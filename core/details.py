@@ -553,12 +553,13 @@ def _call_sender(sender, prompt, tag, name, fresh):
         return sender(prompt, tag, name)
 
 
-def ask_json(sender, prompt, tag, name, want_key, fresh=True):
+def ask_json(sender, prompt, tag, name, want_key, fresh=None):
     """왕복 1회 + JSON 회수 → (obj, info).
     obj: want_key 를 가진 dict(없으면 {}). info: {"ok", "how", "error", "hint", "phase", "fatal", "kind",
     "model", "retry", "reply_len"} — kind 는 "roundtrip"(왕복 자체 실패) / "parse"(답은 왔으나 JSON 없음).
-    fresh=True: 묶음마다 새 채팅 — 앞 묶음의 답·문맥이 섞여 들어오거나(앞 조각 에코) 대화가 길어져
-    Copilot 이 답을 끊는 일을 막는다(묶음은 서로 독립이라 문맥이 필요 없다)."""
+    fresh=None(기본): 묶음을 **같은 채팅에서 이어** 보낸다 — 새 채팅 여부는 sender(judge.copilot_send)가 정한다(첫 왕복·
+    실패 뒤·config.copilotAuto.chatTurns 마다). 앞 묶음의 답이 되풀이돼 섞여 오는 것은 strip_prompt_echo·find_json 이 걷어낸다.
+    fresh=True 는 문맥 오염이 곧 오답인 왕복(팀 유사 항목 정리처럼 앞 묶음과 무관한 목록)에만."""
     try:
         res = _call_sender(sender, prompt, tag, name, fresh)
     except Exception as e:  # noqa: BLE001 - sender 예외가 단계 전체를 죽이지 않게

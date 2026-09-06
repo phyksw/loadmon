@@ -11,8 +11,10 @@ judge.py — raw 판정을 Copilot(GPT-5.6)이 수행한다. (LoadMonitor20: 계
                   80건은 입력 한도 9,000자를 넘긴다: 머리말 572자 + 행 최악 147자 → 80행 ≈ 12,400자)
                   · 청크는 행 수(40)와 **글자 예산(PROMPT_BUDGET)** 둘 다로 자른다 — 긴 제목·긴 과제
                     목록이면 40행 미만으로 줄어든다(pack_chunks). 모든 청크 프롬프트는 머리말(기준·과제
-                    목록·형식)을 포함해 **혼자서 완결**이고 새 채팅에서 보낸다 — 예전 "계속입니다" 청크는
-                    드라이버가 재시도로 새 채팅을 열면 기준 없는 빈 채팅에 떨어졌다.
+                    목록·형식)을 포함해 **혼자서 완결**이다 — 드라이버가 재시도로 새 채팅을 열어도 답이 나온다
+                    (예전 "계속입니다" 청크는 빈 채팅에 떨어졌다). 그러면서도 청크는 **같은 채팅에서 이어** 보내
+                    Copilot 이 앞 청크의 과제·세부업무 표기를 기억한다(첫 왕복·실패 뒤·config.copilotAuto.chatTurns
+                    마다만 새 채팅 — 제보: 청크마다 새 채팅이라 기억이 안 이어짐).
                   · 응답이 잘렸거나(cut·불완전 JSON) JSON 을 못 찾으면 **적응 분할**: 잘린 JSON 은 마지막
                     완전한 행까지 복구(repair_json)하고 빠진 행만 다시 묻고, 통째 실패는 반으로 나눠
                     재시도(최소 5행·깊이 3). 결과는 ai_judgments 의 failed_rows/repaired/roundtrips 로 정직히 남긴다.
@@ -121,6 +123,27 @@ def roundtrip_timeout(n_parts=1):
 
 _FIRST_SEND = [True]        # 판정 세션의 첫 왕복인지 (새 채팅으로 시작)
 _NEED_FRESH = [False]       # 직전 왕복이 실패했거나 답을 해석 못 했다 — 다음 왕복은 새 채팅에서
+_TURNS = [0]                # 지금 채팅에서 성공한 왕복 수 — config.copilotAuto.chatTurns 에 닿으면 다음 왕복은 새 채팅
+_CHAT_TURNS = [None]        # chatTurns 캐시 (None = 아직 안 읽음)
+CHAT_TURNS_DEFAULT = 12     # 한 채팅에 이어 보내는 왕복 상한. 0 = 묶음마다 새 채팅(LM22 1차 방식)
+
+
+def chat_turns():
+    """config.copilotAuto.chatTurns — 한 채팅에서 이어 보내는 왕복 수. 묶음(청크)이 같은 채팅에서 이어지면 Copilot 이
+    앞 묶음의 판정·이름 짓기를 기억해 과제·세부업무 표기가 일관된다(제보: '청크마다 새 채팅이라 기억이 안 이어진다').
+    너무 길어진 채팅은 답이 끊기거나 앞 답을 되풀이하므로 상한마다 새 채팅으로 넘어간다. 0 이면 묶음마다 새 채팅."""
+    if _CHAT_TURNS[0] is None:
+        v = CHAT_TURNS_DEFAULT
+        try:
+            with open(os.path.join(ROOT, "config", "config.json"), encoding="utf-8-sig") as f:
+                raw = (json.load(f).get("copilotAuto") or {}).get("chatTurns", CHAT_TURNS_DEFAULT)
+            v = int(raw)
+            if v < 0:
+                v = CHAT_TURNS_DEFAULT
+        except (OSError, ValueError, TypeError):
+            v = CHAT_TURNS_DEFAULT
+        _CHAT_TURNS[0] = v
+    return _CHAT_TURNS[0]
                             # (끊긴 생성·오류 문구가 남은 채팅에 이어 보내면 다음 답까지 오염된다, 실측)
 _STUB_NOTED = [False]       # 스텁 응답임을 로그에 한 번만 남긴다
 _LAST_PROMPT = [None]       # (경로, 본문) — 직전 성공 왕복 뒤 지운 프롬프트 파일. note_bad_reply 가 되살린다(V-06)
@@ -182,8 +205,12 @@ def who_label(who, n=16):
 def copilot_send(prompt_text, tag, name, fresh=None):
     """Copilot 왕복 1회 — 프롬프트를 report\\judge_{name}_{tag}.md 로 쓰고 드라이버를
     자식 프로세스로 부른다(분할·서약은 드라이버 몫). 반환 {"ok","reply",...,"error","hint"}.
-    fresh: True = 새 채팅에서 시작, None(기본) = 이 프로세스의 첫 성공 왕복까지만 새 채팅
-           (+ 직전 왕복이 실패/해석 불가였으면 새 채팅), False = 이어서(앞 왕복의 문맥을 쓰는 경우).
+    fresh: True = 새 채팅에서 시작, None(기본) = **같은 채팅에서 이어서** — 이 프로세스의 첫 성공 왕복까지만 새 채팅
+           (+ 직전 왕복이 실패/해석 불가·끊김이면 새 채팅, + 한 채팅의 왕복이 config.copilotAuto.chatTurns 에 닿으면 새 채팅,
+           chatTurns=0 이면 매번 새 채팅), False = 무조건 이어서.
+           판정·정제·Agentic·워크플로우의 묶음(청크)은 모두 None 으로 보내 앞 묶음의 문맥(과제·세부업무 표기)을 잇는다 —
+           묶음마다 새 채팅을 열면 Copilot 의 기억이 끊겨 표기가 흔들렸다(제보). 프롬프트는 여전히 혼자서 완결이라 드라이버가
+           재시도로 새 채팅을 열어도 답이 나온다.
     반환 dict 의 cut=True 는 답이 생성 중단 문구로 끝났다는 뜻 — 잘린 JSON 복구 대상.
     프롬프트 파일은 **성공한 왕복이면 회수 직후 지운다**(V-06: 실행당 64~83개가 report\\ 에 누적돼 신호 원문
     사본이 쌓였다) — 실패한 왕복(왕복 자체 실패, 답에 JSON 꼴이 없음)의 것만 남겨 '직접 붙여넣기' 안내에 쓴다.
@@ -201,10 +228,15 @@ def copilot_send(prompt_text, tag, name, fresh=None):
     n_parts = len(prompt_text or "") // PART_PROMPT + 1        # 드라이버의 분할 수 추정
     try:
         cmd = [sys.executable, os.path.join(ROOT, "tools", "copilot_auto.py"), "--send", pf]
-        if fresh is True or (fresh is None and (_FIRST_SEND[0] or _NEED_FRESH[0])):
+        limit = chat_turns()
+        want_fresh = (fresh is True
+                      or (fresh is None and (_FIRST_SEND[0] or _NEED_FRESH[0] or limit <= 0 or _TURNS[0] >= limit)))
+        if want_fresh:
             # 판정의 첫 왕복은 새 채팅에서 — 수집 단계의 실패 대화가 판정을 오염시키지 않게.
             # 직전 왕복이 실패했을 때도 새 채팅 — 끊긴 생성·오류 문구가 남은 채팅은 다음 답을 오염시킨다.
+            # 한 채팅의 왕복이 chatTurns 에 닿아도 새 채팅 — 너무 길어진 대화는 답이 끊기거나 앞 답을 되풀이한다.
             cmd.append("--fresh")
+            _TURNS[0] = 0
         out = subprocess.run(cmd, capture_output=True, timeout=roundtrip_timeout(n_parts),
                              cwd=ROOT, env=dict(os.environ, PYTHONIOENCODING="utf-8"),
                              creationflags=NO_WIN)
@@ -227,6 +259,8 @@ def copilot_send(prompt_text, tag, name, fresh=None):
     if res.get("ok"):
         _FIRST_SEND[0] = False       # 성공했을 때만 소진 — 실패하면 다음도 새 채팅
         _NEED_FRESH[0] = bool(res.get("cut"))   # 끊긴 답이 남은 채팅도 다음엔 새 채팅
+        # 드라이버가 재시도 사다리로 새 채팅을 열었으면 그 채팅의 첫 왕복이다
+        _TURNS[0] = 1 if ("새 채팅" in str(res.get("retry") or "")) else _TURNS[0] + 1
         reply = str(res.get("reply") or "")
         if "{" in reply and "}" in reply:
             # 성공 왕복 — 프롬프트 파일은 지우되 본문은 기억해 둔다(해석 실패 시 note_bad_reply 가 되살림).
@@ -699,8 +733,10 @@ def judge_rows(idxs, rows, models, seen, tag, label, depth, st):
     · st: roundtrips·repaired·retries·failed_rows·omitted_rows·notes·last_err·soft(재시도 끔) 누적."""
     idxs = list(idxs)
     chunk = [rows[i] for i in idxs]
+    # 묶음은 같은 채팅에서 이어 보낸다(fresh=None — 첫 왕복·실패 뒤·chatTurns 마다만 새 채팅). 프롬프트는 혼자서 완결이라
+    # 새 채팅에 떨어져도 답이 나오고, 이어지면 앞 묶음의 표기를 Copilot 이 기억한다
     res = copilot_send(judge_prompt(chunk, idxs[0], models, seen_details=seen, idxs=idxs),
-                       tag, label, fresh=True)
+                       tag, label)
     st["roundtrips"] += 1
     got, info = {}, {}
     if res.get("ok"):

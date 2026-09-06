@@ -400,11 +400,13 @@
   "model": "GPT-5.6",
   "judgeChunk": 40,
   "refineChunk": 20,
+  "chatTurns": 12,
   "sendSenderAddress": false
  },
  "_copilotAuto_옵션_설명": {
   "judgeChunk": "판정 한 왕복에 넣는 신호 수(기본 40). 응답이 잘리거나 실패하면 줄인다 — python judge.py --chunk N 이 있으면 그것이 우선",
   "refineChunk": "정제 한 왕복에 넣는 행 수(기본 20). 40행은 근거 포함 12,000자로 입력 한도(9,000자)를 넘겼다(실측) — python refine.py --chunk N 이 우선",
+  "chatTurns": "한 채팅에서 이어 보내는 왕복(청크) 수. 기본 12. 판정·정제·Agentic·워크플로우의 묶음은 같은 채팅에서 이어 보내 Copilot 이 앞 묶음의 과제·세부업무 표기를 기억하게 한다(묶음마다 새 채팅을 열면 기억이 끊겨 표기가 흔들린다). 첫 왕복·실패한 왕복 뒤·이 수에 닿으면 새 채팅. 0 이면 묶음마다 새 채팅(LM22 1차 방식 — 긴 대화에서 답이 자꾸 끊기는 PC 용)",
   "sendSenderAddress": "false(기본): 메일 상대의 주소 대신 도메인(@회사.com)만 프롬프트에 넣는다. true 면 주소 전체. 어느 쪽이든 사람 이름·MM 은 보내지 않는다",
   "분할전송": "설정 없음 — 프롬프트가 Copilot 입력 한도(9,000자)를 넘으면 줄 경계 8,000자 조각으로 나눠 보내고 답 끝의 [[전송끝]] 서약으로 완료를 판정한다(tools\\copilot_auto.py). replyTimeoutSec 은 조각 수만큼 곱해 기다린다"
  },

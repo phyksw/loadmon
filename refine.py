@@ -467,7 +467,9 @@ class Refiner:
         self.say(f"[refine] {label} 왕복 중… (#{lo}~#{hi}{', 겹침 ' + str(len(ov)) if ov else ''}, "
                  f"프롬프트 {len(prompt):,}자)")
         try:
-            res = copilot_send(prompt, self.tag, f"refine{label}", fresh=True)
+            # fresh=None — 청크를 같은 채팅에서 이어 보낸다(첫 왕복·실패 뒤·chatTurns 마다만 새 채팅): 앞 청크의 과제·담당 업무
+            # 표기를 Copilot 이 기억한다(제보: 청크마다 새 채팅이라 기억이 안 이어짐). 프롬프트는 여전히 혼자서 완결
+            res = copilot_send(prompt, self.tag, f"refine{label}")
         except Exception as e:  # noqa: BLE001 - 한 청크의 왕복 예외가 정제 전체를 멈추지 않게
             res = {"ok": False, "error": f"드라이버 실패({type(e).__name__})"}
         self.st["roundtrips"] += 1

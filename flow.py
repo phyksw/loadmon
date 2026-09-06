@@ -21,7 +21,8 @@ LoadMonitor20 과 다른 점:
   python flow.py --from ... --to ... [--no-merge] [--budget 7000]
 
 묶음이 많은 사람이 통째로 실패하던 것(S2)에 대한 보강 — agentic.py 와 같은 규칙:
-  · 묶음마다 새 채팅(fresh) · 묶음당 단위 6개 상한(답이 잘리지 않게) · 잘린 JSON 복구(core/details.find_json)
+  · 묶음은 같은 채팅에서 이어 보낸다(fresh=None — 첫 왕복·실패 뒤·chatTurns 마다만 새 채팅, 앞 묶음의 표기를 기억)
+    · 묶음당 단위 6개 상한(답이 잘리지 않게) · 잘린 JSON 복구(core/details.find_json)
   · fatal(로그인 만료·Edge 미기동) 즉시 중단 + 사유 hint · 연속 실패 3회 중단 · 적응 분할
   · 묶음별 저장 + 이어서 판정(지난 결과의 flows 는 두고 missing 만 보낸다, --redo 면 처음부터)
   · 신호 3건 이상인 단위가 없으면 실패가 아니라 '결과 없음'(ok:true, flows:[], empty_reason) 으로 저장한다.
@@ -54,6 +55,16 @@ if __name__ == "__main__":
         (sys.stdout.encoding or "utf-8") if sys.stdout.isatty() else "utf-8"))  # 콘솔(bat)=콘솔 코드페이지 · 파이프(UI)=utf-8
 
 PROMPT_BUDGET = 7000            # 한 번에 보낼 프롬프트 글자 수 상한 (입력 잘림 방지)
+
+
+def _chat_note():
+    """로그용 — 묶음을 같은 채팅에서 이어 보내는 정책(config.copilotAuto.chatTurns)"""
+    try:
+        import judge
+        n = judge.chat_turns()
+    except Exception:  # noqa: BLE001 - 로그 문구가 실행을 막지 않게
+        return ""
+    return " — 설정 chatTurns=0: 묶음마다 새 채팅" if n <= 0 else f" · 첫 왕복·실패 뒤·{n}회마다 새 채팅"
 MIN_SIGNALS = 3                 # 이보다 적은 신호는 흐름이라 할 수 없다
 SAMPLE_N = 14                   # 단위당 시간순 표본 수
 MAX_UNITS_PER_CHUNK = 6         # 묶음당 단위 상한 — 답 길이(단위당 ≈1,100자)를 잘리지 않는 범위로
@@ -526,7 +537,7 @@ def main():
               f"남은 {sum(len(c) for c in chunks[max_chunks:])}개 업무는 다음 실행(재분석)이 이어서 판정합니다")
         chunks = chunks[:max_chunks]
     print(f"[flow] 담당 업무 {len(todo)}개 워크플로우 왕복 ({len(chunks)}회로 나눠 보냄 — "
-          "한 흐름이 다른 업무로 넘어가지 않게 업무 단위로 물어봅니다 · 묶음마다 새 채팅)")
+          f"한 흐름이 다른 업무로 넘어가지 않게 업무 단위로 물어봅니다 · 같은 채팅에서 이어서{_chat_note()})")
     dropped, flows, fails = [], list(kept), []
     model_name = str((prev or {}).get("model_name") or "") if kept else ""
     failed, salvaged, consec, stopped, n_sent = 0, 0, 0, "", 0
@@ -534,8 +545,9 @@ def main():
     def ask(part, name):
         nonlocal model_name, n_sent
         n_sent += 1
+        # fresh=None — 묶음을 같은 채팅에서 이어 보낸다(첫 왕복·실패 뒤·chatTurns 마다만 새 채팅)
         o, info = details.ask_json(judge.copilot_send, build_prompt(part), f"{tag}-{name}", "flow",
-                                   "flows", fresh=True)
+                                   "flows", fresh=None)
         if not info.get("ok"):
             return [], info
         model_name = model_name or str(info.get("model") or "")

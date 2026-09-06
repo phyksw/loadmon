@@ -18,7 +18,9 @@ LoadMonitor20 과 다른 점:
     근거 업무명을 내 자료에서 못 찾으면 '[근거 없음]' 표식(억지 매칭 의심).
 
 묶음이 많은 사람(업무 수백 행)이 통째로 실패하던 것(S2)에 대한 보강:
-  · 묶음마다 **새 채팅**(fresh) — 앞 묶음의 답·문맥이 섞여 들어오거나 대화가 길어져 답이 끊기지 않게.
+  · 묶음은 **같은 채팅에서 이어** 보낸다(fresh=None) — Copilot 이 앞 묶음의 매칭·표기를 기억해 묶음 간 판정이 일관되게
+    (제보: 묶음마다 새 채팅이라 기억이 안 이어짐). 첫 왕복·실패 뒤·config.copilotAuto.chatTurns 마다만 새 채팅.
+    되풀이돼 섞여 오는 앞 답은 strip_prompt_echo·find_json 이 걷어낸다.
   · 잘린 JSON·코드펜스·굽은 따옴표·'stopped generating' 답은 core/details.find_json 이 복구한다
     (부분 결과는 salvaged_chunks 에 정직하게 센다). 프롬프트의 출력 예시는 <...> 자리표시자라
     되돌아온 프롬프트가 답으로 파싱되지 않는다(실측 사고: 예시가 매칭으로 저장됐다).
@@ -58,6 +60,16 @@ import details  # noqa: E402
 from details import fold, _fresh_refined  # noqa: E402,F401  (호환: 옛 이름 유지)
 
 PROMPT_BUDGET = 7000           # 한 왕복 프롬프트 글자 상한 (입력 잘림 방지 — 실측 9,000 초과 시 실패)
+
+
+def _chat_note():
+    """로그용 — 묶음을 같은 채팅에서 이어 보내는 정책(config.copilotAuto.chatTurns)"""
+    try:
+        import judge
+        n = judge.chat_turns()
+    except Exception:  # noqa: BLE001 - 로그 문구가 실행을 막지 않게
+        return ""
+    return " — 설정 chatTurns=0: 묶음마다 새 채팅" if n <= 0 else f" · 첫 왕복·실패 뒤·{n}회마다 새 채팅"
 OVERLAY_ROWS = 3               # 묶음 경계 겹침 행 수
 OVERLAY_CHARS = 600            # 겹침 행 글자 상한 (예산 안에 포함해 계산한다)
 MAX_WORK = 12                  # 과제별 근거 업무 상한
@@ -628,7 +640,7 @@ def main():
               f"남은 {deferred}행은 다음 실행(재매칭)이 이어서 판정합니다")
         parts = parts[:max_chunks]
     print(f"[agentic] 과제 매칭 왕복 — 업무 {len(todo)}행을 {len(parts)}묶음으로 나눠 보냅니다 "
-          "(과제 목록은 매번 전부 · 묶음 경계는 앞 행 겹침 · MM 미전송 · 묶음마다 새 채팅)")
+          f"(과제 목록은 매번 전부 · 묶음 경계는 앞 행 겹침 · MM 미전송 · 같은 채팅에서 이어서{_chat_note()})")
 
     done_sigs = set(done_prev)
     failed, salvaged, model_name, fails = 0, 0, str((prev or {}).get("model_name") or "") if done_prev else "", []
@@ -637,8 +649,10 @@ def main():
     def ask(part, name):
         nonlocal model_name, n_sent
         n_sent += 1
+        # fresh=None — 묶음을 같은 채팅에서 이어 보낸다(첫 왕복·실패 뒤·chatTurns 마다만 새 채팅). 앞 묶음의 과제 매칭·표기를
+        # Copilot 이 기억해 묶음 간 판정이 일관된다(제보: 묶음마다 새 채팅이라 기억이 안 이어짐)
         o, info = details.ask_json(judge.copilot_send, ag_prompt(tasks, part, stats_by), f"{tag}-{name}",
-                                   "agentic", "match", fresh=True)
+                                   "agentic", "match", fresh=None)
         if info.get("ok"):
             model_name = model_name or str(info.get("model") or "")
             if info.get("how") == "salvaged" and not _has_items(o):
