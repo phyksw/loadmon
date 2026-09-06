@@ -2,7 +2,7 @@
 r"""
 teamserver.py — 팀 취합 서버 (LoadMonitor22)
 
-팀 공용 PC(예: 192.168.0.10)에서 이 파일 하나를 돌려 두면:
+팀 공용 PC(예: 10.115.147.68)에서 이 파일 하나를 돌려 두면:
   · 팀원들의 LoadMonitor 가 분석을 마칠 때마다 결과를 자동 업로드한다 (POST /api/upload)
   · 업로드가 올 때마다 기존 팀 취합(aggregate.py)을 다시 돌려 HTML 을 갱신한다
     (aggregate 가 팀 통합 보고서 team_full_report.html / _v3 까지 만든다 — Copilot 없이 캐시만)

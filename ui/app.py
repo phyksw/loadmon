@@ -2197,7 +2197,7 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
 <div class="card"><h2>팀 취합 업로드 <span class="state">자동 전송하지 않습니다 — 서버에 닿는 망에서 버튼으로 보냅니다</span></h2>
  <div class="row" style="align-items:center;gap:6px;margin-bottom:8px">
   <span class="state" style="flex:none">저장소</span>
-  <input id="tuurl" placeholder="http://192.168.0.10:9310" style="flex:1;min-width:200px;padding:5px 8px;border:1px solid #d7dbe0;border-radius:5px;font-size:12px">
+  <input id="tuurl" placeholder="http://10.115.147.68:9310" style="flex:1;min-width:200px;padding:5px 8px;border:1px solid #d7dbe0;border-radius:5px;font-size:12px">
   <button class="ghost" id="tuping">연결 확인</button>
   <span class="state" id="tustat"></span></div>
  <div id="tuavail"></div>
@@ -3742,7 +3742,7 @@ class H(BaseHTTPRequestHandler):
                 u = urlparse(url)
                 if u.scheme not in ("http", "https") or not u.netloc or any(c.isspace() for c in url):
                     self._send(200, {"ok": False,
-                                     "error": "주소 형식이 올바르지 않습니다 — 예: http://192.168.0.10:9310"})
+                                     "error": "주소 형식이 올바르지 않습니다 — 예: http://10.115.147.68:9310"})
                     return
             saved = False
             if url and url != (cfg().get("teamServerUrl") or "").strip():
