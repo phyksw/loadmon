@@ -1,0 +1,15 @@
+# 개인 데이터 — 공유 금지 (수집·분석 산출물)
+data/
+report/
+teamdata/
+
+# 배포 패키지에만 넣는 내장 파이썬 런타임(약 21MB)
+python/
+
+# 파이썬 캐시
+__pycache__/
+*.pyc
+
+# 작업 산출물
+*.stale
+*.zip
