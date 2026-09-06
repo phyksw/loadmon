@@ -326,6 +326,8 @@
  "_메일수집_설명": "Outlook 메일·일정 수집 경로. 기본은 클래식 Outlook COM. 이 PC 에서 COM 결과가 비면(새 Outlook 전용·2016 시작 마법사·COM 미등록) ① Windows Search 색인 → ② Outlook 웹(전용 Edge 프로필, mailViaWeb) → ③ Copilot 메일·일정 왕복(mailViaCopilot) 순으로 자동 대체합니다. ②는 Outlook 버전과 무관하고 LLM 을 거치지 않아 정확하며, Copilot 과 같은 전용 Edge 창에서 회사 계정으로 한 번 로그인(계정 선택)만 하면 됩니다. 왕복·읽기는 메일이 비었을 때만 일어납니다.",
  "mailViaCopilot": true,
  "mailViaWeb": true,
+ "_outlookBudgetSec_설명": "Outlook COM 수집 한 회차의 시간 예산(초). 0(기본) = 자동: 240 + 60×개월(360~900). 수집기는 기간을 달로 쪼개 최신 달부터 읽고 달마다 data\\outlook\\coverage.json 에 완료 표를 남기므로, 예산에 닿아 못 읽은 달은 같은 실행 안에서 최대 2회, 그리고 다음 [분석 실행]이 이어서 읽습니다(완료된 달은 건너뜀·최신 2개월은 매번 다시 읽음). 미수집 달이 남으면 수집 데이터 현황과 주간 활동 추이 밑에 표시됩니다. Outlook 이 느린 PC 에서 한 번에 끝내고 싶으면 1200 처럼 크게 두세요",
+ "outlookBudgetSec": 0,
  "_팀즈형식_설명": "팀즈 창 읽기의 시각 형식. 비우면 이 PC 의 Windows 지역 설정에서 자동 구성하고(0줄이면 일반 형식 재시도), 특수한 표기면 .NET 정규식을 직접 지정 — 그룹 1=앞 오전/오후 표기, 2=시, 3=분, 4=뒤 표기(빈 그룹 허용). 예: 14h10 → ()?\\b(\\d{1,2})h(\\d{2})\\b()?   (docs\\설정가이드 §7)",
  "teamsTimeRegex": "",
  "_teamsSelfNames_설명": "팀즈 창 읽기(Start-TeamsSampler)에서 내가 보낸 메시지를 '팀즈(발신)' 으로 알아보기 위한 내 표시 이름 목록(예: [\"홍길동\", \"Gildong Hong\"]). owner·Windows 계정명·AD 표시명·'나/You' 는 자동으로 포함되므로 팀즈 표시 이름이 그와 다를 때만 적는다. 없으면 팀즈로 일한 날이 전부 '수신' 이 되어 PC 하한이 열리지 않는다. 파일 수집의 author(동료 저장 파일 제외)에도 같은 목록이 쓰이며, 이름은 Copilot 프롬프트에 나가지 않는다",

@@ -923,8 +923,42 @@ def _sampler_autorestart(age_min):
     return ""
 
 
-def sources():
-    """수집 데이터 현황 — 무엇이 비어서 결과가 약한지 한눈에"""
+def outlook_coverage(period=None):
+    r"""Outlook COM 수집의 달별 완료 표(data\outlook\coverage.json) 와 화면 기간을 맞춰 본다.
+
+    수집기는 달 단위로 최신 달부터 읽고 예산에 닿으면 멈춘다(다음 실행이 잇는다). 그 사이 화면은 '메일·회의가
+    M월부터만 있는' 상태라 주간 활동 추이·로드율이 앞 달에서 비어 보인다 — 화면이 그것을 말해야 한다.
+    반환 {"months": n, "covered": [...], "uncovered": [...]} — 표가 없거나 COM 이 아닌 경로(색인·웹·Copilot)가
+    채운 자료면 None (그 경로들은 달 단위 표를 남기지 않는다)."""
+    from datetime import date
+    try:
+        with open(os.path.join(DATA, "outlook", "mail_source.json"), encoding="utf-8-sig") as f:
+            src = json.load(f)
+        with open(os.path.join(DATA, "outlook", "coverage.json"), encoding="utf-8-sig") as f:
+            cov = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(src, dict) or src.get("source") != "com" or not isinstance(cov, dict):
+        return None
+    per = period if isinstance(period, (list, tuple)) and len(period) >= 2 else (src.get("period") or [])
+    try:
+        d0, d1 = date.fromisoformat(str(per[0])[:10]), date.fromisoformat(str(per[-1])[:10])
+    except (TypeError, ValueError, IndexError):
+        return None
+    if d0 > d1:
+        d0, d1 = d1, d0
+    months, y, m = [], d0.year, d0.month
+    while (y, m) <= (d1.year, d1.month):
+        months.append(f"{y:04d}-{m:02d}")
+        y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+    mail = cov.get("mail") if isinstance(cov.get("mail"), dict) else {}
+    cal = cov.get("calendar") if isinstance(cov.get("calendar"), dict) else {}
+    unc = [k for k in months if k not in mail or k not in cal]
+    return {"months": len(months), "covered": [k for k in months if k not in unc], "uncovered": unc}
+
+
+def sources(period=None):
+    """수집 데이터 현황 — 무엇이 비어서 결과가 약한지 한눈에. period 는 화면이 보는 기간(메일 수집 범위 대조용)"""
     out = []
     for name, pats, hint in (
         ("PC 가동", ["pc/pc_on.csv"], "run 실행 시 자동"),
@@ -980,6 +1014,15 @@ def sources():
                         hint += " → 전용 Edge 창의 Outlook 탭에서 회사 계정 1회 선택 후 [Outlook 웹 읽기]"
             except (OSError, ValueError):
                 pass
+        if name == "메일·일정" and n:
+            # COM 이 예산에 닿아 못 읽은 달이 기간 안에 있으면 '있음'이 아니라 '부족'이다 — 앞 달의 메일·회의가
+            # 통째로 빠진 채 로드율·주간 추이가 그려진다(실측 제보: 1~5월 공백). 다음 실행이 이어서 읽는다.
+            oc = outlook_coverage(period)
+            if oc and oc["uncovered"]:
+                st = "warn"
+                hint = (f"메일·일정이 {oc['months']}개월 중 {len(oc['covered'])}개월만 수집됨 — 미수집 "
+                        f"{', '.join(oc['uncovered'][:8])}{' …' if len(oc['uncovered']) > 8 else ''}"
+                        " (Outlook 시간 예산) → [분석 실행]을 다시 돌리면 남은 달을 이어서 읽습니다")
         if name == "PC 가동" and 0 < n < 10:
             st, hint = "warn", "기간 대비 부족 — 재분석 시 브라우저 힌트로 보강됩니다"
         elif name == "팀즈 채팅":
@@ -2185,6 +2228,7 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
 <div class="card"><h2>주간 활동 추이 <span class="state">막대 = 신호 건수 · 선 = PC 가동시간</span></h2>
  <div id="weekly"></div>
  <div class="row" id="wleg" style="margin-top:6px;font-size:11px;color:#4a5159"></div>
+ <div class="note" id="wnote" style="display:none;color:#a86400"></div>
  <div id="wclump"></div></div>
 
 <div class="card"><h2>업무별 상세 <span class="state" id="rsrc"></span></h2>
@@ -2548,6 +2592,12 @@ async function refresh(){
  $("actbar").innerHTML=aa.map(([l,v],i)=>`<i style="width:${(v/atot*100).toFixed(1)}%;background:${PAL[(i+3)%PAL.length]}" title="${esc(l)} ${(v/atot*100).toFixed(0)}%"></i>`).join("");
  $("actleg").innerHTML=aa.map(([l,v],i)=>`<div><span class="dot" style="background:${PAL[(i+3)%PAL.length]}"></span>${esc(l)}<span class="v">${(v/atot*100).toFixed(0)}% · ${v.toFixed(2)} MM</span></div>`).join("")||'<div class="note">분석을 실행하세요</div>';
  weekly($("weekly"),d.trend||[]);
+ // 메일·일정이 기간의 일부 달만 수집된 상태(Outlook 시간 예산) — 앞 달의 메일·회의 막대가 비어 보이는 이유를 적는다
+ const wn=$("wnote");
+ if(wn){const mc=d.mail_coverage||null;
+  if(mc&&(mc.uncovered||[]).length){wn.style.display="";
+   wn.innerHTML=`⚠ 메일·회의 막대는 ${mc.months}개월 중 <b>${(mc.covered||[]).length}개월</b>만 수집돼 있습니다 — 미수집 ${esc(mc.uncovered.join(", "))} (Outlook 시간 예산). [분석 실행]을 다시 돌리면 남은 달을 이어서 읽습니다.`;}
+  else wn.style.display="none";}
  // 같은 시각에 몰린 덩어리가 있으면 알린다 — 그날 일한 것이 아닐 수 있다
  const cl=$("wclump");
  if(cl){const cs=d.clumps||[];
@@ -3351,8 +3401,10 @@ class H(BaseHTTPRequestHandler):
             # 스텁 판정 표식(LM_COPILOT_STUB) — 성공 단계의 note 는 화면이 버리고 있었다(검증 확정).
             # 얼린 사본은 baked /api/dash 를 같은 스크립트로 그리므로 여기 실어야 사본에도 배너가 굳는다.
             stub_note = _stub_note(lastrun)
-            self._send(200, {"version": VERSION, "port": PORT[0], "sources": sources(),
+            self._send(200, {"version": VERSION, "port": PORT[0], "sources": sources(meta.get("period")),
                              "file": fn, "rows": rows, "meta": meta,
+                             # 메일·일정 수집 범위(달 단위) — 주간 활동 추이 밑에 '미수집 달'을 적는다(얼린 사본에도 굳는다)
+                             "mail_coverage": outlook_coverage(meta.get("period")),
                              # 화면이 보고 있는 그 기간을 넘긴다 — 예전에는 오늘 기준
                              # 14주 고정이라 1월부터 본 사람도 최근 3개월만 보였다(제보)
                              "clumps": mtime_clumps((meta.get("period") or ["", ""])[0],

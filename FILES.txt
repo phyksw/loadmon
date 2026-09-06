@@ -28,13 +28,13 @@ mine.py                                               17,797 B  5579a795
 refine.py                                             41,749 B  f1f55cc4
 ruff.toml                                              1,004 B  44ee0eea
 FILES.txt                                                (이 파일)
-run.py                                                44,490 B  e079c664
+run.py                                                47,382 B  f6a8e07c
 자가점검.py                                                8,689 B  5d9b47cb
 collect/Add-WorkLog.ps1                                1,771 B  8a921980
 collect/Get-FileActivity.ps1                          48,652 B  cbcbd894
 collect/Get-GitActivity.py                            29,162 B  0facda4f
 collect/Get-LicenseUsage.ps1                           4,093 B  c2df1eda
-collect/Get-OutlookData.ps1                           22,162 B  4bfc1b83
+collect/Get-OutlookData.ps1                           35,401 B  a58c2fc2
 collect/Get-OutlookIndex.ps1                          21,292 B  83984e67
 collect/Get-MailViaCopilot.py                         26,575 B  9e601a9d
 collect/Get-OutlookWeb.py                             40,141 B  a8b185cc
@@ -48,8 +48,8 @@ collect/Get-TeamsWindow.ps1                           31,687 B  ee00402e
 collect/Diagnose-Collectors.ps1                       34,898 B  8625e5d3
 collect/Register-Samplers.ps1                          9,084 B  f1041753
 collect/Start-ActivitySampler.ps1                      7,629 B  694b8203
-config/config.json                                    29,687 B  42d5fc01
-config/config.default.json                            29,687 B  42d5fc01
+config/config.json                                    30,363 B  94733a1b
+config/config.default.json                            30,363 B  94733a1b
 config/agentic_tasks.json                              4,079 B  12466a09
 core/board.py                                         13,045 B  9c4d6431
 core/extract.py                                      189,755 B  ffe2ced8
@@ -66,4 +66,4 @@ tools/lint.ps1                                         7,914 B  16140924
 tools/Make-Package.ps1                                10,733 B  f6623295
 tools/Prepare-Move.ps1                                 9,944 B  5f789031
 tools/update_files.py                                  4,530 B  46a81ea6
-ui/app.py                                            298,250 B  da813dec
+ui/app.py                                            302,004 B  c970983a

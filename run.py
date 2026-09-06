@@ -264,6 +264,49 @@ def mail_fallbacks(c, d0, d1, data, ps, col, t_run):
     return finish()
 
 
+def _outlook_budget(c, d0, d1):
+    """Outlook COM 수집 한 회차의 시간 예산(초) — config.outlookBudgetSec(0 = 자동). 자동은 240 + 60×개월(360~900).
+    수집기가 달 단위로 이어서 읽으므로(data\\outlook\\coverage.json) 예산 안에 못 끝내도 다음 회차·다음 실행이
+    남은 달을 잇는다 — 예전 고정 360초는 메일이 많은 PC 에서 오래된 달을 영영 빠뜨렸다(실측 제보: 1~5월 공백)."""
+    months = max(1, (date.fromisoformat(d1) - date.fromisoformat(d0)).days // 30 + 1)
+    try:
+        v = int(c.get("outlookBudgetSec") or 0)
+    except (TypeError, ValueError):
+        v = 0
+    return v if v > 0 else max(360, min(900, 240 + 60 * months))
+
+
+def collect_outlook(c, d0, d1, data, ps, col):
+    r"""Outlook COM 수집 — 기간의 달을 최신 달부터 읽고, 예산에 닿아 못 읽은 달(coverage: partial)이 남으면
+    진행이 있는 한 같은 실행 안에서 최대 2회 더 이어서 읽는다(회차마다 완료된 달은 건너뛰므로 앞으로만 간다).
+    그래도 남으면 last_run.json 에 미수집 달을 적고 화면(수집 데이터 현황·주간 활동 추이)이 그것을 보여 준다."""
+    budget = _outlook_budget(c, d0, d1)
+    src_p = os.path.join(data, "outlook", "mail_source.json")
+    ok, prev_unc = False, None
+    for i in range(3):
+        name = ("Outlook 메일·일정 (클래식 Outlook을 켜두세요)" if i == 0
+                else f"Outlook 메일·일정 이어서 수집 {i + 1}/3 (남은 달)")
+        ok = step(name, ps + [os.path.join(col, "Get-OutlookData.ps1"), "-From", d0, "-To", d1,
+                              "-BudgetSec", str(budget)], budget + 120)
+        src = _read_json(src_p) or {}
+        if not ok or src.get("source") != "com" or src.get("coverage_complete", True):
+            break
+        unc = list(src.get("uncovered_months") or [])
+        if prev_unc is not None and len(unc) >= len(prev_unc):
+            print("   (진행이 없어 이어서 수집을 멈춥니다 — Outlook 이 느리거나 응답하지 않습니다)")
+            break
+        prev_unc = unc
+        print(f"   미수집 달 {len(unc)}개({', '.join(unc[:6])}{' …' if len(unc) > 6 else ''}) — 이어서 읽습니다")
+    src = _read_json(src_p) or {}
+    if src.get("source") == "com" and not src.get("coverage_complete", True):
+        unc = list(src.get("uncovered_months") or [])
+        print(f"   [!] 메일·일정 미수집 달 {len(unc)}개: {', '.join(unc)} — 다음 [분석 실행]이 이어서 읽습니다"
+              " (그동안 이 달들의 메일·회의는 로드율·주간 추이에 빠져 있습니다)")
+        record("Outlook 수집 범위", False, 0.0,
+               f"미수집 달 {len(unc)}개: {', '.join(unc)} — 다음 실행이 이어서 수집(그 달의 메일·회의는 아직 빠짐)")
+    return ok
+
+
 def _sampler_running():
     """Start-ActivitySampler.ps1 을 돌리는 PowerShell 프로세스 수 (확인 불가면 None)"""
     try:
@@ -498,8 +541,7 @@ def main():
         step("PC 가동 보강 (브라우저 방문 시각 — URL 미수집)",
              [sys.executable, os.path.join(col, "Get-PcOnHints.py"), "--from", d0, "--to", d1], 240)
         t_outlook = time.time()
-        step("Outlook 메일·일정 (클래식 Outlook을 켜두세요)",
-             ps + [os.path.join(col, "Get-OutlookData.ps1"), "-From", d0, "-To", d1], 420)
+        collect_outlook(c, d0, d1, data, ps, col)             # 달 단위 이어서 수집 — 예산에 못 끝내면 진행이 있는 한 최대 3회
         mail_fallbacks(c, d0, d1, data, ps, col, t_outlook)   # COM 이 못 채운 파일만 색인 → Copilot 순으로 대체 (PC별 Outlook 차이)
         step("파일 수정 이력", ps + [os.path.join(col, "Get-FileActivity.ps1"), "-From", d0, "-To", d1], 300)
         step("최근 문서 (Recent·MRU)", ps + [os.path.join(col, "Get-RecentFiles.ps1"), "-From", d0, "-To", d1], 180)
