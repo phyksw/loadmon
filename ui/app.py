@@ -699,7 +699,7 @@ def _rows(path):
     try:
         with open(path, encoding="utf-8-sig", errors="replace") as f:
             return list(csv.DictReader(f))
-    except (OSError, ValueError):
+    except (OSError, ValueError, csv.Error):      # csv.Error: 깨진 따옴표 뒤 13만 자 넘는 필드 — 한 파일이 /api/dash 를 죽이지 않게
         return []
 
 
@@ -965,15 +965,37 @@ def dash_period(meta, lastrun=None):
     그려졌다(제보: "팀 분석처럼 기간 전체를 포함했으면")."""
     from datetime import date, timedelta
 
-    def _ok(v):
-        return isinstance(v, (list, tuple)) and len(v) >= 2 and str(v[0] or "")[:10] and str(v[-1] or "")[:10]
+    def _pair(v):
+        """[d0, d1] 로 쓸 수 있는 값이면 ISO 날짜 문자열 쌍(앞이 이르게 정렬), 아니면 None — 손으로 고친 파일의 'abc' 같은 값은
+        13주 폴백이 아니라 다음 후보(last_run·데이터 범위)로 넘어가야 한다(재검증 지적)"""
+        if not (isinstance(v, (list, tuple)) and len(v) >= 2):
+            return None
+        try:
+            a, b = date.fromisoformat(str(v[0])[:10]), date.fromisoformat(str(v[-1])[:10])
+        except (TypeError, ValueError):
+            return None
+        if a > b:
+            a, b = b, a
+        return [a.isoformat(), b.isoformat()]
 
     for src in (meta, lastrun):
-        if isinstance(src, dict) and _ok(src.get("period")):
-            return [str(src["period"][0])[:10], str(src["period"][-1])[:10]]
+        per = _pair(src.get("period")) if isinstance(src, dict) else None
+        if per:
+            return per
+    # ③ 데이터 범위 — /api/dash 는 자주 불리므로 파일 mtime 이 그대로면 지난 답을 쓴다(files.csv 는 수만 행일 수 있다)
+    srcs = (("pc/pc_on.csv", "date"), ("outlook/mail.csv", "time"), ("outlook/calendar.csv", "start"),
+            ("files/files.csv", "mtime"))
+    def _sz(p):
+        try:
+            return os.path.getsize(p)
+        except OSError:
+            return -1
+    # 키 = (mtime, 크기)×파일 + 오늘 날짜 — 같은 mtime 으로 덮어쓴 파일·자정을 넘긴 서버(400일 창)도 다시 잰다
+    sig = tuple((_mtime(os.path.join(DATA, rel)), _sz(os.path.join(DATA, rel))) for rel, _c in srcs) + (date.today().isoformat(),)
+    if _DASH_EXTENT.get("sig") == sig:
+        return list(_DASH_EXTENT["per"])
     lo = hi = None
-    for rel, col in (("pc/pc_on.csv", "date"), ("outlook/mail.csv", "time"), ("outlook/calendar.csv", "start"),
-                     ("files/files.csv", "mtime")):
+    for rel, col in srcs:
         for r in _rows(os.path.join(DATA, rel)):
             try:
                 d = date.fromisoformat(str(r.get(col) or "")[:10])
@@ -982,9 +1004,12 @@ def dash_period(meta, lastrun=None):
             if d > date.today() + timedelta(days=1) or d < date.today() - timedelta(days=400):
                 continue
             lo, hi = (d if lo is None or d < lo else lo), (d if hi is None or d > hi else hi)
-    if lo and hi:
-        return [lo.isoformat(), hi.isoformat()]
-    return ["", ""]
+    per = [lo.isoformat(), hi.isoformat()] if (lo and hi) else ["", ""]
+    _DASH_EXTENT.update(sig=sig, per=list(per))
+    return per
+
+
+_DASH_EXTENT = {}      # dash_period ③ 의 캐시 — {"sig": (mtime, …), "per": [d0, d1]}
 
 
 def sources(period=None):
@@ -1045,10 +1070,18 @@ def sources(period=None):
             except (OSError, ValueError):
                 pass
         if name == "메일·일정" and n:
+            # 자가검증(-SelfTest / LM_OUTLOOK_SELFTEST) 이 만든 가짜 메일이면 무엇보다 먼저 알린다 — 실제 수집과 섞이지 않게
+            try:
+                with open(os.path.join(DATA, "outlook", "mail_source.json"), encoding="utf-8-sig") as f:
+                    _ms = json.load(f)
+            except (OSError, ValueError):
+                _ms = {}
+            if isinstance(_ms, dict) and _ms.get("selftest"):
+                st, hint = "warn", "자가검증(테스트 전용) 가짜 메일·일정입니다 — 실제 수집이 아닙니다. LM_OUTLOOK_SELFTEST 를 지우고 다시 수집하세요"
             # COM 이 예산에 닿아 못 읽은 달이 기간 안에 있으면 '있음'이 아니라 '부족'이다 — 앞 달의 메일·회의가
             # 통째로 빠진 채 로드율·주간 추이가 그려진다(실측 제보: 1~5월 공백). 다음 실행이 이어서 읽는다.
             oc = outlook_coverage(period)
-            if oc and oc["uncovered"]:
+            if oc and oc["uncovered"] and not (isinstance(_ms, dict) and _ms.get("selftest")):
                 st = "warn"
                 hint = (f"메일·일정이 {oc['months']}개월 중 {len(oc['covered'])}개월만 수집됨 — 미수집 "
                         f"{', '.join(oc['uncovered'][:8])}{' …' if len(oc['uncovered']) > 8 else ''}"
@@ -1114,8 +1147,10 @@ def mtime_clumps(d0="", d1="", top=3):
                     "folder": (fold.most_common(1)[0][0] if fold else "")})
     return out
 
-def trend(d0="", d1="", tag=""):
+def trend(d0="", d1="", tag="", info=None):
     r"""활동 추이 — **분석 기간을 덮고, 실제로 계상된 신호**를 센다.
+    info(dict)를 주면 info["src"] 에 무엇을 셌는지 남긴다: "signals"(판정 신호) / "raw"(수집 raw 폴백) / "none"(기간 없음).
+    화면 안내는 이 값을 봐야 한다 — meta.period 유무로 판단하면 signals 로 그려 놓고 'raw' 라고 적는다(재검증 실측).
 
     예전에는 오늘 기준 14주 고정이라 1월부터 본 사람도 최근 3개월만 보였고(실측 제보),
     data\ 의 raw 수집물을 표본화 없이 세어 한 주의 배치 산출물이 나머지를 눌렀다.
@@ -1159,6 +1194,8 @@ def trend(d0="", d1="", tag=""):
 
     out = [{"label": lb, "pc_h": 0.0, "파일": 0, "메일": 0, "회의": 0, "커밋": 0, "팀즈": 0}
            for lb in buckets]
+    if info is not None:
+        info["src"] = "none"
     if not out:
         return out
 
@@ -1225,7 +1262,7 @@ def trend(d0="", d1="", tag=""):
     # 예전엔 본 PC 의 pc_on.csv 만 세어 추가 PC 의 가동이 이 선에서 통째로 빠졌다(제보: 'PC 가동시간 합산 안 됨').
     try:
         import extract as _X
-        pcd, _w, _s = _X.pc_daily(DATA, start, end)
+        pcd = _X.pc_daily(DATA, start, end)[0]
         for dd, (on_h, _ni, _fo, _lo) in pcd.items():
             i = key(dd) if start <= dd <= end else None
             if i is not None:
@@ -1240,6 +1277,8 @@ def trend(d0="", d1="", tag=""):
                     pass
     for w in out:
         w["pc_h"] = round(w["pc_h"], 1)
+    if info is not None:
+        info["src"] = "signals" if n_sig else "raw"
     return out
 
 def review(gran="week"):
@@ -1498,16 +1537,22 @@ def exclude_work(row_key):
         # 느슨 일치 — 표기 변형(구분자·공백·괄호)과 세부업무 병합 캐시(detail_aliases)까지 같은 축으로 본다
         fold, ukey3, amap = _name_axes()
 
-        def _axes(a, b):
+        def _axes(a, b, use_map):
             ks = {(fold(a), fold(b)), (fold(a), ukey3(b))}
-            rep = amap.get((a, b))
+            rep = amap.get((a, b)) if use_map else None
             if rep:
                 ks |= {(fold(a), fold(rep)), (fold(a), ukey3(rep))}
             return ks
-        want = set()
-        for a, b in targets:
-            want |= _axes(a, b)
-        hit = [r for r in rows if _axes(*_pair(r)) & want]
+        # 1단계: 표기 변형만(구분자·공백·괄호). 2단계: 그래도 없을 때만 세부업무 병합 캐시까지 — 대시보드 행은 판정 이름
+        # 그대로라 캐시의 다른 구성원('레이아웃 리뷰 회의')이 별도 행이다. 1단계에서 캐시를 함께 쓰면 이름 하나를 뺐는데
+        # 같은 묶음의 다른 행 신호까지 지워졌다(재검증 실측).
+        for use_map in (False, True):
+            want = set()
+            for a, b in targets:
+                want |= _axes(a, b, use_map)
+            hit = [r for r in rows if _axes(*_pair(r), use_map) & want]
+            if hit:
+                break
         how = "loose"
     if not hit:
         fold = _name_axes()[0]
@@ -2634,9 +2679,8 @@ async function refresh(){
  // 메일·일정이 기간의 일부 달만 수집된 상태(Outlook 시간 예산) — 앞 달의 메일·회의 막대가 비어 보이는 이유를 적는다
  const wn=$("wnote");
  if(wn){const mc=d.mail_coverage||null;const notes=[];
-  // 분석 결과가 없는 화면(수집만 한 추가 PC·분석 전) — 추이는 마지막 실행의 수집 기간(없으면 데이터 범위)을 raw 로 그린다
-  const analyzed=!!(d.meta&&d.meta.period&&d.meta.period[0]);
-  if(!analyzed&&d.period&&d.period[0]) notes.push(`분석 전이라 수집 raw 를 <b>${esc(d.period[0])} ~ ${esc(d.period[1]||"")}</b> 기간으로 그렸습니다 — [분석 실행] 뒤에는 판정에 쓰인 신호 기준으로 바뀝니다.`);
+  // 추이가 수집 raw 로 그려진 화면(판정 신호가 없음 — 수집만 한 추가 PC·분석 전) — 서버가 실제로 무엇을 셌는지(trend_src)로 판단한다
+  if(d.trend_src==="raw"&&d.period&&d.period[0]) notes.push(`판정에 쓰인 신호가 없어 수집 raw 를 <b>${esc(d.period[0])} ~ ${esc(d.period[1]||"")}</b> 기간으로 그렸습니다 — AI 정제를 켠 [분석 실행] 뒤에는 판정 신호 기준으로 바뀝니다.`);
   if(mc&&(mc.uncovered||[]).length) notes.push(`⚠ 메일·회의 막대는 ${mc.months}개월 중 <b>${(mc.covered||[]).length}개월</b>만 수집돼 있습니다 — 미수집 ${esc(mc.uncovered.join(", "))} (Outlook 시간 예산). [분석 실행]을 다시 돌리면 남은 달을 이어서 읽습니다.`);
   if(notes.length){wn.style.display="";wn.innerHTML=notes.join("<br>");}
   else wn.style.display="none";}
@@ -3446,6 +3490,8 @@ class H(BaseHTTPRequestHandler):
             # 화면 기간 — 분석 결과가 있으면 그 기간, 없으면 마지막 실행(수집)의 기간, 그것도 없으면 수집 데이터의 범위.
             # 추이·덩어리·수집 범위 대조가 전부 같은 기간을 본다(dash_period 참조).
             per = dash_period(meta, lastrun)
+            tinfo = {}
+            tr = trend(per[0], per[1], (m2.group(1) if m2 else ""), info=tinfo)
             self._send(200, {"version": VERSION, "port": PORT[0], "sources": sources(per),
                              "file": fn, "rows": rows, "meta": meta,
                              # 메일·일정 수집 범위(달 단위) — 주간 활동 추이 밑에 '미수집 달'을 적는다(얼린 사본에도 굳는다)
@@ -3453,7 +3499,9 @@ class H(BaseHTTPRequestHandler):
                              # 화면이 보고 있는 그 기간을 넘긴다 — 예전에는 오늘 기준
                              # 14주 고정이라 1월부터 본 사람도 최근 3개월만 보였다(제보)
                              "clumps": mtime_clumps(per[0], per[1]),
-                             "trend": trend(per[0], per[1], (m2.group(1) if m2 else "")),
+                             "trend": tr,
+                             # 추이가 무엇을 셌는지 — signals(판정 신호) / raw(수집 raw 폴백) / none. 화면 안내가 이 값을 본다
+                             "trend_src": tinfo.get("src", ""),
                              "period": per,
                              "judged": judged, "last_run": lastrun,
                              # 판정 건수/대상 — 0 이면 '단계는 성공인데 왕복이 전부 실패' 를 화면이 구분한다
@@ -4649,8 +4697,9 @@ def main():
 if __name__ == "__main__":
     # bat 더블클릭(CP949 콘솔)에서도 —·한글이 안 깨지게 stdout 래핑 (import 시엔 건드리지 않음)
     import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, errors="replace", encoding=(
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, errors="replace", line_buffering=True, encoding=(
         (sys.stdout.encoding or "utf-8") if sys.stdout.isatty() else "utf-8"))  # 콘솔(bat)=콘솔 코드페이지 · 파이프(UI)=utf-8
+    # line_buffering — 주소 안내 줄이 8KB 버퍼에 갇혀 창이 열릴 때까지 안 보이던 것(재검증 실측)
     try:
         sys.exit(main())
     except SystemExit:

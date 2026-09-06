@@ -158,12 +158,12 @@ def mail_fallbacks(c, d0, d1, data, ps, col, t_run):
     폴백은 행을 얻었을 때만 파일을 쓰므로, 재질의가 실패하면 지난 자료는 그대로 남는다.
     · 색인은 반복 회의를 전개하지 못한다(마스터 1건, 감사 outlook-7) — mail_source.json 의 calendar_complete=false
       (exit 3) 면 일정('cal')을 남겨 웹(주 보기 = 회차 전개)으로 다시 읽고, 끝내 못 읽으면 힌트를 남긴다.
-    · COM 이 시간 안에 못 끝내면 mail.csv.part(편지함별·500건마다 중간 저장)가 남는다 — 대체 경로가 모두
-      비었을 때만 그것을 mail.csv 로 승격한다(부분 수집 > 공백)."""
+    · COM 수집기는 달마다 CSV 를 쓰고 달별 완료 표(coverage.json)를 남긴다. 대체 경로가 CSV 를 다시 쓰면 그 표는
+      CSV 와 맞지 않으므로 지운다(수집기도 mail_source.source 가 com 이 아니면 표를 버린다 — 이중 안전장치)."""
     paths = {"mail": os.path.join(data, "outlook", "mail.csv"),
              "cal": os.path.join(data, "outlook", "calendar.csv")}
-    part = os.path.join(data, "outlook", "mail.csv.part")
     src_p = os.path.join(data, "outlook", "mail_source.json")
+    cov_p = os.path.join(data, "outlook", "coverage.json")
     cal_incomplete = {"n": 0, "mtime": None}    # 색인이 남긴 불완전한 일정 — calendar.csv 가 그 뒤 다시 쓰이면 해소
 
     def needs(k):            # COM 이 이번 실행에서 쓰지 않은 파일(없거나 t_run 이전 것) — 색인의 불완전한 일정도 '필요'
@@ -175,19 +175,14 @@ def mail_fallbacks(c, d0, d1, data, ps, col, t_run):
         return False
 
     def finish():
-        """마무리 — 메일이 채워졌으면 COM 의 중간 저장(.part)은 지우고, 아무 경로도 못 채웠으면 .part 를 승격한다"""
-        if needs("mail") and _mtime(part) is not None and _mtime(part) >= t_run and _csv_rows(part) > 0:
+        """마무리 — 대체 경로가 이번 실행에서 CSV 를 썼으면(mail_source.source 가 com 이 아님) COM 의 달별 완료 표를 지운다.
+        표를 두면 다음 COM 실행이 '완료된 달'을 건너뛰어 색인·웹 자료(반복 회의 미전개 등)가 영영 남는다(재검증 지적)."""
+        src_now = _read_json(src_p) if (_mtime(src_p) or 0) >= t_run - 2 else {}
+        if isinstance(src_now, dict) and src_now.get("source") and src_now.get("source") != "com":
             try:
-                os.replace(part, paths["mail"])
-                n = _csv_rows(paths["mail"])
-                print(f"\n── Outlook COM 부분 수집 사용: 시간 안에 끝나지 못한 COM 의 중간 저장 {n}건을 mail.csv 로 승격 (오래된 달이 빠졌을 수 있음)")
-                record("Outlook COM 부분 수집", True, 0.0,
-                       f"COM 이 시간 안에 끝나지 못해 중간 저장 {n}건 사용 — 오래된 달이 빠졌을 수 있음(기간을 줄이거나 다시 실행)")
-            except OSError as e:
-                record("Outlook COM 부분 수집", False, 0.0, f".part 승격 실패: {e}"[:200])
-        elif _mtime(part) is not None:
-            try:
-                os.remove(part)
+                if os.path.exists(cov_p):
+                    os.remove(cov_p)
+                    print(f"   (COM 달별 완료 표 삭제 — {src_now.get('source')} 경로가 메일·일정을 다시 썼으므로 다음 COM 수집은 처음부터)")
             except OSError:
                 pass
         if cal_incomplete["mtime"] is not None and needs("cal"):
@@ -282,28 +277,43 @@ def collect_outlook(c, d0, d1, data, ps, col):
     그래도 남으면 last_run.json 에 미수집 달을 적고 화면(수집 데이터 현황·주간 활동 추이)이 그것을 보여 준다."""
     budget = _outlook_budget(c, d0, d1)
     src_p = os.path.join(data, "outlook", "mail_source.json")
-    ok, prev_unc = False, None
+    ok, prev_unc, src = False, None, {}
+
+    def _fresh_src(t_start):
+        """이번 회차가 쓴 mail_source.json 만 믿는다 — 건너뜀·실패·시간 초과 뒤에는 지난 실행의 파일이 남아 있다(재검증 지적)"""
+        mt = _mtime(src_p)
+        return (_read_json(src_p) or {}) if (mt is not None and mt >= t_start - 2) else {}
+
     for i in range(3):
         name = ("Outlook 메일·일정 (클래식 Outlook을 켜두세요)" if i == 0
                 else f"Outlook 메일·일정 이어서 수집 {i + 1}/3 (남은 달)")
+        # 2회차부터는 -NoRefresh — 1회차가 이미 읽은 최신·재수집 달을 건너뛰고 못 읽은 달만 잇는다(예산이 작으면
+        # 최신 달 재수집에 예산이 다 닳아 옛 달에 영영 못 가던 것, 재검증 실측)
+        t_pass = time.time()
         ok = step(name, ps + [os.path.join(col, "Get-OutlookData.ps1"), "-From", d0, "-To", d1,
-                              "-BudgetSec", str(budget)], budget + 120)
-        src = _read_json(src_p) or {}
+                              "-BudgetSec", str(budget)] + (["-NoRefresh"] if i else []), budget + 120)
+        src = _fresh_src(t_pass)
         if not ok or src.get("source") != "com" or src.get("coverage_complete", True):
             break
         unc = list(src.get("uncovered_months") or [])
-        if prev_unc is not None and len(unc) >= len(prev_unc):
+        partial = list(src.get("partial_months") or [])
+        # 진행 = 미수집 달이 줄었거나, 같은 달을 이어 읽는 중(부분 표식) — 둘 다 아니면 멈춘다
+        if prev_unc is not None and len(unc) >= len(prev_unc) and not partial:
             print("   (진행이 없어 이어서 수집을 멈춥니다 — Outlook 이 느리거나 응답하지 않습니다)")
             break
         prev_unc = unc
         print(f"   미수집 달 {len(unc)}개({', '.join(unc[:6])}{' …' if len(unc) > 6 else ''}) — 이어서 읽습니다")
-    src = _read_json(src_p) or {}
-    if src.get("source") == "com" and not src.get("coverage_complete", True):
-        unc = list(src.get("uncovered_months") or [])
-        print(f"   [!] 메일·일정 미수집 달 {len(unc)}개: {', '.join(unc)} — 다음 [분석 실행]이 이어서 읽습니다"
-              " (그동안 이 달들의 메일·회의는 로드율·주간 추이에 빠져 있습니다)")
-        record("Outlook 수집 범위", False, 0.0,
-               f"미수집 달 {len(unc)}개: {', '.join(unc)} — 다음 실행이 이어서 수집(그 달의 메일·회의는 아직 빠짐)")
+    if src.get("source") == "com":
+        ri = list(src.get("refresh_incomplete") or [])
+        if ri:
+            print(f"   [!] 재수집이 끊긴 달 {', '.join(ri)} — 지난 수집분을 그대로 두었습니다(새 메일·일정 변경은 다음 실행에서)")
+            record("Outlook 재수집", False, 0.0, f"끊긴 재수집: {', '.join(ri)} — 지난 수집분 유지, 다음 실행에서 다시")
+        if not src.get("coverage_complete", True):
+            unc = list(src.get("uncovered_months") or [])
+            print(f"   [!] 메일·일정 미수집 달 {len(unc)}개: {', '.join(unc)} — 다음 [분석 실행]이 이어서 읽습니다"
+                  " (그동안 이 달들의 메일·회의는 로드율·주간 추이에 빠져 있습니다)")
+            record("Outlook 수집 범위", False, 0.0,
+                   f"미수집 달 {len(unc)}개: {', '.join(unc)} — 다음 실행이 이어서 수집(그 달의 메일·회의는 아직 빠짐)")
     return ok
 
 

@@ -345,10 +345,17 @@ _MARK_RE = re.compile(r"\s*\[(근거 없음|겹침)[^\]]*\]")
 
 def _row_index(rows):
     """fold 축 인덱스 — Level 3 · 'Level 2 Level 3' 두 키, 공백 제거판도 함께.
-    Copilot 이 '렌즈시뮬레이션'처럼 붙여 쓰면 근거를 못 찾아 과소 계상되던 것을 막는다(검증 확정)."""
+    Copilot 이 '렌즈시뮬레이션'처럼 붙여 쓰면 근거를 못 찾아 과소 계상되던 것을 막는다(검증 확정).
+    병합 맵을 적용하기 전 판정 이름(_raw3)도 같이 색인한다 — Copilot 은 프롬프트에 보낸 원 표기(work)로 답하는데
+    판정 단계가 캐시를 더 쓰지 않으므로(상위·중위·하위 복원) 행의 Level 3 만 대표 이름으로 바뀐다(재검증 실측:
+    '레이아웃 리뷰 회의' 근거가 [근거 없음]으로 떨어지고 MM 이 대표 이름 쪽에 몰림)."""
     idx, idx_ns = {}, {}
     for r in rows:
-        for key in (fold(r.get("Level 3")), fold(f"{r.get('Level 2')} {r.get('Level 3')}")):
+        keys = {fold(r.get("Level 3")), fold(f"{r.get('Level 2')} {r.get('Level 3')}")}
+        raw3 = r.get("_raw3")
+        if raw3 and raw3 != r.get("Level 3"):
+            keys |= {fold(raw3), fold(f"{r.get('Level 2')} {raw3}")}
+        for key in keys:
             if key:
                 idx.setdefault(key, []).append(r)
                 idx_ns.setdefault(key.replace(" ", ""), []).append(r)
@@ -383,6 +390,7 @@ def recalc_mm(out, rows, amap=None, rows_file=""):
     for r in rows:
         if "_mm" not in r:
             r["_mm"] = details._f(r.get("mm"))
+        r.setdefault("_raw3", r.get("Level 3"))       # 맵 적용 전 이름 — 근거 대조는 원 표기·대표 이름 둘 다로
     if amap:
         details.apply_detail_map(rows, None, amap)
     idx, idx_ns = _row_index(rows)

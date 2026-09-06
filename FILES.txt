@@ -10,7 +10,7 @@ LoadMonitor22-팀서버.bat                                  1,612 B  fc6fa8d5
 LoadMonitor22-팀업로드.bat                                 1,713 B  e172dc7d
 LoadMonitor22-수집진단.bat                                   500 B  a6016c76
 LoadMonitor22-이동준비.bat                                 1,345 B  d97486f0
-agentic.py                                            39,394 B  6a51d85e
+agentic.py                                            40,114 B  a362fe96
 freeze.py                                             45,654 B  38b86b69
 team_report.py                                       155,296 B  3da2a47d
 flow.py                                               35,675 B  59f09bfd
@@ -23,18 +23,18 @@ team_refine.py                                         6,565 B  96154dc4
 report_out.py                                         28,751 B  8e84fad1
 README.md                                             91,458 B  6c9c8c2d
 check.py                                               2,629 B  7badfe69
-judge.py                                              84,597 B  e00e28d3
+judge.py                                              84,650 B  5ab82058
 mine.py                                               17,797 B  5579a795
 refine.py                                             41,749 B  f1f55cc4
 ruff.toml                                              1,004 B  44ee0eea
 FILES.txt                                                (이 파일)
-run.py                                                47,382 B  f6a8e07c
+run.py                                                48,428 B  3b394e05
 자가점검.py                                                8,689 B  5d9b47cb
 collect/Add-WorkLog.ps1                                1,771 B  8a921980
 collect/Get-FileActivity.ps1                          48,652 B  cbcbd894
 collect/Get-GitActivity.py                            29,162 B  0facda4f
 collect/Get-LicenseUsage.ps1                           4,093 B  c2df1eda
-collect/Get-OutlookData.ps1                           35,401 B  a58c2fc2
+collect/Get-OutlookData.ps1                           49,995 B  006c5b43
 collect/Get-OutlookIndex.ps1                          21,292 B  83984e67
 collect/Get-MailViaCopilot.py                         26,575 B  9e601a9d
 collect/Get-OutlookWeb.py                             40,141 B  a8b185cc
@@ -52,7 +52,7 @@ config/config.json                                    30,411 B  599cbe9f
 config/config.default.json                            30,411 B  599cbe9f
 config/agentic_tasks.json                              4,426 B  2c9e5bb1
 core/board.py                                         13,045 B  9c4d6431
-core/extract.py                                      193,523 B  0d17208e
+core/extract.py                                      194,020 B  139cda08
 core/details.py                                       35,711 B  f66abd1c
 core/owner.py                                          1,488 B  1f1dc049
 core/progress.py                                       1,129 B  77a7579a
@@ -66,4 +66,4 @@ tools/lint.ps1                                         7,914 B  16140924
 tools/Make-Package.ps1                                10,733 B  f6623295
 tools/Prepare-Move.ps1                                 9,944 B  5f789031
 tools/update_files.py                                  4,530 B  46a81ea6
-ui/app.py                                            304,992 B  12bcd497
+ui/app.py                                            308,494 B  56cfb1d5

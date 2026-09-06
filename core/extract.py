@@ -1722,16 +1722,10 @@ def manual_hours(data_dir, d0, d1):
     return out
 
 
-def read_pc_spans(data_dir, d0, d1, anomalies=None):
-    """data/pc_spans.csv 또는 data/pc/pc_spans.csv(start,end,src — 로컬 시각, 자정 분할 없음) → {date: [(m0, m1), …]}
-    없으면 {}. 자정을 넘는 구간은 날짜별로 자른다(끝이 자정이면 1440). 추가PC 의 구간도 그대로 모은다 —
-    합집합·주간 창 교집합은 호출측(day_work_hours)이 한다.
-    행 길이에 상한을 두지 않는다(VF-H8) — 수집기 계약이 'live = 현재 부팅 세션 → 지금까지 · 닫힌 구간 길이 무관' 이라 며칠
-    켜 둔 PC 는 한 행(live·event-gap)이 된다. 예전 48h 상한은 그 행을 통째로 버려 pc_on 이 없으면 'PC 기록 결측' 으로 집계됐다.
-    물리 한계는 자정 분할 조각(저마다 ≤24h)이 지킨다. 48h 를 넘는 행은 anomalies(list 를 주면) 에 (첫 해당 날짜, 설명) 으로
-    남겨 결측과 구분한다. 시각 형식 오류·end ≤ start 행은 버린다."""
+def _pc_spans_rows(rows, d0, d1, anomalies=None):
+    """pc_spans 행(start,end,src) → {date: [(m0, m1), …]} — read_pc_spans 의 본체. 루트별로 따로 부를 수 있게 뗐다(pc_daily 가
+    구간이 어느 PC 것인지 알아야 한다)."""
     out = {}
-    rows = _read_multi(data_dir, "pc_spans.csv") + _read_multi(data_dir, "pc", "pc_spans.csv")
     for r in rows:
         a, b = _dt(r.get("start")), _dt(r.get("end"))
         if not (a and b and b > a):
@@ -1755,79 +1749,93 @@ def read_pc_spans(data_dir, d0, d1, anomalies=None):
     return out
 
 
+def read_pc_spans(data_dir, d0, d1, anomalies=None):
+    """data/pc_spans.csv 또는 data/pc/pc_spans.csv(start,end,src — 로컬 시각, 자정 분할 없음) → {date: [(m0, m1), …]}
+    없으면 {}. 자정을 넘는 구간은 날짜별로 자른다(끝이 자정이면 1440). 추가PC 의 구간도 그대로 모은다 —
+    합집합·주간 창 교집합은 호출측(day_work_hours)이 한다.
+    행 길이에 상한을 두지 않는다(VF-H8) — 수집기 계약이 'live = 현재 부팅 세션 → 지금까지 · 닫힌 구간 길이 무관' 이라 며칠
+    켜 둔 PC 는 한 행(live·event-gap)이 된다. 예전 48h 상한은 그 행을 통째로 버려 pc_on 이 없으면 'PC 기록 결측' 으로 집계됐다.
+    물리 한계는 자정 분할 조각(저마다 ≤24h)이 지킨다. 48h 를 넘는 행은 anomalies(list 를 주면) 에 (첫 해당 날짜, 설명) 으로
+    남겨 결측과 구분한다. 시각 형식 오류·end ≤ start 행은 버린다."""
+    rows = _read_multi(data_dir, "pc_spans.csv") + _read_multi(data_dir, "pc", "pc_spans.csv")
+    return _pc_spans_rows(rows, d0, d1, anomalies)
+
+
 def pc_daily(data_dir, d0, d1, day_win=None, anom=None, span_anoms=None):
-    r"""PC 가동 기록을 날짜별로 합친다(본 PC + data\추가PC\*) → (pc, pc_wins, pc_spans).
-      pc       {date: (on_h, night_h, first_on_min|None, last_off_min|None)}
-      pc_wins  {date: [(first_on, last_off), …]} — pc_on 행별 가동 창(두 PC 면 두 창, VF-H9)
-      pc_spans {date: [(m0, m1), …]} — pc_spans.csv 구간의 합집합(모든 루트)
-    · pc_on.csv 행: 물리 한계 검증(on≤24·0≤night≤min(on,13)) 뒤 두 PC 는 (주간 on−night)·night 를 각각 max 한 뒤 on 을
-      재구성한다(A32 — on·night 를 따로 max 하면 다른 PC 의 야간이 주간에서 빠졌다: 데스크톱 08~18 + 노트북 20~23 이 −3h).
-    · pc_spans.csv 구간이 있는 날은 **모든 PC 구간의 합집합 길이**가 가동 시간이다 — 두 PC 를 다른 시간에 쓴 날(데스크톱
-      08~12 + 노트북 13~18)을 스칼라 max 가 5h 로 깎았다(제보: 'PC 가동시간이 합산되지 않는다'). 구간이 없는 PC(옛 수집분)의
-      행은 max 로만 들어가므로 결과는 언제나 예전 값 이상·실제 합집합 이하다. 화면의 주간 추이 PC 선도 이 함수를 쓴다.
-    anom(d, kind, raw, used) 를 주면 기록 오류를 그리로 보고한다(기간 안 날짜만). span_anoms(list)는 read_pc_spans 의 이상치."""
-    day_win = day_win or DAY_WIN                    # DAY_WIN 은 이 아래에서 정의된다 — 기본값은 호출 때 잡는다
-    dw0, dw1 = float(day_win[0]), float(day_win[1])
-    pc, pc_wins, syn, nrows = {}, {}, {}, {}
-    for r in _read_multi(data_dir, "pc", "pc_on.csv"):
-        try:
-            d = datetime.strptime((r.get("date") or "")[:10], "%Y-%m-%d").date()
-            on, ni = float(r.get("on_hours") or 0), float(r.get("night_hours") or 0)
-        except (ValueError, TypeError):
-            continue
-        raw = (on, ni)
-        nrows[d] = nrows.get(d, 0) + 1
-        if not (0.0 <= on <= PHYS_CAP_H and 0.0 <= ni <= min(on, PC_NIGHT_MAX_H)):
-            on = min(max(on, 0.0), PHYS_CAP_H)
-            ni = min(max(ni, 0.0), on, PC_NIGHT_MAX_H)
-            if anom is not None and d0 <= d <= d1:
-                anom(d, f"pc_on 기록 오류(on {raw[0]:g}h·night {raw[1]:g}h)", [raw[0], raw[1]], [on, ni])
-        fo, lo = _hhmm(r.get("first_on")), _hhmm(r.get("last_off"))
-        if fo is not None and lo is not None and fo > lo:
-            # 켠 시각이 끈 시각보다 늦다 — 가동 창을 알 수 없으니(옛 3열 형식처럼) 창 없이 계산하고 표시만
-            if anom is not None and d0 <= d <= d1:
-                anom(d, f"pc_on first_on {_fmt_hm(fo)} > last_off {_fmt_hm(lo)}(가동 창 무시)", None, None)
-            fo = lo = None
-        if fo is not None and lo is not None and lo > fo:
-            pc_wins.setdefault(d, []).append((fo, lo))
-            # 켠 뒤 끄기까지 끊김 없이 켜져 있던 행(on ≈ 창 길이, ±15분)은 창 자체를 구간으로 쓸 수 있다 — 구간 파일이 없는
-            # 옛 수집분끼리도(데스크톱 08~12 + 노트북 13~18) max 가 아니라 합집합 9h 가 된다. 사이에 꺼진 적이 있는 행(on < 창)은
-            # 어디가 꺼졌는지 모르므로 예전대로 max 로만 들어간다.
-            if (lo - fo) / 60.0 - on <= 0.25:
-                syn.setdefault(d, []).append((fo, lo))
-        o_on, o_ni, o_fo, o_lo = pc.get(d, (0.0, 0.0, None, None))
-        day_m, ni_m = max(o_on - o_ni, on - ni), max(o_ni, ni)
-        pc[d] = (min(PHYS_CAP_H, day_m + ni_m), ni_m,
-                 min((x for x in (o_fo, fo) if x is not None), default=None),
-                 max((x for x in (o_lo, lo) if x is not None), default=None))
-    # 구간 기록(data/pc_spans.csv, A3) — 있으면 하한의 재료는 스칼라 on 이 아니라 이 구간이다. 48h 를 넘는 행(며칠 켜 둔 PC 의
-    # live/event-gap)은 버리지 않고 자정 분할해 받되 이상치로 표시한다(VF-H8)
-    pc_spans = {dd: _union_spans(sp) for dd, sp in read_pc_spans(data_dir, d0, d1, anomalies=span_anoms).items()}
+    r"""PC 가동 기록을 날짜별로 합친다(본 PC + data\추가PC\*) → (pc, pc_wins, pc_spans, pc_win_all).
+      pc         {date: (on_h, night_h, first_on_min|None, last_off_min|None)}
+      pc_wins    {date: [(first_on, last_off), …]} — pc_on 행별 가동 창(두 PC 면 두 창, VF-H9)
+      pc_spans   {date: [(m0, m1), …]} — pc_spans.csv **실제 구간**의 합집합(모든 루트)
+      pc_win_all {date: [(m0, m1), …]} — 여러 PC 가 섞인 날에 한해, 실제 구간 ∪ 구간 없는 PC 의 창(하한 창의 재료)
+    · PC 한 대(루트 하나)뿐인 날은 예전 규칙 그대로다 — pc_on 행이 있으면 그 행(on·night 는 수집기 값), 없으면
+      _pc_row 가 구간에서 파생. 자기 구간과 자기 창을 섞지 않는다(잠금·절전 몇 분 공백·HH:mm 반올림으로 창이 구간보다
+      조금 길어져 always_on·저녁 게이트가 뒤집히던 것 — 재검증 실측).
+    · 여러 PC(루트 ≥2)가 기록을 남긴 날: 모든 PC 실제 구간의 합집합 + 구간 파일이 없는 PC(옛 수집분)의 '끊김 없는
+      행(on ≈ 창 길이 ±15분)'의 창을 합쳐 그 길이를 가동 시간으로 쓴다 — 예전 (주간·야간) max 는 두 PC 를 다른 시간에
+      쓴 날(데스크톱 08~12 + 노트북 13~18)을 5h 로 깎았다(제보). 스칼라 병합값과의 max 라 예전 값 밑으로는 안 간다.
+      야간 조각은 수집기 경계(DAY_WIN 08/19시)로 잰다 — 행의 night 열과 같은 축이어야 max 가 이중 계상이 안 된다.
+    · 화면의 주간 추이 PC 선도 이 함수(pc)를 쓴다.
+    anom(d, kind, raw, used) 를 주면 기록 오류를 그리로 보고한다(기간 안 날짜만). span_anoms(list)는 구간 이상치."""
+    day_win = day_win or DAY_WIN
+    cw0, cw1 = float(DAY_WIN[0]), float(DAY_WIN[1])      # 야간 조각은 수집기 경계로(행의 night 열과 같은 축)
+    pc, pc_wins, syn, roots_with, real_by_root = {}, {}, {}, {}, {}
+    roots = _data_roots(data_dir)
+    for ri, root in enumerate(roots):
+        rows_sp = _read(os.path.join(root, "pc_spans.csv")) + _read(os.path.join(root, "pc", "pc_spans.csv"))
+        real_by_root[ri] = _pc_spans_rows(rows_sp, d0, d1, anomalies=span_anoms)
+        for dd in real_by_root[ri]:
+            roots_with.setdefault(dd, set()).add(ri)
+        for r in _read(os.path.join(root, "pc", "pc_on.csv")):
+            try:
+                d = datetime.strptime((r.get("date") or "")[:10], "%Y-%m-%d").date()
+                on, ni = float(r.get("on_hours") or 0), float(r.get("night_hours") or 0)
+            except (ValueError, TypeError):
+                continue
+            raw = (on, ni)
+            roots_with.setdefault(d, set()).add(ri)
+            if not (0.0 <= on <= PHYS_CAP_H and 0.0 <= ni <= min(on, PC_NIGHT_MAX_H)):
+                on = min(max(on, 0.0), PHYS_CAP_H)
+                ni = min(max(ni, 0.0), on, PC_NIGHT_MAX_H)
+                if anom is not None and d0 <= d <= d1:
+                    anom(d, f"pc_on 기록 오류(on {raw[0]:g}h·night {raw[1]:g}h)", [raw[0], raw[1]], [on, ni])
+            fo, lo = _hhmm(r.get("first_on")), _hhmm(r.get("last_off"))
+            if fo is not None and lo is not None and fo > lo:
+                # 켠 시각이 끈 시각보다 늦다 — 가동 창을 알 수 없으니(옛 3열 형식처럼) 창 없이 계산하고 표시만
+                if anom is not None and d0 <= d <= d1:
+                    anom(d, f"pc_on first_on {_fmt_hm(fo)} > last_off {_fmt_hm(lo)}(가동 창 무시)", None, None)
+                fo = lo = None
+            if fo is not None and lo is not None and lo > fo:
+                pc_wins.setdefault(d, []).append((fo, lo))
+                if abs((lo - fo) / 60.0 - on) <= 0.25:           # 켠 뒤 끄기까지 끊김 없던 행 — 창이 곧 구간
+                    syn.setdefault(d, []).append((fo, lo, ri))
+            o_on, o_ni, o_fo, o_lo = pc.get(d, (0.0, 0.0, None, None))
+            day_m, ni_m = max(o_on - o_ni, on - ni), max(o_ni, ni)
+            pc[d] = (min(PHYS_CAP_H, day_m + ni_m), ni_m,
+                     min((x for x in (o_fo, fo) if x is not None), default=None),
+                     max((x for x in (o_lo, lo) if x is not None), default=None))
+    pc_spans = {}
+    for m in real_by_root.values():
+        for dd, lst in m.items():
+            pc_spans.setdefault(dd, []).extend(lst)
+    pc_spans = {dd: _union_spans(lst) for dd, lst in pc_spans.items()}
+    pc_win_all = {}
     for dd in set(pc_spans) | set(syn):
-        # 실제 구간 ∪ (여러 PC 가 섞인 날의) 끊김 없는 행의 창 — 이 합집합 길이와 스칼라 병합값 중 큰 쪽(구간 없는 행이
-        # 섞여도 예전 값 밑으로 안 간다). PC 한 대뿐인 날은 행의 창을 쓰지 않는다 — 수집기 night 열과 분석 주간 창이 어긋난
-        # 행(night 0 인데 07시 시작)의 결과가 예전과 달라지지 않게(회귀 하네스 adv_pc 'flex with night=0'). 다른 루트의
-        # 실제 구간이 있고 그 구간이 행의 창을 덮지 못할 때(옛 PC 행 + 새 PC 구간)만 창을 보탠다.
-        # 돌려주는 pc_spans 는 실제 구간만이다(가동 창·야간 구간 판정은 예전 규칙 그대로).
+        if len(roots_with.get(dd, ())) < 2:
+            continue                                   # PC 한 대뿐인 날 — 예전 규칙 그대로
         real = list(pc_spans.get(dd) or [])
-        wins = list(syn.get(dd) or [])
-        if nrows.get(dd, 0) >= 2:
-            extra = wins
-        elif real:
-            extra = [w for w in wins if _union_min(_clip(real, w[0], w[1])) < (w[1] - w[0]) - 1e-6]
-        else:
-            extra = []
+        extra = [(a, b) for a, b, ri in syn.get(dd, []) if dd not in real_by_root.get(ri, {})]
         sp = _union_spans(real + extra)
         if not sp:
             continue
+        pc_win_all[dd] = sp
         u_on = _union_min(sp) / 60.0
-        u_ni = _union_min(_clip(sp, 0, dw0) + _clip(sp, dw1, 1440)) / 60.0
+        u_ni = _union_min(_clip(sp, 0, cw0) + _clip(sp, cw1, 1440)) / 60.0
         o_on, o_ni, o_fo, o_lo = pc.get(dd, (0.0, 0.0, None, None))
         day_m, ni_m = max(o_on - o_ni, u_on - u_ni), max(o_ni, u_ni)
         pc[dd] = (min(PHYS_CAP_H, day_m + ni_m), ni_m,
                  min((x for x in (o_fo, sp[0][0]) if x is not None), default=None),
                  max((x for x in (o_lo, sp[-1][1]) if x is not None), default=None))
-    return pc, pc_wins, pc_spans
+    return pc, pc_wins, pc_spans, pc_win_all
 
 
 def _holiday_set(cfg):
@@ -2535,7 +2543,7 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
     # ── PC 가동 기록(pc_on.csv + pc_spans.csv, 본 PC + 추가PC/*) — 날짜별 병합은 pc_daily 한 곳에서 한다(화면의 주간 추이
     #    PC 선도 같은 함수). 여러 PC 의 구간은 합집합, 구간 없는 행은 (주간·야간) max(A32) — 제보: 'PC 가동시간 합산 안 됨'. ──
     span_anoms = []
-    pc, pc_wins, pc_spans = pc_daily(data_dir, d0, d1, day_win=day_win, anom=_anom, span_anoms=span_anoms)
+    pc, pc_wins, pc_spans, pc_win_all = pc_daily(data_dir, d0, d1, day_win=day_win, anom=_anom, span_anoms=span_anoms)
     for dd, kind in span_anoms:
         _anom(dd, kind, None, None)
     act, cov, stuck = _activity_spans(data_dir, d0, d1, interval_sec=mc["samplerIntervalSec"],
@@ -2737,7 +2745,11 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
                     + list(meets.get(d, [])) + list(act.get(d, [])) + list(off_blk))
         # PC 가동 창 — pc_spans 가 있으면 그 구간, 없으면 pc_on 행별 first_on~last_off 의 합집합(두 PC 면 두 구간, VF-H9).
         # 양끝 다듬기(A33 trimIdleEdgesMin).
+        # 여러 PC 가 섞인 날은 실제 구간 ∪ 구간 없는 PC 의 창(pc_win_all)을 예전 창에 **더한다** — 가동 시간(pc_daily)과 같은
+        # 재료로 하한 창을 만들되 예전 창보다 좁아지지는 않게(창 길이보다 on 이 큰 잘못된 행의 창도 예전엔 창에 들어갔다)
         pc_win = list(pcs) if pcs else _union_spans(pc_wins.get(d) or [])
+        if pc_win_all.get(d):
+            pc_win = _union_spans(list(pc_win) + list(pc_win_all[d]))
         always_on = (on >= 20.0 or (first_on is not None and last_off is not None
                                     and first_on <= 0 and last_off >= 1440))
         if pc_win and trim_min > 0 and not always_on:
