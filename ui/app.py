@@ -957,6 +957,36 @@ def outlook_coverage(period=None):
     return {"months": len(months), "covered": [k for k in months if k not in unc], "uncovered": unc}
 
 
+def dash_period(meta, lastrun=None):
+    r"""화면이 다루는 기간 [d0, d1] — 추이·덩어리 판정·수집 범위 대조가 모두 이 기간을 쓴다.
+      ① 분석 결과(mm_meta.period) ② 없으면 마지막 실행의 기간(report\last_run.json 의 period = 수집 기간 — 수집만 한
+      추가 PC·분석 전) ③ 그것도 없으면 수집된 데이터의 실제 범위(pc_on·메일·파일 시각의 최소~최대) ④ ["", ""].
+    예전엔 ①이 없으면 추이가 '오늘 기준 13주'로 떨어져, '올해'로 수집한 추가 PC 화면의 주간 활동 추이가 6월부터만
+    그려졌다(제보: "팀 분석처럼 기간 전체를 포함했으면")."""
+    from datetime import date, timedelta
+
+    def _ok(v):
+        return isinstance(v, (list, tuple)) and len(v) >= 2 and str(v[0] or "")[:10] and str(v[-1] or "")[:10]
+
+    for src in (meta, lastrun):
+        if isinstance(src, dict) and _ok(src.get("period")):
+            return [str(src["period"][0])[:10], str(src["period"][-1])[:10]]
+    lo = hi = None
+    for rel, col in (("pc/pc_on.csv", "date"), ("outlook/mail.csv", "time"), ("outlook/calendar.csv", "start"),
+                     ("files/files.csv", "mtime")):
+        for r in _rows(os.path.join(DATA, rel)):
+            try:
+                d = date.fromisoformat(str(r.get(col) or "")[:10])
+            except ValueError:
+                continue
+            if d > date.today() + timedelta(days=1) or d < date.today() - timedelta(days=400):
+                continue
+            lo, hi = (d if lo is None or d < lo else lo), (d if hi is None or d > hi else hi)
+    if lo and hi:
+        return [lo.isoformat(), hi.isoformat()]
+    return ["", ""]
+
+
 def sources(period=None):
     """수집 데이터 현황 — 무엇이 비어서 결과가 약한지 한눈에. period 는 화면이 보는 기간(메일 수집 범위 대조용)"""
     out = []
@@ -2603,9 +2633,12 @@ async function refresh(){
  weekly($("weekly"),d.trend||[]);
  // 메일·일정이 기간의 일부 달만 수집된 상태(Outlook 시간 예산) — 앞 달의 메일·회의 막대가 비어 보이는 이유를 적는다
  const wn=$("wnote");
- if(wn){const mc=d.mail_coverage||null;
-  if(mc&&(mc.uncovered||[]).length){wn.style.display="";
-   wn.innerHTML=`⚠ 메일·회의 막대는 ${mc.months}개월 중 <b>${(mc.covered||[]).length}개월</b>만 수집돼 있습니다 — 미수집 ${esc(mc.uncovered.join(", "))} (Outlook 시간 예산). [분석 실행]을 다시 돌리면 남은 달을 이어서 읽습니다.`;}
+ if(wn){const mc=d.mail_coverage||null;const notes=[];
+  // 분석 결과가 없는 화면(수집만 한 추가 PC·분석 전) — 추이는 마지막 실행의 수집 기간(없으면 데이터 범위)을 raw 로 그린다
+  const analyzed=!!(d.meta&&d.meta.period&&d.meta.period[0]);
+  if(!analyzed&&d.period&&d.period[0]) notes.push(`분석 전이라 수집 raw 를 <b>${esc(d.period[0])} ~ ${esc(d.period[1]||"")}</b> 기간으로 그렸습니다 — [분석 실행] 뒤에는 판정에 쓰인 신호 기준으로 바뀝니다.`);
+  if(mc&&(mc.uncovered||[]).length) notes.push(`⚠ 메일·회의 막대는 ${mc.months}개월 중 <b>${(mc.covered||[]).length}개월</b>만 수집돼 있습니다 — 미수집 ${esc(mc.uncovered.join(", "))} (Outlook 시간 예산). [분석 실행]을 다시 돌리면 남은 달을 이어서 읽습니다.`);
+  if(notes.length){wn.style.display="";wn.innerHTML=notes.join("<br>");}
   else wn.style.display="none";}
  // 같은 시각에 몰린 덩어리가 있으면 알린다 — 그날 일한 것이 아닐 수 있다
  const cl=$("wclump");
@@ -3410,17 +3443,18 @@ class H(BaseHTTPRequestHandler):
             # 스텁 판정 표식(LM_COPILOT_STUB) — 성공 단계의 note 는 화면이 버리고 있었다(검증 확정).
             # 얼린 사본은 baked /api/dash 를 같은 스크립트로 그리므로 여기 실어야 사본에도 배너가 굳는다.
             stub_note = _stub_note(lastrun)
-            self._send(200, {"version": VERSION, "port": PORT[0], "sources": sources(meta.get("period")),
+            # 화면 기간 — 분석 결과가 있으면 그 기간, 없으면 마지막 실행(수집)의 기간, 그것도 없으면 수집 데이터의 범위.
+            # 추이·덩어리·수집 범위 대조가 전부 같은 기간을 본다(dash_period 참조).
+            per = dash_period(meta, lastrun)
+            self._send(200, {"version": VERSION, "port": PORT[0], "sources": sources(per),
                              "file": fn, "rows": rows, "meta": meta,
                              # 메일·일정 수집 범위(달 단위) — 주간 활동 추이 밑에 '미수집 달'을 적는다(얼린 사본에도 굳는다)
-                             "mail_coverage": outlook_coverage(meta.get("period")),
+                             "mail_coverage": outlook_coverage(per),
                              # 화면이 보고 있는 그 기간을 넘긴다 — 예전에는 오늘 기준
                              # 14주 고정이라 1월부터 본 사람도 최근 3개월만 보였다(제보)
-                             "clumps": mtime_clumps((meta.get("period") or ["", ""])[0],
-                                                    (meta.get("period") or ["", ""])[-1]),
-                             "trend": trend((meta.get("period") or ["", ""])[0],
-                                            (meta.get("period") or ["", ""])[-1],
-                                            (m2.group(1) if m2 else "")),
+                             "clumps": mtime_clumps(per[0], per[1]),
+                             "trend": trend(per[0], per[1], (m2.group(1) if m2 else "")),
+                             "period": per,
                              "judged": judged, "last_run": lastrun,
                              # 판정 건수/대상 — 0 이면 '단계는 성공인데 왕복이 전부 실패' 를 화면이 구분한다
                              "judged_n": judged_n, "judged_total": judged_total,
