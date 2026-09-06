@@ -95,7 +95,7 @@ LM20 의 규칙을 하나씩 재측정했다. 고친 것:
   기본 확장자에 `.xlsm .xlsb .pptm .docm .hwpx .vsdx .vi .one .msg`.
 - **Outlook**: 웹 경로가 화면 텍스트의 'sent' 부분일치로 수신을 발신으로 둔갑·다일 일정을 첫날로 접음, 색인 폴백이
   반복 회의를 전개하지 않고(마스터 1건) 내 주소 매칭 실패 시 To 4명 이상을 버림, `noticeSenders` 가 부서명·성씨에
-  부분일치('제어시스템팀' 전원 제외), `storeMailSubject` 해석 불일치 — 모두 수정.
+  부분일치('LiDAR시스템팀' 전원 제외), `storeMailSubject` 해석 불일치 — 모두 수정.
 - **수동 기록**: `collect\Add-WorkLog.ps1` 이 남기는 `data\manual\worklog.csv` 를 아무 코드도 읽지 않았다 → 하한·능동
   흔적·'수동기록' 신호로 반영(docs\설정가이드 §8-3).
 

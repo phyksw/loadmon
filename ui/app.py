@@ -1191,14 +1191,23 @@ def trend(d0="", d1="", tag=""):
                 if i is not None:
                     out[i]["팀즈"] += 1
 
-    # PC 가동 시간 — 기간 안만
-    for r in _rows(os.path.join(DATA, "pc", "pc_on.csv")):
-        i = slot(r.get("date"))
-        if i is not None:
-            try:
-                out[i]["pc_h"] += float(r.get("on_hours") or 0)
-            except (TypeError, ValueError):
-                pass
+    # PC 가동 시간 — 기간 안만. 본 PC + 추가PC 를 extract.pc_daily 로 합친다(구간 합집합 — 분석의 PC 하한과 같은 값).
+    # 예전엔 본 PC 의 pc_on.csv 만 세어 추가 PC 의 가동이 이 선에서 통째로 빠졌다(제보: 'PC 가동시간 합산 안 됨').
+    try:
+        import extract as _X
+        pcd, _w, _s = _X.pc_daily(DATA, start, end)
+        for dd, (on_h, _ni, _fo, _lo) in pcd.items():
+            i = key(dd) if start <= dd <= end else None
+            if i is not None:
+                out[i]["pc_h"] += float(on_h or 0)
+    except Exception:  # noqa: BLE001 — 병합 실패 시 예전 방식(본 PC 만)
+        for r in _rows(os.path.join(DATA, "pc", "pc_on.csv")):
+            i = slot(r.get("date"))
+            if i is not None:
+                try:
+                    out[i]["pc_h"] += float(r.get("on_hours") or 0)
+                except (TypeError, ValueError):
+                    pass
     for w in out:
         w["pc_h"] = round(w["pc_h"], 1)
     return out
