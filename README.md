@@ -1,5 +1,14 @@
 # LoadMonitor22 — 활동 흔적 기반 로드율 (PC 가동 하한 보정)
 
+## 이 저장소 = 풀패키지
+
+내장 파이썬 런타임(`python\`, CPython 3.11 embeddable 34파일 약 21MB)까지 함께 들어 있다 —
+**clone 한 폴더에서 `LoadMonitor22-UI.bat` 을 더블클릭하면 그대로 실행된다**(PC 에 파이썬이 없어도 된다).
+PC 에 파이썬이 있으면 그것을 써도 되고, `python\` 폴더를 지우면 `tools\Get-EmbeddedPython.ps1` 로 다시 받을 수 있다.
+
+수집·분석 산출물(`data\` `report\` `teamdata\`)은 개인 자료라 저장소에 넣지 않는다.
+`config\config.json` 은 배포 기본값이다 — 내려받은 뒤 `owner`·`watchFolders`·`teamServerUrl` 을 자기 환경에 맞게 고친다.
+
 ## v22.0 — 보완툴 3종 본체 통합 · 시간 측정 검증 보완 · 일 상한 폐기
 
 LM20 위에 따로 돌리던 **보완툴 / 보완2 / 팀보완툴 bat 을 없애고** 그 기능을 `LoadMonitor22-UI.bat`

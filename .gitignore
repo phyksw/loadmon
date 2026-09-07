@@ -3,8 +3,7 @@ data/
 report/
 teamdata/
 
-# 배포 패키지에만 넣는 내장 파이썬 런타임(약 21MB)
-python/
+# (내장 파이썬 런타임 python\ 은 저장소에 포함한다 — 풀패키지와 같은 구성으로 clone 하면 바로 실행된다)
 
 # 파이썬 캐시
 __pycache__/
@@ -13,3 +12,5 @@ __pycache__/
 # 작업 산출물
 *.stale
 *.zip
+# 내장 파이썬의 표준 라이브러리 — 이것이 빠지면 python\python.exe 가 아무것도 못 한다(줄 끝 주석은 패턴에 포함되니 쓰지 말 것)
+!python/python311.zip
