@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import sys
+import time
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 
@@ -59,9 +60,11 @@ def main():
     except OSError as e:
         print(f"[export] 공유폴더 접근 실패: {e}")
         return 1
+    # teamup.FILE_NAMES(서버 업로드)와 같은 목록이어야 한다 — workflow 가 빠져 있어 공유폴더로 낸 사람만
+    # 팀 통합 보고서의 워크플로우 절(§7~§10 · AX 가능 MM)에서 통째로 빠졌다(샘플 생성에서 실측).
     names = [f"mm_rows_{tag}.csv", f"mm_rows_{tag}_refined.csv", f"signals_{tag}.csv",
              f"mm_meta_{tag}.json", f"pivots_{tag}.json", f"ai_narratives_{tag}.json",
-             f"entities_{tag}.json", f"agentic_{tag}.json"]
+             f"entities_{tag}.json", f"agentic_{tag}.json", f"workflow_{tag}.json"]
     # 한 파일만 실패해도 member.json 을 새로 쓰면, 공유폴더가 '옛 행 + 새 요약'으로 섞여
     # 팀 리포트가 같은 사람의 MM 을 두 값으로 보여 준다(검증 확정: 0.10 vs 0.50).
     # 그래서 스테이징에 전부 복사하고, 전부 성공했을 때만 제자리로 옮긴다.
@@ -106,14 +109,29 @@ def main():
     try:
         with open(longp(os.path.join(dst, "member.json")), "w", encoding="utf-8") as f:
             b = mj.get("mm_basis") or {}
-            json.dump({"owner": owner, "function": cfg.get("function", ""),
-                       "period": [d0, d1], "tag": tag,
-                       "total_mm": mj.get("total_mm"), "avail_mm": mj.get("avail_mm"),
-                       "load_pct": mj.get("load_pct"), "worked_h": mj.get("worked_h"),
-                       "signals": mj.get("signals"),
-                       "absence_days": b.get("absence_days"), "overtime_h": b.get("overtime_h"),
-                       "no_evidence_days": b.get("no_evidence_days"), "gap_days": b.get("gap_days")},
-                      f, ensure_ascii=False, indent=1)
+            member = {"owner": owner, "function": cfg.get("function", ""),
+                      "period": [d0, d1], "tag": tag,
+                      "total_mm": mj.get("total_mm"), "avail_mm": mj.get("avail_mm"),
+                      "load_pct": mj.get("load_pct"), "worked_h": mj.get("worked_h"),
+                      "signals": mj.get("signals"),
+                      "absence_days": b.get("absence_days"), "overtime_h": b.get("overtime_h"),
+                      "no_evidence_days": b.get("no_evidence_days"), "gap_days": b.get("gap_days")}
+            # 측정 품질·산식 스냅샷은 teamup(서버 업로드)과 **같은 헬퍼**로 만든다 — 여기서 빠뜨리면
+            # 공유폴더로 낸 사람만 팀 리포트의 '측정 방식·신뢰도' 열이 비어 사람 차이로 읽힌다(샘플 생성에서 실측).
+            try:
+                import teamup
+                member.update({"anomaly_days": teamup._count(b.get("anomalies")),
+                               "long_days": teamup._count(b.get("long_days")),
+                               "inferred_absence_days": teamup._count(b.get("inferred_absence_days")),
+                               "lunch_deducted_h": teamup._hours(b.get("lunch_deducted_h")),
+                               "measure": teamup.measure_of(mj, b), "coverage": teamup.coverage_of(mj, b),
+                               "cfg_used": teamup.cfg_used_of(mj, b),
+                               "rehours": bool(mj.get("rehours")), "dropped_h": teamup._hours(mj.get("dropped_h"))})
+            except Exception as e:  # noqa: BLE001 - 스냅샷이 없어도 내보내기는 끝나야 한다
+                print(f"[export] 측정 스냅샷 생략({type(e).__name__}) — 팀 리포트의 '측정 방식' 열이 빈다")
+            member["host"] = os.environ.get("COMPUTERNAME", "")
+            member["analyzed_at"] = time.strftime("%Y-%m-%d %H:%M")
+            json.dump(member, f, ensure_ascii=False, indent=1)
     except OSError as e:
         print(f"[export] member.json 쓰기 실패(잠금/권한): {e}")
         return 1

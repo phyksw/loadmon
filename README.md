@@ -9,6 +9,9 @@ PC 에 파이썬이 있으면 그것을 써도 되고, `python\` 폴더를 지�
 수집·분석 산출물(`data\` `report\` `teamdata\`)은 개인 자료라 저장소에 넣지 않는다.
 `config\config.json` 은 배포 기본값이다 — 내려받은 뒤 `owner`·`watchFolders`·`teamServerUrl` 을 자기 환경에 맞게 고친다.
 
+**결과가 어떻게 생겼는지 먼저 보려면** → [`samples\`](samples/README.md) — 가상 3인 팀으로 돌린
+개인 분석 리포트 · 얼린 보고서 · 팀 통합 보고서 샘플(전부 합성 자료, 개인정보 없음).
+
 ## v22.0 — 보완툴 3종 본체 통합 · 시간 측정 검증 보완 · 일 상한 폐기
 
 LM20 위에 따로 돌리던 **보완툴 / 보완2 / 팀보완툴 bat 을 없애고** 그 기능을 `LoadMonitor22-UI.bat`

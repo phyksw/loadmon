@@ -320,6 +320,15 @@ def _freeze(tag, full, base_url, log, info):
         baked["/api/status"]["running"] = False
         baked["/api/status"]["step"] = ""
     baked["/api/dash"]["stale"] = False
+    # 내 PC 의 사설 IP 를 사본에 굳히지 않는다 — /api/teamserver 의 urls 는 ui/app.py 의 local_ips() 가 NIC 에서
+    # 실측한 값이라(설정값이 아니다) 얼린 사본을 팀·사외로 넘기면 그 PC 가 물린 내부망 대역·호스트가 함께 나간다
+    # (샘플 보고서 검사에서 실측 확인). 화면에는 살아 있는 대시보드에서만 필요하다.
+    # occupant 은 그 포트를 쥔 프로세스의 이름·실행 경로·명령줄·계정이라 사본에 굳을 이유가 없다.
+    ts = baked.get("/api/teamserver")
+    if isinstance(ts, dict):
+        for k in ("urls", "here", "ip", "ips", "host", "occupant"):
+            if k in ts:
+                ts[k] = [] if isinstance(ts.get(k), list) else ""
 
     dash = baked["/api/dash"]
     meta = (dash.get("meta") or {}) if isinstance(dash.get("meta"), dict) else {}
