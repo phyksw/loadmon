@@ -637,7 +637,8 @@ def report_island(tag, full=True, log=_say):
         # 상위(Level 1)로도 묶어 읽히게 — 계층은 상위 > 과제 > 담당업무. flow 가 상위로 정렬해 내보낸다.
         _l1 = str(f.get("level1") or "")
         if _l1 != _l1_prev:
-            _n1 = sum(1 for x in flows if isinstance(x, dict) and str(x.get("level1") or "") == _l1)
+            _n1 = len({str(x.get("model") or "") for x in flows
+                       if isinstance(x, dict) and str(x.get("level1") or "") == _l1})
             fl_cards.append('<div style="margin:14px 0 6px;font-size:12px;color:#4a5159">'
                             f'<b>{_esc(_l1 or "상위 미분류")}</b> '
                             f'<span class="dim">— {_n1}개 과제</span></div>')
@@ -647,7 +648,8 @@ def report_island(tag, full=True, log=_say):
                 if _l1 else "")
         fl_cards.append(
             f'<details{" open" if i == 0 else ""}><summary>{_l1b}{_esc(f.get("model"))}'
-            f'<span class="state">{mm_txt}단계 {len(f.get("steps") or [])}개 · '
+            + (f'<span class="dim"> · {_esc(f.get("branch"))}</span>' if f.get("branch") else "")
+            + f'<span class="state">{mm_txt}단계 {len(f.get("steps") or [])}개 · '
             f'{_esc(role0)}</span></summary><div class="body">'
             f'<div style="margin:2px 0 6px"><b>역할:</b> {_esc(f.get("role")) or "판단 유보"}</div>'
             + (f'<div class="note" style="margin:0 0 6px">{_esc(f.get("summary"))}</div>'

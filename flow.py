@@ -30,6 +30,7 @@ LoadMonitor20 과 다른 점:
 출력: report\workflow_<기간>.json  →  UI '담당자 워크플로우' 탭 (f.model/role/summary/steps/mm.mm/signals)
   {ok, tag, generated, model_name, unit:"과제"|"과제/담당업무", basis, flows[{model:"과제"(기본) 또는 "과제 / 담당업무",
    level1:"신제품개발|기술 내재화|양산준비|일반업무"(상위 · 정제 단계가 채운다. 없으면 빈 문자열),
+   branch:"흐름 이름"(한 과제 안에서 서로 이어지지 않는 일은 흐름을 나눠 여러 건이 된다. 하나뿐이면 ""),
    project, detail, role, summary, steps[≤8], mm:{mm}, signals}], chunks, failed_chunks, salvaged_chunks,
    missing, missing_count, partial, note, last_error, dropped, merge:{rule, ai}, rows_units, empty_reason?}
 """
@@ -68,6 +69,8 @@ def _chat_note():
     return " — 설정 chatTurns=0: 묶음마다 새 채팅" if n <= 0 else f" · 첫 왕복·실패 뒤·{n}회마다 새 채팅"
 MIN_SIGNALS = 3                 # 이보다 적은 신호는 흐름이라 할 수 없다
 FINISH_ROUNDS = 2               # 미판정으로 남은 단위를 자동으로 마저 묻는 회차(0 이면 안 한다)
+MAX_BRANCHES = 4                # 한 과제가 가질 수 있는 흐름 수 — 이어지지 않는 일을 억지로 엮지 않되
+#                                 무한정 쪼개지도 않게. 초과분은 버리지 않고 마지막 흐름에 잇는다.
 SAMPLE_N = 14                   # 단위당 시간순 표본 수
 MAX_UNITS_PER_CHUNK = 6         # 묶음당 단위 상한 — 답 길이(단위당 ≈1,100자)를 잘리지 않는 범위로
 MAX_CHUNKS = 40                 # 한 실행의 묶음 상한 — 초과분은 다음 실행이 missing 을 보고 이어서
@@ -282,6 +285,11 @@ def build_prompt(mats):
         "   흐름을 읽어 3~7단계로. 각 단계: name(단계명) · desc(무슨 일을 했는지 1문장) ·",
         "   evidence(근거가 된 신호 원문 조각 하나) · cycle(반복 주기: 매일/주 1회/수시 등).",
         f"   ★ **다른 {unit_word}의 일을 이 흐름에 섞지 마세요.** 한 흐름은 그 안에서만 이어집니다.",
+        f"   ★★ 한 {unit_word} 안의 [세부업무]가 **서로 이어지지 않으면 흐름을 나눠** 답하세요.",
+        "      같은 key 로 여러 개를 답하고 branch 에 그 흐름 이름(어느 세부업무들인지)을 적습니다.",
+        "      예: 설계 재작업 흐름과 양산 이관 대응 흐름은 주제가 같아도 타임라인이 다릅니다 —",
+        "      **억지로 한 줄기로 엮지 마세요.** 반대로 실제로 이어지는 일은 한 흐름으로 두세요.",
+        f"      한 {unit_word} 의 흐름은 최대 {MAX_BRANCHES}개까지.",
         "3. 각 단계의 agent — Agentic AI 가 그 단계를 대체·보조할 가능성:",
         "   '상'(정형 반복 — 지금 기술로 자동화 가능) / '중'(보조 가능 — 사람 확인 필요) /",
         "   '하'(판단·협상·책임 — 사람 몫). agent_how 에 구체 방안 1문장",
@@ -292,7 +300,8 @@ def build_prompt(mats):
         "출력은 JSON 하나만 (설명 문장 금지). <...> 자리에 실제 값을 넣으세요:",
         # 자리표시자를 <...> 로 둬 **이 예시 자체가 유효한 JSON 이 아니게** 한다 —
         # 회수가 어긋나 우리 프롬프트가 되돌아와도 이것이 답으로 파싱되지 않는다(실측 사고).
-        '{"flows": [ {"key": <아래 목록의 머리말 이름을 그대로>, "role": <한 줄>,',
+        '{"flows": [ {"key": <아래 목록의 머리말 이름을 그대로>, "branch": <흐름 이름 · 하나뿐이면 "">,',
+        '   "role": <한 줄>,',
         # LM20 은 3~7단계였다. 상한을 6 으로 줄이면 긴 흐름이 잘려 '생략된' 것처럼 보인다.
         '   "summary": <2문장>, "steps": [ {"order": 1, "name": <단계명>, "desc": <1문장>,',
         '     "evidence": <근거 조각>, "cycle": <주기>, "agent": <상|중|하>,',
@@ -478,7 +487,7 @@ def sanitize_flows(raw_flows, keys, mats_by=None, dropped=None):
     note_map = _uniq_map(keys, lambda k: _norm_model(k, True))
     ns_map = _uniq_map(keys, lambda k: _norm_model(k).replace(" ", ""))
     fns_map = _uniq_map(keys, lambda k: fold(k).replace(" ", ""))
-    out, seen = [], set()
+    out, seen, n_branch = [], set(), {}
     for f in flows:
         if not isinstance(f, dict):
             continue
@@ -489,7 +498,13 @@ def sanitize_flows(raw_flows, keys, mats_by=None, dropped=None):
             if dropped is not None and raw_name:
                 dropped.append(raw_name)
             continue
-        if key in seen:
+        # 한 과제 안에서 서로 이어지지 않는 일은 흐름(branch)을 나눠 답하게 했다. 예전에는 과제당
+        # 하나만 남겨(if key in seen) 무관한 담당업무가 한 타임라인으로 엮였다(제보).
+        branch = " ".join(str(f.get("branch") or f.get("stream") or "").split())[:40]
+        bk = (key, fold(branch))
+        if bk in seen:
+            continue
+        if n_branch.get(key, 0) >= MAX_BRANCHES:
             continue
         steps_raw = f.get("steps")
         steps_raw = steps_raw if isinstance(steps_raw, list) else []
@@ -510,9 +525,10 @@ def sanitize_flows(raw_flows, keys, mats_by=None, dropped=None):
             if dropped is not None:
                 dropped.append(f"{raw_name}(단계 없음)")
             continue
-        seen.add(key)
+        seen.add(bk)
+        n_branch[key] = n_branch.get(key, 0) + 1
         hit = mats_by.get(key) or {}
-        out.append({"model": key, "level1": hit.get("level1", ""),
+        out.append({"model": key, "branch": branch, "level1": hit.get("level1", ""),
                     "project": hit.get("model", ""), "detail": hit.get("detail", ""),
                     "role": str(f.get("role") or "")[:160],
                     "summary": str(f.get("summary") or "")[:400],
@@ -673,7 +689,9 @@ def main():
             hit = keys[f["model"]]
             f = dict(f, project=hit["model"], detail=hit["detail"], mm={"mm": hit["mm"]}, signals=hit["signals"])
             kept.append(f)
-        if len(kept) >= len(keys):
+        # 한 과제가 여러 흐름(branch)을 가질 수 있으므로 '흐름 수' 가 아니라 '끝난 과제 수' 로 본다.
+        # 그러지 않으면 분기가 하나만 생겨도 len(kept) > len(keys) 가 되어 다 끝난 줄 알고 전부 다시 돌린다.
+        if len({f["model"] for f in kept}) >= len(keys):
             kept = []                            # 다 끝난 결과 — 처음부터 다시(재분석)
     done_keys = {f["model"] for f in kept}
     todo = [m for m in mats if m["key"] not in done_keys]
