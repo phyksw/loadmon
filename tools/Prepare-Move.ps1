@@ -26,7 +26,8 @@
 param(
     [Parameter(Mandatory = $true)][string]$Root,
     [switch]$NoWait,
-    [switch]$CheckOnly
+    [switch]$CheckOnly,
+    [int]$CloseSec = 5      # 성공 시 이 초 뒤 창을 스스로 닫는다(0 = 즉시). 실패 시에는 기다린다.
 )
 $ErrorActionPreference = 'Continue'
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
@@ -270,7 +271,7 @@ if ($movable) {
         }
     } catch {}
     Write-Host ''
-    Say '   [완료] 준비 끝 - 다시 실행하지 않으셔도 됩니다.' 'Green'
+    Say '   [완료] 준비 끝 - 다시 실행하지 않으셔도 됩니다. 대시보드·팀 서버·샘플러는 모두 닫혔습니다.' 'Green'
 } else {
     try { $Host.UI.RawUI.WindowTitle = 'LoadMonitor22 - PC 이동 준비 [미완료]' } catch {}
     Say '  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!' 'Red'
@@ -299,5 +300,33 @@ if ($movable) {
     Say '   [미완료] 위 1~4 를 조치한 뒤 다시 실행하세요.' 'Red'
 }
 Write-Host ''
-if (-not $NoWait) { Write-Host '  창을 닫으려면 아무 키나 누르세요.'; $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown') }
+# 다 끝났는데 '아무 키나 누르세요' 로 창이 남아 있으면 그것 자체가 '안 끝났다' 로 읽힌다(제보).
+# 성공이면 스스로 닫고, 실패면 사유를 읽어야 하므로 기다린다.
+if (-not $NoWait) {
+    if ($movable) {
+        $left = [math]::Max(0, $CloseSec)
+        $held = $false
+        while ($left -gt 0) {
+            Write-Host ("`r  [완료] 정리가 끝났습니다 - {0}초 뒤 이 창이 자동으로 닫힙니다. (읽고 계시면 아무 키나 누르세요)   " -f $left) -NoNewline
+            $t0 = [datetime]::Now
+            while (([datetime]::Now - $t0).TotalMilliseconds -lt 1000) {
+                # 콘솔이 아닌 곳(입력 리디렉션·작업 스케줄러)에서는 KeyAvailable 이 예외를 던진다 -
+                # 그때는 키를 못 받는 것이 정상이므로 조용히 카운트다운만 계속한다.
+                try { if ($Host.UI.RawUI.KeyAvailable) { $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown'); $held = $true; break } }
+                catch { Start-Sleep -Milliseconds 920; break }
+                Start-Sleep -Milliseconds 80
+            }
+            if ($held) { break }
+            $left--
+        }
+        Write-Host ''
+        if ($held) {
+            Write-Host '  자동 닫힘을 멈췄습니다. 창을 닫으려면 아무 키나 누르세요.'
+            $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
+        }
+    } else {
+        Write-Host '  창을 닫으려면 아무 키나 누르세요.'
+        $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
+    }
+}
 if ($movable) { exit 0 } else { exit 1 }
