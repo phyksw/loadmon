@@ -44,8 +44,8 @@ collect/Start-TeamsSampler.ps1                         2,201 B  49b71b44
 collect/Get-RecentFiles.ps1                           22,050 B  8c06dfa2
 collect/Get-TeamsChats.py                             17,754 B  e868c913
 collect/Get-TeamsViaCopilot.py                        22,177 B  e6ef9df2
-collect/Get-TeamsWindow.ps1                           35,239 B  24750674
-collect/Diagnose-Collectors.ps1                       34,898 B  8625e5d3
+collect/Get-TeamsWindow.ps1                           36,106 B  20295d52
+collect/Diagnose-Collectors.ps1                       36,412 B  4f5352b3
 collect/Register-Samplers.ps1                          9,084 B  f1041753
 collect/Start-ActivitySampler.ps1                      8,331 B  4762e361
 config/config.json                                    34,483 B  ba20469d

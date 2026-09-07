@@ -21,7 +21,9 @@ function Rows([string]$p) { if (Test-Path -LiteralPath $p) { try { return ((Get-
 function RowsTxt([string]$p) { $n = Rows $p; if ($n -lt 0) { return '없음' } ; return ('{0}행' -f $n) }
 function Ver([string]$p) { try { return (Get-Item -LiteralPath $p).VersionInfo.ProductVersion } catch { return '?' } }
 $findings = New-Object System.Collections.Generic.List[string]
-# 팀즈 창 읽기(Get-TeamsWindow.ps1)와 같은 규칙으로 시각 패턴을 구성한다(지역 설정 기반) - 여기서 0줄이면 수집기도 0건이다
+# 팀즈 창 읽기(Get-TeamsWindow.ps1)와 같은 규칙으로 시각 패턴을 구성한다(지역 설정 기반).
+# ※ 여기서 몇 줄 잡혔다고 수집기도 그만큼 남기는 것은 아니다 - 수집기는 '왼쪽 채팅목록 열'을 추가로
+#   제외한다(이 진단은 제외하지 않는다). 그래서 아래에서 수집기가 실제 남긴 CSV 행과 반드시 대조한다.
 $ci0 = Get-Culture
 $amD0 = [string]$ci0.DateTimeFormat.AMDesignator; $pmD0 = [string]$ci0.DateTimeFormat.PMDesignator
 $desig0 = ((@('오전', '오후', 'AM', 'PM', 'am', 'pm', 'a.m.', 'p.m.', 'A.M.', 'P.M.', '午前', '午後', '上午', '下午', 'vorm.', 'nachm.', $amD0, $pmD0) | Where-Object { $_ } | Select-Object -Unique | ForEach-Object { [regex]::Escape($_) }) -join '|')
@@ -154,6 +156,22 @@ if ($texts.Count) {
 }
 $dM = Join-Path $root 'data\m365'
 W ("  수집 파일: teams_window.csv {0} / teams_copilot.csv {1} / teams_window_raw.txt {2}줄" -f (RowsTxt (Join-Path $dM 'teams_window.csv')), (RowsTxt (Join-Path $dM 'teams_copilot.csv')), ((Rows (Join-Path $dM 'teams_window_raw.txt')) + 1))
+# 진단이 읽은 줄은 있는데 수집기가 남긴 행이 0이면, 둘 사이(채팅목록 제외·시각 형식)에서 사라진 것이다.
+# 예전에는 이 대조가 없어 진단이 '건강함'으로 보이는데 수집은 0건인 상태를 설명하지 못했다.
+$csvRows = 0
+try {
+    $cp = Join-Path $dM 'teams_window.csv'
+    if (Test-Path -LiteralPath $cp) { $csvRows = [math]::Max(0, (@(Get-Content -LiteralPath $cp -Encoding UTF8 | Where-Object { $_.Trim() })).Count - 1) }
+} catch {}
+$skipP = Join-Path $dM 'teams_window_skipped.txt'
+$nSkip = 0
+try { if (Test-Path -LiteralPath $skipP) { $nSkip = @(Get-Content -LiteralPath $skipP -Encoding UTF8 | Where-Object { $_.Trim() }).Count } } catch {}
+if ($nSkip -gt 0) { W ("  수집기가 '채팅 목록 열'로 보고 제외한 줄: {0}줄 (teams_window_skipped.txt)" -f $nSkip) }
+if ($nTime -gt 0 -and $csvRows -eq 0) {
+    W '  [!] 이 진단은 시각 패턴을 잡았는데 수집기가 남긴 행은 0입니다 - 둘 사이에서 사라졌습니다.'
+    W '      확인: powershell -ExecutionPolicy Bypass -File collect\Get-TeamsWindow.ps1 -KeepChatList'
+    W '      (채팅 목록 제외를 끄고 다시 읽습니다. 이걸로 건수가 살아나면 그 판정이 원인입니다.)'
+}
 $rawP = Join-Path $dM 'teams_window_raw.txt'
 if (Test-Path -LiteralPath $rawP) {
     try {

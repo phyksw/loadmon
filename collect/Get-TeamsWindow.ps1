@@ -219,7 +219,18 @@ if ($texts.Count -eq 0) {
     exit 1
 }
 $uniq = @($texts | Select-Object -Unique)
-[System.IO.File]::WriteAllLines((Join-Path $outDir 'teams_window_raw.txt'), $uniq, [System.Text.Encoding]::UTF8)
+# raw 원문은 **제외하기 전 화면 그대로** 남긴다. 예전에는 제외한 뒤의 $uniq 를 적어서,
+# 다른 PC 에서 이 파일을 받아 -RawFile 로 재생해도 '채팅목록 제외' 사고가 원리상 재현되지 않았다
+# (실측: 같은 원문에 두 버전이 똑같이 6건을 내놓아 파서를 무죄로 오판했다). 원격 진단이 되려면
+# 화면에 실제로 있던 줄이 전부 남아야 한다. 제외된 줄은 무엇이 빠졌는지 볼 수 있게 따로 적는다.
+$rawAll = New-Object System.Collections.Generic.List[string]
+foreach ($x in $uniq) { $rawAll.Add($x) }
+foreach ($x in $skippedTexts) { if (-not $rawAll.Contains($x)) { $rawAll.Add($x) } }
+[System.IO.File]::WriteAllLines((Join-Path $outDir 'teams_window_raw.txt'), $rawAll, [System.Text.Encoding]::UTF8)
+if ($skippedTexts.Count -gt 0) {
+    [System.IO.File]::WriteAllLines((Join-Path $outDir 'teams_window_skipped.txt'),
+        @($skippedTexts | Select-Object -Unique), [System.Text.Encoding]::UTF8)
+}
 
 # ── 메시지 파싱 (best-effort): 이름 + 시각 패턴이 있는 줄을 메시지로 취급 ──
 function Csv-Escape([string]$s) {
@@ -422,8 +433,7 @@ $usedGeneric = $false
 $colUndone = $false
 if ($nTime -eq 0 -and $skippedTexts.Count -gt 0) {
     foreach ($nm in $skippedTexts) { if (-not $uniq.Contains($nm)) { $texts.Add($nm) } }
-    $uniq = @($texts | Select-Object -Unique)
-    [System.IO.File]::WriteAllLines((Join-Path $outDir 'teams_window_raw.txt'), $uniq, [System.Text.Encoding]::UTF8)
+    $uniq = @($texts | Select-Object -Unique)     # raw 파일은 이미 제외 전 전체라 다시 쓰지 않는다
     $res = Parse-Lines $reTime
     $nTime = [int]$res.n
     $colUndone = $true
