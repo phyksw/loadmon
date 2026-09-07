@@ -105,7 +105,9 @@ foreach ($j in $jobs) {
         try { $folder.DeleteTask($name, 0); Write-Host ("[register] 해제: {0}" -f $name) }
         catch {
             # COM 이 못 지우면 schtasks 로 한 번 더 (없는 작업이면 그냥 알린다)
-            $o = & schtasks /Delete /TN $name /F 2>&1
+            # 2>&1 을 쓰면 $ErrorActionPreference='Stop' 아래에서 stderr 한 줄이 종료 오류로 던져져
+            # 이 catch 안에서 그대로 죽는다(실측). stderr 는 잠시 Continue 로 낮춰 받는다.
+            $o = & { $ErrorActionPreference = 'Continue'; & schtasks /Delete /TN $name /F 2>&1 }
             if ($LASTEXITCODE -eq 0) { Write-Host ("[register] 해제: {0}" -f $name) } else { Write-Host ("[register] {0}: 등록돼 있지 않음" -f $name) }
         }
         continue
@@ -138,7 +140,7 @@ foreach ($j in $jobs) {
         Write-Host ("[register] COM 등록 실패({0}) - schtasks 로 재시도" -f $_.Exception.Message.Split([char]10)[0].Trim())
         try {
             [System.IO.File]::WriteAllText($xmlPath, $xml, [System.Text.Encoding]::Unicode)
-            $o = & schtasks /Create /TN $name /XML $xmlPath /F 2>&1
+            $o = & { $ErrorActionPreference = 'Continue'; & schtasks /Create /TN $name /XML $xmlPath /F 2>&1 }
             if ($LASTEXITCODE -eq 0) { $ok = $true } else { Write-Host ("[register] schtasks 실패: " + ($o -join ' ')) }
         } finally { try { Remove-Item -LiteralPath $xmlPath -Force -ErrorAction SilentlyContinue } catch {} }
     }
@@ -152,5 +154,23 @@ foreach ($j in $jobs) {
 }
 if ($Remove) { exit 0 }
 if ($fail) { Write-Host '[register] 일부 작업이 등록되지 않았습니다.'; exit 1 }
+# 등록·시작이 성공해도 실제로 기록이 쌓이는지는 별개다(실행 정책·보안 정책이 루프 진입 전에 막으면
+# 로그조차 안 남는다). 여기서 짧게 확인해 주지 않으면 사용자는 대시보드의 '샘플러 꺼짐' 만 다시 본다.
+if (-not $NoStart) {
+    $actDir = Join-Path (Split-Path -Parent $here) 'datactivity'
+    $seen = $false
+    for ($i = 0; $i -lt 12 -and -not $seen; $i++) {
+        Start-Sleep -Seconds 5
+        $seen = @(Get-ChildItem -LiteralPath $actDir -Filter 'activity_*.csv' -ErrorAction SilentlyContinue |
+                  Where-Object { $_.LastWriteTime -gt (Get-Date).AddMinutes(-3) }).Count -gt 0
+    }
+    if ($seen) {
+        Write-Host '[register] 확인: 샘플이 쌓이기 시작했습니다.'
+    } else {
+        Write-Host '[register] [!] 등록은 됐는데 60초 안에 샘플이 쌓이지 않았습니다.'
+        Write-Host '           실행 정책·보안 정책이 막았을 수 있습니다. 아래를 그대로 실행해 오류를 보세요:'
+        Write-Host ('           powershell -ExecutionPolicy Bypass -File "' + (Join-Path $here 'Start-ActivitySampler.ps1') + '" -TestSamples 3')
+    }
+}
 Write-Host '[register] 완료 - 상태 확인: LoadMonitor22-수집진단.bat ([창 샘플러] 절)'
 exit 0

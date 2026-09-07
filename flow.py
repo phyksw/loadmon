@@ -29,6 +29,7 @@ LoadMonitor20 과 다른 점:
 
 출력: report\workflow_<기간>.json  →  UI '담당자 워크플로우' 탭 (f.model/role/summary/steps/mm.mm/signals)
   {ok, tag, generated, model_name, unit:"과제"|"과제/담당업무", basis, flows[{model:"과제"(기본) 또는 "과제 / 담당업무",
+   level1:"신제품개발|기술 내재화|양산준비|일반업무"(상위 · 정제 단계가 채운다. 없으면 빈 문자열),
    project, detail, role, summary, steps[≤8], mm:{mm}, signals}], chunks, failed_chunks, salvaged_chunks,
    missing, missing_count, partial, note, last_error, dropped, merge:{rule, ai}, rows_units, empty_reason?}
 """
@@ -151,19 +152,27 @@ def gather(rep, tag, amap=None):
             desc_by.setdefault(k, d[:120])
     # 정제 상세설명은 정제본에만 있다 — refine_map 으로 원본 이름에 되짚어 얹는다(설명이라 중복은 무해).
     # MM 은 여기서 손대지 않는다: 정제 행 하나가 원본 여럿에서 왔을 때 원본마다 같은 MM 을 붙이면 총량이 부푼다.
+    # 상위(Level 1)는 판정 단계에서 빈칸이고 정제 단계만 채운다 — 정제본에서 원본 이름 축으로 되짚어 온다.
+    l1_w = {}          # fold(과제) → {상위: mm 합}  (가장 무거운 상위를 그 과제의 상위로 본다)
     try:
         rrows, _rfn = details.read_rows(tag, rep)
         if _rfn and _rfn.endswith("_refined.csv"):
             rmap = _refine_orig(tag, rep)
             for r in rrows:
+                l1 = " ".join((r.get("Level 1") or "").split())
                 d = " ".join((r.get("상세설명") or "").split())
-                if not d:
-                    continue
                 l2 = (r.get("Level 2") or "").strip()
                 l3 = (r.get("Level 3") or "").strip()
-                for (o2, o3) in rmap.get(f"{l2}/{l3}", []) or [(l2, l3)]:
-                    desc_by.setdefault((fold(o2 or "공통"), fold(o3 or "기타")), d[:120])
-    except Exception:  # noqa: BLE001 - 설명이 없어도 워크플로우는 나와야 한다
+                pairs = rmap.get(f"{l2}/{l3}", []) or [(l2, l3)]
+                for (o2, o3) in pairs:
+                    if d:
+                        desc_by.setdefault((fold(o2 or "공통"), fold(o3 or "기타")), d[:120])
+                    if l1:
+                        # 정제 행 하나가 원본 여럿에서 왔으면 MM 을 나눠 싣는다(총량이 부풀지 않게)
+                        w = r["_mm"] / max(1, len(pairs))
+                        g = l1_w.setdefault(fold(o2 or "공통"), {})
+                        g[l1] = g.get(l1, 0.0) + w
+    except Exception:  # noqa: BLE001 - 설명·상위가 없어도 워크플로우는 나와야 한다
         pass
 
     # 과제 안의 세부업무 MM 배분 — 과제 단위 카드가 LM20 처럼 '무엇에 얼마' 를 보여 주는 재료.
@@ -223,11 +232,16 @@ def gather(rep, tag, amap=None):
             mm = round(sum(pv.values()), 3)
             parts = [[n, round(v, 3)] for n, v in sorted(pv.items(), key=lambda kv: -kv[1])[:8] if v > 0]
             desc = " · ".join((dsc_by.get(f2) or [])[:6])
+        g1 = l1_w.get(f2) or {}
+        level1 = max(g1.items(), key=lambda kv: kv[1])[0] if g1 else ""
         out.append({"model": md, "detail": dt, "key": unit_key(md, dt), "signals": len(ss),
-                    "mm": mm, "desc": desc, "parts": parts, "evidence": ev})
+                    "level1": level1, "mm": mm, "desc": desc, "parts": parts, "evidence": ev})
     if not out:
         return [], basis, (f"흐름을 만들 단위가 없습니다 (단위 {len(groups)}개 · 신호 {len(sigs)}건)")
-    out.sort(key=lambda x: -(x["mm"] * 100 + x["signals"]))
+    # 상위(업무 성격)로 먼저 묶고 그 안에서 무거운 순 — LM20 처럼 상위 단위로도 읽히게 한다.
+    L1_ORDER = {"신제품개발": 0, "기술 내재화": 1, "양산준비": 2, "일반업무": 3}
+    out.sort(key=lambda x: (L1_ORDER.get(x.get("level1") or "", 9), x.get("level1") or "힣",
+                            -(x["mm"] * 100 + x["signals"])))
     return out, basis, ""
 
 
@@ -259,7 +273,8 @@ def build_prompt(mats):
         "",
     ]
     for m in mats:
-        lines.append(f"## {m['key']}  (신호 {m['signals']}건)")
+        lines.append(f"## {m['key']}  (신호 {m['signals']}건)"
+                     + (f"  [상위: {m['level1']}]" if m.get("level1") else ""))
         if m.get("parts"):
             # 과제 단위일 때 그 안의 세부업무 배분을 알려 준다 — 단계를 나눌 재료가 된다(LM20 과 같은 정보량)
             lines.append("[세부업무] " + " · ".join(f"{n} {v}MM" for n, v in m["parts"]))
@@ -466,7 +481,7 @@ def sanitize_flows(raw_flows, keys, mats_by=None, dropped=None):
             continue
         seen.add(key)
         hit = mats_by.get(key) or {}
-        out.append({"model": key,
+        out.append({"model": key, "level1": hit.get("level1", ""),
                     "project": hit.get("model", ""), "detail": hit.get("detail", ""),
                     "role": str(f.get("role") or "")[:160],
                     "summary": str(f.get("summary") or "")[:400],

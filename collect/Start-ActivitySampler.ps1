@@ -96,6 +96,9 @@ while ((Get-Date) -lt $deadline) {
         # test samples go to a separate file so they never pollute real data
         $prefix = 'activity'
         if ($TestSamples -gt 0) { $prefix = 'test_activity' }
+        # 폴더가 사라졌을 수 있다 - [추가 PC 취합]이 datactivity 를 통째로 보관 폴더로 옮긴다.
+        # 루프 밖에서 한 번만 만들면 그 뒤로는 살아서 한 줄도 못 쓰는 좀비가 된다(실측). 매 틱 확인한다.
+        if (-not (Test-Path -LiteralPath $outDir)) { New-Item -ItemType Directory -Force -Path $outDir | Out-Null }
         $file = Join-Path $outDir ("{0}_{1}.csv" -f $prefix, $now.ToString('yyyyMMdd'))
         if (-not (Test-Path $file)) {
             [System.IO.File]::AppendAllText($file, "time,process,title,idle_sec,solvers_running,user,host`r`n", [System.Text.Encoding]::UTF8)

@@ -908,11 +908,22 @@ def _sampler_restart_worker(ps1):
         if n > 0:
             how, note = "skip", f"샘플러 프로세스 {n}개가 이미 떠 있는데 샘플이 안 쌓임 — 수동 확인"
             return
-        # 콘솔 없이(DETACHED_PROCESS|CREATE_NEW_PROCESS_GROUP) — 대시보드를 닫아도 샘플러는 남는다
-        subprocess.Popen(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-                          "-WindowStyle", "Hidden", "-File", ps1],
-                         cwd=ROOT, creationflags=0x00000008 | 0x00000200, close_fds=True,
-                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # 콘솔 없이(CREATE_NO_WINDOW|CREATE_NEW_PROCESS_GROUP) — 대시보드를 닫아도 샘플러는 남는다.
+        # ★ 예전에는 DETACHED_PROCESS(0x8) 를 썼는데, 그러면 powershell.exe 가 스크립트를 **한 줄도
+        #   실행하지 않고 즉시 exit 0** 한다(실측 플래그 행렬: 0x8 이 든 조합은 전부 0줄, 빼면 정상).
+        #   그래서 이 경로는 한 번도 작동한 적이 없고, 화면에는 '재시작 시도' 만 10분마다 새로 찍혔다.
+        #   CREATE_NO_WINDOW 로 띄운 자식도 부모(대시보드)가 죽은 뒤 계속 도는 것을 실측 확인했다.
+        p = subprocess.Popen(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                              "-WindowStyle", "Hidden", "-File", ps1],
+                             cwd=ROOT, creationflags=NO_WIN | 0x00000200, close_fds=True,
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # 띄웠다고 도는 것이 아니다 — 3초 뒤에도 살아 있는지 본다. 즉사했으면 그 사실을 화면에 적는다
+        # (예전에는 how="direct" 로 기록만 하고 안 도는 상태를 구분할 방법이 없었다).
+        time.sleep(3.0)
+        if p.poll() is not None:
+            how, note = "error", (f"기동 직후 종료(rc={p.returncode}) — 실행 정책·보안 정책이 막았을 수 있습니다. "
+                                  "LoadMonitor22-샘플러등록.bat 으로 등록해 보세요")
+            return
         how = "direct"
     except Exception as e:  # noqa: BLE001 - 감시 스레드가 죽어도 UI 는 계속
         how, note = "error", f"{type(e).__name__}: {str(e)[:80]}"
@@ -1047,7 +1058,7 @@ def sources(period=None):
         ("git 커밋", ["files/git_commits.csv"], "config.gitRepos 설정 (선택)"),
         ("팀즈 채팅", ["m365/teams_*.csv"], r"상시 샘플러(collect\Start-TeamsSampler.ps1) 권장 · Copilot 경로는 커넥터 있는 테넌트만"),
         ("창 샘플러", ["activity/activity_*.csv"],
-         "collect\\Register-Samplers.ps1 로 1회 등록하면 로그온 때마다 자동 시작 (선택 · 없으면 PC 가동 하한으로 계산)"),
+         "LoadMonitor22-샘플러등록.bat 으로 1회 등록하면 로그온 때마다 자동 시작 (선택 · 없으면 PC 가동 하한으로 계산)"),
         ("추가 PC", ["추가PC/*/outlook/mail.csv", "추가PC/*/files/files.csv",
                      "추가PC/*/pc/pc_on.csv", "추가PC/*/m365/teams_*.csv"],
          "폴더째 옮겨 [추가 PC 수집] → 본 PC 에서 [분석 실행] — 자동 합산 · 중복 자동 제외 (선택)"),
@@ -2571,7 +2582,7 @@ async function poll(){
   const tkTxt=(tk===false)?' · 로그온 자동 시작 작업이 <b>등록돼 있지 않습니다</b>'
              :((tk===true)?' · 등록 작업은 있습니다(정책·권한으로 안 돌 수 있음)':'');
   $("sb_sampler").innerHTML=(s.sampler_age_min==null)
-   ?`<span style="color:#e08a00" title="창 샘플러가 없으면 투입시간이 PC 가동 하한으로만 계산돼 과소 집계될 수 있습니다">샘플러 꺼짐 — 아직 기록이 하나도 없습니다${tkTxt}${srTxt}<br><span class="dim">켜기: 파워셸에서 <b>collect\\Register-Samplers.ps1</b> 실행(로그온 시 자동 시작·실행 시간 제한 없음). 이 화면이 10분에 한 번 자동 기동도 시도합니다.</span></span>`
+   ?`<span style="color:#e08a00" title="창 샘플러가 없으면 투입시간이 PC 가동 하한으로만 계산돼 과소 집계될 수 있습니다">샘플러 꺼짐 — 아직 기록이 하나도 없습니다${tkTxt}${srTxt}<br><span class="dim">켜기: <b>LoadMonitor22-샘플러등록.bat</b> 실행(1회 등록 · 로그온 시 자동 시작). 이 화면도 10분에 한 번 자동 기동을 시도합니다.</span></span>`
    :(s.sampler_age_min<=10?'<span style="color:#4fc47f">샘플러 가동 중</span>'
      :`<span style="color:#e08a00" title="마지막 샘플 ${esc(s.last_sample||"")} — 멈춘 날은 PC 하한 모드로 계산됩니다">샘플러 멈춤 (${s.sampler_age_min}분 전${s.last_sample?` · 마지막 샘플 ${esc(s.last_sample)}`:""})${tkTxt}${srTxt}</span>`);
   $("go").disabled=s.running;
@@ -3231,6 +3242,9 @@ async function loadFlow(){
     +'AI 정제를 포함해 [분석 실행]을 돌리면 자동 생성됩니다. 위 [워크플로우 재분석]으로 지금 만들 수도 있습니다.'+oth+'</div></div>';
   }
  }else{
+  // 상위(Level 1)가 바뀌는 자리마다 머리말을 넣어 '상위 → 과제' 계층이 눈에 보이게 한다.
+  // flow.py 가 상위로 묶어 정렬해 내보내므로 여기서는 바뀌는 지점만 잡으면 된다.
+  let _l1prev=null;
   el.innerHTML=btn+d.flows.map(f=>{
    const mm=f.mm||{}, det=Object.entries(mm.details||{});
    const mtot=det.reduce((s,[,v])=>s+v,0)||1;
@@ -3245,8 +3259,15 @@ async function loadFlow(){
      <td style="width:220px"><span style="display:inline-block;padding:1px 8px;border-radius:9px;color:#fff;font-size:11px;background:${AGENT_C[s.agent]||"#8b929b"}">Agent ${esc(s.agent)}</span>
       ${s.agent_how?`<div style="font-size:11px;color:#4a5159;margin-top:2px">${esc(s.agent_how)}</div>`:""}</td></tr>`).join("");
    const fi=d.flows.indexOf(f);
+   const cur=f.level1||"";
+   const head=(cur!==_l1prev)?`<div style="margin:14px 0 6px;font-size:12px;color:#4a5159"><b>${esc(cur||"상위 미분류")}</b> <span class="dim">— ${d.flows.filter(x=>(x.level1||"")===cur).length}개 과제</span></div>`:"";
+   _l1prev=cur;
    // 과제 수만큼 길어지는 탭 — 접이식으로. 제목 줄에 역할 요약을 실어 접힌 채로도 훑는다.
-   return `<details${fi===0?" open":""}><summary>${esc(f.model)}
+   // 상위(업무 성격) 배지 — 계층은 상위(Level 1) > 과제(Level 2) > 담당업무(Level 3) 다.
+   // LM20 처럼 상위로도 묶어 읽히게 제목에 배지를 달고, 아래에서 상위별로 구간을 나눈다.
+   const L1C={"신제품개발":"#2a78d6","기술 내재화":"#0e8c7a","양산준비":"#e08a00","일반업무":"#8b929b"};
+   const l1b=f.level1?`<span style="display:inline-block;padding:0 7px;border-radius:9px;color:#fff;font-size:11px;background:${L1C[f.level1]||"#8b929b"};margin-right:6px">${esc(f.level1)}</span>`:"";
+   return head+`<details${fi===0?" open":""}><summary>${l1b}${esc(f.model)}
      <span class="state">${(mm.mm!=null)?mm.mm+" MM · ":""}단계 ${(f.steps||[]).length}개 · ${esc((f.role||"판단 유보").split("—")[0].trim())}</span></summary>
     <div class="body">
     <div style="margin:2px 0 6px"><b>역할:</b> ${esc(f.role)||"판단 유보"}</div>
@@ -4667,7 +4688,8 @@ class H(BaseHTTPRequestHandler):
                 tmp = os.path.join(_tf.gettempdir(), "LM22-Prepare-Move.ps1")
                 _sh.copy2(ps1, tmp)
                 # 새 콘솔 창으로 띄운다 — 사용자가 결과를 봐야 하고, 우리가 죽어도 살아남아야 한다
-                flags = 0x00000010 | 0x00000008          # CREATE_NEW_CONSOLE | DETACHED 아님
+                flags = 0x00000010                       # CREATE_NEW_CONSOLE (DETACHED 는 쓰지 않는다 —
+                #                                          그것을 섞으면 자식이 아무것도 실행하지 않고 즉사한다)
                 subprocess.Popen(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
                                   "-File", tmp, "-Root", ROOT],
                                  creationflags=0x00000010, close_fds=True)

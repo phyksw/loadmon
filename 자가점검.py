@@ -14,6 +14,7 @@ NEED = [
     "LoadMonitor22-팀서버.bat",
     "LoadMonitor22-팀업로드.bat",
     "LoadMonitor22-수집진단.bat",
+    "LoadMonitor22-샘플러등록.bat",
     "LoadMonitor22-이동준비.bat",
     "agentic.py",
     "freeze.py",

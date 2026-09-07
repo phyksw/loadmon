@@ -596,6 +596,10 @@ def report_island(tag, full=True, log=_say):
 
     # 담당자 워크플로우 — 화면과 같은 접이식 + 단계 표
     flows = wf.get("flows") or []
+    _L1C = {"신제품개발": "#2a78d6", "기술 내재화": "#0e8c7a",
+            "양산준비": "#e08a00", "일반업무": "#8b929b"}
+    _l1_prev = None                # 상위가 바뀌는 자리에만 머리말을 넣는다
+
     fl_cards = []
     for i, f in enumerate(flows):
         mm = f.get("mm") or {}
@@ -630,8 +634,19 @@ def report_island(tag, full=True, log=_say):
             for j, s in enumerate(f.get("steps") or []) if isinstance(s, dict))
         mm_txt = f"{mm.get('mm')} MM · " if isinstance(mm.get("mm"), (int, float)) else ""
         role0 = str(f.get("role") or "판단 유보").split("—")[0].strip()
+        # 상위(Level 1)로도 묶어 읽히게 — 계층은 상위 > 과제 > 담당업무. flow 가 상위로 정렬해 내보낸다.
+        _l1 = str(f.get("level1") or "")
+        if _l1 != _l1_prev:
+            _n1 = sum(1 for x in flows if isinstance(x, dict) and str(x.get("level1") or "") == _l1)
+            fl_cards.append('<div style="margin:14px 0 6px;font-size:12px;color:#4a5159">'
+                            f'<b>{_esc(_l1 or "상위 미분류")}</b> '
+                            f'<span class="dim">— {_n1}개 과제</span></div>')
+            _l1_prev = _l1
+        _l1b = (f'<span style="display:inline-block;padding:0 7px;border-radius:9px;color:#fff;'
+                f'font-size:11px;background:{_L1C.get(_l1, "#8b929b")};margin-right:6px">{_esc(_l1)}</span>'
+                if _l1 else "")
         fl_cards.append(
-            f'<details{" open" if i == 0 else ""}><summary>{_esc(f.get("model"))}'
+            f'<details{" open" if i == 0 else ""}><summary>{_l1b}{_esc(f.get("model"))}'
             f'<span class="state">{mm_txt}단계 {len(f.get("steps") or [])}개 · '
             f'{_esc(role0)}</span></summary><div class="body">'
             f'<div style="margin:2px 0 6px"><b>역할:</b> {_esc(f.get("role")) or "판단 유보"}</div>'

@@ -500,6 +500,16 @@ def archive_other_pc(data):
                     moved.append(sub)
                 except OSError as ex2:
                     failed.append(f"{sub}({type(ex2).__name__})")
+            # 보관하며 data\activity 를 통째로 옮기면 그 폴더가 사라진다. 그런데 샘플러는 루프에 들어가기
+            # **전에 한 번만** 폴더를 만들므로, 돌고 있던 샘플러는 살아서 CPU 만 쓰고 한 줄도 못 쓰는
+            # 좀비가 된다(오류 로그도 같은 사라진 폴더에 쓰려 해서 안 남는다 — 실측). 게다가 그 좀비가
+            # 뮤텍스를 쥐고 있어 자동 재기동도 '이미 실행 중' 으로 즉사한다. 폴더만 되만들어 주면
+            # 다음 틱에 스스로 기록을 재개하는 것을 확인했다.
+            for sub in ("activity", "pc"):
+                try:
+                    os.makedirs(os.path.join(data, sub), exist_ok=True)
+                except OSError:
+                    pass
             print(f"\n[추가 PC 취합] 지난 수집({prev})을 {os.path.basename(keep)} 폴더로 보관했습니다"
                   f" ({', '.join(moved) or '없음'})")
             if failed:
