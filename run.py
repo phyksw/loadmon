@@ -83,7 +83,9 @@ def step(name, cmd, timeout=420):
         p = subprocess.run(cmd, capture_output=True, timeout=timeout, cwd=ROOT,
                            env=dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1"), creationflags=NO_WIN)
         out = (p.stdout or b"").decode("utf-8", "replace") + (p.stderr or b"").decode("utf-8", "replace")
-        tail = out.strip().splitlines()[-6:]
+        # 마지막 6줄만 찍던 것을 12줄로 — 수집기가 '왜 0건인지' 적는 줄이 정확히 0건일 때
+        # 잘려 나가 화면에는 엉뚱한 원인만 남았다(팀즈 0건 실측: '채팅 목록으로 N줄 제외'가 잘렸다).
+        tail = out.strip().splitlines()[-12:]
         for ln in tail:
             print("   " + ln)
         # 성공해도 요약 줄을 남긴다 — "PC 가동 2건"처럼 값이 이상할 때 어느 수집기가

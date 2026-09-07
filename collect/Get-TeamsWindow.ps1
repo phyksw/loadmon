@@ -77,8 +77,21 @@ function Is-Self([string]$from) {
 
 # ── 창 읽기: ListItem 기하로 '왼쪽 채팅 목록 열'을 찾아 메시지 영역만 남긴다 ─────────────────
 function Get-ListColumn([object[]]$rects, [double]$winLeft, [double]$winWidth) {
-    # $rects: ListItem 사각형(Left/Right/Width). 창 폭 45% 미만의 좁은 항목이 같은 x 에 3개 이상 정렬돼
-    # 창 왼쪽 40% 안에 있으면 그 x 범위 = 채팅 목록 열. 넓은 항목(메시지)이 하나도 안 보이면 거르지 않는다.
+    # $rects: ListItem 사각형(Left/Right/Width). 왼쪽 '채팅 목록 열'을 찾아 그 x 범위를 돌려준다.
+    #
+    # ★ 회귀 사고(LM22): 예전에는 '항목이 가장 많은 좁은 그룹'을 목록으로 보고, 마지막 가드가
+    #   그룹의 **폭**($rg - $l)만 봤다. 그런데 대화를 스크롤하면 화면에 보이는 **메시지 말풍선**이
+    #   채팅 목록 항목보다 많아진다. 그래서 메시지 열이 '가장 많은 그룹'으로 뽑히고,
+    #   예: 창 1920 에서 메시지 열이 x 452~1052 이면 시작 23.5%(<40%)·폭 31%(<45%) 라 가드를
+    #   전부 통과해 **메시지가 100% 삭제**됐다. 그 결과 시각 패턴 0줄 → 신규 0건 → CSV 헤더만 남고,
+    #   스크립트는 exit 0 이라 run.py 는 '성공'으로 기록해 화면 어디에도 실패가 뜨지 않았다.
+    #   (창 폭 1024~1920 = 흔한 사내 노트북에서 재현. 초광폭에서만 우연히 무사했다.)
+    #
+    # 고친 규칙 — 채팅 목록 열은 '창 왼쪽에 붙어 있고 왼쪽 절반 안에서 끝난다':
+    #   · 시작이 창 왼쪽 25% 안                     (목록은 좌측 레일 옆에 붙는다)
+    #   · **오른쪽 끝도** 창 왼쪽 45% 안             ← 예전에 없어서 사고가 났다(폭만 봤다)
+    #   · 항목 3개 이상 · 넓은 항목(메시지)이 하나라도 보일 때만
+    #   · 여러 후보가 있으면 '가장 많은' 것이 아니라 **가장 왼쪽** 것을 고른다
     $wide = 0; $groups = @{}
     foreach ($r in $rects) {
         if ($r.Width -le 0) { continue }
@@ -87,17 +100,22 @@ function Get-ListColumn([object[]]$rects, [double]$winLeft, [double]$winWidth) {
         if (-not $groups.ContainsKey($k)) { $groups[$k] = New-Object System.Collections.Generic.List[object] }
         $groups[$k].Add($r)
     }
-    if ($wide -eq 0) { return $null }
-    $best = $null
-    foreach ($g in $groups.Values) { if ($g.Count -ge 3 -and ($null -eq $best -or $g.Count -gt $best.Count)) { $best = $g } }
+    if ($wide -eq 0) { return $null }          # 메시지 영역이 안 보이면 거를 것도 없다(목록만 띄운 경우)
+    $best = $null; $bl = 0.0; $br = 0.0
+    foreach ($g in $groups.Values) {
+        if ($g.Count -lt 3) { continue }
+        $l = [double]::MaxValue; $rg = [double]::MinValue
+        foreach ($r in $g) { if ($r.Left -lt $l) { $l = $r.Left }; if ($r.Right -gt $rg) { $rg = $r.Right } }
+        if (($l - $winLeft) -gt 0.25 * $winWidth) { continue }      # 창 왼쪽에 붙어 있어야 한다
+        if (($rg - $winLeft) -ge 0.45 * $winWidth) { continue }     # 왼쪽 절반 안에서 끝나야 한다
+        if ($null -eq $best -or $l -lt $bl) { $best = $g; $bl = $l; $br = $rg }
+    }
     if ($null -eq $best) { return $null }
-    $l = [double]::MaxValue; $rg = [double]::MinValue
-    foreach ($r in $best) { if ($r.Left -lt $l) { $l = $r.Left }; if ($r.Right -gt $rg) { $rg = $r.Right } }
-    if (($l - $winLeft) -gt 0.4 * $winWidth -or ($rg - $l) -ge 0.45 * $winWidth) { return $null }
-    return @{ left = $l; right = $rg; n = $best.Count }
+    return @{ left = $bl; right = $br; n = $best.Count }
 }
 function Read-TeamsTexts([IntPtr]$hwnd, [int]$maxElements, [bool]$keepList) {
-    $res = @{ name = ''; count = 0; texts = (New-Object System.Collections.Generic.List[string]); skipped = 0; column = $null }
+    $res = @{ name = ''; count = 0; texts = (New-Object System.Collections.Generic.List[string]); skipped = 0; column = $null;
+              skippedTexts = (New-Object System.Collections.Generic.List[string]) }
     $el = [System.Windows.Automation.AutomationElement]::FromHandle($hwnd)
     $res.name = [string]$el.Current.Name
     $cond = [System.Windows.Automation.Automation]::ContentViewCondition
@@ -143,7 +161,7 @@ function Read-TeamsTexts([IntPtr]$hwnd, [int]$maxElements, [bool]$keepList) {
                 $r = $info.BoundingRectangle
                 if (-not $r.IsEmpty -and $r.Width -lt 0.45 * $wr.Width) {
                     $cx = $r.Left + $r.Width / 2
-                    if ($cx -ge $col.left -and $cx -le $col.right) { $res.skipped++; continue }
+                    if ($cx -ge $col.left -and $cx -le $col.right) { $res.skipped++; $res.skippedTexts.Add($nm); continue }
                 }
             }
             $res.texts.Add($nm)
@@ -153,6 +171,7 @@ function Read-TeamsTexts([IntPtr]$hwnd, [int]$maxElements, [bool]$keepList) {
 }
 
 $texts = New-Object System.Collections.Generic.List[string]
+$skippedTexts = New-Object System.Collections.Generic.List[string]   # 채팅목록으로 보고 뺀 줄 - 안전 밸브가 되돌릴 때 쓴다
 $nListSkipped = 0
 if ($RawFile) {
     # 원문 재생 모드 - 다른 PC 의 teams_window_raw.txt 를 받아 파서만 돌린다(원격 진단·회귀용)
@@ -188,6 +207,7 @@ foreach ($p in $procs) {
             $nListSkipped += [int]$rd.skipped
         }
         foreach ($nm in $rd.texts) { $texts.Add($nm) }
+        foreach ($nm in $rd.skippedTexts) { $skippedTexts.Add($nm) }
     } catch {
         Write-Host ("[teams-window] 창 읽기 실패: {0}" -f $_.Exception.Message)
     }
@@ -390,13 +410,25 @@ function Parse-Lines([string]$re) {
     $summary = $body.Substring(0, [Math]::Min(200, $body.Length))
     # replied_time 은 창 읽기로는 측정할 수 없다 - '미응답'이라고 단정하지 않고 빈 값(미측정)으로 둔다
     $line = ('{0},{1},{2},{3},{4},{5}' -f $t, (Csv-Escape $from), (Csv-Escape $chat), $kind, '', (Csv-Escape $summary))
-    $out.Add(@{ line = $line; time = $t; from = $from; summary = $summary; est = $fd.est; kind = $kind })
+    $out.Add(@{ line = $line; time = $t; from = $from; chat = $chat; summary = $summary; est = $fd.est; kind = $kind })
     }
     return @{ rows = $out; n = $n }
 }
 $res = Parse-Lines $reTime
 $nTime = [int]$res.n
 $usedGeneric = $false
+# 안전 밸브 — 채팅목록으로 보고 뺐는데 남은 줄에 시각이 하나도 없으면, 그 판정이 틀린 것이다
+# (메시지 열을 목록으로 오인한 경우). 뺀 줄을 되돌려 다시 읽는다. 0건으로 끝나는 것보다 낫다.
+$colUndone = $false
+if ($nTime -eq 0 -and $skippedTexts.Count -gt 0) {
+    foreach ($nm in $skippedTexts) { if (-not $uniq.Contains($nm)) { $texts.Add($nm) } }
+    $uniq = @($texts | Select-Object -Unique)
+    [System.IO.File]::WriteAllLines((Join-Path $outDir 'teams_window_raw.txt'), $uniq, [System.Text.Encoding]::UTF8)
+    $res = Parse-Lines $reTime
+    $nTime = [int]$res.n
+    $colUndone = $true
+    Write-Host ('[teams-window] 채팅 목록으로 보고 뺀 ' + $skippedTexts.Count + '줄을 되돌렸습니다 - 그 판정이 틀렸던 것 같습니다(시각 0줄)')
+}
 if ($nTime -eq 0 -and -not $cfgRe -and $uniq.Count -gt 0) {
     # 지역 설정 기반 형식으로 한 줄도 못 잡았다 - Teams 표시 언어가 Windows 와 다를 수 있다. 일반 형식으로 재시도.
     Write-Host '[teams-window] 지역 설정 기반 시각 형식으로 0줄 - 일반 형식(숫자:숫자 / 숫자.숫자)으로 재시도'
@@ -429,10 +461,14 @@ function Split-CsvLine([string]$ln2) {
     return ,$f
 }
 function Sum40([string]$s) { if ($s.Length -gt 40) { return $s.Substring(0, 40) }; return $s }
-function Key-Of([string]$time, [string]$from, [string]$summary) { return ($time + '|' + $from + '|' + (Sum40 $summary)) }
-function Key2-Of([string]$time, [string]$from, [string]$summary) {
+# 중복 키에 chat(대화방)을 넣는다 - 빼면 서로 다른 방에서 같은 사람이 같은 분에 남긴 같은 문구가
+# 한 건으로 뭉쳐, 누적 파일을 다시 쓸 때 기존 행이 조용히 사라진다(감사 확정).
+function Key-Of([string]$time, [string]$from, [string]$chat, [string]$summary) {
+    return ($time + '|' + $from + '|' + $chat + '|' + (Sum40 $summary))
+}
+function Key2-Of([string]$time, [string]$from, [string]$chat, [string]$summary) {
     $hm = if ($time.Length -ge 16) { $time.Substring(11, 5) } else { '' }
-    return ($from + '|' + $hm + '|' + (Sum40 $summary))
+    return ($from + '|' + $hm + '|' + $chat + '|' + (Sum40 $summary))
 }
 $dst = Join-Path $outDir 'teams_window.csv'
 $existing = New-Object System.Collections.Generic.List[string]
@@ -453,9 +489,9 @@ if (Test-Path $dst) {
         $f = Split-CsvLine $old[$i]
         if ($f.Count -ge 6) {
             $sm = if ($f.Count -eq 6) { $f[5] } else { ($f.GetRange(5, $f.Count - 5) -join ',') }
-            $k = Key-Of $f[0] $f[1] $sm
+            $k = Key-Of $f[0] $f[1] $f[2] $sm
             if ($keys.Contains($k)) { continue }
-            Note-Row $k (Key2-Of $f[0] $f[1] $sm) $f[0]
+            Note-Row $k (Key2-Of $f[0] $f[1] $f[2] $sm) $f[0]
         } else {
             $k = $old[$i]
             if ($keys.Contains($k)) { continue }
@@ -466,9 +502,9 @@ if (Test-Path $dst) {
 }
 $added = 0; $nSent = 0; $nEst = 0; $nEstDup = 0
 foreach ($r in $res.rows) {
-    $k = Key-Of $r.time $r.from $r.summary
+    $k = Key-Of $r.time $r.from $r.chat $r.summary
     if ($keys.Contains($k)) { continue }
-    $k2 = Key2-Of $r.time $r.from $r.summary
+    $k2 = Key2-Of $r.time $r.from $r.chat $r.summary
     if ($r.est) {
         $nEst++
         $dd = [datetime]::ParseExact($r.time.Substring(0, 10), 'yyyy-MM-dd', $null)
@@ -486,9 +522,13 @@ $outLines = New-Object System.Collections.Generic.List[string]
 $outLines.Add('time,from,chat,kind,replied_time,summary')
 foreach ($ln2 in ($existing | Sort-Object)) { $outLines.Add($ln2) }
 [System.IO.File]::WriteAllLines($dst, $outLines, [System.Text.Encoding]::UTF8)
-Write-Host ("[teams-window] 원문 {0}줄 (시각 패턴 {1}줄) -> 신규 {2}건 (본인 발신 {3}건 · 날짜 추정 {4}건 · 추정 중복 제외 {5}건) / 누적 {6}건" -f $uniq.Count, $nTime, $added, $nSent, $nEst, $nEstDup, ($outLines.Count - 1))
+Write-Host ("[teams-window] 원문 {0}줄 (시각 패턴 {1}줄{7}) -> 신규 {2}건 (본인 발신 {3}건 · 날짜 추정 {4}건 · 추정 중복 제외 {5}건) / 누적 {6}건" -f $uniq.Count, $nTime, $added, $nSent, $nEst, $nEstDup, ($outLines.Count - 1), $(if ($colUndone) { ', 채팅목록 판정 되돌림' } elseif ($nListSkipped) { ', 채팅목록으로 ' + $nListSkipped + '줄 제외' } else { '' }))
 if ($usedGeneric) { Write-Host '               (일반 형식으로 잡았습니다 - 오전/오후 구분이 없으면 12시간 표기가 오전으로 기록될 수 있음)' }
 if ($nTime -eq 0 -and $uniq.Count -gt 0) {
+    if ($nListSkipped -gt 0) {
+        Write-Host ('               채팅 목록 열로 보고 ' + $nListSkipped + '줄을 제외했습니다 - 잘못 판정했을 수 있습니다.')
+        Write-Host '               확인: powershell -File collect\Get-TeamsWindow.ps1 -KeepChatList  (제외 없이 다시 읽습니다)'
+    }
     Write-Host '               시각 패턴이 한 줄도 없습니다 - 팀즈 표기 형식이 이 PC 의 지역 설정과 다를 수 있습니다.'
     Write-Host ('               반영된 지역 설정: 오전/오후 "' + $amD + '"/"' + $pmD + '", 시각 형식 "' + $ci.DateTimeFormat.ShortTimePattern + '" (' + $ci.Name + ')')
     Write-Host '               조치(이 PC 안에서): Windows 지역 설정(제어판 > 국가 또는 지역 > 형식)을 Teams 표시 언어와 맞추거나,'
