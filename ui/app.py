@@ -855,6 +855,27 @@ def _age(ts):
 SAMPLER_STALE_MIN = 10                      # 마지막 샘플이 이보다 오래됐으면 '멈춤'
 SAMPLER_TASK = "LoadMonitor22-Sampler"      # docs\설정가이드 §4 · collect\Register-Samplers.ps1 의 작업 이름
 SAMPLER_RESTART = {"at": 0.0, "busy": False, "when": "", "how": "", "note": ""}
+SAMPLER_TASK_STATE = {"at": 0.0, "exists": None}   # 등록 작업 유무 — /api/status 는 1초 폴링이라 캐시한다
+
+
+def _sampler_task_exists():
+    """로그온 자동 시작 작업이 등록돼 있는가 — True/False, 확인 실패는 None. 5분 캐시.
+    '꺼짐' 안내가 '등록이 안 된 것'인지 '등록은 됐는데 안 도는 것'인지 사용자가 알아야 조치할 수 있다."""
+    now = time.time()
+    with LOCK:
+        if now - SAMPLER_TASK_STATE["at"] < 300:
+            return SAMPLER_TASK_STATE["exists"]
+        SAMPLER_TASK_STATE["at"] = now
+    ok = None
+    try:
+        r = subprocess.run(["schtasks", "/Query", "/TN", SAMPLER_TASK],
+                           capture_output=True, timeout=20, creationflags=NO_WIN)
+        ok = (r.returncode == 0)
+    except Exception:  # noqa: BLE001 - 조회 실패는 '모름' 이지 '없음' 이 아니다
+        ok = None
+    with LOCK:
+        SAMPLER_TASK_STATE["exists"] = ok
+    return ok
 
 
 def _cfg_bool(v, dflt=True):
@@ -905,9 +926,13 @@ def _sampler_restart_worker(ps1):
 
 
 def _sampler_autorestart(age_min):
-    """/api/status 마다 호출된다(1초 폴링) — 멈춤(>10분)일 때만, 10분에 한 번만, 스레드로 시도한다.
-    returns 상태바에 실을 사유(자동 재기동이 꺼져 있으면 그 사실)."""
-    if age_min is None or age_min <= SAMPLER_STALE_MIN:
+    """/api/status 마다 호출된다(1초 폴링) — 멈춤(>10분)이거나 **아직 한 번도 안 켜졌을 때**,
+    10분에 한 번만, 스레드로 시도한다. returns 상태바에 실을 사유(자동 재기동이 꺼져 있으면 그 사실).
+
+    ★ 예전에는 첫 줄이 'age_min is None 이면 return' 이라, 샘플이 하나도 없는 PC(=한 번도 켜진 적 없음)
+      에서는 자동 기동을 아예 시도하지 않았다. 그래서 화면은 영원히 '샘플러 꺼짐' 만 띄우고 아무 일도
+      일어나지 않았다(제보: "샘플러가 계속 꺼짐 상태 안내인데"). 그 경우야말로 켜 줘야 하는 상황이다."""
+    if age_min is not None and age_min <= SAMPLER_STALE_MIN:
         return ""
     if not _cfg_bool(cfg().get("autoRestartSampler"), True):
         return "자동 재시작 꺼짐(config.autoRestartSampler)"
@@ -1021,7 +1046,8 @@ def sources(period=None):
         ("파일·Recent", ["files/files.csv", "files/recent.csv"], "config.watchFolders 를 실제 작업 폴더로"),
         ("git 커밋", ["files/git_commits.csv"], "config.gitRepos 설정 (선택)"),
         ("팀즈 채팅", ["m365/teams_*.csv"], r"상시 샘플러(collect\Start-TeamsSampler.ps1) 권장 · Copilot 경로는 커넥터 있는 테넌트만"),
-        ("창 샘플러", ["activity/activity_*.csv"], "collect\\Start-ActivitySampler.ps1 상시 가동 (선택)"),
+        ("창 샘플러", ["activity/activity_*.csv"],
+         "collect\\Register-Samplers.ps1 로 1회 등록하면 로그온 때마다 자동 시작 (선택 · 없으면 PC 가동 하한으로 계산)"),
         ("추가 PC", ["추가PC/*/outlook/mail.csv", "추가PC/*/files/files.csv",
                      "추가PC/*/pc/pc_on.csv", "추가PC/*/m365/teams_*.csv"],
          "폴더째 옮겨 [추가 PC 수집] → 본 PC 에서 [분석 실행] — 자동 합산 · 중복 자동 제외 (선택)"),
@@ -2539,10 +2565,15 @@ async function poll(){
   $("sb_last").textContent=s.last_run?`마지막 분석 ${s.last_run} (${s.last_tag})`:"분석 결과 없음";
   const sr=s.sampler_restart||{};
   const srTxt=(sr.when?` · ${sr.how==="skip"||sr.how==="error"?"재시작 보류":"재시작 시도"} ${esc(sr.when)}`:"")+(sr.note?` — ${esc(sr.note)}`:"");
+  // '꺼짐'(기록이 하나도 없음)일 때 예전에는 원인도 조치도 없이 같은 문장만 반복했다 — 무엇을 하면
+  // 되는지 적고, 자동 기동 시도 결과도 함께 보여 준다.
+  const tk=s.sampler_task;
+  const tkTxt=(tk===false)?' · 로그온 자동 시작 작업이 <b>등록돼 있지 않습니다</b>'
+             :((tk===true)?' · 등록 작업은 있습니다(정책·권한으로 안 돌 수 있음)':'');
   $("sb_sampler").innerHTML=(s.sampler_age_min==null)
-   ?'<span style="color:#e08a00">샘플러 꺼짐 — 투입시간 과소 집계 가능</span>'
+   ?`<span style="color:#e08a00" title="창 샘플러가 없으면 투입시간이 PC 가동 하한으로만 계산돼 과소 집계될 수 있습니다">샘플러 꺼짐 — 아직 기록이 하나도 없습니다${tkTxt}${srTxt}<br><span class="dim">켜기: 파워셸에서 <b>collect\\Register-Samplers.ps1</b> 실행(로그온 시 자동 시작·실행 시간 제한 없음). 이 화면이 10분에 한 번 자동 기동도 시도합니다.</span></span>`
    :(s.sampler_age_min<=10?'<span style="color:#4fc47f">샘플러 가동 중</span>'
-     :`<span style="color:#e08a00" title="마지막 샘플 ${esc(s.last_sample||"")} — 멈춘 날은 PC 하한 모드로 계산됩니다">샘플러 멈춤 (${s.sampler_age_min}분 전${s.last_sample?` · 마지막 샘플 ${esc(s.last_sample)}`:""})${srTxt}</span>`);
+     :`<span style="color:#e08a00" title="마지막 샘플 ${esc(s.last_sample||"")} — 멈춘 날은 PC 하한 모드로 계산됩니다">샘플러 멈춤 (${s.sampler_age_min}분 전${s.last_sample?` · 마지막 샘플 ${esc(s.last_sample)}`:""})${tkTxt}${srTxt}</span>`);
   $("go").disabled=s.running;
   $("stop").style.display=s.running?"":"none";
   $("state").textContent=s.running?"실행 중…":"대기 중";
@@ -3509,6 +3540,10 @@ class H(BaseHTTPRequestHandler):
             payload["sampler_age_min"] = age_min
             # A26 — 멈춤 판정·마지막 샘플 시각·자동 재기동 결과(10분에 1회 시도)
             payload["sampler_stale"] = bool(age_min is not None and age_min > SAMPLER_STALE_MIN)
+            # '꺼짐'(기록이 하나도 없음)과 '멈춤'(있는데 오래됨)은 조치가 다르다 — 화면이 구분해 말한다.
+            payload["sampler_never"] = age_min is None
+            payload["sampler_task"] = (_sampler_task_exists()
+                                       if (age_min is None or payload["sampler_stale"]) else None)
             payload["last_sample"] = (time.strftime("%Y-%m-%d %H:%M", time.localtime(last_ts))
                                       if last_ts else "")
             why = _sampler_autorestart(age_min)
