@@ -1192,7 +1192,11 @@ def trend(d0="", d1="", tag="", info=None):
         def key(dt):
             return idx.get(dt.isocalendar()[:2])
 
-    out = [{"label": lb, "pc_h": 0.0, "파일": 0, "메일": 0, "회의": 0, "커밋": 0, "팀즈": 0}
+    # pc_days/pc_wd = 그 버킷에서 'PC 기록이 있는 날' / '평일 수'. 기록이 없는 주를 0h 로 그리면
+    # 'PC 를 안 켠 주'와 구분되지 않는다(이벤트 로그 롤오버로 과거 주는 구조적으로 기록이 없다).
+    # raw_n = 상한·중복제거로 누르기 전의 원건수 — 막대와 실제 신호 수의 차이를 화면이 말할 수 있게.
+    out = [{"label": lb, "pc_h": 0.0, "파일": 0, "메일": 0, "회의": 0, "커밋": 0, "팀즈": 0,
+            "작업창": 0, "pc_days": 0, "pc_wd": 0, "raw_n": 0}
            for lb in buckets]
     if info is not None:
         info["src"] = "none"
@@ -1208,9 +1212,13 @@ def trend(d0="", d1="", tag="", info=None):
     # 수백 파일의 시각을 한 날로 몰면 그 달만 산처럼 솟는다(실측 제보 — 특정 달 몰림).
     # 파일류는 하루 상한 8건으로 눌러 센다(mine 의 '사람 손 하루 한 폴더 8건' 과 같은 눈금).
     # 메일·회의·커밋·팀즈는 사건 시각(발신·개최 시각)이라 그대로 센다.
+    # ★ '작업창' 이 이 표에 없어 기본값 '파일' 로 떨어지던 것이 실측 결함이었다. 신호는 시간순이라
+    #   아침 창 세션이 그날 파일 상한 8칸을 전부 차지하고, 오후에 실제로 만든 문서가 통째로 사라졌다
+    #   (창 샘플러를 켠 PC — 즉 분석을 돌리는 PC — 에서 항상 일어난다). 별도 계열로 뺀다.
     _SRC = (("메일", "메일"), ("mail", "메일"), ("회의", "회의"), ("일정", "회의"),
             ("cal", "회의"), ("커밋", "커밋"), ("git", "커밋"),
-            ("팀즈", "팀즈"), ("teams", "팀즈"))
+            ("팀즈", "팀즈"), ("teams", "팀즈"),
+            ("작업창", "작업창"), ("window", "작업창"))
     sp = os.path.join(REPORT, f"signals_{tag}.csv") if tag else latest_signals()
     n_sig = 0
     _fcap, _seen = {}, set()
@@ -1223,6 +1231,7 @@ def trend(d0="", d1="", tag="", info=None):
         # 변수명이 key 면 위쪽 버킷 함수 key() 를 가려 slot() 이 죽는다(실측)
         kind = next((v for k2, v in _SRC if k2.lower() in s), "파일")
         n_sig += 1                              # 상한 초과분도 '신호는 있었다'로 계상
+        out[i]["raw_n"] += 1                    # 이 버킷의 누르기 전 원건수(막대와의 차이를 화면이 말한다)
         if kind == "파일":
             _t = str(r.get("text") or "")[:120]
             if _t:                              # 빈 text 는 서로 다른 신호일 수 있다 — 안 묶는다
@@ -1260,6 +1269,8 @@ def trend(d0="", d1="", tag="", info=None):
 
     # PC 가동 시간 — 기간 안만. 본 PC + 추가PC 를 extract.pc_daily 로 합친다(구간 합집합 — 분석의 PC 하한과 같은 값).
     # 예전엔 본 PC 의 pc_on.csv 만 세어 추가 PC 의 가동이 이 선에서 통째로 빠졌다(제보: 'PC 가동시간 합산 안 됨').
+    pc_note = ""
+    pcd = {}
     try:
         import extract as _X
         pcd = _X.pc_daily(DATA, start, end)[0]
@@ -1267,18 +1278,43 @@ def trend(d0="", d1="", tag="", info=None):
             i = key(dd) if start <= dd <= end else None
             if i is not None:
                 out[i]["pc_h"] += float(on_h or 0)
-    except Exception:  # noqa: BLE001 — 병합 실패 시 예전 방식(본 PC 만)
+    except Exception as ex:  # noqa: BLE001 — 병합 실패 시 예전 방식(본 PC 만)
+        # 조용히 '본 PC 만' 으로 떨어지면 화면에는 아무 표시가 없어 원인을 못 찾는다(실측:
+        # csv.Error 가 extract 의 except OSError 를 통과해 여기까지 샌다). 이유를 남긴다.
+        pc_note = f"추가 PC 합산 실패({type(ex).__name__}) — 본 PC 기록만 표시합니다"
+        pcd = {}
         for r in _rows(os.path.join(DATA, "pc", "pc_on.csv")):
+            d2 = _d(r.get("date"))
             i = slot(r.get("date"))
             if i is not None:
                 try:
                     out[i]["pc_h"] += float(r.get("on_hours") or 0)
+                    if d2:
+                        pcd[d2] = True
                 except (TypeError, ValueError):
                     pass
+    # 버킷마다 '평일 수'와 'PC 기록이 있는 평일 수' — 기록 없음과 0h 를 화면이 구분하게.
+    dd = start
+    while dd <= end:
+        i = key(dd)
+        if i is not None and dd.weekday() < 5:
+            out[i]["pc_wd"] += 1
+            if dd in pcd:
+                out[i]["pc_days"] += 1
+        dd += timedelta(days=1)
     for w in out:
         w["pc_h"] = round(w["pc_h"], 1)
     if info is not None:
         info["src"] = "signals" if n_sig else "raw"
+        info["gran"] = "month" if monthly else "week"
+        info["pc_note"] = pc_note
+        # PC 기록이 있는 버킷 / 평일이 있는 버킷 — 화면이 "27주 중 16주만 기록" 처럼 말할 수 있게
+        info["pc_buckets"] = sum(1 for w in out if w["pc_days"] > 0)
+        info["pc_buckets_all"] = sum(1 for w in out if w["pc_wd"] > 0)
+        first_pc = next((d for d in sorted(pcd)), None)
+        info["pc_from"] = first_pc.isoformat() if first_pc else ""
+        info["capped"] = sum(max(0, w["raw_n"] - (w["파일"] + w["메일"] + w["회의"] + w["커밋"] + w["팀즈"] + w["작업창"]))
+                             for w in out)
     return out
 
 def review(gran="week"):
@@ -2433,7 +2469,8 @@ function donut(el,data,center,unit){
  el.innerHTML=s;
 }
 function weekly(el,tr){
- const keys=[["파일","#2a78d6"],["메일","#0e8c7a"],["회의","#e08a00"],["커밋","#6c4fb8"],["팀즈","#4a7f9e"]];
+ // '작업창' 은 예전에 '파일' 로 뭉쳐 들어가 하루 8건 상한을 다 먹고 실제 문서를 밀어냈다 — 별도 계열.
+ const keys=[["파일","#2a78d6"],["작업창","#7a8a99"],["메일","#0e8c7a"],["회의","#e08a00"],["커밋","#6c4fb8"],["팀즈","#4a7f9e"]];
  const W=740,H=180,L=34,Rm=38,B=26,T=12,iw=(W-L-Rm)/tr.length;
  const cmax=Math.max(...tr.map(w=>keys.reduce((a,[k])=>a+w[k],0)),1);
  const hmax=Math.max(...tr.map(w=>w.pc_h),1);
@@ -2448,12 +2485,22 @@ function weekly(el,tr){
    s+=`<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" fill="${c}" rx="1"><title>${w.label} ${k} ${w[k]}건</title></rect>`;}});
   if(i%2===0)s+=`<text x="${(x+bw/2).toFixed(1)}" y="${H-B+13}" text-anchor="middle" style="font-size:9px;fill:#8b929b">${w.label}</text>`;
  });
- const pts=tr.map((w,i)=>`${(L+i*iw+iw/2).toFixed(1)},${(H-B-(H-T-B)*w.pc_h/hmax).toFixed(1)}`).join(" ");
- s+=`<polyline points="${pts}" fill="none" stroke="#c8a06a" stroke-width="2"/>`;
- tr.forEach((w,i)=>{if(w.pc_h>0)s+=`<circle cx="${(L+i*iw+iw/2).toFixed(1)}" cy="${(H-B-(H-T-B)*w.pc_h/hmax).toFixed(1)}" r="2.6" fill="#c8a06a"><title>${w.label} PC ${w.pc_h}h</title></circle>`;});
+ // PC 기록이 없는 버킷은 0h 가 아니라 '모름' 이다(이벤트 로그가 롤오버되면 과거 주는 구조적으로 기록이 없다).
+ // 예전에는 0 으로 그려 선이 바닥에 붙어 'PC 가동이 적용 안 된다'로 읽혔다 — 선을 끊고 회색 밴드로 칠한다.
+ const has=w=>(w.pc_wd===undefined)?(w.pc_h>0):(w.pc_days>0);
+ tr.forEach((w,i)=>{if(w.pc_wd!==undefined&&!has(w))
+  s+=`<rect x="${(L+i*iw).toFixed(1)}" y="${T}" width="${iw.toFixed(1)}" height="${(H-T-B).toFixed(1)}" fill="#f2f3f5"><title>${w.label} PC 기록 없음 (평일 ${w.pc_wd}일 중 0일) — 0시간이 아니라 기록이 없는 구간입니다</title></rect>`;});
+ let seg=[];
+ const flush=()=>{if(seg.length>1)s+=`<polyline points="${seg.join(" ")}" fill="none" stroke="#c8a06a" stroke-width="2"/>`;seg=[];};
+ tr.forEach((w,i)=>{if(has(w))seg.push(`${(L+i*iw+iw/2).toFixed(1)},${(H-B-(H-T-B)*w.pc_h/hmax).toFixed(1)}`);else flush();});
+ flush();
+ tr.forEach((w,i)=>{if(has(w)){
+  const part=(w.pc_wd!==undefined&&w.pc_days<w.pc_wd);
+  s+=`<circle cx="${(L+i*iw+iw/2).toFixed(1)}" cy="${(H-B-(H-T-B)*w.pc_h/hmax).toFixed(1)}" r="2.6" fill="${part?"#fff":"#c8a06a"}" stroke="#c8a06a" stroke-width="${part?1.4:0}"><title>${w.label} PC ${w.pc_h}h${w.pc_wd!==undefined?` · 기록 ${w.pc_days}/${w.pc_wd}평일`:""}</title></circle>`;}});
  el.innerHTML=s+"</svg>";
  $("wleg").innerHTML=keys.map(([k,c])=>`<span><span class="dot" style="background:${c}"></span>${k}</span>`).join("")+
-  '<span><span class="dot" style="background:#c8a06a"></span>PC 가동(h)</span>';
+  '<span><span class="dot" style="background:#c8a06a"></span>PC 가동(h·오른쪽 축)</span>'+
+  '<span><span class="dot" style="background:#f2f3f5;border:1px solid #d7dbe0"></span>PC 기록 없음</span>';
 }
 // 409 의 사유(hint)를 그대로 보여 준다 — '이미 실행 중' 한 마디로는 보고서 굽는 중인지 알 수 없다
 async function busyMsg(r,dflt){let h="";try{h=(await r.json()).hint||"";}catch(e){}return h||dflt;}
@@ -2682,6 +2729,15 @@ async function refresh(){
   // 추이가 수집 raw 로 그려진 화면(판정 신호가 없음 — 수집만 한 추가 PC·분석 전) — 서버가 실제로 무엇을 셌는지(trend_src)로 판단한다
   if(d.trend_src==="raw"&&d.period&&d.period[0]) notes.push(`판정에 쓰인 신호가 없어 수집 raw 를 <b>${esc(d.period[0])} ~ ${esc(d.period[1]||"")}</b> 기간으로 그렸습니다 — AI 정제를 켠 [분석 실행] 뒤에는 판정 신호 기준으로 바뀝니다.`);
   if(mc&&(mc.uncovered||[]).length) notes.push(`⚠ 메일·회의 막대는 ${mc.months}개월 중 <b>${(mc.covered||[]).length}개월</b>만 수집돼 있습니다 — 미수집 ${esc(mc.uncovered.join(", "))} (Outlook 시간 예산). [분석 실행]을 다시 돌리면 남은 달을 이어서 읽습니다.`);
+  // PC 가동 선은 Windows 이벤트 로그에서 온다. 로그는 롤오버되므로 기간 앞쪽은 '0시간' 이 아니라
+  // '기록 없음' 이다 — 그것을 말해 주지 않으면 'PC 가동이 적용 안 된다'로 읽힌다(제보).
+  const ti=d.trend_info||{};const unit=ti.gran==="month"?"개월":"주";
+  if(ti.pc_buckets_all&&ti.pc_buckets<ti.pc_buckets_all)
+   notes.push(`PC 가동 선은 ${ti.pc_buckets_all}${unit} 중 <b>${ti.pc_buckets}${unit}</b>만 기록이 있습니다`
+    +(ti.pc_from?` — Windows 이벤트 로그가 <b>${esc(ti.pc_from)}</b> 까지만 남아 있어 그 앞은 <b>0시간이 아니라 기록 없음</b>입니다(회색 구간).`:` — 회색 구간은 0시간이 아니라 기록이 없는 구간입니다.`));
+  if(ti.pc_note) notes.push(`⚠ ${esc(ti.pc_note)}`);
+  if(ti.capped>0) notes.push(`파일 막대는 하루 8건까지만 셉니다 — 이 기간에 <b>${ti.capped.toLocaleString()}건</b>이 상한에 눌렸습니다(공유폴더 재동기화가 그래프를 지배하지 않게 하는 장치입니다. 실제 신호 수는 [업무 리뷰] 탭에서 봅니다).`);
+  if(ti.gran==="month") notes.push(`기간이 길어 <b>월 단위</b>로 묶어 그렸습니다(막대 하나 = 한 달).`);
   if(notes.length){wn.style.display="";wn.innerHTML=notes.join("<br>");}
   else wn.style.display="none";}
  // 같은 시각에 몰린 덩어리가 있으면 알린다 — 그날 일한 것이 아닐 수 있다
@@ -3513,6 +3569,10 @@ class H(BaseHTTPRequestHandler):
                              "trend": tr,
                              # 추이가 무엇을 셌는지 — signals(판정 신호) / raw(수집 raw 폴백) / none. 화면 안내가 이 값을 본다
                              "trend_src": tinfo.get("src", ""),
+                             # 추이 밑 안내 재료 — PC 기록이 있는 버킷/전체, 기록 시작일, 상한에 눌린 건수,
+                             # 주/월 단위, 추가PC 합산 실패 사유. 화면이 '0h' 와 '기록 없음' 을 구분해 말한다.
+                             "trend_info": {k: tinfo.get(k) for k in
+                                            ("gran", "pc_note", "pc_buckets", "pc_buckets_all", "pc_from", "capped")},
                              "period": per,
                              "judged": judged, "last_run": lastrun,
                              # 판정 건수/대상 — 0 이면 '단계는 성공인데 왕복이 전부 실패' 를 화면이 구분한다

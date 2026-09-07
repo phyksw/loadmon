@@ -99,9 +99,13 @@ def rows_path(tag, rep=None):
     return plain if os.path.exists(plain) else (ref if os.path.exists(ref) else plain)
 
 
-def read_rows(tag, rep=None):
-    """mm_rows(정제본 우선) → (행 목록, 파일명). 각 행에 _mm(float) 을 붙인다."""
-    p = rows_path(tag, rep)
+def read_rows(tag, rep=None, plain=False):
+    """mm_rows(정제본 우선) → (행 목록, 파일명). 각 행에 _mm(float) 을 붙인다.
+
+    plain=True 면 정제본을 건너뛰고 원본 mm_rows_<tag>.csv 만 읽는다 — 신호(signals)와 **같은 이름 축**이
+    필요한 곳(워크플로우 MM 조회)에서 쓴다. 정제본은 refine 이 이름을 합치고 바꾸므로
+    (예: '판정엔진'·'검증' → '판정엔진 고도화 및 검증') 신호 축 키로 찾으면 하나도 안 맞는다(실측)."""
+    p = os.path.join(rep or REPORT, f"mm_rows_{tag}.csv") if plain else rows_path(tag, rep)
     try:
         with open(p, encoding="utf-8-sig", errors="replace") as f:
             rows = list(csv.DictReader(f))

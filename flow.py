@@ -93,8 +93,30 @@ def _spread(lst, n):
     return [lst[round(i * step)] for i in range(n)]
 
 
+ETC_DETAIL = "기타 담당업무"      # 신호가 적어 따로 세우지 못한 것들을 과제 안에서 모으는 자리
+
+
 def unit_key(md, dt):
     return f"{md}{KEY_JOIN}{dt}"
+
+
+def _refine_orig(tag, rep=None):
+    r"""report\refine_map_<tag>.json → {"정제L2/정제L3": [(원본L2, 원본L3), …]}. 없으면 빈 dict."""
+    import json
+    p = os.path.join(rep or details.REPORT, f"refine_map_{tag}.json")
+    try:
+        with open(p, encoding="utf-8-sig") as f:
+            o = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    mp = o.get("map") if isinstance(o, dict) else None
+    out = {}
+    for k, v in (mp.items() if isinstance(mp, dict) else []):
+        pairs = [(str(it[0] or "").strip(), str(it[1] or "").strip())
+                 for it in (v if isinstance(v, list) else []) if isinstance(it, (list, tuple)) and len(it) >= 2]
+        if pairs:
+            out[str(k).strip()] = pairs
+    return out
 
 
 # ── 재료 (보완2.wf_materials 이식) ────────────────────────────────────────
@@ -112,7 +134,11 @@ def gather(rep, tag, amap=None):
         basis = "규칙"
     else:
         return [], "", f"signals_{tag}.csv 에 판정(model)·규칙(project) 열이 모두 없습니다"
-    rows, _fn = details.read_rows(tag, rep)
+    # ★ MM 은 **판정 축**(원본 mm_rows)에서 읽는다. 예전에는 정제본을 우선해서 읽었는데, refine 이
+    #   이름을 합치고 바꾸므로 신호(signals)의 (과제, 담당업무) 키와 하나도 맞지 않아 **모든 단위의 MM 이
+    #   0.0** 으로 나왔다(실데이터 실측: 12/12 단위 0.0, 원본으로 바꾸면 합 0.339 로 정상 복구).
+    #   MM 총량을 다시 계산하는 것이 아니라 '조회 축'만 바로잡는 것이라 로드율에는 영향이 없다.
+    rows, _fn = details.read_rows(tag, rep, plain=True)
     if amap:
         details.apply_detail_map(rows, sigs, amap)
     mm_by, desc_by = {}, {}
@@ -123,6 +149,22 @@ def gather(rep, tag, amap=None):
         d = " ".join((r.get("상세설명") or "").split())
         if d:
             desc_by.setdefault(k, d[:120])
+    # 정제 상세설명은 정제본에만 있다 — refine_map 으로 원본 이름에 되짚어 얹는다(설명이라 중복은 무해).
+    # MM 은 여기서 손대지 않는다: 정제 행 하나가 원본 여럿에서 왔을 때 원본마다 같은 MM 을 붙이면 총량이 부푼다.
+    try:
+        rrows, _rfn = details.read_rows(tag, rep)
+        if _rfn and _rfn.endswith("_refined.csv"):
+            rmap = _refine_orig(tag, rep)
+            for r in rrows:
+                d = " ".join((r.get("상세설명") or "").split())
+                if not d:
+                    continue
+                l2 = (r.get("Level 2") or "").strip()
+                l3 = (r.get("Level 3") or "").strip()
+                for (o2, o3) in rmap.get(f"{l2}/{l3}", []) or [(l2, l3)]:
+                    desc_by.setdefault((fold(o2 or "공통"), fold(o3 or "기타")), d[:120])
+    except Exception:  # noqa: BLE001 - 설명이 없어도 워크플로우는 나와야 한다
+        pass
 
     groups = {}
     for s in sigs:
@@ -133,6 +175,16 @@ def gather(rep, tag, amap=None):
             continue
         groups.setdefault((md or "공통", dt or "기타"), []).append(s)
 
+    # 문턱 미달 단위를 그냥 버리면 그 신호가 화면에서 통째로 사라진다(실측: 16조합·신호 19건=12% 유실).
+    # 같은 과제의 '기타 담당업무' 로 모아 둔다 — 판정 행을 다시 쓰지 않으므로 MM 총량은 그대로다.
+    small = {}
+    for (md, dt), ss in list(groups.items()):
+        if len(ss) < MIN_SIGNALS:
+            small.setdefault(md, []).extend(ss)
+            del groups[(md, dt)]
+    for md, ss in small.items():
+        if len(ss) >= MIN_SIGNALS:
+            groups[(md, ETC_DETAIL)] = groups.get((md, ETC_DETAIL), []) + ss
     out = []
     for (md, dt), ss in groups.items():
         if len(ss) < MIN_SIGNALS:
