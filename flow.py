@@ -67,6 +67,7 @@ def _chat_note():
         return ""
     return " — 설정 chatTurns=0: 묶음마다 새 채팅" if n <= 0 else f" · 첫 왕복·실패 뒤·{n}회마다 새 채팅"
 MIN_SIGNALS = 3                 # 이보다 적은 신호는 흐름이라 할 수 없다
+FINISH_ROUNDS = 2               # 미판정으로 남은 단위를 자동으로 마저 묻는 회차(0 이면 안 한다)
 SAMPLE_N = 14                   # 단위당 시간순 표본 수
 MAX_UNITS_PER_CHUNK = 6         # 묶음당 단위 상한 — 답 길이(단위당 ≈1,100자)를 잘리지 않는 범위로
 MAX_CHUNKS = 40                 # 한 실행의 묶음 상한 — 초과분은 다음 실행이 missing 을 보고 이어서
@@ -153,6 +154,7 @@ def gather(rep, tag, amap=None):
     # 정제 상세설명은 정제본에만 있다 — refine_map 으로 원본 이름에 되짚어 얹는다(설명이라 중복은 무해).
     # MM 은 여기서 손대지 않는다: 정제 행 하나가 원본 여럿에서 왔을 때 원본마다 같은 MM 을 붙이면 총량이 부푼다.
     # 상위(Level 1)는 판정 단계에서 빈칸이고 정제 단계만 채운다 — 정제본에서 원본 이름 축으로 되짚어 온다.
+    parts_by, dsc_by = {}, {}   # 과제 축 — 세부업무 MM 배분 / 정제 설명(아래 두 루프가 함께 채운다)
     l1_w = {}          # fold(과제) → {상위: mm 합}  (가장 무거운 상위를 그 과제의 상위로 본다)
     try:
         rrows, _rfn = details.read_rows(tag, rep)
@@ -167,6 +169,9 @@ def gather(rep, tag, amap=None):
                 for (o2, o3) in pairs:
                     if d:
                         desc_by.setdefault((fold(o2 or "공통"), fold(o3 or "기타")), d[:120])
+                        # 과제 단위 카드도 정제 설명을 받아야 한다 — 판정 축(원본 mm_rows)의 상세설명은
+                        # 비어 있으므로, 여기서 과제 축으로도 모아 두지 않으면 0줄이 나간다(실측).
+                        dsc_by.setdefault(fold(o2 or "공통"), []).append(f"{o3}: {d[:80]}")
                     if l1:
                         # 정제 행 하나가 원본 여럿에서 왔으면 MM 을 나눠 싣는다(총량이 부풀지 않게)
                         w = r["_mm"] / max(1, len(pairs))
@@ -176,7 +181,6 @@ def gather(rep, tag, amap=None):
         pass
 
     # 과제 안의 세부업무 MM 배분 — 과제 단위 카드가 LM20 처럼 '무엇에 얼마' 를 보여 주는 재료.
-    parts_by, dsc_by = {}, {}
     for r in rows:
         l2 = (r.get("Level 2") or "").strip() or "공통"
         l3 = (r.get("Level 3") or "").strip() or "기타"
@@ -186,6 +190,21 @@ def gather(rep, tag, amap=None):
         d = " ".join((r.get("상세설명") or "").split())
         if d:
             dsc_by.setdefault(f2, []).append(f"{l3}: {d[:80]}")
+
+    # 요청→산출 페어(에피소드) — pivots 가 만든 '무엇이 요청돼 무엇으로 끝났고 리드타임이 얼마인가'.
+    # 흐름을 잇는 핵심 재료인데 LM22 에서 통째로 빠져 있었다(모델이 시간순 나열만 보고 순서를 지어냈다).
+    eps_by = {}
+    try:
+        with open(os.path.join(rep, f"pivots_{tag}.json"), encoding="utf-8-sig") as f:
+            _pv = json.load(f)
+        for od in ((_pv.get("episodes") or {}).get("orders") or []):
+            if not isinstance(od, dict):
+                continue
+            eps_by.setdefault(fold(od.get("model") or ""), []).append(
+                f"요청 '{str(od.get('req') or '')[:50]}' → 산출 '{str(od.get('done') or '')[:50]}'"
+                + (f" (리드 {od.get('lead_h')}h)" if od.get("lead_h") is not None else ""))
+    except (OSError, ValueError, AttributeError):
+        pass
 
     unit = workflow_unit()
     groups = {}
@@ -235,7 +254,8 @@ def gather(rep, tag, amap=None):
         g1 = l1_w.get(f2) or {}
         level1 = max(g1.items(), key=lambda kv: kv[1])[0] if g1 else ""
         out.append({"model": md, "detail": dt, "key": unit_key(md, dt), "signals": len(ss),
-                    "level1": level1, "mm": mm, "desc": desc, "parts": parts, "evidence": ev})
+                    "level1": level1, "mm": mm, "desc": desc, "parts": parts,
+                    "episodes": (eps_by.get(f2) or [])[:5], "evidence": ev})
     if not out:
         return [], basis, (f"흐름을 만들 단위가 없습니다 (단위 {len(groups)}개 · 신호 {len(sigs)}건)")
     # 상위(업무 성격)로 먼저 묶고 그 안에서 무거운 순 — LM20 처럼 상위 단위로도 읽히게 한다.
@@ -251,22 +271,29 @@ def build_prompt(mats):
     by_task = not any(m.get("detail") for m in mats)
     unit_word = "과제" if by_task else "담당 업무"
     lines = [
-        f"당신은 업무 프로세스 분석가입니다. 아래는 한 담당자의 **{unit_word}별** 활동 흔적입니다",
-        f"({unit_word} 단위, 시간순 신호 표본).",
+        f"당신은 업무 프로세스 분석가입니다. 아래는 한 엔지니어의 {unit_word}별 실제 활동 흔적입니다",
+        "(시간순 raw 신호 표본, 요청→산출 페어, AI 가 정제한 세부업무 설명).",
         "",
-        f"{unit_word}마다 판정하세요 — 반드시 아래 근거에서 관찰되는 것만, 지어내지 말 것:",
-        f"1. role  — 이 {unit_word}에서 이 사람의 역할 한 줄. 근거가 약하면 '판단 유보'.",
-        f"2. steps — 그 {unit_word}가 실제로 흘러간 순서 3~6단계. 각 단계:",
-        "   name(단계명) · desc(1문장) · evidence(근거 조각 하나) · cycle(주기) ·",
-        "   agent(상|중|하: Agentic AI 대체 가능성 — 상=정형 반복 자동화 가능 / 중=보조 가능 /",
-        "   하=판단·협상·책임) · agent_how(무슨 데이터를 입력받아 무엇을 자동으로 하는지 1문장).",
+        f"{unit_word}마다 세 가지를 판정하세요 — 반드시 아래 근거에서 관찰되는 것만, 지어내지 말 것:",
+        f"1. role — 이 {unit_word}에서 이 사람의 역할 한 줄.",
+        "   (예: '해석 실무 담당 — 요청을 받아 시뮬레이션을 돌리고 결과를 회신',",
+        "        '조율 주도 — 회의를 소집하고 분담을 정해 전달') 근거가 약하면 '판단 유보'.",
+        "2. steps — 일이 실제로 흘러간 **순서**. 시간순 신호와 요청→산출 페어에서 반복되는",
+        "   흐름을 읽어 3~7단계로. 각 단계: name(단계명) · desc(무슨 일을 했는지 1문장) ·",
+        "   evidence(근거가 된 신호 원문 조각 하나) · cycle(반복 주기: 매일/주 1회/수시 등).",
         f"   ★ **다른 {unit_word}의 일을 이 흐름에 섞지 마세요.** 한 흐름은 그 안에서만 이어집니다.",
-        f"3. summary — 그 {unit_word}에서 실제로 한 일 2문장.",
+        "3. 각 단계의 agent — Agentic AI 가 그 단계를 대체·보조할 가능성:",
+        "   '상'(정형 반복 — 지금 기술로 자동화 가능) / '중'(보조 가능 — 사람 확인 필요) /",
+        "   '하'(판단·협상·책임 — 사람 몫). agent_how 에 구체 방안 1문장",
+        "   (무슨 데이터를 입력받아 무엇을 자동으로 하는지).",
+        "",
+        f"summary — 이 {unit_word}에서 실제로 한 일 2문장 요약.",
         "",
         "출력은 JSON 하나만 (설명 문장 금지). <...> 자리에 실제 값을 넣으세요:",
         # 자리표시자를 <...> 로 둬 **이 예시 자체가 유효한 JSON 이 아니게** 한다 —
         # 회수가 어긋나 우리 프롬프트가 되돌아와도 이것이 답으로 파싱되지 않는다(실측 사고).
         '{"flows": [ {"key": <아래 목록의 머리말 이름을 그대로>, "role": <한 줄>,',
+        # LM20 은 3~7단계였다. 상한을 6 으로 줄이면 긴 흐름이 잘려 '생략된' 것처럼 보인다.
         '   "summary": <2문장>, "steps": [ {"order": 1, "name": <단계명>, "desc": <1문장>,',
         '     "evidence": <근거 조각>, "cycle": <주기>, "agent": <상|중|하>,',
         '     "agent_how": <방안 1문장>} ]} ]}',
@@ -275,11 +302,15 @@ def build_prompt(mats):
     for m in mats:
         lines.append(f"## {m['key']}  (신호 {m['signals']}건)"
                      + (f"  [상위: {m['level1']}]" if m.get("level1") else ""))
+        for e in (m.get("episodes") or []):
+            lines.append(f"[요청→산출] {e}")
         if m.get("parts"):
             # 과제 단위일 때 그 안의 세부업무 배분을 알려 준다 — 단계를 나눌 재료가 된다(LM20 과 같은 정보량)
             lines.append("[세부업무] " + " · ".join(f"{n} {v}MM" for n, v in m["parts"]))
         if m.get("desc"):
             lines.append(f"[정제 설명] {m['desc']}")
+        if m.get("evidence"):
+            lines.append("[시간순 신호 표본]")
         lines += m["evidence"]
         lines.append("")
     return "\n".join(lines)
@@ -699,7 +730,9 @@ def main():
                "missing": missing[:200], "missing_count": len(missing), "dropped": dropped[:20],
                "partial": bool(missing),
                "note": ("" if not missing else
-                        f"{len(missing)}개 업무 미판정 — " + (stopped or "다시 실행(재분석)하면 남은 업무만 이어서 판정합니다")),
+                        f"{len(missing)}개 업무 미판정 — "
+                        + (stopped or f"자동 마무리 {FINISH_ROUNDS}회를 돌리고도 남았습니다 — "
+                                      "다시 실행하면 남은 업무만 이어서 판정합니다")),
                "last_error": ({"error": why, "hint": how} if why else {}),
                "merge": {"rule": n_rule, "ai": n_ai, "aliases": len(amap or {})},
                "rows_units": len(mats)}
@@ -782,6 +815,34 @@ def main():
             print(f"[flow] {consec}묶음 연속 실패 — 남은 {len(chunks) - ci}묶음은 보내지 않습니다 "
                   "(잠시 뒤 재실행하면 남은 업무만 이어서 판정합니다)")
             break
+    # ③-2 미판정 자동 마무리 — 사람이 [재분석]을 다시 누르지 않아도 남은 단위를 마저 묻는다.
+    # 묶음이 통째로 실패했거나 답에서 빠진 단위가 남는 일이 흔하다(응답 잘림·이름 불일치).
+    # 사람이 손대야 풀리는 상태(stopped)면 헛되이 보내지 않는다.
+    if not stopped:
+        for rnd in range(1, FINISH_ROUNDS + 1):
+            left = [m for m in mats if m["key"] not in {f["model"] for f in flows}]
+            if not left:
+                break
+            # 남은 것은 작게 나눠 묻는다 — 한 번에 몰아 물으면 답이 잘려 또 빠진다
+            sub_chunks = _chunks(left, budget, max(1, min(3, _cfg_int("flowUnitsPerChunk", MAX_UNITS_PER_CHUNK))))
+            print(f"[flow] 미판정 {len(left)}개를 자동으로 마저 판정합니다 "
+                  f"({rnd}/{FINISH_ROUNDS}회차 · {len(sub_chunks)}묶음)")
+            before = len(flows)
+            for si, sub in enumerate(sub_chunks, 1):
+                got3, info3 = ask(sub, f"wf-fin{rnd}-{si}")
+                if info3.get("ok"):
+                    flows.extend(got3)
+                    print(f"[flow] 마무리 {rnd}-{si} — 업무 {len(sub)}개 중 {len(got3)}개 판정")
+                else:
+                    fails.append(info3)
+                    print(f"[flow] 마무리 {rnd}-{si} 실패: {info3.get('error', '')[:80]}")
+                    if info3.get("fatal"):
+                        stopped = f"{info3.get('error', '')} — {info3.get('hint', '')}".strip(" —")
+                        break
+                write_out()
+            if stopped or len(flows) == before:
+                # 한 회차를 다 돌았는데 하나도 못 늘렸으면 더 보내도 같은 결과다
+                break
     progress("워크플로우 분석", len(chunks), len(chunks))
 
     # ④ 결과 — 없으면 기존 workflow_<tag>.json 보존
