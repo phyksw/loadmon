@@ -8,8 +8,8 @@ LoadMonitor22.bat                                      3,155 B  c2712f04
 LoadMonitor22-팀취합.bat                                  1,948 B  58bbfe88
 LoadMonitor22-팀서버.bat                                  1,612 B  fc6fa8d5
 LoadMonitor22-팀업로드.bat                                 1,713 B  e172dc7d
-LoadMonitor22-수집진단.bat                                   500 B  a6016c76
-LoadMonitor22-이동준비.bat                                 1,345 B  d97486f0
+LoadMonitor22-수집진단.bat                                   849 B  e2ad3db7
+LoadMonitor22-이동준비.bat                                 1,312 B  779f6f71
 agentic.py                                            41,104 B  d02f2fc1
 freeze.py                                             48,124 B  78dab3b1
 team_report.py                                       160,115 B  a05ea2f6
@@ -65,6 +65,6 @@ tools/Get-EmbeddedPython.ps1                           2,472 B  e8ce528c
 tools/check_page_js.py                                 8,818 B  f6d3b95b
 tools/lint.ps1                                         7,914 B  16140924
 tools/Make-Package.ps1                                10,733 B  f6623295
-tools/Prepare-Move.ps1                                 9,944 B  5f789031
+tools/Prepare-Move.ps1                                17,286 B  cb791769
 tools/update_files.py                                  4,530 B  46a81ea6
 ui/app.py                                            309,897 B  4f27982b

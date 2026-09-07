@@ -2,12 +2,10 @@
 >nul chcp 949
 cd /d "%~dp0"
 title LoadMonitor22 - PC 이동 준비
+rem 여기서 찍는 글자는 바로 아래 start 뒤 exit 로 이 창이 닫혀 읽히기 전에 사라진다(감사 확정).
+rem 안내는 새로 뜨는 '정리 창'이 전부 다시 찍으므로 여기서는 한 줄만 남긴다.
 echo.
-echo  [PC 이동 준비] 이 폴더를 다른 PC 로 옮길 수 있게 정리합니다.
-echo.
-echo   - 대시보드, 팀 서버, Copilot 전용 Edge, 상시 샘플러를 종료합니다
-echo   - 그런 다음 폴더를 옮길 수 있는지 실제로 확인합니다
-echo   - 수집한 데이터와 분석 결과는 그대로 둡니다 (지우지 않습니다)
+echo  [PC 이동 준비] 정리 창을 엽니다...
 echo.
 if not exist "tools\Prepare-Move.ps1" (
   echo  [!] tools\Prepare-Move.ps1 이 없습니다 - FILES.txt 목록대로 복사됐는지 확인하세요.
@@ -23,5 +21,5 @@ set "LM_ROOT=%LM_ROOT:~0,-1%"
 rem 새 창은 이 폴더 밖(TEMP)에서 띄운다 - cd /d "%%~dp0" 상태로 start 하면 powershell 이 이 폴더를 cwd 로 물려받아
 rem 자기 자신이 폴더를 잡은 채 "다른 프로세스가 사용 중" 으로 이동 확인이 항상 실패했다(실측).
 cd /d "%TEMP%"
-start "" powershell -NoProfile -ExecutionPolicy Bypass -File "%TEMP%\LM22-Prepare-Move.ps1" -Root "%LM_ROOT%"
+start "LoadMonitor22 - PC 이동 준비" powershell -NoProfile -ExecutionPolicy Bypass -File "%TEMP%\LM22-Prepare-Move.ps1" -Root "%LM_ROOT%"
 exit
