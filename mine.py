@@ -291,7 +291,7 @@ def main():
                    "config_warnings": cfg_warns,
                    "worked_h": round(sum(day_hours.values()), 1),
                    "measure": hinfo.get("measure"), "coverage": hinfo.get("coverage"),
-                   "cfg_used": hinfo.get("cfg_used"),
+                   "cfg_used": hinfo.get("cfg_used"), "tool_usage": hinfo.get("tool_usage"),
                    "mm_basis": hinfo,
                    "day_hours": {k.isoformat(): round(v, 2) for k, v in day_hours.items()}},
                   f, ensure_ascii=False, indent=1)

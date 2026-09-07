@@ -1199,13 +1199,26 @@ def member_report(mdir, member, out_dir):
     # D5 — 측정 방식·신뢰도(member.json 우선, 없으면 올라온 mm_meta 의 measure/coverage)
     ag9 = _agg()
     m9 = dict(member)
-    for k9 in ("measure", "coverage", "cfg_used"):
+    for k9 in ("measure", "coverage", "cfg_used", "tool_usage"):
         if not isinstance(m9.get(k9), dict):
             v9 = meta.get(k9) if isinstance(meta.get(k9), dict) else (meta.get("mm_basis") or {}).get(k9)
             if isinstance(v9, dict):
                 m9[k9] = v9
     m9["measure"] = ag9.norm_measure(m9.get("measure"))
     m9["coverage"] = ag9.norm_coverage(m9.get("coverage"))
+    # 프로그램 사용(참고) — 로드율과 무관하다는 것을 문구로 못 박는다(맨 앞 창 시간이라 투입 시간과 다르다)
+    _tu9 = ag9.norm_tool_usage(m9.get("tool_usage")) or {}
+    _tp9 = [x for x in (_tu9.get("programs") or []) if isinstance(x, dict) and x.get("name")]
+    tool_note = ("<div class='note'><b>프로그램 사용(참고)</b> "
+                 + " · ".join(f"{esc(x['name'])} "
+                                + (f"배경 {_fnum(x.get('bg_hours'), 0.0):.0f}h"
+                                   if _fnum(x.get("hours"), 0.0) < 0.05
+                                   else f"{_fnum(x.get('hours'), 0.0):.1f}h")
+                                for x in _tp9[:8])
+                 + (f" · 배경 솔버 {_fnum(_tu9.get('solver_bg_h'), 0.0):.0f}h"
+                    if _fnum(_tu9.get("solver_bg_h"), 0.0) >= 1 else "")
+                 + " <span class='dim'>— 창 샘플러가 본 맨 앞 창 시간입니다. 투입 MM·로드율에는 들어가지 않습니다.</span>"
+                 + "</div>") if _tp9 else ""
     meas_txt = ag9.measure_text(m9)
     meas_txt = f" · 측정 {meas_txt}" if meas_txt else ""
     cov_badge = ag9.coverage_badge(m9)
@@ -1372,7 +1385,7 @@ margin:1px 3px 1px 0;font-size:10.5px;color:#3d444c}}
 </div>
 
 <div class="card"><h2>1. 프로젝트 내 업무 로드 <span class="state">과제별 MM 배분</span></h2>
-{pj_bar or '<div class="note">표시할 배분이 없습니다</div>'}</div>
+{pj_bar or '<div class="note">표시할 배분이 없습니다</div>'}{tool_note}</div>
 
 <div class="card"><h2>2. 업무별 상세 <span class="state">MM 순</span></h2>
 <div style="overflow-x:auto"><table><tr><th style="width:70px">Level 1</th>
@@ -2393,6 +2406,61 @@ def render_full(share, html_dir, sender=None, log=say):
     # 값은 업로드로 들어온 남의 입력 — 숫자는 숫자로만(fnum/pct_text), 문자열은 esc 를 거친다
     vmax = max([_fnum(m.get("total_mm"), 0.0) for m in members_cmp] or [1]) or 1
 
+    def _prog_section():
+        """11. 프로그램 사용 — 상용/비상용 도구를 누가 얼마나 붙잡고 있었나(참고 지표).
+
+        ★ 로드율·MM 과 무관하다. 창 샘플러가 본 '맨 앞 창' 시간이라 투입 시간과 다른 값이고,
+          샘플러를 안 돌리는 사람은 0 으로 나온다 — 그 사람이 도구를 안 썼다는 뜻이 아니다.
+          그래서 '샘플러 없음' 인원을 따로 적어 빈칸을 사람 차이로 읽지 않게 한다."""
+        have, none = [], []
+        for m in members:
+            tu = m.get("tool_usage")
+            if isinstance(tu, dict) and (tu.get("programs") or tu.get("total_h")):
+                have.append((m, tu))
+            else:
+                none.append(m["owner"])
+        if not have:
+            return ""
+        tot, kind_tot = {}, {}
+        for _m, tu in have:
+            for pr in (tu.get("programs") or []):
+                if not isinstance(pr, dict) or not pr.get("name"):
+                    continue
+                t = tot.setdefault(pr["name"], {"h": 0.0, "bg": 0.0, "who": set(),
+                                                "kind": pr.get("kind", ""), "cat": pr.get("cat", "")})
+                t["h"] += _fnum(pr.get("hours"), 0.0)
+                t["bg"] += _fnum(pr.get("bg_hours"), 0.0)
+                t["who"].add(_m["owner"])
+            for kk, vv in (tu.get("by_kind") or []):
+                kind_tot[kk] = kind_tot.get(kk, 0.0) + _fnum(vv, 0.0)
+        rows = "".join(
+            f"<tr><td><b>{esc(nm)}</b></td><td class='dim'>{esc(v['cat'])}</td>"
+            f"<td class='dim'>{esc(v['kind'])}</td>"
+            f"<td class='num'>{v['h']:.1f}h</td>"
+            f"<td class='num dim'>{v['bg']:.0f}h</td>"
+            f"<td class='dim'>{len(v['who'])}명 — {esc(', '.join(sorted(v['who'])[:6]))}</td></tr>"
+            for nm, v in sorted(tot.items(), key=lambda x: -(x[1]["h"] + x[1]["bg"]))[:25])
+        kindline = " · ".join(f"{esc(k)} {v:.0f}h" for k, v in
+                              sorted(kind_tot.items(), key=lambda x: -x[1])) or "–"
+        per = "".join(
+            f"<tr><td><b>{esc(m['owner'])}</b></td>"
+            f"<td class='num'>{_fnum(tu.get('known_h'), 0.0):.0f}h</td>"
+            f"<td class='num dim'>{_fnum(tu.get('solver_bg_h'), 0.0):.0f}h</td>"
+            f"<td class='dim'>{esc(' · '.join((pr.get('name') or '') for pr in (tu.get('programs') or [])[:4]))}</td></tr>"
+            for m, tu in sorted(have, key=lambda x: -_fnum(x[1].get("known_h"), 0.0)))
+        miss = (f"<div class='note'>창 샘플러 기록이 없어 집계되지 않은 인원 {len(none)}명 — "
+                f"{esc(', '.join(sorted(none)[:12]))}. 도구를 안 썼다는 뜻이 아닙니다.</div>") if none else ""
+        return (f"""<div class="card"><h2>11. 프로그램 사용 <span class="state">상용/비상용 도구를 얼마나 붙잡고 있었나 · 참고 지표</span></h2>
+<div class="note">창 샘플러가 본 <b>맨 앞 창</b>의 시간입니다. 투입 MM·로드율 계산에는 들어가지 않습니다 —
+같은 사람의 투입 시간과 숫자가 다른 것이 정상입니다. '배경'은 창을 안 보고 있어도 돌아가던 솔버 시간입니다.
+구분 합계: {kindline}</div>
+<div style='overflow-x:auto'><table><tr><th>프로그램</th><th>분류</th><th>구분</th><th class="num">사용</th>
+<th class="num">배경</th><th>쓴 사람</th></tr>{rows}</table></div>
+<div style='overflow-x:auto;margin-top:10px'><table><tr><th>이름</th><th class="num">도구 사용</th>
+<th class="num">배경 솔버</th><th>주로 쓴 도구</th></tr>{per}</table></div>{miss}</div>
+
+""")
+
     def _row1(m, grey=False):
         return (
             f"<tr{' style=color:#8b929b' if grey else ''}><td><b>{esc(m['owner'])}</b></td>"
@@ -2413,6 +2481,7 @@ def render_full(share, html_dir, sender=None, log=say):
             + ag.cfg_badge(m)                # 산식 설정 상이 (팀 다수와 다른 분모)
             + "</td></tr>")
 
+    prog_html = _prog_section()
     rows1 = "".join(_row1(m) for m in members_cmp)
     rows1x = ""
     if members_x:
@@ -2861,6 +2930,7 @@ Agent 가능성 <span class="pill" style="background:#1d8a4a">상</span> 자동�
 <span class="state">과제를 펼치면 그 안의 담당 업무 워크플로우가 나옵니다</span></h1>
 {''.join(wf_cards) or '<div class="card"><div class="note">담당 업무 단위 워크플로우가 없습니다.</div></div>'}
 {coarse_html}
+{prog_html}
 <div class="note">원천: {esc(share)}{f' + {esc(html_dir)}' if src_n['html'] else ''} ·
 개인 워크플로우 {len(items)}건(서버 {src_n['server']} · 개인 HTML {src_n['html']}) ·
 같은 (사람·업무)는 하나만 계상했습니다.{ext_note}</div>

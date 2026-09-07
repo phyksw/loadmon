@@ -12,6 +12,33 @@ PC 에 파이썬이 있으면 그것을 써도 되고, `python\` 폴더를 지�
 **결과가 어떻게 생겼는지 먼저 보려면** → [`samples\`](samples/README.md) — 가상 3인 팀으로 돌린
 개인 분석 리포트 · 얼린 보고서 · 팀 통합 보고서 샘플(전부 합성 자료, 개인정보 없음).
 
+## v22.1 — 시뮬레이션 산출물 수집 확대 · 프로그램 사용 이력
+
+**해석·CAD 산출물이 통째로 빠지던 것을 고쳤다.** `watchExtensions` 가 179 → 248 개.
+Fluent 2020R1 부터 기본인 HDF5(`.cas.h5` `.dat.h5` `.msh.h5`)·Nastran(`.op2` `.f06` `.f04` `.bdf`)·
+Creo Simulate(`.mfr` `.sdy` `.cvg`)·Simcenter/NX(`.sim` `.fem`)·FloEFD(`.fld` `.cfld` `.fbd`)·
+HyperWorks(`.h3d` `.hm` `.t16`)·LS-DYNA(`.k`)·CATIA(`.catanalysis` `.cgr` `.3dxml` `.model`)·
+Creo 부가 확장자(`.frm` `.sec` `.lay` `.mfg` `.gph`)·Solid Edge(`.par` `.psm` `.dft`)·
+SpaceClaim(`.scdoc`)·오픈소스(`.vtu` `.vtk` `.su2` `.sif` `.unv`)가 들어왔다.
+`.asm` 은 SW개발 → **설계**로 옮겼다(어셈블리 언어가 아니라 Creo/Solid Edge 어셈블리다).
+Creo 판번호 정규식에 `.neu` 를 더해 수집기 두 곳과 분석기의 목록을 맞췄다.
+해석 출력 뭉치 판정(`_is_sim_output`)은 '확장자 종류 ≤2' 만 보던 것을 **같은 이름을 여러 확장자가
+공유하는 세트**(`job.f06`/`job.f04`/`job.op2`)까지 인정하게 했다 — 그전에는 한 번 솔브에 여러 종류를
+내놓는 솔버의 밤샘 해석이 허구의 새벽 근무가 되거나 흔적 없이 사라졌다.
+
+**프로그램 사용 이력이 생겼다.** 창 샘플러의 `process` 열을 `core\programs.py` 카탈로그(상용/비상용
+구분 포함)로 옮겨 `mm_meta` 의 `tool_usage` 로 싣고, 개인 리포트·대시보드·팀 보고서 11절에 보여 준다.
+★ **투입 MM·로드율 계산에는 들어가지 않는다** — 신호로 넣으면 가중치 비율이 바뀌어 지금까지의 MM 이
+통째로 달라진다. 배경에서 도는 솔버는 `config.solverProcesses` 로 따로 세고,
+`solverProcessesExclude` 가 라이선스 대리자(`ansysli_client` 등 로그온 내내 떠 있는 것)를 뺀다 —
+빼지 않으면 '해석을 하루 종일 돌렸다' 가 된다.
+
+**동봉 파이썬의 import 경로 버그 2건.** `python\python311._pth` 때문에 **스크립트가 있는 폴더가
+`sys.path` 에 들어가지 않는다.** 그래서 `export.py` 의 `import teamup` 과 `aggregate.py` 의
+`import team_report` 가 죽었고, 부르는 쪽이 `try/except` 로 감싸고 있어 **오류 없이 기능만 조용히
+빠졌다**: 공유폴더로 낸 `member.json` 에 측정 방식·신뢰도·산식 설정이 통째로 없었고(팀 보고서의
+'측정 방식' 열이 비어 사람 차이로 읽혔다), **팀 통합 보고서가 아예 만들어지지 않았다.**
+
 ## v22.0 — 보완툴 3종 본체 통합 · 시간 측정 검증 보완 · 일 상한 폐기
 
 LM20 위에 따로 돌리던 **보완툴 / 보완2 / 팀보완툴 bat 을 없애고** 그 기능을 `LoadMonitor22-UI.bat`

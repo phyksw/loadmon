@@ -24,6 +24,14 @@ from collections import defaultdict
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 
+# 동봉한 파이썬(python\python311._pth)은 **스크립트가 있는 폴더를 sys.path 에 넣지 않는다** —
+# python311.zip 과 python\ 만 들어간다. 그래서 뿌리 모듈(teamup·team_report…)을 실행 중에
+# import 하려면 여기서 직접 넣어야 한다. 없으면 ModuleNotFoundError 가 나는데, 부르는 쪽이
+# try/except 로 감싸고 있어 오류 없이 기능만 조용히 빠진다(실측: 공유폴더 member.json 에
+# measure/coverage/cfg_used/tool_usage 가 통째로 없었고, 팀 통합보고서가 아예 안 만들어졌다).
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
 
 def esc(s):
     return html.escape(str(s or ""))
@@ -110,6 +118,44 @@ def norm_coverage(v):
     if r is not None:
         out["pc_weekday_ratio"] = round(r, 2)
     return out
+
+
+def norm_tool_usage(v):
+    """member.tool_usage → 프로그램 사용 이력(참고 지표) 정규화.
+
+    ★ 로드율·MM 과 무관하다. 팀 화면에서 이 값이 '일한 양' 으로 읽히지 않게 별도 절에만 쓴다.
+    수치는 전부 숫자로 강제하고, 이름·분류는 길이를 자른다(팀 서버로 올라온 남의 자료다)."""
+    if not isinstance(v, dict):
+        return None
+    out = {}
+    for k in ("samples", "days"):
+        n = fnum(v.get(k))
+        if n is not None:
+            out[k] = int(n)
+    for k in ("total_h", "known_h", "unknown_h", "sim_h", "cad_h", "solver_bg_h"):
+        n = fnum(v.get(k))
+        if n is not None:
+            out[k] = round(n, 2)
+    progs = []
+    for pr in (v.get("programs") if isinstance(v.get("programs"), list) else [])[:12]:
+        if not isinstance(pr, dict):
+            continue
+        nm = str(pr.get("name") or "").strip()[:40]
+        if not nm:
+            continue
+        row = {"name": nm, "kind": str(pr.get("kind") or "")[:6], "cat": str(pr.get("cat") or "")[:10]}
+        for k in ("hours", "bg_hours"):
+            row[k] = round(fnum(pr.get(k)) or 0.0, 2)
+        row["days"] = int(fnum(pr.get("days")) or 0)
+        progs.append(row)
+    out["programs"] = progs
+    for k in ("by_cat", "by_kind"):
+        v2 = v.get(k)
+        if not isinstance(v2, list):
+            continue
+        out[k] = [[str(x[0])[:12], round(fnum(x[1]) or 0.0, 2)] for x in v2
+                  if isinstance(x, (list, tuple)) and len(x) >= 2][:8]
+    return out if (out.get("programs") or out.get("total_h")) else None
 
 
 def norm_cfg_used(v):
@@ -224,6 +270,7 @@ def norm_member(m, name=""):
     m["measure"] = norm_measure(m.get("measure"))
     m["coverage"] = norm_coverage(m.get("coverage"))
     m["cfg_used"] = norm_cfg_used(m.get("cfg_used"))
+    m["tool_usage"] = norm_tool_usage(m.get("tool_usage"))   # 프로그램 사용 이력(참고 지표 — 로드율과 무관)
     if bad:
         print(f"[aggregate] {name or m.get('owner')}: member.json 값 형식 이상 — "
               f"{', '.join(bad[:4])} (그 칸만 무시)")
@@ -473,6 +520,8 @@ def collect_team_data(share):
             "long_days": m.get("long_days") or 0,
             # D5 — 측정 방식·신뢰도·산식 설정(구판 자료는 None/False — 화면이 배지를 생략한다)
             "measure": m.get("measure"), "coverage": m.get("coverage"), "cfg_used": m.get("cfg_used"),
+            # 프로그램 사용 이력 — 여기 빠지면 팀 화면에서 오류 없이 통째로 사라진다(조용한 화이트리스트)
+            "tool_usage": m.get("tool_usage"),
             "measure_text": m.get("measure_text", ""),
             "unreliable": bool(m.get("unreliable")), "cfg_diff": bool(m.get("cfg_diff")),
             # 누가·언제·어디서 (없으면 빈 값 — 옛 클라이언트가 올린 자료도 그대로 표시된다)

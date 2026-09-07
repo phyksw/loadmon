@@ -345,6 +345,7 @@ def build(tag):
                   ("sampler_stuck_days", "샘플러 고착 의심(일)"),
                   # ── LM22 2차(A6·A9·A13·A18·A33·A34·D3·D4·D5·D7) — 값이 있는 키만 표에 나온다 ──
                   ("measure", "측정 방식"), ("coverage", "측정 신뢰도"),
+                  ("tool_usage", "프로그램 사용(참고)"),
                   ("offsite_days", "종일 행사 — 출장·현장·교육(표준 8h 인정, 일)"),
                   ("offsite_h", "종일 행사 인정(h)"),
                   ("manual_days", "수동 기록 Add-WorkLog(일)"), ("manual_h", "수동 기록 인정(h)"),
@@ -362,7 +363,7 @@ def build(tag):
                   ("anomalies", "이상치(PC 기록 오류·부재일 흔적 등, 일)"),
                   ("long_days", "16h 초과(일)"), ("utc_suspect", "메일 시각 UTC 의심"),
                   ("config_warnings", "설정 경고(기본값으로 대체)"))
-    NEW_KEYS = ("measure", "coverage", "cfg_used", "offsite_days", "offsite_h", "manual_days", "manual_h",
+    NEW_KEYS = ("measure", "coverage", "cfg_used", "tool_usage", "offsite_days", "offsite_h", "manual_days", "manual_h",
                 "dinner_deducted_h", "flex_edge_h", "sampler_bridge_h", "pc_record_missing_days",
                 "trace_window_days", "trace_window_h", "pc_coverage_by_month", "passive_capped_days",
                 "weekend_pc_days", "future_days", "today_fraction")
@@ -419,6 +420,31 @@ def build(tag):
             r = cv.get("pc_weekday_ratio")
             if isinstance(r, (int, float)) and not isinstance(r, bool):
                 v += f" · 평일 PC 기록 {round(float(r) * 100)}%"
+        elif k == "tool_usage":
+            # 참고 지표 — 투입 시간이 아니다(맨 앞 창을 띄우고 있던 시간). 로드율과 섞어 읽지 않도록 문구로 못 박는다.
+            # 이 표의 셀은 마지막에 통째로 esc() 되므로 여기서는 태그도 esc 도 쓰지 않는다(쓰면 글자로 박힌다).
+            tu = v if isinstance(v, dict) else {}
+            progs = [p for p in (tu.get("programs") or []) if isinstance(p, dict)]
+            if not progs:
+                why = str(tu.get("why") or "").strip()
+                if not why:
+                    continue
+                v = why
+            else:
+                v = " · ".join(
+                    f"{p.get('name')} " + (f"배경 {_h(p.get('bg_hours')):.0f}h" if _h(p.get("hours")) < 0.05
+                                           else f"{_h(p.get('hours')):.1f}h"
+                                                + (f"(배경 {_h(p.get('bg_hours')):.0f}h)"
+                                                   if _h(p.get("bg_hours")) >= 1 else ""))
+                    for p in progs[:6])
+                kinds = [x for x in (tu.get("by_kind") or []) if isinstance(x, (list, tuple)) and len(x) >= 2]
+                if kinds:
+                    v += " / 구분: " + " · ".join(f"{x[0]} {_h(x[1]):.1f}h" for x in kinds)
+                if _h(tu.get("solver_bg_h")) >= 1:
+                    v += f" / 배경 솔버 가동 {_h(tu.get('solver_bg_h')):.0f}h"
+                if _h(tu.get("unknown_h")) >= 1:
+                    v += f" / 미상 {_h(tu.get('unknown_h')):.0f}h(카탈로그에 없는 실행 파일)"
+                v += " / ※ 참고 지표 — 창 샘플러가 본 '맨 앞 창' 시간이라 투입 MM·로드율에는 들어가지 않는다"
         elif k == "cfg_used":
             cu = v if isinstance(v, dict) else {}
             if not cu:

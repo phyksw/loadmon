@@ -211,6 +211,34 @@ def cfg_used_of(mj, b):
     return out
 
 
+def tool_usage_of(mj, b):
+    """프로그램 사용 이력 요약 — 팀 취합에 올릴 만큼만 줄인다(상위 12개·합계).
+
+    ★ 참고 지표다. 로드율·MM 과 무관하므로 팀 리포트에서도 '얼마나 일했나' 로 읽히지 않게
+      '프로그램 사용' 절에만 쓴다. 창 제목은 애초에 집계에 들어가지 않아 과제명·사람 이름이 없다."""
+    tu = _obj(mj.get("tool_usage")) or _obj(b.get("tool_usage"))
+    if tu is None:
+        return None
+    out = {}
+    for k in ("samples", "days"):
+        if tu.get(k) is not None:
+            out[k] = _count(tu.get(k))
+    for k in ("total_h", "known_h", "unknown_h", "sim_h", "cad_h", "solver_bg_h"):
+        if tu.get(k) is not None:
+            out[k] = _hours(tu.get(k))
+    progs = tu.get("programs") if isinstance(tu.get("programs"), list) else []
+    out["programs"] = [{"name": str(p.get("name") or "")[:40], "kind": str(p.get("kind") or "")[:6],
+                        "cat": str(p.get("cat") or "")[:10], "hours": _hours(p.get("hours")),
+                        "bg_hours": _hours(p.get("bg_hours")), "days": _count(p.get("days"))}
+                       for p in progs if isinstance(p, dict)][:12]
+    for k in ("by_cat", "by_kind"):
+        v = tu.get(k)
+        if isinstance(v, list):
+            out[k] = [[str(x[0])[:12], _hours(x[1])] for x in v
+                      if isinstance(x, (list, tuple)) and len(x) >= 2][:8]
+    return out
+
+
 def push_reports(share, owner, tag):
     r"""report\ 의 개인 HTML 보고서를 <share>\개인리포트\<owner>_<파일명> 으로 복사 → (복사한 이름들, 실패)
     없는 파일은 조용히 건너뛴다(보고서 생성 단계가 실패했어도 묶음 저장은 그대로 유효하다)."""
@@ -281,6 +309,7 @@ def build(cfg, d0, d1):
               # D5 — 측정 방식·신뢰도·산식 설정 스냅샷: 수집 환경 차이(샘플러 유무·PC 기록 결측·설정)를 팀 취합이
               # 사람 차이로 읽지 않게. 구판 core 가 만든 meta 면 None(취합은 배지 없이 예전처럼 비교).
               "measure": measure_of(mj, b), "coverage": coverage_of(mj, b), "cfg_used": cfg_used_of(mj, b),
+              "tool_usage": tool_usage_of(mj, b),
               # A30 — 비업무 제외 후 시간 재산정 여부·뺀 시간(h)
               "rehours": bool(mj.get("rehours")), "dropped_h": _hours(mj.get("dropped_h")),
               "host": os.environ.get("COMPUTERNAME", ""),

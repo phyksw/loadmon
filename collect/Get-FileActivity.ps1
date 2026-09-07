@@ -137,7 +137,7 @@ $excl = @(@($cfg.excludePathKeywords) | Where-Object { $_ } | ForEach-Object { $
 $extSet = New-Object 'System.Collections.Generic.HashSet[string]'
 $extCompound = New-Object System.Collections.Generic.List[string]
 foreach ($e in $exts) { if (($e.TrimStart('.') -split '\.').Count -gt 1) { $extCompound.Add($e) } else { [void]$extSet.Add($e) } }
-$creoRe = New-Object System.Text.RegularExpressions.Regex '\.(prt|asm|drw|frm|sec|lay|mfg|gph)\.\d{1,4}$'
+$creoRe = New-Object System.Text.RegularExpressions.Regex '\.(prt|asm|drw|frm|sec|lay|mfg|gph|neu)\.\d{1,4}$'
 $ignoreNames = @('thumbs.db', 'ehthumbs.db', 'ehthumbs_vista.db', 'desktop.ini', '.ds_store')
 function Get-WatchExt([string]$name) {     # 감시 대상이면 CSV 에 적을 확장자(소문자), 아니면 ''
     if (-not $name) { return '' }

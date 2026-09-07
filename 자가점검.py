@@ -58,6 +58,7 @@ NEED = [
     "config/agentic_tasks.json",
     "core/board.py",
     "core/extract.py",
+    "core/programs.py",
     "core/details.py",
     "core/owner.py",
     "core/progress.py",

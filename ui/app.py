@@ -2730,7 +2730,18 @@ async function refresh(){
   const pick=k=>(nb[k]!=null?nb[k]:(m[k]!=null?m[k]:((m.mm_info&&typeof m.mm_info==="object")?m.mm_info[k]:undefined)));
   const obj=k=>{const v=pick(k);return (v&&typeof v==="object"&&!Array.isArray(v))?v:null;};
   const cnt=v=>Array.isArray(v)?v.length:((v&&typeof v==="object")?Object.keys(v).length:num(v));
-  const cv=obj("coverage"),ms9=obj("measure"),cu=obj("cfg_used");
+  const cv=obj("coverage"),ms9=obj("measure"),cu=obj("cfg_used"),tu=obj("tool_usage");
+  // 프로그램 사용 이력 — 참고 지표다. 창 샘플러가 본 '맨 앞 창' 시간이라 투입 MM 과 다른 값이고,
+  // 로드율 계산에는 들어가지 않는다. 같은 카드에 두되 문구로 못 박는다(안 그러면 '투입 시간'으로 읽힌다).
+  const tuP=(tu&&Array.isArray(tu.programs))?tu.programs.filter(x=>x&&x.name):[];
+  const tuKind=(tu&&Array.isArray(tu.by_kind))?tu.by_kind.filter(x=>Array.isArray(x)&&x.length>=2):[];
+  const toolNote=tuP.length
+    ?`<div class="note"><b>프로그램 사용(참고)</b> ${tuP.slice(0,8).map(x=>esc(x.name)+" "+(num(x.hours)<0.05?`<span class="dim">배경 ${num(x.bg_hours).toFixed(0)}h</span>`:num(x.hours).toFixed(1)+"h"+(num(x.bg_hours)>=1?`<span class="dim">(배경 ${num(x.bg_hours).toFixed(0)}h)</span>`:""))).join(" · ")}`
+      +(tuKind.length?` — 구분 ${tuKind.map(x=>esc(x[0])+" "+num(x[1]).toFixed(1)+"h").join(" · ")}`:"")
+      +(num(tu.solver_bg_h)>=1?` · 배경 솔버 가동 ${num(tu.solver_bg_h).toFixed(0)}h`:"")
+      +(num(tu.unknown_h)>=1?` · 미상 ${num(tu.unknown_h).toFixed(0)}h`:"")
+      +` <span class="dim">— 맨 앞 창을 띄우고 있던 시간입니다. 투입 MM·로드율에는 들어가지 않습니다.</span></div>`
+    :((tu&&tu.why)?`<div class="note"><b>프로그램 사용(참고)</b> <span class="dim">${esc(tu.why)}</span></div>`:"");
   const GC={reliable:["#0f7a3d","신뢰"],caution:["#c98a00","주의"],unreliable:["#c0122f","측정 불충분"]};
   const cvReasons=cv?((Array.isArray(cv.reasons)&&cv.reasons.length)?cv.reasons:(Array.isArray(cv.missing)?cv.missing:[])):[];
   const covBadge=(cv&&GC[cv.grade])?`<span style="display:inline-block;border:1px solid ${GC[cv.grade][0]};color:${GC[cv.grade][0]};border-radius:3px;padding:0 6px;font-size:11px;margin-left:4px" title="${esc(cvReasons.join(" · "))}">${GC[cv.grade][1]}</span>`:"";
@@ -2769,7 +2780,7 @@ async function refresh(){
    수동 흔적(수신·CC)만 있는 날 ${nb.floor_blocked_passive_days||0}일(하한 미적용 — 많으면 config.watchFolders 점검) · 미래 시각 신호 폐기 ${nb.future_signals_dropped||0}건 ·
    부재 추정 ${nb.inferred_absence_days||0}일(PC 도 흔적도 없는 평일 — 가용에서 차감${absd.length?": "+esc(absd.slice(0,12).join(", "))+(absd.length>12?" …":""):""})${simNote}</div>
    <div class="note">흔적 없는 평일 ${nb.no_evidence_days||0}일 — 이 수가 크면 수집이 덜 된 것입니다: Outlook을 켠 상태로 재실행하거나 config.watchFolders 를 확인하세요.</div>`
-   +measNote+rhNote+extraNote+pccNote+futNote+cfgNote
+   +measNote+toolNote+rhNote+extraNote+pccNote+futNote+cfgNote
    +((Array.isArray(nb.config_warnings)&&nb.config_warnings.length)?`<div class="note" style="color:#b54708"><b>설정 경고 ${nb.config_warnings.length}건</b> — 잘못된 값은 기본값으로 대체했습니다: ${esc(nb.config_warnings.slice(0,6).join(" · "))}${nb.config_warnings.length>6?" …":""}</div>`:"")
    +(nb.utc_suspect?`<div class="note" style="color:#b54708"><b>메일 시각이 UTC 로 기록된 것 같습니다</b> — 낮 발신이 새벽 야근으로 잡힐 수 있으니 config.mm.mailTimeOffsetH(예: 9)를 확인하세요.</div>`:"")
    +(anoms.length?`<div class="note"><b>이상치 ${anoms.length}일</b> — PC 기록이 물리적으로 맞지 않아 보정한 날(투입을 자르지 않고 표시만 합니다)

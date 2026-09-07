@@ -77,17 +77,30 @@ CODE_EXTS = {".py", ".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".hh", ".cs", ".j
 # 넣지 않는다(폴더명·힌트로 판정). .zpl/.lsf(광학 스크립트)는 해석 쪽.
 EXT_ACT = {}
 for _n, _exts in (
-    ("설계", ".dwg .dxf .sldprt .sldasm .slddrw .catpart .catproduct .catdrawing .prt .drw .frm .sec .ipt .iam .idw .step .stp "
-            ".igs .iges .x_t .x_b .sat .jt .stl .pcbdoc .schdoc .prjpcb .schlib .pcblib .kicad_pcb .kicad_sch .kicad_pro "
-            ".kicad_sym .kicad_mod .brd .dsn .opj .sch .gbr .gtl .gbl .drl"),
-    ("해석·시뮬레이션", ".zmx .zar .zos .zpl .zsc .zdf .seq .len .lis .lts .frd .oml .inr .fsp .lms .ldev .ind .aedt .aedtz "
-                   ".wbpj .wbpz .mechdb .cas .cas.gz .dat.gz .msh .rst .mph .inp .odb .cae .asc .s2p .slx .mdl"),
-    ("SW개발", ".hex .elf .map .bin .ioc .uvprojx .ewp .eww .xpr .qpf .qsf .bit .sof .asm .sln .vcxproj .csproj .lvproj .lvlib .vi .ctl"),
+    # CAD·도면 — .asm 은 Creo/Solid Edge 어셈블리로 둔다. 예전엔 SW개발이라 판번호 없이 저장한 어셈블리
+    # (bracket.asm)가 전부 SW개발 시간이 됐다. 어셈블리 언어 소스도 .asm 이지만 이 도구를 쓰는 조직에서는
+    # CAD 쪽이 압도적이고, CODE_EXTS 에는 .asm 이 없어 코드 판정에는 원래 쓰이지 않았다.
+    ("설계", ".dwg .dxf .sldprt .sldasm .slddrw .catpart .catproduct .catdrawing .catanalysis .cgr .3dxml .model "
+            ".prt .asm .drw .frm .sec .lay .mfg .gph .ipt .iam .idw .par .psm .dft .fcstd .scdoc .scdocx .agdb "
+            ".step .stp .igs .iges .x_t .x_b .sat .jt .stl .pcbdoc .schdoc .prjpcb .schlib .pcblib "
+            ".kicad_pcb .kicad_sch .kicad_pro .kicad_sym .kicad_mod .brd .dsn .opj .sch .gbr .gtl .gbl .drl"),
+    # 해석·시뮬레이션 — 솔버 입력·결과·실행 로그. 새 확장자를 watchExtensions 에 넣을 때는 반드시 여기에도 넣어라.
+    # 안 넣으면 ACT_RULES 의 맨몸 '.c' 부분문자열에 걸려 'SW개발' 로 떨어진다(.cwr·.cst·.comm·.cvg 실측).
+    ("해석·시뮬레이션", ".zmx .zar .zos .zpl .zsc .zdf .zrd .zbf .seq .len .lis .lts .frd .oml .inr .fsp .lms .ldev .lsf .ind "
+                   ".aedt .aedtz .siw .wbpj .wbpz .mechdb .mechdat .rth .rmg .cdb .anf .trn .jou .flprj "
+                   ".cas .dat.gz .cas.gz .cas.h5 .dat.h5 .msh .msh.h5 .msh.gz .rst .mph .inp .odb .cae .sta "
+                   ".op2 .f06 .f04 .xdb .pch .bdf .nas .neu .sim .fem .afm .modfem .fno "
+                   ".fld .cfld .cpt .fbd .cwr .cst .h3d .hm .t16 .sts .sdy .mfr .k "
+                   ".stt .rpt .comm .cvg .su2 .sif .unv .vtu .vtk .pvsm .plt .asc .s2p .slx .mdl"),
+    ("SW개발", ".hex .elf .map .bin .ioc .uvprojx .ewp .eww .xpr .qpf .qsf .bit .sof .sln .vcxproj .csproj .lvproj .lvlib .vi .ctl"),
+    # .asc 는 LTspice 회로 도면과 LiDAR ASCII 점군이 겹친다 — 예전대로 해석 쪽에 둔다(LTspice = 회로 시뮬레이션).
     ("검증·평가", ".tdms .lvm .pcd .las .laz .ply .bag .mcap .db3 .pcap .pcapng .h5 .hdf5 .npy .npz .parquet .mat"),
 ):
     for _e in _exts.split():
         EXT_ACT[_e] = _n
-_CREO_RE = re.compile(r"\.(prt|asm|drw|frm|sec)\.\d{1,4}$", re.I)       # Creo 판번호 파일 bracket.prt.3
+# Creo 판번호 파일 bracket.prt.3 — 수집기(collect/Get-FileActivity.ps1·Get-RecentFiles.ps1 의 creoRe)와 **같은 목록**이어야 한다.
+# 셋(수집기 정규식·watchExtensions·이 정규식) 중 하나만 고치면 그 확장자는 0건이거나 '기타'로 떨어진다(감사 확정).
+_CREO_RE = re.compile(r"\.(prt|asm|drw|frm|sec|lay|mfg|gph|neu)\.\d{1,4}$", re.I)
 _SIG_SUFFIX_RE = re.compile(r"( 외 \d+건| \((?:일괄|해석 출력) \d+건\))+$")   # load_signals 가 붙이는 규모 표기
 
 
@@ -97,13 +110,18 @@ def _sig_name(text):
     return _SIG_SUFFIX_RE.sub("", name).strip()
 
 
+# 점이 둘인 복합 확장자 — 수집기(watchExtensions)와 분석기가 **같은 목록**을 봐야 한다. Fluent 2020R1 부터 기본 포맷이
+# .cas.h5/.dat.h5 인데 이 목록에 없으면 '.h5'(검증·평가)로 읽혀 해석 시간이 사라진다(감사 확정).
+COMPOUND_EXTS = (".cas.gz", ".dat.gz", ".cas.h5", ".dat.h5", ".msh.h5", ".msh.gz")
+
+
 def _ext_of_signal_text(text):
-    """파일 신호 텍스트에서 확장자 — 복합(.cas.gz)·Creo 판번호(.prt.3 → .prt) 인식."""
+    """파일 신호 텍스트에서 확장자 — 복합(.cas.h5)·Creo 판번호(.prt.3 → .prt) 인식."""
     name = _sig_name(text)
     m = _CREO_RE.search(name)
     if m:
         return "." + m.group(1)
-    for ce in (".cas.gz", ".dat.gz"):
+    for ce in COMPOUND_EXTS:
         if name.endswith(ce):
             return ce
     return os.path.splitext(name)[1]
@@ -708,10 +726,31 @@ def _file_rows(data_dir):
 
 
 # 해석·시뮬레이션·기록 장비의 출력 확장자(S3-P4). 같은 폴더의 연속 분에 이런 파일이 수천 건 몰린 뭉치는 기계가 썼지만
-# '내 일'(해석을 돌린 날)이다 — 뭉치 파일의 확장자 종류가 2개 이하이고 90% 이상이 여기 속하면 해석 출력형.
+# '내 일'(해석을 돌린 날)이다 — 뭉치가 이 집합으로 90% 이상이면 해석 출력형(_is_sim_output).
+# ※ watchExtensions 와 한 세트다 — 여기에만 넣고 수집 목록에 없으면 죽은 항목이고(수집이 안 되니 축약할 것도 없다),
+#   수집 목록에만 넣고 여기 없으면 밤샘 해석이 허구의 새벽 근무로 계상되거나 흔적 0 으로 사라진다(감사 확정).
 SIM_OUT_EXTS = {".dat", ".csv", ".tsv", ".txt", ".lis", ".out", ".h5", ".hdf5", ".npy", ".npz", ".mat", ".parquet", ".pkl",
                 ".pcd", ".las", ".laz", ".ply", ".bag", ".mcap", ".db3", ".pcap", ".pcapng", ".tdms", ".lvm", ".rst", ".odb",
-                ".cas", ".cas.gz", ".dat.gz", ".msh", ".bin"}
+                ".cas", ".cas.gz", ".dat.gz", ".cas.h5", ".dat.h5", ".msh", ".msh.h5", ".msh.gz", ".bin",
+                # 솔버 결과·실행 로그(2차 보강) — Nastran·FLOEFD·Creo Simulate·ANSYS·Marc·오픈소스
+                ".op2", ".f06", ".f04", ".xdb", ".pch", ".plt", ".rth", ".rmg", ".cdb", ".trn",
+                ".fld", ".cfld", ".cpt", ".fbd", ".stt", ".rpt", ".t16", ".sts", ".sta",
+                ".cvg", ".vtu", ".vtk", ".h3d", ".zrd", ".zbf"}
+
+
+_VER_TAIL_RE = re.compile(r"\.\d{1,4}$")            # Creo 판번호 꼬리 bracket.prt.3
+
+
+def _base_name(name, ext):
+    """확장자·Creo 판번호를 뗀 파일 이름(소문자) — 솔버가 한 번에 내놓는 세트(job.f06/job.op2)를 묶는 열쇠."""
+    n = (name or "").strip().lower()
+    n = _VER_TAIL_RE.sub("", n)                     # bracket.prt.3 → bracket.prt
+    e = (ext or "").lower()
+    if e and n.endswith(e):
+        n = n[:-len(e)]
+    else:
+        n = os.path.splitext(n)[0]
+    return n.strip() or (name or "").strip().lower()
 
 
 def _burst_folder(folder):
@@ -733,11 +772,22 @@ def _clusters(minutes, gap=2):
     return out
 
 
-def _is_sim_output(exts):
-    """뭉치의 확장자 분포(Counter) 가 해석 출력형인가 — 종류 ≤2 · 90% 이상 SIM_OUT_EXTS"""
+def _is_sim_output(exts, bases=None):
+    """뭉치가 해석 출력형인가 — 90% 이상이 SIM_OUT_EXTS 이고, 그 위에 둘 중 하나:
+      ① 확장자 종류 ≤2 (기록 장비처럼 한 종류를 쏟아내는 뭉치)
+      ② 같은 base 이름을 여러 확장자가 공유하는 뭉치가 절반 이상 (job.f06/job.f04/job.op2 처럼 솔버가 한 번에 내놓는 세트)
+    ②가 없으면 Nastran·FLOEFD·Creo Simulate·LS-DYNA 처럼 '한 번 솔브 = 여러 종류' 인 솔버는 확장자를 아무리 늘려도
+    축약이 걸리지 않아 밤샘 해석이 허구의 새벽 근무가 되거나 흔적 0 으로 사라진다(감사 확정).
+    bases: Counter{base 이름: 그 base 로 나온 파일 수} — 주지 않으면 ①만 본다."""
     tot = sum(exts.values())
-    return bool(tot and len(exts) <= 2
-                and sum(n for e, n in exts.items() if e in SIM_OUT_EXTS) >= 0.9 * tot)
+    if not (tot and sum(n for e, n in exts.items() if e in SIM_OUT_EXTS) >= 0.9 * tot):
+        return False
+    if len(exts) <= 2:
+        return True
+    if bases:
+        shared = sum(n for _b, n in bases.items() if n >= 2)
+        return shared >= 0.5 * sum(bases.values())
+    return False
 
 
 def _sim_end(code):
@@ -785,6 +835,7 @@ def _file_times(data_dir, d0, d1, exclude=(), cfg=None, burst_n=None, self_names
     rows, seen = [], set()
     pm_by_root = defaultdict(Counter)
     ext_by_key = defaultdict(Counter)           # (date, 분, 폴더) → 확장자 분포(해석 출력형 판정)
+    base_by_key = defaultdict(Counter)           # (date, 분, 폴더) → base 이름 분포 — 솔버가 한 번에 내놓는 세트 판정
     for r in all_rows:
         t = _dt(r.get("mtime"))
         if not t or not (d0 <= t.date() <= d1):
@@ -799,6 +850,7 @@ def _file_times(data_dir, d0, d1, exclude=(), cfg=None, burst_n=None, self_names
         key = (t.date(), t.hour * 60 + t.minute, _burst_folder(r.get("folder")))
         pm_by_root[r.get("_root")][key] += 1    # 버스트 판정은 필터 전 전체 건수로(루트별)
         ext_by_key[key][ext] += 1
+        base_by_key[key][_base_name(name, ext)] += 1
         if not _is_me(r.get("author"), self_names):
             continue                            # 동료가 저장한 파일 — 내 시간 근거가 아니다
         if r.get("_recent") and _view_only(r, view_active):
@@ -824,10 +876,11 @@ def _file_times(data_dir, d0, d1, exclude=(), cfg=None, burst_n=None, self_names
             span = [(day, x, folk) for x in range(cl[0], cl[-1] + 1)]
             if sum(per_min.get(k, 0) for k in span) < big:
                 continue
-            exts = Counter()
+            exts, bases = Counter(), Counter()
             for k in span:
                 exts.update(ext_by_key.get(k, {}))
-            if _is_sim_output(exts):
+                bases.update(base_by_key.get(k, {}))
+            if _is_sim_output(exts, bases):
                 for x in cl:
                     sim_cluster[(day, x, folk)] = (day, cl[0], folk)
     # ② 해석 뭉치를 뺀 나머지는 폴더 무관 (date, 분) 으로 예전 규칙(A7) — 분당 anchor 1건, 뭉치 ≥ big 은 0건
@@ -2247,6 +2300,153 @@ def _activity_spans(data_dir, d0, d1, interval_sec=60, idle_active=IDLE_ACTIVE_S
     return out, cov, stuck
 
 
+_TOOL_USAGE_CACHE = {}          # (data_dir, 기간, 설정, activity 파일 상태) → 집계 결과
+
+
+def tool_usage(data_dir, d0, d1, cfg=None):
+    """창 샘플러의 process 열 → 프로그램별 사용 시간(참고 지표).
+
+    ★ MM 과 무관하다. 여기 값은 load_signals 로 들어가지 않고 mm_basis["tool_usage"] 에만 실린다.
+      신호로 만들면 to_rows 의 가중치 비율이 바뀌어 지금까지의 MM 이 통째로 달라진다(core/programs.py 머리말).
+
+    세는 법
+      · 맨 앞 창(foreground): idle ≤ mm.idleActiveSec 인 샘플만 — Creo 를 띄운 채 퇴근한 밤을
+        '12시간 사용' 으로 적지 않기 위해서다. 한 샘플 = 실측 간격(step, 인접 간격 중앙값 ≤300s).
+      · 배경 솔버(solvers_running): idle 과 무관하게 센다 — 밤새 도는 것이 정상이고, 그것이 이 열의
+        존재 이유다. 다만 '내가 쓴 시간' 과 섞이지 않게 bg_h 로 따로 적는다.
+      · 고착일(_activity_spans 의 stuck_days: idle 이 종일 0 으로 굳은 날)은 통째로 뺀다 — 시간 계산과
+        같은 판정을 써야 화면의 두 숫자가 어긋나지 않는다.
+      · 창 제목은 읽지 않는다. 제목에는 과제명·사람 이름이 들어가므로 이 집계는 실행 파일 이름만 본다.
+
+    반환(전부 JSON 안전)
+      {"samples","days","step_sec","idle_active_sec","total_h","known_h","unknown_h",
+       "programs":[{"name","vendor","kind","cat","hours","bg_hours","days","first","last","procs"}],
+       "by_cat":[[분류,h]], "by_kind":[[상용/비상용,h]], "sim_h", "cad_h",
+       "unknown_top":[[process,h]], "solver_bg_h", "why"}
+      샘플이 없으면 {"samples":0, "why":"…"} — 호출부는 programs 유무로 갈라도 된다."""
+    import statistics
+    try:                          # 이 저장소는 core\ 를 sys.path 에 넣고 평평하게 부른다(mine.py: import extract).
+        import programs as _P     # core 패키지로 부르는 곳(uipp.py 일부 경로)도 있어 둘 다 받는다.
+    except ImportError:
+        from core import programs as _P
+    cfg = cfg if isinstance(cfg, dict) else {}
+    mc = norm_cfg(cfg)[0]
+    idle_act = mc["idleActiveSec"]
+    extra = cfg.get("programsExtra")
+    extra = extra if isinstance(extra, list) else []
+    # 한 번 실행에 세 번 불린다(mine 1회 · rehours_after_judge 2회) — 같은 재료면 다시 읽지 않는다.
+    _files = sorted(_glob_multi(data_dir, "activity", "activity_*.csv"))
+    try:
+        _sig = tuple((os.path.basename(x), os.path.getmtime(x), os.path.getsize(x)) for x in _files)
+    except OSError:
+        _sig = tuple(os.path.basename(x) for x in _files)
+    ck = (str(data_dir), d0, d1, idle_act, repr(extra), _sig)
+    if ck in _TOOL_USAGE_CACHE:
+        return _TOOL_USAGE_CACHE[ck]
+    _, _, stuck = _activity_spans(data_dir, d0, d1, mc["samplerIntervalSec"], idle_act)
+
+    fg = defaultdict(float)          # 표시 이름 → 분(맨 앞 창)
+    bg = defaultdict(float)          # 표시 이름 → 분(배경 솔버)
+    unk = defaultdict(float)         # 못 맞힌 process → 분
+    seen_proc = defaultdict(set)     # 표시 이름 → 실제 process 이름들(무엇으로 맞혔는지 보여 준다)
+    days_of = defaultdict(set)       # 표시 이름 → 쓴 날
+    ident = {}                       # 표시 이름 → {vendor, kind, cat}
+    solver_bg = defaultdict(float)   # process → 분(배경, 이름 못 맞혀도 센다)
+    n_samples, all_days, step_used = 0, set(), []
+
+    for f in _glob_multi(data_dir, "activity", "activity_*.csv"):
+        rows, seen = [], set()
+        for r in _read(f):
+            t = _dt(r.get("time") or r.get("ts"))
+            if not t or not (d0 <= t.date() <= d1) or t.date() in stuck or t in seen:
+                continue
+            try:
+                idle = float(r.get("idle_sec") or r.get("idle") or 0)
+            except ValueError:
+                continue             # 샘플러 강제종료로 열이 밀린 행
+            seen.add(t)
+            rows.append((t, idle, r.get("process") or "", r.get("solvers_running") or ""))
+        if not rows:
+            continue
+        rows.sort(key=lambda x: x[0])
+        deltas = [(rows[i + 1][0] - rows[i][0]).total_seconds() for i in range(len(rows) - 1)
+                  if 0 < (rows[i + 1][0] - rows[i][0]).total_seconds() <= 600]
+        step = statistics.median(deltas) if deltas else float(mc["samplerIntervalSec"])
+        step = min(300.0, max(float(mc["samplerIntervalSec"]), step))
+        step_used.append(step)
+        unit = step / 60.0
+        for t, idle, proc, solvers in rows:
+            n_samples += 1
+            all_days.add(t.date())
+            for s in str(solvers).replace("|", ";").split(";"):
+                s = s.strip().lower()
+                if not s or _P.is_noise(s):
+                    continue          # ansysli_client 는 로그온 내내 떠 있다 — 솔버로 세면 하루 종일 해석이 된다
+                solver_bg[s] += unit
+                it = _P.classify(s, extra)
+                if it:
+                    bg[it["name"]] += unit
+                    ident.setdefault(it["name"], it)
+                    seen_proc[it["name"]].add(s)
+            if idle > idle_act:
+                continue              # 자리를 비운 사이 떠 있던 창은 '쓴 시간' 이 아니다
+            it = _P.classify(proc, extra)
+            if it is None:
+                if proc and not _P.is_noise(proc):
+                    unk[str(proc).strip().lower()] += unit
+                continue
+            nm = it["name"]
+            fg[nm] += unit
+            ident.setdefault(nm, it)
+            seen_proc[nm].add(str(proc).strip().lower())
+            days_of[nm].add(t.date())
+
+    if not n_samples:
+        out = {"samples": 0, "days": 0, "programs": [],
+                "why": "창 샘플러 기록(data\\activity\\activity_*.csv)이 이 기간에 없습니다 — "
+                       "collect\\Register-Samplers.ps1 로 등록하면 다음 분석부터 채워집니다"}
+        _TOOL_USAGE_CACHE[ck] = out
+        return out
+
+    first_last = {}
+    for nm, ds in days_of.items():
+        first_last[nm] = (min(ds).isoformat(), max(ds).isoformat())
+
+    progs = []
+    for nm in set(fg) | set(bg):
+        it = ident.get(nm) or {}
+        fo, bo = first_last.get(nm, ("", ""))
+        progs.append({"name": nm, "vendor": it.get("vendor", ""), "kind": it.get("kind", ""),
+                      "cat": it.get("cat", ""), "hours": round(fg.get(nm, 0.0) / 60.0, 2),
+                      "bg_hours": round(bg.get(nm, 0.0) / 60.0, 2),
+                      "days": len(days_of.get(nm, ())), "first": fo, "last": bo,
+                      "procs": sorted(seen_proc.get(nm, ()))[:6]})
+    progs.sort(key=lambda x: (-(x["hours"] + x["bg_hours"]), x["name"]))
+
+    by_cat, by_kind = defaultdict(float), defaultdict(float)
+    for p in progs:
+        by_cat[p["cat"] or "기타"] += p["hours"]
+        by_kind[p["kind"] or "미상"] += p["hours"]
+    known_h = round(sum(p["hours"] for p in progs), 2)
+    unknown_h = round(sum(unk.values()) / 60.0, 2)
+    out = {"samples": n_samples, "days": len(all_days),
+           "step_sec": round(statistics.median(step_used), 1) if step_used else None,
+           "idle_active_sec": idle_act,
+           "total_h": round(known_h + unknown_h, 2), "known_h": known_h, "unknown_h": unknown_h,
+           "programs": progs[:40],
+           "by_cat": sorted(((k, round(v, 2)) for k, v in by_cat.items()), key=lambda x: -x[1]),
+           "by_kind": sorted(((k, round(v, 2)) for k, v in by_kind.items()), key=lambda x: -x[1]),
+           "sim_h": round(by_cat.get("해석", 0.0) + by_cat.get("광학", 0.0), 2),
+           "cad_h": round(by_cat.get("CAD", 0.0), 2),
+           "solver_bg_h": round(sum(solver_bg.values()) / 60.0, 2),
+           "solver_bg_top": sorted(((k, round(v / 60.0, 2)) for k, v in solver_bg.items()),
+                                   key=lambda x: -x[1])[:10],
+           "unknown_top": sorted(((k, round(v / 60.0, 2)) for k, v in unk.items()),
+                                 key=lambda x: -x[1])[:12]}
+    _TOOL_USAGE_CACHE[ck] = out
+    return out
+
+
 def _meeting_skip(r, tentative="count"):
     """캘린더 행을 '참석'으로 볼 수 없는 사유(문자열) 또는 None. 신호 필터(load_signals)와
     시간 계상(_meeting_spans)이 같은 판정을 공유한다.
@@ -3051,6 +3251,15 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
                         "dinner": [_fmt_hm(dinner[0]), _fmt_hm(dinner[1])], "tentativeMeetings": tentative,
                         "holidays_n": len(holidays), "offsiteAsWork": offsite_on,
                         "samplerGapBridgeMin": bridge_min}
+    # 프로그램 사용 이력 — 참고 지표다. MM·로드율 계산에는 들어가지 않는다(core/programs.py 머리말).
+    # mm_basis 안에 두는 이유: judge 의 재산정이 mm_basis 를 통째로 갈아 끼우므로 여기 있어야 살아남는다.
+    try:
+        info["tool_usage"] = tool_usage(data_dir, d0, d1, cfg)
+    except Exception as e:  # noqa: BLE001 - 참고 지표 하나 때문에 MM 산정이 멈추면 안 된다
+        # 왜 실패했는지 화면·보고서에 그대로 보인다 — 조용히 빈칸으로 두면 '샘플러가 없는 사람' 과
+        # 구분이 안 된다(실제로 import 규칙이 어긋나 세 명 모두 빈칸이던 것을 샘플 생성에서 잡았다).
+        info["tool_usage"] = {"samples": 0, "programs": [],
+                              "why": f"프로그램 사용 집계 실패({type(e).__name__}: {e})"[:200]}
     info["basis"] = (("투입 = 활동 흔적(회의·창 샘플러·신호 세션) 구간의 합집합 · PC 가동 구간 하한(구간 단위) · 상한 없음"
                       f"(하루 24h 물리 한계만) · 이상치 {len(anomalies)}일 표시")
                      if method == "activity" else "투입 = 평일 표준 8h 기준(비교용)")

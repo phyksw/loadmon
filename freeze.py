@@ -516,6 +516,32 @@ def report_island(tag, full=True, log=_say):
         return []
     d0, d1 = tag_to_dates(tag)
     meta = _read_json(os.path.join(REPORT, f"mm_meta_{tag}.json")) or {}
+    # 프로그램 사용(참고) — 맨 앞 창을 띄우고 있던 시간이라 투입 MM 과 다른 값이다. 그 점을 문구로 못 박는다.
+    _tu = meta.get("tool_usage")
+    if not isinstance(_tu, dict):
+        _tu = (meta.get("mm_basis") or {}).get("tool_usage")
+    _tu = _tu if isinstance(_tu, dict) else {}
+    _tp = [x for x in (_tu.get("programs") or []) if isinstance(x, dict) and x.get("name")]
+    tool_note = ""
+    if _tp:
+        def _fh(x):
+            try:
+                return float(x or 0)
+            except (TypeError, ValueError):
+                return 0.0
+        tool_note = ("<div class='note'><b>프로그램 사용(참고)</b> "
+                     # 전면 0h · 배경만 있는 것(밤새 돌린 솔버)은 '0.0h' 로 적으면 안 쓴 것처럼 읽힌다
+                     + " · ".join(
+                         f"{_esc(x['name'])} " + (f"배경 {_fh(x.get('bg_hours')):.0f}h"
+                                                  if _fh(x.get("hours")) < 0.05
+                                                  else f"{_fh(x.get('hours')):.1f}h"
+                                                       + (f"(배경 {_fh(x.get('bg_hours')):.0f}h)"
+                                                          if _fh(x.get("bg_hours")) >= 1 else ""))
+                         for x in _tp[:8])
+                     + (f" · 배경 솔버 가동 {_fh(_tu.get('solver_bg_h')):.0f}h"
+                        if _fh(_tu.get("solver_bg_h")) >= 1 else "")
+                     + " <span class='dim'>— 창 샘플러가 본 맨 앞 창 시간입니다. "
+                       "투입 MM·로드율 계산에는 들어가지 않습니다.</span></div>")
     rows, rows_file = _read_rows(tag)
     if not rows and not meta:
         log(f"    [!] {tag} 결과(mm_rows·mm_meta)가 없어 분석리포트를 만들지 못했습니다.")
@@ -732,7 +758,7 @@ margin:1px 3px 1px 0;font-size:10.5px;color:#3d444c}}
 </div>
 
 <div class="card"><h2>1. 프로젝트 내 업무 로드 <span class="state">과제별 MM 배분</span></h2>
-{pj_bar or '<div class="note">표시할 배분이 없습니다</div>'}</div>
+{pj_bar or '<div class="note">표시할 배분이 없습니다</div>'}{tool_note}</div>
 
 <div class="card"><h2>2. 업무별 상세 <span class="state">MM 순</span></h2>
 <table><tr><th style="width:70px">Level 1</th><th style="width:52px">유형</th>

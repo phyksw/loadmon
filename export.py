@@ -18,6 +18,14 @@ import time
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 
+# 동봉한 파이썬(python\python311._pth)은 **스크립트가 있는 폴더를 sys.path 에 넣지 않는다** —
+# python311.zip 과 python\ 만 들어간다. 그래서 뿌리 모듈(teamup·team_report…)을 실행 중에
+# import 하려면 여기서 직접 넣어야 한다. 없으면 ModuleNotFoundError 가 나는데, 부르는 쪽이
+# try/except 로 감싸고 있어 오류 없이 기능만 조용히 빠진다(실측: 공유폴더 member.json 에
+# measure/coverage/cfg_used/tool_usage 가 통째로 없었고, 팀 통합보고서가 아예 안 만들어졌다).
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
 
 def arg(flag, d=""):
     return sys.argv[sys.argv.index(flag) + 1] if flag in sys.argv else d
@@ -126,9 +134,13 @@ def main():
                                "lunch_deducted_h": teamup._hours(b.get("lunch_deducted_h")),
                                "measure": teamup.measure_of(mj, b), "coverage": teamup.coverage_of(mj, b),
                                "cfg_used": teamup.cfg_used_of(mj, b),
+                               "tool_usage": teamup.tool_usage_of(mj, b),
                                "rehours": bool(mj.get("rehours")), "dropped_h": teamup._hours(mj.get("dropped_h"))})
             except Exception as e:  # noqa: BLE001 - 스냅샷이 없어도 내보내기는 끝나야 한다
-                print(f"[export] 측정 스냅샷 생략({type(e).__name__}) — 팀 리포트의 '측정 방식' 열이 빈다")
+                # 무엇이 없어서 빠졌는지 함께 적는다 — 이름만 찍으면 원인을 못 찾는다(실측: 동봉 파이썬이
+                # 스크립트 폴더를 sys.path 에 넣지 않아 import teamup 이 죽고, measure/coverage/
+                # cfg_used/tool_usage 가 통째로 빠진 member.json 이 공유폴더로 나갔다 — 위 sys.path 참고)
+                print(f"[export] 측정 스냅샷 생략({type(e).__name__}: {e}) — 팀 리포트의 '측정 방식' 열이 빈다")
             member["host"] = os.environ.get("COMPUTERNAME", "")
             member["analyzed_at"] = time.strftime("%Y-%m-%d %H:%M")
             json.dump(member, f, ensure_ascii=False, indent=1)

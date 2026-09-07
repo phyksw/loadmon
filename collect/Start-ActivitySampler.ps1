@@ -75,9 +75,14 @@ function Csv-Escape([string]$s) {
     return $s
 }
 
-# 배포 config 에는 solverProcesses 가 없다 — null 을 그대로 돌리면 시작 즉시 죽는다(검증 확정)
+# config 에 solverProcesses 가 없어도 죽지 않는다 - null 을 그대로 돌리면 시작 즉시 죽는다(검증 확정).
+# v22.1 부터 배포 config 에 기본 목록이 들어 있다(core\programs.py 의 SOLVER_HINTS 와 같은 목록).
 $solverNames = @()
 try { $solverNames = @(@($cfg.solverProcesses) | Where-Object { $_ } | ForEach-Object { $_.ToString().ToLower() }) } catch { $solverNames = @() }
+# 앞부분 일치가 잘못 잡는 것을 뺀다 - 'ansys' 는 라이선스 대리자 ansysli_client 까지 잡는데 그것은 로그온 내내
+# 떠 있어서, 빼지 않으면 solvers_running 이 늘 참이 되어 '해석을 하루 종일 돌렸다' 가 된다.
+$solverSkip = @()
+try { $solverSkip = @(@($cfg.solverProcessesExclude) | Where-Object { $_ } | ForEach-Object { $_.ToString().ToLower() }) } catch { $solverSkip = @() }
 $outDir = Join-Path $root 'data\activity'
 if (-not (Test-Path $outDir)) { New-Item -ItemType Directory -Force -Path $outDir | Out-Null }
 
@@ -111,7 +116,11 @@ while ((Get-Date) -lt $deadline) {
         }
 
         $running = Get-Process | Select-Object -ExpandProperty ProcessName -Unique | ForEach-Object { $_.ToLower() }
-        $solvers = @($running | Where-Object { $n = $_; ($solverNames | Where-Object { $n -like ($_ + '*') }).Count -gt 0 })
+        $solvers = @($running | Where-Object {
+            $n = $_
+            if (($solverSkip | Where-Object { $n -like ($_ + '*') }).Count -gt 0) { return $false }
+            ($solverNames | Where-Object { $n -like ($_ + '*') }).Count -gt 0
+        })
         $idle = [math]::Round((Get-IdleSeconds), 0)
 
         $line = ('{0},{1},{2},{3},{4},{5},{6}' -f `

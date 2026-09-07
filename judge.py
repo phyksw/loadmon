@@ -1167,7 +1167,7 @@ def rehours_meta(kept, dropped, tag, cfg, rep, data_dir=None, say=print):
         info = dict(info)
         info.pop("inferred_absence", None)        # date 키 — mine 도 저장 전에 뺀다
         mj["mm_basis"] = info
-        for k in ("coverage", "measure", "cfg_used"):   # mine 과 같이 최상위에도 싣는다(팀 취합이 읽는다)
+        for k in ("coverage", "measure", "cfg_used", "tool_usage"):   # mine 과 같이 최상위에도 싣는다(팀 취합이 읽는다)
             if isinstance(info.get(k), dict):
                 mj[k] = info[k]
     mj["rehours"] = True
