@@ -28,7 +28,7 @@ LoadMonitor20 과 다른 점:
   · 신호 3건 이상인 단위가 없으면 실패가 아니라 '결과 없음'(ok:true, flows:[], empty_reason) 으로 저장한다.
 
 출력: report\workflow_<기간>.json  →  UI '담당자 워크플로우' 탭 (f.model/role/summary/steps/mm.mm/signals)
-  {ok, tag, generated, model_name, unit:"과제/담당업무", basis, flows[{model:"과제 / 담당업무",
+  {ok, tag, generated, model_name, unit:"과제"|"과제/담당업무", basis, flows[{model:"과제"(기본) 또는 "과제 / 담당업무",
    project, detail, role, summary, steps[≤8], mm:{mm}, signals}], chunks, failed_chunks, salvaged_chunks,
    missing, missing_count, partial, note, last_error, dropped, merge:{rule, ai}, rows_units, empty_reason?}
 """
@@ -70,7 +70,7 @@ SAMPLE_N = 14                   # 단위당 시간순 표본 수
 MAX_UNITS_PER_CHUNK = 6         # 묶음당 단위 상한 — 답 길이(단위당 ≈1,100자)를 잘리지 않는 범위로
 MAX_CHUNKS = 40                 # 한 실행의 묶음 상한 — 초과분은 다음 실행이 missing 을 보고 이어서
 MAX_CONSEC_FAIL = 3             # 연속 실패 상한 — Copilot 이 안 되는 날 남은 묶음을 헛되이 기다리지 않게
-UNIT = "과제/담당업무"
+UNIT = ""                      # 실행 시 workflow_unit() 로 채운다(아래) — 설정이 바뀌면 캐시가 무효화되어야 한다
 KEY_JOIN = " / "                # flow.model = "과제 / 담당업무"
 
 
@@ -97,7 +97,7 @@ ETC_DETAIL = "기타 담당업무"      # 신호가 적어 따로 세우지 못�
 
 
 def unit_key(md, dt):
-    return f"{md}{KEY_JOIN}{dt}"
+    return f"{md}{KEY_JOIN}{dt}" if dt else str(md)
 
 
 def _refine_orig(tag, rep=None):
@@ -166,6 +166,19 @@ def gather(rep, tag, amap=None):
     except Exception:  # noqa: BLE001 - 설명이 없어도 워크플로우는 나와야 한다
         pass
 
+    # 과제 안의 세부업무 MM 배분 — 과제 단위 카드가 LM20 처럼 '무엇에 얼마' 를 보여 주는 재료.
+    parts_by, dsc_by = {}, {}
+    for r in rows:
+        l2 = (r.get("Level 2") or "").strip() or "공통"
+        l3 = (r.get("Level 3") or "").strip() or "기타"
+        f2 = fold(l2)
+        parts_by.setdefault(f2, {})
+        parts_by[f2][l3] = parts_by[f2].get(l3, 0.0) + r["_mm"]
+        d = " ".join((r.get("상세설명") or "").split())
+        if d:
+            dsc_by.setdefault(f2, []).append(f"{l3}: {d[:80]}")
+
+    unit = workflow_unit()
     groups = {}
     for s in sigs:
         # 이름 속 개행·탭은 공백으로 — '## 과제 / 담당업무' 머리말이 두 줄로 갈라지면 키를 못 맞춘다
@@ -173,54 +186,73 @@ def gather(rep, tag, amap=None):
         dt = " ".join((s.get("detail") or s.get("activity") or "").split())
         if not md and not dt:
             continue
-        groups.setdefault((md or "공통", dt or "기타"), []).append(s)
+        # 기본(LM20 과 같음)은 과제 하나가 한 단위다 — 담당업무로 더 쪼개지 않는다.
+        groups.setdefault((md or "공통", (dt or "기타") if unit == "과제/담당업무" else ""), []).append(s)
 
-    # 문턱 미달 단위를 그냥 버리면 그 신호가 화면에서 통째로 사라진다(실측: 16조합·신호 19건=12% 유실).
-    # 같은 과제의 '기타 담당업무' 로 모아 둔다 — 판정 행을 다시 쓰지 않으므로 MM 총량은 그대로다.
-    small = {}
-    for (md, dt), ss in list(groups.items()):
-        if len(ss) < MIN_SIGNALS:
-            small.setdefault(md, []).extend(ss)
-            del groups[(md, dt)]
-    for md, ss in small.items():
-        if len(ss) >= MIN_SIGNALS:
-            groups[(md, ETC_DETAIL)] = groups.get((md, ETC_DETAIL), []) + ss
+    # 담당업무 단위일 때만 문턱을 쓴다. 미달분은 버리지 않고 같은 과제의 '기타 담당업무' 로 모은다
+    # (실측: 그냥 버리면 16조합·신호 19건=12% 가 화면에서 사라졌다).
+    # 과제 단위(기본)에는 문턱을 두지 않는다 — LM20 도 두지 않았고, 과제는 원래 수가 적다.
+    floor = MIN_SIGNALS if unit == "과제/담당업무" else 1
+    if unit == "과제/담당업무":
+        small = {}
+        for (md, dt), ss in list(groups.items()):
+            if len(ss) < floor:
+                small.setdefault(md, []).extend(ss)
+                del groups[(md, dt)]
+        for md, ss in small.items():
+            if len(ss) >= floor:
+                groups[(md, ETC_DETAIL)] = groups.get((md, ETC_DETAIL), []) + ss
+    # 표본 수도 LM20 과 같은 눈금 — 단위가 적으면 과제마다 더 많이 보여 준다
+    per_cap = SAMPLE_N if unit == "과제/담당업무" else (30 if len(groups) <= 3 else 20)
     out = []
     for (md, dt), ss in groups.items():
-        if len(ss) < MIN_SIGNALS:
+        if len(ss) < floor:
             continue
         ss.sort(key=lambda r: str(r.get("time") or ""))
         ev = [f"- {(r.get('time') or '')[5:16]} [{r.get('source')}] "
               f"{' '.join((r.get('text') or '').split())[:80]}"
-              for r in _spread(ss, SAMPLE_N)]
-        k = (fold(md), fold(dt))
+              for r in _spread(ss, per_cap)]
+        f2 = fold(md)
+        if dt:
+            mm = round(mm_by.get((f2, fold(dt)), 0.0), 3)
+            desc = desc_by.get((f2, fold(dt)), "")
+            parts = []
+        else:
+            # 과제 단위: 그 과제의 세부업무 MM 을 모두 더하고, 배분은 parts 로 함께 넘긴다(LM20 과 같은 카드).
+            pv = parts_by.get(f2) or {}
+            mm = round(sum(pv.values()), 3)
+            parts = [[n, round(v, 3)] for n, v in sorted(pv.items(), key=lambda kv: -kv[1])[:8] if v > 0]
+            desc = " · ".join((dsc_by.get(f2) or [])[:6])
         out.append({"model": md, "detail": dt, "key": unit_key(md, dt), "signals": len(ss),
-                    "mm": round(mm_by.get(k, 0.0), 3), "desc": desc_by.get(k, ""), "evidence": ev})
+                    "mm": mm, "desc": desc, "parts": parts, "evidence": ev})
     if not out:
-        return [], basis, (f"신호 {MIN_SIGNALS}건 이상인 (과제, 담당업무) 단위가 없습니다 "
-                           f"(단위 {len(groups)}개 · 신호 {len(sigs)}건)")
+        return [], basis, (f"흐름을 만들 단위가 없습니다 (단위 {len(groups)}개 · 신호 {len(sigs)}건)")
     out.sort(key=lambda x: -(x["mm"] * 100 + x["signals"]))
     return out, basis, ""
 
 
 def build_prompt(mats):
+    # 단위가 '과제' 인지 '과제/담당업무' 인지에 따라 말을 바꾼다 — 프롬프트가 단위와 어긋나면
+    # 모델이 한 흐름 안에서 여러 업무를 섞거나, 반대로 과제를 더 쪼개려 든다.
+    by_task = not any(m.get("detail") for m in mats)
+    unit_word = "과제" if by_task else "담당 업무"
     lines = [
-        "당신은 업무 프로세스 분석가입니다. 아래는 한 담당자의 **담당 업무별** 활동 흔적입니다",
-        "(과제 / 담당 업무 단위, 시간순 신호 표본).",
+        f"당신은 업무 프로세스 분석가입니다. 아래는 한 담당자의 **{unit_word}별** 활동 흔적입니다",
+        f"({unit_word} 단위, 시간순 신호 표본).",
         "",
-        "담당 업무마다 판정하세요 — 반드시 아래 근거에서 관찰되는 것만, 지어내지 말 것:",
-        "1. role  — 이 담당 업무에서 이 사람의 역할 한 줄. 근거가 약하면 '판단 유보'.",
-        "2. steps — 그 업무가 실제로 흘러간 순서 3~6단계. 각 단계:",
+        f"{unit_word}마다 판정하세요 — 반드시 아래 근거에서 관찰되는 것만, 지어내지 말 것:",
+        f"1. role  — 이 {unit_word}에서 이 사람의 역할 한 줄. 근거가 약하면 '판단 유보'.",
+        f"2. steps — 그 {unit_word}가 실제로 흘러간 순서 3~6단계. 각 단계:",
         "   name(단계명) · desc(1문장) · evidence(근거 조각 하나) · cycle(주기) ·",
         "   agent(상|중|하: Agentic AI 대체 가능성 — 상=정형 반복 자동화 가능 / 중=보조 가능 /",
         "   하=판단·협상·책임) · agent_how(무슨 데이터를 입력받아 무엇을 자동으로 하는지 1문장).",
-        "   ★ **다른 담당 업무의 일을 이 흐름에 섞지 마세요.** 한 흐름은 그 업무 안에서만 이어집니다.",
-        "3. summary — 그 업무에서 실제로 한 일 2문장.",
+        f"   ★ **다른 {unit_word}의 일을 이 흐름에 섞지 마세요.** 한 흐름은 그 안에서만 이어집니다.",
+        f"3. summary — 그 {unit_word}에서 실제로 한 일 2문장.",
         "",
         "출력은 JSON 하나만 (설명 문장 금지). <...> 자리에 실제 값을 넣으세요:",
         # 자리표시자를 <...> 로 둬 **이 예시 자체가 유효한 JSON 이 아니게** 한다 —
         # 회수가 어긋나 우리 프롬프트가 되돌아와도 이것이 답으로 파싱되지 않는다(실측 사고).
-        '{"flows": [ {"key": <아래 목록의 "과제 / 담당업무" 를 그대로>, "role": <한 줄>,',
+        '{"flows": [ {"key": <아래 목록의 머리말 이름을 그대로>, "role": <한 줄>,',
         '   "summary": <2문장>, "steps": [ {"order": 1, "name": <단계명>, "desc": <1문장>,',
         '     "evidence": <근거 조각>, "cycle": <주기>, "agent": <상|중|하>,',
         '     "agent_how": <방안 1문장>} ]} ]}',
@@ -228,6 +260,9 @@ def build_prompt(mats):
     ]
     for m in mats:
         lines.append(f"## {m['key']}  (신호 {m['signals']}건)")
+        if m.get("parts"):
+            # 과제 단위일 때 그 안의 세부업무 배분을 알려 준다 — 단계를 나눌 재료가 된다(LM20 과 같은 정보량)
+            lines.append("[세부업무] " + " · ".join(f"{n} {v}MM" for n, v in m["parts"]))
         if m.get("desc"):
             lines.append(f"[정제 설명] {m['desc']}")
         lines += m["evidence"]
@@ -475,6 +510,31 @@ def _load_json(path):
         return None
 
 
+def workflow_unit():
+    """워크플로우 한 단위를 무엇으로 볼 것인가 — config.workflowUnit.
+
+    "과제"(기본, LM20 과 같음)   : 과제 하나가 한 흐름. 그 안의 세부업무는 MM 배분으로 보여 준다.
+    "과제/담당업무"              : 담당 업무마다 따로 흐름을 만든다(LM22 방식 — 잘게 쪼개진다).
+
+    LM22 에서 기본을 '과제/담당업무' 로 바꿨더니 실데이터에서 단위가 2.4배(5→12)가 되어
+    "너무 파편적" 이라는 제보가 왔다. 기본을 LM20 과 같게 되돌린다."""
+    try:
+        with open(os.path.join(ROOT, "config", "config.json"), encoding="utf-8-sig") as f:
+            v = str(json.load(f).get("workflowUnit") or "").strip()
+    except (OSError, ValueError, TypeError, AttributeError):
+        v = ""
+    return "과제/담당업무" if v.replace(" ", "") in ("과제/담당업무", "detail", "과제담당업무") else "과제"
+
+
+def _sync_unit():
+    """모듈 상수 UNIT 을 지금 설정값으로 맞춘다. 출력 JSON 의 unit 과 캐시 유효성 판정(prev.unit == UNIT)이
+    이 값을 보므로, 설정을 바꾸면 지난 흐름 캐시가 저절로 버려진다 — 단위가 달라졌는데 옛 결과를
+    되쓰면 화면과 설정이 어긋난다."""
+    global UNIT
+    UNIT = workflow_unit()
+    return UNIT
+
+
 def _cfg_int(key, default):
     """config.copilotAuto.<key> 정수 — 없거나 이상하면 default."""
     try:
@@ -500,6 +560,7 @@ def _fail_summary(fails):
 
 def main():
     import judge
+    _sync_unit()               # 출력 JSON 의 unit·캐시 유효성 판정을 지금 설정에 맞춘다
     d0, d1 = arg("--from"), arg("--to")
     tag = (f"{d0.replace('-', '')}-{d1.replace('-', '')}" if d0 and d1 else latest_tag())
     rep = os.path.join(ROOT, "report")
