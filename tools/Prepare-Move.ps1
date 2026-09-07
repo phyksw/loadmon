@@ -77,6 +77,16 @@ function Explain([string]$msg) {
     return '확인이 막혔습니다'
 }
 
+# 파일 수·용량을 잰다. 배열로 돌려주면 PowerShell 이 풀어 버려 호출부에서 값이 섞인다(실사고) - 객체로 돌려준다.
+function Folder-Size([string]$path) {
+    $r = [pscustomobject]@{ N = 0; MB = 0.0 }
+    if (-not (Test-Path -LiteralPath $path)) { return $r }
+    $f = @(Get-ChildItem -LiteralPath $path -Recurse -File -Force -ErrorAction SilentlyContinue)
+    $r.N = $f.Count
+    if ($f.Count) { $r.MB = [math]::Round((($f | Measure-Object Length -Sum).Sum) / 1MB, 1) }
+    return $r
+}
+
 Write-Host ''
 Say '  [PC 이동 준비] 이 폴더를 다른 PC 로 옮길 수 있게 정리합니다' 'Cyan'
 Write-Host ("  대상: " + $Root)
@@ -201,6 +211,35 @@ if ($movable) {
     Write-Host '     지난 PC 의 수집 데이터는 자동으로 data\추가PC\ 로 보관되고'
     Write-Host '     분석은 두 PC 를 합쳐 계산합니다.'
     Write-Host '   · report\upload_pending\ 의 업로드 대기 묶음도 함께 따라갑니다.'
+
+    # ── 옮길 크기 — 느린 진짜 원인은 data\copilot_profile 이다 ──────────────────
+    # 실측(LoadMonitor18): 전체 2,679개 551.6MB 중 copilot_profile 이 2,507개 529.2MB(파일수 94%·용량 96%).
+    # 그 안은 Edge 가 새 PC 에서 알아서 다시 받는 캐시(ProvenanceData·component_crx_cache·맞춤법 사전…)다.
+    # 로그인 세션은 따라가지 않는다 - Local State 의 암호 키가 Windows DPAPI 로 '이 PC·이 계정'에 묶여 있고
+    # 그 마스터키는 %APPDATA%\Microsoft\Protect\ 에 있어 폴더째 복사에 딸려오지 않는다(실측: 키 앞머리가
+    # 리터럴 'DPAPI', 쿠키 104건이 전부 'v10' 형식). 즉 가져가도 어차피 새 PC 에서 한 번 로그인해야 한다.
+    # 숫자는 PC 마다 다르므로 하드코딩하지 않고 지금 이 폴더를 잰다. 지우지는 않는다 - 복사에서 빼기만 하면 된다.
+    try {
+        $where2 = if ($restored) { $Root } else { $probe }
+        $prof = Folder-Size (Join-Path $where2 'data\copilot_profile')
+        if ($prof.N -gt 0) {
+            $allf = Folder-Size $where2
+            $slimN = $allf.N - $prof.N
+            $slimMB = [math]::Round($allf.MB - $prof.MB, 1)
+            Write-Host ''
+            Say '   [빠르게 옮기기] 이 폴더의 대부분은 옮길 필요가 없는 Edge 캐시입니다.' 'Cyan'
+            Write-Host ("      지금 이대로 : 파일 {0:N0}개 · {1:N1} MB" -f $allf.N, $allf.MB)
+            Write-Host ("      캐시를 빼면 : 파일 {0:N0}개 · {1:N1} MB" -f $slimN, $slimMB)
+            Write-Host '      data\copilot_profile 은 Copilot 로그인용 Edge 캐시입니다. 로그인 정보는 이 PC 에 묶여 있어'
+            Write-Host '      가져가도 살아나지 않습니다 - 새 PC 에서 [AI 연결 진단] 으로 한 번만 로그인하면 됩니다.'
+            Write-Host ''
+            Write-Host '      아래 한 줄을 명령 프롬프트에 붙여 넣으세요(대상 경로만 바꾸면 됩니다):'
+            $rc = ('robocopy "{0}" "E:\LoadMonitor22" /E /XD copilot_profile __pycache__ .ruff_cache /R:1 /W:1 /MT:16' -f $where2)
+            Say ("      " + $rc) 'Yellow'
+            try { Set-Clipboard -Value $rc -ErrorAction Stop; Write-Host '      (이 줄은 클립보드에도 복사해 두었습니다)' } catch {}
+            Write-Host '      원본 폴더는 지우지 마세요 - 새 PC 가 잘 도는 것을 확인한 뒤에 정리하시면 됩니다.'
+        }
+    } catch {}
     if (-not $restored) {
         # 이것은 실패가 아니다 - 옮길 수 있다는 사실은 이미 증명됐고, 이름만 임시 이름으로 남았다.
         # 예전에는 '[!] 되돌리지 못했습니다' 가 성공 배너 위에 찍혀 실패로 읽혔다(감사 확정).
@@ -225,6 +264,7 @@ if ($movable) {
                      "폴더 이동 가능 확인: 예",
                      "이름 되돌리기: " + $(if ($restored) { "성공" } else { "실패 - 임시 이름 유지 (" + $backRaw + ")" }),
                      "종료한 프로그램: " + $(if ($killedLog.Count) { $killedLog -join ', ' } else { "(없음 - 이미 모두 닫혀 있었음)" }),
+                     "옮길 크기(캐시 포함): " + $(try { $a = Folder-Size $where; "{0}개 {1}MB" -f $a.N, $a.MB } catch { "(재지 못함)" }),
                      "탐색기가 열어 둔 창: " + $(if ($explorer.Count) { (@($explorer | Select-Object -Unique) -join ', ') } else { "(없음)" }))
             [System.IO.File]::WriteAllLines((Join-Path $rep 'move_ready.txt'), $log, [System.Text.Encoding]::UTF8)
         }

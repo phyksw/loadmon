@@ -21,7 +21,7 @@ export.py                                              8,906 B  a4fed94a
 retag.py                                               6,128 B  8d6f81d3
 team_refine.py                                         6,565 B  96154dc4
 report_out.py                                         30,599 B  01944b84
-README.md                                             94,929 B  2f61e927
+README.md                                             96,557 B  1b697ada
 check.py                                               2,629 B  7badfe69
 judge.py                                              87,600 B  1bbf8d73
 mine.py                                               17,836 B  c751c51d
@@ -58,13 +58,13 @@ core/details.py                                       35,909 B  424072eb
 core/owner.py                                          1,488 B  1f1dc049
 core/progress.py                                       1,129 B  77a7579a
 core/projmap.py                                        6,619 B  27dcacc3
-docs/설정가이드.md                                         47,164 B  6cf85a1e
+docs/설정가이드.md                                         48,938 B  bff69f1f
 docs/사용안내.html                                       272,444 B  6082e12b
 tools/copilot_auto.py                                 62,295 B  513c44ef
 tools/Get-EmbeddedPython.ps1                           2,472 B  e8ce528c
 tools/check_page_js.py                                 8,818 B  f6d3b95b
 tools/lint.ps1                                         7,914 B  16140924
 tools/Make-Package.ps1                                10,733 B  f6623295
-tools/Prepare-Move.ps1                                17,286 B  cb791769
+tools/Prepare-Move.ps1                                20,564 B  e6c155eb
 tools/update_files.py                                  4,530 B  46a81ea6
-ui/app.py                                            309,897 B  4f27982b
+ui/app.py                                            309,992 B  c535e338
