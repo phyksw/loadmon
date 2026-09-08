@@ -31,6 +31,7 @@ LoadMonitor20 과 다른 점:
   {ok, tag, generated, model_name, unit:"과제"|"과제/담당업무", basis, flows[{model:"과제"(기본) 또는 "과제 / 담당업무",
    level1:"신제품개발|기술 내재화|양산준비|일반업무"(상위 · 정제 단계가 채운다. 없으면 빈 문자열),
    branch:"흐름 이름"(한 과제 안에서 서로 이어지지 않는 일은 흐름을 나눠 여러 건이 된다. 하나뿐이면 ""),
+   upstream/downstream:"같은 과제의 앞·뒤 담당업무 키"(이어짐만 표시 · 흐름은 합치지 않는다. 없으면 ""),
    project, detail, role, summary, steps[≤8], mm:{mm}, signals}], chunks, failed_chunks, salvaged_chunks,
    missing, missing_count, partial, note, last_error, dropped, merge:{rule, ai}, rows_units, empty_reason?}
 """
@@ -68,11 +69,15 @@ def _chat_note():
         return ""
     return " — 설정 chatTurns=0: 묶음마다 새 채팅" if n <= 0 else f" · 첫 왕복·실패 뒤·{n}회마다 새 채팅"
 MIN_SIGNALS = 3                 # 이보다 적은 신호는 흐름이라 할 수 없다
+MIN_STEPS = 3                   # 이보다 얕은 흐름은 잘린 답의 잔해로 보고 다시 묻는다(프롬프트도 3단계 이상 요구)
 FINISH_ROUNDS = 2               # 미판정으로 남은 단위를 자동으로 마저 묻는 회차(0 이면 안 한다)
 MAX_BRANCHES = 4                # 한 과제가 가질 수 있는 흐름 수 — 이어지지 않는 일을 억지로 엮지 않되
 #                                 무한정 쪼개지도 않게. 초과분은 버리지 않고 마지막 흐름에 잇는다.
 SAMPLE_N = 14                   # 단위당 시간순 표본 수
-MAX_UNITS_PER_CHUNK = 6         # 묶음당 단위 상한 — 답 길이(단위당 ≈1,100자)를 잘리지 않는 범위로
+MAX_UNITS_PER_CHUNK = 10        # 묶음당 단위 상한(마지막 방어선) — 실제 제동은 ANSWER_BUDGET 이 건다
+ANSWER_PER_UNIT = 1100          # 단위 하나가 요구하는 답 길이(실측 ≈1,100자)
+ANSWER_BUDGET = 5500            # 한 왕복이 요구할 답 길이 상한 — 넘으면 잘려 salvage 로 단계가 깎인다
+#                                 (실측: LM22 가 한 왕복에 9,520자를 요구해 보완2 4,760자의 2배였다)
 MAX_CHUNKS = 40                 # 한 실행의 묶음 상한 — 초과분은 다음 실행이 missing 을 보고 이어서
 MAX_CONSEC_FAIL = 3             # 연속 실패 상한 — Copilot 이 안 되는 날 남은 묶음을 헛되이 기다리지 않게
 UNIT = ""                      # 실행 시 workflow_unit() 로 채운다(아래) — 설정이 바뀌면 캐시가 무효화되어야 한다
@@ -287,9 +292,10 @@ def gather(rep, tag, amap=None):
         level1 = max(g1.items(), key=lambda kv: kv[1])[0] if g1 else ""
         out.append({"model": md, "detail": dt, "key": unit_key(md, dt), "signals": len(ss),
                     "level1": level1, "mm": mm, "desc": desc, "parts": parts,
-                    # 요청→산출 페어는 과제 단위 재료다 — 담당업무 카드에 과제 전체 페어를 붙이면 다른 업무의
-                    # 흐름이 섞여 들어온다(보완2 도 담당업무 단위에는 붙이지 않았다)
-                    "episodes": ([] if dt else (eps_by.get(f2) or [])[:5]), "evidence": ev})
+                    # 요청→산출 페어 — 파일 스스로 '흐름을 잇는 핵심 재료' 라 부르는 것인데 담당업무 카드에는
+                    # 한 건도 안 실려 모델이 시간순 나열만 보고 순서를 지어냈다(실측: 페어 0). 되살린다.
+                    # 과제 전체 페어라 다른 업무 것이 섞일 수 있으므로 '이 과제의 페어' 라고 밝혀 붙인다.
+                    "episodes": (eps_by.get(f2) or [])[:(5 if not dt else 3)], "evidence": ev})
     if not out:
         return [], basis, (f"흐름을 만들 단위가 없습니다 (단위 {len(groups)}개 · 신호 {len(sigs)}건)")
     # 상위(업무 성격)로 먼저 묶고 그 안에서 무거운 순 — LM20 처럼 상위 단위로도 읽히게 한다.
@@ -314,30 +320,53 @@ def build_prompt(mats):
         # 보완2 의 문안 그대로(간결 · 3~6단계 · 다른 업무 섞지 말 것). 업무 내용 예시는 두지 않는다 —
         # 사람마다 하는 일이 달라 예시가 틀이 된다(제보).
         lines = [
-            "당신은 업무 프로세스 분석가입니다. 아래는 한 담당자의 **담당 업무별** 활동 흔적입니다",
-            "(과제 / 담당 업무 단위, 시간순 신호 표본, AI 가 정제한 설명).",
+            "당신은 업무 프로세스 분석가입니다. 아래는 한 엔지니어의 **담당 업무별** 실제 활동 흔적입니다",
+            "(과제 / 담당 업무 단위 · 시간순 raw 신호 표본 · 요청→산출 페어 · AI 가 정제한 설명).",
             "",
-            "담당 업무마다 판정하세요 — 반드시 아래 근거에서 관찰되는 것만, 지어내지 말 것:",
-            "1. role  — 이 담당 업무에서 이 사람의 역할 한 줄. 근거가 약하면 '판단 유보'.",
-            "2. steps — 그 업무가 실제로 흘러간 순서 3~6단계. 각 단계:",
-            "   name(단계명) · desc(1문장) · evidence(근거 조각 하나) · cycle(주기) ·",
-            "   agent(상|중|하: Agentic AI 대체 가능성 — 상=정형 반복 자동화 가능 / 중=보조 가능 /",
-            "   하=판단·협상·책임) · agent_how(무슨 데이터를 입력받아 무엇을 자동으로 하는지 1문장).",
+            "담당 업무마다 세 가지를 판정하세요 — 반드시 아래 근거에서 관찰되는 것만, 지어내지 말 것:",
+            "1. role — 이 담당 업무에서 이 사람의 역할 한 줄.",
+            "   근거에 드러난 것만 쓰세요 — 누구에게 받아 무엇을 만들어 누구에게 넘겼는지,",
+            "   주도했는지 요청을 받아 처리했는지. 근거가 약하면 '판단 유보'.",
+            "2. steps — 일이 실제로 흘러간 **순서**. 시간순 신호와 요청→산출 페어에서 반복되는",
+            "   흐름을 읽어 3~7단계로. 각 단계: name(단계명) · desc(무슨 일을 했는지 1문장) ·",
+            "   evidence(근거가 된 신호 원문 조각 하나) · cycle(반복 주기: 매일/주 1회/수시 등).",
             "   ★ **다른 담당 업무의 일을 이 흐름에 섞지 마세요.** 한 흐름은 그 업무 안에서만 이어집니다.",
-            "3. summary — 그 업무에서 실제로 한 일 2문장.",
+            "   ★★ 다만 한 업무의 산출물이 **같은 과제의 다른 담당 업무**의 입력이 되면, 그 상대 업무명을",
+            "      upstream(앞) · downstream(뒤) 에 적으세요. 아래 '### 과제:' 머리말 밑의 업무들끼리만입니다.",
+            "      흐름을 합치지는 말고, 이어진다는 사실만 적습니다.",
+            "3. 각 단계의 agent — Agentic AI 가 그 단계를 대체·보조할 가능성:",
+            "   '상'(정형 반복 — 지금 기술로 자동화 가능) / '중'(보조 가능 — 사람 확인 필요) /",
+            "   '하'(판단·협상·책임 — 사람 몫). agent_how 에 구체 방안 1문장",
+            "   (무슨 데이터를 입력받아 무엇을 자동으로 하는지).",
+            "",
+            "summary — 이 담당 업무에서 실제로 한 일 2문장 요약.",
             "",
             "출력은 JSON 하나만 (설명 문장 금지). <...> 자리에 실제 값을 넣으세요:",
             '{"flows": [ {"key": <아래 목록의 "과제 / 담당업무" 를 그대로>, "role": <한 줄>,',
+            '   "upstream": <앞 업무명 또는 "">, "downstream": <뒤 업무명 또는 "">,',
             '   "summary": <2문장>, "steps": [ {"order": 1, "name": <단계명>, "desc": <1문장>,',
             '     "evidence": <근거 조각>, "cycle": <주기>, "agent": <상|중|하>,',
             '     "agent_how": <방안 1문장>} ]} ]}',
             "",
         ]
+        # 같은 과제의 담당업무를 한 덩어리로 보여 준다 — 묶음이 과제 단위로 짜이므로 여기서도 과제 머리말을
+        # 두어야 모델이 '이 업무들은 서로 이어질 수 있다' 를 안다. 요청→산출 페어는 과제 블록에 한 번만.
+        _pj_prev = None
         for m in mats:
-            lines.append(f"## {m['key']}  (신호 {m['signals']}건 · 실측 {m['mm']} MM)"
-                         + (f"  [상위: {m['level1']}]" if m.get("level1") else ""))
+            _pj = m["model"]
+            if _pj != _pj_prev:
+                _sib = [x["detail"] for x in mats if x["model"] == _pj]
+                lines.append(f"### 과제: {_pj} — 담당 업무 {len(_sib)}개"
+                             + (f"  [상위: {m['level1']}]" if m.get("level1") else ""))
+                if len(_sib) > 1:
+                    lines.append("    (아래 ## 들은 모두 이 과제의 업무입니다 — 서로 이어지면 upstream/downstream 에 적으세요)")
+                for e in (m.get("episodes") or []):
+                    lines.append(f"    [요청→산출] {e}")
+                _pj_prev = _pj
+            lines.append(f"## {m['key']}  (신호 {m['signals']}건 · 실측 {m['mm']} MM)")
             if m.get("desc"):
                 lines.append(f"[정제 설명] {m['desc']}")
+            lines.append("[시간순 신호 표본]")
             lines += m["evidence"]
             lines.append("")
         return "\n".join(lines)
@@ -598,7 +627,20 @@ def sanitize_flows(raw_flows, keys, mats_by=None, dropped=None):
         seen.add(bk)
         n_branch[key] = n_branch.get(key, 0) + 1
         hit = mats_by.get(key) or {}
+        # 같은 과제 안의 앞/뒤 업무 — 흐름을 합치지 않고 '이어진다' 는 사실만 남긴다.
+        # 상대 이름이 같은 과제의 실제 단위로 풀릴 때만 인정한다(지어낸 이름 방지).
+        def _link(v):
+            r = str(v or "").strip()
+            if not r:
+                return ""
+            k2 = _resolve_key(r, keys, low_map, fold_map, norm_map, note_map, ns_map, fns_map)
+            if not k2 or k2 == key:
+                return ""
+            a, b = (mats_by.get(k2) or {}), hit
+            return k2 if fold(a.get("model", "")) == fold(b.get("model", "")) else ""
+
         out.append({"model": key, "branch": branch, "level1": hit.get("level1", ""),
+                    "upstream": _link(f.get("upstream")), "downstream": _link(f.get("downstream")),
                     "project": hit.get("model", ""), "detail": hit.get("detail", ""),
                     "role": str(f.get("role") or "")[:160],
                     "summary": str(f.get("summary") or "")[:400],
@@ -610,23 +652,67 @@ def sanitize_flows(raw_flows, keys, mats_by=None, dropped=None):
 
 
 def _chunks(mats, budget=PROMPT_BUDGET, max_units=None):
-    r"""단위를 프롬프트 크기 기준으로 나눈다 — 한 묶음이 너무 커지지 않게.
-    단위 하나가 예산을 넘으면 그 하나만으로 한 묶음(더 쪼갤 수 없다).
-    max_units: 묶음당 단위 수 상한 — 신호가 적어 짧은 단위가 15개씩 들어가면 **답**이 1.5만 자를 넘어
-    Copilot 이 중간에 끊는다(실측 v22 픽스처: 1묶음 15단위 → 예상 답 16,500자). 입력 예산과 별개로 묶는다."""
+    r"""단위를 **과제 덩어리**로 묶는다 — 같은 과제의 담당업무가 묶음 경계로 갈리면 연계를 볼 수 없다
+    (실측: 광학 설계 8개가 묶음1·2 로 갈렸다). 과제 하나가 예산이나 예상 답 길이를 넘을 때만 그 안에서 쪼갠다.
+
+    두 가지를 함께 막는다:
+      · 입력 — 프롬프트 글자 수 ≤ budget. base 는 **그 모드의 머리말**로 잰다. 예전에는 build_prompt([]) 를
+        썼는데 빈 목록은 과제 모드로 읽혀 다른 머리말(1,330자)을 재는 바람에 단위당 비용을 989자로 잡았다
+        (참값 1,533자) — 예산 가드가 사실상 죽어 있었다(실측).
+      · 출력 — 단위 하나당 답이 약 1,100자다. 묶음이 커지면 답이 잘려 salvage 로 떨어지고 단계가 깎인다.
+        ANSWER_BUDGET 로 예상 답 길이를 눌러, 단위 수 상한(고정 6)보다 실제에 맞게 막는다."""
     out, cur, size = [], [], 0
-    base = len(build_prompt([]))
+    if not mats:
+        return []
+    base = len(build_prompt([mats[0]])) - len(_unit_block(mats[0]))
     cap = max_units or MAX_UNITS_PER_CHUNK
+
+    def _fits(extra_units, extra_chars):
+        return (base + size + extra_chars <= budget
+                and (len(cur) + extra_units) * ANSWER_PER_UNIT <= ANSWER_BUDGET
+                and len(cur) + extra_units <= cap)
+
+    # 과제별 덩어리 — mats 는 이미 상위 → 과제 → 무게 순으로 정렬돼 있다
+    lumps = []
     for m in mats:
-        one = len(build_prompt([m])) - base
-        if cur and (base + size + one > budget or len(cur) >= cap):
+        if lumps and lumps[-1][0] == m["model"]:
+            lumps[-1][1].append(m)
+        else:
+            lumps.append((m["model"], [m]))
+    for _pj, group in lumps:
+        gsize = sum(len(_unit_block(m)) for m in group)
+        if cur and not _fits(len(group), gsize):
             out.append(cur)
             cur, size = [], 0
-        cur.append(m)
-        size += one
+        if _fits(len(group), gsize):
+            cur.extend(group)
+            size += gsize
+            continue
+        # 과제 하나가 통째로 안 들어간다 — 그 과제 안에서만 쪼갠다(다른 과제와는 섞지 않는다)
+        for m in group:
+            one = len(_unit_block(m))
+            if cur and not _fits(1, one):
+                out.append(cur)
+                cur, size = [], 0
+            cur.append(m)
+            size += one
+        out.append(cur)
+        cur, size = [], 0
     if cur:
         out.append(cur)
-    return out or [mats]
+    return [c for c in out if c] or [mats]
+
+
+def _unit_block(m):
+    """그 단위가 프롬프트에 더하는 글자(머리말 제외) — _chunks 의 크기 계산용.
+    머리말은 단위 하나짜리 프롬프트에서 첫 '### '/'## ' 앞까지다. 모드마다 머리말이 다르므로
+    build_prompt([]) 로 재면 안 된다 — 빈 목록은 과제 모드로 읽혀 다른 머리말을 잰다(실측 결함)."""
+    p = build_prompt([m])
+    for mark in ("\n### ", "\n## "):
+        k = p.find(mark)
+        if k >= 0:
+            return p[k + 1:]
+    return p
 
 
 def _save_json(path, obj):
@@ -775,7 +861,9 @@ def main():
     kept = []
     if prev and prev.get("tag") == tag and prev.get("unit") == UNIT and isinstance(prev.get("flows"), list):
         for f in prev["flows"]:
-            if not isinstance(f, dict) or f.get("model") not in keys or not f.get("steps"):
+            # 단계가 MIN_STEPS 미만인 흐름은 잘린 답에서 온 것일 수 있다 — 이어받지 말고 다시 묻는다.
+            if (not isinstance(f, dict) or f.get("model") not in keys
+                    or len(f.get("steps") or []) < MIN_STEPS):
                 continue
             hit = keys[f["model"]]
             f = dict(f, project=hit["model"], detail=hit["detail"], mm={"mm": hit["mm"]}, signals=hit["signals"])
@@ -819,16 +907,42 @@ def main():
         if not info.get("ok"):
             return [], info
         model_name = model_name or str(info.get("model") or "")
-        got = sanitize_flows(o.get("flows"), {m["key"]: m for m in part}, keys, dropped)
+        # 인정 범위 = 이 묶음의 단위 + **같은 과제의 다른 단위**. 예전에는 묶음 키만 인정해,
+        # 같은 채팅으로 문맥이 이어져도 앞·뒤 묶음의 업무를 언급한 답을 통째로 버렸다
+        # (실측: dropped 8·15건이 전부 유효한 단위 이름이었다). 보완2 는 전체 keys 로 살렸다.
+        # 다른 과제 이름은 계속 버린다(지어낸 단위 방지). 이미 판정된 키는 아래에서 걸러 중복을 막는다.
+        _pjs = {fold(m["model"]) for m in part}
+        _allow = {k: v for k, v in keys.items() if fold(v["model"]) in _pjs}
+        _allow.update({m["key"]: m for m in part})
+        got = sanitize_flows(o.get("flows"), _allow, keys, dropped)
+        _have = {f["model"] for f in flows}
+        got = [g for g in got if g["model"] not in _have]      # 앞 묶음에서 이미 판정한 것은 덮지 않는다
+        # 잘린 답(salvage)의 마지막 흐름은 2~3단계로 깎여 온다. 그것을 '완료' 로 저장하면 캐시가
+        # 영구 보존해 다시 묻지 않는다(실측) — 얕은 흐름은 이번 답에서 빼고 미판정으로 남겨 재질문한다.
+        if info.get("how") == "salvaged" and got:
+            _thin = [g for g in got if len(g.get("steps") or []) < MIN_STEPS]
+            if _thin and len(_thin) < len(got):
+                got = [g for g in got if len(g.get("steps") or []) >= MIN_STEPS]
         if not got:
             why = ("응답이 잘려 건질 흐름이 없음" if info.get("how") == "salvaged" else
                    ("응답의 업무명이 분석된 단위와 달라 전부 버림: " + ", ".join(dropped[-3:]) if dropped
                     else "응답에 flows 가 없거나 형식이 다름"))
+            # 형식을 틀린 그 채팅에 재질문을 그대로 이어 붙이면 같은 형식으로 또 답한다 —
+            # judge 에 알려 다음 왕복을 새 채팅에서 시작하게 한다(judge·refine 은 이미 그렇게 한다).
+            try:
+                judge.note_bad_reply()
+            except Exception:  # noqa: BLE001 - 알림 실패가 판정을 막지 않게
+                pass
             return [], {"ok": False, "kind": "parse", "error": why[:120], "fatal": False, "phase": "parse",
                         "hint": "묶음을 나눠 다시 묻습니다 — 반복되면 report\\judge_flow_*.md 의 답을 확인"}
         return got, info
 
+    _order = {m["key"]: i for i, m in enumerate(mats)}
+
     def write_out():
+        # 잘린 답 복구·적응 분할·자동 마무리를 거치면 판정 순서가 뒤섞여, 같은 과제가 화면에서 두 덩어리로
+        # 갈라져 보였다(제보의 '연계되는 업무가 분할'). 저장 직전에 재료 순서(상위 → 과제 → 무게)로 되돌린다.
+        flows.sort(key=lambda f: _order.get(f.get("model"), 10 ** 6))
         done = {f["model"] for f in flows}
         missing = [k for k in keys if k not in done]
         why, how = _fail_summary(fails) if (missing or failed) else ("", "")

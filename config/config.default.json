@@ -511,9 +511,9 @@
  "copilotAuto": {
   "url": "https://m365.cloud.microsoft/chat",
   "port": 9333,
-  "stablePolls": 5,
+  "stablePolls": 8,
   "pollSec": 3,
-  "replyTimeoutSec": 240,
+  "replyTimeoutSec": 480,
   "model": "GPT-5.6",
   "judgeChunk": 40,
   "refineChunk": 20,

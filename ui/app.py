@@ -3281,6 +3281,7 @@ async function loadFlow(){
    return head+`<details${fi===0?" open":""}${hasDet?' style="margin-left:6px"':''}><summary>${hasDet?"":l1b}${ttl}${br}
      <span class="state">${(mm.mm!=null)?mm.mm+" MM · ":""}단계 ${(f.steps||[]).length}개 · ${esc((f.role||"판단 유보").split("—")[0].trim())}</span></summary>
     <div class="body">
+    ${(f.upstream||f.downstream)?`<div class="note" style="margin:2px 0 6px">${f.upstream?`← 앞 업무: <b>${esc(String(f.upstream).split(" / ").pop())}</b>`:""}${(f.upstream&&f.downstream)?" &nbsp;·&nbsp; ":""}${f.downstream?`→ 다음 업무: <b>${esc(String(f.downstream).split(" / ").pop())}</b>`:""}</div>`:""}
     <div style="margin:2px 0 6px"><b>역할:</b> ${esc(f.role)||"판단 유보"}</div>
     ${f.summary?`<div class="note" style="margin-bottom:6px">${esc(f.summary)}</div>`:""}
     ${mmBar}

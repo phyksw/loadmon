@@ -664,7 +664,12 @@ def report_island(tag, full=True, log=_say):
             + (f'<span class="dim"> · {_esc(f.get("branch"))}</span>' if f.get("branch") else "")
             + f'<span class="state">{mm_txt}단계 {len(f.get("steps") or [])}개 · '
             f'{_esc(role0)}</span></summary><div class="body">'
-            f'<div style="margin:2px 0 6px"><b>역할:</b> {_esc(f.get("role")) or "판단 유보"}</div>'
+            + (('<div class="note" style="margin:2px 0 6px">'
+                + ('← 앞 업무: <b>' + _esc(str(f.get("upstream")).split(" / ")[-1]) + '</b>' if f.get("upstream") else '')
+                + (' &nbsp;·&nbsp; ' if (f.get("upstream") and f.get("downstream")) else '')
+                + ('→ 다음 업무: <b>' + _esc(str(f.get("downstream")).split(" / ")[-1]) + '</b>' if f.get("downstream") else '')
+                + '</div>') if (f.get("upstream") or f.get("downstream")) else '')
+            + f'<div style="margin:2px 0 6px"><b>역할:</b> {_esc(f.get("role")) or "판단 유보"}</div>'
             + (f'<div class="note" style="margin:0 0 6px">{_esc(f.get("summary"))}</div>'
                if f.get("summary") else "")
             + dbar
