@@ -98,11 +98,41 @@ def _spread(lst, n):
     return [lst[round(i * step)] for i in range(n)]
 
 
-ETC_DETAIL = "기타 담당업무"      # 신호가 적어 따로 세우지 못한 것들을 과제 안에서 모으는 자리
+THIN = []                       # gather 가 문턱 미달로 뺀 (과제, 담당업무, 신호수) — main 이 알린다
 
 
 def unit_key(md, dt):
     return f"{md}{KEY_JOIN}{dt}" if dt else str(md)
+
+
+def _seed_from_refine(amap, tag, rep, rows_plain):
+    """refine 이 한 행으로 합친 원본 (과제, 담당업무) 들을 별칭 맵에 보탠다 → 새로 넣은 수.
+    같은 과제 안의 병합만 쓰고, 괄호 꼬리가 다르면 거부(_accept_group3), 대표는 MM 큰 이름,
+    캐시에 이미 있는 방향은 지킨다(_set_alias). 원본 파일은 건드리지 않는다."""
+    rmap = _refine_orig(tag, rep)
+    if not rmap or not rows_plain:
+        return 0
+    by_pj, mm_w = details._detail_pools(rows_plain)
+    n = 0
+    for rk, pairs in rmap.items():
+        pjs = {p for p, _d in pairs if p}
+        if len(pjs) != 1:
+            continue                         # 과제를 넘나드는 병합은 워크플로우 단위에 쓰지 않는다
+        pj = next(iter(pjs))
+        pool = by_pj.get(pj) or set()
+        names = [d for _p, d in pairs if d]
+        acc = details._accept_group3(names, pool, {d: mm_w.get((pj, d), 0.0) for d in pool})
+        if not acc:
+            continue                         # 실재하지 않는 이름·1개짜리·괄호 꼬리 상이 → 거부(가드는 그대로)
+        # 대표 이름은 refine 이 지은 이름(refine_map 키 '과제/정제이름' 의 뒷부분)으로 — 그래야 워크플로우 카드가
+        # 분석 리포트 '업무별 상세' 표와 같은 이름으로 보인다. 신호·행 모두 apply_detail_map 으로 그 이름이 되므로
+        # 신호 축에 없는 이름이어도 단위 키는 어긋나지 않는다.
+        refined = rk.split("/", 1)[1].strip() if "/" in rk else ""
+        canon = refined or acc[0]
+        for x in names:
+            if x != canon and details._set_alias(amap, pj, x, canon):
+                n += 1
+    return n
 
 
 def _refine_orig(tag, rep=None):
@@ -169,6 +199,9 @@ def gather(rep, tag, amap=None):
                 l2 = (r.get("Level 2") or "").strip()
                 l3 = (r.get("Level 3") or "").strip()
                 pairs = rmap.get(f"{l2}/{l3}", []) or [(l2, l3)]
+                if d:
+                    # 별칭 병합이 refine 이 지은 이름을 대표로 쓰면 단위 키가 그 이름이 된다 — 그 축으로도 색인
+                    desc_by.setdefault((fold(l2 or "공통"), fold(l3 or "기타")), d[:120])
                 for (o2, o3) in pairs:
                     if d:
                         desc_by.setdefault((fold(o2 or "공통"), fold(o3 or "기타")), d[:120])
@@ -220,19 +253,15 @@ def gather(rep, tag, amap=None):
         # 기본(LM20 과 같음)은 과제 하나가 한 단위다 — 담당업무로 더 쪼개지 않는다.
         groups.setdefault((md or "공통", (dt or "기타") if unit == "과제/담당업무" else ""), []).append(s)
 
-    # 담당업무 단위일 때만 문턱을 쓴다. 미달분은 버리지 않고 같은 과제의 '기타 담당업무' 로 모은다
-    # (실측: 그냥 버리면 16조합·신호 19건=12% 가 화면에서 사라졌다).
-    # 과제 단위(기본)에는 문턱을 두지 않는다 — LM20 도 두지 않았고, 과제는 원래 수가 적다.
+    # 담당업무 단위(기본)는 보완2 와 같이 신호 3건 미만을 뺀다. 예전에 그것들을 '<과제> / 기타 담당업무' 로
+    # 모았는데, 그 자체가 서로 무관한 일을 한 타임라인에 엮는 뭉치였다(제보) — 없앤다.
+    # 별칭 병합이 신호 축에 제대로 걸리면 조각이 합쳐져 문턱 미달이 크게 준다. 뺀 것은 세어 두고 알린다.
     floor = MIN_SIGNALS if unit == "과제/담당업무" else 1
-    if unit == "과제/담당업무":
-        small = {}
-        for (md, dt), ss in list(groups.items()):
-            if len(ss) < floor:
-                small.setdefault(md, []).extend(ss)
-                del groups[(md, dt)]
-        for md, ss in small.items():
-            if len(ss) >= floor:
-                groups[(md, ETC_DETAIL)] = groups.get((md, ETC_DETAIL), []) + ss
+    THIN.clear()
+    for (md, dt), ss in list(groups.items()):
+        if len(ss) < floor:
+            THIN.append((md, dt, len(ss)))
+            del groups[(md, dt)]
     # 표본 수도 LM20 과 같은 눈금 — 단위가 적으면 과제마다 더 많이 보여 준다
     per_cap = SAMPLE_N if unit == "과제/담당업무" else (30 if len(groups) <= 3 else 20)
     out = []
@@ -258,12 +287,20 @@ def gather(rep, tag, amap=None):
         level1 = max(g1.items(), key=lambda kv: kv[1])[0] if g1 else ""
         out.append({"model": md, "detail": dt, "key": unit_key(md, dt), "signals": len(ss),
                     "level1": level1, "mm": mm, "desc": desc, "parts": parts,
-                    "episodes": (eps_by.get(f2) or [])[:5], "evidence": ev})
+                    # 요청→산출 페어는 과제 단위 재료다 — 담당업무 카드에 과제 전체 페어를 붙이면 다른 업무의
+                    # 흐름이 섞여 들어온다(보완2 도 담당업무 단위에는 붙이지 않았다)
+                    "episodes": ([] if dt else (eps_by.get(f2) or [])[:5]), "evidence": ev})
     if not out:
         return [], basis, (f"흐름을 만들 단위가 없습니다 (단위 {len(groups)}개 · 신호 {len(sigs)}건)")
     # 상위(업무 성격)로 먼저 묶고 그 안에서 무거운 순 — LM20 처럼 상위 단위로도 읽히게 한다.
     L1_ORDER = {"신제품개발": 0, "기술 내재화": 1, "양산준비": 2, "일반업무": 3}
+    # 과제(중위) 안에서는 무거운 순 — 담당업무 카드가 자기 과제 밑에 모여 '상위 → 과제 → 담당업무' 로 읽힌다.
+    # 과제 순서 자체는 그 과제의 MM 합(내림차순)으로 정한다.
+    pj_mm = {}
+    for x in out:
+        pj_mm[fold(x["model"])] = pj_mm.get(fold(x["model"]), 0.0) + x["mm"]
     out.sort(key=lambda x: (L1_ORDER.get(x.get("level1") or "", 9), x.get("level1") or "힣",
+                            -pj_mm.get(fold(x["model"]), 0.0), fold(x["model"]),
                             -(x["mm"] * 100 + x["signals"])))
     return out, basis, ""
 
@@ -273,6 +310,37 @@ def build_prompt(mats):
     # 모델이 한 흐름 안에서 여러 업무를 섞거나, 반대로 과제를 더 쪼개려 든다.
     by_task = not any(m.get("detail") for m in mats)
     unit_word = "과제" if by_task else "담당 업무"
+    if not by_task:
+        # 보완2 의 문안 그대로(간결 · 3~6단계 · 다른 업무 섞지 말 것). 업무 내용 예시는 두지 않는다 —
+        # 사람마다 하는 일이 달라 예시가 틀이 된다(제보).
+        lines = [
+            "당신은 업무 프로세스 분석가입니다. 아래는 한 담당자의 **담당 업무별** 활동 흔적입니다",
+            "(과제 / 담당 업무 단위, 시간순 신호 표본, AI 가 정제한 설명).",
+            "",
+            "담당 업무마다 판정하세요 — 반드시 아래 근거에서 관찰되는 것만, 지어내지 말 것:",
+            "1. role  — 이 담당 업무에서 이 사람의 역할 한 줄. 근거가 약하면 '판단 유보'.",
+            "2. steps — 그 업무가 실제로 흘러간 순서 3~6단계. 각 단계:",
+            "   name(단계명) · desc(1문장) · evidence(근거 조각 하나) · cycle(주기) ·",
+            "   agent(상|중|하: Agentic AI 대체 가능성 — 상=정형 반복 자동화 가능 / 중=보조 가능 /",
+            "   하=판단·협상·책임) · agent_how(무슨 데이터를 입력받아 무엇을 자동으로 하는지 1문장).",
+            "   ★ **다른 담당 업무의 일을 이 흐름에 섞지 마세요.** 한 흐름은 그 업무 안에서만 이어집니다.",
+            "3. summary — 그 업무에서 실제로 한 일 2문장.",
+            "",
+            "출력은 JSON 하나만 (설명 문장 금지). <...> 자리에 실제 값을 넣으세요:",
+            '{"flows": [ {"key": <아래 목록의 "과제 / 담당업무" 를 그대로>, "role": <한 줄>,',
+            '   "summary": <2문장>, "steps": [ {"order": 1, "name": <단계명>, "desc": <1문장>,',
+            '     "evidence": <근거 조각>, "cycle": <주기>, "agent": <상|중|하>,',
+            '     "agent_how": <방안 1문장>} ]} ]}',
+            "",
+        ]
+        for m in mats:
+            lines.append(f"## {m['key']}  (신호 {m['signals']}건 · 실측 {m['mm']} MM)"
+                         + (f"  [상위: {m['level1']}]" if m.get("level1") else ""))
+            if m.get("desc"):
+                lines.append(f"[정제 설명] {m['desc']}")
+            lines += m["evidence"]
+            lines.append("")
+        return "\n".join(lines)
     lines = [
         f"당신은 업무 프로세스 분석가입니다. 아래는 한 엔지니어의 {unit_word}별 실제 활동 흔적입니다",
         "(시간순 raw 신호 표본, 요청→산출 페어, AI 가 정제한 세부업무 설명).",
@@ -577,17 +645,18 @@ def _load_json(path):
 def workflow_unit():
     """워크플로우 한 단위를 무엇으로 볼 것인가 — config.workflowUnit.
 
-    "과제"(기본, LM20 과 같음)   : 과제 하나가 한 흐름. 그 안의 세부업무는 MM 배분으로 보여 준다.
-    "과제/담당업무"              : 담당 업무마다 따로 흐름을 만든다(LM22 방식 — 잘게 쪼개진다).
+    "과제/담당업무"(기본 · LM20+보완2 와 같음): 담당 업무(중위개체)마다 따로 흐름을 만든다.
+        보완2 문서: "과제 하나를 한 흐름으로 물어보면 서로 관계 없는 업무가 한 줄로 엮인다."
+        잘게 갈라진 세부업무는 흐름을 만들기 **전에** 별칭 맵(규칙·Copilot·정제 결과)으로 먼저 합친다.
+    "과제"                                    : 과제 하나를 한 흐름으로(옛 방식 — 무관한 일이 엮인다).
 
-    LM22 에서 기본을 '과제/담당업무' 로 바꿨더니 실데이터에서 단위가 2.4배(5→12)가 되어
-    "너무 파편적" 이라는 제보가 왔다. 기본을 LM20 과 같게 되돌린다."""
+    '너무 세분화' 제보의 진짜 원인은 단위가 아니라 병합 맵이 신호 축에 적용되지 않던 것이었다(main 참고)."""
     try:
         with open(os.path.join(ROOT, "config", "config.json"), encoding="utf-8-sig") as f:
             v = str(json.load(f).get("workflowUnit") or "").strip()
     except (OSError, ValueError, TypeError, AttributeError):
         v = ""
-    return "과제/담당업무" if v.replace(" ", "") in ("과제/담당업무", "detail", "과제담당업무") else "과제"
+    return "과제" if v.replace(" ", "") in ("과제", "task", "project") else "과제/담당업무"
 
 
 def _sync_unit():
@@ -637,11 +706,25 @@ def main():
 
     # ① 세부업무 표기 병합 맵 — 규칙 + (--no-merge 아니면) Copilot. 실패해도 워크플로우는 돈다.
     sender = None if "--no-merge" in sys.argv else judge.copilot_send
-    amap, n_rule, n_ai = {}, 0, 0
+    amap, n_rule, n_ai, n_ref = {}, 0, 0, 0
     try:
-        amap, n_rule, n_ai = details.detail_merge_map(tag, sender, log=lambda m: print(f"[flow]{m}"))
-        if n_rule or n_ai:
-            print(f"[flow] 세부업무 유사 병합: 규칙 {n_rule}건 · Copilot {n_ai}건 → "
+        # ★ 병합 맵은 **신호 축(원본 mm_rows 이름)** 으로 만든다. 예전에는 read_rows 기본(정제본 우선)으로
+        #   만들어 별칭 키가 정제본 이름이었고, 원본 이름을 가진 신호에는 하나도 적용되지 않았다
+        #   (규칙 병합 0건 실측). LM20 refine 은 Level 3 를 유지했지만 LM22 refine 은 합치고 바꾼다.
+        rows_plain, _pf = details.read_rows(tag, rep, plain=True)
+        amap, n_rule, n_ai = details.detail_merge_map(tag, sender, rows=rows_plain or None,
+                                                      log=lambda m: print(f"[flow]{m}"))
+        # refine 이 '같은 일' 로 합친 원본 담당업무들도 별칭으로 흡수한다 — 정제가 이미 내린 동일성 판정을
+        # 워크플로우 단위에도 적용해야 조각이 합쳐진다(보완2 시절엔 refine 이 이름을 안 바꿔 저절로 그랬다).
+        n_ref = _seed_from_refine(amap, tag, rep, rows_plain or [])
+        if n_ref:
+            amap = details._flatten3_map(amap)
+            try:
+                details.save_detail_aliases(amap)
+            except OSError:
+                pass
+        if n_rule or n_ai or n_ref:
+            print(f"[flow] 세부업무 유사 병합: 규칙 {n_rule}건 · Copilot {n_ai}건 · 정제 결과 {n_ref}건 → "
                   "config\\detail_aliases.json (한 줄 지우면 그 병합만 원복)")
         elif amap:
             print(f"[flow] 세부업무 병합 맵 {len(amap)}건 적용(캐시)")
@@ -673,6 +756,12 @@ def main():
         print("[flow] 판정(model) 열이 없어 규칙 분류(project/activity) 축으로 만듭니다 — "
               "과제명이 AI 가 정리한 상위개체가 아니라 품질이 낮습니다(basis: 규칙)")
     keys = {m["key"]: m for m in mats}
+    if THIN:
+        # 어떤 담당업무가 왜 빠졌는지 화면에 남긴다 — 예전에는 조용히 사라져 '워크플로우가 너무 적다' 로 읽혔다
+        print(f"[flow] 신호 {MIN_SIGNALS}건 미만이라 흐름을 만들지 않은 담당 업무 {len(THIN)}개: "
+              + ", ".join(f"{md} / {dt}({n})" for md, dt, n in THIN[:6])
+              + (" …" if len(THIN) > 6 else "")
+              + " — 별칭 병합이 더 묶이면 다음 실행에 합쳐져 들어옵니다")
 
     # 세부 병합 왕복이 '사람이 손대야 하는' 이유로 죽었으면 흐름 왕복도 같은 이유로 죽는다 — 헛되이 보내지 않는다
     if merge_fail.get("fatal") and sender is not None:

@@ -3244,7 +3244,7 @@ async function loadFlow(){
  }else{
   // 상위(Level 1)가 바뀌는 자리마다 머리말을 넣어 '상위 → 과제' 계층이 눈에 보이게 한다.
   // flow.py 가 상위로 묶어 정렬해 내보내므로 여기서는 바뀌는 지점만 잡으면 된다.
-  let _l1prev=null;
+  let _l1prev=null,_pjprev=null;
   el.innerHTML=btn+d.flows.map(f=>{
    const mm=f.mm||{}, det=Object.entries(mm.details||{});
    const mtot=det.reduce((s,[,v])=>s+v,0)||1;
@@ -3260,8 +3260,14 @@ async function loadFlow(){
       ${s.agent_how?`<div style="font-size:11px;color:#4a5159;margin-top:2px">${esc(s.agent_how)}</div>`:""}</td></tr>`).join("");
    const fi=d.flows.indexOf(f);
    const cur=f.level1||"";
-   const head=(cur!==_l1prev)?`<div style="margin:14px 0 6px;font-size:12px;color:#4a5159"><b>${esc(cur||"상위 미분류")}</b> <span class="dim">— ${new Set(d.flows.filter(x=>(x.level1||"")===cur).map(x=>x.model)).size}개 과제</span></div>`:"";
-   _l1prev=cur;
+   // 계층: 상위(업무 성격) → 과제(중위) → 담당업무(하위, 카드). 보완2 처럼 담당업무마다 흐름이 따로 서되,
+   // 화면에서는 자기 과제 밑에 모여 있어야 '뒤죽박죽' 으로 읽히지 않는다.
+   const pj=f.project||f.model, hasDet=!!f.detail;
+   const pjOf=x=>x.project||x.model;
+   let head="";
+   if(cur!==_l1prev){head+=`<div style="margin:14px 0 6px;font-size:12px;color:#4a5159"><b>${esc(cur||"상위 미분류")}</b> <span class="dim">— ${new Set(d.flows.filter(x=>(x.level1||"")===cur).map(pjOf)).size}개 과제</span></div>`;_pjprev=null;}
+   if(hasDet&&pj!==_pjprev){head+=`<div style="margin:8px 0 4px 6px;font-size:13px"><b>${esc(pj)}</b> <span class="dim">— 담당 업무 ${d.flows.filter(x=>pjOf(x)===pj&&(x.level1||"")===cur).length}개</span></div>`;}
+   _l1prev=cur;_pjprev=pj;
    // 과제 수만큼 길어지는 탭 — 접이식으로. 제목 줄에 역할 요약을 실어 접힌 채로도 훑는다.
    // 상위(업무 성격) 배지 — 계층은 상위(Level 1) > 과제(Level 2) > 담당업무(Level 3) 다.
    // LM20 처럼 상위로도 묶어 읽히게 제목에 배지를 달고, 아래에서 상위별로 구간을 나눈다.
@@ -3270,7 +3276,9 @@ async function loadFlow(){
    // 한 과제가 여러 흐름을 가질 수 있다 — 이어지지 않는 일을 억지로 한 타임라인으로 엮지 않기 위해서다.
    // 흐름 이름을 제목에 붙여 같은 과제의 다른 줄기임을 알 수 있게 한다.
    const br=f.branch?`<span class="dim"> · ${esc(f.branch)}</span>`:"";
-   return head+`<details${fi===0?" open":""}><summary>${l1b}${esc(f.model)}${br}
+   // 담당업무 카드는 과제 머리말 밑에 있으니 제목에는 담당업무만(과제는 title 속성으로).
+   const ttl=hasDet?`<span title="${esc(pj)}">${esc(f.detail)}</span>`:esc(f.model);
+   return head+`<details${fi===0?" open":""}${hasDet?' style="margin-left:6px"':''}><summary>${hasDet?"":l1b}${ttl}${br}
      <span class="state">${(mm.mm!=null)?mm.mm+" MM · ":""}단계 ${(f.steps||[]).length}개 · ${esc((f.role||"판단 유보").split("—")[0].trim())}</span></summary>
     <div class="body">
     <div style="margin:2px 0 6px"><b>역할:</b> ${esc(f.role)||"판단 유보"}</div>

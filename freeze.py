@@ -599,6 +599,7 @@ def report_island(tag, full=True, log=_say):
     _L1C = {"신제품개발": "#2a78d6", "기술 내재화": "#0e8c7a",
             "양산준비": "#e08a00", "일반업무": "#8b929b"}
     _l1_prev = None                # 상위가 바뀌는 자리에만 머리말을 넣는다
+    _pj_prev = None                # 과제(중위)가 바뀌는 자리에도 — 담당업무 카드가 자기 과제 밑에 모이게
 
     fl_cards = []
     for i, f in enumerate(flows):
@@ -636,18 +637,30 @@ def report_island(tag, full=True, log=_say):
         role0 = str(f.get("role") or "판단 유보").split("—")[0].strip()
         # 상위(Level 1)로도 묶어 읽히게 — 계층은 상위 > 과제 > 담당업무. flow 가 상위로 정렬해 내보낸다.
         _l1 = str(f.get("level1") or "")
+        _pj = str(f.get("project") or f.get("model") or "")
+        _det = str(f.get("detail") or "")
         if _l1 != _l1_prev:
-            _n1 = len({str(x.get("model") or "") for x in flows
+            _n1 = len({str(x.get("project") or x.get("model") or "") for x in flows
                        if isinstance(x, dict) and str(x.get("level1") or "") == _l1})
             fl_cards.append('<div style="margin:14px 0 6px;font-size:12px;color:#4a5159">'
                             f'<b>{_esc(_l1 or "상위 미분류")}</b> '
                             f'<span class="dim">— {_n1}개 과제</span></div>')
             _l1_prev = _l1
+            _pj_prev = None
+        if _det and _pj != _pj_prev:
+            _nd = sum(1 for x in flows if isinstance(x, dict)
+                      and str(x.get("project") or x.get("model") or "") == _pj
+                      and str(x.get("level1") or "") == _l1)
+            fl_cards.append('<div style="margin:8px 0 4px 6px;font-size:13px">'
+                            f'<b>{_esc(_pj)}</b> <span class="dim">— 담당 업무 {_nd}개</span></div>')
+        _pj_prev = _pj
         _l1b = (f'<span style="display:inline-block;padding:0 7px;border-radius:9px;color:#fff;'
                 f'font-size:11px;background:{_L1C.get(_l1, "#8b929b")};margin-right:6px">{_esc(_l1)}</span>'
                 if _l1 else "")
+        _ttl = (f'<span title="{_esc(_pj)}">{_esc(_det)}</span>' if _det else _esc(f.get("model")))
         fl_cards.append(
-            f'<details{" open" if i == 0 else ""}><summary>{_l1b}{_esc(f.get("model"))}'
+            f'<details{" open" if i == 0 else ""}{" style=margin-left:6px" if _det else ""}>'
+            f'<summary>{"" if _det else _l1b}{_ttl}'
             + (f'<span class="dim"> · {_esc(f.get("branch"))}</span>' if f.get("branch") else "")
             + f'<span class="state">{mm_txt}단계 {len(f.get("steps") or [])}개 · '
             f'{_esc(role0)}</span></summary><div class="body">'
