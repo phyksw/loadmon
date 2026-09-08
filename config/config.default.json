@@ -397,6 +397,8 @@
  "teamsWeb": true,
  "_teamsWebMaxChats_설명": "웹 경로에서 훑을 대화방 수(최근 순). 대화방마다 지난 메시지를 위로 되감으므로 늘리면 그만큼 오래 걸립니다. 0 이하·비정상 값은 40 으로 봅니다.",
  "teamsWebMaxChats": 40,
+ "_teamsWebBudgetSec_설명": "웹 경로 전체 시간 예산(초). 이 안에 반드시 저장까지 끝내고, 남은 대화방은 다음 실행으로 미룹니다. 분석 실행이 주는 상한(1200초)보다 짧아야 합니다 — 상한에 걸려 강제 종료되면 그때까지 읽은 것이 통째로 사라집니다.",
+ "teamsWebBudgetSec": 900,
  "_메일수집_설명": "Outlook 메일·일정 수집 경로. 기본은 클래식 Outlook COM. 이 PC 에서 COM 결과가 비면(새 Outlook 전용·2016 시작 마법사·COM 미등록) ① Windows Search 색인 → ② Outlook 웹(전용 Edge 프로필, mailViaWeb) → ③ Copilot 메일·일정 왕복(mailViaCopilot) 순으로 자동 대체합니다. ②는 Outlook 버전과 무관하고 LLM 을 거치지 않아 정확하며, Copilot 과 같은 전용 Edge 창에서 회사 계정으로 한 번 로그인(계정 선택)만 하면 됩니다. 왕복·읽기는 메일이 비었을 때만 일어납니다.",
  "mailViaCopilot": true,
  "mailViaWeb": true,

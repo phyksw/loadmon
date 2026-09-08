@@ -299,6 +299,39 @@ JS_SCROLL_UP = r"""
 """
 
 
+JS_PANE = r"""
+(() => {
+  const MSG = ['[data-tid="chat-pane-item"]', '[data-tid="chat-pane-message"]',
+               '[data-tid="message-pane"] [role="listitem"]', '[role="log"] [role="listitem"]',
+               '[role="main"] [role="listitem"]'];
+  let n = 0;
+  for (const s of MSG) { const k = document.querySelectorAll(s).length; if (k) { n = k; break; } }
+  const head = document.querySelector('[data-tid="chat-header-title"],[data-tid="chatTitle"],'
+             + '[data-tid="chat-header"] [role="heading"],[role="main"] h1');
+  return JSON.stringify({n: n, chat: head ? ((head.getAttribute("title") || head.textContent || "").trim()).slice(0, 120) : ""});
+})()
+"""
+
+
+def wait_pane(br, want_change, limit):
+    """화면이 준비될 때까지 '확인하며' 기다린다 — 무조건 자는 대기를 대신한다.
+    want_change 는 (이전 대화방 이름, 이전 메시지 수). 둘 중 하나라도 달라지면 바로 돌아온다.
+    → (메시지 수, 대화방 이름). 팀즈가 느린 PC 에서는 limit 까지 기다리므로 안전은 그대로다."""
+    t0 = time.monotonic()
+    last = (want_change or ("", -1))
+    got = last
+    while time.monotonic() - t0 < limit:
+        time.sleep(0.25)
+        try:
+            st = br.eval_json(JS_PANE, timeout=15)
+        except Exception:
+            continue
+        got = (str(st.get("chat") or ""), int(st.get("n") or 0))
+        if got[1] > 0 and (got[0] != last[0] or got[1] != last[1]):
+            return got
+    return got
+
+
 class Browser:
     def __init__(self):
         spec = importlib.util.spec_from_file_location("_ca", os.path.join(ROOT, "tools", "copilot_auto.py"))
@@ -401,12 +434,21 @@ def chat_name(item):
     return ""
 
 
-def read_chat(br, idx, name, d0, d1, today, fake=None, diag=None):
-    """대화 하나 — 위로 되감으며 화면을 여러 번 읽어 합친다. → (rows, 화면항목수)"""
+def read_chat(br, idx, name, d0, d1, today, fake=None, diag=None, deadline=None):
+    """대화 하나 — 위로 되감으며 화면을 여러 번 읽어 합친다. → (rows, 화면항목수)
+
+    되감기를 멈추는 조건은 넷이다: 기간보다 오래된 날짜에 닿음 · 더 스크롤되지 않음 ·
+    두 번 연속 새 메시지가 안 나옴(정지) · 전체 시간 예산 소진. 정지 판정이 없으면 해석이
+    전부 실패하는 대화방에서 13회를 끝까지 돌아 시간만 태운다(감사 지적)."""
     rounds = (fake or {}).get(str(idx)) if fake else None
     rows, seen, screen = {}, set(), 0
     oldest = None
+    stall = 0
+    pane = ("", -1)
     for r in range(MAX_SCROLL + 1):
+        if deadline and time.monotonic() > deadline:
+            break
+        before = len(rows)
         if rounds is not None:
             if r >= len(rounds):
                 break
@@ -450,10 +492,17 @@ def read_chat(br, idx, name, d0, d1, today, fake=None, diag=None):
                        "summary": bd[:SUMMARY_MAX], "how": how}
         if oldest and oldest < d0:          # 기간보다 오래된 데까지 왔다 — 더 되감을 이유가 없다
             break
+        if len(rows) > before:
+            stall = 0
+        else:
+            stall += 1
+            if stall >= 2:                  # 두 번 되감아도 새 것이 없다 — 이 대화는 여기까지다
+                break
         if rounds is None:
             if str(br.cdp.eval(JS_SCROLL_UP)) != "scrolled":
                 break
-            time.sleep(1.6)                 # 지난 메시지를 불러올 틈
+            # 지난 메시지가 실제로 붙을 때까지만 기다린다 — 예전에는 무조건 1.6초를 잤다.
+            pane = wait_pane(br, pane, 1.8)
     return list(rows.values()), screen
 
 
@@ -542,6 +591,11 @@ def main():
         max_chats = int(arg("--max-chats") or cfg.get("teamsWebMaxChats") or 40)
     except ValueError:
         max_chats = 40
+    try:
+        # run.py 가 준 상한(1200초)보다 넉넉히 짧게 — 저장·정리 시간을 남긴다
+        budget = float(arg("--budget") or cfg.get("teamsWebBudgetSec") or 900)
+    except ValueError:
+        budget = 900.0
     selfs = self_names(cfg)
 
     fake = None
@@ -588,20 +642,34 @@ def main():
 
     rows = []
     diag = {"no_time": 0, "no_body": 0, "how_msg": ""}
+    # 전체 시간 예산 — 이 안에 반드시 저장까지 끝낸다. run.py 가 준 상한에 걸려 강제 종료되면
+    # 그때까지 읽은 것이 통째로 사라진다(감사 실측: 최악 920초 > 상한 900초 → 15분 쓰고 0건).
+    # 예산이 다 되면 남은 대화방을 포기하고 지금까지 읽은 것을 저장한다 — 다음 실행이 이어서 채운다.
+    deadline = time.monotonic() + budget
+    pane = ("", -1)
+    done = cut = 0
     for it in chats[:max_chats]:
+        if time.monotonic() > deadline:
+            cut = max_chats - done
+            break
         idx = int(it.get("idx") or 0)
         name = chat_name(it)
         if br:
             if str(br.cdp.eval(JS_OPEN % idx)) != "ok":
                 continue
-            time.sleep(2.2)
-        got, screen = read_chat(br, idx, name, d0, d1, today, fake.get("msgs") if fake else None, diag)
+            # 대화가 실제로 바뀔 때까지만 기다린다 — 예전에는 무조건 2.2초를 잤다.
+            pane = wait_pane(br, pane, 2.5)
+        got, screen = read_chat(br, idx, name, d0, d1, today,
+                                fake.get("msgs") if fake else None, diag, deadline)
         for g in got:
             g["kind"] = "sent" if _norm(g["from"]) in selfs else "msg"
         rows += got
+        done += 1
         log(f"  · {name or '(이름 없음)'} — 화면 {screen}개 → {len(got)}건")
     if br:
         br.close()
+    if cut > 0:
+        log(f"시간 예산({budget:.0f}초)에 닿아 남은 대화방 {cut}개는 다음 실행으로 미룹니다 — 지금까지 읽은 것은 저장합니다.")
 
     log(f"진단: 화면 해석 선택자 {diag['how_msg'] or '못 찾음'} · 시각 못 짚음 {diag['no_time']} · 본문 없음 {diag['no_body']}")
     if not rows:

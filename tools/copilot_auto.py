@@ -424,7 +424,11 @@ def js_pick_model(model):
   if(!btns.length)return {ok:false,err:"selector_not_found"};
   const btn=btns[0];
   const cur=(btn.getAttribute("aria-label")||"")+" "+(btn.innerText||"");
-  if(cur.toLowerCase().includes(want))return {ok:true,already:true,cur:cur.slice(0,60)};
+  // 표기 차이를 무시하고 비교한다 — js_pick_model_item 과 같은 규칙. 설정은 'GPT-5.6' 인데
+  // 버튼 라벨은 'GPT 5.6 깊이 생각하기'(하이픈이 아니라 공백)라, 그대로 includes 하면 이
+  // 단축 경로가 영원히 성립하지 않아 매 왕복 메뉴를 여닫으며 2.5초씩 버렸다(감사 실측).
+  const nrm=x=>x.toLowerCase().replace(/[-\\s._]/g,"");
+  if(nrm(cur).includes(nrm(want)))return {ok:true,already:true,cur:cur.slice(0,60)};
   // 이미 열려 있으면 다시 누르면 '닫힌다'(토글). 실측에서 이 때문에 모델 선택이 매번
   // 실패했다 — 열려 있는지 먼저 확인하고, 닫혀 있을 때만 연다.
   const open=[...document.querySelectorAll("[role='menuitem'],[role='menuitemradio']")]

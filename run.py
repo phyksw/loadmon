@@ -193,6 +193,19 @@ def mail_fallbacks(c, d0, d1, data, ps, col, t_run):
                    "회사 계정으로 로그인한 뒤 [Outlook 웹 읽기] 또는 재실행")
         return not needs("mail")
 
+    # COM 이 이번 실행에 쓰긴 했는데 0건인 파일 — 위 '신선도' 기준에 따라 대체 경로를 돌리지 않는다.
+    # 그 판단은 'COM 이 제대로 붙었다' 가 참일 때만 옳다. 보조 계정·다른 기본 프로필에 붙었거나
+    # Restrict 로캘이 어긋난 PC 에서는 0건이 정상이 아닌데, 지금까지 이 상태는 화면 어디에도
+    # 뜨지 않아 메일 신호가 통째로 빈 채 로드율이 나왔다(감사 지적). 절충은 그대로 두고 알리기만 한다.
+    blank = [{"mail": "메일", "cal": "일정"}[k] for k in ("mail", "cal")
+             if not needs(k) and not _csv_has_rows(paths[k])]
+    if blank:
+        why = (f"Outlook COM 이 {'·'.join(blank)}을(를) 0건으로 채웠습니다 — 대체 경로(색인·웹·Copilot)는 "
+               "설계상 건너뜁니다. 이 기간에 정말 없었다면 정상이고, 아니라면 COM 이 다른 프로필·계정에 "
+               "붙은 것입니다 → 대시보드 [Outlook 웹 읽기] 로 확인하세요")
+        print(f"\n   [!] {why}")
+        record("Outlook 메일 0건 점검", True, 0.0, why)
+
     kinds = [k for k in ("mail", "cal") if needs(k)]
     if not kinds:
         return finish()
@@ -585,7 +598,7 @@ def main():
         if not teams_ok and "--no-teams" not in sys.argv and c.get("teamsWeb", True):
             teams_ok = step("팀즈 채팅 (웹 — 전용 Edge, 앱이 꺼져 있어도)",
                             [sys.executable, os.path.join(col, "Get-TeamsWeb.py"),
-                             "--from", d0, "--to", d1], 900)
+                             "--from", d0, "--to", d1], 1200)
         # Copilot 은 '판정 엔진'이다. 팀즈 조회는 테넌트에 커넥터가 있어야만 되는 별개
         # 기능이라, 없는 환경에서 계속 물으면 판정에 쓸 세션만 소진된다(실측).
         use_cp_teams = bool(c.get("teamsViaCopilot"))

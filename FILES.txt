@@ -29,7 +29,7 @@ mine.py                                               17,836 B  c751c51d
 refine.py                                             42,062 B  b56a12e8
 ruff.toml                                              1,004 B  44ee0eea
 FILES.txt                                                (이 파일)
-run.py                                                50,362 B  cfd1bcb5
+run.py                                                51,516 B  c0c9333c
 자가점검.py                                                8,785 B  f74b0d90
 collect/Add-WorkLog.ps1                                1,771 B  8a921980
 collect/Get-FileActivity.ps1                          48,656 B  cfab595d
@@ -45,13 +45,13 @@ collect/Start-TeamsSampler.ps1                         2,201 B  49b71b44
 collect/Get-RecentFiles.ps1                           22,050 B  8c06dfa2
 collect/Get-TeamsChats.py                             17,754 B  e868c913
 collect/Get-TeamsViaCopilot.py                        22,177 B  e6ef9df2
-collect/Get-TeamsWeb.py                               27,766 B  741c662e
+collect/Get-TeamsWeb.py                               31,261 B  1141206c
 collect/Get-TeamsWindow.ps1                           36,106 B  20295d52
 collect/Diagnose-Collectors.ps1                       36,412 B  4f5352b3
 collect/Register-Samplers.ps1                         10,617 B  ad6b07b4
 collect/Start-ActivitySampler.ps1                      8,715 B  c25fec94
-config/config.json                                    35,775 B  4b552dd7
-config/config.default.json                            35,775 B  4b552dd7
+config/config.json                                    36,133 B  85d37be1
+config/config.default.json                            36,133 B  85d37be1
 config/agentic_tasks.json                              4,426 B  2c9e5bb1
 core/board.py                                         13,045 B  9c4d6431
 core/extract.py                                      207,457 B  64eeac2a
@@ -60,9 +60,9 @@ core/details.py                                       36,372 B  34f15be3
 core/owner.py                                          1,488 B  1f1dc049
 core/progress.py                                       1,129 B  77a7579a
 core/projmap.py                                        6,619 B  27dcacc3
-docs/설정가이드.md                                         51,000 B  361189a0
+docs/설정가이드.md                                         51,248 B  ce335fdb
 docs/사용안내.html                                       272,444 B  6082e12b
-tools/copilot_auto.py                                 62,295 B  513c44ef
+tools/copilot_auto.py                                 62,703 B  201ac0ae
 tools/Get-EmbeddedPython.ps1                           2,472 B  e8ce528c
 tools/check_page_js.py                                 8,818 B  f6d3b95b
 tools/lint.ps1                                         7,914 B  16140924
