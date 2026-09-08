@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-projmap.py — 사용자 지정 과제 (LoadMonitor22)
+projmap.py — 사용자 지정 과제 (LoadMonitor23)
 
 사용자가 UI에서 지정한 프로젝트는 config\\projects.json 에 저장된다:
   [{"name": "프로젝트A", "match": ["proja", "간섭계"], "desc": "무엇에 관한 과제인지 설명"}]

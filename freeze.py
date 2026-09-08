@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 r"""
-freeze.py — 분석 결과를 '파일 하나' 보고서 3종으로 만든다 (LoadMonitor22).
+freeze.py — 분석 결과를 '파일 하나' 보고서 3종으로 만든다 (LoadMonitor23).
 
   python freeze.py --from 2026-01-01 --to 2026-08-25            # 3종 전부 (= --all)
   python freeze.py --from ... --to ... --freeze [--summary]     # 얼린 보고서만 (--summary: 원문 제외)
@@ -390,7 +390,7 @@ def _freeze(tag, full, base_url, log, info):
     # stub: 판정이 스텁(LM_COPILOT_STUB, 테스트 전용)이었던 결과 — 취합이 실자료와 구분한다.
     baked["_lm"] = {"kind": "frozen", "owner": owner, "host": host,
                     "period": [d0, d1], "tag": tag, "full": bool(full), "stub": stub,
-                    "generated": time.strftime("%Y-%m-%d %H:%M"), "generator": "LoadMonitor22 freeze.py"}
+                    "generated": time.strftime("%Y-%m-%d %H:%M"), "generator": "LoadMonitor23 freeze.py"}
     who = f"{os.environ.get('USERNAME', '?')}@{host or '?'}"
     ts = time.strftime("%Y-%m-%d %H:%M")
     mode_txt = ("메일·회의 제목 등 원문 근거가 들어 있습니다 — <b>팀 밖 공유 금지</b>"
@@ -721,7 +721,7 @@ def report_island(tag, full=True, log=_say):
         "period": [d0, d1], "tag": tag, "total_mm": total,
         "avail_mm": avail, "load_pct": pct, "rows_file": rows_file,
         "rows": rows, "workflow": wf, "agentic": ag,
-        "generated": generated, "generator": "LoadMonitor22 freeze.py",
+        "generated": generated, "generator": "LoadMonitor23 freeze.py",
         "merged_rows": n_merged, "full": bool(full), "stub": stub},
         ensure_ascii=False).replace("<", "\\u003c")
     stub_txt = " · <b>스텁 판정(테스트 전용 — 실제 Copilot 판정 아님)</b>" if stub else ""

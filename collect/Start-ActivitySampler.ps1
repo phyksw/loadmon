@@ -31,7 +31,7 @@ $mutex = $null
 if ($TestSamples -le 0) {
     try {
         $created = $false
-        $mutex = New-Object System.Threading.Mutex($true, 'Local\LoadMonitor22-ActivitySampler', [ref]$created)
+        $mutex = New-Object System.Threading.Mutex($true, 'Local\LoadMonitor23-ActivitySampler', [ref]$created)
         if (-not $created) {
             Write-Host '[sampler] already running in this session - exit (single instance)'
             exit 0

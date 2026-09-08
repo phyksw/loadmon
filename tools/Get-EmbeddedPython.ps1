@@ -1,12 +1,12 @@
 ﻿# Get-EmbeddedPython.ps1 — 내장 파이썬 설치기 (Python 미설치 PC 대응)
-# python.org 공식 임베더블 배포판(약 11MB)을 받아 LoadMonitor22\python\ 에 풀어둔다.
+# python.org 공식 임베더블 배포판(약 11MB)을 받아 LoadMonitor23\python\ 에 풀어둔다.
 # 이후 모든 bat 이 이 내장 파이썬을 최우선으로 사용한다 — PC에 Python을 설치할 필요가 없다.
 # 표준 라이브러리 전체가 포함되며 LoadMonitor 는 표준 라이브러리만 쓰므로 추가 패키지가 필요 없다.
 # (선택 도구 check.py 의 엑셀 검증만 openpyxl 이 필요 — 내장판에서는 지원하지 않음)
 #
 # 사용:  powershell -ExecutionPolicy Bypass -File tools\Get-EmbeddedPython.ps1
 # 회사망에서 python.org 가 막혀 있으면: 집/개인망 PC에서 이 스크립트를 실행한 뒤
-# LoadMonitor22 폴더를 통째로(python\ 포함) 복사하면 된다.
+# LoadMonitor23 폴더를 통째로(python\ 포함) 복사하면 된다.
 param([string]$Version = '3.11.9')
 
 $ErrorActionPreference = 'Stop'
@@ -42,5 +42,5 @@ $py = Join-Path $dst 'python.exe'
 if ($LASTEXITCODE -ne 0) { Write-Host '[embed-py] 실행 검증 실패'; exit 1 }
 & $py (Join-Path $root '자가점검.py')
 Write-Host ''
-Write-Host '[embed-py] 완료 - 이제 LoadMonitor22-UI.bat 더블클릭으로 바로 실행됩니다.'
+Write-Host '[embed-py] 완료 - 이제 LoadMonitor23-UI.bat 더블클릭으로 바로 실행됩니다.'
 Write-Host '           (bat 이 내장 파이썬을 자동으로 우선 사용합니다)'

@@ -4,7 +4,7 @@ target-version = "py311"
 
 # 캐시는 배포 트리 밖(%TEMP%)에 둔다 — 트리 안에 생긴 .ruff_cache\ 가 "폴더 통째로 복사" 경로에
 # 딸려 갔다(실측 6개). tools\lint.ps1 은 --no-cache 로 돌려 캐시 자체를 만들지 않는다.
-cache-dir = "${TEMP}/LoadMonitor22-ruff_cache"
+cache-dir = "${TEMP}/LoadMonitor23-ruff_cache"
 
 [lint]
 # E/F: pyflakes·pycodestyle 오류, W: 경고(invalid escape 등), B: bugbear(실버그 패턴),

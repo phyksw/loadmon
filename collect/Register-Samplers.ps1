@@ -13,7 +13,7 @@ param(
     [switch]$Remove,
     [switch]$NoStart,
     [switch]$DryRun,
-    [string]$TaskPrefix = 'LoadMonitor22'
+    [string]$TaskPrefix = 'LoadMonitor23'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -89,14 +89,29 @@ function New-TaskXml([string]$taskName, [string]$script, [string]$desc) {
 "@
 }
 
-$jobs = @(@{ name = "$TaskPrefix-Sampler"; script = (Join-Path $here 'Start-ActivitySampler.ps1'); desc = 'LoadMonitor22 창 샘플러 - 로그온 시 자동 시작, 실행 시간 제한 없음 (1분마다 활성 창·무입력 시간을 로컬 CSV 에 기록)' })
+$jobs = @(@{ name = "$TaskPrefix-Sampler"; script = (Join-Path $here 'Start-ActivitySampler.ps1'); desc = 'LoadMonitor23 창 샘플러 - 로그온 시 자동 시작, 실행 시간 제한 없음 (1분마다 활성 창·무입력 시간을 로컬 CSV 에 기록)' })
 if ($Teams) {
-    $jobs += @{ name = "$TaskPrefix-TeamsSampler"; script = (Join-Path $here 'Start-TeamsSampler.ps1'); desc = 'LoadMonitor22 팀즈 상시 샘플러 - 로그온 시 자동 시작, 실행 시간 제한 없음 (열린 팀즈 대화를 5분마다 읽어 로컬 CSV 에 누적)' }
+    $jobs += @{ name = "$TaskPrefix-TeamsSampler"; script = (Join-Path $here 'Start-TeamsSampler.ps1'); desc = 'LoadMonitor23 팀즈 상시 샘플러 - 로그온 시 자동 시작, 실행 시간 제한 없음 (열린 팀즈 대화를 5분마다 읽어 로컬 CSV 에 누적)' }
 }
 
 $svc = $null; $folder = $null
 try { $svc = New-Object -ComObject 'Schedule.Service'; $svc.Connect(); $folder = $svc.GetFolder('\') }
 catch { Write-Host ('[register] 작업 스케줄러 연결 실패: ' + $_.Exception.Message); if (-not $DryRun) { exit 1 } }
+
+# 옛 버전 작업 정리 - 버전마다 작업 이름이 바뀌므로(LoadMonitor20-Sampler, LoadMonitor22-Sampler …)
+# 새 폴더에서 등록만 하면 옛 작업이 **옛 폴더의 스크립트를 계속 돌린다**. 그러면 샘플러가 둘이 되어
+# 같은 시각을 두 CSV 에 쓰고, 사용자는 옛 폴더를 지운 뒤에도 '왜 아직 도는지' 알 수 없다.
+# 이름이 우리 것인 작업만 지운다(LoadMonitor<숫자>-Sampler / -TeamsSampler, 이번 버전 제외).
+if (-not $DryRun -and $folder) {
+    $mine = "^LoadMonitor\d+-(Teams)?Sampler$"
+    foreach ($t in @($folder.GetTasks(1))) {          # 1 = 숨김 작업 포함
+        $tn = [string]$t.Name
+        if ($tn -notmatch $mine) { continue }
+        if ($tn -like "$TaskPrefix-*") { continue }   # 이번 버전 것은 아래에서 갱신한다
+        try { $folder.DeleteTask($tn, 0); Write-Host ("[register] 옛 버전 작업 해제: {0} (이 버전은 {1}-Sampler)" -f $tn, $TaskPrefix) }
+        catch { Write-Host ("[register] 옛 버전 작업 {0} 을 지우지 못했습니다 - 작업 스케줄러에서 손으로 지우세요" -f $tn) }
+    }
+}
 
 $fail = 0
 foreach ($j in $jobs) {
@@ -172,5 +187,5 @@ if (-not $NoStart) {
         Write-Host ('           powershell -ExecutionPolicy Bypass -File "' + (Join-Path $here 'Start-ActivitySampler.ps1') + '" -TestSamples 3')
     }
 }
-Write-Host '[register] 완료 - 상태 확인: LoadMonitor22-수집진단.bat ([창 샘플러] 절)'
+Write-Host '[register] 완료 - 상태 확인: LoadMonitor23-수집진단.bat ([창 샘플러] 절)'
 exit 0

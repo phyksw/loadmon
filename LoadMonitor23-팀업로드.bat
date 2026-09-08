@@ -1,7 +1,7 @@
 @echo off
 >nul chcp 949
 cd /d "%~dp0"
-title LoadMonitor22 - 팀 서버
+title LoadMonitor23 - 팀 업로드
 
 set "PY_EXE="
 set "PY_ARGS="
@@ -29,17 +29,29 @@ if not defined PY_CMD (
   exit /b 1
 )
 
-if not exist "teamserver.py" (
-  echo [!] teamserver.py 가 없습니다 - FILES.txt 목록대로 복사됐는지 확인하세요.
+if not exist "teamup.py" (
+  echo [!] teamup.py 가 없습니다 - FILES.txt 목록대로 복사됐는지 확인하세요.
   pause
   exit /b 1
 )
 echo.
-echo  [팀 서버] 이 PC 를 팀 취합 서버로 가동합니다 (포트: config.teamServerUrl 의 번호, 기본 9310).
-echo           팀원들은 config.teamServerUrl 에 이 PC 주소를 넣고, 서버에 닿는 망에서
-echo           대시보드 [팀 서버 업로드] (또는 LoadMonitor22-팀업로드.bat) 로 올립니다.
-echo           브라우저 접속: http://이PC의IP:포트번호  (실제 번호는 아래 [team] 가동 줄에 찍힙니다)
-echo           팀 통합 보고서: /full  (인별 로드율 제외 v3: /full_v3)
+echo  [팀 업로드] 분석 결과 묶음을 팀 서버로 보냅니다.
+echo             분석 때는 자동으로 보내지 않습니다 - 서버에 닿는 망에서 이것을 실행하세요.
+echo             닿지 않으면 아무것도 잃지 않고 그대로 대기합니다.
 echo.
-"%PY_EXE%" %PY_ARGS% teamserver.py
+"%PY_EXE%" %PY_ARGS% teamup.py --list
+echo.
+echo  [연결 확인] ...
+"%PY_EXE%" %PY_ARGS% teamup.py --ping
+if errorlevel 1 (
+  echo.
+  echo  이 망에서는 팀 서버에 닿지 않습니다 - 묶음은 그대로 대기합니다.
+  echo  사내망에서 이 파일을 다시 실행하면 밀린 기간까지 한 번에 올라갑니다.
+  echo.
+  pause
+  exit /b 1
+)
+echo.
+"%PY_EXE%" %PY_ARGS% teamup.py --upload
+echo.
 pause

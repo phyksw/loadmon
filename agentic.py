@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 r"""
-agentic.py — Agentic AI 12과제 매칭 분석 (LoadMonitor22: 업무 분할 + MM 실측 내장)
+agentic.py — Agentic AI 12과제 매칭 분석 (LoadMonitor23: 업무 분할 + MM 실측 내장)
 
 Copilot 에게 [계획 과제 상세설명 + 본인 업무(과제·세부업무·유형·신호 근거·설명)]을 주고
 세 가지를 판정시킨다:

@@ -36,7 +36,7 @@ $need = @()
 $expect = @{}
 foreach ($ln in Get-Content $filesTxt -Encoding UTF8) {
     if ($ln -match '^\s*$') { continue }
-    if ($ln -match '^(LoadMonitor22 필수|총 |\()') { continue }
+    if ($ln -match '^(LoadMonitor23 필수|총 |\()') { continue }
     if ($ln -match '^\s') { continue }              # 괄호 설명의 이어지는 줄
     $p = ($ln -split '\s{2,}')[0].Trim()
     if ($p) { $need += $p }
@@ -101,7 +101,7 @@ if ($stale.Count) {
 }
 
 $stage = Join-Path ([System.IO.Path]::GetTempPath()) ("LM22pkg_" + [Guid]::NewGuid().ToString('N').Substring(0,8))
-$dest = Join-Path $stage 'LoadMonitor22'
+$dest = Join-Path $stage 'LoadMonitor23'
 New-Item -ItemType Directory -Force $dest | Out-Null
 
 $missing = @()
@@ -158,7 +158,7 @@ if ($h1 -ne $h2) {
 }
 
 if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Force $OutDir | Out-Null }
-$kind = if ($Full) { 'LoadMonitor22_풀패키지_' } else { 'LoadMonitor22_' }
+$kind = if ($Full) { 'LoadMonitor23_풀패키지_' } else { 'LoadMonitor23_' }
 # 이름은 초 단위(HHmmss)까지, 이미 있으면 _2 _3 … 으로 비켜 간다 — 남의 zip 은 절대 지우지 않는다.
 # 압축은 임시 이름(.partial.zip)으로 한 뒤 같은 폴더 안에서 제 이름으로 옮긴다(같은 볼륨 → 원자적 rename).
 # 실측: 같은 분에 두 번 돌리면 뒤 실행이 ArchiveFileExists 로 죽거나, 앞 실행이 막 완성한 zip 을 지웠다.
@@ -184,6 +184,6 @@ Write-Host "         data\ report\ 는 빈 폴더로만 들어갔습니다 (개�
 if ($Full) { Write-Host '         내장 파이썬 동봉 - 받는 PC 에 아무것도 설치할 필요 없이 bat 더블클릭으로 실행됩니다.' }
 Write-Host ""
 Write-Host "받는 사람 안내:"
-Write-Host "  1) 압축을 풀고 LoadMonitor22-UI.bat 실행"
+Write-Host "  1) 압축을 풀고 LoadMonitor23-UI.bat 실행"
 Write-Host "  2) 파이썬이 없으면 tools\Get-EmbeddedPython.ps1 을 먼저 실행"
 Write-Host "  3) Copilot 판정을 쓰려면 화면의 [AI 연결 진단] 으로 로그인 상태 확인"

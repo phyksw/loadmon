@@ -1,5 +1,5 @@
 ﻿{
- "_설명": "LoadMonitor22 — raw 판정은 Copilot(GPT-5.6)이 과제↔업무유형 계층으로 수행. MM은 투입/가용을 나란히 낸다: 투입 MM(실제 활동 흔적 시간) ÷ 가용 MM(일할 수 있었던 양) = 로드율",
+ "_설명": "LoadMonitor23 — raw 판정은 Copilot(GPT-5.6)이 과제↔업무유형 계층으로 수행. MM은 투입/가용을 나란히 낸다: 투입 MM(실제 활동 흔적 시간) ÷ 가용 MM(일할 수 있었던 양) = 로드율",
  "owner": "",
  "function": "",
  "_MM_설명": "1 MM = 8h × 그 달 평일수(주40시간). 가용 MM 은 연차·휴가(+부재 추정)를 일자에서 뺀 값. 투입 MM = 그날 활동 흔적(회의+창 샘플러+신호 세션)의 시간 합집합 — 능동 흔적(산출물·발신·수락 회의·샘플러)이 있는 날은 PC 가동 구간(data\\pc\\pc_spans.csv ∩ 주간 창, ≤11h, 점심·야근일 저녁 차감)을 하한으로 합친다(usePcFloor, '3시간 일하고 저장 1번'의 과소 방지). 흔적이 전혀 없는 날은 PC가 켜져 있어도 0, 수동 흔적(수신·CC·열람)만 있는 날은 하루 passiveDayMaxMin 분까지만. 종일 출장·현장·교육 일정(offsiteAsWork)과 수동 기록(collect\\Add-WorkLog.ps1)은 표준일·기록 시간을 하한으로 인정한다. 상한 없이 실측 그대로라 야근·주말 근무가 많으면 로드율이 100%를 넘는다 — 하루 24h 물리 한계만 두고(PC on≤24·night≤13·주간≤11h 입력 검증), 이상치(PC 기록 오류·부재일 흔적·16h 초과)는 잘라내지 않고 근거 카드에 표시한다. method='workday'는 비교용. 창 샘플러를 켜면 하한 대신 실측이 쓰인다 — 단 샘플러는 키보드·마우스 활동 기준이라 캘린더 없는 대면 업무는 samplerGapBridgeMin 으로 잇는다. 측정 방식(샘플러 실측/PC 하한/흔적 창)과 신뢰도 등급(reliable 신뢰·caution 주의·unreliable 측정 불충분)은 mm_meta 의 measure·coverage 에 남아 리포트·팀 취합에 배지로 보인다. 세부 키는 _mm_옵션_설명",
@@ -412,7 +412,7 @@
  "storeMailSubject": true,
  "idleThresholdSec": 180,
  "samplerIntervalSec": 60,
- "_샘플러_설명": "true(기본): 대시보드가 창 샘플러의 마지막 샘플이 10분 이상 오래된 것을 보면 등록 작업(LoadMonitor22-Sampler) 또는 Start-ActivitySampler 를 다시 띄운다(작업 스케줄러 3일 실행 제한 등으로 조용히 멈춘 것 복구, 10분에 한 번). 로그온 자동 시작은 collect\\Register-Samplers.ps1 로 1회 등록(실행 제한 없음·실패 시 재시작, -Teams 로 팀즈 샘플러까지, -Remove 로 해제). 샘플러 기록은 키보드·마우스 활동 기준",
+ "_샘플러_설명": "true(기본): 대시보드가 창 샘플러의 마지막 샘플이 10분 이상 오래된 것을 보면 등록 작업(LoadMonitor23-Sampler) 또는 Start-ActivitySampler 를 다시 띄운다(작업 스케줄러 3일 실행 제한 등으로 조용히 멈춘 것 복구, 10분에 한 번). 로그온 자동 시작은 collect\\Register-Samplers.ps1 로 1회 등록(실행 제한 없음·실패 시 재시작, -Teams 로 팀즈 샘플러까지, -Remove 로 해제). 샘플러 기록은 키보드·마우스 활동 기준",
  "autoRestartSampler": true,
  "_프로그램사용_설명": "어떤 프로그램을 얼마나 붙잡고 있었나 — 창 샘플러의 process 열(맨 앞 창의 실행 파일 이름)을 집계해 mm_meta 의 tool_usage 로 싣는다. ★ 참고 지표이고 투입 MM·로드율 계산에는 들어가지 않는다(신호로 넣으면 가중치 비율이 바뀌어 지금까지의 MM 이 통째로 달라진다). 프로그램 이름표는 core\\programs.py 의 카탈로그(Creo·CATIA·NX·ANSYS·FloEFD·Abaqus·Zemax·Altium·MATLAB… 상용/비상용 구분 포함)를 쓰고, 사내 제작 도구처럼 카탈로그에 없는 것은 programsExtra 로 보탠다. 창 제목은 집계에 쓰지 않는다(과제명·사람 이름이 들어가므로)",
  "programsExtra": [],
@@ -567,7 +567,7 @@
  ],
  "_팀취합_설명": "팀 배포용 — 공유폴더 경로를 넣으면 분석 후 결과가 <폴더>\\<이름>\\ 으로 자동 복사됩니다. 팀장은 python aggregate.py <폴더> 로 팀 총괄 리포트 생성. 빈 값이면 비활성",
  "teamShareDir": "",
- "_팀서버_설명": "팀 서버 주소 — 팀 공용 PC 에서 LoadMonitor22-팀서버.bat 을 켜 두고 그 주소를 적습니다. LM19 부터는 분석이 끝나도 자동 전송하지 않고 report\\upload_pending\\ 에 묶음만 만들어 둡니다. 서버에 닿는 망에서 대시보드 [팀 서버 업로드] 버튼(또는 LoadMonitor22-팀업로드.bat)을 누르면 밀린 기간까지 한 번에 올라갑니다. 주소는 대시보드의 팀 업로드 카드에서 바로 고칠 수 있습니다.",
+ "_팀서버_설명": "팀 서버 주소 — 팀 공용 PC 에서 LoadMonitor23-팀서버.bat 을 켜 두고 그 주소를 적습니다. LM19 부터는 분석이 끝나도 자동 전송하지 않고 report\\upload_pending\\ 에 묶음만 만들어 둡니다. 서버에 닿는 망에서 대시보드 [팀 서버 업로드] 버튼(또는 LoadMonitor23-팀업로드.bat)을 누르면 밀린 기간까지 한 번에 올라갑니다. 주소는 대시보드의 팀 업로드 카드에서 바로 고칠 수 있습니다.",
  "teamServerUrl": "http://10.115.147.68:9310",
  "_팀업로드_설명": "auto=true 로 두면 예전처럼 분석 직후 자동 전송까지 시도합니다(닿지 않으면 대기로 남습니다). 기본은 false — 사용자가 가능한 망에서 버튼으로 보냅니다.",
  "teamUpload": {

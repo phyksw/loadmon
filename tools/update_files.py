@@ -19,7 +19,7 @@ import zlib
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, errors="replace", encoding=(
         (sys.stdout.encoding or "utf-8") if sys.stdout.isatty() else "utf-8"))  # 콘솔(bat)=콘솔 코드페이지 · 파이프(UI)=utf-8
 
-HEAD = ["LoadMonitor22 필수 파일 목록 - 복사 시 전부 있어야 합니다.",
+HEAD = ["LoadMonitor23 필수 파일 목록 - 복사 시 전부 있어야 합니다.",
         "(data/ report/ teamdata/ 는 복사 금지 - 개인정보)", ""]
 LINE_RE = re.compile(r"^(\S.*?)\s{2,}([\d,]+) B\s+([0-9a-f]{8})\s*$")
 

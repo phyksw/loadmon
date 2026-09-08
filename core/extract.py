@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-extract.py — 개인 PC 흔적에서 업무 로드를 추출해 [매핑데이터] 형식 행으로 만든다. (LoadMonitor22)
+extract.py — 개인 PC 흔적에서 업무 로드를 추출해 [매핑데이터] 형식 행으로 만든다. (LoadMonitor23)
 
 v3 변경 (사용자 피드백 반영):
   · CC 분리     — 메일 rcv 열(to/cc/bulk)로 참조·단체발송을 구분. CC는 약하게(0.25×),

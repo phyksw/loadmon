@@ -1,7 +1,7 @@
 @echo off
 >nul chcp 949
 cd /d "%~dp0"
-title LoadMonitor22 UI
+title LoadMonitor23 UI
 
 rem 실행할 파이썬 찾기: python 이 실제로 실행되면 그것, 아니면 py 런처(-3) 폴백
 rem (Microsoft Store 별칭은 where 를 통과해도 실행하면 Store 만 열리고 아무 일도 안 생긴다)
@@ -44,7 +44,7 @@ if not exist "core\extract.py" goto MISSING
 if not exist "core\progress.py" goto MISSING
 
 echo.
-echo   LoadMonitor22 UI 를 시작합니다. 브라우저가 자동으로 열립니다.
+echo   LoadMonitor23 UI 를 시작합니다. 브라우저가 자동으로 열립니다.
 echo   창을 닫거나 Ctrl+C 를 누르면 종료됩니다.
 echo.
 "%PY_EXE%" %PY_ARGS% ui\app.py
@@ -65,7 +65,7 @@ echo  ==========================================================
 echo.
 echo   현재 폴더: %CD%
 echo.
-echo   원본 PC의 LoadMonitor22 폴더를 통째로 다시 복사하세요.
+echo   원본 PC의 LoadMonitor23 폴더를 통째로 다시 복사하세요.
 echo   ^(data, report 폴더는 빼고 복사 - 개인정보가 딸려갑니다^)
 echo.
 echo   전체 목록은 FILES.txt, 누락 확인은  python 자가점검.py
