@@ -41,6 +41,7 @@ if ROOT not in sys.path:
     # 죽어 **AI 정제만 단독으로** 실패한다(파이썬이 설치된 PC 에서는 안 보이는 결함).
     # agentic.py·retag.py·team_refine.py·ui/app.py 는 모두 ROOT 를 넣는다 — 여기만 빠져 있었다.
     sys.path.insert(0, ROOT)
+from details import ukey2  # noqa: E402  - judge·flow 와 같은 과제 신원 축
 from progress import progress  # noqa: E402
 if __name__ == "__main__":      # import 시엔 건드리지 않는다 — 임포트한 쪽의 stdout 이
     # 교체·GC 되면서 버퍼가 닫혀 이후 출력이 전부 죽는다(다른 모듈과 같은 관례)
@@ -634,8 +635,9 @@ def main():
     # 병합 + 비중 재정규화 (AI가 총량을 바꾸지 못하게 규칙이 통제)
     # 과제명(Level 2)은 기존 이름으로 스냅한다 — AI가 새 이름을 지어내면 대시보드(refined)와
     # 상세리뷰 피벗(judge)의 과제 축이 갈라져 MM 이 다르게 보인다(실측 지적: 미스매칭).
-    known_lv2 = {str(r.get("Level 2") or "").strip().lower() for r in rows} | \
-                {str(n).strip().lower() for n in model_names}
+    # 신원 축은 ukey2 — .lower() 로 보면 AI 가 띄어쓰기만 바꿔도 '모르는 이름' 이 되어
+    # 원본 다수결로 되돌려지거나 새 과제로 남는다(judge·flow 와 같은 축을 쓴다).
+    known_lv2 = {ukey2(r.get("Level 2")) for r in rows} | {ukey2(n) for n in model_names}
     groups, owner = merge_groups(rf.items, rows)
     final = []
     for g in groups:
@@ -653,7 +655,7 @@ def main():
         # 스냅은 judge 체계(entities)가 있을 때만 — 축을 맞출 피벗이 있는 경우다.
         # judge 미실행/실패로 체계가 없으면 AI 정규화(토큰 조각→실제 과제명)를 허용해야
         # 한다: 무조건 되돌리면 refine 단독 사용의 핵심 기능이 죽는다(검증 확정).
-        if model_names and lv2.lower() not in known_lv2:    # AI 개명 → 원본 다수결로
+        if model_names and ukey2(lv2) not in known_lv2:     # AI 개명 → 원본 다수결로
             lv2 = _vote("Level 2") or "공통"
         elif not lv2:
             lv2 = "미지정"

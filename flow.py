@@ -160,7 +160,7 @@ def _refine_orig(tag, rep=None):
 
 
 # ── 재료 (보완2.wf_materials 이식) ────────────────────────────────────────
-def gather(rep, tag, amap=None):
+def gather(rep, tag, amap=None, pmap=None):
     """(과제, 담당 업무) 단위 재료 → (mats, basis, err).
     signals 를 (model|project, detail|activity) 로 묶고 MIN_SIGNALS 미만 제외, 시간순 표본,
     mm 은 mm_rows(정제본 우선) (Level 2, Level 3) fold 합, desc 는 정제 상세설명."""
@@ -179,6 +179,10 @@ def gather(rep, tag, amap=None):
     #   0.0** 으로 나왔다(실데이터 실측: 12/12 단위 0.0, 원본으로 바꾸면 합 0.339 로 정상 복구).
     #   MM 총량을 다시 계산하는 것이 아니라 '조회 축'만 바로잡는 것이라 로드율에는 영향이 없다.
     rows, _fn = details.read_rows(tag, rep, plain=True)
+    # 과제(중위) 병합이 **먼저**다 — 세부업무 맵의 키가 (과제, 이름) 이고 _detail_pools 의 파티션 키도
+    # raw Level 2 라, 과제가 갈린 채로 두면 세부 병합까지 반쪽이 된다(감사 실측).
+    if pmap:
+        details.apply_project_map(rows, sigs, pmap)
     if amap:
         details.apply_detail_map(rows, sigs, amap)
     mm_by, desc_by = {}, {}
@@ -571,6 +575,49 @@ def _resolve_key(raw, keys, low_map, fold_map, norm_map, note_map, ns_map=None, 
     return ""
 
 
+def _dedupe_flows(flows, unit, log=None):
+    """저장 직전 마지막 그물 — 같은 단위가 두 번 들어온 것을 지운다 → (정리된 목록, 버린 것 요약).
+
+    같은 단위가 두 번 생기는 통로는 넷이다: 묶음 사이 재판정 · 지난 결과(kept)와 새 판정 ·
+    잘린 답 복구 · 자동 마무리 회차. sanitize_flows 의 seen 은 **한 호출 안에서만** 살아 있어
+    이들 사이는 못 막는다(감사 재현).
+
+    남기는 쪽은 단계가 많은 쪽 → 역할·요약이 긴 쪽 → 먼저 온 쪽. **steps 를 합치지는 않는다** —
+    두 답의 단계 순서가 다르면 시간순이 깨지고, 근거가 서로 다른 신호를 가리키면 한 카드 안에
+    서로 다른 업무가 섞인다. 버린 쪽은 요약만 남겨 사람이 확인할 수 있게 한다."""
+    def _sig(f):
+        return {details.ukey3(str(x.get("name") or "")) for x in (f.get("steps") or []) if x.get("name")}
+
+    def _rank(f):
+        return (len(f.get("steps") or []),
+                len(str(f.get("role") or "")) + len(str(f.get("summary") or "")))
+
+    best, order, dupes = {}, [], []
+    for f in flows:
+        model = str(f.get("model") or "")
+        br = fold(str(f.get("branch") or "")) if unit == "과제" else ""
+        k = (details.ukey2(model.split(KEY_JOIN)[0]),
+             details.ukey3(model.split(KEY_JOIN)[1]) if KEY_JOIN in model else "", br)
+        cur = best.get(k)
+        if cur is None:
+            best[k] = f
+            order.append(k)
+            continue
+        # 과제 단위에서 branch 이름이 다른데 단계가 거의 같으면 같은 흐름을 달리 부른 것이다.
+        # 반대로 단계가 많이 다르면 의도된 분기이므로 둘 다 남긴다(그 경우 위에서 키가 갈린다).
+        keep, drop = (f, cur) if _rank(f) > _rank(cur) else (cur, f)
+        best[k] = keep
+        dupes.append({"kept": str(keep.get("model") or ""),
+                      "dropped_branch": str(drop.get("branch") or ""),
+                      "steps": [len(keep.get("steps") or []), len(drop.get("steps") or [])],
+                      "role": str(drop.get("role") or "")[:40],
+                      "why": "담당업무 모드 · 같은 단위 재답변" if unit != "과제" else "같은 흐름을 다른 이름으로"})
+    if dupes and log:
+        for d in dupes[:5]:
+            log(f"[flow] 흐름 중복 제거: '{d['kept']}' (단계 {d['steps'][0]}개 유지 · {d['steps'][1]}개 버림)")
+    return [best[k] for k in order], dupes
+
+
 def sanitize_flows(raw_flows, keys, mats_by=None, dropped=None):
     """응답 형태 방어 — 스칼라·null·모르는 키·이상 agent 값을 정규화한다.
     keys: {"과제 / 담당업무": mat}. 정말 모르는 키의 flow 만 버린다(지어낸 단위 방지);
@@ -600,7 +647,10 @@ def sanitize_flows(raw_flows, keys, mats_by=None, dropped=None):
         # 한 과제 안에서 서로 이어지지 않는 일은 흐름(branch)을 나눠 답하게 했다. 예전에는 과제당
         # 하나만 남겨(if key in seen) 무관한 담당업무가 한 타임라인으로 엮였다(제보).
         branch = " ".join(str(f.get("branch") or f.get("stream") or "").split())[:40]
-        bk = (key, fold(branch))
+        # 담당업무 단위(기본)에서는 프롬프트가 branch 를 요구하지 않는다 — 모델이 자유롭게 붙인 이름이
+        # 공백 하나만 달라도 같은 단위의 재답변이 그대로 통과해 카드가 두 장이 됐다(감사 재현).
+        # 그 모드에서는 branch 를 중복 판정에서 아예 뺀다.
+        bk = (key, fold(branch) if workflow_unit() == "과제" else "")
         if bk in seen:
             continue
         if n_branch.get(key, 0) >= MAX_BRANCHES:
@@ -793,11 +843,25 @@ def main():
     # ① 세부업무 표기 병합 맵 — 규칙 + (--no-merge 아니면) Copilot. 실패해도 워크플로우는 돈다.
     sender = None if "--no-merge" in sys.argv else judge.copilot_send
     amap, n_rule, n_ai, n_ref = {}, 0, 0, 0
+    pmap, n_p_rule, n_p_ev, p_note = {}, 0, 0, {"pairs": [], "rejects": []}
     try:
         # ★ 병합 맵은 **신호 축(원본 mm_rows 이름)** 으로 만든다. 예전에는 read_rows 기본(정제본 우선)으로
         #   만들어 별칭 키가 정제본 이름이었고, 원본 이름을 가진 신호에는 하나도 적용되지 않았다
         #   (규칙 병합 0건 실측). LM20 refine 은 Level 3 를 유지했지만 LM22 refine 은 합치고 바꾼다.
         rows_plain, _pf = details.read_rows(tag, rep, plain=True)
+        # ★ 과제(중위) 병합을 **세부업무 병합보다 먼저** 돌린다. details._detail_pools 가 raw Level 2 를
+        #   파티션 키로 쓰므로, 과제가 '광학 설계'/'광학설계' 로 갈린 채 두면 같은 세부업무 집합이 여러
+        #   풀로 쪼개져 세부 병합이 반쪽이 된다(감사 합성 실측: 변형 4개 → 풀 4개).
+        try:
+            import projmap as _pm
+            _pinned = [p.get("name") for p in (_pm.load_user_projects(ROOT) or []) if p.get("name")]
+        except Exception:  # noqa: BLE001 - 지정 과제 목록이 없어도 병합은 돈다
+            _pinned = []
+        pmap, n_p_rule, n_p_ev, p_note = details.project_merge_map(
+            rows_plain or [], details.read_signals(tag, rep), refmap=_refine_orig(tag, rep),
+            pinned=_pinned, log=lambda m: print(f"[flow]{m}"))
+        if pmap:
+            details.apply_project_map(rows_plain, None, pmap)     # 아래 세부 병합이 합쳐진 과제 축을 보게
         amap, n_rule, n_ai = details.detail_merge_map(tag, sender, rows=rows_plain or None,
                                                       log=lambda m: print(f"[flow]{m}"))
         # refine 이 '같은 일' 로 합친 원본 담당업무들도 별칭으로 흡수한다 — 정제가 이미 내린 동일성 판정을
@@ -814,12 +878,25 @@ def main():
                   "config\\detail_aliases.json (한 줄 지우면 그 병합만 원복)")
         elif amap:
             print(f"[flow] 세부업무 병합 맵 {len(amap)}건 적용(캐시)")
+        # 캐시에 남은 (옛 과제, 이름) 키는 과제가 합쳐지면 고아가 된다 — 대표 축으로 접는다.
+        if pmap and amap:
+            amap = details.remap_detail_scope(amap, pmap)
+        if n_p_rule or n_p_ev:
+            print(f"[flow] 과제 표기 병합: 규칙 {n_p_rule}건 · 증거 {n_p_ev}건 · 거부 "
+                  f"{len(p_note.get('rejects') or [])}건 → config\\project_aliases.json")
+            for pr in (p_note.get("pairs") or [])[:6]:
+                print(f"[flow]   '{pr['from']}' → '{pr['to']}'  ({pr['why']} · {pr['mm']:.2f} MM · 신호 {pr['signals']}건)")
+            for rj in (p_note.get("rejects") or [])[:4]:
+                print(f"[flow]   [거부] '{rj['a']}' ↔ '{rj['b']}' — {rj['why']}")
+            print("[flow]   (한 줄 지우면 그 병합만 원복 · 규칙이 다시 합치면 never 에 쌍을 적으세요)")
+        elif pmap:
+            print(f"[flow] 과제 표기 병합 맵 {len(pmap)}건 적용(캐시)")
     except Exception as e:  # noqa: BLE001 - 병합 실패가 워크플로우를 막지 않게
         print(f"[flow] (세부업무 병합 건너뜀: {type(e).__name__}: {str(e)[:80]})")
     merge_fail = dict(getattr(details, "LAST_FAIL", {}) or {})
 
     # ② 재료
-    mats, basis, err = gather(rep, tag, amap)
+    mats, basis, err = gather(rep, tag, amap, pmap)
     if not mats:
         if not basis:
             # 신호 파일 자체가 없다/열이 없다 — 이것은 결과 없음이 아니라 전제가 깨진 것
@@ -942,6 +1019,7 @@ def main():
     def write_out():
         # 잘린 답 복구·적응 분할·자동 마무리를 거치면 판정 순서가 뒤섞여, 같은 과제가 화면에서 두 덩어리로
         # 갈라져 보였다(제보의 '연계되는 업무가 분할'). 저장 직전에 재료 순서(상위 → 과제 → 무게)로 되돌린다.
+        flows[:], _dupes = _dedupe_flows(flows, UNIT, log=print)
         flows.sort(key=lambda f: _order.get(f.get("model"), 10 ** 6))
         done = {f["model"] for f in flows}
         missing = [k for k in keys if k not in done]
@@ -958,6 +1036,13 @@ def main():
                                       "다시 실행하면 남은 업무만 이어서 판정합니다")),
                "last_error": ({"error": why, "hint": how} if why else {}),
                "merge": {"rule": n_rule, "ai": n_ai, "aliases": len(amap or {})},
+               # 과제(중위) 표기 병합과 흐름 중복 제거의 내역 — 무엇을 왜 합쳤는지 사람이 보고 되돌릴 수 있게.
+               # 별도 report 파일을 만들지 않는다(만들면 배포·취합 목록 네 곳을 한 세트로 고쳐야 한다).
+               "merge2": {"rule": n_p_rule, "evidence": n_p_ev, "aliases": len(pmap or {}),
+                          "rejected": len(p_note.get("rejects") or []), "dupes": len(_dupes),
+                          "pairs": (p_note.get("pairs") or [])[:50],
+                          "rejects": (p_note.get("rejects") or [])[:30],
+                          "flow_dupes": _dupes[:30]},
                "rows_units": len(mats)}
         _save_json(dst, out)
         return out

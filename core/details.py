@@ -25,6 +25,7 @@ import os
 import re
 import time
 import unicodedata
+from datetime import date as _date2
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPORT = os.path.join(ROOT, "report")
@@ -293,6 +294,392 @@ def _detail_pools(rows):
             mm = r["_mm"] if "_mm" in r else _f(r.get("mm"))
             mm_w[(pj, d)] = mm_w.get((pj, d), 0.0) + mm
     return by_pj, mm_w
+
+
+# ── 중위(과제) 표기 병합 ──────────────────────────────────────────────────
+# Level 3 에는 신원 축(ukey3)과 병합 캐시가 있는데 Level 2 에는 없었다 — judge.to_model 의
+# 소문자 정확 일치가 전부라, 띄어쓰기 하나만 흔들려도 새 과제가 생겼다. 그 변형은 다시
+# entities_*.json 에 discovered 로 적립돼 다음 실행의 후보로 되먹여져 분할이 영구화된다.
+# 갈라지면 (1) 워크플로우 카드가 여러 장이 되고 (2) _detail_pools 의 파티션 키가 raw Level 2 라
+# 세부업무 병합까지 반쪽이 되며 (3) MM 은 fold 축에서 조회되므로 갈라진 카드마다 같은 MM 이
+# 붙어 총합이 부푼다(감사 합성 실측: 1.8 MM vs 실제 1.2).
+#
+# 여기서는 **Copilot 왕복을 새로 만들지 않는다** — 표기 규칙과 이미 저장소에 있는 증거
+# (refine_map · 담당업무 집합 · 제품 열 · 신호 시간대)만 쓴다. 도메인 어휘는 한 글자도 쓰지 않는다.
+PROJ_ALIAS_FILE = os.path.join(CONFIG, "project_aliases.json")
+GENERIC2 = {"공통", "기타", "미분류", "일반"}   # 기본값 이름 — 병합 후보에서 제외
+MAX_ABSORB2 = 4        # 한 대표가 한 실행에서 흡수할 수 있는 다른 이름 수
+MAX_GROUP2 = 5         # 한 병합 무리의 최대 크기 — 넘으면 그 무리를 통째로 거부
+DICE2 = 0.60           # 이름 유사도 문턱(2-gram Dice)
+JACCARD2 = 0.50        # 담당업무 집합 겹침 문턱
+MIN_SPAN_GAP2 = 14     # 신호 시간대 비겹침 판정의 최소 간격(일)
+
+
+def ukey2(s):
+    """중위(과제) 신원 축 — ukey3·team_report.ukey 와 **같은 규칙**.
+    괄호 꼬리는 남기고(='(양산)'/'(선행)' 은 실제 구분) 공백·구분자·대소문자는 무시한다."""
+    return _fold3(s, drop_note=False).replace(" ", "")
+
+
+def note2(s):
+    """이름 끝 괄호 표기 — 다르면 무조건 합치지 않는다(_note3 의 대칭 이름)."""
+    return _note3(s)
+
+
+def bigram_dice(a, b):
+    """이름 유사도 — team_report.bigram_dice 와 같은 축(개인·팀이 같은 값을 본다)."""
+    def bg(t):
+        t = _fold3(t).replace(" ", "")
+        return {t[i:i + 2] for i in range(len(t) - 1)} or {t}
+    x, y = bg(a), bg(b)
+    return 2 * len(x & y) / (len(x) + len(y) or 1)
+
+
+_NUM2 = re.compile(r"\d+")
+
+
+def _nums2(s):
+    """이름 안 숫자 토큰 — '2차'/'3차', 'v1'/'v2' 는 다른 과제다(표기 규칙이지 도메인 어휘가 아니다)."""
+    return set(_NUM2.findall(_fold3(s, drop_note=False)))
+
+
+def _toks2(s):
+    return set(_fold3(s, drop_note=False).split())
+
+
+def _jac2(a, b):
+    a, b = set(a or ()), set(b or ())
+    return len(a & b) / len(a | b) if (a or b) else 0.0
+
+
+def _pair2(a, b):
+    return frozenset((ukey2(a), ukey2(b)))
+
+
+# ── 캐시 (config\project_aliases.json) ────────────────────────────────────
+def _flatten2_map(pmap, log=None):
+    """사슬(A→B→C) 평탄화 — _flatten3_map 의 2층판(스코프 없음). 순환은 지우지 않고 대표를 정한다."""
+    out, cycles = {}, []
+    for a, v in pmap.items():
+        seen = [a]
+        while v in pmap and v not in seen:
+            seen.append(v)
+            v = pmap[v]
+        if v in pmap and v in seen:
+            members = seen[seen.index(v):]
+            v = _cycle_rep(members)
+            mk = tuple(sorted(members))
+            if mk not in cycles:
+                cycles.append(mk)
+        if v != a:
+            out[a] = v
+    if cycles and log is not None:
+        for mem in cycles[:5]:
+            _say(f"    [!] project_aliases: 병합 방향이 서로를 가리킵니다({' ↔ '.join(mem[:3])})"
+                 f" — '{_cycle_rep(mem)}' 를 대표로 둡니다", log)
+    return out
+
+
+def _final2(pmap, name, limit=32):
+    seen, v = {name}, name
+    while v in pmap and pmap[v] not in seen and len(seen) < limit:
+        v = pmap[v]
+        seen.add(v)
+    return v if v not in pmap else name
+
+
+def _set_alias2(pmap, x, canon):
+    """x → canon 을 **캐시 방향을 지키며** 넣는다 → 새로 넣었으면 True(_set_alias 의 2층판)."""
+    x, canon = str(x or "").strip(), str(canon or "").strip()
+    if not x or not canon or x == canon or x in pmap:
+        return False
+    rep = _final2(pmap, canon)
+    if rep == x:
+        return False
+    pmap[x] = rep
+    return True
+
+
+def _parse_proj_obj(o):
+    """파일 → (맵, never 비교키 집합, never 원문쌍). 형태가 깨졌으면 맵 자리에 None."""
+    if not isinstance(o, dict):
+        return None, set(), []
+    never_keys, never_raw = set(), []
+    for pr in (o.get("never") or []):
+        if isinstance(pr, (list, tuple)) and len(pr) == 2:
+            a, b = str(pr[0] or "").strip(), str(pr[1] or "").strip()
+            if a and b:
+                never_keys.add(_pair2(a, b))
+                never_raw.append([a, b])
+    mp = o.get("map")
+    if not isinstance(mp, dict):
+        return None, never_keys, never_raw
+    pmap = {}
+    for k, v in mp.items():
+        if isinstance(k, str) and isinstance(v, str) and k.strip() and v.strip() and k.strip() != v.strip():
+            pmap[k.strip()] = v.strip()
+    return pmap, never_keys, never_raw
+
+
+def load_project_aliases():
+    """config\\project_aliases.json → (맵, never 비교키, never 원문쌍). 사슬은 풀어서 돌려준다."""
+    try:
+        with open(PROJ_ALIAS_FILE, encoding="utf-8-sig") as f:
+            pmap, nk, nr = _parse_proj_obj(json.load(f))
+    except (OSError, ValueError):
+        return {}, set(), []
+    return _flatten2_map(pmap or {}), nk, nr
+
+
+def save_project_aliases(pmap, never_raw=(), note=None):
+    """맵 저장(사슬 평탄화 후). 손편집으로 깨진 캐시는 백업으로 옮기고 새로 쓴다."""
+    pmap = _flatten2_map(dict(pmap or {}))
+    p = PROJ_ALIAS_FILE
+    if os.path.exists(p):
+        broken = False
+        try:
+            with open(p, encoding="utf-8-sig") as f:
+                cur, _nk, _nr = _parse_proj_obj(json.load(f))
+            broken = cur is None
+        except (OSError, ValueError):
+            broken = True
+        if broken:
+            bak = p + time.strftime(".깨짐백업_%Y%m%d_%H%M%S")
+            try:
+                os.replace(p, bak)
+                _say(f"    [!] project_aliases.json 이 깨져 있어 {os.path.basename(bak)} 로 옮겨 두고 "
+                     "새로 만듭니다 — 필요한 줄은 거기서 복사해 오세요")
+            except OSError:
+                pass
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    body = {"_설명": "과제(중위) 표기 병합 맵 — '변형' → '대표'. 한 줄 지우면 그 병합만 원복됩니다. "
+                     "다만 띄어쓰기·구분자만 다른 이름은 규칙이 다음 실행에 다시 합치므로, "
+                     "영영 갈라 두려면 never 에 [\"이름A\", \"이름B\"] 쌍을 적으세요.",
+            "updated": time.strftime("%Y-%m-%d %H:%M"),
+            "map": dict(sorted(pmap.items())),
+            "never": [list(x) for x in (never_raw or [])]}
+    if note:
+        body["note"] = note
+    tmp = p + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(body, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, p)
+    return p
+
+
+# ── 채택 가드 ──────────────────────────────────────────────────────────────
+def _accept_pair2(a, b, ev, never_keys, ctx):
+    """두 과제 이름을 합쳐도 되는가 → (채택, 사유 한 줄).
+
+    거부 규칙이 먼저다. 그다음 표기가 같으면(ukey2) 그것만으로 채택하고, 다르면 서로 독립인
+    근거가 2개 이상일 때만 채택한다 — 서로 다른 업무가 한 카드에 섞이는 것이 이 기능의 유일한
+    심각한 실패이므로, 애매하면 합치지 않는다."""
+    if _pair2(a, b) in never_keys:
+        return False, "never 목록(사용자가 다르다고 표시)"
+    if note2(a) != note2(b):
+        return False, f"괄호 꼬리 상이('{note2(a)}' vs '{note2(b)}')"
+    if _nums2(a) != _nums2(b):
+        return False, "숫자 토큰 상이(차수·버전)"
+    ta, tb = _toks2(a), _toks2(b)
+    if (ta < tb or tb < ta) and len(ta ^ tb) >= 2:
+        return False, "한쪽이 다른 쪽의 진부분집합 + 잔여 토큰 2개 이상(상위/하위 관계 의심)"
+    la, lb = ctx["l3"].get(a) or set(), ctx["l3"].get(b) or set()
+    if len(la) >= 2 and len(lb) >= 2 and not (la & lb):
+        return False, "담당업무 집합이 완전 배타"
+    sa, sb = ctx["span"].get(a), ctx["span"].get(b)
+    lim = int(ctx.get("half_days") or 0)
+    if sa and sb and lim:
+        gap = (max(sa[0], sb[0]) - min(sa[1], sb[1])).days
+        if gap >= lim:
+            return False, f"신호 시간대 비겹침({gap}일 간격)"
+    pin = ctx.get("pinned") or set()
+    if ukey2(a) in pin and ukey2(b) in pin:
+        return False, "둘 다 사용자 지정 과제(config\\projects.json)"
+    if ev.get("ukey2"):
+        return True, "표기 동일(공백·구분자·대소문자만 다름)"
+    hit = [k for k in ("dice", "refine", "l3", "product") if ev.get(k)]
+    if len(hit) >= 2:
+        return True, f"독립 근거 {len(hit)}개({'·'.join(hit)})"
+    return False, f"근거 부족({len(hit)}개 — 2개 필요)"
+
+
+# ── 맵 만들기 ──────────────────────────────────────────────────────────────
+def project_merge_map(rows, sigs=None, refmap=None, pinned=(), log=print):
+    """과제(중위) 표기 병합 맵 → (pmap, 규칙 병합 수, 증거 병합 수, 기록).
+
+    기록 = {"pairs": [...], "rejects": [...]} — 무엇을 왜 합쳤고 무엇을 왜 거부했는지.
+    rows = mm_rows(plain) · sigs = signals · refmap = flow._refine_orig 결과 ·
+    pinned = config\\projects.json 의 지정 과제명. Copilot 왕복 없음."""
+    rows = rows or []
+    names, mm_w, l3, prod, sig_n = set(), {}, {}, {}, {}
+    for r in rows:
+        pj = (r.get("Level 2") or "").strip()
+        if not pj or pj in GENERIC2:
+            continue
+        names.add(pj)
+        mm_w[pj] = mm_w.get(pj, 0.0) + (r["_mm"] if "_mm" in r else _f(r.get("mm")))
+        d = (r.get("Level 3") or "").strip()
+        if d:
+            l3.setdefault(pj, set()).add(ukey3(d))
+        p = (r.get("제품") or "").strip()
+        if p:
+            prod.setdefault(pj, set()).add(_fold3(p))
+    if len(names) < 2:
+        return {}, 0, 0, {"pairs": [], "rejects": []}
+
+    span = {}
+    for s2 in (sigs or []):
+        pj = (s2.get("model") or s2.get("project") or "").strip()
+        if pj not in names:
+            continue
+        sig_n[pj] = sig_n.get(pj, 0) + 1
+        t = str(s2.get("time") or "")[:10]
+        try:
+            dd = _date2.fromisoformat(t)
+        except ValueError:
+            continue
+        cur = span.get(pj)
+        span[pj] = (min(cur[0], dd), max(cur[1], dd)) if cur else (dd, dd)
+    all_days = 0
+    if span:
+        all_days = (max(v[1] for v in span.values()) - min(v[0] for v in span.values())).days
+    ctx = {"l3": l3, "span": span, "half_days": max(MIN_SPAN_GAP2, all_days // 2),
+           "pinned": {ukey2(p) for p in (pinned or []) if p}}
+
+    # refine 이 한 정제 행으로 덮은 원본들이 서로 다른 과제였다면, refine 은 그 둘을 같은 일로 본 것이다
+    # (flow._seed_from_refine 은 '과제를 넘나드는 병합' 이라며 이 정보를 버린다 — 여기서 근거로만 줍는다)
+    ref_pairs = set()
+    for _rk, prs in (refmap or {}).items():
+        pjs = sorted({str(p or "").strip() for p, _d in prs if str(p or "").strip()})
+        if 2 <= len(pjs) <= MAX_GROUP2:
+            for i in range(len(pjs)):
+                for j in range(i + 1, len(pjs)):
+                    ref_pairs.add(_pair2(pjs[i], pjs[j]))
+
+    pmap, never_keys, never_raw = load_project_aliases()
+    cached_reps = set(pmap.values())
+    n_rule = n_ev = 0
+    pairs, rejects, absorbed = [], [], {}
+
+    def _canon2(group):
+        """대표 — 캐시가 이미 대표로 쓰는 이름이 무리에 있으면 그것을 고정(방향 뒤집힘 방지),
+        없으면 MM 큰 이름 → **띄어쓰기가 살아 있는 이름** → 원문 짧은 이름 → 사전순.
+
+        Level 3 의 _rule_canon 은 '공백 정규화가 짧은 이름' 을 고르는데, 그것을 과제에 그대로 쓰면
+        '광학 설계'/'광학설계' 에서 붙여 쓴 쪽이 대표가 되어 카드 머리말이 읽기 나빠진다(실측).
+        과제 이름은 화면에 그대로 보이므로 team_report.local_groups 와 같이 '정보가 많은 표기' 를
+        고른다. 그러면서도 '빌드  논의'(공백 둘) 같은 오타는 원문 길이 비교에서 걸러진다 —
+        정규화하면 길이가 같고, 원문이 긴 쪽이 지기 때문이다."""
+        cached = [x for x in group if x in cached_reps]
+        pool = cached or list(group)
+        return max(pool, key=lambda x: (mm_w.get(x, 0.0), len(" ".join(x.split())), -len(x), x))
+
+    def _take(x, canon, why, kind):
+        nonlocal n_rule, n_ev
+        if absorbed.get(ukey2(canon), 0) >= MAX_ABSORB2:
+            rejects.append({"a": x, "b": canon, "why": f"한 대표의 흡수 한도 초과({MAX_ABSORB2}개)"})
+            return
+        if not _set_alias2(pmap, x, canon):
+            return
+        absorbed[ukey2(canon)] = absorbed.get(ukey2(canon), 0) + 1
+        pairs.append({"from": x, "to": _final2(pmap, canon), "why": why,
+                      "mm": round(mm_w.get(x, 0.0), 3), "signals": sig_n.get(x, 0)})
+        if kind == "rule":
+            n_rule += 1
+        else:
+            n_ev += 1
+
+    # ① 규칙 — 표기만 다른 이름(오병합 없는 안전 구간)
+    by_k = {}
+    for n in names:
+        by_k.setdefault(ukey2(n), []).append(n)
+    for _k, grp in sorted(by_k.items()):
+        if len(grp) < 2:
+            continue
+        if len(grp) > MAX_GROUP2:
+            rejects.append({"a": grp[0], "b": grp[1], "why": f"무리가 너무 큼({len(grp)}개 > {MAX_GROUP2})"})
+            continue
+        canon = _canon2(grp)
+        for x in sorted(grp):
+            if x == canon:
+                continue
+            ok, why = _accept_pair2(x, canon, {"ukey2": True}, never_keys, ctx)
+            if ok:
+                _take(x, canon, why, "rule")
+            else:
+                rejects.append({"a": x, "b": canon, "why": why})
+
+    # ② 증거 — 표기가 다르면 서로 독립인 근거 2개 이상일 때만
+    reps = sorted({_final2(pmap, n) for n in names})
+    for i in range(len(reps)):
+        for j in range(i + 1, len(reps)):
+            a, b = reps[i], reps[j]
+            if _final2(pmap, a) == _final2(pmap, b):
+                continue
+            ev = {"ukey2": ukey2(a) == ukey2(b),
+                  "dice": bigram_dice(a, b) >= DICE2,
+                  "refine": _pair2(a, b) in ref_pairs,
+                  "l3": (_jac2(l3.get(a), l3.get(b)) >= JACCARD2
+                         and len(l3.get(a) or ()) >= 3 and len(l3.get(b) or ()) >= 3),
+                  "product": bool((prod.get(a) or set()) & (prod.get(b) or set()))}
+            if not any(ev.values()):
+                continue
+            ok, why = _accept_pair2(a, b, ev, never_keys, ctx)
+            if not ok:
+                rejects.append({"a": a, "b": b, "why": why})
+                continue
+            canon = _canon2([a, b])
+            _take(b if canon == a else a, canon, why, "ev")
+
+    pmap = _flatten2_map(pmap, log=log)
+    if n_rule or n_ev:
+        try:
+            save_project_aliases(pmap, never_raw, note=f"규칙 {n_rule} · 증거 {n_ev}")
+        except OSError as e:
+            _say(f"    [!] project_aliases.json 저장 실패({type(e).__name__}) — 이번 실행에만 적용", log)
+    # 한 과제가 전체 MM 의 60% 를 넘게 빨아들였으면 채택은 하되 눈에 띄게 알린다
+    tot = sum(mm_w.values())
+    if tot > 0:
+        after = {}
+        for n in names:
+            after[_final2(pmap, n)] = after.get(_final2(pmap, n), 0.0) + mm_w.get(n, 0.0)
+        big = [k for k, v in after.items() if v > 0.6 * tot]
+        if big and len(after) > 1:
+            _say(f"    [!] 병합 뒤 '{big[0]}' 하나가 전체 MM 의 60% 를 넘습니다 — 과병합이 아닌지 확인하세요", log)
+    return pmap, n_rule, n_ev, {"pairs": pairs, "rejects": rejects}
+
+
+# ── 적용 ──────────────────────────────────────────────────────────────────
+def apply_project_map(rows, sigs, pmap):
+    """mm_rows 행의 Level 2 와 신호의 model|project 를 대표 이름으로 — 원본 파일은 무수정.
+
+    **반드시 apply_detail_map 보다 먼저** 부른다. 세부업무 맵의 키가 (과제, 이름) 이라
+    과제 이름이 먼저 대표가 돼야 맞고, _detail_pools 의 파티션 키도 raw Level 2 라서
+    과제가 갈린 채로 두면 세부 병합까지 반쪽이 된다(감사 실측)."""
+    if not pmap:
+        return rows, sigs
+    for r in (rows or []):
+        pj = (r.get("Level 2") or "").strip()
+        nv = pmap.get(pj)
+        if nv and nv != pj:
+            r["Level 2"] = nv
+    for s2 in (sigs or []):
+        for k in ("model", "project"):
+            if s2.get(k) is None:
+                continue
+            v = str(s2.get(k) or "").strip()
+            nv = pmap.get(v)
+            if nv and nv != v:
+                s2[k] = nv
+    return rows, sigs
+
+
+def remap_detail_scope(amap, pmap):
+    """세부업무 맵의 '과제' 스코프를 과제 병합 대표로 접는다.
+    과제를 합치면 (옛 과제, 이름) 키가 고아가 되어 이미 지불한 세부 병합이 조용히 사라진다."""
+    if not amap or not pmap:
+        return amap
+    return {(pmap.get(pj, pj), d): v for (pj, d), v in amap.items()}
 
 
 def merge_prompt_sections(by_pj, amap):

@@ -57,6 +57,7 @@ from datetime import date, datetime
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(ROOT, "core"))
+from details import ukey2  # noqa: E402  - 과제 신원 축(공백·구분자·대소문자 무시, 괄호 꼬리 보존)
 from progress import progress  # noqa: E402
 NO_WIN = 0x08000000
 _DEC = json.JSONDecoder()
@@ -552,7 +553,9 @@ def sanitize_models(models):
         name = str(m.get("name") or "").strip() if isinstance(m, dict) else str(m).strip()
         if not name or (NOISE_MODEL.match(name) and not (isinstance(m, dict) and m.get("pinned"))):
             continue
-        k = name.lower()
+        # 신원 축은 ukey2 — 예전에는 .lower() 뿐이라 '광학 설계'/'광학설계'/'광학-설계' 가 서로 다른
+        # 과제로 남았고, 그 변형이 discovered 로 적립돼 다음 실행의 후보로 되먹여져 분할이 영구화됐다.
+        k = ukey2(name)
         if k in seen:
             continue
         seen.add(k)
@@ -573,8 +576,16 @@ def sanitize_models(models):
 def to_model(name, models):
     """판정이 돌려준 과제명을 체계의 대표 표기로 정규화 — 대소문자 변형 분리 계상 방지"""
     n = str(name or "").strip()
-    canon = {m["name"].lower(): m["name"] for m in models}
-    return canon.get(n.lower(), n)
+    # 표기 변형(띄어쓰기·하이픈·가운뎃점·대소문자)을 체계의 대표 이름으로 접는다. consolidate 왕복이
+    # 통합한 merged 이름도 함께 실어, 그 왕복의 결과가 판정 성공 행에도 적용되게 한다 — 예전에는
+    # merged 가 match 로만 들어가 **판정 실패 행(rule_model)에만** 반영되는 역전이 있었다(감사 실측).
+    canon = {}
+    for m in models:
+        nm = m["name"]
+        canon.setdefault(ukey2(nm), nm)
+        for alt in (m.get("merged") or []):
+            canon.setdefault(ukey2(alt), nm)
+    return canon.get(ukey2(n), n)
 
 
 def rule_model(r, models):
@@ -1497,10 +1508,12 @@ def main():
             w.writerow({c: r.get(c, "") for c in cols})
     # 판정 중 새로 발견된 과제(체계에 없던 이름) → entities에 discovered로 기록,
     # 다음 실행의 taxonomy 힌트로 자동 순환된다. 비교는 대소문자 무시(중복 계상 방지).
-    model_names_l = {m["name"].lower() for m in models}
+    # 비교는 ukey2 — .lower() 로만 보면 '광학설계' 가 '광학 설계' 의 옆에 새 과제로 적립되고,
+    # 그것이 다음 실행의 taxonomy 힌트가 되어 분할이 영구화된다(재분석해도 낫지 않던 이유).
+    model_names_l = {ukey2(m["name"]) for m in models}
     discovered = sorted({j["model"].strip() for j in judged.values()
                          if j["work"] and j["model"].strip()
-                         and j["model"].strip().lower() not in model_names_l
+                         and ukey2(j["model"].strip()) not in model_names_l
                          and not NOISE_MODEL.match(j["model"].strip())})
     if discovered:
         print("        판정 중 새 과제 발견: " + ", ".join(discovered))

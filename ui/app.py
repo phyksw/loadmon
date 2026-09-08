@@ -3223,6 +3223,30 @@ async function startTool(path){
  if(r.status===409)return {ok:false,busy:true,error:"다른 작업 실행 중",hint:d.hint||""};
  return d;
 }
+// 과제(중위) 표기 병합·흐름 중복 제거 내역 — 무엇을 왜 합쳤는지 보이지 않으면 잘못된 병합을
+// 사람이 찾을 수 없다. 접어 두고, 펼치면 표와 되돌리는 방법을 보여준다.
+function mergeLine(m){
+ if(!m)return"";
+ const np=(m.pairs||[]).length, nd=(m.flow_dupes||[]).length, nr=(m.rejects||[]).length;
+ if(!np&&!nd&&!nr)return"";
+ const rows=(m.pairs||[]).map(p=>`<tr><td>${esc(p.from)}</td><td style="color:#8b929b">→</td><td><b>${esc(p.to)}</b></td>`
+  +`<td class="dim">${esc(p.why||"")}</td><td style="text-align:right">${(p.mm||0).toFixed(2)} MM</td>`
+  +`<td style="text-align:right" class="dim">신호 ${p.signals||0}</td></tr>`).join("");
+ const dups=(m.flow_dupes||[]).map(x=>`<tr><td colspan="3">${esc(x.kept)}</td>`
+  +`<td class="dim">${esc(x.why||"")}</td><td colspan="2" style="text-align:right" class="dim">`
+  +`단계 ${(x.steps||[0,0])[0]}개 유지 · ${(x.steps||[0,0])[1]}개 버림</td></tr>`).join("");
+ const rej=(m.rejects||[]).map(r=>`<tr><td colspan="3">${esc(r.a)} ↔ ${esc(r.b)}</td>`
+  +`<td colspan="3" class="dim">${esc(r.why||"")}</td></tr>`).join("");
+ return '<details style="margin-top:8px"><summary style="cursor:pointer;font-size:12px;color:#4a5159">'
+  +`이름 병합 ${np}건 · 흐름 중복 제거 ${nd}건${nr?` <span class="dim">(합치지 않은 것 ${nr}건)</span>`:""}`
+  +'</summary><table style="width:100%;font-size:12px;margin-top:6px">'
+  +(rows?'<tr><th colspan="6" style="text-align:left;color:#8b929b;font-weight:normal">합친 과제 이름</th></tr>'+rows:"")
+  +(dups?'<tr><th colspan="6" style="text-align:left;color:#8b929b;font-weight:normal;padding-top:6px">중복으로 지운 흐름</th></tr>'+dups:"")
+  +(rej?'<tr><th colspan="6" style="text-align:left;color:#8b929b;font-weight:normal;padding-top:6px">합치지 않은 것</th></tr>'+rej:"")
+  +'</table><div class="note">잘못 합쳐졌으면 <b>config\\project_aliases.json</b> 의 그 줄을 지우세요. '
+  +'띄어쓰기만 다른 이름은 규칙이 다시 합치므로, 영영 갈라 두려면 같은 파일 <b>never</b> 에 '
+  +'<code>["이름A", "이름B"]</code> 를 적으면 됩니다. 다음 [워크플로우 재분석]부터 반영됩니다.</div></details>';
+}
 async function loadFlow(){
  const el=$("rv-flow");
  el.innerHTML='<div class="card"><div class="note">불러오는 중…</div></div>';
@@ -3237,7 +3261,7 @@ async function loadFlow(){
   +'<div class="note">과제별로 <b>역할 → 일의 순서 → 단계별 Agent 가능성</b>을 raw 근거에서 판정합니다. '
   +'MM 배분 숫자는 AI 가 아니라 판정 실측치입니다.'+(nflows?` 업무 ${nflows}/${d.rows_units||nflows}개 판정`+partial+salv:"")+'</div>'+lastErr
   +(d.reextracted?'<div class="note" style="color:#8a5a00">⚠ <b>재추출 이후 결과</b> — '+esc(d.reextracted_note||"이 결과는 마지막 업무 로드 재추출 이전의 것입니다")+' · [워크플로우 재분석]으로 갱신하세요</div>':"")
-  +manualLine(d.manual)+'</div>';
+  +mergeLine(d.merge2)+manualLine(d.manual)+'</div>';
  if(!d.ok||!nflows){
   // 홑따옴표 문자열에서는 ${...} 가 치환되지 않는다 — 템플릿 리터럴로 써야 사유가 실제로 보인다
   // '결과가 없다' 와 '다른 기간 것만 있다' 는 다르다 — 구분해서 말한다

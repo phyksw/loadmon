@@ -18,3 +18,4 @@ __pycache__/
 # 실행 중 만들어지는 개인 캐시 — 세부업무 병합 맵(core/details.py 가 첫 로드 때 만든다).
 # FILES.txt·자가점검 NEED 목록에도 없다. 사람마다 다른 값이라 저장소에 넣지 않는다.
 config/detail_aliases.json
+config/project_aliases.json
