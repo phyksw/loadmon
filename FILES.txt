@@ -60,7 +60,7 @@ core/details.py                                       36,372 B  34f15be3
 core/owner.py                                          1,488 B  1f1dc049
 core/progress.py                                       1,129 B  77a7579a
 core/projmap.py                                        6,619 B  27dcacc3
-docs/설정가이드.md                                         49,294 B  21ae8e15
+docs/설정가이드.md                                         51,000 B  361189a0
 docs/사용안내.html                                       272,444 B  6082e12b
 tools/copilot_auto.py                                 62,295 B  513c44ef
 tools/Get-EmbeddedPython.ps1                           2,472 B  e8ce528c
