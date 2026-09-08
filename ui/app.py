@@ -1056,7 +1056,7 @@ def sources(period=None):
         ("메일·일정", ["outlook/mail.csv", "outlook/calendar.csv"], "클래식 Outlook을 켠 상태로 실행"),
         ("파일·Recent", ["files/files.csv", "files/recent.csv"], "config.watchFolders 를 실제 작업 폴더로"),
         ("git 커밋", ["files/git_commits.csv"], "config.gitRepos 설정 (선택)"),
-        ("팀즈 채팅", ["m365/teams_*.csv"], r"상시 샘플러(collect\Start-TeamsSampler.ps1) 권장 · Copilot 경로는 커넥터 있는 테넌트만"),
+        ("팀즈 채팅", ["m365/teams_*.csv"], r"[팀즈 웹 읽기] 버튼 — 앱이 꺼져 있어도 됩니다 (전용 Edge 창에서 회사 계정 1회 로그인)"),
         ("창 샘플러", ["activity/activity_*.csv"],
          "LoadMonitor22-샘플러등록.bat 으로 1회 등록하면 로그온 때마다 자동 시작 (선택 · 없으면 PC 가동 하한으로 계산)"),
         ("추가 PC", ["추가PC/*/outlook/mail.csv", "추가PC/*/files/files.csv",
@@ -1131,10 +1131,10 @@ def sources(period=None):
             no_cp = os.path.exists(os.path.join(DATA, "m365", "teams_copilot_unavailable.json"))
             if no_cp and n < 5:
                 st = "warn" if n else "off"
-                hint = ("이 계정 Copilot은 팀즈 조회 불가 — 상시 샘플러"
-                        "(collect\\Start-TeamsSampler.ps1)를 켜두면 사용 중 자동 누적됩니다")
+                hint = ("이 계정 Copilot은 팀즈 조회 불가 — [팀즈 웹 읽기] 를 쓰세요"
+                        "(앱이 꺼져 있어도 됩니다). 상시 누적은 collect\\Start-TeamsSampler.ps1")
             elif 0 < n < 5:
-                st, hint = "warn", "회수 부족 — 재수집 권장 (data\\m365\\replies\\ 원문 참고)"
+                st, hint = "warn", "회수 부족 — [팀즈 웹 읽기] 로 보강 (창 읽기는 화면에 보인 부분만 긁습니다)"
         out.append({"name": name, "rows": n, "age": _age(mt),
                     "status": st, "hint": "" if st == "ok" else hint})
     return out
@@ -2333,6 +2333,7 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
  <button class="ghost" id="cdiag">수집 진단</button>
  <button class="ghost" id="prepmove">PC 이동 준비</button>
  <button class="ghost" id="owa">Outlook 웹 읽기</button>
+ <button class="ghost" id="teamsweb">팀즈 웹 읽기</button>
  <button class="ghost" id="narrate">리뷰 코멘트 재생성</button>
  <button class="ghost" id="reset" style="color:#c0122f;border-color:#f0cdd5">데이터 리셋</button>
  <button class="ghost" id="quit">서버 종료</button>
@@ -3134,6 +3135,15 @@ $("owa").onclick=async()=>{
  const d=await fetch("/api/owa",{method:"POST"}).then(r=>r.json()).catch(e=>({ok:false,error:String(e)}));
  $("owa").disabled=false;$("state").textContent="대기 중";
  if(d.rc===2){alert("로그인이 필요합니다.\\n지금 열린 전용 Edge 창의 Outlook 탭에서 회사 계정을 선택/로그인한 뒤 [Outlook 웹 읽기]를 다시 누르세요.");return;}
+ alert((d.ok?"읽기 완료 — ":"읽기 실패 — ")+(d.summary||d.error||"")+"\\n\\n[재분석만]으로 다시 분석하면 반영됩니다.");
+};
+$("teamsweb").onclick=async()=>{
+ // 팀즈 앱이 꺼져 있어도 되는 경로 — 창 읽기(UIA)와 달리 화면 렌더에 좌우되지 않는다
+ if(!confirm("팀즈 웹(teams.microsoft.com)을 전용 Edge 창으로 열어 채팅을 읽습니다.\\n처음이면 그 창의 팀즈 탭에서 회사 계정을 한 번 선택/로그인해야 합니다.\\n\\n팀즈 앱은 켜져 있지 않아도 됩니다.\\n계속할까요?"))return;
+ $("teamsweb").disabled=true;$("state").textContent="팀즈 웹 읽는 중… (대화방을 하나씩 열어 되감습니다, 수 분)";
+ const d=await fetch("/api/teamsweb",{method:"POST"}).then(r=>r.json()).catch(e=>({ok:false,error:String(e)}));
+ $("teamsweb").disabled=false;$("state").textContent="대기 중";
+ if(d.rc===2){alert("로그인이 필요합니다.\\n지금 열린 전용 Edge 창의 팀즈 탭에서 회사 계정을 선택/로그인한 뒤 [팀즈 웹 읽기]를 다시 누르세요.");return;}
  alert((d.ok?"읽기 완료 — ":"읽기 실패 — ")+(d.summary||d.error||"")+"\\n\\n[재분석만]으로 다시 분석하면 반영됩니다.");
 };
 $("prepmove").onclick=async()=>{
@@ -4683,6 +4693,35 @@ class H(BaseHTTPRequestHandler):
                 log(f"[Outlook 웹] rc={r2.returncode} " + (tail[-1] if tail else "")[:120])
                 self._send(200, {"ok": r2.returncode == 0, "rc": r2.returncode, "period": [d0, d1],
                                  "summary": " / ".join(t.replace("[outlook-web] ", "") for t in tail)[:600]})
+            except subprocess.TimeoutExpired:
+                self._send(200, {"ok": False, "rc": -1, "error": "25분 내 끝나지 않음"})
+            except OSError as e:
+                self._send(200, {"ok": False, "rc": -1, "error": f"실행 실패({type(e).__name__})"})
+        elif self.path == "/api/teamsweb":
+            # 팀즈 웹 읽기를 손으로 — 로그인 직후 재수집용. 기간은 Outlook 웹과 같은 규칙.
+            # --force 는 주지 않는다: 이 파일은 '그때 화면에 보인 대화'만 담으므로 누적이 자산이다.
+            d0 = d1 = ""
+            try:
+                with open(os.path.join(REPORT, "last_run.json"), encoding="utf-8-sig") as f:
+                    per = json.load(f).get("period") or []
+                if len(per) == 2:
+                    d0, d1 = per
+            except (OSError, ValueError):
+                pass
+            if not (d0 and d1):
+                import datetime as _dt
+                d1 = _dt.date.today().isoformat()
+                d0 = _dt.date(_dt.date.today().year, 1, 1).isoformat()
+            try:
+                r2 = subprocess.run([sys.executable, os.path.join(ROOT, "collect", "Get-TeamsWeb.py"),
+                                     "--from", d0, "--to", d1],
+                                    capture_output=True, timeout=1500, cwd=ROOT,
+                                    env=dict(os.environ, PYTHONIOENCODING="utf-8"), creationflags=NO_WIN)
+                txt = (r2.stdout or b"").decode("utf-8", "replace")
+                tail = [ln for ln in txt.strip().splitlines() if ln.strip()][-4:]
+                log(f"[팀즈 웹] rc={r2.returncode} " + (tail[-1] if tail else "")[:120])
+                self._send(200, {"ok": r2.returncode == 0, "rc": r2.returncode, "period": [d0, d1],
+                                 "summary": " / ".join(t.replace("[teams-web] ", "") for t in tail)[:600]})
             except subprocess.TimeoutExpired:
                 self._send(200, {"ok": False, "rc": -1, "error": "25분 내 끝나지 않음"})
             except OSError as e:

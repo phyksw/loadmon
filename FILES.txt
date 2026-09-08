@@ -1,7 +1,7 @@
 LoadMonitor22 필수 파일 목록 - 복사 시 전부 있어야 합니다.
 (data/ report/ teamdata/ 는 복사 금지 - 개인정보)
 
-총 66개
+총 67개
 
 LoadMonitor22-UI.bat                                   2,444 B  8e4eb69f
 LoadMonitor22.bat                                      3,155 B  c2712f04
@@ -29,8 +29,8 @@ mine.py                                               17,836 B  c751c51d
 refine.py                                             42,062 B  b56a12e8
 ruff.toml                                              1,004 B  44ee0eea
 FILES.txt                                                (이 파일)
-run.py                                                49,506 B  ee28b10c
-자가점검.py                                                8,754 B  3eb64e97
+run.py                                                50,362 B  cfd1bcb5
+자가점검.py                                                8,785 B  f74b0d90
 collect/Add-WorkLog.ps1                                1,771 B  8a921980
 collect/Get-FileActivity.ps1                          48,656 B  cfab595d
 collect/Get-GitActivity.py                            29,162 B  0facda4f
@@ -45,12 +45,13 @@ collect/Start-TeamsSampler.ps1                         2,201 B  49b71b44
 collect/Get-RecentFiles.ps1                           22,050 B  8c06dfa2
 collect/Get-TeamsChats.py                             17,754 B  e868c913
 collect/Get-TeamsViaCopilot.py                        22,177 B  e6ef9df2
+collect/Get-TeamsWeb.py                               27,766 B  741c662e
 collect/Get-TeamsWindow.ps1                           36,106 B  20295d52
 collect/Diagnose-Collectors.ps1                       36,412 B  4f5352b3
 collect/Register-Samplers.ps1                         10,617 B  ad6b07b4
 collect/Start-ActivitySampler.ps1                      8,715 B  c25fec94
-config/config.json                                    35,004 B  9b674a74
-config/config.default.json                            35,004 B  9b674a74
+config/config.json                                    35,775 B  4b552dd7
+config/config.default.json                            35,775 B  4b552dd7
 config/agentic_tasks.json                              4,426 B  2c9e5bb1
 core/board.py                                         13,045 B  9c4d6431
 core/extract.py                                      207,457 B  64eeac2a
@@ -68,4 +69,4 @@ tools/lint.ps1                                         7,914 B  16140924
 tools/Make-Package.ps1                                10,733 B  f6623295
 tools/Prepare-Move.ps1                                22,237 B  ac13150b
 tools/update_files.py                                  4,530 B  46a81ea6
-ui/app.py                                            322,089 B  476a11d8
+ui/app.py                                            325,234 B  0fec068f

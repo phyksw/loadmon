@@ -578,12 +578,20 @@ def main():
             teams_ok = step("팀즈 채팅 (Graph)",
                             [sys.executable, os.path.join(col, "Get-TeamsChats.py"),
                              "--from", d0, "--to", d1, "--non-interactive"], 300)
+        # 웹 경로 — 메일(Get-OutlookWeb.py)과 같은 방식으로 전용 Edge 프로필에서 팀즈를 읽는다.
+        # 앱이 꺼져 있어도 되고, 창 읽기(UIA)처럼 화면에 그려진 부분만 긁는 것이 아니라 문서 구조를
+        # 읽으므로 창 크기·테마·팀즈 버전에 좌우되지 않는다(PC 마다 0건이던 제보의 원인).
+        # 로그인이 필요하면 2로 끝나 아래 경로로 이어진다 — 그 안내는 수집기가 화면에 남긴다.
+        if not teams_ok and "--no-teams" not in sys.argv and c.get("teamsWeb", True):
+            teams_ok = step("팀즈 채팅 (웹 — 전용 Edge, 앱이 꺼져 있어도)",
+                            [sys.executable, os.path.join(col, "Get-TeamsWeb.py"),
+                             "--from", d0, "--to", d1], 900)
         # Copilot 은 '판정 엔진'이다. 팀즈 조회는 테넌트에 커넥터가 있어야만 되는 별개
         # 기능이라, 없는 환경에서 계속 물으면 판정에 쓸 세션만 소진된다(실측).
         use_cp_teams = bool(c.get("teamsViaCopilot"))
         if not teams_ok and not use_cp_teams and "--no-teams" not in sys.argv:
             print("\n── 팀즈 채팅 (Copilot 경로 건너뜀 — config.teamsViaCopilot=false)")
-            print("   팀즈는 상시 샘플러(collect\\Start-TeamsSampler.ps1)나 Graph 로 모읍니다.")
+            print("   팀즈는 웹 경로(전용 Edge)·상시 샘플러(collect\\Start-TeamsSampler.ps1)·Graph 로 모읍니다.")
             print("   Copilot 은 AI 판정 전용으로 아껴 둡니다.")
             record("팀즈 채팅", True, 0.0, "Copilot 경로 건너뜀(설정)")
         if not teams_ok and use_cp_teams and "--no-teams" not in sys.argv:

@@ -50,6 +50,7 @@ NEED = [
     "collect/Get-RecentFiles.ps1",
     "collect/Get-TeamsChats.py",
     "collect/Get-TeamsViaCopilot.py",
+    "collect/Get-TeamsWeb.py",
     "collect/Get-TeamsWindow.ps1",
     "collect/Diagnose-Collectors.ps1",
     "collect/Register-Samplers.ps1",

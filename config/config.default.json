@@ -1,4 +1,4 @@
-{
+﻿{
  "_설명": "LoadMonitor22 — raw 판정은 Copilot(GPT-5.6)이 과제↔업무유형 계층으로 수행. MM은 투입/가용을 나란히 낸다: 투입 MM(실제 활동 흔적 시간) ÷ 가용 MM(일할 수 있었던 양) = 로드율",
  "owner": "",
  "function": "",
@@ -392,8 +392,11 @@
  "_자동발견_설명": "최근 문서에서 작업 폴더를 자동으로 찾아 감시 대상에 보탭니다. 개인 폴더가 섞이면 위 목록에 폴더명을 추가하거나 아래를 false 로 끄세요.",
  "autoDiscoverFolders": true,
  "_수집옵션_설명": "창제목·메일제목 저장 여부. 끄면 정밀 분류가 약해지지만 저장물이 최소화됩니다",
- "_팀즈수집_설명": "팀즈 채팅 수집 경로. Copilot 은 '판정 엔진'이고 팀즈 조회는 별개 기능이라, 테넌트에 Teams 커넥터가 없으면 Copilot 으로는 볼 수 없습니다(실측). 그 상태에서 계속 물으면 판정에 쓸 세션만 소진됩니다. 기본 false — 팀즈는 collect\\Start-TeamsSampler.ps1 또는 config.graph 로 모으세요.",
+ "_팀즈수집_설명": "팀즈 채팅 수집 경로. ① config.graph(Graph API) → ② 웹(teamsWeb — Copilot 과 같은 전용 Edge 프로필로 teams.microsoft.com 을 읽는다. 팀즈 앱이 꺼져 있어도 되고 LLM 을 거치지 않아 지어낸 행이 없다) → ③ Copilot(teamsViaCopilot) → ④ 열린 창 읽기(Get-TeamsWindow.ps1) 순으로 자동 대체합니다. ④는 화면에 그려진 부분만 UI 자동화로 긁어 창 크기·테마·팀즈 버전에 따라 PC 마다 0건이 되곤 했습니다 — ②가 그 편차를 없앱니다(전용 Edge 창에서 회사 계정 1회 로그인). teamsViaCopilot 기본 false: Copilot 은 '판정 엔진'이고 팀즈 조회는 별개 기능이라, 테넌트에 Teams 커넥터가 없으면 Copilot 으로는 볼 수 없고(실측) 그 상태에서 계속 물으면 판정에 쓸 세션만 소진됩니다.",
  "teamsViaCopilot": false,
+ "teamsWeb": true,
+ "_teamsWebMaxChats_설명": "웹 경로에서 훑을 대화방 수(최근 순). 대화방마다 지난 메시지를 위로 되감으므로 늘리면 그만큼 오래 걸립니다. 0 이하·비정상 값은 40 으로 봅니다.",
+ "teamsWebMaxChats": 40,
  "_메일수집_설명": "Outlook 메일·일정 수집 경로. 기본은 클래식 Outlook COM. 이 PC 에서 COM 결과가 비면(새 Outlook 전용·2016 시작 마법사·COM 미등록) ① Windows Search 색인 → ② Outlook 웹(전용 Edge 프로필, mailViaWeb) → ③ Copilot 메일·일정 왕복(mailViaCopilot) 순으로 자동 대체합니다. ②는 Outlook 버전과 무관하고 LLM 을 거치지 않아 정확하며, Copilot 과 같은 전용 Edge 창에서 회사 계정으로 한 번 로그인(계정 선택)만 하면 됩니다. 왕복·읽기는 메일이 비었을 때만 일어납니다.",
  "mailViaCopilot": true,
  "mailViaWeb": true,
