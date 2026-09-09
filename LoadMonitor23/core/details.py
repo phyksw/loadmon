@@ -231,25 +231,108 @@ def save_detail_aliases(amap, note=None):
 
 
 # ── Copilot 결과 채택 가드 ────────────────────────────────────────────────
+def _snap3(pool):
+    """이름 → 실재 이름 스냅 표. 답이 표기를 흔들어 되돌려 줘도 알아보게 한다.
+    후보가 둘 이상인 축 값은 버린다(모호하면 안 쓴다 — flow._uniq_map 과 같은 규칙)."""
+    out = {}
+    for ax in (lambda x: x, lambda x: x.strip().casefold(), ukey3, _ukey3p):
+        seen = {}
+        for nm in pool:
+            k = ax(nm)
+            if not k:
+                continue
+            seen.setdefault(k, []).append(nm)
+        for k, v in seen.items():
+            if len(v) == 1 and k not in out:
+                out[k] = v[0]
+    return out
+
+
 def _accept_group3(grp, pool, weight=None):
-    """Copilot 그룹 검증: 실재 이름만, 2개 이상, 괄호 꼬리가 서로 다르면 거부.
-    대표는 MM 이 큰 이름 — '리뷰 회의' 같은 곁가지가 묶음의 이름이 되면 어색하다.
-    반환 (대표, [나머지]) / 거부면 None."""
+    """Copilot 그룹 검증 → (대표, [나머지]) / 거부면 None.
+
+    · 실재 이름만 — 다만 **정확일치만 보지 않는다**. 답이 공백 하나만 흔들어도 묶음이 통째로
+      버려졌다(감사 실측: '한 이름만 표기 흔들림' → 그룹 거부). flow._resolve_key 가 같은 문제에
+      여러 축을 쓰는 것과 같이, 여기서도 실재 이름으로 스냅한 뒤 판정한다.
+    · 괄호 꼬리('(양산)' vs '(선행)')는 **그룹 거부가 아니라 멤버 배제**로 바꿨다. 예전에는 꼬리가
+      다른 이름 하나가 섞이면 나머지 유효한 병합까지 함께 사라졌다(실측: 유효 2건 동반 소실).
+      가장 많은 꼬리 쪽을 남기고 다른 꼬리는 뺀 뒤, 남은 것이 2개 이상이면 채택한다.
+    · 대표는 MM 이 큰 이름 — '리뷰 회의' 같은 곁가지가 묶음의 이름이 되면 어색하다."""
     if not isinstance(grp, (list, tuple)):
         return None
+    snap = _snap3(pool)
     seen, names = set(), []
     for x in grp:
         s = str(x or "").strip()
-        if s and s in pool and s not in seen:
-            seen.add(s)
-            names.append(s)
+        if not s:
+            continue
+        hit = (s if s in pool else
+               snap.get(s) or snap.get(s.casefold()) or snap.get(ukey3(s)) or snap.get(_ukey3p(s)))
+        if hit and hit not in seen:
+            seen.add(hit)
+            names.append(hit)
     if len(names) < 2:
         return None
-    if len({_note3(x) for x in names}) > 1:       # '(양산)' vs '(선행)' → 거부
-        return None
+    notes = {}
+    for x in names:
+        notes.setdefault(_note3(x), []).append(x)
+    if len(notes) > 1:
+        keep = max(notes.values(), key=lambda v: (len(v), -len(v[0])))
+        names = [x for x in names if x in keep]
+        if len(names) < 2:
+            return None
     w = weight or {}
-    canon = max(names, key=lambda x: (w.get(x, 0.0), -len(" ".join(x.split())), -len(x), x))
+    canon = max(names, key=lambda x: (w.get(x, 0.0), len(" ".join(x.split())), -len(x), x))
     return canon, [x for x in names if x != canon]
+
+
+# ── 담당업무(Level 3) 구조 규칙 ────────────────────────────────────────────
+# ukey3 하나로는 '공백·구분자·대소문자' 만 접힌다. 실제 응답은 꼬리 문장부호('샘플 평가.'),
+# 어미('검토'/'검토 작업'), 어순('설계 검증'/'검증 설계'), 낱말 하나 차이('금형 수정'/'금형 수정 요청')
+# 로 흔들린다. 아래 규칙은 전부 **표기·구조** 만 본다 — 도메인 어휘 목록을 쓰지 않는다.
+_TAIL3 = re.compile(r"[.…,~!?:;·\-\s]+$")
+# 2자 이상 조사만 뗀다. 1자 조사(도·이·가·은·는·로·에·만)를 넣으면 '설계도' 가 '설계' 로 접혀
+# 오병합된다(실측) — 넣지 말 것.
+_JOSA3 = ("으로", "에서", "부터", "까지", "에게", "및", "의", "와", "과")
+MIN_HEAD3 = 4                  # 접두 규칙에서 짧은 쪽이 이보다 짧으면 쓰지 않는다
+MAX_TAIL3 = 3                  # 접두 규칙에서 붙는 꼬리 길이 상한 — 4자면 '검토'/'검토 반려 대응' 이 붙는다
+
+
+def _ukey3p(s):
+    """ukey3 에 꼬리 문장부호까지 걷어낸 축 — '샘플 평가.' == '샘플 평가'."""
+    return _TAIL3.sub("", _fold3(s, drop_note=False)).replace(" ", "")
+
+
+def _toks3(s):
+    """조사·꼬리부호를 뗀 토큰 집합 — 어순이 바뀌어도 같은 값이 되게."""
+    out = set()
+    for t in _TAIL3.sub("", _fold3(s, drop_note=False)).split():
+        for j in _JOSA3:
+            if len(t) > len(j) + 1 and t.endswith(j):
+                t = t[:-len(j)]
+                break
+        if t:
+            out.add(t)
+    return out
+
+
+def _same_detail3(a, b):
+    """같은 담당업무로 볼 수 있는가 → 사유 문자열 또는 "".
+    괄호 꼬리·숫자 토큰이 다르면 무조건 아니다(차수·버전·양산/선행 구분을 지운다)."""
+    if _note3(a) != _note3(b) or _nums2(a) != _nums2(b):
+        return ""
+    ka, kb = _ukey3p(a), _ukey3p(b)
+    if ka == kb:
+        return "표기 동일"
+    lo, hi = (ka, kb) if len(ka) <= len(kb) else (kb, ka)
+    if len(lo) >= MIN_HEAD3 and hi.startswith(lo) and len(hi) - len(lo) <= MAX_TAIL3:
+        return f"앞부분 동일(꼬리 {len(hi) - len(lo)}자)"
+    ta, tb = _toks3(a), _toks3(b)
+    if ta and ta == tb:
+        return "낱말 같음(어순 무시)"
+    if len(ta & tb) >= 2 and len(ta ^ tb) == 1:
+        return "낱말 하나 차이"
+    return ""
 
 
 def _rule_canon(names, pj, mm_w):
@@ -471,11 +554,18 @@ def save_project_aliases(pmap, never_raw=(), note=None):
 def _accept_pair2(a, b, ev, never_keys, ctx):
     """두 과제 이름을 합쳐도 되는가 → (채택, 사유 한 줄).
 
-    거부 규칙이 먼저다. 그다음 표기가 같으면(ukey2) 그것만으로 채택하고, 다르면 서로 독립인
-    근거가 2개 이상일 때만 채택한다 — 서로 다른 업무가 한 카드에 섞이는 것이 이 기능의 유일한
-    심각한 실패이므로, 애매하면 합치지 않는다."""
+    never 다음은 **표기 동일(ukey2)** 이다. 그 아래 구조 검사는 표기만 다른 쌍에는 정의상 무의미한데
+    (정규화하면 같은 문자열이라 괄호 꼬리·숫자 토큰·토큰 집합이 반드시 같다), 예전에는 채택이 거부
+    규칙 **뒤에** 있어서 '담당업무 완전 배타'·'신호 시간대 비겹침'·'둘 다 지정 과제' 에 걸렸다.
+    표기가 갈린 과제는 대개 기간이 나뉘어 담당업무가 안 겹치는 바로 그 모습이라, **가장 안전한
+    병합이 가장 자주 막혔다**(감사 실측). 게다가 pinned 검사는 ukey2 가 같으면 한 항목을 두 번
+    보는 셈이라 지정 과제의 표기 변형을 늘 거부했다.
+    표기가 다르면 그때 구조 검사를 모두 거치고, 서로 독립인 근거가 2개 이상일 때만 채택한다 —
+    서로 다른 업무가 한 카드에 섞이는 것이 이 기능의 유일한 심각한 실패이므로 애매하면 합치지 않는다."""
     if _pair2(a, b) in never_keys:
         return False, "never 목록(사용자가 다르다고 표시)"
+    if ev.get("ukey2"):
+        return True, "표기 동일(공백·구분자·대소문자만 다름)"
     if note2(a) != note2(b):
         return False, f"괄호 꼬리 상이('{note2(a)}' vs '{note2(b)}')"
     if _nums2(a) != _nums2(b):
@@ -495,8 +585,6 @@ def _accept_pair2(a, b, ev, never_keys, ctx):
     pin = ctx.get("pinned") or set()
     if ukey2(a) in pin and ukey2(b) in pin:
         return False, "둘 다 사용자 지정 과제(config\\projects.json)"
-    if ev.get("ukey2"):
-        return True, "표기 동일(공백·구분자·대소문자만 다름)"
     hit = [k for k in ("dice", "refine", "l3", "product") if ev.get(k)]
     if len(hit) >= 2:
         return True, f"독립 근거 {len(hit)}개({'·'.join(hit)})"
@@ -1014,10 +1102,24 @@ def detail_merge_map(tag, sender=None, rows=None, log=print):
         reps_by.setdefault(p, set()).add(rv)
     n_rule = 0
     for pj, ds in by_pj.items():
+        # ukey3 로 먼저 묶고, 그 대표들끼리 구조 규칙(_same_detail3)으로 한 겹 더 묶는다.
         by_k = {}
         for d in ds:
             by_k.setdefault(ukey3(d), []).append(d)
-        for v in by_k.values():
+        heads = sorted(by_k.values(), key=lambda v: (-mm_w.get((pj, v[0]), 0.0), v[0]))
+        merged_into = {}
+        for i, vi in enumerate(heads):
+            hi = vi[0]
+            if hi in merged_into:
+                continue
+            for vj in heads[i + 1:]:
+                hj = vj[0]
+                if hj in merged_into or not _same_detail3(hi, hj):
+                    continue
+                merged_into[hj] = hi
+                by_k[ukey3(hi)] = by_k.get(ukey3(hi), []) + vj
+                by_k[ukey3(hj)] = []
+        for v in list(by_k.values()):
             if len(v) > 1:
                 # 캐시가 이미 대표로 쓰는 이름이 무리 안에 있으면 그것을 대표로 고정한다 — 기간별
                 # MM 에 따라 대표가 뒤집혀 캐시와 반대 방향의 간선이 생기고, 평탄화가 그 순환을 통째로
