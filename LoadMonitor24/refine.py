@@ -42,6 +42,7 @@ if ROOT not in sys.path:
     # agentic.py·retag.py·team_refine.py·ui/app.py 는 모두 ROOT 를 넣는다 — 여기만 빠져 있었다.
     sys.path.insert(0, ROOT)
 from details import ukey2  # noqa: E402  - judge·flow 와 같은 과제 신원 축
+from details import snap1  # noqa: E402  - 상위(Level 1)를 4개 고정 범주로 스냅
 from progress import progress  # noqa: E402
 if __name__ == "__main__":      # import 시엔 건드리지 않는다 — 임포트한 쪽의 stdout 이
     # 교체·GC 되면서 버퍼가 닫혀 이후 출력이 전부 죽는다(다른 모듈과 같은 관례)
@@ -668,7 +669,7 @@ def main():
         detail = re.sub(r"\s+", " ", str(_g(it, "detail") or "")).strip()[:DETAIL_MAX * 2]
         final.append({"유형": _vote("유형"), "제품": _vote("제품"),
                       "활동": act if act in ACT_CATS else "",
-                      "Level 1": str(_g(it, "level1") or ""), "Level 2": lv2,
+                      "Level 1": snap1(_g(it, "level1")), "Level 2": lv2,
                       "Level 3": lv3, "상세설명": detail,
                       "share": share, "활동일수": days, "근거": srcs,
                       "확신도": "상" if days >= 3 and len(idxs) > 1 else "중",

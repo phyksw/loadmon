@@ -14,7 +14,7 @@ LoadMonitor24-이동준비.bat                                 1,312 B  6fe7c991
 agentic.py                                            41,104 B  e946e70e
 freeze.py                                             50,732 B  aeab8234
 team_report.py                                       160,115 B  c6fe0c20
-flow.py                                               76,027 B  2339a15d
+flow.py                                               79,646 B  d69fc651
 teamserver.py                                         27,808 B  d9325192
 teamup.py                                             39,085 B  792d5243
 aggregate.py                                          50,107 B  77bba803
@@ -26,7 +26,7 @@ README.md                                             96,557 B  75fac7df
 check.py                                               2,629 B  7badfe69
 judge.py                                              92,215 B  df9753e1
 mine.py                                               17,836 B  c751c51d
-refine.py                                             42,315 B  87c4d755
+refine.py                                             42,402 B  266b57b0
 ruff.toml                                              1,004 B  47a31613
 FILES.txt                                                (이 파일)
 run.py                                                51,516 B  b0557152
@@ -56,11 +56,11 @@ config/agentic_tasks.json                              4,426 B  2c9e5bb1
 core/board.py                                         13,045 B  9c4d6431
 core/extract.py                                      207,457 B  9542fa44
 core/programs.py                                      15,778 B  1f1e142f
-core/details.py                                       60,172 B  2f084161
+core/details.py                                       68,458 B  81e34438
 core/owner.py                                          1,488 B  1f1dc049
 core/progress.py                                       1,129 B  77a7579a
-core/projmap.py                                        6,619 B  35695151
-docs/설정가이드.md                                         58,595 B  5a2e8dac
+core/projmap.py                                        7,133 B  cca7d2cb
+docs/설정가이드.md                                         62,090 B  787834d7
 docs/사용안내.html                                       272,444 B  3cea5b8b
 tools/copilot_auto.py                                 62,703 B  201ac0ae
 tools/Get-EmbeddedPython.ps1                           2,472 B  b0a213eb
@@ -69,4 +69,4 @@ tools/lint.ps1                                         7,914 B  0c6f51ac
 tools/Make-Package.ps1                                10,733 B  f8e333a9
 tools/Prepare-Move.ps1                                22,237 B  9859c75a
 tools/update_files.py                                  4,530 B  33b4a677
-ui/app.py                                            329,442 B  c0c60a99
+ui/app.py                                            331,362 B  c04a16b9
