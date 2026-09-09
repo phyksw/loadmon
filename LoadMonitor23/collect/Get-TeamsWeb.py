@@ -142,16 +142,26 @@ def hm_words(s):
     return RE_H_WORD.sub(lambda m: m.group(1) + ":00", s)
 
 
-def stamp(pool, cur_date, d0, d1, today):
-    """화면 조각들(제목 속성·aria-label·본문 앞머리)에서 (날짜, 시각) 을 뽑는다.
-    → (datetime, 'iso'|'full'|'sep'|'rel') 또는 (None, 사유). 날짜를 못 짚으면 그 메시지는 버린다 —
-    시각만 있는 줄에 오늘 날짜를 붙이면 지난 달 대화가 전부 오늘로 몰린다(창 읽기에서 겪은 실측 결함)."""
-    pool = [hm_words(x) for x in pool]
-    for s in pool:
+def stamp(head, body, cur_date, d0, d1, today):
+    """(날짜, 시각) 을 뽑는다 → (datetime, 'iso'|'full'|'sep'|'rel') 또는 (None, 사유).
+
+    ★ 날짜는 **머리 조각(head)에서만** 찾는다. head = <time datetime> · 타임스탬프 · title 속성 ·
+    aria-label 처럼 화면이 '이 메시지의 시각' 이라고 말해 주는 것들이고, body 는 본문이다.
+    본문에는 '지난 회의(2026-06-12) 결론대로' 같은 **다른 날짜**가 흔히 적혀 있어서, 그것을 쓰면
+    9월 메시지가 6월 신호가 된다 — 그러면 6월 리뷰에 하지도 않은 최근 일이 등장한다(제보).
+    창 읽기 수집기는 이미 같은 이유로 헤더와 본문을 나눠 본다(Get-TeamsWindow.ps1 의 '본문의
+    8/15 까지는 날짜로 보지 않는다'). 웹 쪽에도 같은 규칙을 둔다.
+
+    날짜 구분선(cur_date)은 화면이 직접 알려 준 그 날이라 **본문 추측보다 항상 앞선다**.
+    날짜를 끝내 못 짚으면 그 메시지는 버린다 — 시각만 있는 줄에 오늘 날짜를 붙이면 지난 달
+    대화가 전부 오늘로 몰린다(창 읽기에서 겪은 실측 결함)."""
+    head = [hm_words(x) for x in head if x]
+    body = [hm_words(x) for x in body if x]
+    for s in head:
         v = iso_dt(s)
         if v:
             return v, "iso"
-    for s in pool:                       # 제목 속성에 '2026년 6월 3일 오후 3:24' 같은 완전한 표기가 오는 경우
+    for s in head:                       # 제목 속성에 '2026년 6월 3일 오후 3:24' 같은 완전한 표기가 오는 경우
         d = find_date(s, d0, d1)
         if not d:
             continue
@@ -159,8 +169,10 @@ def stamp(pool, cur_date, d0, d1, today):
         if hm:
             return datetime(d.year, d.month, d.day, hm[0][0], hm[0][1]), "full"
         return datetime(d.year, d.month, d.day, 12, 0), "full"
+    # 시각은 본문 앞머리에서 와도 된다(화면이 '홍길동 오후 3:24' 를 한 덩어리로 그리는 스킨) —
+    # 날짜만 본문에서 오면 안 된다.
     hm = None
-    for s in pool:
+    for s in head + body:
         hm = find_times(s)
         if hm:
             break
@@ -168,7 +180,7 @@ def stamp(pool, cur_date, d0, d1, today):
         return None, "시각 없음"
     if cur_date:                          # 날짜 구분선이 알려준 그 날 (팀즈 웹은 날짜마다 구분선을 그린다)
         return datetime(cur_date.year, cur_date.month, cur_date.day, hm[0][0], hm[0][1]), "sep"
-    for s in pool:
+    for s in head:
         d = rel_date(s, today)
         if d:
             return datetime(d.year, d.month, d.day, hm[0][0], hm[0][1]), "rel"
@@ -468,9 +480,11 @@ def read_chat(br, idx, name, d0, d1, today, fake=None, diag=None, deadline=None)
                     cur = d
                 continue
             texts = it.get("texts") or []
-            pool = [it.get("ts") or ""] + list(it.get("titles") or []) + [it.get("label") or ""] + texts[:3]
-            pool = [p for p in pool if p]
-            dt, how = stamp([str(x) for x in ((it.get("iso") or []) + pool)], cur, d0, d1, today)
+            # 머리 조각(화면이 '이 메시지의 시각' 이라 말하는 것)과 본문을 나눠 넘긴다 —
+            # 본문에 적힌 날짜를 시각으로 삼으면 최근 메시지가 과거 달로 들어간다.
+            head = [str(x) for x in ((it.get("iso") or []) + [it.get("ts") or ""]
+                                     + list(it.get("titles") or []) + [it.get("label") or ""])]
+            dt, how = stamp(head, [str(x) for x in texts[:3]], cur, d0, d1, today)
             if not dt:
                 if diag is not None:
                     diag["no_time"] += 1

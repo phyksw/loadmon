@@ -285,10 +285,14 @@ def parse_mail_item(item, d0, d1, folder=""):
     titles = [t for t in (item.get("titles") or []) if t]
     texts = [t for t in (item.get("texts") or []) if t]
     pool = titles + [label] + texts
-    # 시각·날짜: 전체 날짜가 든 title 을 우선(OWA 는 시각 요소의 title 에 전체 날짜를 둔다)
+    # ★ 날짜는 **머리 조각(title·aria-label)에서만** 찾는다. texts 는 발신자·제목·미리보기(본문 앞머리)라
+    #   회신 메일이면 인용문 머리글('2026년 6월 12일 (금) 오전 10:00, 홍길동 님이 작성:')이 그대로 들어 있다.
+    #   그것을 시각으로 쓰면 9월 회신이 6월 메일이 되고, 6월 리뷰에 하지도 않은 최근 일이 등장한다(제보).
+    #   미리보기에 인용문이 있는 것은 한국어 Outlook 에서 흔해 발생 빈도가 높다.
+    head = titles + [label]
     when = None
     precision = "minute"
-    for cand in pool:
+    for cand in head:
         d = find_date(cand, d0, d1)
         ts = find_times(cand)
         if d and ts:
@@ -297,9 +301,13 @@ def parse_mail_item(item, d0, d1, folder=""):
     if not when:
         d = None
         ts = None
-        for cand in pool:
+        for cand in head:
             d = d or find_date(cand, d0, d1)
             ts = ts or (find_times(cand) or None)
+        # 시각은 본문 조각에서 와도 된다(날짜를 머리에서 이미 짚었을 때만) — 날짜만 본문에서 오면 안 된다.
+        if d and not ts:
+            for cand in texts:
+                ts = ts or (find_times(cand) or None)
         if d and ts:
             when = (d, ts[0])
         elif d:
