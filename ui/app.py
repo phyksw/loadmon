@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-app.py — LoadMonitor23 로컬 HTML UI (표준 라이브러리만).
+app.py — LoadMonitor24 로컬 HTML UI (표준 라이브러리만).
 
-  python ui\\app.py          또는  LoadMonitor23-UI.bat 더블클릭
+  python ui\\app.py          또는  LoadMonitor24-UI.bat 더블클릭
 
 탭: 대시보드(요약 시각화) · 주간/월간 리뷰(raw 근거가 들어간 기간 리뷰) · 상세 리뷰(업무별 딥다이브+연결성)
 로컬 전용(127.0.0.1). 외부 전송 없음. Copilot 왕복만 사용자의 기존 세션으로 나간다.
@@ -31,7 +31,7 @@ from progress import parse as parse_progress  # noqa: E402  (core 경로 등록 
 REPORT = os.path.join(ROOT, "report")
 DATA = os.path.join(ROOT, "data")
 NO_WIN = 0x08000000
-VERSION = "v23.0"
+VERSION = "v24.0"
 LOCK = threading.Lock()
 FREEZE_LOCK = threading.Lock()       # [보고서 만들기] 직렬화 — JOB 과 별개(사본에 '실행 중'이 굳지 않게)
 JOB = {"running": False, "log": [], "step": "", "started": 0.0, "pid": 0,
@@ -853,7 +853,7 @@ def _age(ts):
 # 멈춘 날은 하한 모드로 떨어져 PC 유형 편차가 되살아난다. 상태바 표시에 더해 10분에 한 번만
 # 재기동을 시도한다(config.autoRestartSampler, 기본 true).
 SAMPLER_STALE_MIN = 10                      # 마지막 샘플이 이보다 오래됐으면 '멈춤'
-SAMPLER_TASK = "LoadMonitor23-Sampler"      # docs\설정가이드 §4 · collect\Register-Samplers.ps1 의 작업 이름
+SAMPLER_TASK = "LoadMonitor24-Sampler"      # docs\설정가이드 §4 · collect\Register-Samplers.ps1 의 작업 이름
 SAMPLER_RESTART = {"at": 0.0, "busy": False, "when": "", "how": "", "note": ""}
 SAMPLER_TASK_STATE = {"at": 0.0, "exists": None}   # 등록 작업 유무 — /api/status 는 1초 폴링이라 캐시한다
 
@@ -922,7 +922,7 @@ def _sampler_restart_worker(ps1):
         time.sleep(3.0)
         if p.poll() is not None:
             how, note = "error", (f"기동 직후 종료(rc={p.returncode}) — 실행 정책·보안 정책이 막았을 수 있습니다. "
-                                  "LoadMonitor23-샘플러등록.bat 으로 등록해 보세요")
+                                  "LoadMonitor24-샘플러등록.bat 으로 등록해 보세요")
             return
         how = "direct"
     except Exception as e:  # noqa: BLE001 - 감시 스레드가 죽어도 UI 는 계속
@@ -1058,7 +1058,7 @@ def sources(period=None):
         ("git 커밋", ["files/git_commits.csv"], "config.gitRepos 설정 (선택)"),
         ("팀즈 채팅", ["m365/teams_*.csv"], r"[팀즈 웹 읽기] 버튼 — 앱이 꺼져 있어도 됩니다 (전용 Edge 창에서 회사 계정 1회 로그인)"),
         ("창 샘플러", ["activity/activity_*.csv"],
-         "LoadMonitor23-샘플러등록.bat 으로 1회 등록하면 로그온 때마다 자동 시작 (선택 · 없으면 PC 가동 하한으로 계산)"),
+         "LoadMonitor24-샘플러등록.bat 으로 1회 등록하면 로그온 때마다 자동 시작 (선택 · 없으면 PC 가동 하한으로 계산)"),
         ("추가 PC", ["추가PC/*/outlook/mail.csv", "추가PC/*/files/files.csv",
                      "추가PC/*/pc/pc_on.csv", "추가PC/*/m365/teams_*.csv"],
          "폴더째 옮겨 [추가 PC 수집] → 본 PC 에서 [분석 실행] — 자동 합산 · 중복 자동 제외 (선택)"),
@@ -1812,7 +1812,7 @@ def narrate_job():
 
 
 TEAM_PAGE = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
-<title>LoadMonitor23 — 팀 취합</title><style>
+<title>LoadMonitor24 — 팀 취합</title><style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Malgun Gothic',system-ui,sans-serif;background:#f2f4f7;color:#12151a;padding:22px}
 .wrap{max-width:1180px;margin:0 auto}
@@ -1845,7 +1845,7 @@ body.snap .snaponly{display:block}
 .steps a,.steps span{display:inline-block;padding:5px 10px;border-radius:14px;border:1px solid #d7dbe0;background:#fff;color:#4a5159;text-decoration:none}
 .steps .on{background:#2a78d6;border-color:#2a78d6;color:#fff;font-weight:700}
 </style></head><body><div class="wrap">
-<h1>팀 취합<small id="ver">LoadMonitor23</small></h1>
+<h1>팀 취합<small id="ver">LoadMonitor24</small></h1>
 <div class="sub">공유폴더의 인별 결과를 실시간으로 읽어 시각화합니다. 원본 파일은 수정하지 않습니다.</div>
 <div class="steps nosnap">
  <a href="/" target="_blank">① 내 PC 분석</a>
@@ -2251,7 +2251,7 @@ load();tsLoad();
 </script></body></html>"""
 
 PAGE = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
-<title>LoadMonitor23</title><style>
+<title>LoadMonitor24</title><style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Malgun Gothic',system-ui,sans-serif;background:#f2f4f7;color:#12151a;padding:22px}
 .wrap{max-width:1080px;margin:0 auto}
@@ -2303,7 +2303,7 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
 .tl .s{color:#8b929b}.tl .p{font-weight:700}
 .tag{display:inline-block;background:#f0f3f7;border-radius:3px;padding:1px 7px;margin:1px 3px 1px 0;font-size:10.5px;color:#3d444c}
 </style></head><body><div class="wrap">
-<h1>LoadMonitor23<small id="ver">로컬 전용 · 외부 전송 없음</small></h1>
+<h1>LoadMonitor24<small id="ver">로컬 전용 · 외부 전송 없음</small></h1>
 <div id="stub_banner" style="display:none;background:#fff1c2;border:2px solid #e08a00;color:#6b3a00;border-radius:6px;padding:10px 14px;margin:8px 0 12px;font-size:13px;line-height:1.6"></div>
 <div class="steps">
  <span class="on">① 내 PC 분석 (지금 화면)</span>
@@ -2412,7 +2412,7 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
   <span class="state" id="tumsg"></span></div>
  <div class="note" id="tusent"></div>
  <div class="note">팀 서버를 켜고 끄는 것과 취합 결과 보기는 <b><a href="/team" target="_blank">팀 취합 화면</a></b>에 있습니다
- (LoadMonitor23-팀취합.bat 과 같은 화면).</div>
+ (LoadMonitor24-팀취합.bat 과 같은 화면).</div>
  <div class="note">분석이 끝나면 보낼 묶음이 <b>대기</b>로 쌓입니다. 팀 서버에 닿는 망(사내망)에서 [팀 서버 업로드]를
  한 번 누르면 <b>밀린 기간까지 함께</b> 올라가고, 보낸 묶음은 <code>report\\upload_sent\\</code> 로 옮겨집니다.
  닿지 않는 망에서 눌러도 아무것도 잃지 않고 그대로 대기합니다. 서버 대신 공유폴더로 낼 수도 있습니다.</div>
@@ -2583,7 +2583,7 @@ async function poll(){
   const tkTxt=(tk===false)?' · 로그온 자동 시작 작업이 <b>등록돼 있지 않습니다</b>'
              :((tk===true)?' · 등록 작업은 있습니다(정책·권한으로 안 돌 수 있음)':'');
   $("sb_sampler").innerHTML=(s.sampler_age_min==null)
-   ?`<span style="color:#e08a00" title="창 샘플러가 없으면 투입시간이 PC 가동 하한으로만 계산돼 과소 집계될 수 있습니다">샘플러 꺼짐 — 아직 기록이 하나도 없습니다${tkTxt}${srTxt}<br><span class="dim">켜기: <b>LoadMonitor23-샘플러등록.bat</b> 실행(1회 등록 · 로그온 시 자동 시작). 이 화면도 10분에 한 번 자동 기동을 시도합니다.</span></span>`
+   ?`<span style="color:#e08a00" title="창 샘플러가 없으면 투입시간이 PC 가동 하한으로만 계산돼 과소 집계될 수 있습니다">샘플러 꺼짐 — 아직 기록이 하나도 없습니다${tkTxt}${srTxt}<br><span class="dim">켜기: <b>LoadMonitor24-샘플러등록.bat</b> 실행(1회 등록 · 로그온 시 자동 시작). 이 화면도 10분에 한 번 자동 기동을 시도합니다.</span></span>`
    :(s.sampler_age_min<=10?'<span style="color:#4fc47f">샘플러 가동 중</span>'
      :`<span style="color:#e08a00" title="마지막 샘플 ${esc(s.last_sample||"")} — 멈춘 날은 PC 하한 모드로 계산됩니다">샘플러 멈춤 (${s.sampler_age_min}분 전${s.last_sample?` · 마지막 샘플 ${esc(s.last_sample)}`:""})${tkTxt}${srTxt}</span>`);
   $("go").disabled=s.running;
@@ -3152,12 +3152,12 @@ $("prepmove").onclick=async()=>{
  $("prepmove").disabled=true;$("state").textContent="이동 준비 중…";
  const r=await fetch("/api/prepmove",{method:"POST"}).then(x=>x.json()).catch(()=>({ok:false}));
  if(!r.ok){$("prepmove").disabled=false;$("state").textContent="대기 중";
-  alert("정리 창을 띄우지 못했습니다 — LoadMonitor23-이동준비.bat 을 직접 실행하세요."+(r.error?"\\n"+r.error:""));return;}
+  alert("정리 창을 띄우지 못했습니다 — LoadMonitor24-이동준비.bat 을 직접 실행하세요."+(r.error?"\\n"+r.error:""));return;}
  alert("정리 창이 열렸습니다.\\n그 창의 안내를 따라 주세요 — 잠시 뒤 이 대시보드는 닫힙니다.");
  fetch("/api/quit",{method:"POST"}).catch(()=>{});
  document.body.innerHTML='<div class="wrap"><h1>PC 이동 준비</h1>'
   +'<div class="card"><div class="note">대시보드를 종료했습니다. 열린 정리 창의 결과를 확인한 뒤 폴더를 옮기세요.<br>'
-  +'옮긴 PC 에서는 LoadMonitor23-UI.bat 을 실행하면 됩니다 — 지난 PC 데이터는 자동으로 합산됩니다.</div></div></div>';
+  +'옮긴 PC 에서는 LoadMonitor24-UI.bat 을 실행하면 됩니다 — 지난 PC 데이터는 자동으로 합산됩니다.</div></div></div>';
 };
 $("cdiag").onclick=async()=>{
  // PC 마다 Outlook·Teams 버전이 달라 메일·팀즈가 비는 실측 — 무엇이 막혔는지 이 PC 에서 바로 본다
@@ -3813,7 +3813,7 @@ class H(BaseHTTPRequestHandler):
                 else:
                     msg = ("<meta charset='utf-8'><body style=\"font-family:'Malgun Gothic'\">"
                            "<h3>팀 취합 결과가 아직 없습니다</h3>"
-                           "<p>대시보드의 [팀 취합] 버튼을 누르거나 LoadMonitor23-팀취합.bat 을 실행하세요.<br>"
+                           "<p>대시보드의 [팀 취합] 버튼을 누르거나 LoadMonitor24-팀취합.bat 을 실행하세요.<br>"
                            "config.teamShareDir 설정과 팀원들의 내보내기가 선행돼야 합니다.</p></body>")
                 self._send(200, msg.encode("utf-8"), "text/html; charset=utf-8")
         elif self.path == "/api/teamserver":
@@ -4901,7 +4901,7 @@ def main():
     # (다음 AI 왕복 때 자동으로 다시 뜨므로 부작용 없음)
     threading.Thread(target=kill_copilot_edge, daemon=True).start()
     url = f"http://127.0.0.1:{port}/"
-    print(f"[ui] LoadMonitor23 {VERSION} — {url}  (Ctrl+C 종료)")
+    print(f"[ui] LoadMonitor24 {VERSION} — {url}  (Ctrl+C 종료)")
     # LM_NO_BROWSER(수집기·드라이버와 같은 환경변수)도 존중한다 — bat 은 인자 없이 띄우므로 회귀 실행이
     # 실제 브라우저를 열던 결함(PK-03)
     if "--no-browser" not in sys.argv and not os.environ.get("LM_NO_BROWSER"):

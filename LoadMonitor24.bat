@@ -2,11 +2,11 @@
 >nul chcp 949
 setlocal EnableDelayedExpansion
 cd /d "%~dp0"
-title LoadMonitor23 - 업무 로드 MM 추출
+title LoadMonitor24 - 업무 로드 MM 추출
 
 echo.
 echo  ==========================================================
-echo   LoadMonitor23 - 개인 PC 흔적에서 업무 로드 MM 추출
+echo   LoadMonitor24 - 개인 PC 흔적에서 업무 로드 MM 추출
 echo  ==========================================================
 echo.
 

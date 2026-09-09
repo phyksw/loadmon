@@ -1,6 +1,6 @@
 # 샘플 보고서 — 전부 가상(합성) 자료
 
-LoadMonitor23 가 어떤 결과를 내는지 보여 주기 위해, **가상의 3인 팀**을 만들어 실제 파이프라인
+LoadMonitor24 가 어떤 결과를 내는지 보여 주기 위해, **가상의 3인 팀**을 만들어 실제 파이프라인
 (`mine.py` → `judge.py` → `refine.py` → `agentic.py` → `flow.py` → `freeze.py` → `export.py` → `aggregate.py`)을
 그대로 돌린 산출물입니다.
 

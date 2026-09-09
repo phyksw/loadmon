@@ -1,7 +1,7 @@
 @echo off
 >nul chcp 949
 cd /d "%~dp0"
-title LoadMonitor23 - ÆÀ ¾÷·Îµå
+title LoadMonitor24 - ÆÀ ¾÷·Îµå
 
 set "PY_EXE="
 set "PY_ARGS="

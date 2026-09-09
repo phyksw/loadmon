@@ -62,7 +62,7 @@ def main():
         print(json.dumps({"ok": False, "error": "no share",
                           "hint": "팀 공유폴더를 지정하세요 — 팀 취합 화면 위쪽 [팀 공유폴더] 칸에 "
                                   "취합 폴더 경로를 넣고 저장하면 됩니다. 이 PC 에서 팀 서버를 "
-                                  "돌렸다면 LoadMonitor23" + os.sep + "teamdata 를 넣으세요."},
+                                  "돌렸다면 LoadMonitor24" + os.sep + "teamdata 를 넣으세요."},
                          ensure_ascii=False))
         return 1
     members = load_members(share)

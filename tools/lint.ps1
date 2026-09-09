@@ -97,7 +97,7 @@ if (Test-Path $jsChk) {
 
 # --- gate 7: 배포 트리 안의 개발 PC 실경로 ---
 # 실측: 주석에 개발 PC 의 실제 폴더(D:\배포 · D:\작업\Release\fw)가 남은 채 배포됐다. 자리표시자
-# (<사용자>·%USERNAME%·홍길동·D:\src·D:\작업·D:\LoadMonitor23 …)는 두고, 실제 계정 홈(C:\Users\<ASCII 계정>)·
+# (<사용자>·%USERNAME%·홍길동·D:\src·D:\작업·D:\LoadMonitor24 …)는 두고, 실제 계정 홈(C:\Users\<ASCII 계정>)·
 # 이 PC 의 프로필 경로·알려진 개발 폴더만 잡는다. data\ report\ python\ teamdata\ 와 캐시는 보지 않는다.
 # 예시 경로가 필요하면 <사용자>·홍길동 같은 자리표시자를 쓴다(이 파일 자신은 패턴을 담고 있어 검사에서 뺀다).
 $skipTop = @('data', 'report', 'python', 'teamdata')

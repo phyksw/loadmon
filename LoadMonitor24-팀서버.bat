@@ -1,7 +1,7 @@
 @echo off
 >nul chcp 949
 cd /d "%~dp0"
-title LoadMonitor23 - 팀 서버
+title LoadMonitor24 - 팀 서버
 
 set "PY_EXE="
 set "PY_ARGS="
@@ -37,7 +37,7 @@ if not exist "teamserver.py" (
 echo.
 echo  [팀 서버] 이 PC 를 팀 취합 서버로 가동합니다 (포트: config.teamServerUrl 의 번호, 기본 9310).
 echo           팀원들은 config.teamServerUrl 에 이 PC 주소를 넣고, 서버에 닿는 망에서
-echo           대시보드 [팀 서버 업로드] (또는 LoadMonitor23-팀업로드.bat) 로 올립니다.
+echo           대시보드 [팀 서버 업로드] (또는 LoadMonitor24-팀업로드.bat) 로 올립니다.
 echo           브라우저 접속: http://이PC의IP:포트번호  (실제 번호는 아래 [team] 가동 줄에 찍힙니다)
 echo           팀 통합 보고서: /full  (인별 로드율 제외 v3: /full_v3)
 echo.

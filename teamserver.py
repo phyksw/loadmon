@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 r"""
-teamserver.py — 팀 취합 서버 (LoadMonitor23)
+teamserver.py — 팀 취합 서버 (LoadMonitor24)
 
 팀 공용 PC(예: 10.115.147.68)에서 이 파일 하나를 돌려 두면:
   · 팀원들의 LoadMonitor 가 분석을 마칠 때마다 결과를 자동 업로드한다 (POST /api/upload)
@@ -11,7 +11,7 @@ teamserver.py — 팀 취합 서버 (LoadMonitor23)
 
   python teamserver.py                # 기본 포트 9310, 모든 인터페이스에서 수신
   python teamserver.py --port 9310
-  (또는 LoadMonitor23-팀서버.bat)
+  (또는 LoadMonitor24-팀서버.bat)
 
 저장 구조: teamdata\<이름>\ — 팀 공유폴더(teamShareDir)와 같은 배치라 aggregate.py 를
 그대로 재사용한다. 사내망 전용 설계이며 인증은 없다(팀 합의 전제) — 외부망에 열지 말 것.

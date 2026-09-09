@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-run.py — LoadMonitor23 통합 실행기: 수집 → 추출 → (AI 판정·내러티브) → 팀 내보내기.
+run.py — LoadMonitor24 통합 실행기: 수집 → 추출 → (AI 판정·내러티브) → 팀 내보내기.
 
   python run.py --from 2026-05-19 --to 2026-08-17            # 수집 + 추출
   python run.py --from ... --to ... --skip-collect            # 이미 모은 데이터로 추출만
@@ -562,7 +562,7 @@ def main():
                ai_requested=("--ai" in sys.argv), skip_collect=("--skip-collect" in sys.argv),
                finished=None)
     record("시작", True, 0.0)
-    print(f"[LoadMonitor23] {d0} ~ {d1}"
+    print(f"[LoadMonitor24] {d0} ~ {d1}"
           + ("  · AI 판정 포함" if "--ai" in sys.argv else "  · AI 판정 없음(규칙 결과만)"))
 
     # 추가 PC 취합 — 폴더째 옮겨 온 경우 지난 PC 데이터를 자동 보관 (분석 시 합산)
@@ -761,7 +761,7 @@ def main():
     # 팀 업로드는 '준비'까지만 한다 — 팀 서버는 특정 망에서만 닿는데 분석은 아무 망에서나
     # 하기 때문이다(실측: 자동 전송이 대부분 실패하고 결과가 조용히 사라짐). 묶음을
     # report\upload_pending\ 에 만들어 두고, 서버에 닿는 망에서 대시보드 [팀 서버 업로드]
-    # 버튼(또는 LoadMonitor23-팀업로드.bat)으로 밀린 것까지 한 번에 보낸다.
+    # 버튼(또는 LoadMonitor24-팀업로드.bat)으로 밀린 것까지 한 번에 보낸다.
     _t4 = time.time()
     _p4 = subprocess.run([sys.executable, os.path.join(ROOT, "teamup.py"),
                           "--build", "--from", d0, "--to", d1], cwd=ROOT, capture_output=True,

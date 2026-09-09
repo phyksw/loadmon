@@ -22,7 +22,7 @@
 #  · 창 제목이 비어 있었다. → 스스로 제목을 잡고 끝에 [완료]/[미완료] 를 붙인다.
 #  · 이미 준비된 상태를 몰라 반복 실행을 못 막았다. → 지난 기록을 읽어 '이미 준비돼 있습니다' 를 알린다.
 #
-# Usage:  powershell -ExecutionPolicy Bypass -File Prepare-Move.ps1 -Root "D:\...\LoadMonitor23"
+# Usage:  powershell -ExecutionPolicy Bypass -File Prepare-Move.ps1 -Root "D:\...\LoadMonitor24"
 param(
     [Parameter(Mandatory = $true)][string]$Root,
     [switch]$NoWait,
@@ -31,10 +31,10 @@ param(
 )
 $ErrorActionPreference = 'Continue'
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
-try { $Host.UI.RawUI.WindowTitle = 'LoadMonitor23 - PC 이동 준비' } catch {}
-# 경로 정규화 — bat 가 "…\LoadMonitor23\." 처럼 넘겨도(끝 역슬래시가 닫는 따옴표를 삼키지 않게 붙이던 점)
+try { $Host.UI.RawUI.WindowTitle = 'LoadMonitor24 - PC 이동 준비' } catch {}
+# 경로 정규화 — bat 가 "…\LoadMonitor24\." 처럼 넘겨도(끝 역슬래시가 닫는 따옴표를 삼키지 않게 붙이던 점)
 # '\.'·'..'·끝 역슬래시를 지운 정규 경로로 만든다. 실사고: '…\.' 그대로 Split-Path 하면 부모가 폴더 자신이 되어
-# 폴더를 '_이동확인_임시' 로 바꿔 놓고 되돌리지 못한 채, 빈 껍데기 LoadMonitor23\report\move_ready.txt 만 만들었다.
+# 폴더를 '_이동확인_임시' 로 바꿔 놓고 되돌리지 못한 채, 빈 껍데기 LoadMonitor24\report\move_ready.txt 만 만들었다.
 if ($Root -match '^[A-Za-z]:$') { $Root += '\' }          # 'D:' 는 '그 드라이브의 현재 폴더' 라 뜻이 달라진다
 try {
     if (-not [System.IO.Path]::IsPathRooted($Root)) { $Root = Join-Path (Get-Location).Path $Root }
@@ -42,10 +42,10 @@ try {
 } catch {}
 if ($Root.Length -gt 3) { $Root = $Root.TrimEnd('\') }     # 드라이브 루트('D:\')는 그대로
 if (-not (Test-Path -LiteralPath $Root -PathType Container)) { Write-Host "[이동준비] 폴더가 없습니다: $Root"; if (-not $NoWait) { pause }; exit 1 }
-if ($Root -match '^[A-Za-z]:\\$') { Write-Host "[이동준비] 드라이브 루트($Root)는 이름을 바꿔 확인할 수 없습니다 - LoadMonitor23 를 하위 폴더에 두세요"; if (-not $NoWait) { pause }; exit 1 }
+if ($Root -match '^[A-Za-z]:\\$') { Write-Host "[이동준비] 드라이브 루트($Root)는 이름을 바꿔 확인할 수 없습니다 - LoadMonitor24 를 하위 폴더에 두세요"; if (-not $NoWait) { pause }; exit 1 }
 Set-Location ([System.IO.Path]::GetTempPath())     # 이 창이 폴더를 잡지 않게
 # Set-Location 은 PowerShell 의 위치만 바꾸고 프로세스의 현재 폴더(Win32 cwd)는 그대로다 — bat(cd /d "%~dp0" 뒤 start)
-# 나 대시보드(app.py 의 cwd)에서 띄우면 우리 프로세스 자신이 LoadMonitor23 안에 서 있어 이름 바꾸기 시험이
+# 나 대시보드(app.py 의 cwd)에서 띄우면 우리 프로세스 자신이 LoadMonitor24 안에 서 있어 이름 바꾸기 시험이
 # "다른 프로세스가 사용 중" 으로 항상 실패했다(실측). 프로세스 cwd 도 TEMP 로 옮겨 손을 뗀다.
 try { [Environment]::CurrentDirectory = [System.IO.Path]::GetTempPath() } catch {}
 
@@ -59,7 +59,7 @@ function Friendly([string]$name, [string]$cmdline) {
     $n = ($name -replace '\.exe$', '').ToLower()
     if ($n -eq 'msedge') { return 'Copilot 전용 Edge 창' }
     if ($n -eq 'powershell' -or $n -eq 'pwsh') { return '상시 샘플러' }
-    if ($n -eq 'cmd') { return 'LoadMonitor23 실행 창' }
+    if ($n -eq 'cmd') { return 'LoadMonitor24 실행 창' }
     if ($n -eq 'python' -or $n -eq 'pythonw') {
         if ($cmdline -match 'teamserver\.py') { return '팀 서버' }
         if ($cmdline -match 'app\.py') { return '대시보드' }
@@ -116,9 +116,9 @@ function Procs-Under([string]$root) {
 $killed = New-Object System.Collections.Generic.List[string]     # 화면용 - 사람 말 이름
 $killedLog = New-Object System.Collections.Generic.List[string]  # 기록용 - 이름 + PID
 if (-not $CheckOnly) {
-    # 우리가 띄운 창(대시보드·LoadMonitor23 실행 창)이 곧 사라진다. 예고 없이 사라지면 그것 자체가
+    # 우리가 띄운 창(대시보드·LoadMonitor24 실행 창)이 곧 사라진다. 예고 없이 사라지면 그것 자체가
     # '오류로 꺼졌다' 로 읽힌다(감사 확정) — 죽이기 전에 먼저 알린다.
-    Say '  LoadMonitor23 창(대시보드·팀 서버·샘플러)을 닫습니다 - 창이 사라지는 것은 정상입니다.' 'DarkGray'
+    Say '  LoadMonitor24 창(대시보드·팀 서버·샘플러)을 닫습니다 - 창이 사라지는 것은 정상입니다.' 'DarkGray'
     Start-Sleep -Milliseconds 400
     # ① 우리 것부터 - 대시보드·팀 서버·수집기(python), 상시 샘플러(powershell)
     foreach ($p in Procs-Under $Root) {
@@ -148,7 +148,7 @@ if (-not $CheckOnly) {
         Write-Host ("  닫았습니다: " + $show)
     } else {
         # 부정문('없습니다')은 이 도구에서 오류 문구라 성공 화면에 쓰지 않는다 — 능동 서술로 적는다.
-        Write-Host '  확인했습니다: 이 폴더를 쓰고 있는 LoadMonitor23 프로그램은 이미 모두 닫혀 있었습니다'
+        Write-Host '  확인했습니다: 이 폴더를 쓰고 있는 LoadMonitor24 프로그램은 이미 모두 닫혀 있었습니다'
     }
     Start-Sleep -Milliseconds 700
 }
@@ -161,7 +161,7 @@ try {
     foreach ($w in $sh.Windows()) {
         try {
             $p = $w.Document.Folder.Self.Path
-            # 구분자까지 봐야 형제 폴더(LoadMonitor23_old)를 오탐하지 않는다
+            # 구분자까지 봐야 형제 폴더(LoadMonitor24_old)를 오탐하지 않는다
             if ($p -and ($p -eq $Root -or $p.StartsWith($Root + '\', [System.StringComparison]::OrdinalIgnoreCase))) { $explorer += $p }
         } catch {}
     }
@@ -198,7 +198,7 @@ if ($movable) {
 
 Write-Host ''
 if ($movable) {
-    try { $Host.UI.RawUI.WindowTitle = 'LoadMonitor23 - PC 이동 준비 [완료]' } catch {}
+    try { $Host.UI.RawUI.WindowTitle = 'LoadMonitor24 - PC 이동 준비 [완료]' } catch {}
     Say '  ============================================================' 'Green'
     Say '   [완료] PC 이동 준비가 끝났습니다.' 'Green'
     Say '          이제 이 폴더를 통째로 옮기거나 복사하세요.' 'Green'
@@ -208,7 +208,7 @@ if ($movable) {
         Write-Host ("   이미 " + $prevWhen.ToString('M월 d일 HH:mm') + " 에 준비를 마친 폴더입니다 - 다시 확인해도 옮길 수 있는 상태입니다.")
     }
     Write-Host ''
-    Write-Host '   · 다른 PC 로 옮긴 뒤 LoadMonitor23-UI.bat 을 실행하면'
+    Write-Host '   · 다른 PC 로 옮긴 뒤 LoadMonitor24-UI.bat 을 실행하면'
     Write-Host '     지난 PC 의 수집 데이터는 자동으로 data\추가PC\ 로 보관되고'
     Write-Host '     분석은 두 PC 를 합쳐 계산합니다.'
     Write-Host '   · report\upload_pending\ 의 업로드 대기 묶음도 함께 따라갑니다.'
@@ -235,7 +235,7 @@ if ($movable) {
             Write-Host '      가져가도 살아나지 않습니다 - 새 PC 에서 [AI 연결 진단] 으로 한 번만 로그인하면 됩니다.'
             Write-Host ''
             Write-Host '      아래 한 줄을 명령 프롬프트에 붙여 넣으세요(대상 경로만 바꾸면 됩니다):'
-            $rc = ('robocopy "{0}" "E:\LoadMonitor23" /E /XD copilot_profile __pycache__ .ruff_cache /R:1 /W:1 /MT:16' -f $where2)
+            $rc = ('robocopy "{0}" "E:\LoadMonitor24" /E /XD copilot_profile __pycache__ .ruff_cache /R:1 /W:1 /MT:16' -f $where2)
             Say ("      " + $rc) 'Yellow'
             try { Set-Clipboard -Value $rc -ErrorAction Stop; Write-Host '      (이 줄은 클립보드에도 복사해 두었습니다)' } catch {}
             Write-Host '      원본 폴더는 지우지 마세요 - 새 PC 가 잘 도는 것을 확인한 뒤에 정리하시면 됩니다.'
@@ -273,7 +273,7 @@ if ($movable) {
     Write-Host ''
     Say '   [완료] 준비 끝 - 다시 실행하지 않으셔도 됩니다. 대시보드·팀 서버·샘플러는 모두 닫혔습니다.' 'Green'
 } else {
-    try { $Host.UI.RawUI.WindowTitle = 'LoadMonitor23 - PC 이동 준비 [미완료]' } catch {}
+    try { $Host.UI.RawUI.WindowTitle = 'LoadMonitor24 - PC 이동 준비 [미완료]' } catch {}
     Say '  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!' 'Red'
     Say '   [실패] 아직 무언가가 이 폴더를 잡고 있습니다.' 'Red'
     Say '  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!' 'Red'

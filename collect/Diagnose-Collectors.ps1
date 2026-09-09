@@ -265,9 +265,9 @@ function Task-Info([string]$name) {
     } catch { return [pscustomobject]@{ found=$false } }
 }
 $tiS = $null
-foreach ($tn in @('LoadMonitor23-Sampler', 'LoadMonitor23-TeamsSampler')) {
+foreach ($tn in @('LoadMonitor24-Sampler', 'LoadMonitor24-TeamsSampler')) {
     $ti = Task-Info $tn
-    if ($tn -eq 'LoadMonitor23-Sampler') { $tiS = $ti }
+    if ($tn -eq 'LoadMonitor24-Sampler') { $tiS = $ti }
     if ($ti.found) {
         $etlNote = if (-not $ti.etl -or $ti.etl -eq 'PT0S') { 'PT0S(제한 없음)' } else { $ti.etl + ' ← 실행 시간 제한(이 시간 뒤 조용히 정지)' }
         W ("  작업 {0}: 등록됨 · 상태 {1} · 마지막 실행 {2} (결과 {3}) · ExecutionTimeLimit {4} · 겹침 {5}" -f $tn, $ti.state, $ti.last, $ti.result, $etlNote, $ti.mi)
@@ -279,7 +279,7 @@ try {
     $svcD = New-Object -ComObject 'Schedule.Service'; $svcD.Connect()
     foreach ($t in @($svcD.GetFolder('\').GetTasks(1))) {
         $tn2 = [string]$t.Name
-        if ($tn2 -match "^LoadMonitor\d+-(Teams)?Sampler$" -and $tn2 -notlike 'LoadMonitor23-*') {
+        if ($tn2 -match "^LoadMonitor\d+-(Teams)?Sampler$" -and $tn2 -notlike 'LoadMonitor24-*') {
             W ("  [!] 옛 버전 작업 {0} 이 남아 있습니다 - 옛 폴더의 샘플러가 함께 돌아 기록이 갈립니다." -f $tn2)
             W  "      해제: powershell -ExecutionPolicy Bypass -File collect\Register-Samplers.ps1  (등록할 때 자동으로 지웁니다)"
         }
@@ -367,9 +367,9 @@ if ($nBoot -gt 0 -and $nSleep -eq 0 -and $nShut -le 1 -and $lockP -notlike 'ok*'
 if ($reachDays -ge 0 -and $reachDays -lt 45) { $findings.Add("System 로그가 ${reachDays}일 전까지만 남아 있음(롤오버) → 그 이전 PC 가동은 브라우저 방문 힌트·창 샘플러로만 보강됩니다.") }
 if ($n20 -gt 0) { $findings.Add("pc_on.csv 에 on=20h 행 ${n20}개(옛 20h 캡 흔적) → 이 버전 수집기로 재수집하면 항상 켜진 날의 기록이 살아납니다.") }
 if ($actF.Count -or $tiS.found -or $sp.Count) {
-    if (-not $tiS.found) { $findings.Add('창 샘플러 작업(LoadMonitor23-Sampler) 미등록 → 로그온 때마다 수동 시작해야 합니다. 등록: powershell -ExecutionPolicy Bypass -File collect\Register-Samplers.ps1 (관리자 불필요, 실행 시간 제한 없음)') }
+    if (-not $tiS.found) { $findings.Add('창 샘플러 작업(LoadMonitor24-Sampler) 미등록 → 로그온 때마다 수동 시작해야 합니다. 등록: powershell -ExecutionPolicy Bypass -File collect\Register-Samplers.ps1 (관리자 불필요, 실행 시간 제한 없음)') }
     elseif ($tiS.etl -and $tiS.etl -ne 'PT0S') { $findings.Add('창 샘플러 작업에 실행 시간 제한 ' + $tiS.etl + ' → 로그온 3일 뒤 조용히 정지합니다. Register-Samplers.ps1 로 재등록하세요(제한 없음·겹침 무시로 덮어씀).') }
-    if ($age -gt 10 -and -not $sp.Count) { $findings.Add("창 샘플러 멈춤(마지막 샘플 ${age}분 전, 프로세스 없음) → 재시작: powershell -WindowStyle Hidden -ExecutionPolicy Bypass -File collect\Start-ActivitySampler.ps1 (등록돼 있으면 schtasks /Run /TN LoadMonitor23-Sampler)") }
+    if ($age -gt 10 -and -not $sp.Count) { $findings.Add("창 샘플러 멈춤(마지막 샘플 ${age}분 전, 프로세스 없음) → 재시작: powershell -WindowStyle Hidden -ExecutionPolicy Bypass -File collect\Start-ActivitySampler.ps1 (등록돼 있으면 schtasks /Run /TN LoadMonitor24-Sampler)") }
     if ($stuckNames.Count) { $findings.Add("창 샘플러 idle=0 고착(${ratio}%, " + ($stuckNames -join ', ') + ") → 구버전 샘플러의 TickCount 랩(가동 " + [math]::Round($upDays, 1) + "일). 샘플러를 이 버전으로 재시작하세요. 분석은 고착일을 PC 하한 모드로 대체합니다.") }
 } elseif (-not $tiS.found) { $findings.Add('창 샘플러 미사용(선택) → 켜면 하한 추정 대신 실측이 쓰여 정확도가 크게 오릅니다: powershell -ExecutionPolicy Bypass -File collect\Register-Samplers.ps1') }
 if (-not $gitUse) { $findings.Add('git.exe 를 찾지 못함 → 커밋 신호가 0건이 됩니다. Git 설치 후 config.gitExe 에 경로를 적거나 PATH 에 추가하세요(GitHub Desktop·SourceTree 내장 git 경로도 가능).') }

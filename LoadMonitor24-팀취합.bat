@@ -1,7 +1,7 @@
 @echo off
 >nul chcp 949
 cd /d "%~dp0"
-title LoadMonitor23 - 팀 취합 뷰어
+title LoadMonitor24 - 팀 취합 뷰어
 
 set "PY_EXE="
 set "PY_ARGS="
@@ -52,7 +52,7 @@ exit /b 0
 
 :MISSING
 echo.
-echo  [!] 파일이 빠졌습니다 - LoadMonitor23 폴더를 통째로 다시 복사하세요.
+echo  [!] 파일이 빠졌습니다 - LoadMonitor24 폴더를 통째로 다시 복사하세요.
 echo      ^(data, report 폴더는 빼고 - 개인정보^)
 pause
 exit /b 1

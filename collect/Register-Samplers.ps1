@@ -13,7 +13,7 @@ param(
     [switch]$Remove,
     [switch]$NoStart,
     [switch]$DryRun,
-    [string]$TaskPrefix = 'LoadMonitor23'
+    [string]$TaskPrefix = 'LoadMonitor24'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -89,9 +89,9 @@ function New-TaskXml([string]$taskName, [string]$script, [string]$desc) {
 "@
 }
 
-$jobs = @(@{ name = "$TaskPrefix-Sampler"; script = (Join-Path $here 'Start-ActivitySampler.ps1'); desc = 'LoadMonitor23 창 샘플러 - 로그온 시 자동 시작, 실행 시간 제한 없음 (1분마다 활성 창·무입력 시간을 로컬 CSV 에 기록)' })
+$jobs = @(@{ name = "$TaskPrefix-Sampler"; script = (Join-Path $here 'Start-ActivitySampler.ps1'); desc = 'LoadMonitor24 창 샘플러 - 로그온 시 자동 시작, 실행 시간 제한 없음 (1분마다 활성 창·무입력 시간을 로컬 CSV 에 기록)' })
 if ($Teams) {
-    $jobs += @{ name = "$TaskPrefix-TeamsSampler"; script = (Join-Path $here 'Start-TeamsSampler.ps1'); desc = 'LoadMonitor23 팀즈 상시 샘플러 - 로그온 시 자동 시작, 실행 시간 제한 없음 (열린 팀즈 대화를 5분마다 읽어 로컬 CSV 에 누적)' }
+    $jobs += @{ name = "$TaskPrefix-TeamsSampler"; script = (Join-Path $here 'Start-TeamsSampler.ps1'); desc = 'LoadMonitor24 팀즈 상시 샘플러 - 로그온 시 자동 시작, 실행 시간 제한 없음 (열린 팀즈 대화를 5분마다 읽어 로컬 CSV 에 누적)' }
 }
 
 $svc = $null; $folder = $null
@@ -187,5 +187,5 @@ if (-not $NoStart) {
         Write-Host ('           powershell -ExecutionPolicy Bypass -File "' + (Join-Path $here 'Start-ActivitySampler.ps1') + '" -TestSamples 3')
     }
 }
-Write-Host '[register] 완료 - 상태 확인: LoadMonitor23-수집진단.bat ([창 샘플러] 절)'
+Write-Host '[register] 완료 - 상태 확인: LoadMonitor24-수집진단.bat ([창 샘플러] 절)'
 exit 0

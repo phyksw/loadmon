@@ -1,7 +1,7 @@
 @echo off
 >nul chcp 949
 cd /d "%~dp0"
-title LoadMonitor23 - 창 샘플러 등록
+title LoadMonitor24 - 창 샘플러 등록
 echo.
 echo  [창 샘플러 등록] 로그온할 때마다 자동으로 시작되게 1회 등록합니다.
 echo.

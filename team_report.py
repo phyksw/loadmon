@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 r"""
-team_report.py — 팀 통합 보고서(HTML 한 장) + 유사 항목 정리 엔진 (LoadMonitor23, 팀장용).
+team_report.py — 팀 통합 보고서(HTML 한 장) + 유사 항목 정리 엔진 (LoadMonitor24, 팀장용).
 
 옛 '팀보완툴.py' 를 본체 모듈로 옮긴 것이다. 하는 일:
   · refine_once(share, sender)   — 과제·세부업무 표기 통합(규칙 + Copilot ≤3회) → team_aliases.json
@@ -2767,7 +2767,7 @@ def render_full(share, html_dir, sender=None, log=say):
             f'<span class="state">{len(coarse)}건 · 유형 분석에서 제외</span></h2>'
             '<div class="note" style="margin:0 0 8px">프로젝트 하나에는 성격이 다른 업무가 여럿 '
             '섞여 있어 하나의 일의 순서로 정의할 수 없습니다. 아래 인원은 담당 업무 단위 '
-            '워크플로우가 아직 없어 유형 분석에 넣지 않았습니다 — 그 PC 에서 LoadMonitor23 로 '
+            '워크플로우가 아직 없어 유형 분석에 넣지 않았습니다 — 그 PC 에서 LoadMonitor24 로 '
             '[분석 실행](AI 판정)을 다시 돌리면 담당 업무 단위로 만들어집니다.</div>'
             '<table><tr><th style="width:120px">이름</th><th>과제</th></tr>'
             + "".join(f"<tr><td><b>{esc(w)}</b></td><td>"

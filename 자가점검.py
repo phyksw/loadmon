@@ -8,14 +8,14 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, errors="replace", encoding=(
         (sys.stdout.encoding or "utf-8") if sys.stdout.isatty() else "utf-8"))  # 콘솔(bat)=콘솔 코드페이지 · 파이프(UI)=utf-8
 ROOT = os.path.dirname(os.path.abspath(__file__))
 NEED = [
-    "LoadMonitor23-UI.bat",
-    "LoadMonitor23.bat",
-    "LoadMonitor23-팀취합.bat",
-    "LoadMonitor23-팀서버.bat",
-    "LoadMonitor23-팀업로드.bat",
-    "LoadMonitor23-수집진단.bat",
-    "LoadMonitor23-샘플러등록.bat",
-    "LoadMonitor23-이동준비.bat",
+    "LoadMonitor24-UI.bat",
+    "LoadMonitor24.bat",
+    "LoadMonitor24-팀취합.bat",
+    "LoadMonitor24-팀서버.bat",
+    "LoadMonitor24-팀업로드.bat",
+    "LoadMonitor24-수집진단.bat",
+    "LoadMonitor24-샘플러등록.bat",
+    "LoadMonitor24-이동준비.bat",
     "agentic.py",
     "freeze.py",
     "team_report.py",
@@ -83,7 +83,7 @@ if miss:
     for m in miss:
         print("    " + m)
     sys.exit(1)
-print("[OK] 전부 있습니다. LoadMonitor23-UI.bat 을 실행하세요.")
+print("[OK] 전부 있습니다. LoadMonitor24-UI.bat 을 실행하세요.")
 
 
 # ── git 실행 파일 ────────────────────────────────────────────────────────
