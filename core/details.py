@@ -398,6 +398,33 @@ JACCARD2 = 0.50        # 담당업무 집합 겹침 문턱
 MIN_SPAN_GAP2 = 14     # 신호 시간대 비겹침 판정의 최소 간격(일)
 
 
+# ── 상위(Level 1) 신원 축 ──────────────────────────────────────────────────
+# 상위는 **4개 고정 범주**인데, refine 이 모델이 돌려준 문자열을 검증 없이 그대로 저장했다
+# (Level 2·3·활동은 스냅·화이트리스트로 지키면서 여기만 무방비였다). 그래서 '기술내재화'(공백 없음)
+# 같은 표기 변형이 다섯 번째 상위처럼 화면에 떴다(감사 실측). 고정 목록이 있으므로 스냅하면 끝난다.
+LEVEL1_SET = ("신제품개발", "기술 내재화", "양산준비", "일반업무")
+
+
+def ukey1(s):
+    """상위 신원 축 — ukey2 와 같은 규칙(공백·구분자·대소문자 무시)."""
+    return _fold3(s, drop_note=True).replace(" ", "")
+
+
+_L1_BY_KEY = {ukey1(x): x for x in LEVEL1_SET}
+
+
+def snap1(s):
+    """모델이 돌려준 상위 문자열 → 고정 범주 이름. 못 짚으면 "" (억지로 찍지 않는다).
+    앞부분 일치는 **후보가 유일할 때만** 쓴다 — 모호하면 쓰지 않는 것이 이 저장소의 규칙(_snap3)."""
+    k = ukey1(s)
+    if not k:
+        return ""
+    if k in _L1_BY_KEY:
+        return _L1_BY_KEY[k]
+    cand = {v for kk, v in _L1_BY_KEY.items() if kk.startswith(k[:3]) or k.startswith(kk[:3])}
+    return next(iter(cand)) if len(cand) == 1 else ""
+
+
 def ukey2(s):
     """중위(과제) 신원 축 — ukey3·team_report.ukey 와 **같은 규칙**.
     괄호 꼬리는 남기고(='(양산)'/'(선행)' 은 실제 구분) 공백·구분자·대소문자는 무시한다."""
@@ -591,6 +618,153 @@ def _accept_pair2(a, b, ev, never_keys, ctx):
     return False, f"근거 부족({len(hit)}개 — 2개 필요)"
 
 
+# ── 점수와 제약 클러스터링 ────────────────────────────────────────────────
+# 예전에는 근거를 **개수로 세고**(2개 이상) 그 앞에 **하드 비토**를 뒀다. 그래서 담당업무 집합이
+# 완전히 같은(Jaccard 1.0) 두 과제가 '근거 부족 1개' 로 거부되고, 이름이 닮고 제품이 같은 짝이
+# '담당업무 완전 배타' 로 거부됐다 — 기간이 갈린 같은 과제가 바로 그 모습이라, 가장 안전한 병합이
+# 가장 자주 막혔다(감사 실측). 이제 **가중치를 합산**하고 두 문턱으로 나눈다.
+#
+# 절대 뒤집으면 안 되는 것(사용자 의사·차수/버전 구분)만 -∞ 로 남긴다: never · 괄호 꼬리 · 숫자 토큰.
+# 나머지(담당업무 배타·시간대 비겹침·진부분집합)는 **감점**이다 — 다른 근거가 충분히 세면 이길 수 있다.
+W_MERGE = 1.0            # 이 점수 이상이면 병합
+W_ASK = 0.35             # 이 점수 이상 W_MERGE 미만은 '애매' — 합치지 않고 사람에게 보여 준다
+NEG_INF = float("-inf")
+
+
+def pair_score(a, b, ev, never_keys, ctx):
+    """두 과제 이름의 병합 점수 → (점수, 사유 한 줄). -inf 면 절대 병합 금지."""
+    if _pair2(a, b) in never_keys:
+        return NEG_INF, "never 목록(사용자가 다르다고 표시)"
+    if note2(a) != note2(b):
+        return NEG_INF, f"괄호 꼬리 상이('{note2(a)}' vs '{note2(b)}')"
+    if _nums2(a) != _nums2(b):
+        return NEG_INF, "숫자 토큰 상이(차수·버전)"
+    if ev.get("ukey2"):
+        return 10.0, "표기 동일(공백·구분자·대소문자만 다름)"
+    pin = ctx.get("pinned") or set()
+    if ukey2(a) in pin and ukey2(b) in pin:
+        return NEG_INF, "둘 다 사용자 지정 과제(config\\projects.json)"
+
+    sc, why = 0.0, []
+    dice = bigram_dice(a, b)
+    if dice > 0.45:
+        v = 2.4 * (dice - 0.45)
+        sc += v
+        why.append(f"이름 {dice:.2f}")
+    la, lb = ctx["l3"].get(a) or set(), ctx["l3"].get(b) or set()
+    if la and lb:
+        j = _jac2(la, lb)
+        if j > 0:
+            v = 2.0 * j
+            sc += v
+            why.append(f"담당업무 {j:.2f}")
+        elif len(la) >= 2 and len(lb) >= 2:
+            sc -= 0.8
+            why.append("담당업무 배타 -0.8")
+    if ev.get("refine"):
+        sc += 1.0
+        why.append("정제가 함께 묶음")
+    if ev.get("product"):
+        sc += 1.2
+        why.append("제품 일치")
+    ta, tb = _toks2(a), _toks2(b)
+    if (ta < tb or tb < ta) and len(ta ^ tb) >= 2:
+        sc -= 0.5
+        why.append("진부분집합 -0.5")
+    sa, sb = ctx["span"].get(a), ctx["span"].get(b)
+    lim = int(ctx.get("half_days") or 0)
+    if sa and sb and lim:
+        gap = (max(sa[0], sb[0]) - min(sa[1], sb[1])).days
+        if gap >= lim:
+            sc -= 0.6
+            why.append(f"시간대 비겹침 {gap}일 -0.6")
+    return sc, (" · ".join(why) + f" → {sc:.2f}" if why else "근거 없음")
+
+
+def _cost2(part, W):
+    """상관 클러스터링 목적함수 — 무리 안 음수 간선의 절댓값 + 무리 밖 양수 간선의 합."""
+    where = {}
+    for i, grp in enumerate(part):
+        for x in grp:
+            where[x] = i
+    c = 0.0
+    for (x, y), w in W.items():
+        if w == NEG_INF:
+            c += 1e6 if where.get(x) == where.get(y) else 0.0
+        elif where.get(x) == where.get(y):
+            c += -w if w < 0 else 0.0
+        else:
+            c += w if w > 0 else 0.0
+    return c
+
+
+def _ok_group(grp, W, cap):
+    """무리가 제약을 지키는가 — 금지(-inf) 간선이 안에 없고 크기가 상한 안."""
+    if len(grp) > cap:
+        return False
+    g = sorted(grp)
+    for i in range(len(g)):
+        for j in range(i + 1, len(g)):
+            if W.get((g[i], g[j]), 0.0) == NEG_INF:
+                return False
+    return True
+
+
+def cluster2(names, W, order, cap):
+    """Pivot(KwikCluster) + 국소탐색. 표준 라이브러리만.
+
+    ★ 제약은 **무리 안에서** 강제한다. 쌍 단위 거부만 하던 예전에는 never 로 갈라 둔 두 이름이
+    제3의 이름을 경유해 같은 무리가 됐다(감사 확인) — 쌍 거부는 추이적으로 우회된다.
+    order 는 결정적이어야 한다(MM 내림 → 사전순, 캐시 대표 우선) — 그래야 기간이 바뀌어도
+    같은 자료면 같은 파티션이 나온다(예전에는 MM 값만 달라져도 셋으로 갈렸다)."""
+    part, placed = [], set()
+    for p in order:
+        if p in placed:
+            continue
+        grp = [p]
+        placed.add(p)
+        for x in order:
+            if x in placed:
+                continue
+            if W.get((min(p, x), max(p, x)), 0.0) < W_MERGE:
+                continue
+            if _ok_group(grp + [x], W, cap):
+                grp.append(x)
+                placed.add(x)
+        part.append(grp)
+    # 국소탐색 — 한 이름을 다른 무리(또는 단독)로 옮겨 목적함수가 줄면 옮긴다
+    for _ in range(6):
+        best = _cost2(part, W)
+        moved = False
+        for gi, grp in enumerate(list(part)):
+            if len(grp) <= 1:
+                continue
+            for x in list(grp):
+                for gj in list(range(len(part))) + [-1]:
+                    if gj == gi:
+                        continue
+                    cand = [list(g) for g in part]
+                    cand[gi] = [y for y in cand[gi] if y != x]
+                    if gj == -1:
+                        cand.append([x])
+                    else:
+                        cand[gj] = cand[gj] + [x]
+                        if not _ok_group(cand[gj], W, cap):
+                            continue
+                    cand = [g for g in cand if g]
+                    c = _cost2(cand, W)
+                    if c < best - 1e-9:
+                        best, part, moved = c, cand, True
+                        break
+                if moved:
+                    break
+            if moved:
+                break
+        if not moved:
+            break
+    return part
+
+
 # ── 맵 만들기 ──────────────────────────────────────────────────────────────
 def project_merge_map(rows, sigs=None, refmap=None, pinned=(), log=print):
     """과제(중위) 표기 병합 맵 → (pmap, 규칙 병합 수, 증거 병합 수, 기록).
@@ -663,10 +837,9 @@ def project_merge_map(rows, sigs=None, refmap=None, pinned=(), log=print):
         return max(pool, key=lambda x: (mm_w.get(x, 0.0), len(" ".join(x.split())), -len(x), x))
 
     def _take(x, canon, why, kind):
+        # 흡수 한도(MAX_ABSORB2)는 폐기했다 — 그 쌍의 '지역 대표' 를 세는 값이라 사슬로 우회됐고
+        # (감사 실측: 상한 4·5인데 6개가 한 무리), 이제는 무리 크기를 클러스터링이 직접 지킨다.
         nonlocal n_rule, n_ev
-        if absorbed.get(ukey2(canon), 0) >= MAX_ABSORB2:
-            rejects.append({"a": x, "b": canon, "why": f"한 대표의 흡수 한도 초과({MAX_ABSORB2}개)"})
-            return
         if not _set_alias2(pmap, x, canon):
             return
         absorbed[ukey2(canon)] = absorbed.get(ukey2(canon), 0) + 1
@@ -677,47 +850,42 @@ def project_merge_map(rows, sigs=None, refmap=None, pinned=(), log=print):
         else:
             n_ev += 1
 
-    # ① 규칙 — 표기만 다른 이름(오병합 없는 안전 구간)
-    by_k = {}
-    for n in names:
-        by_k.setdefault(ukey2(n), []).append(n)
-    for _k, grp in sorted(by_k.items()):
+    # ── 점수 그래프 ─────────────────────────────────────────────────────────
+    # 모든 쌍에 점수를 매긴다. -inf 는 절대 금지(never·괄호꼬리·숫자토큰·둘 다 지정 과제),
+    # 10.0 은 표기 동일(무조건 병합), 나머지는 근거 가중치의 합이다.
+    ns = sorted(names)
+    W, pair_why, ask = {}, {}, []
+    for i2 in range(len(ns)):
+        for j2 in range(i2 + 1, len(ns)):
+            a, b = ns[i2], ns[j2]
+            ev = {"ukey2": ukey2(a) == ukey2(b),
+                  "refine": _pair2(a, b) in ref_pairs,
+                  "product": bool((prod.get(a) or set()) & (prod.get(b) or set()))}
+            w, why = pair_score(a, b, ev, never_keys, ctx)
+            W[(a, b)] = w
+            pair_why[(a, b)] = why
+            if W_ASK <= w < W_MERGE:
+                ask.append({"a": a, "b": b, "why": why})
+            elif w != NEG_INF and w < W_ASK and (ev["refine"] or ev["product"] or bigram_dice(a, b) >= 0.5):
+                rejects.append({"a": a, "b": b, "why": why})
+            elif w == NEG_INF:
+                rejects.append({"a": a, "b": b, "why": why})
+
+    # ── 제약 클러스터링 ─────────────────────────────────────────────────────
+    # 순서는 결정적이어야 한다 — 캐시가 이미 대표로 쓰는 이름 먼저, 그다음 MM 내림, 사전순.
+    # 예전 그리디는 MM 값만 달라져도 파티션이 셋으로 갈렸다(감사 실측).
+    order = sorted(ns, key=lambda x: (0 if x in cached_reps else 1, -mm_w.get(x, 0.0), x))
+    for grp in cluster2(ns, W, order, MAX_GROUP2):
         if len(grp) < 2:
-            continue
-        if len(grp) > MAX_GROUP2:
-            rejects.append({"a": grp[0], "b": grp[1], "why": f"무리가 너무 큼({len(grp)}개 > {MAX_GROUP2})"})
             continue
         canon = _canon2(grp)
         for x in sorted(grp):
             if x == canon:
                 continue
-            ok, why = _accept_pair2(x, canon, {"ukey2": True}, never_keys, ctx)
-            if ok:
-                _take(x, canon, why, "rule")
-            else:
-                rejects.append({"a": x, "b": canon, "why": why})
-
-    # ② 증거 — 표기가 다르면 서로 독립인 근거 2개 이상일 때만
-    reps = sorted({_final2(pmap, n) for n in names})
-    for i in range(len(reps)):
-        for j in range(i + 1, len(reps)):
-            a, b = reps[i], reps[j]
-            if _final2(pmap, a) == _final2(pmap, b):
-                continue
-            ev = {"ukey2": ukey2(a) == ukey2(b),
-                  "dice": bigram_dice(a, b) >= DICE2,
-                  "refine": _pair2(a, b) in ref_pairs,
-                  "l3": (_jac2(l3.get(a), l3.get(b)) >= JACCARD2
-                         and len(l3.get(a) or ()) >= 3 and len(l3.get(b) or ()) >= 3),
-                  "product": bool((prod.get(a) or set()) & (prod.get(b) or set()))}
-            if not any(ev.values()):
-                continue
-            ok, why = _accept_pair2(a, b, ev, never_keys, ctx)
-            if not ok:
-                rejects.append({"a": a, "b": b, "why": why})
-                continue
-            canon = _canon2([a, b])
-            _take(b if canon == a else a, canon, why, "ev")
+            key = (min(x, canon), max(x, canon))
+            why = pair_why.get(key) or "같은 무리"
+            kind = "rule" if W.get(key, 0.0) >= 10.0 else "ev"
+            _take(x, canon, why, kind)
 
     pmap = _flatten2_map(pmap, log=log)
     if n_rule or n_ev:
@@ -734,7 +902,9 @@ def project_merge_map(rows, sigs=None, refmap=None, pinned=(), log=print):
         big = [k for k, v in after.items() if v > 0.6 * tot]
         if big and len(after) > 1:
             _say(f"    [!] 병합 뒤 '{big[0]}' 하나가 전체 MM 의 60% 를 넘습니다 — 과병합이 아닌지 확인하세요", log)
-    return pmap, n_rule, n_ev, {"pairs": pairs, "rejects": rejects}
+    # 애매한 쌍(점수가 문턱 사이) — 합치지 않고 사람에게 보여 준다. 문헌의 3분할과 같은 취지:
+    # 자동으로 처리할 수 있는 구간만 자동으로 하고, 경계는 사람이 한 번 정하면 캐시가 기억한다.
+    return pmap, n_rule, n_ev, {"pairs": pairs, "rejects": rejects, "ask": ask[:20]}
 
 
 # ── 적용 ──────────────────────────────────────────────────────────────────

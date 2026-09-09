@@ -46,7 +46,11 @@ def load_user_projects(root):
                 out.append({"name": str(it["name"]).strip(),
                             "match": [str(k).strip().lower() for k in (it.get("match") or [])
                                       if str(k).strip()],
-                            "desc": str(it.get("desc") or "").strip()})
+                            "desc": str(it.get("desc") or "").strip(),
+                            # 상위(업무 성격)를 사람이 못 박는 값 — 상위는 Level 2·3 과 달리 고칠
+                            # 수단이 전혀 없어, 한 번 어긋나면 재왕복 말고는 손댈 데가 없었다.
+                            # 적어 두면 flow 의 상위 투표를 이긴다(flow.L1_PIN).
+                            "level1": str(it.get("level1") or "").strip()})
         return out
     except (OSError, ValueError):
         return []
@@ -65,7 +69,8 @@ def save_user_projects(root, projects):
         clean.append({"name": name,
                       "match": [str(k).strip().lower()[:30] for k in (it.get("match") or [])
                                 if str(k).strip()][:12],
-                      "desc": str(it.get("desc") or "").strip()[:200]})
+                      "desc": str(it.get("desc") or "").strip()[:200],
+                      "level1": str(it.get("level1") or "").strip()[:20]})   # 저장에서도 보존
     with open(_path(root), "w", encoding="utf-8") as f:
         json.dump(clean, f, ensure_ascii=False, indent=1)
     return clean

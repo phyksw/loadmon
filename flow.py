@@ -68,6 +68,9 @@ def _chat_note():
     except Exception:  # noqa: BLE001 - 로그 문구가 실행을 막지 않게
         return ""
     return " — 설정 chatTurns=0: 묶음마다 새 채팅" if n <= 0 else f" · 첫 왕복·실패 뒤·{n}회마다 새 채팅"
+L1_MARGIN = 0.60                # 상위(업무 성격) 확정에 필요한 1위 표 비중 — 못 넘으면 찍지 않고 '혼재' 로 남긴다.
+#                                 51:49 로 갈린 과제와 100:0 인 과제를 같게 다루던 argmax 를 대신한다(감사 지적).
+#                                 계층 분류 문헌의 통례 — 확신이 없으면 하위로 내려가지 않고 기권한다.
 MIN_SIGNALS = 3                 # 이보다 적은 신호는 흐름이라 할 수 없다
 MIN_STEPS = 3                   # 이보다 얕은 흐름은 잘린 답의 잔해로 보고 다시 묻는다(프롬프트도 3단계 이상 요구)
 FINISH_ROUNDS = 12              # 미판정 자동 마무리 **상한** 회차 — 실제로는 '진전이 없으면' 먼저 멈춘다.
@@ -165,6 +168,23 @@ def _refine_orig(tag, rep=None):
 
 
 # ── 재료 (보완2.wf_materials 이식) ────────────────────────────────────────
+L1_PIN = {}        # ukey2(과제) → 상위. config\projects.json 의 level1 — 사람이 못 박은 값은 투표를 이긴다
+
+
+def load_l1_pin(root):
+    """지정 과제 목록에서 상위를 읽어 둔다 — 상위는 Level 2·3 과 달리 사람이 고칠 수단이 전혀 없었다."""
+    out = {}
+    try:
+        import projmap
+        for p in (projmap.load_user_projects(root) or []):
+            nm, l1 = str(p.get("name") or "").strip(), details.snap1(p.get("level1"))
+            if nm and l1:
+                out[details.ukey2(nm)] = l1
+    except Exception:  # noqa: BLE001 - 지정 과제가 없어도 워크플로우는 돈다
+        return {}
+    return out
+
+
 def gather(rep, tag, amap=None, pmap=None):
     """(과제, 담당 업무) 단위 재료 → (mats, basis, err).
     signals 를 (model|project, detail|activity) 로 묶고 MIN_SIGNALS 미만 제외, 시간순 표본,
@@ -202,13 +222,23 @@ def gather(rep, tag, amap=None, pmap=None):
     # MM 은 여기서 손대지 않는다: 정제 행 하나가 원본 여럿에서 왔을 때 원본마다 같은 MM 을 붙이면 총량이 부푼다.
     # 상위(Level 1)는 판정 단계에서 빈칸이고 정제 단계만 채운다 — 정제본에서 원본 이름 축으로 되짚어 온다.
     parts_by, dsc_by = {}, {}   # 과제 축 — 세부업무 MM 배분 / 정제 설명(아래 두 루프가 함께 채운다)
-    l1_w = {}          # fold(과제) → {상위: mm 합}  (가장 무거운 상위를 그 과제의 상위로 본다)
+    # ★ 키는 **과제 병합 대표** 이름이어야 한다. 예전에는 병합 전 원본 이름(fold(o2))으로 표를 만들고
+    #   조회는 병합 후 대표 이름으로 해서, 흡수된 과제의 상위 표가 통째로 버려졌다 — 합성 실측에서
+    #   전체 MM 의 절반을 차지한 '양산준비' 표가 사라지고 0.5MM 짜리가 과제 전체를 대표했다(감사 확인).
+    #   축도 fold 가 아니라 병합과 같은 ukey2 를 쓴다. fold 는 괄호를 지워, 병합이 일부러 갈라 둔
+    #   '(양산)'/'(선행)' 두 과제가 서로의 상위를 가져갔다(감사 실측).
+    def _l1k(name):
+        return details.ukey2((pmap or {}).get(str(name or "").strip(), str(name or "").strip()) or "공통")
+
+    l1_w = {}          # ukey2(병합 대표 과제) → {상위: mm 합}
     try:
         rrows, _rfn = details.read_rows(tag, rep)
         if _rfn and _rfn.endswith("_refined.csv"):
             rmap = _refine_orig(tag, rep)
             for r in rrows:
-                l1 = " ".join((r.get("Level 1") or "").split())
+                # 읽을 때도 스냅한다 — refine 은 저장 시 스냅하지만, **이미 만들어진 정제본**에는
+                # 스냅 전 값이 남아 있다. 그걸 그대로 쓰면 '기술내재화'가 다섯 번째 상위로 화면에 뜬다.
+                l1 = details.snap1(r.get("Level 1"))
                 d = " ".join((r.get("상세설명") or "").split())
                 l2 = (r.get("Level 2") or "").strip()
                 l3 = (r.get("Level 3") or "").strip()
@@ -225,7 +255,7 @@ def gather(rep, tag, amap=None, pmap=None):
                     if l1:
                         # 정제 행 하나가 원본 여럿에서 왔으면 MM 을 나눠 싣는다(총량이 부풀지 않게)
                         w = r["_mm"] / max(1, len(pairs))
-                        g = l1_w.setdefault(fold(o2 or "공통"), {})
+                        g = l1_w.setdefault(_l1k(o2), {})
                         g[l1] = g.get(l1, 0.0) + w
     except Exception:  # noqa: BLE001 - 설명·상위가 없어도 워크플로우는 나와야 한다
         pass
@@ -297,10 +327,22 @@ def gather(rep, tag, amap=None, pmap=None):
             mm = round(sum(pv.values()), 3)
             parts = [[n, round(v, 3)] for n, v in sorted(pv.items(), key=lambda kv: -kv[1])[:8] if v > 0]
             desc = " · ".join((dsc_by.get(f2) or [])[:6])
-        g1 = l1_w.get(f2) or {}
-        level1 = max(g1.items(), key=lambda kv: kv[1])[0] if g1 else ""
+        # 상위는 표가 갈리면 **찍지 않는다**. 1위 비중이 L1_MARGIN 에 못 미치면 빈 값으로 두고
+        # 진 표를 level1_mix 에 남겨 화면이 '상위 혼재' 로 알린다 — 혼재 자체가 '과제가 과병합됐거나
+        # 상위 판정이 갈렸다' 는 신호라, 억지로 하나를 찍으면 그 사실이 숨는다(감사 지적).
+        # 지정 과제(config\projects.json)에 상위를 적어 두었으면 그것이 투표를 이긴다.
+        g1 = l1_w.get(details.ukey2(md)) or l1_w.get(f2) or {}
+        pinned_l1 = (L1_PIN.get(details.ukey2(md)) or "")
+        level1, level1_mix = pinned_l1, []
+        if not level1 and g1:
+            tot = sum(g1.values())
+            top, w1 = max(g1.items(), key=lambda kv: (kv[1], kv[0]))
+            if tot > 0 and w1 / tot >= L1_MARGIN:
+                level1 = top
+            else:
+                level1_mix = [[k, round(v, 3)] for k, v in sorted(g1.items(), key=lambda kv: -kv[1])[:3]]
         out.append({"model": md, "detail": dt, "key": unit_key(md, dt), "signals": len(ss),
-                    "level1": level1, "mm": mm, "desc": desc, "parts": parts,
+                    "level1": level1, "level1_mix": level1_mix, "mm": mm, "desc": desc, "parts": parts,
                     # 요청→산출 페어 — 파일 스스로 '흐름을 잇는 핵심 재료' 라 부르는 것인데 담당업무 카드에는
                     # 한 건도 안 실려 모델이 시간순 나열만 보고 순서를 지어냈다(실측: 페어 0). 되살린다.
                     # 과제 전체 페어라 다른 업무 것이 섞일 수 있으므로 '이 과제의 페어' 라고 밝혀 붙인다.
@@ -695,6 +737,8 @@ def sanitize_flows(raw_flows, keys, mats_by=None, dropped=None):
             return k2 if fold(a.get("model", "")) == fold(b.get("model", "")) else ""
 
         out.append({"model": key, "branch": branch, "level1": hit.get("level1", ""),
+                    # 상위 표가 갈린 카드는 화면이 "상위 미분류" 대신 그 사실을 말해야 한다
+                    "level1_mix": hit.get("level1_mix") or [],
                     "upstream": _link(f.get("upstream")), "downstream": _link(f.get("downstream")),
                     "project": hit.get("model", ""), "detail": hit.get("detail", ""),
                     "role": str(f.get("role") or "")[:160],
@@ -888,6 +932,7 @@ def main():
     merge_fail = dict(getattr(details, "LAST_FAIL", {}) or {})
 
     # ② 재료
+    L1_PIN.update(load_l1_pin(ROOT))
     mats, basis, err = gather(rep, tag, amap, pmap)
     if not mats:
         if not basis:
@@ -1045,6 +1090,10 @@ def main():
                # 왜 어떤 단위가 비었는지 나중에도 알 수 있게 남긴다
                # 신호가 얕아 흐름을 만들지 않은 업무 — 예전에는 콘솔에만 찍혀 화면에서 통째로 사라졌다.
                # 사용자에게는 '내 일이 없어졌다' 로 보인다(감사 지적). 왕복은 늘지 않는다.
+               # 상위(업무 성격) 표가 갈린 과제 — 억지로 하나를 찍지 않고 여기에 남긴다.
+               # 이 목록이 곧 '재배치가 필요한 것' 이다(과병합 의심 또는 상위 판정 불일치).
+               "level1_mixed": [{"model": m["model"], "detail": m["detail"], "votes": m["level1_mix"]}
+                                for m in mats if m.get("level1_mix")][:100],
                "thin": [{"project": md, "detail": dt, "signals": n} for md, dt, n in THIN[:200]],
                "thin_count": len(THIN),
                "missing": missing[:200], "missing_count": len(missing), "dropped": dropped[:20],

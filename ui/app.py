@@ -3226,6 +3226,24 @@ async function startTool(path){
 // flow.py 의 details.fold 와 같은 축 — 과제 이름을 화면에서 묶을 때 쓴다.
 // 구분자를 공백으로 바꾸고 공백을 접은 뒤 소문자로. 두 곳이 다른 축을 쓰면 머리말이 갈린다.
 const fold2=s=>String(s||"").normalize("NFKC").replace(/[·・ㆍ‧/_\-()\[\]（）]/g," ").split(/\s+/).filter(Boolean).join(" ").toLowerCase();
+// 상위(업무 성격) 표가 갈린 과제 — 억지로 하나를 찍지 않고 그 사실을 보여 준다.
+// 이 목록이 곧 '재배치가 필요한 것' 이다: 과제가 과병합됐거나(서로 다른 성격의 일이 한 과제로 묶임)
+// 상위 판정이 행마다 갈린 것이다. 어느 쪽인지는 사람이 보면 바로 안다.
+function mixedLine(mx){
+ if(!mx||!mx.length)return"";
+ const rows=mx.map(m=>{
+  const v=(m.votes||[]).map(([k,w])=>`${esc(k)} ${(+w).toFixed(2)}`).join(" · ");
+  return `<tr><td><b>${esc(m.model)}</b>${m.detail?` <span class="dim">/ ${esc(m.detail)}</span>`:""}</td><td class="dim">${v}</td></tr>`;
+ }).join("");
+ return '<details style="margin-top:8px"><summary style="cursor:pointer;font-size:12px;color:#8a5a00">'
+  +`상위(업무 성격)가 갈린 과제 ${mx.length}건 — 재배치 필요</summary>`
+  +'<table style="width:100%;font-size:12px;margin-top:6px">'+rows+'</table>'
+  +'<div class="note">1위 표가 60%에 못 미쳐 <b>일부러 상위를 찍지 않았습니다</b>. 억지로 하나를 고르면 '
+  +'그 과제가 과병합됐다는 사실이 숨습니다. 서로 다른 성격의 일이 한 과제로 묶였다면 '
+  +'<b>config\\project_aliases.json</b> 의 <b>never</b> 에 그 쌍을 적어 갈라 두고, 과제는 맞는데 상위만 '
+  +'갈린 것이라면 <b>config\\projects.json</b> 의 그 과제에 <code>"level1": "신제품개발"</code> 처럼 적어 '
+  +'못 박으세요. 지정한 값은 투표를 이깁니다.</div></details>';
+}
 // 과제(중위) 표기 병합·흐름 중복 제거 내역 — 무엇을 왜 합쳤는지 보이지 않으면 잘못된 병합을
 // 사람이 찾을 수 없다. 접어 두고, 펼치면 표와 되돌리는 방법을 보여준다.
 function mergeLine(m){
@@ -3267,7 +3285,7 @@ async function loadFlow(){
   +'<div class="note">과제별로 <b>역할 → 일의 순서 → 단계별 Agent 가능성</b>을 raw 근거에서 판정합니다. '
   +'MM 배분 숫자는 AI 가 아니라 판정 실측치입니다.'+(nflows?` 업무 ${nflows}/${d.rows_units||nflows}개 판정`+partial+salv:"")+'</div>'+lastErr
   +(d.reextracted?'<div class="note" style="color:#8a5a00">⚠ <b>재추출 이후 결과</b> — '+esc(d.reextracted_note||"이 결과는 마지막 업무 로드 재추출 이전의 것입니다")+' · [워크플로우 재분석]으로 갱신하세요</div>':"")
-  +mergeLine(d.merge2)+manualLine(d.manual)+'</div>';
+  +mergeLine(d.merge2)+mixedLine(d.level1_mixed)+manualLine(d.manual)+'</div>';
  if(!d.ok||!nflows){
   // 홑따옴표 문자열에서는 ${...} 가 치환되지 않는다 — 템플릿 리터럴로 써야 사유가 실제로 보인다
   // '결과가 없다' 와 '다른 기간 것만 있다' 는 다르다 — 구분해서 말한다
@@ -3310,7 +3328,10 @@ async function loadFlow(){
    const pkOf=x=>x.pjkey||pjOf(x);
    const pk=pkOf(f);
    let head="";
-   if(cur!==_l1prev){head+=`<div style="margin:14px 0 6px;font-size:12px;color:#4a5159"><b>${esc(cur||"상위 미분류")}</b> <span class="dim">— ${new Set(d.flows.filter(x=>(x.level1||"")===cur).map(pkOf)).size}개 과제</span></div>`;_pjprev=null;}
+   // 상위가 빈 카드는 두 종류다 — 표 자체가 없는 것(미분류)과, 표가 갈려 일부러 안 찍은 것(혼재).
+   // 후자는 '재배치가 필요한 것' 이므로 그렇게 말해 줘야 한다. 예전에는 둘 다 '상위 미분류' 였다.
+   const l1lab=cur?esc(cur):((f.level1_mix||[]).length?"상위 혼재 — 재배치 필요":"상위 미분류");
+   if(cur!==_l1prev){head+=`<div style="margin:14px 0 6px;font-size:12px;color:#4a5159"><b>${l1lab}</b> <span class="dim">— ${new Set(d.flows.filter(x=>(x.level1||"")===cur).map(pkOf)).size}개 과제</span></div>`;_pjprev=null;}
    if(hasDet&&pk!==_pjprev){
     const sibs=d.flows.filter(x=>pkOf(x)===pk&&(x.level1||"")===cur).length;
     // 신호가 얕아 흐름을 만들지 않은 업무 — 콘솔에만 있던 것을 과제 밑에 한 줄로 알린다.
