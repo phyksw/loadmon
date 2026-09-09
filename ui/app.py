@@ -3252,11 +3252,14 @@ async function loadFlow(){
  el.innerHTML='<div class="card"><div class="note">불러오는 중…</div></div>';
  const d=await fetch("/api/workflow").then(r=>r.json()).catch(()=>({}));
  const nflows=(d.flows||[]).length;
- const partial=d.partial&&d.missing_count?`<span style="color:#c0122f"> · ${d.missing_count}개 업무 미판정${d.failed_chunks?` (${d.failed_chunks}/${d.chunks||"?"} 묶음 실패)`:""} — [워크플로우 재분석]을 누르면 남은 업무만 이어서 판정</span>`:"";
+ // 워크플로우는 이제 한 번의 실행으로 끝까지 판정한다(진전이 있는 한 자동으로 마저 묻는다).
+ // 그래도 남았다면 두 가지 중 하나다 — 시간 예산·상한에 걸려 끊긴 것(다시 누르면 이어진다)이거나,
+ // 더 늘릴 수 없어 멈춘 것(다시 눌러도 같다). 후자에 [이어서 분석]을 권하면 헛수고를 시킨다.
+ const partial=d.partial&&d.missing_count?`<span style="color:#c0122f"> · ${d.missing_count}개 업무 미판정${d.failed_chunks?` (${d.failed_chunks}/${d.chunks||"?"} 묶음 실패)`:""} — ${d.resumable?"[이어서 분석]을 누르면 남은 업무만 이어서 판정합니다":"자동 마무리가 더 늘리지 못했습니다 — 다시 눌러도 같을 수 있습니다(신호가 얕거나 응답이 그 이름을 돌려주지 않는 단위)"}</span>`:"";
  const salv=d.salvaged_chunks?` · 잘린 답 복구 ${d.salvaged_chunks}묶음(부분 결과)`:"";
  const lastErr=d.last_error&&d.last_error.error?`<div class="note" style="color:#c0122f">마지막 실패 사유: ${esc(d.last_error.error)}${d.last_error.hint?` — ${esc(d.last_error.hint)}`:""}</div>`:"";
  const btn='<div class="card"><div class="row" style="align-items:center;gap:10px">'
-  +'<button class="ghost" id="flowre">'+(d.partial&&d.missing_count?"이어서 분석(남은 "+d.missing_count+"개)":"워크플로우 재분석")+'</button>'
+  +'<button class="ghost" id="flowre">'+(d.partial&&d.missing_count&&d.resumable?"이어서 분석(남은 "+d.missing_count+"개)":"워크플로우 재분석")+'</button>'
   +'<span class="state" id="flowmsg">'+(d.running?"워크플로우 분석 진행 중… (진행률은 상단 진행 바)":(d.generated?esc(`생성 ${d.generated} · ${d.model_name||""}`)+(d.basis==="규칙"?" · 규칙 축(AI 판정 없음)":""):""))+'</span></div>'
   +'<div class="note">과제별로 <b>역할 → 일의 순서 → 단계별 Agent 가능성</b>을 raw 근거에서 판정합니다. '
   +'MM 배분 숫자는 AI 가 아니라 판정 실측치입니다.'+(nflows?` 업무 ${nflows}/${d.rows_units||nflows}개 판정`+partial+salv:"")+'</div>'+lastErr
