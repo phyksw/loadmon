@@ -418,11 +418,20 @@ def strip_example_rows(reply, rows, spans):
 
 # ── [0] 엔티티 체계 수립 — 지정 프로젝트는 항상 포함, 나머지는 raw에서 자동 발견 ──
 def _sample_lines(rows, k, fmt):
-    """rows 전체에 고르게 퍼진 k개 표본 줄 — 앞부분만 자르면 기간 초반에 치우친다."""
+    """rows 전체에 고르게 퍼진 k개 표본 줄 — **끝(마지막 행)을 반드시 포함한다**.
+
+    예전에는 rows[::step][:k] 였는데, step = len//k 가 1로 굳는 구간(k < N < 2k)에서는
+    그냥 '앞 k개' 가 되어 뒤쪽이 통째로 빠졌다. 월별 리뷰에서 이게 특히 나빴다 — 신호 90건 상한에
+    한 달 150건이면 6월 17일에서 끊겨, 모델은 6월 후반 근거를 못 받은 채 '6월 한 달' 을 쓰라는
+    지시를 받는다. 그러면 없는 이야기로 공백을 메운다(제보: 과거 달에 하지도 않은 최근 일).
+    실측 커버리지: N=120 75% · N=150 60% · N=179 50%. 아래 식은 어느 N 에서도 처음과 끝을 담는다."""
     if not rows or k <= 0:
         return []
-    step = max(1, len(rows) // k)
-    return [fmt(r) for r in rows[::step][:k]]
+    n = len(rows)
+    if n <= k:
+        return [fmt(r) for r in rows]
+    idx = sorted({round(j * (n - 1) / (k - 1)) for j in range(k)}) if k > 1 else [n - 1]
+    return [fmt(rows[i]) for i in idx]
 
 
 def _fit_samples(rows, k, fmt, head_len, budget=PROMPT_BUDGET, k_min=20):
@@ -1270,6 +1279,11 @@ def write_outputs(kept, tag, cfg, rep):
 
 
 # ── [월별] 내러티브 ────────────────────────────────────────────────────────
+def _nm_key(s):
+    """과제 이름 비교 축 — 공백·구분자·대소문자 무시(core/details.ukey2 와 같은 규칙)."""
+    return re.sub(r"[\s·・ㆍ‧/_\-()\[\]]+", "", str(s or "")).casefold()
+
+
 NARRATIVE_EXAMPLE = ('{"summary":"이 달 요약 2~3문장","projects":[{"name":"프로젝트A",'
                      '"story":"무엇을 어떻게 했는지 1~2문장","worktypes":"개발 위주"}]}')
 
@@ -1286,6 +1300,11 @@ def narrate(kept, total_mm, tag):
             f"당신은 업무 리뷰 작성자입니다. {mk} 한 달의 판정된 업무 신호가 아래에 있습니다.",
             "과제별로 사용자가 어떤 업무에 리소스를 기여했는지, 업무유형(개발/사무/현장/협업)",
             "배분이 어땠는지 서술하세요. 불필요한 정보는 빼고 업무 내용만.",
+            # 이 한 줄이 필요한 이유: 예전에는 달마다 같은 채팅을 이어 써서 앞선 달·판정 청크의
+            # 신호가 문맥에 남았고, 그 내용이 과거 달 리뷰에 섞여 나왔다(제보). 채팅을 분리한
+            # 뒤에도 드라이버가 새 채팅 열기에 실패하면 같은 일이 생기므로 프롬프트에도 못 박는다.
+            f"아래 [신호] 목록에 있는 것만 근거로 쓰세요. 목록에 없는 과제·활동은 {mk} 의 일이 "
+            "아니므로 쓰지 마세요.",
             "",
             "출력은 JSON 하나만(설명·표·코드블록 없이). story 는 120자 이내:",
             NARRATIVE_EXAMPLE,
@@ -1293,15 +1312,36 @@ def narrate(kept, total_mm, tag):
         head_len = sum(len(x) + 1 for x in head)
         # 한 달 신호가 90건을 넘으면 예전엔 **앞 90건**(월초에 치우침)을 보냈고, 제목이 길면 9,500~10,100자로
         # 한도를 넘겨 2조각으로 나뉘었다(실측). 달 전체에 고르게 퍼진 표본을 예산 안에서 보낸다.
+        # 시각에 **연도를 포함**한다 — 예전에는 'MM-DD HH:MM' 이라 다른 달 문맥이 남았을 때
+        # 모델이 어느 달 것인지 구분할 근거가 프롬프트 안에 없었다.
         lines = _fit_samples(rows, 90, lambda r: (
-            f"- {r['time'][5:16]} [{r['source']}] {r.get('model', '')}/{r.get('worktype', '')} "
+            f"- {r['time'][:16]} [{r['source']}] {r.get('model', '')}/{r.get('worktype', '')} "
             f"{who_label(r.get('who'), 10)} {(r.get('text') or '')[:80]}"), head_len)
         prompt = "\n".join(head + lines)
-        res = copilot_send(prompt, tag, f"narr_{mk}")
+        # ★ 달마다 **새 채팅**에서 묻는다. 예전에는 fresh 를 주지 않아 '같은 채팅에서 이어서' 가 됐고,
+        # narrate 는 judge.main 끝에서 돌므로 그 채팅에는 이미 **분석 기간 전체**(최근 달 포함)의 판정
+        # 청크가 들어 있었다. 그래서 6월 리뷰에 8~9월 일이 적히는 일이 생겼다(제보).
+        # 판정 청크는 앞 묶음의 과제 표기를 이어받는 이득이 있어 같은 채팅을 쓰지만, 월별 리뷰는
+        # 프롬프트가 혼자서 완결이라 이어받을 이득이 없고 오염만 남는다.
+        res = copilot_send(prompt, tag, f"narr_{mk}", fresh=True)
         if res.get("ok"):
             o = rfind_json(res.get("reply", ""), "summary", skip=(NARRATIVE_EXAMPLE,)) \
                 or repair_json(res.get("reply", ""), "summary", skip=(NARRATIVE_EXAMPLE,))
             if o and str(o.get("summary") or "").strip():
+                # 답이 든 과제 이름이 **그 달에 실제로 있는 이름**인지 확인한다. 예전에는 아무 검증이
+                # 없어, 프롬프트 예시의 '프로젝트A' 같은 것이 그대로 리뷰에 실릴 수 있었다(같은 계열의
+                # 에코 사고가 rfind_json 주석에 실측으로 남아 있다). 없는 이름은 그 항목만 버린다.
+                real = {_nm_key(r.get("model")) for r in rows if r.get("model")} | {_nm_key("공통")}
+                keep, drop = [], []
+                for p in (o.get("projects") or []):
+                    if isinstance(p, dict) and _nm_key(p.get("name")) in real:
+                        keep.append(p)
+                    elif isinstance(p, dict) and str(p.get("name") or "").strip():
+                        drop.append(str(p.get("name")).strip())
+                if drop:
+                    print(f"        {mk} 리뷰에서 이 달에 없는 과제 {len(drop)}건 제외: "
+                          + ", ".join(drop[:3]) + (" …" if len(drop) > 3 else ""))
+                o["projects"] = keep
                 out[mk] = o
                 print(f"        {mk} 내러티브 ✓" + (" (잘린 응답 일부 복구)" if res.get("cut") else ""))
                 continue

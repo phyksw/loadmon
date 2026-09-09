@@ -24,7 +24,7 @@ team_refine.py                                         6,565 B  f81b7f19
 report_out.py                                         30,599 B  01944b84
 README.md                                             96,557 B  52c64e44
 check.py                                               2,629 B  7badfe69
-judge.py                                              88,764 B  db0900e3
+judge.py                                              92,215 B  df9753e1
 mine.py                                               17,836 B  c751c51d
 refine.py                                             42,315 B  87c4d755
 ruff.toml                                              1,004 B  a9cb09e1
@@ -38,14 +38,14 @@ collect/Get-LicenseUsage.ps1                           4,093 B  c2df1eda
 collect/Get-OutlookData.ps1                           49,995 B  006c5b43
 collect/Get-OutlookIndex.ps1                          21,292 B  83984e67
 collect/Get-MailViaCopilot.py                         26,575 B  9e601a9d
-collect/Get-OutlookWeb.py                             40,141 B  a8b185cc
+collect/Get-OutlookWeb.py                             40,842 B  d259bd40
 collect/Get-PcOnHistory.ps1                           18,791 B  cb1f7e8b
 collect/Get-PcOnHints.py                              15,076 B  95986c3a
 collect/Start-TeamsSampler.ps1                         2,201 B  49b71b44
 collect/Get-RecentFiles.ps1                           22,050 B  06afbc7c
 collect/Get-TeamsChats.py                             17,754 B  e868c913
 collect/Get-TeamsViaCopilot.py                        22,177 B  e6ef9df2
-collect/Get-TeamsWeb.py                               31,261 B  1141206c
+collect/Get-TeamsWeb.py                               32,508 B  6661dabb
 collect/Get-TeamsWindow.ps1                           36,106 B  20295d52
 collect/Diagnose-Collectors.ps1                       37,278 B  c681fbca
 collect/Register-Samplers.ps1                         11,780 B  a19f947c
@@ -60,7 +60,7 @@ core/details.py                                       60,172 B  33af236b
 core/owner.py                                          1,488 B  1f1dc049
 core/progress.py                                       1,129 B  77a7579a
 core/projmap.py                                        6,619 B  963a04bb
-docs/설정가이드.md                                         56,646 B  d59d66b3
+docs/설정가이드.md                                         58,595 B  55498cd8
 docs/사용안내.html                                       272,444 B  7a912a1b
 tools/copilot_auto.py                                 62,703 B  201ac0ae
 tools/Get-EmbeddedPython.ps1                           2,472 B  1e9b31c2
