@@ -14,7 +14,7 @@ LoadMonitor23-이동준비.bat                                 1,312 B  c55ba39e
 agentic.py                                            41,104 B  80d4f2fc
 freeze.py                                             50,732 B  ecc43208
 team_report.py                                       160,115 B  b16e902f
-flow.py                                               75,066 B  b2da038b
+flow.py                                               76,027 B  9e3332d8
 teamserver.py                                         27,808 B  4bbd708a
 teamup.py                                             39,085 B  2a5bfb23
 aggregate.py                                          50,107 B  77bba803
@@ -56,11 +56,11 @@ config/agentic_tasks.json                              4,426 B  2c9e5bb1
 core/board.py                                         13,045 B  9c4d6431
 core/extract.py                                      207,457 B  4ca34ac7
 core/programs.py                                      15,778 B  1f1e142f
-core/details.py                                       54,702 B  e9f04cda
+core/details.py                                       60,172 B  33af236b
 core/owner.py                                          1,488 B  1f1dc049
 core/progress.py                                       1,129 B  77a7579a
 core/projmap.py                                        6,619 B  963a04bb
-docs/설정가이드.md                                         55,490 B  c9bad342
+docs/설정가이드.md                                         56,646 B  d59d66b3
 docs/사용안내.html                                       272,444 B  7a912a1b
 tools/copilot_auto.py                                 62,703 B  201ac0ae
 tools/Get-EmbeddedPython.ps1                           2,472 B  1e9b31c2
@@ -69,4 +69,4 @@ tools/lint.ps1                                         7,914 B  12ff6d18
 tools/Make-Package.ps1                                10,733 B  f4a24d1f
 tools/Prepare-Move.ps1                                22,237 B  fe984cf3
 tools/update_files.py                                  4,530 B  bd6aa9a1
-ui/app.py                                            328,114 B  2ce03a28
+ui/app.py                                            329,442 B  5f77ea06

@@ -716,16 +716,19 @@ def _chunks(mats, budget=PROMPT_BUDGET, max_units=None):
         (참값 1,533자) — 예산 가드가 사실상 죽어 있었다(실측).
       · 출력 — 단위 하나당 답이 약 1,100자다. 묶음이 커지면 답이 잘려 salvage 로 떨어지고 단계가 깎인다.
         ANSWER_BUDGET 로 예상 답 길이를 눌러, 단위 수 상한(고정 6)보다 실제에 맞게 막는다."""
-    out, cur, size = [], [], 0
+    out, cur = [], []
     if not mats:
         return []
-    base = len(build_prompt([mats[0]])) - len(_unit_block(mats[0]))
     cap = max_units or MAX_UNITS_PER_CHUNK
 
-    def _fits(extra_units, extra_chars):
-        return (base + size + extra_chars <= budget
-                and (len(cur) + extra_units) * ANSWER_PER_UNIT <= ANSWER_BUDGET
-                and len(cur) + extra_units <= cap)
+    # 입력 크기는 **실제 프롬프트 길이**로 잰다. 예전에는 단위 블록 길이를 더했는데, build_prompt 는
+    # '### 과제:' 머리말과 요청→산출 페어를 **과제당 한 번만** 넣는데, 예전 계산은 그것을 단위마다
+    # 세어 같은 과제 3단위 묶음을 실제 6,596자인데 7,423자로 잡아 예산 7,000 을 넘긴 것처럼 만들었다.
+    # 그 과대추정 때문에 들어갈 수 있는 묶음이 둘로 갈렸고 왕복이 두 배가 됐다(감사 실측: 100 → 50묶음).
+    def _fits(add):
+        n = len(cur) + len(add)
+        return (n * ANSWER_PER_UNIT <= ANSWER_BUDGET and n <= cap
+                and len(build_prompt(cur + add)) <= budget)
 
     # 과제별 덩어리 — mats 는 이미 상위 → 과제 → 무게 순으로 정렬돼 있다
     lumps = []
@@ -735,39 +738,23 @@ def _chunks(mats, budget=PROMPT_BUDGET, max_units=None):
         else:
             lumps.append((m["model"], [m]))
     for _pj, group in lumps:
-        gsize = sum(len(_unit_block(m)) for m in group)
-        if cur and not _fits(len(group), gsize):
+        if cur and not _fits(group):
             out.append(cur)
-            cur, size = [], 0
-        if _fits(len(group), gsize):
+            cur = []
+        if _fits(group):
             cur.extend(group)
-            size += gsize
             continue
         # 과제 하나가 통째로 안 들어간다 — 그 과제 안에서만 쪼갠다(다른 과제와는 섞지 않는다)
         for m in group:
-            one = len(_unit_block(m))
-            if cur and not _fits(1, one):
+            if cur and not _fits([m]):
                 out.append(cur)
-                cur, size = [], 0
+                cur = []
             cur.append(m)
-            size += one
         out.append(cur)
-        cur, size = [], 0
+        cur = []
     if cur:
         out.append(cur)
     return [c for c in out if c] or [mats]
-
-
-def _unit_block(m):
-    """그 단위가 프롬프트에 더하는 글자(머리말 제외) — _chunks 의 크기 계산용.
-    머리말은 단위 하나짜리 프롬프트에서 첫 '### '/'## ' 앞까지다. 모드마다 머리말이 다르므로
-    build_prompt([]) 로 재면 안 된다 — 빈 목록은 과제 모드로 읽혀 다른 머리말을 잰다(실측 결함)."""
-    p = build_prompt([m])
-    for mark in ("\n### ", "\n## "):
-        k = p.find(mark)
-        if k >= 0:
-            return p[k + 1:]
-    return p
 
 
 def _save_json(path, obj):
@@ -948,7 +935,11 @@ def main():
                     or len(f.get("steps") or []) < MIN_STEPS):
                 continue
             hit = keys[f["model"]]
-            f = dict(f, project=hit["model"], detail=hit["detail"], mm={"mm": hit["mm"]}, signals=hit["signals"])
+            # level1 도 함께 갱신한다 — 예전에는 이어받은 흐름이 **옛 상위**를 그대로 들고 와,
+            # 같은 과제의 카드가 상위 머리말 여러 개로 찢어졌다(감사 재현). 새로 판정한 흐름은
+            # 이번 mats 의 level1 을 쓰므로 두 축이 어긋난 것이다.
+            f = dict(f, project=hit["model"], detail=hit["detail"], mm={"mm": hit["mm"]},
+                     signals=hit["signals"], level1=hit.get("level1", ""))
             kept.append(f)
         # 한 과제가 여러 흐름(branch)을 가질 수 있으므로 '흐름 수' 가 아니라 '끝난 과제 수' 로 본다.
         # 그러지 않으면 분기가 하나만 생겨도 len(kept) > len(keys) 가 되어 다 끝난 줄 알고 전부 다시 돌린다.
@@ -1040,6 +1031,11 @@ def main():
         # 갈라져 보였다(제보의 '연계되는 업무가 분할'). 저장 직전에 재료 순서(상위 → 과제 → 무게)로 되돌린다.
         flows[:], _dupes = _dedupe_flows(flows, UNIT, log=print)
         flows.sort(key=lambda f: _order.get(f.get("model"), 10 ** 6))
+        # 화면·분석리포트가 '같은 과제' 를 묶는 키. 예전에는 원시 문자열로 비교해, 정렬은 fold 축인데
+        # 머리말은 표기가 조금만 달라도 따로 서고 같은 과제 머리말이 두 번 나왔다(감사 재현).
+        # 정렬과 같은 축을 그대로 실어 보내 둘이 어긋날 수 없게 한다.
+        for _f in flows:
+            _f["pjkey"] = fold(str(_f.get("project") or _f.get("model") or "").split(KEY_JOIN)[0])
         done = {f["model"] for f in flows}
         missing = [k for k in keys if k not in done]
         why, how = _fail_summary(fails) if (missing or failed) else ("", "")
@@ -1047,6 +1043,10 @@ def main():
                "model_name": model_name, "unit": UNIT, "basis": basis, "flows": flows,
                "chunks": len(chunks), "failed_chunks": failed, "salvaged_chunks": salvaged, "roundtrips": n_sent,
                # 왜 어떤 단위가 비었는지 나중에도 알 수 있게 남긴다
+               # 신호가 얕아 흐름을 만들지 않은 업무 — 예전에는 콘솔에만 찍혀 화면에서 통째로 사라졌다.
+               # 사용자에게는 '내 일이 없어졌다' 로 보인다(감사 지적). 왕복은 늘지 않는다.
+               "thin": [{"project": md, "detail": dt, "signals": n} for md, dt, n in THIN[:200]],
+               "thin_count": len(THIN),
                "missing": missing[:200], "missing_count": len(missing), "dropped": dropped[:20],
                "partial": bool(missing),
                # 다시 돌리면 남은 것이 채워지는가 — 시간 예산·묶음 상한·치명 중단으로 끊긴 경우만 참이다.

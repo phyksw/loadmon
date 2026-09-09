@@ -3223,6 +3223,9 @@ async function startTool(path){
  if(r.status===409)return {ok:false,busy:true,error:"다른 작업 실행 중",hint:d.hint||""};
  return d;
 }
+// flow.py 의 details.fold 와 같은 축 — 과제 이름을 화면에서 묶을 때 쓴다.
+// 구분자를 공백으로 바꾸고 공백을 접은 뒤 소문자로. 두 곳이 다른 축을 쓰면 머리말이 갈린다.
+const fold2=s=>String(s||"").normalize("NFKC").replace(/[·・ㆍ‧/_\-()\[\]（）]/g," ").split(/\s+/).filter(Boolean).join(" ").toLowerCase();
 // 과제(중위) 표기 병합·흐름 중복 제거 내역 — 무엇을 왜 합쳤는지 보이지 않으면 잘못된 병합을
 // 사람이 찾을 수 없다. 접어 두고, 펼치면 표와 되돌리는 방법을 보여준다.
 function mergeLine(m){
@@ -3301,10 +3304,22 @@ async function loadFlow(){
    // 화면에서는 자기 과제 밑에 모여 있어야 '뒤죽박죽' 으로 읽히지 않는다.
    const pj=f.project||f.model, hasDet=!!f.detail;
    const pjOf=x=>x.project||x.model;
+   // 과제를 묶는 키는 flow.py 가 실어 준 pjkey(정렬과 같은 축)를 쓴다. 예전에는 표시 이름을
+   // 그대로 비교해, 정렬은 정규화 축인데 머리말은 원시 문자열이라 표기가 조금만 달라도
+   // 같은 과제 머리말이 두 번 나왔다. 옛 결과 파일에는 pjkey 가 없으므로 이름으로 되돌린다.
+   const pkOf=x=>x.pjkey||pjOf(x);
+   const pk=pkOf(f);
    let head="";
-   if(cur!==_l1prev){head+=`<div style="margin:14px 0 6px;font-size:12px;color:#4a5159"><b>${esc(cur||"상위 미분류")}</b> <span class="dim">— ${new Set(d.flows.filter(x=>(x.level1||"")===cur).map(pjOf)).size}개 과제</span></div>`;_pjprev=null;}
-   if(hasDet&&pj!==_pjprev){head+=`<div style="margin:8px 0 4px 6px;font-size:13px"><b>${esc(pj)}</b> <span class="dim">— 담당 업무 ${d.flows.filter(x=>pjOf(x)===pj&&(x.level1||"")===cur).length}개</span></div>`;}
-   _l1prev=cur;_pjprev=pj;
+   if(cur!==_l1prev){head+=`<div style="margin:14px 0 6px;font-size:12px;color:#4a5159"><b>${esc(cur||"상위 미분류")}</b> <span class="dim">— ${new Set(d.flows.filter(x=>(x.level1||"")===cur).map(pkOf)).size}개 과제</span></div>`;_pjprev=null;}
+   if(hasDet&&pk!==_pjprev){
+    const sibs=d.flows.filter(x=>pkOf(x)===pk&&(x.level1||"")===cur).length;
+    // 신호가 얕아 흐름을 만들지 않은 업무 — 콘솔에만 있던 것을 과제 밑에 한 줄로 알린다.
+    // 이것이 안 보이면 사용자에게는 '내 일이 통째로 사라졌다' 로 읽힌다.
+    const th=(d.thin||[]).filter(t=>fold2(t.project)===pk);
+    const thin=th.length?`<span class="dim"> · <span title="${esc(th.map(t=>t.detail+"("+t.signals+")").join(", "))}">신호가 얕아 흐름을 만들지 않은 업무 ${th.length}개</span></span>`:"";
+    head+=`<div style="margin:8px 0 4px 6px;font-size:13px"><b>${esc(pj)}</b> <span class="dim">— 담당 업무 ${sibs}개</span>${thin}</div>`;
+   }
+   _l1prev=cur;_pjprev=pk;
    // 과제 수만큼 길어지는 탭 — 접이식으로. 제목 줄에 역할 요약을 실어 접힌 채로도 훑는다.
    // 상위(업무 성격) 배지 — 계층은 상위(Level 1) > 과제(Level 2) > 담당업무(Level 3) 다.
    // LM20 처럼 상위로도 묶어 읽히게 제목에 배지를 달고, 아래에서 상위별로 구간을 나눈다.
