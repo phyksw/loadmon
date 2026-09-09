@@ -1,0 +1,31 @@
+# Personal collection, reports, browser profiles and generated caches
+data/
+report/
+teamdata/
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.pytest_cache/
+.venv/
+*.log
+*.stale
+*.zip
+!LoadMonitor24/python/python311.zip
+!LoadMonitor25/python/python311.zip
+# Embedded Python extension modules are runtime dependencies, not bytecode caches.
+!LoadMonitor24/python/*.pyd
+!LoadMonitor25/python/*.pyd
+
+# Local settings: keep the packaged default as the reproducible template.
+LoadMonitor24/config/*
+!LoadMonitor24/config/config.default.json
+!LoadMonitor24/config/agentic_tasks.json
+LoadMonitor25/config/*
+!LoadMonitor25/config/config.default.json
+!LoadMonitor25/config/agentic_tasks.json
+.codex/.state/
+.env
+.env.*
+
+# Local verification output contains machine paths.
+verification/

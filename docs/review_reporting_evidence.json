@@ -1,0 +1,94 @@
+{
+  "scope": "AST-isolated original functions, TEMP synthetic files only; no app, server, collection, AI or upload",
+  "temp": "C:\\Users\\User\\AppData\\Local\\Temp\\lm25-report-review-9jnlkf4w",
+  "period_and_snapshot": {
+    "row_file": "mm_rows_20260801-20260831.csv",
+    "rows_mm": 1.0,
+    "agentic": [
+      {
+        "owner": "MemberA",
+        "match": [
+          {
+            "task": "TaskA",
+            "fit": 80,
+            "load_mm": 1.0,
+            "work": []
+          }
+        ],
+        "new": [],
+        "misassigned": [],
+        "tag": "20260801-20260831",
+        "file": "agentic_20260801-20260831.json",
+        "other_period": true
+      }
+    ],
+    "html_flow_count": 1,
+    "html_flow_mm": 5.0,
+    "html_stub_accepted": true
+  },
+  "ax_semantics": {
+    "same_work_10mm_two_steps": 5.0,
+    "same_work_10mm_one_step_split_into_three": 7.5,
+    "duration_fields_used": false
+  },
+  "cohort": {
+    "two_incompatible_members_cfg_mismatch": [],
+    "coverage_missing_unreliable": false,
+    "zero_official_mm_rows_scale": 1.0
+  },
+  "owner_collisions": {
+    "a.b": "a_b",
+    "a_b": "a_b",
+    "long1": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "long2": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+  },
+  "partial_folder_write": {
+    "ok": false,
+    "failed": 1,
+    "a": "new-a",
+    "b": "old-b",
+    "member_total_mm": 1,
+    "pending_kept": true
+  },
+  "board_secondary_code": {
+    "assigned_codes": [
+      "CodeA",
+      "CodeB"
+    ],
+    "returned_codes": [
+      "CodeA"
+    ],
+    "total_mm": 1.0,
+    "visible_split_sum": 0.5
+  },
+  "sources": [
+    {
+      "path": "LoadMonitor25/aggregate.py",
+      "sha256": "40ae30b9991428a3c763fb3e8901591414e52ff8d247190228d607d364d7aeee"
+    },
+    {
+      "path": "LoadMonitor25/team_report.py",
+      "sha256": "3467b774bee9e13400b9904c76d54fcb5aa1d23ae61906601612f90f9173630c"
+    },
+    {
+      "path": "LoadMonitor25/core/owner.py",
+      "sha256": "4452e0909629b4b93017beea3fb8cb4f217620d9995eafaefa17d26a8c5d049d"
+    },
+    {
+      "path": "LoadMonitor25/teamup.py",
+      "sha256": "b2462410e045f4963cc3d0e1b1cee8138dce6f33ee8a0e2ad6746b31e8ce52bc"
+    },
+    {
+      "path": "LoadMonitor25/core/board.py",
+      "sha256": "b5a59f1262d3b5f497554c2d475e72a75aa960a6defe01c4f86f54939611f079"
+    }
+  ],
+  "reproduction": {
+    "script": "C:\\Users\\User\\AppData\\Local\\Temp\\lm25-report-review-9jnlkf4w\\reproduce_reporting.py",
+    "script_sha256": "24dbae202311e7857a9f9884a1acece9376a29ce04d5c7c80cdb6506ddde40a4",
+    "command": "python -B \"C:\\Users\\User\\AppData\\Local\\Temp\\lm25-report-review-9jnlkf4w\\reproduce_reporting.py\" \"D:/배포/_gpt\"",
+    "provenance": "Original observations were produced by Python stdin. This preserved equivalent script was rerun and all six observation sections matched.",
+    "replay_temp": "C:\\Users\\User\\AppData\\Local\\Temp\\lm25-report-review-dvrozwtk",
+    "all_observation_sections_matched": true
+  }
+}

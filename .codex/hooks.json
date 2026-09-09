@@ -1,0 +1,30 @@
+{
+  "description": "LM25 edit feedback and completion checks; source-only, no collectors or network.",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "timeout": 180,
+            "command": "python -B -c \"import pathlib,runpy,subprocess,sys; r=pathlib.Path(subprocess.check_output(['git','rev-parse','--show-toplevel'],text=True,encoding='utf-8').strip()); sys.path.insert(0,str(r/'scripts')); runpy.run_path(str(r/'scripts'/'codex_hook.py'),run_name='__main__')\"",
+            "type": "command",
+            "statusMessage": "LM25 lint"
+          }
+        ],
+        "matcher": "^(Bash|apply_patch|Edit|Write)$"
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "timeout": 180,
+            "command": "python -B -c \"import pathlib,runpy,subprocess,sys; r=pathlib.Path(subprocess.check_output(['git','rev-parse','--show-toplevel'],text=True,encoding='utf-8').strip()); sys.path.insert(0,str(r/'scripts')); runpy.run_path(str(r/'scripts'/'codex_hook.py'),run_name='__main__')\"",
+            "type": "command",
+            "statusMessage": "LM25 full validation"
+          }
+        ]
+      }
+    ]
+  }
+}

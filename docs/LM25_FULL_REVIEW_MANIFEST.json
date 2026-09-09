@@ -1,0 +1,360 @@
+{
+  "date": "2026-09-09",
+  "purpose": "Product source snapshot for the full design review; excludes private config/runtime/data/reports.",
+  "source_files": [
+    {
+      "path": "LoadMonitor25/FILES.txt",
+      "sha256": "d29fc9c1ffe81c84160cb23b8ea930830843c5f4b4f886d98319dc3667329155"
+    },
+    {
+      "path": "LoadMonitor25/LoadMonitor25-UI.bat",
+      "sha256": "8e5c0305d5605dc3a7418d638c546b567cb5c474a91ac903a408bb8ec8b11a64"
+    },
+    {
+      "path": "LoadMonitor25/LoadMonitor25-\uc0d8\ud50c\ub7ec\ub4f1\ub85d.bat",
+      "sha256": "004bb5e38161395260f633b904abcf0a39c61982930f95166d510835e0e9cd9d"
+    },
+    {
+      "path": "LoadMonitor25/LoadMonitor25-\uc218\uc9d1\uc9c4\ub2e8.bat",
+      "sha256": "780cd4035264562b4293eead9a8152e90ac8499e26224f2b9f6478e3b4b3555b"
+    },
+    {
+      "path": "LoadMonitor25/LoadMonitor25-\uc774\ub3d9\uc900\ube44.bat",
+      "sha256": "e7a31330bf213f4844dfacb1ad1782623550267580f255e40ac26983794615bc"
+    },
+    {
+      "path": "LoadMonitor25/LoadMonitor25-\ud300\uc11c\ubc84.bat",
+      "sha256": "03ed86f528c6fa146a2b4a4da7a745061c93ecb9eb0c5306bfa8f99788d83f92"
+    },
+    {
+      "path": "LoadMonitor25/LoadMonitor25-\ud300\uc5c5\ub85c\ub4dc.bat",
+      "sha256": "c8255fc004b8ee1ee4501e230a5ca7d65e9d981f4cdac61966d9911e49c7fdb9"
+    },
+    {
+      "path": "LoadMonitor25/LoadMonitor25-\ud300\ucde8\ud569.bat",
+      "sha256": "c6b2190092641e83ee7f8d16c77b484bc2bf2365893bf84b89dda1d6ee66017f"
+    },
+    {
+      "path": "LoadMonitor25/LoadMonitor25.bat",
+      "sha256": "a89921f8c46e278046ae6378050052aa90a2fe1f7bdd80f59da504fa7ce1509a"
+    },
+    {
+      "path": "LoadMonitor25/agentic.py",
+      "sha256": "c4f64f396a8bc5c12620cea45f4431b61b6a931ba616fef80e2ec3257ba19e70"
+    },
+    {
+      "path": "LoadMonitor25/aggregate.py",
+      "sha256": "40ae30b9991428a3c763fb3e8901591414e52ff8d247190228d607d364d7aeee"
+    },
+    {
+      "path": "LoadMonitor25/check.py",
+      "sha256": "6de7baa024c7c63bab51e3875c5e1dc4bdca12c69faa900e4569f67f7ad7ab26"
+    },
+    {
+      "path": "LoadMonitor25/collect/Add-WorkLog.ps1",
+      "sha256": "ccd3b2d6fb581b61c4c65143079a1d55f2e9278e73ccfe490dffd49ffb0d1717"
+    },
+    {
+      "path": "LoadMonitor25/collect/Diagnose-Collectors.ps1",
+      "sha256": "6315565b55a3300a4d57267503c233edd0ad73284946780fdc232bfddd8e5b96"
+    },
+    {
+      "path": "LoadMonitor25/collect/Get-FileActivity.ps1",
+      "sha256": "290f5d92e93c8c4238a84795231b434a6fb42f39423d59bbb9fa89d3a7b6fc43"
+    },
+    {
+      "path": "LoadMonitor25/collect/Get-GitActivity.py",
+      "sha256": "ac1248d39eacc347d02146db4a53559c965590a76a5577cca1531adc47729fed"
+    },
+    {
+      "path": "LoadMonitor25/collect/Get-LicenseUsage.ps1",
+      "sha256": "31010dd3377309311987b891e4c60f5a77207f5f2517c91e58fc87ee8ee0baf7"
+    },
+    {
+      "path": "LoadMonitor25/collect/Get-MailViaCopilot.py",
+      "sha256": "9c2b8d8719111fa4f175587cad95280de155bd019e23df70f5c03fe437200f9c"
+    },
+    {
+      "path": "LoadMonitor25/collect/Get-OutlookData.ps1",
+      "sha256": "c80958657307aaa3fb4e5cc358a60ac6a725c1f17affcbe92d439d00a80aeaa4"
+    },
+    {
+      "path": "LoadMonitor25/collect/Get-OutlookIndex.ps1",
+      "sha256": "42d095916ecb06100d07bed2879ce99cf0452396ce18c182e1600577ae094a8a"
+    },
+    {
+      "path": "LoadMonitor25/collect/Get-OutlookWeb.py",
+      "sha256": "3cfe83a470c8b901d5c59b1b1946a3b139ddcc6f967f0ddde03b3ba02285a53c"
+    },
+    {
+      "path": "LoadMonitor25/collect/Get-PcOnHints.py",
+      "sha256": "216d8484dcaea0c018bb38536aab2ef542549130c541028ba93b71a537ce31dc"
+    },
+    {
+      "path": "LoadMonitor25/collect/Get-PcOnHistory.ps1",
+      "sha256": "fc98a38780e46e728acbd6743d97c06f7d1055c05ab450c192fa947afab0d763"
+    },
+    {
+      "path": "LoadMonitor25/collect/Get-RecentFiles.ps1",
+      "sha256": "638c7fd61aa61d857d23379a12965b117fd29db784e35b7bdd056e35c6825f94"
+    },
+    {
+      "path": "LoadMonitor25/collect/Get-TeamsChats.py",
+      "sha256": "485fd313c9d3c8c8209b9fe06a86b23fdca2b5561f220c859bc0dc0e31d47edc"
+    },
+    {
+      "path": "LoadMonitor25/collect/Get-TeamsViaCopilot.py",
+      "sha256": "d42bb671693759a4caf206c709245efc54dad1630fa39b9bd5ffd604c277b551"
+    },
+    {
+      "path": "LoadMonitor25/collect/Get-TeamsWeb.py",
+      "sha256": "ff0fc4c7448efdf849a5bf6d3e00fb21d1b8a1f139afc9093ffa8d799e1081c2"
+    },
+    {
+      "path": "LoadMonitor25/collect/Get-TeamsWindow.ps1",
+      "sha256": "cf9f2c876e3541fb019dabcf43a5ec9de89ee683959658b826fb448b596450d5"
+    },
+    {
+      "path": "LoadMonitor25/collect/Register-Samplers.ps1",
+      "sha256": "99a5fe1eb1b46a4ffce92ba3d3831e543eaecb509b2982a30b22172be1b03731"
+    },
+    {
+      "path": "LoadMonitor25/collect/Start-ActivitySampler.ps1",
+      "sha256": "b9ad413790a26e99275a227eb18a226f3eed083d6851ce9686fb651831b6f6cb"
+    },
+    {
+      "path": "LoadMonitor25/collect/Start-TeamsSampler.ps1",
+      "sha256": "598637cb55ff88d002a81818f2e683b4f463eab2702976f3772dd60cfe80a644"
+    },
+    {
+      "path": "LoadMonitor25/config/agentic_tasks.json",
+      "sha256": "4413d76a0374c9d55addba03d0c6d49631c514fabe6e10d71f10ac1cb7c45fa7"
+    },
+    {
+      "path": "LoadMonitor25/config/config.default.json",
+      "sha256": "c2b0e067eda9badea1290853a07e91f4dfc235dd4726acc1a511b1530ee868ed"
+    },
+    {
+      "path": "LoadMonitor25/core/board.py",
+      "sha256": "b5a59f1262d3b5f497554c2d475e72a75aa960a6defe01c4f86f54939611f079"
+    },
+    {
+      "path": "LoadMonitor25/core/details.py",
+      "sha256": "291f2b79f48d595bfd2bd6fb12ab7e4bb260d61418960e53a1c11cbc0bb788c1"
+    },
+    {
+      "path": "LoadMonitor25/core/extract.py",
+      "sha256": "26193db035f118314b1495973ced8604cc23d26b64f8582d1dfe08d18c1f088d"
+    },
+    {
+      "path": "LoadMonitor25/core/owner.py",
+      "sha256": "4452e0909629b4b93017beea3fb8cb4f217620d9995eafaefa17d26a8c5d049d"
+    },
+    {
+      "path": "LoadMonitor25/core/programs.py",
+      "sha256": "4dbf99811a5225f8a7de13b29d5ee6a53dfa80fe27b8a273339e9877c6292d5c"
+    },
+    {
+      "path": "LoadMonitor25/core/progress.py",
+      "sha256": "4a6db13c140b82b2aa88717637b39b0d9b40569ab5b0d6a190ca9e8593cd1cfe"
+    },
+    {
+      "path": "LoadMonitor25/core/projmap.py",
+      "sha256": "4db043e6ee0ffca9181df7ad6393de3f5d1e095d0349a4087a7c44870fbec1e3"
+    },
+    {
+      "path": "LoadMonitor25/export.py",
+      "sha256": "0129521f6b8bb72325163e60e20b3ede10f80fd7afc7308f0ea4b26d7a3f3914"
+    },
+    {
+      "path": "LoadMonitor25/flow.py",
+      "sha256": "5821809f768bd9a3153126b2b0d6de31e496f33f309109b0a449ed4feaa8bc86"
+    },
+    {
+      "path": "LoadMonitor25/freeze.py",
+      "sha256": "081d1e0ff8ee9040f60fd03fb15926b6f778d7692329ee6e3127d373b03a17d6"
+    },
+    {
+      "path": "LoadMonitor25/judge.py",
+      "sha256": "df1d37b7502aefe60155dc879cbccd24e478be0daab03159d45200c69ae657b2"
+    },
+    {
+      "path": "LoadMonitor25/mine.py",
+      "sha256": "a827341fd9799ced4cc639df3053837d6b8b10e057fa23f5e8cbe5ecba46437f"
+    },
+    {
+      "path": "LoadMonitor25/refine.py",
+      "sha256": "0afc8e7d771d1a6a43b8cfeeede222df8a95cdcf38f6cb4b8906aacf85c2517c"
+    },
+    {
+      "path": "LoadMonitor25/report_out.py",
+      "sha256": "7ae50f6e3e068d65e2b488411c0ae78bdde7c0f0345ddbb1d5f9aafcf00f209b"
+    },
+    {
+      "path": "LoadMonitor25/retag.py",
+      "sha256": "b64cbd39237714c22a5c9d536eafa3ef22b3f0ccceb8c8fe9d724fdc7b54acdc"
+    },
+    {
+      "path": "LoadMonitor25/ruff.toml",
+      "sha256": "87365e71cda55a9964712e3eb173253799ba0c40e899edea55167e2a20727b2a"
+    },
+    {
+      "path": "LoadMonitor25/run.py",
+      "sha256": "404d11a34ca4764c780d886e9f169cbcdf468e1dc3914fa8ea80dcb3f02616b1"
+    },
+    {
+      "path": "LoadMonitor25/team_refine.py",
+      "sha256": "5f4d4fe67acaa4d8e981b1d06bba197b4a8464ef5f3200bfc22680eee6db8bc1"
+    },
+    {
+      "path": "LoadMonitor25/team_report.py",
+      "sha256": "3467b774bee9e13400b9904c76d54fcb5aa1d23ae61906601612f90f9173630c"
+    },
+    {
+      "path": "LoadMonitor25/teamserver.py",
+      "sha256": "46c58b969eca393ca0bc7c9344e10b698873f5e661e63dd964692e2e7d228112"
+    },
+    {
+      "path": "LoadMonitor25/teamup.py",
+      "sha256": "b2462410e045f4963cc3d0e1b1cee8138dce6f33ee8a0e2ad6746b31e8ce52bc"
+    },
+    {
+      "path": "LoadMonitor25/tools/Get-EmbeddedPython.ps1",
+      "sha256": "da7bcf46fc8c89d5948b39029490783e8b585a0cea5f2f474291656b08697128"
+    },
+    {
+      "path": "LoadMonitor25/tools/Make-Package.ps1",
+      "sha256": "85beec347aa334b34ad207d7b38672ce91d88b8dbd5cd7c5f2d2fb9446df11a2"
+    },
+    {
+      "path": "LoadMonitor25/tools/Prepare-Move.ps1",
+      "sha256": "c9ffe45b5ef12edb68369006a07d09fde947b35b26d8e07ba6607996ba6f98df"
+    },
+    {
+      "path": "LoadMonitor25/tools/check_page_js.py",
+      "sha256": "7d5d144b57ca9b523ab017a7ff9200ae3ae5993ea7f40f4c89ee9e099a114058"
+    },
+    {
+      "path": "LoadMonitor25/tools/copilot_auto.py",
+      "sha256": "b9de5bd4e8ba2338747c8265aa4001bd088149734752a5437611716cc708b152"
+    },
+    {
+      "path": "LoadMonitor25/tools/lint.ps1",
+      "sha256": "ef9bb76c53cf400b37eda4f0e62e187bde9fcd0aeb29498f12e12e4d4d79d9f5"
+    },
+    {
+      "path": "LoadMonitor25/tools/update_files.py",
+      "sha256": "f2bb5088cde4dd4379ee90976831235d28707bacd6e988c4927faad7266a962b"
+    },
+    {
+      "path": "LoadMonitor25/ui/app.py",
+      "sha256": "0a1873b1becc75682b98da1598b5a53b84478865349357649e234e360dc69e07"
+    },
+    {
+      "path": "LoadMonitor25/\uc790\uac00\uc810\uac80.py",
+      "sha256": "b61b7131f21881199ab5e61b8c8677d1b653c138f4c0e8c3ad952203eb0ec3cd"
+    }
+  ],
+  "evidence_source_checks": [
+    {
+      "evidence": "review_runtime_evidence.json",
+      "path": "LoadMonitor25/run.py",
+      "match": true
+    },
+    {
+      "evidence": "review_runtime_evidence.json",
+      "path": "LoadMonitor25/ui/app.py",
+      "match": true
+    },
+    {
+      "evidence": "review_runtime_evidence.json",
+      "path": "LoadMonitor25/ui/app.py",
+      "match": true
+    },
+    {
+      "evidence": "review_runtime_evidence.json",
+      "path": "LoadMonitor25/teamserver.py",
+      "match": true
+    },
+    {
+      "evidence": "review_workflow_evidence.json",
+      "path": "LoadMonitor25/core/details.py",
+      "match": true
+    },
+    {
+      "evidence": "review_workflow_evidence.json",
+      "path": "LoadMonitor25/refine.py",
+      "match": true
+    },
+    {
+      "evidence": "review_workflow_evidence.json",
+      "path": "LoadMonitor25/judge.py",
+      "match": true
+    },
+    {
+      "evidence": "review_workflow_evidence.json",
+      "path": "LoadMonitor25/core/details.py",
+      "match": true
+    },
+    {
+      "evidence": "review_workflow_evidence.json",
+      "path": "LoadMonitor25/refine.py",
+      "match": true
+    },
+    {
+      "evidence": "review_workflow_evidence.json",
+      "path": "LoadMonitor25/core/details.py",
+      "match": true
+    },
+    {
+      "evidence": "review_workflow_evidence.json",
+      "path": "LoadMonitor25/agentic.py",
+      "match": true
+    },
+    {
+      "evidence": "review_workflow_evidence.json",
+      "path": "LoadMonitor25/core/details.py",
+      "match": true
+    },
+    {
+      "evidence": "review_workflow_evidence.json",
+      "path": "LoadMonitor25/refine.py",
+      "match": true
+    },
+    {
+      "evidence": "review_workflow_evidence.json",
+      "path": "LoadMonitor25/refine.py",
+      "match": true
+    },
+    {
+      "evidence": "review_workflow_evidence.json",
+      "path": "LoadMonitor25/agentic.py",
+      "match": true
+    },
+    {
+      "evidence": "review_reporting_evidence.json",
+      "path": "LoadMonitor25/aggregate.py",
+      "match": true
+    },
+    {
+      "evidence": "review_reporting_evidence.json",
+      "path": "LoadMonitor25/team_report.py",
+      "match": true
+    },
+    {
+      "evidence": "review_reporting_evidence.json",
+      "path": "LoadMonitor25/core/owner.py",
+      "match": true
+    },
+    {
+      "evidence": "review_reporting_evidence.json",
+      "path": "LoadMonitor25/teamup.py",
+      "match": true
+    },
+    {
+      "evidence": "review_reporting_evidence.json",
+      "path": "LoadMonitor25/core/board.py",
+      "match": true
+    }
+  ]
+}

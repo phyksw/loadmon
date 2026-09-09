@@ -1,0 +1,128 @@
+{
+  "unattended_solver": {
+    "no_human_hours": 4.0,
+    "with_one_unrelated_active_signal_at_22_hours": 11.0,
+    "no_human_stat": {
+      "nights": 1,
+      "capped": 1,
+      "unlocked": 0
+    },
+    "single_signal_stat": {
+      "nights": 1,
+      "capped": 0,
+      "unlocked": 1
+    }
+  },
+  "private_activity": {
+    "signals": 1,
+    "excluded": {
+      "개인정보필터": 1,
+      "개인정보필터(개인)": 1
+    },
+    "retained_hours": {
+      "2026-09-07": 1.5
+    },
+    "dropped_h": 0.0,
+    "business_ground_truth_h": 0.5
+  },
+  "coverage_and_absence": {
+    "coverage": {
+      "grade": "reliable",
+      "reasons": [],
+      "pc_weekday_ratio": 0.4
+    },
+    "sampler_minutes": 1,
+    "days_requested": 5,
+    "hours": {
+      "2026-09-07": 6.83
+    },
+    "inferred_absence": {
+      "2026-09-09": 1.0,
+      "2026-09-10": 1.0,
+      "2026-09-11": 1.0
+    },
+    "mm_inference": [
+      {
+        "2026-09": {
+          "worked": 6.8,
+          "workdays": 16,
+          "covered": 2.0,
+          "absent": 0.0,
+          "capacity_h": 128.0,
+          "avail_mm": 0.125,
+          "mm": 0.053,
+          "load_pct": 42.4
+        }
+      },
+      0.053,
+      0.125
+    ],
+    "mm_without_inference": [
+      {
+        "2026-09": {
+          "worked": 6.8,
+          "workdays": 19,
+          "covered": 5.0,
+          "absent": 0.0,
+          "capacity_h": 152.0,
+          "avail_mm": 0.263,
+          "mm": 0.045,
+          "load_pct": 17.1
+        }
+      },
+      0.045,
+      0.263
+    ]
+  },
+  "manual_disjoint": {
+    "actual_disjoint_hours": 8,
+    "reported_hours": {
+      "2026-09-07": 4.0
+    },
+    "manual_increment_h": 0.0
+  },
+  "weight_sensitivity": {
+    "base": [
+      {
+        "project": "A",
+        "mm": 0.5
+      },
+      {
+        "project": "B",
+        "mm": 0.5
+      }
+    ],
+    "same_total_more_A_signals": [
+      {
+        "project": "A",
+        "mm": 0.667
+      },
+      {
+        "project": "B",
+        "mm": 0.333
+      }
+    ]
+  },
+  "validation_scope": "TEMP source copies plus synthetic CSV; no collector/main/network/private config/data executed or accessed",
+  "temp_dir": "C:\\Users\\User\\AppData\\Local\\Temp\\lm25_measurement_review_mn5wbs7v",
+  "mail_period_leakage": {
+    "in_period_rows_unchanged": 1,
+    "before_weight": 1.0,
+    "before_source": "메일(수신)",
+    "after_adding_4_out_of_period_rows_weight": 0.2,
+    "after_source": "메일(수신전용)"
+  },
+  "multi_pc_positive": {
+    "first_span_h": 3,
+    "second_span_h": 3,
+    "overlap_h": 1,
+    "union_h": 5.0,
+    "expected_union_h": 5
+  },
+  "overlapping_meetings_positive": {
+    "two_meetings_2h_each": 4,
+    "overlap_h": 1,
+    "reported_h": 3.0,
+    "expected_union_h": 3
+  }
+}

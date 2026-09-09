@@ -1,0 +1,188 @@
+{
+  "schema_version": 1,
+  "project": "LoadMonitor25",
+  "generated_utc": "2026-09-09T13:14:39+00:00",
+  "purpose": "Reproduce review findings; observed values are not desired regression expectations.",
+  "execution": {
+    "command": "python -B scripts/review_probes.py",
+    "mode": "selected AST definitions with synthetic in-memory inputs",
+    "application_module_imported": false,
+    "application_entry_point_executed": false,
+    "user_data_or_config_read": false,
+    "network_used": false,
+    "files_written_by_probe": false,
+    "stubs": [
+      "details exposes only the extracted _f",
+      "workflow_unit returns \ub2f4\ub2f9\uc5c5\ubb34"
+    ]
+  },
+  "sources": [
+    {
+      "path": "LoadMonitor25/core/details.py",
+      "sha256": "291f2b79f48d595bfd2bd6fb12ab7e4bb260d61418960e53a1c11cbc0bb788c1",
+      "definitions": [
+        "_f",
+        "fold"
+      ]
+    },
+    {
+      "path": "LoadMonitor25/agentic.py",
+      "sha256": "c4f64f396a8bc5c12620cea45f4431b61b6a931ba616fef80e2ec3257ba19e70",
+      "definitions": [
+        "MAX_WORK",
+        "_MARK_RE",
+        "_clean_list",
+        "_placeholder",
+        "_row_index",
+        "find_rows",
+        "recalc_mm"
+      ]
+    },
+    {
+      "path": "LoadMonitor25/flow.py",
+      "sha256": "5821809f768bd9a3153126b2b0d6de31e496f33f309109b0a449ed4feaa8bc86",
+      "definitions": [
+        "AGENT_OK",
+        "KEY_JOIN",
+        "MAX_BRANCHES",
+        "_DASH_TAIL",
+        "_PAREN_TAIL",
+        "_SEP",
+        "_fold_sep",
+        "_norm_model",
+        "_resolve_key",
+        "_strip_tails",
+        "_tail_note",
+        "_uniq_map",
+        "sanitize_flows"
+      ]
+    }
+  ],
+  "probes": [
+    {
+      "id": "ambiguous_detail_across_projects",
+      "certainty": "confirmed function behavior; field frequency unmeasured",
+      "input": {
+        "rows": [
+          {
+            "Level 2": "project A",
+            "Level 3": "design review",
+            "mm": 0.2
+          },
+          {
+            "Level 2": "project B",
+            "Level 3": "design review",
+            "mm": 0.8
+          }
+        ],
+        "work": [
+          "design review"
+        ]
+      },
+      "observed": {
+        "load_mm": 1.0,
+        "load_mm_split": 1.0,
+        "evidence_rows": 2,
+        "evidence_missing": []
+      },
+      "expected_improvement": {
+        "status": "ambiguous until a project-scoped row identifier is supplied",
+        "eligible_related_mm_while_ambiguous": 0.0,
+        "related_mm_if_project_A_is_explicitly_selected": 0.2
+      },
+      "issue_reproduced": true
+    },
+    {
+      "id": "related_mm_overlap_and_savings_semantics",
+      "certainty": "confirmed calculation; UI consumers were reviewed statically, not run here",
+      "input": {
+        "rows": [
+          {
+            "Level 2": "project A",
+            "Level 3": "design review",
+            "mm": 1.0
+          }
+        ],
+        "candidate_fits": [
+          10,
+          90
+        ]
+      },
+      "observed": {
+        "matches": [
+          {
+            "task": "candidate B",
+            "fit": 90,
+            "load_mm": 1.0,
+            "load_mm_split": 0.5
+          },
+          {
+            "task": "candidate A",
+            "fit": 10,
+            "load_mm": 1.0,
+            "load_mm_split": 0.5
+          }
+        ],
+        "raw_sum_mm": 2.0,
+        "split_sum_mm": 1.0
+      },
+      "expected_improvement": {
+        "unique_related_work_mm": 1.0,
+        "estimated_saved_mm": null,
+        "display_contract": "Name related workload explicitly; use one aggregation policy across reports.",
+        "savings_contract": "Do not infer saved hours from fit or equal overlap allocation."
+      },
+      "issue_reproduced": true
+    },
+    {
+      "id": "unverified_workflow_evidence_and_rating",
+      "certainty": "confirmed sanitizer behavior; no live AI request made",
+      "input": {
+        "materials": {
+          "project A / design review": {
+            "model": "project A",
+            "detail": "design review",
+            "mm": 0.2,
+            "signals": 5,
+            "evidence": [
+              "design checklist update"
+            ]
+          }
+        },
+        "raw_flows": [
+          {
+            "key": "project A / design review",
+            "steps": [
+              {
+                "name": "approve purchase",
+                "evidence": "a source that does not exist",
+                "agent": "UNSURE"
+              }
+            ]
+          }
+        ]
+      },
+      "observed": {
+        "accepted_flows": 1,
+        "accepted_steps": [
+          {
+            "order": 1,
+            "name": "approve purchase",
+            "desc": "",
+            "evidence": "a source that does not exist",
+            "cycle": "",
+            "agent": "\uc911",
+            "agent_how": ""
+          }
+        ]
+      },
+      "expected_improvement": {
+        "status": "needs_review",
+        "automation_grade": null,
+        "unverified_steps_excluded_from_automation_ranking": true,
+        "evidence_contract": "Validate each evidence identifier against the same project and period."
+      },
+      "issue_reproduced": true
+    }
+  ]
+}

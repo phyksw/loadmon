@@ -1,0 +1,3 @@
+# Preserve package bytes, including CP949 BAT and BOM/CRLF PowerShell files.
+* -text
+

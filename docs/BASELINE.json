@@ -1,0 +1,608 @@
+{
+  "prepared_at": "2026-09-09T22:03:54.1537906+09:00",
+  "source_archive": "D:\\배포\\LoadMonitor24_풀패키지_20260909_172407.zip",
+  "archive_bytes": 12215307,
+  "archive_sha256": "2db12eee37365904d1a5228c1dda30740ba65f119d8253885e1a87aa59ec020f",
+  "project_root": "D:\\배포\\_gpt",
+  "extracted_files": 101,
+  "extraction_verified": true,
+  "package_source_modified": false,
+  "files": [
+    {
+      "path": "LoadMonitor24/agentic.py",
+      "bytes": 41104,
+      "sha256": "d18ed9fba360a2a995049e2d74c404af74db1f47221ec4c195ba9db747951cdd"
+    },
+    {
+      "path": "LoadMonitor24/aggregate.py",
+      "bytes": 50107,
+      "sha256": "40ae30b9991428a3c763fb3e8901591414e52ff8d247190228d607d364d7aeee"
+    },
+    {
+      "path": "LoadMonitor24/check.py",
+      "bytes": 2629,
+      "sha256": "6de7baa024c7c63bab51e3875c5e1dc4bdca12c69faa900e4569f67f7ad7ab26"
+    },
+    {
+      "path": "LoadMonitor24/export.py",
+      "bytes": 8906,
+      "sha256": "0129521f6b8bb72325163e60e20b3ede10f80fd7afc7308f0ea4b26d7a3f3914"
+    },
+    {
+      "path": "LoadMonitor24/FILES.txt",
+      "bytes": 5107,
+      "sha256": "7e749436ee060430df236e6efef8205687dbb53b143bd3c8bfd9adbc2d7b81e3"
+    },
+    {
+      "path": "LoadMonitor24/flow.py",
+      "bytes": 79646,
+      "sha256": "c62ea1e9bef2decb554480a779d651bc610c39fe9b9bd66e4069c72a753b9f7c"
+    },
+    {
+      "path": "LoadMonitor24/freeze.py",
+      "bytes": 50732,
+      "sha256": "e1376050e4184fc18512787a2d1ff0d2c15b1aca709204ffaf533a45f4e0e54c"
+    },
+    {
+      "path": "LoadMonitor24/judge.py",
+      "bytes": 92215,
+      "sha256": "df1d37b7502aefe60155dc879cbccd24e478be0daab03159d45200c69ae657b2"
+    },
+    {
+      "path": "LoadMonitor24/LoadMonitor24-UI.bat",
+      "bytes": 2444,
+      "sha256": "f4c00ac2bde7a7e5a20b54ea206b1f9b157fc5a32aabf09099071fb94ec862c9"
+    },
+    {
+      "path": "LoadMonitor24/LoadMonitor24-샘플러등록.bat",
+      "bytes": 868,
+      "sha256": "3c5d1d32f136250f6a56e09b0f72879dea4ac6cb8057aed4dbbdc6cda8133c49"
+    },
+    {
+      "path": "LoadMonitor24/LoadMonitor24-수집진단.bat",
+      "bytes": 849,
+      "sha256": "3ae8eb3f57101e467eed73b2eee7885326589ce0d399c3b6d5fb966d73d3bd0e"
+    },
+    {
+      "path": "LoadMonitor24/LoadMonitor24-이동준비.bat",
+      "bytes": 1312,
+      "sha256": "095e1349132e5633f139d1fcaaa0254ecffda5edc8c0a786d75dc0a564a11934"
+    },
+    {
+      "path": "LoadMonitor24/LoadMonitor24-팀서버.bat",
+      "bytes": 1612,
+      "sha256": "193cdd531819ee831029796bc6349802cb69c54c2b389ce32ec57fd3621d8502"
+    },
+    {
+      "path": "LoadMonitor24/LoadMonitor24-팀업로드.bat",
+      "bytes": 1713,
+      "sha256": "b5417dcf372418d968a2230d6d22aac729f372715fd6928c96f9e8c79588298d"
+    },
+    {
+      "path": "LoadMonitor24/LoadMonitor24-팀취합.bat",
+      "bytes": 1948,
+      "sha256": "b657313c1e6fda294fbc75093630efe58f9da6d74915bdc8800050f41c71e500"
+    },
+    {
+      "path": "LoadMonitor24/LoadMonitor24.bat",
+      "bytes": 3155,
+      "sha256": "a942c51d6334c420db6426b720113359f8ab015d28de6b654f2711cb4f2d7a89"
+    },
+    {
+      "path": "LoadMonitor24/mine.py",
+      "bytes": 17836,
+      "sha256": "a827341fd9799ced4cc639df3053837d6b8b10e057fa23f5e8cbe5ecba46437f"
+    },
+    {
+      "path": "LoadMonitor24/README.md",
+      "bytes": 96557,
+      "sha256": "b537bb2e6d9ce9e6e1ad19989cfcb02b79b58136257dcf0bfafcd6d88bee826e"
+    },
+    {
+      "path": "LoadMonitor24/refine.py",
+      "bytes": 42402,
+      "sha256": "0afc8e7d771d1a6a43b8cfeeede222df8a95cdcf38f6cb4b8906aacf85c2517c"
+    },
+    {
+      "path": "LoadMonitor24/report_out.py",
+      "bytes": 30599,
+      "sha256": "7ae50f6e3e068d65e2b488411c0ae78bdde7c0f0345ddbb1d5f9aafcf00f209b"
+    },
+    {
+      "path": "LoadMonitor24/retag.py",
+      "bytes": 6128,
+      "sha256": "b64cbd39237714c22a5c9d536eafa3ef22b3f0ccceb8c8fe9d724fdc7b54acdc"
+    },
+    {
+      "path": "LoadMonitor24/ruff.toml",
+      "bytes": 1004,
+      "sha256": "c49dfd2732d96614c87401114d7debff9202c8d3ea25550df2eaf9bb14c2770a"
+    },
+    {
+      "path": "LoadMonitor24/run.py",
+      "bytes": 51516,
+      "sha256": "bdfc2f8588490645a79779cfd8c779cda6361abd158305b5c59fc61793df1fe9"
+    },
+    {
+      "path": "LoadMonitor24/teamserver.py",
+      "bytes": 27808,
+      "sha256": "85b995a448ebc86632483a8fe6d1360e407202ad59d74153ec44443fae4fe81c"
+    },
+    {
+      "path": "LoadMonitor24/teamup.py",
+      "bytes": 39085,
+      "sha256": "fb15c2da97f70507d05b674ce1c4db16218b9e8d76263b5e2982b0b918cbb8f3"
+    },
+    {
+      "path": "LoadMonitor24/team_refine.py",
+      "bytes": 6565,
+      "sha256": "db97532ae5eb6ad53d728d3431e17f1e94ae9dc736a005ad6e8d332504e750dc"
+    },
+    {
+      "path": "LoadMonitor24/team_report.py",
+      "bytes": 160115,
+      "sha256": "aa810182e3ae4f0a1cb32c2246fdfb6891ba88d1c7b0aa91703301bcc09f3974"
+    },
+    {
+      "path": "LoadMonitor24/자가점검.py",
+      "bytes": 8785,
+      "sha256": "141c417062296f94d2319c717e8d4c86950a133ad193c50fb404277c0d5f780f"
+    },
+    {
+      "path": "LoadMonitor24/collect/Add-WorkLog.ps1",
+      "bytes": 1771,
+      "sha256": "ccd3b2d6fb581b61c4c65143079a1d55f2e9278e73ccfe490dffd49ffb0d1717"
+    },
+    {
+      "path": "LoadMonitor24/collect/Diagnose-Collectors.ps1",
+      "bytes": 37278,
+      "sha256": "22bfefd1469258942de2f7c58d7943aabc90eed93b1bb2c8733e138357ef7bab"
+    },
+    {
+      "path": "LoadMonitor24/collect/Get-FileActivity.ps1",
+      "bytes": 48656,
+      "sha256": "290f5d92e93c8c4238a84795231b434a6fb42f39423d59bbb9fa89d3a7b6fc43"
+    },
+    {
+      "path": "LoadMonitor24/collect/Get-GitActivity.py",
+      "bytes": 29162,
+      "sha256": "ac1248d39eacc347d02146db4a53559c965590a76a5577cca1531adc47729fed"
+    },
+    {
+      "path": "LoadMonitor24/collect/Get-LicenseUsage.ps1",
+      "bytes": 4093,
+      "sha256": "31010dd3377309311987b891e4c60f5a77207f5f2517c91e58fc87ee8ee0baf7"
+    },
+    {
+      "path": "LoadMonitor24/collect/Get-MailViaCopilot.py",
+      "bytes": 26575,
+      "sha256": "9c2b8d8719111fa4f175587cad95280de155bd019e23df70f5c03fe437200f9c"
+    },
+    {
+      "path": "LoadMonitor24/collect/Get-OutlookData.ps1",
+      "bytes": 49995,
+      "sha256": "c80958657307aaa3fb4e5cc358a60ac6a725c1f17affcbe92d439d00a80aeaa4"
+    },
+    {
+      "path": "LoadMonitor24/collect/Get-OutlookIndex.ps1",
+      "bytes": 21292,
+      "sha256": "42d095916ecb06100d07bed2879ce99cf0452396ce18c182e1600577ae094a8a"
+    },
+    {
+      "path": "LoadMonitor24/collect/Get-OutlookWeb.py",
+      "bytes": 40842,
+      "sha256": "3cfe83a470c8b901d5c59b1b1946a3b139ddcc6f967f0ddde03b3ba02285a53c"
+    },
+    {
+      "path": "LoadMonitor24/collect/Get-PcOnHints.py",
+      "bytes": 15076,
+      "sha256": "216d8484dcaea0c018bb38536aab2ef542549130c541028ba93b71a537ce31dc"
+    },
+    {
+      "path": "LoadMonitor24/collect/Get-PcOnHistory.ps1",
+      "bytes": 18791,
+      "sha256": "fc98a38780e46e728acbd6743d97c06f7d1055c05ab450c192fa947afab0d763"
+    },
+    {
+      "path": "LoadMonitor24/collect/Get-RecentFiles.ps1",
+      "bytes": 22050,
+      "sha256": "4c9c4f4dabf582f96b5b6694b0c46190dbd9c6be417c2d60476f3f8fb7169529"
+    },
+    {
+      "path": "LoadMonitor24/collect/Get-TeamsChats.py",
+      "bytes": 17754,
+      "sha256": "485fd313c9d3c8c8209b9fe06a86b23fdca2b5561f220c859bc0dc0e31d47edc"
+    },
+    {
+      "path": "LoadMonitor24/collect/Get-TeamsViaCopilot.py",
+      "bytes": 22177,
+      "sha256": "d42bb671693759a4caf206c709245efc54dad1630fa39b9bd5ffd604c277b551"
+    },
+    {
+      "path": "LoadMonitor24/collect/Get-TeamsWeb.py",
+      "bytes": 32508,
+      "sha256": "ff0fc4c7448efdf849a5bf6d3e00fb21d1b8a1f139afc9093ffa8d799e1081c2"
+    },
+    {
+      "path": "LoadMonitor24/collect/Get-TeamsWindow.ps1",
+      "bytes": 36106,
+      "sha256": "cf9f2c876e3541fb019dabcf43a5ec9de89ee683959658b826fb448b596450d5"
+    },
+    {
+      "path": "LoadMonitor24/collect/Register-Samplers.ps1",
+      "bytes": 11780,
+      "sha256": "6bfaf7c666478c9171ef458746a84cf442f558dbe13d8457b64f20ae6024e947"
+    },
+    {
+      "path": "LoadMonitor24/collect/Start-ActivitySampler.ps1",
+      "bytes": 8715,
+      "sha256": "d1b4dce76e44dd6b4a88c98b7b988b7236975b25fb543ee5ebfc900bc0da30b6"
+    },
+    {
+      "path": "LoadMonitor24/collect/Start-TeamsSampler.ps1",
+      "bytes": 2201,
+      "sha256": "598637cb55ff88d002a81818f2e683b4f463eab2702976f3772dd60cfe80a644"
+    },
+    {
+      "path": "LoadMonitor24/config/agentic_tasks.json",
+      "bytes": 4426,
+      "sha256": "4413d76a0374c9d55addba03d0c6d49631c514fabe6e10d71f10ac1cb7c45fa7"
+    },
+    {
+      "path": "LoadMonitor24/config/config.default.json",
+      "bytes": 36821,
+      "sha256": "8b24ec4da39aaf66977ebbf0ce532e5287c70135b5964ed589d97b41955c3979"
+    },
+    {
+      "path": "LoadMonitor24/config/config.json",
+      "bytes": 36821,
+      "sha256": "8b24ec4da39aaf66977ebbf0ce532e5287c70135b5964ed589d97b41955c3979"
+    },
+    {
+      "path": "LoadMonitor24/core/board.py",
+      "bytes": 13045,
+      "sha256": "b5a59f1262d3b5f497554c2d475e72a75aa960a6defe01c4f86f54939611f079"
+    },
+    {
+      "path": "LoadMonitor24/core/details.py",
+      "bytes": 68458,
+      "sha256": "566674232be256ab3472b259518234482f91c1a8d0256a4d9029a59632900f83"
+    },
+    {
+      "path": "LoadMonitor24/core/extract.py",
+      "bytes": 207457,
+      "sha256": "6c0a20d226a500c7b595facfd5c788e7a0e11bf34b382d0ba26fea978c3f2b9b"
+    },
+    {
+      "path": "LoadMonitor24/core/owner.py",
+      "bytes": 1488,
+      "sha256": "4452e0909629b4b93017beea3fb8cb4f217620d9995eafaefa17d26a8c5d049d"
+    },
+    {
+      "path": "LoadMonitor24/core/programs.py",
+      "bytes": 15778,
+      "sha256": "4dbf99811a5225f8a7de13b29d5ee6a53dfa80fe27b8a273339e9877c6292d5c"
+    },
+    {
+      "path": "LoadMonitor24/core/progress.py",
+      "bytes": 1129,
+      "sha256": "4a6db13c140b82b2aa88717637b39b0d9b40569ab5b0d6a190ca9e8593cd1cfe"
+    },
+    {
+      "path": "LoadMonitor24/core/projmap.py",
+      "bytes": 7133,
+      "sha256": "8445d2fcf554e54473be47120cb60b84a385e588505ad3d4f83cf6b9e036bb6b"
+    },
+    {
+      "path": "LoadMonitor24/docs/사용안내.html",
+      "bytes": 272444,
+      "sha256": "c08666a6cd689e3aea1ab747e3a356420108528172439f504ddc5006c7e7aa4e"
+    },
+    {
+      "path": "LoadMonitor24/docs/설정가이드.md",
+      "bytes": 62090,
+      "sha256": "f37053cfc8e9000499f1ad481ad009091f08347ceaa3bcc29d530e63ca7e5b16"
+    },
+    {
+      "path": "LoadMonitor24/python/libcrypto-3.dll",
+      "bytes": 5191960,
+      "sha256": "05fe080eab7fc535c51e10c1bd76a2f3e6217f9c91a25034774588881c3f99de"
+    },
+    {
+      "path": "LoadMonitor24/python/libffi-8.dll",
+      "bytes": 39696,
+      "sha256": "eff52743773eb550fcc6ce3efc37c85724502233b6b002a35496d828bd7b280a"
+    },
+    {
+      "path": "LoadMonitor24/python/libssl-3.dll",
+      "bytes": 787224,
+      "sha256": "2e9fbcd8f7fdc13a5179533239811456554f2b3aa2fb10e1b17be0df81c79006"
+    },
+    {
+      "path": "LoadMonitor24/python/LICENSE.txt",
+      "bytes": 36874,
+      "sha256": "e502c6b880ff58d614901495a9009c136539cd0b1e2a2abb8fc00b934c203419"
+    },
+    {
+      "path": "LoadMonitor24/python/pyexpat.pyd",
+      "bytes": 199448,
+      "sha256": "c7c7564f7f874fb660a46384980a2cf28bc3e245ca83628a197ccf861eab5560"
+    },
+    {
+      "path": "LoadMonitor24/python/python.cat",
+      "bytes": 643161,
+      "sha256": "aa9bcfe5c4d8d1285eeb997539899da49987640e4de2fe300d8c1422381cfa27"
+    },
+    {
+      "path": "LoadMonitor24/python/python.exe",
+      "bytes": 103192,
+      "sha256": "5f7b89a612c9b8af1d6456cdfcd1dbe5ca630849e79aebced9bee9a6694952ec"
+    },
+    {
+      "path": "LoadMonitor24/python/python3.dll",
+      "bytes": 67352,
+      "sha256": "db84bc052cfb121fe4db36242ba5f1d2c031b600ef5d8d752cf25b7c02b6bac6"
+    },
+    {
+      "path": "LoadMonitor24/python/python311.dll",
+      "bytes": 5800216,
+      "sha256": "0817a2a657a24c0d5fbb60df56960f42fc66b3039d522ec952dab83e2d869364"
+    },
+    {
+      "path": "LoadMonitor24/python/python311.zip",
+      "bytes": 4285636,
+      "sha256": "7d0f59c930e7d3d9352399ea3c95c0272489b3c09a8e95faaedfa8a23e20e5b1"
+    },
+    {
+      "path": "LoadMonitor24/python/python311._pth",
+      "bytes": 80,
+      "sha256": "2e49845005576acc75d1fa54ca0aa29589c2714499a4d8d8122cb342b14ca446"
+    },
+    {
+      "path": "LoadMonitor24/python/pythonw.exe",
+      "bytes": 101656,
+      "sha256": "d5355e1de2a5195dccb1ba524b146aa7705be71af18d876819756838251b37b3"
+    },
+    {
+      "path": "LoadMonitor24/python/select.pyd",
+      "bytes": 30488,
+      "sha256": "bae0974390945520eb99ab32486c6a964691f8f4a028ac408d98fa8fb0db7d90"
+    },
+    {
+      "path": "LoadMonitor24/python/sqlite3.dll",
+      "bytes": 1540888,
+      "sha256": "314bba62f4a1628b986afc94c09dc29cdaf08210eae469440fbf46bcdb86d3fd"
+    },
+    {
+      "path": "LoadMonitor24/python/unicodedata.pyd",
+      "bytes": 1140504,
+      "sha256": "37c68617fa02a2cadced17ef724e2d450ef12a8a37215da789a4679fde1c5c02"
+    },
+    {
+      "path": "LoadMonitor24/python/vcruntime140.dll",
+      "bytes": 119192,
+      "sha256": "4d292623516f65c80482081e62d5dadb759dc16e851de5db24c3cbb57b87db83"
+    },
+    {
+      "path": "LoadMonitor24/python/vcruntime140_1.dll",
+      "bytes": 49528,
+      "sha256": "a113f192195f245f17389e6ecbed8005990bcb2476ddad33f7c4c6c86327afe5"
+    },
+    {
+      "path": "LoadMonitor24/python/winsound.pyd",
+      "bytes": 31512,
+      "sha256": "b79c9bd9114b7f243f5a80ffd2de5c5942fc64ceec4a52a048bb4a07848b9239"
+    },
+    {
+      "path": "LoadMonitor24/python/_asyncio.pyd",
+      "bytes": 65304,
+      "sha256": "746bc8fa88282afe19dc60e426cc0a75bea3bd137cca06a0b57a30bd31459403"
+    },
+    {
+      "path": "LoadMonitor24/python/_bz2.pyd",
+      "bytes": 84760,
+      "sha256": "00b8ca9a338d2b47285c9e56d6d893db2a999b47216756f18439997fb80a56e3"
+    },
+    {
+      "path": "LoadMonitor24/python/_ctypes.pyd",
+      "bytes": 124696,
+      "sha256": "c148292328f0aab7863af82f54f613961e7cb95b7215f7a81cafaf45bd4c42b7"
+    },
+    {
+      "path": "LoadMonitor24/python/_decimal.pyd",
+      "bytes": 255768,
+      "sha256": "980a63f2b39cf16910f44384398e25f24482346a482addb00de42555b17d4278"
+    },
+    {
+      "path": "LoadMonitor24/python/_elementtree.pyd",
+      "bytes": 128792,
+      "sha256": "02e30b6a2bee5be5336e40a9c89575603051bde86f9c9cdc78b7fa7d9b7bd1f0"
+    },
+    {
+      "path": "LoadMonitor24/python/_hashlib.pyd",
+      "bytes": 65304,
+      "sha256": "87dd0c858620287454fd6d31d52b6a48eddbb2a08e09e8b2d9fdb0b92200d766"
+    },
+    {
+      "path": "LoadMonitor24/python/_lzma.pyd",
+      "bytes": 159512,
+      "sha256": "f5e01b516c2c23035f7703e23569dec26c5616c05a929b2580ae474a5c6722c5"
+    },
+    {
+      "path": "LoadMonitor24/python/_msi.pyd",
+      "bytes": 44824,
+      "sha256": "0f876c25188d1dde26eb852251439a6ec8edc1bc921be026f819eeb8686db2af"
+    },
+    {
+      "path": "LoadMonitor24/python/_multiprocessing.pyd",
+      "bytes": 34584,
+      "sha256": "975c1947798e3c39898c86675ca1eb68249f77361f41f172f9800275227213b9"
+    },
+    {
+      "path": "LoadMonitor24/python/_overlapped.pyd",
+      "bytes": 51480,
+      "sha256": "ca106e4dfdeafeabf9e98956d3d8d0cb73e109f1a96f1a7e35bc47dbd7c7e164"
+    },
+    {
+      "path": "LoadMonitor24/python/_queue.pyd",
+      "bytes": 32024,
+      "sha256": "3f8e7e6aa13b417acc78b63434fb1144e6319a010a9fc376c54d6e69b638fe4c"
+    },
+    {
+      "path": "LoadMonitor24/python/_socket.pyd",
+      "bytes": 79640,
+      "sha256": "a19e3c7c03ef1b5625790b1c9c42594909311ab6df540fbf43c6aa93300ab166"
+    },
+    {
+      "path": "LoadMonitor24/python/_sqlite3.pyd",
+      "bytes": 120600,
+      "sha256": "ff6a2a2f38b21b7784f97d604c99961d8c07ef455f7908110a4e893835d42b76"
+    },
+    {
+      "path": "LoadMonitor24/python/_ssl.pyd",
+      "bytes": 178456,
+      "sha256": "ba5388d6a6557d431e086734a3323621dc447f63ba299b0a815e5837cf869678"
+    },
+    {
+      "path": "LoadMonitor24/python/_uuid.pyd",
+      "bytes": 25368,
+      "sha256": "e6aa7f1637e211251c9d6f467203b2b6d85e5bc2d901699f2a55af637fa89250"
+    },
+    {
+      "path": "LoadMonitor24/python/_zoneinfo.pyd",
+      "bytes": 45848,
+      "sha256": "7e7b4157e401f8281fd85b68f2e21c828bf739c91416b2824dd22cb385eef819"
+    },
+    {
+      "path": "LoadMonitor24/tools/check_page_js.py",
+      "bytes": 8818,
+      "sha256": "7d5d144b57ca9b523ab017a7ff9200ae3ae5993ea7f40f4c89ee9e099a114058"
+    },
+    {
+      "path": "LoadMonitor24/tools/copilot_auto.py",
+      "bytes": 62703,
+      "sha256": "b9de5bd4e8ba2338747c8265aa4001bd088149734752a5437611716cc708b152"
+    },
+    {
+      "path": "LoadMonitor24/tools/Get-EmbeddedPython.ps1",
+      "bytes": 2472,
+      "sha256": "94f6852b1069252f8b4c1987430066015736fdc5611857977b198d13f8719a4d"
+    },
+    {
+      "path": "LoadMonitor24/tools/lint.ps1",
+      "bytes": 7914,
+      "sha256": "79d6bbfc689d08b977ccabcd8d70b898ed01ba7600e3ab909d7e7e3e886b1f2e"
+    },
+    {
+      "path": "LoadMonitor24/tools/Make-Package.ps1",
+      "bytes": 10733,
+      "sha256": "f7e498c93d38620ea6aa34c816e19c2428adb9ca2502e2ff6127d529a0c927da"
+    },
+    {
+      "path": "LoadMonitor24/tools/Prepare-Move.ps1",
+      "bytes": 22237,
+      "sha256": "ad82012508d595250db51784ca6fd40f474b56f266ef4b9c0a509238bc719616"
+    },
+    {
+      "path": "LoadMonitor24/tools/update_files.py",
+      "bytes": 4530,
+      "sha256": "47b82968338541f00d7dceb095a23a8f391f1857df929975947e4385065f4931"
+    },
+    {
+      "path": "LoadMonitor24/ui/app.py",
+      "bytes": 331362,
+      "sha256": "7540c166652332bba13f539698f83db31dfb6c146c1edb7d731e7b37991708e8"
+    }
+  ],
+  "existing_loadmon24_differences": [],
+  "reviewed_markdown": [
+    {
+      "path": "D:\\배포\\LoadMonitor17_20260822_2340\\LoadMonitor17\\README.md",
+      "sha256": "58758662fe7aaff69747d39ed85248d33d2c19b6c02c62aedee8a58336217d85"
+    },
+    {
+      "path": "D:\\배포\\LoadMonitor17_20260822_2340\\LoadMonitor17\\docs\\설정가이드.md",
+      "sha256": "175f17313343c0c50f3de9cbd23a3814e06dc399f450655838f0b0e92a974956"
+    },
+    {
+      "path": "D:\\배포\\loadmon22\\README.md",
+      "sha256": "b3f55d069e9a3c3b769e2c79addfc55dd51306164ec1ec0198fc24952e611e62"
+    },
+    {
+      "path": "D:\\배포\\loadmon22\\docs\\설정가이드.md",
+      "sha256": "11e0fd2e9b676102d3c9d54b7e3ddbad4772a3fe499310b9495439b091208f53"
+    },
+    {
+      "path": "D:\\배포\\loadmon22\\samples\\README.md",
+      "sha256": "40af2b4892e0663bb9e98814b20ce684de70a2e9db1bec25fb724027f714e575"
+    },
+    {
+      "path": "D:\\배포\\LoadMoitor_tool\\memory.md",
+      "sha256": "55870df8620868e681803fd4bca8802010b39da7872414e6c19a2aef72a466aa"
+    },
+    {
+      "path": "D:\\배포\\LoadMoitor_tool\\memory\\MEMORY.md",
+      "sha256": "0425a3f069a7f320ccfa43da7a4dfb84bb28cba32ad57007999917c4320381e3"
+    },
+    {
+      "path": "D:\\배포\\LoadMoitor_tool\\memory\\loadmonitor-test-isolation.md",
+      "sha256": "574e7b5454932d39fdf4a0708f2a29ce6dcdbbe46c169ec60dbb20a35c0a507d"
+    },
+    {
+      "path": "D:\\배포\\LoadMoitor_tool\\memory\\loadmonitor-refine-evidence.md",
+      "sha256": "75ca7b9111e2d07e2d2641db5ad583d0dcf4e8c0ed209a175f4bddea1c4f7b61"
+    },
+    {
+      "path": "D:\\배포\\LoadMoitor_tool\\memory\\loadmonitor-outlook-com.md",
+      "sha256": "0c60ea9b5ef9d3357b1c746f6a50ae64775cb084d17b094e5c8f1e9a7d7787d1"
+    },
+    {
+      "path": "D:\\배포\\LoadMoitor_tool\\memory\\loadmonitor-no-data-export.md",
+      "sha256": "3301e30697a331dedcbd2ca13c90a19cb34a240337f16db8c2efb8cdf021c3f6"
+    },
+    {
+      "path": "D:\\배포\\LoadMoitor_tool\\memory\\loadmonitor-lm15-baseline.md",
+      "sha256": "d0cc8311898078969714b691d08a3683fdababa543a6de4ed858d06fa46d8c41"
+    },
+    {
+      "path": "D:\\배포\\LoadMoitor_tool\\memory\\loadmonitor-copilot-auto.md",
+      "sha256": "be84b7cd1fd0f4385a6c3ce0dfc4f7e4e53a4c462cbf6dd55cd964ee974ee77a"
+    },
+    {
+      "path": "D:\\배포\\LoadMoitor_tool\\LoadMonitor18\\README.md",
+      "sha256": "2b35a49049c1403d5de1445cf5007736e090b82948f059b49cf977ae928e0d6a"
+    },
+    {
+      "path": "D:\\배포\\LoadMoitor_tool\\handover.md",
+      "sha256": "513b713dcddb8268b8f66b4efcf5c1a245ade2e22e510167df886ccaaf7cd7a6"
+    },
+    {
+      "path": "D:\\배포\\LoadMoitor_tool\\LoadMonitor18\\docs\\설정가이드.md",
+      "sha256": "f3e184b086b08076ad575e00a54aff7e6f848d074e43d8056946a9c60c180824"
+    },
+    {
+      "path": "D:\\배포\\loadmon23\\README.md",
+      "sha256": "ac6ffa571e5df3a666c824c3967f236c2c60ca2d7e3fa3f48a0224fa5fb7102d"
+    },
+    {
+      "path": "D:\\배포\\loadmon23\\docs\\설정가이드.md",
+      "sha256": "3966dc2d91b4d5335447e706a018dc8d4c77b802e1e778bc03fe836a33282465"
+    },
+    {
+      "path": "D:\\배포\\loadmon23\\samples\\README.md",
+      "sha256": "358bb63d406ea82909f91635d2bb0b516c9642359fc6a957b5151870859f9dfd"
+    },
+    {
+      "path": "D:\\배포\\loadmon24\\docs\\설정가이드.md",
+      "sha256": "f37053cfc8e9000499f1ad481ad009091f08347ceaa3bcc29d530e63ca7e5b16"
+    },
+    {
+      "path": "D:\\배포\\loadmon24\\README.md",
+      "sha256": "b537bb2e6d9ce9e6e1ad19989cfcb02b79b58136257dcf0bfafcd6d88bee826e"
+    },
+    {
+      "path": "D:\\배포\\loadmon24\\samples\\README.md",
+      "sha256": "a556a78f24e1d9b7d2cd368bd3897639f4000019dac19d8212b2b41dbebd6f8a"
+    }
+  ]
+}

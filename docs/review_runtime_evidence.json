@@ -1,0 +1,120 @@
+{
+  "schema_version": 1,
+  "project": "LoadMonitor25",
+  "generated_utc": "2026-09-09T13:35:15+00:00",
+  "execution": {
+    "mode": "selected AST definitions with synthetic inputs and injected I/O",
+    "application_imported": false,
+    "user_data_or_config_read": false,
+    "network_or_process_started": false,
+    "temp_data_only": true
+  },
+  "sources": [
+    {
+      "path": "LoadMonitor25/run.py",
+      "sha256": "404d11a34ca4764c780d886e9f169cbcdf468e1dc3914fa8ea80dcb3f02616b1",
+      "definitions": [
+        "main"
+      ]
+    },
+    {
+      "path": "LoadMonitor25/ui/app.py",
+      "sha256": "0a1873b1becc75682b98da1598b5a53b84478865349357649e234e360dc69e07",
+      "definitions": [
+        "H.do_POST"
+      ]
+    },
+    {
+      "path": "LoadMonitor25/ui/app.py",
+      "sha256": "0a1873b1becc75682b98da1598b5a53b84478865349357649e234e360dc69e07",
+      "definitions": [
+        "kill_copilot_edge"
+      ]
+    },
+    {
+      "path": "LoadMonitor25/teamserver.py",
+      "sha256": "46c58b969eca393ca0bc7c9344e10b698873f5e661e63dd964692e2e7d228112",
+      "definitions": [
+        "H._save"
+      ]
+    }
+  ],
+  "probes": [
+    {
+      "id": "no_teams_does_not_disable_graph",
+      "observed": {
+        "graph_calls": [
+          {
+            "name": "\ud300\uc988 \ucc44\ud305 (Graph)",
+            "command": [
+              "SYNTHETIC_PYTHON",
+              "SYNTHETIC_ROOT\\collect\\Get-TeamsChats.py",
+              "--from",
+              "2026-09-01",
+              "--to",
+              "2026-09-02",
+              "--non-interactive"
+            ],
+            "result": false
+          }
+        ]
+      },
+      "issue_reproduced": true
+    },
+    {
+      "id": "failed_collection_reports_completion",
+      "observed": {
+        "failed_step_count": 6,
+        "exit_code": 0,
+        "completion_record": [
+          "\uc644\ub8cc(\uc218\uc9d1\ub9cc)",
+          true,
+          0.0,
+          "\ucd94\uac00 PC \uc218\uc9d1 \ubaa8\ub4dc \u2014 \ubd84\uc11d\uc740 \ubcf8 PC \uc5d0\uc11c"
+        ],
+        "scope": "All six direct step calls fail; Outlook/fallbacks are no-op stubs."
+      },
+      "issue_reproduced": true
+    },
+    {
+      "id": "json_array_latches_busy",
+      "observed": {
+        "payload": [],
+        "exception": "'list' object has no attribute 'get'",
+        "job_running": true,
+        "http_replies": []
+      },
+      "issue_reproduced": true
+    },
+    {
+      "id": "browser_cleanup_has_no_installation_scope",
+      "observed": {
+        "captured_command_only_not_executed": [
+          "powershell",
+          "-NoProfile",
+          "-Command",
+          "Get-CimInstance Win32_Process -Filter \"Name='msedge.exe'\" | Where-Object {$_.CommandLine -like '*copilot_profile*'} | ForEach-Object {Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue}"
+        ],
+        "real_processes_touched": false
+      },
+      "issue_reproduced": true
+    },
+    {
+      "id": "team_bundle_publication_is_per_file",
+      "observed": {
+        "snapshot_after_first_replace": [
+          {
+            "first.csv": "new",
+            "second.csv": "\"old\"",
+            "member.json": "\"old\""
+          }
+        ],
+        "save_errors": [],
+        "staged_count": 3,
+        "scope": "A callback observes the write boundary; no real concurrent server was run.",
+        "synthetic_directory": "C:\\Users\\User\\AppData\\Local\\Temp\\lm25-design-runtime-oteaext0"
+      },
+      "issue_reproduced": true
+    }
+  ]
+}
