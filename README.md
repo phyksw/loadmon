@@ -5,8 +5,9 @@ PC 디지털 흔적으로 개인·팀의 **업무 로드율**(투입 MM ÷ 가�
 
 | 폴더 | 버전 | 시작 |
 |---|---|---|
-| [`LoadMonitor23/`](LoadMonitor23/) | **최신** | `LoadMonitor23-UI.bat` |
-| [`LoadMonitor22/`](LoadMonitor22/) | 이전 판(그대로 보존) | `LoadMonitor22-UI.bat` |
+| [`LoadMonitor24/`](LoadMonitor24/) | **최신** | `LoadMonitor24-UI.bat` |
+| [`LoadMonitor23/`](LoadMonitor23/) | 이전 판(그대로 보존) | `LoadMonitor23-UI.bat` |
+| [`LoadMonitor22/`](LoadMonitor22/) | 그 전 판(그대로 보존) | `LoadMonitor22-UI.bat` |
 
 ## 쓰는 법
 
@@ -14,8 +15,12 @@ PC 디지털 흔적으로 개인·팀의 **업무 로드율**(투입 MM ÷ 가�
 내장 파이썬(`python\`)이 함께 들어 있어 **아무것도 설치하지 않아도 동작합니다.**
 자세한 설정은 각 폴더의 `README.md` 와 `docs\설정가이드.md` 를 보세요.
 
-두 버전을 나란히 놓고 결과를 비교할 수 있습니다. 다만 **창 샘플러는 한쪽에서만** 켜세요 —
-둘 다 켜면 같은 시각이 두 폴더의 `data\activity` 로 갈려 어느 쪽도 온전하지 않습니다.
+여러 버전을 나란히 놓고 결과를 비교할 수 있습니다. 다만 **창 샘플러는 한 곳에서만** 켜세요 —
+여럿을 켜면 같은 시각이 여러 폴더의 `data\activity` 로 갈려 어느 쪽도 온전하지 않습니다.
+
+## LM24 에서 달라진 것
+
+- 진행 중입니다 — 담당자 워크플로우의 남은 병합 누락과 **상위(업무 성격) 미스매치 재배치**.
 
 ## LM23 에서 달라진 것
 
@@ -24,6 +29,9 @@ PC 디지털 흔적으로 개인·팀의 **업무 로드율**(투입 MM ÷ 가�
   `config\project_aliases.json` 에서 되돌릴 수 있습니다.
 - **팀즈 웹 읽기** — 팀즈 앱이 꺼져 있어도 전용 Edge 로 `teams.microsoft.com` 을 읽습니다.
   앱 창 읽기(UIA)가 PC 마다 0 건이 되던 문제의 대체 경로입니다.
+- **워크플로우가 한 번에 끝까지** 판정합니다 — [이어서 분석]을 다시 누를 일이 없습니다.
+- **월간 리뷰에 다른 달 일이 섞이던 것** 수정 — 달마다 새 채팅, 그 달 끝까지 표본,
+  본문·회신 인용문에 적힌 날짜를 그 항목의 시각으로 쓰지 않음.
 - 그 밖에 수집·판정 속도와 진단 개선. 자세한 내역은 커밋 로그를 보세요.
 
 ## 브랜치
@@ -32,12 +40,13 @@ PC 디지털 흔적으로 개인·팀의 **업무 로드율**(투입 MM ÷ 가�
 
 | 브랜치 | 내용 |
 |---|---|
-| `main` | 지금 보는 것 — 두 버전 폴더를 함께 담습니다 |
-| `lm23` | LoadMonitor23 만 (루트에 바로 놓임) |
+| `main` | 지금 보는 것 — 모든 버전 폴더를 함께 담습니다 |
+| `lm24` | LoadMonitor24 만 (루트에 바로 놓임) |
+| `lm23` | LoadMonitor23 만 · 태그 `v23.0` |
 | `lm22` | LoadMonitor22 만 · 태그 `v22.0` |
 
 ```
-git clone -b lm23 https://github.com/phyksw/loadmon.git
+git clone -b lm24 https://github.com/phyksw/loadmon.git
 ```
 
 ## 주의
