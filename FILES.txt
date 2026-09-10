@@ -24,9 +24,9 @@ team_refine.py                                         6,565 B  2940e54b
 report_out.py                                         30,599 B  01944b84
 README.md                                             96,557 B  75fac7df
 check.py                                               2,629 B  7badfe69
-judge.py                                              92,537 B  9625fde7
+judge.py                                              94,698 B  8020f548
 mine.py                                               17,836 B  c751c51d
-refine.py                                             42,402 B  266b57b0
+refine.py                                             42,873 B  bb5da4d9
 ruff.toml                                              1,004 B  47a31613
 FILES.txt                                                (이 파일)
 run.py                                                51,516 B  b0557152
@@ -37,7 +37,7 @@ collect/Get-GitActivity.py                            29,162 B  0facda4f
 collect/Get-LicenseUsage.ps1                           4,093 B  c2df1eda
 collect/Get-OutlookData.ps1                           49,995 B  006c5b43
 collect/Get-OutlookIndex.ps1                          21,292 B  83984e67
-collect/Get-MailViaCopilot.py                         26,575 B  9e601a9d
+collect/Get-MailViaCopilot.py                         27,439 B  2f93c18b
 collect/Get-OutlookWeb.py                             40,842 B  d259bd40
 collect/Get-PcOnHistory.ps1                           18,791 B  cb1f7e8b
 collect/Get-PcOnHints.py                              15,076 B  95986c3a
@@ -60,14 +60,14 @@ core/details.py                                       68,458 B  81e34438
 core/owner.py                                          1,488 B  1f1dc049
 core/progress.py                                       1,129 B  77a7579a
 core/projmap.py                                        7,133 B  cca7d2cb
-docs/설정가이드.md                                         65,637 B  dcf7fb5c
+docs/설정가이드.md                                         67,145 B  d15a53f3
 docs/사용안내.html                                       272,444 B  3cea5b8b
-tools/copilot_auto.py                                 67,015 B  19fb8aca
+tools/copilot_auto.py                                 67,907 B  50ec5517
 tools/Get-EmbeddedPython.ps1                           2,472 B  b0a213eb
 tools/check_page_js.py                                 8,818 B  f6d3b95b
 tools/lint.ps1                                         7,914 B  0c6f51ac
 tools/Make-Package.ps1                                10,733 B  f8e333a9
-tools/Make-MovePack.py                                 6,104 B  071f9f35
+tools/Make-MovePack.py                                 9,139 B  4b3babfe
 tools/Prepare-Move.ps1                                23,951 B  c3cce561
 tools/update_files.py                                  4,530 B  33b4a677
 ui/app.py                                            331,362 B  c04a16b9

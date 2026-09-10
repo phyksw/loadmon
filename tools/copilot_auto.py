@@ -84,6 +84,10 @@ DEFAULTS = {
     "replyTimeoutSec": 300,
     "stablePolls": 6,          # innerText가 N회 연속 동일하면 응답 완료로 판정
     "pollSec": 2,
+    # 이 전용 프로필의 디스크 캐시 상한(MB). 상한이 없어 GB 급으로 자랐고, 그것이 PC 간 폴더 이동이
+    # 10~30분 걸리던 원인이었다(파일 수 94%·용량 96%). 캐시는 새 PC 에서 어차피 다시 받는다.
+    # 0 이면 상한 없음(예전 동작). config.copilotAuto.diskCacheMB 로 조절.
+    "diskCacheMB": 200,
 }
 
 # ── 긴 프롬프트 분할 (보완툴 AutoSend 이식) ──
@@ -361,9 +365,14 @@ def ensure_edge(cfg):
         return None
     os.makedirs(cfg["profileDir"], exist_ok=True)
     subprocess.Popen(
+        # --disk-cache-size: 이 프로필의 디스크 캐시 상한(바이트). 상한이 없어 GB 급으로 자랐고,
+        # 그것이 PC 간 폴더 이동이 10~30분 걸리던 원인이었다(파일 수 94%·용량 96%). 캐시는 새 PC 에서
+        # 어차피 다시 받는 것이라 줄여도 잃는 것이 없다. 0 이면 상한을 걸지 않는다(예전 동작).
         [edge, f"--user-data-dir={cfg['profileDir']}", f"--remote-debugging-port={port}",
-         "--remote-allow-origins=*", "--no-first-run", "--no-default-browser-check",
-         "--window-size=1150,900", cfg["url"]],
+         "--remote-allow-origins=*", "--no-first-run", "--no-default-browser-check"]
+        + ([f"--disk-cache-size={int(cfg.get('diskCacheMB') or 0) * 1048576}"]
+           if int(cfg.get("diskCacheMB") or 0) > 0 else [])
+        + ["--window-size=1150,900", cfg["url"]],
         creationflags=NO_WIN)
     for _ in range(40):                        # 최대 20초 대기
         time.sleep(0.5)

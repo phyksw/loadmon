@@ -12,6 +12,15 @@ data\copilot_profile(Copilot 로그인용 Edge 프로필)이 **파일 수의 94%
 그래서 zip **한 개**로 만든다 — 옮길 파일이 1개가 되면 두 원인이 함께 사라진다.
 
   python tools\Make-MovePack.py [--out D:\어디] [--full] [--no-report]
+  python tools\Make-MovePack.py --trim      # zip 을 만들지 않고 **캐시만 비운다**
+
+--trim 은 zip 없이 옮기고 싶을 때 쓴다. 프로필 안의 캐시 폴더(Cache·Code Cache·GPUCache·
+ShaderCache·DawnCache·component_crx_cache·Service Worker\CacheStorage)만 지운다 —
+**로그인은 그대로 남는다**(쿠키·Local State·Login Data·Preferences 는 건드리지 않는다).
+비우고 나면 폴더째 복사해도 빠르다. 실측: 캐시만 빼면 어떤 방법이든(robocopy·tar·zip)
+0.1초 미만이라, 느렸던 것은 방식이 아니라 그 폴더였다.
+Edge 기동 인자에 캐시 상한(config.copilotAuto.diskCacheMB, 기본 200MB)도 넣었으므로
+앞으로는 다시 GB 로 자라지 않는다.
 
 담는 것 : data\ (copilot_profile 제외) · report\ · config\*.json (병합 맵 포함)
 안 담는 것: data\copilot_profile · python\ · .git\ · __pycache__ · *.zip · 얼린보고서 과거본(--full 이면 전부)
@@ -24,6 +33,7 @@ data\copilot_profile(Copilot 로그인용 Edge 프로필)이 **파일 수의 94%
 """
 import io
 import os
+import shutil
 import sys
 import time
 import zipfile
@@ -73,7 +83,46 @@ def _frozen_trim(items, keep):
     return [(p, r) for p, r in items if r not in drop], len(drop)
 
 
+# 지워도 로그인이 유지되는 캐시 폴더 — Edge 가 새 PC 에서 어차피 다시 만든다.
+# 로그인 상태는 Network\Cookies · Local State · Login Data · Preferences 에 있고 그것들은 건드리지 않는다.
+CACHE_DIRS = ("Cache", "Code Cache", "GPUCache", "ShaderCache", "DawnCache",
+              "component_crx_cache", "GrShaderCache", "optimization_guide_model_store")
+
+
+def trim_profile():
+    """전용 Edge 프로필의 캐시만 비운다 → (지운 파일 수, 바이트). 로그인은 남는다.
+    zip 없이 폴더째 옮기고 싶을 때 쓴다 — 비우고 나면 어떤 복사 방법이든 빨라진다."""
+    prof = os.path.join(ROOT, "data", "copilot_profile")
+    if not os.path.isdir(prof):
+        log("전용 Edge 프로필이 없습니다 — 비울 것이 없습니다.")
+        return 0, 0
+    targets = []
+    for cur, dirs, _files in os.walk(prof):
+        for d in list(dirs):
+            if d in CACHE_DIRS or (d == "CacheStorage" and "Service Worker" in cur):
+                targets.append(os.path.join(cur, d))
+                dirs.remove(d)
+    n = b = 0
+    for t in targets:
+        for r, _d, fs in os.walk(t):
+            for f in fs:
+                try:
+                    b += os.path.getsize(os.path.join(r, f))
+                    n += 1
+                except OSError:
+                    pass
+        shutil.rmtree(t, ignore_errors=True)
+    return n, b
+
+
 def main():
+    if "--trim" in sys.argv:
+        log("전용 Edge 프로필의 캐시만 비웁니다 — 로그인은 그대로 남습니다.")
+        log("(Edge 가 열려 있으면 일부는 잠겨 있어 다음에 지워집니다)")
+        n, b = trim_profile()
+        log(f"지운 캐시 {n:,}개 · {b / 1048576:.1f} MB")
+        log("이제 폴더째 옮겨도 빠릅니다 — [PC 이동 준비]가 알려 주는 robocopy 한 줄을 쓰세요.")
+        return 0
     full = "--full" in sys.argv
     out_dir = arg("--out") or os.path.dirname(ROOT)
     items = []
@@ -121,8 +170,11 @@ def main():
     zmb = os.path.getsize(dst) / 1048576
     log(f"만들었습니다 — {dst}")
     log(f"  {len(items):,}개 → 파일 1개 · {total / 1048576:.1f} MB → {zmb:.1f} MB · {sec:.1f}초")
-    log("  이 zip 하나만 옮기면 됩니다. 받는 PC 의 같은 판본 폴더에 풀고 →")
-    log("  [AI 연결 진단] 으로 Edge 에 회사 계정 1회 로그인 → [분석 실행].")
+    log("  이 zip 하나만 옮기면 됩니다. 받는 PC 의 같은 판본 폴더에 풀고 바로 쓰세요.")
+    log("  · [추가 PC 수집]·[팀 취합]·[재분석만] 은 로그인 없이 그대로 됩니다.")
+    log("  · [분석 실행] 도 됩니다 — Copilot 로그인이 없으면 AI 판정만 건너뛰고 규칙 판정으로")
+    log("    신호·MM·보고서를 만듭니다(약 35초 안에 알려 줍니다). 뒤에 [AI 연결 진단] 으로")
+    log("    한 번 로그인하고 [재분석만] 을 누르면 AI 판정만 이어서 합니다.")
     log("  원본 폴더는 지우지 마세요 — 새 PC 가 잘 도는 것을 확인한 뒤에 정리하시면 됩니다.")
     return 0
 

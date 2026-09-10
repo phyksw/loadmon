@@ -42,6 +42,7 @@ if ROOT not in sys.path:
     # agentic.py·retag.py·team_refine.py·ui/app.py 는 모두 ROOT 를 넣는다 — 여기만 빠져 있었다.
     sys.path.insert(0, ROOT)
 from details import ukey2  # noqa: E402  - judge·flow 와 같은 과제 신원 축
+import details as _details  # noqa: E402  - explain_failure(로그인 필요 등 치명 실패 판정)
 from details import snap1  # noqa: E402  - 상위(Level 1)를 4개 고정 범주로 스냅
 from progress import progress  # noqa: E402
 if __name__ == "__main__":      # import 시엔 건드리지 않는다 — 임포트한 쪽의 stdout 이
@@ -490,6 +491,11 @@ class Refiner:
                 self.say(f"        생성 중단 응답 — {len(got)}개 항목 회수")
         else:
             self.say(f"        {res.get('error', '')} — {str(res.get('hint', ''))[:80]}")
+            # 사람이 손대야 풀리는 실패(로그인 필요·Edge 없음)는 남은 청크를 다 물어도 똑같다 —
+            # judge 와 같은 관문을 둔다. 정제 없이도 판정 결과는 그대로 남는다.
+            _w, _h, _fatal = _details.explain_failure(res)
+            if _fatal:
+                self.st["fatal"] = f"{_w} — {_h}"
         ch_ok = {i for i, _ in ch}
         covered = set()
         for it in got:

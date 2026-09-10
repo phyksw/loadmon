@@ -57,6 +57,7 @@ from datetime import date, datetime
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(ROOT, "core"))
+from details import explain_failure  # noqa: E402  - 로그인 필요 등 "사람이 손대야 풀리는" 실패 판정
 from details import ukey2  # noqa: E402  - 과제 신원 축(공백·구분자·대소문자 무시, 괄호 꼬리 보존)
 from progress import progress  # noqa: E402
 NO_WIN = 0x08000000
@@ -776,6 +777,14 @@ def judge_rows(idxs, rows, models, seen, tag, label, depth, st):
         st["last_err"] = " — ".join(x for x in (str(res.get("error") or ""),
                                                 str(res.get("hint") or "")) if x)[:200]
         st["notes"].append(f"{label}: 실패({res.get('error', '')})")
+        # 사람이 손대야 풀리는 실패(로그인 필요·Edge 없음·입력창 없음)는 **나눠 다시 물어도 똑같다**.
+        # 예전에는 이것을 적응 분할로 되풀이해 청크 하나에 왕복 15회를 썼다(실행당 49회 · 28분).
+        # agentic·flow 는 이미 explain_failure 로 접는데 judge 만 안 보고 있었다.
+        _why, _how, _fatal = explain_failure(res)
+        if _fatal:
+            st["fatal"] = f"{_why} — {_how}"
+            st["failed_rows"] += len(idxs)
+            return got
     missing = [i for i in idxs if i not in got]
     if not missing:
         return got
@@ -1428,6 +1437,15 @@ def main():
     print(f"[judge] 0/{n_chunks + 1} 엔티티 체계 수립 왕복 (모델 {model_name}"
           + (f" · 지정 {len(pinned)}개" if pinned else "") + ") — 응답까지 수십 초 걸립니다")
     res = copilot_send(taxonomy_prompt(rows, hints, pinned), tag, "taxonomy")
+    # 이 왕복이 사실상 프로브다 — 로그인이 안 됐으면 여기서 이미 드러난다. 그때는 청크 루프에
+    # **들어가지 않는다**(왕복 49회 → 1회 · 28분 → 약 35초). 규칙 판정은 아래에서 그대로 돌아
+    # signals·mm_rows·보고서가 나오므로, 사용자는 결과를 받고 로그인 뒤 [재분석만]으로 이으면 된다.
+    _why0, _how0, _fatal0 = explain_failure(res)
+    if _fatal0:
+        print(f"[judge] AI 판정을 건너뜁니다 — {_why0}")
+        print(f"        {_how0}")
+        print("        규칙 판정으로 신호·MM·보고서는 그대로 만듭니다. 로그인 뒤 [재분석만]을 누르면 "
+              "AI 판정만 이어서 합니다.")
     models = []
     if res.get("ok"):
         o = (rfind_json(res.get("reply", ""), "models", skip=(TAXONOMY_EXAMPLE,))
@@ -1482,6 +1500,11 @@ def main():
     judged, n_fail, n_partial, last_err = {}, 0, 0, ""
     st = {"roundtrips": 0, "repaired": 0, "retries": 0, "failed_rows": 0, "omitted_rows": 0,
           "notes": [], "last_err": "", "soft": False, "aborted": False}
+    if _fatal0:
+        # 체계 수립 왕복이 이미 '사람이 손대야 풀리는 실패' 였다 — 청크를 한 번도 보내지 않는다.
+        # 아래 루프는 aborted 를 보고 전부 규칙 판정으로 넘긴다(왕복 49회 → 1회 · 28분 → 약 35초).
+        st["aborted"] = True
+        st["fatal"] = f"{_why0} — {_how0}"
     consec, prev_idxs = 0, ()
     for ci, (start, n) in enumerate(plan):
         progress("AI 판정", ci + 1, len(chunks) + 1)
@@ -1505,7 +1528,12 @@ def main():
             last_err = st.get("last_err") or last_err
         note = ("" if not st["notes"] else " · " + " / ".join(st["notes"][:4]))
         print(f"        판정 {len(got)}/{n}건{note}")
-        if consec >= ABORT_FAIL_CHUNKS:
+        if st.get("fatal"):
+            # 사람이 손대야 풀리는 상태 — 6청크를 기다릴 이유가 없다. 바로 규칙 판정으로 넘긴다.
+            st["aborted"] = True
+            print(f"        {st['fatal']}")
+            print("        남은 청크는 규칙 판정으로 둡니다 — 해결한 뒤 [재분석만]을 누르면 AI 판정만 이어서 합니다.")
+        elif consec >= ABORT_FAIL_CHUNKS:
             st["aborted"] = True
             print(f"        연속 {consec}청크 0건 — 남은 청크는 규칙 판정으로 둡니다"
                   "(Copilot 상태를 확인한 뒤 재실행하면 이어서 판정됩니다)")

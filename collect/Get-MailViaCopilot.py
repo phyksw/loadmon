@@ -279,6 +279,12 @@ def _one_slice(kind, s0, s1, alt=False):
         return [], "other"
     if not res.get("ok"):
         print(f"[mail-copilot]   {kind} {s0}~{s1}: 실패 — {res.get('error', '')}")
+        # 로그인 필요·Edge 없음 같은 '사람이 손대야 풀리는' 실패는 조각을 나눠 다시 물어도 똑같다.
+        # 예전에는 이것을 18회 되풀이해 9~10분을 버렸다(감사 실측) — 한 번에 접는다.
+        if str(res.get("phase") or "") in ("login_required", "edge_not_found",
+                                           "launch_failed", "input_not_found"):
+            print(f"[mail-copilot]   {res.get('hint', '')}")
+            return [], "fatal"
         return [], "other"
     reply = res.get("reply", "")
     try:                                    # 원문 응답 보존 — 진위·누락 진단용
@@ -397,6 +403,12 @@ def collect_kind(kind, d0, d1, store_subject, one_slice=None):
     for i, (s0, s1) in enumerate(sl):
         print(f"[mail-copilot] {kind} {i + 1}/{len(sl)} 조각 {s0}~{s1}")
         got, st = q(kind, s0, s1, alt)
+        if st == "fatal":
+            # 로그인이 안 된 PC — 조각을 더 물어도 똑같다. 한 조각에서 접는다.
+            print(f"[mail-copilot] Copilot 을 쓸 수 없어 남은 {len(sl) - i}조각을 생략합니다 "
+                  "(로그인 뒤 다시 실행하면 이어서 모읍니다)")
+            unable = True
+            break
         if st == "unable" and not alt:
             print("[mail-copilot]   '조회 불가' 응답 — 검색형 화법으로 전환해 재시도")
             alt = True
