@@ -72,6 +72,7 @@ NEED = [
     "tools/check_page_js.py",
     "tools/lint.ps1",
     "tools/Make-Package.ps1",
+    "tools/Make-MovePack.py",
     "tools/Prepare-Move.ps1",
     "tools/update_files.py",
     "ui/app.py",

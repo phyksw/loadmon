@@ -691,6 +691,53 @@ def new_chat(cdp, cfg):
         return "실패"
 
 
+TRACE_MAX = 4_000_000          # 이 크기를 넘으면 갈아 끼운다 — 로그가 조용히 커지지 않게
+
+
+def trace(stage, **kw):
+    """왕복 한 줄 기록 → report\\copilot_trace.jsonl.
+    남기는 것: 단계·시각·프롬프트/답 **길이**·소요 초·완료 판정 방식·새 채팅 여부·성공 여부.
+    남기지 않는 것: 프롬프트 원문·답 원문(신호 원문이 들어 있다·팀 서버로 나가지 않는다).
+    실패해도 왕복을 막지 않는다 — 계측이 도구를 죽이면 안 된다."""
+    try:
+        p = os.path.join(ROOT, "report", "copilot_trace.jsonl")
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        try:
+            if os.path.getsize(p) > TRACE_MAX:
+                os.replace(p, p + ".1")
+        except OSError:
+            pass
+        row = {"t": time.strftime("%Y-%m-%d %H:%M:%S"), "stage": stage}
+        row.update(kw)
+        with open(p, "a", encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    except Exception:  # noqa: BLE001 - 계측 실패가 판정을 막지 않게
+        pass
+
+
+def _traced(fn):
+    """run_roundtrip / run_roundtrip_split 을 감싸 소요 시간을 남긴다."""
+    def wrap(cfg, prompt, fresh=False, **kw):
+        t0 = time.time()
+        res = fn(cfg, prompt, fresh=fresh, **kw)
+        try:
+            r = res if isinstance(res, dict) else {}
+            trace(os.environ.get("LM_STAGE", "") or fn.__name__,
+                  sec=round(time.time() - t0, 1), prompt=len(prompt or ""),
+                  reply=len(r.get("reply") or ""), ok=bool(r.get("ok")),
+                  done_by=r.get("done_by", ""), gen=r.get("gen_sec", 0),
+                  pick=r.get("pick", ""), pledge=bool(r.get("sentinel")),
+                  fresh=bool(fresh), cut=bool(r.get("cut")),
+                  parts=r.get("parts", 1), retry=r.get("retry", ""),
+                  err=(r.get("error") or "")[:60])
+        except Exception:  # noqa: BLE001
+            pass
+        return res
+    wrap.__name__ = fn.__name__
+    wrap.__doc__ = fn.__doc__
+    return wrap
+
+
 def run_roundtrip(cfg, prompt, fresh=False):
     """프롬프트 전송 → 응답 회수. Copilot 일시 오류('응답할 수 없습니다')나 무응답이면
     단계적으로 재시도한다: ① 새 채팅에서 같은 모델로 ② 새 채팅 + 자동 모델로.
@@ -721,14 +768,19 @@ def run_roundtrip(cfg, prompt, fresh=False):
         if not bad:
             return res
         # ① 새 채팅에서 같은 모델로 재시도 (대화 문맥 오염·일시 오류 해소)
+        # 재시도는 **더 짧게 기다린다** — 1차가 replyTimeoutSec 를 다 쓰고 실패했다면 그 채팅·그 시각의
+        # Copilot 이 느린 것이고, 같은 예산으로 세 번 기다리면 왕복 하나에 최악 24분이 든다(감사 실측).
+        # 절반으로 줄여도 재시도 '횟수' 는 그대로라 회수 가능성은 유지되고 최악은 16분이 된다.
+        cfg2 = dict(cfg)
+        cfg2["replyTimeoutSec"] = max(120, int(cfg.get("replyTimeoutSec") or 480) // 2)
         how2 = new_chat(cdp, cfg)
-        res2 = _roundtrip_once(cdp, cfg, prompt)
+        res2 = _roundtrip_once(cdp, cfg2, prompt)
         if res2.get("ok") and not is_error_reply(res2.get("reply")) and not res2.get("cut"):
             res2["retry"] = f"1단계 재시도 성공 (새 채팅 · {how2})"
             return res2
         # ② 새 채팅 + 자동 모델 폴백 (특정 모델 라우팅 장애 대비)
         new_chat(cdp, cfg)
-        res3 = _roundtrip_once(cdp, cfg, prompt, model_override="자동")
+        res3 = _roundtrip_once(cdp, cfg2, prompt, model_override="자동")
         if res3.get("ok") and not is_error_reply(res3.get("reply")) and not res3.get("cut"):
             res3["retry"] = "2단계 재시도 성공 (새 채팅 + 자동 모델)"
             return res3
@@ -873,7 +925,8 @@ def _roundtrip_once(cdp, cfg, prompt, model_override=None):
         # 응답 대기: 프롬프트 전송 이후 '새로 늘어난' 텍스트가 N회 연속 동일하면 완료
         deadline = time.time() + cfg["replyTimeoutSec"]
         how = "anchor"
-        last, stable = None, 0
+        last, stable, idle = None, 0, 0
+        t_gen0 = time.time()          # 계측용 — 전송 뒤 첫 폴부터 완료까지
         while time.time() < deadline:
             time.sleep(cfg["pollSec"])
             try:
@@ -899,24 +952,40 @@ def _roundtrip_once(cdp, cfg, prompt, model_override=None):
                 except (TimeoutError, OSError, RuntimeError):
                     pass
                 return _reply_result(strip_echo(new, prompt, anchor, how), note_model, how, True,
-                                     waited, resent)
+                                     waited, resent, gen_sec=time.time() - t_gen0, done_by="pledge")
             if new.strip() and new == last:
                 stable += 1
-                if stable >= cfg["stablePolls"]:
+                # 텍스트가 멈췄으면 **화면에 '중지' 버튼이 아직 있는지** 본다. 없으면 생성이 끝난 것이라
+                # stablePolls 를 끝까지 기다릴 이유가 없다 — 예전에는 서약을 못 잡은 왕복마다
+                # 8회 × 3초 = 24초를 그냥 흘려보냈다(실행당 왕복 100회면 최대 30분).
+                # 버튼 판정이 틀릴 수 있으므로 **2회 연속** 확인하고, 그래도 안 되면 예전 규칙으로 돌아간다.
+                if stable >= 2 and idle < 2:
+                    try:
+                        if not bool(cdp.eval(js_is_generating(), timeout=10)):
+                            idle += 1
+                        else:
+                            idle = 0
+                    except (TimeoutError, OSError, RuntimeError):
+                        idle = 0      # 못 물어봤으면 판단하지 않는다(안전 쪽)
+                if (stable >= cfg["stablePolls"]) or (stable >= 2 and idle >= 2):
                     # 어떤 경로로 회수했는지 남긴다 — fulltext 가 잦으면 앵커가 깨진 것이다
                     return _reply_result(strip_echo(new, prompt, anchor, how), note_model, how, False,
-                                         waited, resent)
+                                         waited, resent, gen_sec=time.time() - t_gen0,
+                                         done_by=("idle" if stable < cfg["stablePolls"] else "stable"))
             else:
-                stable = 0
+                stable, idle = 0, 0
             last = new
         return {"ok": False, "phase": "no_reply", "error": "응답 시간 초과",
                 "reply": (last or "").strip(), "sentinel": False,
                 "hint": "Copilot 창이 응답을 생성 중인지 확인 — 반복되면 화면 스크린샷을 Claude에게"}
 
 
-def _reply_result(reply, note_model, how, sentinel, waited=0, resent=False):
+def _reply_result(reply, note_model, how, sentinel, waited=0, resent=False,
+                  gen_sec=0.0, done_by=""):
     """회수 결과 dict — cut(생성 중단 문구가 꼬리에 있음)·waited(앞 답 생성 대기 초)·resent(전송 재클릭)
-    를 함께 남겨 호출자가 잘린 답을 복구·부분 재시도할 수 있게 한다."""
+    를 함께 남겨 호출자가 잘린 답을 복구·부분 재시도할 수 있게 한다.
+    gen_sec·done_by 는 계측용 — 답을 기다린 초와 무엇으로 완료를 알았는지
+    (pledge=서약 / idle=중지 버튼 사라짐 / stable=같은 텍스트 반복)."""
     reply = (reply or "").strip()
     out = {"ok": True, "phase": "replied", "reply": reply, "model": note_model, "pick": how,
            "sentinel": bool(sentinel), "cut": is_cut_reply(reply)}
@@ -924,6 +993,10 @@ def _reply_result(reply, note_model, how, sentinel, waited=0, resent=False):
         out["waited"] = waited
     if resent:
         out["resent"] = True
+    if gen_sec:
+        out["gen_sec"] = round(gen_sec, 1)
+    if done_by:
+        out["done_by"] = done_by
     return out
 
 
@@ -1070,6 +1143,10 @@ STUB_BODY_PATTERNS = (
     (re.compile(r"^#\d+ \| \d{4}-\d{2}-\d{2}", re.M), ("judge_rows.json", "judge.json", "j.json")),
 )
 
+
+
+run_roundtrip = _traced(run_roundtrip)
+run_roundtrip_split = _traced(run_roundtrip_split)
 
 def stub_candidates(prompt):
     """프롬프트 → 스텁 파일 후보 이름 목록(우선순위 순)."""

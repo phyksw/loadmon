@@ -57,7 +57,12 @@ if __name__ == "__main__":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, errors="replace", encoding=(
         (sys.stdout.encoding or "utf-8") if sys.stdout.isatty() else "utf-8"))  # 콘솔(bat)=콘솔 코드페이지 · 파이프(UI)=utf-8
 
-PROMPT_BUDGET = 7000            # 한 번에 보낼 프롬프트 글자 수 상한 (입력 잘림 방지)
+PROMPT_BUDGET = 8300            # 한 번에 보낼 프롬프트 글자 수 상한 (입력 잘림 방지)
+#                                 7,000 이던 것을 올렸다 — 묶음이 잘게 갈려 왕복이 1.6배가 됐고
+#                                 그중 14~21%는 단위 1개짜리로 예산의 45%만 쓰고 있었다(감사 실측).
+#                                 답 길이는 ANSWER_BUDGET 5,500 이 그대로 제동하므로 '답 잘림' 위험은 없고,
+#                                 최대 프롬프트 8,102자 < 드라이버 분할 문턱(SAFE_PROMPT 9,000 − 서약 38)
+#                                 이라 2조각 분할도 생기지 않는다. 실측 시뮬: 묶음 118 → 98(-17%).
 
 
 def _chat_note():

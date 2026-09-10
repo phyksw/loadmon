@@ -234,10 +234,28 @@ if ($movable) {
             Write-Host '      data\copilot_profile 은 Copilot 로그인용 Edge 캐시입니다. 로그인 정보는 이 PC 에 묶여 있어'
             Write-Host '      가져가도 살아나지 않습니다 - 새 PC 에서 [AI 연결 진단] 으로 한 번만 로그인하면 됩니다.'
             Write-Host ''
-            Write-Host '      아래 한 줄을 명령 프롬프트에 붙여 넣으세요(대상 경로만 바꾸면 됩니다):'
-            $rc = ('robocopy "{0}" "E:\LoadMonitor24" /E /XD copilot_profile __pycache__ .ruff_cache /R:1 /W:1 /MT:16' -f $where2)
+            # ── 권하는 방법: zip 한 개 ────────────────────────────────────────────
+            # 느린 이유는 바이트와 **파일 개수** 둘 다인데(실측: 같은 58.6MB 를 3,000개로 쪼개면 17배),
+            # 둘 다 copilot_profile 하나에서 나온다. 옮길 파일을 1개로 만들면 두 원인이 함께 사라진다.
+            # 예전에는 robocopy 한 줄만 '참고' 로 맨 아래에 있어, 사용자가 탐색기로 폴더를 드래그하면
+            # 전량이 복사됐다(그 경로에는 아무 방어가 없다) - 그래서 만들어 주는 쪽을 앞에 둔다.
+            $py = Join-Path $where2 'python\python.exe'
+            $mk = Join-Path $where2 'tools\Make-MovePack.py'
+            if ((Test-Path -LiteralPath $py) -and (Test-Path -LiteralPath $mk)) {
+                Say '      [권장] 옮길 것만 담은 zip 한 개를 지금 만들 수 있습니다:' 'Cyan'
+                $cmd = ('"{0}" "{1}"' -f $py, $mk)
+                Say ("      " + $cmd) 'Yellow'
+                try { Set-Clipboard -Value $cmd -ErrorAction Stop; Write-Host '      (클립보드에 복사해 두었습니다 - 명령 프롬프트에 붙여 넣으세요)' } catch {}
+                Write-Host '      수만 개 파일 대신 zip 1개만 옮기면 됩니다(보통 20~60초).'
+                Write-Host ''
+                Write-Host '      폴더째 옮기고 싶으면 아래 한 줄을 쓰세요(대상 경로만 바꾸면 됩니다):'
+            } else {
+                Write-Host '      아래 한 줄을 명령 프롬프트에 붙여 넣으세요(대상 경로만 바꾸면 됩니다):'
+            }
+            # /NFL /NDL /NJH /NJS /NP - 콘솔 출력만으로 1.77배를 잃는다(실측 1.03s vs 1.82s).
+            # /XD .git - 개발 체크아웃이면 537개 18MB 가 그대로 따라간다.
+            $rc = ('robocopy "{0}" "E:\LoadMonitor24" /E /XD copilot_profile __pycache__ .ruff_cache .git /R:1 /W:1 /MT:16 /NFL /NDL /NJH /NJS /NP' -f $where2)
             Say ("      " + $rc) 'Yellow'
-            try { Set-Clipboard -Value $rc -ErrorAction Stop; Write-Host '      (이 줄은 클립보드에도 복사해 두었습니다)' } catch {}
             Write-Host '      원본 폴더는 지우지 마세요 - 새 PC 가 잘 도는 것을 확인한 뒤에 정리하시면 됩니다.'
         }
     } catch {}

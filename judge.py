@@ -238,8 +238,11 @@ def copilot_send(prompt_text, tag, name, fresh=None):
             # 한 채팅의 왕복이 chatTurns 에 닿아도 새 채팅 — 너무 길어진 대화는 답이 끊기거나 앞 답을 되풀이한다.
             cmd.append("--fresh")
             _TURNS[0] = 0
+        # LM_STAGE — 드라이버가 report\copilot_trace.jsonl 에 '어느 단계의 왕복인지' 를 남기게 한다.
+        # 이름만 넘긴다(chunk3·narr_2026-06·wf1 …). 프롬프트 원문은 계측에 들어가지 않는다.
         out = subprocess.run(cmd, capture_output=True, timeout=roundtrip_timeout(n_parts),
-                             cwd=ROOT, env=dict(os.environ, PYTHONIOENCODING="utf-8"),
+                             cwd=ROOT, env=dict(os.environ, PYTHONIOENCODING="utf-8",
+                                                LM_STAGE=str(name or "")[:40]),
                              creationflags=NO_WIN)
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": "왕복 시간 초과",
