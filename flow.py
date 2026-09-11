@@ -988,8 +988,13 @@ def main():
             # level1 도 함께 갱신한다 — 예전에는 이어받은 흐름이 **옛 상위**를 그대로 들고 와,
             # 같은 과제의 카드가 상위 머리말 여러 개로 찢어졌다(감사 재현). 새로 판정한 흐름은
             # 이번 mats 의 level1 을 쓰므로 두 축이 어긋난 것이다.
+            # 단, **이번 mats 에 상위가 비어 있으면 덮지 않는다** — AI 정제가 실패·생략된 실행은
+            # level1 이 전부 빈 문자열이라, 덮으면 지난 실행이 제대로 분류해 둔 상위까지 지워져
+            # 화면의 상위과제 분류가 통째로 빈칸이 됐다(실측: ['신제품개발','양산준비','일반업무']
+            # → ['','','']). 빈 값은 '모른다' 이지 '상위가 없다' 가 아니다.
+            _l1 = hit.get("level1", "") or f.get("level1", "")
             f = dict(f, project=hit["model"], detail=hit["detail"], mm={"mm": hit["mm"]},
-                     signals=hit["signals"], level1=hit.get("level1", ""))
+                     signals=hit["signals"], level1=_l1)
             kept.append(f)
         # 한 과제가 여러 흐름(branch)을 가질 수 있으므로 '흐름 수' 가 아니라 '끝난 과제 수' 로 본다.
         # 그러지 않으면 분기가 하나만 생겨도 len(kept) > len(keys) 가 되어 다 끝난 줄 알고 전부 다시 돌린다.

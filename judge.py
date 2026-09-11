@@ -1437,12 +1437,12 @@ def main():
     print(f"[judge] 0/{n_chunks + 1} 엔티티 체계 수립 왕복 (모델 {model_name}"
           + (f" · 지정 {len(pinned)}개" if pinned else "") + ") — 응답까지 수십 초 걸립니다")
     res = copilot_send(taxonomy_prompt(rows, hints, pinned), tag, "taxonomy")
-    # 이 왕복이 사실상 프로브다 — 로그인이 안 됐으면 여기서 이미 드러난다. 그때는 청크 루프에
-    # **들어가지 않는다**(왕복 49회 → 1회 · 28분 → 약 35초). 규칙 판정은 아래에서 그대로 돌아
-    # signals·mm_rows·보고서가 나오므로, 사용자는 결과를 받고 로그인 뒤 [재분석만]으로 이으면 된다.
+    # 이 왕복이 사실상 프로브다 — 로그인이 안 됐으면 여기서 이미 드러난다. 다만 **한 번으로
+    # 단정하지는 않는다**(아래 주석). 규칙 판정은 어떤 경우에도 돌아 signals·mm_rows·보고서가
+    # 나오므로, 사용자는 결과를 받고 로그인 뒤 [재분석만]으로 이으면 된다.
     _why0, _how0, _fatal0 = explain_failure(res)
     if _fatal0:
-        print(f"[judge] AI 판정을 건너뜁니다 — {_why0}")
+        print(f"[judge] 체계 수립 왕복이 실패했습니다 — {_why0}")
         print(f"        {_how0}")
         print("        규칙 판정으로 신호·MM·보고서는 그대로 만듭니다. 로그인 뒤 [재분석만]을 누르면 "
               "AI 판정만 이어서 합니다.")
@@ -1501,10 +1501,14 @@ def main():
     st = {"roundtrips": 0, "repaired": 0, "retries": 0, "failed_rows": 0, "omitted_rows": 0,
           "notes": [], "last_err": "", "soft": False, "aborted": False}
     if _fatal0:
-        # 체계 수립 왕복이 이미 '사람이 손대야 풀리는 실패' 였다 — 청크를 한 번도 보내지 않는다.
-        # 아래 루프는 aborted 를 보고 전부 규칙 판정으로 넘긴다(왕복 49회 → 1회 · 28분 → 약 35초).
-        st["aborted"] = True
-        st["fatal"] = f"{_why0} — {_how0}"
+        # ★ 체계 수립 왕복 **한 번**으로 '사람이 손대야 풀리는 실패' 라고 단정하지 않는다.
+        # 일시적 실패(입력창을 아직 못 찾음 등)도 같은 얼굴로 오는데, 예전 판본은 그 한 번에
+        # AI 판정 전체를 건너뛰었다 — 그러면 정제가 생략되고 run.py 가 이미 .stale 로 개명한
+        # 정제본이 돌아오지 않아 **상위과제 분류가 빈칸**이 됐다(실측 제보·재현).
+        # 그래서 청크를 하나만 더 보내 확인한다. 그것도 같은 실패면 청크 루프 끝의 관문이
+        # aborted 로 접는다: 진짜 로그인 필요 PC 는 왕복 2회(약 1분, 예전 49회·28분)로 끝나고,
+        # 일시적 실패였으면 예전처럼 끝까지 판정된다.
+        print("        확인을 위해 첫 청크 하나만 보내 봅니다 — 같은 실패면 거기서 접습니다.")
     consec, prev_idxs = 0, ()
     for ci, (start, n) in enumerate(plan):
         progress("AI 판정", ci + 1, len(chunks) + 1)

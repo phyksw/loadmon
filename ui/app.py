@@ -766,6 +766,43 @@ def _rows(path):
         return []
 
 
+def _data_roots():
+    r"""본 수집 폴더 + data\추가PC\* 보관 폴더들. core.extract._data_roots 와 **같은 목록**이어야 한다.
+
+    폴더째 다른 PC 로 옮기면 run.py 가 지난 PC 수집물을 data\추가PC\<지난 PC>\ 로
+    옮긴다. 분석(core.extract)은 그것을 합쳐 세는데 **화면은 본 폴더만 봤다** — 그것이
+    이동 직후 화면을 빈칸으로 만들었다(실측: 기간 인식이 ['2026-01-03','2026-09-10'] → ['','']
+    로 무너지면서 추이가 '오늘 기준 13주' 로 떨어지고 막대 9개월치가 통째 사라졌다)."""
+    roots = [DATA]
+    base = os.path.join(DATA, "추가PC")
+    try:
+        if os.path.isdir(base):
+            roots += sorted(os.path.join(base, n) for n in os.listdir(base)
+                            if os.path.isdir(os.path.join(base, n)))
+    except OSError:
+        pass
+    return roots
+
+
+def _paths_multi(rel):
+    r"""모든 뿌리에서 같은 상대경로인 파일 경로 목록(rel 은 '/' 또는 와일드카드 포함)."""
+    parts = [x for x in str(rel).replace(chr(92), "/").split("/") if x]
+    out = []
+    for rt in _data_roots():
+        p = os.path.join(rt, *parts)
+        out += sorted(glob.glob(p)) if ("*" in p or "?" in p) else ([p] if os.path.exists(p) else [])
+    return out
+
+
+def _rows_multi(rel):
+    r"""본 폴더 + 추가PC 를 이어붙인 CSV 행. 중복 제거는 하지 않는다 —
+    여기 쓰는 곳은 '언제부터 언제까지 자료가 있는가'와 '하루 상한 8건' 뿐이다."""
+    rows = []
+    for p in _paths_multi(rel):
+        rows += _rows(p)
+    return rows
+
+
 def _mtime(p):
     """리셋·재분석과 경합해도 죽지 않는 mtime — 파일이 사라졌으면 0"""
     try:
@@ -1090,12 +1127,15 @@ def dash_period(meta, lastrun=None):
         except OSError:
             return -1
     # 키 = (mtime, 크기)×파일 + 오늘 날짜 — 같은 mtime 으로 덮어쓴 파일·자정을 넘긴 서버(400일 창)도 다시 잰다
-    sig = tuple((_mtime(os.path.join(DATA, rel)), _sz(os.path.join(DATA, rel))) for rel, _c in srcs) + (date.today().isoformat(),)
+    # 뿌리마다(본 폴더 + 추가PC\*) 잰다 — 옮겨 온 폴더는 자료가 전부 추가PC\ 쪽에 있어
+    # 본 폴더만 보면 lo/hi 가 None 이 되고 기간이 ["",""] 로 떨어진다(실측 재현).
+    _cand = [q for rel, _c in srcs for q in _paths_multi(rel)]
+    sig = tuple((_mtime(q), _sz(q)) for q in _cand) + (date.today().isoformat(),)
     if _DASH_EXTENT.get("sig") == sig:
         return list(_DASH_EXTENT["per"])
     lo = hi = None
     for rel, col in srcs:
-        for r in _rows(os.path.join(DATA, rel)):
+        for r in _rows_multi(rel):
             try:
                 d = date.fromisoformat(str(r.get(col) or "")[:10])
             except ValueError:
@@ -1351,7 +1391,7 @@ def trend(d0="", d1="", tag="", info=None):
                              ("outlook/mail.csv", "메일", "time"),
                              ("outlook/calendar.csv", "회의", "start"),
                              ("files/git_commits.csv", "커밋", "time")):
-            for r in _rows(os.path.join(DATA, *pat.split("/"))):
+            for r in _rows_multi(pat):          # 본 PC + 추가PC — 옮겨 온 폴더도 모양이 보이게
                 d = str(r.get(col) or "")[:10]
                 i = slot(d)
                 if i is None:
@@ -1361,7 +1401,7 @@ def trend(d0="", d1="", tag="", info=None):
                     if _fcap[d] > 8:
                         continue
                 out[i][k2] += 1
-        for f in glob.glob(os.path.join(DATA, "m365", "teams_*.csv")):
+        for f in _paths_multi("m365/teams_*.csv"):
             for r in _rows(f):
                 i = slot(r.get("time"))
                 if i is not None:

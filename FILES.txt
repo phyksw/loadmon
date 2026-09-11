@@ -14,7 +14,7 @@ LoadMonitor24-이동준비.bat                                 1,312 B  6fe7c991
 agentic.py                                            41,104 B  e946e70e
 freeze.py                                             52,886 B  2d091c13
 team_report.py                                       160,115 B  c6fe0c20
-flow.py                                               80,261 B  357a0e82
+flow.py                                               80,788 B  b5303b4c
 teamserver.py                                         27,808 B  d9325192
 teamup.py                                             39,085 B  792d5243
 aggregate.py                                          50,107 B  77bba803
@@ -24,12 +24,12 @@ team_refine.py                                         6,565 B  2940e54b
 report_out.py                                         30,599 B  01944b84
 README.md                                             97,565 B  c1c94938
 check.py                                               2,629 B  7badfe69
-judge.py                                              94,698 B  8020f548
+judge.py                                              95,262 B  4345f437
 mine.py                                               17,836 B  c751c51d
 refine.py                                             42,873 B  bb5da4d9
 ruff.toml                                              1,004 B  47a31613
 FILES.txt                                                (이 파일)
-run.py                                                53,742 B  6a2084d1
+run.py                                                54,685 B  b58ee804
 자가점검.py                                                8,815 B  57ae39a2
 collect/Add-WorkLog.ps1                                1,771 B  8a921980
 collect/Get-FileActivity.ps1                          48,656 B  cfab595d
@@ -62,7 +62,7 @@ core/progress.py                                       1,129 B  77a7579a
 core/projmap.py                                        7,133 B  cca7d2cb
 docs/설정가이드.md                                         68,583 B  6fed449e
 docs/사용안내.html                                       272,444 B  3cea5b8b
-tools/copilot_auto.py                                 67,907 B  50ec5517
+tools/copilot_auto.py                                 69,016 B  76afea53
 tools/Get-EmbeddedPython.ps1                           2,472 B  b0a213eb
 tools/check_page_js.py                                 8,818 B  f6d3b95b
 tools/lint.ps1                                         7,914 B  0c6f51ac
@@ -70,4 +70,4 @@ tools/Make-Package.ps1                                10,733 B  f8e333a9
 tools/Make-MovePack.py                                12,103 B  4132d2e7
 tools/Prepare-Move.ps1                                26,116 B  67389835
 tools/update_files.py                                  4,530 B  33b4a677
-ui/app.py                                            335,139 B  fc434666
+ui/app.py                                            337,017 B  306dcfd5

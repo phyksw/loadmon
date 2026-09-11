@@ -83,6 +83,9 @@ DEFAULTS = {
     # — 긴 답을 쓰다 잠시 멈춘 것을 완료로 오인해 조기 회수하던 결함(실측) 방지.
     "replyTimeoutSec": 300,
     "stablePolls": 6,          # innerText가 N회 연속 동일하면 응답 완료로 판정
+    # 입력창이 뜰 때까지 기다리는 한도(초). 한 번 못 찾은 것을 곧 영구 실패로 부르면
+    # 일시적인 SPA 렌더 지연 하나가 AI 판정 전체를 건너뛰게 만든다(실측 — 상위과제 분류 빈칸).
+    "readyWaitSec": 60,
     "pollSec": 2,
     # 이 전용 프로필의 디스크 캐시 상한(MB). 상한이 없어 GB 급으로 자랐고, 그것이 PC 간 폴더 이동이
     # 10~30분 걸리던 원인이었다(파일 수 94%·용량 96%). 캐시는 새 PC 에서 어차피 다시 받는다.
@@ -880,7 +883,17 @@ def _roundtrip_once(cdp, cfg, prompt, model_override=None):
             except Exception:
                 pass
             baseline = len(cdp.eval(js_chat_text(cfg), timeout=45) or "")
+        # 입력창은 **기다린다**. 예전엔 위의 time.sleep(2) 한 번이 유예의 전부여서, SPA 렌더가
+        # 조금 늦거나 앞 답 정리가 겹치면 한 번 못 찾은 것이 곧 'input_not_found' 였다. 그 실패는
+        # explain_failure 가 '사람이 손대야 풀리는 실패' 로 분류하는 이름이라, 일시적인 늦음 하나가
+        # AI 판정 전체를 건너뛰게 만들었다(상위과제 분류 빈칸의 원인 — 실측). 조건을 폴링해
+        # 여기서 끝까지 못 찾았을 때에만 영구 실패로 부른다.
+        _ready_s = max(5, int(cfg.get("readyWaitSec") or 60))
+        _dl = time.time() + _ready_s
         ins = cdp.eval(js_focus(cfg))
+        while not (ins and ins.get("ok")) and time.time() < _dl:
+            time.sleep(1)
+            ins = cdp.eval(js_focus(cfg))
         if not (ins and ins.get("ok")):
             dbg = cdp.eval(js_diagnose())
             dump = os.path.join(ROOT, "data", "copilot_auto_debug.json")
@@ -888,7 +901,7 @@ def _roundtrip_once(cdp, cfg, prompt, model_override=None):
             with open(dump, "w", encoding="utf-8") as f:
                 json.dump(dbg, f, ensure_ascii=False, indent=1)
             return {"ok": False, "phase": "input_not_found",
-                    "error": "채팅 입력창을 찾지 못함",
+                    "error": f"채팅 입력창을 찾지 못함({_ready_s}초 대기)",
                     "hint": "data\\copilot_auto_debug.json 과 화면 스크린샷을 Claude에게 보여주면 선택자를 맞춰줄 수 있습니다"}
         # 주입: CDP Input.insertText(IME/붙여넣기 수준 — 리치 에디터가 정상 수신) → 실패 시 예비 경로
         cdp.call("Input.insertText", {"text": prompt})
