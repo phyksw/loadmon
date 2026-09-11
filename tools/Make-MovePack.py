@@ -1,26 +1,28 @@
 # -*- coding: utf-8 -*-
 r"""
-Make-MovePack.py — 다른 PC 로 옮길 **최소 이동본**을 zip 한 개로 만든다.
+Make-MovePack.py — 다른 PC 로 옮길 **최소 이동본**을 zip 한 개로 만든다(보조 수단).
 
-폴더째 옮기면 10~30분이 걸린다는 제보의 원인은 '데이터가 많아서' 가 아니라 폴더 하나다:
-data\copilot_profile(Copilot 로그인용 Edge 프로필)이 **파일 수의 94%·용량의 96%** 를 차지한다
-(tools\Prepare-Move.ps1 의 실측 기록). 그 안은 Edge 가 새 PC 에서 알아서 다시 받는 캐시이고,
-로그인 세션은 Windows DPAPI 로 '이 PC·이 계정' 에 묶여 있어 **가져가도 살아나지 않는다** —
-받는 PC 에서 [AI 연결 진단] 으로 한 번 로그인하면 끝이다(30초 미만).
+※ 실사용 동선에서는 이 파일을 쓰지 않는다. 사용자는 [PC 이동 준비] 를 누르고 폴더를 탐색기로
+  드래그한다(제보: "zip 을 따로 옮기거나 푸는 것은 못 한다"). 그래서 폴더를 실제로 줄이는 일은
+  tools\Prepare-Move.ps1 의 Trim-Profile 이 [PC 이동 준비] 안에서 **자동으로** 한다.
+  이 파일은 그 규칙의 사본(trim_profile)과, 원하는 사람을 위한 zip 묶기를 갖고 있다.
 
-느린 이유는 바이트와 **파일 개수** 둘 다다(실측: 같은 58.6MB 를 3,000개로 쪼개면 17배 느리다).
-그래서 zip **한 개**로 만든다 — 옮길 파일이 1개가 되면 두 원인이 함께 사라진다.
+폴더가 큰 원인은 '데이터가 많아서' 가 아니라 폴더 하나다: data\copilot_profile(Copilot 로그인용
+Edge 프로필)이 **파일 수의 94%·용량의 96%** 를 차지한다(실측 8개 설치본 100~529MB).
+정작 옮겨야 할 수집 CSV·보고서는 0.06~0.27MB 다. 그리고 로그인 세션은 Windows DPAPI 로
+'이 PC·이 계정' 에 묶여 있어 **가져가도 살아나지 않는다** — 받는 PC 에서 [AI 연결 진단] 으로
+한 번 로그인하면 끝이다(30초 미만).
 
   python tools\Make-MovePack.py [--out D:\어디] [--full] [--no-report]
-  python tools\Make-MovePack.py --trim      # zip 을 만들지 않고 **캐시만 비운다**
+  python tools\Make-MovePack.py --trim      # zip 없이 **프로필만 줄인다**
 
---trim 은 zip 없이 옮기고 싶을 때 쓴다. 프로필 안의 캐시 폴더(Cache·Code Cache·GPUCache·
-ShaderCache·DawnCache·component_crx_cache·Service Worker\CacheStorage)만 지운다 —
-**로그인은 그대로 남는다**(쿠키·Local State·Login Data·Preferences 는 건드리지 않는다).
-비우고 나면 폴더째 복사해도 빠르다. 실측: 캐시만 빼면 어떤 방법이든(robocopy·tar·zip)
-0.1초 미만이라, 느렸던 것은 방식이 아니라 그 폴더였다.
-Edge 기동 인자에 캐시 상한(config.copilotAuto.diskCacheMB, 기본 200MB)도 넣었으므로
-앞으로는 다시 GB 로 자라지 않는다.
+--trim 은 [PC 이동 준비] 와 같은 규칙으로 프로필을 줄인다: 루트에서 Default 와 Local State 등
+몇 개만 남기고, Default 안에서는 캐시류와 저장된 비밀번호·방문 이력을 지운다.
+**로그인은 그대로 남는다**(Default 의 쿠키·MSAL 토큰, 루트 Local State 를 남긴다).
+실측: 529.2MB/2,507개 → 11.7MB/418개(98% 회수, 0.8초). 비우고 나면 폴더째 복사해도 빠르다
+(같은 폴더 robocopy 실측 0.68초 → 0.09초).
+Edge 기동 인자의 캐시 상한(config.copilotAuto.diskCacheMB)은 Default\Cache 31MB 만 제어한다 —
+ProvenanceData 168MB·component_crx_cache 168MB 는 그 상한과 무관해서 이 정리가 필요하다.
 
 담는 것 : data\ (copilot_profile 제외) · report\ · config\*.json (병합 맵 포함)
 안 담는 것: data\copilot_profile · python\ · .git\ · __pycache__ · *.zip · 얼린보고서 과거본(--full 이면 전부)
@@ -83,36 +85,86 @@ def _frozen_trim(items, keep):
     return [(p, r) for p, r in items if r not in drop], len(drop)
 
 
-# 지워도 로그인이 유지되는 캐시 폴더 — Edge 가 새 PC 에서 어차피 다시 만든다.
-# 로그인 상태는 Network\Cookies · Local State · Login Data · Preferences 에 있고 그것들은 건드리지 않는다.
-CACHE_DIRS = ("Cache", "Code Cache", "GPUCache", "ShaderCache", "DawnCache",
-              "component_crx_cache", "GrShaderCache", "optimization_guide_model_store")
+# 프로필에서 '옮길 필요가 없는 것' 을 지운다. 지울 이름을 나열하지 않고 **남길 것만 남긴다** —
+# Edge 는 버전이 오를 때마다 새 컴포넌트 폴더를 만들어서(ProvenanceData·Edge Entity Extraction·
+# Edge Wallet·Subresource Filter…) 이름 목록 방식은 반드시 낡는다. 실측: 옛 목록의 DawnCache·
+# optimization_guide_model_store 는 지금 프로필에 없는 이름이고, 그 목록으로는 529MB 중 244MB 밖에
+# 못 걷어냈다. 반전 규칙은 같은 프로필에서 517.5MB(98%)를 회수한다(529.2MB/2,507개 → 11.7MB/418개).
+# 이름 비교는 반드시 완전 일치 — '*Wallet*' 은 루트 'Edge Wallet'(지워도 됨)과 Default\EdgeWallet(보존)을,
+# '*crx_cache*' 는 component_crx_cache(지움)와 extensions_crx_cache(보존)를 뒤섞는다.
+# ※ 정본은 tools\Prepare-Move.ps1 의 Trim-Profile 이다(실사용 동선 [PC 이동 준비] 가 그쪽을 탄다).
+#    여기는 같은 규칙의 사본이므로 한쪽을 고치면 다른 쪽도 같이 고칠 것.
+KEEP_ROOT = {"Default", "Local State", "Last Browser", "Last Version",
+             "first_party_sets.db", "Variations"}
+DEL_IN_DEFAULT = ("Cache", "Code Cache", "GPUCache", "ShaderCache", "DawnCache",
+                  "DawnGraphiteCache", "DawnWebGPUCache", "GrShaderCache",
+                  "component_crx_cache", "optimization_guide_hint_cache_store",
+                  "optimization_guide_model_store", "EdgeCoupons")
+# 저장된 비밀번호·자동완성·방문 이력은 옮길 폴더에 있을 이유가 없다 — 실측해 보니 전용 프로필에도
+# 동기화로 개인 비밀번호와 방문 이력이 들어와 있었다(공개 저장소라 건수는 적지 않는다).
+# 로그인 세션은 Cookies·Local State 로 유지되므로 이 PC 에서 계속 써도 다시 로그인하지 않는다.
+DEL_FILES_IN_DEFAULT = ("Login Data", "Login Data For Account", "Web Data", "History")
+
+
+def _long(p):
+    r"""260자(MAX_PATH)를 넘는 경로는 \\?\ 접두사가 있어야 지워진다 — Service Worker\CacheStorage 의
+    GUID 경로가 쉽게 넘는다(실측: 267자에서 삭제가 통째로 실패해 21.4MB 가 그대로 남았다)."""
+    p = os.path.abspath(p)
+    if p.startswith("\\\\?\\"):
+        return p
+    return "\\\\?\\UNC" + p[1:] if p.startswith("\\\\") else "\\\\?\\" + p
+
+
+def _rm(path):
+    if not os.path.exists(path):
+        return
+    if os.path.isdir(path):
+        shutil.rmtree(path, ignore_errors=True)
+        if os.path.isdir(path):
+            shutil.rmtree(_long(path), ignore_errors=True)
+        return
+    for p in (path, _long(path)):
+        try:
+            os.remove(p)
+            return
+        except OSError:
+            pass
+
+
+def _size(path):
+    n = b = 0
+    for r, _d, fs in os.walk(path):
+        for f in fs:
+            try:
+                b += os.path.getsize(os.path.join(r, f))
+                n += 1
+            except OSError:
+                pass
+    return n, b
 
 
 def trim_profile():
-    """전용 Edge 프로필의 캐시만 비운다 → (지운 파일 수, 바이트). 로그인은 남는다.
-    zip 없이 폴더째 옮기고 싶을 때 쓴다 — 비우고 나면 어떤 복사 방법이든 빨라진다."""
+    """전용 Edge 프로필에서 옮길 필요가 없는 것을 지운다 → (지운 파일 수, 바이트).
+    로그인(Default 안의 쿠키·MSAL 토큰, 루트 Local State)은 남는다.
+    회수량은 **삭제 후 재측정**으로 낸다 — 삭제 전에 세면 잠겨서 못 지운 것까지 '지웠다' 로 집계돼
+    '정리했다는데 폴더는 그대로' 가 된다(옛 구현의 결함)."""
     prof = os.path.join(ROOT, "data", "copilot_profile")
     if not os.path.isdir(prof):
         log("전용 Edge 프로필이 없습니다 — 비울 것이 없습니다.")
         return 0, 0
-    targets = []
-    for cur, dirs, _files in os.walk(prof):
-        for d in list(dirs):
-            if d in CACHE_DIRS or (d == "CacheStorage" and "Service Worker" in cur):
-                targets.append(os.path.join(cur, d))
-                dirs.remove(d)
-    n = b = 0
-    for t in targets:
-        for r, _d, fs in os.walk(t):
-            for f in fs:
-                try:
-                    b += os.path.getsize(os.path.join(r, f))
-                    n += 1
-                except OSError:
-                    pass
-        shutil.rmtree(t, ignore_errors=True)
-    return n, b
+    n0, b0 = _size(prof)
+    for name in os.listdir(prof):
+        if name not in KEEP_ROOT:
+            _rm(os.path.join(prof, name))
+    dflt = os.path.join(prof, "Default")
+    if os.path.isdir(dflt):
+        for d in DEL_IN_DEFAULT:
+            _rm(os.path.join(dflt, d))
+        _rm(os.path.join(dflt, "Service Worker", "CacheStorage"))   # 등록부는 남긴다
+        for f in DEL_FILES_IN_DEFAULT:
+            _rm(os.path.join(dflt, f))
+    n1, b1 = _size(prof)
+    return n0 - n1, b0 - b1
 
 
 def main():

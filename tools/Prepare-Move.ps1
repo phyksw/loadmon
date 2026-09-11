@@ -27,7 +27,8 @@ param(
     [Parameter(Mandatory = $true)][string]$Root,
     [switch]$NoWait,
     [switch]$CheckOnly,
-    [int]$CloseSec = 5      # 성공 시 이 초 뒤 창을 스스로 닫는다(0 = 즉시). 실패 시에는 기다린다.
+    [int]$CloseSec = 20     # 성공 시 이 초 뒤 창을 스스로 닫는다(0 = 즉시). 실패 시에는 기다린다.
+                        # 5초였는데 마지막 안내(옮기는 방법)를 읽기 전에 닫힌다는 제보로 늘렸다.
 )
 $ErrorActionPreference = 'Continue'
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
@@ -86,6 +87,48 @@ function Folder-Size([string]$path) {
     $r.N = $f.Count
     if ($f.Count) { $r.MB = [math]::Round((($f | Measure-Object Length -Sum).Sum) / 1MB, 1) }
     return $r
+}
+
+# 옮기기 전에 프로필에서 '옮길 필요가 없는 것' 을 지운다.
+# 지울 목록을 나열하지 않고 **남길 것만 남긴다** — Edge 는 버전이 오를 때마다 새 컴포넌트 폴더를
+# 만들어서(ProvenanceData·Edge Entity Extraction·Edge Wallet·Subresource Filter…) 이름 목록 방식은
+# 반드시 낡는다. 실측: 예전 목록의 DawnCache·optimization_guide_model_store 는 지금 프로필에 없는
+# 이름이고, 그 목록으로는 529MB 중 244MB 밖에 못 걷어냈다(반전 규칙은 510MB).
+# 로그인은 Default 폴더 안(Cookies·Local Storage 의 MSAL 토큰)과 루트 Local State(암호 키)에 있고
+# 둘 다 남긴다. 이름 비교는 반드시 완전 일치 — '*Wallet*' 같은 와일드카드는 루트 'Edge Wallet'(지워도 됨)과
+# Default\EdgeWallet(보존)을, '*crx_cache*' 는 component_crx_cache(지움)와 extensions_crx_cache(보존)를 뒤섞는다.
+$script:KEEP_ROOT = @('Default', 'Local State', 'Last Browser', 'Last Version',
+                      'first_party_sets.db', 'Variations')
+$script:DEL_IN_DEFAULT = @('Cache', 'Code Cache', 'GPUCache', 'ShaderCache', 'DawnCache',
+                           'DawnGraphiteCache', 'DawnWebGPUCache', 'GrShaderCache',
+                           'component_crx_cache', 'optimization_guide_hint_cache_store',
+                           'optimization_guide_model_store', 'EdgeCoupons')
+# 저장된 비밀번호·자동완성·방문 이력은 옮길 폴더에 있을 이유가 없다 — 실측해 보니 전용 프로필에도
+# 동기화로 개인 비밀번호와 방문 이력이 들어와 있었다(공개 저장소라 건수는 적지 않는다).
+# 로그인 세션은 Cookies·Local State 로 유지되므로 이 PC 에서 계속 써도 다시 로그인하지 않는다.
+$script:DEL_FILES_IN_DEFAULT = @('Login Data', 'Login Data For Account', 'Web Data', 'History')
+
+# Remove-Item -Recurse 는 260자(MAX_PATH)를 넘는 경로에서 조용히 실패한다 — Service Worker\CacheStorage 의
+# GUID 경로가 쉽게 넘는다(실측: 267자에서 DirectoryNotFoundException 'the-real-index', 21.4MB 가 그대로 남았다).
+# 도구 폴더가 깊은 곳(OneDrive\문서\…)에 있으면 흔한 일이라 \\?\ 접두사로 한 번 더 시도한다.
+function Remove-Tree([string]$path) {
+    if (-not (Test-Path -LiteralPath $path)) { return }
+    try { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop; return } catch {}
+    $long = if ($path -like '\\*') { '\\?\UNC' + $path.Substring(1) } else { '\\?\' + $path }
+    try { [System.IO.Directory]::Delete($long, $true); return } catch {}
+    try { [System.IO.File]::Delete($long) } catch {}
+}
+
+function Trim-Profile([string]$prof) {
+    foreach ($it in @(Get-ChildItem -LiteralPath $prof -Force -ErrorAction SilentlyContinue)) {
+        if ($script:KEEP_ROOT -contains $it.Name) { continue }
+        Remove-Tree $it.FullName
+    }
+    $def = Join-Path $prof 'Default'
+    if (-not (Test-Path -LiteralPath $def -PathType Container)) { return }
+    foreach ($d in $script:DEL_IN_DEFAULT) { Remove-Tree (Join-Path $def $d) }
+    Remove-Tree (Join-Path $def 'Service Worker\CacheStorage')   # 등록부(Database·ScriptCache)는 남긴다
+    foreach ($f in $script:DEL_FILES_IN_DEFAULT) { Remove-Tree (Join-Path $def $f) }
 }
 
 Write-Host ''
@@ -213,52 +256,39 @@ if ($movable) {
     Write-Host '     분석은 두 PC 를 합쳐 계산합니다.'
     Write-Host '   · report\upload_pending\ 의 업로드 대기 묶음도 함께 따라갑니다.'
 
-    # ── 옮길 크기 — 느린 진짜 원인은 data\copilot_profile 이다 ──────────────────
-    # 실측(LoadMonitor18): 전체 2,679개 551.6MB 중 copilot_profile 이 2,507개 529.2MB(파일수 94%·용량 96%).
-    # 그 안은 Edge 가 새 PC 에서 알아서 다시 받는 캐시(ProvenanceData·component_crx_cache·맞춤법 사전…)다.
-    # 로그인 세션은 따라가지 않는다 - Local State 의 암호 키가 Windows DPAPI 로 '이 PC·이 계정'에 묶여 있고
-    # 그 마스터키는 %APPDATA%\Microsoft\Protect\ 에 있어 폴더째 복사에 딸려오지 않는다(실측: 키 앞머리가
-    # 리터럴 'DPAPI', 쿠키 104건이 전부 'v10' 형식). 즉 가져가도 어차피 새 PC 에서 한 번 로그인해야 한다.
-    # 숫자는 PC 마다 다르므로 하드코딩하지 않고 지금 이 폴더를 잰다. 지우지는 않는다 - 복사에서 빼기만 하면 된다.
-    try {
-        $where2 = if ($restored) { $Root } else { $probe }
-        $prof = Folder-Size (Join-Path $where2 'data\copilot_profile')
-        if ($prof.N -gt 0) {
-            $allf = Folder-Size $where2
-            $slimN = $allf.N - $prof.N
-            $slimMB = [math]::Round($allf.MB - $prof.MB, 1)
-            Write-Host ''
-            Say '   [빠르게 옮기기] 이 폴더의 대부분은 옮길 필요가 없는 Edge 캐시입니다.' 'Cyan'
-            Write-Host ("      지금 이대로 : 파일 {0:N0}개 · {1:N1} MB" -f $allf.N, $allf.MB)
-            Write-Host ("      캐시를 빼면 : 파일 {0:N0}개 · {1:N1} MB" -f $slimN, $slimMB)
-            Write-Host '      data\copilot_profile 은 Copilot 로그인용 Edge 캐시입니다. 로그인 정보는 이 PC 에 묶여 있어'
-            Write-Host '      가져가도 살아나지 않습니다 - 새 PC 에서 [AI 연결 진단] 으로 한 번만 로그인하면 됩니다.'
-            Write-Host ''
-            # ── 권하는 방법: zip 한 개 ────────────────────────────────────────────
-            # 느린 이유는 바이트와 **파일 개수** 둘 다인데(실측: 같은 58.6MB 를 3,000개로 쪼개면 17배),
-            # 둘 다 copilot_profile 하나에서 나온다. 옮길 파일을 1개로 만들면 두 원인이 함께 사라진다.
-            # 예전에는 robocopy 한 줄만 '참고' 로 맨 아래에 있어, 사용자가 탐색기로 폴더를 드래그하면
-            # 전량이 복사됐다(그 경로에는 아무 방어가 없다) - 그래서 만들어 주는 쪽을 앞에 둔다.
-            $py = Join-Path $where2 'python\python.exe'
-            $mk = Join-Path $where2 'tools\Make-MovePack.py'
-            if ((Test-Path -LiteralPath $py) -and (Test-Path -LiteralPath $mk)) {
-                Say '      [권장] 옮길 것만 담은 zip 한 개를 지금 만들 수 있습니다:' 'Cyan'
-                $cmd = ('"{0}" "{1}"' -f $py, $mk)
-                Say ("      " + $cmd) 'Yellow'
-                try { Set-Clipboard -Value $cmd -ErrorAction Stop; Write-Host '      (클립보드에 복사해 두었습니다 - 명령 프롬프트에 붙여 넣으세요)' } catch {}
-                Write-Host '      수만 개 파일 대신 zip 1개만 옮기면 됩니다(보통 20~60초).'
+    # ── 옮기기 전 정리 — 폴더 용량의 대부분은 옮길 필요가 없는 Edge 컴포넌트다 ──────────────
+    # 실측(설치본 8개): data\copilot_profile 이 폴더 용량의 96%(LoadMonitor18 은 2,679개 551.6MB 중
+    # 2,507개 529.2MB). 그 안에서 ProvenanceData 168.6MB + component_crx_cache 168~185MB 가 65% 인데
+    # 둘 다 Edge 가 새 PC 에서 다시 받는 컴포넌트다. 로그인 세션은 Local State 의 암호 키가 DPAPI 로
+    # '이 PC·이 계정' 에 묶여 있어(마스터키는 %APPDATA%\Microsoft\Protect\) 폴더째 복사로 따라가지 않는다.
+    # 예전에는 '캐시를 빼면 N MB' 라고 알려만 주고 지우는 일은 사용자에게 떠넘겼다 — 실제로는 아무도
+    # 지우지 않고 그대로 드래그했다(제보). 그래서 여기서 직접 지운다(규칙은 파일 앞 Trim-Profile).
+    if (-not $CheckOnly) {
+        try {
+            $where2 = if ($restored) { $Root } else { $probe }
+            $profDir = Join-Path $where2 'data\copilot_profile'
+            if (Test-Path -LiteralPath $profDir -PathType Container) {
+                $before = Folder-Size $where2
                 Write-Host ''
-                Write-Host '      폴더째 옮기고 싶으면 아래 한 줄을 쓰세요(대상 경로만 바꾸면 됩니다):'
-            } else {
-                Write-Host '      아래 한 줄을 명령 프롬프트에 붙여 넣으세요(대상 경로만 바꾸면 됩니다):'
+                Say '   옮길 준비로 Copilot 캐시를 정리하는 중입니다 - 수십 초 걸릴 수 있습니다...' 'Cyan'
+                Trim-Profile $profDir
+                # 회수량은 **삭제 후 재측정**으로 낸다. 삭제 전에 세면 잠겨서 못 지운 것까지 '지웠다' 로
+                # 집계돼 "정리했다는데 폴더는 그대로" 가 된다(옛 Make-MovePack.trim_profile 의 결함).
+                $after = Folder-Size $where2
+                Say ("   정리했습니다: {0:N0}개 · {1:N1} MB 회수" -f ($before.N - $after.N),
+                     [math]::Round($before.MB - $after.MB, 1)) 'Green'
+                Write-Host ("   지금 옮길 크기: 파일 {0:N0}개 · {1:N1} MB" -f $after.N, $after.MB)
+                Write-Host '   Copilot 로그인은 이 PC 에 그대로 남습니다 - 새 PC 에서는 [AI 연결 진단] 으로 한 번 로그인하세요.'
             }
-            # /NFL /NDL /NJH /NJS /NP - 콘솔 출력만으로 1.77배를 잃는다(실측 1.03s vs 1.82s).
-            # /XD .git - 개발 체크아웃이면 537개 18MB 가 그대로 따라간다.
-            $rc = ('robocopy "{0}" "E:\LoadMonitor24" /E /XD copilot_profile __pycache__ .ruff_cache .git /R:1 /W:1 /MT:16 /NFL /NDL /NJH /NJS /NP' -f $where2)
-            Say ("      " + $rc) 'Yellow'
-            Write-Host '      원본 폴더는 지우지 마세요 - 새 PC 가 잘 도는 것을 확인한 뒤에 정리하시면 됩니다.'
-        }
-    } catch {}
+        } catch {}
+    }
+    # 옮기는 방법은 한 가지만 말한다. 실제 사용자는 zip 도 robocopy 도 쓰지 않고 탐색기로 폴더를
+    # 드래그한다(제보: zip 을 따로 옮기거나 푸는 것은 못 한다). 위에서 이미 폴더를 줄여 뒀으므로
+    # 드래그로도 빠르다. zip(tools\Make-MovePack.py)·robocopy 는 docs 의 설정가이드로 내렸다.
+    Write-Host ''
+    Say '   [옮기는 방법] 이 폴더를 탐색기에서 그대로 드래그해 옮기세요.' 'Cyan'
+    Write-Host '      새 PC 에서 LoadMonitor24-UI.bat 을 실행하면 이어서 바로 쓸 수 있습니다.'
+    Write-Host '      원본 폴더는 지우지 마세요 - 새 PC 가 잘 도는 것을 확인한 뒤에 정리하시면 됩니다.'
     if (-not $restored) {
         # 이것은 실패가 아니다 - 옮길 수 있다는 사실은 이미 증명됐고, 이름만 임시 이름으로 남았다.
         # 예전에는 '[!] 되돌리지 못했습니다' 가 성공 배너 위에 찍혀 실패로 읽혔다(감사 확정).

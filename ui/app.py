@@ -59,6 +59,69 @@ def kill_copilot_edge():
                    capture_output=True, creationflags=NO_WIN, timeout=20)
 
 
+def drop_foreign_profile():
+    r"""다른 PC 에서 옮겨 온 폴더면 전용 Edge 프로필을 통째로 버린다(시작 시 1회).
+
+    로그인 세션은 Local State 의 키가 DPAPI 로 '이 PC·이 계정' 에 묶여 있어 따라와도 살아나지
+    않는다. 그런데 **죽은 세션이 남아 있는 쪽이 없는 쪽보다 나쁘다** — 사이트가 로그인 화면 대신
+    오류 페이지를 주면 웹 수집기가 '로그인 필요(rc=2)' 가 아니라 '시간 초과(rc=1)' 로 끝나고
+    화면에는 '화면이 뜨지 않았습니다(네트워크·차단?)' 라고 뜬다. 사용자는 네트워크 문제로 읽고
+    넘어가고, 그 PC 의 메일·팀즈가 조용히 빈 채 폴더가 다음 PC 로 떠난다(그 PC 에서만 보이는
+    신호라 다른 PC 가 메워 주지 못한다). 지우면 [AI 연결 진단] 이 새 프로필로 정상 로그인을 받는다.
+
+    판정 신호는 archive_other_pc(run.py)가 쓰는 것과 같은 data\pc_name.txt 다. UI 는 그 파일을
+    고치지 않으므로(고치는 쪽은 run.py) '폴더 복사 → UI 실행' 순서에서 정확히 한 번 발동한다.
+    덤으로 도착 즉시 수백 MB 가 사라진다(실측 프로필 100~529MB).
+    """
+    try:
+        prof = os.path.join(DATA, "copilot_profile")
+        if not os.path.isdir(prof):
+            return
+        # 판정 기준은 run.py.archive_other_pc 와 **같아야 한다** — 한쪽만 '다른 PC' 라고 보면
+        # 이름이 바뀌는 VDI 에서 접속할 때마다 프로필을 버려 매번 다시 로그인하게 된다.
+        here = (os.environ.get("COMPUTERNAME") or "").strip()
+        here_id = ""
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography",
+                                0, winreg.KEY_READ | winreg.KEY_WOW64_64KEY) as k:
+                here_id = str(winreg.QueryValueEx(k, "MachineGuid")[0]).strip()
+        except (OSError, ImportError, IndexError, ValueError):
+            here_id = ""
+
+        def _read(fn):
+            p = os.path.join(DATA, fn)
+            if not os.path.exists(p):
+                return ""
+            with open(p, encoding="utf-8-sig") as f:
+                return f.read().strip()
+
+        prev, prev_id = _read("pc_name.txt"), _read("pc_id.txt")
+        if prev_id and here_id:
+            foreign = prev_id != here_id
+        else:
+            foreign = bool(prev and here and prev != here)
+        if not foreign:
+            return
+        prev = prev or "이전 PC"
+        n = b = 0
+        for r, _d, fs in os.walk(prof):
+            for fn in fs:
+                try:
+                    b += os.path.getsize(os.path.join(r, fn))
+                    n += 1
+                except OSError:
+                    pass
+        import shutil as _sh       # 모듈 수준에 없다 — 이 파일의 다른 삭제 경로와 같은 방식
+        _sh.rmtree(prof, ignore_errors=True)
+        if os.path.isdir(prof):     # 260자(MAX_PATH) 초과 경로는 \\?\ 가 있어야 지워진다
+            _sh.rmtree("\\\\?\\" + os.path.abspath(prof), ignore_errors=True)
+        log(f"[정리] 다른 PC({prev})에서 온 Copilot 로그인 세션은 이 PC 에서 쓸 수 없어 정리했습니다"
+            f" — {n:,}개 {b / 1048576:.1f} MB 회수. [AI 연결 진단] 에서 한 번 로그인하시면 됩니다.")
+    except OSError:
+        pass
+
+
 def cleanup_children():
     try:
         kill_job()
@@ -4920,7 +4983,12 @@ def main():
     atexit.register(cleanup_children)
     # 이전 세션이 갑자기 꺼졌어도 남아 있는 Copilot 전용 Edge를 시작 시 자가 정리
     # (다음 AI 왕복 때 자동으로 다시 뜨므로 부작용 없음)
-    threading.Thread(target=kill_copilot_edge, daemon=True).start()
+    # 이어서 '다른 PC 에서 온 프로필 버리기' 를 같은 스레드에서 한다 — Edge 가 확실히 죽은 뒤라야
+    # 잠긴 파일 없이 지워진다(별도 스레드로 띄우면 종료와 삭제가 겹친다).
+    def _startup_cleanup():
+        kill_copilot_edge()
+        drop_foreign_profile()
+    threading.Thread(target=_startup_cleanup, daemon=True).start()
     url = f"http://127.0.0.1:{port}/"
     print(f"[ui] LoadMonitor24 {VERSION} — {url}  (Ctrl+C 종료)")
     # LM_NO_BROWSER(수집기·드라이버와 같은 환경변수)도 존중한다 — bat 은 인자 없이 띄우므로 회귀 실행이

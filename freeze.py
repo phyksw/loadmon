@@ -43,6 +43,41 @@ import time
 ROOT = os.path.dirname(os.path.abspath(__file__))
 REPORT = os.path.join(ROOT, "report")
 FREEZE_DIR = os.path.join(REPORT, "얼린보고서")
+KEEP_FROZEN = 10        # 얼린보고서\ 에 남길 과거본 수(같은 종류끼리). 0 이면 무제한.
+# 분석을 한 번 돌 때마다 얼린 보고서와 분석리포트가 한 장씩(합쳐 약 0.6MB) 쌓인다. 아무도 읽지
+# 않는 순수 적재라 오래 쓰면 이것만 수십 MB 가 되고, 그대로 다음 PC 로 따라간다. 원자료가 함께
+# 옮겨 다니므로 과거본은 언제든 다시 구울 수 있다 — 최근 것만 남긴다.
+# (tools\Make-MovePack.py 는 zip 을 만들 때만 2개로 잘랐는데, 실사용자는 zip 을 쓰지 않아
+#  그 규칙이 한 번도 집행되지 않았다. 그래서 만드는 자리에서 바로 정리한다.)
+
+
+def _prune_frozen(made_path):
+    r"""방금 만든 파일과 **같은 계열**만 최근 KEEP_FROZEN 개로 줄인다.
+
+    계열은 '무엇인가'(보고서 / 분석리포트)와 '원문본이냐 요약본이냐' 로만 가른다. 기간은 일부러
+    키에 넣지 않는다 — 화면 기본 기간이 ytd 라 종료일이 매일 바뀌고, 기간을 키에 넣으면 매일이
+    새 계열이 되어 한 장도 정리되지 않는다. 반대로 요약본을 원문본과 같은 계열로 묶으면 서로를
+    밀어내 한쪽이 통째로 사라진다(첫 구현에서 실제로 요약본 2장이 전부 지워졌다 — 시험으로 확인).
+    """
+    if not KEEP_FROZEN or not made_path:
+        return
+    try:
+        base = os.path.basename(made_path)
+        stem = base.split("_20", 1)[0]          # 'LoadMonitor_보고서' / 'LoadMonitor_분석리포트'
+        want_sum = "_요약" in base
+        same = [os.path.join(FREEZE_DIR, f) for f in os.listdir(FREEZE_DIR)
+                if f.lower().endswith(".html") and f.startswith(stem)
+                and ("_요약" in f) == want_sum]
+        if len(same) <= KEEP_FROZEN:
+            return
+        same.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+        for p in same[KEEP_FROZEN:]:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+    except OSError:
+        pass
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 _CORE = os.path.join(ROOT, "core")
@@ -419,6 +454,7 @@ def _freeze(tag, full, base_url, log, info):
     try:
         os.makedirs(FREEZE_DIR, exist_ok=True)
         made.append(_write_atomic(os.path.join(FREEZE_DIR, name), out))
+        _prune_frozen(made[-1])
     except OSError as e:
         log(f"    [!] 저장 실패({type(e).__name__}) — report 폴더 권한·잠금을 확인하세요.")
     try:
@@ -826,6 +862,7 @@ margin:1px 3px 1px 0;font-size:10.5px;color:#3d444c}}
         os.makedirs(FREEZE_DIR, exist_ok=True)
         name = _safe_name(f"LoadMonitor_분석리포트_{d0}_{d1}_{host or 'PC'}_{time.strftime('%Y%m%d_%H%M')}{sfx}.html")
         made.append(_write_atomic(os.path.join(FREEZE_DIR, name), doc))
+        _prune_frozen(made[-1])
     except OSError as e:
         log(f"    [!] 분석리포트 사본 저장 실패({type(e).__name__})")
     for p in made:

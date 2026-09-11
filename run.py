@@ -484,18 +484,47 @@ def agentic_recalc_inproc(d0, d1):
         return False
 
 
+def machine_id():
+    r"""이 PC 의 안정적인 식별자(없으면 빈 문자열).
+
+    클라우드·VDI 는 접속할 때마다 COMPUTERNAME 이 바뀌는 경우가 있다. 이름만으로 '다른 PC' 를
+    판정하면 실행할 때마다 data\추가PC\<새 이름>\ 이 하나씩 생기고 매번 전량 재수집이 걸려,
+    프로필을 줄여 놔도 폴더가 이쪽으로 다시 부푼다(설계 검증 지적). 레지스트리의 MachineGuid 는
+    OS 설치 단위로 고정이라 세션 이름이 바뀌어도 같은 값이다. 못 읽으면 이름 비교로 되돌아간다.
+    """
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography",
+                            0, winreg.KEY_READ | winreg.KEY_WOW64_64KEY) as k:
+            return str(winreg.QueryValueEx(k, "MachineGuid")[0]).strip()
+    except (OSError, ImportError, IndexError, ValueError):
+        return ""
+
+
 def archive_other_pc(data):
     r"""추가 PC 취합 — 폴더째 다른 PC 로 옮겨 왔으면, 지난 PC 의 수집 데이터를
     data\추가PC\<지난 PC 이름>\ 으로 보관하고 이번 PC 것을 새로 수집하게 한다.
     분석은 본 폴더 + 추가PC\* 를 전부 합쳐 계산한다(중복은 자동 제거)."""
     try:
         name_f = os.path.join(data, "pc_name.txt")
+        id_f = os.path.join(data, "pc_id.txt")
         here = os.environ.get("COMPUTERNAME", "").strip()
-        prev = ""
+        here_id = machine_id()
+        prev = prev_id = ""
         if os.path.exists(name_f):
             prev = open(name_f, encoding="utf-8-sig").read().strip()
-        if prev and here and prev != here:
-            keep = os.path.join(data, "추가PC", prev)
+        if os.path.exists(id_f):
+            prev_id = open(id_f, encoding="utf-8-sig").read().strip()
+        # 둘 다 식별자가 있으면 식별자로 판정한다(이름이 바뀌는 VDI 대응). 하나라도 없으면 —
+        # 예전 판본에서 올라온 폴더이거나 레지스트리를 못 읽는 환경 — 기존대로 이름으로 판정한다.
+        if prev_id and here_id:
+            moved_pc = prev_id != here_id
+        else:
+            moved_pc = bool(prev and here and prev != here)
+        if moved_pc:
+            # 폴더 이름은 사람이 읽는 것이라 이름표를 쓴다. 이름표가 없는데 식별자만 다른 경우
+            # (예전 판본에서 올라온 폴더)에도 폴더 이름은 있어야 하므로 대체 이름을 만든다.
+            keep = os.path.join(data, "추가PC", prev or ("이전PC-" + time.strftime("%Y%m%d")))
             # 이미 있는 보관본은 지우지 않는다 — 옮기다 실패하면 그 PC 자료를 통째로 잃는다
             # (검증 확정). 분석은 추가PC\* 를 전부 합치므로 형제 폴더로 두면 된다.
             if os.path.isdir(keep):
@@ -532,6 +561,14 @@ def archive_other_pc(data):
             record("추가 PC 보관", not failed, 0.0,
                    f"{prev} → {os.path.basename(keep)}"
                    + (f" · 옮기지 못함: {', '.join(failed)}" if failed else ""))
+        if here_id:
+            # 식별자도 어떤 경우에도 남긴다(이름표와 같은 이유). 이것이 있어야 다음 실행이
+            # 이름이 바뀐 같은 PC 를 '다른 PC' 로 오해하지 않는다.
+            try:
+                with open(id_f, "w", encoding="utf-8") as f:
+                    f.write(here_id)
+            except OSError:
+                pass
         if here:
             # 이름표는 어떤 경우에도 남긴다 — 남기지 않으면 다음 실행이 같은 보관을 또 시도해
             # 한 번의 일시적 오류가 영구 손실로 번진다(검증 지적)
