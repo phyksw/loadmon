@@ -17,6 +17,7 @@ sender 계약: sender(prompt_text, tag, name) -> {"ok": bool, "reply": str, "err
 
   python team_report.py [취합폴더] [--snapshot] [--copilot]
 """
+import copy
 import csv
 import glob
 import io
@@ -485,7 +486,9 @@ def merge_candidates(agentic):
                 continue
             items.append({"name": nm, "logic": str(n.get("logic") or ""),
                           "reason": str(n.get("reason") or ""),
-                          "mm": _fnum(n.get("load_mm"), 0.0), "who": str(a.get("owner") or "")})
+                          "mm": _fnum(n.get("allocated_candidate_mm"), 0.0),
+                          "allocation_verified": n.get("allocated_candidate_mm") is not None,
+                          "who": str(a.get("owner") or "")})
     groups = []
     for it in items:
         hit = None
@@ -499,11 +502,13 @@ def merge_candidates(agentic):
                 break
         if hit is None:
             groups.append({"name": it["name"], "names": {it["name"]}, "logic": it["logic"],
-                           "reason": it["reason"], "mm": it["mm"], "who": {it["who"]}})
+                           "reason": it["reason"], "mm": it["mm"], "who": {it["who"]},
+                           "allocation_verified": it["allocation_verified"]})
         else:
             hit["names"].add(it["name"])
             hit["who"].add(it["who"])
             hit["mm"] += it["mm"]
+            hit["allocation_verified"] &= it["allocation_verified"]
             if len(it["name"]) > len(hit["name"]):
                 hit["name"] = it["name"]
             if len(it["logic"]) > len(hit["logic"]):
@@ -527,23 +532,21 @@ def heat(v, vmax):
 
 
 def find_member_file(mdir, prefix, tag):
-    r"""인별 폴더에서 산출물 하나 — **기간(tag)이 달라도 찾는다**(같은 이름이면 최신)."""
+    """현재 기간 파일만 선택한다. 없으면 누락이며 과거 파일을 대신 쓰지 않는다."""
+    if not _agg().valid_tag(tag):
+        return ""
     p = os.path.join(mdir, f"{prefix}_{tag}.json")
     if tag and os.path.exists(p):
         return p
-    fs = glob.glob(os.path.join(mdir, f"{prefix}_*.json"))
-    if not fs:
-        return ""
-    try:
-        return max(fs, key=os.path.getmtime)
-    except OSError:
-        return fs[-1]
+    return ""
 
 
 def collect_agentic_all(members):
-    """인별 Agentic 결과 — 기간이 달라도 모은다. 어떤 파일을 썼는지도 남긴다."""
+    """동일 비교 기간의 완료된 Agentic 결과만 모은다."""
     out = []
     for m in members:
+        if m.get("unreliable"):
+            continue
         p = find_member_file(m["dir"], "agentic", m.get("tag", ""))
         if not p:
             continue
@@ -552,14 +555,17 @@ def collect_agentic_all(members):
                 a = json.load(f)
         except (OSError, ValueError):
             continue
-        if not isinstance(a, dict):
+        if not _agg().artifact_current(a, m.get("tag")):
             continue
         a = _agg().norm_agentic(a)            # dict 항목만 · fit/load_mm 숫자 강제(화면 JS 도 이것을 믿는다)
         atag = str(a.get("tag") or "")
         out.append({"owner": m["owner"], "match": a.get("match") or [],
                     "new": a.get("new") or [], "misassigned": a.get("misassigned") or [],
                     "tag": atag, "file": os.path.basename(p),
-                    "other_period": bool(m.get("tag") and atag and atag != str(m["tag"]))})
+                    "other_period": False,
+                    "unique_related_work_mm": a.get("unique_related_work_mm"),
+                    "expected_saved_mm": None,
+                    "allocation_verified": a.get("allocation_verified", False)})
     return out
 
 
@@ -625,48 +631,123 @@ def stack_legend(owners):
         for i, o in enumerate(owners))
 
 
+def _flow_breakdown(fl, rows=None):
+    """현재 행으로 확인된 업무별 MM. 불완전한 계보는 None(검토 필요).
+
+    source_work_ids가 있으면 전부 유일한 현재 행에 대응해야 한다. 별칭을 거친
+    흐름 이름이나 저장된 fl.mm로 누락 ID를 대신하지 않는다. 구판은 정확한
+    (과제, 담당 업무)에 맞는 행이 하나일 때만 호환한다.
+    """
+    if rows is None:
+        return None
+    rows = [r for r in rows if isinstance(r, dict)]
+    if "source_work_ids" in fl:
+        ids = fl["source_work_ids"]
+        if (not isinstance(ids, list) or not ids
+                or any(not isinstance(value, str) for value in ids)
+                or len(ids) != len(set(ids))):
+            return None
+        indexed = {}
+
+        def unique_object(pairs):
+            obj = {}
+            for key, value in pairs:
+                if key in obj:
+                    raise ValueError("duplicate source work ID")
+                obj[key] = value
+            return obj
+
+        for row in rows:
+            amount = _fnum(row.get("_mm", row.get("mm")))
+            if amount is None or amount < 0:
+                return None
+            row_id = _agg().stable_work_id(row)
+            contribution = {row_id: amount}
+            if "source_work_mm" in row:
+                lineage = row["source_work_mm"]
+                try:
+                    if isinstance(lineage, str):
+                        lineage = json.loads(lineage, object_pairs_hook=unique_object)
+                except (TypeError, ValueError):
+                    return None
+                if not isinstance(lineage, dict) or not lineage:
+                    return None
+                weights = {}
+                for source_id, raw_weight in lineage.items():
+                    weight = _fnum(raw_weight)
+                    if (not isinstance(source_id, str)
+                            or not re.fullmatch(r"work_[0-9a-f]{24}", source_id)
+                            or isinstance(raw_weight, bool) or weight is None or weight < 0):
+                        return None
+                    weights[source_id] = weight
+                original = _fnum(sum(weights.values()))
+                if original is None or amount > original + max(1e-6, original * 1e-6):
+                    return None
+                scale = min(1.0, amount / original) if original else 0.0
+                # 병합 대표가 원본 ID와 같아도 그 원본 기여만 사용한다.
+                # 대표 행 전체 MM을 덮어씌우면 다른 원본의 업무량이 다시 붙는다.
+                contribution = {key: value * scale for key, value in weights.items()}
+            for source_id, value in contribution.items():
+                indexed.setdefault(source_id, []).append((value, str(row.get("Level 3") or "업무 미상")))
+        if any(len(indexed.get(value, [])) != 1 for value in ids):
+            return None
+        matched_values = [indexed[value][0] for value in ids]
+    else:
+        project, detail = flow_unit(fl)
+        matched = [row for row in rows
+                   if str(row.get("Level 2") or "").strip() == project
+                   and str(row.get("Level 3") or "").strip() == detail]
+        if not detail or len(matched) != 1:
+            return None
+        values = [_fnum(row.get("_mm", row.get("mm"))) for row in matched]
+        if any(value is None or value < 0 for value in values):
+            return None
+        matched_values = [(value, detail) for value in values]
+    breakdown = {}
+    for value, detail in matched_values:
+        breakdown[detail] = breakdown.get(detail, 0.0) + value
+    if _fnum(sum(breakdown.values())) is None:
+        return None
+    return breakdown
+
+
 def _flow_mm(fl, rows=None):
-    r"""이 흐름의 MM — 워크플로우 JSON 값이 비면 **본인 mm_rows 실측**으로 되살린다.
-    mm 칸이 'abc'·문자열·숫자 그대로여도 죽지 않는다(한 인원의 오형식이 보고서를 막지 않게)."""
-    mm = fl.get("mm")
-    if not isinstance(mm, dict):
-        v0 = _fnum(mm)
-        if v0:
-            return v0
-        mm = {}
-    v = _fnum(mm.get("mm"))
-    if v:
-        return v
-    d = mm.get("details")
-    if isinstance(d, dict) and d:
-        try:
-            return float(sum(float(v) for v in d.values()))
-        except (TypeError, ValueError):
-            pass
-    if not rows:
-        return 0.0
-    proj, det = flow_unit(fl)
-    if proj == "(과제 미상)":
-        proj = ""
-    tot = 0.0
-    for r in rows:
-        p2, d2 = ukey(r.get("Level 2")), ukey(r.get("Level 3"))
-        if det:
-            if (not proj or p2 == ukey(proj)) and d2 == ukey(det):
-                tot += r["_mm"]
-        elif proj and p2 == ukey(proj):
-            tot += r["_mm"]
-    return round(tot, 3)
+    amounts = _flow_breakdown(fl, rows)
+    return round(sum(amounts.values()), 3) if amounts is not None else None
+
+
+def apply_current_flow_amounts(workflow, rows):
+    """개인 화면·스냅샷·팀 복원의 흐름 수치를 현재 행 계보에 맞춘 복사본.
+
+    파일은 쓰지 않는다. 연결이 불완전해도 단계와 분기는 확인 목록에서 읽을 수
+    있게 보존하며, 오래된 mm/details 숫자로 빈칸을 채우지 않는다.
+    """
+    out = copy.deepcopy(workflow) if isinstance(workflow, dict) else {}
+    current_rows = rows if isinstance(rows, list) else []
+    for field in ("flows", "review_flows"):
+        if field not in out:
+            continue
+        updated = []
+        for raw in out[field] if isinstance(out[field], list) else []:
+            flow = norm_flow(raw, include_review=True)
+            if flow is None:
+                continue
+            amounts = _flow_breakdown(flow, current_rows)
+            amount = round(sum(amounts.values()), 3) if amounts is not None else None
+            mm = dict(flow.get("mm")) if isinstance(flow.get("mm"), dict) else {}
+            mm.update(mm=amount, details={key: round(value, 6) for key, value in (amounts or {}).items()})
+            flow.update(mm=mm, related_work_mm=amount, expected_saved_mm=None)
+            if amount is None:
+                flow.update(needs_review=True, kpi_eligible=False,
+                            review_reason="현재 업무 행과 흐름의 연결을 확인할 수 없음 — KPI 제외")
+            updated.append(flow)
+        out[field] = updated
+    return out
 
 
 def _flow_ax(fl):
-    """이 흐름 자체의 AX 비율 — 상 100% + 중 50%, 그 사람이 실제로 적은 단계 기준"""
-    st = [s for s in (fl.get("steps") or []) if isinstance(s, dict)]
-    if not st:
-        return 0.0
-    hi = sum(1 for s in st if (s.get("agent") or "") == "상")
-    mid = sum(1 for s in st if (s.get("agent") or "") == "중")
-    return (hi + mid * 0.5) / len(st)
+    """절감량은 단계 개수로 추정할 수 없다. 실증 입력 계약이 생기기 전에는 미검증."""
+    return None
 
 
 def _island(html_text, el_id):
@@ -683,20 +764,22 @@ def _island(html_text, el_id):
 def _flow_print(owner, fl):
     r"""흐름 지문 — (**사람**, 과제, 단계 구성, 역할). 사람을 빼면 같은 단계를 반복하는 두 사람의
     흐름이 '같은 자료'로 보여 한쪽이 통째로 버려진다(실측)."""
-    return (fold(str(owner)),
-            fold(fl.get("model")),
+    return (str(owner),
+            flow_unit(fl),
+            str(fl.get("branch") or "").strip(),
             frozenset(fold(s.get("name")) for s in (fl.get("steps") or []) if s.get("name")),
             fold(fl.get("role")))
 
 
 _STEP_STR = ("name", "agent", "cycle", "desc", "agent_how", "evidence")
-_FLOW_STR = ("model", "project", "detail", "role", "summary")
+_FLOW_STR = ("model", "project", "detail", "branch", "role", "summary")
 
 
-def norm_flow(fl):
+def norm_flow(fl, include_review=False):
     """흐름 하나를 믿을 수 있는 형태로 — dict 만, steps 는 list 의 dict 항목만, 표시 칸은 str.
     None 이면 버릴 흐름. (한 인원의 steps:'notalist'·[null,'x',5]·cycle:{…} 이 팀 보고서를 죽이던 결함)"""
-    if not isinstance(fl, dict) or not isinstance(fl.get("steps"), list):
+    if (not isinstance(fl, dict) or not isinstance(fl.get("steps"), list)
+            or (not include_review and (fl.get("needs_review") or fl.get("kpi_eligible") is False))):
         return None
     steps = []
     for s in fl["steps"]:
@@ -706,6 +789,9 @@ def norm_flow(fl):
         for k in _STEP_STR:
             if s2.get(k) is not None and not isinstance(s2[k], str):
                 s2[k] = str(s2[k])
+        if (s2.get("agent") not in ("상", "중", "하") or s2.get("needs_review")
+                or s2.get("evidence_status") == "invalid"):
+            s2["agent"] = ""
         steps.append(s2)
     fl2 = dict(fl, steps=steps)
     for k in _FLOW_STR:
@@ -714,7 +800,41 @@ def norm_flow(fl):
     return fl2
 
 
-def gather_flows(share, html_dir):
+def _personal_data(text, member):
+    """기간·작성자·완료 상태가 확인되는 개인 HTML 섬만 읽는다.
+
+    묶음 실행은 JSON을 사용한다. 외부 HTML에는 동일 실행이라는 증거가 없으므로
+    새 묶음의 빈 칸을 예전 개인 HTML로 채우지 않는다.
+    """
+    if os.path.basename(os.path.dirname(member.get("dir") or "")) == ".runs":
+        return None
+    o = _island(text, "lm-report-data")
+    if isinstance(o, dict):
+        info, workflow, rows = o, o.get("workflow"), o.get("rows")
+        frozen = False
+    else:
+        o = _island(text, "lm-frozen-data")
+        if not isinstance(o, dict):
+            return None
+        info = o.get("_lm")
+        if not isinstance(info, dict):
+            return None
+        dash = o.get("/api/dash") or {}
+        if not isinstance(dash, dict):
+            return None
+        workflow, rows = o.get("/api/workflow"), dash.get("rows")
+        frozen = True
+    tag = member.get("tag")
+    if (str(info.get("owner") or "").strip() != str(member.get("owner") or "").strip()
+            or info.get("tag") != tag or not _agg().artifact_current(info, tag)
+            or not _agg().artifact_current(o, tag)):
+        return None
+    if isinstance(workflow, dict) and not _agg().artifact_current(workflow, tag):
+        return None
+    return {"data": o, "info": info, "workflow": workflow, "rows": rows, "frozen": frozen}
+
+
+def gather_flows(share, html_dir, members=None):
     """워크플로우 재료 — ① 취합 폴더 인별 workflow_*.json ② 개인 리포트/얼린 보고서 HTML.
     같은 (사람, 과제) 는 단계가 많은 쪽 하나만 남기고, HTML 쪽은 지문이 같으면 버린다(이중 합산 방지).
     HTML 의 owner 가 인원(member.json)이 아니면 사람으로 세지 않고 src_n["external"] 에 이름만 남긴다
@@ -723,8 +843,10 @@ def gather_flows(share, html_dir):
     flows, src_n = {}, {"server": 0, "html": 0, "external": {}}
     prints = set()
     rows_by = {}                      # owner -> mm_rows (MM 되살리기용)
-    members = ag.load_members(share)
-    known = {_owner_key(m["owner"]) for m in members}
+    members = ag.load_members(share) if members is None else members
+    members = [m for m in members if not m.get("unreliable")]
+    known = {m["owner"]: m for m in members}
+    server_owners = set()
 
     def add_rows(owner, rows):
         out = []
@@ -738,7 +860,11 @@ def gather_flows(share, html_dir):
             r["_mm"] = mmv
             out.append(r)
         if out:
-            rows_by.setdefault(fold(str(owner)), out)
+            total = known.get(str(owner), {}).get("total_mm")
+            scale = ag.mm_scale(total, sum(r["_mm"] for r in out))
+            for row in out:
+                row["_mm"] *= scale
+            rows_by.setdefault(str(owner), out)
 
     def put(owner, fl, srckind):
         fl = norm_flow(fl)
@@ -755,11 +881,9 @@ def gather_flows(share, html_dir):
         fp = _flow_print(owner, fl)
         if srckind == "html" and fp in prints:
             return                       # 그 사람의 서버 취합분과 같은 자료 — 두 번 세지 않는다
-        key = (ukey(owner), ukey(model))
+        key = (str(owner), flow_unit(fl), str(fl.get("branch") or "").strip())
         cur = flows.get(key)
-        if cur is None or len(fl.get("steps") or []) > len(cur["fl"].get("steps") or []):
-            if cur is not None:          # 교체 — 옛 출처의 계수를 되돌린다(각주 합이 맞게)
-                src_n[cur["src"]] = max(0, src_n.get(cur["src"], 0) - 1)
+        if cur is None:
             flows[key] = {"owner": str(owner), "fl": fl, "_html": srckind == "html", "src": srckind}
             src_n[srckind] += 1
         prints.add(fp)
@@ -767,7 +891,7 @@ def gather_flows(share, html_dir):
     def put_html(who, fls):
         """HTML 출처 — 인원이 아니면 세지 않고 이름만 기록"""
         fls = fls if isinstance(fls, list) else []
-        if _owner_key(who) not in known:
+        if who not in known:
             src_n["external"][str(who)] = src_n["external"].get(str(who), 0) + len(fls)
             return False
         for fl in fls:
@@ -777,7 +901,8 @@ def gather_flows(share, html_dir):
     def drop_coarse():
         r"""한 사람이 '과제' 단위 흐름과 '과제 / 담당업무' 단위 흐름을 함께 냈으면 굵은 쪽을 버린다."""
         fine = {}
-        for (own, _mdl), v in flows.items():
+        for flow_key, v in flows.items():
+            own = flow_key[0]
             fl = v["fl"]
             base = fold(fl.get("project") or (str(fl.get("model") or "").split(" / ")[0]))
             if fl.get("detail") or " / " in str(fl.get("model") or ""):
@@ -785,6 +910,7 @@ def gather_flows(share, html_dir):
                 fine[(own, base)] += 1
         for key in [k for k in list(flows)
                     if (k[0], fold(str(flows[k]["fl"].get("model") or ""))) in fine
+                    and not flows[k]["fl"].get("branch")
                     and " / " not in str(flows[k]["fl"].get("model") or "")]:
             src = "html" if flows[key].get("_html") else "server"
             flows.pop(key, None)
@@ -793,42 +919,37 @@ def gather_flows(share, html_dir):
     for m in members:
         add_rows(m["owner"], m.get("rows"))       # 취합 엔진이 이미 읽어 둔 mm_rows
         p = os.path.join(m["dir"], f"workflow_{m.get('tag')}.json")
+        if os.path.exists(p):
+            server_owners.add(m["owner"])
         o = None
         try:
-            o = json.load(open(p, encoding="utf-8-sig")) if os.path.exists(p) else None
+            if os.path.exists(p):
+                with open(p, encoding="utf-8-sig") as stream:
+                    o = json.load(stream)
         except (OSError, ValueError):
             pass
-        if not isinstance(o, dict):              # '[1,2]' 한 파일이 팀 보고서를 죽이지 않게
+        if not ag.artifact_current(o, m.get("tag")):
             continue
+        server_owners.add(m["owner"])
         fls = o.get("flows")
         for fl in (fls if isinstance(fls, list) else []):
             put(m["owner"], fl, "server")
 
     if html_dir and os.path.isdir(html_dir):
-        for p in glob.glob(os.path.join(html_dir, "*.html")):
+        for p in sorted(glob.glob(os.path.join(html_dir, "*.html"))):
             try:
-                txt = open(p, encoding="utf-8", errors="replace").read()
+                with open(p, encoding="utf-8", errors="replace") as stream:
+                    txt = stream.read()
             except OSError:
                 continue
-            o = _island(txt, "lm-report-data")
-            if isinstance(o, dict) and isinstance(o.get("workflow"), dict):
-                who0 = str(o.get("owner") or "") or os.path.basename(p)
-                if put_html(who0, o["workflow"].get("flows")):
-                    add_rows(who0, o.get("rows"))     # 개인 리포트 섬에는 mm_rows 가 통째로 있다
-                continue
-            o = _island(txt, "lm-frozen-data")
-            if isinstance(o, dict) and isinstance(o.get("/api/workflow"), dict):
-                dash = o.get("/api/dash")
-                dash = dash if isinstance(dash, dict) else {}
-                lm = o.get("_lm")
-                lm = lm if isinstance(lm, dict) else {}
-                who = str(lm.get("owner") or "").strip()
-                if not who:
-                    who = re.sub(r"^LoadMonitor_보고서_|\.html$", "",
-                                 os.path.basename(p))
-                    who = re.sub(r"[_ ]?\d{4}-\d{2}-\d{2}.*$", "", who).strip("_ ") or who
-                if put_html(who, o["/api/workflow"].get("flows")):
-                    add_rows(who, dash.get("rows"))
+            for who, member in known.items():
+                if who in server_owners:
+                    continue
+                source = _personal_data(txt, member)
+                if source and isinstance(source["workflow"], dict):
+                    if put_html(who, source["workflow"].get("flows")):
+                        add_rows(who, source["rows"])
+                    break
     drop_coarse()
     return list(flows.values()), src_n, rows_by
 
@@ -861,45 +982,35 @@ def _sum_wt_rows(rows, wt):
             wt[k2] = wt.get(k2, 0.0) + mmv
 
 
-def collect_wt_html(html_dir):
-    r"""개인 HTML 에서 **화면이 보여주는 업무유형 값 그대로** 걷는다.
-    ① 얼린 보고서(lm-frozen-data): /api/extra 의 pivots.by_worktype(옛 사본은 /api/review), 없으면
-       /api/dash rows 합산.
-    ② 개인 PC 에서 만든 분석 리포트(lm-report-data): rows 합산. 복원 사본(rebuilt_from)은 제외."""
+def collect_wt_html(html_dir, members=()):
+    """확인된 현 기간 개인 HTML만 제공한다. 서버 CSV가 있으면 소비자가 CSV를 우선한다."""
     out = {}
     if not (html_dir and os.path.isdir(html_dir)):
         return out
-    for p2 in sorted(glob.glob(os.path.join(html_dir, "*.html"))):
+    for path in sorted(glob.glob(os.path.join(html_dir, "*.html"))):
         try:
-            txt = open(p2, encoding="utf-8", errors="replace").read()
+            with open(path, encoding="utf-8", errors="replace") as f:
+                text = f.read()
         except OSError:
             continue
-        who, wt, frozen = "", {}, False
-        o = _island(txt, "lm-frozen-data")
-        if isinstance(o, dict):
-            frozen = True
-            lm = o.get("_lm")
-            lm = lm if isinstance(lm, dict) else {}
-            who = str(lm.get("owner") or "").strip()
-            for k2, v in _pivot_bw(o).items():
-                mmv = _fnum(v.get("mm") if isinstance(v, dict) else v)
-                if mmv is not None:
-                    wt[str(k2)] = wt.get(str(k2), 0.0) + mmv
-            if not wt:
-                dash = o.get("/api/dash")
-                _sum_wt_rows((dash if isinstance(dash, dict) else {}).get("rows"), wt)
-        else:
-            o = _island(txt, "lm-report-data")
-            if not isinstance(o, dict) or str(o.get("rebuilt_from") or ""):
+        for member in members:
+            if member.get("unreliable"):
                 continue
-            who = str(o.get("owner") or "").strip()
-            _sum_wt_rows(o.get("rows"), wt)
-        if not (who and wt):
-            continue
-        k0 = ukey(who)
-        if k0 not in out or (frozen and not out[k0]["frozen"]):
-            out[k0] = {"owner": who, "frozen": frozen,
-                       "wt": {k2: round(v, 3) for k2, v in wt.items() if v}}
+            source = _personal_data(text, member)
+            if not source or source["info"].get("rebuilt_from"):
+                continue
+            wt = {}
+            _sum_wt_rows(source["rows"], wt)
+            if not wt and source["frozen"]:
+                for key, value in _pivot_bw(source["data"]).items():
+                    mm = _fnum(value.get("mm") if isinstance(value, dict) else value)
+                    if mm is not None:
+                        wt[str(key)] = mm
+            if wt:
+                scale = _agg().mm_scale(member.get("total_mm"), sum(wt.values()))
+                out.setdefault(ukey(member["owner"]), {
+                    "owner": member["owner"], "frozen": source["frozen"],
+                    "wt": {k: round(v * scale, 3) for k, v in wt.items()}})
     return out
 
 
@@ -937,6 +1048,12 @@ def cluster_flows(items, share, rows_by=None):
         if not det:                                   # 상위 개체 단위 — 유형으로 삼지 않는다
             coarse.append({"owner": it["owner"], "project": proj, "fl": fl})
             continue
+        amount = _flow_mm(fl, (rows_by or {}).get(it["owner"]))
+        if amount is None:
+            coarse.append({"owner": it["owner"], "project": proj, "fl": fl,
+                           "review_reason": "현재 업무 행과 흐름의 연결을 확인할 수 없음 — KPI 제외"})
+            continue
+        it = dict(it, related_work_mm=amount)
         s = sig(fl)
         hit = None
         for c in clusters:
@@ -968,15 +1085,12 @@ def cluster_flows(items, share, rows_by=None):
         who = sorted({it["owner"] for it in c["items"]})
         per = []
         for it in c["items"]:
-            v = _flow_mm(it["fl"], (rows_by or {}).get(fold(it["owner"])))
+            v = it["related_work_mm"]
             per.append((it, v))
         mm = sum(v for _it, v in per)
         mm_by = {}
         for it, v in per:
             mm_by[it["owner"]] = round(mm_by.get(it["owner"], 0.0) + v, 2)
-        ax_mm = round(sum(v * _flow_ax(it["fl"]) for it, v in per), 3)
-        ax_ratio = (ax_mm / mm) if mm else round(
-            sum(_flow_ax(it["fl"]) for it, _v in per) / max(1, len(per)), 3)
         pos, cnt, name_rep, agents, cycles = {}, {}, {}, {}, {}
         descs, hows = {}, {}
         for it in c["items"]:
@@ -987,7 +1101,10 @@ def cluster_flows(items, share, rows_by=None):
                 pos[k] = pos.get(k, 0) + i
                 cnt[k] = cnt.get(k, 0) + 1
                 name_rep.setdefault(k, s.get("name"))
-                a = s.get("agent") or "중"
+                a = s.get("agent") or ""
+                if (it["fl"].get("identity_schema") != 1
+                        or s.get("evidence_status") != "verified"):
+                    a = ""
                 agents.setdefault(k, {}).update({a: agents.get(k, {}).get(a, 0) + 1})
                 if s.get("cycle"):
                     cycles[k] = s["cycle"]
@@ -1000,7 +1117,7 @@ def cluster_flows(items, share, rows_by=None):
         keep = [k for k in cnt if cnt[k] * 2 >= n] or sorted(cnt, key=lambda k: -cnt[k])[:7]
         keep.sort(key=lambda k: pos[k] / cnt[k])
         all_steps = [{"name": name_rep[k],
-                      "agent": max(agents.get(k, {"중": 1}), key=lambda a: agents[k].get(a, 0)),
+                      "agent": max(agents.get(k, {"": 1}), key=lambda a: agents[k].get(a, 0)),
                       "cycle": cycles.get(k, ""), "n": cnt[k],
                       "desc": descs.get(k, ""), "how": hows.get(k, "")} for k in keep]
         steps = all_steps[:10]
@@ -1011,7 +1128,7 @@ def cluster_flows(items, share, rows_by=None):
         out.append({"project": c["project"], "detail": c["detail"],
                     "model": f'{c["project"]} / {c["detail"]}',
                     "who": who, "flows": n, "mm": round(mm, 2),
-                    "ax_mm": ax_mm, "ax_ratio": round(ax_ratio, 3),
+                    "related_work_mm": round(mm, 2), "expected_saved_mm": None,
                     "mm_by": mm_by, "cycle_top": (cyc.most_common(1)[0][0] if cyc else ""),
                     "steps": steps, "steps_total": len(all_steps),
                     "role": (roles[0] if roles else ""),
@@ -1027,20 +1144,20 @@ def group_by_project(clusters, rows_by=None):
     g = {}
     for c in clusters:
         k = ukey(c["project"])
-        d = g.setdefault(k, {"project": c["project"], "types": [], "mm": 0.0, "ax_mm": 0.0,
+        d = g.setdefault(k, {"project": c["project"], "types": [], "mm": 0.0,
+                             "expected_saved_mm": None,
                              "who": set(), "flows": 0})
         if len(str(c["project"])) > len(str(d["project"])):
             d["project"] = c["project"]
         d["types"].append(c)
         d["mm"] += c["mm"]
-        d["ax_mm"] += c["ax_mm"]
         d["who"].update(c["who"])
         d["flows"] += c["flows"]
     out = []
     for d in g.values():
         d["who"] = sorted(d["who"])
         d["mm"] = round(d["mm"], 2)
-        d["ax_mm"] = round(d["ax_mm"], 2)
+        d["related_work_mm"] = d["mm"]
         d["types"].sort(key=lambda c: (-len(c["who"]), -c["mm"]))
         d["shared"] = sum(1 for c in d["types"] if len(c["who"]) > 1)
         out.append(d)
@@ -1053,20 +1170,14 @@ _AGENT_C = {"상": "#1d8a4a", "중": "#c98a00", "하": "#8b929b"}
 
 
 def find_member_any(mdir, prefix, tag, exts=(".json",)):
-    """인별 폴더에서 prefix_*.확장자 하나 — tag 우선, 없으면 최신"""
-    for ext in exts:
-        p = os.path.join(mdir, f"{prefix}_{tag}{ext}")
-        if tag and os.path.exists(p):
-            return p
-    fs = []
-    for ext in exts:
-        fs += glob.glob(os.path.join(mdir, f"{prefix}_*{ext}"))
-    if not fs:
+    """명시한 기간의 산출물만 선택한다."""
+    if not _agg().valid_tag(tag):
         return ""
-    try:
-        return max(fs, key=os.path.getmtime)
-    except OSError:
-        return fs[-1]
+    for ext in exts:
+        path = os.path.join(mdir, f"{prefix}_{tag}{ext}")
+        if os.path.isfile(path):
+            return path
+    return ""
 
 
 def _parse_mm_rows(p, total_mm=None):
@@ -1083,7 +1194,7 @@ def _parse_mm_rows(p, total_mm=None):
                 v = float(r["mm"])
             except (TypeError, ValueError):
                 v = None
-        if v is None and total_mm:
+        if v is None and total_mm is not None:
             try:
                 v = float(r.get("share") or 0) * float(total_mm)
             except (TypeError, ValueError):
@@ -1102,6 +1213,8 @@ def _member_rows(mdir, tag, total_mm=None):
     """정제본 우선 — 개인 대시보드와 같은 규칙. 이 기간(tag) 파일이 하나라도 있으면 다른 기간이
     mtime 으로 이기지 못한다. total_mm 은 숫자로 강제('abc' 면 없는 것으로)."""
     total_mm = _fnum(total_mm)
+    if not _agg().valid_tag(tag):
+        return [], ""
     ref = os.path.join(mdir, f"mm_rows_{tag}_refined.csv") if tag else ""
     plain = os.path.join(mdir, f"mm_rows_{tag}.csv") if tag else ""
     ref = ref if (ref and os.path.exists(ref)) else ""
@@ -1113,31 +1226,6 @@ def _member_rows(mdir, tag, total_mm=None):
                 p = plain
         except OSError:
             pass
-    if not p:
-        refs = glob.glob(os.path.join(mdir, "mm_rows_*_refined.csv"))
-        plains = [x for x in glob.glob(os.path.join(mdir, "mm_rows_*.csv"))
-                  if not x.endswith("_refined.csv")]
-        if total_mm:
-            best, best_key = "", None
-            for c in refs + plains:
-                rows_c = _parse_mm_rows(c, total_mm)
-                if rows_c is None:
-                    continue
-                sc = sum(r["mm"] for r in rows_c)
-                try:
-                    mt = os.path.getmtime(c)
-                except OSError:
-                    mt = 0.0
-                key = (abs(sc - float(total_mm)), -mt)
-                if best_key is None or key < best_key:
-                    best, best_key = c, key
-            p = best
-        else:
-            cands = refs or plains
-            try:
-                p = max(cands, key=os.path.getmtime) if cands else ""
-            except OSError:
-                p = cands[-1] if cands else ""
     if not p:
         return [], ""
     rows = _parse_mm_rows(p, total_mm)
@@ -1166,7 +1254,7 @@ def member_report(mdir, member, out_dir):
                 o9 = json.load(f)
         except (OSError, ValueError):
             return {}
-        return o9 if isinstance(o9, dict) else {}
+        return o9 if _agg().artifact_current(o9, tag) else {}
 
     meta = _load_obj("mm_meta")
     wf = _load_obj("workflow")
@@ -1183,7 +1271,14 @@ def member_report(mdir, member, out_dir):
         period = ["", ""]
     d0, d1 = (str(period[0] or "").strip() or "?"), (str(period[-1] or "").strip() or "?")
     d0e, d1e = esc(d0), esc(d1)                 # 기간도 업로드된 값 — 제목·머리글에 그대로 박지 않는다
-    total = round(sum(r["mm"] for r in rows), 2) or _fnum(member.get("total_mm"), 0.0)
+    total = _fnum(member.get("total_mm"))
+    if total is None:
+        total = round(sum(r["mm"] for r in rows), 2)
+    scale = _agg().mm_scale(total, sum(r["mm"] for r in rows))
+    for row in rows:
+        row["mm"] *= scale
+    classified = round(sum(row["mm"] for row in rows), 3)
+    unallocated = round(max(0.0, total - classified), 3)
     avail = _fnum(member.get("avail_mm"))
     if avail is None:
         avail = _fnum(meta.get("avail_mm"))
@@ -1250,9 +1345,11 @@ def member_report(mdir, member, out_dir):
             f'{esc(k)}<span class="v">{v:.2f} MM</span></div>'
             for i, (k, v) in enumerate(by_pj)) + "</div>") if by_pj else ""
 
+    wf = apply_current_flow_amounts(wf, rows)
     fl_cards = []
-    flows_l = [norm_flow(f) for f in (wf.get("flows") if isinstance(wf.get("flows"), list) else [])]
+    flows_l = [norm_flow(f, include_review=True) for f in (wf.get("flows") if isinstance(wf.get("flows"), list) else [])]
     for i, f in enumerate([f for f in flows_l if f is not None]):
+        mmv = f.get("related_work_mm")
         st_l = f.get("steps") or []
         # 값은 업로드된 JSON — 화면에 낼 때 반드시 esc(order 칸의 저장형 XSS, 검증 확정)
         steps = "".join(
@@ -1263,16 +1360,15 @@ def member_report(mdir, member, out_dir):
             + (f'<div class="sub">근거: {esc(s.get("evidence"))}</div>'
                if s.get("evidence") else "")
             + f'</td><td class="agc"><span class="pill" '
-            f'style="background:{_AGENT_C.get(str(s.get("agent") or "중"), "#8b929b")}">'
-            f'Agent {esc(s.get("agent") or "중")}</span>'
+            f'style="background:{_AGENT_C.get(str(s.get("agent") or ""), "#8b929b")}">'
+            f'Agent {esc(s.get("agent") or "확인 필요")}</span>'
             + (f'<div class="sub">{esc(s.get("agent_how"))}</div>'
                if s.get("agent_how") else "") + "</td></tr>"
             for j, s in enumerate(st_l))
-        mm = f.get("mm")
-        mmv = _fnum(mm.get("mm") if isinstance(mm, dict) else mm)
-        mm_txt = f"{mmv:g} MM · " if mmv else ""
+        mm_txt = f"관련 업무 {mmv:g} MM · " if mmv is not None else "업무 MM 미확인 · "
+        branch_txt = f' / {esc(f["branch"])}' if f.get("branch") else ""
         fl_cards.append(
-            f'<details{" open" if i == 0 else ""}><summary>{esc(f.get("model"))}'
+            f'<details{" open" if i == 0 else ""}><summary>{esc(f.get("model"))}{branch_txt}'
             f'<span class="state">{mm_txt}단계 {len(st_l)}개 · '
             f'{esc(str(f.get("role") or "판단 유보").split("—")[0].strip())}</span></summary>'
             f'<div class="body"><div style="margin:2px 0 6px"><b>역할:</b> '
@@ -1300,10 +1396,9 @@ def member_report(mdir, member, out_dir):
     m_html = "".join(
         f"<tr><td><b>{esc(m.get('task'))}</b> {esc(m.get('name'))}</td>"
         f"<td class='num'>{_fint(m.get('fit'), 0)}%</td><td style='width:100px'>{_fitbar(m.get('fit'))}</td>"
-        f"<td class='num'><b>{_fnum(m.get('load_mm'), 0.0):.2f}</b>"
-        + (f"<div class='sub'>안분 {m.get('load_mm_split'):.2f}</div>"
-           if isinstance(m.get("load_mm_split"), (int, float))
-           and m.get("load_mm_split") != m.get("load_mm") else "")
+        f"<td class='num'><b>{_fnum(m.get('related_work_mm'), 0.0):.2f}</b>"
+        + (f"<div class='sub'>후보 안분 {m['allocated_candidate_mm']:.2f}</div>"
+           if m.get("allocated_candidate_mm") is not None else "<div class='sub'>안분 미확인</div>")
         + "</td><td>"
         + "".join(f'<span class="tag">{esc(w)}</span>' for w in (m.get("work") or []))
         + ("<div style='color:#c0392b;font-size:11px'>근거 없음 — 이 업무명을 자료에서 "
@@ -1315,6 +1410,7 @@ def member_report(mdir, member, out_dir):
     island = json.dumps({
         "kind": "lm-personal-report", "owner": owner, "host": member.get("host", ""),
         "period": [d0, d1], "tag": tag, "total_mm": total, "avail_mm": avail,
+        "classified_work_mm": classified, "unallocated_work_mm": unallocated,
         "load_pct": pct, "rows_file": rows_file, "rows": rows,
         "measure": m9.get("measure"), "coverage": m9.get("coverage"),
         "workflow": wf, "agentic": ag, "rebuilt_from": "팀서버 업로드 자료",
@@ -1399,9 +1495,11 @@ margin:1px 3px 1px 0;font-size:10.5px;color:#3d444c}}
 
 <div class="card"><h2>4. Agentic AI 과제 매칭</h2>
 <div style="overflow-x:auto"><table><tr><th>과제</th><th class="num" style="width:52px">적합률</th>
-<th></th><th class="num" style="width:78px">대체 로드 MM</th>
+<th></th><th class="num" style="width:78px">관련 업무 MM</th>
 <th>관련 업무 · 사유</th></tr>{m_html}</table></div></div>
 
+<div class="note">총 투입 추정 {total:.2f} MM · 분류된 업무 {classified:.2f} MM · 차이 {unallocated:.2f} MM.
+차이는 미배분·정제 제외 후보를 포함하며 다른 업무에 재배분하지 않습니다. 절감량은 미검증입니다.</div>
 <div class="note">이 리포트는 팀 서버에 올라온 분석 자료(mm_rows·mm_meta·workflow·agentic)로
 다시 만든 것입니다 — 본인 PC 에서 만든 얼린 보고서와 화면 구성은 같고, 대시보드 조작
 버튼만 없습니다.</div>
@@ -1456,9 +1554,15 @@ def rebuild_member_reports(share, html_dir, log=say):
     for m in members:
         owner = m["owner"]
         try:                # 한 사람의 오형식이 **뒤 순서 인원**의 복원까지 막던 결함 — 그 사람만 건너뛴다
-            own = [p for p in glob.glob(os.path.join(html_dir, "*.html"))
-                   if ukey(owner) in ukey(os.path.basename(p))
-                   and ("분석리포트" not in os.path.basename(p) or not _is_rebuilt(p))]
+            own = []
+            for existing in glob.glob(os.path.join(html_dir, "*.html")):
+                try:
+                    with open(existing, encoding="utf-8", errors="replace") as f:
+                        current = _personal_data(f.read(), m)
+                except OSError:
+                    continue
+                if current and not current["info"].get("rebuilt_from"):
+                    own.append(existing)
             if own:
                 kept += 1
                 stale += _drop_stale(owner)        # 진짜 리포트가 있으면 복원본은 군더더기
@@ -1960,6 +2064,8 @@ def cand_refine(share, cands, sender=None, log=say):
             hit["names"] = sorted(set(hit["names"]) | set(g["names"]) | {g["name"]})
             hit["who"] = sorted(set(hit["who"]) | set(g["who"]))
             hit["mm"] += g["mm"]
+            hit["allocation_verified"] = (hit.get("allocation_verified", False)
+                                          and g.get("allocation_verified", False))
             if len(g["logic"]) > len(hit["logic"]):
                 hit["logic"] = g["logic"]
             if len(g["reason"]) > len(hit["reason"]):
@@ -1972,7 +2078,7 @@ def cand_refine(share, cands, sender=None, log=say):
 
 
 def team_rows_matrix(members, share):
-    r"""과제×인원 · 업무유형을 **기간(tag)이 달라도** 다시 센다.
+    r"""과제×인원 · 업무유형을 현재 비교 기간의 행에서만 센다.
 
     행 MM 은 그 사람의 공식 투입(member.total_mm)에 맞춰 재스케일한다(배율 규칙은 aggregate.mm_scale
     한 곳) — 과제×인원·트리맵·세부·회의 배분·업무유형이 §1 투입과 같은 총량이 되게. 예전에는 업무유형만
@@ -2141,7 +2247,8 @@ def build_gantt(share, members, clusters, groups, owners=()):
             if not isinstance(r, dict):
                 continue
             mon = str(r.get("time") or "")[:7]
-            if not _MON_RE.fullmatch(mon):
+            if (not _MON_RE.fullmatch(mon) or
+                    not (m["tag"][:8] <= str(r.get("time") or "")[:10].replace("-", "") <= m["tag"][-8:])):
                 continue           # 날짜가 아닌 값('abcdefg')이 문자열 비교로 월 범위를 무한히 늘리던 결함
             pj = str(r.get("model") or r.get("project") or "").strip()
             dt = str(r.get("detail") or r.get("activity") or "").strip()
@@ -2362,29 +2469,20 @@ def render_full(share, html_dir, sender=None, log=say):
     따른다: 과제·업무는 누적바, Agentic 12과제는 히트맵 색. sender 가 있으면 계열/세부/후보/
     과제분류 캐시를 Copilot 으로 채우고(캐시 누적), 없으면 저장된 캐시만 적용한다."""
     ag = _agg()
-    data = ag.collect_team_data(share)
-    members = data["members"]
     lm = ag.load_members(share)
-    if len(lm) == len(members):
-        # 두 목록은 같은 폴더 순서다 — 항목끼리 붙여야 owner 이름이 같은 폴더 두 개도 제 폴더를 가리킨다
-        for m, src in zip(members, lm):  # noqa: B905
-            m["dir"] = src["dir"]
-    else:
-        mdirs = {m["owner"]: m["dir"] for m in lm}
-        for m in members:
-            m["dir"] = mdirs.get(m["owner"], "")
+    data = ag.collect_team_data(share, members=lm)
+    members = data["members"]
     stamp = time.strftime("%Y-%m-%d %H:%M")
     adjust = load_adjust(share, log)
 
-    # 기간이 달라도 모은다 — 예전 버전으로 올린 사람의 Agentic 이 빠지던 결함
-    agentic = collect_agentic_all([m for m in members if m["dir"]]) or (data.get("agentic") or [])
+    # 한 번 읽은 실행 포인터의 경로를 모든 섹션이 공유한다.
+    agentic = collect_agentic_all([m for m in members if m["dir"]])
     cands = merge_candidates(agentic)
     cands, n_cand = cand_refine(share, cands, sender, log)
     if n_cand:
         log(f"    신규 후보 통합: {n_cand}줄 합침 ({CAND_FILE} 누적)")
-    owners_all = list(dict.fromkeys(m["owner"] for m in members))
     # D5(b) — 측정 불충분(coverage.grade=unreliable) 인원은 §1 별도 표 · 팀 투입·순위·과제×인원·유형 분포에서 제외.
-    # Agentic·워크플로우·간트(그 사람 자신의 자료)는 그대로 둔다. 구판 자료(coverage 없음)는 비교에 들어간다.
+    # Agentic·워크플로우도 같은 포함 집합을 사용한다. 미상 신뢰도는 확인 전 비교 제외.
     members_cmp = [m for m in members if not m.get("unreliable")]
     members_x = [m for m in members if m.get("unreliable")]
     owners = list(dict.fromkeys(m["owner"] for m in members_cmp))
@@ -2392,14 +2490,18 @@ def render_full(share, html_dir, sender=None, log=say):
         log(f"    측정 불충분(비교 제외) {len(members_x)}명: {', '.join(m['owner'] for m in members_x)}")
 
     # ── 워크플로우 재료 ──
-    items, src_n, rows_by = gather_flows(share, html_dir)
+    items, src_n, rows_by = gather_flows(share, html_dir, members=lm)
     clusters, coarse = cluster_flows(items, share, rows_by) if items else ([], [])
+    review_flows = [flow for flow in coarse if flow.get("review_reason")]
+    coarse = [flow for flow in coarse if not flow.get("review_reason")]
     groups = group_by_project(clusters) if clusters else []
-    wf_owners = sorted({it["owner"] for it in items})
+    wf_owners = sorted({owner for cluster in clusters for owner in cluster["who"]})
     wf_mm = round(sum(c["mm"] for c in clusters), 2)
-    ax_total = round(sum(c["ax_mm"] for c in clusters), 2)
+    candidate_work_mm = round(sum(c["related_work_mm"] for c in clusters if c["agent_hi"]), 2)
 
     team_mm = round(sum(float(m.get("total_mm") or 0) for m in members_cmp), 2)
+    classified_mm = round(sum(m.get("classified_work_mm") or 0 for m in members_cmp), 2)
+    unallocated_mm = round(sum(m.get("unallocated_work_mm") or 0 for m in members_cmp), 2)
     n_ag = len(agentic)
 
     # ── 1. 인별 로드율 ──
@@ -2479,6 +2581,8 @@ def render_full(share, html_dir, sender=None, log=say):
             + ag.anomaly_badge(m)            # 'PC 기록 이상 N일 · 16h 초과 N일' — 개인 이상치 장부의 일수
             + ag.coverage_badge(m)           # 신뢰 / 주의 / 측정 불충분 (D5)
             + ag.cfg_badge(m)                # 산식 설정 상이 (팀 다수와 다른 분모)
+            + ("<div>비교 제외: " + esc(" · ".join(m.get("exclusion_reasons") or [])) + "</div>"
+               if m.get("unreliable") else "")
             + "</td></tr>")
 
     prog_html = _prog_section()
@@ -2487,9 +2591,8 @@ def render_full(share, html_dir, sender=None, log=say):
     if members_x:
         rows1x = (
             "<div style='margin-top:10px;border-top:1px dashed #e4e7eb;padding-top:8px'>"
-            "<div style='font-size:12px;font-weight:700;margin-bottom:2px'>측정 불충분 — 팀 투입·순위·과제×인원에서 제외 "
-            "<span class='state'>PC 가동 기록·창 샘플러·Outlook 일정이 모두 비어 근거가 파일 흔적뿐 — 수집 실패이지 "
-            "낮은 로드가 아닙니다</span></div><div style='overflow-x:auto'><table><tr><th>이름</th><th>파트</th>"
+            "<div style='font-size:12px;font-weight:700;margin-bottom:2px'>비교 조건 미충족 — 모든 팀 KPI에서 제외 "
+            "<span class='state'>기간·신뢰도·가용량·산식 설정·인원 식별을 확인해야 하는 자료이며 낮은 로드를 뜻하지 않습니다</span></div><div style='overflow-x:auto'><table><tr><th>이름</th><th>파트</th>"
             "<th>기간</th><th class='num'>투입</th><th class='num'>가용</th><th class='num'>로드율</th><th></th>"
             "<th>측정 방식</th><th>근거</th></tr>"
             + "".join(_row1(m, grey=True) for m in members_x) + "</table></div></div>")
@@ -2555,17 +2658,15 @@ def render_full(share, html_dir, sender=None, log=say):
         if any(g["name"] == EMPTY_PJ or EMPTY_PJ in g["names"] for g in np_rows):
             np_html += ('<div class="note">' + esc(EMPTY_PJ)
                         + " = 과제(Level 2) 칸이 비어 있던 행 — 그 PC 에서 정제하면 채워집니다.</div>")
-    data_note = ""
+    data_note = (f'<div class="note">총 투입 추정 {team_mm:.2f} MM · 분류된 업무 {classified_mm:.2f} MM · '
+                 f'차이 {unallocated_mm:.2f} MM. 차이는 미배분·정제 제외 후보를 포함하며 다른 업무에 '
+                 '재배분하지 않습니다. 실제 절감으로 해석할 수 없습니다.</div>')
     rescaled = [f"{o9}({i9.get('sum', 0):.2f}→{i9.get('total', 0):.2f})"
                 for o9, i9 in (wt_src or {}).items() if abs(i9.get("scale", 1.0) - 1.0) > 0.05]
     if rescaled:
         data_note += ('<div class="note" style="margin:6px 0 0">행 MM 합이 ①의 공식 투입과 달라 '
                       "투입에 맞춰 재스케일한 인원: " + esc(", ".join(rescaled))
-                      + " — 과제 열 합·트리맵·세부 구성은 이 배율로 맞춘 값입니다(정제본이 옛것이거나 "
-                      "다른 기간 자료를 가져온 경우).</div>")
-    if tag_fixed:
-        data_note += ('<div class="note" style="margin:6px 0 0">다른 기간 자료를 가져온 인원: '
-                      + esc(", ".join(tag_fixed)) + " — 기간이 달라도 빠지지 않게 했습니다.</div>")
+                      + " — 과제 열 합·트리맵·세부 구성은 같은 기간 행을 공식 총량에 배분한 값입니다.</div>")
     if meet_alloc:
         data_note += ('<div class="note" style="margin:6px 0 0">과제 미지정 회의·협업 '
                       f"{meet_alloc:.2f} MM 은 각자의 과제 비중대로 배분했습니다(추정) — "
@@ -2574,7 +2675,7 @@ def render_full(share, html_dir, sender=None, log=say):
         data_note += ('<div class="note" style="margin:6px 0 0">mm 자료를 찾지 못한 인원: '
                       + esc(", ".join(no_rows)) + " — 그 PC 에서 업로드하면 채워집니다.</div>")
     if members_x:
-        data_note += ('<div class="note" style="margin:6px 0 0">측정 불충분으로 과제×인원·유형 분포에서 제외한 인원: '
+        data_note += ('<div class="note" style="margin:6px 0 0">비교 조건 미충족으로 모든 KPI에서 제외한 인원: '
                       + esc(", ".join(m["owner"] for m in members_x))
                       + " — 그 사람의 과제 배분은 개인 리포트(개인리포트 폴더)를 보세요.</div>")
     so_owners = sorted(o for o, i in (wt_src or {}).items() if i.get("share_only"))
@@ -2584,11 +2685,11 @@ def render_full(share, html_dir, sender=None, log=say):
                       + " — 그 PC 에서 다시 업로드하면 채워집니다.</div>")
 
     # ── 3. 업무유형 분포 — 개인 HTML 화면 값 그대로, 없는 사람만 폴백 ──
-    html_wt = collect_wt_html(html_dir)
+    html_wt = collect_wt_html(html_dir, members_cmp)
     n_html_wt = 0
     for o in owners:
         hw = html_wt.get(ukey(o))
-        if hw:
+        if hw and not wt_src.get(o, {}).get("file"):
             wt[o] = dict(hw["wt"])
             n_html_wt += 1
             wt_src.setdefault(o, {})["file"] = ("개인 HTML(얼린 보고서)" if hw["frozen"]
@@ -2651,7 +2752,7 @@ def render_full(share, html_dir, sender=None, log=say):
         + (f"<div class='sub'>표기 {len(g['names'])}종 통합: "
            f"{esc(' / '.join(g['names'][:4]))}</div>" if len(g["names"]) > 1 else "")
         + f"</td><td>{''.join('<span class=tag>' + esc(w) + '</span>' for w in g['who'])}</td>"
-        f"<td class='num'>{g['mm']:.2f}</td>"
+        f"<td class='num'>{format(g['mm'], '.2f') if g.get('allocation_verified') else '안분 미확인'}</td>"
         f"<td class='dim'>{esc(g['logic'][:130])}</td></tr>"
         for g in cands) or "<tr><td colspan=4 class='dim'>발굴된 후보가 없습니다</td></tr>"
 
@@ -2672,7 +2773,7 @@ def render_full(share, html_dir, sender=None, log=say):
         f"style='width:{max(3, round(c['mm'] / cmax * 250))}px'></span></td>"
         f"<td class='num'><b>{c['mm']:.2f}</b></td>"
         f"<td class='num'>{len(c['who'])}명 · {c['flows']}건</td>"
-        f"<td class='num'>{c['ax_mm']:.2f}</td></tr>"
+        "<td class='num dim'>미검증</td></tr>"
         for c in clusters[:14]) or (
         "<tr><td colspan=5 class='dim'>담당 업무 단위 워크플로우가 없습니다</td></tr>")
     if len(clusters) > 14:
@@ -2680,7 +2781,7 @@ def render_full(share, html_dir, sender=None, log=say):
         wf_bars += (f"<tr><td class='dim'>나머지 {len(_r)}종</td><td></td>"
                     f"<td class='num dim'>{sum(c['mm'] for c in _r):.2f}</td>"
                     f"<td class='num dim'>{sum(c['flows'] for c in _r)}건</td>"
-                    f"<td class='num dim'>{sum(c['ax_mm'] for c in _r):.2f}</td></tr>")
+                    "<td class='num dim'>미검증</td></tr>")
 
     # ── 8. 자동화 우선순위 ──
     auto = sorted([c for c in clusters if c["agent_hi"]],
@@ -2689,7 +2790,7 @@ def render_full(share, html_dir, sender=None, log=say):
         f"<tr><td><b>{esc(c['detail'])}</b><div class='sub'>{esc(c['project'])}</div></td>"
         f"<td>{''.join('<span class=tag>' + esc(n) + '</span>' for n in c['agent_hi_names'])}</td>"
         f"<td class='num'>{len(c['who'])}명</td><td class='num'><b>{c['mm']:.2f}</b></td>"
-        f"<td class='num'>{c['ax_mm']:.2f}</td>"
+        "<td class='num dim'>미검증</td>"
         f"<td class='dim'>{esc(c['cycle_top'] or '-')}</td></tr>"
         for c in auto[:12]) or (
         "<tr><td colspan=6 class='dim'>'상'(자동화 가능) 판정 단계가 없습니다</td></tr>")
@@ -2700,7 +2801,7 @@ def render_full(share, html_dir, sender=None, log=say):
           "total": c["mm"]} for c in clusters[:14]], wf_owners, 280, 160)
 
     # ── 9-1. 담당 업무 활동 간트 (월별 · 신호 기준) ──
-    gantt_html = build_gantt(share, members, clusters, groups, owners_all)   # 간트는 본인 자료 — 전원
+    gantt_html = build_gantt(share, members_cmp, clusters, groups, owners)
 
     # ── 10. 과제별 워크플로우 (접이식) ──
     def _steps_tbl(steps, total=None):
@@ -2715,7 +2816,7 @@ def render_full(share, html_dir, sender=None, log=say):
             + (esc(s.get("desc")) or '<span class="dim">설명 없음</span>')
             + f'</td><td class="num" style="width:44px">{s["n"]}명</td>'
             f'<td class="agc"><span class="pill" '
-            f'style="background:{_AGENT_C.get(s["agent"], "#8b929b")}">Agent {esc(s["agent"])}</span>'
+            f'style="background:{_AGENT_C.get(s["agent"], "#8b929b")}">Agent {esc(s["agent"] or "확인 필요")}</span>'
             + (f'<div class="sub">{esc(s["how"])}</div>' if s.get("how") else "")
             + "</td></tr>" for i, s in enumerate(steps))
         return (body + tail) or (
@@ -2759,20 +2860,36 @@ def render_full(share, html_dir, sender=None, log=say):
 
     coarse_html = ""
     if coarse:
-        by_who = {}
+        branch_cards = []
         for x in coarse:
-            by_who.setdefault(x["owner"], set()).add(x["project"])
+            flow = x["fl"]
+            step_rows = "".join(
+                f'<tr><td class="ord">{i + 1}</td><td><b>{esc(step.get("name"))}</b></td>'
+                f'<td>{esc(step.get("desc"))}'
+                + (f'<div class="sub">근거: {esc(step.get("evidence"))}</div>' if step.get("evidence") else "")
+                + '</td><td>' + esc(step.get("agent") or "확인 필요")
+                + (f'<div class="sub">{esc(step.get("agent_how"))}</div>' if step.get("agent_how") else "")
+                + '</td></tr>' for i, step in enumerate(flow.get("steps") or []))
+            branch_cards.append(
+                f'<details><summary>{esc(x["owner"])} · {esc(x["project"])}'
+                f' / {esc(flow.get("branch") or "과제 전체")}</summary><div class="body">'
+                f'<div>{esc(flow.get("role"))}</div><div class="dim">{esc(flow.get("summary"))}</div>'
+                '<table><tr><th></th><th>단계</th><th>무슨 일 · 근거</th><th>AI 적합도</th></tr>'
+                + step_rows + '</table></div></details>')
         coarse_html = (
-            '<div class="card"><h2>과제(상위 개체) 단위로만 올라온 워크플로우 '
+            '<div class="card"><h2>과제 단위 워크플로우 '
             f'<span class="state">{len(coarse)}건 · 유형 분석에서 제외</span></h2>'
-            '<div class="note" style="margin:0 0 8px">프로젝트 하나에는 성격이 다른 업무가 여럿 '
-            '섞여 있어 하나의 일의 순서로 정의할 수 없습니다. 아래 인원은 담당 업무 단위 '
-            '워크플로우가 아직 없어 유형 분석에 넣지 않았습니다 — 그 PC 에서 LoadMonitor25 로 '
-            '[분석 실행](AI 판정)을 다시 돌리면 담당 업무 단위로 만들어집니다.</div>'
-            '<table><tr><th style="width:120px">이름</th><th>과제</th></tr>'
-            + "".join(f"<tr><td><b>{esc(w)}</b></td><td>"
-                      + "".join(f'<span class="tag">{esc(p)}</span>' for p in sorted(ps))
-                      + "</td></tr>" for w, ps in sorted(by_who.items())) + "</table></div>")
+            '<div class="note" style="margin:0 0 8px">과제 안의 여러 흐름과 단계 내용을 보존했습니다. '
+            '흐름별 업무량 안분 근거가 없어 담당 업무 유형 및 MM KPI에는 합산하지 않습니다. '
+            'AI 적합도는 검토 의견이며 실제 절감량은 미검증입니다.</div>'
+            + "".join(branch_cards) + "</div>")
+    if review_flows:
+        coarse_html += ('<div class="card"><h2>워크플로우 연결 확인 필요 — KPI 제외</h2>'
+                        '<div class="note">원본을 보존한 참고 항목입니다. 현재 기간 업무 행과 연결을 확인한 뒤 다시 분석하세요.</div>'
+                        '<table><tr><th>이름</th><th>업무</th><th>확인 사유</th></tr>'
+                        + "".join(f'<tr><td>{esc(item["owner"])}</td><td>{esc(item["fl"].get("model"))}</td>'
+                                  f'<td>{esc(item["review_reason"])}</td></tr>' for item in review_flows)
+                        + '</table></div>')
 
     island = json.dumps({"kind": "lm-team-report", "generated": stamp, "share": share,
                          "tasks": data.get("tasks") or [], "agentic": agentic,
@@ -2856,14 +2973,13 @@ textarea{{width:100%;height:64px;font:11px Consolas,monospace;margin-top:6px}}
 
 <div class="kpis">
 <div class="kpi"><div class="lb">인원</div><div class="vl">{len(members)}</div>
-<div class="nt">Agentic {n_ag}명 · 워크플로우 {len(wf_owners)}명{f' · 측정 불충분 {len(members_x)}명' if members_x else ''}</div></div>
+<div class="nt">Agentic {n_ag}명 · 워크플로우 {len(wf_owners)}명{f' · 비교 제외 {len(members_x)}명' if members_x else ''}</div></div>
 <div class="kpi"><div class="lb">팀 투입 MM</div><div class="vl">{team_mm:.2f}</div>
-<div class="nt">과제 {len(pj_groups)}개{' · 측정 불충분 인원 제외' if members_x else ''}</div></div>
+<div class="nt">과제 {len(pj_groups)}개{' · 비교 조건 미충족 인원 제외' if members_x else ''}</div></div>
 <div class="kpi"><div class="lb">담당 업무 유형</div><div class="vl">{len(clusters)}</div>
 <div class="nt">여러 명이 하는 유형 {sum(1 for c in clusters if len(c['who']) > 1)}종</div></div>
-<div class="kpi"><div class="lb">AX 가능 MM</div><div class="vl">{ax_total:.2f}</div>
-<div class="nt">워크플로우 MM {wf_mm:.2f} 의
-{round(ax_total / (wf_mm or 1) * 100)}%</div></div>
+<div class="kpi"><div class="lb">AI 적용 검토 대상 업무 MM</div><div class="vl">{candidate_work_mm:.2f}</div>
+<div class="nt">전체 흐름 업무 {wf_mm:.2f} MM · 예상 절감 미검증</div></div>
 </div>
 
 <!--SEC1--><div class="card"><h2>1. 인별 로드율 <span class="state">투입 MM ÷ 가용 MM · 야근은 상한 없이(하루 24h 물리 한계만) ·
@@ -2877,16 +2993,12 @@ textarea{{width:100%;height:64px;font:11px Consolas,monospace;margin-top:6px}}
 {treemap_html(pj_big + pj_small, np_rows)}{pj_stack}{pj_fold}{np_html}
 <div class="row" style="margin-top:8px">{stack_legend(owners)}</div>{data_note}</div>
 
-<div class="card"><h2>3. 업무유형 분포 <span class="state">인별 MM — 개인 HTML 화면 값
-그대로(HTML 이 없는 사람만 개인 자료 구성비 × ①의 투입 MM)</span></h2>
+<div class="card"><h2>3. 업무유형 분포 <span class="state">같은 기간의 업무 행을 공식 투입 MM에 배분 · 행이 없으면 검증된 같은 기간 HTML 참고</span></h2>
 {wt_stack}<div class="row" style="margin-top:6px">{wt_leg}</div></div>
 
 <div class="card"><h2>4. Agentic AI 12과제 적합률 × 인원
 <span class="state">세로 = 인원 · 가로 = 12과제(인원이 많아도 표 폭이 늘지 않습니다) ·
-색이 진할수록 적합률 높음 · 셀 클릭 = 제외/복원 · 이름 체크 해제 = 그 사람 제외</span></h2>
-{('<div class="note" style="margin:0 0 6px">다른 기간 결과를 쓴 인원: '
-  + esc(', '.join(other_period)) + ' — 기간이 달라도 결과를 가져왔습니다.</div>')
- if other_period else ''}
+색이 진할수록 적합률 높음 · MM은 match·신규 후보 전체에 중복 안분한 업무량(절감량 아님) · 구판 안분 미확인은 합계 제외 · 셀 클릭 = 제외/복원 · 이름 체크 해제 = 그 사람 제외</span></h2>
 <div id="pchks" style="margin:6px 0"></div>
 <div style="overflow-x:auto"><table id="agx"></table></div>
 <div style="margin-top:6px">{task_legend}</div>
@@ -2895,8 +3007,8 @@ textarea{{width:100%;height:64px;font:11px Consolas,monospace;margin-top:6px}}
 <textarea id="adjout" style="display:none" readonly></textarea></div></div>
 
 <div class="card"><h2>5. 팀에서 발굴된 신규 Agentic AI 후보
-<span class="state">담당자별로 나온 후보 중 비슷한 것은 합쳤습니다</span></h2>
-<div style='overflow-x:auto'><table><tr><th>후보</th><th>제안 인원</th><th class="num">대체 가능 ≈MM</th><th>로직</th></tr>
+<span class="state">담당자별 유사 후보를 합쳤습니다 · MM은 전체 후보 간 중복 안분한 업무량이며 예상·실제 절감은 미검증입니다</span></h2>
+<div style='overflow-x:auto'><table><tr><th>후보</th><th>제안 인원</th><th class="num">후보 안분 업무 MM</th><th>로직</th></tr>
 {rows_new}</table></div></div>
 
 <div class="card"><h2>6. 공통업무 — 자동화 우선 후보</h2>
@@ -2913,13 +3025,13 @@ Agent 가능성 <span class="pill" style="background:#1d8a4a">상</span> 자동�
 
 <div class="card"><h2>7. 유형별 비중 <span class="state">막대 = 합산 MM</span></h2>
 <div style='overflow-x:auto'><table><tr><th>담당 업무</th><th></th><th class="num">MM</th><th class="num">인원·흐름</th>
-<th class="num">AX 가능 MM</th></tr>{wf_bars}</table></div></div>
+<th class="num">예상 절감 MM</th></tr>{wf_bars}</table></div></div>
 
 <div class="card"><h2>8. 자동화 우선순위
 <span class="state">'상'(자동화 가능) 단계가 있는 담당 업무 — 여러 명이 하고 MM 이 클수록
-팀 차원 효과가 큽니다</span></h2>
+적용 검토 규모가 큽니다. 업무량은 절감량이 아니며 예상·실제 절감은 미검증입니다</span></h2>
 <div style='overflow-x:auto'><table><tr><th>담당 업무</th><th>자동화 가능 단계</th><th class="num">인원</th>
-<th class="num">MM</th><th class="num">AX 가능 MM</th><th>주기</th></tr>{auto_rows}</table></div></div>
+<th class="num">MM</th><th class="num">예상 절감 MM</th><th>주기</th></tr>{auto_rows}</table></div></div>
 
 <div class="card"><h2>9. 담당 업무 × 인원 <span class="state">누적바 = 사람별 MM</span></h2>
 {wf_stack}<div class="row" style="margin-top:8px">{stack_legend(wf_owners)}</div></div>
@@ -2931,7 +3043,7 @@ Agent 가능성 <span class="pill" style="background:#1d8a4a">상</span> 자동�
 {''.join(wf_cards) or '<div class="card"><div class="note">담당 업무 단위 워크플로우가 없습니다.</div></div>'}
 {coarse_html}
 {prog_html}
-<div class="note">원천: {esc(share)}{f' + {esc(html_dir)}' if src_n['html'] else ''} ·
+<div class="note">비교 기간: {esc(data.get("comparison_tag") or "미확인")} · 원천: {esc(share)}{f' + {esc(html_dir)}' if src_n['html'] else ''} ·
 개인 워크플로우 {len(items)}건(서버 {src_n['server']} · 개인 HTML {src_n['html']}) ·
 같은 (사람·업무)는 하나만 계상했습니다.{ext_note}</div>
 </div>
@@ -2953,7 +3065,7 @@ Agent 가능성 <span class="pill" style="background:#1d8a4a">상</span> 자동�
   var ti=tasks.findIndex(function(t){{return t.id===String(x[0]);}});
   var oi=owners.indexOf(String(x[1]));
   if(ti>=0&&oi>=0)exC.add(ti+","+oi);}});
- function mmOf(hit){{return hit.load_mm_split!=null?hit.load_mm_split:(hit.load_mm||0);}}
+ function mmOf(hit){{return hit.allocated_candidate_mm!=null?hit.allocated_candidate_mm:0;}}
  function heatSt(fit){{
   var al=Math.min(0.85,fit/100*0.85+0.08);
   return "background:rgba(42,120,214,"+al.toFixed(2)+");color:"+(fit>=45?"#fff":"#12151a");}}
@@ -2964,7 +3076,7 @@ Agent 가능성 <span class="pill" style="background:#1d8a4a">상</span> 자동�
   var h="<tr><th class=stick>이름</th>";
   tasks.forEach(function(tk){{
    h+="<th title=\\""+E(tk.name)+" — "+E(tk.desc)+"\\">"+E(tk.id)+"</th>";}});
-  h+="<th class=num>합계 ≈MM</th></tr>";
+  h+="<th class=num>안분 합계 MM</th></tr>";
   var sums=tasks.map(function(){{return 0;}}), fits=tasks.map(function(){{return [];}});
   ags.forEach(function(a,oi){{
    if(exP.has(oi))return;
@@ -2998,7 +3110,7 @@ Agent 가능성 <span class="pill" style="background:#1d8a4a">상</span> 자동�
      row+="<td class='cell num"+(off?" x":"")+"' style=\\""+(off?"":heatSt(hit.fit))
        +"\\" data-ti="+ti+" data-oi="+oi+" title=\\"\\u2248"+mmv.toFixed(2)
        +" MM\\"><b>"+E(hit.fit)+"%</b><br><span style='font-size:8.5px'>"
-       +mmv.toFixed(2)+"</span></td>";
+       +(hit.allocated_candidate_mm==null?"안분 미확인":mmv.toFixed(2))+"</span></td>";
     }}else row+="<td class='dim num'>·</td>";
    }});
    row+="<td class=num><b>"+ptot.toFixed(2)+"</b></td></tr>";
@@ -3052,7 +3164,8 @@ Agent 가능성 <span class="pill" style="background:#1d8a4a">상</span> 자동�
     doc3 = doc3.replace('<div class="top">팀 통합 보고서 ·',
                         '<div class="top">팀 통합 보고서 <b>v3 — 인별 로드율 제외</b> ·', 1)
     info = {"members": len(members), "agentic": n_ag, "clusters": len(clusters),
-            "coarse": len(coarse), "other_period": other_period, "wf_owners": len(wf_owners),
+            "coarse": len(coarse), "review_flows": len(review_flows),
+            "other_period": other_period, "wf_owners": len(wf_owners),
             "flows": len(items), "flows_html": src_n["html"], "generated": stamp}
     log(f"       인원 {len(members)}명 · Agentic {n_ag}명 · 담당 업무 유형 {len(clusters)}종"
         + (f" · 과제 단위만 {len(coarse)}건" if coarse else ""))

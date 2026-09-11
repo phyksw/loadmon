@@ -20,6 +20,7 @@ agentic·flow·freeze(분석리포트)·judge 가 같은 축을 쓰게 한다.
   여기 축(_fold3/ukey3/_note3)은 괄호 꼬리를 보존한다.
 """
 import csv
+import hashlib
 import json
 import os
 import re
@@ -37,6 +38,54 @@ KEY_SEP = "␟"                 # '␟' — JSON 키 "과제␟세부업무"
 SECTION_BUDGET = 6000              # 과제 하나의 목록이 이보다 크면 겹침 2줄로 나눈다
 BATCH_BUDGET = 7000                # Copilot 한 왕복 프롬프트 상한(입력 잘림 방지)
 MAX_ROUNDTRIPS = 12                # 세부 병합에 쓰는 왕복 상한 — flow 앞에서 끝없이 기다리지 않게
+
+
+def stable_id(kind, *parts):
+    """Opaque identity from explicit scope; never fuzzy-match across projects."""
+    # Keep exact names: even spelling variants may be explicitly separated by never.
+    normalized = [str(p) if p is not None else "" for p in parts]
+    raw = json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
+    return kind + "_" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+
+
+def stable_work_id(row):
+    return stable_id("work", row.get("Level 2"), row.get("Level 3"), row.get("유형"))
+
+
+def stable_signal_id(row, tag):
+    # Include the period and original activity content, not generated annotations.
+    return stable_id("sig", tag, *(row.get(k) for k in
+                     ("time", "source", "text", "who", "weight", "model", "project", "detail", "activity")))
+
+
+def analysis_fingerprint(root, tag, payload):
+    """Content proof for partial AI resume. Missing/unreadable proof never matches."""
+    try:
+        digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                                           allow_nan=False, separators=(",", ":")).encode("utf-8"))
+        paths = []
+        for directory in (root, os.path.join(root, "core"), os.path.join(root, "config")):
+            for name in os.listdir(directory):
+                if name.endswith(".py") or (directory.endswith("config") and name.endswith(".json")):
+                    paths.append(os.path.join(directory, name))
+        report = os.path.join(root, "report")
+        paths += [os.path.join(report, f"{prefix}_{tag}{suffix}") for prefix, suffix in
+                  (("signals", ".csv"), ("evidence", ".md"), ("refine_map", ".json"),
+                   ("mm_rows", ".csv"), ("mm_rows", "_refined.csv"), ("mm_meta", ".json"),
+                   ("pivots", ".json"), ("entities", ".json"))]
+        for path in sorted(paths):
+            digest.update(os.path.relpath(path, root).encode("utf-8"))
+            try:
+                content = hashlib.sha256()
+                with open(path, "rb") as stream:
+                    for block in iter(lambda: stream.read(1024 * 1024), b""):
+                        content.update(block)
+                digest.update(b"\0file\0" + content.digest())
+            except FileNotFoundError:
+                digest.update(b"\0missing\0")
+        return digest.hexdigest()
+    except (OSError, ValueError, TypeError):
+        return ""
 
 
 def _say(msg, log=print):
@@ -639,11 +688,11 @@ def pair_score(a, b, ev, never_keys, ctx):
         return NEG_INF, f"괄호 꼬리 상이('{note2(a)}' vs '{note2(b)}')"
     if _nums2(a) != _nums2(b):
         return NEG_INF, "숫자 토큰 상이(차수·버전)"
-    if ev.get("ukey2"):
-        return 10.0, "표기 동일(공백·구분자·대소문자만 다름)"
     pin = ctx.get("pinned") or set()
     if ukey2(a) in pin and ukey2(b) in pin:
         return NEG_INF, "둘 다 사용자 지정 과제(config\\projects.json)"
+    if ev.get("ukey2"):
+        return 10.0, "표기 동일(공백·구분자·대소문자만 다름)"
 
     sc, why = 0.0, []
     dice = bigram_dice(a, b)
@@ -766,6 +815,30 @@ def cluster2(names, W, order, cap):
 
 
 # ── 맵 만들기 ──────────────────────────────────────────────────────────────
+def validate_project_aliases(pmap, never_keys, ctx, cap=MAX_GROUP2):
+    """Apply today's hard constraints to whole cached/combined components."""
+    pmap = _flatten2_map(dict(pmap or {}))
+    groups = {}
+    for name in set(pmap) | set(pmap.values()):
+        groups.setdefault(_final2(pmap, name), set()).add(name)
+    invalid, rejects = set(), []
+    for group in groups.values():
+        members = sorted(group)
+        reasons = []
+        if len(members) > cap:
+            reasons.append("기존 병합 무리 상한 초과")
+        for i, a in enumerate(members):
+            for b in members[i + 1:]:
+                score, why = pair_score(a, b, {"ukey2": ukey2(a) == ukey2(b)}, never_keys, ctx)
+                if score == NEG_INF:
+                    reasons.append(why)
+        if reasons:
+            invalid.update(group)
+            rejects.append({"a": members[0], "b": members[-1], "why": "기존 병합 해제: " + "; ".join(sorted(set(reasons))),
+                            "members": members})
+    return {a: b for a, b in pmap.items() if a not in invalid and b not in invalid}, rejects
+
+
 def project_merge_map(rows, sigs=None, refmap=None, pinned=(), log=print):
     """과제(중위) 표기 병합 맵 → (pmap, 규칙 병합 수, 증거 병합 수, 기록).
 
@@ -819,9 +892,11 @@ def project_merge_map(rows, sigs=None, refmap=None, pinned=(), log=print):
                     ref_pairs.add(_pair2(pjs[i], pjs[j]))
 
     pmap, never_keys, never_raw = load_project_aliases()
+    original_pmap = dict(pmap)
+    pmap, cache_rejects = validate_project_aliases(pmap, never_keys, ctx)
     cached_reps = set(pmap.values())
     n_rule = n_ev = 0
-    pairs, rejects, absorbed = [], [], {}
+    pairs, rejects, absorbed = [], list(cache_rejects), {}
 
     def _canon2(group):
         """대표 — 캐시가 이미 대표로 쓰는 이름이 무리에 있으면 그것을 고정(방향 뒤집힘 방지),
@@ -887,8 +962,10 @@ def project_merge_map(rows, sigs=None, refmap=None, pinned=(), log=print):
             kind = "rule" if W.get(key, 0.0) >= 10.0 else "ev"
             _take(x, canon, why, kind)
 
-    pmap = _flatten2_map(pmap, log=log)
-    if n_rule or n_ev:
+    pmap, final_rejects = validate_project_aliases(pmap, never_keys, ctx)
+    rejects.extend(final_rejects)
+    pairs = [p for p in pairs if _final2(pmap, p["from"]) == p["to"]]
+    if n_rule or n_ev or pmap != original_pmap:
         try:
             save_project_aliases(pmap, never_raw, note=f"규칙 {n_rule} · 증거 {n_ev}")
         except OSError as e:
@@ -1226,7 +1303,7 @@ def ask_json(sender, prompt, tag, name, want_key, fresh=None):
         return {}, {"ok": False, "kind": "parse", "error": "응답에서 JSON 을 찾지 못함",
                     "hint": reply_diagnosis(reply, prompt), "fatal": False, "phase": "parse",
                     "reply_len": len(reply)}
-    return o, {"ok": True, "how": how, "model": str(res.get("model") or ""),
+    return o, {"ok": True, "how": how, "cut": bool(res.get("cut")), "model": str(res.get("model") or ""),
                "retry": res.get("retry"), "reply_len": len(reply)}
 
 

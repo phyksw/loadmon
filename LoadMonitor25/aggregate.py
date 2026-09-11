@@ -18,9 +18,11 @@ import io
 import json
 import math
 import os
+import re
 import sys
 import time
 from collections import defaultdict
+from datetime import datetime
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 
@@ -31,6 +33,12 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 # measure/coverage/cfg_used/tool_usage 가 통째로 없었고, 팀 통합보고서가 아예 안 만들어졌다).
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
+CORE = os.path.join(ROOT, "core")
+if CORE not in sys.path:
+    sys.path.insert(0, CORE)
+
+from bundles import resolve_member_dir  # noqa: E402 - embedded Python needs the core path first
+from details import stable_work_id as stable_work_id  # noqa: E402 - shared row identity re-export
 
 
 def esc(s):
@@ -66,28 +74,28 @@ def pct_text(v):
 
 
 def mm_scale(total_mm, rows_sum):
-    """행 MM 합 → 공식 투입(member.total_mm) 재스케일 배율 — **규칙은 여기 한 곳뿐**.
+    """행 합이 추정 총량을 넘을 때만 제한한다. 제외·미배분 MM을 생존 업무에 올리지 않는다.
 
-    §1(투입)·§2(과제×인원·트리맵)·§3(업무유형) 이 한 문서 안에서 같은 수치가 되게 한다.
-    정제본이 옛것이거나 다른 기간 파일을 가져오면 행 합이 공식값과 달라지는데, 그때 §2 만
-    행 합 그대로 두면 한 사람의 과제 열 합이 §1 투입의 몇 배로 보였다(검증 확정).
-    공식값이 없거나 행 합이 0 이면 1.0(행 그대로)."""
+    총 투입 추정과 분류된 업무 합계는 별개다. 차이는 미배분/제외 후보로 표시하며
+    임의 재배분이나 절감으로 보지 않는다. 공식값이 없거나 행 합이 0이면 원행을 유지한다.
+    """
     t, s = fnum(total_mm), fnum(rows_sum)
-    if not t or t <= 0 or not s or s <= 0:
+    if t is None or t < 0 or s is None or s <= 0:
         return 1.0
-    return t / s
+    return min(1.0, t / s)
 
 
 _NUM_KEYS = ("total_mm", "avail_mm", "load_pct", "worked_h", "overtime_h", "dropped_h")
 _CNT_KEYS = ("signals", "no_evidence_days", "absence_days", "gap_days", "anomaly_days", "long_days")
-_STR_KEYS = ("function", "tag", "host", "analyzed_at", "uploaded_at", "uploaded_from", "via")
+_STR_KEYS = ("function", "tag", "host", "analyzed_at", "uploaded_at", "uploaded_from", "via", "member_id")
 
 # ── D5: 측정 방식·신뢰도·산식 설정 (teamup.build 가 mm_meta 의 measure/coverage/cfg_used 를 올린다) ──
 # 수집 환경 차이(샘플러 유무·PC 기록 결측·설정)가 -9~-80pt 를 만드는데 표에서는 사람 차이로 읽혔다.
 MEASURE_KEYS = ("sampler_days", "pc_floor_days", "trace_window_days", "offsite_days", "manual_days",
                 "pc_record_days", "floor_blocked_passive_days", "pc_record_missing_days")
 CFG_KEYS = ("standardDayHours", "usePcFloor", "pcFloorNeeds", "dayWindow", "lunch", "dinner",
-            "tentativeMeetings", "holidays_n", "offsiteAsWork", "samplerGapBridgeMin")
+            "tentativeMeetings", "holidays_n", "offsiteAsWork", "samplerGapBridgeMin",
+            "machineRuntimeCountsAsHuman", "inferAbsenceApplied")
 GRADES = ("reliable", "caution", "unreliable")
 GRADE_LABEL = {"reliable": "신뢰", "caution": "주의", "unreliable": "측정 불충분"}
 GRADE_COLOR = {"reliable": "#0f7a3d", "caution": "#c98a00", "unreliable": "#c0122f"}
@@ -175,7 +183,25 @@ def norm_cfg_used(v):
 
 
 def is_unreliable(m):
-    return bool(((m or {}).get("coverage") or {}).get("grade") == "unreliable")
+    return bool(((m or {}).get("coverage") or {}).get("grade") not in ("reliable", "caution"))
+
+
+def valid_tag(tag):
+    """분석 기간 태그만 허용한다. 경로 조각·없는 날짜·역순 기간은 거부한다."""
+    if not isinstance(tag, str) or not re.fullmatch(r"\d{8}-\d{8}", tag):
+        return False
+    try:
+        start, end = (datetime.strptime(x, "%Y%m%d") for x in tag.split("-"))
+        return start <= end
+    except ValueError:
+        return False
+
+
+def artifact_current(obj, tag):
+    """이름이 현 기간인 파일도 내부 tag와 완료 상태를 다시 확인한다."""
+    return (isinstance(obj, dict) and valid_tag(tag)
+            and obj.get("tag", tag) == tag and not obj.get("stub")
+            and not obj.get("partial") and obj.get("ok") is not False)
 
 
 def measure_text(m):
@@ -216,7 +242,7 @@ def cfg_mismatch(members):
         votes[s] += 1
     top, n_top = max(votes.items(), key=lambda kv: kv[1])
     if n_top * 2 <= len(have):
-        return set()
+        return set(sig) if len(votes) > 1 else set()
     return {o for o, s in sig.items() if s != top}
 
 
@@ -232,12 +258,57 @@ def cfg_badge(m):
 
 
 def mark_members(members):
-    """load_members 끝에서 — measure/coverage/cfg_used 정규화 결과로 unreliable·cfg_diff 표식을 붙인다"""
-    diff = cfg_mismatch(members)
+    """동일 기간·측정 신뢰도·분모·산식 기준을 모든 비교 KPI에 한 번 적용한다.
+
+    요청 기간이 없는 팀 취합은 가장 최근 종료일의 기간을 명시적으로 선택한다.
+    다른 기간과 미상/불충분 자료는 명단에는 남기고 정량 비교에서는 제외한다.
+    """
+    tags = {m.get("tag") for m in members if valid_tag(m.get("tag"))}
+    tag = max(tags, key=lambda t: (t.split("-")[1], t.split("-")[0])) if tags else ""
+    diff = cfg_mismatch([m for m in members if m.get("tag") == tag and not is_unreliable(m)])
+    names = defaultdict(int)
+    ids = defaultdict(int)
     for m in members:
-        m["unreliable"] = is_unreliable(m)
+        names[m.get("owner")] += 1
+        if m.get("member_id"):
+            ids[m["member_id"]] += 1
+    for m in members:
+        reasons = []
+        if not valid_tag(m.get("tag")):
+            reasons.append("분석 기간 미확인")
+        elif m.get("tag") != tag:
+            reasons.append("팀 비교 기간과 다름")
+        if valid_tag(m.get("tag")) and m.get("period"):
+            expected = [datetime.strptime(x, "%Y%m%d").strftime("%Y-%m-%d")
+                        for x in m["tag"].split("-")]
+            if m["period"] != expected:
+                reasons.append("표시 기간과 산출물 기간 불일치")
+        if is_unreliable(m):
+            reasons.append("측정 불충분" if (m.get("coverage") or {}).get("grade") == "unreliable"
+                           else "측정 신뢰도 미확인")
+        if fnum(m.get("total_mm")) is None or fnum(m.get("total_mm"), -1) < 0:
+            reasons.append("투입 MM 미확인")
+        if fnum(m.get("avail_mm"), 0) <= 0:
+            reasons.append("가용 MM 미확인")
+        if not m.get("cfg_used") or fnum(m["cfg_used"].get("standardDayHours"), 0) <= 0:
+            reasons.append("산식 설정 미확인")
+        if m.get("owner") in diff:
+            reasons.append("산식 설정 상이")
+        if names[m.get("owner")] > 1:
+            reasons.append("동일 표시 이름 중복 — 확인 필요")
+        if ids.get(m.get("member_id"), 0) > 1:
+            reasons.append("동일 구성원 중복 폴더")
+        if m.get("stub") or m.get("partial"):
+            reasons.append("미완료 분석")
+        m["comparison_tag"] = tag
+        m["kpi_eligible"] = not reasons
+        m["exclusion_reasons"] = reasons
+        # 기존 화면도 동일 집합을 제외하도록 호환 필드를 유지한다.
+        m["unreliable"] = bool(reasons)
         m["cfg_diff"] = m.get("owner") in diff
         m["measure_text"] = measure_text(m)
+        if not reasons:
+            m["load_pct"] = round(m["total_mm"] / m["avail_mm"] * 100, 1)
     return members
 
 
@@ -300,11 +371,15 @@ def load_members(share):
     out = []
     for name in sorted(os.listdir(share)):
         d = os.path.join(share, name)
-        mp = os.path.join(d, "member.json")
-        if not os.path.isdir(d) or not os.path.exists(mp):
+        if not os.path.isdir(d) or name.startswith("."):
             continue
         try:
-            m = json.load(open(mp, encoding="utf-8-sig"))
+            d = resolve_member_dir(d)
+            mp = os.path.join(d, "member.json")
+            if not os.path.exists(mp):
+                continue
+            with open(mp, encoding="utf-8-sig") as stream:
+                m = json.load(stream)
             # 손으로 만든/편집한 member.json 이 형식을 벗어나면 그 사람만 건너뛴다
             # (owner 없는 한 명 때문에 팀 전체 취합이 죽던 것 — 검증 확정)
             if not isinstance(m, dict):
@@ -315,6 +390,10 @@ def load_members(share):
             m["owner"] = str(m["owner"]).strip()
             norm_member(m, name)
             tag = str(m.get("tag") or "")
+            if not valid_tag(tag):
+                m.update(rows=[], pivots={}, dir=d, file_at="")
+                out.append(m)
+                continue
             # 개인 대시보드와 같은 우선순위: refined(정제본)가 있으면 그것을
             rows_p = os.path.join(d, f"mm_rows_{tag}.csv")
             ref_p = os.path.join(d, f"mm_rows_{tag}_refined.csv")
@@ -329,11 +408,16 @@ def load_members(share):
                         print(f"[aggregate] {name}: 정제본이 원본보다 오래되어 원본을 씁니다")
                 except OSError:
                     rows_p = ref_p
-            m["rows"] = (list(csv.DictReader(open(rows_p, encoding="utf-8-sig", errors="replace")))
-                         if os.path.exists(rows_p) else [])
+            m["rows"] = []
+            if os.path.exists(rows_p):
+                with open(rows_p, encoding="utf-8-sig", errors="replace") as stream:
+                    m["rows"] = list(csv.DictReader(stream))
             m["rows"] = [r for r in m["rows"] if isinstance(r, dict)]
             pv_p = os.path.join(d, f"pivots_{tag}.json")
-            pv = (json.load(open(pv_p, encoding="utf-8-sig")) if os.path.exists(pv_p) else {})
+            pv = {}
+            if os.path.exists(pv_p):
+                with open(pv_p, encoding="utf-8-sig") as stream:
+                    pv = json.load(stream)
             if not isinstance(pv, dict):
                 print(f"[aggregate] {name}: pivots 파일이 객체가 아니라 무시합니다")
                 pv = {}
@@ -452,11 +536,12 @@ def load_agentic(m):
     if not os.path.exists(ap):
         return None
     try:
-        a2 = json.load(open(ap, encoding="utf-8-sig"))
+        with open(ap, encoding="utf-8-sig") as stream:
+            a2 = json.load(stream)
     except (OSError, ValueError):
         return None
-    if not isinstance(a2, dict):
-        print(f"[aggregate] {m.get('owner')}: agentic 파일이 객체가 아니라 무시합니다")
+    if not artifact_current(a2, m.get("tag")):
+        print(f"[aggregate] {m.get('owner')}: Agentic 기간/완료 상태를 확인할 수 없어 제외합니다")
         return None
     return norm_agentic(a2)
 
@@ -466,7 +551,7 @@ def norm_agentic(a2):
     out = dict(a2)
     for k in ("match", "new", "misassigned"):
         v = a2.get(k)
-        out[k] = [x for x in v if isinstance(x, dict)] if isinstance(v, list) else []
+        out[k] = [dict(x) for x in v if isinstance(x, dict)] if isinstance(v, list) else []
     for x in out["match"]:
         x["fit"] = fint(x.get("fit"), 0)
         x["load_mm"] = fnum(x.get("load_mm"), 0.0)
@@ -480,22 +565,51 @@ def norm_agentic(a2):
             x["work"] = [] if x.get("work") in (None, "") else [str(x.get("work"))]
     for x in out["new"]:
         x["load_mm"] = fnum(x.get("load_mm"), 0.0)
+    candidates = out["match"] + out["new"]
+    unique = fnum(a2.get("unique_related_work_mm"))
+    verified = a2.get("identity_schema") == 1 and unique is not None and unique >= 0
+    for x in candidates:
+        related = fnum(x.get("related_work_mm"))
+        allocated = fnum(x.get("allocated_candidate_mm"))
+        if (related is None or allocated is None or related < 0 or allocated < 0
+                or allocated > related + 0.005):
+            verified = False
+        work_ids = x.get("work_ids")
+        if (not isinstance(work_ids, list)
+                or any(not isinstance(w, str) or not re.fullmatch(r"work_[0-9a-f]{24}", w) for w in work_ids)
+                or (related and not work_ids)):
+            verified = False
+        x["related_work_mm"] = max(0.0, related if related is not None else x.get("load_mm", 0.0))
+        x["allocated_candidate_mm"] = allocated
+        # 이 계약에는 절감률·단계 시간 실증이 없다. AI 적합도를 절감률로 바꾸지 않는다.
+        x["expected_saved_mm"] = None
+    allocated_total = sum(fnum(x.get("allocated_candidate_mm"), 0.0) for x in candidates)
+    if unique is not None and abs(allocated_total - unique) > max(0.01, len(candidates) * 0.001):
+        verified = False
+    if not verified:
+        for x in candidates:
+            x["allocated_candidate_mm"] = None
+    out["unique_related_work_mm"] = unique if verified else None
+    out["expected_saved_mm"] = None
+    out["allocation_verified"] = verified
     return out
 
 
-def collect_team_data(share):
+def collect_team_data(share, members=None):
     """팀 뷰어 UI 용 실시간 취합 — 공유폴더를 읽어 시각화 가능한 JSON 을 만든다.
     team_aliases.json(Copilot 정리 결과)이 있으면 과제·세부업무 표기를 대표 이름으로 통합."""
-    members = load_members(share)
+    members = load_members(share) if members is None else members
     al = load_aliases(share)
     pj_map, dt_map = al["projects"], al["details"]
     tasks = []
     tp = os.path.join(ROOT, "config", "agentic_tasks.json")
     try:
-        tasks = json.load(open(tp, encoding="utf-8-sig")).get("tasks") or []
+        with open(tp, encoding="utf-8-sig") as stream:
+            tasks = json.load(stream).get("tasks") or []
     except (OSError, ValueError):
         pass
     out = {"share": share, "aliases": bool(pj_map or dt_map),
+           "comparison_tag": next((m.get("comparison_tag") for m in members), ""),
            "alias_n": len(pj_map) + len(dt_map), "members": [], "tasks": tasks,
            "matrix": {}, "details": {}, "wt": {}, "agentic": [], "common": [],
            # D5(b) — 측정 불충분(unreliable) 인원: 표에는 남되 팀 평균·순위·과제 매트릭스·유형 분포에서 뺀다
@@ -506,11 +620,16 @@ def collect_team_data(share):
     common_all = defaultdict(lambda: {"mm": 0.0, "models": set(), "who": set()})
     for m in members:
         who = m["owner"]
+        row_sum = sum(max(0.0, fnum(r.get("mm"), 0.0)) for r in m.get("rows", []))
+        classified = row_sum * mm_scale(m.get("total_mm"), row_sum)
+        total = fnum(m.get("total_mm"))
         out["members"].append({
             "owner": who, "function": m.get("function", ""),
             "period": m.get("period") or [], "tag": m.get("tag", ""),
-            "total_mm": m.get("total_mm") or 0.0,
-            "avail_mm": m.get("avail_mm") or 0.0,
+            "total_mm": m.get("total_mm"),
+            "classified_work_mm": round(classified, 3),
+            "unallocated_work_mm": round(max(0.0, total - classified), 3) if total is not None else None,
+            "avail_mm": m.get("avail_mm"),
             "load_pct": m.get("load_pct"),
             "signals": m.get("signals"), "worked_h": m.get("worked_h"),
             "no_evidence_days": m.get("no_evidence_days"),
@@ -524,6 +643,10 @@ def collect_team_data(share):
             "tool_usage": m.get("tool_usage"),
             "measure_text": m.get("measure_text", ""),
             "unreliable": bool(m.get("unreliable")), "cfg_diff": bool(m.get("cfg_diff")),
+            "kpi_eligible": bool(m.get("kpi_eligible")),
+            "exclusion_reasons": m.get("exclusion_reasons") or [],
+            "comparison_tag": m.get("comparison_tag", ""),
+            "member_id": m.get("member_id", ""), "dir": m.get("dir", ""),
             # 누가·언제·어디서 (없으면 빈 값 — 옛 클라이언트가 올린 자료도 그대로 표시된다)
             "host": m.get("host", ""), "analyzed_at": m.get("analyzed_at", ""),
             "uploaded_at": m.get("uploaded_at", ""),
@@ -555,7 +678,10 @@ def collect_team_data(share):
         if a2 is not None:
             out["agentic"].append({"owner": who, "match": a2.get("match") or [],
                                    "new": a2.get("new") or [],
-                                   "misassigned": a2.get("misassigned") or []})
+                                   "misassigned": a2.get("misassigned") or [],
+                                   "unique_related_work_mm": a2.get("unique_related_work_mm"),
+                                   "expected_saved_mm": None,
+                                   "allocation_verified": a2.get("allocation_verified", False)})
     out["matrix"] = {k: dict(v) for k, v in
                      sorted(matrix.items(), key=lambda kv: -sum(kv[1].values()))}
     out["details"] = {k: dict(v) for k, v in
@@ -572,13 +698,16 @@ def build_team_agentic(share, members):
     """팀 Agentic AI 취합 — team_report.html 과 별도 HTML.
     ① 실제 팀 로드율 ② 12과제 × 인원 적합률·로드 매트릭스 ③ 팀 발굴 후보 통합"""
     tasks = []
-    tp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config", "agentic_tasks.json")
+    tp = os.path.join(ROOT, "config", "agentic_tasks.json")
     try:
-        tasks = json.load(open(tp, encoding="utf-8-sig")).get("tasks") or []
+        with open(tp, encoding="utf-8-sig") as stream:
+            tasks = json.load(stream).get("tasks") or []
     except (OSError, ValueError):
         pass
     ags = []
     for m in members:
+        if m.get("unreliable"):
+            continue
         a2 = load_agentic(m)
         if a2 is not None:
             ags.append((m, a2))
@@ -590,7 +719,7 @@ def build_team_agentic(share, members):
          ".tag{display:inline-block;background:#f0f3f7;border-radius:3px;padding:1px 6px;",
          "margin:1px 2px;font-size:11px}</style>",
          f"<h1>팀 Agentic AI 취합</h1><p class='dim'>인원 {len(members)}명 중 Agentic 분석 "
-         f"{len(ags)}명 · 적합률 = 그 과제가 그 사람의 현재 업무를 자동화·대체할 수 있는 정도</p>"]
+         f"{len(ags)}명 · 적합률 = 그 과제의 업무 적용 가능성에 대한 AI 판정(절감률 아님)</p>"]
 
     # ① 실제 팀 로드율
     h.append("<h2>1. 실제 팀 로드율</h2><table><tr><th>이름</th><th>투입 MM</th><th>가용 MM</th>"
@@ -601,18 +730,18 @@ def build_team_agentic(share, members):
                  f"<td>{fnum(m.get('total_mm'), 0.0):.2f}</td>"
                  f"<td>{fnum(m.get('avail_mm'), 0.0):.2f}</td>"
                  f"<td><b>{pct_text(m.get('load_pct'))}</b>"
-                 f"{' <span class=dim>(측정 불충분 — 비교 제외)</span>' if m.get('unreliable') else ''}</td>"
+                 f"{' <span class=dim>(비교 조건 미충족)</span>' if m.get('unreliable') else ''}</td>"
                  f"<td>{'완료' if any(x[0] is m for x in ags) else '<span class=dim>미실행</span>'}</td></tr>")
     h.append("</table>")
 
     # ② 12과제 × 인원 적합률(로드) 매트릭스 + 과제별 팀 합계
     h.append("<h2>2. Agentic AI 12과제 적합률 — 과제 × 인원</h2>"
-             "<div class='dim'>셀 = 적합률% (그 사람의 대체 가능 로드 MM) · "
-             "합계 로드가 큰 과제일수록 팀 차원의 자동화 효과가 크다 · "
-             "적합률·로드 MM은 <b>Copilot 판정치(≈)</b>다 — 1절의 실측 MM과 다르다</div>"
+             "<div class='dim'>셀 = AI 적합률% (전체 후보 간 중복 안분 업무 MM) · "
+             "관련 업무량은 절감량이 아니며 예상·실제 절감은 미검증입니다 · "
+             "구판 안분 미확인은 합계 제외, 관련 업무는 재분석으로 확인합니다</div>"
              "<table><tr><th>축</th><th>과제</th>"
              + "".join(f"<th>{esc(m['owner'])}</th>" for m, _a in ags)
-             + "<th>팀 합계 로드 ≈</th></tr>")
+             + "<th>팀 안분 업무 합계</th></tr>")
     rank = []
     tasks = [t for t in tasks if isinstance(t, dict)]
     for t in tasks:
@@ -621,8 +750,9 @@ def build_team_agentic(share, members):
             hit = next((x for x in (a.get("match") or []) if x.get("task") == t.get("id")), None)
             if hit and fint(hit.get("fit"), 0) > 0:
                 # fit·load_mm 은 업로드된 JSON 값 — 숫자로 강제한 뒤에만 쓴다(저장형 XSS, 검증 확정)
-                lm = fnum(hit.get("load_mm"), 0.0)
-                cells += (f"<td><b>{fint(hit.get('fit'), 0)}%</b> ({lm:.2f})</td>")
+                lm = fnum(hit.get("allocated_candidate_mm"), 0.0)
+                cells += (f"<td><b>{fint(hit.get('fit'), 0)}%</b> "
+                          f"({format(lm, '.2f') if hit.get('allocated_candidate_mm') is not None else '안분 미확인'})</td>")
                 tot += lm
             else:
                 cells += "<td class='dim'>-</td>"
@@ -633,7 +763,7 @@ def build_team_agentic(share, members):
     rank.sort(key=lambda x: -x[1])
     top = [f"{t.get('id')}({v:.2f}MM)" for t, v in rank[:3] if v > 0]
     if top:
-        h.append(f"<div class='dim'>팀 우선순위 제안(Copilot 판정 로드 기준): {esc(' → '.join(top))}</div>")
+        h.append(f"<div class='dim'>팀 적용 검토 순위(중복 안분 업무량 기준): {esc(' → '.join(top))}</div>")
 
     # ③ 팀 발굴 후보 통합 + 오할당 요약
     h.append("<h2>3. 팀에서 발굴된 신규 Agentic AI 후보</h2>")
@@ -642,7 +772,7 @@ def build_team_agentic(share, members):
         for n2 in (a.get("new") or []):
             any_new = True
             h.append(f"<div style='margin:8px 0'>· <b>{esc(n2.get('name'))}</b> "
-                     f"<span class='dim'>제안 {esc(m['owner'])} · 대체 가능 ≈ {fnum(n2.get('load_mm'), 0.0):.2f} MM</span><br>"
+                     f"<span class='dim'>제안 {esc(m['owner'])} · 안분 업무 {format(n2['allocated_candidate_mm'], '.2f') if n2.get('allocated_candidate_mm') is not None else '미확인'} MM</span><br>"
                      f"<span class='dim'>로직: {esc(n2.get('logic'))} / 사유: {esc(n2.get('reason'))}</span></div>")
     if not any_new:
         h.append("<div class='dim'>발굴된 후보가 없습니다.</div>")
@@ -733,7 +863,7 @@ def main():
     rescaled = []                  # 행 합이 공식 투입과 달라 재스케일된 인원 — 표에 밝힌다
     # D5(b) — 측정 불충분(coverage.grade=unreliable: PC 기록·샘플러·달력이 모두 결측) 인원은 팀 평균·순위·
     # 재스케일(mm_scale)·과제 매트릭스에서 빼고 §1 에 별도 표로 둔다. 파일만 수집된 사람(36%)이 '정상
-    # 결과' 로 표에 섞이던 것을 막는다. 구판 자료(coverage 없음)는 예전처럼 비교에 들어간다.
+    # 결과' 로 표에 섞이던 것을 막는다. 구판 자료(coverage 없음)는 확인 전 비교에서 제외한다.
     members_cmp = [m for m in members if not m.get("unreliable")]
     members_x = [m for m in members if m.get("unreliable")]
     for m in members_cmp:
@@ -773,7 +903,7 @@ def main():
          "padding:5px 8px;text-align:left;font-size:13px}th{background:#f5f7fa}",
          "h2{margin:26px 0 4px;font-size:17px}.dim{color:#888;font-size:12px}</style>",
          f"<h1>팀 업무 로드율 총괄</h1><p class='dim'>공유폴더: {esc(share)} · 인원 {len(members)}명"
-         + (f"(측정 불충분 {len(members_x)}명은 비교 제외)" if members_x else "")
+         + (f"(비교 조건 미충족 {len(members_x)}명은 비교 제외)" if members_x else "")
          + " · MM = 주40시간(평일 8h) 가동시간 기준, 야간은 산출물 있는 날만 인정</p>"]
 
     def _row1(m, grey=False):
@@ -782,7 +912,7 @@ def main():
         pct = m.get("load_pct")
         if pct is None and av:
             pct = round(t / av * 100, 1)
-        warn = []
+        warn = list(m.get("exclusion_reasons") or [])
         if m.get("no_evidence_days"):
             warn.append(f"무흔적 평일 {m['no_evidence_days']}일")
         if m.get("gap_days"):
@@ -814,9 +944,8 @@ def main():
         h.append(_row1(m))
     h.append("</table>")
     if members_x:
-        h.append("<h3 style='font-size:14px;margin:4px 0'>측정 불충분 — 팀 평균·순위·과제 매트릭스에서 제외</h3>"
-                 "<p class='dim'>PC 가동 기록·창 샘플러·Outlook 일정이 모두 비어 투입 시간의 근거가 파일 흔적뿐인 인원 — "
-                 "수집 실패이지 낮은 로드가 아닙니다. 그 PC 에서 수집을 살린 뒤 다시 올리면 비교에 들어갑니다.</p>" + HEAD1)
+        h.append("<h3 style='font-size:14px;margin:4px 0'>비교 조건 미충족 — 모든 팀 KPI에서 제외</h3>"
+                 "<p class='dim'>기간·신뢰도·가용량·산식 설정·인원 식별을 확인해야 하는 자료이며 낮은 로드를 뜻하지 않습니다.</p>" + HEAD1)
         for m in members_x:
             h.append(_row1(m, grey=True))
         h.append("</table>")
@@ -824,7 +953,7 @@ def main():
     h.append("<h2>2. 과제 × 인원 (MM)</h2>"
              + ("<p class='dim'>행 MM 합이 공식 투입(1절)과 달라 투입에 맞춰 재스케일한 인원: "
                 + esc(", ".join(rescaled)) + "</p>" if rescaled else "")
-             + ("<p class='dim'>측정 불충분으로 제외한 인원: "
+             + ("<p class='dim'>비교 조건 미충족으로 제외한 인원: "
                 + esc(", ".join(m["owner"] for m in members_x))
                 + " — 과제 배분은 그 사람의 개인 리포트를 보세요</p>" if members_x else "")
              + "<table><tr><th>과제</th>"

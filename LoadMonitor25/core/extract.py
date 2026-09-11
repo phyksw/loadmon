@@ -9,7 +9,7 @@ v3 변경 (사용자 피드백 반영):
                   (문서 20분당 1.0보다 촘촘하게) — "개발 MM이 적게 잡힌다" 보정.
   · 출처 명시    — 모든 신호에 출처가 남고, 소스별 채택/제외 건수를 meta로 반환한다 (데이터 출처 확인용).
 
-MM은 절대시간이 아니라 기간 대비 비율(share)이다. 합이 항상 100%.
+총 투입 MM은 추정 시간/월 표준시간, 업무별 share는 신호 가중 배분이다. 정확한 업무별 실측시간은 아니다.
 
 LM22 (로드율 보완):
   · 상한 폐기    — 출력 worked 를 자르던 16h 상한·연차 4h 클램프 삭제. 입력의 물리 한계(PC on≤24·
@@ -831,7 +831,8 @@ def _file_times(data_dir, d0, d1, exclude=(), cfg=None, burst_n=None, self_names
     hit = _text_filter(exclude)
     all_rows = _file_rows(data_dir)
     if self_names is None:
-        self_names = _self_names(data_dir, cfg, all_rows)
+        self_names = _self_names(data_dir, cfg, [r for r in all_rows
+                                 if (t := _dt(r.get("mtime"))) and d0 <= t.date() <= d1])
     rows, seen = [], set()
     pm_by_root = defaultdict(Counter)
     ext_by_key = defaultdict(Counter)           # (date, 분, 폴더) → 확장자 분포(해석 출력형 판정)
@@ -965,7 +966,8 @@ def load_signals(data_dir, d0, d1, exclude=(), cfg=None):
     all_frows = _file_rows(data_dir)
     # '나' 의 이름 집합(owner·계정·teamsSelfNames·mail_source me — 전부 비면 author 최빈값, VF-H2) — 파일 author(A14)·
     # 내가 보낸 메일의 수신 사본(A29) 판정에 쓴다. 이름은 meta 에도 싣지 않는다(다수결 적용은 config_warnings 한 줄, 이름 가림).
-    self_names = _self_names(data_dir, cfg, all_frows, warns=cfg_warns)
+    self_names = _self_names(data_dir, cfg, [r for r in all_frows
+                             if (t := _dt(r.get("mtime"))) and d0 <= t.date() <= d1], warns=cfg_warns)
     sig = []
     meta = {"counted": Counter(), "excluded": Counter(), "weights": {}, "config_warnings": cfg_warns,
             "view_only": 0, "author_excluded": 0}
@@ -1020,7 +1022,11 @@ def load_signals(data_dir, d0, d1, exclude=(), cfg=None):
     # ── 메일: 발신 > 직접수신 > CC. 단체발송·공지·수신전용 발신자는 업무 증거로 쓰지 않는다 ──
     notice = [str(x).strip().lower() for x in (cfg_list(cfg, "noticeSenders") or NOTICE_DEFAULT)
               if str(x).strip()]
-    mail_rows = _read_multi(data_dir, "outlook", "mail.csv")
+    mail_rows = []
+    for r in _read_multi(data_dir, "outlook", "mail.csv"):
+        t = _pt(r.get("time"))
+        if t and d0 <= (t + _td(hours=mail_off)).date() <= d1:
+            mail_rows.append(r)
     # 행동 기반 판별의 재료: 내가 발신한 대화(conversation) 집합 + 발신자별 수신 횟수
     sent_conv = {(r.get("conversation") or "").strip().lower()
                  for r in mail_rows if r.get("box") == "sent"} - {""}
@@ -1252,9 +1258,10 @@ def load_signals(data_dir, d0, d1, exclude=(), cfg=None):
     # ── 수동 기록(A13): collect/Add-WorkLog.ps1 의 worklog.csv — PC 밖 업무(출장·조립·현장) ──
     # 시간은 day_work_hours 가 manual_hours 로 하한 인정한다. 여기서는 과제 배분 근거(시간당 2.0)와
     # 능동 흔적(NIGHT_PRODUCTIVE)만 — 세션은 만들지 않는다(signalMinutes 0).
-    for dd, (mh, texts) in sorted(manual_hours(data_dir, d0, d1).items()):
-        add(datetime(dd.year, dd.month, dd.day, 9, 0), "수동기록",
-            (" · ".join(texts) or "수동 기록")[:120], mh * W["수동기록_시간당"], "수동기록", "나")
+    for dd, mh, text, bound in _manual_records(data_dir, d0, d1, exclude, nonwork):
+        t = datetime(dd.year, dd.month, dd.day) + _td(minutes=bound[0] if bound else 540)
+        add(t, "수동기록", (text or "수동 기록")[:120], mh * W["수동기록_시간당"], "수동기록", "나",
+            dkey=(t, "수동기록", text, mh, bound))
 
     for r in _read_multi(data_dir, "files", "git_commits.csv"):
         try:
@@ -1307,7 +1314,7 @@ def load_signals(data_dir, d0, d1, exclude=(), cfg=None):
                 idle = float(r.get("idle_sec") or 0)
             except ValueError:           # 샘플러 강제종료로 열이 밀린 행 — 폐기(하단 스팬 계산과 동일 패턴)
                 continue
-            if t:
+            if t and d0 <= t.date() <= d1:
                 rows.append((t, idle, r.get("process") or "", (r.get("title") or "")[:70]))
         rows.sort(key=lambda x: x[0])
         deltas = [(rows[i + 1][0] - rows[i][0]).total_seconds() for i in range(len(rows) - 1)
@@ -1724,7 +1731,7 @@ def _offsite_row(r, kws, nonwork, tentative="count", hit=None):
     return busy in ("3", "4") or (busy == "2" and any(k in low for k in kws))
 
 
-def offsite_days(data_dir, d0, d1, cfg=None, exclude=None):
+def offsite_days(data_dir, d0, d1, cfg=None, exclude=None, rejected=()):
     """'회사 밖 근무' 일(A6) → {date: subject} — 종일 일정 + 하루짜리(≥6h) 시간제 블록(재택근무가 아닌 출장·현장·교육,
     A19 의 blocks 중 부재중/근무지외 또는 키워드). config.mm.offsiteAsWork=false 면 {}.
     day_work_hours 가 그날을 표준일 × (1−부재) 하한·능동 흔적으로 인정하고 부재 추정에서 뺀다.
@@ -1742,37 +1749,83 @@ def offsite_days(data_dir, d0, d1, cfg=None, exclude=None):
         if not _offsite_row(r, kws, nonwork, tentative, hit):
             continue
         t0, t1 = _dt(r.get("start")), _dt(r.get("end"))
+        text_key = _one_line(str(r.get("subject") or ""), None)[:100]
+        if (t0, text_key) in rejected:
+            continue
         days = _allday_dates(t0, t1) if _truthy(r.get("all_day")) else [
             dd for dd in _allday_dates(t0, t1)
             if dd == t0.date() or dd < t1.date() or (t1.hour * 60 + t1.minute) >= 360]   # 마지막 날은 6h 이상일 때만
         for dd in days:
+            if (datetime(dd.year, dd.month, dd.day, 9), text_key) in rejected:
+                continue
             if d0 <= dd <= d1 and dd not in out:
                 out[dd] = (r.get("subject") or "").strip()
     return out
 
 
-def manual_hours(data_dir, d0, d1):
-    """collect/Add-WorkLog.ps1 의 data/manual/worklog.csv(date,category,hours,entity,note,user) → {date: (hours, [text…])}
-    PC 밖 업무(출장·조립·장비 점검)의 유일한 원천(A13). 추가PC 포함(같은 행은 1건), 0 < h, 하루 합계 ≤ PHYS_CAP_H.
-    day_work_hours 가 그날을 기록 시간 하한·능동 흔적으로 인정하고 부재 추정에서 뺀다."""
-    out, seen = {}, set()
+def _manual_records(data_dir, d0, d1, exclude=(), nonwork=(), rejected=()):
+    """수동 기록의 원행을 보존한다. 선택 start/end가 모두 유효하면 그 구간이 시간 근거다.
+
+    현재 입력기의 date/hours만 있는 행은 겹침을 알 수 없는 기록으로 남긴다. 잘못된
+    start/end를 임의로 배치하지 않는다. 추가 PC의 같은 원행은 한 번만 인정한다.
+    """
+    out, seen = [], set()
+    hit = _text_filter(exclude)
     for r in _read_multi(data_dir, "manual", "worklog.csv"):
         t = _dt((r.get("date") or "").strip()[:10])
+        if not t or not (d0 <= t.date() <= d1):
+            continue
+        txt = _one_line(" ".join(str(r.get(k) or "").strip() for k in ("category", "entity", "note")), None)
+        if hit(txt.lower()) or _nonwork_hit(txt.lower(), nonwork):
+            continue
+        bounds = []
+        for col in ("start", "end"):
+            raw = str(r.get(col) or "").strip()
+            if re.fullmatch(r"(?:[01]?\d|2[0-3]):[0-5]\d(?::[0-5]\d)?|24:00(?::00)?", raw):
+                bits = [int(x) for x in raw.split(":")]
+                bound = bits[0] * 60 + bits[1] + (bits[2] / 60.0 if len(bits) > 2 else 0)
+            else:
+                dt = _dt(raw)
+                bound = ((dt - t).total_seconds() / 60.0) if dt else None
+            bounds.append(bound)
+        timed = all(x is not None for x in bounds) and 0 <= bounds[0] < bounds[1] <= 1440
         try:
             h = float(r.get("hours") or 0)
         except (TypeError, ValueError):
+            h = 0.0
+        if timed:
+            h = (bounds[1] - bounds[0]) / 60.0
+        if not (0 < h <= PHYS_CAP_H):
             continue
-        if not t or not (0 < h <= PHYS_CAP_H) or not (d0 <= t.date() <= d1):
+        stamp = t + _td(minutes=bounds[0] if timed else 540)
+        if (stamp, (txt or "수동 기록")[:100]) in rejected:
             continue
-        key = (t.date(), (r.get("category") or "").strip(), h, (r.get("entity") or "").strip(),
-               (r.get("note") or "").strip())
+        key = (t.date(), h, txt, tuple(bounds) if timed else None)
         if key in seen:
             continue
         seen.add(key)
-        txt = " ".join(x for x in key[1:2] + key[3:5] if x)
-        h0, lst = out.get(t.date(), (0.0, []))
-        out[t.date()] = (min(PHYS_CAP_H, h0 + h), lst + ([txt] if txt else []))
+        out.append((t.date(), h, txt, tuple(bounds) if timed else None))
     return out
+
+
+def manual_hours(data_dir, d0, d1, exclude=(), nonwork=(), rejected=(), details=None):
+    """{date: (hours, texts)}. 명시 구간은 합집합, 시각 없는 hours는 겹침 미상 일일 하한.
+
+    details는 구간(spans)과 시각 미상 시간(unplaced)을 전달한다. 시각 미상 시간을 PC
+    시간에 덧셈하면 중복이므로 자동 가산하지 않는다. 겹치지 않는 실제 업무는 start/end로 기록한다.
+    """
+    spans, unplaced, texts = {}, {}, {}
+    for dd, h, txt, bound in _manual_records(data_dir, d0, d1, exclude, nonwork, rejected):
+        texts.setdefault(dd, []).extend([txt] if txt else [])
+        if bound:
+            spans.setdefault(dd, []).append(bound)
+        else:
+            unplaced[dd] = unplaced.get(dd, 0.0) + h
+    spans = {dd: _union_spans(sp) for dd, sp in spans.items()}
+    if details is not None:
+        details.update(spans=spans, unplaced=unplaced)
+    return {dd: (min(PHYS_CAP_H, _union_min(spans.get(dd, [])) / 60.0 + unplaced.get(dd, 0)), txt)
+            for dd, txt in texts.items()}
 
 
 def _pc_spans_rows(rows, d0, d1, anomalies=None):
@@ -1816,6 +1869,7 @@ def read_pc_spans(data_dir, d0, d1, anomalies=None):
 
 def pc_daily(data_dir, d0, d1, day_win=None, anom=None, span_anoms=None):
     r"""PC 가동 기록을 날짜별로 합친다(본 PC + data\추가PC\*) → (pc, pc_wins, pc_spans, pc_win_all).
+    각 루트의 pc/pc_on.csv 및 옛 평면 배치 pc_on.csv 를 함께 읽는다(중복은 기존 max/구간 합집합으로 처리).
       pc         {date: (on_h, night_h, first_on_min|None, last_off_min|None)}
       pc_wins    {date: [(first_on, last_off), …]} — pc_on 행별 가동 창(두 PC 면 두 창, VF-H9)
       pc_spans   {date: [(m0, m1), …]} — pc_spans.csv **실제 구간**의 합집합(모든 루트)
@@ -1838,7 +1892,8 @@ def pc_daily(data_dir, d0, d1, day_win=None, anom=None, span_anoms=None):
         real_by_root[ri] = _pc_spans_rows(rows_sp, d0, d1, anomalies=span_anoms)
         for dd in real_by_root[ri]:
             roots_with.setdefault(dd, set()).add(ri)
-        for r in _read(os.path.join(root, "pc", "pc_on.csv")):
+        rows_pc = _read(os.path.join(root, "pc_on.csv")) + _read(os.path.join(root, "pc", "pc_on.csv"))
+        for r in rows_pc:
             try:
                 d = datetime.strptime((r.get("date") or "")[:10], "%Y-%m-%d").date()
                 on, ni = float(r.get("on_hours") or 0), float(r.get("night_hours") or 0)
@@ -2155,90 +2210,23 @@ def _tail_clip(spans, limit):
 
 def _sim_night_credit(sim_sp, hum_pt, hum_sp, view_pt, pc_night, d0, d1, day_win,
                       mode="span", cap_h=SIM_NIGHT_CAP_H, unlock=True, needs_pc=False):
-    """야간 해석(솔버) 근무 인정(S4-N1) — 밤새 돌린 해석(ANSYS·Zemax·CFD…)의 실행 구간을 근무로 돌려준다.
+    """기계의 출력 구간은 참고값만 반환한다. 사람의 투입 구간으로 전환하지 않는다.
 
-    밤 = 주간 창 밖의 한 덩어리(기본 19:00~다음날 08:00) — 자정을 넘으므로 두 날짜에 걸친다.
-      · end   = 그 밤 안 마지막 해석 출력 시각(뭉치의 끝 — _file_times 가 시작·끝을 함께 준다)
-      · start = 그 밤 안에서 첫 해석 출력 **이전**의 마지막 사람 능동 흔적(= job 제출 시각). 없으면 첫 출력 시각
-      · needs_pc 면 내 PC 야간 가동 구간과 겹치는 만큼만 — 기본 false(서버·클러스터에서 도는 해석이 대부분)
-      · 상한 cap_h(밤당 h, 0=무제한)는 앞을 깎는다(출력 쪽 끝을 남긴다). 첫 출력 **뒤**에 사람 흔적(능동 신호·
-        열람·샘플러·회의)이 있으면 = 새벽에 결과를 보고 다시 돌린 밤이라 상한을 풀고 구간 전체를 인정한다
-        (unlock). 제출 시각(첫 출력 전)의 흔적은 해제 사유가 아니다.
-      · mode="anchor" 는 뭉치마다 SIM_NIGHT_ANCHOR_MIN 분(제출·확인)만, "off" 는 아무것도 인정하지 않는다.
-    입력은 모두 {date: …}(그날 0~1440분). sim_sp·hum_sp·pc_night 은 [(a, b)], hum_pt·view_pt 는 [분].
-    returns ({date: [(a, b)]}, {"nights": 인정한 밤, "capped": 상한이 걸린 밤, "unlocked": 상한이 풀린 밤})
-    구간은 날짜별로 잘라 돌려준다 — 호출측이 그날 흔적에 합집합으로 더한다(중복 계상 없음). 한 날짜가 두 밤
-    (전날 밤의 새벽 + 그날 밤의 저녁)에 걸리면 날짜 합계에도 같은 상한을 건다."""
-    out, free, st = {}, set(), {"nights": 0, "capped": 0, "unlocked": 0}
-    dw0, dw1 = float(day_win[0]), float(day_win[1])
-    if mode == "off" or not sim_sp or dw1 - dw0 >= 1440:
-        return out, st
-    base = d0.toordinal()
-
-    def _am(dd, m):
-        return (dd.toordinal() - base) * 1440.0 + float(m)
-
-    def _pts(src):
-        return sorted(_am(dd, m) for dd, lst in (src or {}).items() if d0 <= dd <= d1 for m in lst)
-
-    def _sps(src):
-        return _union_spans([(_am(dd, a), _am(dd, b)) for dd, lst in (src or {}).items()
-                             if d0 <= dd <= d1 for a, b in lst])
-
-    # 뭉치는 폭이 0 일 수 있다(한 분에 몰린 출력 수천 건·대표 신호 1건) — 합집합으로 접으면 사라지므로 그대로 둔다
-    sim_a = sorted((_am(dd, a), _am(dd, max(a, b))) for dd, lst in (sim_sp or {}).items()
-                   if d0 <= dd <= d1 for a, b in lst)
-    hum_a, view_a = _pts(hum_pt), _pts(view_pt)
-    hums_a, pc_a = _sps(hum_sp), _sps(pc_night)
-    nd = d0 - _td(days=1)
-    while nd <= d1:
-        # 밤의 경계는 _is_night 과 같다 — 19:00 은 밤, 08:00 은 낮
-        w0, w1 = _am(nd, dw1), _am(nd, 1440.0) + dw0
-        nd += _td(days=1)
-        cl = [(max(a, w0), min(b, w1)) for a, b in sim_a if b >= w0 and a < w1]
-        if not cl:
-            continue
-        first, last = min(a for a, _b in cl), max(b for _a, b in cl)
-        if mode == "anchor":
-            seg = [(a, min(a + SIM_NIGHT_ANCHOR_MIN, w1)) for a, _b in cl]
-        else:
-            # job 제출 = 첫 출력 이전의 마지막 사람 흔적. 구간 흔적(회의·샘플러)은 그 끝을 흔적 시각으로 본다
-            cand = [t for t in hum_a if w0 <= t <= first]
-            cand += [min(b, first) for a, b in hums_a if b > w0 and a <= first]
-            seg = [(max(cand) if cand else first, last)]
-        if needs_pc:
-            seg = _intersect_spans(seg, _clip(pc_a, w0, w1))
-        seg = _union_spans(seg)
-        if not seg:
-            continue
-        opened = bool(unlock and (any(first < t <= w1 for t in hum_a)
-                                  or any(first < t <= w1 for t in view_a)
-                                  or any(b > first and a < w1 for a, b in hums_a)))
-        if opened:
-            st["unlocked"] += 1
-        elif cap_h > 0 and _union_min(seg) > cap_h * 60 + 1e-9:
-            seg, st["capped"] = _tail_clip(seg, cap_h * 60), st["capped"] + 1
-        st["nights"] += 1
-        for a, b in seg:                       # 자정을 넘는 구간은 날짜별로 분할해 각 날에 배분
-            while b > a + 1e-9:
-                k = int(a // 1440)
-                edge = min(b, (k + 1) * 1440.0)
-                dd = datetime.fromordinal(base + k).date()
-                if d0 <= dd <= d1:
-                    out.setdefault(dd, []).append((a - k * 1440.0, edge - k * 1440.0))
-                    if opened:
-                        free.add(dd)
-                a = edge
-    res = {}
-    for dd, sp in out.items():
-        sp = _union_spans(sp)
-        if cap_h > 0 and dd not in free and _union_min(sp) > cap_h * 60 + 1e-9:
-            sp = _tail_clip(sp, cap_h * 60)    # 한 날짜가 두 밤에 걸린 경우 — 날짜 합계에도 같은 상한
-        res[dd] = sp
-    return res, st
+    기존 호출 인자는 이전 설정 파일과의 호환을 위해 받는다. 사람의 제출·확인·회의·
+    창 활동은 각자의 근거 구간에서 이미 계산하므로 솔버 구간을 더하거나 상한을 풀지 않는다.
+    출력 시각 사이의 간격은 실제 연속 실행을 입증하지 않으므로 기계 구간도 추정값이다.
+    """
+    dw0, dw1 = map(float, day_win)
+    night_sp = {dd: _union_spans(_clip(sp, 0, dw0) + _clip(sp, dw1, 1440))
+                for dd, sp in (sim_sp or {}).items() if d0 <= dd <= d1}
+    runtime_h = sum(_union_min(sp) for sp in night_sp.values()) / 60.0
+    return {}, {"nights": 0, "capped": 0, "unlocked": 0,
+                "machine_night_h": round(runtime_h, 2),
+                "machine_night_days": sum(bool(sp) for sp in night_sp.values())}
 
 
-def _activity_spans(data_dir, d0, d1, interval_sec=60, idle_active=IDLE_ACTIVE_SEC):
+def _activity_spans(data_dir, d0, d1, interval_sec=60, idle_active=IDLE_ACTIVE_SEC,
+                    exclude=(), nonwork=(), rejected=(), excluded_spans=None):
     """창 샘플러 → (spans, cov_spans, stuck_days)
       spans      {date: [(분,분)]} 활동 구간(idle ≤ idle_active 샘플, 같은 창 제목 10분 이어붙임)
       cov_spans  {date: [(분,분)]} 샘플이 실제로 덮은 구간의 합집합(idle 샘플 포함, 샘플마다 (m, m+3×step)) —
@@ -2253,6 +2241,8 @@ def _activity_spans(data_dir, d0, d1, interval_sec=60, idle_active=IDLE_ACTIVE_S
     · 같은 시각 중복 샘플은 한 번만."""
     import statistics
     out, cov, stat = {}, {}, {}
+    hit = _text_filter(exclude)
+    rejected = set(rejected)
     for f in _glob_multi(data_dir, "activity", "activity_*.csv"):
         rows, seen = [], set()
         for r in _read(f):
@@ -2278,6 +2268,13 @@ def _activity_spans(data_dir, d0, d1, interval_sec=60, idle_active=IDLE_ACTIVE_S
             s = stat.setdefault(dd, [0, 0])
             s[0] += 1
             s[1] += 1 if idle > 0 else 0
+            if (hit(title.lower()) or _nonwork_hit(title.lower(), nonwork)
+                    or (dd, _one_line(title, None)) in rejected):
+                # 제외된 관측도 수집 범위에는 남긴다. PC 하한·공백 보정이 다시 채우면 안 된다.
+                if excluded_spans is not None:
+                    excluded_spans.setdefault(dd, []).append((m, min(1440.0, m + step / 60.0)))
+                prev = None
+                continue
             if idle > idle_active:
                 # 같은 창을 계속 보고 있는 동안(≤10분)은 prev 를 지우지 않는다 — 다음 활동 샘플이 a=prev[1] 로 잇는다
                 if not (prev and prev[2] == title and prev[3] == dd and 0 <= m - prev[1] <= SAME_TITLE_BRIDGE_MIN):
@@ -2474,7 +2471,7 @@ def _meeting_skip(r, tentative="count"):
     return None
 
 
-def _meeting_spans(data_dir, d0, d1, nonwork, tentative="count", exclude=(), now=None, day_win=None):
+def _meeting_spans(data_dir, d0, d1, nonwork, tentative="count", exclude=(), now=None, day_win=None, rejected=()):
     """returns (out, carried, accepted, blocks)
       out      {date: [(a,b)…]} 회의 구간(분). 다일·자정 넘김은 날짜별로 잘라 각 날 상한 = max(8h, 주간 창 길이)
                (A6 — 6/1 09:00→6/3 18:00 출장의 둘째 날이 사라지지 않는다; 12h 현장 08~20 은 창 길이까지)
@@ -2496,6 +2493,8 @@ def _meeting_spans(data_dir, d0, d1, nonwork, tentative="count", exclude=(), now
         t0, t1 = _dt(r.get("start")), _dt(r.get("end"))
         subj_raw = (r.get("subject") or "").strip()
         subj = subj_raw.lower()
+        if (t0, _one_line(subj_raw, None)[:100]) in rejected:
+            continue
         if _nonwork_hit(subj, nonwork) or _meeting_skip(r, tentative) or hit(subj):
             continue                       # 취소·연차·미수락·거절·개인정보 일정은 업무 시간이 아니다
         if not (t0 and t1 and t1 > t0) or _truthy(r.get("all_day")):
@@ -2559,8 +2558,7 @@ def _signal_spans(signals, d0, d1, mins=None, now=None, extra=None, gap=None, da
     · now+5분 이후 시각(시계 오류·타임존) 은 폐기하고 센다. '파일(일괄)' 은 시간 근거가 아니다.
     · extra = {date: [(분, code)]} 표본화 전 전체 파일 시각(시간 재료로만 합친다) — 표본 신호와 같이
       signalMinutes 가 0 이하면 세션을 만들지 않는다(파일 세션을 설정으로 끌 수 있어야 한다).
-      code "sim"(해석 출력 뭉치의 시작 분 anchor, VF-H1)은 기계가 쓴 시각이라 야간이면 건너뛴다(밤새 돌린 솔버 ≠ 야근) —
-      주간이면 예전처럼 파일 1건의 세션(해석을 돌린 날의 흔적).
+      code "sim"(해석 출력 뭉치)은 주야간 모두 기계가 쓴 시각이므로 사람의 세션에서 제외한다.
     · gap·day_win 은 인자로 받는다 — 모듈 전역을 고치지 않는다(재진입 안전)."""
     now = (now or datetime.now()) + _td(minutes=FUTURE_SLACK_MIN)
     mins = mins or LONE_SIGNAL_MIN
@@ -2573,7 +2571,7 @@ def _signal_spans(signals, d0, d1, mins=None, now=None, extra=None, gap=None, da
         if t > now:
             dropped += 1
             continue
-        if src == "파일(일괄)" or mins.get(src, 0) <= 0:
+        if src in ("파일(일괄)", "파일(해석출력)") or mins.get(src, 0) <= 0:
             continue
         if _is_night(t, day_win) and src not in NIGHT_PRODUCTIVE and src != "회의":
             continue
@@ -2584,9 +2582,7 @@ def _signal_spans(signals, d0, d1, mins=None, now=None, extra=None, gap=None, da
         day0 = datetime(d.year, d.month, d.day)
         for m, code in lst:
             if _sim_end(code) is not None:
-                if _is_night(day0 + _td(minutes=m), day_win):
-                    continue                     # 해석 출력 anchor 의 야간 시각 — 세션 재료가 아니다(VF-H1·S4-N1)
-                label = "파일"
+                continue                         # 기계 출력은 주야간 모두 사람의 시간 근거가 아니다.
             else:
                 label = "파일(코드)" if code else "파일"
             if mins.get(label, 0) <= 0 or day0 + _td(minutes=m) > now:
@@ -2659,7 +2655,7 @@ def _utc_suspect(data_dir, d0, d1, offset_h=0.0):
     return bool(n >= 5 and k / n >= 0.6)
 
 
-def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=None):
+def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=None, rejected_rows=()):
     """투입 시간 = 그날 활동 흔적(회의·창 샘플러·신호 세션) 구간의 합집합 + PC 가동 구간 하한(구간 단위, A3).
     method="workday" 로 두면 예전처럼 '평일이면 표준 8h'로 계산한다(비교용).
       now        : 미래 시각 판정 기준(테스트용, 기본 datetime.now())
@@ -2678,12 +2674,9 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
       · 종일 행사(A6)·수동 기록(A13): 표준일×(1−부재)·기록 시간을 하한으로, 능동 흔적, 부재 추정 제외.
       · 시차 근무(D4) : 산출물 없어도 주간 창 밖 PC 가동을 앞뒤 각 flexEdgeH 까지(야간 합 ≤ PC night).
       · 주말 "pc"(D7) : weekendWindow="pc" 면 능동 흔적이 있는 주말은 평일과 같은 PC 하한.
-      · 부재 추정(A31): 투입 ≤15분·PC ≤30분·능동 흔적 없음(수신 1통·유지관리 깨움 허용).
-      · 야간 해석(S4-N1): 밤새 돌린 솔버(ANSYS·Zemax·CFD…)의 출력 뭉치를 근무로 인정한다 — mm.simNight
-                       span(제출~마지막 출력 구간, 기본) · anchor(뭉치당 30분) · off(게이트만, 시간 0).
-                       상한 mm.simNightCapH(밤당 4h, 0=무제한) · 첫 출력 뒤 사람 흔적이 있으면 상한 해제
-                       (simNightHumanUnlock) · mm.simNightNeedsPc=true 면 내 PC 야간 가동과 겹치는 만큼만.
-                       PC 가 꺼져 있어도 인정하므로 저녁·새벽 크레딧의 '야간 합 ≤ PC night' 캡 계산에서는 제외한다.
+      · 수집 공백: 근태 미확인 날짜로 알리고 가용·1MM 분모를 유지한다. 기존 inferAbsence 설정도 휴무로 바꾸지 않는다.
+      · 기계 출력: 출력 시각 사이의 추정 실행 구간을 별도 참고값으로 남긴다. 기존 simNight 설정과 무관하게
+                   인적시간·PC 하한·야간 연장 근거로 전환하지 않는다. 사람의 제출·확인 활동은 그 자체 근거로 센다.
     info 새 키: sampler_stuck_days(A1)·offsite_days·offsite_h·manual_days·manual_h·dinner_deducted_h·flex_edge_h·
       sampler_bridge_h·passive_capped_days·weekend_pc_days·pc_record_missing_days·pc_record_days·trace_window_h·
       trace_window_days·pc_coverage_by_month{YYYY-MM:비율}·always_on_days·measure·coverage·cfg_used(D5)·
@@ -2727,6 +2720,18 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
                          f"{day_max_h:g}h 로 제한하지만 24h 물리 한계 보장·저녁 크레딧 정확도는 떨어진다")
     nonwork = _nonwork_list(cfg)
     exclude = cfg_list(cfg, "excludePathKeywords")
+    rejected_windows, rejected_meetings, rejected_manual = set(), set(), set()
+    for r in rejected_rows:
+        t = _dt(r.get("time")) if isinstance(r, dict) else None
+        if not t:
+            continue
+        src, txt = str(r.get("source") or ""), _one_line(str(r.get("text") or ""), None)
+        if src.startswith("작업창"):
+            rejected_windows.add((t.date(), txt[:70]))
+        elif src == "회의":
+            rejected_meetings.add((t, txt[:100]))
+        elif src == "수동기록":
+            rejected_manual.add((t, txt[:100]))
     anomalies, _anom_idx = [], {}
 
     def _anom(d, kind, raw=None, used=None):
@@ -2746,10 +2751,13 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
     pc, pc_wins, pc_spans, pc_win_all = pc_daily(data_dir, d0, d1, day_win=day_win, anom=_anom, span_anoms=span_anoms)
     for dd, kind in span_anoms:
         _anom(dd, kind, None, None)
+    excluded_activity = {}
     act, cov, stuck = _activity_spans(data_dir, d0, d1, interval_sec=mc["samplerIntervalSec"],
-                                      idle_active=mc["idleActiveSec"])
+                                      idle_active=mc["idleActiveSec"], exclude=exclude, nonwork=nonwork,
+                                      rejected=rejected_windows, excluded_spans=excluded_activity)
     meets, meet_carry, accepted, blocks = _meeting_spans(
-        data_dir, d0, d1, nonwork, tentative, exclude=exclude, now=now, day_win=day_win)
+        data_dir, d0, d1, nonwork, tentative, exclude=exclude, now=now, day_win=day_win,
+        rejected=rejected_meetings)
     # 약속(ms 0) 블록 중 출장·현장·교육 키워드가 든 것은 그 시간만큼 근무(A19 — 오프사이트 폴백 근거). '재택근무'·'치과' 는 아니다.
     off_kws = _offsite_kws(cfg)
     blk = {}
@@ -2757,8 +2765,10 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
         for a, b, subj in lst:
             if any(k in (subj or "").lower() for k in off_kws):
                 blk.setdefault(dd, []).append((a, b))
-    offsite = offsite_days(data_dir, d0, d1, cfg, exclude) if (offsite_on and method == "activity") else {}
-    manual = manual_hours(data_dir, d0, d1)
+    offsite = offsite_days(data_dir, d0, d1, cfg, exclude, rejected_meetings) if (offsite_on and method == "activity") else {}
+    manual_detail = {}
+    manual = manual_hours(data_dir, d0, d1, exclude, nonwork, rejected_manual, manual_detail)
+    manual_sp = manual_detail["spans"]
     mins = mc["signalMinutes"]
     extra = None
     if span_all_files and method == "activity":
@@ -2767,10 +2777,12 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
     sstats = {}
     sess, future_dropped = _signal_spans(signals, d0, d1, mins, now=now, extra=extra, gap=gap, day_win=day_win,
                                          passive_max_min=mc["passiveDayMaxMin"], stats=sstats)
+    for dd, blocked in excluded_activity.items():
+        sess[dd] = _subtract_spans(sess.get(dd, []), blocked)
     abs_spans = {}
     absence = absence_days(data_dir, d0, d1, spans=abs_spans)
     holidays = _holiday_set(cfg)
-    hours, inferred = {}, {}
+    hours, inferred, collection_gaps = {}, {}, []
     cal_n = 0
     for r in _read_multi(data_dir, "outlook", "calendar.csv"):
         t = _dt(r.get("start"))
@@ -2805,12 +2817,8 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
             _anom(dd, "샘플러 idle 0 고착(TickCount 랩·원격 세션) — 그날 샘플러 폐기, PC 하한 모드", None, None)
     # 능동 산출물(파일·코드·커밋·발신·수동기록) 시각 — 주말 근거·저녁 크레딧·PC 하한 게이트·흔적 창의 재료.
     # tp = 모든 신호 시각(수동 포함) — 점심·저녁·창 가장자리의 '흔적 ±5분' 판정(A33).
-    # sim_days = 해석 출력 뭉치(대표 '파일(해석출력)'·anchor code "sim")가 있는 날 — 기계가 쓴 시각이라 하한 게이트(active_day)만
-    # 열고, 주간 창 안의 시각만 산출물·흔적으로 쓴다(VF-H1: 밤새 돌린 솔버의 03:00 출력이 새벽 크레딧·흔적 창·자정 연속성의
-    # 재료가 되던 과대 — '취침 중 켜둔 PC 를 근무로 세지 않는다').
-    # sim_sp/hum_pt/view_pt = 야간 해석 인정(S4-N1)의 재료 — 해석 출력 뭉치의 (시작, 끝) · 사람 능동 흔적 시각 ·
-    # 열람만 한 흔적(상한 해제 판정에만 쓴다). '파일(해석출력)' 자신은 사람 흔적이 아니다.
-    prod, tp, sim_days = {}, {}, set()
+    # sim_sp는 기계 실행 참고값만 만든다. 출력 자체는 사람의 능동 흔적/하한 게이트가 아니다.
+    prod, tp = {}, {}
     sim_sp, hum_pt, view_pt = {}, {}, {}
     now_lim = (now or datetime.now()) + timedelta(minutes=FUTURE_SLACK_MIN)   # 미래 시각(시계 오류)은 흔적이 아니다
     for t, src, _x, _w, _who in signals:
@@ -2818,12 +2826,8 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
             continue
         m = t.hour * 60 + t.minute
         if src == "파일(해석출력)":
-            sim_days.add(t.date())
             sim_sp.setdefault(t.date(), []).append((float(m), float(m)))
-            if dw0 <= m < dw1:
-                prod.setdefault(t.date(), []).append(m)
-                tp.setdefault(t.date(), []).append(m)
-            continue
+            continue  # 자동 출력은 PC 하한·야간 연장·사람 흔적 창도 열지 않는다.
         if src != "회의":                       # 회의는 캘린더 구간(meets)이 정확한 흔적이다 — 시작 시각 ±5분을 덧붙이지 않는다
             tp.setdefault(t.date(), []).append(m)
         if src in NIGHT_PRODUCTIVE:
@@ -2841,10 +2845,8 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
                     continue
                 end = _sim_end(c)
                 if end is not None:              # 해석 출력 anchor — 대표 신호와 같은 규칙(게이트만, 주간 창 안일 때만 산출물)
-                    sim_days.add(dd)
                     sim_sp.setdefault(dd, []).append((float(m), min(1440.0, max(float(m), end))))
-                    if not (dw0 <= m < dw1):
-                        continue
+                    continue
                 else:
                     hum_pt.setdefault(dd, []).append(float(m))   # 표본에서 빠진 사람 저장 파일도 제출 흔적이다
                 ok.append(m)
@@ -2894,7 +2896,7 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
     # ── 야간 해석(솔버) 인정(S4-N1) — 한 밤이 자정을 넘어 두 날짜에 걸치므로 하루씩 도는 아래 루프 안에서는
     #    만들 수 없다. 밤 단위로 미리 인정 구간을 계산해 두고 루프는 그날 몫만 합집합으로 더한다. ──
     sim_night, sim_stat = {}, {"nights": 0, "capped": 0, "unlocked": 0}
-    if sim_mode != "off" and method == "activity" and sim_sp:
+    if method == "activity" and sim_sp:
         pc_night = {}
         for dd in set(pc_spans) | set(pc_wins):
             nz = _night_zone(pc_spans.get(dd) or _union_spans(pc_wins.get(dd) or []))
@@ -2905,6 +2907,10 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
         sim_night, sim_stat = _sim_night_credit(sim_sp, hum_pt, hum_sp, view_pt, pc_night, d0, d1, day_win,
                                                 mode=sim_mode, cap_h=sim_cap_h, unlock=sim_unlock,
                                                 needs_pc=sim_needs_pc)
+    info["machine_night_h"] = sim_stat.get("machine_night_h", 0.0)
+    info["machine_night_days"] = sim_stat.get("machine_night_days", 0)
+    info["machine_runtime_h"] = round(sum(_union_min(sp) for sp in sim_sp.values()) / 60.0, 2)
+    info["machine_runtime_basis"] = "자동 출력 시각 사이의 추정 구간; 인적 투입시간/MM에 미포함"
     info["sim_night_days"] = sim_stat["nights"]
     info["sim_night_capped_days"] = sim_stat["capped"]
     info["sim_night_unlocked_days"] = sim_stat["unlocked"]
@@ -2932,9 +2938,13 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
                                  if (b - a >= 6 * 60 and a <= lunch[0] and b >= lunch[1]) else [(a, b)])]
         is_offsite = d in offsite and absent < 1.0
         is_manual = d in manual
-        active_day = ((d in prod) or (d in sim_days) or (d in accepted) or bool(act.get(d)) or bool(off_blk)
+        active_day = ((d in prod) or (d in accepted) or bool(act.get(d)) or bool(off_blk)
                       or is_offsite or is_manual)
         spans = list(act.get(d, [])) + list(meets.get(d, [])) + list(sess.get(d, [])) + list(off_blk)
+        manual_gain = _union_min(spans + list(manual_sp.get(d, []))) - _union_min(spans)
+        spans += list(manual_sp.get(d, []))
+        if method == "activity":
+            info["manual_h"] += manual_gain / 60.0
         if off and not active_day:
             # 주말·공휴일은 능동 흔적(산출물·수락 회의·샘플러)이 있는 날만 — 수신 메일 1통은 근무가 아니다.
             # 자정을 넘어 이어진 회의 조각(수락 회의의 연속)은 남긴다 — 버리면 금요일 심야→
@@ -2970,6 +2980,7 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
                 if _union_min(lw) >= 30:
                     wins = _subtract_spans(wins, _subtract_spans(lw, trace_sp))
             if wins:
+                wins = _subtract_spans(wins, excluded_activity.get(d, []))
                 before = _union_hours(spans)
                 gain = min(on, _union_hours(spans + wins)) - before
                 if gain > 0:
@@ -3012,6 +3023,7 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
                 allowed = night * 60 - _union_min(_subtract_spans(_night_zone(spans), sim_add))
                 if allowed > 1e-9:
                     fitted = _fit_credit(credit, spans, allowed)
+                    fitted = _subtract_spans(fitted, excluded_activity.get(d, []))
                     gain = _union_min(spans + fitted) - _union_min(spans)
                     if gain > 1e-9:
                         spans += fitted
@@ -3021,7 +3033,7 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
         covered_all = cov.get(d) or []
         if act.get(d) and bridge_min > 0 and covered_all and (not off or floor_day):
             base_u = _union_spans(spans)
-            skip_w = [tuple(lunch)]
+            skip_w = [tuple(lunch)] + list(excluded_activity.get(d, []))
             if night > 0 or (t_last is not None and t_last >= dinner[1]) or base_u[-1][1] >= dinner[1]:
                 skip_w.append(tuple(dinner))
             bridged = []
@@ -3090,7 +3102,7 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
                     base = _subtract_spans(base, abs_spans[d])
                     if len0 > 0 and kind == "window":
                         gap_h *= _union_min(base) / len0
-                covered = _clip(covered_all, dw0, dw1) if act.get(d) else []
+                covered = _clip(covered_all, dw0, dw1)
                 unc = _subtract_spans(base, covered) if covered else list(base)
                 # 점심(A35 — day_on 크기와 무관하게 창이 점심을 ≥30분 덮으면) · 저녁(A33 — 야근일만) 공백: 흔적 ±5분이 없는 부분
                 lunch_gap, dinner_gap = [], []
@@ -3135,6 +3147,7 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
             # ── 시차 근무(D4a): 산출물 없어도 주간 창 밖 PC 가동을 앞뒤 각 flex_h 까지(야간 합 ≤ PC night) ──
             if flex_h > 0 and gate_ok and kind in ("window", "spans") and pc_win and not off:
                 cand = (_clip(pc_win, max(0.0, dw0 - flex_h * 60), dw0) + _clip(pc_win, dw1, min(1440.0, dw1 + flex_h * 60)))
+                cand = _subtract_spans(cand, excluded_activity.get(d, []))
                 allowed = night * 60 - night_min_ex
                 if cand and allowed > 1e-9:
                     fitted = _fit_credit([(a, b, "b") if b <= dw0 else (a, b, "a") for a, b in cand], spans, allowed)
@@ -3200,16 +3213,10 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
                 info["night_days"] += 1
         elif not off and absent < 1.0:
             info["no_evidence_days"] += 1
-        if not off and absent <= 0.0 and infer_abs and method == "activity":
-            k = d.strftime("%Y-%m")
-            n, m = pc_alive.get(k, (0, 0))
-            # 부재 추정(A31 완화): 투입 ≤15분·PC 가동 ≤30분(유지관리 깨움)·능동 흔적 없음(수신 1통 허용)인 평일 —
-            # 그 달 PC 기록이 평일의 40% 이상 살아 있을 때만(수집 실패를 부재로 오인하지 않게). 호출측이 가용에서 차감한다.
-            # 달력 근태가 있는 날(반차 0.5 포함)은 추정하지 않는다(VF-H7 — 반차일이 추정 1.0 이 되어 분모에서 통째로 빠지던 것).
-            if (worked <= 0.25 and on <= 0.5 and not active_day and not is_offsite and not is_manual
-                    and n and m / n >= 0.4):
-                inferred[d] = 1.0
-                info["inferred_absence_days"] += 1
+        if (not off and absent <= 0.0 and method == "activity" and d <= now_lim.date()
+                and worked <= 0.25 and on <= 0.5 and not active_day and not cov.get(d)):
+            # 기록 없음은 휴무를 입증하지 않는다. 설정 inferAbsence가 남아 있어도 가용/분모는 유지한다.
+            collection_gaps.append(d.isoformat())
         if off and d.isoweekday() <= 5:
             info["holidays"] += 1
         d += timedelta(days=1)
@@ -3219,6 +3226,16 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
         info[k] = round(info[k], 1)
     info["inferred_absence"] = inferred
     info["inferred_absence_dates"] = [x.isoformat() for x in sorted(inferred)]
+    info["manual_unplaced_h"] = round(sum(manual_detail["unplaced"].values()), 2)
+    info["manual_unplaced_days"] = len(manual_detail["unplaced"])
+    info["manual_time_basis"] = "start/end 구간은 합집합; 시각 미상 hours는 겹침 미상 하한(자동 덧셈 안 함)"
+    if manual_detail["unplaced"]:
+        cfg_warns.append("시각 없는 수동 기록은 PC와 겹침 미상 — 별도 업무시간 합산에는 start/end 필요")
+    info["collection_gap_dates"] = collection_gaps
+    info["collection_gap_days"] = len(collection_gaps)
+    info["absence_inference_used"] = False
+    if infer_abs and collection_gaps:
+        cfg_warns.append("수집공백을 부재로 추정하지 않음 — 해당 평일의 가용시간과 1MM 분모 유지")
     # ── D5: 측정 방식·신뢰도·산식 설정 — mine.py 가 mm_meta 최상위에 싣고 팀 취합·리포트가 배지로 보인다 ──
     wd_hours = sum(1 for dd in hours if not _is_off_day(dd, holidays))
     if method != "activity":
@@ -3244,9 +3261,12 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
         reasons.append("창 샘플러 0일")
     if not cal_n:
         reasons.append("달력 0행")
+    if collection_gaps:
+        reasons.append(f"근태 미확인·수집공백 {len(collection_gaps)}일(가용 유지)")
     info["coverage"] = {"grade": "reliable" if not reasons else ("caution" if len(reasons) == 1 else "unreliable"),
                         "reasons": reasons, "pc_weekday_ratio": round(pc_ratio, 2)}
-    info["cfg_used"] = {"standardDayHours": std, "usePcFloor": use_pc_floor, "pcFloorNeeds": floor_needs,
+    info["cfg_used"] = {"machineRuntimeCountsAsHuman": False, "inferAbsenceApplied": False,
+                        "standardDayHours": std, "usePcFloor": use_pc_floor, "pcFloorNeeds": floor_needs,
                         "dayWindow": [_fmt_hm(dw0), _fmt_hm(dw1)], "lunch": [_fmt_hm(lunch[0]), _fmt_hm(lunch[1])],
                         "dinner": [_fmt_hm(dinner[0]), _fmt_hm(dinner[1])], "tentativeMeetings": tentative,
                         "holidays_n": len(holidays), "offsiteAsWork": offsite_on,
@@ -3260,7 +3280,7 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
         # 구분이 안 된다(실제로 import 규칙이 어긋나 세 명 모두 빈칸이던 것을 샘플 생성에서 잡았다).
         info["tool_usage"] = {"samples": 0, "programs": [],
                               "why": f"프로그램 사용 집계 실패({type(e).__name__}: {e})"[:200]}
-    info["basis"] = (("투입 = 활동 흔적(회의·창 샘플러·신호 세션) 구간의 합집합 · PC 가동 구간 하한(구간 단위) · 상한 없음"
+    info["basis"] = (("인적 투입 추정 = 업무 활동 구간 합집합 · PC 가동 미관측 구간 추정 · 기계 출력시간 제외 · 수집공백 가용 유지 · 상한 없음"
                       f"(하루 24h 물리 한계만) · 이상치 {len(anomalies)}일 표시")
                      if method == "activity" else "투입 = 평일 표준 8h 기준(비교용)")
     return hours, info
@@ -3280,9 +3300,8 @@ def mm_from_hours(day_hours, d0, d1, workdays=(1, 2, 3, 4, 5), cfg=None, absence
       now      : 분석 시각(기본 datetime.now()). 오늘보다 뒤의 평일은 가용에서 뺀다(info["future_days"]),
                  오늘은 주간 창에서 지금까지 지난 비율만 가용(info["today_fraction"]) — 09시에 돌리면 오늘 잔여가
                  통째로 가용이던 −27pt 과소(A34).
-      inferred : 부재 '추정' 일자(day_work_hours info["inferred_absence"] 의 키). 이 날은 미등록 공휴일처럼 그 달
-                 평일수(1 MM 의 분모)에서도 뺀다 — 추정이 성공해도 투입 MM 분모가 20일 그대로이던 −15%(A31).
-                 달력 근태(연차)는 예전처럼 가용에서만 빠진다. 로드율은 두 경우 모두 같다.
+      inferred : 이전 결과와 호출 호환용. 수집공백은 휴무 근거가 아니므로 가용과 월 분모에서 차감하지 않는다.
+                 absence에 합쳐진 동일 날짜의 추정값도 무시한다. 확인된 달력 근태는 가용에서만 차감한다.
       info     : dict 를 주면 future_days·today_fraction 을 채운다(mine.py 가 day_work_hours info 를 넘긴다).
 
     returns ({'YYYY-MM': {...}}, 총 투입 MM, 총 가용 MM)"""
@@ -3304,16 +3323,14 @@ def mm_from_hours(day_hours, d0, d1, workdays=(1, 2, 3, 4, 5), cfg=None, absence
     d = d0
     while d <= d1:
         m = months.setdefault(d.strftime("%Y-%m"),
-                              {"worked": 0.0, "workdays": 0, "covered": 0, "absent": 0.0, "_inf": 0})
+                              {"worked": 0.0, "workdays": 0, "covered": 0, "absent": 0.0})
         if not _is_off_day(d, holidays, workdays):
             if d > today:
                 future_days += 1                          # 아직 오지 않은 평일 — 가용이 아니다(A34)
             else:
                 frac = today_frac if d == today else 1.0
-                if d in inf_days:
-                    m["_inf"] += 1                        # 추정 부재 — 분모(그 달 평일수)에서도 뺀다(A31)
-                else:
-                    m["covered"] += frac
+                m["covered"] += frac
+                if d not in inf_days:
                     m["absent"] += min(frac, absence.get(d, 0.0))
         m["worked"] += day_hours.get(d, 0.0)
         d += timedelta(days=1)
@@ -3322,8 +3339,7 @@ def mm_from_hours(day_hours, d0, d1, workdays=(1, 2, 3, 4, 5), cfg=None, absence
         y, mo = int(mk[:4]), int(mk[5:7])
         full = sum(1 for dd in (_date(y, mo, i + 1) for i in range(_cal.monthrange(y, mo)[1]))
                    if not _is_off_day(dd, holidays, workdays))
-        full = max(0, full - m.pop("_inf"))
-        m["workdays"] = full                                   # 달 전체 평일수(추정 부재 제외)
+        m["workdays"] = full                                   # 같은 달에는 같은 1MM 분모
         m["capacity_h"] = std * max(1, full)                   # 1 MM 에 해당하는 시간
         # 가용: 이 기간에 실제로 일할 수 있었던 날 (부재 차감). 기간 밖·미래 날짜는 가용이 아니다.
         avail_days = max(0.0, m["covered"] - m["absent"])
@@ -3406,8 +3422,12 @@ def rehours_after_judge(data_dir, kept_rows, dropped_rows, d0, d1, cfg, exclude=
             ex_drop.add(fol)
     ft_kept = _file_times(data_dir, d0, d1, ex + sorted(ex_drop), cfg, sim_drop=sim_drop)[0]
     ft_all = _file_times(data_dir, d0, d1, ex, cfg)[0] if (ex_drop or sim_drop) else ft_kept
-    hours_k, info_k = day_work_hours(data_dir, kept_sig, d0, d1, cfg, file_times=ft_kept)
-    hours_a, _info_a = day_work_hours(data_dir, all_sig, d0, d1, cfg, file_times=ft_all)
+    # load_signals의 호출별 필터를 원시 시간 재독에도 동일하게 적용한다.
+    time_cfg = dict(cfg or {})
+    time_cfg["excludePathKeywords"] = list(dict.fromkeys(cfg_list(cfg, "excludePathKeywords") + ex))
+    hours_k, info_k = day_work_hours(data_dir, kept_sig, d0, d1, time_cfg, file_times=ft_kept,
+                                   rejected_rows=dropped_rows or ())
+    hours_a, _info_a = day_work_hours(data_dir, all_sig, d0, d1, time_cfg, file_times=ft_all)
     absence = dict(absence_days(data_dir, d0, d1))
     inferred = info_k.get("inferred_absence") or {}
     absence.update(inferred)

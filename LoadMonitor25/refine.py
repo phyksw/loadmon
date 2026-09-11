@@ -5,7 +5,7 @@ refine.py — AI 정제: 추출된 업무 항목을 Copilot이 '원문 근거를
 규칙으로 못 하는 것만 AI에게 맡긴다:
   ① 같은 업무가 토큰별로 쪼개진 행 병합   ② 프로젝트명 정규화(실제 과제명으로)
   ③ Level 1 부여                        ④ 상세설명 한 줄 작성 (고유명사 포함)
-비중(share)은 규칙이 계산한 값을 유지·재정규화한다 — AI가 총량을 바꾸지 못하게.
+비중(share)과 MM은 원행 값을 합친다. 제외한 업무의 시간은 생존 업무에 재배분하지 않는다.
 
   python refine.py --from 2026-05-19 --to 2026-08-17 [--chunk 20]
 
@@ -26,6 +26,7 @@ refine.py — AI 정제: 추출된 업무 항목을 Copilot이 '원문 근거를
 import csv
 import io
 import json
+import math
 import os
 import re
 import subprocess
@@ -43,6 +44,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from details import ukey2  # noqa: E402  - judge·flow 와 같은 과제 신원 축
 from details import snap1  # noqa: E402  - 상위(Level 1)를 4개 고정 범주로 스냅
+from details import stable_work_id  # noqa: E402  - 정제 이름과 무관한 원행 계보
 from progress import progress  # noqa: E402
 if __name__ == "__main__":      # import 시엔 건드리지 않는다 — 임포트한 쪽의 stdout 이
     # 교체·GC 되면서 버퍼가 닫혀 이후 출력이 전부 죽는다(다른 모듈과 같은 관례)
@@ -331,8 +333,6 @@ def slice_for_chunk(by, ch, cap=9000, overlap=()):
         lv2 = str(r.get("Level 2") or "").strip()
         lv3 = str(r.get("Level 3") or "").strip()
         lines = by.get((lv2, lv3)) or []
-        if not lines:                              # 2차: Level 2 만으로 (세부업무명이 정제된 경우)
-            lines = [ln for (m, _d), v in by.items() if m == lv2 for ln in v]
         if not lines:
             continue
         hit += 1
@@ -345,21 +345,18 @@ def slice_for_chunk(by, ch, cap=9000, overlap=()):
     return text, hit
 
 
-def _evidence_slice(ev_text, names):
-    """이 청크에 등장하는 과제(Level 2)의 근거 단락만 골라낸다 — 전체 근거를 매번 보내면
-    프롬프트가 비대해져 응답이 잘린다.
-    헤더의 Level 2 부분만 대조한다: Level 3(활동 범주)는 여러 과제가 공유하므로 그걸로
-    매칭하면 다른 과제의 근거가 섞인다. 못 맞추면 **빈 문자열** — 예전처럼 앞부분 4000자를
-    넣으면 다른 항목의 근거가 이 청크의 근거인 양 전달돼 오히려 판단을 망친다."""
+def _evidence_slice(ev_text, keys):
+    """과제와 업무가 모두 일치하는 예전 Markdown 근거만 허용한다. 불일치는 근거 부족이다."""
     if not ev_text:
         return ""
-    want = {str(n).strip().lower() for n in names if str(n).strip()}
+    want = {(str(pair[0]).strip().lower(), str(pair[1]).strip().lower())
+            for pair in keys if isinstance(pair, (list, tuple)) and len(pair) == 2}
     keep, take = [], False
     for ln in ev_text.splitlines():
         if ln.startswith("#"):
-            # 헤더 형식 '## {Level 2} / {Level 3} — …' 의 Level 2 부분만 본다
-            head = ln.lstrip("# ").split(" / ")[0].strip().lower()
-            take = any(w and (w == head or w in head) for w in want)
+            # 헤더 형식 '## {Level 2} / {Level 3} — …'. 부분 문자열은 동일 업무의 증거가 아니다.
+            head = ln.lstrip("# ").split(" — ", 1)[0].split(" / ", 1)
+            take = len(head) == 2 and tuple(part.strip().lower() for part in head) in want
         if take:
             keep.append(ln)
     return "\n".join(keep)
@@ -437,10 +434,9 @@ class Refiner:
             sub_ev, hit = slice_for_chunk(self.sig_by, ch, cap, ov)
             ev_mode = "aligned" if hit == len(ch) else ("partial" if hit else "none")
         else:
-            # signals 가 없다 — 예전 근거 파일을 항목별 정렬 없이 보낸다.
-            # 정렬을 보장할 수 없다는 사실을 프롬프트가 명시하므로 창작으로 이어지지 않는다.
-            sub_ev = _evidence_slice(self.ev, [r["Level 2"] for _i, r in ch]) or self.ev[:min(4000, cap)]
-            sub_ev = sub_ev[:cap]
+            # signals가 없더라도 다른 항목의 raw sample을 대신 보내지 않는다.
+            sub_ev = _evidence_slice(self.ev, [(r.get("Level 2"), r.get("Level 3")) for _i, r in ch])
+            sub_ev = sub_ev[:max(0, cap)]
             ev_mode = "unaligned" if sub_ev else "none"
             hit = 0
         if sub_ev:
@@ -560,6 +556,41 @@ def merge_groups(items, rows):
     return [g for g in groups if g["idxs"]], owner
 
 
+def _refined_amounts(rows, indices):
+    """병합은 원행 합계만 유지한다. 제외된 행의 MM을 다른 업무로 옮기지 않는다."""
+    chosen = [rows[i] for i in sorted(set(indices))]
+    return (sum(_f(r.get("share")) for r in chosen), sum(_f(r.get("mm")) for r in chosen))
+
+
+def _refine_totals(rows, final, excluded_indices):
+    """Track allocation changes without calling the difference measured nonwork or savings."""
+    return {"source_total_mm": round(sum(_f(r.get("mm")) for r in rows), 6),
+            "retained_total_mm": round(sum(_f(r.get("mm")) for r in final), 6),
+            "excluded_candidate_mm": round(_refined_amounts(rows, excluded_indices)[1], 6)}
+
+
+def _source_work_mm(rows, indices):
+    """Record each original work ID once; duplicate identities are ambiguous, not additive."""
+    result = {}
+    for i in sorted(set(indices)):
+        row = rows[i]
+        identity, amount = stable_work_id(row), _f(row.get("mm"))
+        if identity in result or not math.isfinite(amount) or amount < 0:
+            raise ValueError("원행 업무 ID가 중복되거나 MM이 올바르지 않습니다 — 원행을 확인하세요")
+        result[identity] = amount
+    return result
+
+
+def _check_refined_sources(rows):
+    """No original work may appear in two output rows or acquire additional MM."""
+    seen = set()
+    for row in rows:
+        sources = row["source_work_mm"]
+        if seen.intersection(sources) or not math.isclose(sum(sources.values()), row["mm"], abs_tol=1e-6):
+            raise ValueError("정제 원행 계보의 중복 또는 MM 합계 불일치 — 정제본을 저장하지 않습니다")
+        seen.update(sources)
+
+
 def main():
     d0, d1 = arg("--from"), arg("--to")
     tag = f"{d0.replace('-','')}-{d1.replace('-','')}"
@@ -569,7 +600,8 @@ def main():
     if not os.path.exists(src):
         print(f"[refine] 입력 없음 — 먼저 mine.py 를 실행하세요 ({src})")
         return 1
-    rows = list(csv.DictReader(open(src, encoding="utf-8-sig")))
+    with open(src, encoding="utf-8-sig") as stream:
+        rows = list(csv.DictReader(stream))
     # 숫자 셀을 먼저 확정한다(V-05) — 빈칸·비숫자 셀 하나에 item_line/병합의 float()/int() 가 ValueError 로 죽어
     # run.py 가 'AI 정제 실패' 로만 남기던 결함. 0 으로 두고 행 수를 로그·마지막 JSON(bad_rows)에 남긴다.
     bad_rows = 0
@@ -579,9 +611,17 @@ def main():
         r["share"], r["mm"], r["활동일수"] = _f(r.get("share")), _f(r.get("mm")), _i(r.get("활동일수"))
     if bad_rows:
         print(f"[refine] 숫자 변환 실패 {bad_rows}행 — share/mm/활동일수 가 빈칸·비숫자(엑셀 재저장·손편집?) → 0 으로 두고 계속합니다")
+    try:
+        _source_work_mm(rows, range(len(rows)))
+    except ValueError as error:
+        print(json.dumps({"ok": False, "error": str(error)}, ensure_ascii=False))
+        return 1
     # 근거는 판정 축과 키가 같은 signals 를 우선한다. 없을 때만 예전 evidence 파일.
     sig_by, sig_judged = load_signal_evidence(rep, tag)
-    ev = open(evp, encoding="utf-8").read() if os.path.exists(evp) else ""
+    ev = ""
+    if os.path.exists(evp):
+        with open(evp, encoding="utf-8") as stream:
+            ev = stream.read()
     if sig_by:
         print(f"[refine] 근거 원천: signals_{tag}.csv "
               f"({'판정 축' if sig_judged else '규칙 축'}, {len(sig_by)}묶음)")
@@ -592,8 +632,9 @@ def main():
     model_names = []
     if os.path.exists(ent_p):
         try:
-            model_names = [m["name"] for m in json.load(open(ent_p, encoding="utf-8")).get("models", [])
-                           if isinstance(m, dict) and m.get("name")]
+            with open(ent_p, encoding="utf-8") as stream:
+                model_names = [m["name"] for m in json.load(stream).get("models", [])
+                               if isinstance(m, dict) and m.get("name")]
         except (OSError, ValueError):
             pass
     # 항목이 많으면 한 번의 왕복으로는 응답이 잘리거나 실패한다 — 청크로 나눠 여러 번 돈다.
@@ -633,7 +674,7 @@ def main():
         print(f"[refine] 청크 {failed}/{len(plan)} 실패 · 왕복 {st['roundtrips']}회(재시도 {st['retries']}) · "
               f"잘린 응답 복구 {st['repaired']}회 · 원본 유지 항목 {st['failed_items']} — 해당 항목은 원본 그대로 보존됩니다")
 
-    # 병합 + 비중 재정규화 (AI가 총량을 바꾸지 못하게 규칙이 통제)
+    # 병합은 원행 share/MM 합계. 비업무 제외량은 다른 행에 재배분하지 않는다.
     # 과제명(Level 2)은 기존 이름으로 스냅한다 — AI가 새 이름을 지어내면 대시보드(refined)와
     # 상세리뷰 피벗(judge)의 과제 축이 갈라져 MM 이 다르게 보인다(실측 지적: 미스매칭).
     # 신원 축은 ukey2 — .lower() 로 보면 AI 가 띄어쓰기만 바꿔도 '모르는 이름' 이 되어
@@ -645,7 +686,7 @@ def main():
         it, idxs = g["it"], sorted(g["idxs"])
         if _g(it, "work") is False:
             continue
-        share = sum(_f(rows[i].get("share")) for i in idxs)
+        share, amount_mm = _refined_amounts(rows, idxs)
         days = max(_i(rows[i].get("활동일수")) for i in idxs)
         srcs = " · ".join(sorted({str(rows[i].get("근거") or "") for i in idxs}))
 
@@ -671,7 +712,8 @@ def main():
                       "활동": act if act in ACT_CATS else "",
                       "Level 1": snap1(_g(it, "level1")), "Level 2": lv2,
                       "Level 3": lv3, "상세설명": detail,
-                      "share": share, "활동일수": days, "근거": srcs,
+                      "share": share, "mm": amount_mm, "활동일수": days, "근거": srcs,
+                      "source_work_mm": _source_work_mm(rows, idxs),
                       "확신도": "상" if days >= 3 and len(idxs) > 1 else "중",
                       # 정제 행이 덮은 원본 (Level 2, Level 3) — refine_map 용(CSV 열에는 안 나간다)
                       "_orig": [(str(rows[i].get("Level 2") or ""), str(rows[i].get("Level 3") or "")) for i in idxs]})
@@ -680,8 +722,10 @@ def main():
             final.append({"유형": r.get("유형", ""), "제품": r.get("제품", ""),
                           "활동": r.get("활동", ""),
                           "Level 1": "", "Level 2": r.get("Level 2", ""), "Level 3": r.get("Level 3", ""),
-                          "상세설명": "", "share": _f(r.get("share")), "활동일수": _i(r.get("활동일수")),
+                          "상세설명": "", "share": _f(r.get("share")), "mm": _f(r.get("mm")),
+                          "활동일수": _i(r.get("활동일수")),
                           "근거": r.get("근거", ""), "확신도": r.get("확신도", ""),
+                          "source_work_mm": _source_work_mm(rows, [i]),
                           "_orig": [(str(r.get("Level 2") or ""), str(r.get("Level 3") or ""))]})
     if len(final) > len(rows):
         # 정제는 행을 합칠 수만 있고 늘릴 수 없다 — 늘었다면 응답 번호가 중복된 것이다.
@@ -690,29 +734,27 @@ def main():
               "(응답의 항목번호 중복) — 정제본을 쓰지 않고 규칙 결과를 유지합니다")
         print(json.dumps(dict(tail, ok=False, error="항목 수 증가"), ensure_ascii=False))
         return 1
-    tot = sum(f["share"] for f in final) or 1.0
-    # share 0(실측 총량 0)이면 0으로 둔다 — 1.0 폴백은 빈 기간을 1MM 규모로 지어내는 결함
-    # (judge.py 의 `or 1` 폴백 제거와 같은 취지)
-    # 총 MM 은 Σmm/Σshare 로 잰다 — 예전 rows[0] 한 행의 mm/share 는 반올림(mm 3자리·share 4자리)이
-    # 작은 첫 행에서 크게 증폭됐다(합성 실측: 7.80 MM 이 8.33 으로).
-    tot_mm = sum(_f(r.get("mm")) for r in rows)
-    tot_sh = sum(_f(r.get("share")) for r in rows)
-    months = tot_mm / tot_sh if tot_sh else 0.0
     for f in final:
-        f["share"] = round(f["share"] / tot, 4)
-        f["mm"] = round(f["share"] * months, 3)
+        f["share"] = round(f["share"], 4)
+        f["mm"] = round(f["mm"], 3)
         f["이름"] = rows[0].get("이름", "")
         f["Function"] = rows[0].get("Function", "")
     final.sort(key=lambda x: -x["mm"])
+    try:
+        _check_refined_sources(final)
+    except ValueError as error:
+        print(json.dumps(dict(tail, ok=False, error=str(error)), ensure_ascii=False))
+        return 1
 
     dst = os.path.join(rep, f"mm_rows_{tag}_refined.csv")
     cols = ["Function", "Level 1", "제품", "유형", "활동", "Level 2", "Level 3", "이름", "상세설명",
-            "share", "mm", "근거", "확신도", "활동일수"]
+            "share", "mm", "근거", "확신도", "활동일수", "source_work_mm"]
     with open(dst, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.DictWriter(f, fieldnames=cols)
         w.writeheader()
         for r in final:
-            w.writerow({c: r.get(c, "") for c in cols})
+            w.writerow({c: (json.dumps(r[c], ensure_ascii=False, sort_keys=True) if c == "source_work_mm"
+                            else r.get(c, "")) for c in cols})
     # 정제 행 → 원본 (Level 2, Level 3) 매핑(V-02) — UI 오할당 제외(app.exclude_work)가 정제·병합으로 이름이 바뀐
     # 행도 signals 의 원본 쌍으로 풀어 구성원 신호를 전부 제외한다. 정제본과 운명을 같이한다(run.py 가 .stale 로
     # 개명, exclude 가 함께 삭제). 같은 이름의 정제 행이 둘이면 원본 쌍을 합친다.
@@ -727,7 +769,9 @@ def main():
     try:
         with open(mp, "w", encoding="utf-8") as f:
             json.dump({"tag": tag, "generated": time.strftime("%Y-%m-%d %H:%M"), "rows_file": os.path.basename(src),
-                       "refined_file": os.path.basename(dst), "map": rmap}, f, ensure_ascii=False, indent=1)
+                       "refined_file": os.path.basename(dst), "map": rmap,
+                       **_refine_totals(rows, final, [i for g in groups if _g(g["it"], "work") is False
+                                                     for i in g["idxs"]])}, f, ensure_ascii=False, indent=1)
     except OSError as e:
         print(f"[refine] 정제 매핑(refine_map) 저장 실패({type(e).__name__}) — 오할당 제외는 이름 일치로만 찾습니다")
     print(f"[refine] {len(rows)}항목 → {len(final)}항목 (병합 {len(rows)-len(final)}) · "

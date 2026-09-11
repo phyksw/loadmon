@@ -187,6 +187,16 @@ INTERCEPT_JS = """(function(){
  "use strict";
  var el=document.getElementById("lm-frozen-data");
  var D={};try{D=JSON.parse(el.textContent);}catch(e){}
+ // The frozen report contains one analysis period. Keep the live period selector
+ // on that period, and resolve its qualified URLs only to the same baked data.
+ var T=D._lm&&D._lm.tag||"";
+ Object.keys(D).forEach(function(k){
+  if(k!=="/api/extra"&&!/^\\/api\\/review\\?g=(week|month|all)$/.test(k))return;
+  var b=D[k];
+  if(!T||!b||typeof b!=="object"||Array.isArray(b))return;
+  if(b.tag&&b.tag!==T){delete D[k];return;}
+  b.tag=T;b.available_periods=[T];
+ });
  function fake(body){return Promise.resolve({ok:true,status:200,
   json:function(){return Promise.resolve(body);},
   text:function(){return Promise.resolve(JSON.stringify(body));}});}
@@ -195,6 +205,15 @@ INTERCEPT_JS = """(function(){
   var m=((opt&&opt.method)||"GET").toUpperCase();
   var u=String(url).replace(/^https?:\\/\\/[^\\/]+/,"");
   if(m==="GET"&&Object.prototype.hasOwnProperty.call(D,u))return fake(D[u]);
+  if(m==="GET"&&T){
+   var q=u.indexOf("?"),path=u.slice(0,q),params=new URLSearchParams(u.slice(q+1));
+   if(q>0&&(path==="/api/extra"||path==="/api/review")&&params.getAll("tag").length===1&&params.get("tag")===T){
+    var allowed=Array.from(params.keys()).every(function(k){return k==="tag"||(path==="/api/review"&&k==="g");});
+    var g=params.get("g"),key=path==="/api/extra"?path:path+"?g="+g;
+    if(allowed&&(path==="/api/extra"||(params.getAll("g").length===1&&/^(week|month|all)$/.test(g)))
+       &&Object.prototype.hasOwnProperty.call(D,key)&&D[key].tag===T)return fake(D[key]);
+   }
+  }
   return fake(BLOCK);
  };
  window.confirm=function(){alert("얼린 보고서 사본입니다 — 동작 버튼은 실행되지 않습니다.");return false;};
@@ -547,16 +566,22 @@ def report_island(tag, full=True, log=_say):
         log(f"    [!] {tag} 결과(mm_rows·mm_meta)가 없어 분석리포트를 만들지 못했습니다.")
         return []
     wf = _read_json(os.path.join(REPORT, f"workflow_{tag}.json")) or {}
-    ag = _read_json(os.path.join(REPORT, f"agentic_{tag}.json")) or {}
+    import aggregate
+    from team_report import apply_current_flow_amounts
+    wf = apply_current_flow_amounts(wf, rows)
+    ag = aggregate.norm_agentic(_read_json(os.path.join(REPORT, f"agentic_{tag}.json")) or {})
     if not full:
         wf, ag = _strip_evidence(wf), _strip_evidence(ag)
     owner, host = _owner(), _host()
 
     rows, n_merged = _apply_details(rows, log)
+    classified_mm = sum(_num(r.get("mm")) for r in rows)
     for r in rows:
         r["mm"] = round(_num(r.get("mm")), 2)
     rows.sort(key=lambda r: -r["mm"])
-    total = round(sum(r["mm"] for r in rows), 2)
+    total = _num(meta.get("total_mm"), classified_mm)
+    allocation_note = (f"<div class='note'>투입 추정 {total:.2f} MM · 분류 업무 {classified_mm:.2f} MM · "
+                       f"미배분 {max(0.0, total-classified_mm):.2f} MM(제외·분류 미확정, 절감량 아님)</div>")
     avail = meta.get("avail_mm")
     pct = meta.get("load_pct")
     if pct is None and avail:
@@ -627,13 +652,13 @@ def report_island(tag, full=True, log=_say):
             + (f'<div class="sub">근거: {_esc(s.get("evidence"))}</div>'
                if s.get("evidence") else "")
             + f'</td><td class="agc"><span class="pill" '
-            f'style="background:{_AGENT_C.get(s.get("agent") or "중", "#8b929b")}">'
-            f'Agent {_esc(s.get("agent") or "중")}</span>'
+            f'style="background:{_AGENT_C.get(s.get("agent"), "#8b929b")}">'
+            f'Agent {_esc(s.get("agent") or "확인 필요")}</span>'
             + (f'<div class="sub" style="color:#4a5159">{_esc(s.get("agent_how"))}</div>'
                if s.get("agent_how") else "")
             + "</td></tr>"
             for j, s in enumerate(f.get("steps") or []) if isinstance(s, dict))
-        mm_txt = f"{mm.get('mm')} MM · " if isinstance(mm.get("mm"), (int, float)) else ""
+        mm_txt = f"{mm.get('mm')} MM · " if isinstance(mm.get("mm"), (int, float)) else "관련 MM 확인 필요 · "
         role0 = str(f.get("role") or "판단 유보").split("—")[0].strip()
         # 상위(Level 1)로도 묶어 읽히게 — 계층은 상위 > 과제 > 담당업무. flow 가 상위로 정렬해 내보낸다.
         _l1 = str(f.get("level1") or "")
@@ -670,6 +695,8 @@ def report_island(tag, full=True, log=_say):
                 + ('→ 다음 업무: <b>' + _esc(str(f.get("downstream")).split(" / ")[-1]) + '</b>' if f.get("downstream") else '')
                 + '</div>') if (f.get("upstream") or f.get("downstream")) else '')
             + f'<div style="margin:2px 0 6px"><b>역할:</b> {_esc(f.get("role")) or "판단 유보"}</div>'
+            + (f'<div class="note">{_esc(f.get("review_reason") or "근거 확인 필요 · KPI 제외")}</div>'
+               if f.get("needs_review") else "")
             + (f'<div class="note" style="margin:0 0 6px">{_esc(f.get("summary"))}</div>'
                if f.get("summary") else "")
             + dbar
@@ -685,10 +712,7 @@ def report_island(tag, full=True, log=_say):
     m_html = "".join(
         f"<tr><td><b>{_esc(m.get('task'))}</b> {_esc(m.get('name'))}</td>"
         f"<td class='num'>{_esc(m.get('fit'))}%</td><td style='width:100px'>{_fitbar(m.get('fit'))}</td>"
-        f"<td class='num'><b>{_num(m.get('load_mm')):.2f}</b>"
-        + (f"<div class='sub'>안분 {_num(m.get('load_mm_split')):.2f}</div>"
-           if isinstance(m.get("load_mm_split"), (int, float))
-           and m.get("load_mm_split") != m.get("load_mm") else "")
+        f"<td class='num'><b>{'미확인' if m.get('allocated_candidate_mm') is None else format(m['allocated_candidate_mm'], '.2f')}</b>"
         + "</td><td>"
         + "".join(f'<span class="tag">{_esc(w)}</span>' for w in (m.get("work") or []))
         + ("<div style='color:#c0392b;font-size:11px;margin-top:2px'>근거 없음 — "
@@ -701,8 +725,8 @@ def report_island(tag, full=True, log=_say):
         for m in match[:12]) or "<tr><td colspan=5 class='dim'>매칭 결과 없음</td></tr>"
     new_html = "".join(
         f'<div style="border-left:3px solid #6c4fb8;padding:4px 0 4px 12px;margin:10px 0">'
-        f'<b>{_esc(n.get("name"))}</b> <span class="state">대체 가능 로드 ≈ '
-        f'{_num(n.get("load_mm")):.2f} MM</span>'
+        f'<b>{_esc(n.get("name"))}</b> <span class="state">후보별 안분 업무량 '
+        f'{"미확인" if n.get("allocated_candidate_mm") is None else format(n["allocated_candidate_mm"], ".2f")} MM</span>'
         + (f'<div style="font-size:12px;margin-top:3px"><b>동작 로직:</b> '
            f'{_esc(n.get("logic"))}</div>' if n.get("logic") else "")
         + "</div>"
@@ -795,7 +819,7 @@ margin:1px 3px 1px 0;font-size:10.5px;color:#3d444c}}
 <div class="card"><h2>1. 프로젝트 내 업무 로드 <span class="state">과제별 MM 배분</span></h2>
 {pj_bar or '<div class="note">표시할 배분이 없습니다</div>'}{tool_note}</div>
 
-<div class="card"><h2>2. 업무별 상세 <span class="state">MM 순</span></h2>
+<div class="card"><h2>2. 업무별 상세 <span class="state">MM 순</span></h2>{allocation_note}
 <table><tr><th style="width:70px">Level 1</th><th style="width:52px">유형</th>
 <th style="width:140px">과제</th><th style="width:120px">담당 업무</th><th>상세설명</th>
 <th class="num" style="width:52px">MM</th><th></th></tr>{row_html}</table></div>
@@ -805,9 +829,9 @@ margin:1px 3px 1px 0;font-size:10.5px;color:#3d444c}}
 {flows_html}
 
 <div class="card"><h2>4. Agentic AI 12과제 매칭
-<span class="state">적합률 = 그 과제가 내 업무를 자동화·대체할 수 있는 정도</span></h2>
+<span class="state">적합률은 AI 적용 적합도 · 예상 절감량은 미검증</span></h2>
 <table><tr><th>과제</th><th class="num" style="width:52px">적합률</th><th></th>
-<th class="num" style="width:78px">대체 로드 MM</th><th>관련 업무 · 사유</th></tr>{m_html}</table>
+<th class="num" style="width:78px">안분 업무 MM</th><th>관련 업무 · 사유</th></tr>{m_html}</table>
 {ag_note}
 {('<h2 style="margin:16px 0 6px">신규 자동화 후보</h2>' + new_html) if new_html else ''}</div>
 

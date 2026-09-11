@@ -5,6 +5,8 @@ run.py — LoadMonitor25 통합 실행기: 수집 → 추출 → (AI 판정·내
   python run.py --from 2026-05-19 --to 2026-08-17            # 수집 + 추출
   python run.py --from ... --to ... --skip-collect            # 이미 모은 데이터로 추출만
   python run.py --from ... --to ... --ai                      # AI 정제까지 (Copilot 무개입)
+  python run.py --from ... --to ... --skip-collect --ai --reuse-complete  # 검증된 과거기간 완료본 재사용
+  # --force 는 완료본이 있어도 전체 재분석한다.
 
 설계 원칙 (v5):
   · MM = 인정 근무시간 / (8h × 그 달 평일수) — 평일 표준 8h 기준, 근태 부재 차감, 야근·주말은 산출물 있을 때만 가산.
@@ -60,6 +62,8 @@ def arg(flag, dflt=""):
 # host 를 남긴다 — 배포본에 남의 report\ 가 딸려 오면 화면이 그것을 '남의 결과'로
 # 표시할 수 있어야 한다(실측: 배포 zip 에 개발 PC 산출물 17개가 동봉돼 있었다)
 RUN = {"stages": [], "host": os.environ.get("COMPUTERNAME", "")}
+_ACTIVE_CACHE = None
+_CAPTURE_RESULTS = {}
 
 
 def record(name, ok, sec=0.0, note=""):
@@ -74,6 +78,22 @@ def record(name, ok, sec=0.0, note=""):
             json.dump(RUN, f, ensure_ascii=False, indent=1)
     except OSError:
         pass
+
+
+def finish_run(result_available=False, collect_only=False):
+    """Return 0 complete / 2 partial / 1 failed, retaining every stage reason."""
+    stages = [s for s in RUN.get("stages", [])
+              if s.get("name") not in {"시작", "추가 PC 보관", "완료", "완료(수집만)"}
+              and not (s.get("name") == "AI 판정" and not RUN.get("ai_requested"))]
+    failures = [s.get("name") for s in stages if s.get("ok") is not True]
+    usable = result_available or any(s.get("ok") is True for s in stages)
+    status = "complete" if stages and not failures else ("partial" if usable else "failed")
+    RUN.update(status=status, failed_stages=failures, finished=time.strftime("%Y-%m-%d %H:%M"))
+    label = {"complete": "완료", "partial": "부분 완료", "failed": "실패"}[status]
+    note = label + (f" · 확인 필요: {', '.join(failures)}" if failures else "")
+    record("완료(수집만)" if collect_only else "완료", status == "complete", 0.0, note)
+    print(f"[LoadMonitor25] {note}")
+    return {"complete": 0, "partial": 2, "failed": 1}[status]
 
 
 def step(name, cmd, timeout=420):
@@ -389,6 +409,8 @@ def run_ai_stage(script, d0, d1, retry_wait=15):
     응답을 거부하는 일이 있어(실측: 뒤 단계만 실패), 실패하면 잠시 쉬고 1회 재시도한다.
     반환: (rc, note)."""
     cmd = [sys.executable, os.path.join(ROOT, script), "--from", d0, "--to", d1]
+    if _ACTIVE_CACHE is not None:
+        cmd = _ACTIVE_CACHE.command(script, ["--from", d0, "--to", d1])
     env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1")
     rc, why = _run_capture(cmd, env)
     if rc == 0:
@@ -429,6 +451,7 @@ def _run_capture(cmd, env):
             except ValueError:
                 pass
     rc = p.wait()
+    _CAPTURE_RESULTS[os.path.basename(cmd[1])] = {"rc": rc, "summary": last_json}
     if rc == 0:
         return 0, ""
     why = str(last_json.get("error") or "")
@@ -484,35 +507,105 @@ def agentic_recalc_inproc(d0, d1):
         return False
 
 
+def _archive_path(path, data):
+    """Require an actual local path within data, without links in its ancestor chain."""
+    import stat
+    root, path = os.path.abspath(data), os.path.abspath(path)
+    folded_root = os.path.normcase(root)
+    if (os.path.normcase(os.path.realpath(root)) != folded_root
+            or os.path.normcase(os.path.commonpath((root, path))) != folded_root
+            or os.path.normcase(os.path.commonpath((root, os.path.realpath(path)))) != folded_root):
+        raise OSError("PC 보관 경로가 실제 data 폴더 밖을 가리킵니다")
+    current = path
+    while True:
+        try:
+            info = os.lstat(current)
+            if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+                raise OSError("PC 보관 경로에 링크 또는 junction이 있습니다")
+        except FileNotFoundError:
+            pass
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    return path
+
+
+def _write_pc_name(data, name):
+    """Replace the PC label only after a complete write; keep the old label on failure."""
+    import stat
+    import tempfile
+    _archive_path(os.path.join(data, "pc_name.txt"), data)
+    fd, temporary = tempfile.mkstemp(prefix=".pc-name-", suffix=".tmp", dir=data)
+    info = os.fstat(fd)
+    identity = (info.st_dev, info.st_ino)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(name)
+            stream.flush()
+            os.fsync(stream.fileno())
+        _archive_path(temporary, data)
+        os.replace(temporary, _archive_path(os.path.join(data, "pc_name.txt"), data))
+    finally:
+        try:
+            current = os.lstat(temporary)
+            if (stat.S_ISREG(current.st_mode) and not getattr(current, "st_file_attributes", 0) & 0x400
+                    and (current.st_dev, current.st_ino) == identity
+                    and os.path.realpath(temporary) == os.path.abspath(temporary)):
+                os.unlink(temporary)
+        except OSError:
+            pass
+
+
 def archive_other_pc(data):
     r"""추가 PC 취합 — 폴더째 다른 PC 로 옮겨 왔으면, 지난 PC 의 수집 데이터를
     data\추가PC\<지난 PC 이름>\ 으로 보관하고 이번 PC 것을 새로 수집하게 한다.
-    분석은 본 폴더 + 추가PC\* 를 전부 합쳐 계산한다(중복은 자동 제거)."""
+    분석은 본 폴더 + 추가PC\* 를 전부 합쳐 계산한다(중복은 자동 제거).
+    실패하면 False: 이름표를 유지하고 호출자는 새 수집을 시작하지 않아야 한다."""
     try:
+        data = os.path.abspath(data)
+        _archive_path(data, data)
+        os.makedirs(data, exist_ok=True)
         name_f = os.path.join(data, "pc_name.txt")
+        sources = ("outlook", "files", "pc", "m365", "activity",
+                   "pc_on.csv", "pc_spans.csv", "pc_source.json")
+        # Check the entire set before moving the first directory: a junction
+        # in an archive parent or source must not cause a partial relocation.
+        for relative in ("pc_name.txt", "추가PC", *sources):
+            _archive_path(os.path.join(data, relative), data)
         here = os.environ.get("COMPUTERNAME", "").strip()
         prev = ""
         if os.path.exists(name_f):
-            prev = open(name_f, encoding="utf-8-sig").read().strip()
+            with open(name_f, encoding="utf-8-sig") as stream:
+                prev = stream.read().strip()
         if prev and here and prev != here:
+            if os.path.basename(prev) != prev or prev in {".", ".."} or ":" in prev:
+                raise ValueError("이전 PC 이름이 보관 폴더명으로 올바르지 않습니다")
             keep = os.path.join(data, "추가PC", prev)
+            _archive_path(keep, data)
             # 이미 있는 보관본은 지우지 않는다 — 옮기다 실패하면 그 PC 자료를 통째로 잃는다
             # (검증 확정). 분석은 추가PC\* 를 전부 합치므로 형제 폴더로 두면 된다.
-            if os.path.isdir(keep):
-                keep = keep + "-" + time.strftime("%Y%m%d-%H%M%S")
-            os.makedirs(keep, exist_ok=True)
+            if os.path.exists(keep):
+                prefix = keep + "-" + time.strftime("%Y%m%d-%H%M%S")
+                keep, serial = prefix, 0
+                while os.path.exists(keep):
+                    serial += 1
+                    keep = f"{prefix}-{serial}"
+            _archive_path(keep, data)
+            os.makedirs(keep, exist_ok=False)
             moved, failed = [], []
-            for sub in ("outlook", "files", "pc", "m365", "activity"):
+            for sub in sources:
                 src_d = os.path.join(data, sub)
-                if not os.path.isdir(src_d):
+                if not (os.path.isfile(src_d) if "." in sub else os.path.isdir(src_d)):
                     continue
                 try:
                     # 같은 볼륨 rename 은 원자적 — 실패해도 원본이 그대로 남는다.
                     # shutil.move 는 복사+삭제로 넘어가며 실패 시 원본을 훼손할 수 있다.
-                    os.rename(src_d, os.path.join(keep, sub))
+                    os.rename(_archive_path(src_d, data), _archive_path(os.path.join(keep, sub), data))
                     moved.append(sub)
                 except OSError as ex2:
                     failed.append(f"{sub}({type(ex2).__name__})")
+                    break
             # 보관하며 data\activity 를 통째로 옮기면 그 폴더가 사라진다. 그런데 샘플러는 루프에 들어가기
             # **전에 한 번만** 폴더를 만들므로, 돌고 있던 샘플러는 살아서 CPU 만 쓰고 한 줄도 못 쓰는
             # 좀비가 된다(오류 로그도 같은 사라진 폴더에 쓰려 해서 안 남는다 — 실측). 게다가 그 좀비가
@@ -520,31 +613,33 @@ def archive_other_pc(data):
             # 다음 틱에 스스로 기록을 재개하는 것을 확인했다.
             for sub in ("activity", "pc"):
                 try:
-                    os.makedirs(os.path.join(data, sub), exist_ok=True)
+                    os.makedirs(_archive_path(os.path.join(data, sub), data), exist_ok=True)
                 except OSError:
                     pass
             print(f"\n[추가 PC 취합] 지난 수집({prev})을 {os.path.basename(keep)} 폴더로 보관했습니다"
                   f" ({', '.join(moved) or '없음'})")
             if failed:
                 print(f"               옮기지 못한 폴더: {', '.join(failed)} — 그 폴더를 쓰는 프로그램"
-                      "(탐색기·Excel 등)을 닫고 다시 실행하면 함께 보관됩니다. 자료는 지우지 않았습니다.")
-            print(f"               이번 PC({here})의 데이터를 새로 수집하고, 분석은 두 PC 를 합쳐 계산합니다.")
+                      "(탐색기·Excel 등)을 닫고 다시 실행하세요. 이름표를 유지하고 새 수집은 중단합니다.")
             record("추가 PC 보관", not failed, 0.0,
                    f"{prev} → {os.path.basename(keep)}"
                    + (f" · 옮기지 못함: {', '.join(failed)}" if failed else ""))
+            if failed:
+                return False
+            print(f"               이번 PC({here})의 데이터를 새로 수집하고, 분석은 두 PC 를 합쳐 계산합니다.")
         if here:
-            # 이름표는 어떤 경우에도 남긴다 — 남기지 않으면 다음 실행이 같은 보관을 또 시도해
-            # 한 번의 일시적 오류가 영구 손실로 번진다(검증 지적)
-            try:
-                with open(name_f, "w", encoding="utf-8") as f:
-                    f.write(here)
-            except OSError:
-                pass
-    except OSError as ex:
-        print(f"[추가 PC 취합] 보관 건너뜀({type(ex).__name__}) — 이번 수집이 기존 데이터를 덮습니다")
+            _write_pc_name(data, here)
+        return True
+    except (OSError, UnicodeError, ValueError) as ex:
+        print(f"[추가 PC 취합] 보관 실패({type(ex).__name__}) — 기존 자료 보호를 위해 새 수집을 중단합니다")
+        record("추가 PC 보관", False, 0.0, f"보관 실패({type(ex).__name__}) · 새 수집 중단")
+        return False
 
 
 def main():
+    global _ACTIVE_CACHE
+    _ACTIVE_CACHE = None
+    _CAPTURE_RESULTS.clear()
     c = cfg()
     d0 = arg("--from") or (date.today().replace(day=1)).isoformat()
     d1 = arg("--to") or date.today().isoformat()
@@ -558,16 +653,45 @@ def main():
     except ValueError:
         print(f"[!] 날짜 형식이 잘못됐습니다 (YYYY-MM-DD): --from {d0} --to {d1}")
         return 1
+    # 완료본 검증은 last_run을 새 실행으로 덮기 전에 한다. 기본 실행 경로는 그대로다.
+    cache_hit, cache_note = False, ""
+    if "--reuse-complete" in sys.argv:
+        import run_cache
+        try:
+            cache_note = run_cache.eligible(sys.argv[1:], c, [d0, d1])
+            if not cache_note:
+                _ACTIVE_CACHE = run_cache.Session(ROOT, [d0, d1])
+                if "--force" not in sys.argv:
+                    cache_hit, cache_note = _ACTIVE_CACHE.lookup()
+                else:
+                    cache_note = "강제 재분석 요청"
+        except (OSError, ValueError, TypeError, KeyError, AttributeError, SyntaxError) as exc:
+            _ACTIVE_CACHE = None
+            cache_note = f"완료본 검증 보류({type(exc).__name__}): {str(exc)[:120]}"
+        print(f"[완료 결과 재사용] {cache_note}")
+    RUN.clear()
+    RUN.update(stages=[], host=os.environ.get("COMPUTERNAME", ""))
     RUN.update(period=[d0, d1], started=time.strftime("%Y-%m-%d %H:%M"),
                ai_requested=("--ai" in sys.argv), skip_collect=("--skip-collect" in sys.argv),
                finished=None)
     record("시작", True, 0.0)
+    if cache_hit:
+        RUN["reused_complete"] = True
+        RUN.update(status="complete", failed_stages=[])
+        RUN["finished"] = time.strftime("%Y-%m-%d %H:%M")
+        record("완료 결과 재사용", True, 0.0, cache_note)
+        record("완료", True, 0.0, "원본 경로의 검증된 분석·보고서를 재사용했습니다")
+        print("[LoadMonitor25] 동일한 완료 결과를 재사용했습니다. AI를 다시 호출하지 않았습니다.")
+        return 0
     print(f"[LoadMonitor25] {d0} ~ {d1}"
           + ("  · AI 판정 포함" if "--ai" in sys.argv else "  · AI 판정 없음(규칙 결과만)"))
 
     # 추가 PC 취합 — 폴더째 옮겨 온 경우 지난 PC 데이터를 자동 보관 (분석 시 합산)
     if "--skip-collect" not in sys.argv:
-        archive_other_pc(data)
+        if not archive_other_pc(data):
+            RUN["finished"] = time.strftime("%Y-%m-%d %H:%M")
+            record("수집 중단", False, 0.0, "이전 PC 자료 보관을 완료하지 못했습니다. 자료와 이름표를 확인한 뒤 다시 실행하세요.")
+            return 1
         ensure_sampler(c, data, col)       # 멈춘 창 샘플러 재기동 (있던 PC 만)
 
         step("PC 가동 이력", ps + [os.path.join(col, "Get-PcOnHistory.ps1"), "-From", d0, "-To", d1], 300)
@@ -585,7 +709,7 @@ def main():
         # 팀즈: Graph(설정 시) → 실패하면 Copilot 무개입 추출로 자동 대체
         #       (회사 정책이 device code·사용자 동의를 막아도 Copilot 경로는 동작한다)
         teams_ok = False
-        if (c.get("graph") or {}).get("clientId"):
+        if "--no-teams" not in sys.argv and (c.get("graph") or {}).get("clientId"):
             # 비대화 모드 — 토큰이 만료됐을 때 device-code 입력을 기다리며 300초를 버리지 않는다
             # (여기엔 콘솔이 없어 사용자는 그 프롬프트를 볼 수도 없다). 로그인은 --login-only 로.
             teams_ok = step("팀즈 채팅 (Graph)",
@@ -621,9 +745,7 @@ def main():
         print("\n[수집만] 이 PC 의 데이터 수집을 마쳤습니다 — 분석은 하지 않았습니다.")
         print("        폴더째 본 PC 로 가져가 [분석 실행]을 누르면 두 PC 데이터가 합산됩니다")
         print("        (같은 메일·일정 등 중복 자료는 분석 때 자동 제외).")
-        RUN["finished"] = time.strftime("%Y-%m-%d %H:%M")
-        record("완료(수집만)", True, 0.0, "추가 PC 수집 모드 — 분석은 본 PC 에서")
-        return 0
+        return finish_run(collect_only=True)
 
     print("\n── 업무 로드 추출 (주40h 근무일 기준)")
     _t = time.time()
@@ -646,6 +768,8 @@ def main():
     if rc_m == 0:
         # 지난 판정 산출물은 이 시점부터 '옛것' 이다(V-01) — 정제본이 화면에 그대로 남지 않게 개명한다
         _inv, _inv_fail = invalidate_ai_outputs(d0, d1)
+        if _ACTIVE_CACHE is not None and _inv_fail:
+            record("지난 판정 무효화", False, 0.0, "산출물 잠김 — 완료 캐시 등록 보류")
         record("업무 로드 추출", True, time.time() - _t,
                (f"지난 판정 산출물 {len(_inv)}개 무효화(.stale)" if _inv else "")
                + (f" · 무효화 실패: {', '.join(_inv_fail)}" if _inv_fail else ""))
@@ -673,8 +797,10 @@ def main():
         # 출력을 흘려보내며 마지막 줄 JSON 을 건진다 — judge 는 판정 0건(왕복 전부 실패)이면
         # 코드 3 과 {"ok":false,"error","hint"} 를 낸다(F3). 예전에는 그 경우도 0 이라
         # 'AI 판정 ok' 로 적히고 정제·Agentic·워크플로우가 빈손으로 계속 돌았다.
-        rc, why_j = _run_capture([sys.executable, os.path.join(ROOT, "judge.py"),
-                                  "--from", d0, "--to", d1],
+        judge_cmd = [sys.executable, os.path.join(ROOT, "judge.py"), "--from", d0, "--to", d1]
+        if _ACTIVE_CACHE is not None:
+            judge_cmd = _ACTIVE_CACHE.command("judge.py", ["--from", d0, "--to", d1])
+        rc, why_j = _run_capture(judge_cmd,
                                  dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1"))
         _stub = "스텁 판정(LM_COPILOT_STUB — 테스트 전용, 실제 Copilot 아님)"             if os.environ.get("LM_COPILOT_STUB") else ""
         if rc == 0:
@@ -708,10 +834,15 @@ def main():
         else:
             print("\n── AI 정제 (Level1·상세설명 문장화)")
             _t3 = time.time()
-            rc2 = subprocess.run([sys.executable, os.path.join(ROOT, "refine.py"),
-                                  "--from", d0, "--to", d1], cwd=ROOT,
-                                 env=dict(os.environ, PYTHONIOENCODING="utf-8",
-                                          PYTHONUNBUFFERED="1")).returncode
+            if _ACTIVE_CACHE is not None:
+                refine_cmd = _ACTIVE_CACHE.command("refine.py", ["--from", d0, "--to", d1])
+                rc2, _refine_note = _run_capture(refine_cmd, dict(os.environ, PYTHONIOENCODING="utf-8",
+                                                               PYTHONUNBUFFERED="1"))
+            else:
+                rc2 = subprocess.run([sys.executable, os.path.join(ROOT, "refine.py"),
+                                      "--from", d0, "--to", d1], cwd=ROOT,
+                                     env=dict(os.environ, PYTHONIOENCODING="utf-8",
+                                              PYTHONUNBUFFERED="1")).returncode
             record("AI 정제", rc2 == 0, time.time() - _t3)
             if rc2 != 0:
                 print("   AI 정제 실패 — report 폴더의 evidence 파일을 Copilot에 붙여넣어도 됩니다")
@@ -734,7 +865,9 @@ def main():
             # 워크플로우 단계가 만든 세부업무 병합 맵(config\detail_aliases.json)을 Agentic 실측에 반영 —
             # agentic 이 flow 보다 먼저 돌아 첫 --ai 실행(캐시 없음·리셋 뒤)의 load_mm 이 맵 없이
             # 계산돼 같은 실행의 workflow mm 과 어긋났다(F5). 왕복 없음·실패 무시.
-            agentic_recalc_inproc(d0, d1)
+            recalced = agentic_recalc_inproc(d0, d1)
+            if _ACTIVE_CACHE is not None:
+                record("Agentic 실측 재계산", recalced)
     else:
         record("AI 판정", False, 0.0, "AI 판정을 켜지 않고 실행했습니다(--ai 없음)")
         # 지난 AI 실행의 Agentic 결과가 남아 있으면 MM 실측만 재추출된 행으로 다시 센다(왕복 없음) — 매칭 자체는
@@ -753,7 +886,7 @@ def main():
                                  "--from", d0, "--to", d1, "--all"],
                                 dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1"))
     # 0 전부 · 2 일부만(무엇이 빠졌는지는 note 에) · 그 밖은 실패 — 보고서가 없어도 묶음·업로드는 계속
-    record("보고서 생성", rc_f in (0, 2), time.time() - _t,
+    record("보고서 생성", rc_f == 0, time.time() - _t,
            "" if rc_f == 0 else (note_f or f"freeze.py 종료코드 {rc_f}"))
     if rc_f not in (0, 2):
         print("   [!] 보고서 생성 실패 — 대시보드의 [보고서 만들기] 버튼으로 다시 시도할 수 있습니다")
@@ -796,12 +929,18 @@ def main():
 
     if (c.get("teamShareDir") or "").strip():
         print("\n── 팀 공유폴더 내보내기")
-        subprocess.run([sys.executable, os.path.join(ROOT, "export.py"),
-                        "--from", d0, "--to", d1], cwd=ROOT,
-                       env=dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1"))
-    RUN["finished"] = time.strftime("%Y-%m-%d %H:%M")
-    record("완료", True, 0.0)
-    return 0
+        exported = subprocess.run([sys.executable, os.path.join(ROOT, "export.py"),
+                                   "--from", d0, "--to", d1], cwd=ROOT,
+                                  env=dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1"))
+        record("팀 공유폴더 내보내기", exported.returncode == 0)
+    final_code = finish_run(result_available=True)
+    if _ACTIVE_CACHE is not None:
+        frozen = (_CAPTURE_RESULTS.get("freeze.py") or {}).get("summary")
+        saved, why_cache = _ACTIVE_CACHE.save(RUN["stages"], frozen)
+        RUN["complete_cache"] = {"saved": saved, "reason": why_cache}
+        record("완료", final_code == 0, 0.0, RUN.get("status", ""))
+        print(f"[완료 결과 재사용] {'등록' if saved else '등록 보류'}: {why_cache}")
+    return final_code
 
 
 if __name__ == "__main__":

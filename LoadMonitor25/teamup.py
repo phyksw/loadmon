@@ -23,6 +23,7 @@ teamup.py — 분석 결과를 팀 저장소로 올린다 (LoadMonitor25: 자동
 판정 결과다. 사내망 전용.
 """
 import io
+import hashlib
 import json
 import math
 import os
@@ -272,26 +273,52 @@ def push_reports(share, owner, tag):
     return copied, bad
 
 
-def build(cfg, d0, d1):
-    """report 의 산출물로 업로드 묶음(서버 전송 본문 그대로)을 만든다 → 경로 또는 None.
-    같은 기간을 다시 분석하면 그 기간 대기 묶음을 갈아끼운다(같은 것이 쌓이지 않게)."""
+def _source_snapshot(tag):
+    result = {}
+    for pattern in FILE_NAMES:
+        name = pattern.format(t=tag)
+        try:
+            st = os.stat(os.path.join(REPORT, name))
+        except FileNotFoundError:
+            continue
+        result[name] = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+    return result
+
+
+def make_payload(cfg, d0, d1):
+    """Build one period's snapshot in memory, shared by both export paths."""
     tag = f"{d0.replace('-', '')}-{d1.replace('-', '')}"
-    files = {}
-    for pat in FILE_NAMES:
-        n = pat.format(t=tag)
-        p = os.path.join(REPORT, n)
-        if os.path.exists(p):
-            try:
-                files[n] = open(p, encoding="utf-8-sig", errors="replace").read()
-            except OSError:
-                pass
+    before = _source_snapshot(tag)
+    files, digests = {}, {}
+    for n in before:
+        try:
+            with open(os.path.join(REPORT, n), "rb") as stream:
+                raw = stream.read()
+            files[n] = raw.decode("utf-8-sig")
+            digests[n] = hashlib.sha256(raw).hexdigest()
+        except (OSError, UnicodeError) as error:
+            raise ValueError(f"팀 묶음 원본을 읽지 못했습니다: {n}") from error
     if not files:
         return None
-    meta_p = os.path.join(REPORT, f"mm_meta_{tag}.json")
-    try:
-        mj = json.load(open(meta_p, encoding="utf-8-sig")) if os.path.exists(meta_p) else {}
-    except (OSError, ValueError):
-        mj = {}
+    # Member and artifact metadata must come from the SAME captured bytes.
+    mj = json.loads(files.get(f"mm_meta_{tag}.json", "{}"))
+    if not isinstance(mj, dict):
+        raise ValueError("mm_meta 객체 형식 오류")
+    for n, digest in digests.items():
+        with open(os.path.join(REPORT, n), "rb") as stream:
+            if hashlib.file_digest(stream, "sha256").hexdigest() != digest:
+                raise ValueError("팀 묶음 준비 중 원본이 바뀌었습니다. 분석 완료 후 다시 시도하세요")
+    if before != _source_snapshot(tag):
+        raise ValueError("팀 묶음 준비 중 파일 목록/내용이 바뀌었습니다. 분석 완료 후 다시 시도하세요")
+    original, refined = f"mm_rows_{tag}.csv", f"mm_rows_{tag}_refined.csv"
+    if original in before and refined in before and before[refined][3] < before[original][3]:
+        files.pop(refined, None)
+    anchor = before.get(refined if refined in files else original)
+    if anchor:
+        for prefix in ("agentic", "workflow"):
+            name = f"{prefix}_{tag}.json"
+            if name in before and before[name][3] < anchor[3]:
+                files.pop(name, None)
     b = mj.get("mm_basis") or {}
     member = {"owner": safe_owner(cfg.get("owner") or os.environ.get("USERNAME", "")),
               "function": cfg.get("function", ""), "period": [d0, d1], "tag": tag,
@@ -315,12 +342,24 @@ def build(cfg, d0, d1):
               "host": os.environ.get("COMPUTERNAME", ""),
               # 누가·언제·어디서 — 팀장이 "이 숫자는 누구 것이고 언제 것인가"를 묻는다(사용자 요청)
               "analyzed_at": time.strftime("%Y-%m-%d %H:%M")}
+    from owner import identity_fields
+    member.update(identity_fields(cfg, os.environ.get("USERNAME", "")))
+    member["source_artifacts"] = {name: {"sha256": digests[name], "mtime_ns": before[name][3], "bytes": before[name][2]}
+                                  for name in files}
+    return {"member": member, "files": files,
+            "built": time.strftime("%Y-%m-%d %H:%M"),
+            "blocked": blockers(member, files)}
+
+
+def build(cfg, d0, d1):
+    """Prepare the transfer queue without contacting a server."""
+    payload = make_payload(cfg, d0, d1)
+    if payload is None:
+        return None
+    tag = payload["member"]["tag"]
     os.makedirs(PENDING, exist_ok=True)
     dst = os.path.join(PENDING, f"{tag}.json")
     tmp = dst + ".tmp"
-    payload = {"member": member, "files": files,
-               "built": time.strftime("%Y-%m-%d %H:%M"),
-               "blocked": blockers(member, files)}
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False)
     os.replace(tmp, dst)                    # 쓰다 만 묶음이 남지 않게
@@ -540,41 +579,18 @@ def to_folder(share):
         m = d.get("member") or {}
         owner = m.get("owner") or "이름미상"
         dst = os.path.join(share, owner)
-        try:
-            # 공유폴더 자체는 이미 있어야 하므로 만들 것은 <이름> 한 단계뿐이다
-            # (os.makedirs 는 확장 경로에서 부모까지 거슬러 올라가다 깨진다 — 한 단계만 만든다)
-            if not os.path.isdir(longp(dst)):
-                os.mkdir(longp(dst))
-        except FileExistsError:
-            pass
-        except OSError as e:
-            hint = " (경로가 260자를 넘습니다 — 더 짧은 공유폴더를 쓰세요)" if len(os.path.abspath(dst)) >= MAXP else ""
-            results.append({"file": it["file"], "ok": False,
-                            "msg": f"공유폴더 접근 실패: {e}{hint} — 이 망에서 닿지 않을 수 있습니다"})
-            failed += 1
-            continue
         want = d.get("files") or {}
         n_ok, bad = 0, []
-        for name, text in want.items():
-            try:
-                with open(longp(os.path.join(dst, name)), "w", encoding="utf-8-sig", newline="") as f:
-                    f.write(text)
-                n_ok += 1
-            except OSError as e:
-                bad.append(f"{name}({type(e).__name__})")
-        # 일부만 써 놓고 member.json 을 갱신하면 팀 취합이 '신호 없는 인원'으로 집계된다(검증 확정).
-        # 전부 성공했을 때만 member.json 을 쓰고, 그럴 때만 대기열에서 뺀다.
-        if n_ok == len(want) and want and not bad:
-            try:
-                # host 를 지우지 않는다 — 어느 PC 에서 나온 결과인지 팀장이 알아야 한다(사용자 요청)
-                mm = dict(m)
-                mm["uploaded_at"] = time.strftime("%Y-%m-%d %H:%M")
-                mm["uploaded_from"] = os.environ.get("COMPUTERNAME", "")
-                mm["via"] = "공유폴더"
-                with open(longp(os.path.join(dst, "member.json")), "w", encoding="utf-8") as f:
-                    json.dump(mm, f, ensure_ascii=False, indent=1)
-            except OSError as e:
-                bad.append(f"member.json({type(e).__name__})")
+        try:
+            if owner != safe_owner(owner):
+                raise ValueError("팀 구성원 폴더 이름이 잘못됐습니다")
+            from bundles import write_bundle
+            mm = dict(m, uploaded_at=time.strftime("%Y-%m-%d %H:%M"),
+                      uploaded_from=os.environ.get("COMPUTERNAME", ""), via="공유폴더")
+            write_bundle(dst, mm, want)
+            n_ok = len(want)
+        except (OSError, ValueError, TypeError) as error:
+            bad.append(str(error))
         if n_ok == len(want) and want and not bad:
             sent += 1
             # 개인 HTML 보고서(분석리포트·얼린 보고서)는 묶음이 아니라 여기서 따로 —
@@ -598,7 +614,7 @@ def to_folder(share):
         else:
             failed += 1
             results.append({"file": it["file"], "tag": it.get("tag", ""), "ok": False,
-                            "msg": f"{n_ok}/{len(want)}개만 저장됨 — 실패: {', '.join(bad[:3])} "
+                            "msg": f"묶음 게시 실패(이전 결과 유지): {', '.join(bad[:3])} "
                                    "(대기 유지 — 잠금이 풀린 뒤 다시 시도하세요)"})
     return {"ok": failed == 0, "sent": sent, "failed": failed, "results": results,
             "dest": share}

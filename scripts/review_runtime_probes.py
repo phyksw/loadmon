@@ -1,7 +1,8 @@
 """Read-only runtime design diagnostics using selected AST definitions and TEMP.
 
 No application imports, real process starts, collection, user settings or network.
-These observations reproduce defects; they are not desired regression assertions.
+These observations report whether historical defects still reproduce; a repaired
+behavior produces issue_reproduced=false, not a desired regression assertion.
 """
 
 import ast
@@ -12,7 +13,8 @@ import io
 import json
 import os
 import runpy
-import secrets
+import sys
+import importlib.util
 import tempfile
 import threading
 import time
@@ -45,18 +47,20 @@ def run_probes():
 
     def fake_step(name, command, timeout):
         stages.append({"name": name, "command": command, "result": False})
+        namespace["RUN"]["stages"].append({"name": name, "ok": False})
         return False
 
     namespace = {
         "cfg": lambda: {"graph": {"clientId": "synthetic-id"}},
         "arg": lambda flag: {"--from": "2026-09-01", "--to": "2026-09-02"}.get(flag),
         "date": date, "os": os, "ROOT": "SYNTHETIC_ROOT", "RUN": {}, "time": time,
+        "_ACTIVE_CACHE": None, "_CAPTURE_RESULTS": {},
         "sys": SimpleNamespace(argv=["run.py", "--collect-only", "--no-teams"], executable="SYNTHETIC_PYTHON"),
         "record": lambda *args: records.append(args), "step": fake_step,
-        "archive_other_pc": lambda *args: None, "ensure_sampler": lambda *args: None,
+        "archive_other_pc": lambda *args: True, "ensure_sampler": lambda *args: None,
         "collect_outlook": lambda *args: None, "mail_fallbacks": lambda *args: None,
     }
-    load_definitions(namespace, "run.py", {"main"}, sources)
+    load_definitions(namespace, "run.py", {"main", "finish_run"}, sources)
     with contextlib.redirect_stdout(io.StringIO()):
         exit_code = namespace["main"]()
     graph = [stage for stage in stages if "Graph" in stage["name"]]
@@ -64,21 +68,24 @@ def run_probes():
                    "issue_reproduced": len(graph) == 1})
     probes.append({"id": "failed_collection_reports_completion", "observed": {
         "failed_step_count": len(stages), "exit_code": exit_code, "completion_record": records[-1],
-        "scope": "All six direct step calls fail; Outlook/fallbacks are no-op stubs."},
+        "scope": "All direct injected step calls fail; Outlook/fallbacks are no-op stubs."},
         "issue_reproduced": bool(stages) and exit_code == 0 and records[-1][1] is True})
 
     job = {"running": False}
-    namespace = {"json": json, "LOCK": threading.Lock(), "JOB": job, "time": time,
+    namespace = {"json": json, "LOCK": threading.Lock(), "REQUEST_LOCK": threading.Lock(), "JOB": job, "time": time,
                  "threading": SimpleNamespace(), "run_job": lambda *args: None}
     # Thread is resolved before its argument expressions, but must never start here.
     def forbidden_thread(*args, **kwargs):
         raise AssertionError("A real or stub worker must not be created by this probe")
 
     namespace["threading"].Thread = forbidden_thread
+    load_definitions(namespace, "ui/app.py", {"validate_run_request"}, sources)
     load_method(namespace, "ui/app.py", "H", "do_POST", sources)
+    load_method(namespace, "ui/app.py", "H", "_do_POST", sources)
     replies = []
     handler = SimpleNamespace(path="/api/run", headers={"Content-Length": "2"}, rfile=io.BytesIO(b"[]"),
                               _freezing=lambda: False, _send=lambda *args: replies.append(args))
+    handler._do_POST = lambda: namespace["_do_POST"](handler)
     exception = None
     try:
         namespace["do_POST"](handler)
@@ -89,7 +96,12 @@ def run_probes():
         "issue_reproduced": exception is not None and job["running"] is True and not replies})
 
     commands = []
-    namespace = {"subprocess": SimpleNamespace(run=lambda command, **kwargs: commands.append(command)), "NO_WIN": 0}
+    def capture(command, **kwargs):
+        commands.append(command)
+        return SimpleNamespace(returncode=0, stdout=b"[]")
+    if str(SOURCE / "core") not in sys.path:
+        sys.path.insert(0, str(SOURCE / "core"))
+    namespace = {"subprocess": SimpleNamespace(run=capture), "NO_WIN": 0, "ROOT": "SYNTHETIC_ROOT", "json": json}
     load_definitions(namespace, "ui/app.py", {"kill_copilot_edge"}, sources)
     namespace["kill_copilot_edge"]()
     probes.append({"id": "browser_cleanup_has_no_installation_scope", "observed": {
@@ -100,25 +112,32 @@ def run_probes():
     temp_root = Path(tempfile.mkdtemp(prefix="lm25-design-runtime-"))
     owner_root = temp_root / "synthetic-person"
     owner_root.mkdir()
-    for name in ("first.csv", "second.csv", "member.json"):
-        (owner_root / name).write_text('"old"', encoding="utf-8")
+    tag = "20260901-20260902"
+    names = [f"mm_rows_{tag}.csv", f"mm_meta_{tag}.json", "member.json"]
+    old_member = {"owner": "synthetic-person", "tag": tag, "generation": "old"}
+    for name in names:
+        (owner_root / name).write_text(json.dumps(old_member) if name == "member.json" else "old", encoding="utf-8")
+    spec = importlib.util.spec_from_file_location("runtime_probe_bundles", SOURCE / "core/bundles.py")
+    bundle = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bundle)
     observations = []
+    original_write = bundle._write
 
-    def observe_replace(src, dst):
-        os.replace(src, dst)
-        if str(src).endswith(".part") and Path(dst).name == "first.csv":
-            observations.append({p.name: p.read_text(encoding="utf-8") for p in (
-                owner_root / "first.csv", owner_root / "second.csv", owner_root / "member.json")})
+    def observe_write(path, body):
+        original_write(path, body)
+        active = Path(bundle.resolve_member_dir(owner_root))
+        observations.append({n: (active / n).read_text(encoding="utf-8") for n in names})
 
-    os_proxy = SimpleNamespace(path=os.path, makedirs=os.makedirs, getpid=os.getpid, replace=observe_replace, remove=os.remove)
-    namespace = {"os": os_proxy, "TEAMDATA": str(temp_root), "threading": threading, "secrets": secrets, "json": json}
+    bundle._write = observe_write
+    namespace = {"os": os, "TEAMDATA": str(temp_root), "write_bundle": bundle.write_bundle}
     load_method(namespace, "teamserver.py", "H", "_save", sources)
-    bad, staged = namespace["_save"]("synthetic-person", {"generation": "new"}, {"first.csv": "new", "second.csv": "new"})
+    bad, staged = namespace["_save"]("synthetic-person", dict(old_member, generation="new"),
+                                     {names[0]: "new", names[1]: "new"})
     probes.append({"id": "team_bundle_publication_is_per_file", "observed": {
-        "snapshot_after_first_replace": observations, "save_errors": bad, "staged_count": len(staged),
-        "scope": "A callback observes the write boundary; no real concurrent server was run.",
+        "snapshots_during_staging": observations, "save_errors": bad, "staged_count": len(staged),
+        "scope": "A callback observes the staging boundary; no actual server was run.",
         "synthetic_directory": str(temp_root)},
-        "issue_reproduced": not bad and observations == [{"first.csv": "new", "second.csv": '"old"', "member.json": '"old"'}]})
+        "issue_reproduced": any(o[names[0]] != o[names[1]] for o in observations)})
 
     return {"schema_version": 1, "project": "LoadMonitor25", "generated_utc": datetime.now(UTC).isoformat(timespec="seconds"),
             "execution": {"mode": "selected AST definitions with synthetic inputs and injected I/O",

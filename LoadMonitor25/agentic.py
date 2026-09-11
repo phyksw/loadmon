@@ -13,23 +13,23 @@ LoadMonitor20 과 다른 점:
     실측). 과제 목록은 매번 전부, 묶음 경계는 앞 묶음 끝 3행(600자) 겹침으로 문맥 유지.
     겹친 행은 rows_analyzed 에 세지 않는다. 묶음 일부가 실패해도 나머지로 결과를 만든다.
   · **MM 은 프롬프트에 넣지 않는다**(사람·MM 미전송 원칙). load_mm 은 AI 가 준 값이 아니라
-    프로그램이 **내 mm_rows 실측**으로 붙인다(recalc_mm): 근거 업무명 → 행 대조 → 실측 합.
+    프로그램이 **내 mm_rows 실측**으로 붙인다(recalc_mm): work_ids → 동일 범위 행 대조 → 실측 합.
     같은 업무를 여러 과제가 물면 겹친 과제 수로 안분한 load_mm_split 도 남긴다.
-    근거 업무명을 내 자료에서 못 찾으면 '[근거 없음]' 표식(억지 매칭 의심).
+    구판 이름은 유일한 정확 매칭만 허용하며, 모호하거나 없는 근거는 합산하지 않는다.
 
 묶음이 많은 사람(업무 수백 행)이 통째로 실패하던 것(S2)에 대한 보강:
   · 묶음은 **같은 채팅에서 이어** 보낸다(fresh=None) — Copilot 이 앞 묶음의 매칭·표기를 기억해 묶음 간 판정이 일관되게
     (제보: 묶음마다 새 채팅이라 기억이 안 이어짐). 첫 왕복·실패 뒤·config.copilotAuto.chatTurns 마다만 새 채팅.
     되풀이돼 섞여 오는 앞 답은 strip_prompt_echo·find_json 이 걷어낸다.
   · 잘린 JSON·코드펜스·굽은 따옴표·'stopped generating' 답은 core/details.find_json 이 복구한다
-    (부분 결과는 salvaged_chunks 에 정직하게 센다). 프롬프트의 출력 예시는 <...> 자리표시자라
+    복구된 답은 완료로 채택하지 않고 작은 묶음으로 재시도한다. 프롬프트의 출력 예시는 <...> 자리표시자라
     되돌아온 프롬프트가 답으로 파싱되지 않는다(실측 사고: 예시가 매칭으로 저장됐다).
   · 로그인 만료·Edge 미기동 같은 **사람이 손대야 하는 실패는 첫 묶음에서 바로 접고**(fatal), 그 밖의
     실패는 연속 3회면 접는다 — 남은 묶음을 헛되이 기다리지 않는다. 마지막 줄 JSON 의 error/hint 에
     실제 사유(무엇이 막혔고 무엇을 하면 되는지)를 싣는다.
   · 답이 없거나 잘린 묶음은 반으로 나눠 1회 더 묻는다(적응 분할).
   · 묶음이 끝날 때마다 저장하고(중단돼도 그때까지의 결과가 남는다), 어느 행까지 판정했는지
-    rows_done 을 남겨 **다음 실행은 남은 행만 이어서** 보낸다(--redo 면 처음부터).
+    processed_ids/rows_done 을 남긴다. 동일 입력 content fingerprint일 때만 남은 행을 이어서 보낸다.
   · 모든 묶음이 정상인데 매칭이 0건이면 실패가 아니라 '매칭 없음' 결과다(옛 판은 rc1 로 재시도했다).
 
   python agentic.py                          # 최신 결과 대상
@@ -45,6 +45,7 @@ LoadMonitor20 과 다른 점:
 import glob
 import io
 import json
+import math
 import os
 import re
 import sys
@@ -111,6 +112,9 @@ def load_tasks():
     tasks = [t for t in (o.get("tasks") or []) if isinstance(t, dict) and t.get("id")]
     if not tasks:
         return [], (o.get("axes") or {}), "config\\agentic_tasks.json 에 tasks(id 있는 과제)가 없습니다"
+    ids = [t.get("id") for t in tasks]
+    if not all(isinstance(value, str) and value.strip() == value for value in ids) or len(ids) != len(set(ids)):
+        return [], {}, "config\\agentic_tasks.json 의 과제 ID가 문자열이 아니거나 중복됩니다"
     return tasks, (o.get("axes") if isinstance(o.get("axes"), dict) else {}), ""
 
 
@@ -131,9 +135,9 @@ def _one_line(s, n):
 
 
 def row_line(r, stat=None):
-    """행 한 줄 — MM 은 넣지 않는다. '· 과제 / 세부업무 / 유형 / 신호 근거 — 설명[:60] (수동 m/n)'
+    """행 한 줄 — MM 은 넣지 않는다. '· [work_id] 과제 / 세부업무 / 유형 / 신호 근거 — 설명 (수동 m/n)'
     stat=(총 신호, 수동 신호) — 오할당 판정 근거를 행 끝에 붙인다(옛 별도 절보다 짧다)."""
-    s = f"· {_one_line(r.get('Level 2'), 40)} / {_one_line(r.get('Level 3'), 60)} / {_one_line(r.get('유형'), 10)}"
+    s = f"· [{details.stable_work_id(r)}] {_one_line(r.get('Level 2'), 40)} / {_one_line(r.get('Level 3'), 60)} / {_one_line(r.get('유형'), 10)}"
     ev = _one_line(r.get("근거"), 40)
     if ev:
         s += f" / 신호 {ev}"
@@ -151,9 +155,8 @@ def row_key(r):
 
 
 def row_sig(r):
-    """행 식별자(이어서 판정용) — 과제|세부업무|유형|MM."""
-    return (f"{_one_line(r.get('Level 2'), 80)}|{_one_line(r.get('Level 3'), 120)}|"
-            f"{_one_line(r.get('유형'), 10)}|{details._f(r.get('mm')):.3f}")
+    """Stable scoped work identity. Resume additionally requires the input hash."""
+    return details.stable_work_id(r)
 
 
 def ag_prompt(tasks, rows, stats=None):
@@ -168,20 +171,22 @@ def ag_prompt(tasks, rows, stats=None):
         "세 가지를 판정하세요:",
         "1. match — 과제마다: 이 사람의 아래 업무 중 그 과제가 자동화·대체할 수 있는 것이",
         "   얼마나 있는가. task(과제 코드)·fit(적합률 0~100)·",
-        "   work(관련 업무 이름들 — **아래 목록의 세부업무 표기를 그대로**, 임의로 줄이거나 고치지 말 것)·",
+        "   work_ids(관련 업무의 [work_...] ID 배열 — 목록의 ID만 사용, 이름으로 대신하지 말 것)·",
         "   reason(근거 1~2문장). 관련이 없으면 넣지 말 것. 억지로 만들지 말 것.",
         "2. new — 계획 과제에 없지만 이 사람의 반복 업무에서 발굴되는 신규 Agentic AI 후보.",
         "   name·logic(무엇을 입력받아 무엇을 자동화하는지)·reason·",
-        "   work(근거가 된 아래 업무 이름들 — 표기 그대로). 근거가 약하면 빈 배열.",
+        "   work_ids(근거 업무 ID 배열). 근거가 약하면 신규 후보를 만들지 말 것.",
         "3. misassigned — 이 사람 본인의 업무가 아닌데 잘못 분류된 것으로 의심되는 행:",
         "   근거는 수신전용·CC 신호만으로 구성, 단순 참조·공지 성격, 다른 사람 업무의 흔적.",
         "   각 행 끝의 '(수동 m/n)' 은 그 업무 신호 n건 중 참조·수신(CC·수신전용·단체) m건 —",
-        "   수동 비중이 높으면 의심. row(과제/세부업무 그대로)·reason.",
+        "   수동 비중이 높으면 의심. row_id(해당 work_... ID)·reason.",
+        "4. processed_ids — match/new/misassigned 세 검토를 모두 끝낸 업무 ID 배열.",
+        "   매칭이 없어도 검토를 끝낸 모든 입력 ID를 한 번씩 적으세요. 미검토 ID는 넣지 마세요.",
         "",
         "출력은 JSON 하나만 (설명 문장·코드펜스 금지, 짧게). <...> 자리에 실제 값을 넣으세요:",
-        '{"match":[{"task":<과제 코드>,"fit":<0~100>,"work":[<세부업무 표기 그대로>],"reason":<근거 1~2문장>}],',
-        ' "new":[{"name":<후보 이름>,"logic":<자동화 로직>,"reason":<사유>,"work":[<근거 업무>]}],',
-        ' "misassigned":[{"row":<과제/세부업무>,"reason":<근거>}]}',
+        '{"match":[{"task":<과제 코드>,"fit":<1~100>,"work_ids":[<업무 ID>],"reason":<근거 1~2문장>}],',
+        ' "new":[{"name":<후보 이름>,"logic":<자동화 로직>,"reason":<사유>,"work_ids":[<업무 ID>]}],',
+        ' "misassigned":[{"row_id":<업무 ID>,"reason":<근거>}], "processed_ids":[<검토 완료한 모든 업무 ID>]}',
         "",
         "[계획 과제]",
     ]
@@ -271,10 +276,12 @@ def _clean_list(v, cap=MAX_WORK):
         return []
     out = []
     for w in v:
-        s = " ".join(str(w or "").split())
+        if not isinstance(w, str):
+            continue
+        s = " ".join(w.split())
         if s and not _placeholder(s) and s not in out:
             out.append(s)
-    return out[:cap]
+    return out if cap is None else out[:cap]
 
 
 def merge_match(best, o, tmap):
@@ -284,7 +291,7 @@ def merge_match(best, o, tmap):
     for m in (o.get("match") or []):
         if not isinstance(m, dict):
             continue
-        tid = str(m.get("task") or "").strip().upper()
+        tid = str(m.get("task") or "").strip()
         if tid not in tmap:
             continue
         try:
@@ -299,7 +306,7 @@ def merge_match(best, o, tmap):
         if cur is None:
             best[tid] = {"task": tid, "axis": tmap[tid].get("axis", ""),
                          "name": tmap[tid].get("name", tid), "fit": fit, "load_mm": 0.0,
-                         "work": work, "reason": reason}
+                         "work": work, "work_ids": _clean_list(m.get("work_ids"), cap=None), "reason": reason}
         else:
             if fit > cur["fit"]:
                 cur["fit"] = fit
@@ -307,6 +314,7 @@ def merge_match(best, o, tmap):
             for w in work:
                 if w not in cur["work"] and len(cur["work"]) < MAX_WORK:
                     cur["work"].append(w)
+            cur["work_ids"] = list(dict.fromkeys(cur.get("work_ids", []) + _clean_list(m.get("work_ids"), cap=None)))
         got += 1
     return got
 
@@ -318,12 +326,13 @@ def merge_new(news, o):
             continue
         item = {"name": str(x["name"]).strip()[:60], "logic": str(x.get("logic") or "")[:300],
                 "reason": str(x.get("reason") or "")[:300], "load_mm": 0.0,
-                "work": _clean_list(x.get("work"))}
+                "work": _clean_list(x.get("work")), "work_ids": _clean_list(x.get("work_ids"), cap=None)}
         dup = next((u for u in news if fold(u["name"]) == fold(item["name"])), None)
         if dup is None:
             news.append(item)
             n += 1
         else:
+            dup["work_ids"] = list(dict.fromkeys(dup.get("work_ids", []) + item["work_ids"]))
             for w in item["work"]:
                 if w not in dup["work"] and len(dup["work"]) < MAX_WORK:
                     dup["work"].append(w)
@@ -341,7 +350,7 @@ def merge_mis(mis, o):
         row = str(x["row"]).strip()[:80]
         if any(u["row"] == row for u in mis):
             continue
-        mis.append({"row": row, "reason": str(x.get("reason") or "")[:250]})
+        mis.append({"row": row, "row_id": x.get("row_id", ""), "reason": str(x.get("reason") or "")[:250]})
         n += 1
     return n
 
@@ -349,6 +358,52 @@ def merge_mis(mis, o):
 def _has_items(o):
     """응답에 판정 내용이 하나라도 있는가 — 복구본(salvaged)이 빈 껍데기면 성공으로 세지 않는다."""
     return any(isinstance(o.get(k), list) and o.get(k) for k in ("match", "new", "misassigned"))
+
+
+def validate_response(obj, rows, tmap, info):
+    """Only complete batches with explicit per-work acknowledgements can be done."""
+    if info.get("how") == "salvaged" or info.get("cut"):
+        raise ValueError("응답이 잘려 검토 완료를 확인할 수 없음")
+    if not isinstance(obj, dict) or any(not isinstance(obj.get(k), list)
+                                        for k in ("match", "new", "misassigned", "processed_ids")):
+        raise ValueError("필수 판정 배열/processed_ids 없음")
+    by_id = {row_sig(r): r for r in rows}
+    processed = obj["processed_ids"]
+    if (not all(isinstance(v, str) for v in processed) or len(processed) != len(set(processed))
+            or set(processed) != set(by_id)):
+        raise ValueError("입력 업무별 검토 완료 ID가 누락되거나 다름")
+
+    def text_ok(value):
+        return isinstance(value, str) and bool(value.strip()) and not _placeholder(value)
+
+    def work(item):
+        ids = item.get("work_ids")
+        if (not isinstance(ids, list) or not ids or not all(isinstance(v, str) and v in by_id for v in ids)
+                or len(ids) != len(set(ids))):
+            raise ValueError("근거 업무 ID가 현재 묶음에 없거나 잘못됨")
+        return ids, [f"{by_id[v].get('Level 2')} / {by_id[v].get('Level 3')}" for v in ids]
+
+    out = {"match": [], "new": [], "misassigned": [], "processed_ids": processed}
+    for name in ("match", "new"):
+        for item in obj[name]:
+            if not isinstance(item, dict) or not text_ok(item.get("reason")):
+                raise ValueError("후보 사유가 없거나 형식이 잘못됨")
+            ids, labels = work(item)
+            if name == "match":
+                fit = item.get("fit")
+                if (not isinstance(item.get("task"), str) or item["task"] not in tmap
+                        or type(fit) not in (int, float) or not math.isfinite(fit) or not 1 <= fit <= 100):
+                    raise ValueError("과제 ID 또는 적합도 값이 잘못됨")
+            elif not all(text_ok(item.get(k)) for k in ("name", "logic")):
+                raise ValueError("신규 후보 이름/로직이 없음")
+            out[name].append(dict(item, work_ids=ids, work=labels))
+    for item in obj["misassigned"]:
+        if (not isinstance(item, dict) or not text_ok(item.get("reason"))
+                or not isinstance(item.get("row_id"), str) or item["row_id"] not in by_id):
+            raise ValueError("오할당 업무 ID/사유가 잘못됨")
+        row = by_id[item["row_id"]]
+        out["misassigned"].append(dict(item, row=f"{row.get('Level 2')} / {row.get('Level 3')}"))
+    return out
 
 
 # ── MM 실측 재계산 (보완2 fix_agentic 이식 — 파일이 아니라 dict 대상) ─────────
@@ -363,7 +418,8 @@ def _row_index(rows):
     '레이아웃 리뷰 회의' 근거가 [근거 없음]으로 떨어지고 MM 이 대표 이름 쪽에 몰림)."""
     idx, idx_ns = {}, {}
     for r in rows:
-        keys = {fold(r.get("Level 3")), fold(f"{r.get('Level 2')} {r.get('Level 3')}")}
+        keys = {fold(r.get("Level 3")), fold(f"{r.get('Level 2')} {r.get('Level 3')}"),
+                fold(f"{r.get('Level 2')} / {r.get('Level 3')}")}
         raw3 = r.get("_raw3")
         if raw3 and raw3 != r.get("Level 3"):
             keys |= {fold(raw3), fold(f"{r.get('Level 2')} {raw3}")}
@@ -375,19 +431,18 @@ def _row_index(rows):
 
 
 def find_rows(name, idx, idx_ns):
+    """Legacy names may resolve only to one exact scoped work identity."""
     f = fold(name)
     if not f:
         return []
     if f in idx:
-        return idx[f]
+        hit = list({id(r): r for r in idx[f]}.values())
+        return hit if len({r.get("_work_id") or row_sig(r) for r in hit}) == 1 else []
     ns = f.replace(" ", "")
     if ns in idx_ns:
-        return idx_ns[ns]
-    # 부분 일치 폴백 — 양쪽 다 4자 이상일 때만('세부'·'교육' 같은 짧은 이름이 전부를 물지 않게)
-    if len(ns) < 4:
-        return []
-    hit = [r for k, rs in idx_ns.items() if len(k) >= 4 and (ns in k or k in ns) for r in rs]
-    return list({id(r): r for r in hit}.values())
+        hit = list({id(r): r for r in idx_ns[ns]}.values())
+        return hit if len({r.get("_work_id") or row_sig(r) for r in hit}) == 1 else []
+    return []  # A partial name cannot establish work identity.
 
 
 def recalc_mm(out, rows, amap=None, rows_file=""):
@@ -403,9 +458,24 @@ def recalc_mm(out, rows, amap=None, rows_file=""):
         if "_mm" not in r:
             r["_mm"] = details._f(r.get("mm"))
         r.setdefault("_raw3", r.get("Level 3"))       # 맵 적용 전 이름 — 근거 대조는 원 표기·대표 이름 둘 다로
+        r["_work_id"] = row_sig(r)
     if amap:
         details.apply_detail_map(rows, None, amap)
     idx, idx_ns = _row_index(rows)
+    by_id = defaultdict(list)
+    for row in rows:
+        by_id[row["_work_id"]].append(row)
+
+    def resolve(candidate):
+        hit, missing = [], []
+        use_ids = "work_ids" in candidate
+        for value in _clean_list(candidate.get("work_ids" if use_ids else "work"), cap=None):
+            matched = by_id.get(value, []) if use_ids else find_rows(value, idx, idx_ns)
+            if matched:
+                hit.extend(matched)
+            else:
+                missing.append(value)
+        return list({id(r): r for r in hit}.values()), missing
 
     match = [m for m in (out.get("match") or []) if isinstance(m, dict)]
     claims = {}
@@ -413,14 +483,7 @@ def recalc_mm(out, rows, amap=None, rows_file=""):
     for m in match:
         if not m.get("fit"):
             continue
-        hit, miss = [], []
-        for w in _clean_list(m.get("work")):
-            rs = find_rows(w, idx, idx_ns)
-            if rs:
-                hit += rs
-            else:
-                miss.append(w)
-        hit = list({id(r): r for r in hit}.values())
+        hit, miss = resolve(m)
         found[id(m)] = (hit, miss)
         for r in hit:
             claims.setdefault(id(r), []).append(m.get("task"))
@@ -455,18 +518,32 @@ def recalc_mm(out, rows, amap=None, rows_file=""):
         if not isinstance(n, dict):
             continue
         n.setdefault("load_mm_ai", n.get("load_mm", 0))
-        hit, miss = [], []
-        for w in _clean_list(n.get("work")):
-            rs = find_rows(w, idx, idx_ns)
-            if rs:
-                hit += rs
-            else:
-                miss.append(w)
-        hit = list({id(r): r for r in hit}.values())
+        hit, miss = resolve(n)
         n["load_mm"] = round(sum(r["_mm"] for r in hit), 3)
         n["evidence_rows"] = len(hit)
         n["evidence_missing"] = miss[:6]
         new_sum += n["load_mm"]
+
+    candidates = [m for m in match if m.get("fit")] + [n for n in out.get("new", []) if isinstance(n, dict)]
+    all_hits, counts = {}, Counter()
+    for candidate in candidates:
+        hit, _ = resolve(candidate)
+        all_hits[id(candidate)] = hit
+        counts.update({id(r) for r in hit})
+    unique = {id(r): r for hit in all_hits.values() for r in hit}
+    for candidate in candidates:
+        hit = all_hits[id(candidate)]
+        candidate.update(candidate_id=details.stable_id("candidate", candidate.get("task") or candidate.get("name"),
+                                                        "" if candidate.get("task") else candidate.get("logic")),
+                         related_work_mm=round(sum(r["_mm"] for r in hit), 3),
+                         allocated_candidate_mm=round(sum(r["_mm"] / counts[id(r)] for r in hit), 6),
+                         expected_saved_mm=None,
+                         resolved_work_ids=sorted({r["_work_id"] for r in hit}),
+                         kpi_eligible=bool(hit) and not candidate.get("evidence_missing"))
+    out["unique_related_work_mm"] = round(sum(r["_mm"] for r in unique.values()), 6)
+    out["expected_saved_mm"] = None
+    out["work_rows"] = [{"id": r["_work_id"], "project": r.get("Level 2"), "detail": r.get("_raw3"),
+                         "worktype": r.get("유형")} for r in rows]
 
     hits = [m for m in match if m.get("fit")]
     no_ev = [m for m in hits if not m.get("evidence_rows")]
@@ -552,11 +629,12 @@ def _seed_prev(prev, tmap):
     for m in (prev.get("match") or []):
         if not isinstance(m, dict) or not m.get("fit"):
             continue
-        tid = str(m.get("task") or "").strip().upper()
+        tid = str(m.get("task") or "").strip()
         if tid not in tmap:
             continue
         best[tid] = {"task": tid, "axis": tmap[tid].get("axis", ""), "name": tmap[tid].get("name", tid),
                      "fit": int(m.get("fit") or 0), "load_mm": 0.0, "work": _clean_list(m.get("work")),
+                     "work_ids": _clean_list(m.get("work_ids"), cap=None),
                      "reason": _MARK_RE.sub("", str(m.get("reason") or "")).strip()[:300],
                      "load_mm_ai": m.get("load_mm_ai", 0)}
     merge_new(news, {"new": prev.get("new") or []})
@@ -603,7 +681,10 @@ def main():
         print(f"[agentic] 세부업무 병합 맵을 읽지 못해 무시합니다({type(e).__name__})")
         amap = {}
 
-    stats_by = sig_stats(details.read_signals(tag, rep))
+    signals = details.read_signals(tag, rep)
+    stats_by = sig_stats(signals)
+    input_fingerprint = details.analysis_fingerprint(ROOT, tag, {"schema": 1, "rows": rows, "signals": signals,
+                                                                 "tasks": tasks, "aliases": amap})
     try:
         budget = max(1500, int(arg("--budget", PROMPT_BUDGET)))    # 튜닝·테스트용 묶음 예산
     except ValueError:
@@ -615,11 +696,12 @@ def main():
     tmap = {str(t.get("id")): t for t in tasks if t.get("id")}
     ap = os.path.join(rep, f"agentic_{tag}.json")
 
-    # 이어서 판정 — 지난 실행이 같은 자료(행 수·파일)에서 일부 행만 끝냈으면 남은 행만 보낸다
+    # 이어서 판정 — 동일 원문/설정/소스 fingerprint에서 명시적으로 완료된 ID만 승계한다.
     sig_all = [row_sig(r) for r in rows]
     prev = None if "--redo" in sys.argv else _load_json(ap)
     done_prev = set()
-    if (prev and prev.get("tag") == tag and prev.get("rows_total") == len(rows)
+    if (input_fingerprint and prev and prev.get("input_fingerprint") == input_fingerprint
+            and prev.get("identity_schema") == 1 and prev.get("tag") == tag and prev.get("rows_total") == len(rows)
             and prev.get("rows_file") == rows_fn and isinstance(prev.get("rows_done"), list)):
         done_prev = set(prev["rows_done"]) & set(sig_all)
         if done_prev >= set(sig_all):
@@ -647,7 +729,7 @@ def main():
     consec, stopped, n_sent = 0, "", 0
 
     def ask(part, name):
-        nonlocal model_name, n_sent
+        nonlocal model_name, n_sent, salvaged
         n_sent += 1
         # fresh=None — 묶음을 같은 채팅에서 이어 보낸다(첫 왕복·실패 뒤·chatTurns 마다만 새 채팅). 앞 묶음의 과제 매칭·표기를
         # Copilot 이 기억해 묶음 간 판정이 일관된다(제보: 묶음마다 새 채팅이라 기억이 안 이어짐)
@@ -655,9 +737,13 @@ def main():
                                    "agentic", "match", fresh=None)
         if info.get("ok"):
             model_name = model_name or str(info.get("model") or "")
-            if info.get("how") == "salvaged" and not _has_items(o):
-                return {}, {"ok": False, "kind": "parse", "error": "응답이 잘려 건질 내용이 없음",
-                            "hint": "답이 길어 중간에 끊겼습니다 — 묶음을 나눠 다시 묻습니다", "fatal": False}
+            try:
+                o = validate_response(o, part, tmap, info)
+            except ValueError as error:
+                if info.get("how") == "salvaged" or info.get("cut"):
+                    salvaged += 1
+                return {}, {"ok": False, "kind": "parse", "error": str(error),
+                            "hint": "완전한 업무 ID별 판정이 필요합니다 — 묶음을 나눠 다시 묻습니다", "fatal": False}
         return o, info
 
     def absorb(o, part_rows, n_new, ci, note=""):
@@ -674,11 +760,12 @@ def main():
         analyzed = len(sig_all) - len(pending)
         # 분할 재시도로 결국 성공한 묶음의 실패는 사유에 남기지 않는다 — 남은 행·실패 묶음이 있을 때만
         why, how = _fail_summary(fails) if (pending or failed) else ("", "")
-        out = {"tag": tag, "axes": axes, "match": list(best.values()), "new": news[:8],
-               "misassigned": mis[:12],
+        out = {"tag": tag, "axes": axes, "match": list(best.values()), "new": news,
+               "misassigned": mis,
                # 실제로 판정에 쓰인 행 수만 적는다(겹침 제외) — 반쪽 결과가 완전한 결과처럼 보이면 안 된다
                "rows_analyzed": analyzed, "rows_total": len(rows), "rows_pending": len(pending),
-               "rows_done": sorted(done_sigs), "rows_file": rows_fn,
+               "rows_done": sorted(done_sigs), "processed_ids": sorted(done_sigs), "rows_file": rows_fn,
+               "identity_schema": 1, "input_fingerprint": input_fingerprint,
                "partial": bool(pending), "chunks": len(parts), "failed_chunks": failed,
                "salvaged_chunks": salvaged, "roundtrips": n_sent,
                "note": ("" if not pending else

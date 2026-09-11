@@ -10,6 +10,8 @@ r"""owner.py — '이름'(팀 취합의 폴더 키) 규칙 한 곳에 모으기.
 정규화 규칙이 서로 어긋나면 같은 사람이 두 폴더로 갈라져 팀 MM 이 중복 계상되므로, 규칙은 이 파일 하나뿐이다.
 """
 import re
+import hashlib
+import unicodedata
 
 # teamserver.py 와 같은 규칙 (경로 구분자·윈도우 금지문자·점·공백만)
 OWNER_BAD = re.compile(r'[\\/:*?"<>|.]|^\s*$')
@@ -26,3 +28,15 @@ def safe_owner(v):
 def owner_of(cfg, env_user=""):
     """설정 → 윈도우 계정 순으로 이름을 정하고 정규화한다"""
     return safe_owner((cfg or {}).get("owner") or env_user)
+
+
+def identity_fields(cfg, env_user=""):
+    """Keep the original identity before lossy folder normalization.
+
+    This detects punctuation/truncation collisions; a personal name is still not
+    an organization-wide employee identifier and renames need deliberate review.
+    """
+    raw = unicodedata.normalize("NFKC", str((cfg or {}).get("owner") or env_user or "이름미상"))
+    raw = "".join(c for c in raw if unicodedata.category(c) not in {"Cc", "Cf"})
+    raw = " ".join(raw.split())
+    return {"owner_source": raw, "member_id": hashlib.sha256(raw.casefold().encode("utf-8")).hexdigest()}

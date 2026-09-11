@@ -22,7 +22,6 @@ import html
 import json
 import os
 import re
-import secrets
 import subprocess
 import sys
 import threading
@@ -31,6 +30,8 @@ import unicodedata
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(ROOT, "core"))
+from bundles import resolve_member_dir, write_bundle  # noqa: E402
 if __name__ == "__main__":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, errors="replace", encoding=(
         (sys.stdout.encoding or "utf-8") if sys.stdout.isatty() else "utf-8"))  # 콘솔(bat)=콘솔 코드페이지 · 파이프(UI)=utf-8
@@ -49,7 +50,7 @@ def _share_root():
     예전에는 teamdata\ 로 고정이라, 팀 공유폴더(teamShareDir)를 설정해 둔 PC 에서
     서버를 켜면 '받은 자리'와 '보는 자리'가 갈라져 업로드가 화면에 영영 안 떴다."""
     d = str(_cfg().get("teamShareDir") or "").strip()
-    if d and os.path.isdir(d):
+    if d:
         return d
     return os.path.join(ROOT, "teamdata")
 
@@ -214,10 +215,8 @@ def members():
     if not os.path.isdir(TEAMDATA):
         return out
     for d in sorted(os.listdir(TEAMDATA)):
-        mp = os.path.join(TEAMDATA, d, "member.json")
-        if not os.path.exists(mp):
-            continue
         try:
+            mp = os.path.join(resolve_member_dir(os.path.join(TEAMDATA, d)), "member.json")
             m = json.load(open(mp, encoding="utf-8-sig"))
         except (OSError, ValueError):
             continue
@@ -229,6 +228,7 @@ def members():
             m["uploaded_at"] = time.strftime("%m-%d %H:%M", time.localtime(os.path.getmtime(mp)))
         except OSError:
             m["uploaded_at"] = ""
+        m["bundle_file_at"] = os.path.getmtime(mp)
         out.append(m)
     return out
 
@@ -292,8 +292,7 @@ class H(BaseHTTPRequestHandler):
             now = time.time()
             rows = []
             for m in ms:
-                mp = os.path.join(TEAMDATA, str(m.get("owner")), "member.json")
-                age_d = (now - os.path.getmtime(mp)) / 86400 if os.path.exists(mp) else 99
+                age_d = (now - m.get("bundle_file_at", 0)) / 86400
                 cls = "ok" if age_d < 8 else "old"
                 lp = m.get("load_pct")
                 try:                        # 숫자가 아니면 화면이 통째로 죽는다(저장형 DoS)
@@ -364,73 +363,12 @@ class H(BaseHTTPRequestHandler):
 
     @staticmethod
     def _save(owner, member, files):
-        r"""한 사람의 묶음을 원자적으로 바꿔 끼운다 — 반환 (bad, staged). 호출자는 owner 잠금을 쥔 채 부른다.
-
-        부분 저장은 팀 취합을 조용히 망친다(파일은 옛것, member.json 만 새것) — 검증 확정.
-        .part 로 먼저 쓰고 전부 성공했을 때만 한꺼번에 바꿔 끼운다. 임시 이름에는 pid·스레드·난수를
-        붙여 다른 요청·다른 프로세스(teamup --to-folder)와 절대 겹치지 않게 한다.
-        되돌리기 순서: 원본이 있던 파일은 .bak 를 제자리로(새 파일을 덮음), 원본이 없던 파일만 지운다 —
-        예전 순서(먼저 지우고 나중에 복원)는 .bak 가 없으면 설치된 파일을 통째로 잃었다."""
-        dst = os.path.join(TEAMDATA, owner)
-        os.makedirs(dst, exist_ok=True)
-        uniq = f"{os.getpid()}.{threading.get_ident()}.{secrets.token_hex(3)}"
-        staged, bad = [], []
-        # member.json 도 같은 묶음으로 — 파일만 새것이고 member.json 만 옛것이면 취합이 섞인다
-        items = list(files.items()) + [("member.json",
-                                        json.dumps(member, ensure_ascii=False, indent=1))]
-        for name, content in items:
-            p2 = os.path.join(dst, name)
-            tmp = f"{p2}.{uniq}.part"
-            try:
-                with open(tmp, "w", encoding="utf-8", newline="") as f:
-                    f.write(content)
-                staged.append((tmp, p2))
-            except OSError as e:
-                bad.append(f"{name}({type(e).__name__})")
-        if not bad:
-            done, baks, firstfail = [], [], ""
-            for tmp, p2 in staged:
-                try:
-                    if os.path.isfile(p2):
-                        # 파일일 때만 비켜 놓는다 — 같은 이름의 폴더가 있으면 그것은 비정상이므로
-                        # 옮기지 말고 실패로 두어 사람이 보게 한다
-                        bak = f"{p2}.{uniq}.bak"
-                        os.replace(p2, bak)               # 예전 내용을 옆에 보관
-                        baks.append((bak, p2))
-                    os.replace(tmp, p2)
-                    done.append(p2)
-                except OSError as e:
-                    firstfail = f"{os.path.basename(p2)}({type(e).__name__})"
-                    break                             # 첫 실패에서 멈춘다 — 더 헤집지 않는다
-            if firstfail:
-                restored = set()
-                for bak, p2 in baks:                  # 예전 파일을 제자리로(이번에 넣은 것을 덮는다)
-                    try:
-                        os.replace(bak, p2)
-                        restored.add(p2)
-                    except OSError:
-                        pass
-                for p2 in done:                       # 원본이 없던(새로 생긴) 파일만 걷어낸다
-                    if p2 in restored:
-                        continue
-                    try:
-                        os.remove(p2)
-                    except OSError:
-                        pass
-                bad.append(firstfail)
-            else:
-                for bak, _p in baks:
-                    try:
-                        os.remove(bak)
-                    except OSError:
-                        pass
-        if bad:
-            for tmp, _ in staged:                # 내 임시 파일만 정리 — 반쪽 상태를 남기지 않는다
-                try:
-                    os.remove(tmp)
-                except OSError:
-                    pass
-        return bad, staged
+        """Publish one immutable snapshot; readers pin a completed generation."""
+        try:
+            write_bundle(os.path.join(TEAMDATA, owner), member, files)
+            return [], list(files) + ["member.json"]
+        except (OSError, ValueError, TypeError) as error:
+            return [str(error)], []
 
     def do_POST(self):
         if self.path == "/api/shutdown":
@@ -502,7 +440,7 @@ class H(BaseHTTPRequestHandler):
         if bad:
             print(f"[team] 업로드 거부(저장 실패): {owner} — {bad[:3]}")
             self._send(500, {"ok": False, "error": f"저장 실패: {', '.join(bad[:3])} "
-                                                   "(파일이 열려 있거나 권한이 없습니다)"})
+                                                   "(이전 공개 묶음 유지)"})
             return
         saved = max(0, len(staged) - 1)          # member.json 은 파일 수에서 뺀다
         with LOCK:
@@ -518,7 +456,15 @@ class H(BaseHTTPRequestHandler):
 def main():
     port = int(arg("--port", "0") or 0) or _cfg_port()
     PORT[0] = port
-    os.makedirs(TEAMDATA, exist_ok=True)
+    configured = str(_cfg().get("teamShareDir") or "").strip()
+    if configured and (not os.path.isabs(TEAMDATA) or not os.path.isdir(TEAMDATA)):
+        print(f"[team] 설정한 공유폴더에 접근할 수 없습니다: {TEAMDATA} — 다른 저장소로 전환하지 않습니다")
+        return 2
+    try:
+        os.makedirs(TEAMDATA, exist_ok=True)
+    except OSError as error:
+        print(f"[team] 저장소를 열지 못했습니다: {TEAMDATA} — {error}")
+        return 2
     try:
         srv = ThreadingHTTPServer(("0.0.0.0", port), H)
     except OSError as e:

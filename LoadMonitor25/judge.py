@@ -689,6 +689,7 @@ def parse_judgments_ex(reply, idxs):
         if rows:
             info["scan"] = info["repaired"] = True
     out = {}
+    invalid = set()
     for row in rows:
         if not (isinstance(row, list) and len(row) >= 2):
             continue
@@ -697,10 +698,23 @@ def parse_judgments_ex(reply, idxs):
         except (TypeError, ValueError):
             continue
         if idx in valid:
-            g = [str(x).strip() for x in (list(row[1:]) + ["", "", ""])[:4]]
-            out[idx] = {"work": g[0].lower().startswith("y"), "model": g[1],
-                        "worktype": g[2] if g[2] in WORKTYPES else ("사무" if g[0].lower().startswith("y") else ""),
-                        "detail": g[3][:40]}
+            values = (list(row[1:]) + ["", "", ""])[:4]
+            if (isinstance(row[0], bool) or not all(isinstance(x, str) for x in values)
+                    or values[0].strip().lower() not in {"y", "n"}):
+                invalid.add(idx)
+                continue
+            g = [x.strip() for x in values]
+            if g[0].lower() == "y" and (not g[1] or g[2] not in WORKTYPES or not g[3]):
+                invalid.add(idx)
+                continue
+            judgment = {"work": g[0].lower() == "y", "model": g[1],
+                        "worktype": g[2] if g[0].lower() == "y" else "", "detail": g[3][:40]}
+            if idx in out and out[idx] != judgment:
+                invalid.add(idx)
+            out[idx] = judgment
+    for idx in invalid:
+        out.pop(idx, None)
+    info["invalid_rows"] = len(invalid)
     return out, info
 
 
@@ -776,7 +790,8 @@ def judge_rows(idxs, rows, models, seen, tag, label, depth, st):
     missing = [i for i in idxs if i not in got]
     if not missing:
         return got
-    incomplete = (not res.get("ok")) or (not got) or bool(info.get("repaired")) or bool(res.get("cut"))
+    incomplete = ((not res.get("ok")) or (not got) or bool(info.get("repaired"))
+                  or bool(res.get("cut")) or bool(info.get("invalid_rows")))
     if not incomplete:
         st["omitted_rows"] += len(missing)          # 온전한 답인데 모델이 빠뜨림 — 규칙으로
         return got
@@ -1351,16 +1366,78 @@ def narrate(kept, total_mm, tag):
     return out
 
 
-def save_narratives(nar, rep, tag):
-    """월별 내러티브 저장 — 한 달도 못 만들었으면(왕복 전부 실패) 기존 파일을 빈 {} 로 덮지 않고
-    보존한다(F3: 지난 실행의 내러티브가 통째로 사라지던 결함). 반환: 저장했으면 True."""
+def save_narratives(nar, rep, tag, expected_months=None):
+    """같은 기간의 성공월만 교체하고 실패월의 기존 리뷰는 '이전 결과'로 보존한다.
+
+    기존 YYYY-MM 키는 유지한다. _status는 이번에 갱신/보존/누락된 월을 구분하며,
+    expected_months는 실제 판정 신호가 있는 월이다. 반환은 새 유효 리뷰 저장 여부다.
+    """
+    import tempfile
+    if not re.fullmatch(r"\d{8}-\d{8}", tag):
+        raise ValueError("내러티브 분석 기간 형식 오류")
+    first, last = (datetime.strptime(part, "%Y%m%d").date() for part in tag.split("-"))
+    if first > last:
+        raise ValueError("내러티브 시작일이 종료일보다 늦습니다")
+    first_month, last_month = first.strftime("%Y-%m"), last.strftime("%Y-%m")
+
+    def in_period(month):
+        if not isinstance(month, str) or not re.fullmatch(r"\d{4}-\d{2}", month):
+            return False
+        try:
+            date.fromisoformat(month + "-01")
+        except ValueError:
+            return False
+        return first_month <= month <= last_month
+
+    def valid(value):
+        return (isinstance(value, dict) and isinstance(value.get("summary"), str)
+                and bool(value["summary"].strip()) and isinstance(value.get("projects", []), list)
+                and all(isinstance(pj, dict) and isinstance(pj.get("name"), str)
+                        and bool(pj["name"].strip()) for pj in value.get("projects", [])))
+
+    if expected_months is None:
+        expected = {f"{index // 12:04d}-{index % 12 + 1:02d}"
+                    for index in range(first.year * 12 + first.month - 1, last.year * 12 + last.month)}
+    else:
+        expected = set(expected_months)
+        if any(not in_period(month) for month in expected):
+            raise ValueError("판정 신호 월이 내러티브 분석 기간 밖입니다")
     p = os.path.join(rep, f"ai_narratives_{tag}.json")
-    if not nar and os.path.exists(p):
-        print("        월별 내러티브 0개 — 기존 ai_narratives 파일을 보존합니다(덮어쓰지 않음)")
-        return False
-    with open(p, "w", encoding="utf-8") as f:
-        json.dump(nar, f, ensure_ascii=False, indent=1)
-    return True
+    previous = {}
+    try:
+        with open(p, encoding="utf-8-sig") as stream:
+            previous = json.load(stream)
+    except (FileNotFoundError, ValueError):
+        pass
+    if not isinstance(previous, dict):
+        previous = {}
+    old_status = previous.get("_status")
+    if old_status is not None and (not isinstance(old_status, dict) or old_status.get("tag") != tag):
+        previous = {}  # 다른 기간의 메타데이터가 붙은 파일은 합치지 않는다.
+    old = {month: value for month, value in previous.items() if in_period(month) and valid(value)}
+    new = {month: value for month, value in (nar.items() if isinstance(nar, dict) else [])
+           if in_period(month) and month in expected and valid(value)}
+    retained = (expected - new.keys()) & old.keys()
+    missing = expected - new.keys() - retained
+    merged = {month: new.get(month, old.get(month)) for month in sorted(new.keys() | retained)}
+    merged["_status"] = {"schema": 1, "tag": tag, "updated": time.strftime("%Y-%m-%d %H:%M"),
+                         "expected_months": sorted(expected), "updated_months": sorted(new),
+                         "retained_months": sorted(retained), "missing_months": sorted(missing),
+                         "partial": bool(retained or missing)}
+    os.makedirs(rep, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=rep,
+                                         prefix=".narratives-", suffix=".tmp", delete=False) as stream:
+            temporary = stream.name
+            json.dump(merged, stream, ensure_ascii=False, indent=1, allow_nan=False)
+        os.replace(temporary, p)
+    finally:
+        if temporary and os.path.exists(temporary):
+            os.remove(temporary)
+    if retained or missing:
+        print(f"        월별 내러티브 부분 완료 — 갱신 {len(new)}개월 · 이전 결과 보존 {len(retained)}개월 · 누락 {len(missing)}개월")
+    return bool(new)
 
 
 def main():
@@ -1392,9 +1469,9 @@ def main():
         total_mm = float(mj.get("total_mm") or 0)
         print(f"[judge] 리뷰 코멘트 재생성 — 판정 신호 {len(kept)}건")
         nar = narrate(kept, total_mm, tag)
-        saved = save_narratives(nar, rep, tag)
+        saved = save_narratives(nar, rep, tag, {r["time"][:7] for r in kept})
         print(f"[judge] 월별 코멘트 {len(nar)}개 " + ("저장" if saved else "— 기존 파일 유지"))
-        return 0 if nar else 1
+        return 0 if saved else 1
     cfg = extract.load_cfg()
     known = cfg.get("projects") or []
     model_name = (cfg.get("copilotAuto") or {}).get("model", "GPT-5.6")
@@ -1622,7 +1699,7 @@ def main():
         print("[judge] 월별 리뷰 내러티브 생성 중…")
         progress("월별 리뷰", 0, 1)
         nar = narrate(kept, total_mm, tag)
-        save_narratives(nar, rep, tag)
+        save_narratives(nar, rep, tag, {r["time"][:7] for r in kept})
     return 0
 
 

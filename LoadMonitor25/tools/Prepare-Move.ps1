@@ -1,4 +1,4 @@
-﻿# Prepare-Move.ps1 - 이 폴더를 다른 PC 로 통째로 옮길 수 있게 '잡고 있는 것'을 놓아 준다.
+﻿# Prepare-Move.ps1 - 프로그램 정리와 폴더 확인 뒤, 개인 상태를 보존한 이동 ZIP을 만듭니다.
 #
 # 왜 필요한가: 분석이 끝난 뒤 폴더를 옮기려 하면 "사용 중" 이라 옮겨지지 않는다.
 # 잡고 있는 것은 대개 우리 자신이다 - 대시보드(python ui\app.py), 팀 서버(teamserver.py),
@@ -20,14 +20,15 @@
 #  · PID 나열은 개발자 덤프로 읽힌다. → 화면에는 사람 말 이름만, PID·원문은 move_ready.txt 로.
 #  · 실패 사유가 영문 .NET 예외 원문이었다. → 한국어 한 줄로 옮기고 원문은 기록으로.
 #  · 창 제목이 비어 있었다. → 스스로 제목을 잡고 끝에 [완료]/[미완료] 를 붙인다.
-#  · 이미 준비된 상태를 몰라 반복 실행을 못 막았다. → 지난 기록을 읽어 '이미 준비돼 있습니다' 를 알린다.
+#  · ZIP 검증이 끝난 뒤에만 완료를 표시하고, 다음 PC에 복사할 경로를 안내한다.
 #
 # Usage:  powershell -ExecutionPolicy Bypass -File Prepare-Move.ps1 -Root "D:\...\LoadMonitor25"
 param(
     [Parameter(Mandatory = $true)][string]$Root,
+    [string]$Output,
     [switch]$NoWait,
     [switch]$CheckOnly,
-    [int]$CloseSec = 5      # 성공 시 이 초 뒤 창을 스스로 닫는다(0 = 즉시). 실패 시에는 기다린다.
+    [int]$CloseSec = 15     # ZIP 경로를 읽을 시간을 준다(0 = 즉시). 실패 시에는 기다린다.
 )
 $ErrorActionPreference = 'Continue'
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
@@ -78,39 +79,122 @@ function Explain([string]$msg) {
     return '확인이 막혔습니다'
 }
 
-# 파일 수·용량을 잰다. 배열로 돌려주면 PowerShell 이 풀어 버려 호출부에서 값이 섞인다(실사고) - 객체로 돌려준다.
-function Folder-Size([string]$path) {
-    $r = [pscustomobject]@{ N = 0; MB = 0.0 }
-    if (-not (Test-Path -LiteralPath $path)) { return $r }
-    $f = @(Get-ChildItem -LiteralPath $path -Recurse -File -Force -ErrorAction SilentlyContinue)
-    $r.N = $f.Count
-    if ($f.Count) { $r.MB = [math]::Round((($f | Measure-Object Length -Sum).Sum) / 1MB, 1) }
-    return $r
-}
-
 Write-Host ''
-Say '  [PC 이동 준비] 이 폴더를 다른 PC 로 옮길 수 있게 정리합니다' 'Cyan'
+Say '  [PC 이동 준비] 프로그램을 정리하고 이동 ZIP 하나를 만듭니다' 'Cyan'
 Write-Host ("  대상: " + $Root)
 Write-Host ''
 if (-not $NoWait) { Start-Sleep -Milliseconds 800 }   # 우리를 띄운 bat/cmd 가 먼저 닫히도록
 
-# 지난 준비 기록 — 이미 끝난 것을 모르고 또 누르는 것을 막는다(제보의 '계속 시도').
-$prevWhen = $null
-try {
-    $rp = Join-Path $Root 'report\move_ready.txt'
-    if (Test-Path -LiteralPath $rp) {
-        $age = (Get-Date) - (Get-Item -LiteralPath $rp).LastWriteTime
-        if ($age.TotalHours -lt 12) { $prevWhen = (Get-Item -LiteralPath $rp).LastWriteTime }
+function Path-Under([string]$path, [string]$root) {
+    try {
+        # Drive-relative/root-relative paths depend on an unrelated process's
+        # current directory and cannot identify this installation reliably.
+        if (-not [System.IO.Path]::IsPathRooted($path) -or $path -notmatch '^(?:[A-Za-z]:[\\/]|\\\\)') { return $false }
+        $candidate = [System.IO.Path]::GetFullPath($path).TrimEnd('\')
+        return $candidate.Equals($root, [StringComparison]::OrdinalIgnoreCase) -or
+            $candidate.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase)
+    } catch { return $false }
+}
+
+function Command-Arguments([string]$commandLine) {
+    if (-not $commandLine) { return @() }
+    try {
+        if (-not ('LM25MoveCommandLine' -as [type])) {
+            # Windows quoting rules distinguish "LoadMonitor25 archive" from
+            # LoadMonitor25. A whitespace boundary in a regex cannot do this.
+            Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class LM25MoveCommandLine {
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr CommandLineToArgvW(string line, out int count);
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr LocalFree(IntPtr memory);
+    public static string[] Parse(string line) {
+        int count;
+        IntPtr memory = CommandLineToArgvW(line, out count);
+        if (memory == IntPtr.Zero) return new string[0];
+        try {
+            string[] values = new string[count];
+            for (int i = 0; i < count; i++)
+                values[i] = Marshal.PtrToStringUni(Marshal.ReadIntPtr(memory, i * IntPtr.Size));
+            return values;
+        } finally { LocalFree(memory); }
     }
-} catch {}
+}
+'@ -ErrorAction Stop
+        }
+        return [LM25MoveCommandLine]::Parse($commandLine)
+    } catch { return @() } # Uncertain command lines never select a process.
+}
+
+function Command-Under([string]$commandLine, [string]$root) {
+    foreach ($argument in @(Command-Arguments $commandLine)) {
+        $path = $argument
+        if ($argument -match '^--?[A-Za-z][A-Za-z0-9-]*=(.*)$') { $path = $Matches[1] }
+        if (Path-Under $path $root) { return $true }
+    }
+    return $false
+}
+
+function Copilot-Under([string]$commandLine, [string]$root) {
+    foreach ($argument in @(Command-Arguments $commandLine)) {
+        if ($argument -match '^--user-data-dir=(.+)$') {
+            $profile = $Matches[1]
+            if ((Path-Under $profile $root) -and $profile -match '[\\/]copilot_profile[\\/]?$') { return $true }
+        }
+    }
+    return $false
+}
 
 function Procs-Under([string]$root) {
-    # 실행 파일이 이 폴더 안에 있거나(내장 파이썬), 명령줄이 이 폴더를 가리키는 프로세스
-    $esc = [regex]::Escape($root)
     Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-        ($_.ExecutablePath -and $_.ExecutablePath -match $esc) -or
-        ($_.CommandLine -and $_.CommandLine -match $esc)
+        (Path-Under $_.ExecutablePath $root) -or (Command-Under $_.CommandLine $root)
     }
+}
+
+function New-MoveZip([string]$source, [string]$destination) {
+    $tool = Join-Path $source 'tools\transfer.py'
+    if (-not (Test-Path -LiteralPath $tool -PathType Leaf)) {
+        throw 'tools\transfer.py가 없습니다. 배포 파일을 확인하세요.'
+    }
+    $python = Join-Path $source 'python\python.exe'
+    if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
+        $command = Get-Command python -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $command) { throw '내장 Python이 없습니다. 배포 파일을 확인하세요.' }
+        $python = $command.Source
+    }
+    $arguments = @('-B', $tool, '--root', $source, '--json')
+    if ($destination) { $arguments += @('--output', $destination) }
+    $result = $null
+    # PowerShell 5.1 decodes native output with the console code page. --json
+    # emits UTF-8, including the ZIP path, regardless of the launcher's code page.
+    $previousEncoding = [Console]::OutputEncoding
+    try {
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        & $python @arguments 2>&1 | ForEach-Object {
+            $line = $_.ToString()
+            try { $event = $line | ConvertFrom-Json -ErrorAction Stop } catch { $event = $null }
+            if ($event -and $event.status -eq 'progress') {
+                Write-Host ('  ZIP 생성: {0}/{1}개 파일' -f $event.processed_files, $event.file_count)
+            } elseif ($event -and $event.status -in @('completed', 'failed')) {
+                $result = $event
+            } elseif ($line) {
+                Write-Host ('  ' + $line)
+            }
+        }
+        $code = $LASTEXITCODE
+    } finally {
+        [Console]::OutputEncoding = $previousEncoding
+    }
+    if ($code -ne 0 -or -not $result -or $result.status -ne 'completed') {
+        if ($result -and $result.error) { throw [string]$result.error }
+        throw 'ZIP 생성이 완료되지 않았습니다. 위 메시지를 확인하세요.'
+    }
+    if (-not $result.output -or -not (Test-Path -LiteralPath $result.output -PathType Leaf)) {
+        throw '완료된 ZIP 파일을 확인하지 못했습니다.'
+    }
+    return $result
 }
 
 $killed = New-Object System.Collections.Generic.List[string]     # 화면용 - 사람 말 이름
@@ -134,7 +218,7 @@ if (-not $CheckOnly) {
     }
     # ② Copilot 전용 Edge - 일반 Edge 는 건드리지 않는다
     Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -like '*copilot_profile*' } | ForEach-Object {
+        Where-Object { Copilot-Under $_.CommandLine $Root } | ForEach-Object {
             try {
                 Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop
                 $killed.Add('Copilot 전용 Edge 창')
@@ -197,113 +281,97 @@ if ($movable) {
 }
 
 Write-Host ''
-if ($movable) {
+$zip = $null
+$zipError = ''
+$success = $false
+if ($movable -and $restored) {
+    if ($CheckOnly) {
+        # Keep the legacy diagnostic switch: rename/restore only, with no
+        # process termination or archive creation.
+        $success = $true
+    } else {
+        Say '  폴더 확인과 원래 이름 복원이 끝났습니다. 이동 ZIP을 만듭니다…' 'Cyan'
+        Write-Host '  설정·수집 자료·보고서·팀 자료·내장 Python을 보존합니다.'
+        Write-Host '  전용 브라우저 프로필과 실행 캐시는 제외합니다.'
+        try { $zip = New-MoveZip $Root $Output; $success = $true }
+        catch { $zipError = $_.Exception.Message }
+    }
+} elseif ($movable) {
+    $zipError = '폴더의 원래 이름을 되돌리지 못해 ZIP 생성을 멈췄습니다.'
+}
+
+if ($success) {
     try { $Host.UI.RawUI.WindowTitle = 'LoadMonitor25 - PC 이동 준비 [완료]' } catch {}
     Say '  ============================================================' 'Green'
-    Say '   [완료] PC 이동 준비가 끝났습니다.' 'Green'
-    Say '          이제 이 폴더를 통째로 옮기거나 복사하세요.' 'Green'
+    if ($CheckOnly) {
+        Say '   [완료] 폴더 이동 가능 확인과 원래 이름 복원이 끝났습니다.' 'Green'
+        Write-Host '          확인 전용 실행이므로 프로그램 종료·ZIP 생성은 하지 않았습니다.'
+    } else {
+        Say '   [완료] PC 이동 준비와 ZIP 검증이 끝났습니다.' 'Green'
+        Write-Host ('          ' + $zip.output)
+    }
     Say '  ============================================================' 'Green'
-    if ($prevWhen) {
+    if (-not $CheckOnly) {
         Write-Host ''
-        Write-Host ("   이미 " + $prevWhen.ToString('M월 d일 HH:mm') + " 에 준비를 마친 폴더입니다 - 다시 확인해도 옮길 수 있는 상태입니다.")
+        Write-Host '   1) 위 ZIP 하나를 다음 PC로 복사하세요.'
+        Write-Host '   2) 빈 폴더에 압축을 풀고 안의 LoadMonitor25-UI.bat을 실행하세요.'
+        Write-Host '   3) 추가 수집할 PC에서는 수집을 계속하고, 마지막 PC에서는 수집 자료로 분석하세요.'
+        Write-Host '   설정·추가 PC 기록·보고서·업로드 대기 묶음이 함께 들어 있습니다.'
+        Write-Host '   새 PC에서는 회사 계정에 다시 로그인할 수 있습니다.'
+        Write-Host '   원본 폴더와 자료는 보존되어 있습니다.'
     }
-    Write-Host ''
-    Write-Host '   · 다른 PC 로 옮긴 뒤 LoadMonitor25-UI.bat 을 실행하면'
-    Write-Host '     지난 PC 의 수집 데이터는 자동으로 data\추가PC\ 로 보관되고'
-    Write-Host '     분석은 두 PC 를 합쳐 계산합니다.'
-    Write-Host '   · report\upload_pending\ 의 업로드 대기 묶음도 함께 따라갑니다.'
-
-    # ── 옮길 크기 — 느린 진짜 원인은 data\copilot_profile 이다 ──────────────────
-    # 실측(LoadMonitor18): 전체 2,679개 551.6MB 중 copilot_profile 이 2,507개 529.2MB(파일수 94%·용량 96%).
-    # 그 안은 Edge 가 새 PC 에서 알아서 다시 받는 캐시(ProvenanceData·component_crx_cache·맞춤법 사전…)다.
-    # 로그인 세션은 따라가지 않는다 - Local State 의 암호 키가 Windows DPAPI 로 '이 PC·이 계정'에 묶여 있고
-    # 그 마스터키는 %APPDATA%\Microsoft\Protect\ 에 있어 폴더째 복사에 딸려오지 않는다(실측: 키 앞머리가
-    # 리터럴 'DPAPI', 쿠키 104건이 전부 'v10' 형식). 즉 가져가도 어차피 새 PC 에서 한 번 로그인해야 한다.
-    # 숫자는 PC 마다 다르므로 하드코딩하지 않고 지금 이 폴더를 잰다. 지우지는 않는다 - 복사에서 빼기만 하면 된다.
-    try {
-        $where2 = if ($restored) { $Root } else { $probe }
-        $prof = Folder-Size (Join-Path $where2 'data\copilot_profile')
-        if ($prof.N -gt 0) {
-            $allf = Folder-Size $where2
-            $slimN = $allf.N - $prof.N
-            $slimMB = [math]::Round($allf.MB - $prof.MB, 1)
-            Write-Host ''
-            Say '   [빠르게 옮기기] 이 폴더의 대부분은 옮길 필요가 없는 Edge 캐시입니다.' 'Cyan'
-            Write-Host ("      지금 이대로 : 파일 {0:N0}개 · {1:N1} MB" -f $allf.N, $allf.MB)
-            Write-Host ("      캐시를 빼면 : 파일 {0:N0}개 · {1:N1} MB" -f $slimN, $slimMB)
-            Write-Host '      data\copilot_profile 은 Copilot 로그인용 Edge 캐시입니다. 로그인 정보는 이 PC 에 묶여 있어'
-            Write-Host '      가져가도 살아나지 않습니다 - 새 PC 에서 [AI 연결 진단] 으로 한 번만 로그인하면 됩니다.'
-            Write-Host ''
-            Write-Host '      아래 한 줄을 명령 프롬프트에 붙여 넣으세요(대상 경로만 바꾸면 됩니다):'
-            $rc = ('robocopy "{0}" "E:\LoadMonitor25" /E /XD copilot_profile __pycache__ .ruff_cache /R:1 /W:1 /MT:16' -f $where2)
-            Say ("      " + $rc) 'Yellow'
-            try { Set-Clipboard -Value $rc -ErrorAction Stop; Write-Host '      (이 줄은 클립보드에도 복사해 두었습니다)' } catch {}
-            Write-Host '      원본 폴더는 지우지 마세요 - 새 PC 가 잘 도는 것을 확인한 뒤에 정리하시면 됩니다.'
-        }
-    } catch {}
-    if (-not $restored) {
-        # 이것은 실패가 아니다 - 옮길 수 있다는 사실은 이미 증명됐고, 이름만 임시 이름으로 남았다.
-        # 예전에는 '[!] 되돌리지 못했습니다' 가 성공 배너 위에 찍혀 실패로 읽혔다(감사 확정).
-        $now = if (Test-Path -LiteralPath $probe) { $probe } else {
-            $hit = @(Get-ChildItem -LiteralPath $parent -Directory -Filter ($leaf + '_이동확인_임시*') -ErrorAction SilentlyContinue | Select-Object -First 1)
-            if ($hit.Count) { $hit[0].FullName } else { $probe }
-        }
-        Write-Host ''
-        Say '   [참고] 폴더 이름이 지금 임시 이름으로 남아 있습니다 - 옮기는 데는 지장이 없습니다.' 'Yellow'
-        Write-Host ("          " + $now)
-        Write-Host ("          그대로 옮기셔도 되고, '" + $leaf + "' 로 이름을 바꾸셔도 됩니다.")
-    }
-    try {
-        # 기록은 '지금 실제로 있는' 폴더 안에만 쓴다 — 되돌리지 못했으면 아직 $probe 이름이다.
-        # 없는 경로에 report\ 를 새로 만들면 빈 껍데기 폴더가 생겨 사용자가 그것을 옮긴다(실사고).
-        $where = if ($restored) { $Root } else { $probe }
-        if (Test-Path -LiteralPath $where -PathType Container) {
-            $rep = Join-Path $where 'report'
-            if (-not (Test-Path -LiteralPath $rep)) { New-Item -ItemType Directory -Force -Path $rep | Out-Null }
-            # PID·영문 원문은 화면이 아니라 여기에 남긴다(화면은 사람 말로만).
-            $log = @("이동 준비 완료  " + (Get-Date).ToString('yyyy-MM-dd HH:mm'),
-                     "폴더 이동 가능 확인: 예",
-                     "이름 되돌리기: " + $(if ($restored) { "성공" } else { "실패 - 임시 이름 유지 (" + $backRaw + ")" }),
-                     "종료한 프로그램: " + $(if ($killedLog.Count) { $killedLog -join ', ' } else { "(없음 - 이미 모두 닫혀 있었음)" }),
-                     "옮길 크기(캐시 포함): " + $(try { $a = Folder-Size $where; "{0}개 {1}MB" -f $a.N, $a.MB } catch { "(재지 못함)" }),
-                     "탐색기가 열어 둔 창: " + $(if ($explorer.Count) { (@($explorer | Select-Object -Unique) -join ', ') } else { "(없음)" }))
-            [System.IO.File]::WriteAllLines((Join-Path $rep 'move_ready.txt'), $log, [System.Text.Encoding]::UTF8)
-        }
-    } catch {}
-    Write-Host ''
-    Say '   [완료] 준비 끝 - 다시 실행하지 않으셔도 됩니다. 대시보드·팀 서버·샘플러는 모두 닫혔습니다.' 'Green'
 } else {
     try { $Host.UI.RawUI.WindowTitle = 'LoadMonitor25 - PC 이동 준비 [미완료]' } catch {}
     Say '  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!' 'Red'
-    Say '   [실패] 아직 무언가가 이 폴더를 잡고 있습니다.' 'Red'
+    Say '   [미완료] PC 이동 준비를 마치지 못했습니다.' 'Red'
     Say '  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!' 'Red'
-    Write-Host ("   사유: " + $(if ($why) { $why } else { '확인이 막혔습니다' }))
+    Write-Host ("   사유: " + $(if ($zipError) { $zipError } elseif ($why) { $why } else { '확인이 막혔습니다' }))
     Write-Host ''
-    if ($explorer.Count) {
+    if ($movable -and -not $restored) {
+        Say '   원본 자료는 아래 임시 이름의 폴더에 보존되어 있습니다.' 'Yellow'
+        Write-Host ('   ' + $probe)
+        Write-Host ('   사용 중인 프로그램을 닫고 폴더 이름을 ' + $leaf + '(으)로 되돌린 뒤 다시 실행하세요.')
+    } else {
+        Write-Host ('   원본 폴더와 자료는 보존되어 있습니다: ' + $Root)
+    }
+    if (-not $movable -and $explorer.Count) {
         # 실패했을 때에만 탐색기 경로를 보여 준다 - 이때는 실제로 조치가 필요한 정보다.
         Write-Host '   탐색기가 이 폴더를 열어 두고 있습니다 - 그 창을 닫으세요:'
         foreach ($p in ($explorer | Select-Object -Unique)) { Write-Host ("      " + $p) }
         Write-Host ''
     }
-    Write-Host '   흔한 원인과 조치:'
-    Write-Host '   1) 탐색기에서 이 폴더(또는 하위 폴더)를 열어 두었다  -> 그 창을 닫으세요'
-    Write-Host '   2) 이 폴더의 파일을 Excel·메모장 등으로 열어 두었다  -> 닫으세요'
-    Write-Host '   3) 명령 프롬프트가 이 폴더에 들어가 있다             -> 그 창을 닫으세요'
-    Write-Host '   4) 백신 검사가 진행 중이다                           -> 잠시 뒤 다시 실행'
-    $left = @(Procs-Under $Root | Where-Object { $_.ProcessId -ne $PID } |
-              ForEach-Object { Friendly $_.Name $_.CommandLine } | Select-Object -Unique)
-    if ($left.Count) {
-        Write-Host ''
-        Write-Host ('   아직 이 폴더를 쓰는 프로그램: ' + ($left -join ', '))
+    if (-not $movable) {
+        Write-Host '   폴더를 연 탐색기·Excel·메모장·명령 프롬프트를 닫고 다시 실행하세요.'
+        $left = @(Procs-Under $Root | Where-Object { $_.ProcessId -ne $PID } |
+                  ForEach-Object { Friendly $_.Name $_.CommandLine } | Select-Object -Unique)
+        if ($left.Count) { Write-Host ('   아직 이 폴더를 쓰는 프로그램: ' + ($left -join ', ')) }
     }
-    Write-Host ''
-    Say '   [미완료] 위 1~4 를 조치한 뒤 다시 실행하세요.' 'Red'
 }
+
+# Write the result only after transfer.py has finished its source verification.
+# Never recreate a missing original path after a failed rename restoration.
+try {
+    $where = if ($restored -or -not $movable) { $Root } else { $probe }
+    if (Test-Path -LiteralPath $where -PathType Container) {
+        $rep = Join-Path $where 'report'
+        if (-not (Test-Path -LiteralPath $rep)) { New-Item -ItemType Directory -Path $rep | Out-Null }
+        $log = @(
+            ('이동 준비 ' + $(if ($success) { '완료' } else { '미완료' }) + '  ' + (Get-Date).ToString('yyyy-MM-dd HH:mm'))
+            ('폴더 이동 가능 확인: ' + $movable)
+            ('이름 되돌리기: ' + $restored)
+            ('확인 전용: ' + [bool]$CheckOnly)
+            ('ZIP: ' + $(if ($zip) { $zip.output } else { '(생성하지 않음)' }))
+            ('사유: ' + $zipError + ' ' + $whyRaw + ' ' + $backRaw)
+            ('종료한 프로그램: ' + ($killedLog -join ', '))
+        )
+        [System.IO.File]::WriteAllLines((Join-Path $rep 'move_ready.txt'), $log, [System.Text.Encoding]::UTF8)
+    }
+} catch {}
 Write-Host ''
 # 다 끝났는데 '아무 키나 누르세요' 로 창이 남아 있으면 그것 자체가 '안 끝났다' 로 읽힌다(제보).
 # 성공이면 스스로 닫고, 실패면 사유를 읽어야 하므로 기다린다.
 if (-not $NoWait) {
-    if ($movable) {
+    if ($success) {
         $left = [math]::Max(0, $CloseSec)
         $held = $false
         while ($left -gt 0) {
@@ -329,4 +397,4 @@ if (-not $NoWait) {
         $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
     }
 }
-if ($movable) { exit 0 } else { exit 1 }
+if ($success) { exit 0 } else { exit 1 }

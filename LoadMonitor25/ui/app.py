@@ -27,12 +27,14 @@ sys.path.insert(0, os.path.join(ROOT, "core"))
 if ROOT not in sys.path:          # judge·aggregate 등 루트 모듈 임포트용
     sys.path.insert(0, ROOT)      # (ui\app.py 로 실행하면 sys.path[0]이 ui\ 라 루트가 안 잡힌다)
 from progress import parse as parse_progress  # noqa: E402  (core 경로 등록 뒤에 임포트)
+from tools.transfer import create_transfer  # noqa: E402
 
 REPORT = os.path.join(ROOT, "report")
 DATA = os.path.join(ROOT, "data")
 NO_WIN = 0x08000000
-VERSION = "v24.0"
+VERSION = "v25.0"
 LOCK = threading.Lock()
+REQUEST_LOCK = threading.Lock()      # Serialize synchronous mutations with transfer startup.
 FREEZE_LOCK = threading.Lock()       # [보고서 만들기] 직렬화 — JOB 과 별개(사본에 '실행 중'이 굳지 않게)
 JOB = {"running": False, "log": [], "step": "", "started": 0.0, "pid": 0,
        "phase": "", "done": 0, "total": 0, "phase_started": 0.0}
@@ -40,6 +42,8 @@ JOB = {"running": False, "log": [], "step": "", "started": 0.0, "pid": 0,
 
 def kill_job():
     """실행 중인 분석 프로세스 트리(run→mine/judge→copilot_auto)를 통째로 종료"""
+    if cancel_transfer():
+        return
     with LOCK:
         pid = JOB.get("pid") or 0
     if pid:
@@ -49,14 +53,32 @@ def kill_job():
             JOB["pid"] = 0
 
 
+def cancel_transfer():
+    """Signal the ZIP thread in memory; its normal cleanup removes the partial ZIP."""
+    with LOCK:
+        if not JOB.get("running") or JOB.get("kind") != "transfer":
+            return False
+        JOB["transfer_cancel_requested"] = True
+        return True
+
+
 def kill_copilot_edge():
-    """Copilot 왕복용 전용 Edge(작업이 끝나도 재사용 대기로 남는다)를 종료 —
-    일반 Edge는 건드리지 않고 copilot_profile 프로필로 뜬 것만"""
-    subprocess.run(["powershell", "-NoProfile", "-Command",
-                    "Get-CimInstance Win32_Process -Filter \"Name='msedge.exe'\" | "
-                    "Where-Object {$_.CommandLine -like '*copilot_profile*'} | "
-                    "ForEach-Object {Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue}"],
-                   capture_output=True, creationflags=NO_WIN, timeout=20)
+    """현재 설치본의 정확한 전용 프로필 경로를 확인한 Edge만 종료한다."""
+    from process_scope import edge_pids
+    result = subprocess.run(["powershell", "-NoProfile", "-Command",
+                             "[Console]::OutputEncoding=[Text.UTF8Encoding]::new(); "
+                             "Get-CimInstance Win32_Process -Filter \"Name='msedge.exe'\" | "
+                             "Select-Object Name,ProcessId,CommandLine | ConvertTo-Json -Compress"],
+                            capture_output=True, creationflags=NO_WIN, timeout=20)
+    if result.returncode != 0:
+        return
+    try:
+        records = json.loads(result.stdout.decode("utf-8-sig") or "[]")
+    except (ValueError, UnicodeError):
+        return
+    for pid in edge_pids(ROOT, records):
+        subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True,
+                       creationflags=NO_WIN, timeout=10)
 
 
 def cleanup_children():
@@ -711,17 +733,31 @@ def _mtime(p):
         return 0.0
 
 
-def _has_collected():
-    r"""data\ 에 수집물이 있는가 — '수집은 했는데 분석을 안 했다' 를 가리기 위한 것."""
+def _source_files(patterns):
+    """List known collection files in this PC and direct additional-PC folders."""
+    roots = [DATA]
     try:
-        d = os.path.join(ROOT, "data")
-        for n in os.listdir(d):
-            if n.endswith(".csv") and os.path.getsize(os.path.join(d, n)) > 200:
-                return True
-        sub = os.path.join(d, "추가PC")
-        return os.path.isdir(sub) and bool(os.listdir(sub))
+        with os.scandir(os.path.join(DATA, "추가PC")) as entries:
+            roots.extend(entry.path for entry in entries if entry.is_dir(follow_symlinks=False)
+                         and not getattr(entry.stat(follow_symlinks=False), "st_file_attributes", 0) & 0x400)
     except OSError:
-        return False
+        pass
+    return sorted({os.path.normpath(path) for root in roots for pattern in patterns
+                   for path in glob.glob(os.path.join(root, pattern)) if os.path.isfile(path)})
+
+
+def _has_collected():
+    """A single actual collected CSV row counts, including nested source folders."""
+    patterns = ["*.csv", "pc/*.csv", "outlook/*.csv", "files/*.csv", "m365/*.csv",
+                "activity/*.csv", "manual/*.csv"]
+    for path in _source_files(patterns):
+        try:
+            with open(path, encoding="utf-8-sig", newline="") as stream:
+                if any(any(row.values()) for row in csv.DictReader(stream)):
+                    return True
+        except (OSError, UnicodeError, csv.Error):
+            continue
+    return False
 
 
 class _Done(Exception):
@@ -829,11 +865,34 @@ def _stub_note(lastrun):
 
 
 def latest_signals():
-    """최신 signals CSV — judge 가 남기는 규칙 백업본(signals_*_rules.csv)은 제외한다.
-    백업본이 걸리면 tag 파싱이 깨지고, 리뷰 탭이 판정 '이전' 귀속을 보여준다."""
+    """Use the dashboard's analysis period; never substitute a different period."""
+    filename, _ = result_rows()
+    match = re.fullmatch(r"mm_rows_(\d{8}-\d{8})(?:_refined)?\.csv", os.path.basename(filename))
+    if match:
+        path = os.path.join(REPORT, f"signals_{match.group(1)}.csv")
+        return path if os.path.isfile(path) else ""
     fs = [f for f in glob.glob(os.path.join(REPORT, "signals_*.csv"))
-          if not f.endswith("_rules.csv")]
+          if re.fullmatch(r"signals_\d{8}-\d{8}\.csv", os.path.basename(f))]
     return max(fs, key=_mtime) if fs else ""
+
+
+def review_source(tag=None):
+    """Expose available periods without mixing their signal rows or narratives."""
+    available = sorted({os.path.basename(path)[8:-4] for path in glob.glob(os.path.join(REPORT, "signals_*.csv"))
+                        if re.fullmatch(r"signals_\d{8}-\d{8}\.csv", os.path.basename(path))}, reverse=True)
+    if tag is not None:
+        if not isinstance(tag, str) or not re.fullmatch(r"\d{8}-\d{8}", tag):
+            raise ValueError("분석 기간 형식이 잘못되었습니다")
+        selected = tag
+    else:
+        filename, _ = result_rows()
+        match = re.fullmatch(r"mm_rows_(\d{8}-\d{8})(?:_refined)?\.csv", os.path.basename(filename))
+        path = latest_signals() if not match else ""
+        selected = match.group(1) if match else (os.path.basename(path)[8:-4] if path else "")
+    present = selected in available
+    return {"tag": selected, "available_periods": available,
+            "signals_file": f"signals_{selected}.csv" if present else "",
+            "missing_signals": bool(selected and not present)}
 
 
 def latest(pat):
@@ -952,6 +1011,8 @@ def _sampler_autorestart(age_min):
         return "collect\\Start-ActivitySampler.ps1 없음"
     now = time.time()
     with LOCK:
+        if JOB.get("running") and JOB.get("kind") in {"transfer", "prepmove"}:
+            return "이동 ZIP 생성 중에는 자동 재시작을 보류합니다"
         if SAMPLER_RESTART["busy"] or now - SAMPLER_RESTART["at"] < 600:
             return ""
         SAMPLER_RESTART.update(at=now, busy=True)
@@ -1052,7 +1113,8 @@ def sources(period=None):
     """수집 데이터 현황 — 무엇이 비어서 결과가 약한지 한눈에. period 는 화면이 보는 기간(메일 수집 범위 대조용)"""
     out = []
     for name, pats, hint in (
-        ("PC 가동", ["pc/pc_on.csv"], "run 실행 시 자동"),
+        ("PC 가동", ["pc/pc_on.csv", "pc_on.csv", "pc/pc_spans.csv", "pc_spans.csv",
+                     "추가PC/*/pc/pc_on.csv", "추가PC/*/pc_on.csv", "추가PC/*/pc/pc_spans.csv", "추가PC/*/pc_spans.csv"], "현재 PC와 추가 PC의 가동 기록 · 분석 실행 시 수집"),
         ("메일·일정", ["outlook/mail.csv", "outlook/calendar.csv"], "클래식 Outlook을 켠 상태로 실행"),
         ("파일·Recent", ["files/files.csv", "files/recent.csv"], "config.watchFolders 를 실제 작업 폴더로"),
         ("git 커밋", ["files/git_commits.csv"], "config.gitRepos 설정 (선택)"),
@@ -1060,7 +1122,7 @@ def sources(period=None):
         ("창 샘플러", ["activity/activity_*.csv"],
          "LoadMonitor25-샘플러등록.bat 으로 1회 등록하면 로그온 때마다 자동 시작 (선택 · 없으면 PC 가동 하한으로 계산)"),
         ("추가 PC", ["추가PC/*/outlook/mail.csv", "추가PC/*/files/files.csv",
-                     "추가PC/*/pc/pc_on.csv", "추가PC/*/m365/teams_*.csv"],
+                     "추가PC/*/pc/pc_on.csv", "추가PC/*/pc_on.csv", "추가PC/*/pc/pc_spans.csv", "추가PC/*/pc_spans.csv", "추가PC/*/m365/teams_*.csv"],
          "폴더째 옮겨 [추가 PC 수집] → 본 PC 에서 [분석 실행] — 자동 합산 · 중복 자동 제외 (선택)"),
     ):
         n, mt = 0, 0.0
@@ -1354,11 +1416,14 @@ def trend(d0="", d1="", tag="", info=None):
                              for w in out)
     return out
 
-def review(gran="week"):
+def review(gran="week", tag=None):
     """주간/월간/전체 업무 리뷰 — 신호별 귀속 내역(signals_*.csv)을 기간으로 묶어
     프로젝트별 raw 근거·타임라인·사람/산출물 연결까지 만든다. '요약'이 아니라 원문이 들어간 리뷰."""
     from datetime import datetime, timedelta
-    rows = _rows(latest_signals())
+    if tag is not None and not re.fullmatch(r"\d{8}-\d{8}", tag):
+        return []
+    path = os.path.join(REPORT, f"signals_{tag}.csv") if tag else latest_signals()
+    rows = _rows(path)
     if not rows:
         return []
     groups = {}
@@ -1494,7 +1559,7 @@ def result_rows():
     return (os.path.basename(p) if p else ""), rows
 
 
-def run_job(d0, d1, ai, skip, collect_only=False):
+def run_job(d0, d1, ai, skip, collect_only=False, reuse_complete=False, force=False):
     try:
         # A34 — 종료일이 미래면 오늘로 당긴다: 미래 평일이 통째로 가용에 남아 로드율이 20% 대로 떨어지던 것.
         # (오늘 잔여 시간은 extract.mm_from_hours 가 now 로 비례 처리한다 — 산정 근거 노트 '가용 기준')
@@ -1510,6 +1575,10 @@ def run_job(d0, d1, ai, skip, collect_only=False):
                 cmd.append("--ai")
             if skip:
                 cmd.append("--skip-collect")
+            if reuse_complete and ai and skip:
+                cmd.append("--reuse-complete")
+            if force:
+                cmd.append("--force")
         log(f"실행: {d0} ~ {d1}" + (" · 수집만(추가 PC)" if collect_only else
             (" · AI 정제" if ai else "") + (" · 재분석만" if skip else "")))
         p = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -1533,7 +1602,9 @@ def run_job(d0, d1, ai, skip, collect_only=False):
                         JOB["step"] = line.strip("─ ")
                         JOB.update(phase="", done=0, total=0)
         p.wait()
-        log("=== 완료 ===" if p.returncode == 0 else f"=== 종료(코드 {p.returncode}) — 로그 확인 ===")
+        log("=== 완료 ===" if p.returncode == 0 else
+            "=== 부분 완료 — 실패한 단계는 로그에서 확인하세요 ===" if p.returncode == 2 else
+            f"=== 종료(코드 {p.returncode}) — 로그 확인 ===")
     except Exception as e:
         log(f"오류: {e}")
     finally:
@@ -1542,6 +1613,79 @@ def run_job(d0, d1, ai, skip, collect_only=False):
             JOB["step"] = ""
             JOB["pid"] = 0
             JOB.update(phase="", done=0, total=0)
+
+
+def transfer_job():
+    """Run the archive library in a worker thread, with in-memory cancellation."""
+    def cancelled():
+        with LOCK:
+            return bool(JOB.get("transfer_cancel_requested"))
+
+    def progress(item):
+        with LOCK:
+            if JOB.get("phase") != "이동 ZIP":
+                JOB["phase_started"] = time.time()
+            JOB.update(phase="이동 ZIP", done=item.get("processed_files", 0),
+                       total=item.get("file_count", 0))
+
+    try:
+        log("이동 ZIP 생성: 자료·설정·보고서·내장 Python을 보존하고 브라우저 프로필은 복사에서 제외합니다.")
+        result = create_transfer(ROOT, progress=progress, cancelled=cancelled)
+        if result.get("status") != "completed" or not result.get("output") or not os.path.isfile(result["output"]):
+            raise RuntimeError("완성된 이동 ZIP을 확인하지 못했습니다")
+        with LOCK:
+            JOB["transfer_result"] = dict(result, ok=True)
+        log(f"이동 ZIP 완료: {result['output']}")
+        log("이 ZIP만 전달해 다음 PC의 빈 폴더에 풀어 사용하세요. 새 PC에서는 회사 계정 로그인이 필요할 수 있습니다.")
+    except Exception as error:
+        with LOCK:
+            JOB["transfer_result"] = {"ok": False, "error": str(error)}
+        log(f"이동 ZIP 오류: {error}")
+    finally:
+        with LOCK:
+            JOB.update(running=False, kind="", step="", pid=0, phase="", done=0, total=0,
+                       transfer_cancel_requested=False)
+
+
+def run_timings():
+    """Read recorded stage durations without opening any collected content."""
+    try:
+        with open(os.path.join(REPORT, "last_run.json"), encoding="utf-8-sig") as stream:
+            record = json.load(stream)
+        if not isinstance(record, dict) or not isinstance(record.get("stages"), list):
+            return []
+        timings = []
+        for stage in record["stages"]:
+            if not isinstance(stage, dict) or not isinstance(stage.get("name"), str):
+                continue
+            try:
+                seconds = float(stage.get("sec", 0))
+            except (TypeError, ValueError):
+                continue
+            if 0 < seconds < 365 * 86400:
+                timings.append({"name": stage["name"], "sec": round(seconds), "ok": stage.get("ok") is True})
+        return sorted(timings, key=lambda item: -item["sec"])[:6]
+    except (OSError, ValueError):
+        return []
+
+
+def validate_run_request(body):
+    """Validate the request before setting JOB.running or constructing a worker."""
+    from datetime import date
+    if not isinstance(body, dict):
+        raise ValueError("요청은 JSON 객체여야 합니다")
+    days = []
+    for name in ("from", "to"):
+        value = body.get(name)
+        if not isinstance(value, str) or len(value) != 10:
+            raise ValueError("시작일과 종료일을 YYYY-MM-DD로 입력하세요")
+        days.append(date.fromisoformat(value))
+    if days[0] > days[1]:
+        raise ValueError("시작일이 종료일보다 늦습니다")
+    flags = ("ai", "skip", "collect_only", "reuse_complete", "force")
+    if any(name in body and not isinstance(body[name], bool) for name in flags):
+        raise ValueError("실행 옵션은 true 또는 false여야 합니다")
+    return (body["from"], body["to"], *(body.get(name, False) for name in flags))
 
 
 def _refine_map(tag):
@@ -1767,12 +1911,12 @@ def tool_job(kind, extra=()):
             JOB.update(running=False, step="", pid=0, phase="", done=0, total=0)
 
 
-def narrate_job():
+def narrate_job(tag=None):
     """9a — 리뷰 코멘트(월별 내러티브)만 다시 생성한다.
-    다른 PC로 옮기면 report\\ 를 복사하지 않으므로 코멘트가 비어 보인다. 판정 결과
-    (signals)만 있으면 왕복 몇 번으로 되살릴 수 있다."""
+    선택한 분석 기간의 판정 결과(signals)에서 월별 코멘트를 갱신한다."""
     try:
-        sp = latest_signals()
+        selected = review_source(tag)
+        sp = os.path.join(REPORT, selected["signals_file"]) if selected["signals_file"] else ""
         if not sp:
             log("[리뷰] 판정 결과가 없습니다 — [분석 실행]에 'AI 판정'을 켜고 먼저 돌리세요")
             return
@@ -1921,7 +2065,7 @@ v3 는 인별 로드율을 뺀 공유용, [스냅샷 저장]은 팀통합보고�
  <div class="card"><h2>업무유형 분포 (인별)</h2><div id="wtstack"></div></div>
 </div>
 
-<div class="card"><h2>Agentic AI 12과제 적합률 — 과제 × 인원 <span class="state" style="font-weight:400;font-size:11px;color:#8b929b">셀 색이 진할수록 적합 · 숫자 = 적합%(대체 가능 MM)</span></h2>
+<div class="card"><h2>Agentic AI 12과제 적합률 — 과제 × 인원 <span class="state" style="font-weight:400;font-size:11px;color:#8b929b">셀 색이 진할수록 적합 · 숫자 = 적합%(후보별 안분 업무 MM) · 절감량 미검증</span></h2>
  <div style="overflow-x:auto"><table class="heat" id="heat"></table></div>
  <div class="note" id="heatrank"></div></div>
 
@@ -2009,7 +2153,7 @@ const cfgB=m=>m.cfg_diff?` <span class="tag" style="border:1px solid #b06ef7;col
 function render(){
  const ms=D.members||[];
  // 측정 불충분(unreliable)은 팀 평균·순위·과제 매트릭스에서 빼고 표에는 남긴다(별도 표시)
- const okm=ms.filter(m=>!m.unreliable),exm=ms.filter(m=>m.unreliable);
+ const okm=ms.filter(m=>m.kpi_eligible===true),exm=ms.filter(m=>m.kpi_eligible!==true);
  $("k_n").textContent=ms.length;
  $("k_nn").textContent=ms.map(m=>m.owner).join(" · ").slice(0,40);
  const tin=okm.reduce((a,m)=>a+(m.total_mm||0),0),tav=okm.reduce((a,m)=>a+(m.avail_mm||0),0);
@@ -2033,7 +2177,7 @@ function render(){
     const up=m.uploaded_at||"",upf=m.uploaded_from||"",an=m.analyzed_at||"",hs=m.host||"";
     const fa=m.file_at||"";
     const pct=m.load_pct==null?(m.avail_mm?Math.round(m.total_mm/m.avail_mm*100):null):Math.round(m.load_pct);
-    return `<tr${m.unreliable?' style="color:#8b929b"':""}><td><b>${esc(m.owner)}</b>${m.via?` <span class="tag">${esc(m.via)}</span>`:""}${covB(m)}${cfgB(m)}</td>
+    return `<tr${m.unreliable?' style="color:#8b929b"':""}><td><b>${esc(m.owner)}</b>${m.via?` <span class="tag">${esc(m.via)}</span>`:""}${covB(m)}${cfgB(m)}${(m.exclusion_reasons||[]).length?`<div class="note">비교 제외: ${esc(m.exclusion_reasons.join(" · "))}</div>`:""}</td>
      <td>${esc(m.function||"")}</td><td>${esc((m.period||[]).join(" ~ "))}</td>
      <td>${(m.total_mm||0).toFixed(2)}</td><td>${pct==null?"–":pct+"%"}${m.unreliable?' <span class="state">비교 제외</span>':""}</td>
      <td style="font-size:11px">${esc(m.measure_text||"–")}</td>
@@ -2074,7 +2218,8 @@ function render(){
    <span style="width:80px;font-size:11.5px;text-align:right">${esc(m.owner)}</span><span>${segs}</span></div>`;
  }).join("")+`<div class="row" style="margin-top:6px">${Object.entries(WTC).map(([k,c])=>`<span style="font-size:11px"><span class="dot" style="background:${c}"></span>${k}</span>`).join("")}</div>`;
  // 12과제 히트맵
- const ags=D.agentic||[];const tks=D.tasks||[];
+ const comparable=new Set(okm.map(m=>m.owner));
+ const ags=(D.agentic||[]).filter(a=>comparable.has(a.owner));const tks=D.tasks||[];
  if(tks.length){
   let h=`<tr><th style="text-align:left">과제</th>${ags.map(a=>`<th>${esc(a.owner)}</th>`).join("")}<th>팀 합계</th></tr>`;
   const rank=[];
@@ -2083,9 +2228,9 @@ function render(){
    const cells=ags.map(a=>{
     const m=(a.match||[]).find(x=>x.task===t.id);
     if(!m||!m.fit)return`<td style="color:#c9cfd8">-</td>`;
-    tot+=m.load_mm||0;
+    tot+=m.allocated_candidate_mm||0;
     const al=Math.min(0.85,m.fit/100*0.85+0.08);
-    return`<td style="background:rgba(42,120,214,${al});color:${m.fit>=45?"#fff":"#12151a"}"><b>${m.fit}%</b><br><span style="font-size:9.5px">${(m.load_mm||0).toFixed(2)}</span></td>`;
+    return`<td style="background:rgba(42,120,214,${al});color:${m.fit>=45?"#fff":"#12151a"}"><b>${m.fit}%</b><br><span style="font-size:9.5px">${m.allocated_candidate_mm==null?"미확인":Number(m.allocated_candidate_mm).toFixed(2)}</span></td>`;
    }).join("");
    rank.push([t,tot]);
    h+=`<tr><td style="text-align:left" title="${esc(t.desc)}"><b>${esc(t.id)}</b> ${esc(t.name)}</td>${cells}<td><b>${tot.toFixed(2)} MM</b></td></tr>`;
@@ -2093,12 +2238,12 @@ function render(){
   $("heat").innerHTML=h;
   rank.sort((a,b)=>b[1]-a[1]);
   const top=rank.filter(([_,v])=>v>0).slice(0,3).map(([t,v])=>`${t.id}(${v.toFixed(2)}MM)`);
-  $("heatrank").textContent=top.length?`팀 우선순위 제안(현재 로드 기준): ${top.join(" → ")}`:"Agentic 분석을 실행한 인원이 없거나 매칭이 없습니다 — 각자 UI의 Agentic AI 탭에서 분석 후 재내보내기";
+  $("heatrank").textContent=top.length?`팀 검토 순서(검증된 후보 안분 업무량 기준, 절감량 미검증): ${top.join(" → ")}`:"Agentic 분석을 실행한 인원이 없거나 매칭이 없습니다 — 각자 UI의 Agentic AI 탭에서 분석 후 재내보내기";
  }
  // 발굴 후보
  let nl="";
  ags.forEach(a=>(a.new||[]).forEach(n=>{nl+=`<div style="border-left:3px solid #6c4fb8;padding:3px 0 3px 10px;margin:8px 0">
-  <b>${esc(n.name)}</b> <span style="font-size:10.5px;color:#8b929b">제안 ${esc(a.owner)} · ≈${(n.load_mm||0).toFixed(2)} MM</span>
+  <b>${esc(n.name)}</b> <span style="font-size:10.5px;color:#8b929b">제안 ${esc(a.owner)} · 안분 업무량 ${n.allocated_candidate_mm==null?"미확인":Number(n.allocated_candidate_mm).toFixed(2)} MM</span>
   <div style="font-size:11px;color:#5a626b">로직: ${esc(n.logic)}<br>사유: ${esc(n.reason)}</div></div>`;}));
  $("newlist").innerHTML=nl||'<div class="note">발굴된 후보가 없습니다.</div>';
  // 공통업무
@@ -2291,10 +2436,10 @@ td{padding:6px 8px;border-bottom:1px solid #eef0f3;vertical-align:top}
 .leg{font-size:11px;color:#4a5159;line-height:1.9}
 .leg .v{float:right;font-weight:700}
 details{margin-bottom:12px}
-details summary{cursor:pointer;font-size:13px;font-weight:700;color:#2c333b;padding:12px 16px;
+details > summary{cursor:pointer;font-size:13px;font-weight:700;color:#2c333b;padding:12px 16px;
  background:#fff;border:1px solid #e4e7eb;border-radius:8px;list-style:none}
-details summary::before{content:"▸ ";color:#8b929b}
-details[open] summary{border-radius:8px 8px 0 0}details[open] summary::before{content:"▾ "}
+details > summary::before{content:"▸ ";color:#8b929b}
+details[open] > summary{border-radius:8px 8px 0 0}details[open] > summary::before{content:"▾ "}
 details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radius:0 0 8px 8px;padding:14px 16px}
 .bigbar{height:26px;border-radius:5px;overflow:hidden;display:flex;margin:6px 0 10px}
 .bigbar i{display:block;height:100%}
@@ -2320,8 +2465,10 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
  <span class="chip" data-d="180">6개월</span><span class="chip" data-d="365">1년</span>
  <label>시작 <input type="date" id="from"></label><label>끝 <input type="date" id="to"></label>
  <label><input type="checkbox" id="ai" checked> AI 정제</label>
- <label><input type="checkbox" id="skip"> 재분석만</label>
+ <label><input type="checkbox" id="skip"> 수집 없이 분석</label>
+ <label title="같은 입력의 완료 결과가 있어도 AI 분석을 다시 실행합니다"><input type="checkbox" id="force"> 강제 재분석</label>
  <button class="run" id="go">분석 실행</button>
+ <button class="run" id="analyzecollected">모은 자료 분석</button>
  <button class="run" id="stop" style="background:#c0122f;display:none">중지</button>
  <span class="state" id="state">대기 중</span>
  <span style="flex:1"></span>
@@ -2338,6 +2485,9 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
  <button class="ghost" id="reset" style="color:#c0122f;border-color:#f0cdd5">데이터 리셋</button>
  <button class="ghost" id="quit">서버 종료</button>
 </div>
+<div class="note" style="margin-top:10px">여러 PC를 거칠 때: 각 로컬 PC에서 <b>추가 PC 수집 → PC 이동 준비</b>, 마지막 PC에서 <b>모은 자료 분석</b>을 한 번 실행하세요. 완료된 과거 기간의 입력·결과가 같으면 검증된 결과를 재사용하고, 오늘을 포함하거나 변경된 자료는 다시 분석합니다. 보고서만 다시 만들 때는 <b>보고서 만들기</b>를 사용하세요.</div>
+<div class="note" id="move_result" style="white-space:pre-wrap;overflow-wrap:anywhere" aria-live="polite"></div>
+<div class="note" id="run_timings"></div>
 <div id="prog" style="display:none;margin-top:10px">
  <div style="display:flex;justify-content:space-between;font-size:11.5px;color:#4a5159;margin-bottom:4px">
   <span id="pg_label"></span><span id="pg_time" style="color:#8b929b"></span></div>
@@ -2549,6 +2699,11 @@ async function poll(){
   $("log").textContent=s.log.join("\\n")||"…";$("log").scrollTop=$("log").scrollHeight;
   $("step").textContent=s.step||"";
   const fmt=x=>x==null?"":(x<60?`${x}초`:(x<3600?`${Math.floor(x/60)}분 ${x%60}초`:`${Math.floor(x/3600)}시간 ${Math.floor(x%3600/60)}분`));
+  $("run_timings").textContent=(s.run_timings||[]).length?"최근 실행에서 오래 걸린 단계: "+s.run_timings.map(x=>`${x.name} ${fmt(x.sec)}${x.ok?"":" (미완료)"}`).join(" · "):"";
+  const mv=s.transfer_result;
+  if(mv){const nl=String.fromCharCode(10);$("move_result").textContent=mv.ok
+   ?`이동 ZIP 완료 · ${mv.processed_files||mv.file_count||0}개 · ${(Number(mv.zip_bytes||0)/1048576).toFixed(1)} MB${nl}${mv.output}${nl}이 파일을 다음 PC의 빈 폴더에 풀어 사용하세요. 설정·자료·보고서는 포함되며 회사 계정은 다시 로그인할 수 있습니다.`
+   :"이동 ZIP 미완료: "+(mv.error||"로그를 확인하세요.");}
   if(s.running){
    $("prog").style.display="";
    const pct=s.total?Math.round(s.done/s.total*100):null;
@@ -2587,12 +2742,14 @@ async function poll(){
    :(s.sampler_age_min<=10?'<span style="color:#4fc47f">샘플러 가동 중</span>'
      :`<span style="color:#e08a00" title="마지막 샘플 ${esc(s.last_sample||"")} — 멈춘 날은 PC 하한 모드로 계산됩니다">샘플러 멈춤 (${s.sampler_age_min}분 전${s.last_sample?` · 마지막 샘플 ${esc(s.last_sample)}`:""})${tkTxt}${srTxt}</span>`);
   $("go").disabled=s.running;
+  $("analyzecollected").disabled=s.running;
+  $("prepmove").disabled=s.running;
   $("stop").style.display=s.running?"":"none";
   $("state").textContent=s.running?"실행 중…":"대기 중";
   if(s.running)$("dlog").open=true;
   if(!s.running&&timer){clearInterval(timer);timer=null;}
   // 실행 중 새로고침하면 timer 가 없어 완료를 놓친다 — 상태 전이(running→멈춤)로 판정한다
-  if(wasRunning&&!s.running){loaded={};refresh();}
+  if(wasRunning&&!s.running){loaded={};await refresh();await reloadVisibleTab();}
   wasRunning=s.running;
  }catch(e){$("state").textContent="서버 연결 끊김 — 창을 닫고 다시 실행하세요";}
 }
@@ -2623,7 +2780,9 @@ async function refresh(){
  $("k_load").textContent=avMM?Math.round(inMM/avMM*100)+"%":"–";
  $("sb_load").textContent=avMM?`로드율 ${Math.round(inMM/avMM*100)}% (투입 ${inMM.toFixed(2)}/가용 ${avMM.toFixed(2)} MM)`:"";
  $("sb_ver").textContent=`${d.version} · 포트 ${d.port}`;
- $("k_mm").textContent=avMM?`투입 ${inMM.toFixed(2)} / 가용 ${avMM.toFixed(2)} MM`:(d.total?d.total.toFixed(2)+" MM":"분석 전");
+ $("k_mm").textContent=avMM?`투입 추정 ${inMM.toFixed(2)} / 가용 ${avMM.toFixed(2)} MM`:(d.total?d.total.toFixed(2)+" MM":"분석 전");
+ const classified=rs.reduce((sum,r)=>sum+(Number(r.mm)||0),0),unallocated=Math.max(0,inMM-classified);
+ if(unallocated>0.01)$("k_mm").textContent+=` · 분류 업무 ${classified.toFixed(2)} / 미배분 ${unallocated.toFixed(2)} MM(제외·분류 미확정, 절감량 아님)`;
  const projs=[...new Set(rs.map(r=>r["Level 2"]))];
  const col=p=>PAL[projs.indexOf(p)%PAL.length];
  const byP={};rs.forEach(r=>byP[r["Level 2"]]=(byP[r["Level 2"]]||0)+(r.mm||0));
@@ -2652,8 +2811,8 @@ async function refresh(){
    noticeBar.style.display="";
    noticeBar.innerHTML='\u2139\ufe0f <b>수집만 되어 있습니다 — 아직 분석하지 않았습니다.</b> '
      +'이 상태에서는 팀 업로드 묶음도, 담당자 워크플로우도 만들어지지 않습니다.<br>'
-     +'<b>이 PC 가 마지막(클라우드) PC 라면 위 [분석 실행]</b>을 누르세요. '
-     +'다른 PC 라면 [PC 이동 준비] 후 폴더를 옮기면 됩니다.';
+     +'<b>이 PC 가 마지막(클라우드) PC 라면 위 [모은 자료 분석]</b>을 누르세요. '
+     +'다른 PC 라면 [이동 ZIP 만들기]로 만든 파일을 전달하면 됩니다.';
   }else if(d.foreign){
    noticeBar.style.display="";
    noticeBar.innerHTML='\u26a0\ufe0f 이 결과는 <b>이 PC 에서 만든 것이 아닙니다</b> ('
@@ -2857,11 +3016,14 @@ async function refresh(){
   if(H("passive_capped_days"))extra.push(`수동 세션 상한 적용 ${cnt(pick("passive_capped_days"))}일`);
   if(H("weekend_pc_days"))extra.push(`주말 PC 창 인정 ${cnt(pick("weekend_pc_days"))}일`);
   const extraNote=extra.length?`<div class="note">추가 보정 — ${extra.join(" · ")}</div>`:"";
-  // 야간 해석(솔버) 인정(S4-N1) — 밤새 돌린 해석의 실행 구간. 값이 0 이면 아무것도 그리지 않는다(구판 meta 호환)
-  const snH=num(pick("sim_night_h")),snD=cnt(pick("sim_night_days"));
-  const simNote=(snH||snD)?` · <b>야간 해석 인정 ${snH.toFixed(1)}h</b> · ${snD}일(상한 ${cnt(pick("sim_night_capped_days"))}일 · 재실행으로 상한 해제 ${cnt(pick("sim_night_unlocked_days"))}일 · PC 밖 ${num(pick("sim_night_remote_h")).toFixed(1)}h)`:"";
+  // Machine execution is context, never an additional human work interval.
+  const machine=pick("machine_runtime_h"),machineNight=pick("machine_night_h");
+  const simNote=machine!=null?` · <b>기계 가동 참고 ${num(machine).toFixed(1)}h</b>(야간 ${num(machineNight).toFixed(1)}h, 인적 투입 MM에 가산하지 않음)`:
+   num(pick("sim_night_h"))?` · 구버전 야간 해석 보정 ${num(pick("sim_night_h")).toFixed(1)}h — 새 산식은 재분석 후 적용`:"";
   const pcc=obj("pc_coverage_by_month");
-  const pccNote=pcc?`<div class="note">월별 PC 기록 — ${Object.entries(pcc).sort().map(([k,v])=>`${esc(k)} ${Math.round(num(v)*100)}%${num(v)<0.4?" <b style='color:#b54708'>[하한 미적용]</b>":""}`).join(" · ")} (40% 미만인 달은 PC 하한·부재 추정이 꺼집니다)</div>`:"";
+  const pccNote=pcc?`<div class="note">월별 PC 기록 — ${Object.entries(pcc).sort().map(([k,v])=>`${esc(k)} ${Math.round(num(v)*100)}%${num(v)<0.4?" <b style='color:#b54708'>[하한 미적용]</b>":""}`).join(" · ")} (40% 미만인 달은 PC 하한을 적용하지 않습니다)</div>`:"";
+  const gapNote=pick("collection_gap_days")!=null?`<div class="note">근태 미확인·수집 공백 ${num(pick("collection_gap_days"))}일 — 휴무로 단정하지 않고 가용시간을 유지했습니다.</div>`:"";
+  const manualNote=num(pick("manual_unplaced_h"))?`<div class="note">시각 미상 수동기록 ${num(pick("manual_unplaced_h")).toFixed(1)}h — PC 활동과 겹침을 확인할 수 없어 하한으로만 사용했습니다. 별도 시간 합산은 수동 CSV에 start/end가 필요합니다.</div>`:"";
   const fut=pick("future_days"),tf=pick("today_fraction");
   const futNote=(fut!=null||tf!=null)?`<div class="note">가용 기준 — ${fut!=null?`미래 평일 ${cnt(fut)}일은 가용에서 제외`:""}${(fut!=null&&tf!=null)?" · ":""}${tf!=null?`오늘은 ${Math.round(num(tf)*100)}% 만 가용(분석 시각${d.as_of?" "+esc(d.as_of):""} 기준 — 다시 분석하면 갱신)`:""}</div>`:"";
   const rhNote=m.rehours?`<div class="note"><b>비업무 제외 ${num(m.dropped_n)}건 · −${num(m.dropped_h).toFixed(1)}h</b> — 판정 후 시간을 다시 재어 투입 ${m.total_mm_before_rehours!=null?num(m.total_mm_before_rehours).toFixed(2)+" → ":""}${num(m.total_mm).toFixed(2)} MM 으로 갱신했습니다(버린 신호의 시간이 남은 행에 옮겨 붙지 않습니다)</div>`:"";
@@ -2877,9 +3039,9 @@ async function refresh(){
    주말 근무 ${nb.weekend_days||0}일 · PC가동 하한 보정 ${num(nb.pc_floor_h).toFixed(0)}h/${nb.pc_floor_days||0}일(흔적 있는 날의 주간 투입을 PC 가동시간까지 인정 — 저장 1번=1시간 과소 방지) · 공휴일 ${nb.holidays||0}일 제외</div>
    <div class="note">측정 보정 — 점심 차감 ${num(nb.lunch_deducted_h).toFixed(0)}h · 저녁·새벽 가동 인정 ${num(nb.evening_credit_h).toFixed(1)}h · 주말 산출물 창 ${num(nb.weekend_window_h).toFixed(1)}h ·
    수동 흔적(수신·CC)만 있는 날 ${nb.floor_blocked_passive_days||0}일(하한 미적용 — 많으면 config.watchFolders 점검) · 미래 시각 신호 폐기 ${nb.future_signals_dropped||0}건 ·
-   부재 추정 ${nb.inferred_absence_days||0}일(PC 도 흔적도 없는 평일 — 가용에서 차감${absd.length?": "+esc(absd.slice(0,12).join(", "))+(absd.length>12?" …":""):""})${simNote}</div>
+   과거 부재 추정 기록 ${nb.inferred_absence_days||0}일(새 산식은 근태 미확인 결측으로 가용을 줄이지 않음${absd.length?": "+esc(absd.slice(0,12).join(", "))+(absd.length>12?" …":""):""})${simNote}</div>
    <div class="note">흔적 없는 평일 ${nb.no_evidence_days||0}일 — 이 수가 크면 수집이 덜 된 것입니다: Outlook을 켠 상태로 재실행하거나 config.watchFolders 를 확인하세요.</div>`
-   +measNote+toolNote+rhNote+extraNote+pccNote+futNote+cfgNote
+   +measNote+toolNote+rhNote+extraNote+pccNote+gapNote+manualNote+futNote+cfgNote
    +((Array.isArray(nb.config_warnings)&&nb.config_warnings.length)?`<div class="note" style="color:#b54708"><b>설정 경고 ${nb.config_warnings.length}건</b> — 잘못된 값은 기본값으로 대체했습니다: ${esc(nb.config_warnings.slice(0,6).join(" · "))}${nb.config_warnings.length>6?" …":""}</div>`:"")
    +(nb.utc_suspect?`<div class="note" style="color:#b54708"><b>메일 시각이 UTC 로 기록된 것 같습니다</b> — 낮 발신이 새벽 야근으로 잡힐 수 있으니 config.mm.mailTimeOffsetH(예: 9)를 확인하세요.</div>`:"")
    +(anoms.length?`<div class="note"><b>이상치 ${anoms.length}일</b> — PC 기록이 물리적으로 맞지 않아 보정한 날(투입을 자르지 않고 표시만 합니다)
@@ -2924,20 +3086,30 @@ $("pjretag").onclick=async()=>{
  if(!d.ok){$("pjmsg").textContent=d.error==="no signals"?"분석 결과가 아직 없습니다 — 먼저 [분석 실행]":(d.error==="no projects"?"지정된 프로젝트가 없습니다":(d.error==="not judged"?"AI 판정 전입니다 — 'AI 판정' 체크로 분석 후 재분류 가능":(d.error==="busy"?"다른 작업이 실행 중입니다":"재분류 실패")));return;}
  const det=Object.entries(d.by||{}).map(([k,v])=>`${k} ${v}건`).join(" · ");
  $("pjmsg").textContent=d.retagged?`재분류 ${d.retagged}건 (${det}) — 화면 갱신됨`:"유사한 신호 없음 — 변경 0건";
- loaded={};refresh();};
+ loaded={};await refresh();await reloadVisibleTab();};
 pjLoad();
 
 $("go").onclick=async()=>{
- const b={from:$("from").value,to:$("to").value,ai:$("ai").checked,skip:$("skip").checked};
+ const b={from:$("from").value,to:$("to").value,ai:$("ai").checked,skip:$("skip").checked,force:$("force").checked};
  if(!b.from||!b.to){alert("기간을 선택하세요");return;}
  const r=await fetch("/api/run",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});
  if(r.status===409){alert(await busyMsg(r,"이미 실행 중입니다"));return;}
+ if(!r.ok){alert("실행 요청을 확인하세요: "+((await r.json()).error||r.status));return;}
  $("go").disabled=true;timer=setInterval(poll,1000);poll();
 };
+$("analyzecollected").onclick=async()=>{
+ const b={from:$("from").value,to:$("to").value,ai:true,skip:true,reuse_complete:true,force:$("force").checked};
+ if(!b.from||!b.to){alert("기간을 선택하세요");return;}
+ const r=await fetch("/api/run",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});
+ if(r.status===409){alert(await busyMsg(r,"이미 실행 중입니다"));return;}
+ if(!r.ok){alert("실행 요청을 확인하세요: "+((await r.json()).error||r.status));return;}
+ $("analyzecollected").disabled=true;if(!timer)timer=setInterval(poll,1000);poll();
+};
 $("stop").onclick=async()=>{
- if(!confirm("실행 중인 분석을 중단할까요? 지금까지 수집·판정된 결과는 보존됩니다."))return;
+ if(!confirm("실행 중인 작업을 중지할까요? 수집·판정 결과는 보존하고, 미완성 이동 ZIP은 정리합니다."))return;
  $("stop").disabled=true;
- await fetch("/api/stop",{method:"POST"});
+ const stopped=await fetch("/api/stop",{method:"POST"}).then(r=>r.json());
+ if(stopped.kind==="transfer"){$("stop").disabled=false;if(!timer)timer=setInterval(poll,1000);poll();return;}
  $("stop").disabled=false;$("stop").style.display="none";
  if(timer){clearInterval(timer);timer=null;}
  loaded={};refresh();poll();tuLoad();
@@ -3076,7 +3248,7 @@ $("collect2").onclick=async()=>{
  if(!b.from||!b.to){alert("기간을 선택하세요");return;}
  if(!confirm("이 PC 의 데이터를 수집만 합니다 (분석 없음).\\n\\n"
    +"· 다른 PC 에서 가져온 폴더라면, 지난 PC 데이터는 data\\\\추가PC\\\\ 로 자동 보관됩니다\\n"
-   +"· 수집 후 폴더째 본 PC 로 가져가 [분석 실행]을 누르면 두 PC 가 합산됩니다\\n"
+   +"· 수집 후 [이동 ZIP 만들기]로 다음 PC에 전달하고, 마지막 PC에서 [모은 자료 분석]을 실행하세요\\n"
    +"· 같은 메일·일정 등 중복 자료는 분석 때 자동 제외됩니다\\n\\n진행할까요?"))return;
  const r=await fetch("/api/run",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});
  if(r.status===409){alert(await busyMsg(r,"이미 실행 중입니다"));return;}
@@ -3147,17 +3319,17 @@ $("teamsweb").onclick=async()=>{
  alert((d.ok?"읽기 완료 — ":"읽기 실패 — ")+(d.summary||d.error||"")+"\\n\\n[재분석만]으로 다시 분석하면 반영됩니다.");
 };
 $("prepmove").onclick=async()=>{
- // 폴더를 다른 PC 로 옮기려면 우리(대시보드·팀 서버·Copilot Edge·샘플러)가 먼저 손을 놓아야 한다
- if(!confirm("이 폴더를 다른 PC 로 옮길 수 있도록 정리합니다.\\n\\n· 팀 서버·Copilot 창·샘플러를 종료합니다\\n· 정리 창이 열리고, 이 대시보드도 함께 닫힙니다\\n· 수집 데이터와 분석 결과는 그대로 둡니다\\n· 정리 창이 '빠르게 옮기는 방법'(Edge 캐시 제외)도 함께 알려 줍니다\\n\\n계속할까요?"))return;
- $("prepmove").disabled=true;$("state").textContent="이동 준비 중…";
+ const nl=String.fromCharCode(10);
+ if(!confirm(["PC 이동 준비와 이동 ZIP 생성을 이어서 실행합니다.","","· 대시보드·팀 서버·전용 브라우저·샘플러를 정리합니다","· 설정·수집 자료·보고서를 보존한 ZIP 하나를 만듭니다","· 전용 창에서 완료와 ZIP 경로를 확인하세요","· 원본 폴더는 삭제하지 않습니다","","계속할까요?"].join(nl)))return;
+ $("prepmove").disabled=true;$("state").textContent="PC 이동 준비 시작 중…";
  const r=await fetch("/api/prepmove",{method:"POST"}).then(x=>x.json()).catch(()=>({ok:false}));
  if(!r.ok){$("prepmove").disabled=false;$("state").textContent="대기 중";
-  alert("정리 창을 띄우지 못했습니다 — LoadMonitor25-이동준비.bat 을 직접 실행하세요."+(r.error?"\\n"+r.error:""));return;}
- alert("정리 창이 열렸습니다.\\n그 창의 안내를 따라 주세요 — 잠시 뒤 이 대시보드는 닫힙니다.");
+  alert((r.hint||r.error||"전용 창을 띄우지 못했습니다 — LoadMonitor25-이동준비.bat 을 직접 실행하세요."));return;}
  fetch("/api/quit",{method:"POST"}).catch(()=>{});
- document.body.innerHTML='<div class="wrap"><h1>PC 이동 준비</h1>'
-  +'<div class="card"><div class="note">대시보드를 종료했습니다. 열린 정리 창의 결과를 확인한 뒤 폴더를 옮기세요.<br>'
-  +'옮긴 PC 에서는 LoadMonitor25-UI.bat 을 실행하면 됩니다 — 지난 PC 데이터는 자동으로 합산됩니다.</div></div></div>';
+ document.body.innerHTML='<div class="wrap"><h1>PC 이동 준비 · 이동 ZIP</h1>'
+  +'<div class="card"><p>전용 창에서 정리와 ZIP 생성을 진행합니다. 아직 ZIP이 완성된 상태는 아닙니다.</p>'
+  +'<p>그 창의 <b>완료</b> 표시와 ZIP 경로를 확인한 뒤, ZIP 하나를 다음 PC의 빈 폴더에 풀어 주세요.</p>'
+  +'<p>압축을 푼 프로그램 폴더의 <b>LoadMonitor25-UI.bat</b>을 실행합니다. 이전 PC의 자료·설정·보고서는 ZIP에 보존됩니다.</p></div></div>';
 };
 $("cdiag").onclick=async()=>{
  // PC 마다 Outlook·Teams 버전이 달라 메일·팀즈가 비는 실측 — 무엇이 막혔는지 이 PC 에서 바로 본다
@@ -3170,8 +3342,9 @@ $("cdiag").onclick=async()=>{
 };
 $("narrate").onclick=async()=>{
  if(!confirm("월별 리뷰 코멘트를 다시 생성할까요?\\nCopilot 왕복이 월당 수십 초 걸립니다."))return;
- const r=await fetch("/api/narrate",{method:"POST"});
+ const r=await fetch("/api/narrate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({tag:reviewPeriod||null})});
  if(r.status===409){alert(await busyMsg(r,"다른 작업이 실행 중입니다"));return;}
+ if(!r.ok){alert((await r.json()).error||"리뷰 재생성을 시작하지 못했습니다");return;}
  timer=setInterval(poll,1000);poll();
 };
 $("reset").onclick=async()=>{
@@ -3198,6 +3371,7 @@ document.querySelectorAll("[data-s]").forEach(c=>c.onclick=()=>showData(c.datase
 
 // ── 탭 + 리뷰 (raw 근거·타임라인·연결성) ──
 let loaded={};
+let reviewPeriod="";
 const AGENT_C={"상":"#1d8a4a","중":"#c98a00","하":"#8b929b"};
 // 수동 재분석(Agentic·워크플로우)은 서버 스레드에서 돈다 — 끝날 때까지 /api/status 를 보며 기다린다.
 // 새로고침해도 서버가 기억하므로(GET 의 running/manual) 탭을 다시 열면 이어서 기다리고 사유를 다시 보여 준다.
@@ -3268,8 +3442,77 @@ function mergeLine(m){
   +'띄어쓰기만 다른 이름은 규칙이 다시 합치므로, 영영 갈라 두려면 같은 파일 <b>never</b> 에 '
   +'<code>["이름A", "이름B"]</code> 를 적으면 됩니다. 다음 [워크플로우 재분석]부터 반영됩니다.</div></details>';
 }
+const flowOpen = new Map();
+function flowCard(f,fi){
+   const pj=f.project||f.model||"과제 미지정", hasDet=!!f.detail;
+   const mm=f.mm||{}, det=Object.entries(mm.details||{});
+   const mtot=det.reduce((s,[,v])=>s+v,0)||1;
+   const mmBar=det.length?('<div class="bigbar" style="margin:4px 0">'
+     +det.map(([k,v],i)=>`<i style="width:${(v/mtot*100).toFixed(1)}%;background:${PAL[i%PAL.length]}" title="${esc(k)} ${v} MM"></i>`).join("")
+     +'</div><div class="leg" style="font-size:11px">'
+     +det.map(([k,v],i)=>`<div><span class="dot" style="background:${PAL[i%PAL.length]}"></span>${esc(k)}<span class="v">${v} MM</span></div>`).join("")+'</div>'):"";
+   const steps=(f.steps||[]).map(s=>`
+    <tr><td style="width:26px;text-align:center;color:#8b929b"><b>${s.order}</b></td>
+     <td style="width:150px"><b>${esc(s.name)}</b>${s.cycle?`<div style="color:#8b929b;font-size:11px">${esc(s.cycle)}</div>`:""}</td>
+     <td>${esc(s.desc)}${s.evidence?`<div style="color:#98a0a8;font-size:11px">근거: ${esc(s.evidence)}</div>`:""}</td>
+     <td style="width:220px"><span style="display:inline-block;padding:1px 8px;border-radius:9px;color:#fff;font-size:11px;background:${AGENT_C[s.agent]||"#8b929b"}">Agent ${esc(s.agent||"확인 필요")}</span>
+      ${s.agent_how?`<div style="font-size:11px;color:#4a5159;margin-top:2px">${esc(s.agent_how)}</div>`:""}</td></tr>`).join("");
+   // 과제 수만큼 길어지는 탭 — 접이식으로. 제목 줄에 역할 요약을 실어 접힌 채로도 훑는다.
+   // 상위(업무 성격) 배지 — 계층은 상위(Level 1) > 과제(Level 2) > 담당업무(Level 3) 다.
+   // LM20 처럼 상위로도 묶어 읽히게 제목에 배지를 달고, 아래에서 상위별로 구간을 나눈다.
+   const L1C={"신제품개발":"#2a78d6","기술 내재화":"#0e8c7a","양산준비":"#e08a00","일반업무":"#8b929b"};
+   const l1b=f.level1?`<span style="display:inline-block;padding:0 7px;border-radius:9px;color:#fff;font-size:11px;background:${L1C[f.level1]||"#8b929b"};margin-right:6px">${esc(f.level1)}</span>`:"";
+   // 한 과제가 여러 흐름을 가질 수 있다 — 이어지지 않는 일을 억지로 한 타임라인으로 엮지 않기 위해서다.
+   // 흐름 이름을 제목에 붙여 같은 과제의 다른 줄기임을 알 수 있게 한다.
+   const br=f.branch?`<span class="dim"> · ${esc(f.branch)}</span>`:"";
+   // 담당업무 카드는 과제 머리말 밑에 있으니 제목에는 담당업무만(과제는 title 속성으로).
+   const ttl=hasDet?`<span title="${esc(pj)}">${esc(f.detail)}</span>`:esc(f.model);
+   return `<details class="flow-task"${fi===0?" open":""}${hasDet?' style="margin-left:6px"':''}><summary>${hasDet?"":l1b}${ttl}${br}
+     <span class="state">${(mm.mm!=null)?mm.mm+" MM · ":"관련 MM 확인 필요 · "}단계 ${(f.steps||[]).length}개 · ${esc((f.role||"판단 유보").split("—")[0].trim())}</span></summary>
+    <div class="body">
+    ${(f.upstream||f.downstream)?`<div class="note" style="margin:2px 0 6px">${f.upstream?`← 앞 업무: <b>${esc(String(f.upstream).split(" / ").pop())}</b>`:""}${(f.upstream&&f.downstream)?" &nbsp;·&nbsp; ":""}${f.downstream?`→ 다음 업무: <b>${esc(String(f.downstream).split(" / ").pop())}</b>`:""}</div>`:""}
+    <div style="margin:2px 0 6px"><b>역할:</b> ${esc(f.role)||"판단 유보"}</div>
+    ${f.summary?`<div class="note" style="margin-bottom:6px">${esc(f.summary)}</div>`:""}
+    ${f.needs_review?'<div class="note" style="color:#b54708">근거 또는 AI 판정 확인 필요 — 팀 우선순위 집계에서 제외됩니다.</div>':""}
+    ${mmBar}
+    <table style="margin-top:6px"><tr><th></th><th>단계</th><th>무슨 일</th><th>Agent 가능성</th></tr>${steps}</table>
+    </div></details>`;
+}
+function flowGroups(d){
+ const levels=new Map();
+ (d.flows||[]).forEach((f,i)=>{
+  const label=f.level1||((f.level1_mix||[]).length?"상위 혼재 — 재배치 필요":"상위 미분류");
+  if(!levels.has(label))levels.set(label,new Map());
+  const projects=levels.get(label), name=f.project||f.model||"과제 미지정", pk=f.project_id||f.pjkey||name;
+  if(!projects.has(pk))projects.set(pk,{name,hasId:!!f.project_id,flows:[]});
+  projects.get(pk).flows.push({f,i});
+ });
+ const opened=key=>(flowOpen.get(key)??true)?" open":"";
+ const prefix=d.tag||"current";
+ return [...levels].map(([label,projects])=>{
+  const key=JSON.stringify([prefix,"level",label]);
+  const count=[...projects.values()].reduce((sum,p)=>sum+p.flows.length,0);
+  const body=[...projects].map(([pk,pj])=>{
+   const pkey=JSON.stringify([prefix,"project",label,pk]);
+   const thin=(d.thin||[]).filter(t=>t.project_id?t.project_id===pk:(t.project===pj.name||(!pj.hasId&&fold2(t.project)===pk)));
+   const note=thin.length?`<div class="note">신호가 얕아 흐름을 만들지 않은 업무 ${thin.length}개: ${thin.map(t=>esc(t.detail)+" ("+esc(t.signals)+"건)").join(", ")}</div>`:"";
+   return `<details class="flow-group flow-project" data-flow-key="${esc(pkey)}"${opened(pkey)}><summary>${esc(pj.name)} <span class="state">담당 업무 ${pj.flows.length}개</span></summary><div class="body">${note}${pj.flows.map(({f,i})=>flowCard(f,i)).join("")}</div></details>`;
+  }).join("");
+  return `<details class="flow-group flow-level" data-flow-key="${esc(key)}"${opened(key)}><summary>${esc(label)} <span class="state">과제 ${projects.size}개 · 담당 업무 ${count}개</span></summary><div class="body">${body}</div></details>`;
+ }).join("");
+}
+function bindFlowGroups(el){
+ const groups=()=>el.querySelectorAll("details[data-flow-key]");
+ groups().forEach(node=>node.ontoggle=()=>flowOpen.set(node.dataset.flowKey,node.open));
+ [["flowexpand",true],["flowcollapse",false]].forEach(([id,open])=>{
+  const button=$(id);if(button)button.onclick=()=>groups().forEach(node=>{
+   node.open=open;flowOpen.set(node.dataset.flowKey,open);
+  });
+ });
+}
 async function loadFlow(){
  const el=$("rv-flow");
+ el.querySelectorAll("details[data-flow-key]").forEach(node=>flowOpen.set(node.dataset.flowKey,node.open));
  el.innerHTML='<div class="card"><div class="note">불러오는 중…</div></div>';
  const d=await fetch("/api/workflow").then(r=>r.json()).catch(()=>({}));
  const nflows=(d.flows||[]).length;
@@ -3281,6 +3524,7 @@ async function loadFlow(){
  const lastErr=d.last_error&&d.last_error.error?`<div class="note" style="color:#c0122f">마지막 실패 사유: ${esc(d.last_error.error)}${d.last_error.hint?` — ${esc(d.last_error.hint)}`:""}</div>`:"";
  const btn='<div class="card"><div class="row" style="align-items:center;gap:10px">'
   +'<button class="ghost" id="flowre">'+(d.partial&&d.missing_count&&d.resumable?"이어서 분석(남은 "+d.missing_count+"개)":"워크플로우 재분석")+'</button>'
+  +(nflows?'<button class="ghost" id="flowexpand">상위·과제 모두 펼치기</button><button class="ghost" id="flowcollapse">상위·과제 모두 접기</button>':"")
   +'<span class="state" id="flowmsg">'+(d.running?"워크플로우 분석 진행 중… (진행률은 상단 진행 바)":(d.generated?esc(`생성 ${d.generated} · ${d.model_name||""}`)+(d.basis==="규칙"?" · 규칙 축(AI 판정 없음)":""):""))+'</span></div>'
   +'<div class="note">과제별로 <b>역할 → 일의 순서 → 단계별 Agent 가능성</b>을 raw 근거에서 판정합니다. '
   +'MM 배분 숫자는 AI 가 아니라 판정 실측치입니다.'+(nflows?` 업무 ${nflows}/${d.rows_units||nflows}개 판정`+partial+salv:"")+'</div>'+lastErr
@@ -3300,66 +3544,9 @@ async function loadFlow(){
     +'AI 정제를 포함해 [분석 실행]을 돌리면 자동 생성됩니다. 위 [워크플로우 재분석]으로 지금 만들 수도 있습니다.'+oth+'</div></div>';
   }
  }else{
-  // 상위(Level 1)가 바뀌는 자리마다 머리말을 넣어 '상위 → 과제' 계층이 눈에 보이게 한다.
-  // flow.py 가 상위로 묶어 정렬해 내보내므로 여기서는 바뀌는 지점만 잡으면 된다.
-  let _l1prev=null,_pjprev=null;
-  el.innerHTML=btn+d.flows.map(f=>{
-   const mm=f.mm||{}, det=Object.entries(mm.details||{});
-   const mtot=det.reduce((s,[,v])=>s+v,0)||1;
-   const mmBar=det.length?('<div class="bigbar" style="margin:4px 0">'
-     +det.map(([k,v],i)=>`<i style="width:${(v/mtot*100).toFixed(1)}%;background:${PAL[i%PAL.length]}" title="${esc(k)} ${v} MM"></i>`).join("")
-     +'</div><div class="leg" style="font-size:11px">'
-     +det.map(([k,v],i)=>`<div><span class="dot" style="background:${PAL[i%PAL.length]}"></span>${esc(k)}<span class="v">${v} MM</span></div>`).join("")+'</div>'):"";
-   const steps=(f.steps||[]).map(s=>`
-    <tr><td style="width:26px;text-align:center;color:#8b929b"><b>${s.order}</b></td>
-     <td style="width:150px"><b>${esc(s.name)}</b>${s.cycle?`<div style="color:#8b929b;font-size:11px">${esc(s.cycle)}</div>`:""}</td>
-     <td>${esc(s.desc)}${s.evidence?`<div style="color:#98a0a8;font-size:11px">근거: ${esc(s.evidence)}</div>`:""}</td>
-     <td style="width:220px"><span style="display:inline-block;padding:1px 8px;border-radius:9px;color:#fff;font-size:11px;background:${AGENT_C[s.agent]||"#8b929b"}">Agent ${esc(s.agent)}</span>
-      ${s.agent_how?`<div style="font-size:11px;color:#4a5159;margin-top:2px">${esc(s.agent_how)}</div>`:""}</td></tr>`).join("");
-   const fi=d.flows.indexOf(f);
-   const cur=f.level1||"";
-   // 계층: 상위(업무 성격) → 과제(중위) → 담당업무(하위, 카드). 보완2 처럼 담당업무마다 흐름이 따로 서되,
-   // 화면에서는 자기 과제 밑에 모여 있어야 '뒤죽박죽' 으로 읽히지 않는다.
-   const pj=f.project||f.model, hasDet=!!f.detail;
-   const pjOf=x=>x.project||x.model;
-   // 과제를 묶는 키는 flow.py 가 실어 준 pjkey(정렬과 같은 축)를 쓴다. 예전에는 표시 이름을
-   // 그대로 비교해, 정렬은 정규화 축인데 머리말은 원시 문자열이라 표기가 조금만 달라도
-   // 같은 과제 머리말이 두 번 나왔다. 옛 결과 파일에는 pjkey 가 없으므로 이름으로 되돌린다.
-   const pkOf=x=>x.pjkey||pjOf(x);
-   const pk=pkOf(f);
-   let head="";
-   // 상위가 빈 카드는 두 종류다 — 표 자체가 없는 것(미분류)과, 표가 갈려 일부러 안 찍은 것(혼재).
-   // 후자는 '재배치가 필요한 것' 이므로 그렇게 말해 줘야 한다. 예전에는 둘 다 '상위 미분류' 였다.
-   const l1lab=cur?esc(cur):((f.level1_mix||[]).length?"상위 혼재 — 재배치 필요":"상위 미분류");
-   if(cur!==_l1prev){head+=`<div style="margin:14px 0 6px;font-size:12px;color:#4a5159"><b>${l1lab}</b> <span class="dim">— ${new Set(d.flows.filter(x=>(x.level1||"")===cur).map(pkOf)).size}개 과제</span></div>`;_pjprev=null;}
-   if(hasDet&&pk!==_pjprev){
-    const sibs=d.flows.filter(x=>pkOf(x)===pk&&(x.level1||"")===cur).length;
-    // 신호가 얕아 흐름을 만들지 않은 업무 — 콘솔에만 있던 것을 과제 밑에 한 줄로 알린다.
-    // 이것이 안 보이면 사용자에게는 '내 일이 통째로 사라졌다' 로 읽힌다.
-    const th=(d.thin||[]).filter(t=>fold2(t.project)===pk);
-    const thin=th.length?`<span class="dim"> · <span title="${esc(th.map(t=>t.detail+"("+t.signals+")").join(", "))}">신호가 얕아 흐름을 만들지 않은 업무 ${th.length}개</span></span>`:"";
-    head+=`<div style="margin:8px 0 4px 6px;font-size:13px"><b>${esc(pj)}</b> <span class="dim">— 담당 업무 ${sibs}개</span>${thin}</div>`;
-   }
-   _l1prev=cur;_pjprev=pk;
-   // 과제 수만큼 길어지는 탭 — 접이식으로. 제목 줄에 역할 요약을 실어 접힌 채로도 훑는다.
-   // 상위(업무 성격) 배지 — 계층은 상위(Level 1) > 과제(Level 2) > 담당업무(Level 3) 다.
-   // LM20 처럼 상위로도 묶어 읽히게 제목에 배지를 달고, 아래에서 상위별로 구간을 나눈다.
-   const L1C={"신제품개발":"#2a78d6","기술 내재화":"#0e8c7a","양산준비":"#e08a00","일반업무":"#8b929b"};
-   const l1b=f.level1?`<span style="display:inline-block;padding:0 7px;border-radius:9px;color:#fff;font-size:11px;background:${L1C[f.level1]||"#8b929b"};margin-right:6px">${esc(f.level1)}</span>`:"";
-   // 한 과제가 여러 흐름을 가질 수 있다 — 이어지지 않는 일을 억지로 한 타임라인으로 엮지 않기 위해서다.
-   // 흐름 이름을 제목에 붙여 같은 과제의 다른 줄기임을 알 수 있게 한다.
-   const br=f.branch?`<span class="dim"> · ${esc(f.branch)}</span>`:"";
-   // 담당업무 카드는 과제 머리말 밑에 있으니 제목에는 담당업무만(과제는 title 속성으로).
-   const ttl=hasDet?`<span title="${esc(pj)}">${esc(f.detail)}</span>`:esc(f.model);
-   return head+`<details${fi===0?" open":""}${hasDet?' style="margin-left:6px"':''}><summary>${hasDet?"":l1b}${ttl}${br}
-     <span class="state">${(mm.mm!=null)?mm.mm+" MM · ":""}단계 ${(f.steps||[]).length}개 · ${esc((f.role||"판단 유보").split("—")[0].trim())}</span></summary>
-    <div class="body">
-    ${(f.upstream||f.downstream)?`<div class="note" style="margin:2px 0 6px">${f.upstream?`← 앞 업무: <b>${esc(String(f.upstream).split(" / ").pop())}</b>`:""}${(f.upstream&&f.downstream)?" &nbsp;·&nbsp; ":""}${f.downstream?`→ 다음 업무: <b>${esc(String(f.downstream).split(" / ").pop())}</b>`:""}</div>`:""}
-    <div style="margin:2px 0 6px"><b>역할:</b> ${esc(f.role)||"판단 유보"}</div>
-    ${f.summary?`<div class="note" style="margin-bottom:6px">${esc(f.summary)}</div>`:""}
-    ${mmBar}
-    <table style="margin-top:6px"><tr><th></th><th>단계</th><th>무슨 일</th><th>Agent 가능성</th></tr>${steps}</table>
-    </div></details>`;}).join("");
+  el.innerHTML=btn+flowGroups(d);
+  bindFlowGroups(el);
+
  }
  const rb=$("flowre");
  if(rb)rb.onclick=async()=>{
@@ -3385,6 +3572,21 @@ document.querySelectorAll("#tabs [data-t]").forEach(c=>c.onclick=()=>{
  else if(id==="flow"){if(!loaded[id]){loaded[id]=1;loadFlow().catch(e=>fail(id,e));}}
  else if(id!=="dash"&&!loaded[id]){loaded[id]=1;loadReview(id).catch(e=>fail(id,e));}
 });
+async function reloadVisibleTab(){
+ const active=document.querySelector("#tabs [data-t].on");
+ const id=active&&active.dataset.t;
+ if(!id||id==="dash")return;
+ loaded[id]=1;
+ try{
+  if(id==="flow")await loadFlow();
+  else if(id==="agentic")await loadAgentic();
+  else await loadReview(id);
+ }catch(e){
+  loaded[id]=0;
+  const el=$("rv-"+id);
+  if(el)el.innerHTML='<div class="card"><div class="note">표시 실패('+esc(String(e&&e.message||e))+') — 탭을 다시 누르면 재시도합니다.</div></div>';
+ }
+}
 function connSVG(g,col){
  if(!g.p_edges.length&&!g.a_edges.length)return"";
  const people=[...new Set(g.p_edges.map(e=>e[0]))].slice(0,7);
@@ -3412,13 +3614,25 @@ async function loadReview(kind){
  const el=$("rv-"+kind);
  el.innerHTML='<div class="card"><div class="note">불러오는 중…</div></div>';
  const g={week:"week",month:"month",deep:"all"}[kind];
- const d=await fetch("/api/review?g="+g).then(r=>r.json());
- let extra={};try{extra=await fetch("/api/extra").then(r=>r.json());}catch(e){}
- const nar=extra.narratives||{};
- if(!d.groups.length){el.innerHTML='<div class="card"><div class="note">데이터 없음 — [분석 실행]을 먼저 돌리면 신호별 내역이 생성됩니다.</div></div>';return;}
+ const d=await fetch("/api/review?g="+g+(reviewPeriod?"&tag="+encodeURIComponent(reviewPeriod):"")).then(r=>r.json());
+ let extra={};try{extra=await fetch("/api/extra"+(d.tag?"?tag="+encodeURIComponent(d.tag):"")).then(r=>r.json());}catch(e){}
+ const nar=extra.narratives||{}, ns=nar._status||{};
+ const formatTag=t=>String(t||"").split("-").map(x=>x.length===8?[x.slice(0,4),x.slice(4,6),x.slice(6)].join("-"):x).join(" ~ ");
+ const options=(d.available_periods||[]).map(t=>`<option value="${esc(t)}"${reviewPeriod===t?" selected":""}>${esc(formatTag(t))}</option>`).join("");
+ const periodBar=`<div class="card"><div class="row"><label>리뷰 분석 기간 <select id="reviewperiod-${kind}"><option value=""${!reviewPeriod?" selected":""}>현재 대시보드와 같은 기간</option>${options}</select></label><span class="state">${esc(formatTag(d.tag))}</span></div><div class="note">저장된 분석 기간별로 리뷰를 확인합니다. 서로 다른 기간의 기록은 합치지 않습니다.</div></div>`;
+ const bindPeriod=()=>{
+  const select=$("reviewperiod-"+kind);
+  if(select)select.onchange=async()=>{reviewPeriod=select.value;loaded={};await reloadVisibleTab();};
+ };
+ if(!Array.isArray(d.groups)||!d.groups.length){
+  el.innerHTML=periodBar+'<div class="card"><div class="note">'+(d.missing_signals
+   ?'이 분석 기간의 신호 파일을 찾지 못했습니다. 이전 PC의 report 폴더가 함께 옮겨졌는지 확인하거나 위에서 보존된 기간을 선택하세요.'
+   :'선택한 기간의 리뷰 자료가 없습니다. 수집 자료와 분석 기간을 확인한 뒤 분석을 실행하세요.')+'</div></div>';
+  bindPeriod();return;
+ }
  const allP=[...new Set(d.groups.flatMap(x=>x.projects.map(p=>p.name)))];
  const col=p=>PAL[allP.indexOf(p)%PAL.length];
- let pre="";
+ let pre=periodBar;
  if(kind==="deep"&&extra.entities&&(extra.entities.models||[]).length){
   const en=extra.entities;
   const disc=new Set(en.discovered||[]);
@@ -3467,10 +3681,10 @@ async function loadReview(kind){
    `<div>${l.t} <span class="s">[${esc(l.src)}]</span> <span class="p" style="color:${col(l.proj)}">${esc(l.proj)}</span> ${l.who&&l.who!=="나"?esc(l.who)+": ":""}${esc(l.text)}</div>`).join("")).join("");
   const nx=(kind==="month")?nar[x.key]:null;
   const narH=nx?`<div style="background:#f0f6fd;border:1px solid #d6e5f7;border-radius:6px;padding:10px 14px;margin:8px 0;font-size:12.5px;line-height:1.7">
-   <b>AI 월간 리뷰</b> — ${esc(nx.summary||"")}${(nx.projects||[]).map(p=>`<div style="margin-top:4px">· <b>${esc(p.name)}</b> ${esc(p.story||"")} <span class="state">${esc(p.worktypes||"")}</span></div>`).join("")}</div>`
+   <b>AI 월간 리뷰</b>${(ns.retained_months||[]).includes(x.key)?'<div class="note">이번 재생성에서 이 달의 응답을 받지 못해 이전 코멘트를 보존했습니다.</div>':""} — ${esc(nx.summary||"")}${(nx.projects||[]).map(p=>`<div style="margin-top:4px">· <b>${esc(p.name)}</b> ${esc(p.story||"")} <span class="state">${esc(p.worktypes||"")}</span></div>`).join("")}</div>`
    :(kind==="month"?`<div class="note" style="border:1px dashed #c9cfd8;border-radius:6px;padding:8px 12px;margin:8px 0">
-   이 달의 AI 리뷰 코멘트가 없습니다 — 다른 PC에서 복사했거나(코멘트는 report 폴더에 있어 복사 시 제외됨)
-   AI 판정 없이 분석한 경우입니다. 상단 <b>[리뷰 코멘트 재생성]</b> 버튼으로 몇 분 만에 복구할 수 있습니다.</div>`:"");
+   이 달의 AI 리뷰 코멘트가 없습니다. 아래 원문 근거는 그대로 확인할 수 있습니다.
+   상단 <b>[리뷰 코멘트 재생성]</b>으로 선택한 분석 기간의 코멘트를 다시 요청할 수 있습니다. PC 이동 준비 ZIP에는 기존 코멘트도 포함됩니다.</div>`:"");
   const wtsum=(x.wt||[]).map(([k,v])=>`${k} ${v}%`).join(" · ");
   const head=`${esc(x.label)} <span class="state">신호 ${x.signals}건 · 활동 ${x.days}일${wtsum?" · "+esc(wtsum):""}</span>`;
   const body=`${narH}${bar}${psec}${connSVG(x,col)}
@@ -3481,6 +3695,7 @@ async function loadReview(kind){
   if(kind==="deep")return `<div class="card"><h2>${head}</h2>${body}</div>`;
   return `<details${gi===0?" open":""}><summary>${head}</summary><div class="body">${body}</div></details>`;
  }).join("");
+ bindPeriod();
 }
 // ── Agentic AI 탭 ──
 async function loadAgentic(){
@@ -3497,7 +3712,7 @@ async function loadAgentic(){
  if(!a){h+=`<div class="note">아직 매칭 결과가 없습니다${d.tag?` (기간 ${esc(d.tag)})`:""}${d.other_tag?` — <b>${esc(d.other_tag)}</b> 기간 결과는 있습니다`:""}${d.stage_note?` <span class="state">· 최근 실행 기록: ${esc(d.stage_note)}</span>`:""} — [분석 실행](AI 판정 포함)을 돌리면 자동으로 생성됩니다. 이미 분석을 마쳤다면 위 버튼으로 매칭만 실행하세요.</div></div>`;}
  else{
   const lastErr=a.last_error&&a.last_error.error?`<div class="note" style="color:#c0122f">마지막 실패 사유: ${esc(a.last_error.error)}${a.last_error.hint?` — ${esc(a.last_error.hint)}`:""}</div>`:"";
-  h+=`<div class="note">기간 ${esc(a.tag)} · 업무 ${a.rows_analyzed}행 분석${a.rows_total&&a.rows_total!==a.rows_analyzed?` / 전체 ${a.rows_total}행`:""}${a.chunks?` · 묶음 ${a.chunks}회`:""}${a.failed_chunks?` <span style="color:#c0122f">· ${a.failed_chunks}/${a.chunks||"?"} 묶음 실패</span>`:""}${pend?` <span style="color:#c0122f">· ${pend}행 미판정 — 결과가 실제보다 적을 수 있음. 위 버튼으로 남은 행만 이어서 판정</span>`:""}${a.salvaged_chunks?` · 잘린 답 복구 ${a.salvaged_chunks}묶음(부분 결과)`:""}${a.mm_recalc?` · 로드 MM 은 업무 실측 합(겹침 과제는 안분)`:""}${!(a.match||[]).length&&!pend?` · <b>12과제에 걸치는 현업이 없습니다(매칭 0건 — 실패 아님)</b>`:""}</div>${lastErr}${d.reextracted?`<div class="note" style="color:#8a5a00">⚠ <b>${esc(d.reextracted_title||"재추출 이후 결과")}</b> — ${esc(d.reextracted_note||"이 매칭은 마지막 업무 로드 재추출 이전의 것입니다")}</div>`:""}</div>`;
+  h+=`<div class="note">기간 ${esc(a.tag)} · 업무 ${a.rows_analyzed}행 분석${a.rows_total&&a.rows_total!==a.rows_analyzed?` / 전체 ${a.rows_total}행`:""}${a.chunks?` · 묶음 ${a.chunks}회`:""}${a.failed_chunks?` <span style="color:#c0122f">· ${a.failed_chunks}/${a.chunks||"?"} 묶음 실패</span>`:""}${pend?` <span style="color:#c0122f">· ${pend}행 미판정 — 결과가 실제보다 적을 수 있음. 위 버튼으로 남은 행만 이어서 판정</span>`:""}${a.salvaged_chunks?` · 잘린 답 복구 ${a.salvaged_chunks}묶음(부분 결과)`:""}${a.mm_recalc?` · 업무 MM은 근거 기반 추정·가중 배분이며, 중복 후보는 안분`:""}${!(a.match||[]).length&&!pend?` · <b>12과제에 걸치는 현업이 없습니다(매칭 0건 — 실패 아님)</b>`:""}</div>${lastErr}${d.reextracted?`<div class="note" style="color:#8a5a00">⚠ <b>${esc(d.reextracted_title||"재추출 이후 결과")}</b> — ${esc(d.reextracted_note||"이 매칭은 마지막 업무 로드 재추출 이전의 것입니다")}</div>`:""}</div>`;
   const axCol={"축1":"#2a78d6","축2":"#0e8c7a","축3":"#a61b4a"};
   const FITC=["#e1e0d9","#cde2fb","#9ec5f4","#6da7ec","#3987e5","#256abf","#184f95"];
   const fitBar=f=>{const v=Math.max(0,Math.min(100,Number(f)||0));
@@ -3506,19 +3721,19 @@ async function loadAgentic(){
    return `<svg width="90" height="12" style="vertical-align:middle"><rect width="90" height="12" rx="2" fill="#eef0f3"/><rect width="${w}" height="12" rx="2" fill="${c}"/><text x="${v>=45?4:(w+4)}" y="9.3" style="font-size:9px;font-weight:700;fill:${v>=45?"#fff":"#52514e"}">${v}%</text></svg>`;};
   h+=`<div class="card"><h2>① 12과제 × 현업 매칭</h2>
    <table><tr><th style="width:46px">축</th><th style="width:60px">과제</th><th style="width:190px">과제명</th>
-   <th style="width:60px">적합률</th><th style="width:95px"></th><th style="width:66px">현재 로드</th><th>매칭 현업 · 사유</th></tr>`;
+   <th style="width:60px">적합률</th><th style="width:95px"></th><th style="width:90px">안분 업무량</th><th>매칭 현업 · 사유</th></tr>`;
   const byId={};(a.match||[]).forEach(m=>byId[m.task]=m);
   t.forEach(tk=>{const m=byId[tk.id]||{fit:0,load_mm:0,work:[],reason:"관련 현업 없음"};
    h+=`<tr${m.fit>=60?' style="background:#f4faf5"':""}><td><b style="color:${axCol[tk.axis]||"#333"}">${esc(tk.axis)}</b></td>
     <td><b>${esc(tk.id)}</b></td><td title="${esc(tk.desc||"")}">${esc(tk.name)}<div class="note" style="margin:2px 0 0">${esc(String(tk.desc||"").slice(0,64))}…</div></td>
-    <td><b>${m.fit}%</b></td><td>${fitBar(m.fit)}</td><td>${(m.load_mm||0).toFixed(2)} MM</td>
+    <td><b>${m.fit}%</b></td><td>${fitBar(m.fit)}</td><td>${m.allocated_candidate_mm==null?"미확인":Number(m.allocated_candidate_mm).toFixed(2)} MM</td>
     <td>${(m.work||[]).map(w=>`<span class="tag">${esc(w)}</span>`).join("")}
      <div style="font-size:11px;color:#5a626b;margin-top:2px">${esc(m.reason||"")}</div></td></tr>`;});
-  h+=`</table><div class="note">적합률 = 그 과제가 내 현재 업무를 자동화·대체할 수 있는 정도(Copilot 판정). 과제 설명은 과제명에 마우스를 올리면 전문이 보입니다.</div></div>`;
+  h+=`</table><div class="note">적합률은 AI의 적용 적합도 판정입니다. MM은 관련 업무량을 후보 간 안분한 값이며 예상 절감량은 아직 검증되지 않았습니다. 미확인은 재매칭이 필요합니다.</div></div>`;
   h+=`<div class="card"><h2>② 신규 Agentic AI 후보 발굴</h2>`;
   if((a.new||[]).length){(a.new||[]).forEach(n=>{
    h+=`<div style="border-left:3px solid #6c4fb8;padding:4px 0 4px 12px;margin:10px 0">
-    <b>${esc(n.name)}</b> <span class="state">대체 가능 로드 ≈ ${(n.load_mm||0).toFixed(2)} MM</span>
+    <b>${esc(n.name)}</b> <span class="state">후보별 안분 업무량 ${n.allocated_candidate_mm==null?"미확인":Number(n.allocated_candidate_mm).toFixed(2)} MM</span>
     <div style="font-size:12px;margin-top:3px"><b>동작 로직:</b> ${esc(n.logic)}</div>
     <div style="font-size:11.5px;color:#5a626b;margin-top:2px"><b>발굴 사유:</b> ${esc(n.reason)}</div></div>`;});}
   else h+=`<div class="note">근거가 충분한 신규 후보가 없습니다 — 신호가 쌓일수록 발굴 정확도가 올라갑니다.</div>`;
@@ -3592,6 +3807,20 @@ class H(BaseHTTPRequestHandler):
         return False
 
     def do_DELETE(self):
+        if not REQUEST_LOCK.acquire(blocking=False):
+            self._send(409, {"ok": False, "error": "busy"})
+            return
+        try:
+            with LOCK:
+                moving = JOB.get("running") and JOB.get("kind") in {"transfer", "prepmove"}
+            if moving:
+                self._send(409, {"ok": False, "error": "busy", "hint": "이동 ZIP 생성이 끝난 뒤 다시 시도하세요"})
+                return
+            self._do_DELETE()
+        finally:
+            REQUEST_LOCK.release()
+
+    def _do_DELETE(self):
         if self.path == "/api/team_refine":
             share = team_share()[0]
             # 기본 = team_aliases.json 삭제(정리 되돌리기). 선택 본문 {"files":[...]} 로 계열·세부·후보·
@@ -3633,7 +3862,10 @@ class H(BaseHTTPRequestHandler):
                 payload = {"running": JOB["running"], "log": JOB["log"][-200:],
                            "step": JOB["step"], "phase": JOB["phase"],
                            "done": JOB["done"], "total": JOB["total"],
-                           "elapsed": int(el), "eta": eta}
+                           "elapsed": int(el), "eta": eta,
+                           "transfer_result": JOB.get("transfer_result")}
+                moving = JOB["running"] and JOB.get("kind") in {"transfer", "prepmove"}
+            payload["run_timings"] = run_timings()
             # 상태바 요약 — mtime 만 보므로 1초 폴링에도 부담 없다
             mp = latest("mm_meta_*.json")
             payload["last_run"] = _age(_mtime(mp)) if mp else ""
@@ -3652,7 +3884,7 @@ class H(BaseHTTPRequestHandler):
                                        if (age_min is None or payload["sampler_stale"]) else None)
             payload["last_sample"] = (time.strftime("%Y-%m-%d %H:%M", time.localtime(last_ts))
                                       if last_ts else "")
-            why = _sampler_autorestart(age_min)
+            why = "이동 ZIP 생성 중에는 자동 재시작을 보류합니다" if moving else _sampler_autorestart(age_min)
             with LOCK:
                 payload["sampler_restart"] = {"when": SAMPLER_RESTART["when"], "how": SAMPLER_RESTART["how"],
                                               "note": SAMPLER_RESTART["note"] or why}
@@ -3901,6 +4133,11 @@ class H(BaseHTTPRequestHandler):
                         out = json.load(open(wp, encoding="utf-8-sig"))
                         if not isinstance(out, dict):
                             out = {"ok": False, "error": "파일 손상", "file_error": f"workflow_{tag}.json 의 최상위가 객체가 아닙니다"}
+                        else:
+                            import details
+                            from team_report import apply_current_flow_amounts
+                            current_rows, _ = details.read_rows(tag, REPORT)
+                            out = apply_current_flow_amounts(out, current_rows)
                     except (OSError, ValueError) as e:
                         out = {"ok": False, "error": "파일 손상",
                                "file_error": f"workflow_{tag}.json 을 읽지 못함({type(e).__name__}) — [워크플로우 재분석]으로 다시 만드세요"}
@@ -3946,6 +4183,8 @@ class H(BaseHTTPRequestHandler):
                     try:
                         a = json.load(open(ap, encoding="utf-8-sig"))
                         if isinstance(a, dict):
+                            import aggregate
+                            a = aggregate.norm_agentic(a)
                             a = _agentic_stale(a, tag, ap, out)
                             out["analysis"] = a
                         else:
@@ -3963,12 +4202,16 @@ class H(BaseHTTPRequestHandler):
                 out["running"] = bool(JOB["running"] and JOB["step"] == TOOL_JOBS["agentic"][1])
                 out["busy"] = JOB["step"] if JOB["running"] else ""
             self._send(200, out)
-        elif self.path == "/api/extra":
+        elif self.path.split("?", 1)[0] == "/api/extra":
             # 리뷰 본문과 같은 signals 파일의 tag를 앵커로 — 서로 다른 분석 기간의
             # pivots/내러티브/체계가 한 화면에 섞이지 않게 한다
-            out = {}
-            sp = latest_signals()
-            tag = os.path.basename(sp)[len("signals_"):-len(".csv")] if sp else ""
+            from urllib.parse import parse_qs, urlsplit
+            try:
+                out = review_source(parse_qs(urlsplit(self.path).query).get("tag", [None])[0])
+            except ValueError as error:
+                self._send(400, {"error": str(error)})
+                return
+            tag = out["tag"] if out["signals_file"] else ""
             if tag:
                 out["tag"] = tag
                 for key, name in (("pivots", f"pivots_{tag}.json"),
@@ -4021,12 +4264,17 @@ class H(BaseHTTPRequestHandler):
                 out["pivots"]["consistent_with"] = _fn2
             self._send(200, out)
         elif self.path.startswith("/api/review"):
-            g = "week"
-            if "g=month" in self.path:
-                g = "month"
-            elif "g=all" in self.path:
-                g = "all"
-            self._send(200, {"gran": g, "groups": review(g)})
+            from urllib.parse import parse_qs, urlsplit
+            query = parse_qs(urlsplit(self.path).query)
+            g = query.get("g", ["week"])[0]
+            if g not in {"week", "month", "all"}:
+                g = "week"
+            try:
+                selected = review_source(query.get("tag", [None])[0])
+            except ValueError as error:
+                self._send(400, {"error": str(error)})
+                return
+            self._send(200, dict(selected, gran=g, groups=review(g, selected["tag"])))
         elif self.path.startswith("/api/data"):
             src = (self.path.split("src=")[-1] if "src=" in self.path else "files")
             pats = {"mail": "outlook/mail.csv", "cal": "outlook/calendar.csv",
@@ -4034,28 +4282,71 @@ class H(BaseHTTPRequestHandler):
                     "git": "files/git_commits.csv", "pc": "pc/pc_on.csv",
                     "teams": "m365/teams_*.csv", "act": "activity/activity_*.csv"}
             rows, cols, fns = [], [], []
-            for f in sorted(glob.glob(os.path.join(DATA, pats.get(src, "files/files.csv")))):
+            patterns = [pats.get(src, "files/files.csv")]
+            if src == "pc":
+                patterns += ["pc_on.csv", "pc/pc_spans.csv", "pc_spans.csv"]
+            for f in _source_files(patterns):
                 rs = _rows(f)
                 if rs:
-                    fns.append(os.path.basename(f))
-                    cols = cols or list(rs[0].keys())
+                    fns.append(os.path.relpath(f, DATA))
+                    cols.extend(column for column in rs[0] if column not in cols)
                     rows += rs
+            if src == "pc":
+                leading = [key for key in ("date", "start", "end", "active_hours", "hours", "first_on", "last_off") if key in cols]
+                cols = leading + [key for key in cols if key not in leading]
             total = len(rows)                       # 자르기 '전' 실제 수집량 — 400 고정 오인 방지
             rows = rows[-400:][::-1]
             fn = fns[0] if len(fns) == 1 else (f"{len(fns)}개 파일" if fns else "")
             self._send(200, {"file": fn, "cols": cols[:8], "rows": [
                 {c: str(r.get(c, ""))[:90] for c in cols[:8]} for r in rows],
-                "total": total, "shown": len(rows)})
+                "total": total, "shown": len(rows), "files": fns})
         else:
             self._send(404, {"error": "not found"})
 
     def do_POST(self):
-        if self.path == "/api/run":
-            n = int(self.headers.get("Content-Length", 0))
+        if self.path in {"/api/stop", "/api/quit"}:
+            self._do_POST()
+            return
+        if not REQUEST_LOCK.acquire(blocking=False):
+            self._send(409, {"error": "busy", "hint": "다른 작업이 끝난 뒤 다시 실행하세요."})
+            return
+        original_reader = self.rfile
+        try:
+            with LOCK:
+                moving = JOB.get("running") and JOB.get("kind") in {"transfer", "prepmove"}
+            if moving:
+                self._send(409, {"error": "busy", "hint": "이동 ZIP을 만드는 중입니다. 완료하거나 중지한 뒤 실행하세요."})
+                return
+            # Reject malformed JSON before any endpoint can mutate config or
+            # reserve JOB. Keep the validated bytes for existing route parsers.
             try:
+                import io
+                size = int(self.headers.get("Content-Length", 0) or 0)
+                if not 0 <= size <= 4 * 1024 * 1024:
+                    raise ValueError("요청 크기가 올바르지 않습니다")
+                raw = self.rfile.read(size)
+                body = json.loads(raw or b"{}")
+                if not isinstance(body, dict):
+                    raise ValueError("JSON 객체가 필요합니다")
+                self.rfile = io.BytesIO(raw)
+            except (ValueError, TypeError, OSError) as error:
+                self._send(400, {"ok": False, "error": str(error)})
+                return
+            self._do_POST()
+        finally:
+            self.rfile = original_reader
+            REQUEST_LOCK.release()
+
+    def _do_POST(self):
+        if self.path == "/api/run":
+            try:
+                n = int(self.headers.get("Content-Length", 0))
+                if not 0 <= n <= 65536:
+                    raise ValueError("요청 크기가 너무 큽니다")
                 b = json.loads(self.rfile.read(n) or b"{}")
-            except Exception:
-                self._send(400, {"error": "bad json"})
+                args = validate_run_request(b)
+            except (ValueError, TypeError, OSError) as error:
+                self._send(400, {"error": str(error)})
                 return
             with LOCK:
                 if JOB["running"]:
@@ -4063,12 +4354,36 @@ class H(BaseHTTPRequestHandler):
                     return
                 if self._freezing():        # 보고서 굽는 중 — run.py 가 report\ 를 다시 쓰면 사본이 반쪽이 된다
                     return
-                JOB.update(running=True, log=[], step="", started=time.time())
-            threading.Thread(target=run_job, args=(b.get("from"), b.get("to"),
-                                                   bool(b.get("ai")), bool(b.get("skip")),
-                                                   bool(b.get("collect_only"))),
-                             daemon=True).start()
+                JOB.update(running=True, kind="analysis", log=[], step="", started=time.time())
+            try:
+                threading.Thread(target=run_job, args=args, daemon=True).start()
+            except (RuntimeError, OSError) as error:
+                with LOCK:
+                    JOB["running"] = False
+                self._send(503, {"error": str(error)})
+                return
             self._send(200, {"ok": True})
+        elif self.path == "/api/transfer":
+            with LOCK:
+                if JOB["running"]:
+                    self._send(409, {"error": "busy"})
+                    return
+                if SAMPLER_RESTART["busy"]:
+                    self._send(409, {"error": "busy", "hint": "샘플러 재시작 처리가 끝난 뒤 이동 ZIP을 만들어 주세요."})
+                    return
+                if self._freezing():
+                    return
+                JOB.update(running=True, kind="transfer", log=[], step="이동 ZIP 생성",
+                           started=time.time(), transfer_result=None, transfer_cancel_requested=False,
+                           phase="", done=0, total=0)
+            try:
+                threading.Thread(target=transfer_job, daemon=False).start()
+            except (RuntimeError, OSError) as error:
+                with LOCK:
+                    JOB.update(running=False, kind="")
+                self._send(503, {"ok": False, "error": str(error)})
+                return
+            self._send(202, {"ok": True})
         elif self.path == "/api/projects":
             n = int(self.headers.get("Content-Length", 0))
             try:
@@ -4467,8 +4782,14 @@ class H(BaseHTTPRequestHandler):
                     return
                 JOB.update(running=True, step=TOOL_JOBS[kind][1], started=time.time(),
                            phase="", done=0, total=0)
-            th = threading.Thread(target=tool_job, args=(kind, ["--redo"] if b.get("redo") else []), daemon=True)
-            th.start()
+            try:
+                th = threading.Thread(target=tool_job, args=(kind, ["--redo"] if b.get("redo") else []), daemon=True)
+                th.start()
+            except (RuntimeError, OSError) as error:
+                with LOCK:
+                    JOB.update(running=False, step="")
+                self._send(503, {"ok": False, "error": str(error)})
+                return
             if b.get("wait"):
                 th.join()
                 with LOCK:
@@ -4660,6 +4981,14 @@ class H(BaseHTTPRequestHandler):
                     JOB["running"] = False
                     JOB["step"] = ""
         elif self.path == "/api/stop":
+            try:
+                if cancel_transfer():
+                    log("[중지] 이동 ZIP 취소를 요청했습니다. 임시 파일 정리가 끝나면 완료됩니다.")
+                    self._send(200, {"ok": True, "kind": "transfer", "stopped": False})
+                    return
+            except OSError as error:
+                self._send(503, {"ok": False, "error": f"이동 ZIP 취소 요청 실패: {error}"})
+                return
             with LOCK:
                 was = JOB["running"]
                 had_pid = bool(JOB.get("pid"))
@@ -4790,27 +5119,30 @@ class H(BaseHTTPRequestHandler):
             except OSError as e:
                 self._send(200, {"ok": False, "rc": -1, "error": f"실행 실패({type(e).__name__})"})
         elif self.path == "/api/prepmove":
-            # 정리 작업은 TEMP 로 복사된 스크립트가 한다 — 이 폴더 안에서 돌리면
-            # 그 스크립트 자신이 폴더를 잡아 '옮길 수 있는가' 확인이 항상 실패한다.
-            ps1 = os.path.join(ROOT, "tools", "Prepare-Move.ps1")
-            if not os.path.exists(ps1):
-                self._send(200, {"ok": False, "error": "tools\\Prepare-Move.ps1 이 없습니다"})
-                return
+            with LOCK:
+                if JOB.get("running") or SAMPLER_RESTART["busy"]:
+                    self._send(409, {"ok": False, "error": "busy", "hint": "진행 중인 작업이 끝난 뒤 PC 이동 준비를 실행하세요."})
+                    return
+                if self._freezing():
+                    return
+                JOB.update(running=True, kind="prepmove", step="PC 이동 준비", started=time.time(), pid=0)
             try:
                 import shutil as _sh
                 import tempfile as _tf
-                tmp = os.path.join(_tf.gettempdir(), "LM22-Prepare-Move.ps1")
-                _sh.copy2(ps1, tmp)
-                # 새 콘솔 창으로 띄운다 — 사용자가 결과를 봐야 하고, 우리가 죽어도 살아남아야 한다
-                flags = 0x00000010                       # CREATE_NEW_CONSOLE (DETACHED 는 쓰지 않는다 —
-                #                                          그것을 섞으면 자식이 아무것도 실행하지 않고 즉사한다)
+                source = os.path.join(ROOT, "tools", "Prepare-Move.ps1")
+                descriptor, tmp = _tf.mkstemp(prefix="LM25-Prepare-Move-", suffix=".ps1")
+                os.close(descriptor)
+                _sh.copyfile(source, tmp)
+                # The preparation must survive the UI shutdown and show the ZIP result.
                 subprocess.Popen(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
                                   "-File", tmp, "-Root", ROOT],
                                  creationflags=0x00000010, close_fds=True)
-                log("[이동 준비] 정리 창을 띄웠습니다 — 대시보드는 곧 종료됩니다")
-                self._send(200, {"ok": True, "flags": flags})
-            except OSError as e:
-                self._send(200, {"ok": False, "error": f"{type(e).__name__}: {str(e)[:120]}"})
+                log("[이동 준비] 전용 창에서 정리 후 이동 ZIP을 만듭니다 — 완료·경로는 그 창에서 확인하세요")
+                self._send(200, {"ok": True, "started": True})
+            except OSError as error:
+                with LOCK:
+                    JOB.update(running=False, kind="", step="", pid=0)
+                self._send(503, {"ok": False, "error": str(error)})
         elif self.path == "/api/collectdiag":
             # 수집 진단 — 이 PC 의 Outlook·Teams 버전/상태에서 무엇이 막혔는지를 한 장으로.
             # PC 마다 Outlook(클래식/새 Outlook/2016 마법사)·Teams(클래식/새 Teams·지역 형식)가 달라
@@ -4875,6 +5207,19 @@ class H(BaseHTTPRequestHandler):
                  + str(res.get("error", ""))))
             self._send(200, res)
         elif self.path == "/api/narrate":
+            try:
+                n = int(self.headers.get("Content-Length", 0))
+                if not 0 <= n <= 65536:
+                    raise ValueError("요청 크기가 너무 큽니다")
+                body = json.loads(self.rfile.read(n) or b"{}")
+                if not isinstance(body, dict):
+                    raise ValueError("요청은 JSON 객체여야 합니다")
+                selected = review_source(body.get("tag") or None)
+                if not selected["signals_file"]:
+                    raise ValueError("선택한 분석 기간의 신호 파일이 없습니다")
+            except (ValueError, TypeError, OSError) as error:
+                self._send(400, {"ok": False, "error": str(error)})
+                return
             with LOCK:
                 if JOB["running"]:
                     self._send(409, {"ok": False, "error": "busy"})
@@ -4883,7 +5228,13 @@ class H(BaseHTTPRequestHandler):
                     return
                 JOB.update(running=True, log=[], step="리뷰 코멘트 재생성",
                            started=time.time(), phase="", done=0, total=0)
-            threading.Thread(target=narrate_job, daemon=True).start()
+            try:
+                threading.Thread(target=narrate_job, args=(selected["tag"],), daemon=True).start()
+            except (RuntimeError, OSError) as error:
+                with LOCK:
+                    JOB.update(running=False, step="")
+                self._send(503, {"ok": False, "error": str(error)})
+                return
             self._send(200, {"ok": True})
         elif self.path == "/api/openfolder":
             try:
@@ -4932,6 +5283,8 @@ def main():
         ThreadingHTTPServer(("127.0.0.1", port), H).serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        cancel_transfer()  # Let the non-daemon ZIP worker finish its normal cleanup on exit.
     print("[ui] 종료")
     return 0
 

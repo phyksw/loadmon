@@ -22,6 +22,8 @@ from collections import defaultdict
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 REP = os.path.join(ROOT, "report")
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
 
 def _fresh_refined(plain, refined):
@@ -296,19 +298,23 @@ def build(tag):
                      f"<td class='dim'>{esc(m.get('obs'))}</td></tr>")
         h.append("</table>")
 
-    ag = _json(os.path.join(REP, f"agentic_{tag}.json"))
+    import aggregate
+    ag = aggregate.norm_agentic(_json(os.path.join(REP, f"agentic_{tag}.json")))
+    classified_mm = sum(aggregate.fnum(row.get("mm"), 0.0) for row in rows)
+    h.append(f"<div class='dim'>투입 추정 {inmm:.2f} MM · 분류 업무 {classified_mm:.2f} MM · "
+             f"미배분 {max(0.0, inmm-classified_mm):.2f} MM(제외·분류 미확정, 절감량 아님)</div>")
     if ag.get("match") is not None:
         h.append("<h2>7. Agentic AI 과제 매칭</h2>"
                  "<div class='dim'>계획된 Agentic AI 12과제와 현재 업무 로드의 매칭 — "
-                 "적합률 = 그 과제가 내 업무를 자동화·대체할 수 있는 정도(Copilot 판정)</div>"
-                 "<table><tr><th>축</th><th>과제</th><th>적합률</th><th>현재 로드(MM)</th>"
+                 "적합률은 AI 적용 적합도이며, 예상 절감량은 미검증입니다.</div>"
+                 "<table><tr><th>축</th><th>과제</th><th>적합률</th><th>후보별 안분 업무량(MM)</th>"
                  "<th>매칭 현업</th><th>사유</th></tr>")
         for m in ag.get("match") or []:
             if not m.get("fit"):
                 continue
             h.append(f"<tr><td>{esc(m.get('axis'))}</td>"
                      f"<td><b>{esc(m.get('task'))}</b> {esc(m.get('name'))}</td>"
-                     f"<td><b>{esc(m.get('fit'))}%</b></td><td>{m.get('load_mm', 0):.2f}</td>"
+                     f"<td><b>{esc(m.get('fit'))}%</b></td><td>{'미확인' if m.get('allocated_candidate_mm') is None else format(m['allocated_candidate_mm'], '.2f')}</td>"
                      f"<td>{esc(', '.join(m.get('work') or []))}</td>"
                      f"<td class='dim'>{esc(m.get('reason'))}</td></tr>")
         h.append("</table>")
@@ -316,7 +322,7 @@ def build(tag):
             h.append("<h3 style='font-size:14px'>신규 Agentic AI 후보 발굴</h3>")
             for n2 in ag["new"]:
                 h.append(f"<div style='margin:6px 0'>· <b>{esc(n2.get('name'))}</b> "
-                         f"(대체 가능 ≈ {n2.get('load_mm', 0):.2f} MM)<br>"
+                         f"(후보별 안분 업무량 {'미확인' if n2.get('allocated_candidate_mm') is None else format(n2['allocated_candidate_mm'], '.2f')} MM)<br>"
                          f"<span class='dim'>로직: {esc(n2.get('logic'))}<br>"
                          f"사유: {esc(n2.get('reason'))}</span></div>")
         if ag.get("misassigned"):

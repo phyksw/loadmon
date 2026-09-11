@@ -1,0 +1,16 @@
+{
+  "date": "2026-09-10",
+  "scope": "Synthetic TEMP fixture only; not measured user data or network transfer performance. Baseline zips every file at compression level 1; optimized tool excludes browser profiles and performs hash verification.",
+  "fixture": "C:\\Users\\User\\AppData\\Local\\Temp\\lm25-transfer-benchmark-p8qcnlmi",
+  "source_sha256": "511bd7271076fbca63e384a1ed877693a597e7d5c9e7c6ce55ab1d39b65e199b",
+  "baseline_files": 1508,
+  "included_files": 8,
+  "browser_profile_files_excluded": 1500,
+  "baseline_source_bytes": 14512688,
+  "included_source_bytes": 2224688,
+  "baseline_zip_bytes": 13616451,
+  "transfer_zip_bytes": 1059940,
+  "baseline_zip_seconds": 0.48,
+  "verified_transfer_seconds": 0.058,
+  "all_required_fixture_bytes_preserved": true
+}
