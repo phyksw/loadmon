@@ -67,6 +67,24 @@ class RunRequestTests(unittest.TestCase):
         self.assertEqual(self.post("/api/transfer")[0][0], 409)
         self.assertEqual(len(self.started), 1)
 
+    def test_additional_collection_resets_result_and_reports_start_failure(self):
+        payload = {"from": "2026-09-01", "to": "2026-09-13", "collect_only": True}
+        self.env["JOB"]["run_result"] = {"ok": True, "message": "previous run"}
+        self.assertEqual(self.post("/api/run", payload)[0], (200, {"ok": True}))
+        self.assertEqual(self.started[0]["args"], ("2026-09-01", "2026-09-13", False, False, True, False, False))
+        self.assertEqual(self.env["JOB"]["step"], "추가 PC 수집 준비")
+        self.assertIsNone(self.env["JOB"]["run_result"])
+        self.env["JOB"]["running"] = False
+
+        def fail():
+            raise RuntimeError("synthetic collection start failure")
+        self.env["threading"].Thread = lambda **kwargs: SimpleNamespace(start=fail)
+        response = self.post("/api/run", payload)[0]
+        self.assertEqual(response[0], 503)
+        self.assertIn("synthetic collection", response[1]["error"])
+        self.assertFalse(self.env["JOB"]["running"])
+        self.assertEqual(self.env["JOB"]["step"], "")
+
     def test_transfer_job_starts_once(self):
         self.assertEqual(self.post("/api/transfer")[0][0], 202)
         self.assertEqual(self.env["JOB"]["kind"], "transfer")
@@ -220,6 +238,24 @@ class ProcessWiringTests(unittest.TestCase):
         env["run_job"]("2026-08-01", "2026-08-31", True, True, True, True, True)
         self.assertIn("--collect-only", calls[1])
         self.assertTrue({"--ai", "--skip-collect", "--reuse-complete", "--force"}.isdisjoint(calls[1]))
+
+    def test_collection_outcome_remains_visible_after_worker_exits(self):
+        for code, expected in ((0, "추가 PC 수집 완료"), (2, "부분 완료"), (1, "실패"), (None, "access denied")):
+            with self.subTest(code=code):
+                env = definitions({"run_job"})
+
+                def popen(*args, **kwargs):
+                    if code is None:
+                        raise OSError("synthetic access denied")
+                    return SimpleNamespace(stdout=io.BytesIO(), pid=123, returncode=code, wait=lambda: code)
+                env.update(ROOT="SYNTHETIC_ROOT", subprocess=SimpleNamespace(
+                    Popen=popen, PIPE=subprocess.PIPE, STDOUT=subprocess.STDOUT))
+                env["JOB"]["running"] = True
+                env["run_job"]("2026-08-01", "2026-08-31", False, False, True)
+                self.assertFalse(env["JOB"]["running"])
+                self.assertEqual(env["JOB"]["pid"], 0)
+                self.assertEqual(env["JOB"]["run_result"]["ok"], code == 0)
+                self.assertIn(expected, env["JOB"]["run_result"]["message"])
 
     def test_transfer_reports_only_completed_existing_zip(self):
         with tempfile.TemporaryDirectory(prefix="lm25-transfer-ui-") as directory:

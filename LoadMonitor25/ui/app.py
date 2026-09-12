@@ -1560,6 +1560,8 @@ def result_rows():
 
 
 def run_job(d0, d1, ai, skip, collect_only=False, reuse_complete=False, force=False):
+    label = "추가 PC 수집" if collect_only else "분석"
+    result = None
     try:
         # A34 — 종료일이 미래면 오늘로 당긴다: 미래 평일이 통째로 가용에 남아 로드율이 20% 대로 떨어지던 것.
         # (오늘 잔여 시간은 extract.mm_from_hours 가 now 로 비례 처리한다 — 산정 근거 노트 '가용 기준')
@@ -1605,10 +1607,18 @@ def run_job(d0, d1, ai, skip, collect_only=False, reuse_complete=False, force=Fa
         log("=== 완료 ===" if p.returncode == 0 else
             "=== 부분 완료 — 실패한 단계는 로그에서 확인하세요 ===" if p.returncode == 2 else
             f"=== 종료(코드 {p.returncode}) — 로그 확인 ===")
+        message = (f"{label} 완료" if p.returncode == 0 else
+                   f"{label} 부분 완료 — 실패한 단계는 진행 로그를 확인하세요" if p.returncode == 2 else
+                   f"{label} 실패(코드 {p.returncode}) — 진행 로그를 확인하세요")
+        if collect_only and p.returncode == 0:
+            message += " — 다음 PC로 옮기려면 [PC 이동 준비]를 누르세요"
+        result = {"ok": p.returncode == 0, "message": message, "code": p.returncode}
     except Exception as e:
         log(f"오류: {e}")
+        result = {"ok": False, "message": f"{label} 시작/실행 실패: {e}"}
     finally:
         with LOCK:
+            JOB["run_result"] = result
             JOB["running"] = False
             JOB["step"] = ""
             JOB["pid"] = 0
@@ -2487,6 +2497,7 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
 </div>
 <div class="note" style="margin-top:10px">여러 PC를 거칠 때: 각 로컬 PC에서 <b>추가 PC 수집 → PC 이동 준비</b>, 마지막 PC에서 <b>모은 자료 분석</b>을 한 번 실행하세요. 완료된 과거 기간의 입력·결과가 같으면 검증된 결과를 재사용하고, 오늘을 포함하거나 변경된 자료는 다시 분석합니다. 보고서만 다시 만들 때는 <b>보고서 만들기</b>를 사용하세요.</div>
 <div class="note" id="move_result" style="white-space:pre-wrap;overflow-wrap:anywhere" aria-live="polite"></div>
+<div class="note" id="run_feedback" style="white-space:pre-wrap;overflow-wrap:anywhere" role="status" aria-live="polite"></div>
 <div class="note" id="run_timings"></div>
 <div id="prog" style="display:none;margin-top:10px">
  <div style="display:flex;justify-content:space-between;font-size:11.5px;color:#4a5159;margin-bottom:4px">
@@ -2693,9 +2704,48 @@ function weekly(el,tr){
 // 409 의 사유(hint)를 그대로 보여 준다 — '이미 실행 중' 한 마디로는 보고서 굽는 중인지 알 수 없다
 async function busyMsg(r,dflt){let h="";try{h=(await r.json()).hint||"";}catch(e){}return h||dflt;}
 let timer=null;
+let runSubmitting=false,runFeedbackActive=false;
+let runRequestEpoch=0,pollSequence=0,pollApplied=0;
+function runButtons(disabled){
+ ["go","analyzecollected","collect2","prepmove"].forEach(id=>$(id).disabled=disabled);
+}
+async function requestRun(body,label){
+ if(runSubmitting)return;
+ const feedback=$("run_feedback");
+ runFeedbackActive=false;
+ if(!body.from||!body.to){feedback.textContent="기간을 선택하세요";return;}
+ if(body.from>body.to){feedback.textContent="시작일이 종료일보다 늦습니다 — 기간을 확인하세요";return;}
+ runRequestEpoch++;runSubmitting=true;runButtons(true);
+ feedback.textContent=label+" 요청 중…";$("dlog").open=true;
+ const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),15000);
+ try{
+  const r=await fetch("/api/run",{method:"POST",headers:{"Content-Type":"application/json"},
+   body:JSON.stringify(body),signal:controller.signal});
+  let d;try{d=await r.json();}catch(e){throw new Error("응답 형식을 확인하지 못했습니다");}
+  if(!r.ok||!d||d.ok!==true){
+   feedback.textContent=label+" 시작 안 됨 — "+(d&&d.hint||(r.status===409?"다른 작업이 실행 중입니다. 완료 후 다시 누르세요":d&&d.error)||`서버 오류 (${r.status})`);
+   return;
+  }
+  runFeedbackActive=true;wasRunning=true;feedback.textContent=label+" 요청 접수 — 진행 로그를 확인하세요";
+  if(!timer)timer=setInterval(poll,1000);
+ }catch(e){
+  feedback.textContent=label+" 응답을 확인하지 못했습니다 — "+(e.name==="AbortError"?"응답 시간 초과":(e.message||"서버 연결 실패"))
+   +". 진행 로그에서 실행 여부를 확인하고, 연결이 끊겼으면 LM25 UI를 다시 실행하세요.";
+ }finally{
+  clearTimeout(timeout);runRequestEpoch++;runSubmitting=false;runButtons(!!wasRunning);poll();
+ }
+}
 async function poll(){
+ const epoch=runRequestEpoch,sequence=++pollSequence;
  try{
   const s=await fetch("/api/status").then(r=>r.json());
+  // Status can take longer than a new run request; never apply an older snapshot.
+  if(epoch!==runRequestEpoch||sequence<pollApplied)return;
+  pollApplied=sequence;
+  if(runFeedbackActive&&!runSubmitting&&!s.running&&s.run_result){
+   $("run_feedback").textContent=s.run_result.message||"진행 로그를 확인하세요";
+   runFeedbackActive=false;
+  }
   $("log").textContent=s.log.join("\\n")||"…";$("log").scrollTop=$("log").scrollHeight;
   $("step").textContent=s.step||"";
   const fmt=x=>x==null?"":(x<60?`${x}초`:(x<3600?`${Math.floor(x/60)}분 ${x%60}초`:`${Math.floor(x/3600)}시간 ${Math.floor(x%3600/60)}분`));
@@ -2741,9 +2791,7 @@ async function poll(){
    ?`<span style="color:#e08a00" title="창 샘플러가 없으면 투입시간이 PC 가동 하한으로만 계산돼 과소 집계될 수 있습니다">샘플러 꺼짐 — 아직 기록이 하나도 없습니다${tkTxt}${srTxt}<br><span class="dim">켜기: <b>LoadMonitor25-샘플러등록.bat</b> 실행(1회 등록 · 로그온 시 자동 시작). 이 화면도 10분에 한 번 자동 기동을 시도합니다.</span></span>`
    :(s.sampler_age_min<=10?'<span style="color:#4fc47f">샘플러 가동 중</span>'
      :`<span style="color:#e08a00" title="마지막 샘플 ${esc(s.last_sample||"")} — 멈춘 날은 PC 하한 모드로 계산됩니다">샘플러 멈춤 (${s.sampler_age_min}분 전${s.last_sample?` · 마지막 샘플 ${esc(s.last_sample)}`:""})${tkTxt}${srTxt}</span>`);
-  $("go").disabled=s.running;
-  $("analyzecollected").disabled=s.running;
-  $("prepmove").disabled=s.running;
+  runButtons(runSubmitting||s.running);
   $("stop").style.display=s.running?"":"none";
   $("state").textContent=s.running?"실행 중…":"대기 중";
   if(s.running)$("dlog").open=true;
@@ -2751,7 +2799,7 @@ async function poll(){
   // 실행 중 새로고침하면 timer 가 없어 완료를 놓친다 — 상태 전이(running→멈춤)로 판정한다
   if(wasRunning&&!s.running){loaded={};await refresh();await reloadVisibleTab();}
   wasRunning=s.running;
- }catch(e){$("state").textContent="서버 연결 끊김 — 창을 닫고 다시 실행하세요";}
+ }catch(e){if(epoch===runRequestEpoch&&sequence>=pollApplied)$("state").textContent="서버 연결 끊김 — 창을 닫고 다시 실행하세요";}
 }
 let wasRunning=false;
 async function refresh(){
@@ -2812,7 +2860,7 @@ async function refresh(){
    noticeBar.innerHTML='\u2139\ufe0f <b>수집만 되어 있습니다 — 아직 분석하지 않았습니다.</b> '
      +'이 상태에서는 팀 업로드 묶음도, 담당자 워크플로우도 만들어지지 않습니다.<br>'
      +'<b>이 PC 가 마지막(클라우드) PC 라면 위 [모은 자료 분석]</b>을 누르세요. '
-     +'다른 PC 라면 [이동 ZIP 만들기]로 만든 파일을 전달하면 됩니다.';
+     +'다른 PC 라면 [PC 이동 준비]로 만든 ZIP 파일을 전달하면 됩니다.';
   }else if(d.foreign){
    noticeBar.style.display="";
    noticeBar.innerHTML='\u26a0\ufe0f 이 결과는 <b>이 PC 에서 만든 것이 아닙니다</b> ('
@@ -3091,19 +3139,11 @@ pjLoad();
 
 $("go").onclick=async()=>{
  const b={from:$("from").value,to:$("to").value,ai:$("ai").checked,skip:$("skip").checked,force:$("force").checked};
- if(!b.from||!b.to){alert("기간을 선택하세요");return;}
- const r=await fetch("/api/run",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});
- if(r.status===409){alert(await busyMsg(r,"이미 실행 중입니다"));return;}
- if(!r.ok){alert("실행 요청을 확인하세요: "+((await r.json()).error||r.status));return;}
- $("go").disabled=true;timer=setInterval(poll,1000);poll();
+ return requestRun(b,"분석");
 };
 $("analyzecollected").onclick=async()=>{
  const b={from:$("from").value,to:$("to").value,ai:true,skip:true,reuse_complete:true,force:$("force").checked};
- if(!b.from||!b.to){alert("기간을 선택하세요");return;}
- const r=await fetch("/api/run",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});
- if(r.status===409){alert(await busyMsg(r,"이미 실행 중입니다"));return;}
- if(!r.ok){alert("실행 요청을 확인하세요: "+((await r.json()).error||r.status));return;}
- $("analyzecollected").disabled=true;if(!timer)timer=setInterval(poll,1000);poll();
+ return requestRun(b,"모은 자료 분석");
 };
 $("stop").onclick=async()=>{
  if(!confirm("실행 중인 작업을 중지할까요? 수집·판정 결과는 보존하고, 미완성 이동 ZIP은 정리합니다."))return;
@@ -3245,14 +3285,7 @@ $("tubuild").onclick=()=>tuBuild(false);
 $("tuopen").onclick=()=>fetch("/api/teamopen",{method:"POST"});
 $("collect2").onclick=async()=>{
  const b={from:$("from").value,to:$("to").value,collect_only:true};
- if(!b.from||!b.to){alert("기간을 선택하세요");return;}
- if(!confirm("이 PC 의 데이터를 수집만 합니다 (분석 없음).\\n\\n"
-   +"· 다른 PC 에서 가져온 폴더라면, 지난 PC 데이터는 data\\\\추가PC\\\\ 로 자동 보관됩니다\\n"
-   +"· 수집 후 [이동 ZIP 만들기]로 다음 PC에 전달하고, 마지막 PC에서 [모은 자료 분석]을 실행하세요\\n"
-   +"· 같은 메일·일정 등 중복 자료는 분석 때 자동 제외됩니다\\n\\n진행할까요?"))return;
- const r=await fetch("/api/run",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});
- if(r.status===409){alert(await busyMsg(r,"이미 실행 중입니다"));return;}
- timer=setInterval(poll,1000);poll();
+ return requestRun(b,"추가 PC 수집");
 };
 $("report").onclick=async()=>{
  const NL=String.fromCharCode(10);
@@ -3863,6 +3896,7 @@ class H(BaseHTTPRequestHandler):
                            "step": JOB["step"], "phase": JOB["phase"],
                            "done": JOB["done"], "total": JOB["total"],
                            "elapsed": int(el), "eta": eta,
+                           "run_result": JOB.get("run_result"),
                            "transfer_result": JOB.get("transfer_result")}
                 moving = JOB["running"] and JOB.get("kind") in {"transfer", "prepmove"}
             payload["run_timings"] = run_timings()
@@ -4354,12 +4388,14 @@ class H(BaseHTTPRequestHandler):
                     return
                 if self._freezing():        # 보고서 굽는 중 — run.py 가 report\ 를 다시 쓰면 사본이 반쪽이 된다
                     return
-                JOB.update(running=True, kind="analysis", log=[], step="", started=time.time())
+                JOB.update(running=True, kind="analysis", log=[], run_result=None,
+                           step="추가 PC 수집 준비" if args[4] else "분석 준비", started=time.time(),
+                           phase="", done=0, total=0)
             try:
                 threading.Thread(target=run_job, args=args, daemon=True).start()
             except (RuntimeError, OSError) as error:
                 with LOCK:
-                    JOB["running"] = False
+                    JOB.update(running=False, step="")
                 self._send(503, {"error": str(error)})
                 return
             self._send(200, {"ok": True})

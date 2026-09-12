@@ -285,7 +285,8 @@ const window=globalThis,document={getElementById:()=>({textContent:JSON.stringif
 
     def test_visible_month_reload_after_completion_without_another_click(self):
         source = page()
-        code = js_function(source, "async function poll(") + "\n" + js_function(source, "async function reloadVisibleTab(")
+        run_state = source.split("let timer=null;", 1)[1].split("async function poll(", 1)[0]
+        code = run_state + js_function(source, "async function poll(") + "\n" + js_function(source, "async function reloadVisibleTab(")
         result = node("""
 const elements={};const $=id=>elements[id]||(elements[id]={innerHTML:'old',style:{},textContent:'',scrollHeight:0});
 const document={querySelector:()=>({dataset:{t:'month'}})};
