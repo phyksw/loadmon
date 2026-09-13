@@ -6,15 +6,15 @@ Get-PcOnHints.py — 브라우저 사용기록의 '방문 시각'만으로 과�
     Edge/Chrome 사용기록은 기본 90일 보존이라 기간 전체를 덮는 유일한 상시 소스다.
 
 프라이버시: visits.visit_time 컬럼(시각)만 SELECT 한다 — URL·제목·검색어는 조회 자체를
-    하지 않는다. 산출물은 날짜별 가동시간 숫자뿐이다. 다른 기기(휴대폰)에서 동기화된 방문
-    (visit_source.source=0, originator_cache_guid 있음)은 이 PC 의 가동 근거가 아니므로 제외한다.
+    하지 않는다. 산출물은 날짜별 가동시간 숫자뿐이다. 방문은 LM20 과 같이 전부 센다 — '동기화 방문'
+    표식(visit_source·originator_cache_guid)은 이 PC 에서 본 방문에도 붙어 제외 근거가 못 된다(실측, visit_times 주석).
 
 동작: 방문 시각을 30분 갭으로 세션화(+마지막 방문 5분 여유) → 힌트 구간.
     data\pc\pc_spans.csv(이벤트 구간, Get-PcOnHistory.ps1) 가 있으면 **이벤트 구간 ∪ 힌트 구간** 을
     합친 뒤 날짜별 on/night/first/last 를 한 구간 집합에서 다시 계산해 pc_on.csv 를 쓴다(예전의
     'on 은 힌트, night 는 이벤트' 따로 max 병합이 night≈on 모순 행을 만들던 결함 수정). 힌트 구간은
     pc_spans.csv 에 src=hint 로 보태 extract 가 같은 구간을 본다. pc_spans.csv 가 없으면(옛 수집분)
-    날짜별 병합으로 폴백하되 on 을 힌트로 바꿀 때 night/first/last 도 힌트 값으로 함께 바꾼다.
+    날짜별 병합으로 폴백한다 — 주간(on−night)·야간을 **열별 최댓값**으로 합치고 first 는 이른 쪽·last 는 늦은 쪽.
 
   python collect\Get-PcOnHints.py --from 2026-05-19 --to 2026-08-17
 """
@@ -66,10 +66,9 @@ def _chrome_us(t):
 
 def visit_times(hist_path, t0, t1):
     """방문 시각 목록 — 브라우저가 잠그고 있어도 사본으로 읽는다 (URL 은 조회하지 않음).
-    반환 (times, excluded): excluded = 다른 기기 동기화 방문 수(제외됨)."""
+    반환 방문 시각 목록."""
     tmp = os.path.join(tempfile.gettempdir(), "lm_hist_copy")
     times = []
-    excluded = 0
     try:
         shutil.copy2(hist_path, tmp)
         for ext in ("-wal", "-shm"):        # WAL 에만 있는 최근 방문 포함
@@ -77,30 +76,19 @@ def visit_times(hist_path, t0, t1):
                 shutil.copy2(hist_path + ext, tmp + ext)
         con = sqlite3.connect(tmp)
         try:
-            cols = {r[1] for r in con.execute("PRAGMA table_info(visits)")}
-            has_src = bool(con.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='visit_source'").fetchone())
             lo, hi = _chrome_us(t0), _chrome_us(t1)
-            where = ["v.visit_time >= ? AND v.visit_time < ?"]
-            q = "SELECT v.visit_time FROM visits v"
-            if has_src:
-                # visit_source 는 '이 PC 에서 직접 본 방문(SOURCE_BROWSED=1)' 에는 행이 없고, 동기화(0)·
-                # 확장·가져오기(2~5) 방문에만 남는다 → 행이 없거나 1 인 것만 이 PC 의 가동 근거
-                q += " LEFT JOIN visit_source s ON s.id = v.id"
-                where.append("(s.source IS NULL OR s.source = 1)")
-            if "originator_cache_guid" in cols:   # 최근 Chromium: 다른 기기에서 온 방문은 원 기기 GUID 가 채워진다
-                where.append("(v.originator_cache_guid IS NULL OR v.originator_cache_guid = '')")
-            n_all = con.execute("SELECT COUNT(*) FROM visits v WHERE " + where[0], (lo, hi)).fetchone()[0]
-            n_keep = 0
-            for (v,) in con.execute(q + " WHERE " + " AND ".join(where), (lo, hi)):
+            # 방문은 **전부** 이 PC 의 가동 근거로 센다 — LM20 과 같다. LM22~LM24 는 visit_source(source≠1)·
+            # originator_cache_guid 로 '다른 기기 동기화' 를 걸렀는데, 이 PC 이벤트 로그 가동 구간과 로컬 시각으로 대조하니
+            # 거른 방문도 이 PC 가 켜진 시간의 것이었다(남긴 방문 89% · source=8 1,946건 95% · guid 532건 70% — guid 의 나머지는
+            # 전부 종료 이벤트가 빠진 하루(이벤트 구간이 20h 에서 잘린 날)에 몰려 있고 그날도 일반 방문이 PC 가 켜져 있었음을
+            # 보인다). 그 필터가 보강 시간을 LM20 보다 줄였다(보강만 8월 60.1h → 38.0h).
+            for (v,) in con.execute("SELECT visit_time FROM visits WHERE visit_time >= ? AND visit_time < ?", (lo, hi)):
                 try:
                     t = datetime.fromtimestamp(v / 1e6 - CHROME_EPOCH_OFFSET)
                 except (OSError, OverflowError, ValueError):
                     continue
-                n_keep += 1
                 if t0 <= t < t1:
                     times.append(t)
-            excluded = max(0, n_all - n_keep)
         finally:
             con.close()
     except Exception as e:
@@ -111,7 +99,7 @@ def visit_times(hist_path, t0, t1):
                 os.remove(p)
             except OSError:
                 pass
-    return times, excluded
+    return times
 
 
 def to_spans(times):
@@ -222,7 +210,7 @@ def _read_pc_on(csv_path):
     return rows
 
 
-def merge_pc_on(csv_path, hints, hint_spans=None, spans_path=None, t0=None, t1=None):
+def merge_pc_on(csv_path, hints, hint_spans=None, spans_path=None, t0=None, t1=None, src=HINT_SRC):
     """힌트를 pc_on.csv 에 병합. 반환 (합계 일수, 신규 일수, 보강 일수). t0·t1 = 이번 기간 [t0, t1).
 
     spans_path(pc_spans.csv) 가 있으면 구간 단위 병합: 이벤트 구간 ∪ 힌트 구간을 합친 한 집합에서
@@ -236,8 +224,15 @@ def merge_pc_on(csv_path, hints, hint_spans=None, spans_path=None, t0=None, t1=N
         # 이번 기간 [t0, t1) 안의 옛 힌트만 교체한다 — 기간 밖(지난 실행이 더 넓은 기간으로 모은) 힌트 구간은 남긴다.
         # 예전에는 힌트 전부를 지우고 이번 기간만 다시 넣어, 좁은 기간으로 한 번 돌리면 앞 달의 힌트가 사라졌다
         # (Get-PcOnHistory.ps1 이 도달 창 밖의 예전 기록을 보존하게 된 것과 같은 규칙).
-        ev = [(a, b, s) for a, b, s in read_spans_csv(spans_path)
-              if s != HINT_SRC or (t0 is not None and t1 is not None and not (a < t1 and b > t0))]
+        # 옛 같은-src(힌트·샘플러) 구간은 **지우지 않고** 이번 구간과 합친다. 예전엔 기간 안 옛 힌트를 버리고 이번 방문으로만
+        # 다시 만들어, 브라우저 기록(약 90일)이 만료된 날은 힌트 구간이 사라지고 그날 저녁·주말 투입이 재실행마다 줄었다
+        # (재검토 실측: 평일 저녁 10.83h → 8.67h, 토요일 6.0h → 2.0h). 기간을 밀어 재실행할 때 자정을 넘긴 세션의 앞 몫이
+        # 지워지던 것(−0.5h)도 같은 원인이다. 방문은 사라지지 않는 사건이라 합집합이 맞고, merge_spans 가 겹침을 합쳐
+        # 재실행해도 구간이 늘지 않는다. (t0·t1 은 호출 호환용으로만 남는다.)
+        ev, old_same = [], []
+        for a, b, s in read_spans_csv(spans_path):
+            (old_same if s == src else ev).append((a, b, s))
+        hint_spans = merge_spans([(a, b) for a, b, _ in old_same] + list(hint_spans))
         union = merge_spans([(a, b) for a, b, _ in ev] + list(hint_spans))
         daily = daily_from_spans(union)
         for k, d in sorted(daily.items()):
@@ -247,13 +242,19 @@ def merge_pc_on(csv_path, hints, hint_spans=None, spans_path=None, t0=None, t1=N
                 added += 1
             else:
                 try:
-                    if float(old.get("on_hours") or 0) + 0.005 < float(new["on_hours"]):
+                    o_on, n_on = float(old.get("on_hours") or 0), float(new["on_hours"])
+                    if o_on > n_on + 0.005:
+                        # ★ 행을 줄이지 않는다(LM20 의 max 규칙). 구간이 덜 남은 날 — 이벤트 수집기가 보존한 도달 창 밖 행,
+                        #   구간 파일이 없던 옛 판본의 행 — 을 구간 재계산으로 덮으면 기록이 깎였다(감사 실측: 보존 행
+                        #   06-10 8.00h → 3.08h, 07-15 9.00h → 1.08h).
+                        continue
+                    if o_on + 0.005 < n_on:
                         improved += 1
                 except (ValueError, TypeError):
                     pass
             rows[k] = new
         _write_pc_on(csv_path, rows)
-        write_spans_csv(spans_path, ev + [(a, b, HINT_SRC) for a, b in hint_spans])
+        write_spans_csv(spans_path, ev + [(a, b, src) for a, b in hint_spans])
         return len(rows), added, improved
 
     for k, d in sorted(hints.items()):
@@ -264,22 +265,31 @@ def merge_pc_on(csv_path, hints, hint_spans=None, spans_path=None, t0=None, t1=N
             added += 1
             continue
         try:
-            if float(old.get("on_hours") or 0) < float(h["on_hours"]):
-                # 힌트가 더 넓으면 행 전체를 힌트 값으로 — on 만 바꾸고 night 는 이벤트 max 로 두면
-                # night≈on 인 모순 행(주간 0h)이 생긴다(감사 teams-pc-sampler-8)
-                old.update(h)
-                improved += 1
+            o_on, o_ni = float(old.get("on_hours") or 0), float(old.get("night_hours") or 0)
+            h_on, h_ni = float(h["on_hours"]), float(h["night_hours"])
         except (ValueError, TypeError):
             continue
+        # 주간(on−night)과 야간을 **따로** 최댓값으로 합친다. 두 몫은 시간대가 겹치지 않아 합이 실제 가동의 하한이다.
+        # 예전엔 힌트 on 이 크면 행 통째를 힌트로 바꿔, 옛 행의 저녁 가동·first_on·last_off 가 사라졌다(재검토 실측:
+        # 보관 행 08:00~21:00 night 2.0 → 샘플러 09:00~17:04 night 0.0). on 만 바꾸고 night 를 두는 모순(night≈on,
+        # 감사 teams-pc-sampler-8)도 주간·야간을 따로 재므로 생기지 않는다.
+        day_m, ni = max(o_on - o_ni, h_on - h_ni, 0.0), max(o_ni, h_ni)
+        if day_m + ni > o_on + 0.005:
+            fo = [x for x in (str(old.get("first_on") or ""), h["first_on"]) if x]
+            lo = [x for x in (str(old.get("last_off") or ""), h["last_off"]) if x]
+            old.update(on_hours=str(round(day_m + ni, 2)), night_hours=str(round(ni, 2)),
+                       first_on=min(fo) if fo else "", last_off=max(lo) if lo else "")
+            improved += 1
     _write_pc_on(csv_path, rows)
     return len(rows), added, improved
 
 
-def sampler_times(t0, t1):
-    """창 샘플러(activity_*.csv)의 샘플 시각 — 1분 간격으로 찍히는 가장 확실한 가동 증거.
-    제목·프로세스는 읽지 않고 time 열만 쓴다. 브라우저 기록이 정책으로 막힌 PC 의 대비책."""
+def sampler_times(t0, t1, data_root=None):
+    r"""창 샘플러(activity_*.csv)의 샘플 시각 — 1분 간격으로 찍히는 가장 확실한 가동 증거.
+    제목·프로세스는 읽지 않고 time 열만 쓴다. 브라우저 기록이 정책으로 막힌 PC 의 대비책.
+    data_root 를 주면 그 뿌리(data\추가PC\<PC>)의 샘플을 읽는다."""
     times = []
-    for p in glob.glob(os.path.join(ROOT, "data", "activity", "activity_*.csv")):
+    for p in glob.glob(os.path.join(data_root or os.path.join(ROOT, "data"), "activity", "activity_*.csv")):
         try:
             with open(p, encoding="utf-8-sig", errors="replace") as f:
                 for r in csv.DictReader(f):
@@ -307,12 +317,11 @@ def main():
         print("[pc-hint] Edge/Chrome 사용기록 없음(정책 차단 가능) — 샘플러 시각으로만 보강 시도")
     times = []
     for h in files:
-        vt, excl = visit_times(h, t0, t1)
+        vt = visit_times(h, t0, t1)
         times += vt
         prof = os.path.basename(os.path.dirname(h))
         brand = "Edge" if "\\Edge\\" in h else "Chrome"
-        note = f" · 다른 기기 동기화 {excl}건 제외" if excl else ""
-        print(f"[pc-hint] {brand}\\{prof}: 방문 시각 {len(vt)}건{note} (URL 미조회)")
+        print(f"[pc-hint] {brand}\\{prof}: 방문 시각 {len(vt)}건 (URL 미조회)")
     st = sampler_times(t0, t1)
     if st:
         print(f"[pc-hint] 창 샘플러: 샘플 시각 {len(st)}건 합류")
@@ -322,14 +331,43 @@ def main():
     spans_path = os.path.join(pc_dir, "pc_spans.csv")
     if not times:
         print("[pc-hint] 보강 근거 없음(방문 기록·샘플러 모두 0건) — 이벤트 로그 결과 유지")
+        extra_sampler(t0, t1)          # 본 PC 근거가 없어도 옮겨 온 PC 의 샘플러는 보강한다
         return 0
     # TAIL_MIN 여유가 --to 자정을 넘겨 기간 밖 날짜 행을 만들지 않게 t1 로 자른다
     hint_spans = [(a, min(b, t1)) for a, b in to_spans(times) if a < t1]
     daily = daily_from_spans(hint_spans)
     total, added, improved = merge_pc_on(csv_path, daily, hint_spans, spans_path, t0, t1)
+    extra_sampler(t0, t1)            # 요약 줄보다 먼저 — run.py 가 마지막 줄을 수집 단계 요약으로 남긴다
     mode = "구간 합집합" if os.path.isfile(spans_path) else "날짜별(pc_spans.csv 없음)"
     print(f"[pc-hint] 힌트 {len(daily)}일 → pc_on.csv 병합({mode}): 신규 {added}일 · 보강 {improved}일 · 합계 {total}일")
     return 0
+
+
+def extra_sampler(t0, t1):
+    r"""추가PC\<지난 PC>\ 로 보관된 창 샘플러 기록을 **그 PC 의** pc_on 에 보강한다.
+    폴더째 옮기면 지난 PC 의 activity 가 보관 폴더로 옮겨지는데, 보강은 본 폴더의 activity 만 읽어 마지막 분석 뒤
+    옮기기 전까지 쌓인 샘플이 가동 시간에 끝내 반영되지 않았다(감사 확인 — 이동을 반복할수록 빠진다).
+    다른 PC 의 시간을 이 PC 기록에 섞지 않도록 그 뿌리의 pc_on·pc_spans 에만 쓰고(src=sampler), 행은 줄이지 않는다."""
+    base = os.path.join(ROOT, "data", "추가PC")
+    if not os.path.isdir(base):
+        return
+    for name in sorted(os.listdir(base)):
+        root = os.path.join(base, name)
+        if not os.path.isdir(os.path.join(root, "activity")):
+            continue
+        st = sampler_times(t0, t1, data_root=root)
+        if not st:
+            continue
+        spans = [(a, min(b, t1)) for a, b in to_spans(st) if a < t1]
+        pc_dir = os.path.join(root, "pc")
+        os.makedirs(pc_dir, exist_ok=True)
+        csv_p, spans_p = os.path.join(pc_dir, "pc_on.csv"), os.path.join(pc_dir, "pc_spans.csv")
+        try:
+            tot, add, imp = merge_pc_on(csv_p, daily_from_spans(spans), spans, spans_p, t0, t1, src="sampler")
+        except OSError as e:
+            print(f"[pc-hint] 추가PC\\{name}: 샘플러 보강 실패({e.__class__.__name__})")
+            continue
+        print(f"[pc-hint] 추가PC\\{name}: 창 샘플러 {len(st)}건 → 그 PC 의 pc_on 보강 · 신규 {add}일 · 보강 {imp}일")
 
 
 if __name__ == "__main__":

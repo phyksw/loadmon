@@ -2595,7 +2595,7 @@ def _signal_spans(signals, d0, d1, mins=None, now=None, extra=None, gap=None, da
     out, capped_days = {}, 0
     for d, items in by_day.items():
         items.sort()
-        spans, cur = [], None
+        spans, cur, pend = [], None, []     # pend = 능동 세션(cur) 뒤에 떨어져 온 수동 조각 — cur 를 닫지 않고 보류
         for m, src in items:
             lone = mins.get(src, 0)
             half = max(2.5, lone / 2)
@@ -2608,11 +2608,33 @@ def _signal_spans(signals, d0, d1, mins=None, now=None, extra=None, gap=None, da
                     # 뒤 신호의 a 가 cur[0] 보다 앞설 수 있다. 끝만 늘리면 그 앞부분이 잘려
                     # '신호를 더 넣을수록 시간이 줄어드는' 비단조 과소계상이 된다.
                     cur = (min(cur[0], a), max(cur[1], b), cur[2] or active)
+                    if pend:                  # 늘어난 능동 세션이 덮은 보류 조각은 버린다(수동 상한에서 빼지 않게)
+                        pend = [(max(p0, cur[1]), p1, False) for p0, p1, _ in pend if p1 > cur[1]]
+                    continue
+                # ★ 수동 신호(수신 메일 등)가 능동 세션을 닫지 않는다. 예전에는 '파일 10:00 · 수신 10:50 · 파일 11:20'
+                #   에서 수신 한 건이 능동 세션을 닫아 두 파일 사이 45분 다리가 끊겼다 — 신호를 더 넣을수록 시간이
+                #   줄었다(감사 실측: 토요일 2.33h → 2.04h, LM20 2.33h). 수동 조각은 보류했다가 능동 세션이 끝날 때 붙인다.
+                if cur[2] and not active:
+                    if pend and a <= pend[-1][1]:
+                        # 시작도 함께 늘린다(뒤 신호의 폭이 더 크면 a 가 앞설 수 있다) · 앞 조각과 이어지면 합친다
+                        pend[-1] = (min(pend[-1][0], a), max(pend[-1][1], b), False)
+                        while len(pend) > 1 and pend[-2][1] >= pend[-1][0]:
+                            q = pend.pop()
+                            pend[-1] = (min(pend[-1][0], q[0]), max(pend[-1][1], q[1]), False)
+                    else:
+                        pend.append((a, b, False))
                     continue
                 spans.append(cur)
+                if active:                    # 새 능동 신호와 겹치는 보류 조각은 그 세션에 흡수(예전과 같다)
+                    while pend and a <= pend[-1][1]:
+                        p0, p1, _ = pend.pop()
+                        a, b = min(a, p0), max(b, p1)
+                spans.extend(pend)
+                pend = []
             cur = (a, b, active)
         if cur:
             spans.append(cur)
+            spans.extend(pend)
         # 자정 클램프 — 00시 직후 신호가 음수 분(전날)으로, 24시 직전이 1440분 초과로 새지 않게.
         # 수동만으로 만든 세션(ac=False)은 일 합계 passive_max 까지만(A18).
         res, pas, capped = [], 0.0, False
@@ -3057,10 +3079,20 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
                 and (day_min + night_min_ex) > 0):
             gate_ok = (floor_needs != "active") or active_day
             base, kind, gap_h, day_on_eff = [], None, 0.0, day_on
+            alt = None          # (base, kind, gap_h, day_on_eff) — 구간 방식과 함께 계산해 하한이 큰 쪽을 쓰는 대안
             if gate_ok:
                 if pcs:
                     base = _clip(pc_win, dw0, dw1)
                     kind, day_on_eff = "spans", _union_min(base) / 60.0
+                    # ★ 구간 파일이 없는 PC(옛 판본 수집분)·보존 행의 pc_on 이 점심 절전 등으로 끊겨 있으면 pc_win_all 에
+                    #   들어가지 못해 하한에서 통째로 빠졌다(감사 실측: PC 이동 날 8.0h → 3.0h, LM20 8.0h). 구간 합집합이
+                    #   병합 가동시간보다 뚜렷이 짧으면 그 행의 창을 하한 재료로 쓰는 **창 방식도** 계산한다. 창 방식은 절전
+                    #   공백을 차감하므로 두 PC 를 다른 시간에 쓴 날엔 구간 방식보다 작아질 수 있다(재검토 실측 8.17h→6.06h) —
+                    #   그래서 대체하지 않고 둘 중 하한이 큰 쪽을 쓴다(아래 _floor_calc).
+                    span_day = _union_min(_clip(_union_spans(list(pcs) + list(pc_win_all.get(d) or [])), dw0, dw1)) / 60.0
+                    if pc_wins.get(d) and day_on > span_day + 0.25:
+                        wb = _clip(_union_spans(list(pc_win) + list(pc_wins[d])), dw0, dw1)
+                        alt = (wb, "window", max(0.0, _union_min(wb) / 60.0 - day_on), day_on)
                 elif day_on > 0 and pc_win:
                     base = _clip(pc_win, dw0, dw1)
                     kind, gap_h = "window", max(0.0, _union_min(base) / 60.0 - day_on)
@@ -3071,6 +3103,7 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
                     tw = _trace_window(prod.get(d, []), list(meets.get(d, [])) + list(act.get(d, [])) + list(off_blk))
                     base = _intersect_spans(base, _clip(tw, dw0, dw1))
                     kind, gap_h, day_on_eff = "always_on", 0.0, _union_min(base) / 60.0
+                    alt = None
                     info["always_on_days"] += 1
                 if (not base and fallback == "trace" and not act.get(d) and not is_offsite and not is_manual
                         and ((d in prod) or (d in accepted) or off_blk)):
@@ -3084,39 +3117,50 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
             elif day_on > 0 or pcs:
                 info["floor_blocked_passive_days"] += 1
             if base:
-                if abs_spans.get(d):
-                    # 반차 시각(A5) — 그 시간은 가동 창이 아니다. 절전 공백(gap)은 어디 있었는지 모르므로 남은 창 길이에 비례해 줄인다
-                    len0 = _union_min(base)
-                    base = _subtract_spans(base, abs_spans[d])
-                    if len0 > 0 and kind == "window":
-                        gap_h *= _union_min(base) / len0
-                covered = _clip(covered_all, dw0, dw1) if act.get(d) else []
-                unc = _subtract_spans(base, covered) if covered else list(base)
-                # 점심(A35 — day_on 크기와 무관하게 창이 점심을 ≥30분 덮으면) · 저녁(A33 — 야근일만) 공백: 흔적 ±5분이 없는 부분
-                lunch_gap, dinner_gap = [], []
-                lw = _intersect_spans(base, [tuple(lunch)])
-                if _union_min(lw) >= 30 and (kind != "window" or _union_min(lw) / 60.0 <= day_on_eff + 1e-9):
-                    lunch_gap = _subtract_spans(lw, trace_sp)
-                if night > 0 and day_on_eff >= 6 and last_off is not None and last_off >= dinner[1]:
-                    dinner_gap = _subtract_spans(_intersect_spans(base, [tuple(dinner)]), trace_sp)
-                floor_u_sp = _intersect_spans(_subtract_spans(base, lunch_gap + dinner_gap), unc)
-                lunch_ded = _union_min(_intersect_spans(lunch_gap, unc)) / 60.0
-                dinner_ded = _union_min(_intersect_spans(dinner_gap, unc)) / 60.0
-                floor_u = _union_min(floor_u_sp) / 60.0
-                meet_h = _union_min(_intersect_spans(list(meets.get(d, [])) + list(off_blk), unc)) / 60.0   # PC 밖 달력 회의
-                if kind == "window":
-                    # 절전·잠금 PC(A3e): 가동 창과 on 의 차이(gap) 중 점심·달력 회의로 설명되는 만큼은 근무 — 나머지는 뺀다
-                    floor_u = max(0.0, floor_u - max(0.0, gap_h - lunch_ded - meet_h))
-                elif kind == "nowin":
-                    # 창을 모르면 on 이 상한 — 단 PC 절전 중의 달력 회의(unc 안)는 on 밖의 근무라 더한다(VF-H6: 옛 3열 pc_on 에서
-                    # 회의 1h 가 상한에 흡수되던 과소)
-                    floor_u = max(0.0, min(floor_u, day_on - lunch_ded - dinner_ded + meet_h))
-                elif kind == "trace":
-                    floor_u = min(floor_u, std)
-                inside_u = _union_min(_intersect_spans(day_spans, unc))    # 미커버 가동 구간 안의 실측 흔적
-                rest = day_min - inside_u                                   # 창 밖 흔적 + 샘플러 실측 — 그대로 더한다
-                if 0 < absent < 1:
-                    floor_u = min(floor_u, max(0.0, std * (1.0 - absent) - rest / 60.0))
+                def _floor_calc(base, kind, gap_h, day_on_eff):
+                    """하한 계산 한 벌 — (floor_u, inside_u, rest, lunch_ded, dinner_ded, covered)."""
+                    if abs_spans.get(d):
+                        # 반차 시각(A5) — 그 시간은 가동 창이 아니다. 절전 공백(gap)은 어디 있었는지 모르므로 남은 창 길이에 비례해 줄인다
+                        len0 = _union_min(base)
+                        base = _subtract_spans(base, abs_spans[d])
+                        if len0 > 0 and kind == "window":
+                            gap_h *= _union_min(base) / len0
+                    covered = _clip(covered_all, dw0, dw1) if act.get(d) else []
+                    unc = _subtract_spans(base, covered) if covered else list(base)
+                    # 점심(A35 — day_on 크기와 무관하게 창이 점심을 ≥30분 덮으면) · 저녁(A33 — 야근일만) 공백: 흔적 ±5분이 없는 부분
+                    lunch_gap, dinner_gap = [], []
+                    lw = _intersect_spans(base, [tuple(lunch)])
+                    if _union_min(lw) >= 30 and (kind != "window" or _union_min(lw) / 60.0 <= day_on_eff + 1e-9):
+                        lunch_gap = _subtract_spans(lw, trace_sp)
+                    if night > 0 and day_on_eff >= 6 and last_off is not None and last_off >= dinner[1]:
+                        dinner_gap = _subtract_spans(_intersect_spans(base, [tuple(dinner)]), trace_sp)
+                    floor_u_sp = _intersect_spans(_subtract_spans(base, lunch_gap + dinner_gap), unc)
+                    lunch_ded = _union_min(_intersect_spans(lunch_gap, unc)) / 60.0
+                    dinner_ded = _union_min(_intersect_spans(dinner_gap, unc)) / 60.0
+                    floor_u = _union_min(floor_u_sp) / 60.0
+                    meet_h = _union_min(_intersect_spans(list(meets.get(d, [])) + list(off_blk), unc)) / 60.0   # PC 밖 달력 회의
+                    if kind == "window":
+                        # 절전·잠금 PC(A3e): 가동 창과 on 의 차이(gap) 중 점심·달력 회의로 설명되는 만큼은 근무 — 나머지는 뺀다
+                        floor_u = max(0.0, floor_u - max(0.0, gap_h - lunch_ded - meet_h))
+                    elif kind == "nowin":
+                        # 창을 모르면 on 이 상한 — 단 PC 절전 중의 달력 회의(unc 안)는 on 밖의 근무라 더한다(VF-H6: 옛 3열 pc_on 에서
+                        # 회의 1h 가 상한에 흡수되던 과소)
+                        floor_u = max(0.0, min(floor_u, day_on - lunch_ded - dinner_ded + meet_h))
+                    elif kind == "trace":
+                        floor_u = min(floor_u, std)
+                    inside_u = _union_min(_intersect_spans(day_spans, unc))    # 미커버 가동 구간 안의 실측 흔적
+                    rest = day_min - inside_u                                   # 창 밖 흔적 + 샘플러 실측 — 그대로 더한다
+                    if 0 < absent < 1:
+                        floor_u = min(floor_u, max(0.0, std * (1.0 - absent) - rest / 60.0))
+                    return floor_u, inside_u, rest, lunch_ded, dinner_ded, covered
+
+                floor_u, inside_u, rest, lunch_ded, dinner_ded, covered = _floor_calc(base, kind, gap_h, day_on_eff)
+                if alt:
+                    a_res = _floor_calc(*alt)
+                    # 결과 투입(분)으로 비교한다 — 하한이 흔적보다 작으면 흔적(day_min)이 그대로 남는다
+                    if max(day_min, a_res[2] + a_res[0] * 60.0) > max(day_min, rest + floor_u * 60.0) + 1e-9:
+                        floor_u, inside_u, rest, lunch_ded, dinner_ded, covered = a_res
+                        base, kind, gap_h, day_on_eff = alt
                 if floor_u * 60.0 > inside_u + 1e-9:
                     gain = (floor_u * 60.0 - inside_u) / 60.0
                     day_min = rest + floor_u * 60.0

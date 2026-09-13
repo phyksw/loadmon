@@ -178,9 +178,10 @@ if ($null -ne $open) {
         }
     }
 }
-# 1분 미만 조각 제거 + 겹침 병합(정렬) - 어떤 이벤트 순서에서도 구간이 서로 겹치지 않게 (하루 on ≤ 24h 보장)
+# 겹침 병합(정렬) - 어떤 이벤트 순서에서도 구간이 서로 겹치지 않게 (하루 on ≤ 24h 보장)
 $clean = New-Object System.Collections.Generic.List[object]
-foreach ($s in @($spans | Where-Object { ($_.b - $_.a).TotalMinutes -ge 1 } | Sort-Object a)) {
+# 1분 미만 켜짐도 센다(LM20 과 같다) - 모던 스탠바이 이탈·깨운 직후 절전·부팅 직후 조각을 버리면 LM20 보다 줄었다(감사 실측)
+foreach ($s in @($spans | Where-Object { $_.b -gt $_.a } | Sort-Object a)) {
     if ($clean.Count -gt 0 -and $s.a -le $clean[$clean.Count - 1].b) {
         $last = $clean[$clean.Count - 1]
         if ($s.b -gt $last.b) { $last.b = $s.b }
@@ -258,17 +259,31 @@ else { $reachT = $until }
 if ($reachT -lt $since) { $reachT = $since }
 $pcOnPath = Join-Path $OutDir 'pc_on.csv'
 $spansPath = Join-Path $OutDir 'pc_spans.csv'
-$keptDays = 0; $keptSpans = 0
+$keptDays = 0; $keptSpans = 0; $replacedDays = 0
 $newDates = @{}
 foreach ($k in $daily.Keys) { $newDates[$k] = $true }
 $keepRows = New-Object System.Collections.Generic.List[string]
+$replaceRows = @{}
 if (Test-Path $pcOnPath) {
     $oldRows = @()
     try { $oldRows = @(Import-Csv -LiteralPath $pcOnPath -Encoding UTF8) } catch { $oldRows = @() }
     foreach ($o in $oldRows) {
         $ds = [string]$o.date
-        if (-not $ds -or $newDates.ContainsKey($ds)) { continue }
+        if (-not $ds) { continue }
         try { $dd = [datetime]::ParseExact($ds, 'yyyy-MM-dd', $null) } catch { continue }
+        if ($newDates.ContainsKey($ds)) {
+            # 도달 시작일은 로그 앞부분이 롤오버돼 이번 행이 **부분**이다 - 예전 행이 더 크면 예전 행을 쓴다
+            # (예전엔 부분 행이 온전한 행을 덮어 매 실행 하루씩 깎였다 - 감사 실측 8.43h -> 5.24h)
+            if ($dd -eq $reachT.Date) {
+                $oldOn = 0.0
+                [void][double]::TryParse([string]$o.on_hours, [System.Globalization.NumberStyles]::Float, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$oldOn)
+                if ($oldOn -gt ([double]$daily[$ds].on + 0.005)) {
+                    $replaceRows[$ds] = ('{0},{1},{2},{3},{4},{5}' -f $ds, [string]$o.on_hours, [string]$o.first_on, [string]$o.last_off, [string]$o.night_hours, [string]$o.weekend)
+                    $replacedDays++
+                }
+            }
+            continue
+        }
         # 도달 시작일 당일은 이번 결과에 그 날 행이 없을 때만(첫 이벤트가 '끔' 이면 구간이 안 생긴다) 예전 행을 둔다
         if ($dd -le $reachT.Date -or $dd -ge $until.Date) {
             $keepRows.Add(('{0},{1},{2},{3},{4},{5}' -f $ds, [string]$o.on_hours, [string]$o.first_on, [string]$o.last_off, [string]$o.night_hours, [string]$o.weekend))
@@ -276,12 +291,19 @@ if (Test-Path $pcOnPath) {
         }
     }
 }
+for ($i = 1; $i -lt $rows.Count; $i++) {
+    $k10 = $rows[$i].Substring(0, [math]::Min(10, $rows[$i].Length))
+    if ($replaceRows.ContainsKey($k10)) { $rows[$i] = $replaceRows[$k10] }
+}
 if ($keepRows.Count -gt 0) {
     $hdr = $rows[0]
     $body = @(@($rows | Select-Object -Skip 1) + @($keepRows) | Sort-Object)   # 'yyyy-MM-dd,' 로 시작 - 문자열 정렬 = 날짜 정렬
     $rows = New-Object System.Collections.Generic.List[string]
     $rows.Add($hdr); foreach ($r in $body) { $rows.Add($r) }
     Write-Host ("[pc-on] 지난 기록 보존: {0}일 (이번 실행의 도달 창 {1} ~ {2} 밖)" -f $keptDays, $reachT.ToString('yyyy-MM-dd HH:mm'), $until.AddDays(-1).ToString('yyyy-MM-dd'))
+}
+if ($replacedDays -gt 0) {
+    Write-Host ("[pc-on] 도달 시작일 {0}일: 로그 앞부분이 롤오버돼 이번 행이 부분이라 예전 행을 유지했습니다" -f $replacedDays)
 }
 [System.IO.File]::WriteAllLines($pcOnPath, $rows, [System.Text.Encoding]::UTF8)
 
@@ -330,6 +352,7 @@ $srcInfo = [ordered]@{
     spans = [int]$spans.Count
     days = [int]($rows.Count - 1)
     preserved_days = [int]$keptDays
+    replaced_days = [int]$replacedDays
     preserved_spans = [int]$keptSpans
     reach_from = $reachT.ToString('yyyy-MM-dd HH:mm')
     sources = $srcStatus
