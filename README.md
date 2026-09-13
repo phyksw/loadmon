@@ -1044,6 +1044,10 @@ python aggregate.py \\서버\팀공유\LoadMonitor               # (팀장) 팀 
 
 또는 `LoadMonitor24-UI.bat` 더블클릭 → 브라우저 대시보드에서 [분석 실행].
 
+기간을 생략하면(`python run.py`, `LoadMonitor24.bat` 의 기본 메뉴, 대시보드 '올해' 칩) 셋 모두 **올해 1월 1일 ~
+오늘**이다 — 팀 취합은 같은 기간이어야 맞고, 화면은 가장 최근 결과를 보이므로 기본이 다르면 기간이 바뀐 줄 모른
+채 "추이가 고장났다" 로 읽힌다(v24.0.1, `docs\설정가이드.md` 의 '활동 추이가 …' 절).
+
 **Python 3.11 이상**이 필요하다(`datetime.UTC`·`zip(strict=True)` 를 쓰므로 3.9·3.10 은 AI 판정·Teams(Graph) 수집에서 오류) — 파이썬이 없거나 낮은 PC 는 `tools\Make-Package.ps1 -Full` 풀패키지(내장 파이썬 3.11 동봉)를 쓴다.
 
 첫 실행 전 `config\config.json`에서 반드시:

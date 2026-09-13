@@ -5,6 +5,7 @@ run.py — LoadMonitor24 통합 실행기: 수집 → 추출 → (AI 판정·내
   python run.py --from 2026-05-19 --to 2026-08-17            # 수집 + 추출
   python run.py --from ... --to ... --skip-collect            # 이미 모은 데이터로 추출만
   python run.py --from ... --to ... --ai                      # AI 정제까지 (Copilot 무개입)
+  python run.py                                               # 기간 생략 = 올해 1월 1일 ~ 오늘 (화면·bat 기본과 같다)
 
 설계 원칙 (v5):
   · MM = 인정 근무시간 / (8h × 그 달 평일수) — 평일 표준 8h 기준, 근태 부재 차감, 야근·주말은 산출물 있을 때만 가산.
@@ -546,7 +547,9 @@ def archive_other_pc(data):
 
 def main():
     c = cfg()
-    d0 = arg("--from") or (date.today().replace(day=1)).isoformat()
+    # 기본 기간은 화면(UI 칩 '올해')·LoadMonitor24.bat 과 같은 '올해 1월 1일부터' — 셋이 달라(이번 달 1일 / 최근 3개월 /
+    # 올해) 나중에 돈 짧은 결과가 mtime 최신 규칙으로 화면을 차지해 "1월부터 보던 추이가 2주짜리가 됐다" 로 읽혔다(감사 재현).
+    d0 = arg("--from") or date.today().replace(month=1, day=1).isoformat()
     d1 = arg("--to") or date.today().isoformat()
     data = os.path.join(ROOT, "data")
     ps = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]

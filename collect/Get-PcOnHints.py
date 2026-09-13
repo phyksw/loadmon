@@ -222,8 +222,8 @@ def _read_pc_on(csv_path):
     return rows
 
 
-def merge_pc_on(csv_path, hints, hint_spans=None, spans_path=None):
-    """힌트를 pc_on.csv 에 병합. 반환 (합계 일수, 신규 일수, 보강 일수).
+def merge_pc_on(csv_path, hints, hint_spans=None, spans_path=None, t0=None, t1=None):
+    """힌트를 pc_on.csv 에 병합. 반환 (합계 일수, 신규 일수, 보강 일수). t0·t1 = 이번 기간 [t0, t1).
 
     spans_path(pc_spans.csv) 가 있으면 구간 단위 병합: 이벤트 구간 ∪ 힌트 구간을 합친 한 집합에서
     날짜별 on/night/first/last 를 다시 계산한다(night 만 이벤트 값이 남는 모순 없음). 그 날짜들의
@@ -233,7 +233,11 @@ def merge_pc_on(csv_path, hints, hint_spans=None, spans_path=None):
     rows = _read_pc_on(csv_path)
     added = improved = 0
     if spans_path and hint_spans is not None and os.path.isfile(spans_path):
-        ev = [(a, b, s) for a, b, s in read_spans_csv(spans_path) if s != HINT_SRC]
+        # 이번 기간 [t0, t1) 안의 옛 힌트만 교체한다 — 기간 밖(지난 실행이 더 넓은 기간으로 모은) 힌트 구간은 남긴다.
+        # 예전에는 힌트 전부를 지우고 이번 기간만 다시 넣어, 좁은 기간으로 한 번 돌리면 앞 달의 힌트가 사라졌다
+        # (Get-PcOnHistory.ps1 이 도달 창 밖의 예전 기록을 보존하게 된 것과 같은 규칙).
+        ev = [(a, b, s) for a, b, s in read_spans_csv(spans_path)
+              if s != HINT_SRC or (t0 is not None and t1 is not None and not (a < t1 and b > t0))]
         union = merge_spans([(a, b) for a, b, _ in ev] + list(hint_spans))
         daily = daily_from_spans(union)
         for k, d in sorted(daily.items()):
@@ -322,7 +326,7 @@ def main():
     # TAIL_MIN 여유가 --to 자정을 넘겨 기간 밖 날짜 행을 만들지 않게 t1 로 자른다
     hint_spans = [(a, min(b, t1)) for a, b in to_spans(times) if a < t1]
     daily = daily_from_spans(hint_spans)
-    total, added, improved = merge_pc_on(csv_path, daily, hint_spans, spans_path)
+    total, added, improved = merge_pc_on(csv_path, daily, hint_spans, spans_path, t0, t1)
     mode = "구간 합집합" if os.path.isfile(spans_path) else "날짜별(pc_spans.csv 없음)"
     print(f"[pc-hint] 힌트 {len(daily)}일 → pc_on.csv 병합({mode}): 신규 {added}일 · 보강 {improved}일 · 합계 {total}일")
     return 0

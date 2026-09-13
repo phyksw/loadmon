@@ -31,7 +31,7 @@ from progress import parse as parse_progress  # noqa: E402  (core 경로 등록 
 REPORT = os.path.join(ROOT, "report")
 DATA = os.path.join(ROOT, "data")
 NO_WIN = 0x08000000
-VERSION = "v24.0"
+VERSION = "v24.0.1"
 LOCK = threading.Lock()
 FREEZE_LOCK = threading.Lock()       # [보고서 만들기] 직렬화 — JOB 과 별개(사본에 '실행 중'이 굳지 않게)
 JOB = {"running": False, "log": [], "step": "", "started": 0.0, "pid": 0,
@@ -703,6 +703,43 @@ def _rows(path):
         return []
 
 
+def _data_roots():
+    r"""본 수집 폴더 + data\추가PC\* 보관 폴더들. core.extract._data_roots 와 **같은 목록**이어야 한다.
+
+    폴더째 다른 PC 로 옮기면 run.py 가 지난 PC 수집물을 data\추가PC\<지난 PC>\ 로
+    옮긴다. 분석(core.extract)은 그것을 합쳐 세는데 **화면은 본 폴더만 봤다** — 그것이
+    이동 직후 화면을 빈칸으로 만들었다(실측: 기간 인식이 ['2026-01-03','2026-09-10'] → ['','']
+    로 무너지면서 추이가 '오늘 기준 13주' 로 떨어지고 막대 9개월치가 통째 사라졌다)."""
+    roots = [DATA]
+    base = os.path.join(DATA, "추가PC")
+    try:
+        if os.path.isdir(base):
+            roots += sorted(os.path.join(base, n) for n in os.listdir(base)
+                            if os.path.isdir(os.path.join(base, n)))
+    except OSError:
+        pass
+    return roots
+
+
+def _paths_multi(rel):
+    r"""모든 뿌리에서 같은 상대경로인 파일 경로 목록(rel 은 '/' 또는 와일드카드 포함)."""
+    parts = [x for x in str(rel).replace(chr(92), "/").split("/") if x]
+    out = []
+    for rt in _data_roots():
+        p = os.path.join(rt, *parts)
+        out += sorted(glob.glob(p)) if ("*" in p or "?" in p) else ([p] if os.path.exists(p) else [])
+    return out
+
+
+def _rows_multi(rel):
+    r"""본 폴더 + 추가PC 를 이어붙인 CSV 행. 중복 제거는 하지 않는다 —
+    여기 쓰는 곳은 '언제부터 언제까지 자료가 있는가'와 '하루 상한 8건' 뿐이다."""
+    rows = []
+    for p in _paths_multi(rel):
+        rows += _rows(p)
+    return rows
+
+
 def _mtime(p):
     """리셋·재분석과 경합해도 죽지 않는 mtime — 파일이 사라졌으면 0"""
     try:
@@ -967,14 +1004,21 @@ def outlook_coverage(period=None):
     반환 {"months": n, "covered": [...], "uncovered": [...]} — 표가 없거나 COM 이 아닌 경로(색인·웹·Copilot)가
     채운 자료면 None (그 경로들은 달 단위 표를 남기지 않는다)."""
     from datetime import date
-    try:
-        with open(os.path.join(DATA, "outlook", "mail_source.json"), encoding="utf-8-sig") as f:
-            src = json.load(f)
-        with open(os.path.join(DATA, "outlook", "coverage.json"), encoding="utf-8-sig") as f:
-            cov = json.load(f)
-    except (OSError, ValueError):
-        return None
-    if not isinstance(src, dict) or src.get("source") != "com" or not isinstance(cov, dict):
+
+    def _load(rt):
+        try:
+            with open(os.path.join(rt, "outlook", "mail_source.json"), encoding="utf-8-sig") as f:
+                s = json.load(f)
+            with open(os.path.join(rt, "outlook", "coverage.json"), encoding="utf-8-sig") as f:
+                c = json.load(f)
+        except (OSError, ValueError):
+            return None, None
+        if not isinstance(s, dict) or s.get("source") != "com" or not isinstance(c, dict):
+            return None, None
+        return s, c
+
+    src, cov = _load(DATA)
+    if src is None:
         return None
     per = period if isinstance(period, (list, tuple)) and len(period) >= 2 else (src.get("period") or [])
     try:
@@ -987,8 +1031,16 @@ def outlook_coverage(period=None):
     while (y, m) <= (d1.year, d1.month):
         months.append(f"{y:04d}-{m:02d}")
         y, m = (y + 1, 1) if m == 12 else (y, m + 1)
-    mail = cov.get("mail") if isinstance(cov.get("mail"), dict) else {}
-    cal = cov.get("calendar") if isinstance(cov.get("calendar"), dict) else {}
+    # 지난 PC(추가PC\*) 가 COM 으로 이미 읽은 달은 '미수집' 이 아니다 — 옮긴 직후 본 PC 표만 보면 1~5월을
+    # 미수집으로 과잉 경고하고, 안내를 따르면 Outlook 재수집을 헛되이 돌린다(감사 실측).
+    mail = set(cov["mail"].keys()) if isinstance(cov.get("mail"), dict) else set()
+    cal = set(cov["calendar"].keys()) if isinstance(cov.get("calendar"), dict) else set()
+    for rt in _data_roots()[1:]:
+        _s, _c = _load(rt)
+        if _c is None:
+            continue
+        mail |= set(_c["mail"].keys()) if isinstance(_c.get("mail"), dict) else set()
+        cal |= set(_c["calendar"].keys()) if isinstance(_c.get("calendar"), dict) else set()
     unc = [k for k in months if k not in mail or k not in cal]
     return {"months": len(months), "covered": [k for k in months if k not in unc], "uncovered": unc}
 
@@ -1027,12 +1079,15 @@ def dash_period(meta, lastrun=None):
         except OSError:
             return -1
     # 키 = (mtime, 크기)×파일 + 오늘 날짜 — 같은 mtime 으로 덮어쓴 파일·자정을 넘긴 서버(400일 창)도 다시 잰다
-    sig = tuple((_mtime(os.path.join(DATA, rel)), _sz(os.path.join(DATA, rel))) for rel, _c in srcs) + (date.today().isoformat(),)
+    # 뿌리마다(본 폴더 + 추가PC\*) 잰다 — 옮겨 온 폴더는 자료가 전부 추가PC\ 쪽에 있어
+    # 본 폴더만 보면 lo/hi 가 None 이 되고 기간이 ["",""] 로 떨어진다(실측 재현).
+    _cand = [q for rel, _c in srcs for q in _paths_multi(rel)]
+    sig = tuple((_mtime(q), _sz(q)) for q in _cand) + (date.today().isoformat(),)
     if _DASH_EXTENT.get("sig") == sig:
         return list(_DASH_EXTENT["per"])
     lo = hi = None
     for rel, col in srcs:
-        for r in _rows(os.path.join(DATA, rel)):
+        for r in _rows_multi(rel):
             try:
                 d = date.fromisoformat(str(r.get(col) or "")[:10])
             except ValueError:
@@ -1063,11 +1118,22 @@ def sources(period=None):
                      "추가PC/*/pc/pc_on.csv", "추가PC/*/m365/teams_*.csv"],
          "폴더째 옮겨 [추가 PC 수집] → 본 PC 에서 [분석 실행] — 자동 합산 · 중복 자동 제외 (선택)"),
     ):
-        n, mt = 0, 0.0
+        # '창 샘플러'(이 PC 의 샘플러 상태)와 '추가 PC'(추가PC 자체) 행은 본 폴더만, 나머지는 본 PC + 추가PC\* 를 합쳐 센다.
+        # 폴더째 옮긴 직후에는 지난 PC 수집물이 전부 추가PC\ 에 있어, 본 폴더만 세면 '메일·일정 0건 · 없음' 같은 거짓
+        # 경고가 KPI·현황표에 떴다(감사 재현 — 추가PC 에 716건이 있는데도). 분석·추이와 같은 뿌리를 본다.
+        here_only = name in ("창 샘플러", "추가 PC")
+        n, mt, n_here = 0, 0.0, 0
         for p in pats:
             for f in glob.glob(os.path.join(DATA, p)):
-                n += max(0, len(_rows(f)))
+                n_here += max(0, len(_rows(f)))
                 mt = max(mt, _mtime(f))
+            if not here_only:
+                for f in _paths_multi(p):
+                    if not f.startswith(os.path.join(DATA, "추가PC")):
+                        continue                # 본 폴더 몫은 위에서 셌다
+                    n += max(0, len(_rows(f)))
+                    mt = max(mt, _mtime(f))
+        n += n_here
         opt = name in ("git 커밋", "팀즈 채팅", "창 샘플러", "추가 PC")
         st = "ok" if n else ("off" if opt else "bad")
         # 건수가 있어도 기간 대비 몇 건뿐이면 '찾긴 했지만 못 찾은' 것이다(실측: 3개월에
@@ -1135,8 +1201,13 @@ def sources(period=None):
                         "(앱이 꺼져 있어도 됩니다). 상시 누적은 collect\\Start-TeamsSampler.ps1")
             elif 0 < n < 5:
                 st, hint = "warn", "회수 부족 — [팀즈 웹 읽기] 로 보강 (창 읽기는 화면에 보인 부분만 긁습니다)"
-        out.append({"name": name, "rows": n, "age": _age(mt),
-                    "status": st, "hint": "" if st == "ok" else hint})
+        # 본 PC 와 추가 PC 의 몫을 갈라 적는다 — 합만 보이면 이 PC 의 수집 실패(0건)가 가려진다
+        split = ""
+        if n and n_here < n and not here_only:
+            split = (f"본 PC {n_here:,}건 + 추가 PC {n - n_here:,}건" if n_here
+                     else f"본 PC 0건 — 추가 PC 자료 {n:,}건(옮겨 온 폴더)으로 표시")
+        out.append({"name": name, "rows": n, "here": n_here, "age": _age(mt), "status": st,
+                    "hint": split if st == "ok" else (f"{split} · {hint}" if split else hint)})
     return out
 
 
@@ -1163,7 +1234,7 @@ def mtime_clumps(d0="", d1="", top=3):
     lo, hi = _d(d0), _d(d1)
     by_min, by_min_folder, total = Counter(), {}, 0
     for name in ("files.csv", "recent.csv"):
-        for r in _rows(os.path.join(DATA, "files", name)):
+        for r in _rows_multi("files/" + name):     # 본 PC + 추가PC — 덩어리는 어느 뿌리에 있든 같은 경고
             t = (r.get("mtime") or "").strip()
             dt = _d(t)
             if not dt or (lo and dt < lo) or (hi and dt > hi):
@@ -1184,6 +1255,9 @@ def mtime_clumps(d0="", d1="", top=3):
                     "folder": (fold.most_common(1)[0][0] if fold else "")})
     return out
 
+MONTHLY_OVER_WEEKS = 16     # 이보다 긴 기간(주)은 달 단위로 묶는다 — 화면 칩 기준 1·3개월=주간, 6개월·1년·올해=월간
+
+
 def trend(d0="", d1="", tag="", info=None):
     r"""활동 추이 — **분석 기간을 덮고, 실제로 계상된 신호**를 센다.
     info(dict)를 주면 info["src"] 에 무엇을 셌는지 남긴다: "signals"(판정 신호) / "raw"(수집 raw 폴백) / "none"(기간 없음).
@@ -1192,7 +1266,8 @@ def trend(d0="", d1="", tag="", info=None):
     예전에는 오늘 기준 14주 고정이라 1월부터 본 사람도 최근 3개월만 보였고(실측 제보),
     data\ 의 raw 수집물을 표본화 없이 세어 한 주의 배치 산출물이 나머지를 눌렀다.
     이제 report\signals_<기간>.csv(판정에 실제로 쓰인 신호)를 세므로 MM 산정과 축이 같다.
-    기간이 길면 주 대신 달로 묶는다 — 34주를 한 화면에 그리면 읽을 수 없다."""
+    기간이 길면(MONTHLY_OVER_WEEKS 초과) 주 대신 달로 묶고 제목도 '월간 활동 추이' 가 된다 — 34주를 한 화면에 그리면 읽을 수 없다.
+    info["period"] 는 실제로 그린 [d0, d1], info["roots"] 는 합쳐 센 뿌리 수(본 PC + 추가PC\*)."""
     from datetime import date, timedelta
 
     def _d(s, dflt=None):
@@ -1206,14 +1281,17 @@ def trend(d0="", d1="", tag="", info=None):
     if start > end:
         start, end = end, start
     span_w = max(1, ((end - start).days // 7) + 1)
-    monthly = span_w > 26                       # 반년이 넘으면 달 단위로
+    # 화면 기간 칩 기준으로 1개월·3개월(≤13주)은 주 단위, 6개월·1년·올해는 달 단위 — 제목도 '주간/월간 활동 추이' 로 바뀐다.
+    # 예전 경계(26주)는 '6개월' 이 주 26개로 그려져 읽기 어려웠고, 기간이 길면 월별 추이를 기대한다(제보).
+    monthly = span_w > MONTHLY_OVER_WEEKS
 
     buckets, idx = [], {}
     if monthly:
         y, m = start.year, start.month
+        one_year = (start.year == end.year)     # 한 해 안이면 '3월', 해가 바뀌면 '25/12' 처럼 — 제목에 기간이 적힌다
         while (y, m) <= (end.year, end.month):
             idx[(y, m)] = len(buckets)
-            buckets.append(f"{y % 100:02d}/{m:02d}")
+            buckets.append(f"{m}월" if one_year else f"{y % 100:02d}/{m:02d}")
             y, m = (y + 1, 1) if m == 12 else (y, m + 1)
 
         def key(dt):
@@ -1281,28 +1359,33 @@ def trend(d0="", d1="", tag="", info=None):
                 continue
         out[i][kind] += 1
     if not n_sig:
-        # 판정 결과가 아직 없는 기간 — 그때만 수집 raw 로라도 모양을 보여준다 (같은 상한)
+        # 판정 결과가 아직 없는 기간 — 그때만 수집 raw 로라도 모양을 보여준다 (같은 상한).
+        # 본 PC + 추가PC 를 합쳐 세되 **같은 사건은 1회만** — 옮겨 온 폴더(추가PC\<지난 PC>)와 새 PC 가 같은
+        # 메일함·같은 기간을 수집하면 메일·회의·팀즈 행이 뿌리 수만큼 겹친다(감사 실측: 뿌리 2개 ×2.00, 3개 ×3.00).
+        # 분석(core.extract.load_signals)은 add() 의 _dedup 으로 지우는데 화면 폴백에는 그 규칙이 없었다.
         _fcap.clear()
-        for pat, k2, col in (("files/files.csv", "파일", "mtime"),
-                             ("files/recent.csv", "파일", "mtime"),
-                             ("outlook/mail.csv", "메일", "time"),
-                             ("outlook/calendar.csv", "회의", "start"),
-                             ("files/git_commits.csv", "커밋", "time")):
-            for r in _rows(os.path.join(DATA, *pat.split("/"))):
-                d = str(r.get(col) or "")[:10]
+        for pat, k2, col, kcols in (("files/files.csv", "파일", "mtime", ("folder", "name")),
+                                    ("files/recent.csv", "파일", "mtime", ("folder", "name")),
+                                    ("outlook/mail.csv", "메일", "time", ("subject", "sender")),
+                                    ("outlook/calendar.csv", "회의", "start", ("subject",)),
+                                    ("files/git_commits.csv", "커밋", "time", ("repo", "subject")),
+                                    ("m365/teams_*.csv", "팀즈", "time", ("from", "summary"))):
+            seen = set()
+            for r in _rows_multi(pat):          # 본 PC + 추가PC — 옮겨 온 폴더도 모양이 보이게
+                t = str(r.get(col) or "")
+                d = t[:10]
                 i = slot(d)
                 if i is None:
                     continue
+                k = (t[:16],) + tuple(str(r.get(c) or "")[:60] for c in kcols)   # 분 단위 시각 + 제목류
+                if k in seen:                   # 다른 뿌리(또는 같은 파일 안)에 같은 사건이 또 있다 — 1회만
+                    continue
+                seen.add(k)
                 if k2 == "파일":
                     _fcap[d] = _fcap.get(d, 0) + 1
                     if _fcap[d] > 8:
                         continue
                 out[i][k2] += 1
-        for f in glob.glob(os.path.join(DATA, "m365", "teams_*.csv")):
-            for r in _rows(f):
-                i = slot(r.get("time"))
-                if i is not None:
-                    out[i]["팀즈"] += 1
 
     # PC 가동 시간 — 기간 안만. 본 PC + 추가PC 를 extract.pc_daily 로 합친다(구간 합집합 — 분석의 PC 하한과 같은 값).
     # 예전엔 본 PC 의 pc_on.csv 만 세어 추가 PC 의 가동이 이 선에서 통째로 빠졌다(제보: 'PC 가동시간 합산 안 됨').
@@ -1318,18 +1401,22 @@ def trend(d0="", d1="", tag="", info=None):
     except Exception as ex:  # noqa: BLE001 — 병합 실패 시 예전 방식(본 PC 만)
         # 조용히 '본 PC 만' 으로 떨어지면 화면에는 아무 표시가 없어 원인을 못 찾는다(실측:
         # csv.Error 가 extract 의 except OSError 를 통과해 여기까지 샌다). 이유를 남긴다.
-        pc_note = f"추가 PC 합산 실패({type(ex).__name__}) — 본 PC 기록만 표시합니다"
+        pc_note = f"추가 PC 구간 합산 실패({type(ex).__name__}) — pc_on 일별 기록만으로 표시합니다"
         pcd = {}
-        for r in _rows(os.path.join(DATA, "pc", "pc_on.csv")):
+        _byd = {}
+        for r in _rows_multi("pc/pc_on.csv"):   # 본 PC + 추가PC 의 일별 행 — 같은 날은 큰 쪽(더하면 24h 를 넘는다)
             d2 = _d(r.get("date"))
-            i = slot(r.get("date"))
+            if d2 is None or not (start <= d2 <= end):
+                continue
+            try:
+                _byd[d2] = max(_byd.get(d2, 0.0), float(r.get("on_hours") or 0))
+            except (TypeError, ValueError):
+                continue
+        for d2, on_h in _byd.items():
+            i = key(d2)
             if i is not None:
-                try:
-                    out[i]["pc_h"] += float(r.get("on_hours") or 0)
-                    if d2:
-                        pcd[d2] = True
-                except (TypeError, ValueError):
-                    pass
+                out[i]["pc_h"] += on_h
+                pcd[d2] = True
     # 버킷마다 '평일 수'와 'PC 기록이 있는 평일 수' — 기록 없음과 0h 를 화면이 구분하게.
     dd = start
     while dd <= end:
@@ -1352,6 +1439,8 @@ def trend(d0="", d1="", tag="", info=None):
         info["pc_from"] = first_pc.isoformat() if first_pc else ""
         info["capped"] = sum(max(0, w["raw_n"] - (w["파일"] + w["메일"] + w["회의"] + w["커밋"] + w["팀즈"] + w["작업창"]))
                              for w in out)
+        info["period"] = [start.isoformat(), end.isoformat()]     # 실제로 그린 기간 — 제목이 이것을 적는다
+        info["roots"] = len(_data_roots())                          # 본 PC + 추가PC 폴더 수 — raw 안내에 적는다
     return out
 
 def review(gran="week"):
@@ -2383,7 +2472,7 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
   <div id="actleg" class="leg"></div></div>
 </div>
 
-<div class="card"><h2>주간 활동 추이 <span class="state">막대 = 신호 건수 · 선 = PC 가동시간</span></h2>
+<div class="card"><h2><span id="wtitle">활동 추이</span> <span class="state" id="wsub">막대 = 신호 건수 · 선 = PC 가동시간</span></h2>
  <div id="weekly"></div>
  <div class="row" id="wleg" style="margin-top:6px;font-size:11px;color:#4a5159"></div>
  <div class="note" id="wnote" style="display:none;color:#a86400"></div>
@@ -2521,7 +2610,7 @@ function weekly(el,tr){
   const x=L+i*iw+iw*0.18,bw=iw*0.64;let y=H-B;
   keys.forEach(([k,c])=>{const h=(H-T-B)*w[k]/cmax;if(h>0.5){y-=h;
    s+=`<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" fill="${c}" rx="1"><title>${w.label} ${k} ${w[k]}건</title></rect>`;}});
-  if(i%2===0)s+=`<text x="${(x+bw/2).toFixed(1)}" y="${H-B+13}" text-anchor="middle" style="font-size:9px;fill:#8b929b">${w.label}</text>`;
+  if(tr.length<=16||i%2===0)s+=`<text x="${(x+bw/2).toFixed(1)}" y="${H-B+13}" text-anchor="middle" style="font-size:9px;fill:#8b929b">${w.label}</text>`;
  });
  // PC 기록이 없는 버킷은 0h 가 아니라 '모름' 이다(이벤트 로그가 롤오버되면 과거 주는 구조적으로 기록이 없다).
  // 예전에는 0 으로 그려 선이 바닥에 붙어 'PC 가동이 적용 안 된다'로 읽혔다 — 선을 끊고 회색 밴드로 칠한다.
@@ -2766,11 +2855,20 @@ async function refresh(){
  $("actbar").innerHTML=aa.map(([l,v],i)=>`<i style="width:${(v/atot*100).toFixed(1)}%;background:${PAL[(i+3)%PAL.length]}" title="${esc(l)} ${(v/atot*100).toFixed(0)}%"></i>`).join("");
  $("actleg").innerHTML=aa.map(([l,v],i)=>`<div><span class="dot" style="background:${PAL[(i+3)%PAL.length]}"></span>${esc(l)}<span class="v">${(v/atot*100).toFixed(0)}% · ${v.toFixed(2)} MM</span></div>`).join("")||'<div class="note">분석을 실행하세요</div>';
  weekly($("weekly"),d.trend||[]);
+ // 제목은 묶음 단위를 따른다 — 1·3개월은 '주간', 6개월·1년·올해는 '월간' 활동 추이. 그린 기간을 제목에 적어
+ // '어느 기간의 결과를 보고 있는지' 가 화면에 남게 한다(기본 기간이 bat·run.py·화면에서 서로 달라 기간이
+ // 바뀐 줄 모르고 "추이가 고장났다" 로 읽히던 것 — 이제 기본은 셋 다 '올해' 다).
+ {const ti0=d.trend_info||{};const wt=$("wtitle"),ws=$("wsub");const per0=ti0.period||d.period||[];
+  if(wt)wt.textContent=(ti0.gran==="month"?"월간":"주간")+" 활동 추이";
+  if(ws)ws.textContent=(per0[0]?`${per0[0]} ~ ${per0[1]||""} · `:"")
+   +(ti0.gran==="month"?"막대 하나 = 한 달":"막대 하나 = 한 주")+" · 막대 = 신호 건수 · 선 = PC 가동시간";}
  // 메일·일정이 기간의 일부 달만 수집된 상태(Outlook 시간 예산) — 앞 달의 메일·회의 막대가 비어 보이는 이유를 적는다
  const wn=$("wnote");
  if(wn){const mc=d.mail_coverage||null;const notes=[];
   // 추이가 수집 raw 로 그려진 화면(판정 신호가 없음 — 수집만 한 추가 PC·분석 전) — 서버가 실제로 무엇을 셌는지(trend_src)로 판단한다
-  if(d.trend_src==="raw"&&d.period&&d.period[0]) notes.push(`판정에 쓰인 신호가 없어 수집 raw 를 <b>${esc(d.period[0])} ~ ${esc(d.period[1]||"")}</b> 기간으로 그렸습니다 — AI 정제를 켠 [분석 실행] 뒤에는 판정 신호 기준으로 바뀝니다.`);
+  if(d.trend_src==="raw"&&d.period&&d.period[0]) notes.push(`판정에 쓰인 신호가 없어 수집 raw 를 <b>${esc(d.period[0])} ~ ${esc(d.period[1]||"")}</b> 기간으로 그렸습니다`
+   +((((d.trend_info||{}).roots)||1)>1?` (본 PC + 추가 PC ${(d.trend_info||{}).roots-1}개 폴더 합산 · 같은 사건은 1회만)`:"")
+   +` — AI 정제를 켠 [분석 실행] 뒤에는 판정 신호 기준으로 바뀝니다.`);
   if(mc&&(mc.uncovered||[]).length) notes.push(`⚠ 메일·회의 막대는 ${mc.months}개월 중 <b>${(mc.covered||[]).length}개월</b>만 수집돼 있습니다 — 미수집 ${esc(mc.uncovered.join(", "))} (Outlook 시간 예산). [분석 실행]을 다시 돌리면 남은 달을 이어서 읽습니다.`);
   // PC 가동 선은 Windows 이벤트 로그에서 온다. 로그는 롤오버되므로 기간 앞쪽은 '0시간' 이 아니라
   // '기록 없음' 이다 — 그것을 말해 주지 않으면 'PC 가동이 적용 안 된다'로 읽힌다(제보).
@@ -2780,7 +2878,6 @@ async function refresh(){
     +(ti.pc_from?` — Windows 이벤트 로그가 <b>${esc(ti.pc_from)}</b> 까지만 남아 있어 그 앞은 <b>0시간이 아니라 기록 없음</b>입니다(회색 구간).`:` — 회색 구간은 0시간이 아니라 기록이 없는 구간입니다.`));
   if(ti.pc_note) notes.push(`⚠ ${esc(ti.pc_note)}`);
   if(ti.capped>0) notes.push(`파일 막대는 하루 8건까지만 셉니다 — 이 기간에 <b>${ti.capped.toLocaleString()}건</b>이 상한에 눌렸습니다(공유폴더 재동기화가 그래프를 지배하지 않게 하는 장치입니다. 실제 신호 수는 [업무 리뷰] 탭에서 봅니다).`);
-  if(ti.gran==="month") notes.push(`기간이 길어 <b>월 단위</b>로 묶어 그렸습니다(막대 하나 = 한 달).`);
   if(notes.length){wn.style.display="";wn.innerHTML=notes.join("<br>");}
   else wn.style.display="none";}
  // 같은 시각에 몰린 덩어리가 있으면 알린다 — 그날 일한 것이 아닐 수 있다
@@ -2893,7 +2990,7 @@ async function refresh(){
   .map(([k,v])=>`<span class="src" style="border-color:#f0cdd5;color:#c0122f">제외: ${esc(k)} ${v}건</span>`).join("");
  const C={ok:"#0f7a3d",warn:"#c98a00",bad:"#c0122f",off:"#98a0a8"};
  $("src").innerHTML=d.sources.map(s=>`<span class="src"><span class="dot" style="background:${C[s.status]||C.off}"></span>
-  <b>${s.name}</b> ${s.rows.toLocaleString()}건 · ${s.age}${s.hint?` <span style="color:${s.status==="warn"?"#c98a00":"#c0122f"}">→ ${esc(s.hint)}</span>`:""}</span>`).join("");
+  <b>${s.name}</b> ${s.rows.toLocaleString()}건 · ${s.age}${s.hint?` <span style="color:${s.status==="warn"?"#c98a00":(s.status==="ok"?"#4a5159":"#c0122f")}">→ ${esc(s.hint)}</span>`:""}</span>`).join("");
 }
 // ── 과제 지정 카드 ──
 let PJ=[];
@@ -3713,7 +3810,8 @@ class H(BaseHTTPRequestHandler):
                              # 추이 밑 안내 재료 — PC 기록이 있는 버킷/전체, 기록 시작일, 상한에 눌린 건수,
                              # 주/월 단위, 추가PC 합산 실패 사유. 화면이 '0h' 와 '기록 없음' 을 구분해 말한다.
                              "trend_info": {k: tinfo.get(k) for k in
-                                            ("gran", "pc_note", "pc_buckets", "pc_buckets_all", "pc_from", "capped")},
+                                            ("gran", "pc_note", "pc_buckets", "pc_buckets_all", "pc_from", "capped",
+                                             "period", "roots")},
                              "period": per,
                              "judged": judged, "last_run": lastrun,
                              # 판정 건수/대상 — 0 이면 '단계는 성공인데 왕복이 전부 실패' 를 화면이 구분한다
@@ -4034,7 +4132,9 @@ class H(BaseHTTPRequestHandler):
                     "git": "files/git_commits.csv", "pc": "pc/pc_on.csv",
                     "teams": "m365/teams_*.csv", "act": "activity/activity_*.csv"}
             rows, cols, fns = [], [], []
-            for f in sorted(glob.glob(os.path.join(DATA, pats.get(src, "files/files.csv")))):
+            _pat = pats.get(src, "files/files.csv")
+            # 창 샘플러(act)는 이 PC 의 상태 — 나머지 원본은 본 PC + 추가PC\* 를 함께 보인다(추이·분석과 같은 뿌리)
+            for f in (sorted(glob.glob(os.path.join(DATA, _pat))) if src == "act" else _paths_multi(_pat)):
                 rs = _rows(f)
                 if rs:
                     fns.append(os.path.basename(f))
