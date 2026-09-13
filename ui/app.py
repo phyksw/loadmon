@@ -31,7 +31,7 @@ from progress import parse as parse_progress  # noqa: E402  (core 경로 등록 
 REPORT = os.path.join(ROOT, "report")
 DATA = os.path.join(ROOT, "data")
 NO_WIN = 0x08000000
-VERSION = "v24.0.1"
+VERSION = "v24.0.2"
 LOCK = threading.Lock()
 FREEZE_LOCK = threading.Lock()       # [보고서 만들기] 직렬화 — JOB 과 별개(사본에 '실행 중'이 굳지 않게)
 JOB = {"running": False, "log": [], "step": "", "started": 0.0, "pid": 0,
@@ -1259,15 +1259,18 @@ MONTHLY_OVER_WEEKS = 16     # 이보다 긴 기간(주)은 달 단위로 묶는�
 
 
 def trend(d0="", d1="", tag="", info=None):
-    r"""활동 추이 — **분석 기간을 덮고, 실제로 계상된 신호**를 센다.
-    info(dict)를 주면 info["src"] 에 무엇을 셌는지 남긴다: "signals"(판정 신호) / "raw"(수집 raw 폴백) / "none"(기간 없음).
-    화면 안내는 이 값을 봐야 한다 — meta.period 유무로 판단하면 signals 로 그려 놓고 'raw' 라고 적는다(재검증 실측).
+    r"""활동 추이 — 분석 기간을 덮고, **수집된 흔적 전부**(파일·메일·회의·커밋·팀즈)를 센다. LM20 과 같은 기준.
 
-    예전에는 오늘 기준 14주 고정이라 1월부터 본 사람도 최근 3개월만 보였고(실측 제보),
-    data\ 의 raw 수집물을 표본화 없이 세어 한 주의 배치 산출물이 나머지를 눌렀다.
-    이제 report\signals_<기간>.csv(판정에 실제로 쓰인 신호)를 세므로 MM 산정과 축이 같다.
-    기간이 길면(MONTHLY_OVER_WEEKS 초과) 주 대신 달로 묶고 제목도 '월간 활동 추이' 가 된다 — 34주를 한 화면에 그리면 읽을 수 없다.
-    info["period"] 는 실제로 그린 [d0, d1], info["roots"] 는 합쳐 센 뿌리 수(본 PC + 추가PC\*)."""
+    LM22~v24.1 은 판정용 표본(report\signals_<기간>.csv — 폴더·하루 8건 표본 → 비업무 제거)을 세고 거기에 다시
+    '파일 하루 8건' 상한을 걸어, 실제로 얼마나 일했든 막대가 납작했다(제보: "집계란이 잘 안 뜬다 — LM20 이 나았다").
+    판정 표본은 MM 산정용이지 활동량이 아니다. 화면은 실제 수집량을 보여야 한다(LM20 trend 의 원칙 그대로).
+    한 시각(분)에 몰린 파일 덩어리(공유폴더 재동기화·폴더 복사·백업 복원)만 막대에서 빼고 그 수를 안내한다 —
+    블랭킷 상한이 아니라 mtime_clumps 와 같은 기준(한 분에 50건 이상 · 기간 파일의 10% 이상)의 표적 제외다.
+    본 PC + 추가PC\* 를 합쳐 세되 같은 사건(분 단위 시각 + 제목류)은 1회만.
+
+    info(dict): src "raw"(막대 = 수집량) / "none"(기간 없음), signals_n(판정에 쓰인 표본 신호 수 — 참고),
+    clump_excluded(덩어리로 뺀 파일 수), gran, pc_*, period(실제로 그린 [d0, d1]), roots(뿌리 수).
+    기간이 길면(MONTHLY_OVER_WEEKS 초과) 주 대신 달로 묶고 제목도 '월간 활동 추이' 가 된다."""
     from datetime import date, timedelta
 
     def _d(s, dflt=None):
@@ -1309,7 +1312,7 @@ def trend(d0="", d1="", tag="", info=None):
 
     # pc_days/pc_wd = 그 버킷에서 'PC 기록이 있는 날' / '평일 수'. 기록이 없는 주를 0h 로 그리면
     # 'PC 를 안 켠 주'와 구분되지 않는다(이벤트 로그 롤오버로 과거 주는 구조적으로 기록이 없다).
-    # raw_n = 상한·중복제거로 누르기 전의 원건수 — 막대와 실제 신호 수의 차이를 화면이 말할 수 있게.
+    # raw_n = 그 버킷 막대 합(옛 화면·얼린 사본과의 키 호환). '작업창' 은 이제 세지 않는다(샘플러 1분 표본은 흔적 건수가 아니다).
     out = [{"label": lb, "pc_h": 0.0, "파일": 0, "메일": 0, "회의": 0, "커밋": 0, "팀즈": 0,
             "작업창": 0, "pc_days": 0, "pc_wd": 0, "raw_n": 0}
            for lb in buckets]
@@ -1322,70 +1325,51 @@ def trend(d0="", d1="", tag="", info=None):
         dt = _d(s)
         return key(dt) if (dt and start <= dt <= end) else None
 
-    # 판정에 **실제로 쓰인 신호**(report\signals_<기간>.csv)를 센다 — 대시보드 MM 과 같은 축.
-    # 파일 신호의 시각은 mtime 하나뿐이다 — 공유폴더 재동기화·폴더 이관·백업 복원이
-    # 수백 파일의 시각을 한 날로 몰면 그 달만 산처럼 솟는다(실측 제보 — 특정 달 몰림).
-    # 파일류는 하루 상한 8건으로 눌러 센다(mine 의 '사람 손 하루 한 폴더 8건' 과 같은 눈금).
-    # 메일·회의·커밋·팀즈는 사건 시각(발신·개최 시각)이라 그대로 센다.
-    # ★ '작업창' 이 이 표에 없어 기본값 '파일' 로 떨어지던 것이 실측 결함이었다. 신호는 시간순이라
-    #   아침 창 세션이 그날 파일 상한 8칸을 전부 차지하고, 오후에 실제로 만든 문서가 통째로 사라졌다
-    #   (창 샘플러를 켠 PC — 즉 분석을 돌리는 PC — 에서 항상 일어난다). 별도 계열로 뺀다.
-    _SRC = (("메일", "메일"), ("mail", "메일"), ("회의", "회의"), ("일정", "회의"),
-            ("cal", "회의"), ("커밋", "커밋"), ("git", "커밋"),
-            ("팀즈", "팀즈"), ("teams", "팀즈"),
-            ("작업창", "작업창"), ("window", "작업창"))
-    sp = os.path.join(REPORT, f"signals_{tag}.csv") if tag else latest_signals()
-    n_sig = 0
-    _fcap, _seen = {}, set()
-    for r in _rows(sp):
-        d = str(r.get("time") or r.get("date") or "")[:10]
-        i = slot(d)
-        if i is None:
-            continue
-        s = str(r.get("source") or "").lower()
-        # 변수명이 key 면 위쪽 버킷 함수 key() 를 가려 slot() 이 죽는다(실측)
-        kind = next((v for k2, v in _SRC if k2.lower() in s), "파일")
-        n_sig += 1                              # 상한 초과분도 '신호는 있었다'로 계상
-        out[i]["raw_n"] += 1                    # 이 버킷의 누르기 전 원건수(막대와의 차이를 화면이 말한다)
-        if kind == "파일":
-            _t = str(r.get("text") or "")[:120]
-            if _t:                              # 빈 text 는 서로 다른 신호일 수 있다 — 안 묶는다
-                _k = (d, _t)
-                if _k in _seen:                 # 같은 날 같은 파일 신호는 1회만
-                    continue
-                _seen.add(_k)
-            _fcap[d] = _fcap.get(d, 0) + 1
-            if _fcap[d] > 8:                    # 재동기화 몰림이 그래프를 지배하지 않게
+    # ── 막대 = 수집된 흔적 **전부**(기간 안, 본 PC + 추가PC, 같은 사건은 1회) — LM20 과 같은 기준.
+    # 파일류(스냅샷 files.csv · 관측 이력 files_history.csv · Recent)는 한 집합에서 중복을 지운다 — 이력에는
+    # 나중에 다시 고쳐 시각이 바뀐 파일의 예전 관측이 남아 있어, 앞 달의 활동이 스냅샷만 볼 때보다 온전히 보인다.
+    from collections import Counter
+    seen_f, files = set(), []
+    for pat in ("files/files.csv", "files/files_history.csv", "files/recent.csv"):
+        for r in _rows_multi(pat):
+            t = str(r.get("mtime") or "")
+            i = slot(t[:10])
+            if i is None:
                 continue
-        out[i][kind] += 1
-    if not n_sig:
-        # 판정 결과가 아직 없는 기간 — 그때만 수집 raw 로라도 모양을 보여준다 (같은 상한).
-        # 본 PC + 추가PC 를 합쳐 세되 **같은 사건은 1회만** — 옮겨 온 폴더(추가PC\<지난 PC>)와 새 PC 가 같은
-        # 메일함·같은 기간을 수집하면 메일·회의·팀즈 행이 뿌리 수만큼 겹친다(감사 실측: 뿌리 2개 ×2.00, 3개 ×3.00).
-        # 분석(core.extract.load_signals)은 add() 의 _dedup 으로 지우는데 화면 폴백에는 그 규칙이 없었다.
-        _fcap.clear()
-        for pat, k2, col, kcols in (("files/files.csv", "파일", "mtime", ("folder", "name")),
-                                    ("files/recent.csv", "파일", "mtime", ("folder", "name")),
-                                    ("outlook/mail.csv", "메일", "time", ("subject", "sender")),
-                                    ("outlook/calendar.csv", "회의", "start", ("subject",)),
-                                    ("files/git_commits.csv", "커밋", "time", ("repo", "subject")),
-                                    ("m365/teams_*.csv", "팀즈", "time", ("from", "summary"))):
-            seen = set()
-            for r in _rows_multi(pat):          # 본 PC + 추가PC — 옮겨 온 폴더도 모양이 보이게
-                t = str(r.get(col) or "")
-                d = t[:10]
-                i = slot(d)
-                if i is None:
-                    continue
-                k = (t[:16],) + tuple(str(r.get(c) or "")[:60] for c in kcols)   # 분 단위 시각 + 제목류
-                if k in seen:                   # 다른 뿌리(또는 같은 파일 안)에 같은 사건이 또 있다 — 1회만
-                    continue
-                seen.add(k)
-                if k2 == "파일":
-                    _fcap[d] = _fcap.get(d, 0) + 1
-                    if _fcap[d] > 8:
-                        continue
-                out[i][k2] += 1
+            k = (t[:16], str(r.get("folder") or "")[:60], str(r.get("name") or "")[:60])
+            if k in seen_f:
+                continue
+            seen_f.add(k)
+            files.append((i, t[:16]))
+    # 한 분(分)에 몰린 덩어리만 막대에서 뺀다 — 하루 상한이 아니라 표적 제외. 기준은 mtime_clumps 와 같다.
+    by_min = Counter(m for _i, m in files)
+    clump_min = {m for m, n in by_min.items() if n >= 50 and n >= 0.10 * len(files)}
+    clump_n = 0
+    for i, m in files:
+        if m in clump_min:
+            clump_n += 1
+            continue
+        out[i]["파일"] += 1
+    for pat, k2, col, kcols in (("outlook/mail.csv", "메일", "time", ("subject", "sender")),
+                                ("outlook/calendar.csv", "회의", "start", ("subject",)),
+                                ("files/git_commits.csv", "커밋", "time", ("repo", "subject")),
+                                ("m365/teams_*.csv", "팀즈", "time", ("from", "summary"))):
+        seen = set()
+        for r in _rows_multi(pat):              # 본 PC + 추가PC — 옮겨 온 폴더의 지난 달도 그대로 보이게
+            t = str(r.get(col) or "")
+            i = slot(t[:10])
+            if i is None:
+                continue
+            k = (t[:16],) + tuple(str(r.get(c) or "")[:60] for c in kcols)   # 분 단위 시각 + 제목류
+            if k in seen:                       # 다른 뿌리(또는 같은 파일 안)에 같은 사건이 또 있다 — 1회만
+                continue
+            seen.add(k)
+            out[i][k2] += 1
+    for w in out:
+        w["raw_n"] = w["파일"] + w["메일"] + w["회의"] + w["커밋"] + w["팀즈"]
+    # 판정에 쓰인 표본 신호 수(참고 — MM 산정 축). 화면 안내가 '막대 N건 · 판정 표본 M건' 을 말할 수 있게.
+    sp = os.path.join(REPORT, f"signals_{tag}.csv") if tag else latest_signals()
+    n_sig = sum(1 for r in _rows(sp) if slot(str(r.get("time") or r.get("date") or "")[:10]) is not None)
 
     # PC 가동 시간 — 기간 안만. 본 PC + 추가PC 를 extract.pc_daily 로 합친다(구간 합집합 — 분석의 PC 하한과 같은 값).
     # 예전엔 본 PC 의 pc_on.csv 만 세어 추가 PC 의 가동이 이 선에서 통째로 빠졌다(제보: 'PC 가동시간 합산 안 됨').
@@ -1429,7 +1413,10 @@ def trend(d0="", d1="", tag="", info=None):
     for w in out:
         w["pc_h"] = round(w["pc_h"], 1)
     if info is not None:
-        info["src"] = "signals" if n_sig else "raw"
+        info["src"] = "raw"                     # 막대는 언제나 수집량(LM20 기준) — 'none' 은 기간이 없을 때뿐
+        info["signals_n"] = n_sig               # 판정에 쓰인 표본 신호 수(참고)
+        info["clump_excluded"] = clump_n        # 한 분에 몰린 파일 덩어리로 막대에서 뺀 수
+        info["clump_minutes"] = sorted(clump_min)[:5]
         info["gran"] = "month" if monthly else "week"
         info["pc_note"] = pc_note
         # PC 기록이 있는 버킷 / 평일이 있는 버킷 — 화면이 "27주 중 16주만 기록" 처럼 말할 수 있게
@@ -1437,8 +1424,7 @@ def trend(d0="", d1="", tag="", info=None):
         info["pc_buckets_all"] = sum(1 for w in out if w["pc_wd"] > 0)
         first_pc = next((d for d in sorted(pcd)), None)
         info["pc_from"] = first_pc.isoformat() if first_pc else ""
-        info["capped"] = sum(max(0, w["raw_n"] - (w["파일"] + w["메일"] + w["회의"] + w["커밋"] + w["팀즈"] + w["작업창"]))
-                             for w in out)
+        info["capped"] = 0                      # 상한은 없다(옛 키 호환)
         info["period"] = [start.isoformat(), end.isoformat()]     # 실제로 그린 기간 — 제목이 이것을 적는다
         info["roots"] = len(_data_roots())                          # 본 PC + 추가PC 폴더 수 — raw 안내에 적는다
     return out
@@ -2472,7 +2458,7 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
   <div id="actleg" class="leg"></div></div>
 </div>
 
-<div class="card"><h2><span id="wtitle">활동 추이</span> <span class="state" id="wsub">막대 = 신호 건수 · 선 = PC 가동시간</span></h2>
+<div class="card"><h2><span id="wtitle">활동 추이</span> <span class="state" id="wsub">막대 = 수집된 흔적 건수 · 선 = PC 가동시간</span></h2>
  <div id="weekly"></div>
  <div class="row" id="wleg" style="margin-top:6px;font-size:11px;color:#4a5159"></div>
  <div class="note" id="wnote" style="display:none;color:#a86400"></div>
@@ -2596,8 +2582,8 @@ function donut(el,data,center,unit){
  el.innerHTML=s;
 }
 function weekly(el,tr){
- // '작업창' 은 예전에 '파일' 로 뭉쳐 들어가 하루 8건 상한을 다 먹고 실제 문서를 밀어냈다 — 별도 계열.
- const keys=[["파일","#2a78d6"],["작업창","#7a8a99"],["메일","#0e8c7a"],["회의","#e08a00"],["커밋","#6c4fb8"],["팀즈","#4a7f9e"]];
+ // 막대 = 수집된 흔적(파일·메일·회의·커밋·팀즈) 전부 — LM20 과 같은 기준. 판정 표본이 아니다.
+ const keys=[["파일","#2a78d6"],["메일","#0e8c7a"],["회의","#e08a00"],["커밋","#6c4fb8"],["팀즈","#4a7f9e"]];
  const W=740,H=180,L=34,Rm=38,B=26,T=12,iw=(W-L-Rm)/tr.length;
  const cmax=Math.max(...tr.map(w=>keys.reduce((a,[k])=>a+w[k],0)),1);
  const hmax=Math.max(...tr.map(w=>w.pc_h),1);
@@ -2861,14 +2847,16 @@ async function refresh(){
  {const ti0=d.trend_info||{};const wt=$("wtitle"),ws=$("wsub");const per0=ti0.period||d.period||[];
   if(wt)wt.textContent=(ti0.gran==="month"?"월간":"주간")+" 활동 추이";
   if(ws)ws.textContent=(per0[0]?`${per0[0]} ~ ${per0[1]||""} · `:"")
-   +(ti0.gran==="month"?"막대 하나 = 한 달":"막대 하나 = 한 주")+" · 막대 = 신호 건수 · 선 = PC 가동시간";}
+   +(ti0.gran==="month"?"막대 하나 = 한 달":"막대 하나 = 한 주")+" · 막대 = 수집된 흔적 건수 · 선 = PC 가동시간";}
  // 메일·일정이 기간의 일부 달만 수집된 상태(Outlook 시간 예산) — 앞 달의 메일·회의 막대가 비어 보이는 이유를 적는다
  const wn=$("wnote");
  if(wn){const mc=d.mail_coverage||null;const notes=[];
-  // 추이가 수집 raw 로 그려진 화면(판정 신호가 없음 — 수집만 한 추가 PC·분석 전) — 서버가 실제로 무엇을 셌는지(trend_src)로 판단한다
-  if(d.trend_src==="raw"&&d.period&&d.period[0]) notes.push(`판정에 쓰인 신호가 없어 수집 raw 를 <b>${esc(d.period[0])} ~ ${esc(d.period[1]||"")}</b> 기간으로 그렸습니다`
-   +((((d.trend_info||{}).roots)||1)>1?` (본 PC + 추가 PC ${(d.trend_info||{}).roots-1}개 폴더 합산 · 같은 사건은 1회만)`:"")
-   +` — AI 정제를 켠 [분석 실행] 뒤에는 판정 신호 기준으로 바뀝니다.`);
+  // 막대는 판정 표본이 아니라 수집량이다 — 무엇을 셌는지, 뿌리 몇 개를 합쳤는지, 덩어리를 얼마나 뺐는지 한 줄로.
+  {const tq=d.trend_info||{};const rt=Number(tq.roots||1);
+   if(d.trend_src==="raw") notes.push(`막대는 <b>수집된 흔적 전부</b>입니다(판정 표본이 아니라 실제 수집량 — LM20 과 같은 기준)`
+    +(rt>1?` · 본 PC + 추가 PC ${rt-1}개 폴더 합산(같은 사건은 1회만)`:"")
+    +(tq.signals_n?` · 이 중 판정에 쓰인 표본 신호 ${Number(tq.signals_n).toLocaleString()}건`:"")
+    +(tq.clump_excluded>0?` · 한 시각에 몰린 파일 덩어리 <b>${Number(tq.clump_excluded).toLocaleString()}건</b>은 막대에서 뺐습니다(아래 경고)`:"")+".");}
   if(mc&&(mc.uncovered||[]).length) notes.push(`⚠ 메일·회의 막대는 ${mc.months}개월 중 <b>${(mc.covered||[]).length}개월</b>만 수집돼 있습니다 — 미수집 ${esc(mc.uncovered.join(", "))} (Outlook 시간 예산). [분석 실행]을 다시 돌리면 남은 달을 이어서 읽습니다.`);
   // PC 가동 선은 Windows 이벤트 로그에서 온다. 로그는 롤오버되므로 기간 앞쪽은 '0시간' 이 아니라
   // '기록 없음' 이다 — 그것을 말해 주지 않으면 'PC 가동이 적용 안 된다'로 읽힌다(제보).
@@ -2877,7 +2865,6 @@ async function refresh(){
    notes.push(`PC 가동 선은 ${ti.pc_buckets_all}${unit} 중 <b>${ti.pc_buckets}${unit}</b>만 기록이 있습니다`
     +(ti.pc_from?` — Windows 이벤트 로그가 <b>${esc(ti.pc_from)}</b> 까지만 남아 있어 그 앞은 <b>0시간이 아니라 기록 없음</b>입니다(회색 구간).`:` — 회색 구간은 0시간이 아니라 기록이 없는 구간입니다.`));
   if(ti.pc_note) notes.push(`⚠ ${esc(ti.pc_note)}`);
-  if(ti.capped>0) notes.push(`파일 막대는 하루 8건까지만 셉니다 — 이 기간에 <b>${ti.capped.toLocaleString()}건</b>이 상한에 눌렸습니다(공유폴더 재동기화가 그래프를 지배하지 않게 하는 장치입니다. 실제 신호 수는 [업무 리뷰] 탭에서 봅니다).`);
   if(notes.length){wn.style.display="";wn.innerHTML=notes.join("<br>");}
   else wn.style.display="none";}
  // 같은 시각에 몰린 덩어리가 있으면 알린다 — 그날 일한 것이 아닐 수 있다
@@ -3811,7 +3798,7 @@ class H(BaseHTTPRequestHandler):
                              # 주/월 단위, 추가PC 합산 실패 사유. 화면이 '0h' 와 '기록 없음' 을 구분해 말한다.
                              "trend_info": {k: tinfo.get(k) for k in
                                             ("gran", "pc_note", "pc_buckets", "pc_buckets_all", "pc_from", "capped",
-                                             "period", "roots")},
+                                             "period", "roots", "signals_n", "clump_excluded")},
                              "period": per,
                              "judged": judged, "last_run": lastrun,
                              # 판정 건수/대상 — 0 이면 '단계는 성공인데 왕복이 전부 실패' 를 화면이 구분한다
