@@ -496,6 +496,10 @@ class Refiner:
             _w, _h, _fatal = _details.explain_failure(res)
             if _fatal:
                 self.st["fatal"] = f"{_w} — {_h}"
+                # 예전엔 이 표식을 아무도 읽지 않아(감사 확정 — 죽은 관문) 로그인 필요 상태에서도 남은 청크를
+                # 전부 보냈다. 여기서 접는다: 이 청크의 항목은 실패로 세고, 반분 재시도도 하지 않는다.
+                self.st["failed_items"] += len({i for i, _ in ch} - set(ov))
+                return 0
         ch_ok = {i for i, _ in ch}
         covered = set()
         for it in got:
@@ -614,6 +618,10 @@ def main():
     rf = Refiner(tag, rep, sig_by, ev, model_names)
     failed, consec = 0, 0
     for ci, (ch, ov) in enumerate(plan):
+        if rf.st.get("fatal"):
+            # 사람이 손대야 풀리는 실패(로그인 필요 등) — 남은 청크는 보내지 않는다(judge 와 같은 관문).
+            rf.st["failed_items"] += len({i for i, _ in ch} - set(ov))
+            continue
         progress("AI 정제", ci, len(plan))
         before = len(rf.items)
         rf.run(ch, ov, str(ci + 1))

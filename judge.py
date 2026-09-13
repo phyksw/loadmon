@@ -1441,6 +1441,7 @@ def main():
     # 단정하지는 않는다**(아래 주석). 규칙 판정은 어떤 경우에도 돌아 signals·mm_rows·보고서가
     # 나오므로, 사용자는 결과를 받고 로그인 뒤 [재분석만]으로 이으면 된다.
     _why0, _how0, _fatal0 = explain_failure(res)
+    tax_ok = bool(res.get("ok"))          # 체계 왕복 성공 여부 — entities 저장 관문이 본다
     if _fatal0:
         print(f"[judge] 체계 수립 왕복이 실패했습니다 — {_why0}")
         print(f"        {_how0}")
@@ -1596,9 +1597,23 @@ def main():
             ent_obj["models"] + [{"name": d, "match": [d.lower()], "obs": "판정 중 발견"}
                                  for d in discovered])
         ent_obj["discovered"] = discovered
-    if judged or not ent_prev:
+    if (judged and tax_ok) or not ent_prev:
         with open(ent_p, "w", encoding="utf-8") as f:
             json.dump(ent_obj, f, ensure_ascii=False, indent=1)
+    elif not tax_ok:
+        # 체계 왕복이 실패한 실행 — 청크는 규칙 폴백 체계로 판정됐다. 그 체계로 entities 를 덮으면 다음 실행의
+        # 힌트(prev_models)가 폴백 이름으로 퇴화한다(감사 지적). 발견된 새 과제만 기존 체계에 보탠다.
+        if discovered:
+            try:
+                ent_prev_obj = json.load(open(ent_p, encoding="utf-8-sig"))
+                ent_prev_obj["models"] = sanitize_models(
+                    list(ent_prev_obj.get("models") or []) + [{"name": d, "match": [d.lower()], "obs": "판정 중 발견"}
+                                                              for d in discovered])
+                with open(ent_p, "w", encoding="utf-8") as f:
+                    json.dump(ent_prev_obj, f, ensure_ascii=False, indent=1)
+            except (OSError, ValueError, TypeError):
+                pass
+        print("        체계 수립 왕복 실패 — 기존 entities 파일을 보존합니다(규칙 폴백 체계로 덮지 않음)")
     else:
         print("        판정 0건 — 기존 entities 파일을 보존합니다(규칙 폴백 체계로 덮지 않음)")
 

@@ -86,6 +86,10 @@ DEFAULTS = {
     # 입력창이 뜰 때까지 기다리는 한도(초). 한 번 못 찾은 것을 곧 영구 실패로 부르면
     # 일시적인 SPA 렌더 지연 하나가 AI 판정 전체를 건너뛰게 만든다(실측 — 상위과제 분류 빈칸).
     "readyWaitSec": 60,
+    # 첫 글자가 오기까지 기다려 주는 한도(초). '깊이 생각하기' 모델은 첫 토큰 전에 수십 초를 생각한다 —
+    # 그 동안 화면에는 프롬프트 에코 꼬리만 있어 예전 규칙(stablePolls×pollSec = 24초)이 '답이 멈췄다' 로
+    # 오인하고 빈 답을 성공으로 돌려줬다(감사 실측 · LM24 공통). 빈 답은 judge 가 반으로 나눠 다시 묻는다 → 왕복 3배.
+    "firstTokenSec": 180,
     "pollSec": 2,
     # 이 전용 프로필의 디스크 캐시 상한(MB). 상한이 없어 GB 급으로 자랐고, 그것이 PC 간 폴더 이동이
     # 10~30분 걸리던 원인이었다(파일 수 94%·용량 96%). 캐시는 새 PC 에서 어차피 다시 받는다.
@@ -777,7 +781,7 @@ def run_roundtrip(cfg, prompt, fresh=False):
         # 끊긴 답(cut)도 재시도 사유다 — 다만 앞부분에 잘린 JSON 이 남아 있을 수 있어 전부 실패하면
         # 그 답을 ok+cut 으로 돌려주고 호출자가 복구·부분 재시도한다(judge/refine 의 적응 분할).
         bad = ((res.get("ok") and (is_error_reply(res.get("reply")) or res.get("cut")))
-               or res.get("phase") == "no_reply")
+               or res.get("phase") in ("no_reply", "empty_reply"))
         if not bad:
             return res
         # ① 새 채팅에서 같은 모델로 재시도 (대화 문맥 오염·일시 오류 해소)
@@ -956,6 +960,12 @@ def _roundtrip_once(cdp, cfg, prompt, model_override=None):
         #   낳아 왕복이 배로 는다(제보: 분석 시간 2배). 버튼을 본 적이 있을 때에만 '사라짐' 을 완료 신호로 믿고,
         #   본 적이 없으면 예전 규칙(stablePolls)으로만 판정한다 — 선택자가 안 맞는 UI 에서는 LM24 와 같아진다.
         busy_seen = False
+        # ★ 첫 글자가 오기 전의 '생각' 구간은 답이 멈춘 것이 아니다. 앵커 뒤에는 프롬프트 에코 꼬리가 남아
+        #   new.strip() 이 참이라, 예전엔 그 상태가 stablePolls 만큼 이어지면(24~27초) 빈 답을 ok 로 돌려줬다
+        #   (감사 실측 — LM24 공통). judge 는 '빈 성공' 을 JSON 없음으로 보고 청크를 반으로 나눠 다시 물어
+        #   왕복이 3배가 됐다. 여기서는 (버튼이 보이거나 firstTokenSec 안이면) 빈 몸통을 세지 않고,
+        #   그래도 끝내 비었으면 ok=False(empty_reply) 로 돌려 재시도 사다리(새 채팅)를 타게 한다.
+        first_token_s = max(30, int(cfg.get("firstTokenSec") or 180))
         t_gen0 = time.time()          # 계측용 — 전송 뒤 첫 폴부터 완료까지
         while time.time() < deadline:
             time.sleep(cfg["pollSec"])
@@ -992,7 +1002,11 @@ def _roundtrip_once(cdp, cfg, prompt, model_override=None):
                 gen = None            # 못 물어봤으면 판단하지 않는다(안전 쪽)
             if gen:
                 busy_seen = True
-            if new.strip() and new == last:
+            body = strip_echo(new, prompt, anchor, how).strip()     # 에코 꼬리를 걷어낸 '진짜 답'
+            if not body and (gen or (time.time() - t_gen0) < first_token_s):
+                # 아직 첫 글자가 없다 — 생각 중이다(버튼이 보이거나 유예 안). 멈춘 답으로 세지 않는다.
+                stable, idle = 0, 0
+            elif new.strip() and new == last:
                 stable += 1
                 # 텍스트가 멈췄고, 버튼을 본 적이 있는데 지금은 없다 → 생성이 끝난 것. stablePolls 를 끝까지
                 # 기다릴 이유가 없다(예전엔 서약을 못 잡은 왕복마다 8회 × 3초 = 24초를 흘려보냈다).
@@ -1003,6 +1017,13 @@ def _roundtrip_once(cdp, cfg, prompt, model_override=None):
                 else:
                     idle = 0
                 if (stable >= cfg["stablePolls"]) or (stable >= 2 and idle >= 2):
+                    if not body:
+                        # 유예를 넘겼는데도 답이 비었다 — '빈 성공' 이 아니라 실패다. 호출자(run_roundtrip)의
+                        # 사다리가 새 채팅에서 다시 보낸다. 예전엔 ok=True·"" 로 돌아가 judge 가 반분했다.
+                        return {"ok": False, "phase": "empty_reply", "error": "답이 비어 있음(첫 글자가 오지 않음)",
+                                "reply": "", "sentinel": False, "busy_seen": busy_seen,
+                                "gen_sec": round(time.time() - t_gen0, 1),
+                                "hint": "Copilot 이 생각만 하다 답을 내지 않았습니다 — 새 채팅에서 다시 보냅니다"}
                     # 어떤 경로로 회수했는지 남긴다 — fulltext 가 잦으면 앵커가 깨진 것이다
                     return _reply_result(strip_echo(new, prompt, anchor, how), note_model, how, False,
                                          waited, resent, gen_sec=time.time() - t_gen0,

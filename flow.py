@@ -190,6 +190,10 @@ def load_l1_pin(root):
     return out
 
 
+REFINED_USED = False    # gather 가 정제본(_refined.csv)을 읽었는가 — 상위(level1)를 '모른다' 와 '없다' 로 가르는 근거
+PREV_L1 = {}            # 지난 실행 결과의 과제 키 → 상위. 정제본이 없는 실행이 지난 상위를 이어받을 때 쓴다
+
+
 def gather(rep, tag, amap=None, pmap=None):
     """(과제, 담당 업무) 단위 재료 → (mats, basis, err).
     signals 를 (model|project, detail|activity) 로 묶고 MIN_SIGNALS 미만 제외, 시간순 표본,
@@ -236,9 +240,12 @@ def gather(rep, tag, amap=None, pmap=None):
         return details.ukey2((pmap or {}).get(str(name or "").strip(), str(name or "").strip()) or "공통")
 
     l1_w = {}          # ukey2(병합 대표 과제) → {상위: mm 합}
+    global REFINED_USED
+    REFINED_USED = False
     try:
         rrows, _rfn = details.read_rows(tag, rep)
         if _rfn and _rfn.endswith("_refined.csv"):
+            REFINED_USED = True
             rmap = _refine_orig(tag, rep)
             for r in rrows:
                 # 읽을 때도 스냅한다 — refine 은 저장 시 스냅하지만, **이미 만들어진 정제본**에는
@@ -741,7 +748,11 @@ def sanitize_flows(raw_flows, keys, mats_by=None, dropped=None):
             a, b = (mats_by.get(k2) or {}), hit
             return k2 if fold(a.get("model", "")) == fold(b.get("model", "")) else ""
 
-        out.append({"model": key, "branch": branch, "level1": hit.get("level1", ""),
+        # 상위는 정제 단계가 채운다. 정제본을 못 읽은 실행(판정 실패·무AI)은 값이 '' 인데, 그것은 '모른다' 지
+        # '없다' 가 아니다 — 지난 실행이 분류해 둔 상위를 이어받는다. 정제본을 읽었는데 '' 이면 정제가 낸
+        # '혼재' 라는 뜻이므로 그대로 둔다(화면이 '상위 혼재 — 재배치 필요' 로 말한다).
+        _l1_new = hit.get("level1", "") or ("" if REFINED_USED else PREV_L1.get(key, ""))
+        out.append({"model": key, "branch": branch, "level1": _l1_new,
                     # 상위 표가 갈린 카드는 화면이 "상위 미분류" 대신 그 사실을 말해야 한다
                     "level1_mix": hit.get("level1_mix") or [],
                     "upstream": _link(f.get("upstream")), "downstream": _link(f.get("downstream")),
@@ -976,6 +987,13 @@ def main():
         return 1
 
     # 이어서 판정 — 같은 기간·같은 단위 축의 지난 결과가 있으면 그 단위는 두고 빠진 단위만 보낸다
+    # 지난 결과의 상위 표 — --redo 여도 읽는다(흐름은 다시 묻되 상위 '기억' 은 정제본이 없을 때의 폴백이다)
+    PREV_L1.clear()
+    _pv0 = _load_json(dst)
+    if isinstance(_pv0, dict) and _pv0.get("tag") == tag and isinstance(_pv0.get("flows"), list):
+        for _f0 in _pv0["flows"]:
+            if isinstance(_f0, dict) and _f0.get("model") and _f0.get("level1"):
+                PREV_L1.setdefault(_f0["model"], _f0["level1"])
     prev = None if "--redo" in sys.argv else _load_json(dst)
     kept = []
     if prev and prev.get("tag") == tag and prev.get("unit") == UNIT and isinstance(prev.get("flows"), list):
@@ -992,7 +1010,9 @@ def main():
             # level1 이 전부 빈 문자열이라, 덮으면 지난 실행이 제대로 분류해 둔 상위까지 지워져
             # 화면의 상위과제 분류가 통째로 빈칸이 됐다(실측: ['신제품개발','양산준비','일반업무']
             # → ['','','']). 빈 값은 '모른다' 이지 '상위가 없다' 가 아니다.
-            _l1 = hit.get("level1", "") or f.get("level1", "")
+            # 정제본을 읽은 실행이면 이번 값이 진실('' 도 '혼재' 라는 답) — 옛 값으로 덮지 않는다(감사 지적).
+            # 정제본이 없는 실행만 지난 상위를 이어받는다.
+            _l1 = hit.get("level1", "") if REFINED_USED else (hit.get("level1", "") or f.get("level1", ""))
             f = dict(f, project=hit["model"], detail=hit["detail"], mm={"mm": hit["mm"]},
                      signals=hit["signals"], level1=_l1)
             kept.append(f)
