@@ -36,26 +36,30 @@ if not defined PY_CMD (
   exit /b 1
 )
 
-echo   분석 기간을 고르세요.
+echo   분석 기간을 고르세요. 기본은 대시보드와 같은 '올해' 입니다 - 팀 취합은 같은 기간이어야 맞습니다.
 echo.
-echo     1. 최근 1개월
-echo     2. 최근 3개월   [기본]
-echo     3. 최근 6개월
-echo     4. 직접 입력
+echo     1. 올해 (1월 1일부터 오늘까지)   [기본]
+echo     2. 최근 1개월
+echo     3. 최근 3개월
+echo     4. 최근 6개월
+echo     5. 직접 입력
 echo.
 set "SEL="
 set /p SEL=  번호 :
-if "%SEL%"=="" set "SEL=2"
+if "%SEL%"=="" set "SEL=1"
 
-set "DAYS=90"
-if "%SEL%"=="1" set "DAYS=30"
-if "%SEL%"=="3" set "DAYS=180"
+rem DAYS=ytd 는 올해 1월 1일부터. 예전 기본(최근 3개월)은 화면 기본(올해)과 달라, bat 으로 한 번 돌리면
+rem 짧은 기간 결과가 화면을 차지해 "1월부터 보던 추이가 사라졌다" 로 읽혔다(실측).
+set "DAYS=ytd"
+if "%SEL%"=="2" set "DAYS=30"
+if "%SEL%"=="3" set "DAYS=90"
+if "%SEL%"=="4" set "DAYS=180"
 
 set "FROM="
 set "TO="
-if "%SEL%"=="4" goto ASKDATE
+if "%SEL%"=="5" goto ASKDATE
 
-"%PY_EXE%" %PY_ARGS% -c "import datetime,sys;print((datetime.date.today()-datetime.timedelta(days=int(sys.argv[1]))).isoformat())" %DAYS% > "%TEMP%\lm_from.txt"
+"%PY_EXE%" %PY_ARGS% -c "import datetime,sys;t=datetime.date.today();a=sys.argv[1];print(t.replace(month=1,day=1).isoformat() if a=='ytd' else (t-datetime.timedelta(days=int(a))).isoformat())" %DAYS% > "%TEMP%\lm_from.txt"
 set /p FROM=<"%TEMP%\lm_from.txt"
 "%PY_EXE%" %PY_ARGS% -c "import datetime;print(datetime.date.today().isoformat())" > "%TEMP%\lm_to.txt"
 set /p TO=<"%TEMP%\lm_to.txt"

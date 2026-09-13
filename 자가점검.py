@@ -68,6 +68,7 @@ NEED = [
     "docs/설정가이드.md",
     "docs/사용안내.html",
     "tools/copilot_auto.py",
+    "tools/trace_summary.py",
     "tools/Get-EmbeddedPython.ps1",
     "tools/check_page_js.py",
     "tools/lint.ps1",

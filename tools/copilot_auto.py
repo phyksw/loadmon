@@ -741,6 +741,7 @@ def _traced(fn):
                   pick=r.get("pick", ""), pledge=bool(r.get("sentinel")),
                   fresh=bool(fresh), cut=bool(r.get("cut")),
                   parts=r.get("parts", 1), retry=r.get("retry", ""),
+                  busy=r.get("busy_seen"),
                   err=(r.get("error") or "")[:60])
         except Exception:  # noqa: BLE001
             pass
@@ -948,6 +949,13 @@ def _roundtrip_once(cdp, cfg, prompt, model_override=None):
         deadline = time.time() + cfg["replyTimeoutSec"]
         how = "anchor"
         last, stable, idle = None, 0, 0
+        # ★ '중지' 버튼을 이 왕복에서 **한 번이라도 봤는가**. js_is_generating 은 못 찾으면 False(생성 중 아님)
+        #   로 답하는, wait_idle 용의 '막지 않는 쪽이 안전한' 함수다. 그것을 조기 완료 판정에 그대로 쓰면 방향이
+        #   반대다 — UI 의 버튼 표기가 후보 문구와 안 맞으면 '깊이 생각하기' 가 12초만 멈춰도 답을 쓰는 도중에
+        #   회수한다(시뮬레이션: 멈춤 12~24초에서 답의 33% 만 회수 · LM24 는 온전). 잘린 답은 빠진 행 재질문을
+        #   낳아 왕복이 배로 는다(제보: 분석 시간 2배). 버튼을 본 적이 있을 때에만 '사라짐' 을 완료 신호로 믿고,
+        #   본 적이 없으면 예전 규칙(stablePolls)으로만 판정한다 — 선택자가 안 맞는 UI 에서는 LM24 와 같아진다.
+        busy_seen = False
         t_gen0 = time.time()          # 계측용 — 전송 뒤 첫 폴부터 완료까지
         while time.time() < deadline:
             time.sleep(cfg["pollSec"])
@@ -974,26 +982,32 @@ def _roundtrip_once(cdp, cfg, prompt, model_override=None):
                 except (TimeoutError, OSError, RuntimeError):
                     pass
                 return _reply_result(strip_echo(new, prompt, anchor, how), note_model, how, True,
-                                     waited, resent, gen_sec=time.time() - t_gen0, done_by="pledge")
+                                     waited, resent, gen_sec=time.time() - t_gen0, done_by="pledge",
+                                     busy_seen=busy_seen)
+            # 버튼 상태는 매 폴 본다(버튼 목록 훑기 — innerText 보다 훨씬 가볍다). 텍스트가 늘고 있는 동안
+            # 버튼이 보이면 '이 UI 에서 선택자가 맞는다' 는 증거가 된다.
+            try:
+                gen = bool(cdp.eval(js_is_generating(), timeout=10))
+            except (TimeoutError, OSError, RuntimeError):
+                gen = None            # 못 물어봤으면 판단하지 않는다(안전 쪽)
+            if gen:
+                busy_seen = True
             if new.strip() and new == last:
                 stable += 1
-                # 텍스트가 멈췄으면 **화면에 '중지' 버튼이 아직 있는지** 본다. 없으면 생성이 끝난 것이라
-                # stablePolls 를 끝까지 기다릴 이유가 없다 — 예전에는 서약을 못 잡은 왕복마다
-                # 8회 × 3초 = 24초를 그냥 흘려보냈다(실행당 왕복 100회면 최대 30분).
-                # 버튼 판정이 틀릴 수 있으므로 **2회 연속** 확인하고, 그래도 안 되면 예전 규칙으로 돌아간다.
-                if stable >= 2 and idle < 2:
-                    try:
-                        if not bool(cdp.eval(js_is_generating(), timeout=10)):
-                            idle += 1
-                        else:
-                            idle = 0
-                    except (TimeoutError, OSError, RuntimeError):
-                        idle = 0      # 못 물어봤으면 판단하지 않는다(안전 쪽)
+                # 텍스트가 멈췄고, 버튼을 본 적이 있는데 지금은 없다 → 생성이 끝난 것. stablePolls 를 끝까지
+                # 기다릴 이유가 없다(예전엔 서약을 못 잡은 왕복마다 8회 × 3초 = 24초를 흘려보냈다).
+                # 틀릴 수 있으므로 **2회 연속** 확인한다. 버튼을 본 적이 없으면 이 지름길은 쓰지 않는다.
+                # 답이 JSON 꼴이면 괄호가 닫혔을 때만 — '생각 중' 에 버튼을 잠깐 숨기는 UI 에서 반쪽 JSON 을 집지 않게.
+                if busy_seen and gen is False and _looks_closed(new):
+                    idle += 1
+                else:
+                    idle = 0
                 if (stable >= cfg["stablePolls"]) or (stable >= 2 and idle >= 2):
                     # 어떤 경로로 회수했는지 남긴다 — fulltext 가 잦으면 앵커가 깨진 것이다
                     return _reply_result(strip_echo(new, prompt, anchor, how), note_model, how, False,
                                          waited, resent, gen_sec=time.time() - t_gen0,
-                                         done_by=("idle" if stable < cfg["stablePolls"] else "stable"))
+                                         done_by=("idle" if stable < cfg["stablePolls"] else "stable"),
+                                         busy_seen=busy_seen)
             else:
                 stable, idle = 0, 0
             last = new
@@ -1002,8 +1016,17 @@ def _roundtrip_once(cdp, cfg, prompt, model_override=None):
                 "hint": "Copilot 창이 응답을 생성 중인지 확인 — 반복되면 화면 스크린샷을 Claude에게"}
 
 
+def _looks_closed(reply):
+    """답이 JSON 꼴({ 나 [ 가 있음)이면 괄호가 모두 닫혔는가 — 산문이면 항상 참.
+    잘린 JSON 을 '완료' 로 집지 않기 위한 값싼 확인이다(파싱이 아니라 개수만 본다)."""
+    s = str(reply or "")
+    if "{" not in s and "[" not in s:
+        return True
+    return s.count("{") <= s.count("}") and s.count("[") <= s.count("]")
+
+
 def _reply_result(reply, note_model, how, sentinel, waited=0, resent=False,
-                  gen_sec=0.0, done_by=""):
+                  gen_sec=0.0, done_by="", busy_seen=None):
     """회수 결과 dict — cut(생성 중단 문구가 꼬리에 있음)·waited(앞 답 생성 대기 초)·resent(전송 재클릭)
     를 함께 남겨 호출자가 잘린 답을 복구·부분 재시도할 수 있게 한다.
     gen_sec·done_by 는 계측용 — 답을 기다린 초와 무엇으로 완료를 알았는지
@@ -1019,6 +1042,8 @@ def _reply_result(reply, note_model, how, sentinel, waited=0, resent=False,
         out["gen_sec"] = round(gen_sec, 1)
     if done_by:
         out["done_by"] = done_by
+    if busy_seen is not None:
+        out["busy_seen"] = bool(busy_seen)     # 이 왕복에서 '중지' 버튼을 봤는가 — 선택자가 UI 와 맞는지의 증거
     return out
 
 

@@ -247,14 +247,67 @@ foreach ($k in ($daily.Keys | Sort-Object)) {
     $rows.Add(('{0},{1},{2},{3},{4},{5}' -f $k, [math]::Round($d.on,2), `
         $d.first.ToString('HH:mm'), $lastStr, [math]::Round($d.night,2), $we))
 }
-[System.IO.File]::WriteAllLines((Join-Path $OutDir 'pc_on.csv'), $rows, [System.Text.Encoding]::UTF8)
+# ── 지난 실행의 기록 보존 - 이 실행이 닿지 못한 날은 예전 행·구간을 그대로 둔다.
+# System 로그는 롤오버되므로 매 실행 [-From, 도달 시작) 구간에는 이벤트가 없다. 예전에는 파일을 통째로 새로 써서
+# 1~5월에 모아 둔 기록이 6월 재실행에서 사라지고, 화면의 PC 가동 선이 '이번 실행이 닿은 범위' 로 매번 줄었다(감사 실측).
+# 규칙: 이번 도달 창 [reach, until) 안은 이번 결과가 진실(행이 없는 날 = 안 켠 날), 그 밖의 날은 예전 행·구간 유지.
+#       도달 시작 = 첫 이벤트 시각(이벤트가 없으면 현재 부팅 시각, 그것도 없으면 기간 끝 = 아무것도 덮지 않음).
+if ($sorted.Count -gt 0 -and -not $fallbackBoot) { $reachT = $sorted[0].t }
+elseif ($fallbackBoot -and $bootNow) { $reachT = $bootNow }
+else { $reachT = $until }
+if ($reachT -lt $since) { $reachT = $since }
+$pcOnPath = Join-Path $OutDir 'pc_on.csv'
+$spansPath = Join-Path $OutDir 'pc_spans.csv'
+$keptDays = 0; $keptSpans = 0
+$newDates = @{}
+foreach ($k in $daily.Keys) { $newDates[$k] = $true }
+$keepRows = New-Object System.Collections.Generic.List[string]
+if (Test-Path $pcOnPath) {
+    $oldRows = @()
+    try { $oldRows = @(Import-Csv -LiteralPath $pcOnPath -Encoding UTF8) } catch { $oldRows = @() }
+    foreach ($o in $oldRows) {
+        $ds = [string]$o.date
+        if (-not $ds -or $newDates.ContainsKey($ds)) { continue }
+        try { $dd = [datetime]::ParseExact($ds, 'yyyy-MM-dd', $null) } catch { continue }
+        # 도달 시작일 당일은 이번 결과에 그 날 행이 없을 때만(첫 이벤트가 '끔' 이면 구간이 안 생긴다) 예전 행을 둔다
+        if ($dd -le $reachT.Date -or $dd -ge $until.Date) {
+            $keepRows.Add(('{0},{1},{2},{3},{4},{5}' -f $ds, [string]$o.on_hours, [string]$o.first_on, [string]$o.last_off, [string]$o.night_hours, [string]$o.weekend))
+            $keptDays++
+        }
+    }
+}
+if ($keepRows.Count -gt 0) {
+    $hdr = $rows[0]
+    $body = @(@($rows | Select-Object -Skip 1) + @($keepRows) | Sort-Object)   # 'yyyy-MM-dd,' 로 시작 - 문자열 정렬 = 날짜 정렬
+    $rows = New-Object System.Collections.Generic.List[string]
+    $rows.Add($hdr); foreach ($r in $body) { $rows.Add($r) }
+    Write-Host ("[pc-on] 지난 기록 보존: {0}일 (이번 실행의 도달 창 {1} ~ {2} 밖)" -f $keptDays, $reachT.ToString('yyyy-MM-dd HH:mm'), $until.AddDays(-1).ToString('yyyy-MM-dd'))
+}
+[System.IO.File]::WriteAllLines($pcOnPath, $rows, [System.Text.Encoding]::UTF8)
 
 # 구간 원본 - extract 가 '언제 켜져 있었는지' 를 직접 쓴다(점심·회의 시간과의 겹침 계산). Get-PcOnHints 가 힌트 구간(src=hint)을 보탠다.
+# 예전 구간도 같은 규칙으로 보존한다 - 도달 시작 전에 시작한 구간은 남기되 도달 시작을 넘는 꼬리는 자른다(이번 구간과 안 겹치게).
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+$allSpans = New-Object System.Collections.Generic.List[object]
+foreach ($s in $spans) { $allSpans.Add([pscustomobject]@{ a = $s.a; b = $s.b; src = $s.src }) }
+if (Test-Path $spansPath) {
+    $oldSpans = @()
+    try { $oldSpans = @(Import-Csv -LiteralPath $spansPath -Encoding UTF8) } catch { $oldSpans = @() }
+    foreach ($o in $oldSpans) {
+        try { $a = Parse-Dt ([string]$o.start); $b = Parse-Dt ([string]$o.end) } catch { continue }
+        $osrc = if ($o.src) { [string]$o.src } else { 'event' }
+        if ($a -ge $until) {
+            if ($b -gt $a) { $allSpans.Add([pscustomobject]@{ a = $a; b = $b; src = $osrc }); $keptSpans++ }
+        } elseif ($a -lt $reachT) {
+            if ($b -gt $reachT) { $b = $reachT }
+            if ($b -gt $a) { $allSpans.Add([pscustomobject]@{ a = $a; b = $b; src = $osrc }); $keptSpans++ }
+        }
+    }
+}
 $srows = New-Object System.Collections.Generic.List[string]
 $srows.Add('start,end,src')
-foreach ($s in $spans) { $srows.Add(('{0},{1},{2}' -f $s.a.ToString('yyyy-MM-dd HH:mm:ss'), $s.b.ToString('yyyy-MM-dd HH:mm:ss'), $s.src)) }
-[System.IO.File]::WriteAllLines((Join-Path $OutDir 'pc_spans.csv'), $srows, $utf8NoBom)
+foreach ($s in @($allSpans | Sort-Object a)) { $srows.Add(('{0},{1},{2}' -f $s.a.ToString('yyyy-MM-dd HH:mm:ss'), $s.b.ToString('yyyy-MM-dd HH:mm:ss'), $s.src)) }
+[System.IO.File]::WriteAllLines($spansPath, $srows, $utf8NoBom)
 
 # 수집 환경 진단 - 권한·전원 정책 차이를 사람 차이로 읽지 않게 리포트·진단이 참조한다
 $srcInfo = [ordered]@{
@@ -276,6 +329,9 @@ $srcInfo = [ordered]@{
     gap_closed_spans = [int]$gapClosed
     spans = [int]$spans.Count
     days = [int]($rows.Count - 1)
+    preserved_days = [int]$keptDays
+    preserved_spans = [int]$keptSpans
+    reach_from = $reachT.ToString('yyyy-MM-dd HH:mm')
     sources = $srcStatus
     warnings = @($warnings)
 }
