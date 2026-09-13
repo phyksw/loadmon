@@ -39,8 +39,8 @@ collect/Get-OutlookData.ps1                           49,995 B  006c5b43
 collect/Get-OutlookIndex.ps1                          21,292 B  83984e67
 collect/Get-MailViaCopilot.py                         26,575 B  9e601a9d
 collect/Get-OutlookWeb.py                             40,842 B  d259bd40
-collect/Get-PcOnHistory.ps1                           22,490 B  ab7e3429
-collect/Get-PcOnHints.py                              15,639 B  4d104945
+collect/Get-PcOnHistory.ps1                           23,965 B  2f77e550
+collect/Get-PcOnHints.py                              19,265 B  a91b9ffa
 collect/Start-TeamsSampler.ps1                         2,201 B  49b71b44
 collect/Get-RecentFiles.ps1                           22,050 B  05139be4
 collect/Get-TeamsChats.py                             17,754 B  e868c913
@@ -54,7 +54,7 @@ config/config.json                                    36,821 B  b951b207
 config/config.default.json                            36,821 B  b951b207
 config/agentic_tasks.json                              4,426 B  2c9e5bb1
 core/board.py                                         13,045 B  9c4d6431
-core/extract.py                                      207,457 B  9542fa44
+core/extract.py                                      211,573 B  b349058c
 core/programs.py                                      15,778 B  1f1e142f
 core/details.py                                       68,458 B  81e34438
 core/owner.py                                          1,488 B  1f1dc049
@@ -69,4 +69,4 @@ tools/lint.ps1                                         7,914 B  0c6f51ac
 tools/Make-Package.ps1                                10,733 B  f8e333a9
 tools/Prepare-Move.ps1                                22,237 B  9859c75a
 tools/update_files.py                                  4,530 B  33b4a677
-ui/app.py                                            342,098 B  1989cc2c
+ui/app.py                                            342,098 B  fa9bdaf9
