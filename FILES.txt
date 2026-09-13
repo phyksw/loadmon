@@ -60,7 +60,7 @@ core/details.py                                       68,458 B  81e34438
 core/owner.py                                          1,488 B  1f1dc049
 core/progress.py                                       1,129 B  77a7579a
 core/projmap.py                                        7,133 B  cca7d2cb
-docs/설정가이드.md                                         72,256 B  85e6be51
+docs/설정가이드.md                                         73,118 B  7516331d
 docs/사용안내.html                                       272,444 B  3cea5b8b
 tools/copilot_auto.py                                 71,000 B  ea7c770d
 tools/trace_summary.py                                 6,916 B  b0d0d60e
@@ -71,4 +71,4 @@ tools/Make-Package.ps1                                10,733 B  f8e333a9
 tools/Make-MovePack.py                                12,103 B  4132d2e7
 tools/Prepare-Move.ps1                                26,116 B  67389835
 tools/update_files.py                                  4,530 B  33b4a677
-ui/app.py                                            342,345 B  bc55b691
+ui/app.py                                            341,042 B  56d796aa
