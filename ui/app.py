@@ -31,7 +31,7 @@ from progress import parse as parse_progress  # noqa: E402  (core 경로 등록 
 REPORT = os.path.join(ROOT, "report")
 DATA = os.path.join(ROOT, "data")
 NO_WIN = 0x08000000
-VERSION = "v24.0.4"
+VERSION = "v24.0.5"
 LOCK = threading.Lock()
 FREEZE_LOCK = threading.Lock()       # [보고서 만들기] 직렬화 — JOB 과 별개(사본에 '실행 중'이 굳지 않게)
 JOB = {"running": False, "log": [], "step": "", "started": 0.0, "pid": 0,
@@ -1262,14 +1262,13 @@ def trend(d0="", d1="", tag="", info=None):
     r"""활동 추이 — 분석 기간을 덮고, **판정에 실제로 쓰인 신호**(report\signals_<기간>.csv)를 센다. LM24 의 기준.
     대시보드 MM 과 같은 축이고, 파일류는 하루 8건 상한으로 눌러 재동기화 몰림이 그래프를 지배하지 않는다.
 
-    v24.2 는 이것을 '수집된 흔적 전부'(LM20 식) 로 바꿨었다 — 그러자 이력(files_history) 한 달이 13,203 건으로 축을
-    독점해 나머지가 납작해졌고(실측 스크린샷), 정작 "집계가 안 뜬다" 의 원인은 막대 **위에** 그려진 회색 띠였다
-    (weekly() 참조). 제보 "LM24 에서 고쳐졌던 것이 완전히 맛이 갔다" — LM24 기준으로 되돌린다.
-    판정 신호가 없는 기간(수집만 한 추가 PC·분석 전)만 수집 raw 폴백: 본 PC + 추가PC\*, 같은 사건은 1회,
-    파일은 **하루에 한 번**(한 파일을 하루 스무 번 저장해도 흔적은 하나), 한 분에 몰린 덩어리(≥50건·≥10%)는 표적 제외.
+    판정 신호가 없는 기간(수집만 한 PC·분석 전)은 수집 raw 로 모양만 보인다 — LM20+보완2(0901 보완2.py TREND_NEW)와
+    **같은 규칙**: files.csv·recent.csv 의 mtime 을 하루 8건 상한, 메일·일정·커밋·팀즈는 그대로. 다른 점은 둘뿐이다 —
+    본 PC + 추가PC\* 를 함께 읽고(폴더 이동 뒤 빈 추이), 두 PC 가 같은 사서함을 읽어 생긴 같은 메일·일정은 1회.
+    (v24.2~v24.5 는 폴백에서 files_history 를 세고 하루 상한을 없애 한 달이 13,203건이 됐다 — 되돌림.)
 
     info(dict): src "signals"(판정 신호) / "raw"(수집 폴백) / "none"(기간 없음), signals_n, capped(상한에 눌린 건수),
-    clump_excluded(폴백에서 덩어리로 뺀 파일 수), gran, pc_*(pc_days_total = 기록 있는 날 수), period, roots.
+    gran, pc_*(pc_days_total = 기록 있는 날 수), period, roots.
     기간이 길면(MONTHLY_OVER_WEEKS 초과) 주 대신 달로 묶고 제목도 '월간 활동 추이' 가 된다."""
     from datetime import date, timedelta
 
@@ -1358,32 +1357,19 @@ def trend(d0="", d1="", tag="", info=None):
             if _fcap[d] > 8:                    # 재동기화 몰림이 그래프를 지배하지 않게
                 continue
         out[i][kind] += 1
-    clump_n, clump_min = 0, set()
     if not n_sig:
-        # 판정 결과가 없는 기간(수집만 한 추가 PC·분석 전) — 그때만 수집 raw 로 모양을 보여준다.
-        # 본 PC + 추가PC\*(옮겨 온 폴더의 지난 달도 보이게), 같은 사건은 1회. 파일은 **하루에 한 번** — 한 파일을 하루
-        # 스무 번 저장해도 흔적은 하나다(이력 files_history 의 분 단위 관측을 그대로 세면 한 달이 1만 건을 넘어 축을
-        # 독점한다 — 실측 13,203). 한 분에 몰린 덩어리(≥50건·≥10%)는 mtime_clumps 와 같은 기준으로 표적 제외.
-        from collections import Counter
-        seen_f, files = set(), []
-        for pat in ("files/files.csv", "files/files_history.csv", "files/recent.csv"):
-            for r in _rows_multi(pat):
-                t = str(r.get("mtime") or "")
-                i = slot(t[:10])
+        # 판정 결과가 아직 없는 기간 — 그때만 수집 raw 로라도 모양을 보여준다 (같은 상한). LM20+보완2 와 같은 규칙.
+        _fcap.clear()
+        for pat in ("files/files.csv", "files/recent.csv"):
+            for r in _rows_multi(pat):                  # 본 PC + 추가PC
+                d = str(r.get("mtime") or "")[:10]
+                i = slot(d)
                 if i is None:
                     continue
-                k = (t[:10], str(r.get("folder") or "")[:60], str(r.get("name") or "")[:60])
-                if k in seen_f:
+                _fcap[d] = _fcap.get(d, 0) + 1
+                if _fcap[d] > 8:                        # 재동기화 몰림이 그래프를 지배하지 않게(보완2 와 같다)
                     continue
-                seen_f.add(k)
-                files.append((i, t[:16]))
-        by_min = Counter(m for _i, m in files)
-        clump_min = {m for m, n in by_min.items() if n >= 50 and n >= 0.10 * len(files)}
-        for i, m in files:
-            if m in clump_min:
-                clump_n += 1
-                continue
-            out[i]["파일"] += 1
+                out[i]["파일"] += 1
         for pat, k2, col, kcols in (("outlook/mail.csv", "메일", "time", ("subject", "sender")),
                                     ("outlook/calendar.csv", "회의", "start", ("subject",)),
                                     ("files/git_commits.csv", "커밋", "time", ("repo", "subject")),
@@ -1394,13 +1380,13 @@ def trend(d0="", d1="", tag="", info=None):
                 i = slot(t[:10])
                 if i is None:
                     continue
-                k = (t[:16],) + tuple(str(r.get(c) or "")[:60] for c in kcols)   # 분 단위 시각 + 제목류
-                if k in seen:                   # 다른 뿌리(또는 같은 파일 안)에 같은 사건이 또 있다 — 1회만
-                    continue
-                seen.add(k)
+                if len(_data_roots()) > 1:
+                    # 두 PC 가 같은 사서함·저장소를 읽으면 같은 사건이 두 번 들어온다 — 분 단위 시각 + 제목류로 1회만
+                    k = (t[:16],) + tuple(str(r.get(c) or "")[:60] for c in kcols)
+                    if k in seen:
+                        continue
+                    seen.add(k)
                 out[i][k2] += 1
-        for w in out:
-            w["raw_n"] = w["파일"] + w["메일"] + w["회의"] + w["커밋"] + w["팀즈"]
 
     # PC 가동 시간 — 기간 안만. 본 PC + 추가PC 를 extract.pc_daily 로 합친다(구간 합집합 — 분석의 PC 하한과 같은 값).
     # 예전엔 본 PC 의 pc_on.csv 만 세어 추가 PC 의 가동이 이 선에서 통째로 빠졌다(제보: 'PC 가동시간 합산 안 됨').
@@ -1446,8 +1432,6 @@ def trend(d0="", d1="", tag="", info=None):
     if info is not None:
         info["src"] = "signals" if n_sig else "raw"   # 무엇을 셌는지 — 화면 안내·부제가 이 값을 본다
         info["signals_n"] = n_sig               # 판정에 쓰인 신호 수
-        info["clump_excluded"] = clump_n        # (raw 폴백) 한 분에 몰린 파일 덩어리로 막대에서 뺀 수
-        info["clump_minutes"] = sorted(clump_min)[:5]
         info["gran"] = "month" if monthly else "week"
         info["pc_note"] = pc_note
         # PC 기록이 있는 버킷 / 평일이 있는 버킷 — 화면이 "27주 중 16주만 기록" 처럼 말할 수 있게
@@ -1457,7 +1441,7 @@ def trend(d0="", d1="", tag="", info=None):
         first_pc = next((d for d in sorted(pcd)), None)
         info["pc_from"] = first_pc.isoformat() if first_pc else ""
         info["capped"] = (sum(max(0, w["raw_n"] - (w["파일"] + w["메일"] + w["회의"] + w["커밋"] + w["팀즈"] + w["작업창"]))
-                              for w in out) if n_sig else 0)      # 하루 8건 상한에 눌린 파일 신호 수
+                              for w in out) if n_sig else sum(max(0, n - 8) for n in _fcap.values()))   # 하루 8건 상한에 눌린 파일 수
         info["period"] = [start.isoformat(), end.isoformat()]     # 실제로 그린 기간 — 제목이 이것을 적는다
         info["roots"] = len(_data_roots())                          # 본 PC + 추가PC 폴더 수 — raw 안내에 적는다
     return out
@@ -2619,13 +2603,7 @@ function weekly(el,tr){
  // '작업창' 은 예전에 '파일' 로 뭉쳐 들어가 하루 8건 상한을 다 먹고 실제 문서를 밀어냈다 — 별도 계열.
  const keys=[["파일","#2a78d6"],["작업창","#7a8a99"],["메일","#0e8c7a"],["회의","#e08a00"],["커밋","#6c4fb8"],["팀즈","#4a7f9e"]];
  const W=740,H=180,L=34,Rm=38,B=26,T=12,iw=(W-L-Rm)/Math.max(tr.length,1);
- const sums=tr.map(w=>keys.reduce((a,[k])=>a+(Number(w[k])||0),0));
- // 축 상한 — 한 달이 나머지의 2.5배를 넘으면(대량 복사·이력 몰림) 그 달이 축을 독점해 나머지가 납작해진다(실측
- // 스크린샷: 축 13,203 · 보이는 막대 최대 1,300). 두 번째로 큰 막대 기준으로 축을 잡고, 넘는 막대는 비율을 지킨 채
- // 위를 잘라 '▲실제 건수' 를 적는다 — 값을 숨기지 않고 나머지 달도 읽히게.
- const sorted=[...sums].sort((a,b)=>b-a);const top=sorted[0]||0,second=sorted[1]||0;
- const clip=(second>0&&top>2.5*second)?Math.ceil(second*1.25):0;
- const cmax=Math.max(clip||top,1);
+ const cmax=Math.max(...tr.map(w=>keys.reduce((a,[k])=>a+(Number(w[k])||0),0)),1);
  const hmax=Math.max(...tr.map(w=>Number(w.pc_h)||0),1);
  let s=`<svg viewBox="0 0 ${W} ${H}" style="width:100%">`;
  for(let g=0;g<=3;g++){const y=T+(H-T-B)*g/3;
@@ -2639,12 +2617,11 @@ function weekly(el,tr){
  const has=w=>(w.pc_wd===undefined)?(w.pc_h>0):(w.pc_days>0);
  tr.forEach((w,i)=>{if(w.pc_wd!==undefined&&!has(w))
   s+=`<rect x="${(L+i*iw).toFixed(1)}" y="${T}" width="${iw.toFixed(1)}" height="${(H-T-B).toFixed(1)}" fill="#f2f3f5"><title>${w.label} PC 기록 없음 (평일 ${w.pc_wd}일 중 0일) — 0시간이 아니라 기록이 없는 구간입니다. 막대(신호)는 그대로 셉니다</title></rect>`;});
- // ② 막대 — 축을 넘는 막대는 비율을 유지한 채 위를 자르고 실제 합계를 적는다
+ // ② 막대
  tr.forEach((w,i)=>{
-  const x=L+i*iw+iw*0.18,bw=iw*0.64;let y=H-B;const tot=sums[i];const over=clip>0&&tot>cmax;const sc=over?cmax/tot:1;
-  keys.forEach(([k,c])=>{const h=(H-T-B)*(Number(w[k])||0)*sc/cmax;if(h>0.5){y-=h;
-   s+=`<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" fill="${c}" rx="1"><title>${w.label} ${k} ${w[k]}건${over?` — 이 달 합계 ${tot.toLocaleString()}건은 축을 넘어 위를 잘랐습니다`:""}</title></rect>`;}});
-  if(over)s+=`<text x="${(x+bw/2).toFixed(1)}" y="${T+9}" text-anchor="middle" style="font-size:9px;fill:#c0122f;font-weight:600">▲${tot.toLocaleString()}</text>`;
+  const x=L+i*iw+iw*0.18,bw=iw*0.64;let y=H-B;
+  keys.forEach(([k,c])=>{const h=(H-T-B)*(Number(w[k])||0)/cmax;if(h>0.5){y-=h;
+   s+=`<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" fill="${c}" rx="1"><title>${w.label} ${k} ${w[k]}건</title></rect>`;}});
   if(tr.length<=16||i%2===0)s+=`<text x="${(x+bw/2).toFixed(1)}" y="${H-B+13}" text-anchor="middle" style="font-size:9px;fill:#8b929b">${w.label}</text>`;
  });
  // ③ PC 가동 선 — 기록 없는 버킷에서 끊는다(0 으로 그리면 선이 바닥에 붙어 'PC 가동이 적용 안 된다' 로 읽혔다)
@@ -2902,7 +2879,7 @@ async function refresh(){
    if(d.trend_src==="raw"&&d.period&&d.period[0]) notes.push(`아직 판정 신호가 없어(분석 전·수집만 한 PC) 막대는 <b>수집된 흔적</b>으로 그렸습니다 — AI 정제를 켠 [분석 실행] 뒤에는 판정 신호 기준(MM 과 같은 축)으로 바뀝니다`
     +(rt>1?` · 본 PC + 추가 PC ${rt-1}개 폴더 합산(같은 사건은 1회만)`:"")
     +(tq.signals_n?` · 이 중 판정에 쓰인 표본 신호 ${Number(tq.signals_n).toLocaleString()}건`:"")
-    +(tq.clump_excluded>0?` · 한 시각에 몰린 파일 덩어리 <b>${Number(tq.clump_excluded).toLocaleString()}건</b>은 막대에서 뺐습니다(아래 경고)`:"")+".");}
+    +".");}
   if(mc&&(mc.uncovered||[]).length) notes.push(`⚠ 메일·회의 막대는 ${mc.months}개월 중 <b>${(mc.covered||[]).length}개월</b>만 수집돼 있습니다 — 미수집 ${esc(mc.uncovered.join(", "))} (Outlook 시간 예산). [분석 실행]을 다시 돌리면 남은 달을 이어서 읽습니다.`);
   // PC 가동 선은 Windows 이벤트 로그에서 온다. 로그는 롤오버되므로 기간 앞쪽은 '0시간' 이 아니라
   // '기록 없음' 이다 — 그것을 말해 주지 않으면 'PC 가동이 적용 안 된다'로 읽힌다(제보).
@@ -3846,7 +3823,7 @@ class H(BaseHTTPRequestHandler):
                              # 주/월 단위, 추가PC 합산 실패 사유. 화면이 '0h' 와 '기록 없음' 을 구분해 말한다.
                              "trend_info": {k: tinfo.get(k) for k in
                                             ("gran", "pc_note", "pc_buckets", "pc_buckets_all", "pc_from", "capped",
-                                             "period", "roots", "signals_n", "clump_excluded", "pc_days_total")},
+                                             "period", "roots", "signals_n", "pc_days_total")},
                              "period": per,
                              "judged": judged, "last_run": lastrun,
                              # 판정 건수/대상 — 0 이면 '단계는 성공인데 왕복이 전부 실패' 를 화면이 구분한다

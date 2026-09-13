@@ -1,0 +1,157 @@
+﻿# Get-PcOnHistory.ps1
+# Reconstructs past PC-on periods from the Windows event log (no admin needed):
+#   System 6005/6006  = event log service start/stop (boot / shutdown)
+#   Kernel-Power 42   = entering sleep
+#   Power-Troubleshooter 1 = wake from sleep
+# Output: ..\data\pc\pc_on.csv   date, on_hours, first_on, last_off, night_hours, weekend
+# The System log usually covers the last 2-6 months - the script prints actual coverage.
+# Usage:  .\Get-PcOnHistory.ps1 -From 2026-02-01 -To 2026-07-31   (or -Days 120)
+param(
+    [string]$From = '',
+    [string]$To = '',
+    [int]$Days = 120
+)
+
+$ErrorActionPreference = 'Stop'
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}   # run.py 가 UTF-8 로 읽는다
+$root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+$outDir = Join-Path $root 'data\pc'
+if (-not (Test-Path $outDir)) { New-Item -ItemType Directory -Force -Path $outDir | Out-Null }
+
+if ($From) { $since = [datetime]::ParseExact($From, 'yyyy-MM-dd', $null) } else { $since = (Get-Date).Date.AddDays(-$Days) }
+if ($To)   { $until = ([datetime]::ParseExact($To, 'yyyy-MM-dd', $null)).AddDays(1) } else { $until = (Get-Date).Date.AddDays(1) }
+
+Write-Host ("[pc-on] querying event log {0} .. {1}" -f $since.ToString('yyyy-MM-dd'), $until.ToString('yyyy-MM-dd'))
+
+$events = @()
+try {
+    $events += Get-WinEvent -FilterHashtable @{ LogName='System'; Id=@(6005,6006); StartTime=$since; EndTime=$until } -ErrorAction SilentlyContinue |
+        ForEach-Object { [pscustomobject]@{ t=$_.TimeCreated; kind=$(if ($_.Id -eq 6005) {'on'} else {'off'}) } }
+} catch {}
+try {
+    $events += Get-WinEvent -FilterHashtable @{ LogName='System'; ProviderName='Microsoft-Windows-Kernel-Power'; Id=42; StartTime=$since; EndTime=$until } -ErrorAction SilentlyContinue |
+        ForEach-Object { [pscustomobject]@{ t=$_.TimeCreated; kind='off' } }
+} catch {}
+try {
+    $events += Get-WinEvent -FilterHashtable @{ LogName='System'; ProviderName='Microsoft-Windows-Power-Troubleshooter'; Id=1; StartTime=$since; EndTime=$until } -ErrorAction SilentlyContinue |
+        ForEach-Object { [pscustomobject]@{ t=$_.TimeCreated; kind='on' } }
+} catch {}
+# Modern Standby 노트북은 6005/6006(부팅/종료)이 거의 안 남는다 - 실측 'PC 가동 없음'의 주원인.
+# Kernel-Power 506/507 = Modern Standby 진입/이탈, 1074/6008 = 종료/비정상 종료.
+try {
+    $events += Get-WinEvent -FilterHashtable @{ LogName='System'; ProviderName='Microsoft-Windows-Kernel-Power'; Id=@(506,507); StartTime=$since; EndTime=$until } -ErrorAction SilentlyContinue |
+        ForEach-Object { [pscustomobject]@{ t=$_.TimeCreated; kind=$(if ($_.Id -eq 506) {'off'} else {'on'}) } }
+} catch {}
+try {
+    $events += Get-WinEvent -FilterHashtable @{ LogName='System'; Id=@(1074,6008); StartTime=$since; EndTime=$until } -ErrorAction SilentlyContinue |
+        ForEach-Object { [pscustomobject]@{ t=$_.TimeCreated; kind='off' } }
+} catch {}
+# 회사 PC는 System 로그가 빨리 롤오버돼 과거가 통째로 빈다(실측 '기간 3개월에 2건') -
+# 남아 있는 다른 소스를 전부 긁는다: 로그온/로그오프, OS 시작/종료, 절전 해제, 부팅 채널.
+try {
+    $events += Get-WinEvent -FilterHashtable @{ LogName='System'; ProviderName='Microsoft-Windows-Winlogon'; Id=@(7001,7002); StartTime=$since; EndTime=$until } -ErrorAction SilentlyContinue |
+        ForEach-Object { [pscustomobject]@{ t=$_.TimeCreated; kind=$(if ($_.Id -eq 7001) {'on'} else {'off'}) } }
+} catch {}
+try {
+    $events += Get-WinEvent -FilterHashtable @{ LogName='System'; ProviderName='Microsoft-Windows-Kernel-General'; Id=@(12,13); StartTime=$since; EndTime=$until } -ErrorAction SilentlyContinue |
+        ForEach-Object { [pscustomobject]@{ t=$_.TimeCreated; kind=$(if ($_.Id -eq 12) {'on'} else {'off'}) } }
+} catch {}
+try {
+    $events += Get-WinEvent -FilterHashtable @{ LogName='System'; ProviderName='Microsoft-Windows-Kernel-Power'; Id=107; StartTime=$since; EndTime=$until } -ErrorAction SilentlyContinue |
+        ForEach-Object { [pscustomobject]@{ t=$_.TimeCreated; kind='on' } }
+} catch {}
+# 별도 채널 - System 이 롤오버돼도 여기는 수개월 남는 경우가 많다 (부팅 100 / 종료 200)
+try {
+    $events += Get-WinEvent -FilterHashtable @{ LogName='Microsoft-Windows-Diagnostics-Performance/Operational'; Id=@(100,200); StartTime=$since; EndTime=$until } -ErrorAction SilentlyContinue |
+        ForEach-Object { [pscustomobject]@{ t=$_.TimeCreated; kind=$(if ($_.Id -eq 100) {'on'} else {'off'}) } }
+} catch {}
+# 잠금/해제(Security 4800/4801) - 권한이 있으면 가장 정확한 근무 구간 (없으면 조용히 넘어감)
+try {
+    $events += Get-WinEvent -FilterHashtable @{ LogName='Security'; Id=@(4800,4801); StartTime=$since; EndTime=$until } -ErrorAction Stop |
+        ForEach-Object { [pscustomobject]@{ t=$_.TimeCreated; kind=$(if ($_.Id -eq 4801) {'on'} else {'off'}) } }
+} catch {}
+
+$events = $events | Sort-Object t
+if ($events.Count -eq 0) {
+    Write-Host '[pc-on] no events found in range (log may not reach that far back).'
+    # 최후 폴백: 이벤트 로그가 비어도(권한/롤오버/Modern Standby) 현재 부팅 이후 구간만은 기록한다
+    try {
+        $boot = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime
+        if ($boot -and $boot -lt $until) {
+            $bs = if ($boot -gt $since) { $boot } else { $since }
+            $events += [pscustomobject]@{ t=$bs; kind='on' }
+            Write-Host ("[pc-on] fallback: current boot session since {0}" -f $bs.ToString('yyyy-MM-dd HH:mm'))
+            Write-Host '[pc-on] TIP: 과거 이력까지 정확하려면 창 샘플러(Start-ActivitySampler.ps1)를 켜 두세요.'
+        }
+    } catch {}
+}
+else {
+    # 커버리지 진단 - '기간을 못 찾는' 상황을 숨기지 않는다. 이벤트가 있어도 기간 앞부분이
+    # 통째로 비면(롤오버) 브라우저 힌트(Get-PcOnHints.py)가 이어서 보강한다.
+    $covDays = ($events | ForEach-Object { $_.t.Date } | Sort-Object -Unique).Count
+    $rangeDays = [math]::Max(1, [int]($until.Date - $since.Date).TotalDays)
+    Write-Host ("[pc-on] events: {0}, coverage {1}/{2}일, 도달 시작 {3}" -f $events.Count, $covDays, $rangeDays, $events[0].t.ToString('yyyy-MM-dd'))
+    if ($covDays * 2 -lt $rangeDays) {
+        Write-Host ("[pc-on] 주의: 이벤트 로그가 기간의 절반도 못 덮습니다(롤오버) — 브라우저 사용기록 힌트로 보강합니다.")
+    }
+}
+
+# build on-spans: 'on' opens, 'off' closes; dangling spans are capped
+$spans = @()
+$open = $null
+foreach ($e in $events) {
+    if ($e.kind -eq 'on') {
+        if ($null -eq $open) { $open = $e.t }
+    } else {
+        if ($null -ne $open) {
+            if ($e.t -gt $open) { $spans += ,@($open, $e.t) }
+            $open = $null
+        }
+    }
+}
+if ($null -ne $open) { $spans += ,@($open, (Get-Date)) }   # still running now
+
+# split spans at midnight, aggregate per day
+$daily = @{}
+foreach ($s in $spans) {
+    $a = $s[0]; $b = $s[1]
+    # cap absurd spans (missed sleep events) at 20h
+    if (($b - $a).TotalHours -gt 20) { $b = $a.AddHours(20) }
+    $cur = $a
+    while ($cur.Date -le $b.Date) {
+        $dayEnd = $cur.Date.AddDays(1)
+        $segEnd = if ($b -lt $dayEnd) { $b } else { $dayEnd }
+        $key = $cur.Date.ToString('yyyy-MM-dd')
+        if (-not $daily.ContainsKey($key)) {
+            $daily[$key] = @{ on=0.0; night=0.0; first=$cur; last=$segEnd }
+        }
+        $h = ($segEnd - $cur).TotalHours
+        $daily[$key].on += $h
+        if ($cur -lt $daily[$key].first) { $daily[$key].first = $cur }
+        if ($segEnd -gt $daily[$key].last) { $daily[$key].last = $segEnd }
+        # night portion: before 08:00 or after 19:00
+        $m8  = $cur.Date.AddHours(8); $m19 = $cur.Date.AddHours(19)
+        $nightA = if ($cur -lt $m8) { [math]::Min($segEnd.Ticks, $m8.Ticks) } else { $cur.Ticks }
+        if ($cur -lt $m8) { $daily[$key].night += ([datetime]$nightA - $cur).TotalHours }
+        if ($segEnd -gt $m19) {
+            $st = if ($cur -gt $m19) { $cur } else { $m19 }
+            $daily[$key].night += ($segEnd - $st).TotalHours
+        }
+        $cur = $dayEnd
+    }
+}
+
+$rows = New-Object System.Collections.Generic.List[string]
+$rows.Add('date,on_hours,first_on,last_off,night_hours,weekend')
+foreach ($k in ($daily.Keys | Sort-Object)) {
+    $d = $daily[$k]
+    $dow = ([datetime]$k).DayOfWeek
+    $we = if ($dow -eq 'Saturday' -or $dow -eq 'Sunday') { 1 } else { 0 }
+    # 자정으로 끝난 구간은 '24:00' - '00:00' 으로 쓰면 문자열 비교에서 가장 이른 시각이 돼
+    # 병합(Get-PcOnHints)에서 마지막 사용 시각이 영원히 반영되지 않는다
+    $lastStr = if ($d.last.Date -gt ([datetime]$k).Date) { '24:00' } else { $d.last.ToString('HH:mm') }
+    $rows.Add(('{0},{1},{2},{3},{4},{5}' -f $k, [math]::Round($d.on,2), `
+        $d.first.ToString('HH:mm'), $lastStr, [math]::Round($d.night,2), $we))
+}
+[System.IO.File]::WriteAllLines((Join-Path $outDir 'pc_on.csv'), $rows, [System.Text.Encoding]::UTF8)
+Write-Host ("[pc-on] days written: {0}" -f ($rows.Count - 1))

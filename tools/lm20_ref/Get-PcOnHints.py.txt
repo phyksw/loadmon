@@ -1,0 +1,218 @@
+# -*- coding: utf-8 -*-
+r"""
+Get-PcOnHints.py — 브라우저 사용기록의 '방문 시각'만으로 과거 PC 가동을 보강한다.
+
+왜: 회사 PC는 System 이벤트 로그가 빨리 롤오버돼 3개월 기간에 며칠만 남는다(실측 2건).
+    Edge/Chrome 사용기록은 기본 90일 보존이라 기간 전체를 덮는 유일한 상시 소스다.
+
+프라이버시: visits.visit_time 컬럼(시각)만 SELECT 한다 — URL·제목·검색어는 조회 자체를
+    하지 않는다. 산출물은 날짜별 가동시간 숫자뿐이다.
+
+동작: 방문 시각을 30분 갭으로 세션화(+마지막 방문 5분 여유) → 자정 분할 → 일별
+    on/night 계산 → 기존 data\pc\pc_on.csv(이벤트 기반)와 날짜별 max 병합.
+
+  python collect\Get-PcOnHints.py --from 2026-05-19 --to 2026-08-17
+"""
+import csv
+import glob
+import io
+import os
+import shutil
+import sqlite3
+import sys
+import tempfile
+from datetime import datetime, timedelta
+
+if __name__ == "__main__":
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+GAP_MIN = 30          # 방문 간격이 이보다 벌어지면 다른 세션
+TAIL_MIN = 5          # 마지막 방문 뒤 여유
+CHROME_EPOCH_OFFSET = 11644473600   # 1601-01-01 → 1970-01-01 (초)
+
+
+def arg(flag, d=""):
+    return sys.argv[sys.argv.index(flag) + 1] if flag in sys.argv else d
+
+
+def history_files():
+    """Edge/Chrome 전 프로필의 History 경로 (LM 전용 copilot_profile 은 여기 없음)"""
+    la = os.environ.get("LOCALAPPDATA", "")
+    outs = []
+    for base in (os.path.join(la, "Microsoft", "Edge", "User Data"),
+                 os.path.join(la, "Google", "Chrome", "User Data")):
+        if not os.path.isdir(base):
+            continue
+        for prof in ["Default"] + [os.path.basename(p) for p in glob.glob(os.path.join(base, "Profile *"))]:
+            h = os.path.join(base, prof, "History")
+            if os.path.isfile(h):
+                outs.append(h)
+    return outs
+
+
+def visit_times(hist_path, t0, t1):
+    """방문 시각 목록 — 브라우저가 잠그고 있어도 사본으로 읽는다 (URL 은 조회하지 않음)"""
+    tmp = os.path.join(tempfile.gettempdir(), "lm_hist_copy")
+    times = []
+    try:
+        shutil.copy2(hist_path, tmp)
+        for ext in ("-wal", "-shm"):        # WAL 에만 있는 최근 방문 포함
+            if os.path.isfile(hist_path + ext):
+                shutil.copy2(hist_path + ext, tmp + ext)
+        con = sqlite3.connect(tmp)
+        try:
+            for (v,) in con.execute("SELECT visit_time FROM visits"):
+                try:
+                    t = datetime.fromtimestamp(v / 1e6 - CHROME_EPOCH_OFFSET)
+                except (OSError, OverflowError, ValueError):
+                    continue
+                if t0 <= t < t1:
+                    times.append(t)
+        finally:
+            con.close()
+    except Exception as e:
+        print(f"[pc-hint] {os.path.basename(os.path.dirname(hist_path))}: 읽기 실패 ({e.__class__.__name__})")
+    finally:
+        for p in (tmp, tmp + "-wal", tmp + "-shm"):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+    return times
+
+
+def to_spans(times):
+    """시각 목록 → (시작, 끝) 세션 구간 (30분 갭 분리, 끝 +5분)"""
+    spans = []
+    for t in sorted(times):
+        if spans and (t - spans[-1][1]).total_seconds() <= GAP_MIN * 60:
+            spans[-1][1] = t
+        else:
+            spans.append([t, t])
+    return [(a, b + timedelta(minutes=TAIL_MIN)) for a, b in spans]
+
+
+def daily_from_spans(spans):
+    """자정 분할 → {date: {on, night, first, last}} — PS 수집기와 같은 정의(야간 = 08시 이전·19시 이후)"""
+    daily = {}
+    for a, b in spans:
+        cur = a
+        while cur.date() <= b.date():
+            day_end = datetime.combine(cur.date(), datetime.min.time()) + timedelta(days=1)
+            seg_end = min(b, day_end)
+            if seg_end <= cur:
+                break
+            k = cur.date().isoformat()
+            d = daily.setdefault(k, {"on": 0.0, "night": 0.0, "first": cur, "last": seg_end})
+            d["on"] += (seg_end - cur).total_seconds() / 3600
+            d["first"] = min(d["first"], cur)
+            d["last"] = max(d["last"], seg_end)
+            m8 = datetime.combine(cur.date(), datetime.min.time()) + timedelta(hours=8)
+            m19 = datetime.combine(cur.date(), datetime.min.time()) + timedelta(hours=19)
+            if cur < m8:
+                d["night"] += (min(seg_end, m8) - cur).total_seconds() / 3600
+            if seg_end > m19:
+                d["night"] += (seg_end - max(cur, m19)).total_seconds() / 3600
+            cur = day_end
+    return daily
+
+
+def merge_pc_on(csv_path, hints):
+    """이벤트 기반 pc_on.csv 와 병합 — 날짜별로 큰 쪽(on/night max, first min, last max)"""
+    rows = {}
+    if os.path.isfile(csv_path):
+        with open(csv_path, encoding="utf-8-sig") as f:
+            for r in csv.DictReader(f):
+                if r.get("date"):
+                    rows[r["date"]] = r
+    def _hhmm(dt, day_key):
+        """자정으로 끝난 구간은 '00:00'이 아니라 '24:00' — 문자열 비교(max)에서 가장 이른
+        시각으로 취급돼 마지막 사용 시각이 영원히 반영되지 않던 문제를 막는다."""
+        if dt.strftime("%H:%M") == "00:00" and dt.date().isoformat() != day_key:
+            return "24:00"
+        return dt.strftime("%H:%M")
+
+    added = improved = 0
+    for k, d in sorted(hints.items()):
+        h = {"date": k, "on_hours": round(d["on"], 2), "first_on": d["first"].strftime("%H:%M"),
+             "last_off": _hhmm(d["last"], k), "night_hours": round(d["night"], 2),
+             "weekend": 1 if datetime.strptime(k, "%Y-%m-%d").weekday() >= 5 else 0}
+        old = rows.get(k)
+        if not old:
+            rows[k] = {a: str(b) for a, b in h.items()}
+            added += 1
+            continue
+        try:
+            if float(old.get("on_hours") or 0) < h["on_hours"]:
+                old["on_hours"] = str(h["on_hours"])
+                old["night_hours"] = str(max(float(old.get("night_hours") or 0), h["night_hours"]))
+                old["first_on"] = min(old.get("first_on") or "23:59", h["first_on"])
+                old["last_off"] = max(old.get("last_off") or "00:00", h["last_off"])
+                improved += 1
+        except (ValueError, TypeError):
+            continue
+    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+    with open(csv_path, "w", encoding="utf-8", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["date", "on_hours", "first_on", "last_off", "night_hours", "weekend"])
+        for k in sorted(rows):
+            r = rows[k]
+            w.writerow([r.get("date"), r.get("on_hours"), r.get("first_on"),
+                        r.get("last_off"), r.get("night_hours"), r.get("weekend")])
+    return len(rows), added, improved
+
+
+def sampler_times(t0, t1):
+    """창 샘플러(activity_*.csv)의 샘플 시각 — 1분 간격으로 찍히는 가장 확실한 가동 증거.
+    제목·프로세스는 읽지 않고 time 열만 쓴다. 브라우저 기록이 정책으로 막힌 PC 의 대비책."""
+    times = []
+    for p in glob.glob(os.path.join(ROOT, "data", "activity", "activity_*.csv")):
+        try:
+            with open(p, encoding="utf-8-sig", errors="replace") as f:
+                for r in csv.DictReader(f):
+                    try:
+                        t = datetime.strptime((r.get("time") or "")[:19], "%Y-%m-%d %H:%M:%S")
+                    except ValueError:
+                        try:
+                            t = datetime.strptime((r.get("time") or "")[:16], "%Y-%m-%d %H:%M")
+                        except ValueError:
+                            continue
+                    if t0 <= t < t1:
+                        times.append(t)
+        except OSError:
+            continue
+    return times
+
+
+def main():
+    d0 = arg("--from") or (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+    d1 = arg("--to") or datetime.now().strftime("%Y-%m-%d")
+    t0 = datetime.strptime(d0, "%Y-%m-%d")
+    t1 = datetime.strptime(d1, "%Y-%m-%d") + timedelta(days=1)
+    files = history_files()
+    if not files:
+        print("[pc-hint] Edge/Chrome 사용기록 없음(정책 차단 가능) — 샘플러 시각으로만 보강 시도")
+    times = []
+    for h in files:
+        n = len(times)
+        times += visit_times(h, t0, t1)
+        prof = os.path.basename(os.path.dirname(h))
+        brand = "Edge" if "\\Edge\\" in h else "Chrome"
+        print(f"[pc-hint] {brand}\\{prof}: 방문 시각 {len(times) - n}건 (URL 미조회)")
+    st = sampler_times(t0, t1)
+    if st:
+        print(f"[pc-hint] 창 샘플러: 샘플 시각 {len(st)}건 합류")
+    times += st
+    if not times:
+        print("[pc-hint] 보강 근거 없음(방문 기록·샘플러 모두 0건) — 이벤트 로그 결과 유지")
+        return 0
+    # TAIL_MIN 여유가 --to 자정을 넘겨 기간 밖 날짜 행을 만들지 않게 t1 로 자른다
+    daily = daily_from_spans([(a, min(b, t1)) for a, b in to_spans(times) if a < t1])
+    total, added, improved = merge_pc_on(os.path.join(ROOT, "data", "pc", "pc_on.csv"), daily)
+    print(f"[pc-hint] 힌트 {len(daily)}일 → pc_on.csv 병합: 신규 {added}일 · 보강 {improved}일 · 합계 {total}일")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

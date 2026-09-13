@@ -1,7 +1,7 @@
 LoadMonitor24 필수 파일 목록 - 복사 시 전부 있어야 합니다.
 (data/ report/ teamdata/ 는 복사 금지 - 개인정보)
 
-총 67개
+총 71개
 
 LoadMonitor24-UI.bat                                   2,444 B  ef09c6ae
 LoadMonitor24.bat                                      3,554 B  f030200d
@@ -9,6 +9,7 @@ LoadMonitor24-팀취합.bat                                  1,948 B  2f2471c0
 LoadMonitor24-팀서버.bat                                  1,612 B  e2adafad
 LoadMonitor24-팀업로드.bat                                 1,713 B  9372748b
 LoadMonitor24-수집진단.bat                                   849 B  f9708afd
+LoadMonitor24-가동시간비교.bat                               1,048 B  2ba31119
 LoadMonitor24-샘플러등록.bat                                  868 B  4e48ca20
 LoadMonitor24-이동준비.bat                                 1,312 B  6fe7c991
 agentic.py                                            41,104 B  e946e70e
@@ -30,7 +31,7 @@ refine.py                                             42,402 B  266b57b0
 ruff.toml                                              1,004 B  47a31613
 FILES.txt                                                (이 파일)
 run.py                                                51,987 B  ee283c8f
-자가점검.py                                                8,785 B  b9fd138a
+자가점검.py                                                8,951 B  ffc66193
 collect/Add-WorkLog.ps1                                1,771 B  8a921980
 collect/Get-FileActivity.ps1                          48,656 B  cfab595d
 collect/Get-GitActivity.py                            29,162 B  0facda4f
@@ -63,10 +64,13 @@ core/projmap.py                                        7,133 B  cca7d2cb
 docs/설정가이드.md                                         65,952 B  45552857
 docs/사용안내.html                                       272,444 B  3cea5b8b
 tools/copilot_auto.py                                 62,703 B  201ac0ae
+tools/pc_hours_compare.py                             13,868 B  c224e7aa
+tools/lm20_ref/Get-PcOnHistory.ps1.txt                 9,319 B  5ce7ef54
+tools/lm20_ref/Get-PcOnHints.py.txt                    9,545 B  7d4dae30
 tools/Get-EmbeddedPython.ps1                           2,472 B  b0a213eb
 tools/check_page_js.py                                 8,818 B  f6d3b95b
 tools/lint.ps1                                         7,914 B  0c6f51ac
 tools/Make-Package.ps1                                10,733 B  f8e333a9
 tools/Prepare-Move.ps1                                22,237 B  9859c75a
 tools/update_files.py                                  4,530 B  33b4a677
-ui/app.py                                            342,098 B  fa9bdaf9
+ui/app.py                                            339,737 B  9b1b52b1
