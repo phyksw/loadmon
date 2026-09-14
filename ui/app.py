@@ -31,7 +31,7 @@ from progress import parse as parse_progress  # noqa: E402  (core 경로 등록 
 REPORT = os.path.join(ROOT, "report")
 DATA = os.path.join(ROOT, "data")
 NO_WIN = 0x08000000
-VERSION = "v24.9"
+VERSION = "v24.10"
 LOCK = threading.Lock()
 FREEZE_LOCK = threading.Lock()       # [보고서 만들기] 직렬화 — JOB 과 별개(사본에 '실행 중'이 굳지 않게)
 JOB = {"running": False, "log": [], "step": "", "started": 0.0, "pid": 0,
@@ -3608,6 +3608,11 @@ async function loadFlow(){
   // 상위(Level 1)가 바뀌는 자리마다 머리말을 넣어 '상위 → 과제' 계층이 눈에 보이게 한다.
   // flow.py 가 상위로 묶어 정렬해 내보내므로 여기서는 바뀌는 지점만 잡으면 된다.
   let _l1prev=null,_pjprev=null;
+  // 상위(업무 성격)·과제(중위)도 접었다 펼 수 있게 <details> 로 감싼다(제보). 열고 닫은 상태는
+  // 화면이 다시 그려져도 유지돼야 하므로 창 전역 Set 에 키로 기억한다.
+  const FOPEN=window.__flowOpen||(window.__flowOpen=new Set());
+  let _grpOpen=0;                       // 지금 열려 있는 그룹 <details> 수(상위·과제) — 끝에서 닫는다
+  const _first={l1:null,pj:null};
   el.innerHTML=btn+d.flows.map(f=>{
    const mm=f.mm||{}, det=Object.entries(mm.details||{});
    const mtot=det.reduce((s,[,v])=>s+v,0)||1;
@@ -3636,27 +3641,46 @@ async function loadFlow(){
    // 상위가 빈 카드는 두 종류다 — 표 자체가 없는 것(미분류)과, 표가 갈려 일부러 안 찍은 것(혼재).
    // 후자는 '재배치가 필요한 것' 이므로 그렇게 말해 줘야 한다. 예전에는 둘 다 '상위 미분류' 였다.
    const l1lab=cur?esc(cur):((f.level1_mix||[]).length?"상위 혼재 — 재배치 필요":"상위 미분류");
-   if(cur!==_l1prev){head+=`<div style="margin:14px 0 6px;font-size:12px;color:#4a5159"><b>${l1lab}</b> <span class="dim">— ${new Set(d.flows.filter(x=>(x.level1||"")===cur).map(pkOf)).size}개 과제</span></div>`;_pjprev=null;}
+   if(cur!==_l1prev){
+    // 앞 그룹들을 닫는다(과제 → 상위 순서)
+    while(_grpOpen>0){head+="</div></details>";_grpOpen--;}
+    if(_first.l1===null)_first.l1="l1:"+cur;
+    const _k="l1:"+cur, _n=new Set(d.flows.filter(x=>(x.level1||"")===cur).map(pkOf)).size;
+    const _nf=d.flows.filter(x=>(x.level1||"")===cur).length;
+    const _op=(FOPEN.size?FOPEN.has(_k):_k===_first.l1)?" open":"";
+    head+=`<details class="grp1" data-k="${esc(_k)}"${_op} style="margin:14px 0 4px">
+      <summary style="font-size:12.5px;color:#4a5159;padding:6px 10px;background:#f3f5f8;border-radius:6px">
+      <b>${l1lab}</b> <span class="dim">— 과제 ${_n}개 · 담당 업무 ${_nf}개</span></summary><div class="body">`;
+    _grpOpen++;_pjprev=null;}
    if(hasDet&&pk!==_pjprev){
     const sibs=d.flows.filter(x=>pkOf(x)===pk&&(x.level1||"")===cur).length;
     // 신호가 얕아 흐름을 만들지 않은 업무 — 콘솔에만 있던 것을 과제 밑에 한 줄로 알린다.
     // 이것이 안 보이면 사용자에게는 '내 일이 통째로 사라졌다' 로 읽힌다.
     const th=(d.thin||[]).filter(t=>fold2(t.project)===pk);
     const thin=th.length?`<span class="dim"> · <span title="${esc(th.map(t=>t.detail+"("+t.signals+")").join(", "))}">신호가 얕아 흐름을 만들지 않은 업무 ${th.length}개</span></span>`:"";
-    head+=`<div style="margin:8px 0 4px 6px;font-size:13px"><b>${esc(pj)}</b> <span class="dim">— 담당 업무 ${sibs}개</span>${thin}</div>`;
+    if(_grpOpen>1){head+="</div></details>";_grpOpen--;}          // 앞 과제를 닫는다
+    if(_first.pj===null)_first.pj="pj:"+pk;
+    const _kp="pj:"+pk;
+    const _opp=(FOPEN.size?FOPEN.has(_kp):_kp===_first.pj)?" open":"";
+    head+=`<details class="grp2" data-k="${esc(_kp)}"${_opp} style="margin:8px 0 4px 6px">
+      <summary style="font-size:13px;padding:4px 8px"><b>${esc(pj)}</b> <span class="dim">— 담당 업무 ${sibs}개</span>${thin}</summary><div class="body">`;
+    _grpOpen++;
    }
    _l1prev=cur;_pjprev=pk;
    // 과제 수만큼 길어지는 탭 — 접이식으로. 제목 줄에 역할 요약을 실어 접힌 채로도 훑는다.
    // 상위(업무 성격) 배지 — 계층은 상위(Level 1) > 과제(Level 2) > 담당업무(Level 3) 다.
    // LM20 처럼 상위로도 묶어 읽히게 제목에 배지를 달고, 아래에서 상위별로 구간을 나눈다.
-   const L1C={"신제품개발":"#2a78d6","기술 내재화":"#0e8c7a","양산준비":"#e08a00","일반업무":"#8b929b"};
+   const L1C={"신제품개발":"#2a78d6","기술 내재화":"#0e8c7a","양산준비":"#e08a00","AX·자동화":"#6c4fb8","일반업무":"#8b929b"};
    const l1b=f.level1?`<span style="display:inline-block;padding:0 7px;border-radius:9px;color:#fff;font-size:11px;background:${L1C[f.level1]||"#8b929b"};margin-right:6px">${esc(f.level1)}</span>`:"";
    // 한 과제가 여러 흐름을 가질 수 있다 — 이어지지 않는 일을 억지로 한 타임라인으로 엮지 않기 위해서다.
    // 흐름 이름을 제목에 붙여 같은 과제의 다른 줄기임을 알 수 있게 한다.
    const br=f.branch?`<span class="dim"> · ${esc(f.branch)}</span>`:"";
    // 담당업무 카드는 과제 머리말 밑에 있으니 제목에는 담당업무만(과제는 title 속성으로).
    const ttl=hasDet?`<span title="${esc(pj)}">${esc(f.detail)}</span>`:esc(f.model);
-   return head+`<details${fi===0?" open":""}${hasDet?' style="margin-left:6px"':''}><summary>${hasDet?"":l1b}${ttl}${br}
+   // 카드도 같은 규칙으로 상태를 기억한다 — 처음 화면에서는 첫 카드만 펼친다
+   const _kc="wf:"+String(f.model||"")+"|"+String(f.branch||"");
+   const _opc=(FOPEN.size?FOPEN.has(_kc):fi===0)?" open":"";
+   return head+`<details${_opc}${hasDet?' style="margin-left:6px"':''} data-k="${esc(_kc)}"><summary>${hasDet?"":l1b}${ttl}${br}
      <span class="state">${(mm.mm!=null)?mm.mm+" MM · ":""}단계 ${(f.steps||[]).length}개 · ${esc((f.role||"판단 유보").split("—")[0].trim())}</span></summary>
     <div class="body">
     ${(f.upstream||f.downstream)?`<div class="note" style="margin:2px 0 6px">${f.upstream?`← 앞 업무: <b>${esc(String(f.upstream).split(" / ").pop())}</b>`:""}${(f.upstream&&f.downstream)?" &nbsp;·&nbsp; ":""}${f.downstream?`→ 다음 업무: <b>${esc(String(f.downstream).split(" / ").pop())}</b>`:""}</div>`:""}
@@ -3664,7 +3688,13 @@ async function loadFlow(){
     ${f.summary?`<div class="note" style="margin-bottom:6px">${esc(f.summary)}</div>`:""}
     ${mmBar}
     <table style="margin-top:6px"><tr><th></th><th>단계</th><th>무슨 일</th><th>Agent 가능성</th></tr>${steps}</table>
-    </div></details>`;}).join("");
+    </div></details>`;}).join("")+(function(){let s="";while(_grpOpen>0){s+="</div></details>";_grpOpen--;}return s;})();
+  // 접고 펴는 상태를 기억한다 — 1초 주기 갱신이나 탭 이동 뒤에도 보던 자리가 유지된다
+  el.querySelectorAll("details[data-k]").forEach(dt=>{
+   dt.addEventListener("toggle",()=>{const k=dt.getAttribute("data-k");
+    if(dt.open)FOPEN.add(k);else FOPEN.delete(k);
+    if(!FOPEN.size)FOPEN.add("\u0000");});           // 전부 접은 상태도 '사용자가 정한 것' 으로 남긴다
+  });
  }
  const rb=$("flowre");
  if(rb)rb.onclick=async()=>{
@@ -3771,11 +3801,16 @@ async function loadReview(kind){
   const tl=x.timeline.map(day=>`<div class="d">${day.date}</div>`+day.lines.map(l=>
    `<div>${l.t} <span class="s">[${esc(l.src)}]</span> <span class="p" style="color:${col(l.proj)}">${esc(l.proj)}</span> ${l.who&&l.who!=="나"?esc(l.who)+": ":""}${esc(l.text)}</div>`).join("")).join("");
   const nx=(kind==="month")?nar[x.key]:null;
+  // 이월된 달은 출처를 적는다 — 같은 달 코멘트는 기간이 달라도 그 달의 것이지만, 어느 기간에서 온
+  // 것인지 모르면 사용자가 숫자와 글이 어긋난 것으로 읽는다.
+  const narFrom=nx&&nx.from_tag?` <span class="state">(${esc(nx.from_tag)} 기간에서 이월)</span>`:"";
   const narH=nx?`<div style="background:#f0f6fd;border:1px solid #d6e5f7;border-radius:6px;padding:10px 14px;margin:8px 0;font-size:12.5px;line-height:1.7">
-   <b>AI 월간 리뷰</b> — ${esc(nx.summary||"")}${(nx.projects||[]).map(p=>`<div style="margin-top:4px">· <b>${esc(p.name)}</b> ${esc(p.story||"")} <span class="state">${esc(p.worktypes||"")}</span></div>`).join("")}</div>`
+   <b>AI 월간 리뷰</b>${narFrom} — ${esc(nx.summary||"")}${(nx.projects||[]).map(p=>`<div style="margin-top:4px">· <b>${esc(p.name)}</b> ${esc(p.story||"")} <span class="state">${esc(p.worktypes||"")}</span></div>`).join("")}</div>`
    :(kind==="month"?`<div class="note" style="border:1px dashed #c9cfd8;border-radius:6px;padding:8px 12px;margin:8px 0">
-   이 달의 AI 리뷰 코멘트가 없습니다 — 다른 PC에서 복사했거나(코멘트는 report 폴더에 있어 복사 시 제외됨)
-   AI 판정 없이 분석한 경우입니다. 상단 <b>[리뷰 코멘트 재생성]</b> 버튼으로 몇 분 만에 복구할 수 있습니다.</div>`:"");
+   이 달의 AI 리뷰 코멘트가 없습니다. 흔한 순서대로 — ① 이 기간을 <b>AI 판정 없이</b> 분석했다
+   ② 그 달의 왕복이 실패했다(진행 로그의 "${esc(x.key)} 내러티브 실패") ③ 판정이 시간 예산·정체 감지로
+   끊겨 남은 달을 만들지 못했다 ④ 다른 PC에서 결과만 복사했다(코멘트는 report 폴더에 있어 제외됨).
+   상단 <b>[리뷰 코멘트 재생성]</b> 이 이미 판정된 신호로 이 달만 다시 만듭니다 — 재수집·재판정은 하지 않습니다.</div>`:"");
   const wtsum=(x.wt||[]).map(([k,v])=>`${k} ${v}%`).join(" · ");
   const head=`${esc(x.label)} <span class="state">신호 ${x.signals}건 · 활동 ${x.days}일${wtsum?" · "+esc(wtsum):""}</span>`;
   const body=`${narH}${bar}${psec}${connSVG(x,col)}
@@ -3802,7 +3837,7 @@ async function loadAgentic(){
  if(!a){h+=`<div class="note">아직 매칭 결과가 없습니다${d.tag?` (기간 ${esc(d.tag)})`:""}${d.other_tag?` — <b>${esc(d.other_tag)}</b> 기간 결과는 있습니다`:""}${d.stage_note?` <span class="state">· 최근 실행 기록: ${esc(d.stage_note)}</span>`:""} — [분석 실행](AI 판정 포함)을 돌리면 자동으로 생성됩니다. 이미 분석을 마쳤다면 위 버튼으로 매칭만 실행하세요.</div></div>`;}
  else{
   const lastErr=a.last_error&&a.last_error.error?`<div class="note" style="color:#c0122f">마지막 실패 사유: ${esc(a.last_error.error)}${a.last_error.hint?` — ${esc(a.last_error.hint)}`:""}</div>`:"";
-  h+=`<div class="note">기간 ${esc(a.tag)} · 업무 ${a.rows_analyzed}행 분석${a.rows_total&&a.rows_total!==a.rows_analyzed?` / 전체 ${a.rows_total}행`:""}${a.chunks?` · 묶음 ${a.chunks}회`:""}${a.failed_chunks?` <span style="color:#c0122f">· ${a.failed_chunks}/${a.chunks||"?"} 묶음 실패</span>`:""}${pend?` <span style="color:#c0122f">· ${pend}행 미판정 — 결과가 실제보다 적을 수 있음. 위 버튼으로 남은 행만 이어서 판정</span>`:""}${a.salvaged_chunks?` · 잘린 답 복구 ${a.salvaged_chunks}묶음(부분 결과)`:""}${a.mm_recalc?` · 로드 MM 은 업무 실측 합(겹침 과제는 안분)`:""}${!(a.match||[]).length&&!pend?` · <b>12과제에 걸치는 현업이 없습니다(매칭 0건 — 실패 아님)</b>`:""}</div>${lastErr}${d.reextracted?`<div class="note" style="color:#8a5a00">⚠ <b>${esc(d.reextracted_title||"재추출 이후 결과")}</b> — ${esc(d.reextracted_note||"이 매칭은 마지막 업무 로드 재추출 이전의 것입니다")}</div>`:""}</div>`;
+  h+=`<div class="note">기간 ${esc(a.tag)} · 업무 ${a.rows_analyzed}행 분석${a.rows_total&&a.rows_total!==a.rows_analyzed?` / 전체 ${a.rows_total}행`:""}${a.chunks?` · 묶음 ${a.chunks}회`:""}${a.failed_chunks?` <span style="color:#c0122f">· ${a.failed_chunks}/${a.chunks||"?"} 묶음 실패</span>`:""}${pend?` <span style="color:#c0122f">· ${pend}행 미판정 — 결과가 실제보다 적을 수 있음. 위 버튼으로 남은 행만 이어서 판정</span>`:""}${a.salvaged_chunks?` · 잘린 답 복구 ${a.salvaged_chunks}묶음(부분 결과)`:""}${a.mm_recalc?` · 로드 MM 은 업무 실측 합(겹침 과제는 안분)`:""}${!(a.match||[]).length&&!pend&&!(a.unknown_task_count||0)?` · <b>12과제에 걸치는 현업이 없습니다(매칭 0건 — 실패 아님)</b>`:""}${a.unknown_task_count?` <span style="color:#c0122f">· 답이 목록에 없는 과제 코드 ${a.unknown_task_count}건(${(a.unknown_tasks||[]).slice(0,4).map(esc).join(", ")}) — 그만큼 매칭이 빠졌습니다</span>`:""}</div>${(function(){const r=a.mm_recalc||{};if(r.matched_rows==null)return "";const tot=r.rows_total||a.rows_total||0, mr=r.matched_rows||0;const pct=tot?Math.round(mr/tot*100):0;const warn=pct<80?' style="color:#c0122f"':"";return `<div class="note"${warn}>근거로 잡힌 업무 <b>${mr}/${tot}행</b> (${pct}%) · ${(r.matched_mm||0).toFixed(2)} MM — 미계상 ${r.unmatched_rows||0}행 · ${(r.unmatched_mm||0).toFixed(2)} MM${r.work_cap?` · 과제별 근거 상한 ${r.work_cap}개(config.copilotAuto.agenticMaxWork)`:""}${pct<80?" — 상한을 올리거나 [재매칭]으로 다시 물으면 늘어납니다":""}</div>`;})()}${lastErr}${d.reextracted?`<div class="note" style="color:#8a5a00">⚠ <b>${esc(d.reextracted_title||"재추출 이후 결과")}</b> — ${esc(d.reextracted_note||"이 매칭은 마지막 업무 로드 재추출 이전의 것입니다")}</div>`:""}</div>`;
   const axCol={"축1":"#2a78d6","축2":"#0e8c7a","축3":"#a61b4a"};
   const FITC=["#e1e0d9","#cde2fb","#9ec5f4","#6da7ec","#3987e5","#256abf","#184f95"];
   const fitBar=f=>{const v=Math.max(0,Math.min(100,Number(f)||0));
@@ -4289,6 +4324,24 @@ class H(BaseHTTPRequestHandler):
                                 out[key] = json.load(f)
                         except (OSError, ValueError):
                             pass
+                # 월별 코멘트는 기간(tag)이 바뀌면 새 파일에 없다 — 같은 달의 코멘트는 기간이 달라도
+                # 그 달의 것이므로, 이 tag 파일이 없으면 가장 최근 기간의 것을 대신 보여 준다(제보:
+                # '월별 코멘트가 빠짐'). 판정을 다시 돌리면 judge 가 그 달을 이 tag 로 이월해 쓴다.
+                if not out.get("narratives"):
+                    alt = [q for q in glob.glob(os.path.join(REPORT, "ai_narratives_*.json"))
+                           if os.path.basename(q) != f"ai_narratives_{tag}.json"]
+                    for q in sorted(alt, key=lambda x: _mtime(x), reverse=True):
+                        try:
+                            with open(q, encoding="utf-8") as f:
+                                v = json.load(f)
+                        except (OSError, ValueError):
+                            continue
+                        if isinstance(v, dict) and v:
+                            _t = os.path.basename(q)[len("ai_narratives_"):-len(".json")]
+                            out["narratives"] = {k: dict(x, from_tag=str(x.get("from_tag") or _t))
+                                                 for k, x in v.items() if isinstance(x, dict)}
+                            out["narratives_alt_tag"] = _t
+                            break
             # ── 일관성: 피벗의 MM 숫자는 대시보드와 '같은 파일'에서 다시 계산한다 ──
             # judge 시점 pivots JSON은 refine(행 병합·비업무 제거·재정규화) 이전 값이라
             # 대시보드(refined 우선)와 어긋난다 — 실측: 상세리뷰 '개발' MM이 대시보드 초과.

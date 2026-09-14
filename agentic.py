@@ -72,7 +72,10 @@ def _chat_note():
     return " — 설정 chatTurns=0: 묶음마다 새 채팅" if n <= 0 else f" · 첫 왕복·실패 뒤·{n}회마다 새 채팅"
 OVERLAY_ROWS = 3               # 묶음 경계 겹침 행 수
 OVERLAY_CHARS = 600            # 겹침 행 글자 상한 (예산 안에 포함해 계산한다)
-MAX_WORK = 12                  # 과제별 근거 업무 상한
+MAX_WORK = 60                  # 과제별 근거 업무 상한(config.copilotAuto.agenticMaxWork).
+#                                12 이던 것을 올렸다 — 묶음을 나눠 240행을 다 보내도 과제당 12개에서
+#                                끊겨 근거 행의 78%가 어느 과제에도 계상되지 않았다(실측). 업무가 많은
+#                                사람일수록 로드가 작게 나와 사람 간 비교가 뒤집혔다.
 MAX_CHUNKS = 30                # 한 실행의 묶음 상한 — 초과분은 rows_done 을 남겨 다음 실행이 이어서
 MAX_CONSEC_FAIL = 3            # 연속 실패 상한 — Copilot 이 안 되는 날 남은 묶음을 헛되이 기다리지 않게
 SPLIT_MIN_ROWS = 4             # 이 이상인 묶음이 답 없이/잘려 실패하면 반으로 나눠 1회 재시도
@@ -264,7 +267,14 @@ def _placeholder(s):
     return len(s) >= 2 and s[0] == "<" and s[-1] == ">"
 
 
-def _clean_list(v, cap=MAX_WORK):
+def max_work():
+    """과제별 근거 업무 상한 — config.copilotAuto.agenticMaxWork(기본 MAX_WORK)."""
+    return max(1, _cfg_int("agenticMaxWork", MAX_WORK))
+
+
+def _clean_list(v, cap=None):
+    # cap 기본값에 상수를 박아 두면 import 시점에 고정돼 설정이 무력해진다 — None 으로 받고 여기서 읽는다
+    cap = max_work() if cap is None else cap
     if isinstance(v, str):
         v = [v]
     if not isinstance(v, list):
@@ -277,16 +287,30 @@ def _clean_list(v, cap=MAX_WORK):
     return out[:cap]
 
 
-def merge_match(best, o, tmap):
+def _tid_key(s):
+    """과제 코드 비교 축 — 영문·숫자만 남긴다(AL-1 · al 1 · AL1 을 같게 본다).
+    예전에는 대문자로만 맞춰, 답이 'AL1' 처럼 적으면 그 매칭이 **조용히 전량 버려졌다**."""
+    return re.sub(r"[^A-Z0-9]", "", str(s or "").upper())
+
+
+def merge_match(best, o, tmap, unknown=None):
     """한 묶음 응답(o)을 best(과제별 누적)에 합친다 → 이 묶음의 매칭 건수.
-    과제별 최고 fit·그때 reason, work 는 합집합(MAX_WORK 상한)."""
+    과제별 최고 fit·그때 reason, work 는 합집합(max_work() 상한).
+    unknown: 목록을 주면 tmap 에 없는 과제 코드를 담아 돌려준다(화면에 알리기 위해)."""
     got = 0
+    _bykey = {_tid_key(k): k for k in tmap}
     for m in (o.get("match") or []):
         if not isinstance(m, dict):
             continue
         tid = str(m.get("task") or "").strip().upper()
         if tid not in tmap:
-            continue
+            _alt = _bykey.get(_tid_key(tid))
+            if _alt:
+                tid = _alt                      # 표기만 다른 같은 과제 — 살린다
+            else:
+                if unknown is not None and tid:
+                    unknown.append(tid)
+                continue
         try:
             fit = max(0, min(100, int(float(m.get("fit") or 0))))
         except (TypeError, ValueError):
@@ -304,8 +328,9 @@ def merge_match(best, o, tmap):
             if fit > cur["fit"]:
                 cur["fit"] = fit
                 cur["reason"] = reason or cur["reason"]
+            _cap = max_work()
             for w in work:
-                if w not in cur["work"] and len(cur["work"]) < MAX_WORK:
+                if w not in cur["work"] and len(cur["work"]) < _cap:
                     cur["work"].append(w)
         got += 1
     return got
@@ -472,13 +497,23 @@ def recalc_mm(out, rows, amap=None, rows_file=""):
     no_ev = [m for m in hits if not m.get("evidence_rows")]
     dup = [m for m in hits if m.get("shared_tasks")]
     out["match"] = sorted(match, key=lambda x: (-int(x.get("fit") or 0), -float(x.get("load_mm") or 0)))
+    # 커버리지 — '근거로 잡힌 행' 과 '어느 과제에도 계상되지 않은 행'. 예전에는 이 숫자가 없어서
+    # 매칭이 덜 된 결과가 완전한 결과처럼 보였다(제보: '매칭이 덜 되어 계산되는 문제').
+    _matched_ids = set(claims)
+    _matched_mm = round(sum(r["_mm"] for r in rows if id(r) in _matched_ids), 2)
+    _total_mm = round(sum(r["_mm"] for r in rows), 2)
     out["mm_recalc"] = {
         "at": time.strftime("%Y-%m-%d %H:%M"), "rows_file": rows_file,
-        "rows_total_mm": round(sum(r["_mm"] for r in rows), 2),
+        "rows_total_mm": _total_mm,
         "sum_load_mm": round(sum(m["load_mm"] for m in hits), 2),
         "sum_load_mm_split": round(sum(m["load_mm_split"] for m in hits), 2),
         "sum_new_load_mm": round(new_sum, 2),
         "matched_tasks": len(hits), "no_evidence": len(no_ev), "overlapped": len(dup),
+        "matched_rows": len(_matched_ids), "rows_total": len(rows),
+        "matched_mm": _matched_mm,
+        "unmatched_rows": len(rows) - len(_matched_ids),
+        "unmatched_mm": round(_total_mm - _matched_mm, 2),
+        "work_cap": max_work(),
         "aliases": len(amap or {})}
     return out
 
@@ -656,6 +691,8 @@ def main():
               f"남은 {len(todo)}행만 이어서 보냅니다(처음부터 하려면 --redo)")
     else:
         best, news, mis = {}, [], []
+    # 답이 목록에 없는 과제 코드를 적어 온 건수 — 화면이 '매칭 0건' 을 단정하지 않게 모아 둔다
+    unknown_tids = []
 
     parts = split_rows(tasks, todo, budget=budget, stats_by=stats_by)
     deferred = 0
@@ -687,7 +724,7 @@ def main():
 
     def absorb(o, part_rows, n_new, ci, note=""):
         nonlocal salvaged
-        got = merge_match(best, o, tmap)
+        got = merge_match(best, o, tmap, unknown=unknown_tids)
         merge_new(news, o)
         merge_mis(mis, o)
         for r in part_rows[-n_new:]:
@@ -706,6 +743,10 @@ def main():
                "rows_done": sorted(done_sigs), "rows_file": rows_fn,
                "partial": bool(pending), "chunks": len(parts), "failed_chunks": failed,
                "salvaged_chunks": salvaged, "roundtrips": n_sent,
+               # 답이 적어 온 과제 코드가 목록에 없어 버린 건수 — 예전에는 조용히 버리고 화면은
+               # '매칭 0건(실패 아님)' 이라고 단정했다
+               "unknown_tasks": sorted(set(unknown_tids))[:12],
+               "unknown_task_count": len(unknown_tids),
                "note": ("" if not pending else
                         (f"{len(pending)}행 미판정 — " + (stopped or "다시 실행(재매칭)하면 남은 행만 이어서 판정합니다"))),
                "last_error": ({"error": why, "hint": how} if why else {}),
