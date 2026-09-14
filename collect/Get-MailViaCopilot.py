@@ -443,6 +443,22 @@ def collect_kind(kind, d0, d1, store_subject, one_slice=None):
     return len(rows), unable
 
 
+def _precision_counts(out_dir):
+    """방금 쓴 mail.csv 의 (전체, 시각을 못 읽은) 통수 — mail_source.json 에 남겨 화면이 손실을 말할 수 있게 한다."""
+    import csv as _csv
+    p = os.path.join(out_dir, "mail.csv")
+    n_all = n_date = 0
+    try:
+        with open(p, encoding="utf-8-sig", errors="replace") as f:
+            for r in _csv.DictReader(f):
+                n_all += 1
+                if (r.get("time_precision") or "").strip().lower() == "date":
+                    n_date += 1
+    except OSError:
+        return 0, 0
+    return n_all, n_date
+
+
 def main():
     d0 = arg("--from") or (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
     d1 = arg("--to") or datetime.now().strftime("%Y-%m-%d")
@@ -482,9 +498,12 @@ def main():
         print(f"[mail-copilot] {kind}: {n}건 저장")
     try:
         os.makedirs(OUT_DIR, exist_ok=True)
+        _pa, _pd = _precision_counts(OUT_DIR)
         src = {"source": "copilot", "when": datetime.now().strftime("%Y-%m-%d %H:%M"),
                "kinds": todo, "rows": total, "mail": counts.get("mail", 0), "calendar": counts.get("cal", 0),
-               "me": [], "warnings": []}
+               "me": [], "mail_rows": _pa, "date_only": _pd,       # 시각을 못 읽은 통수(시간 계상 제외 — extract A38)
+               "warnings": ([f"시각을 못 읽은 메일 {_pd}/{_pa}통 — 시간 계상 제외(클래식 Outlook 을 켜고 재수집 권장)"]
+                            if _pd else [])}
         if "cal" in todo:
             # 프롬프트가 회차마다 한 행을 요구한다 — 반복 마스터만 남는 색인 폴백과 달리 '완전' 로 표시(LLM 회수 한계는 별개)
             src["calendar_complete"] = bool(counts.get("cal"))

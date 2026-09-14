@@ -211,7 +211,8 @@ if ($doMail) {
     $sqlOld = $selBase -f '', $sinceU, $untilU
     $res = Run-Query 'mail' $sqlNew $sqlOld 20000
     $mailRows = New-Object System.Collections.Generic.List[string]
-    $mailRows.Add('box,time,sender,subject,conversation,rcv')
+    # time_precision - 색인의 시각도 분 단위다. 열을 안 쓰면 7열 파일과 섞일 때 '날짜만' 행이 승격된다(COM 과 같은 이유)
+    $mailRows.Add('box,time,sender,subject,conversation,rcv,time_precision')
     $nIn = 0; $nSent = 0; $nSkip = 0; $nCc = 0; $nBulk = 0
     foreach ($r in $res.rows) {
         try {
@@ -249,7 +250,7 @@ if ($doMail) {
                 else { $rcv = 'bulk'; $nBulk++ }
                 $nIn++
             } else { $nSent++ }
-            $mailRows.Add(('{0},{1},{2},{3},{4},{5}' -f $box, $t.ToString('yyyy-MM-dd HH:mm'), (Csv-Escape $sender), (Csv-Escape $subj), (Csv-Escape $conv), $rcv))
+            $mailRows.Add(('{0},{1},{2},{3},{4},{5},minute' -f $box, $t.ToString('yyyy-MM-dd HH:mm'), (Csv-Escape $sender), (Csv-Escape $subj), (Csv-Escape $conv), $rcv))
         } catch {}
     }
     $nMail = $mailRows.Count - 1

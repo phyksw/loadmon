@@ -502,6 +502,32 @@ def machine_id():
         return ""
 
 
+def own_data_empty(data):
+    r"""이 PC 가 직접 모은 자료가 없는가 — data\ 의 수집 폴더(추가PC 제외)에 쓸 만한 CSV 가 하나도 없으면 True.
+
+    폴더째 옮겨 오면 지난 PC 자료는 data\추가PC\<지난 PC>\ 로 보관되고 이 PC 것은 아직 없다. 그 상태에서
+    [재분석만]을 누르면 예전에는 수집을 건너뛰어 **옮겨 온 PC 의 자료만** 분석했다(제보). 이 함수로 그 상태를 알아낸다."""
+    for sub in ("outlook", "files", "pc", "m365", "activity", "manual"):
+        p = os.path.join(data, sub)
+        if not os.path.isdir(p):
+            continue
+        try:
+            for n in os.listdir(p):
+                if n.lower().endswith(".csv") and os.path.getsize(os.path.join(p, n)) > 200:
+                    return False
+        except OSError:
+            continue
+    return True
+
+
+def has_extra_pc(data):
+    r"""data\추가PC\<PC>\ 보관본이 하나라도 있는가"""
+    base = os.path.join(data, "추가PC")
+    try:
+        return os.path.isdir(base) and any(os.path.isdir(os.path.join(base, n)) for n in os.listdir(base))
+    except OSError:
+        return False
+
 def archive_other_pc(data):
     r"""추가 PC 취합 — 폴더째 다른 PC 로 옮겨 왔으면, 지난 PC 의 수집 데이터를
     data\추가PC\<지난 PC 이름>\ 으로 보관하고 이번 PC 것을 새로 수집하게 한다.
@@ -606,7 +632,16 @@ def main():
           + ("  · AI 판정 포함" if "--ai" in sys.argv else "  · AI 판정 없음(규칙 결과만)"))
 
     # 추가 PC 취합 — 폴더째 옮겨 온 경우 지난 PC 데이터를 자동 보관 (분석 시 합산)
-    if "--skip-collect" not in sys.argv:
+    # ★ [재분석만](--skip-collect)이어도 **이 PC 자료가 하나도 없고 옮겨 온 보관본이 있으면** 한 번은 수집한다.
+    #   예전에는 수집을 통째로 건너뛰어 옮겨 온 PC 의 자료만으로 분석됐다(제보: "현재 PC 것도 추가 집계돼야 한다").
+    #   이 PC 자료가 이미 있으면 예전대로 건너뛴다 — [재분석만] 의 뜻(수집 없이 판정만)을 지킨다.
+    _skip = "--skip-collect" in sys.argv
+    if _skip and own_data_empty(data) and has_extra_pc(data):
+        print("\n[추가 집계] 이 PC 에서 모은 자료가 없고 옮겨 온 보관본(data\\추가PC)만 있습니다 —")
+        print("           [재분석만] 이지만 이 PC 자료를 한 번 수집한 뒤 두 PC 를 합쳐 분석합니다.")
+        record("추가 집계", True, 0.0, "이 PC 자료 없음 + 추가PC 보관본 있음 — 재분석만이어도 이 PC 수집 1회")
+        _skip = False
+    if not _skip:
         archive_other_pc(data)
         ensure_sampler(c, data, col)       # 멈춘 창 샘플러 재기동 (있던 PC 만)
 

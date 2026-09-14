@@ -358,6 +358,12 @@ def norm_cfg(cfg):
          "dinner": _win_cfg(mmc.get("dinner"), DINNER, "mm.dinner", warns),
          "passiveDayMaxMin": _num(mmc.get("passiveDayMaxMin"), PASSIVE_DAY_MAX_MIN, 0, 1440,
                                   "mm.passiveDayMaxMin", warns),
+         # 수동 흔적(수신 메일·CC·팀즈 수신)만 있는 날에도 PC 가동 하한을 열어 주는 문턱 — 물량과 분포를 함께 본다.
+         # 0 이면 끈다(예전 동작: 능동 흔적이 없는 날은 하루 최대 passiveDayMaxMin).
+         "passiveFloorMinN": _num(mmc.get("passiveFloorMinN"), PASSIVE_FLOOR_MIN_N, 0, 500,
+                                  "mm.passiveFloorMinN", warns),
+         "passiveFloorMinH": _num(mmc.get("passiveFloorMinH"), PASSIVE_FLOOR_MIN_H, 0, 12,
+                                  "mm.passiveFloorMinH", warns),
          "samplerGapBridgeMin": _num(mmc.get("samplerGapBridgeMin"), SAMPLER_GAP_BRIDGE_MIN, 0, 1440,
                                      "mm.samplerGapBridgeMin", warns),
          "flexEdgeH": _num(mmc.get("flexEdgeH"), FLEX_EDGE_H, 0, 12, "mm.flexEdgeH", warns),
@@ -443,7 +449,9 @@ def _read(path):
             rows = list(csv.DictReader(f))
             # 수집기가 강제 종료되면 마지막 행이 열 수 부족(None 채움)으로 남는다.
             # 그 행 하나가 이후 모든 분석을 죽였다(실측 재현) — 여기서 걸러낸다.
-            return [r for r in rows if None not in r.values()]
+            # 열 수가 **남는** 행(None 키에 잔여 값)도 버린다 — 6열 머리말 파일에 7열 행이 섞이면
+            # time_precision 이 조용히 사라져 '날짜만' 메일이 정오 발신으로 승격됐다(감사 실측).
+            return [r for r in rows if None not in r.values() and None not in r]
     except OSError:
         return []
 
@@ -1064,10 +1072,32 @@ def load_signals(data_dir, d0, d1, exclude=(), cfg=None):
         return (t.replace(second=0, microsecond=0), "메일", "sent" if box == "sent" else "inbox",
                 c or ("@" + _norm_person(snd)))
 
-    for r in mail_rows:
+    _mail_rows = mail_rows
+    # ★ 같은 메일이 두 뿌리(본 PC·추가PC)에 있고 한쪽은 정확한 시각, 한쪽은 '날짜만' 이면 분 단위 중복 키가 서로 달라
+    #   두 번 세어졌다(감사 실측: 같은 200통이 신호 400·가중치 410). 정확한 시각 사본이 있는 (날짜·편지함·대화/제목)
+    #   묶음의 '날짜만' 행은 버린다. 분 단위 키는 그대로 둔다 — 날짜 단위로 낮추면 같은 스레드 하루 5통이 1통이 된다.
+    _exact = set()
+    for r in _mail_rows:
+        if (r.get("time_precision") or "").strip().lower() != "date":
+            _t0 = _pt(r.get("time"))
+            if _t0:
+                _exact.add((_t0.date(), (r.get("box") or "").strip(),
+                            ((r.get("conversation") or "").strip() or (r.get("subject") or "").strip()[:40])))
+    for r in _mail_rows:
         t = _pt(r.get("time"))
         if not t:
             continue
+        if d0 <= t.date() <= d1:
+            meta["mail_rows_total"] = meta.get("mail_rows_total", 0) + 1
+        if (r.get("time_precision") or "").strip().lower() == "date":
+            if d0 <= t.date() <= d1:
+                meta["mail_date_only"] = meta.get("mail_date_only", 0) + 1
+            _k0 = (t.date(), (r.get("box") or "").strip(),
+                   ((r.get("conversation") or "").strip() or (r.get("subject") or "").strip()[:40]))
+            if _k0 in _exact:
+                if d0 <= t.date() <= d1:
+                    meta["excluded"]["중복(같은 메일의 정확한 시각 사본 있음)"] += 1
+                continue
         if mail_off:
             t = t + _td(hours=mail_off)
         # 웹·Copilot 경로가 날짜만 알아낸 행(time_precision=date) — 시각은 정오로 두고 시간 근거에서 뺀다(A38):
@@ -1929,7 +1959,10 @@ SESSION_GAP_MIN = 45       # 이 간격 안이면 같은 작업 세션 (config.m
 # 목록에 없는 라벨은 세션을 만들지 않는다(A18 — 예전 기본 10분은 가장 약한 '메일(수신전용)' 에 수신의 2배를 줬다).
 LONE_SIGNAL_MIN = {"파일": 60, "파일(코드)": 90, "커밋": 90, "회의": 0,
                    "메일(발신)": 20, "팀즈(발신)": 10, "팀즈(오더)": 15,
-                   "메일(수신)": 5, "메일(CC)": 3, "메일(수신전용)": 2, "팀즈(수신)": 5, "팀즈(단체)": 3,
+                   # 메일(CC)·메일(수신전용) 은 5 로 둔다 — _signal_spans 의 half = max(2.5, lone/2) 하한 때문에
+                   # 5분 미만 값은 어차피 5분으로 세어졌다(감사 실측: 선언 3·2 와 무관하게 셋 다 5.0분).
+                   # 차등은 가중치 W(메일CC 0.25·알림성 0.2~0.4×)가 맡는다. 시간 차등이 필요하면 half 하한부터 고칠 것.
+                   "메일(수신)": 5, "메일(CC)": 5, "메일(수신전용)": 5, "팀즈(수신)": 5, "팀즈(단체)": 3,
                    # 열람만 한 Recent 는 수신 메일 수준의 수동 흔적(D2b) · 타인 파일·일괄 대표·수동기록·
                    # 날짜만 아는 발신은 시간 근거가 아니다(가중치·게이트만)
                    "파일(열람)": 5, "파일(타인)": 0, "파일(일괄)": 0, "수동기록": 0, "메일(발신·일자)": 0,
@@ -1941,6 +1974,11 @@ LONE_SIGNAL_MIN = {"파일": 60, "파일(코드)": 90, "커밋": 90, "회의": 0
                    "작업창": 0, "작업창(IDE)": 0}
 ACTIVE_SRC = set(NIGHT_PRODUCTIVE) | {"회의", "팀즈(오더)", "작업창", "작업창(IDE)", "파일(해석출력)"}   # 능동 흔적
 PASSIVE_DAY_MAX_MIN = 60.0  # 수동 신호만으로 만든 세션의 하루 합계 상한(분) — config.mm.passiveDayMaxMin(A18)
+# 수동 흔적만 있는 날(메일·Teams 만 한 날)의 PC 가동 하한 게이트 — 통수 N 이상이고 주간 창 안에서 H 시간 이상에 걸쳐
+# 분포하면 그날도 하한을 연다. 예전엔 능동 흔적(파일 저장·발신)이 하나라도 없으면 하루 최대 60분이었다(감사 실측:
+# 수신 80통·PC 09~18 인 날이 1.0h — LM20 은 9.38h). 물량·분포 조건이 없으면 'CC 한 통 = 하루 7.7h' 과대가 된다.
+PASSIVE_FLOOR_MIN_N = 8.0
+PASSIVE_FLOOR_MIN_H = 3.0
 # ── 물리 한계·보정 파라미터 (config.mm 로 조정) ──
 PHYS_CAP_H = 24.0          # 하루 24h — 유일한 출력 한계. 입력 검증이 정상이면 닿을 수 없다
 PC_NIGHT_MAX_H = 13.0      # 야간창 19~24 + 00~08 = 13시간(입력 검증용 — 출력 상한이 아니다)
@@ -2789,6 +2827,10 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
     sstats = {}
     sess, future_dropped = _signal_spans(signals, d0, d1, mins, now=now, extra=extra, gap=gap, day_win=day_win,
                                          passive_max_min=mc["passiveDayMaxMin"], stats=sstats)
+    # 보고용 — '메일이 만든 시간 근거' 를 따로 잰다(합산에는 쓰지 않는다). 화면·리포트가 'PC 가동 하한에
+    # 흡수된 몫' 까지 말할 수 있어야 "메일이 반영되지 않는다" 를 숫자로 답할 수 있다(감사 지적).
+    mail_sess, _md = _signal_spans([g for g in signals if str(g[1]).startswith("메일")], d0, d1, mins,
+                                   now=now, gap=gap, day_win=day_win, passive_max_min=mc["passiveDayMaxMin"])
     abs_spans = {}
     absence = absence_days(data_dir, d0, d1, spans=abs_spans)
     holidays = _holiday_set(cfg)
@@ -2806,6 +2848,9 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
             "pc_floor_h": 0.0, "pc_floor_days": 0,
             # ── LM22 추가(기존 키는 위에 그대로) ──
             "floor_blocked_passive_days": 0, "lunch_deducted_h": 0.0, "evening_credit_h": 0.0,
+            # 메일 근거 — mail_session_min: 메일 신호만으로 만든 세션 합(분) · mail_in_floor_min: 그중 PC 가동 하한 구간에
+            # 흡수돼 따로 더해지지 않은 몫 · passive_floor_days: 수동 물량·분포로 하한을 연 날
+            "mail_session_min": 0.0, "mail_in_floor_min": 0.0, "passive_floor_days": 0,
             "weekend_window_h": 0.0, "sampler_partial_days": 0, "sampler_stuck_days": len(stuck),
             "inferred_absence_days": 0, "future_signals_dropped": future_dropped,
             "phys_cap_days": 0, "day_cap_days": 0, "day_cap_hours": day_cap,
@@ -2930,9 +2975,11 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
     info["sim_night_days"] = sim_stat["nights"]
     info["sim_night_capped_days"] = sim_stat["capped"]
     info["sim_night_unlocked_days"] = sim_stat["unlocked"]
+    pf_n, pf_h = mc.get("passiveFloorMinN") or 0, mc.get("passiveFloorMinH") or 0
     gap_run = []
     d = d0
     while d <= d1:
+        base = []          # 이 날의 PC 가동 하한 재료 — 하한 계산을 건너뛴 날도 아래 메일 근거 집계가 읽는다
         off = _is_off_day(d, holidays)
         absent = absence.get(d, 0.0)
         has_pc_row = d in pc
@@ -3077,7 +3124,14 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
         #     자리에 있었다는 근거는 아니다. 켜 둔 PC + 야간 해석만으로 주간 8h 가 붙던 것을 막는다.
         if (use_pc_floor and method == "activity" and floor_day and absent < 1.0
                 and (day_min + night_min_ex) > 0):
-            gate_ok = (floor_needs != "active") or active_day
+            # ★ 수동 흔적(수신 메일·CC·팀즈 수신)만 있는 날도 물량·분포가 충분하면 하한을 연다(mm.passiveFloorMinN/H).
+            #   예전엔 능동 흔적이 없으면 하루 최대 60분이었다 — 메일·Teams 만 한 날이 1.0h 로 찍혔다(감사 실측).
+            _pas = sorted(m for m in (tp.get(d) or []) if dw0 <= m <= dw1)
+            passive_bulk = bool(_pas and pf_n > 0 and pf_h > 0 and len(_pas) >= pf_n
+                                and (_pas[-1] - _pas[0]) >= pf_h * 60.0)
+            if passive_bulk and not active_day:
+                info["passive_floor_days"] += 1
+            gate_ok = (floor_needs != "active") or active_day or passive_bulk
             base, kind, gap_h, day_on_eff = [], None, 0.0, day_on
             alt = None          # (base, kind, gap_h, day_on_eff) — 구간 방식과 함께 계산해 하한이 큰 쪽을 쓰는 대안
             if gate_ok:
@@ -3187,6 +3241,11 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
                         spans += fitted
                         night_min = _union_min(_night_zone(spans))
                         info["flex_edge_h"] += gain / 60.0
+        _msp = mail_sess.get(d) or []
+        if _msp:
+            info["mail_session_min"] += _union_min(_msp)
+            if base:
+                info["mail_in_floor_min"] += _union_min(_intersect_spans(_msp, base))
         worked = (day_min + night_min) / 60.0
         # 야간 시간은 경계에 걸친 구간도 겹치는 만큼만 정확히 잰다 (18~20시 연장근무 누락 방지)
         night_h = night_min / 60.0
