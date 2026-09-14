@@ -56,7 +56,9 @@ $mailP = Join-Path $outDir 'mail.csv'
 $calP  = Join-Path $outDir 'calendar.csv'
 $covP  = Join-Path $outDir 'coverage.json'
 $srcP  = Join-Path $outDir 'mail_source.json'
-$MAIL_HEADER = 'box,time,sender,subject,conversation,rcv'
+# time_precision - COM 의 ReceivedTime/SentOn 은 항상 분 단위라 'minute'. 열을 안 쓰면 웹·Copilot 이 만든
+# 7열 파일과 섞일 때 그 파일의 '날짜만' 행이 정오 발신으로 승격돼(세션 20분) 없는 근무가 생긴다(감사 실측).
+$MAIL_HEADER = 'box,time,sender,subject,conversation,rcv,time_precision'
 $CAL_HEADER  = 'start,end,all_day,busy_status,subject,categories,location,response,meeting_status'
 $REFRESH_MONTHS = 2          # 최신 N개월은 이미 읽었어도 매번 다시 읽는다(-NoRefresh 면 안 한다)
 $TS = 'yyyy-MM-dd HH:mm:ss'  # 표에 적는 시각 형식
@@ -434,7 +436,7 @@ function Read-MailMonth($ns, $mo, [string[]]$me, $state) {
                 if ($t -ge $upper) { continue }
                 if ($SelfTestDelayMs -gt 0) { Start-Sleep -Milliseconds $SelfTestDelayMs }
                 if ($sw.Elapsed.TotalSeconds -gt $BudgetSec) { $stop = ('시간 예산 {0}초' -f $BudgetSec); break }
-                $boxRows.Add(('{0},{1},{2},{3},{4},{5}' -f $b.name, $t.ToString('yyyy-MM-dd HH:mm'), 'selftest', ('selftest mail ' + $i), ('conv ' + ($i % 3)), $(if ($b.name -eq 'inbox') { 'to' } else { '' })))
+                $boxRows.Add(('{0},{1},{2},{3},{4},{5},minute' -f $b.name, $t.ToString('yyyy-MM-dd HH:mm'), 'selftest', ('selftest mail ' + $i), ('conv ' + ($i % 3)), $(if ($b.name -eq 'inbox') { 'to' } else { '' })))
                 $lastT = $t
             }
         } else {
@@ -487,7 +489,7 @@ function Read-MailMonth($ns, $mo, [string[]]$me, $state) {
                             }
                         }
                     }
-                    $boxRows.Add(('{0},{1},{2},{3},{4},{5}' -f `
+                    $boxRows.Add(('{0},{1},{2},{3},{4},{5},minute' -f `
                         $b.name, $t.ToString('yyyy-MM-dd HH:mm'), (Csv-Escape ([string]$m.SenderName)), `
                         (Csv-Escape $subj), (Csv-Escape $conv), $rcv))
                     $lastT = $t

@@ -15,6 +15,7 @@ r"""PC 가동시간 비교 — 이 PC 에서 **LM20 수집기**와 **현재 수�
 import csv
 import glob
 import io
+import json
 import os
 import shutil
 import sqlite3
@@ -191,6 +192,129 @@ def months(d0, d1):
     return out
 
 
+MAIL_MIN = {"메일(발신)": 20, "메일(수신)": 5, "메일(CC)": 3, "메일(수신전용)": 2, "메일(발신·일자)": 0}
+PASSIVE_MAX_MIN = 60.0        # core/extract.PASSIVE_DAY_MAX_MIN — 수동 신호(수신·CC)만으로 만든 시간의 하루 상한
+
+
+def mail_rows(d0, d1):
+    r"""본 PC + 추가PC 의 mail.csv 를 읽어 (달, 구분, 시각 정밀도) 별 통수. 제목·주소·사람 이름은 읽지 않는다."""
+    roots = [DATA] + sorted(p for p in glob.glob(os.path.join(DATA, "추가PC", "*")) if os.path.isdir(p))
+    per_month, per_day, n_all = {}, {}, 0
+    for rt in roots:
+        p = os.path.join(rt, "outlook", "mail.csv")
+        if not os.path.isfile(p):
+            continue
+        try:
+            with open(p, encoding="utf-8-sig", errors="replace") as f:
+                for r in csv.DictReader(f):
+                    t = str(r.get("time") or "")
+                    k = t[:10]
+                    if not (d0 <= k <= d1):
+                        continue
+                    n_all += 1
+                    box = "발신" if (r.get("box") or "").strip() == "sent" else "수신"
+                    prec = (r.get("time_precision") or "").strip().lower()
+                    prec = "날짜만" if prec == "date" else ("시각" if len(t) >= 16 else "시각(열 없음)")
+                    a = per_month.setdefault(k[:7], {})
+                    a[(box, prec)] = a.get((box, prec), 0) + 1
+                    per_day.setdefault(k, [0, 0])[0 if box == "발신" else 1] += 1
+        except OSError:
+            continue
+    return per_month, per_day, n_all
+
+
+def mail_source():
+    out = []
+    for rt in [DATA] + sorted(p for p in glob.glob(os.path.join(DATA, "추가PC", "*")) if os.path.isdir(p)):
+        p = os.path.join(rt, "outlook", "mail_source.json")
+        if not os.path.isfile(p):
+            continue
+        try:
+            with open(p, encoding="utf-8-sig") as f:
+                j = json.load(f)
+        except (OSError, ValueError):
+            continue
+        name = "본 PC" if rt == DATA else "추가PC:" + os.path.basename(rt)
+        out.append((name, str(j.get("source") or "?"), bool(j.get("coverage_complete", True)),
+                    list(j.get("uncovered_months") or [])))
+    return out
+
+
+def latest_meta(d0, d1):
+    """가장 최근 분석 결과(mm_meta_*.json) — 메일 관련 제외 건수와 근무시간 산정 근거."""
+    best, best_mt = None, -1.0
+    for p in glob.glob(os.path.join(ROOT, "report", "mm_meta_*.json")):
+        try:
+            mt = os.path.getmtime(p)
+        except OSError:
+            continue
+        if mt > best_mt:
+            best, best_mt = p, mt
+    if not best:
+        return None, None
+    try:
+        with open(best, encoding="utf-8-sig") as f:
+            return os.path.basename(best), json.load(f)
+    except (OSError, ValueError):
+        return os.path.basename(best), None
+
+
+def mail_section(d0, d1):
+    say("")
+    say("■ 메일 — 수집 경로 · 시각 · 시간 계상")
+    src = mail_source()
+    if not src:
+        say("  mail_source.json 이 없습니다 — 아직 메일 수집을 돌리지 않았습니다.")
+    for name, s, complete, unc in src:
+        label = {"com": "Outlook 앱(COM) — 시각 정확", "index": "Windows 검색 색인(앱 없이) — 시각 정확",
+                 "owa": "Outlook 웹(전용 Edge) — 어제 이전은 시각이 날짜만일 수 있음",
+                 "web": "Outlook 웹(전용 Edge) — 어제 이전은 시각이 날짜만일 수 있음",
+                 "copilot": "Copilot 왕복 — 시각이 날짜만일 수 있음"}.get(s, s)
+        say(f"  [{name}] 수집 경로: {label}" + ("" if complete else f" · 미수집 달 {len(unc)}개: {', '.join(unc[:8])}"))
+    per_month, per_day, n_all = mail_rows(d0, d1)
+    if not n_all:
+        say("  기간 안 메일 0통 — 수집이 안 됐거나 기간이 어긋났습니다.")
+        return
+    say(f"  기간 안 메일 {n_all:,}통 · 달별(발신/수신, 시각 있음 → 날짜만):")
+    for m in sorted(per_month):
+        a = per_month[m]
+        snd_t = a.get(("발신", "시각"), 0) + a.get(("발신", "시각(열 없음)"), 0)
+        snd_d = a.get(("발신", "날짜만"), 0)
+        rcv_t = a.get(("수신", "시각"), 0) + a.get(("수신", "시각(열 없음)"), 0)
+        rcv_d = a.get(("수신", "날짜만"), 0)
+        say(f"    {m}  발신 {snd_t:>5,} / 날짜만 {snd_d:>5,}   수신 {rcv_t:>6,} / 날짜만 {rcv_d:>6,}")
+    d_only = sum(v for a in per_month.values() for (b, p), v in a.items() if p == "날짜만")
+    if d_only:
+        say(f"  ※ 시각이 '날짜만' 인 메일 {d_only:,}통은 **시간 계상에서 빠집니다**(정오로 두고 근거에서 제외 — A38).")
+        say("     Outlook 앱(클래식)을 켠 상태로 [분석 실행]을 하면 앱 경로(COM)가 정확한 시각으로 다시 씁니다.")
+    # 수동 상한이 하루에 얼마나 잘라내는지 — 규칙 상수로 계산(수신·CC 를 수신 5분으로 본 근사)
+    cut_days, cut_min = 0, 0.0
+    for _d, (_n_snd, n_rcv) in sorted(per_day.items()):
+        passive = n_rcv * MAIL_MIN["메일(수신)"]
+        if passive > PASSIVE_MAX_MIN:
+            cut_days += 1
+            cut_min += passive - PASSIVE_MAX_MIN
+    say(f"  수신 메일만으로 만든 시간의 하루 상한({PASSIVE_MAX_MIN:.0f}분)에 걸리는 날: {cut_days}일"
+        + (f" · 잘리는 양 합계 약 {cut_min / 60:.1f}h (수신 1통 {MAIL_MIN['메일(수신)']}분 기준 근사)" if cut_days else ""))
+    say("  (발신 메일은 능동 흔적이라 상한이 없고, 앞뒤 작업과 45분 안이면 한 세션으로 이어집니다.)")
+    name, meta = latest_meta(d0, d1)
+    if not meta:
+        say("  분석 결과(mm_meta)가 없어 실제 계상 시간은 못 보여 줍니다 — [분석 실행] 뒤 다시 돌려 주세요.")
+        return
+    basis = meta.get("mm_basis") or {}
+    say(f"  최근 분석({name}) 기준: 근무시간 합 {meta.get('worked_h', '?')}h · 투입 {meta.get('total_mm', '?')} MM"
+        f" · 로드율 {meta.get('load_pct', '?')}%")
+    for k, lbl in (("passive_capped_days", "수신 메일 상한에 걸린 날"), ("pc_floor_days", "PC 가동 하한이 적용된 날"),
+                   ("lunch_deducted_h", "점심 차감(h)"), ("dinner_deducted_h", "저녁 차감(h)"),
+                   ("pc_record_missing_days", "PC 기록이 없던 날")):
+        if k in basis:
+            say(f"    · {lbl}: {basis[k]}")
+    exc = meta.get("excluded") or {}
+    mail_exc = {k: v for k, v in exc.items() if any(x in k for x in ("메일", "공지", "단체", "시각 형식"))}
+    if mail_exc:
+        say("    · 메일에서 제외된 건수: " + " · ".join(f"{k} {v:,}" for k, v in sorted(mail_exc.items(), key=lambda x: -x[1])))
+
+
 def main():
     today = date.today()
     d0 = arg("--from") or today.replace(month=1, day=1).isoformat()
@@ -202,6 +326,13 @@ def main():
     say(f"[PC 가동시간 비교] 기간 {d0} ~ {d1} · PC {os.environ.get('COMPUTERNAME', '')} · {time.strftime('%Y-%m-%d %H:%M')}")
     say("  실제 data 폴더는 읽기만 합니다. 두 수집기는 임시 폴더에서 돌고 끝나면 지웁니다.")
     say("")
+    miss = [p for p in (os.path.join(ROOT, "collect", "Get-PcOnHistory.ps1"),
+                        os.path.join(ROOT, "collect", "Get-PcOnHints.py")) if not os.path.isfile(p)]
+    if miss:
+        say("[!] 이 폴더에 수집기가 없습니다 — 비교를 건너뛰고 메일 항목만 보여 줍니다: "
+            + ", ".join(os.path.basename(p) for p in miss))
+        mail_section(d0, d1)
+        return 1
     say("① LM20 수집기(0551) 실행 중…")
     lm20 = run_tree("LM20", os.path.join(REF, "Get-PcOnHistory.ps1.txt"), os.path.join(REF, "Get-PcOnHints.py.txt"), d0, d1)
     say(f"   끝 ({lm20['sec']}초, rc={lm20['rc']})")
@@ -253,11 +384,13 @@ def main():
             s2 = sampler_counts(r, d0, d1)
             say(f"  창 샘플러(추가PC:{os.path.basename(r)}) 달별 샘플: " + ("  ".join(f"{m[5:]}월 {n}" for m, n in sorted(s2.items())) or "없음"))
 
+    mail_section(d0, d1)
     say("")
     say("■ 읽는 법")
     say("  · 'LM20 +보강' 이 '현재 +보강' 보다 크면 → 수집기 차이(이 표를 그대로 보내 주세요)")
     say("  · 두 수집기는 비슷한데 '저장된 data' 가 작으면 → 저장된 기록이 옛 수집 결과(분석 실행을 다시 돌리면 채워짐)")
     say("  · '저장된 data' 는 큰데 '화면 선' 이 작으면 → 화면 계산 문제")
+    say("  · 메일 항목의 '날짜만' 이 많으면 → Outlook 앱(COM) 경로로 다시 수집해야 시간이 잡힙니다")
     shutil.rmtree(WORK, ignore_errors=True)
     out = os.path.join(ROOT, "report", "pc_hours_compare.txt")
     try:

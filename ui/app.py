@@ -31,7 +31,7 @@ from progress import parse as parse_progress  # noqa: E402  (core 경로 등록 
 REPORT = os.path.join(ROOT, "report")
 DATA = os.path.join(ROOT, "data")
 NO_WIN = 0x08000000
-VERSION = "v24.0.5"
+VERSION = "v24.0.6"
 LOCK = threading.Lock()
 FREEZE_LOCK = threading.Lock()       # [보고서 만들기] 직렬화 — JOB 과 별개(사본에 '실행 중'이 굳지 않게)
 JOB = {"running": False, "log": [], "step": "", "started": 0.0, "pid": 0,
@@ -1122,6 +1122,7 @@ def sources(period=None):
         # 폴더째 옮긴 직후에는 지난 PC 수집물이 전부 추가PC\ 에 있어, 본 폴더만 세면 '메일·일정 0건 · 없음' 같은 거짓
         # 경고가 KPI·현황표에 떴다(감사 재현 — 추가PC 에 716건이 있는데도). 분석·추이와 같은 뿌리를 본다.
         here_only = name in ("창 샘플러", "추가 PC")
+        always = ""                 # 상태가 ok 여도 화면에 남길 사실(수집 경로 등)
         n, mt, n_here = 0, 0.0, 0
         for p in pats:
             for f in glob.glob(os.path.join(DATA, p)):
@@ -1179,6 +1180,21 @@ def sources(period=None):
                     _ms = json.load(f)
             except (OSError, ValueError):
                 _ms = {}
+            # 수집 경로는 **항상** 적는다 — 앱(COM)·색인은 시각이 정확하고, 웹·Copilot 은 어제 이전 항목이
+            # 날짜만이라 그만큼 시간 계상에서 빠진다(extract A38). 예전에는 이 사실이 화면 어디에도 없었다(감사 지적).
+            _path = {"com": "Outlook 앱(COM)", "index": "Windows 검색 색인", "owa": "Outlook 웹(Edge)",
+                     "web": "Outlook 웹(Edge)", "copilot": "Copilot 왕복"}.get(str(_ms.get("source") or ""), "")
+            _dn, _mr = int(_ms.get("date_only") or 0), int(_ms.get("mail_rows") or 0)
+            if _path:
+                # always 는 상태가 ok 여도 화면에 남는다 — 정상 줄의 hint 는 아래에서 비워지기 때문
+                always = (f"수집 경로: {_path}"
+                          + (f" · 시각 못 읽은 메일 {_dn:,}/{_mr:,}통(시간 계상 제외)" if _dn else ""))
+            if _dn and _mr and _dn >= 0.20 * _mr:
+                st = "warn"
+                always = f"수집 경로: {_path}" if _path else ""      # 경고문이 통수를 말하므로 중복을 뺀다
+                hint = (f"시각을 못 읽은 메일 {_dn:,}통({_dn * 100 // max(_mr, 1)}%)은 시간 계상에서 빠졌습니다 — "
+                        "클래식 Outlook 을 켠 상태로 [분석 실행]을 하면 앱 경로가 정확한 시각으로 다시 씁니다"
+                        + (" · " + hint if hint else ""))
             if isinstance(_ms, dict) and _ms.get("selftest"):
                 st, hint = "warn", "자가검증(테스트 전용) 가짜 메일·일정입니다 — 실제 수집이 아닙니다. LM_OUTLOOK_SELFTEST 를 지우고 다시 수집하세요"
             # COM 이 예산에 닿아 못 읽은 달이 기간 안에 있으면 '있음'이 아니라 '부족'이다 — 앞 달의 메일·회의가
@@ -1206,8 +1222,9 @@ def sources(period=None):
         if n and n_here < n and not here_only:
             split = (f"본 PC {n_here:,}건 + 추가 PC {n - n_here:,}건" if n_here
                      else f"본 PC 0건 — 추가 PC 자료 {n:,}건(옮겨 온 폴더)으로 표시")
+        # always(수집 경로 같은 '정상이어도 보여야 하는 사실')는 상태와 무관하게 남긴다
         out.append({"name": name, "rows": n, "here": n_here, "age": _age(mt), "status": st,
-                    "hint": split if st == "ok" else (f"{split} · {hint}" if split else hint)})
+                    "hint": " · ".join(x for x in (split, always, ("" if st == "ok" else hint)) if x)})
     return out
 
 

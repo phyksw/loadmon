@@ -766,6 +766,22 @@ def _save(kind, rows, store_subject):
     return dst
 
 
+def _precision_counts(out_dir):
+    """방금 쓴 mail.csv 의 (전체, 시각을 못 읽은) 통수 — mail_source.json 에 남겨 화면이 손실을 말할 수 있게 한다."""
+    import csv as _csv
+    p = os.path.join(out_dir, "mail.csv")
+    n_all = n_date = 0
+    try:
+        with open(p, encoding="utf-8-sig", errors="replace") as f:
+            for r in _csv.DictReader(f):
+                n_all += 1
+                if (r.get("time_precision") or "").strip().lower() == "date":
+                    n_date += 1
+    except OSError:
+        return 0, 0
+    return n_all, n_date
+
+
 def main():
     d0s = arg("--from") or (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
     d1s = arg("--to") or datetime.now().strftime("%Y-%m-%d")
@@ -847,10 +863,15 @@ def main():
         br.close()
     if total:
         try:
+            _pa, _pd = _precision_counts(OUT_DIR)
             src = {"source": "owa", "when": datetime.now().strftime("%Y-%m-%d %H:%M"),
                    "kinds": todo, "rows": total, "mail": counts.get("mail", 0), "calendar": counts.get("cal", 0),
                    "me": [],                           # 내 주소는 화면에 없다 — rcv 는 to/cc(참조 조각) 만
-                   "warnings": []}
+                   # 시각을 못 읽은 통수 — 목록 화면은 어제 이전 항목에 날짜만 보인다. 그 행은 시간 계상에서 빠지므로
+                   # (core/extract A38) 화면이 '몇 통이 빠졌는지' 를 말할 수 있어야 한다(감사 지적: 콘솔에만 있었다).
+                   "mail_rows": _pa, "date_only": _pd,
+                   "warnings": ([f"시각을 못 읽은 메일 {_pd}/{_pa}통 — 시간 계상 제외(클래식 Outlook 을 켜고 재수집 권장)"]
+                                if _pd else [])}
             if "cal" in todo:
                 # 주 보기는 반복 회의를 회차마다 그린다 — 색인 폴백(마스터 1건)과 달리 일정이 완전하다
                 src["calendar_complete"] = bool(counts.get("cal"))

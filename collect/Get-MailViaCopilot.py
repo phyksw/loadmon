@@ -279,6 +279,12 @@ def _one_slice(kind, s0, s1, alt=False):
         return [], "other"
     if not res.get("ok"):
         print(f"[mail-copilot]   {kind} {s0}~{s1}: 실패 — {res.get('error', '')}")
+        # 로그인 필요·Edge 없음 같은 '사람이 손대야 풀리는' 실패는 조각을 나눠 다시 물어도 똑같다.
+        # 예전에는 이것을 18회 되풀이해 9~10분을 버렸다(감사 실측) — 한 번에 접는다.
+        if str(res.get("phase") or "") in ("login_required", "edge_not_found",
+                                           "launch_failed", "input_not_found"):
+            print(f"[mail-copilot]   {res.get('hint', '')}")
+            return [], "fatal"
         return [], "other"
     reply = res.get("reply", "")
     try:                                    # 원문 응답 보존 — 진위·누락 진단용
@@ -397,6 +403,12 @@ def collect_kind(kind, d0, d1, store_subject, one_slice=None):
     for i, (s0, s1) in enumerate(sl):
         print(f"[mail-copilot] {kind} {i + 1}/{len(sl)} 조각 {s0}~{s1}")
         got, st = q(kind, s0, s1, alt)
+        if st == "fatal":
+            # 로그인이 안 된 PC — 조각을 더 물어도 똑같다. 한 조각에서 접는다.
+            print(f"[mail-copilot] Copilot 을 쓸 수 없어 남은 {len(sl) - i}조각을 생략합니다 "
+                  "(로그인 뒤 다시 실행하면 이어서 모읍니다)")
+            unable = True
+            break
         if st == "unable" and not alt:
             print("[mail-copilot]   '조회 불가' 응답 — 검색형 화법으로 전환해 재시도")
             alt = True
@@ -429,6 +441,22 @@ def collect_kind(kind, d0, d1, store_subject, one_slice=None):
         rows.sort(key=lambda r: r[kidx])
         _save(kind, rows, store_subject)
     return len(rows), unable
+
+
+def _precision_counts(out_dir):
+    """방금 쓴 mail.csv 의 (전체, 시각을 못 읽은) 통수 — mail_source.json 에 남겨 화면이 손실을 말할 수 있게 한다."""
+    import csv as _csv
+    p = os.path.join(out_dir, "mail.csv")
+    n_all = n_date = 0
+    try:
+        with open(p, encoding="utf-8-sig", errors="replace") as f:
+            for r in _csv.DictReader(f):
+                n_all += 1
+                if (r.get("time_precision") or "").strip().lower() == "date":
+                    n_date += 1
+    except OSError:
+        return 0, 0
+    return n_all, n_date
 
 
 def main():
@@ -470,9 +498,12 @@ def main():
         print(f"[mail-copilot] {kind}: {n}건 저장")
     try:
         os.makedirs(OUT_DIR, exist_ok=True)
+        _pa, _pd = _precision_counts(OUT_DIR)
         src = {"source": "copilot", "when": datetime.now().strftime("%Y-%m-%d %H:%M"),
                "kinds": todo, "rows": total, "mail": counts.get("mail", 0), "calendar": counts.get("cal", 0),
-               "me": [], "warnings": []}
+               "me": [], "mail_rows": _pa, "date_only": _pd,       # 시각을 못 읽은 통수(시간 계상 제외 — extract A38)
+               "warnings": ([f"시각을 못 읽은 메일 {_pd}/{_pa}통 — 시간 계상 제외(클래식 Outlook 을 켜고 재수집 권장)"]
+                            if _pd else [])}
         if "cal" in todo:
             # 프롬프트가 회차마다 한 행을 요구한다 — 반복 마스터만 남는 색인 폴백과 달리 '완전' 로 표시(LLM 회수 한계는 별개)
             src["calendar_complete"] = bool(counts.get("cal"))
