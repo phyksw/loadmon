@@ -84,6 +84,10 @@ DEFAULTS = {
     "replyTimeoutSec": 300,
     "stablePolls": 6,          # innerText가 N회 연속 동일하면 응답 완료로 판정
     "pollSec": 2,
+    # 왕복 1회(사다리 3단 + 고정 대기)의 총 예산(초). 0 이면 끔(예전 동작 = 최악 24~31분).
+    # 이 안에 못 끝내면 있는 대로 돌려주고 호출자(judge/refine/flow)가 묶음을 나눠 다시 묻는다 —
+    # 한 묶음이 30분을 붙잡고 있으면 그 단계의 시간 예산이 통째로 녹는다(감사 실측).
+    "roundtripMaxSec": 900,
 }
 
 # ── 긴 프롬프트 분할 (보완툴 AutoSend 이식) ──
@@ -694,7 +698,16 @@ def new_chat(cdp, cfg):
 def run_roundtrip(cfg, prompt, fresh=False):
     """프롬프트 전송 → 응답 회수. Copilot 일시 오류('응답할 수 없습니다')나 무응답이면
     단계적으로 재시도한다: ① 새 채팅에서 같은 모델로 ② 새 채팅 + 자동 모델로.
-    어느 단계에서 성공했는지 retry 노트로 남긴다."""
+    어느 단계에서 성공했는지 retry 노트로 남긴다.
+    왕복 1회 총 예산은 cfg.roundtripMaxSec(0 이면 끔)다 — 사다리를 다 태우면 고정 대기까지 합쳐 한 왕복에
+    30분이 들고(감사 실측), 그 동안 호출자는 아무것도 받지 못한다. 부모가 강제 종료하기 전에 **자식이
+    스스로** 접어야 '정상 재시도 중' 이 죽지 않고 화면에 이유가 남는다."""
+    _t_rt = time.time()
+    _rt_max = max(0, int(cfg.get("roundtripMaxSec") or 0))
+
+    def _rt_left():
+        return (_t_rt + _rt_max - time.time()) if _rt_max else 10 ** 6
+
     how = ensure_edge(cfg)
     if how is None:
         return {"ok": False, "phase": "edge_not_found" if not find_edge() else "launch_failed",
@@ -721,14 +734,26 @@ def run_roundtrip(cfg, prompt, fresh=False):
         if not bad:
             return res
         # ① 새 채팅에서 같은 모델로 재시도 (대화 문맥 오염·일시 오류 해소)
+        # 재시도는 **더 짧게 기다린다** — 1차가 replyTimeoutSec 를 다 쓰고 실패했다면 그 채팅·그 시각의
+        # Copilot 이 느린 것이고, 같은 예산으로 세 번 기다리면 왕복 하나에 최악 24분이 든다(감사 실측).
+        cfg2 = dict(cfg)
+        cfg2["replyTimeoutSec"] = max(120, int(cfg.get("replyTimeoutSec") or 480) // 2)
+        if _rt_left() < 120:                   # 왕복 예산이 남지 않았다 — 있는 대로 돌려준다
+            res["retry"] = f"왕복 예산 {_rt_max // 60}분을 다 써 재시도하지 않았습니다"
+            return res
+        cfg2["replyTimeoutSec"] = int(min(cfg2["replyTimeoutSec"], max(60, _rt_left() - 60)))
         how2 = new_chat(cdp, cfg)
-        res2 = _roundtrip_once(cdp, cfg, prompt)
+        res2 = _roundtrip_once(cdp, cfg2, prompt)
         if res2.get("ok") and not is_error_reply(res2.get("reply")) and not res2.get("cut"):
             res2["retry"] = f"1단계 재시도 성공 (새 채팅 · {how2})"
             return res2
         # ② 새 채팅 + 자동 모델 폴백 (특정 모델 라우팅 장애 대비)
+        if _rt_left() < 120:
+            res2["retry"] = f"왕복 예산 {_rt_max // 60}분을 다 써 2단계 재시도는 하지 않았습니다"
+            return res2 if res2.get("reply") else res
+        cfg2["replyTimeoutSec"] = int(min(cfg2["replyTimeoutSec"], max(60, _rt_left() - 60)))
         new_chat(cdp, cfg)
-        res3 = _roundtrip_once(cdp, cfg, prompt, model_override="자동")
+        res3 = _roundtrip_once(cdp, cfg2, prompt, model_override="자동")
         if res3.get("ok") and not is_error_reply(res3.get("reply")) and not res3.get("cut"):
             res3["retry"] = "2단계 재시도 성공 (새 채팅 + 자동 모델)"
             return res3

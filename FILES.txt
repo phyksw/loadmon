@@ -12,10 +12,10 @@ LoadMonitor24-수집진단.bat                                   849 B  f9708afd
 LoadMonitor24-가동시간비교.bat                               1,048 B  2ba31119
 LoadMonitor24-샘플러등록.bat                                  868 B  4e48ca20
 LoadMonitor24-이동준비.bat                                 1,312 B  6fe7c991
-agentic.py                                            41,104 B  e946e70e
+agentic.py                                            42,848 B  14fe307b
 freeze.py                                             50,732 B  aeab8234
 team_report.py                                       160,115 B  c6fe0c20
-flow.py                                               79,646 B  d69fc651
+flow.py                                               83,869 B  c043dc57
 teamserver.py                                         27,808 B  d9325192
 teamup.py                                             39,085 B  792d5243
 aggregate.py                                          50,107 B  77bba803
@@ -25,12 +25,12 @@ team_refine.py                                         6,565 B  2940e54b
 report_out.py                                         30,599 B  01944b84
 README.md                                             96,966 B  a62e0e2f
 check.py                                               2,629 B  7badfe69
-judge.py                                              93,909 B  78898d13
+judge.py                                              95,214 B  4bdf5b24
 mine.py                                               17,836 B  c751c51d
-refine.py                                             42,402 B  266b57b0
+refine.py                                             44,557 B  202ff212
 ruff.toml                                              1,004 B  47a31613
 FILES.txt                                                (이 파일)
-run.py                                                58,134 B  6f5b02a9
+run.py                                                59,213 B  716e7a27
 자가점검.py                                                8,951 B  ffc66193
 collect/Add-WorkLog.ps1                                1,771 B  8a921980
 collect/Get-FileActivity.ps1                          48,656 B  cfab595d
@@ -51,8 +51,8 @@ collect/Get-TeamsWindow.ps1                           36,106 B  20295d52
 collect/Diagnose-Collectors.ps1                       37,278 B  84757f4e
 collect/Register-Samplers.ps1                         11,780 B  d18b9601
 collect/Start-ActivitySampler.ps1                      8,715 B  9bec0ce6
-config/config.json                                    38,205 B  e3797c59
-config/config.default.json                            38,205 B  e3797c59
+config/config.json                                    39,659 B  7de05130
+config/config.default.json                            39,659 B  7de05130
 config/agentic_tasks.json                              4,426 B  2c9e5bb1
 core/board.py                                         13,045 B  9c4d6431
 core/extract.py                                      216,811 B  342e77f0
@@ -61,9 +61,9 @@ core/details.py                                       68,458 B  81e34438
 core/owner.py                                          1,488 B  1f1dc049
 core/progress.py                                       1,129 B  77a7579a
 core/projmap.py                                        7,133 B  cca7d2cb
-docs/설정가이드.md                                         77,163 B  97767ce5
+docs/설정가이드.md                                         78,899 B  01a06025
 docs/사용안내.html                                       272,444 B  3cea5b8b
-tools/copilot_auto.py                                 62,703 B  201ac0ae
+tools/copilot_auto.py                                 64,666 B  d1c6c7ec
 tools/pc_hours_compare.py                             21,288 B  73150c99
 tools/lm20_ref/Get-PcOnHistory.ps1.txt                 9,319 B  5ce7ef54
 tools/lm20_ref/Get-PcOnHints.py.txt                    9,545 B  7d4dae30
@@ -73,4 +73,4 @@ tools/lint.ps1                                         7,914 B  0c6f51ac
 tools/Make-Package.ps1                                10,733 B  f8e333a9
 tools/Prepare-Move.ps1                                22,237 B  9859c75a
 tools/update_files.py                                  4,530 B  33b4a677
-ui/app.py                                            345,956 B  0cd38238
+ui/app.py                                            347,072 B  a1c97ae3

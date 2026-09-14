@@ -88,6 +88,11 @@ BUDGET_MIN = 120                # 워크플로우 전체 시간 예산(분) — 
 #                                 run.py·대시보드는 flow.py 에 타임아웃을 걸지 않으므로(p.wait()) 스스로 끊어야 한다.
 #                                 config.flowBudgetMin 으로 조절 · 0 이면 무제한(끝까지).
 MAX_CONSEC_FAIL = 3             # 연속 실패 상한 — Copilot 이 안 되는 날 남은 묶음을 헛되이 기다리지 않게
+FINISH_MIN_GAIN = 2             # 마무리 회차의 이득 문턱 — 한 회차에 이만큼도 못 늘리면 멈춘다(config.flowFinishMinGain).
+#                                 예전 문턱은 사실상 '1건' 이라 회차마다 하나만 늘어도 12회차를 끝까지 돌아
+#                                 예산 120분을 통째로 태웠다(제보 '2시간 정체' 의 실체).
+FINISH_MAX_ASK = 3              # 같은 단위를 마무리에서 다시 묻는 횟수 상한(config.flowFinishMaxAsk).
+#                                 신호가 얕아 답에 끝내 안 나오는 단위 1개가 12왕복을 태우던 것을 막는다.
 UNIT = ""                      # 실행 시 workflow_unit() 로 채운다(아래) — 설정이 바뀌면 캐시가 무효화되어야 한다
 KEY_JOIN = " / "                # flow.model = "과제 / 담당업무"
 
@@ -840,13 +845,22 @@ def _sync_unit():
     return UNIT
 
 
-def _cfg_int(key, default):
-    """config.copilotAuto.<key> 정수 — 없거나 이상하면 default."""
+def _cfg_int(key, default, allow_zero=False):
+    r"""config 의 정수 설정 — copilotAuto.<key> 를 먼저 보고, 없으면 **최상위** <key> 를 본다.
+    예전에는 copilotAuto 만 봤다. 그런데 flowBudgetMin·flowMaxChunks·flowUnitsPerChunk 는
+    최상위 키다 — 설정가이드가 안내하는 값이 **한 번도 읽히지 않았고**, 제보의 '2시간'(=기본
+    flowBudgetMin 120분)을 사용자가 낮출 방법이 없었다(감사 실측).
+    allow_zero: flowBudgetMin=0('무제한')처럼 0 이 뜻을 갖는 키."""
     try:
         with open(os.path.join(ROOT, "config", "config.json"), encoding="utf-8-sig") as f:
-            v = (json.load(f).get("copilotAuto") or {}).get(key)
+            c = json.load(f)
+        v = (c.get("copilotAuto") or {}).get(key)
+        if v is None:
+            v = c.get(key)
         n = int(v)
-        return n if n > 0 else int(default)
+        if n > 0 or (allow_zero and n == 0):
+            return n
+        return int(default)
     except (OSError, ValueError, TypeError, AttributeError):
         return int(default)
 
@@ -1007,7 +1021,8 @@ def main():
         max_chunks = MAX_CHUNKS
     # 전체 시간 예산 — '한 번에 다 끝내되 영원히 돌지는 않게'. 0 이면 끝까지 간다.
     try:
-        budget_min = max(0.0, float(arg("--budget-min", _cfg_int("flowBudgetMin", BUDGET_MIN))))
+        budget_min = max(0.0, float(arg("--budget-min",
+                                        _cfg_int("flowBudgetMin", BUDGET_MIN, allow_zero=True))))
     except ValueError:
         budget_min = float(BUDGET_MIN)
     t_start = time.monotonic()
@@ -1135,7 +1150,10 @@ def main():
                 # 답이 길어 잘렸다 — 빠진 단위만 작은 묶음으로 한 번 더 묻는다(답이 짧아져 잘리지 않는다)
                 left = [m for m in part if m["key"] not in {f["model"] for f in got}]
                 print(f"[flow] {ci}/{len(chunks)} 응답이 잘려 앞부분만 복구했습니다 — 빠진 {len(left)}개를 다시 묻습니다")
-                if left:
+                if left and over_budget():
+                    print(f"[flow] {ci}/{len(chunks)} 예산({budget_min:.0f}분)이 남지 않아 빠진 "
+                          f"{len(left)}개는 미판정으로 둡니다 — 다시 실행하면 이어서 판정합니다")
+                elif left:
                     got2, info2 = ask(left, f"wf{ci}-r")
                     if info2.get("ok"):
                         flows.extend(got2)
@@ -1165,6 +1183,8 @@ def main():
             ok_half = 0
             print(f"[flow] {ci}/{len(chunks)} 묶음을 {len(halves)}개로 나눠 다시 묻습니다(적응 분할)")
             for hi, sub in enumerate(halves, 1):
+                if over_budget():           # 예산은 왕복 직전에 본다 — 예전에는 묶음 경계만 봐서 넘쳤다
+                    break
                 got2, info2 = ask(sub, f"wf{ci}-{hi}")
                 if info2.get("ok"):
                     ok_half += 1
@@ -1204,45 +1224,78 @@ def main():
     # 예전에는 2회차 고정이라 그래도 남으면 사람이 다시 눌러야 했다(제보) — 이제 '진전이 있는 한' 계속하고,
     # 한 회차에 하나도 못 늘렸거나 시간 예산을 넘기면 멈춘다. FINISH_ROUNDS 는 폭주를 막는 상한일 뿐이다.
     # 사람이 손대야 풀리는 상태(stopped)면 헛되이 보내지 않는다.
-    if not stopped:
-        for rnd in range(1, FINISH_ROUNDS + 1):
-            left = [m for m in mats if m["key"] not in {f["model"] for f in flows}]
+    # 2026-09-14 감사 — 이 루프가 예산 120분을 통째로 태우던 자리다(제보: "2시간이나 정체").
+    # 세 가지가 없었다: ① 이득 문턱(회차에 1개만 늘어도 계속) ② 연속 실패 차단기(묶음 루프에만 있었다)
+    # ③ 같은 단위를 다시 묻는 횟수 제한. 게다가 progress() 가 없어 진행 바가 얼어 '정지' 로 보였다.
+    fin_rounds = _cfg_int("flowFinishRounds", FINISH_ROUNDS, allow_zero=True)
+    fin_gain = max(1, _cfg_int("flowFinishMinGain", FINISH_MIN_GAIN))
+    fin_max_ask = max(1, _cfg_int("flowFinishMaxAsk", FINISH_MAX_ASK))
+    asked = Counter()
+    if not stopped and fin_rounds > 0:
+        fin_consec = 0
+        for rnd in range(1, fin_rounds + 1):
+            done_keys = {f["model"] for f in flows}
+            left = [m for m in mats if m["key"] not in done_keys and asked[m["key"]] < fin_max_ask]
+            held = [m for m in mats if m["key"] not in done_keys and asked[m["key"]] >= fin_max_ask]
             if not left:
+                if held:
+                    stopped = (f"미판정 {len(held)}개는 {fin_max_ask}번 물어도 답에 나오지 않아 더 묻지 "
+                               "않았습니다 — 다시 실행하면 그 업무만 새 묶음으로 다시 묻습니다"
+                               "(config.flowFinishMaxAsk 으로 조절)")
+                    print(f"[flow] {stopped}")
                 break
             if over_budget():
-                stopped = (f"시간 예산 {budget_min}분을 넘겨 미판정 {len(left)}개를 남겼습니다 — "
+                stopped = (f"시간 예산 {budget_min:.0f}분을 넘겨 미판정 {len(left) + len(held)}개를 남겼습니다 — "
                            "다시 실행하면 남은 업무만 이어서 판정합니다(config.flowBudgetMin 으로 조절)")
                 print(f"[flow] {stopped}")
                 break
             # 남은 것은 작게 나눠 묻는다 — 한 번에 몰아 물으면 답이 잘려 또 빠진다
             sub_chunks = _chunks(left, budget, max(1, min(3, _cfg_int("flowUnitsPerChunk", MAX_UNITS_PER_CHUNK))))
             print(f"[flow] 미판정 {len(left)}개를 자동으로 마저 판정합니다 "
-                  f"({rnd}회차 · {len(sub_chunks)}묶음 · 경과 {elapsed_min():.0f}분)")
+                  f"({rnd}/{fin_rounds}회차 · {len(sub_chunks)}묶음 · 경과 {elapsed_min():.0f}분"
+                  + (f" / 예산 {budget_min:.0f}분" if budget_min else " · 예산 없음") + ")")
             before = len(flows)
             for si, sub in enumerate(sub_chunks, 1):
                 if over_budget():
                     break
+                # 진행 바가 이 구간에서도 움직이게 — 예전에는 마무리 회차 내내 한 줄도 없었다
+                progress("워크플로우 마무리", len(flows), len(mats))
+                for m in sub:
+                    asked[m["key"]] += 1
                 got3, info3 = ask(sub, f"wf-fin{rnd}-{si}")
                 if info3.get("ok"):
                     flows.extend(got3)
+                    fin_consec = 0
                     print(f"[flow] 마무리 {rnd}-{si} — 업무 {len(sub)}개 중 {len(got3)}개 판정")
                 else:
                     fails.append(info3)
+                    fin_consec += 1
                     print(f"[flow] 마무리 {rnd}-{si} 실패: {info3.get('error', '')[:80]}")
                     if info3.get("fatal"):
                         stopped = f"{info3.get('error', '')} — {info3.get('hint', '')}".strip(" —")
                         break
+                    if fin_consec >= MAX_CONSEC_FAIL:
+                        stopped = (f"마무리에서 {fin_consec}묶음 연속 실패({info3.get('error', '')[:40]}) — "
+                                   "Copilot 상태를 확인한 뒤 [이어서 분석]으로 이어서")
+                        print(f"[flow] {stopped}")
+                        break
                 write_out()
-            if stopped or len(flows) == before:
-                # 한 회차를 다 돌았는데 하나도 못 늘렸으면 더 보내도 같은 결과다
-                if not stopped and len(flows) == before:
-                    print(f"[flow] 마무리 {rnd}회차에서 더 늘지 않아 멈춥니다 — "
-                          f"남은 {len(left)}개는 신호가 얕거나 이름이 응답과 맞지 않는 단위입니다")
+            progress("워크플로우 마무리", len(flows), len(mats))
+            gain = len(flows) - before
+            if stopped or gain < fin_gain:
+                if not stopped:
+                    _rest = len([m for m in mats if m["key"] not in {f["model"] for f in flows}])
+                    if _rest:
+                        stopped = (f"마무리 {rnd}회차에 판정이 {gain}건만 늘어(문턱 {fin_gain}건) 멈췄습니다 — "
+                                   "다시 실행하면 남은 업무만 이어서 판정합니다"
+                                   "(config.flowFinishMinGain 으로 조절)")
+                    print(f"[flow] 마무리 {rnd}회차 이득 {gain}건 — 문턱 {fin_gain}건에 못 미쳐 멈춥니다"
+                          + (f" (남은 {_rest}개는 다시 실행하면 이어서 판정합니다)" if _rest else ""))
                 break
         else:
             _lo = [m for m in mats if m["key"] not in {f["model"] for f in flows}]
             if _lo:
-                print(f"[flow] 마무리 상한 {FINISH_ROUNDS}회차를 다 썼는데 {len(_lo)}개가 남았습니다")
+                print(f"[flow] 마무리 상한 {fin_rounds}회차를 다 썼는데 {len(_lo)}개가 남았습니다")
     progress("워크플로우 분석", len(chunks), len(chunks))
 
     # ④ 결과 — 없으면 기존 workflow_<tag>.json 보존
