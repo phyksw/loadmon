@@ -55,7 +55,7 @@ config/config.json                                    40,681 B  67a2ab0f
 config/config.default.json                            40,681 B  67a2ab0f
 config/agentic_tasks.json                              4,426 B  2c9e5bb1
 core/board.py                                         13,087 B  2e672d20
-core/extract.py                                      216,811 B  342e77f0
+core/extract.py                                      217,716 B  3ee28e08
 core/programs.py                                      15,778 B  1f1e142f
 core/details.py                                       72,654 B  bc4fc6db
 core/owner.py                                          1,488 B  1f1dc049
@@ -75,4 +75,4 @@ tools/Make-Package.ps1                                10,733 B  f8e333a9
 tools/Make-MovePack.py                                12,103 B  4132d2e7
 tools/Prepare-Move.ps1                                26,116 B  67389835
 tools/update_files.py                                  4,530 B  33b4a677
-ui/app.py                                            357,686 B  119ba97e
+ui/app.py                                            357,686 B  a2205889

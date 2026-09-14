@@ -1903,14 +1903,22 @@ def pc_daily(data_dir, d0, d1, day_win=None, anom=None, span_anoms=None):
     pc_spans = {dd: _union_spans(lst) for dd, lst in pc_spans.items()}
     pc_win_all = {}
     for dd in set(pc_spans) | set(syn):
-        if len(roots_with.get(dd, ())) < 2:
-            continue                                   # PC 한 대뿐인 날 — 예전 규칙 그대로
+        # 실제 구간의 합집합으로 그 날 가동 시간을 채운다 — **모든 날**에 적용한다.
+        # 예전에는 여러 PC 가 기록한 날만 이 경로를 탔고, 한 대뿐인 날은 pc_on 행들의 max 였다.
+        # 그래서 (a) 하루에 세션 행이 여러 개면 가장 긴 세션 하나만 세고(3h+3h+3h → 3h),
+        # (b) pc_on 행이 없고 구간만 있는 날은 0h 였다 → 추이 선의 PC 가동이 통째로 빠졌다
+        # (제보: "수십 시간인데 한 달에 8h"). 구간은 측정값이므로 이것이 사실에 가깝다.
+        multi = len(roots_with.get(dd, ())) >= 2
         real = list(pc_spans.get(dd) or [])
-        extra = [(a, b) for a, b, ri in syn.get(dd, []) if dd not in real_by_root.get(ri, {})]
+        # '구간 없는 PC 의 창' 은 여러 PC 가 섞인 날에만 보탠다 — 한 대뿐인 날에 자기 창을 섞으면
+        # 잠금·절전 몇 분 공백·HH:mm 반올림으로 창이 구간보다 길어져 always_on·저녁 게이트가 뒤집힌다.
+        extra = ([(a, b) for a, b, ri in syn.get(dd, []) if dd not in real_by_root.get(ri, {})]
+                 if multi else [])
         sp = _union_spans(real + extra)
         if not sp:
             continue
-        pc_win_all[dd] = sp
+        if multi:
+            pc_win_all[dd] = sp                        # 하한 창의 재료 — 여러 PC 인 날만(예전 그대로)
         u_on = _union_min(sp) / 60.0
         u_ni = _union_min(_clip(sp, 0, cw0) + _clip(sp, cw1, 1440)) / 60.0
         o_on, o_ni, o_fo, o_lo = pc.get(dd, (0.0, 0.0, None, None))
