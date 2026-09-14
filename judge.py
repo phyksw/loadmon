@@ -203,6 +203,18 @@ def who_label(who, n=16):
     return "(상대)"
 
 
+def kill_tree(pid):
+    r"""프로세스와 자손 전부 종료(윈도) — 드라이버만 죽이면 그 아래 Edge·CDP 가 남아 다음 왕복을 막는다."""
+    try:
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                       capture_output=True, timeout=30, creationflags=NO_WIN)
+    except (OSError, subprocess.SubprocessError):
+        try:
+            os.kill(pid, 9)
+        except OSError:
+            pass
+
+
 def copilot_send(prompt_text, tag, name, fresh=None):
     """Copilot 왕복 1회 — 프롬프트를 report\\judge_{name}_{tag}.md 로 쓰고 드라이버를
     자식 프로세스로 부른다(분할·서약은 드라이버 몫). 반환 {"ok","reply",...,"error","hint"}.
@@ -238,9 +250,34 @@ def copilot_send(prompt_text, tag, name, fresh=None):
             # 한 채팅의 왕복이 chatTurns 에 닿아도 새 채팅 — 너무 길어진 대화는 답이 끊기거나 앞 답을 되풀이한다.
             cmd.append("--fresh")
             _TURNS[0] = 0
-        out = subprocess.run(cmd, capture_output=True, timeout=roundtrip_timeout(n_parts),
-                             cwd=ROOT, env=dict(os.environ, PYTHONIOENCODING="utf-8"),
-                             creationflags=NO_WIN)
+        _lim = roundtrip_timeout(n_parts)
+        _p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                              cwd=ROOT, env=dict(os.environ, PYTHONIOENCODING="utf-8"),
+                              creationflags=NO_WIN)
+        # 답은 길다(워크플로우 판정은 수십~수백 KB). 파이프를 **읽으면서** 기다려야 한다 —
+        # 끝난 뒤 한 번에 읽으면 자식이 윈도 파이프 버퍼를 넘겨 쓰다 막혀 영원히 끝나지 않는다(실측).
+        import threading
+        _buf = []
+        _rd = threading.Thread(target=lambda: _buf.append(_p.stdout.read() if _p.stdout else b""),
+                               daemon=True)
+        _rd.start()
+        _t0 = _beat = time.time()
+        while _p.poll() is None:
+            time.sleep(1)
+            _now = time.time()
+            if _now - _t0 > _lim:
+                kill_tree(_p.pid)
+                try:
+                    _p.wait(timeout=30)
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
+                raise subprocess.TimeoutExpired(cmd, _lim)
+            if _now - _beat >= 60:
+                _beat = _now
+                print(f"        … Copilot 응답 대기 {int((_now - _t0) / 60)}분 / 최대 {int(_lim / 60)}분 ({name})",
+                      flush=True)
+        _rd.join(timeout=30)
+        out = subprocess.CompletedProcess(cmd, _p.returncode, b"".join(_buf), b"")
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": "왕복 시간 초과",
                 "hint": "Copilot 응답 지연 — 이 청크는 규칙 판정으로 진행"}

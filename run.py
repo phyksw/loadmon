@@ -404,6 +404,87 @@ def run_ai_stage(script, d0, d1, retry_wait=15):
                 else f"재시도에도 실패(코드 {rc}) - 탭의 수동 실행으로 다시")
 
 
+def kill_tree(pid):
+    r"""프로세스와 자손 전부 종료(윈도) — 자식만 죽이면 그 아래 드라이버·Edge 가 남아 다음 실행을 막는다."""
+    try:
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                       capture_output=True, timeout=30, creationflags=NO_WIN)
+    except (OSError, subprocess.SubprocessError):
+        try:
+            os.kill(pid, 9)
+        except OSError:
+            pass
+
+
+def _stage_limits():
+    r"""(정체 한도 초, 절대 상한 초) — config.json 의 aiStageStallMin·aiStageMaxMin. 0 이면 끔."""
+    stall, cap = 15.0, 180.0
+    try:
+        c = cfg() if "cfg" in globals() else {}
+        stall = float(c.get("aiStageStallMin", stall))
+        cap = float(c.get("aiStageMaxMin", cap))
+    except (OSError, ValueError, TypeError):
+        pass
+    return max(0.0, stall) * 60.0, max(0.0, cap) * 60.0
+
+
+def watch_child(p, on_line, label, beat_sec=120):
+    r"""자식 출력을 읽으며 **정체**를 감시한다. 무출력이 정체 한도를 넘거나 총 시간이 상한을 넘으면 트리를 끊는다.
+    예전에는 자식이 멈추면 부모도 영원히 기다려(제보 '무한 정지') 화면이 '실행 중' 에서 벗어나지 못했다.
+    반환: 중단 사유(없으면 None)."""
+    import queue
+    import threading
+    stall_sec, cap_sec = _stage_limits()
+    q = queue.Queue()
+
+    def _rd():
+        try:
+            for ln in p.stdout:
+                q.put(ln if isinstance(ln, str) else ln.decode("utf-8", "replace"))
+        except (OSError, ValueError):
+            pass
+        finally:
+            q.put(None)
+
+    threading.Thread(target=_rd, daemon=True).start()
+    t0 = last = beat = time.time()
+    why = None
+    while True:
+        try:
+            ln = q.get(timeout=5)
+        except queue.Empty:                    # 5초 동안 한 줄도 안 왔다
+            now = time.time()
+            if stall_sec and now - last > stall_sec:
+                why = f"{label}: {int((now - last) // 60)}분 {int((now - last) % 60)}초 동안 아무 출력이 없어 중단했습니다"
+            elif cap_sec and now - t0 > cap_sec:
+                why = f"{label}: 시간 상한 {int(cap_sec / 60)}분을 넘겨 중단했습니다"
+            if why:
+                break
+            if now - beat >= beat_sec:         # 살아 있다는 표시 — 멈춘 것처럼 보이지 않게
+                beat = now
+                print(f"   … {label} 진행 중 (경과 {int((now - t0) / 60)}분 · 마지막 출력 {int(now - last)}초 전)",
+                      flush=True)
+            continue
+        if ln is None:
+            break
+        last = time.time()
+        on_line(ln.rstrip("\n"))
+        if cap_sec and time.time() - t0 > cap_sec:      # 출력이 계속 있어도 상한은 본다(끝나지 않는 실행 방지)
+            why = f"{label}: 시간 상한 {int(cap_sec / 60)}분을 넘겨 중단했습니다"
+            break
+    if why:
+        print(f"[!] {why}", flush=True)
+        print("    멈춘 자리에서 끊었습니다 — 화면의 마지막 줄이 그 자리입니다. 가장 흔한 원인은 Copilot 창이 로그인·"
+              "오류 화면에서 멈춘 것입니다 — [AI 연결 진단]으로 확인한 뒤 다시 실행하세요.",
+              flush=True)
+        kill_tree(p.pid)
+        try:
+            p.wait(timeout=30)
+        except Exception:
+            pass
+    return why
+
+
 def _run_capture(cmd, env):
     r"""자식 출력을 화면에 그대로 흘리면서, 실패 사유만 따로 건져 낸다.
 
@@ -416,8 +497,9 @@ def _run_capture(cmd, env):
     except OSError as e:
         return 1, f"실행 실패({type(e).__name__})"
     tail, last_json = [], {}
-    for line in p.stdout:
-        line = line.rstrip("\n")
+    label = os.path.basename(str(cmd[1] if len(cmd) > 1 else "단계"))
+
+    def _on(line):
         print(line, flush=True)          # [progress] 줄이 UI 진행 바에 바로 닿게(텍스트 층 버퍼링 방지)
         if line.strip():
             tail.append(line.strip())
@@ -426,10 +508,14 @@ def _run_capture(cmd, env):
             try:
                 o = json.loads(line)
                 if isinstance(o, dict):
-                    last_json = o
+                    last_json.update(o)
             except ValueError:
                 pass
+
+    stopped = watch_child(p, _on, label)
     rc = p.wait()
+    if stopped:
+        return (rc or 1), stopped
     if rc == 0:
         return 0, ""
     why = str(last_json.get("error") or "")
@@ -675,12 +761,18 @@ def main():
                          cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                          env=dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1"))
     tail = []
-    for raw in p.stdout:
-        line = raw.decode("utf-8", "replace").rstrip()
+
+    def _on_mine(line):
         print(line, flush=True)
         tail.append(line)
         del tail[:-12]
+
+    stop_m = watch_child(p, _on_mine, "업무 로드 추출")   # 멈추면 끊는다(정체 감지)
     rc_m = p.wait()
+    if stop_m:
+        record("업무 로드 추출", False, time.time() - _t, stop_m)
+        record("종료", False, 0.0, stop_m)
+        return 1
     if rc_m == 0:
         # 지난 판정 산출물은 이 시점부터 '옛것' 이다(V-01) — 정제본이 화면에 그대로 남지 않게 개명한다
         _inv, _inv_fail = invalidate_ai_outputs(d0, d1)
@@ -746,11 +838,13 @@ def main():
         else:
             print("\n── AI 정제 (Level1·상세설명 문장화)")
             _t3 = time.time()
-            rc2 = subprocess.run([sys.executable, os.path.join(ROOT, "refine.py"),
-                                  "--from", d0, "--to", d1], cwd=ROOT,
-                                 env=dict(os.environ, PYTHONIOENCODING="utf-8",
-                                          PYTHONUNBUFFERED="1")).returncode
-            record("AI 정제", rc2 == 0, time.time() - _t3)
+            # 다른 AI 단계와 같은 감시를 받게 한다 — 예전에는 timeout 도 정체 감지도 없는
+            # subprocess.run 이어서 정제가 멈추면 분석 전체가 여기서 영원히 서 있었다(실측 감사).
+            rc2, why_r = _run_capture([sys.executable, os.path.join(ROOT, "refine.py"),
+                                       "--from", d0, "--to", d1],
+                                      dict(os.environ, PYTHONIOENCODING="utf-8",
+                                           PYTHONUNBUFFERED="1"))
+            record("AI 정제", rc2 == 0, time.time() - _t3, why_r)
             if rc2 != 0:
                 print("   AI 정제 실패 — report 폴더의 evidence 파일을 Copilot에 붙여넣어도 됩니다")
 

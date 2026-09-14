@@ -31,7 +31,7 @@ from progress import parse as parse_progress  # noqa: E402  (core 경로 등록 
 REPORT = os.path.join(ROOT, "report")
 DATA = os.path.join(ROOT, "data")
 NO_WIN = 0x08000000
-VERSION = "v24.0.6"
+VERSION = "v24.0.7"
 LOCK = threading.Lock()
 FREEZE_LOCK = threading.Lock()       # [보고서 만들기] 직렬화 — JOB 과 별개(사본에 '실행 중'이 굳지 않게)
 JOB = {"running": False, "log": [], "step": "", "started": 0.0, "pid": 0,
@@ -44,7 +44,7 @@ def kill_job():
         pid = JOB.get("pid") or 0
     if pid:
         subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)],
-                       capture_output=True, creationflags=NO_WIN)
+                       capture_output=True, creationflags=NO_WIN, timeout=30)
         with LOCK:
             JOB["pid"] = 0
 
@@ -1625,24 +1625,34 @@ def run_job(d0, d1, ai, skip, collect_only=False):
                              env=dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1"), creationflags=NO_WIN)
         with LOCK:
             JOB["pid"] = p.pid
-        for raw in iter(p.stdout.readline, b""):
-            line = raw.decode("utf-8", "replace").rstrip()
-            if line:
-                pg = parse_progress(line)
-                if pg:
-                    ph, done, total = pg
-                    with LOCK:
-                        if JOB["phase"] != ph:
-                            JOB["phase_started"] = time.time()
-                        JOB.update(phase=ph, done=done, total=total)
-                    continue                     # 진행률 줄은 로그를 채우지 않는다
-                log(line)
-                if line.startswith("──"):
-                    with LOCK:
-                        JOB["step"] = line.strip("─ ")
-                        JOB.update(phase="", done=0, total=0)
+
+        def _on(line):
+            line = line.rstrip()
+            if not line:
+                return
+            pg = parse_progress(line)
+            if pg:
+                ph, done, total = pg
+                with LOCK:
+                    if JOB["phase"] != ph:
+                        JOB["phase_started"] = time.time()
+                    JOB.update(phase=ph, done=done, total=total)
+                return                           # 진행률 줄은 로그를 채우지 않는다
+            log(line)
+            if line.startswith("──"):
+                with LOCK:
+                    JOB["step"] = line.strip("─ ")
+                    JOB.update(phase="", done=0, total=0)
+
+        # 정체 감시 — 예전에는 자식이 멈추면 여기서 영원히 기다려 상태바가 '실행 중' 에서 벗어나지
+        # 못했다(제보 '무한 정지'). 이제 무출력이 한도를 넘으면 트리를 끊고 이유를 로그에 남긴다.
+        stopped = watch_child(p, _on, "분석 실행")
         p.wait()
-        log("=== 완료 ===" if p.returncode == 0 else f"=== 종료(코드 {p.returncode}) — 로그 확인 ===")
+        if stopped:
+            log(stopped)
+            log("=== 중단(정체 감지) — [AI 연결 진단]으로 Copilot 창 상태를 확인한 뒤 다시 실행하세요 ===")
+        else:
+            log("=== 완료 ===" if p.returncode == 0 else f"=== 종료(코드 {p.returncode}) — 로그 확인 ===")
     except Exception as e:
         log(f"오류: {e}")
     finally:
@@ -1817,6 +1827,87 @@ def _tag_args():
     return t, []
 
 
+def kill_tree(pid):
+    r"""프로세스와 자손 전부 종료(윈도) — 자식만 죽이면 그 아래 드라이버·Edge 가 남아 다음 실행을 막는다."""
+    try:
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                       capture_output=True, timeout=30, creationflags=NO_WIN)
+    except (OSError, subprocess.SubprocessError):
+        try:
+            os.kill(pid, 9)
+        except OSError:
+            pass
+
+
+def _stage_limits():
+    r"""(정체 한도 초, 절대 상한 초) — config.json 의 aiStageStallMin·aiStageMaxMin. 0 이면 끔."""
+    stall, cap = 15.0, 180.0
+    try:
+        c = cfg() if "cfg" in globals() else {}
+        stall = float(c.get("aiStageStallMin", stall))
+        cap = float(c.get("aiStageMaxMin", cap))
+    except (OSError, ValueError, TypeError):
+        pass
+    return max(0.0, stall) * 60.0, max(0.0, cap) * 60.0
+
+
+def watch_child(p, on_line, label, beat_sec=120):
+    r"""자식 출력을 읽으며 **정체**를 감시한다. 무출력이 정체 한도를 넘거나 총 시간이 상한을 넘으면 트리를 끊는다.
+    예전에는 자식이 멈추면 부모도 영원히 기다려(제보 '무한 정지') 화면이 '실행 중' 에서 벗어나지 못했다.
+    반환: 중단 사유(없으면 None)."""
+    import queue
+    import threading
+    stall_sec, cap_sec = _stage_limits()
+    q = queue.Queue()
+
+    def _rd():
+        try:
+            for ln in p.stdout:
+                q.put(ln if isinstance(ln, str) else ln.decode("utf-8", "replace"))
+        except (OSError, ValueError):
+            pass
+        finally:
+            q.put(None)
+
+    threading.Thread(target=_rd, daemon=True).start()
+    t0 = last = beat = time.time()
+    why = None
+    while True:
+        try:
+            ln = q.get(timeout=5)
+        except queue.Empty:                    # 5초 동안 한 줄도 안 왔다
+            now = time.time()
+            if stall_sec and now - last > stall_sec:
+                why = f"{label}: {int((now - last) // 60)}분 {int((now - last) % 60)}초 동안 아무 출력이 없어 중단했습니다"
+            elif cap_sec and now - t0 > cap_sec:
+                why = f"{label}: 시간 상한 {int(cap_sec / 60)}분을 넘겨 중단했습니다"
+            if why:
+                break
+            if now - beat >= beat_sec:         # 살아 있다는 표시 — 멈춘 것처럼 보이지 않게
+                beat = now
+                print(f"   … {label} 진행 중 (경과 {int((now - t0) / 60)}분 · 마지막 출력 {int(now - last)}초 전)",
+                      flush=True)
+            continue
+        if ln is None:
+            break
+        last = time.time()
+        on_line(ln.rstrip("\n"))
+        if cap_sec and time.time() - t0 > cap_sec:      # 출력이 계속 있어도 상한은 본다(끝나지 않는 실행 방지)
+            why = f"{label}: 시간 상한 {int(cap_sec / 60)}분을 넘겨 중단했습니다"
+            break
+    if why:
+        print(f"[!] {why}", flush=True)
+        print("    멈춘 자리에서 끊었습니다 — 화면의 마지막 줄이 그 자리입니다. 가장 흔한 원인은 Copilot 창이 로그인·"
+              "오류 화면에서 멈춘 것입니다 — [AI 연결 진단]으로 확인한 뒤 다시 실행하세요.",
+              flush=True)
+        kill_tree(p.pid)
+        try:
+            p.wait(timeout=30)
+        except Exception:
+            pass
+    return why
+
+
 def tool_job(kind, extra=()):
     """agentic.py / flow.py 를 스레드에서 끝까지 돌리고 결과를 MANUAL[kind] 에 남긴다(run_job 과 같은 프로토콜).
     인자가 없으면 두 스크립트는 mm_meta 최신 기간을 잡아 화면과 어긋난 파일에 쓸 수 있으므로 기간을 명시한다."""
@@ -1833,10 +1924,12 @@ def tool_job(kind, extra=()):
         with LOCK:
             JOB["pid"] = p.pid
         last, tail = None, ""
-        for raw in iter(p.stdout.readline, b""):
-            line = raw.decode("utf-8", "replace").rstrip()
+        box = {"last": None, "tail": ""}
+
+        def _on(line):
+            line = line.rstrip()
             if not line:
-                continue
+                return
             pg = parse_progress(line)
             if pg:
                 ph, done, total = pg
@@ -1844,19 +1937,26 @@ def tool_job(kind, extra=()):
                     if JOB["phase"] != ph:
                         JOB["phase_started"] = time.time()
                     JOB.update(phase=ph, done=done, total=total)
-                continue
+                return
             if line.startswith("{") and line.rstrip().endswith("}"):
                 try:
                     o = json.loads(line)
                     if isinstance(o, dict):
-                        last = o
-                        continue
+                        box["last"] = o
+                        return
                 except ValueError:
                     pass
-            tail = line
+            box["tail"] = line
             log(line)
+
+        # 정체 감시 — 자식이 멈추면 트리를 끊고 이유를 남긴다(제보 '무한 정지': 화면이 실행 중에서 못 벗어났다)
+        stopped = watch_child(p, _on, step)
         p.wait()
-        if last is None:
+        last, tail = box["last"], box["tail"]
+        if stopped:
+            res = {"ok": False, "error": "중단(정체 감지)", "hint": stopped}
+            log(stopped)
+        elif last is None:
             # 자식이 죽으면 사유는 마지막 로그 줄(스택 끝)에 있다 — 버리면 빈 힌트만 남는다
             res = {"ok": False, "error": "출력 해석 실패",
                    "hint": (tail[:200] if tail else f"종료 코드 {p.returncode}") + " — 진행 로그를 확인하세요"}
@@ -1897,10 +1997,11 @@ def narrate_job():
                                       PYTHONUNBUFFERED="1"), creationflags=NO_WIN)
         with LOCK:
             JOB["pid"] = p.pid
-        for raw in iter(p.stdout.readline, b""):
-            line = raw.decode("utf-8", "replace").rstrip()
+
+        def _on(line):
+            line = line.rstrip()
             if not line:
-                continue
+                return
             pg = parse_progress(line)
             if pg:
                 ph, done, total = pg
@@ -1908,10 +2009,16 @@ def narrate_job():
                     if JOB["phase"] != ph:
                         JOB["phase_started"] = time.time()
                     JOB.update(phase=ph, done=done, total=total)
-                continue
+                return
             log(line)
+
+        stopped = watch_child(p, _on, "리뷰 코멘트")      # 멈추면 끊는다 — 화면이 '실행 중' 에 갇히지 않게
         p.wait()
-        log("=== 리뷰 코멘트 완료 ===" if p.returncode == 0 else "=== 리뷰 생성 실패 ===")
+        if stopped:
+            log(stopped)
+            log("=== 리뷰 생성 중단(정체 감지) ===")
+        else:
+            log("=== 리뷰 코멘트 완료 ===" if p.returncode == 0 else "=== 리뷰 생성 실패 ===")
     except Exception as e:
         log(f"오류: {e}")
     finally:
