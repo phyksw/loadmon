@@ -57,6 +57,8 @@ from datetime import date, datetime
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(ROOT, "core"))
+from details import explain_failure  # noqa: E402  - 로그인 필요 등 "사람이 손대야 풀리는" 실패 판정
+from details import level1_of  # noqa: E402  - 상위 규칙 분류(코드네임·ax·공통)
 from details import ukey2  # noqa: E402  - 과제 신원 축(공백·구분자·대소문자 무시, 괄호 꼬리 보존)
 from progress import progress  # noqa: E402
 NO_WIN = 0x08000000
@@ -1314,7 +1316,10 @@ def write_outputs(kept, tag, cfg, rep):
     for (md, dt), a in sorted(agg.items(), key=lambda kv: -kv[1]["w"]):
         share = a["w"] / tot_w
         srcs = len({s.split("(")[0] for s in a["src"]})
-        out_rows.append({"Function": cfg.get("function", ""), "Level 1": "",
+        # 상위 초안 — 규칙(코드네임·ax·공통)으로 채운다. AI 정제가 돌면 그 판정이 이 값을 덮는다.
+        # 예전에는 판정 단계에서 늘 빈칸이라, 정제가 실패한 실행에서는 상위가 화면에서 전멸했다.
+        out_rows.append({"Function": cfg.get("function", ""),
+                         "Level 1": level1_of(f"{md} {dt}", md, ROOT),
                          "제품": _product_for(md, dt),
                          "유형": a["wt"].most_common(1)[0][0], "Level 2": md, "Level 3": dt,
                          "이름": owner, "상세설명": "",
@@ -1352,7 +1357,20 @@ def narrate(kept, total_mm, tag):
     for r in kept:
         by_month[r["time"][:7]].append(r)
     out = {}
+    _rep = os.path.join(ROOT, "report")
+    _dl, _bud = _stage_budget()
+    _consec = 0
     for _i, mk in enumerate(sorted(by_month)):
+        # 예산·연속 실패 관문 — 예전에는 달마다 새 채팅으로 끝까지 시도했고, 그 사이에 부모의 단계 상한에
+        # 걸리면 **성공한 달까지 통째로 사라졌다**(저장이 마지막에 한 번뿐이었다).
+        if _dl is not None and time.monotonic() > _dl:
+            print(f"        시간 예산 {_bud:.0f}분을 넘겨 남은 {len(by_month) - _i}개월 코멘트는 만들지 "
+                  "않았습니다 — 여기까지는 저장했고 [리뷰 코멘트 재생성]으로 이어서 만들 수 있습니다")
+            break
+        if _consec >= 3:
+            print(f"        {_consec}개월 연속 실패 — 남은 {len(by_month) - _i}개월은 보내지 않습니다 "
+                  "([AI 연결 진단]으로 Copilot 상태를 확인한 뒤 [리뷰 코멘트 재생성])")
+            break
         progress("월별 리뷰", _i, len(by_month))
         rows = by_month[mk]
         head = [
@@ -1402,23 +1420,88 @@ def narrate(kept, total_mm, tag):
                           + ", ".join(drop[:3]) + (" …" if len(drop) > 3 else ""))
                 o["projects"] = keep
                 out[mk] = o
+                _consec = 0
+                save_narratives(out, _rep, tag, carry=False)   # 달마다 즉시 저장 — 끊겨도 이 달은 남는다
                 print(f"        {mk} 내러티브 ✓" + (" (잘린 응답 일부 복구)" if res.get("cut") else ""))
                 continue
             note_bad_reply()
-        print(f"        {mk} 내러티브 실패 — 건너뜀")
+        _consec += 1
+        # explain_failure 는 (사유, 조치, fatal) 세 값을 돌려준다(core/details.py)
+        _why, _how, _fatal = explain_failure(res) if isinstance(res, dict) else ("", "", False)
+        print(f"        {mk} 내러티브 실패 — 건너뜀" + (f" ({_why[:60]})" if _why else ""))
+        if _fatal:
+            print("        사람이 손대야 풀리는 상태입니다 — 남은 달은 보내지 않습니다: " + _how[:80])
+            break
     progress("월별 리뷰", len(by_month), len(by_month))
     return out
 
 
-def save_narratives(nar, rep, tag):
-    """월별 내러티브 저장 — 한 달도 못 만들었으면(왕복 전부 실패) 기존 파일을 빈 {} 로 덮지 않고
-    보존한다(F3: 지난 실행의 내러티브가 통째로 사라지던 결함). 반환: 저장했으면 True."""
+def _stage_budget():
+    r"""(마감 시각(monotonic) 또는 None, 예산 분) — config.aiStageBudgetMin(0 이면 끔)과
+    run.py 가 물려준 전체 마감(LM_AI_DEADLINE · epoch 초) 중 이른 쪽. refine·agentic 과 같은 규칙."""
+    mins = 120.0
+    try:
+        with open(os.path.join(ROOT, "config", "config.json"), encoding="utf-8-sig") as f:
+            v = json.load(f).get("aiStageBudgetMin")
+        if v is not None:
+            mins = max(0.0, float(v))
+    except (OSError, ValueError, TypeError, AttributeError):
+        mins = 120.0
+    dl = (time.monotonic() + mins * 60.0) if mins > 0 else None
+    try:
+        total_at = float(os.environ.get("LM_AI_DEADLINE") or 0)
+    except ValueError:
+        total_at = 0.0
+    if total_at > 0:
+        left = time.monotonic() + max(0.0, total_at - time.time())
+        dl = min(dl, left) if dl else left
+    return dl, mins
+
+
+def save_narratives(nar, rep, tag, carry=True):
+    r"""월별 내러티브 저장 — 세 가지를 지킨다(제보: '월별 코멘트가 빠짐').
+     ① 하나도 못 만들었으면 **아무 것도 쓰지 않는다**. 예전에는 그 tag 파일이 없을 때 빈 {} 를 새로 만들어
+        화면이 '코멘트 없음' 으로 굳었다 — 분석 기간을 바꿔 재실행하면 항상 이 경로였다(실측).
+     ② 같은 tag 의 기존 달은 물려받는다 — 부분 재생성이 나머지 달을 지우지 않게.
+     ③ 이번에 못 만든 달은 **다른 기간(tag) 파일에서 이월**한다. 같은 달의 코멘트는 기간이 달라도 그 달의
+        것이다. 이월한 달에는 from_tag 를 붙여 화면이 출처를 말할 수 있게 한다.
+    반환: 저장했으면 True."""
     p = os.path.join(rep, f"ai_narratives_{tag}.json")
-    if not nar and os.path.exists(p):
-        print("        월별 내러티브 0개 — 기존 ai_narratives 파일을 보존합니다(덮어쓰지 않음)")
+    merged = {}
+    try:
+        if os.path.exists(p):
+            with open(p, encoding="utf-8") as f:
+                old = json.load(f)
+            if isinstance(old, dict):
+                merged.update({k: v for k, v in old.items() if isinstance(v, dict)})
+    except (OSError, ValueError):
+        pass
+    if carry:
+        import glob as _glob
+        others = [q for q in _glob.glob(os.path.join(rep, "ai_narratives_*.json"))
+                  if os.path.basename(q) != os.path.basename(p)]
+        for q in sorted(others, key=lambda x: os.path.getmtime(x), reverse=True):
+            try:
+                with open(q, encoding="utf-8") as f:
+                    other = json.load(f)
+            except (OSError, ValueError):
+                continue
+            if not isinstance(other, dict):
+                continue
+            _t = os.path.basename(q)[len("ai_narratives_"):-len(".json")]
+            for mk, v in other.items():
+                if isinstance(v, dict) and mk not in merged and mk not in (nar or {}):
+                    merged[mk] = dict(v, from_tag=str(v.get("from_tag") or _t))
+    merged.update({k: v for k, v in (nar or {}).items() if isinstance(v, dict)})
+    if not merged:
+        print("        월별 내러티브 0개 — 파일을 만들지 않습니다(기존 파일도 그대로 둡니다)")
         return False
     with open(p, "w", encoding="utf-8") as f:
-        json.dump(nar, f, ensure_ascii=False, indent=1)
+        json.dump(merged, f, ensure_ascii=False, indent=1)
+    _carried = sorted(k for k, v in merged.items() if isinstance(v, dict) and v.get("from_tag"))
+    if _carried:
+        print(f"        월별 코멘트 {len(_carried)}개월은 이전 기간에서 이월했습니다: "
+              + ", ".join(_carried[:6]) + (" …" if len(_carried) > 6 else ""))
     return True
 
 

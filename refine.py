@@ -41,7 +41,9 @@ if ROOT not in sys.path:
     # 죽어 **AI 정제만 단독으로** 실패한다(파이썬이 설치된 PC 에서는 안 보이는 결함).
     # agentic.py·retag.py·team_refine.py·ui/app.py 는 모두 ROOT 를 넣는다 — 여기만 빠져 있었다.
     sys.path.insert(0, ROOT)
+from details import level1_of  # noqa: E402  - 상위 규칙 분류(코드네임·ax·공통) — AI 가 비운 자리만
 from details import ukey2  # noqa: E402  - judge·flow 와 같은 과제 신원 축
+from details import ukey3  # noqa: E402  - 담당업무(하위) 신원 축 — 같은 업무를 두 행으로 남기지 않게
 from details import snap1  # noqa: E402  - 상위(Level 1)를 4개 고정 범주로 스냅
 from progress import progress  # noqa: E402
 if __name__ == "__main__":      # import 시엔 건드리지 않는다 — 임포트한 쪽의 stdout 이
@@ -219,7 +221,8 @@ def build_prompt(rows, evidence_md, model_names=(), ev_mode="aligned", overlap=(
         "2. l2 = 실제 과제·프로젝트명으로 정규화 (원문에서 읽어낸 이름. 토큰 조각 금지)"
         + (" — 이미 확정된 과제 체계가 있으니 그 표기를 그대로 유지할 것(변형·재작명 금지): "
            + ", ".join(model_names) if model_names else ""),
-        "3. l1 = 업무 성격 (신제품개발 / 기술 내재화 / 양산준비 / 일반업무 중 택1)",
+        "3. l1 = 업무 성격 (신제품개발 / 기술 내재화 / 양산준비 / 일반업무 / AX·자동화 중 택1)",
+        "   (AX·자동화 = AI·자동화 도구를 만들거나 적용하는 일. 회계·실험실 관리 같은 사무는 일반업무)",
         "4. l3 = **담당 업무 항목명**(중위개체) — 항목 줄의 세부업무명을 유지·다듬는다.",
         "   ('Capability 구조 설계', '수광부 렌즈 해석'처럼 그 과제 안의 실제 업무 이름.",
         "    설계/문서·보고 같은 **범주로 축약 금지** — 범주는 a 에 따로 쓴다)",
@@ -404,6 +407,13 @@ def sanitize_evidence(ev_text, kws):
 def plan_chunks(idxed, chunk_n):
     """[(원본 인덱스, 행)] → [(항목 목록, 겹침 번호 집합)]. 두 번째 청크부터 앞 청크 끝 OV_N 항목
     (OV_CHARS 이내)을 앞에 붙인다 — 청크 경계에서 갈린 같은 업무를 이을 수 있게(agentic.split_rows 와 같은 꼴)."""
+    # 청크는 **정체성 축**으로 자른다 — 예전에는 CSV 순서(비중 내림차순)를 그대로 잘라 같은 과제의
+    # 행이 여러 청크로 흩어졌고, 이어 주는 것은 겹침 3항목 창 하나뿐이었다. 경계에서 모델이 같은 업무에
+    # 다른 이름을 붙이면 그대로 두 행으로 남았다(제보: '같은 일이 다른 일로 인식'). 원본 인덱스는
+    # 그대로 들고 가므로 병합·되쓰기(merge_groups·refine_map)는 영향받지 않는다.
+    idxed = sorted(idxed, key=lambda ir: (ukey2((ir[1].get("Level 2") or "").strip() or "공통"),
+                                          -_f(ir[1].get("share")),
+                                          ukey3((ir[1].get("Level 3") or "").strip())))
     base = [idxed[i:i + chunk_n] for i in range(0, len(idxed), chunk_n)]
     out = []
     for k, ch in enumerate(base):
@@ -708,7 +718,10 @@ def main():
         detail = re.sub(r"\s+", " ", str(_g(it, "detail") or "")).strip()[:DETAIL_MAX * 2]
         final.append({"유형": _vote("유형"), "제품": _vote("제품"),
                       "활동": act if act in ACT_CATS else "",
-                      "Level 1": snap1(_g(it, "level1")), "Level 2": lv2,
+                      # 상위는 AI 판정 우선, 비었을 때만 규칙(코드네임·ax·공통 키워드)으로 채운다 —
+                      # 예전에는 규칙 폴백이 없어 정제가 못 짚은 행의 상위가 통째로 빈칸이었다
+                      "Level 1": (snap1(_g(it, "level1"))
+                                  or level1_of(f"{lv2} {lv3} {detail}", lv2, ROOT)), "Level 2": lv2,
                       "Level 3": lv3, "상세설명": detail,
                       "share": share, "활동일수": days, "근거": srcs,
                       "확신도": "상" if days >= 3 and len(idxs) > 1 else "중",
@@ -718,10 +731,40 @@ def main():
         if i not in owner:
             final.append({"유형": r.get("유형", ""), "제품": r.get("제품", ""),
                           "활동": r.get("활동", ""),
-                          "Level 1": "", "Level 2": r.get("Level 2", ""), "Level 3": r.get("Level 3", ""),
+                          # AI 가 언급하지 않은 행도 규칙으로는 상위를 줄 수 있다(빈칸보다 낫다)
+                          "Level 1": level1_of(
+                              f'{r.get("Level 2", "")} {r.get("Level 3", "")}', r.get("Level 2", ""), ROOT),
+                          "Level 2": r.get("Level 2", ""), "Level 3": r.get("Level 3", ""),
                           "상세설명": "", "share": _f(r.get("share")), "활동일수": _i(r.get("활동일수")),
                           "근거": r.get("근거", ""), "확신도": r.get("확신도", ""),
                           "_orig": [(str(r.get("Level 2") or ""), str(r.get("Level 3") or ""))]})
+    # 같은 (과제, 담당업무)가 두 행으로 남는 것을 접는다 — 청크가 달라 각각 다른 이름으로 왔거나,
+    # 겹침 항목이 따로 판정된 경우다(제보: '하위·중위가 오버레이 청크 때문인지 다른 일로 인식').
+    # 접는 축은 judge·flow 와 같은 ukey2/ukey3. 비중은 합하고 대표 표기·설명은 비중 큰 쪽을 쓴다.
+    _fold, _order = {}, []
+    for f in final:
+        k = (ukey2(f.get("Level 2")), ukey3(f.get("Level 3")))
+        g = _fold.get(k)
+        if g is None:
+            _fold[k] = f
+            _order.append(k)
+            continue
+        if f["share"] > g["share"]:
+            for col in ("Level 1", "Level 2", "Level 3", "상세설명", "활동", "유형", "제품"):
+                if str(f.get(col) or "").strip():
+                    g[col] = f[col]
+        else:
+            for col in ("Level 1", "상세설명", "활동", "유형", "제품"):
+                if not str(g.get(col) or "").strip() and str(f.get(col) or "").strip():
+                    g[col] = f[col]
+        g["share"] = _f(g.get("share")) + _f(f.get("share"))
+        g["활동일수"] = max(_i(g.get("활동일수")), _i(f.get("활동일수")))
+        g["근거"] = " · ".join(sorted({x for x in (str(g.get("근거") or ""), str(f.get("근거") or "")) if x}))
+        g["_orig"] = (g.get("_orig") or []) + (f.get("_orig") or [])
+    if len(_fold) < len(final):
+        print(f"[refine] 같은 업무로 판정된 {len(final) - len(_fold)}행을 접었습니다 "
+              "(청크가 달라 따로 온 같은 과제·담당업무)")
+    final = [_fold[k] for k in _order]
     if len(final) > len(rows):
         # 정제는 행을 합칠 수만 있고 늘릴 수 없다 — 늘었다면 응답 번호가 중복된 것이다.
         # 왜곡된 배분으로 좋은 결과를 덮지 않고 규칙 결과를 그대로 둔다.

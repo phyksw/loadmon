@@ -402,7 +402,17 @@ MIN_SPAN_GAP2 = 14     # 신호 시간대 비겹침 판정의 최소 간격(일)
 # 상위는 **4개 고정 범주**인데, refine 이 모델이 돌려준 문자열을 검증 없이 그대로 저장했다
 # (Level 2·3·활동은 스냅·화이트리스트로 지키면서 여기만 무방비였다). 그래서 '기술내재화'(공백 없음)
 # 같은 표기 변형이 다섯 번째 상위처럼 화면에 떴다(감사 실측). 고정 목록이 있으므로 스냅하면 끝난다.
-LEVEL1_SET = ("신제품개발", "기술 내재화", "양산준비", "일반업무")
+LEVEL1_SET = ("신제품개발", "기술 내재화", "양산준비", "일반업무", "AX·자동화")
+# 현장에서 쓰는 말 → 고정 범주. 제보: "과제는 보통 양산·개발·공통·ax 로 나뉜다".
+# 예전에는 이 표가 없어 '개발'·'공통'·'ax' 가 **조용히 버려졌다**(snap1 이 ""를 돌려줌).
+LEVEL1_ALIAS = {
+    "양산": "양산준비", "양산화": "양산준비", "양산이관": "양산준비", "생산": "양산준비",
+    "개발": "신제품개발", "선행": "신제품개발", "선행개발": "신제품개발", "신제품": "신제품개발",
+    "내재화": "기술 내재화", "기술내재화": "기술 내재화", "요소기술": "기술 내재화",
+    "공통": "일반업무", "사무": "일반업무", "일반": "일반업무", "지원": "일반업무",
+    "ax": "AX·자동화", "AX": "AX·자동화", "자동화": "AX·자동화", "agentic": "AX·자동화",
+    "에이전틱": "AX·자동화", "ai": "AX·자동화",
+}
 
 
 def ukey1(s):
@@ -411,18 +421,72 @@ def ukey1(s):
 
 
 _L1_BY_KEY = {ukey1(x): x for x in LEVEL1_SET}
+_L1_BY_ALIAS = {ukey1(k): v for k, v in LEVEL1_ALIAS.items()}
 
 
 def snap1(s):
     """모델이 돌려준 상위 문자열 → 고정 범주 이름. 못 짚으면 "" (억지로 찍지 않는다).
-    앞부분 일치는 **후보가 유일할 때만** 쓴다 — 모호하면 쓰지 않는 것이 이 저장소의 규칙(_snap3)."""
+    ① 고정 범주 완전 일치 → ② 현장 어휘 동의어(LEVEL1_ALIAS) → ③ 앞부분 일치(후보가 유일할 때만).
+    ③ 은 모호하면 쓰지 않는 것이 이 저장소의 규칙(_snap3)."""
     k = ukey1(s)
     if not k:
         return ""
     if k in _L1_BY_KEY:
         return _L1_BY_KEY[k]
+    if k in _L1_BY_ALIAS:
+        return _L1_BY_ALIAS[k]
     cand = {v for kk, v in _L1_BY_KEY.items() if kk.startswith(k[:3]) or k.startswith(kk[:3])}
     return next(iter(cand)) if len(cand) == 1 else ""
+
+
+# ── 상위(Level 1) 규칙 분류 ────────────────────────────────────────────────
+# 제보: "양산·개발은 코드네임이고, 공통은 회계·실험실관리 같은 일반 사무, ax 는 AI 자동화".
+# 코드네임은 **사람이 아는 사실**이라 설정으로 받는다(사내 이름을 코드에 넣지 않는다 — 배포본은 빈 배열).
+# 규칙은 AI 판정을 덮지 않는다: 호출자가 **AI 가 비운 자리에만** 쓴다(refine·judge).
+_L1_AX_DEFAULT = ("ax", "agentic", "copilot", "rpa", "llm", "gpt", "프롬프트", "에이전트",
+                  "자동화", "자동 분류", "자동분류", "챗봇", "머신러닝", "딥러닝", "ai ")
+_L1_COMMON_DEFAULT = ("회계", "결산", "예산", "품의", "정산", "자산", "실사", "구매요청", "사무용품",
+                      "실험실", "실험실관리", "교정", "검교정", "안전", "교육", "인사", "근태", "감사",
+                      "표준", "특허", "회식", "총무", "연말정산", "출장 정산")
+
+
+def _l1_cfg(root):
+    """config.json 의 상위 규칙 설정 — 없으면 기본값. (코드네임 맵, ax 키워드, 공통 키워드)"""
+    codes, ax, common = {}, list(_L1_AX_DEFAULT), list(_L1_COMMON_DEFAULT)
+    try:
+        with open(os.path.join(root, "config", "config.json"), encoding="utf-8-sig") as f:
+            c = json.load(f)
+        raw = c.get("level1Codenames") or {}
+        if isinstance(raw, dict):
+            for k, v in raw.items():
+                name = snap1(k) or str(k)
+                codes[name] = [str(x).strip().lower() for x in (v or []) if str(x).strip()]
+        if isinstance(c.get("level1AxKeywords"), list) and c["level1AxKeywords"]:
+            ax = [str(x).strip().lower() for x in c["level1AxKeywords"] if str(x).strip()]
+        if isinstance(c.get("level1CommonKeywords"), list) and c["level1CommonKeywords"]:
+            common = [str(x).strip().lower() for x in c["level1CommonKeywords"] if str(x).strip()]
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    return codes, ax, common
+
+
+def level1_of(text, l2="", root=None, cfg=None):
+    """규칙으로 상위(Level 1)를 정한다 — 못 정하면 ""(억지로 찍지 않는다).
+    우선순위: ① 과제명(l2)에 코드네임이 있으면 그 범주 ② ax 키워드 ③ 공통(사무) 키워드.
+    ax 를 공통보다 먼저 보는 이유: '실험실 자동화' 는 사무가 아니라 AX 다(제보의 정의)."""
+    root = root or ROOT
+    codes, ax, common = cfg if cfg else _l1_cfg(root)
+    hay2 = " ".join(str(x or "") for x in (l2,)).lower()
+    hay = " ".join(str(x or "") for x in (l2, text)).lower()
+    for name, keys in (codes or {}).items():
+        for k in keys:
+            if k and (k in hay2 or k in hay):
+                return snap1(name) or ""
+    if any(k and k in hay for k in ax):
+        return "AX·자동화"
+    if any(k and k in hay for k in common):
+        return "일반업무"
+    return ""
 
 
 def ukey2(s):
