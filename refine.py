@@ -570,6 +570,31 @@ def merge_groups(items, rows):
     return [g for g in groups if g["idxs"]], owner
 
 
+def _stage_budget():
+    r"""(마감 시각(monotonic) 또는 None, 예산 분) — config.aiStageBudgetMin(0 이면 끔)과
+    run.py 가 물려준 전체 마감(LM_AI_DEADLINE · epoch 초) 중 **이른 쪽**.
+    예산에 닿으면 그때까지의 결과를 저장하고 남은 것은 손대지 않는다(다시 실행하면 이어서).
+    예전에는 이 단계에 시간 조건이 없어 몇 시간을 돌거나, 바깥 상한(aiStageMaxMin)에 끊겨
+    그때까지 만든 것이 통째로 사라졌다(감사 실측)."""
+    mins = 120.0
+    try:
+        with open(os.path.join(ROOT, "config", "config.json"), encoding="utf-8-sig") as f:
+            v = json.load(f).get("aiStageBudgetMin")
+        if v is not None:
+            mins = max(0.0, float(v))
+    except (OSError, ValueError, TypeError, AttributeError):
+        mins = 120.0
+    dl = (time.monotonic() + mins * 60.0) if mins > 0 else None
+    try:
+        total_at = float(os.environ.get("LM_AI_DEADLINE") or 0)
+    except ValueError:
+        total_at = 0.0
+    if total_at > 0:
+        left = time.monotonic() + max(0.0, total_at - time.time())
+        dl = min(dl, left) if dl else left
+    return dl, mins
+
+
 def main():
     d0, d1 = arg("--from"), arg("--to")
     tag = f"{d0.replace('-','')}-{d1.replace('-','')}"
@@ -617,7 +642,18 @@ def main():
           f"예산 {PROMPT_BUDGET:,}자)")
     rf = Refiner(tag, rep, sig_by, ev, model_names)
     failed, consec = 0, 0
+    _dl, _bud = _stage_budget()
+    _stopped = ""
     for ci, (ch, ov) in enumerate(plan):
+        if _dl is not None and time.monotonic() > _dl and not rf.st.get("fatal"):
+            # 예산 초과 — 루프만 정상 종료한다. 아래 병합·저장 경로를 그대로 타므로 여기까지 정제한 것은 남는다.
+            _stopped = (f"시간 예산 {_bud:.0f}분을 넘겨 남은 {len(plan) - ci}청크를 보내지 않았습니다 — "
+                        "여기까지 정제한 것은 저장했고, 다시 실행하면 남은 항목을 이어서 정제합니다"
+                        "(config.aiStageBudgetMin 으로 조절)")
+            print(f"[refine] {_stopped}")
+            for _ch2, _ov2 in plan[ci:]:
+                rf.st["failed_items"] += len({i for i, _ in _ch2} - set(_ov2))
+            break
         if rf.st.get("fatal"):
             # 사람이 손대야 풀리는 실패(로그인 필요 등) — 남은 청크는 보내지 않는다(judge 와 같은 관문).
             rf.st["failed_items"] += len({i for i, _ in ch} - set(ov))
@@ -638,6 +674,9 @@ def main():
     tail = {"chunks": len(plan), "failed_chunks": failed, "roundtrips": st["roundtrips"],
             "repaired": st["repaired"], "retries": st["retries"], "failed_items": st["failed_items"],
             "bad_rows": bad_rows}
+    if _stopped:                     # 화면이 '왜 일부만 정제됐는지' 를 말할 수 있게 마지막 JSON 에 싣는다
+        tail["stopped"] = _stopped
+        tail["hint"] = _stopped
     if not rf.items:
         print("[refine] 정제된 항목이 없습니다 — 규칙 결과를 그대로 둡니다")
         print("        report\\refine_prompt_*.md 를 Copilot에 직접 붙여넣어도 됩니다")

@@ -394,6 +394,11 @@ def run_ai_stage(script, d0, d1, retry_wait=15):
     rc, why = _run_capture(cmd, env)
     if rc == 0:
         return 0, ""
+    if "중단했습니다" in str(why or ""):
+        # 정체 감지·시간 상한으로 끊은 것은 다시 보내도 같은 벽에 닿는다 — 예전에는 이 경우도 재시도해
+        # 한 단계가 상한을 두 번 썼다(최악 360분, 감사 실측).
+        print(f"   {script} 를 중단했습니다 — 같은 벽에 다시 닿으므로 재시도하지 않습니다")
+        return rc, why
     print(f"   첫 시도 실패(코드 {rc}) - {retry_wait}초 뒤 1회 재시도합니다")
     time.sleep(retry_wait)
     rc, why2 = _run_capture(cmd, env)
@@ -835,6 +840,16 @@ def main():
         return 1
 
     if "--ai" in sys.argv:
+        # 한 번의 [분석 실행] 전체(판정+정제+Agentic+워크플로우) 마감을 자식들에게 물려준다.
+        # 예전에는 단계마다 독립 상한이라 합계가 몇 시간이 될 수 있었다(감사 실측). 0 이면 끔.
+        try:
+            _tot = float(c.get("aiTotalBudgetMin", 300) or 0)
+        except (ValueError, TypeError):
+            _tot = 300.0
+        if _tot > 0:
+            os.environ["LM_AI_DEADLINE"] = str(time.time() + _tot * 60.0)
+            print(f"   (AI 단계 전체 마감 {_tot:.0f}분 — 넘기면 그때까지의 결과를 저장하고 멈춥니다"
+                  " · config.aiTotalBudgetMin)")
         print("\n── AI 판정 (계층 엔티티: 과제↔유형↔세부업무 + 월별 내러티브) — 시간이 걸립니다")
         _t2 = time.time()
         # 출력을 흘려보내며 마지막 줄 JSON 을 건진다 — judge 는 판정 0건(왕복 전부 실패)이면

@@ -111,6 +111,21 @@ def chunk_default(key, default):
     return n if n > 0 else int(default)
 
 
+SAFE_PROMPT = 9000          # tools/copilot_auto.SAFE_PROMPT 와 같은 값 — 이 길이까지는 드라이버가 한 번에 보낸다
+PLEDGE_RESERVE = 60         # 드라이버가 붙이는 서약 지시 길이 여유(copilot_auto.PLEDGE_TAIL)
+
+
+def n_parts_of(prompt_text):
+    r"""드라이버(copilot_auto.make_parts)와 **같은 규칙**으로 조각 수를 센다.
+    예전에는 len // PART_PROMPT + 1 이었다 — 8,001~9,000자(호출자들의 정상 상한: flow 8,300 ·
+    judge/refine 8,409)를 2조각으로 세어, 드라이버가 1조각으로 보내는 왕복에 부모가 54분을 허용했다.
+    자식은 늦어도 스스로 접으므로(roundtripMaxSec) 효과는 '진짜 멈춘 왕복을 두 배 늦게 끊는 것' 뿐이었다."""
+    n = len(str(prompt_text or ""))
+    if n + PLEDGE_RESERVE <= SAFE_PROMPT:
+        return 1
+    return (n + PART_PROMPT - 1) // PART_PROMPT + 1      # 줄 경계로 나누므로 한 조각 여유를 둔다
+
+
 def roundtrip_timeout(n_parts=1):
     """자식(copilot_auto)의 재시도 사다리 예산에 맞춘 타임아웃 — 부모가 짧으면
     '정상 재시도 중'을 죽여버린다. 드라이버가 긴 프롬프트를 조각으로 나눠 보내면 왕복이
@@ -120,7 +135,14 @@ def roundtrip_timeout(n_parts=1):
     except (ValueError, TypeError):
         sec = 300.0
     n = max(1, int(n_parts or 1))
-    return max(900.0, sec * 3 + 180) * n
+    base = max(900.0, sec * 3 + 180)
+    try:                        # 자식이 먼저 접는다(copilotAuto.roundtripMaxSec) — 부모는 5분 여유만 두고 지켜본다
+        rt = float(_copilot_cfg().get("roundtripMaxSec") or 0)
+    except (ValueError, TypeError):
+        rt = 0.0
+    if rt > 0:
+        base = min(base, rt + 300.0)
+    return base * n
 
 
 _FIRST_SEND = [True]        # 판정 세션의 첫 왕복인지 (새 채팅으로 시작)
@@ -239,7 +261,7 @@ def copilot_send(prompt_text, tag, name, fresh=None):
     except OSError as e:
         return {"ok": False, "error": f"프롬프트 파일 쓰기 실패({type(e).__name__})",
                 "hint": f"{pf} 를 잠근 프로그램을 닫고 재실행"}
-    n_parts = len(prompt_text or "") // PART_PROMPT + 1        # 드라이버의 분할 수 추정
+    n_parts = n_parts_of(prompt_text)                          # 드라이버와 같은 규칙으로 센다
     try:
         cmd = [sys.executable, os.path.join(ROOT, "tools", "copilot_auto.py"), "--send", pf]
         limit = chat_turns()

@@ -31,11 +31,11 @@ from progress import parse as parse_progress  # noqa: E402  (core 경로 등록 
 REPORT = os.path.join(ROOT, "report")
 DATA = os.path.join(ROOT, "data")
 NO_WIN = 0x08000000
-VERSION = "v24.8"
+VERSION = "v24.9"
 LOCK = threading.Lock()
 FREEZE_LOCK = threading.Lock()       # [보고서 만들기] 직렬화 — JOB 과 별개(사본에 '실행 중'이 굳지 않게)
 JOB = {"running": False, "log": [], "step": "", "started": 0.0, "pid": 0,
-       "phase": "", "done": 0, "total": 0, "phase_started": 0.0}
+       "phase": "", "done": 0, "total": 0, "phase_started": 0.0, "last_out": 0.0}
 
 
 def kill_job():
@@ -1954,6 +1954,8 @@ def watch_child(p, on_line, label, beat_sec=120):
         if ln is None:
             break
         last = time.time()
+        with LOCK:                  # 화면이 "마지막 소식 N초 전" 을 말할 수 있게 — 느린 것과 멈춘 것의 구분
+            JOB["last_out"] = last
         on_line(ln.rstrip("\n"))
         if cap_sec and time.time() - t0 > cap_sec:      # 출력이 계속 있어도 상한은 본다(끝나지 않는 실행 방지)
             why = f"{label}: 시간 상한 {int(cap_sec / 60)}분을 넘겨 중단했습니다"
@@ -2840,9 +2842,16 @@ async function poll(){
    $("pg_bar").style.background=pct==null?"#c9cfd8":"#2a78d6";
    $("pg_label").textContent=s.phase?`${s.phase} ${s.done}/${s.total}${pct!=null?` (${pct}%)`:""}`:(s.step||"준비 중…");
    $("pg_time").textContent=`경과 ${fmt(s.elapsed)}`+(s.eta!=null?` · 남은 시간 약 ${fmt(s.eta)}`:"");
-   $("pg_hint").textContent=s.phase&&s.phase.startsWith("AI")
-    ?"Copilot 왕복은 한 번에 수십 초~수 분 걸립니다. 창을 닫지 말고 두세요 — 중간에 멈추려면 [중지]."
-    :"";
+   // 느린 것과 멈춘 것을 구분할 정보 — 예전에는 "수십 초~수 분" 한 줄뿐이라, 한 왕복이 십 분을 넘기면
+   // 사용자가 "멈췄다" 고 판단할 수밖에 없었다(제보: 2시간 정체).
+   const aiPhase=s.phase&&/^(AI|워크플로우|Agentic|월별)/.test(s.phase);
+   const idle=(s.idle==null?null:s.idle);
+   $("pg_hint").textContent=!aiPhase?""
+    :("Copilot 왕복 한 번에 1~15분 걸립니다(왕복 상한 roundtripMaxSec)."
+      +(idle!=null?` 마지막 소식 ${fmt(idle)} 전 —`:"")
+      +(idle!=null&&idle>=120?" 아직 끊지 않았습니다(무출력이 계속되면 자동 중단합니다).":" 진행 중입니다.")
+      +" 창을 닫지 말고 두세요 · 멈추려면 [중지]. 단계가 시간 예산에 닿으면 그때까지의 결과를 저장하고 멈춥니다.");
+   $("pg_hint").style.color=(idle!=null&&idle>=120)?"#c0122f":"";
   }else{$("prog").style.display="none";}
   // ── 하단 상태바 ──
   $("sb_dot").style.background=s.running?"#e08a00":"#4fc47f";
@@ -3929,7 +3938,9 @@ class H(BaseHTTPRequestHandler):
                 payload = {"running": JOB["running"], "log": JOB["log"][-200:],
                            "step": JOB["step"], "phase": JOB["phase"],
                            "done": JOB["done"], "total": JOB["total"],
-                           "elapsed": int(el), "eta": eta}
+                           "elapsed": int(el), "eta": eta,
+                           # 마지막 출력 이후 흐른 초 — 화면이 '돌고 있다/조용하다' 를 구분한다
+                           "idle": (int(time.time() - JOB["last_out"]) if JOB["last_out"] else None)}
             # 상태바 요약 — mtime 만 보므로 1초 폴링에도 부담 없다
             mp = latest("mm_meta_*.json")
             payload["last_run"] = _age(_mtime(mp)) if mp else ""
