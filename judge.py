@@ -1358,7 +1358,9 @@ def narrate(kept, total_mm, tag):
         by_month[r["time"][:7]].append(r)
     out = {}
     _rep = os.path.join(ROOT, "report")
-    _dl, _bud = _stage_budget()
+    # 월별 코멘트는 판정 뒤에 오므로 예산의 첫 희생자가 된다 — 판정이 예산을 다 썼어도 최소 몫을 준다
+    # (제보: '월간 코멘트가 빠짐' · '진행되다가 안 됨'). 코멘트는 왕복 1회로 한 달이 끝난다.
+    _dl, _bud = _stage_budget(floor_min=20.0)
     _consec = 0
     for _i, mk in enumerate(sorted(by_month)):
         # 예산·연속 실패 관문 — 예전에는 달마다 새 채팅으로 끝까지 시도했고, 그 사이에 부모의 단계 상한에
@@ -1436,7 +1438,7 @@ def narrate(kept, total_mm, tag):
     return out
 
 
-def _stage_budget():
+def _stage_budget(floor_min=15.0):
     r"""(마감 시각(monotonic) 또는 None, 예산 분) — config.aiStageBudgetMin(0 이면 끔)과
     run.py 가 물려준 전체 마감(LM_AI_DEADLINE · epoch 초) 중 이른 쪽. refine·agentic 과 같은 규칙."""
     mins = 120.0
@@ -1454,6 +1456,9 @@ def _stage_budget():
         total_at = 0.0
     if total_at > 0:
         left = time.monotonic() + max(0.0, total_at - time.time())
+        # 전체 마감이 이미 지났어도 이 단계에 **최소 몫**은 준다. 예전에는 앞 단계(판정)가 마감을 다
+        # 써 버리면 정제·Agentic 이 입구에서 즉시 멈췄다 — 사용자에게는 "진행되다가 안 된다" 로 보였다.
+        left = max(left, time.monotonic() + max(0.0, float(floor_min)) * 60.0)
         dl = min(dl, left) if dl else left
     return dl, mins
 
@@ -1622,7 +1627,21 @@ def main():
     st = {"roundtrips": 0, "repaired": 0, "retries": 0, "failed_rows": 0, "omitted_rows": 0,
           "notes": [], "last_err": "", "soft": False, "aborted": False}
     consec, prev_idxs = 0, ()
+    _dl, _bud = _stage_budget()
+    _budget_stop = ""
     for ci, (start, n) in enumerate(plan):
+        # 예산 관문 — **스스로** 멈추고 아래 저장·내러티브 경로를 그대로 탄다(종료코드 0).
+        # 예전에는 부모의 상한에 끊겨 종료코드가 0 이 아니었고, 그러면 run.py 가 정제·Agentic·
+        # 워크플로우를 전부 건너뛰고 월별 코멘트도 만들지 못했다(제보).
+        if _dl is not None and _budget_stop == "" and time.monotonic() > _dl:
+            _budget_stop = (f"시간 예산 {_bud:.0f}분을 넘겨 남은 {len(plan) - ci}청크를 보내지 "
+                            "않았습니다 — 여기까지의 판정을 저장하고 월별 코멘트까지 만든 뒤 끝냅니다"
+                            "(다시 실행하면 남은 신호만 이어서 판정합니다 · config.aiStageBudgetMin)")
+            print(f"[judge] {_budget_stop}")
+        if _budget_stop:
+            st["failed_rows"] += n
+            n_fail += 1
+            continue
         progress("AI 판정", ci + 1, len(chunks) + 1)
         idxs = list(range(start, start + n))
         if st["aborted"]:

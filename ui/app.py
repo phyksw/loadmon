@@ -31,7 +31,7 @@ from progress import parse as parse_progress  # noqa: E402  (core 경로 등록 
 REPORT = os.path.join(ROOT, "report")
 DATA = os.path.join(ROOT, "data")
 NO_WIN = 0x08000000
-VERSION = "v24.0.9"
+VERSION = "v24.0.10"
 LOCK = threading.Lock()
 FREEZE_LOCK = threading.Lock()       # [보고서 만들기] 직렬화 — JOB 과 별개(사본에 '실행 중'이 굳지 않게)
 JOB = {"running": False, "log": [], "step": "", "started": 0.0, "pid": 0,
@@ -1840,15 +1840,20 @@ def kill_tree(pid):
 
 
 def _stage_limits():
-    r"""(정체 한도 초, 절대 상한 초) — config.json 의 aiStageStallMin·aiStageMaxMin. 0 이면 끔."""
-    stall, cap = 15.0, 180.0
+    r"""(정체 한도 초, 절대 상한 초, 무진전 한도 초) — config.json 의 aiStageStallMin ·
+    aiStageMaxMin · aiStageNoProgressMin. 0 이면 끔.
+    절대 상한은 '진행 중인' 단계도 죽인다 — 그래서 기본을 끄고(0), 대신 **무진전**(진행률이 늘지
+    않는 상태)을 본다. 어제는 절대 상한 180분이 오래 걸리는 정상 판정을 끊었고, 그러면 run.py 가
+    정제·Agentic·워크플로우를 건너뛰어 사용자에게는 '진행되다가 안 된다' 로 보였다(제보)."""
+    stall, cap, nop = 15.0, 0.0, 45.0
     try:
         c = cfg() if "cfg" in globals() else {}
         stall = float(c.get("aiStageStallMin", stall))
         cap = float(c.get("aiStageMaxMin", cap))
+        nop = float(c.get("aiStageNoProgressMin", nop))
     except (OSError, ValueError, TypeError):
         pass
-    return max(0.0, stall) * 60.0, max(0.0, cap) * 60.0
+    return max(0.0, stall) * 60.0, max(0.0, cap) * 60.0, max(0.0, nop) * 60.0
 
 
 def watch_child(p, on_line, label, beat_sec=120):
@@ -1857,8 +1862,20 @@ def watch_child(p, on_line, label, beat_sec=120):
     반환: 중단 사유(없으면 None)."""
     import queue
     import threading
-    stall_sec, cap_sec = _stage_limits()
+    stall_sec, cap_sec, nop_sec = _stage_limits()
     q = queue.Queue()
+    seen = {"phase": None, "done": -1}          # 마지막으로 본 진행률 — 무진전 판정의 기준
+
+    def _pg_of(s):
+        """'[progress] AI 판정|3|12' → ("AI 판정", 3) / 아니면 None. 진행이 늘었는지만 본다."""
+        if not s.startswith("[progress]"):
+            return None
+        try:
+            ph, done, _tot = s[len("[progress]"):].strip().split("|")
+            return ph.strip(), int(done)
+        except (ValueError, AttributeError):
+            return None
+
 
     def _rd():
         try:
@@ -1870,7 +1887,7 @@ def watch_child(p, on_line, label, beat_sec=120):
             q.put(None)
 
     threading.Thread(target=_rd, daemon=True).start()
-    t0 = last = beat = time.time()
+    t0 = last = beat = prog = time.time()
     why = None
     while True:
         try:
@@ -1879,6 +1896,9 @@ def watch_child(p, on_line, label, beat_sec=120):
             now = time.time()
             if stall_sec and now - last > stall_sec:
                 why = f"{label}: {int((now - last) // 60)}분 {int((now - last) % 60)}초 동안 아무 출력이 없어 중단했습니다"
+            elif nop_sec and now - prog > nop_sec:
+                why = (f"{label}: {int((now - prog) / 60)}분 동안 진행이 늘지 않아 중단했습니다"
+                       " (진행률이 그대로입니다 — Copilot 창 상태를 확인하세요)")
             elif cap_sec and now - t0 > cap_sec:
                 why = f"{label}: 시간 상한 {int(cap_sec / 60)}분을 넘겨 중단했습니다"
             if why:
@@ -1891,11 +1911,18 @@ def watch_child(p, on_line, label, beat_sec=120):
         if ln is None:
             break
         last = time.time()
+        _pg = _pg_of(ln.rstrip())               # [progress] 줄이면 진행률을 본다
+        if _pg and (_pg[0] != seen["phase"] or _pg[1] > seen["done"]):
+            seen["phase"], seen["done"] = _pg[0], _pg[1]
+            prog = last                         # 진행이 실제로 늘었다 — 무진전 시계를 되돌린다
         with LOCK:                  # 화면이 "마지막 소식 N초 전" 을 말할 수 있게 — 느린 것과 멈춘 것의 구분
             JOB["last_out"] = last
         on_line(ln.rstrip("\n"))
-        if cap_sec and time.time() - t0 > cap_sec:      # 출력이 계속 있어도 상한은 본다(끝나지 않는 실행 방지)
+        if cap_sec and time.time() - t0 > cap_sec:      # 상한을 켜 둔 경우만(기본 0=끔)
             why = f"{label}: 시간 상한 {int(cap_sec / 60)}분을 넘겨 중단했습니다"
+            break
+        if nop_sec and time.time() - prog > nop_sec:   # 출력은 있는데 진행률이 안 늘어난다
+            why = f"{label}: {int((time.time() - prog) / 60)}분 동안 진행이 늘지 않아 중단했습니다"
             break
     if why:
         print(f"[!] {why}", flush=True)

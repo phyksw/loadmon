@@ -599,7 +599,7 @@ def _seed_prev(prev, tmap):
     return best, news, mis
 
 
-def _stage_budget():
+def _stage_budget(floor_min=15.0):
     r"""(마감 시각(monotonic) 또는 None, 예산 분) — config.aiStageBudgetMin(0 이면 끔)과
     run.py 가 물려준 전체 마감(LM_AI_DEADLINE · epoch 초) 중 **이른 쪽**.
     예산에 닿으면 그때까지의 결과를 저장하고 남은 것은 손대지 않는다(다시 실행하면 이어서).
@@ -620,6 +620,9 @@ def _stage_budget():
         total_at = 0.0
     if total_at > 0:
         left = time.monotonic() + max(0.0, total_at - time.time())
+        # 전체 마감이 이미 지났어도 이 단계에 **최소 몫**은 준다. 예전에는 앞 단계(판정)가 마감을 다
+        # 써 버리면 정제·Agentic 이 입구에서 즉시 멈췄다 — 사용자에게는 "진행되다가 안 된다" 로 보였다.
+        left = max(left, time.monotonic() + max(0.0, float(floor_min)) * 60.0)
         dl = min(dl, left) if dl else left
     return dl, mins
 

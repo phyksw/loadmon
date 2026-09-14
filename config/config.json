@@ -388,7 +388,8 @@
  "aiStageBudgetMin": 120,
  "aiTotalBudgetMin": 300,
  "aiStageStallMin": 15,
- "aiStageMaxMin": 180,
+ "aiStageMaxMin": 0,
+ "aiStageNoProgressMin": 45,
  "gitExe": "",
  "_프라이버시_설명": "★필수★ 개인 폴더 키워드를 직접 추가하세요. 이 필터가 리포트·AI 프롬프트의 마지막 방어선입니다. 규칙(파일·Recent·git 수집기와 분석 공통): 경로 전용 토큰(temp·downloads·임시·다운로드)은 폴더명 완전 일치, 영문 키워드는 단어 경계(temp 가 Temperature·template 에 걸리지 않음), 한글은 부분일치. 무엇이 빠졌는지는 수집 로그와 data\\files_excluded.json 에 남습니다",
  "excludePathKeywords": [
