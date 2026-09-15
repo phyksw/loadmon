@@ -31,7 +31,7 @@ from progress import parse as parse_progress  # noqa: E402  (core 경로 등록 
 REPORT = os.path.join(ROOT, "report")
 DATA = os.path.join(ROOT, "data")
 NO_WIN = 0x08000000
-VERSION = "v24.13"
+VERSION = "v24.14"
 LOCK = threading.Lock()
 FREEZE_LOCK = threading.Lock()       # [보고서 만들기] 직렬화 — JOB 과 별개(사본에 '실행 중'이 굳지 않게)
 JOB = {"running": False, "log": [], "step": "", "started": 0.0, "pid": 0,
@@ -849,6 +849,27 @@ def _stage_note(stage):
     if s.get("ok"):
         return f"최근 실행에서 정상 완료 ({lr.get('finished') or lr.get('started') or ''})"
     return f"최근 실행에서 실패: {s.get('note') or '사유 미기록'}"
+
+
+def _stage_kind(stage):
+    r"""그 단계가 왜 결과를 남기지 못했나 — 화면이 '다음에 무엇을 하라' 를 고를 수 있게 갈래를 준다.
+    stalled(정체로 중단) · budget(시간 예산) · skipped(앞 단계 실패로 건너뜀) · failed(왕복 실패) ·
+    none(기록 없음) · ok(정상 완료로 기록됨 — 결과 파일이 없으면 기간이 다른 것이다).
+    제보: "에이전틱이 안 만들어졌습니다 — 정체되어 스킵된 걸까요?" 를 화면이 바로 답하게."""
+    note = _stage_note(stage)
+    if not note:
+        return "none"
+    if "정상 완료" in note:
+        return "ok"
+    if "기록이 없" in note or "도달하지 못" in note:
+        return "none"
+    if "중단" in note:
+        return "stalled"
+    if "시간 예산" in note:
+        return "budget"
+    if "건너뜀" in note or "건너뛰" in note:
+        return "skipped"
+    return "failed"
 
 
 REEXTRACTED = "판정 이후 재추출됨"
@@ -3628,7 +3649,7 @@ async function loadFlow(){
    el.innerHTML=btn+`<div class="card"><div class="note">${per}워크플로우로 만들 담당 업무가 없습니다 — ${esc(d.empty_reason)}.<br>`
     +'신호가 3건 이상 쌓인 (과제, 담당업무)가 있어야 흐름을 판정합니다. 더 긴 기간을 분석하거나 신호가 쌓인 뒤 다시 돌리세요.</div></div>';
   }else{
-   el.innerHTML=btn+`<div class="card"><div class="note">${per}워크플로우 분석이 없습니다${d.file_error?` <span style="color:#c0122f">· ${esc(d.file_error)}</span>`:""}${d.stage_note?` <span class="state">· 최근 실행 기록: ${esc(d.stage_note)}</span>`:""} — `
+   el.innerHTML=btn+`<div class="card"><div class="note">${per}워크플로우 분석이 없습니다${d.file_error?` <span style="color:#c0122f">· ${esc(d.file_error)}</span>`:""}${d.stage_note?` <span class="state">· 최근 실행 기록: ${esc(d.stage_note)}</span>`:""}${whyEmpty(d.stage_kind,"[워크플로우 재분석]")} — `
     +'AI 정제를 포함해 [분석 실행]을 돌리면 자동 생성됩니다. 위 [워크플로우 재분석]으로 지금 만들 수도 있습니다.'+oth+'</div></div>';
   }
  }else{
@@ -3770,6 +3791,19 @@ function connSVG(g,col){
  <text x="590" y="12" style="font-size:9.5px;fill:#98a0a8">산출물·커밋</text></svg>`;
  return `<div class="card" style="margin:8px 0"><h2 style="font-size:12px">업무 연결성</h2>${s}</div>`;
 }
+// 결과가 없을 때 '무엇을 하면 되는지' — 사유 갈래(stage_kind)별 한 문장. 제보: "안 만들어졌는데
+// 정체되어 스킵된 걸까요?" 를 화면이 바로 답하게 한다.
+function whyEmpty(kind, redo){
+ const b=redo||"위 버튼";
+ return {
+  stalled:` — <b>정체로 중단</b>됐습니다(진행이 멈춰 자동으로 끊었습니다). [AI 연결 진단]으로 Copilot 창 상태를 확인한 뒤 ${b} 으로 남은 것만 이어서 하세요.`,
+  budget:` — <b>시간 예산</b>에 닿아 남은 묶음을 보내지 않았습니다. ${b} 을 누르면 남은 것만 이어서 합니다(예산은 config.aiStageBudgetMin·flowBudgetMin).`,
+  skipped:` — 앞 단계(AI 판정) 실패로 <b>건너뛰었습니다</b>. 판정을 먼저 성공시킨 뒤 ${b} 을 누르세요.`,
+  failed:` — 왕복이 실패했습니다(위 사유). [AI 연결 진단] 확인 후 ${b}.`,
+  ok:` — 최근 실행은 정상 완료로 기록돼 있습니다. 결과가 안 보이면 <b>화면이 보는 기간과 결과 기간이 다른</b> 경우입니다(기간을 맞춰 다시 실행).`,
+  none:""
+ }[kind||"none"]||"";
+}
 async function loadReview(kind){
  const el=$("rv-"+kind);
  el.innerHTML='<div class="card"><div class="note">불러오는 중…</div></div>';
@@ -3861,7 +3895,7 @@ async function loadAgentic(){
    <button class="${a?"ghost":"run"}" id="agrun" style="padding:7px 18px;font-size:12.5px">${a?(pend?`이어서 매칭(남은 ${pend}행)`:"재매칭"):"Agentic AI 매칭 실행"}</button>
    <span class="state" id="agmsg">${d.running?"Agentic 매칭 진행 중… (진행률은 상단 진행 바)":(a?"과제 지정·제외를 바꿨거나 agentic_tasks.json 을 수정했을 때 다시 돌리세요 (묶음마다 왕복 1회, 수십 초~수 분)":"분석이 아직 없거나 자동 매칭이 실패한 경우 수동 실행 (묶음마다 왕복 1회, 수십 초~수 분)")}</span>
   </div>${d.tasks_error?`<div class="note" style="color:#c0122f">과제 목록을 읽지 못했습니다 — ${esc(d.tasks_error)}</div>`:""}${d.file_error?`<div class="note" style="color:#c0122f">${esc(d.file_error)}</div>`:""}${manualLine(d.manual)}`;
- if(!a){h+=`<div class="note">아직 매칭 결과가 없습니다${d.tag?` (기간 ${esc(d.tag)})`:""}${d.other_tag?` — <b>${esc(d.other_tag)}</b> 기간 결과는 있습니다`:""}${d.stage_note?` <span class="state">· 최근 실행 기록: ${esc(d.stage_note)}</span>`:""} — [분석 실행](AI 판정 포함)을 돌리면 자동으로 생성됩니다. 이미 분석을 마쳤다면 위 버튼으로 매칭만 실행하세요.</div></div>`;}
+ if(!a){h+=`<div class="note">아직 매칭 결과가 없습니다${d.tag?` (기간 ${esc(d.tag)})`:""}${d.other_tag?` — <b>${esc(d.other_tag)}</b> 기간 결과는 있습니다`:""}${d.stage_note?` <span class="state">· 최근 실행 기록: ${esc(d.stage_note)}</span>`:""}${whyEmpty(d.stage_kind,"[재매칭]")} — [분석 실행](AI 판정 포함)을 돌리면 자동으로 생성됩니다. 이미 분석을 마쳤다면 위 버튼으로 매칭만 실행하세요.</div></div>`;}
  else{
   const lastErr=a.last_error&&a.last_error.error?`<div class="note" style="color:#c0122f">마지막 실패 사유: ${esc(a.last_error.error)}${a.last_error.hint?` — ${esc(a.last_error.hint)}`:""}</div>`:"";
   h+=`<div class="note">기간 ${esc(a.tag)} · 업무 ${a.rows_analyzed}행 분석${a.rows_total&&a.rows_total!==a.rows_analyzed?` / 전체 ${a.rows_total}행`:""}${a.chunks?` · 묶음 ${a.chunks}회`:""}${a.failed_chunks?` <span style="color:#c0122f">· ${a.failed_chunks}/${a.chunks||"?"} 묶음 실패</span>`:""}${pend?` <span style="color:#c0122f">· ${pend}행 미판정 — 결과가 실제보다 적을 수 있음. 위 버튼으로 남은 행만 이어서 판정</span>`:""}${a.salvaged_chunks?` · 잘린 답 복구 ${a.salvaged_chunks}묶음(부분 결과)`:""}${a.mm_recalc?` · 로드 MM 은 업무 실측 합(겹침 과제는 안분)`:""}${!(a.match||[]).length&&!pend&&!(a.unknown_task_count||0)?` · <b>12과제에 걸치는 현업이 없습니다(매칭 0건 — 실패 아님)</b>`:""}${a.unknown_task_count?` <span style="color:#c0122f">· 답이 목록에 없는 과제 코드 ${a.unknown_task_count}건(${(a.unknown_tasks||[]).slice(0,4).map(esc).join(", ")}) — 그만큼 매칭이 빠졌습니다</span>`:""}</div>${(function(){const r=a.mm_recalc||{};if(r.matched_rows==null)return "";const tot=r.rows_total||a.rows_total||0, mr=r.matched_rows||0;const pct=tot?Math.round(mr/tot*100):0;const warn=pct<80?' style="color:#c0122f"':"";return `<div class="note"${warn}>근거로 잡힌 업무 <b>${mr}/${tot}행</b> (${pct}%) · ${(r.matched_mm||0).toFixed(2)} MM — 미계상 ${r.unmatched_rows||0}행 · ${(r.unmatched_mm||0).toFixed(2)} MM${r.work_cap?` · 과제별 근거 상한 ${r.work_cap}개(config.copilotAuto.agenticMaxWork)`:""}${pct<80?" — 상한을 올리거나 [재매칭]으로 다시 물으면 늘어납니다":""}</div>`;})()}${lastErr}${d.reextracted?`<div class="note" style="color:#8a5a00">⚠ <b>${esc(d.reextracted_title||"재추출 이후 결과")}</b> — ${esc(d.reextracted_note||"이 매칭은 마지막 업무 로드 재추출 이전의 것입니다")}</div>`:""}</div>`;
@@ -4260,7 +4294,8 @@ class H(BaseHTTPRequestHandler):
             import projmap
             self._send(200, {"projects": projmap.load_user_projects(ROOT)})
         elif self.path == "/api/workflow":
-            out = {"ok": False, "stage_note": _stage_note("워크플로우 분석")}
+            out = {"ok": False, "stage_note": _stage_note("워크플로우 분석"),
+                   "stage_kind": _stage_kind("워크플로우 분석")}
             sp = latest_signals()
             if sp:
                 tag = os.path.basename(sp)[len("signals_"):-len(".csv")]
@@ -4276,6 +4311,7 @@ class H(BaseHTTPRequestHandler):
                                "file_error": f"workflow_{tag}.json 을 읽지 못함({type(e).__name__}) — [워크플로우 재분석]으로 다시 만드세요"}
                     out["tag"] = tag
                     out["stage_note"] = _stage_note("워크플로우 분석")
+                    out["stage_kind"] = _stage_kind("워크플로우 분석")
                     # 판정 뒤 업무 로드가 다시 추출됐으면(무AI 재실행 등) 이 결과는 옛 행 기준이다(V-01) — 지우지 않고 표시
                     if _reextracted(tag):
                         out["reextracted"] = True
@@ -4295,7 +4331,8 @@ class H(BaseHTTPRequestHandler):
                 out["busy"] = JOB["step"] if JOB["running"] else ""
             self._send(200, out)
         elif self.path == "/api/agentic":
-            out = {"tasks": [], "analysis": None, "stage_note": _stage_note("Agentic 매칭")}
+            out = {"tasks": [], "analysis": None, "stage_note": _stage_note("Agentic 매칭"),
+                   "stage_kind": _stage_kind("Agentic 매칭")}
             tp = os.path.join(ROOT, "config", "agentic_tasks.json")
             try:
                 tj = json.load(open(tp, encoding="utf-8-sig"))
