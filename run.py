@@ -153,6 +153,14 @@ def _run_rc(cmd, timeout):
         return -2, [f"실행 실패: {e}"[:200]]
 
 
+def collect_headless(c):
+    r"""[수집만] 모드의 무창 수집 — 창을 여는 경로(아웃룩 웹·Copilot·팀즈 웹·팀즈 Copilot)를 생략한다.
+    추가 PC 의 메일·팀즈는 계정 단위라 **본 PC 가 같은 사서함을 수집**하고 분석이 중복을 제거한다 —
+    추가 PC 의 몫은 그 기계의 로그(PC 가동·파일·git·샘플러)다(제보: "로그만 가져오면 되는 것 아닌가").
+    본 PC 분석 실행에는 영향이 없다. 추가 PC 가 유일한 아웃룩인 예외 환경만 false 로."""
+    return "--collect-only" in sys.argv and bool(c.get("collectOnlyHeadless", True))
+
+
 def mail_fallbacks(c, d0, d1, data, ps, col, t_run):
     """Outlook COM 이 이번 실행에서 채우지 못한 파일의 대체 경로 — PC 마다 Outlook 이 달라(새 Outlook
     전용·2016 시작 마법사·COM 미등록) 메일이 통째로 비는 실측(회사 PC3)에 대응한다.
@@ -237,6 +245,12 @@ def mail_fallbacks(c, d0, d1, data, ps, col, t_run):
     months = max(1, (date.fromisoformat(d1) - date.fromisoformat(d0)).days // 30 + 1)
     # ② Outlook 웹 — 버전 무관·LLM 무관(지어낸 행 없음). 전용 Edge 프로필에 회사 계정 로그인 1회 필요.
     #    종료 코드 2 = 로그인 필요 → 단계는 실패로 남되 사유를 명확히 적는다(화면이 그대로 보여준다).
+    if collect_headless(c):
+        record("Outlook 대체② Outlook 웹", True, 0.0,
+               "수집만 모드 — 창 여는 경로 생략(메일은 본 PC 가 같은 계정으로 수집 · 분석 때 중복 제거)")
+        record("Outlook 대체③ Copilot 메일·일정", True, 0.0,
+               "수집만 모드 — Copilot 은 판정 전용, 추가 PC 수집엔 쓰지 않습니다(config.collectOnlyHeadless)")
+        return finish()
     if c.get("mailViaWeb", True) and "--no-mail-web" not in sys.argv:
         only = ["--only", kinds[0]] if len(kinds) == 1 else []
         name2 = "Outlook 대체② Outlook 웹 (전용 Edge 프로필 — 버전 무관)"
@@ -832,19 +846,24 @@ def main():
             if not teams_ok:
                 print("   앱 창에서 새 줄을 얻지 못했습니다 — 웹 경로로 이어서 시도합니다"
                       " (앱을 켜 두고 대화를 열어 두면 앱 경로만으로 끝납니다)")
-        if not teams_ok and "--no-teams" not in sys.argv and c.get("teamsWeb", True):
+        if not teams_ok and collect_headless(c) and "--no-teams" not in sys.argv:
+            print("\n── 팀즈 채팅 (수집만 모드 — 웹·Copilot 경로 생략)")
+            print("   추가 PC 의 팀즈는 앱 창 읽기·Graph·상시 샘플러로만 — 창을 열지 않습니다.")
+            record("팀즈 채팅", True, 0.0, "수집만 모드 — 창 여는 경로 생략(본 PC 가 같은 계정으로 수집)")
+        if (not teams_ok and "--no-teams" not in sys.argv and c.get("teamsWeb", True)
+                and not collect_headless(c)):
             teams_ok = step("팀즈 채팅 (웹 — 전용 Edge, 앱이 꺼져 있어도)",
                             [sys.executable, os.path.join(col, "Get-TeamsWeb.py"),
                              "--from", d0, "--to", d1], 1200)
         # Copilot 은 '판정 엔진'이다. 팀즈 조회는 테넌트에 커넥터가 있어야만 되는 별개
         # 기능이라, 없는 환경에서 계속 물으면 판정에 쓸 세션만 소진된다(실측).
         use_cp_teams = bool(c.get("teamsViaCopilot"))
-        if not teams_ok and not use_cp_teams and "--no-teams" not in sys.argv:
+        if not teams_ok and not use_cp_teams and "--no-teams" not in sys.argv and not collect_headless(c):
             print("\n── 팀즈 채팅 (Copilot 경로 건너뜀 — config.teamsViaCopilot=false)")
             print("   팀즈는 웹 경로(전용 Edge)·상시 샘플러(collect\\Start-TeamsSampler.ps1)·Graph 로 모읍니다.")
             print("   Copilot 은 AI 판정 전용으로 아껴 둡니다.")
             record("팀즈 채팅", True, 0.0, "Copilot 경로 건너뜀(설정)")
-        if not teams_ok and use_cp_teams and "--no-teams" not in sys.argv:
+        if not teams_ok and use_cp_teams and "--no-teams" not in sys.argv and not collect_headless(c):
             teams_ok = step("팀즈 채팅 (Copilot 무개입 — Graph 불가 시 대체)",
                             [sys.executable, os.path.join(col, "Get-TeamsViaCopilot.py"),
                              "--from", d0, "--to", d1],

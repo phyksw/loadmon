@@ -30,7 +30,7 @@ mine.py                                               18,110 B  e59b3914
 refine.py                                             50,015 B  8b9e7ba2
 ruff.toml                                              1,004 B  47a31613
 FILES.txt                                                (이 파일)
-run.py                                                73,115 B  f83f2775
+run.py                                                74,755 B  e16a9752
 자가점검.py                                                9,162 B  94a5fc0a
 collect/Add-WorkLog.ps1                                1,771 B  8a921980
 collect/Get-FileActivity.ps1                          48,656 B  cfab595d
@@ -51,8 +51,8 @@ collect/Get-TeamsWindow.ps1                           36,450 B  3995ec1e
 collect/Diagnose-Collectors.ps1                       37,278 B  84757f4e
 collect/Register-Samplers.ps1                         11,780 B  d18b9601
 collect/Start-ActivitySampler.ps1                      8,715 B  9bec0ce6
-config/config.json                                    42,877 B  6f7affda
-config/config.default.json                            42,877 B  6f7affda
+config/config.json                                    43,484 B  ab8a44f4
+config/config.default.json                            43,484 B  ab8a44f4
 config/agentic_tasks.json                              4,426 B  2c9e5bb1
 core/board.py                                         13,181 B  86eaf661
 core/extract.py                                      227,283 B  cb706498
@@ -67,7 +67,7 @@ core/details.py                                       77,855 B  b04db4f5
 core/owner.py                                          1,488 B  1f1dc049
 core/progress.py                                       1,648 B  15bfd33b
 core/projmap.py                                        7,133 B  cca7d2cb
-docs/설정가이드.md                                         85,363 B  082c4322
+docs/설정가이드.md                                         85,707 B  a4958b5f
 docs/사용안내.html                                       272,444 B  3cea5b8b
 tools/copilot_auto.py                                 80,681 B  013c92f2
 tools/pc_hours_compare.py                             21,674 B  c43ff972
