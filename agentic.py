@@ -600,31 +600,10 @@ def _seed_prev(prev, tmap):
 
 
 def _stage_budget(floor_min=15.0):
-    r"""(마감 시각(monotonic) 또는 None, 예산 분) — config.aiStageBudgetMin(0 이면 끔)과
-    run.py 가 물려준 전체 마감(LM_AI_DEADLINE · epoch 초) 중 **이른 쪽**.
-    예산에 닿으면 그때까지의 결과를 저장하고 남은 것은 손대지 않는다(다시 실행하면 이어서).
-    예전에는 이 단계에 시간 조건이 없어 몇 시간을 돌거나, 바깥 상한(aiStageMaxMin)에 끊겨
-    그때까지 만든 것이 통째로 사라졌다(감사 실측)."""
-    mins = 120.0
-    try:
-        with open(os.path.join(ROOT, "config", "config.json"), encoding="utf-8-sig") as f:
-            v = json.load(f).get("aiStageBudgetMin")
-        if v is not None:
-            mins = max(0.0, float(v))
-    except (OSError, ValueError, TypeError, AttributeError):
-        mins = 120.0
-    dl = (time.monotonic() + mins * 60.0) if mins > 0 else None
-    try:
-        total_at = float(os.environ.get("LM_AI_DEADLINE") or 0)
-    except ValueError:
-        total_at = 0.0
-    if total_at > 0:
-        left = time.monotonic() + max(0.0, total_at - time.time())
-        # 전체 마감이 이미 지났어도 이 단계에 **최소 몫**은 준다. 예전에는 앞 단계(판정)가 마감을 다
-        # 써 버리면 정제·Agentic 이 입구에서 즉시 멈췄다 — 사용자에게는 "진행되다가 안 된다" 로 보였다.
-        left = max(left, time.monotonic() + max(0.0, float(floor_min)) * 60.0)
-        dl = min(dl, left) if dl else left
-    return dl, mins
+    r"""core.budget.stage_budget 위임 — v3 에서 3벌 사본을 한 벌로 모았다(구조 감사:
+    사본 유사도 0.925~1.000 · 정책 수정이 한 곳씩 빠지던 원인). 시그니처는 관행 유지."""
+    from budget import stage_budget
+    return stage_budget(floor_min=floor_min, root=ROOT, now=time.time, mono=time.monotonic)
 
 
 def main():

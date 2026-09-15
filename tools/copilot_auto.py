@@ -107,6 +107,17 @@ DEFAULTS = {
 # 응답 회수 앵커(프롬프트 꼬리)도 못 찾아 실패가 연쇄된다. 그래서 한도 안 조각으로 나눈다.
 SAFE_PROMPT = 9000                  # 이 길이까지는 한 번에 보낸다 (flow.py 의 실측 안전 예산)
 PART_PROMPT = 8000                  # 조각 크기 (머리말 여유 포함)
+_RT_DEADLINE = None           # 현재 왕복의 벽시계 마감(epoch) — run_roundtrip/_split 이 세팅
+
+
+def _dl_left(default=10 ** 6):
+    """왕복 마감까지 남은 초 — v3: 폴링 대기 26곳이 예산 밖이어서 '예산 900초'의 실제 값이
+    경로마다 달랐다(구조 감사). 고정 대기가 이 값을 상한으로 삼으면 예산이 전 구간을 덮는다."""
+    if _RT_DEADLINE is None:
+        return default
+    return max(0.0, _RT_DEADLINE - time.time())
+
+
 SENTINEL = "[[전송끝]]"             # 답이 '다 쓰였다'는 서약 — 이것이 보이기 전에는
                                     # 어떤 클릭·다음 전송도 하지 않는다 (생성 중단 방지)
 PLEDGE_TAIL = f"\n\n(답을 다 쓴 뒤 맨 마지막 줄에 {SENTINEL} 이라고 쓰세요.)"
@@ -831,6 +842,8 @@ def run_roundtrip(cfg, prompt, fresh=False):
     스스로** 접어야 '정상 재시도 중' 이 죽지 않고 화면에 이유가 남는다."""
     _t_rt = time.time()
     _rt_max = max(0, int(cfg.get("roundtripMaxSec") or 0))
+    global _RT_DEADLINE           # v3: 고정 대기(준비·입력창·유휴 폴링)도 왕복 예산 안에서 끝나게
+    _RT_DEADLINE = (_t_rt + _rt_max) if _rt_max else None
 
     def _rt_left():
         return (_t_rt + _rt_max - time.time()) if _rt_max else 10 ** 6
@@ -981,7 +994,7 @@ def _roundtrip_once(cdp, cfg, prompt, model_override=None):
         # explain_failure 가 '사람이 손대야 풀리는 실패' 로 분류하는 이름이라, 일시적인 늦음 하나가
         # AI 판정 전체를 건너뛰게 만들었다(상위과제 분류 빈칸의 원인 — 실측). 조건을 폴링해
         # 여기서 끝까지 못 찾았을 때에만 영구 실패로 부른다.
-        _ready_s = max(5, int(cfg.get("readyWaitSec") or 60))
+        _ready_s = max(5, min(int(cfg.get("readyWaitSec") or 60), int(_dl_left(3600) * 0.5) or 5))
         _dl = time.time() + _ready_s
         ins = cdp.eval(js_focus(cfg))
         while not (ins and ins.get("ok")) and time.time() < _dl:
@@ -1038,7 +1051,7 @@ def _roundtrip_once(cdp, cfg, prompt, model_override=None):
             base = 0                # 못 재면 자르지 않는다 — 전문 폴백이 안전하다
 
         # 응답 대기: 프롬프트 전송 이후 '새로 늘어난' 텍스트가 N회 연속 동일하면 완료
-        deadline = time.time() + cfg["replyTimeoutSec"]
+        deadline = time.time() + min(float(cfg["replyTimeoutSec"]), _dl_left(10 ** 6))
         how = "anchor"
         last, stable, idle = None, 0, 0
         # ★ '중지' 버튼을 이 왕복에서 **한 번이라도 봤는가**. js_is_generating 은 못 찾으면 False(생성 중 아님)
@@ -1053,7 +1066,7 @@ def _roundtrip_once(cdp, cfg, prompt, model_override=None):
         #   (감사 실측 — LM24 공통). judge 는 '빈 성공' 을 JSON 없음으로 보고 청크를 반으로 나눠 다시 물어
         #   왕복이 3배가 됐다. 여기서는 (버튼이 보이거나 firstTokenSec 안이면) 빈 몸통을 세지 않고,
         #   그래도 끝내 비었으면 ok=False(empty_reply) 로 돌려 재시도 사다리(새 채팅)를 타게 한다.
-        first_token_s = max(30, int(cfg.get("firstTokenSec") or 180))
+        first_token_s = max(30, min(int(cfg.get("firstTokenSec") or 180), int(_dl_left(3600))))
         t_gen0 = time.time()          # 계측용 — 전송 뒤 첫 폴부터 완료까지
         while time.time() < deadline:
             time.sleep(cfg["pollSec"])
@@ -1165,7 +1178,7 @@ def _wait_rest(cdp, cfg, prompt, secs=300):
     anchor = build_anchor(prompt)
     if not anchor:
         return None
-    deadline = time.time() + secs
+    deadline = time.time() + min(float(secs), _dl_left(10 ** 6))
     last, quiet = None, 0
     while time.time() < deadline:
         time.sleep(5)
@@ -1259,6 +1272,8 @@ def run_roundtrip_split(cfg, prompt, fresh=False):
     # 왕복 예산 — 단부 run_roundtrip:826-836 과 같은 상한을 다부 경로에도 건다(제보 ④)
     _rt_max = max(0, int(cfg.get("roundtripMaxSec") or 0))
     _deadline = (time.time() + _rt_max) if _rt_max else None
+    global _RT_DEADLINE
+    _RT_DEADLINE = _deadline      # v3: 다부 경로의 고정 대기도 같은 마감을 본다
     res = {"ok": False, "phase": "error", "error": "왕복 시작 실패"}
     for attempt in (1, 2):
         ws_url = find_tab(cfg)
