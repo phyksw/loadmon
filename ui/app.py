@@ -1433,7 +1433,7 @@ def trend(d0="", d1="", tag="", info=None):
     # 'PC 를 안 켠 주'와 구분되지 않는다(이벤트 로그 롤오버로 과거 주는 구조적으로 기록이 없다).
     # raw_n = 상한·중복제거로 누르기 전의 원건수 — 막대와 실제 신호 수의 차이를 화면이 말할 수 있게.
     out = [{"label": lb, "pc_h": 0.0, "파일": 0, "메일": 0, "회의": 0, "커밋": 0, "팀즈": 0,
-            "작업창": 0, "pc_days": 0, "pc_wd": 0, "raw_n": 0}
+            "작업창": 0, "pc_days": 0, "pc_wd": 0, "pc_rd": 0, "raw_n": 0}
            for lb in buckets]
     if info is not None:
         info["src"] = "none"
@@ -1519,6 +1519,7 @@ def trend(d0="", d1="", tag="", info=None):
             i = key(dd) if start <= dd <= end else None
             if i is not None:
                 out[i]["pc_h"] += float(on_h or 0)
+                out[i]["pc_rd"] += 1        # 기록 있는 날(주말 포함) — 선은 '기록일 평균 h/일' 로 그린다
     except Exception as ex:  # noqa: BLE001 — 병합 실패 시 **루트 단위 부분 성공**
         # v2 폴백은 루트 간 행-max 라 하루 두 세션(데스크톱 오전 + 노트북 오후)이 큰 쪽 하나로
         # 붕괴했고, 198h 달이 하루치로 꺼졌다(구조 감사 실측). v3: 깨진 루트만 빼고 남은 루트를
@@ -1540,6 +1541,7 @@ def trend(d0="", d1="", tag="", info=None):
                 i = key(dd2) if start <= dd2 <= end else None
                 if i is not None:
                     out[i]["pc_h"] += float(on2 or 0)
+                    out[i]["pc_rd"] += 1
                     pcd[dd2] = True
         pc_note = (f"PC 기록 일부를 읽지 못했습니다({type(ex).__name__}"
                    + (" · 제외: " + ", ".join(_bad_roots[:3]) if _bad_roots else "")
@@ -2790,17 +2792,26 @@ function weekly(el,tr){
  const keys=[["파일","#2a78d6"],["작업창","#7a8a99"],["메일","#0e8c7a"],["회의","#e08a00"],["커밋","#6c4fb8"],["팀즈","#4a7f9e"]];
  const W=740,H=180,L=34,Rm=38,B=26,T=12,iw=(W-L-Rm)/Math.max(tr.length,1);
  const cmax=Math.max(...tr.map(w=>keys.reduce((a,[k])=>a+(Number(w[k])||0),0)),1);
- const hmax=Math.max(...tr.map(w=>Number(w.pc_h)||0),1);
+ // 선 = 기록 있는 날의 하루 평균 가동(h/일) · 축 0~24h 고정.
+ // 예전의 '월 총합' 선은 기록 가용성(롤오버로 며칠만 남은 달)과 켜짐 시간이 뒤섞여, 바닥을 기다
+ // 수직 벽으로 치솟는 하키스틱이 됐다(실측: y 153→141 포복 → 32→12 벽) — 합산 문제가 아니라
+ // 지표 문제라 아홉 판의 합산 수정이 그림을 못 바꿨다. 평균은 빠진 날에 물타기되지 않고,
+ // 24h 물리 상한 축이라 달끼리 비교된다. 총합은 아래 진단 줄이 말한다.
+ const avgOf=w=>{const rd=Number(w.pc_rd);if(rd>0)return Math.min(24,(Number(w.pc_h)||0)/rd);
+  return (w.pc_rd===undefined&&Number(w.pc_h)>0)?null:0;};   // 옛 baked 데이터(pc_rd 없음)는 총합 축 폴백
+ const legacy=tr.some(w=>w.pc_rd===undefined&&Number(w.pc_h)>0);
+ const hmax=legacy?Math.max(...tr.map(w=>Number(w.pc_h)||0),1):24;
+ const lineVal=w=>legacy?(Number(w.pc_h)||0):(avgOf(w)||0);
  let s=`<svg viewBox="0 0 ${W} ${H}" style="width:100%">`;
  for(let g=0;g<=3;g++){const y=T+(H-T-B)*g/3;
   s+=`<line x1="${L}" x2="${W-Rm}" y1="${y}" y2="${y}" stroke="#eef0f3"/>
   <text x="${L-5}" y="${y+3}" text-anchor="end" style="font-size:9px;fill:#98a0a8">${Math.round(cmax*(1-g/3))}</text>
-  <text x="${W-Rm+5}" y="${y+3}" style="font-size:9px;fill:#c8a06a">${(hmax*(1-g/3)).toFixed(0)}h</text>`;}
+  <text x="${W-Rm+5}" y="${y+3}" style="font-size:9px;fill:#c8a06a">${(hmax*(1-g/3)).toFixed(0)}${legacy?"h":"h/일"}</text>`;}
  // ① PC 기록이 없는 버킷의 회색 띠 — 0h 가 아니라 '모름' 이다(이벤트 로그가 롤오버되면 과거 주는 구조적으로 기록이 없다).
  //   ★ 막대 **뒤**에 깐다. 예전엔 막대 다음에 그려(불투명) 그 달의 막대를 통째로 덮었다 — 옮긴 PC 는 PC 기록이 없어
  //   모든 달이 회색이라 "집계가 안 뜬다" 로 보였다(실측 스크린샷: 1~5월 막대 없음 · 축만 13,203). LM24 에서는 PC 기록이
  //   있는 달만 그려져 발현하지 않았고, LM20 에는 이 띠가 없었다.
- const has=w=>(w.pc_wd===undefined)?(w.pc_h>0):(w.pc_days>0);
+ const has=w=>(w.pc_rd!==undefined)?(w.pc_rd>0):((w.pc_wd===undefined)?(w.pc_h>0):(w.pc_days>0));
  tr.forEach((w,i)=>{if(w.pc_wd!==undefined&&!has(w))
   s+=`<rect x="${(L+i*iw).toFixed(1)}" y="${T}" width="${iw.toFixed(1)}" height="${(H-T-B).toFixed(1)}" fill="#f2f3f5"><title>${w.label} PC 기록 없음 (평일 ${w.pc_wd}일 중 0일) — 0시간이 아니라 기록이 없는 구간입니다. 막대(신호)는 그대로 셉니다</title></rect>`;});
  // ② 막대
@@ -2813,11 +2824,12 @@ function weekly(el,tr){
  // ③ PC 가동 선 — 기록 없는 버킷에서 끊는다(0 으로 그리면 선이 바닥에 붙어 'PC 가동이 적용 안 된다' 로 읽혔다)
  let seg=[];
  const flush=()=>{if(seg.length>1)s+=`<polyline points="${seg.join(" ")}" fill="none" stroke="#c8a06a" stroke-width="2"/>`;seg=[];};
- tr.forEach((w,i)=>{if(has(w))seg.push(`${(L+i*iw+iw/2).toFixed(1)},${(H-B-(H-T-B)*w.pc_h/hmax).toFixed(1)}`);else flush();});
+ tr.forEach((w,i)=>{if(has(w))seg.push(`${(L+i*iw+iw/2).toFixed(1)},${(H-B-(H-T-B)*lineVal(w)/hmax).toFixed(1)}`);else flush();});
  flush();
  tr.forEach((w,i)=>{if(has(w)){
   const part=(w.pc_wd!==undefined&&w.pc_days<w.pc_wd);
-  s+=`<circle cx="${(L+i*iw+iw/2).toFixed(1)}" cy="${(H-B-(H-T-B)*w.pc_h/hmax).toFixed(1)}" r="2.6" fill="${part?"#fff":"#c8a06a"}" stroke="#c8a06a" stroke-width="${part?1.4:0}"><title>${w.label} PC ${w.pc_h}h${w.pc_wd!==undefined?` · 기록 ${w.pc_days}/${w.pc_wd}평일`:""}</title></circle>`;}});
+  const _av=lineVal(w);
+  s+=`<circle cx="${(L+i*iw+iw/2).toFixed(1)}" cy="${(H-B-(H-T-B)*_av/hmax).toFixed(1)}" r="2.6" fill="${part?"#fff":"#c8a06a"}" stroke="#c8a06a" stroke-width="${part?1.4:0}"><title>${w.label} ${legacy?`PC ${w.pc_h}h`:`평균 ${_av.toFixed(1)}h/일 · 총 ${(Number(w.pc_h)||0).toFixed(1)}h · 기록 ${w.pc_rd||0}일`}${w.pc_wd!==undefined?` (평일 ${w.pc_days}/${w.pc_wd})`:""}${(!legacy&&_av>=20)?" · 종일 켜 둔 패턴(야간 포함)":""}</title></circle>`;}});
  el.innerHTML=s+"</svg>";
  $("wleg").innerHTML=keys.map(([k,c])=>`<span><span class="dot" style="background:${c}"></span>${k}</span>`).join("")+
   '<span><span class="dot" style="background:#c8a06a"></span>PC 가동(h·오른쪽 축)</span>'+
@@ -3063,7 +3075,7 @@ async function refresh(){
   if(wt)wt.textContent=(ti0.gran==="month"?"월간":"주간")+" 활동 추이";
   if(ws)ws.textContent=(per0[0]?`${per0[0]} ~ ${per0[1]||""} · `:"")
    +(ti0.gran==="month"?"막대 하나 = 한 달":"막대 하나 = 한 주")
-   +(d.trend_src==="signals"?" · 막대 = 판정에 쓰인 신호 건수(MM 과 같은 축)":" · 막대 = 수집된 흔적 건수")+" · 선 = PC 가동시간";}
+   +(d.trend_src==="signals"?" · 막대 = 판정에 쓰인 신호 건수(MM 과 같은 축)":" · 막대 = 수집된 흔적 건수")+" · 선 = PC 가동(기록일 평균 h/일)";}
  // 메일·일정이 기간의 일부 달만 수집된 상태(Outlook 시간 예산) — 앞 달의 메일·회의 막대가 비어 보이는 이유를 적는다
  const wn=$("wnote");
  if(wn){const mc=d.mail_coverage||null;const notes=[];
@@ -3079,7 +3091,7 @@ async function refresh(){
   const ti=d.trend_info||{};const unit=ti.gran==="month"?"개월":"주";
   if(ti.pc_buckets_all&&ti.pc_buckets<ti.pc_buckets_all)
    notes.push(`PC 가동 선은 ${ti.pc_buckets_all}${unit} 중 <b>${ti.pc_buckets}${unit}</b>만 기록이 있습니다`
-    +(ti.pc_days_total!=null?` (기록 있는 날 ${Number(ti.pc_days_total).toLocaleString()}일 — 선의 높이는 그 날들의 합입니다)`:"")
+    +(ti.pc_days_total!=null?` (기록 있는 날 ${Number(ti.pc_days_total).toLocaleString()}일 — 선은 그 날들의 하루 평균 h/일입니다)`:"")
     +(ti.pc_from?` — Windows 이벤트 로그가 <b>${esc(ti.pc_from)}</b> 까지만 남아 있어 그 앞은 <b>0시간이 아니라 기록 없음</b>입니다(회색 구간).`:` — 회색 구간은 0시간이 아니라 기록이 없는 구간입니다.`));
   // PC 가동 진단 — **항상** 한 줄. 제보 "8h 라니 합산한 숫자도 아니다" 처럼 숫자가 낮을 때
   // 그것이 합산 실패인지 기록 부족인지 이 줄에서 끝나게 한다(합계·기록일·폴더별·로그 커버리지).
