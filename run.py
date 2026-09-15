@@ -620,6 +620,68 @@ def machine_id():
         return ""
 
 
+def register_sampler_once(ps, col):
+    r"""창 샘플러 등록이 없으면 1회 등록한다(schtasks/COM 은 Register-Samplers.ps1 이 판단).
+    이미 등록돼 있으면 그 스크립트가 아무것도 바꾸지 않는다 — 매 실행 호출해도 부작용이 없다.
+    실패(정책·권한)는 기록만 하고 진행한다."""
+    try:
+        r = subprocess.run(["schtasks", "/Query", "/TN", "LoadMonitor24-Sampler"],
+                           capture_output=True, timeout=30, creationflags=NO_WIN)
+        if r.returncode == 0:
+            return True                     # 이미 등록돼 있다
+    except (OSError, subprocess.SubprocessError):
+        pass
+    ok = step("창 샘플러 자동 등록(1회 · 로그온 시 시작)",
+              ps + [os.path.join(col, "Register-Samplers.ps1")], 180)
+    if not ok:
+        print("   샘플러 자동 등록이 되지 않았습니다 — 보안 정책이 막는 환경일 수 있습니다."
+              " LoadMonitor24-샘플러등록.bat 을 한 번 실행해 주세요(없어도 분석은 됩니다).")
+    return ok
+
+
+def pc_history_gap(data, d0, d1, fresh_hours=None):
+    r"""저장된 PC 가동 기록이 요청 기간을 못 덮거나 오래됐나 → (갱신 필요, 사유).
+    화면의 추이 선과 분석의 PC 하한은 **저장된 data\pc** 만 본다. 그래서 수집이 그 기간에 대해
+    한 번도 돌지 않았거나(=0h) 오래된 채로 [재분석만] 을 눌러도 숫자가 낫지 않았다(제보 실측:
+    지금 수집하면 704.7h 인데 저장된 파일은 0h). 이 판단으로 PC 이력만 자동 보강한다."""
+    try:
+        fresh_hours = float(cfg().get("pcRefreshHours", 12) if fresh_hours is None else fresh_hours)
+    except (ValueError, TypeError):
+        fresh_hours = 12.0
+    pcdir = os.path.join(data, "pc")
+    on_p = os.path.join(pcdir, "pc_on.csv")
+    if not os.path.exists(on_p) or os.path.getsize(on_p) < 40:
+        return True, "저장된 PC 가동 기록이 없습니다"
+    src = {}
+    try:
+        with open(os.path.join(pcdir, "pc_source.json"), encoding="utf-8-sig") as f:
+            src = json.load(f) or {}
+    except (OSError, ValueError):
+        src = {}
+    rng = src.get("range") if isinstance(src.get("range"), list) else None
+    if not rng or len(rng) < 2:
+        return True, "저장된 기록의 수집 범위를 알 수 없습니다"
+    if str(rng[0]) > str(d0):
+        return True, f"저장된 기록은 {rng[0]} 부터입니다 (요청 {d0})"
+    if str(rng[1]) < str(d1):
+        return True, f"저장된 기록은 {rng[1]} 까지입니다 (요청 {d1})"
+    if fresh_hours > 0:
+        age_h = (time.time() - os.path.getmtime(on_p)) / 3600.0
+        if age_h > fresh_hours:
+            return True, f"저장된 기록이 {age_h:.0f}시간 전 것입니다"
+    return False, ""
+
+
+def collect_pc_only(data, d0, d1, ps, col, why=""):
+    r"""PC 가동 이력·힌트만 모은다 — [재분석만] 에서도 PC 시간이 최신이 되게(수집 전체는 켜지 않는다)."""
+    print("\n" + f"[PC 이력] {why} — PC 가동 기록만 다시 모읍니다(수십 초 · 수집 전체는 하지 않습니다)")
+    ok1 = step("PC 가동 이력(자동 보강)",
+               ps + [os.path.join(col, "Get-PcOnHistory.ps1"), "-From", d0, "-To", d1], 300)
+    step("PC 가동 보강 (브라우저 방문 시각 — URL 미수집)",
+         [sys.executable, os.path.join(col, "Get-PcOnHints.py"), "--from", d0, "--to", d1], 240)
+    return ok1
+
+
 def own_data_empty(data):
     r"""이 PC 가 직접 모은 자료가 없는가 — data\ 의 수집 폴더(추가PC 제외)에 쓸 만한 CSV 가 하나도 없으면 True.
 
@@ -754,6 +816,12 @@ def main():
     #   예전에는 수집을 통째로 건너뛰어 옮겨 온 PC 의 자료만으로 분석됐다(제보: "현재 PC 것도 추가 집계돼야 한다").
     #   이 PC 자료가 이미 있으면 예전대로 건너뛴다 — [재분석만] 의 뜻(수집 없이 판정만)을 지킨다.
     _skip = "--skip-collect" in sys.argv
+    # [재분석만] 이어도 **PC 가동 기록만** 최신으로 만든다 — 화면의 추이 선·PC 하한은 저장된 파일만
+    # 보기 때문에, 오래된 채로 다시 눌러도 숫자가 낫지 않았다(제보: "한 번에 되게 하라").
+    if _skip:
+        _need, _why = pc_history_gap(data, d0, d1)
+        if _need:
+            collect_pc_only(data, d0, d1, ps, col, _why)
     if _skip and own_data_empty(data) and has_extra_pc(data):
         print("\n[추가 집계] 이 PC 에서 모은 자료가 없고 옮겨 온 보관본(data\\추가PC)만 있습니다 —")
         print("           [재분석만] 이지만 이 PC 자료를 한 번 수집한 뒤 두 PC 를 합쳐 분석합니다.")
@@ -762,6 +830,11 @@ def main():
     if not _skip:
         archive_other_pc(data)
         ensure_sampler(c, data, col)       # 멈춘 창 샘플러 재기동 (있던 PC 만)
+        # 등록이 아예 없으면 **자동으로 1회 등록**한다 — 이벤트 로그는 롤오버되지만(이 PC 실측:
+        # 199일 중 90일만 남음) 샘플러가 돌면 그 뒤 구간은 로그와 무관하게 pc_spans 에 쌓인다.
+        # 사용자가 bat 을 따로 돌리지 않아도 되게(제보: "한 번에 되게 하라"). 실패하면 안내만 남긴다.
+        if c.get("autoRegisterSampler", True):
+            register_sampler_once(ps, col)
 
         step("PC 가동 이력", ps + [os.path.join(col, "Get-PcOnHistory.ps1"), "-From", d0, "-To", d1], 300)
         # 이벤트 로그가 롤오버로 기간을 못 덮으면 브라우저 '방문 시각'만으로 보강

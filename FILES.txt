@@ -30,7 +30,7 @@ mine.py                                               17,836 B  c751c51d
 refine.py                                             49,721 B  b64f795f
 ruff.toml                                              1,004 B  47a31613
 FILES.txt                                                (이 파일)
-run.py                                                66,836 B  3b22323e
+run.py                                                71,229 B  279f5ceb
 자가점검.py                                                9,011 B  9b3fcd58
 collect/Add-WorkLog.ps1                                1,771 B  8a921980
 collect/Get-FileActivity.ps1                          48,656 B  cfab595d
@@ -51,11 +51,11 @@ collect/Get-TeamsWindow.ps1                           36,450 B  3995ec1e
 collect/Diagnose-Collectors.ps1                       37,278 B  84757f4e
 collect/Register-Samplers.ps1                         11,780 B  d18b9601
 collect/Start-ActivitySampler.ps1                      8,715 B  9bec0ce6
-config/config.json                                    41,579 B  342be0aa
-config/config.default.json                            41,579 B  342be0aa
+config/config.json                                    42,321 B  6a787cc0
+config/config.default.json                            42,321 B  6a787cc0
 config/agentic_tasks.json                              4,426 B  2c9e5bb1
 core/board.py                                         13,304 B  0c569927
-core/extract.py                                      220,916 B  51d3ebcf
+core/extract.py                                      221,047 B  5a707aca
 core/programs.py                                      15,778 B  1f1e142f
 core/details.py                                       73,901 B  e2057f5b
 core/owner.py                                          1,488 B  1f1dc049
@@ -75,4 +75,4 @@ tools/Make-Package.ps1                                10,733 B  f8e333a9
 tools/Make-MovePack.py                                12,103 B  4132d2e7
 tools/Prepare-Move.ps1                                26,116 B  67389835
 tools/update_files.py                                  4,530 B  33b4a677
-ui/app.py                                            362,085 B  1bec3d98
+ui/app.py                                            362,224 B  76e88e15
