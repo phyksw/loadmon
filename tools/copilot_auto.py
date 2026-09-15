@@ -365,8 +365,12 @@ def ensure_edge(cfg):
         return None
     os.makedirs(cfg["profileDir"], exist_ok=True)
     subprocess.Popen(
+        # 배경 스로틀링 해제 3종 — 창이 뒤에 있거나 탭이 비활성이면 크로미움이 타이머·렌더를 늦춘다.
+        # 그러면 답이 화면 텍스트로 자라지 않아 드라이버가 헛되이 기다린다(제보: 커서를 대니 움직였다).
         [edge, f"--user-data-dir={cfg['profileDir']}", f"--remote-debugging-port={port}",
          "--remote-allow-origins=*", "--no-first-run", "--no-default-browser-check",
+         "--disable-background-timer-throttling", "--disable-backgrounding-occluded-windows",
+         "--disable-renderer-backgrounding",
          "--window-size=1150,900", cfg["url"]],
         creationflags=NO_WIN)
     for _ in range(40):                        # 최대 20초 대기
@@ -376,17 +380,65 @@ def ensure_edge(cfg):
     return None
 
 
+# Copilot 채팅으로 인정하는 호스트 — 로그인·리디렉트로 호스트가 바뀌어도 **같은 탭을 재사용**하기 위한 목록.
+# 예전에는 cfg.url 의 호스트만 봤다. 그래서 리디렉트된 탭을 못 알아보고 매 왕복마다 새 탭을 만들었고
+# (단계마다 드라이버가 새 프로세스라 계속 늘어난다), 새 탭은 활성 탭이 아니어서 크로미움이 렌더·타이머를
+# 늦춰 답이 자라지 않았다 — 제보의 "채팅 창이 2개 뜨고, 새 창에 커서를 대니 움직였다" 가 그 증상이다.
+CHAT_HOSTS = ("m365.cloud.microsoft", "copilot.cloud.microsoft", "copilot.microsoft.com",
+              "office.com", "microsoft365.com", "bing.com/chat", "login.microsoftonline",
+              "login.live.com")
+
+
+def _is_chat_tab(url, want):
+    u = str(url or "")
+    return bool(u) and (want in u or any(h in u for h in CHAT_HOSTS))
+
+
+def _close_tab(port, tid):
+    try:
+        urllib.request.urlopen(f"http://127.0.0.1:{port}/json/close/{tid}", timeout=5).read()
+        return True
+    except Exception:
+        return False
+
+
 def find_tab(cfg):
-    """Copilot 탭을 찾고 없으면 만든다 → ws URL 반환"""
+    """Copilot 탭을 **하나만** 두고 그 ws URL 을 돌려준다.
+    · 인정 호스트(CHAT_HOSTS) 중 하나라도 맞으면 재사용 — 리디렉트된 탭도 같은 탭으로 본다.
+    · 여러 개면 첫 것만 남기고 닫는다(창이 늘어나지 않게).
+    · 맞는 탭이 없으면 **기존 탭을 그 URL 로 이동**시킨다. 탭이 하나도 없을 때만 새로 만든다."""
     port = cfg["port"]
-    tabs = [t for t in http_json(port, "/json") if t.get("type") == "page"]
-    want = cfg["url"].split("//", 1)[-1].split("/", 1)[0]        # 호스트로 매칭
+    try:
+        tabs = [t for t in http_json(port, "/json") if t.get("type") == "page"]
+    except Exception:
+        return None
+    want = cfg["url"].split("//", 1)[-1].split("/", 1)[0]
+    hits = [t for t in tabs if _is_chat_tab(t.get("url"), want)]
+    if hits:
+        keep = hits[0]
+        for t in hits[1:]:                      # 같은 채팅 탭이 여러 개 — 하나만 남긴다
+            if t.get("id"):
+                _close_tab(port, t["id"])
+        return keep["webSocketDebuggerUrl"]
+    # 채팅 탭이 없다 — 있는 탭을 옮겨 쓴다(새 창·새 탭을 늘리지 않는다)
     for t in tabs:
-        if want in (t.get("url") or ""):
-            return t["webSocketDebuggerUrl"]
-    for t in tabs:                              # 로그인 리디렉트 중인 탭도 인정
-        if "login.microsoftonline" in (t.get("url") or ""):
-            return t["webSocketDebuggerUrl"]
+        ws = t.get("webSocketDebuggerUrl")
+        if not ws:
+            continue
+        try:
+            c = CDP(ws)
+            try:
+                c.call("Page.navigate", {"url": cfg["url"]}, timeout=20)
+                for _ in range(20):
+                    time.sleep(1)
+                    st = c.eval(js_state())
+                    if st and st.get("ready") in ("interactive", "complete"):
+                        break
+            finally:
+                c.close()
+            return ws
+        except Exception:
+            continue
     from urllib.parse import quote
     for method in ("PUT", "GET"):               # 신버전은 PUT, 구버전은 GET
         try:
@@ -394,9 +446,17 @@ def find_tab(cfg):
             return t["webSocketDebuggerUrl"]
         except Exception:
             continue
-    if tabs:
-        return tabs[0]["webSocketDebuggerUrl"]
     return None
+
+
+def activate(cdp):
+    """탭을 앞으로 — 보이지 않는 탭은 크로미움이 렌더·타이머를 늦춰 답이 자라지 않는다(제보의 정체).
+    실패해도 왕복은 계속한다(포커스가 없을 뿐이다)."""
+    try:
+        cdp.call("Page.bringToFront", timeout=10)
+        return True
+    except Exception:
+        return False
 
 
 # ── 페이지 조작 ──
@@ -674,11 +734,14 @@ def js_new_chat():
 
 
 def new_chat(cdp, cfg):
-    """새 채팅으로 전환 — 버튼을 찾으면 클릭, 없으면 채팅 URL 재진입(새 대화로 열림)."""
+    """새 채팅으로 전환 — 버튼을 찾으면 클릭, 없으면 채팅 URL 재진입(새 대화로 열림).
+    **같은 탭에서** 한다(새 탭·새 창을 만들지 않는다). 전환 뒤 탭을 다시 앞으로 올린다."""
+    activate(cdp)
     try:
         r = cdp.eval(js_new_chat()) or {}
         if r.get("ok"):
             time.sleep(3)
+            activate(cdp)
             return "새 채팅 버튼"
     except Exception:
         pass
@@ -718,6 +781,7 @@ def run_roundtrip(cfg, prompt, fresh=False):
         return {"ok": False, "phase": "launch_failed", "error": "Copilot 탭을 만들 수 없음",
                 "hint": "열린 Edge(자동 프로필) 창에서 직접 주소를 열어보세요: " + cfg["url"]}
     cdp = CDP(ws_url)
+    activate(cdp)                     # 탭을 앞으로 — 비활성 탭은 답이 자라지 않는다(배경 스로틀링)
     try:
         if fresh:
             # 판정처럼 '깨끗한 문맥'이 필요한 왕복은 새 채팅에서 시작한다 —

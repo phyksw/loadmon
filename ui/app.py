@@ -31,7 +31,7 @@ from progress import parse as parse_progress  # noqa: E402  (core 경로 등록 
 REPORT = os.path.join(ROOT, "report")
 DATA = os.path.join(ROOT, "data")
 NO_WIN = 0x08000000
-VERSION = "v24.0.11"
+VERSION = "v24.0.12"
 LOCK = threading.Lock()
 FREEZE_LOCK = threading.Lock()       # [보고서 만들기] 직렬화 — JOB 과 별개(사본에 '실행 중'이 굳지 않게)
 JOB = {"running": False, "log": [], "step": "", "started": 0.0, "pid": 0,

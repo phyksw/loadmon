@@ -421,6 +421,8 @@
  "_수집옵션_설명": "창제목·메일제목 저장 여부. 끄면 정밀 분류가 약해지지만 저장물이 최소화됩니다",
  "_팀즈수집_설명": "팀즈 채팅 수집 경로. ① config.graph(Graph API) → ② 웹(teamsWeb — Copilot 과 같은 전용 Edge 프로필로 teams.microsoft.com 을 읽는다. 팀즈 앱이 꺼져 있어도 되고 LLM 을 거치지 않아 지어낸 행이 없다) → ③ Copilot(teamsViaCopilot) → ④ 열린 창 읽기(Get-TeamsWindow.ps1) 순으로 자동 대체합니다. ④는 화면에 그려진 부분만 UI 자동화로 긁어 창 크기·테마·팀즈 버전에 따라 PC 마다 0건이 되곤 했습니다 — ②가 그 편차를 없앱니다(전용 Edge 창에서 회사 계정 1회 로그인). teamsViaCopilot 기본 false: Copilot 은 '판정 엔진'이고 팀즈 조회는 별개 기능이라, 테넌트에 Teams 커넥터가 없으면 Copilot 으로는 볼 수 없고(실측) 그 상태에서 계속 물으면 판정에 쓸 세션만 소진됩니다.",
  "teamsViaCopilot": false,
+ "_앱우선_설명": "true(기본): 팀즈·Outlook 은 **앱을 먼저** 씁니다. 팀즈는 켜져 있는 앱 창을 먼저 읽고(새 줄을 얻으면 웹·Copilot 경로를 건너뜁니다 — 전용 Edge 탭이 뜨지 않습니다), Outlook 은 원래부터 COM(앱)이 1순위입니다. false 로 두면 예전 순서(웹 먼저)로 돌아갑니다. 앱이 꺼져 있거나 화면에 렌더된 대화가 없으면 자동으로 웹 경로로 넘어갑니다.",
+ "preferApp": true,
  "teamsWeb": true,
  "_teamsWebMaxChats_설명": "웹 경로에서 훑을 대화방 수(최근 순). 대화방마다 지난 메시지를 위로 되감으므로 늘리면 그만큼 오래 걸립니다. 0 이하·비정상 값은 40 으로 봅니다.",
  "teamsWebMaxChats": 40,
