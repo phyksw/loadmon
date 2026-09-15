@@ -31,7 +31,7 @@ from progress import parse as parse_progress  # noqa: E402  (core 경로 등록 
 REPORT = os.path.join(ROOT, "report")
 DATA = os.path.join(ROOT, "data")
 NO_WIN = 0x08000000
-VERSION = "v24.15"
+VERSION = "v24.16"
 LOCK = threading.Lock()
 FREEZE_LOCK = threading.Lock()       # [보고서 만들기] 직렬화 — JOB 과 별개(사본에 '실행 중'이 굳지 않게)
 JOB = {"running": False, "log": [], "step": "", "started": 0.0, "pid": 0,
@@ -1545,6 +1545,11 @@ def trend(d0="", d1="", tag="", info=None):
                               for w in out) if n_sig else sum(max(0, n - 8) for n in _fcap.values()))   # 하루 8건 상한에 눌린 파일 수
         info["period"] = [start.isoformat(), end.isoformat()]     # 실제로 그린 기간 — 제목이 이것을 적는다
         info["roots"] = len(_data_roots())                          # 본 PC + 추가PC 폴더 수 — raw 안내에 적는다
+        try:                    # PC 가동 진단 — 숫자가 낮은 이유(기록 자체가 적음)를 화면이 말하게
+            import extract as _X2
+            info["pc_diag"] = _X2.pc_coverage(DATA, start, end)
+        except Exception:       # noqa: BLE001 — 진단이 추이를 막지 않는다
+            info["pc_diag"] = {}
     return out
 
 def review(gran="week"):
@@ -3132,6 +3137,19 @@ async function refresh(){
    notes.push(`PC 가동 선은 ${ti.pc_buckets_all}${unit} 중 <b>${ti.pc_buckets}${unit}</b>만 기록이 있습니다`
     +(ti.pc_days_total!=null?` (기록 있는 날 ${Number(ti.pc_days_total).toLocaleString()}일 — 선의 높이는 그 날들의 합입니다)`:"")
     +(ti.pc_from?` — Windows 이벤트 로그가 <b>${esc(ti.pc_from)}</b> 까지만 남아 있어 그 앞은 <b>0시간이 아니라 기록 없음</b>입니다(회색 구간).`:` — 회색 구간은 0시간이 아니라 기록이 없는 구간입니다.`));
+  // PC 가동 진단 — **항상** 한 줄. 제보 "8h 라니 합산한 숫자도 아니다" 처럼 숫자가 낮을 때
+  // 그것이 합산 실패인지 기록 부족인지 이 줄에서 끝나게 한다(합계·기록일·폴더별·로그 커버리지).
+  {const pd=ti.pc_diag||{};const sum=(d.trend||[]).reduce((a,w)=>a+(Number(w.pc_h)||0),0);
+   if((pd.roots||[]).length||sum>0){
+    const per=(pd.roots||[]).map(r=>`${esc(r.name)} ${r.hours}h(${r.days}일·구간 ${r.spans})`).join(" + ");
+    const cov=(pd.coverage_days!=null&&pd.range_days)?` · 이벤트 로그는 이 기간 ${pd.range_days}일 중 <b>${pd.coverage_days}일</b>만 덮습니다${pd.reach_start?`(${esc(pd.reach_start)} 부터)`:""}`:"";
+    notes.push(`PC 가동 합계 <b>${sum.toFixed(1)}h</b> · 기록 있는 날 ${Number(pd.days||ti.pc_days_total||0).toLocaleString()}일`
+     +(per?` · 폴더별 ${per}`:"")+cov
+     +(pd.generated?` · 마지막 수집 ${esc(pd.generated)}`:"")
+     +(pd.dropped?` · <span style="color:#c0122f">읽지 못한 행 ${pd.dropped}개</span>`:"")
+     +((pd.roots||[]).length>1?" — 합계는 구간 합집합이라 폴더별 단순 합과 다릅니다(같은 시간대 중복 제거)":""));
+    if(pd.warn) notes.push(`⚠ ${esc(pd.warn)} — 브라우저 사용기록 힌트(Get-PcOnHints)와 창 샘플러(LoadMonitor24-샘플러등록.bat)가 이 구간을 메웁니다.`);
+   }}
   if(ti.pc_note) notes.push(`⚠ ${esc(ti.pc_note)}`);
   if(ti.capped>0) notes.push(`파일 막대는 하루 8건까지만 셉니다 — 이 기간에 <b>${Number(ti.capped).toLocaleString()}건</b>이 상한에 눌렸습니다(공유폴더 재동기화가 그래프를 지배하지 않게 하는 장치 · 실제 신호 수는 [업무 리뷰] 탭).`);
   if(notes.length){wn.style.display="";wn.innerHTML=notes.join("<br>");}

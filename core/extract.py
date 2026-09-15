@@ -441,19 +441,33 @@ def _glob_multi(data_dir, *rel_pattern):
     return sorted(outs)
 
 
+READ_DROPPED = {}          # {경로: 버린 행 수} — 화면이 "읽지 못한 행 N개" 를 말할 수 있게
+
+
 def _read(path):
     if not os.path.exists(path):
         return []
     try:
         with open(path, encoding="utf-8-sig", errors="replace") as f:
             rows = list(csv.DictReader(f))
-            # 수집기가 강제 종료되면 마지막 행이 열 수 부족(None 채움)으로 남는다.
-            # 그 행 하나가 이후 모든 분석을 죽였다(실측 재현) — 여기서 걸러낸다.
-            # 열 수가 **남는** 행(None 키에 잔여 값)도 버린다 — 6열 머리말 파일에 7열 행이 섞이면
-            # time_precision 이 조용히 사라져 '날짜만' 메일이 정오 발신으로 승격됐다(감사 실측).
-            return [r for r in rows if None not in r.values() and None not in r]
     except OSError:
         return []
+    out, dropped = [], 0
+    for r in rows:
+        if None in r:
+            # 열 수가 **남는** 행(None 키에 잔여 값) — 버린다. 6열 머리말 파일에 7열 행이 섞이면
+            # time_precision 이 조용히 사라져 '날짜만' 메일이 정오 발신으로 승격됐다(감사 실측).
+            dropped += 1
+            continue
+        if None in r.values():
+            # 열 수가 **부족**한 행(수집기 강제 종료로 잘린 꼬리) — 예전에는 버렸다. 그런데 한 줄 때문에
+            # 그 파일의 기록이 통째로 빠지는 일이 있어(제보: PC 집계가 낮다), 빈칸으로 채워 살린다.
+            # 읽는 쪽은 모두 빈 값 가드가 있다(float(x or 0) · _hhmm → None).
+            r = {k: ("" if v is None else v) for k, v in r.items()}
+        out.append(r)
+    if dropped:
+        READ_DROPPED[path] = dropped
+    return out
 
 
 def _dt(s, fmts=("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d")):
@@ -1927,6 +1941,54 @@ def pc_daily(data_dir, d0, d1, day_win=None, anom=None, span_anoms=None):
                  min((x for x in (o_fo, sp[0][0]) if x is not None), default=None),
                  max((x for x in (o_lo, sp[-1][1]) if x is not None), default=None))
     return pc, pc_wins, pc_spans, pc_win_all
+
+
+def pc_coverage(data_dir, d0, d1):
+    r"""PC 가동 기록의 **출처 진단** — 화면이 "합산이 안 된 숫자 아니냐" 에 숫자로 답하게.
+    반환 {"hours", "days", "roots": [{"name","hours","days","rows","spans"}], "coverage_days",
+          "range_days", "reach_start", "generated", "warn", "dropped"}
+    roots 의 시간은 그 폴더 파일에 적힌 값의 단순 합이다 — 최종 합산은 구간 합집합이라(pc_daily)
+    단순 합과 다를 수 있다. 그 사실도 화면 문구에 적는다."""
+    out = {"roots": [], "hours": 0.0, "days": 0, "coverage_days": None, "range_days": None,
+           "reach_start": "", "generated": "", "warn": "", "dropped": 0}
+    roots = _data_roots(data_dir)
+    base = os.path.abspath(_data_roots(data_dir)[0]) if roots else ""
+    for root in roots:
+        name = "본 PC" if os.path.abspath(root) == base else os.path.basename(os.path.normpath(root))
+        rows = _read(os.path.join(root, "pc", "pc_on.csv"))
+        hrs, days = 0.0, set()
+        for r in rows:
+            try:
+                d = datetime.strptime((r.get("date") or "")[:10], "%Y-%m-%d").date()
+            except (ValueError, TypeError):
+                continue
+            if not (d0 <= d <= d1):
+                continue
+            days.add(d)
+            try:
+                hrs += float(r.get("on_hours") or 0)
+            except (TypeError, ValueError):
+                pass
+        sp = _pc_spans_rows(_read(os.path.join(root, "pc_spans.csv"))
+                            + _read(os.path.join(root, "pc", "pc_spans.csv")), d0, d1)
+        n_sp = sum(len(v) for v in sp.values())
+        out["roots"].append({"name": name, "hours": round(hrs, 1), "days": len(days),
+                             "rows": len(rows), "spans": n_sp})
+        # 수집기 요약(pc_source.json) — 이벤트 로그가 기간을 얼마나 덮는지
+        try:
+            with open(os.path.join(root, "pc", "pc_source.json"), encoding="utf-8-sig") as f:
+                src = json.load(f)
+            if isinstance(src, dict) and (out["generated"] or "") <= str(src.get("generated") or ""):
+                out["coverage_days"] = src.get("coverage_days")
+                out["range_days"] = src.get("range_days")
+                out["reach_start"] = str(src.get("reach_start") or "")
+                out["generated"] = str(src.get("generated") or "")
+                w = src.get("warnings")
+                out["warn"] = str((w or [""])[0])[:160] if isinstance(w, list) else ""
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+    out["dropped"] = sum(n for p, n in READ_DROPPED.items() if "pc" in p.replace(chr(92), "/"))
+    return out
 
 
 def _holiday_set(cfg):
