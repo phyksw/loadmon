@@ -31,7 +31,7 @@ from progress import parse as parse_progress  # noqa: E402  (core 경로 등록 
 REPORT = os.path.join(ROOT, "report")
 DATA = os.path.join(ROOT, "data")
 NO_WIN = 0x08000000
-VERSION = "v24.14"
+VERSION = "v24.15"
 LOCK = threading.Lock()
 FREEZE_LOCK = threading.Lock()       # [보고서 만들기] 직렬화 — JOB 과 별개(사본에 '실행 중'이 굳지 않게)
 JOB = {"running": False, "log": [], "step": "", "started": 0.0, "pid": 0,
@@ -3594,7 +3594,7 @@ function mixedLine(mx){
   +'<div class="note">1위 표가 60%에 못 미쳐 <b>일부러 상위를 찍지 않았습니다</b>. 억지로 하나를 고르면 '
   +'그 과제가 과병합됐다는 사실이 숨습니다. 서로 다른 성격의 일이 한 과제로 묶였다면 '
   +'<b>config\\project_aliases.json</b> 의 <b>never</b> 에 그 쌍을 적어 갈라 두고, 과제는 맞는데 상위만 '
-  +'갈린 것이라면 <b>config\\projects.json</b> 의 그 과제에 <code>"level1": "신제품개발"</code> 처럼 적어 '
+  +'갈린 것이라면 <b>config\\projects.json</b> 의 그 과제에 <code>"level1": "개발"</code> 처럼 적어 '
   +'못 박으세요. 지정한 값은 투표를 이깁니다.</div></details>';
 }
 // 과제(중위) 표기 병합·흐름 중복 제거 내역 — 무엇을 왜 합쳤는지 보이지 않으면 잘못된 병합을
@@ -3718,7 +3718,8 @@ async function loadFlow(){
    // 과제 수만큼 길어지는 탭 — 접이식으로. 제목 줄에 역할 요약을 실어 접힌 채로도 훑는다.
    // 상위(업무 성격) 배지 — 계층은 상위(Level 1) > 과제(Level 2) > 담당업무(Level 3) 다.
    // LM20 처럼 상위로도 묶어 읽히게 제목에 배지를 달고, 아래에서 상위별로 구간을 나눈다.
-   const L1C={"신제품개발":"#2a78d6","기술 내재화":"#0e8c7a","양산준비":"#e08a00","AX·자동화":"#6c4fb8","일반업무":"#8b929b"};
+   // 새 어휘(개발·양산·AX·공통)가 기본이고 옛 이름도 같은 색을 갖는다 — 예전 결과 파일이 섞여도 같게 보인다
+   const L1C={"개발":"#2a78d6","신제품개발":"#2a78d6","기술 내재화":"#0e8c7a","양산":"#e08a00","양산준비":"#e08a00","AX":"#6c4fb8","AX·자동화":"#6c4fb8","공통":"#8b929b","일반업무":"#8b929b","표준 특허":"#8b929b"};
    const l1b=f.level1?`<span style="display:inline-block;padding:0 7px;border-radius:9px;color:#fff;font-size:11px;background:${L1C[f.level1]||"#8b929b"};margin-right:6px">${esc(f.level1)}</span>`:"";
    // 한 과제가 여러 흐름을 가질 수 있다 — 이어지지 않는 일을 억지로 한 타임라인으로 엮지 않기 위해서다.
    // 흐름 이름을 제목에 붙여 같은 과제의 다른 줄기임을 알 수 있게 한다.
