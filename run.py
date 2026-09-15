@@ -30,6 +30,8 @@ if __name__ == "__main__":      # import 시엔 건드리지 않는다 — 임�
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, errors="replace", encoding=(
         (sys.stdout.encoding or "utf-8") if sys.stdout.isatty() else "utf-8"))  # 콘솔(bat)=콘솔 코드페이지 · 파이프(UI)=utf-8
 NO_WIN = 0x08000000
+_AI_T0 = None            # AI 마감 기준 시각(선예약 반환용)
+_AI_TOT_MIN = None
 
 
 def cfg():
@@ -967,9 +969,21 @@ def main():
         except (ValueError, TypeError):
             _tot = 300.0
         if _tot > 0:
-            os.environ["LM_AI_DEADLINE"] = str(time.time() + _tot * 60.0)
-            print(f"   (AI 단계 전체 마감 {_tot:.0f}분 — 넘기면 그때까지의 결과를 저장하고 멈춥니다"
-                  " · config.aiTotalBudgetMin)")
+            # flow(마지막 단계) 몫 **선예약** — 앞 단계에는 전체 − 예약분만 물려준다. 예전에는 앞
+            # 단계가 전체를 소진하면 flow 가 15분 floor 로 굶어 워크플로우가 반쪽이 됐다(실측:
+            # 잔여 0분에서 120업무 중 60개 소실). 총 벽시계 상한은 그대로다 — flow 직전에 마감을
+            # 전체로 되돌리므로 합계는 여전히 aiTotalBudgetMin 안이다.
+            try:
+                _fb = float(c.get("flowBudgetMin", 120) or 0) or 120.0
+            except (ValueError, TypeError):
+                _fb = 120.0
+            _flow_reserve = min(max(60.0, _fb), max(60.0, _tot * 0.4))
+            global _AI_T0, _AI_TOT_MIN
+            _AI_T0, _AI_TOT_MIN = time.time(), _tot
+            os.environ["LM_AI_DEADLINE"] = str(_AI_T0 + (_tot - _flow_reserve) * 60.0)
+            print(f"   (AI 단계 전체 마감 {_tot:.0f}분 — 워크플로우 몫 {_flow_reserve:.0f}분 선예약,"
+                  f" 판정·정제·Agentic 은 {_tot - _flow_reserve:.0f}분 안에서"
+                  " · config.aiTotalBudgetMin/flowBudgetMin)")
         print("\n── AI 판정 (계층 엔티티: 과제↔유형↔세부업무 + 월별 내러티브) — 시간이 걸립니다")
         _t2 = time.time()
         # 출력을 흘려보내며 마지막 줄 JSON 을 건진다 — judge 는 판정 0건(왕복 전부 실패)이면
@@ -1064,6 +1078,9 @@ def main():
                 print("   Agentic 매칭 실패 — UI Agentic AI 탭의 [재매칭]으로 다시 시도하세요")
 
             # 담당자 워크플로우 — 과제별 역할·일의 순서·Agent 가능성 (실패해도 분석은 유효)
+            # 선예약분 반환 — 마감을 전체로 되돌린다(앞 단계가 일찍 끝났으면 flow 가 잔여를 다 쓴다)
+            if _AI_T0 is not None and _AI_TOT_MIN:
+                os.environ["LM_AI_DEADLINE"] = str(_AI_T0 + _AI_TOT_MIN * 60.0)
             print("\n── 담당자 워크플로우 (역할·순서·Agent 가능성)")
             _t3 = time.time()
             rc2, note2 = run_ai_stage("flow.py", d0, d1)

@@ -1068,14 +1068,17 @@ def main():
     except ValueError:
         budget_min = float(BUDGET_MIN)
     t_start = time.monotonic()
-    # v3: flow 도 전체 마감(LM_AI_DEADLINE)·단계 예산에 **처음으로 참여**한다(구조 감사: 유일한
-    # 정책 밖 스테이지). flowBudgetMin 은 extra_cap 으로 존중 — 0(무제한)이면 기존 뜻 그대로.
+    # v3: flow 도 전체 마감(LM_AI_DEADLINE)에 참여하되, run.py 가 flow 몫을 **선예약**하므로 앞
+    # 단계 소진에 굶지 않는다. 단계 예산은 flowBudgetMin **단일원** — aiStageBudgetMin 이 flow 를
+    # 몰래 조이던 잠복 경로(실측: aiStageBudgetMin=10 이면 v2 60/60 → v3 36/60)를 차단한다.
     from budget import stage_budget as _sb
-    _dl_core, _bud_min = _sb(floor_min=15.0, extra_cap_min=(budget_min or None),
+    _dl_core, _bud_min = _sb(floor_min=15.0, stage_min_override=(budget_min or 0),
                              root=ROOT, now=time.time, mono=time.monotonic)
     deadline = ((t_start + budget_min * 60) if budget_min else None)
-    if _dl_core is not None:
-        deadline = _dl_core if deadline is None else min(deadline, _dl_core)
+    _dl_src = "flowBudgetMin"
+    if _dl_core is not None and (deadline is None or _dl_core < deadline):
+        deadline = _dl_core
+        _dl_src = "전체 마감 잔여(aiTotalBudgetMin)"
 
     def over_budget():
         return deadline is not None and time.monotonic() > deadline
@@ -1186,7 +1189,8 @@ def main():
         if over_budget():
             if _ss is not None:
                 _ss.note_resume(pending=len(chunks) - ci + 1)
-            stopped = (f"시간 예산 {budget_min}분을 넘겨 남은 {len(chunks) - ci + 1}묶음을 보내지 않았습니다 — "
+            _eff = (deadline - t_start) / 60 if deadline else budget_min
+            stopped = (f"시간 예산 {_eff:.0f}분({_dl_src})을 넘겨 남은 {len(chunks) - ci + 1}묶음을 보내지 않았습니다 — "
                        "다시 실행하면 남은 업무만 이어서 판정합니다(config.flowBudgetMin 으로 조절)")
             print(f"[flow] {stopped}")
             break
@@ -1296,7 +1300,8 @@ def main():
                     print(f"[flow] {stopped}")
                 break
             if over_budget():
-                stopped = (f"시간 예산 {budget_min:.0f}분을 넘겨 미판정 {len(left) + len(held)}개를 남겼습니다 — "
+                _eff2 = (deadline - t_start) / 60 if deadline else budget_min
+                stopped = (f"시간 예산 {_eff2:.0f}분({_dl_src})을 넘겨 미판정 {len(left) + len(held)}개를 남겼습니다 — "
                            "다시 실행하면 남은 업무만 이어서 판정합니다(config.flowBudgetMin 으로 조절)")
                 print(f"[flow] {stopped}")
                 break

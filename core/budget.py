@@ -19,7 +19,8 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def stage_budget(floor_min=15.0, extra_cap_min=None, root=None, now=None, mono=None):
+def stage_budget(floor_min=15.0, extra_cap_min=None, root=None, now=None, mono=None,
+                 stage_min_override=None):
     r"""(마감 시각(monotonic) 또는 None, 예산 분). 모든 AI 스테이지(judge·refine·agentic·flow)가
     이 함수 하나만 쓴다 — tools/check_l1.py 와 같은 취지의 관문이 사본 재출현을 막는다.
     now/mono: 호출 스테이지의 time.time/monotonic — 가상 시계 하네스(J.time 몽키패치)가
@@ -27,13 +28,18 @@ def stage_budget(floor_min=15.0, extra_cap_min=None, root=None, now=None, mono=N
     now = now or time.time
     mono = mono or time.monotonic
     mins = 120.0
-    try:
-        with open(os.path.join(root or ROOT, "config", "config.json"), encoding="utf-8-sig") as f:
-            v = json.load(f).get("aiStageBudgetMin")
-        if v is not None:
-            mins = max(0.0, float(v))
-    except (OSError, ValueError, TypeError, AttributeError):
-        mins = 120.0
+    if stage_min_override is not None:
+        # 자기 예산 키를 따로 가진 단계(flow=flowBudgetMin) — aiStageBudgetMin 을 읽지 않는다.
+        # 0 = 무제한(그 단계의 기존 의미 그대로).
+        mins = max(0.0, float(stage_min_override))
+    else:
+        try:
+            with open(os.path.join(root or ROOT, "config", "config.json"), encoding="utf-8-sig") as f:
+                v = json.load(f).get("aiStageBudgetMin")
+            if v is not None:
+                mins = max(0.0, float(v))
+        except (OSError, ValueError, TypeError, AttributeError):
+            mins = 120.0
     if extra_cap_min:
         mins = min(mins, float(extra_cap_min)) if mins > 0 else float(extra_cap_min)
     dl = (mono() + mins * 60.0) if mins > 0 else None

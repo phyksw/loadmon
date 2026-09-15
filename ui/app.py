@@ -1561,7 +1561,7 @@ def trend(d0="", d1="", tag="", info=None):
                 out[_i]["wk_h"] += float(_h or 0)
         if info is not None and not _wh:
             info["wk_note"] = ("근무시간 실측이 아직 없습니다 — [분석 실행]/[수집만]이 계산해 "
-                               "저장합니다(그때까지는 PC 가동 점선만)")
+                               "저장합니다(그때까지 선은 PC 가동 기준)")
     except Exception as _exw:  # noqa: BLE001 — 실측 판독 실패는 선을 비울 뿐, 추이를 막지 않는다
         if info is not None:
             info["wk_note"] = f"근무시간 실측 판독 실패({type(_exw).__name__}) — PC 가동 선만 표시"
@@ -2857,7 +2857,11 @@ function weekly(el,tr){
  // 그대로 나온다(수번째 제보 "수십 시간인데 8h" 의 뿌리 교정). PC 가동 월 합계는 점선 보조선.
  // 근무 실측이 전혀 없으면(수집만 한 PC·분석 전) 기존 PC 선이 주선이다(폴백).
  const hasWk=tr.some(w=>Number(w.wk_h)>0);
- const hmax=Math.max(...tr.map(w=>Math.max(Number(w.pc_h)||0,Number(w.wk_h)||0)),1);
+ // 축은 **근무 기준** — 항상 켠 PC(월 320h)가 축을 늘리면 괜찮은 근무 실선(70~140h)이 플롯의
+ // 19~44% 로 눌린다(실측). PC 가동은 점 툴팁·아래 진단 줄에만 — '기록 가용성 하키스틱' 을
+ // 증거 차트에 다시 그려 넣지 않는다(이 도구 스스로 PC 가동을 '시간의 근거가 아니라 교차확인'
+ // 으로 규정). 근무 실측이 없으면(수집만·분석 전) 기존 PC 선 폴백.
+ const hmax=Math.max(...tr.map(w=>hasWk?(Number(w.wk_h)||0):(Number(w.pc_h)||0)),1);
  const lineVal=w=>hasWk?(Number(w.wk_h)||0):(Number(w.pc_h)||0);
  let s=`<svg viewBox="0 0 ${W} ${H}" style="width:100%">`;
  for(let g=0;g<=3;g++){const y=T+(H-T-B)*g/3;
@@ -2883,12 +2887,7 @@ function weekly(el,tr){
  const flush=()=>{if(seg.length>1)s+=`<polyline points="${seg.join(" ")}" fill="none" stroke="#c8a06a" stroke-width="2"/>`;seg=[];};
  tr.forEach((w,i)=>{if(has(w)||(hasWk&&Number(w.wk_h)>0))seg.push(`${(L+i*iw+iw/2).toFixed(1)},${(H-B-(H-T-B)*lineVal(w)/hmax).toFixed(1)}`);else flush();});
  flush();
- if(hasWk){          // 보조 점선 = PC 가동 월 합계(진단용 — 주선과 같은 축)
-  let seg2=[];
-  const flush2=()=>{if(seg2.length>1)s+=`<polyline points="${seg2.join(" ")}" fill="none" stroke="#b9b0a0" stroke-width="1.4" stroke-dasharray="4 3" opacity="0.9"/>`;seg2=[];};
-  tr.forEach((w,i)=>{if(has(w))seg2.push(`${(L+i*iw+iw/2).toFixed(1)},${(H-B-(H-T-B)*(Number(w.pc_h)||0)/hmax).toFixed(1)}`);else flush2();});
-  flush2();
- }
+
  tr.forEach((w,i)=>{const _wk=Number(w.wk_h)||0;if(has(w)||(hasWk&&_wk>0)){
   const part=(w.pc_wd!==undefined&&w.pc_days<w.pc_wd);
   const _tot=Number(w.pc_h)||0, _rd=Number(w.pc_rd)||0, _avg=_rd>0?_tot/_rd:0;
@@ -2896,7 +2895,7 @@ function weekly(el,tr){
   s+=`<circle cx="${(L+i*iw+iw/2).toFixed(1)}" cy="${(H-B-(H-T-B)*_v/hmax).toFixed(1)}" r="2.6" fill="${part?"#fff":"#c8a06a"}" stroke="#c8a06a" stroke-width="${part?1.4:0}"><title>${w.label}${hasWk?` 근무 ${_wk.toFixed(1)}h ·`:""} PC 가동 ${_tot.toFixed(1)}h${_rd?`(기록 ${_rd}일·평균 ${_avg.toFixed(1)}h/일)`:""}${w.pc_wd!==undefined?` (평일 ${w.pc_days}/${w.pc_wd})`:""}${_avg>=20?" · PC 종일 켜 둠(야간 포함)":""}</title></circle>`;}});
  el.innerHTML=s+"</svg>";
  $("wleg").innerHTML=keys.map(([k,c])=>`<span><span class="dot" style="background:${c}"></span>${k}</span>`).join("")+
-  '<span><span class="dot" style="background:#c8a06a"></span>근무시간(h·오른쪽 축 실선) · PC 가동(점선)</span>'+
+  '<span><span class="dot" style="background:#c8a06a"></span>근무시간(h·오른쪽 축)</span>'+
   '<span><span class="dot" style="background:#f2f3f5;border:1px solid #d7dbe0"></span>PC 기록 없음</span>';
 }
 // 409 의 사유(hint)를 그대로 보여 준다 — '이미 실행 중' 한 마디로는 보고서 굽는 중인지 알 수 없다
@@ -3139,7 +3138,7 @@ async function refresh(){
   if(wt)wt.textContent=(ti0.gran==="month"?"월간":"주간")+" 활동 추이";
   if(ws)ws.textContent=(per0[0]?`${per0[0]} ~ ${per0[1]||""} · `:"")
    +(ti0.gran==="month"?"막대 하나 = 한 달":"막대 하나 = 한 주")
-   +(d.trend_src==="signals"?" · 막대 = 판정에 쓰인 신호 건수(MM 과 같은 축)":" · 막대 = 수집된 흔적 건수")+" · 실선 = 근무시간(투입 실측·월 합계) · 점선 = PC 가동";}
+   +(d.trend_src==="signals"?" · 막대 = 판정에 쓰인 신호 건수(MM 과 같은 축)":" · 막대 = 수집된 흔적 건수")+" · 선 = 근무시간(투입 실측·월 합계 — PC 가동은 점 툴팁·진단 줄)";}
  // 메일·일정이 기간의 일부 달만 수집된 상태(Outlook 시간 예산) — 앞 달의 메일·회의 막대가 비어 보이는 이유를 적는다
  const wn=$("wnote");
  if(wn){const mc=d.mail_coverage||null;const notes=[];

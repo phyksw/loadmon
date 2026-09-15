@@ -15,7 +15,7 @@ LoadMonitor24-이동준비.bat                                 1,312 B  6fe7c991
 agentic.py                                            45,651 B  6a97765d
 freeze.py                                             53,563 B  2ffbc705
 team_report.py                                       160,391 B  56e24a91
-flow.py                                               88,658 B  e8e55907
+flow.py                                               89,019 B  23fcab48
 teamserver.py                                         27,808 B  d9325192
 teamup.py                                             39,085 B  792d5243
 aggregate.py                                          50,107 B  77bba803
@@ -30,7 +30,7 @@ mine.py                                               18,110 B  e59b3914
 refine.py                                             50,015 B  8b9e7ba2
 ruff.toml                                              1,004 B  47a31613
 FILES.txt                                                (이 파일)
-run.py                                                74,755 B  e16a9752
+run.py                                                76,013 B  d5015769
 자가점검.py                                                9,162 B  94a5fc0a
 collect/Add-WorkLog.ps1                                1,771 B  8a921980
 collect/Get-FileActivity.ps1                          48,656 B  cfab595d
@@ -51,13 +51,13 @@ collect/Get-TeamsWindow.ps1                           36,450 B  3995ec1e
 collect/Diagnose-Collectors.ps1                       37,278 B  84757f4e
 collect/Register-Samplers.ps1                         11,780 B  d18b9601
 collect/Start-ActivitySampler.ps1                      8,715 B  9bec0ce6
-config/config.json                                    43,484 B  ab8a44f4
-config/config.default.json                            43,484 B  ab8a44f4
+config/config.json                                    43,641 B  e2f8d1d0
+config/config.default.json                            43,641 B  e2f8d1d0
 config/agentic_tasks.json                              4,426 B  2c9e5bb1
 core/board.py                                         13,181 B  86eaf661
 core/extract.py                                      227,283 B  cb706498
 core/pc_ledger.py                                     19,424 B  7b61fc34
-core/budget.py                                         2,619 B  d096ff8f
+core/budget.py                                         2,968 B  3297d2b6
 core/stage_state.py                                    7,301 B  d30a0590
 core/watch.py                                          6,594 B  33e30d52
 tools/check_l1.py                                      4,770 B  cfe71d55
@@ -81,4 +81,4 @@ tools/Make-Package.ps1                                10,739 B  3b01fdf5
 tools/Make-MovePack.py                                12,103 B  4132d2e7
 tools/Prepare-Move.ps1                                26,116 B  67389835
 tools/update_files.py                                  4,530 B  33b4a677
-ui/app.py                                            367,960 B  950d393e
+ui/app.py                                            367,971 B  af816f1f
