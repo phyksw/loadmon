@@ -391,10 +391,21 @@ def run_ai_stage(script, d0, d1, retry_wait=15):
     응답을 거부하는 일이 있어(실측: 뒤 단계만 실패), 실패하면 잠시 쉬고 1회 재시도한다.
     반환: (rc, note)."""
     cmd = [sys.executable, os.path.join(ROOT, script), "--from", d0, "--to", d1]
-    env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1")
-    rc, why = _run_capture(cmd, env)
+    env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1", LM_LAUNCHER="run")
+    _tag = f"{d0.replace('-', '')}-{d1.replace('-', '')}"
+    _stage_id = {"agentic.py": "agentic", "flow.py": "flow", "refine.py": "refine",
+                 "judge.py": "judge"}.get(os.path.basename(script), os.path.basename(script))
+    _WATCH_STATE_PATH["p"] = os.path.join(ROOT, "report", f"stage_state_{_tag}_{_stage_id}.json")
+    try:
+        rc, why = _run_capture(cmd, env)
+    finally:
+        _WATCH_STATE_PATH["p"] = None
     if rc == 0:
         return 0, ""
+    if rc == 2:
+        # v3 rc 규약: 2 = 부분(이어가기 가능 — 예산·정체 자가 중단으로 남은 묶음이 있다).
+        # 다음 실행이 이어서 하므로 재시도하지 않고, 뒤 단계는 계속 진행한다.
+        return 2, str(why or "부분 완료 — 다시 실행하면 남은 것만 이어서")
     if "중단했습니다" in str(why or ""):
         # 정체 감지·시간 상한으로 끊은 것은 다시 보내도 같은 벽에 닿는다 — 예전에는 이 경우도 재시도해
         # 한 단계가 상한을 두 번 썼다(최악 360분, 감사 실측).
@@ -410,112 +421,23 @@ def run_ai_stage(script, d0, d1, retry_wait=15):
                 else f"재시도에도 실패(코드 {rc}) - 탭의 수동 실행으로 다시")
 
 
-def kill_tree(pid):
-    r"""프로세스와 자손 전부 종료(윈도) — 자식만 죽이면 그 아래 드라이버·Edge 가 남아 다음 실행을 막는다."""
-    try:
-        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
-                       capture_output=True, timeout=30, creationflags=NO_WIN)
-    except (OSError, subprocess.SubprocessError):
-        try:
-            os.kill(pid, 9)
-        except OSError:
-            pass
+# v3: 감시기 한 벌 — core/watch (run.py·ui/app.py 복제 3함수를 모았다 · 구조 감사 4계층).
+# 신판 자식은 상태 파일 하트비트로 생존을 알린다 — 긴 왕복의 stdout 침묵을 죽음으로 오진하지 않는다.
+from watch import kill_tree  # noqa: E402,F401 - 기존 호출부 이름 유지
+from watch import stage_limits as _core_stage_limits  # noqa: E402
+from watch import watch_child as _core_watch_child  # noqa: E402
+
+_WATCH_STATE_PATH = {"p": None}      # 다음 watch_child 호출이 볼 상태 파일 — run_ai_stage 가 세팅
 
 
 def _stage_limits():
-    r"""(정체 한도 초, 절대 상한 초, 무진전 한도 초) — config.json 의 aiStageStallMin ·
-    aiStageMaxMin · aiStageNoProgressMin. 0 이면 끔.
-    절대 상한은 '진행 중인' 단계도 죽인다 — 그래서 기본을 끄고(0), 대신 **무진전**(진행률이 늘지
-    않는 상태)을 본다. 어제는 절대 상한 180분이 오래 걸리는 정상 판정을 끊었고, 그러면 run.py 가
-    정제·Agentic·워크플로우를 건너뛰어 사용자에게는 '진행되다가 안 된다' 로 보였다(제보)."""
-    stall, cap, nop = 15.0, 0.0, 45.0
-    try:
-        c = cfg() if "cfg" in globals() else {}
-        stall = float(c.get("aiStageStallMin", stall))
-        cap = float(c.get("aiStageMaxMin", cap))
-        nop = float(c.get("aiStageNoProgressMin", nop))
-    except (OSError, ValueError, TypeError):
-        pass
-    return max(0.0, stall) * 60.0, max(0.0, cap) * 60.0, max(0.0, nop) * 60.0
+    return _core_stage_limits(cfg() if "cfg" in globals() else {})
 
 
 def watch_child(p, on_line, label, beat_sec=120):
-    r"""자식 출력을 읽으며 **정체**를 감시한다. 무출력이 정체 한도를 넘거나 총 시간이 상한을 넘으면 트리를 끊는다.
-    예전에는 자식이 멈추면 부모도 영원히 기다려(제보 '무한 정지') 화면이 '실행 중' 에서 벗어나지 못했다.
-    반환: 중단 사유(없으면 None)."""
-    import queue
-    import threading
-    stall_sec, cap_sec, nop_sec = _stage_limits()
-    q = queue.Queue()
-    seen = {"phase": None, "done": -1}          # 마지막으로 본 진행률 — 무진전 판정의 기준
-
-    def _pg_of(s):
-        """'[progress] AI 판정|3|12' → ("AI 판정", 3) / 아니면 None. 진행이 늘었는지만 본다."""
-        if not s.startswith("[progress]"):
-            return None
-        try:
-            ph, done, _tot = s[len("[progress]"):].strip().split("|")
-            return ph.strip(), int(done)
-        except (ValueError, AttributeError):
-            return None
-
-
-    def _rd():
-        try:
-            for ln in p.stdout:
-                q.put(ln if isinstance(ln, str) else ln.decode("utf-8", "replace"))
-        except (OSError, ValueError):
-            pass
-        finally:
-            q.put(None)
-
-    threading.Thread(target=_rd, daemon=True).start()
-    t0 = last = beat = prog = time.time()
-    why = None
-    while True:
-        try:
-            ln = q.get(timeout=5)
-        except queue.Empty:                    # 5초 동안 한 줄도 안 왔다
-            now = time.time()
-            if stall_sec and now - last > stall_sec:
-                why = f"{label}: {int((now - last) // 60)}분 {int((now - last) % 60)}초 동안 아무 출력이 없어 중단했습니다"
-            elif nop_sec and now - prog > nop_sec:
-                why = (f"{label}: {int((now - prog) / 60)}분 동안 진행이 늘지 않아 중단했습니다"
-                       " (진행률이 그대로입니다 — Copilot 창 상태를 확인하세요)")
-            elif cap_sec and now - t0 > cap_sec:
-                why = f"{label}: 시간 상한 {int(cap_sec / 60)}분을 넘겨 중단했습니다"
-            if why:
-                break
-            if now - beat >= beat_sec:         # 살아 있다는 표시 — 멈춘 것처럼 보이지 않게
-                beat = now
-                print(f"   … {label} 진행 중 (경과 {int((now - t0) / 60)}분 · 마지막 출력 {int(now - last)}초 전)",
-                      flush=True)
-            continue
-        if ln is None:
-            break
-        last = time.time()
-        _pg = _pg_of(ln.rstrip())               # [progress] 줄이면 진행률을 본다
-        if _pg and (_pg[0] != seen["phase"] or _pg[1] > seen["done"]):
-            seen["phase"], seen["done"] = _pg[0], _pg[1]
-            prog = last                         # 진행이 실제로 늘었다 — 무진전 시계를 되돌린다
-        on_line(ln.rstrip("\n"))
-        if cap_sec and time.time() - t0 > cap_sec:      # 상한을 켜 둔 경우만(기본 0=끔)
-            why = f"{label}: 시간 상한 {int(cap_sec / 60)}분을 넘겨 중단했습니다"
-            break
-        if nop_sec and time.time() - prog > nop_sec:   # 출력은 있는데 진행률이 안 늘어난다
-            why = f"{label}: {int((time.time() - prog) / 60)}분 동안 진행이 늘지 않아 중단했습니다"
-            break
-    if why:
-        print(f"[!] {why}", flush=True)
-        print("    멈춘 자리에서 끊었습니다 — 화면의 마지막 줄이 그 자리입니다. 가장 흔한 원인은 Copilot 창이 로그인·"
-              "오류 화면에서 멈춘 것입니다 — [AI 연결 진단]으로 확인한 뒤 다시 실행하세요.",
-              flush=True)
-        kill_tree(p.pid)
-        try:
-            p.wait(timeout=30)
-        except Exception:
-            pass
-    return why
+    return _core_watch_child(p, on_line, label, beat_sec=beat_sec,
+                             cfg_dict=(cfg() if "cfg" in globals() else {}),
+                             state_path=_WATCH_STATE_PATH.get("p"))
 
 
 def _run_capture(cmd, env):
@@ -567,7 +489,9 @@ def invalidate_ai_outputs(d0, d1):
     반환: (개명한 이름 목록, 실패 목록). 실패해도 화면은 mtime 규칙(정제본 < 원본)으로 원본을 고른다."""
     tag = f"{d0.replace('-', '')}-{d1.replace('-', '')}"
     rep = os.path.join(ROOT, "report")
-    names = [f"mm_rows_{tag}_refined.csv", f"ai_judgments_{tag}.json",
+    # v3: ai_judgments 는 무효화하지 않는다 — judge 가 내용 sig 로 유효분만 회수한다('이어서 판정').
+    # v2 는 매 실행 .stale 개명이 재개 자료를 없애, 부분 실패의 재개 단위가 '스테이지 전체'였다.
+    names = [f"mm_rows_{tag}_refined.csv",
              f"dropped_signals_{tag}.csv", f"refine_map_{tag}.json"]
     done, failed = [], []
     for n in names:
@@ -1015,14 +939,15 @@ def main():
             _note_j = f"judge.py 종료코드 {rc}" + (f" — {why_j}" if why_j else "")
         if _stub and rc != 0:
             _note_j += " · " + _stub
-        record("AI 판정", rc == 0, time.time() - _t2, _note_j)
+        record("AI 판정", rc in (0, 2), time.time() - _t2,
+               ("부분 판정 — 다시 실행하면 남은 신호만 이어서 · " if rc == 2 else "") + str(_note_j or ""))
         if _stub:
             print(f"   [!] {_stub}")
         # 판정이 0 이 아니게 끝났어도 **이번 실행에서 판정된 행이 있으면** 뒤 단계를 계속한다.
         # 예전에는 무조건 건너뛰어, 정체 감지·상한에 한 번 걸리면 정제·Agentic·워크플로우가 전부
         # 사라졌다(제보: "진행되다가 안 된다"). 판정 결과가 남아 있으면 정제할 재료는 있는 것이다.
         _partial_ok = False
-        if rc != 0:
+        if rc not in (0, 2):
             _jp = os.path.join(ROOT, "report",
                                f"ai_judgments_{d0.replace('-', '')}-{d1.replace('-', '')}.json")
             try:
@@ -1039,7 +964,7 @@ def main():
                         record("AI 판정", False, time.time() - _t2, _note_j)
             except (OSError, ValueError, TypeError):
                 _partial_ok = False
-        if rc != 0 and not _partial_ok:
+        if rc not in (0, 2) and not _partial_ok:
             _skip = ("AI 판정 왕복 전부 실패로 건너뜀" if rc == 3 else "판정 실패로 건너뜀")
             print("   [!] AI 판정 실패 — 화면의 과제는 AI가 정리한 것이 아니라 규칙이 뽑은")
             print("       임시 결과입니다. 위 judge 로그의 마지막 오류를 보세요.")
@@ -1069,24 +994,25 @@ def main():
                                        "--from", d0, "--to", d1],
                                       dict(os.environ, PYTHONIOENCODING="utf-8",
                                            PYTHONUNBUFFERED="1"))
-            record("AI 정제", rc2 == 0, time.time() - _t3, why_r)
-            if rc2 != 0:
+            record("AI 정제", rc2 in (0, 2), time.time() - _t3,
+                   ("부분 완료 — 다시 실행하면 남은 것만 이어서 · " if rc2 == 2 else "") + str(why_r or ""))
+            if rc2 not in (0, 2):
                 print("   AI 정제 실패 — report 폴더의 evidence 파일을 Copilot에 붙여넣어도 됩니다")
 
             # Agentic AI 매칭 — 판정 후 12과제 매칭·발굴·오할당 검증을 자동 수행
             print("\n── Agentic AI 매칭 (12과제 적합·신규 발굴·오할당 검증)")
             _t3 = time.time()
             rc2, note2 = run_ai_stage("agentic.py", d0, d1)
-            record("Agentic 매칭", rc2 == 0, time.time() - _t3, note2)
-            if rc2 != 0:
+            record("Agentic 매칭", rc2 in (0, 2), time.time() - _t3, note2)
+            if rc2 not in (0, 2):
                 print("   Agentic 매칭 실패 — UI Agentic AI 탭의 [재매칭]으로 다시 시도하세요")
 
             # 담당자 워크플로우 — 과제별 역할·일의 순서·Agent 가능성 (실패해도 분석은 유효)
             print("\n── 담당자 워크플로우 (역할·순서·Agent 가능성)")
             _t3 = time.time()
             rc2, note2 = run_ai_stage("flow.py", d0, d1)
-            record("워크플로우 분석", rc2 == 0, time.time() - _t3, note2)
-            if rc2 != 0:
+            record("워크플로우 분석", rc2 in (0, 2), time.time() - _t3, note2)
+            if rc2 not in (0, 2):
                 print("   워크플로우 분석 실패 — UI 담당자 워크플로우 탭의 [재분석]으로 다시 시도하세요")
             # 워크플로우 단계가 만든 세부업무 병합 맵(config\detail_aliases.json)을 Agentic 실측에 반영 —
             # agentic 이 flow 보다 먼저 돌아 첫 --ai 실행(캐시 없음·리셋 뒤)의 load_mm 이 맵 없이

@@ -598,6 +598,8 @@ def _stage_budget(floor_min=15.0):
 def main():
     d0, d1 = arg("--from"), arg("--to")
     tag = f"{d0.replace('-','')}-{d1.replace('-','')}"
+    from stage_state import open_stage
+    _ss = open_stage(os.path.join(ROOT, "report"), tag, "refine")
     rep = os.path.join(ROOT, "report")
     src = os.path.join(rep, f"mm_rows_{tag}.csv")
     evp = os.path.join(rep, f"evidence_{tag}.md")
@@ -647,6 +649,8 @@ def main():
     for ci, (ch, ov) in enumerate(plan):
         if _dl is not None and time.monotonic() > _dl and not rf.st.get("fatal"):
             # 예산 초과 — 루프만 정상 종료한다. 아래 병합·저장 경로를 그대로 타므로 여기까지 정제한 것은 남는다.
+            if _ss is not None:
+                _ss.note_resume(pending=len(plan) - ci)
             _stopped = (f"시간 예산 {_bud:.0f}분을 넘겨 남은 {len(plan) - ci}청크를 보내지 않았습니다 — "
                         "여기까지 정제한 것은 저장했고, 다시 실행하면 남은 항목을 이어서 정제합니다"
                         "(config.aiStageBudgetMin 으로 조절)")
@@ -826,7 +830,12 @@ def main():
               f"{f['mm']:5.2f} MM  {str(f.get('상세설명') or '')[:44]}")
     print(f"[refine] → {dst}")
     print(json.dumps(dict(tail, ok=True, rows=len(rows), refined=len(final)), ensure_ascii=False))
-    return 0
+    if _ss is not None:
+        if _stopped:
+            _ss.finish("partial", stop_kind="budget", reason=_stopped)
+        else:
+            _ss.finish("done")
+    return 2 if _stopped else 0
 
 
 if __name__ == "__main__":

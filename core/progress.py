@@ -18,6 +18,15 @@ def progress(phase, done, total):
         print(f"[progress] {phase}|{int(done)}|{int(total)}", flush=True)
     except (ValueError, TypeError):
         pass
+    # v3: 상태 파일 피기백 — stdout 줄은 그대로(하위 호환), 열린 스테이지 상태가 있으면 함께 갱신.
+    # 무진전 감시는 이제 이 done 값을 본다(updated 는 하트비트 스레드가 갱신 — 생존 전용).
+    try:
+        from stage_state import current
+        st = current()
+        if st is not None:
+            st.beat(phase=phase, done=done, total=total)
+    except Exception:  # noqa: BLE001 — 진행 표시가 스테이지를 죽이면 안 된다
+        pass
 
 
 def parse(line):

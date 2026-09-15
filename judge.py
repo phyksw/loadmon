@@ -776,6 +776,13 @@ def parse_judgments(reply, start, n):
     return parse_judgments_ex(reply, range(start, start + n))[0]
 
 
+def signal_sig(r):
+    """신호 행의 내용 신원 — '이어서 판정' 의 키. 행 인덱스는 mine 재추출마다 흔들리지만
+    (시각|출처|원문 머리) 는 같은 사건이면 같다. agentic.row_sig 와 같은 사상(내용 기반 재개)."""
+    return (f"{(r.get('time') or '')[:16]}|{(r.get('source') or '')[:12]}|"
+            f"{' '.join((r.get('text') or '').split())[:120]}")
+
+
 def pack_chunks(rows, chunk_n, head_len, budget=PROMPT_BUDGET):
     """행을 [(start, n)] 로 자른다 — 행 수(chunk_n)와 글자 예산 둘 다로. 머리말(head_len)+행 합이 budget 을
     넘기 전에 끊는다(첫 행은 항상 넣는다). 긴 제목·긴 과제 목록·긴 '앞서 쓴 이름' 목록이면 40행이
@@ -1538,6 +1545,8 @@ def main():
         saved = save_narratives(nar, rep, tag)
         print(f"[judge] 월별 코멘트 {len(nar)}개 " + ("저장" if saved else "— 기존 파일 유지"))
         return 0 if nar else 1
+    from stage_state import open_stage
+    _ss = open_stage(rep, tag, "judge")        # v3 상태 파일 — 하트비트·진행·중단 사유(구조 감사 4계층)
     cfg = extract.load_cfg()
     known = cfg.get("projects") or []
     model_name = (cfg.get("copilotAuto") or {}).get("model", "GPT-5.6")
@@ -1624,12 +1633,32 @@ def main():
     # [1..N] 신호 판정 — 행 수(chunk_n)와 글자 예산 둘 다로 자른다. 머리말 길이는 과제 목록과
     # '앞서 쓴 이름' 목록 상한을 포함해 잰다.
     head_len = len(judge_prompt([], 0, models)) + SEEN_MAX_CHARS + 160
-    plan = pack_chunks(rows, chunk_n, head_len)
-    chunks = [rows[s:s + n] for s, n in plan]
-    if len(chunks) != n_chunks:
-        print(f"        글자 예산({PROMPT_BUDGET:,}자)에 맞춰 청크 {n_chunks}→{len(chunks)}개"
-              f" (머리말 {head_len:,}자 · 행 최대 {max(n for _s, n in plan)}개)")
+    # v3 '이어서 판정' — 지난 실행의 판정을 내용 sig 로 회수하고, 남은 행만 왕복한다.
+    # (v2 는 이 약속이 출력에만 있고 메커니즘이 없었다 — 구조 감사 CONFIRMED.)
     judged, n_fail, n_partial, last_err = {}, 0, 0, ""
+    _resumed = 0
+    if "--redo" not in sys.argv:
+        try:
+            with open(os.path.join(rep, f"ai_judgments_{tag}.json"), encoding="utf-8-sig") as _pf:
+                _prev = json.load(_pf)
+            _by_sig = {v.get("sig"): v for v in (_prev.get("items") or {}).values()
+                       if isinstance(v, dict) and v.get("sig")}
+            for _i, _r in enumerate(rows):
+                _v = _by_sig.get(signal_sig(_r))
+                if _v is not None:
+                    judged[_i] = {k2: v2 for k2, v2 in _v.items() if k2 != "sig"}
+            _resumed = len(judged)
+        except (OSError, ValueError, TypeError, AttributeError):
+            _resumed = 0
+    _todo = [i for i in range(len(rows)) if i not in judged]
+    if _resumed:
+        print(f"[judge] 이어서 판정 — 지난 실행 {_resumed}건 재사용 · 남은 {len(_todo)}건만 왕복")
+    _sub = [rows[i] for i in _todo]
+    plan = pack_chunks(_sub, chunk_n, head_len)
+    chunks = [_sub[s:s + n] for s, n in plan]
+    if len(chunks) != n_chunks and not _resumed:
+        print(f"        글자 예산({PROMPT_BUDGET:,}자)에 맞춰 청크 {n_chunks}→{len(chunks)}개"
+              f" (머리말 {head_len:,}자 · 행 최대 {max((n for _s, n in plan), default=0)}개)")
     st = {"roundtrips": 0, "repaired": 0, "retries": 0, "failed_rows": 0, "omitted_rows": 0,
           "notes": [], "last_err": "", "soft": False, "aborted": False}
     if _fatal0:
@@ -1649,6 +1678,8 @@ def main():
         # 예전에는 부모의 상한에 끊겨 종료코드가 0 이 아니었고, 그러면 run.py 가 정제·Agentic·
         # 워크플로우를 전부 건너뛰고 월별 코멘트도 만들지 못했다(제보).
         if _dl is not None and _budget_stop == "" and time.monotonic() > _dl:
+            if _ss is not None:
+                _ss.note_resume(pending=len(plan) - ci)
             _budget_stop = (f"시간 예산 {_bud:.0f}분을 넘겨 남은 {len(plan) - ci}청크를 보내지 "
                             "않았습니다 — 여기까지의 판정을 저장하고 월별 코멘트까지 만든 뒤 끝냅니다"
                             "(다시 실행하면 남은 신호만 이어서 판정합니다 · config.aiStageBudgetMin)")
@@ -1658,12 +1689,12 @@ def main():
             n_fail += 1
             continue
         progress("AI 판정", ci + 1, len(chunks) + 1)
-        idxs = list(range(start, start + n))
+        idxs = [_todo[k] for k in range(start, start + n)]     # todo 부분집합 → 원본 행 인덱스
         if st["aborted"]:
             st["failed_rows"] += n
             n_fail += 1
             continue
-        print(f"[judge] {ci+1}/{len(chunks)} 신호 판정 왕복 (#{start}~#{start+n-1})")
+        print(f"[judge] {ci+1}/{len(chunks)} 신호 판정 왕복 (#{idxs[0]}~#{idxs[-1]})")
         st["notes"] = []
         got = judge_rows(idxs, rows, models, recent_details(judged, prev_idxs), tag, f"chunk{ci+1}", 0, st)
         judged.update(got)
@@ -1773,7 +1804,8 @@ def main():
                    "omitted_rows": st["omitted_rows"], "repaired": st["repaired"],
                    "retries": st["retries"], "roundtrips": st["roundtrips"],
                    "aborted": st["aborted"], "chunk_rows": chunk_n, "prompt_budget": PROMPT_BUDGET,
-                   "items": {str(k): v for k, v in judged.items()}}, f, ensure_ascii=False, indent=1)
+                   "items": {str(k): dict(v, sig=signal_sig(rows[k])) for k, v in judged.items()
+                             if 0 <= k < len(rows)}}, f, ensure_ascii=False, indent=1)
 
     # A30 — 비업무로 버린 신호의 시간을 총량에서도 뺀다(mm_meta 갱신). write_outputs 보다 먼저.
     rh = rehours_meta(kept, dropped_rows, tag, cfg, rep, os.path.join(ROOT, "data"))
@@ -1810,6 +1842,8 @@ def main():
         print("        signals/mm_rows 는 규칙 판정으로 두고, 월별 내러티브·entities 기존 파일은 보존합니다")
         print(json.dumps({"ok": False, "error": err, "hint": hint, "judged": 0,
                           "chunks": len(chunks), "failed_chunks": n_fail}, ensure_ascii=False))
+        if _ss is not None:
+            _ss.finish("failed", stop_kind="fatal", reason=err, error=err, hint=hint)
         return 3
 
     # [월별] 내러티브
@@ -1818,7 +1852,16 @@ def main():
         progress("월별 리뷰", 0, 1)
         nar = narrate(kept, total_mm, tag)
         save_narratives(nar, rep, tag)
-    return 0
+    # v3 rc 규약: 부분(예산 중단·실패 잔여)은 2 — '이어서' 가 데이터가 된다. 완주는 0.
+    _partial = bool(_budget_stop) or st["failed_rows"] > 0 or st["omitted_rows"] > 0
+    if _ss is not None:
+        if _partial:
+            _ss.note_resume(pending=max(int(st["failed_rows"] + st["omitted_rows"]), 1))
+            _ss.finish("partial", stop_kind=("budget" if _budget_stop else "fatal"),
+                       reason=_budget_stop or f"실패 행 {st['failed_rows']}·누락 {st['omitted_rows']}")
+        else:
+            _ss.finish("done")
+    return 2 if _partial else 0
 
 
 if __name__ == "__main__":

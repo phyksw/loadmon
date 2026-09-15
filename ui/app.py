@@ -855,7 +855,25 @@ def _stage_kind(stage):
     r"""그 단계가 왜 결과를 남기지 못했나 — 화면이 '다음에 무엇을 하라' 를 고를 수 있게 갈래를 준다.
     stalled(정체로 중단) · budget(시간 예산) · skipped(앞 단계 실패로 건너뜀) · failed(왕복 실패) ·
     none(기록 없음) · ok(정상 완료로 기록됨 — 결과 파일이 없으면 기간이 다른 것이다).
-    제보: "에이전틱이 안 만들어졌습니다 — 정체되어 스킵된 걸까요?" 를 화면이 바로 답하게."""
+    제보: "에이전틱이 안 만들어졌습니다 — 정체되어 스킵된 걸까요?" 를 화면이 바로 답하게.
+    v3: 상태 파일(stage_state)이 있으면 **데이터로** 답한다 — 한국어 note 부분 문자열 분류는
+    구판 기록용 폴백으로만 남는다(문구를 다듬으면 분류가 깨지던 구조의 종식 · 구조 감사 4계층)."""
+    _sid = {"AI 판정": "judge", "AI 정제": "refine", "Agentic 매칭": "agentic",
+            "워크플로우 분석": "flow"}.get(stage)
+    if _sid:
+        try:
+            from stage_state import read_latest
+            st3 = read_latest(REPORT, _sid)
+        except Exception:  # noqa: BLE001
+            st3 = None
+        if st3 is not None:
+            _stv = str(st3.get("state") or "")
+            _kind = str((st3.get("stop") or {}).get("kind") or "")
+            if _stv == "done":
+                return "ok"
+            if _stv in ("partial", "failed"):
+                return {"budget": "budget", "stall": "stalled", "login": "failed",
+                        "lock": "failed"}.get(_kind, "failed")
     note = _stage_note(stage)
     if not note:
         return "none"
@@ -1919,114 +1937,19 @@ def _tag_args():
     return t, []
 
 
-def kill_tree(pid):
-    r"""프로세스와 자손 전부 종료(윈도) — 자식만 죽이면 그 아래 드라이버·Edge 가 남아 다음 실행을 막는다."""
-    try:
-        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
-                       capture_output=True, timeout=30, creationflags=NO_WIN)
-    except (OSError, subprocess.SubprocessError):
-        try:
-            os.kill(pid, 9)
-        except OSError:
-            pass
+# v3: 감시기 한 벌 — core/watch 임포트(복제 3함수 삭제 · 구조 감사 4계층)
+from watch import kill_tree  # noqa: E402,F401
+from watch import stage_limits as _core_stage_limits  # noqa: E402
+from watch import watch_child as _core_watch_child  # noqa: E402
 
 
 def _stage_limits():
-    r"""(정체 한도 초, 절대 상한 초, 무진전 한도 초) — config.json 의 aiStageStallMin ·
-    aiStageMaxMin · aiStageNoProgressMin. 0 이면 끔.
-    절대 상한은 '진행 중인' 단계도 죽인다 — 그래서 기본을 끄고(0), 대신 **무진전**(진행률이 늘지
-    않는 상태)을 본다. 어제는 절대 상한 180분이 오래 걸리는 정상 판정을 끊었고, 그러면 run.py 가
-    정제·Agentic·워크플로우를 건너뛰어 사용자에게는 '진행되다가 안 된다' 로 보였다(제보)."""
-    stall, cap, nop = 15.0, 0.0, 45.0
-    try:
-        c = cfg() if "cfg" in globals() else {}
-        stall = float(c.get("aiStageStallMin", stall))
-        cap = float(c.get("aiStageMaxMin", cap))
-        nop = float(c.get("aiStageNoProgressMin", nop))
-    except (OSError, ValueError, TypeError):
-        pass
-    return max(0.0, stall) * 60.0, max(0.0, cap) * 60.0, max(0.0, nop) * 60.0
+    return _core_stage_limits(cfg() if callable(globals().get("cfg")) else {})
 
 
 def watch_child(p, on_line, label, beat_sec=120):
-    r"""자식 출력을 읽으며 **정체**를 감시한다. 무출력이 정체 한도를 넘거나 총 시간이 상한을 넘으면 트리를 끊는다.
-    예전에는 자식이 멈추면 부모도 영원히 기다려(제보 '무한 정지') 화면이 '실행 중' 에서 벗어나지 못했다.
-    반환: 중단 사유(없으면 None)."""
-    import queue
-    import threading
-    stall_sec, cap_sec, nop_sec = _stage_limits()
-    q = queue.Queue()
-    seen = {"phase": None, "done": -1}          # 마지막으로 본 진행률 — 무진전 판정의 기준
-
-    def _pg_of(s):
-        """'[progress] AI 판정|3|12' → ("AI 판정", 3) / 아니면 None. 진행이 늘었는지만 본다."""
-        if not s.startswith("[progress]"):
-            return None
-        try:
-            ph, done, _tot = s[len("[progress]"):].strip().split("|")
-            return ph.strip(), int(done)
-        except (ValueError, AttributeError):
-            return None
-
-
-    def _rd():
-        try:
-            for ln in p.stdout:
-                q.put(ln if isinstance(ln, str) else ln.decode("utf-8", "replace"))
-        except (OSError, ValueError):
-            pass
-        finally:
-            q.put(None)
-
-    threading.Thread(target=_rd, daemon=True).start()
-    t0 = last = beat = prog = time.time()
-    why = None
-    while True:
-        try:
-            ln = q.get(timeout=5)
-        except queue.Empty:                    # 5초 동안 한 줄도 안 왔다
-            now = time.time()
-            if stall_sec and now - last > stall_sec:
-                why = f"{label}: {int((now - last) // 60)}분 {int((now - last) % 60)}초 동안 아무 출력이 없어 중단했습니다"
-            elif nop_sec and now - prog > nop_sec:
-                why = (f"{label}: {int((now - prog) / 60)}분 동안 진행이 늘지 않아 중단했습니다"
-                       " (진행률이 그대로입니다 — Copilot 창 상태를 확인하세요)")
-            elif cap_sec and now - t0 > cap_sec:
-                why = f"{label}: 시간 상한 {int(cap_sec / 60)}분을 넘겨 중단했습니다"
-            if why:
-                break
-            if now - beat >= beat_sec:         # 살아 있다는 표시 — 멈춘 것처럼 보이지 않게
-                beat = now
-                print(f"   … {label} 진행 중 (경과 {int((now - t0) / 60)}분 · 마지막 출력 {int(now - last)}초 전)",
-                      flush=True)
-            continue
-        if ln is None:
-            break
-        last = time.time()
-        _pg = _pg_of(ln.rstrip())               # [progress] 줄이면 진행률을 본다
-        if _pg and (_pg[0] != seen["phase"] or _pg[1] > seen["done"]):
-            seen["phase"], seen["done"] = _pg[0], _pg[1]
-            prog = last                         # 진행이 실제로 늘었다 — 무진전 시계를 되돌린다
-        with LOCK:                  # 화면이 "마지막 소식 N초 전" 을 말할 수 있게 — 느린 것과 멈춘 것의 구분
-            JOB["last_out"] = last
-        on_line(ln.rstrip("\n"))
-        if cap_sec and time.time() - t0 > cap_sec:      # 상한을 켜 둔 경우만(기본 0=끔)
-            why = f"{label}: 시간 상한 {int(cap_sec / 60)}분을 넘겨 중단했습니다"
-            break
-        if nop_sec and time.time() - prog > nop_sec:   # 출력은 있는데 진행률이 안 늘어난다
-            why = f"{label}: {int((time.time() - prog) / 60)}분 동안 진행이 늘지 않아 중단했습니다"
-            break
-    if why:
-        print(f"[!] {why}", flush=True)
-        print("    멈춘 자리에서 끊었습니다 — 화면의 마지막 줄이 그 자리입니다. 가장 흔한 원인은 Copilot 창이 로그인·"
-              "오류 화면에서 멈춘 것입니다 — [AI 연결 진단]으로 확인한 뒤 다시 실행하세요.",
-              flush=True)
-        kill_tree(p.pid)
-        try:
-            p.wait(timeout=30)
-        except Exception:
-            pass
-    return why
+    return _core_watch_child(p, on_line, label, beat_sec=beat_sec,
+                             cfg_dict=(cfg() if callable(globals().get("cfg")) else {}))
 
 
 def tool_job(kind, extra=()):

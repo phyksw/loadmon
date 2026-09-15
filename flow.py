@@ -908,6 +908,8 @@ def main():
     _sync_unit()               # 출력 JSON 의 unit·캐시 유효성 판정을 지금 설정에 맞춘다
     d0, d1 = arg("--from"), arg("--to")
     tag = (f"{d0.replace('-', '')}-{d1.replace('-', '')}" if d0 and d1 else latest_tag())
+    from stage_state import open_stage
+    _ss = open_stage(os.path.join(ROOT, "report"), tag, "flow")
     rep = os.path.join(ROOT, "report")
     if not tag:
         print("[flow] 분석 결과가 없습니다 — 먼저 [분석 실행]")
@@ -1182,6 +1184,8 @@ def main():
 
     for ci, part in enumerate(chunks, 1):
         if over_budget():
+            if _ss is not None:
+                _ss.note_resume(pending=len(chunks) - ci + 1)
             stopped = (f"시간 예산 {budget_min}분을 넘겨 남은 {len(chunks) - ci + 1}묶음을 보내지 않았습니다 — "
                        "다시 실행하면 남은 업무만 이어서 판정합니다(config.flowBudgetMin 으로 조절)")
             print(f"[flow] {stopped}")
@@ -1373,7 +1377,12 @@ def main():
                       **({"hint": out["note"]} if out["missing_count"] else {}),
                       **({"last_error": out["last_error"]} if out["last_error"] else {}),
                       "merge": {"rule": n_rule, "ai": n_ai}}, ensure_ascii=False))
-    return 0
+    _partial = bool(locals().get("stopped") or locals().get("partial"))
+    if _ss is not None:
+        _ss.finish("partial" if _partial else "done",
+                   stop_kind=("budget" if locals().get("stopped") else ("fatal" if _partial else None)),
+                   reason=str(locals().get("stopped") or ""))
+    return 2 if _partial else 0
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 LoadMonitor24 필수 파일 목록 - 복사 시 전부 있어야 합니다.
 (data/ report/ teamdata/ 는 복사 금지 - 개인정보)
 
-총 76개
+총 78개
 
 LoadMonitor24-UI.bat                                   2,444 B  ef09c6ae
 LoadMonitor24.bat                                      3,554 B  f030200d
@@ -12,10 +12,10 @@ LoadMonitor24-수집진단.bat                                   849 B  f9708afd
 LoadMonitor24-가동시간비교.bat                               1,048 B  2ba31119
 LoadMonitor24-샘플러등록.bat                                  868 B  4e48ca20
 LoadMonitor24-이동준비.bat                                 1,312 B  6fe7c991
-agentic.py                                            45,198 B  49d5fe91
+agentic.py                                            45,651 B  6a97765d
 freeze.py                                             53,563 B  2ffbc705
 team_report.py                                       160,391 B  56e24a91
-flow.py                                               88,125 B  0cd240c0
+flow.py                                               88,658 B  e8e55907
 teamserver.py                                         27,808 B  d9325192
 teamup.py                                             39,085 B  792d5243
 aggregate.py                                          50,107 B  77bba803
@@ -25,13 +25,13 @@ team_refine.py                                         6,565 B  2940e54b
 report_out.py                                         30,599 B  01944b84
 README.md                                             97,980 B  6298a25e
 check.py                                               2,629 B  7badfe69
-judge.py                                             105,432 B  d9e5d637
+judge.py                                             108,118 B  f0232882
 mine.py                                               17,836 B  c751c51d
-refine.py                                             49,156 B  ff83063e
+refine.py                                             49,529 B  995b8891
 ruff.toml                                              1,004 B  47a31613
 FILES.txt                                                (이 파일)
-run.py                                                73,482 B  910ae555
-자가점검.py                                                9,086 B  17c35175
+run.py                                                70,379 B  eb8aca73
+자가점검.py                                                9,134 B  2648caf2
 collect/Add-WorkLog.ps1                                1,771 B  8a921980
 collect/Get-FileActivity.ps1                          48,656 B  cfab595d
 collect/Get-GitActivity.py                            29,162 B  0facda4f
@@ -58,11 +58,13 @@ core/board.py                                         13,181 B  86eaf661
 core/extract.py                                      224,478 B  97b69a8c
 core/pc_ledger.py                                     16,063 B  30613824
 core/budget.py                                         2,619 B  d096ff8f
+core/stage_state.py                                    6,418 B  e426d9c8
+core/watch.py                                          6,576 B  7203e0a3
 tools/check_l1.py                                      3,383 B  708f26e0
 core/programs.py                                      15,778 B  1f1e142f
 core/details.py                                       77,855 B  b04db4f5
 core/owner.py                                          1,488 B  1f1dc049
-core/progress.py                                       1,129 B  77a7579a
+core/progress.py                                       1,648 B  15bfd33b
 core/projmap.py                                        7,133 B  cca7d2cb
 docs/설정가이드.md                                         83,463 B  f7e14d9e
 docs/사용안내.html                                       272,444 B  3cea5b8b
@@ -78,4 +80,4 @@ tools/Make-Package.ps1                                10,739 B  3b01fdf5
 tools/Make-MovePack.py                                12,103 B  4132d2e7
 tools/Prepare-Move.ps1                                26,116 B  67389835
 tools/update_files.py                                  4,530 B  33b4a677
-ui/app.py                                            364,640 B  5398a876
+ui/app.py                                            360,700 B  b0ca074d

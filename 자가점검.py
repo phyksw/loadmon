@@ -63,6 +63,8 @@ NEED = [
     "core/extract.py",
     "core/pc_ledger.py",
     "core/budget.py",
+    "core/stage_state.py",
+    "core/watch.py",
     "tools/check_l1.py",
     "core/programs.py",
     "core/details.py",

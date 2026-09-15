@@ -610,6 +610,8 @@ def main():
     import judge
     d0, d1 = arg("--from"), arg("--to")
     tag = (f"{d0.replace('-', '')}-{d1.replace('-', '')}" if d0 and d1 else latest_tag())
+    from stage_state import open_stage
+    _ss = open_stage(os.path.join(ROOT, "report"), tag, "agentic")
     rep = os.path.join(ROOT, "report")
     if not tag:
         print("[agentic] 분석 결과가 없습니다 — 먼저 [분석 실행]")
@@ -742,6 +744,9 @@ def main():
     for ci, (part, n_new) in enumerate(parts, 1):
         if _dl is not None and time.monotonic() > _dl:
             # 예산 초과 — 남은 묶음은 rows_done 에 남아 다음 실행이 이어서 묻는다(MAX_CHUNKS 와 같은 처리)
+            globals()["_AG_PARTIAL"] = True
+            if _ss is not None:
+                _ss.note_resume(pending=len(parts) - ci + 1)
             print(f"[agentic] 시간 예산 {_bud:.0f}분을 넘겨 남은 {len(parts) - ci + 1}묶음을 보내지 "
                   "않았습니다 — 여기까지의 결과는 저장했고, 다시 실행하면 남은 것만 이어서 묻습니다"
                   "(config.aiStageBudgetMin 으로 조절)")
@@ -845,7 +850,11 @@ def main():
                       "note": out["note"], **({"hint": out["note"]} if out["rows_pending"] else {}),
                       **({"last_error": out["last_error"]} if out["last_error"] else {})},
                      ensure_ascii=False))
-    return 0
+    _partial = bool(globals().get("_AG_PARTIAL"))
+    if _ss is not None:
+        _ss.finish("partial" if _partial else "done",
+                   stop_kind=("budget" if _partial else None))
+    return 2 if _partial else 0
 
 
 if __name__ == "__main__":
