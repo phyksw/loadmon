@@ -31,7 +31,7 @@ from progress import parse as parse_progress  # noqa: E402  (core 경로 등록 
 REPORT = os.path.join(ROOT, "report")
 DATA = os.path.join(ROOT, "data")
 NO_WIN = 0x08000000
-VERSION = "v24.18"
+VERSION = "v24.19"
 LOCK = threading.Lock()
 FREEZE_LOCK = threading.Lock()       # [보고서 만들기] 직렬화 — JOB 과 별개(사본에 '실행 중'이 굳지 않게)
 JOB = {"running": False, "log": [], "step": "", "started": 0.0, "pid": 0,
@@ -4083,6 +4083,16 @@ class H(BaseHTTPRequestHandler):
             self._send(200, payload)
         elif self.path == "/api/dash":
             fn, rows = result_rows()
+            # 옛 정제본(v24.15 이전·다른 버전 PC 업로드분)의 스냅 전 상위 이름을 새 4범주로 접어 내려준다 —
+            # 화면을 열기만 해도(재분석 없이) '신제품개발'·'기술내재화' 가 '개발' 로 보인다(제보: 재분석 요구 금지).
+            try:
+                import details as _dl1
+                for _r in rows:
+                    _sn = _dl1.snap1(_r.get("Level 1"))
+                    if _sn:
+                        _r["Level 1"] = _sn
+            except Exception:  # noqa: BLE001
+                pass
             meta = {}
             # meta 는 화면에 띄운 rows 와 **같은 태그**를 우선한다 — mtime 최신만 고르면
             # 다른 기간의 meta 로 로드율을 계산하거나, 그 meta 가 없어서 rows 는 멀쩡한데
