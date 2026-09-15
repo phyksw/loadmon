@@ -145,5 +145,9 @@ $env:PYTHONIOENCODING = 'utf-8'
 & $py8 (Join-Path $root 'tools\check_l1.py') 2>&1 | ForEach-Object { Write-Output $_ }
 if ($LASTEXITCODE -ne 0) { $fail = 1 }
 
-if ($fail -eq 0) { Write-Output 'lint OK (8 gates)' }
+# --- gate 9: 월간 활동 추이 계약 - 근무 실측 선·집계 전체 기간·판정 밖 막대(반복 제보 봉인) ---
+& $py8 (Join-Path $root 'tools\check_trend.py') 2>&1 | ForEach-Object { Write-Output $_ }
+if ($LASTEXITCODE -ne 0) { $fail = 1 }
+
+if ($fail -eq 0) { Write-Output 'lint OK (9 gates)' }
 exit $fail

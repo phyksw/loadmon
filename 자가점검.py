@@ -66,6 +66,7 @@ NEED = [
     "core/stage_state.py",
     "core/watch.py",
     "tools/check_l1.py",
+    "tools/check_trend.py",
     "core/programs.py",
     "core/details.py",
     "core/owner.py",

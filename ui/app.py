@@ -1385,6 +1385,47 @@ def mtime_clumps(d0="", d1="", top=3):
 MONTHLY_OVER_WEEKS = 16     # 이보다 긴 기간(주)은 달 단위로 묶는다 — 화면 칩 기준 1·3개월=주간, 6개월·1년·올해=월간
 
 
+_TREND_WH = {}     # 근무시간 실측 캐시 — {"sig": (기간·파일 mtime), "wh": {date: h}}
+
+
+def _trend_work_hours(_X, start, end):
+    r"""기간의 일별 근무시간(투입 실측) — mine 과 같은 호출(load_signals → day_work_hours).
+    /api/dash 는 자주 불리므로 원천 파일 mtime 이 그대로면 지난 답을 쓴다."""
+    import glob as _g
+    from datetime import date as _date
+    key = [start.isoformat(), end.isoformat(), _date.today().isoformat()]
+    for rel in ("files/files.csv", "files/recent.csv", "outlook/mail.csv", "outlook/calendar.csv",
+                "pc/pc_on.csv", "pc_spans.csv", "pc/pc_spans.csv", "files/git_commits.csv"):
+        for q in _paths_multi(rel):
+            try:
+                key.append((q, os.path.getmtime(q), os.path.getsize(q)))
+            except OSError:
+                continue
+    for q in _paths_multi("activity/activity_*.csv"):
+        try:
+            key.append((q, os.path.getmtime(q)))
+        except OSError:
+            continue
+    _ = _g
+    sig_key = tuple(map(str, key))
+    if _TREND_WH.get("sig") == sig_key:
+        return _TREND_WH["wh"]
+    cfg2 = _X.load_cfg()
+    try:
+        from mine import EXCLUDE as _EX0
+    except ImportError:
+        _EX0 = ()
+    exclude = sorted(set(_EX0) | {str(k) for k in _X.cfg_list(cfg2, "excludePathKeywords")
+                                  if str(k).strip()})
+    rows, meta = _X.load_signals(DATA, start, end, exclude, cfg2)
+    wh = {}
+    if rows:
+        wh, _hi = _X.day_work_hours(DATA, rows, start, end, cfg2,
+                                    file_times=meta.get("file_times"))
+    _TREND_WH.update(sig=sig_key, wh=dict(wh))
+    return wh
+
+
 def trend(d0="", d1="", tag="", info=None):
     r"""활동 추이 — 분석 기간을 덮고, **판정에 실제로 쓰인 신호**(report\signals_<기간>.csv)를 센다. LM24 의 기준.
     대시보드 MM 과 같은 축이고, 파일류는 하루 8건 상한으로 눌러 재동기화 몰림이 그래프를 지배하지 않는다.
@@ -1440,7 +1481,7 @@ def trend(d0="", d1="", tag="", info=None):
     # 'PC 를 안 켠 주'와 구분되지 않는다(이벤트 로그 롤오버로 과거 주는 구조적으로 기록이 없다).
     # raw_n = 상한·중복제거로 누르기 전의 원건수 — 막대와 실제 신호 수의 차이를 화면이 말할 수 있게.
     out = [{"label": lb, "pc_h": 0.0, "파일": 0, "메일": 0, "회의": 0, "커밋": 0, "팀즈": 0,
-            "작업창": 0, "pc_days": 0, "pc_wd": 0, "pc_rd": 0, "raw_n": 0}
+            "작업창": 0, "pc_days": 0, "pc_wd": 0, "pc_rd": 0, "wk_h": 0.0, "raw_n": 0}
            for lb in buckets]
     if info is not None:
         info["src"] = "none"
@@ -1532,6 +1573,21 @@ def trend(d0="", d1="", tag="", info=None):
                     seen.add(k)
                 out[i][k2] += 1
                 _n_raw_out += 1
+
+    # ── 근무시간(투입 실측) — 선의 **주 재료**. PC 이벤트 로그는 롤오버로 파괴되면 그 달이 영영
+    # 한 자릿수라(수번째 제보 "수십 시간인데 8h"), 선을 로그에 묶어 두는 한 같은 문제가 반복된다.
+    # 이 도구가 MM 을 계산할 때 이미 쓰는 실측(회의·산출물·메일·샘플러 세션 합집합 + PC 하한 —
+    # extract.day_work_hours, mine 과 동일 호출)을 그대로 쓴다. 파일·메일 흔적은 롤오버되지 않는다.
+    try:
+        import extract as _XW
+        _wh = _trend_work_hours(_XW, start, end)
+        for _dd, _h in _wh.items():
+            _i = key(_dd) if start <= _dd <= end else None
+            if _i is not None:
+                out[_i]["wk_h"] += float(_h or 0)
+    except Exception as _exw:  # noqa: BLE001 — 실측 실패는 선을 비울 뿐, 추이를 막지 않는다
+        if info is not None:
+            info["wk_note"] = f"근무시간 실측 실패({type(_exw).__name__}) — PC 가동 선만 표시"
 
     # PC 가동 시간 — 기간 안만. 본 PC + 추가PC 를 extract.pc_daily 로 합친다(구간 합집합 — 분석의 PC 하한과 같은 값).
     # 예전엔 본 PC 의 pc_on.csv 만 세어 추가 PC 의 가동이 이 선에서 통째로 빠졌다(제보: 'PC 가동시간 합산 안 됨').
@@ -2819,11 +2875,13 @@ function weekly(el,tr){
  const keys=[["파일","#2a78d6"],["작업창","#7a8a99"],["메일","#0e8c7a"],["회의","#e08a00"],["커밋","#6c4fb8"],["팀즈","#4a7f9e"]];
  const W=740,H=180,L=34,Rm=38,B=26,T=12,iw=(W-L-Rm)/Math.max(tr.length,1);
  const cmax=Math.max(...tr.map(w=>keys.reduce((a,[k])=>a+(Number(w[k])||0),0)),1);
- // 선 = 그 달의 **가동시간 합계**(누적된 일의 증거 — 이 카드의 의의). 평균·기록일은 점 툴팁의
- // 보조 정보로만 둔다. 기록이 일부만 남은 달은 실제보다 낮게 보인다 — 그 사실은 회색 '기록 없음'
- // 구간·빈 점(부분 기록)·아래 진단 줄(로그 커버리지)이 말한다. 값 자체는 실측 그대로 둔다.
- const hmax=Math.max(...tr.map(w=>Number(w.pc_h)||0),1);
- const lineVal=w=>Number(w.pc_h)||0;
+ // 주선(실선) = **근무시간(투입 실측)** 월 합계 — MM·로드율과 같은 산식(회의·산출물·메일·샘플러
+ // 세션 합집합 + PC 하한). PC 이벤트 로그가 롤오버로 파괴된 달도 파일·메일 흔적으로 수십 시간이
+ // 그대로 나온다(수번째 제보 "수십 시간인데 8h" 의 뿌리 교정). PC 가동 월 합계는 점선 보조선.
+ // 근무 실측이 전혀 없으면(수집만 한 PC·분석 전) 기존 PC 선이 주선이다(폴백).
+ const hasWk=tr.some(w=>Number(w.wk_h)>0);
+ const hmax=Math.max(...tr.map(w=>Math.max(Number(w.pc_h)||0,Number(w.wk_h)||0)),1);
+ const lineVal=w=>hasWk?(Number(w.wk_h)||0):(Number(w.pc_h)||0);
  let s=`<svg viewBox="0 0 ${W} ${H}" style="width:100%">`;
  for(let g=0;g<=3;g++){const y=T+(H-T-B)*g/3;
   s+=`<line x1="${L}" x2="${W-Rm}" y1="${y}" y2="${y}" stroke="#eef0f3"/>
@@ -2846,15 +2904,22 @@ function weekly(el,tr){
  // ③ PC 가동 선 — 기록 없는 버킷에서 끊는다(0 으로 그리면 선이 바닥에 붙어 'PC 가동이 적용 안 된다' 로 읽혔다)
  let seg=[];
  const flush=()=>{if(seg.length>1)s+=`<polyline points="${seg.join(" ")}" fill="none" stroke="#c8a06a" stroke-width="2"/>`;seg=[];};
- tr.forEach((w,i)=>{if(has(w))seg.push(`${(L+i*iw+iw/2).toFixed(1)},${(H-B-(H-T-B)*lineVal(w)/hmax).toFixed(1)}`);else flush();});
+ tr.forEach((w,i)=>{if(has(w)||(hasWk&&Number(w.wk_h)>0))seg.push(`${(L+i*iw+iw/2).toFixed(1)},${(H-B-(H-T-B)*lineVal(w)/hmax).toFixed(1)}`);else flush();});
  flush();
- tr.forEach((w,i)=>{if(has(w)){
+ if(hasWk){          // 보조 점선 = PC 가동 월 합계(진단용 — 주선과 같은 축)
+  let seg2=[];
+  const flush2=()=>{if(seg2.length>1)s+=`<polyline points="${seg2.join(" ")}" fill="none" stroke="#b9b0a0" stroke-width="1.4" stroke-dasharray="4 3" opacity="0.9"/>`;seg2=[];};
+  tr.forEach((w,i)=>{if(has(w))seg2.push(`${(L+i*iw+iw/2).toFixed(1)},${(H-B-(H-T-B)*(Number(w.pc_h)||0)/hmax).toFixed(1)}`);else flush2();});
+  flush2();
+ }
+ tr.forEach((w,i)=>{const _wk=Number(w.wk_h)||0;if(has(w)||(hasWk&&_wk>0)){
   const part=(w.pc_wd!==undefined&&w.pc_days<w.pc_wd);
   const _tot=Number(w.pc_h)||0, _rd=Number(w.pc_rd)||0, _avg=_rd>0?_tot/_rd:0;
-  s+=`<circle cx="${(L+i*iw+iw/2).toFixed(1)}" cy="${(H-B-(H-T-B)*_tot/hmax).toFixed(1)}" r="2.6" fill="${part?"#fff":"#c8a06a"}" stroke="#c8a06a" stroke-width="${part?1.4:0}"><title>${w.label} PC ${_tot.toFixed(1)}h${_rd?` · 기록 ${_rd}일 · 평균 ${_avg.toFixed(1)}h/일`:""}${w.pc_wd!==undefined?` (평일 ${w.pc_days}/${w.pc_wd})`:""}${_avg>=20?" · 종일 켜 둔 패턴(야간 포함)":""}</title></circle>`;}});
+  const _v=lineVal(w);
+  s+=`<circle cx="${(L+i*iw+iw/2).toFixed(1)}" cy="${(H-B-(H-T-B)*_v/hmax).toFixed(1)}" r="2.6" fill="${part?"#fff":"#c8a06a"}" stroke="#c8a06a" stroke-width="${part?1.4:0}"><title>${w.label}${hasWk?` 근무 ${_wk.toFixed(1)}h ·`:""} PC 가동 ${_tot.toFixed(1)}h${_rd?`(기록 ${_rd}일·평균 ${_avg.toFixed(1)}h/일)`:""}${w.pc_wd!==undefined?` (평일 ${w.pc_days}/${w.pc_wd})`:""}${_avg>=20?" · PC 종일 켜 둠(야간 포함)":""}</title></circle>`;}});
  el.innerHTML=s+"</svg>";
  $("wleg").innerHTML=keys.map(([k,c])=>`<span><span class="dot" style="background:${c}"></span>${k}</span>`).join("")+
-  '<span><span class="dot" style="background:#c8a06a"></span>PC 가동(h·오른쪽 축)</span>'+
+  '<span><span class="dot" style="background:#c8a06a"></span>근무시간(h·오른쪽 축 실선) · PC 가동(점선)</span>'+
   '<span><span class="dot" style="background:#f2f3f5;border:1px solid #d7dbe0"></span>PC 기록 없음</span>';
 }
 // 409 의 사유(hint)를 그대로 보여 준다 — '이미 실행 중' 한 마디로는 보고서 굽는 중인지 알 수 없다
@@ -3097,7 +3162,7 @@ async function refresh(){
   if(wt)wt.textContent=(ti0.gran==="month"?"월간":"주간")+" 활동 추이";
   if(ws)ws.textContent=(per0[0]?`${per0[0]} ~ ${per0[1]||""} · `:"")
    +(ti0.gran==="month"?"막대 하나 = 한 달":"막대 하나 = 한 주")
-   +(d.trend_src==="signals"?" · 막대 = 판정에 쓰인 신호 건수(MM 과 같은 축)":" · 막대 = 수집된 흔적 건수")+" · 선 = PC 가동시간(월 합계)";}
+   +(d.trend_src==="signals"?" · 막대 = 판정에 쓰인 신호 건수(MM 과 같은 축)":" · 막대 = 수집된 흔적 건수")+" · 실선 = 근무시간(투입 실측·월 합계) · 점선 = PC 가동";}
  // 메일·일정이 기간의 일부 달만 수집된 상태(Outlook 시간 예산) — 앞 달의 메일·회의 막대가 비어 보이는 이유를 적는다
  const wn=$("wnote");
  if(wn){const mc=d.mail_coverage||null;const notes=[];
@@ -3130,6 +3195,7 @@ async function refresh(){
     if(pd.dropped) notes.push(`⚠ PC 기록 파일에서 <b>읽지 못한 행 ${pd.dropped}개</b>가 있었습니다(이동 중 잘렸을 수 있음) — 그 파일만 빼고 나머지로 그렸습니다. [분석 실행]으로 다시 수집하면 복구됩니다.`);
     if(pd.warn) notes.push(`⚠ ${esc(pd.warn)} — 롤오버된 과거는 되살릴 수 없지만, 브라우저 사용기록 힌트와 창 샘플러가 <b>앞으로의 구간</b>을 메웁니다(샘플러 등록이 없으면 [분석 실행]이 자동으로 1회 등록합니다 · config.autoRegisterSampler).`);
    }}
+  if(ti.wk_note) notes.push(`⚠ ${esc(ti.wk_note)}`);
   if(ti.raw_outside_n>0&&(ti.sig_span||[]).length===2)
    notes.push(`판정 기간(${esc(ti.sig_span[0])} ~ ${esc(ti.sig_span[1])}) <b>밖</b>의 막대 ${Number(ti.raw_outside_n).toLocaleString()}건은 <b>수집 흔적</b> 기준입니다 — 집계기간 전체를 보이기 위해 판정 전 달도 함께 그립니다(그 달을 판정 축으로 보려면 그 기간으로 [분석 실행]).`);
   if(ti.pc_note) notes.push(`⚠ ${esc(ti.pc_note)}`);
@@ -4143,7 +4209,7 @@ class H(BaseHTTPRequestHandler):
                              "trend_info": {k: tinfo.get(k) for k in
                                             ("gran", "pc_note", "pc_buckets", "pc_buckets_all", "pc_from", "capped",
                                              "period", "roots", "signals_n", "pc_days_total", "pc_diag",
-                                             "raw_outside_n", "sig_span")},
+                                             "raw_outside_n", "sig_span", "wk_note")},
                              "period": per,
                              "judged": judged, "last_run": lastrun,
                              # 판정 건수/대상 — 0 이면 '단계는 성공인데 왕복이 전부 실패' 를 화면이 구분한다
