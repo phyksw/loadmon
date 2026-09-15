@@ -550,3 +550,7 @@ if ($nTime -gt 0 -and $nSent -eq 0 -and $added -gt 0 -and $selfCfgN -eq 0) {
 if ($RawFile) { Write-Host ('               (재생 모드 - 결과는 ' + $outDir + ' 에만 기록, 실데이터는 건드리지 않음)') }
 Write-Host '               (열려 있는 대화의 화면 렌더분만 - 상시 수집은 Start-TeamsSampler.ps1 을 켜두세요)'
 Write-Host '               (날짜 표기가 없는 줄은 수집일 날짜로 추정 - 같은 줄이 7일 안에 다시 보이면 넣지 않음)'
+# 종료코드로 '무엇이 됐는지' 를 알린다 - 0: 새 줄을 얻었다 / 4: 읽었지만 새 줄 0건(앱이 꺼졌거나 렌더된 것이 없음).
+# 예전에는 언제나 0 이라 run.py 가 '성공' 으로 기록했고, 앱 경로를 먼저 시도할 수 없었다(웹 탭이 먼저 떴다).
+if ($added -le 0) { exit 4 }
+exit 0

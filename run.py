@@ -788,6 +788,15 @@ def main():
         # 앱이 꺼져 있어도 되고, 창 읽기(UIA)처럼 화면에 그려진 부분만 긁는 것이 아니라 문서 구조를
         # 읽으므로 창 크기·테마·팀즈 버전에 좌우되지 않는다(PC 마다 0건이던 제보의 원인).
         # 로그인이 필요하면 2로 끝나 아래 경로로 이어진다 — 그 안내는 수집기가 화면에 남긴다.
+        # 앱 우선(config.preferApp, 기본 true) — 켜져 있는 팀즈 **앱 창**을 먼저 읽는다. 새 줄을 얻으면
+        # 웹·Copilot 경로를 건너뛰어 Edge 탭이 아예 뜨지 않는다(제보: "팀즈·아웃룩은 최대한 앱을 쓰라",
+        # "창이 여러 개 뜬다"). 앱이 꺼져 있거나 렌더된 것이 없으면 수집기가 종료코드 4 를 주고 웹으로 넘어간다.
+        if not teams_ok and "--no-teams" not in sys.argv and c.get("preferApp", True):
+            teams_ok = step("팀즈 채팅 (앱 창 읽기 — 켜져 있는 대화)",
+                            ps + [os.path.join(col, "Get-TeamsWindow.ps1")], 120)
+            if not teams_ok:
+                print("   앱 창에서 새 줄을 얻지 못했습니다 — 웹 경로로 이어서 시도합니다"
+                      " (앱을 켜 두고 대화를 열어 두면 앱 경로만으로 끝납니다)")
         if not teams_ok and "--no-teams" not in sys.argv and c.get("teamsWeb", True):
             teams_ok = step("팀즈 채팅 (웹 — 전용 Edge, 앱이 꺼져 있어도)",
                             [sys.executable, os.path.join(col, "Get-TeamsWeb.py"),
@@ -806,7 +815,8 @@ def main():
                              "--from", d0, "--to", d1],
                             300 + 600 * max(1, ((date.fromisoformat(d1)
                                                  - date.fromisoformat(d0)).days // 30 + 1)))
-        if not teams_ok and "--no-teams" not in sys.argv:
+        if not teams_ok and "--no-teams" not in sys.argv and not c.get("preferApp", True):
+            # preferApp 이면 위에서 이미 앱 창을 읽었다 — 두 번 읽지 않는다
             step("팀즈 채팅 (열린 창 읽기 — 앱이 켜져 있으면)",
                  ps + [os.path.join(col, "Get-TeamsWindow.ps1")], 120)
 
