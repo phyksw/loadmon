@@ -1988,6 +1988,8 @@ def pc_coverage(data_dir, d0, d1):
         except (OSError, ValueError, TypeError, AttributeError):
             pass
     out["dropped"] = sum(n for p, n in READ_DROPPED.items() if "pc" in p.replace(chr(92), "/"))
+    out["hours"] = round(sum(r["hours"] for r in out["roots"]), 1)
+    out["days"] = max([r["days"] for r in out["roots"]] or [0])
     return out
 
 

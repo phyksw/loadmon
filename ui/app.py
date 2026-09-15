@@ -31,7 +31,7 @@ from progress import parse as parse_progress  # noqa: E402  (core 경로 등록 
 REPORT = os.path.join(ROOT, "report")
 DATA = os.path.join(ROOT, "data")
 NO_WIN = 0x08000000
-VERSION = "v24.0.15"
+VERSION = "v24.0.16"
 LOCK = threading.Lock()
 FREEZE_LOCK = threading.Lock()       # [보고서 만들기] 직렬화 — JOB 과 별개(사본에 '실행 중'이 굳지 않게)
 JOB = {"running": False, "log": [], "step": "", "started": 0.0, "pid": 0,
@@ -3085,7 +3085,7 @@ async function refresh(){
      +(pd.generated?` · 마지막 수집 ${esc(pd.generated)}`:"")
      +(pd.dropped?` · <span style="color:#c0122f">읽지 못한 행 ${pd.dropped}개</span>`:"")
      +((pd.roots||[]).length>1?" — 합계는 구간 합집합이라 폴더별 단순 합과 다릅니다(같은 시간대 중복 제거)":""));
-    if(pd.warn) notes.push(`⚠ ${esc(pd.warn)} — 브라우저 사용기록 힌트(Get-PcOnHints)와 창 샘플러(LoadMonitor24-샘플러등록.bat)가 이 구간을 메웁니다.`);
+    if(pd.warn) notes.push(`⚠ ${esc(pd.warn)} — 롤오버된 과거는 되살릴 수 없지만, 브라우저 사용기록 힌트와 창 샘플러가 <b>앞으로의 구간</b>을 메웁니다(샘플러 등록이 없으면 [분석 실행]이 자동으로 1회 등록합니다 · config.autoRegisterSampler).`);
    }}
   if(ti.pc_note) notes.push(`⚠ ${esc(ti.pc_note)}`);
   if(ti.capped>0) notes.push(`파일 막대는 하루 8건까지만 셉니다 — 이 기간에 <b>${Number(ti.capped).toLocaleString()}건</b>이 상한에 눌렸습니다(공유폴더 재동기화가 그래프를 지배하지 않게 하는 장치 · 실제 신호 수는 [업무 리뷰] 탭).`);
@@ -4073,7 +4073,7 @@ class H(BaseHTTPRequestHandler):
                              # 주/월 단위, 추가PC 합산 실패 사유. 화면이 '0h' 와 '기록 없음' 을 구분해 말한다.
                              "trend_info": {k: tinfo.get(k) for k in
                                             ("gran", "pc_note", "pc_buckets", "pc_buckets_all", "pc_from", "capped",
-                                             "period", "roots", "signals_n", "pc_days_total")},
+                                             "period", "roots", "signals_n", "pc_days_total", "pc_diag")},
                              "period": per,
                              "judged": judged, "last_run": lastrun,
                              # 판정 건수/대상 — 0 이면 '단계는 성공인데 왕복이 전부 실패' 를 화면이 구분한다
