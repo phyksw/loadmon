@@ -17,6 +17,7 @@ import io
 import json
 import os
 import subprocess
+import csv
 import sys
 import time
 from datetime import date
@@ -652,19 +653,27 @@ def pc_history_gap(data, d0, d1, fresh_hours=None):
     on_p = os.path.join(pcdir, "pc_on.csv")
     if not os.path.exists(on_p) or os.path.getsize(on_p) < 40:
         return True, "저장된 PC 가동 기록이 없습니다"
-    src = {}
-    try:
-        with open(os.path.join(pcdir, "pc_source.json"), encoding="utf-8-sig") as f:
-            src = json.load(f) or {}
-    except (OSError, ValueError):
-        src = {}
-    rng = src.get("range") if isinstance(src.get("range"), list) else None
-    if not rng or len(rng) < 2:
-        return True, "저장된 기록의 수집 범위를 알 수 없습니다"
-    if str(rng[0]) > str(d0):
-        return True, f"저장된 기록은 {rng[0]} 부터입니다 (요청 {d0})"
-    if str(rng[1]) < str(d1):
-        return True, f"저장된 기록은 {rng[1]} 까지입니다 (요청 {d1})"
+    # v3: 판정 근거를 pc_source.json 의 range(파생 캐시의 자기 신고)에서 **원장 실측**으로.
+    # v2 는 짧은 기간 수집이 range 를 좁혀 써서 '기간 못 덮음' 오판 → 12h 마다 파괴적 재작성이
+    # 반복됐다(구조 감사 실측). v3 재수집은 append 전용이라 잦아도 해가 없지만, 판정 자체를
+    # 실제 데이터로 한다. 요청 시작이 원장 첫 기록보다 훨씬 앞서는 것은 롤오버로 못 되살리는
+    # 과거라 재수집 사유가 아니다 — 끝(최근) 쪽만 본다.
+    dates = []
+    for f2 in (os.path.join(pcdir, "pc_on.csv"),):
+        try:
+            with open(f2, encoding="utf-8-sig", errors="replace", newline="") as fh:
+                dates = sorted({(r.get("date") or "")[:10] for r in csv.DictReader(fh)
+                                if (r.get("date") or "")[:10]})
+        except (OSError, csv.Error):
+            dates = []
+    if not dates:
+        return True, "저장된 PC 가동 기록이 비어 있습니다"
+    if dates[-1] < d1:
+        return True, f"저장된 기록은 {dates[-1]} 까지입니다 (요청 {d1})"
+    if dates[0] > d0:
+        # 시작 쪽 확장 — 이벤트 로그는 롤오버로 못 닿아도 브라우저 힌트(≈90일)·샘플러 보관본은
+        # 아직 닿을 수 있다. v3 수집은 append 전용이라 다시 돌아도 잃을 것이 없다.
+        return True, f"저장된 기록은 {dates[0]} 부터입니다 (요청 {d0} — 힌트·샘플러가 닿는 만큼 보강)"
     if fresh_hours > 0:
         age_h = (time.time() - os.path.getmtime(on_p)) / 3600.0
         if age_h > fresh_hours:
@@ -680,6 +689,30 @@ def collect_pc_only(data, d0, d1, ps, col, why=""):
     step("PC 가동 보강 (브라우저 방문 시각 — URL 미수집)",
          [sys.executable, os.path.join(col, "Get-PcOnHints.py"), "--from", d0, "--to", d1], 240)
     return ok1
+
+
+def migrate_extra_pc_ledgers(data):
+    r"""추가PC\<이름>\pc 를 v3 원장으로 1회 이행한다(멱등 — 앵커가 생기면 다시 안 한다).
+    이행되면 그 폴더도 '캐시 ≡ 파생' 이 되어 본 PC 와 같은 규칙으로 읽힌다. 남의 폴더라
+    앵커는 그 폴더 자신의 첫 물리 이벤트로만 잡는다(--foreign)."""
+    base = os.path.join(data, "추가PC")
+    if not os.path.isdir(base):
+        return
+    try:
+        sys.path.insert(0, os.path.join(ROOT, "core"))
+        import pc_ledger
+    except ImportError:
+        return
+    for name in sorted(os.listdir(base)):
+        pcdir = os.path.join(base, name, "pc")
+        if not os.path.isdir(pcdir) or os.path.exists(os.path.join(pcdir, "pc_anchor.json")):
+            continue
+        try:
+            r = pc_ledger.ingest(pcdir, own_pc=False)
+            if r["migrated"] or r["days"]:
+                print("[원장] 추가PC" + chr(92) + f"{name}: 구판 기록 이행 {r['migrated']}건 · 파생 {r['days']}일")
+        except (OSError, ValueError) as e:
+            print("[원장] 추가PC" + chr(92) + f"{name}: 이행 보류({type(e).__name__}) — 기존 기록 그대로")
 
 
 def own_data_empty(data):
@@ -829,6 +862,7 @@ def main():
         _skip = False
     if not _skip:
         archive_other_pc(data)
+        migrate_extra_pc_ledgers(data)     # 추가PC 보관본 1회 이행(v3 원장·멱등) — 실패해도 계속
         ensure_sampler(c, data, col)       # 멈춘 창 샘플러 재기동 (있던 PC 만)
         # 등록이 아예 없으면 **자동으로 1회 등록**한다 — 이벤트 로그는 롤오버되지만(이 PC 실측:
         # 199일 중 90일만 남음) 샘플러가 돌면 그 뒤 구간은 로그와 무관하게 pc_spans 에 쌓인다.

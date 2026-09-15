@@ -1,7 +1,7 @@
 LoadMonitor24 필수 파일 목록 - 복사 시 전부 있어야 합니다.
 (data/ report/ teamdata/ 는 복사 금지 - 개인정보)
 
-총 73개
+총 74개
 
 LoadMonitor24-UI.bat                                   2,444 B  ef09c6ae
 LoadMonitor24.bat                                      3,554 B  f030200d
@@ -30,8 +30,8 @@ mine.py                                               17,836 B  c751c51d
 refine.py                                             50,078 B  167416d2
 ruff.toml                                              1,004 B  47a31613
 FILES.txt                                                (이 파일)
-run.py                                                71,229 B  279f5ceb
-자가점검.py                                                9,011 B  9b3fcd58
+run.py                                                73,454 B  56b235bd
+자가점검.py                                                9,039 B  c1a49292
 collect/Add-WorkLog.ps1                                1,771 B  8a921980
 collect/Get-FileActivity.ps1                          48,656 B  cfab595d
 collect/Get-GitActivity.py                            29,162 B  0facda4f
@@ -40,8 +40,8 @@ collect/Get-OutlookData.ps1                           50,298 B  42624bbe
 collect/Get-OutlookIndex.ps1                          21,472 B  1f2071bb
 collect/Get-MailViaCopilot.py                         28,363 B  022c7e7d
 collect/Get-OutlookWeb.py                             42,011 B  801c6461
-collect/Get-PcOnHistory.ps1                           23,965 B  2f77e550
-collect/Get-PcOnHints.py                              21,195 B  5474c56f
+collect/Get-PcOnHistory.ps1                           21,282 B  92b32604
+collect/Get-PcOnHints.py                              13,771 B  041802a4
 collect/Start-TeamsSampler.ps1                         2,201 B  49b71b44
 collect/Get-RecentFiles.ps1                           22,050 B  05139be4
 collect/Get-TeamsChats.py                             17,754 B  e868c913
@@ -55,7 +55,8 @@ config/config.json                                    42,321 B  6a787cc0
 config/config.default.json                            42,321 B  6a787cc0
 config/agentic_tasks.json                              4,426 B  2c9e5bb1
 core/board.py                                         13,778 B  64f3c7f3
-core/extract.py                                      223,788 B  783ecde0
+core/extract.py                                      224,478 B  97b69a8c
+core/pc_ledger.py                                     16,063 B  30613824
 core/programs.py                                      15,778 B  1f1e142f
 core/details.py                                       74,324 B  55d5c042
 core/owner.py                                          1,488 B  1f1dc049
@@ -64,15 +65,15 @@ core/projmap.py                                        7,133 B  cca7d2cb
 docs/설정가이드.md                                         83,463 B  f7e14d9e
 docs/사용안내.html                                       272,444 B  3cea5b8b
 tools/copilot_auto.py                                 79,685 B  ddd937eb
-tools/pc_hours_compare.py                             21,288 B  73150c99
+tools/pc_hours_compare.py                             21,674 B  c43ff972
 tools/lm20_ref/Get-PcOnHistory.ps1.txt                 9,319 B  5ce7ef54
 tools/lm20_ref/Get-PcOnHints.py.txt                    9,545 B  7d4dae30
 tools/trace_summary.py                                 6,916 B  b0d0d60e
 tools/Get-EmbeddedPython.ps1                           2,472 B  b0a213eb
 tools/check_page_js.py                                 8,818 B  f6d3b95b
 tools/lint.ps1                                         7,914 B  0c6f51ac
-tools/Make-Package.ps1                                10,733 B  f8e333a9
+tools/Make-Package.ps1                                10,739 B  3b01fdf5
 tools/Make-MovePack.py                                12,103 B  4132d2e7
 tools/Prepare-Move.ps1                                26,116 B  67389835
 tools/update_files.py                                  4,530 B  33b4a677
-ui/app.py                                            363,494 B  ae163730
+ui/app.py                                            363,908 B  df38cdc5

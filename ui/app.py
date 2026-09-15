@@ -31,7 +31,7 @@ from progress import parse as parse_progress  # noqa: E402  (core 경로 등록 
 REPORT = os.path.join(ROOT, "report")
 DATA = os.path.join(ROOT, "data")
 NO_WIN = 0x08000000
-VERSION = "v24.19"
+VERSION = "v3.0"          # lm24-v3 — 구조 재설계 계열(원장 구조·단일 실행기·어휘 단일화)
 LOCK = threading.Lock()
 FREEZE_LOCK = threading.Lock()       # [보고서 만들기] 직렬화 — JOB 과 별개(사본에 '실행 중'이 굳지 않게)
 JOB = {"running": False, "log": [], "step": "", "started": 0.0, "pid": 0,
@@ -1500,25 +1500,28 @@ def trend(d0="", d1="", tag="", info=None):
             i = key(dd) if start <= dd <= end else None
             if i is not None:
                 out[i]["pc_h"] += float(on_h or 0)
-    except Exception as ex:  # noqa: BLE001 — 병합 실패 시 예전 방식(본 PC 만)
-        # 조용히 '본 PC 만' 으로 떨어지면 화면에는 아무 표시가 없어 원인을 못 찾는다(실측:
-        # csv.Error 가 extract 의 except OSError 를 통과해 여기까지 샌다). 이유를 남긴다.
-        pc_note = f"추가 PC 구간 합산 실패({type(ex).__name__}) — pc_on 일별 기록만으로 표시합니다"
+    except Exception as ex:  # noqa: BLE001 — 병합 실패 시 **루트 단위 부분 성공**
+        # v2 폴백은 루트 간 행-max 라 하루 두 세션(데스크톱 오전 + 노트북 오후)이 큰 쪽 하나로
+        # 붕괴했고, 198h 달이 하루치로 꺼졌다(구조 감사 실측). v3: 깨진 루트만 빼고 남은 루트를
+        # 같은 함수(pc_daily)로 계산한다 — 폴백에서도 읽기 규칙은 한 벌이다.
         pcd = {}
-        _byd = {}
-        for r in _rows_multi("pc/pc_on.csv"):   # 본 PC + 추가PC 의 일별 행 — 같은 날은 큰 쪽(더하면 24h 를 넘는다)
-            d2 = _d(r.get("date"))
-            if d2 is None or not (start <= d2 <= end):
-                continue
+        _ok_roots, _bad_roots = [], []
+        for _r1 in _data_roots():
             try:
-                _byd[d2] = max(_byd.get(d2, 0.0), float(r.get("on_hours") or 0))
-            except (TypeError, ValueError):
+                _pcd1 = _X.pc_daily(_r1 if os.path.isdir(os.path.join(_r1, "pc")) else _r1,
+                                    start, end)[0]
+            except Exception:  # noqa: BLE001
+                _bad_roots.append(os.path.basename(os.path.normpath(_r1)) or "본 PC")
                 continue
-        for d2, on_h in _byd.items():
-            i = key(d2)
-            if i is not None:
-                out[i]["pc_h"] += on_h
-                pcd[d2] = True
+            _ok_roots.append(_r1)
+            for dd2, (on2, _n2, _f2, _l2) in _pcd1.items():
+                i = key(dd2) if start <= dd2 <= end else None
+                if i is not None:
+                    out[i]["pc_h"] += float(on2 or 0)
+                    pcd[dd2] = True
+        pc_note = (f"PC 기록 일부를 읽지 못했습니다({type(ex).__name__}"
+                   + (" · 제외: " + ", ".join(_bad_roots[:3]) if _bad_roots else "")
+                   + ") — 읽힌 폴더만 합산했습니다")
     # 버킷마다 '평일 수'와 'PC 기록이 있는 평일 수' — 기록 없음과 0h 를 화면이 구분하게.
     dd = start
     while dd <= end:

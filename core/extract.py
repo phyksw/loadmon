@@ -2002,21 +2002,32 @@ def pc_coverage(data_dir, d0, d1):
     for root in roots:
         name = "본 PC" if os.path.abspath(root) == base else os.path.basename(os.path.normpath(root))
         rows = _read(os.path.join(root, "pc", "pc_on.csv"))
+        # pc_daily 와 **같은 유령 필터** — v2 에서는 이 진단만 필터 없이 원값 합을 내서, 같은
+        # 폴더가 추이 8h·진단 618h 로 갈렸다(v3 구조 감사 실측 77배). v3 루트(pc_anchor.json
+        # 있음)는 쓰기 시점에 이미 걸러져 필터가 무의미하고, 구판 루트만 읽기 안전망을 태운다.
+        _sp_rows = _read(os.path.join(root, "pc_spans.csv")) + _read(os.path.join(root, "pc", "pc_spans.csv"))
+        if os.path.exists(os.path.join(root, "pc", "pc_anchor.json")):
+            def _ph(dd):
+                return False
+        else:
+            _evd, _fe = _evt_span_dates(_sp_rows, d0, d1)
+
+            def _ph(dd, _fe=_fe, _evd=_evd):
+                return _fe is not None and dd < _fe and dd not in _evd
         hrs, days = 0.0, set()
         for r in rows:
             try:
                 d = datetime.strptime((r.get("date") or "")[:10], "%Y-%m-%d").date()
             except (ValueError, TypeError):
                 continue
-            if not (d0 <= d <= d1):
+            if not (d0 <= d <= d1) or _ph(d):
                 continue
             days.add(d)
             try:
                 hrs += float(r.get("on_hours") or 0)
             except (TypeError, ValueError):
                 pass
-        sp = _pc_spans_rows(_read(os.path.join(root, "pc_spans.csv"))
-                            + _read(os.path.join(root, "pc", "pc_spans.csv")), d0, d1)
+        sp = _pc_spans_rows(_sp_rows, d0, d1)
         n_sp = sum(len(v) for v in sp.values())
         out["roots"].append({"name": name, "hours": round(hrs, 1), "days": len(days),
                              "rows": len(rows), "spans": n_sp})

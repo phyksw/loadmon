@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """자가점검 — 이 폴더에 필수 파일이 다 있는지 확인. python 자가점검.py"""
 import io
 import json
@@ -61,6 +61,7 @@ NEED = [
     "config/agentic_tasks.json",
     "core/board.py",
     "core/extract.py",
+    "core/pc_ledger.py",
     "core/programs.py",
     "core/details.py",
     "core/owner.py",

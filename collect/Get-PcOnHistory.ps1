@@ -16,6 +16,7 @@
 param(
     [string]$From = '',
     [string]$To = '',
+    [string]$Python = '',     # 원장 반영에 쓸 파이썬(비우면 <root>\python\python.exe -> PATH 순)
     [int]$Days = 120,
     [string]$OutDir = '',        # 출력 폴더 대체 (기본 ..\data\pc) - 테스트용
     [string]$EventsCsv = '',     # 이벤트 로그 대신 읽을 CSV (t,kind[,src]) - 테스트용
@@ -248,88 +249,41 @@ foreach ($k in ($daily.Keys | Sort-Object)) {
     $rows.Add(('{0},{1},{2},{3},{4},{5}' -f $k, [math]::Round($d.on,2), `
         $d.first.ToString('HH:mm'), $lastStr, [math]::Round($d.night,2), $we))
 }
-# ── 지난 실행의 기록 보존 - 이 실행이 닿지 못한 날은 예전 행·구간을 그대로 둔다.
-# System 로그는 롤오버되므로 매 실행 [-From, 도달 시작) 구간에는 이벤트가 없다. 예전에는 파일을 통째로 새로 써서
-# 1~5월에 모아 둔 기록이 6월 재실행에서 사라지고, 화면의 PC 가동 선이 '이번 실행이 닿은 범위' 로 매번 줄었다(감사 실측).
-# 규칙: 이번 도달 창 [reach, until) 안은 이번 결과가 진실(행이 없는 날 = 안 켠 날), 그 밖의 날은 예전 행·구간 유지.
-#       도달 시작 = 첫 이벤트 시각(이벤트가 없으면 현재 부팅 시각, 그것도 없으면 기간 끝 = 아무것도 덮지 않음).
+# ── v3 원장(ledger) 구조 — 이 수집기는 **병합하지 않는다**.
+#    관측(이번 실행의 구간)만 pc_events_new.csv 로 쓰고, 원장 반영·pc_on 캐시 재생성은
+#    core\pc_ledger.py --ingest 한 곳이 한다(원장은 추가 전용 — 지난 기록을 지울 수 없다).
+#    v2 까지 여기 있던 '도달 창 안 재작성'은 힌트의 no-shrink 래칫과 정면 모순이라
+#    실행 한 번이 저장된 704.6h 중 593.5h 를 지울 수 있었다(v3 구조 감사 합성 실측).
 if ($sorted.Count -gt 0 -and -not $fallbackBoot) { $reachT = $sorted[0].t }
 elseif ($fallbackBoot -and $bootNow) { $reachT = $bootNow }
 else { $reachT = $until }
 if ($reachT -lt $since) { $reachT = $since }
 $pcOnPath = Join-Path $OutDir 'pc_on.csv'
 $spansPath = Join-Path $OutDir 'pc_spans.csv'
-$keptDays = 0; $keptSpans = 0; $replacedDays = 0
-$newDates = @{}
-foreach ($k in $daily.Keys) { $newDates[$k] = $true }
-$keepRows = New-Object System.Collections.Generic.List[string]
-$replaceRows = @{}
-if (Test-Path $pcOnPath) {
-    $oldRows = @()
-    try { $oldRows = @(Import-Csv -LiteralPath $pcOnPath -Encoding UTF8) } catch { $oldRows = @() }
-    foreach ($o in $oldRows) {
-        $ds = [string]$o.date
-        if (-not $ds) { continue }
-        try { $dd = [datetime]::ParseExact($ds, 'yyyy-MM-dd', $null) } catch { continue }
-        if ($newDates.ContainsKey($ds)) {
-            # 도달 시작일은 로그 앞부분이 롤오버돼 이번 행이 **부분**이다 - 예전 행이 더 크면 예전 행을 쓴다
-            # (예전엔 부분 행이 온전한 행을 덮어 매 실행 하루씩 깎였다 - 감사 실측 8.43h -> 5.24h)
-            if ($dd -eq $reachT.Date) {
-                $oldOn = 0.0
-                [void][double]::TryParse([string]$o.on_hours, [System.Globalization.NumberStyles]::Float, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$oldOn)
-                if ($oldOn -gt ([double]$daily[$ds].on + 0.005)) {
-                    $replaceRows[$ds] = ('{0},{1},{2},{3},{4},{5}' -f $ds, [string]$o.on_hours, [string]$o.first_on, [string]$o.last_off, [string]$o.night_hours, [string]$o.weekend)
-                    $replacedDays++
-                }
-            }
-            continue
-        }
-        # 도달 시작일 당일은 이번 결과에 그 날 행이 없을 때만(첫 이벤트가 '끔' 이면 구간이 안 생긴다) 예전 행을 둔다
-        if ($dd -le $reachT.Date -or $dd -ge $until.Date) {
-            $keepRows.Add(('{0},{1},{2},{3},{4},{5}' -f $ds, [string]$o.on_hours, [string]$o.first_on, [string]$o.last_off, [string]$o.night_hours, [string]$o.weekend))
-            $keptDays++
-        }
-    }
-}
-for ($i = 1; $i -lt $rows.Count; $i++) {
-    $k10 = $rows[$i].Substring(0, [math]::Min(10, $rows[$i].Length))
-    if ($replaceRows.ContainsKey($k10)) { $rows[$i] = $replaceRows[$k10] }
-}
-if ($keepRows.Count -gt 0) {
-    $hdr = $rows[0]
-    $body = @(@($rows | Select-Object -Skip 1) + @($keepRows) | Sort-Object)   # 'yyyy-MM-dd,' 로 시작 - 문자열 정렬 = 날짜 정렬
-    $rows = New-Object System.Collections.Generic.List[string]
-    $rows.Add($hdr); foreach ($r in $body) { $rows.Add($r) }
-    Write-Host ("[pc-on] 지난 기록 보존: {0}일 (이번 실행의 도달 창 {1} ~ {2} 밖)" -f $keptDays, $reachT.ToString('yyyy-MM-dd HH:mm'), $until.AddDays(-1).ToString('yyyy-MM-dd'))
-}
-if ($replacedDays -gt 0) {
-    Write-Host ("[pc-on] 도달 시작일 {0}일: 로그 앞부분이 롤오버돼 이번 행이 부분이라 예전 행을 유지했습니다" -f $replacedDays)
-}
-[System.IO.File]::WriteAllLines($pcOnPath, $rows, [System.Text.Encoding]::UTF8)
-
-# 구간 원본 - extract 가 '언제 켜져 있었는지' 를 직접 쓴다(점심·회의 시간과의 겹침 계산). Get-PcOnHints 가 힌트 구간(src=hint)을 보탠다.
-# 예전 구간도 같은 규칙으로 보존한다 - 도달 시작 전에 시작한 구간은 남기되 도달 시작을 넘는 꼬리는 자른다(이번 구간과 안 겹치게).
+$keptDays = 0; $keptSpans = 0; $replacedDays = 0    # v3: 보존 특례 소멸 — 진단 JSON 호환용 0
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-$allSpans = New-Object System.Collections.Generic.List[object]
-foreach ($s in $spans) { $allSpans.Add([pscustomobject]@{ a = $s.a; b = $s.b; src = $s.src }) }
-if (Test-Path $spansPath) {
-    $oldSpans = @()
-    try { $oldSpans = @(Import-Csv -LiteralPath $spansPath -Encoding UTF8) } catch { $oldSpans = @() }
-    foreach ($o in $oldSpans) {
-        try { $a = Parse-Dt ([string]$o.start); $b = Parse-Dt ([string]$o.end) } catch { continue }
-        $osrc = if ($o.src) { [string]$o.src } else { 'event' }
-        if ($a -ge $until) {
-            if ($b -gt $a) { $allSpans.Add([pscustomobject]@{ a = $a; b = $b; src = $osrc }); $keptSpans++ }
-        } elseif ($a -lt $reachT) {
-            if ($b -gt $reachT) { $b = $reachT }
-            if ($b -gt $a) { $allSpans.Add([pscustomobject]@{ a = $a; b = $b; src = $osrc }); $keptSpans++ }
-        }
-    }
+$evPath = Join-Path $OutDir 'pc_events_new.csv'
+$erow = New-Object System.Collections.Generic.List[string]
+$erow.Add('start,end,src')
+foreach ($s in @($spans | Sort-Object a)) { $erow.Add(('{0},{1},{2}' -f $s.a.ToString('yyyy-MM-dd HH:mm:ss'), $s.b.ToString('yyyy-MM-dd HH:mm:ss'), $s.src)) }
+[System.IO.File]::WriteAllLines($evPath, $erow, $utf8NoBom)
+$ledger = Join-Path $root 'core\pc_ledger.py'
+$py = if ($Python) { $Python } else { Join-Path $root 'python\python.exe' }
+if (-not (Test-Path $py)) { $pyCmd = Get-Command python -ErrorAction SilentlyContinue; if ($pyCmd) { $py = $pyCmd.Source } }
+if ((Test-Path $py) -and (Test-Path $ledger)) {
+    $env:PYTHONIOENCODING = 'utf-8'
+    & $py $ledger --ingest $OutDir 2>&1 | ForEach-Object { Write-Host $_ }
+} elseif (-not (Test-Path $pcOnPath) -and -not (Test-Path $spansPath)) {
+    # 파이썬이 없는 임시 트리(수집기 단독 시험) — **빈 폴더에만** 이번 관측으로 새로 쓴다.
+    [System.IO.File]::WriteAllLines($pcOnPath, $rows, [System.Text.Encoding]::UTF8)
+    $srows = New-Object System.Collections.Generic.List[string]
+    $srows.Add('start,end,src')
+    foreach ($s in @($spans | Sort-Object a)) { $srows.Add(('{0},{1},{2}' -f $s.a.ToString('yyyy-MM-dd HH:mm:ss'), $s.b.ToString('yyyy-MM-dd HH:mm:ss'), $s.src)) }
+    [System.IO.File]::WriteAllLines($spansPath, $srows, $utf8NoBom)
+    Write-Host '[pc-on] 파이썬 없음 — 빈 폴더라 이번 관측만 새로 썼습니다(원장 반영은 본 트리 실행에서)'
+} else {
+    Write-Host '[pc-on] 주의: python 또는 core\pc_ledger.py 가 없어 원장 반영을 보류했습니다 — 기존 기록은 건드리지 않습니다'
 }
-$srows = New-Object System.Collections.Generic.List[string]
-$srows.Add('start,end,src')
-foreach ($s in @($allSpans | Sort-Object a)) { $srows.Add(('{0},{1},{2}' -f $s.a.ToString('yyyy-MM-dd HH:mm:ss'), $s.b.ToString('yyyy-MM-dd HH:mm:ss'), $s.src)) }
-[System.IO.File]::WriteAllLines($spansPath, $srows, $utf8NoBom)
 
 # 수집 환경 진단 - 권한·전원 정책 차이를 사람 차이로 읽지 않게 리포트·진단이 참조한다
 $srcInfo = [ordered]@{
@@ -361,4 +315,4 @@ $srcInfo = [ordered]@{
 try {
     [System.IO.File]::WriteAllText((Join-Path $OutDir 'pc_source.json'), ($srcInfo | ConvertTo-Json -Depth 5), $utf8NoBom)
 } catch { Write-Host ('[pc-on] pc_source.json 저장 실패: ' + $_.Exception.Message) }
-Write-Host ("[pc-on] days written: {0} (spans {1}, live={2}, gap-closed={3}, capped={4})" -f ($rows.Count - 1), $spans.Count, $live, $gapClosed, $capped)
+Write-Host ("[pc-on] observed: {0}일 · 구간 {1} (live={2}, gap-closed={3}, capped={4}) — 원장 반영 결과는 [pc-ledger] 줄" -f ($rows.Count - 1), $spans.Count, $live, $gapClosed, $capped)

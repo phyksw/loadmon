@@ -158,7 +158,7 @@ if ($h1 -ne $h2) {
 }
 
 if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Force $OutDir | Out-Null }
-$kind = if ($Full) { 'LoadMonitor24_풀패키지_' } else { 'LoadMonitor24_' }
+$kind = if ($Full) { 'LoadMonitor24_v3_풀패키지_' } else { 'LoadMonitor24_v3_' }
 # 이름은 초 단위(HHmmss)까지, 이미 있으면 _2 _3 … 으로 비켜 간다 — 남의 zip 은 절대 지우지 않는다.
 # 압축은 임시 이름(.partial.zip)으로 한 뒤 같은 폴더 안에서 제 이름으로 옮긴다(같은 볼륨 → 원자적 rename).
 # 실측: 같은 분에 두 번 돌리면 뒤 실행이 ArchiveFileExists 로 죽거나, 앞 실행이 막 완성한 zip 을 지웠다.

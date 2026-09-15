@@ -73,13 +73,18 @@ def run_tree(name, hist_src, hints_src, d0, d1):
     os.makedirs(os.path.join(t, "data", "pc"), exist_ok=True)
     shutil.copyfile(hist_src, os.path.join(t, "collect", "Get-PcOnHistory.ps1"))
     shutil.copyfile(hints_src, os.path.join(t, "collect", "Get-PcOnHints.py"))
+    led = os.path.join(os.path.dirname(os.path.dirname(hist_src)), "core", "pc_ledger.py")
+    if os.path.isfile(led):                     # v3 수집기는 원장 모듈이 있어야 반영까지 돈다
+        os.makedirs(os.path.join(t, "core"), exist_ok=True)
+        shutil.copyfile(led, os.path.join(t, "core", "pc_ledger.py"))
     act = os.path.join(DATA, "activity")
     if os.path.isdir(act):                       # 창 샘플러 시각은 보강 재료 — 두 판본에 같은 사본을 준다
         shutil.copytree(act, os.path.join(t, "data", "activity"), dirs_exist_ok=True)
     env = dict(os.environ, PYTHONIOENCODING="utf-8", LM_NO_BROWSER="1")
     t0 = time.time()
     p1 = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-                         os.path.join(t, "collect", "Get-PcOnHistory.ps1"), "-From", d0, "-To", d1],
+                         os.path.join(t, "collect", "Get-PcOnHistory.ps1"), "-From", d0, "-To", d1,
+                         "-Python", sys.executable],
                         capture_output=True, cwd=t, env=env, creationflags=NO_WIN, timeout=600)
     ev_log = (p1.stdout or b"").decode("utf-8", "replace").strip().splitlines()
     pc_on = os.path.join(t, "data", "pc", "pc_on.csv")
