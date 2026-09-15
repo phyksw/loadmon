@@ -377,15 +377,13 @@ def gather(rep, tag, amap=None, pmap=None):
     if not out:
         return [], basis, (f"흐름을 만들 단위가 없습니다 (단위 {len(groups)}개 · 신호 {len(sigs)}건)")
     # 상위(업무 성격)로 먼저 묶고 그 안에서 무거운 순 — LM20 처럼 상위 단위로도 읽히게 한다.
-    # 새 어휘가 기본이고, 옛 결과 파일의 이름도 같은 자리에 둔다(섞여 있어도 순서가 흔들리지 않게)
-    L1_ORDER = {"개발": 0, "신제품개발": 0, "기술 내재화": 0, "양산": 1, "양산준비": 1,
-                "AX": 2, "AX·자동화": 2, "공통": 3, "일반업무": 3, "표준 특허": 3}
+    # 정렬 순번은 details.L1_META 단일원에서 — 옛 이름은 l1_order 가 스냅해 같은 자리를 준다
     # 과제(중위) 안에서는 무거운 순 — 담당업무 카드가 자기 과제 밑에 모여 '상위 → 과제 → 담당업무' 로 읽힌다.
     # 과제 순서 자체는 그 과제의 MM 합(내림차순)으로 정한다.
     pj_mm = {}
     for x in out:
         pj_mm[fold(x["model"])] = pj_mm.get(fold(x["model"]), 0.0) + x["mm"]
-    out.sort(key=lambda x: (L1_ORDER.get(x.get("level1") or "", 9), x.get("level1") or "힣",
+    out.sort(key=lambda x: (details.l1_order(x.get("level1") or ""), x.get("level1") or "힣",
                             -pj_mm.get(fold(x["model"]), 0.0), fold(x["model"]),
                             -(x["mm"] * 100 + x["signals"])))
     return out, basis, ""

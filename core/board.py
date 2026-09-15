@@ -25,11 +25,7 @@ COLS = ["row_id", "Function", "Level 1", "Level 2", "Level 3", "이름", "상세
 # 사람이 실제로 입력하는 열 (나머지는 전부 파생)
 INPUT_COLS = ["Function", "Level 1", "Level 2", "Level 3", "이름", "상세설명",
               "mm_12mo", "mm_run3", "과제코드1", "과제코드2", "과제코드3", "확신도", "인원구분"]
-# 사내 엑셀의 '단계' 열 매핑 — 새 어휘와 옛 어휘를 모두 받는다(엑셀 축은 그대로 유지)
-STAGE_BY_L1 = {"개발": "개발", "신제품개발": "개발", "기술 내재화": "개발",
-               "양산": "양산준비", "양산준비": "양산준비",
-               "AX": "기타", "AX·자동화": "기타",
-               "공통": "기타", "일반업무": "기타", "표준 특허": "기타"}
+# 사내 엑셀의 '단계' 열 — details.L1_META 단일원에서 파생(l1_stage 가 옛 이름도 스냅해 받는다)
 MIN_SHARE = 0.1        # '실질 관여' 임계 (월 0.1MM ≈ 반나절/월)
 
 
@@ -81,15 +77,11 @@ def recompute(rows, lookup=None):
         r["mm_avg"] = round(mm12 / 12.0, 6)
         r["n코드"] = len(codes_of(r))
         r["분할mm"] = round(r["mm_avg"] / r["n코드"], 6) if r["n코드"] else 0.0
-        # 옛 이름·무공백 변형('기술내재화'·'표준특허'·'개 발')을 snap1 로 새 이름에 접어 단계를 찾는다.
-        # 예전에는 raw 문자열로 조회해 띄어쓰기 하나 차이가 '기타' 로 새 나갔다(제보 ③).
-        _l1 = _s(r.get("Level 1"))
         try:
-            from details import snap1 as _snap1
-            _l1 = _snap1(_l1) or _l1
+            from details import l1_stage
+            r["단계"] = l1_stage(_s(r.get("Level 1")))     # 단일원 — 옛 이름·표기 변형도 스냅해 받는다
         except Exception:  # noqa: BLE001
-            pass
-        r["단계"] = STAGE_BY_L1.get(_l1, STAGE_BY_L1.get(_s(r.get("Level 1")), "기타"))
+            r["단계"] = "기타"
         c1 = _s(r.get("과제코드1"))
         if c1 in lookup:
             ai, ev = lookup[c1]

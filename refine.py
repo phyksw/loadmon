@@ -41,6 +41,7 @@ if ROOT not in sys.path:
     # 죽어 **AI 정제만 단독으로** 실패한다(파이썬이 설치된 PC 에서는 안 보이는 결함).
     # agentic.py·retag.py·team_refine.py·ui/app.py 는 모두 ROOT 를 넣는다 — 여기만 빠져 있었다.
     sys.path.insert(0, ROOT)
+from details import l1_prompt_lines  # noqa: E402  - 상위 정의 줄 생성(L1_META 단일원)
 from details import level1_of  # noqa: E402  - 상위 규칙 분류(코드네임·ax·공통) — AI 가 비운 자리만
 from details import ukey2  # noqa: E402  - judge·flow 와 같은 과제 신원 축
 from details import ukey3  # noqa: E402  - 담당업무(하위) 신원 축 — 같은 업무를 두 행으로 남기지 않게
@@ -222,11 +223,9 @@ def build_prompt(rows, evidence_md, model_names=(), ev_mode="aligned", overlap=(
         "2. l2 = 실제 과제·프로젝트명으로 정규화 (원문에서 읽어낸 이름. 토큰 조각 금지)"
         + (" — 이미 확정된 과제 체계가 있으니 그 표기를 그대로 유지할 것(변형·재작명 금지): "
            + ", ".join(model_names) if model_names else ""),
-        "3. l1 = 업무 성격 (개발 / 양산 / AX / 공통 중 택1)",
-        "   · 개발 = 선행·신제품·요소기술 개발 (과제 이름이 프로젝트 코드네임인 경우가 많다)",
-        "   · 양산 = 양산 이관·양산 대응 (역시 코드네임)",
-        "   · AX = AI 를 활용한 자동화 과제(도구를 만들거나 업무에 적용하는 일)",
-        "   · 공통 = 일반 사무 — 회계·재무·총무·실험실 관리 등",
+        # 상위 정의 줄은 details.L1_META 에서 생성 — config.level1Set 추가 범주가 프롬프트에
+        # 자동으로 실린다(v2 는 하드코딩이라 모델이 추가 범주를 낼 수 없었다 — 반쯤 죽은 설정).
+        *l1_prompt_lines(),
         "4. l3 = **담당 업무 항목명**(중위개체) — 항목 줄의 세부업무명을 유지·다듬는다.",
         "   ('Capability 구조 설계', '수광부 렌즈 해석'처럼 그 과제 안의 실제 업무 이름.",
         "    설계/문서·보고 같은 **범주로 축약 금지** — 범주는 a 에 따로 쓴다)",

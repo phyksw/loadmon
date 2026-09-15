@@ -114,6 +114,11 @@ def read_rows(tag, rep=None, plain=False):
         return [], ""
     for r in rows:
         r["_mm"] = _f(r.get("mm"))
+        # 읽기 경계 스냅 — 옛 정제본(v24.15 이전·타 판 PC 업로드분)의 스냅 전 상위 이름을 여기서
+        # 접는다. v2 는 소비자 7곳이 각자 스냅을 불렀고 안 부른 통로가 계속 새로 생겼다(구조 감사).
+        _l1 = r.get("Level 1")
+        if _l1:
+            r["Level 1"] = snap1(_l1) or _l1
     return rows, os.path.basename(p)
 
 
@@ -442,6 +447,63 @@ def _level1_extra():
 
 LEVEL1_ALL = LEVEL1_SET + tuple(x for x in _level1_extra() if x not in LEVEL1_SET)
 _L1_BY_KEY = {ukey1(x): x for x in LEVEL1_ALL}
+
+# ── 상위 어휘의 **표현 속성 단일원** — 색·정렬·엑셀 단계·프롬프트 문구 전부 여기서 파생한다.
+# v2 는 이 표가 flow(정렬)·ui(JS 색)·freeze(색)·board(엑셀 단계)·refine(프롬프트)에 raw 문자열
+# 사전 4벌로 흩어져 있었고, 범주가 바뀔 때 빠진 곳은 회색·맨뒤·'기타' 로 **조용히** 틀렸다.
+# 이제 소비자는 l1_color/l1_order/l1_stage/l1_prompt_lines/l1_meta_payload 만 쓴다 —
+# tools/check_l1.py(lint 관문 8)가 이 표 밖의 하드코딩 재출현을 막는다.
+L1_META = {
+    "개발": {"color": "#2a78d6", "order": 0, "stage": "개발",
+             "desc": "선행·신제품·요소기술 개발 (과제 이름이 프로젝트 코드네임인 경우가 많다)"},
+    "양산": {"color": "#e08a00", "order": 1, "stage": "양산준비",
+             "desc": "양산 이관·양산 대응 (역시 코드네임)"},
+    "AX": {"color": "#6c4fb8", "order": 2, "stage": "기타",
+           "desc": "AI 를 활용한 자동화 과제(도구를 만들거나 업무에 적용하는 일)"},
+    "공통": {"color": "#8b929b", "order": 3, "stage": "기타",
+             "desc": "일반 사무 — 회계·재무·총무·실험실 관리 등"},
+}
+# config.level1Set 추가 범주 — 표 순서 기반 예약 팔레트(이름 해시가 아니라 순서라, 타 판 PC 와
+# 취합해도 같은 순서면 같은 색 — 결정론). 단계는 '기타'.
+_L1_EXTRA_PALETTE = ("#0e8c7a", "#a61b4a", "#3d8f3d", "#c05a78", "#4a7f9e", "#8a6d3b")
+for _i, _x in enumerate(x for x in LEVEL1_ALL if x not in L1_META):
+    L1_META[_x] = {"color": _L1_EXTRA_PALETTE[_i % len(_L1_EXTRA_PALETTE)],
+                   "order": 4 + _i, "stage": "기타", "desc": "config.level1Set 추가 범주"}
+
+
+def l1_color(name, default="#8b929b"):
+    """상위 이름(옛 이름 포함) → 색. 모르는 이름은 회색."""
+    m = L1_META.get(snap1(name) or str(name or ""))
+    return m["color"] if m else default
+
+
+def l1_order(name):
+    """상위 이름(옛 이름 포함) → 정렬 순번. 미분류·모르는 이름은 맨 뒤."""
+    m = L1_META.get(snap1(name) or str(name or ""))
+    return m["order"] if m else 99
+
+
+def l1_stage(name):
+    """상위 이름 → 팀 배분표 엑셀의 '단계' 열 값."""
+    m = L1_META.get(snap1(name) or str(name or ""))
+    return m["stage"] if m else "기타"
+
+
+def l1_prompt_lines():
+    """refine 프롬프트의 상위 정의 줄 — 표에서 생성하므로 범주 추가가 프롬프트에 자동 반영된다."""
+    names = " / ".join(L1_META)
+    out = [f"3. l1 = 업무 성격 ({names} 중 택1)"]
+    out += [f"   · {n} = {m['desc']}" for n, m in L1_META.items()]
+    return out
+
+
+def l1_meta_payload():
+    """화면(JS)용 — /api/dash 가 실어 보낸다. 옛 이름도 같은 색·순서를 갖게 별칭 키를 함께 편다."""
+    out = {n: {"color": m["color"], "order": m["order"]} for n, m in L1_META.items()}
+    for alias, target in LEVEL1_ALIAS.items():
+        if target in L1_META and alias not in out:
+            out[alias] = {"color": L1_META[target]["color"], "order": L1_META[target]["order"]}
+    return out
 _L1_BY_ALIAS = {ukey1(k): v for k, v in LEVEL1_ALIAS.items()}
 
 

@@ -638,9 +638,15 @@ def report_island(tag, full=True, log=_say):
 
     # 담당자 워크플로우 — 화면과 같은 접이식 + 단계 표
     flows = wf.get("flows") or []
-    _L1C = {"개발": "#2a78d6", "신제품개발": "#2a78d6", "기술 내재화": "#0e8c7a",
-            "양산": "#e08a00", "양산준비": "#e08a00", "AX": "#6c4fb8", "AX·자동화": "#6c4fb8",
-            "공통": "#8b929b", "일반업무": "#8b929b", "표준 특허": "#8b929b"}
+    try:                          # 읽기 경계 스냅 — 옛 workflow_*.json 의 스냅 전 상위 이름(v3 구조 감사 무스냅 통로)
+        import details as _dsn
+        for _fl in flows:
+            if isinstance(_fl, dict) and _fl.get("level1"):
+                _fl["level1"] = _dsn.snap1(_fl["level1"]) or _fl["level1"]
+    except Exception:  # noqa: BLE001
+        pass
+    import details as _dl
+    _L1C = {n: _dl.l1_color(n) for n in list(_dl.L1_META) + list(_dl.LEVEL1_ALIAS)}   # 단일원 파생
     _l1_prev = None                # 상위가 바뀌는 자리에만 머리말을 넣는다
     _pj_prev = None                # 과제(중위)가 바뀌는 자리에도 — 담당업무 카드가 자기 과제 밑에 모이게
 

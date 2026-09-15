@@ -2948,7 +2948,7 @@ async function poll(){
 let wasRunning=false;
 async function refresh(){
  let d;
- try{ d=await fetch("/api/dash").then(r=>r.json()); }
+ try{ d=keepDash(await fetch("/api/dash").then(r=>r.json())); }
  catch(e){ $("state").textContent="대시보드 데이터를 읽지 못했습니다 — 진행 로그를 확인하세요"; return; }
  $("ver").textContent=`${d.version} · 포트 ${d.port} · 로컬 전용`;
  // 스텁 판정 배너 — 무엇보다 먼저. LM_COPILOT_STUB 로 만든 결과는 실제 Copilot 판정이 아니다(테스트 전용).
@@ -3741,8 +3741,10 @@ async function loadFlow(){
    // 과제 수만큼 길어지는 탭 — 접이식으로. 제목 줄에 역할 요약을 실어 접힌 채로도 훑는다.
    // 상위(업무 성격) 배지 — 계층은 상위(Level 1) > 과제(Level 2) > 담당업무(Level 3) 다.
    // LM20 처럼 상위로도 묶어 읽히게 제목에 배지를 달고, 아래에서 상위별로 구간을 나눈다.
-   // 새 어휘(개발·양산·AX·공통)가 기본이고 옛 이름도 같은 색을 갖는다 — 예전 결과 파일이 섞여도 같게 보인다
-   const L1C={"개발":"#2a78d6","신제품개발":"#2a78d6","기술 내재화":"#0e8c7a","양산":"#e08a00","양산준비":"#e08a00","AX":"#6c4fb8","AX·자동화":"#6c4fb8","공통":"#8b929b","일반업무":"#8b929b","표준 특허":"#8b929b"};
+   // 상위 색·순서는 서버(details.L1_META 단일원)가 /api/dash 로 준다 — JS 하드코딩 사전 폐기.
+   // 얼린 사본(l1meta 없는 옛 데이터)은 회색 기본값으로 그린다(방어).
+   const L1M=(window.__dash&&window.__dash.l1meta)||{};
+   const L1C=new Proxy({},{get:(_,k)=>(L1M[k]&&L1M[k].color)||"#8b929b",has:(_,k)=>k in L1M});
    const l1b=f.level1?`<span style="display:inline-block;padding:0 7px;border-radius:9px;color:#fff;font-size:11px;background:${L1C[f.level1]||"#8b929b"};margin-right:6px">${esc(f.level1)}</span>`:"";
    // 한 과제가 여러 흐름을 가질 수 있다 — 이어지지 않는 일을 억지로 한 타임라인으로 엮지 않기 위해서다.
    // 흐름 이름을 제목에 붙여 같은 과제의 다른 줄기임을 알 수 있게 한다.
@@ -3828,6 +3830,7 @@ function whyEmpty(kind, redo){
   none:""
  }[kind||"none"]||"";
 }
+function keepDash(d){window.__dash=d;return d;}
 async function loadReview(kind){
  const el=$("rv-"+kind);
  el.innerHTML='<div class="card"><div class="note">불러오는 중…</div></div>';
@@ -4137,7 +4140,13 @@ class H(BaseHTTPRequestHandler):
             per = dash_period(meta, lastrun)
             tinfo = {}
             tr = trend(per[0], per[1], (m2.group(1) if m2 else ""), info=tinfo)
+            try:
+                import details as _dl1m
+                _l1meta = _dl1m.l1_meta_payload()
+            except Exception:  # noqa: BLE001
+                _l1meta = {}
             self._send(200, {"version": VERSION, "port": PORT[0], "sources": sources(per),
+                             "l1meta": _l1meta,
                              "file": fn, "rows": rows, "meta": meta,
                              # 메일·일정 수집 범위(달 단위) — 주간 활동 추이 밑에 '미수집 달'을 적는다(얼린 사본에도 굳는다)
                              "mail_coverage": outlook_coverage(per),
@@ -4344,6 +4353,13 @@ class H(BaseHTTPRequestHandler):
                         out = {"ok": False, "error": "파일 손상",
                                "file_error": f"workflow_{tag}.json 을 읽지 못함({type(e).__name__}) — [워크플로우 재분석]으로 다시 만드세요"}
                     out["tag"] = tag
+                    try:                     # 읽기 경계 스냅 — 옛 workflow_*.json 의 스냅 전 상위 이름
+                        import details as _dsn
+                        for _fl in (out.get("flows") or []):
+                            if isinstance(_fl, dict) and _fl.get("level1"):
+                                _fl["level1"] = _dsn.snap1(_fl["level1"]) or _fl["level1"]
+                    except Exception:  # noqa: BLE001
+                        pass
                     out["stage_note"] = _stage_note("워크플로우 분석")
                     out["stage_kind"] = _stage_kind("워크플로우 분석")
                     # 판정 뒤 업무 로드가 다시 추출됐으면(무AI 재실행 등) 이 결과는 옛 행 기준이다(V-01) — 지우지 않고 표시

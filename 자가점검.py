@@ -62,6 +62,7 @@ NEED = [
     "core/board.py",
     "core/extract.py",
     "core/pc_ledger.py",
+    "tools/check_l1.py",
     "core/programs.py",
     "core/details.py",
     "core/owner.py",

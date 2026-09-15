@@ -138,5 +138,12 @@ foreach ($f in @(Get-ChildItem $root -Recurse -File -ErrorAction SilentlyContinu
     }
 }
 
-if ($fail -eq 0) { Write-Output 'lint OK (7 gates)' }
+# --- gate 8: 상위(Level 1) 어휘 단일원 - details.L1_META 밖 하드코딩 재출현 금지 ---
+$py8 = Join-Path $root 'python\python.exe'
+if (-not (Test-Path $py8)) { $py8 = 'python' }
+$env:PYTHONIOENCODING = 'utf-8'
+& $py8 (Join-Path $root 'tools\check_l1.py') 2>&1 | ForEach-Object { Write-Output $_ }
+if ($LASTEXITCODE -ne 0) { $fail = 1 }
+
+if ($fail -eq 0) { Write-Output 'lint OK (8 gates)' }
 exit $fail
