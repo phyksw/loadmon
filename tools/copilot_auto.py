@@ -429,7 +429,7 @@ def find_tab(cfg):
             c = CDP(ws)
             try:
                 c.call("Page.navigate", {"url": cfg["url"]}, timeout=20)
-                for _ in range(20):
+                for _ in range(8):       # 준비되면 즉시 탈출(제보 ④ — 고정 20초 대기 축소)
                     time.sleep(1)
                     st = c.eval(js_state())
                     if st and st.get("ready") in ("interactive", "complete"):
@@ -747,12 +747,12 @@ def new_chat(cdp, cfg):
         pass
     try:
         cdp.eval("(function(){location.href=" + json.dumps(cfg["url"]) + ";return 1;})()")
-        for _ in range(20):
+        for _ in range(8):               # 준비되면 즉시 탈출 — 실패 왕복마다 20초를 세 번 세던 것을 줄인다(제보 ④)
             time.sleep(1)
             st = cdp.eval(js_state())
             if st and st.get("ready") in ("interactive", "complete"):
                 break
-        time.sleep(2)
+        time.sleep(1)
         return "URL 재진입"
     except Exception:
         return "실패"
@@ -1051,9 +1051,11 @@ def _wait_rest(cdp, cfg, prompt, secs=300):
     return strip_echo(last or "", prompt, anchor, "anchor").strip() or None
 
 
-def _run_parts(cdp, cfg, parts, fresh):
+def _run_parts(cdp, cfg, parts, fresh, deadline=None):
     """같은 CDP·같은 채팅에서 조각을 차례로 보낸다 — 조각별 _roundtrip_once, 사다리 없음.
-    조각마다 서약을 확인하고, 없으면 _wait_rest 로 기다린 뒤에만 다음 조각을 보낸다."""
+    조각마다 서약을 확인하고, 없으면 _wait_rest 로 기다린 뒤에만 다음 조각을 보낸다.
+    deadline(monotonic 초): 넘기면 조각을 더 보내지 않고 시간 초과로 접는다 — 예전에는 이 다부 경로에
+    왕복 예산이 없어 한 왕복이 76~80분까지 무제동으로 돌았다(제보 ④ · 검증 CONFIRMED)."""
     total = len(parts)
     if fresh:
         try:
@@ -1062,6 +1064,10 @@ def _run_parts(cdp, cfg, parts, fresh):
             pass
     res = {"ok": False, "phase": "error", "error": "왕복 시작 실패"}
     for i, part in enumerate(parts, 1):
+        if deadline is not None and time.time() > deadline:
+            return {"ok": False, "phase": "timeout", "parts": total,
+                    "error": f"나눔 {i}/{total}: 왕복 예산을 넘겨 중단(이 청크는 규칙 판정으로)",
+                    "hint": "Copilot 응답 지연 — config.copilotAuto.roundtripMaxSec"}
         res = _roundtrip_once(cdp, cfg, part)
         if not res.get("ok"):
             res["error"] = f"나눔 {i}/{total}: " + str(res.get("error") or "왕복 실패")
@@ -1110,6 +1116,9 @@ def run_roundtrip_split(cfg, prompt, fresh=False):
         return {"ok": False, "phase": "edge_not_found" if not find_edge() else "launch_failed",
                 "error": "Edge 실행 실패", "parts": len(parts),
                 "hint": "Edge 설치 여부 확인 · 보안 정책이 디버그 포트를 막는 환경이면 클립보드(수동) 방식 사용"}
+    # 왕복 예산 — 단부 run_roundtrip:826-836 과 같은 상한을 다부 경로에도 건다(제보 ④)
+    _rt_max = max(0, int(cfg.get("roundtripMaxSec") or 0))
+    _deadline = (time.time() + _rt_max) if _rt_max else None
     res = {"ok": False, "phase": "error", "error": "왕복 시작 실패"}
     for attempt in (1, 2):
         ws_url = find_tab(cfg)
@@ -1118,8 +1127,9 @@ def run_roundtrip_split(cfg, prompt, fresh=False):
                     "parts": len(parts),
                     "hint": "열린 Edge(자동 프로필) 창에서 직접 주소를 열어보세요: " + cfg["url"]}
         cdp = CDP(ws_url)
+        activate(cdp)                    # 탭을 앞으로 — 비활성 탭은 답이 자라지 않는다(배경 스로틀링, v24.13)
         try:
-            res = _run_parts(cdp, cfg, parts, fresh=(fresh or attempt == 2))
+            res = _run_parts(cdp, cfg, parts, fresh=(fresh or attempt == 2), deadline=_deadline)
         except Exception as e:
             res = {"ok": False, "phase": "error", "error": f"{type(e).__name__}: {e}"}
         finally:

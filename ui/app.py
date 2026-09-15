@@ -31,7 +31,7 @@ from progress import parse as parse_progress  # noqa: E402  (core 경로 등록 
 REPORT = os.path.join(ROOT, "report")
 DATA = os.path.join(ROOT, "data")
 NO_WIN = 0x08000000
-VERSION = "v24.0.16"
+VERSION = "v24.0.17"
 LOCK = threading.Lock()
 FREEZE_LOCK = threading.Lock()       # [보고서 만들기] 직렬화 — JOB 과 별개(사본에 '실행 중'이 굳지 않게)
 JOB = {"running": False, "log": [], "step": "", "started": 0.0, "pid": 0,
@@ -3085,6 +3085,8 @@ async function refresh(){
      +(pd.generated?` · 마지막 수집 ${esc(pd.generated)}`:"")
      +(pd.dropped?` · <span style="color:#c0122f">읽지 못한 행 ${pd.dropped}개</span>`:"")
      +((pd.roots||[]).length>1?" — 합계는 구간 합집합이라 폴더별 단순 합과 다릅니다(같은 시간대 중복 제거)":""));
+    if(pd.fallback_boot) notes.push(`⚠ 이 기간 <b>Windows 이벤트 로그가 0건</b>이라 '부팅 후 경과시간' 한 구간만으로 PC 선을 그렸습니다(수집만 한 PC·권한 차단·Modern Standby). 그 달의 '${(sum||0).toFixed(1)}h' 는 합산이 아니라 <b>하루치 부팅 시간</b>입니다 — 샘플러(LoadMonitor24-샘플러등록.bat)를 켜 두면 앞으로 정확해집니다.`);
+    if(pd.dropped) notes.push(`⚠ PC 기록 파일에서 <b>읽지 못한 행 ${pd.dropped}개</b>가 있었습니다(이동 중 잘렸을 수 있음) — 그 파일만 빼고 나머지로 그렸습니다. [분석 실행]으로 다시 수집하면 복구됩니다.`);
     if(pd.warn) notes.push(`⚠ ${esc(pd.warn)} — 롤오버된 과거는 되살릴 수 없지만, 브라우저 사용기록 힌트와 창 샘플러가 <b>앞으로의 구간</b>을 메웁니다(샘플러 등록이 없으면 [분석 실행]이 자동으로 1회 등록합니다 · config.autoRegisterSampler).`);
    }}
   if(ti.pc_note) notes.push(`⚠ ${esc(ti.pc_note)}`);

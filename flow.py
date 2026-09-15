@@ -69,6 +69,8 @@ def _chat_note():
         return ""
     return " — 설정 chatTurns=0: 묶음마다 새 채팅" if n <= 0 else f" · 첫 왕복·실패 뒤·{n}회마다 새 채팅"
 L1_MARGIN = 0.60                # 상위(업무 성격) 확정에 필요한 1위 표 비중 — 못 넘으면 찍지 않고 '혼재' 로 남긴다.
+L1_COVER_MIN = 0.50             # 과제 MM 중 상위가 분류된 비율의 하한 — 미분류가 과반이면 한 행이 과제를
+#                                 확정하지 못하게 '혼재(미분류 포함)' 로 남긴다(제보 ③ · 검증 CONFIRMED).
 #                                 51:49 로 갈린 과제와 100:0 인 과제를 같게 다루던 argmax 를 대신한다(감사 지적).
 #                                 계층 분류 문헌의 통례 — 확신이 없으면 하위로 내려가지 않고 기권한다.
 MIN_SIGNALS = 3                 # 이보다 적은 신호는 흐름이라 할 수 없다
@@ -236,6 +238,7 @@ def gather(rep, tag, amap=None, pmap=None):
         return details.ukey2((pmap or {}).get(str(name or "").strip(), str(name or "").strip()) or "공통")
 
     l1_w = {}          # ukey2(병합 대표 과제) → {상위: mm 합}
+    l1_seen = {}       # ukey2 → 분류 여부와 무관한 과제 MM 합(커버리지 분모 — F6)
     try:
         rrows, _rfn = details.read_rows(tag, rep)
         if _rfn and _rfn.endswith("_refined.csv"):
@@ -252,6 +255,8 @@ def gather(rep, tag, amap=None, pmap=None):
                     # 별칭 병합이 refine 이 지은 이름을 대표로 쓰면 단위 키가 그 이름이 된다 — 그 축으로도 색인
                     desc_by.setdefault((fold(l2 or "공통"), fold(l3 or "기타")), d[:120])
                 for (o2, o3) in pairs:
+                    _wk = _l1k(o2)
+                    l1_seen[_wk] = l1_seen.get(_wk, 0.0) + r["_mm"] / max(1, len(pairs))
                     if d:
                         desc_by.setdefault((fold(o2 or "공통"), fold(o3 or "기타")), d[:120])
                         # 과제 단위 카드도 정제 설명을 받아야 한다 — 판정 축(원본 mm_rows)의 상세설명은
@@ -337,15 +342,20 @@ def gather(rep, tag, amap=None, pmap=None):
         # 상위 판정이 갈렸다' 는 신호라, 억지로 하나를 찍으면 그 사실이 숨는다(감사 지적).
         # 지정 과제(config\projects.json)에 상위를 적어 두었으면 그것이 투표를 이긴다.
         g1 = l1_w.get(details.ukey2(md)) or l1_w.get(f2) or {}
+        _seen = l1_seen.get(details.ukey2(md)) or l1_seen.get(f2) or sum(g1.values())
         pinned_l1 = (L1_PIN.get(details.ukey2(md)) or "")
         level1, level1_mix = pinned_l1, []
         if not level1 and g1:
             tot = sum(g1.values())
+            cover = (tot / _seen) if _seen > 0 else 1.0
             top, w1 = max(g1.items(), key=lambda kv: (kv[1], kv[0]))
-            if tot > 0 and w1 / tot >= L1_MARGIN:
+            if tot > 0 and w1 / tot >= L1_MARGIN and cover >= L1_COVER_MIN:
                 level1 = top
             else:
                 level1_mix = [[k, round(v, 3)] for k, v in sorted(g1.items(), key=lambda kv: -kv[1])[:3]]
+                if cover < L1_COVER_MIN and _seen - tot > 0.005:
+                    # 미분류가 과반 — 그 사실을 혼재 목록 맨 앞에 실어 '재배치 필요' 로 보인다
+                    level1_mix = [["미분류", round(_seen - tot, 3)]] + level1_mix[:2]
         out.append({"model": md, "detail": dt, "key": unit_key(md, dt), "signals": len(ss),
                     "level1": level1, "level1_mix": level1_mix, "mm": mm, "desc": desc, "parts": parts,
                     # 요청→산출 페어 — 파일 스스로 '흐름을 잇는 핵심 재료' 라 부르는 것인데 담당업무 카드에는

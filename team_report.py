@@ -1227,9 +1227,15 @@ def member_report(mdir, member, out_dir):
         cov_note = (" · <b style='color:#c0122f'>측정 불충분</b> — PC 가동 기록·창 샘플러·Outlook 일정이 모두 비어 "
                     "근거가 파일 흔적뿐입니다(팀 비교 제외)")
 
+    def _snap_l1(v):        # 옛 정제본의 스냅 전 값을 새 이름으로 접어 표시(제보 ③)
+        try:
+            import details
+            return details.snap1(v) or (v or "")
+        except Exception:  # noqa: BLE001
+            return v or ""
     mmax = max([r["mm"] for r in rows] or [1]) or 1
     row_html = "".join(
-        f"<tr><td>{esc(r.get('Level 1'))}</td><td>{esc(r.get('유형'))}</td>"
+        f"<tr><td>{esc(_snap_l1(r.get('Level 1')))}</td><td>{esc(r.get('유형'))}</td>"
         f"<td><b>{esc(r.get('Level 2'))}</b></td><td>{esc(r.get('Level 3'))}</td>"
         f"<td>{esc(r.get('상세설명'))}</td><td class='num'><b>{r['mm']:.2f}</b></td>"
         f"<td style='width:100px'><span class='mmbar' "

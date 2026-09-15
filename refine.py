@@ -737,9 +737,12 @@ def main():
         if i not in owner:
             final.append({"유형": r.get("유형", ""), "제품": r.get("제품", ""),
                           "활동": r.get("활동", ""),
-                          # AI 가 언급하지 않은 행도 규칙으로는 상위를 줄 수 있다(빈칸보다 낫다)
-                          "Level 1": level1_of(
-                              f'{r.get("Level 2", "")} {r.get("Level 3", "")}', r.get("Level 2", ""), ROOT),
+                          # AI 가 언급하지 않은 행 — 먼저 **기존 Level 1 을 보존**한다(옛 이름·수기 값을
+                          # snap1 로 새 4범주에 접어). 예전에는 이 값을 읽지 않고 규칙으로만 재계산해
+                          # 코드네임 과제의 상위가 정제 한 번에 빈칸이 됐다(제보 ③ · 검증 CONFIRMED).
+                          "Level 1": (snap1(r.get("Level 1", ""))
+                                      or level1_of(f'{r.get("Level 2", "")} {r.get("Level 3", "")}',
+                                                   r.get("Level 2", ""), ROOT)),
                           "Level 2": r.get("Level 2", ""), "Level 3": r.get("Level 3", ""),
                           "상세설명": "", "share": _f(r.get("share")), "활동일수": _i(r.get("활동일수")),
                           "근거": r.get("근거", ""), "확신도": r.get("확신도", ""),

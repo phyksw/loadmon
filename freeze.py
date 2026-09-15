@@ -565,9 +565,15 @@ def report_island(tag, full=True, log=_say):
         except (TypeError, ValueError, ZeroDivisionError):
             pct = None
 
+    def _snap_l1(v):        # 옛 정제본의 스냅 전 값(기술내재화 등)을 새 이름으로 접어 표시(제보 ③)
+        try:
+            import details
+            return details.snap1(v) or (v or "")
+        except Exception:  # noqa: BLE001
+            return v or ""
     mmax = max([r["mm"] for r in rows] or [1]) or 1
     row_html = "".join(
-        f"<tr><td>{_esc(r.get('Level 1'))}</td><td>{_esc(r.get('유형'))}</td>"
+        f"<tr><td>{_esc(_snap_l1(r.get('Level 1')))}</td><td>{_esc(r.get('유형'))}</td>"
         f"<td><b>{_esc(r.get('Level 2'))}</b></td><td>{_esc(r.get('Level 3'))}</td>"
         f"<td class='desc'>{_esc(r.get('상세설명'))}</td>"
         f"<td class='num'><b>{r['mm']:.2f}</b></td>"
