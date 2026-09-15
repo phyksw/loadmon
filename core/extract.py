@@ -1996,6 +1996,49 @@ def pc_daily(data_dir, d0, d1, day_win=None, anom=None, span_anoms=None, single_
     return pc, pc_wins, pc_spans, pc_win_all
 
 
+def save_day_hours(rep_dir, tag, day_hours):
+    r"""근무시간(투입 실측) 아티팩트 — report\day_hours_<tag>.json.
+    화면(추이 실선)은 이것을 **읽기만** 한다. v3 초기엔 /api/dash 가 요청 스레드에서 재계산해
+    로드바 완료 뒤 수 분 CPU 가 말없이 돌았다(제보 "끝났는데 탐색하듯 돈다") — 계산은 수집·분석이
+    로드바 안(progress 표시)에서 하고 여기 저장한다."""
+    try:
+        p = os.path.join(rep_dir, f"day_hours_{tag}.json")
+        with open(p + ".tmp", "w", encoding="utf-8") as f:
+            json.dump({"schema": 1,
+                       "days": {(k.isoformat() if hasattr(k, "isoformat") else str(k)[:10]):
+                                round(float(v), 3) for k, v in (day_hours or {}).items()}},
+                      f, ensure_ascii=False)
+        os.replace(p + ".tmp", p)
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def load_day_hours_range(rep_dir, d0, d1):
+    r"""기간과 겹치는 모든 day_hours_*.json 을 합쳐 {date: h} — 겹치는 날은 mtime 이 늦은 파일이
+    이긴다(가장 최근 계산이 최신 자료 기준)."""
+    out, order = {}, []
+    try:
+        for p in glob.glob(os.path.join(rep_dir, "day_hours_*.json")):
+            try:
+                order.append((os.path.getmtime(p), p))
+            except OSError:
+                continue
+        for _mt, p in sorted(order):
+            try:
+                with open(p, encoding="utf-8-sig") as f:
+                    d = json.load(f)
+                for k, v in (d.get("days") or {}).items():
+                    k = str(k)[:10]
+                    if (not d0 or k >= str(d0)[:10]) and (not d1 or k <= str(d1)[:10]):
+                        out[k] = float(v)
+            except (OSError, ValueError, TypeError):
+                continue
+    except OSError:
+        pass
+    return out
+
+
 def pc_coverage(data_dir, d0, d1):
     r"""PC 가동 기록의 **출처 진단** — 화면이 "합산이 안 된 숫자 아니냐" 에 숫자로 답하게.
     반환 {"hours", "days", "roots": [{"name","hours","days","rows","spans"}], "coverage_days",

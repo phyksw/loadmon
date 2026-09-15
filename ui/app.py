@@ -1385,45 +1385,19 @@ def mtime_clumps(d0="", d1="", top=3):
 MONTHLY_OVER_WEEKS = 16     # 이보다 긴 기간(주)은 달 단위로 묶는다 — 화면 칩 기준 1·3개월=주간, 6개월·1년·올해=월간
 
 
-_TREND_WH = {}     # 근무시간 실측 캐시 — {"sig": (기간·파일 mtime), "wh": {date: h}}
-
-
 def _trend_work_hours(_X, start, end):
-    r"""기간의 일별 근무시간(투입 실측) — mine 과 같은 호출(load_signals → day_work_hours).
-    /api/dash 는 자주 불리므로 원천 파일 mtime 이 그대로면 지난 답을 쓴다."""
-    import glob as _g
+    r"""근무시간(투입 실측) — report\day_hours_*.json **읽기만**. 계산은 수집·분석이 로드바 안에서
+    한다(mine·run --collect-only 가 저장). v3 초기엔 여기서 load_signals+day_work_hours 를 요청
+    스레드로 재계산해, 로드바가 끝난 뒤 수 분 동안 '탐색하듯 도는' CPU 가 됐다(제보 — 폐기)."""
+    wh = _X.load_day_hours_range(REPORT, start.isoformat(), end.isoformat())
     from datetime import date as _date
-    key = [start.isoformat(), end.isoformat(), _date.today().isoformat()]
-    for rel in ("files/files.csv", "files/recent.csv", "outlook/mail.csv", "outlook/calendar.csv",
-                "pc/pc_on.csv", "pc_spans.csv", "pc/pc_spans.csv", "files/git_commits.csv"):
-        for q in _paths_multi(rel):
-            try:
-                key.append((q, os.path.getmtime(q), os.path.getsize(q)))
-            except OSError:
-                continue
-    for q in _paths_multi("activity/activity_*.csv"):
+    out = {}
+    for k, v in wh.items():
         try:
-            key.append((q, os.path.getmtime(q)))
-        except OSError:
+            out[_date.fromisoformat(k)] = float(v)
+        except (ValueError, TypeError):
             continue
-    _ = _g
-    sig_key = tuple(map(str, key))
-    if _TREND_WH.get("sig") == sig_key:
-        return _TREND_WH["wh"]
-    cfg2 = _X.load_cfg()
-    try:
-        from mine import EXCLUDE as _EX0
-    except ImportError:
-        _EX0 = ()
-    exclude = sorted(set(_EX0) | {str(k) for k in _X.cfg_list(cfg2, "excludePathKeywords")
-                                  if str(k).strip()})
-    rows, meta = _X.load_signals(DATA, start, end, exclude, cfg2)
-    wh = {}
-    if rows:
-        wh, _hi = _X.day_work_hours(DATA, rows, start, end, cfg2,
-                                    file_times=meta.get("file_times"))
-    _TREND_WH.update(sig=sig_key, wh=dict(wh))
-    return wh
+    return out
 
 
 def trend(d0="", d1="", tag="", info=None):
@@ -1585,9 +1559,12 @@ def trend(d0="", d1="", tag="", info=None):
             _i = key(_dd) if start <= _dd <= end else None
             if _i is not None:
                 out[_i]["wk_h"] += float(_h or 0)
-    except Exception as _exw:  # noqa: BLE001 — 실측 실패는 선을 비울 뿐, 추이를 막지 않는다
+        if info is not None and not _wh:
+            info["wk_note"] = ("근무시간 실측이 아직 없습니다 — [분석 실행]/[수집만]이 계산해 "
+                               "저장합니다(그때까지는 PC 가동 점선만)")
+    except Exception as _exw:  # noqa: BLE001 — 실측 판독 실패는 선을 비울 뿐, 추이를 막지 않는다
         if info is not None:
-            info["wk_note"] = f"근무시간 실측 실패({type(_exw).__name__}) — PC 가동 선만 표시"
+            info["wk_note"] = f"근무시간 실측 판독 실패({type(_exw).__name__}) — PC 가동 선만 표시"
 
     # PC 가동 시간 — 기간 안만. 본 PC + 추가PC 를 extract.pc_daily 로 합친다(구간 합집합 — 분석의 PC 하한과 같은 값).
     # 예전엔 본 PC 의 pc_on.csv 만 세어 추가 PC 의 가동이 이 선에서 통째로 빠졌다(제보: 'PC 가동시간 합산 안 됨').

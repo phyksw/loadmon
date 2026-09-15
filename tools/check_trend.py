@@ -91,6 +91,20 @@ try:
 
     core = os.path.join(T, "core")
     sys.path[:] = [core, T] + [p for p in sys.path if p not in (core, T)]
+    # v3 계약: 근무 실측은 수집·분석이 **로드바 안에서** 계산해 저장하고, 화면은 읽기만 한다.
+    # 관문도 같은 체인을 탄다 — mine 과 동일 호출로 계산 → save_day_hours → trend 가 판독.
+    import extract as _X
+    _cfg = _X.load_cfg() if hasattr(_X, "load_cfg") else {}
+    _rows, _meta = _X.load_signals(os.path.join(T, "data"), date(2026, 3, 1), date(2026, 9, 15),
+                                   (), _cfg)
+    if not _rows:
+        bad("픽스처: load_signals 0건 — 관문 재료가 죽었습니다")
+    else:
+        _wh, _hi = _X.day_work_hours(os.path.join(T, "data"), _rows,
+                                     date(2026, 3, 1), date(2026, 9, 15), _cfg,
+                                     file_times=_meta.get("file_times"))
+        if not _X.save_day_hours(rep, "20260301-20260915", _wh):
+            bad("save_day_hours 실패")
     spec = importlib.util.spec_from_file_location("app", os.path.join(T, "ui", "app.py"))
     A = importlib.util.module_from_spec(spec)
     sys.modules["app"] = A
@@ -115,7 +129,8 @@ try:
         pc4 = float(by.get("4월", {}).get("pc_h") or 0)
         if wk4 < 50.0:
             bad(f"③ 근무 실측 선이 무너졌습니다 — 4월 근무 {wk4:.1f}h(<50h). "
-                "선이 다시 PC 로그에 묶였는지 확인하세요(수번째 제보 '수십 시간인데 8h' 재발)")
+                "선이 다시 PC 로그에 묶였거나, 화면이 day_hours 아티팩트를 못 읽습니다"
+                "(수번째 제보 '수십 시간인데 8h' 재발)")
         if pc4 > 5.0:
             bad(f"④ 교차 증명 실패 — 파괴 시나리오인데 4월 pc_h={pc4:.1f}h(픽스처 오류?)")
         if fail == 0:

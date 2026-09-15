@@ -26,11 +26,11 @@ report_out.py                                         30,599 B  01944b84
 README.md                                             97,980 B  6298a25e
 check.py                                               2,629 B  7badfe69
 judge.py                                             108,118 B  f0232882
-mine.py                                               17,836 B  c751c51d
+mine.py                                               18,110 B  e59b3914
 refine.py                                             50,015 B  8b9e7ba2
 ruff.toml                                              1,004 B  47a31613
 FILES.txt                                                (이 파일)
-run.py                                                70,893 B  ad9a5829
+run.py                                                73,115 B  f83f2775
 자가점검.py                                                9,162 B  94a5fc0a
 collect/Add-WorkLog.ps1                                1,771 B  8a921980
 collect/Get-FileActivity.ps1                          48,656 B  cfab595d
@@ -55,13 +55,13 @@ config/config.json                                    42,877 B  6f7affda
 config/config.default.json                            42,877 B  6f7affda
 config/agentic_tasks.json                              4,426 B  2c9e5bb1
 core/board.py                                         13,181 B  86eaf661
-core/extract.py                                      225,351 B  764efc98
+core/extract.py                                      227,283 B  cb706498
 core/pc_ledger.py                                     19,424 B  7b61fc34
 core/budget.py                                         2,619 B  d096ff8f
 core/stage_state.py                                    7,301 B  d30a0590
 core/watch.py                                          6,594 B  33e30d52
 tools/check_l1.py                                      4,770 B  cfe71d55
-tools/check_trend.py                                   6,660 B  5ea11a56
+tools/check_trend.py                                   7,627 B  d4724e09
 core/programs.py                                      15,778 B  1f1e142f
 core/details.py                                       77,855 B  b04db4f5
 core/owner.py                                          1,488 B  1f1dc049
@@ -81,4 +81,4 @@ tools/Make-Package.ps1                                10,739 B  3b01fdf5
 tools/Make-MovePack.py                                12,103 B  4132d2e7
 tools/Prepare-Move.ps1                                26,116 B  67389835
 tools/update_files.py                                  4,530 B  33b4a677
-ui/app.py                                            368,683 B  6d6b0c05
+ui/app.py                                            367,960 B  950d393e

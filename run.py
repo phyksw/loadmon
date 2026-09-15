@@ -557,8 +557,10 @@ def register_sampler_once(ps, col):
             return True                     # 이미 등록돼 있다
     except (OSError, subprocess.SubprocessError):
         pass
-    ok = step("창 샘플러 자동 등록(1회 · 로그온 시 시작)",
+    ok = step("창 샘플러 자동 등록(1회 · 등록 즉시 + 로그온마다 시작)",
               ps + [os.path.join(col, "Register-Samplers.ps1")], 180)
+    if ok:
+        print("   샘플러가 지금부터 백그라운드로 기록합니다(창 1분·팀즈 5분 주기) — 수집의 일부입니다.")
     if not ok:
         print("   샘플러 자동 등록이 되지 않았습니다 — 보안 정책이 막는 환경일 수 있습니다."
               " LoadMonitor24-샘플러등록.bat 을 한 번 실행해 주세요(없어도 분석은 됩니다).")
@@ -854,9 +856,38 @@ def main():
                  ps + [os.path.join(col, "Get-TeamsWindow.ps1")], 120)
 
     if "--collect-only" in sys.argv:
+        # 근무시간 실측을 **로드바 안에서** 계산·저장한다 — 예전에는 화면이 열릴 때 재계산해
+        # '끝났는데 탐색하듯 도는' CPU 가 로드바 밖에 있었다(제보). 실패해도 수집은 유효.
+        try:
+            from progress import progress as _pg
+            import extract as _XW
+            _pg("근무시간 실측", 0, 1)
+            print("\n── 근무시간 실측(추이 실선 재료 — 이 계산까지가 수집입니다)")
+            _cfgw = _XW.load_cfg()
+            try:
+                from mine import EXCLUDE as _EX0
+            except ImportError:
+                _EX0 = ()
+            _exw = sorted(set(_EX0) | {str(k) for k in _XW.cfg_list(_cfgw, "excludePathKeywords")
+                                       if str(k).strip()})
+            from datetime import date as _date
+            _dd0, _dd1 = _date.fromisoformat(d0), _date.fromisoformat(d1)
+            _rows, _metaw = _XW.load_signals(data, _dd0, _dd1, _exw, _cfgw)
+            if _rows:
+                _wh, _hi = _XW.day_work_hours(data, _rows, _dd0, _dd1, _cfgw,
+                                              file_times=_metaw.get("file_times"))
+                _XW.save_day_hours(os.path.join(ROOT, "report"),
+                                   f"{d0.replace('-', '')}-{d1.replace('-', '')}", _wh)
+                print(f"   근무 실측 {len(_wh)}일 저장 — 본 PC 추이 실선에 그대로 쓰입니다")
+            _pg("근무시간 실측", 1, 1)
+        except Exception as _e:  # noqa: BLE001
+            print(f"   근무 실측 저장 보류({type(_e).__name__}) — 본 PC 분석 때 다시 계산됩니다")
         print("\n[수집만] 이 PC 의 데이터 수집을 마쳤습니다 — 분석은 하지 않았습니다.")
         print("        폴더째 본 PC 로 가져가 [분석 실행]을 누르면 두 PC 데이터가 합산됩니다")
         print("        (같은 메일·일정 등 중복 자료는 분석 때 자동 제외).")
+        print("        ※ 창 샘플러(1분 주기)·팀즈 샘플러(5분 주기)는 **백그라운드로 계속** 활동을")
+        print("          기록합니다 — 이것이 수집의 일부입니다(끝난 뒤 도는 프로그램이 그것입니다).")
+        print("          멈추려면: schtasks /End /TN LoadMonitor24-Sampler (등록 해제는 /Delete)")
         RUN["finished"] = time.strftime("%Y-%m-%d %H:%M")
         record("완료(수집만)", True, 0.0, "추가 PC 수집 모드 — 분석은 본 PC 에서")
         return 0

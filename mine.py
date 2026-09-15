@@ -154,6 +154,9 @@ def main():
     # 그 달 평일수(투입 MM 분모)에서도 뺀다(A31) — inferred 로 따로 넘긴다.
     inferred = hinfo.pop("inferred_absence", {}) or {}
     absence.update(inferred)
+    extract.save_day_hours(os.path.join(ROOT, "report"),
+                           f"{d0.isoformat().replace('-', '')}-{d1.isoformat().replace('-', '')}",
+                           day_hours)      # 추이 실선의 재료 — 화면은 읽기만 한다(재계산 금지)
     # 잘못된 설정값은 죽지 않고 기본값으로 대체됐다 — 무엇이 무시됐는지 사용자에게 보인다
     cfg_warns = list(dict.fromkeys(list(meta.get("config_warnings") or [])
                                    + list(hinfo.get("config_warnings") or [])))
