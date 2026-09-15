@@ -1151,10 +1151,9 @@ def outlook_coverage(period=None):
 def dash_period(meta, lastrun=None):
     r"""화면이 다루는 기간 [d0, d1] — 추이·덩어리 판정·수집 범위 대조가 모두 이 기간을 쓴다.
       ① 분석 결과(mm_meta.period) ② 없으면 마지막 실행의 기간(report\last_run.json 의 period = 수집 기간 — 수집만 한
-      추가 PC·분석 전) ③ 그것도 없으면 수집된 데이터의 실제 범위(pc_on·메일·파일 시각의 최소~최대) ④ ["", ""].
-    예전엔 ①이 없으면 추이가 '오늘 기준 13주'로 떨어져, '올해'로 수집한 추가 PC 화면의 주간 활동 추이가 6월부터만
-    그려졌다(제보: "팀 분석처럼 기간 전체를 포함했으면")."""
-    from datetime import date, timedelta
+      추가 PC·분석 전) ③ 그것도 없으면 수집된 데이터의 실제 범위(data_extent) ④ ["", ""].
+    주의: 추이 카드는 이 함수가 아니라 '이 값 ∪ data_extent()' 를 쓴다 — 분석 창이 집계 전체를 가리지 않게."""
+    from datetime import date
 
     def _pair(v):
         """[d0, d1] 로 쓸 수 있는 값이면 ISO 날짜 문자열 쌍(앞이 이르게 정렬), 아니면 None — 손으로 고친 파일의 'abc' 같은 값은
@@ -1173,7 +1172,15 @@ def dash_period(meta, lastrun=None):
         per = _pair(src.get("period")) if isinstance(src, dict) else None
         if per:
             return per
-    # ③ 데이터 범위 — /api/dash 는 자주 불리므로 파일 mtime 이 그대로면 지난 답을 쓴다(files.csv 는 수만 행일 수 있다)
+    return data_extent()
+
+
+def data_extent():
+    r"""수집 데이터의 실측 범위 [d0, d1] — pc_on·메일·일정·파일 시각의 최소~최대(400일 창).
+    dash_period ③ 이던 것을 분리했다: 추이 카드가 '분석 창'이 아니라 **집계 전체**를 그리려면
+    분석 기간과 무관하게 이 범위가 필요하다(제보: "왜 집계기간 전체를 안 보여주나").
+    /api/dash 는 자주 불리므로 파일 mtime 이 그대로면 지난 답을 쓴다(files.csv 는 수만 행일 수 있다)."""
+    from datetime import date, timedelta
     srcs = (("pc/pc_on.csv", "date"), ("outlook/mail.csv", "time"), ("outlook/calendar.csv", "start"),
             ("files/files.csv", "mtime"))
     def _sz(p):
@@ -1456,8 +1463,12 @@ def trend(d0="", d1="", tag="", info=None):
     sp = os.path.join(REPORT, f"signals_{tag}.csv") if tag else latest_signals()
     n_sig = 0
     _fcap, _seen = {}, set()
+    _sig_lo, _sig_hi = "", ""            # 판정 신호가 실제로 덮는 날짜 범위 — 그 밖 버킷은 수집 흔적으로 보완
     for r in _rows(sp):
         d = str(r.get("time") or r.get("date") or "")[:10]
+        if len(d) == 10:
+            _sig_lo = d if (not _sig_lo or d < _sig_lo) else _sig_lo
+            _sig_hi = d if (not _sig_hi or d > _sig_hi) else _sig_hi
         i = slot(d)
         if i is None:
             continue
@@ -1477,19 +1488,32 @@ def trend(d0="", d1="", tag="", info=None):
             if _fcap[d] > 8:                    # 재동기화 몰림이 그래프를 지배하지 않게
                 continue
         out[i][kind] += 1
-    if not n_sig:
-        # 판정 결과가 아직 없는 기간 — 그때만 수집 raw 로라도 모양을 보여준다 (같은 상한). LM20+보완2 와 같은 규칙.
+    # 판정 신호가 덮지 않는 버킷(판정 기간 밖 달)은 수집 raw 로 보완한다 — 예전엔 신호가 하나라도
+    # 있으면 raw 폴백 전체가 꺼져, 집계기간을 넓혀도 앞 달 막대가 통째로 비었다(all-or-nothing 구조).
+    def _slot_raw(s10):
+        i = slot(s10)
+        if i is None:
+            return None
+        if not n_sig:
+            return i                      # 판정 자체가 없다 — 전 버킷 raw(기존 규칙)
+        if _sig_lo and _sig_hi and _sig_lo <= s10 <= _sig_hi:
+            return None                   # 판정이 덮는 날 — 신호 막대가 진실
+        return i
+
+    _n_raw_out = 0
+    if (not n_sig) or (_sig_lo and _sig_lo > (start.isoformat())) or (_sig_hi and _sig_hi < (end.isoformat())):
         _fcap.clear()
         for pat in ("files/files.csv", "files/recent.csv"):
             for r in _rows_multi(pat):                  # 본 PC + 추가PC
                 d = str(r.get("mtime") or "")[:10]
-                i = slot(d)
+                i = _slot_raw(d)
                 if i is None:
                     continue
                 _fcap[d] = _fcap.get(d, 0) + 1
                 if _fcap[d] > 8:                        # 재동기화 몰림이 그래프를 지배하지 않게(보완2 와 같다)
                     continue
                 out[i]["파일"] += 1
+                _n_raw_out += 1
         for pat, k2, col, kcols in (("outlook/mail.csv", "메일", "time", ("subject", "sender")),
                                     ("outlook/calendar.csv", "회의", "start", ("subject",)),
                                     ("files/git_commits.csv", "커밋", "time", ("repo", "subject")),
@@ -1497,7 +1521,7 @@ def trend(d0="", d1="", tag="", info=None):
             seen = set()
             for r in _rows_multi(pat):
                 t = str(r.get(col) or "")
-                i = slot(t[:10])
+                i = _slot_raw(t[:10])
                 if i is None:
                     continue
                 if len(_data_roots()) > 1:
@@ -1507,6 +1531,7 @@ def trend(d0="", d1="", tag="", info=None):
                         continue
                     seen.add(k)
                 out[i][k2] += 1
+                _n_raw_out += 1
 
     # PC 가동 시간 — 기간 안만. 본 PC + 추가PC 를 extract.pc_daily 로 합친다(구간 합집합 — 분석의 PC 하한과 같은 값).
     # 예전엔 본 PC 의 pc_on.csv 만 세어 추가 PC 의 가동이 이 선에서 통째로 빠졌다(제보: 'PC 가동시간 합산 안 됨').
@@ -1563,6 +1588,8 @@ def trend(d0="", d1="", tag="", info=None):
         info["gran"] = "month" if monthly else "week"
         info["pc_note"] = pc_note
         # PC 기록이 있는 버킷 / 평일이 있는 버킷 — 화면이 "27주 중 16주만 기록" 처럼 말할 수 있게
+        info["raw_outside_n"] = int(_n_raw_out) if n_sig else 0
+        info["sig_span"] = [_sig_lo, _sig_hi] if (_sig_lo and n_sig) else []
         info["pc_buckets"] = sum(1 for w in out if w["pc_days"] > 0)
         info["pc_buckets_all"] = sum(1 for w in out if w["pc_wd"] > 0)
         info["pc_days_total"] = len(pcd)       # 기록이 있는 날 수 — 선 높이가 낮은 이유(기록 이틀치)를 화면이 말하게
@@ -2792,21 +2819,16 @@ function weekly(el,tr){
  const keys=[["파일","#2a78d6"],["작업창","#7a8a99"],["메일","#0e8c7a"],["회의","#e08a00"],["커밋","#6c4fb8"],["팀즈","#4a7f9e"]];
  const W=740,H=180,L=34,Rm=38,B=26,T=12,iw=(W-L-Rm)/Math.max(tr.length,1);
  const cmax=Math.max(...tr.map(w=>keys.reduce((a,[k])=>a+(Number(w[k])||0),0)),1);
- // 선 = 기록 있는 날의 하루 평균 가동(h/일) · 축 0~24h 고정.
- // 예전의 '월 총합' 선은 기록 가용성(롤오버로 며칠만 남은 달)과 켜짐 시간이 뒤섞여, 바닥을 기다
- // 수직 벽으로 치솟는 하키스틱이 됐다(실측: y 153→141 포복 → 32→12 벽) — 합산 문제가 아니라
- // 지표 문제라 아홉 판의 합산 수정이 그림을 못 바꿨다. 평균은 빠진 날에 물타기되지 않고,
- // 24h 물리 상한 축이라 달끼리 비교된다. 총합은 아래 진단 줄이 말한다.
- const avgOf=w=>{const rd=Number(w.pc_rd);if(rd>0)return Math.min(24,(Number(w.pc_h)||0)/rd);
-  return (w.pc_rd===undefined&&Number(w.pc_h)>0)?null:0;};   // 옛 baked 데이터(pc_rd 없음)는 총합 축 폴백
- const legacy=tr.some(w=>w.pc_rd===undefined&&Number(w.pc_h)>0);
- const hmax=legacy?Math.max(...tr.map(w=>Number(w.pc_h)||0),1):24;
- const lineVal=w=>legacy?(Number(w.pc_h)||0):(avgOf(w)||0);
+ // 선 = 그 달의 **가동시간 합계**(누적된 일의 증거 — 이 카드의 의의). 평균·기록일은 점 툴팁의
+ // 보조 정보로만 둔다. 기록이 일부만 남은 달은 실제보다 낮게 보인다 — 그 사실은 회색 '기록 없음'
+ // 구간·빈 점(부분 기록)·아래 진단 줄(로그 커버리지)이 말한다. 값 자체는 실측 그대로 둔다.
+ const hmax=Math.max(...tr.map(w=>Number(w.pc_h)||0),1);
+ const lineVal=w=>Number(w.pc_h)||0;
  let s=`<svg viewBox="0 0 ${W} ${H}" style="width:100%">`;
  for(let g=0;g<=3;g++){const y=T+(H-T-B)*g/3;
   s+=`<line x1="${L}" x2="${W-Rm}" y1="${y}" y2="${y}" stroke="#eef0f3"/>
   <text x="${L-5}" y="${y+3}" text-anchor="end" style="font-size:9px;fill:#98a0a8">${Math.round(cmax*(1-g/3))}</text>
-  <text x="${W-Rm+5}" y="${y+3}" style="font-size:9px;fill:#c8a06a">${(hmax*(1-g/3)).toFixed(0)}${legacy?"h":"h/일"}</text>`;}
+  <text x="${W-Rm+5}" y="${y+3}" style="font-size:9px;fill:#c8a06a">${(hmax*(1-g/3)).toFixed(0)}h</text>`;}
  // ① PC 기록이 없는 버킷의 회색 띠 — 0h 가 아니라 '모름' 이다(이벤트 로그가 롤오버되면 과거 주는 구조적으로 기록이 없다).
  //   ★ 막대 **뒤**에 깐다. 예전엔 막대 다음에 그려(불투명) 그 달의 막대를 통째로 덮었다 — 옮긴 PC 는 PC 기록이 없어
  //   모든 달이 회색이라 "집계가 안 뜬다" 로 보였다(실측 스크린샷: 1~5월 막대 없음 · 축만 13,203). LM24 에서는 PC 기록이
@@ -2828,8 +2850,8 @@ function weekly(el,tr){
  flush();
  tr.forEach((w,i)=>{if(has(w)){
   const part=(w.pc_wd!==undefined&&w.pc_days<w.pc_wd);
-  const _av=lineVal(w);
-  s+=`<circle cx="${(L+i*iw+iw/2).toFixed(1)}" cy="${(H-B-(H-T-B)*_av/hmax).toFixed(1)}" r="2.6" fill="${part?"#fff":"#c8a06a"}" stroke="#c8a06a" stroke-width="${part?1.4:0}"><title>${w.label} ${legacy?`PC ${w.pc_h}h`:`평균 ${_av.toFixed(1)}h/일 · 총 ${(Number(w.pc_h)||0).toFixed(1)}h · 기록 ${w.pc_rd||0}일`}${w.pc_wd!==undefined?` (평일 ${w.pc_days}/${w.pc_wd})`:""}${(!legacy&&_av>=20)?" · 종일 켜 둔 패턴(야간 포함)":""}</title></circle>`;}});
+  const _tot=Number(w.pc_h)||0, _rd=Number(w.pc_rd)||0, _avg=_rd>0?_tot/_rd:0;
+  s+=`<circle cx="${(L+i*iw+iw/2).toFixed(1)}" cy="${(H-B-(H-T-B)*_tot/hmax).toFixed(1)}" r="2.6" fill="${part?"#fff":"#c8a06a"}" stroke="#c8a06a" stroke-width="${part?1.4:0}"><title>${w.label} PC ${_tot.toFixed(1)}h${_rd?` · 기록 ${_rd}일 · 평균 ${_avg.toFixed(1)}h/일`:""}${w.pc_wd!==undefined?` (평일 ${w.pc_days}/${w.pc_wd})`:""}${_avg>=20?" · 종일 켜 둔 패턴(야간 포함)":""}</title></circle>`;}});
  el.innerHTML=s+"</svg>";
  $("wleg").innerHTML=keys.map(([k,c])=>`<span><span class="dot" style="background:${c}"></span>${k}</span>`).join("")+
   '<span><span class="dot" style="background:#c8a06a"></span>PC 가동(h·오른쪽 축)</span>'+
@@ -3075,7 +3097,7 @@ async function refresh(){
   if(wt)wt.textContent=(ti0.gran==="month"?"월간":"주간")+" 활동 추이";
   if(ws)ws.textContent=(per0[0]?`${per0[0]} ~ ${per0[1]||""} · `:"")
    +(ti0.gran==="month"?"막대 하나 = 한 달":"막대 하나 = 한 주")
-   +(d.trend_src==="signals"?" · 막대 = 판정에 쓰인 신호 건수(MM 과 같은 축)":" · 막대 = 수집된 흔적 건수")+" · 선 = PC 가동(기록일 평균 h/일)";}
+   +(d.trend_src==="signals"?" · 막대 = 판정에 쓰인 신호 건수(MM 과 같은 축)":" · 막대 = 수집된 흔적 건수")+" · 선 = PC 가동시간(월 합계)";}
  // 메일·일정이 기간의 일부 달만 수집된 상태(Outlook 시간 예산) — 앞 달의 메일·회의 막대가 비어 보이는 이유를 적는다
  const wn=$("wnote");
  if(wn){const mc=d.mail_coverage||null;const notes=[];
@@ -3091,7 +3113,7 @@ async function refresh(){
   const ti=d.trend_info||{};const unit=ti.gran==="month"?"개월":"주";
   if(ti.pc_buckets_all&&ti.pc_buckets<ti.pc_buckets_all)
    notes.push(`PC 가동 선은 ${ti.pc_buckets_all}${unit} 중 <b>${ti.pc_buckets}${unit}</b>만 기록이 있습니다`
-    +(ti.pc_days_total!=null?` (기록 있는 날 ${Number(ti.pc_days_total).toLocaleString()}일 — 선은 그 날들의 하루 평균 h/일입니다)`:"")
+    +(ti.pc_days_total!=null?` (기록 있는 날 ${Number(ti.pc_days_total).toLocaleString()}일 — 선의 높이는 그 날들의 합입니다)`:"")
     +(ti.pc_from?` — Windows 이벤트 로그가 <b>${esc(ti.pc_from)}</b> 까지만 남아 있어 그 앞은 <b>0시간이 아니라 기록 없음</b>입니다(회색 구간).`:` — 회색 구간은 0시간이 아니라 기록이 없는 구간입니다.`));
   // PC 가동 진단 — **항상** 한 줄. 제보 "8h 라니 합산한 숫자도 아니다" 처럼 숫자가 낮을 때
   // 그것이 합산 실패인지 기록 부족인지 이 줄에서 끝나게 한다(합계·기록일·폴더별·로그 커버리지).
@@ -3108,6 +3130,8 @@ async function refresh(){
     if(pd.dropped) notes.push(`⚠ PC 기록 파일에서 <b>읽지 못한 행 ${pd.dropped}개</b>가 있었습니다(이동 중 잘렸을 수 있음) — 그 파일만 빼고 나머지로 그렸습니다. [분석 실행]으로 다시 수집하면 복구됩니다.`);
     if(pd.warn) notes.push(`⚠ ${esc(pd.warn)} — 롤오버된 과거는 되살릴 수 없지만, 브라우저 사용기록 힌트와 창 샘플러가 <b>앞으로의 구간</b>을 메웁니다(샘플러 등록이 없으면 [분석 실행]이 자동으로 1회 등록합니다 · config.autoRegisterSampler).`);
    }}
+  if(ti.raw_outside_n>0&&(ti.sig_span||[]).length===2)
+   notes.push(`판정 기간(${esc(ti.sig_span[0])} ~ ${esc(ti.sig_span[1])}) <b>밖</b>의 막대 ${Number(ti.raw_outside_n).toLocaleString()}건은 <b>수집 흔적</b> 기준입니다 — 집계기간 전체를 보이기 위해 판정 전 달도 함께 그립니다(그 달을 판정 축으로 보려면 그 기간으로 [분석 실행]).`);
   if(ti.pc_note) notes.push(`⚠ ${esc(ti.pc_note)}`);
   if(ti.capped>0) notes.push(`파일 막대는 하루 8건까지만 셉니다 — 이 기간에 <b>${Number(ti.capped).toLocaleString()}건</b>이 상한에 눌렸습니다(공유폴더 재동기화가 그래프를 지배하지 않게 하는 장치 · 실제 신호 수는 [업무 리뷰] 탭).`);
   if(notes.length){wn.style.display="";wn.innerHTML=notes.join("<br>");}
@@ -4091,8 +4115,13 @@ class H(BaseHTTPRequestHandler):
             # 화면 기간 — 분석 결과가 있으면 그 기간, 없으면 마지막 실행(수집)의 기간, 그것도 없으면 수집 데이터의 범위.
             # 추이·덩어리·수집 범위 대조가 전부 같은 기간을 본다(dash_period 참조).
             per = dash_period(meta, lastrun)
+            # 추이 카드만은 **집계기간 전체** — 분석 창(per)이 6월~ 이어도 자료가 3월부터 있으면
+            # 3월부터 그린다(제보). 나머지 카드(덩어리·수집 대조)는 분석 창 그대로.
+            _ext = data_extent()
+            per_tr = [min(x for x in (per[0], _ext[0]) if x) if (per[0] or _ext[0]) else "",
+                      max(x for x in (per[1], _ext[1]) if x) if (per[1] or _ext[1]) else ""]
             tinfo = {}
-            tr = trend(per[0], per[1], (m2.group(1) if m2 else ""), info=tinfo)
+            tr = trend(per_tr[0], per_tr[1], (m2.group(1) if m2 else ""), info=tinfo)
             try:
                 import details as _dl1m
                 _l1meta = _dl1m.l1_meta_payload()
@@ -4113,7 +4142,8 @@ class H(BaseHTTPRequestHandler):
                              # 주/월 단위, 추가PC 합산 실패 사유. 화면이 '0h' 와 '기록 없음' 을 구분해 말한다.
                              "trend_info": {k: tinfo.get(k) for k in
                                             ("gran", "pc_note", "pc_buckets", "pc_buckets_all", "pc_from", "capped",
-                                             "period", "roots", "signals_n", "pc_days_total", "pc_diag")},
+                                             "period", "roots", "signals_n", "pc_days_total", "pc_diag",
+                                             "raw_outside_n", "sig_span")},
                              "period": per,
                              "judged": judged, "last_run": lastrun,
                              # 판정 건수/대상 — 0 이면 '단계는 성공인데 왕복이 전부 실패' 를 화면이 구분한다
