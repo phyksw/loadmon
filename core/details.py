@@ -419,6 +419,7 @@ LEVEL1_ALIAS = {
     "선행": "개발", "선행개발": "개발", "신제품": "개발", "요소기술": "개발", "내재화": "개발",
     "사무": "공통", "일반": "공통", "지원": "공통", "관리": "공통",
     "ax": "AX", "자동화": "AX", "agentic": "AX", "에이전틱": "AX", "ai": "AX", "에이아이": "AX",
+    "ｱx": "AX", "ＡＸ": "AX", "ＡＸ자동화": "AX",     # 반각 가타카나·전각 표기
 }
 
 
@@ -464,7 +465,8 @@ def snap1(s):
 # 코드네임은 **사람이 아는 사실**이라 설정으로 받는다(사내 이름을 코드에 넣지 않는다 — 배포본은 빈 배열).
 # 규칙은 AI 판정을 덮지 않는다: 호출자가 **AI 가 비운 자리에만** 쓴다(refine·judge).
 _L1_AX_DEFAULT = ("ax", "agentic", "copilot", "rpa", "llm", "gpt", "프롬프트", "에이전트",
-                  "자동화", "자동 분류", "자동분류", "챗봇", "머신러닝", "딥러닝", "ai ")
+                  "자동화", "자동 분류", "자동분류", "챗봇", "머신러닝", "딥러닝")
+_L1_AX_WORD = ("ai",)          # 단어 경계로만(문자열 끝의 'AI' 도 잡되 'brain' 의 ai 는 아니게)
 # 공통(일반 사무) 키워드 — 제보: "공통은 일반사무 회계·재무·총무·실험실 관리 등등"
 _L1_COMMON_DEFAULT = ("회계", "재무", "자금", "세무", "결산", "예산", "품의", "정산", "자산", "실사",
                       "구매요청", "발주 요청", "사무용품", "비품", "법인카드", "총무", "인사", "근태",
@@ -498,13 +500,14 @@ def level1_of(text, l2="", root=None, cfg=None):
     ax 를 공통보다 먼저 보는 이유: '실험실 자동화' 는 사무가 아니라 AX 다(제보의 정의)."""
     root = root or ROOT
     codes, ax, common = cfg if cfg else _l1_cfg(root)
-    hay2 = " ".join(str(x or "") for x in (l2,)).lower()
-    hay = " ".join(str(x or "") for x in (l2, text)).lower()
+    # NFKC 정규화 — 전각 'ＡＸ'·반각 가타카나 표기도 같은 축으로 본다(제보 ③)
+    hay2 = unicodedata.normalize("NFKC", " ".join(str(x or "") for x in (l2,))).lower()
+    hay = unicodedata.normalize("NFKC", " ".join(str(x or "") for x in (l2, text))).lower()
     for name, keys in (codes or {}).items():
         for k in keys:
             if k and (k in hay2 or k in hay):
                 return snap1(name) or ""
-    if any(k and k in hay for k in ax):
+    if any(k and k in hay for k in ax) or re.search(r"(?<![a-z])ai(?![a-z])", hay):
         return "AX"
     if any(k and k in hay for k in common):
         return "공통"

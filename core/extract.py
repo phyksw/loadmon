@@ -53,6 +53,15 @@ from datetime import timedelta as _td
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+
+def _level1_of(text, l2=""):
+    """규칙 상위 분류(core/details.level1_of) — 임포트 실패해도 추출은 계속(빈칸)."""
+    try:
+        from details import level1_of
+        return level1_of(text, l2, ROOT)
+    except Exception:  # noqa: BLE001
+        return ""
+
 # 활동(Level 3) 규칙 — 신호 텍스트에서 '무슨 활동인가'를 뽑는다
 ACT_RULES = [
     ("설계", ["설계", "도면", "회로", "구조", "레이아웃", "schematic", "layout", "cad",
@@ -451,6 +460,11 @@ def _read(path):
         with open(path, encoding="utf-8-sig", errors="replace") as f:
             rows = list(csv.DictReader(f))
     except OSError:
+        return []
+    except csv.Error:
+        # 잘린 파일의 깨진 따옴표가 13만 자 초과 필드를 만들면 csv.Error — 예전엔 이게 pc_daily 밖으로
+        # 새어 화면이 예외 폴백(행-max)으로 떨어지며 그 달이 하루치(~8h)로 붕괴했다(제보 ①). 파일만 버린다.
+        READ_DROPPED[path] = READ_DROPPED.get(path, 0) + 1
         return []
     out, dropped = [], 0
     for r in rows:
@@ -1519,7 +1533,10 @@ def to_rows(items, months, owner="", function=""):
         srcs = len({s.split("(")[0] for s in v["src"]})
         conf = "상" if (srcs >= 2 and len(v["days"]) >= 3) else ("중" if srcs >= 2 or len(v["days"]) >= 3 else "하")
         rows.append({
-            "Function": function, "Level 1": "", "Level 2": proj, "Level 3": _one_line(act),
+            # 규칙 단독(AI 판정·정제 없이) 실행에서도 상위를 채운다 — judge.py 초안과 같은 규칙·우선순위.
+            # 예전에는 늘 빈칸이라 대시보드 상세 리뷰 표의 Level 1 열이 전부 '-' 였다(제보 ③).
+            "Function": function, "Level 1": _level1_of(f"{proj} {_one_line(act)}", proj),
+            "Level 2": proj, "Level 3": _one_line(act),
             "이름": owner, "상세설명": "",
             "share": round(share, 4), "mm": round(share * months, 3),
             "근거": " · ".join(f"{s}{n}" for s, n in v["src"].most_common()),
@@ -1858,6 +1875,23 @@ def read_pc_spans(data_dir, d0, d1, anomalies=None):
     return _pc_spans_rows(rows, d0, d1, anomalies)
 
 
+EVENT_SPAN_SRC = ("event", "event-gap", "event-cap", "live", "boot")
+
+
+def _evt_span_dates(rows, d0, d1):
+    r"""pc_spans 행에서 **물리 이벤트**(전원·부팅·세션 = event 계열) 구간이 있는 날짜 집합과 그 최소 날짜.
+    힌트(브라우저 방문)·샘플러(창) 구간은 제외 — '이 PC 를 실제로 켠 첫 물리 증거'의 하한을 잡기 위해서다.
+    이동해 온 PC 에서 브라우저 동기화 방문이 '이 PC 를 쓰기 전' 날짜에 가짜 가동을 만들던 것을 막는다(제보 ②)."""
+    dates = set()
+    for r in rows:
+        if str(r.get("src") or "").strip().lower() not in EVENT_SPAN_SRC:
+            continue
+        a = _dt(r.get("start"))
+        if a and d0 <= a.date() <= d1:
+            dates.add(a.date())
+    return dates, (min(dates) if dates else None)
+
+
 def pc_daily(data_dir, d0, d1, day_win=None, anom=None, span_anoms=None):
     r"""PC 가동 기록을 날짜별로 합친다(본 PC + data\추가PC\*) → (pc, pc_wins, pc_spans, pc_win_all).
       pc         {date: (on_h, night_h, first_on_min|None, last_off_min|None)}
@@ -1880,6 +1914,16 @@ def pc_daily(data_dir, d0, d1, day_win=None, anom=None, span_anoms=None):
     for ri, root in enumerate(roots):
         rows_sp = _read(os.path.join(root, "pc_spans.csv")) + _read(os.path.join(root, "pc", "pc_spans.csv"))
         real_by_root[ri] = _pc_spans_rows(rows_sp, d0, d1, anomalies=span_anoms)
+        # 이동해 온 PC 방어(제보 ②) — 이 루트의 첫 물리 이벤트 이전이면서 그 날 구간이 전부 힌트/샘플러인
+        # 날은 '이 PC 를 쓰기 전' 브라우저 동기화 방문이 만든 가짜다. 그 루트에서 행·구간을 함께 무시한다.
+        _evt_dates, _first_evt = _evt_span_dates(rows_sp, d0, d1)
+
+        def _phantom(dd, _fe=_first_evt, _ed=_evt_dates):
+            return _fe is not None and dd < _fe and dd not in _ed
+
+        if _first_evt is not None:
+            for dd in [x for x in real_by_root[ri] if _phantom(dd=x)]:
+                del real_by_root[ri][dd]
         for dd in real_by_root[ri]:
             roots_with.setdefault(dd, set()).add(ri)
         for r in _read(os.path.join(root, "pc", "pc_on.csv")):
@@ -1887,6 +1931,8 @@ def pc_daily(data_dir, d0, d1, day_win=None, anom=None, span_anoms=None):
                 d = datetime.strptime((r.get("date") or "")[:10], "%Y-%m-%d").date()
                 on, ni = float(r.get("on_hours") or 0), float(r.get("night_hours") or 0)
             except (ValueError, TypeError):
+                continue
+            if _phantom(dd=d):                  # 첫 물리 증거 이전의 힌트 전용 날 — 그 행은 가짜
                 continue
             raw = (on, ni)
             roots_with.setdefault(d, set()).add(ri)
@@ -1950,7 +1996,7 @@ def pc_coverage(data_dir, d0, d1):
     roots 의 시간은 그 폴더 파일에 적힌 값의 단순 합이다 — 최종 합산은 구간 합집합이라(pc_daily)
     단순 합과 다를 수 있다. 그 사실도 화면 문구에 적는다."""
     out = {"roots": [], "hours": 0.0, "days": 0, "coverage_days": None, "range_days": None,
-           "reach_start": "", "generated": "", "warn": "", "dropped": 0}
+           "reach_start": "", "generated": "", "warn": "", "dropped": 0, "fallback_boot": False}
     roots = _data_roots(data_dir)
     base = os.path.abspath(_data_roots(data_dir)[0]) if roots else ""
     for root in roots:
@@ -1983,6 +2029,7 @@ def pc_coverage(data_dir, d0, d1):
                 out["range_days"] = src.get("range_days")
                 out["reach_start"] = str(src.get("reach_start") or "")
                 out["generated"] = str(src.get("generated") or "")
+                out["fallback_boot"] = bool(src.get("fallback_boot"))   # 이벤트 0건 → 부팅 폴백 1구간(제보 ①)
                 w = src.get("warnings")
                 out["warn"] = str((w or [""])[0])[:160] if isinstance(w, list) else ""
         except (OSError, ValueError, TypeError, AttributeError):

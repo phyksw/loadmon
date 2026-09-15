@@ -307,11 +307,49 @@ def sampler_times(t0, t1, data_root=None):
     return times
 
 
+def _this_pc_since():
+    r"""이 PC 에서 이 사용자의 **첫 물리 증거** — pc_spans.csv 의 첫 event 계열 구간 시작과
+    %USERPROFILE% 생성시각 중 이른 쪽. 이보다 앞선 브라우저 방문은 '이 PC 를 쓰기 전'(이동 전 기기·
+    동기화로 넘어온 방문)이라 가동 근거로 세지 않는다(제보 ②). 못 구하면 None(클램프 안 함)."""
+    cands = []
+    try:
+        prof = os.environ.get("USERPROFILE", "")
+        if prof and os.path.isdir(prof):
+            cands.append(datetime.fromtimestamp(os.path.getctime(prof)))
+    except OSError:
+        pass
+    try:
+        sp = os.path.join(ROOT, "data", "pc", "pc_spans.csv")
+        if os.path.isfile(sp):
+            import csv as _csv
+            evt = ("event", "event-gap", "event-cap", "live", "boot")
+            with open(sp, encoding="utf-8-sig", errors="replace") as f:
+                starts = [r.get("start") for r in _csv.DictReader(f)
+                          if str(r.get("src") or "").strip().lower() in evt]
+            ds = []
+            for s in starts:
+                try:
+                    ds.append(datetime.strptime((s or "")[:19], SPAN_FMT))
+                except (ValueError, TypeError):
+                    continue
+            if ds:
+                cands.append(min(ds))
+    except (OSError, ValueError):
+        pass
+    return min(cands) if cands else None
+
+
 def main():
     d0 = arg("--from") or (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
     d1 = arg("--to") or datetime.now().strftime("%Y-%m-%d")
     t0 = datetime.strptime(d0, "%Y-%m-%d")
     t1 = datetime.strptime(d1, "%Y-%m-%d") + timedelta(days=1)
+    _since = _this_pc_since()
+    if _since is not None and _since > t0:
+        # 이 PC 의 첫 물리 증거 이후 방문만 센다 — 이동해 온 PC 의 동기화 방문 과대를 막는다.
+        # 오래 쓴 PC 는 %USERPROFILE% 생성이 과거라 하한도 과거 → 롤오버 보강이 그대로 살아 있다.
+        print(f"[pc-hint] 이 PC 첫 사용 추정 {_since:%Y-%m-%d} 이후 방문만 셉니다(이동 PC 동기화 방문 제외)")
+        t0 = datetime(_since.year, _since.month, _since.day)
     files = history_files()
     if not files:
         print("[pc-hint] Edge/Chrome 사용기록 없음(정책 차단 가능) — 샘플러 시각으로만 보강 시도")

@@ -81,7 +81,15 @@ def recompute(rows, lookup=None):
         r["mm_avg"] = round(mm12 / 12.0, 6)
         r["n코드"] = len(codes_of(r))
         r["분할mm"] = round(r["mm_avg"] / r["n코드"], 6) if r["n코드"] else 0.0
-        r["단계"] = STAGE_BY_L1.get(_s(r.get("Level 1")), "기타")
+        # 옛 이름·무공백 변형('기술내재화'·'표준특허'·'개 발')을 snap1 로 새 이름에 접어 단계를 찾는다.
+        # 예전에는 raw 문자열로 조회해 띄어쓰기 하나 차이가 '기타' 로 새 나갔다(제보 ③).
+        _l1 = _s(r.get("Level 1"))
+        try:
+            from details import snap1 as _snap1
+            _l1 = _snap1(_l1) or _l1
+        except Exception:  # noqa: BLE001
+            pass
+        r["단계"] = STAGE_BY_L1.get(_l1, STAGE_BY_L1.get(_s(r.get("Level 1")), "기타"))
         c1 = _s(r.get("과제코드1"))
         if c1 in lookup:
             ai, ev = lookup[c1]

@@ -12,10 +12,10 @@ LoadMonitor24-수집진단.bat                                   849 B  f9708afd
 LoadMonitor24-가동시간비교.bat                               1,048 B  2ba31119
 LoadMonitor24-샘플러등록.bat                                  868 B  4e48ca20
 LoadMonitor24-이동준비.bat                                 1,312 B  6fe7c991
-agentic.py                                            45,884 B  a0118898
-freeze.py                                             53,034 B  8237735a
-team_report.py                                       160,115 B  c6fe0c20
-flow.py                                               86,853 B  66dd0948
+agentic.py                                            46,367 B  ae7630d2
+freeze.py                                             53,331 B  143feda4
+team_report.py                                       160,391 B  56e24a91
+flow.py                                               87,795 B  e54839ee
 teamserver.py                                         27,808 B  d9325192
 teamup.py                                             39,085 B  792d5243
 aggregate.py                                          50,107 B  77bba803
@@ -27,7 +27,7 @@ README.md                                             97,980 B  6298a25e
 check.py                                               2,629 B  7badfe69
 judge.py                                             106,314 B  1aeea44a
 mine.py                                               17,836 B  c751c51d
-refine.py                                             49,721 B  b64f795f
+refine.py                                             50,078 B  167416d2
 ruff.toml                                              1,004 B  47a31613
 FILES.txt                                                (이 파일)
 run.py                                                71,229 B  279f5ceb
@@ -41,7 +41,7 @@ collect/Get-OutlookIndex.ps1                          21,472 B  1f2071bb
 collect/Get-MailViaCopilot.py                         28,363 B  022c7e7d
 collect/Get-OutlookWeb.py                             42,011 B  801c6461
 collect/Get-PcOnHistory.ps1                           23,965 B  2f77e550
-collect/Get-PcOnHints.py                              19,265 B  a91b9ffa
+collect/Get-PcOnHints.py                              21,195 B  5474c56f
 collect/Start-TeamsSampler.ps1                         2,201 B  49b71b44
 collect/Get-RecentFiles.ps1                           22,050 B  05139be4
 collect/Get-TeamsChats.py                             17,754 B  e868c913
@@ -54,16 +54,16 @@ collect/Start-ActivitySampler.ps1                      8,715 B  9bec0ce6
 config/config.json                                    42,321 B  6a787cc0
 config/config.default.json                            42,321 B  6a787cc0
 config/agentic_tasks.json                              4,426 B  2c9e5bb1
-core/board.py                                         13,304 B  0c569927
-core/extract.py                                      221,047 B  5a707aca
+core/board.py                                         13,778 B  64f3c7f3
+core/extract.py                                      223,788 B  783ecde0
 core/programs.py                                      15,778 B  1f1e142f
-core/details.py                                       73,901 B  e2057f5b
+core/details.py                                       74,324 B  55d5c042
 core/owner.py                                          1,488 B  1f1dc049
 core/progress.py                                       1,129 B  77a7579a
 core/projmap.py                                        7,133 B  cca7d2cb
 docs/설정가이드.md                                         83,463 B  f7e14d9e
 docs/사용안내.html                                       272,444 B  3cea5b8b
-tools/copilot_auto.py                                 78,493 B  d7c6b43e
+tools/copilot_auto.py                                 79,685 B  ddd937eb
 tools/pc_hours_compare.py                             21,288 B  73150c99
 tools/lm20_ref/Get-PcOnHistory.ps1.txt                 9,319 B  5ce7ef54
 tools/lm20_ref/Get-PcOnHints.py.txt                    9,545 B  7d4dae30
@@ -75,4 +75,4 @@ tools/Make-Package.ps1                                10,733 B  f8e333a9
 tools/Make-MovePack.py                                12,103 B  4132d2e7
 tools/Prepare-Move.ps1                                26,116 B  67389835
 tools/update_files.py                                  4,530 B  33b4a677
-ui/app.py                                            362,224 B  76e88e15
+ui/app.py                                            362,910 B  6005f218

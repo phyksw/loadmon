@@ -795,6 +795,11 @@ def main():
             ok_half = 0
             print(f"[agentic] {ci}/{len(parts)} 묶음을 {len(halves)}개로 나눠 다시 묻습니다(적응 분할)")
             for hi, sub in enumerate(halves, 1):
+                if _dl is not None and time.monotonic() > _dl:
+                    # 반분 루프도 예산을 본다 — 예전에는 여기가 검사 밖이라 단계 예산을 40~50분 넘겼다
+                    # (제보 ④ · 검증 CONFIRMED). 남은 절반은 다음 실행이 이어서 판정한다.
+                    print("[agentic] 시간 예산을 넘겨 분할 재시도를 멈춥니다 — 남은 것은 다시 실행하면 이어서")
+                    break
                 o2, info2 = ask(sub, f"ag{ci}-{hi}")
                 if info2.get("ok"):
                     ok_half += 1
