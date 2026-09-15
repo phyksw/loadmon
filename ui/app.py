@@ -851,7 +851,7 @@ def _stage_note(stage):
     return f"최근 실행에서 실패: {s.get('note') or '사유 미기록'}"
 
 
-def _stage_kind(stage):
+def _stage_kind(stage, tag=None):
     r"""그 단계가 왜 결과를 남기지 못했나 — 화면이 '다음에 무엇을 하라' 를 고를 수 있게 갈래를 준다.
     stalled(정체로 중단) · budget(시간 예산) · skipped(앞 단계 실패로 건너뜀) · failed(왕복 실패) ·
     none(기록 없음) · ok(정상 완료로 기록됨 — 결과 파일이 없으면 기간이 다른 것이다).
@@ -863,7 +863,8 @@ def _stage_kind(stage):
     if _sid:
         try:
             from stage_state import read_latest
-            st3 = read_latest(REPORT, _sid)
+            from stage_state import read_state
+            st3 = (read_state(REPORT, tag, _sid) if tag else None) or read_latest(REPORT, _sid)
         except Exception:  # noqa: BLE001
             st3 = None
         if st3 is not None:
@@ -1526,8 +1527,11 @@ def trend(d0="", d1="", tag="", info=None):
         _ok_roots, _bad_roots = [], []
         for _r1 in _data_roots():
             try:
-                _pcd1 = _X.pc_daily(_r1 if os.path.isdir(os.path.join(_r1, "pc")) else _r1,
-                                    start, end)[0]
+                # pc_daily(DATA) 는 추가PC 를 스스로 또 합친다 — 루트별 부분 성공이 목적이므로
+                # 그 루트 '하나만' 보는 임시 뷰를 만든다(최종 검증: 이중 합산 실측 13h→18h)
+                _pcd1 = _X.pc_daily(_r1, start, end, single_root=True)[0]
+            except TypeError:
+                _pcd1 = _X.pc_daily(_r1, start, end)[0]
             except Exception:  # noqa: BLE001
                 _bad_roots.append(os.path.basename(os.path.normpath(_r1)) or "본 PC")
                 continue
@@ -1947,9 +1951,20 @@ def _stage_limits():
     return _core_stage_limits(cfg() if callable(globals().get("cfg")) else {})
 
 
+_WATCH_STATE_PATH = {"p": None}      # 다음 watch_child 가 볼 상태 파일 — tool_job 이 세팅
+
+
 def watch_child(p, on_line, label, beat_sec=120):
-    return _core_watch_child(p, on_line, label, beat_sec=beat_sec,
-                             cfg_dict=(cfg() if callable(globals().get("cfg")) else {}))
+    def _on(ln):                    # 화면의 "마지막 소식 N초 전" — 자식 출력 시각을 JOB 에 남긴다
+        try:
+            with LOCK:
+                JOB["last_out"] = time.time()
+        except Exception:  # noqa: BLE001
+            pass
+        on_line(ln)
+    return _core_watch_child(p, _on, label, beat_sec=beat_sec,
+                             cfg_dict=(cfg() if callable(globals().get("cfg")) else {}),
+                             state_path=_WATCH_STATE_PATH.get("p"))
 
 
 def tool_job(kind, extra=()):
@@ -1958,6 +1973,7 @@ def tool_job(kind, extra=()):
     script, step = TOOL_JOBS[kind]
     t0 = time.time()
     tag, targs = _tag_args()
+    _WATCH_STATE_PATH["p"] = (os.path.join(REPORT, f"stage_state_{tag}_{kind}.json") if tag else None)
     res = {"ok": False, "error": "실행 실패", "hint": ""}
     try:
         cmd = [sys.executable, os.path.join(ROOT, script)] + targs + list(extra)
@@ -2006,7 +2022,9 @@ def tool_job(kind, extra=()):
                    "hint": (tail[:200] if tail else f"종료 코드 {p.returncode}") + " — 진행 로그를 확인하세요"}
         else:
             res = last
-            if p.returncode != 0 and res.get("ok"):
+            if p.returncode == 2:
+                res["partial"] = True           # v3 rc 규약: 2 = 부분(성공) — 다음 실행이 이어서
+            elif p.returncode != 0 and res.get("ok"):
                 res["ok"] = False
         log(f"=== {step} " + ("완료" if res.get("ok") else f"실패: {str(res.get('error') or '')[:80]}"
                                 + (f" — {str(res.get('hint') or '')[:120]}" if res.get("hint") else "")) + " ===")
@@ -4284,7 +4302,7 @@ class H(BaseHTTPRequestHandler):
                     except Exception:  # noqa: BLE001
                         pass
                     out["stage_note"] = _stage_note("워크플로우 분석")
-                    out["stage_kind"] = _stage_kind("워크플로우 분석")
+                    out["stage_kind"] = _stage_kind("워크플로우 분석", tag)
                     # 판정 뒤 업무 로드가 다시 추출됐으면(무AI 재실행 등) 이 결과는 옛 행 기준이다(V-01) — 지우지 않고 표시
                     if _reextracted(tag):
                         out["reextracted"] = True

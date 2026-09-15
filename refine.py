@@ -120,7 +120,12 @@ def _send_via_driver(prompt_text, tag, name, fresh=None):
             import judge as _j
             budget = _j.roundtrip_timeout(_j.n_parts_of(prompt_text or ""))
         except Exception:  # noqa: BLE001
-            budget = 1200.0
+            try:
+                with open(os.path.join(ROOT, "config", "config.json"), encoding="utf-8-sig") as _cf:
+                    _rt = float((json.load(_cf).get("copilotAuto") or {}).get("roundtripMaxSec") or 900)
+            except (OSError, ValueError, TypeError, AttributeError):
+                _rt = 900.0
+            budget = _rt + 300.0
         out = subprocess.run(cmd, capture_output=True, timeout=budget, cwd=ROOT,
                              env=dict(os.environ, PYTHONIOENCODING="utf-8"), creationflags=NO_WIN)
         res = json.loads((out.stdout or b"").decode("utf-8", "replace").strip().splitlines()[-1])
@@ -605,6 +610,8 @@ def main():
     evp = os.path.join(rep, f"evidence_{tag}.md")
     if not os.path.exists(src):
         print(f"[refine] 입력 없음 — 먼저 mine.py 를 실행하세요 ({src})")
+        if _ss is not None:
+            _ss.finish("failed", stop_kind="fatal", reason="입력 없음")
         return 1
     rows = list(csv.DictReader(open(src, encoding="utf-8-sig")))
     # 숫자 셀을 먼저 확정한다(V-05) — 빈칸·비숫자 셀 하나에 item_line/병합의 float()/int() 가 ValueError 로 죽어
@@ -652,8 +659,8 @@ def main():
             if _ss is not None:
                 _ss.note_resume(pending=len(plan) - ci)
             _stopped = (f"시간 예산 {_bud:.0f}분을 넘겨 남은 {len(plan) - ci}청크를 보내지 않았습니다 — "
-                        "여기까지 정제한 것은 저장했고, 다시 실행하면 남은 항목을 이어서 정제합니다"
-                        "(config.aiStageBudgetMin 으로 조절)")
+                        "여기까지 정제한 것은 저장했습니다 — 정제는 이름 병합 특성상 전량 기준이라, "
+                        "다시 실행하면 처음부터 다시 정제합니다(config.aiStageBudgetMin 으로 조절)")
             print(f"[refine] {_stopped}")
             for _ch2, _ov2 in plan[ci:]:
                 rf.st["failed_items"] += len({i for i, _ in _ch2} - set(_ov2))

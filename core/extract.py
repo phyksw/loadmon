@@ -1875,7 +1875,8 @@ def read_pc_spans(data_dir, d0, d1, anomalies=None):
     return _pc_spans_rows(rows, d0, d1, anomalies)
 
 
-EVENT_SPAN_SRC = ("event", "event-gap", "event-cap", "live", "boot")
+# migr(구판 행 이행분)도 물리 증거로 친다 — 유령 필터가 이행분을 지우면 안 된다(v3 최종 검증 CRITICAL)
+EVENT_SPAN_SRC = ("event", "event-gap", "event-cap", "live", "boot", "migr")
 
 
 def _evt_span_dates(rows, d0, d1):
@@ -1892,7 +1893,7 @@ def _evt_span_dates(rows, d0, d1):
     return dates, (min(dates) if dates else None)
 
 
-def pc_daily(data_dir, d0, d1, day_win=None, anom=None, span_anoms=None):
+def pc_daily(data_dir, d0, d1, day_win=None, anom=None, span_anoms=None, single_root=False):
     r"""PC 가동 기록을 날짜별로 합친다(본 PC + data\추가PC\*) → (pc, pc_wins, pc_spans, pc_win_all).
       pc         {date: (on_h, night_h, first_on_min|None, last_off_min|None)}
       pc_wins    {date: [(first_on, last_off), …]} — pc_on 행별 가동 창(두 PC 면 두 창, VF-H9)
@@ -1910,13 +1911,19 @@ def pc_daily(data_dir, d0, d1, day_win=None, anom=None, span_anoms=None):
     day_win = day_win or DAY_WIN
     cw0, cw1 = float(DAY_WIN[0]), float(DAY_WIN[1])      # 야간 조각은 수집기 경계로(행의 night 열과 같은 축)
     pc, pc_wins, syn, roots_with, real_by_root = {}, {}, {}, {}, {}
-    roots = _data_roots(data_dir)
+    roots = [data_dir] if single_root else _data_roots(data_dir)
     for ri, root in enumerate(roots):
         rows_sp = _read(os.path.join(root, "pc_spans.csv")) + _read(os.path.join(root, "pc", "pc_spans.csv"))
         real_by_root[ri] = _pc_spans_rows(rows_sp, d0, d1, anomalies=span_anoms)
         # 이동해 온 PC 방어(제보 ②) — 이 루트의 첫 물리 이벤트 이전이면서 그 날 구간이 전부 힌트/샘플러인
         # 날은 '이 PC 를 쓰기 전' 브라우저 동기화 방문이 만든 가짜다. 그 루트에서 행·구간을 함께 무시한다.
-        _evt_dates, _first_evt = _evt_span_dates(rows_sp, d0, d1)
+        # v3 루트(pc_anchor.json)는 쓰기 시점(앵커)에 이미 걸러졌다 — 읽기 필터를 끈다.
+        # 최종 검증 CRITICAL: 이 분기가 pc_coverage 에만 있고 여기 없어서, migr 이행분이
+        # '첫 물리 이벤트 이전 힌트' 로 오판돼 화면(추이·하한)에서만 통째로 증발했다(진단과 재분열).
+        if os.path.exists(os.path.join(root, "pc", "pc_anchor.json")):
+            _evt_dates, _first_evt = set(), None
+        else:
+            _evt_dates, _first_evt = _evt_span_dates(rows_sp, d0, d1)
 
         def _phantom(dd, _fe=_first_evt, _ed=_evt_dates):
             return _fe is not None and dd < _fe and dd not in _ed
@@ -2023,6 +2030,7 @@ def pc_coverage(data_dir, d0, d1):
             if not (d0 <= d <= d1) or _ph(d):
                 continue
             days.add(d)
+            out.setdefault("_day_union", set()).add(d)     # 합계 일수는 루트 합집합(이동 PC 2폴더 절반 표시 방지)
             try:
                 hrs += float(r.get("on_hours") or 0)
             except (TypeError, ValueError):
@@ -2047,7 +2055,7 @@ def pc_coverage(data_dir, d0, d1):
             pass
     out["dropped"] = sum(n for p, n in READ_DROPPED.items() if "pc" in p.replace(chr(92), "/"))
     out["hours"] = round(sum(r["hours"] for r in out["roots"]), 1)
-    out["days"] = max([r["days"] for r in out["roots"]] or [0])
+    out["days"] = len(out.pop("_day_union", set()) or []) or max([r["days"] for r in out["roots"]] or [0])
     return out
 
 

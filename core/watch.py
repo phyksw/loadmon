@@ -11,7 +11,7 @@ v3 규약:
  · **무진전**은 상태 파일 done(없으면 stdout [progress])에만 적용한다 — updated 와 분리
    (구조 감사 검증 에이전트: 이 둘을 섞으면 '느림 vs 죽음' 오진이 재발한다).
  · 중단 판단의 1차 권한은 스테이지 자신(예산 자가 중단·rc 2 부분)이고, 감시는 마지막 안전망이다.
-run.py 와 ui/app.py 는 이 모듈을 임포트한다 — 사본 재출현은 관문(stage_contract_check)이 막는다.
+run.py 와 ui/app.py 는 이 모듈을 임포트한다 — 사본 재출현은 lint 관문 8(tools/check_l1.py 계약 검사)이 막는다.
 """
 import json
 import os

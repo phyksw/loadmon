@@ -263,6 +263,13 @@ $spansPath = Join-Path $OutDir 'pc_spans.csv'
 $keptDays = 0; $keptSpans = 0; $replacedDays = 0    # v3: 보존 특례 소멸 — 진단 JSON 호환용 0
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $evPath = Join-Path $OutDir 'pc_events_new.csv'
+$ledger0 = Join-Path $root 'core\pc_ledger.py'
+$py0 = if ($Python) { $Python } else { Join-Path $root 'python\python.exe' }
+if ((Test-Path $evPath) -and (Test-Path $py0) -and (Test-Path $ledger0)) {
+    # 지난 실행이 ingest 전에 끊겼다 — 그 관측을 먼저 원장에 회수한 뒤 새 관측을 쓴다(덮어쓰면 영구 소실)
+    $env:PYTHONIOENCODING = 'utf-8'
+    & $py0 $ledger0 --ingest $OutDir 2>&1 | ForEach-Object { Write-Host ('[pc-on] 잔존 관측 회수: ' + $_) }
+}
 $erow = New-Object System.Collections.Generic.List[string]
 $erow.Add('start,end,src')
 foreach ($s in @($spans | Sort-Object a)) { $erow.Add(('{0},{1},{2}' -f $s.a.ToString('yyyy-MM-dd HH:mm:ss'), $s.b.ToString('yyyy-MM-dd HH:mm:ss'), $s.src)) }

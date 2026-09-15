@@ -17,6 +17,7 @@ import io
 import json
 import os
 import subprocess
+from datetime import datetime, timedelta
 import csv
 import sys
 import time
@@ -594,9 +595,10 @@ def pc_history_gap(data, d0, d1, fresh_hours=None):
         return True, "저장된 PC 가동 기록이 비어 있습니다"
     if dates[-1] < d1:
         return True, f"저장된 기록은 {dates[-1]} 까지입니다 (요청 {d1})"
-    if dates[0] > d0:
-        # 시작 쪽 확장 — 이벤트 로그는 롤오버로 못 닿아도 브라우저 힌트(≈90일)·샘플러 보관본은
-        # 아직 닿을 수 있다. v3 수집은 append 전용이라 다시 돌아도 잃을 것이 없다.
+    _hint_floor = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+    if dates[0] > d0 and dates[0] > _hint_floor:
+        # 시작 쪽 확장 — 브라우저 힌트(≈90일)·샘플러가 아직 닿는 범위만. 그보다 먼 과거는 어떤
+        # 재수집으로도 못 메우므로 매 실행 헛수고를 만들지 않는다(최종 검증 INFO).
         return True, f"저장된 기록은 {dates[0]} 부터입니다 (요청 {d0} — 힌트·샘플러가 닿는 만큼 보강)"
     if fresh_hours > 0:
         age_h = (time.time() - os.path.getmtime(on_p)) / 3600.0
@@ -923,6 +925,8 @@ def main():
         # 출력을 흘려보내며 마지막 줄 JSON 을 건진다 — judge 는 판정 0건(왕복 전부 실패)이면
         # 코드 3 과 {"ok":false,"error","hint"} 를 낸다(F3). 예전에는 그 경우도 0 이라
         # 'AI 판정 ok' 로 적히고 정제·Agentic·워크플로우가 빈손으로 계속 돌았다.
+        _WATCH_STATE_PATH["p"] = os.path.join(ROOT, "report",
+                                              f"stage_state_{d0.replace('-', '')}-{d1.replace('-', '')}_judge.json")
         rc, why_j = _run_capture([sys.executable, os.path.join(ROOT, "judge.py"),
                                   "--from", d0, "--to", d1],
                                  dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1"))
@@ -990,6 +994,8 @@ def main():
             _t3 = time.time()
             # 다른 AI 단계와 같은 감시를 받게 한다 — 예전에는 timeout 도 정체 감지도 없는
             # subprocess.run 이어서 정제가 멈추면 분석 전체가 여기서 영원히 서 있었다(실측 감사).
+            _WATCH_STATE_PATH["p"] = os.path.join(ROOT, "report",
+                                                  f"stage_state_{d0.replace('-', '')}-{d1.replace('-', '')}_refine.json")
             rc2, why_r = _run_capture([sys.executable, os.path.join(ROOT, "refine.py"),
                                        "--from", d0, "--to", d1],
                                       dict(os.environ, PYTHONIOENCODING="utf-8",

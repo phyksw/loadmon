@@ -68,6 +68,30 @@ rp = open(os.path.join(ROOT, "refine.py"), encoding="utf-8").read()
 if "l1_prompt_lines()" not in rp:
     bad("refine.py 가 l1_prompt_lines() 를 쓰지 않습니다 — 상위 정의가 프롬프트에 하드코딩됐을 수 있음")
 
+# ── ③ 계약 사본 재출현 금지(v3 구조 계약) — 감시기·예산이 core 밖에 본문으로 다시 생기면 실패 ──
+CONTRACT = [
+    ("run.py", r"def kill_tree\(", "kill_tree 본문 재출현 — core/watch 임포트를 쓰세요"),
+    ("ui/app.py", r"def kill_tree\(", "kill_tree 본문 재출현 — core/watch 임포트를 쓰세요"),
+]
+for rel, pat, why in CONTRACT:
+    src = open(os.path.join(ROOT, rel.replace("/", os.sep)), encoding="utf-8").read()
+    if re.search(pat, src):
+        bad(f"{rel}: {why}")
+for rel in ("run.py", "ui/app.py"):
+    src = open(os.path.join(ROOT, rel.replace("/", os.sep)), encoding="utf-8").read()
+    for fn, marker in (("watch_child", "_core_watch_child"), ("_stage_limits", "_core_stage_limits")):
+        i = src.find(f"def {fn}(")
+        if i >= 0:
+            body = src[i:src.find(chr(10) + "def ", i + 1)]
+            if marker not in body:
+                bad(f"{rel}: {fn} 이 core/watch 위임이 아니라 본문 재정의입니다")
+for rel in ("judge.py", "refine.py", "agentic.py"):
+    src = open(os.path.join(ROOT, rel), encoding="utf-8").read()
+    i = src.find("def _stage_budget(")
+    if i >= 0 and "from budget import stage_budget" not in src[i:i + 600]:
+        bad(f"{rel}: _stage_budget 이 core/budget 위임이 아닙니다(사본 재출현)")
+
 if fail == 0:
-    print(f"[l1] 단일원 OK — 범주 {len(D.L1_META)}개 · 별칭 {len(D.LEVEL1_ALIAS)}개 파생 일치")
+    print(f"[l1] 단일원 OK — 범주 {len(D.L1_META)}개 · 별칭 {len(D.LEVEL1_ALIAS)}개 파생 일치"
+          " · 계약 사본 재출현 없음")
 sys.exit(fail)

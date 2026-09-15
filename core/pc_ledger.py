@@ -32,9 +32,67 @@ import io
 import json
 import os
 import sys
+import time
 from datetime import datetime, timedelta
 
 SPAN_FMT = "%Y-%m-%d %H:%M:%S"
+
+
+class _dir_lock:
+    r"""폴더 잠금 — 동시 실행(UI + bat)의 read-modify-write 유실을 막는다(최종 검증 실측: 잠금
+    없이는 2프로세스 동시 append 에서 43% 유실 + os.replace PermissionError 크래시).
+    윈도 msvcrt 바이트 잠금 · 못 얻으면 최대 10초 재시도 후 그냥 진행(잠그다 굶기지 않는다 —
+    최악이 v2 의 평소 상태다)."""
+
+    def __init__(self, pcdir):
+        self.path = os.path.join(pcdir, ".ledger.lock")
+        self.f = None
+
+    def __enter__(self):
+        try:
+            import msvcrt
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
+            self.f = open(self.path, "a+")
+            for _ in range(100):
+                try:
+                    msvcrt.locking(self.f.fileno(), msvcrt.LK_NBLCK, 1)
+                    return self
+                except OSError:
+                    time.sleep(0.1)
+            self.f.close()
+            self.f = None
+        except (ImportError, OSError):
+            self.f = None
+        return self
+
+    def __exit__(self, *a):
+        if self.f is not None:
+            try:
+                import msvcrt
+                self.f.seek(0)
+                msvcrt.locking(self.f.fileno(), msvcrt.LK_UNLCK, 1)
+            except (ImportError, OSError):
+                pass
+            try:
+                self.f.close()
+            except OSError:
+                pass
+        return False
+
+
+def _replace_retry(src, dst, tries=25):
+    """os.replace 를 짧게 재시도 — 화면·백신이 읽는 순간의 WinError 5 로 수집이 죽지 않게."""
+    for _ in range(tries):
+        try:
+            os.replace(src, dst)
+            return True
+        except PermissionError:
+            time.sleep(0.2)
+    try:
+        os.replace(src, dst)
+        return True
+    except OSError:
+        return False
 EVENT_SRC = ("event", "event-gap", "event-cap", "boot")   # 물리 이벤트 계열(전원·부팅·세션)
 LIVE_SRC = "live"                                         # 현재 부팅 세션 — 부팅당 1행 upsert
 HINT_SRC = "hint"                                         # 브라우저 방문 파생
@@ -94,7 +152,7 @@ def _write_spans(pcdir, rows):
         w.writerow(["start", "end", "src", "seen"])
         for a, b, src, seen in sorted(rows, key=lambda r: (r[0], r[1], r[2])):
             w.writerow([a.strftime(SPAN_FMT), b.strftime(SPAN_FMT), src, seen])
-    os.replace(tmp, p)
+    _replace_retry(tmp, p)
 
 
 def append_spans(pcdir, new_spans, src=None, seen=None, anchor=None):
@@ -107,6 +165,11 @@ def append_spans(pcdir, new_spans, src=None, seen=None, anchor=None):
       (이동 PC 의 동기화 방문이 저장소에 들어오지 못하게 — 쓰기 시점 방어).
     반환 (추가된 수, live 갱신 수, 앵커로 거른 수)."""
     os.makedirs(pcdir, exist_ok=True)
+    with _dir_lock(pcdir):
+        return _append_locked(pcdir, new_spans, src, seen, anchor)
+
+
+def _append_locked(pcdir, new_spans, src, seen, anchor):
     rows, _bad = read_spans(pcdir)
     seen = seen or datetime.now().strftime("%Y-%m-%d %H:%M")
     have = {(a.strftime(SPAN_FMT), b.strftime(SPAN_FMT), s) for a, b, s, _ in rows}
@@ -197,14 +260,24 @@ def _read_on_rows(pcdir):
     return out
 
 
-def regen_pc_on(pcdir):
+def regen_pc_on(pcdir, anchor=None):
     """pc_on.csv 를 원장에서 **통째로 재생성**한다 — 병합 없음.
     원장에 없는 날의 구판 행(과거 재작성으로 구간 근거가 지워진 날)은 그대로 옮겨 적는다(carry).
     원장에 있는 날은 언제나 파생값이다 — 같은 날에 두 규칙이 경합하지 않는다.
+    anchor: 이 폴더의 첫 사용 시각 — carry(원장 밖 구판 행)는 앵커 이전 날짜를 거른다
+    (이동 PC 의 v2 오염 행이 캐시에 영속하지 않게 — 최종 검증 MAJOR).
     반환 (원장 파생 일수, carry 일수)."""
+    with _dir_lock(pcdir):
+        return _regen_locked(pcdir, anchor)
+
+
+def _regen_locked(pcdir, anchor):
     rows, _bad = read_spans(pcdir)
     daily = derive_daily(rows)
-    carry = [r for r in _read_on_rows(pcdir) if (r.get("date") or "")[:10] not in daily]
+    _amin = anchor.strftime("%Y-%m-%d") if anchor else ""
+    carry = [r for r in _read_on_rows(pcdir)
+             if (r.get("date") or "")[:10] not in daily
+             and (not _amin or (r.get("date") or "")[:10] >= _amin)]
     lines = []
     for k in daily:
         d = daily[k]
@@ -224,7 +297,7 @@ def regen_pc_on(pcdir):
                                           "night_hours", "weekend"])
         w.writeheader()
         w.writerows(lines)
-    os.replace(tmp, on_path(pcdir))
+    _replace_retry(tmp, on_path(pcdir))
     return len(daily), len(carry)
 
 
@@ -241,9 +314,13 @@ def ensure_anchor(pcdir, own_pc=True):
     본 PC: min(USERPROFILE 생성, 원장 첫 물리 이벤트). 남의 폴더(추가PC 보관본): 첫 물리 이벤트만
     (남의 프로필 생성 시각은 이 기계 것이라 무의미). 근거가 하나도 없으면 만들지 않는다 → 그 폴더는
     구판 규칙(extract 의 안전망 필터)으로 읽힌다."""
+    try:
+        os.makedirs(pcdir, exist_ok=True)      # 폴더가 없으면 기록이 조용히 실패했다(최종 검증 MINOR)
+    except OSError:
+        pass
     old = read_anchor(pcdir)
     if old is not None:
-        return old
+        return min(old, datetime.now())        # 미래로 굳은 앵커(시계 이상)도 지금 이후로는 안 막게
     cands, how = [], []
     if own_pc:
         prof = os.environ.get("USERPROFILE", "")
@@ -260,7 +337,7 @@ def ensure_anchor(pcdir, own_pc=True):
         how.append("first-event")
     if not cands:
         return None
-    since = min(cands)
+    since = min(min(cands), datetime.now())    # 미래 ctime(시계 이상)이 앵커가 되면 힌트 보강이 전멸한다
     try:
         with open(anchor_path(pcdir), "w", encoding="utf-8") as f:
             json.dump({"since": since.strftime(SPAN_FMT),
@@ -270,10 +347,12 @@ def ensure_anchor(pcdir, own_pc=True):
     return since
 
 
-def migrate(pcdir):
+def migrate(pcdir, anchor=None):
     """1회 이행 — 원장에 근거가 없는 구판 pc_on 행을 살린다.
     '끊김 없는 행'(first~last 창 길이 ≈ on ±15분)만 창 그대로 src=migr 구간으로 원장에 넣는다.
     끊김 있는 행은 어디가 비었는지 알 수 없어 구간을 지어내지 않는다 — regen 의 carry 로 산다.
+    앵커 이전 행은 승격하지 않는다 — 이동 PC 의 v2 오염 행이 원장에 들어오면 추가 전용이라
+    지울 정규 경로가 없다(최종 검증 MAJOR: 두 수정이 한 세트여야 CRITICAL 수정이 안전하다).
     멱등: migr 구간도 완전 일치 중복 제거를 거치므로 두 번 돌려도 한 번이다. 반환 이행 구간 수."""
     rows, _bad = read_spans(pcdir)
     covered = set(derive_daily(rows))
@@ -290,8 +369,10 @@ def migrate(pcdir):
                 else datetime.strptime(k + " " + lo_s, "%Y-%m-%d %H:%M")
         except (ValueError, TypeError):
             continue
+        if anchor is not None and lo <= anchor:
+            continue                            # 앵커 이전 — 이동 전 기계·동기화 흔적일 수 있다
         if lo > fo and abs((lo - fo).total_seconds() / 3600.0 - on) <= 0.25:
-            add.append((fo, lo, MIGR_SRC))
+            add.append((max(fo, anchor) if anchor else fo, lo, MIGR_SRC))
     if add:
         append_spans(pcdir, add, seen="migrated")
     return len(add)
@@ -322,8 +403,8 @@ def ingest(pcdir, own_pc=True, events_file=None):
             pass
         _ = anchor
     since = ensure_anchor(pcdir, own_pc=own_pc)
-    migr = migrate(pcdir)
-    days, carried = regen_pc_on(pcdir)
+    migr = migrate(pcdir, anchor=since)
+    days, carried = regen_pc_on(pcdir, anchor=since)
     return {"added": added, "live_up": live_up, "clipped": clipped, "migrated": migr,
             "days": days, "carried": carried,
             "anchor": since.strftime(SPAN_FMT) if since else ""}

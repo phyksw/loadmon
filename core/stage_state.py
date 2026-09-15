@@ -120,12 +120,28 @@ def current():
     return _CUR
 
 
+DEAD_AFTER_SEC = 90.0     # 하트비트(30초) 3주기 — running 인데 이보다 오래 조용하면 죽은 것
+
+
+def _normalize(d):
+    """running 인데 하트비트가 멎은 지 오래면 사망으로 보정해 돌려준다 — finish 없이 죽은(kill·
+    예외·조기 반환) 프로세스의 상태 파일이 화면을 영원히 '실행 중' 으로 속이지 않게(최종 검증 MAJOR)."""
+    try:
+        if (d.get("state") == "running"
+                and time.time() - float(d.get("updated") or 0) > DEAD_AFTER_SEC):
+            d = dict(d, state="failed",
+                     stop={"kind": "stall", "reason": "프로세스가 하트비트 없이 사라졌습니다(중단·강제 종료)"})
+    except (TypeError, ValueError):
+        pass
+    return d
+
+
 def read_state(report_dir, tag, stage):
     """부모·화면이 읽는다 — 없거나 깨졌으면 None(구판 자식 → 기존 stdout 해석으로 폴백)."""
     try:
         with open(state_path(report_dir, tag, stage), encoding="utf-8-sig") as f:
             d = json.load(f)
-        return d if isinstance(d, dict) and d.get("schema") == SCHEMA else None
+        return _normalize(d) if isinstance(d, dict) and d.get("schema") == SCHEMA else None
     except (OSError, ValueError):
         return None
 
@@ -140,8 +156,8 @@ def read_latest(report_dir, stage):
             if t > best_t:
                 with open(p, encoding="utf-8-sig") as f:
                     d = json.load(f)
-                if isinstance(d, dict) and d.get("schema") == SCHEMA:
-                    best, best_t = d, t
+                if isinstance(d, dict) and d.get("schema") == SCHEMA and d.get("tag"):
+                    best, best_t = _normalize(d), t          # 빈 tag 파일(인자 없는 실행 잔재)은 무시
         except (OSError, ValueError):
             continue
     return best

@@ -975,7 +975,7 @@ def _roundtrip_once(cdp, cfg, prompt, model_override=None):
         time.sleep(2)                          # SPA 렌더 여유
         # 앞 답이 아직 생성 중이면 끝날 때까지 기다린다 — 생성 중 전송 클릭은 '중지'가 되어 앞 답을
         # 끊고(잘린 JSON) 이번 프롬프트는 입력창에 남는다. 큰 사람의 연속 실패가 여기서 시작됐다.
-        waited = wait_idle(cdp)
+        waited = wait_idle(cdp, secs=int(min(45, max(5, _dl_left(45)))))
         note_model = select_model(cdp, cfg, override=model_override)
 
         # 대형 DOM(긴 대화)에서 innerText 평가가 25초를 넘겨 왕복 전체가 error 로 죽던
@@ -1207,7 +1207,7 @@ def _wait_rest(cdp, cfg, prompt, secs=300):
 def _run_parts(cdp, cfg, parts, fresh, deadline=None):
     """같은 CDP·같은 채팅에서 조각을 차례로 보낸다 — 조각별 _roundtrip_once, 사다리 없음.
     조각마다 서약을 확인하고, 없으면 _wait_rest 로 기다린 뒤에만 다음 조각을 보낸다.
-    deadline(monotonic 초): 넘기면 조각을 더 보내지 않고 시간 초과로 접는다 — 예전에는 이 다부 경로에
+    deadline(epoch 초): 넘기면 조각을 더 보내지 않고 시간 초과로 접는다 — 예전에는 이 다부 경로에
     왕복 예산이 없어 한 왕복이 76~80분까지 무제동으로 돌았다(제보 ④ · 검증 CONFIRMED)."""
     total = len(parts)
     if fresh:
@@ -1240,7 +1240,7 @@ def _run_parts(cdp, cfg, parts, fresh, deadline=None):
                 if more is None:
                     # 관찰이 불가능했다 — 생성 중일 수 있으니 넉넉히 기다린 뒤 진행
                     # (생성 중에 다음을 보내면 전송 버튼이 '중지'가 되어 답을 끊는다)
-                    time.sleep(30)
+                    time.sleep(min(30.0, max(1.0, _dl_left(30))))
                 res["note"] = f"나눔 {i}/{total}: 서약 없이 생성 정지 확인 후 진행"
         if is_error_reply(reply):
             # 중간 조각의 일시 오류도 실패다 — 그 조각을 '받지 못한' 채 이어 가면 마지막

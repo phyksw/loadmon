@@ -131,56 +131,6 @@ def merge_spans(spans):
     return out
 
 
-def daily_from_spans(spans):
-    """자정 분할 → {date: {on, night, first, last}} — PS 수집기와 같은 정의(야간 = 08시 이전·19시 이후)"""
-    daily = {}
-    for a, b in spans:
-        cur = a
-        while cur.date() <= b.date():
-            day_end = datetime.combine(cur.date(), datetime.min.time()) + timedelta(days=1)
-            seg_end = min(b, day_end)
-            if seg_end <= cur:
-                break
-            k = cur.date().isoformat()
-            d = daily.setdefault(k, {"on": 0.0, "night": 0.0, "first": cur, "last": seg_end})
-            d["on"] += (seg_end - cur).total_seconds() / 3600
-            d["first"] = min(d["first"], cur)
-            d["last"] = max(d["last"], seg_end)
-            m8 = datetime.combine(cur.date(), datetime.min.time()) + timedelta(hours=8)
-            m19 = datetime.combine(cur.date(), datetime.min.time()) + timedelta(hours=19)
-            if cur < m8:
-                d["night"] += (min(seg_end, m8) - cur).total_seconds() / 3600
-            if seg_end > m19:
-                d["night"] += (seg_end - max(cur, m19)).total_seconds() / 3600
-            cur = day_end
-    return daily
-
-
-def read_spans_csv(path):
-    """pc_spans.csv → [(start, end, src)] (없으면 [])"""
-    out = []
-    if not os.path.isfile(path):
-        return out
-    with open(path, encoding="utf-8-sig") as f:
-        for r in csv.DictReader(f):
-            try:
-                a = datetime.strptime((r.get("start") or "")[:19], SPAN_FMT)
-                b = datetime.strptime((r.get("end") or "")[:19], SPAN_FMT)
-            except ValueError:
-                continue
-            if b > a:
-                out.append((a, b, (r.get("src") or "event").strip() or "event"))
-    return out
-
-
-def write_spans_csv(path, spans):
-    with open(path, "w", encoding="utf-8", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["start", "end", "src"])
-        for a, b, s in sorted(spans):
-            w.writerow([a.strftime(SPAN_FMT), b.strftime(SPAN_FMT), s])
-
-
 def sampler_times(t0, t1, data_root=None):
     r"""창 샘플러(activity_*.csv)의 샘플 시각 — 1분 간격으로 찍히는 가장 확실한 가동 증거.
     제목·프로세스는 읽지 않고 time 열만 쓴다. 브라우저 기록이 정책으로 막힌 PC 의 대비책.
@@ -240,7 +190,7 @@ def main():
     # TAIL_MIN 여유가 --to 자정을 넘겨 기간 밖 구간을 만들지 않게 t1 로 자른다
     hint_spans = [(a, min(b, t1), HINT_SRC) for a, b in to_spans(times) if a < t1]
     added, _lu, clipped = _ledger.append_spans(pc_dir, hint_spans, anchor=anchor)
-    days, carried = _ledger.regen_pc_on(pc_dir)
+    days, carried = _ledger.regen_pc_on(pc_dir, anchor=anchor)
     extra_sampler(t0, t1)            # 요약 줄보다 먼저 — run.py 가 마지막 줄을 수집 단계 요약으로 남긴다
     print(f"[pc-hint] 힌트 구간 {len(hint_spans)}개 → 원장 추가 {added}"
           + (f" · 앵커 이전 제외 {clipped}" if clipped else "")
@@ -269,9 +219,9 @@ def extra_sampler(t0, t1):
         if _ledger is None:
             continue
         try:
-            # 남의 폴더 — 앵커는 그 폴더 자신의 첫 물리 이벤트로만(own_pc=False), 샘플은 그 PC 실사용 증거라 앵커로 거르지 않는다
+            # 남의 폴더 — 앵커 생성은 run.py 이행 단계(migrate_extra_pc_ledgers)가 한다. 샘플은 그 PC 실사용 증거라 앵커로 거르지 않는다
             add, _lu, _cl = _ledger.append_spans(pc_dir, [(a, b, "sampler") for a, b, *_ in spans])
-            days, carried = _ledger.regen_pc_on(pc_dir)
+            days, carried = _ledger.regen_pc_on(pc_dir, anchor=_ledger.read_anchor(pc_dir))
         except OSError as e:
             print(f"[pc-hint] 추가PC\\{name}: 샘플러 보강 실패({e.__class__.__name__})")
             continue
