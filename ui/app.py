@@ -31,7 +31,7 @@ from progress import parse as parse_progress  # noqa: E402  (core 경로 등록 
 REPORT = os.path.join(ROOT, "report")
 DATA = os.path.join(ROOT, "data")
 NO_WIN = 0x08000000
-VERSION = "v3.0"          # lm24-v3 — 구조 재설계 계열(원장 구조·단일 실행기·어휘 단일화)
+VERSION = "v4.0"          # lm24-v4 — v3 구조 위 운영 다듬기(교차 프로세스 사실은 파일이 진실)
 LOCK = threading.Lock()
 FREEZE_LOCK = threading.Lock()       # [보고서 만들기] 직렬화 — JOB 과 별개(사본에 '실행 중'이 굳지 않게)
 JOB = {"running": False, "log": [], "step": "", "started": 0.0, "pid": 0,
@@ -2924,7 +2924,12 @@ async function poll(){
       +(idle!=null&&idle>=120?" 아직 끊지 않았습니다(무출력이 계속되면 자동 중단합니다).":" 진행 중입니다.")
       +" 창을 닫지 말고 두세요 · 멈추려면 [중지]. 단계가 시간 예산에 닿으면 그때까지의 결과를 저장하고 멈춥니다.");
    $("pg_hint").style.color=(idle!=null&&idle>=120)?"#c0122f":"";
-  }else{$("prog").style.display="none";}
+  }else{
+   $("prog").style.display="none";
+   // 실행이 막 끝났으면 업로드 카드도 새로 읽는다 — 분석이 만든 묶음이 바로 보이게(v4)
+   if(window.__wasRunning){window.__wasRunning=false;tuLoad();}
+  }
+  if(s.running)window.__wasRunning=true;
   // ── 하단 상태바 ──
   $("sb_dot").style.background=s.running?"#e08a00":"#4fc47f";
   $("sb_state").textContent=s.running?(s.step||"실행 중"):"대기";
@@ -3398,17 +3403,14 @@ $("tuping").onclick=async()=>{
  if(r.saved)tuLoad();
 };
 async function tuSend(){
+ // v4: 판정 전에 **항상** 새로 읽는다 — 예전에는 TU(마지막 tuLoad 스냅샷)로 판정해서, 화면을
+ // 분석 전에 열어 두면 분석이 끝나도 "보낼 결과가 없습니다" 가 떴다(UI 재시작으로만 풀리던 제보).
+ // 교차 프로세스 사실(파일)은 메모리 스냅샷이 아니라 누르는 순간의 파일이 진실이다.
+ tuBusy(true,"대기 목록 확인 중…");
+ await tuLoad();
+ tuBusy(false,"");
  let p=(TU.pending||[]).length;
  if(!p){
-  // 결과가 있는데 묶음만 없는 경우가 흔하다(예전 버전으로 분석) — 여기서 바로 만들어 준다
-  if(TU.unknown){
-   // 한 번 실패한 상태로 굳어 '껐다 켜야 되는' 일이 없게, 누른 김에 다시 읽어 본다
-   tuBusy(true,"대기 목록 다시 확인 중…");
-   await tuLoad();
-   tuBusy(false,"");
-   p=(TU.pending||[]).length;
-   if(p)return tuSendConfirmed(p);
-  }
   if(TU.unknown){
    // '모른다' 를 '없다' 로 말하면, 보낼 것이 있는데도 못 보내게 막는 셈이다(실측 제보)
    alert("대기 목록을 확인하지 못했습니다 — 보낼 것이 없다는 뜻이 아닙니다."
