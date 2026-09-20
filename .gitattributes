@@ -1,0 +1,14 @@
+# 줄끝·인코딩을 바이트 그대로 보존한다.
+#   .bat = CP949 + CRLF / .ps1 = UTF-8 BOM + CRLF / .py .json .md = UTF-8 LF
+# FILES.txt 의 crc32 자가점검이 바이트 단위로 맞아야 하므로 git 자동 변환을 전부 끈다.
+* -text
+
+# 변환만 끄고 diff 는 텍스트로 보이게 한다.
+*.py    diff
+*.ps1   diff
+*.bat   diff
+*.md    diff
+*.json  diff
+*.txt   diff
+*.html  diff
+*.toml  diff
