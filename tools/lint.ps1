@@ -1,4 +1,4 @@
-﻿# lint.ps1 - single lint entry for LoadMonitor: 7 gates in one.
+﻿# lint.ps1 - single lint entry for LoadMonitor: 10 gates in one.
 #   1) ruff (python)               2) PowerShell syntax parse
 #   3) PAGE/TEAM_PAGE unescaped \n (JS SyntaxError -> 버튼 전멸 실사고 방지)
 #   4) bat encoding (CP949 + CRLF, no BOM)
@@ -149,5 +149,9 @@ if ($LASTEXITCODE -ne 0) { $fail = 1 }
 & $py8 (Join-Path $root 'tools\check_trend.py') 2>&1 | ForEach-Object { Write-Output $_ }
 if ($LASTEXITCODE -ne 0) { $fail = 1 }
 
-if ($fail -eq 0) { Write-Output 'lint OK (9 gates)' }
+# --- gate 10: 팀취합본 로드율 재계산기 계약 - 판 무관(A·B·C3 동일)·8h 바닥 산식·분석 시점 절단·기존 보고서 무변경 ---
+& $py8 (Join-Path $root 'tools\check_recalc.py') 2>&1 | ForEach-Object { Write-Output $_ }
+if ($LASTEXITCODE -ne 0) { $fail = 1 }
+
+if ($fail -eq 0) { Write-Output 'lint OK (10 gates)' }
 exit $fail

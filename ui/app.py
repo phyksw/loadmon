@@ -31,7 +31,7 @@ from progress import parse as parse_progress  # noqa: E402  (core 경로 등록 
 REPORT = os.path.join(ROOT, "report")
 DATA = os.path.join(ROOT, "data")
 NO_WIN = 0x08000000
-VERSION = "v4.0"          # lm24-v4 — v3 구조 위 운영 다듬기(교차 프로세스 사실은 파일이 진실)
+VERSION = "v4.1"          # lm24-v4 — v3 구조 위 운영 다듬기(교차 프로세스 사실은 파일이 진실) · 팀취합본 로드율 재계산기
 LOCK = threading.Lock()
 FREEZE_LOCK = threading.Lock()       # [보고서 만들기] 직렬화 — JOB 과 별개(사본에 '실행 중'이 굳지 않게)
 JOB = {"running": False, "log": [], "step": "", "started": 0.0, "pid": 0,

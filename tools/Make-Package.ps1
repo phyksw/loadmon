@@ -18,7 +18,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 
-# 패키징 훅: lint 7관문(ruff·PS 파서·화면 JS 문법·bat/ps1 인코딩·개발 PC 실경로)을 통과해야 담는다.
+# 패키징 훅: lint 10관문(ruff·PS 파서·화면 JS 문법·bat/ps1 인코딩·개발 PC 실경로·L1 어휘·추이 계약·재계산기 계약)을 통과해야 담는다.
 # 실사고 — JS 문법 오류 하나로 버튼 11개가 전부 죽은 배포본이 나간 적이 있다. 배포 직전이 마지막 관문이다.
 if (-not $SkipLint) {
     $lint = Join-Path $PSScriptRoot 'lint.ps1'
