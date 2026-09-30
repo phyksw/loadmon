@@ -54,8 +54,10 @@ from datetime import timedelta as _td
 
 try:
     from .collection_state import latest_original_rows
+    from .communication_context import make_excerpt, make_text_filter
 except ImportError:
     from collection_state import latest_original_rows
+    from communication_context import make_excerpt, make_text_filter
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -627,19 +629,7 @@ def _text_filter(exclude):
      · 경로 전용 토큰은 제외한다 — 경로는 수집기가 이미 거른다.
      · ASCII 는 단어 경계를 요구한다('temp'⊄'template'). 한글은 부분일치 유지
        ('개인'⊂'개인자료' 를 잡아야 하는 마지막 방어선)."""
-    ex_all = [str(e).lower() for e in exclude if e]
-    ex_kr = [e for e in ex_all if not e.isascii() and e not in PATH_ONLY_KW]
-    ex_ascii = [e for e in ex_all if e.isascii() and e not in PATH_ONLY_KW]
-    ex_pat = (re.compile("|".join(f"(?<![a-z0-9]){re.escape(e)}(?![a-z0-9])"
-                                  for e in ex_ascii)) if ex_ascii else None)
-
-    def hit(low):
-        h = next((e for e in ex_kr if e in low), None)
-        if not h and ex_pat:
-            m = ex_pat.search(low)
-            h = m.group(0) if m else None
-        return h
-    return hit
+    return make_text_filter(exclude)
 
 
 def _norm_person(s):
@@ -966,7 +956,8 @@ def _file_times(data_dir, d0, d1, exclude=(), cfg=None, burst_n=None, self_names
 
 COLLECTION_CONTEXT_FIELDS = ("context_excerpt", "context_truncated", "source_id", "source_kind",
                              "source_url", "conversation_id", "account", "folder", "time_precision", "context_filtered",
-                             "modified_time", "context_available")
+                             "modified_time", "context_available", "full_body_chars", "body_capture_status",
+                             "capture_method", "body_truncated", "body_complete", "capture_limit", "capture_scope")
 UNVERIFIED_TIME_PRECISIONS = {"estimated", "date", "ai_reported", "unknown"}
 CONTEXT_ONLY_TIME_SOURCES = {f"팀즈({kind}·시각미확인)" for kind in ("발신", "오더", "수신", "단체")}
 CONTEXT_ONLY_TIME_SOURCES |= {f"메일({kind}·시각미확인)" for kind in ("발신", "수신", "CC", "수신전용")}
@@ -988,9 +979,10 @@ def collection_context(row):
     row = row or {}
     out = {key: _one_line(str(row.get(key) or ""), None) for key in COLLECTION_CONTEXT_FIELDS}
     excerpt = out["context_excerpt"]
-    out["context_truncated"] = "true" if (len(excerpt) > 4000 or _truthy(row.get("context_truncated"))) else "false"
+    out["context_truncated"] = "true" if (len(excerpt) > 4000 or _truthy(row.get("context_truncated"))
+        or _truthy(row.get("body_truncated")) or row.get("body_capture_status") in {"collapsed", "partial"}) else "false"
     out["context_filtered"] = "true" if _truthy(row.get("context_filtered")) else ""
-    out["context_excerpt"] = "" if out["context_filtered"] else excerpt[:4000]
+    out["context_excerpt"] = "" if out["context_filtered"] else make_excerpt(excerpt, 4000)
     for key in COLLECTION_CONTEXT_FIELDS[2:]:
         out[key] = out[key][:2048 if key == "source_url" else 512]
     return out
@@ -1011,19 +1003,13 @@ def context_preview(row, limit=800):
     limit = max(0, int(limit))
     clipped = len(text) > limit
     if clipped:
-        # Spread the available characters across the beginning, middle and end.
-        # A decision/action item near the end must not always disappear.
-        n = max(0, limit - 16)
-        a, b = n // 2, n // 4
-        middle = max(a, len(text) // 2 - b // 2)
-        text = (text[:a] + " …[중간 생략]… " + text[middle:middle + b]
-                + " … " + text[-(n - a - b):]) if n else ""
+        text = make_excerpt(text, limit)
     status = ("문맥 제외(보호 필터)" if context["context_filtered"] else "본문 미수집") if not context["context_excerpt"] else (
         "일부 발췌·생략 있음" if clipped or context["context_truncated"] == "true" else "수집 문맥")
     parts = [status + (": " + json.dumps(text, ensure_ascii=False) if text else "")]
     for key, label, cap in (("source_kind", "출처", 64), ("source_id", "원천ID", 120),
                             ("conversation_id", "대화ID", 120), ("source_url", "참조", 240),
-                            ("time_precision", "시각정밀도", 20)):
+                            ("time_precision", "시각정밀도", 20), ("body_capture_status", "본문캡처", 16)):
         if context[key]:
             parts.append(label + "=" + json.dumps(context[key][:cap], ensure_ascii=False))
     return " | ".join(parts)
@@ -1095,6 +1081,7 @@ def load_signals(data_dir, d0, d1, exclude=(), cfg=None):
         if not text:
             return
         lbl = _timing_label(label or src, context or {})
+        context_hit = _hit(_one_line(str((context or {}).get("context_excerpt") or ""), None).lower())
         context = collection_context(context)
         if not (d0 <= t.date() <= d1):
             return  # An out-of-period guessed timestamp must not reserve a source ID.
@@ -1106,7 +1093,6 @@ def load_signals(data_dir, d0, d1, exclude=(), cfg=None):
             meta["excluded"]["개인정보필터"] += 1
             meta["excluded"][f"개인정보필터({text_hit})"] += 1
             return
-        context_hit = _hit(context["context_excerpt"].lower())
         if context_hit:
             context["context_excerpt"] = ""
             context["context_filtered"] = "true"
@@ -1238,7 +1224,7 @@ def load_signals(data_dir, d0, d1, exclude=(), cfg=None):
         precise = precise_copy(r, _pt(r.get("time")) + _td(hours=mail_off))
         if precise is not None:
             incoming, existing = collection_context(r), collection_context(precise)
-            if not _hit(incoming["context_excerpt"].lower()):
+            if not _hit(_one_line(str(r.get("context_excerpt") or ""), None).lower()):
                 if len(incoming["context_excerpt"]) > len(existing["context_excerpt"]):
                     precise["context_excerpt"] = incoming["context_excerpt"]
                     precise["context_truncated"] = incoming["context_truncated"]

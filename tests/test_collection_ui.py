@@ -22,6 +22,15 @@ class Elements(HTMLParser):
 
 
 class CollectionUiTests(unittest.TestCase):
+    def test_web_body_default_and_incomplete_capture_are_visible(self):
+        self.run_js(r'''
+assert.equal(byId.communicationbody.checked,true);
+context.renderCommunicationEvidence({families:{teams:{unique_rows:4,context_rows:3,
+ web_body_observed_rows:3,web_body_partial_rows:1}}});
+assert.match(byId.communicationevidence.innerHTML,/웹 본문 3건 · 이 중 미펼침\/부분 1건/);
+assert.match(byId.communicationevidence.innerHTML,/전체 원본 대비 확보율 미확인/);
+''')
+
     def test_graph_connection_requires_explicit_app_and_logs_device_login(self):
         self.run_js(r'''
 await byId.communicationconnect.onclick();assert.equal(requests.length,0);
@@ -139,7 +148,7 @@ assert.equal(byId.collect2.disabled,true);
 assert.equal(byId.collect2body.checked,true);
 byId.collect2body.checked=false;fetchWith(async()=>reply(200,{ok:true}));await byId.collect2.onclick();
 assert.equal(JSON.parse(requests[0].options.body).mail_body,false);
-assert.equal(byId.communicationbody.checked,false); // The separate button has its own disclosed option.
+assert.equal(byId.communicationbody.checked,true); // Its independent default must not be changed by collect2.
 ''')
 
     def test_api_errors_are_visible_and_reenable_controls(self):

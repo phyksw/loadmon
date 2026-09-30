@@ -596,7 +596,7 @@
   "teamsBudgetSec": 2400,
   "graphBudgetSec": 900
  },
- "_collection_설명": "원문과 분석 발췌 분리: Graph/COM/파일 입력은 수집한 전체 평문을 data/communication_originals에 보관. 분석 문맥은 기본 4000자, AI 요청은 신호당 800자 발췌. Outlook COM은 모든 연결 저장소 및 이미 열린 PST를 조회하며 캐시 범위는 서버 전체와 다르다. mailWebBody=true는 웹 메일을 열므로 읽음 상태가 바뀔 수 있음. 중단된 Graph 페이지는 같은 계정·기간으로 재실행하여 이어받음. 권한·예산·폴더·본문 오류는 부분으로 기록.",
+ "_collection_설명": "원문과 분석 발췌 분리: Graph/COM/파일 입력과 웹에서 읽어낸 본문을 data/communication_originals에 보관. 웹은 렌더된 범위이며 미펼침·부분 본문을 구분한다. 보호 키워드가 있는 웹 본문은 보관하지 않는다. 분석 문맥은 앞·중간·끝 기본 4000자, AI 요청은 신호당 800자 발췌. Outlook COM은 모든 연결 저장소 및 이미 열린 PST를 조회하며 캐시 범위는 서버 전체와 다르다. mailWebBody=true는 웹 메일을 열므로 읽음 상태가 바뀔 수 있음. 중단된 Graph 페이지는 같은 계정·기간으로 재실행하여 이어받음. 권한·예산·폴더·본문 오류는 부분으로 기록.",
  "_collectOnlyHeadless_설명": "true(기본): 명령줄 --collect-only 무인 수집은 웹·Copilot 창을 열지 않는다. UI의 추가 PC 수집과 메일·Teams만 수집은 --interactive-collect로 웹 보충을 허용하고 Copilot 조회는 생략한다. 추가 PC 수집의 Outlook 웹 본문은 기본 포함이며 화면 체크를 끄면 이번 실행에서는 제외한다(읽음 표시가 바뀔 수 있음).",
  "_communicationImport_설명": "사용자가 선택한 EML/MBOX 메일 및 Graph chatMessage JSON, LM25 지정형식 CSV/JSON/JSONL만 읽는다. MSG는 UI 별도 버튼과 기존 Outlook 필요. PST는 기존 Outlook에서 사용자가 이미 열어 둔 저장소로 조회. communicationImportRecursive=false면 폴더 바로 아래만 처리. communicationImportOwnAddresses는 본인 주소 목록, 미설정은 방향미확인. communicationImportAccount는 명시적 계정 표식. 선택 입력의 원본 건수는 communicationImportExpectedCount로 대조 가능하나 서버 전체 확보를 뜻하지 않는다. 첨부는 읽지 않음."
 }

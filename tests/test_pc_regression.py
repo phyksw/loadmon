@@ -28,6 +28,7 @@ class PcRegressionTests(unittest.TestCase):
         source = (PROJECT / "LoadMonitor25/core/extract.py").read_text(encoding="utf-8-sig")
         target.write_text(source, encoding="utf-8")
         (target.parent / "collection_state.py").write_bytes((PROJECT / "LoadMonitor25/core/collection_state.py").read_bytes())
+        (target.parent / "communication_context.py").write_bytes((PROJECT / "LoadMonitor25/core/communication_context.py").read_bytes())
         cls.extract = {"__file__": str(target), "__name__": "synthetic_extract"}
         with mock.patch.object(sys, "path", [str(target.parent), *sys.path]):
             exec(compile(source, str(target), "exec"), cls.extract)

@@ -51,6 +51,19 @@ class CommunicationEvidenceTests(unittest.TestCase):
         self.assertEqual(result["mm_effect"], "none")
         self.assertNotIn("SENSITIVE", json.dumps(result))
 
+    def test_web_body_observations_keep_incomplete_and_filtered_content_distinct(self):
+        row = {"time": "2026-01-05 09:00", "source_kind": "teams_web", "context_excerpt": "SENSITIVE_BODY"}
+        self.csv("m365/teams_web.csv", [dict(row, source_id="a", body_capture_status="rendered"),
+                                      dict(row, source_id="b", body_capture_status="partial"),
+                                      dict(row, source_id="c", body_capture_status="collapsed", context_filtered="true"),
+                                      dict(row, source_id="old", body_capture_status="partial", time="2025-12-31 09:00")])
+        family = self.report()["families"]["teams"]
+        self.assertEqual((family["web_body_observed_rows"], family["web_body_partial_rows"]), (2, 1))
+        self.assertEqual(family["context_rows"], 2)
+        self.assertIsNone(family["source_coverage_ratio"])
+        self.assertTrue(any("웹 본문" in item for item in family["limits"]))
+        self.assertNotIn("SENSITIVE", json.dumps(family))
+
     def test_counts_scope_period_and_cross_pc_identity_are_separate(self):
         row = {"time": "2026-01-05 09:00", "box": "sent", "subject": "SENSITIVE_TITLE", "source_id": "id-1",
                "conversation_id": "SENSITIVE_THREAD", "account": "SENSITIVE_ACCOUNT", "source_kind": "outlook_com"}

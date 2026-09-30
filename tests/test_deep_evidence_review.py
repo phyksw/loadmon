@@ -39,7 +39,8 @@ class DeepEvidenceReviewTests(unittest.TestCase):
         self.cfg.update(owner="Synthetic", teamsSelfNames=["Synthetic"], projects=[])
         (self.root / "config/config.json").write_text(json.dumps(self.cfg), "utf-8")
         self.state = load_module("deep_state", self.root / "core/collection_state.py")
-        with mock.patch.dict(sys.modules, {"collection_state": self.state}):
+        context = load_module("deep_context", self.root / "core/communication_context.py")
+        with mock.patch.dict(sys.modules, {"collection_state": self.state, "communication_context": context}):
             self.extract = load_module("deep_extract", self.root / "core/extract.py")
             self.evidence = load_module("deep_evidence", self.root / "core/communication_evidence.py")
 

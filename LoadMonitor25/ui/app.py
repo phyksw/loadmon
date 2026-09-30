@@ -32,7 +32,7 @@ from tools.transfer import create_transfer  # noqa: E402
 REPORT = os.path.join(ROOT, "report")
 DATA = os.path.join(ROOT, "data")
 NO_WIN = 0x08000000
-VERSION = "v25.11"
+VERSION = "v25.12"
 LOCK = threading.Lock()
 REQUEST_LOCK = threading.Lock()      # Serialize synchronous mutations with transfer startup.
 FREEZE_LOCK = threading.Lock()       # [보고서 만들기] 직렬화 — JOB 과 별개(사본에 '실행 중'이 굳지 않게)
@@ -2847,7 +2847,7 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
  <div id="communicationactions">
  <p class="note"><a href="/api/communication/diagnostics" download="LM25-collection-diagnostics.json">마지막 실행 원인표 다운로드</a> · 메일 제목·본문·수신인 없이 앱 기능·실행 경로·처리 건수·소요시간을 저장합니다. 원인표 안의 실행 기간을 확인하세요.</p>
   <div class="row"><button id="communicationcollect">메일·Teams만 수집 (웹 포함)</button>
-   <label><input id="communicationbody" type="checkbox">Outlook 웹 본문 포함 · 읽음 표시가 바뀔 수 있음</label></div>
+   <label><input id="communicationbody" type="checkbox" checked>Outlook 웹 본문 포함 · 읽음 표시가 바뀔 수 있음</label></div>
   <p class="note">상단 실행 기간을 사용합니다. 연결된 Graph, Outlook 앱의 모든 연결 저장소, 화면 보충 경로를 사용합니다. 중단된 Graph 페이지는 같은 기간으로 다시 실행하면 이어받습니다. 앱·화면만으로는 서버 전체 확보를 보장할 수 없습니다. AI를 호출하지 않습니다.</p>
   <details><summary>① 서버 원문 연결 — 조직에서 허용한 Graph 앱이 있을 때</summary>
    <p class="note">Copilot 라이선스는 필요하지 않습니다. Entra에 등록한 공용 클라이언트 앱 ID와 조직의 읽기 권한 승인이 필요합니다. 차단된 권한은 자동으로 우회되지 않습니다. 로그인 주소와 코드는 아래 진행 로그에 표시됩니다.</p>
@@ -3049,7 +3049,9 @@ function renderCommunicationEvidence(report){
    const pending=Number.isInteger(f.pending_rows)&&f.pending_rows>0?f.pending_rows:0;
    const pendingFailed=Number.isInteger(f.pending_unreadable_files)&&f.pending_unreadable_files>0?f.pending_unreadable_files:0;
    const pendingLabel=pending?`${pending.toLocaleString()}건`:(pendingFailed?"미확인":"없음");
-   return `<tr><td>${kind==="mail"?"메일":"Teams"}</td><td>${observed}</td><td>${unreadable?"확인된 ":""}${b.toLocaleString()}건</td><td>${pendingLabel}${pendingFailed?`<br>보류 자료 읽기 실패 ${pendingFailed.toLocaleString()}파일`:""}</td><td>${unreadable?"확인된 ":""}${Number(f.conversation_count)||0}개</td><td>${esc((f.limits||[]).join(" · ")||"전체 원본 대비 확보율 미확인")}</td></tr>`;
+   const web=Number(f.web_body_observed_rows)||0,partial=Number(f.web_body_partial_rows)||0;
+   const webLabel=web?`<br><span class="note">웹 본문 ${web.toLocaleString()}건 · 이 중 미펼침/부분 ${partial.toLocaleString()}건</span>`:"";
+   return `<tr><td>${kind==="mail"?"메일":"Teams"}</td><td>${observed}</td><td>${unreadable?"확인된 ":""}${b.toLocaleString()}건${webLabel}</td><td>${pendingLabel}${pendingFailed?`<br>보류 자료 읽기 실패 ${pendingFailed.toLocaleString()}파일`:""}</td><td>${unreadable?"확인된 ":""}${Number(f.conversation_count)||0}개</td><td>${esc((f.limits||[]).join(" · ")||"전체 원본 대비 확보율 미확인")}</td></tr>`;
   }).join("")+"</table><p class='note'>날짜 미확정 보류는 같은 요청 기간에서 관측한 자료이며 기간 내 고유 건수·AI 분석에 포함하지 않습니다. 본문 포함은 보관 자료 기준이며, 보호 필터 적용 후 AI에 전달되는 수는 줄어들 수 있습니다. 대화 묶음 수가 전체 대화 확보를 뜻하지 않습니다.</p>";
  const actions=[...new Set([...(report?.actions||[]),...Object.values(families).flatMap(f=>f.actions||[])])];
  if(actions.length)host.innerHTML+='<p class="note"><b>다음 조치:</b> '+actions.map(esc).join(" · ")+"</p>";

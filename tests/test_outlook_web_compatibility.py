@@ -64,7 +64,8 @@ class OutlookWebCompatibility(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(prefix='lm25-owa-dom-code-')
         cls.addClassCleanup(temporary.cleanup)
         root = Path(temporary.name)
-        for folder, filename in [('collect', 'Get-OutlookWeb.py'), ('core', 'collection_state.py')]:
+        for folder, filename in [('collect', 'Get-OutlookWeb.py'), ('core', 'collection_state.py'),
+                                 ('core', 'communication_archive.py'), ('core', 'communication_context.py')]:
             (root / folder).mkdir(exist_ok=True)
             shutil.copyfile(ROOT / folder / filename, root / folder / filename)
         spec = importlib.util.spec_from_file_location("owa_compat", root / "collect/Get-OutlookWeb.py")

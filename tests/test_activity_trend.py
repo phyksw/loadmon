@@ -48,6 +48,7 @@ class ActivityTrendTests(unittest.TestCase):
         code.parent.mkdir(parents=True)
         shutil.copyfile(PROJECT / "LoadMonitor25" / "core" / "extract.py", code)
         shutil.copyfile(PROJECT / "LoadMonitor25/core/collection_state.py", code.parent / "collection_state.py")
+        shutil.copyfile(PROJECT / "LoadMonitor25/core/communication_context.py", code.parent / "communication_context.py")
         spec = importlib.util.spec_from_file_location("lm25_synthetic_extract", code)
         self.extract = importlib.util.module_from_spec(spec)
         with mock.patch.object(sys, "path", [str(code.parent), *sys.path]):

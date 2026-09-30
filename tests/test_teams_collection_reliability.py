@@ -30,7 +30,7 @@ class TeamsCollectionTests(unittest.TestCase):
         for name in ("Get-TeamsWeb.py", "Get-OutlookWeb.py", "Get-TeamsChats.py",
                      "Get-TeamsViaCopilot.py", "Get-TeamsWindow.ps1"):
             shutil.copyfile(PRODUCT / "collect" / name, self.root / "collect" / name)
-        for name in ("collection_state.py", "graph_client.py", "communication_archive.py"):
+        for name in ("collection_state.py", "graph_client.py", "communication_archive.py", "communication_context.py"):
             shutil.copyfile(PRODUCT / "core" / name, self.root / "core" / name)
         (self.root / "config/config.json").write_text(json.dumps({
             "owner": "Synthetic", "teamsSelfNames": ["Synthetic"],

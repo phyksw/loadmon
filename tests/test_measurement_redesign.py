@@ -27,6 +27,7 @@ class MeasurementRedesignTests(unittest.TestCase):
         target.parent.mkdir(parents=True)
         shutil.copyfile(PROJECT / "LoadMonitor25/core/extract.py", target)
         shutil.copyfile(PROJECT / "LoadMonitor25/core/collection_state.py", target.parent / "collection_state.py")
+        shutil.copyfile(PROJECT / "LoadMonitor25/core/communication_context.py", target.parent / "communication_context.py")
         spec = importlib.util.spec_from_file_location("synthetic_measurement_redesign", target)
         cls.module = importlib.util.module_from_spec(spec)
         with mock.patch.object(sys, "path", [str(target.parent), *sys.path]):

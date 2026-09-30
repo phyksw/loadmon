@@ -41,17 +41,25 @@ if __name__ == "__main__":
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "core"))
-from collection_state import merge_csv, read_csv, record_key, write_csv, write_status  # noqa: E402
+from collection_state import merge_csv, read_csv, record_key, web_capture_score, write_csv, write_status  # noqa: E402
+from communication_archive import archive_records  # noqa: E402
+from communication_context import body_is_filtered, make_excerpt  # noqa: E402
 
 OUT_DIR = os.path.join(ROOT, "data", "m365")
 HDR = "time,from,chat,kind,replied_time,summary"
 FIELDS = HDR.split(",") + ["context_excerpt", "context_truncated", "source_id", "source_kind",
-                            "source_url", "conversation_id", "time_precision"]
+                            "source_url", "conversation_id", "time_precision", "context_filtered",
+                            "full_body_chars", "body_capture_status"]
 SCOPE = "Teams 웹에서 탐색한 채팅 목록·메시지 DOM; 숨김 대화·채널·서버 전체 기록은 보장하지 않음"
 TEAMS_URL = "https://teams.microsoft.com/v2/"
 HOSTS = ("teams.microsoft.com", "teams.cloud.microsoft", "teams.office.com", "teams.live.com")
 MAX_SCROLL = 200                # 시간 예산과 함께 적용하는 안전 상한; 도달하면 partial
 SUMMARY_MAX = 200               # 창 읽기 경로와 같은 길이
+
+
+def capture_signature(context_chars, privacy_keywords):
+    payload = ['web_context_v1', context_chars, list(privacy_keywords)]
+    return hashlib.sha256(json.dumps(payload, ensure_ascii=True, sort_keys=True).encode('utf-8')).hexdigest()
 
 
 def arg(flag, d=""):
@@ -269,6 +277,15 @@ JS_DOM = r"""
     return !owner || !nearest || nearest.getAttribute('data-message-id') === owner;
   };
   const messageBody = e => all(bodySelector,e).find(x => ownPart(e,x));
+  const expansionControls = e => all('button,[role="button"]',e).filter(x => {
+    if (!ownPart(e,x) || all(bodySelector,e).some(body => body.contains(x)) ||
+        x.disabled || x.getAttribute('aria-disabled') === 'true' || x.closest('form,a[href]') ||
+        x.getAttribute('form') !== null || x.getAttribute('formaction') !== null ||
+        x.getAttribute('type') === 'submit' || x.getAttribute('aria-haspopup') || x.getAttribute('aria-expanded') === 'true') return false;
+    const label = (x.getAttribute('aria-label') || x.textContent || '').replace(/\s+/g,' ').trim();
+    return /^(read more|see more|show more|view more|더\s?보기|자세히\s?보기|전체\s?보기|계속\s?읽기)$/i.test(label) ||
+      /^(?:(?:view|show|see|load) (?:all )?(?:\d+ )?(?:more )?replies|\d+ replies|답글\s*\d*\s*개?\s*(?:더\s*)?보기|\d+개?\s*답글(?:\s*보기)?)$/i.test(label);
+  });
   const timestampNodes = e => {
     const bodies = all(bodySelector,e);
     const headerPart = x => ownPart(e,x) && !bodies.some(body => body.contains(x));
@@ -351,11 +368,12 @@ JS_OPEN = r"""
 })()
 """
 JS_MSGS = dom_script(r"""
-  const out = {href: location.href, how: "", chat: "", n: 0, items: []};
+  const out = {href: location.href, how: "", chat: "", conversation_id: "", n: 0, items: []};
   const messages = messageNodes(), root = paneRoot();
   if (!messages.length) return JSON.stringify(out);
   out.how = 'message identity / log semantics / legacy pane';
   out.chat = text(all(headers)[0]).slice(0, 120);
+  out.conversation_id = chatId(root) || chatId(document.querySelector('[role="main"][data-chat-id]'));
   const SEP = '[role="separator"],[data-tid*="divider"],[data-tid="date-separator"],[data-tid="message-date"]';
   for (const e of all(messageSelector + ',' + SEP)) {
     if (!messages.includes(e)) {
@@ -376,11 +394,30 @@ JS_MSGS = dom_script(r"""
       ts: ts ? ((ts.getAttribute("title") || ts.getAttribute("datetime") || ts.textContent || "").trim()) : "",
       iso: stamps.filter(x => x.matches('time[datetime]')).map(x => x.getAttribute("datetime")).filter(Boolean).slice(0, 3),
       titles: stamps.flatMap(x => [x.getAttribute('title'),x.getAttribute('aria-label')]).filter(Boolean).slice(0, 6),
-      body: bd ? (bd.textContent || "").trim().slice(0, 20000) : "",
+      body: bd ? (bd.innerText || bd.textContent || "").trim() : "",
+      body_capture_status: expansionControls(e).length ? 'collapsed' : bd ? 'rendered' : 'partial',
       texts: leafs(e).slice(0, 20)});
   }
   out.n = out.items.filter(x => x.t === "msg").length;
   return JSON.stringify(out);
+""")
+JS_EXPAND_MESSAGES = dom_script(r"""
+  window.__lm_body_expands = window.__lm_body_expands || new Set();
+  let clicked = 0;
+  const conversation = chatId(paneRoot()) || text(all(headers)[0]);
+  for (const e of messageNodes()) {
+    const id = messageIdentity(e);
+    if (!id) continue; // An unidentified action could belong to a different message.
+    for (const button of expansionControls(e)) {
+      const key = conversation+'|'+id+'|'+(button.getAttribute('aria-label') || button.textContent || '')+'|'+(e.textContent || '').length;
+      if (window.__lm_body_expands.has(key)) continue;
+      window.__lm_body_expands.add(key);
+      button.click(); clicked++;
+      if (clicked >= 12) break;
+    }
+    if (clicked >= 12) break;
+  }
+  return JSON.stringify({clicked});
 """)
 JS_SCROLL_UP = dom_script(r"""
   const CAND = ['[data-tid="message-pane-list-viewport"]', '[data-tid="message-pane"]', '[data-tid="chat-pane-list"]', '[role="log"]'];
@@ -400,6 +437,11 @@ JS_SCROLL_UP = dom_script(r"""
   el.dispatchEvent(new Event("scroll", {bubbles: true}));
   return el.scrollTop < before ? "scrolled" : "top";
 """)
+JS_SCROLL_DOWN = JS_SCROLL_UP.replace(
+    "el.scrollTop = Math.max(minimum, el.scrollTop - Math.max(400, el.clientHeight - 60));",
+    "const maximum = minimum < 0 ? 0 : el.scrollHeight-el.clientHeight; "
+    "el.scrollTop = Math.min(maximum, el.scrollTop + Math.max(400, el.clientHeight - 60));"
+).replace('el.scrollTop < before ? "scrolled" : "top"', 'el.scrollTop > before ? "scrolled" : "bottom"')
 
 JS_SCROLL_CHATS = dom_script(r"""
   let el = (window.__lm_chats || [])[0] || document.querySelector('[data-tid="chat-list"],[role="tree"],[role="listbox"]');
@@ -601,6 +643,35 @@ class Browser:
                 return {}
         return r or {}
 
+    def capture_messages(self, conversation_id, name, deadline=None):
+        """Expand only message-owned read controls, then recheck the active room."""
+        end = min(deadline or float('inf'), self.deadline or float('inf'), time.monotonic() + 3)
+        expected = {'conversation_id': conversation_id, 'name': name}
+        page = None
+        try:
+            for _ in range(4):
+                if time.monotonic() >= end:
+                    raise TimeoutError('message_expansion_time_budget')
+                pane = self.eval_json(JS_PANE, timeout=max(0.001, end-time.monotonic()))
+                if not pane_matches(expected, name, pane):
+                    raise ValueError('context_room_changed')
+                page = self.eval_json(JS_MSGS, timeout=max(0.001, end-time.monotonic()))
+                if not pane_matches(expected, name, page):
+                    raise ValueError('context_room_changed')
+                result = self.eval_json(JS_EXPAND_MESSAGES, timeout=max(0.001, end-time.monotonic()))
+                if not result.get('clicked'):
+                    return page
+                time.sleep(min(0.3, max(0, end-time.monotonic())))
+            pane = self.eval_json(JS_PANE, timeout=max(0.001, end-time.monotonic()))
+            if not pane_matches(expected, name, pane):
+                raise ValueError('context_room_changed')
+            return self.eval_json(JS_MSGS, timeout=max(0.001, end-time.monotonic()))
+        except TimeoutError:
+            if page is None:
+                raise
+            # The last verified observation is still evidence, not a completed read.
+            return dict(page, read_interrupted=True)
+
     def close(self):
         try:
             if self.cdp:
@@ -656,14 +727,14 @@ def wait_chat(br, item, name, limit=5):
 
 
 def read_chat(br, idx, name, d0, d1, today, fake=None, diag=None, deadline=None,
-              max_scroll=MAX_SCROLL, context_chars=4000, on_page=None, conversation_id="", on_undated=None):
+              max_scroll=MAX_SCROLL, context_chars=4000, on_page=None, conversation_id="", on_undated=None,
+              direction="up", on_cursor=None, initial_page=None, privacy_keywords=()):
     """대화 하나 — 위로 되감으며 화면을 여러 번 읽어 합친다. → (rows, 화면항목수)
 
     기간보다 오래된 날짜, 스크롤 상한, 연속된 동일 화면, 전체 시간 예산에서 멈춘다.
     기간 밖 메시지도 탐색 진행으로 세고, 화면 상단에서는 지연 로딩을 기다린다."""
     rounds = (fake or {}).get(str(idx)) if fake else None
     rows, seen, observed, screen = {}, set(), set(), 0
-    oldest = None
     stall = 0
     pane = ("", -1)
     reason = "scroll_limit"
@@ -672,14 +743,21 @@ def read_chat(br, idx, name, d0, d1, today, fake=None, diag=None, deadline=None,
             reason = "time_budget"
             break
         before = len(observed)
-        batch, pending = [], []
-        if rounds is not None:
+        batch, pending, page_dates, cursor_batch = [], [], [], []
+        if r == 0 and initial_page is not None:
+            page = initial_page
+        elif rounds is not None:
             if r >= len(rounds):
                 reason = "history_end"
                 break
             page = rounds[r]
         else:
-            page = br.eval_json(JS_MSGS)
+            page = (br.capture_messages(conversation_id, name, deadline) if hasattr(br, 'capture_messages')
+                    else br.eval_json(JS_MSGS))
+        if rounds is None and (page.get('conversation_id') and conversation_id and page['conversation_id'] != conversation_id
+                or page.get('chat') and name and not pane_matches({'conversation_id': conversation_id, 'name': name}, name, page)):
+            reason = 'context_room_changed'
+            break
         if diag is not None and page.get("how"):
             diag["how_msg"] = page["how"]
         items = page.get("items") or []
@@ -704,29 +782,44 @@ def read_chat(br, idx, name, d0, d1, today, fake=None, diag=None, deadline=None,
             bd = body_of(it, texts, au, it.get("ts") or "")
             if not bd:
                 if diag is not None:
-                    diag["no_body"] += 1
+                    diag["no_body"] = diag.get("no_body", 0) + 1
                 continue
             if dt and how in ('iso', 'full', 'date', 'rel'):
                 cur = dt.date()  # Proven only in this rendered page, never carried across scrolls.
             sid = str(it.get("id") or "")
+            capture = str(it.get('body_capture_status') or ('rendered' if it.get('body') else 'partial'))
+            if capture not in ('rendered', 'collapsed', 'partial'):
+                capture = 'partial'
             row = {"time": dt.strftime("%Y-%m-%d %H:%M") if dt else '', "from": au, "chat": chat,
-                   "summary": bd[:SUMMARY_MAX], "how": how, "context_excerpt": bd[:context_chars],
-                   "context_truncated": str(len(bd) > context_chars or len(str(it.get('body') or '')) >= 20000).lower(),
+                   "summary": bd[:SUMMARY_MAX], "how": how, "context_excerpt": make_excerpt(bd, context_chars),
+                   "context_truncated": str(len(bd) > context_chars or capture != 'rendered').lower(),
                    "source_id": "teams-dom:" + conversation_id + "/" + sid if sid else "", "source_kind": "teams_web",
                    "source_url": str(it.get("url") or ""), "conversation_id": conversation_id,
-                   "time_precision": "unknown" if not dt else "date" if how == "date" else "minute", "replied_time": ""}
+                   "time_precision": "unknown" if not dt else "date" if how == "date" else "minute", "replied_time": "",
+                   "full_body_chars": len(bd), "body_capture_status": capture, '_full_body': bd}
+            if body_is_filtered(bd, privacy_keywords):
+                row.update(summary='', context_excerpt='', context_filtered='true')
+                row.pop('_full_body', None)
+            else:
+                row['context_filtered'] = ''
             if not dt:
                 if diag is not None:
-                    diag["no_time"] += 1
+                    diag["no_time"] = diag.get("no_time", 0) + 1
                 row.update(timestamp_text=' | '.join(head)[:1000], requested_from=str(d0), requested_to=str(d1))
                 pending.append(row)
                 continue
-            oldest = dt.date() if oldest is None else min(oldest, dt.date())
+            page_dates.append(dt.date())
+            # Recent out-of-period pages are valid navigation progress. Keep
+            # their ID/time cursor, not their body, so old periods are reachable.
+            if sid and conversation_id:
+                cursor_batch.append(row)
             if not (d0 <= dt.date() <= d1):
                 continue
             k = (conversation_id, sid) if sid else (au, dt.isoformat(), chat, hashlib.sha1(bd.encode("utf-8")).hexdigest())
             if k in seen:
-                continue
+                previous = rows[k]
+                if not prefer_observation(previous, row):
+                    continue
             seen.add(k)
             rows[k] = row
             batch.append(row)
@@ -737,8 +830,16 @@ def read_chat(br, idx, name, d0, d1, today, fake=None, diag=None, deadline=None,
             diag['dated_messages'] = diag.get('dated_messages', 0) + len(batch)
         if batch and on_page:
             on_page(batch)
-        if oldest and oldest < d0:          # 기간보다 오래된 데까지 왔다 — 더 되감을 이유가 없다
+        if cursor_batch and on_cursor:
+            on_cursor(cursor_batch, direction)
+        if page.get('read_interrupted'):
+            reason = 'time_budget'
+            break
+        if direction == 'up' and page_dates and max(page_dates) < d0:
             reason = "requested_start_reached"
+            break
+        if direction == 'down' and page_dates and min(page_dates) > d1:
+            reason = 'requested_end_reached'
             break
         if len(observed) > before:
             stall = 0
@@ -748,8 +849,8 @@ def read_chat(br, idx, name, d0, d1, today, fake=None, diag=None, deadline=None,
                 reason = "messages_stalled"
                 break
         if rounds is None:
-            movement = str(br.cdp.eval(JS_SCROLL_UP))
-            if movement not in ("scrolled", "top"):
+            movement = str(br.cdp.eval(JS_SCROLL_UP if direction == 'up' else JS_SCROLL_DOWN))
+            if movement not in ("scrolled", "top", "bottom"):
                 reason = "history_end_or_unavailable"
                 break
             # 지난 메시지가 실제로 붙을 때까지만 기다린다 — 예전에는 무조건 1.6초를 잤다.
@@ -757,6 +858,60 @@ def read_chat(br, idx, name, d0, d1, today, fake=None, diag=None, deadline=None,
     if diag is not None:
         diag.setdefault("chat_reasons", []).append(reason)
     return list(rows.values()), screen
+
+
+def prefer_observation(previous, current):
+    """Retain richer observed bodies; a full-body privacy match takes priority."""
+    if str(previous.get('context_filtered', '')).lower() == 'true':
+        return False
+    if str(current.get('context_filtered', '')).lower() == 'true':
+        return True
+    return web_capture_score(current) > web_capture_score(previous)
+
+
+def message_cursor(rows, conversation_id, name, direction='up'):
+    prefix = 'teams-dom:' + conversation_id + '/'
+    candidates = [row for row in rows if conversation_id and str(row.get('source_id') or '').startswith(prefix)]
+    if not candidates:
+        return None
+    row = sorted(candidates, key=lambda value: value['time'])[0 if direction == 'up' else -1]
+    mid = row['source_id'][len(prefix):]
+    return {'conversation_id': conversation_id, 'id': mid, 'name': name,
+            'url': 'https://teams.microsoft.com/l/message/'+quote(conversation_id, safe='')+'/'+quote(mid, safe='')}
+
+
+def read_chat_resumable(br, idx, name, d0, d1, today, *, fake=None, diag=None, deadline=None,
+                        max_scroll=MAX_SCROLL, context_chars=4000, on_page=None, conversation_id='',
+                        on_undated=None, cursor=None, on_cursor=None, privacy_keywords=()):
+    """Refresh the verified current page, then continue older history at a saved ID."""
+    initial = None
+    if br and cursor:
+        current = (br.capture_messages(conversation_id, name, deadline) if hasattr(br, 'capture_messages')
+                   else br.eval_json(JS_MSGS))
+        if not pane_matches({'conversation_id': conversation_id, 'name': name}, name, current):
+            if diag is not None:
+                diag.setdefault('chat_reasons', []).append('context_room_changed')
+            return [], 0
+        read_chat(None, 0, name, d0, d1, today, fake={'0': [current]}, max_scroll=0,
+                  context_chars=context_chars, on_page=on_page, conversation_id=conversation_id,
+                  on_undated=on_undated, privacy_keywords=privacy_keywords)
+        first_id = next((str(row.get('id')) for row in current.get('items', []) if row.get('id')), '')
+        fallback = {'conversation_id': conversation_id, 'id': first_id, 'name': name,
+                    'url': 'https://teams.microsoft.com/l/message/'+quote(conversation_id, safe='')+'/'+quote(first_id, safe='')}
+        initial = verified_resume(br, cursor, fallback, deadline)
+        if initial is None:
+            if diag is not None:
+                diag.setdefault('chat_reasons', []).append('context_resume_unconfirmed')
+            return [], 0
+
+    def checkpoint(batch, direction):
+        value = message_cursor(batch, conversation_id, name, direction)
+        if value and on_cursor:
+            on_cursor(value)
+
+    return read_chat(br, idx, name, d0, d1, today, fake, diag, deadline, max_scroll,
+                     context_chars, on_page, conversation_id, on_undated,
+                     on_cursor=checkpoint, initial_page=initial, privacy_keywords=privacy_keywords)
 
 
 # ── 저장 ─────────────────────────────────────────────────────────────────────
@@ -772,8 +927,10 @@ def key_of(time_s, frm, chat, summary):
 def save(rows, force):
     """부분 화면 수집으로 지난 기록을 잃지 않는다. --force도 기존 기간을 지우지 않는다."""
     dst = os.path.join(OUT_DIR, "teams_web.csv")
+    _archive_bodies(rows)
+    clean_rows = [{key: value for key, value in row.items() if not key.startswith('_')} for row in rows]
     before = len(read_csv(dst))
-    total = merge_csv(dst, rows, FIELDS, kind="teams")
+    total = merge_csv(dst, clean_rows, FIELDS, kind="teams")
     resolved = {record_key(row, 'teams') for row in rows if row.get('source_id') and row.get('time')}
     if resolved:
         pending_path = os.path.join(ROOT, 'data', 'collection_pending', 'teams_web_undated.csv')
@@ -789,7 +946,19 @@ def save_undated(rows):
     path = os.path.join(ROOT, 'data', 'collection_pending', 'teams_web_undated.csv')
     known = {record_key(row, 'teams') for row in read_csv(os.path.join(OUT_DIR, 'teams_web.csv')) if row.get('source_id')}
     pending = [row for row in rows if not row.get('source_id') or record_key(row, 'teams') not in known]
+    _archive_bodies(pending)
+    pending = [{key: value for key, value in row.items() if not key.startswith('_')} for row in pending]
     return merge_csv(path, pending, FIELDS + ['timestamp_text', 'requested_from', 'requested_to'], kind='teams')
+
+
+def _archive_bodies(rows):
+    originals = []
+    for row in rows:
+        if isinstance(row.get('_full_body'), str) and str(row.get('context_filtered', '')).lower() != 'true':
+            originals.append({**row, 'body': row['_full_body'], 'capture_method': 'web_dom',
+                              'body_truncated': row.get('body_capture_status') != 'rendered'})
+    if originals:
+        archive_records(ROOT, 'teams', originals)
 
 
 def walk_chats(br, fake, max_chats, max_pages, deadline, visit, skip=()):
@@ -926,46 +1095,71 @@ def search_page(br, query, deadline):
     return dict(last, state='unsupported', reason='search_ui_or_query_unconfirmed')
 
 
-def search_context(br, item, day, d0, d1, today, context_chars, fixture=None, deadline=None, on_undated=None):
-    """Read nearby rendered originals only after verifying room AND anchor ID.
+def _open_original(br, item, deadline):
+    if message_link(item.get('url')) != (item['conversation_id'], item['id']):
+        return {}, {}
+    end = min(deadline or float('inf'), time.monotonic() + 8)
+    if end <= time.monotonic():
+        raise TimeoutError('search_context_time_budget')
+    br.cdp.call('Page.navigate', {'url': item['url']}, timeout=end-time.monotonic())
+    pane, page = {}, {}
+    while time.monotonic() < end:
+        time.sleep(min(0.25, max(0, end-time.monotonic())))
+        pane = br.eval_json(JS_PANE, timeout=max(0.001, end-time.monotonic()))
+        page = br.eval_json(JS_MSGS, timeout=max(0.001, end-time.monotonic()))
+        if pane_matches(item, item.get('name', ''), pane) and any(
+                str(message.get('id') or '') == item['id'] for message in page.get('items', [])):
+            if hasattr(br, 'capture_messages'):
+                page = br.capture_messages(item['conversation_id'], item.get('name', ''), end)
+            break
+    return pane, page
 
-    A search preview is never saved as an original. A search date is never used
-    to invent a timestamp. Context outside the requested interval is excluded.
+
+def verified_resume(br, cursor, fallback, deadline):
+    """A deleted bookmark restarts from a freshly verified anchor, never a stale pane."""
+    targets = [cursor, fallback] if cursor != fallback else [fallback]
+    for target in targets:
+        target = search_identity(target)
+        if not target or target['conversation_id'] != fallback.get('conversation_id'):
+            continue
+        if deadline and time.monotonic() >= deadline:
+            break
+        pane, page = _open_original(br, target, deadline)
+        if pane_matches(target, target.get('name', ''), pane) and any(
+                str(message.get('id') or '') == target['id'] for message in page.get('items', [])):
+            return page
+    return None
+
+
+def search_context(br, item, day, d0, d1, today, context_chars, fixture=None, deadline=None, on_undated=None,
+                   *, persist=None, progress=None, resume=None, max_context_pages=12, privacy_keywords=()):
+    """Verify the original, then checkpoint rendered context in both directions.
+
+    Page/message/time limits describe observed coverage only. The search date
+    never supplies a missing timestamp, and a checkpoint is never a completion
+    claim for the room or the server.
     """
     item = search_identity(item)
     if not item:
         return [], 'search_identity_missing'
+    end = min(deadline or float('inf'), time.monotonic() + 18)
     if fixture is not None:
         pane, page = fixture.get('pane') or {}, fixture.get('page') or {}
     else:
-        url = item.get('url') or ''
-        if message_link(url) != (item['conversation_id'], item['id']):
-            return [], 'search_permalink_missing'
-        br.cdp.call('Page.navigate', {'url': url})
-        end = min(deadline or time.monotonic() + 8, time.monotonic() + 8)
-        pane, page = {}, {}
-        while time.monotonic() < end:
-            time.sleep(0.3)
-            pane, page = br.eval_json(JS_PANE), br.eval_json(JS_MSGS)
-            if pane_matches(item, item.get('name', ''), pane) and any(
-                    str(m.get('id') or '') == item['id'] for m in page.get('items', [])):
-                break
-    if not pane_matches(item, item.get('name', ''), pane):
+        pane, page = _open_original(br, item, end)
+    if (not pane_matches(item, item.get('name', ''), pane) or
+            ((page.get('conversation_id') or page.get('chat')) and
+             not pane_matches(item, item.get('name', ''), page))):
         return [], 'search_room_unconfirmed'
     items = page.get('items') or []
     anchor = next((i for i, entry in enumerate(items) if entry.get('t') == 'msg'
                    and str(entry.get('id') or '') == item['id']), None)
     if anchor is None:
         return [], 'search_anchor_unconfirmed'
-    # Keep date dividers in document order while bounding the neighbor count.
-    positions = [i for i, entry in enumerate(items) if entry.get('t') == 'msg']
-    pos = positions.index(anchor)
-    lo, hi = positions[max(0, pos-6)], positions[min(len(positions)-1, pos+6)]
-    prior_sep = [entry for entry in items[:lo] if entry.get('t') == 'sep'][-1:]
-    context = dict(page, items=prior_sep + items[lo:hi+1])
     rows, _ = read_chat(None, 0, item.get('name', ''), d0, d1, today,
-                        fake={'0': [context]}, max_scroll=0, context_chars=context_chars,
-                        conversation_id=item['conversation_id'], on_undated=on_undated)
+                        fake={'0': [page]}, max_scroll=0, context_chars=context_chars,
+                        conversation_id=item['conversation_id'], on_undated=on_undated,
+                        privacy_keywords=privacy_keywords)
     anchor_id = 'teams-dom:' + item['conversation_id'] + '/' + item['id']
     anchor_row = next((row for row in rows if row.get('source_id') == anchor_id), None)
     if not anchor_row:
@@ -973,7 +1167,57 @@ def search_context(br, item, day, d0, d1, today, context_chars, fixture=None, de
     if anchor_row['time'][:10] != day.isoformat():
         return [], 'search_date_filter_unconfirmed'
     anchor_row['source_url'] = item.get('url') or anchor_row['source_url']
-    return rows, ''
+    observed, notes = {}, []
+    cursors = dict(resume or {})
+
+    def accept(batch):
+        changed = []
+        for row in batch:
+            key = row.get('source_id') or key_of(row['time'], row['from'], row['chat'], row['summary'])
+            old = observed.get(key)
+            if old and not prefer_observation(old, row):
+                continue
+            observed[key] = row
+            changed.append(row)
+        if changed and persist:
+            persist(changed)
+
+    def checkpoint(batch, direction):
+        value = message_cursor(batch, item['conversation_id'], item.get('name', ''), direction)
+        if value:
+            cursors[direction] = value
+            if progress:
+                progress(cursors)
+
+    # Save the entire verified initial page before any further navigation.
+    accept(rows)
+    for direction in ('up', 'down'):
+        if time.monotonic() >= end:
+            notes.append('search_context_time_budget')
+            break
+        start_page = page
+        if fixture is None:
+            cursor = search_identity(cursors.get(direction) or item)
+            if not cursor or cursor['conversation_id'] != item['conversation_id']:
+                notes.append('search_context_resume_unconfirmed')
+                continue
+            start_page = verified_resume(br, cursor, item, end)
+            if start_page is None:
+                notes.append('search_context_resume_unconfirmed')
+                continue
+            pages = None
+        else:
+            pages = {'0': [page, *(fixture.get('pages_'+direction) or [])]}
+        diagnostic = {}
+        read_chat(br, 0, item.get('name', ''), d0, d1, today, fake=pages, diag=diagnostic,
+                  deadline=end, max_scroll=max_context_pages, context_chars=context_chars, on_page=accept,
+                  conversation_id=item['conversation_id'], on_undated=on_undated, direction=direction,
+                  on_cursor=checkpoint, initial_page=start_page if pages is None else None,
+                  privacy_keywords=privacy_keywords)
+        stop = (diagnostic.get('chat_reasons') or [''])[0]
+        if stop in ('time_budget', 'scroll_limit', 'messages_stalled', 'context_room_changed'):
+            notes.append('search_context_'+stop)
+    return list(observed.values()), ';'.join(dict.fromkeys(notes))
 
 
 def search_checkpoint(root, payload):
@@ -994,7 +1238,7 @@ def search_checkpoint(root, payload):
 
 
 def collect_search(br, fake, root, d0, d1, today, deadline, context_chars, persist,
-                   max_days=30, max_pages=40, on_progress=None, on_undated=None):
+                   max_days=30, max_pages=40, on_progress=None, on_undated=None, privacy_keywords=()):
     """Date shards resume oldest-unattempted first; recent days refresh each run.
 
     completed_partial means the observed UI query ended, never server coverage.
@@ -1008,7 +1252,9 @@ def collect_search(br, fake, root, d0, d1, today, deadline, context_chars, persi
         prior = {}
     if not isinstance(prior, dict):
         prior = {}
-    jobs = prior.get('jobs', {}) if prior.get('requested_from') == str(d0) and prior.get('requested_to') == str(d1) else {}
+    signature = capture_signature(context_chars, privacy_keywords)
+    jobs = prior.get('jobs', {}) if (prior.get('requested_from') == str(d0) and prior.get('requested_to') == str(d1)
+                                   and prior.get('capture_signature') == signature) else {}
     if not isinstance(jobs, dict):
         jobs = {}
     days = [d0 + timedelta(days=i) for i in range((d1-d0).days+1)]
@@ -1029,7 +1275,8 @@ def collect_search(br, fake, root, d0, d1, today, deadline, context_chars, persi
         counts = {state: sum(jobs.get(str(day), {}).get('state', 'pending') == state for day in days)
                   for state in ('attempted', 'completed_partial', 'blocked', 'pending')}
         payload = {'requested_from': str(d0), 'requested_to': str(d1), 'status': 'partial',
-                   'scope': 'Observed Sent: date search results and verified nearby original messages; not exhaustive',
+                   'capture_signature': signature,
+                   'scope': 'Observed Sent: date search results and verified paged original messages; not exhaustive',
                    'reasons': list(dict.fromkeys(reasons)), 'jobs': jobs, 'counts': counts,
                    'attempted_this_run': attempted, 'total_days': len(days), 'finished_at': time.time()}
         search_checkpoint(root, payload)
@@ -1045,7 +1292,12 @@ def collect_search(br, fake, root, d0, d1, today, deadline, context_chars, persi
         key, query = str(day), day.strftime('Sent:%m/%d/%Y')
         log(f'기간 검색 {key} - 날짜 검색 지원 여부와 원문을 확인합니다')
         attempted += 1
+        previous_job = jobs.get(key) if isinstance(jobs.get(key), dict) else {}
+        prior_done = previous_job.get('processed_anchors') or []
+        done = {str(value) for value in prior_done} if previous_job.get('state') != 'completed_partial' else set()
+        cursors = previous_job.get('context_cursors') or {}
         job = {'query': query, 'state': 'attempted', 'pages': 0, 'results': 0, 'rows': 0,
+               'processed_anchors': sorted(done), 'context_cursors': cursors if isinstance(cursors, dict) else {},
                'reasons': [], 'finished_at': time.time()}
         jobs[key] = job
         snapshot()
@@ -1080,15 +1332,30 @@ def collect_search(br, fake, root, d0, d1, today, deadline, context_chars, persi
                     seen.add(ident)
                     new += 1
                     job['results'] += 1
+                    anchor_key = json.dumps(ident, ensure_ascii=True, separators=(',', ':'))
+                    if anchor_key in done:
+                        continue
                     if time.monotonic() >= deadline:
                         job['reasons'].append('search_time_budget')
                         break
                     detail = ((fixture or {}).get('details') or {}).get(raw.get('key') or raw.get('id') or raw.get('url'), {}) if fake is not None else None
-                    rows, reason = search_context(br, raw, day, d0, d1, today, context_chars, detail, deadline, on_undated)
-                    if rows:
-                        persist(rows)
-                        saved.update(row.get('source_id') or key_of(row['time'], row['from'], row['chat'], row['summary']) for row in rows)
+
+                    def commit_page(batch):
+                        persist(batch)  # Full original -> CSV -> checkpoint. Failure never advances the cursor.
+                        saved.update(row.get('source_id') or key_of(row['time'], row['from'], row['chat'], row['summary']) for row in batch)
                         job['rows'] = len(saved)
+                        snapshot()
+
+                    def context_progress(value):
+                        job['context_cursors'][anchor_key] = value
+                        snapshot()
+
+                    rows, reason = search_context(br, raw, day, d0, d1, today, context_chars, detail, deadline, on_undated,
+                                                   persist=commit_page, progress=context_progress,
+                                                   resume=job['context_cursors'].get(anchor_key), privacy_keywords=privacy_keywords)
+                    if rows:
+                        done.add(anchor_key)
+                        job['processed_anchors'] = sorted(done)
                     if reason:
                         job['reasons'].append(reason)
                     snapshot()
@@ -1169,6 +1436,7 @@ def main():
     context_chars = max(200, min(20000, int(ccfg.get("contextChars") or 4000)))
     max_scroll = max(1, min(2000, int(cfg.get("teamsWebMaxScrolls") or MAX_SCROLL)))
     max_pages = max(1, min(1000, int(cfg.get("teamsWebListPages") or 100)))
+    signature = capture_signature(context_chars, cfg.get('excludePathKeywords') or [])
     reasons, processed = ["web_scope_not_exhaustive"], []
     search_summary = {}
     rows_seen = set()
@@ -1180,15 +1448,22 @@ def main():
             prior = json.load(f)
     except (OSError, ValueError):
         pass
-    resume = (prior.get("processed_chat_keys") or []) if (
+    same_capture = (prior.get('capture_signature') == signature)
+    resume = (prior.get("processed_chat_keys") or []) if (same_capture and
         prior.get("requested_from") == d0s and prior.get("requested_to") == d1s
         and set(prior.get("reasons") or []) & {"chat_limit", "time_budget", "list_page_limit", "interrupted"}) else []
+    chat_cursors = prior.get('chat_context_cursors') or {} if (
+        same_capture and prior.get('requested_from') == d0s and prior.get('requested_to') == d1s) else {}
+    if not isinstance(chat_cursors, dict):
+        chat_cursors = {}
 
     def status(state="partial", extra_reason="", **extra):
         return write_status(ROOT, "teams_web", d0s, d1s, status=state, rows=len(rows_seen), scope=SCOPE,
                             reasons=list(dict.fromkeys(reasons + ([extra_reason] if extra_reason else []))),
                             completed_units=len(processed), total_units=None,
                             processed_chat_keys=list(dict.fromkeys(resume + processed))[-2000:],
+                            chat_context_cursors=chat_cursors,
+                            capture_signature=signature,
                             search=search_summary, undated_rows=undated_rows,
                             observed_messages=diag['observed_messages'], dated_messages=diag['dated_messages'], **extra)
 
@@ -1280,9 +1555,16 @@ def main():
                 return
         fm = fake.get("msgs") if fake else None
         fake_idx = key if fm and key in fm else idx
-        got, screen = read_chat(br, fake_idx, name, d0, d1, today, fm, diag, deadline,
-                                max_scroll, context_chars, persist, str(it.get("conversation_id") or ""), preserve_undated)
-        if (diag.get("chat_reasons") or [""])[-1] not in ("time_budget", "scroll_limit", "messages_stalled"):
+        def checkpoint(value):
+            chat_cursors[key] = value
+            status(extra_reason='interrupted')
+
+        got, screen = read_chat_resumable(br, fake_idx, name, d0, d1, today, fake=fm, diag=diag, deadline=deadline,
+                                          max_scroll=max_scroll, context_chars=context_chars, on_page=persist,
+                                          conversation_id=str(it.get('conversation_id') or ''), on_undated=preserve_undated,
+                                          cursor=chat_cursors.get(key), on_cursor=checkpoint,
+                                          privacy_keywords=cfg.get('excludePathKeywords') or [])
+        if (diag.get("chat_reasons") or [""])[-1] in ('requested_start_reached', 'history_end'):
             processed.append(key)
         status(extra_reason="interrupted")
         log(f"  · {name or '(이름 없음)'} — 화면 {screen}개 → {len(got)}건")
@@ -1295,7 +1577,8 @@ def main():
             try:
                 collect_search(br, fake, ROOT, d0, d1, today,
                                min(deadline, time.monotonic() + min(60, budget * 0.25)),
-                               context_chars, persist, on_progress=search_progress, on_undated=preserve_undated)
+                               context_chars, persist, on_progress=search_progress, on_undated=preserve_undated,
+                               privacy_keywords=cfg.get('excludePathKeywords') or [])
                 reasons += search_summary.get('reasons', [])
             except Exception as error:
                 reasons.append('search_failed:' + type(error).__name__)

@@ -22,7 +22,8 @@ class TeamsSearchTests(unittest.TestCase):
             (self.root / folder).mkdir()
         for name in ('Get-TeamsWeb.py', 'Get-OutlookWeb.py'):
             shutil.copyfile(PRODUCT / 'collect' / name, self.root / 'collect' / name)
-        shutil.copyfile(PRODUCT / 'core/collection_state.py', self.root / 'core/collection_state.py')
+        for name in ('collection_state.py', 'communication_archive.py', 'communication_context.py'):
+            shutil.copyfile(PRODUCT / 'core' / name, self.root / 'core' / name)
         spec = importlib.util.spec_from_file_location('search_fixture', self.root / 'collect/Get-TeamsWeb.py')
         self.mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.mod)

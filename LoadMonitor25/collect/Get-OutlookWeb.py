@@ -40,6 +40,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT_DIR = os.path.join(ROOT, "data", "outlook")
 sys.path.insert(0, os.path.join(ROOT, "core"))
 from collection_state import _atomic_text, merge_csv, read_csv, record_key, write_csv, write_status  # noqa: E402
+from communication_archive import archive_records  # noqa: E402
+from communication_context import body_is_filtered, make_excerpt  # noqa: E402
 
 MAIL_HDR = "box,time,sender,subject,conversation,rcv,time_precision"
 CAL_HDR = "start,end,all_day,busy_status,subject,categories,location,response,meeting_status"
@@ -535,22 +537,66 @@ JS_MAIL_DETAIL = JS_DOM + r"""
   const bodySelector='[data-testid="message-body"],[data-testid="message-body-content"],[data-tid="message-body"],'+
     '[role="document"][aria-label*="Message body" i],[role="document"][aria-label*="메일 본문"],'+
     '[role="document"][aria-label*="메시지 본문"],div[aria-label="Message body" i],div[aria-label="메시지 본문"]';
-  let bodies=[...document.querySelectorAll(bodySelector)].filter(visible);
-  bodies=bodies.filter(e=>!bodies.some(other=>other!==e && e.contains(other)));
-  const candidates=[];
-  for(const body of bodies){
-    const identityContainer=body.closest(idSelector);
-    const message=identityContainer;
-    if(!message || message.contains(selected[0])) continue;
-    const subject=firstText(message,'[data-testid="message-subject"],[data-tid="message-subject"],[role="heading"]');
-    if(!expected.subject || normal(subject)!==normal(expected.subject)) continue;
-    const identity=itemId(identityContainer);
-    if(!identity || !expected.item_id || identity!==expected.item_id) continue;
-    const text=body.innerText || body.textContent || '';
-    candidates.push({container:'message-body',item_id:identity,selected_key:expected.key,subject,proof:'message-id',
-      body:text.slice(0,expected.limit+1),truncated:text.length>expected.limit,url:location.href});
+  const excluded=e=>!!e.closest(bodySelector+',blockquote');
+  const cards=[...document.querySelectorAll(idSelector)].filter(e=>visible(e) && !excluded(e) &&
+    !e.contains(selected[0]) && !selected[0].contains(e) && !e.closest('[role="grid"],[role="listbox"]'));
+  // Same-ID nested wrappers are one message; nested quoted/different-ID cards
+  // cannot become independently dated messages in this read pane.
+  const roots=cards.filter(e=>!cards.some(p=>p!==e && p.contains(e)));
+  const anchors=roots.filter(e=>itemId(e)===expected.item_id);
+  if(anchors.length!==1) return JSON.stringify({reason:'unique_message_body_not_verified'});
+  const anchor=anchors[0];
+  const own=(e,card)=>{for(let p=e;p && p!==card;p=p.parentElement){
+    if(itemId(p) && itemId(p)!==itemId(card)) return false;}return card.contains(e);};
+  const headers=(card,selector)=>[...card.querySelectorAll(selector)].filter(e=>visible(e)&&!excluded(e)&&own(e,card));
+  const subjectSelector='[data-testid="message-subject"],[data-tid="message-subject"],'+
+    '[data-testid="subject"],[data-tid="subject"],[role="heading"]';
+  const headerText=(card,selector)=>headers(card,selector).map(e=>(e.textContent||'').trim()).find(Boolean)||'';
+  let pane=null;
+  for(let p=anchor.parentElement;p;p=p.parentElement){
+    if(p.contains(selected[0])) break;
+    const cid=p.getAttribute('data-convid')||'';
+    const semantic=['reading-pane','readingPane','conversation-view','conversationView'].includes(p.getAttribute('data-testid')) ||
+      ['reading-pane','conversation-view'].includes(p.getAttribute('data-tid'));
+    if((cid && expected.conversation_id && cid===expected.conversation_id) || semantic){pane=p;break;}
   }
-  return JSON.stringify(candidates.length===1 ? candidates[0] : {reason:'unique_message_body_not_verified'});
+  const paneSubject=pane ? [...pane.querySelectorAll(subjectSelector)].filter(e=>visible(e)&&!excluded(e)&&!e.closest(idSelector))
+    .map(e=>(e.textContent||'').trim()).find(Boolean)||'' : '';
+  const anchorSubject=headerText(anchor,subjectSelector)||paneSubject;
+  if(!expected.subject || normal(anchorSubject)!==normal(expected.subject))
+    return JSON.stringify({reason:'detail_subject_mismatch'});
+  const cid=expected.conversation_id || (pane && pane.getAttribute('data-convid')) || '';
+  const members=pane ? roots.filter(e=>pane.contains(e) && (!e.getAttribute('data-convid') || e.getAttribute('data-convid')===cid)) : [anchor];
+  const cap=Math.min(1000000,Math.max(1,Number(expected.capture_limit)||1000000));
+  const messages=[];let expanded=0,remaining=0,ambiguous=0;
+  if(pane){const orphanBodies=[...pane.querySelectorAll(bodySelector)].filter(e=>visible(e)&&!e.closest('blockquote')&&!e.closest(idSelector));
+    ambiguous=orphanBodies.filter(e=>!orphanBodies.some(p=>p!==e&&p.contains(e))).length;}
+  for(const card of members){
+    const identity=itemId(card), subject=headerText(card,subjectSelector)||paneSubject;
+    if(!identity || !subject || members.filter(e=>itemId(e)===identity).length!==1){ambiguous++;continue;}
+    const controls=[card,...card.querySelectorAll('[aria-expanded="false"]')].filter(e=>visible(e)&&own(e,card)&&!excluded(e)&&
+      !e.closest('form,a,[href],[form],[formaction]')&&e.getAttribute('type')!=='submit'&&e.getAttribute('aria-expanded')==='false' &&
+      (e===card || ['message-header','messageHeader'].includes(e.getAttribute('data-testid')) ||
+       /^(show more|read more|전체 메시지 표시|더 보기)$/i.test((e.getAttribute('aria-label')||e.textContent||'').trim()) ||
+       /(?:expand|show|open).*(?:message|email)|(?:메일|메시지).*(?:펼치|열기)/i.test(e.getAttribute('aria-label')||'')));
+    remaining+=controls.length;
+    if(expected.expand && expanded<8){for(const control of controls){if(expanded>=8)break;control.click();expanded++;}}
+    let bodies=[...card.querySelectorAll(bodySelector)].filter(e=>visible(e)&&own(e,card));
+    // Keep outer body wrappers once so nested rich-text markers are not doubled.
+    bodies=bodies.filter(e=>!bodies.some(p=>p!==e && p.contains(e)));
+    const text=bodies.map(e=>e.innerText||e.textContent||'').join('\n').trim();
+    const status=controls.length ? (text ? 'partial' : 'collapsed') : text.length>cap ? 'partial' : bodies.length ? 'rendered' : 'collapsed';
+    const dates=headers(card,'time,[data-testid*="date" i],[data-testid*="time" i],[data-tid*="date" i],[data-tid*="time" i],[data-automationid*="date" i]')
+      .map(e=>e.getAttribute('datetime')||e.getAttribute('title')||e.getAttribute('aria-label')||e.textContent||'').filter(Boolean);
+    const sender=headerText(card,'[data-testid="sender"],[data-tid="sender"],[data-testid="message-sender"],[data-tid="message-sender"]');
+    messages.push({container:'message-body',item_id:identity,selected_key:expected.key,anchor_id:expected.item_id,
+      conversation_id:cid,subject,sender,date_texts:dates,proof:identity===expected.item_id?'message-id':'anchored-thread-message-id',
+      body:text.slice(0,cap),body_capture_status:status,full_body_chars:Math.min(text.length,cap),
+      body_truncated:status!=='rendered',capture_limit:cap,url:location.href});
+  }
+  const primary=messages.find(x=>x.item_id===expected.item_id);
+  if(!primary) return JSON.stringify({reason:'unique_message_body_not_verified'});
+  return JSON.stringify({...primary,messages,expanded,remaining_collapsed:remaining,ambiguous_messages:ambiguous});
 })()"""
 JS_SCROLL = JS_DOM + r"""
   const list=rows(); if(!list.length) return 'no-list';
@@ -829,44 +875,57 @@ def detail_context(item, row, detail, limit):
     body = re.sub(r"\s+", " ", str(detail.get("body") or "")).strip()
     if not body:
         return "", "", "detail_body_empty", ""
-    truncated = bool(detail.get("truncated")) or len(body) > limit
+    truncated = (bool(detail.get("truncated")) or detail.get("body_truncated") in (True, "true") or
+                 detail.get("body_capture_status") in {"partial", "collapsed"} or len(body) > limit)
     url = str(detail.get("url") or "")
     if not any(url.startswith("https://" + host + "/") for host in HOSTS):
         url = ""
-    return body[:limit], str(truncated).lower(), "", url
+    return make_excerpt(body, limit), str(truncated).lower(), "", url
 
 
 def read_mail_detail(br, item, row, limit):
     if not item.get("item_id"):
         return {}, "message_identity_missing"
+    detail = {}
     try:
         timeout = br.remaining(3) if hasattr(br, "remaining") else 3
         if str(br.cdp.eval(JS_OPEN_MAIL % json.dumps(item.get("key", "")), timeout=timeout)) != "opened":
             return {}, "message_could_not_be_selected"
         expected = {"item_id": item.get("item_id", ""), "key": item.get("key", ""),
-                    "subject": row[3], "limit": limit}
-        until = time.monotonic() + (br.remaining(3) if hasattr(br, "remaining") else 3)
-        detail = {}
+                    "subject": row[3] if row else item.get("subject", ""), "limit": limit,
+                    "conversation_id": item.get("conversation_id", ""), "expand": True}
+        until = time.monotonic() + (br.remaining(8) if hasattr(br, "remaining") else 8)
         while time.monotonic() < until:
             detail = br.eval_json(JS_MAIL_DETAIL % json.dumps(expected, ensure_ascii=False), timeout=2)
-            if detail.get("body"):
+            if detail.get("messages") and not detail.get("expanded"):
+                return detail, ""
+            if detail.get("body") and not detail.get("messages"):
                 return detail, ""
             time.sleep(min(0.15, max(0, until-time.monotonic())))
-        return {}, detail.get("reason", "message_detail_not_verified")
+        # Keep individually verified partial bodies after the finite expansion
+        # budget; their capture status prevents claiming fully rendered mail.
+        return (detail, "") if detail.get("messages") else ({}, detail.get("reason", "message_detail_not_verified"))
     except Exception as error:
+        if detail.get("messages"):
+            detail["read_interrupted"] = True
+            return detail, ""
         return {}, "detail_read_failed:" + type(error).__name__
 
 
 def collect_mail(br, d0, d1, fake=None, *, body=False, context_chars=4000,
-                 checkpoint=None, deadline=None, state_path=None, store_subject=True):
+                 checkpoint=None, deadline=None, state_path=None, store_subject=True, exclude_keywords=()):
     """Read visible search results; checkpoint each page and retain metadata on detail failure."""
-    rows, seen, observed, undated_seen = [], set(), set(), set()
+    body = body and store_subject and context_chars > 0
+    rows, seen, observed, undated_seen, retained_ids = [], set(), set(), set(), set()
     diag = {"search": 0, "items": 0, "parsed": 0, "sent": 0, "cc": 0,
             "date_only": 0, "pages": 0, "sent_pass_new": 0, "body_rows": 0,
             "detail_failed": 0, "completed_units": 0, "search_failed": 0,
             "search_unverified": 0, "search_attempts": 0, "undated": 0, "period_filtered": 0,
-            "empty_results": 0, "unsupported_pages": 0, "navigation_failed": 0, "visible_unverified": 0, "reasons": []}
-    state = {"schema": 2, "requested_from": str(d0), "requested_to": str(d1),
+            "empty_results": 0, "unsupported_pages": 0, "navigation_failed": 0, "visible_unverified": 0,
+            "thread_messages": 0, "detail_dates_recovered": 0, "body_partial": 0, "pending_body_rows": 0,
+            "context_filtered": 0, "reasons": []}
+    state = {"schema": 3, "requested_from": str(d0), "requested_to": str(d1),
+             "exclude_signature": hashlib.sha256(json.dumps(exclude_keywords, ensure_ascii=True).encode()).hexdigest(),
              "body": body, "context_chars": context_chars, "units": {}}
     if state_path and fake is None:
         try:
@@ -897,7 +956,7 @@ def collect_mail(br, d0, d1, fake=None, *, body=False, context_chars=4000,
                 raise TimeoutError("collection budget")
             key = item.get("key") or json.dumps(item, ensure_ascii=False)[:200]
             key_hash = hashlib.sha256(key.encode("utf-8")).hexdigest()
-            if key in seen or (not visible_only and key_hash in active_seen):
+            if key in seen or item.get("item_id") in retained_ids or (not visible_only and key_hash in active_seen):
                 continue
             if key not in observed:
                 observed.add(key)
@@ -907,48 +966,123 @@ def collect_mail(br, d0, d1, fake=None, *, body=False, context_chars=4000,
             # A folder URL alone does not prove OWA search remained in that folder.
             row = parse_mail_item(item, start, end, folder if fake is not None else "unknown",
                                   explicit_dates=(fake is None or visible_only))
-            if not row:
-                if key not in undated_seen:
-                    undated_seen.add(key)
-                    diag["undated"] += 1
-                    diag["reasons"].append("mail_date_unconfirmed")
-                    pending.append(_undated_mail(item, key_hash, folder, d0, d1, store_subject))
-                continue
-            if not (d0.isoformat() <= row[1][:10] <= d1.isoformat()):
+            # A conversation result can show its newest, out-of-period reply
+            # while an older individual message matched the requested period.
+            if row and not body and not (d0.isoformat() <= row[1][:10] <= d1.isoformat()):
                 diag["period_filtered"] += 1
                 continue
-            if visible_only:
-                row[0], row[5] = "unknown", ""
-            excerpt = truncated = source_url = ""
-            reason = ""
+            detail, reason = {}, ""
             if body:
                 if fake is not None:
                     detail, reason = item.get("detail") or {}, ""
                 else:
                     detail, reason = read_mail_detail(br, item, row, context_chars)
-                if not reason:
-                    excerpt, truncated, reason, source_url = detail_context(item, row, detail, context_chars)
-                if reason:
+            candidates = [(item, row, detail)]
+            # Only a verified selected-message envelope can introduce siblings.
+            expected_subject = row[3] if row else item.get("subject", "")
+            anchor_ok = (detail.get("item_id") == item.get("item_id") and bool(item.get("item_id")) and
+                         detail.get("selected_key") == item.get("key") and
+                         re.sub(r"\s+", " ", str(detail.get("subject") or "")).strip().casefold() ==
+                         re.sub(r"\s+", " ", str(expected_subject or "")).strip().casefold() and bool(expected_subject))
+            if not reason and anchor_ok:
+                primary = dict(item, date_texts=detail.get("date_texts") or item.get("date_texts") or [])
+                detailed_row = parse_mail_item(primary, d0, d1, "unknown", explicit_dates=True)
+                if detailed_row and (not row or detail.get("date_texts")):
+                    if not row:
+                        diag["detail_dates_recovered"] += 1
+                    row = detailed_row
+                candidates = [(primary, row, detail)]
+                identities = [message.get("item_id") for message in detail.get("messages") or []]
+                for message in detail.get("messages") or []:
+                    identity = message.get("item_id")
+                    if identity == item.get("item_id"):
+                        continue
+                    if (not identity or identities.count(identity) != 1 or message.get("anchor_id") != item.get("item_id") or
+                            message.get("selected_key") != item.get("key") or
+                            message.get("proof") != "anchored-thread-message-id" or
+                            (item.get("conversation_id") and message.get("conversation_id") != item["conversation_id"])):
+                        reason = "thread_message_identity_not_verified"
+                        continue
+                    sibling = dict(message, key=item["key"], texts=[], titles=[], label="")
+                    sibling_row = parse_mail_item(sibling, d0, d1, "unknown", explicit_dates=True)
+                    candidates.append((sibling, sibling_row, message))
+                    diag["thread_messages"] += 1
+                if detail.get("ambiguous_messages"):
+                    reason = "thread_message_identity_not_verified"
+                if detail.get("read_interrupted"):
+                    reason = "thread_detail_interrupted; verified_observations_retained"
+            item_problem = reason
+            for candidate, current, message in candidates:
+                identity = candidate.get("item_id")
+                if identity and identity in retained_ids:
+                    continue
+                if current and not (d0.isoformat() <= current[1][:10] <= d1.isoformat()):
+                    diag["period_filtered"] += 1
+                    continue
+                excerpt = truncated = source_url = full_body = capture_status = filtered = ""
+                capture_reason = reason if candidate is item else ""
+                if body and not capture_reason:
+                    # Undated messages can still verify body identity/subject;
+                    # they remain quarantined until their own date is known.
+                    check_row = current or ["", "", "", candidate.get("subject") or expected_subject]
+                    excerpt, truncated, capture_reason, source_url = detail_context(candidate, check_row, message, context_chars)
+                    if capture_reason == "detail_body_empty" and message.get("body_capture_status") in {"collapsed", "partial"}:
+                        capture_status = message["body_capture_status"]
+                    if not capture_reason:
+                        full_body = str(message.get("body") or "")
+                        capture_status = message.get("body_capture_status") or ("partial" if message.get("truncated") else "rendered")
+                        if body_is_filtered(full_body, exclude_keywords):
+                            excerpt = full_body = truncated = ""
+                            filtered = "true"
+                            diag["context_filtered"] += 1
+                        if capture_status != "rendered":
+                            diag["body_partial"] += 1
+                            item_problem = "thread_body_not_fully_rendered"
+                if capture_reason:
                     diag["detail_failed"] += 1
-                    if reason not in diag["reasons"]:
-                        diag["reasons"].append(reason)
-                elif excerpt:
-                    diag["body_rows"] += 1
-            # A conversation identifier is not a message identifier.
-            source_id = item.get("item_id") or "derived:outlook-visible:" + key_hash
-            row += [excerpt, truncated, source_id, "outlook_web", source_url,
-                    item.get("conversation_id", ""), folder if fake is not None else "requested:" + folder, ""]
-            rows.append(row)
-            seen.add(key)
-            if not reason and not visible_only:
+                    item_problem = capture_reason
+                    if capture_reason not in diag["reasons"]:
+                        diag["reasons"].append(capture_reason)
+                if not current:
+                    pending_key = identity or key
+                    if pending_key not in undated_seen:
+                        undated_seen.add(pending_key)
+                        diag["undated"] += 1
+                        pending_row = _undated_mail(candidate, key_hash, folder, d0, d1, store_subject)
+                        pending_row.update(context_excerpt=excerpt, context_truncated=truncated, context_filtered=filtered,
+                                           full_body_chars=len(full_body), body_capture_status=capture_status, _full_body=full_body)
+                        pending.append(pending_row)
+                        diag["pending_body_rows"] += bool(full_body)
+                    item_problem = "mail_date_unconfirmed"
+                    continue
+                diag["body_rows"] += bool(full_body)
+                if visible_only:
+                    current[0], current[5] = "unknown", ""
+                source_id = identity or "derived:outlook-visible:" + key_hash
+                current += [excerpt, truncated, source_id, "outlook_web", source_url,
+                            candidate.get("conversation_id", ""), folder if fake is not None else "requested:" + folder, "",
+                            len(full_body) if body and not capture_reason else "", capture_status, filtered, full_body]
+                rows.append(current)
+                if identity and (not body or filtered or (not capture_reason and capture_status == "rendered")):
+                    retained_ids.add(identity)
+                diag["parsed"] += 1
+                if current[0] == "sent":
+                    diag["sent"] += 1
+                elif current[5] == "cc":
+                    diag["cc"] += 1
+                if current[6] == "date":
+                    diag["date_only"] += 1
+            # A pending observation is not a finished message. Its unchanged
+            # stable ID may acquire an explicit date on the next virtual page.
+            if row is not None:
+                seen.add(key)
+            if item_problem:
+                if active_unit is not None:
+                    active_unit["detail_pending"] = True
+                if item_problem not in diag["reasons"]:
+                    diag["reasons"].append(item_problem)
+            elif not visible_only:
                 active_seen.add(key_hash)
-            diag["parsed"] += 1
-            if row[0] == "sent":
-                diag["sent"] += 1
-            elif row[5] == "cc":
-                diag["cc"] += 1
-            if row[6] == "date":
-                diag["date_only"] += 1
         if pending:
             _save_undated_mail(pending)
         if checkpoint and rows:
@@ -983,6 +1117,7 @@ def collect_mail(br, d0, d1, fake=None, *, body=False, context_chars=4000,
                     continue
                 active_unit["attempted_at"] = time.time()
                 active_unit["traversed"] = False
+                active_unit["detail_pending"] = False
                 save_progress()
                 log(f"메일 검색 {start}~{end} ({folder}); 저장 {len(rows)}건")
                 navigation = br.goto(url)
@@ -1088,10 +1223,10 @@ def collect_mail(br, d0, d1, fake=None, *, body=False, context_chars=4000,
                     jobs.extend((day, day, folder, url) for day, _ in mail_search_windows(start, end, 1))
                     diag["reasons"].append("saturated_range_retried_by_day")
                 # Traversed means the available UI list stopped, never complete mailbox coverage.
-                active_unit.update(traversed=True, saturated=saturated, finished_at=time.time(),
+                active_unit.update(traversed=not active_unit.get("detail_pending"), saturated=saturated, finished_at=time.time(), last_attempt=time.time(),
                                    scope="visible inbox/sent search; server and folder scope unverified")
                 save_progress()
-                diag["completed_units"] += 1
+                diag["completed_units"] += int(active_unit["traversed"])
     except Exception as error:
         if checkpoint and rows:
             checkpoint(rows)
@@ -1184,7 +1319,21 @@ def _save_undated_mail(rows):
     known = {record_key(row, 'mail') for row in read_csv(os.path.join(OUT_DIR, 'mail.csv')) if row.get('source_id')}
     pending = [row for row in rows if record_key(row, 'mail') not in known]
     if pending:
-        merge_csv(path, pending, list(pending[0]), kind='mail')
+        records = [dict(row) for row in pending]
+        _archive_mail_bodies(records)
+        merge_csv(path, records, list(dict.fromkeys(key for row in records for key in row)), kind='mail')
+
+
+def _archive_mail_bodies(records):
+    originals = []
+    for row in records:
+        full_body = row.pop('_full_body', '')
+        if full_body and row.get('context_filtered') != 'true':
+            originals.append(dict(row, body=full_body, capture_method='web_dom',
+                                  body_truncated=row.get('body_capture_status') != 'rendered',
+                                  capture_limit=1000000, capture_scope='identified rendered message body'))
+    if originals:
+        archive_records(ROOT, 'mail', originals)
 
 
 def _save(kind, rows, store_subject):
@@ -1193,6 +1342,8 @@ def _save(kind, rows, store_subject):
     base = (MAIL_HDR if kind == "mail" else CAL_HDR).split(",")
     extra = ["context_excerpt", "context_truncated", "source_id", "source_kind",
              "source_url", "conversation_id", "folder", "account"]
+    if kind == 'mail':
+        extra += ['full_body_chars', 'body_capture_status', 'context_filtered', '_full_body']
     fields = base + [key for key in extra if key not in base]
     records = []
     for raw in rows:
@@ -1203,9 +1354,13 @@ def _save(kind, rows, store_subject):
             row["subject"] = ""
             row["context_excerpt"] = ""
             row["context_truncated"] = ""
+            row.pop('_full_body', None)
             if kind == "mail":
                 row["conversation"] = _conv_token(row.get("conversation", ""))
         records.append(row)
+    if kind == 'mail':
+        _archive_mail_bodies(records)
+        fields.remove('_full_body')
     merge_csv(dst, records, fields, kind="mail" if kind == "mail" else "calendar")
     if kind == 'mail':
         pending_path = os.path.join(ROOT, 'data', 'collection_pending', 'outlook_web_undated.csv')
@@ -1319,7 +1474,8 @@ def main():
             if kind == "mail":
                 rows, state, diag = collect_mail(br, d0, d1, fake, body=body,
                                                 context_chars=context_chars, checkpoint=checkpoint, deadline=deadline,
-                                                state_path=os.path.join(OUT_DIR, "web_mail_jobs.json"), store_subject=store_subject)
+                                                state_path=os.path.join(OUT_DIR, "web_mail_jobs.json"), store_subject=store_subject,
+                                                exclude_keywords=cfg.get("excludePathKeywords") or [])
             else:
                 rows, state, diag = collect_cal(br, d0, d1, fake, checkpoint=checkpoint, deadline=deadline)
             diagnostics[kind] = diag

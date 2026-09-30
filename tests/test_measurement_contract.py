@@ -34,6 +34,7 @@ class MeasurementContractTests(unittest.TestCase):
         source = (PROJECT / "LoadMonitor25/core/extract.py").read_text(encoding="utf-8-sig")
         path.write_text(source, encoding="utf-8")
         (path.parent / "collection_state.py").write_bytes((PROJECT / "LoadMonitor25/core/collection_state.py").read_bytes())
+        (path.parent / "communication_context.py").write_bytes((PROJECT / "LoadMonitor25/core/communication_context.py").read_bytes())
         cls.extract = {"__file__": str(path), "__name__": "synthetic_extract"}
         with mock.patch.object(sys, "path", [str(path.parent), *sys.path]):
             exec(compile(source, str(path), "exec"), cls.extract)

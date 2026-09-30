@@ -248,7 +248,8 @@ def build_report(root, d0, d1, config=None, current_run=None):
     families = {}
     for family in ("mail", "teams"):
         item = dict.fromkeys(("raw_rows", "in_period_rows", "unique_rows", "context_rows", "context_truncated_rows",
-                              "context_filtered_rows", "dated_rows", "unknown_date_rows", "conversation_count", "files", "unreadable_files", "ai_reported_rows"), 0)
+                              "context_filtered_rows", "dated_rows", "unknown_date_rows", "conversation_count", "files", "unreadable_files", "ai_reported_rows",
+                              "web_body_observed_rows", "web_body_partial_rows"), 0)
         seen, conversations, kinds, days = {}, set(), set(), set()
         collected = []
         for data in _roots(root):
@@ -293,6 +294,10 @@ def build_report(root, d0, d1, config=None, current_run=None):
             if conversation:
                 conversations.add((_text(row.get("account")), conversation))
             source = str(row.get("source_kind") or "legacy")
+            capture = str(row.get("body_capture_status") or "")
+            if body and source in {"outlook_web", "teams_web"}:
+                item["web_body_observed_rows"] += capture in {"rendered", "collapsed", "partial"}
+                item["web_body_partial_rows"] += capture in {"collapsed", "partial"}
             item["ai_reported_rows"] += "copilot" in source.lower() or str(row.get("time_precision") or "").lower() == "ai_reported"
             kinds.add(source if source in ROUTES else ("import" if source.startswith("import") else "legacy_or_other"))
         item.update(unique_rows=len(seen), conversation_count=len(conversations), source_kinds=sorted(kinds),
@@ -317,6 +322,8 @@ def build_report(root, d0, d1, config=None, current_run=None):
             item["limits"].append("읽지 못한 저장 파일 존재")
         if item["ai_reported_rows"]:
             item["limits"].append("AI 조회·요약 자료 존재: 원문 확인 전 확정 근거 아님")
+        if item["web_body_partial_rows"]:
+            item["limits"].append("펼치기·앞뒤 탐색이 끝나지 않은 웹 본문 존재")
         item["actions"] = (["수집 경로·계정·요청 기간 확인", "사용자가 선택한 원본 내보내기 자료 가져오기"]
                            if not seen or not item["context_rows"] else ["중요 업무의 앞뒤 대화·원문을 추가 확인"])
         families[family] = item

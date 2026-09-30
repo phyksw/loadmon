@@ -82,7 +82,10 @@ def latest_original_rows(rows, kind="mail"):
     observed body establish a revision. A missing body cannot invalidate the
     last observed version; an explicitly observed empty body can. Unversioned
     copies of that exact identity cannot restore a superseded message body.
-    No comparison is made across accounts, conversations or different IDs.
+    No comparison is made across accounts, conversations or different IDs. Web
+    copies have no verified edit order: their best observed body is retained as
+    one metadata bundle, while an explicit privacy block applies to every copy
+    of that web source ID. Dates remain per observation for downstream checks.
     """
     rows = list(rows)
     graph_kind = "teams_graph" if kind == "teams" else "outlook_graph"
@@ -109,8 +112,49 @@ def latest_original_rows(rows, kind="mail"):
             key = record_key(row, kind)
             if key not in latest or stamp > latest[key]:
                 latest[key] = stamp
-    return [row for row, stamp in zip(rows, versions, strict=True)
-            if record_key(row, kind) not in latest or stamp == latest[record_key(row, kind)]]
+    selected = [row for row, stamp in zip(rows, versions, strict=True)
+                if record_key(row, kind) not in latest or stamp == latest[record_key(row, kind)]]
+    web_groups = {}
+    for row in rows:
+        if row.get("source_id") and row.get("source_kind") in {"teams_web", "outlook_web"}:
+            web_groups.setdefault((record_key(row, kind), row["source_kind"]), []).append(row)
+    web_bodies = {}
+    for key, copies in web_groups.items():
+        blocked = next((row for row in copies if str(row.get("context_filtered", "")).lower() in {"true", "1", "yes"}), None)
+        best = blocked if blocked is not None else max(copies, key=web_capture_score)
+        bundle = {field: best[field] for field in WEB_CONTEXT_FIELDS if field in best}
+        if blocked is not None:
+            bundle.update(context_excerpt="", summary="", context_filtered="true",
+                          context_available="false", body_capture_status="filtered")
+        web_bodies[key] = bundle
+    result = []
+    for row in selected:
+        bundle = web_bodies.get((record_key(row, kind), row.get("source_kind")))
+        if bundle is not None:
+            row = {**{field: value for field, value in row.items() if field not in WEB_CONTEXT_FIELDS}, **bundle}
+        result.append(row)
+    return result
+
+
+WEB_CONTEXT_FIELDS = {"context_excerpt", "context_truncated", "context_filtered", "context_available", "summary",
+                      "full_body_chars", "body_capture_status", "capture_method", "body_truncated", "body_complete",
+                      "capture_truncated", "capture_limit", "capture_scope"}
+
+
+def web_capture_score(row):
+    """Prefer observed web bodies over previews; this is not edit-time ordering."""
+    text = str(row.get("context_excerpt") if "context_excerpt" in row else row.get("body") or "")
+    if not text or str(row.get("context_filtered", "")).lower() in {"true", "1", "yes"}:
+        return (0, 0, 0)
+    status = str(row.get("body_capture_status") or "")
+    truncated = any(str(row.get(key, "")).lower() in {"true", "1", "yes"}
+                    for key in ("body_truncated", "capture_truncated"))
+    rank = 3 if status == "rendered" and not truncated else 1 if status == "collapsed" else 2
+    try:
+        size = max(len(text), int(row.get("full_body_chars") or 0))
+    except (ValueError, TypeError, OverflowError):
+        size = len(text)
+    return (rank, size, len(text))
 
 
 def merge_rows(existing, incoming, kind="mail"):
@@ -187,11 +231,38 @@ def merge_rows(existing, incoming, kind="mail"):
                 previous["observed_sources"] = "|".join(sorted(sources))
             continue
         keep_context = bool(old_context and len(old_context) > len(new_context) and not newer_original)
+        web_pair = bool(previous.get("source_id") and previous.get("source_id") == clean.get("source_id")
+                        and clean.get("source_kind") in {"teams_web", "outlook_web"}
+                        and previous.get("source_kind") == clean.get("source_kind"))
+        keep_web_context = web_pair and web_capture_score(previous) > web_capture_score(clean)
+        if web_pair:
+            if str(clean.get("context_filtered", "")).lower() in {"true", "1", "yes"}:
+                # A fuller read can discover private text outside the old
+                # excerpt. That explicit block outranks retained body quality.
+                clean.update(context_excerpt="", summary="", context_filtered="true",
+                             context_available="false", body_capture_status="filtered")
+                keep_web_context = False
+            elif (str(previous.get("context_filtered", "")).lower() in {"true", "1", "yes"}
+                  and web_capture_score(clean)[0] < 3):
+                # A metadata-only/partial retry cannot certify that the
+                # previously blocked full message is now safe to interpret.
+                keep_web_context = True
+            keep_context = keep_web_context
+            if not keep_web_context and web_capture_score(clean)[0]:
+                # Capture metadata describes its chosen excerpt as one unit;
+                # a newly rendered body must not inherit an old partial flag.
+                for field in WEB_CONTEXT_FIELDS - clean.keys():
+                    previous.pop(field, None)
         precision = {"estimated": 0, "ai_reported": 0, "unknown": 0, "date": 1, "minute": 2, "second": 3, "exact": 3}
         def time_rank(value):
             return precision.get(value.get("time_precision"), 3 if len(value.get("time", "")) > 10 else 1)
         keep_time = time_rank(previous) > time_rank(clean)
         for field, value in clean.items():
+            if keep_web_context and field in WEB_CONTEXT_FIELDS:
+                continue
+            if web_pair and not keep_web_context and field in WEB_CONTEXT_FIELDS:
+                previous[field] = value
+                continue
             if (field == "modified_time" and not context_available
                     and clean.get("source_kind") in {"teams_graph", "outlook_graph"}):
                 continue  # Missing/disabled body cannot promote the version of stored context.
