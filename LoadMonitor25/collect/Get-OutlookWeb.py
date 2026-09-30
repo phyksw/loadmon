@@ -39,7 +39,7 @@ if __name__ == "__main__":
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT_DIR = os.path.join(ROOT, "data", "outlook")
 sys.path.insert(0, os.path.join(ROOT, "core"))
-from collection_state import _atomic_text, merge_csv, write_status  # noqa: E402
+from collection_state import _atomic_text, merge_csv, read_csv, record_key, write_csv, write_status  # noqa: E402
 
 MAIL_HDR = "box,time,sender,subject,conversation,rcv,time_precision"
 CAL_HDR = "start,end,all_day,busy_status,subject,categories,location,response,meeting_status"
@@ -617,7 +617,9 @@ class Browser:
         if self.deadline is not None:
             self.cfg["_collection_deadline"] = self.deadline
         if not self.ca.ensure_edge(self.cfg):
+            self.last_diagnostic = self.cfg.get('_edge_reason', 'driver_unavailable')
             return False
+        self.port = self.cfg["port"]
         tabs = [t for t in self.ca.http_json(self.port, "/json", timeout=self.remaining(3)) if t.get("type") == "page"]
         ws = None
         for t in tabs:
@@ -856,9 +858,9 @@ def read_mail_detail(br, item, row, limit):
 
 
 def collect_mail(br, d0, d1, fake=None, *, body=False, context_chars=4000,
-                 checkpoint=None, deadline=None, state_path=None):
+                 checkpoint=None, deadline=None, state_path=None, store_subject=True):
     """Read visible search results; checkpoint each page and retain metadata on detail failure."""
-    rows, seen = [], set()
+    rows, seen, observed, undated_seen = [], set(), set(), set()
     diag = {"search": 0, "items": 0, "parsed": 0, "sent": 0, "cc": 0,
             "date_only": 0, "pages": 0, "sent_pass_new": 0, "body_rows": 0,
             "detail_failed": 0, "completed_units": 0, "search_failed": 0,
@@ -886,6 +888,7 @@ def collect_mail(br, d0, d1, fake=None, *, body=False, context_chars=4000,
 
     def consume(page, folder, start, end, *, visible_only=False):
         diag["pages"] += 1
+        pending = []
         if page.get("n", 0) > 600:
             diag["reasons"].append("visible_page_item_limit_reached")
         for item in page.get("items", []):
@@ -896,14 +899,20 @@ def collect_mail(br, d0, d1, fake=None, *, body=False, context_chars=4000,
             key_hash = hashlib.sha256(key.encode("utf-8")).hexdigest()
             if key in seen or (not visible_only and key_hash in active_seen):
                 continue
-            seen.add(key)
-            diag["items"] += 1
-            if folder == "sent":
-                diag["sent_pass_new"] += 1
+            if key not in observed:
+                observed.add(key)
+                diag["items"] += 1
+                if folder == "sent":
+                    diag["sent_pass_new"] += 1
             # A folder URL alone does not prove OWA search remained in that folder.
-            row = parse_mail_item(item, start, end, folder if fake is not None else "unknown", explicit_dates=visible_only)
+            row = parse_mail_item(item, start, end, folder if fake is not None else "unknown",
+                                  explicit_dates=(fake is None or visible_only))
             if not row:
-                diag["undated"] += 1
+                if key not in undated_seen:
+                    undated_seen.add(key)
+                    diag["undated"] += 1
+                    diag["reasons"].append("mail_date_unconfirmed")
+                    pending.append(_undated_mail(item, key_hash, folder, d0, d1, store_subject))
                 continue
             if not (d0.isoformat() <= row[1][:10] <= d1.isoformat()):
                 diag["period_filtered"] += 1
@@ -930,6 +939,7 @@ def collect_mail(br, d0, d1, fake=None, *, body=False, context_chars=4000,
             row += [excerpt, truncated, source_id, "outlook_web", source_url,
                     item.get("conversation_id", ""), folder if fake is not None else "requested:" + folder, ""]
             rows.append(row)
+            seen.add(key)
             if not reason and not visible_only:
                 active_seen.add(key_hash)
             diag["parsed"] += 1
@@ -939,6 +949,8 @@ def collect_mail(br, d0, d1, fake=None, *, body=False, context_chars=4000,
                 diag["cc"] += 1
             if row[6] == "date":
                 diag["date_only"] += 1
+        if pending:
+            _save_undated_mail(pending)
         if checkpoint and rows:
             checkpoint(rows)
         save_progress()
@@ -1107,6 +1119,9 @@ def collect_cal(br, d0, d1, fake=None, *, checkpoint=None, deadline=None):
                 st = br.goto(url, wait=5.0)
                 if st == "login":
                     return rows, "login", diag
+                if st != "ok":
+                    diag["reasons"] = ["calendar_page_not_ready"]
+                    return rows, "partial" if rows else "failed", diag
                 pg = br.eval_json(JS_CAL)
             except Exception as error:
                 diag["reasons"] = ["calendar_page_failed:" + type(error).__name__]
@@ -1149,6 +1164,29 @@ def _has_data(path):
         return False
 
 
+def _undated_mail(item, key_hash, folder, d0, d1, store_subject):
+    # Parsing may help identify metadata, but its inferred date is NEVER stored.
+    candidate = parse_mail_item(item, d0, d1, "unknown")
+    sender = candidate[2] if candidate else str(item.get("sender") or "")
+    subject = candidate[3] if candidate else str(item.get("subject") or "")
+    return {"box": "unknown", "time": "", "time_precision": "unknown", "sender": sender,
+            "subject": subject if store_subject else "", "conversation": "", "rcv": "",
+            "context_excerpt": "", "source_id": item.get("item_id") or "derived:outlook-visible:" + key_hash,
+            "source_kind": "outlook_web", "conversation_id": item.get("conversation_id") or "",
+            "account": "", "folder": "requested:" + folder,
+            "timestamp_text": " | ".join(str(x) for x in [*(item.get("date_texts") or []),
+                                *(item.get("titles") or []), item.get("label") or ""])[:1000] if store_subject else "",
+            "requested_from": str(d0), "requested_to": str(d1)}
+
+
+def _save_undated_mail(rows):
+    path = os.path.join(ROOT, 'data', 'collection_pending', 'outlook_web_undated.csv')
+    known = {record_key(row, 'mail') for row in read_csv(os.path.join(OUT_DIR, 'mail.csv')) if row.get('source_id')}
+    pending = [row for row in rows if record_key(row, 'mail') not in known]
+    if pending:
+        merge_csv(path, pending, list(pending[0]), kind='mail')
+
+
 def _save(kind, rows, store_subject):
     """Atomic union: partial or narrower fallback never replaces earlier history."""
     dst = os.path.join(OUT_DIR, "mail.csv" if kind == "mail" else "calendar.csv")
@@ -1169,6 +1207,14 @@ def _save(kind, rows, store_subject):
                 row["conversation"] = _conv_token(row.get("conversation", ""))
         records.append(row)
     merge_csv(dst, records, fields, kind="mail" if kind == "mail" else "calendar")
+    if kind == 'mail':
+        pending_path = os.path.join(ROOT, 'data', 'collection_pending', 'outlook_web_undated.csv')
+        if os.path.exists(pending_path):
+            resolved = {record_key(row, 'mail') for row in records if row.get('source_id')}
+            pending = read_csv(pending_path)
+            remaining = [row for row in pending if record_key(row, 'mail') not in resolved]
+            if len(remaining) != len(pending):
+                write_csv(pending_path, remaining, list(pending[0]))
     return dst
 
 
@@ -1245,7 +1291,8 @@ def main():
             br.deadline = deadline
             if not br.start():
                 br.close()
-                return finish(3, "time_budget_reached" if time.monotonic() >= deadline else "Edge startup failed", blocked=True)
+                return finish(3, "time_budget_reached" if time.monotonic() >= deadline else
+                              (getattr(br, 'last_diagnostic', '') or "Edge startup failed"), blocked=True)
             initial = br.goto(MAIL_URL)
             if initial == "login":
                 log("전용 Edge 창에서 회사 계정 로그인이 필요합니다. 로그인 후 수집을 다시 실행하세요.")
@@ -1272,7 +1319,7 @@ def main():
             if kind == "mail":
                 rows, state, diag = collect_mail(br, d0, d1, fake, body=body,
                                                 context_chars=context_chars, checkpoint=checkpoint, deadline=deadline,
-                                                state_path=os.path.join(OUT_DIR, "web_mail_jobs.json"))
+                                                state_path=os.path.join(OUT_DIR, "web_mail_jobs.json"), store_subject=store_subject)
             else:
                 rows, state, diag = collect_cal(br, d0, d1, fake, checkpoint=checkpoint, deadline=deadline)
             diagnostics[kind] = diag

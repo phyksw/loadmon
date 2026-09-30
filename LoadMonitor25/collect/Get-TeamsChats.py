@@ -70,8 +70,8 @@ def load_token():
     return GraphAuth(ROOT, load_cfg()).load()
 
 
-def acquire_token(interactive=True):
-    return GraphAuth(ROOT, load_cfg()).acquire(interactive)
+def acquire_token(interactive=True, force_login=False):
+    return GraphAuth(ROOT, load_cfg()).acquire(interactive, force_login=force_login)
 
 
 def strip_html(value):
@@ -115,7 +115,8 @@ def collect(d0, d1, max_chats=None, max_msgs=None, interactive=True, time_budget
             raise GraphError("identity_missing")
         account = str((cfg.get("graph") or {}).get("tenantId") or "organizations") + ":" + str(me["id"])
         run = PageRun(ROOT, "teams_graph", account, d0, d1,
-                      {"channels": channels, "context": context_chars, "version": 2}, client, force)
+                      {"channels": channels, "context": context_chars, "version": 2}, client, force,
+                      storage_path=out, storage_kind="teams")
         run.add("list:chats", "chat_list", query("/me/chats", **{"$top": 50, "$expand": "members"}))
         if channels:
             run.add("list:teams", "team_list", query("/me/joinedTeams"))
@@ -205,6 +206,7 @@ def collect(d0, d1, max_chats=None, max_msgs=None, interactive=True, time_budget
                full_requested_scope_complete=state == "complete" and channels,
                completed_units=sum(bool(unit.get("done")) for unit in units), total_units=len(units),
                pages=sum(unit.get("pages", 0) for unit in units), denied_units=sum(unit.get("http_status") == 403 for unit in units),
+               checkpoint_recovery=run.recovery_reason,
                completed_chat_ids=[u["conversation_id"] for u in units if u["kind"] == "chat_messages" and u.get("done")],
                channel_scope=CHANNEL_SCOPE if channels else "not_requested")
         print(f"[graph] {run.observed} observations · {state} · " + ", ".join(run.issues()), flush=True)
@@ -236,7 +238,7 @@ def main():
                           "token_cache_exists": os.path.isfile(TOKEN_PATH)}, ensure_ascii=True), flush=True)
         return 0
     if args.login_only:
-        token, error = acquire_token(True)
+        token, error = acquire_token(True, force_login=True)
         print("[graph] " + ("login_complete" if token else str(error)), flush=True)
         return 0 if token else 1
     return 0 if collect(args.d0, args.d1, max_chats=args.max_chats or None, max_msgs=args.max_msgs or None,

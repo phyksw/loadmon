@@ -600,7 +600,7 @@ def main():
             ROOT, c, d0, d1, step, record, ps=ps, argv=sys.argv)
 
     from communication_evidence import write_report
-    evidence = write_report(ROOT, d0, d1, c)
+    evidence = write_report(ROOT, d0, d1, c, current_run=RUN)
     RUN["communication_evidence"] = evidence
     counts = evidence.get("families", {})
     record("메일·Teams 근거 점검", True, 0, " · ".join(

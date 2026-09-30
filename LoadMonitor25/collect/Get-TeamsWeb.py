@@ -259,15 +259,27 @@ JS_DOM = r"""
     return nodes.filter(e => !nodes.some(child => child !== e && e.contains(child)));
   };
   const bodySelector = '[data-tid="messageBodyContent"],[data-tid="message-body"],[data-tid="message-content"],[id^="content-"]';
+  const quoteSelector = 'blockquote,[data-tid="quoted-reply"],[data-tid="quoted-message"],[data-tid="reply-preview"],[data-tid="message-quote"]';
+  const quoted = e => !!e.closest(quoteSelector);
+  const messageIdentity = e => e.getAttribute('data-message-id') ||
+    (all('[data-message-id]',e).find(x => !quoted(x)) || {getAttribute: () => ''}).getAttribute('data-message-id') || '';
+  const ownPart = (e,x) => {
+    if (quoted(x)) return false;
+    const owner = messageIdentity(e), nearest = x.closest('[data-message-id]');
+    return !owner || !nearest || nearest.getAttribute('data-message-id') === owner;
+  };
+  const messageBody = e => all(bodySelector,e).find(x => ownPart(e,x));
   const timestampNodes = e => {
-    const body = e.querySelector(bodySelector);
-    const known = all('[data-tid="message-timestamp"],[data-tid="timestamp"],[data-tid="chat-pane-message-timestamp"],time',e);
-    const titled = all('[title],[aria-label]',e).filter(x => (!body || !body.contains(x)) &&
+    const bodies = all(bodySelector,e);
+    const headerPart = x => ownPart(e,x) && !bodies.some(body => body.contains(x));
+    const known = all('[data-tid="message-timestamp"],[data-tid="timestamp"],[data-tid="chat-pane-message-timestamp"],time',e)
+      .filter(headerPart);
+    const titled = all('[title],[aria-label]',e).filter(x => headerPart(x) &&
       /\d{1,2}:\d{2}|\d{1,2}\s*[시時时]/.test((x.getAttribute('title') || '')+' '+(x.getAttribute('aria-label') || '')));
     // Older skins expose a separate clock text leaf without a data-tid.
     // Match the entire leaf; a deadline sentence in the body is not a clock.
     const clock = all('span,div,p,a',e).filter(x => x.childElementCount === 0 &&
-      (!body || !body.contains(x)) && /^(?:(?:오전|오후|AM|PM)\s*)?\d{1,2}:\d{2}(?:\s*(?:AM|PM))?$/i.test((x.textContent || '').trim()));
+      headerPart(x) && /^(?:(?:오전|오후|AM|PM)\s*)?\d{1,2}:\d{2}(?:\s*(?:AM|PM))?$/i.test((x.textContent || '').trim()));
     return [...new Set([...known,...titled,...clock])];
   };
   const messageSelector = '[data-tid="chat-pane-item"],[data-tid="chat-pane-message"],'
@@ -276,6 +288,7 @@ JS_DOM = r"""
     + '[data-tid="message-pane"] [role="listitem"],[role="main"] [role="listitem"]';
   const messageNodes = () => {
     const nodes = all(messageSelector).filter(e => {
+      if (quoted(e)) return false;
       if (!e.matches('[role="main"] [role="listitem"]') ||
           e.matches('[data-tid="chat-pane-item"],[data-tid="chat-pane-message"],[role="log"] [role="listitem"],[data-tid="message-pane"] [role="listitem"]')) return true;
       const stamps = timestampNodes(e);
@@ -285,7 +298,8 @@ JS_DOM = r"""
     });
     // A message body may itself match an older message-container selector.
     // Retain the outer message once, not an extra nested copy.
-    return nodes.filter(e => !nodes.some(parent => parent !== e && parent.contains(e)));
+    return nodes.filter(e => !nodes.some(parent => parent !== e && parent.contains(e) &&
+      (!messageIdentity(e) || !messageIdentity(parent) || messageIdentity(e) === messageIdentity(parent))));
   };
 """
 
@@ -350,18 +364,17 @@ JS_MSGS = dom_script(r"""
       if (s && s.length <= 60) out.items.push({t: "sep", text: s});
       continue;
     }
-    const au = e.querySelector('[data-tid="message-author-name"],[data-tid="messageAuthorName"],[data-tid="message-author"]');
+    const au = all('[data-tid="message-author-name"],[data-tid="messageAuthorName"],[data-tid="message-author"]',e).find(x => ownPart(e,x));
     const stamps = timestampNodes(e);
     const ts = stamps[0];
-    const bd = e.querySelector(bodySelector);
-    const nested = e.querySelector('[data-message-id]');
+    const bd = messageBody(e);
     out.items.push({t: "msg",
-      id: e.getAttribute("data-message-id") || (nested ? nested.getAttribute('data-message-id') : '') || e.getAttribute("data-item-id") || "",
+      id: messageIdentity(e) || e.getAttribute("data-item-id") || "",
       url: (e.querySelector('a[href*="/message/"]') || {}).href || "",
       label: (e.getAttribute("aria-label") || "").slice(0, 400),
       author: au ? (au.textContent || "").trim() : "",
       ts: ts ? ((ts.getAttribute("title") || ts.getAttribute("datetime") || ts.textContent || "").trim()) : "",
-      iso: [...e.querySelectorAll("time[datetime]")].map(x => x.getAttribute("datetime")).filter(Boolean).slice(0, 3),
+      iso: stamps.filter(x => x.matches('time[datetime]')).map(x => x.getAttribute("datetime")).filter(Boolean).slice(0, 3),
       titles: stamps.flatMap(x => [x.getAttribute('title'),x.getAttribute('aria-label')]).filter(Boolean).slice(0, 6),
       body: bd ? (bd.textContent || "").trim().slice(0, 20000) : "",
       texts: leafs(e).slice(0, 20)});
@@ -491,6 +504,7 @@ class Browser:
     def start(self):
         if not self.ca.ensure_edge(self.cfg):
             return False
+        self.port = self.cfg["port"]
         ws = None
         def remaining():
             seconds = (self.deadline or float('inf'))-time.monotonic()
@@ -1211,7 +1225,8 @@ def main():
             return 3
         if not started:
             log("전용 Edge(디버그 포트)를 띄우지 못했습니다 — Edge 설치·config.copilotAuto.port 확인")
-            status("blocked", "driver_unavailable")
+            reason = getattr(br, 'cfg', {}).get('_edge_reason', 'driver_unavailable')
+            status("blocked", reason)
             return 3
         log('Teams 웹 로그인 및 실제 대화 목록 로딩을 확인합니다')
         try:

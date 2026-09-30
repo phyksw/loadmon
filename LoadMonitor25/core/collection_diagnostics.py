@@ -84,6 +84,8 @@ CAUSES = {
     "login_required": ("로그인 필요", "수집용 Edge 창에서 회사 계정 로그인 후 같은 기간으로 재실행하세요."),
     "access_blocked": ("접근 제한", "브라우저에 표시된 조직 접근 조건·계정 권한을 확인하세요."),
     "browser_unavailable": ("브라우저 연결 실패", "Edge 실행 및 조직의 브라우저 자동화 허용 여부를 확인하세요."),
+    "browser_profile_unverified": ("수집용 브라우저 확인 실패", "같은 포트를 쓰는 다른 LM 설치본이 있는지 확인하세요. 현재 설치본의 전용 프로필 연결을 확인해야 합니다."),
+    "browser_port_unavailable": ("수집용 브라우저 포트 사용 불가", "수집용 포트를 확보하지 못했습니다. 실행 중인 다른 설치본과 포트 제한을 확인하세요."),
     "page_not_ready": ("화면 준비 실패", "수집용 웹 창에 메일·채팅 목록이 실제로 표시되는지 확인하세요."),
     "selector_unmatched": ("화면 구조 인식 실패", "원인표의 경로·화면 인식 건수로 해당 화면 형식을 점검해야 합니다."),
     "date_unconfirmed": ("날짜를 확인하지 못함", "날짜가 확인되지 않은 메시지는 선택 기간의 건수에 넣지 않습니다."),
@@ -92,6 +94,7 @@ CAUSES = {
     "com_unavailable": ("클래식 Outlook 경로 사용 불가", "새 Outlook·웹은 웹 경로 또는 승인된 Graph 경로로 수집합니다."),
     "graph_unconfigured": ("Graph 연결 없음", "승인된 앱 연결이 없으므로 앱·웹에서 확인된 자료만 수집합니다."),
     "disabled": ("경로 생략", "실행 옵션·설정 또는 앞 경로의 완료 범위를 확인하세요."),
+    "status_write_failed": ("수집 상태 저장 실패", "상태 파일 잠금·폴더 쓰기 권한을 확인하세요. 다른 수집 경로는 계속 실행합니다."),
     "other": ("추가 확인 필요", "해당 경로의 상태·처리 건수와 실행 중 표시된 안내를 확인하세요."),
 }
 SOURCES = {"outlook_com", "outlook_index", "outlook_web", "outlook_graph", "outlook_copilot",
@@ -110,6 +113,9 @@ WEB_COUNTERS = {"search", "items", "parsed", "sent", "cc", "date_only", "pages",
 def cause_code(reason):
     value = str(reason).lower()
     for code, patterns in (
+        ("status_write_failed", ("status_write_failed",)),
+        ("browser_profile_unverified", ("browser_profile_unverified",)),
+        ("browser_port_unavailable", ("browser_port_unavailable",)),
         ("login_required", ("login", "로그인")),
         ("com_unavailable", ("com_unregistered", "classic_profile_missing")),
         ("graph_unconfigured", ("graph 앱 연결 미설정",)),
@@ -131,7 +137,19 @@ def build_diagnostics(root, d0, d1, run):
     """Whitelist fixed labels/counters. Never serialize raw collector errors or logs."""
     routes = []
     started = run.get("started_at")
-    for state in status_snapshot(root):
+    states = {state["source"]: state for state in status_snapshot(root)}
+    # A status file can remain locked while actual collection proceeds. Use the
+    # current in-memory result instead of presenting that file's stale success.
+    for family in (run.get("collection") or {}).values():
+        if not isinstance(family, dict):
+            continue
+        for state in family.get("sources", []):
+            if (isinstance(state, dict) and state.get("source") in SOURCES
+                    and [state.get("requested_from"), state.get("requested_to")] == [d0, d1]
+                    and isinstance(started, (int, float))
+                    and isinstance(state.get("finished_at"), (int, float)) and state["finished_at"] >= started):
+                states[state["source"]] = state
+    for state in states.values():
         if state.get("source") not in SOURCES:
             continue
         same = [state.get("requested_from"), state.get("requested_to")] == [d0, d1]
@@ -154,8 +172,10 @@ def build_diagnostics(root, d0, d1, run):
     for item in routes:
         if not item["current_run"]:
             continue
-        for code in item["causes"]:
-            if code not in {"other", "disabled", "graph_unconfigured"}:
+        codes = item["causes"] or (["other"] if item["status"] in {"blocked", "failed"} else [])
+        for code in codes:
+            if code not in {"other", "disabled", "graph_unconfigured"} or (
+                    code == "other" and item["status"] in {"blocked", "failed"}):
                 summaries.append(f"{item['source']}: {CAUSES[code][0]} — {CAUSES[code][1]}")
     stages = []
     for stage in run.get("stages", []):
@@ -171,7 +191,7 @@ def build_diagnostics(root, d0, d1, run):
                                       if isinstance(r, dict) and set(r) == {"name", "version"}
                                       and isinstance(r["name"], str) and r["name"] in {"outlook", "olk", "ms-teams", "teams"}
                                       and re.fullmatch(r"(?:\d+(?:\.\d+){1,5}|unknown)", str(r["version"]))]
-    return {"schema": 1, "version": "v25.10", "period": [d0, d1], "created_at": time.time(),
+    return {"schema": 1, "version": "v25.11", "period": [d0, d1], "created_at": time.time(),
             "client_capabilities": capability, "routes": routes, "stages": stages,
             "summary": list(dict.fromkeys(summaries)), "includes_message_content": False,
             "scope_note": "현재 실행과 이전 기록을 구분합니다. 관측 자료·웹 목록은 서버 전체 확보율이 아닙니다."}

@@ -34,8 +34,27 @@ class CommunicationCollection:
         self.col = self.root / "collect"
         self.states = []
 
+    def save_status(self, source, status="partial", rows=0, scope="", reasons=(), **extra):
+        """A locked diagnostic file must not remove the remaining collection routes."""
+        try:
+            return write_status(self.root, source, self.d0, self.d1, status, rows, scope, reasons, **extra)
+        except OSError:
+            # Preserve current diagnostics in RUN. An old on-disk 'complete'
+            # status must not suppress another route after persistence failed.
+            result = dict(extra, schema=1, source=source, requested_from=self.d0,
+                          requested_to=self.d1, status="partial" if status == "complete" else status,
+                          rows=max(0, int(rows)), scope=str(scope), finished_at=time.time(),
+                          reasons=list(dict.fromkeys([*reasons, "status_write_failed"])))
+            for field in ("mail_status", "calendar_status"):
+                if result.get(field) == "complete":
+                    result[field] = "partial"
+            result["full_requested_scope_complete"] = False
+            self.record("수집 상태 저장 · " + source, False, 0,
+                        "상태 파일 저장 실패 — 기존 파일을 보존하고 다른 수집 경로를 계속 확인합니다")
+            return result
+
     def skip(self, source, reason):
-        result = write_status(self.root, source, self.d0, self.d1, "skipped", reasons=[reason])
+        result = self.save_status(source, "skipped", reasons=[reason])
         self.states.append(result)
         self.record("수집 경로 · " + source, True, 0, "생략: " + reason)
         return result
@@ -45,8 +64,8 @@ class CommunicationCollection:
         ok = self.step(label, command, timeout)
         result = load_status(self.root, source, self.d0, self.d1, since=started)
         if result is None:
-            result = write_status(
-                self.root, source, self.d0, self.d1, "partial" if ok else "failed",
+            result = self.save_status(
+                source, "partial" if ok else "failed",
                 reasons=["collector_did_not_report_scope" if ok else "collector_failed_or_timed_out"],
                 process_ok=bool(ok))
         elif not ok:
@@ -56,8 +75,8 @@ class CommunicationCollection:
         result["budget_sec"] = timeout
         extras = {k: v for k, v in result.items() if k not in {
             "schema", "source", "requested_from", "requested_to", "status", "rows", "scope", "reasons", "finished_at"}}
-        result = write_status(self.root, source, self.d0, self.d1, result["status"],
-                              result.get("rows", 0), result.get("scope", ""), result.get("reasons", []), **extras)
+        result = self.save_status(source, result["status"], result.get("rows", 0),
+                                  result.get("scope", ""), result.get("reasons", []), **extras)
         self.states.append(result)
         return result
 
@@ -71,9 +90,8 @@ class CommunicationCollection:
                 extras[field] = "partial"
         extras["process_ok"] = False
         status = result["status"] if result["status"] in {"failed", "blocked", "skipped"} else "partial"
-        return write_status(self.root, result["source"], self.d0, self.d1, status,
-                            result.get("rows", 0), result.get("scope", ""),
-                            [*result.get("reasons", []), "process_did_not_finish"], **extras)
+        return self.save_status(result["source"], status, result.get("rows", 0), result.get("scope", ""),
+                                [*result.get("reasons", []), "process_did_not_finish"], **extras)
 
     def report(self, family, complete, reasons=()):
         summary = "범위 확인 완료" if complete else "부분 수집 · 전체 범위 확인 안 됨"

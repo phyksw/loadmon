@@ -8,6 +8,7 @@ import io
 import json
 import os
 from pathlib import Path
+import sys
 import tempfile
 import time
 from types import SimpleNamespace
@@ -26,8 +27,10 @@ class PcRegressionTests(unittest.TestCase):
         target.parent.mkdir(parents=True)
         source = (PROJECT / "LoadMonitor25/core/extract.py").read_text(encoding="utf-8-sig")
         target.write_text(source, encoding="utf-8")
+        (target.parent / "collection_state.py").write_bytes((PROJECT / "LoadMonitor25/core/collection_state.py").read_bytes())
         cls.extract = {"__file__": str(target), "__name__": "synthetic_extract"}
-        exec(compile(source, str(target), "exec"), cls.extract)
+        with mock.patch.object(sys, "path", [str(target.parent), *sys.path]):
+            exec(compile(source, str(target), "exec"), cls.extract)
         cls.cfg = json.loads((PROJECT / "LoadMonitor25/config/config.default.json").read_text(encoding="utf-8-sig"))
         cls.run_tree = ast.parse((PROJECT / "LoadMonitor25/run.py").read_text(encoding="utf-8-sig"))
 

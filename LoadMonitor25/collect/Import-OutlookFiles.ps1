@@ -70,15 +70,21 @@ function Convert-OutlookSelectedMessage($Item, [string]$Identity, [string[]]$Sel
 
 function Get-SelectedMessagePlan([string[]]$SelectedPaths, [string]$CheckpointPath,
         [string]$StartDate, [string]$EndDate, [bool]$SubjectEnabled, [bool]$BodyEnabled,
-        [int]$ExcerptChars, [string[]]$SelfAddresses) {
+        [int]$ExcerptChars, [string[]]$SelfAddresses, [string]$CsvPath = '') {
     $signature=Get-OutlookTextHash ((@($StartDate,$EndDate,[string]$SubjectEnabled,[string]$BodyEnabled,[string]$ExcerptChars) + @($SelfAddresses|Sort-Object) + @($SelectedPaths|Sort-Object)) -join "`n")
     $state=@{signature=$signature;complete=$false;files=@{}}
     try {
         $prior=Get-Content -LiteralPath $CheckpointPath -Raw -Encoding UTF8 | ConvertFrom-Json
         if ($prior.signature -eq $signature -and -not $prior.complete) {
-            foreach($entry in $prior.files.PSObject.Properties) { $state.files[$entry.Name]=@{done=[bool]$entry.Value.done;hash=[string]$entry.Value.hash} }
+            foreach($entry in $prior.files.PSObject.Properties) { $state.files[$entry.Name]=@{done=[bool]$entry.Value.done;hash=[string]$entry.Value.hash;source_id=[string]$entry.Value.source_id;no_row=[bool]$entry.Value.no_row} }
         }
     } catch {}
+    if ($CsvPath) {
+        $stored = Get-OutlookStoredSourceIds $root $CsvPath
+        foreach ($entry in $state.files.Values) {
+            if ($entry.done -and -not $entry.no_row -and (-not $entry.source_id -or -not $stored.Contains([string]$entry.source_id))) { $entry.done = $false }
+        }
+    }
     $ordered=@($SelectedPaths | Sort-Object @{Expression={ $key=Get-OutlookTextHash ($_.ToLowerInvariant()); [bool]$state.files[$key].done }})
     return @{state=$state;paths=$ordered}
 }
@@ -112,7 +118,8 @@ try {
     if ($null -ne $cfg.collection.mailBody) { $storeBody=[bool]$cfg.collection.mailBody }
     if ($null -ne $cfg.collection.contextChars) { $contextChars=[Math]::Max(0,[Math]::Min(20000,[int]$cfg.collection.contextChars)) }
     $selected=@($selected | ForEach-Object {(Get-Item -LiteralPath $_).FullName})
-    $plan=Get-SelectedMessagePlan $selected $progressPath $From $To $storeSubject $storeBody $contextChars $addresses
+    $out=Join-Path $root 'data\outlook\mail.csv'
+    $plan=Get-SelectedMessagePlan $selected $progressPath $From $To $storeSubject $storeBody $contextChars $addresses $out
     $progress=$plan.state
     # A completed run refreshes all selected files next time. An interrupted run
     # starts with unfinished files, validating byte hashes before skipping prior
@@ -140,7 +147,9 @@ try {
                 $lines=@($row | ConvertTo-Csv -NoTypeInformation)
                 $null=Merge-OutlookCsv $root $out $lines 'mail'
                 $script:msgRows++
+                $progress.files[$fileKey].source_id = [string]$row.source_id
             } else { $script:msgSkipped++ }
+            $progress.files[$fileKey].no_row = (-not $row)
             if (-not $row -or $row.context_truncated -ne 'unknown') { $progress.files[$fileKey].done=$true }
             Write-OutlookProgress $progressPath $progress
             Write-OutlookStatus $root 'outlook_files' $From $To 'partial' $script:msgRows $scope @($problems) @{selected_files=$selected.Count;attempted_files=$script:msgAttempted;mail_status='partial'}

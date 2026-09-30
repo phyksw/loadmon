@@ -13,10 +13,12 @@ import math
 import os
 import re
 from pathlib import Path
+import sys
 import tempfile
 import time
 from types import SimpleNamespace
 import unittest
+from unittest import mock
 
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -31,8 +33,10 @@ class MeasurementContractTests(unittest.TestCase):
         path.parent.mkdir(parents=True)
         source = (PROJECT / "LoadMonitor25/core/extract.py").read_text(encoding="utf-8-sig")
         path.write_text(source, encoding="utf-8")
+        (path.parent / "collection_state.py").write_bytes((PROJECT / "LoadMonitor25/core/collection_state.py").read_bytes())
         cls.extract = {"__file__": str(path), "__name__": "synthetic_extract"}
-        exec(compile(source, str(path), "exec"), cls.extract)
+        with mock.patch.object(sys, "path", [str(path.parent), *sys.path]):
+            exec(compile(source, str(path), "exec"), cls.extract)
         cls.defaults = json.loads((PROJECT / "LoadMonitor25/config/config.default.json").read_text(encoding="utf-8-sig"))
         cls.refine_tree = ast.parse((PROJECT / "LoadMonitor25/refine.py").read_text(encoding="utf-8-sig"))
         identity_tree = ast.parse((PROJECT / "LoadMonitor25/core/details.py").read_text(encoding="utf-8-sig"))

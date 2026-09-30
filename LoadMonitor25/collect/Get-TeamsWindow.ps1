@@ -298,8 +298,8 @@ $desig = (($amSet + $pmSet) | Where-Object { $_ } | Select-Object -Unique | ForE
 $sepRe = ':'
 if ($ci.DateTimeFormat.ShortTimePattern -match '\.') { $sepRe = '[:.]' }
 # 숫자 앞뒤 경계는 \b 가 아니라 '숫자 아님'으로 본다 - '午後2:10' 처럼 CJK 글자 바로 뒤에 숫자가 오면 \b 가 성립하지 않는다(시험 실측)
-$reTime = '(?:(' + $desig + ')\s*)?(?<!\d)(\d{1,2})' + $sepRe + '(\d{2})(?!\d)(?:\s*(' + $desig + '))?'
-$reTimeGeneric = '()?(?<!\d)(\d{1,2})[:.](\d{2})(?!\d)()?'   # 0줄일 때의 마지막 시도 - 구분자·표기 무관(그룹 수 동일)
+$reTime = '(?:(' + $desig + ')\s*)?(?<![\d./])(\d{1,2})' + $sepRe + '(\d{2})(?![\d./])(?:\s*(' + $desig + '))?'
+$reTimeGeneric = '()?(?<![\d./])(\d{1,2})[:.](\d{2})(?![\d./])()?'   # Full dates are not clock text.
 $cfgRe = ''
 try { $cfgRe = [string]$cfgObj.teamsTimeRegex } catch {}
 if ($cfgRe) { $reTime = $cfgRe; Write-Host '[teams-window] config.teamsTimeRegex 사용' }
@@ -358,11 +358,35 @@ function Find-HeaderDate([string]$pre, [datetime]$ref) {
         try { $x = [datetime]::new([int]$m.Groups[1].Value, [int]$m.Groups[2].Value, [int]$m.Groups[3].Value) } catch { $x = $null }
         if ($x) { $r.date = $x; $r.idx = $m.Index; $r.len = $m.Length; $r.est = $false; return $r }
     }
+    # Match a complete explicit year before a month/day prefix can consume it.
+    $m = [regex]::Match($pre, '(?<!\d)(\d{1,2})\s*[/.\-]\s*(\d{1,2})\s*[/.\-]\s*((?:19|20)\d{2})(?!\d)')
+    if ($m.Success) {
+        $a = [int]$m.Groups[1].Value; $b = [int]$m.Groups[2].Value
+        $mo = $a; $dd = $b
+        if ($a -gt 12 -or ($dayFirst -and $b -le 12)) { $mo = $b; $dd = $a }
+        try { $x = [datetime]::new([int]$m.Groups[3].Value, $mo, $dd) } catch { return $r }
+        $r.date = $x; $r.idx = $m.Index; $r.len = $m.Length; $r.est = $false; return $r
+    }
+    foreach ($monthPattern in @($reMon, $reMonC)) {
+        if (-not $monthPattern) { continue }
+        $m = [regex]::Match($pre, ('\b(\d{1,2})\.?\s+' + $monthPattern + '\.?\s*,?\s*((?:19|20)\d{2})(?!\d)'), $rxOpt)
+        $dayIndex = 1; $monthIndex = 2
+        if (-not $m.Success) {
+            $m = [regex]::Match($pre, ('\b' + $monthPattern + '\.?\s+(\d{1,2})\s*,?\s*((?:19|20)\d{2})(?!\d)'), $rxOpt)
+            $dayIndex = 2; $monthIndex = 1
+        }
+        if ($m.Success) {
+            $monthName = $m.Groups[$monthIndex].Value.ToLower()
+            $mo = if ($monthPattern -eq $reMon) { $mon[$monthName.Substring(0, 3)] } else { $monC[$monthName] }
+            try { $x = [datetime]::new([int]$m.Groups[3].Value, [int]$mo, [int]$m.Groups[$dayIndex].Value) } catch { return $r }
+            $r.date = $x; $r.idx = $m.Index; $r.len = $m.Length; $r.est = $false; return $r
+        }
+    }
     $m = [regex]::Match($pre, '(?<!\d)(\d{1,2})\s*[월月]\s*(\d{1,2})\s*[일日]')
     if ($m.Success) {
         # 8월 15일 / 8月15日 (한·일·중)
         $x = Day-Of ([int]$m.Groups[1].Value) ([int]$m.Groups[2].Value) $ref
-        if ($x) { $r.date = $x; $r.idx = $m.Index; $r.len = $m.Length; $r.est = $false; return $r }
+        if ($x) { $r.date = $x; $r.idx = $m.Index; $r.len = $m.Length; return $r }
     }
     $m = [regex]::Match($pre, '(?<!\d)(\d{1,2})\s?[/.]\s?(\d{1,2})\.?(?!\d)')
     if ($m.Success) {
@@ -373,7 +397,7 @@ function Find-HeaderDate([string]$pre, [datetime]$ref) {
         if ($mo -gt 12 -and $dd -le 12) { $t0 = $mo; $mo = $dd; $dd = $t0 }
         if ($mo -ge 1 -and $mo -le 12 -and $dd -ge 1 -and $dd -le 31) {
             $x = Day-Of $mo $dd $ref
-            if ($x) { $r.date = $x; $r.idx = $m.Index; $r.len = $m.Length; $r.est = $false; return $r }
+            if ($x) { $r.date = $x; $r.idx = $m.Index; $r.len = $m.Length; return $r }
         }
     }
     if ($reMonC) {
@@ -381,25 +405,25 @@ function Find-HeaderDate([string]$pre, [datetime]$ref) {
         if ($m.Success) {
             # 15. Aug / 15 août (이 PC 문화권의 월 이름, 일-월)
             $x = Day-Of $monC[$m.Groups[2].Value.ToLower()] ([int]$m.Groups[1].Value) $ref
-            if ($x) { $r.date = $x; $r.idx = $m.Index; $r.len = $m.Length; $r.est = $false; return $r }
+            if ($x) { $r.date = $x; $r.idx = $m.Index; $r.len = $m.Length; return $r }
         }
         $m = [regex]::Match($pre, ('\b' + $reMonC + '\.?\s+(\d{1,2})\b'), $rxOpt)
         if ($m.Success) {
             $x = Day-Of $monC[$m.Groups[1].Value.ToLower()] ([int]$m.Groups[2].Value) $ref
-            if ($x) { $r.date = $x; $r.idx = $m.Index; $r.len = $m.Length; $r.est = $false; return $r }
+            if ($x) { $r.date = $x; $r.idx = $m.Index; $r.len = $m.Length; return $r }
         }
     }
     $m = [regex]::Match($pre, ('\b(\d{1,2})\s+' + $reMon + '\b'))
     if ($m.Success) {
         # '15 Aug' (일 월) - 월-일 분기보다 먼저 본다(뒤에 두면 'Aug 3' 류 오인)
         $x = Day-Of $mon[$m.Groups[2].Value.Substring(0, 3).ToLower()] ([int]$m.Groups[1].Value) $ref
-        if ($x) { $r.date = $x; $r.idx = $m.Index; $r.len = $m.Length; $r.est = $false; return $r }
+        if ($x) { $r.date = $x; $r.idx = $m.Index; $r.len = $m.Length; return $r }
     }
     $m = [regex]::Match($pre, ('\b' + $reMon + '\.?\s+(\d{1,2})\b'))
     if ($m.Success) {
         # 'Aug 15' / 'August 15' (월 일)
         $x = Day-Of $mon[$m.Groups[1].Value.Substring(0, 3).ToLower()] ([int]$m.Groups[2].Value) $ref
-        if ($x) { $r.date = $x; $r.idx = $m.Index; $r.len = $m.Length; $r.est = $false; return $r }
+        if ($x) { $r.date = $x; $r.idx = $m.Index; $r.len = $m.Length; return $r }
     }
     $m = [regex]::Match($pre, $reYesterday, $rxOpt)
     if ($m.Success) { $r.date = $ref.Date.AddDays(-1); $r.idx = $m.Index; $r.len = $m.Length; $r.est = $false; return $r }
@@ -422,7 +446,7 @@ function Parse-Lines([string]$re) {
     # 한 번의 파싱 패스 - 지역 설정 정규식으로 0줄이면 일반 형식으로 다시 부른다.
     # 반환 rows: @{line; time; from; summary; est} 목록, n: 시각 패턴 줄 수
     $out = New-Object System.Collections.Generic.List[object]
-    $n = 0; $chat = ''; $separatorDate = $null
+    $n = 0; $chat = ''; $separatorDate = $null; $separatorEstimated = $false
     $script:parsedMessages = 0; $script:periodExcluded = 0; $script:dateUnconfirmed = 0
     foreach ($ln in $uniq) {
     if ($ln -eq $windowBoundary) { $chat = ''; $separatorDate = $null; continue }
@@ -434,9 +458,9 @@ function Parse-Lines([string]$re) {
         # Teams can expose the date divider as a separate UIA element.
         # Accept a date-only line, optionally followed by a weekday; never a body sentence.
         $divider = Find-HeaderDate $ln $today
-        if (-not $divider.est -and $divider.idx -ge 0) {
+        if ($divider.idx -ge 0) {
             $remaining = ($ln.Substring(0, $divider.idx) + ' ' + $ln.Substring($divider.idx + $divider.len)).Trim(' ', ',', '.', '-', '(', ')')
-            if (-not $remaining -or $dow.ContainsKey($remaining.ToLower())) { $separatorDate = $divider.date }
+            if (-not $remaining -or $dow.ContainsKey($remaining.ToLower())) { $separatorDate = $divider.date; $separatorEstimated = $divider.est }
         }
         continue
     }
@@ -453,8 +477,8 @@ function Parse-Lines([string]$re) {
     $pre = $ln.Substring(0, $tm.Index)
     $post = $ln.Substring($tm.Index + $tm.Length)
     $fd = Find-HeaderDate $pre $today
-    if (-not $fd.est) { $separatorDate = $fd.date }
-    if ($fd.est -and $null -ne $separatorDate) { $fd.date = $separatorDate; $fd.est = $false }
+    if ($fd.idx -ge 0) { $separatorDate = $fd.date; $separatorEstimated = $fd.est }
+    if ($fd.idx -lt 0 -and $null -ne $separatorDate) { $fd.date = $separatorDate; $fd.est = $separatorEstimated }
     if ($fd.est) { $script:dateUnconfirmed++ }
     $d = $fd.date
     $script:parsedMessages++
@@ -478,6 +502,7 @@ function Parse-Lines([string]$re) {
     # replied_time 은 창 읽기로는 측정할 수 없다 - '미응답'이라고 단정하지 않고 빈 값(미측정)으로 둔다
     $line = ('{0},{1},{2},{3},{4},{5}' -f $t, (Csv-Escape $from), (Csv-Escape $chat), $kind, '', (Csv-Escape $summary))
     $out.Add(@{ line = $line; time = $t; from = $from; chat = $chat; summary = $summary; est = $fd.est; kind = $kind;
+        date_missing = ($fd.idx -lt 0 -and $null -eq $separatorDate);
         context_excerpt = $body.Substring(0, [Math]::Min($contextChars, $body.Length));
         context_truncated = ($body.Length -gt $contextChars).ToString().ToLower(); source_id = ''; source_kind = 'teams_app';
         source_url = ''; conversation_id = ''; time_precision = $(if ($fd.est) { 'estimated' } else { 'minute' }) })
@@ -600,7 +625,7 @@ foreach ($r in $res.rows) {
         }
     }
     $k2 = Key2-Of $r.time $r.from $r.chat $r.summary $r.context_excerpt
-    if ($r.est) {
+    if ($r.est -and $r.date_missing) {
         $dd = [datetime]::ParseExact($r.time.Substring(0, 10), 'yyyy-MM-dd', $null)
         $dup = $false
         if ($k2dates.ContainsKey($k2)) {

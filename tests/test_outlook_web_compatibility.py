@@ -61,7 +61,13 @@ def node(tag="div", attrs=None, text="", children=None, **extra):
 class OutlookWebCompatibility(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        spec = importlib.util.spec_from_file_location("owa_compat", ROOT / "collect/Get-OutlookWeb.py")
+        temporary = tempfile.TemporaryDirectory(prefix='lm25-owa-dom-code-')
+        cls.addClassCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        for folder, filename in [('collect', 'Get-OutlookWeb.py'), ('core', 'collection_state.py')]:
+            (root / folder).mkdir(exist_ok=True)
+            shutil.copyfile(ROOT / folder / filename, root / folder / filename)
+        spec = importlib.util.spec_from_file_location("owa_compat", root / "collect/Get-OutlookWeb.py")
         cls.mod = importlib.util.module_from_spec(spec)
         with patch.object(sys, "path", list(sys.path)):
             spec.loader.exec_module(cls.mod)

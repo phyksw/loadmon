@@ -32,7 +32,7 @@ from tools.transfer import create_transfer  # noqa: E402
 REPORT = os.path.join(ROOT, "report")
 DATA = os.path.join(ROOT, "data")
 NO_WIN = 0x08000000
-VERSION = "v25.10"
+VERSION = "v25.11"
 LOCK = threading.Lock()
 REQUEST_LOCK = threading.Lock()      # Serialize synchronous mutations with transfer startup.
 FREEZE_LOCK = threading.Lock()       # [보고서 만들기] 직렬화 — JOB 과 별개(사본에 '실행 중'이 굳지 않게)
@@ -1901,6 +1901,12 @@ def run_job(d0, d1, ai, skip, collect_only=False, reuse_complete=False, force=Fa
                                       f"확인된 {rows:,}건 / 본문 발췌 {bodies:,}건)")
                     else:
                         counts.append(f"{name} {rows:,}건 / 본문 발췌 {bodies:,}건")
+                    pending = item.get("pending_rows", 0)
+                    pending_failed = item.get("pending_unreadable_files", 0)
+                    if type(pending) is int and pending > 0:
+                        counts[-1] += f" / 날짜 미확정 별도 보류 {pending:,}건"
+                    if type(pending_failed) is int and pending_failed > 0:
+                        counts[-1] += f" / 보류 자료 읽기 실패 {pending_failed:,}파일"
                 message += "\n기간 내 보관 자료(이전 PC 포함): " + " · ".join(counts)
                 message += "\n서버 전체 확보율은 미확인입니다. [메일·Teams 근거 확보]에서 경로별 실패·생략 사유를 확인하세요."
             except (OSError, ValueError, TypeError, KeyError, AttributeError):
@@ -3036,12 +3042,15 @@ function renderCommunicationEvidence(report){
  const families=(report||{}).families||{};
  const connection=report?.connection;
  if(connection&&$("communicationclient")&&!$("communicationclient").value){$("communicationclient").value=connection.client_id||"";$("communicationtenant").value=connection.tenant_id||"organizations";$("communicationchannels").checked=connection.include_channels===true;}
- host.innerHTML='<table><tr><th>기간 내 자료</th><th>고유 기록</th><th>본문 포함</th><th>대화 묶음</th><th>확인할 공백</th></tr>'+["mail","teams"].map(kind=>{
+  host.innerHTML='<table><tr><th>기간 내 자료</th><th>고유 기록</th><th>본문 포함</th><th>날짜 미확정·별도 보류</th><th>대화 묶음</th><th>확인할 공백</th></tr>'+["mail","teams"].map(kind=>{
   const f=families[kind]||{},n=Number(f.unique_rows)||0,b=Number(f.context_rows)||0;
   const unreadable=Number.isInteger(f.unreadable_files)&&f.unreadable_files>0?f.unreadable_files:0;
   const observed=unreadable?`건수 미확인<br><span class="note">읽기 실패 ${unreadable.toLocaleString()}파일 · 확인된 ${n.toLocaleString()}건</span>`:`${n.toLocaleString()}건`;
-  return `<tr><td>${kind==="mail"?"메일":"Teams"}</td><td>${observed}</td><td>${unreadable?"확인된 ":""}${b.toLocaleString()}건</td><td>${unreadable?"확인된 ":""}${Number(f.conversation_count)||0}개</td><td>${esc((f.limits||[]).join(" · ")||"전체 원본 대비 확보율 미확인")}</td></tr>`;
- }).join("")+"</table><p class='note'>본문 포함은 보관 자료 기준이며, 보호 필터 적용 후 AI에 전달되는 수는 줄어들 수 있습니다. 대화 묶음 수가 전체 대화 확보를 뜻하지 않습니다.</p>";
+   const pending=Number.isInteger(f.pending_rows)&&f.pending_rows>0?f.pending_rows:0;
+   const pendingFailed=Number.isInteger(f.pending_unreadable_files)&&f.pending_unreadable_files>0?f.pending_unreadable_files:0;
+   const pendingLabel=pending?`${pending.toLocaleString()}건`:(pendingFailed?"미확인":"없음");
+   return `<tr><td>${kind==="mail"?"메일":"Teams"}</td><td>${observed}</td><td>${unreadable?"확인된 ":""}${b.toLocaleString()}건</td><td>${pendingLabel}${pendingFailed?`<br>보류 자료 읽기 실패 ${pendingFailed.toLocaleString()}파일`:""}</td><td>${unreadable?"확인된 ":""}${Number(f.conversation_count)||0}개</td><td>${esc((f.limits||[]).join(" · ")||"전체 원본 대비 확보율 미확인")}</td></tr>`;
+  }).join("")+"</table><p class='note'>날짜 미확정 보류는 같은 요청 기간에서 관측한 자료이며 기간 내 고유 건수·AI 분석에 포함하지 않습니다. 본문 포함은 보관 자료 기준이며, 보호 필터 적용 후 AI에 전달되는 수는 줄어들 수 있습니다. 대화 묶음 수가 전체 대화 확보를 뜻하지 않습니다.</p>";
  const actions=[...new Set([...(report?.actions||[]),...Object.values(families).flatMap(f=>f.actions||[])])];
  if(actions.length)host.innerHTML+='<p class="note"><b>다음 조치:</b> '+actions.map(esc).join(" · ")+"</p>";
  if(document.getElementById("lm-frozen-data")&&$("communicationactions"))$("communicationactions").style.display="none";

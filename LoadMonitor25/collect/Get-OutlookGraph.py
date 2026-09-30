@@ -68,7 +68,8 @@ def collect(root, config, d0, d1, *, interactive=False, budget=240, force=False,
         except GraphError:
             sent_folder = None
         run = PageRun(root, "outlook_graph", account, d0, d1,
-                      {"context": context_chars, "store_subject": bool(store_subject), "body": want_body, "version": 1}, client, force)
+                      {"context": context_chars, "store_subject": bool(store_subject), "body": want_body, "version": 1},
+                      client, force, storage_path=output)
         z0, z1 = [value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ") for value in (start, until)]
         # Both ranges include moved sent mail; folder membership never narrows the API inventory.
         for field in ("receivedDateTime", "sentDateTime"):
@@ -146,6 +147,7 @@ def collect(root, config, d0, d1, *, interactive=False, budget=240, force=False,
                         completed_units=sum(bool(u.get("done")) for u in units), total_units=len(units),
                         pages=sum(u.get("pages", 0) for u in units),
                         checkpoint_scope="account and requested period; archived body and CSV precede cursor",
+                        checkpoint_recovery=run.recovery_reason,
                         denied_units=sum(u.get("http_status") == 403 for u in units),
                         enumeration_complete=enumeration_complete, body_requested=want_body,
                         full_requested_scope_complete=state == "complete")
@@ -168,7 +170,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     config = load_config()
     if args.login_only:
-        token, error = GraphAuth(ROOT, config).acquire(True)
+        token, error = GraphAuth(ROOT, config).acquire(True, force_login=True)
         print("[outlook-graph] " + ("login_complete" if token else str(error)), flush=True)
         return 0 if token else 1
     result = collect(ROOT, config, args.d0, args.d1, interactive=False, budget=args.time_budget, force=args.force)

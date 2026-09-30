@@ -1,0 +1,194 @@
+{
+  "version": "v25.11",
+  "review_date": "2026-10-01",
+  "baseline_commit": "f6d9165f28dcf050a6ded8970cc7e783b2551186",
+  "scope": [
+    "UI additional-PC action",
+    "COM and Windows Search",
+    "Graph auth/paging/checkpoints",
+    "Teams UIA and web DOM",
+    "Outlook web",
+    "browser/CDP transport",
+    "saved evidence and multi-PC merge",
+    "AI input and displayed counts",
+    "packaging and regression validation"
+  ],
+  "findings": [
+    {
+      "id": "D01",
+      "priority": "P1",
+      "title": "Outlook 색인 보충 후 COM 부분 커서 초기화",
+      "status": "fixed_synthetic_verification",
+      "source": "LoadMonitor25/collect/Get-OutlookData.ps1",
+      "line": 137,
+      "reproduction": "test_index_supplement_keeps_com_partial_cursor_and_saved_rows"
+    },
+    {
+      "id": "D02",
+      "priority": "P2",
+      "title": "CSV 이동·유실 뒤 Graph 체크포인트만 재개하여 범위 완료 오판",
+      "status": "fixed_synthetic_verification",
+      "source": "LoadMonitor25/core/graph_client.py",
+      "line": 332,
+      "reproduction": "test_graph_missing_csv_restarts_inventory_instead_of_false_complete"
+    },
+    {
+      "id": "D03",
+      "priority": "P2",
+      "title": "기본 일정 계정·폴더 변경 뒤 이전 완료 월 재사용",
+      "status": "fixed_synthetic_verification",
+      "source": "LoadMonitor25/collect/Get-OutlookData.ps1",
+      "line": 235,
+      "reproduction": "test_calendar_scope_retains_same_account_and_resets_changed_calendar"
+    },
+    {
+      "id": "D04",
+      "priority": "P2",
+      "title": "MSG 저장 자료 유실 뒤 완료된 파일 건너뜀",
+      "status": "fixed_synthetic_verification",
+      "source": "LoadMonitor25/collect/Import-OutlookFiles.ps1",
+      "line": 71,
+      "reproduction": "test_selected_msg_progress_requires_saved_row_but_keeps_period_exclusions"
+    },
+    {
+      "id": "D05",
+      "priority": "P2",
+      "title": "명시적 Graph 로그인에서 캐시 재사용으로 계정 재선택 흐름 미시작",
+      "status": "fixed_synthetic_verification",
+      "source": "LoadMonitor25/core/graph_client.py",
+      "line": 182,
+      "reproduction": "test_explicit_graph_login_allows_account_switch_without_discarding_old_cache"
+    },
+    {
+      "id": "D06",
+      "priority": "P1",
+      "title": "추가 PC의 오래된 긴 본문이 최신 수정 본문을 덮음",
+      "status": "fixed_synthetic_verification",
+      "source": "LoadMonitor25/core/collection_state.py",
+      "line": 78,
+      "reproduction": "test_old_pc_graph_snapshot_must_not_replace_newer_edited_body"
+    },
+    {
+      "id": "D07",
+      "priority": "P2",
+      "title": "다른 발신자·초의 legacy 메일이 동일 분·제목으로 합쳐짐",
+      "status": "fixed_synthetic_verification",
+      "source": "LoadMonitor25/core/extract.py",
+      "line": 1204,
+      "reproduction": "test_distinct_legacy_mail_senders_same_minute_are_not_one_message"
+    },
+    {
+      "id": "D08",
+      "priority": "P2",
+      "title": "명시적으로 비워진 최신 Teams 원문에 옛 summary 잔존",
+      "status": "fixed_synthetic_verification",
+      "source": "LoadMonitor25/core/collection_state.py",
+      "line": 116,
+      "reproduction": "test_explicit_empty_teams_edit_removes_old_summary_as_well_as_context"
+    },
+    {
+      "id": "D09",
+      "priority": "P2",
+      "title": "Teams 시각 보정이 근거 건수와 분석에 다르게 적용",
+      "status": "fixed_synthetic_verification",
+      "source": "LoadMonitor25/core/communication_evidence.py",
+      "line": 235,
+      "reproduction": "test_teams_saved_evidence_period_matches_configured_analysis_offset"
+    },
+    {
+      "id": "D10",
+      "priority": "P1",
+      "title": "Teams 앱의 명시 과거 연도 소실",
+      "status": "fixed_synthetic_verification",
+      "source": "LoadMonitor25/collect/Get-TeamsWindow.ps1",
+      "line": 351,
+      "reproduction": "test_app_explicit_old_year_survives_numeric_and_month_name_headers"
+    },
+    {
+      "id": "D11",
+      "priority": "P1",
+      "title": "Teams 웹의 본문 인용·중첩 메시지 날짜를 원문 작성일로 사용",
+      "status": "fixed_synthetic_verification",
+      "source": "LoadMonitor25/collect/Get-TeamsWeb.py",
+      "line": 272,
+      "reproduction": "test_deep_web_review.py"
+    },
+    {
+      "id": "D12",
+      "priority": "P1",
+      "title": "설치 프로필 확인 없이 타 설치의 Edge 디버그 포트 재사용",
+      "status": "fixed_synthetic_verification",
+      "source": "LoadMonitor25/tools/copilot_auto.py",
+      "line": 425,
+      "reproduction": "test_deep_web_review.py"
+    },
+    {
+      "id": "D13",
+      "priority": "P2",
+      "title": "WS 응답 조각마다 시간 제한이 갱신되어 호출 예산 초과",
+      "status": "fixed_synthetic_verification",
+      "source": "LoadMonitor25/tools/copilot_auto.py",
+      "line": 263,
+      "reproduction": "test_deep_web_review.py"
+    },
+    {
+      "id": "D14",
+      "priority": "P2",
+      "title": "상태 저장 실패로 후속 수집 중단·옛 완료 상태 재표시",
+      "status": "fixed_synthetic_verification",
+      "source": "LoadMonitor25/core/communication.py",
+      "line": 37,
+      "reproduction": "test_deep_orchestration_review.py"
+    },
+    {
+      "id": "D15",
+      "priority": "P2",
+      "title": "Outlook 웹의 연도 불확정 날짜를 요청 기간에 확정 귀속",
+      "status": "fixed_synthetic_verification",
+      "source": "LoadMonitor25/collect/Get-OutlookWeb.py",
+      "line": 889,
+      "reproduction": "test_deep_web_review.py"
+    },
+    {
+      "id": "D16",
+      "priority": "P2",
+      "title": "Outlook 웹 일정 이동 실패 후 이전 DOM을 새 주로 해석",
+      "status": "fixed_synthetic_verification",
+      "source": "LoadMonitor25/collect/Get-OutlookWeb.py",
+      "line": 1105,
+      "reproduction": "test_deep_web_review.py"
+    }
+  ],
+  "validation_status": "full_pass",
+  "actual_company_account_validation": false,
+  "limits": [
+    "DOM/UIA observations do not certify server completeness",
+    "COM reflects synchronized stores; completed old months require explicit refresh",
+    "Windows Search returns indexed metadata with a 20000-row limit and no continuation",
+    "Graph only covers granted mailbox/chat/channel scope",
+    "Dedicated browser profile ownership does not verify the selected Microsoft account",
+    "No attachment-content extraction or AI reconstruction of unseen messages",
+    "mailTimeOffsetH is a legacy shared adjustment for mail and Teams; default is zero",
+    "HTML static structure checked; browser rendering not verified",
+    "Calendar web navigation success checks host/grid, not the displayed week/year; this remains unverified"
+  ],
+  "unconfirmed_runtime_risks": [
+    "Teams room switching still accepts matching names when the pane exposes no conversation ID; duplicate room names could be ambiguous (not reproduced on a company DOM)"
+  ],
+  "validation": {
+    "tests_run": 649,
+    "passed": 648,
+    "skipped": 1,
+    "new_regression_tests": 50,
+    "seconds": 180.698,
+    "full_log": "verification/lm25-check-20261001-003825-091.txt",
+    "quick": "PASS",
+    "manifest_required_files": 94,
+    "independent_review": "implemented files reviewed by another contributor",
+    "notes": [
+      "Pre-existing ResourceWarning messages remain in judge.py and team_report.py",
+      "ImportWarning appears in synthetic AST-loading fixtures; no test failure",
+      "Actual company account, client/browser version matrix, and original server counts were not tested"
+    ]
+  }
+}

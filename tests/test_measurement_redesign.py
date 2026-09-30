@@ -8,8 +8,10 @@ import json
 import math
 from pathlib import Path
 import shutil
+import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -24,9 +26,11 @@ class MeasurementRedesignTests(unittest.TestCase):
         target = cls.base / "source" / "core" / "extract.py"
         target.parent.mkdir(parents=True)
         shutil.copyfile(PROJECT / "LoadMonitor25/core/extract.py", target)
+        shutil.copyfile(PROJECT / "LoadMonitor25/core/collection_state.py", target.parent / "collection_state.py")
         spec = importlib.util.spec_from_file_location("synthetic_measurement_redesign", target)
         cls.module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(cls.module)
+        with mock.patch.object(sys, "path", [str(target.parent), *sys.path]):
+            spec.loader.exec_module(cls.module)
         cls.defaults = json.loads((PROJECT / "LoadMonitor25/config/config.default.json").read_text(encoding="utf-8-sig"))
 
     @classmethod

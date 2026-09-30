@@ -21,7 +21,7 @@ import urllib.parse
 import urllib.request
 import uuid
 
-from collection_state import _atomic_text
+from collection_state import _atomic_text, read_csv, record_key
 
 GRAPH = "https://graph.microsoft.com/v1.0"
 BASE_SCOPES = ["User.Read", "offline_access"]
@@ -179,7 +179,7 @@ class GraphAuth:
                 pass
         return token
 
-    def acquire(self, interactive=False, force_refresh=False):
+    def acquire(self, interactive=False, force_refresh=False, force_login=False):
         client = str(self.graph.get("clientId") or "").strip()
         tenant = str(self.graph.get("tenantId") or "organizations").strip()
         scopes = list(self.graph.get("scopes") or BASE_SCOPES + CHAT_SCOPES)
@@ -195,10 +195,10 @@ class GraphAuth:
         bound = token.get("_client_id") == client and token.get("_tenant_id") == tenant
         requested = _scope_names(scopes) - {"offline_access", "openid", "profile"}
         granted = _scope_names(str(token.get("scope") or "").split())
-        if not force_refresh and bound and requested <= granted and token.get("access_token") and token.get("_expires_at", 0) > self.clock():
+        if not force_login and not force_refresh and bound and requested <= granted and token.get("access_token") and token.get("_expires_at", 0) > self.clock():
             return token["access_token"], None
         base = f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0"
-        if bound and token.get("refresh_token"):
+        if not force_login and bound and token.get("refresh_token"):
             got, _ = self.poster(base + "/token", {"client_id": client, "grant_type": "refresh_token",
                                     "refresh_token": token["refresh_token"], "scope": " ".join(scopes)})
             if got and got.get("access_token"):
@@ -286,8 +286,14 @@ def local_bounds(d0, d1, tz=None):
 
 class PageRun:
     """Round-robin durable work queue. Handler writes archive/CSV before commit."""
-    def __init__(self, root, source, account, d0, d1, signature, client, force=False):
+    def __init__(self, root, source, account, d0, d1, signature, client, force=False,
+                 storage_path=None, storage_kind="mail"):
         self.client = client
+        self.storage_path = Path(storage_path) if storage_path else None
+        self.storage_kind, self.source, self.account = storage_kind, source, account
+        self.d0, self.d1 = str(d0), str(d1)
+        self.reasons, self.observed, self.attempted = [], 0, 0
+        self.recovery_reason = ""
         identity = [source, account, str(d0), str(d1), signature]
         digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
         self.path = Path(root) / "data" / "graph_checkpoints" / (source + "_" + digest + ".json")
@@ -299,6 +305,15 @@ class PageRun:
                     self.state = prior
             except (OSError, ValueError, TypeError):
                 pass
+        if self.state["units"] and self.storage_path:
+            # A cursor proves traversal only while its committed observations
+            # still exist. PC transfer moves CSVs separately from this checkpoint;
+            # another route may also add rows without invalidating our progress.
+            saved = self.state.get("storage_inventory")
+            present = self.storage_inventory()
+            if saved is None or present is None or not set(saved) <= present:
+                self.state = {"schema": 1, "identity": identity, "units": {}, "sequence": 0}
+                self.recovery_reason = "saved_observations_missing_restarted"
         # A fully traversed previous snapshot is refreshed; partial runs resume.
         if self.state["units"] and all(u.get("done") for u in self.state["units"].values()):
             self.state = {"schema": 1, "identity": identity, "units": {}, "sequence": 0}
@@ -313,7 +328,20 @@ class PageRun:
                                 pages=0, rows=0, issues=[], visited=[], page_signature="")
                     priority += 1
             self.state["sequence"] = priority
-        self.reasons, self.observed, self.attempted = [], 0, 0
+
+    def storage_inventory(self):
+        if not self.storage_path or not self.storage_path.is_file():
+            return None
+        rows = read_csv(self.storage_path)  # Malformed CSV must remain untouched.
+        result = set()
+        for row in rows:
+            if (row.get("source_kind") != self.source or row.get("account") != self.account
+                    or not self.d0 <= row.get("time", "")[:10] <= self.d1):
+                continue
+            observation = [record_key(row, self.storage_kind), row.get("context_excerpt", ""),
+                           row.get("summary", ""), row.get("subject", "")]
+            result.add(hashlib.sha256(json.dumps(observation, ensure_ascii=False).encode()).hexdigest())
+        return result
 
     def add(self, key, kind, url, **meta):
         if key not in self.state["units"]:
@@ -321,6 +349,11 @@ class PageRun:
                 "done": False, "offset": 0, "last": 0, "pages": 0, "rows": 0, "issues": [], **meta}
 
     def save(self):
+        if self.storage_path:
+            inventory = self.storage_inventory()
+            # An initial HTTP failure can precede creation of an empty CSV.
+            if inventory is not None:
+                self.state["storage_inventory"] = sorted(inventory)
         _atomic_text(self.path, json.dumps(self.state, ensure_ascii=False))
 
     def run(self, handler, deadline, limits=None):

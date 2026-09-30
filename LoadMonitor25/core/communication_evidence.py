@@ -9,11 +9,12 @@ import csv
 from datetime import date, datetime, timedelta
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
 import uuid
 
-from collection_state import read_csv
+from collection_state import latest_original_rows, read_csv, record_key
 
 SCHEMA = 1
 POLICY = ("수집된 자료에서 관측한 단서만 분석합니다. 건수는 업무 전체 확보율·업무시간이 아닙니다. "
@@ -124,12 +125,90 @@ def _roots(root):
     return [data, *sorted(p for p in extra.iterdir() if p.is_dir())] if extra.is_dir() else [data]
 
 
-def _scope(root, family, d0, d1):
+def _pending_counts(root, family, d0, d1, collected=()):
+    """Count undated originals separately; they establish no in-period evidence."""
+    filename = "outlook_web_undated.csv" if family == "mail" else "teams_web_undated.csv"
+    # A precise original on another PC can resolve a stale pending copy. Do not
+    # infer identity from a title/body or resolve it with another uncertain row.
+    resolved = {(record_key(row, family), _text(row.get("source_kind"))) for row in collected
+                if row.get("source_id") and _text(row.get("source_kind"))
+                and _text(row.get("time_precision")).lower() in {"second", "minute"}
+                and re.match(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}", str(row.get("time") or ""))
+                and _day(row.get("time")) is not None}
+    seen, unreadable = set(), 0
+    for data in _roots(root):
+        path = data / "collection_pending" / filename
+        if not path.is_file():
+            continue
+        try:
+            rows = read_csv(path)
+            required = {"time", "time_precision", "requested_from", "requested_to"}
+            if any(not required.issubset(row) for row in rows):
+                raise ValueError("Invalid pending observation schema")
+            for row in rows:
+                if ([row.get("requested_from"), row.get("requested_to")] == [str(d0), str(d1)]
+                        and not _text(row.get("time"))
+                        and _text(row.get("time_precision")).lower() == "unknown"):
+                    if row.get("source_id") and (record_key(row, family), _text(row.get("source_kind"))) in resolved:
+                        continue
+                    seen.add(record_key(row, family))
+        except (OSError, UnicodeError, csv.Error, ValueError):
+            # A damaged file's period is unknowable; only the file count is exposed.
+            unreadable += 1
+    return len(seen), unreadable
+
+
+def _current_states(root, d0, d1, current_run=None):
+    """Use same-period receipts from the current run, including unsaved failures."""
+    if current_run is None:
+        try:
+            current_run = json.loads((Path(root) / "report/last_run.json").read_text("utf-8-sig"))
+        except (OSError, ValueError, UnicodeError):
+            return []
+    if not isinstance(current_run, dict) or current_run.get("period") != [str(d0), str(d1)]:
+        return []
+    started = current_run.get("started_at")
+    if type(started) not in {int, float} or not math.isfinite(started) or started <= 0:
+        return []
+    collection = current_run.get("collection")
+    if not isinstance(collection, dict):
+        return []
     states = []
+    for family in collection.values():
+        rows = family.get("sources") if isinstance(family, dict) else None
+        if not isinstance(rows, list):
+            continue
+        for item in rows:
+            if (not isinstance(item, dict) or not isinstance(item.get("source"), str)
+                    or item["source"] not in ROUTES):
+                continue
+            finished = item.get("finished_at")
+            if ([item.get("requested_from"), item.get("requested_to")] == [str(d0), str(d1)]
+                    and type(finished) in {int, float} and math.isfinite(finished) and finished >= started):
+                states.append(item)
+    return states
+
+
+def _scope(root, family, d0, d1, current_states=()):
+    observed = {}
     directory = Path(root) / "data" / "collection_status"
     for path in sorted(directory.glob("*.json")):
         try:
             item = json.loads(path.read_text("utf-8-sig"))
+            if (isinstance(item, dict) and isinstance(item.get("source"), str)
+                    and [item.get("requested_from"), item.get("requested_to")] == [str(d0), str(d1)]):
+                observed[item["source"]] = item
+        except (OSError, ValueError, TypeError, AttributeError):
+            continue
+    for item in current_states:
+        previous = observed.get(item["source"], {})
+        stamp = previous.get("finished_at")
+        if type(stamp) in {int, float} and math.isfinite(stamp) and stamp > item["finished_at"]:
+            continue  # A later standalone collection takes precedence over last_run.
+        observed[item["source"]] = item
+    states = []
+    for item in observed.values():
+        try:
             source = item.get("source", "")
             if source not in ROUTES or not (source.startswith("outlook_" if family == "mail" else "teams_")
                                             or (source == "communication_import" and item.get(family + "_status") != "skipped"
@@ -138,6 +217,8 @@ def _scope(root, family, d0, d1):
             if [item.get("requested_from"), item.get("requested_to")] != [str(d0), str(d1)]:
                 continue
             status = item.get("mail_status", item.get("status")) if family == "mail" else item.get("teams_status", item.get("status"))
+            if item.get("status") in {"failed", "blocked", "skipped"}:
+                status = item["status"]
             if source in {"communication_import", "outlook_files"}:
                 status = "partial"  # Import completion proves only the selected files, not the mailbox/chat scope.
             if item.get("server_scope_verified") is False or item.get("server_coverage_verified") is False:
@@ -151,12 +232,13 @@ def _scope(root, family, d0, d1):
     return coverage, states
 
 
-def build_report(root, d0, d1, config=None):
+def build_report(root, d0, d1, config=None, current_run=None):
     """Read saved communication CSVs for one exact period; never starts a collector."""
     d0, d1 = date.fromisoformat(str(d0)), date.fromisoformat(str(d1))
     if d1 < d0:
         raise ValueError("시작일이 종료일보다 늦습니다")
     config = config or {}
+    current_states = _current_states(root, d0, d1, current_run)
     try:
         offset = float((config.get("mm") or {}).get("mailTimeOffsetH") or 0)
         if not -24 <= offset <= 24:
@@ -168,6 +250,7 @@ def build_report(root, d0, d1, config=None):
         item = dict.fromkeys(("raw_rows", "in_period_rows", "unique_rows", "context_rows", "context_truncated_rows",
                               "context_filtered_rows", "dated_rows", "unknown_date_rows", "conversation_count", "files", "unreadable_files", "ai_reported_rows"), 0)
         seen, conversations, kinds, days = {}, set(), set(), set()
+        collected = []
         for data in _roots(root):
             paths = [data / "outlook" / "mail.csv"] if family == "mail" else sorted((data / "m365").glob("teams_*.csv"))
             for path in paths:
@@ -175,25 +258,31 @@ def build_report(root, d0, d1, config=None):
                     continue
                 item["files"] += 1
                 try:
-                    for row in read_csv(path):
-                        item["raw_rows"] += 1
-                        day = _day(row.get("time"), offset if family == "mail" else 0)
-                        uncertain = str(row.get("time_precision") or "").lower() in UNCERTAIN_TIME
-                        if day is None:
-                            item["unknown_date_rows"] += 1
-                            continue
-                        if not d0 <= day <= d1:
-                            continue
-                        item["in_period_rows"] += 1
-                        if uncertain:
-                            item["unknown_date_rows"] += 1
-                        key = _identity(row, family)
-                        # A duplicate metadata-only row cannot erase a richer observation.
-                        if key not in seen or len(usable_context(row, config)) > len(usable_context(seen[key], config)):
-                            seen[key] = row
-                        days.add(str(day))
+                    collected.extend(read_csv(path))
                 except (OSError, UnicodeError, csv.Error, ValueError):
                     item["unreadable_files"] += 1
+        item["raw_rows"] = len(collected)
+        originals = latest_original_rows(collected, family)
+        item["pending_rows"], item["pending_unreadable_files"] = _pending_counts(root, family, d0, d1, originals)
+        for row in originals:
+            # The legacy mailTimeOffsetH setting also adjusts Teams
+            # in extract.load_signals. Saved-evidence counts must use
+            # the same date boundary as the analysis they describe.
+            day = _day(row.get("time"), offset)
+            uncertain = str(row.get("time_precision") or "").lower() in UNCERTAIN_TIME
+            if day is None:
+                item["unknown_date_rows"] += 1
+                continue
+            if not d0 <= day <= d1:
+                continue
+            item["in_period_rows"] += 1
+            if uncertain:
+                item["unknown_date_rows"] += 1
+            key = _identity(row, family)
+            # A duplicate metadata-only row cannot erase a richer observation.
+            if key not in seen or len(usable_context(row, config)) > len(usable_context(seen[key], config)):
+                seen[key] = row
+            days.add(str(day))
         for row in seen.values():
             body = usable_context(row, config)
             item["context_rows"] += bool(body)
@@ -209,7 +298,7 @@ def build_report(root, d0, d1, config=None):
         item.update(unique_rows=len(seen), conversation_count=len(conversations), source_kinds=sorted(kinds),
                     observed_days=len(days), source_coverage_ratio=None,
                     context_ratio=round(item["context_rows"] / len(seen), 4) if seen else None)
-        item["scope_status"], item["source_statuses"] = _scope(root, family, d0, d1)
+        item["scope_status"], item["source_statuses"] = _scope(root, family, d0, d1, current_states)
         item["status"] = "unavailable" if not seen else ("observed" if item["context_rows"] else "limited")
         item["limits"] = ["전체 원본 건수 미확인: 확보율 산출 불가", "본문 비율은 저장된 기간 내 고유행 기준; 전체 대화·첨부 확보율 아님"]
         if not seen:
@@ -220,6 +309,10 @@ def build_report(root, d0, d1, config=None):
             item["limits"].append("요청 범위 완주 미확인")
         if item["unknown_date_rows"]:
             item["limits"].append("날짜 미확인·추정 자료 존재")
+        if item["pending_rows"]:
+            item["limits"].append("날짜 확인 대기 원문 존재: 기간 내 건수·본문·AI 분석에서 제외")
+        if item["pending_unreadable_files"]:
+            item["limits"].append("읽지 못한 날짜 확인 대기 파일 존재: 해당 파일의 기간도 미확인")
         if item["unreadable_files"]:
             item["limits"].append("읽지 못한 저장 파일 존재")
         if item["ai_reported_rows"]:
@@ -236,8 +329,8 @@ def build_report(root, d0, d1, config=None):
             "note": POLICY, "mm_effect": "none"}
 
 
-def write_report(root, d0, d1, config=None, report=None):
-    result = report if report is not None else build_report(root, d0, d1, config)
+def write_report(root, d0, d1, config=None, report=None, current_run=None):
+    result = report if report is not None else build_report(root, d0, d1, config, current_run=current_run)
     tag = str(d0).replace("-", "") + "-" + str(d1).replace("-", "")
     if not re.fullmatch(r"\d{8}-\d{8}", tag) or result.get("period") != [str(d0), str(d1)]:
         raise ValueError("근거 보고서 기간 불일치")

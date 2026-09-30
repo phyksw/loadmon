@@ -52,6 +52,11 @@ from collections import Counter, defaultdict
 from datetime import datetime
 from datetime import timedelta as _td
 
+try:
+    from .collection_state import latest_original_rows
+except ImportError:
+    from collection_state import latest_original_rows
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # 활동(Level 3) 규칙 — 신호 텍스트에서 '무슨 활동인가'를 뽑는다
@@ -960,7 +965,8 @@ def _file_times(data_dir, d0, d1, exclude=(), cfg=None, burst_n=None, self_names
 
 
 COLLECTION_CONTEXT_FIELDS = ("context_excerpt", "context_truncated", "source_id", "source_kind",
-                             "source_url", "conversation_id", "account", "folder", "time_precision", "context_filtered")
+                             "source_url", "conversation_id", "account", "folder", "time_precision", "context_filtered",
+                             "modified_time", "context_available")
 UNVERIFIED_TIME_PRECISIONS = {"estimated", "date", "ai_reported", "unknown"}
 CONTEXT_ONLY_TIME_SOURCES = {f"팀즈({kind}·시각미확인)" for kind in ("발신", "오더", "수신", "단체")}
 CONTEXT_ONLY_TIME_SOURCES |= {f"메일({kind}·시각미확인)" for kind in ("발신", "수신", "CC", "수신전용")}
@@ -1035,7 +1041,7 @@ def _collection_key(row, t, family, fallback):
         return (family, "content", account, conversation, t,
                 str(row.get("from") or row.get("sender") or "").strip(),
                 str(row.get("box") or ""), text)
-    return fallback                       # Preserve legacy mail/cross-PC matching.
+    return (*fallback, account) if fallback is not None else fallback
 
 
 def load_signals(data_dir, d0, d1, exclude=(), cfg=None):
@@ -1154,7 +1160,7 @@ def load_signals(data_dir, d0, d1, exclude=(), cfg=None):
     notice = [str(x).strip().lower() for x in (cfg_list(cfg, "noticeSenders") or NOTICE_DEFAULT)
               if str(x).strip()]
     mail_rows = []
-    for r in _read_multi(data_dir, "outlook", "mail.csv"):
+    for r in latest_original_rows(_read_multi(data_dir, "outlook", "mail.csv"), "mail"):
         t = _pt(r.get("time"))
         if t and d0 <= (t + _td(hours=mail_off)).date() <= d1:
             mail_rows.append(r)
@@ -1196,20 +1202,32 @@ def load_signals(data_dir, d0, d1, exclude=(), cfg=None):
         return False
 
     def _mail_key(t, box, conv, subj, snd):
-        """추가PC 취합용 중복 키(A29) — (분, 편지함, 대화 정규화 또는 제목 앞 40자). 둘 다 비면 발신자로 구분."""
-        c = _RE_PREFIX.sub("", (conv or subj or "").strip().lower())[:40]
-        return (t.replace(second=0, microsecond=0), "메일", "sent" if box == "sent" else "inbox",
-                c or ("@" + _norm_person(snd)))
+        """ID 없는 이전 PC 자료는 원시각·발신자·전체 제목이 같은 관측만 합친다."""
+        return (t, "메일", str(box or "").strip().lower(), _norm_person(snd),
+                _one_line(conv or "", None).lower(), _one_line(subj or "", None).lower())
 
     def mail_copy_key(r, t):
         identity = str(r.get("source_id") or "").strip()
         scope = (r.get("account") or "", r.get("box") or "", r.get("conversation_id") or "")
         if identity:
             return (t.date(), *scope, "id", identity)
-        return (t.date(), *scope, "legacy", (r.get("conversation") or r.get("subject") or "")[:40])
+        return (t.date(), *scope, "legacy", _norm_person(r.get("sender")),
+                _one_line(r.get("conversation") or "", None).lower(),
+                _one_line(r.get("subject") or "", None).lower())
 
-    exact_mail = {mail_copy_key(r, _pt(r.get("time")) + _td(hours=mail_off)): r
-                  for r in mail_rows if (r.get("time_precision") or "").strip().lower() != "date"}
+    exact_mail = defaultdict(dict)
+    for r in mail_rows:
+        if ((r.get("time_precision") or "").strip().lower() in UNVERIFIED_TIME_PRECISIONS
+                or len(str(r.get("time") or "")) <= 10):
+            continue
+        t = _pt(r.get("time")) + _td(hours=mail_off)
+        identity = _collection_key(r, t, "메일", _mail_key(t, r.get("box"), r.get("conversation"),
+                                                        r.get("subject"), r.get("sender")))
+        exact_mail[mail_copy_key(r, t)][identity] = r
+
+    def precise_copy(row, stamp):
+        candidates = exact_mail.get(mail_copy_key(row, stamp), {})
+        return next(iter(candidates.values())) if len(candidates) == 1 else None
     # Date-only supplements may have a richer body than the precise-time copy.
     # Preserve that evidence before dropping the duplicate event, regardless of order.
     for r in mail_rows:
@@ -1217,7 +1235,7 @@ def load_signals(data_dir, d0, d1, exclude=(), cfg=None):
             continue
         if _hit(_one_line(str(r.get("subject") or ""), None).lower()):
             continue  # A private-title date-only copy cannot enrich another signal.
-        precise = exact_mail.get(mail_copy_key(r, _pt(r.get("time")) + _td(hours=mail_off)))
+        precise = precise_copy(r, _pt(r.get("time")) + _td(hours=mail_off))
         if precise is not None:
             incoming, existing = collection_context(r), collection_context(precise)
             if not _hit(incoming["context_excerpt"].lower()):
@@ -1241,7 +1259,7 @@ def load_signals(data_dir, d0, d1, exclude=(), cfg=None):
         # 발신은 전용 라벨(세션 없음·능동 흔적 유지), 수신은 수동 신호라 정오 5분이 상한 안에서 묻힌다
         date_only = (r.get("time_precision") or "").strip().lower() == "date"
         if date_only:
-            if mail_copy_key(r, t) in exact_mail:
+            if precise_copy(r, t) is not None:
                 meta["excluded"]["중복(같은 메일의 정확한 시각 사본 있음)"] += 1
                 continue
             t = t.replace(hour=12, minute=0, second=0, microsecond=0)
@@ -1444,35 +1462,35 @@ def load_signals(data_dir, d0, d1, exclude=(), cfg=None):
 
     # ── 팀즈: 오더(요청류) > 발신 > 단순 수신. 단체채팅 수신은 감쇠 (CC성 분리) ──
     # mailTimeOffsetH 는 팀즈 행에도 적용한다(A27 — Graph 경로가 UTC 로 남긴 시각 보정, 창 읽기는 보통 0)
-    for p in _glob_multi(data_dir, "m365", "teams_*.csv"):
-        for r in _read(p):
-            t = _pt(r.get("time"))
-            if t and mail_off:
-                t = t + _td(hours=mail_off)
-            kind = (r.get("kind") or "").lower()
-            frm0 = (r.get("from") or "").strip()
-            # A8: 창 읽기 경로(구판 수집분)는 본인 메시지도 kind=msg 로 남겼다 — 발신자가 '나' 면 발신으로 본다
-            # (팀즈로 일한 날이 수동 흔적만 남아 PC 하한이 막히던 원인). self_names 는 owner·계정·teamsSelfNames.
-            if kind not in ("sent", "order") and frm0 and _norm_person(frm0) in self_names:
-                kind = "sent"
-            group = (r.get("chat") or "").count(",") >= 2   # 참여자 3명 이상 = 단체채팅
-            if kind == "order":
-                w, lbl = W["팀즈오더"], "팀즈(오더)"
-            elif kind == "sent":
-                w, lbl = W["메일발신"] * 0.6, "팀즈(발신)"
-            else:
-                w, lbl = W["팀즈"], "팀즈(수신)"
-            if group and kind not in ("order", "sent"):   # 내가 보낸 단체방 메시지는 발신(능동)으로 남긴다
-                w *= 0.5
-                lbl = "팀즈(단체)"
-            lbl = _timing_label(lbl, r)
-            frm = (r.get("from") or "").strip()
-            if is_notice(frm, exempt=False):
-                if t and d0 <= t.date() <= d1:
-                    meta["excluded"]["공지·시스템 발신(정부24·HR 등)"] += 1
-                continue
-            key = _collection_key(r, t, "팀즈", None)
-            add(t, "팀즈", r.get("summary"), w, lbl, frm, dkey=key, context=r)
+    team_rows = [row for path in _glob_multi(data_dir, "m365", "teams_*.csv") for row in _read(path)]
+    for r in latest_original_rows(team_rows, "teams"):
+        t = _pt(r.get("time"))
+        if t and mail_off:
+            t = t + _td(hours=mail_off)
+        kind = (r.get("kind") or "").lower()
+        frm0 = (r.get("from") or "").strip()
+        # A8: 창 읽기 경로(구판 수집분)는 본인 메시지도 kind=msg 로 남겼다 — 발신자가 '나' 면 발신으로 본다
+        # (팀즈로 일한 날이 수동 흔적만 남아 PC 하한이 막히던 원인). self_names 는 owner·계정·teamsSelfNames.
+        if kind not in ("sent", "order") and frm0 and _norm_person(frm0) in self_names:
+            kind = "sent"
+        group = (r.get("chat") or "").count(",") >= 2   # 참여자 3명 이상 = 단체채팅
+        if kind == "order":
+            w, lbl = W["팀즈오더"], "팀즈(오더)"
+        elif kind == "sent":
+            w, lbl = W["메일발신"] * 0.6, "팀즈(발신)"
+        else:
+            w, lbl = W["팀즈"], "팀즈(수신)"
+        if group and kind not in ("order", "sent"):   # 내가 보낸 단체방 메시지는 발신(능동)으로 남긴다
+            w *= 0.5
+            lbl = "팀즈(단체)"
+        lbl = _timing_label(lbl, r)
+        frm = (r.get("from") or "").strip()
+        if is_notice(frm, exempt=False):
+            if t and d0 <= t.date() <= d1:
+                meta["excluded"]["공지·시스템 발신(정부24·HR 등)"] += 1
+            continue
+        key = _collection_key(r, t, "팀즈", None)
+        add(t, "팀즈", r.get("summary"), w, lbl, frm, dkey=key, context=r)
 
     # ── 작업창: 순활동 '분' 단위 — 샘플 수가 아니라 실측 간격 × 샘플(A28). idle 임계는 시간 계산(_activity_spans)과
     # 같은 mm.idleActiveSec 을 쓴다(예전 180 고정은 읽기 구간을 시간엔 넣고 가중치엔 빼는 불일치). IDE·코드 창은 촘촘히 ──

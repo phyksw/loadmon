@@ -75,6 +75,44 @@ def record_key(row, kind="mail"):
     return (kind, "derived", account, digest)
 
 
+def latest_original_rows(rows, kind="mail"):
+    """Select authoritative Graph body revisions across saved PC snapshots.
+
+    Only a scoped original ID, a timezone-aware modification timestamp and an
+    observed body establish a revision. A missing body cannot invalidate the
+    last observed version; an explicitly observed empty body can. Unversioned
+    copies of that exact identity cannot restore a superseded message body.
+    No comparison is made across accounts, conversations or different IDs.
+    """
+    rows = list(rows)
+    graph_kind = "teams_graph" if kind == "teams" else "outlook_graph"
+
+    def version(row):
+        if row.get("source_kind") != graph_kind or not row.get("source_id"):
+            return None
+        # merge_rows retains both the older body and its modified_time after a
+        # metadata-only retry, even if the latest context_available flag is false.
+        if not (row.get("context_excerpt") or str(row.get("context_available", "")).lower() == "true"):
+            return None
+        try:
+            stamp = datetime.fromisoformat(str(row.get("modified_time") or "").replace("Z", "+00:00"))
+            return stamp if stamp.tzinfo is not None else None
+        except (ValueError, TypeError):
+            return None
+
+    latest = {}
+    versions = []
+    for row in rows:
+        stamp = version(row)
+        versions.append(stamp)
+        if stamp is not None:
+            key = record_key(row, kind)
+            if key not in latest or stamp > latest[key]:
+                latest[key] = stamp
+    return [row for row, stamp in zip(rows, versions, strict=True)
+            if record_key(row, kind) not in latest or stamp == latest[record_key(row, kind)]]
+
+
 def merge_rows(existing, incoming, kind="mail"):
     """Union records; metadata-only observations never erase collected context."""
     records = {}
@@ -163,7 +201,7 @@ def merge_rows(existing, incoming, kind="mail"):
                 continue
             if field == "source_kind" and keep_time and old_context == new_context:
                 continue
-            if value or (newer_original and field in {"context_excerpt", "context_truncated"}):
+            if value or (newer_original and field in {"context_excerpt", "context_truncated", "summary"}):
                 previous[field] = value
         if sources:
             previous["observed_sources"] = "|".join(sorted(sources))

@@ -45,6 +45,8 @@ $script:observedRows = 0
 $script:observedCalendarRows = 0
 $script:folderScope = ''
 $script:previousFolderScope = ''
+$script:calendarScope = ''
+$script:previousCalendarScope = ''
 $script:connectedStoreScope = -not $DefaultStoreOnly
 $storeSubject = $true
 if ($cfg -and $cfg.PSObject.Properties['storeMailSubject'] -and -not $cfg.storeMailSubject) { $storeSubject = $false }
@@ -136,18 +138,12 @@ function Load-Coverage {
     $c = New-Coverage
     if (-not (Test-Path $covP)) { return $c }
     try {
-        # 다른 경로(색인·웹·Copilot 폴백)가 CSV 를 다시 썼으면 표는 그 CSV 와 맞지 않는다 - 버린다
-        if (Test-Path $srcP) {
-            try {
-                $sj = Get-Content -Raw -Encoding UTF8 $srcP | ConvertFrom-Json
-                if ($sj -and $sj.PSObject.Properties['source'] -and ([string]$sj.source) -ne 'com') {
-                    Write-Host ("[outlook] 지난 자료는 {0} 경로가 채운 것 - 완료 표를 버리고 처음부터 읽습니다" -f $sj.source)
-                    return $c
-                }
-            } catch {}
-        }
+        # Every supplement atomically unions the existing CSV. Its source marker
+        # does not invalidate COM progress. Validate saved observations below;
+        # resetting on source=index/web would starve long mailbox resumptions.
         $j = Get-Content -Raw -Encoding UTF8 $covP | ConvertFrom-Json
         $script:previousFolderScope = [string]$j.folder_scope
+        $script:previousCalendarScope = [string]$j.calendar_scope
         $ver = 0; try { $ver = [int]$j.version } catch {}
         $w = ''; try { $w = [string]$j.writer } catch {}
         $ss = $true; try { $ss = [bool]$j.store_subject } catch {}
@@ -181,7 +177,7 @@ function Load-Coverage {
                             $e.inbox_done = [bool]$p.Value.inbox_done; $e.inbox_before = [string]$p.Value.inbox_before
                             $e.sent_done = [bool]$p.Value.sent_done;   $e.sent_before = [string]$p.Value.sent_before
                             $e.folders = @{}
-                            if ($p.Value.folders) { foreach ($fp in $p.Value.folders.PSObject.Properties) { $e.folders[$fp.Name] = @{ done = [bool]$fp.Value.done; before = [string]$fp.Value.before; seen_ids = @($fp.Value.seen_ids) } } }
+                            if ($p.Value.folders) { foreach ($fp in $p.Value.folders.PSObject.Properties) { $e.folders[$fp.Name] = @{ done = [bool]$fp.Value.done; before = [string]$fp.Value.before; seen_ids = @($fp.Value.seen_ids); saved_ids = @($fp.Value.saved_ids); observation_schema = [int]$fp.Value.observation_schema; account = [string]$fp.Value.account } } }
                         } else {
                             $e.from = [string]$p.Value.from
                         }
@@ -195,7 +191,7 @@ function Load-Coverage {
 }
 function Save-Coverage($c) {
     try {
-        $o = [ordered]@{ version = 4; writer = $writer; store_subject = $storeSubject; keep_days = $KeepDays; mail_scope = $mailScope; mail_all_folders = $mailAllFolders; mail_body = $mailBody; context_chars = $contextChars; folder_scope = $script:folderScope;
+        $o = [ordered]@{ version = 4; writer = $writer; store_subject = $storeSubject; keep_days = $KeepDays; mail_scope = $mailScope; mail_all_folders = $mailAllFolders; mail_body = $mailBody; context_chars = $contextChars; folder_scope = $script:folderScope; calendar_scope = $script:calendarScope;
                          when = (Get-Date).ToString('yyyy-MM-dd HH:mm'); mail = [ordered]@{}; calendar = [ordered]@{};
                          partial = [ordered]@{ mail = [ordered]@{}; calendar = [ordered]@{} } }
         foreach ($kind in @('mail', 'calendar')) {
@@ -234,6 +230,45 @@ function Get-Partial([string]$kind, $mo) {
     if (-not $e) { return $null }
     if (($e.start -ne $mo.start) -or ($e.end -ne $mo.end)) { return $null }
     return $e
+}
+
+function Set-CalendarScope($Namespace) {
+    $script:calendarScope = ''
+    if ($SelfTest) { $script:calendarScope = 'selftest-calendar' }
+    else {
+        try {
+            $folder = $Namespace.GetDefaultFolder(9)
+            $account = [string]$folder.StoreID; $entry = [string]$folder.EntryID
+            if (-not $account -or -not $entry) { throw 'missing calendar identity' }
+            $script:calendarScope = Get-OutlookTextHash ($account + ':' + $entry)
+        } catch { $script:collectionProblems.Add('calendar scope identity inaccessible') }
+    }
+    if (-not $script:calendarScope -or $script:calendarScope -ne $script:previousCalendarScope) {
+        $script:cov.calendar = @{}; $script:cov.partial.calendar = @{}
+    }
+}
+
+function Confirm-CoverageObservations($Coverage, $MailByMonth, $CalendarByMonth) {
+    foreach ($kind in @('mail', 'calendar')) {
+        $by = $(if ($kind -eq 'mail') { $MailByMonth } else { $CalendarByMonth })
+        foreach ($key in @($Coverage[$kind].Keys)) {
+            $count = $(if ($by.ContainsKey($key)) { $by[$key].Count } else { 0 })
+            if ($count -lt [int]$Coverage[$kind][$key].rows) { $Coverage[$kind].Remove($key) }
+        }
+    }
+    if (-not (Test-Path -LiteralPath $calP)) { $Coverage.partial.calendar = @{} }
+    if ($SelfTest) { return }
+    $ids = Get-OutlookStoredSourceIds $root $mailP
+    foreach ($entry in $Coverage.partial.mail.Values) {
+        foreach ($cursor in $entry.folders.Values) {
+            $lost = $cursor.observation_schema -ne 1
+            foreach ($id in @($cursor.saved_ids)) {
+                if (-not $id) { continue }
+                if (-not $cursor.account -or -not $ids.Contains(([string]$cursor.account + ':' + [string]$id))) { $lost = $true; break }
+            }
+            if ($lost) { $cursor.done = $false; $cursor.before = ''; $cursor.seen_ids = @(); $cursor.saved_ids = @() }
+        }
+    }
 }
 
 # ── 기존 CSV 를 달별로 나눠 든다(행은 원문 그대로) - 다시 읽는 달만 바꾸고 나머지는 보존 ────────────
@@ -438,9 +473,13 @@ function Read-MailMonth($ns, $mo, [string[]]$me, $state) {
     foreach ($b in $boxes) {
         if (-not $state.folders.ContainsKey($b.key)) { $state.folders[$b.key] = @{ done = $false; before = ''; seen_ids = @() } }
         $cursor = $state.folders[$b.key]
+        if (-not $SelfTest) { try { $cursor.account = [string]$b.folder.StoreID } catch {} }
+        $cursor.observation_schema = 1
         if ($cursor.done) { continue }
         $seenIds = New-Object 'System.Collections.Generic.HashSet[string]'
+        $savedIds = New-Object 'System.Collections.Generic.HashSet[string]'
         foreach ($identity in @($cursor.seen_ids)) { if ($identity) { [void]$seenIds.Add([string]$identity) } }
+        foreach ($identity in @($cursor.saved_ids)) { if ($identity) { [void]$savedIds.Add([string]$identity) } }
         if ($sw.Elapsed.TotalSeconds -gt $BudgetSec) { $script:stopReason = 'mail time budget reached'; break }
         $upper = $mo.end
         if ($cursor.before) { try { $upper = [datetime]::ParseExact($cursor.before, $TS, $null).AddMinutes(1); if ($upper -gt $mo.end) { $upper = $mo.end } } catch {} }
@@ -516,12 +555,14 @@ function Read-MailMonth($ns, $mo, [string[]]$me, $state) {
                     # in-memory arrays or analysis CSVs. Preserve source metadata.
                     if ($vals.Count -gt 15) { $vals[15] = '' }
                     $rows.Add((($vals | ForEach-Object { Csv-Escape ([string]$_) }) -join ','))
+                    if ($itemId -and ($SelfTest -or ($entry -and $account))) { [void]$savedIds.Add($itemId) }
                     $script:observedRows++; $lastT = $t
                     if ($itemId -and ($SelfTest -or ($context[1] -ne 'unknown' -and $entry -and $account))) { [void]$seenIds.Add($itemId) }
                     if ($pendingRows.Count -ge 100) {
                         $null = Merge-OutlookCsv $root $mailP (@($MAIL_HEADER) + @($pendingRows)) 'mail'
                         $pendingRows.Clear()
                         $cursor.seen_ids = @($seenIds)
+                        $cursor.saved_ids = @($savedIds)
                         if ($lastT -and -not $failed) { $cursor.before = $lastT.ToString($TS) }
                         if ($script:cov -and $covP) { $script:cov.partial.mail[$mo.key] = @{ start=$mo.start;end=$mo.end;folders=$state.folders }; Save-Coverage $script:cov }
                     }
@@ -530,6 +571,7 @@ function Read-MailMonth($ns, $mo, [string[]]$me, $state) {
         } catch { $failed = $true; $script:collectionProblems.Add('mail folder query failed: ' + $_.Exception.GetType().Name) }
         if ($pendingRows.Count) { $null = Merge-OutlookCsv $root $mailP (@($MAIL_HEADER) + @($pendingRows)) 'mail'; $pendingRows.Clear() }
         $cursor.seen_ids = @($seenIds)
+        $cursor.saved_ids = @($savedIds)
         if ($stopped) {
             if ($lastT -and -not $failed) { $cursor.before = $lastT.ToString($TS) }
             $script:stopReason = 'mail time or item limit reached'; break
@@ -573,13 +615,8 @@ try {
     if ($Force) { $script:cov = New-Coverage }
     $mailBy = Load-CsvByMonth $mailP 1
     $calBy  = Load-CsvByMonth $calP  0
-    # 지난 표에 '완료'로 남았는데 CSV 에 그 달 행이 하나도 없으면 표를 믿지 않는다(파일만 지운 경우). 원래 0건인 달은 그대로
-    foreach ($kind in @('mail', 'calendar')) {
-        $by = $(if ($kind -eq 'mail') { $mailBy } else { $calBy })
-        foreach ($k in @($script:cov[$kind].Keys)) {
-            if (-not $by.ContainsKey($k) -and [int]$script:cov[$kind][$k].rows -gt 0) { $script:cov[$kind].Remove($k) }
-        }
-    }
+    # A cursor cannot replace its saved evidence after a CSV move/truncation.
+    Confirm-CoverageObservations $script:cov $mailBy $calBy
     $mailTodo = @(Months-ToRead 'mail')
     $calTodo  = @(Months-ToRead 'calendar')
     Write-Host ("[outlook] 기간 {0} ~ {1} · {2}개월 · 읽을 달: 메일 {3} / 일정 {4} (완료된 달은 건너뜀{5}{6}) · 예산 {7}초" -f `
@@ -671,6 +708,8 @@ try {
         $script:cov.mail = @{}; $script:cov.partial.mail = @{}
         $mailTodo = @(Months-ToRead 'mail')
     }
+    Set-CalendarScope $ns
+    $calTodo = @(Months-ToRead 'calendar')
     # ---------- calendar: 최신 달부터, 예산의 절반까지 ----------
     foreach ($mo in $calTodo) {
         if ($sw.Elapsed.TotalSeconds -gt ($BudgetSec * 0.5)) { break }

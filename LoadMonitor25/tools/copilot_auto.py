@@ -39,6 +39,8 @@ copilot_auto.py — 사람 개입 없는 M365 Copilot 연동 (Edge DevTools Prot
 """
 import argparse
 import base64
+import ctypes
+import hashlib
 import json
 import os
 import re
@@ -230,26 +232,50 @@ class WS:
     def __init__(self, url, timeout=30):
         m = re.match(r"ws://([^:/]+):(\d+)(/.*)", url)
         host, port, path = m.group(1), int(m.group(2)), m.group(3)
+        self.deadline = time.monotonic() + timeout
+        self.buffer = b""
         self.sock = socket.create_connection((host, port), timeout=timeout)
-        self.sock.settimeout(timeout)
         key = base64.b64encode(os.urandom(16)).decode()
         req = (f"GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\n"
                "Upgrade: websocket\r\nConnection: Upgrade\r\n"
                f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n")
-        self.sock.sendall(req.encode())
-        resp = b""
-        while b"\r\n\r\n" not in resp:
-            chunk = self.sock.recv(4096)
-            if not chunk:
-                raise ConnectionError("ws handshake: connection closed")
-            resp += chunk
-        if b" 101 " not in resp.split(b"\r\n", 1)[0]:
-            raise ConnectionError("ws handshake rejected: " + resp[:120].decode(errors="replace"))
+        try:
+            self._set_timeout()
+            self.sock.sendall(req.encode())
+            resp = b""
+            while b"\r\n\r\n" not in resp:
+                self._set_timeout()
+                chunk = self.sock.recv(4096)
+                if not chunk:
+                    raise ConnectionError("ws handshake: connection closed")
+                resp += chunk
+                if len(resp) > 65536:
+                    raise ConnectionError("ws handshake header too large")
+            head, self.buffer = resp.split(b"\r\n\r\n", 1)
+            if b" 101 " not in head.split(b"\r\n", 1)[0]:
+                raise ConnectionError("ws handshake rejected")
+            self._set_timeout()
+        except Exception:
+            self.close()
+            raise
+        self.deadline = None
+
+    def _set_timeout(self):
+        if self.deadline is None:
+            return
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("websocket deadline exceeded")
+        self.sock.settimeout(remaining)
 
     def _read_exact(self, n):
         buf = b""
         while len(buf) < n:
-            chunk = self.sock.recv(n - len(buf))
+            self._set_timeout()
+            if self.buffer:
+                chunk, self.buffer = self.buffer[:n-len(buf)], self.buffer[n-len(buf):]
+            else:
+                chunk = self.sock.recv(n - len(buf))
             if not chunk:
                 raise ConnectionError("ws: connection closed")
             buf += chunk
@@ -267,6 +293,7 @@ class WS:
         else:
             header += bytes([0x80 | 127]) + struct.pack(">Q", n)
         masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+        self._set_timeout()
         self.sock.sendall(header + mask + masked)
 
     def recv_text(self):
@@ -284,6 +311,7 @@ class WS:
             if opcode == 9:                    # ping → pong
                 mask = os.urandom(4)
                 masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+                self._set_timeout()
                 self.sock.sendall(bytes([0x8A, 0x80 | len(payload)]) + mask + masked)
                 continue
             if opcode == 8:
@@ -309,23 +337,23 @@ class CDP:
     def call(self, method, params=None, timeout=25):
         self.next_id += 1
         mid = self.next_id
-        self.ws.send_text(json.dumps({"id": mid, "method": method, "params": params or {}}))
-        end = time.time() + timeout
-        while True:
-            remain = end - time.time()
-            if remain <= 0:
-                raise TimeoutError(f"CDP {method}: {timeout}초 내 무응답")
-            # per-call 데드라인을 소켓에 실제로 전달 — 고정 30초에 묶이면 timeout 인자가 무의미해진다
-            self.ws.sock.settimeout(max(0.5, min(remain, 30.0)))
-            try:
+        end = time.monotonic() + timeout
+        self.ws.deadline = end
+        try:
+            self.ws.send_text(json.dumps({"id": mid, "method": method, "params": params or {}}))
+            while True:
+                if time.monotonic() >= end:
+                    raise TimeoutError("CDP deadline exceeded")
                 msg = json.loads(self.ws.recv_text())
-            except TimeoutError as e:
-                # 타임아웃이 프레임 중간에 나면 스트림 동기가 깨질 수 있으므로 이 연결은 재사용 금지
-                raise TimeoutError(f"CDP {method}: {timeout}초 내 무응답 (연결 재수립 필요)") from e
-            if msg.get("id") == mid:
-                if "error" in msg:
-                    raise RuntimeError(f"CDP {method}: {msg['error']}")
-                return msg.get("result", {})
+                if time.monotonic() >= end:
+                    raise TimeoutError("CDP deadline exceeded")
+                if msg.get("id") == mid:
+                    if "error" in msg:
+                        raise RuntimeError(f"CDP {method}: {msg['error']}")
+                    return msg.get("result", {})
+        except TimeoutError as error:
+            self.ws.close()  # A partially read frame cannot be reused safely.
+            raise TimeoutError(f"CDP {method}: {timeout}초 내 무응답 (연결 재수립 필요)") from error
 
     def reconnect(self, timeout=30):
         """타임아웃 후 스트림 desync 대비 — 새 소켓으로 재접속"""
@@ -349,26 +377,126 @@ class CDP:
 
 
 # ── Edge 수명주기 ──
+def _profile_path(value):
+    return os.path.normcase(os.path.realpath(os.path.abspath(os.path.expandvars(str(value)))))
+
+
+def _argument_value(args, name):
+    for index, arg in enumerate(args):
+        if arg.startswith(name + "="):
+            return arg[len(name) + 1:]
+        if arg == name and index + 1 < len(args):
+            return args[index + 1]
+    return None
+
+
+def _windows_listener_arguments(port, timeout):
+    """Read only the process owning this port; never print its command line."""
+    if os.name != "nt":
+        return []
+    script = ("$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new(); "
+              f"$p=@(Get-NetTCPConnection -LocalPort {int(port)} -State Listen | "
+              "Select-Object -ExpandProperty OwningProcess -Unique); "
+              "if($p.Count -eq 1){Get-CimInstance Win32_Process -Filter ('ProcessId='+$p[0]) | "
+              "Select-Object Name,CommandLine | ConvertTo-Json -Compress}")
+    try:
+        result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                                capture_output=True, encoding="utf-8", errors="replace",
+                                timeout=timeout, creationflags=NO_WIN, check=False)
+        process = json.loads(result.stdout or "null")
+        if not isinstance(process, dict) or str(process.get("Name", "")).lower() != "msedge.exe":
+            return []
+        command = str(process.get("CommandLine") or "")
+        argc = ctypes.c_int()
+        split = ctypes.windll.shell32.CommandLineToArgvW
+        split.argtypes = [ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_int)]
+        split.restype = ctypes.POINTER(ctypes.c_wchar_p)
+        argv = split(command, ctypes.byref(argc))
+        if not argv:
+            return []
+        try:
+            return [argv[i] for i in range(argc.value)]
+        finally:
+            ctypes.windll.kernel32.LocalFree(ctypes.cast(argv, ctypes.c_void_p))
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return []
+
+
+def _debugger_owns_profile(port, profile, timeout=3):
+    """A live debugging port alone proves neither installation nor profile."""
+    end = time.monotonic() + timeout
+    connection = None
+    args = []
+    try:
+        version = http_json(port, "/json/version", timeout=max(0.001, end - time.monotonic()))
+        url = str(version.get("webSocketDebuggerUrl") or "")
+        # Do not follow an arbitrary endpoint supplied by an unrelated service.
+        if not re.fullmatch(r"ws://(?:127\.0\.0\.1|localhost|\[::1\]):" + str(port) + r"/devtools/browser/[^/]+", url):
+            return False
+        connection = CDP(url, timeout=max(0.001, end - time.monotonic()))
+        result = connection.call("Browser.getBrowserCommandLine", timeout=max(0.001, end - time.monotonic()))
+        args = result.get("arguments") or []
+    except Exception:
+        pass  # Older LM sessions lack --enable-automation; inspect their listener PID below.
+    finally:
+        if connection:
+            connection.close()
+    if not args and time.monotonic() < end:
+        args = _windows_listener_arguments(port, end - time.monotonic())
+    value = _argument_value(args, "--user-data-dir")
+    return bool(value and _profile_path(value) == _profile_path(profile) and
+                _argument_value(args, "--remote-debugging-port") == str(port))
+
+
+def _port_available(port):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        try:
+            probe.bind(("127.0.0.1", port))
+            return True
+        except OSError:
+            return False
+
+
 def ensure_edge(cfg):
-    """디버그 포트가 살아있으면 재사용, 없으면 전용 프로필로 새로 띄운다"""
+    """Reuse only the requested profile; isolate conflicting installations."""
     if os.environ.get("LM_NO_BROWSER"):        # 회귀 시험용 — 실제 Edge 를 띄우지 않는다(스텁 드라이버는 무관)
         return None
-    port = cfg["port"]
+    port = int(cfg["port"])
+    cfg.pop("_edge_reason", None)
     deadline = min(time.monotonic() + 20, float(cfg.get("_collection_deadline") or float("inf")))
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         return None
-    if debugger_alive(port, timeout=min(1, remaining)):
-        return "reused"
+    profile = _profile_path(cfg["profileDir"])
+    alternate = 20000 + int(hashlib.sha256(profile.encode("utf-8")).hexdigest()[:8], 16) % 30000
+    candidates = list(dict.fromkeys([port, alternate, alternate + 1, alternate + 2]))
+    free = []
+    for candidate in candidates:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        if debugger_alive(candidate, timeout=min(0.5, remaining)):
+            if _debugger_owns_profile(candidate, profile, timeout=min(3, max(0.001, deadline-time.monotonic()))):
+                cfg["port"] = candidate
+                cfg.pop("_edge_reason", None)
+                return "reused"
+            cfg["_edge_reason"] = "browser_profile_unverified"
+        elif _port_available(candidate):
+            free.append(candidate)
     if time.monotonic() >= deadline:
         return None
+    if not free:
+        cfg.setdefault("_edge_reason", "browser_port_unavailable")
+        return None
+    port = free[0]
+    cfg["port"] = port
     edge = find_edge()
     if not edge:
         return None
     os.makedirs(cfg["profileDir"], exist_ok=True)
     subprocess.Popen(
         [edge, f"--user-data-dir={cfg['profileDir']}", f"--remote-debugging-port={port}",
-         "--remote-allow-origins=*", "--no-first-run", "--no-default-browser-check",
+         "--remote-allow-origins=*", "--enable-automation", "--no-first-run", "--no-default-browser-check",
          "--window-size=1150,900", cfg["url"]],
         creationflags=NO_WIN)
     while time.monotonic() < deadline:
@@ -377,7 +505,11 @@ def ensure_edge(cfg):
         if remaining <= 0:
             break
         if debugger_alive(port, timeout=min(1, remaining)):
-            return "launched"
+            if _debugger_owns_profile(port, profile, timeout=min(3, max(0.001, deadline-time.monotonic()))):
+                cfg.pop("_edge_reason", None)
+                return "launched"
+            cfg["_edge_reason"] = "browser_profile_unverified"
+            return None
     return None
 
 

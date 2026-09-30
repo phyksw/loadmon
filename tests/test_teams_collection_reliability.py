@@ -9,7 +9,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -284,11 +283,11 @@ class TeamsCollectionTests(unittest.TestCase):
                           "2026-06-01 09:00,Old,Old,msg,,old summary,old context,old-id\n", "utf-8")
         raw = self.root / "synthetic_raw.txt"
         raw.write_text("Synthetic chat\nPerson, 9:00 AM " + "Detailed body " * 250 + "\n", "utf-8")
-        now = time.time()
+        now = datetime(2026, 9, 30, 12).timestamp()
         os.utime(raw, (now, now))
         result = subprocess.run([shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
                                  str(self.root / "collect/Get-TeamsWindow.ps1"), "-RawFile", str(raw),
-                                 "-From", "2026-01-01", "-To", datetime.now(UTC).date().isoformat()],
+                                 "-From", "2026-01-01", "-To", "2026-09-30"],
                                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, check=False)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         with target.open(encoding="utf-8-sig", newline="") as stream:
@@ -320,9 +319,11 @@ class TeamsCollectionTests(unittest.TestCase):
         prefix = "Common body context " * 25
         raw.write_text("Synthetic chat\nPerson, 9:00 AM " + prefix + "Alpha decision\n"
                        "Person, 9:00 AM " + prefix + "Beta decision\n", encoding="utf-8")
+        observed = datetime(2026, 9, 30, 12).timestamp()
+        os.utime(raw, (observed, observed))
         args = [shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
                 str(self.root / "collect/Get-TeamsWindow.ps1"), "-RawFile", str(raw),
-                "-From", "2026-01-01", "-To", datetime.now(UTC).date().isoformat()]
+                "-From", "2026-01-01", "-To", "2026-09-30"]
         for _ in range(2):
             result = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace",
                                     timeout=30, check=False)

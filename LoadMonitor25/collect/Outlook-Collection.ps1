@@ -75,6 +75,16 @@ function Read-OutlookCsvLines([string]$Root, [string]$Path, [string]$Header) {
     } finally { $env:PYTHONIOENCODING = $oldEncoding }
 }
 
+function Get-OutlookStoredSourceIds([string]$Root, [string]$Path) {
+    $ids = New-Object 'System.Collections.Generic.HashSet[string]'
+    if (Test-Path -LiteralPath $Path) {
+        foreach ($row in @(Read-OutlookCsvLines $Root $Path 'source_id' | ConvertFrom-Csv)) {
+            if ($row.source_id) { [void]$ids.Add([string]$row.source_id) }
+        }
+    }
+    return ,$ids
+}
+
 function Write-OutlookStatus([string]$Root, [string]$Source, [string]$From, [string]$To,
         [string]$Status, [int]$Rows, [string]$Scope, [string[]]$Reasons = @(), [hashtable]$Extra = @{}) {
     $dir = Join-Path $Root 'data\collection_status'
