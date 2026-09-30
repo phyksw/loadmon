@@ -32,8 +32,8 @@ ROWS = [
 ]
 
 
-def load(version, relative, names, env=None, methods=()):
-    path = ROOT / version / relative
+def load(relative, names, env=None, methods=()):
+    path = ROOT / "LoadMonitor25" / relative
     tree = ast.parse(path.read_text(encoding="utf-8-sig"))
     chosen = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
     for node in tree.body:
@@ -47,8 +47,8 @@ def load(version, relative, names, env=None, methods=()):
     return ns
 
 
-def page(version="LoadMonitor25"):
-    tree = ast.parse((ROOT / version / "ui/app.py").read_text(encoding="utf-8-sig"))
+def page():
+    tree = ast.parse((ROOT / "LoadMonitor25/ui/app.py").read_text(encoding="utf-8-sig"))
     return next(n.value.value for n in tree.body if isinstance(n, ast.Assign)
                 and any(isinstance(t, ast.Name) and t.id == "PAGE" for t in n.targets))
 
@@ -70,22 +70,22 @@ def node(code):
     return json.loads(result.stdout)
 
 
-def groups(version="LoadMonitor25"):
-    ns = load(version, "ui/app.py", {"review"}, {"_rows": lambda _p: copy.deepcopy(ROWS),
+def groups():
+    ns = load("ui/app.py", {"review"}, {"_rows": lambda _p: copy.deepcopy(ROWS),
                                                 "latest_signals": lambda: "synthetic.csv"})
     return ns["review"]("month")
 
 
-def render_month(version, narratives, frozen=False):
-    source = page(version)
+def render_month(narratives, frozen=False):
+    source = page()
     constants = "\n".join(re.search(r"^const " + name + r"=.*;$", source, re.M)[0] for name in ("PAL", "WTCOL", "esc"))
     code = constants + "\n" + js_function(source, "function connSVG(") + "\n" + js_function(source, "async function loadReview(")
-    payload = {"review": {"gran": "month", "groups": groups(version), "tag": TAG,
+    payload = {"review": {"gran": "month", "groups": groups(), "tag": TAG,
                           "available_periods": [TAG], "missing_signals": False},
                "extra": {"tag": TAG, "narratives": narratives}}
     transport = "const fetch=async url=>({json:async()=>url.startsWith('/api/review')?payload.review:payload.extra});\n"
     if frozen:
-        intercept = load(version, "freeze.py", {"INTERCEPT_JS"})["INTERCEPT_JS"]
+        intercept = load("freeze.py", {"INTERCEPT_JS"})["INTERCEPT_JS"]
         transport = ("const baked={_lm:{tag:payload.review.tag},'/api/review?g=month':payload.review,'/api/extra':payload.extra};\n"
                      "const window=globalThis;const document={getElementById:()=>({textContent:JSON.stringify(baked)}),addEventListener:()=>{}};\n"
                      + intercept + "\n")
@@ -103,7 +103,7 @@ class MonthlySaveTests(unittest.TestCase):
         self.old = {"2026-01": {"summary": "Previous January", "projects": []},
                     "2026-02": {"summary": "Previous February", "projects": []}}
         self.path.write_text(json.dumps(self.old), encoding="utf-8")
-        self.save = load("LoadMonitor25", "judge.py", {"save_narratives"})["save_narratives"]
+        self.save = load("judge.py", {"save_narratives"})["save_narratives"]
 
     def read(self):
         return json.loads(self.path.read_text(encoding="utf-8"))
@@ -182,7 +182,7 @@ class MonthlyViewTests(unittest.TestCase):
         (rep / f"ai_narratives_{TAG}.json").write_text(json.dumps(narrative), encoding="utf-8")
         (rep / "ai_narratives_20250101-20251231.json").write_text('{"foreign":true}', encoding="utf-8")
         (rep / f"signals_{TAG}.csv").write_text("time,weight,project,source,text,who,detail,worktype\n", encoding="utf-8")
-        ns = load("LoadMonitor25", "ui/app.py", {"review_source"},
+        ns = load("ui/app.py", {"review_source"},
                   {"REPORT": str(rep), "TEAM_FILES": {}, "latest_signals": lambda: str(rep / f"signals_{TAG}.csv"),
                    "result_rows": lambda: ("", [])}, methods={"do_GET"})
         replies = []
@@ -192,7 +192,7 @@ class MonthlyViewTests(unittest.TestCase):
         self.assertNotIn("foreign", replies[0][1]["narratives"])
 
     def test_current_and_explicit_periods_do_not_mix_signals_or_narratives(self):
-        rep, ns = period_fixture("LoadMonitor25")
+        rep, ns = period_fixture()
         raw = rep / "mm_rows_20260201-20260228.csv"
         raw.write_text("Level 2,Level 3,mm,share\nSynthetic,Work,0.1,1\n", encoding="utf-8")
         os.utime(raw, (40, 40))
@@ -212,7 +212,7 @@ class MonthlyViewTests(unittest.TestCase):
             self.assertEqual(replies[-1][1]["narratives"]["2026-02"]["summary"], summary)
 
     def test_missing_current_signals_is_explicit_and_invalid_period_is_rejected(self):
-        rep, ns = period_fixture("LoadMonitor25")
+        rep, ns = period_fixture()
         (rep / "mm_rows_20260301-20260331.csv").write_text("Level 2,Level 3,mm,share\nSynthetic,Work,0.1,1\n", encoding="utf-8")
         self.assertEqual(ns["latest_signals"](), "")
         self.assertEqual(ns["review"]("month"), [])
@@ -225,43 +225,39 @@ class MonthlyViewTests(unittest.TestCase):
             ns["do_GET"](SimpleNamespace(path=path, _send=lambda *args: replies.append(args)))
             self.assertEqual(replies[-1][0], 400)
 
-    def test_lm24_and_lm25_keep_raw_project_people_outputs_and_timeline(self):
-        for version in ("LoadMonitor24", "LoadMonitor25"):
-            with self.subTest(version=version):
-                result = groups(version)
-                self.assertEqual([g["key"] for g in result], ["2026-02", "2026-01"])
-                january = result[1]
-                self.assertEqual(january["projects"][0]["files"], ["Synthetic design.txt"])
-                self.assertEqual(january["projects"][0]["meets"], ["Synthetic meeting"])
-                self.assertEqual(january["projects"][0]["people"], [["Synthetic colleague", 1]])
-                self.assertEqual(len(january["timeline"][0]["lines"]), 2)
-                self.assertTrue(january["p_edges"] and january["a_edges"])
+    def test_monthly_groups_keep_raw_project_people_outputs_and_timeline(self):
+        result = groups()
+        self.assertEqual([g["key"] for g in result], ["2026-02", "2026-01"])
+        january = result[1]
+        self.assertEqual(january["projects"][0]["files"], ["Synthetic design.txt"])
+        self.assertEqual(january["projects"][0]["meets"], ["Synthetic meeting"])
+        self.assertEqual(january["projects"][0]["people"], [["Synthetic colleague", 1]])
+        self.assertEqual(len(january["timeline"][0]["lines"]), 2)
+        self.assertTrue(january["p_edges"] and january["a_edges"])
 
     def test_monthly_js_renders_story_and_raw_features_with_or_without_narrative(self):
-        for version in ("LoadMonitor24", "LoadMonitor25"):
-            with self.subTest(version=version):
-                result = render_month(version, {"2026-01": {"summary": "Synthetic January summary", "projects": [
-                    {"name": "Synthetic project", "story": "Synthetic contribution story", "worktypes": "개발"}]}})
-                for text in ("Synthetic January summary", "Synthetic contribution story", "Synthetic design.txt",
-                             "Synthetic colleague", "Synthetic meeting", "Synthetic request", "원문 근거 타임라인", "업무 연결성"):
-                    self.assertIn(text, result["html"])
-                missing = render_month(version, {})["html"]
-                self.assertIn("리뷰 코멘트 재생성", missing)
-                self.assertIn("Synthetic design.txt", missing)
+        result = render_month({"2026-01": {"summary": "Synthetic January summary", "projects": [
+            {"name": "Synthetic project", "story": "Synthetic contribution story", "worktypes": "개발"}]}})
+        for text in ("Synthetic January summary", "Synthetic contribution story", "Synthetic design.txt",
+                     "Synthetic colleague", "Synthetic meeting", "Synthetic request", "원문 근거 타임라인", "업무 연결성"):
+            self.assertIn(text, result["html"])
+        missing = render_month({})["html"]
+        self.assertIn("리뷰 코멘트 재생성", missing)
+        self.assertIn("Synthetic design.txt", missing)
 
     def test_monthly_js_shows_preserved_status_and_same_period_selector(self):
-        result = render_month("LoadMonitor25", {"2026-01": {"summary": "Retained January", "projects": []},
+        result = render_month({"2026-01": {"summary": "Retained January", "projects": []},
                                               "_status": {"retained_months": ["2026-01"]}})
         self.assertIn("이전 코멘트를 보존했습니다", result["html"])
         self.assertIn('value="' + TAG + '"', result["html"])
         self.assertIn("리뷰 분석 기간", result["html"])
 
     def test_frozen_monthly_js_keeps_narrative_with_period_qualified_extra(self):
-        result = render_month("LoadMonitor25", {"2026-01": {"summary": "Frozen January summary", "projects": []}}, frozen=True)
+        result = render_month({"2026-01": {"summary": "Frozen January summary", "projects": []}}, frozen=True)
         self.assertIn("Frozen January summary", result["html"])
 
     def test_frozen_intercept_exposes_only_frozen_period_and_rejects_other_tags(self):
-        intercept = load("LoadMonitor25", "freeze.py", {"INTERCEPT_JS"})["INTERCEPT_JS"]
+        intercept = load("freeze.py", {"INTERCEPT_JS"})["INTERCEPT_JS"]
         result = node("const T=" + json.dumps(TAG) + ";\n" + """
 const D={_lm:{tag:T},'/api/review?g=month':{tag:T,groups:[{key:'Synthetic'}],available_periods:[T,'20250101-20251231']},
  '/api/extra':{tag:T,narratives:{'2026-01':{summary:'Frozen story'}}},
@@ -319,7 +315,7 @@ const fetch=async()=>({json:async()=>({running:false,log:[],step:'',sources:[]})
                        "REPORT": str(rep), "FREEZE_DIR": str(rep / "archive"), "_owner": lambda: "Synthetic", "_host": lambda: "PC",
                        "_is_stub": lambda: False, "_esc": html.escape, "_safe_name": lambda s: s, "_size_txt": lambda p: "",
                        "_write_atomic": write, "tag_of": lambda d0, d1: d0.replace("-", "") + "-" + d1.replace("-", "")}
-                ns = load("LoadMonitor25", "freeze.py", {"_freeze", "_strip_evidence", "INTERCEPT_JS"}, env)
+                ns = load("freeze.py", {"_freeze", "_strip_evidence", "INTERCEPT_JS"}, env)
                 files = ns["_freeze"](TAG, full, "synthetic-no-network", lambda *_: None, {})
                 self.assertEqual(len(files), 2)
                 baked = json.loads(re.search(r'id="lm-frozen-data">(.*?)</script>', written[0], re.S)[1])
@@ -327,7 +323,7 @@ const fetch=async()=>({json:async()=>({running:false,log:[],step:'',sources:[]})
                 self.assertEqual("narratives" in baked["/api/extra"], full)
 
 
-def period_fixture(version):
+def period_fixture():
     rep = Path(tempfile.mkdtemp(prefix="lm25-monthly-period-"))
     for tag, rows, stamp in ((TAG, ROWS, 20), ("20260201-20260228", ROWS[2:], 30)):
         path = rep / f"signals_{tag}.csv"
@@ -336,32 +332,28 @@ def period_fixture(version):
             writer.writeheader()
             writer.writerows(rows)
         os.utime(path, (stamp, stamp))
-    ns = load(version, "ui/app.py", {"review", "review_source", "latest_signals", "_rows", "_mtime", "result_rows", "_fresh_refined"},
+    ns = load("ui/app.py", {"review", "review_source", "latest_signals", "_rows", "_mtime", "result_rows", "_fresh_refined"},
               {"REPORT": str(rep), "TEAM_FILES": {}}, methods={"do_GET"})
-    if version == "LoadMonitor25":
-        # Load the actual pure projection module; this fixture's report folder is synthetic.
-        projection = load(version, "core/review_basis.py", {"number", "tag_period", "periods", "daily_ledger", "project"},
-                          {"deepcopy": copy.deepcopy, "math": __import__("math"), "timedelta": __import__("datetime").timedelta})
-        ns["measured_review"] = lambda gran, tag: projection["project"](ns["review"](gran, tag), None, tag, gran)
+    # Load the actual pure projection module; this fixture's report folder is synthetic.
+    projection = load("core/review_basis.py", {"number", "tag_period", "periods", "daily_ledger", "project"},
+                      {"deepcopy": copy.deepcopy, "math": __import__("math"), "timedelta": __import__("datetime").timedelta})
+    ns["measured_review"] = lambda gran, tag: projection["project"](ns["review"](gran, tag), None, tag, gran)
     return rep, ns
 
 
 def diagnostics():
-    """Compare historical period selection with the current explicit-period contract."""
-    out = {}
-    for version in ("LoadMonitor24", "LoadMonitor25"):
-        rep, ns = period_fixture(version)
-        visible = [g["key"] for g in ns["review"]("month")]
-        # A normal signals rewrite (retag/judge) can disagree with latest MM rows.
-        raw = rep / "mm_rows_20260201-20260228.csv"
-        raw.write_text("Level 2,Level 3,mm,share\nSynthetic,Work,0.1,1\n", encoding="utf-8")
-        os.utime(raw, (40, 40))
-        os.utime(rep / f"signals_{TAG}.csv", (50, 50))
-        out[version] = {"narrow_latest_visible_months": visible, "dashboard_file": ns["result_rows"]()[0],
-                        "latest_signals": Path(ns["latest_signals"]()).name,
-                        "review_months_after_other_signals_touch": [g["key"] for g in ns["review"]("month")],
-                        "synthetic_directory": str(rep)}
-    return out
+    """Show the LM25 explicit-period contract on a synthetic signals rewrite."""
+    rep, ns = period_fixture()
+    visible = [g["key"] for g in ns["review"]("month")]
+    # A normal signals rewrite (retag/judge) can disagree with latest MM rows.
+    raw = rep / "mm_rows_20260201-20260228.csv"
+    raw.write_text("Level 2,Level 3,mm,share\nSynthetic,Work,0.1,1\n", encoding="utf-8")
+    os.utime(raw, (40, 40))
+    os.utime(rep / f"signals_{TAG}.csv", (50, 50))
+    return {"LoadMonitor25": {"narrow_latest_visible_months": visible, "dashboard_file": ns["result_rows"]()[0],
+                              "latest_signals": Path(ns["latest_signals"]()).name,
+                              "review_months_after_other_signals_touch": [g["key"] for g in ns["review"]("month")],
+                              "synthetic_directory": str(rep)}}
 
 
 if __name__ == "__main__":

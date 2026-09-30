@@ -1,6 +1,6 @@
 # LM25 서브에이전트 운영
 
-목적은 [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md)의 시간·MM 신뢰성, 과제 분류와 병합, 근거 있는 AI 후보, 개인·팀 보고서 일관성을 나누어 검증하는 것입니다. 활성 개발 소스는 `LoadMonitor25/`이며 `LoadMonitor24/`와 `BASELINE.json`은 원본 기준으로 보존합니다.
+목적은 [PROJECT_CONTEXT.md](PROJECT_CONTEXT.md)의 시간·MM 신뢰성, 과제 분류와 병합, 근거 있는 AI 후보, 개인·팀 보고서 일관성을 나누어 검증하는 것입니다. 제품 소스는 `LoadMonitor25/`만 둡니다. 구버전 소스와 기준선 폴더를 다시 추가하지 않으며 과거 비교 자료는 Git 이력에서 읽습니다.
 
 ## 역할
 

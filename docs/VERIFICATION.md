@@ -10,7 +10,7 @@
 - ZIP: 파일 101개 + 빈 폴더 항목 2개. 경로 유효성을 확인한 후 새 폴더에 해제했습니다.
 - 추출 파일 101개 모두 ZIP 파일 내용과 SHA-256 일치. 기존 `D:\배포\loadmon24`의 대응 파일도 101개 모두 일치했습니다.
 - 내장 Python: 3.11.9. 개발 Python의 Ruff: 0.16.3. Node.js와 Git 사용 가능.
-- 검토한 기존 Markdown: 22개. 개별 파일 해시는 [BASELINE.json](BASELINE.json)에 있습니다.
+- 검토한 기존 Markdown: 22개. 개별 파일 해시는 [당시 기준선 기록](https://github.com/phyksw/loadmon/blob/e0c6dc6b0fe0f7b763a61869ca53318040c98f54/docs/BASELINE.json)에 있습니다.
 
 ## 검사 결과
 

@@ -24,9 +24,17 @@ import tomllib
 EXCLUDED_DIRS = {
     "data", "report", "teamdata", "python", ".git", ".venv", "venv",
     "__pycache__", ".ruff_cache", ".pytest_cache", ".state", "node_modules",
-    "copilot_profile", "loadmonitor24",
+    "copilot_profile",
 }
 DEFAULT_CONFIGS = {"config.default.json", "agentic_tasks.json"}
+
+
+def check_product_scope(root: Path) -> list[str]:
+    """Reject other version directories instead of silently ignoring their code."""
+    return [f"Only LoadMonitor25/ is allowed in this branch: {entry.name}/"
+            for entry in root.iterdir()
+            if re.fullmatch(r"loadmonitor\d+", entry.name, re.I)
+            and entry.name.casefold() != "loadmonitor25" and (entry.is_dir() or entry.is_symlink())]
 
 
 def iter_source_files(source: Path):
@@ -295,6 +303,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[FAIL] LM25 source directory missing or linked: {source}")
         return 1
     gates = QualityGates(root)
+    gates.findings("LM25-only product tree", check_product_scope(root))
     print(f"LM25 {'full' if args.full else 'quick'} quality checks; application services are not started.", flush=True)
     try:
         powershell = quick_checks(gates, source)

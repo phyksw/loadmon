@@ -1,6 +1,7 @@
 """Validate exactly the staged snapshot, including partially staged files."""
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -11,7 +12,8 @@ PRIVATE_DIRS = {"data", "report", "teamdata", "copilot_profile", "__pycache__", 
 
 def forbidden(path):
     parts = tuple(part.lower() for part in Path(path).parts)
-    return bool(PRIVATE_DIRS.intersection(parts)) or (
+    other_version = bool(parts and re.fullmatch(r"loadmonitor\d+", parts[0]) and parts[0] != "loadmonitor25")
+    return other_version or bool(PRIVATE_DIRS.intersection(parts)) or (
         len(parts) >= 3 and parts[0].startswith("loadmonitor") and parts[1] == "config"
         and parts[2] not in {"config.default.json", "agentic_tasks.json"}
     )
@@ -35,7 +37,7 @@ def main(root=ROOT):
     names = [x.decode("utf-8") for x in staged.split(b"\0") if x]
     bad = [x for x in names if forbidden(x)]
     if bad:
-        print("Commit rejected: personal/generated files are staged:\n" + "\n".join(bad), file=sys.stderr)
+        print("Commit rejected: personal/generated or non-LM25 product files are staged:\n" + "\n".join(bad), file=sys.stderr)
         return 1
     changed = subprocess.run(["git", "diff", "--cached", "--name-only", "-z"], cwd=root, capture_output=True, check=True).stdout
     if not changed:

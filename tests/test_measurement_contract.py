@@ -27,15 +27,12 @@ class MeasurementContractTests(unittest.TestCase):
     def setUpClass(cls):
         cls.temp = tempfile.TemporaryDirectory(prefix="lm25-measurement-contract-")
         cls.base = Path(cls.temp.name)
-        cls.modules = {}
-        for version in ("LoadMonitor24", "LoadMonitor25"):
-            path = cls.base / "source" / version / "core" / "extract.py"
-            path.parent.mkdir(parents=True)
-            source = (PROJECT / version / "core/extract.py").read_text(encoding="utf-8-sig")
-            path.write_text(source, encoding="utf-8")
-            env = {"__file__": str(path), "__name__": "synthetic_extract"}
-            exec(compile(source, str(path), "exec"), env)
-            cls.modules[version] = env
+        path = cls.base / "source" / "LoadMonitor25" / "core" / "extract.py"
+        path.parent.mkdir(parents=True)
+        source = (PROJECT / "LoadMonitor25/core/extract.py").read_text(encoding="utf-8-sig")
+        path.write_text(source, encoding="utf-8")
+        cls.extract = {"__file__": str(path), "__name__": "synthetic_extract"}
+        exec(compile(source, str(path), "exec"), cls.extract)
         cls.defaults = json.loads((PROJECT / "LoadMonitor25/config/config.default.json").read_text(encoding="utf-8-sig"))
         cls.refine_tree = ast.parse((PROJECT / "LoadMonitor25/refine.py").read_text(encoding="utf-8-sig"))
         identity_tree = ast.parse((PROJECT / "LoadMonitor25/core/details.py").read_text(encoding="utf-8-sig"))
@@ -51,8 +48,7 @@ class MeasurementContractTests(unittest.TestCase):
     def setUp(self):
         self.data = Path(tempfile.mkdtemp(prefix="case-", dir=self.base)) / "data"
         self.data.mkdir()
-        self.new = self.modules["LoadMonitor25"]
-        self.old = self.modules["LoadMonitor24"]
+        self.new = self.extract
         self.day = date(2026, 9, 7)
         self.now = datetime(2026, 9, 30, 23, 59)
         self.cfg = copy.deepcopy(self.defaults)
@@ -75,13 +71,13 @@ class MeasurementContractTests(unittest.TestCase):
         return [{"time": (start + timedelta(minutes=i * step)).isoformat(sep=" "),
                  "idle_sec": 1, "process": "editor.exe", "title": title} for i in range(count)]
 
-    def signals(self, module=None, end=None):
-        return (module or self.new)["load_signals"](
+    def signals(self, end=None):
+        return self.new["load_signals"](
             str(self.data), self.day, end or self.day,
             exclude=self.cfg.get("excludePathKeywords", []), cfg=self.cfg)
 
-    def hours(self, signals=(), module=None, end=None, file_times=None):
-        return (module or self.new)["day_work_hours"](
+    def hours(self, signals=(), end=None, file_times=None):
+        return self.new["day_work_hours"](
             str(self.data), list(signals), self.day, end or self.day,
             cfg=self.cfg, now=self.now, file_times=file_times or {})
 
@@ -96,24 +92,21 @@ class MeasurementContractTests(unittest.TestCase):
     def test_unattended_solver_is_machine_time_only(self):
         nxt = self.day + timedelta(days=1)
         sim = {self.day: [(1200, 1440)], nxt: [(0, 420)]}
-        inputs = (sim, {}, {}, {}, {}, self.day, nxt, (480, 1140))
-        before, _ = self.old["_sim_night_credit"](*inputs)
-        self.assertEqual(sum(self.old["_union_min"](s) for s in before.values()) / 60, 4)
+        # 20:00–24:00 plus 00:00–07:00 is 11 machine hours across two dates.
+        # None of the compatibility modes or a human anchor can turn it into labor.
         for mode in ("span", "anchor", "off"):
             for human in ({}, {self.day: [1320]}):
                 human_spans, stats = self.new["_sim_night_credit"](
                     sim, human, {}, {}, {}, self.day, nxt, (480, 1140), mode=mode)
                 self.assertEqual(human_spans, {})
-                self.assertEqual(stats["machine_night_h"], 11)
-                self.assertEqual(stats["unlocked"], 0)
+                self.assertEqual(stats, {"machine_night_h": 11, "machine_night_days": 2,
+                                         "nights": 0, "capped": 0, "unlocked": 0})
 
     def test_daytime_solver_cannot_open_pc_floor_or_human_session(self):
         self.csv("pc/pc_on.csv", [self.pc()])
         signal = [(datetime(2026, 9, 7, 10), "파일(해석출력)", "solver output", 1.5, "")]
         files = {self.day: [(600, ("sim", 1020))]}
-        old, _ = self.hours(signal, self.old, file_times=files)
         new, info = self.hours(signal, file_times=files)
-        self.assertGreater(sum(old.values()), 0)
         self.assertEqual(sum(new.values()), 0)
         self.assertEqual(info["machine_runtime_h"], 7)
         self.assertEqual(info["sim_night_h"], 0)
@@ -197,8 +190,7 @@ class MeasurementContractTests(unittest.TestCase):
         self.csv(path.relative_to(self.data), [row] + outside)
         second, _ = self.signals()
         self.assertEqual(first, second)
-        before, _ = self.signals(self.old)
-        self.assertEqual(before[0][3], 0.2)
+        self.assertEqual(len(second), 1)
         self.assertEqual(second[0][3], 1.0)
 
     def test_outside_period_sampler_cannot_change_current_interval(self):

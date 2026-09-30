@@ -2,6 +2,8 @@
 
 ## 린트와 검증
 
+이 브랜치는 `LoadMonitor25/` 제품만 허용합니다. 다른 버전 폴더는 quick/full 검사에서 실패하며, Git 훅은 강제 추가한 구버전 파일도 거부합니다. 과거 버전은 별도 Git 브랜치와 이력에서 조회합니다.
+
 `python -B scripts/quality.py --quick`은 LM25·프로젝트 Python 전체 Ruff, Python/JSON/TOML 문법, BAT/PS1 인코딩·줄바꿈, PowerShell 파서, Python이 실제로 내보내는 PAGE/TEAM_PAGE JavaScript를 검사합니다. `ui/app.py`도 항상 포함합니다.
 
 `--full`은 위 검사와 함께 TEMP의 코드·배포 기본설정 복제본에서 필수 파일, FILES.txt 크기·CRC, 기존 7관문 및 `tests/` 회귀를 실행합니다. 실제 수집·UI 서버·Copilot·업로드는 시작하지 않습니다. 개인 `config.json`과 데이터/보고서는 읽지 않습니다. `Test-Project.ps1`은 full 실행과 로그 저장용 진입점입니다.

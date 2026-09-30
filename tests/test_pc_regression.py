@@ -22,15 +22,12 @@ class PcRegressionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.base = Path(tempfile.mkdtemp(prefix="lm25-pc-regression-"))
-        cls.modules = {}
-        for version in ("LoadMonitor24", "LoadMonitor25"):
-            target = cls.base / "source" / version / "core" / "extract.py"
-            target.parent.mkdir(parents=True)
-            source = (PROJECT / version / "core" / "extract.py").read_text(encoding="utf-8-sig")
-            target.write_text(source, encoding="utf-8")
-            env = {"__file__": str(target), "__name__": f"synthetic_{version}_extract"}
-            exec(compile(source, str(target), "exec"), env)
-            cls.modules[version] = env
+        target = cls.base / "source" / "LoadMonitor25" / "core" / "extract.py"
+        target.parent.mkdir(parents=True)
+        source = (PROJECT / "LoadMonitor25/core/extract.py").read_text(encoding="utf-8-sig")
+        target.write_text(source, encoding="utf-8")
+        cls.extract = {"__file__": str(target), "__name__": "synthetic_extract"}
+        exec(compile(source, str(target), "exec"), cls.extract)
         cls.cfg = json.loads((PROJECT / "LoadMonitor25/config/config.default.json").read_text(encoding="utf-8-sig"))
         cls.run_tree = ast.parse((PROJECT / "LoadMonitor25/run.py").read_text(encoding="utf-8-sig"))
 
@@ -38,8 +35,7 @@ class PcRegressionTests(unittest.TestCase):
         self.root = Path(tempfile.mkdtemp(prefix="case-", dir=self.base))
         self.data = self.root / "data"
         self.data.mkdir()
-        self.new = self.modules["LoadMonitor25"]
-        self.old = self.modules["LoadMonitor24"]
+        self.new = self.extract
 
     def write(self, relative, text):
         path = self.data / relative
@@ -65,7 +61,7 @@ class PcRegressionTests(unittest.TestCase):
         exec(compile(ast.Module(body=body, type_ignores=[]), "synthetic_run", "exec"), env)
         return env, calls
 
-    def test_standard_pc_and_monthly_mm_match_lm24(self):
+    def test_standard_pc_and_monthly_mm_follow_daily_hours_and_full_month_capacity(self):
         self.pc()
         self.pc("추가PC/PC-B/pc/pc_on.csv", day="2026-09-01")
         self.write("pc/pc_spans.csv", "start,end,src\n2026-08-31 09:00:00,2026-08-31 17:00:00,event\n")
@@ -73,16 +69,23 @@ class PcRegressionTests(unittest.TestCase):
         start, end = date(2026, 8, 31), date(2026, 9, 1)
         signals = [(datetime(2026, month, day, 10), "파일", "synthetic.docx", 1.0, "self")
                    for month, day in ((8, 31), (9, 1))]
-        results = []
-        for module in (self.old, self.new):
-            hours, info = module["day_work_hours"](str(self.data), signals, start, end,
-                                                   cfg=self.cfg, now=datetime(2026, 9, 10), file_times={})
-            mm = module["mm_from_hours"](hours, start, end, cfg=self.cfg, now=datetime(2026, 9, 10))
-            self.assertEqual(info["pc_record_days"], 2)
-            self.assertTrue(all(hours[day] > 0 for day in (start, end)))
-            self.assertGreater(mm[1], 0)
-            results.append((hours, info["pc_coverage_by_month"], mm))
-        self.assertEqual(results[0], results[1])
+        hours, info = self.new["day_work_hours"](str(self.data), signals, start, end,
+                                                 cfg=self.cfg, now=datetime(2026, 9, 10), file_times={})
+        months, total_mm, available_mm = self.new["mm_from_hours"](
+            hours, start, end, cfg=self.cfg, now=datetime(2026, 9, 10))
+        # 480 minutes minus lunch (60) and idle edges (10 at each end) = 400.
+        self.assertEqual(self.cfg["mm"]["trimIdleEdgesMin"], 10)
+        self.assertEqual(hours, {start: 6.67, end: 6.67})
+        self.assertEqual(info["pc_record_days"], 2)
+        self.assertEqual(info["pc_coverage_by_month"], {"2026-08": 1, "2026-09": 1})
+        # The bundled 2026 calendar has 20/19 workdays: a one-day slice retains
+        # the entire month's 160/152-hour denominator, rather than becoming 1 MM.
+        self.assertEqual(months, {
+            "2026-08": {"worked": 6.7, "workdays": 20, "covered": 1, "absent": 0,
+                        "capacity_h": 160, "avail_mm": 0.05, "mm": 0.042, "load_pct": 84.0},
+            "2026-09": {"worked": 6.7, "workdays": 19, "covered": 1, "absent": 0,
+                        "capacity_h": 152, "avail_mm": 0.053, "mm": 0.044, "load_pct": 83.0}})
+        self.assertEqual((total_mm, available_mm), (0.086, 0.103))
 
     def test_flat_pc_on_compatibility_and_duplicates_do_not_add_hours(self):
         day = date(2026, 8, 31)
@@ -94,8 +97,9 @@ class PcRegressionTests(unittest.TestCase):
         flat_hours, flat_info = self.new["day_work_hours"](
             str(self.data), signals, day, day, cfg=self.cfg, now=datetime(2026, 9, 10), file_times={})
         self.assertEqual(flat_info["pc_record_days"], 1)
+        self.assertEqual(flat_hours, {day: 6.67})
         self.pc()
-        canonical_hours, _info = self.old["day_work_hours"](
+        canonical_hours, _info = self.new["day_work_hours"](
             str(self.data), signals, day, day, cfg=self.cfg, now=datetime(2026, 9, 10), file_times={})
         self.assertEqual(flat_hours, canonical_hours)
         self.pc("추가PC/PC-B/pc_on.csv")
@@ -107,17 +111,16 @@ class PcRegressionTests(unittest.TestCase):
         self.write("pc/pc_on.csv", "date,on_hours,night_hours\n2026-08-31,8,0\n")
         day = date(2026, 8, 31)
         self.assertEqual(self.new["pc_daily"](str(self.data), day, day),
-                         self.old["pc_daily"](str(self.data), day, day))
-        self.assertEqual(self.new["pc_daily"](str(self.data), day, day)[0][day][0], 8)
+                         ({day: (8, 0, None, None)}, {}, {}, {}))
 
     def test_multi_pc_spans_union_and_cross_midnight_are_preserved(self):
         self.write("pc/pc_spans.csv", "start,end,src\n2026-08-31 22:00:00,2026-09-01 02:00:00,event\n")
         self.write("추가PC/PC-B/pc_spans.csv", "start,end,src\n2026-08-31 23:00:00,2026-09-01 03:00:00,event\n")
         start, end = date(2026, 8, 31), date(2026, 9, 1)
         result = self.new["pc_daily"](str(self.data), start, end)
-        self.assertEqual(result, self.old["pc_daily"](str(self.data), start, end))
-        self.assertEqual(result[0][start][0], 2)
-        self.assertEqual(result[0][end][0], 3)
+        expected_spans = {start: [(1320, 1440)], end: [(0, 180)]}
+        self.assertEqual(result, ({start: (2, 2, 1320, 1440), end: (3, 3, 0, 180)},
+                                  {}, expected_spans, expected_spans))
 
     def test_archive_failure_keeps_identity_and_stops_all_collection(self):
         self.write("pc_name.txt", "PC-A")

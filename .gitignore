@@ -10,16 +10,11 @@ __pycache__/
 *.log
 *.stale
 *.zip
-!LoadMonitor24/python/python311.zip
 !LoadMonitor25/python/python311.zip
 # Embedded Python extension modules are runtime dependencies, not bytecode caches.
-!LoadMonitor24/python/*.pyd
 !LoadMonitor25/python/*.pyd
 
 # Local settings: keep the packaged default as the reproducible template.
-LoadMonitor24/config/*
-!LoadMonitor24/config/config.default.json
-!LoadMonitor24/config/agentic_tasks.json
 LoadMonitor25/config/*
 !LoadMonitor25/config/config.default.json
 !LoadMonitor25/config/agentic_tasks.json
@@ -29,3 +24,7 @@ LoadMonitor25/config/*
 
 # Local verification output contains machine paths.
 verification/
+
+# This branch contains only the LM25 product; old versions stay in Git history.
+/LoadMonitor[0-9]*/
+!/LoadMonitor25/
