@@ -3,7 +3,7 @@
 # Outlook 사서함을 색인하고 있으면 메일·일정 메타데이터를 읽을 수 있다(읽기 전용, Outlook 을
 # 띄우지 않으므로 마법사 무한 대기가 없다).
 # Usage:  .\Get-OutlookIndex.ps1 -From 2026-01-01 -To 2026-06-30 [-Force] [-Only mail|cal]
-#   기존 mail.csv / calendar.csv 에 자료가 있으면 건드리지 않는다(-Force 로 덮어쓰기).
+#   Existing records are retained; -Force recollects and atomically unions the requested range.
 # 한계(감사 outlook-7): 색인은 MAPI 항목 단위라 반복 회의는 '마스터 1건' 뿐이고 회차가 전개되지 않는다
 #   (COM 의 IncludeRecurrences 와 다름). 마스터 행은 calendar.csv 에 쓰지 않고(첫 회차 1건만 남기면 전개된
 #   것처럼 보인다) 그 수를 mail_source.json 의 calendar_recurring_masters 에, calendar_complete=false 로 적고
@@ -25,6 +25,7 @@ param(
 $ErrorActionPreference = 'Stop'
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+. (Join-Path $PSScriptRoot 'Outlook-Collection.ps1')
 $cfg = $null
 try { $cfg = Get-Content -Raw -Encoding UTF8 (Join-Path $root 'config\config.json') | ConvertFrom-Json } catch {}
 $storeSubject = $true
@@ -54,6 +55,9 @@ function Conv-Token([string]$s) {
 
 if ($From) { $since = [datetime]::ParseExact($From, 'yyyy-MM-dd', $null) } else { $since = (Get-Date).Date.AddDays(-$Days) }
 if ($To)   { $until = ([datetime]::ParseExact($To, 'yyyy-MM-dd', $null)).AddDays(1) } else { $until = (Get-Date).Date.AddDays(1) }
+$requestedFrom = $since.ToString('yyyy-MM-dd'); $requestedTo = $until.AddDays(-1).ToString('yyyy-MM-dd')
+$scope = 'Windows Search local indexed MAPI metadata; indexed accounts/folders and recurrence coverage not verified; no body'
+Write-OutlookStatus $root 'outlook_index' $requestedFrom $requestedTo 'partial' 0 $scope @('index collection started; index coverage is not mailbox coverage') @{ mail_status = $(if ($Only -eq 'cal') { 'skipped' } else { 'partial' }); calendar_status = $(if ($Only -eq 'mail') { 'skipped' } else { 'partial' }); mail_rows = 0; calendar_rows = 0 }
 $mailP = Join-Path $outDir 'mail.csv'
 $calP  = Join-Path $outDir 'calendar.csv'
 $doMail = $Force -or -not (Has-Data $mailP)
@@ -61,12 +65,15 @@ $doCal  = $Force -or -not (Has-Data $calP)
 if ($Only -eq 'mail') { $doCal = $false } elseif ($Only -eq 'cal') { $doMail = $false }
 if (-not $doMail -and $Only -ne 'cal') { Write-Host '[outlook-index] mail.csv 에 이미 자료가 있어 건너뜀 (덮어쓰려면 -Force)' }
 if (-not $doCal -and $Only -ne 'mail') { Write-Host '[outlook-index] calendar.csv 에 이미 자료가 있어 건너뜀 (덮어쓰려면 -Force)' }
-if (-not $doMail -and -not $doCal) { exit 0 }
+if (-not $doMail -and -not $doCal) {
+    Write-OutlookStatus $root 'outlook_index' $requestedFrom $requestedTo 'partial' 0 $scope @('existing files skipped; requested range not verified') @{ mail_status = 'skipped'; calendar_status = 'skipped'; mail_rows = 0; calendar_rows = 0 }
+    exit 0
+}
 
 # 내 주소·이름 - rcv(to/cc/bulk) 판정용. 도메인 미가입 PC 는 whoami /upn 이 실패한다(실측: 종료코드 1·빈값)
 # 그래서 여러 출처를 겹쳐 본다. USERNAME 은 약한 단서라 매칭에는 쓰되 '내 주소를 안다' 로 치지 않는다.
 $me = @(); $meSrc = @()
-if ($doMail) {
+if ($doMail -and -not $env:LM_INDEX_FAKE) {
     try {
         $u = (& whoami /upn 2>$null)
         if ($LASTEXITCODE -eq 0 -and $u) { $me += ([string]$u).Trim().ToLower(); $meSrc += 'upn' }
@@ -122,7 +129,11 @@ if ($doMail) {
 
 $fake = $null
 if ($env:LM_INDEX_FAKE) {
-    try { $fake = Get-Content -Raw -Encoding UTF8 $env:LM_INDEX_FAKE | ConvertFrom-Json } catch { $fake = $null }
+    try { $fake = Get-Content -Raw -Encoding UTF8 $env:LM_INDEX_FAKE | ConvertFrom-Json; if (-not $fake) { throw 'empty fixture' } }
+    catch {
+        Write-OutlookStatus $root 'outlook_index' $requestedFrom $requestedTo 'failed' 0 $scope @('invalid synthetic fixture; live index was not queried') @{ mail_status = $(if ($doMail) { 'failed' } else { 'skipped' }); calendar_status = $(if ($doCal) { 'failed' } else { 'skipped' }); mail_rows = 0; calendar_rows = 0 }
+        exit 1
+    }
     Write-Host '[outlook-index] LM_INDEX_FAKE - 색인 대신 시험용 행을 씁니다'
 }
 $conn = $null
@@ -131,12 +142,13 @@ if (-not $fake) {
     try { $conn.Open() } catch {
         Write-Host ('[outlook-index] Windows Search 색인에 연결할 수 없습니다: ' + $_.Exception.Message.Split([char]10)[0])
         Write-Host '                (Windows Search 서비스가 꺼져 있거나 색인이 비활성화된 PC)'
+        Write-OutlookStatus $root 'outlook_index' $requestedFrom $requestedTo 'blocked' 0 $scope @('Windows Search provider unavailable') @{ mail_status = $(if ($doMail) { 'failed' } else { 'skipped' }); calendar_status = $(if ($doCal) { 'failed' } else { 'skipped' }); mail_rows = 0; calendar_rows = 0 }
         exit 1
     }
 }
 function Query([string]$sql, [int]$cap) {
     $rows = New-Object System.Collections.Generic.List[object]
-    $cmd = $conn.CreateCommand(); $cmd.CommandText = $sql
+    $cmd = $conn.CreateCommand(); $cmd.CommandText = $sql; $cmd.CommandTimeout = 30
     $rd = $cmd.ExecuteReader()
     try {
         while ($rd.Read()) {
@@ -145,7 +157,8 @@ function Query([string]$sql, [int]$cap) {
             $rows.Add($o)
             if ($rows.Count -ge $cap) { break }
         }
-    } finally { $rd.Close() }
+    } catch { $warnings.Add('index query interrupted; partial query rows retained') }
+    finally { $rd.Close() }
     return $rows
 }
 function Fake-Rows([string]$kind) {
@@ -170,9 +183,11 @@ function Run-Query([string]$kind, [string]$sqlNew, [string]$sqlOld, [int]$cap) {
     if ($fake) { return @{ rows = @(Fake-Rows $kind); fallback = $false } }
     try { return @{ rows = @(Query $sqlNew $cap); fallback = $false } }
     catch {
+        $warnings.Add($kind + ' expanded index property query failed; retried base metadata')
         Write-Host ('[outlook-index] ' + $kind + ' 조회(확장 속성) 실패: ' + $_.Exception.Message.Split([char]10)[0] + ' - 기본 속성으로 재시도')
         try { return @{ rows = @(Query $sqlOld $cap); fallback = $true } }
         catch {
+            $warnings.Add($kind + ' index query_failed; source results unavailable')
             Write-Host ('[outlook-index] ' + $kind + ' 조회 실패: ' + $_.Exception.Message.Split([char]10)[0])
             return @{ rows = @(); fallback = $true }
         }
@@ -210,8 +225,9 @@ if ($doMail) {
     $sqlNew = $selBase -f ', System.Message.ToName, System.Message.CcName', $sinceU, $untilU   # 표시 이름으로도 나를 찾는다(X500·별칭 주소 대응)
     $sqlOld = $selBase -f '', $sinceU, $untilU
     $res = Run-Query 'mail' $sqlNew $sqlOld 20000
+    if ($res.rows.Count -ge 20000) { $warnings.Add('mail index query reached 20000-row limit') }
     $mailRows = New-Object System.Collections.Generic.List[string]
-    $mailRows.Add('box,time,sender,subject,conversation,rcv')
+    $mailRows.Add('box,time,sender,subject,conversation,rcv,time_precision,context_excerpt,context_truncated,source_id,source_kind,source_url,conversation_id,folder,account')
     $nIn = 0; $nSent = 0; $nSkip = 0; $nCc = 0; $nBulk = 0
     foreach ($r in $res.rows) {
         try {
@@ -220,14 +236,15 @@ if ($doMail) {
             if ($url -notmatch '^mapi\d*:') { $nSkip++; continue }     # SQL 필터의 이중 안전장치
             # 폴더는 경로 조각 단위로 정확히 본다 - '지운 편지함'(한국어 삭제함)을 놓치거나 'Presentations' 를 Sent 로 오인하지 않게
             $segs = @(($folder -split '[\\/]') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-            if (@($segs | Where-Object { $_ -match '^(지운 편지함|삭제된 항목|삭제된 편지함|Deleted Items|Trash|정크 메일|Junk E-?mail|Junk|스팸|Spam|임시 보관함|Drafts?|보낼 편지함|Outbox|보관|보관함|Archive|동기화 문제|Sync Issues|대화 기록|Conversation History|RSS 피드|RSS Feeds)$' }).Count) { $nSkip++; continue }
+            if (@($segs | Where-Object { $_ -match '^(지운 편지함|삭제된 항목|삭제된 편지함|Deleted Items|Trash|정크 메일|Junk E-?mail|Junk|스팸|Spam|임시 보관함|Drafts?|보낼 편지함|Outbox|동기화 문제|Sync Issues|대화 기록|Conversation History|RSS 피드|RSS Feeds)$' }).Count) { $nSkip++; continue }
             $box = 'inbox'
             if (@($segs | Where-Object { $_ -match '^(보낸\s*(편지함|메일함|항목)|Sent(\s+(Items|Mail|Messages))?)$' }).Count) { $box = 'sent' }
             $t = $null
             if ($box -eq 'sent') { $t = D $r 'System.Message.DateSent' }
             if (-not $t) { $t = D $r 'System.Message.DateReceived' }
             if (-not $t) { $t = D $r 'System.ItemDate' }
-            if (-not $t) { continue }
+            if (-not $t) { $warnings.Add('indexed mail timestamp unavailable'); continue }
+            if ($t -lt $since -or $t -ge $until) { continue }
             $subjRaw = (V $r 'System.Subject')
             $conv = $subjRaw
             while ($conv -match '^\s*(RE|FW|FWD|답장|전달|회신)\s*:\s*') { $conv = $conv -replace '^\s*(RE|FW|FWD|답장|전달|회신)\s*:\s*', '' }
@@ -249,12 +266,13 @@ if ($doMail) {
                 else { $rcv = 'bulk'; $nBulk++ }
                 $nIn++
             } else { $nSent++ }
-            $mailRows.Add(('{0},{1},{2},{3},{4},{5}' -f $box, $t.ToString('yyyy-MM-dd HH:mm'), (Csv-Escape $sender), (Csv-Escape $subj), (Csv-Escape $conv), $rcv))
+            $vals = @($box, $t.ToString('yyyy-MM-dd HH:mm'), $sender, $subj, $conv, $rcv, 'minute', '', '', $url, 'outlook_index', $url, '', $folder, '')
+            $mailRows.Add((($vals | ForEach-Object { Csv-Escape ([string]$_) }) -join ','))
         } catch {}
     }
     $nMail = $mailRows.Count - 1
     if ($nMail -gt 0) {
-        [System.IO.File]::WriteAllLines($mailP, $mailRows, [System.Text.Encoding]::UTF8)
+        $null = Merge-OutlookCsv $root $mailP $mailRows.ToArray() 'mail'
         Write-Host ("[outlook-index] mail rows: {0} (inbox {1} [cc {2} · bulk {3} · unknown {4}] / sent {5}, 제외 {6})" -f $nMail, $nIn, $nCc, $nBulk, $nUnk, $nSent, $nSkip)
         if ($nUnk -gt 0) { $warnings.Add(('내 주소 미확정 - 수신 {0}건 rcv=unknown(직접 수신처럼 계상, CC 구분 불가)' -f $nUnk)) }
     } else {
@@ -262,7 +280,7 @@ if ($doMail) {
     }
 }
 # ---------- calendar ----------
-$calComplete = $true
+$calComplete = $false
 if ($doCal) {
     $selCal = ("SELECT System.StartDate, System.EndDate, System.Subject, System.Calendar.Location, System.Calendar.ShowTimeAs{0}, " +
                "System.ItemUrl FROM SYSTEMINDEX WHERE System.Kind = 'calendar' AND System.ItemUrl LIKE 'mapi%' " +
@@ -270,6 +288,7 @@ if ($doCal) {
     $sqlNew = $selCal -f ', System.Calendar.IsRecurring', $sinceU, $untilU
     $sqlOld = $selCal -f '', $sinceU, $untilU
     $res = Run-Query 'calendar' $sqlNew $sqlOld 8000
+    if ($res.rows.Count -ge 8000) { $warnings.Add('calendar index query reached 8000-row limit') }
     $recUnknown = [bool]$res.fallback          # 반복 여부를 읽지 못했다 - 마스터가 섞여 있어도 가려낼 수 없다
     $calRows = New-Object System.Collections.Generic.List[string]
     $calRows.Add('start,end,all_day,busy_status,subject,categories,location,response,meeting_status')   # response/meeting_status 는 색인에 없어 빈값
@@ -280,6 +299,7 @@ if ($doCal) {
             if (($isRec -is [bool] -and $isRec) -or ([string]$isRec -match '^(True|1|-1)$')) { $nRec++; continue }   # 반복 마스터 - 회차 전개 불가, 쓰지 않는다
             $st = D $r 'System.StartDate'; $en = D $r 'System.EndDate'
             if (-not $st -or -not $en) { continue }
+            if ($st -ge $until -or $en -lt $since) { continue }
             $allDay = 'False'
             if ($st.TimeOfDay.TotalMinutes -eq 0 -and ($en - $st).TotalHours -ge 23) { $allDay = 'True' }
             $busy = (V $r 'System.Calendar.ShowTimeAs'); if (-not $busy) { $busy = '2' }
@@ -289,9 +309,9 @@ if ($doCal) {
         } catch {}
     }
     $nCal = $calRows.Count - 1
-    $calComplete = (($nRec -eq 0) -and -not $recUnknown)
+    $calComplete = $false # Absence of indexed recurrence masters does not prove complete calendar coverage.
     if ($nCal -gt 0) {
-        [System.IO.File]::WriteAllLines($calP, $calRows, [System.Text.Encoding]::UTF8)
+        $null = Merge-OutlookCsv $root $calP $calRows.ToArray() 'calendar'
         Write-Host ("[outlook-index] calendar rows: {0} (반복 마스터 {1}건 제외)" -f $nCal, $nRec)
     } else {
         Write-Host ("[outlook-index] 색인에서 기간 내 일정을 찾지 못했습니다.{0}" -f $(if ($nRec -gt 0) { " (반복 마스터 {0}건은 회차가 전개되지 않아 쓰지 않음)" -f $nRec } else { '' }))
@@ -300,6 +320,8 @@ if ($doCal) {
     elseif ($recUnknown) { $warnings.Add('반복 여부(IsRecurring)를 읽지 못해 일정 완전성을 보증할 수 없음') }
 }
 try { if ($conn) { $conn.Close() } } catch {}
+$warnings.Add('metadata_only: body not collected; Windows Search index scope/freshness not verified')
+Write-OutlookStatus $root 'outlook_index' $requestedFrom $requestedTo $(if ($nMail + $nCal) { 'partial' } else { 'failed' }) ($nMail + $nCal) $scope @($warnings) @{ mail_status = $(if (-not $doMail) { 'skipped' } elseif ($nMail) { 'partial' } else { 'failed' }); calendar_status = $(if (-not $doCal) { 'skipped' } elseif ($nCal) { 'partial' } else { 'failed' }); mail_rows = $nMail; calendar_rows = $nCal; body_collected = $false }
 
 if ($nMail -gt 0 -or $nCal -gt 0 -or $nRec -gt 0) {
     try {

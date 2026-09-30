@@ -1,30 +1,19 @@
-﻿# Get-OutlookData.ps1
-# Read-only export of Outlook calendar + mail metadata via COM (works without Graph API).
-# Mail/calendar history reaches back YEARS (cached OST) - main source for retrospective analysis.
-# Output: ..\data\outlook\calendar.csv , mail.csv (UTF-8) + coverage.json (달별 수집 완료 표 v2)
-# Usage:  .\Get-OutlookData.ps1 -From 2026-01-01 -To 2026-06-30 [-BudgetSec 360] [-Force] [-NoRefresh]   (or -Days 90)
-#
-# 달 단위 이어서 수집(LM22 2차): 기간을 달로 쪼개 **최신 달부터** 읽고, 달 하나를 다 읽을 때마다 CSV 와
-#   coverage.json 을 쓴다. 시간 예산(-BudgetSec)에 닿으면 거기서 멈추되, 다 읽은 달은 다음 실행에서
-#   건너뛰므로 실행을 거듭하면 기간 전체가 채워진다. 예전에는 매번 최신순으로 처음부터 읽다가 예산에
-#   닿으면 오래된 달이 **영영** 빠졌다(실측 제보: '주간 활동이 1월부터 안 나온다' - 1~5월 메일·회의 공백).
-#   · 완료 표는 달마다 실제로 읽은 [start, end) 를 함께 적는다 - 기간 시작·끝에 걸려 일부만 읽은 달은 나중에
-#     더 넓은 기간으로 부르면 다시 읽는다(재검증 실측: '3개월' 뒤 '올해'에서 3월 앞부분이 영영 빠지던 것).
-#   · 예산에 닿아 절반만 읽은 달은 **이어서** 읽는다(메일: 편지함별 '여기까지 읽음' 경계, 일정: 마지막 시작 시각) -
-#     달 하나가 예산보다 크면 처음부터 다시 읽느라 영영 못 끝내던 것(재검증 실측).
-#   · 최신 달(이번 달)은 매번 먼저 다시 읽고, 그다음 못 읽은 달(최신→과거), 마지막에 최신 2개월 재수집.
-#     run.py 의 연속 회차는 -NoRefresh 로 못 읽은 달만 잇는다. -Force 면 전부 다시.
-#   · 기존 CSV 의 다른 달 행은 그대로 보존하고 KeepDays(400일)보다 오래된 행만 버린다. 메일 행은 절대 중복 제거하지
-#     않는다(같은 분에 같은 제목으로 두 번 오는 알림·배포 메일은 실제 2건) - 달 경계에 걸친 일정 회차만 한 번으로.
-#   · 표는 '누가 썼는지'(com / selftest)·storeMailSubject 와 함께 저장하고, 다른 경로(색인·웹·Copilot 폴백)가 CSV 를
-#     다시 썼거나(mail_source.json 의 source 가 com 이 아님) 설정이 바뀌었으면 표를 버리고 처음부터 읽는다.
-# 중간 저장: 달마다 CSV 를 다시 쓰므로 강제 종료돼도 그때까지 읽은 달이 남는다(mail.csv.part 는 더 쓰지 않는다).
-#   CSV 는 임시 파일 뒤 교체하되, 화면이 파일을 읽고 있어 교체가 막히면 잠시 기다렸다가 제자리에 쓴다(실행을 끊지 않는다).
-# 일정은 예산의 절반까지만 쓴다(메일이 굶지 않게) - 남은 달은 역시 다음 실행이 잇는다.
-# storeMailSubject: 키가 없으면 true(다른 세 경로와 동일). false 면 제목·일정 제목을 비우고 conversation 도
-#   원문 대신 짧은 해시로 남긴다(회신 이력 판정만 유지).
-# -SelfTest N: Outlook 없이 달마다 N건의 가짜 메일·일정을 만들어 예산·이어서 수집·병합 논리를 검증한다(테스트 전용 -
-#   표·mail_source.json 에 selftest 표식이 남아 실제 수집과 섞이지 않는다).
+﻿# Get-OutlookData.ps1 — bounded, read-only Outlook COM collection.
+# Default account/store only: delivered mail folders and descendants, excluding
+# Deleted/Junk/Drafts/Outbox, plus the default calendar with recurrence expansion.
+# collection.mailAllFolders=false restricts mail to Inbox/Sent. No other account,
+# shared/public mailbox or attachment contents are automatically expanded.
+# Mail metadata + IDs/provenance + bounded Body text (collection.contextChars,
+# default 4000). storeMailSubject=false also disables newly collected body text.
+# Existing CSV history is atomically unioned, including rows outside this run's
+# range. -Force recollects; it never replaces old history. -KeepDays is accepted
+# for CLI compatibility and no longer deletes observations.
+# coverage.json v3 tracks month/folder bounds and cursor overlap; changed folder
+# scope or body settings invalidates old completion. Checkpoints retain partial
+# results on limits/errors. Complete means only the declared local COM-visible
+# scope was enumerated; it cannot verify server synchronization or all accounts.
+# -SelfTest N is synthetic only, with explicit selftest writer/source markers.
+# Usage: -From yyyy-MM-dd -To yyyy-MM-dd [-BudgetSec 360] [-Force] [-NoRefresh]
 param(
     [string]$From = '',
     [string]$To = '',
@@ -41,7 +30,19 @@ $ErrorActionPreference = 'Stop'
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}   # run.py 가 UTF-8 로 읽는다
 $sw = [System.Diagnostics.Stopwatch]::StartNew()       # 시간 예산은 COM 연결까지 포함해 잰다(run.py 의 시계와 같다)
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
-$cfg  = Get-Content -Raw -Encoding UTF8 (Join-Path $root 'config\config.json') | ConvertFrom-Json
+. (Join-Path $PSScriptRoot 'Outlook-Collection.ps1')
+$cfg = $null
+try { $cfg = Get-Content -Raw -Encoding UTF8 (Join-Path $root 'config\config.json') | ConvertFrom-Json } catch {}
+$contextChars = 4000; $mailBody = $true; $mailAllFolders = $true
+try { if ($null -ne $cfg.collection.contextChars) { $contextChars = [Math]::Min(20000, [Math]::Max(0, [int]$cfg.collection.contextChars)) } } catch {}
+try { if ($null -ne $cfg.collection.mailBody) { $mailBody = [bool]$cfg.collection.mailBody } } catch {}
+try { if ($null -ne $cfg.collection.mailAllFolders) { $mailAllFolders = [bool]$cfg.collection.mailAllFolders } } catch {}
+$script:collectionProblems = New-Object 'System.Collections.Generic.List[string]'
+$script:mailFolders = @()
+$script:observedRows = 0
+$script:observedCalendarRows = 0
+$script:folderScope = ''
+$script:previousFolderScope = ''
 $storeSubject = $true
 if ($cfg -and $cfg.PSObject.Properties['storeMailSubject'] -and -not $cfg.storeMailSubject) { $storeSubject = $false }
 if ($BudgetSec -le 0) { $BudgetSec = 360 }
@@ -56,7 +57,7 @@ $mailP = Join-Path $outDir 'mail.csv'
 $calP  = Join-Path $outDir 'calendar.csv'
 $covP  = Join-Path $outDir 'coverage.json'
 $srcP  = Join-Path $outDir 'mail_source.json'
-$MAIL_HEADER = 'box,time,sender,subject,conversation,rcv'
+$MAIL_HEADER = 'box,time,sender,subject,conversation,rcv,time_precision,context_excerpt,context_truncated,source_id,source_kind,source_url,conversation_id,folder,account'
 $CAL_HEADER  = 'start,end,all_day,busy_status,subject,categories,location,response,meeting_status'
 $REFRESH_MONTHS = 2          # 최신 N개월은 이미 읽었어도 매번 다시 읽는다(-NoRefresh 면 안 한다)
 $TS = 'yyyy-MM-dd HH:mm:ss'  # 표에 적는 시각 형식
@@ -97,6 +98,10 @@ if ($until -gt $tomorrow) { $until = $tomorrow }     # 미래 종료일은 내�
 if ($until -le $since) { $until = $since.AddDays(1) }
 $fmt = 'g'  # locale short date+time, what Outlook Restrict expects
 $ol = $null
+$requestedFrom = $since.ToString('yyyy-MM-dd'); $requestedTo = $until.AddDays(-1).ToString('yyyy-MM-dd')
+$scope = 'default_account_only: delivered mail folders (excluding Deleted/Junk/Drafts/Outbox) and default calendar; local COM-visible items only'
+if (-not $mailAllFolders) { $scope = 'default_account_only: Inbox and Sent only, and default calendar; local COM-visible items only' }
+Write-OutlookStatus $root 'outlook_com' $requestedFrom $requestedTo 'partial' 0 $scope @('collection started; no completion verified') @{ mail_scope = 'default_account_only'; mail_status = 'partial'; calendar_status = 'partial'; mail_rows = $script:observedRows; calendar_rows = 0 }
 
 # ── 달 목록: 기간과 겹치는 달을 최신 달부터. 각 달의 [start, end) 는 기간에 맞춰 자른다 ─────────────
 $months = New-Object System.Collections.Generic.List[object]
@@ -138,10 +143,11 @@ function Load-Coverage {
             } catch {}
         }
         $j = Get-Content -Raw -Encoding UTF8 $covP | ConvertFrom-Json
+        $script:previousFolderScope = [string]$j.folder_scope
         $ver = 0; try { $ver = [int]$j.version } catch {}
         $w = ''; try { $w = [string]$j.writer } catch {}
         $ss = $true; try { $ss = [bool]$j.store_subject } catch {}
-        if ($ver -ne 2 -or $w -ne $writer -or $ss -ne $storeSubject) {
+        if ($ver -ne 3 -or $w -ne $writer -or $ss -ne $storeSubject -or [bool]$j.mail_all_folders -ne $mailAllFolders -or [bool]$j.mail_body -ne $mailBody -or [int]$j.context_chars -ne $contextChars) {
             Write-Host ("[outlook] 완료 표가 이번 실행과 맞지 않아(버전 {0} · 작성 {1} · 제목 저장 {2}) 처음부터 읽습니다" -f $ver, $w, $ss)
             return $c
         }
@@ -170,6 +176,8 @@ function Load-Coverage {
                         if ($kind -eq 'mail') {
                             $e.inbox_done = [bool]$p.Value.inbox_done; $e.inbox_before = [string]$p.Value.inbox_before
                             $e.sent_done = [bool]$p.Value.sent_done;   $e.sent_before = [string]$p.Value.sent_before
+                            $e.folders = @{}
+                            if ($p.Value.folders) { foreach ($fp in $p.Value.folders.PSObject.Properties) { $e.folders[$fp.Name] = @{ done = [bool]$fp.Value.done; before = [string]$fp.Value.before } } }
                         } else {
                             $e.from = [string]$p.Value.from
                         }
@@ -183,7 +191,7 @@ function Load-Coverage {
 }
 function Save-Coverage($c) {
     try {
-        $o = [ordered]@{ version = 2; writer = $writer; store_subject = $storeSubject; keep_days = $KeepDays;
+        $o = [ordered]@{ version = 3; writer = $writer; store_subject = $storeSubject; keep_days = $KeepDays; mail_all_folders = $mailAllFolders; mail_body = $mailBody; context_chars = $contextChars; folder_scope = $script:folderScope;
                          when = (Get-Date).ToString('yyyy-MM-dd HH:mm'); mail = [ordered]@{}; calendar = [ordered]@{};
                          partial = [ordered]@{ mail = [ordered]@{}; calendar = [ordered]@{} } }
         foreach ($kind in @('mail', 'calendar')) {
@@ -197,12 +205,12 @@ function Save-Coverage($c) {
                 $x = [ordered]@{ start = $e.start.ToString($TS); end = $e.end.ToString($TS) }
                 if ($kind -eq 'mail') {
                     $x.inbox_done = [bool]$e.inbox_done; $x.inbox_before = [string]$e.inbox_before
-                    $x.sent_done = [bool]$e.sent_done;   $x.sent_before = [string]$e.sent_before
+                    $x.sent_done = [bool]$e.sent_done;   $x.sent_before = [string]$e.sent_before; $x.folders = $e.folders
                 } else { $x.from = [string]$e.from }
                 $o.partial[$kind][$k] = $x
             }
         }
-        ($o | ConvertTo-Json -Depth 5) | Set-Content -Path $covP -Encoding UTF8
+        ($o | ConvertTo-Json -Depth 12) | Set-Content -Path $covP -Encoding UTF8
     } catch { Write-Host ("[outlook] coverage.json 저장 실패: {0}" -f $_.Exception.Message) }
 }
 function Test-Covered([string]$kind, $mo) {
@@ -231,15 +239,15 @@ function Month-Of([string]$line, [int]$timeCol) {
 function Load-CsvByMonth([string]$path, [int]$timeCol) {
     $by = @{}
     if (-not (Test-Path $path)) { return $by }
-    $cut = (Get-Date).Date.AddDays(-$KeepDays)
+    $hdr = $(if ($timeCol -eq 1) { $MAIL_HEADER } else { $CAL_HEADER })
     $n = 0
-    foreach ($line in (Read-Lines $path)) {
+    foreach ($line in (Read-OutlookCsvLines $root $path $hdr)) {
         $n++
         if ($n -eq 1) { continue }                          # 머리말
         if (-not $line) { continue }
         $mo = Month-Of $line $timeCol
         if (-not $mo) { continue }                          # 형식이 어긋난 행은 버린다(구판 헤더 등)
-        if ($mo.date -lt $cut) { continue }                 # KeepDays 보다 오래된 행은 버린다
+        # Existing history is retained; KeepDays no longer deletes prior observations.
         if (-not $by.ContainsKey($mo.key)) { $by[$mo.key] = New-Object System.Collections.Generic.List[string] }
         $by[$mo.key].Add($line)
     }
@@ -255,28 +263,10 @@ function Add-Rows($by, $rows, [int]$timeCol, [string]$defaultKey) {
     }
 }
 function Write-CsvByMonth([string]$path, [string]$header, $by, [bool]$dedupe) {
-    $lines = New-Object System.Collections.Generic.List[string]
+    $lines = New-Object 'System.Collections.Generic.List[string]'
     $lines.Add($header)
-    $seen = New-Object 'System.Collections.Generic.HashSet[string]'
-    foreach ($k in ($by.Keys | Sort-Object -Descending)) {
-        foreach ($line in $by[$k]) {
-            if ($dedupe) { if ($seen.Add($line)) { $lines.Add($line) } }   # 일정: 달 경계·이어 읽기 경계의 같은 회차만 한 번
-            else { $lines.Add($line) }                                      # 메일: 같은 분·같은 제목의 두 통도 실제 2건
-        }
-    }
-    $tmp = $path + '.tmp'
-    [System.IO.File]::WriteAllLines($tmp, $lines, [System.Text.Encoding]::UTF8)
-    $ok = $false
-    for ($i = 0; $i -lt 5 -and -not $ok; $i++) {
-        try { Move-Item -LiteralPath $tmp -Destination $path -Force; $ok = $true }
-        catch { Start-Sleep -Milliseconds 200 }             # 화면(/api/dash)이 CSV 를 읽는 중 - 잠시 뒤 다시
-    }
-    if (-not $ok) {
-        # 교체가 계속 막히면 제자리에 쓴다(예전 방식) - 한 달 쓰기 실패로 수집 전체를 끊지 않는다
-        try { [System.IO.File]::WriteAllLines($path, $lines, [System.Text.Encoding]::UTF8) } catch { Write-Host ("[outlook] 경고: {0} 저장 실패 - {1}" -f (Split-Path -Leaf $path), $_.Exception.Message) }
-        try { Remove-Item -LiteralPath $tmp -ErrorAction SilentlyContinue } catch {}
-    }
-    return ($lines.Count - 1)
+    foreach ($key in ($by.Keys | Sort-Object)) { foreach ($line in $by[$key]) { $lines.Add($line) } }
+    return Merge-OutlookCsv $root $path $lines.ToArray() $(if ($path -eq $mailP) { 'mail' } else { 'calendar' })
 }
 
 # ── 버전 강건성: 2016/2019/2021/365 '클래식' Outlook 은 전부 동일한 COM(Outlook.Application)
@@ -307,6 +297,7 @@ function Set-SkipReason([string]$reason) {
         $f = Join-Path $outDir 'outlook_skip.json'
         $o = [ordered]@{ reason = $reason; when = (Get-Date).ToString('yyyy-MM-dd HH:mm') }
         ($o | ConvertTo-Json -Compress) | Set-Content -Path $f -Encoding UTF8
+        Write-OutlookStatus $root 'outlook_com' $requestedFrom $requestedTo 'blocked' $script:observedRows $scope @($reason) @{ mail_scope = 'default_account_only'; mail_status = 'failed'; calendar_status = 'failed'; mail_rows = $script:observedRows; calendar_rows = $script:observedCalendarRows }
     } catch {}
 }
 function Clear-SkipReason {
@@ -363,16 +354,18 @@ function Read-CalendarMonth($ns, $mo, [string]$resumeFrom) {
             if ($SelfTestDelayMs -gt 0) { Start-Sleep -Milliseconds $SelfTestDelayMs }
             if ($sw.Elapsed.TotalSeconds -gt $halfBudget) { $script:stopReason = ('일정 시간 예산({0}초) 도달' -f [math]::Round($halfBudget, 1)); break }
             $rows.Add(('{0},{1},False,2,{2},,,3,1' -f $st.ToString('yyyy-MM-dd HH:mm'), $st.AddHours(1).ToString('yyyy-MM-dd HH:mm'), ('selftest meeting ' + $i)))
+            $script:observedCalendarRows++
             $script:calLast = $st.ToString($TS)
         }
         return $rows
     }
+    try {
     $cal = $ns.GetDefaultFolder(9)  # olFolderCalendar
     $items = $cal.Items
-    $items.IncludeRecurrences = $true
     # IncludeRecurrences 는 [Start] 오름차순 정렬을 요구한다(COM 규칙 - 내림차순이면 회차 전개가 깨진다). 예산에 닿으면
     # 마지막 시작 시각을 표식으로 남겨 다음 실행이 거기서부터 잇는다.
     $items.Sort('[Start]')
+    $items.IncludeRecurrences = $true
     $flt = ("[Start] < '{0}' AND [End] >= '{1}' AND [Start] >= '{2}'" -f $mo.end.ToString($fmt), $mo.start.ToString($fmt), $lo.ToString($fmt))
     if ($lo -le $mo.start) { $flt = ("[Start] < '{0}' AND [End] >= '{1}'" -f $mo.end.ToString($fmt), $mo.start.ToString($fmt)) }
     $sel = $items.Restrict($flt)
@@ -380,7 +373,7 @@ function Read-CalendarMonth($ns, $mo, [string]$resumeFrom) {
     foreach ($it in $sel) {
         $count++
         if ($count -gt 8000) { $script:stopReason = '일정 상한 8000건(깨진 반복 일정?)'; break }   # runaway guard for broken recurrences
-        if (($count % 100) -eq 0 -and $sw.Elapsed.TotalSeconds -gt $halfBudget) {
+        if ($sw.Elapsed.TotalSeconds -gt $halfBudget) {
             $script:stopReason = ('일정 시간 예산({0}초) 도달' -f [math]::Round($halfBudget, 1)); break
         }
         try {
@@ -395,123 +388,109 @@ function Read-CalendarMonth($ns, $mo, [string]$resumeFrom) {
                 $it.Start.ToString('yyyy-MM-dd HH:mm'), $it.End.ToString('yyyy-MM-dd HH:mm'), `
                 $it.AllDayEvent, $it.BusyStatus, (Csv-Escape $subj), `
                 (Csv-Escape ([string]$it.Categories)), (Csv-Escape ([string]$it.Location)), $resp, $mst))
+            $script:observedCalendarRows++
+            if (($rows.Count % 100) -eq 0) { $null = Merge-OutlookCsv $root $calP (@($CAL_HEADER) + @($rows)) 'calendar' }
             try { $script:calLast = $it.Start.ToString($TS) } catch {}
-        } catch {}
+        } catch { $script:stopReason = 'calendar item could not be read'; $script:collectionProblems.Add($script:stopReason) }
     }
+    } catch { $script:stopReason = 'calendar query or enumeration failed'; $script:collectionProblems.Add($script:stopReason) }
+    if ($rows.Count) { $null = Merge-OutlookCsv $root $calP (@($CAL_HEADER) + @($rows)) 'calendar' }
+    if (@($script:collectionProblems | Where-Object { $_ -like 'calendar *' }).Count) { $script:calLast = '' }
     return $rows
 }
 function Read-MailMonth($ns, $mo, [string[]]$me, $state) {
-    # 반환: 이 달의 inbox+sent CSV 행 목록(state 에 '여기까지 읽음' 표식이 있으면 그 이전만). 예산에 닿으면
-    # $script:stopReason 을 채우고, 멈춘 편지함의 경계 분(같은 분의 행은 버리고 다음에 다시 읽는다)을 state 에 남긴다.
-    # rcv = 수신 구분: to(직접 수신) / cc(참조) / bulk(내 주소가 To/CC에 없음 - 배포리스트·공지)
-    # CC·단체발송이 본인 업무로 계상되는 오류를 분석기에서 분리하기 위한 핵심 열이다.
-    $rows = New-Object System.Collections.Generic.List[string]
+    $rows = New-Object 'System.Collections.Generic.List[string]'
     $script:stopReason = ''
-    $boxes = @()
-    if ($SelfTest) {
-        $boxes = @(@{ name = 'inbox'; field = '[ReceivedTime]' }, @{ name = 'sent'; field = '[SentOn]' })
-    } else {
-        $boxes = @(
-            @{ name = 'inbox'; folder = $ns.GetDefaultFolder(6); field = '[ReceivedTime]' },
-            @{ name = 'sent';  folder = $ns.GetDefaultFolder(5); field = '[SentOn]' }
-        )
-    }
+    if (-not $state.folders) { $state.folders = @{} }
+    $boxes = $script:mailFolders
+    if ($SelfTest) { $boxes = @(@{ name = 'inbox'; key = 'self-inbox'; field = '[ReceivedTime]' }, @{ name = 'sent'; key = 'self-sent'; field = '[SentOn]' }) }
     foreach ($b in $boxes) {
-        $doneKey = $b.name + '_done'; $beforeKey = $b.name + '_before'
-        if ($state[$doneKey]) { continue }
+        if (-not $state.folders.ContainsKey($b.key)) { $state.folders[$b.key] = @{ done = $false; before = '' } }
+        $cursor = $state.folders[$b.key]
+        if ($cursor.done) { continue }
+        if ($sw.Elapsed.TotalSeconds -gt $BudgetSec) { $script:stopReason = 'mail time budget reached'; break }
         $upper = $mo.end
-        if ($state[$beforeKey]) {
-            # 경계 분 '이하'를 다시 읽는다 - Restrict 는 분 단위 문자열이라 (경계 + 1분) 미만으로 잡아야 그 분의 행이 전부 든다
-            try { $upper = ([datetime]::ParseExact([string]$state[$beforeKey], $TS, $null)).AddMinutes(1) } catch {}
-            if ($upper -gt $mo.end) { $upper = $mo.end }
-        }
-        $boxRows = New-Object System.Collections.Generic.List[string]
-        $stop = ''; $lastT = $null
-        if ($SelfTest) {
-            for ($i = 0; $i -lt $SelfTest; $i++) {
-                $t = $mo.end.AddMinutes(-1 - $i * 97)
-                if ($t -lt $mo.start) { $t = $mo.start.AddMinutes($i) }
-                if ($t -ge $upper) { continue }
-                if ($SelfTestDelayMs -gt 0) { Start-Sleep -Milliseconds $SelfTestDelayMs }
-                if ($sw.Elapsed.TotalSeconds -gt $BudgetSec) { $stop = ('시간 예산 {0}초' -f $BudgetSec); break }
-                $boxRows.Add(('{0},{1},{2},{3},{4},{5}' -f $b.name, $t.ToString('yyyy-MM-dd HH:mm'), 'selftest', ('selftest mail ' + $i), ('conv ' + ($i % 3)), $(if ($b.name -eq 'inbox') { 'to' } else { '' })))
-                $lastT = $t
+        if ($cursor.before) { try { $upper = [datetime]::ParseExact($cursor.before, $TS, $null).AddMinutes(1); if ($upper -gt $mo.end) { $upper = $mo.end } } catch {} }
+        $lastT = $null; $stopped = $false; $failed = $false; $n = 0
+        try {
+            if ($SelfTest) {
+                $selection = 0..($SelfTest - 1)
+            } else {
+                $items = $b.folder.Items
+                $items.Sort($b.field, $true)
+                $filter = ("{0} >= '{1}' AND {0} < '{2}'" -f $b.field, $mo.start.ToString($fmt), $upper.ToString($fmt))
+                $selection = $items.Restrict($filter)
             }
-        } else {
-            $mi = $b.folder.Items
-            $mi.Sort($b.field, $true)                   # 최신순 - 예산에 닿으면 '여기까지 읽음' 경계를 남기고 다음 실행이 그 아래를 잇는다
-            $mflt = ("{0} >= '{1}' AND {0} < '{2}'" -f $b.field, $mo.start.ToString($fmt), $upper.ToString($fmt))
-            $msel = $mi.Restrict($mflt)
-            $n = 0
-            foreach ($m in $msel) {
+            foreach ($m in $selection) {
                 $n++
-                if ($n -gt 20000) { $stop = ('{0} 상한 20000건' -f $b.name); break }
-                if (($n % 50) -eq 0 -and $sw.Elapsed.TotalSeconds -gt $BudgetSec) { $stop = ('시간 예산 {0}초' -f $BudgetSec); break }
+                if ($SelfTestDelayMs -gt 0) { Start-Sleep -Milliseconds $SelfTestDelayMs }
+                if ($sw.Elapsed.TotalSeconds -gt $BudgetSec -or $n -gt 20000) { $stopped = $true; break }
                 try {
-                    if ($m.Class -ne 43) { continue }  # olMail only
-                    $t = if ($b.name -eq 'inbox') { $m.ReceivedTime } else { $m.SentOn }
-                    $subj = ''
-                    $conv = [string]$m.ConversationTopic
-                    if ($storeSubject) { $subj = [string]$m.Subject } else { $conv = Conv-Token $conv }
-                    $rcv = ''
-                    if ($b.name -eq 'inbox') {
-                        # 수신자 판정은 To/CC 표시 문자열(PR_DISPLAY_TO/CC) 1회 조회로 - 수신자마다 PropertyAccessor 를
-                        # 부르던 왕복(N배)을 없앤다. 표시 이름으로 못 찾을 때만 소규모 수신자 목록을 주소로 정밀 확인.
-                        $rcv = 'bulk'
-                        $toS = ''; $ccS = ''
-                        try { $toS = [string]$m.To } catch {}
-                        try { $ccS = [string]$m.CC } catch {}
-                        if (Test-MeInList $toS $me) { $rcv = 'to' }
-                        elseif (Test-MeInList $ccS $me) { $rcv = 'cc' }
-                        elseif (-not $me.Count) { $rcv = 'unknown' }      # 내 주소를 모른다 - bulk 로 버리지 않는다
-                        else {
-                            $nRcpt = 0
-                            try { $nRcpt = [int]$m.Recipients.Count } catch {}
-                            if ($nRcpt -le 12) {
+                    if ($SelfTest) {
+                        $t = $mo.end.AddMinutes(-1 - [int]$m * 97)
+                        if ($t -lt $mo.start) { $t = $mo.start.AddMinutes([int]$m) }
+                        if ($t -ge $upper) { continue }
+                        $vals = @($b.name, $t.ToString('yyyy-MM-dd HH:mm'), 'selftest', ('selftest mail ' + $m), ('conv ' + ([int]$m % 3)), 'to', 'minute', 'synthetic body', 'false', ($mo.key + '-' + $b.key + '-' + $m), 'selftest', '', '', $b.key, 'selftest')
+                    } else {
+                        if ($m.Class -ne 43) { continue }
+                        $box = $b.name; $sender = [string]$m.SenderName
+                        # Custom folders can contain moved sent mail. Only exact known sender identity upgrades it.
+                        try { if (Test-MeInList ([string]$m.SenderEmailAddress) $me) { $box = 'sent' } } catch {}
+                        # Use the same timestamp as this folder's bounded Restrict/sort/cursor.
+                        $t = $(if ($b.name -eq 'sent') { $m.SentOn } else { $m.ReceivedTime })
+                        if ($t -lt $mo.start -or $t -ge $mo.end) { continue }
+                        $subject = ''; $conversation = [string]$m.ConversationTopic
+                        if ($storeSubject) { $subject = [string]$m.Subject } else { $conversation = Conv-Token $conversation }
+                        $rcv = ''
+                        if ($box -eq 'inbox') {
+                            $toS = ''; $ccS = ''
+                            try { $toS = [string]$m.To; $ccS = [string]$m.CC } catch {}
+                            if (Test-MeInList $toS $me) { $rcv = 'to' }
+                            elseif (Test-MeInList $ccS $me) { $rcv = 'cc' }
+                            elseif (-not $me.Count -or (-not $toS -and -not $ccS)) { $rcv = 'unknown' }
+                            else {
+                                $rcv = 'bulk'
                                 try {
-                                    foreach ($rc in $m.Recipients) {
-                                        $addr = ''
-                                        try { $addr = $rc.PropertyAccessor.GetProperty('http://schemas.microsoft.com/mapi/proptag/0x39FE001E') } catch {}
-                                        if (-not $addr) { $addr = $rc.Address }
-                                        $nm = [string]$rc.Name
-                                        $hitMe = $false
-                                        foreach ($meid in $me) {
-                                            if (($addr -and $addr.ToLower() -eq $meid) -or ($nm -and $nm.ToLower() -eq $meid)) { $hitMe = $true; break }
-                                        }
-                                        if ($hitMe) {
-                                            if ($rc.Type -eq 1) { $rcv = 'to'; break }          # olTo
-                                            elseif ($rc.Type -eq 2) { $rcv = 'cc' }             # olCC (To 매칭이 있으면 to 우선)
+                                    if ([int]$m.Recipients.Count -le 12) {
+                                        foreach ($rc in $m.Recipients) {
+                                            $addr = ''
+                                            try { $addr = $rc.PropertyAccessor.GetProperty('http://schemas.microsoft.com/mapi/proptag/0x39FE001E') } catch {}
+                                            if (-not $addr) { $addr = [string]$rc.Address }
+                                            if ((Test-MeInList $addr $me) -or (Test-MeInList ([string]$rc.Name) $me)) {
+                                                if ($rc.Type -eq 1) { $rcv = 'to'; break }
+                                                elseif ($rc.Type -eq 2) { $rcv = 'cc' }
+                                            }
                                         }
                                     }
-                                } catch { $rcv = 'to' }   # 수신자 열람 실패 시 보수적으로 직접 수신 취급
+                                } catch { $rcv = 'unknown' }
                             }
                         }
+                        $context = @(Get-OutlookContext $m $contextChars ($mailBody -and $storeSubject -and $contextChars -gt 0) $script:collectionProblems)
+                        if ($context[1] -eq 'unknown') { $failed = $true }
+                        $entry = ''; $conversationId = ''; $account = ''; $folderPath = ''
+                        try { $entry = [string]$m.EntryID; $conversationId = [string]$m.ConversationID; $account = [string]$b.folder.StoreID; $folderPath = [string]$b.folder.FolderPath } catch { $failed = $true; $script:collectionProblems.Add('message identity or folder inaccessible') }
+                        if (-not $entry -or -not $account) { $failed = $true; $script:collectionProblems.Add('message or account identity empty') }
+                        $sourceId = $(if ($entry) { $account + ':' + $entry } else { '' })
+                        $vals = @($box, $t.ToString('yyyy-MM-dd HH:mm'), $sender, $subject, $conversation, $rcv, 'minute', $context[0], $context[1], $sourceId, 'outlook_com', '', $conversationId, $folderPath, $account)
                     }
-                    $boxRows.Add(('{0},{1},{2},{3},{4},{5}' -f `
-                        $b.name, $t.ToString('yyyy-MM-dd HH:mm'), (Csv-Escape ([string]$m.SenderName)), `
-                        (Csv-Escape $subj), (Csv-Escape $conv), $rcv))
-                    $lastT = $t
-                } catch {}
+                    $rows.Add((($vals | ForEach-Object { Csv-Escape ([string]$_) }) -join ','))
+                    $script:observedRows++; $lastT = $t
+                    if (($n % 100) -eq 0) { $null = Merge-OutlookCsv $root $mailP (@($MAIL_HEADER) + @($rows)) 'mail' }
+                } catch { $failed = $true; $script:collectionProblems.Add('mail item inaccessible: ' + $_.Exception.GetType().Name) }
             }
+        } catch { $failed = $true; $script:collectionProblems.Add('mail folder query failed: ' + $_.Exception.GetType().Name) }
+        if ($rows.Count) { $null = Merge-OutlookCsv $root $mailP (@($MAIL_HEADER) + @($rows)) 'mail' }
+        if ($stopped) {
+            if ($lastT -and -not $failed) { $cursor.before = $lastT.ToString($TS) }
+            $script:stopReason = 'mail time or item limit reached'; break
         }
-        if ($stop) {
-            # 경계 분의 행은 버리고 표식만 남긴다 - 다음 실행이 그 분부터(포함) 다시 읽으므로 빠짐도 중복도 없다
-            if ($lastT) {
-                $bm = $lastT.ToString('yyyy-MM-dd HH:mm')
-                $kept = New-Object System.Collections.Generic.List[string]
-                foreach ($line in $boxRows) { if (-not $line.StartsWith($b.name + ',' + $bm + ',')) { $kept.Add($line) } }
-                $boxRows = $kept
-                $state[$beforeKey] = $lastT.ToString($TS)
-            }
-            foreach ($line in $boxRows) { $rows.Add($line) }
-            $script:stopReason = $stop
-            return $rows
-        }
-        foreach ($line in $boxRows) { $rows.Add($line) }
-        $state[$doneKey] = $true
+        if ($failed) { $cursor.before = ''; $script:stopReason = 'one or more mail items/folders could not be read' }
+        else { $cursor.done = $true }
     }
+    if (@($script:collectionProblems | Where-Object { $_ -notlike 'calendar *' }).Count -and -not $script:stopReason) { $script:stopReason = 'mail scope or item verification incomplete' }
     return $rows
 }
+
 function Months-ToRead([string]$kind) {
     # 읽는 순서: ① 최신 달(새 메일이 붙는 달) → ② 아직 못 읽은 달(최신→과거) → ③ 나머지 재수집 달.
     # 못 읽은 달을 재수집 달보다 앞에 둔다 - 재수집 달을 먼저 읽으면 예산이 거기서 다 닳아 실행을 거듭해도
@@ -630,6 +609,17 @@ try {
     $now = (Get-Date).ToString('yyyy-MM-dd HH:mm')
     $readCal = 0; $readMail = 0
 
+    if (-not $SelfTest) {
+        try { $script:mailFolders = @(Get-OutlookMailFolders $ns $mailAllFolders $script:collectionProblems) }
+        catch { $script:collectionProblems.Add('default mailbox folder discovery failed: ' + $_.Exception.GetType().Name); $script:mailFolders = @() }
+        $scopeKeys = @($script:mailFolders | ForEach-Object { [string]$_.folder.StoreID + ':' + $_.key } | Sort-Object)
+        $script:folderScope = Conv-Token ($scopeKeys -join '|')
+    } else { $script:folderScope = 'selftest-inbox-sent' }
+    if ($script:folderScope -ne $script:previousFolderScope -or $script:collectionProblems.Count) {
+        # A newly added/moved folder changes the declared scope of every completed month.
+        $script:cov.mail = @{}; $script:cov.partial.mail = @{}
+        $mailTodo = @(Months-ToRead 'mail')
+    }
     # ---------- calendar: 최신 달부터, 예산의 절반까지 ----------
     foreach ($mo in $calTodo) {
         if ($sw.Elapsed.TotalSeconds -gt ($BudgetSec * 0.5)) { break }
@@ -639,11 +629,12 @@ try {
         if ($script:stopReason) {
             if ($wasComplete) {
                 # 완료했던 달의 재수집이 끊겼다 - 옛 행을 지키고 다음 실행이 처음부터 다시 읽는다
+                Add-Rows $calBy $rows 0 $mo.key
                 $refreshIncomplete.Add('일정 ' + $mo.key)
                 $warnings.Add(('일정 {0}: {1} - 지난 수집분을 그대로 두고 다음 실행에서 다시 읽습니다' -f $mo.key, $script:stopReason))
             } else {
                 # 부분: 이어 읽던 행(있으면) + 이번 행. 완료 표시는 안 하고 '여기까지' 표식만 남긴다
-                if (-not $p) { $calBy.Remove($mo.key) }
+                # Retain the complete old month, including outside a narrower requested range.
                 Add-Rows $calBy $rows 0 $mo.key
                 $script:cov.partial.calendar[$mo.key] = @{ from = $script:calLast; start = $mo.start; end = $mo.end }
                 $warnings.Add(('일정 {0}: {1} - 이 달은 다음 실행에서 이어서 읽습니다' -f $mo.key, $script:stopReason))
@@ -653,7 +644,7 @@ try {
             Save-Coverage $script:cov
             break
         }
-        if (-not $p) { $calBy.Remove($mo.key) }
+        # Retain the complete old month, including outside a narrower requested range.
         Add-Rows $calBy $rows 0 $mo.key
         $cnt = $(if ($calBy.ContainsKey($mo.key)) { $calBy[$mo.key].Count } else { 0 })
         $script:cov.calendar[$mo.key] = @{ rows = $cnt; when = $now; start = $mo.start; end = $mo.end }
@@ -670,18 +661,19 @@ try {
         if ($sw.Elapsed.TotalSeconds -gt $BudgetSec) { break }
         $wasComplete = Test-Covered 'mail' $mo
         $p = Get-Partial 'mail' $mo
-        $state = @{ inbox_done = $false; inbox_before = ''; sent_done = $false; sent_before = '' }
-        if ($p) { $state.inbox_done = [bool]$p.inbox_done; $state.inbox_before = [string]$p.inbox_before; $state.sent_done = [bool]$p.sent_done; $state.sent_before = [string]$p.sent_before }
+        $state = @{ inbox_done = $false; inbox_before = ''; sent_done = $false; sent_before = ''; folders = @{} }
+        if ($p) { $state.inbox_done = [bool]$p.inbox_done; $state.inbox_before = [string]$p.inbox_before; $state.sent_done = [bool]$p.sent_done; $state.sent_before = [string]$p.sent_before; $state.folders = $p.folders }
         $rows = @(Read-MailMonth $ns $mo $me $state)
         if ($script:stopReason) {
             if ($wasComplete) {
+                Add-Rows $mailBy $rows 1 $mo.key
                 $refreshIncomplete.Add('메일 ' + $mo.key)
                 $warnings.Add(('메일 {0}: {1} 도달 - 지난 수집분을 그대로 두고 다음 실행에서 다시 읽습니다' -f $mo.key, $script:stopReason))
             } else {
-                if (-not $p) { $mailBy.Remove($mo.key) }
+                # Retain the complete old month, including outside a narrower requested range.
                 Add-Rows $mailBy $rows 1 $mo.key
                 $script:cov.partial.mail[$mo.key] = @{ inbox_done = $state.inbox_done; inbox_before = $state.inbox_before;
-                                                       sent_done = $state.sent_done; sent_before = $state.sent_before;
+                                                       sent_done = $state.sent_done; sent_before = $state.sent_before; folders = $state.folders;
                                                        start = $mo.start; end = $mo.end }
                 $warnings.Add(('메일 {0}: {1} 도달 - 이 달은 다음 실행에서 이어서 읽습니다(그다음 오래된 달도)' -f $mo.key, $script:stopReason))
             }
@@ -690,7 +682,7 @@ try {
             Save-Coverage $script:cov
             break
         }
-        if (-not $p) { $mailBy.Remove($mo.key) }
+        # Retain the complete old month, including outside a narrower requested range.
         Add-Rows $mailBy $rows 1 $mo.key
         $cnt = $(if ($mailBy.ContainsKey($mo.key)) { $mailBy[$mo.key].Count } else { 0 })
         $script:cov.mail[$mo.key] = @{ rows = $cnt; when = $now; start = $mo.start; end = $mo.end }
@@ -701,6 +693,15 @@ try {
         Write-Host ("[outlook] 메일 {0}: {1}건 (경과 {2}초)" -f $mo.key, $cnt, [int]$sw.Elapsed.TotalSeconds)
     }
     if (-not (Test-Path $mailP)) { $null = Write-CsvByMonth $mailP $MAIL_HEADER $mailBy $false }
+    # Report canonical persisted counts, not old rows plus repeated observations.
+    $mailBy = Load-CsvByMonth $mailP 1
+    $calBy = Load-CsvByMonth $calP 0
+    foreach ($kind in @('mail', 'calendar')) {
+        $by = $(if ($kind -eq 'mail') { $mailBy } else { $calBy })
+        foreach ($key in @($script:cov[$kind].Keys)) {
+            $script:cov[$kind][$key].rows = $(if ($by.ContainsKey($key)) { $by[$key].Count } else { 0 })
+        }
+    }
     Save-Coverage $script:cov
 
     # ---------- 요약: 기간 안에서 아직 못 읽은 달 ----------
@@ -708,13 +709,16 @@ try {
     $uncCal  = @($months | Where-Object { -not (Test-Covered 'calendar' $_) } | ForEach-Object { $_.key })
     $unc = @($uncMail + $uncCal | Select-Object -Unique | Sort-Object)
     $partialMonths = @(@($script:cov.partial.mail.Keys) + @($script:cov.partial.calendar.Keys) | Select-Object -Unique | Sort-Object)
-    $complete = ($unc.Count -eq 0)
+    $complete = ($unc.Count -eq 0 -and $refreshIncomplete.Count -eq 0 -and $script:collectionProblems.Count -eq 0)
     $nMail = 0; foreach ($k in $mailBy.Keys) { $nMail += $mailBy[$k].Count }
     $nCal = 0;  foreach ($k in $calBy.Keys)  { $nCal  += $calBy[$k].Count }
+    $mailStatus = $(if ($uncMail.Count -eq 0 -and -not @($script:collectionProblems | Where-Object { $_ -notlike 'calendar *' }).Count -and -not @($refreshIncomplete | Where-Object { $_ -like '메일 *' }).Count) { 'complete' } else { 'partial' })
+    $calendarStatus = $(if ($uncCal.Count -eq 0 -and -not @($refreshIncomplete | Where-Object { $_ -like '일정 *' }).Count -and -not @($script:collectionProblems | Where-Object { $_ -like 'calendar *' }).Count) { 'complete' } else { 'partial' })
+    Write-OutlookStatus $root 'outlook_com' $requestedFrom $requestedTo $(if ($complete) { 'complete' } else { 'partial' }) ($script:observedRows + $script:observedCalendarRows) $scope @(@($warnings) + @($script:collectionProblems) + @($unc | ForEach-Object { 'uncovered month: ' + $_ })) @{ mail_scope = 'default_account_only'; mail_status = $mailStatus; calendar_status = $calendarStatus; mail_rows = $script:observedRows; calendar_rows = $script:observedCalendarRows; completed_units = (($months.Count * 2) - $uncMail.Count - $uncCal.Count); total_units = ($months.Count * 2); folders = $script:mailFolders.Count; body_requested = ($mailBody -and $storeSubject -and $contextChars -gt 0); context_chars = $contextChars }
     Clear-SkipReason            # 성공했으니 지난 사유는 지운다
     try {                       # 어느 경로가 채웠는지 기록 - 폴백(색인/Copilot)이 남긴 'index/copilot' 표식을 덮는다
         $src = [ordered]@{ source = 'com'; when = $now; mail = $nMail; calendar = $nCal;
-                           calendar_complete = ($uncCal.Count -eq 0); calendar_recurring_masters = 0; me = @($me);
+                           calendar_complete = ($calendarStatus -eq 'complete'); calendar_recurring_masters = 0; me = @($me);
                            mail_truncated = ($uncMail.Count -gt 0); warnings = @($warnings);
                            coverage_complete = $complete; uncovered_months = @($unc);
                            uncovered_mail = @($uncMail); uncovered_calendar = @($uncCal);
@@ -752,6 +756,7 @@ catch {
         Write-Host '          클래식 Outlook(2016~365)을 실행해 프로필 로그인까지 마친 상태에서 재시도하세요.'
         Write-Host '          (버전은 무관 - 2016/2019/2021/365 모두 동일하게 동작합니다)'
     }
+    Write-OutlookStatus $root 'outlook_com' $requestedFrom $requestedTo $(if ($script:observedRows + $script:observedCalendarRows) { 'partial' } else { 'failed' }) ($script:observedRows + $script:observedCalendarRows) $scope @('COM collection exception; saved observations retained', $_.Exception.GetType().Name) @{ mail_scope = 'default_account_only'; mail_status = $(if ($script:observedRows) { 'partial' } else { 'failed' }); calendar_status = $(if ($script:observedCalendarRows) { 'partial' } else { 'failed' }); mail_rows = $script:observedRows; calendar_rows = $script:observedCalendarRows }
     exit 1
 }
 finally {

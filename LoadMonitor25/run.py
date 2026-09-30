@@ -86,7 +86,7 @@ def finish_run(result_available=False, collect_only=False):
               if s.get("name") not in {"시작", "추가 PC 보관", "완료", "완료(수집만)"}
               and not (s.get("name") == "AI 판정" and not RUN.get("ai_requested"))]
     failures = [s.get("name") for s in stages if s.get("ok") is not True]
-    usable = result_available or any(s.get("ok") is True for s in stages)
+    usable = result_available or any(s.get("ok") is True and not s.get("name", "").startswith("수집 경로 · ") for s in stages)
     status = "complete" if stages and not failures else ("partial" if usable else "failed")
     RUN.update(status=status, failed_stages=failures, finished=time.strftime("%Y-%m-%d %H:%M"))
     label = {"complete": "완료", "partial": "부분 완료", "failed": "실패"}[status]
@@ -170,128 +170,12 @@ def _run_rc(cmd, timeout):
         return -2, [f"실행 실패: {e}"[:200]]
 
 
-def mail_fallbacks(c, d0, d1, data, ps, col, t_run):
-    """Outlook COM 이 이번 실행에서 채우지 못한 파일의 대체 경로 — PC 마다 Outlook 이 달라(새 Outlook
-    전용·2016 시작 마법사·COM 미등록) 메일이 통째로 비는 실측(회사 PC3)에 대응한다.
-      ① Windows Search 색인(Outlook 을 띄우지 않고 읽음) → ② Outlook 웹 → ③ Copilot 메일·일정 왕복(설정)
-    기준은 '신선도'다: COM 이 이번 실행(t_run 이후)에 쓴 파일은 비어 있어도 건드리지 않고(기간에 메일이
-    없는 정상 PC 가 매번 Copilot 왕복을 하지 않게), 그렇지 않은 파일은 지난 폴백 자료가 남아 있어도
-    --force 로 갱신한다(COM 없는 PC 의 자료가 첫 수집일에 얼어붙지 않게 — 검증에서 확정된 결함).
-    폴백은 행을 얻었을 때만 파일을 쓰므로, 재질의가 실패하면 지난 자료는 그대로 남는다.
-    · 색인은 반복 회의를 전개하지 못한다(마스터 1건, 감사 outlook-7) — mail_source.json 의 calendar_complete=false
-      (exit 3) 면 일정('cal')을 남겨 웹(주 보기 = 회차 전개)으로 다시 읽고, 끝내 못 읽으면 힌트를 남긴다.
-    · COM 수집기는 달마다 CSV 를 쓰고 달별 완료 표(coverage.json)를 남긴다. 대체 경로가 CSV 를 다시 쓰면 그 표는
-      CSV 와 맞지 않으므로 지운다(수집기도 mail_source.source 가 com 이 아니면 표를 버린다 — 이중 안전장치)."""
-    paths = {"mail": os.path.join(data, "outlook", "mail.csv"),
-             "cal": os.path.join(data, "outlook", "calendar.csv")}
-    src_p = os.path.join(data, "outlook", "mail_source.json")
-    cov_p = os.path.join(data, "outlook", "coverage.json")
-    cal_incomplete = {"n": 0, "mtime": None}    # 색인이 남긴 불완전한 일정 — calendar.csv 가 그 뒤 다시 쓰이면 해소
-
-    def needs(k):            # COM 이 이번 실행에서 쓰지 않은 파일(없거나 t_run 이전 것) — 색인의 불완전한 일정도 '필요'
-        mt = _mtime(paths[k])
-        if mt is None or mt < t_run:
-            return True
-        if k == "cal" and cal_incomplete["mtime"] is not None and mt <= cal_incomplete["mtime"]:
-            return True
-        return False
-
-    def finish():
-        """마무리 — 대체 경로가 이번 실행에서 CSV 를 썼으면(mail_source.source 가 com 이 아님) COM 의 달별 완료 표를 지운다.
-        표를 두면 다음 COM 실행이 '완료된 달'을 건너뛰어 색인·웹 자료(반복 회의 미전개 등)가 영영 남는다(재검증 지적)."""
-        src_now = _read_json(src_p) if (_mtime(src_p) or 0) >= t_run - 2 else {}
-        if isinstance(src_now, dict) and src_now.get("source") and src_now.get("source") != "com":
-            try:
-                if os.path.exists(cov_p):
-                    os.remove(cov_p)
-                    print(f"   (COM 달별 완료 표 삭제 — {src_now.get('source')} 경로가 메일·일정을 다시 썼으므로 다음 COM 수집은 처음부터)")
-            except OSError:
-                pass
-        if cal_incomplete["mtime"] is not None and needs("cal"):
-            record("Outlook 일정 완전성", False, 0.0,
-                   f"색인 경로: 반복 회의 {cal_incomplete['n']}건 미전개(회의 시간 과소) — 전용 Edge 창의 Outlook 탭에 "
-                   "회사 계정으로 로그인한 뒤 [Outlook 웹 읽기] 또는 재실행")
-        return not needs("mail")
-
-    # COM 이 이번 실행에 쓰긴 했는데 0건인 파일 — 위 '신선도' 기준에 따라 대체 경로를 돌리지 않는다.
-    # 그 판단은 'COM 이 제대로 붙었다' 가 참일 때만 옳다. 보조 계정·다른 기본 프로필에 붙었거나
-    # Restrict 로캘이 어긋난 PC 에서는 0건이 정상이 아닌데, 지금까지 이 상태는 화면 어디에도
-    # 뜨지 않아 메일 신호가 통째로 빈 채 로드율이 나왔다(감사 지적). 절충은 그대로 두고 알리기만 한다.
-    blank = [{"mail": "메일", "cal": "일정"}[k] for k in ("mail", "cal")
-             if not needs(k) and not _csv_has_rows(paths[k])]
-    if blank:
-        why = (f"Outlook COM 이 {'·'.join(blank)}을(를) 0건으로 채웠습니다 — 대체 경로(색인·웹·Copilot)는 "
-               "설계상 건너뜁니다. 이 기간에 정말 없었다면 정상이고, 아니라면 COM 이 다른 프로필·계정에 "
-               "붙은 것입니다 → 대시보드 [Outlook 웹 읽기] 로 확인하세요")
-        print(f"\n   [!] {why}")
-        record("Outlook 메일 0건 점검", True, 0.0, why)
-
-    kinds = [k for k in ("mail", "cal") if needs(k)]
-    if not kinds:
-        return finish()
-    stale = [k for k in kinds if _csv_has_rows(paths[k])]
-    print("\n── Outlook 결과를 이번 실행에서 얻지 못해 대체 경로로 다시 시도합니다 (이 PC 의 Outlook 버전·상태 때문일 수 있음)"
-          + (f" — 지난 대체 수집 자료({', '.join(stale)}) 갱신" if stale else ""))
-    only = ["-Only", kinds[0]] if len(kinds) == 1 else []
-    name1 = "Outlook 대체① Windows Search 색인 (COM 불가 PC)"
-    print(f"\n── {name1}")
-    t1 = time.time()
-    rc1, tail1 = _run_rc(ps + [os.path.join(col, "Get-OutlookIndex.ps1"), "-From", d0, "-To", d1, "-Force"] + only, 240)
-    for ln in tail1:
-        print("   " + ln)
-    src = _read_json(src_p) if (_mtime(src_p) or 0) >= t1 - 2 else {}     # 이번 색인 실행이 쓴 것만(파일 시각 해상도 여유 2초)
-    if src.get("source") == "index" and src.get("calendar_complete") is False:
-        cal_incomplete = {"n": int(src.get("calendar_recurring_masters") or 0), "mtime": _mtime(paths["cal"]) or 0}
-    if rc1 == 3:
-        record(name1, True, time.time() - t1,
-               f"저장했지만 일정 불완전 — 반복 회의 마스터 {cal_incomplete['n']}건 미전개(색인 한계) → Outlook 웹으로 일정 재시도")
-    else:
-        record(name1, rc1 == 0, time.time() - t1,
-               (tail1[-1][:200] if tail1 else "") if rc1 == 0 else " / ".join(tail1[-2:]))
-    kinds = [k for k in kinds if needs(k)]
-    if not kinds:
-        return finish()
-    months = max(1, (date.fromisoformat(d1) - date.fromisoformat(d0)).days // 30 + 1)
-    # ② Outlook 웹 — 버전 무관·LLM 무관(지어낸 행 없음). 전용 Edge 프로필에 회사 계정 로그인 1회 필요.
-    #    종료 코드 2 = 로그인 필요 → 단계는 실패로 남되 사유를 명확히 적는다(화면이 그대로 보여준다).
-    if c.get("mailViaWeb", True) and "--no-mail-web" not in sys.argv:
-        only = ["--only", kinds[0]] if len(kinds) == 1 else []
-        name2 = "Outlook 대체② Outlook 웹 (전용 Edge 프로필 — 버전 무관)"
-        t2 = time.time()
-        try:
-            p2 = subprocess.run([sys.executable, os.path.join(col, "Get-OutlookWeb.py"),
-                                 "--from", d0, "--to", d1, "--force"] + only,
-                                capture_output=True, timeout=180 + 150 * months, cwd=ROOT,
-                                env=dict(os.environ, PYTHONIOENCODING="utf-8"), creationflags=NO_WIN)
-            out2 = (p2.stdout or b"").decode("utf-8", "replace") + (p2.stderr or b"").decode("utf-8", "replace")
-            tail2 = out2.strip().splitlines()[-6:]
-            print(f"\n── {name2}")
-            for ln in tail2:
-                print("   " + ln)
-            if p2.returncode == 2:
-                record(name2, False, time.time() - t2,
-                       "로그인 필요 — 전용 Edge 창(Copilot 과 같은 창)의 Outlook 탭에서 회사 계정을 1회 선택/로그인한 뒤 다시 실행")
-            else:
-                record(name2, p2.returncode == 0, time.time() - t2,
-                       (tail2[-1][:200] if tail2 else "") if p2.returncode == 0 else " / ".join(tail2[-2:]))
-        except subprocess.TimeoutExpired:
-            print(f"\n── {name2}\n   시간 초과 — 건너뜀")
-            record(name2, False, time.time() - t2, "시간 초과")
-        except OSError as e:
-            record(name2, False, time.time() - t2, str(e)[:200])
-        kinds = [k for k in kinds if needs(k)]
-        if not kinds:
-            return finish()
-    else:
-        record("Outlook 대체② Outlook 웹", True, 0.0, "건너뜀(config.mailViaWeb=false)")
-    if not c.get("mailViaCopilot", True) or "--no-mail-copilot" in sys.argv:
-        record("Outlook 대체③ Copilot 메일·일정", True, 0.0, "건너뜀(config.mailViaCopilot=false)")
-        return finish()
-    only = ["--only", kinds[0]] if len(kinds) == 1 else []
-    step("Outlook 대체③ Copilot 메일·일정 왕복 (COM·색인·웹 모두 불가 PC)",
-         [sys.executable, os.path.join(col, "Get-MailViaCopilot.py"), "--from", d0, "--to", d1, "--force"] + only,
-         300 + 600 * months * 2)
-    return finish()
+def mail_fallbacks(c, d0, d1, data, ps, col, t_run, process_ok=True):
+    """보충 경로는 CSV 건수·수정시각 대신 명시된 수집 범위로 판단한다."""
+    from communication import collect_mail
+    result = collect_mail(ROOT, c, d0, d1, step, record, t_run, process_ok=process_ok, ps=ps)
+    RUN.setdefault("collection", {})["outlook"] = result
+    return result["status"] == "complete"
 
 
 def _outlook_budget(c, d0, d1):
@@ -700,46 +584,15 @@ def main():
         step("PC 가동 보강 (브라우저 방문 시각 — URL 미수집)",
              [sys.executable, os.path.join(col, "Get-PcOnHints.py"), "--from", d0, "--to", d1], 240)
         t_outlook = time.time()
-        collect_outlook(c, d0, d1, data, ps, col)             # 달 단위 이어서 수집 — 예산에 못 끝내면 진행이 있는 한 최대 3회
-        mail_fallbacks(c, d0, d1, data, ps, col, t_outlook)   # COM 이 못 채운 파일만 색인 → Copilot 순으로 대체 (PC별 Outlook 차이)
+        outlook_ok = collect_outlook(c, d0, d1, data, ps, col)  # 달 단위 이어서 수집, 최대 3회
+        mail_fallbacks(c, d0, d1, data, ps, col, t_outlook, outlook_ok)
         step("파일 수정 이력", ps + [os.path.join(col, "Get-FileActivity.ps1"), "-From", d0, "-To", d1], 300)
         step("최근 문서 (Recent·MRU)", ps + [os.path.join(col, "Get-RecentFiles.ps1"), "-From", d0, "-To", d1], 180)
         step("git 커밋 (SW개발)", [sys.executable, os.path.join(col, "Get-GitActivity.py"),
                                 "--from", d0, "--to", d1], 240)
-        # 팀즈: Graph(설정 시) → 실패하면 Copilot 무개입 추출로 자동 대체
-        #       (회사 정책이 device code·사용자 동의를 막아도 Copilot 경로는 동작한다)
-        teams_ok = False
-        if "--no-teams" not in sys.argv and (c.get("graph") or {}).get("clientId"):
-            # 비대화 모드 — 토큰이 만료됐을 때 device-code 입력을 기다리며 300초를 버리지 않는다
-            # (여기엔 콘솔이 없어 사용자는 그 프롬프트를 볼 수도 없다). 로그인은 --login-only 로.
-            teams_ok = step("팀즈 채팅 (Graph)",
-                            [sys.executable, os.path.join(col, "Get-TeamsChats.py"),
-                             "--from", d0, "--to", d1, "--non-interactive"], 300)
-        # 웹 경로 — 메일(Get-OutlookWeb.py)과 같은 방식으로 전용 Edge 프로필에서 팀즈를 읽는다.
-        # 앱이 꺼져 있어도 되고, 창 읽기(UIA)처럼 화면에 그려진 부분만 긁는 것이 아니라 문서 구조를
-        # 읽으므로 창 크기·테마·팀즈 버전에 좌우되지 않는다(PC 마다 0건이던 제보의 원인).
-        # 로그인이 필요하면 2로 끝나 아래 경로로 이어진다 — 그 안내는 수집기가 화면에 남긴다.
-        if not teams_ok and "--no-teams" not in sys.argv and c.get("teamsWeb", True):
-            teams_ok = step("팀즈 채팅 (웹 — 전용 Edge, 앱이 꺼져 있어도)",
-                            [sys.executable, os.path.join(col, "Get-TeamsWeb.py"),
-                             "--from", d0, "--to", d1], 1200)
-        # Copilot 은 '판정 엔진'이다. 팀즈 조회는 테넌트에 커넥터가 있어야만 되는 별개
-        # 기능이라, 없는 환경에서 계속 물으면 판정에 쓸 세션만 소진된다(실측).
-        use_cp_teams = bool(c.get("teamsViaCopilot"))
-        if not teams_ok and not use_cp_teams and "--no-teams" not in sys.argv:
-            print("\n── 팀즈 채팅 (Copilot 경로 건너뜀 — config.teamsViaCopilot=false)")
-            print("   팀즈는 웹 경로(전용 Edge)·상시 샘플러(collect\\Start-TeamsSampler.ps1)·Graph 로 모읍니다.")
-            print("   Copilot 은 AI 판정 전용으로 아껴 둡니다.")
-            record("팀즈 채팅", True, 0.0, "Copilot 경로 건너뜀(설정)")
-        if not teams_ok and use_cp_teams and "--no-teams" not in sys.argv:
-            teams_ok = step("팀즈 채팅 (Copilot 무개입 — Graph 불가 시 대체)",
-                            [sys.executable, os.path.join(col, "Get-TeamsViaCopilot.py"),
-                             "--from", d0, "--to", d1],
-                            300 + 600 * max(1, ((date.fromisoformat(d1)
-                                                 - date.fromisoformat(d0)).days // 30 + 1)))
-        if not teams_ok and "--no-teams" not in sys.argv:
-            step("팀즈 채팅 (열린 창 읽기 — 앱이 켜져 있으면)",
-                 ps + [os.path.join(col, "Get-TeamsWindow.ps1")], 120)
+        from communication import collect_teams
+        RUN.setdefault("collection", {})["teams"] = collect_teams(
+            ROOT, c, d0, d1, step, record, ps=ps, argv=sys.argv)
 
     if "--collect-only" in sys.argv:
         print("\n[수집만] 이 PC 의 데이터 수집을 마쳤습니다 — 분석은 하지 않았습니다.")

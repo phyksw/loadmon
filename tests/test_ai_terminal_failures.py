@@ -154,6 +154,11 @@ class MailTerminalTests(unittest.TestCase):
             self.calls.append(args)
             return SimpleNamespace(stdout=json.dumps({"ok": False, "phase": "login_required"}).encode())
         self.env = failures()
+        # Exercise the production atomic writer/status helper inside the temporary root.
+        state_env = {"__name__": "collection_state_for_mail_test"}
+        exec(compile((ROOT / "core/collection_state.py").read_text(encoding="utf-8-sig"),
+                     str(ROOT / "core/collection_state.py"), "exec"), state_env)
+        self.env.update(merge_csv=state_env["merge_csv"], write_status=state_env["write_status"])
         self.env.update(ROOT=str(self.root), OUT_DIR=str(self.out),
                         UNAVAILABLE_FLAG=str(self.out / "mail_copilot_unavailable.json"),
                         datetime=datetime, timedelta=timedelta, os=os, json=json, re=re,

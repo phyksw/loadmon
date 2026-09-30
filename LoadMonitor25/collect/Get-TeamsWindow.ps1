@@ -10,7 +10,7 @@
 #    표기가 없는 줄은 수집일로 '추정'하고, 같은 (발신자·시각·요지)가 7일 안에 이미 있으면 다시 넣지 않는다
 #    (채팅 목록 미리보기가 매일 새 신호가 되던 문제).
 #  · 왼쪽 채팅 목록(좁은 열의 ListItem)은 메시지 영역이 보일 때 파싱에서 제외한다(-KeepChatList 로 해제).
-param([int]$MaxElements = 4000, [string]$RawFile = '', [switch]$KeepChatList)
+param([int]$MaxElements = 4000, [string]$RawFile = '', [switch]$KeepChatList, [string]$From = '', [string]$To = '')
 
 $ErrorActionPreference = 'Stop'
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}   # run.py 가 UTF-8 로 읽는다
@@ -25,6 +25,28 @@ Add-Type -AssemblyName UIAutomationTypes
 # ── config.json 은 한 번만 읽는다 (teamsTimeRegex · teamsSelfNames · owner) ──────────────────
 $cfgObj = $null
 try { $cfgObj = Get-Content -Raw -Encoding UTF8 (Join-Path $root 'config\config.json') | ConvertFrom-Json } catch {}
+$contextChars = 4000
+try { if ($cfgObj.collection.contextChars) { $contextChars = [Math]::Max(200, [Math]::Min(20000, [int]$cfgObj.collection.contextChars)) } } catch {}
+if (-not $From) { $From = (Get-Date).Date.AddDays(-90).ToString('yyyy-MM-dd') }
+if (-not $To) { $To = (Get-Date).ToString('yyyy-MM-dd') }
+$periodStart = [datetime]::ParseExact($From, 'yyyy-MM-dd', $null)
+$periodEnd = ([datetime]::ParseExact($To, 'yyyy-MM-dd', $null)).AddDays(1)
+function Write-CollectionStatus([string]$state, [int]$rows, [string[]]$reasons) {
+    $statusDir = Join-Path $root 'data\collection_status'
+    if ($RawFile) { $statusDir = Join-Path $outDir 'collection_status' }
+    if (-not (Test-Path -LiteralPath $statusDir)) { New-Item -ItemType Directory -Path $statusDir -Force | Out-Null }
+    $path = Join-Path $statusDir 'teams_app.json'
+    $tmp = $path + '.' + $PID + '.tmp'
+    $item = [ordered]@{ schema = 1; source = 'teams_app'; requested_from = $From; requested_to = $To;
+        status = $state; rows = $rows; scope = '열린 Teams 앱의 현재 UIA 화면; 전체 채팅·기간 완주를 보장하지 않음';
+        reasons = @('visible_app_snapshot') + @($reasons); completed_units = 0; total_units = $null;
+        finished_at = ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() / 1000.0) }
+    [System.IO.File]::WriteAllText($tmp, ($item | ConvertTo-Json -Depth 5), [System.Text.Encoding]::UTF8)
+    if (Test-Path -LiteralPath $path) { [IO.File]::Replace($tmp, $path, [NullString]::Value) }
+    else { [IO.File]::Move($tmp, $path) }
+}
+Write-CollectionStatus 'partial' 0 @('interrupted')
+
 
 function Get-SelfNames([object]$cfg, [bool]$replay) {
     # 본인 판정 이름 집합(소문자·공백 제거 변형 포함). 재생 모드(-RawFile)는 다른 PC 원문일 수 있어 설정값만 쓴다.
@@ -156,7 +178,8 @@ function Read-TeamsTexts([IntPtr]$hwnd, [int]$maxElements, [bool]$keepList) {
         try {
             $info = if ($cached) { $e.Cached } else { $e.Current }
             $nm = [string]$info.Name
-            if (-not ($nm -and $nm.Length -ge 4 -and $nm.Length -le 600)) { continue }
+            if (-not ($nm -and $nm.Length -ge 4)) { continue }
+            if ($nm.Length -gt 100000) { $nm = $nm.Substring(0, 100000) }
             if ($col) {
                 $r = $info.BoundingRectangle
                 if (-not $r.IsEmpty -and $r.Width -lt 0.45 * $wr.Width) {
@@ -175,7 +198,7 @@ $skippedTexts = New-Object System.Collections.Generic.List[string]   # 채팅목
 $nListSkipped = 0
 if ($RawFile) {
     # 원문 재생 모드 - 다른 PC 의 teams_window_raw.txt 를 받아 파서만 돌린다(원격 진단·회귀용)
-    if (-not (Test-Path -LiteralPath $RawFile)) { Write-Host "[teams-window] RawFile 없음: $RawFile"; exit 1 }
+    if (-not (Test-Path -LiteralPath $RawFile)) { Write-CollectionStatus 'failed' 0 @('replay_missing'); exit 1 }
     foreach ($ln in [System.IO.File]::ReadAllLines($RawFile, [System.Text.Encoding]::UTF8)) {
         if ($ln -and $ln.Length -ge 4) { $texts.Add($ln) }
     }
@@ -194,6 +217,7 @@ if (-not $vis) {
     } else {
         Write-Host '[teams-window] Teams 프로세스가 없습니다 - Teams 앱(신·구 무관)을 열어 두고 다시 실행하세요.'
     }
+    Write-CollectionStatus 'blocked' 0 @('app_not_visible')
     exit 1
 }
 $procs = $vis
@@ -216,6 +240,7 @@ foreach ($p in $procs) {
 if ($texts.Count -eq 0) {
     Write-Host '[teams-window] 텍스트를 읽지 못했습니다 - 팀즈 창을 앞으로 가져온 뒤 재시도하세요.'
     Write-Host '               (새 Teams 는 WebView2 안에 그려집니다 - 창이 화면에 보이는 상태여야 UIA 가 읽습니다)'
+    Write-CollectionStatus 'failed' 0 @('no_readable_text')
     exit 1
 }
 $uniq = @($texts | Select-Object -Unique)
@@ -403,6 +428,7 @@ function Parse-Lines([string]$re) {
     $post = $ln.Substring($tm.Index + $tm.Length)
     $fd = Find-HeaderDate $pre $today
     $d = $fd.date
+    if ($d -lt $periodStart -or $d -ge $periodEnd) { continue }
     $preClean = $pre
     if ($fd.idx -ge 0) {
         $preClean = $pre.Substring(0, $fd.idx) + ' ' + $pre.Substring($fd.idx + $fd.len)
@@ -421,7 +447,10 @@ function Parse-Lines([string]$re) {
     $summary = $body.Substring(0, [Math]::Min(200, $body.Length))
     # replied_time 은 창 읽기로는 측정할 수 없다 - '미응답'이라고 단정하지 않고 빈 값(미측정)으로 둔다
     $line = ('{0},{1},{2},{3},{4},{5}' -f $t, (Csv-Escape $from), (Csv-Escape $chat), $kind, '', (Csv-Escape $summary))
-    $out.Add(@{ line = $line; time = $t; from = $from; chat = $chat; summary = $summary; est = $fd.est; kind = $kind })
+    $out.Add(@{ line = $line; time = $t; from = $from; chat = $chat; summary = $summary; est = $fd.est; kind = $kind;
+        context_excerpt = $body.Substring(0, [Math]::Min($contextChars, $body.Length));
+        context_truncated = ($body.Length -gt $contextChars).ToString().ToLower(); source_id = ''; source_kind = 'teams_app';
+        source_url = ''; conversation_id = ''; time_precision = $(if ($fd.est) { 'estimated' } else { 'minute' }) })
     }
     return @{ rows = $out; n = $n }
 }
@@ -448,9 +477,8 @@ if ($nTime -eq 0 -and -not $cfgRe -and $uniq.Count -gt 0) {
 }
 # ── 누적 저장 (append + dedupe) ──────────────────────────────────────────
 # 덮어쓰면 상시 샘플러(Start-TeamsSampler)가 모아둔 이력이 1회 실행에 지워진다.
-# 기존 행을 읽어 (time|from|summary 앞 40자) 키로 중복을 거르고 신규만 보탠다. chat·kind 는 키에 넣지 않는다 -
-# 같은 메시지가 대화방 제목이나 본인 판정만 달라져 두 번 들어가지 않게.
-# 날짜를 추정한 행(표기 없음)은 (from|HH:mm|summary40) 이 7일 안에 이미 있으면 같은 메시지의 재노출로 보고 넣지 않는다.
+# 기존 행의 날짜·시각·보낸 사람·대화방·요약을 대조해 누적하며 재관측한 더 긴 문맥은 갱신한다.
+# 날짜를 추정한 행은 같은 시간·보낸 사람·대화방·요약이 7일 안에 있으면 재노출로 간주한다.
 function Split-CsvLine([string]$ln2) {
     $f = New-Object System.Collections.Generic.List[string]
     $sb = New-Object System.Text.StringBuilder
@@ -470,20 +498,35 @@ function Split-CsvLine([string]$ln2) {
     $f.Add($sb.ToString())
     return ,$f
 }
-function Sum40([string]$s) { if ($s.Length -gt 40) { return $s.Substring(0, 40) }; return $s }
+function Summary-Key([string]$s) { if ($s.Length -gt 200) { return $s.Substring(0, 200) }; return $s }
 # 중복 키에 chat(대화방)을 넣는다 - 빼면 서로 다른 방에서 같은 사람이 같은 분에 남긴 같은 문구가
 # 한 건으로 뭉쳐, 누적 파일을 다시 쓸 때 기존 행이 조용히 사라진다(감사 확정).
-function Key-Of([string]$time, [string]$from, [string]$chat, [string]$summary) {
-    return ($time + '|' + $from + '|' + $chat + '|' + (Sum40 $summary))
+function Key-Of([string]$time, [string]$from, [string]$chat, [string]$summary, [string]$context = "") {
+    $body = $(if ($context) { $context } else { Summary-Key $summary })
+    return ($time + '|' + $from + '|' + $chat + '|' + $body)
 }
-function Key2-Of([string]$time, [string]$from, [string]$chat, [string]$summary) {
+function Key2-Of([string]$time, [string]$from, [string]$chat, [string]$summary, [string]$context = "") {
+    $body = $(if ($context) { $context } else { Summary-Key $summary })
     $hm = if ($time.Length -ge 16) { $time.Substring(11, 5) } else { '' }
-    return ($from + '|' + $hm + '|' + $chat + '|' + (Sum40 $summary))
+    return ($from + '|' + $hm + '|' + $chat + '|' + $body)
 }
 $dst = Join-Path $outDir 'teams_window.csv'
-$existing = New-Object System.Collections.Generic.List[string]
+$existing = New-Object System.Collections.Generic.List[object]
+$fields = @('time','from','chat','kind','replied_time','summary','context_excerpt','context_truncated','source_id','source_kind','source_url','conversation_id','time_precision')
+function Normalize-Row($r) {
+    $row = [ordered]@{}
+    foreach ($field in $fields) { $v = ''; try { $v = [string]$r.$field } catch {}; $row[$field] = $v }
+    return [pscustomobject]$row
+}
 $keys = New-Object 'System.Collections.Generic.HashSet[string]'
 $k2dates = @{}
+$byKey = @{}
+$byLegacyKey = @{}
+function Note-LegacyRow($r) {
+    $weak = Key-Of $r.time $r.from $r.chat $r.summary
+    if (-not $byLegacyKey.ContainsKey($weak)) { $byLegacyKey[$weak] = New-Object System.Collections.Generic.List[object] }
+    $byLegacyKey[$weak].Add($r)
+}
 function Note-Row([string]$k, [string]$k2, [string]$time) {
     [void]$keys.Add($k)
     if (-not $k2) { return }
@@ -492,31 +535,43 @@ function Note-Row([string]$k, [string]$k2, [string]$time) {
     if (-not $k2dates.ContainsKey($k2)) { $k2dates[$k2] = New-Object System.Collections.Generic.List[datetime] }
     $k2dates[$k2].Add($dd)
 }
-if (Test-Path $dst) {
-    $old = @([System.IO.File]::ReadAllLines($dst, [System.Text.Encoding]::UTF8))
-    for ($i = 1; $i -lt $old.Count; $i++) {
-        if (-not $old[$i]) { continue }
-        $f = Split-CsvLine $old[$i]
-        if ($f.Count -ge 6) {
-            $sm = if ($f.Count -eq 6) { $f[5] } else { ($f.GetRange(5, $f.Count - 5) -join ',') }
-            $k = Key-Of $f[0] $f[1] $f[2] $sm
-            if ($keys.Contains($k)) { continue }
-            Note-Row $k (Key2-Of $f[0] $f[1] $f[2] $sm) $f[0]
-        } else {
-            $k = $old[$i]
-            if ($keys.Contains($k)) { continue }
-            [void]$keys.Add($k)
-        }
-        $existing.Add($old[$i])
+if (Test-Path -LiteralPath $dst) {
+    # 헤더 이름으로 읽는다. 추가 열을 summary에 이어 붙이던 구형 6열 처리를 쓰지 않는다.
+    foreach ($old in @(Import-Csv -LiteralPath $dst -Encoding UTF8)) {
+        if (-not $old.time) { continue }
+        $r = Normalize-Row $old
+        $k = Key-Of $r.time $r.from $r.chat $r.summary $r.context_excerpt
+        if ($keys.Contains($k)) { continue }
+        Note-Row $k (Key2-Of $r.time $r.from $r.chat $r.summary $r.context_excerpt) $r.time
+        $existing.Add($r)
+        $byKey[$k] = $r
+        Note-LegacyRow $r
     }
 }
 $added = 0; $nSent = 0; $nEst = 0; $nEstDup = 0
 foreach ($r in $res.rows) {
-    $k = Key-Of $r.time $r.from $r.chat $r.summary
+    $k = Key-Of $r.time $r.from $r.chat $r.summary $r.context_excerpt
+    if ($r.est) { $nEst++ }
     if ($keys.Contains($k)) { continue }
-    $k2 = Key2-Of $r.time $r.from $r.chat $r.summary
+    # A six-column legacy observation can gain context only with one candidate.
+    # Two rich messages with the same first 200 characters remain separate.
+    $weak = Key-Of $r.time $r.from $r.chat $r.summary
+    $candidates = $byLegacyKey[$weak]
+    if ($candidates -and $candidates.Count -eq 1) {
+        $old = $candidates[0]
+        if (-not $old.context_excerpt -and $r.context_excerpt -and ([string]$r.context_excerpt).StartsWith([string]$old.summary)) {
+            $oldKey = Key-Of $old.time $old.from $old.chat $old.summary
+            [void]$keys.Remove($oldKey); $byKey.Remove($oldKey)
+            $old.context_excerpt = [string]$r.context_excerpt
+            $old.context_truncated = [string]$r.context_truncated
+            foreach ($field in @('source_kind','time_precision')) { if (-not $old.$field) { $old.$field = [string]$r.$field } }
+            Note-Row $k (Key2-Of $r.time $r.from $r.chat $r.summary $r.context_excerpt) $r.time
+            $byKey[$k] = $old
+            continue
+        }
+    }
+    $k2 = Key2-Of $r.time $r.from $r.chat $r.summary $r.context_excerpt
     if ($r.est) {
-        $nEst++
         $dd = [datetime]::ParseExact($r.time.Substring(0, 10), 'yyyy-MM-dd', $null)
         $dup = $false
         if ($k2dates.ContainsKey($k2)) {
@@ -525,13 +580,24 @@ foreach ($r in $res.rows) {
         if ($dup) { $nEstDup++; [void]$keys.Add($k); continue }
     }
     Note-Row $k $k2 $r.time
-    $existing.Add($r.line); $added++
+    $normalized = Normalize-Row ([pscustomobject]$r)
+    $existing.Add($normalized); $byKey[$k] = $normalized; Note-LegacyRow $normalized; $added++
     if ($r.kind -eq 'sent') { $nSent++ }
 }
 $outLines = New-Object System.Collections.Generic.List[string]
-$outLines.Add('time,from,chat,kind,replied_time,summary')
-foreach ($ln2 in ($existing | Sort-Object)) { $outLines.Add($ln2) }
-[System.IO.File]::WriteAllLines($dst, $outLines, [System.Text.Encoding]::UTF8)
+$outLines.Add(($fields -join ','))
+foreach ($row in ($existing | Sort-Object time)) {
+    $cells = foreach ($field in $fields) { Csv-Escape ([string]$row.$field) }
+    $outLines.Add(($cells -join ','))
+}
+$tmp = $dst + '.' + $PID + '.tmp'
+[System.IO.File]::WriteAllLines($tmp, $outLines, [System.Text.Encoding]::UTF8)
+if (Test-Path -LiteralPath $dst) { [IO.File]::Replace($tmp, $dst, [NullString]::Value) }
+else { [IO.File]::Move($tmp, $dst) }
+$reason = @()
+if ($nEst -gt 0) { $reason += 'estimated_dates' }
+if ($nTime -eq 0) { $reason += 'no_parseable_messages' }
+Write-CollectionStatus 'partial' ([int]$res.rows.Count) $reason
 Write-Host ("[teams-window] 원문 {0}줄 (시각 패턴 {1}줄{7}) -> 신규 {2}건 (본인 발신 {3}건 · 날짜 추정 {4}건 · 추정 중복 제외 {5}건) / 누적 {6}건" -f $uniq.Count, $nTime, $added, $nSent, $nEst, $nEstDup, ($outLines.Count - 1), $(if ($colUndone) { ', 채팅목록 판정 되돌림' } elseif ($nListSkipped) { ', 채팅목록으로 ' + $nListSkipped + '줄 제외' } else { '' }))
 if ($usedGeneric) { Write-Host '               (일반 형식으로 잡았습니다 - 오전/오후 구분이 없으면 12시간 표기가 오전으로 기록될 수 있음)' }
 if ($nTime -eq 0 -and $uniq.Count -gt 0) {

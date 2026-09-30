@@ -40,6 +40,9 @@ if __name__ == "__main__":
         (sys.stdout.encoding or "utf-8") if sys.stdout.isatty() else "utf-8"))  # 콘솔(bat)=콘솔 코드페이지 · 파이프(UI)=utf-8
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT_DIR = os.path.join(ROOT, "data", "outlook")
+sys.path.insert(0, os.path.join(ROOT, "core"))
+from collection_state import merge_csv, write_status  # noqa: E402
+
 MAIL_HDR = "box,time,sender,subject,conversation,rcv,time_precision"
 CAL_HDR = "start,end,all_day,busy_status,subject,categories,location,response,meeting_status"
 MAIL_URL = "https://outlook.office.com/mail/"
@@ -435,11 +438,51 @@ JS_MAIL = r"""
   out.n = opts.length;
   out.items = opts.slice(0, 600).map(o => ({
     key: (o.getAttribute("data-convid") || o.getAttribute("data-item-id") || o.id || "") + "|" + (o.getAttribute("aria-label") || "").slice(0, 80),
+    item_id: o.getAttribute("data-item-id") || "",
+    conversation_id: o.getAttribute("data-convid") || "",
     label: o.getAttribute("aria-label") || "",
     titles: [...o.querySelectorAll("[title]")].map(x => x.getAttribute("title") || "").filter(Boolean).slice(0, 12),
     texts: [...o.querySelectorAll("span,div,a")].filter(x => x.childElementCount === 0).map(x => (x.textContent || "").trim()).filter(Boolean).slice(0, 24)
   }));
   return JSON.stringify(out);
+})()
+"""
+JS_OPEN_MAIL = r"""
+(() => {
+  const key = %s;
+  const items = [...document.querySelectorAll('[role="option"], [role="row"][aria-label], [data-item-id]')];
+  const matches = items.filter(o => ((o.getAttribute("data-convid") || o.getAttribute("data-item-id") || o.id || "")
+      + "|" + (o.getAttribute("aria-label") || "").slice(0, 80)) === key);
+  if (matches.length !== 1 || !matches[0].getAttribute("data-item-id")) return "unverified-item";
+  matches[0].click();
+  return "opened";
+})()
+"""
+JS_MAIL_DETAIL = r"""
+(() => {
+  const expected = %s;
+  const normal = s => (s || "").replace(/\s+/g," ").trim().toLowerCase();
+  const selected = [...document.querySelectorAll('[aria-selected="true"][data-item-id]')]
+      .filter(e => e.getAttribute("data-item-id") === expected.item_id);
+  if (selected.length !== 1) return JSON.stringify({reason:"selected_message_not_verified"});
+  const selectedKey = (selected[0].getAttribute("data-convid") || selected[0].getAttribute("data-item-id") || selected[0].id || "")
+      + "|" + (selected[0].getAttribute("aria-label") || "").slice(0,80);
+  if (selectedKey !== expected.key) return JSON.stringify({reason:"selected_key_changed"});
+  const bodies = [...document.querySelectorAll('[data-testid="message-body"], [data-testid="message-body-content"], [data-tid="message-body"]')]
+      .filter(e => e.getBoundingClientRect().width > 0 && e.getBoundingClientRect().height > 0);
+  const matched = bodies.filter(e => {
+    const message = e.closest('[data-item-id]');
+    return message && message.getAttribute("data-item-id") === expected.item_id;
+  });
+  if (matched.length !== 1) return JSON.stringify({reason:"unique_message_body_not_verified"});
+  const message = matched[0].closest('[data-item-id]');
+  const subject = message.querySelector('[data-testid="message-subject"], [data-tid="message-subject"], [role="heading"]');
+  if (!subject || !expected.subject || normal(subject.textContent) !== normal(expected.subject))
+      return JSON.stringify({reason:"detail_subject_not_verified"});
+  const text = matched[0].textContent || "";
+  return JSON.stringify({container:"message-body", item_id:expected.item_id, selected_key:selectedKey,
+      subject:subject.textContent, body:text.slice(0, expected.limit + 1),
+      truncated:text.length > expected.limit, url:location.href});
 })()
 """
 JS_SCROLL = r"""
@@ -621,96 +664,162 @@ def _fake_mail_batch(fake, month_key, folder):
     return list(fm) if folder == "inbox" else []
 
 
-def collect_mail(br, d0, d1, fake=None):
-    """달 × 폴더(받은 편지함 → 보낸 편지함) 슬라이스로 읽는다. box 는 (화면의 폴더명 조각) > (읽은 폴더) 순.
-    검색 범위가 '모든 폴더'로 잡힌 OWA 라도 같은 항목(key)은 먼저 읽은 받은 편지함 슬라이스에 남으므로
-    발신이 수신으로 격하될 뿐, 수신이 발신(능동 신호)이 되는 방향의 오류는 생기지 않는다."""
+def detail_context(item, row, detail, limit):
+    """Accept only an identified, selected message body; never a list preview/page dump."""
+    def norm(value):
+        return re.sub(r"\s+", " ", str(value or "")).strip().casefold()
+    if not item.get("item_id") or detail.get("item_id") != item["item_id"]:
+        return "", "", "detail_message_identity_missing_or_mismatch", ""
+    if detail.get("selected_key") != item.get("key") or detail.get("container") != "message-body":
+        return "", "", "detail_container_or_selection_not_verified", ""
+    if not row[3] or norm(detail.get("subject")) != norm(row[3]):
+        return "", "", "detail_subject_mismatch", ""
+    body = re.sub(r"\s+", " ", str(detail.get("body") or "")).strip()
+    if not body:
+        return "", "", "detail_body_empty", ""
+    truncated = bool(detail.get("truncated")) or len(body) > limit
+    url = str(detail.get("url") or "")
+    if not any(url.startswith("https://" + host + "/") for host in HOSTS):
+        url = ""
+    return body[:limit], str(truncated).lower(), "", url
+
+
+def read_mail_detail(br, item, row, limit):
+    if not item.get("item_id"):
+        return {}, "message_identity_missing"
+    try:
+        if str(br.cdp.eval(JS_OPEN_MAIL % json.dumps(item.get("key", "")))) != "opened":
+            return {}, "message_could_not_be_selected"
+        expected = {"item_id": item["item_id"], "key": item.get("key", ""),
+                    "subject": row[3], "limit": limit}
+        for _ in range(4):
+            detail = br.eval_json(JS_MAIL_DETAIL % json.dumps(expected, ensure_ascii=False))
+            if detail.get("body"):
+                return detail, ""
+            time.sleep(0.25)
+        return {}, detail.get("reason", "message_detail_not_verified")
+    except Exception as error:
+        return {}, "detail_read_failed:" + type(error).__name__
+
+
+def collect_mail(br, d0, d1, fake=None, *, body=False, context_chars=4000,
+                 checkpoint=None, deadline=None):
+    """Read visible search results; checkpoint each page and retain metadata on detail failure."""
     rows, seen = [], set()
-    diag = {"search": 0, "items": 0, "parsed": 0, "sent": 0, "cc": 0, "date_only": 0, "pages": 0, "sent_pass_new": 0}
-    for s, e in months_of(d0, d1):
-        mon_n = 0
-        for folder, url in MAIL_FOLDERS:
-            if fake is not None:
-                batch = _fake_mail_batch(fake, s.strftime("%Y-%m"), folder)
-                pages = [{"items": batch, "n": len(batch), "search": True}]
-            else:
-                st = br.goto(url)
-                if st == "login":
+    diag = {"search": 0, "items": 0, "parsed": 0, "sent": 0, "cc": 0,
+            "date_only": 0, "pages": 0, "sent_pass_new": 0, "body_rows": 0,
+            "detail_failed": 0, "completed_units": 0, "reasons": []}
+    def consume(page, folder, start, end):
+        diag["pages"] += 1
+        if page.get("n", 0) > 600:
+            diag["reasons"].append("visible_page_item_limit_reached")
+        for item in page.get("items", []):
+            if deadline and time.monotonic() >= deadline:
+                diag["reasons"].append("time_budget_reached")
+                raise TimeoutError("collection budget")
+            key = item.get("key") or json.dumps(item, ensure_ascii=False)[:200]
+            if key in seen:
+                continue
+            seen.add(key)
+            diag["items"] += 1
+            if folder == "sent":
+                diag["sent_pass_new"] += 1
+            row = parse_mail_item(item, start, end, folder)
+            if not row or not (d0.isoformat() <= row[1][:10] <= d1.isoformat()):
+                continue
+            excerpt = truncated = source_url = ""
+            if body:
+                if fake is not None:
+                    detail, reason = item.get("detail") or {}, ""
+                else:
+                    detail, reason = read_mail_detail(br, item, row, context_chars)
+                if not reason:
+                    excerpt, truncated, reason, source_url = detail_context(item, row, detail, context_chars)
+                if reason:
+                    diag["detail_failed"] += 1
+                    if reason not in diag["reasons"]:
+                        diag["reasons"].append(reason)
+                elif excerpt:
+                    diag["body_rows"] += 1
+            # A conversation identifier is not a message identifier.
+            row += [excerpt, truncated, item.get("item_id", ""), "outlook_web", source_url,
+                    item.get("conversation_id", ""), folder, ""]
+            rows.append(row)
+            diag["parsed"] += 1
+            if row[0] == "sent":
+                diag["sent"] += 1
+            elif row[5] == "cc":
+                diag["cc"] += 1
+            if row[6] == "date":
+                diag["date_only"] += 1
+        if checkpoint and rows:
+            checkpoint(rows)
+
+    try:
+        for start, end in months_of(d0, d1):
+            for folder, url in MAIL_FOLDERS:
+                if deadline and time.monotonic() >= deadline:
+                    diag["reasons"].append("time_budget_reached")
+                    return rows, "partial", diag
+                if fake is not None:
+                    batch = _fake_mail_batch(fake, start.strftime("%Y-%m"), folder)
+                    consume({"items": batch}, folder, start, end)
+                    diag["completed_units"] += 1
+                    continue
+                if br.goto(url) == "login":
                     return rows, "login", diag
-                q = f"received>={s.isoformat()} received<={e.isoformat()}"
-                ok = br.search(q)
-                if ok:
+                searched = br.search(f"received>={start.isoformat()} received<={end.isoformat()}")
+                if searched:
                     diag["search"] += 1
-                pages = []
-                stall = 0
-                # 화면에 새로 나온 것이 있는지는 이 슬라이스 전용 집합으로 본다 —
-                # 행 중복 제거용 seen 과 같이 쓰면 두 번째 화면부터 newk 가 늘 비어
-                # stall 이 오르지 않고 400회를 다 돌아 폴백 전체가 시간 초과된다(검증 확정).
-                seen_scroll = set()
+                else:
+                    diag["reasons"].append("search_scope_not_verified")
+                stall, seen_scroll = 0, set()
                 for _ in range(400):
-                    pg = br.eval_json(JS_MAIL)
-                    pages.append(pg)
-                    newk = {it.get("key") for it in pg.get("items", [])} - seen_scroll
-                    seen_scroll |= newk
-                    if not newk:
-                        stall += 1
-                    else:
-                        stall = 0
+                    if deadline and time.monotonic() >= deadline:
+                        diag["reasons"].append("time_budget_reached")
+                        return rows, "partial", diag
+                    page = br.eval_json(JS_MAIL)
+                    consume(page, folder, start, end)
+                    new = {item.get("key") for item in page.get("items", [])} - seen_scroll
+                    seen_scroll |= new
+                    stall = 0 if new else stall + 1
                     if stall >= 3:
                         break
-                    r = str(br.cdp.eval(JS_SCROLL))
-                    if r in ("no-list", "end") and stall >= 1:
+                    scrolled = str(br.cdp.eval(JS_SCROLL))
+                    if scrolled in ("no-list", "end") and stall >= 1:
                         break
                     time.sleep(1.0)
-                    if not ok:                  # 검색창을 못 찾았으면 폴더를 그냥 훑는다 — 기간 아래로 내려가면 멈춘다
-                        olds = [parse_mail_item(it, s, e, folder) for it in pg.get("items", [])]
-                        olds = [o for o in olds if o]
-                        if olds and min(o[1][:10] for o in olds) < d0.isoformat():
-                            break
-            for pg in pages:
-                diag["pages"] += 1
-                for it in pg.get("items", []):
-                    k = it.get("key") or json.dumps(it, ensure_ascii=False)[:200]
-                    if k in seen:
-                        continue
-                    seen.add(k)
-                    diag["items"] += 1
-                    if folder == "sent":
-                        diag["sent_pass_new"] += 1
-                    r = parse_mail_item(it, s, e, folder)
-                    if not r:
-                        continue
-                    if not (d0.isoformat() <= r[1][:10] <= d1.isoformat()):
-                        continue
-                    diag["parsed"] += 1
-                    if r[0] == "sent":
-                        diag["sent"] += 1
-                    elif r[5] == "cc":
-                        diag["cc"] += 1
-                    if r[6] == "date":
-                        diag["date_only"] += 1
-                    rows.append(r)
-                    mon_n += 1
-        log(f"메일 {s.strftime('%Y-%m')}: 항목 {diag['items']}개 중 해석 {mon_n}건 누적 {len(rows)}건"
-            f" (보낸 편지함 슬라이스 신규 {diag['sent_pass_new']}개)")
-    rows.sort(key=lambda r: r[1])
+                else:
+                    diag["reasons"].append("mail_scroll_limit_reached")
+                diag["completed_units"] += 1
+    except Exception as error:
+        diag["reasons"].append("mail_page_failed:" + type(error).__name__)
+        return rows, "partial" if rows else "failed", diag
+    rows.sort(key=lambda row: row[1])
     return rows, ("ok" if rows else "empty"), diag
 
 
-def collect_cal(br, d0, d1, fake=None):
+def collect_cal(br, d0, d1, fake=None, *, checkpoint=None, deadline=None):
     rows, seen = [], set()
     diag = {"weeks": 0, "events": 0, "parsed": 0}
     cur = d0 - timedelta(days=d0.weekday())
     while cur <= d1:
+        if deadline and time.monotonic() >= deadline:
+            diag["reasons"] = ["calendar_time_budget_reached"]
+            return rows, "partial", diag
         diag["weeks"] += 1
         if fake is not None:
             pg = {"events": fake.get("cal", {}).get(cur.isoformat(), [])}
         else:
             url = f"{CAL_URL}/{cur.year}/{cur.month}/{cur.day}"
-            st = br.goto(url, wait=5.0)
-            if st == "login":
-                return rows, "login", diag
-            pg = br.eval_json(JS_CAL)
+            try:
+                st = br.goto(url, wait=5.0)
+                if st == "login":
+                    return rows, "login", diag
+                pg = br.eval_json(JS_CAL)
+            except Exception as error:
+                diag["reasons"] = ["calendar_page_failed:" + type(error).__name__]
+                return rows, "partial" if rows else "failed", diag
         wk_end = cur + timedelta(days=6)
         for ev in pg.get("events", []):
             diag["events"] += 1
@@ -728,6 +837,8 @@ def collect_cal(br, d0, d1, fake=None):
             if r[0][:10] != r[1][:10]:
                 diag["multi_day"] = diag.get("multi_day", 0) + 1
             rows.append(r)
+        if checkpoint and rows:
+            checkpoint(rows)
         cur += timedelta(days=7)
     rows.sort(key=lambda r: r[0])
     log(f"일정: {diag['weeks']}주 · 요소 {diag['events']}개 중 해석 {len(rows)}건 (다일 {diag.get('multi_day', 0)}건)")
@@ -748,21 +859,25 @@ def _has_data(path):
 
 
 def _save(kind, rows, store_subject):
+    """Atomic union: partial or narrower fallback never replaces earlier history."""
     dst = os.path.join(OUT_DIR, "mail.csv" if kind == "mail" else "calendar.csv")
-    os.makedirs(OUT_DIR, exist_ok=True)
-    with open(dst, "w", encoding="utf-8-sig", newline="") as f:
-        f.write((MAIL_HDR if kind == "mail" else CAL_HDR) + "\n")
-        hdr_n = (MAIL_HDR if kind == "mail" else CAL_HDR).count(",") + 1
-        for r in rows:
-            r = list(r)
-            r += [""] * (hdr_n - len(r))     # 새 열(response,meeting_status)은 빈값 — 열 수가 모자라면 extract._read 가 행을 버린다
-            if not store_subject:            # 제목을 남기지 않는다 — conversation 도 원문 대신 해시(회신 이력 판정만 유지)
-                if kind == "mail":
-                    r[3] = ""
-                    r[4] = _conv_token(r[4])
-                else:
-                    r[4] = ""
-            f.write(",".join(_esc(c) for c in r) + "\n")
+    base = (MAIL_HDR if kind == "mail" else CAL_HDR).split(",")
+    extra = ["context_excerpt", "context_truncated", "source_id", "source_kind",
+             "source_url", "conversation_id", "folder", "account"]
+    fields = base + [key for key in extra if key not in base]
+    records = []
+    for raw in rows:
+        values = list(raw) + [""] * max(0, len(fields) - len(raw))
+        row = dict(zip(fields, values, strict=False))
+        row["source_kind"] = row.get("source_kind") or "outlook_web"
+        if not store_subject:
+            row["subject"] = ""
+            row["context_excerpt"] = ""
+            row["context_truncated"] = ""
+            if kind == "mail":
+                row["conversation"] = _conv_token(row.get("conversation", ""))
+        records.append(row)
+    merge_csv(dst, records, fields, kind="mail" if kind == "mail" else "calendar")
     return dst
 
 
@@ -770,102 +885,107 @@ def main():
     d0s = arg("--from") or (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
     d1s = arg("--to") or datetime.now().strftime("%Y-%m-%d")
     d0, d1 = date.fromisoformat(d0s), date.fromisoformat(d1s)
-    only = arg("--only")
-    force = "--force" in sys.argv
+    only, force = arg("--only"), "--force" in sys.argv
     try:
         cfg = json.load(open(os.path.join(ROOT, "config", "config.json"), encoding="utf-8-sig"))
     except (OSError, ValueError):
         cfg = {}
     store_subject = bool(cfg.get("storeMailSubject", True))
-    todo = []
-    for kind, fn in (("mail", "mail.csv"), ("cal", "calendar.csv")):
-        if only and kind != only:
-            continue
-        p = os.path.join(OUT_DIR, fn)
-        if _has_data(p) and not force:
-            log(f"{fn} 에 이미 자료가 있어 건너뜀 (덮어쓰려면 --force)")
-        else:
-            todo.append(kind)
+    collection = cfg.get("collection") or {}
+    body = bool(collection.get("mailWebBody", False)) and store_subject
+    try:
+        context_chars = min(20000, max(0, int(collection.get("contextChars", 4000))))
+    except (TypeError, ValueError):
+        context_chars = 4000
+    body = body and context_chars > 0
+    counts, diagnostics = {}, {}
+    reasons = ["visible_search_results_only; mailbox-wide coverage is not verified"]
+    if not body:
+        reasons.append("metadata_only: mailWebBody is disabled; no message body collected")
+    else:
+        reasons.append("message detail opening can mark mail read; tenant selectors require real-environment verification")
+    todo = [kind for kind in ("mail", "cal") if not only or only == kind]
+    attempted = set()
+    def finish(code, reason="", blocked=False, in_progress=False):
+        kinds = {kind: ("partial" if counts.get(kind) or in_progress else "failed") if kind in attempted or kind in todo else "skipped"
+                 for kind in ("mail", "cal")}
+        write_status(ROOT, "outlook_web", d0s, d1s,
+                     status="partial" if sum(counts.values()) or in_progress or code == 0 else ("blocked" if blocked else "failed"),
+                     rows=sum(counts.values()), scope="OWA visible inbox/sent search pages and calendar week views",
+                     reasons=reasons + ([reason] if reason else []),
+                     mail_status=kinds["mail"], calendar_status=kinds["cal"],
+                     mail_rows=counts.get("mail", 0), calendar_rows=counts.get("cal", 0),
+                     body_requested=body, body_rows=diagnostics.get("mail", {}).get("body_rows", 0),
+                     completed_units=sum(x.get("completed_units", x.get("weeks", 0)) for x in diagnostics.values()),
+                     context_chars=context_chars)
+        return code
+    finish(1, "collection started; completion not verified", in_progress=True)
+    todo = [kind for kind in todo if force or not _has_data(os.path.join(OUT_DIR, "mail.csv" if kind == "mail" else "calendar.csv"))]
     if not todo:
-        return 0
+        return finish(0, "existing files skipped; requested range not verified")
     fake = None
-    fk = os.environ.get("LM_OWA_FAKE", "")
-    if fk:
+    fake_path = os.environ.get("LM_OWA_FAKE", "")
+    if fake_path:
         try:
-            fake = json.load(open(fk, encoding="utf-8-sig"))
+            with open(fake_path, encoding="utf-8-sig") as stream:
+                fake = json.load(stream)
         except (OSError, ValueError):
-            fake = {}
+            return finish(1, "invalid synthetic fixture")
         if fake.get("login"):
-            log("로그인 필요(시험용 가짜)")
-            return 2
+            return finish(2, "login_required", blocked=True)
     br = None
+    deadline = time.monotonic() + 900
     if fake is None:
         if os.environ.get("LM_NO_BROWSER"):
-            log("LM_NO_BROWSER 설정 — 브라우저를 띄우지 않습니다(시험용)")
-            return 3
+            return finish(3, "browser_disabled", blocked=True)
         try:
             br = Browser()
-            started = br.start()
-        except Exception as e:              # 드라이버 모듈 부재·포트 충돌 등 — 사슬의 다음 경로로 넘긴다
-            log(f"드라이버를 쓸 수 없습니다({type(e).__name__}: {str(e)[:80]}) — 다음 대체 경로로")
-            return 3
-        if not started:
-            log("전용 Edge(디버그 포트)를 띄우지 못했습니다 — Edge 설치·config.copilotAuto.port 확인")
-            return 3
-        st = br.goto(MAIL_URL)
-        if st == "login":
-            log("로그인 필요 — 지금 열린 전용 Edge 창의 Outlook 탭에서 회사 계정을 한 번 선택/로그인하세요 (Copilot 과 같은 창, 1회).")
-            log("           로그인 뒤 [분석 실행] 또는 대시보드 [Outlook 웹 읽기]를 다시 누르면 이어서 읽습니다.")
-            return 2
-        if st == "timeout":
-            log("Outlook 웹 화면이 뜨지 않았습니다(네트워크·차단?) — 전용 Edge 창에서 outlook.office.com 이 열리는지 확인하세요.")
-            return 1
-    total = 0
-    status = {}
-    counts = {}
-    for kind in todo:
-        if kind == "mail":
-            rows, stt, diag = collect_mail(br, d0, d1, fake)
-            log(f"메일 진단: 검색 {diag['search']}회 · 화면 항목 {diag['items']}개 · 해석 {diag['parsed']}건"
-                f"(보낸 {diag['sent']} · 참조 {diag['cc']} · 날짜만 {diag['date_only']}) · 페이지 {diag['pages']}")
-        else:
-            rows, stt, diag = collect_cal(br, d0, d1, fake)
-        status[kind] = stt
-        if stt == "login":
-            log("로그인 필요 — 전용 Edge 창의 Outlook 탭에서 회사 계정을 한 번 선택하세요.")
+            if not br.start():
+                br.close()
+                return finish(3, "Edge startup failed", blocked=True)
+            initial = br.goto(MAIL_URL)
+            if initial == "login":
+                br.close()
+                return finish(2, "login_required", blocked=True)
+            if initial == "timeout":
+                br.close()
+                return finish(1, "mail page timeout")
+        except Exception as error:
             if br:
                 br.close()
-            return 2
-        if rows:
-            _save(kind, rows, store_subject)
-            total += len(rows)
-            counts[kind] = len(rows)
-            log(f"{kind}: {len(rows)}건 저장")
-        else:
-            log(f"{kind}: 읽은 것이 없음 — 화면 항목은 보이는데 해석이 0이면 표기 형식 문제(로그의 '항목/해석' 수 참고)")
-    if br:
-        br.close()
-    if total:
-        try:
-            src = {"source": "owa", "when": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                   "kinds": todo, "rows": total, "mail": counts.get("mail", 0), "calendar": counts.get("cal", 0),
-                   "me": [],                           # 내 주소는 화면에 없다 — rcv 는 to/cc(참조 조각) 만
-                   "warnings": []}
-            if "cal" in todo:
-                # 주 보기는 반복 회의를 회차마다 그린다 — 색인 폴백(마스터 1건)과 달리 일정이 완전하다
-                src["calendar_complete"] = bool(counts.get("cal"))
-                src["calendar_recurring_masters"] = 0
-            with open(os.path.join(OUT_DIR, "mail_source.json"), "w", encoding="utf-8") as f:
-                json.dump(src, f, ensure_ascii=False)
-            if "mail" in todo and _has_data(os.path.join(OUT_DIR, "mail.csv")):
-                try:
-                    os.remove(os.path.join(OUT_DIR, "outlook_skip.json"))
-                except OSError:
-                    pass
-        except OSError:
-            pass
-        return 0
-    return 1
+            return finish(3, "browser_failed:" + type(error).__name__, blocked=True)
+    try:
+        for kind in todo:
+            attempted.add(kind)
+            def checkpoint(current):
+                _save(kind, current, store_subject)
+                counts[kind] = len(current)
+                finish(0, "partial observations checkpointed")
+            if kind == "mail":
+                rows, state, diag = collect_mail(br, d0, d1, fake, body=body,
+                                                context_chars=context_chars, checkpoint=checkpoint, deadline=deadline)
+            else:
+                rows, state, diag = collect_cal(br, d0, d1, fake, checkpoint=checkpoint, deadline=deadline)
+            diagnostics[kind] = diag
+            reasons.extend(diag.get("reasons", []))
+            if rows:
+                checkpoint(rows)
+            if state == "login":
+                return finish(2, "login_required_after_partial_collection", blocked=True)
+            log(f"{kind}: {len(rows)} observations retained; declared scope remains partial")
+        if sum(counts.values()):
+            source = {"source": "owa", "when": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                      "kinds": list(counts), "rows": sum(counts.values()), "mail": counts.get("mail", 0),
+                      "calendar": counts.get("cal", 0), "calendar_complete": False, "me": [],
+                      "warnings": list(dict.fromkeys(reasons))}
+            with open(os.path.join(OUT_DIR, "mail_source.json"), "w", encoding="utf-8") as stream:
+                json.dump(source, stream, ensure_ascii=False)
+        return finish(0 if sum(counts.values()) else 1)
+    except Exception as error:
+        return finish(1, "collection_or_save_failed:" + type(error).__name__)
+    finally:
+        if br:
+            br.close()
 
 
 if __name__ == "__main__":

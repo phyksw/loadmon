@@ -36,6 +36,9 @@ sys.path.insert(0, os.path.join(ROOT, "core"))
 from details import explain_failure  # noqa: E402  - 로그인/기동 실패는 수집 분할로 해결되지 않음
 NO_WIN = 0x08000000
 OUT_DIR = os.path.join(ROOT, "data", "outlook")
+sys.path.insert(0, os.path.join(ROOT, "core"))
+from collection_state import merge_csv, write_status  # noqa: E402
+
 MAIL_HDR = "box,time,sender,subject,conversation,rcv,time_precision"
 MAIL_HDR_ASK = "box,time,sender,subject,conversation,rcv"      # Copilot 에 묻는 열 — time_precision 은 묻지 않는다(C1)
 CAL_HDR = "start,end,all_day,busy_status,subject,categories,location,response,meeting_status"
@@ -329,21 +332,25 @@ def _has_data(path):
 
 
 def _save(kind, rows, store_subject):
+    """Atomic union: partial or narrower fallback never replaces earlier history."""
     dst = os.path.join(OUT_DIR, "mail.csv" if kind == "mail" else "calendar.csv")
-    os.makedirs(OUT_DIR, exist_ok=True)
-    with open(dst, "w", encoding="utf-8-sig", newline="") as f:
-        f.write((MAIL_HDR if kind == "mail" else CAL_HDR) + "\n")
-        hdr_n = (MAIL_HDR if kind == "mail" else CAL_HDR).count(",") + 1
-        for r in rows:
-            r = list(r)
-            r += [""] * (hdr_n - len(r))     # 새 열(response,meeting_status)은 빈값 — 열 수가 모자라면 extract._read 가 행을 버린다
-            if not store_subject:           # config.storeMailSubject=false 면 제목을 남기지 않는다(COM 경로와 동일) — conversation 은 해시
-                if kind == "mail":
-                    r[3] = ""
-                    r[4] = _conv_token(r[4])
-                else:
-                    r[4] = ""
-            f.write(",".join(_esc(c) for c in r) + "\n")
+    base = (MAIL_HDR if kind == "mail" else CAL_HDR).split(",")
+    extra = ["context_excerpt", "context_truncated", "source_id", "source_kind",
+             "source_url", "conversation_id", "folder", "account"]
+    fields = base + [key for key in extra if key not in base]
+    records = []
+    for raw in rows:
+        values = list(raw) + [""] * max(0, len(fields) - len(raw))
+        row = dict(zip(fields, values, strict=False))
+        row["source_kind"] = row.get("source_kind") or "outlook_copilot"
+        if not store_subject:
+            row["subject"] = ""
+            row["context_excerpt"] = ""
+            row["context_truncated"] = ""
+            if kind == "mail":
+                row["conversation"] = _conv_token(row.get("conversation", ""))
+        records.append(row)
+    merge_csv(dst, records, fields, kind="mail" if kind == "mail" else "calendar")
     return dst
 
 
@@ -410,6 +417,8 @@ def collect_kind(kind, d0, d1, store_subject, one_slice=None):
                 seen.add(k)
                 rows.append(r)
                 n += 1
+        if n:
+            _save(kind, rows, store_subject)
         return n
 
     alt, fails, unable = False, 0, False
@@ -460,6 +469,25 @@ def main():
     except (OSError, ValueError):
         cfg = {}
     store_subject = bool(cfg.get("storeMailSubject", True))
+    counts = {}
+    def finish(code, reason=""):
+        status = "partial" if sum(counts.values()) else ("blocked" if code else "partial")
+        kinds = {"mail": "skipped", "cal": "skipped"}
+        for kind in ("mail", "cal"):
+            if not only or only == kind:
+                kinds[kind] = "partial" if counts.get(kind) else "failed"
+        write_status(ROOT, "outlook_copilot", d0, d1, status=status,
+                     rows=sum(counts.values()),
+                     scope="Copilot returned mail/calendar metadata; no message body or source identity verified",
+                     reasons=["metadata_only", "LLM search coverage and source contents are not verified", reason],
+                     mail_status=kinds["mail"], calendar_status=kinds["cal"],
+                     mail_rows=counts.get("mail", 0), calendar_rows=counts.get("cal", 0),
+                     body_collected=False, source_verified=False)
+        return code
+    write_status(ROOT, "outlook_copilot", d0, d1, status="partial",
+                 scope="Copilot mail/calendar metadata", reasons=["collection started; completion not verified"],
+                 mail_status="skipped" if only == "cal" else "partial",
+                 calendar_status="skipped" if only == "mail" else "partial", mail_rows=0, calendar_rows=0)
     if os.path.exists(UNAVAILABLE_FLAG) and "--retry-copilot" not in sys.argv:
         try:
             info = json.load(open(UNAVAILABLE_FLAG, encoding="utf-8-sig"))
@@ -467,7 +495,7 @@ def main():
             info = {}
         print(f"[mail-copilot] 이 계정의 Copilot 은 메일 조회 불가로 확인됨({info.get('when', '?')}) — 왕복 생략")
         print("               (재시도: --retry-copilot 또는 data\\outlook\\mail_copilot_unavailable.json 삭제)")
-        return 1
+        return finish(1, "Copilot unavailable or collection failed")
     todo = []
     for kind, fn in (("mail", "mail.csv"), ("cal", "calendar.csv")):
         if only and kind != only:
@@ -478,7 +506,7 @@ def main():
         else:
             todo.append(kind)
     if not todo:
-        return 0
+        return finish(0, "existing file skipped; requested coverage not verified")
     total, unable_kinds, counts = 0, set(), {}
     terminal_error = ""
     for kind in todo:
@@ -490,9 +518,11 @@ def main():
             counts[kind] = getattr(error, "saved_rows", 0)
             total += counts[kind]
             if not total:
-                return 1
+                return finish(1, "Copilot unavailable or collection failed")
             terminal_error = str(error)
             break
+        except Exception as error:
+            return finish(1, "collection_or_save_failed:" + type(error).__name__)
         total += n
         counts[kind] = n
         if unable:
@@ -505,15 +535,15 @@ def main():
                "mail": counts.get("mail", 0), "calendar": counts.get("cal", 0),
                "me": [], "warnings": [terminal_error] if terminal_error else []}
         if "cal" in todo:
-            # 프롬프트가 회차마다 한 행을 요구한다 — 반복 마스터만 남는 색인 폴백과 달리 '완전' 로 표시(LLM 회수 한계는 별개)
-            src["calendar_complete"] = bool(counts.get("cal")) and not terminal_error
+            # Returned rows cannot prove all source events or recurrence instances were found.
+            src["calendar_complete"] = False  # LLM rows do not prove complete source coverage.
             src["calendar_recurring_masters"] = 0
         with open(os.path.join(OUT_DIR, "mail_source.json"), "w", encoding="utf-8") as f:
             json.dump(src, f, ensure_ascii=False)
     except OSError:
         pass
     if terminal_error:
-        return 1
+        return finish(1, "Copilot unavailable or collection failed")
     if total == 0:
         # '불가' 기억은 메일 조회가 막혔을 때만 남긴다(메일이 핵심). 일정만 시도해 막힌 경우는 기록하지 않는다 —
         # 전역 플래그가 다음 실행의 메일 왕복까지 막아 버리기 때문.
@@ -528,7 +558,7 @@ def main():
             except OSError:
                 pass
         print("[mail-copilot] 표를 얻지 못함 — 실제 응답 원문은 data\\outlook\\replies\\ 에서 확인")
-        return 1
+        return finish(1, "Copilot unavailable or collection failed")
     if os.path.exists(UNAVAILABLE_FLAG):
         try:
             os.remove(UNAVAILABLE_FLAG)
@@ -540,7 +570,7 @@ def main():
             os.remove(os.path.join(OUT_DIR, "outlook_skip.json"))
     except OSError:
         pass
-    return 0
+    return finish(0)
 
 
 if __name__ == "__main__":

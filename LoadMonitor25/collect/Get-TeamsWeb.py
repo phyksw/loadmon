@@ -5,26 +5,25 @@ Get-TeamsWeb.py — 팀즈 웹(teams.microsoft.com)을 전용 Edge 프로필로 
 Get-OutlookWeb.py 와 같은 방식이다: Copilot 에 쓰는 전용 Edge 프로필(data\\copilot_profile)에 회사 계정으로
 한 번 로그인해 두면, **팀즈 앱이 꺼져 있어도** 동작한다. 앱 창 읽기(Get-TeamsWindow.ps1)는 화면에 그려진
 부분만 UI 자동화로 긁으므로 창 크기·테마·팀즈 버전에 따라 PC 마다 0건이 되곤 했다(실측 제보). 웹 경로는
-화면 렌더가 아니라 문서 구조(role·data-tid·aria-label)를 읽으므로 그 편차가 없고, 스크롤로 지난 날짜까지
-거슬러 올라간다.
+문서 구조(role·data-tid·aria-label)를 읽고 채팅 목록과 메시지를 스크롤한다. 로그인·웹 UI·시간 상한에 따라
+도달 범위가 달라지므로 이 경로만으로 서버의 전체 채팅을 읽었다고 판정하지 않는다.
 
-  python collect\\Get-TeamsWeb.py --from 2026-06-01 --to 2026-06-30 [--max-chats 40] [--force]
+  python collect\\Get-TeamsWeb.py --from 2026-06-01 --to 2026-06-30 [--max-chats 200] [--force]
 
 출력: data\\m365\\teams_web.csv   (time,from,chat,kind,replied_time,summary)
       — Graph·창 읽기 경로와 같은 스키마라 분석기(core\\extract.py 의 teams_*.csv)가 그대로 인제스트한다.
-      이미 있는 teams_*.csv 전부와 대조해 같은 메시지는 다시 적지 않는다(경로가 겹쳐도 중복 계상 없음).
+      기본 열과 함께 본문 문맥·출처·시각 정밀도를 저장하고 기존 teams_web.csv에 페이지마다 누적한다.
+      data\\collection_status\\teams_web.json에 탐색 범위와 중단 이유를 기록한다.
 종료 코드: 0 저장 / 1 아무것도 못 읽음 / 2 로그인 필요(전용 Edge 창에서 1회) / 3 드라이버 불가
 
-Copilot 과 달리 LLM 을 거치지 않으므로 지어낸 행이 없고, 데이터는 PC 밖으로 나가지 않는다(브라우저가 내
-채팅을 보여주는 것을 읽을 뿐이다). replied_time 은 웹에서도 측정할 수 없어 빈 값(미측정)으로 둔다.
+LLM을 거치지 않고 브라우저에 표시된 내용을 읽는다. 웹 로그인과 화면 갱신에는 Microsoft 서비스 연결이
+필요하며, replied_time은 웹에서도 측정할 수 없어 빈 값(미측정)으로 둔다.
 
 화면 구조는 Microsoft 가 바꿀 수 있어 선택자를 여러 벌 두고 '무엇으로 몇 개를 잡았는지' 를 로그에 남긴다
 (회사 PC 의 원문을 밖으로 보낼 수 없으므로 진단은 로그의 숫자로 한다).
 시험용: LM_TEAMSWEB_FAKE=<json> 이면 브라우저 없이 그 파일의 화면 응답을 쓴다
         {"chats": <JS_CHATS 응답>, "msgs": {"<대화번호>": [<JS_MSGS 응답>, …(스크롤 회차)]}}
 """
-import csv
-import glob
 import hashlib
 import importlib.util
 import io
@@ -41,11 +40,17 @@ if __name__ == "__main__":
         (sys.stdout.encoding or "utf-8") if sys.stdout.isatty() else "utf-8"))  # 콘솔(bat)=콘솔 코드페이지 · 파이프(UI)=utf-8
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "core"))
+from collection_state import merge_csv, read_csv, write_status  # noqa: E402
+
 OUT_DIR = os.path.join(ROOT, "data", "m365")
 HDR = "time,from,chat,kind,replied_time,summary"
+FIELDS = HDR.split(",") + ["context_excerpt", "context_truncated", "source_id", "source_kind",
+                            "source_url", "conversation_id", "time_precision"]
+SCOPE = "Teams 웹에서 탐색한 채팅 목록·메시지 DOM; 숨김 대화·채널·서버 전체 기록은 보장하지 않음"
 TEAMS_URL = "https://teams.microsoft.com/v2/"
 HOSTS = ("teams.microsoft.com", "teams.cloud.microsoft", "teams.office.com", "teams.live.com")
-MAX_SCROLL = 12                 # 대화 하나당 위로 되감는 횟수 상한 — 오래된 대화도 몇 달은 덮는다
+MAX_SCROLL = 200                # 시간 예산과 함께 적용하는 안전 상한; 도달하면 partial
 SUMMARY_MAX = 200               # 창 읽기 경로와 같은 길이
 
 
@@ -168,7 +173,7 @@ def stamp(head, body, cur_date, d0, d1, today):
         hm = find_times(s)
         if hm:
             return datetime(d.year, d.month, d.day, hm[0][0], hm[0][1]), "full"
-        return datetime(d.year, d.month, d.day, 12, 0), "full"
+        return datetime(d.year, d.month, d.day, 12, 0), "date"
     # 시각은 본문 앞머리에서 와도 된다(화면이 '홍길동 오후 3:24' 를 한 덩어리로 그리는 스킨) —
     # 날짜만 본문에서 오면 안 된다.
     hm = None
@@ -232,6 +237,11 @@ JS_CHATS = r"""
   out.n = els.length;
   out.items = els.slice(0, 300).map((e, i) => ({
     idx: i,
+    key: e.getAttribute("data-chat-id") || e.getAttribute("data-item-id") ||
+         (e.querySelector("a[href]") || {}).href ||
+         e.getAttribute("title") || e.getAttribute("aria-label") || (e.textContent || "").trim(),
+    conversation_id: e.getAttribute("data-chat-id") || e.getAttribute("data-item-id") || "",
+    name: (e.getAttribute("title") || (e.querySelector('[data-tid="chat-list-item-title"],[data-tid="chat-title"]') || {}).textContent || "").trim(),
     label: (e.getAttribute("aria-label") || e.getAttribute("title") || "").slice(0, 300),
     texts: [...e.querySelectorAll("span,div,a")].filter(x => x.childElementCount === 0)
              .map(x => (x.textContent || "").trim()).filter(Boolean).slice(0, 8)
@@ -242,7 +252,11 @@ JS_CHATS = r"""
 # 팀즈 목록은 pointerdown 으로 라우팅하는 스킨이 있어 click() 만으로는 열리지 않는다 — 전체 순서를 보낸다.
 JS_OPEN = r"""
 (() => {
-  const e = (window.__lm_chats || [])[%d];
+  const key = %s;
+  const e = (window.__lm_chats || []).find(e =>
+    (e.getAttribute("data-chat-id") || e.getAttribute("data-item-id") ||
+     (e.querySelector("a[href]") || {}).href ||
+     e.getAttribute("title") || e.getAttribute("aria-label") || (e.textContent || "").trim()) === key);
   if (!e) return "gone";
   try { e.scrollIntoView({block: "center"}); } catch (x) {}
   const t = e.querySelector('[role="button"],a,button') || e;
@@ -278,12 +292,14 @@ JS_MSGS = r"""
     const ts = e.querySelector('[data-tid="message-timestamp"],time');
     const bd = e.querySelector('[data-tid="messageBodyContent"],[id^="content-"]');
     out.items.push({t: "msg",
+      id: e.getAttribute("data-message-id") || e.getAttribute("data-item-id") || "",
+      url: (e.querySelector('a[href*="/message/"]') || {}).href || "",
       label: (e.getAttribute("aria-label") || "").slice(0, 400),
       author: au ? (au.textContent || "").trim() : "",
       ts: ts ? ((ts.getAttribute("title") || ts.getAttribute("datetime") || ts.textContent || "").trim()) : "",
       iso: [...e.querySelectorAll("time[datetime]")].map(x => x.getAttribute("datetime")).filter(Boolean).slice(0, 3),
       titles: [...e.querySelectorAll("[title]")].map(x => (x.getAttribute("title") || "").trim()).filter(Boolean).slice(0, 6),
-      body: bd ? (bd.textContent || "").trim().slice(0, 600) : "",
+      body: bd ? (bd.textContent || "").trim().slice(0, 20000) : "",
       texts: leafs(e).slice(0, 20)});
   }
   out.n = out.items.filter(x => x.t === "msg").length;
@@ -310,6 +326,18 @@ JS_SCROLL_UP = r"""
 })()
 """
 
+JS_SCROLL_CHATS = r"""
+(() => {
+  let el = document.querySelector('[data-tid="chat-list"],[role="tree"],[role="listbox"]');
+  while (el && el !== document.body && el.scrollHeight <= el.clientHeight + 20) el = el.parentElement;
+  if (!el || el === document.body) return "no-scroller";
+  const before = el.scrollTop;
+  el.scrollTop += Math.max(200, el.clientHeight - 40);
+  el.dispatchEvent(new Event("scroll", {bubbles:true}));
+  return el.scrollTop > before ? "scrolled" : "end";
+})()
+"""
+
 
 JS_PANE = r"""
 (() => {
@@ -320,7 +348,9 @@ JS_PANE = r"""
   for (const s of MSG) { const k = document.querySelectorAll(s).length; if (k) { n = k; break; } }
   const head = document.querySelector('[data-tid="chat-header-title"],[data-tid="chatTitle"],'
              + '[data-tid="chat-header"] [role="heading"],[role="main"] h1');
-  return JSON.stringify({n: n, chat: head ? ((head.getAttribute("title") || head.textContent || "").trim()).slice(0, 120) : ""});
+  const pane = document.querySelector('[data-tid="message-pane"][data-chat-id],[role="main"][data-chat-id]');
+  return JSON.stringify({n: n, conversation_id: pane ? pane.getAttribute("data-chat-id") : "",
+      chat: head ? ((head.getAttribute("title") || head.textContent || "").trim()).slice(0, 120) : ""});
 })()
 """
 
@@ -434,6 +464,8 @@ class Browser:
 # ── 수집 ─────────────────────────────────────────────────────────────────────
 def chat_name(item):
     """대화방 이름 — aria-label 의 첫 조각이 대개 상대/팀 이름이다. 시각·미리보기 조각은 버린다."""
+    if item.get("name"):
+        return str(item["name"]).strip()
     lb = (item.get("label") or "").strip()
     if lb:
         head = re.split(r"[,|·]| - ", lb)[0].strip()
@@ -446,23 +478,36 @@ def chat_name(item):
     return ""
 
 
-def read_chat(br, idx, name, d0, d1, today, fake=None, diag=None, deadline=None):
+def pane_matches(item, name, pane):
+    """A changing message count does not prove that the requested chat opened."""
+    requested_id = str(item.get("conversation_id") or "")
+    actual_id = str(pane.get("conversation_id") or "")
+    if requested_id and actual_id:
+        return requested_id == actual_id
+    return bool(name and pane.get("chat") and _norm(name) == _norm(pane["chat"]))
+
+
+def read_chat(br, idx, name, d0, d1, today, fake=None, diag=None, deadline=None,
+              max_scroll=MAX_SCROLL, context_chars=4000, on_page=None, conversation_id=""):
     """대화 하나 — 위로 되감으며 화면을 여러 번 읽어 합친다. → (rows, 화면항목수)
 
-    되감기를 멈추는 조건은 넷이다: 기간보다 오래된 날짜에 닿음 · 더 스크롤되지 않음 ·
-    두 번 연속 새 메시지가 안 나옴(정지) · 전체 시간 예산 소진. 정지 판정이 없으면 해석이
-    전부 실패하는 대화방에서 13회를 끝까지 돌아 시간만 태운다(감사 지적)."""
+    기간보다 오래된 날짜, 스크롤 상한, 연속된 동일 화면, 전체 시간 예산에서 멈춘다.
+    기간 밖 메시지도 탐색 진행으로 세고, 화면 상단에서는 지연 로딩을 기다린다."""
     rounds = (fake or {}).get(str(idx)) if fake else None
-    rows, seen, screen = {}, set(), 0
+    rows, seen, observed, screen = {}, set(), set(), 0
     oldest = None
     stall = 0
     pane = ("", -1)
-    for r in range(MAX_SCROLL + 1):
+    reason = "scroll_limit"
+    for r in range(max_scroll + 1):
         if deadline and time.monotonic() > deadline:
+            reason = "time_budget"
             break
-        before = len(rows)
+        before = len(observed)
+        batch = []
         if rounds is not None:
             if r >= len(rounds):
+                reason = "history_end"
                 break
             page = rounds[r]
         else:
@@ -479,6 +524,8 @@ def read_chat(br, idx, name, d0, d1, today, fake=None, diag=None, deadline=None)
                 if d:
                     cur = d
                 continue
+            # 탐색 진행에는 기간 밖 메시지도 센다. 과거 기간에 닿기 전에 최근 화면에서 멈추지 않는다.
+            observed.add(json.dumps(it, ensure_ascii=False, sort_keys=True))
             texts = it.get("texts") or []
             # 머리 조각(화면이 '이 메시지의 시각' 이라 말하는 것)과 본문을 나눠 넘긴다 —
             # 본문에 적힌 날짜를 시각으로 삼으면 최근 메시지가 과거 달로 들어간다.
@@ -498,25 +545,40 @@ def read_chat(br, idx, name, d0, d1, today, fake=None, diag=None, deadline=None)
             oldest = dt.date() if oldest is None else min(oldest, dt.date())
             if not (d0 <= dt.date() <= d1):
                 continue
-            k = (au, dt.strftime("%H:%M"), chat, hashlib.sha1(bd[:120].encode("utf-8")).hexdigest()[:10])
+            sid = str(it.get("id") or "")
+            k = (conversation_id, sid) if sid else (au, dt.isoformat(), chat, hashlib.sha1(bd.encode("utf-8")).hexdigest())
             if k in seen:
                 continue
             seen.add(k)
-            rows[k] = {"time": dt.strftime("%Y-%m-%d %H:%M"), "from": au, "chat": chat,
-                       "summary": bd[:SUMMARY_MAX], "how": how}
+            row = {"time": dt.strftime("%Y-%m-%d %H:%M"), "from": au, "chat": chat,
+                   "summary": bd[:SUMMARY_MAX], "how": how, "context_excerpt": bd[:context_chars],
+                   "context_truncated": str(len(bd) > context_chars or len(str(it.get('body') or '')) >= 20000).lower(),
+                   "source_id": "teams-dom:" + conversation_id + "/" + sid if sid else "", "source_kind": "teams_web",
+                   "source_url": str(it.get("url") or ""), "conversation_id": conversation_id,
+                   "time_precision": "date" if how == "date" else "minute", "replied_time": ""}
+            rows[k] = row
+            batch.append(row)
+        if batch and on_page:
+            on_page(batch)
         if oldest and oldest < d0:          # 기간보다 오래된 데까지 왔다 — 더 되감을 이유가 없다
+            reason = "requested_start_reached"
             break
-        if len(rows) > before:
+        if len(observed) > before:
             stall = 0
         else:
             stall += 1
             if stall >= 2:                  # 두 번 되감아도 새 것이 없다 — 이 대화는 여기까지다
+                reason = "messages_stalled"
                 break
         if rounds is None:
-            if str(br.cdp.eval(JS_SCROLL_UP)) != "scrolled":
+            movement = str(br.cdp.eval(JS_SCROLL_UP))
+            if movement not in ("scrolled", "top"):
+                reason = "history_end_or_unavailable"
                 break
             # 지난 메시지가 실제로 붙을 때까지만 기다린다 — 예전에는 무조건 1.6초를 잤다.
             pane = wait_pane(br, pane, 1.8)
+    if diag is not None:
+        diag.setdefault("chat_reasons", []).append(reason)
     return list(rows.values()), screen
 
 
@@ -526,69 +588,52 @@ def _sum40(s):
 
 
 def key_of(time_s, frm, chat, summary):
-    """창 읽기 경로와 같은 모양의 열쇠 — 같은 메시지를 두 경로가 잡아도 한 번만 센다."""
-    return "|".join((_norm(frm), str(time_s or "")[11:16], _norm(chat), _sum40(summary)))
-
-
-def existing_keys(skip):
-    """이미 모아 둔 teams_*.csv 전부의 열쇠 — Graph·창 읽기와 겹치는 메시지를 다시 적지 않는다."""
-    keys = set()
-    for p in glob.glob(os.path.join(OUT_DIR, "teams_*.csv")):
-        if os.path.abspath(p) == os.path.abspath(skip):
-            continue
-        try:
-            with open(p, encoding="utf-8-sig", errors="replace") as f:
-                for r in csv.DictReader(f):
-                    if r.get("time"):
-                        keys.add(key_of(r.get("time"), r.get("from"), r.get("chat"), r.get("summary")))
-        except OSError:
-            continue
-    return keys
-
-
-def _esc(s):
-    s = re.sub(r"[\r\n]+", " ", str(s or ""))
-    return '"' + s.replace('"', '""') + '"' if ("," in s or '"' in s) else s
+    """원본 ID가 없는 화면 관측을 위한 날짜 포함 비교 키."""
+    return "|".join((_norm(frm), str(time_s or "")[:16], _norm(chat), _sum40(summary)))
 
 
 def save(rows, force):
-    """덮어쓰지 않고 누적한다 — 이 파일은 실행할 때마다 그 시점에 보이는 대화만 담기 때문이다."""
-    os.makedirs(OUT_DIR, exist_ok=True)
+    """부분 화면 수집으로 지난 기록을 잃지 않는다. --force도 기존 기간을 지우지 않는다."""
     dst = os.path.join(OUT_DIR, "teams_web.csv")
-    out, keys = [], set()
-    if os.path.exists(dst) and not force:
-        try:
-            with open(dst, encoding="utf-8-sig", errors="replace") as f:
-                for r in csv.DictReader(f):
-                    if not r.get("time") or None in r.values():
-                        continue
-                    k = key_of(r.get("time"), r.get("from"), r.get("chat"), r.get("summary"))
-                    if k in keys:
-                        continue
-                    keys.add(k)
-                    out.append([r.get("time") or "", r.get("from") or "", r.get("chat") or "",
-                                r.get("kind") or "", r.get("replied_time") or "", r.get("summary") or ""])
-        except OSError:
-            pass
-    other = existing_keys(dst)
-    added = dup = 0
-    for r in rows:
-        k = key_of(r["time"], r["from"], r["chat"], r["summary"])
-        if k in keys:
-            continue
-        if k in other:                      # Graph·창 읽기가 이미 잡은 메시지
-            dup += 1
-            keys.add(k)
-            continue
-        keys.add(k)
-        out.append([r["time"], r["from"], r["chat"], r["kind"], "", r["summary"]])
-        added += 1
-    out.sort(key=lambda x: x[0])
-    with open(dst, "w", encoding="utf-8-sig", newline="") as f:
-        f.write(HDR + "\n")
-        for r in out:
-            f.write(",".join(_esc(c) for c in r) + "\n")
-    return dst, added, dup, len(out)
+    before = len(read_csv(dst))
+    total = merge_csv(dst, rows, FIELDS, kind="teams")
+    return dst, max(0, total - before), 0, total
+
+
+def walk_chats(br, fake, max_chats, max_pages, deadline, visit, skip=()):
+    """가상 목록을 페이지마다 다시 읽는다. DOM 인덱스는 다음 페이지로 가지고 가지 않는다."""
+    seen, done, stall = set(), [], 0
+    skip = set(skip)
+    pages = ((fake or {}).get("chat_pages") or [(fake or {}).get("chats") or {}]) if fake is not None else None
+    for p in range(max_pages):
+        if time.monotonic() >= deadline:
+            return done, p, "time_budget"
+        if pages is not None and p >= len(pages):
+            return done, p, "list_end"
+        page = pages[p] if pages is not None else br.eval_json(JS_CHATS)
+        fresh = 0
+        for item in page.get("items") or []:
+            key = str(item.get("key") or item.get("conversation_id") or chat_name(item) or item.get("idx"))
+            if key in seen:
+                continue
+            seen.add(key)
+            fresh += 1
+            if key in skip:
+                continue
+            if len(done) >= max_chats:
+                return done, p + 1, "chat_limit"
+            if time.monotonic() >= deadline:
+                return done, p + 1, "time_budget"
+            visit(item, key)
+            done.append(key)
+        stall = 0 if fresh else stall + 1
+        if stall >= 2:
+            return done, p + 1, "list_stalled"
+        if pages is None:
+            if str(br.cdp.eval(JS_SCROLL_CHATS)) != "scrolled":
+                return done, p + 1, "list_end_or_unavailable"
+            time.sleep(0.8)
+    return done, max_pages, "list_page_limit"
 
 
 def main():
@@ -598,19 +643,43 @@ def main():
     today = date.today()
     force = "--force" in sys.argv
     try:
-        cfg = json.load(open(os.path.join(ROOT, "config", "config.json"), encoding="utf-8-sig"))
+        with open(os.path.join(ROOT, "config", "config.json"), encoding="utf-8-sig") as stream:
+            cfg = json.load(stream)
     except (OSError, ValueError):
         cfg = {}
     try:
-        max_chats = int(arg("--max-chats") or cfg.get("teamsWebMaxChats") or 40)
+        max_chats = max(1, int(arg("--max-chats") or cfg.get("teamsWebMaxChats") or 200))
     except ValueError:
-        max_chats = 40
+        max_chats = 200
     try:
         # run.py 가 준 상한(1200초)보다 넉넉히 짧게 — 저장·정리 시간을 남긴다
         budget = float(arg("--budget") or cfg.get("teamsWebBudgetSec") or 900)
     except ValueError:
         budget = 900.0
     selfs = self_names(cfg)
+    ccfg = cfg.get("collection") or {}
+    context_chars = max(200, min(20000, int(ccfg.get("contextChars") or 4000)))
+    max_scroll = max(1, min(2000, int(cfg.get("teamsWebMaxScrolls") or MAX_SCROLL)))
+    max_pages = max(1, min(1000, int(cfg.get("teamsWebListPages") or 100)))
+    reasons, processed = ["web_scope_not_exhaustive"], []
+    rows_seen = set()
+    prior = {}
+    try:
+        with open(os.path.join(ROOT, "data", "collection_status", "teams_web.json"), encoding="utf-8-sig") as f:
+            prior = json.load(f)
+    except (OSError, ValueError):
+        pass
+    resume = (prior.get("processed_chat_keys") or []) if (
+        prior.get("requested_from") == d0s and prior.get("requested_to") == d1s
+        and set(prior.get("reasons") or []) & {"chat_limit", "time_budget", "list_page_limit", "interrupted"}) else []
+
+    def status(state="partial", extra_reason="", **extra):
+        return write_status(ROOT, "teams_web", d0s, d1s, status=state, rows=len(rows_seen), scope=SCOPE,
+                            reasons=list(dict.fromkeys(reasons + ([extra_reason] if extra_reason else []))),
+                            completed_units=len(processed), total_units=None,
+                            processed_chat_keys=list(dict.fromkeys(resume + processed))[-2000:], **extra)
+
+    status(extra_reason="interrupted")  # 강제 종료되어도 완주로 남지 않는다.
 
     fake = None
     fk = os.environ.get("LM_TEAMSWEB_FAKE", "")
@@ -621,80 +690,91 @@ def main():
             fake = {}
         if fake.get("login"):
             log("로그인 필요(시험용 가짜)")
+            status("blocked", "login_required")
             return 2
     br = None
     if fake is None:
         if os.environ.get("LM_NO_BROWSER"):
             log("LM_NO_BROWSER 설정 — 브라우저를 띄우지 않습니다(시험용)")
+            status("blocked", "browser_disabled")
             return 3
         try:
             br = Browser()
             started = br.start()
         except Exception as e:              # 드라이버 부재·포트 충돌 — 사슬의 다음 경로(창 읽기)로 넘긴다
             log(f"드라이버를 쓸 수 없습니다({type(e).__name__}: {str(e)[:80]}) — 다음 대체 경로로")
+            status("failed", "driver_error")
             return 3
         if not started:
             log("전용 Edge(디버그 포트)를 띄우지 못했습니다 — Edge 설치·config.copilotAuto.port 확인")
+            status("blocked", "driver_unavailable")
             return 3
         st = br.goto(TEAMS_URL)
         if st == "login":
             log("로그인 필요 — 지금 열린 전용 Edge 창의 팀즈 탭에서 회사 계정을 한 번 선택/로그인하세요 (Copilot 과 같은 창, 1회).")
             log("           로그인 뒤 [분석 실행]을 다시 누르면 이어서 읽습니다.")
+            status("blocked", "login_required")
             return 2
         if st == "timeout":
             log("팀즈 웹 화면이 뜨지 않았습니다(네트워크·차단?) — 전용 Edge 창에서 teams.microsoft.com 이 열리는지 확인하세요.")
+            status("failed", "page_timeout")
             return 1
 
-    page = json.loads(json.dumps(fake.get("chats") or {})) if fake is not None else br.eval_json(JS_CHATS)
-    chats = page.get("items") or []
-    log(f"대화 목록 {page.get('n') or 0}개 (선택자 {page.get('how') or '못 찾음'})")
-    if not chats:
-        log("채팅 목록을 찾지 못했습니다 — 전용 Edge 창의 팀즈에서 [채팅] 탭이 열려 있는지 확인하세요.")
-        if br:
-            br.close()
-        return 1
-
-    rows = []
     diag = {"no_time": 0, "no_body": 0, "how_msg": ""}
     # 전체 시간 예산 — 이 안에 반드시 저장까지 끝낸다. run.py 가 준 상한에 걸려 강제 종료되면
     # 그때까지 읽은 것이 통째로 사라진다(감사 실측: 최악 920초 > 상한 900초 → 15분 쓰고 0건).
     # 예산이 다 되면 남은 대화방을 포기하고 지금까지 읽은 것을 저장한다 — 다음 실행이 이어서 채운다.
     deadline = time.monotonic() + budget
-    pane = ("", -1)
-    done = cut = 0
-    for it in chats[:max_chats]:
-        if time.monotonic() > deadline:
-            cut = max_chats - done
-            break
+    def persist(batch):
+        for row in batch:
+            row["kind"] = "sent" if _norm(row["from"]) in selfs else "msg"
+            rows_seen.add(row.get("source_id") or key_of(row["time"], row["from"], row["chat"], row["summary"]))
+        save(batch, force)
+        status(extra_reason="interrupted")
+
+    def visit(it, key):
         idx = int(it.get("idx") or 0)
         name = chat_name(it)
         if br:
-            if str(br.cdp.eval(JS_OPEN % idx)) != "ok":
-                continue
-            # 대화가 실제로 바뀔 때까지만 기다린다 — 예전에는 무조건 2.2초를 잤다.
-            pane = wait_pane(br, pane, 2.5)
-        got, screen = read_chat(br, idx, name, d0, d1, today,
-                                fake.get("msgs") if fake else None, diag, deadline)
-        for g in got:
-            g["kind"] = "sent" if _norm(g["from"]) in selfs else "msg"
-        rows += got
-        done += 1
+            old = br.eval_json(JS_PANE)
+            br.eval_json(JS_CHATS)  # 가상 목록의 오래된 DOM 참조를 버린다.
+            if str(br.cdp.eval(JS_OPEN % json.dumps(key))) != "ok":
+                reasons.append("chat_open_failed")
+                return
+            previous = (old.get("chat", ""), old.get("n", -1))
+            wait_pane(br, previous, 5)
+            if not pane_matches(it, name, br.eval_json(JS_PANE)):
+                reasons.append("chat_switch_unconfirmed")
+                return
+        fm = fake.get("msgs") if fake else None
+        fake_idx = key if fm and key in fm else idx
+        got, screen = read_chat(br, fake_idx, name, d0, d1, today, fm, diag, deadline,
+                                max_scroll, context_chars, persist, str(it.get("conversation_id") or ""))
+        if (diag.get("chat_reasons") or [""])[-1] not in ("time_budget", "scroll_limit", "messages_stalled"):
+            processed.append(key)
+        status(extra_reason="interrupted")
         log(f"  · {name or '(이름 없음)'} — 화면 {screen}개 → {len(got)}건")
-    if br:
-        br.close()
-    if cut > 0:
-        log(f"시간 예산({budget:.0f}초)에 닿아 남은 대화방 {cut}개는 다음 실행으로 미룹니다 — 지금까지 읽은 것은 저장합니다.")
-
+    try:
+        _done, pages, stop = walk_chats(br, fake, max_chats, max_pages, deadline, visit, resume)
+        reasons += [stop] + (diag.get("chat_reasons") or [])
+        status(list_pages=pages, no_time=diag["no_time"], no_body=diag["no_body"])
+    except Exception as e:
+        status("partial" if rows_seen else "failed", "collection_error:" + type(e).__name__)
+        log("탐색 중단 — 저장된 페이지는 보존됩니다")
+        return 1
+    finally:
+        if br:
+            br.close()
     log(f"진단: 화면 해석 선택자 {diag['how_msg'] or '못 찾음'} · 시각 못 짚음 {diag['no_time']} · 본문 없음 {diag['no_body']}")
-    if not rows:
+    if not rows_seen:
         log("읽은 것이 없습니다 — 화면 항목은 보이는데 0건이면 표기 형식 문제입니다(위 진단 숫자 참고).")
         return 1
-    dst, added, dup, total = save(rows, force)
+    dst, added, dup, total = save([], force)
     try:
         shown = os.path.relpath(dst, ROOT)
     except ValueError:              # 다른 드라이브(시험용으로 출력을 돌린 경우) - 표시일 뿐이니 죽지 않는다
         shown = dst
-    log(f"{shown} — 신규 {added}건 (다른 경로와 겹쳐 제외 {dup}건) / 누적 {total}건")
+    log(f"{shown} — 이번 실행 관측 {len(rows_seen)}건 / 누적 {total}건")
     return 0 if (added or total) else 1
 
 

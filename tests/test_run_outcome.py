@@ -7,10 +7,13 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 import time
+import sys
+import tempfile
 import unittest
 
 
 SOURCE = Path(__file__).resolve().parents[1] / "LoadMonitor25" / "run.py"
+sys.path.insert(0, str(SOURCE.parent / "core"))
 
 
 def environment():
@@ -62,6 +65,7 @@ class RunOutcomeTests(unittest.TestCase):
     def test_no_teams_disables_all_teams_routes_and_failed_collection_is_not_success(self):
         env = environment()
         called = []
+        env["ROOT"] = tempfile.mkdtemp(prefix="lm25-no-teams-")
         def step(name, command, timeout):
             called.append(command)
             env["record"](name, False)

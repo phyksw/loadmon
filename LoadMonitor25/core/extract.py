@@ -959,6 +959,80 @@ def _file_times(data_dir, d0, d1, exclude=(), cfg=None, burst_n=None, self_names
     return out, burst, nb, set(sim_cluster) | set(generated_clusters)
 
 
+COLLECTION_CONTEXT_FIELDS = ("context_excerpt", "context_truncated", "source_id", "source_kind",
+                             "source_url", "conversation_id", "account", "folder", "time_precision")
+UNVERIFIED_TIME_PRECISIONS = {"estimated", "date", "ai_reported", "unknown"}
+CONTEXT_ONLY_TIME_SOURCES = {f"팀즈({kind}·시각미확인)" for kind in ("발신", "오더", "수신", "단체")}
+
+
+def _timing_label(source, row):
+    """Keep uncertain Teams content for classification, without claiming a work timestamp."""
+    precision = str(row.get("time_precision") or "").strip().lower()
+    if source.startswith("팀즈(") and source not in CONTEXT_ONLY_TIME_SOURCES and precision in UNVERIFIED_TIME_PRECISIONS:
+        return source[:-1] + "·시각미확인)"
+    return source
+
+
+def collection_context(row):
+    """Keep collected evidence separate from the legacy 100-character display text."""
+    row = row or {}
+    out = {key: _one_line(str(row.get(key) or ""), None) for key in COLLECTION_CONTEXT_FIELDS}
+    excerpt = out["context_excerpt"]
+    out["context_truncated"] = "true" if (len(excerpt) > 4000 or _truthy(row.get("context_truncated"))) else "false"
+    out["context_excerpt"] = excerpt[:4000]
+    for key in COLLECTION_CONTEXT_FIELDS[2:]:
+        out[key] = out[key][:2048 if key == "source_url" else 512]
+    return out
+
+
+def collection_ai_chars(cfg=None):
+    collection = (cfg or {}).get("collection") or {}
+    try:
+        return max(0, min(1600, int(collection.get("aiContextChars", 800))))
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return 800
+
+
+def context_preview(row, limit=800):
+    """Bound AI input without changing the locally retained excerpt; show omitted spans."""
+    context = collection_context(row)
+    text = context["context_excerpt"]
+    limit = max(0, int(limit))
+    clipped = len(text) > limit
+    if clipped:
+        # Spread the available characters across the beginning, middle and end.
+        # A decision/action item near the end must not always disappear.
+        n = max(0, limit - 16)
+        a, b = n // 2, n // 4
+        middle = max(a, len(text) // 2 - b // 2)
+        text = (text[:a] + " …[중간 생략]… " + text[middle:middle + b]
+                + " … " + text[-(n - a - b):]) if n else ""
+    status = "본문 미수집" if not context["context_excerpt"] else (
+        "일부 발췌·생략 있음" if clipped or context["context_truncated"] == "true" else "수집 문맥")
+    parts = [status + (": " + json.dumps(text, ensure_ascii=False) if text else "")]
+    for key, label, cap in (("source_kind", "출처", 64), ("source_id", "원천ID", 120),
+                            ("conversation_id", "대화ID", 120), ("source_url", "참조", 240),
+                            ("time_precision", "시각정밀도", 20)):
+        if context[key]:
+            parts.append(label + "=" + json.dumps(context[key][:cap], ensure_ascii=False))
+    return " | ".join(parts)
+
+
+def _collection_key(row, t, family, fallback):
+    """IDs are scoped; without one, only exactly matching collected content is merged."""
+    identity = str(row.get("source_id") or "").strip()
+    account = str(row.get("account") or "").strip().lower()
+    conversation = str(row.get("conversation_id") or row.get("chat") or "").strip()
+    if identity:
+        return (family, "source-id", account, conversation, identity)
+    if family == "팀즈" or any(row.get(k) for k in ("context_excerpt", "source_kind", "conversation_id")):
+        text = _one_line(str(row.get("context_excerpt") or row.get("summary") or row.get("subject") or ""), None)
+        return (family, "content", account, conversation, t,
+                str(row.get("from") or row.get("sender") or "").strip(),
+                str(row.get("box") or ""), text)
+    return fallback                       # Preserve legacy mail/cross-PC matching.
+
+
 def load_signals(data_dir, d0, d1, exclude=(), cfg=None):
     """수집 폴더 → (signals, meta)
     signals: [(dt, source_label, text, weight)] — weight는 시간이 아니라 '관여 강도'
@@ -993,7 +1067,7 @@ def load_signals(data_dir, d0, d1, exclude=(), cfg=None):
                              if (t := _dt(r.get("mtime"))) and d0 <= t.date() <= d1], warns=cfg_warns)
     sig = []
     meta = {"counted": Counter(), "excluded": Counter(), "weights": {}, "config_warnings": cfg_warns,
-            "view_only": 0, "author_excluded": 0}
+            "view_only": 0, "author_excluded": 0, "signal_contexts": []}
     _dedup = {}                            # 중복 키 → sig 색인(None = 걸러진 신호)
 
     def _pt(s):
@@ -1003,13 +1077,21 @@ def load_signals(data_dir, d0, d1, exclude=(), cfg=None):
             meta["excluded"]["시각 형식 오류"] += 1
         return t
 
-    def add(t, src, text, w, label=None, who="", dkey=None):
+    def add(t, src, text, w, label=None, who="", dkey=None, context=None):
         if not (t and text):
             return
         text = _one_line(text, None)       # 개행·탭·연속 공백 → 한 칸(S2) — 프롬프트 한 줄·CSV 셀이 갈라지지 않게
         if not text:
             return
         lbl = label or src
+        context = collection_context(context)
+        context_hit = _hit(context["context_excerpt"].lower())
+        if context_hit:
+            meta["excluded"]["개인정보필터"] += 1
+            meta["excluded"][f"개인정보필터({context_hit})"] += 1
+            return
+        if not (d0 <= t.date() <= d1):
+            return  # An out-of-period guessed timestamp must not reserve a source ID.
         # 추가 PC 취합·파일 이력에서 같은 신호가 두 번 온다. 호출측이 준 키(파일: 분·이름·확장자·폴더명 —
         # 힌트·원경로와 무관, 메일: 분·편지함·대화 — 라벨·발신자 표기와 무관) 또는 (시각, 출처, 원문, 발신자)가
         # 같으면 한 번만 계상하고, 나중 것의 가중치가 높으면 그쪽(라벨 포함)을 남긴다(A29).
@@ -1017,16 +1099,31 @@ def load_signals(data_dir, d0, d1, exclude=(), cfg=None):
         if key in _dedup:
             meta["excluded"]["중복(추가 PC 취합·이력)"] += 1
             i = _dedup[key]
-            if i is not None and w > sig[i][3]:
-                meta["counted"][sig[i][1]] -= 1
-                sig[i] = (sig[i][0], lbl, sig[i][2], w, sig[i][4])
-                meta["counted"][lbl] += 1
+            if i is not None:
+                previous = meta["signal_contexts"][i]
+                old_t, old_label, old_text, old_weight, old_who = sig[i]
+                upgrade_time = old_label in CONTEXT_ONLY_TIME_SOURCES and lbl not in CONTEXT_ONLY_TIME_SOURCES
+                weaker_time = lbl in CONTEXT_ONLY_TIME_SOURCES and old_label not in CONTEXT_ONLY_TIME_SOURCES
+                # A metadata-only supplement cannot replace evidence already recovered.
+                if len(context["context_excerpt"]) > len(previous["context_excerpt"]):
+                    previous["context_excerpt"] = context["context_excerpt"]
+                    previous["context_truncated"] = context["context_truncated"]
+                for field in COLLECTION_CONTEXT_FIELDS[2:]:
+                    if field == "time_precision" and weaker_time:
+                        continue
+                    if not previous[field] and context[field]:
+                        previous[field] = context[field]
+                if upgrade_time:
+                    previous["time_precision"] = context["time_precision"]
+                if w > old_weight or upgrade_time:
+                    new_label = lbl if upgrade_time or not weaker_time else old_label
+                    meta["counted"][old_label] -= 1
+                    sig[i] = (t if upgrade_time else old_t, new_label, old_text, max(w, old_weight), old_who)
+                    meta["counted"][new_label] += 1
             return
         _dedup[key] = None
-        if not (d0 <= t.date() <= d1):
-            return
         low = text.lower()
-        hit = _hit(low)
+        hit = _hit(low) or _hit(context["context_excerpt"].lower())
         if hit:
             # 어떤 키워드가 무엇을 지웠는지 남긴다 — 조용한 삭제는 추적이 불가능하다
             meta["excluded"]["개인정보필터"] += 1
@@ -1040,6 +1137,7 @@ def load_signals(data_dir, d0, d1, exclude=(), cfg=None):
                 return
         _dedup[key] = len(sig)
         sig.append((t, lbl, text, w, (who or "").strip()[:20]))
+        meta["signal_contexts"].append(context)
         meta["counted"][lbl] += 1
 
     # ── 메일: 발신 > 직접수신 > CC. 단체발송·공지·수신전용 발신자는 업무 증거로 쓰지 않는다 ──
@@ -1093,6 +1191,30 @@ def load_signals(data_dir, d0, d1, exclude=(), cfg=None):
         return (t.replace(second=0, microsecond=0), "메일", "sent" if box == "sent" else "inbox",
                 c or ("@" + _norm_person(snd)))
 
+    def mail_copy_key(r, t):
+        identity = str(r.get("source_id") or "").strip()
+        scope = (r.get("account") or "", r.get("box") or "", r.get("conversation_id") or "")
+        if identity:
+            return (t.date(), *scope, "id", identity)
+        return (t.date(), *scope, "legacy", (r.get("conversation") or r.get("subject") or "")[:40])
+
+    exact_mail = {mail_copy_key(r, _pt(r.get("time")) + _td(hours=mail_off)): r
+                  for r in mail_rows if (r.get("time_precision") or "").strip().lower() != "date"}
+    # Date-only supplements may have a richer body than the precise-time copy.
+    # Preserve that evidence before dropping the duplicate event, regardless of order.
+    for r in mail_rows:
+        if (r.get("time_precision") or "").strip().lower() != "date" or not r.get("source_id"):
+            continue
+        precise = exact_mail.get(mail_copy_key(r, _pt(r.get("time")) + _td(hours=mail_off)))
+        if precise is not None:
+            incoming, existing = collection_context(r), collection_context(precise)
+            if not _hit(incoming["context_excerpt"].lower()):
+                if len(incoming["context_excerpt"]) > len(existing["context_excerpt"]):
+                    precise["context_excerpt"] = incoming["context_excerpt"]
+                    precise["context_truncated"] = incoming["context_truncated"]
+                for field in COLLECTION_CONTEXT_FIELDS[2:-1]:
+                    if not precise.get(field) and incoming[field]:
+                        precise[field] = incoming[field]
     for r in mail_rows:
         t = _pt(r.get("time"))
         if not t:
@@ -1103,12 +1225,16 @@ def load_signals(data_dir, d0, d1, exclude=(), cfg=None):
         # 발신은 전용 라벨(세션 없음·능동 흔적 유지), 수신은 수동 신호라 정오 5분이 상한 안에서 묻힌다
         date_only = (r.get("time_precision") or "").strip().lower() == "date"
         if date_only:
+            if mail_copy_key(r, t) in exact_mail:
+                meta["excluded"]["중복(같은 메일의 정확한 시각 사본 있음)"] += 1
+                continue
             t = t.replace(hour=12, minute=0, second=0, microsecond=0)
         subj = r.get("subject")
         snd = (r.get("sender") or "").strip()
         key = _mail_key(t, r.get("box"), r.get("conversation"), subj, snd)
+        key = _collection_key(r, t, "메일", key)
         if r.get("box") == "sent":
-            add(t, "메일", subj, W["메일발신"], "메일(발신·일자)" if date_only else "메일(발신)", "나", dkey=key)
+            add(t, "메일", subj, W["메일발신"], "메일(발신·일자)" if date_only else "메일(발신)", "나", dkey=key, context=r)
             continue
         sl = snd.lower()
         if _norm_person(sl) in self_names:        # 나에게 보낸 메모·다른 경로의 발신 사본 — 수신이 아니다(A29)
@@ -1128,10 +1254,10 @@ def load_signals(data_dir, d0, d1, exclude=(), cfg=None):
         oneway = recv_cnt[sl] >= 5 and sl not in replied
         if rcv == "cc":
             add(t, "메일", subj, W["메일CC"] * (0.4 if oneway else 1.0),
-                "메일(수신전용)" if oneway else "메일(CC)", snd, dkey=key)
+                "메일(수신전용)" if oneway else "메일(CC)", snd, dkey=key, context=r)
         else:
             add(t, "메일", subj, (W["메일"] * 0.2) if oneway else W["메일"],
-                "메일(수신전용)" if oneway else "메일(수신)", snd, dkey=key)
+                "메일(수신전용)" if oneway else "메일(수신)", snd, dkey=key, context=r)
 
     off_kws = _offsite_kws(cfg)
     for r in _read_multi(data_dir, "outlook", "calendar.csv"):
@@ -1318,12 +1444,14 @@ def load_signals(data_dir, d0, d1, exclude=(), cfg=None):
             if group and kind not in ("order", "sent"):   # 내가 보낸 단체방 메시지는 발신(능동)으로 남긴다
                 w *= 0.5
                 lbl = "팀즈(단체)"
+            lbl = _timing_label(lbl, r)
             frm = (r.get("from") or "").strip()
             if is_notice(frm, exempt=False):
                 if t and d0 <= t.date() <= d1:
                     meta["excluded"]["공지·시스템 발신(정부24·HR 등)"] += 1
                 continue
-            add(t, "팀즈", r.get("summary"), w, lbl, frm)
+            key = _collection_key(r, t, "팀즈", None)
+            add(t, "팀즈", r.get("summary"), w, lbl, frm, dkey=key, context=r)
 
     # ── 작업창: 순활동 '분' 단위 — 샘플 수가 아니라 실측 간격 × 샘플(A28). idle 임계는 시간 계산(_activity_spans)과
     # 같은 mm.idleActiveSec 을 쓴다(예전 180 고정은 읽기 구간을 시간엔 넣고 가중치엔 빼는 불일치). IDE·코드 창은 촘촘히 ──
@@ -1361,7 +1489,9 @@ def load_signals(data_dir, d0, d1, exclude=(), cfg=None):
             add(s["t0"], "작업창", title, min(s["min"], day_len_min) * rate,
                 "작업창(IDE)" if s["ide"] else "작업창")
 
-    sig.sort(key=lambda x: x[0])
+    ordered = sorted(zip(sig, meta["signal_contexts"], strict=True), key=lambda pair: pair[0][0])
+    sig = [signal for signal, _context in ordered]
+    meta["signal_contexts"] = [context for _signal, context in ordered]
     meta["counted"] = dict(meta["counted"])
     meta["excluded"] = dict(meta["excluded"])
     meta["weights"] = {k: round(v, 4) if isinstance(v, float) else v for k, v in W.items()}
@@ -2661,7 +2791,7 @@ def _signal_spans(signals, d0, d1, mins=None, now=None, extra=None, gap=None, da
         if t > now:
             dropped += 1
             continue
-        if src in ("파일(일괄)", "파일(해석출력)") or mins.get(src, 0) <= 0:
+        if src in CONTEXT_ONLY_TIME_SOURCES or src in ("파일(일괄)", "파일(해석출력)") or mins.get(src, 0) <= 0:
             continue
         if _is_night(t, day_win) and src not in NIGHT_PRODUCTIVE and src != "회의":
             continue
@@ -2726,12 +2856,13 @@ def _utc_suspect(data_dir, d0, d1, offset_h=0.0):
     """발신(메일 sent + 팀즈 kind=sent, A27)의 60% 이상이 00~08시면 시각이 UTC 로 기록된 것으로 의심
     (웹·Copilot·Graph 수집 경로). 낮 발신이 새벽 '야근'으로 옮겨가는 구조적 오류 — 경고만 하고
     config.mm.mailTimeOffsetH 로 보정한다(보정값을 적용한 뒤의 시각으로 판정하므로 offset 을 맞추면 경고가 사라진다).
-    날짜만 아는 행(time_precision=date)은 판정에서 뺀다."""
+    날짜만 아는 행·추정 시각·AI 보고 시각은 판정에서 뺀다."""
     n = k = 0
     rows = [r for r in _read_multi(data_dir, "outlook", "mail.csv") if r.get("box") == "sent"
-            and (r.get("time_precision") or "").strip().lower() != "date"]
+            and (r.get("time_precision") or "").strip().lower() not in UNVERIFIED_TIME_PRECISIONS]
     for p in _glob_multi(data_dir, "m365", "teams_*.csv"):
-        rows += [r for r in _read(p) if (r.get("kind") or "").strip().lower() == "sent"]
+        rows += [r for r in _read(p) if (r.get("kind") or "").strip().lower() == "sent"
+                 and (r.get("time_precision") or "").strip().lower() not in UNVERIFIED_TIME_PRECISIONS]
     for r in rows:
         t = _dt(r.get("time"))
         if not t:
@@ -2772,6 +2903,11 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
       trace_window_days·pc_coverage_by_month{YYYY-MM:비율}·always_on_days·measure·coverage·cfg_used(D5)·
       sim_night_h·sim_night_days·sim_night_capped_days·sim_night_unlocked_days·sim_night_remote_h(S4-N1)"""
     from datetime import timedelta
+    # These dates/times are collection hints, not verified work timestamps. Removing
+    # them here also prevents PC-floor, lunch/dinner and night-extension side effects.
+    all_signals = list(signals)
+    signals = [signal for signal in all_signals if signal[1] not in CONTEXT_ONLY_TIME_SOURCES]
+    unverified_time_signals = len(all_signals) - len(signals)
     cfg = cfg if isinstance(cfg, dict) else {}
     mc, cfg_warns = norm_cfg(cfg)            # 잘못된 설정값은 죽지 않고 기본값 + info["config_warnings"]
     std = mc["standardDayHours"]
@@ -2894,7 +3030,7 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
             "phys_cap_days": 0, "day_cap_days": 0, "day_cap_hours": day_cap,
             "absent_worked_h": 0.0, "long_days": [], "anomalies": anomalies,
             "utc_suspect": _utc_suspect(data_dir, d0, d1, mail_off),
-            "config_warnings": cfg_warns,
+             "config_warnings": cfg_warns, "unverified_time_signals": unverified_time_signals,
             # ── LM22 2차(A6·A9·A13·A18·A33·D3·D4·D7·D5) ──
             "offsite_days": 0, "offsite_h": 0.0, "manual_days": 0, "manual_h": 0.0,
             "dinner_deducted_h": 0.0, "flex_edge_h": 0.0, "sampler_bridge_h": 0.0,
@@ -3490,7 +3626,7 @@ def rehours_after_judge(data_dir, kept_rows, dropped_rows, d0, d1, cfg, exclude=
                 w = float(r.get("weight") or 0)
             except (TypeError, ValueError):
                 w = 0.0
-            out.append((t, (r.get("source") or "").strip(), (r.get("text") or "").strip() or "-", w,
+            out.append((t, _timing_label((r.get("source") or "").strip(), r), (r.get("text") or "").strip() or "-", w,
                         (r.get("who") or "").strip()[:20]))
         out.sort(key=lambda x: x[0])
         return out

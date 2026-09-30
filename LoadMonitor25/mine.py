@@ -273,11 +273,14 @@ def main():
 
     def _w_sig(f):
         w = csv.writer(f)
-        w.writerow(["time", "source", "who", "project", "activity", "weight", "text"])
-        for t, src, text, wt, who, proj, act in assigns:
+        context_fields = extract.COLLECTION_CONTEXT_FIELDS
+        w.writerow(["time", "source", "who", "project", "activity", "weight", "text", *context_fields])
+        contexts = meta.get("signal_contexts") or [{} for _ in assigns]
+        for assignment, context in zip(assigns, contexts, strict=True):
+            t, src, text, wt, who, proj, act = assignment
             # S2: activity·text 는 한 줄로(개행·탭·앞뒤 공백 정규화) — 열 이름·text ≤100자 계약은 그대로
             w.writerow([t.strftime("%Y-%m-%d %H:%M"), src, who, proj, extract._one_line(act), round(wt, 3),
-                        _sig_text(src, text)])
+                        _sig_text(src, text), *(context.get(key, "") for key in context_fields)])
 
     import json
 

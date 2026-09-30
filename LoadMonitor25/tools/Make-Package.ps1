@@ -101,6 +101,10 @@ if ($stale.Count) {
 }
 
 $stage = Join-Path ([System.IO.Path]::GetTempPath()) ("LM22pkg_" + [Guid]::NewGuid().ToString('N').Substring(0,8))
+$stage = [System.IO.Path]::GetFullPath($stage)
+$safeTemp = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd('\') + '\'
+if (-not $stage.StartsWith($safeTemp, [StringComparison]::OrdinalIgnoreCase) -or
+    (Split-Path -Leaf $stage) -notmatch '^LM22pkg_[0-9a-f]{8}$') { throw 'Unsafe package staging path' }
 $dest = Join-Path $stage 'LoadMonitor25'
 New-Item -ItemType Directory -Force $dest | Out-Null
 

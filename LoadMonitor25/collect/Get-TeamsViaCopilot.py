@@ -24,6 +24,12 @@ if __name__ == "__main__":      # import 시(파서 재사용·테스트) stdout
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, errors="replace", encoding=(
         (sys.stdout.encoding or "utf-8") if sys.stdout.isatty() else "utf-8"))  # 콘솔(bat)=콘솔 코드페이지 · 파이프(UI)=utf-8
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "core"))
+from collection_state import merge_csv, write_status  # noqa: E402
+
+FIELDS = ["time", "from", "chat", "kind", "replied_time", "summary", "context_excerpt",
+          "context_truncated", "source_id", "source_kind", "source_url", "conversation_id", "time_precision"]
+SCOPE = "Copilot이 검색해 응답한 Teams 채팅 표; 원본 메시지·기간 전체 회수는 검증하지 못함"
 NO_WIN = 0x08000000
 
 
@@ -253,19 +259,23 @@ def _one_slice(s0, s1, alt=False):
 
 
 def _save_rows(rows):
-    """지금까지 모은 행을 즉시 CSV 로 — 부모(run.py) 타임아웃·강제 종료가 와도
-    이미 회수한 조각은 잃지 않는다(검증 확정: 끝에서 한 번만 쓰면 전량 소실)."""
+    """응답 조각마다 원자적으로 합친다. 실패·빈 응답은 지난 실행 자료를 지우지 않는다."""
     dst = os.path.join(ROOT, "data", "m365", "teams_copilot.csv")
-    os.makedirs(os.path.dirname(dst), exist_ok=True)
-
-    def esc(s):
-        s = re.sub(r"[\r\n]+", " ", str(s or ""))
-        return '"' + s.replace('"', '""') + '"' if ("," in s or '"' in s) else s
-
-    with open(dst, "w", encoding="utf-8-sig", newline="") as f:
-        f.write("time,from,chat,kind,replied_time,summary\n")
-        for r in rows:
-            f.write(",".join([esc(c) for c in r[:6]]) + "\n")
+    try:
+        with open(os.path.join(ROOT, "config", "config.json"), encoding="utf-8-sig") as f:
+            cfg = json.load(f)
+    except (OSError, ValueError):
+        cfg = {}
+    limit = max(200, min(20000, int((cfg.get("collection") or {}).get("contextChars") or 4000)))
+    records = []
+    for row in rows:
+        record = dict(zip(FIELDS[:6], row[:6], strict=True))
+        text = str(record.get("summary") or "")
+        record.update(summary=text[:200], context_excerpt=text[:limit], context_truncated=str(len(text) > limit).lower(),
+                      source_id="", source_kind="teams_copilot", source_url="", conversation_id="",
+                      time_precision="ai_reported")
+        records.append(record)
+    merge_csv(dst, records, FIELDS, kind="teams")
     return dst
 
 
@@ -293,6 +303,15 @@ UNAVAILABLE_FLAG = os.path.join(ROOT, "data", "m365", "teams_copilot_unavailable
 def main():
     d0 = arg("--from") or (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
     d1 = arg("--to") or datetime.now().strftime("%Y-%m-%d")
+    reasons = ["ai_retrieval_not_exhaustive", "original_message_not_verified"]
+    progress = {"rows": 0, "completed": 0, "total": 0}
+
+    def status(state="partial", reason=""):
+        return write_status(ROOT, "teams_copilot", d0, d1, status=state, rows=progress["rows"], scope=SCOPE,
+                            reasons=reasons + ([reason] if reason else []),
+                            completed_units=progress["completed"], total_units=progress["total"])
+
+    status(reason="interrupted")
     # 이 계정의 Copilot 이 팀즈 조회 자체를 못 한다고 전에 확인됐으면(테넌트에 Teams
     # 커넥터 부재 — 실측) 분석 때마다 수십 분 헛왕복하지 않는다. 회사가 커넥터를 켜준 뒤
     # 다시 시도하려면 --retry-copilot 을 붙이거나 플래그 파일을 지우면 된다.
@@ -305,6 +324,7 @@ def main():
         print("               팀즈는 상시 샘플러(collect\\Start-TeamsSampler.ps1)로 따로 모으세요.")
         print("               (커넥터가 생겨 재시도하려면: --retry-copilot 또는 "
               "data\\m365\\teams_copilot_unavailable.json 삭제)")
+        status("blocked", "remembered_unavailable")
         return 1
     # 90일 통짜 요청은 응답이 잘리거나 '응답할 수 없습니다'가 잦다(실측 — 팀즈 데이터 누락의
     # 주원인). 30일 조각으로 나눠 왕복하고 합친다. 각 왕복은 재시도 사다리의 보호를 받는다.
@@ -318,19 +338,22 @@ def main():
         cur = end + timedelta(days=1)
     print(f"[teams-copilot] {d0}~{d1} → {len(slices)}조각 왕복 (30일 단위) — 조각당 수십 초")
     rows, seen = [], set()
+    progress["total"] = len(slices)
 
     def take(batch):
         n = 0
         for r in batch:
-            # 중복 키에서 summary 는 뺀다 — 요지는 왕복마다 LLM이 새로 쓰므로 같은 메시지가
-            # 재질의에서 다른 요약으로 돌아오면 중복 유입된다.
-            # 다만 대화방(chat)은 넣는다 — (시각,발신자)만으로 좁히면 같은 분에 다른 방으로
-            # 보낸 별개 메시지가 통째로 사라진다(실측: 4건 중 2건 소실).
-            k = (r[0], r[1], r[2])
+            # 원본 ID 없는 AI 응답은 동일한 행만 합친다. 같은 분의 서로 다른 메시지는 보존한다.
+            # 재질의로 요약이 바뀐 행의 동일성은 검증할 수 없어 별도 관측으로 남긴다.
+            k = (r[0], r[1], r[2], r[5])
             if k not in seen:                # 조각 경계·재질의 중복 제거
                 seen.add(k)
                 rows.append(r)
                 n += 1
+        if batch:
+            _save_rows(batch)
+        progress["rows"] = len(rows)
+        status(reason="interrupted")
         return n
 
     alt_mode = False        # '조회 불가' 후 검색형 화법으로 전환됐는지
@@ -338,6 +361,7 @@ def main():
     #                         연속 카운터는 unable↔other 가 섞이면 계속 초기화돼 끝까지
     #                         물어보게 되고, 그 사이 판정용 Copilot 세션이 소진된다(실측).
     for i, (s0, s1) in enumerate(slices):
+        progress["completed"] = i
         print(f"[teams-copilot] {i + 1}/{len(slices)} 조각 {s0}~{s1}")
         got, st = _one_slice(s0, s1, alt_mode)
         if st == "unable" and not alt_mode:
@@ -347,6 +371,7 @@ def main():
             alt_mode = True
             got, st = _one_slice(s0, s1, alt_mode)
         if st == "unable":
+            reasons.append("search_unavailable")
             # 커넥터 부재는 재질의로 해결되지 않는다 — 한 번 확인되면 즉시 접는다
             fails += 1
             if True:
@@ -368,11 +393,13 @@ def main():
         if st in ("other", "empty") and not got:
             fails += 1
             if fails >= 3:
+                reasons.append("response_failures")
                 print("[teams-copilot] 3조각에서 표를 얻지 못해 중단합니다 — 판정용 Copilot "
                       "세션을 아끼기 위해서입니다.")
                 print("               팀즈는 상시 샘플러(collect\\Start-TeamsSampler.ps1)로 모으세요.")
                 break
         take(got)
+        progress["completed"] = i + 1
         if st == "empty":
             print("[teams-copilot]   이 조각은 메시지 없음 (재질의 생략)")
             print(f"[teams-copilot]   누적 {len(rows)}건")
@@ -390,11 +417,13 @@ def main():
             _save_rows(rows)               # 증분 저장 — 부모 타임아웃이 와도 회수분 보존
         print(f"[teams-copilot]   누적 {len(rows)}건" + (" (증분 저장됨)" if rows else ""))
     if not rows:
+        status("blocked" if "search_unavailable" in reasons else "partial", "no_verified_rows")
         print("[teams-copilot] 전 조각에서 표를 얻지 못함 — Copilot이 팀즈 검색을 지원하지 않는")
         print("               계정이거나 기간에 채팅이 없을 수 있음 (창 읽기 폴백이 이어집니다)")
         print("               실제 응답 원문은 data\\m365\\replies\\ 에서 확인할 수 있습니다")
         return 1
     _save_rows(rows)
+    status()
     if os.path.exists(UNAVAILABLE_FLAG):    # 재시도가 성공했으면 '불가' 기록을 해제
         try:
             os.remove(UNAVAILABLE_FLAG)

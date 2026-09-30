@@ -54,8 +54,16 @@ def stable_work_id(row):
 
 def stable_signal_id(row, tag):
     # Include the period and original activity content, not generated annotations.
-    return stable_id("sig", tag, *(row.get(k) for k in
-                     ("time", "source", "text", "who", "weight", "model", "project", "detail", "activity")))
+    parts = [row.get(k) for k in
+             ("time", "source", "text", "who", "weight", "model", "project", "detail", "activity")]
+    # Old rows retain exactly the same ID; new source identity prevents identical
+    # display snippets from different messages/conversations sharing an evidence ID.
+    if row.get("source_id") or row.get("conversation_id"):
+        parts += ["collection-v1", row.get("account") or "", row.get("conversation_id") or "",
+                  row.get("source_id") or ""]
+    elif row.get("context_excerpt"):
+        parts += ["collection-context-v1", row.get("account") or "", row["context_excerpt"]]
+    return stable_id("sig", tag, *parts)
 
 
 def analysis_fingerprint(root, tag, payload):

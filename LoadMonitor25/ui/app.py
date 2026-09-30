@@ -32,7 +32,7 @@ from tools.transfer import create_transfer  # noqa: E402
 REPORT = os.path.join(ROOT, "report")
 DATA = os.path.join(ROOT, "data")
 NO_WIN = 0x08000000
-VERSION = "v25.3"
+VERSION = "v25.4"
 LOCK = threading.Lock()
 REQUEST_LOCK = threading.Lock()      # Serialize synchronous mutations with transfer startup.
 FREEZE_LOCK = threading.Lock()       # [보고서 만들기] 직렬화 — JOB 과 별개(사본에 '실행 중'이 굳지 않게)
@@ -1068,6 +1068,16 @@ def _sampler_autorestart(age_min):
     return ""
 
 
+def communication_coverage(period=None):
+    """Latest source reports; a different requested period never proves this view."""
+    from collection_state import status_snapshot
+    items = status_snapshot(ROOT)
+    for item in items:
+        item["matches_period"] = bool(period and len(period) == 2 and
+                                      [item.get("requested_from"), item.get("requested_to")] == list(period))
+    return items
+
+
 def outlook_coverage(period=None):
     r"""Outlook COM 수집의 달별 완료 표(data\outlook\coverage.json) 와 화면 기간을 맞춰 본다.
 
@@ -1484,6 +1494,7 @@ def activity_payload(d0="", d1=""):
     info["read_issues"] = _activity_read_issues()
     return {"ok": True, "kind": "collected_activity", "period": [d0, d1],
             "trend": rows, "trend_info": info, "trend_src": info.get("src"),
+            "communication_coverage": communication_coverage([d0, d1]),
             "mail_coverage": outlook_coverage([d0, d1]), "clumps": mtime_clumps(d0, d1)}
 
 
@@ -2619,6 +2630,9 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
  <div class="row" id="wleg" style="margin-top:6px;font-size:11px;color:#4a5159"></div>
  <div class="note" id="wnote" style="display:none;color:#a86400"></div>
  <div id="wclump"></div></div>
+<div class="card"><h2>메일·Teams 수집 범위 <span class="state">수집 건수와 전체 확인 여부는 다릅니다</span></h2>
+ <div class="note">수집 경로 → 기존 자료와 합치기 → 문맥 발췌 → AI 분석. 권한이 없거나 화면에 나오지 않은 내용은 확인할 수 없습니다.</div>
+ <div id="communicationcoverage" style="overflow:auto"></div></div>
 <div class="note" id="analysisstatus" role="status" aria-live="polite"></div>
 <div class="note" id="analysisperiod"></div>
 <div class="kpis">
@@ -2774,7 +2788,18 @@ function activityFromSelection(){
 $("viewperiod").onclick=activityFromSelection;
 for(const id of ["from","to"])$(id).addEventListener("change",activityFromSelection);
 $("activityscale").onchange=()=>{if(lastActivity)weekly($("weekly"),lastActivity.trend||[]);};
+function renderCommunicationCoverage(items){
+ const host=$("communicationcoverage");if(!host)return;
+ const names={outlook_com:"Outlook 앱(COM)",outlook_index:"Windows Search 색인",outlook_web:"Outlook 웹",outlook_copilot:"메일 Copilot",teams_app:"Teams 열린 앱",teams_graph:"Teams Graph",teams_web:"Teams 웹",teams_copilot:"Teams Copilot"};
+ const states={complete:"명시 범위 완료",partial:"부분 수집",failed:"실패",blocked:"접근 불가",skipped:"생략",unknown:"미확인"};
+ if(!Array.isArray(items)||!items.length){host.innerHTML='<p class="note">이 버전의 범위 기록이 없습니다. 다음 수집 후 경로별 기간과 중단 이유가 표시됩니다. 기존 CSV 건수만으로 전체 수집을 확인할 수 없습니다.</p>';return;}
+ host.innerHTML='<table><tr><th>경로</th><th>상태</th><th>실행 요청 기간</th><th>확인 범위·중단 이유</th></tr>'+items.map(s=>{
+  const status=states[s.status]||"미확인",same=s.matches_period!==false;
+  return `<tr><td>${esc(names[s.source]||s.source)}</td><td style="color:${s.status==="complete"&&same?"#16704a":"#a86400"}">${esc(status)}${same?"":" · 다른 기간 기록"}</td><td>${esc(s.requested_from||"")} ~ ${esc(s.requested_to||"")}</td><td>${esc(s.scope||"범위 미확인")}<br><span class="note">${esc((Array.isArray(s.reasons)?s.reasons:[]).join(" · "))}</span></td></tr>`;
+ }).join("")+"</table><p class='note'>‘명시 범위 완료’도 조직 전체 메일·Teams 전체를 뜻하지 않습니다. 웹 본문 읽기는 기본 꺼짐이며, 색인·Copilot 결과는 메타데이터 단서입니다. 첨부파일 내용은 수집하지 않습니다.</p>";
+}
 function renderActivity(d,independent=false){
+ renderCommunicationCoverage(d.communication_coverage||[]);
  lastActivity=d;
  weekly($("weekly"),d.trend||[]);
  const ti=d.trend_info||{}, per=ti.period||d.period||[];
@@ -4173,6 +4198,7 @@ class H(BaseHTTPRequestHandler):
                              "file": fn, "rows": rows, "meta": meta,
                              # 메일·일정 수집 범위(달 단위) — 주간 활동 추이 밑에 '미수집 달'을 적는다(얼린 사본에도 굳는다)
                              "mail_coverage": outlook_coverage(per),
+                             "communication_coverage": communication_coverage(per),
                              # 화면이 보고 있는 그 기간을 넘긴다 — 예전에는 오늘 기준
                              # 14주 고정이라 1월부터 본 사람도 최근 3개월만 보였다(제보)
                              "clumps": mtime_clumps(per[0], per[1]),

@@ -24,8 +24,9 @@ Get-TeamsChats.py — Microsoft Graph로 '내 팀즈 채팅'을 직접 수집 (d
       — 기존 teams_orders*.csv 와 같은 스키마라 분석기가 그대로 인제스트한다.
       time 은 이 PC 의 로컬 시각(Graph 의 createdDateTime 은 UTC '…Z' — 그대로 적으면 9시간 밀려
       낮 발신이 새벽 '야간 산출물'이 됐다). since/until 도 로컬 자정을 UTC 로 바꿔 비교한다.
-      채팅방·메시지는 since 에 닿을 때까지 페이지를 넘기고(서버 필터 $filter=lastModifiedDateTime gt since),
-      안전 상한에 걸리면 '미수집' 경고를 낸다. 총 시간 예산(기본 240초) 안에서만 돈다.
+      마지막 수정일 필터로 후보를 좁히고 생성일로 요청 기간을 검사하며 모든 nextLink를 따른다.
+      본문 문맥·원본 ID를 페이지마다 누적한다. 권한 오류·시간·건수 상한은 상태 파일에 부분 수집으로
+      기록한다. complete도 승인된 /me/chats 범위의 완주이며 채널 대화는 포함하지 않는다.
 """
 import argparse
 import io
@@ -46,6 +47,12 @@ if __name__ == "__main__":      # import 시엔 건드리지 않는다 — 임�
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, errors="replace", encoding=(
         (sys.stdout.encoding or "utf-8") if sys.stdout.isatty() else "utf-8"))  # 콘솔(bat)=콘솔 코드페이지 · 파이프(UI)=utf-8
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "core"))
+from collection_state import merge_csv, write_status  # noqa: E402
+
+FIELDS = ["time", "from", "summary", "replied_time", "chat", "kind", "context_excerpt",
+          "context_truncated", "source_id", "source_kind", "source_url", "conversation_id", "time_precision"]
+SCOPE = "Graph /me/chats의 권한 있는 채팅 메시지·요청 생성일 범위; Teams 채널은 포함하지 않음"
 CFG_PATH = os.path.join(ROOT, "config", "config.json")
 TOKEN_PATH = os.path.join(ROOT, "data", "graph_token.json")
 OUT_DIR = os.path.join(ROOT, "data", "m365")
@@ -55,7 +62,7 @@ DEFAULT_SCOPES = ["Chat.Read", "User.Read", "offline_access"]
 
 def load_cfg():
     try:
-        with open(CFG_PATH, encoding="utf-8") as f:
+        with open(CFG_PATH, encoding="utf-8-sig") as f:
             return json.load(f)
     except Exception:
         return {}
@@ -201,144 +208,164 @@ def local_day(d):
 
 
 def collect(d0, d1, max_chats=500, max_msgs=None, interactive=True, time_budget=240.0):
-    """d0~d1(로컬 날짜) 의 내 채팅을 모아 CSV 로. max_msgs 는 방당 안전 상한(None = 기간 길이 비례, 최소 1000)"""
-    token, err = acquire_token(interactive)
+    """페이지마다 원자적으로 누적 저장. 페이지 실패·403·상한은 완주가 아니다."""
+    started = time.monotonic()
+    deadline = started + max(0.0, time_budget)
+    out = os.path.join(OUT_DIR, "teams_chats.csv")
+    rows, reasons, completed = [], [], []
+    chats, seen_chats, chat_urls = [], set(), set()
+    cfg = load_cfg()
+    context_chars = max(200, min(20000, int((cfg.get("collection") or {}).get("contextChars") or 4000)))
+    since, until = local_day(d0), local_day(d1) + timedelta(days=1)
+    # gt 필터의 자정 경계를 포함한 뒤 실제 요청 기간은 createdDateTime으로 검사한다.
+    since_z = (since - timedelta(seconds=1)).astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    max_msgs = max(1, int(max_msgs or max(1000, 50 * max(1, (until - since).days))))
+    max_chats = max(1, int(max_chats))
+
+    def status(state="partial", more=()):
+        return write_status(ROOT, "teams_graph", d0, d1, status=state, rows=len(rows), scope=SCOPE,
+                            reasons=reasons + list(more), completed_units=len(completed),
+                            total_units=len(chats), completed_chat_ids=completed)
+
+    status(more=["interrupted"])
+    try:
+        token, err = acquire_token(interactive)
+    except Exception as ex:
+        status("failed", ["authentication_error:" + type(ex).__name__])
+        return None
     if not token:
         print(f"[graph] {err}")
+        status("blocked", ["login_or_configuration_required"])
         return None
-    t_start = time.time()
-    me = get_json(f"{GRAPH}/me", token)
-    my_id = me.get("id", "")
-    print(f"[graph] 로그인: {me.get('displayName','')} <{me.get('mail') or me.get('userPrincipalName','')}>")
-    since = local_day(d0)
-    until = local_day(d1) + timedelta(days=1)
-    since_z = since.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    days = max(1, (until - since).days)
-    if not max_msgs:
-        max_msgs = max(1000, 50 * days)
-    rows = []
-    warns = []
-    # 채팅방: 마지막 메시지 시각 내림차순으로 받아 since 이전 방이 나오면 멈춘다 — 60개 상한이 아니라 기간이 기준.
-    # ($orderby 를 거절하는 테넌트/버전이면 정렬 없이 전부 훑고 lastMessagePreview 로만 거른다)
-    ordered = True
-    url = (f"{GRAPH}/me/chats?$top=50&$expand=members,lastMessagePreview"
-           "&$orderby=lastMessagePreview/createdDateTime%20desc")
-    chats, pages = [], 0
-    max_pages = max_chats // 50 + 2
-    stop = False
-    while url and not stop and pages < max_pages:
-        pages += 1
-        try:
-            page = get_json(url, token)
-        except urllib.error.HTTPError as e:
-            if e.code == 400 and ordered:
-                ordered = False
-                url = f"{GRAPH}/me/chats?$top=50&$expand=members"
-                pages -= 1
-                continue
-            print(f"[graph] /me/chats 실패 {e.code} — 권한(Chat.Read) 동의 여부 확인")
-            return None
-        for ch in page.get("value", []):
-            last = parse_graph_time(((ch.get("lastMessagePreview") or {}).get("createdDateTime")) or "")
-            if last is not None and last < since:
-                if ordered:
-                    stop = True          # 정렬돼 있으니 이후 방은 전부 기간 밖
-                    break
-                continue                 # 정렬 없음: 이 방만 건너뜀
-            chats.append(ch)
-            if len(chats) >= max_chats:
-                warns.append(f"채팅방 {max_chats}개 상한 도달 — 더 오래된 방은 미수집(--max-chats 로 상향)")
-                stop = True
-                break
-        url = page.get("@odata.nextLink")
-    if url and not stop:
-        warns.append(f"채팅방 목록 {pages}페이지 상한 — 이후 방 미수집")
-    print(f"[graph] 채팅방 {len(chats)}개 조회 ({d0}~{d1} 안에 메시지가 있을 수 있는 방)")
-    filtered = True
-    n_budget_left = 0
-    for i, ch in enumerate(chats):
-        if time.time() - t_start > time_budget:
-            n_budget_left = len(chats) - i
-            warns.append(f"시간 예산 {int(time_budget)}초 도달 — 채팅방 {n_budget_left}개 미수집(다음 실행 때 재시도)")
+    try:
+        me = get_json(f"{GRAPH}/me", token)
+    except Exception as ex:
+        status("blocked" if isinstance(ex, urllib.error.HTTPError) and ex.code in (401, 403) else "failed",
+               ["identity_request_failed:" + str(getattr(ex, "code", type(ex).__name__))])
+        return None
+    my_id = me.get("id", "") if isinstance(me, dict) else ""
+    if not my_id:
+        status("failed", ["identity_missing"])
+        return None
+    url = f"{GRAPH}/me/chats?$top=50&$expand=members"
+    while url:
+        if time.monotonic() >= deadline:
+            reasons.append("time_budget")
             break
-        cid = ch.get("id")
-        topic = ch.get("topic") or ", ".join(
-            (m.get("displayName") or "") for m in (ch.get("members") or [])[:3])[:40]
-        base = f"{GRAPH}/chats/{urllib.parse.quote(cid)}/messages?$top=50"
-        murl = base + ("&$filter=lastModifiedDateTime%20gt%20" + since_z if filtered else "")
-        got, pages = 0, 0
-        reached = False                  # since 이전 메시지를 만났거나 페이지가 끝났다 = 기간을 다 덮음
+        if url in chat_urls:
+            reasons.append("chat_page_repeated")
+            break
+        chat_urls.add(url)
+        try:
+            page = get_json(url, token, timeout=max(1, min(30, deadline - time.monotonic())))
+        except Exception as ex:
+            reasons.append("chat_list_failed:" + str(getattr(ex, "code", type(ex).__name__)))
+            break
+        if not isinstance(page, dict) or not isinstance(page.get("value"), list):
+            reasons.append("chat_list_invalid")
+            break
+        capped = False
+        for ch in page["value"]:
+            if not isinstance(ch, dict):
+                reasons.append("chat_invalid")
+                continue
+            cid = str(ch.get("id") or "")
+            if not cid:
+                reasons.append("chat_id_missing")
+                continue
+            if cid in seen_chats:
+                continue
+            if len(chats) >= max_chats:
+                capped = True
+                break
+            seen_chats.add(cid)
+            chats.append(ch)
+        url = page.get("@odata.nextLink")
+        if capped or (url and len(chats) >= max_chats):
+            reasons.append("chat_limit")
+            break
+    for ch in chats:
+        if time.monotonic() >= deadline:
+            reasons.append("time_budget")
+            break
+        cid = str(ch["id"])
+        topic = ch.get("topic") or ", ".join((m.get("displayName") or "") for m in (ch.get("members") or [])[:3])[:120]
+        base = f"{GRAPH}/chats/{urllib.parse.quote(cid, safe='')}/messages?$top=50"
+        murl = base + "&$filter=lastModifiedDateTime%20gt%20" + since_z
+        filtered_url = murl
+        visited, scanned, seen_messages = set(), 0, set()
         while murl:
-            pages += 1
+            if time.monotonic() >= deadline:
+                reasons.append("time_budget")
+                break
+            if murl in visited:
+                reasons.append("message_page_repeated")
+                break
+            visited.add(murl)
             try:
-                mp = get_json(murl, token)
-            except urllib.error.HTTPError as e:
-                if e.code == 400 and filtered and pages == 1:
-                    filtered = False     # 이 테넌트는 $filter 미지원 — 필터 없이 페이지로만
-                    murl = base
-                    pages -= 1
+                page = get_json(murl, token, timeout=max(1, min(30, deadline - time.monotonic())))
+            except Exception as ex:
+                if isinstance(ex, urllib.error.HTTPError) and ex.code == 400 and murl == filtered_url:
+                    murl = base  # 필터를 지원하지 않으면 원래 권한 범위에서 페이지를 계속 읽는다.
                     continue
-                if e.code in (403, 404):
-                    reached = True
+                reasons.append("messages_failed:" + str(getattr(ex, "code", type(ex).__name__)))
+                break
+            if not isinstance(page, dict) or not isinstance(page.get("value"), list):
+                reasons.append("messages_invalid")
+                break
+            batch, capped = [], False
+            for m in page["value"]:
+                if not isinstance(m, dict):
+                    reasons.append("message_invalid")
+                    continue
+                mid = str(m.get("id") or "")
+                if mid and mid in seen_messages:
+                    continue
+                if scanned >= max_msgs:
+                    capped = True
                     break
-                raise
-            stop = False
-            for m in mp.get("value", []):
+                scanned += 1
+                if mid:
+                    seen_messages.add(mid)
                 t = parse_graph_time(m.get("createdDateTime"))
                 if t is None:
+                    reasons.append("message_time_unreadable")
                     continue
-                if t < since:
-                    stop = True
-                    break
-                if t >= until:
+                # Graph의 기본 정렬은 createdDateTime 순서라는 보장이 없다. 오래된 한 건으로 멈추지 않는다.
+                if not (since <= t < until):
                     continue
                 body = strip_html((m.get("body") or {}).get("content", ""))
-                if not body or len(body) < 2:
+                if not body:
                     continue
-                frm = (((m.get("from") or {}).get("user") or {}).get("displayName") or "")
-                is_me = (((m.get("from") or {}).get("user") or {}).get("id") or "") == my_id
+                user = (m.get("from") or {}).get("user") or {}
+                is_me = user.get("id") == my_id
                 kind = "sent" if is_me else ("order" if any(k in body for k in ORDER_HINTS) else "msg")
-                rows.append({"time": t.strftime("%Y-%m-%d %H:%M"), "from": frm or ("나" if is_me else ""),
-                             "summary": body[:220], "chat": topic, "kind": kind})
-                got += 1
-            nxt = mp.get("@odata.nextLink")
-            if stop or not nxt:
-                reached = True
-                murl = None
-            elif got >= max_msgs:
-                murl = None
-            else:
-                murl = nxt
-        if not reached:
-            warns.append(f"방 '{topic[:20]}': {got}건 상한 도달(이전 메시지 미수집 — 기간을 나눠 다시 수집)")
-    rows.sort(key=lambda r: r["time"])
-    # 오더 → 내 응답 리드타임 (같은 채팅방에서 내 다음 발신)
-    for i, r in enumerate(rows):
-        r["replied_time"] = "미응답"
-        if r["kind"] != "order":
-            continue
-        for nxt in rows[i + 1:]:
-            if nxt["chat"] == r["chat"] and nxt["kind"] == "sent":
-                r["replied_time"] = nxt["time"]
+                batch.append({"time": t.strftime("%Y-%m-%d %H:%M"), "from": user.get("displayName") or ("나" if is_me else ""),
+                              "chat": topic, "kind": kind, "summary": body[:200], "replied_time": "",
+                              "context_excerpt": body[:context_chars], "context_truncated": str(len(body) > context_chars).lower(),
+                              "source_id": "graph:" + cid + "/" + mid if mid else "", "source_kind": "teams_graph",
+                              "source_url": str(m.get("webUrl") or ""), "conversation_id": cid, "time_precision": "minute"})
+            rows.extend(batch)
+            if batch:
+                merge_csv(out, batch, FIELDS, kind="teams")
+            status(more=["interrupted"])
+            murl = page.get("@odata.nextLink")
+            if capped or (murl and scanned >= max_msgs):
+                reasons.append("message_limit")
                 break
-    os.makedirs(OUT_DIR, exist_ok=True)
-    out = os.path.join(OUT_DIR, "teams_chats.csv")
-
-    def esc(s):
-        s = re.sub(r"[\r\n]+", " ", str(s or ""))
-        return '"' + s.replace('"', '""') + '"' if ("," in s or '"' in s) else s
-
-    with open(out, "w", encoding="utf-8-sig", newline="") as f:
-        f.write("time,from,summary,replied_time,chat,kind\n")
-        for r in rows:
-            f.write(",".join(esc(r[k]) for k in
-                             ("time", "from", "summary", "replied_time", "chat", "kind")) + "\n")
-    n_order = sum(1 for r in rows if r["kind"] == "order")
-    n_sent = sum(1 for r in rows if r["kind"] == "sent")
-    print(f"[graph] 메시지 {len(rows)}건 (업무 오더 후보 {n_order}건 · 내 발신 {n_sent}건, 로컬 시각) → {out}")
-    for w in warns:
-        print(f"[graph] 경고: {w}")
-    return out
+            if not murl:
+                completed.append(cid)
+    reasons[:] = list(dict.fromkeys(reasons))
+    if reasons:
+        state = "partial" if chats or rows else "failed"
+    else:
+        state = "complete"
+    # 정상 0건과 조회 실패 0건을 구분한다. 기존 수집 행은 어느 경우도 지우지 않는다.
+    if state == "complete" or rows:
+        merge_csv(out, [], FIELDS, kind="teams")
+    status(state)
+    print(f"[graph] {len(rows)}건 · {state} · " + ", ".join(reasons))
+    return out if state == "complete" or rows else None
 
 
 def main():
