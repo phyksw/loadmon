@@ -22,6 +22,29 @@ class Elements(HTMLParser):
 
 
 class CollectionUiTests(unittest.TestCase):
+    def test_graph_connection_requires_explicit_app_and_logs_device_login(self):
+        self.run_js(r'''
+await byId.communicationconnect.onclick();assert.equal(requests.length,0);
+assert.match(byId.communicationfeedback.textContent,/클라이언트 ID/);
+byId.communicationclient.value='00000000-0000-4000-8000-000000000001';
+byId.communicationtenant.value='example.invalid';byId.communicationchannels.checked=true;
+fetchWith(async()=>reply(202,{ok:true}));await byId.communicationconnect.onclick();
+assert.equal(requests[0].url,'/api/communication/connect');
+assert.deepEqual(JSON.parse(requests[0].options.body),{from:'2026-09-01',to:'2026-09-13',client_id:'00000000-0000-4000-8000-000000000001',tenant_id:'example.invalid',include_channels:true});
+assert.match(byId.communicationfeedback.textContent,/Microsoft 로그인/);
+assert.equal(byId.communicationconnect.disabled,true);assert.equal(byId.communicationmsg.disabled,true);
+''')
+
+    def test_import_counts_and_addresses_are_explicit_and_msg_has_separate_route(self):
+        self.run_js(r'''
+byId.communicationpaths.value='D:\\synthetic\\mail.msg';
+byId.communicationown.value='one@example.invalid, two@example.invalid';byId.communicationexpected.value='0';
+fetchWith(async()=>reply(202,{ok:true}));await byId.communicationmsg.onclick();
+assert.equal(requests[0].url,'/api/communication/msg');const body=JSON.parse(requests[0].options.body);
+assert.deepEqual(body.own_addresses,['one@example.invalid','two@example.invalid']);assert.equal(body.expected_count,0);
+assert(!body.ai);assert(!body.include_channels);
+''')
+
     def test_new_communication_job_rejects_old_poll_and_shows_current_failure(self):
         self.run_js(r'''
 context.refresh=async()=>{};context.reloadVisibleTab=async()=>{};

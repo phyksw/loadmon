@@ -1,7 +1,8 @@
 """Create a verified PC-transfer ZIP without changing the source application.
 
 Unlike Make-Package.ps1 this preserves personal configuration, collected data,
-reports and team data. Only explicitly named disposable directories are omitted.
+reports and team data. Named disposable directories and Graph login caches are
+omitted; the destination PC signs in again without losing collection checkpoints.
 """
 
 from __future__ import annotations
@@ -201,6 +202,7 @@ def _previous_manifest(path, expected):
 
 def _scan(root, custom, cancelled=None):
     files, directories, excluded, excluded_files = {}, {}, [], []
+    excluded_credentials = {"graph_oauth_cache": 0}
     stack = [root]
     while stack:
         _check_cancel(cancelled)
@@ -231,6 +233,12 @@ def _scan(root, custom, cancelled=None):
                 else:
                     stack.append(path)
             elif stat.S_ISREG(info.st_mode):
+                if (relative.parts[0].casefold() == "data"
+                        and relative.name.casefold() == "graph_token.json"):
+                    # Includes additional-PC archives. Never open/hash credentials
+                    # or disclose their paths in the plan/manifest/progress log.
+                    excluded_credentials["graph_oauth_cache"] += 1
+                    continue
                 if relative.as_posix().casefold() == MANIFEST_NAME.casefold():
                     excluded_files.append(_previous_manifest(path, _fingerprint(info)))
                     continue
@@ -242,6 +250,7 @@ def _scan(root, custom, cancelled=None):
         "directories": dict(sorted(directories.items())),
         "excluded_dirs": sorted(excluded, key=lambda item: item["path"]),
         "excluded_files": excluded_files,
+        "excluded_credentials": excluded_credentials,
     }
 
 
@@ -252,6 +261,7 @@ def _summary(root, output, snapshot, status):
         "total_bytes": sum(info[0] for info in snapshot["files"].values()),
         "excluded_dirs": snapshot["excluded_dirs"],
         "excluded_files": snapshot["excluded_files"],
+        "excluded_credentials": snapshot["excluded_credentials"],
         "excluded_contents_scanned": False,
     }
 
@@ -389,18 +399,20 @@ def create_transfer(root, output=None, progress=None, cancelled=None):
                     "created_at": datetime.now().astimezone().isoformat(),
                     "app_name": root.name,
                     "policy": {
-                        "preserve": "All application files, personal configuration, data, reports and team data",
+                        "preserve": "Application files, personal configuration, collected data, reports and team data except listed exclusions",
                         "exclude": sorted(CACHE_DIRS),
                         "cache_scope": {
                             "application_root": True, "code_trees": sorted(CACHE_CODE_TREES),
                             "other_directories": "preserved",
                         },
                         "browser_profiles": "Only dedicated/default or exact configured profile directories",
+                        "graph_credentials": "App-owned Graph OAuth caches excluded; sign in again on destination",
                         "source_modified": False, "profile_relogin_may_be_required": True,
                         "excluded_contents_scanned": False,
                     },
                     "excluded_dirs": snapshot["excluded_dirs"], "files": files,
                     "previous_manifest": snapshot["excluded_files"],
+                    "excluded_credentials": snapshot["excluded_credentials"],
                 }
                 manifest_entry = f"{root.name}/{MANIFEST_NAME}"
                 archive.writestr(_zip_info(manifest_entry),

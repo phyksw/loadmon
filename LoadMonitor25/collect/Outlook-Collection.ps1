@@ -36,7 +36,25 @@ function Merge-OutlookCsv([string]$Root, [string]$Path, [string[]]$Lines, [strin
     $tmp = $Path + '.' + [guid]::NewGuid().ToString('N') + '.incoming'
     try {
         [IO.File]::WriteAllLines($tmp, $Lines, [Text.UTF8Encoding]::new($true))
-        $code = 'import sys;sys.path.insert(0,sys.argv[1]);from collection_state import read_csv,merge_csv;import csv;f=open(sys.argv[3],encoding=''utf-8-sig'',newline='''');h=next(csv.reader(f));f.close();print(merge_csv(sys.argv[2],read_csv(sys.argv[3]),h,kind=sys.argv[4]))'
+        $code = @'
+import sys,csv,base64
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+from collection_state import read_csv,merge_csv
+with open(sys.argv[3],encoding='utf-8-sig',newline='') as stream:
+    fields=next(csv.reader(stream))
+rows=read_csv(sys.argv[3])
+raw=[]
+for row in rows:
+    encoded=row.pop('raw_body_b64','')
+    if encoded:
+        record=dict(row,body=base64.b64decode(encoded,validate=True).decode('utf-8'))
+        raw.append(record)
+if raw:
+    from communication_archive import archive_records
+    archive_records(str(Path(sys.argv[1]).parent),'mail',raw)
+print(merge_csv(sys.argv[2],rows,[f for f in fields if f!='raw_body_b64'],kind=sys.argv[4]))
+'@
         $result = & (Get-CollectionPython $Root) -B -c $code (Join-Path $Root 'core') $Path $tmp $Kind
         if ($LASTEXITCODE -ne 0) { throw 'CSV union failed; previous file retained' }
         return [int](@($result)[-1])
@@ -74,7 +92,24 @@ function Write-OutlookStatus([string]$Root, [string]$Source, [string]$From, [str
     } finally { if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force } }
 }
 
-function Get-OutlookMailFolders($Namespace, [bool]$AllFolders, $Problems, [int]$MaxFolders = 1000) {
+function Write-OutlookProgress([string]$Path, $Value) {
+    [void][IO.Directory]::CreateDirectory((Split-Path -Parent $Path))
+    $temporary = $Path + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
+    try {
+        [IO.File]::WriteAllText($temporary, ($Value | ConvertTo-Json -Depth 12), [Text.UTF8Encoding]::new($false))
+        if (Test-Path -LiteralPath $Path) { [IO.File]::Replace($temporary, $Path, [NullString]::Value) }
+        else { [IO.File]::Move($temporary, $Path) }
+    } finally { if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force } }
+}
+
+function Get-OutlookTextHash([string]$Text) {
+    $hash = [Security.Cryptography.SHA256]::Create()
+    try { return (($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes($Text)) | ForEach-Object { $_.ToString('x2') }) -join '') }
+    finally { $hash.Dispose() }
+}
+
+function Get-OutlookMailFolders($Namespace, [bool]$AllFolders, $Problems, [int]$MaxFolders = 1000, [bool]$AllStores = $false) {
+    if ($AllStores) { return Get-OutlookConnectedFolders $Namespace $AllFolders $Problems $MaxFolders }
     # Only DefaultStore, never Namespace.Stores / other accounts / public or shared mailboxes.
     # Keep the directly accessible defaults even if DefaultStore/root enumeration
     # fails. A broader discovery failure must not discard the old local fallback.
@@ -128,17 +163,89 @@ function Get-OutlookMailFolders($Namespace, [bool]$AllFolders, $Problems, [int]$
     return $result.ToArray()
 }
 
+function Get-OutlookConnectedFolders($Namespace, [bool]$AllFolders, $Problems, [int]$MaxFolders = 3000) {
+    # Enumerate already-connected stores only. Never mount a PST, open another
+    # profile, request a shared mailbox, or read/decrypt an OST directly.
+    $result = New-Object 'System.Collections.Generic.List[object]'
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]'
+    $stores = @()
+    try { $stores = @($Namespace.Stores) } catch { $Problems.Add('connected store enumeration inaccessible') }
+    if (-not $stores.Count) {
+        $Problems.Add('connected stores unavailable; retained default mailbox fallback')
+        return Get-OutlookMailFolders $Namespace $AllFolders $Problems $MaxFolders $false
+    }
+    foreach ($store in $stores) {
+        $sid = ''; try { $sid = [string]$store.StoreID } catch {}
+        if (-not $sid) { $Problems.Add('connected store identity unavailable'); continue }
+        # Public-folder trees are not a personal delivered-mail collection.
+        try { if ($null -ne $store.ExchangeStoreType -and [int]$store.ExchangeStoreType -eq 2) { continue } } catch {}
+        $exclude = New-Object 'System.Collections.Generic.HashSet[string]'
+        foreach ($id in @(3,23,16,4,19,20,21,22)) {
+            try { $f = $store.GetDefaultFolder($id); if ($f) { [void]$exclude.Add([string]$f.EntryID) } } catch {}
+        }
+        $sentId = ''; $queue = New-Object 'System.Collections.Generic.Queue[object]'
+        foreach ($spec in @(@{id=6;sent=$false},@{id=5;sent=$true})) {
+            try {
+                $f = $store.GetDefaultFolder($spec.id)
+                if ($f) { $queue.Enqueue(@{folder=$f;sent=$spec.sent;depth=1}) }
+                if ($spec.sent -and $f) { $sentId = [string]$f.EntryID }
+            } catch {}
+        }
+        if ($AllFolders) {
+            try { $f = $store.GetRootFolder(); if (-not $f) { throw 'missing root' }; $queue.Enqueue(@{folder=$f;sent=$false;depth=0}) }
+            catch { $Problems.Add('connected store root inaccessible; accessible defaults retained') }
+        }
+        while ($queue.Count) {
+            $node = $queue.Dequeue(); $folder = $node.folder
+            try {
+                $entry = [string]$folder.EntryID; $key = $sid + ':' + $entry
+                if (-not $entry -or -not $seen.Add($key) -or $exclude.Contains($entry)) { continue }
+                if ($seen.Count -gt $MaxFolders -or $node.depth -gt 32) { $Problems.Add('connected folder traversal limit reached'); break }
+                # Skip virtual Search Folders and never double-count their views.
+                try { if ([string]$folder.Name -match '^(Search Folders|검색 폴더|Sync Issues|동기화 문제|Deleted Items|삭제된 항목|Junk Email|정크 메일|Drafts|임시 보관함|Outbox|보낼 편지함)$') { continue } } catch {}
+                $sent = $node.sent -or ($sentId -and $entry -eq $sentId)
+                if ([int]$folder.DefaultItemType -eq 0) {
+                    $result.Add(@{name=$(if($sent){'sent'}else{'inbox'});folder=$folder;key=$key;
+                                  field=$(if($sent){'[SentOn]'}else{'[ReceivedTime]'});mixed=(-not $sent)})
+                }
+                if ($AllFolders) { foreach ($child in $folder.Folders) { $queue.Enqueue(@{folder=$child;sent=$sent;depth=$node.depth+1}) } }
+            } catch { $Problems.Add('connected folder inaccessible: ' + $_.Exception.GetType().Name) }
+        }
+        if ($seen.Count -gt $MaxFolders) { break }
+    }
+    return $result.ToArray()
+}
+
+function Get-OutlookSenderAddress($Item) {
+    $address = ''; try { $address = [string]$Item.SenderEmailAddress } catch {}
+    try {
+        if ([string]$Item.SenderEmailType -eq 'EX') {
+            $exchange = $Item.Sender.GetExchangeUser()
+            if ($exchange.PrimarySmtpAddress) { $address = [string]$exchange.PrimarySmtpAddress }
+        }
+    } catch {}
+    return $address
+}
+
+function Get-OutlookDirection($Item, [string]$FolderKind, [string[]]$SelfAddresses) {
+    if ($FolderKind -eq 'sent') { return 'sent' }
+    try { if (([int]$Item.PropertyAccessor.GetProperty('http://schemas.microsoft.com/mapi/proptag/0x0E070003') -band 32) -ne 0) { return 'sent' } } catch {}
+    $address = (Get-OutlookSenderAddress $Item).Trim().ToLowerInvariant()
+    if ($address -and $SelfAddresses -contains $address) { return 'sent' }
+    return 'inbox'
+}
+
 function Get-OutlookContext($Item, [int]$Limit, [bool]$Enabled, $Problems) {
-    if (-not $Enabled) { return @('', '') }
+    if (-not $Enabled) { return @('', '', '') }
     try {
         $raw = $Item.Body
         if ($null -eq $raw) { throw 'message body property unavailable' }
         $body = (([string]$raw) -replace '\s+', ' ').Trim()
         $truncated = $body.Length -gt $Limit
         if ($truncated) { $body = $body.Substring(0, $Limit) }
-        return @($body, $(if ($truncated) { 'true' } else { 'false' }))
+        return @($body, $(if ($truncated) { 'true' } else { 'false' }), [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$raw)))
     } catch {
         $Problems.Add('message body inaccessible: ' + $_.Exception.GetType().Name)
-        return @('', 'unknown')
+        return @('', 'unknown', '')
     }
 }

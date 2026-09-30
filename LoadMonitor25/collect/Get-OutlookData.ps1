@@ -1,8 +1,9 @@
 ﻿# Get-OutlookData.ps1 — bounded, read-only Outlook COM collection.
-# Default account/store only: delivered mail folders and descendants, excluding
+# Already-connected stores: delivered mail folders and descendants, excluding
 # Deleted/Junk/Drafts/Outbox, plus the default calendar with recurrence expansion.
-# collection.mailAllFolders=false restricts mail to Inbox/Sent. No other account,
-# shared/public mailbox or attachment contents are automatically expanded.
+# collection.mailAllFolders=false restricts mail to Inbox/Sent in those stores.
+# -DefaultStoreOnly retains the narrower legacy scope. Public/search/deleted/
+# junk/draft/outbox folders and attachments are excluded. PST files are not mounted.
 # Mail metadata + IDs/provenance + bounded Body text (collection.contextChars,
 # default 4000). storeMailSubject=false also disables newly collected body text.
 # Existing CSV history is atomically unioned, including rows outside this run's
@@ -21,6 +22,7 @@ param(
     [int]$BudgetSec = 360,
     [switch]$Force,
     [switch]$NoRefresh,
+    [switch]$DefaultStoreOnly,
     [int]$KeepDays = 400,
     [int]$SelfTest = 0,
     [int]$SelfTestDelayMs = 0
@@ -43,6 +45,7 @@ $script:observedRows = 0
 $script:observedCalendarRows = 0
 $script:folderScope = ''
 $script:previousFolderScope = ''
+$script:connectedStoreScope = -not $DefaultStoreOnly
 $storeSubject = $true
 if ($cfg -and $cfg.PSObject.Properties['storeMailSubject'] -and -not $cfg.storeMailSubject) { $storeSubject = $false }
 if ($BudgetSec -le 0) { $BudgetSec = 360 }
@@ -57,7 +60,7 @@ $mailP = Join-Path $outDir 'mail.csv'
 $calP  = Join-Path $outDir 'calendar.csv'
 $covP  = Join-Path $outDir 'coverage.json'
 $srcP  = Join-Path $outDir 'mail_source.json'
-$MAIL_HEADER = 'box,time,sender,subject,conversation,rcv,time_precision,context_excerpt,context_truncated,source_id,source_kind,source_url,conversation_id,folder,account'
+$MAIL_HEADER = 'box,time,sender,subject,conversation,rcv,time_precision,context_excerpt,context_truncated,source_id,source_kind,source_url,conversation_id,folder,account,raw_body_b64'
 $CAL_HEADER  = 'start,end,all_day,busy_status,subject,categories,location,response,meeting_status'
 $REFRESH_MONTHS = 2          # 최신 N개월은 이미 읽었어도 매번 다시 읽는다(-NoRefresh 면 안 한다)
 $TS = 'yyyy-MM-dd HH:mm:ss'  # 표에 적는 시각 형식
@@ -99,9 +102,10 @@ if ($until -le $since) { $until = $since.AddDays(1) }
 $fmt = 'g'  # locale short date+time, what Outlook Restrict expects
 $ol = $null
 $requestedFrom = $since.ToString('yyyy-MM-dd'); $requestedTo = $until.AddDays(-1).ToString('yyyy-MM-dd')
-$scope = 'default_account_only: delivered mail folders (excluding Deleted/Junk/Drafts/Outbox) and default calendar; local COM-visible items only'
-if (-not $mailAllFolders) { $scope = 'default_account_only: Inbox and Sent only, and default calendar; local COM-visible items only' }
-Write-OutlookStatus $root 'outlook_com' $requestedFrom $requestedTo 'partial' 0 $scope @('collection started; no completion verified') @{ mail_scope = 'default_account_only'; mail_status = 'partial'; calendar_status = 'partial'; mail_rows = $script:observedRows; calendar_rows = 0 }
+$mailScope = $(if ($DefaultStoreOnly) { 'default_account_only' } else { 'already_connected_stores' })
+$scope = $mailScope + ': delivered mail folders, excluding Deleted/Junk/Drafts/Outbox/Search/Public; default calendar only; local COM visibility, server synchronization unverified'
+if (-not $mailAllFolders) { $scope += '; Inbox/Sent only' }
+Write-OutlookStatus $root 'outlook_com' $requestedFrom $requestedTo 'partial' 0 $scope @('collection started; server synchronization unverified') @{ mail_scope = $mailScope; mail_status = 'partial'; calendar_status = 'partial'; mail_rows = $script:observedRows; calendar_rows = 0 }
 
 # ── 달 목록: 기간과 겹치는 달을 최신 달부터. 각 달의 [start, end) 는 기간에 맞춰 자른다 ─────────────
 $months = New-Object System.Collections.Generic.List[object]
@@ -147,7 +151,7 @@ function Load-Coverage {
         $ver = 0; try { $ver = [int]$j.version } catch {}
         $w = ''; try { $w = [string]$j.writer } catch {}
         $ss = $true; try { $ss = [bool]$j.store_subject } catch {}
-        if ($ver -ne 3 -or $w -ne $writer -or $ss -ne $storeSubject -or [bool]$j.mail_all_folders -ne $mailAllFolders -or [bool]$j.mail_body -ne $mailBody -or [int]$j.context_chars -ne $contextChars) {
+        if ($ver -ne 4 -or $w -ne $writer -or $ss -ne $storeSubject -or [string]$j.mail_scope -ne $mailScope -or [bool]$j.mail_all_folders -ne $mailAllFolders -or [bool]$j.mail_body -ne $mailBody -or [int]$j.context_chars -ne $contextChars) {
             Write-Host ("[outlook] 완료 표가 이번 실행과 맞지 않아(버전 {0} · 작성 {1} · 제목 저장 {2}) 처음부터 읽습니다" -f $ver, $w, $ss)
             return $c
         }
@@ -177,7 +181,7 @@ function Load-Coverage {
                             $e.inbox_done = [bool]$p.Value.inbox_done; $e.inbox_before = [string]$p.Value.inbox_before
                             $e.sent_done = [bool]$p.Value.sent_done;   $e.sent_before = [string]$p.Value.sent_before
                             $e.folders = @{}
-                            if ($p.Value.folders) { foreach ($fp in $p.Value.folders.PSObject.Properties) { $e.folders[$fp.Name] = @{ done = [bool]$fp.Value.done; before = [string]$fp.Value.before } } }
+                            if ($p.Value.folders) { foreach ($fp in $p.Value.folders.PSObject.Properties) { $e.folders[$fp.Name] = @{ done = [bool]$fp.Value.done; before = [string]$fp.Value.before; seen_ids = @($fp.Value.seen_ids) } } }
                         } else {
                             $e.from = [string]$p.Value.from
                         }
@@ -191,7 +195,7 @@ function Load-Coverage {
 }
 function Save-Coverage($c) {
     try {
-        $o = [ordered]@{ version = 3; writer = $writer; store_subject = $storeSubject; keep_days = $KeepDays; mail_all_folders = $mailAllFolders; mail_body = $mailBody; context_chars = $contextChars; folder_scope = $script:folderScope;
+        $o = [ordered]@{ version = 4; writer = $writer; store_subject = $storeSubject; keep_days = $KeepDays; mail_scope = $mailScope; mail_all_folders = $mailAllFolders; mail_body = $mailBody; context_chars = $contextChars; folder_scope = $script:folderScope;
                          when = (Get-Date).ToString('yyyy-MM-dd HH:mm'); mail = [ordered]@{}; calendar = [ordered]@{};
                          partial = [ordered]@{ mail = [ordered]@{}; calendar = [ordered]@{} } }
         foreach ($kind in @('mail', 'calendar')) {
@@ -210,8 +214,13 @@ function Save-Coverage($c) {
                 $o.partial[$kind][$k] = $x
             }
         }
-        ($o | ConvertTo-Json -Depth 12) | Set-Content -Path $covP -Encoding UTF8
-    } catch { Write-Host ("[outlook] coverage.json 저장 실패: {0}" -f $_.Exception.Message) }
+        $tmp = $covP + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
+        try {
+            [IO.File]::WriteAllText($tmp, ($o | ConvertTo-Json -Depth 12), [Text.UTF8Encoding]::new($true))
+            if (Test-Path -LiteralPath $covP) { [IO.File]::Replace($tmp, $covP, [NullString]::Value) }
+            else { [IO.File]::Move($tmp, $covP) }
+        } finally { if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force } }
+    } catch { Write-Host ("[outlook] coverage.json 저장 실패: {0}" -f $_.Exception.Message); throw }
 }
 function Test-Covered([string]$kind, $mo) {
     # 완료 표의 달이 이번에 부른 [start, end) 를 전부 덮을 때만 '읽었다'로 본다
@@ -297,7 +306,7 @@ function Set-SkipReason([string]$reason) {
         $f = Join-Path $outDir 'outlook_skip.json'
         $o = [ordered]@{ reason = $reason; when = (Get-Date).ToString('yyyy-MM-dd HH:mm') }
         ($o | ConvertTo-Json -Compress) | Set-Content -Path $f -Encoding UTF8
-        Write-OutlookStatus $root 'outlook_com' $requestedFrom $requestedTo 'blocked' $script:observedRows $scope @($reason) @{ mail_scope = 'default_account_only'; mail_status = 'failed'; calendar_status = 'failed'; mail_rows = $script:observedRows; calendar_rows = $script:observedCalendarRows }
+        Write-OutlookStatus $root 'outlook_com' $requestedFrom $requestedTo 'blocked' $script:observedRows $scope @($reason) @{ mail_scope = $mailScope; mail_status = 'failed'; calendar_status = 'failed'; mail_rows = $script:observedRows; calendar_rows = $script:observedCalendarRows }
     } catch {}
 }
 function Clear-SkipReason {
@@ -400,14 +409,38 @@ function Read-CalendarMonth($ns, $mo, [string]$resumeFrom) {
 }
 function Read-MailMonth($ns, $mo, [string[]]$me, $state) {
     $rows = New-Object 'System.Collections.Generic.List[string]'
+    $pendingRows = New-Object 'System.Collections.Generic.List[string]'
     $script:stopReason = ''
     if (-not $state.folders) { $state.folders = @{} }
+    if ($script:cov -and $covP) {
+        # Invalidate cached completion before refreshing, including hard process
+        # termination between page checkpoints. CSV history remains untouched.
+        $script:cov.mail.Remove($mo.key)
+        $script:cov.partial.mail[$mo.key] = @{start=$mo.start;end=$mo.end;folders=$state.folders}
+        Save-Coverage $script:cov
+    }
     $boxes = $script:mailFolders
     if ($SelfTest) { $boxes = @(@{ name = 'inbox'; key = 'self-inbox'; field = '[ReceivedTime]' }, @{ name = 'sent'; key = 'self-sent'; field = '[SentOn]' }) }
+    else {
+        # A moved sent message may have ReceivedTime outside the requested range.
+        # Query mixed folders twice, with an independent bounded cursor per clock.
+        $boxes = @(foreach ($folderSpec in $boxes) {
+            if ($folderSpec.mixed) {
+                foreach ($direction in @('inbox','sent')) {
+                    $copy = $folderSpec.Clone(); $copy.key += ':' + $direction
+                    $copy.filter_direction = $direction
+                    $copy.field = $(if ($direction -eq 'sent') { '[SentOn]' } else { '[ReceivedTime]' })
+                    $copy
+                }
+            } else { $folderSpec }
+        })
+    }
     foreach ($b in $boxes) {
-        if (-not $state.folders.ContainsKey($b.key)) { $state.folders[$b.key] = @{ done = $false; before = '' } }
+        if (-not $state.folders.ContainsKey($b.key)) { $state.folders[$b.key] = @{ done = $false; before = ''; seen_ids = @() } }
         $cursor = $state.folders[$b.key]
         if ($cursor.done) { continue }
+        $seenIds = New-Object 'System.Collections.Generic.HashSet[string]'
+        foreach ($identity in @($cursor.seen_ids)) { if ($identity) { [void]$seenIds.Add([string]$identity) } }
         if ($sw.Elapsed.TotalSeconds -gt $BudgetSec) { $script:stopReason = 'mail time budget reached'; break }
         $upper = $mo.end
         if ($cursor.before) { try { $upper = [datetime]::ParseExact($cursor.before, $TS, $null).AddMinutes(1); if ($upper -gt $mo.end) { $upper = $mo.end } } catch {} }
@@ -417,27 +450,31 @@ function Read-MailMonth($ns, $mo, [string[]]$me, $state) {
                 $selection = 0..($SelfTest - 1)
             } else {
                 $items = $b.folder.Items
-                $items.Sort($b.field, $true)
+                try { $items.Sort($b.field, $true) }
+                catch { $failed=$true; $upper=$mo.end; $cursor.before=''; $script:collectionProblems.Add('mail folder sort unavailable; scanning local items without time cursor') }
                 $filter = ("{0} >= '{1}' AND {0} < '{2}'" -f $b.field, $mo.start.ToString($fmt), $upper.ToString($fmt))
-                $selection = $items.Restrict($filter)
+                try { $selection = $items.Restrict($filter) }
+                catch { $failed=$true; $selection=$items; $cursor.before=''; $script:collectionProblems.Add('mail Restrict unavailable; using bounded local item enumeration') }
             }
             foreach ($m in $selection) {
-                $n++
                 if ($SelfTestDelayMs -gt 0) { Start-Sleep -Milliseconds $SelfTestDelayMs }
-                if ($sw.Elapsed.TotalSeconds -gt $BudgetSec -or $n -gt 20000) { $stopped = $true; break }
+                if ($sw.Elapsed.TotalSeconds -gt $BudgetSec -or $n -ge 20000) { $stopped = $true; break }
                 try {
+                    $itemId = $(if ($SelfTest) { [string]$m } else { [string]$m.EntryID })
+                    if ($itemId -and $seenIds.Contains($itemId)) { continue }
+                    $n++
                     if ($SelfTest) {
                         $t = $mo.end.AddMinutes(-1 - [int]$m * 97)
                         if ($t -lt $mo.start) { $t = $mo.start.AddMinutes([int]$m) }
                         if ($t -ge $upper) { continue }
                         $vals = @($b.name, $t.ToString('yyyy-MM-dd HH:mm'), 'selftest', ('selftest mail ' + $m), ('conv ' + ([int]$m % 3)), 'to', 'minute', 'synthetic body', 'false', ($mo.key + '-' + $b.key + '-' + $m), 'selftest', '', '', $b.key, 'selftest')
                     } else {
-                        if ($m.Class -ne 43) { continue }
-                        $box = $b.name; $sender = [string]$m.SenderName
-                        # Custom folders can contain moved sent mail. Only exact known sender identity upgrades it.
-                        try { if (Test-MeInList ([string]$m.SenderEmailAddress) $me) { $box = 'sent' } } catch {}
-                        # Use the same timestamp as this folder's bounded Restrict/sort/cursor.
-                        $t = $(if ($b.name -eq 'sent') { $m.SentOn } else { $m.ReceivedTime })
+                        if ($m.Class -ne 43) { if ($itemId) { [void]$seenIds.Add($itemId) }; continue }
+                        if ($null -ne $m.Sent -and -not [bool]$m.Sent) { if ($itemId) { [void]$seenIds.Add($itemId) }; continue }
+                        $box = Get-OutlookDirection $m $b.name $me
+                        if ($b.filter_direction -and $box -ne $b.filter_direction) { if ($itemId) { [void]$seenIds.Add($itemId) }; continue }
+                        $sender = [string]$m.SenderName
+                        $t = $(if ($box -eq 'sent') { $m.SentOn } else { $m.ReceivedTime })
                         if ($t -lt $mo.start -or $t -ge $mo.end) { continue }
                         $subject = ''; $conversation = [string]$m.ConversationTopic
                         if ($storeSubject) { $subject = [string]$m.Subject } else { $conversation = Conv-Token $conversation }
@@ -472,22 +509,36 @@ function Read-MailMonth($ns, $mo, [string[]]$me, $state) {
                         if (-not $entry -or -not $account) { $failed = $true; $script:collectionProblems.Add('message or account identity empty') }
                         $sourceId = $(if ($entry) { $account + ':' + $entry } else { '' })
                         $vals = @($box, $t.ToString('yyyy-MM-dd HH:mm'), $sender, $subject, $conversation, $rcv, 'minute', $context[0], $context[1], $sourceId, 'outlook_com', '', $conversationId, $folderPath, $account)
+                        if ($MAIL_HEADER -like '*raw_body_b64*') { $vals += [string]$context[2] }
                     }
+                    $pendingRows.Add((($vals | ForEach-Object { Csv-Escape ([string]$_) }) -join ','))
+                    # Full bodies live in the durable archive, not in month-sized
+                    # in-memory arrays or analysis CSVs. Preserve source metadata.
+                    if ($vals.Count -gt 15) { $vals[15] = '' }
                     $rows.Add((($vals | ForEach-Object { Csv-Escape ([string]$_) }) -join ','))
                     $script:observedRows++; $lastT = $t
-                    if (($n % 100) -eq 0) { $null = Merge-OutlookCsv $root $mailP (@($MAIL_HEADER) + @($rows)) 'mail' }
+                    if ($itemId -and ($SelfTest -or ($context[1] -ne 'unknown' -and $entry -and $account))) { [void]$seenIds.Add($itemId) }
+                    if ($pendingRows.Count -ge 100) {
+                        $null = Merge-OutlookCsv $root $mailP (@($MAIL_HEADER) + @($pendingRows)) 'mail'
+                        $pendingRows.Clear()
+                        $cursor.seen_ids = @($seenIds)
+                        if ($lastT -and -not $failed) { $cursor.before = $lastT.ToString($TS) }
+                        if ($script:cov -and $covP) { $script:cov.partial.mail[$mo.key] = @{ start=$mo.start;end=$mo.end;folders=$state.folders }; Save-Coverage $script:cov }
+                    }
                 } catch { $failed = $true; $script:collectionProblems.Add('mail item inaccessible: ' + $_.Exception.GetType().Name) }
             }
         } catch { $failed = $true; $script:collectionProblems.Add('mail folder query failed: ' + $_.Exception.GetType().Name) }
-        if ($rows.Count) { $null = Merge-OutlookCsv $root $mailP (@($MAIL_HEADER) + @($rows)) 'mail' }
+        if ($pendingRows.Count) { $null = Merge-OutlookCsv $root $mailP (@($MAIL_HEADER) + @($pendingRows)) 'mail'; $pendingRows.Clear() }
+        $cursor.seen_ids = @($seenIds)
         if ($stopped) {
             if ($lastT -and -not $failed) { $cursor.before = $lastT.ToString($TS) }
             $script:stopReason = 'mail time or item limit reached'; break
         }
         if ($failed) { $cursor.before = ''; $script:stopReason = 'one or more mail items/folders could not be read' }
         else { $cursor.done = $true }
+        if ($script:cov -and $covP) { $script:cov.partial.mail[$mo.key] = @{ start=$mo.start;end=$mo.end;folders=$state.folders }; Save-Coverage $script:cov }
     }
-    if (@($script:collectionProblems | Where-Object { $_ -notlike 'calendar *' }).Count -and -not $script:stopReason) { $script:stopReason = 'mail scope or item verification incomplete' }
+    if (-not $script:connectedStoreScope -and @($script:collectionProblems | Where-Object { $_ -notlike 'calendar *' }).Count -and -not $script:stopReason) { $script:stopReason = 'mail scope or item verification incomplete' }
     return $rows
 }
 
@@ -610,12 +661,12 @@ try {
     $readCal = 0; $readMail = 0
 
     if (-not $SelfTest) {
-        try { $script:mailFolders = @(Get-OutlookMailFolders $ns $mailAllFolders $script:collectionProblems) }
-        catch { $script:collectionProblems.Add('default mailbox folder discovery failed: ' + $_.Exception.GetType().Name); $script:mailFolders = @() }
+        try { $script:mailFolders = @(Get-OutlookMailFolders $ns $mailAllFolders $script:collectionProblems 3000 (-not $DefaultStoreOnly)) }
+        catch { $script:collectionProblems.Add('connected mailbox folder discovery failed: ' + $_.Exception.GetType().Name); $script:mailFolders = @() }
         $scopeKeys = @($script:mailFolders | ForEach-Object { [string]$_.folder.StoreID + ':' + $_.key } | Sort-Object)
         $script:folderScope = Conv-Token ($scopeKeys -join '|')
     } else { $script:folderScope = 'selftest-inbox-sent' }
-    if ($script:folderScope -ne $script:previousFolderScope -or $script:collectionProblems.Count) {
+    if ($script:folderScope -ne $script:previousFolderScope) {
         # A newly added/moved folder changes the declared scope of every completed month.
         $script:cov.mail = @{}; $script:cov.partial.mail = @{}
         $mailTodo = @(Months-ToRead 'mail')
@@ -680,7 +731,9 @@ try {
             Write-Host ('[outlook] 경고: ' + $warnings[$warnings.Count - 1])
             $null = Write-CsvByMonth $mailP $MAIL_HEADER $mailBy $false
             Save-Coverage $script:cov
-            break
+            # A damaged item/store must not indefinitely hide all older months.
+            if ($sw.Elapsed.TotalSeconds -ge $BudgetSec) { break }
+            continue
         }
         # Retain the complete old month, including outside a narrower requested range.
         Add-Rows $mailBy $rows 1 $mo.key
@@ -714,13 +767,15 @@ try {
     $nCal = 0;  foreach ($k in $calBy.Keys)  { $nCal  += $calBy[$k].Count }
     $mailStatus = $(if ($uncMail.Count -eq 0 -and -not @($script:collectionProblems | Where-Object { $_ -notlike 'calendar *' }).Count -and -not @($refreshIncomplete | Where-Object { $_ -like '메일 *' }).Count) { 'complete' } else { 'partial' })
     $calendarStatus = $(if ($uncCal.Count -eq 0 -and -not @($refreshIncomplete | Where-Object { $_ -like '일정 *' }).Count -and -not @($script:collectionProblems | Where-Object { $_ -like 'calendar *' }).Count) { 'complete' } else { 'partial' })
-    Write-OutlookStatus $root 'outlook_com' $requestedFrom $requestedTo $(if ($complete) { 'complete' } else { 'partial' }) ($script:observedRows + $script:observedCalendarRows) $scope @(@($warnings) + @($script:collectionProblems) + @($unc | ForEach-Object { 'uncovered month: ' + $_ })) @{ mail_scope = 'default_account_only'; mail_status = $mailStatus; calendar_status = $calendarStatus; mail_rows = $script:observedRows; calendar_rows = $script:observedCalendarRows; completed_units = (($months.Count * 2) - $uncMail.Count - $uncCal.Count); total_units = ($months.Count * 2); folders = $script:mailFolders.Count; body_requested = ($mailBody -and $storeSubject -and $contextChars -gt 0); context_chars = $contextChars }
+    # Local enumeration and cached coverage cannot certify server synchronization.
+    # Keep supplementation enabled even when every currently visible folder ended.
+    Write-OutlookStatus $root 'outlook_com' $requestedFrom $requestedTo 'partial' ($script:observedRows + $script:observedCalendarRows) $scope @(@('server synchronization unverified; connected COM-visible stores only') + @($warnings) + @($script:collectionProblems) + @($unc | ForEach-Object { 'uncovered month: ' + $_ })) @{ mail_scope = $mailScope; mail_status = 'partial'; calendar_status = $calendarStatus; local_mail_status = $mailStatus; server_complete = $false; mail_rows = $script:observedRows; calendar_rows = $script:observedCalendarRows; completed_units = (($months.Count * 2) - $uncMail.Count - $uncCal.Count); total_units = ($months.Count * 2); folders = $script:mailFolders.Count; body_requested = ($mailBody -and $storeSubject -and $contextChars -gt 0); context_chars = $contextChars }
     Clear-SkipReason            # 성공했으니 지난 사유는 지운다
     try {                       # 어느 경로가 채웠는지 기록 - 폴백(색인/Copilot)이 남긴 'index/copilot' 표식을 덮는다
         $src = [ordered]@{ source = 'com'; when = $now; mail = $nMail; calendar = $nCal;
                            calendar_complete = ($calendarStatus -eq 'complete'); calendar_recurring_masters = 0; me = @($me);
                            mail_truncated = ($uncMail.Count -gt 0); warnings = @($warnings);
-                           coverage_complete = $complete; uncovered_months = @($unc);
+                           coverage_complete = $false; local_coverage_complete = $complete; server_complete = $false; uncovered_months = @($unc);
                            uncovered_mail = @($uncMail); uncovered_calendar = @($uncCal);
                            partial_months = @($partialMonths); refresh_incomplete = @($refreshIncomplete);
                            months_read = [ordered]@{ mail = $readMail; calendar = $readCal };
@@ -732,7 +787,7 @@ try {
     Write-Host ("[outlook] mail rows: {0} · calendar rows: {1} (이번에 읽은 달: 메일 {2} / 일정 {3}, 경과 {4}초)" -f $nMail, $nCal, $readMail, $readCal, [int]$sw.Elapsed.TotalSeconds)
     if ($refreshIncomplete.Count) { Write-Host ("[outlook] 재수집 미완 {0} - 지난 수집분 유지(새 메일·일정 변경은 다음 실행에서)" -f ($refreshIncomplete -join ', ')) }
     if ($complete) {
-        Write-Host '[outlook] coverage: complete - 기간의 모든 달을 읽었습니다'
+        Write-Host '[outlook] local coverage: complete - 연결된 저장소의 기간을 읽었습니다. 서버 동기화 완주는 확인되지 않았습니다.'
         Write-Host '[outlook] done.'
     } else {
         Write-Host ("[outlook] coverage: partial - 미수집 달 {0}개: {1}{2}" -f $unc.Count, ($unc -join ','), $(if ($partialMonths.Count) { ' (이어 읽는 중: ' + ($partialMonths -join ',') + ')' } else { '' }))
@@ -756,7 +811,7 @@ catch {
         Write-Host '          클래식 Outlook(2016~365)을 실행해 프로필 로그인까지 마친 상태에서 재시도하세요.'
         Write-Host '          (버전은 무관 - 2016/2019/2021/365 모두 동일하게 동작합니다)'
     }
-    Write-OutlookStatus $root 'outlook_com' $requestedFrom $requestedTo $(if ($script:observedRows + $script:observedCalendarRows) { 'partial' } else { 'failed' }) ($script:observedRows + $script:observedCalendarRows) $scope @('COM collection exception; saved observations retained', $_.Exception.GetType().Name) @{ mail_scope = 'default_account_only'; mail_status = $(if ($script:observedRows) { 'partial' } else { 'failed' }); calendar_status = $(if ($script:observedCalendarRows) { 'partial' } else { 'failed' }); mail_rows = $script:observedRows; calendar_rows = $script:observedCalendarRows }
+    Write-OutlookStatus $root 'outlook_com' $requestedFrom $requestedTo $(if ($script:observedRows + $script:observedCalendarRows) { 'partial' } else { 'failed' }) ($script:observedRows + $script:observedCalendarRows) $scope @('COM collection exception; saved observations retained', $_.Exception.GetType().Name) @{ mail_scope = $mailScope; mail_status = $(if ($script:observedRows) { 'partial' } else { 'failed' }); calendar_status = $(if ($script:observedCalendarRows) { 'partial' } else { 'failed' }); mail_rows = $script:observedRows; calendar_rows = $script:observedCalendarRows }
     exit 1
 }
 finally {

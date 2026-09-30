@@ -505,15 +505,17 @@
  ],
  "_프로젝트_설명": "과제 지정은 UI 대시보드의 '과제 지정' 카드에서 (config\\projects.json 에 저장). 지정된 과제는 AI 체계에 항상 포함되고, 지정 안 된 영역은 AI가 raw에서 자동 발견합니다. 여기 projects 배열(문자열)은 구버전 호환 힌트 — 새 지정 기능을 쓰세요",
  "projects": [],
- "_graph_설명": "팀즈 채팅 직접 수집(선택). Entra 앱 등록 1회 후 clientId 입력 — collect\\Get-TeamsChats.py 참조",
+ "_graph_설명": "메일·Teams 서버 원문 수집(선택). UI에서 조직이 허용한 Entra 공용 클라이언트 앱 ID와 테넌트를 설정하고 Microsoft 로그인. Mail.Read/Chat.Read/User.Read 위임 읽기 권한. includeChannels=true이면 Team.ReadBasic.All/Channel.ReadBasic.All/ChannelMessage.Read.All 추가 승인 필요. Copilot 라이선스 불필요. 차단된 조직 정책은 우회하지 않으며 기본 사서함·승인된 채팅/가입 팀 범위만 조회한다.",
  "graph": {
   "clientId": "",
   "tenantId": "organizations",
   "scopes": [
    "Chat.Read",
+   "Mail.Read",
    "User.Read",
    "offline_access"
-  ]
+  ],
+  "includeChannels": false
  },
  "_copilot_설명": "무개입 Copilot 왕복(전용 Edge 프로필). 최초 1회만 로그인. model 은 표기를 대충 적어도 된다 — 하이픈·공백·점 차이를 무시하고 찾는다 (설정 'GPT-5.6' → 메뉴의 'GPT 5.6 깊이 생각하기' 매칭). 메뉴가 [자동/빠른 응답/깊이 생각하기/GPT >] 구조면 GPT 하위 메뉴까지 열고 들어간다. stablePolls x pollSec = 응답이 이 시간 동안 안 변하면 완료로 판정",
  "copilotAuto": {
@@ -589,10 +591,11 @@
   "communicationImportRecursive": false,
   "communicationImportOwnAddresses": [],
   "communicationImportAccount": "",
-  "supplementBudgetSec": 1200,
-  "teamsBudgetSec": 1500
+  "supplementBudgetSec": 2400,
+  "teamsBudgetSec": 2400,
+  "graphBudgetSec": 900
  },
- "_collection_설명": "수집 문맥은 기본 4000자, AI 요청 문맥은 신호당 800자(앞·중간·끝 발췌). 메일 COM은 기본 계정의 메일 폴더를 재귀 조회하며 삭제/정크는 제외. mailWebBody=true는 웹 메일을 열어 본문을 읽으므로 읽음 상태가 바뀔 수 있음(기본 false). 수집 예산 초과·부분·미확인은 완료로 간주하지 않음. 권한/라이선스/로그인은 각 경로의 조건을 충족해야 함.",
+ "_collection_설명": "원문과 분석 발췌 분리: Graph/COM/파일 입력은 수집한 전체 평문을 data/communication_originals에 보관. 분석 문맥은 기본 4000자, AI 요청은 신호당 800자 발췌. Outlook COM은 모든 연결 저장소 및 이미 열린 PST를 조회하며 캐시 범위는 서버 전체와 다르다. mailWebBody=true는 웹 메일을 열므로 읽음 상태가 바뀔 수 있음. 중단된 Graph 페이지는 같은 계정·기간으로 재실행하여 이어받음. 권한·예산·폴더·본문 오류는 부분으로 기록.",
  "_collectOnlyHeadless_설명": "true(기본): 추가 PC 수집(--collect-only)에서는 웹·Copilot 창을 열지 않고 앱·COM·색인·설정된 Graph만 사용. UI의 메일·Teams만 수집(웹 포함)은 명시적으로 웹을 허용하고 Copilot 조회는 생략한다.",
- "_communicationImport_설명": "UI에서 사용자가 지정한 EML/MBOX 파일·폴더만 읽는다. communicationImportRecursive=false면 폴더 바로 아래만 처리. communicationImportOwnAddresses에 본인 메일 주소를 설정한 경우에만 발신·수신 방향 판별; 미설정이면 방향미확인 문맥으로 보존하고 근무시간 신호로 쓰지 않는다. communicationImportAccount는 여러 계정 파일을 구분할 명시적 계정 표식이며 자동 추정하지 않는다. 원본 파일과 첨부는 수정하지 않는다."
+ "_communicationImport_설명": "사용자가 선택한 EML/MBOX 메일 및 Graph chatMessage JSON, LM25 지정형식 CSV/JSON/JSONL만 읽는다. MSG는 UI 별도 버튼과 기존 Outlook 필요. PST는 기존 Outlook에서 사용자가 이미 열어 둔 저장소로 조회. communicationImportRecursive=false면 폴더 바로 아래만 처리. communicationImportOwnAddresses는 본인 주소 목록, 미설정은 방향미확인. communicationImportAccount는 명시적 계정 표식. 선택 입력의 원본 건수는 communicationImportExpectedCount로 대조 가능하나 서버 전체 확보를 뜻하지 않는다. 첨부는 읽지 않음."
 }

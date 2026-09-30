@@ -191,7 +191,8 @@ class OutlookReliabilityTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.text)
         self.assertEqual(len(self.read()), 4)
         self.assertEqual(len(self.read("calendar.csv")), 1)
-        self.assertEqual(self.status("outlook_com")["status"], "complete")
+        self.assertEqual(self.status("outlook_com")["status"], "partial")
+        self.assertEqual(self.status("outlook_com")["local_mail_status"], "complete")
 
     def test_launcher_only_runtime_saves_com_and_index_and_preserves_history(self):
         # Emulate the BAT's supported `py -3` route without relying on a registry
@@ -370,9 +371,11 @@ $rows=@(Read-MailMonth $null $month @('me@synthetic.invalid') $state)
         self.assertEqual(source["mail"], 7)
         self.assertEqual(source["calendar"], len(self.read("calendar.csv")))
         status = self.status("outlook_com")
-        self.assertEqual(status["status"], "complete")
-        self.assertEqual(status["mail_scope"], "default_account_only")
-        self.assertEqual(status["mail_status"], "complete")
+        self.assertEqual(status["status"], "partial")
+        self.assertEqual(status["mail_scope"], "already_connected_stores")
+        self.assertEqual(status["mail_status"], "partial")
+        self.assertEqual(status["local_mail_status"], "complete")
+        self.assertFalse(status["server_complete"])
 
     def test_com_incorrect_existing_csv_is_not_replaced(self):
         old = b"box,time,sender,subject,conversation,rcv\ninbox,2020-01-01,x,y,z,to,extra\n"

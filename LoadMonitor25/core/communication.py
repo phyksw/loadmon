@@ -90,14 +90,21 @@ class CommunicationCollection:
             if not state:
                 return
             for kind, field in (("mail", "mail_status"), ("cal", "calendar_status")):
+                # A locally cached store can finish enumerating while older
+                # server messages have never synchronized to this PC.
+                if kind == "mail" and state.get("source") != "outlook_graph":
+                    continue
                 if state.get("status") not in {"failed", "blocked", "skipped"} and state.get("scope") and state.get(field) == "complete":
                     pending.discard(kind)
 
         consume(initial)
-        budget = _number(self.options.get("supplementBudgetSec"), 1200, 60, 7200)
+        budget = _number(self.options.get("supplementBudgetSec"), 2400, 60, 14400)
         deadline = time.monotonic() + budget
         months = max(1, (date.fromisoformat(self.d1) - date.fromisoformat(self.d0)).days // 30 + 1)
         routes = [
+            ("outlook_graph", "Outlook 원문 · Graph 전체 사서함 페이지", "Get-OutlookGraph.py",
+             _number(self.options.get("graphBudgetSec"), 900, 30, 6900) + 90,
+             bool((self.config.get("graph") or {}).get("clientId"))),
             ("outlook_index", "Outlook 보충 · Windows Search 색인", "Get-OutlookIndex.ps1", 240, True),
             ("outlook_web", "Outlook 보충 · 웹", "Get-OutlookWeb.py", 180 + 150 * months,
              not self.headless and self.config.get("mailViaWeb", True) and "--no-mail-web" not in self.argv),
@@ -109,7 +116,8 @@ class CommunicationCollection:
                 self.skip(source, "앞 경로가 명시한 요청 범위를 완료함")
                 continue
             if not enabled:
-                self.skip(source, "수집만 모드에서 창 생략" if self.headless else "설정 또는 실행 옵션에서 비활성")
+                self.skip(source, "Graph 앱 연결 미설정" if source == "outlook_graph" else
+                          "수집만 모드에서 창 생략" if self.headless else "설정 또는 실행 옵션에서 비활성")
                 continue
             remaining = int(deadline - time.monotonic())
             if remaining <= 0:
@@ -121,7 +129,14 @@ class CommunicationCollection:
             else:
                 command = [self.python, str(self.col / file), "--from", self.d0, "--to", self.d1, "--force"]
                 only_flag = "--only"
-            if len(pending) == 1:
+            if source == "outlook_graph":
+                if "mail" not in pending:
+                    self.skip(source, "메일 요청 범위 완료")
+                    continue
+                command += ["--non-interactive", "--time-budget", str(max(1, min(timeout, remaining) - 90))]
+                # Force is a web refresh option; Graph must retain resumable cursors.
+                command.remove("--force")
+            elif len(pending) == 1:
                 command += [only_flag, next(iter(pending))]
             if source == "outlook_web" and "--mail-web-body" in self.argv:
                 command.append("--include-body")
@@ -134,7 +149,7 @@ class CommunicationCollection:
             for source in ("teams_app", "teams_graph", "teams_web", "teams_copilot"):
                 self.skip(source, "--no-teams")
             return {"family": "Teams", "status": "skipped", "period": [self.d0, self.d1], "sources": self.states}
-        budget = _number(self.options.get("teamsBudgetSec"), 1500, 120, 7200)
+        budget = _number(self.options.get("teamsBudgetSec"), 2400, 120, 14400)
         deadline = time.monotonic() + budget
         graph = bool((self.config.get("graph") or {}).get("clientId"))
         web = self.config.get("teamsWeb", True) and not self.headless
@@ -144,11 +159,12 @@ class CommunicationCollection:
                "-From", self.d0, "-To", self.d1], 120, True)
         routes = [
             ("teams_graph", "Teams 수집 · Graph", [self.python, str(self.col / "Get-TeamsChats.py"),
-             "--from", self.d0, "--to", self.d1, "--non-interactive"], 300, graph),
+             "--from", self.d0, "--to", self.d1, "--non-interactive"],
+             _number(self.options.get("graphBudgetSec"), 900, 30, 6900) + 90, graph),
             ("teams_web", "Teams 보충 · 웹", [self.python, str(self.col / "Get-TeamsWeb.py"),
              "--from", self.d0, "--to", self.d1, "--force"], 1200, web),
         ]
-        if self.config.get("preferApp", True):
+        if self.config.get("preferApp", True) and not graph:
             routes.insert(0, app)
         else:
             routes.append(app)
@@ -172,9 +188,12 @@ class CommunicationCollection:
             if source == "teams_web":
                 web_budget = _number(self.config.get("teamsWebBudgetSec"), 900, 30, 6900)
                 command += ["--budget", str(max(1, min(web_budget, remaining - 20)))]
+            elif source == "teams_graph":
+                command += ["--time-budget", str(max(1, min(timeout, remaining) - 90))]
             state = self.run(source, label, command, min(timeout, remaining))
             # App/UI/Copilot cannot certify the server's entire accessible chat list.
-            complete = source == "teams_graph" and state.get("status") == "complete"
+            complete = (source == "teams_graph" and state.get("status") == "complete"
+                        and state.get("full_requested_scope_complete") is True)
         return self.report("Teams", complete, [] if complete else ["앱·웹 탐색 범위 및 중단 사유 확인"])
 
 

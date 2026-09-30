@@ -6,6 +6,7 @@ write an explicit bounded scope; unknown and interrupted scopes remain partial.
 from __future__ import annotations
 
 import csv
+from datetime import datetime
 import hashlib
 import io
 import json
@@ -130,19 +131,39 @@ def merge_rows(existing, incoming, kind="mail"):
         sources.update(filter(None, (previous.get("source_kind"), clean.get("source_kind"))))
         old_context = previous.get("context_excerpt", "")
         new_context = clean.get("context_excerpt", "")
-        keep_context = bool(old_context and len(old_context) > len(new_context))
+        newer_original, older_original = False, False
+        context_available = (str(clean.get("context_available", "")).lower() != "false"
+                             and (bool(new_context) or str(clean.get("context_available", "")).lower() == "true"))
+        if (previous.get("source_id") and previous.get("source_id") == clean.get("source_id")
+                and clean.get("source_kind") in {"teams_graph", "outlook_graph"}
+                and previous.get("source_kind") == clean.get("source_kind")):
+            try:
+                old_modified = datetime.fromisoformat(str(previous.get("modified_time") or "").replace("Z", "+00:00"))
+                new_modified = datetime.fromisoformat(str(clean.get("modified_time") or "").replace("Z", "+00:00"))
+                newer_original = bool(context_available and old_modified.tzinfo and new_modified.tzinfo and new_modified > old_modified)
+                older_original = bool(old_modified.tzinfo and new_modified.tzinfo and new_modified < old_modified)
+            except (ValueError, TypeError):
+                pass
+        if older_original:
+            if sources:
+                previous["observed_sources"] = "|".join(sorted(sources))
+            continue
+        keep_context = bool(old_context and len(old_context) > len(new_context) and not newer_original)
         precision = {"estimated": 0, "ai_reported": 0, "unknown": 0, "date": 1, "minute": 2, "second": 3, "exact": 3}
         def time_rank(value):
             return precision.get(value.get("time_precision"), 3 if len(value.get("time", "")) > 10 else 1)
         keep_time = time_rank(previous) > time_rank(clean)
         for field, value in clean.items():
+            if (field == "modified_time" and not context_available
+                    and clean.get("source_kind") in {"teams_graph", "outlook_graph"}):
+                continue  # Missing/disabled body cannot promote the version of stored context.
             if field in {"context_excerpt", "source_kind", "context_truncated"} and keep_context:
                 continue
             if field in {"time", "time_precision"} and keep_time:
                 continue
             if field == "source_kind" and keep_time and old_context == new_context:
                 continue
-            if value:
+            if value or (newer_original and field in {"context_excerpt", "context_truncated"}):
                 previous[field] = value
         if sources:
             previous["observed_sources"] = "|".join(sorted(sources))

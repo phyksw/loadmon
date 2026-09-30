@@ -1,0 +1,36 @@
+{
+  "schema": "lm25.communication.v1",
+  "expected_count": 2,
+  "messages": [
+    {
+      "schema": "lm25.communication.v1",
+      "family": "mail",
+      "time": "2026-09-15T10:00:00+09:00",
+      "body": "Synthetic: Please review the draft specification.",
+      "conversation_id": "synthetic-mail-thread-1",
+      "source_id": "synthetic-mail-1",
+      "sender": "sender@example.invalid",
+      "subject": "Synthetic review request",
+      "conversation": "Synthetic specification",
+      "box": "unknown",
+      "rcv": "",
+      "account": "synthetic-account",
+      "source_url": ""
+    },
+    {
+      "schema": "lm25.communication.v1",
+      "family": "teams",
+      "time": "2026-09-15T10:05:00+09:00",
+      "body": "Synthetic: Review complete. The revised specification is ready.",
+      "conversation_id": "synthetic-chat-1",
+      "source_id": "synthetic-chat-message-1",
+      "sender": "Synthetic colleague",
+      "subject": "",
+      "conversation": "Synthetic project chat",
+      "box": "unknown",
+      "rcv": "",
+      "account": "synthetic-account",
+      "source_url": ""
+    }
+  ]
+}

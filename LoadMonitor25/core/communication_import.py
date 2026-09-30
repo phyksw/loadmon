@@ -1,11 +1,12 @@
-"""Read explicitly selected EML/MBOX exports; never discover account caches.
+"""Read explicitly selected mail/Teams exports; never discover account caches.
 
-Only data/outlook/mail.csv and data/collection_status/communication_import.json
-are written under root. Source files remain unchanged; summaries contain counts,
+Normalized CSVs, full-body evidence and count-only import status are written
+under root. Source files remain unchanged; summaries contain counts,
 not message content, addresses, or selected paths. MSG/PST are unsupported.
 """
 from __future__ import annotations
 
+import csv
 from datetime import UTC, date
 from email import policy
 from email.parser import BytesParser
@@ -18,8 +19,12 @@ import re
 
 try:
     from .collection_state import merge_csv, read_csv, record_key, write_status
+    from .communication_exports import ExportError, load_export, parse_record
+    from .communication_archive import archive_records
 except ImportError:
     from collection_state import merge_csv, read_csv, record_key, write_status
+    from communication_exports import ExportError, load_export, parse_record
+    from communication_archive import archive_records
 
 
 FIELDS = ("box", "time", "sender", "subject", "conversation", "rcv", "time_precision",
@@ -29,8 +34,11 @@ FIELDS = ("box", "time", "sender", "subject", "conversation", "rcv", "time_preci
           "source_sha256", "message_fingerprint", "attachment_count", "import_format")
 MAX_MESSAGE_BYTES = 16 * 1024 * 1024
 MAX_FILE_BYTES = 512 * 1024 * 1024
-MAX_MESSAGES = 10000
-MAX_FILES = 10000
+PERSIST_BATCH_ROWS = 1000
+
+
+class ImportPersistenceError(RuntimeError):
+    """Writing evidence failed; do not downgrade it to a malformed input."""
 
 
 class _VisibleHTML(HTMLParser):
@@ -120,17 +128,17 @@ def _parse(raw, path, format_name, context_chars, own_addresses, account):
                cc_addresses=";".join(cc_addresses), date_original=original_date, time_utc=utc,
                source_sha256=digest, message_fingerprint=fingerprint, attachment_count=str(sum(1 for p in message.walk()
                    if p.get_content_disposition() == "attachment")), import_format=format_name)
+    row["_full_body"] = body
     defects = any(part.defects for part in message.walk())
     return row, stamp.date() if stamp else None, defects
 
 
 def import_paths(root, paths, d0, d1, config=None):
-    """Import selected files into the existing mail CSV and return a private-safe summary.
+    """Import selected EML/MBOX, Graph JSON or explicit normalized v1 exports.
 
-    collection.communicationImportRecursive controls directory recursion (default
-    false); communicationImportOwnAddresses optionally identifies sent/received
-    direction; communicationImportAccount scopes IDs. Unknown direction is kept
-    explicitly, never inferred from filename or message wording.
+    Counts describe selected files, never the whole mailbox or tenant. Optional
+    communicationImportExpectedCount is the number of records before date filters,
+    including duplicates. Unknown normalized dates/timezones are rejected.
     """
     d0, d1 = date.fromisoformat(str(d0)), date.fromisoformat(str(d1))
     if d0 > d1:
@@ -140,18 +148,43 @@ def import_paths(root, paths, d0, d1, config=None):
     collection = (config or {}).get("collection") or {}
     recursive = bool(collection.get("communicationImportRecursive", False))
     context_chars = min(20000, max(0, int(collection.get("contextChars", 4000))))
+    # No record/file-count cap: retrying a fixed prefix would strand later data.
+    # File/record byte limits remain explicit, independently configurable bounds.
+    max_file_mb = collection.get("communicationImportMaxFileMB", MAX_FILE_BYTES // (1024 * 1024))
+    max_json_mb = collection.get("communicationImportMaxJsonMB", 64)
+    if any(type(value) is not int or not 1 <= value <= 16384 for value in (max_file_mb, max_json_mb)):
+        raise ValueError("invalid_export_size_limit")
+    max_file_bytes, max_json_bytes = max_file_mb * 1024 * 1024, max_json_mb * 1024 * 1024
     own = collection.get("communicationImportOwnAddresses") or []
     if isinstance(own, str):
         own = re.split(r"[;,\s]+", own)
     own = {str(item).strip().casefold() for item in own if str(item).strip()}
     account = str(collection.get("communicationImportAccount") or "").strip()
-    counts = dict.fromkeys(("files", "messages", "observed", "added", "duplicates", "outside_range",
-              "undated", "unsupported", "errors", "malformed", "body_rows", "truncated", "unknown_direction"), 0)
+    expected = collection.get("communicationImportExpectedCount")
+    if expected is not None and (type(expected) is not int or expected < 0):
+        raise ValueError("invalid_expected_count")
+    counters = ("files", "messages", "observed", "added", "duplicates", "outside_range", "undated",
+                "unsupported", "errors", "malformed", "body_rows", "truncated", "unknown_direction",
+                "discarded", "body_missing", "archived")
+    counts = dict.fromkeys(counters, 0)
+    family_counts = {family: dict.fromkeys(counters, 0) for family in ("mail", "teams")}
     reasons, selected, visited = [], [], set()
-    output = Path(root) / "data" / "outlook" / "mail.csv"
+    formats = set()
+    outputs = {"mail": Path(root) / "data/outlook/mail.csv", "teams": Path(root) / "data/m365/teams_import.csv"}
+    existing = {family: read_csv(path) for family, path in outputs.items()}
+    known = {family: {record_key(row, family) for row in rows} for family, rows in existing.items()}
+    fingerprints = {family: {record_key(row, family): row.get("message_fingerprint", "") for row in rows}
+                    for family, rows in existing.items()}
+    pending = {"mail": [], "teams": []}
+    extensions = {".eml", ".mbox", ".json", ".jsonl", ".csv"}
 
-    def problem(reason, counter="errors"):
-        counts[counter] += 1
+    def bump(counter, family=None, value=1):
+        counts[counter] += value
+        if family in family_counts:
+            family_counts[family][counter] += value
+
+    def problem(reason, counter="errors", family=None):
+        bump(counter, family)
         if reason not in reasons:
             reasons.append(reason)
 
@@ -165,108 +198,178 @@ def import_paths(root, paths, d0, d1, config=None):
             if candidate.is_dir():
                 iterator = candidate.rglob("*") if recursive else candidate.iterdir()
                 for item in iterator:
-                    # Path.rglob does not recurse symlink directories; reject leaf links too.
-                    if item.is_file() and not item.is_symlink() and item.suffix.lower() in {".eml", ".mbox"}:
+                    if item.is_file() and not item.is_symlink() and item.suffix.lower() in extensions:
                         selected.append(item)
-                        if len(selected) >= MAX_FILES:
-                            problem("selected_file_limit_reached")
-                            break
             elif candidate.is_file():
                 selected.append(candidate)
             else:
                 problem("input_not_regular_file")
         except (OSError, ValueError, TypeError):
             problem("input_unavailable")
-        if len(selected) >= MAX_FILES:
-            break
-    existing = read_csv(output)
-    known = {record_key(row) for row in existing}
-    fingerprints = {record_key(row): row.get("message_fingerprint", "") for row in existing}
-    pending = []
+
+    def flush(family):
+        rows = pending[family]
+        if rows:
+            try:
+                merge_csv(outputs[family], rows, FIELDS if family == "mail" else
+                          ("time", "kind", "from", "chat", "summary", "time_precision"), kind=family)
+            except (OSError, ValueError) as error:
+                raise ImportPersistenceError("normalized_evidence_write_failed") from error
+            rows.clear()
+
+    def accept(family, row, when):
+        if when is None:
+            problem("undated_message_skipped", "undated", family)
+            bump("discarded", family)
+            return
+        if not d0 <= when <= d1:
+            bump("outside_range", family)
+            return
+        key = record_key(row, family)
+        if fingerprints[family].get(key) and fingerprints[family][key] != row["message_fingerprint"]:
+            row["source_id"] += ":collision:" + row["message_fingerprint"]
+            key = record_key(row, family)
+            problem("conflicting_message_id_retained_separately", "malformed", family)
+        fingerprints[family][key] = row["message_fingerprint"]
+        # Archive complete plain body BEFORE publishing its bounded analysis row.
+        # Failure propagates: an old success receipt must not be written for it.
+        body = row.pop("_full_body")
+        try:
+            archived = archive_records(root, family, [dict(row, body=body)])
+        except (OSError, ValueError) as error:
+            raise ImportPersistenceError("original_evidence_write_failed") from error
+        bump("archived", family, archived)
+        if key in known[family]:
+            bump("duplicates", family)
+        else:
+            known[family].add(key)
+            bump("added", family)
+        bump("observed", family)
+        bump("body_rows", family, bool(row["context_excerpt"]))
+        bump("truncated", family, row["context_truncated"] == "true")
+        bump("unknown_direction", family, family == "mail" and row["box"] == "unknown")
+        pending[family].append(row)
+        if len(pending[family]) >= PERSIST_BATCH_ROWS:
+            flush(family)
 
     def consume(raw, path, kind):
-        counts["messages"] += 1
+        bump("messages", "mail")
         if len(raw) > MAX_MESSAGE_BYTES:
-            problem("message_size_limit")
+            problem("message_size_limit", family="mail")
+            bump("discarded", "mail")
             return
         try:
             row, when, defects = _parse(raw, path, kind, context_chars, own, account)
         except (ValueError, TypeError, LookupError, UnicodeError, OverflowError, IndexError):
-            problem("message_parse_failed")
+            problem("message_parse_failed", family="mail")
+            bump("discarded", "mail")
             return
         if defects:
-            problem("malformed_mime", "malformed")
-        if when is None:
-            problem("undated_message_skipped", "undated")
-            return
-        if not d0 <= when <= d1:
-            counts["outside_range"] += 1
-            return
-        key = record_key(row)
-        if fingerprints.get(key) and fingerprints[key] != row["message_fingerprint"]:
-            row["source_id"] += ":collision:" + row["message_fingerprint"]
-            key = record_key(row)
-            problem("conflicting_message_id_retained_separately", "malformed")
-        fingerprints[key] = row["message_fingerprint"]
-        if key in known:
-            counts["duplicates"] += 1
-        else:
-            known.add(key)
-            counts["added"] += 1
-        counts["observed"] += 1
-        counts["body_rows"] += bool(row["context_excerpt"])
-        counts["truncated"] += row["context_truncated"] == "true"
-        counts["unknown_direction"] += row["box"] == "unknown"
-        pending.append(row)
+            problem("malformed_mime", "malformed", "mail")
+        accept("mail", row, when)
 
+    def consume_export(kind, item, hint, path, format_name):
+        family = "teams" if kind == "graph" else item.get("family") if isinstance(item, dict) else None
+        if family not in family_counts:
+            family = None
+        bump("messages", family)
+        def visible_html(body):
+            parser = _VisibleHTML()
+            parser.feed(body)
+            return "".join(parser.parts)
+        try:
+            family, row, when = parse_record(kind, item, hint, path, context_chars, account, visible_html)
+        except ExportError as error:
+            code = str(error)
+            counter = "undated" if code == "undated_or_timezone_unknown" else "body_missing" if code == "body_missing" else "malformed"
+            problem(code, counter, family)
+            bump("discarded", family)
+            return
+        row["import_format"] = format_name
+        accept(family, row, when)
+
+    # Mark this selected-file run in progress so failure cannot leave an old
+    # complete status looking like the result of the new attempt.
+    write_status(root, "communication_import", d0, d1, status="partial", scope="selected export files only",
+                 reasons=["import_in_progress"], mail_status="partial", teams_status="partial")
     for path in selected:
         if path in visited:
             continue
         visited.add(path)
         counts["files"] += 1
         suffix = path.suffix.lower()
-        if suffix not in {".eml", ".mbox"}:
-            problem("unsupported_format_eml_mbox_only", "unsupported")
+        if suffix not in extensions:
+            problem("unsupported_export_format", "unsupported")
             continue
         try:
-            if path.stat().st_size > (MAX_MESSAGE_BYTES if suffix == ".eml" else MAX_FILE_BYTES):
+            if path.stat().st_size > (MAX_MESSAGE_BYTES if suffix == ".eml" else max_file_bytes):
                 problem("file_size_limit")
                 continue
             if suffix == ".eml":
+                formats.add("eml")
+                family_counts["mail"]["files"] += 1
                 with path.open("rb") as stream:
                     consume(stream.read(MAX_MESSAGE_BYTES + 1), path, "eml")
-            else:
+            elif suffix == ".mbox":
+                formats.add("mbox")
+                family_counts["mail"]["files"] += 1
                 box = mailbox.mbox(path, create=False)
                 try:
                     before = counts["messages"]
                     for key in box.iterkeys():
-                        if counts["messages"] >= MAX_MESSAGES:
-                            problem("message_count_limit")
-                            break
                         with box.get_file(key) as stream:
                             consume(stream.read(MAX_MESSAGE_BYTES + 1), path, "mbox")
                     if counts["messages"] == before and path.stat().st_size:
                         problem("nonempty_mbox_has_no_messages")
                 finally:
                     box.close()
-        except (OSError, ValueError, mailbox.Error):
+            else:
+                format_name, records, warnings = load_export(path, max_json_bytes=max_json_bytes)
+                formats.add(format_name)
+                for reason in warnings:
+                    problem(reason, "malformed")
+                file_families = set()
+                before = counts["messages"]
+                for kind, item, hint in records:
+                    family = "teams" if kind == "graph" else item.get("family") if isinstance(item, dict) else None
+                    if family in family_counts:
+                        file_families.add(family)
+                    consume_export(kind, item, hint, path, format_name)
+                if counts["messages"] == before and format_name == "jsonl":
+                    problem("empty_export")
+                for family in file_families:
+                    family_counts[family]["files"] += 1
+        except ExportError as error:
+            problem(str(error), "unsupported")
+        except (OSError, ValueError, mailbox.Error, UnicodeError, csv.Error):
             problem("file_read_failed")
-        if pending:
-            merge_csv(output, pending, FIELDS)
-            pending.clear()
-        if counts["messages"] >= MAX_MESSAGES:
-            problem("message_count_limit")
-            break
+        # A persistence error must escape rather than be reported as read failure.
+        for family in pending:
+            flush(family)
     if not selected:
         problem("no_supported_files_selected")
+    if expected is not None and counts["messages"] != expected:
+        problem("selected_export_expected_count_mismatch", "malformed")
     partial = bool(reasons)
     status = "partial" if partial and counts["observed"] else "failed" if partial else "complete"
-    final_count = len(read_csv(output))
-    counts["added"] = max(0, final_count - len(existing))
-    result = write_status(root, "communication_import", d0, d1, status=status,
-                          rows=counts["observed"], scope="explicitly selected EML/MBOX export files within requested dates; not mailbox coverage",
-                          reasons=reasons, counts=counts, imported_rows=counts["added"],
-                          observed_rows=counts["observed"], existing_total=final_count,
-                          mail_status=status, calendar_status="skipped", mail_rows=counts["observed"],
-                          calendar_rows=0, recursive=recursive)
-    return result
+    final_counts = {family: len(read_csv(path)) for family, path in outputs.items()}
+    for family in family_counts:
+        family_counts[family]["added"] = max(0, final_counts[family] - len(existing[family]))
+    counts["added"] = sum(value["added"] for value in family_counts.values())
+    reconciliation = {"scope": "selected_export_only", "expected_count": expected,
+                      "encountered_count": counts["messages"],
+                      "matched": counts["messages"] == expected if expected is not None else None,
+                      "server_coverage_verified": False,
+                      "selected_files_fully_processed": not bool(reasons),
+                      "count_reconciled": counts["messages"] == counts["observed"] + counts["outside_range"] + counts["discarded"]}
+    family_status = {family: (status if value["messages"] else "skipped") for family, value in family_counts.items()}
+    return write_status(root, "communication_import", d0, d1, status=status,
+                        rows=counts["observed"], scope="explicitly selected export files within requested dates; not mailbox or chat coverage",
+                        reasons=reasons, counts=counts, family_counts=family_counts, formats=sorted(formats),
+                        reconciliation=reconciliation, imported_rows=counts["added"],
+                        limits={"max_file_mb": max_file_mb, "max_json_csv_mb": max_json_mb,
+                                "max_message_bytes": MAX_MESSAGE_BYTES, "record_count_limit": None},
+                        observed_rows=counts["observed"], existing_total=sum(final_counts.values()),
+                        existing_totals=final_counts, mail_status=family_status["mail"], teams_status=family_status["teams"],
+                        calendar_status="skipped", mail_rows=family_counts["mail"]["observed"],
+                        teams_rows=family_counts["teams"]["observed"], calendar_rows=0, recursive=recursive)

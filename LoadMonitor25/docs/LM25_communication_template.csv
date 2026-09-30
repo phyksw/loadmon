@@ -1,0 +1,3 @@
+﻿schema,family,time,body,conversation_id,source_id,sender,subject,conversation,box,rcv,account,source_url
+lm25.communication.v1,mail,2026-09-15T10:00:00+09:00,Synthetic: Please review the draft specification.,synthetic-mail-thread-1,synthetic-mail-1,sender@example.invalid,Synthetic review request,Synthetic specification,unknown,,synthetic-account,
+lm25.communication.v1,teams,2026-09-15T10:05:00+09:00,Synthetic: Review complete. The revised specification is ready.,synthetic-chat-1,synthetic-chat-message-1,Synthetic colleague,,Synthetic project chat,unknown,,synthetic-account,

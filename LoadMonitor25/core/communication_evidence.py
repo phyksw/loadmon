@@ -19,8 +19,9 @@ SCHEMA = 1
 POLICY = ("수집된 자료에서 관측한 단서만 분석합니다. 건수는 업무 전체 확보율·업무시간이 아닙니다. "
           "근거 ID 연결은 서술의 사실 검증이 아닙니다. 본문·첨부·대화 앞뒤·역할·성과가 없으면 판단을 유보하고, "
           "AI 해석·자동화 제안을 확인된 원문 사실과 구분하세요. 자료 부족을 무업무·0시간으로 해석하지 마세요.")
-ROUTES = {"outlook_com", "outlook_index", "outlook_web", "outlook_copilot", "teams_app", "teams_graph",
-          "teams_web", "teams_copilot", "import_eml", "import_mbox", "import_csv", "import_json", "communication_import", "mail-import"}
+ROUTES = {"outlook_com", "outlook_index", "outlook_web", "outlook_copilot", "outlook_graph", "outlook_files", "outlook_msg", "teams_app", "teams_graph",
+          "teams_web", "teams_copilot", "import_eml", "import_mbox", "import_csv", "import_json", "communication_import", "mail-import",
+          "teams-graph-import", "teams-normalized-import", "mail-normalized-import"}
 UNCERTAIN_TIME = {"estimated", "ai_reported", "unknown"}
 
 
@@ -131,13 +132,16 @@ def _scope(root, family, d0, d1):
             item = json.loads(path.read_text("utf-8-sig"))
             source = item.get("source", "")
             if source not in ROUTES or not (source.startswith("outlook_" if family == "mail" else "teams_")
-                                            or (family == "mail" and source == "communication_import")):
+                                            or (source == "communication_import" and item.get(family + "_status") != "skipped"
+                                                and (family == "mail" or family + "_status" in item))):
                 continue
             if [item.get("requested_from"), item.get("requested_to")] != [str(d0), str(d1)]:
                 continue
             status = item.get("mail_status", item.get("status")) if family == "mail" else item.get("teams_status", item.get("status"))
-            if source == "communication_import":
+            if source in {"communication_import", "outlook_files"}:
                 status = "partial"  # Import completion proves only the selected files, not the mailbox/chat scope.
+            if item.get("server_scope_verified") is False or item.get("server_coverage_verified") is False:
+                status = "partial"
             if item.get("process_ok") is False or not item.get("scope"):
                 status = "partial"
             states.append({"source": source, "status": status if status in {"complete", "partial", "failed", "blocked", "skipped"} else "unknown"})

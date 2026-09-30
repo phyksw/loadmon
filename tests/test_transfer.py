@@ -41,14 +41,14 @@ class TransferTests(unittest.TestCase):
 
     def test_core_state_preserved_manifest_hashes_and_single_root(self):
         keep = ["data/pc_name.txt", "data/추가PC/PC-A/pc/pc_on.csv", "data/manual/worklog.csv",
-                "data/graph_token.json", "data/custom_cache.json", "report/upload_pending/p.json",
+                "data/custom_cache.json", "report/upload_pending/p.json",
                 "report/upload_sent/s.json", "report/ai_judgments.json", "report/보완툴/detail_aliases.json",
                 "config/excluded_work.json", "config/detail_aliases.json", "teamdata/member.json",
                 "python/python.exe", "logs/anything.log", "cache/important.json", "docs/copilot_profile/keep.txt"]
         for name in keep:
             self.write(name)
         (self.root / "empty_directory").mkdir()
-        excluded = ["data/copilot_profile/Default/cache", "data/추가PC/PC-A/copilot_profile/Cookies",
+        excluded = ["data/graph_token.json", "data/copilot_profile/Default/cache", "data/추가PC/PC-A/copilot_profile/Cookies",
                     "core/__pycache__/x.pyc", ".git/objects/large", ".ruff_cache/file", ".pytest_cache/file"]
         for name in excluded:
             self.write(name, "omit")

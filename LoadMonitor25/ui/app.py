@@ -32,7 +32,7 @@ from tools.transfer import create_transfer  # noqa: E402
 REPORT = os.path.join(ROOT, "report")
 DATA = os.path.join(ROOT, "data")
 NO_WIN = 0x08000000
-VERSION = "v25.6"
+VERSION = "v25.7"
 LOCK = threading.Lock()
 REQUEST_LOCK = threading.Lock()      # Serialize synchronous mutations with transfer startup.
 FREEZE_LOCK = threading.Lock()       # [보고서 만들기] 직렬화 — JOB 과 별개(사본에 '실행 중'이 굳지 않게)
@@ -1083,30 +1083,145 @@ def communication_evidence(period=None):
     from communication_evidence import build_report
     if not period or len(period) != 2 or not all(period):
         return {"status": "unavailable", "families": {}, "limits": ["조회 기간을 선택하세요"]}
-    return build_report(ROOT, period[0], period[1], cfg())
+    config = cfg()
+    report = build_report(ROOT, period[0], period[1], config)
+    graph = config.get("graph") or {}
+    report["connection"] = {"client_id": str(graph.get("clientId") or ""),
+                            "tenant_id": str(graph.get("tenantId") or "organizations"),
+                            "include_channels": bool(graph.get("includeChannels", False))}
+    return report
 
 
-def import_communication_job(paths, d0, d1):
+def import_communication_job(paths, d0, d1, options=None):
     """Explicit file intake is separate from collection and AI execution."""
     from communication_import import import_paths
     from communication_evidence import write_report
     try:
-        result = import_paths(ROOT, paths, d0, d1, cfg())
+        from communication_setup import import_options
+        config = import_options(options or {}, cfg())
+        result = import_paths(ROOT, paths, d0, d1, config)
         write_report(ROOT, d0, d1, cfg())
         ok = result.get("status") not in {"failed", "blocked"}
-        log("메일 파일 가져오기: " + json.dumps(result, ensure_ascii=False))
-        message = ("메일 가져오기 " + ("부분 완료" if result.get("status") == "partial" else "완료")
+        log("메일·Teams 파일 가져오기: " + json.dumps(result, ensure_ascii=False))
+        message = ("메일·Teams 가져오기 " + ("부분 완료" if result.get("status") == "partial" else "완료")
                    + f" — 관측 {result.get('observed_rows', 0)}건 · 새 저장 {result.get('imported_rows', 0)}건. 수집 범위를 확인한 뒤 [모은 자료 분석]을 실행하세요"
-                   if ok else "메일 가져오기 실패 — 지원 파일·날짜·읽기 권한을 확인하고 진행 로그의 사유를 확인하세요")
+                   if ok else "파일 가져오기 실패 — 지원 형식·날짜·읽기 권한을 확인하고 진행 로그의 사유를 확인하세요")
         summary = {"ok": ok, "message": message,
                    "import": result}
-    except (OSError, ValueError, TypeError) as error:
+    except (OSError, ValueError, TypeError, RuntimeError) as error:
         summary = {"ok": False, "message": f"메일 가져오기 실패({type(error).__name__}) — 기존 수집 자료를 확인하세요"}
         log(summary["message"])
     finally:
         with LOCK:
             JOB.update(running=False, step="", pid=0, phase="", done=0, total=0,
                        run_result=locals().get("summary", {"ok": False, "message": "가져오기 중단"}))
+
+
+def communication_watchdog(process, seconds):
+    """Bound our worker only; never terminate the user's Outlook application."""
+    expired = threading.Event()
+    def stop():
+        if process.poll() is None:
+            expired.set()
+            try:
+                process.kill()
+            except OSError:
+                pass
+    timer = threading.Timer(seconds, stop)
+    timer.daemon = True
+    timer.start()
+    return timer, expired
+
+
+def communication_connection_job():
+    """Show Microsoft's device-code flow in the existing local progress log."""
+    result = {"ok": False, "message": "Microsoft 연결 중단 — 진행 로그를 확인하세요"}
+    try:
+        command = [sys.executable, "-u", os.path.join(ROOT, "collect", "Get-TeamsChats.py"), "--login-only"]
+        log("Microsoft 로그인 안내의 주소를 직접 열어 코드를 입력하세요. 조직에서 승인한 앱만 연결할 수 있습니다.")
+        with subprocess.Popen(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                              env=dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1"),
+                              creationflags=NO_WIN) as process:
+            with LOCK:
+                JOB["pid"] = process.pid
+            timer, expired = communication_watchdog(process, 960)
+            try:
+                for raw in iter(process.stdout.readline, b""):
+                    line = raw.decode("utf-8", "replace").rstrip()
+                    if line:
+                        log(line)
+                process.wait()
+            finally:
+                timer.cancel()
+            ok = process.returncode == 0
+            result = {"ok": ok, "message": "Microsoft 연결 완료 — [메일·Teams만 수집]을 실행하세요" if ok else
+                      "Microsoft 연결 실패 — 권한·앱 등록·조직 정책을 확인하거나 내보내기 자료를 가져오세요"}
+            if expired.is_set():
+                result = {"ok": False, "message": "Microsoft 연결 시간 초과 — 로그인·조직 정책을 확인하세요"}
+    except (OSError, ValueError) as error:
+        log("Microsoft 연결 실행 실패: " + type(error).__name__)
+    finally:
+        with LOCK:
+            JOB.update(running=False, step="", pid=0, phase="", done=0, total=0, run_result=result)
+
+
+def communication_msg_job(paths, d0, d1, options=None):
+    """Read only explicit MSG files with the user's installed classic Outlook."""
+    import tempfile
+    from collection_state import load_status, write_status
+    from communication_evidence import write_report
+    from communication_setup import import_options
+    temporary = ""
+    result = {"ok": False, "message": "MSG 가져오기 실패 — 진행 로그를 확인하세요"}
+    try:
+        config = import_options(options or {}, cfg())
+        selected = config.get("collection") or {}
+        manifest = {"paths": paths, "ownAddresses": selected.get("communicationImportOwnAddresses", [])}
+        if "communicationImportExpectedCount" in selected:
+            manifest["expectedCount"] = selected["communicationImportExpectedCount"]
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8-sig", suffix=".json", prefix="lm25-msg-", delete=False) as stream:
+            temporary = stream.name
+            json.dump(manifest, stream, ensure_ascii=False)
+        command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+                   os.path.join(ROOT, "collect", "Import-OutlookFiles.ps1"),
+                   "-ManifestPath", temporary, "-From", d0, "-To", d1]
+        started = time.time()
+        with subprocess.Popen(command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                              env=dict(os.environ, LM_PYTHON_EXE=sys.executable, PYTHONIOENCODING="utf-8"),
+                              creationflags=NO_WIN) as process:
+            with LOCK:
+                JOB["pid"] = process.pid
+            timer, expired = communication_watchdog(process, 330)
+            try:
+                for raw in iter(process.stdout.readline, b""):
+                    line = raw.decode("utf-8", "replace").rstrip()
+                    if line:
+                        log(line)
+                process.wait()
+            finally:
+                timer.cancel()
+            state = load_status(ROOT, "outlook_files", d0, d1, since=started) or {}
+            if expired.is_set():
+                state = write_status(ROOT, "outlook_files", d0, d1, "partial", state.get("rows", 0),
+                                     scope=state.get("scope") or "explicitly selected MSG files only",
+                                     reasons=[*state.get("reasons", []), "native_reader_timeout"],
+                                     process_ok=False, mail_status="partial", server_complete=False)
+                log("MSG 읽기 시간 초과 — 저장된 자료는 유지합니다. Outlook 응답을 확인한 뒤 같은 파일로 다시 실행하세요.")
+            ok = process.returncode == 0 and state.get("status") == "complete"
+            partial = state.get("status") == "partial" or process.returncode == 2
+            result = {"ok": ok, "message": ("MSG 가져오기 완료" if ok else "MSG 부분 수집" if partial else "MSG 가져오기 실패")
+                      + f" — 저장 {state.get('rows', 0)}건. 범위와 진행 로그를 확인하세요", "import": state}
+        write_report(ROOT, d0, d1, cfg())
+    except (OSError, ValueError, TypeError) as error:
+        log("MSG 가져오기 실행 실패: " + type(error).__name__)
+    finally:
+        if temporary:
+            try:
+                os.unlink(temporary)  # Only the manifest created by this worker.
+            except OSError:
+                pass
+        with LOCK:
+            JOB.update(running=False, step="", pid=0, phase="", done=0, total=0, run_result=result)
 
 
 def outlook_coverage(period=None):
@@ -2669,16 +2784,26 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
  <div class="note" id="wnote" style="display:none;color:#a86400"></div>
  <div id="wclump"></div></div>
 <div class="card"><h2>메일·Teams 근거 확보 <span class="state">누가 어떤 일을 요청하고 결정했는지 확인하기 위한 자료입니다</span></h2>
- <div class="row" style="margin:12px 0;font-weight:700"><span>① 기간별 탐색</span> → <span>② 원문·대화 연결</span> → <span>③ 중복 제거·보호 필터</span> → <span>④ 업무별 근거 분석</span></div>
+ <div class="row" style="margin:12px 0;font-weight:700"><span>① 서버 / 앱 / 내보내기 선택</span> → <span>② 기간·페이지 끝까지 읽기</span> → <span>③ 원문 보관·중복 제거</span> → <span>④ 근거가 있는 업무 분석</span></div>
  <div id="communicationevidence"></div>
  <div id="communicationactions">
   <div class="row"><button id="communicationcollect">메일·Teams만 수집 (웹 포함)</button>
    <label><input id="communicationbody" type="checkbox">Outlook 웹 본문 포함 · 읽음 표시가 바뀔 수 있음</label></div>
-  <p class="note">상단 실행 기간을 사용합니다. Edge에서 회사 계정 로그인이 필요할 수 있습니다. 이 버튼은 AI를 호출하지 않습니다. 날짜별 작업은 예산 내에서 이어받으며 미완료 범위를 남깁니다.</p>
-  <details><summary>메일 접근이 막혔다면 저장한 EML / MBOX 가져오기</summary>
-   <p class="note">Outlook에서 저장한 .eml 또는 별도로 제공받은 .mbox 파일의 전체 경로를 한 줄에 하나씩 입력하세요. 폴더는 바로 아래 파일만 읽습니다. 첨부파일은 읽지 않습니다. PST·MSG는 지원하지 않습니다. 설정에 본인 메일 주소가 없으면 발수신 방향과 담당 역할은 미확인으로 남습니다.</p>
-   <textarea id="communicationpaths" rows="3" style="width:100%" aria-label="메일 파일 또는 폴더 전체 경로" placeholder="메일 파일 또는 폴더의 전체 경로"></textarea>
-   <button class="ghost" id="communicationimport">선택한 메일 파일 가져오기</button>
+  <p class="note">상단 실행 기간을 사용합니다. 연결된 Graph, Outlook 앱의 모든 연결 저장소, 화면 보충 경로를 사용합니다. 중단된 Graph 페이지는 같은 기간으로 다시 실행하면 이어받습니다. 앱·화면만으로는 서버 전체 확보를 보장할 수 없습니다. AI를 호출하지 않습니다.</p>
+  <details><summary>① 서버 원문 연결 — 조직에서 허용한 Graph 앱이 있을 때</summary>
+   <p class="note">Copilot 라이선스는 필요하지 않습니다. Entra에 등록한 공용 클라이언트 앱 ID와 조직의 읽기 권한 승인이 필요합니다. 차단된 권한은 자동으로 우회되지 않습니다. 로그인 주소와 코드는 아래 진행 로그에 표시됩니다.</p>
+   <div class="row"><label>앱 클라이언트 ID <input id="communicationclient" size="38" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"></label><label>테넌트 ID / 도메인 <input id="communicationtenant" size="28" placeholder="organizations"></label></div>
+   <label><input type="checkbox" id="communicationchannels">Teams 채널·답글도 포함 (추가 권한 승인 필요)</label>
+   <button class="ghost" id="communicationconnect">설정 저장하고 Microsoft 로그인</button>
+  </details>
+  <details><summary>② 서버 연결이 막혔다면 — Outlook 저장소 / 내보낸 메일·Teams 자료</summary>
+   <p class="note">기존 Outlook은 연결된 모든 사서함과 이미 열어 둔 PST를 조회합니다. 새 Outlook은 [설정 → 파일 → 내보내기]로 PST를 만든 뒤 기존 Outlook에서 열고 위 수집을 실행할 수 있습니다. 캐시 모드에서는 요청 기간까지 동기화가 완료되어야 합니다.</p>
+   <p class="note">직접 가져오기: EML/MBOX 메일, Graph chatMessage JSON, LM25 지정 형식 CSV/JSON/JSONL. 폴더는 바로 아래 파일만 읽습니다. Teams의 임의 화면 저장 HTML·요약문은 원문으로 취급하지 않습니다. PST 바이너리를 직접 해독하지 않습니다. MSG는 기존 Outlook이 있는 PC에서 별도 버튼으로 가져옵니다. 첨부파일 내용은 읽지 않습니다.</p>
+   <textarea id="communicationpaths" rows="3" style="width:100%" aria-label="메일 또는 Teams 내보내기 파일 전체 경로" placeholder="메일 또는 Teams 파일·폴더의 전체 경로를 한 줄에 하나씩"></textarea>
+   <div class="row"><label>본인 메일 주소 <input id="communicationown" size="38" placeholder="여러 주소는 쉼표로 구분"></label><label>내보내기 원본 건수 (선택) <input id="communicationexpected" type="number" min="0" step="1" placeholder="기간 필터 전 전체 건수"></label></div>
+   <p class="note">본인 주소가 없으면 발수신 방향·담당 역할은 미확인입니다. 원본 건수 대조는 선택한 내보내기 파일만 검증하며 서버 전체 건수는 입증하지 않습니다. 지정 CSV 예시는 배포본 docs/LM25_communication_template.csv에 있습니다.</p>
+   <button class="ghost" id="communicationimport">선택한 메일·Teams 파일 가져오기</button>
+   <button class="ghost" id="communicationmsg">선택한 MSG 가져오기 (기존 Outlook)</button>
   </details><p class="note" id="communicationfeedback" role="status" aria-live="polite"></p>
  </div>
  <div class="note">수집 건수는 근무시간·MM이 아닙니다. 아래 원본 대비 확보율은 확인할 수 없으며, AI가 미수집 내용을 채웠다고 간주하지 않습니다.</div>
@@ -2840,7 +2965,7 @@ for(const id of ["from","to"])$(id).addEventListener("change",activityFromSelect
 $("activityscale").onchange=()=>{if(lastActivity)weekly($("weekly"),lastActivity.trend||[]);};
 function renderCommunicationCoverage(items){
  const host=$("communicationcoverage");if(!host)return;
- const names={outlook_com:"Outlook 앱(COM)",outlook_index:"Windows Search 색인",outlook_web:"Outlook 웹",outlook_copilot:"메일 Copilot",teams_app:"Teams 열린 앱",teams_graph:"Teams Graph",teams_web:"Teams 웹",teams_copilot:"Teams Copilot",communication_import:"선택한 EML/MBOX 파일"};
+ const names={outlook_com:"Outlook 연결 저장소(COM)",outlook_graph:"메일 Graph 서버 원문",outlook_files:"선택한 Outlook MSG",outlook_index:"Windows Search 색인",outlook_web:"Outlook 웹",outlook_copilot:"메일 Copilot",teams_app:"Teams 열린 앱",teams_graph:"Teams Graph",teams_web:"Teams 웹",teams_copilot:"Teams Copilot",communication_import:"선택한 메일·Teams 내보내기"};
  const states={complete:"명시 범위 완료",partial:"부분 수집",failed:"실패",blocked:"접근 불가",skipped:"생략",unknown:"미확인"};
  if(!Array.isArray(items)||!items.length){host.innerHTML='<p class="note">이 버전의 범위 기록이 없습니다. 다음 수집 후 경로별 기간과 중단 이유가 표시됩니다. 기존 CSV 건수만으로 전체 수집을 확인할 수 없습니다.</p>';return;}
  host.innerHTML='<table><tr><th>경로</th><th>상태</th><th>실행 요청 기간</th><th>확인 범위·중단 이유</th></tr>'+items.map(s=>{
@@ -2852,6 +2977,8 @@ function renderCommunicationCoverage(items){
 function renderCommunicationEvidence(report){
  const host=$("communicationevidence");if(!host)return;
  const families=(report||{}).families||{};
+ const connection=report?.connection;
+ if(connection&&$("communicationclient")&&!$("communicationclient").value){$("communicationclient").value=connection.client_id||"";$("communicationtenant").value=connection.tenant_id||"organizations";$("communicationchannels").checked=connection.include_channels===true;}
  host.innerHTML='<table><tr><th>기간 내 자료</th><th>고유 기록</th><th>본문 포함</th><th>대화 묶음</th><th>확인할 공백</th></tr>'+["mail","teams"].map(kind=>{
   const f=families[kind]||{},n=Number(f.unique_rows)||0,b=Number(f.context_rows)||0;
   return `<tr><td>${kind==="mail"?"메일":"Teams"}</td><td>${n.toLocaleString()}건</td><td>${b.toLocaleString()}건</td><td>${Number(f.conversation_count)||0}개</td><td>${esc((f.limits||[]).join(" · ")||"전체 원본 대비 확보율 미확인")}</td></tr>`;
@@ -2989,16 +3116,23 @@ let timer=null;
 let runSubmitting=false,runFeedbackActive=false,communicationFeedbackActive=false;
 let runRequestEpoch=0,pollSequence=0,pollApplied=0;
 function runButtons(disabled){
- ["go","analyzecollected","collect2","prepmove","communicationcollect","communicationimport"].forEach(id=>{if($(id))$(id).disabled=disabled;});
+ ["go","analyzecollected","collect2","prepmove","communicationcollect","communicationimport","communicationconnect","communicationmsg"].forEach(id=>{if($(id))$(id).disabled=disabled;});
 }
 async function communicationAction(kind){
  if(runSubmitting||wasRunning)return;
  const feedback=$("communicationfeedback"),a=$("from").value,b=$("to").value;
  if(!a||!b||a>b){feedback.textContent="상단 실행 기간을 확인하세요";return;}
  const body={from:a,to:b};
- if(kind==="import"){
+ if(kind==="import"||kind==="msg"){
   body.paths=$("communicationpaths").value.split(/\\r?\\n/).map(x=>x.trim().replace(/^"|"$/g,"")).filter(Boolean);
   if(!body.paths.length){feedback.textContent="가져올 파일 또는 폴더 경로를 입력하세요";return;}
+  const own=$("communicationown").value.trim(),expected=$("communicationexpected").value.trim();
+  if(own)body.own_addresses=own.split(/[,;\\s]+/).filter(Boolean);
+  if(expected){const n=Number(expected);if(!Number.isSafeInteger(n)||n<0){feedback.textContent="원본 건수는 0 이상의 정수로 입력하세요";return;}body.expected_count=n;}
+ }else if(kind==="connect"){
+  body.client_id=$("communicationclient").value.trim();body.tenant_id=$("communicationtenant").value.trim()||"organizations";body.include_channels=$("communicationchannels").checked;
+  const own=$("communicationown").value.trim();if(own)body.own_addresses=own.split(/[,;\\s]+/).filter(Boolean);
+  if(!body.client_id){feedback.textContent="조직에서 허용한 앱의 클라이언트 ID를 입력하세요";return;}
  }else body.mail_body=$("communicationbody").checked;
  runRequestEpoch++;communicationFeedbackActive=false;runFeedbackActive=false;
  runSubmitting=true;runButtons(true);feedback.textContent="요청 중…";
@@ -3006,13 +3140,15 @@ async function communicationAction(kind){
  try{
   const r=await fetch("/api/communication/"+kind,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body),signal:controller.signal}),d=await r.json();
   if(!r.ok||!d.ok)throw Error(d.hint||d.error||"시작하지 못했습니다");
-  feedback.textContent="요청 접수 — 진행 로그와 수집 범위를 확인하세요. 완료 후 [모은 자료 분석]을 실행할 수 있습니다.";
+  feedback.textContent=kind==="connect"?"요청 접수 — 아래 진행 로그의 Microsoft 로그인 주소와 코드를 확인하세요.":"요청 접수 — 진행 로그와 수집 범위를 확인하세요. 완료 후 [모은 자료 분석]을 실행할 수 있습니다.";
   communicationFeedbackActive=true;wasRunning=true;$("dlog").open=true;if(!timer)timer=setInterval(poll,1000);
  }catch(e){feedback.textContent=e.name==="AbortError"?"응답 시간 초과 — 진행 로그에서 실행 여부를 확인하세요":String(e.message||e);}
  finally{clearTimeout(timeout);runRequestEpoch++;runSubmitting=false;runButtons(!!wasRunning);poll();}
 }
 $("communicationcollect").onclick=()=>communicationAction("collect");
 $("communicationimport").onclick=()=>communicationAction("import");
+$("communicationconnect").onclick=()=>communicationAction("connect");
+$("communicationmsg").onclick=()=>communicationAction("msg");
 async function requestRun(body,label){
  if(runSubmitting)return;
  const feedback=$("run_feedback");
@@ -4694,7 +4830,8 @@ class H(BaseHTTPRequestHandler):
             REQUEST_LOCK.release()
 
     def _do_POST(self):
-        if self.path in {"/api/communication/collect", "/api/communication/import"}:
+        if self.path in {"/api/communication/collect", "/api/communication/import",
+                         "/api/communication/connect", "/api/communication/msg"}:
             try:
                 from urllib.parse import urlsplit
                 origin = self.headers.get("Origin", "")
@@ -4708,10 +4845,18 @@ class H(BaseHTTPRequestHandler):
                 if "mail_body" in b and not isinstance(b["mail_body"], bool):
                     raise ValueError("본문 수집 옵션을 확인하세요")
                 importing = self.path.endswith("/import")
+                connecting = self.path.endswith("/connect")
+                native_msg = self.path.endswith("/msg")
                 paths = b.get("paths", [])
-                if importing and (not isinstance(paths, list) or not 1 <= len(paths) <= 200
+                if (importing or native_msg) and (not isinstance(paths, list) or not 1 <= len(paths) <= 200
                                   or any(not isinstance(p, str) or not p.strip() or len(p) > 32768 for p in paths)):
-                    raise ValueError("메일 파일 또는 폴더 경로를 1~200개 입력하세요")
+                    raise ValueError("파일 또는 폴더 경로를 1~200개 입력하세요")
+                if native_msg and any(not p.lower().endswith(".msg") for p in paths):
+                    raise ValueError("MSG 버튼에는 .msg 파일 전체 경로만 입력하세요. 폴더·다른 형식은 별도로 가져오세요")
+                from communication_setup import connection_settings, import_options, save_connection
+                settings = connection_settings(b) if connecting else None
+                if importing or native_msg:
+                    import_options(b, cfg())  # Validate before starting a background job.
             except (ValueError, TypeError, OSError) as error:
                 self._send(400, {"ok": False, "error": str(error)})
                 return
@@ -4721,15 +4866,19 @@ class H(BaseHTTPRequestHandler):
                         self._send(409, {"ok": False, "hint": "실행 중인 작업이 끝난 뒤 다시 실행하세요"})
                     return
                 JOB.update(running=True, kind="communication", log=[], run_result=None, started=time.time(),
-                           step="메일 파일 가져오기" if importing else "메일·Teams 수집 준비", phase="", done=0, total=0)
+                           step="Microsoft 로그인 준비" if connecting else "파일 가져오기" if importing or native_msg else "메일·Teams 수집 준비", phase="", done=0, total=0)
             try:
-                if importing:
-                    worker = threading.Thread(target=import_communication_job, args=(paths, args[0], args[1]), daemon=True)
+                if connecting:
+                    save_connection(ROOT, settings)
+                    worker = threading.Thread(target=communication_connection_job, daemon=True)
+                elif importing or native_msg:
+                    worker = threading.Thread(target=communication_msg_job if native_msg else import_communication_job,
+                                              args=(paths, args[0], args[1], b), daemon=True)
                 else:
                     worker = threading.Thread(target=run_job, args=(args[0], args[1], False, False, True),
                                               kwargs={"communications": True, "mail_body": b.get("mail_body", False)}, daemon=True)
                 worker.start()
-            except (RuntimeError, OSError) as error:
+            except (RuntimeError, OSError, ValueError, TypeError) as error:
                 with LOCK:
                     JOB.update(running=False, step="")
                 self._send(503, {"ok": False, "error": str(error)})

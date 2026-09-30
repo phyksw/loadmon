@@ -31,7 +31,8 @@ class TeamsCollectionTests(unittest.TestCase):
         for name in ("Get-TeamsWeb.py", "Get-OutlookWeb.py", "Get-TeamsChats.py",
                      "Get-TeamsViaCopilot.py", "Get-TeamsWindow.ps1"):
             shutil.copyfile(PRODUCT / "collect" / name, self.root / "collect" / name)
-        shutil.copyfile(PRODUCT / "core/collection_state.py", self.root / "core/collection_state.py")
+        for name in ("collection_state.py", "graph_client.py", "communication_archive.py"):
+            shutil.copyfile(PRODUCT / "core" / name, self.root / "core" / name)
         (self.root / "config/config.json").write_text(json.dumps({
             "owner": "Synthetic", "teamsSelfNames": ["Synthetic"],
             "collection": {"contextChars": 4000}, "teamsWebMaxChats": 200}), encoding="utf-8")
@@ -199,9 +200,9 @@ class TeamsCollectionTests(unittest.TestCase):
                 return {"id": "me"}
             if "/me/chats" in url:
                 return {"value": [{"id": "chat"}]}
-            if url == "next-page":
+            if url == "https://graph.microsoft.com/v1.0/chats/chat/messages?$skiptoken=next":
                 raise HTTPError(url, 403, "Forbidden", None, None)
-            return {"value": [self.graph_message("1")], "@odata.nextLink": "next-page"}
+            return {"value": [self.graph_message("1")], "@odata.nextLink": "https://graph.microsoft.com/v1.0/chats/chat/messages?$skiptoken=next"}
         self.graph(response)
         self.assertEqual(len(self.read_rows("teams_chats.csv")), 1)
         self.assertEqual(self.status("teams_graph")["status"], "partial")

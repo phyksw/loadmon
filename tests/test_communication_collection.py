@@ -39,7 +39,7 @@ class RoutingTests(unittest.TestCase):
     def test_only_successful_scoped_graph_completion_stops_web(self):
         for process_ok in (True, False):
             self.calls.clear()
-            runner = self.run_with({"Get-TeamsChats.py": ("teams_graph", "complete", {}, process_ok)},
+            runner = self.run_with({"Get-TeamsChats.py": ("teams_graph", "complete", {"full_requested_scope_complete": True}, process_ok)},
                                    {"graph": {"clientId": "synthetic"}, "preferApp": False})
             result = runner.teams()
             names = [x[0] for x in self.calls]
@@ -54,11 +54,12 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual([x[0] for x in self.calls], ["Get-OutlookIndex.ps1", "Get-OutlookWeb.py", "Get-MailViaCopilot.py"])
         self.assertEqual(result["status"], "partial")
 
-    def test_zero_rows_with_proven_com_scope_can_be_complete(self):
+    def test_finished_com_cache_does_not_certify_server_mail(self):
         write_status(self.root, "outlook_com", *self.period, "complete", scope="default store",
                      mail_status="complete", calendar_status="complete")
-        self.assertEqual(self.run_with().mail(time.time() - 1)["status"], "complete")
-        self.assertFalse(self.calls)
+        self.assertEqual(self.run_with().mail(time.time() - 1)["status"], "partial")
+        self.assertEqual(len(self.calls), 3)
+        self.assertTrue(all(command[-1] == "mail" for _, command, _ in self.calls))
 
     def test_interrupted_com_checkpoint_cannot_stop_supplements(self):
         write_status(self.root, "outlook_com", *self.period, "complete", scope="default store",
@@ -70,7 +71,25 @@ class RoutingTests(unittest.TestCase):
         write_status(self.root, "outlook_com", *self.period, "partial", scope="default store",
                      mail_status="complete", calendar_status="partial")
         self.run_with().mail(time.time() - 1)
-        self.assertTrue(all(command[-1] == "cal" for _, command, _ in self.calls))
+        self.assertTrue(all("--only" not in command and "-Only" not in command for _, command, _ in self.calls))
+
+    def test_mail_graph_runs_even_when_local_cache_claims_complete_and_resumes(self):
+        write_status(self.root, "outlook_com", *self.period, "complete", scope="local cached folders",
+                     mail_status="complete", calendar_status="complete")
+        runner = self.run_with({"Get-OutlookGraph.py": ("outlook_graph", "complete", {"mail_status": "complete"}, True)},
+                               {"graph": {"clientId": "synthetic"}})
+        result = runner.mail(time.time() - 1)
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual([x[0] for x in self.calls], ["Get-OutlookGraph.py"])
+        self.assertIn("--non-interactive", self.calls[0][1])
+        self.assertNotIn("--force", self.calls[0][1])
+
+    def test_chat_only_graph_completion_does_not_suppress_channel_supplements(self):
+        runner = self.run_with({"Get-TeamsChats.py": ("teams_graph", "complete", {
+            "chats_status": "complete", "channels_status": "skipped", "full_requested_scope_complete": False}, True)},
+            {"graph": {"clientId": "synthetic"}})
+        self.assertEqual(runner.teams()["status"], "partial")
+        self.assertIn("Get-TeamsWeb.py", [x[0] for x in self.calls])
 
     def test_failed_process_cannot_claim_calendar_complete(self):
         response = ("outlook_index", "complete", {"mail_status": "complete", "calendar_status": "complete"}, False)
@@ -188,6 +207,21 @@ class UnionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             merge_csv(path, [self.row], self.row)
         self.assertEqual(path.read_text("utf-8"), before)
+
+    def test_newer_graph_edit_can_shorten_body_but_old_pages_cannot(self):
+        original = dict(self.row, source_id="same", source_kind="outlook_graph",
+                        context_excerpt="This instruction was withdrawn", modified_time="2026-09-01T00:00:00Z")
+        edited = dict(original, context_excerpt="Withdrawn", modified_time="2026-09-02T00:00:00Z")
+        self.assertEqual(merge_rows([original], [edited])[0]["context_excerpt"], "Withdrawn")
+        self.assertEqual(merge_rows([original], [dict(edited, modified_time="2026-08-31T00:00:00Z")])[0]["context_excerpt"], original["context_excerpt"])
+        self.assertEqual(merge_rows([edited], [original])[0]["modified_time"], edited["modified_time"])
+        self.assertEqual(merge_rows([edited], [original])[0]["context_excerpt"], "Withdrawn")
+        unavailable = dict(edited, context_excerpt="", modified_time="2026-09-03T00:00:00Z", context_available="false")
+        preserved = merge_rows([edited], [unavailable])[0]
+        self.assertEqual(preserved["context_excerpt"], "Withdrawn")
+        self.assertEqual(preserved["modified_time"], edited["modified_time"])
+        available_empty = dict(unavailable, context_available="true")
+        self.assertEqual(merge_rows([edited], [available_empty])[0]["context_excerpt"], "")
 
     def test_ai_timestamp_cannot_downgrade_precise_observation(self):
         row = dict(self.row, source_id="one", time_precision="minute", source_kind="outlook_com")
