@@ -1,8 +1,10 @@
 """Teams DOM contracts in synthetic markup; no browser, account or company data."""
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -260,6 +262,78 @@ class TeamsWebCompatibilityTests(unittest.TestCase):
         browser = SimpleNamespace(eval_json=lambda _: next(pages))
         with patch.object(self.mod.time, 'sleep'):
             self.assertTrue(self.mod.wait_chat(browser, {'conversation_id': 'room-id'}, 'Room'))
+
+    def test_legacy_semantic_list_and_plain_timestamp_survive_complete_main_flow(self):
+        markup = '''<html><aside><div role="tree"><div role="treeitem" title="Room" id="room-row">
+          <button role="button" aria-label="Room" id="room-button"><span>Room</span></button></div></div></aside>
+          <main role="main"><h1>Room</h1><div role="listitem" data-item-id="m1">
+          <span data-tid="message-author-name">Person</span><span title="2026-06-03 09:00">09:00</span>
+          <div data-tid="messageBodyContent">Original prior-version message</div></div></main></html>'''
+        scripts = [self.mod.JS_READY, self.mod.JS_CHATS, self.mod.JS_PANE, self.mod.JS_MSGS,
+                   self.mod.JS_OPEN % json.dumps('Room')]
+        captured = self.dom(markup, *scripts)
+        values = dict(zip(scripts, captured['results'], strict=True))
+        browser = self.mod.Browser.__new__(self.mod.Browser)
+        browser.deadline, browser.cfg = None, {}
+        browser.start = lambda: True
+        browser.close = lambda: None
+        browser.href = lambda **kwargs: self.mod.TEAMS_URL
+        browser.eval_json = lambda script, **kwargs: values.get(script, {})
+        browser.cdp = SimpleNamespace(eval=lambda script: values.get(script, 'unsupported'), call=lambda *args: None)
+        now = [0.0]
+        with patch.object(self.mod, 'Browser', return_value=browser), \
+                patch.object(self.mod.time, 'monotonic', side_effect=lambda: now[0]), \
+                patch.object(self.mod.time, 'sleep', side_effect=lambda seconds: now.__setitem__(0, now[0]+seconds)), \
+                patch.dict(os.environ, {'LM_NO_BROWSER': '', 'LM_TEAMSWEB_FAKE': ''}), \
+                patch.object(sys, 'argv', ['collector', '--from', '2026-06-01', '--to', '2026-06-30', '--budget', '60']), \
+                patch.object(self.mod, 'log'):
+            self.assertEqual(self.mod.main(), 0)
+        stored = self.mod.read_csv(self.root / 'data/m365/teams_web.csv')
+        self.assertEqual([(row['time'], row['context_excerpt']) for row in stored],
+                         [('2026-06-03 09:00', 'Original prior-version message')])
+        self.assertIn({'id': 'room-button', 'type': 'click'}, captured['events'])
+        self.assertNotIn({'id': 'room-row', 'type': 'click'}, captured['events'])
+
+    def test_transient_sso_redirect_continues_the_same_wait(self):
+        browser = self.mod.Browser.__new__(self.mod.Browser)
+        browser.deadline = None
+        locations = iter(['https://login.microsoftonline.com/tenant/oauth2/authorize',
+                          self.mod.TEAMS_URL, self.mod.TEAMS_URL])
+        browser.href = lambda **kwargs: next(locations)
+        browser.eval_json = lambda *args, **kwargs: {'chats': 1}
+        with patch.object(self.mod.time, 'sleep'), patch.object(self.mod, 'log'):
+            self.assertEqual(browser.wait_ready(), 'ok')
+
+    def test_grouped_sidebar_does_not_replace_all_chat_children_with_folder(self):
+        markup = '''<html><div data-tid="chat-list" role="tree"><div role="treeitem" aria-expanded="true" title="Favorites">
+          <div role="group"><div role="treeitem" data-chat-id="room-a" title="Room A"><span>Room A</span></div>
+          <div role="treeitem" data-chat-id="room-b" title="Room B"><span>Room B</span></div></div>
+          </div></div></html>'''
+        page = self.dom(markup, self.mod.JS_CHATS)['results'][0]
+        self.assertEqual([item['name'] for item in page['items']], ['Room A', 'Room B'])
+        self.assertEqual({item['conversation_id'] for item in page['items']}, {'room-a', 'room-b'})
+
+    def test_legacy_plain_leaves_keep_author_clock_and_body_without_tid(self):
+        markup = '''<html><main role="main"><h1>Room</h1><div role="separator">2026-06-03</div>
+          <div role="listitem"><span>Person</span><span>09:00</span><p>Plain original content</p></div>
+          </main></html>'''
+        page = self.dom(markup, self.mod.JS_MSGS)['results'][0]
+        rows = self.read([page])
+        self.assertEqual([(row['from'], row['time'], row['context_excerpt']) for row in rows],
+                         [('Person', '2026-06-03 09:00', 'Plain original content')])
+
+    def test_login_requiring_user_stops_at_deadline_and_keeps_distinct_status(self):
+        browser = self.mod.Browser.__new__(self.mod.Browser)
+        browser.deadline = 2.0
+        browser.href = lambda **kwargs: 'https://login.microsoftonline.com/tenant/login'
+        browser.eval_json = lambda *args, **kwargs: {'login': True}
+        now = [0.0]
+        with patch.object(self.mod.time, 'monotonic', side_effect=lambda: now[0]), \
+                patch.object(self.mod.time, 'sleep', side_effect=lambda seconds: now.__setitem__(0, now[0]+seconds)), \
+                patch.object(self.mod, 'log') as log:
+            self.assertEqual(browser.wait_ready(), 'login')
+        self.assertEqual(now[0], 2.0)
+        self.assertEqual(log.call_count, 1)
 
 
 if __name__ == '__main__':

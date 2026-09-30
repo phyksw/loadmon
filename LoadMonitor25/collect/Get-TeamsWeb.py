@@ -242,12 +242,47 @@ JS_DOM = r"""
     document.querySelector('[role="main"]');
   const chatId = e => e ? (e.getAttribute('data-chat-id') ||
     (e.querySelector('[data-chat-id]') || {getAttribute:()=>''}).getAttribute('data-chat-id') || '') : '';
+  const chatNodes = () => {
+    const known = all('[data-tid="chat-list-item"],[data-tid="chat-list-item-row"],'
+      + '[data-tid="chat-list"] [role="treeitem"],[data-tid="chat-list"] [role="option"]');
+    const semantic = all('[role="treeitem"],[role="listitem"],[role="option"]').filter(e =>
+      chatId(e) || e.querySelector('[data-tid="chat-list-item-title"],[data-tid="chat-title"]'));
+    // Restore the earlier semantic list route. These are only candidates:
+    // after clicking, the requested room must still match the message pane.
+    const legacy = all('[role="tree"] [role="treeitem"],[role="listbox"] [role="option"],'
+      + '[role="list"] [role="listitem"][data-tid]').filter(e =>
+        (e.getAttribute('title') || e.getAttribute('aria-label')) &&
+        !e.querySelector('[role="treeitem"],[role="option"],[role="listitem"]'));
+    const nodes = [...new Set([...known,...semantic,...legacy])];
+    // Sidebar sections can be treeitems too. Keep their leaf conversations;
+    // retaining the outer section hides every child and only toggles a folder.
+    return nodes.filter(e => !nodes.some(child => child !== e && e.contains(child)));
+  };
+  const bodySelector = '[data-tid="messageBodyContent"],[data-tid="message-body"],[data-tid="message-content"],[id^="content-"]';
+  const timestampNodes = e => {
+    const body = e.querySelector(bodySelector);
+    const known = all('[data-tid="message-timestamp"],[data-tid="timestamp"],[data-tid="chat-pane-message-timestamp"],time',e);
+    const titled = all('[title],[aria-label]',e).filter(x => (!body || !body.contains(x)) &&
+      /\d{1,2}:\d{2}|\d{1,2}\s*[시時时]/.test((x.getAttribute('title') || '')+' '+(x.getAttribute('aria-label') || '')));
+    // Older skins expose a separate clock text leaf without a data-tid.
+    // Match the entire leaf; a deadline sentence in the body is not a clock.
+    const clock = all('span,div,p,a',e).filter(x => x.childElementCount === 0 &&
+      (!body || !body.contains(x)) && /^(?:(?:오전|오후|AM|PM)\s*)?\d{1,2}:\d{2}(?:\s*(?:AM|PM))?$/i.test((x.textContent || '').trim()));
+    return [...new Set([...known,...titled,...clock])];
+  };
   const messageSelector = '[data-tid="chat-pane-item"],[data-tid="chat-pane-message"],'
     + '[data-tid="message-pane"] [data-message-id],[data-tid="chat-pane-list"] [data-message-id],'
     + '[role="log"] [data-message-id],[role="log"] [role="listitem"],[role="log"] [role="article"],'
-    + '[data-tid="message-pane"] [role="listitem"]';
+    + '[data-tid="message-pane"] [role="listitem"],[role="main"] [role="listitem"]';
   const messageNodes = () => {
-    const nodes = all(messageSelector);
+    const nodes = all(messageSelector).filter(e => {
+      if (!e.matches('[role="main"] [role="listitem"]') ||
+          e.matches('[data-tid="chat-pane-item"],[data-tid="chat-pane-message"],[role="log"] [role="listitem"],[data-tid="message-pane"] [role="listitem"]')) return true;
+      const stamps = timestampNodes(e);
+      return stamps.length && (e.querySelector(bodySelector) ||
+        all('span,div,p,a',e).filter(x => x.childElementCount === 0 && (x.textContent || '').trim() &&
+          !stamps.some(stamp => stamp.contains(x))).length >= 2);
+    });
     // A message body may itself match an older message-container selector.
     // Retain the outer message once, not an extra nested copy.
     return nodes.filter(e => !nodes.some(parent => parent !== e && parent.contains(e)));
@@ -261,13 +296,7 @@ def dom_script(body):
 
 JS_CHATS = dom_script(r"""
   const out = {href: location.href, how: "", n: 0, items: []};
-  const known = '[data-tid="chat-list-item"],[data-tid="chat-list-item-row"],'
-    + '[data-tid="chat-list"] [role="treeitem"],[data-tid="chat-list"] [role="option"]';
-  let els = all(known);
-  const semantic = all('[role="treeitem"],[role="listitem"],[role="option"]').filter(e =>
-    chatId(e) || e.querySelector('[data-tid="chat-list-item-title"],[data-tid="chat-title"]'));
-  els = [...new Set([...els,...semantic])];
-  els = els.filter(e => !els.some(parent => parent !== e && parent.contains(e)));
+  const els = chatNodes();
   out.how = els.length ? 'chat identity/title in list or legacy chat-list-item' : '';
   window.__lm_chats = els;
   out.n = els.length;
@@ -276,6 +305,9 @@ JS_CHATS = dom_script(r"""
       (e.querySelector('a[href]') || {}).href || e.getAttribute('title') ||
       e.getAttribute('aria-label') || (e.textContent || '').trim();
     e.__lm_chat_key = key;
+    e.__lm_chat_name = (e.getAttribute('title') ||
+      (e.querySelector('[data-tid="chat-list-item-title"],[data-tid="chat-title"]') || {}).textContent ||
+      leafs(e)[0] || e.getAttribute('aria-label') || '').trim();
     return {
     idx: i,
     key: key,
@@ -294,7 +326,10 @@ JS_OPEN = r"""
   if (!e) return "gone";
   try { e.scrollIntoView({block: "center"}); } catch (x) {}
   // The first button may be a More options menu, not the conversation.
-  const t = e.querySelector('a[href*="/chat/"],a[href*="/l/chat/"]') || e;
+  const norm = value => (value || '').replace(/\s+/g,' ').trim().toLowerCase();
+  const target = [...e.querySelectorAll('[role="button"],button,a')].find(x =>
+    !x.getAttribute('aria-haspopup') && norm(x.getAttribute('aria-label') || x.getAttribute('title') || x.textContent) === norm(e.__lm_chat_name));
+  const t = e.querySelector('a[href*="/chat/"],a[href*="/l/chat/"]') || target || e;
   for (const ev of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
     t.dispatchEvent(new MouseEvent(ev, {bubbles: true, cancelable: true, view: window}));
   }
@@ -316,9 +351,9 @@ JS_MSGS = dom_script(r"""
       continue;
     }
     const au = e.querySelector('[data-tid="message-author-name"],[data-tid="messageAuthorName"],[data-tid="message-author"]');
-    const stamps = all('[data-tid="message-timestamp"],[data-tid="timestamp"],[data-tid="chat-pane-message-timestamp"],time',e);
+    const stamps = timestampNodes(e);
     const ts = stamps[0];
-    const bd = e.querySelector('[data-tid="messageBodyContent"],[data-tid="message-body"],[data-tid="message-content"],[id^="content-"]');
+    const bd = e.querySelector(bodySelector);
     const nested = e.querySelector('[data-message-id]');
     out.items.push({t: "msg",
       id: e.getAttribute("data-message-id") || (nested ? nested.getAttribute('data-message-id') : '') || e.getAttribute("data-item-id") || "",
@@ -377,11 +412,7 @@ JS_PANE = dom_script(r"""
 JS_READY = dom_script(r"""
   const signin = all('input[type="password"],input[autocomplete="username"]');
   const busy = all('[role="progressbar"],[aria-busy="true"]').length > 0;
-  const chatList = all('[data-tid="chat-list-item"],[data-tid="chat-list-item-row"],'
-    + '[data-tid="chat-list"] [role="treeitem"],[role="treeitem"][data-chat-id],'
-    + '[role="option"][data-chat-id],[role="listitem"][data-chat-id]');
-  chatList.push(...all('[role="treeitem"],[role="listitem"],[role="option"]').filter(e =>
-    e.querySelector('[data-tid="chat-list-item-title"],[data-tid="chat-title"]')));
+  const chatList = chatNodes();
   const empty = all('[role="status"],[data-tid*="empty"]').some(e =>
     /no (?:chats|conversations)|채팅이 없|대화가 없/i.test(e.textContent || ''));
   const web = all('a,button').find(e => /^(Use the web app instead|Continue on this browser|Use Teams on the web|웹 앱 사용|이 브라우저에서 계속)$/i.test(text(e)));
@@ -507,18 +538,29 @@ class Browser:
     def wait_ready(self, settle=6.0, limit=45):
         """팀즈 웹은 첫 로드가 느리다(워크로드 셸 → 채팅). → 'login' | 'ok' | 'timeout'"""
         until = min(self.deadline or float('inf'), time.monotonic() + limit)
-        opened, stable = False, 0
+        opened, stable, waiting_login, login_announced = False, 0, False, False
         while time.monotonic() < until:
             h = self.href(timeout=min(5, max(0.1, until-time.monotonic())))
             host = urlparse(h).hostname or ''
             if host in ('login.microsoftonline.com', 'login.live.com', 'login.microsoft.com'):
-                return "login"
+                waiting_login, stable = True, 0
+                if not login_announced:
+                    log('로그인 화면 확인 - 전용 Edge에서 로그인하면 이번 수집을 이어갑니다. 자동 SSO 완료도 기다립니다.')
+                    login_announced = True
+                time.sleep(min(0.5, max(0, until-time.monotonic())))
+                continue
             try:
                 state = self.eval_json(JS_READY, timeout=min(5, max(0.1, until-time.monotonic())))
             except Exception:
                 state = {}
             if state.get('login'):
-                return 'login'
+                waiting_login, stable = True, 0
+                if not login_announced:
+                    log('로그인 화면 확인 - 전용 Edge에서 로그인하면 이번 수집을 이어갑니다. 자동 SSO 완료도 기다립니다.')
+                    login_announced = True
+                time.sleep(min(0.5, max(0, until-time.monotonic())))
+                continue
+            waiting_login = False
             if state.get('chats') or state.get('messages') or (state.get('empty') and not state.get('busy')):
                 stable += 1
                 if stable >= 2:
@@ -529,7 +571,7 @@ class Browser:
                     self.cdp.eval(JS_OPEN_CHAT_AREA, timeout=min(5, max(0.1, until-time.monotonic())))
                     opened = True
             time.sleep(min(0.5, max(0, until-time.monotonic())))
-        return "timeout"
+        return 'login' if waiting_login else 'timeout'
 
     def eval_json(self, js, timeout=40):
         if self.deadline:

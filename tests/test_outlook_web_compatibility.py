@@ -198,8 +198,8 @@ class OutlookWebCompatibility(unittest.TestCase):
         self.assertTrue(self.mod.is_login_url("https://login.microsoftonline.com/tenant"))
         self.assertFalse(self.mod.is_login_url("https://login.microsoftonline.com.attacker.invalid/"))
 
-    def test_search_waits_for_transition_not_just_entered_query_and_old_search_heading(self):
-        for changed in (False, True):
+    def test_search_distinguishes_transition_visible_observations_and_failed_input(self):
+        for changed in (False, True, None):
             with self.subTest(changed=changed):
                 clock = [0.0]
                 state = {"query": "old-query", "entered": False}
@@ -211,7 +211,7 @@ class OutlookWebCompatibility(unittest.TestCase):
                     return json.dumps({"href": "https://outlook.office.com/mail/search", "state": "results", "searching": True,
                                        "query": state["query"], "items": [{"key": "new" if changed and state["entered"] else "old"}]})
                 def call(method, params=None, **kwargs):
-                    if method == "Input.insertText":
+                    if method == "Input.insertText" and changed is not None:
                         state.update(query=params["text"], entered=True)
                 browser = self.mod.Browser.__new__(self.mod.Browser)
                 browser.deadline = 20
@@ -220,7 +220,7 @@ class OutlookWebCompatibility(unittest.TestCase):
                 with patch.object(self.mod.time, "monotonic", side_effect=lambda: clock[0]), \
                         patch.object(self.mod.time, "sleep", side_effect=lambda seconds: clock.__setitem__(0, clock[0]+seconds)):
                     result = browser.search("received:09/03/2026")
-                self.assertEqual(bool(result), changed)
+                self.assertEqual(result, "query_entered_unverified" if changed else "visible_unverified" if changed is False else False)
                 self.assertLessEqual(clock[0], 12.21)
                 if changed:
                     self.assertLess(clock[0], 1)
@@ -244,6 +244,177 @@ class OutlookWebCompatibility(unittest.TestCase):
             status = json.loads((root / "data/collection_status/outlook_web.json").read_text())
             self.assertEqual((status["status"], status["time_budget_sec"]), ("partial", 4))
             self.assertEqual((status["diagnostics"]["mail"]["parsed"], status["diagnostics"]["mail"]["undated"]), (1, 1))
+
+    def test_legacy_attribute_rows_and_parseable_date_only_options_are_not_lost(self):
+        fixtures = [
+            node(children=[node(attrs={"data-item-id": "legacy", "aria-label": "2026-09-03 10:00"},
+                                children=[node("span", text="Sender"), node("span", text="Subject")])]),
+            node(attrs={"role": "listbox"}, children=[node(attrs={"role": "option", "aria-label": "Sep 3, 2026"},
+                                children=[node("span", text="Sender"), node("span", text="Subject")])]),
+            node(attrs={"role": "listbox"}, children=[node(attrs={"role": "option", "aria-label": "03.09.2026"},
+                                children=[node("span", text="Sender"), node("span", text="Subject")])]),
+        ]
+        for fixture in fixtures:
+            with self.subTest(fixture=fixture):
+                page, = self.javascript(fixture, [self.mod.JS_MAIL])
+                self.assertEqual(page["n"], 1)
+                row = self.mod.parse_mail_item(page["items"][0], date(2026, 9, 1), date(2026, 9, 30), "unknown")
+                self.assertEqual(row[1][:10], "2026-09-03")
+
+    def test_real_browser_main_flow_survives_transient_sso_and_saves_observations(self):
+        """Exercise actual Browser/main/collect/save, faking only CDP transport."""
+        module = self.mod
+        page, = self.javascript(node(children=[node("input", {"id": "topSearchInput"}),
+            node(attrs={"data-item-id": "legacy", "aria-label": "2026-09-03 10:00"},
+                 children=[node("span", text="Sender"), node("span", text="Subject")])]), [module.JS_MAIL])
+        clock = [0.0]
+        calls = []
+        class Connection:
+            def __init__(self, ws_url, timeout):
+                self.url = module.MAIL_URL
+                self.query = ""
+                self.navigations = 0
+                self.login_until = 0
+            def charge(self, kind, timeout):
+                calls.append((kind, timeout))
+                if timeout < 0.01:
+                    raise TimeoutError("synthetic elapsed command")
+                clock[0] += 0.01
+            def current_url(self):
+                return "https://login.microsoftonline.com/tenant/oauth2/authorize" if clock[0] < self.login_until else self.url
+            def call(self, method, params=None, timeout=25):
+                self.charge(method, timeout)
+                if method == "Page.navigate":
+                    self.navigations += 1
+                    self.url, self.query = params["url"], ""
+                    if self.navigations == 1:
+                        self.login_until = clock[0]+0.7
+                elif method == "Input.insertText":
+                    self.query = params["text"]
+                elif method == "Input.dispatchKeyEvent":
+                    self.url = module.MAIL_URL+"search"
+                return {}
+            def eval(self, script, timeout=25):
+                self.charge("eval", timeout)
+                if script == "location.href":
+                    return self.current_url()
+                if script == module.JS_MAIL:
+                    return json.dumps(dict(page, href=self.current_url(), query=self.query, searching="/search" in self.url))
+                if script == module.JS_FOCUS_SEARCH:
+                    return "ok"
+                if script == module.JS_CLEAR_SEARCH:
+                    return "cleared"
+                if script == module.JS_SCROLL:
+                    return "end"
+                raise AssertionError("Unexpected CDP expression")
+            def close(self):
+                pass
+        class Bootstrap(module.Browser):
+            def __init__(self):
+                self.cfg = {"port": 9999, "url": module.MAIL_URL}
+                self.port, self.deadline, self.cdp = 9999, None, None
+                self.last_diagnostic = ""
+                self.ca = SimpleNamespace(ensure_edge=lambda cfg: True, CDP=Connection,
+                    http_json=lambda *a, **kw: [{"type": "page", "url": module.MAIL_URL, "webSocketDebuggerUrl": "ws://fixture/"}])
+        with tempfile.TemporaryDirectory(prefix="lm25-owa-main-cdp-") as directory:
+            root = Path(directory)
+            with patch.object(module, "ROOT", str(root)), patch.object(module, "OUT_DIR", str(root/"data/outlook")), \
+                    patch.object(module, "Browser", Bootstrap), patch.dict(os.environ, {"LM_OWA_FAKE": "", "LM_NO_BROWSER": ""}), \
+                    patch.object(sys, "argv", ["collector", "--from", "2026-09-01", "--to", "2026-09-07", "--only", "mail", "--exclude-body", "--time-budget", "20"]), \
+                    patch.object(module.time, "monotonic", side_effect=lambda: clock[0]), \
+                    patch.object(module.time, "sleep", side_effect=lambda seconds: clock.__setitem__(0, clock[0]+seconds)), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                result = module.main()
+            self.assertEqual(result, 0)
+            self.assertIn("Subject", (root/"data/outlook/mail.csv").read_text(encoding="utf-8-sig"))
+            status = json.loads((root/"data/collection_status/outlook_web.json").read_text())
+            self.assertEqual((status["mail_rows"], status["mail_status"]), (1, "partial"))
+        self.assertGreaterEqual(clock[0], 0.7)
+        self.assertLess(clock[0], 20)
+        self.assertTrue(all(0 < timeout <= 20 for _, timeout in calls))
+
+    def test_persistent_login_wait_is_shorter_after_ready_and_respects_route_budget(self):
+        for ready, budget, expected_limit in ((False, 30, 8.3), (True, 30, 2.3), (False, 0.5, 0.501)):
+            with self.subTest(ready=ready, budget=budget):
+                clock = [0.0]
+                browser = self.mod.Browser.__new__(self.mod.Browser)
+                browser.deadline = budget
+                browser._ready_once = ready
+                browser.last_diagnostic = ""
+                browser.cdp = SimpleNamespace(eval=lambda *a, **kw: "https://login.microsoftonline.com/tenant/")
+                with patch.object(self.mod.time, "monotonic", side_effect=lambda: clock[0]), \
+                        patch.object(self.mod.time, "sleep", side_effect=lambda seconds: clock.__setitem__(0, clock[0]+seconds)), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(browser.wait_ready(), "login")
+                self.assertEqual(browser.last_diagnostic, "login_required")
+                self.assertGreater(clock[0], 0)
+                self.assertLessEqual(clock[0], expected_limit)
+
+    def test_unchanged_visible_list_retains_only_explicit_period_dates_without_completing_search(self):
+        module = self.mod
+        class Browser:
+            def __init__(self):
+                self.query = ""
+                self.nav = 0
+            def goto(self, _):
+                self.nav += 1
+                return "ok" if self.nav == 1 else "login"
+            def search(self, query):
+                self.query = query
+                return "visible_unverified"
+            def eval_json(self, _):
+                return {"state": "results", "query": self.query, "items": [
+                    {"key": "within", "item_id": "within", "label": "2026-09-03 10:00", "subject": "Sent Items", "texts": ["Sender", "Sent Items"]},
+                    {"key": "header", "item_id": "header", "date_texts": ["2026-09-03T10:00:00"],
+                     "label": "Synthetic sender, Project Alpha, Sep 3 10:00", "texts": []},
+                    {"key": "outside", "item_id": "outside", "label": "2025-09-03 10:00", "texts": ["Sender", "Outside"]},
+                    {"key": "inferred", "item_id": "inferred", "label": "Sep 3 10:00", "texts": ["Sender", "Do not infer year"]},
+                    {"key": "ambiguous", "item_id": "ambiguous", "label": "03/09/2026 10:00", "texts": ["Sender", "Do not infer date order"]},
+                ]}
+        with tempfile.TemporaryDirectory(prefix="lm25-owa-visible-only-") as directory:
+            checkpoint = Path(directory)/"jobs.json"
+            stored = []
+            rows, state, diag = module.collect_mail(Browser(), date(2026, 9, 1), date(2026, 9, 7),
+                                                    checkpoint=lambda values: stored.extend(values), state_path=str(checkpoint))
+            self.assertEqual((len(rows), state, rows[0][0], rows[0][3], rows[0][5]), (2, "login", "unknown", "Sent Items", ""))
+            self.assertEqual(rows[1][2:4], ["Synthetic sender", "Project Alpha"])
+            self.assertEqual((rows[1][0], rows[1][5]), ("unknown", ""))
+            self.assertEqual((diag["search"], diag["completed_units"], diag["visible_unverified"]), (0, 0, 1))
+            self.assertEqual((diag["undated"], diag["period_filtered"]), (2, 1))
+            unit = json.loads(checkpoint.read_text())["units"]["inbox:2026-09-01:2026-09-07"]
+            self.assertFalse(unit["traversed"])
+            self.assertEqual(unit["seen_hashes"], [])
+            self.assertTrue(stored)
+        for month in (3, 9):
+            self.assertIsNone(module.parse_mail_item({"label": "03/09/2026 10:00", "texts": ["Sender", "Subject"]},
+                                                     date(2026, month, 1), date(2026, month, 28), "unknown", explicit_dates=True))
+
+    def test_slow_cdp_poll_does_not_shrink_last_call_below_normal_response_latency(self):
+        clock = [0.0]
+        entered = [False]
+        browser = self.mod.Browser.__new__(self.mod.Browser)
+        browser.deadline = 30
+        browser.last_diagnostic = ""
+        def evaluate(script, timeout=25):
+            if timeout < 0.37:
+                clock[0] += timeout
+                raise TimeoutError("normal synthetic CDP latency exceeds tiny poll timeout")
+            clock[0] += 0.37
+            if script == self.mod.JS_FOCUS_SEARCH:
+                return "ok"
+            if script == self.mod.JS_CLEAR_SEARCH:
+                return "cleared"
+            return json.dumps({"href": "https://outlook.office.com/mail/search", "state": "results", "searching": True,
+                               "query": "received:09/03/2026" if entered[0] else "old", "items": [{"key": "same"}]})
+        def call(method, params=None, timeout=25):
+            if method == "Input.insertText":
+                entered[0] = True
+        browser.cdp = SimpleNamespace(eval=evaluate, call=call)
+        with patch.object(self.mod.time, "monotonic", side_effect=lambda: clock[0]), \
+                patch.object(self.mod.time, "sleep", side_effect=lambda seconds: clock.__setitem__(0, clock[0]+seconds)):
+            self.assertEqual(browser.search("received:09/03/2026"), "visible_unverified")
+            browser.wait_list_change(("same",), limit=1.5)
+        self.assertLess(clock[0], 30)
 
 
 if __name__ == "__main__":

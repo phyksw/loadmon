@@ -32,7 +32,7 @@ from tools.transfer import create_transfer  # noqa: E402
 REPORT = os.path.join(ROOT, "report")
 DATA = os.path.join(ROOT, "data")
 NO_WIN = 0x08000000
-VERSION = "v25.9"
+VERSION = "v25.10"
 LOCK = threading.Lock()
 REQUEST_LOCK = threading.Lock()      # Serialize synchronous mutations with transfer startup.
 FREEZE_LOCK = threading.Lock()       # [보고서 만들기] 직렬화 — JOB 과 별개(사본에 '실행 중'이 굳지 않게)
@@ -1893,7 +1893,14 @@ def run_job(d0, d1, ai, skip, collect_only=False, reuse_complete=False, force=Fa
                     rows, bodies = item["unique_rows"], item["context_rows"]
                     if type(rows) is not int or type(bodies) is not int or not 0 <= bodies <= rows:
                         raise ValueError("invalid counts")
-                    counts.append(f"{name} {rows:,}건 / 본문 발췌 {bodies:,}건")
+                    unreadable = item.get("unreadable_files", 0)
+                    if type(unreadable) is not int or unreadable < 0:
+                        raise ValueError("invalid unreadable file count")
+                    if unreadable:
+                        counts.append(f"{name} 건수 미확인 (읽기 실패 {unreadable:,}파일 · "
+                                      f"확인된 {rows:,}건 / 본문 발췌 {bodies:,}건)")
+                    else:
+                        counts.append(f"{name} {rows:,}건 / 본문 발췌 {bodies:,}건")
                 message += "\n기간 내 보관 자료(이전 PC 포함): " + " · ".join(counts)
                 message += "\n서버 전체 확보율은 미확인입니다. [메일·Teams 근거 확보]에서 경로별 실패·생략 사유를 확인하세요."
             except (OSError, ValueError, TypeError, KeyError, AttributeError):
@@ -3031,7 +3038,9 @@ function renderCommunicationEvidence(report){
  if(connection&&$("communicationclient")&&!$("communicationclient").value){$("communicationclient").value=connection.client_id||"";$("communicationtenant").value=connection.tenant_id||"organizations";$("communicationchannels").checked=connection.include_channels===true;}
  host.innerHTML='<table><tr><th>기간 내 자료</th><th>고유 기록</th><th>본문 포함</th><th>대화 묶음</th><th>확인할 공백</th></tr>'+["mail","teams"].map(kind=>{
   const f=families[kind]||{},n=Number(f.unique_rows)||0,b=Number(f.context_rows)||0;
-  return `<tr><td>${kind==="mail"?"메일":"Teams"}</td><td>${n.toLocaleString()}건</td><td>${b.toLocaleString()}건</td><td>${Number(f.conversation_count)||0}개</td><td>${esc((f.limits||[]).join(" · ")||"전체 원본 대비 확보율 미확인")}</td></tr>`;
+  const unreadable=Number.isInteger(f.unreadable_files)&&f.unreadable_files>0?f.unreadable_files:0;
+  const observed=unreadable?`건수 미확인<br><span class="note">읽기 실패 ${unreadable.toLocaleString()}파일 · 확인된 ${n.toLocaleString()}건</span>`:`${n.toLocaleString()}건`;
+  return `<tr><td>${kind==="mail"?"메일":"Teams"}</td><td>${observed}</td><td>${unreadable?"확인된 ":""}${b.toLocaleString()}건</td><td>${unreadable?"확인된 ":""}${Number(f.conversation_count)||0}개</td><td>${esc((f.limits||[]).join(" · ")||"전체 원본 대비 확보율 미확인")}</td></tr>`;
  }).join("")+"</table><p class='note'>본문 포함은 보관 자료 기준이며, 보호 필터 적용 후 AI에 전달되는 수는 줄어들 수 있습니다. 대화 묶음 수가 전체 대화 확보를 뜻하지 않습니다.</p>";
  const actions=[...new Set([...(report?.actions||[]),...Object.values(families).flatMap(f=>f.actions||[])])];
  if(actions.length)host.innerHTML+='<p class="note"><b>다음 조치:</b> '+actions.map(esc).join(" · ")+"</p>";

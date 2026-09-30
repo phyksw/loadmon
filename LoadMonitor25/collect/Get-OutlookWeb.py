@@ -75,6 +75,17 @@ def structured_stamp(text):
         return None
 
 
+def explicit_date_header(text):
+    """Unverified search cannot supply a missing year or ambiguous month/day order."""
+    for match in RE_MDY.finditer(text or ""):
+        a, b = int(match.group(1)), int(match.group(2))
+        if 1 <= a <= 12 and 1 <= b <= 12 and a != b:
+            return False
+    if RE_YMD.search(text or "") or RE_MDY.search(text or ""):
+        return True
+    return any(match and match.group(3) for match in (RE_MONEN.search(text or ""), RE_DMONEN.search(text or "")))
+
+
 # ── 날짜·시각 해석 (표기 형식 무관) ─────────────────────────────────────────────
 AM_WORDS = ("오전", "AM", "A.M.", "午前", "上午", "VORM.")
 PM_WORDS = ("오후", "PM", "P.M.", "午後", "下午", "NACHM.")
@@ -295,7 +306,7 @@ def _conv_token(conv):
     return "#" + hashlib.sha1(s.encode("utf-8")).hexdigest()[:10] if s else ""
 
 
-def parse_mail_item(item, d0, d1, folder=""):
+def parse_mail_item(item, d0, d1, folder="", *, explicit_dates=False):
     """화면 항목(aria-label·title·leaf texts) → [box,time,sender,subject,conversation,rcv,time_precision] 또는 None
     folder: 이 항목을 읽은 폴더 슬라이스('inbox'|'sent'|'') — 화면에 폴더명 조각이 없을 때의 box."""
     label = item.get("label") or ""
@@ -309,6 +320,8 @@ def parse_mail_item(item, d0, d1, folder=""):
     # Explicit time/column metadata may be a visible leaf in modern OWA. Never
     # treat arbitrary preview text as a message date or exact timestamp.
     head = list(item.get("date_texts") or []) + titles + [label]
+    if explicit_dates:
+        head = [text for text in head if explicit_date_header(text)]
     when = None
     precision = "minute"
     for value in item.get("date_texts") or []:
@@ -456,15 +469,19 @@ JS_DOM = r"""(() => {
   const searchBox = () => [...document.querySelectorAll(searchSelectors)].find(visible);
   const idSelector = '[data-item-id],[data-itemid],[data-message-id]';
   const itemId = e => e && (e.getAttribute('data-item-id') || e.getAttribute('data-itemid') || e.getAttribute('data-message-id')) || '';
+  const dateHint = new RegExp(__LM_DATE_HINT__, 'i');
   const rows = () => {
     let found=[...document.querySelectorAll('[role="listbox"] [role="option"],[role="grid"] [role="row"],'+
       '[role="listitem"][data-item-id],[role="listitem"][data-itemid],[role="listitem"][data-message-id]')];
     if(!found.length) found=[...document.querySelectorAll('[role="option"],[role="row"][aria-label]')];
-    found=found.filter(e=>visible(e) && !e.closest('[role="search"],[role="combobox"],[role="menu"]') &&
-      !e.querySelector('[role="columnheader"]'));
-    found=found.filter(e=>itemId(e) || e.getAttribute('data-convid') || e.querySelector('time,[data-testid="sender"],[data-tid="sender"]') ||
-      /\d{4}[년.\-/]|\d{1,2}:\d{2}|\d{1,2}[월/]\s*\d{1,2}/.test((e.getAttribute('aria-label')||'')+' '+
-        [...e.querySelectorAll('[title]')].map(x=>x.getAttribute('title')||'').join(' ')));
+    const eligible=e=>visible(e) && !e.closest('[role="search"],[role="combobox"],[role="menu"],[role="document"]') &&
+      !e.querySelector('[role="columnheader"],[role="document"],[data-testid="message-body"],[data-tid="message-body"]');
+    const message=e=>itemId(e) || e.getAttribute('data-convid') || e.querySelector('time,[data-testid="sender"],[data-tid="sender"]') ||
+      dateHint.test((e.getAttribute('aria-label')||'')+' '+[...e.querySelectorAll('[title]')].map(x=>x.getAttribute('title')||'').join(' '));
+    found=found.filter(e=>eligible(e)&&message(e));
+    // Preserve the attribute-only OWA layout supported before v25.9. The
+    // fallback applies after unrelated options (e.g. folders) are removed.
+    if(!found.length) found=[...document.querySelectorAll('[data-convid],'+idSelector)].filter(eligible);
     // Nested wrappers do not represent additional messages.
     return found.filter(e=>!found.some(other=>other!==e && e.contains(other)));
   };
@@ -492,7 +509,7 @@ JS_DOM = r"""(() => {
     }}
     return [...candidates].sort((a,b)=>b[1]-a[1])[0]?.[0] || null;
   };
-"""
+""".replace("__LM_DATE_HINT__", json.dumps("|".join(rx.pattern for rx in (RE_YMD, RE_MDY, RE_MONEN, RE_DMONEN, RE_MD_KO, RE_MD, RE_TIME))))
 JS_MAIL = JS_DOM + r"""
   const list=rows(), sb=searchBox();
   const signals=[...document.querySelectorAll('[role="status"],[role="heading"],[data-testid*="empty" i]')].filter(visible)
@@ -585,6 +602,7 @@ class Browser:
         self.cdp = None
         self.deadline = None
         self.last_diagnostic = ""
+        self._ready_once = False
 
     def remaining(self, limit=12):
         remaining = limit if self.deadline is None else min(limit, self.deadline - time.monotonic())
@@ -641,22 +659,34 @@ class Browser:
     def wait_ready(self, settle=0.0, limit=18):
         """Wait for observable mail/calendar UI, not an empty generic main shell."""
         until = time.monotonic() + self.remaining(limit)
+        login_since = None
+        login_grace = 2 if getattr(self, "_ready_once", False) else 8
         while time.monotonic() < until:
             h = self.href()
             if is_login_url(h):
-                self.last_diagnostic = "login_required"
-                return "login"
+                if login_since is None:
+                    login_since = time.monotonic()
+                    log("회사 로그인 리다이렉트를 확인하고 있습니다.")
+                if time.monotonic()-login_since >= login_grace:
+                    self.last_diagnostic = "login_required"
+                    return "login"
+                if time.monotonic() >= until:
+                    break
+                self.pause(min(0.2, max(0, until-time.monotonic())))
+                continue
+            login_since = None
             try:
-                page = self.eval_json(JS_MAIL, timeout=min(3, until - time.monotonic()))
+                page = self.eval_json(JS_MAIL, timeout=3)
                 calendar = "/calendar" in h and int(self.cdp.eval('document.querySelectorAll(\'[role="grid"]\').length', timeout=self.remaining(3)) or 0)
             except Exception:
                 page, calendar = {}, False
             if urlsplit(h).hostname in HOSTS and not page.get("loading") and (calendar or page.get("items") or page.get("empty") or (page.get("search") and page.get("listboxes"))):
                 self.last_diagnostic = "ready"
+                self._ready_once = True
                 return "ok"
             self.pause(0.2)
-        self.last_diagnostic = "mail_surface_not_ready"
-        return "timeout"
+        self.last_diagnostic = "login_required" if login_since is not None else "mail_surface_not_ready"
+        return "login" if login_since is not None else "timeout"
 
     def eval_json(self, js, timeout=8):
         r = self.cdp.eval(js, timeout=self.remaining(timeout))
@@ -686,16 +716,35 @@ class Browser:
         except Exception:
             return False
         until, stable, saw_loading = time.monotonic() + self.remaining(12), 0, False
+        visible_stable, visible_keys = 0, None
+        login_since = None
         while time.monotonic() < until:
-            page = self.eval_json(JS_MAIL, timeout=min(3, until - time.monotonic()))
+            # The poll window decides whether to start another observation;
+            # its last few milliseconds are not a safe CDP response timeout.
+            # Every call still has the hard route deadline through remaining().
+            page = self.eval_json(JS_MAIL, timeout=3)
             if is_login_url(page.get("href", "")):
-                self.last_diagnostic = "login_required"
-                return False
+                visible_stable = 0
+                login_since = time.monotonic() if login_since is None else login_since
+                if time.monotonic()-login_since >= 2:
+                    self.last_diagnostic = "login_required"
+                    return False
+                if time.monotonic() >= until:
+                    break
+                self.pause(min(0.2, max(0, until-time.monotonic())))
+                continue
+            login_since = None
             entered = str(page.get("query") or "").strip() == query
             changed = tuple(item.get("key") for item in page.get("items", [])) != signature
             saw_loading = saw_loading or bool(page.get("loading"))
             transitioned = changed or saw_loading or (page.get("searching") and not before.get("searching")) or (page.get("href") and page.get("href") != before.get("href"))
             result = page.get("state") in {"results", "empty"}
+            keys = tuple(item.get("key") for item in page.get("items", []))
+            if entered and keys and result and not page.get("loading"):
+                visible_stable = visible_stable+1 if keys == visible_keys else 1
+                visible_keys = keys
+            else:
+                visible_stable = 0
             if entered and result and not page.get("loading") and transitioned:
                 stable += 1
                 if stable >= 2:
@@ -703,8 +752,13 @@ class Browser:
                     return "query_entered_unverified"
             else:
                 stable = 0
-            self.pause(0.2)
-        self.last_diagnostic = "search_result_not_ready_or_stale"
+            left = until-time.monotonic()
+            if left > 0:
+                self.pause(min(0.2, left))
+        if visible_stable >= 2 and login_since is None:
+            self.last_diagnostic = "query_entered; visible_results_unverified"
+            return "visible_unverified"
+        self.last_diagnostic = "login_required" if login_since is not None else "search_result_not_ready_or_stale"
         return False
 
     def close(self):
@@ -718,7 +772,9 @@ class Browser:
         until = time.monotonic() + self.remaining(limit)
         while time.monotonic() < until:
             self.pause(0.2)
-            page = self.eval_json(JS_MAIL, timeout=max(0.05, min(2, until-time.monotonic())))
+            if time.monotonic() >= until:
+                break
+            page = self.eval_json(JS_MAIL, timeout=2)
             if not page.get("loading") and tuple(item.get("key") for item in page.get("items", [])) != keys:
                 return
 
@@ -790,7 +846,7 @@ def read_mail_detail(br, item, row, limit):
         until = time.monotonic() + (br.remaining(3) if hasattr(br, "remaining") else 3)
         detail = {}
         while time.monotonic() < until:
-            detail = br.eval_json(JS_MAIL_DETAIL % json.dumps(expected, ensure_ascii=False), timeout=max(0.05, min(2, until-time.monotonic())))
+            detail = br.eval_json(JS_MAIL_DETAIL % json.dumps(expected, ensure_ascii=False), timeout=2)
             if detail.get("body"):
                 return detail, ""
             time.sleep(min(0.15, max(0, until-time.monotonic())))
@@ -807,7 +863,7 @@ def collect_mail(br, d0, d1, fake=None, *, body=False, context_chars=4000,
             "date_only": 0, "pages": 0, "sent_pass_new": 0, "body_rows": 0,
             "detail_failed": 0, "completed_units": 0, "search_failed": 0,
             "search_unverified": 0, "search_attempts": 0, "undated": 0, "period_filtered": 0,
-            "empty_results": 0, "unsupported_pages": 0, "navigation_failed": 0, "reasons": []}
+            "empty_results": 0, "unsupported_pages": 0, "navigation_failed": 0, "visible_unverified": 0, "reasons": []}
     state = {"schema": 2, "requested_from": str(d0), "requested_to": str(d1),
              "body": body, "context_chars": context_chars, "units": {}}
     if state_path and fake is None:
@@ -828,7 +884,7 @@ def collect_mail(br, d0, d1, fake=None, *, body=False, context_chars=4000,
     def job_key(start, end, folder):
         return f"{folder}:{start}:{end}"
 
-    def consume(page, folder, start, end):
+    def consume(page, folder, start, end, *, visible_only=False):
         diag["pages"] += 1
         if page.get("n", 0) > 600:
             diag["reasons"].append("visible_page_item_limit_reached")
@@ -838,20 +894,22 @@ def collect_mail(br, d0, d1, fake=None, *, body=False, context_chars=4000,
                 raise TimeoutError("collection budget")
             key = item.get("key") or json.dumps(item, ensure_ascii=False)[:200]
             key_hash = hashlib.sha256(key.encode("utf-8")).hexdigest()
-            if key in seen or key_hash in active_seen:
+            if key in seen or (not visible_only and key_hash in active_seen):
                 continue
             seen.add(key)
             diag["items"] += 1
             if folder == "sent":
                 diag["sent_pass_new"] += 1
             # A folder URL alone does not prove OWA search remained in that folder.
-            row = parse_mail_item(item, start, end, folder if fake is not None else "unknown")
+            row = parse_mail_item(item, start, end, folder if fake is not None else "unknown", explicit_dates=visible_only)
             if not row:
                 diag["undated"] += 1
                 continue
             if not (d0.isoformat() <= row[1][:10] <= d1.isoformat()):
                 diag["period_filtered"] += 1
                 continue
+            if visible_only:
+                row[0], row[5] = "unknown", ""
             excerpt = truncated = source_url = ""
             reason = ""
             if body:
@@ -872,7 +930,7 @@ def collect_mail(br, d0, d1, fake=None, *, body=False, context_chars=4000,
             row += [excerpt, truncated, source_id, "outlook_web", source_url,
                     item.get("conversation_id", ""), folder if fake is not None else "requested:" + folder, ""]
             rows.append(row)
-            if not reason:
+            if not reason and not visible_only:
                 active_seen.add(key_hash)
             diag["parsed"] += 1
             if row[0] == "sent":
@@ -930,6 +988,24 @@ def collect_mail(br, d0, d1, fake=None, *, body=False, context_chars=4000,
                     continue
                 diag["search_attempts"] += 1
                 searched = br.search(mail_search_query(start, end, folder))
+                if searched == "visible_unverified":
+                    diag["visible_unverified"] += 1
+                    diag["reasons"].append("visible_observations_only; search_not_verified; range_pending")
+                    active_unit["last_attempt"] = time.time()
+                    page = br.eval_json(JS_MAIL)
+                    if is_login_url(page.get("href", "")):
+                        return rows, "login", diag
+                    if str(page.get("query") or "").strip() == mail_search_query(start, end, folder):
+                        consume(page, folder, start, end, visible_only=True)
+                    else:
+                        diag["reasons"].append("search_query_changed; visible_observations_skipped")
+                    save_progress()
+                    # This neither certifies a search nor advances its cursor.
+                    # Repeated UI uncertainty should not use the entire run budget.
+                    failures += 1
+                    if failures >= 3:
+                        break
+                    continue
                 if searched:
                     diag["search"] += 1
                     diag["search_unverified"] += 1

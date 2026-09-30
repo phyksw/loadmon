@@ -104,7 +104,7 @@ COUNTERS = {"rows", "mail_rows", "calendar_rows", "parsed_messages", "period_exc
 WEB_COUNTERS = {"search", "items", "parsed", "sent", "cc", "date_only", "pages", "sent_pass_new",
                 "body_rows", "detail_failed", "completed_units", "search_failed", "search_unverified",
                 "search_attempts", "undated", "period_filtered", "empty_results", "unsupported_pages",
-                "navigation_failed", "total_units"}
+                "navigation_failed", "visible_unverified", "total_units"}
 
 
 def cause_code(reason):
@@ -171,7 +171,7 @@ def build_diagnostics(root, d0, d1, run):
                                       if isinstance(r, dict) and set(r) == {"name", "version"}
                                       and isinstance(r["name"], str) and r["name"] in {"outlook", "olk", "ms-teams", "teams"}
                                       and re.fullmatch(r"(?:\d+(?:\.\d+){1,5}|unknown)", str(r["version"]))]
-    return {"schema": 1, "version": "v25.9", "period": [d0, d1], "created_at": time.time(),
+    return {"schema": 1, "version": "v25.10", "period": [d0, d1], "created_at": time.time(),
             "client_capabilities": capability, "routes": routes, "stages": stages,
             "summary": list(dict.fromkeys(summaries)), "includes_message_content": False,
             "scope_note": "현재 실행과 이전 기록을 구분합니다. 관측 자료·웹 목록은 서버 전체 확보율이 아닙니다."}

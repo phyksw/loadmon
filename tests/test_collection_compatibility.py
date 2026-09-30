@@ -45,7 +45,7 @@ class CompatibilityTests(unittest.TestCase):
         self.assertEqual(D.outlook_capability(FakeRegistry(denied=True)),
                          {"oom_registered": None, "classic_profile": None})
 
-    def test_missing_com_or_profile_does_not_launch_outlook_and_unknown_still_attempts(self):
+    def test_registry_hints_cannot_suppress_actual_outlook_collection(self):
         tree = ast.parse((APP / "run.py").read_text("utf-8-sig"))
         node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "collect_outlook")
         with tempfile.TemporaryDirectory(prefix="lm25-native-route-") as td:
@@ -54,19 +54,25 @@ class CompatibilityTests(unittest.TestCase):
                   "print": lambda *a, **k: None, "step": lambda *a: calls.append(a) or False,
                   "_outlook_budget": lambda *a: 30, "_mtime": lambda *a: None, "_read_json": lambda *a: {}}
             exec(compile(ast.Module(body=[node], type_ignores=[]), "synthetic-run", "exec"), ns)
-            for caps, expect_call in (
-                ({"oom_registered": False}, False),
+            for caps in (
+                {"oom_registered": False},
                 ({"oom_registered": True, "classic_profile": False, "client_probe": "observed_running_processes_only",
-                  "running_clients": [{"name": "olk", "version": "1.2"}]}, False),
-                ({"oom_registered": None, "classic_profile": None}, True),
-                ({"oom_registered": True, "classic_profile": True}, True),
+                  "running_clients": [{"name": "olk", "version": "1.2"}]}),
+                {"oom_registered": None, "classic_profile": None},
+                {"oom_registered": True, "classic_profile": True},
                 ({"oom_registered": True, "classic_profile": False, "client_probe": "observed_running_processes_only",
-                  "running_clients": [{"name": "outlook", "version": "16.0"}]}, True),
+                  "running_clients": [{"name": "outlook", "version": "16.0"}]}),
             ):
                 calls.clear()
                 with mock.patch.object(D, "client_snapshot", return_value=caps):
                     ns["collect_outlook"]({}, "2026-09-01", "2026-09-30", td, [], "synthetic")
-                self.assertEqual(bool(calls), expect_call, caps)
+                self.assertEqual(len(calls), 1, caps)
+                self.assertEqual(ns["RUN"]["client_capabilities"], caps)
+            calls.clear()
+            with mock.patch.object(D, "client_snapshot", side_effect=RuntimeError("synthetic probe failure")):
+                ns["collect_outlook"]({}, "2026-09-01", "2026-09-30", td, [], "synthetic")
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(ns["RUN"]["client_capabilities"]["client_probe"], "failed")
 
     def test_diagnostics_export_contains_no_content_logs_paths_or_accounts_and_marks_stale(self):
         with tempfile.TemporaryDirectory(prefix="lm25-compat-diag-") as td:
@@ -74,7 +80,7 @@ class CompatibilityTests(unittest.TestCase):
             write_status(td, "outlook_web", "2026-09-01", "2026-09-30", "blocked",
                          reasons=["login_required", "SECRET_BODY user@example.invalid"],
                          raw_body="SECRET_BODY", account="user@example.invalid", elapsed_sec=12.5,
-                         diagnostics={"mail": {"items": 7, "undated": 5, "raw_body": "SECRET_BODY"}})
+                         diagnostics={"mail": {"items": 7, "undated": 5, "visible_unverified": 1, "raw_body": "SECRET_BODY"}})
             write_status(td, "teams_web", "2026-08-01", "2026-08-31", "failed", reasons=["page_timeout"], rows=7)
             run = {"started_at": started, "client_capabilities": {"oom_registered": False,
                    "running_clients": [{"name": "olk", "version": "1.2026.1"}, {"name": "private", "version": "secret"}]},
@@ -90,6 +96,7 @@ class CompatibilityTests(unittest.TestCase):
             self.assertEqual(mail["counters"]["elapsed_sec"], 12.5)
             self.assertEqual(mail["counters"]["mail_items"], 7)
             self.assertEqual(mail["counters"]["mail_undated"], 5)
+            self.assertEqual(mail["counters"]["mail_visible_unverified"], 1)
             self.assertIn("로그인 필요", result["summary"][0])
             self.assertNotIn("화면 준비 실패", " ".join(result["summary"]))
             self.assertFalse(result["includes_message_content"])

@@ -191,20 +191,15 @@ def collect_outlook(c, d0, d1, data, ps, col):
     진행이 있는 한 같은 실행 안에서 최대 2회 더 이어서 읽는다(회차마다 완료된 달은 건너뛰므로 앞으로만 간다).
     그래도 남으면 last_run.json 에 미수집 달을 적고 화면(수집 데이터 현황·주간 활동 추이)이 그것을 보여 준다."""
     from collection_diagnostics import client_snapshot
-    from collection_state import write_status
-    capabilities = client_snapshot()
+    try:
+        capabilities = client_snapshot()
+    except Exception:  # Diagnostics must never prevent the actual collector from running.
+        capabilities = {"oom_registered": None, "classic_profile": None, "client_probe": "failed"}
+        print("   Outlook 기능 사전 확인 실패 — 실제 수집 경로에서 연결을 확인합니다", flush=True)
     RUN["client_capabilities"] = capabilities
-    unconfigured = (capabilities.get("classic_profile") is False and
-                    capabilities.get("client_probe") == "observed_running_processes_only" and
-                    not any(p.get("name") == "outlook" for p in capabilities.get("running_clients", [])))
-    if capabilities.get("oom_registered") is False or unconfigured:
-        reason = "com_unregistered" if capabilities.get("oom_registered") is False else "classic_profile_missing"
-        write_status(ROOT, "outlook_com", d0, d1, "skipped", reasons=[reason],
-                     mail_status="skipped", calendar_status="skipped", server_scope_verified=False)
-        note = "클래식 Outlook COM/프로필 없음 — 새 Outlook·Microsoft 365 웹/Graph 보충으로 진행"
-        print("   " + note, flush=True)
-        record("수집 경로 · outlook_com", True, 0, note)
-        return True
+    # Registry/process discovery is only a hint. The PowerShell collector checks
+    # its own process/profile and connects to the running Outlook first; Python's
+    # registry view must not remove that working path before it can be attempted.
     budget = _outlook_budget(c, d0, d1)
     src_p = os.path.join(data, "outlook", "mail_source.json")
     ok, prev_unc, src = False, None, {}
