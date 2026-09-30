@@ -1,4 +1,5 @@
 """Validate exactly the staged snapshot, including partially staged files."""
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -14,6 +15,16 @@ def forbidden(path):
         len(parts) >= 3 and parts[0].startswith("loadmonitor") and parts[1] == "config"
         and parts[2] not in {"config.default.json", "agentic_tasks.json"}
     )
+
+
+def isolated_environment(root):
+    """Do not let a hook's index/worktree leak into synthetic Git repositories."""
+    local = subprocess.run(["git", "rev-parse", "--local-env-vars"], cwd=root,
+                           capture_output=True, text=True, check=True).stdout.splitlines()
+    environment = os.environ.copy()
+    for name in local:
+        environment.pop(name, None)
+    return environment
 
 
 def main(root=ROOT):
@@ -37,7 +48,8 @@ def main(root=ROOT):
         print("Staged snapshot has no scripts/quality.py; stage the project infrastructure first.", file=sys.stderr)
         return 1
     print(f"Checking staged snapshot: {snapshot}")
-    return subprocess.run([sys.executable, "-B", str(runner), "--full", "--root", str(snapshot)], cwd=snapshot, check=False).returncode
+    return subprocess.run([sys.executable, "-B", str(runner), "--full", "--root", str(snapshot)],
+                          cwd=snapshot, env=isolated_environment(root), check=False).returncode
 
 
 if __name__ == "__main__":

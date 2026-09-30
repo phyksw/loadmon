@@ -3,6 +3,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -154,6 +155,23 @@ class GitIndexTests(unittest.TestCase):
         self.git("add", "LoadMonitor25")
         with contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(GIT_GATE.main(self.root), 1)
+
+    def test_hook_environment_cannot_modify_parent_index_from_regression(self):
+        self.sample.write_text("valid = 1\n", encoding="utf-8")
+        checker = self.root / "scripts" / "quality.py"
+        checker.write_text(
+            "from pathlib import Path\nimport subprocess, tempfile\n"
+            "p = Path(tempfile.mkdtemp(prefix='lm25-nested-git-'))\n"
+            "subprocess.run(['git','init','--quiet'], cwd=p, check=True)\n"
+            "(p/'only-inner.txt').write_text('synthetic')\n"
+            "subprocess.run(['git','add','only-inner.txt'], cwd=p, check=True)\n",
+            encoding="utf-8")
+        self.git("add", "scripts", "sample.py")
+        before = self.git("ls-files", "--stage").stdout
+        with mock.patch.dict(os.environ, {"GIT_DIR": str(self.root / ".git"),
+                                          "GIT_INDEX_FILE": str(self.root / ".git" / "index")}):
+            self.assertEqual(self.run_gate(), 0)
+        self.assertEqual(self.git("ls-files", "--stage").stdout, before)
 
 
 if __name__ == "__main__":
