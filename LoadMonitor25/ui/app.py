@@ -32,7 +32,7 @@ from tools.transfer import create_transfer  # noqa: E402
 REPORT = os.path.join(ROOT, "report")
 DATA = os.path.join(ROOT, "data")
 NO_WIN = 0x08000000
-VERSION = "v25.7"
+VERSION = "v25.8"
 LOCK = threading.Lock()
 REQUEST_LOCK = threading.Lock()      # Serialize synchronous mutations with transfer startup.
 FREEZE_LOCK = threading.Lock()       # [보고서 만들기] 직렬화 — JOB 과 별개(사본에 '실행 중'이 굳지 않게)
@@ -1818,11 +1818,11 @@ def run_job(d0, d1, ai, skip, collect_only=False, reuse_complete=False, force=Fa
             d1 = today
         cmd = [sys.executable, os.path.join(ROOT, "run.py"), "--from", d0, "--to", d1]
         if collect_only:
-            cmd.append("--collect-only")          # 추가 PC 에서: 수집만 하고 분석은 본 PC 에서
+            # Both UI collection buttons are interactive; raw CLI collection keeps its headless default.
+            cmd.extend(["--collect-only", "--interactive-collect", "--no-mail-copilot", "--no-teams-copilot"])
+            cmd.append("--mail-web-body" if mail_body else "--no-mail-web-body")
             if communications:
-                cmd.extend(["--communications-only", "--interactive-collect", "--no-mail-copilot", "--no-teams-copilot"])
-                if mail_body:
-                    cmd.append("--mail-web-body")
+                cmd.append("--communications-only")
         else:
             if ai:
                 cmd.append("--ai")
@@ -1832,8 +1832,21 @@ def run_job(d0, d1, ai, skip, collect_only=False, reuse_complete=False, force=Fa
                 cmd.append("--reuse-complete")
             if force:
                 cmd.append("--force")
-        log(f"실행: {d0} ~ {d1}" + (" · 메일·Teams 수집 (웹 포함)" if communications else " · 수집만(추가 PC)" if collect_only else
+        log(f"실행: {d0} ~ {d1}" + (" · 메일·Teams 수집 (웹 포함)" if communications else " · 추가 PC 수집 (메일·Teams 웹 포함)" if collect_only else
             (" · AI 정제" if ai else "") + (" · 재분석만" if skip else "")))
+        if collect_only:
+            log("웹 보충 허용 · Copilot/AI 호출 없음 · Outlook 웹 본문 " + ("포함(읽음 표시가 바뀔 수 있음)" if mail_body else "제외"))
+            tag = d0.replace("-", "") + "-" + d1.replace("-", "")
+            report_path = os.path.join(ROOT, "report", f"communication_evidence_{tag}.json")
+            previous_report = None
+            previous_report_known = True
+            try:
+                before = os.stat(report_path)
+                previous_report = (before.st_ino, before.st_mtime_ns, before.st_size)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                previous_report_known = False
         p = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                              env=dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1"), creationflags=NO_WIN)
         with LOCK:
@@ -1863,6 +1876,27 @@ def run_job(d0, d1, ai, skip, collect_only=False, reuse_complete=False, force=Fa
                    f"{label} 실패(코드 {p.returncode}) — 진행 로그를 확인하세요")
         if collect_only and not communications and p.returncode == 0:
             message += " — 다음 PC로 옮기려면 [PC 이동 준비]를 누르세요"
+        if collect_only:
+            try:
+                # write_report replaces atomically. Compare the file, not two clocks with different precision.
+                after = os.stat(report_path)
+                if not previous_report_known or (after.st_ino, after.st_mtime_ns, after.st_size) == previous_report:
+                    raise ValueError("previous run")
+                with open(report_path, encoding="utf-8-sig") as stream:
+                    evidence = json.load(stream)
+                if evidence.get("period") != [d0, d1]:
+                    raise ValueError("wrong period")
+                counts = []
+                for family, name in (("mail", "메일"), ("teams", "Teams")):
+                    item = evidence["families"][family]
+                    rows, bodies = item["unique_rows"], item["context_rows"]
+                    if type(rows) is not int or type(bodies) is not int or not 0 <= bodies <= rows:
+                        raise ValueError("invalid counts")
+                    counts.append(f"{name} {rows:,}건 / 본문 발췌 {bodies:,}건")
+                message += "\n기간 내 보관 자료(이전 PC 포함): " + " · ".join(counts)
+                message += "\n서버 전체 확보율은 미확인입니다. [메일·Teams 근거 확보]에서 경로별 실패·생략 사유를 확인하세요."
+            except (OSError, ValueError, TypeError, KeyError, AttributeError):
+                message += "\n이번 실행의 메일·Teams 건수 확인 안 됨 — 진행 로그와 경로별 수집 상태를 확인하세요."
         result = {"ok": p.returncode == 0, "message": message, "code": p.returncode}
     except Exception as e:
         log(f"오류: {e}")
@@ -1944,7 +1978,7 @@ def validate_run_request(body):
     if days[0] > days[1]:
         raise ValueError("시작일이 종료일보다 늦습니다")
     flags = ("ai", "skip", "collect_only", "reuse_complete", "force")
-    if any(name in body and not isinstance(body[name], bool) for name in flags):
+    if any(name in body and not isinstance(body[name], bool) for name in (*flags, "mail_body")):
         raise ValueError("실행 옵션은 true 또는 false여야 합니다")
     return (body["from"], body["to"], *(body.get(name, False) for name in flags))
 
@@ -2748,6 +2782,7 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
  <button class="ghost" id="reset" style="color:#c0122f;border-color:#f0cdd5">데이터 리셋</button>
  <button class="ghost" id="quit">서버 종료</button>
 </div>
+<div class="note" style="margin-top:10px"><label><input type="checkbox" id="collect2body" checked> 추가 PC 수집: Outlook 웹 본문 포함 · 메일을 열면서 읽음 표시가 바뀔 수 있음</label><br>추가 PC 수집은 PC·파일 기록과 메일·Teams 웹 보충을 함께 실행합니다. 웹 창의 회사 계정 로그인이 필요할 수 있으며, Copilot·AI는 호출하지 않습니다.</div>
 <div class="note" style="margin-top:10px">여러 PC를 거칠 때: 각 로컬 PC에서 <b>추가 PC 수집 → PC 이동 준비</b>, 마지막 PC에서 <b>모은 자료 분석</b>을 한 번 실행하세요. 완료된 과거 기간의 입력·결과가 같으면 검증된 결과를 재사용하고, 오늘을 포함하거나 변경된 자료는 다시 분석합니다. 보고서만 다시 만들 때는 <b>보고서 만들기</b>를 사용하세요.</div>
 <div class="note" id="move_result" style="white-space:pre-wrap;overflow-wrap:anywhere" aria-live="polite"></div>
 <div class="note" id="run_feedback" style="white-space:pre-wrap;overflow-wrap:anywhere" role="status" aria-live="polite"></div>
@@ -2972,7 +3007,7 @@ function renderCommunicationCoverage(items){
   const status=states[s.status]||"미확인",same=s.matches_period!==false;
   const jobs=s.search?.counts,progress=jobs?`날짜 작업 ${Number(s.search.total_days)||0}일 중 관측 목록 탐색 ${Number(jobs.completed_partial)||0}일 · 차단 ${Number(jobs.blocked)||0}일 · 미완료/대기 ${(Number(jobs.attempted)||0)+(Number(jobs.pending)||0)}일 (전체 확보 아님)`:"";
   return `<tr><td>${esc(names[s.source]||s.source)}</td><td style="color:${s.status==="complete"&&same?"#16704a":"#a86400"}">${esc(status)}${same?"":" · 다른 기간 기록"}</td><td>${esc(s.requested_from||"")} ~ ${esc(s.requested_to||"")}</td><td>${esc(s.scope||"범위 미확인")}${progress?"<br>"+esc(progress):""}<br><span class="note">${esc((Array.isArray(s.reasons)?s.reasons:[]).join(" · "))}</span></td></tr>`;
- }).join("")+"</table><p class='note'>‘명시 범위 완료’도 조직 전체 메일·Teams 전체를 뜻하지 않습니다. 웹 본문 읽기는 기본 꺼짐이며, 색인·Copilot 결과는 메타데이터 단서입니다. 첨부파일 내용은 수집하지 않습니다.</p>";
+ }).join("")+"</table><p class='note'>‘명시 범위 완료’도 조직 전체 메일·Teams 전체를 뜻하지 않습니다. 웹 본문은 실행 버튼의 체크 상태를 따릅니다(추가 PC 수집은 기본 포함). 색인·Copilot 결과는 메타데이터 단서이며 첨부파일 내용은 수집하지 않습니다.</p>";
 }
 function renderCommunicationEvidence(report){
  const host=$("communicationevidence");if(!host)return;
@@ -3712,7 +3747,7 @@ async function tuBuild(latest){
 $("tubuild").onclick=()=>tuBuild(false);
 $("tuopen").onclick=()=>fetch("/api/teamopen",{method:"POST"});
 $("collect2").onclick=async()=>{
- const b={from:$("from").value,to:$("to").value,collect_only:true};
+ const b={from:$("from").value,to:$("to").value,collect_only:true,mail_body:$("collect2body").checked};
  return requestRun(b,"추가 PC 수집");
 };
 $("report").onclick=async()=>{
@@ -4904,7 +4939,8 @@ class H(BaseHTTPRequestHandler):
                            step="추가 PC 수집 준비" if args[4] else "분석 준비", started=time.time(),
                            phase="", done=0, total=0)
             try:
-                threading.Thread(target=run_job, args=args, daemon=True).start()
+                threading.Thread(target=run_job, args=args,
+                                 kwargs={"mail_body": b.get("mail_body", True) if args[4] else False}, daemon=True).start()
             except (RuntimeError, OSError) as error:
                 with LOCK:
                     JOB.update(running=False, step="")

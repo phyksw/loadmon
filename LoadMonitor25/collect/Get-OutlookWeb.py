@@ -969,12 +969,14 @@ def main():
     d0, d1 = date.fromisoformat(d0s), date.fromisoformat(d1s)
     only, force = arg("--only"), "--force" in sys.argv
     try:
-        cfg = json.load(open(os.path.join(ROOT, "config", "config.json"), encoding="utf-8-sig"))
+        with open(os.path.join(ROOT, "config", "config.json"), encoding="utf-8-sig") as stream:
+            cfg = json.load(stream)
     except (OSError, ValueError):
         cfg = {}
     store_subject = bool(cfg.get("storeMailSubject", True))
     collection = cfg.get("collection") or {}
     body = (bool(collection.get("mailWebBody", False)) or "--include-body" in sys.argv) and store_subject
+    body = body and "--exclude-body" not in sys.argv
     try:
         context_chars = min(20000, max(0, int(collection.get("contextChars", 4000))))
     except (TypeError, ValueError):

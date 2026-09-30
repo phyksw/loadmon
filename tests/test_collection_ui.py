@@ -90,7 +90,7 @@ assert(!JSON.parse(requests[0].options.body).ai);
         script = page.split("<script>", 1)[1].split("</script>", 1)[0]
         cls.prelude = "const source=" + json.dumps(script) + ";\nconst elements=" + json.dumps(Elements(page).elements) + ";\n" + r'''
 const assert=require('node:assert/strict'),vm=require('node:vm');
-const nodes=elements.map(e=>({...e,value:'',checked:false,disabled:false,style:{},dataset:{},
+const nodes=elements.map(e=>({...e,value:'',checked:('checked' in e),disabled:false,style:{},dataset:{},
  classList:{toggle(){}},addEventListener(){},querySelectorAll(){return []}}));
 const byId=Object.fromEntries(nodes.filter(n=>n.id).map(n=>[n.id,n]));
 let requests=[],polls=0,intervals=0,timeouts=[];
@@ -128,10 +128,18 @@ assert.equal(byId.dlog.open,true);
 assert(['go','analyzecollected','collect2','prepmove'].every(id=>byId[id].disabled));
 await byId.collect2.onclick();assert.equal(requests.length,1);
 assert.equal(requests[0].url,'/api/run');
-assert.deepEqual(JSON.parse(requests[0].options.body),{from:'2026-09-01',to:'2026-09-13',collect_only:true});
+assert.deepEqual(JSON.parse(requests[0].options.body),{from:'2026-09-01',to:'2026-09-13',collect_only:true,mail_body:true});
 finish(reply(200,{ok:true}));await click;
 assert.match(byId.run_feedback.textContent,/요청 접수/);assert.equal(polls,1);
 assert.equal(byId.collect2.disabled,true);
+''')
+
+    def test_additional_pc_web_body_can_be_explicitly_disabled(self):
+        self.run_js(r'''
+assert.equal(byId.collect2body.checked,true);
+byId.collect2body.checked=false;fetchWith(async()=>reply(200,{ok:true}));await byId.collect2.onclick();
+assert.equal(JSON.parse(requests[0].options.body).mail_body,false);
+assert.equal(byId.communicationbody.checked,false); // The separate button has its own disclosed option.
 ''')
 
     def test_api_errors_are_visible_and_reenable_controls(self):

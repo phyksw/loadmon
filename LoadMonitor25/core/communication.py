@@ -138,8 +138,11 @@ class CommunicationCollection:
                 command.remove("--force")
             elif len(pending) == 1:
                 command += [only_flag, next(iter(pending))]
-            if source == "outlook_web" and "--mail-web-body" in self.argv:
-                command.append("--include-body")
+            if source == "outlook_web":
+                if "--no-mail-web-body" in self.argv:
+                    command.append("--exclude-body")
+                elif "--mail-web-body" in self.argv:
+                    command.append("--include-body")
             consume(self.run(source, label, command, min(timeout, remaining)))
         return self.report("Outlook", not pending,
                            [f"미확인: {', '.join(sorted(pending))}"] if pending else [])

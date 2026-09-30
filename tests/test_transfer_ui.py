@@ -257,6 +257,60 @@ class ProcessWiringTests(unittest.TestCase):
                 self.assertEqual(env["JOB"]["run_result"]["ok"], code == 0)
                 self.assertIn(expected, env["JOB"]["run_result"]["message"])
 
+    def test_collection_result_uses_only_fresh_matching_period_counts(self):
+        for state in ("fresh", "stale", "replaced", "unreadable_before", "wrong_period", "invalid_counts", "missing"):
+            with self.subTest(state=state), tempfile.TemporaryDirectory(prefix="lm25-result-") as directory:
+                env = definitions({"run_job"})
+                report = Path(directory, "report", "communication_evidence_20260901-20260913.json")
+                report.parent.mkdir()
+                saved = {"period": ["2026-09-01", "2026-09-13"], "families": {
+                    "mail": {"unique_rows": 0, "context_rows": 0},
+                    "teams": {"unique_rows": 7, "context_rows": 2}}, "secret": "NOT_PUBLIC"}
+                if state in {"stale", "replaced"}:
+                    report.write_text(json.dumps(saved), encoding="utf-8")
+
+                def popen(*args, **kwargs):
+                    evidence = {"period": ["2026-09-01", "2026-09-13"], "families": {
+                        "mail": {"unique_rows": 0, "context_rows": 0},
+                        "teams": {"unique_rows": 7, "context_rows": 2}}, "secret": "NOT_PUBLIC"}
+                    if state == "wrong_period":
+                        evidence["period"][0] = "2026-08-01"
+                    if state == "invalid_counts":
+                        evidence["families"]["mail"]["unique_rows"] = "NOT_A_COUNT"
+                    if state not in {"missing", "stale"}:
+                        temporary = report.with_suffix(".tmp")
+                        temporary.write_text(json.dumps(evidence), encoding="utf-8")
+                        # Same counts and even the same timestamp are fresh when atomically replaced.
+                        if state == "replaced":
+                            timestamp = report.stat().st_mtime_ns
+                            os.utime(temporary, ns=(timestamp, timestamp))
+                        temporary.replace(report)
+                    return SimpleNamespace(stdout=io.BytesIO(), pid=123, returncode=2, wait=lambda: 2)
+
+                if state == "unreadable_before":
+                    first_stat = [True]
+                    def denied_stat(path):
+                        if first_stat:
+                            first_stat.pop()
+                            raise PermissionError("synthetic stat denied")
+                        return os.stat(path)
+                    env["os"] = SimpleNamespace(path=os.path, environ=os.environ, stat=denied_stat)
+                env.update(ROOT=directory, subprocess=SimpleNamespace(
+                    Popen=popen, PIPE=subprocess.PIPE, STDOUT=subprocess.STDOUT))
+                env["run_job"]("2026-09-01", "2026-09-13", False, False, True)
+                result = env["JOB"]["run_result"]
+                self.assertFalse(result["ok"])
+                self.assertIn("부분 완료", result["message"])
+                self.assertNotIn("NOT_PUBLIC", result["message"])
+                if state in {"fresh", "replaced"}:
+                    self.assertIn("메일 0건 / 본문 발췌 0건", result["message"])
+                    self.assertIn("Teams 7건 / 본문 발췌 2건", result["message"])
+                    self.assertIn("이전 PC 포함", result["message"])
+                    self.assertIn("확보율은 미확인", result["message"])
+                else:
+                    self.assertIn("건수 확인 안 됨", result["message"])
+                    self.assertNotIn("Teams 7건", result["message"])
+
     def test_transfer_reports_only_completed_existing_zip(self):
         with tempfile.TemporaryDirectory(prefix="lm25-transfer-ui-") as directory:
             root = Path(directory)
