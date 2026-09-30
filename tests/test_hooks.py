@@ -73,6 +73,19 @@ class HookTests(unittest.TestCase):
         self.assertNotIn("decision", second)
         self.assertIn("systemMessage", second)
 
+    def test_full_hook_budget_covers_suite_and_timeout_remains_failure(self):
+        key = HOOK.fingerprint(self.root)
+        with mock.patch.object(HOOK.subprocess, "run", side_effect=subprocess.TimeoutExpired("synthetic", 1)) as run:
+            passed, output, cached = HOOK.check(self.root, "full", key)
+        budget = run.call_args.kwargs["timeout"]
+        config = json.loads((ROOT / ".codex/hooks.json").read_text(encoding="utf-8"))
+        self.assertGreater(budget, HOOK.PROJECT_TEST_TIMEOUT_SECONDS)
+        self.assertGreater(config["hooks"]["Stop"][0]["hooks"][0]["timeout"], budget)
+        self.assertFalse(passed)
+        self.assertFalse(cached)
+        self.assertIn("Quality runner failed", output)
+        self.assertFalse(json.loads((self.root / ".codex/.state/full.json").read_text())["passed"])
+
     def test_edit_feedback_does_not_discard_original_tool_output(self):
         with mock.patch.object(HOOK, "check", return_value=(False, "lint failed", False)):
             result = HOOK.handle({"hook_event_name": "PostToolUse"}, self.root)

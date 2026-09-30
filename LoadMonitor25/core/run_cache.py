@@ -548,6 +548,9 @@ def observe_stage(root, script, receipt, args):
     receipt = Path(receipt).resolve()
     if script not in STAGES or not receipt.is_relative_to(root / "report" / CACHE_DIR / "receipts"):
         raise ValueError("허용되지 않은 단계 관찰 경로")
+    # A prior receipt must not survive a failed final write. If invalidation is
+    # blocked, fail before running the stage so its caller cannot claim success.
+    receipt.unlink(missing_ok=True)
     sys.path[:0] = [str(root), str(root / "core")]
     sys.argv = [str(root / script), *args]
     judge = importlib.import_module("judge")

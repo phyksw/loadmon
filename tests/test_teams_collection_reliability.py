@@ -98,7 +98,7 @@ class TeamsCollectionTests(unittest.TestCase):
                                   cdp=SimpleNamespace(eval=lambda js: "ok" if "const key" in js else "end"),
                                   eval_json=lambda js: {"items": [item]} if js == m.JS_CHATS else {"chat": "Old room", "n": 2})
         with patch.object(m, "Browser", return_value=browser), patch.object(m, "read_chat") as read, \
-                patch.object(m, "wait_pane", return_value=("Old room", 2)), \
+                patch.object(m, "wait_chat", return_value=False), \
                 patch.dict(os.environ, {"LM_NO_BROWSER": "", "LM_TEAMSWEB_FAKE": ""}), \
                 patch.object(sys, "argv", ["collector", "--from", "2026-06-01", "--to", "2026-06-30"]), \
                 contextlib.redirect_stdout(io.StringIO()):
@@ -107,6 +107,30 @@ class TeamsCollectionTests(unittest.TestCase):
         self.assertIn("chat_switch_unconfirmed", self.status("teams_web")["reasons"])
         self.assertFalse(m.pane_matches(item, "New room", {"chat": "New room", "conversation_id": "wrong-id"}))
         self.assertTrue(m.pane_matches(item, "New room", {"chat": "New room"}))
+
+    def test_web_waits_for_actual_room_and_accepts_full_group_title(self):
+        m = self.module("Get-TeamsWeb.py")
+        item = {"label": "Alice, Bob, unread 2", "texts": ["Alice, Bob", "Preview text"]}
+        responses = iter([RuntimeError("pane replacing"), {"chat": "Previous room", "n": 99}, {"chat": "Alice, Bob", "n": 1}])
+
+        def screen(_):
+            response = next(responses)
+            if isinstance(response, Exception):
+                raise response
+            return response
+
+        browser = SimpleNamespace(eval_json=screen)
+        with patch.object(m.time, "sleep"):
+            self.assertTrue(m.wait_chat(browser, item, m.chat_name(item), limit=1))
+        self.assertFalse(m.pane_matches(item, m.chat_name(item), {"chat": "Alice"}))
+        self.assertFalse(m.pane_matches(item, m.chat_name(item), {"chat": "Bob"}))
+        self.assertFalse(m.pane_matches(item, m.chat_name(item), {"chat": "Alice, Bob, Charlie"}))
+        self.assertFalse(m.pane_matches({"label": "Alice, Bob, unread 2"}, "Alice", {"chat": "Alice"}))
+        self.assertFalse(m.pane_matches(dict(item, conversation_id="group-a"), "Alice",
+                                        {"chat": "Alice, Bob", "conversation_id": "group-b"}))
+        named = {"name": "Alice, Bob", "texts": ["Alice", "Bob", "Preview"]}
+        self.assertFalse(m.pane_matches(named, "Alice, Bob", {"chat": "Alice"}))
+        self.assertTrue(m.pane_matches(named, "Alice, Bob", {"chat": "Alice, Bob"}))
 
     def test_virtual_list_second_page_with_reused_indices_and_context(self):
         body = "Detailed context " * 400
@@ -307,6 +331,92 @@ class TeamsCollectionTests(unittest.TestCase):
             self.assertEqual(len(rows), 2)
             self.assertEqual(rows[0]["summary"], rows[1]["summary"])
             self.assertEqual(len({r["context_excerpt"] for r in rows}), 2)
+
+    def app_replay(self, text, *period):
+        raw = self.root / "synthetic_date_dividers.txt"
+        raw.write_text(text, encoding="utf-8")
+        observed = datetime(2026, 9, 30, 12).timestamp()
+        os.utime(raw, (observed, observed))
+        result = subprocess.run([shutil.which("powershell"), "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+                                 str(self.root / "collect/Get-TeamsWindow.ps1"), "-RawFile", str(raw), *period],
+                                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, check=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        target = self.root / "data/m365/replay/teams_window.csv"
+        with target.open(encoding="utf-8-sig", newline="") as stream:
+            return list(csv.DictReader(stream))
+
+    def test_app_historical_date_divider_prevents_all_rows_being_filtered_as_today(self):
+        rows = self.app_replay("Synthetic chat\n2026-06-03\nPerson, 9:00 AM Historical work\n",
+                               "-From", "2026-06-01", "-To", "2026-06-30")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["time"], "2026-06-03 09:00")
+        self.assertEqual(rows[0]["time_precision"], "minute")
+
+    def test_app_sampler_without_period_keeps_older_visible_messages(self):
+        rows = self.app_replay("Synthetic chat\nPerson, 2025-06-03 9:00 AM Older visible work\n")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["time"], "2025-06-03 09:00")
+
+    def test_app_mixed_inline_dates_advance_day_and_new_chat_resets_it(self):
+        rows = self.app_replay("Synthetic chat\n2026-06-03\nPerson, 9:00 AM First day work\n"
+                               "Person, 2026-06-04 9:00 AM Second day work\nPerson, 10:00 AM Later second day work\n"
+                               "Another chat\nPerson, 11:00 AM Date unknown in other room\n",
+                               "-From", "2026-06-01", "-To", "2026-06-30")
+        self.assertEqual([row["time"] for row in rows], ["2026-06-03 09:00", "2026-06-04 09:00", "2026-06-04 10:00"])
+
+    def test_app_repeated_date_in_second_room_is_preserved_in_parse_and_raw(self):
+        source = ("Alpha chat\n2026-06-03\nPerson, 9:00 AM Alpha work\n"
+                  "Beta chat\n2026-06-03\nPerson, 10:00 AM Beta work\n")
+        rows = self.app_replay(source, "-From", "2026-06-01", "-To", "2026-06-30")
+        self.assertEqual([(r["chat"], r["time"]) for r in rows],
+                         [("Alpha", "2026-06-03 09:00"), ("Beta", "2026-06-03 10:00")])
+        raw = (self.root / "data/m365/replay/teams_window_raw.txt").read_text("utf-8-sig")
+        self.assertEqual(raw.splitlines(), source.splitlines())
+
+    def test_app_return_to_prior_room_and_date_does_not_inherit_other_room(self):
+        rows = self.app_replay("Alpha chat\n2026-06-03\nPerson, 9:00 AM Alpha first\n"
+                               "Beta chat\n2026-06-04\nPerson, 10:00 AM Beta work\n"
+                               "Alpha chat\n2026-06-03\nPerson, 11:00 AM Alpha second\n"
+                               "Person, 11:00 AM Alpha second\n",
+                               "-From", "2026-06-01", "-To", "2026-06-30")
+        self.assertEqual(len(rows), 3)  # Repeated message text is deduplicated only after attribution.
+        last = next(r for r in rows if r["summary"] == "Alpha second")
+        self.assertEqual((last["chat"], last["time"]), ("Alpha", "2026-06-03 11:00"))
+
+    def test_app_raw_window_boundary_resets_chat_and_date_without_visible_title(self):
+        boundary = "[LM25_TEAMS_WINDOW_BOUNDARY]\n"
+        source = (boundary + "Alpha chat\n2026-06-03\nPerson, 9:00 AM Known first window\n"
+                  + boundary + "Person, 10:00 AM Unknown second window\n")
+        rows = self.app_replay(source)
+        second = next(r for r in rows if r["summary"] == "Unknown second window")
+        self.assertEqual(second["chat"], "")
+        self.assertEqual(second["time_precision"], "estimated")
+        self.assertEqual(second["time"], "2026-09-30 10:00")
+        raw = (self.root / "data/m365/replay/teams_window_raw.txt").read_text("utf-8-sig")
+        self.assertEqual(raw.splitlines(), source.splitlines())
+
+    def test_app_short_korean_date_dividers_are_preserved_without_short_buttons(self):
+        rows = self.app_replay("Synthetic chat\n오늘\nPerson, 9:00 AM Today work\n"
+                               "어제\nPerson, 10:00 AM Yesterday work\nOK\n닫기\n",
+                               "-From", "2026-09-29", "-To", "2026-09-30")
+        by_text = {row["summary"]: row for row in rows}
+        self.assertEqual(by_text["Today work"]["time"], "2026-09-30 09:00")
+        self.assertEqual(by_text["Yesterday work"]["time"], "2026-09-29 10:00")
+        self.assertTrue(all(row["time_precision"] == "minute" for row in rows))
+        raw = (self.root / "data/m365/replay/teams_window_raw.txt").read_text("utf-8-sig")
+        self.assertIn("오늘", raw.splitlines())
+        self.assertIn("어제", raw.splitlines())
+        self.assertNotIn("OK", raw.splitlines())
+        self.assertNotIn("닫기", raw.splitlines())
+
+    def test_app_unknown_date_is_not_invented_from_body_or_request_period(self):
+        rows = self.app_replay("Synthetic chat\nPerson, 9:00 AM Discuss 2026-06-03 deadline\n",
+                               "-From", "2026-06-01", "-To", "2026-06-30")
+        self.assertEqual(rows, [])
+        status = json.loads((self.root / "data/m365/replay/collection_status/teams_app.json").read_text("utf-8-sig"))
+        self.assertEqual(status["date_unconfirmed"], 1)
+        self.assertEqual(status["period_excluded"], 1)
+        self.assertIn("outside_requested_period", status["reasons"])
 
 
 if __name__ == "__main__":

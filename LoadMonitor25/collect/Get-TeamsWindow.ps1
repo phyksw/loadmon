@@ -27,6 +27,7 @@ $cfgObj = $null
 try { $cfgObj = Get-Content -Raw -Encoding UTF8 (Join-Path $root 'config\config.json') | ConvertFrom-Json } catch {}
 $contextChars = 4000
 try { if ($cfgObj.collection.contextChars) { $contextChars = [Math]::Max(200, [Math]::Min(20000, [int]$cfgObj.collection.contextChars)) } } catch {}
+$filterPeriod = [bool]($From -or $To)
 if (-not $From) { $From = (Get-Date).Date.AddDays(-90).ToString('yyyy-MM-dd') }
 if (-not $To) { $To = (Get-Date).ToString('yyyy-MM-dd') }
 $periodStart = [datetime]::ParseExact($From, 'yyyy-MM-dd', $null)
@@ -40,7 +41,9 @@ function Write-CollectionStatus([string]$state, [int]$rows, [string[]]$reasons) 
     $item = [ordered]@{ schema = 1; source = 'teams_app'; requested_from = $From; requested_to = $To;
         status = $state; rows = $rows; scope = '열린 Teams 앱의 현재 UIA 화면; 전체 채팅·기간 완주를 보장하지 않음';
         reasons = @('visible_app_snapshot') + @($reasons); completed_units = 0; total_units = $null;
-        finished_at = ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() / 1000.0) }
+        finished_at = ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() / 1000.0);
+        parsed_messages = [int]$script:parsedMessages; period_excluded = [int]$script:periodExcluded;
+        date_unconfirmed = [int]$script:dateUnconfirmed }
     [System.IO.File]::WriteAllText($tmp, ($item | ConvertTo-Json -Depth 5), [System.Text.Encoding]::UTF8)
     if (Test-Path -LiteralPath $path) { [IO.File]::Replace($tmp, $path, [NullString]::Value) }
     else { [IO.File]::Move($tmp, $path) }
@@ -135,9 +138,17 @@ function Get-ListColumn([object[]]$rects, [double]$winLeft, [double]$winWidth) {
     if ($null -eq $best) { return $null }
     return @{ left = $bl; right = $br; n = $best.Count }
 }
+function Test-ReadableText([string]$text) {
+    if (-not $text) { return $false }
+    if ($text.Length -ge 4) { return $true }
+    # Keep exact short date dividers supported by Find-HeaderDate, not arbitrary buttons.
+    return $text.Trim() -match '^(오늘|어제|今日|昨日|今天|昨天|[일월화수목금토]요일|[日月火水木金土]曜(?:日)?|周[日一二三四五六]|星期[日一二三四五六]|Sun|Mon|Tue|Wed|Thu|Fri|Sat|\d{1,2}[/.]\d{1,2}\.?)$'
+}
+
 function Read-TeamsTexts([IntPtr]$hwnd, [int]$maxElements, [bool]$keepList) {
     $res = @{ name = ''; count = 0; texts = (New-Object System.Collections.Generic.List[string]); skipped = 0; column = $null;
-              skippedTexts = (New-Object System.Collections.Generic.List[string]) }
+              skippedTexts = (New-Object System.Collections.Generic.List[string]);
+              rawTexts = (New-Object System.Collections.Generic.List[string]) }
     $el = [System.Windows.Automation.AutomationElement]::FromHandle($hwnd)
     $res.name = [string]$el.Current.Name
     $cond = [System.Windows.Automation.Automation]::ContentViewCondition
@@ -178,8 +189,9 @@ function Read-TeamsTexts([IntPtr]$hwnd, [int]$maxElements, [bool]$keepList) {
         try {
             $info = if ($cached) { $e.Cached } else { $e.Current }
             $nm = [string]$info.Name
-            if (-not ($nm -and $nm.Length -ge 4)) { continue }
+            if (-not (Test-ReadableText $nm)) { continue }
             if ($nm.Length -gt 100000) { $nm = $nm.Substring(0, 100000) }
+            $res.rawTexts.Add($nm)
             if ($col) {
                 $r = $info.BoundingRectangle
                 if (-not $r.IsEmpty -and $r.Width -lt 0.45 * $wr.Width) {
@@ -193,14 +205,16 @@ function Read-TeamsTexts([IntPtr]$hwnd, [int]$maxElements, [bool]$keepList) {
     return $res
 }
 
+$windowBoundary = '[LM25_TEAMS_WINDOW_BOUNDARY]'
 $texts = New-Object System.Collections.Generic.List[string]
+$rawAll = New-Object System.Collections.Generic.List[string]
 $skippedTexts = New-Object System.Collections.Generic.List[string]   # 채팅목록으로 보고 뺀 줄 - 안전 밸브가 되돌릴 때 쓴다
 $nListSkipped = 0
 if ($RawFile) {
     # 원문 재생 모드 - 다른 PC 의 teams_window_raw.txt 를 받아 파서만 돌린다(원격 진단·회귀용)
     if (-not (Test-Path -LiteralPath $RawFile)) { Write-CollectionStatus 'failed' 0 @('replay_missing'); exit 1 }
     foreach ($ln in [System.IO.File]::ReadAllLines($RawFile, [System.Text.Encoding]::UTF8)) {
-        if ($ln -and $ln.Length -ge 4) { $texts.Add($ln) }
+        if (Test-ReadableText $ln) { $texts.Add($ln); $rawAll.Add($ln) }
     }
     Write-Host ("[teams-window] 원문 재생: {0}줄" -f $texts.Count)
     $procs = @()
@@ -230,7 +244,13 @@ foreach ($p in $procs) {
             Write-Host ("               채팅 목록 열(항목 {0}개, x {1:0}~{2:0}) 안의 {3}줄은 미리보기로 보고 제외 - 메시지 영역만 파싱 (-KeepChatList 로 해제)" -f $rd.column.n, $rd.column.left, $rd.column.right, $rd.skipped)
             $nListSkipped += [int]$rd.skipped
         }
+        # Each native window starts a separate date/chat context, including when
+        # its title or date divider is not exposed by UIA. Keep this in raw replay.
+        if ($rd.texts.Count) { $texts.Add($windowBoundary) }
         foreach ($nm in $rd.texts) { $texts.Add($nm) }
+        if ($rd.rawTexts.Count) { $rawAll.Add($windowBoundary) }
+        foreach ($nm in $rd.rawTexts) { $rawAll.Add($nm) }
+        if ($rd.skippedTexts.Count) { $skippedTexts.Add($windowBoundary) }
         foreach ($nm in $rd.skippedTexts) { $skippedTexts.Add($nm) }
     } catch {
         Write-Host ("[teams-window] 창 읽기 실패: {0}" -f $_.Exception.Message)
@@ -243,18 +263,15 @@ if ($texts.Count -eq 0) {
     Write-CollectionStatus 'failed' 0 @('no_readable_text')
     exit 1
 }
-$uniq = @($texts | Select-Object -Unique)
-# raw 원문은 **제외하기 전 화면 그대로** 남긴다. 예전에는 제외한 뒤의 $uniq 를 적어서,
-# 다른 PC 에서 이 파일을 받아 -RawFile 로 재생해도 '채팅목록 제외' 사고가 원리상 재현되지 않았다
-# (실측: 같은 원문에 두 버전이 똑같이 6건을 내놓아 파서를 무죄로 오판했다). 원격 진단이 되려면
-# 화면에 실제로 있던 줄이 전부 남아야 한다. 제외된 줄은 무엇이 빠졌는지 볼 수 있게 따로 적는다.
-$rawAll = New-Object System.Collections.Generic.List[string]
-foreach ($x in $uniq) { $rawAll.Add($x) }
-foreach ($x in $skippedTexts) { if (-not $rawAll.Contains($x)) { $rawAll.Add($x) } }
+# Preserve order and repeated structural lines. Message deduplication occurs at
+# CSV persistence after the date and conversation have been established.
+$uniq = @($texts)
+# rawAll includes the pre-column-filter UIA order and explicit window boundaries.
+# Replaying it must preserve repeated room titles/date dividers exactly.
 [System.IO.File]::WriteAllLines((Join-Path $outDir 'teams_window_raw.txt'), $rawAll, [System.Text.Encoding]::UTF8)
 if ($skippedTexts.Count -gt 0) {
     [System.IO.File]::WriteAllLines((Join-Path $outDir 'teams_window_skipped.txt'),
-        @($skippedTexts | Select-Object -Unique), [System.Text.Encoding]::UTF8)
+        @($skippedTexts), [System.Text.Encoding]::UTF8)
 }
 
 # ── 메시지 파싱 (best-effort): 이름 + 시각 패턴이 있는 줄을 메시지로 취급 ──
@@ -405,13 +422,22 @@ function Parse-Lines([string]$re) {
     # 한 번의 파싱 패스 - 지역 설정 정규식으로 0줄이면 일반 형식으로 다시 부른다.
     # 반환 rows: @{line; time; from; summary; est} 목록, n: 시각 패턴 줄 수
     $out = New-Object System.Collections.Generic.List[object]
-    $n = 0; $chat = ''
+    $n = 0; $chat = ''; $separatorDate = $null
+    $script:parsedMessages = 0; $script:periodExcluded = 0; $script:dateUnconfirmed = 0
     foreach ($ln in $uniq) {
+    if ($ln -eq $windowBoundary) { $chat = ''; $separatorDate = $null; continue }
     $tm = [regex]::Match($ln, $re, $rxOpt)   # 대소문자 무시(pm/PM) - 첫 시각 패턴이 헤더
     # 대화방 제목 후보 (창 상단): "홍길동 채팅" / "프로젝트A 팀" / "Project A chat" / "홍길동 | Microsoft Teams" - 시각이 있는 줄은 메시지다
     if (-not $tm.Success) {
-        if ($ln -match '^(.{2,40})\s(채팅|대화|팀|채널|chat|Chat|team|Team|channel|Channel)$') { $chat = $Matches[1] }
-        elseif ($ln -match '^(.{2,40}?)\s*[|·-]\s*Microsoft Teams$') { $chat = $Matches[1] }
+        if ($ln -match '^(.{2,40})\s(채팅|대화|팀|채널|chat|Chat|team|Team|channel|Channel)$') { $chat = $Matches[1]; $separatorDate = $null }
+        elseif ($ln -match '^(.{2,40}?)\s*[|·-]\s*Microsoft Teams$') { $chat = $Matches[1]; $separatorDate = $null }
+        # Teams can expose the date divider as a separate UIA element.
+        # Accept a date-only line, optionally followed by a weekday; never a body sentence.
+        $divider = Find-HeaderDate $ln $today
+        if (-not $divider.est -and $divider.idx -ge 0) {
+            $remaining = ($ln.Substring(0, $divider.idx) + ' ' + $ln.Substring($divider.idx + $divider.len)).Trim(' ', ',', '.', '-', '(', ')')
+            if (-not $remaining -or $dow.ContainsKey($remaining.ToLower())) { $separatorDate = $divider.date }
+        }
         continue
     }
     $n++
@@ -427,8 +453,12 @@ function Parse-Lines([string]$re) {
     $pre = $ln.Substring(0, $tm.Index)
     $post = $ln.Substring($tm.Index + $tm.Length)
     $fd = Find-HeaderDate $pre $today
+    if (-not $fd.est) { $separatorDate = $fd.date }
+    if ($fd.est -and $null -ne $separatorDate) { $fd.date = $separatorDate; $fd.est = $false }
+    if ($fd.est) { $script:dateUnconfirmed++ }
     $d = $fd.date
-    if ($d -lt $periodStart -or $d -ge $periodEnd) { continue }
+    $script:parsedMessages++
+    if ($filterPeriod -and ($d -lt $periodStart -or $d -ge $periodEnd)) { $script:periodExcluded++; continue }
     $preClean = $pre
     if ($fd.idx -ge 0) {
         $preClean = $pre.Substring(0, $fd.idx) + ' ' + $pre.Substring($fd.idx + $fd.len)
@@ -461,8 +491,7 @@ $usedGeneric = $false
 # (메시지 열을 목록으로 오인한 경우). 뺀 줄을 되돌려 다시 읽는다. 0건으로 끝나는 것보다 낫다.
 $colUndone = $false
 if ($nTime -eq 0 -and $skippedTexts.Count -gt 0) {
-    foreach ($nm in $skippedTexts) { if (-not $uniq.Contains($nm)) { $texts.Add($nm) } }
-    $uniq = @($texts | Select-Object -Unique)     # raw 파일은 이미 제외 전 전체라 다시 쓰지 않는다
+    $uniq = @($rawAll) # Restore the original order, including all window/date/room boundaries.
     $res = Parse-Lines $reTime
     $nTime = [int]$res.n
     $colUndone = $true
@@ -597,6 +626,8 @@ else { [IO.File]::Move($tmp, $dst) }
 $reason = @()
 if ($nEst -gt 0) { $reason += 'estimated_dates' }
 if ($nTime -eq 0) { $reason += 'no_parseable_messages' }
+if ($script:periodExcluded -gt 0) { $reason += 'outside_requested_period' }
+if ($script:dateUnconfirmed -gt 0) { $reason += 'date_unconfirmed' }
 Write-CollectionStatus 'partial' ([int]$res.rows.Count) $reason
 Write-Host ("[teams-window] 원문 {0}줄 (시각 패턴 {1}줄{7}) -> 신규 {2}건 (본인 발신 {3}건 · 날짜 추정 {4}건 · 추정 중복 제외 {5}건) / 누적 {6}건" -f $uniq.Count, $nTime, $added, $nSent, $nEst, $nEstDup, ($outLines.Count - 1), $(if ($colUndone) { ', 채팅목록 판정 되돌림' } elseif ($nListSkipped) { ', 채팅목록으로 ' + $nListSkipped + '줄 제외' } else { '' }))
 if ($usedGeneric) { Write-Host '               (일반 형식으로 잡았습니다 - 오전/오후 구분이 없으면 12시간 표기가 오전으로 기록될 수 있음)' }

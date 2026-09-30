@@ -101,7 +101,8 @@ def step(name, cmd, timeout=420):
     t0 = time.time()
     try:
         p = subprocess.run(cmd, capture_output=True, timeout=timeout, cwd=ROOT,
-                           env=dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1"), creationflags=NO_WIN)
+                           env=dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1",
+                                    LM_PYTHON_EXE=sys.executable), creationflags=NO_WIN)
         out = (p.stdout or b"").decode("utf-8", "replace") + (p.stderr or b"").decode("utf-8", "replace")
         # 마지막 6줄만 찍던 것을 12줄로 — 수집기가 '왜 0건인지' 적는 줄이 정확히 0건일 때
         # 잘려 나가 화면에는 엉뚱한 원인만 남았다(팀즈 0건 실측: '채팅 목록으로 N줄 제외'가 잘렸다).
@@ -161,7 +162,8 @@ def _run_rc(cmd, timeout):
     색인 폴백의 exit 3(저장했지만 일정 불완전)처럼 0 이 아닌 코드에도 뜻이 있을 때 쓴다."""
     try:
         p = subprocess.run(cmd, capture_output=True, timeout=timeout, cwd=ROOT,
-                           env=dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1"), creationflags=NO_WIN)
+                           env=dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1",
+                                    LM_PYTHON_EXE=sys.executable), creationflags=NO_WIN)
         out = (p.stdout or b"").decode("utf-8", "replace") + (p.stderr or b"").decode("utf-8", "replace")
         return p.returncode, out.strip().splitlines()[-6:]
     except subprocess.TimeoutExpired:

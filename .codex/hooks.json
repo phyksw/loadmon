@@ -18,7 +18,7 @@
       {
         "hooks": [
           {
-            "timeout": 180,
+            "timeout": 330,
             "command": "python -B -c \"import pathlib,runpy,subprocess,sys; r=pathlib.Path(subprocess.check_output(['git','rev-parse','--show-toplevel'],text=True,encoding='utf-8').strip()); sys.path.insert(0,str(r/'scripts')); runpy.run_path(str(r/'scripts'/'codex_hook.py'),run_name='__main__')\"",
             "type": "command",
             "statusMessage": "LM25 full validation"

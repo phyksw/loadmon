@@ -66,6 +66,17 @@ class ActivityTrendTests(unittest.TestCase):
     def signals(self, rows, tag=TAG):
         return self.write(f"signals_{tag}.csv", rows, ["time", "source", "text", "who"], report=True)
 
+    def test_empty_mail_hint_identifies_each_actual_route(self):
+        stages = [{"name": name, "ok": False, "note": "synthetic failure"} for name in (
+            "Outlook COM", "Outlook 보충 · Windows Search 색인", "Outlook 보충 · 웹",
+            "Outlook 보충 · Copilot 조회", "Outlook 수집 범위")]
+        (self.report / "last_run.json").write_text(json.dumps({"stages": stages}), encoding="utf-8")
+        sources = self.ns["sources"]()
+        mail = next(row for row in sources if row["name"] == "메일·일정")
+        for name in ("COM", "색인", "Outlook 웹", "Copilot", "수집 범위"):
+            self.assertIn(name + ": 실패", mail["hint"])
+        self.assertEqual(mail["hint"].count("COM: 실패"), 1)
+
     def trend(self, start="2026-01-01", end="2026-09-13", tag=TAG):
         info = {}
         return self.ns["trend"](start, end, tag, info), info

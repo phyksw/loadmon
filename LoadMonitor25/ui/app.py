@@ -32,7 +32,7 @@ from tools.transfer import create_transfer  # noqa: E402
 REPORT = os.path.join(ROOT, "report")
 DATA = os.path.join(ROOT, "data")
 NO_WIN = 0x08000000
-VERSION = "v25.4"
+VERSION = "v25.5"
 LOCK = threading.Lock()
 REQUEST_LOCK = threading.Lock()      # Serialize synchronous mutations with transfer startup.
 FREEZE_LOCK = threading.Lock()       # [보고서 만들기] 직렬화 — JOB 과 별개(사본에 '실행 중'이 굳지 않게)
@@ -1239,10 +1239,10 @@ def sources(period=None):
                     parts = []
                     for x in _st:
                         nm = str(x.get("name", ""))
-                        short = ("COM" if "대체" not in nm else
-                                 "색인" if "대체①" in nm else
-                                 "Outlook 웹" if "대체②" in nm else
-                                 "Copilot" if "대체③" in nm else nm)
+                        short = ("색인" if "색인" in nm or "대체①" in nm else
+                                 "Outlook 웹" if "웹" in nm or "대체②" in nm else
+                                 "Copilot" if "Copilot" in nm or "대체③" in nm else
+                                 "수집 범위" if "수집 범위" in nm else "COM")
                         note = (x.get("note") or "").strip()
                         parts.append(f"{short}: {'OK' if x.get('ok') else '실패'}" + (f" — {note[:90]}" if note and not x.get("ok") else ""))
                     hint = (hint + " · " if hint else "") + " / ".join(parts)

@@ -61,7 +61,7 @@ class CollectionContextTests(unittest.TestCase):
     def setUp(self):
         self.data = Path(tempfile.mkdtemp(prefix="case-", dir=self.temp.name))
         self.cfg = copy.deepcopy(self.defaults)
-        self.cfg.update(owner="Synthetic", teamsSelfNames=["Synthetic"], excludePathKeywords=[],
+        self.cfg.update(owner="Synthetic", teamsSelfNames=["Synthetic"],
                         collection={"aiContextChars": 800}, projects=[])
         (self.root / "config/config.json").write_text(json.dumps(self.cfg), encoding="utf-8")
 
@@ -87,7 +87,8 @@ class CollectionContextTests(unittest.TestCase):
                 "time_precision": "minute", **values}
 
     def signals(self, end=DAY):
-        return self.extract.load_signals(str(self.data), DAY, end, exclude=[], cfg=self.cfg)
+        return self.extract.load_signals(str(self.data), DAY, end,
+                                         exclude=self.cfg["excludePathKeywords"], cfg=self.cfg)
 
     def test_different_chat_day_and_source_id_never_collapse(self):
         rows = [self.teams(source_id="message-1", conversation_id="chat-1"),
@@ -233,6 +234,95 @@ class CollectionContextTests(unittest.TestCase):
         self.assertEqual(len(contexts["long"]["context_excerpt"]), 4000)
         self.assertEqual(contexts["long"]["context_truncated"], "true")
         self.assertEqual(contexts["private"]["context_excerpt"], "")
+
+    def test_default_privacy_filter_withholds_footer_without_dropping_safe_signals(self):
+        private_body = "Design review. PRIVATE_BODY_MARKER 개인정보 처리 안내"
+        self.assertIn("개인", self.cfg["excludePathKeywords"])
+        self.write("outlook/mail.csv", [self.mail(source_id="safe-mail", context_excerpt=private_body),
+                                        self.mail(source_id="private-mail", subject="개인 일정", context_excerpt="Safe body")])
+        self.write("m365/teams_web.csv", [self.teams(source_id="safe-chat", context_excerpt=private_body),
+                                           self.teams(source_id="private-chat", summary="개인 일정", context_excerpt="Safe body")])
+        signals, meta = self.signals()
+        self.assertEqual(len(signals), 2)
+        self.assertEqual(meta["excluded"]["개인정보필터"], 2)
+        self.assertEqual(dict(meta["context_filtered"]), {"메일": 1, "팀즈": 1})
+        self.assertTrue(all(c["context_excerpt"] == "" and c["context_filtered"] == "true"
+                            and c["context_truncated"] == "false" for c in meta["signal_contexts"]))
+        for context in meta["signal_contexts"]:
+            preview = self.extract.context_preview(context)
+            self.assertIn("문맥 제외(보호 필터)", preview)
+            self.assertNotIn("PRIVATE_BODY_MARKER", preview)
+        poisoned = {"context_excerpt": private_body, "context_filtered": "true"}
+        self.assertNotIn("PRIVATE_BODY_MARKER", self.extract.context_preview(poisoned))
+
+    def test_filtered_duplicate_never_overwrites_safe_context_or_bypasses_private_title(self):
+        private_body = "PRIVATE_BODY_MARKER 개인정보 처리 안내"
+        for safe_body in ("Verified design decision", ""):
+            for private_first in (True, False):
+                safe = self.teams(source_id="same-chat", context_excerpt=safe_body)
+                filtered = self.teams(source_id="same-chat", context_excerpt=private_body)
+                self.write("m365/teams_web.csv", [filtered if private_first else safe])
+                self.write("추가PC/PC-B/m365/teams_web.csv", [safe if private_first else filtered,
+                    self.teams(source_id="same-chat", summary="개인 일정", kind="order", context_excerpt="MUST_NOT_MERGE")])
+                signals, meta = self.signals()
+                self.assertEqual(len(signals), 1)
+                self.assertEqual(signals[0][1], "팀즈(발신)")
+                context = meta["signal_contexts"][0]
+                self.assertEqual(context["context_excerpt"], safe_body)
+                self.assertEqual(context["context_filtered"], "" if safe_body else "true")
+                self.assertEqual(meta["excluded"]["개인정보필터"], 1)
+                self.assertNotIn("PRIVATE_BODY_MARKER", self.extract.context_preview(context))
+                self.assertNotIn("MUST_NOT_MERGE", self.extract.context_preview(context))
+        self.write("outlook/mail.csv", [self.mail(source_id="same-mail", time_precision="date",
+                    time="2026-09-07", context_excerpt=private_body)])
+        self.write("추가PC/PC-B/outlook/mail.csv", [self.mail(source_id="same-mail", context_excerpt="Verified design decision")])
+        signals, meta = self.signals()
+        mail = next(c for c in meta["signal_contexts"] if c["source_id"] == "same-mail")
+        self.assertEqual(mail["context_excerpt"], "Verified design decision")
+        self.assertNotEqual(mail["context_filtered"], "true")
+        self.write("outlook/mail.csv", [self.mail(source_id="same-mail", time_precision="date",
+                    time="2026-09-07", subject="개인 일정", context_excerpt="MUST_NOT_MERGE")])
+        self.write("추가PC/PC-B/outlook/mail.csv", [self.mail(source_id="same-mail")])
+        _signals, meta = self.signals()
+        mail = next(c for c in meta["signal_contexts"] if c["source_id"] == "same-mail")
+        self.assertEqual(mail["context_excerpt"], "")
+
+    def test_production_mine_judge_refine_keep_safe_signal_and_do_not_send_filtered_body(self):
+        private_body = "Design evidence. PRIVATE_BODY_MARKER 개인정보 처리 안내"
+        self.write("outlook/mail.csv", [self.mail(source_id="mail", context_excerpt=private_body)])
+        self.write("m365/teams_web.csv", [self.teams(source_id="chat", context_excerpt=private_body)])
+        result = subprocess.run([sys.executable, "-B", str(self.root / "mine.py"), str(self.data),
+                                 "--from", DAY.isoformat(), "--to", DAY.isoformat()],
+                                cwd=self.root, capture_output=True, text=True, encoding="utf-8",
+                                env={**os.environ, "PYTHONUTF8": "1"}, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("안전한 제목·요약 신호는 유지", result.stdout)
+        meta = json.loads((self.root / "report" / f"mm_meta_{TAG}.json").read_text("utf-8"))
+        self.assertEqual(meta["signals"], 2)
+        self.assertEqual(meta["context_filtered"], {"메일": 1, "팀즈": 1})
+        prompts = []
+        def sender(prompt, _tag, name, **_kwargs):
+            prompts.append(prompt)
+            if name in ("taxonomy", "consolidate"):
+                return {"ok": True, "reply": json.dumps({"models": [{"name": "Demo", "match": ["demo"], "obs": "Synthetic"}]})}
+            ids = [int(x) for x in re.findall(r"^#(\d+) \|", prompt, re.M)]
+            return {"ok": True, "reply": json.dumps({"j": [[i, "y", "Demo", "협업", "Review"] for i in ids]})}
+        with mock.patch.object(self.judge, "copilot_send", sender), mock.patch.object(sys, "argv", [
+                "judge.py", "--from", DAY.isoformat(), "--to", DAY.isoformat(), "--no-narrate"]), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.judge.main(), 0)
+        self.assertTrue(prompts)
+        self.assertNotIn("PRIVATE_BODY_MARKER", "\n".join(prompts))
+        with (self.root / "report" / f"signals_{TAG}.csv").open(encoding="utf-8-sig") as stream:
+            rows = list(csv.DictReader(stream))
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(all(r["context_filtered"] == "true" and r["context_excerpt"] == "" for r in rows))
+        evidence, judged = self.refine.load_signal_evidence(str(self.root / "report"), TAG)
+        self.assertTrue(judged)
+        evidence_text = "\n".join(line for lines in evidence.values() for line in lines)
+        self.assertNotIn("PRIVATE_BODY_MARKER", evidence_text)
+        self.assertIn("문맥 제외(보호 필터)", evidence_text)
+        _cleaned, dropped, _hits = self.refine.sanitize_evidence(evidence_text, self.cfg["excludePathKeywords"])
+        self.assertEqual(dropped, 0)
 
     def test_new_evidence_ids_are_scoped_and_old_ids_remain_byte_identical(self):
         row = {"time": "2026-09-07 10:00", "source": "팀즈(발신)", "text": "identical", "who": "Synthetic"}

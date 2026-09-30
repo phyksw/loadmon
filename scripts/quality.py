@@ -27,6 +27,7 @@ EXCLUDED_DIRS = {
     "copilot_profile",
 }
 DEFAULT_CONFIGS = {"config.default.json", "agentic_tasks.json"}
+PROJECT_TEST_TIMEOUT_SECONDS = 240
 
 
 def check_product_scope(root: Path) -> list[str]:
@@ -281,7 +282,7 @@ def full_checks(gates: QualityGates, source: Path, powershell: str | None) -> No
             return
         gates.command("Project regression tests", [
             sys.executable, "-B", "-m", "unittest", "discover", "-s", str(tests), "-p", "test_*.py",
-        ], timeout=120)
+        ], timeout=PROJECT_TEST_TIMEOUT_SECONDS)  # Includes real PowerShell collector regressions.
     else:
         print("[SKIP] Project regression tests: tests/ is not present", flush=True)
 

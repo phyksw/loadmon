@@ -78,6 +78,29 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(len(self.calls), 3)
         self.assertEqual(result["status"], "partial")
 
+    def test_unsuccessful_exit_keeps_blocked_or_failed_reason(self):
+        for state in ("blocked", "failed", "skipped"):
+            with self.subTest(state=state):
+                runner = self.run_with({"Get-TeamsWeb.py": (
+                    "teams_web", state, {"reasons": ["login_required"]}, False)})
+                result = runner.run("teams_web", "web", ["Get-TeamsWeb.py"], 30)
+                self.assertEqual(result["status"], state)
+                self.assertFalse(result["process_ok"])
+                self.assertIn("login_required", result["reasons"])
+                self.assertEqual(load_status(self.root, "teams_web", *self.period)["status"], state)
+
+    def test_interrupted_com_preserves_failure_and_checkpoint_metadata(self):
+        write_status(self.root, "outlook_com", *self.period, "blocked", scope="default store",
+                     reasons=["com_unavailable"], mail_status="blocked", calendar_status="complete",
+                     completed_months=["2026-09"])
+        result = self.run_with().mail(time.time() - 1, process_ok=False)
+        initial = result["sources"][0]
+        self.assertEqual(initial["status"], "blocked")
+        self.assertEqual(initial["mail_status"], "blocked")
+        self.assertEqual(initial["calendar_status"], "partial")
+        self.assertEqual(initial["completed_months"], ["2026-09"])
+        self.assertEqual(len(self.calls), 3)
+
     def test_stale_or_other_period_manifest_is_not_current_evidence(self):
         write_status(self.root, "outlook_com", "2026-08-01", "2026-08-31", "complete", scope="default store",
                      mail_status="complete", calendar_status="complete")

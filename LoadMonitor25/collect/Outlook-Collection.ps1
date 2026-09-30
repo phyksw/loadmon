@@ -1,8 +1,33 @@
 ﻿# Shared persistence and bounded default-mailbox discovery. No Outlook connection at import.
 function Get-CollectionPython([string]$Root) {
-    $exe = Join-Path $Root 'python\python.exe'
-    if (Test-Path -LiteralPath $exe) { return $exe }
-    return (Get-Command python -ErrorAction Stop).Source
+    if ($script:outlookPythonExe -and (Test-Path -LiteralPath $script:outlookPythonExe -PathType Leaf)) {
+        return $script:outlookPythonExe
+    }
+    # run.py passes its verified interpreter. Standalone collectors also support
+    # the same embedded / PATH / py -3 launch modes as LoadMonitor25.bat.
+    $candidates = New-Object 'System.Collections.Generic.List[object]'
+    if ($env:LM_PYTHON_EXE) { $candidates.Add(@{ exe = $env:LM_PYTHON_EXE; prefix = @() }) }
+    $candidates.Add(@{ exe = (Join-Path $Root 'python\python.exe'); prefix = @() })
+    foreach ($name in @('python', 'py')) {
+        $command = Get-Command $name -CommandType Application -ErrorAction SilentlyContinue
+        if ($command) { $candidates.Add(@{ exe = $command.Source; prefix = $(if ($name -eq 'py') { @('-3') } else { @() }) }) }
+    }
+    foreach ($candidate in $candidates) {
+        $exe = [string]$candidate.exe
+        # Windows' Store shortcut is not an installed runtime and may open a UI.
+        if (-not (Test-Path -LiteralPath $exe -PathType Leaf) -or [IO.Path]::GetExtension($exe).ToLowerInvariant() -notin @('.exe', '.com', '.cmd', '.bat') -or
+            $exe -match '\\Microsoft\\WindowsApps\\python(?:3)?\.exe$') { continue }
+        try {
+            $prefix = @($candidate.prefix)
+            $result = @(& $exe @prefix -B -c 'import sys;sys.exit(1) if sys.version_info < (3,11) else None;print(sys.executable)' 2>$null)
+            if ($LASTEXITCODE -ne 0 -or $result.Count -ne 1) { continue }
+            $resolved = ([string]$result[0]).Trim()
+            if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) { continue }
+            $script:outlookPythonExe = $resolved
+            return $resolved
+        } catch { continue }
+    }
+    throw 'No usable Python 3.11+ runtime for Outlook CSV persistence (LM_PYTHON_EXE, embedded, python, py -3)'
 }
 
 function Merge-OutlookCsv([string]$Root, [string]$Path, [string[]]$Lines, [string]$Kind = 'mail') {
@@ -51,22 +76,37 @@ function Write-OutlookStatus([string]$Root, [string]$Source, [string]$From, [str
 
 function Get-OutlookMailFolders($Namespace, [bool]$AllFolders, $Problems, [int]$MaxFolders = 1000) {
     # Only DefaultStore, never Namespace.Stores / other accounts / public or shared mailboxes.
-    $sent = $Namespace.GetDefaultFolder(5)
-    $inbox = $Namespace.GetDefaultFolder(6)
-    if (-not $AllFolders) {
-        return @(@{ name = 'inbox'; folder = $inbox; key = [string]$inbox.EntryID; field = '[ReceivedTime]' },
-                 @{ name = 'sent'; folder = $sent; key = [string]$sent.EntryID; field = '[SentOn]' })
+    # Keep the directly accessible defaults even if DefaultStore/root enumeration
+    # fails. A broader discovery failure must not discard the old local fallback.
+    $result = New-Object 'System.Collections.Generic.List[object]'
+    $added = New-Object 'System.Collections.Generic.HashSet[string]'
+    $sentKey = ''
+    foreach ($spec in @(@{ id = 6; name = 'inbox'; field = '[ReceivedTime]' }, @{ id = 5; name = 'sent'; field = '[SentOn]' })) {
+        try {
+            $folder = $Namespace.GetDefaultFolder($spec.id)
+            $key = [string]$folder.EntryID
+            if (-not $folder -or -not $key) { throw 'default folder identity unavailable' }
+            if ($spec.name -eq 'sent') { $sentKey = $key }
+            if ($added.Add($key)) { $result.Add(@{ name = $spec.name; folder = $folder; key = $key; field = $spec.field }) }
+        } catch { $Problems.Add('default ' + $spec.name + ' folder inaccessible: ' + $_.Exception.GetType().Name) }
     }
+    if (-not $AllFolders) { return $result.ToArray() }
     $exclude = New-Object 'System.Collections.Generic.HashSet[string]'
     foreach ($id in @(3, 23, 16, 4)) { # Deleted, Junk, Drafts, Outbox: not delivered message evidence
         try { [void]$exclude.Add([string]$Namespace.GetDefaultFolder($id).EntryID) }
         catch { $Problems.Add('excluded default folder identity inaccessible') }
     }
-    $store = $Namespace.DefaultStore
     $queue = New-Object 'System.Collections.Generic.Queue[object]'
-    $queue.Enqueue(@{ folder = $store.GetRootFolder(); sent = $false; depth = 0 })
+    try {
+        $store = $Namespace.DefaultStore
+        $storeRoot = $store.GetRootFolder()
+        if (-not $storeRoot) { throw 'default store root unavailable' }
+        $queue.Enqueue(@{ folder = $storeRoot; sent = $false; depth = 0 })
+    } catch {
+        $Problems.Add('default mailbox root inaccessible; retained accessible Inbox/Sent: ' + $_.Exception.GetType().Name)
+        return $result.ToArray()
+    }
     $seen = New-Object 'System.Collections.Generic.HashSet[string]'
-    $result = New-Object 'System.Collections.Generic.List[object]'
     while ($queue.Count) {
         $node = $queue.Dequeue(); $folder = $node.folder
         try {
@@ -75,8 +115,8 @@ function Get-OutlookMailFolders($Namespace, [bool]$AllFolders, $Problems, [int]$
             if ($seen.Count -gt $MaxFolders -or $node.depth -gt 32) {
                 $Problems.Add('default mailbox folder traversal limit reached'); break
             }
-            $isSent = $node.sent -or ($key -eq [string]$sent.EntryID)
-            if ([int]$folder.DefaultItemType -eq 0 -and $node.depth -gt 0) {
+            $isSent = $node.sent -or ($sentKey -and $key -eq $sentKey)
+            if ([int]$folder.DefaultItemType -eq 0 -and $node.depth -gt 0 -and $added.Add($key)) {
                 $result.Add(@{ name = $(if ($isSent) { 'sent' } else { 'inbox' }); folder = $folder;
                               key = $key; field = $(if ($isSent) { '[SentOn]' } else { '[ReceivedTime]' }) })
             }

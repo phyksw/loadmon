@@ -205,6 +205,44 @@ class CacheTests(unittest.TestCase):
         self.assertFalse(self.session.save(self.stages, self.frozen)[0])
         self.assertFalse(self.session.lookup()[0])
 
+    def test_failed_receipt_write_cannot_reuse_previous_success(self):
+        path = self.session.receipts["agentic.py"]
+        self.assertTrue(CACHE._json(path)["safe"])
+        result = {"ok": True, "phase": "replied", "model": "live-model", "sentinel": True, "cut": False,
+                  "reply": json.dumps({"match": [123], "new": [], "misassigned": []})}
+        sender = mock.Mock(return_value=result)
+        judge = SimpleNamespace(copilot_send=sender)
+
+        def main():
+            self.assertFalse(path.exists(), "invalidate previous proof before any stage work")
+            self.assertIs(judge.copilot_send(AGENTIC_PROMPT, TAG, "agentic"), result)
+            return 0
+
+        stage = SimpleNamespace(main=main)
+        with mock.patch.object(CACHE.importlib, "import_module", side_effect=lambda name: judge if name == "judge" else stage), \
+                mock.patch.object(CACHE, "_atomic", side_effect=PermissionError("synthetic locked receipt")), \
+                mock.patch.object(sys, "path", list(sys.path)), mock.patch.object(sys, "argv", []):
+            self.assertEqual(CACHE.observe_stage(self.root, "agentic.py", path, []), 0)
+        sender.assert_called_once()
+        self.assertIs(judge.copilot_send, sender)
+        self.assertFalse(path.exists())
+        self.assertFalse(self.session.save(self.stages, self.frozen)[0])
+        self.assertFalse(self.session.lookup()[0])
+
+    def test_locked_previous_receipt_stops_before_stage_execution(self):
+        path = self.session.receipts["agentic.py"]
+        previous = path.read_bytes()
+        with mock.patch.object(Path, "unlink", side_effect=PermissionError("synthetic locked prior receipt")), \
+                mock.patch.object(CACHE.importlib, "import_module") as importer:
+            with self.assertRaisesRegex(PermissionError, "synthetic locked prior receipt"):
+                CACHE.observe_stage(self.root, "agentic.py", path, [])
+        importer.assert_not_called()
+        self.assertEqual(path.read_bytes(), previous)
+        failed_stages = [{**stage, "ok": False} if stage["name"] == "Agentic 매칭" else stage
+                         for stage in self.stages]
+        self.assertFalse(self.session.save(failed_stages, self.frozen)[0])
+        self.assertFalse(self.session.lookup()[0])
+
     def test_missing_partial_stub_and_failed_evidence_never_register(self):
         for filename, field, value in (
                 (f"ai_judgments_{TAG}.json", "partial_chunks", 1),

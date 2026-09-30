@@ -7,7 +7,7 @@ import subprocess
 import sys
 import tempfile
 
-from quality import project_files
+from quality import PROJECT_TEST_TIMEOUT_SECONDS, project_files
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -35,7 +35,8 @@ def check(root, mode, current_hash):
     try:
         result = subprocess.run(
             [sys.executable, "-B", str(root / "scripts" / "quality.py"), f"--{mode}", "--root", str(root)],
-            cwd=root, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=150,
+            cwd=root, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=PROJECT_TEST_TIMEOUT_SECONDS + 60 if mode == "full" else 150,
         )
         output = (result.stdout or "") + (result.stderr or "")
         passed = result.returncode == 0

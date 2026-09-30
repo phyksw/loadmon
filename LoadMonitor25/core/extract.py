@@ -960,7 +960,7 @@ def _file_times(data_dir, d0, d1, exclude=(), cfg=None, burst_n=None, self_names
 
 
 COLLECTION_CONTEXT_FIELDS = ("context_excerpt", "context_truncated", "source_id", "source_kind",
-                             "source_url", "conversation_id", "account", "folder", "time_precision")
+                             "source_url", "conversation_id", "account", "folder", "time_precision", "context_filtered")
 UNVERIFIED_TIME_PRECISIONS = {"estimated", "date", "ai_reported", "unknown"}
 CONTEXT_ONLY_TIME_SOURCES = {f"팀즈({kind}·시각미확인)" for kind in ("발신", "오더", "수신", "단체")}
 
@@ -979,7 +979,8 @@ def collection_context(row):
     out = {key: _one_line(str(row.get(key) or ""), None) for key in COLLECTION_CONTEXT_FIELDS}
     excerpt = out["context_excerpt"]
     out["context_truncated"] = "true" if (len(excerpt) > 4000 or _truthy(row.get("context_truncated"))) else "false"
-    out["context_excerpt"] = excerpt[:4000]
+    out["context_filtered"] = "true" if _truthy(row.get("context_filtered")) else ""
+    out["context_excerpt"] = "" if out["context_filtered"] else excerpt[:4000]
     for key in COLLECTION_CONTEXT_FIELDS[2:]:
         out[key] = out[key][:2048 if key == "source_url" else 512]
     return out
@@ -1007,7 +1008,7 @@ def context_preview(row, limit=800):
         middle = max(a, len(text) // 2 - b // 2)
         text = (text[:a] + " …[중간 생략]… " + text[middle:middle + b]
                 + " … " + text[-(n - a - b):]) if n else ""
-    status = "본문 미수집" if not context["context_excerpt"] else (
+    status = ("문맥 제외(보호 필터)" if context["context_filtered"] else "본문 미수집") if not context["context_excerpt"] else (
         "일부 발췌·생략 있음" if clipped or context["context_truncated"] == "true" else "수집 문맥")
     parts = [status + (": " + json.dumps(text, ensure_ascii=False) if text else "")]
     for key, label, cap in (("source_kind", "출처", 64), ("source_id", "원천ID", 120),
@@ -1067,7 +1068,7 @@ def load_signals(data_dir, d0, d1, exclude=(), cfg=None):
                              if (t := _dt(r.get("mtime"))) and d0 <= t.date() <= d1], warns=cfg_warns)
     sig = []
     meta = {"counted": Counter(), "excluded": Counter(), "weights": {}, "config_warnings": cfg_warns,
-            "view_only": 0, "author_excluded": 0, "signal_contexts": []}
+            "view_only": 0, "author_excluded": 0, "signal_contexts": [], "context_filtered": Counter()}
     _dedup = {}                            # 중복 키 → sig 색인(None = 걸러진 신호)
 
     def _pt(s):
@@ -1085,13 +1086,21 @@ def load_signals(data_dir, d0, d1, exclude=(), cfg=None):
             return
         lbl = label or src
         context = collection_context(context)
-        context_hit = _hit(context["context_excerpt"].lower())
-        if context_hit:
-            meta["excluded"]["개인정보필터"] += 1
-            meta["excluded"][f"개인정보필터({context_hit})"] += 1
-            return
         if not (d0 <= t.date() <= d1):
             return  # An out-of-period guessed timestamp must not reserve a source ID.
+        # The legacy subject/summary remains the signal's privacy boundary. An
+        # added body may contain a common privacy footer: withhold that body, not
+        # the otherwise safe signal. Test the subject before any duplicate merge.
+        text_hit = _hit(text.lower())
+        if text_hit:
+            meta["excluded"]["개인정보필터"] += 1
+            meta["excluded"][f"개인정보필터({text_hit})"] += 1
+            return
+        context_hit = _hit(context["context_excerpt"].lower())
+        if context_hit:
+            context["context_excerpt"] = ""
+            context["context_filtered"] = "true"
+            meta["context_filtered"][src] += 1
         # 추가 PC 취합·파일 이력에서 같은 신호가 두 번 온다. 호출측이 준 키(파일: 분·이름·확장자·폴더명 —
         # 힌트·원경로와 무관, 메일: 분·편지함·대화 — 라벨·발신자 표기와 무관) 또는 (시각, 출처, 원문, 발신자)가
         # 같으면 한 번만 계상하고, 나중 것의 가중치가 높으면 그쪽(라벨 포함)을 남긴다(A29).
@@ -1108,8 +1117,11 @@ def load_signals(data_dir, d0, d1, exclude=(), cfg=None):
                 if len(context["context_excerpt"]) > len(previous["context_excerpt"]):
                     previous["context_excerpt"] = context["context_excerpt"]
                     previous["context_truncated"] = context["context_truncated"]
+                    previous["context_filtered"] = ""
+                elif not previous["context_excerpt"] and context["context_filtered"]:
+                    previous["context_filtered"] = "true"
                 for field in COLLECTION_CONTEXT_FIELDS[2:]:
-                    if field == "time_precision" and weaker_time:
+                    if field == "context_filtered" or (field == "time_precision" and weaker_time):
                         continue
                     if not previous[field] and context[field]:
                         previous[field] = context[field]
@@ -1123,12 +1135,6 @@ def load_signals(data_dir, d0, d1, exclude=(), cfg=None):
             return
         _dedup[key] = None
         low = text.lower()
-        hit = _hit(low) or _hit(context["context_excerpt"].lower())
-        if hit:
-            # 어떤 키워드가 무엇을 지웠는지 남긴다 — 조용한 삭제는 추적이 불가능하다
-            meta["excluded"]["개인정보필터"] += 1
-            meta["excluded"][f"개인정보필터({hit})"] += 1
-            return
         if src != "파일":                    # 파일명에는 비업무 목록을 적용하지 않는다(A36) — 산출물이지 근태가 아니다
             nw = _nonwork_hit(low, nonwork)
             if nw:
@@ -1205,6 +1211,8 @@ def load_signals(data_dir, d0, d1, exclude=(), cfg=None):
     for r in mail_rows:
         if (r.get("time_precision") or "").strip().lower() != "date" or not r.get("source_id"):
             continue
+        if _hit(_one_line(str(r.get("subject") or ""), None).lower()):
+            continue  # A private-title date-only copy cannot enrich another signal.
         precise = exact_mail.get(mail_copy_key(r, _pt(r.get("time")) + _td(hours=mail_off)))
         if precise is not None:
             incoming, existing = collection_context(r), collection_context(precise)
@@ -1212,7 +1220,11 @@ def load_signals(data_dir, d0, d1, exclude=(), cfg=None):
                 if len(incoming["context_excerpt"]) > len(existing["context_excerpt"]):
                     precise["context_excerpt"] = incoming["context_excerpt"]
                     precise["context_truncated"] = incoming["context_truncated"]
-                for field in COLLECTION_CONTEXT_FIELDS[2:-1]:
+                    precise["context_filtered"] = ""
+                elif not existing["context_excerpt"] and incoming["context_filtered"]:
+                    precise["context_filtered"] = "true"
+                for field in (key for key in COLLECTION_CONTEXT_FIELDS[2:]
+                              if key not in {"time_precision", "context_filtered"}):
                     if not precise.get(field) and incoming[field]:
                         precise[field] = incoming[field]
     for r in mail_rows:

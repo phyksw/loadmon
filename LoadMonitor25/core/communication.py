@@ -49,18 +49,23 @@ class CommunicationCollection:
                 reasons=["collector_did_not_report_scope" if ok else "collector_failed_or_timed_out"],
                 process_ok=bool(ok))
         elif not ok:
-            # A process timeout after an earlier checkpoint cannot certify completion.
-            extras = {k: v for k, v in result.items() if k not in {
-                "schema", "source", "requested_from", "requested_to", "status", "rows",
-                "scope", "reasons", "finished_at"}}
-            for field in ("mail_status", "calendar_status"):
-                if extras.get(field) == "complete":
-                    extras[field] = "partial"
-            result = write_status(self.root, source, self.d0, self.d1, "partial",
-                                  result.get("rows", 0), result.get("scope", ""),
-                                  [*result.get("reasons", []), "process_did_not_finish"], **extras)
+            result = self.interrupted(result)
         self.states.append(result)
         return result
+
+    def interrupted(self, result):
+        """Reject completion after a bad exit while preserving the reported failure."""
+        extras = {k: v for k, v in result.items() if k not in {
+            "schema", "source", "requested_from", "requested_to", "status", "rows",
+            "scope", "reasons", "finished_at"}}
+        for field in ("mail_status", "calendar_status"):
+            if extras.get(field) == "complete":
+                extras[field] = "partial"
+        extras["process_ok"] = False
+        status = result["status"] if result["status"] in {"failed", "blocked", "skipped"} else "partial"
+        return write_status(self.root, result["source"], self.d0, self.d1, status,
+                            result.get("rows", 0), result.get("scope", ""),
+                            [*result.get("reasons", []), "process_did_not_finish"], **extras)
 
     def report(self, family, complete, reasons=()):
         summary = "범위 확인 완료" if complete else "부분 수집 · 전체 범위 확인 안 됨"
@@ -76,10 +81,7 @@ class CommunicationCollection:
         pending = {"mail", "cal"}
         initial = load_status(self.root, "outlook_com", self.d0, self.d1, since=since)
         if initial and not process_ok:
-            initial = write_status(self.root, "outlook_com", self.d0, self.d1, "partial",
-                                   initial.get("rows", 0), initial.get("scope", ""),
-                                   [*initial.get("reasons", []), "process_did_not_finish"],
-                                   mail_status="partial", calendar_status="partial")
+            initial = self.interrupted(initial)
         if initial:
             self.states.append(initial)
 

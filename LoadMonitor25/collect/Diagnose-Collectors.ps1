@@ -2,8 +2,8 @@
 # PC 마다 Outlook(클래식/새 Outlook/2016 마법사)·Teams(클래식/새 Teams·지역 형식)가 달라 수집이
 # 비는데, 개발자가 그 PC 를 직접 볼 수 없다. 이 스크립트는 원인을 판별할 사실만 모아 report\collect_diag.txt
 # 에 적는다. 채팅·메일 내용은 담지 않는다(형식 보존 마스킹: 글자는 x, 숫자·구두점·AM/PM/오전/오후만 유지).
-# Usage:  .\Diagnose-Collectors.ps1 [-OutFile path]
-param([string]$OutFile = '')
+# Usage:  .\Diagnose-Collectors.ps1 [-OutFile path] [-SavedOnly]
+param([string]$OutFile = '', [switch]$SavedOnly)
 $ErrorActionPreference = 'Continue'
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
@@ -20,6 +20,59 @@ function Mask([string]$s) {
 function Rows([string]$p) { if (Test-Path -LiteralPath $p) { try { return ((Get-Content -LiteralPath $p | Where-Object { $_.Trim() }).Count - 1) } catch { return -1 } } ; return -1 }
 function RowsTxt([string]$p) { $n = Rows $p; if ($n -lt 0) { return '없음' } ; return ('{0}행' -f $n) }
 function Ver([string]$p) { try { return (Get-Item -LiteralPath $p).VersionInfo.ProductVersion } catch { return '?' } }
+
+# 저장된 건수/실행 상태만 확인하는 경로. 앱·COM·검색 색인·계정에 연결하지 않는다.
+function SavedSummary {
+    W '[저장된 수집 결과 - 새 수집 아님]'
+    W ('  설치 폴더: ' + $root)
+    foreach ($rel in @('outlook\mail.csv', 'outlook\calendar.csv', 'm365\teams_*.csv')) {
+        $files = @(Get-ChildItem -Path (Join-Path $root ('data\' + $rel)) -File -ErrorAction SilentlyContinue)
+        if (-not $files.Count) { W ('  ' + $rel + ': 파일 없음'); continue }
+        foreach ($file in $files) {
+            try {
+                $count = @(Import-Csv -LiteralPath $file.FullName -Encoding UTF8 -ErrorAction Stop).Count
+                W ('  {0}: {1}건 / 수정 {2}' -f $file.Name, $count, $file.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss'))
+            } catch { W ('  ' + $file.Name + ': CSV 읽기 실패') }
+        }
+    }
+    $states = @(Get-ChildItem -LiteralPath (Join-Path $root 'data\collection_status') -Filter '*.json' -File -ErrorAction SilentlyContinue)
+    if (-not $states.Count) { W '  경로별 상태 기록 없음 - 미실행/구버전/실행 폴더를 확인하세요.' }
+    foreach ($file in $states) {
+        if ($file.BaseName -notmatch '^(outlook|teams)_[a-z_]+$') { continue }
+        try {
+            $state = Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+            $codes = @($state.reasons | ForEach-Object {
+                $text = [string]$_
+                if ($text -cmatch '^[a-zA-Z0-9_:. -]{1,100}$') { $text } else { Mask $text }
+            }) -join ', '
+            W ('  {0}: {1} / {2}건 / 기간 {3} ~ {4} / 사유 {5}' -f $file.BaseName, $state.status, $state.rows, $state.requested_from, $state.requested_to, $codes)
+            foreach ($key in @('parsed_messages', 'period_excluded', 'date_unconfirmed')) {
+                if ($null -ne $state.$key) { W ('    {0}: {1}' -f $key, [int]$state.$key) }
+            }
+        } catch { W ('  ' + $file.Name + ': 상태 읽기 실패') }
+    }
+    $last = Join-Path $root 'report\last_run.json'
+    if (Test-Path -LiteralPath $last) {
+        try {
+            $saved = Get-Content -LiteralPath $last -Raw -Encoding UTF8 | ConvertFrom-Json
+            W ('  최근 실행: {0} / 기간 {1} / 상태 {2}' -f $saved.started, ($saved.period -join ' ~ '), $saved.status)
+            foreach ($stage in $saved.stages) {
+                if ($stage.name -match 'Outlook|Teams|팀즈|메일') {
+                    W ('    {0}: {1}' -f $stage.name, $(if ($stage.ok) { 'OK' } else { '미완료' }))
+                }
+            }
+        } catch { W '  last_run.json 읽기 실패' }
+    } else { W '  last_run.json 없음 - 이 폴더에서 분석을 실행했는지 확인하세요.' }
+}
+
+SavedSummary
+if ($SavedOnly) {
+    $parent = Split-Path -Parent $OutFile
+    if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
+    [System.IO.File]::WriteAllLines($OutFile, $L, [System.Text.Encoding]::UTF8)
+    Write-Host ('저장: ' + $OutFile)
+    exit 0
+}
 $findings = New-Object System.Collections.Generic.List[string]
 # 팀즈 창 읽기(Get-TeamsWindow.ps1)와 같은 규칙으로 시각 패턴을 구성한다(지역 설정 기반).
 # ※ 여기서 몇 줄 잡혔다고 수집기도 그만큼 남기는 것은 아니다 - 수집기는 '왼쪽 채팅목록 열'을 추가로
@@ -344,7 +397,7 @@ if (Test-Path -LiteralPath $lr) {
     try {
         $j = Get-Content -LiteralPath $lr -Raw -Encoding UTF8 | ConvertFrom-Json
         W ("  기간 {0}  시작 {1}" -f ($j.period -join '~'), $j.started)
-        foreach ($s in $j.stages) { if ($s.name -match 'Outlook|팀즈|메일') { W ("  {0} {1}{2}" -f $(if ($s.ok) { 'OK ' } else { 'NG ' }), $s.name, $(if ($s.note) { ' - ' + $s.note } else { '' })) } }
+        foreach ($s in $j.stages) { if ($s.name -match 'Outlook|Teams|팀즈|메일') { W ("  {0} {1}{2}" -f $(if ($s.ok) { 'OK ' } else { 'NG ' }), $s.name, $(if ($s.note) { ' - ' + $s.note } else { '' })) } }
     } catch { W '  last_run.json 해석 실패' }
 } else { W '  last_run.json 없음 (아직 실행 전)' }
 

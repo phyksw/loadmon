@@ -484,7 +484,26 @@ def pane_matches(item, name, pane):
     actual_id = str(pane.get("conversation_id") or "")
     if requested_id and actual_id:
         return requested_id == actual_id
-    return bool(name and pane.get("chat") and _norm(name) == _norm(pane["chat"]))
+    # Prefer the complete item title/name leaf. The label-derived name may be
+    # only the first participant in a comma-separated group title.
+    names = [item["name"]] if item.get("name") else (item.get("texts") or [])[:1]
+    if not any(names) and not re.search(r"[,|·]", str(item.get("label") or "")):
+        names = [name]
+    actual = _norm(pane.get("chat"))
+    return bool(actual and any(_norm(candidate) == actual for candidate in names if candidate))
+
+
+def wait_chat(br, item, name, limit=5):
+    """Wait for identity, not just a changing count in the previous chat."""
+    until = time.monotonic() + limit
+    while time.monotonic() < until:
+        try:
+            if pane_matches(item, name, br.eval_json(JS_PANE)):
+                return True
+        except Exception:
+            pass  # A pane being replaced can be temporarily unreadable.
+        time.sleep(0.25)
+    return False
 
 
 def read_chat(br, idx, name, d0, d1, today, fake=None, diag=None, deadline=None,
@@ -736,14 +755,11 @@ def main():
         idx = int(it.get("idx") or 0)
         name = chat_name(it)
         if br:
-            old = br.eval_json(JS_PANE)
             br.eval_json(JS_CHATS)  # 가상 목록의 오래된 DOM 참조를 버린다.
             if str(br.cdp.eval(JS_OPEN % json.dumps(key))) != "ok":
                 reasons.append("chat_open_failed")
                 return
-            previous = (old.get("chat", ""), old.get("n", -1))
-            wait_pane(br, previous, 5)
-            if not pane_matches(it, name, br.eval_json(JS_PANE)):
+            if not wait_chat(br, it, name):
                 reasons.append("chat_switch_unconfirmed")
                 return
         fm = fake.get("msgs") if fake else None

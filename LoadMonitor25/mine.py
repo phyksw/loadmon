@@ -142,6 +142,9 @@ def main():
     if meta["excluded"]:
         print("[출처] 제외: " + ", ".join(f"{k} {v}" for k, v in meta["excluded"].items())
               + "   ← CC·단체발송·비업무는 본인 업무로 계상하지 않음")
+    if meta.get("context_filtered"):
+        print("[문맥] 보호 필터로 추가 본문 제외: " + ", ".join(f"{k} {v}" for k, v in meta["context_filtered"].items())
+              + "   ← 안전한 제목·요약 신호는 유지")
 
     # MM v4: 투입 MM(실제 투입시간, 상한 없음) 과 가용 MM(연차를 일자에서 뺀 값)을 나란히 낸다.
     # 로드율 = 투입 ÷ 가용. PC 가동시간은 시간의 근거가 아니라 그날 일했는지 교차확인과
@@ -289,6 +292,7 @@ def main():
         json.dump({"period": [d0.isoformat(), d1.isoformat()], "months": round(months, 2),
                    "signals": len(sig), "counted": meta["counted"],
                    "excluded": meta["excluded"], "weights": meta["weights"],
+                    "context_filtered": meta.get("context_filtered", {}),
                    "total_mm": total_mm, "avail_mm": avail_mm,
                    "load_pct": round(load_pct, 1), "mm_months": mm_months,
                    "config_warnings": cfg_warns,
