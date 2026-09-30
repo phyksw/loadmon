@@ -338,6 +338,11 @@ def period_fixture(version):
         os.utime(path, (stamp, stamp))
     ns = load(version, "ui/app.py", {"review", "review_source", "latest_signals", "_rows", "_mtime", "result_rows", "_fresh_refined"},
               {"REPORT": str(rep), "TEAM_FILES": {}}, methods={"do_GET"})
+    if version == "LoadMonitor25":
+        # Load the actual pure projection module; this fixture's report folder is synthetic.
+        projection = load(version, "core/review_basis.py", {"number", "tag_period", "periods", "daily_ledger", "project"},
+                          {"deepcopy": copy.deepcopy, "math": __import__("math"), "timedelta": __import__("datetime").timedelta})
+        ns["measured_review"] = lambda gran, tag: projection["project"](ns["review"](gran, tag), None, tag, gran)
     return rep, ns
 
 

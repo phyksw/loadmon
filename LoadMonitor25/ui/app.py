@@ -32,7 +32,7 @@ from tools.transfer import create_transfer  # noqa: E402
 REPORT = os.path.join(ROOT, "report")
 DATA = os.path.join(ROOT, "data")
 NO_WIN = 0x08000000
-VERSION = "v25.0"
+VERSION = "v25.3"
 LOCK = threading.Lock()
 REQUEST_LOCK = threading.Lock()      # Serialize synchronous mutations with transfer startup.
 FREEZE_LOCK = threading.Lock()       # [보고서 만들기] 직렬화 — JOB 과 별개(사본에 '실행 중'이 굳지 않게)
@@ -716,13 +716,48 @@ def cfg():
 
 
 def _rows(path):
-    """수집 CSV는 엑셀로 열었다 CP949로 재저장되는 일이 흔하다 — 한 파일 때문에
-    대시보드 전체가 죽지 않게 관대하게 읽는다(UnicodeDecodeError는 ValueError 계열)."""
-    try:
-        with open(path, encoding="utf-8-sig", errors="replace") as f:
-            return list(csv.DictReader(f))
-    except (OSError, ValueError, csv.Error):      # csv.Error: 깨진 따옴표 뒤 13만 자 넘는 필드 — 한 파일이 /api/dash 를 죽이지 않게
+    """Preserve valid CSV records and characters, including Excel re-saves and long mail fields."""
+    issues = globals().setdefault("_CSV_READ_ISSUES", {})
+    if not path:
         return []
+    try:
+        with open(path, "rb") as f:
+            bom = f.read(4)
+        encodings = ("utf-16",) if bom.startswith((b"\xff\xfe", b"\xfe\xff")) else ("utf-8-sig", "cp949")
+        csv.field_size_limit(max(csv.field_size_limit(), 16 * 1024 * 1024))
+        for encoding in encodings:
+            try:
+                with open(path, encoding=encoding, newline="") as f:
+                    rows = list(csv.DictReader(f))
+                issues.pop(path, None)
+                return rows
+            except UnicodeError:
+                continue
+        issues[path] = "문자 인코딩을 읽지 못했습니다"
+    except FileNotFoundError:
+        issues.pop(path, None)
+    except (OSError, ValueError, csv.Error) as error:
+        issues[path] = f"CSV 읽기 실패 ({type(error).__name__})"
+    return []
+
+
+def _json_finite(value):
+    """JSON has no NaN/Infinity; expose those unknown values as null, never break the whole response."""
+    if isinstance(value, float):
+        import math
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: _json_finite(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_finite(item) for item in value]
+    return value
+
+
+def _activity_read_issues():
+    prefix = os.path.normcase(os.path.abspath(DATA)) + os.sep
+    return [{"file": os.path.relpath(path, DATA), "reason": reason}
+            for path, reason in list(globals().get("_CSV_READ_ISSUES", {}).items())
+            if os.path.normcase(os.path.abspath(path)).startswith(prefix) and os.path.isfile(path)]
 
 
 def _mtime(p):
@@ -751,13 +786,26 @@ def _has_collected():
     patterns = ["*.csv", "pc/*.csv", "outlook/*.csv", "files/*.csv", "m365/*.csv",
                 "activity/*.csv", "manual/*.csv"]
     for path in _source_files(patterns):
-        try:
-            with open(path, encoding="utf-8-sig", newline="") as stream:
-                if any(any(row.values()) for row in csv.DictReader(stream)):
-                    return True
-        except (OSError, UnicodeError, csv.Error):
-            continue
+        if any(any(row.values()) for row in _rows(path)):
+            return True
     return False
+
+
+def _source_rows(patterns):
+    """Read the same known PC roots used by collection visibility and data browsing."""
+    for path in _source_files(patterns):
+        yield from _rows(path)
+
+
+def _tag_period(tag):
+    from datetime import date
+    if not isinstance(tag, str) or not re.fullmatch(r"\d{8}-\d{8}", tag):
+        return []
+    try:
+        pair = [date.fromisoformat(value).isoformat() for value in tag.split("-")]
+        return pair if pair[0] <= pair[1] else []
+    except ValueError:
+        return []
 
 
 class _Done(Exception):
@@ -1028,15 +1076,23 @@ def outlook_coverage(period=None):
     반환 {"months": n, "covered": [...], "uncovered": [...]} — 표가 없거나 COM 이 아닌 경로(색인·웹·Copilot)가
     채운 자료면 None (그 경로들은 달 단위 표를 남기지 않는다)."""
     from datetime import date
-    try:
-        with open(os.path.join(DATA, "outlook", "mail_source.json"), encoding="utf-8-sig") as f:
-            src = json.load(f)
-        with open(os.path.join(DATA, "outlook", "coverage.json"), encoding="utf-8-sig") as f:
-            cov = json.load(f)
-    except (OSError, ValueError):
+    collected = []
+    for path in _source_files(["outlook/mail_source.json"]):
+        try:
+            with open(path, encoding="utf-8-sig") as f:
+                src = json.load(f)
+            with open(os.path.join(os.path.dirname(path), "coverage.json"), encoding="utf-8-sig") as f:
+                cov = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if isinstance(src, dict) and src.get("source") == "com" and isinstance(cov, dict):
+            collected.append((src, cov))
+    if not collected:
         return None
-    if not isinstance(src, dict) or src.get("source") != "com" or not isinstance(cov, dict):
-        return None
+    src = collected[0][0]
+    cov = {kind: {month: value for _, item in collected
+                  for month, value in (item.get(kind) if isinstance(item.get(kind), dict) else {}).items()}
+           for kind in ("mail", "calendar")}
     per = period if isinstance(period, (list, tuple)) and len(period) >= 2 else (src.get("period") or [])
     try:
         d0, d1 = date.fromisoformat(str(per[0])[:10]), date.fromisoformat(str(per[-1])[:10])
@@ -1079,28 +1135,38 @@ def dash_period(meta, lastrun=None):
         per = _pair(src.get("period")) if isinstance(src, dict) else None
         if per:
             return per
-    # ③ 데이터 범위 — /api/dash 는 자주 불리므로 파일 mtime 이 그대로면 지난 답을 쓴다(files.csv 는 수만 행일 수 있다)
-    srcs = (("pc/pc_on.csv", "date"), ("outlook/mail.csv", "time"), ("outlook/calendar.csv", "start"),
-            ("files/files.csv", "mtime"))
-    def _sz(p):
+    # Include archived PCs, file histories, chats, worklogs and span-only PC records.
+    srcs = ((["pc/pc_on.csv", "pc_on.csv"], ("date",)),
+            (["pc/pc_spans.csv", "pc_spans.csv"], ("start", "end")),
+            (["outlook/mail.csv"], ("time",)), (["outlook/calendar.csv"], ("start",)),
+            (["files/files.csv", "files/recent.csv", "files/files_history.csv",
+              "files/recent_history.csv"], ("mtime",)),
+            (["files/git_commits.csv", "m365/teams_*.csv"], ("time",)),
+            (["activity/activity_*.csv"], ("time",)), (["manual/worklog.csv"], ("date",)))
+    files = [(path, cols) for patterns, cols in srcs for path in _source_files(patterns)]
+    def fingerprint(path):
         try:
-            return os.path.getsize(p)
+            st = os.stat(path)
+            return path, st.st_mtime_ns, st.st_size
         except OSError:
-            return -1
-    # 키 = (mtime, 크기)×파일 + 오늘 날짜 — 같은 mtime 으로 덮어쓴 파일·자정을 넘긴 서버(400일 창)도 다시 잰다
-    sig = tuple((_mtime(os.path.join(DATA, rel)), _sz(os.path.join(DATA, rel))) for rel, _c in srcs) + (date.today().isoformat(),)
+            return path, 0, 0
+    sig = tuple(fingerprint(path) for path, _ in files) + (date.today().isoformat(),)
     if _DASH_EXTENT.get("sig") == sig:
         return list(_DASH_EXTENT["per"])
     lo = hi = None
-    for rel, col in srcs:
-        for r in _rows(os.path.join(DATA, rel)):
-            try:
-                d = date.fromisoformat(str(r.get(col) or "")[:10])
-            except ValueError:
-                continue
-            if d > date.today() + timedelta(days=1) or d < date.today() - timedelta(days=400):
-                continue
-            lo, hi = (d if lo is None or d < lo else lo), (d if hi is None or d > hi else hi)
+    for path, cols in files:
+        for row in _rows(path):
+            for col in cols:
+                text = str(row.get(col) or "")
+                try:
+                    d = date.fromisoformat(text[:10])
+                    if col == "end" and text[11:16] == "00:00":
+                        d -= timedelta(days=1)  # end of a PC span is exclusive
+                except ValueError:
+                    continue
+                if d > date.today():
+                    continue
+                lo, hi = (d if lo is None or d < lo else lo), (d if hi is None or d > hi else hi)
     per = [lo.isoformat(), hi.isoformat()] if (lo and hi) else ["", ""]
     _DASH_EXTENT.update(sig=sig, per=list(per))
     return per
@@ -1116,7 +1182,7 @@ def sources(period=None):
         ("PC 가동", ["pc/pc_on.csv", "pc_on.csv", "pc/pc_spans.csv", "pc_spans.csv",
                      "추가PC/*/pc/pc_on.csv", "추가PC/*/pc_on.csv", "추가PC/*/pc/pc_spans.csv", "추가PC/*/pc_spans.csv"], "현재 PC와 추가 PC의 가동 기록 · 분석 실행 시 수집"),
         ("메일·일정", ["outlook/mail.csv", "outlook/calendar.csv"], "클래식 Outlook을 켠 상태로 실행"),
-        ("파일·Recent", ["files/files.csv", "files/recent.csv"], "config.watchFolders 를 실제 작업 폴더로"),
+        ("파일·Recent", ["files/files.csv", "files/recent.csv", "files/files_history.csv", "files/recent_history.csv"], "config.watchFolders 를 실제 작업 폴더로"),
         ("git 커밋", ["files/git_commits.csv"], "config.gitRepos 설정 (선택)"),
         ("팀즈 채팅", ["m365/teams_*.csv"], r"[팀즈 웹 읽기] 버튼 — 앱이 꺼져 있어도 됩니다 (전용 Edge 창에서 회사 계정 1회 로그인)"),
         ("창 샘플러", ["activity/activity_*.csv"],
@@ -1125,11 +1191,16 @@ def sources(period=None):
                      "추가PC/*/pc/pc_on.csv", "추가PC/*/pc_on.csv", "추가PC/*/pc/pc_spans.csv", "추가PC/*/pc_spans.csv", "추가PC/*/m365/teams_*.csv"],
          "폴더째 옮겨 [추가 PC 수집] → 본 PC 에서 [분석 실행] — 자동 합산 · 중복 자동 제외 (선택)"),
     ):
-        n, mt = 0, 0.0
-        for p in pats:
-            for f in glob.glob(os.path.join(DATA, p)):
-                n += max(0, len(_rows(f)))
-                mt = max(mt, _mtime(f))
+        here_only = name in ("창 샘플러", "추가 PC")
+        paths = (sorted({f for pat in pats for f in glob.glob(os.path.join(DATA, pat))})
+                 if here_only else _source_files(pats))
+        n, mt, here = 0, 0.0, 0
+        for path in paths:
+            count = len(_rows(path))
+            n += count
+            if not os.path.relpath(path, DATA).startswith("추가PC" + os.sep):
+                here += count
+            mt = max(mt, _mtime(path))
         opt = name in ("git 커밋", "팀즈 채팅", "창 샘플러", "추가 PC")
         st = "ok" if n else ("off" if opt else "bad")
         # 건수가 있어도 기간 대비 몇 건뿐이면 '찾긴 했지만 못 찾은' 것이다(실측: 3개월에
@@ -1140,7 +1211,8 @@ def sources(period=None):
             try:
                 with open(os.path.join(DATA, "outlook", "outlook_skip.json"),
                           encoding="utf-8-sig") as f:
-                    why = (json.load(f).get("reason") or "").strip()
+                    skip_note = json.load(f)
+                why = str(skip_note.get("reason") or "").strip() if isinstance(skip_note, dict) else ""
                 if why:
                     hint = why
             except (OSError, ValueError):
@@ -1197,8 +1269,9 @@ def sources(period=None):
                         "(앱이 꺼져 있어도 됩니다). 상시 누적은 collect\\Start-TeamsSampler.ps1")
             elif 0 < n < 5:
                 st, hint = "warn", "회수 부족 — [팀즈 웹 읽기] 로 보강 (창 읽기는 화면에 보인 부분만 긁습니다)"
-        out.append({"name": name, "rows": n, "age": _age(mt),
-                    "status": st, "hint": "" if st == "ok" else hint})
+        split = f"본 PC {here:,}건 + 추가 PC {n - here:,}건" if n > here and not here_only else ""
+        out.append({"name": name, "rows": n, "here": here, "age": _age(mt),
+                    "status": st, "hint": split if st == "ok" else " · ".join(x for x in (split, hint) if x)})
     return out
 
 
@@ -1224,12 +1297,17 @@ def mtime_clumps(d0="", d1="", top=3):
 
     lo, hi = _d(d0), _d(d1)
     by_min, by_min_folder, total = Counter(), {}, 0
-    for name in ("files.csv", "recent.csv"):
-        for r in _rows(os.path.join(DATA, "files", name)):
+    seen = set()
+    for name in ("files.csv", "recent.csv", "files_history.csv", "recent_history.csv"):
+        for r in _source_rows(["files/" + name]):
             t = (r.get("mtime") or "").strip()
             dt = _d(t)
             if not dt or (lo and dt < lo) or (hi and dt > hi):
                 continue
+            identity = (t, r.get("folder"), r.get("name"))
+            if identity in seen:
+                continue
+            seen.add(identity)
             total += 1
             k = t[:16]                       # 분 단위
             by_min[k] += 1
@@ -1247,179 +1325,173 @@ def mtime_clumps(d0="", d1="", top=3):
     return out
 
 def trend(d0="", d1="", tag="", info=None):
-    r"""활동 추이 — **분석 기간을 덮고, 실제로 계상된 신호**를 센다.
-    info(dict)를 주면 info["src"] 에 무엇을 셌는지 남긴다: "signals"(판정 신호) / "raw"(수집 raw 폴백) / "none"(기간 없음).
-    화면 안내는 이 값을 봐야 한다 — meta.period 유무로 판단하면 signals 로 그려 놓고 'raw' 라고 적는다(재검증 실측).
+    """Count collected events across the full period and every PC, independently of AI sampling.
 
-    예전에는 오늘 기준 14주 고정이라 1월부터 본 사람도 최근 3개월만 보였고(실측 제보),
-    data\ 의 raw 수집물을 표본화 없이 세어 한 주의 배치 산출물이 나머지를 눌렀다.
-    이제 report\signals_<기간>.csv(판정에 실제로 쓰인 신호)를 세므로 MM 산정과 축이 같다.
-    기간이 길면 주 대신 달로 묶는다 — 34주를 한 화면에 그리면 읽을 수 없다."""
+    Identical collected observations count once. File bursts remain visible and are explained by
+    mtime_clumps; neither a daily cap nor an AI exclusion silently changes this collection count.
+    Window sampler rows have a different unit, so report them separately from event bars.
+    """
     from datetime import date, timedelta
 
-    def _d(s, dflt=None):
+    def day(value):
         try:
-            return date.fromisoformat(str(s)[:10])
+            return date.fromisoformat(str(value)[:10])
         except (TypeError, ValueError):
-            return dflt
+            return None
 
-    end = _d(d1) or date.today()
-    start = _d(d0) or (end - timedelta(weeks=13))
+    inferred = (_tag_period(tag) or dash_period({}, {})) if not d0 or not d1 else []
+    start, end = day(d0 or (inferred[0] if inferred else "")), day(d1 or (inferred[1] if inferred else ""))
+    if info is not None:
+        info.update(src="none", period=["", ""], counted=0, displayed=0, duplicates=0,
+                    capped=0, signals_n=0, window_samples=0)
+    if not start or not end:
+        return []
     if start > end:
         start, end = end, start
-    span_w = max(1, ((end - start).days // 7) + 1)
-    monthly = span_w > 26                       # 반년이 넘으면 달 단위로
+    monthly = ((end - start).days // 7 + 1) > 16
+    keys = ("파일", "작업창", "메일", "회의", "커밋", "팀즈", "수동", "기타")
+    out, indices = [], {}
+    cursor = start.replace(day=1) if monthly else start - timedelta(days=start.weekday())
+    while cursor <= end:
+        nxt = ((cursor.replace(year=cursor.year + 1, month=1) if cursor.month == 12
+                else cursor.replace(month=cursor.month + 1)) if monthly else cursor + timedelta(days=7))
+        ident = (cursor.year, cursor.month) if monthly else cursor.isocalendar()[:2]
+        indices[ident] = len(out)
+        label = ((f"{cursor.month}월" if start.year == end.year else f"{cursor:%y/%m}")
+                 if monthly else f"{max(cursor, start):%m/%d}")
+        out.append({"label": label, "from": max(cursor, start).isoformat(),
+                    "to": min(nxt - timedelta(days=1), end).isoformat(),
+                    "pc_h": 0.0, "pc_days": 0, "pc_wd": 0, "pc_record_days": 0,
+                    "raw_n": 0, "duplicates": 0, "capped": 0, "window_samples": 0,
+                    "counts": dict.fromkeys(keys, 0), **dict.fromkeys(keys, 0)})
+        cursor = nxt
 
-    buckets, idx = [], {}
-    if monthly:
-        y, m = start.year, start.month
-        while (y, m) <= (end.year, end.month):
-            idx[(y, m)] = len(buckets)
-            buckets.append(f"{y % 100:02d}/{m:02d}")
-            y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+    def slot(value):
+        dt = day(value)
+        if dt is None or not start <= dt <= end:
+            return None
+        return indices.get((dt.year, dt.month) if monthly else dt.isocalendar()[:2])
 
-        def key(dt):
-            return idx.get((dt.year, dt.month))
-    else:
-        w0 = start - timedelta(days=start.weekday())
-        w = w0
-        while w <= end:
-            idx[w.isocalendar()[:2]] = len(buckets)
-            buckets.append(f"{w:%m/%d}")
-            w += timedelta(weeks=1)
+    seen = set()
+    def add(value, kind, identity):
+        index = slot(value)
+        if index is None:
+            return
+        bucket = out[index]
+        bucket["raw_n"] += 1
+        if identity in seen:
+            bucket["duplicates"] += 1
+            return
+        seen.add(identity)
+        bucket["counts"][kind] += 1
+        bucket[kind] += 1
 
-        def key(dt):
-            return idx.get(dt.isocalendar()[:2])
+    specs = ((["files/files.csv", "files/recent.csv", "files/files_history.csv", "files/recent_history.csv"],
+              "파일", ("mtime",), ("folder", "name")),
+             (["outlook/mail.csv"], "메일", ("time",), ("subject", "sender", "from", "to", "rcv")),
+             (["outlook/calendar.csv"], "회의", ("start",), ("subject", "end", "organizer")),
+             (["files/git_commits.csv"], "커밋", ("time",), ("repo", "hash", "subject")),
+             (["m365/teams_*.csv"], "팀즈", ("time",), ("from", "summary", "chat", "subject")),
+             (["manual/worklog.csv"], "수동", ("date", "start"),
+              ("category", "entity", "note", "user", "project", "detail", "hours", "end")))
+    for patterns, kind, timecols, columns in specs:
+        for row in _source_rows(patterns):
+            stamp = next((str(row.get(col)).strip() for col in timecols if row.get(col)), "")
+            identity = (kind, stamp) + tuple(str(row.get(col) or "").strip() for col in columns)
+            add(stamp, kind, identity)
 
-    # pc_days/pc_wd = 그 버킷에서 'PC 기록이 있는 날' / '평일 수'. 기록이 없는 주를 0h 로 그리면
-    # 'PC 를 안 켠 주'와 구분되지 않는다(이벤트 로그 롤오버로 과거 주는 구조적으로 기록이 없다).
-    # raw_n = 상한·중복제거로 누르기 전의 원건수 — 막대와 실제 신호 수의 차이를 화면이 말할 수 있게.
-    out = [{"label": lb, "pc_h": 0.0, "파일": 0, "메일": 0, "회의": 0, "커밋": 0, "팀즈": 0,
-            "작업창": 0, "pc_days": 0, "pc_wd": 0, "raw_n": 0}
-           for lb in buckets]
-    if info is not None:
-        info["src"] = "none"
-    if not out:
-        return out
+    sample_seen = set()
+    for row in _source_rows(["activity/activity_*.csv"]):
+        stamp = str(row.get("time") or "").strip()
+        index = slot(stamp)
+        identity = (stamp,) + tuple(str(row.get(k) or "") for k in ("process", "title", "idle_sec"))
+        if index is not None and identity not in sample_seen:
+            sample_seen.add(identity)
+            out[index]["window_samples"] += 1
 
-    def slot(s):
-        dt = _d(s)
-        return key(dt) if (dt and start <= dt <= end) else None
+    # The selected period's AI sample count is context only, never the activity-count source.
+    sample_tag = tag or f"{start:%Y%m%d}-{end:%Y%m%d}"
+    sp = os.path.join(REPORT, f"signals_{sample_tag}.csv")
+    signals_n = sum(slot(row.get("time") or row.get("date")) is not None for row in _rows(sp))
 
-    # 판정에 **실제로 쓰인 신호**(report\signals_<기간>.csv)를 센다 — 대시보드 MM 과 같은 축.
-    # 파일 신호의 시각은 mtime 하나뿐이다 — 공유폴더 재동기화·폴더 이관·백업 복원이
-    # 수백 파일의 시각을 한 날로 몰면 그 달만 산처럼 솟는다(실측 제보 — 특정 달 몰림).
-    # 파일류는 하루 상한 8건으로 눌러 센다(mine 의 '사람 손 하루 한 폴더 8건' 과 같은 눈금).
-    # 메일·회의·커밋·팀즈는 사건 시각(발신·개최 시각)이라 그대로 센다.
-    # ★ '작업창' 이 이 표에 없어 기본값 '파일' 로 떨어지던 것이 실측 결함이었다. 신호는 시간순이라
-    #   아침 창 세션이 그날 파일 상한 8칸을 전부 차지하고, 오후에 실제로 만든 문서가 통째로 사라졌다
-    #   (창 샘플러를 켠 PC — 즉 분석을 돌리는 PC — 에서 항상 일어난다). 별도 계열로 뺀다.
-    _SRC = (("메일", "메일"), ("mail", "메일"), ("회의", "회의"), ("일정", "회의"),
-            ("cal", "회의"), ("커밋", "커밋"), ("git", "커밋"),
-            ("팀즈", "팀즈"), ("teams", "팀즈"),
-            ("작업창", "작업창"), ("window", "작업창"))
-    sp = os.path.join(REPORT, f"signals_{tag}.csv") if tag else latest_signals()
-    n_sig = 0
-    _fcap, _seen = {}, set()
-    for r in _rows(sp):
-        d = str(r.get("time") or r.get("date") or "")[:10]
-        i = slot(d)
-        if i is None:
-            continue
-        s = str(r.get("source") or "").lower()
-        # 변수명이 key 면 위쪽 버킷 함수 key() 를 가려 slot() 이 죽는다(실측)
-        kind = next((v for k2, v in _SRC if k2.lower() in s), "파일")
-        n_sig += 1                              # 상한 초과분도 '신호는 있었다'로 계상
-        out[i]["raw_n"] += 1                    # 이 버킷의 누르기 전 원건수(막대와의 차이를 화면이 말한다)
-        if kind == "파일":
-            _t = str(r.get("text") or "")[:120]
-            if _t:                              # 빈 text 는 서로 다른 신호일 수 있다 — 안 묶는다
-                _k = (d, _t)
-                if _k in _seen:                 # 같은 날 같은 파일 신호는 1회만
-                    continue
-                _seen.add(_k)
-            _fcap[d] = _fcap.get(d, 0) + 1
-            if _fcap[d] > 8:                    # 재동기화 몰림이 그래프를 지배하지 않게
-                continue
-        out[i][kind] += 1
-    if not n_sig:
-        # 판정 결과가 아직 없는 기간 — 그때만 수집 raw 로라도 모양을 보여준다 (같은 상한)
-        _fcap.clear()
-        for pat, k2, col in (("files/files.csv", "파일", "mtime"),
-                             ("files/recent.csv", "파일", "mtime"),
-                             ("outlook/mail.csv", "메일", "time"),
-                             ("outlook/calendar.csv", "회의", "start"),
-                             ("files/git_commits.csv", "커밋", "time")):
-            for r in _rows(os.path.join(DATA, *pat.split("/"))):
-                d = str(r.get(col) or "")[:10]
-                i = slot(d)
-                if i is None:
-                    continue
-                if k2 == "파일":
-                    _fcap[d] = _fcap.get(d, 0) + 1
-                    if _fcap[d] > 8:
-                        continue
-                out[i][k2] += 1
-        for f in glob.glob(os.path.join(DATA, "m365", "teams_*.csv")):
-            for r in _rows(f):
-                i = slot(r.get("time"))
-                if i is not None:
-                    out[i]["팀즈"] += 1
-
-    # PC 가동 시간 — 기간 안만. 본 PC + 추가PC 를 extract.pc_daily 로 합친다(구간 합집합 — 분석의 PC 하한과 같은 값).
-    # 예전엔 본 PC 의 pc_on.csv 만 세어 추가 PC 의 가동이 이 선에서 통째로 빠졌다(제보: 'PC 가동시간 합산 안 됨').
-    pc_note = ""
-    pcd = {}
+    pc_note, pcd = "", {}
     try:
         import extract as _X
-        pcd = _X.pc_daily(DATA, start, end)[0]
-        for dd, (on_h, _ni, _fo, _lo) in pcd.items():
-            i = key(dd) if start <= dd <= end else None
-            if i is not None:
-                out[i]["pc_h"] += float(on_h or 0)
-    except Exception as ex:  # noqa: BLE001 — 병합 실패 시 예전 방식(본 PC 만)
-        # 조용히 '본 PC 만' 으로 떨어지면 화면에는 아무 표시가 없어 원인을 못 찾는다(실측:
-        # csv.Error 가 extract 의 except OSError 를 통과해 여기까지 샌다). 이유를 남긴다.
-        pc_note = f"추가 PC 합산 실패({type(ex).__name__}) — 본 PC 기록만 표시합니다"
+        pc_result = _X.pc_daily(DATA, start, end)
+        pcd = dict(pc_result[0])
+        # The measurement caller derives span-only days in _pc_row. The chart also needs them.
+        for dt, spans in pc_result[2].items():
+            hours = sum(b - a for a, b in spans) / 60.0  # already a clipped, disjoint union
+            previous = pcd.get(dt, (0.0, 0.0, None, None))
+            pcd[dt] = (max(float(previous[0]), hours), *previous[1:])
+        for dt, (hours, _night, _first, _last) in pcd.items():
+            index = slot(dt)
+            if index is not None:
+                out[index]["pc_h"] += float(hours or 0)
+    except Exception as ex:  # noqa: BLE001 - report degraded input, keep all PCs' daily rows
+        pc_note = f"PC 구간 합산 실패({type(ex).__name__}) — 모든 PC의 일별 기록 중 같은 날 큰 값으로 표시합니다"
         pcd = {}
-        for r in _rows(os.path.join(DATA, "pc", "pc_on.csv")):
-            d2 = _d(r.get("date"))
-            i = slot(r.get("date"))
-            if i is not None:
-                try:
-                    out[i]["pc_h"] += float(r.get("on_hours") or 0)
-                    if d2:
-                        pcd[d2] = True
-                except (TypeError, ValueError):
-                    pass
-    # 버킷마다 '평일 수'와 'PC 기록이 있는 평일 수' — 기록 없음과 0h 를 화면이 구분하게.
-    dd = start
-    while dd <= end:
-        i = key(dd)
-        if i is not None and dd.weekday() < 5:
-            out[i]["pc_wd"] += 1
-            if dd in pcd:
-                out[i]["pc_days"] += 1
-        dd += timedelta(days=1)
-    for w in out:
-        w["pc_h"] = round(w["pc_h"], 1)
+        for row in _source_rows(["pc/pc_on.csv", "pc_on.csv"]):
+            dt = day(row.get("date"))
+            if slot(dt) is None:
+                continue
+            try:
+                hours = float(row.get("on_hours") or 0)
+                if not 0 <= hours <= 24:
+                    continue
+                pcd[dt] = max(pcd.get(dt, 0), hours)
+            except (TypeError, ValueError):
+                continue
+        for dt, hours in pcd.items():
+            out[slot(dt)]["pc_h"] += hours
+    dt = start
+    while dt <= end:
+        bucket = out[slot(dt)]
+        if dt.weekday() < 5:
+            bucket["pc_wd"] += 1
+            if dt in pcd:
+                bucket["pc_days"] += 1
+        if dt in pcd:
+            bucket["pc_record_days"] += 1
+        dt += timedelta(days=1)
+    for bucket in out:
+        bucket["pc_h"] = round(bucket["pc_h"], 1)
     if info is not None:
-        info["src"] = "signals" if n_sig else "raw"
-        info["gran"] = "month" if monthly else "week"
-        info["pc_note"] = pc_note
-        # PC 기록이 있는 버킷 / 평일이 있는 버킷 — 화면이 "27주 중 16주만 기록" 처럼 말할 수 있게
-        info["pc_buckets"] = sum(1 for w in out if w["pc_days"] > 0)
-        info["pc_buckets_all"] = sum(1 for w in out if w["pc_wd"] > 0)
-        first_pc = next((d for d in sorted(pcd)), None)
-        info["pc_from"] = first_pc.isoformat() if first_pc else ""
-        info["capped"] = sum(max(0, w["raw_n"] - (w["파일"] + w["메일"] + w["회의"] + w["커밋"] + w["팀즈"] + w["작업창"]))
-                             for w in out)
+        info.update(src="raw", signals_n=signals_n, window_samples=len(sample_seen),
+                    gran="month" if monthly else "week",
+                    period=[start.isoformat(), end.isoformat()], pc_note=pc_note,
+                    pc_buckets=sum(w["pc_record_days"] > 0 for w in out), pc_buckets_all=len(out),
+                    pc_from=min(pcd).isoformat() if pcd else "",
+                    counted=sum(sum(w["counts"].values()) for w in out),
+                    displayed=sum(sum(w[k] for k in keys) for w in out),
+                    raw_n=sum(w["raw_n"] for w in out), duplicates=sum(w["duplicates"] for w in out),
+                    capped=sum(w["capped"] for w in out))
     return out
+
+
+def activity_payload(d0="", d1=""):
+    """Read stored observations for a chosen range without running analysis or AI."""
+    if not d0 and not d1:
+        d0, d1 = dash_period({}, {})
+    if d0 or d1:
+        tag = str(d0).replace("-", "") + "-" + str(d1).replace("-", "")
+        if _tag_period(tag) != [d0, d1]:
+            raise ValueError("조회 시작일·종료일을 YYYY-MM-DD 형식으로 확인하세요")
+    else:
+        tag = ""
+    info = {}
+    rows = trend(d0, d1, tag, info)
+    info["read_issues"] = _activity_read_issues()
+    return {"ok": True, "kind": "collected_activity", "period": [d0, d1],
+            "trend": rows, "trend_info": info, "trend_src": info.get("src"),
+            "mail_coverage": outlook_coverage([d0, d1]), "clumps": mtime_clumps(d0, d1)}
+
 
 def review(gran="week", tag=None):
     """주간/월간/전체 업무 리뷰 — 신호별 귀속 내역(signals_*.csv)을 기간으로 묶어
     프로젝트별 raw 근거·타임라인·사람/산출물 연결까지 만든다. '요약'이 아니라 원문이 들어간 리뷰."""
     from datetime import datetime, timedelta
+    import math
     if tag is not None and not re.fullmatch(r"\d{8}-\d{8}", tag):
         return []
     path = os.path.join(REPORT, f"signals_{tag}.csv") if tag else latest_signals()
@@ -1427,11 +1499,20 @@ def review(gran="week", tag=None):
     if not rows:
         return []
     groups = {}
+    bounds = None
+    period_tag = tag or os.path.basename(path)[len("signals_"):-len(".csv")]
+    if re.fullmatch(r"\d{8}-\d{8}", period_tag):
+        try:
+            bounds = [datetime.strptime(s, "%Y%m%d").date() for s in period_tag.split("-")]
+        except ValueError:
+            return []
     for r in rows:
         try:
             t = datetime.strptime((r.get("time") or "")[:16], "%Y-%m-%d %H:%M")
             w = float(r.get("weight") or 0)
         except ValueError:
+            continue
+        if not math.isfinite(w) or w < 0 or (bounds and not bounds[0] <= t.date() <= bounds[1]):
             continue
         if gran == "week":
             mon = t.date() - timedelta(days=t.weekday())
@@ -1477,7 +1558,7 @@ def review(gran="week", tag=None):
         for pj, pp in sorted(g["proj"].items(), key=lambda kv: -kv[1]["w"]):
             projs.append({
                 "name": pj, "share": round(pp["w"] / tot, 4),
-                "mm": round(pp["w"] / tot * months, 3), "n": pp["n"],
+                "mm": None, "share_basis": "signal_weight", "n": pp["n"],
                 # pw 가드: 가중치 합 0(잘린 행 등)이면 ZeroDivision 으로 리뷰 탭 전체가 죽는다
                 "acts": [{"name": a, "pct": round(v / (pp["w"] or 1e-9) * 100)} for a, v in pp["acts"].most_common(4)],
                 "wt": [[k, round(v / (pp["w"] or 1e-9) * 100)] for k, v in pp["wt"].most_common()],
@@ -1499,6 +1580,11 @@ def review(gran="week", tag=None):
                     "wt": [[k, round(v / tot * 100)] for k, v in (g.get("wt") or Counter()).most_common()],
                     "timeline": timeline, "p_edges": p_edges[:24], "a_edges": a_edges[:24]})
     return out
+
+
+def measured_review(gran, tag):
+    from review_basis import load_projection
+    return load_projection(REPORT, review(gran, tag), tag, gran)
 
 
 def _fresh_refined(plain, ref):
@@ -1545,8 +1631,10 @@ def result_rows():
     rows = _rows(p) if p else []
 
     def _f(v):
+        import math
         try:
-            return float(v or 0)
+            number = float(v or 0)
+            return number if math.isfinite(number) else 0.0
         except (TypeError, ValueError):
             return 0.0
 
@@ -2467,13 +2555,14 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
  <a href="/team" target="_blank">④ 팀 취합 화면 →</a>
  <a href="/guide" target="_blank">사용 안내</a>
 </div>
-<div class="sub">PC 흔적에서 업무 로드를 추출합니다. <b>투입 MM</b>(실제 일한 양)과 <b>가용 MM</b>(일할 수 있었던 양 — 연차는 일자에서 차감)을
+<div class="sub">PC 흔적에서 업무 로드를 추정합니다. <b>투입 MM</b>(근거로 추정한 업무 시간)과 <b>가용 MM</b>(분석 시점의 근무 가능 시간 — 확인된 연차는 차감)을
  나란히 내고 <b>로드율 = 투입 ÷ 가용</b>으로 비교합니다. 1 MM = 8h × 그 달 평일수(주40시간). 야근은 상한 없이 그대로 반영됩니다.</div>
 
 <div class="card"><div class="row">
  <span class="chip on" data-d="ytd">올해</span> <span class="chip" data-d="30">1개월</span><span class="chip" data-d="90">3개월</span>
  <span class="chip" data-d="180">6개월</span><span class="chip" data-d="365">1년</span>
- <label>시작 <input type="date" id="from"></label><label>끝 <input type="date" id="to"></label>
+ <label>조회·분석 시작 <input type="date" id="from"></label><label>끝 <input type="date" id="to"></label>
+ <button class="ghost" id="viewperiod">선택 기간 집계</button>
  <label><input type="checkbox" id="ai" checked> AI 정제</label>
  <label><input type="checkbox" id="skip"> 수집 없이 분석</label>
  <label title="같은 입력의 완료 결과가 있어도 AI 분석을 다시 실행합니다"><input type="checkbox" id="force"> 강제 재분석</label>
@@ -2517,6 +2606,21 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
 </div>
 
 <div class="tab" id="tab-dash">
+<div class="card" id="activitycard"><h2><span id="wtitle">활동 추이</span> <span class="state" id="wsub">막대 = 수집 기록 건수 · 선 = PC 가동시간</span></h2>
+ <div class="row" id="activitycontrols" style="margin-bottom:8px">
+  <label>수집 기록 조회 <input type="date" id="activityfrom"></label> ~ <input type="date" id="activityto" aria-label="수집 기록 조회 종료일">
+  <button class="ghost" id="activityshow">기간 조회</button><button class="ghost" id="activityall">수집 전체 기간</button>
+  <button class="ghost" id="activityreset">분석 기간으로</button><span class="state" id="activitystatus" role="status" aria-live="polite"></span>
+ </div>
+ <div id="activitytotal" style="font-weight:700;margin-bottom:8px"></div>
+ <div class="row" style="margin-bottom:8px"><label><input type="checkbox" id="activityscale" checked> 큰 봉우리 축 줄여 보기</label><span class="state" id="wscale"></span></div>
+ <div id="weekly"><div class="note">선택한 기간의 수집 기록을 집계하고 있습니다…</div></div>
+ <details open style="margin-top:8px"><summary>기간별 집계 숫자 확인</summary><div id="wcounts" style="overflow:auto"></div></details>
+ <div class="row" id="wleg" style="margin-top:6px;font-size:11px;color:#4a5159"></div>
+ <div class="note" id="wnote" style="display:none;color:#a86400"></div>
+ <div id="wclump"></div></div>
+<div class="note" id="analysisstatus" role="status" aria-live="polite"></div>
+<div class="note" id="analysisperiod"></div>
 <div class="kpis">
  <div class="kpi"><div class="lb">로드율 <span style="font-weight:400">(투입 ÷ 가용)</span></div>
   <div class="vl" id="k_load">–</div><div class="nt" id="k_mm">–</div></div>
@@ -2543,12 +2647,6 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
   <div class="bigbar" id="actbar"></div>
   <div id="actleg" class="leg"></div></div>
 </div>
-
-<div class="card"><h2>주간 활동 추이 <span class="state">막대 = 신호 건수 · 선 = PC 가동시간</span></h2>
- <div id="weekly"></div>
- <div class="row" id="wleg" style="margin-top:6px;font-size:11px;color:#4a5159"></div>
- <div class="note" id="wnote" style="display:none;color:#a86400"></div>
- <div id="wclump"></div></div>
 
 <div class="card"><h2>업무별 상세 <span class="state" id="rsrc"></span></h2>
  <table id="res"></table>
@@ -2652,7 +2750,7 @@ function setDays(n,el){const t=new Date();
  $("from").value=iso(a);$("to").value=iso(t);
  document.querySelectorAll("[data-d]").forEach(c=>c.classList.toggle("on",c===el));}
 document.querySelectorAll("[data-d]").forEach(c=>c.onclick=()=>{
- const v=c.dataset.d;setDays(v==="ytd"?"ytd":+v,c);});
+ const v=c.dataset.d;setDays(v==="ytd"?"ytd":+v,c);activityFromSelection();});
 setDays("ytd",document.querySelector('[data-d="ytd"]'));
 
 function donut(el,data,center,unit){
@@ -2667,28 +2765,124 @@ function donut(el,data,center,unit){
  <text x="75" y="90" text-anchor="middle" style="font-size:10px;fill:#8b929b">${unit}</text></svg>`;
  el.innerHTML=s;
 }
+let activityOverride=false,activityCommitted=false,activityEpoch=0,activityQueryAll=false,lastActivity=null;
+function activityFromSelection(){
+ if(document.getElementById("lm-frozen-data"))return;
+ $("activityfrom").value=$("from").value;$("activityto").value=$("to").value;
+ return browseActivity(false);
+}
+$("viewperiod").onclick=activityFromSelection;
+for(const id of ["from","to"])$(id).addEventListener("change",activityFromSelection);
+$("activityscale").onchange=()=>{if(lastActivity)weekly($("weekly"),lastActivity.trend||[]);};
+function renderActivity(d,independent=false){
+ lastActivity=d;
+ weekly($("weekly"),d.trend||[]);
+ const ti=d.trend_info||{}, per=ti.period||d.period||[];
+ $("wtitle").textContent=(ti.gran==="month"?"월간":"주간")+" 활동 추이";
+ $("wsub").textContent=(per[0]?`${per[0]} ~ ${per[1]} · `:"")
+  +(ti.gran==="month"?"막대 하나 = 한 달":"막대 하나 = 한 주")+" · 선 = PC 가동시간";
+ const number=v=>(Number(v)||0).toLocaleString();
+ if($("activitytotal"))$("activitytotal").textContent=ti.counted==null?"":"기간 합계 "+number(ti.counted)+"건";
+ const ck=["파일","메일","회의","커밋","팀즈","수동"];
+ for(const k of ["작업창","기타"])if((d.trend||[]).some(w=>Number((w.counts||w)[k])>0))ck.push(k);
+ const wc=$("wcounts");
+ if(wc)wc.innerHTML='<table><tr><th>기간</th>'+ck.map(k=>`<th>${esc(k)}</th>`).join("")+'<th>집계 합계</th><th>차트 표시</th><th>PC 가동</th><th>창 표본</th></tr>'
+  +(d.trend||[]).map(w=>{const c=w.counts||w;return `<tr><td>${esc(w.from||w.label)} ~ ${esc(w.to||"")}</td>`
+   +ck.map(k=>`<td>${number(c[k])}</td>`).join("")+`<td>${number(ck.reduce((n,k)=>n+(Number(c[k])||0),0))}</td><td>${number(ck.reduce((n,k)=>n+(Number(w[k])||0),0))}</td>`
+   +`<td>${(w.pc_record_days!==undefined?w.pc_record_days>0:w.pc_days>0)?number(w.pc_h)+"h":"기록 없음"}</td><td>${number(w.window_samples)}</td></tr>`;}).join("")+"</table>";
+ const wn=$("wnote");
+ if(wn){const mc=d.mail_coverage||null,notes=[];
+  notes.push(ti.counted!==undefined?`기간 전체 집계 <b>${number(ti.counted)}건</b> · 차트 표시 ${number(ti.displayed)}건 · 중복 제외 ${number(ti.duplicates)}건`:"");
+  if(d.trend_src==="raw") notes.push("본 PC와 추가 PC의 수집 원문·파일 이력 전체를 합산했습니다. 같은 기록은 한 번만 세며 하루 건수 상한은 없습니다. 수집 기록 건수는 인정 근무시간·MM과 다릅니다.");
+  if(ti.signals_n!==undefined&&ti.signals_n!==null)notes.push(`AI 판정용 표본 ${number(ti.signals_n)}건은 별도 참고 수치입니다.`);
+  if(ti.window_samples>0)notes.push(`창 활동 표본 ${number(ti.window_samples)}개는 반복 관측이므로 건수 막대와 분리해 표에 표시합니다.`);
+  if(ti.capped>0)notes.push(`이전 방식으로 저장된 결과입니다. 상한으로 줄인 ${number(ti.capped)}건도 집계 합계에 포함합니다.`);
+  if(mc&&(mc.uncovered||[]).length)notes.push(`메일·일정 수집 완료 ${mc.covered.length}/${mc.months}개월 · 미완료 ${esc(mc.uncovered.join(", "))}. 다시 수집하면 남은 달을 이어서 읽습니다.`);
+  const unit=ti.gran==="month"?"개월":"주";
+  if(ti.pc_buckets_all&&ti.pc_buckets<ti.pc_buckets_all)notes.push(`PC 기록은 ${ti.pc_buckets_all}${unit} 중 ${ti.pc_buckets}${unit}에 있습니다. 회색 구간도 업무 신호는 집계하며 PC 가동시간만 알 수 없습니다.`);
+  if(ti.pc_note)notes.push(esc(ti.pc_note));
+  if((ti.read_issues||[]).length)notes.push('<b>읽지 못한 수집 파일이 있어 집계가 불완전합니다.</b> '+ti.read_issues.map(x=>esc(x.file)+': '+esc(x.reason)).join(' · '));
+  const a=$("from"),b=$("to");
+  if(!independent&&per[0]&&a&&b&&(a.value!==per[0]||b.value!==per[1]))notes.push("현재 그래프는 제목에 적힌 분석 기간입니다. 상단 날짜는 다음 수집·분석에 사용할 기간이며, 날짜만 바꾸면 기존 분석 결과는 바뀌지 않습니다.");
+  if(independent)notes.push("수집 기록 조회 결과입니다. 아래 업무 분류·시간·MM은 표시된 저장 분석 기간의 결과이며, 수집·AI 분석은 실행하지 않았습니다.");
+  wn.style.display=notes.some(Boolean)?"":"none";wn.innerHTML=notes.filter(Boolean).join("<br>");}
+ // 같은 시각에 몰린 덩어리가 있으면 알린다 — 그날 일한 것이 아닐 수 있다
+ const cl=$("wclump");
+ if(cl){const cs=d.clumps||[];
+  cl.innerHTML=cs.length?cs.map(c=>
+   `<div style="color:#a86400;background:#fdf3e2;border-left:4px solid #e08a00;`
+   +`padding:8px 12px;border-radius:6px;margin:6px 0;font-size:12px">`
+   +`<b>${esc(c.when)}</b> 한 시각에 파일 <b>${c.n.toLocaleString()}건</b>`
+   +` (이 기간 파일 흔적의 ${Math.round(c.share*100)}%)`
+   +(c.folder?` · <code>${esc(c.folder)}</code>`:"")
+   +`<br>폴더가 통째로 다시 쓰이면(공유 드라이브 동기화·폴더 복사·git 체크아웃·백업 복원) `
+   +`그 안 파일 전부의 수정 시각이 그 순간으로 바뀝니다. `
+   +`<b>그날 그만큼 일한 것이 아닐 수 있습니다</b> — 같은 폴더를 보는 사람은 모두 같은 봉우리가 생깁니다. 수집된 기록이므로 집계에는 포함합니다.</div>`
+  ).join(""):"";}
+
+ const per2=(d.trend_info||{}).period||d.period||[];
+ if($("activityfrom"))$("activityfrom").value=per2[0]||"";
+ if($("activityto"))$("activityto").value=per2[1]||"";
+ if(document.getElementById("lm-frozen-data")){
+  if($("activitycontrols"))$("activitycontrols").style.display="none";
+  if($("viewperiod"))$("viewperiod").style.display="none";
+ }
+}
+async function browseActivity(all=false){
+ const status=$("activitystatus"),a=$("activityfrom").value,b=$("activityto").value;
+ if(!all&&(!a||!b||a>b)){status.textContent="조회 시작일·종료일을 확인하세요";return;}
+ const epoch=++activityEpoch;
+ activityQueryAll=all;
+ activityOverride=true;status.textContent="보관된 수집 기록 조회 중…";
+ const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),60000);
+ try{
+  const url="/api/activity"+(all?"":"?from="+encodeURIComponent(a)+"&to="+encodeURIComponent(b));
+  const response=await fetch(url,{signal:controller.signal}),data=await response.json();
+  if(epoch!==activityEpoch)return;
+  if(!response.ok||!data.ok||!Array.isArray(data.trend))throw Error(data.error||"조회 결과를 읽지 못했습니다");
+  activityCommitted=true;renderActivity(data,true);status.textContent="수집 기록 조회 완료 · 분석 실행 없음";
+ }catch(error){
+  if(epoch!==activityEpoch)return;
+  activityOverride=activityCommitted;
+  status.textContent=error.name==="AbortError"?"조회 시간이 초과되었습니다 — 다시 조회하세요":"조회 실패: "+String(error.message||error);
+ }finally{clearTimeout(timeout);}
+}
+$("activityshow").onclick=()=>browseActivity(false);
+$("activityall").onclick=()=>browseActivity(true);
+$("activityreset").onclick=async()=>{activityEpoch++;activityOverride=false;activityCommitted=false;$("activitystatus").textContent="";await refresh();};
+
 function weekly(el,tr){
- // '작업창' 은 예전에 '파일' 로 뭉쳐 들어가 하루 8건 상한을 다 먹고 실제 문서를 밀어냈다 — 별도 계열.
- const keys=[["파일","#2a78d6"],["작업창","#7a8a99"],["메일","#0e8c7a"],["회의","#e08a00"],["커밋","#6c4fb8"],["팀즈","#4a7f9e"]];
+ // 작업창/기타 키는 옛 결과 호환용. 새 결과의 창 표본은 건수 막대와 별도로 안내한다.
+ if(!tr.length){el.innerHTML='<div class="note">집계할 기간의 자료가 없습니다.</div>';$("wleg").innerHTML="";if($("wscale"))$("wscale").textContent="";return;}
+ const keys=[["파일","#2a78d6"],["작업창","#7a8a99"],["메일","#0e8c7a"],["회의","#e08a00"],["커밋","#6c4fb8"],["팀즈","#4a7f9e"],["수동","#bd7046"],["기타","#989280"]]
+  .filter(([k])=>!["작업창","기타"].includes(k)||tr.some(w=>Number(w[k])>0));
  const W=740,H=180,L=34,Rm=38,B=26,T=12,iw=(W-L-Rm)/tr.length;
- const cmax=Math.max(...tr.map(w=>keys.reduce((a,[k])=>a+w[k],0)),1);
+ const totals=tr.map(w=>keys.reduce((a,[k])=>a+(Number(w[k])||0),0));
+ const ranked=totals.filter(n=>n>0).sort((a,b)=>b-a);
+ const fullMax=Math.max(...totals,1),limit=Math.max(1,Math.ceil((ranked[1]||fullMax)*2.5));
+ const compressed=!!($("activityscale")&&$("activityscale").checked)&&ranked.length>1&&fullMax>limit;
+ const cmax=compressed?limit:fullMax;
+ if($("wscale"))$("wscale").textContent=compressed
+  ?`표시 축 ${cmax.toLocaleString()}건 · ▲는 실제 건수입니다. 체크를 끄면 전체 높이로 봅니다. 집계값은 같습니다.`:"전체 건수를 같은 높이 기준으로 표시합니다.";
  const hmax=Math.max(...tr.map(w=>w.pc_h),1);
  let s=`<svg viewBox="0 0 ${W} ${H}" style="width:100%">`;
- for(let g=0;g<=3;g++){const y=T+(H-T-B)*g/3;
+ const has=w=>w.pc_record_days!==undefined?w.pc_record_days>0:(w.pc_wd===undefined?w.pc_h>0:w.pc_days>0);
+ const pcAny=tr.some(has),ticks=Math.min(3,cmax);
+ tr.forEach((w,i)=>{if(w.pc_wd!==undefined&&!has(w))
+  s+=`<rect x="${(L+i*iw).toFixed(1)}" y="${T}" width="${iw.toFixed(1)}" height="${(H-T-B).toFixed(1)}" fill="#f2f3f5" pointer-events="none"><title>${w.label} PC 기록 없음 (평일 ${w.pc_wd}일 중 0일) — 0시간이 아니라 기록이 없는 구간입니다</title></rect>`;});
+ for(let g=0;g<=ticks;g++){const y=T+(H-T-B)*g/ticks,frac=1-g/ticks;
   s+=`<line x1="${L}" x2="${W-Rm}" y1="${y}" y2="${y}" stroke="#eef0f3"/>
-  <text x="${L-5}" y="${y+3}" text-anchor="end" style="font-size:9px;fill:#98a0a8">${Math.round(cmax*(1-g/3))}</text>
-  <text x="${W-Rm+5}" y="${y+3}" style="font-size:9px;fill:#c8a06a">${(hmax*(1-g/3)).toFixed(0)}h</text>`;}
+  <text x="${L-5}" y="${y+3}" text-anchor="end" style="font-size:9px;fill:#98a0a8">${Math.round(cmax*frac)}</text>`;
+  if(pcAny)s+=`<text x="${W-Rm+5}" y="${y+3}" style="font-size:9px;fill:#c8a06a">${Number((hmax*frac).toFixed(hmax<10?1:0))}h</text>`;}
  tr.forEach((w,i)=>{
-  const x=L+i*iw+iw*0.18,bw=iw*0.64;let y=H-B;
-  keys.forEach(([k,c])=>{const h=(H-T-B)*w[k]/cmax;if(h>0.5){y-=h;
-   s+=`<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" fill="${c}" rx="1"><title>${w.label} ${k} ${w[k]}건</title></rect>`;}});
-  if(i%2===0)s+=`<text x="${(x+bw/2).toFixed(1)}" y="${H-B+13}" text-anchor="middle" style="font-size:9px;fill:#8b929b">${w.label}</text>`;
+  const x=L+i*iw+iw*0.18,bw=iw*0.64,factor=Math.min(1,cmax/(totals[i]||1));let y=H-B;
+  keys.forEach(([k,c])=>{const h=(H-T-B)*(Number(w[k])||0)/cmax*factor;if(h>0){y-=h;
+   s+=`<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(0.6,h).toFixed(1)}" fill="${c}" rx="1"><title>${w.label} ${k} ${w[k]}건</title></rect>`;}});
+  if(totals[i]>cmax)s+=`<text x="${(x+bw/2).toFixed(1)}" y="${T-3}" text-anchor="middle" style="font-size:9px;fill:#a86400;font-weight:700">▲${totals[i].toLocaleString()}<title>${esc(w.label)} 실제 합계 ${totals[i].toLocaleString()}건 — 표시 축만 줄였습니다</title></text>`;
+  if(tr.length<=16||i%2===0)s+=`<text x="${(x+bw/2).toFixed(1)}" y="${H-B+13}" text-anchor="middle" style="font-size:9px;fill:#8b929b">${w.label}</text>`;
  });
  // PC 기록이 없는 버킷은 0h 가 아니라 '모름' 이다(이벤트 로그가 롤오버되면 과거 주는 구조적으로 기록이 없다).
  // 예전에는 0 으로 그려 선이 바닥에 붙어 'PC 가동이 적용 안 된다'로 읽혔다 — 선을 끊고 회색 밴드로 칠한다.
- const has=w=>(w.pc_wd===undefined)?(w.pc_h>0):(w.pc_days>0);
- tr.forEach((w,i)=>{if(w.pc_wd!==undefined&&!has(w))
-  s+=`<rect x="${(L+i*iw).toFixed(1)}" y="${T}" width="${iw.toFixed(1)}" height="${(H-T-B).toFixed(1)}" fill="#f2f3f5"><title>${w.label} PC 기록 없음 (평일 ${w.pc_wd}일 중 0일) — 0시간이 아니라 기록이 없는 구간입니다</title></rect>`;});
  let seg=[];
  const flush=()=>{if(seg.length>1)s+=`<polyline points="${seg.join(" ")}" fill="none" stroke="#c8a06a" stroke-width="2"/>`;seg=[];};
  tr.forEach((w,i)=>{if(has(w))seg.push(`${(L+i*iw+iw/2).toFixed(1)},${(H-B-(H-T-B)*w.pc_h/hmax).toFixed(1)}`);else flush();});
@@ -2804,8 +2998,17 @@ async function poll(){
 let wasRunning=false;
 async function refresh(){
  let d;
- try{ d=await fetch("/api/dash").then(r=>r.json()); }
- catch(e){ $("state").textContent="대시보드 데이터를 읽지 못했습니다 — 진행 로그를 확인하세요"; return; }
+ const activityAtStart=activityEpoch,refreshCollected=activityOverride&&activityCommitted;
+ const status=$("analysisstatus");
+ try{const response=await fetch("/api/dash");if(response.ok===false)throw Error(`HTTP ${response.status}`);d=await response.json();}
+ catch(e){if(status)status.textContent="저장된 분석 결과를 읽지 못했습니다. 수집 기록은 별도로 조회합니다. "+String(e.message||e);return;}
+ // Collection visibility must not depend on any optional analysis card.
+ if(!activityOverride)renderActivity(d);
+ try{renderAnalysis(d);if(status)status.textContent="";}
+ catch(e){if(status)status.textContent="분석 결과 일부를 표시하지 못했습니다. 수집 집계는 계속 확인할 수 있습니다. "+String(e.message||e);}
+ if(refreshCollected&&activityOverride&&activityCommitted&&activityAtStart===activityEpoch)await browseActivity(activityQueryAll);
+}
+function renderAnalysis(d){
  $("ver").textContent=`${d.version} · 포트 ${d.port} · 로컬 전용`;
  // 스텁 판정 배너 — 무엇보다 먼저. LM_COPILOT_STUB 로 만든 결과는 실제 Copilot 판정이 아니다(테스트 전용).
  // 얼린 사본은 이 화면과 같은 스크립트가 baked /api/dash 를 읽으므로 같은 배너가 그대로 굳는다.
@@ -2824,12 +3027,17 @@ async function refresh(){
  }
  const rs=d.rows||[];
  const mm=d.meta||{};
- const inMM=(mm.total_mm!=null?mm.total_mm:d.total)||0, avMM=mm.avail_mm||0;
- $("k_load").textContent=avMM?Math.round(inMM/avMM*100)+"%":"–";
- $("sb_load").textContent=avMM?`로드율 ${Math.round(inMM/avMM*100)}% (투입 ${inMM.toFixed(2)}/가용 ${avMM.toFixed(2)} MM)`:"";
+ const finite=v=>{if(v==null||typeof v==="boolean"||String(v).trim()==="")return null;const n=Number(v);return Number.isFinite(n)&&n>=0?n:null;};
+ const inMM=finite(mm.total_mm), avMM=finite(mm.avail_mm),hasLoad=inMM!=null&&avMM>0;
+ $("k_load").textContent=hasLoad?Math.round(inMM/avMM*100)+"%":"–";
+ $("sb_load").textContent=hasLoad?`로드율 ${Math.round(inMM/avMM*100)}% (투입 ${inMM.toFixed(2)}/가용 ${avMM.toFixed(2)} MM)`:"";
  $("sb_ver").textContent=`${d.version} · 포트 ${d.port}`;
- $("k_mm").textContent=avMM?`투입 추정 ${inMM.toFixed(2)} / 가용 ${avMM.toFixed(2)} MM`:(d.total?d.total.toFixed(2)+" MM":"분석 전");
- const classified=rs.reduce((sum,r)=>sum+(Number(r.mm)||0),0),unallocated=Math.max(0,inMM-classified);
+ $("k_mm").textContent=hasLoad?`투입 추정 ${inMM.toFixed(2)} / 가용 ${avMM.toFixed(2)} MM`
+  :(inMM!=null?`투입 추정 ${inMM.toFixed(2)} MM · 가용 ${avMM===0?"0.00 MM":"미확인"}`
+    :(d.file?`분류 업무 ${Number(d.total||0).toFixed(2)} MM · 투입·가용 산정 자료 미확인`:"분석 전"));
+ const ap=$("analysisperiod");
+ if(ap)ap.textContent=d.file?`저장된 분석: ${(mm.period||d.period||[]).join(" ~ ")} · ${d.file} — 날짜 조회는 수집 집계를 바꾸며, 시간·MM 재산정은 분석 실행 시 수행합니다.`:"저장된 분석 결과가 없습니다. 수집 기록의 기간별 집계는 분석 없이 확인할 수 있습니다.";
+ const classified=rs.reduce((sum,r)=>sum+(Number(r.mm)||0),0),unallocated=inMM==null?0:Math.max(0,inMM-classified);
  if(unallocated>0.01)$("k_mm").textContent+=` · 분류 업무 ${classified.toFixed(2)} / 미배분 ${unallocated.toFixed(2)} MM(제외·분류 미확정, 절감량 아님)`;
  const projs=[...new Set(rs.map(r=>r["Level 2"]))];
  const col=p=>PAL[projs.indexOf(p)%PAL.length];
@@ -2880,7 +3088,7 @@ async function refresh(){
  const jiLine=jiBits.length?('· 판정 기록: '+jiBits.join(' · ')):"";
  const jiBad=(ji.failed_rows>0)||(ji.partial_chunks>0)||!!ji.aborted;
  if(rs.length&&d.judged===false){
-  const lr=d.last_run||{}, st=(lr.stages||[]);
+  const lr=d.last_run||{}, st=(Array.isArray(lr.stages)?lr.stages:[]).filter(x=>x&&typeof x==="object");
   const j=st.find(x=>x.name==="AI 판정");
   // 화면 파일의 기간과 최근 실행의 기간이 다르면 — 최근 실행이 결과를 못 만든 것.
   // 이걸 먼저 말하지 않으면 '다시 실행하세요' 안내가 영원히 반복된다(검증 지적).
@@ -2972,37 +3180,6 @@ async function refresh(){
  const atot=aa.reduce((s,[,v])=>s+v,0)||1;
  $("actbar").innerHTML=aa.map(([l,v],i)=>`<i style="width:${(v/atot*100).toFixed(1)}%;background:${PAL[(i+3)%PAL.length]}" title="${esc(l)} ${(v/atot*100).toFixed(0)}%"></i>`).join("");
  $("actleg").innerHTML=aa.map(([l,v],i)=>`<div><span class="dot" style="background:${PAL[(i+3)%PAL.length]}"></span>${esc(l)}<span class="v">${(v/atot*100).toFixed(0)}% · ${v.toFixed(2)} MM</span></div>`).join("")||'<div class="note">분석을 실행하세요</div>';
- weekly($("weekly"),d.trend||[]);
- // 메일·일정이 기간의 일부 달만 수집된 상태(Outlook 시간 예산) — 앞 달의 메일·회의 막대가 비어 보이는 이유를 적는다
- const wn=$("wnote");
- if(wn){const mc=d.mail_coverage||null;const notes=[];
-  // 추이가 수집 raw 로 그려진 화면(판정 신호가 없음 — 수집만 한 추가 PC·분석 전) — 서버가 실제로 무엇을 셌는지(trend_src)로 판단한다
-  if(d.trend_src==="raw"&&d.period&&d.period[0]) notes.push(`판정에 쓰인 신호가 없어 수집 raw 를 <b>${esc(d.period[0])} ~ ${esc(d.period[1]||"")}</b> 기간으로 그렸습니다 — AI 정제를 켠 [분석 실행] 뒤에는 판정 신호 기준으로 바뀝니다.`);
-  if(mc&&(mc.uncovered||[]).length) notes.push(`⚠ 메일·회의 막대는 ${mc.months}개월 중 <b>${(mc.covered||[]).length}개월</b>만 수집돼 있습니다 — 미수집 ${esc(mc.uncovered.join(", "))} (Outlook 시간 예산). [분석 실행]을 다시 돌리면 남은 달을 이어서 읽습니다.`);
-  // PC 가동 선은 Windows 이벤트 로그에서 온다. 로그는 롤오버되므로 기간 앞쪽은 '0시간' 이 아니라
-  // '기록 없음' 이다 — 그것을 말해 주지 않으면 'PC 가동이 적용 안 된다'로 읽힌다(제보).
-  const ti=d.trend_info||{};const unit=ti.gran==="month"?"개월":"주";
-  if(ti.pc_buckets_all&&ti.pc_buckets<ti.pc_buckets_all)
-   notes.push(`PC 가동 선은 ${ti.pc_buckets_all}${unit} 중 <b>${ti.pc_buckets}${unit}</b>만 기록이 있습니다`
-    +(ti.pc_from?` — Windows 이벤트 로그가 <b>${esc(ti.pc_from)}</b> 까지만 남아 있어 그 앞은 <b>0시간이 아니라 기록 없음</b>입니다(회색 구간).`:` — 회색 구간은 0시간이 아니라 기록이 없는 구간입니다.`));
-  if(ti.pc_note) notes.push(`⚠ ${esc(ti.pc_note)}`);
-  if(ti.capped>0) notes.push(`파일 막대는 하루 8건까지만 셉니다 — 이 기간에 <b>${ti.capped.toLocaleString()}건</b>이 상한에 눌렸습니다(공유폴더 재동기화가 그래프를 지배하지 않게 하는 장치입니다. 실제 신호 수는 [업무 리뷰] 탭에서 봅니다).`);
-  if(ti.gran==="month") notes.push(`기간이 길어 <b>월 단위</b>로 묶어 그렸습니다(막대 하나 = 한 달).`);
-  if(notes.length){wn.style.display="";wn.innerHTML=notes.join("<br>");}
-  else wn.style.display="none";}
- // 같은 시각에 몰린 덩어리가 있으면 알린다 — 그날 일한 것이 아닐 수 있다
- const cl=$("wclump");
- if(cl){const cs=d.clumps||[];
-  cl.innerHTML=cs.length?cs.map(c=>
-   `<div style="color:#a86400;background:#fdf3e2;border-left:4px solid #e08a00;`
-   +`padding:8px 12px;border-radius:6px;margin:6px 0;font-size:12px">`
-   +`<b>${esc(c.when)}</b> 한 시각에 파일 <b>${c.n.toLocaleString()}건</b>`
-   +` (이 기간 파일 흔적의 ${Math.round(c.share*100)}%)`
-   +(c.folder?` · <code>${esc(c.folder)}</code>`:"")
-   +`<br>폴더가 통째로 다시 쓰이면(공유 드라이브 동기화·폴더 복사·git 체크아웃·백업 복원) `
-   +`그 안 파일 전부의 수정 시각이 그 순간으로 바뀝니다. `
-   +`<b>그날 그만큼 일한 것이 아닐 수 있습니다</b> — 같은 폴더를 보는 사람은 모두 같은 봉우리가 생깁니다.</div>`
-  ).join(""):"";}
  const max=Math.max(...rs.map(r=>r.mm||0),0.0001);
  $("rsrc").textContent=d.file?`${d.file} · ${rs.length}항목`:"결과 없음";
  $("res").innerHTML="<tr><th style='width:80px'>Level 1</th><th style='width:60px'>유형</th><th style='width:150px'>Level 2 (과제)</th><th style='width:90px'>Level 3</th><th>상세설명</th><th style='width:120px'>근거(출처)</th><th style='width:58px'>비중</th><th style='width:48px'>MM</th><th style='width:36px'>확신</th></tr>"+
@@ -3487,7 +3664,7 @@ function flowCard(f,fi){
    const steps=(f.steps||[]).map(s=>`
     <tr><td style="width:26px;text-align:center;color:#8b929b"><b>${s.order}</b></td>
      <td style="width:150px"><b>${esc(s.name)}</b>${s.cycle?`<div style="color:#8b929b;font-size:11px">${esc(s.cycle)}</div>`:""}</td>
-     <td>${esc(s.desc)}${s.evidence?`<div style="color:#98a0a8;font-size:11px">근거: ${esc(s.evidence)}</div>`:""}</td>
+     <td>${esc(s.desc)}${s.evidence?`<div style="color:#98a0a8;font-size:11px">근거: ${esc(s.evidence)}</div>`:""}${s.needs_review?`<div class="note" style="color:#b54708">단계 근거·판정 확인 필요${s.evidence_status?": "+esc(s.evidence_status):""}</div>`:""}</td>
      <td style="width:220px"><span style="display:inline-block;padding:1px 8px;border-radius:9px;color:#fff;font-size:11px;background:${AGENT_C[s.agent]||"#8b929b"}">Agent ${esc(s.agent||"확인 필요")}</span>
       ${s.agent_how?`<div style="font-size:11px;color:#4a5159;margin-top:2px">${esc(s.agent_how)}</div>`:""}</td></tr>`).join("");
    // 과제 수만큼 길어지는 탭 — 접이식으로. 제목 줄에 역할 요약을 실어 접힌 채로도 훑는다.
@@ -3499,14 +3676,14 @@ function flowCard(f,fi){
    // 흐름 이름을 제목에 붙여 같은 과제의 다른 줄기임을 알 수 있게 한다.
    const br=f.branch?`<span class="dim"> · ${esc(f.branch)}</span>`:"";
    // 담당업무 카드는 과제 머리말 밑에 있으니 제목에는 담당업무만(과제는 title 속성으로).
-   const ttl=hasDet?`<span title="${esc(pj)}">${esc(f.detail)}</span>`:esc(f.model);
+   const ttl=hasDet?(f.needs_review?`${esc(pj)} / ${esc(f.detail)}`:`<span title="${esc(pj)}">${esc(f.detail)}</span>`):esc(f.model);
    return `<details class="flow-task"${fi===0?" open":""}${hasDet?' style="margin-left:6px"':''}><summary>${hasDet?"":l1b}${ttl}${br}
      <span class="state">${(mm.mm!=null)?mm.mm+" MM · ":"관련 MM 확인 필요 · "}단계 ${(f.steps||[]).length}개 · ${esc((f.role||"판단 유보").split("—")[0].trim())}</span></summary>
     <div class="body">
     ${(f.upstream||f.downstream)?`<div class="note" style="margin:2px 0 6px">${f.upstream?`← 앞 업무: <b>${esc(String(f.upstream).split(" / ").pop())}</b>`:""}${(f.upstream&&f.downstream)?" &nbsp;·&nbsp; ":""}${f.downstream?`→ 다음 업무: <b>${esc(String(f.downstream).split(" / ").pop())}</b>`:""}</div>`:""}
     <div style="margin:2px 0 6px"><b>역할:</b> ${esc(f.role)||"판단 유보"}</div>
     ${f.summary?`<div class="note" style="margin-bottom:6px">${esc(f.summary)}</div>`:""}
-    ${f.needs_review?'<div class="note" style="color:#b54708">근거 또는 AI 판정 확인 필요 — 팀 우선순위 집계에서 제외됩니다.</div>':""}
+    ${f.needs_review?`<div class="note" style="color:#b54708">검토 필요 — 근거 또는 AI 판정 확인 필요 · 팀 우선순위 집계에서 제외됩니다.${f.review_reason?" "+esc(f.review_reason):""}</div>`:""}
     ${mmBar}
     <table style="margin-top:6px"><tr><th></th><th>단계</th><th>무슨 일</th><th>Agent 가능성</th></tr>${steps}</table>
     </div></details>`;
@@ -3549,6 +3726,9 @@ async function loadFlow(){
  el.innerHTML='<div class="card"><div class="note">불러오는 중…</div></div>';
  const d=await fetch("/api/workflow").then(r=>r.json()).catch(()=>({}));
  const nflows=(d.flows||[]).length;
+ const reviewFlows=(Array.isArray(d.review_flows)?d.review_flows:[]).filter(f=>f&&typeof f==="object");
+ const reviewHtml=reviewFlows.length?'<div class="card"><h2>검토 필요 '+reviewFlows.length+'건</h2><div class="note">아래 내용은 AI 초안입니다. 근거를 확인하기 전에는 확정 결과에 포함하지 않습니다.</div>'
+  +reviewFlows.map((f,i)=>flowCard({...f,needs_review:true},i)).join("")+'</div>':"";
  // 워크플로우는 이제 한 번의 실행으로 끝까지 판정한다(진전이 있는 한 자동으로 마저 묻는다).
  // 그래도 남았다면 두 가지 중 하나다 — 시간 예산·상한에 걸려 끊긴 것(다시 누르면 이어진다)이거나,
  // 더 늘릴 수 없어 멈춘 것(다시 눌러도 같다). 후자에 [이어서 분석]을 권하면 헛수고를 시킨다.
@@ -3560,10 +3740,12 @@ async function loadFlow(){
   +(nflows?'<button class="ghost" id="flowexpand">상위·과제 모두 펼치기</button><button class="ghost" id="flowcollapse">상위·과제 모두 접기</button>':"")
   +'<span class="state" id="flowmsg">'+(d.running?"워크플로우 분석 진행 중… (진행률은 상단 진행 바)":(d.generated?esc(`생성 ${d.generated} · ${d.model_name||""}`)+(d.basis==="규칙"?" · 규칙 축(AI 판정 없음)":""):""))+'</span></div>'
   +'<div class="note">과제별로 <b>역할 → 일의 순서 → 단계별 Agent 가능성</b>을 raw 근거에서 판정합니다. '
-  +'MM 배분 숫자는 AI 가 아니라 판정 실측치입니다.'+(nflows?` 업무 ${nflows}/${d.rows_units||nflows}개 판정`+partial+salv:"")+'</div>'+lastErr
+  +'MM은 저장된 투입 추정값과 업무별 배분에서 가져옵니다.'+` 검증된 흐름 ${nflows}개 · 검토 필요 ${reviewFlows.length}개`+partial+salv+'</div>'+lastErr
   +(d.reextracted?'<div class="note" style="color:#8a5a00">⚠ <b>재추출 이후 결과</b> — '+esc(d.reextracted_note||"이 결과는 마지막 업무 로드 재추출 이전의 것입니다")+' · [워크플로우 재분석]으로 갱신하세요</div>':"")
   +mergeLine(d.merge2)+mixedLine(d.level1_mixed)+manualLine(d.manual)+'</div>';
- if(!d.ok||!nflows){
+ if(reviewFlows.length&&!nflows){
+  el.innerHTML=btn+reviewHtml;
+ }else if(!d.ok||!nflows){
   // 홑따옴표 문자열에서는 ${...} 가 치환되지 않는다 — 템플릿 리터럴로 써야 사유가 실제로 보인다
   // '결과가 없다' 와 '다른 기간 것만 있다' 는 다르다 — 구분해서 말한다
   const per=d.tag?`지금 보는 기간(${esc(d.tag)})에는 `:"";
@@ -3577,7 +3759,7 @@ async function loadFlow(){
     +'AI 정제를 포함해 [분석 실행]을 돌리면 자동 생성됩니다. 위 [워크플로우 재분석]으로 지금 만들 수도 있습니다.'+oth+'</div></div>';
   }
  }else{
-  el.innerHTML=btn+flowGroups(d);
+  el.innerHTML=btn+flowGroups(d)+reviewHtml;
   bindFlowGroups(el);
 
  }
@@ -3702,7 +3884,7 @@ async function loadReview(kind){
    const cms=p.comms.map(c=>`<div style="font-size:11px;color:#5a626b;line-height:1.7">· ${esc(c)}</div>`).join("");
    return `<div style="border-left:3px solid ${col(p.name)};padding:4px 0 4px 12px;margin:12px 0">
     <div style="font-size:13px"><b>${esc(p.name)}</b>
-     <span class="state">${(p.share*100).toFixed(0)}% · ${p.mm.toFixed(2)} MM · 신호 ${p.n}건</span></div>
+     <span class="state">근거 비중 ${(p.share*100).toFixed(0)}% · 신호 ${p.n}건</span></div>
     <div style="margin-top:3px;font-size:11.5px">${(p.wt||[]).map(([k,v])=>`<span class="tag" style="border-left:3px solid ${WTCOL[k]||"#98a0a8"}">${esc(k)} ${v}%</span>`).join("")}
      <span class="state">· ${acts}</span></div>
     ${ppl?`<div style="margin-top:5px"><span class="state">함께:</span> ${ppl}</div>`:""}
@@ -3719,11 +3901,14 @@ async function loadReview(kind){
    이 달의 AI 리뷰 코멘트가 없습니다. 아래 원문 근거는 그대로 확인할 수 있습니다.
    상단 <b>[리뷰 코멘트 재생성]</b>으로 선택한 분석 기간의 코멘트를 다시 요청할 수 있습니다. PC 이동 준비 ZIP에는 기존 코멘트도 포함됩니다.</div>`:"");
   const wtsum=(x.wt||[]).map(([k,v])=>`${k} ${v}%`).join(" · ");
-  const head=`${esc(x.label)} <span class="state">신호 ${x.signals}건 · 활동 ${x.days}일${wtsum?" · "+esc(wtsum):""}</span>`;
+  const measured=x.measurement||{}, measuredText=measured.available
+   ?` · 시간 추정 ${Number(measured.worked_h).toFixed(1)}h · ${Number(measured.mm).toFixed(3)} MM`
+   :" · 시간 산정 자료 없음";
+  const head=`${esc(x.label)} <span class="state">신호 ${x.signals}건 · 활동 ${x.days}일${measuredText}${wtsum?" · "+esc(wtsum):""}</span>`;
   const body=`${narH}${bar}${psec}${connSVG(x,col)}
    <details style="margin-top:6px"><summary style="padding:8px 12px;font-size:12px">원문 근거 타임라인 (해석 검증용 — 판정된 업무 신호만)</summary>
    <div class="body tl" style="max-height:420px;overflow:auto">${tl}</div></details>
-   <div class="note" style="margin-top:6px">프로젝트 MM은 기간×신호 비중 개략치 — 확정 MM은 대시보드 기준</div>`;
+   <div class="note" style="margin-top:6px">업무별 비중은 분석 신호의 가중 비중입니다. 기간의 시간·MM은 같은 분석의 저장된 일별 시간 장부를 사용합니다.${measured.reason?" "+esc(measured.reason):""}</div>`;
   // 카드가 길어 접이식으로 — 첫 기간만 펼침. 상세 리뷰(deep)는 표 중심이라 기존 유지.
   if(kind==="deep")return `<div class="card"><h2>${head}</h2>${body}</div>`;
   return `<details${gi===0?" open":""}><summary>${head}</summary><div class="body">${body}</div></details>`;
@@ -3807,6 +3992,9 @@ async function loadAgentic(){
 }
 setInterval(()=>{if(!timer)poll();},3000);
 refresh();poll();tuLoad();
+if(typeof window.addEventListener==="function")window.addEventListener("load",()=>{
+ if(!document.getElementById("lm-frozen-data"))activityFromSelection();
+});
 </script>
 </body></html>"""
 
@@ -3816,7 +4004,8 @@ class H(BaseHTTPRequestHandler):
         pass
 
     def _send(self, code, body, ctype="application/json; charset=utf-8", headers=None):
-        data = body if isinstance(body, bytes) else json.dumps(body, ensure_ascii=False).encode("utf-8")
+        data = body if isinstance(body, bytes) else json.dumps(_json_finite(body), ensure_ascii=False,
+                                                              allow_nan=False).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         for k, v in (headers or {}).items():
@@ -3923,6 +4112,15 @@ class H(BaseHTTPRequestHandler):
                 payload["sampler_restart"] = {"when": SAMPLER_RESTART["when"], "how": SAMPLER_RESTART["how"],
                                               "note": SAMPLER_RESTART["note"] or why}
             self._send(200, payload)
+        elif self.path.split("?", 1)[0] == "/api/activity":
+            from urllib.parse import parse_qs, urlsplit
+            try:
+                query = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
+                if set(query) - {"from", "to"} or any(len(v) != 1 for v in query.values()):
+                    raise ValueError("조회 기간 요청을 확인하세요")
+                self._send(200, activity_payload(query.get("from", [""])[0], query.get("to", [""])[0]))
+            except ValueError as error:
+                self._send(400, {"ok": False, "error": str(error)})
         elif self.path == "/api/dash":
             fn, rows = result_rows()
             meta = {}
@@ -3935,7 +4133,7 @@ class H(BaseHTTPRequestHandler):
                 cand = os.path.join(REPORT, f"mm_meta_{m2.group(1)}.json")
                 if os.path.exists(cand):
                     mp = cand
-            if not mp:
+            if not mp and not m2:
                 mp = latest("mm_meta_*.json")
             if mp:
                 # 깨진/중단 저장된 JSON도 견뎌야 한다 — 여기서 예외가 나면 /api/dash 전체가
@@ -3963,7 +4161,12 @@ class H(BaseHTTPRequestHandler):
             stub_note = _stub_note(lastrun)
             # 화면 기간 — 분석 결과가 있으면 그 기간, 없으면 마지막 실행(수집)의 기간, 그것도 없으면 수집 데이터의 범위.
             # 추이·덩어리·수집 범위 대조가 전부 같은 기간을 본다(dash_period 참조).
-            per = dash_period(meta, lastrun)
+            if not isinstance(meta, dict):
+                meta = {}
+            row_period = _tag_period(m2.group(1)) if m2 else []
+            if row_period and meta.get("period") and meta["period"] != row_period:
+                meta = {}  # a foreign period's metadata must not label current rows
+            per = row_period or dash_period(meta, lastrun)
             tinfo = {}
             tr = trend(per[0], per[1], (m2.group(1) if m2 else ""), info=tinfo)
             self._send(200, {"version": VERSION, "port": PORT[0], "sources": sources(per),
@@ -3974,12 +4177,13 @@ class H(BaseHTTPRequestHandler):
                              # 14주 고정이라 1월부터 본 사람도 최근 3개월만 보였다(제보)
                              "clumps": mtime_clumps(per[0], per[1]),
                              "trend": tr,
-                             # 추이가 무엇을 셌는지 — signals(판정 신호) / raw(수집 raw 폴백) / none. 화면 안내가 이 값을 본다
+                             # 추이는 raw 수집량. 판정 표본은 참고 수치로만 전달한다.
                              "trend_src": tinfo.get("src", ""),
                              # 추이 밑 안내 재료 — PC 기록이 있는 버킷/전체, 기록 시작일, 상한에 눌린 건수,
                              # 주/월 단위, 추가PC 합산 실패 사유. 화면이 '0h' 와 '기록 없음' 을 구분해 말한다.
                              "trend_info": {k: tinfo.get(k) for k in
-                                            ("gran", "pc_note", "pc_buckets", "pc_buckets_all", "pc_from", "capped")},
+                                            ("gran", "period", "pc_note", "pc_buckets", "pc_buckets_all", "pc_from", "capped",
+                                              "counted", "displayed", "raw_n", "duplicates", "signals_n", "window_samples")},
                              "period": per,
                              "judged": judged, "last_run": lastrun,
                              # 판정 건수/대상 — 0 이면 '단계는 성공인데 왕복이 전부 실패' 를 화면이 구분한다
@@ -4308,7 +4512,7 @@ class H(BaseHTTPRequestHandler):
             except ValueError as error:
                 self._send(400, {"error": str(error)})
                 return
-            self._send(200, dict(selected, gran=g, groups=review(g, selected["tag"])))
+            self._send(200, dict(selected, gran=g, groups=measured_review(g, selected["tag"])))
         elif self.path.startswith("/api/data"):
             src = (self.path.split("src=")[-1] if "src=" in self.path else "files")
             pats = {"mail": "outlook/mail.csv", "cal": "outlook/calendar.csv",

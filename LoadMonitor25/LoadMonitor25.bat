@@ -38,14 +38,15 @@ if not defined PY_CMD (
 
 echo   분석 기간을 고르세요.
 echo.
+echo     0. 올해 1월 1일부터   [기본]
 echo     1. 최근 1개월
-echo     2. 최근 3개월   [기본]
+echo     2. 최근 3개월
 echo     3. 최근 6개월
 echo     4. 직접 입력
 echo.
 set "SEL="
 set /p SEL=  번호 :
-if "%SEL%"=="" set "SEL=2"
+if "%SEL%"=="" set "SEL=0"
 
 set "DAYS=90"
 if "%SEL%"=="1" set "DAYS=30"
@@ -55,7 +56,7 @@ set "FROM="
 set "TO="
 if "%SEL%"=="4" goto ASKDATE
 
-"%PY_EXE%" %PY_ARGS% -c "import datetime,sys;print((datetime.date.today()-datetime.timedelta(days=int(sys.argv[1]))).isoformat())" %DAYS% > "%TEMP%\lm_from.txt"
+"%PY_EXE%" %PY_ARGS% -c "import datetime,sys;print((datetime.date.today().replace(month=1,day=1) if sys.argv[2]=='0' else datetime.date.today()-datetime.timedelta(days=int(sys.argv[1]))).isoformat())" %DAYS% %SEL% > "%TEMP%\lm_from.txt"
 set /p FROM=<"%TEMP%\lm_from.txt"
 "%PY_EXE%" %PY_ARGS% -c "import datetime;print(datetime.date.today().isoformat())" > "%TEMP%\lm_to.txt"
 set /p TO=<"%TEMP%\lm_to.txt"

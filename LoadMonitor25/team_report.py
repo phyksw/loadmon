@@ -20,6 +20,7 @@ sender 계약: sender(prompt_text, tag, name) -> {"ok": bool, "reply": str, "err
 import copy
 import csv
 import glob
+import hashlib
 import io
 import json
 import os
@@ -798,6 +799,156 @@ def norm_flow(fl, include_review=False):
         if fl2.get(k) is not None and not isinstance(fl2[k], str):
             fl2[k] = str(fl2[k])
     return fl2
+
+
+def render_analysis_status(members):
+    """Publication completion is distinct from confidence in the measured hours."""
+    if not members:
+        return ""
+    ag = _agg()
+    rows = []
+    for member in members:
+        status = ag.analysis_status_summary(member)
+        counts = (f'{status["judged"]} / {status["total"]}건'
+                  if status["judged"] is not None else "건수 근거 없음")
+        rows.append(f'<tr><td>{esc(member.get("owner"))}</td><td>{esc(member.get("tag"))}</td>'
+                    f'<td><span class="tag">{esc(status["label"])}</span></td><td>{counts}</td>'
+                    f'<td>{esc(" ".join(status["warnings"])) or "완료 근거가 있는 저장본"}</td></tr>')
+    return ('<section class="card" id="team-analysis-status"><h2>분석 진행 상태</h2>'
+            '<div class="note">저장본의 분석 완료 여부입니다. 시간 측정 신뢰도와 팀 비교 가능 여부는 별도 기준입니다.</div>'
+            '<table><tr><th>이름</th><th>분석 기간</th><th>상태</th><th>판정 완료 / 대상</th><th>설명</th></tr>'
+            + "".join(rows) + '</table></section>')
+
+
+def collect_reference_workflows(members):
+    """Known members' own-period text, independently of numeric comparison eligibility.
+
+    The caller supplies already pinned member directories. Never scan another period or
+    import an unregistered HTML identity. This result is not an input to KPI clustering.
+    """
+    ag = _agg()
+    items, notices = [], []
+    for member in members:
+        directory = str(member.get("dir") or "")
+        origin = str(member.get("member_source_dir") or directory)
+        tag = str(member.get("tag") or "")
+        identity = json.dumps([str(member.get("member_id") or ""),
+                               os.path.normcase(os.path.abspath(origin))], ensure_ascii=False)
+        key = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+        source = {"member_key": key, "owner": str(member.get("owner") or "이름 미확인"),
+                  "tag": tag, "source_folder": os.path.basename(origin),
+                  "file": f"workflow_{tag}.json" if ag.valid_tag(tag) else "",
+                  "measurement_confidence": member.get("measurement_confidence", "unknown")}
+
+        def notice(status, reason):
+            notices.append(dict(source, status=status, reason=reason, reference_readable=False))
+
+        if not ag.valid_tag(tag):
+            notice("invalid_period", "구성원의 분석 기간을 확인할 수 없어 파일을 선택하지 않았습니다")
+            continue
+        if not directory:
+            notice("missing", "구성원의 자료 위치가 없습니다")
+            continue
+        path = os.path.join(directory, source["file"])
+        try:
+            with open(path, encoding="utf-8-sig") as stream:
+                obj = json.load(stream)
+        except FileNotFoundError:
+            notice("missing", "이 구성원 기간의 워크플로우 파일이 없습니다")
+            continue
+        except (OSError, ValueError):
+            notice("unreadable", "워크플로우 파일을 읽거나 JSON으로 해석할 수 없습니다")
+            continue
+        if not isinstance(obj, dict):
+            notice("invalid_format", "워크플로우 JSON이 객체가 아닙니다")
+            continue
+        if obj.get("tag", tag) != tag:
+            notice("period_mismatch", "파일명·구성원 기간과 JSON 내부 기간이 달라 내용을 연결하지 않았습니다")
+            continue
+        if member.get("stub") or obj.get("stub"):
+            notice("stub", "시험용 스텁 결과입니다. 실제 업무 참고자료에 포함하지 않았습니다")
+            continue
+        reasons = [str(x) for x in (member.get("exclusion_reasons") or [])]
+        comparable = bool(member.get("kpi_eligible")) and not member.get("unreliable")
+        if not comparable and not reasons:
+            reasons.append("팀 비교 조건 미충족")
+        if obj.get("partial"):
+            reasons.append("워크플로우 분석 일부 완료")
+        if obj.get("ok") is False:
+            reasons.append("워크플로우 분석 미완료 — 저장된 내용만 참고")
+        current = ag.artifact_current(obj, tag)
+        malformed = 0
+        for field in ("flows", "review_flows"):
+            raw_flows = obj.get(field, [])
+            if not isinstance(raw_flows, list):
+                malformed += 1
+                continue
+            for index, raw in enumerate(raw_flows):
+                flow = norm_flow(raw, include_review=True)
+                if flow is None:
+                    malformed += 1
+                    continue
+                flow_reasons = list(reasons)
+                review = field == "review_flows" or flow.get("needs_review") or flow.get("kpi_eligible") is False
+                if review:
+                    flow_reasons.append(str(flow.get("review_reason") or "흐름 근거·판정 확인 필요"))
+                if comparable and current and not review:
+                    # Already confirmed entries stay solely in the existing quantitative path.
+                    if _flow_mm(flow, member.get("rows")) is not None or not flow_unit(flow)[1]:
+                        continue
+                    flow_reasons.append("현재 업무 행과 흐름의 연결을 확인할 수 없음")
+                # Only qualitative content crosses this boundary. Stored or recomputed MM,
+                # fit percentages and candidate allocations never enter the reference payload.
+                text = {name: str(flow.get(name) or "") for name in _FLOW_STR}
+                text["steps"] = [{name: str(step.get(name) or "") for name in
+                                  ("name", "desc", "evidence", "cycle", "agent_how", "evidence_status")}
+                                 for step in flow["steps"]]
+                items.append(dict(source, reference_id=json.dumps([key, field, index], ensure_ascii=False),
+                                  source_field=field, reference_readable=True, kpi_eligible=False,
+                                  comparison_eligible=False, reasons=list(dict.fromkeys(flow_reasons)), workflow=text))
+        if malformed:
+            notice("invalid_entries", f"형식이 잘못된 흐름 목록·항목 {malformed}개는 내용을 표시하지 못했습니다")
+    return {"items": items, "notices": notices}
+
+
+def render_reference_workflows(reference):
+    """Expandable text-only reference cards; intentionally contains no MM or ranking values."""
+    items, notices = reference["items"], reference["notices"]
+    if not items and not notices:
+        return ""
+    cards = []
+    for item in items:
+        flow = item["workflow"]
+        title = " / ".join(x for x in (flow.get("project"), flow.get("detail")) if x) or flow.get("model") or "업무명 미확인"
+        if flow.get("branch"):
+            title += " / " + flow["branch"]
+        steps = "".join(
+            f'<tr><td>{index + 1}</td><td><b>{esc(step["name"])}</b>'
+            + (f'<div class="sub">{esc(step["cycle"])}</div>' if step["cycle"] else "")
+            + f'</td><td>{esc(step["desc"])}'
+            + (f'<div class="sub">근거: {esc(step["evidence"])}</div>' if step["evidence"] else "")
+            + (f'<div class="sub">근거 상태: {esc(step["evidence_status"])}</div>' if step["evidence_status"] else "")
+            + (f'<div class="sub">AI 제안(미검증): {esc(step["agent_how"])}</div>' if step["agent_how"] else "")
+            + '</td></tr>' for index, step in enumerate(flow["steps"]))
+        cards.append(
+            f'<details class="reference-workflow" data-reference-key="{esc(item["reference_id"])}"><summary>'
+            f'{esc(item["owner"])} · {esc(item["tag"])} · {esc(title)}</summary><div class="body">'
+            f'<div class="note">참고 사유: {esc(" · ".join(item["reasons"]))}</div>'
+            f'<div class="sub">출처: {esc(item["source_folder"])} / {esc(item["file"])} · {esc(item["source_field"])}</div>'
+            f'<p><b>역할:</b> {esc(flow["role"]) or "기록 없음"}</p>'
+            + (f'<div class="note">{esc(flow["summary"])}</div>' if flow["summary"] else "")
+            + ('<table><tr><th>순서</th><th>단계</th><th>내용·근거</th></tr>' + steps + '</table>'
+               if steps else '<div class="note">저장된 단계가 없습니다.</div>') + '</div></details>')
+    unavailable = ("<table><tr><th>이름·기간</th><th>출처</th><th>읽지 못한 사유</th></tr>"
+                   + "".join(f'<tr><td>{esc(x["owner"])} · {esc(x["tag"])}</td>'
+                             f'<td>{esc(x["source_folder"])} / {esc(x["file"])}</td>'
+                             f'<td>{esc(x["reason"])}</td></tr>' for x in notices) + "</table>") if notices else ""
+    return ('<section class="card" id="team-reference-workflows"><h2>참고 워크플로우 — 팀 비교에서 제외</h2>'
+            f'<div class="note">열람 가능한 흐름 {len(items)}건입니다. 각 자료의 소유자와 원래 기간을 유지하며 '
+            '팀 MM·인원 순위·자동화 우선순위 수치에는 합산하지 않습니다. AI 설명과 제안은 확인할 초안입니다.</div>'
+            + "".join(cards) + unavailable
+            + '<div class="note">구성원 등록 없이 개인 HTML만 있는 자료와 다른 기간 파일은 이 참고목록에서 '
+            '자동으로 가져오지 않습니다.</div></section>')
 
 
 def _personal_data(text, member):
@@ -2472,6 +2623,9 @@ def render_full(share, html_dir, sender=None, log=say):
     lm = ag.load_members(share)
     data = ag.collect_team_data(share, members=lm)
     members = data["members"]
+    reference_workflows = collect_reference_workflows(lm)
+    reference_html = render_reference_workflows(reference_workflows)
+    analysis_status_html = render_analysis_status(members)
     stamp = time.strftime("%Y-%m-%d %H:%M")
     adjust = load_adjust(share, log)
 
@@ -2892,8 +3046,9 @@ def render_full(share, html_dir, sender=None, log=say):
                         + '</table></div>')
 
     island = json.dumps({"kind": "lm-team-report", "generated": stamp, "share": share,
-                         "tasks": data.get("tasks") or [], "agentic": agentic,
-                         "members": members, "adjust": adjust},
+                          "tasks": data.get("tasks") or [], "agentic": agentic,
+                          "reference_workflows": reference_workflows,
+                          "members": members, "adjust": adjust},
                         ensure_ascii=False).replace("<", "\\u003c")
     ext = src_n.get("external") or {}
     ext_note = ""
@@ -2982,6 +3137,7 @@ textarea{{width:100%;height:64px;font:11px Consolas,monospace;margin-top:6px}}
 <div class="nt">전체 흐름 업무 {wf_mm:.2f} MM · 예상 절감 미검증</div></div>
 </div>
 
+{analysis_status_html}
 <!--SEC1--><div class="card"><h2>1. 인별 로드율 <span class="state">투입 MM ÷ 가용 MM · 야근은 상한 없이(하루 24h 물리 한계만) ·
 측정 방식 = 샘플러 실측 / PC 가동 하한 / 흔적 폭 / 종일 행사 / 수동 기록 일수 · 배지: 신뢰·주의·측정 불충분(수집 결측 수) ·
 '산식 설정 상이' = 표준시간·점심·주간 창·공휴일 수가 팀 다수와 달라 분모가 다른 사람</span></h2>
@@ -3042,6 +3198,7 @@ Agent 가능성 <span class="pill" style="background:#1d8a4a">상</span> 자동�
 <span class="state">과제를 펼치면 그 안의 담당 업무 워크플로우가 나옵니다</span></h1>
 {''.join(wf_cards) or '<div class="card"><div class="note">담당 업무 단위 워크플로우가 없습니다.</div></div>'}
 {coarse_html}
+{reference_html}
 {prog_html}
 <div class="note">비교 기간: {esc(data.get("comparison_tag") or "미확인")} · 원천: {esc(share)}{f' + {esc(html_dir)}' if src_n['html'] else ''} ·
 개인 워크플로우 {len(items)}건(서버 {src_n['server']} · 개인 HTML {src_n['html']}) ·
@@ -3151,6 +3308,7 @@ Agent 가능성 <span class="pill" style="background:#1d8a4a">상</span> 자동�
           for m9 in members]
     island3 = json.dumps({"kind": "lm-team-report", "generated": stamp, "share": share,
                           "tasks": data.get("tasks") or [], "agentic": agentic,
+                          "reference_workflows": reference_workflows,
                           "members": m3, "adjust": adjust},
                          ensure_ascii=False).replace("<", "\\u003c")
     doc3 = re.sub(r"<!--SEC1-->.*?<!--/SEC1-->", "", doc, flags=re.S)
@@ -3165,6 +3323,8 @@ Agent 가능성 <span class="pill" style="background:#1d8a4a">상</span> 자동�
                         '<div class="top">팀 통합 보고서 <b>v3 — 인별 로드율 제외</b> ·', 1)
     info = {"members": len(members), "agentic": n_ag, "clusters": len(clusters),
             "coarse": len(coarse), "review_flows": len(review_flows),
+            "reference_flows": len(reference_workflows["items"]),
+            "reference_notices": len(reference_workflows["notices"]),
             "other_period": other_period, "wf_owners": len(wf_owners),
             "flows": len(items), "flows_html": src_n["html"], "generated": stamp}
     log(f"       인원 {len(members)}명 · Agentic {n_ag}명 · 담당 업무 유형 {len(clusters)}종"

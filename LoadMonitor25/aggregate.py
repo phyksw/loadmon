@@ -186,6 +186,45 @@ def is_unreliable(m):
     return bool(((m or {}).get("coverage") or {}).get("grade") not in ("reliable", "caution"))
 
 
+def analysis_status_summary(member):
+    """Safe publication-status summary, independent of measurement/KPI policy.
+
+    Keep only known states and counts. Source warnings, paths and logs may contain
+    private text; render fixed explanations instead of forwarding their contents.
+    """
+    source = member.get("analysis_status")
+    source = source if isinstance(source, dict) else {}
+    state = source.get("state")
+    if state not in ("complete", "partial", "rule_only", "unknown"):
+        state = "unknown"
+    if member.get("partial") is True:
+        state = "partial"
+    stub = member.get("stub") is True or source.get("stub") is True
+    labels = {"complete": "분석 완료", "partial": "분석 일부 완료",
+              "rule_only": "규칙 분류 · AI 미요청", "unknown": "분석 완료 여부 미확인"}
+    warnings = {
+        "complete": [],
+        "partial": ["완료된 일부 판정만 포함합니다. 전체 분석 결과로 비교하지 않습니다."],
+        "rule_only": ["AI를 요청하지 않은 규칙 분류 결과입니다."],
+        "unknown": ["같은 기간의 분석 완료 근거가 없습니다. 구판 자료일 수 있습니다."],
+    }[state]
+    if stub:
+        warnings = warnings + ["시험용 스텁 결과입니다."]
+    counts = {}
+    for key in ("judged", "total"):
+        value = source.get(key)
+        try:
+            number = None if isinstance(value, bool) else fnum(value)
+        except OverflowError:
+            number = None
+        counts[key] = int(number) if number is not None and number >= 0 and number.is_integer() else None
+    if counts["total"] is None or counts["total"] <= 0 or counts["judged"] is None or counts["judged"] > counts["total"]:
+        counts = {"judged": None, "total": None}
+    return {"state": state, "label": labels[state], "stub": stub, **counts,
+            "ai_requested": source.get("ai_requested") if isinstance(source.get("ai_requested"), bool) else None,
+            "warnings": warnings}
+
+
 def valid_tag(tag):
     """분석 기간 태그만 허용한다. 경로 조각·없는 날짜·역순 기간은 거부한다."""
     if not isinstance(tag, str) or not re.fullmatch(r"\d{8}-\d{8}", tag):
@@ -303,7 +342,10 @@ def mark_members(members):
         m["comparison_tag"] = tag
         m["kpi_eligible"] = not reasons
         m["exclusion_reasons"] = reasons
+        m["measurement_confidence"] = ((m.get("coverage") or {}).get("grade") or "unknown")
+        m["comparison_eligible"] = not reasons
         # 기존 화면도 동일 집합을 제외하도록 호환 필드를 유지한다.
+        # 이 호환 표식은 정량 비교 조건이다. 정성 자료의 열람 가능 여부가 아니다.
         m["unreliable"] = bool(reasons)
         m["cfg_diff"] = m.get("owner") in diff
         m["measure_text"] = measure_text(m)
@@ -373,6 +415,7 @@ def load_members(share):
         d = os.path.join(share, name)
         if not os.path.isdir(d) or name.startswith("."):
             continue
+        source_dir = d
         try:
             d = resolve_member_dir(d)
             mp = os.path.join(d, "member.json")
@@ -389,6 +432,8 @@ def load_members(share):
                 print(f"[aggregate] {name}: member.json 에 owner 가 없어 폴더명을 씁니다")
             m["owner"] = str(m["owner"]).strip()
             norm_member(m, name)
+            # 실행 세대가 바뀌어도 같은 입력 폴더를 가리키며, 동명이인을 합치지 않는다.
+            m["member_source_dir"] = source_dir
             tag = str(m.get("tag") or "")
             if not valid_tag(tag):
                 m.update(rows=[], pivots={}, dir=d, file_at="")
@@ -644,6 +689,9 @@ def collect_team_data(share, members=None):
             "measure_text": m.get("measure_text", ""),
             "unreliable": bool(m.get("unreliable")), "cfg_diff": bool(m.get("cfg_diff")),
             "kpi_eligible": bool(m.get("kpi_eligible")),
+            "comparison_eligible": bool(m.get("comparison_eligible")),
+            "measurement_confidence": m.get("measurement_confidence", "unknown"),
+            "analysis_status": analysis_status_summary(m),
             "exclusion_reasons": m.get("exclusion_reasons") or [],
             "comparison_tag": m.get("comparison_tag", ""),
             "member_id": m.get("member_id", ""), "dir": m.get("dir", ""),

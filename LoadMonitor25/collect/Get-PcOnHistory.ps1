@@ -37,6 +37,8 @@ function Parse-Dt([string]$s) {
 if ($From) { $since = [datetime]::ParseExact($From, 'yyyy-MM-dd', $null) } else { $since = (Get-Date).Date.AddDays(-$Days) }
 if ($To)   { $until = ([datetime]::ParseExact($To, 'yyyy-MM-dd', $null)).AddDays(1) } else { $until = (Get-Date).Date.AddDays(1) }
 $nowT = if ($Now) { Parse-Dt $Now } else { Get-Date }
+if ($until -le $since) { throw 'From must not be after To.' }
+$observedEnd = if ($nowT -lt $until) { $nowT } else { $until }
 $bootNow = $null
 if ($BootTime) { $bootNow = Parse-Dt $BootTime }
 else { try { $bootNow = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime } catch {} }
@@ -58,6 +60,7 @@ function Read-Src([hashtable]$filter, [scriptblock]$kindOf, [bool]$perUser = $fa
         $got = 0
         Get-WinEvent -FilterHashtable $filter -ErrorAction Stop | ForEach-Object {
             $ev = $_
+            if ($ev.TimeCreated -lt $since -or $ev.TimeCreated -ge $until -or $ev.TimeCreated -gt $nowT) { return }
             if ($perUser -and $mySid) {
                 # 로그온/로그오프(7001/7002)는 이 PC 의 모든 세션이 남긴다 - 다른 사용자의 로그오프가 내 구간을 닫지 않게
                 try {
@@ -84,8 +87,9 @@ if ($EventsCsv) {
     foreach ($r in @(Import-Csv -LiteralPath $EventsCsv)) {
         if (-not $r.t -or -not $r.kind) { continue }
         $t = Parse-Dt ([string]$r.t)
-        if ($t -lt $since -or $t -ge $until) { continue }
+        if ($t -lt $since -or $t -ge $until -or $t -gt $nowT) { continue }
         $k = ([string]$r.kind).Trim().ToLower()
+        if ($k -notin @('on', 'off')) { continue }
         $s = if ($r.src) { [string]$r.src } else { $(if ($k -eq 'on') { '6005' } else { '6006' }) }
         $isBoot = ($s -eq 'boot') -or (($s -match '^\d+$') -and ($BOOT_IDS -contains [int]$s))
         $events.Add([pscustomobject]@{ t = $t; kind = $k; src = $s; boot = $isBoot })
@@ -118,7 +122,7 @@ $fallbackBoot = $false
 if ($events.Count -eq 0) {
     Write-Host '[pc-on] no events found in range (log may not reach that far back).'
     # 최후 폴백: 이벤트 로그가 비어도(권한/롤오버/Modern Standby) 현재 부팅 이후 구간만은 기록한다
-    if ($bootNow -and $bootNow -lt $until) {
+    if ($bootNow -and $bootNow -lt $observedEnd -and $since -lt $observedEnd) {
         $bs = if ($bootNow -gt $since) { $bootNow } else { $since }
         $events.Add([pscustomobject]@{ t = $bs; kind = 'on'; src = 'boot'; boot = $true })
         $fallbackBoot = $true
@@ -207,9 +211,90 @@ if ($diagStatus -like 'unauthorized*' -or $diagStatus -like 'error*') {
     Write-Host ("[pc-on] Diagnostics-Performance 채널 읽기 불가({0}) - System 로그 롤오버 시 과거 부팅 기록을 보강하지 못합니다." -f $diagStatus)
 }
 
+# 이번 실행이 실제 도달한 창만 갱신한다. 로그 롤오버/조회 기간 축소는 과거 관측을 지울 근거가 아니다.
+# hint는 독립 수집 근거이므로 이벤트 재수집으로 지우지 않는다. 경계를 가로지른 옛 구간은 앞/뒤 모두 보존한다.
+$pcOnPath = Join-Path $OutDir 'pc_on.csv'
+$spansPath = Join-Path $OutDir 'pc_spans.csv'
+$reachT = $observedEnd
+$replaceObserved = ($sorted.Count -gt 0 -and -not $fallbackBoot)
+if ($replaceObserved) { $reachT = $sorted[0].t }
+if ($reachT -lt $since) { $reachT = $since }
+$oldDaily = @{}; $knownDays = @{}
+$oldRawSpans = New-Object System.Collections.Generic.List[object]
+if (Test-Path -LiteralPath $pcOnPath) {
+    foreach ($r in @(Import-Csv -LiteralPath $pcOnPath -Encoding UTF8 -ErrorAction Stop)) {
+        try { $d = Parse-Dt ([string]$r.date) } catch { continue }
+        if ($d -ge $nowT) { continue }
+        $oldDaily[$d.ToString('yyyy-MM-dd')] = $r
+        $knownDays[$d.ToString('yyyy-MM-dd')] = $true
+    }
+}
+$allSpans = New-Object System.Collections.Generic.List[object]
+$keptSpans = 0
+if (Test-Path -LiteralPath $spansPath) {
+    foreach ($r in @(Import-Csv -LiteralPath $spansPath -Encoding UTF8 -ErrorAction Stop)) {
+        try { $a = Parse-Dt ([string]$r.start); $b = Parse-Dt ([string]$r.end) } catch { continue }
+        if ($b -gt $a) { $oldRawSpans.Add([pscustomobject]@{ a=$a; b=$b }) }
+        if ($b -gt $nowT) { $b = $nowT }
+        if ($b -le $a) { continue }
+        $src = if ($r.src) { [string]$r.src } else { 'event' }
+        for ($d = $a.Date; $d -lt $b; $d = $d.AddDays(1)) {
+            $knownDays[$d.ToString('yyyy-MM-dd')] = $true
+        }
+        if (-not $replaceObserved -or $src -eq 'hint' -or $b -le $reachT -or $a -ge $observedEnd) {
+            $allSpans.Add([pscustomobject]@{ a=$a; b=$b; src=$src }); $keptSpans++
+        } else {
+            if ($a -lt $reachT) {
+                $allSpans.Add([pscustomobject]@{ a=$a; b=$reachT; src=$src }); $keptSpans++
+            }
+            if ($b -gt $observedEnd) {
+                $allSpans.Add([pscustomobject]@{ a=$observedEnd; b=$b; src=$src }); $keptSpans++
+            }
+        }
+    }
+}
+# 옛 일별 총량이 구간으로 전부 설명되는지 확인한다. 부분 구간이 생겼다는 이유만으로 다음 재수집에서
+# legacy 하한을 없애면 8h -> (부분 구간 2h 추가) 8h -> (동일 재수집) 2h 로 줄어든다.
+# 미래 입력을 자르기 전 원구간과 비교해야 미래값 수정이 legacy 보존으로 취소되지 않는다.
+$oldUnion = New-Object System.Collections.Generic.List[object]
+foreach ($s in @($oldRawSpans | Sort-Object a,b)) {
+    if ($oldUnion.Count -gt 0 -and $s.a -le $oldUnion[$oldUnion.Count - 1].b) {
+        if ($s.b -gt $oldUnion[$oldUnion.Count - 1].b) { $oldUnion[$oldUnion.Count - 1].b = $s.b }
+    } else { $oldUnion.Add([pscustomobject]@{ a=$s.a; b=$s.b }) }
+}
+$oldSpanHours = @{}
+foreach ($s in $oldUnion) {
+    $cur = $s.a
+    while ($cur -lt $s.b) {
+        $end = if ($s.b -lt $cur.Date.AddDays(1)) { $s.b } else { $cur.Date.AddDays(1) }
+        $key = $cur.ToString('yyyy-MM-dd')
+        $oldSpanHours[$key] += ($end - $cur).TotalHours
+        $cur = $end
+    }
+}
+foreach ($s in $spans) {
+    if (-not $fallbackBoot) { $allSpans.Add($s); continue }
+    # 이벤트 0건의 부팅 폴백은 이미 관측한 날짜를 더 넓은 추정 구간으로 덮지 않는다.
+    $cur = $s.a
+    while ($cur -lt $s.b) {
+        $end = if ($s.b -lt $cur.Date.AddDays(1)) { $s.b } else { $cur.Date.AddDays(1) }
+        if (-not $knownDays.ContainsKey($cur.ToString('yyyy-MM-dd'))) {
+            $allSpans.Add([pscustomobject]@{ a=$cur; b=$end; src=$s.src })
+        }
+        $cur = $end
+    }
+}
+# 저장용 출처는 유지하고, 일별 시간은 전체 구간 합집합 하나에서 계산한다(같은 날 앞부분/힌트 누락·중복 방지).
+$union = New-Object System.Collections.Generic.List[object]
+foreach ($s in @($allSpans | Sort-Object a,b)) {
+    if ($union.Count -gt 0 -and $s.a -le $union[$union.Count - 1].b) {
+        if ($s.b -gt $union[$union.Count - 1].b) { $union[$union.Count - 1].b = $s.b }
+    } else { $union.Add([pscustomobject]@{ a=$s.a; b=$s.b }) }
+}
+
 # split spans at midnight, aggregate per day (night = 08:00 이전 · 19:00 이후 - extract 의 dayWindow 기본과 같은 경계)
 $daily = @{}
-foreach ($s in $spans) {
+foreach ($s in $union) {
     $a = $s.a; $b = $s.b
     $cur = $a
     while ($cur -lt $b) {
@@ -237,6 +322,7 @@ foreach ($s in $spans) {
 
 $rows = New-Object System.Collections.Generic.List[string]
 $rows.Add('date,on_hours,first_on,last_off,night_hours,weekend')
+$body = @{}
 foreach ($k in ($daily.Keys | Sort-Object)) {
     $d = $daily[$k]
     $dow = ([datetime]$k).DayOfWeek
@@ -244,17 +330,36 @@ foreach ($k in ($daily.Keys | Sort-Object)) {
     # 자정으로 끝난 구간은 '24:00' - '00:00' 으로 쓰면 문자열 비교에서 가장 이른 시각이 돼
     # 병합(Get-PcOnHints)에서 마지막 사용 시각이 영원히 반영되지 않는다
     $lastStr = if ($d.last.Date -gt ([datetime]$k).Date) { '24:00' } else { $d.last.ToString('HH:mm') }
-    $rows.Add(('{0},{1},{2},{3},{4},{5}' -f $k, [math]::Round($d.on,2), `
-        $d.first.ToString('HH:mm'), $lastStr, [math]::Round($d.night,2), $we))
+    $body[$k] = ('{0},{1},{2},{3},{4},{5}' -f $k, [math]::Round($d.on,2), `
+        $d.first.ToString('HH:mm'), $lastStr, [math]::Round($d.night,2), $we)
 }
-[System.IO.File]::WriteAllLines((Join-Path $OutDir 'pc_on.csv'), $rows, [System.Text.Encoding]::UTF8)
+# 구간이 없는 옛 일별 형식도 보존한다. 부분일의 정확한 겹침은 복원할 수 없어 합산하지 않고 큰 관측값을 남긴다.
+$keptDays = 0
+foreach ($k in $oldDaily.Keys) {
+    $d = Parse-Dt $k; $o = $oldDaily[$k]
+    $outside = (-not $replaceObserved -or $d -lt $reachT -or $d.AddDays(1) -gt $observedEnd)
+    if (-not $outside) { continue }
+    $on = 0.0; $night = 0.0
+    $style = [System.Globalization.NumberStyles]::Float
+    $culture = [System.Globalization.CultureInfo]::InvariantCulture
+    if (-not [double]::TryParse([string]$o.on_hours, $style, $culture, [ref]$on) -or
+        -not [double]::TryParse([string]$o.night_hours, $style, $culture, [ref]$night) -or
+        [double]::IsNaN($on) -or [double]::IsNaN($night) -or $on -lt 0 -or $on -gt 24 -or $night -lt 0 -or $night -gt $on) { continue }
+    if ($on -le ([double]$oldSpanHours[$k] + 0.005)) { continue }
+    if (-not $daily.ContainsKey($k) -or $on -gt $daily[$k].on) {
+        $body[$k] = ('{0},{1},{2},{3},{4},{5}' -f $k, $on.ToString($culture), [string]$o.first_on, [string]$o.last_off, $night.ToString($culture), [string]$o.weekend)
+        $keptDays++
+    }
+}
+foreach ($k in @($body.Keys | Sort-Object)) { $rows.Add($body[$k]) }
+[System.IO.File]::WriteAllLines($pcOnPath, $rows, [System.Text.Encoding]::UTF8)
 
 # 구간 원본 - extract 가 '언제 켜져 있었는지' 를 직접 쓴다(점심·회의 시간과의 겹침 계산). Get-PcOnHints 가 힌트 구간(src=hint)을 보탠다.
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $srows = New-Object System.Collections.Generic.List[string]
 $srows.Add('start,end,src')
-foreach ($s in $spans) { $srows.Add(('{0},{1},{2}' -f $s.a.ToString('yyyy-MM-dd HH:mm:ss'), $s.b.ToString('yyyy-MM-dd HH:mm:ss'), $s.src)) }
-[System.IO.File]::WriteAllLines((Join-Path $OutDir 'pc_spans.csv'), $srows, $utf8NoBom)
+foreach ($s in @($allSpans | Sort-Object a,b,src)) { $srows.Add(('{0},{1},{2}' -f $s.a.ToString('yyyy-MM-dd HH:mm:ss'), $s.b.ToString('yyyy-MM-dd HH:mm:ss'), $s.src)) }
+[System.IO.File]::WriteAllLines($spansPath, $srows, $utf8NoBom)
 
 # 수집 환경 진단 - 권한·전원 정책 차이를 사람 차이로 읽지 않게 리포트·진단이 참조한다
 $srcInfo = [ordered]@{
@@ -274,8 +379,13 @@ $srcInfo = [ordered]@{
     reach_start = $reachStart
     capped_spans = [int]$capped
     gap_closed_spans = [int]$gapClosed
-    spans = [int]$spans.Count
+    spans = [int]$allSpans.Count
     days = [int]($rows.Count - 1)
+    preserved_legacy_days = [int]$keptDays
+    legacy_daily_basis = '구간으로 전부 설명되지 않는 옛 일별 하한은 원행 유지; 부분 구간과 겹침 미상, 자동 합산하지 않음'
+    preserved_spans = [int]$keptSpans
+    replaced_from = $(if ($replaceObserved) { $reachT.ToString('yyyy-MM-dd HH:mm') } else { '' })
+    replaced_until = $(if ($replaceObserved) { $observedEnd.ToString('yyyy-MM-dd HH:mm') } else { '' })
     sources = $srcStatus
     warnings = @($warnings)
 }

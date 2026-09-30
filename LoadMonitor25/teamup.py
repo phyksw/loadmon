@@ -275,7 +275,9 @@ def push_reports(share, owner, tag):
 
 def _source_snapshot(tag):
     result = {}
-    for pattern in FILE_NAMES:
+    # These status inputs are captured and verified with the report bytes, but
+    # only their summary is transmitted in member.json (not the private logs).
+    for pattern in FILE_NAMES + ("ai_judgments_{t}.json", "last_run.json"):
         name = pattern.format(t=tag)
         try:
             st = os.stat(os.path.join(REPORT, name))
@@ -285,19 +287,94 @@ def _source_snapshot(tag):
     return result
 
 
+def _publication_status(tag, captured):
+    """Carry known completion evidence; a matching period alone is not success."""
+    warnings, basis = [], []
+
+    def obj(name):
+        if name not in captured:
+            return None
+        try:
+            value = json.loads(captured[name])
+            return value if isinstance(value, dict) else None
+        except (ValueError, TypeError):
+            return None
+
+    run = obj("last_run.json")
+    expected = [f"{v[:4]}-{v[4:6]}-{v[6:8]}" for v in tag.split("-")]
+    if not run or run.get("period") != expected:
+        run = {}
+    else:
+        basis.append("last_run.json")
+    requested = run.get("ai_requested") if isinstance(run.get("ai_requested"), bool) else None
+    stages = [s for s in (run.get("stages") or []) if isinstance(s, dict)] \
+        if isinstance(run.get("stages"), list) else []
+    stub = run.get("stub") is True or any("LM_COPILOT_STUB" in str(s.get("note") or "") for s in stages)
+    failures = [str(s.get("name") or "단계 미상") for s in stages
+                if s.get("ok") is False and s.get("name") not in ("시작", "완료", "완료(수집만)")
+                and not (s.get("name") == "AI 판정" and requested is False)]
+    partial = run.get("status") in ("partial", "failed") or bool(failures)
+    name = f"ai_judgments_{tag}.json"
+    judgment = obj(name)
+    judged = total = None
+    if requested is not False and name in captured:
+        basis.append(name)
+
+        def count(value):
+            if isinstance(value, bool):
+                return None
+            if isinstance(value, int):
+                return value if value >= 0 else None
+            if isinstance(value, float) and math.isfinite(value) and value >= 0 and value.is_integer():
+                return int(value)
+            return None
+
+        if judgment and judgment.get("tag", tag) == tag:
+            judged, total = count(judgment.get("judged")), count(judgment.get("total"))
+            stub = stub or judgment.get("stub") is True
+        if judged is None or total is None or total <= 0 or judged > total:
+            judged = total = None
+            warnings.append("AI 판정 건수 형식/범위 미확인")
+        elif judged < total:
+            partial = True
+            warnings.append(f"AI 판정 {judged}/{total}건 — 나머지는 규칙 결과")
+    if failures:
+        warnings.append("실패 단계: " + ", ".join(dict.fromkeys(failures)))
+    if partial:
+        state = "partial"
+    elif requested is False:
+        state = "rule_only"
+    else:
+        done = {s.get("name") for s in stages if s.get("ok") is True}
+        # run.py builds the pending bundle before finish_run writes its final
+        # status. At that point these completed stages provide the same evidence.
+        finished = run.get("status") == "complete" or {
+            "업무 로드 추출", "AI 판정", "AI 정제", "Agentic 매칭", "워크플로우 분석", "보고서 생성"
+        }.issubset(done)
+        state = "complete" if total is not None and judged == total and finished else "unknown"
+        if state == "unknown":
+            warnings.append("이 기간의 전체 분석 완료 상태 미확인")
+    if stub:
+        warnings.append("테스트 스텁 응답 — 실제 AI 분석 아님")
+    return {"state": state, "ai_requested": requested, "judged": judged, "total": total,
+            "stub": stub, "basis": basis, "warnings": warnings}
+
+
 def make_payload(cfg, d0, d1):
     """Build one period's snapshot in memory, shared by both export paths."""
     tag = f"{d0.replace('-', '')}-{d1.replace('-', '')}"
     before = _source_snapshot(tag)
-    files, digests = {}, {}
+    captured, digests = {}, {}
     for n in before:
         try:
             with open(os.path.join(REPORT, n), "rb") as stream:
                 raw = stream.read()
-            files[n] = raw.decode("utf-8-sig")
+            captured[n] = raw.decode("utf-8-sig")
             digests[n] = hashlib.sha256(raw).hexdigest()
         except (OSError, UnicodeError) as error:
             raise ValueError(f"팀 묶음 원본을 읽지 못했습니다: {n}") from error
+    files = {pattern.format(t=tag): captured[pattern.format(t=tag)] for pattern in FILE_NAMES
+             if pattern.format(t=tag) in captured}
     if not files:
         return None
     # Member and artifact metadata must come from the SAME captured bytes.
@@ -344,6 +421,11 @@ def make_payload(cfg, d0, d1):
               "analyzed_at": time.strftime("%Y-%m-%d %H:%M")}
     from owner import identity_fields
     member.update(identity_fields(cfg, os.environ.get("USERNAME", "")))
+    status = _publication_status(tag, captured)
+    member.update(partial=status["state"] == "partial", stub=status["stub"], analysis_status=status)
+    member["status_source_artifacts"] = {
+        name: {"sha256": digests[name], "mtime_ns": before[name][3], "bytes": before[name][2]}
+        for name in status["basis"]}
     member["source_artifacts"] = {name: {"sha256": digests[name], "mtime_ns": before[name][3], "bytes": before[name][2]}
                                   for name in files}
     return {"member": member, "files": files,

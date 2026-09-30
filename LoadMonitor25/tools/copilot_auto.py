@@ -630,6 +630,43 @@ def is_cut_reply(reply):
     return bool(tail) and any(m in tail for m in CUT_REPLY_MARKS)
 
 
+def _json_incomplete(reply):
+    """JSON처럼 시작한 본문의 열린 괄호·문자열을 확인한다. CSV/일반 문장은 그대로 허용한다."""
+    text = (reply or "").strip()
+    start = re.search(r'(?m)^[ \t]*(?:\{(?=\s*(?:"|}|$))|\[(?=\s*(?:[\[{\]"\d-]|true\b|false\b|null\b|$)))', text)
+    if start is None:
+        return False
+    stack, quoted, escaped = [], False, False
+    for char in text[start.start():]:
+        if quoted:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                quoted = False
+        elif char == '"':
+            quoted = True
+        elif char in "[{":
+            stack.append(char)
+        elif char in "]}":
+            if not stack or stack.pop() != {"}": "{", "]": "["}[char]:
+                return True
+            if not stack:
+                return False
+    return bool(stack) or quoted
+
+
+def _reply_finished(cdp, reply):
+    if _json_incomplete(reply):
+        return False
+    try:
+        return cdp.eval(js_is_generating(), timeout=5) is False
+    except (TimeoutError, RuntimeError, OSError):
+        # 생성 상태를 확인하지 못하면 현재 왕복 예산 안에서 다음 조회를 기다린다.
+        return False
+
+
 def js_is_generating():
     """아직 답을 쓰는 중인가 — 전송 자리에 '중지' 버튼이 떠 있으면 생성 중이다.
     UI 표기가 바뀌어도 죽지 않게 후보 문구를 넓게 잡고, 못 찾으면 '생성 중 아님'(진행)."""
@@ -792,6 +829,7 @@ def pick_reply(txt, base, anchor):
 def _roundtrip_once(cdp, cfg, prompt, model_override=None):
     if True:
         # 페이지 로드/로그인 확인
+        ready_deadline = time.time() + 30
         state = None
         for _ in range(30):
             state = cdp.eval(js_state())
@@ -820,6 +858,9 @@ def _roundtrip_once(cdp, cfg, prompt, model_override=None):
                 pass
             baseline = len(cdp.eval(js_chat_text(cfg), timeout=45) or "")
         ins = cdp.eval(js_focus(cfg))
+        while not (ins and ins.get("ok")) and time.time() < ready_deadline:
+            time.sleep(min(1.0, max(0.0, ready_deadline - time.time())))
+            ins = cdp.eval(js_focus(cfg))
         if not (ins and ins.get("ok")):
             dbg = cdp.eval(js_diagnose())
             dump = os.path.join(ROOT, "data", "copilot_auto_debug.json")
@@ -898,11 +939,12 @@ def _roundtrip_once(cdp, cfg, prompt, model_override=None):
                         new, how = new2, how2
                 except (TimeoutError, OSError, RuntimeError):
                     pass
-                return _reply_result(strip_echo(new, prompt, anchor, how), note_model, how, True,
-                                     waited, resent)
+                reply = strip_echo(new, prompt, anchor, how)
+                if _reply_finished(cdp, reply):
+                    return _reply_result(reply, note_model, how, True, waited, resent)
             if new.strip() and new == last:
                 stable += 1
-                if stable >= cfg["stablePolls"]:
+                if stable >= cfg["stablePolls"] and _reply_finished(cdp, strip_echo(new, prompt, anchor, how)):
                     # 어떤 경로로 회수했는지 남긴다 — fulltext 가 잦으면 앵커가 깨진 것이다
                     return _reply_result(strip_echo(new, prompt, anchor, how), note_model, how, False,
                                          waited, resent)
@@ -953,13 +995,13 @@ def _wait_rest(cdp, cfg, prompt, secs=300):
         reply, how = pick_reply(txt, 0, anchor)
         if how != "anchor":
             return None
-        if has_pledge(reply, prompt, anchor, how):
+        if has_pledge(reply, prompt, anchor, how) and _reply_finished(cdp, strip_echo(reply, prompt, anchor, how)):
             return strip_echo(reply, prompt, anchor, how).strip()
         quiet = quiet + 1 if reply == last else 0
         last = reply
-        if quiet >= 12:                  # 60초째 그대로 = 끝났는데 서약만 빠뜨린 답
+        if quiet >= 12 and _reply_finished(cdp, strip_echo(reply, prompt, anchor, how)):
             return strip_echo(reply, prompt, anchor, how).strip() or None
-    return strip_echo(last or "", prompt, anchor, "anchor").strip() or None
+    return None
 
 
 def _run_parts(cdp, cfg, parts, fresh):
@@ -990,9 +1032,9 @@ def _run_parts(cdp, cfg, parts, fresh):
                             "error": f"나눔 {i}/{total}: 응답을 받지 못했습니다",
                             "hint": "Copilot 창에서 생성이 멈췄는지 확인하세요"}
                 if more is None:
-                    # 관찰이 불가능했다 — 생성 중일 수 있으니 넉넉히 기다린 뒤 진행
-                    # (생성 중에 다음을 보내면 전송 버튼이 '중지'가 되어 답을 끊는다)
-                    time.sleep(30)
+                    return {"ok": False, "phase": "no_reply", "reply": reply,
+                            "error": f"나눔 {i}/{total}: 응답 완료를 확인하지 못했습니다",
+                            "hint": "Copilot 창에서 생성이 끝났는지 확인한 뒤 다시 실행하세요"}
                 res["note"] = f"나눔 {i}/{total}: 서약 없이 생성 정지 확인 후 진행"
         if is_error_reply(reply):
             # 중간 조각의 일시 오류도 실패다 — 그 조각을 '받지 못한' 채 이어 가면 마지막

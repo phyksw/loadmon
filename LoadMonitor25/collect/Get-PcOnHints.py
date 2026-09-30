@@ -222,20 +222,40 @@ def _read_pc_on(csv_path):
     return rows
 
 
-def merge_pc_on(csv_path, hints, hint_spans=None, spans_path=None):
+def merge_pc_on(csv_path, hints, hint_spans=None, spans_path=None, t0=None, t1=None, now=None):
     """힌트를 pc_on.csv 에 병합. 반환 (합계 일수, 신규 일수, 보강 일수).
 
     spans_path(pc_spans.csv) 가 있으면 구간 단위 병합: 이벤트 구간 ∪ 힌트 구간을 합친 한 집합에서
     날짜별 on/night/first/last 를 다시 계산한다(night 만 이벤트 값이 남는 모순 없음). 그 날짜들의
     행은 재계산값으로 바뀌고, 다른 날짜 행은 그대로 둔다. 힌트 구간은 pc_spans.csv 에 src=hint 로
-    저장(재실행 시 예전 hint 행은 교체).
+    저장. 브라우저 롤오버·일부 프로필 읽기 실패는 과거 방문이 없었다는 증거가 아니므로
+    예전 hint도 합집합으로 누적한다. t0/t1은 새 힌트의 조회 범위이며 과거 보존 범위가 아니다.
     없으면 날짜별 폴백: 힌트 on 이 더 크면 on·night·first·last 를 **힌트 값으로 함께** 바꾼다."""
     rows = _read_pc_on(csv_path)
     added = improved = 0
+    observed = now or datetime.now()
+    limit = min(t1, observed) if t1 is not None else observed
+    if hint_spans is not None:
+        hint_spans = merge_spans([(max(a, t0) if t0 is not None else a, min(b, limit))
+                                  for a, b in hint_spans if a < limit and (t0 is None or b > t0)])
+        hints = daily_from_spans(hint_spans)
     if spans_path and hint_spans is not None and os.path.isfile(spans_path):
-        ev = [(a, b, s) for a, b, s in read_spans_csv(spans_path) if s != HINT_SRC]
-        union = merge_spans([(a, b) for a, b, _ in ev] + list(hint_spans))
+        original = read_spans_csv(spans_path)
+        previous = [(a, min(b, observed), s) for a, b, s in original if a < observed]
+        ev = [(a, b, s) for a, b, s in previous if s != HINT_SRC]
+        accumulated = merge_spans([(a, b) for a, b, s in previous if s == HINT_SRC] + list(hint_spans))
+        union = merge_spans([(a, b) for a, b, _ in ev] + accumulated)
         daily = daily_from_spans(union)
+        represented = daily_from_spans(merge_spans([(a, b) for a, b, _ in original]))
+        for k in list(rows):
+            try:
+                future = datetime.strptime(k, "%Y-%m-%d") >= observed
+                clipped = (k in represented and k not in daily
+                           and float(rows[k].get("on_hours") or 0) <= represented[k]["on"] + 0.005)
+            except (ValueError, TypeError):
+                continue
+            if future or clipped:
+                rows.pop(k)
         for k, d in sorted(daily.items()):
             new = _row(k, d)
             old = rows.get(k)
@@ -247,9 +267,18 @@ def merge_pc_on(csv_path, hints, hint_spans=None, spans_path=None):
                         improved += 1
                 except (ValueError, TypeError):
                     pass
+            # 부분 구간이 이미 있는 재실행도 옛 하한을 유지한다. 미래 clip 전 원구간보다 큰 값만
+            # legacy 하한으로 보아 미래값을 바로잡는 작업까지 취소하지 않는다. 겹침 미상으로 합산하지 않는다.
+            if old:
+                try:
+                    prior = float(old.get("on_hours") or 0)
+                    if prior > represented.get(k, {}).get("on", 0) + 0.005 and prior > float(new["on_hours"]):
+                        continue
+                except (ValueError, TypeError):
+                    pass
             rows[k] = new
         _write_pc_on(csv_path, rows)
-        write_spans_csv(spans_path, ev + [(a, b, HINT_SRC) for a, b in hint_spans])
+        write_spans_csv(spans_path, ev + [(a, b, HINT_SRC) for a, b in accumulated])
         return len(rows), added, improved
 
     for k, d in sorted(hints.items()):
@@ -294,22 +323,29 @@ def sampler_times(t0, t1):
 
 
 def main():
-    d0 = arg("--from") or (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
-    d1 = arg("--to") or datetime.now().strftime("%Y-%m-%d")
+    now = datetime.now()
+    d0 = arg("--from") or (now - timedelta(days=90)).strftime("%Y-%m-%d")
+    d1 = arg("--to") or now.strftime("%Y-%m-%d")
     t0 = datetime.strptime(d0, "%Y-%m-%d")
     t1 = datetime.strptime(d1, "%Y-%m-%d") + timedelta(days=1)
+    if t1 <= t0:
+        raise ValueError("--from must not be after --to")
+    observed = min(t1, now)
+    if observed <= t0:
+        print("[pc-hint] 아직 도달하지 않은 기간 — 기존 기록 유지")
+        return 0
     files = history_files()
     if not files:
         print("[pc-hint] Edge/Chrome 사용기록 없음(정책 차단 가능) — 샘플러 시각으로만 보강 시도")
     times = []
     for h in files:
-        vt, excl = visit_times(h, t0, t1)
+        vt, excl = visit_times(h, t0, observed)
         times += vt
         prof = os.path.basename(os.path.dirname(h))
         brand = "Edge" if "\\Edge\\" in h else "Chrome"
         note = f" · 다른 기기 동기화 {excl}건 제외" if excl else ""
         print(f"[pc-hint] {brand}\\{prof}: 방문 시각 {len(vt)}건{note} (URL 미조회)")
-    st = sampler_times(t0, t1)
+    st = sampler_times(t0, observed)
     if st:
         print(f"[pc-hint] 창 샘플러: 샘플 시각 {len(st)}건 합류")
     times += st
@@ -319,10 +355,10 @@ def main():
     if not times:
         print("[pc-hint] 보강 근거 없음(방문 기록·샘플러 모두 0건) — 이벤트 로그 결과 유지")
         return 0
-    # TAIL_MIN 여유가 --to 자정을 넘겨 기간 밖 날짜 행을 만들지 않게 t1 로 자른다
-    hint_spans = [(a, min(b, t1)) for a, b in to_spans(times) if a < t1]
+    # 여유가 조회 끝 자정이나 현재 시각을 넘어 미래 PC 시간을 만들지 않게 자른다.
+    hint_spans = [(a, min(b, observed)) for a, b in to_spans(times) if t0 <= a < observed]
     daily = daily_from_spans(hint_spans)
-    total, added, improved = merge_pc_on(csv_path, daily, hint_spans, spans_path)
+    total, added, improved = merge_pc_on(csv_path, daily, hint_spans, spans_path, t0, t1, now)
     mode = "구간 합집합" if os.path.isfile(spans_path) else "날짜별(pc_spans.csv 없음)"
     print(f"[pc-hint] 힌트 {len(daily)}일 → pc_on.csv 병합({mode}): 신규 {added}일 · 보강 {improved}일 · 합계 {total}일")
     return 0

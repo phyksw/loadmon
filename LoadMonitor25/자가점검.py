@@ -62,6 +62,7 @@ NEED = [
     "core/board.py",
     "core/bundles.py",
     "core/extract.py",
+    "core/review_basis.py",
     "core/programs.py",
     "core/details.py",
     "core/owner.py",

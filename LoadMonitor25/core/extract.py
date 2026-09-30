@@ -45,6 +45,7 @@ LM22 2차 (감사 A1·A3·A6·A9·A13·A24·A25·A30~A35·D3·D4·D5·D7 의 시
 import csv
 import glob
 import json
+import math
 import os
 import re
 from collections import Counter, defaultdict
@@ -737,6 +738,16 @@ SIM_OUT_EXTS = {".dat", ".csv", ".tsv", ".txt", ".lis", ".out", ".h5", ".hdf5", 
                 ".fld", ".cfld", ".cpt", ".fbd", ".stt", ".rpt", ".t16", ".sts", ".sta",
                 ".cvg", ".vtu", ".vtk", ".h3d", ".zrd", ".zbf"}
 
+# 결과 전용 포맷은 출력 개수와 무관하게 기계 산출물이다. CSV/TXT/DAT 등 겸용 포맷은
+# 이 목록에 넣지 않는다. 파일 mtime만으로 사람이 결과를 읽거나 편집한 시간을 알 수 없다.
+SOLVER_RESULT_EXTS = {".op2", ".f06", ".f04", ".rth", ".rmg", ".h3d", ".zrd", ".zbf"}
+
+
+def _generated_file(row):
+    """명시된 기계 출처/결과 전용 포맷. 사람이 다룬 시간은 별도 창·발신·수동 근거에서 센다."""
+    origin = str(row.get("origin") or row.get("file_origin") or "").strip().lower()
+    return origin in {"machine", "generated", "solver"} or (row.get("ext") or "").lower() in SOLVER_RESULT_EXTS
+
 
 _VER_TAIL_RE = re.compile(r"\.\d{1,4}$")            # Creo 판번호 꼬리 bracket.prt.3
 
@@ -849,9 +860,12 @@ def _file_times(data_dir, d0, d1, exclude=(), cfg=None, burst_n=None, self_names
             continue
         seen.add(dk)
         key = (t.date(), t.hour * 60 + t.minute, _burst_folder(r.get("folder")))
-        pm_by_root[r.get("_root")][key] += 1    # 버스트 판정은 필터 전 전체 건수로(루트별)
-        ext_by_key[key][ext] += 1
-        base_by_key[key][_base_name(name, ext)] += 1
+        generated = _generated_file(r)
+        if not generated:
+            # 기계 결과 옆에서 사람이 저장한 문서가 출력 파일 수 때문에 일괄로 소실되지 않게 분리한다.
+            pm_by_root[r.get("_root")][key] += 1    # 그 밖의 버스트 판정은 필터 전 전체 건수로(루트별)
+            ext_by_key[key][ext] += 1
+            base_by_key[key][_base_name(name, ext)] += 1
         if not _is_me(r.get("author"), self_names):
             continue                            # 동료가 저장한 파일 — 내 시간 근거가 아니다
         if r.get("_recent") and _view_only(r, view_active):
@@ -859,7 +873,16 @@ def _file_times(data_dir, d0, d1, exclude=(), cfg=None, burst_n=None, self_names
         low = (name + (" | 폴더:" + fol if fol else "")).lower()
         if hit(low):
             continue
-        rows.append((key, ext in CODE_EXTS))
+        rows.append((key, ext in CODE_EXTS, generated))
+    generated_by_folder = defaultdict(set)
+    for key, _code, generated in rows:
+        if generated:
+            generated_by_folder[(key[0], key[2])].add(key[1])
+    generated_clusters = {}
+    for (day, folk), minutes in generated_by_folder.items():
+        for cluster in _clusters(minutes):
+            for minute in cluster:
+                generated_clusters[(day, minute, folk)] = (day, cluster[0], folk)
     per_min = Counter()
     for pm in pm_by_root.values():
         for k, n in pm.items():
@@ -901,8 +924,8 @@ def _file_times(data_dir, d0, d1, exclude=(), cfg=None, burst_n=None, self_names
                 huge_g.update((day, x) for x in cl)
     burst = set(sim_cluster) | {k for k in per_min if k not in sim_cluster and (k[0], k[1]) in burst_g}
     out, nb, anchored, sim_first = {}, 0, set(), {}
-    for key, code in rows:
-        cid = sim_cluster.get(key)
+    for key, code, generated in rows:
+        cid = generated_clusters.get(key) if generated else sim_cluster.get(key)
         if cid is not None:                      # 해석 출력 뭉치 — 시작·끝 분(rows 는 시간순이 아니다)
             nb += 1
             m0, m1 = sim_first.get(cid, (key[1], key[1]))
@@ -933,7 +956,7 @@ def _file_times(data_dir, d0, d1, exclude=(), cfg=None, burst_n=None, self_names
     for (day, _m0, folk), (m, mend) in sim_first.items():
         if (day, folk) not in drop_folk:
             out.setdefault(day, []).append((m, ("sim", mend)))
-    return out, burst, nb, set(sim_cluster)
+    return out, burst, nb, set(sim_cluster) | set(generated_clusters)
 
 
 def load_signals(data_dir, d0, d1, exclude=(), cfg=None):
@@ -1183,8 +1206,9 @@ def load_signals(data_dir, d0, d1, exclude=(), cfg=None):
         hint = "" if other else file_hint(os.path.join(r.get("folder") or "", name), r.get("size_kb"))
         text = (name + (" § " + hint if hint else "") + (" | 폴더:" + fol if fol else ""))
         bkey = (t.date(), t.hour * 60 + t.minute, _burst_folder(r.get("folder")))
-        bulk = (not other) and (not view) and bkey in burst
-        sim = bulk and bkey in sim_bulk
+        generated = _generated_file(r)
+        bulk = (not other) and (not view) and (generated or bkey in burst)
+        sim = bulk and (generated or bkey in sim_bulk)
         file_groups.setdefault((fol or (r.get("folder") or ""), t.date()), []).append(
             (t, text, code, bulk, dkey, other, view, sim))
 
@@ -1867,7 +1891,7 @@ def read_pc_spans(data_dir, d0, d1, anomalies=None):
     return _pc_spans_rows(rows, d0, d1, anomalies)
 
 
-def pc_daily(data_dir, d0, d1, day_win=None, anom=None, span_anoms=None):
+def pc_daily(data_dir, d0, d1, day_win=None, anom=None, span_anoms=None, basis=None, now=None):
     r"""PC 가동 기록을 날짜별로 합친다(본 PC + data\추가PC\*) → (pc, pc_wins, pc_spans, pc_win_all).
     각 루트의 pc/pc_on.csv 및 옛 평면 배치 pc_on.csv 를 함께 읽는다(중복은 기존 max/구간 합집합으로 처리).
       pc         {date: (on_h, night_h, first_on_min|None, last_off_min|None)}
@@ -1882,14 +1906,22 @@ def pc_daily(data_dir, d0, d1, day_win=None, anom=None, span_anoms=None):
       쓴 날(데스크톱 08~12 + 노트북 13~18)을 5h 로 깎았다(제보). 스칼라 병합값과의 max 라 예전 값 밑으로는 안 간다.
       야간 조각은 수집기 경계(DAY_WIN 08/19시)로 잰다 — 행의 night 열과 같은 축이어야 max 가 이중 계상이 안 된다.
     · 화면의 주간 추이 PC 선도 이 함수(pc)를 쓴다.
+    basis(dict)는 루트·날짜별 일별 총량/관측 구간/위치 미상의 잔여량을 전달한다. 구간이 한 조각
+    있다고 그 날 전체가 관측된 것은 아니다. 반환 4개 계약은 유지한다. now를 주면 미래 PC 입력을 자른다.
     anom(d, kind, raw, used) 를 주면 기록 오류를 그리로 보고한다(기간 안 날짜만). span_anoms(list)는 구간 이상치."""
     day_win = day_win or DAY_WIN
     cw0, cw1 = float(DAY_WIN[0]), float(DAY_WIN[1])      # 야간 조각은 수집기 경계로(행의 night 열과 같은 축)
-    pc, pc_wins, syn, roots_with, real_by_root = {}, {}, {}, {}, {}
+    pc, pc_wins, syn, roots_with, real_by_root, aggregate_by_root = {}, {}, {}, {}, {}, {}
+    now_min = (now.hour * 60 + now.minute + now.second / 60.0) if now else None
     roots = _data_roots(data_dir)
     for ri, root in enumerate(roots):
         rows_sp = _read(os.path.join(root, "pc_spans.csv")) + _read(os.path.join(root, "pc", "pc_spans.csv"))
         real_by_root[ri] = _pc_spans_rows(rows_sp, d0, d1, anomalies=span_anoms)
+        if now is not None:
+            real_by_root[ri] = {dd: (_clip(sp, 0, now_min) if dd == now.date() else sp)
+                                for dd, sp in real_by_root[ri].items() if dd <= now.date()}
+            real_by_root[ri] = {dd: sp for dd, sp in real_by_root[ri].items() if sp}
+        aggregate_by_root[ri] = {}
         for dd in real_by_root[ri]:
             roots_with.setdefault(dd, set()).add(ri)
         rows_pc = _read(os.path.join(root, "pc_on.csv")) + _read(os.path.join(root, "pc", "pc_on.csv"))
@@ -1899,7 +1931,13 @@ def pc_daily(data_dir, d0, d1, day_win=None, anom=None, span_anoms=None):
                 on, ni = float(r.get("on_hours") or 0), float(r.get("night_hours") or 0)
             except (ValueError, TypeError):
                 continue
+            if not (d0 <= d <= d1) or (now is not None and d > now.date()):
+                continue
             raw = (on, ni)
+            if not (math.isfinite(on) and math.isfinite(ni)):
+                if anom is not None:
+                    anom(d, "pc_on 유한하지 않은 시간 폐기", None, None)
+                continue
             roots_with.setdefault(d, set()).add(ri)
             if not (0.0 <= on <= PHYS_CAP_H and 0.0 <= ni <= min(on, PC_NIGHT_MAX_H)):
                 on = min(max(on, 0.0), PHYS_CAP_H)
@@ -1912,6 +1950,20 @@ def pc_daily(data_dir, d0, d1, day_win=None, anom=None, span_anoms=None):
                 if anom is not None and d0 <= d <= d1:
                     anom(d, f"pc_on first_on {_fmt_hm(fo)} > last_off {_fmt_hm(lo)}(가동 창 무시)", None, None)
                 fo = lo = None
+            if now is not None and d == now.date():
+                # 오늘의 일별 총량도 아직 오지 않은 창 길이를 포함할 수 없다. 위치를 모르면 경과 시간까지만.
+                lo = min(lo, now_min) if lo is not None else None
+                available = max(0.0, (lo if lo is not None else now_min) - (fo or 0.0)) / 60.0
+                on = min(on, available)
+                ni = min(ni, on, _union_min(_clip([(fo or 0.0, lo if lo is not None else now_min)], 0, cw0)
+                                          + _clip([(fo or 0.0, lo if lo is not None else now_min)], cw1, now_min)) / 60.0)
+                if fo is not None and lo is not None and lo <= fo:
+                    fo = lo = None
+                if on <= 0:
+                    continue
+            old_aggregate = aggregate_by_root[ri].get(d)
+            if old_aggregate is None or on > old_aggregate[0]:
+                aggregate_by_root[ri][d] = (on, ni, fo, lo)
             if fo is not None and lo is not None and lo > fo:
                 pc_wins.setdefault(d, []).append((fo, lo))
                 if abs((lo - fo) / 60.0 - on) <= 0.25:           # 켠 뒤 끄기까지 끊김 없던 행 — 창이 곧 구간
@@ -1943,6 +1995,44 @@ def pc_daily(data_dir, d0, d1, day_win=None, anom=None, span_anoms=None):
         pc[dd] = (min(PHYS_CAP_H, day_m + ni_m), ni_m,
                  min((x for x in (o_fo, sp[0][0]) if x is not None), default=None),
                  max((x for x in (o_lo, sp[-1][1]) if x is not None), default=None))
+    if isinstance(basis, dict):
+        basis.clear()
+        for ri in range(len(roots)):
+            for dd in set(real_by_root[ri]) | set(aggregate_by_root[ri]):
+                sp = _union_spans(real_by_root[ri].get(dd, []))
+                observed_h = _union_min(sp) / 60.0
+                aggregate = aggregate_by_root[ri].get(dd)
+                aggregate_h = aggregate[0] if aggregate else 0.0
+                aggregate_window = ([(aggregate[2], aggregate[3])] if aggregate
+                                    and aggregate[2] is not None and aggregate[3] is not None
+                                    and aggregate[3] > aggregate[2] else [])
+                # 새 야간/창 밖 조각이 옛 주간 총량을 표현했다고 보지 않는다. 일별 행이 가진
+                # 창과 주·야간 예산에 맞는 조각만 이전 집계의 위치를 설명한다.
+                compatible = _intersect_spans(sp, aggregate_window) if aggregate_window else sp
+                observed_day = _union_min(_clip(compatible, cw0, cw1)) / 60.0
+                observed_night = _union_min(_clip(compatible, 0, cw0) + _clip(compatible, cw1, 1440)) / 60.0
+                represented = (min(observed_day, aggregate[0] - aggregate[1]) + min(observed_night, aggregate[1])
+                               if aggregate else 0.0)
+                residual = max(0.0, aggregate_h - represented)
+                state = "partial" if sp and residual > 0.02 else ("aggregate_only" if not sp and aggregate else "spans")
+                item = {"root_index": ri, "state": state, "aggregate_h": round(aggregate_h, 3),
+                        "observed_span_h": round(observed_h, 3), "unplaced_h": round(residual, 3),
+                        "represented_aggregate_h": round(represented, 3),
+                        "location_unknown": residual > 0.02, "aggregate_window_known": bool(aggregate_window)}
+                day_basis = basis.setdefault(dd, {"partial": False, "unplaced_h": 0.0, "roots": [],
+                                                 "floor_windows": [], "floor_window_unknown": False})
+                day_basis["partial"] |= state == "partial"
+                # PC가 여러 대면 겹침을 모르는 잔여 시간을 더하지 않는다.
+                day_basis["unplaced_h"] = max(day_basis["unplaced_h"], item["unplaced_h"])
+                day_basis["roots"].append(item)
+                # 하한 추정의 창과 실제 관측 구간을 분리한다. 부분 관측 루트는 기존 집계창을
+                # 유지하고, 집계창조차 없으면 nowin 예산을 쓴다. 새 조각이 옛 창을 대체하거나
+                # 확장하지 않으며 완전히 표현된 다른 PC의 구간은 그대로 합친다.
+                day_basis["floor_windows"].extend(aggregate_window if residual > 0.02 else (sp or aggregate_window))
+                day_basis["floor_window_unknown"] |= residual > 0.02 and not aggregate_window
+        for dd, item in basis.items():
+            item["partial"] |= bool(pc_spans.get(dd)) and item["unplaced_h"] > 0.02
+            item["floor_windows"] = _union_spans(item["floor_windows"])
     return pc, pc_wins, pc_spans, pc_win_all
 
 
@@ -2748,7 +2838,10 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
     # ── PC 가동 기록(pc_on.csv + pc_spans.csv, 본 PC + 추가PC/*) — 날짜별 병합은 pc_daily 한 곳에서 한다(화면의 주간 추이
     #    PC 선도 같은 함수). 여러 PC 의 구간은 합집합, 구간 없는 행은 (주간·야간) max(A32) — 제보: 'PC 가동시간 합산 안 됨'. ──
     span_anoms = []
-    pc, pc_wins, pc_spans, pc_win_all = pc_daily(data_dir, d0, d1, day_win=day_win, anom=_anom, span_anoms=span_anoms)
+    pc_basis = {}
+    pc_now = now or datetime.now()
+    pc, pc_wins, pc_spans, pc_win_all = pc_daily(data_dir, d0, d1, day_win=day_win, anom=_anom,
+                                               span_anoms=span_anoms, basis=pc_basis, now=pc_now)
     for dd, kind in span_anoms:
         _anom(dd, kind, None, None)
     excluded_activity = {}
@@ -2820,7 +2913,7 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
     # sim_sp는 기계 실행 참고값만 만든다. 출력 자체는 사람의 능동 흔적/하한 게이트가 아니다.
     prod, tp = {}, {}
     sim_sp, hum_pt, view_pt = {}, {}, {}
-    now_lim = (now or datetime.now()) + timedelta(minutes=FUTURE_SLACK_MIN)   # 미래 시각(시계 오류)은 흔적이 아니다
+    now_lim = pc_now + timedelta(minutes=FUTURE_SLACK_MIN)   # 미래 시각(시계 오류)은 흔적이 아니다
     for t, src, _x, _w, _who in signals:
         if not (d0 <= t.date() <= d1) or t > now_lim:
             continue
@@ -2957,8 +3050,12 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
         # 양끝 다듬기(A33 trimIdleEdgesMin).
         # 여러 PC 가 섞인 날은 실제 구간 ∪ 구간 없는 PC 의 창(pc_win_all)을 예전 창에 **더한다** — 가동 시간(pc_daily)과 같은
         # 재료로 하한 창을 만들되 예전 창보다 좁아지지는 않게(창 길이보다 on 이 큰 잘못된 행의 창도 예전엔 창에 들어갔다)
-        pc_win = list(pcs) if pcs else _union_spans(pc_wins.get(d) or [])
-        if pc_win_all.get(d):
+        partial_pc = bool(pc_basis.get(d, {}).get("partial"))
+        # 부분 구간은 옛 일별 총량의 나머지가 꺼져 있었다는 근거가 아니다. PC 하한만 기존
+        # aggregate/window 추정으로 계산하고 실제 pc_spans의 위치·길이는 그대로 둔다.
+        pc_win = (list(pc_basis[d]["floor_windows"]) if partial_pc
+                  else (list(pcs) if pcs else _union_spans(pc_wins.get(d) or [])))
+        if pc_win_all.get(d) and not partial_pc:
             pc_win = _union_spans(list(pc_win) + list(pc_win_all[d]))
         always_on = (on >= 20.0 or (first_on is not None and last_off is not None
                                     and first_on <= 0 and last_off >= 1440))
@@ -3070,7 +3167,9 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
             gate_ok = (floor_needs != "active") or active_day
             base, kind, gap_h, day_on_eff = [], None, 0.0, day_on
             if gate_ok:
-                if pcs:
+                if partial_pc and pc_basis[d]["floor_window_unknown"] and day_on > 0:
+                    base, kind, gap_h = [(dw0, dw1)], "nowin", max(0.0, (dw1 - dw0) / 60.0 - day_on)
+                elif pcs and not partial_pc:
                     base = _clip(pc_win, dw0, dw1)
                     kind, day_on_eff = "spans", _union_min(base) / 60.0
                 elif day_on > 0 and pc_win:
@@ -3078,6 +3177,9 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
                     kind, gap_h = "window", max(0.0, _union_min(base) / 60.0 - day_on)
                 elif day_on > 0:
                     base, kind, gap_h = [(dw0, dw1)], "nowin", max(0.0, (dw1 - dw0) / 60.0 - day_on)
+                if base and d == pc_now.date():
+                    # 창 없는 옛 총량도 오늘 아직 오지 않은 주간 구간으로 배치하지 않는다.
+                    base = _clip(base, 0, pc_now.hour * 60 + pc_now.minute + pc_now.second / 60.0)
                 if base and always_on:
                     # 항상 켜 두는 PC(A3f): day_on 포화 대신 '첫 능동 흔적 −30 ~ 마지막 +30' 만
                     tw = _trace_window(prod.get(d, []), list(meets.get(d, [])) + list(act.get(d, [])) + list(off_blk))
@@ -3233,6 +3335,11 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
         cfg_warns.append("시각 없는 수동 기록은 PC와 겹침 미상 — 별도 업무시간 합산에는 start/end 필요")
     info["collection_gap_dates"] = collection_gaps
     info["collection_gap_days"] = len(collection_gaps)
+    info["pc_observation_basis"] = {dd.isoformat(): item for dd, item in sorted(pc_basis.items())}
+    partial_pc_days = sum(bool(item["partial"]) for item in pc_basis.values())
+    info["pc_partial_observation_days"] = partial_pc_days
+    info["pc_unplaced_h"] = round(sum(item["unplaced_h"] for item in pc_basis.values()), 3)
+    info["pc_unplaced_basis"] = "PC 일별 총량 중 시간 위치 미확인 부분; 인적시간에 별도 가산하지 않음"
     info["absence_inference_used"] = False
     if infer_abs and collection_gaps:
         cfg_warns.append("수집공백을 부재로 추정하지 않음 — 해당 평일의 가용시간과 1MM 분모 유지")
@@ -3263,6 +3370,8 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
         reasons.append("달력 0행")
     if collection_gaps:
         reasons.append(f"근태 미확인·수집공백 {len(collection_gaps)}일(가용 유지)")
+    if partial_pc_days:
+        reasons.append(f"PC 부분 구간 {partial_pc_days}일 — 일별 총량의 나머지 시간 위치 미확인")
     info["coverage"] = {"grade": "reliable" if not reasons else ("caution" if len(reasons) == 1 else "unreliable"),
                         "reasons": reasons, "pc_weekday_ratio": round(pc_ratio, 2)}
     info["cfg_used"] = {"machineRuntimeCountsAsHuman": False, "inferAbsenceApplied": False,

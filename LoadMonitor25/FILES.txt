@@ -1,10 +1,10 @@
 LoadMonitor25 필수 파일 목록 - 복사 시 전부 있어야 합니다.
 (data/ report/ teamdata/ 는 복사 금지 - 개인정보)
 
-총 74개
+총 75개
 
 LoadMonitor25-UI.bat                                   2,444 B  a400d046
-LoadMonitor25.bat                                      3,155 B  e4e48c0a
+LoadMonitor25.bat                                      3,261 B  fa1f7533
 LoadMonitor25-팀취합.bat                                  1,948 B  8f4e3163
 LoadMonitor25-팀서버.bat                                  1,612 B  e78d5139
 LoadMonitor25-팀업로드.bat                                 1,713 B  32a2ba9d
@@ -14,34 +14,34 @@ LoadMonitor25-이동준비.bat                                 1,063 B  6735729a
 LoadMonitor25-빠른이동.bat                                   125 B  6f5e3143
 agentic.py                                            46,935 B  b9b465b7
 freeze.py                                             52,388 B  bf9ba522
-team_report.py                                       167,382 B  7164220a
+team_report.py                                       177,419 B  d877d332
 flow.py                                               84,511 B  248ab9c9
 teamserver.py                                         24,918 B  1b26e160
-teamup.py                                             39,410 B  41ed939a
-aggregate.py                                          56,638 B  d9ab115b
+teamup.py                                             43,530 B  241f55af
+aggregate.py                                          59,298 B  39e31dfc
 export.py                                              3,339 B  7bd0e652
 retag.py                                               6,128 B  8d6f81d3
 team_refine.py                                         6,565 B  474ed796
 report_out.py                                         31,160 B  8f18cad9
-README.md                                             97,427 B  38da44fd
+README.md                                            103,598 B  ec7e427a
 check.py                                               2,629 B  7badfe69
-judge.py                                              96,153 B  6aa86786
+judge.py                                              97,882 B  ac04192c
 mine.py                                               17,836 B  c751c51d
 refine.py                                             44,045 B  690e0c5a
 ruff.toml                                              1,004 B  aa861118
 FILES.txt                                                (이 파일)
-run.py                                                59,118 B  94093e7b
-자가점검.py                                                8,992 B  8c1fbe35
+run.py                                                59,125 B  3f7194cb
+자가점검.py                                                9,020 B  13275feb
 collect/Add-WorkLog.ps1                                1,771 B  8a921980
 collect/Get-FileActivity.ps1                          48,656 B  cfab595d
 collect/Get-GitActivity.py                            29,162 B  0facda4f
 collect/Get-LicenseUsage.ps1                           4,093 B  c2df1eda
 collect/Get-OutlookData.ps1                           49,995 B  006c5b43
 collect/Get-OutlookIndex.ps1                          21,292 B  83984e67
-collect/Get-MailViaCopilot.py                         26,575 B  9e601a9d
+collect/Get-MailViaCopilot.py                         27,975 B  34e8d9b8
 collect/Get-OutlookWeb.py                             40,842 B  d259bd40
-collect/Get-PcOnHistory.ps1                           18,791 B  cb1f7e8b
-collect/Get-PcOnHints.py                              15,076 B  95986c3a
+collect/Get-PcOnHistory.ps1                           25,151 B  2f510b9e
+collect/Get-PcOnHints.py                              17,248 B  7ad9cb5f
 collect/Start-TeamsSampler.ps1                         2,201 B  49b71b44
 collect/Get-RecentFiles.ps1                           22,050 B  8fbaf83a
 collect/Get-TeamsChats.py                             17,754 B  e868c913
@@ -56,7 +56,8 @@ config/config.default.json                            36,821 B  aff01128
 config/agentic_tasks.json                              4,426 B  2c9e5bb1
 core/board.py                                         13,045 B  9c4d6431
 core/bundles.py                                        6,552 B  bba74a53
-core/extract.py                                      207,992 B  5581e9d9
+core/extract.py                                      216,213 B  6b891bb7
+core/review_basis.py                                   6,455 B  b9cf5bca
 core/programs.py                                      15,778 B  1f1e142f
 core/details.py                                       72,325 B  be5e3354
 core/owner.py                                          2,123 B  4be566ba
@@ -67,8 +68,8 @@ core/run_cache.py                                     29,950 B  11791a3e
 docs/설정가이드.md                                         62,090 B  054c36d2
 docs/사용안내.html                                       272,444 B  26f990bb
 docs/빠른이동.md                                           9,041 B  1e599bb8
-docs/LM25_산정및팀취합.md                                    4,640 B  6b09472e
-tools/copilot_auto.py                                 62,703 B  201ac0ae
+docs/LM25_산정및팀취합.md                                    8,237 B  d4f3f993
+tools/copilot_auto.py                                 64,382 B  6bf6b797
 tools/Get-EmbeddedPython.ps1                           2,472 B  46f770a5
 tools/check_page_js.py                                 8,818 B  f6d3b95b
 tools/lint.ps1                                         8,350 B  b04c5764
@@ -76,4 +77,4 @@ tools/Make-Package.ps1                                10,733 B  fa234c23
 tools/Prepare-Move.ps1                                22,997 B  b91fc8ef
 tools/transfer.py                                     22,068 B  55dd0c43
 tools/update_files.py                                  4,530 B  c8761170
-ui/app.py                                            353,681 B  42db004f
+ui/app.py                                            366,725 B  2742265c

@@ -641,7 +641,7 @@ def main():
     _ACTIVE_CACHE = None
     _CAPTURE_RESULTS.clear()
     c = cfg()
-    d0 = arg("--from") or (date.today().replace(day=1)).isoformat()
+    d0 = arg("--from") or date.today().replace(month=1, day=1).isoformat()
     d1 = arg("--to") or date.today().isoformat()
     data = os.path.join(ROOT, "data")
     ps = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]

@@ -24,8 +24,9 @@ try {
     Start-Transcript -LiteralPath $taskLog | Out-Null
     $taskTranscript = $true
     Write-Host "LM25 quality checks: $taskMode"
-    & $taskDevExe -B (Join-Path $PSScriptRoot 'quality.py') $taskMode --root $taskRoot
+    & $taskDevExe -B (Join-Path $PSScriptRoot 'quality.py') $taskMode --root $taskRoot | ForEach-Object { Write-Host $_ }
     $taskExit = $LASTEXITCODE
+    Write-Host "Quality gate exit code: $taskExit"
     Write-Host "Log: $taskLog"
 }
 finally {

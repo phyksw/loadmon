@@ -30,7 +30,7 @@ judge.py — raw 판정을 Copilot(GPT-5.6)이 수행한다. (LoadMonitor20: 계
   python judge.py --from ... --to ... [--chunk 40] [--no-narrate]
   (청크 기본값은 config.copilotAuto.judgeChunk 로도 바꿀 수 있다 — --chunk 가 우선)
 
-종료 코드: 0 정상 · 1 입력 없음 · 3 판정 0건(왕복 전부 실패 등 — 마지막 줄 JSON {"ok":false,
+종료 코드: 0 전체 판정 · 1 입력 없음 · 2 일부 판정(나머지는 규칙 결과로 보존) · 3 판정 0건(왕복 전부 실패 등 — 마지막 줄 JSON {"ok":false,
 "error","hint"}; signals/mm_rows 는 규칙 판정으로 쓰되 entities·ai_narratives 기존 파일은 보존,
 월별 내러티브 왕복은 하지 않는다 — run.py 가 이 코드를 보고 정제·Agentic·워크플로우를 건너뛴다).
 
@@ -57,7 +57,7 @@ from datetime import date, datetime
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(ROOT, "core"))
-from details import ukey2  # noqa: E402  - 과제 신원 축(공백·구분자·대소문자 무시, 괄호 꼬리 보존)
+from details import explain_failure, ukey2  # noqa: E402  - 과제 신원과 왕복 실패 분류
 from progress import progress  # noqa: E402
 NO_WIN = 0x08000000
 _DEC = json.JSONDecoder()
@@ -766,6 +766,9 @@ def judge_rows(idxs, rows, models, seen, tag, label, depth, st):
     · 통째 실패(왕복 실패·JSON 없음) → 2*MIN_SPLIT 행 이상이면 반으로 나눠 각각 재시도(깊이 MAX_SPLIT_DEPTH).
     · st: roundtrips·repaired·retries·failed_rows·omitted_rows·notes·last_err·soft(재시도 끔) 누적."""
     idxs = list(idxs)
+    if st.get("fatal"):
+        st["failed_rows"] += len(idxs)
+        return {}
     chunk = [rows[i] for i in idxs]
     # 묶음은 같은 채팅에서 이어 보낸다(fresh=None — 첫 왕복·실패 뒤·chatTurns 마다만 새 채팅). 프롬프트는 혼자서 완결이라
     # 새 채팅에 떨어져도 답이 나오고, 이어지면 앞 묶음의 표기를 Copilot 이 기억한다
@@ -787,6 +790,12 @@ def judge_rows(idxs, rows, models, seen, tag, label, depth, st):
         st["last_err"] = " — ".join(x for x in (str(res.get("error") or ""),
                                                 str(res.get("hint") or "")) if x)[:200]
         st["notes"].append(f"{label}: 실패({res.get('error', '')})")
+        why, how, fatal = explain_failure(res)
+        if fatal:
+            st["fatal"] = " — ".join(x for x in (why, how) if x)
+            st["last_err"] = st["fatal"]
+            st["failed_rows"] += len(idxs)
+            return got
     missing = [i for i in idxs if i not in got]
     if not missing:
         return got
@@ -1192,9 +1201,8 @@ def rehours_meta(kept, dropped, tag, cfg, rep, data_dir=None, say=print):
     mj["total_mm_before_rehours"] = before_mm
     mj["total_mm"], mj["avail_mm"] = total_mm, avail_mm
     mj["load_pct"] = round(total_mm / avail_mm * 100, 1) if avail_mm else 0.0
-    if day_hours:
-        mj["day_hours"] = day_hours
-        mj["worked_h"] = worked_h
+    mj["day_hours"] = day_hours
+    mj["worked_h"] = worked_h
     if isinstance(res.get("months"), dict):
         mj["mm_months"] = res["months"]
     info = res.get("info")
@@ -1502,6 +1510,9 @@ def main():
     print(f"[judge] 0/{n_chunks + 1} 엔티티 체계 수립 왕복 (모델 {model_name}"
           + (f" · 지정 {len(pinned)}개" if pinned else "") + ") — 응답까지 수십 초 걸립니다")
     res = copilot_send(taxonomy_prompt(rows, hints, pinned), tag, "taxonomy")
+    why0, how0, fatal0 = explain_failure(res) if not res.get("ok") else ("", "", False)
+    # 로그인/기동 실패는 자료를 나눠도 풀리지 않는다. 입력창 지연은 청크 한 번으로 재확인한다.
+    fatal0 = fatal0 and res.get("phase") != "input_not_found"
     models = []
     if res.get("ok"):
         o = (rfind_json(res.get("reply", ""), "models", skip=(TAXONOMY_EXAMPLE,))
@@ -1556,6 +1567,11 @@ def main():
     judged, n_fail, n_partial, last_err = {}, 0, 0, ""
     st = {"roundtrips": 0, "repaired": 0, "retries": 0, "failed_rows": 0, "omitted_rows": 0,
           "notes": [], "last_err": "", "soft": False, "aborted": False}
+    if fatal0:
+        last_err = st["fatal"] = st["last_err"] = " — ".join(x for x in (why0, how0) if x)
+        st["aborted"] = True
+        print(f"[judge] AI 판정 중단 — {last_err}")
+        print("        수집 자료와 규칙 결과는 보존합니다. 조치 후 다시 분석하세요.")
     consec, prev_idxs = 0, ()
     for ci, (start, n) in enumerate(plan):
         progress("AI 판정", ci + 1, len(chunks) + 1)
@@ -1579,7 +1595,11 @@ def main():
             last_err = st.get("last_err") or last_err
         note = ("" if not st["notes"] else " · " + " / ".join(st["notes"][:4]))
         print(f"        판정 {len(got)}/{n}건{note}")
-        if consec >= ABORT_FAIL_CHUNKS:
+        if st.get("fatal"):
+            st["aborted"] = True
+            print(f"        AI 판정 중단 — {st['fatal']}")
+            print("        남은 신호는 규칙 결과로 보존합니다. 조치 후 다시 분석하세요.")
+        elif consec >= ABORT_FAIL_CHUNKS:
             st["aborted"] = True
             print(f"        연속 {consec}청크 0건 — 남은 청크는 규칙 판정으로 둡니다"
                   "(Copilot 상태를 확인한 뒤 재실행하면 이어서 판정됩니다)")
@@ -1693,6 +1713,14 @@ def main():
         print(json.dumps({"ok": False, "error": err, "hint": hint, "judged": 0,
                           "chunks": len(chunks), "failed_chunks": n_fail}, ensure_ascii=False))
         return 3
+
+    if st.get("fatal") or len(judged) < len(rows):
+        hint = st.get("fatal") or (f"미판정 {len(rows) - len(judged)}건은 규칙 결과로 보존했습니다. "
+                                    "진행 로그의 응답 누락/형식 오류를 확인하고 다시 분석하세요.")
+        print(json.dumps({"ok": False, "error": "AI 판정 부분 완료",
+                          "hint": hint, "judged": len(judged), "total": len(rows),
+                          "chunks": len(chunks), "failed_chunks": n_fail}, ensure_ascii=False))
+        return 2
 
     # [월별] 내러티브
     if "--no-narrate" not in sys.argv:

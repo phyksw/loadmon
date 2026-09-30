@@ -32,6 +32,8 @@ if __name__ == "__main__":      # import 시(파서 재사용·테스트) stdout
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, errors="replace", encoding=(
         (sys.stdout.encoding or "utf-8") if sys.stdout.isatty() else "utf-8"))  # 콘솔(bat)=콘솔 코드페이지 · 파이프(UI)=utf-8
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "core"))
+from details import explain_failure  # noqa: E402  - 로그인/기동 실패는 수집 분할로 해결되지 않음
 NO_WIN = 0x08000000
 OUT_DIR = os.path.join(ROOT, "data", "outlook")
 MAIL_HDR = "box,time,sender,subject,conversation,rcv,time_precision"
@@ -40,6 +42,10 @@ CAL_HDR = "start,end,all_day,busy_status,subject,categories,location,response,me
 CAL_HDR_ASK = "start,end,all_day,busy_status,subject,categories,location"   # Copilot 에 묻는 열 — 응답 상태는 물을 수 없다
 UNAVAILABLE_FLAG = os.path.join(OUT_DIR, "mail_copilot_unavailable.json")
 FULL_N = 140                    # 한 조각 회수가 이 이상이면 150행 상한에 잘린 것으로 보고 5일 조각으로 재질의
+
+
+class TerminalCollectionError(RuntimeError):
+    """사람의 조치가 필요한 실패. 조회 불가 계정으로 영구 기록하지 않는다."""
 
 
 def arg(flag, d=""):
@@ -279,6 +285,9 @@ def _one_slice(kind, s0, s1, alt=False):
         return [], "other"
     if not res.get("ok"):
         print(f"[mail-copilot]   {kind} {s0}~{s1}: 실패 — {res.get('error', '')}")
+        why, how, fatal = explain_failure(res)
+        if fatal:
+            raise TerminalCollectionError(" — ".join(x for x in (why, how) if x))
         return [], "other"
     reply = res.get("reply", "")
     try:                                    # 원문 응답 보존 — 진위·누락 진단용
@@ -382,6 +391,16 @@ def collect_kind(kind, d0, d1, store_subject, one_slice=None):
     rows, seen = [], set()
     kidx = 0 if kind == "cal" else 1
 
+    def query(*args):
+        try:
+            return q(*args)
+        except TerminalCollectionError as error:
+            if rows:
+                rows.sort(key=lambda r: r[kidx])
+                _save(kind, rows, store_subject)
+            error.saved_rows = len(rows)
+            raise
+
     def take(batch):
         n = 0
         for r in batch:
@@ -396,11 +415,11 @@ def collect_kind(kind, d0, d1, store_subject, one_slice=None):
     alt, fails, unable = False, 0, False
     for i, (s0, s1) in enumerate(sl):
         print(f"[mail-copilot] {kind} {i + 1}/{len(sl)} 조각 {s0}~{s1}")
-        got, st = q(kind, s0, s1, alt)
+        got, st = query(kind, s0, s1, alt)
         if st == "unable" and not alt:
             print("[mail-copilot]   '조회 불가' 응답 — 검색형 화법으로 전환해 재시도")
             alt = True
-            got, st = q(kind, s0, s1, alt)
+            got, st = query(kind, s0, s1, alt)
         if st == "unable":
             print(f"[mail-copilot] Copilot 이 {kind} 조회를 지원하지 않는 응답 — 남은 조각 생략")
             unable = True
@@ -417,10 +436,10 @@ def collect_kind(kind, d0, d1, store_subject, one_slice=None):
         span = _span_days(s0, s1)
         if len(got) >= FULL_N and span > 5:
             print(f"[mail-copilot]   {len(got)}건 (150행 상한에 잘림) → 5일 조각 재질의")
-            _refine(kind, s0, s1, alt, 5, take, q)
+            _refine(kind, s0, s1, alt, 5, take, query)
         elif need_subdivide(len(got), span):
             print(f"[mail-copilot]   {len(got)}건 ({'회수 부족' if len(got) < 5 else '잘림 의심'}) → 10일 조각 재질의")
-            _refine(kind, s0, s1, alt, 10, take, q)
+            _refine(kind, s0, s1, alt, 10, take, query)
         if rows:
             rows.sort(key=lambda r: r[kidx])
             _save(kind, rows, store_subject)          # 증분 저장
@@ -461,8 +480,19 @@ def main():
     if not todo:
         return 0
     total, unable_kinds, counts = 0, set(), {}
+    terminal_error = ""
     for kind in todo:
-        n, unable = collect_kind(kind, d0, d1, store_subject)
+        try:
+            n, unable = collect_kind(kind, d0, d1, store_subject)
+        except TerminalCollectionError as error:
+            print(f"[mail-copilot] 수집 중단 — {error}")
+            print("               이미 저장한 자료는 보존했습니다. 조치 후 다시 수집하세요.")
+            counts[kind] = getattr(error, "saved_rows", 0)
+            total += counts[kind]
+            if not total:
+                return 1
+            terminal_error = str(error)
+            break
         total += n
         counts[kind] = n
         if unable:
@@ -471,16 +501,19 @@ def main():
     try:
         os.makedirs(OUT_DIR, exist_ok=True)
         src = {"source": "copilot", "when": datetime.now().strftime("%Y-%m-%d %H:%M"),
-               "kinds": todo, "rows": total, "mail": counts.get("mail", 0), "calendar": counts.get("cal", 0),
-               "me": [], "warnings": []}
+               "kinds": list(counts) if terminal_error else todo, "rows": total,
+               "mail": counts.get("mail", 0), "calendar": counts.get("cal", 0),
+               "me": [], "warnings": [terminal_error] if terminal_error else []}
         if "cal" in todo:
             # 프롬프트가 회차마다 한 행을 요구한다 — 반복 마스터만 남는 색인 폴백과 달리 '완전' 로 표시(LLM 회수 한계는 별개)
-            src["calendar_complete"] = bool(counts.get("cal"))
+            src["calendar_complete"] = bool(counts.get("cal")) and not terminal_error
             src["calendar_recurring_masters"] = 0
         with open(os.path.join(OUT_DIR, "mail_source.json"), "w", encoding="utf-8") as f:
             json.dump(src, f, ensure_ascii=False)
     except OSError:
         pass
+    if terminal_error:
+        return 1
     if total == 0:
         # '불가' 기억은 메일 조회가 막혔을 때만 남긴다(메일이 핵심). 일정만 시도해 막힌 경우는 기록하지 않는다 —
         # 전역 플래그가 다음 실행의 메일 왕복까지 막아 버리기 때문.
