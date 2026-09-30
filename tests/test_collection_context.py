@@ -167,6 +167,24 @@ class CollectionContextTests(unittest.TestCase):
             self.assertEqual(meta["signal_contexts"][0]["time_precision"], precision)
             self.assertEqual(meta["signal_contexts"][0]["context_excerpt"], uncertain["context_excerpt"])
 
+    def test_import_unknown_direction_and_timezone_never_create_time_anchors(self):
+        self.write("outlook/mail.csv", [
+            self.mail(box="unknown", source_kind="mail-import", source_id="unknown-direction",
+                      context_excerpt="Imported discussion context"),
+            self.mail(box="sent", source_kind="mail-import", source_id="unknown-timezone", time_precision="unknown",
+                      time="2026-09-07 21:00", context_excerpt="Imported design context")])
+        self.write("pc/pc_on.csv", [{"date": DAY.isoformat(), "on_hours": 10, "first_on": "09:00",
+                                    "last_off": "20:00", "night_hours": 1, "weekend": 0}])
+        signals, meta = self.signals()
+        self.assertEqual({s[1] for s in signals}, {"메일(방향미확인)", "메일(발신·시각미확인)"})
+        self.assertTrue(all(c["context_excerpt"] for c in meta["signal_contexts"]))
+        now = datetime(2026, 9, 30, 23, 59)
+        baseline, _ = self.extract.day_work_hours(str(self.data), [], DAY, DAY, self.cfg, now, {})
+        hours, info = self.extract.day_work_hours(str(self.data), signals, DAY, DAY, self.cfg, now, {})
+        self.assertEqual(hours, baseline)
+        self.assertEqual(info["unverified_time_signals"], 2)
+        self.assertEqual(self.extract._signal_spans(signals, DAY, DAY, {s[1]: 120 for s in signals}, now=now)[0], {})
+
     def test_unverified_times_do_not_trigger_timezone_warning_or_rejudge_hours(self):
         rows = [self.teams(source_id=str(i), time=f"2026-09-07 02:0{i}", time_precision="ai_reported")
                 for i in range(5)]

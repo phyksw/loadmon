@@ -35,7 +35,7 @@ class WorkflowIntegrityTests(unittest.TestCase):
         self.root = Path(tempfile.mkdtemp(prefix="lm25-workflow-integrity-"))
         for directory in ("core", "config", "report"):
             (self.root / directory).mkdir()
-        for name in ("agentic.py", "flow.py", "core/details.py"):
+        for name in ("agentic.py", "flow.py", "core/details.py", "core/communication_evidence.py", "core/collection_state.py"):
             (self.root / name).write_bytes((ROOT / name).read_bytes())
         self.details = module("synthetic_details", self.root / "core/details.py")
         progress = ModuleType("progress")

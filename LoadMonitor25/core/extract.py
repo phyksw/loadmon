@@ -963,12 +963,16 @@ COLLECTION_CONTEXT_FIELDS = ("context_excerpt", "context_truncated", "source_id"
                              "source_url", "conversation_id", "account", "folder", "time_precision", "context_filtered")
 UNVERIFIED_TIME_PRECISIONS = {"estimated", "date", "ai_reported", "unknown"}
 CONTEXT_ONLY_TIME_SOURCES = {f"팀즈({kind}·시각미확인)" for kind in ("발신", "오더", "수신", "단체")}
+CONTEXT_ONLY_TIME_SOURCES |= {f"메일({kind}·시각미확인)" for kind in ("발신", "수신", "CC", "수신전용")}
+CONTEXT_ONLY_TIME_SOURCES.add("메일(방향미확인)")
 
 
 def _timing_label(source, row):
     """Keep uncertain Teams content for classification, without claiming a work timestamp."""
     precision = str(row.get("time_precision") or "").strip().lower()
-    if source.startswith("팀즈(") and source not in CONTEXT_ONLY_TIME_SOURCES and precision in UNVERIFIED_TIME_PRECISIONS:
+    uncertain = (source.startswith("팀즈(") and precision in UNVERIFIED_TIME_PRECISIONS) or (
+        source.startswith("메일(") and precision in UNVERIFIED_TIME_PRECISIONS - {"date"})
+    if uncertain and source not in CONTEXT_ONLY_TIME_SOURCES:
         return source[:-1] + "·시각미확인)"
     return source
 
@@ -1084,7 +1088,7 @@ def load_signals(data_dir, d0, d1, exclude=(), cfg=None):
         text = _one_line(text, None)       # 개행·탭·연속 공백 → 한 칸(S2) — 프롬프트 한 줄·CSV 셀이 갈라지지 않게
         if not text:
             return
-        lbl = label or src
+        lbl = _timing_label(label or src, context or {})
         context = collection_context(context)
         if not (d0 <= t.date() <= d1):
             return  # An out-of-period guessed timestamp must not reserve a source ID.
@@ -1245,6 +1249,11 @@ def load_signals(data_dir, d0, d1, exclude=(), cfg=None):
         snd = (r.get("sender") or "").strip()
         key = _mail_key(t, r.get("box"), r.get("conversation"), subj, snd)
         key = _collection_key(r, t, "메일", key)
+        if str(r.get("box") or "").strip().lower() == "unknown":
+            # Imported mail proves message content, not whether this person sent
+            # or received it. Keep classification context without a time anchor.
+            add(t, "메일", subj, W["메일CC"], "메일(방향미확인)", snd, dkey=key, context=r)
+            continue
         if r.get("box") == "sent":
             add(t, "메일", subj, W["메일발신"], "메일(발신·일자)" if date_only else "메일(발신)", "나", dkey=key, context=r)
             continue

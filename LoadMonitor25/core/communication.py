@@ -29,7 +29,8 @@ class CommunicationCollection:
         self.argv = sys.argv if argv is None else argv
         self.python = executable or sys.executable
         self.ps = ps or ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]
-        self.headless = "--collect-only" in self.argv and config.get("collectOnlyHeadless", True)
+        self.headless = ("--collect-only" in self.argv and config.get("collectOnlyHeadless", True)
+                         and "--interactive-collect" not in self.argv)
         self.col = self.root / "collect"
         self.states = []
 
@@ -122,6 +123,8 @@ class CommunicationCollection:
                 only_flag = "--only"
             if len(pending) == 1:
                 command += [only_flag, next(iter(pending))]
+            if source == "outlook_web" and "--mail-web-body" in self.argv:
+                command.append("--include-body")
             consume(self.run(source, label, command, min(timeout, remaining)))
         return self.report("Outlook", not pending,
                            [f"미확인: {', '.join(sorted(pending))}"] if pending else [])
@@ -135,7 +138,8 @@ class CommunicationCollection:
         deadline = time.monotonic() + budget
         graph = bool((self.config.get("graph") or {}).get("clientId"))
         web = self.config.get("teamsWeb", True) and not self.headless
-        copilot = self.config.get("teamsViaCopilot", False) and not self.headless
+        copilot = (self.config.get("teamsViaCopilot", False) and not self.headless
+                   and "--no-teams-copilot" not in self.argv)
         app = ("teams_app", "Teams 보충 · 열린 앱", self.ps + [str(self.col / "Get-TeamsWindow.ps1"),
                "-From", self.d0, "-To", self.d1], 120, True)
         routes = [

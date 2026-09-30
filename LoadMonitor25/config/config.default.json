@@ -586,9 +586,13 @@
   "mailAllFolders": true,
   "mailBody": true,
   "mailWebBody": false,
+  "communicationImportRecursive": false,
+  "communicationImportOwnAddresses": [],
+  "communicationImportAccount": "",
   "supplementBudgetSec": 1200,
   "teamsBudgetSec": 1500
  },
  "_collection_설명": "수집 문맥은 기본 4000자, AI 요청 문맥은 신호당 800자(앞·중간·끝 발췌). 메일 COM은 기본 계정의 메일 폴더를 재귀 조회하며 삭제/정크는 제외. mailWebBody=true는 웹 메일을 열어 본문을 읽으므로 읽음 상태가 바뀔 수 있음(기본 false). 수집 예산 초과·부분·미확인은 완료로 간주하지 않음. 권한/라이선스/로그인은 각 경로의 조건을 충족해야 함.",
- "_collectOnlyHeadless_설명": "true(기본): 추가 PC 수집(--collect-only)에서는 웹·Copilot 창을 열지 않고 앱·COM·색인·설정된 Graph만 사용. 웹 보충이 필요하면 일반 분석 실행 또는 웹 읽기 버튼을 사용."
+ "_collectOnlyHeadless_설명": "true(기본): 추가 PC 수집(--collect-only)에서는 웹·Copilot 창을 열지 않고 앱·COM·색인·설정된 Graph만 사용. UI의 메일·Teams만 수집(웹 포함)은 명시적으로 웹을 허용하고 Copilot 조회는 생략한다.",
+ "_communicationImport_설명": "UI에서 사용자가 지정한 EML/MBOX 파일·폴더만 읽는다. communicationImportRecursive=false면 폴더 바로 아래만 처리. communicationImportOwnAddresses에 본인 메일 주소를 설정한 경우에만 발신·수신 방향 판별; 미설정이면 방향미확인 문맥으로 보존하고 근무시간 신호로 쓰지 않는다. communicationImportAccount는 여러 계정 파일을 구분할 명시적 계정 표식이며 자동 추정하지 않는다. 원본 파일과 첨부는 수정하지 않는다."
 }

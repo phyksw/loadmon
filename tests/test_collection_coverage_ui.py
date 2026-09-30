@@ -58,6 +58,7 @@ let lastActivity=null;
             "dash_period": lambda *_: PERIOD,
             "trend": lambda *_: [], "_activity_read_issues": lambda: [],
             "outlook_coverage": lambda *_: None, "mtime_clumps": lambda *_: [],
+            "communication_evidence": lambda *_: {},
         }
         exec(compile(ast.Module(body=body, type_ignores=[]), str(SOURCE), "exec"), self.namespace)
 

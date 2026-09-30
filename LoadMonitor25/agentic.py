@@ -58,6 +58,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from progress import progress  # noqa: E402
 import details  # noqa: E402
+import communication_evidence  # noqa: E402
 from details import fold, _fresh_refined  # noqa: E402,F401  (호환: 옛 이름 유지)
 
 PROMPT_BUDGET = 7000           # 한 왕복 프롬프트 글자 상한 (입력 잘림 방지 — 실측 9,000 초과 시 실패)
@@ -147,6 +148,10 @@ def row_line(r, stat=None):
     if stat:
         total, weak = stat
         s += f" (수동 {weak}/{total})"
+    if "_evidence_readiness" in r:
+        s += "\n  " + communication_evidence.readiness_notice(r["_evidence_readiness"])
+        if r.get("_evidence_excerpt"):
+            s += "\n  [관측 발췌] " + r["_evidence_excerpt"]
     return s
 
 
@@ -166,7 +171,9 @@ def ag_prompt(tasks, rows, stats=None):
     lines = [
         "당신은 LiDAR 개발팀의 Agentic AI 과제 기획 분석가입니다.",
         "[계획 과제]는 팀이 개발하기로 한 Agentic AI 과제이고,",
-        "[현재 업무]는 한 팀원의 실제 업무(PC 흔적 기반 자동 분석) 목록입니다.",
+        "[현재 업무]는 한 팀원의 관측 자료를 자동 분류한 업무 후보 목록입니다.",
+        communication_evidence.prompt_notice(),
+        "근거 상태가 limited/unavailable인 업무의 과정·반복성·역할을 확정하지 말고 매칭/신규 발굴을 보류하세요.",
         "",
         "세 가지를 판정하세요:",
         "1. match — 과제마다: 이 사람의 아래 업무 중 그 과제가 자동화·대체할 수 있는 것이",
@@ -213,6 +220,41 @@ def sig_stats(sigs):
         weak = sum(v for k, v in cnt.items() if k in WEAK_SOURCES)
         out[(fold(md), fold(dt))] = (total, weak)
     return out
+
+
+def attach_evidence(rows, signals, original_rows=None):
+    """Keep context beside work rows without changing their IDs or measured MM."""
+    groups = defaultdict(list)
+    for signal in signals or []:
+        key = (str(signal.get("model") or signal.get("project") or "공통").strip(),
+               str(signal.get("detail") or signal.get("activity") or "").strip())
+        groups[key].append(signal)
+    originals = defaultdict(list)
+    for original in original_rows or []:
+        originals[details.stable_work_id(original)].append(original)
+    for row in rows:
+        sources = row.get("source_work_mm")
+        has_lineage = sources not in (None, "")
+        if isinstance(sources, str):
+            try:
+                sources = json.loads(sources)
+            except ValueError:
+                sources = {}
+        if has_lineage:
+            # Refined rows may have entirely different names. Follow recorded
+            # source IDs to original axes; never guess a partial-name match.
+            source_rows = [originals[identity][0] for identity in sources if len(originals[identity]) == 1] if isinstance(sources, dict) else []
+        else:
+            source_rows = [row]
+        pairs = {(str(r.get("Level 2") or "").strip(), str(r.get("Level 3") or "").strip()) for r in source_rows}
+        selected = [s for pair in sorted(pairs) for s in groups.get(pair, [])]
+        row["_evidence_readiness"] = communication_evidence.unit_readiness(selected)
+        if has_lineage and (not isinstance(sources, dict) or not sources or len(source_rows) != len(sources)):
+            row["_evidence_readiness"].update(status="limited", allows_interpretation=False)
+            row["_evidence_readiness"]["limits"].append("원본 업무 ID 계보 일부 또는 전체 미확인")
+        # Prefer recovered bodies; then spread over the remaining observations.
+        candidates = sorted(selected, key=lambda s: (not bool(communication_evidence.usable_context(s)), str(s.get("time") or "")))
+        row["_evidence_excerpt"] = " / ".join(communication_evidence.evidence_line(s, 280) for s in candidates[:2])
 
 
 def stats_for(rows, stats_by):
@@ -533,13 +575,16 @@ def recalc_mm(out, rows, amap=None, rows_file=""):
     unique = {id(r): r for hit in all_hits.values() for r in hit}
     for candidate in candidates:
         hit = all_hits[id(candidate)]
+        ready = bool(hit) and all(r.get("_evidence_readiness", {}).get("allows_interpretation") for r in hit)
         candidate.update(candidate_id=details.stable_id("candidate", candidate.get("task") or candidate.get("name"),
                                                         "" if candidate.get("task") else candidate.get("logic")),
                          related_work_mm=round(sum(r["_mm"] for r in hit), 3),
                          allocated_candidate_mm=round(sum(r["_mm"] / counts[id(r)] for r in hit), 6),
                          expected_saved_mm=None,
                          resolved_work_ids=sorted({r["_work_id"] for r in hit}),
-                         kpi_eligible=bool(hit) and not candidate.get("evidence_missing"))
+                         evidence_readiness="context_available" if ready else "limited",
+                         interpretation_status="ai_inference", fact_verified=False,
+                         needs_review=not ready, kpi_eligible=ready and not candidate.get("evidence_missing"))
     out["unique_related_work_mm"] = round(sum(r["_mm"] for r in unique.values()), 6)
     out["expected_saved_mm"] = None
     out["work_rows"] = [{"id": r["_work_id"], "project": r.get("Level 2"), "detail": r.get("_raw3"),
@@ -588,6 +633,7 @@ def recalc_file(tag, rep=None, log=print):
         amap = details.load_detail_aliases()
     except Exception:  # noqa: BLE001
         amap = {}
+    attach_evidence(rows, details.read_signals(tag, rep), details.read_rows(tag, rep, plain=True)[0])
     recalc_mm(ag, rows, amap, fn)
     _save_json(ap, ag)
     mr = ag["mm_recalc"]
@@ -682,6 +728,7 @@ def main():
         amap = {}
 
     signals = details.read_signals(tag, rep)
+    attach_evidence(rows, signals, details.read_rows(tag, rep, plain=True)[0])
     stats_by = sig_stats(signals)
     input_fingerprint = details.analysis_fingerprint(ROOT, tag, {"schema": 1, "rows": rows, "signals": signals,
                                                                  "tasks": tasks, "aliases": amap})
@@ -730,10 +777,14 @@ def main():
 
     def ask(part, name):
         nonlocal model_name, n_sent, salvaged
+        prompt = ag_prompt(tasks, part, stats_by)
+        if len(prompt) > budget:
+            return None, {"ok": False, "kind": "budget", "fatal": False, "phase": "prepare",
+                          "error": "근거 프롬프트 예산 초과", "hint": "입력 근거를 잘라 전송하지 않았습니다"}
         n_sent += 1
         # fresh=None — 묶음을 같은 채팅에서 이어 보낸다(첫 왕복·실패 뒤·chatTurns 마다만 새 채팅). 앞 묶음의 과제 매칭·표기를
         # Copilot 이 기억해 묶음 간 판정이 일관된다(제보: 묶음마다 새 채팅이라 기억이 안 이어짐)
-        o, info = details.ask_json(judge.copilot_send, ag_prompt(tasks, part, stats_by), f"{tag}-{name}",
+        o, info = details.ask_json(judge.copilot_send, prompt, f"{tag}-{name}",
                                    "agentic", "match", fresh=None)
         if info.get("ok"):
             model_name = model_name or str(info.get("model") or "")

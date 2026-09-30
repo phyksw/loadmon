@@ -116,6 +116,27 @@ class RoutingTests(unittest.TestCase):
         runner.mail(time.time())
         self.assertEqual([x[0] for x in self.calls], ["Get-TeamsWindow.ps1", "Get-OutlookIndex.ps1"])
 
+    def test_interactive_collection_uses_web_skips_both_copilots_and_requires_body_opt_in(self):
+        for include_body in (False, True):
+            with self.subTest(include_body=include_body):
+                self.calls.clear()
+                argv = ["--collect-only", "--communications-only", "--interactive-collect",
+                        "--no-mail-copilot", "--no-teams-copilot"]
+                if include_body:
+                    argv.append("--mail-web-body")
+                runner = self.run_with(config={"collectOnlyHeadless": True, "mailViaWeb": True,
+                                              "teamsWeb": True, "mailViaCopilot": True,
+                                              "teamsViaCopilot": True}, argv=argv)
+                runner.mail(time.time())
+                runner.teams()
+                commands = {name: command for name, command, _ in self.calls}
+                self.assertEqual(set(commands), {"Get-OutlookIndex.ps1", "Get-OutlookWeb.py",
+                                                  "Get-TeamsWindow.ps1", "Get-TeamsWeb.py"})
+                self.assertEqual("--include-body" in commands["Get-OutlookWeb.py"], include_body)
+                self.assertNotIn("--include-body", commands["Get-TeamsWeb.py"])
+                for source in ("outlook_copilot", "teams_copilot"):
+                    self.assertEqual(load_status(self.root, source, *self.period)["status"], "skipped")
+
     def test_no_teams_invokes_no_collector(self):
         self.assertEqual(self.run_with(argv=["--no-teams"]).teams()["status"], "skipped")
         self.assertFalse(self.calls)

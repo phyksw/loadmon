@@ -22,6 +22,43 @@ class Elements(HTMLParser):
 
 
 class CollectionUiTests(unittest.TestCase):
+    def test_new_communication_job_rejects_old_poll_and_shows_current_failure(self):
+        self.run_js(r'''
+context.refresh=async()=>{};context.reloadVisibleTab=async()=>{};
+let oldReply;context.fetch=()=>new Promise(resolve=>oldReply=resolve);
+const oldPoll=actualPoll();
+fetchWith(async()=>reply(202,{ok:true}));await byId.communicationcollect.onclick();
+oldReply(reply(200,{running:false,log:[],run_result:{message:'OLD DONE'}}));await oldPoll;
+assert.equal(byId.communicationcollect.disabled,true);
+assert.match(byId.communicationfeedback.textContent,/요청 접수/);
+context.fetch=async()=>reply(200,{running:false,log:[],run_result:{message:'CURRENT IMPORT FAILED'}});
+await actualPoll();assert.equal(byId.communicationfeedback.textContent,'CURRENT IMPORT FAILED');
+assert.equal(byId.communicationcollect.disabled,false);
+''')
+
+    def test_interactive_communication_collection_uses_period_and_explicit_body_choice(self):
+        self.run_js(r'''
+fetchWith(()=>Promise.resolve(reply(202,{ok:true})));
+byId.communicationbody.checked=true;
+await byId.communicationcollect.onclick();
+assert.equal(requests[0].url,'/api/communication/collect');
+assert.deepEqual(JSON.parse(requests[0].options.body),{from:'2026-09-01',to:'2026-09-13',mail_body:true});
+assert.equal(byId.communicationcollect.disabled,true);
+assert.match(byId.communicationfeedback.textContent,/요청 접수/);
+''')
+
+    def test_mail_import_requires_explicit_paths_and_does_not_start_ai(self):
+        self.run_js(r'''
+byId.communicationpaths.value='';await byId.communicationimport.onclick();
+assert.equal(requests.length,0);assert.match(byId.communicationfeedback.textContent,/경로/);
+byId.communicationpaths.value='"D:\\synthetic\\first.eml"\nD:\\synthetic\\second.mbox';
+fetchWith(()=>Promise.resolve(reply(202,{ok:true})));
+await byId.communicationimport.onclick();
+assert.equal(requests[0].url,'/api/communication/import');
+assert.deepEqual(JSON.parse(requests[0].options.body),{from:'2026-09-01',to:'2026-09-13',paths:['D:\\synthetic\\first.eml','D:\\synthetic\\second.mbox']});
+assert(!JSON.parse(requests[0].options.body).ai);
+''')
+
     @classmethod
     def setUpClass(cls):
         tree = ast.parse(SOURCE.read_text(encoding="utf-8-sig"))

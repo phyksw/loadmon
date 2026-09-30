@@ -41,7 +41,7 @@ class ActivityTrendTests(unittest.TestCase):
         self.ns = {"os": os, "csv": csv, "glob": glob, "json": json, "re": re, "time": time,
                    "Counter": Counter, "DATA": str(self.data), "REPORT": str(self.report),
                    "_DASH_EXTENT": {}, "latest_signals": lambda: "",
-                   "communication_coverage": lambda period: []}
+                   "communication_coverage": lambda period: [], "communication_evidence": lambda period: {}}
         exec(compile(ast.Module(body=body, type_ignores=[]), str(SOURCE), "exec"), self.ns)
         # Actual PC parser copied to TEMP; its ROOT and every supplied input are synthetic.
         code = self.root / "code" / "core" / "extract.py"

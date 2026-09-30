@@ -83,7 +83,7 @@ def record(name, ok, sec=0.0, note=""):
 def finish_run(result_available=False, collect_only=False):
     """Return 0 complete / 2 partial / 1 failed, retaining every stage reason."""
     stages = [s for s in RUN.get("stages", [])
-              if s.get("name") not in {"시작", "추가 PC 보관", "완료", "완료(수집만)"}
+              if s.get("name") not in {"시작", "추가 PC 보관", "완료", "완료(수집만)", "메일·Teams 근거 점검"}
               and not (s.get("name") == "AI 판정" and not RUN.get("ai_requested"))]
     failures = [s.get("name") for s in stages if s.get("ok") is not True]
     usable = result_available or any(s.get("ok") is True and not s.get("name", "").startswith("수집 경로 · ") for s in stages)
@@ -578,25 +578,32 @@ def main():
             RUN["finished"] = time.strftime("%Y-%m-%d %H:%M")
             record("수집 중단", False, 0.0, "이전 PC 자료 보관을 완료하지 못했습니다. 자료와 이름표를 확인한 뒤 다시 실행하세요.")
             return 1
-        ensure_sampler(c, data, col)       # 멈춘 창 샘플러 재기동 (있던 PC 만)
-
-        step("PC 가동 이력", ps + [os.path.join(col, "Get-PcOnHistory.ps1"), "-From", d0, "-To", d1], 300)
-        # 이벤트 로그가 롤오버로 기간을 못 덮으면 브라우저 '방문 시각'만으로 보강
-        # (URL·제목은 조회하지 않는다)
-        step("PC 가동 보강 (브라우저 방문 시각 — URL 미수집)",
-             [sys.executable, os.path.join(col, "Get-PcOnHints.py"), "--from", d0, "--to", d1], 240)
+        if "--communications-only" not in sys.argv:
+            ensure_sampler(c, data, col)       # 멈춘 창 샘플러 재기동 (있던 PC 만)
+            step("PC 가동 이력", ps + [os.path.join(col, "Get-PcOnHistory.ps1"), "-From", d0, "-To", d1], 300)
+            step("PC 가동 보강 (브라우저 방문 시각 — URL 미수집)",
+                 [sys.executable, os.path.join(col, "Get-PcOnHints.py"), "--from", d0, "--to", d1], 240)
         t_outlook = time.time()
         outlook_ok = collect_outlook(c, d0, d1, data, ps, col)  # 달 단위 이어서 수집, 최대 3회
         mail_fallbacks(c, d0, d1, data, ps, col, t_outlook, outlook_ok)
-        step("파일 수정 이력", ps + [os.path.join(col, "Get-FileActivity.ps1"), "-From", d0, "-To", d1], 300)
-        step("최근 문서 (Recent·MRU)", ps + [os.path.join(col, "Get-RecentFiles.ps1"), "-From", d0, "-To", d1], 180)
-        step("git 커밋 (SW개발)", [sys.executable, os.path.join(col, "Get-GitActivity.py"),
-                                "--from", d0, "--to", d1], 240)
+        if "--communications-only" not in sys.argv:
+            step("파일 수정 이력", ps + [os.path.join(col, "Get-FileActivity.ps1"), "-From", d0, "-To", d1], 300)
+            step("최근 문서 (Recent·MRU)", ps + [os.path.join(col, "Get-RecentFiles.ps1"), "-From", d0, "-To", d1], 180)
+            step("git 커밋 (SW개발)", [sys.executable, os.path.join(col, "Get-GitActivity.py"),
+                                    "--from", d0, "--to", d1], 240)
         from communication import collect_teams
         RUN.setdefault("collection", {})["teams"] = collect_teams(
             ROOT, c, d0, d1, step, record, ps=ps, argv=sys.argv)
 
-    if "--collect-only" in sys.argv:
+    from communication_evidence import write_report
+    evidence = write_report(ROOT, d0, d1, c)
+    RUN["communication_evidence"] = evidence
+    counts = evidence.get("families", {})
+    record("메일·Teams 근거 점검", True, 0, " · ".join(
+        f"{kind} {v.get('unique_rows', 0)}건 / 본문 {v.get('context_rows', 0)}건"
+        for kind, v in counts.items()) + " · 전체 원본 대비 확보율은 미확인")
+
+    if "--collect-only" in sys.argv or "--communications-only" in sys.argv:
         print("\n[수집만] 이 PC 의 데이터 수집을 마쳤습니다 — 분석은 하지 않았습니다.")
         print("        폴더째 본 PC 로 가져가 [분석 실행]을 누르면 두 PC 데이터가 합산됩니다")
         print("        (같은 메일·일정 등 중복 자료는 분석 때 자동 제외).")

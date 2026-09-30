@@ -41,7 +41,7 @@ if __name__ == "__main__":
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT_DIR = os.path.join(ROOT, "data", "outlook")
 sys.path.insert(0, os.path.join(ROOT, "core"))
-from collection_state import merge_csv, write_status  # noqa: E402
+from collection_state import _atomic_text, merge_csv, write_status  # noqa: E402
 
 MAIL_HDR = "box,time,sender,subject,conversation,rcv,time_precision"
 CAL_HDR = "start,end,all_day,busy_status,subject,categories,location,response,meeting_status"
@@ -327,7 +327,7 @@ def parse_mail_item(item, d0, d1, folder=""):
     elif any(x in INBOX_WORDS for x in toks):
         box = "inbox"
     else:
-        box = "sent" if folder == "sent" else "inbox"    # 폴더 조각이 없으면 읽은 폴더가 곧 box(없으면 보수적으로 수신)
+        box = "unknown" if folder == "unknown" else "sent" if folder == "sent" else "inbox"
     # 발신자·제목: 시각/날짜/상태어/폴더명이 아닌 짧은 leaf 텍스트의 첫째·둘째
     cands = []
     for x in texts:
@@ -633,7 +633,12 @@ class Browser:
         time.sleep(0.4)
         self.ca.press_enter(self.cdp)
         time.sleep(5.0)
-        return True
+        # Reading back the query proves entry, not server execution or folder scope.
+        entered = self.cdp.eval(r'''(() => {
+          const s = document.querySelector('#topSearchInput, input[role="searchbox"], [role="search"] input');
+          return s ? (s.value || s.textContent || "") : "";
+        })()''')
+        return "query_entered_unverified" if str(entered).strip() == query else False
 
     def close(self):
         try:
@@ -654,6 +659,20 @@ def months_of(d0, d1):
         outs.append((s, e))
         cur = nxt
     return outs
+
+
+def mail_search_query(start, end, folder):
+    """Documented Outlook AQS date range; sent folders use the sent date."""
+    property_name = "sent" if folder == "sent" else "received"
+    return f"{property_name}:{start:%m/%d/%Y}..{end:%m/%d/%Y}"
+
+
+def mail_search_windows(d0, d1, days=7):
+    current = d0
+    while current <= d1:
+        end = min(d1, current + timedelta(days=max(1, days) - 1))
+        yield current, end
+        current = end + timedelta(days=1)
 
 
 def _fake_mail_batch(fake, month_key, folder):
@@ -703,12 +722,33 @@ def read_mail_detail(br, item, row, limit):
 
 
 def collect_mail(br, d0, d1, fake=None, *, body=False, context_chars=4000,
-                 checkpoint=None, deadline=None):
+                 checkpoint=None, deadline=None, state_path=None):
     """Read visible search results; checkpoint each page and retain metadata on detail failure."""
     rows, seen = [], set()
     diag = {"search": 0, "items": 0, "parsed": 0, "sent": 0, "cc": 0,
             "date_only": 0, "pages": 0, "sent_pass_new": 0, "body_rows": 0,
-            "detail_failed": 0, "completed_units": 0, "reasons": []}
+            "detail_failed": 0, "completed_units": 0, "search_failed": 0,
+            "search_unverified": 0, "reasons": []}
+    state = {"schema": 1, "requested_from": str(d0), "requested_to": str(d1),
+             "body": body, "context_chars": context_chars, "units": {}}
+    if state_path and fake is None:
+        try:
+            with open(state_path, encoding="utf-8") as stream:
+                previous = json.load(stream)
+            if all(previous.get(key) == state[key] for key in state if key != "units") and isinstance(previous.get("units"), dict):
+                state = previous
+        except (OSError, ValueError, TypeError):
+            pass
+    active_seen, active_unit = set(), None
+
+    def save_progress():
+        if state_path and fake is None and active_unit is not None:
+            active_unit["seen_hashes"] = sorted(active_seen)
+            _atomic_text(state_path, json.dumps(state, ensure_ascii=True))
+
+    def job_key(start, end, folder):
+        return f"{folder}:{start}:{end}"
+
     def consume(page, folder, start, end):
         diag["pages"] += 1
         if page.get("n", 0) > 600:
@@ -718,13 +758,15 @@ def collect_mail(br, d0, d1, fake=None, *, body=False, context_chars=4000,
                 diag["reasons"].append("time_budget_reached")
                 raise TimeoutError("collection budget")
             key = item.get("key") or json.dumps(item, ensure_ascii=False)[:200]
-            if key in seen:
+            key_hash = hashlib.sha256(key.encode("utf-8")).hexdigest()
+            if key in seen or key_hash in active_seen:
                 continue
             seen.add(key)
             diag["items"] += 1
             if folder == "sent":
                 diag["sent_pass_new"] += 1
-            row = parse_mail_item(item, start, end, folder)
+            # A folder URL alone does not prove OWA search remained in that folder.
+            row = parse_mail_item(item, start, end, folder if fake is not None else "unknown")
             if not row or not (d0.isoformat() <= row[1][:10] <= d1.isoformat()):
                 continue
             excerpt = truncated = source_url = ""
@@ -743,8 +785,9 @@ def collect_mail(br, d0, d1, fake=None, *, body=False, context_chars=4000,
                     diag["body_rows"] += 1
             # A conversation identifier is not a message identifier.
             row += [excerpt, truncated, item.get("item_id", ""), "outlook_web", source_url,
-                    item.get("conversation_id", ""), folder, ""]
+                    item.get("conversation_id", ""), folder if fake is not None else "requested:" + folder, ""]
             rows.append(row)
+            active_seen.add(key_hash)
             diag["parsed"] += 1
             if row[0] == "sent":
                 diag["sent"] += 1
@@ -754,10 +797,24 @@ def collect_mail(br, d0, d1, fake=None, *, body=False, context_chars=4000,
                 diag["date_only"] += 1
         if checkpoint and rows:
             checkpoint(rows)
+        save_progress()
 
     try:
-        for start, end in months_of(d0, d1):
-            for folder, url in MAIL_FOLDERS:
+        windows = months_of(d0, d1) if fake is not None else mail_search_windows(d0, d1)
+        jobs = [(start, end, folder, url) for start, end in windows for folder, url in MAIL_FOLDERS]
+        expanded = []
+        for start, end, folder, url in jobs:
+            if state["units"].get(job_key(start, end, folder), {}).get("split"):
+                expanded.extend((day, day, folder, url) for day, _ in mail_search_windows(start, end, 1))
+            else:
+                expanded.append((start, end, folder, url))
+        jobs = expanded
+        pending = [job for job in jobs if not state["units"].get(job_key(*job[:3]), {}).get("traversed")]
+        # Resume untouched/interrupted ranges first; once explored, refresh newest ranges.
+        jobs = pending or list(reversed(jobs))
+        for start, end, folder, url in jobs:
+                active_unit = state["units"].setdefault(job_key(start, end, folder), {})
+                active_seen = set(active_unit.get("seen_hashes") or []) if not active_unit.get("traversed") else set()
                 if deadline and time.monotonic() >= deadline:
                     diag["reasons"].append("time_budget_reached")
                     return rows, "partial", diag
@@ -766,14 +823,23 @@ def collect_mail(br, d0, d1, fake=None, *, body=False, context_chars=4000,
                     consume({"items": batch}, folder, start, end)
                     diag["completed_units"] += 1
                     continue
-                if br.goto(url) == "login":
+                navigation = br.goto(url)
+                if navigation == "login":
                     return rows, "login", diag
-                searched = br.search(f"received>={start.isoformat()} received<={end.isoformat()}")
+                if navigation != "ok":
+                    diag["reasons"].append("folder_navigation_not_verified")
+                    continue
+                searched = br.search(mail_search_query(start, end, folder))
                 if searched:
                     diag["search"] += 1
+                    diag["search_unverified"] += 1
+                    diag["reasons"].append("query_entered; server_search_and_folder_scope_not_verified")
                 else:
-                    diag["reasons"].append("search_scope_not_verified")
+                    diag["search_failed"] += 1
+                    diag["reasons"].append("search_input_failed; stale_visible_list_skipped")
+                    continue
                 stall, seen_scroll = 0, set()
+                saturated = False
                 for _ in range(400):
                     if deadline and time.monotonic() >= deadline:
                         diag["reasons"].append("time_budget_reached")
@@ -782,6 +848,10 @@ def collect_mail(br, d0, d1, fake=None, *, body=False, context_chars=4000,
                     consume(page, folder, start, end)
                     new = {item.get("key") for item in page.get("items", [])} - seen_scroll
                     seen_scroll |= new
+                    if len(seen_scroll) >= 1000:
+                        saturated = True
+                        diag["reasons"].append("search_result_limit_possible")
+                        break
                     stall = 0 if new else stall + 1
                     if stall >= 3:
                         break
@@ -790,9 +860,21 @@ def collect_mail(br, d0, d1, fake=None, *, body=False, context_chars=4000,
                         break
                     time.sleep(1.0)
                 else:
+                    saturated = True
                     diag["reasons"].append("mail_scroll_limit_reached")
+                if saturated and start < end:
+                    active_unit["split"] = True
+                    jobs.extend((day, day, folder, url) for day, _ in mail_search_windows(start, end, 1))
+                    diag["reasons"].append("saturated_range_retried_by_day")
+                # Traversed means the available UI list stopped, never complete mailbox coverage.
+                active_unit.update(traversed=True, saturated=saturated, finished_at=time.time(),
+                                   scope="visible inbox/sent search; server and folder scope unverified")
+                save_progress()
                 diag["completed_units"] += 1
     except Exception as error:
+        if checkpoint and rows:
+            checkpoint(rows)
+        save_progress()
         diag["reasons"].append("mail_page_failed:" + type(error).__name__)
         return rows, "partial" if rows else "failed", diag
     rows.sort(key=lambda row: row[1])
@@ -892,7 +974,7 @@ def main():
         cfg = {}
     store_subject = bool(cfg.get("storeMailSubject", True))
     collection = cfg.get("collection") or {}
-    body = bool(collection.get("mailWebBody", False)) and store_subject
+    body = (bool(collection.get("mailWebBody", False)) or "--include-body" in sys.argv) and store_subject
     try:
         context_chars = min(20000, max(0, int(collection.get("contextChars", 4000))))
     except (TypeError, ValueError):
@@ -963,7 +1045,8 @@ def main():
                 finish(0, "partial observations checkpointed")
             if kind == "mail":
                 rows, state, diag = collect_mail(br, d0, d1, fake, body=body,
-                                                context_chars=context_chars, checkpoint=checkpoint, deadline=deadline)
+                                                context_chars=context_chars, checkpoint=checkpoint, deadline=deadline,
+                                                state_path=os.path.join(OUT_DIR, "web_mail_jobs.json"))
             else:
                 rows, state, diag = collect_cal(br, d0, d1, fake, checkpoint=checkpoint, deadline=deadline)
             diagnostics[kind] = diag

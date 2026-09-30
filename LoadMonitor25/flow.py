@@ -9,7 +9,7 @@ flow.py — 담당자 워크플로우 분석 (LoadMonitor25: 과제 / 담당업�
 
 LoadMonitor20 과 다른 점:
   · 과제(model) 단위로 묶으면 관계없는 업무가 한 흐름으로 엮였다(실측) → (과제, 담당업무) 단위.
-    신호 3건 미만인 단위는 흐름이라 할 수 없어 제외한다.
+    신호가 하나라도 있으면 관측 단위로 남기되, 제목뿐인 통신 근거의 흐름 해석은 보류한다.
   · 먼저 세부업무 표기 병합 맵(core/details — 규칙 + Copilot, config\detail_aliases.json 캐시)을
     만들어 적용한다: '레이아웃 검토/수정/리뷰 회의' 처럼 조각난 이름이 한 단위가 된다. --no-merge 면
     규칙 병합만.
@@ -25,7 +25,7 @@ LoadMonitor20 과 다른 점:
     · 묶음당 단위 6개 상한(답이 잘리지 않게) · 잘린 JSON 복구(core/details.find_json)
   · fatal(로그인 만료·Edge 미기동) 즉시 중단 + 사유 hint · 연속 실패 3회 중단 · 적응 분할
   · 묶음별 저장 + 이어서 판정(지난 결과의 flows 는 두고 missing 만 보낸다, --redo 면 처음부터)
-  · 신호 3건 이상인 단위가 없으면 실패가 아니라 '결과 없음'(ok:true, flows:[], empty_reason) 으로 저장한다.
+  · 신호가 없으면 '결과 없음', 해석 근거가 부족하면 review_flows에 보류 사유를 저장한다.
 
 출력: report\workflow_<기간>.json  →  UI '담당자 워크플로우' 탭 (f.model/role/summary/steps/mm.mm/signals)
   {ok, tag, generated, model_name, unit:"과제"|"과제/담당업무", basis, flows[{model:"과제"(기본) 또는 "과제 / 담당업무",
@@ -51,6 +51,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 from progress import progress  # noqa: E402
 import details  # noqa: E402
+import communication_evidence  # noqa: E402
 from details import fold, _fresh_refined  # noqa: E402,F401  (호환: 옛 이름 유지)
 
 if __name__ == "__main__":
@@ -71,8 +72,8 @@ def _chat_note():
 L1_MARGIN = 0.60                # 상위(업무 성격) 확정에 필요한 1위 표 비중 — 못 넘으면 찍지 않고 '혼재' 로 남긴다.
 #                                 51:49 로 갈린 과제와 100:0 인 과제를 같게 다루던 argmax 를 대신한다(감사 지적).
 #                                 계층 분류 문헌의 통례 — 확신이 없으면 하위로 내려가지 않고 기권한다.
-MIN_SIGNALS = 3                 # 이보다 적은 신호는 흐름이라 할 수 없다
-MIN_STEPS = 3                   # 이보다 얕은 흐름은 잘린 답의 잔해로 보고 다시 묻는다(프롬프트도 3단계 이상 요구)
+MIN_SIGNALS = 1                 # 적은 근거도 표시하되 문맥 부족은 별도로 판단한다.
+MIN_STEPS = 1                   # 관측된 한 단계도 허용하며, 없는 단계를 채우도록 강제하지 않는다.
 FINISH_ROUNDS = 12              # 미판정 자동 마무리 **상한** 회차 — 실제로는 '진전이 없으면' 먼저 멈춘다.
 #                                 예전엔 2 로 고정이라, 두 번 돌고도 남으면 사람이 [이어서 분석]을 또 눌러야 했다(제보).
 MAX_BRANCHES = 4                # 한 과제가 가질 수 있는 흐름 수 — 이어지지 않는 일을 억지로 엮지 않되
@@ -316,17 +317,27 @@ def gather(rep, tag, amap=None, pmap=None):
             THIN.append((md, dt, len(ss)))
             del groups[(md, dt)]
     # 표본 수도 LM20 과 같은 눈금 — 단위가 적으면 과제마다 더 많이 보여 준다
-    per_cap = SAMPLE_N if unit == "과제/담당업무" else (30 if len(groups) <= 3 else 20)
+    per_cap = SAMPLE_N  # Preserve spread across the period while allowing bounded body context.
     out = []
     for (md, dt), ss in groups.items():
         if len(ss) < floor:
             continue
         ss.sort(key=lambda r: str(r.get("time") or ""))
         sample = _spread(ss, per_cap)
-        ev = [f"- [{r['_evidence_id']}] {(r.get('time') or '')[5:16]} [{r.get('source')}] "
-              f"{' '.join((r.get('text') or '').split())[:80]}"
+        # A rich observation between spread positions must not disappear while
+        # the whole-unit assessment still claims that the AI received context.
+        if not communication_evidence.unit_readiness(sample)["allows_interpretation"]:
+            rich = next((r for r in ss if communication_evidence.unit_readiness([r])["allows_interpretation"]), None)
+            if rich is not None:
+                sample[len(sample) // 2] = rich
+                sample.sort(key=lambda r: str(r.get("time") or ""))
+        ev = [f"- [{r['_evidence_id']}] {(r.get('time') or '')[:16]} [{r.get('source')}] "
+              f"{communication_evidence.evidence_line(r, 300)}"
               for r in sample]
-        evidence_by_id = {r["_evidence_id"]: {k: r.get(k, "") for k in ("time", "source", "text", "model", "project", "detail")}
+        evidence_by_id = {r["_evidence_id"]: {**{k: r.get(k, "") for k in ("time", "source", "text", "model", "project", "detail",
+                                                                                 "source_id", "source_kind", "source_url", "conversation_id",
+                                                                                 "context_filtered", "context_truncated", "time_precision")},
+                                               "context_excerpt": communication_evidence.usable_context(r)[:400]}
                           for r in sample}
         f2 = scope(md)
         if dt:
@@ -357,6 +368,7 @@ def gather(rep, tag, amap=None, pmap=None):
             else:
                 level1_mix = [[k, round(v, 3)] for k, v in sorted(g1.items(), key=lambda kv: -kv[1])[:3]]
         out.append({"model": md, "detail": dt, "key": unit_key(md, dt), "signals": len(ss),
+                    "evidence_readiness": communication_evidence.unit_readiness(sample),
                     "unit_id": details.stable_id("unit", tag, md, dt), "evidence_by_id": evidence_by_id,
                     "source_work_ids": source_work_ids,
                     "level1": level1, "level1_mix": level1_mix, "mm": mm, "desc": desc, "parts": parts,
@@ -389,6 +401,7 @@ def build_prompt(mats):
         # 사람마다 하는 일이 달라 예시가 틀이 된다(제보).
         lines = [
             "당신은 업무 프로세스 분석가입니다. 아래는 한 엔지니어의 **담당 업무별** 실제 활동 흔적입니다",
+            communication_evidence.prompt_notice(),
             "(과제 / 담당 업무 단위 · 시간순 raw 신호 표본 · 요청→산출 페어 · AI 가 정제한 설명).",
             "",
             "담당 업무마다 세 가지를 판정하세요 — 반드시 아래 근거에서 관찰되는 것만, 지어내지 말 것:",
@@ -396,7 +409,8 @@ def build_prompt(mats):
             "   근거에 드러난 것만 쓰세요 — 누구에게 받아 무엇을 만들어 누구에게 넘겼는지,",
             "   주도했는지 요청을 받아 처리했는지. 근거가 약하면 '판단 유보'.",
             "2. steps — 일이 실제로 흘러간 **순서**. 시간순 신호와 요청→산출 페어에서 반복되는",
-            "   흐름을 읽어 3~7단계로. 각 단계: name(단계명) · desc(무슨 일을 했는지 1문장) ·",
+            "   관측된 근거가 뒷받침하는 단계만 1~7개. 한 단계만 확인되면 한 단계만 쓰세요. 과정 미확인이면",
+            "   steps:[], insufficient_evidence:true, limitation:사유로 판단을 유보하세요. 각 단계: name·desc·",
             "   evidence_ids(이 업무의 [sig_...] 근거 ID 배열) · cycle(추정 반복 주기; 불명은 판단 유보).",
             "   ★ **다른 담당 업무의 일을 이 흐름에 섞지 마세요.** 한 흐름은 그 업무 안에서만 이어집니다.",
             "   ★★ 다만 한 업무의 산출물이 **같은 과제의 다른 담당 업무**의 입력이 되면, 그 상대 업무명을",
@@ -432,6 +446,7 @@ def build_prompt(mats):
                     lines.append(f"    [요청→산출] {e}")
                 _pj_prev = _pj
             lines.append(f"## {m['key']}  [unit_id={m['unit_id']}] (신호 {m['signals']}건 · 실측 {m['mm']} MM)")
+            lines.append(communication_evidence.readiness_notice(m.get("evidence_readiness")))
             if m.get("desc"):
                 lines.append(f"[정제 설명] {m['desc']}")
             lines.append("[시간순 신호 표본]")
@@ -440,6 +455,7 @@ def build_prompt(mats):
         return "\n".join(lines)
     lines = [
         f"당신은 업무 프로세스 분석가입니다. 아래는 한 엔지니어의 {unit_word}별 실제 활동 흔적입니다",
+        communication_evidence.prompt_notice(),
         "(시간순 raw 신호 표본, 요청→산출 페어, AI 가 정제한 세부업무 설명).",
         "",
         f"{unit_word}마다 세 가지를 판정하세요 — 반드시 아래 근거에서 관찰되는 것만, 지어내지 말 것:",
@@ -447,7 +463,8 @@ def build_prompt(mats):
         "   근거에 드러난 것만 쓰세요 — 누구에게 받아 무엇을 만들어 누구에게 넘겼는지,",
         "   주도했는지 요청을 받아 처리했는지. 근거가 약하면 '판단 유보'.",
         "2. steps — 일이 실제로 흘러간 **순서**. 시간순 신호와 요청→산출 페어에서 반복되는",
-        "   흐름을 읽어 3~7단계로. 각 단계: name(단계명) · desc(무슨 일을 했는지 1문장) ·",
+        "   관측된 근거가 뒷받침하는 단계만 1~7개. 한 단계만 확인되면 한 단계만 쓰세요. 과정 미확인이면",
+        "   steps:[], insufficient_evidence:true, limitation:사유로 판단을 유보하세요. 각 단계: name·desc·",
         "   evidence_ids(이 과제의 [sig_...] 근거 ID 배열) · cycle(추정 반복 주기; 불명은 판단 유보).",
         f"   ★ **다른 {unit_word}의 일을 이 흐름에 섞지 마세요.** 한 흐름은 그 안에서만 이어집니다.",
         f"   ★★ 한 {unit_word} 안의 [세부업무]가 **서로 이어지지 않으면 흐름을 나눠** 답하세요.",
@@ -478,6 +495,7 @@ def build_prompt(mats):
     for m in mats:
         lines.append(f"## {m['key']}  [unit_id={m['unit_id']}] (신호 {m['signals']}건)"
                      + (f"  [상위: {m['level1']}]" if m.get("level1") else ""))
+        lines.append(communication_evidence.readiness_notice(m.get("evidence_readiness")))
         for e in (m.get("episodes") or []):
             lines.append(f"[요청→산출] {e}")
         if m.get("parts"):
@@ -720,6 +738,8 @@ def sanitize_flows(raw_flows, keys, mats_by=None, dropped=None):
         steps_raw = steps_raw if isinstance(steps_raw, list) else []
         hit = mats_by.get(key) or {}
         evidence_sources = hit.get("evidence_by_id") or {}
+        readiness = hit.get("evidence_readiness") or communication_evidence.unit_readiness(evidence_sources.values())
+        limited = not readiness.get("allows_interpretation") or f.get("insufficient_evidence") is True
         steps = []
         for s in steps_raw[:8]:
             if not isinstance(s, dict):
@@ -729,7 +749,11 @@ def sanitize_flows(raw_flows, keys, mats_by=None, dropped=None):
             evidence_ok = (isinstance(evidence_ids, list) and bool(evidence_ids)
                            and all(isinstance(v, str) and v in evidence_sources for v in evidence_ids)
                            and len(evidence_ids) == len(set(evidence_ids)))
-            needs_review = (not evidence_ok or ag not in AGENT_OK
+            step_readiness = communication_evidence.unit_readiness(
+                [evidence_sources[v] for v in evidence_ids] if evidence_ok else [])
+            step_limited = evidence_ok and not step_readiness["allows_interpretation"]
+            limited |= step_limited
+            needs_review = (limited or not evidence_ok or ag not in AGENT_OK
                             or not isinstance(s.get("name"), str) or not s["name"].strip()
                             or not isinstance(s.get("desc"), str) or not s["desc"].strip())
             actual = " | ".join(str(evidence_sources[v].get("text") or "")[:120]
@@ -739,11 +763,13 @@ def sanitize_flows(raw_flows, keys, mats_by=None, dropped=None):
                           "name": str(s.get("name") or "")[:40] or f"단계 {i}",
                           "desc": str(s.get("desc") or "")[:200],
                           "evidence": actual[:240], "evidence_ids": evidence_ids if evidence_ok else [],
-                          "evidence_status": "verified" if evidence_ok else "invalid", "needs_review": needs_review,
+                          "evidence_status": "source_linked" if evidence_ok else "invalid", "needs_review": needs_review,
+                          "interpretation_status": "ai_inference", "fact_verified": False,
+                          "evidence_readiness": step_readiness,
                           "cycle": str(s.get("cycle") or "")[:20],
                           "cycle_basis": "AI 추정", "agent": ag if ag in AGENT_OK and evidence_ok else "",
                           "agent_how": str(s.get("agent_how") or "")[:200]})
-        if not steps:
+        if not steps and not limited:
             if dropped is not None:
                 dropped.append(f"{raw_name}(단계 없음)")
             continue
@@ -764,12 +790,15 @@ def sanitize_flows(raw_flows, keys, mats_by=None, dropped=None):
             a, b = (mats_by.get(k2) or {}), hit
             return k2 if a.get("model", "") == b.get("model", "") else ""
 
-        needs_review = any(s["needs_review"] for s in steps)
+        needs_review = limited or any(s["needs_review"] for s in steps)
         out.append({"model": key, "branch": branch, "level1": hit.get("level1", ""),
                     "unit_id": hit.get("unit_id", ""), "identity_schema": 1,
                     "source_work_ids": list(hit.get("source_work_ids") or []),
                     "project_id": details.stable_id("project", hit.get("model", "")),
                     "needs_review": needs_review, "kpi_eligible": not needs_review,
+                    "evidence_readiness": readiness, "insufficient_evidence": limited,
+                    "limitation": str(f.get("limitation") or ("본문·산출물 근거 부족: 과정 판단 유보" if limited else ""))[:200],
+                    "interpretation_status": "ai_inference", "fact_verified": False,
                     "evidence_sources": evidence_sources, "links_basis": "AI 추론(동일 과제)",
                     # 상위 표가 갈린 카드는 화면이 "상위 미분류" 대신 그 사실을 말해야 한다
                     "level1_mix": hit.get("level1_mix") or [],
@@ -799,7 +828,8 @@ def validate_flow_batch(obj, part, info):
     for item in obj["flows"]:
         if (not isinstance(item, dict) or not isinstance(item.get("unit_id"), str)
                 or item["unit_id"] not in requested or not isinstance(item.get("steps"), list)
-                or not MIN_STEPS <= len(item["steps"]) <= 8
+                or not (MIN_STEPS <= len(item["steps"]) <= 8 or
+                        (not item["steps"] and item.get("insufficient_evidence") is True and str(item.get("limitation") or "").strip()))
                 or not all(isinstance(step, dict) for step in item["steps"])):
             raise ValueError("흐름 ID 또는 단계 배열이 잘못됨")
         counts[item["unit_id"]] += 1
@@ -1012,7 +1042,10 @@ def main():
     if basis == "규칙":
         print("[flow] 판정(model) 열이 없어 규칙 분류(project/activity) 축으로 만듭니다 — "
               "과제명이 AI 가 정리한 상위개체가 아니라 품질이 낮습니다(basis: 규칙)")
+    for material in mats:
+        material.setdefault("evidence_readiness", communication_evidence.unit_readiness((material.get("evidence_by_id") or {}).values()))
     keys = {m["key"]: m for m in mats}
+    deferred_keys = {m["key"] for m in mats if not m["evidence_readiness"]["allows_interpretation"]}
     if THIN:
         # 어떤 담당업무가 왜 빠졌는지 화면에 남긴다 — 예전에는 조용히 사라져 '워크플로우가 너무 적다' 로 읽혔다
         print(f"[flow] 신호 {MIN_SIGNALS}건 미만이라 흐름을 만들지 않은 담당 업무 {len(THIN)}개: "
@@ -1052,7 +1085,7 @@ def main():
         if len({f["model"] for f in kept}) >= len(keys):
             kept = []                            # 다 끝난 결과 — 처음부터 다시(재분석)
     done_keys = {f["model"] for f in kept}
-    todo = [m for m in mats if m["key"] not in done_keys]
+    todo = [m for m in mats if m["key"] not in done_keys | deferred_keys]
     if kept:
         print(f"[flow] 지난 실행이 {len(kept)}/{len(keys)}개 업무를 끝냈습니다 — 남은 {len(todo)}개만 이어서 보냅니다"
               "(처음부터 하려면 --redo)")
@@ -1088,14 +1121,23 @@ def main():
     print(f"[flow] 담당 업무 {len(todo)}개 워크플로우 왕복 ({len(chunks)}회로 나눠 보냄 — "
           f"한 흐름이 다른 업무로 넘어가지 않게 업무 단위로 물어봅니다 · 같은 채팅에서 이어서{_chat_note()})")
     dropped, flows, fails, review_flows = [], list(kept), [], []
+    for key in deferred_keys:
+        material = keys[key]
+        review_flows.extend(sanitize_flows([{"unit_id": material["unit_id"], "steps": [],
+                                            "insufficient_evidence": True,
+                                            "limitation": "본문·산출물 근거 부족: 과정·역할·자동화 적합성 판단 유보"}], keys))
     model_name = str((prev or {}).get("model_name") or "") if kept else ""
     failed, salvaged, consec, stopped, n_sent = 0, 0, 0, "", 0
 
     def ask(part, name):
         nonlocal model_name, n_sent, salvaged
+        prompt = build_prompt(part)
+        if len(prompt) > budget:
+            return [], {"ok": False, "kind": "budget", "fatal": False, "phase": "prepare",
+                        "error": "근거 프롬프트 예산 초과", "hint": "근거를 임의로 버리거나 잘라 전송하지 않았습니다"}
         n_sent += 1
         # fresh=None — 묶음을 같은 채팅에서 이어 보낸다(첫 왕복·실패 뒤·chatTurns 마다만 새 채팅)
-        o, info = details.ask_json(judge.copilot_send, build_prompt(part), f"{tag}-{name}", "flow",
+        o, info = details.ask_json(judge.copilot_send, prompt, f"{tag}-{name}", "flow",
                                    "flows", fresh=None)
         if not info.get("ok"):
             return [], info
@@ -1111,14 +1153,19 @@ def main():
         # 같은 과제의 다른 업무 연결은 별도 upstream/downstream 문맥이며 판정 완료를 뜻하지 않는다.
         _allow = {m["key"]: m for m in part}
         got = sanitize_flows(o.get("flows"), _allow, keys, dropped)
-        invalid = [f for f in got if f.get("needs_review")]
+        deferred = [f for f in got if f.get("insufficient_evidence")]
+        review_flows.extend(deferred)
+        deferred_keys.update(f["model"] for f in deferred)
+        invalid = [f for f in got if f.get("needs_review") and not f.get("insufficient_evidence")]
         if invalid:
             review_flows.extend(invalid)
             dropped.extend(f["model"] + "(근거 ID/자동화 등급 확인 필요)" for f in invalid)
             return [], {"ok": False, "kind": "parse", "phase": "parse", "fatal": False,
                         "error": "흐름 단계 근거 ID 또는 판정값 검증 실패", "hint": "검증되지 않은 흐름은 완료·KPI에서 제외합니다"}
         _have = {f["model"] for f in flows}
-        got = [g for g in got if g["model"] not in _have]      # 앞 묶음에서 이미 판정한 것은 덮지 않는다
+        got = [g for g in got if g["model"] not in _have and not g.get("insufficient_evidence")]
+        if not got and deferred:
+            return [], info
         if not got:
             why = ("응답이 잘려 건질 흐름이 없음" if info.get("how") == "salvaged" else
                    ("응답의 업무명이 분석된 단위와 달라 전부 버림: " + ", ".join(dropped[-3:]) if dropped
@@ -1146,12 +1193,14 @@ def main():
         for _f in flows:
             _f["pjkey"] = fold(str(_f.get("project") or _f.get("model") or "").split(KEY_JOIN)[0])
         done = {f["model"] for f in flows}
-        missing = [k for k in keys if k not in done]
+        missing = [k for k in keys if k not in done | deferred_keys]
         why, how = _fail_summary(fails) if (missing or failed) else ("", "")
         out = {"ok": True, "tag": tag, "generated": time.strftime("%Y-%m-%d %H:%M"),
                "identity_schema": 1, "input_fingerprint": input_fingerprint,
                "processed_ids": sorted(keys[k]["unit_id"] for k in done),
                "review_flows": [f for f in review_flows if f["model"] not in done][:100],
+                "evidence_limited_count": len(deferred_keys),
+                "evidence_note": "근거 연결 확인은 AI 서술의 사실 검증이 아닙니다. 보류된 업무의 시간/MM은 별도 산식을 유지합니다.",
                "model_name": model_name, "unit": UNIT, "basis": basis, "flows": flows,
                "chunks": len(chunks), "failed_chunks": failed, "salvaged_chunks": salvaged, "roundtrips": n_sent,
                # 왜 어떤 단위가 비었는지 나중에도 알 수 있게 남긴다
@@ -1273,7 +1322,7 @@ def main():
     # 사람이 손대야 풀리는 상태(stopped)면 헛되이 보내지 않는다.
     if not stopped:
         for rnd in range(1, FINISH_ROUNDS + 1):
-            left = [m for m in mats if m["key"] not in {f["model"] for f in flows}]
+            left = [m for m in mats if m["key"] not in {f["model"] for f in flows} | deferred_keys]
             if not left:
                 break
             if over_budget():
@@ -1307,7 +1356,7 @@ def main():
                           f"남은 {len(left)}개는 신호가 얕거나 이름이 응답과 맞지 않는 단위입니다")
                 break
         else:
-            _lo = [m for m in mats if m["key"] not in {f["model"] for f in flows}]
+            _lo = [m for m in mats if m["key"] not in {f["model"] for f in flows} | deferred_keys]
             if _lo:
                 print(f"[flow] 마무리 상한 {FINISH_ROUNDS}회차를 다 썼는데 {len(_lo)}개가 남았습니다")
     progress("워크플로우 분석", len(chunks), len(chunks))

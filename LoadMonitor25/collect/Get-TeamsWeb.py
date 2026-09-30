@@ -33,7 +33,7 @@ import re
 import sys
 import time
 from datetime import date, datetime, timedelta
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlparse
 
 if __name__ == "__main__":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, errors="replace", encoding=(
@@ -655,6 +655,316 @@ def walk_chats(br, fake, max_chats, max_pages, deadline, visit, skip=()):
     return done, max_pages, "list_page_limit"
 
 
+# Search is an additional, explicitly partial route. These UI selectors are
+# capability probes, not a Microsoft API contract. Never substitute '*' when
+# date-only Sent: search is unsupported, and never treat an unknown UI as empty.
+JS_SEARCH_FOCUS = r"""
+(() => {
+  const e = document.querySelector('input[data-tid="search-box"],[data-tid="search-box"] input,'
+      + 'input[data-tid="search-box-input"],input[data-tid="search-input"],input[role="searchbox"],'
+      + 'input[aria-label*="Search"],input[aria-label*="검색"]');
+  if (!e || !e.matches('input,textarea,[contenteditable="true"]')) return 'unsupported';
+  e.focus(); if(e.select) e.select(); return 'focused';
+})()
+"""
+JS_SEARCH_PAGE = r"""
+(() => {
+  const input = document.querySelector('input[data-tid="search-box"],[data-tid="search-box"] input,'
+      + 'input[data-tid="search-box-input"],input[data-tid="search-input"],input[role="searchbox"],'
+      + 'input[aria-label*="Search"],input[aria-label*="검색"]');
+  const root = document.querySelector('[data-tid="search-results"],[data-tid="search-results-container"],'
+      + '[data-tid="search-page"],[data-tid="search-results-page"]');
+  if (!root) return JSON.stringify({query:input ? (input.value || input.textContent || '') : '', state:'unsupported',items:[]});
+  const busy = !!root.querySelector('[aria-busy="true"],[role="progressbar"]');
+  const tab = [...document.querySelectorAll('[role="tab"]')].find(e => /^(Messages|메시지)$/i.test((e.textContent || '').trim()));
+  const selected = !!tab && tab.getAttribute('aria-selected') === 'true';
+  const els = [...root.querySelectorAll('[data-tid="search-result-message"],[data-tid="message-search-result"],'
+      + '[data-tid="search-result"][data-message-id],[data-message-id][data-chat-id]')];
+  window.__lm_search_results = els;
+  const items = els.map((e,idx) => {
+    const link = [...e.querySelectorAll('a[href]')].find(a => /\/(?:l\/)?message\//.test(a.pathname));
+    const title = e.querySelector('[data-tid="chat-title"],[data-tid="search-result-chat-name"],[data-tid="chat-name"]');
+    return {idx, id:e.getAttribute('data-message-id') || '', conversation_id:e.getAttribute('data-chat-id') || '',
+      name:title ? (title.textContent || '').trim() : '', url:link ? link.href : '',
+      key:e.getAttribute('data-message-id') || (link ? link.href : '')};
+  });
+  const empty = [...root.querySelectorAll('[role="status"],[data-tid*="empty"],[data-tid*="no-result"]')]
+      .some(e => /no (?:results|messages)|결과가 없|메시지가 없|결과 없음/i.test(e.textContent || ''));
+  return JSON.stringify({query:input ? (input.value || input.textContent || '') : '',
+    state:busy ? 'loading' : !selected ? 'wrong_tab' : items.length ? 'results' : empty ? 'empty' : 'unknown', items});
+})()
+"""
+JS_SEARCH_MESSAGES = r"""
+(() => { const e = [...document.querySelectorAll('[role="tab"]')].find(e => /^(Messages|메시지)$/i.test((e.textContent || '').trim()));
+  if(!e) return 'unsupported'; if(e.getAttribute('aria-selected') !== 'true') e.click(); return 'ok'; })()
+"""
+JS_SEARCH_SCROLL = r"""
+(() => {
+  const root = document.querySelector('[data-tid="search-results"],[data-tid="search-results-container"],'
+      + '[data-tid="search-page"],[data-tid="search-results-page"]');
+  if(!root) return 'unsupported';
+  const next = [...root.querySelectorAll('button')].find(e => !e.disabled && /^(Load more|Show more|Next|더 보기|더 로드|다음)$/i.test((e.textContent || e.getAttribute('aria-label') || '').trim()));
+  if(next) { next.click(); return 'next'; }
+  const el = [root,...root.querySelectorAll('*')].find(e => e.scrollHeight > e.clientHeight + 30 && /auto|scroll/.test(getComputedStyle(e).overflowY));
+  if(!el) return 'end_or_unavailable';
+  const before=el.scrollTop; el.scrollTop += Math.max(200,el.clientHeight-50); el.dispatchEvent(new Event('scroll',{bubbles:true}));
+  return el.scrollTop>before ? 'scrolled' : 'end_or_unavailable';
+})()
+"""
+
+
+def message_link(value):
+    """Only a Teams message permalink can supply conversation/message identity."""
+    try:
+        parsed = urlparse(str(value or ''))
+        if parsed.scheme != 'https' or parsed.hostname not in HOSTS:
+            return '', ''
+        match = re.search(r'/(?:l/)?message/([^/]+)/([^/?]+)', parsed.path)
+        return (unquote(match[1]), unquote(match[2])) if match else ('', '')
+    except ValueError:
+        return '', ''
+
+
+def search_identity(item):
+    conv, mid = message_link(item.get('url'))
+    if item.get('conversation_id') and conv and str(item['conversation_id']) != conv:
+        return None
+    if item.get('id') and mid and str(item['id']) != mid:
+        return None
+    conv, mid = str(item.get('conversation_id') or conv), str(item.get('id') or mid)
+    if not conv or not mid:
+        return None
+    return dict(item, conversation_id=conv, id=mid)
+
+
+def search_page(br, query, deadline):
+    if str(br.cdp.eval(JS_SEARCH_FOCUS)) != 'focused':
+        return {'state': 'unsupported', 'reason': 'search_input_unsupported'}
+    br.cdp.call('Input.insertText', {'text': query})
+    br.ca.press_enter(br.cdp)
+    end = min(deadline, time.monotonic() + 12)
+    last = {'state': 'unknown'}
+    while time.monotonic() < end:
+        time.sleep(0.4)
+        br.cdp.eval(JS_SEARCH_MESSAGES)
+        last = br.eval_json(JS_SEARCH_PAGE)
+        if last.get('query', '').strip().lower() == query.lower() and last.get('state') in ('results', 'empty'):
+            return last
+    return dict(last, state='unsupported', reason='search_ui_or_query_unconfirmed')
+
+
+def search_context(br, item, day, d0, d1, today, context_chars, fixture=None, deadline=None):
+    """Read nearby rendered originals only after verifying room AND anchor ID.
+
+    A search preview is never saved as an original. A search date is never used
+    to invent a timestamp. Context outside the requested interval is excluded.
+    """
+    item = search_identity(item)
+    if not item:
+        return [], 'search_identity_missing'
+    if fixture is not None:
+        pane, page = fixture.get('pane') or {}, fixture.get('page') or {}
+    else:
+        url = item.get('url') or ''
+        if message_link(url) != (item['conversation_id'], item['id']):
+            return [], 'search_permalink_missing'
+        br.cdp.call('Page.navigate', {'url': url})
+        end = min(deadline or time.monotonic() + 8, time.monotonic() + 8)
+        pane, page = {}, {}
+        while time.monotonic() < end:
+            time.sleep(0.3)
+            pane, page = br.eval_json(JS_PANE), br.eval_json(JS_MSGS)
+            if pane_matches(item, item.get('name', ''), pane) and any(
+                    str(m.get('id') or '') == item['id'] for m in page.get('items', [])):
+                break
+    if not pane_matches(item, item.get('name', ''), pane):
+        return [], 'search_room_unconfirmed'
+    items = page.get('items') or []
+    anchor = next((i for i, entry in enumerate(items) if entry.get('t') == 'msg'
+                   and str(entry.get('id') or '') == item['id']), None)
+    if anchor is None:
+        return [], 'search_anchor_unconfirmed'
+    # Keep date dividers in document order while bounding the neighbor count.
+    positions = [i for i, entry in enumerate(items) if entry.get('t') == 'msg']
+    pos = positions.index(anchor)
+    lo, hi = positions[max(0, pos-6)], positions[min(len(positions)-1, pos+6)]
+    prior_sep = [entry for entry in items[:lo] if entry.get('t') == 'sep'][-1:]
+    context = dict(page, items=prior_sep + items[lo:hi+1])
+    rows, _ = read_chat(None, 0, item.get('name', ''), d0, d1, today,
+                        fake={'0': [context]}, max_scroll=0, context_chars=context_chars,
+                        conversation_id=item['conversation_id'])
+    anchor_id = 'teams-dom:' + item['conversation_id'] + '/' + item['id']
+    anchor_row = next((row for row in rows if row.get('source_id') == anchor_id), None)
+    if not anchor_row:
+        return [], 'search_anchor_date_or_body_missing'
+    if anchor_row['time'][:10] != day.isoformat():
+        return [], 'search_date_filter_unconfirmed'
+    anchor_row['source_url'] = item.get('url') or anchor_row['source_url']
+    return rows, ''
+
+
+def search_checkpoint(root, payload):
+    folder = os.path.join(root, 'data', 'collection_status')
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, 'teams_search_jobs.json')
+    tmp = path + '.' + str(os.getpid()) + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as stream:
+        json.dump(payload, stream, ensure_ascii=False, indent=2)
+    for retry in range(5):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if retry == 4:
+                raise
+            time.sleep(0.05 * (retry + 1))
+
+
+def collect_search(br, fake, root, d0, d1, today, deadline, context_chars, persist,
+                   max_days=30, max_pages=40, on_progress=None):
+    """Date shards resume oldest-unattempted first; recent days refresh each run.
+
+    completed_partial means the observed UI query ended, never server coverage.
+    Checkpoints contain counters/IDs, not message bodies. No Graph or AI calls.
+    """
+    path = os.path.join(root, 'data', 'collection_status', 'teams_search_jobs.json')
+    try:
+        with open(path, encoding='utf-8-sig') as stream:
+            prior = json.load(stream)
+    except (OSError, ValueError):
+        prior = {}
+    if not isinstance(prior, dict):
+        prior = {}
+    jobs = prior.get('jobs', {}) if prior.get('requested_from') == str(d0) and prior.get('requested_to') == str(d1) else {}
+    if not isinstance(jobs, dict):
+        jobs = {}
+    days = [d0 + timedelta(days=i) for i in range((d1-d0).days+1)]
+    # Prior completed days are periodically retried; unknown/blocked days cannot
+    # permanently monopolize a budget. Last-attempt scheduling also advances on
+    # changed login profiles without trusting an earlier completion as coverage.
+    queue = sorted(days, key=lambda day: float(jobs.get(str(day), {}).get('finished_at', 0)))
+    latest = min(d1, today)
+    if latest in queue:
+        queue.remove(latest)
+        queue.append(latest)  # process a fresh/old shard before reserving latest refresh
+    selected = queue[:max(1, max_days-1)]
+    if latest in days and latest not in selected and max_days > 1:
+        selected.insert(1, latest)
+    reasons, attempted = ['search_scope_unverified'], 0
+
+    def snapshot():
+        counts = {state: sum(jobs.get(str(day), {}).get('state', 'pending') == state for day in days)
+                  for state in ('attempted', 'completed_partial', 'blocked', 'pending')}
+        payload = {'requested_from': str(d0), 'requested_to': str(d1), 'status': 'partial',
+                   'scope': 'Observed Sent: date search results and verified nearby original messages; not exhaustive',
+                   'reasons': list(dict.fromkeys(reasons)), 'jobs': jobs, 'counts': counts,
+                   'attempted_this_run': attempted, 'total_days': len(days), 'finished_at': time.time()}
+        search_checkpoint(root, payload)
+        if on_progress:
+            on_progress({key: value for key, value in payload.items() if key != 'jobs'})
+        return payload
+
+    snapshot()
+    for day in selected:
+        if time.monotonic() >= deadline:
+            reasons.append('search_time_budget')
+            break
+        key, query = str(day), day.strftime('Sent:%m/%d/%Y')
+        attempted += 1
+        job = {'query': query, 'state': 'attempted', 'pages': 0, 'results': 0, 'rows': 0,
+               'reasons': [], 'finished_at': time.time()}
+        jobs[key] = job
+        snapshot()
+        fixture = (fake or {}).get('search', {}).get(key) if fake is not None else None
+        try:
+            if fake is not None:
+                pages = (fixture or {}).get('pages') or []
+                page = pages[0] if pages else {'state': 'unsupported', 'reason': 'search_fixture_unavailable'}
+            else:
+                page = search_page(br, query, deadline)
+            seen, saved, stalled, exhausted = set(), set(), 0, False
+            for page_no in range(max_pages):
+                if time.monotonic() >= deadline:
+                    job['reasons'].append('search_time_budget')
+                    break
+                state = page.get('state')
+                if state not in ('results', 'empty'):
+                    job['state'] = 'blocked'
+                    job['reasons'].append(page.get('reason') or 'search_ui_unsupported')
+                    break
+                job['pages'] += 1
+                if state == 'empty':
+                    exhausted = True
+                    job['reasons'].append('search_ui_empty_scope_unverified')
+                    break
+                new = 0
+                for raw in page.get('items') or []:
+                    item = search_identity(raw)
+                    ident = (item['conversation_id'], item['id']) if item else str(raw)
+                    if ident in seen:
+                        continue
+                    seen.add(ident)
+                    new += 1
+                    job['results'] += 1
+                    if time.monotonic() >= deadline:
+                        job['reasons'].append('search_time_budget')
+                        break
+                    detail = ((fixture or {}).get('details') or {}).get(raw.get('key') or raw.get('id') or raw.get('url'), {}) if fake is not None else None
+                    rows, reason = search_context(br, raw, day, d0, d1, today, context_chars, detail, deadline)
+                    if rows:
+                        persist(rows)
+                        saved.update(row.get('source_id') or key_of(row['time'], row['from'], row['chat'], row['summary']) for row in rows)
+                        job['rows'] = len(saved)
+                    if reason:
+                        job['reasons'].append(reason)
+                    snapshot()
+                if 'search_time_budget' in job['reasons']:
+                    break
+                stalled = stalled + 1 if not new else 0
+                if stalled >= 2:
+                    job['reasons'].append('search_results_stalled')
+                    break
+                if fake is not None:
+                    if page_no + 1 >= len(pages):
+                        exhausted = True
+                        break
+                    page = pages[page_no+1]
+                else:
+                    # Opening the original changes the route. Return to the same
+                    # query and replay result pages; never retain stale DOM nodes.
+                    page = search_page(br, query, deadline)
+                    if page.get('state') not in ('results', 'empty'):
+                        job['state'] = 'blocked'
+                        job['reasons'].append('search_return_unconfirmed')
+                        break
+                    for _ in range(page_no+1):
+                        movement = str(br.cdp.eval(JS_SEARCH_SCROLL))
+                        if movement not in ('scrolled', 'next'):
+                            exhausted = True
+                            break
+                        time.sleep(0.7)
+                        page = br.eval_json(JS_SEARCH_PAGE)
+                    if exhausted:
+                        break
+            else:
+                job['reasons'].append('search_page_limit')
+            if exhausted and job['state'] != 'blocked':
+                job['state'] = 'completed_partial'
+            if job['state'] == 'attempted' and not job['reasons']:
+                job['reasons'].append('search_incomplete')
+        except Exception as error:
+            job['state'] = 'blocked'
+            job['reasons'].append('search_error:' + type(error).__name__)
+        job['reasons'] = list(dict.fromkeys(job['reasons']))
+        job['finished_at'] = time.time()
+        snapshot()
+        # One unsupported global UI probe is enough; preserve budget for legacy.
+        if 'search_ui_or_query_unconfirmed' in job['reasons'] or 'search_input_unsupported' in job['reasons']:
+            reasons.append('search_unsupported')
+            break
+    return snapshot()
+
+
 def main():
     d0s = arg("--from") or (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
     d1s = arg("--to") or datetime.now().strftime("%Y-%m-%d")
@@ -681,6 +991,7 @@ def main():
     max_scroll = max(1, min(2000, int(cfg.get("teamsWebMaxScrolls") or MAX_SCROLL)))
     max_pages = max(1, min(1000, int(cfg.get("teamsWebListPages") or 100)))
     reasons, processed = ["web_scope_not_exhaustive"], []
+    search_summary = {}
     rows_seen = set()
     prior = {}
     try:
@@ -696,7 +1007,8 @@ def main():
         return write_status(ROOT, "teams_web", d0s, d1s, status=state, rows=len(rows_seen), scope=SCOPE,
                             reasons=list(dict.fromkeys(reasons + ([extra_reason] if extra_reason else []))),
                             completed_units=len(processed), total_units=None,
-                            processed_chat_keys=list(dict.fromkeys(resume + processed))[-2000:], **extra)
+                            processed_chat_keys=list(dict.fromkeys(resume + processed))[-2000:],
+                            search=search_summary, **extra)
 
     status(extra_reason="interrupted")  # 강제 종료되어도 완주로 남지 않는다.
 
@@ -704,7 +1016,8 @@ def main():
     fk = os.environ.get("LM_TEAMSWEB_FAKE", "")
     if fk:
         try:
-            fake = json.load(open(fk, encoding="utf-8-sig"))
+            with open(fk, encoding="utf-8-sig") as stream:
+                fake = json.load(stream)
         except (OSError, ValueError):
             fake = {}
         if fake.get("login"):
@@ -771,6 +1084,25 @@ def main():
         status(extra_reason="interrupted")
         log(f"  · {name or '(이름 없음)'} — 화면 {screen}개 → {len(got)}건")
     try:
+        if fake is None or 'search' in fake:
+            def search_progress(summary):
+                nonlocal search_summary
+                search_summary = summary
+                status(extra_reason='interrupted')
+            try:
+                collect_search(br, fake, ROOT, d0, d1, today,
+                               min(deadline, time.monotonic() + min(360, budget * 0.45)),
+                               context_chars, persist, on_progress=search_progress)
+                reasons += search_summary.get('reasons', [])
+            except Exception as error:
+                reasons.append('search_failed:' + type(error).__name__)
+            # Search failure must not disable the established chat-list route.
+            if br:
+                try:
+                    if br.goto(TEAMS_URL, wait=1) != 'ok':
+                        reasons.append('search_chat_list_restore_unconfirmed')
+                except Exception:
+                    reasons.append('search_chat_list_restore_failed')
         _done, pages, stop = walk_chats(br, fake, max_chats, max_pages, deadline, visit, resume)
         reasons += [stop] + (diag.get("chat_reasons") or [])
         status(list_pages=pages, no_time=diag["no_time"], no_body=diag["no_body"])

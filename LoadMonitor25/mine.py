@@ -133,6 +133,8 @@ def main():
                                      if str(k).strip()})
     progress("신호 수집", 0, 3)
     sig, meta = extract.load_signals(data_dir, d0, d1, exclude, cfg)
+    from communication_evidence import write_report
+    communication = write_report(ROOT, d0, d1, cfg)
     if not sig:
         print(f"[mine] 신호 0건 — 수집 폴더 확인: {data_dir}")
         return 2                     # 2 = 신호 없음 (예외 사망(3)과 구분 — run.py 가 다르게 안내)
@@ -293,6 +295,7 @@ def main():
                    "signals": len(sig), "counted": meta["counted"],
                    "excluded": meta["excluded"], "weights": meta["weights"],
                     "context_filtered": meta.get("context_filtered", {}),
+                    "communication_evidence": communication,
                    "total_mm": total_mm, "avail_mm": avail_mm,
                    "load_pct": round(load_pct, 1), "mm_months": mm_months,
                    "config_warnings": cfg_warns,

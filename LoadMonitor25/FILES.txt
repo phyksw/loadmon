@@ -1,7 +1,7 @@
 LoadMonitor25 필수 파일 목록 - 복사 시 전부 있어야 합니다.
 (data/ report/ teamdata/ 는 복사 금지 - 개인정보)
 
-총 79개
+총 83개
 
 LoadMonitor25-UI.bat                                   2,444 B  a400d046
 LoadMonitor25.bat                                      3,261 B  fa1f7533
@@ -12,10 +12,10 @@ LoadMonitor25-수집진단.bat                                   849 B  4b05c1a1
 LoadMonitor25-샘플러등록.bat                                  868 B  0dcea1e0
 LoadMonitor25-이동준비.bat                                 1,063 B  6735729a
 LoadMonitor25-빠른이동.bat                                   125 B  6f5e3143
-agentic.py                                            46,935 B  b9b465b7
+agentic.py                                            50,296 B  ecfaaa3d
 freeze.py                                             52,388 B  bf9ba522
 team_report.py                                       177,419 B  d877d332
-flow.py                                               84,511 B  248ab9c9
+flow.py                                               88,805 B  c5390e39
 teamserver.py                                         24,918 B  1b26e160
 teamup.py                                             43,530 B  241f55af
 aggregate.py                                          59,298 B  39e31dfc
@@ -23,15 +23,15 @@ export.py                                              3,339 B  7bd0e652
 retag.py                                               6,128 B  8d6f81d3
 team_refine.py                                         6,565 B  474ed796
 report_out.py                                         31,160 B  8f18cad9
-README.md                                            104,237 B  df89f212
+README.md                                            105,596 B  c74a88e7
 check.py                                               2,629 B  7badfe69
-judge.py                                              99,434 B  c0f84118
-mine.py                                               18,421 B  41270b0f
-refine.py                                             46,939 B  f6e3bdf9
+judge.py                                              99,815 B  09c87051
+mine.py                                               18,586 B  dc89f32d
+refine.py                                             47,279 B  a3438ca1
 ruff.toml                                              1,004 B  aa861118
 FILES.txt                                                (이 파일)
-run.py                                                47,715 B  71629f77
-자가점검.py                                                9,152 B  afdefc37
+run.py                                                48,185 B  040c5c1e
+자가점검.py                                                9,309 B  e8159835
 collect/Add-WorkLog.ps1                                1,771 B  8a921980
 collect/Get-FileActivity.ps1                          48,656 B  cfab595d
 collect/Get-GitActivity.py                            29,162 B  0facda4f
@@ -40,26 +40,29 @@ collect/Get-OutlookData.ps1                           53,343 B  69fde491
 collect/Outlook-Collection.ps1                         8,944 B  865cec66
 collect/Get-OutlookIndex.ps1                          24,280 B  178e6806
 collect/Get-MailViaCopilot.py                         29,925 B  9a089fdf
-collect/Get-OutlookWeb.py                             47,392 B  3dc0c608
+collect/Get-OutlookWeb.py                             51,966 B  f1a8096c
+collect/Import-Communication.py                        1,185 B  9b1b30ae
 collect/Get-PcOnHistory.ps1                           25,151 B  2f510b9e
 collect/Get-PcOnHints.py                              17,248 B  7ad9cb5f
 collect/Start-TeamsSampler.ps1                         2,201 B  49b71b44
 collect/Get-RecentFiles.ps1                           22,050 B  8fbaf83a
 collect/Get-TeamsChats.py                             19,200 B  9b415890
 collect/Get-TeamsViaCopilot.py                        23,701 B  faac34aa
-collect/Get-TeamsWeb.py                               38,514 B  f7728f7b
+collect/Get-TeamsWeb.py                               55,792 B  79140f02
 collect/Get-TeamsWindow.ps1                           42,558 B  e4123bcd
 collect/Diagnose-Collectors.ps1                       40,422 B  7d9e5194
 collect/Register-Samplers.ps1                         11,780 B  c18cfb7e
 collect/Start-ActivitySampler.ps1                      8,715 B  805b5cf1
-config/config.json                                    37,000 B  27304a27
-config/config.default.json                            37,000 B  27304a27
+config/config.json                                    37,709 B  f8ed6219
+config/config.default.json                            37,709 B  f8ed6219
 config/agentic_tasks.json                              4,426 B  2c9e5bb1
 core/collection_state.py                              10,400 B  edcd5c0e
-core/communication.py                                  9,501 B  a78f41b5
+core/communication.py                                  9,760 B  f05d48c4
+core/communication_import.py                          12,639 B  af72c78b
+core/communication_evidence.py                        14,498 B  4147091c
 core/board.py                                         13,045 B  9c4d6431
 core/bundles.py                                        6,552 B  bba74a53
-core/extract.py                                      225,555 B  0c556fd2
+core/extract.py                                      226,240 B  6f9cb469
 core/review_basis.py                                   6,455 B  b9cf5bca
 core/programs.py                                      15,778 B  1f1e142f
 core/details.py                                       72,832 B  17b6f170
@@ -69,6 +72,7 @@ core/process_scope.py                                  2,161 B  3cf073b8
 core/projmap.py                                        7,133 B  14e8a565
 core/run_cache.py                                     30,147 B  3b559eed
 docs/LM25_수집개선.md                                     12,448 B  3c1d4de4
+docs/LM25_수집파이프라인.html                                18,281 B  1216e9e6
 docs/설정가이드.md                                         62,090 B  054c36d2
 docs/사용안내.html                                       272,444 B  26f990bb
 docs/빠른이동.md                                           9,041 B  1e599bb8
@@ -81,4 +85,4 @@ tools/Make-Package.ps1                                11,064 B  ebffe7d6
 tools/Prepare-Move.ps1                                22,997 B  b91fc8ef
 tools/transfer.py                                     22,068 B  55dd0c43
 tools/update_files.py                                  4,530 B  c8761170
-ui/app.py                                            369,512 B  408e7cc0
+ui/app.py                                            380,489 B  6ccb0d90

@@ -32,7 +32,7 @@ from tools.transfer import create_transfer  # noqa: E402
 REPORT = os.path.join(ROOT, "report")
 DATA = os.path.join(ROOT, "data")
 NO_WIN = 0x08000000
-VERSION = "v25.5"
+VERSION = "v25.6"
 LOCK = threading.Lock()
 REQUEST_LOCK = threading.Lock()      # Serialize synchronous mutations with transfer startup.
 FREEZE_LOCK = threading.Lock()       # [보고서 만들기] 직렬화 — JOB 과 별개(사본에 '실행 중'이 굳지 않게)
@@ -1078,6 +1078,37 @@ def communication_coverage(period=None):
     return items
 
 
+def communication_evidence(period=None):
+    """Read observed evidence for this exact view, never infer a server total."""
+    from communication_evidence import build_report
+    if not period or len(period) != 2 or not all(period):
+        return {"status": "unavailable", "families": {}, "limits": ["조회 기간을 선택하세요"]}
+    return build_report(ROOT, period[0], period[1], cfg())
+
+
+def import_communication_job(paths, d0, d1):
+    """Explicit file intake is separate from collection and AI execution."""
+    from communication_import import import_paths
+    from communication_evidence import write_report
+    try:
+        result = import_paths(ROOT, paths, d0, d1, cfg())
+        write_report(ROOT, d0, d1, cfg())
+        ok = result.get("status") not in {"failed", "blocked"}
+        log("메일 파일 가져오기: " + json.dumps(result, ensure_ascii=False))
+        message = ("메일 가져오기 " + ("부분 완료" if result.get("status") == "partial" else "완료")
+                   + f" — 관측 {result.get('observed_rows', 0)}건 · 새 저장 {result.get('imported_rows', 0)}건. 수집 범위를 확인한 뒤 [수집 자료 분석]을 실행하세요"
+                   if ok else "메일 가져오기 실패 — 지원 파일·날짜·읽기 권한을 확인하고 진행 로그의 사유를 확인하세요")
+        summary = {"ok": ok, "message": message,
+                   "import": result}
+    except (OSError, ValueError, TypeError) as error:
+        summary = {"ok": False, "message": f"메일 가져오기 실패({type(error).__name__}) — 기존 수집 자료를 확인하세요"}
+        log(summary["message"])
+    finally:
+        with LOCK:
+            JOB.update(running=False, step="", pid=0, phase="", done=0, total=0,
+                       run_result=locals().get("summary", {"ok": False, "message": "가져오기 중단"}))
+
+
 def outlook_coverage(period=None):
     r"""Outlook COM 수집의 달별 완료 표(data\outlook\coverage.json) 와 화면 기간을 맞춰 본다.
 
@@ -1495,6 +1526,7 @@ def activity_payload(d0="", d1=""):
     return {"ok": True, "kind": "collected_activity", "period": [d0, d1],
             "trend": rows, "trend_info": info, "trend_src": info.get("src"),
             "communication_coverage": communication_coverage([d0, d1]),
+            "communication_evidence": communication_evidence([d0, d1]),
             "mail_coverage": outlook_coverage([d0, d1]), "clumps": mtime_clumps(d0, d1)}
 
 
@@ -1658,8 +1690,9 @@ def result_rows():
     return (os.path.basename(p) if p else ""), rows
 
 
-def run_job(d0, d1, ai, skip, collect_only=False, reuse_complete=False, force=False):
-    label = "추가 PC 수집" if collect_only else "분석"
+def run_job(d0, d1, ai, skip, collect_only=False, reuse_complete=False, force=False,
+            communications=False, mail_body=False):
+    label = "메일·Teams 수집" if communications else ("추가 PC 수집" if collect_only else "분석")
     result = None
     try:
         # A34 — 종료일이 미래면 오늘로 당긴다: 미래 평일이 통째로 가용에 남아 로드율이 20% 대로 떨어지던 것.
@@ -1671,6 +1704,10 @@ def run_job(d0, d1, ai, skip, collect_only=False, reuse_complete=False, force=Fa
         cmd = [sys.executable, os.path.join(ROOT, "run.py"), "--from", d0, "--to", d1]
         if collect_only:
             cmd.append("--collect-only")          # 추가 PC 에서: 수집만 하고 분석은 본 PC 에서
+            if communications:
+                cmd.extend(["--communications-only", "--interactive-collect", "--no-mail-copilot", "--no-teams-copilot"])
+                if mail_body:
+                    cmd.append("--mail-web-body")
         else:
             if ai:
                 cmd.append("--ai")
@@ -1709,7 +1746,7 @@ def run_job(d0, d1, ai, skip, collect_only=False, reuse_complete=False, force=Fa
         message = (f"{label} 완료" if p.returncode == 0 else
                    f"{label} 부분 완료 — 실패한 단계는 진행 로그를 확인하세요" if p.returncode == 2 else
                    f"{label} 실패(코드 {p.returncode}) — 진행 로그를 확인하세요")
-        if collect_only and p.returncode == 0:
+        if collect_only and not communications and p.returncode == 0:
             message += " — 다음 PC로 옮기려면 [PC 이동 준비]를 누르세요"
         result = {"ok": p.returncode == 0, "message": message, "code": p.returncode}
     except Exception as e:
@@ -2630,8 +2667,20 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
  <div class="row" id="wleg" style="margin-top:6px;font-size:11px;color:#4a5159"></div>
  <div class="note" id="wnote" style="display:none;color:#a86400"></div>
  <div id="wclump"></div></div>
-<div class="card"><h2>메일·Teams 수집 범위 <span class="state">수집 건수와 전체 확인 여부는 다릅니다</span></h2>
- <div class="note">수집 경로 → 기존 자료와 합치기 → 문맥 발췌 → AI 분석. 권한이 없거나 화면에 나오지 않은 내용은 확인할 수 없습니다.</div>
+<div class="card"><h2>메일·Teams 근거 확보 <span class="state">누가 어떤 일을 요청하고 결정했는지 확인하기 위한 자료입니다</span></h2>
+ <div class="row" style="margin:12px 0;font-weight:700"><span>① 기간별 탐색</span> → <span>② 원문·대화 연결</span> → <span>③ 중복 제거·보호 필터</span> → <span>④ 업무별 근거 분석</span></div>
+ <div id="communicationevidence"></div>
+ <div id="communicationactions">
+  <div class="row"><button id="communicationcollect">메일·Teams만 수집 (웹 포함)</button>
+   <label><input id="communicationbody" type="checkbox">Outlook 웹 본문 포함 · 읽음 표시가 바뀔 수 있음</label></div>
+  <p class="note">상단 실행 기간을 사용합니다. Edge에서 회사 계정 로그인이 필요할 수 있습니다. 이 버튼은 AI를 호출하지 않습니다. 날짜별 작업은 예산 내에서 이어받으며 미완료 범위를 남깁니다.</p>
+  <details><summary>메일 접근이 막혔다면 저장한 EML / MBOX 가져오기</summary>
+   <p class="note">Outlook에서 저장한 .eml 또는 별도로 제공받은 .mbox 파일의 전체 경로를 한 줄에 하나씩 입력하세요. 폴더는 바로 아래 파일만 읽습니다. 첨부파일은 읽지 않습니다. PST·MSG는 지원하지 않습니다.</p>
+   <textarea id="communicationpaths" rows="3" style="width:100%" aria-label="메일 파일 또는 폴더 전체 경로" placeholder="메일 파일 또는 폴더의 전체 경로"></textarea>
+   <button class="ghost" id="communicationimport">선택한 메일 파일 가져오기</button>
+  </details><p class="note" id="communicationfeedback" role="status" aria-live="polite"></p>
+ </div>
+ <div class="note">수집 건수는 근무시간·MM이 아닙니다. 아래 원본 대비 확보율은 확인할 수 없으며, AI가 미수집 내용을 채웠다고 간주하지 않습니다.</div>
  <div id="communicationcoverage" style="overflow:auto"></div></div>
 <div class="note" id="analysisstatus" role="status" aria-live="polite"></div>
 <div class="note" id="analysisperiod"></div>
@@ -2790,16 +2839,29 @@ for(const id of ["from","to"])$(id).addEventListener("change",activityFromSelect
 $("activityscale").onchange=()=>{if(lastActivity)weekly($("weekly"),lastActivity.trend||[]);};
 function renderCommunicationCoverage(items){
  const host=$("communicationcoverage");if(!host)return;
- const names={outlook_com:"Outlook 앱(COM)",outlook_index:"Windows Search 색인",outlook_web:"Outlook 웹",outlook_copilot:"메일 Copilot",teams_app:"Teams 열린 앱",teams_graph:"Teams Graph",teams_web:"Teams 웹",teams_copilot:"Teams Copilot"};
+ const names={outlook_com:"Outlook 앱(COM)",outlook_index:"Windows Search 색인",outlook_web:"Outlook 웹",outlook_copilot:"메일 Copilot",teams_app:"Teams 열린 앱",teams_graph:"Teams Graph",teams_web:"Teams 웹",teams_copilot:"Teams Copilot",communication_import:"선택한 EML/MBOX 파일"};
  const states={complete:"명시 범위 완료",partial:"부분 수집",failed:"실패",blocked:"접근 불가",skipped:"생략",unknown:"미확인"};
  if(!Array.isArray(items)||!items.length){host.innerHTML='<p class="note">이 버전의 범위 기록이 없습니다. 다음 수집 후 경로별 기간과 중단 이유가 표시됩니다. 기존 CSV 건수만으로 전체 수집을 확인할 수 없습니다.</p>';return;}
  host.innerHTML='<table><tr><th>경로</th><th>상태</th><th>실행 요청 기간</th><th>확인 범위·중단 이유</th></tr>'+items.map(s=>{
   const status=states[s.status]||"미확인",same=s.matches_period!==false;
-  return `<tr><td>${esc(names[s.source]||s.source)}</td><td style="color:${s.status==="complete"&&same?"#16704a":"#a86400"}">${esc(status)}${same?"":" · 다른 기간 기록"}</td><td>${esc(s.requested_from||"")} ~ ${esc(s.requested_to||"")}</td><td>${esc(s.scope||"범위 미확인")}<br><span class="note">${esc((Array.isArray(s.reasons)?s.reasons:[]).join(" · "))}</span></td></tr>`;
+  const jobs=s.search?.counts,progress=jobs?`날짜 작업 ${Number(s.search.total_days)||0}일 중 관측 목록 탐색 ${Number(jobs.completed_partial)||0}일 · 차단 ${Number(jobs.blocked)||0}일 · 미완료/대기 ${(Number(jobs.attempted)||0)+(Number(jobs.pending)||0)}일 (전체 확보 아님)`:"";
+  return `<tr><td>${esc(names[s.source]||s.source)}</td><td style="color:${s.status==="complete"&&same?"#16704a":"#a86400"}">${esc(status)}${same?"":" · 다른 기간 기록"}</td><td>${esc(s.requested_from||"")} ~ ${esc(s.requested_to||"")}</td><td>${esc(s.scope||"범위 미확인")}${progress?"<br>"+esc(progress):""}<br><span class="note">${esc((Array.isArray(s.reasons)?s.reasons:[]).join(" · "))}</span></td></tr>`;
  }).join("")+"</table><p class='note'>‘명시 범위 완료’도 조직 전체 메일·Teams 전체를 뜻하지 않습니다. 웹 본문 읽기는 기본 꺼짐이며, 색인·Copilot 결과는 메타데이터 단서입니다. 첨부파일 내용은 수집하지 않습니다.</p>";
+}
+function renderCommunicationEvidence(report){
+ const host=$("communicationevidence");if(!host)return;
+ const families=(report||{}).families||{};
+ host.innerHTML='<table><tr><th>기간 내 자료</th><th>고유 기록</th><th>본문 포함</th><th>대화 묶음</th><th>확인할 공백</th></tr>'+["mail","teams"].map(kind=>{
+  const f=families[kind]||{},n=Number(f.unique_rows)||0,b=Number(f.context_rows)||0;
+  return `<tr><td>${kind==="mail"?"메일":"Teams"}</td><td>${n.toLocaleString()}건</td><td>${b.toLocaleString()}건</td><td>${Number(f.conversation_count)||0}개</td><td>${esc((f.limits||[]).join(" · ")||"전체 원본 대비 확보율 미확인")}</td></tr>`;
+ }).join("")+"</table><p class='note'>본문 포함은 보관 자료 기준이며, 보호 필터 적용 후 AI에 전달되는 수는 줄어들 수 있습니다. 대화 묶음 수가 전체 대화 확보를 뜻하지 않습니다.</p>";
+ const actions=[...new Set([...(report?.actions||[]),...Object.values(families).flatMap(f=>f.actions||[])])];
+ if(actions.length)host.innerHTML+='<p class="note"><b>다음 조치:</b> '+actions.map(esc).join(" · ")+"</p>";
+ if(document.getElementById("lm-frozen-data")&&$("communicationactions"))$("communicationactions").style.display="none";
 }
 function renderActivity(d,independent=false){
  renderCommunicationCoverage(d.communication_coverage||[]);
+ renderCommunicationEvidence(d.communication_evidence||{});
  lastActivity=d;
  weekly($("weekly"),d.trend||[]);
  const ti=d.trend_info||{}, per=ti.period||d.period||[];
@@ -2923,15 +2985,38 @@ function weekly(el,tr){
 // 409 의 사유(hint)를 그대로 보여 준다 — '이미 실행 중' 한 마디로는 보고서 굽는 중인지 알 수 없다
 async function busyMsg(r,dflt){let h="";try{h=(await r.json()).hint||"";}catch(e){}return h||dflt;}
 let timer=null;
-let runSubmitting=false,runFeedbackActive=false;
+let runSubmitting=false,runFeedbackActive=false,communicationFeedbackActive=false;
 let runRequestEpoch=0,pollSequence=0,pollApplied=0;
 function runButtons(disabled){
- ["go","analyzecollected","collect2","prepmove"].forEach(id=>$(id).disabled=disabled);
+ ["go","analyzecollected","collect2","prepmove","communicationcollect","communicationimport"].forEach(id=>{if($(id))$(id).disabled=disabled;});
 }
+async function communicationAction(kind){
+ if(runSubmitting||wasRunning)return;
+ const feedback=$("communicationfeedback"),a=$("from").value,b=$("to").value;
+ if(!a||!b||a>b){feedback.textContent="상단 실행 기간을 확인하세요";return;}
+ const body={from:a,to:b};
+ if(kind==="import"){
+  body.paths=$("communicationpaths").value.split(/\\r?\\n/).map(x=>x.trim().replace(/^"|"$/g,"")).filter(Boolean);
+  if(!body.paths.length){feedback.textContent="가져올 파일 또는 폴더 경로를 입력하세요";return;}
+ }else body.mail_body=$("communicationbody").checked;
+ runRequestEpoch++;communicationFeedbackActive=false;runFeedbackActive=false;
+ runSubmitting=true;runButtons(true);feedback.textContent="요청 중…";
+ const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),15000);
+ try{
+  const r=await fetch("/api/communication/"+kind,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body),signal:controller.signal}),d=await r.json();
+  if(!r.ok||!d.ok)throw Error(d.hint||d.error||"시작하지 못했습니다");
+  feedback.textContent="요청 접수 — 진행 로그와 수집 범위를 확인하세요. 완료 후 [수집 자료 분석]을 실행할 수 있습니다.";
+  communicationFeedbackActive=true;wasRunning=true;$("dlog").open=true;if(!timer)timer=setInterval(poll,1000);
+ }catch(e){feedback.textContent=e.name==="AbortError"?"응답 시간 초과 — 진행 로그에서 실행 여부를 확인하세요":String(e.message||e);}
+ finally{clearTimeout(timeout);runRequestEpoch++;runSubmitting=false;runButtons(!!wasRunning);poll();}
+}
+$("communicationcollect").onclick=()=>communicationAction("collect");
+$("communicationimport").onclick=()=>communicationAction("import");
 async function requestRun(body,label){
  if(runSubmitting)return;
  const feedback=$("run_feedback");
  runFeedbackActive=false;
+ communicationFeedbackActive=false;
  if(!body.from||!body.to){feedback.textContent="기간을 선택하세요";return;}
  if(body.from>body.to){feedback.textContent="시작일이 종료일보다 늦습니다 — 기간을 확인하세요";return;}
  runRequestEpoch++;runSubmitting=true;runButtons(true);
@@ -2961,6 +3046,10 @@ async function poll(){
   // Status can take longer than a new run request; never apply an older snapshot.
   if(epoch!==runRequestEpoch||sequence<pollApplied)return;
   pollApplied=sequence;
+  if(communicationFeedbackActive&&!runSubmitting&&!s.running&&s.run_result){
+   $("communicationfeedback").textContent=s.run_result.message||"진행 로그를 확인하세요";
+   communicationFeedbackActive=false;
+  }
   if(runFeedbackActive&&!runSubmitting&&!s.running&&s.run_result){
    $("run_feedback").textContent=s.run_result.message||"진행 로그를 확인하세요";
    runFeedbackActive=false;
@@ -3765,7 +3854,8 @@ async function loadFlow(){
   +(nflows?'<button class="ghost" id="flowexpand">상위·과제 모두 펼치기</button><button class="ghost" id="flowcollapse">상위·과제 모두 접기</button>':"")
   +'<span class="state" id="flowmsg">'+(d.running?"워크플로우 분석 진행 중… (진행률은 상단 진행 바)":(d.generated?esc(`생성 ${d.generated} · ${d.model_name||""}`)+(d.basis==="규칙"?" · 규칙 축(AI 판정 없음)":""):""))+'</span></div>'
   +'<div class="note">과제별로 <b>역할 → 일의 순서 → 단계별 Agent 가능성</b>을 raw 근거에서 판정합니다. '
-  +'MM은 저장된 투입 추정값과 업무별 배분에서 가져옵니다.'+` 검증된 흐름 ${nflows}개 · 검토 필요 ${reviewFlows.length}개`+partial+salv+'</div>'+lastErr
+  +'MM은 저장된 투입 추정값과 업무별 배분에서 가져옵니다.'+` 근거가 연결된 AI 해석 ${nflows}개 · 검토 필요 ${reviewFlows.length}개`+partial+salv+'</div>'
+  +'<div class="note">원신호 ID 연결 확인은 서술 내용의 사실 검증이 아닙니다. 본문 없는 메일·Teams 단서만 있는 업무는 과정·역할 확정을 보류합니다.</div>'+lastErr
   +(d.reextracted?'<div class="note" style="color:#8a5a00">⚠ <b>재추출 이후 결과</b> — '+esc(d.reextracted_note||"이 결과는 마지막 업무 로드 재추출 이전의 것입니다")+' · [워크플로우 재분석]으로 갱신하세요</div>':"")
   +mergeLine(d.merge2)+mixedLine(d.level1_mixed)+manualLine(d.manual)+'</div>';
  if(reviewFlows.length&&!nflows){
@@ -3971,13 +4061,13 @@ async function loadAgentic(){
     <td><b>${esc(tk.id)}</b></td><td title="${esc(tk.desc||"")}">${esc(tk.name)}<div class="note" style="margin:2px 0 0">${esc(String(tk.desc||"").slice(0,64))}…</div></td>
     <td><b>${m.fit}%</b></td><td>${fitBar(m.fit)}</td><td>${m.allocated_candidate_mm==null?"미확인":Number(m.allocated_candidate_mm).toFixed(2)} MM</td>
     <td>${(m.work||[]).map(w=>`<span class="tag">${esc(w)}</span>`).join("")}
-     <div style="font-size:11px;color:#5a626b;margin-top:2px">${esc(m.reason||"")}</div></td></tr>`;});
+     <div style="font-size:11px;color:#5a626b;margin-top:2px">${esc(m.reason||"")}</div>${m.needs_review?'<div class="note">본문·산출물 근거 부족: 검토 필요</div>':""}</td></tr>`;});
   h+=`</table><div class="note">적합률은 AI의 적용 적합도 판정입니다. MM은 관련 업무량을 후보 간 안분한 값이며 예상 절감량은 아직 검증되지 않았습니다. 미확인은 재매칭이 필요합니다.</div></div>`;
   h+=`<div class="card"><h2>② 신규 Agentic AI 후보 발굴</h2>`;
   if((a.new||[]).length){(a.new||[]).forEach(n=>{
    h+=`<div style="border-left:3px solid #6c4fb8;padding:4px 0 4px 12px;margin:10px 0">
     <b>${esc(n.name)}</b> <span class="state">후보별 안분 업무량 ${n.allocated_candidate_mm==null?"미확인":Number(n.allocated_candidate_mm).toFixed(2)} MM</span>
-    <div style="font-size:12px;margin-top:3px"><b>동작 로직:</b> ${esc(n.logic)}</div>
+    <div style="font-size:12px;margin-top:3px"><b>동작 로직:</b> ${esc(n.logic)}</div>${n.needs_review?'<div class="note">본문·산출물 근거 부족: 검토 필요</div>':""}
     <div style="font-size:11.5px;color:#5a626b;margin-top:2px"><b>발굴 사유:</b> ${esc(n.reason)}</div></div>`;});}
   else h+=`<div class="note">근거가 충분한 신규 후보가 없습니다 — 신호가 쌓일수록 발굴 정확도가 올라갑니다.</div>`;
   h+=`</div>`;
@@ -4199,6 +4289,7 @@ class H(BaseHTTPRequestHandler):
                              # 메일·일정 수집 범위(달 단위) — 주간 활동 추이 밑에 '미수집 달'을 적는다(얼린 사본에도 굳는다)
                              "mail_coverage": outlook_coverage(per),
                              "communication_coverage": communication_coverage(per),
+                             "communication_evidence": communication_evidence(per),
                              # 화면이 보고 있는 그 기간을 넘긴다 — 예전에는 오늘 기준
                              # 14주 고정이라 1월부터 본 사람도 최근 3개월만 보였다(제보)
                              "clumps": mtime_clumps(per[0], per[1]),
@@ -4602,7 +4693,48 @@ class H(BaseHTTPRequestHandler):
             REQUEST_LOCK.release()
 
     def _do_POST(self):
-        if self.path == "/api/run":
+        if self.path in {"/api/communication/collect", "/api/communication/import"}:
+            try:
+                from urllib.parse import urlsplit
+                origin = self.headers.get("Origin", "")
+                if origin and (urlsplit(origin).hostname not in {"localhost", "127.0.0.1"}
+                               or urlsplit(origin).netloc != self.headers.get("Host", "")):
+                    raise ValueError("LM25 로컬 화면에서 요청하세요")
+                if not self.headers.get("Content-Type", "").startswith("application/json"):
+                    raise ValueError("JSON 요청이 필요합니다")
+                b = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+                args = validate_run_request(b)
+                if "mail_body" in b and not isinstance(b["mail_body"], bool):
+                    raise ValueError("본문 수집 옵션을 확인하세요")
+                importing = self.path.endswith("/import")
+                paths = b.get("paths", [])
+                if importing and (not isinstance(paths, list) or not 1 <= len(paths) <= 200
+                                  or any(not isinstance(p, str) or not p.strip() or len(p) > 32768 for p in paths)):
+                    raise ValueError("메일 파일 또는 폴더 경로를 1~200개 입력하세요")
+            except (ValueError, TypeError, OSError) as error:
+                self._send(400, {"ok": False, "error": str(error)})
+                return
+            with LOCK:
+                if JOB["running"] or self._freezing():
+                    if JOB["running"]:
+                        self._send(409, {"ok": False, "hint": "실행 중인 작업이 끝난 뒤 다시 실행하세요"})
+                    return
+                JOB.update(running=True, kind="communication", log=[], run_result=None, started=time.time(),
+                           step="메일 파일 가져오기" if importing else "메일·Teams 수집 준비", phase="", done=0, total=0)
+            try:
+                if importing:
+                    worker = threading.Thread(target=import_communication_job, args=(paths, args[0], args[1]), daemon=True)
+                else:
+                    worker = threading.Thread(target=run_job, args=(args[0], args[1], False, False, True),
+                                              kwargs={"communications": True, "mail_body": b.get("mail_body", False)}, daemon=True)
+                worker.start()
+            except (RuntimeError, OSError) as error:
+                with LOCK:
+                    JOB.update(running=False, step="")
+                self._send(503, {"ok": False, "error": str(error)})
+                return
+            self._send(202, {"ok": True})
+        elif self.path == "/api/run":
             try:
                 n = int(self.headers.get("Content-Length", 0))
                 if not 0 <= n <= 65536:
