@@ -57,15 +57,18 @@ class DiagnosticTests(unittest.TestCase):
         body = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in {"step", "_run_rc"}]
         with tempfile.TemporaryDirectory(prefix="lm25-python-handoff-") as td:
             child = mock.Mock(return_value=SimpleNamespace(returncode=0, stdout=b"OK", stderr=b""))
+            streaming = mock.Mock(return_value={"returncode": 0, "tail": ["OK"], "timed_out": False})
             ns = {"subprocess": SimpleNamespace(run=child, TimeoutExpired=subprocess.TimeoutExpired),
                   "os": os, "sys": sys, "time": time, "ROOT": td, "NO_WIN": 0,
                   "record": mock.Mock(), "print": mock.Mock()}
             exec(compile(ast.Module(body=body, type_ignores=[]), "synthetic-run.py", "exec"), ns)
-            with mock.patch.dict(os.environ, {"LM_PYTHON_EXE": "stale-python-path"}):
+            with mock.patch.dict(os.environ, {"LM_PYTHON_EXE": "stale-python-path"}), \
+                    mock.patch.dict(sys.modules, {"collection_process": SimpleNamespace(run_stream=streaming)}):
                 self.assertTrue(ns["step"]("synthetic", ["never-started"], 10))
                 self.assertEqual(ns["_run_rc"](["never-started"], 10)[0], 0)
-            self.assertEqual(child.call_count, 2)
-            for call in child.call_args_list:
+            self.assertEqual(child.call_count, 1)
+            self.assertEqual(streaming.call_count, 1)
+            for call in [*child.call_args_list, *streaming.call_args_list]:
                 self.assertEqual(call.kwargs["env"]["LM_PYTHON_EXE"], sys.executable)
                 self.assertEqual(call.kwargs["cwd"], td)
 

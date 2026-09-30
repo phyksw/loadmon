@@ -66,6 +66,8 @@ NEED = [
     "core/collection_state.py",
     "core/graph_client.py",
     "core/communication.py",
+    "core/collection_diagnostics.py",
+    "core/collection_process.py",
     "core/communication_archive.py",
     "core/communication_setup.py",
     "core/communication_exports.py",

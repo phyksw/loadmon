@@ -211,15 +211,15 @@ def find_edge():
     return None
 
 
-def http_json(port, path, method="GET"):
+def http_json(port, path, method="GET", timeout=5):
     req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", method=method)
-    with urllib.request.urlopen(req, timeout=5) as r:
+    with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode("utf-8"))
 
 
-def debugger_alive(port):
+def debugger_alive(port, timeout=1):
     try:
-        http_json(port, "/json/version")
+        http_json(port, "/json/version", timeout=timeout)
         return True
     except Exception:
         return False
@@ -301,9 +301,9 @@ class WS:
 
 
 class CDP:
-    def __init__(self, ws_url):
+    def __init__(self, ws_url, timeout=30):
         self.ws_url = ws_url
-        self.ws = WS(ws_url)
+        self.ws = WS(ws_url, timeout=timeout)
         self.next_id = 0
 
     def call(self, method, params=None, timeout=25):
@@ -327,13 +327,13 @@ class CDP:
                     raise RuntimeError(f"CDP {method}: {msg['error']}")
                 return msg.get("result", {})
 
-    def reconnect(self):
+    def reconnect(self, timeout=30):
         """타임아웃 후 스트림 desync 대비 — 새 소켓으로 재접속"""
         try:
             self.ws.close()
         except Exception:
             pass
-        self.ws = WS(self.ws_url)
+        self.ws = WS(self.ws_url, timeout=timeout)
 
     def eval(self, expr, timeout=25):
         r = self.call("Runtime.evaluate",
@@ -354,8 +354,14 @@ def ensure_edge(cfg):
     if os.environ.get("LM_NO_BROWSER"):        # 회귀 시험용 — 실제 Edge 를 띄우지 않는다(스텁 드라이버는 무관)
         return None
     port = cfg["port"]
-    if debugger_alive(port):
+    deadline = min(time.monotonic() + 20, float(cfg.get("_collection_deadline") or float("inf")))
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return None
+    if debugger_alive(port, timeout=min(1, remaining)):
         return "reused"
+    if time.monotonic() >= deadline:
+        return None
     edge = find_edge()
     if not edge:
         return None
@@ -365,9 +371,12 @@ def ensure_edge(cfg):
          "--remote-allow-origins=*", "--no-first-run", "--no-default-browser-check",
          "--window-size=1150,900", cfg["url"]],
         creationflags=NO_WIN)
-    for _ in range(40):                        # 최대 20초 대기
-        time.sleep(0.5)
-        if debugger_alive(port):
+    while time.monotonic() < deadline:
+        time.sleep(min(0.25, max(0, deadline - time.monotonic())))
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        if debugger_alive(port, timeout=min(1, remaining)):
             return "launched"
     return None
 

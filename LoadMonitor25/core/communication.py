@@ -51,6 +51,13 @@ class CommunicationCollection:
                 process_ok=bool(ok))
         elif not ok:
             result = self.interrupted(result)
+        elapsed = max(0, round(time.time() - started, 2))
+        result["elapsed_sec"] = elapsed
+        result["budget_sec"] = timeout
+        extras = {k: v for k, v in result.items() if k not in {
+            "schema", "source", "requested_from", "requested_to", "status", "rows", "scope", "reasons", "finished_at"}}
+        result = write_status(self.root, source, self.d0, self.d1, result["status"],
+                              result.get("rows", 0), result.get("scope", ""), result.get("reasons", []), **extras)
         self.states.append(result)
         return result
 
@@ -106,7 +113,8 @@ class CommunicationCollection:
              _number(self.options.get("graphBudgetSec"), 900, 30, 6900) + 90,
              bool((self.config.get("graph") or {}).get("clientId"))),
             ("outlook_index", "Outlook 보충 · Windows Search 색인", "Get-OutlookIndex.ps1", 240, True),
-            ("outlook_web", "Outlook 보충 · 웹", "Get-OutlookWeb.py", 180 + 150 * months,
+            ("outlook_web", "Outlook 보충 · Microsoft 365 웹 (앱 버전 무관)", "Get-OutlookWeb.py",
+             _number(self.options.get("mailWebBudgetSec"), 180, 30, 1800) + 30,
              not self.headless and self.config.get("mailViaWeb", True) and "--no-mail-web" not in self.argv),
             ("outlook_copilot", "Outlook 보충 · Copilot 조회", "Get-MailViaCopilot.py", 300 + 600 * months * 2,
              not self.headless and self.config.get("mailViaCopilot", True) and "--no-mail-copilot" not in self.argv),
@@ -139,6 +147,7 @@ class CommunicationCollection:
             elif len(pending) == 1:
                 command += [only_flag, next(iter(pending))]
             if source == "outlook_web":
+                command += ["--time-budget", str(max(1, min(timeout, remaining) - 30))]
                 if "--no-mail-web-body" in self.argv:
                     command.append("--exclude-body")
                 elif "--mail-web-body" in self.argv:
@@ -189,8 +198,9 @@ class CommunicationCollection:
                 self.skip(source, "수집 시간 예산 도달 · 다음 실행 필요")
                 continue
             if source == "teams_web":
-                web_budget = _number(self.config.get("teamsWebBudgetSec"), 900, 30, 6900)
-                command += ["--budget", str(max(1, min(web_budget, remaining - 20)))]
+                web_budget = _number(self.config.get("teamsWebBudgetSec"), 300, 30, 6900)
+                timeout = min(timeout, web_budget + 30)
+                command += ["--budget", str(max(1, min(web_budget, min(timeout, remaining) - 30)))]
             elif source == "teams_graph":
                 command += ["--time-budget", str(max(1, min(timeout, remaining) - 90))]
             state = self.run(source, label, command, min(timeout, remaining))

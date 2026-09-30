@@ -183,7 +183,16 @@ def _atomic_text(path, text):
             stream.write(text)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        # Windows scanners/readers can briefly hold a handle without delete
+        # sharing. Retry only those errors; never unlink the previous snapshot.
+        for delay in (0.05, 0.1, 0.2, 0.4, 0.8, None):
+            try:
+                os.replace(temporary, path)
+                break
+            except OSError as error:
+                if getattr(error, "winerror", None) not in (5, 32, 33) or delay is None:
+                    raise
+                time.sleep(delay)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)

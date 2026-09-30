@@ -97,28 +97,22 @@ def finish_run(result_available=False, collect_only=False):
 
 
 def step(name, cmd, timeout=420):
-    print(f"\n── {name}")
+    from collection_process import run_stream
+    print(f"\n── {name}", flush=True)
     t0 = time.time()
     try:
-        p = subprocess.run(cmd, capture_output=True, timeout=timeout, cwd=ROOT,
-                           env=dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1",
-                                    LM_PYTHON_EXE=sys.executable), creationflags=NO_WIN)
-        out = (p.stdout or b"").decode("utf-8", "replace") + (p.stderr or b"").decode("utf-8", "replace")
-        # 마지막 6줄만 찍던 것을 12줄로 — 수집기가 '왜 0건인지' 적는 줄이 정확히 0건일 때
-        # 잘려 나가 화면에는 엉뚱한 원인만 남았다(팀즈 0건 실측: '채팅 목록으로 N줄 제외'가 잘렸다).
-        tail = out.strip().splitlines()[-12:]
-        for ln in tail:
-            print("   " + ln)
-        # 성공해도 요약 줄을 남긴다 — "PC 가동 2건"처럼 값이 이상할 때 어느 수집기가
-        # 무엇을 찾았는지 last_run.json 만으로 원격 진단이 되게 한다.
-        record(name, p.returncode == 0, time.time() - t0,
-               (tail[-1][:200] if tail else "") if p.returncode == 0
-               else " / ".join(tail[-2:]))
-        return p.returncode == 0
-    except subprocess.TimeoutExpired:
-        print(f"   시간 초과({timeout}s) — 건너뜀")
-        record(name, False, time.time() - t0, f"시간 초과 {timeout}s")
-        return False
+        result = run_stream(cmd, timeout, cwd=ROOT,
+                            env=dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1",
+                                     LM_PYTHON_EXE=sys.executable), creationflags=NO_WIN,
+                            on_line=lambda line: print("   " + line, flush=True))
+        tail = result["tail"]
+        ok = result["returncode"] == 0 and not result["timed_out"]
+        note = " / ".join(tail[-2:])
+        if result["timed_out"]:
+            note = f"시간 초과 {timeout}s · " + note
+            print(f"   시간 초과({timeout}s) — 저장된 중간 결과와 마지막 원인을 보존했습니다", flush=True)
+        record(name, ok, time.time() - t0, note)
+        return ok
     except OSError as e:
         print(f"   실행 실패: {e}")
         record(name, False, time.time() - t0, str(e)[:200])
@@ -196,6 +190,21 @@ def collect_outlook(c, d0, d1, data, ps, col):
     r"""Outlook COM 수집 — 기간의 달을 최신 달부터 읽고, 예산에 닿아 못 읽은 달(coverage: partial)이 남으면
     진행이 있는 한 같은 실행 안에서 최대 2회 더 이어서 읽는다(회차마다 완료된 달은 건너뛰므로 앞으로만 간다).
     그래도 남으면 last_run.json 에 미수집 달을 적고 화면(수집 데이터 현황·주간 활동 추이)이 그것을 보여 준다."""
+    from collection_diagnostics import client_snapshot
+    from collection_state import write_status
+    capabilities = client_snapshot()
+    RUN["client_capabilities"] = capabilities
+    unconfigured = (capabilities.get("classic_profile") is False and
+                    capabilities.get("client_probe") == "observed_running_processes_only" and
+                    not any(p.get("name") == "outlook" for p in capabilities.get("running_clients", [])))
+    if capabilities.get("oom_registered") is False or unconfigured:
+        reason = "com_unregistered" if capabilities.get("oom_registered") is False else "classic_profile_missing"
+        write_status(ROOT, "outlook_com", d0, d1, "skipped", reasons=[reason],
+                     mail_status="skipped", calendar_status="skipped", server_scope_verified=False)
+        note = "클래식 Outlook COM/프로필 없음 — 새 Outlook·Microsoft 365 웹/Graph 보충으로 진행"
+        print("   " + note, flush=True)
+        record("수집 경로 · outlook_com", True, 0, note)
+        return True
     budget = _outlook_budget(c, d0, d1)
     src_p = os.path.join(data, "outlook", "mail_source.json")
     ok, prev_unc, src = False, None, {}
@@ -206,7 +215,7 @@ def collect_outlook(c, d0, d1, data, ps, col):
         return (_read_json(src_p) or {}) if (mt is not None and mt >= t_start - 2) else {}
 
     for i in range(3):
-        name = ("Outlook 메일·일정 (클래식 Outlook을 켜두세요)" if i == 0
+        name = ("Outlook 메일·일정 (클래식 Outlook·Microsoft 365 클래식)" if i == 0
                 else f"Outlook 메일·일정 이어서 수집 {i + 1}/3 (남은 달)")
         # 2회차부터는 -NoRefresh — 1회차가 이미 읽은 최신·재수집 달을 건너뛰고 못 읽은 달만 잇는다(예산이 작으면
         # 최신 달 재수집에 예산이 다 닳아 옛 달에 영영 못 가던 것, 재검증 실측)
@@ -557,7 +566,7 @@ def main():
         print(f"[완료 결과 재사용] {cache_note}")
     RUN.clear()
     RUN.update(stages=[], host=os.environ.get("COMPUTERNAME", ""))
-    RUN.update(period=[d0, d1], started=time.strftime("%Y-%m-%d %H:%M"),
+    RUN.update(period=[d0, d1], started=time.strftime("%Y-%m-%d %H:%M"), started_at=time.time(),
                ai_requested=("--ai" in sys.argv), skip_collect=("--skip-collect" in sys.argv),
                finished=None)
     record("시작", True, 0.0)
@@ -602,6 +611,14 @@ def main():
     record("메일·Teams 근거 점검", True, 0, " · ".join(
         f"{kind} {v.get('unique_rows', 0)}건 / 본문 {v.get('context_rows', 0)}건"
         for kind, v in counts.items()) + " · 전체 원본 대비 확보율은 미확인")
+    from collection_diagnostics import write_diagnostics
+    try:
+        diagnostics = write_diagnostics(ROOT, d0, d1, RUN)
+        for message in diagnostics["summary"][:6]:
+            print("[수집 원인] " + message, flush=True)
+        print("[수집 원인표] report/communication_diagnostics.json · 메시지 내용 없이 상태·건수·소요시간만 저장", flush=True)
+    except (OSError, ValueError, TypeError):
+        print("[수집 원인표] 저장 실패 — 진행 로그와 경로별 상태를 확인하세요", flush=True)
 
     if "--collect-only" in sys.argv or "--communications-only" in sys.argv:
         if "--communications-only" in sys.argv:

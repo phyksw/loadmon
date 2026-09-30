@@ -32,7 +32,7 @@ from tools.transfer import create_transfer  # noqa: E402
 REPORT = os.path.join(ROOT, "report")
 DATA = os.path.join(ROOT, "data")
 NO_WIN = 0x08000000
-VERSION = "v25.8"
+VERSION = "v25.9"
 LOCK = threading.Lock()
 REQUEST_LOCK = threading.Lock()      # Serialize synchronous mutations with transfer startup.
 FREEZE_LOCK = threading.Lock()       # [보고서 만들기] 직렬화 — JOB 과 별개(사본에 '실행 중'이 굳지 않게)
@@ -1847,6 +1847,7 @@ def run_job(d0, d1, ai, skip, collect_only=False, reuse_complete=False, force=Fa
                 pass
             except OSError:
                 previous_report_known = False
+        collection_started = time.time()
         p = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                              env=dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1"), creationflags=NO_WIN)
         with LOCK:
@@ -1897,6 +1898,15 @@ def run_job(d0, d1, ai, skip, collect_only=False, reuse_complete=False, force=Fa
                 message += "\n서버 전체 확보율은 미확인입니다. [메일·Teams 근거 확보]에서 경로별 실패·생략 사유를 확인하세요."
             except (OSError, ValueError, TypeError, KeyError, AttributeError):
                 message += "\n이번 실행의 메일·Teams 건수 확인 안 됨 — 진행 로그와 경로별 수집 상태를 확인하세요."
+            try:
+                with open(os.path.join(ROOT, "report", "communication_diagnostics.json"), encoding="utf-8") as stream:
+                    diagnosis = json.load(stream)
+                if diagnosis.get("period") == [d0, d1] and diagnosis.get("created_at", 0) >= collection_started:
+                    for cause in diagnosis.get("summary", [])[:3]:
+                        message += "\n" + str(cause)
+                    message += "\n[메일·Teams 근거 확보 → 마지막 실행 원인표 다운로드]에서 경로·건수·소요시간을 확인할 수 있습니다."
+            except (OSError, ValueError, TypeError, AttributeError):
+                pass
         result = {"ok": p.returncode == 0, "message": message, "code": p.returncode}
     except Exception as e:
         log(f"오류: {e}")
@@ -2822,6 +2832,7 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
  <div class="row" style="margin:12px 0;font-weight:700"><span>① 서버 / 앱 / 내보내기 선택</span> → <span>② 기간·페이지 끝까지 읽기</span> → <span>③ 원문 보관·중복 제거</span> → <span>④ 근거가 있는 업무 분석</span></div>
  <div id="communicationevidence"></div>
  <div id="communicationactions">
+ <p class="note"><a href="/api/communication/diagnostics" download="LM25-collection-diagnostics.json">마지막 실행 원인표 다운로드</a> · 메일 제목·본문·수신인 없이 앱 기능·실행 경로·처리 건수·소요시간을 저장합니다. 원인표 안의 실행 기간을 확인하세요.</p>
   <div class="row"><button id="communicationcollect">메일·Teams만 수집 (웹 포함)</button>
    <label><input id="communicationbody" type="checkbox">Outlook 웹 본문 포함 · 읽음 표시가 바뀔 수 있음</label></div>
   <p class="note">상단 실행 기간을 사용합니다. 연결된 Graph, Outlook 앱의 모든 연결 저장소, 화면 보충 경로를 사용합니다. 중단된 Graph 페이지는 같은 기간으로 다시 실행하면 이어받습니다. 앱·화면만으로는 서버 전체 확보를 보장할 수 없습니다. AI를 호출하지 않습니다.</p>
@@ -3006,7 +3017,11 @@ function renderCommunicationCoverage(items){
  host.innerHTML='<table><tr><th>경로</th><th>상태</th><th>실행 요청 기간</th><th>확인 범위·중단 이유</th></tr>'+items.map(s=>{
   const status=states[s.status]||"미확인",same=s.matches_period!==false;
   const jobs=s.search?.counts,progress=jobs?`날짜 작업 ${Number(s.search.total_days)||0}일 중 관측 목록 탐색 ${Number(jobs.completed_partial)||0}일 · 차단 ${Number(jobs.blocked)||0}일 · 미완료/대기 ${(Number(jobs.attempted)||0)+(Number(jobs.pending)||0)}일 (전체 확보 아님)`:"";
-  return `<tr><td>${esc(names[s.source]||s.source)}</td><td style="color:${s.status==="complete"&&same?"#16704a":"#a86400"}">${esc(status)}${same?"":" · 다른 기간 기록"}</td><td>${esc(s.requested_from||"")} ~ ${esc(s.requested_to||"")}</td><td>${esc(s.scope||"범위 미확인")}${progress?"<br>"+esc(progress):""}<br><span class="note">${esc((Array.isArray(s.reasons)?s.reasons:[]).join(" · "))}</span></td></tr>`;
+  const measured=[],md=s.diagnostics?.mail||{};
+  for(const [label,value] of [["경과 초",s.elapsed_sec],["화면 항목(중복 가능)",md.items??s.observed_messages],["날짜 미확인",md.undated??s.no_time],["별도 보류",s.undated_rows]]){
+   if(Number.isFinite(value)&&value>=0)measured.push(`${label}: ${value.toLocaleString()}`);
+  }
+  return `<tr><td>${esc(names[s.source]||s.source)}</td><td style="color:${s.status==="complete"&&same?"#16704a":"#a86400"}">${esc(status)}${same?"":" · 다른 기간 기록"}</td><td>${esc(s.requested_from||"")} ~ ${esc(s.requested_to||"")}</td><td>${esc(s.scope||"범위 미확인")}${progress?"<br>"+esc(progress):""}${measured.length?"<br>"+esc(measured.join(" · ")):""}<br><span class="note">${esc((Array.isArray(s.reasons)?s.reasons:[]).join(" · "))}</span></td></tr>`;
  }).join("")+"</table><p class='note'>‘명시 범위 완료’도 조직 전체 메일·Teams 전체를 뜻하지 않습니다. 웹 본문은 실행 버튼의 체크 상태를 따릅니다(추가 PC 수집은 기본 포함). 색인·Copilot 결과는 메타데이터 단서이며 첨부파일 내용은 수집하지 않습니다.</p>";
 }
 function renderCommunicationEvidence(report){
@@ -4361,6 +4376,15 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path in ("/", "/index.html"):
             self._send(200, PAGE.encode("utf-8"), "text/html; charset=utf-8")
+        elif self.path == "/api/communication/diagnostics":
+            try:
+                with open(os.path.join(REPORT, "communication_diagnostics.json"), encoding="utf-8") as stream:
+                    result = json.load(stream)
+                if result.get("schema") != 1 or result.get("includes_message_content") is not False:
+                    raise ValueError("invalid diagnostics")
+                self._send(200, result, headers={"Content-Disposition": 'attachment; filename="LM25-collection-diagnostics.json"'})
+            except (OSError, ValueError, TypeError, AttributeError):
+                self._send(404, {"error": "이번 버전에서 수집을 실행하면 메시지 내용 없는 원인표를 저장합니다."})
         elif self.path == "/api/status":
             with LOCK:
                 el = time.time() - JOB["started"] if JOB["started"] else 0

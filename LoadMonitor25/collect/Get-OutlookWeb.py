@@ -2,10 +2,9 @@
 """
 Get-OutlookWeb.py — Outlook 웹(outlook.office.com)을 전용 Edge 프로필로 열어 메일·일정을 읽는다 (폴백).
 
-Outlook 의 '버전'과 무관한 경로다: 클래식/새 Outlook/2016 마법사/COM 미등록 어느 PC 든, Copilot 에
-쓰는 전용 Edge 프로필(data\\copilot_profile)에 회사 계정으로 한 번 로그인해 두면 동작한다. Copilot 처럼
-LLM 을 거치지 않으므로 지어낸 행이 없고, 데이터는 PC 밖으로 나가지 않는다(브라우저가 내 사서함을 보여주는
-것을 읽을 뿐).
+클래식 Outlook COM과 별도로 전용 Edge 프로필의 로그인된 웹 화면을 읽는다.
+OWA 화면 구조·회사 정책에 따라 지원 여부와 관측 범위가 달라지며 전체 사서함 완료를 보장하지 않는다.
+LLM이나 비공개 메일 API를 사용하지 않는다.
 
   python collect\\Get-OutlookWeb.py --from 2026-06-01 --to 2026-06-30 [--only mail|cal] [--force]
 
@@ -14,13 +13,12 @@ LLM 을 거치지 않으므로 지어낸 행이 없고, 데이터는 PC 밖으�
       data\\outlook\\calendar.csv  (start,end,all_day,busy_status,subject,categories,location,response,meeting_status)
                                   ※ response/meeting_status 는 COM 수집기(Get-OutlookData.ps1)만 채운다 — 여기선 빈값
                                   ※ 여러 날에 걸친 일정(휴가·출장·워크숍)은 start~end 한 행(첫날~마지막날) — extract 가 일자로 전개한다
-종료 코드: 0 저장(또는 이미 자료 있어 생략) / 1 아무것도 못 읽음 / 2 로그인 필요(전용 Edge 창에서 1회) / 3 드라이버 불가
+종료 코드: 0 관측 저장 / 1 아무것도 못 읽음 / 2 로그인 필요(전용 Edge 창에서 1회) / 3 브라우저 시작 불가
 
 화면 구조는 Microsoft 가 바꿀 수 있어 '역할(role)·aria-label·title' 같은 접근성 속성만 의지하고, 무엇을 몇 개
 인식했는지 로그에 남긴다(회사 PC 의 원문을 밖으로 보낼 수 없으므로 진단은 로그 숫자로 한다).
-발신/수신 구분: 받은 편지함·보낸 편지함 폴더 URL 을 따로 열어 슬라이스마다 검색하고(폴더가 곧 box), 화면에
-폴더명 조각('보낸 편지함')이 있으면 그것을 우선한다 — 제목·미리보기의 영어 단어(presentation·consent·
-'Sent from my iPhone')로 발신을 판정하던 부분 문자열 규칙은 폐기(감사 outlook-5).
+발신/수신 구분: 받은/보낸 폴더에서 날짜 검색하되 검색 범위가 그대로인지 확인할 수 없으므로,
+항목의 독립 폴더명 조각으로 증명되지 않은 방향은 unknown이다. 제목·미리보기의 부분 단어로 판정하지 않는다.
 시험용: LM_OWA_FAKE=<json> 이면 브라우저 없이 그 파일의 항목을 화면 대신 쓴다.
         mail: {"YYYY-MM": [item…]} (받은 편지함 슬라이스) 또는 {"YYYY-MM": {"inbox": [...], "sent": [...]}}
 """
@@ -33,7 +31,7 @@ import re
 import sys
 import time
 from datetime import date, datetime, timedelta
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 if __name__ == "__main__":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, errors="replace", encoding=(
@@ -46,7 +44,7 @@ from collection_state import _atomic_text, merge_csv, write_status  # noqa: E402
 MAIL_HDR = "box,time,sender,subject,conversation,rcv,time_precision"
 CAL_HDR = "start,end,all_day,busy_status,subject,categories,location,response,meeting_status"
 MAIL_URL = "https://outlook.office.com/mail/"
-# 폴더별 슬라이스 — 폴더 URL 이 곧 box 다(검색 범위가 '현재 폴더'인 OWA). 화면에 폴더명 조각이 있으면 그쪽이 우선.
+# Folder navigation requests a scope; it cannot certify the server's search scope.
 MAIL_FOLDERS = (("inbox", MAIL_URL + "inbox"), ("sent", MAIL_URL + "sentitems"))
 CAL_URL = "https://outlook.office.com/calendar/view/week"
 HOSTS = ("outlook.office.com", "outlook.cloud.microsoft", "outlook.office365.com", "outlook.live.com")
@@ -58,7 +56,23 @@ def arg(flag, d=""):
 
 
 def log(msg):
-    print("[outlook-web] " + msg)
+    print("[outlook-web] " + msg, flush=True)
+
+
+def is_login_url(url):
+    host = (urlsplit(str(url or "")).hostname or "").lower()
+    return host in {"login.microsoftonline.com", "login.live.com", "login.microsoft.com"}
+
+
+def structured_stamp(text):
+    """Only an explicit HTML time value can carry an ISO timezone."""
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})?", str(text or "")):
+        return None
+    try:
+        value = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return value.astimezone().replace(tzinfo=None) if value.tzinfo else value
+    except ValueError:
+        return None
 
 
 # ── 날짜·시각 해석 (표기 형식 무관) ─────────────────────────────────────────────
@@ -292,10 +306,19 @@ def parse_mail_item(item, d0, d1, folder=""):
     #   회신 메일이면 인용문 머리글('2026년 6월 12일 (금) 오전 10:00, 홍길동 님이 작성:')이 그대로 들어 있다.
     #   그것을 시각으로 쓰면 9월 회신이 6월 메일이 되고, 6월 리뷰에 하지도 않은 최근 일이 등장한다(제보).
     #   미리보기에 인용문이 있는 것은 한국어 Outlook 에서 흔해 발생 빈도가 높다.
-    head = titles + [label]
+    # Explicit time/column metadata may be a visible leaf in modern OWA. Never
+    # treat arbitrary preview text as a message date or exact timestamp.
+    head = list(item.get("date_texts") or []) + titles + [label]
     when = None
     precision = "minute"
+    for value in item.get("date_texts") or []:
+        stamp = structured_stamp(value)
+        if stamp:
+            when = (stamp.date(), (stamp.hour, stamp.minute))
+            break
     for cand in head:
+        if when:
+            break
         d = find_date(cand, d0, d1)
         ts = find_times(cand)
         if d and ts:
@@ -307,10 +330,6 @@ def parse_mail_item(item, d0, d1, folder=""):
         for cand in head:
             d = d or find_date(cand, d0, d1)
             ts = ts or (find_times(cand) or None)
-        # 시각은 본문 조각에서 와도 된다(날짜를 머리에서 이미 짚었을 때만) — 날짜만 본문에서 오면 안 된다.
-        if d and not ts:
-            for cand in texts:
-                ts = ts or (find_times(cand) or None)
         if d and ts:
             when = (d, ts[0])
         elif d:
@@ -341,8 +360,8 @@ def parse_mail_item(item, d0, d1, folder=""):
         if re.fullmatch(r"[\d\s.,:/\-]+", x):
             continue
         cands.append(x.strip())
-    sender = cands[0] if cands else ""
-    subject = cands[1] if len(cands) > 1 else ""
+    sender = str(item.get("sender") or (cands[0] if cands else ""))
+    subject = str(item.get("subject") or (cands[1] if len(cands) > 1 else ""))
     if not subject and label:
         # aria-label 에서 상태어 제거 후 "보낸이, 제목, ..." 형태로 보완
         parts = [p.strip() for p in re.split(r"[,，]\s*", label) if p.strip()]
@@ -426,81 +445,103 @@ def parse_event(ev, d0, d1):
 
 
 # ── 브라우저(CDP) ─────────────────────────────────────────────────────────────
-JS_MAIL = r"""
-(() => {
-  const out = {href: location.href, n: 0, items: [], listboxes: 0, search: false};
-  const sb = document.querySelector('#topSearchInput, input[role="searchbox"], [role="search"] input, input[aria-label*="검색"], input[aria-label*="Search"], input[placeholder*="검색"], input[placeholder*="Search"]');
-  out.search = !!sb;
-  let opts = [...document.querySelectorAll('[role="listbox"] [role="option"]')];
-  out.listboxes = document.querySelectorAll('[role="listbox"]').length;
-  if (!opts.length) opts = [...document.querySelectorAll('[role="option"]')];
-  if (!opts.length) opts = [...document.querySelectorAll('[role="row"][aria-label], [data-convid], [data-item-id]')];
-  out.n = opts.length;
-  out.items = opts.slice(0, 600).map(o => ({
-    key: (o.getAttribute("data-convid") || o.getAttribute("data-item-id") || o.id || "") + "|" + (o.getAttribute("aria-label") || "").slice(0, 80),
-    item_id: o.getAttribute("data-item-id") || "",
-    conversation_id: o.getAttribute("data-convid") || "",
-    label: o.getAttribute("aria-label") || "",
-    titles: [...o.querySelectorAll("[title]")].map(x => x.getAttribute("title") || "").filter(Boolean).slice(0, 12),
-    texts: [...o.querySelectorAll("span,div,a")].filter(x => x.childElementCount === 0).map(x => (x.textContent || "").trim()).filter(Boolean).slice(0, 24)
-  }));
-  return JSON.stringify(out);
-})()
-"""
-JS_OPEN_MAIL = r"""
-(() => {
-  const key = %s;
-  const items = [...document.querySelectorAll('[role="option"], [role="row"][aria-label], [data-item-id]')];
-  const matches = items.filter(o => ((o.getAttribute("data-convid") || o.getAttribute("data-item-id") || o.id || "")
-      + "|" + (o.getAttribute("aria-label") || "").slice(0, 80)) === key);
-  if (matches.length !== 1 || !matches[0].getAttribute("data-item-id")) return "unverified-item";
-  matches[0].click();
-  return "opened";
-})()
-"""
-JS_MAIL_DETAIL = r"""
-(() => {
-  const expected = %s;
+JS_DOM = r"""(() => {
+  const visible = e => { if (!e || e.closest('[aria-hidden="true"]')) return false;
+    const r=e.getBoundingClientRect(), s=getComputedStyle(e);
+    return r.width>0 && r.height>0 && s.visibility!=="hidden" && s.display!=="none"; };
   const normal = s => (s || "").replace(/\s+/g," ").trim().toLowerCase();
-  const selected = [...document.querySelectorAll('[aria-selected="true"][data-item-id]')]
-      .filter(e => e.getAttribute("data-item-id") === expected.item_id);
-  if (selected.length !== 1) return JSON.stringify({reason:"selected_message_not_verified"});
-  const selectedKey = (selected[0].getAttribute("data-convid") || selected[0].getAttribute("data-item-id") || selected[0].id || "")
-      + "|" + (selected[0].getAttribute("aria-label") || "").slice(0,80);
-  if (selectedKey !== expected.key) return JSON.stringify({reason:"selected_key_changed"});
-  const bodies = [...document.querySelectorAll('[data-testid="message-body"], [data-testid="message-body-content"], [data-tid="message-body"]')]
-      .filter(e => e.getBoundingClientRect().width > 0 && e.getBoundingClientRect().height > 0);
-  const matched = bodies.filter(e => {
-    const message = e.closest('[data-item-id]');
-    return message && message.getAttribute("data-item-id") === expected.item_id;
-  });
-  if (matched.length !== 1) return JSON.stringify({reason:"unique_message_body_not_verified"});
-  const message = matched[0].closest('[data-item-id]');
-  const subject = message.querySelector('[data-testid="message-subject"], [data-tid="message-subject"], [role="heading"]');
-  if (!subject || !expected.subject || normal(subject.textContent) !== normal(expected.subject))
-      return JSON.stringify({reason:"detail_subject_not_verified"});
-  const text = matched[0].textContent || "";
-  return JSON.stringify({container:"message-body", item_id:expected.item_id, selected_key:selectedKey,
-      subject:subject.textContent, body:text.slice(0, expected.limit + 1),
-      truncated:text.length > expected.limit, url:location.href});
-})()
+  const searchSelectors = '#topSearchInput,input[role="searchbox"],[role="search"] input,'+
+    'input[aria-label*="검색"],input[aria-label*="Search" i],input[placeholder*="검색"],'+
+    'input[placeholder*="Search" i],[role="combobox"][aria-label*="검색"],[role="combobox"][aria-label*="Search" i]';
+  const searchBox = () => [...document.querySelectorAll(searchSelectors)].find(visible);
+  const idSelector = '[data-item-id],[data-itemid],[data-message-id]';
+  const itemId = e => e && (e.getAttribute('data-item-id') || e.getAttribute('data-itemid') || e.getAttribute('data-message-id')) || '';
+  const rows = () => {
+    let found=[...document.querySelectorAll('[role="listbox"] [role="option"],[role="grid"] [role="row"],'+
+      '[role="listitem"][data-item-id],[role="listitem"][data-itemid],[role="listitem"][data-message-id]')];
+    if(!found.length) found=[...document.querySelectorAll('[role="option"],[role="row"][aria-label]')];
+    found=found.filter(e=>visible(e) && !e.closest('[role="search"],[role="combobox"],[role="menu"]') &&
+      !e.querySelector('[role="columnheader"]'));
+    found=found.filter(e=>itemId(e) || e.getAttribute('data-convid') || e.querySelector('time,[data-testid="sender"],[data-tid="sender"]') ||
+      /\d{4}[년.\-/]|\d{1,2}:\d{2}|\d{1,2}[월/]\s*\d{1,2}/.test((e.getAttribute('aria-label')||'')+' '+
+        [...e.querySelectorAll('[title]')].map(x=>x.getAttribute('title')||'').join(' ')));
+    // Nested wrappers do not represent additional messages.
+    return found.filter(e=>!found.some(other=>other!==e && e.contains(other)));
+  };
+  const firstText = (e,selector) => {const child=[...e.querySelectorAll(selector)].find(visible);return child ? (child.textContent||'').trim() : '';};
+  const info = e => {
+    const identity=itemId(e), label=e.getAttribute('aria-label')||'';
+    const texts=[...e.querySelectorAll('span,div,a,time')].filter(x=>x.childElementCount===0 && visible(x))
+      .map(x=>(x.textContent||'').trim()).filter(Boolean).slice(0,32);
+    const dates=[...e.querySelectorAll('time,[data-testid*="date" i],[data-testid*="time" i],[data-tid*="date" i],'+
+      '[data-tid*="time" i],[data-automationid*="date" i]')].filter(visible)
+      .map(x=>x.getAttribute('datetime')||x.getAttribute('title')||x.getAttribute('aria-label')||x.textContent||'').filter(Boolean);
+    const subject=firstText(e,'[data-testid="message-subject"],[data-tid="message-subject"],[data-testid="subject"],[data-tid="subject"]');
+    const sender=firstText(e,'[data-testid="sender"],[data-tid="sender"],[data-testid="message-sender"],[data-tid="message-sender"]');
+    // An ID is stable when read/unread labels change. Without it, retain all
+    // visible header evidence, not a truncated preview or recycled DOM index.
+    const key=identity ? 'item:'+identity : 'visible:'+JSON.stringify([e.getAttribute('data-convid')||'',label,texts,dates]);
+    return {key,item_id:identity,conversation_id:e.getAttribute('data-convid')||'',label,texts,date_texts:dates,subject,sender,
+      titles:[...e.querySelectorAll('[title]')].filter(visible).map(x=>x.getAttribute('title')).filter(Boolean).slice(0,16)};
+  };
+  const listScroller = list => {
+    const candidates=new Map();
+    for(const row of list){let e=row.parentElement;for(let i=0;e && i<12;i++,e=e.parentElement){
+      if(e.scrollHeight>e.clientHeight+20 && /auto|scroll/.test(getComputedStyle(e).overflowY))
+        candidates.set(e,(candidates.get(e)||0)+1);
+    }}
+    return [...candidates].sort((a,b)=>b[1]-a[1])[0]?.[0] || null;
+  };
 """
-JS_SCROLL = r"""
-(() => {
-  const lb = document.querySelector('[role="listbox"]') || document.querySelector('[role="option"]');
-  if (!lb) return "no-list";
-  let el = lb;
-  for (let i = 0; i < 12 && el; i++) {
-    if (el.scrollHeight > el.clientHeight + 20 && getComputedStyle(el).overflowY !== "visible") break;
-    el = el.parentElement;
+JS_MAIL = JS_DOM + r"""
+  const list=rows(), sb=searchBox();
+  const signals=[...document.querySelectorAll('[role="status"],[role="heading"],[data-testid*="empty" i]')].filter(visible)
+    .map(e=>normal(e.textContent));
+  const empty=signals.some(s=>/^(no (results|messages|items)( found)?[.!]?|we didn't find anything[.!]?|검색 결과가 없습니다[.!]?|결과 없음|항목이 없습니다[.!]?)$/.test(s));
+  const loading=[...document.querySelectorAll('[role="progressbar"],[aria-busy="true"]')].some(visible);
+  const searching=/\/search(?:\/|\?|$)/i.test(location.href) || signals.some(s=>/^(search results|검색 결과)(\s|$)/.test(s));
+  return JSON.stringify({href:location.href,n:list.length,items:list.slice(0,600).map(info),search:!!sb,
+    query:sb ? (sb.value||sb.textContent||'') : '',empty,loading,searching,
+    listboxes:document.querySelectorAll('[role="listbox"],[role="grid"]').length,
+    state:loading ? 'loading' : list.length ? 'results' : empty ? 'empty' : 'unsupported'});
+})()"""
+JS_OPEN_MAIL = JS_DOM + r"""
+  const key=%s, matches=rows().filter(e=>info(e).key===key);
+  if(matches.length!==1) return 'unverified-item';
+  window.__lm_mail_selected=matches[0];window.__lm_mail_key=key;
+  matches[0].click();return 'opened';
+})()"""
+JS_MAIL_DETAIL = JS_DOM + r"""
+  const expected=%s;
+  const selected=rows().filter(e=>info(e).key===expected.key && (e.getAttribute('aria-selected')==='true' || e.getAttribute('data-is-selected')==='true'));
+  if(selected.length!==1) return JSON.stringify({reason:'selected_message_not_verified'});
+  const bodySelector='[data-testid="message-body"],[data-testid="message-body-content"],[data-tid="message-body"],'+
+    '[role="document"][aria-label*="Message body" i],[role="document"][aria-label*="메일 본문"],'+
+    '[role="document"][aria-label*="메시지 본문"],div[aria-label="Message body" i],div[aria-label="메시지 본문"]';
+  let bodies=[...document.querySelectorAll(bodySelector)].filter(visible);
+  bodies=bodies.filter(e=>!bodies.some(other=>other!==e && e.contains(other)));
+  const candidates=[];
+  for(const body of bodies){
+    const identityContainer=body.closest(idSelector);
+    const message=identityContainer;
+    if(!message || message.contains(selected[0])) continue;
+    const subject=firstText(message,'[data-testid="message-subject"],[data-tid="message-subject"],[role="heading"]');
+    if(!expected.subject || normal(subject)!==normal(expected.subject)) continue;
+    const identity=itemId(identityContainer);
+    if(!identity || !expected.item_id || identity!==expected.item_id) continue;
+    const text=body.innerText || body.textContent || '';
+    candidates.push({container:'message-body',item_id:identity,selected_key:expected.key,subject,proof:'message-id',
+      body:text.slice(0,expected.limit+1),truncated:text.length>expected.limit,url:location.href});
   }
-  if (!el) return "no-scroller";
-  const before = el.scrollTop;
-  el.scrollTop = el.scrollTop + Math.max(200, el.clientHeight - 40);
-  el.dispatchEvent(new Event("scroll", {bubbles: true}));
-  return (el.scrollTop > before) ? "scrolled" : "end";
-})()
-"""
+  return JSON.stringify(candidates.length===1 ? candidates[0] : {reason:'unique_message_body_not_verified'});
+})()"""
+JS_SCROLL = JS_DOM + r"""
+  const list=rows(); if(!list.length) return 'no-list';
+  const el=listScroller(list); if(!el) return 'end';
+  const before=el.scrollTop; el.scrollTop+=Math.max(100,el.clientHeight-40);
+  el.dispatchEvent(new Event('scroll',{bubbles:true}));
+  return el.scrollTop>before ? 'scrolled' : 'end';
+})()"""
 JS_CAL = r"""
 (() => {
   const out = {href: location.href, n: 0, events: []};
@@ -520,16 +561,11 @@ JS_CAL = r"""
   return JSON.stringify(out);
 })()
 """
-JS_FOCUS_SEARCH = r"""
-(() => {
-  const sels = ['#topSearchInput', 'input[role="searchbox"]', '[role="search"] input', 'input[aria-label*="검색"]', 'input[aria-label*="Search"]', 'input[placeholder*="검색"]', 'input[placeholder*="Search"]', '[role="combobox"][aria-label*="검색"]', '[role="combobox"][aria-label*="Search"]'];
-  const vis = el => { const r = el.getBoundingClientRect(); return r.width > 40 && r.height > 8; };
-  for (const s of sels) { for (const c of document.querySelectorAll(s)) { if (vis(c)) { c.focus(); c.click(); window.__lm_sb = c; return "ok:" + s; } } }
-  const btn = document.querySelector('button[aria-label*="검색"], button[aria-label*="Search"]');
-  if (btn) { btn.click(); return "button"; }
-  return "none";
-})()
-"""
+JS_FOCUS_SEARCH = JS_DOM + r"""
+  const c=searchBox();if(c){c.focus();c.click();window.__lm_sb=c;return 'ok';}
+  const btn=[...document.querySelectorAll('button[aria-label*="검색"],button[aria-label*="Search" i]')].find(visible);
+  if(btn){btn.click();return 'button';}return 'none';
+})()"""
 JS_CLEAR_SEARCH = r"""
 (() => { const el = window.__lm_sb; if (!el) return "none";
   el.focus(); try { el.select && el.select(); } catch (e) {}
@@ -543,73 +579,87 @@ class Browser:
         spec = importlib.util.spec_from_file_location("_ca", os.path.join(ROOT, "tools", "copilot_auto.py"))
         self.ca = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.ca)
-        self.cfg = self.ca.load_cfg()
+        self.cfg = dict(self.ca.load_cfg())
+        self.cfg["url"] = MAIL_URL
         self.port = self.cfg["port"]
         self.cdp = None
+        self.deadline = None
+        self.last_diagnostic = ""
+
+    def remaining(self, limit=12):
+        remaining = limit if self.deadline is None else min(limit, self.deadline - time.monotonic())
+        if remaining <= 0:
+            raise TimeoutError("outlook_web_time_budget")
+        return remaining
+
+    def pause(self, seconds):
+        time.sleep(min(seconds, self.remaining(seconds)))
 
     def start(self):
+        if self.deadline is not None:
+            self.cfg["_collection_deadline"] = self.deadline
         if not self.ca.ensure_edge(self.cfg):
             return False
-        tabs = [t for t in self.ca.http_json(self.port, "/json") if t.get("type") == "page"]
+        tabs = [t for t in self.ca.http_json(self.port, "/json", timeout=self.remaining(3)) if t.get("type") == "page"]
         ws = None
         for t in tabs:
-            if any(h in (t.get("url") or "") for h in HOSTS):
+            if urlsplit(t.get("url") or "").hostname in HOSTS:
                 ws = t["webSocketDebuggerUrl"]
                 break
         if not ws:
             for method in ("PUT", "GET"):
                 try:
-                    t = self.ca.http_json(self.port, "/json/new?" + quote(MAIL_URL, safe=""), method=method)
+                    t = self.ca.http_json(self.port, "/json/new?" + quote(MAIL_URL, safe=""), method=method, timeout=self.remaining(3))
                     ws = t["webSocketDebuggerUrl"]
                     break
                 except Exception:
                     continue
         if not ws:
             return False
-        self.cdp = self.ca.CDP(ws)
+        self.cdp = self.ca.CDP(ws, timeout=self.remaining(5))
         try:
-            self.cdp.call("Page.enable")
+            self.cdp.call("Page.enable", timeout=self.remaining(3))
         except Exception:
             pass
         return True
 
-    def goto(self, url, wait=6.0):
+    def goto(self, url, wait=0.0):
         try:
-            self.cdp.call("Page.navigate", {"url": url})
+            self.cdp.call("Page.navigate", {"url": url}, timeout=self.remaining())
         except Exception:
-            self.cdp.reconnect()
-            self.cdp.call("Page.navigate", {"url": url})
+            self.remaining()
+            self.cdp.reconnect(timeout=self.remaining(3))
+            self.cdp.call("Page.navigate", {"url": url}, timeout=self.remaining())
         return self.wait_ready(wait)
 
     def href(self):
         try:
-            return str(self.cdp.eval("location.href"))
+            return str(self.cdp.eval("location.href", timeout=self.remaining(3)))
         except Exception:
             return ""
 
-    def wait_ready(self, settle=6.0, limit=75):
-        """로드 완료 + 목록/로그인 판별 → 'login' | 'ok' | 'timeout'"""
-        t0 = time.time()
-        while time.time() - t0 < limit:
-            time.sleep(1.0)
+    def wait_ready(self, settle=0.0, limit=18):
+        """Wait for observable mail/calendar UI, not an empty generic main shell."""
+        until = time.monotonic() + self.remaining(limit)
+        while time.monotonic() < until:
             h = self.href()
-            if "login.microsoftonline" in h or "login.live.com" in h or "login.microsoft" in h:
+            if is_login_url(h):
+                self.last_diagnostic = "login_required"
                 return "login"
             try:
-                rs = self.cdp.eval("document.readyState")
-                n = int(self.cdp.eval('document.querySelectorAll(\'[role="listbox"],[role="grid"],[role="main"]\').length') or 0)
+                page = self.eval_json(JS_MAIL, timeout=min(3, until - time.monotonic()))
+                calendar = "/calendar" in h and int(self.cdp.eval('document.querySelectorAll(\'[role="grid"]\').length', timeout=self.remaining(3)) or 0)
             except Exception:
-                rs, n = "", 0
-            if rs == "complete" and n > 0:
-                time.sleep(settle)
-                h = self.href()
-                if "login.microsoftonline" in h or "login.live.com" in h:
-                    return "login"
+                page, calendar = {}, False
+            if urlsplit(h).hostname in HOSTS and not page.get("loading") and (calendar or page.get("items") or page.get("empty") or (page.get("search") and page.get("listboxes"))):
+                self.last_diagnostic = "ready"
                 return "ok"
+            self.pause(0.2)
+        self.last_diagnostic = "mail_surface_not_ready"
         return "timeout"
 
-    def eval_json(self, js, timeout=40):
-        r = self.cdp.eval(js, timeout=timeout)
+    def eval_json(self, js, timeout=8):
+        r = self.cdp.eval(js, timeout=self.remaining(timeout))
         if isinstance(r, str):
             try:
                 return json.loads(r)
@@ -618,27 +668,44 @@ class Browser:
         return r or {}
 
     def search(self, query):
-        how = str(self.cdp.eval(JS_FOCUS_SEARCH))
+        self.last_diagnostic = "search_input_missing"
+        before = self.eval_json(JS_MAIL)
+        signature = tuple(item.get("key") for item in before.get("items", []))
+        how = str(self.cdp.eval(JS_FOCUS_SEARCH, timeout=self.remaining(3)))
         if how == "none":
             return False
-        time.sleep(0.8)
         if how == "button":
-            str(self.cdp.eval(JS_FOCUS_SEARCH))
-            time.sleep(0.6)
-        self.cdp.eval(JS_CLEAR_SEARCH)
+            self.pause(0.15)
+            if str(self.cdp.eval(JS_FOCUS_SEARCH, timeout=self.remaining(3))) != "ok":
+                return False
+        self.cdp.eval(JS_CLEAR_SEARCH, timeout=self.remaining(3))
         try:
-            self.cdp.call("Input.insertText", {"text": query})
+            self.cdp.call("Input.insertText", {"text": query}, timeout=self.remaining(3))
+            self.cdp.call("Input.dispatchKeyEvent", {"type": "keyDown", "key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13}, timeout=self.remaining(3))
+            self.cdp.call("Input.dispatchKeyEvent", {"type": "keyUp", "key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13}, timeout=self.remaining(3))
         except Exception:
             return False
-        time.sleep(0.4)
-        self.ca.press_enter(self.cdp)
-        time.sleep(5.0)
-        # Reading back the query proves entry, not server execution or folder scope.
-        entered = self.cdp.eval(r'''(() => {
-          const s = document.querySelector('#topSearchInput, input[role="searchbox"], [role="search"] input');
-          return s ? (s.value || s.textContent || "") : "";
-        })()''')
-        return "query_entered_unverified" if str(entered).strip() == query else False
+        until, stable, saw_loading = time.monotonic() + self.remaining(12), 0, False
+        while time.monotonic() < until:
+            page = self.eval_json(JS_MAIL, timeout=min(3, until - time.monotonic()))
+            if is_login_url(page.get("href", "")):
+                self.last_diagnostic = "login_required"
+                return False
+            entered = str(page.get("query") or "").strip() == query
+            changed = tuple(item.get("key") for item in page.get("items", [])) != signature
+            saw_loading = saw_loading or bool(page.get("loading"))
+            transitioned = changed or saw_loading or (page.get("searching") and not before.get("searching")) or (page.get("href") and page.get("href") != before.get("href"))
+            result = page.get("state") in {"results", "empty"}
+            if entered and result and not page.get("loading") and transitioned:
+                stable += 1
+                if stable >= 2:
+                    self.last_diagnostic = "visible_search_results; folder_scope_unverified"
+                    return "query_entered_unverified"
+            else:
+                stable = 0
+            self.pause(0.2)
+        self.last_diagnostic = "search_result_not_ready_or_stale"
+        return False
 
     def close(self):
         try:
@@ -646,6 +713,14 @@ class Browser:
                 self.cdp.close()
         except Exception:
             pass
+
+    def wait_list_change(self, keys, limit=2):
+        until = time.monotonic() + self.remaining(limit)
+        while time.monotonic() < until:
+            self.pause(0.2)
+            page = self.eval_json(JS_MAIL, timeout=max(0.05, min(2, until-time.monotonic())))
+            if not page.get("loading") and tuple(item.get("key") for item in page.get("items", [])) != keys:
+                return
 
 
 # ── 수집 ─────────────────────────────────────────────────────────────────────
@@ -707,15 +782,18 @@ def read_mail_detail(br, item, row, limit):
     if not item.get("item_id"):
         return {}, "message_identity_missing"
     try:
-        if str(br.cdp.eval(JS_OPEN_MAIL % json.dumps(item.get("key", "")))) != "opened":
+        timeout = br.remaining(3) if hasattr(br, "remaining") else 3
+        if str(br.cdp.eval(JS_OPEN_MAIL % json.dumps(item.get("key", "")), timeout=timeout)) != "opened":
             return {}, "message_could_not_be_selected"
-        expected = {"item_id": item["item_id"], "key": item.get("key", ""),
+        expected = {"item_id": item.get("item_id", ""), "key": item.get("key", ""),
                     "subject": row[3], "limit": limit}
-        for _ in range(4):
-            detail = br.eval_json(JS_MAIL_DETAIL % json.dumps(expected, ensure_ascii=False))
+        until = time.monotonic() + (br.remaining(3) if hasattr(br, "remaining") else 3)
+        detail = {}
+        while time.monotonic() < until:
+            detail = br.eval_json(JS_MAIL_DETAIL % json.dumps(expected, ensure_ascii=False), timeout=max(0.05, min(2, until-time.monotonic())))
             if detail.get("body"):
                 return detail, ""
-            time.sleep(0.25)
+            time.sleep(min(0.15, max(0, until-time.monotonic())))
         return {}, detail.get("reason", "message_detail_not_verified")
     except Exception as error:
         return {}, "detail_read_failed:" + type(error).__name__
@@ -728,8 +806,9 @@ def collect_mail(br, d0, d1, fake=None, *, body=False, context_chars=4000,
     diag = {"search": 0, "items": 0, "parsed": 0, "sent": 0, "cc": 0,
             "date_only": 0, "pages": 0, "sent_pass_new": 0, "body_rows": 0,
             "detail_failed": 0, "completed_units": 0, "search_failed": 0,
-            "search_unverified": 0, "reasons": []}
-    state = {"schema": 1, "requested_from": str(d0), "requested_to": str(d1),
+            "search_unverified": 0, "search_attempts": 0, "undated": 0, "period_filtered": 0,
+            "empty_results": 0, "unsupported_pages": 0, "navigation_failed": 0, "reasons": []}
+    state = {"schema": 2, "requested_from": str(d0), "requested_to": str(d1),
              "body": body, "context_chars": context_chars, "units": {}}
     if state_path and fake is None:
         try:
@@ -767,9 +846,14 @@ def collect_mail(br, d0, d1, fake=None, *, body=False, context_chars=4000,
                 diag["sent_pass_new"] += 1
             # A folder URL alone does not prove OWA search remained in that folder.
             row = parse_mail_item(item, start, end, folder if fake is not None else "unknown")
-            if not row or not (d0.isoformat() <= row[1][:10] <= d1.isoformat()):
+            if not row:
+                diag["undated"] += 1
+                continue
+            if not (d0.isoformat() <= row[1][:10] <= d1.isoformat()):
+                diag["period_filtered"] += 1
                 continue
             excerpt = truncated = source_url = ""
+            reason = ""
             if body:
                 if fake is not None:
                     detail, reason = item.get("detail") or {}, ""
@@ -784,10 +868,12 @@ def collect_mail(br, d0, d1, fake=None, *, body=False, context_chars=4000,
                 elif excerpt:
                     diag["body_rows"] += 1
             # A conversation identifier is not a message identifier.
-            row += [excerpt, truncated, item.get("item_id", ""), "outlook_web", source_url,
+            source_id = item.get("item_id") or "derived:outlook-visible:" + key_hash
+            row += [excerpt, truncated, source_id, "outlook_web", source_url,
                     item.get("conversation_id", ""), folder if fake is not None else "requested:" + folder, ""]
             rows.append(row)
-            active_seen.add(key_hash)
+            if not reason:
+                active_seen.add(key_hash)
             diag["parsed"] += 1
             if row[0] == "sent":
                 diag["sent"] += 1
@@ -811,7 +897,9 @@ def collect_mail(br, d0, d1, fake=None, *, body=False, context_chars=4000,
         jobs = expanded
         pending = [job for job in jobs if not state["units"].get(job_key(*job[:3]), {}).get("traversed")]
         # Resume untouched/interrupted ranges first; once explored, refresh newest ranges.
-        jobs = pending or list(reversed(jobs))
+        jobs = sorted(pending, key=lambda job: state["units"].get(job_key(*job[:3]), {}).get("last_attempt", 0)) or list(reversed(jobs))
+        diag["total_units"] = len(jobs)
+        failures = 0
         for start, end, folder, url in jobs:
                 active_unit = state["units"].setdefault(job_key(start, end, folder), {})
                 active_seen = set(active_unit.get("seen_hashes") or []) if not active_unit.get("traversed") else set()
@@ -823,28 +911,59 @@ def collect_mail(br, d0, d1, fake=None, *, body=False, context_chars=4000,
                     consume({"items": batch}, folder, start, end)
                     diag["completed_units"] += 1
                     continue
+                active_unit["attempted_at"] = time.time()
+                active_unit["traversed"] = False
+                save_progress()
+                log(f"메일 검색 {start}~{end} ({folder}); 저장 {len(rows)}건")
                 navigation = br.goto(url)
                 if navigation == "login":
                     return rows, "login", diag
                 if navigation != "ok":
+                    active_unit["last_attempt"] = time.time()
+                    save_progress()
+                    diag["navigation_failed"] += 1
                     diag["reasons"].append("folder_navigation_not_verified")
+                    failures += 1
+                    if failures >= 2:
+                        diag["reasons"].append("mail_surface_unavailable; remaining_ranges_pending")
+                        break
                     continue
+                diag["search_attempts"] += 1
                 searched = br.search(mail_search_query(start, end, folder))
                 if searched:
                     diag["search"] += 1
                     diag["search_unverified"] += 1
                     diag["reasons"].append("query_entered; server_search_and_folder_scope_not_verified")
                 else:
+                    active_unit["last_attempt"] = time.time()
+                    save_progress()
                     diag["search_failed"] += 1
                     diag["reasons"].append("search_input_failed; stale_visible_list_skipped")
+                    detail = getattr(br, "last_diagnostic", "")
+                    if detail == "login_required":
+                        return rows, "login", diag
+                    if detail:
+                        diag["reasons"].append(detail)
+                    failures += 1
+                    if failures >= 3:
+                        diag["reasons"].append("search_unavailable; remaining_ranges_pending")
+                        break
                     continue
                 stall, seen_scroll = 0, set()
-                saturated = False
+                saturated, unsupported = False, False
                 for _ in range(400):
                     if deadline and time.monotonic() >= deadline:
                         diag["reasons"].append("time_budget_reached")
                         return rows, "partial", diag
                     page = br.eval_json(JS_MAIL)
+                    if page.get("state") == "unsupported":
+                        diag["unsupported_pages"] += 1
+                        diag["reasons"].append("mail_list_selector_unsupported; range_pending")
+                        unsupported = True
+                        break
+                    if page.get("empty"):
+                        diag["empty_results"] += 1
+                        break
                     consume(page, folder, start, end)
                     new = {item.get("key") for item in page.get("items", [])} - seen_scroll
                     seen_scroll |= new
@@ -855,13 +974,27 @@ def collect_mail(br, d0, d1, fake=None, *, body=False, context_chars=4000,
                     stall = 0 if new else stall + 1
                     if stall >= 3:
                         break
-                    scrolled = str(br.cdp.eval(JS_SCROLL))
+                    if hasattr(br, "remaining"):
+                        scrolled = str(br.cdp.eval(JS_SCROLL, timeout=br.remaining(3)))
+                    else:
+                        scrolled = str(br.cdp.eval(JS_SCROLL))
                     if scrolled in ("no-list", "end") and stall >= 1:
                         break
-                    time.sleep(1.0)
+                    if hasattr(br, "wait_list_change"):
+                        br.wait_list_change(tuple(item.get("key") for item in page.get("items", [])), limit=1.5 if scrolled == "scrolled" else 0.3)
+                    else:
+                        time.sleep(1.0)
                 else:
                     saturated = True
                     diag["reasons"].append("mail_scroll_limit_reached")
+                if unsupported:
+                    active_unit["last_attempt"] = time.time()
+                    failures += 1
+                    save_progress()
+                    if failures >= 3:
+                        break
+                    continue
+                failures = 0
                 if saturated and start < end:
                     active_unit["split"] = True
                     jobs.extend((day, day, folder, url) for day, _ in mail_search_windows(start, end, 1))
@@ -875,7 +1008,7 @@ def collect_mail(br, d0, d1, fake=None, *, body=False, context_chars=4000,
         if checkpoint and rows:
             checkpoint(rows)
         save_progress()
-        diag["reasons"].append("mail_page_failed:" + type(error).__name__)
+        diag["reasons"].append("time_budget_reached" if isinstance(error, TimeoutError) else "mail_page_failed:" + type(error).__name__)
         return rows, "partial" if rows else "failed", diag
     rows.sort(key=lambda row: row[1])
     return rows, ("ok" if rows else "empty"), diag
@@ -964,10 +1097,11 @@ def _save(kind, rows, store_subject):
 
 
 def main():
+    started = time.monotonic()
     d0s = arg("--from") or (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
     d1s = arg("--to") or datetime.now().strftime("%Y-%m-%d")
     d0, d1 = date.fromisoformat(d0s), date.fromisoformat(d1s)
-    only, force = arg("--only"), "--force" in sys.argv
+    only = arg("--only")
     try:
         with open(os.path.join(ROOT, "config", "config.json"), encoding="utf-8-sig") as stream:
             cfg = json.load(stream)
@@ -975,6 +1109,11 @@ def main():
         cfg = {}
     store_subject = bool(cfg.get("storeMailSubject", True))
     collection = cfg.get("collection") or {}
+    try:
+        budget = max(1, min(1800, float(arg("--time-budget") or arg("--budget") or collection.get("mailWebBudgetSec", 180))))
+    except (TypeError, ValueError):
+        budget = 180
+    deadline = started + budget
     body = (bool(collection.get("mailWebBody", False)) or "--include-body" in sys.argv) and store_subject
     body = body and "--exclude-body" not in sys.argv
     try:
@@ -1001,12 +1140,15 @@ def main():
                      mail_rows=counts.get("mail", 0), calendar_rows=counts.get("cal", 0),
                      body_requested=body, body_rows=diagnostics.get("mail", {}).get("body_rows", 0),
                      completed_units=sum(x.get("completed_units", x.get("weeks", 0)) for x in diagnostics.values()),
+                     total_units=sum(x.get("total_units", x.get("weeks", 0)) for x in diagnostics.values()),
+                     diagnostics={kind: {key: value for key, value in diag.items() if isinstance(value, (int, float))}
+                                  for kind, diag in diagnostics.items()},
+                     elapsed_sec=round(time.monotonic()-started, 2), time_budget_sec=budget,
                      context_chars=context_chars)
         return code
     finish(1, "collection started; completion not verified", in_progress=True)
-    todo = [kind for kind in todo if force or not _has_data(os.path.join(OUT_DIR, "mail.csv" if kind == "mail" else "calendar.csv"))]
-    if not todo:
-        return finish(0, "existing files skipped; requested range not verified")
+    # A nonempty local CSV says nothing about the selected range or earlier
+    # partial collection. Existing rows are retained by atomic union.
     fake = None
     fake_path = os.environ.get("LM_OWA_FAKE", "")
     if fake_path:
@@ -1018,17 +1160,19 @@ def main():
         if fake.get("login"):
             return finish(2, "login_required", blocked=True)
     br = None
-    deadline = time.monotonic() + 900
+    log(f"웹 화면 수집 시작: {d0s}~{d1s}, 최대 {budget:g}초; 전체 사서함 완료는 확인하지 않습니다")
     if fake is None:
         if os.environ.get("LM_NO_BROWSER"):
             return finish(3, "browser_disabled", blocked=True)
         try:
             br = Browser()
+            br.deadline = deadline
             if not br.start():
                 br.close()
-                return finish(3, "Edge startup failed", blocked=True)
+                return finish(3, "time_budget_reached" if time.monotonic() >= deadline else "Edge startup failed", blocked=True)
             initial = br.goto(MAIL_URL)
             if initial == "login":
+                log("전용 Edge 창에서 회사 계정 로그인이 필요합니다. 로그인 후 수집을 다시 실행하세요.")
                 br.close()
                 return finish(2, "login_required", blocked=True)
             if initial == "timeout":
@@ -1037,12 +1181,16 @@ def main():
         except Exception as error:
             if br:
                 br.close()
-            return finish(3, "browser_failed:" + type(error).__name__, blocked=True)
+            return finish(3, "time_budget_reached" if isinstance(error, TimeoutError) else "browser_failed:" + type(error).__name__, blocked=True)
     try:
         for kind in todo:
             attempted.add(kind)
+            saved_count = 0
             def checkpoint(current):
-                _save(kind, current, store_subject)
+                nonlocal saved_count
+                if len(current) > saved_count:
+                    _save(kind, current[saved_count:], store_subject)
+                    saved_count = len(current)
                 counts[kind] = len(current)
                 finish(0, "partial observations checkpointed")
             if kind == "mail":
@@ -1056,6 +1204,7 @@ def main():
             if rows:
                 checkpoint(rows)
             if state == "login":
+                log("로그인이 필요해 수집을 중단했습니다. 이미 저장한 관측은 유지합니다.")
                 return finish(2, "login_required_after_partial_collection", blocked=True)
             log(f"{kind}: {len(rows)} observations retained; declared scope remains partial")
         if sum(counts.values()):
@@ -1067,7 +1216,7 @@ def main():
                 json.dump(source, stream, ensure_ascii=False)
         return finish(0 if sum(counts.values()) else 1)
     except Exception as error:
-        return finish(1, "collection_or_save_failed:" + type(error).__name__)
+        return finish(1, "time_budget_reached" if isinstance(error, TimeoutError) else "collection_or_save_failed:" + type(error).__name__)
     finally:
         if br:
             br.close()

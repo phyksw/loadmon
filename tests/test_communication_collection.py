@@ -59,7 +59,8 @@ class RoutingTests(unittest.TestCase):
                      mail_status="complete", calendar_status="complete")
         self.assertEqual(self.run_with().mail(time.time() - 1)["status"], "partial")
         self.assertEqual(len(self.calls), 3)
-        self.assertTrue(all(command[-1] == "mail" for _, command, _ in self.calls))
+        self.assertTrue(all(command[command.index("-Only" if "-Only" in command else "--only") + 1] == "mail"
+                            for _, command, _ in self.calls))
 
     def test_interrupted_com_checkpoint_cannot_stop_supplements(self):
         write_status(self.root, "outlook_com", *self.period, "complete", scope="default store",

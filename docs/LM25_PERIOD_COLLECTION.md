@@ -1,4 +1,31 @@
-# LM25 v25.8 기간 원문 수집
+# LM25 v25.9 기간 원문 수집
+
+## v25.9 — 메일 7건·Teams 0건, 긴 대기 후 무결과 재검토
+
+사용자 테스트 PC에는 접근하지 못했다. 따라서 아래는 코드·합성 DOM으로 재현한 결함이며, 실제 7건/0건의 단일 원인을 단정하는 보고서가 아니다. 기존 버튼 연결 수정만으로 앱/웹 화면 파싱과 계정 준비 문제까지 해결되지는 않았다.
+
+| 확정 결함 | 수정 및 검증 범위 |
+|---|---|
+| Outlook 목록 추출은 row/grid를 지원하지만 스크롤은 listbox/option만 지원 | 공통 목록 인식과 실제 스크롤 부모 탐색. 첫 화면 7개+가상 다음 페이지 2개를 합성 DOM에서 누적 수집 |
+| Outlook 검색 초점은 combobox도 찾지만 입력 검증은 다른 선택자 사용 | 같은 입력 요소·검색어 readback·결과 전환 확인. 검색이 실행되지 않은 경우 빈 결과로 완료 처리하지 않음 |
+| 기존 CSV 존재 시 새 기간 수집을 생략 | 파일 존재만으로 범위 완료를 판단하는 조기 반환 제거 |
+| Teams 빈 role=main 셸을 준비 완료로 판단 | 채팅 목록/메시지/명시 빈 상태로 준비 판정. 구/신 선택자와 접근성 역할·대화 식별자 지원 |
+| 완전한 날짜 뒤의 시각 전용 메시지와 1~2글자 답변 탈락 | 동일 화면에서 확인된 날짜만 이어받고 짧은 본문 보존. 날짜 불명확 원문은 분석 CSV와 분리 보류. 다른 방의 재사용 DOM ID로 보류 자료가 지워지지 않도록 대화 범위 유지 |
+| 빈 날짜 검색 최대 30일 반복, 고정 sleep 누적 | 빈 검색 2회 후 목록 수집, 검색은 전체 예산 25%·최대60초. Outlook은 상태 변화 기반 대기로 교체 |
+| Edge 최대20초 대기 루프가 probe5초×41회로 최대225초 | 단조 시계의 절대 마감 시각과 probe별 잔여 timeout 적용. HTTP/CDP 생성·호출·재연결에도 남은 예산 전달 |
+| 수집 완료 후 마지막12줄만 표시, 시간 초과 시 출력 소실 | stdout/stderr 실시간 표시·15초 heartbeat·시간 초과의 부분 출력 보존. 실행한 작업 프로세스만 종료하며 사용자 Outlook/Edge를 종료하지 않음 |
+
+Outlook 본문은 메시지 ID·선택행·제목·유일 본문 영역을 확인한 경우에만 연결한다. 발신자/제목/분 단위 시각만 같은 다른 메일을 혼동할 수 있는 본문 폴백은 독립 검토에서 제거했다. 웹 본문은 설정한 길이의 발췌이고 전체 평문 보관을 보장하지 않는다.
+
+`collection_diagnostics`는 COM을 실행하지 않고 등록·프로필 존재를 확인한다. COM 미등록 또는 프로필이 없고 클래식 Outlook 실행도 확인되지 않으면 불필요한 활성화 대기를 생략한다. 조회 권한 등으로 기능을 확인하지 못한 경우는 지원 불가로 단정하지 않는다. Microsoft 365 구독의 클래식 Outlook은 기존 COM 경로, 새 Outlook과 웹은 웹/허용된 Graph 경로를 사용한다. 실행 중인 앱의 이름·숫자 버전만 최대4초의 별도 읽기 조회로 기록한다.
+
+메일 웹 기본 예산은 collection.mailWebBudgetSec=180, Teams는 teamsWebBudgetSec=300이다. 기존 개인 설정은 자동 변경하지 않는다. 파싱 실패·진행 없음은 예산을 다 쓰지 않고 중단하며 부분 결과와 재개 정보를 보존한다. 예산을 줄인 것은 완주를 뜻하지 않으며 긴 기간은 여러 번 실행할 수 있다. COM/Graph/PC/파일 단계까지 합친 전체 시간이 3~5분이라는 의미는 아니다.
+
+수집 종료 후 `report/communication_diagnostics.json`을 원자 저장한다. 다운로드 API는 마지막 저장 원인표를 제공하며 기간·현재 실행 여부·경과 시간·관측 항목·날짜 미확인/보류 건수와 고정 사유를 담는다. 원본 reasons/log의 자유문자열, 제목·본문·계정·수신인·프로필 경로는 복사하지 않는다. Teams 보류 원문은 원인표가 아닌 로컬 보류 CSV에만 존재한다. 원인표만으로 수집 원문 내용을 공유하지 않고 실제 PC에서 실패한 경로를 다음에 구분할 수 있다.
+
+회귀는 Windows/TEMP의 합성 데이터·가짜 registry·실제 짧은 합성 작업자·Node의 합성 DOM을 사용했다. 실제 회사 계정·로그인·원문 건수 대조와 모든 Teams/Outlook UI 버전은 미검증이다. 변경 구현자와 다른 사람이 시간 제한·본문 오귀속·날짜 보류·프로세스 종료 범위를 검토했다. 최종 전체 검사·배포 해시·Git 커밋은 배포검증.json에 기록한다.
+
+공식 참고: [새/클래식 Outlook 기능 비교](https://support.microsoft.com/en-us/outlook/getstarted/feature-comparison-between-new-outlook-and-classic-outlook), [Teams 웹 전제 조건](https://learn.microsoft.com/en-us/microsoftteams/teams-client-web), [Outlook 웹 검색](https://support.microsoft.com/en-us/outlook/search-mail-and-people-in-outlook-on-the-web), [Teams 검색](https://support.microsoft.com/en-us/teams/chat/search-for-messages-and-more-in-microsoft-teams).
 
 ## v25.8 — 추가 PC 수집 버튼의 연결 누락 수정
 

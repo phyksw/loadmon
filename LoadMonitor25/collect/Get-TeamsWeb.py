@@ -41,7 +41,7 @@ if __name__ == "__main__":
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "core"))
-from collection_state import merge_csv, read_csv, write_status  # noqa: E402
+from collection_state import merge_csv, read_csv, record_key, write_csv, write_status  # noqa: E402
 
 OUT_DIR = os.path.join(ROOT, "data", "m365")
 HDR = "time,from,chat,kind,replied_time,summary"
@@ -73,7 +73,7 @@ _spec.loader.exec_module(_owa)
 find_times = _owa.find_times
 find_date = _owa.find_date
 
-RE_ISO = re.compile(r"(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})")
+RE_ISO = re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:[zZ]|[+-]\d{2}:?\d{2})?")
 TODAY_W = ("오늘", "today", "今日", "今天")
 YDAY_W = ("어제", "yesterday", "昨日", "昨天")
 # 요일 이름 → 월=0. 한 글자('월')는 '8월' 과 섞이므로 두 글자 이상만 본다.
@@ -123,13 +123,11 @@ def iso_dt(s):
     if not m:
         return None
     try:
-        v = datetime.fromisoformat(s.replace("Z", "+00:00").replace("z", "+00:00"))
+        # A localized accessible label can surround an ISO value. Parse the
+        # entire matched offset too: dropping it silently shifts the date.
+        v = datetime.fromisoformat(m.group().replace("Z", "+00:00").replace("z", "+00:00"))
     except ValueError:
-        try:
-            y, mo, dd, hh, mi = (int(x) for x in m.groups())
-            return datetime(y, mo, dd, hh, mi)
-        except ValueError:
-            return None
+        return None
     if v.tzinfo is not None:
         v = v.astimezone().replace(tzinfo=None)
     return v.replace(second=0, microsecond=0)
@@ -147,6 +145,14 @@ def hm_words(s):
     return RE_H_WORD.sub(lambda m: m.group(1) + ":00", s)
 
 
+def screen_date(text, today):
+    """The selected reporting year is not evidence of a rendered message year."""
+    value = str(text or '')
+    if re.search(r'(?<!\d)(?:19|20)\d{2}(?!\d)', value):
+        return find_date(value)
+    return rel_date(value, today)
+
+
 def stamp(head, body, cur_date, d0, d1, today):
     """(날짜, 시각) 을 뽑는다 → (datetime, 'iso'|'full'|'sep'|'rel') 또는 (None, 사유).
 
@@ -158,8 +164,8 @@ def stamp(head, body, cur_date, d0, d1, today):
     8/15 까지는 날짜로 보지 않는다'). 웹 쪽에도 같은 규칙을 둔다.
 
     날짜 구분선(cur_date)은 화면이 직접 알려 준 그 날이라 **본문 추측보다 항상 앞선다**.
-    날짜를 끝내 못 짚으면 그 메시지는 버린다 — 시각만 있는 줄에 오늘 날짜를 붙이면 지난 달
-    대화가 전부 오늘로 몰린다(창 읽기에서 겪은 실측 결함)."""
+    날짜를 끝내 못 짚으면 None을 반환해 별도 보류 저장한다. 시각만 있는 줄에 요청 기간이나
+    오늘 날짜를 붙여 분석 입력으로 만들지 않는다."""
     head = [hm_words(x) for x in head if x]
     body = [hm_words(x) for x in body if x]
     for s in head:
@@ -167,17 +173,17 @@ def stamp(head, body, cur_date, d0, d1, today):
         if v:
             return v, "iso"
     for s in head:                       # 제목 속성에 '2026년 6월 3일 오후 3:24' 같은 완전한 표기가 오는 경우
-        d = find_date(s, d0, d1)
+        d = screen_date(s, today)
         if not d:
             continue
-        hm = find_times(s)
+        hm = find_times(s) or next((find_times(part) for part in head if find_times(part)), None)
         if hm:
             return datetime(d.year, d.month, d.day, hm[0][0], hm[0][1]), "full"
         return datetime(d.year, d.month, d.day, 12, 0), "date"
-    # 시각은 본문 앞머리에서 와도 된다(화면이 '홍길동 오후 3:24' 를 한 덩어리로 그리는 스킨) —
-    # 날짜만 본문에서 오면 안 된다.
+    # Body deadlines are not timestamps. Modern/legacy DOM timestamp nodes
+    # supply header parts; body text is preserved separately if time is absent.
     hm = None
-    for s in head + body:
+    for s in head:
         hm = find_times(s)
         if hm:
             break
@@ -214,7 +220,7 @@ def author_of(it, texts):
 
 def body_of(it, texts, author, ts):
     b = (it.get("body") or "").strip()
-    if len(b) >= 3:
+    if b:
         return b
     drop = {_norm(author), _norm(ts)}
     out = [s for s in texts if _norm(s) not in drop and len(s.strip()) >= 2]
@@ -222,97 +228,118 @@ def body_of(it, texts, author, ts):
 
 
 # ── 화면 읽기 스크립트 ───────────────────────────────────────────────────────
-JS_CHATS = r"""
-(() => {
+JS_DOM = r"""
+  const visible = e => !e.closest('[hidden],[aria-hidden="true"]') &&
+    (!e.getClientRects || e.getClientRects().length > 0);
+  const all = (s, root=document) => [...root.querySelectorAll(s)].filter(visible);
+  const text = e => e ? (e.getAttribute('title') || e.textContent || '').trim() : '';
+  const leafs = e => all('span,div,p,a',e).filter(x => x.childElementCount === 0)
+    .map(x => (x.textContent || '').trim()).filter(Boolean);
+  const headers = '[data-tid="chat-header-title"],[data-tid="chatTitle"],'
+    + '[data-tid="chat-header"] [data-tid="chat-title"],[data-tid="chat-header"] [role="heading"],'
+    + '[role="main"] [role="heading"][aria-level="1"],[role="main"] h1';
+  const paneRoot = () => document.querySelector('[data-tid="message-pane"],[data-tid="chat-pane-list"],[role="log"]') ||
+    document.querySelector('[role="main"]');
+  const chatId = e => e ? (e.getAttribute('data-chat-id') ||
+    (e.querySelector('[data-chat-id]') || {getAttribute:()=>''}).getAttribute('data-chat-id') || '') : '';
+  const messageSelector = '[data-tid="chat-pane-item"],[data-tid="chat-pane-message"],'
+    + '[data-tid="message-pane"] [data-message-id],[data-tid="chat-pane-list"] [data-message-id],'
+    + '[role="log"] [data-message-id],[role="log"] [role="listitem"],[role="log"] [role="article"],'
+    + '[data-tid="message-pane"] [role="listitem"]';
+  const messageNodes = () => {
+    const nodes = all(messageSelector);
+    // A message body may itself match an older message-container selector.
+    // Retain the outer message once, not an extra nested copy.
+    return nodes.filter(e => !nodes.some(parent => parent !== e && parent.contains(e)));
+  };
+"""
+
+
+def dom_script(body):
+    return "(() => {\n" + JS_DOM + body + "\n})()"
+
+
+JS_CHATS = dom_script(r"""
   const out = {href: location.href, how: "", n: 0, items: []};
-  const SELS = ['[data-tid="chat-list"] [data-tid="chat-list-item"]',
-                '[data-tid="chat-list-item"]',
-                '[data-tid="chat-list"] [role="treeitem"]',
-                '[role="tree"] [role="treeitem"]',
-                '[role="list"] [role="listitem"][data-tid]',
-                '[role="listbox"] [role="option"]'];
-  let els = [];
-  for (const s of SELS) { els = [...document.querySelectorAll(s)]; if (els.length) { out.how = s; break; } }
+  const known = '[data-tid="chat-list-item"],[data-tid="chat-list-item-row"],'
+    + '[data-tid="chat-list"] [role="treeitem"],[data-tid="chat-list"] [role="option"]';
+  let els = all(known);
+  const semantic = all('[role="treeitem"],[role="listitem"],[role="option"]').filter(e =>
+    chatId(e) || e.querySelector('[data-tid="chat-list-item-title"],[data-tid="chat-title"]'));
+  els = [...new Set([...els,...semantic])];
+  els = els.filter(e => !els.some(parent => parent !== e && parent.contains(e)));
+  out.how = els.length ? 'chat identity/title in list or legacy chat-list-item' : '';
   window.__lm_chats = els;
   out.n = els.length;
-  out.items = els.slice(0, 300).map((e, i) => ({
+  out.items = els.map((e, i) => {
+    const key = chatId(e) || e.getAttribute('data-item-id') ||
+      (e.querySelector('a[href]') || {}).href || e.getAttribute('title') ||
+      e.getAttribute('aria-label') || (e.textContent || '').trim();
+    e.__lm_chat_key = key;
+    return {
     idx: i,
-    key: e.getAttribute("data-chat-id") || e.getAttribute("data-item-id") ||
-         (e.querySelector("a[href]") || {}).href ||
-         e.getAttribute("title") || e.getAttribute("aria-label") || (e.textContent || "").trim(),
-    conversation_id: e.getAttribute("data-chat-id") || e.getAttribute("data-item-id") || "",
+    key: key,
+    conversation_id: chatId(e),
     name: (e.getAttribute("title") || (e.querySelector('[data-tid="chat-list-item-title"],[data-tid="chat-title"]') || {}).textContent || "").trim(),
     label: (e.getAttribute("aria-label") || e.getAttribute("title") || "").slice(0, 300),
-    texts: [...e.querySelectorAll("span,div,a")].filter(x => x.childElementCount === 0)
-             .map(x => (x.textContent || "").trim()).filter(Boolean).slice(0, 8)
-  }));
+    texts: leafs(e).slice(0, 8)
+  }; });
   return JSON.stringify(out);
-})()
-"""
+""")
 # 팀즈 목록은 pointerdown 으로 라우팅하는 스킨이 있어 click() 만으로는 열리지 않는다 — 전체 순서를 보낸다.
 JS_OPEN = r"""
 (() => {
   const key = %s;
-  const e = (window.__lm_chats || []).find(e =>
-    (e.getAttribute("data-chat-id") || e.getAttribute("data-item-id") ||
-     (e.querySelector("a[href]") || {}).href ||
-     e.getAttribute("title") || e.getAttribute("aria-label") || (e.textContent || "").trim()) === key);
+  const e = (window.__lm_chats || []).find(e => e.__lm_chat_key === key);
   if (!e) return "gone";
   try { e.scrollIntoView({block: "center"}); } catch (x) {}
-  const t = e.querySelector('[role="button"],a,button') || e;
+  // The first button may be a More options menu, not the conversation.
+  const t = e.querySelector('a[href*="/chat/"],a[href*="/l/chat/"]') || e;
   for (const ev of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
     t.dispatchEvent(new MouseEvent(ev, {bubbles: true, cancelable: true, view: window}));
   }
   return "ok";
 })()
 """
-JS_MSGS = r"""
-(() => {
+JS_MSGS = dom_script(r"""
   const out = {href: location.href, how: "", chat: "", n: 0, items: []};
-  const MSG = ['[data-tid="chat-pane-item"]', '[data-tid="chat-pane-message"]',
-               '[data-tid="message-pane"] [role="listitem"]', '[role="log"] [role="listitem"]',
-               '[role="main"] [role="listitem"]'];
-  const SEP = '[role="separator"],[data-tid*="divider"]';
-  let msel = "";
-  for (const s of MSG) { if (document.querySelector(s)) { msel = s; break; } }
-  if (!msel) return JSON.stringify(out);
-  out.how = msel;
-  const head = document.querySelector('[data-tid="chat-header-title"],[data-tid="chatTitle"],'
-             + '[data-tid="chat-header"] [role="heading"],[role="main"] h1');
-  out.chat = head ? ((head.getAttribute("title") || head.textContent || "").trim()).slice(0, 120) : "";
-  const leafs = e => [...e.querySelectorAll("span,div,p,a")].filter(x => x.childElementCount === 0)
-      .map(x => (x.textContent || "").trim()).filter(Boolean);
-  for (const e of document.querySelectorAll(msel + "," + SEP)) {   // querySelectorAll 은 문서 순서 — 구분선이 제자리에 온다
-    if (!e.matches(msel)) {
+  const messages = messageNodes(), root = paneRoot();
+  if (!messages.length) return JSON.stringify(out);
+  out.how = 'message identity / log semantics / legacy pane';
+  out.chat = text(all(headers)[0]).slice(0, 120);
+  const SEP = '[role="separator"],[data-tid*="divider"],[data-tid="date-separator"],[data-tid="message-date"]';
+  for (const e of all(messageSelector + ',' + SEP)) {
+    if (!messages.includes(e)) {
+      if (!e.matches(SEP) || !root || !root.contains(e)) continue;
       const s = (e.textContent || "").trim();
       if (s && s.length <= 60) out.items.push({t: "sep", text: s});
       continue;
     }
-    const au = e.querySelector('[data-tid="message-author-name"],[data-tid="messageAuthorName"]');
-    const ts = e.querySelector('[data-tid="message-timestamp"],time');
-    const bd = e.querySelector('[data-tid="messageBodyContent"],[id^="content-"]');
+    const au = e.querySelector('[data-tid="message-author-name"],[data-tid="messageAuthorName"],[data-tid="message-author"]');
+    const stamps = all('[data-tid="message-timestamp"],[data-tid="timestamp"],[data-tid="chat-pane-message-timestamp"],time',e);
+    const ts = stamps[0];
+    const bd = e.querySelector('[data-tid="messageBodyContent"],[data-tid="message-body"],[data-tid="message-content"],[id^="content-"]');
+    const nested = e.querySelector('[data-message-id]');
     out.items.push({t: "msg",
-      id: e.getAttribute("data-message-id") || e.getAttribute("data-item-id") || "",
+      id: e.getAttribute("data-message-id") || (nested ? nested.getAttribute('data-message-id') : '') || e.getAttribute("data-item-id") || "",
       url: (e.querySelector('a[href*="/message/"]') || {}).href || "",
       label: (e.getAttribute("aria-label") || "").slice(0, 400),
       author: au ? (au.textContent || "").trim() : "",
       ts: ts ? ((ts.getAttribute("title") || ts.getAttribute("datetime") || ts.textContent || "").trim()) : "",
       iso: [...e.querySelectorAll("time[datetime]")].map(x => x.getAttribute("datetime")).filter(Boolean).slice(0, 3),
-      titles: [...e.querySelectorAll("[title]")].map(x => (x.getAttribute("title") || "").trim()).filter(Boolean).slice(0, 6),
+      titles: stamps.flatMap(x => [x.getAttribute('title'),x.getAttribute('aria-label')]).filter(Boolean).slice(0, 6),
       body: bd ? (bd.textContent || "").trim().slice(0, 20000) : "",
       texts: leafs(e).slice(0, 20)});
   }
   out.n = out.items.filter(x => x.t === "msg").length;
   return JSON.stringify(out);
-})()
-"""
-JS_SCROLL_UP = r"""
-(() => {
-  const CAND = ['[data-tid="message-pane-list-viewport"]', '[data-tid="message-pane"]', '[role="log"]'];
+""")
+JS_SCROLL_UP = dom_script(r"""
+  const CAND = ['[data-tid="message-pane-list-viewport"]', '[data-tid="message-pane"]', '[data-tid="chat-pane-list"]', '[role="log"]'];
   let el = null;
   for (const s of CAND) { const e = document.querySelector(s); if (e && e.scrollHeight > e.clientHeight + 20) { el = e; break; } }
   if (!el) {
-    let m = document.querySelector('[data-tid="chat-pane-item"],[role="log"] [role="listitem"],[role="main"] [role="listitem"]');
+    let m = messageNodes()[0];
     while (m && m !== document.body) {
       if (m.scrollHeight > m.clientHeight + 20 && getComputedStyle(m).overflowY !== "visible") { el = m; break; }
       m = m.parentElement;
@@ -320,39 +347,57 @@ JS_SCROLL_UP = r"""
   }
   if (!el) return "no-scroller";
   const before = el.scrollTop;
-  el.scrollTop = Math.max(0, el.scrollTop - Math.max(400, el.clientHeight - 60));
+  const minimum = getComputedStyle(el).flexDirection === 'column-reverse' ? -(el.scrollHeight-el.clientHeight) : 0;
+  el.scrollTop = Math.max(minimum, el.scrollTop - Math.max(400, el.clientHeight - 60));
   el.dispatchEvent(new Event("scroll", {bubbles: true}));
   return el.scrollTop < before ? "scrolled" : "top";
-})()
-"""
+""")
 
-JS_SCROLL_CHATS = r"""
-(() => {
-  let el = document.querySelector('[data-tid="chat-list"],[role="tree"],[role="listbox"]');
+JS_SCROLL_CHATS = dom_script(r"""
+  let el = (window.__lm_chats || [])[0] || document.querySelector('[data-tid="chat-list"],[role="tree"],[role="listbox"]');
   while (el && el !== document.body && el.scrollHeight <= el.clientHeight + 20) el = el.parentElement;
   if (!el || el === document.body) return "no-scroller";
   const before = el.scrollTop;
   el.scrollTop += Math.max(200, el.clientHeight - 40);
   el.dispatchEvent(new Event("scroll", {bubbles:true}));
   return el.scrollTop > before ? "scrolled" : "end";
-})()
-"""
+""")
 
 
-JS_PANE = r"""
-(() => {
-  const MSG = ['[data-tid="chat-pane-item"]', '[data-tid="chat-pane-message"]',
-               '[data-tid="message-pane"] [role="listitem"]', '[role="log"] [role="listitem"]',
-               '[role="main"] [role="listitem"]'];
-  let n = 0;
-  for (const s of MSG) { const k = document.querySelectorAll(s).length; if (k) { n = k; break; } }
-  const head = document.querySelector('[data-tid="chat-header-title"],[data-tid="chatTitle"],'
-             + '[data-tid="chat-header"] [role="heading"],[role="main"] h1');
-  const pane = document.querySelector('[data-tid="message-pane"][data-chat-id],[role="main"][data-chat-id]');
-  return JSON.stringify({n: n, conversation_id: pane ? pane.getAttribute("data-chat-id") : "",
-      chat: head ? ((head.getAttribute("title") || head.textContent || "").trim()).slice(0, 120) : ""});
-})()
-"""
+JS_PANE = dom_script(r"""
+  const pane = paneRoot(), messages = messageNodes();
+  const key = e => e ? (e.getAttribute('data-message-id') || e.getAttribute('data-item-id') ||
+    (e.textContent || '').slice(0,120)) : '';
+  return JSON.stringify({n: messages.length, conversation_id: chatId(pane) || chatId(document.querySelector('[role="main"][data-chat-id]')),
+      busy: !!(pane && pane.querySelector('[aria-busy="true"],[role="progressbar"]')),
+      fingerprint: key(messages[0])+'|'+key(messages[messages.length-1]),
+      chat: text(all(headers)[0]).slice(0, 120)});
+""")
+
+JS_READY = dom_script(r"""
+  const signin = all('input[type="password"],input[autocomplete="username"]');
+  const busy = all('[role="progressbar"],[aria-busy="true"]').length > 0;
+  const chatList = all('[data-tid="chat-list-item"],[data-tid="chat-list-item-row"],'
+    + '[data-tid="chat-list"] [role="treeitem"],[role="treeitem"][data-chat-id],'
+    + '[role="option"][data-chat-id],[role="listitem"][data-chat-id]');
+  chatList.push(...all('[role="treeitem"],[role="listitem"],[role="option"]').filter(e =>
+    e.querySelector('[data-tid="chat-list-item-title"],[data-tid="chat-title"]')));
+  const empty = all('[role="status"],[data-tid*="empty"]').some(e =>
+    /no (?:chats|conversations)|채팅이 없|대화가 없/i.test(e.textContent || ''));
+  const web = all('a,button').find(e => /^(Use the web app instead|Continue on this browser|Use Teams on the web|웹 앱 사용|이 브라우저에서 계속)$/i.test(text(e)));
+  const chatNav = all('[role="navigation"] button,[role="navigation"] [role="tab"],[role="tablist"] [role="tab"]').find(e =>
+    /^(Chat|Chats|Chat and channels|Chats and channels|채팅|채팅 및 채널)$/i.test(e.getAttribute('aria-label') || text(e)));
+  return JSON.stringify({login:signin.length > 0, busy:busy, chats:chatList.length,
+    messages:messageNodes().length, empty:empty, web:!!web, chat_nav:!!chatNav});
+""")
+
+JS_OPEN_CHAT_AREA = dom_script(r"""
+  const web = all('a,button').find(e => /^(Use the web app instead|Continue on this browser|Use Teams on the web|웹 앱 사용|이 브라우저에서 계속)$/i.test(text(e)));
+  const nav = all('[role="navigation"] button,[role="navigation"] [role="tab"],[role="tablist"] [role="tab"]').find(e =>
+    /^(Chat|Chats|Chat and channels|Chats and channels|채팅|채팅 및 채널)$/i.test(e.getAttribute('aria-label') || text(e)));
+  const e = web || nav;
+  if (!e) return 'unavailable'; e.click(); return 'opened';
+""")
 
 
 def wait_pane(br, want_change, limit):
@@ -368,10 +413,37 @@ def wait_pane(br, want_change, limit):
             st = br.eval_json(JS_PANE, timeout=15)
         except Exception:
             continue
-        got = (str(st.get("chat") or ""), int(st.get("n") or 0))
-        if got[1] > 0 and (got[0] != last[0] or got[1] != last[1]):
+        got = (str(st.get("chat") or ""), int(st.get("n") or 0), str(st.get('fingerprint') or ''))
+        if got[1] > 0 and got != last and not st.get('busy'):
             return got
     return got
+
+
+class DeadlineCDP:
+    """Bound direct CDP calls too; bypassing eval_json must not reset the budget."""
+    def __init__(self, driver, deadline):
+        self.driver, self.deadline = driver, deadline
+
+    def seconds(self, requested=5):
+        end = self.deadline()
+        if end is None:
+            return requested
+        remaining = end-time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError('teams_web_time_budget')
+        return min(requested, remaining)
+
+    def call(self, method, params=None, timeout=5):
+        return self.driver.call(method, params, timeout=self.seconds(timeout))
+
+    def eval(self, script, timeout=5):
+        return self.driver.eval(script, timeout=self.seconds(timeout))
+
+    def reconnect(self):
+        return self.driver.reconnect(timeout=self.seconds())
+
+    def close(self):
+        self.driver.close()
 
 
 class Browser:
@@ -380,15 +452,22 @@ class Browser:
         self.ca = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.ca)
         self.cfg = self.ca.load_cfg()
+        self.cfg['url'] = TEAMS_URL
         self.port = self.cfg["port"]
         self.cdp = None
+        self.deadline = None
 
     def start(self):
         if not self.ca.ensure_edge(self.cfg):
             return False
         ws = None
-        for t in [t for t in self.ca.http_json(self.port, "/json") if t.get("type") == "page"]:
-            if any(h in (t.get("url") or "") for h in HOSTS):
+        def remaining():
+            seconds = (self.deadline or float('inf'))-time.monotonic()
+            if seconds <= 0:
+                raise TimeoutError('teams_web_time_budget')
+            return min(5, seconds)
+        for t in [t for t in self.ca.http_json(self.port, "/json", timeout=remaining()) if t.get("type") == "page"]:
+            if urlparse(t.get("url") or "").hostname in HOSTS:
                 ws = t["webSocketDebuggerUrl"]
                 break
         if not ws:
@@ -396,22 +475,24 @@ class Browser:
             for method in ("PUT", "GET"):
                 try:
                     ws = self.ca.http_json(self.port, "/json/new?" + quote(TEAMS_URL, safe=""),
-                                           method=method)["webSocketDebuggerUrl"]
+                                           method=method, timeout=remaining())["webSocketDebuggerUrl"]
                     break
                 except Exception:
                     continue
         if not ws:
             return False
-        self.cdp = self.ca.CDP(ws)
+        if self.deadline and time.monotonic() >= self.deadline:
+            raise TimeoutError('teams_web_time_budget')
+        self.cdp = DeadlineCDP(self.ca.CDP(ws, timeout=remaining()), lambda: self.deadline)
         try:
             self.cdp.call("Page.enable")
         except Exception:
             pass
         return True
 
-    def href(self):
+    def href(self, timeout=5):
         try:
-            return str(self.cdp.eval("location.href"))
+            return str(self.cdp.eval("location.href", timeout=timeout))
         except Exception:
             return ""
 
@@ -423,28 +504,39 @@ class Browser:
             self.cdp.call("Page.navigate", {"url": url})
         return self.wait_ready(wait)
 
-    def wait_ready(self, settle=6.0, limit=90):
+    def wait_ready(self, settle=6.0, limit=45):
         """팀즈 웹은 첫 로드가 느리다(워크로드 셸 → 채팅). → 'login' | 'ok' | 'timeout'"""
-        t0 = time.time()
-        while time.time() - t0 < limit:
-            time.sleep(1.0)
-            h = self.href()
-            if "login.microsoftonline" in h or "login.live.com" in h or "login.microsoft" in h:
+        until = min(self.deadline or float('inf'), time.monotonic() + limit)
+        opened, stable = False, 0
+        while time.monotonic() < until:
+            h = self.href(timeout=min(5, max(0.1, until-time.monotonic())))
+            host = urlparse(h).hostname or ''
+            if host in ('login.microsoftonline.com', 'login.live.com', 'login.microsoft.com'):
                 return "login"
             try:
-                rs = self.cdp.eval("document.readyState")
-                n = int(self.cdp.eval('document.querySelectorAll(\'[data-tid="chat-list-item"],'
-                                      '[role="treeitem"],[role="main"]\').length') or 0)
+                state = self.eval_json(JS_READY, timeout=min(5, max(0.1, until-time.monotonic())))
             except Exception:
-                rs, n = "", 0
-            if rs == "complete" and n > 0:
-                time.sleep(settle)
-                if "login.microsoftonline" in self.href():
-                    return "login"
-                return "ok"
+                state = {}
+            if state.get('login'):
+                return 'login'
+            if state.get('chats') or state.get('messages') or (state.get('empty') and not state.get('busy')):
+                stable += 1
+                if stable >= 2:
+                    return 'ok'
+            else:
+                stable = 0
+                if host in HOSTS and not opened and (state.get('web') or state.get('chat_nav')):
+                    self.cdp.eval(JS_OPEN_CHAT_AREA, timeout=min(5, max(0.1, until-time.monotonic())))
+                    opened = True
+            time.sleep(min(0.5, max(0, until-time.monotonic())))
         return "timeout"
 
     def eval_json(self, js, timeout=40):
+        if self.deadline:
+            remaining = self.deadline-time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError('teams_web_time_budget')
+            timeout = min(timeout, remaining)
         r = self.cdp.eval(js, timeout=timeout)
         if isinstance(r, str):
             try:
@@ -498,7 +590,8 @@ def wait_chat(br, item, name, limit=5):
     until = time.monotonic() + limit
     while time.monotonic() < until:
         try:
-            if pane_matches(item, name, br.eval_json(JS_PANE)):
+            pane = br.eval_json(JS_PANE)
+            if pane_matches(item, name, pane) and pane.get('n', 1) > 0 and not pane.get('busy'):
                 return True
         except Exception:
             pass  # A pane being replaced can be temporarily unreadable.
@@ -507,7 +600,7 @@ def wait_chat(br, item, name, limit=5):
 
 
 def read_chat(br, idx, name, d0, d1, today, fake=None, diag=None, deadline=None,
-              max_scroll=MAX_SCROLL, context_chars=4000, on_page=None, conversation_id=""):
+              max_scroll=MAX_SCROLL, context_chars=4000, on_page=None, conversation_id="", on_undated=None):
     """대화 하나 — 위로 되감으며 화면을 여러 번 읽어 합친다. → (rows, 화면항목수)
 
     기간보다 오래된 날짜, 스크롤 상한, 연속된 동일 화면, 전체 시간 예산에서 멈춘다.
@@ -523,7 +616,7 @@ def read_chat(br, idx, name, d0, d1, today, fake=None, diag=None, deadline=None,
             reason = "time_budget"
             break
         before = len(observed)
-        batch = []
+        batch, pending = [], []
         if rounds is not None:
             if r >= len(rounds):
                 reason = "history_end"
@@ -539,9 +632,9 @@ def read_chat(br, idx, name, d0, d1, today, fake=None, diag=None, deadline=None,
         cur = None
         for it in items:
             if it.get("t") == "sep":
-                d = find_date(it.get("text"), d0, d1) or rel_date(it.get("text"), today)
-                if d:
-                    cur = d
+                # Reset at every separator. An unread/date divider with an
+                # unknown year must not inherit a different known day's date.
+                cur = screen_date(it.get("text"), today)
                 continue
             # 탐색 진행에는 기간 밖 메시지도 센다. 과거 기간에 닿기 전에 최근 화면에서 멈추지 않는다.
             observed.add(json.dumps(it, ensure_ascii=False, sort_keys=True))
@@ -551,32 +644,41 @@ def read_chat(br, idx, name, d0, d1, today, fake=None, diag=None, deadline=None,
             head = [str(x) for x in ((it.get("iso") or []) + [it.get("ts") or ""]
                                      + list(it.get("titles") or []) + [it.get("label") or ""])]
             dt, how = stamp(head, [str(x) for x in texts[:3]], cur, d0, d1, today)
-            if not dt:
-                if diag is not None:
-                    diag["no_time"] += 1
-                continue
             au = author_of(it, texts)
             bd = body_of(it, texts, au, it.get("ts") or "")
-            if len(bd) < 3:
+            if not bd:
                 if diag is not None:
                     diag["no_body"] += 1
                 continue
-            oldest = dt.date() if oldest is None else min(oldest, dt.date())
-            if not (d0 <= dt.date() <= d1):
-                continue
+            if dt and how in ('iso', 'full', 'date', 'rel'):
+                cur = dt.date()  # Proven only in this rendered page, never carried across scrolls.
             sid = str(it.get("id") or "")
-            k = (conversation_id, sid) if sid else (au, dt.isoformat(), chat, hashlib.sha1(bd.encode("utf-8")).hexdigest())
-            if k in seen:
-                continue
-            seen.add(k)
-            row = {"time": dt.strftime("%Y-%m-%d %H:%M"), "from": au, "chat": chat,
+            row = {"time": dt.strftime("%Y-%m-%d %H:%M") if dt else '', "from": au, "chat": chat,
                    "summary": bd[:SUMMARY_MAX], "how": how, "context_excerpt": bd[:context_chars],
                    "context_truncated": str(len(bd) > context_chars or len(str(it.get('body') or '')) >= 20000).lower(),
                    "source_id": "teams-dom:" + conversation_id + "/" + sid if sid else "", "source_kind": "teams_web",
                    "source_url": str(it.get("url") or ""), "conversation_id": conversation_id,
-                   "time_precision": "date" if how == "date" else "minute", "replied_time": ""}
+                   "time_precision": "unknown" if not dt else "date" if how == "date" else "minute", "replied_time": ""}
+            if not dt:
+                if diag is not None:
+                    diag["no_time"] += 1
+                row.update(timestamp_text=' | '.join(head)[:1000], requested_from=str(d0), requested_to=str(d1))
+                pending.append(row)
+                continue
+            oldest = dt.date() if oldest is None else min(oldest, dt.date())
+            if not (d0 <= dt.date() <= d1):
+                continue
+            k = (conversation_id, sid) if sid else (au, dt.isoformat(), chat, hashlib.sha1(bd.encode("utf-8")).hexdigest())
+            if k in seen:
+                continue
+            seen.add(k)
             rows[k] = row
             batch.append(row)
+        if pending and on_undated:
+            on_undated(pending)
+        if diag is not None:
+            diag['observed_messages'] = diag.get('observed_messages', 0) + len(observed) - before
+            diag['dated_messages'] = diag.get('dated_messages', 0) + len(batch)
         if batch and on_page:
             on_page(batch)
         if oldest and oldest < d0:          # 기간보다 오래된 데까지 왔다 — 더 되감을 이유가 없다
@@ -616,7 +718,22 @@ def save(rows, force):
     dst = os.path.join(OUT_DIR, "teams_web.csv")
     before = len(read_csv(dst))
     total = merge_csv(dst, rows, FIELDS, kind="teams")
+    resolved = {record_key(row, 'teams') for row in rows if row.get('source_id') and row.get('time')}
+    if resolved:
+        pending_path = os.path.join(ROOT, 'data', 'collection_pending', 'teams_web_undated.csv')
+        pending = read_csv(pending_path)
+        remaining = [row for row in pending if record_key(row, 'teams') not in resolved]
+        if len(remaining) != len(pending):
+            write_csv(pending_path, remaining, FIELDS + ['timestamp_text', 'requested_from', 'requested_to'])
     return dst, max(0, total - before), 0, total
+
+
+def save_undated(rows):
+    """Quarantine observed originals without inventing a reporting date or MM."""
+    path = os.path.join(ROOT, 'data', 'collection_pending', 'teams_web_undated.csv')
+    known = {record_key(row, 'teams') for row in read_csv(os.path.join(OUT_DIR, 'teams_web.csv')) if row.get('source_id')}
+    pending = [row for row in rows if not row.get('source_id') or record_key(row, 'teams') not in known]
+    return merge_csv(path, pending, FIELDS + ['timestamp_text', 'requested_from', 'requested_to'], kind='teams')
 
 
 def walk_chats(br, fake, max_chats, max_pages, deadline, visit, skip=()):
@@ -753,7 +870,7 @@ def search_page(br, query, deadline):
     return dict(last, state='unsupported', reason='search_ui_or_query_unconfirmed')
 
 
-def search_context(br, item, day, d0, d1, today, context_chars, fixture=None, deadline=None):
+def search_context(br, item, day, d0, d1, today, context_chars, fixture=None, deadline=None, on_undated=None):
     """Read nearby rendered originals only after verifying room AND anchor ID.
 
     A search preview is never saved as an original. A search date is never used
@@ -792,7 +909,7 @@ def search_context(br, item, day, d0, d1, today, context_chars, fixture=None, de
     context = dict(page, items=prior_sep + items[lo:hi+1])
     rows, _ = read_chat(None, 0, item.get('name', ''), d0, d1, today,
                         fake={'0': [context]}, max_scroll=0, context_chars=context_chars,
-                        conversation_id=item['conversation_id'])
+                        conversation_id=item['conversation_id'], on_undated=on_undated)
     anchor_id = 'teams-dom:' + item['conversation_id'] + '/' + item['id']
     anchor_row = next((row for row in rows if row.get('source_id') == anchor_id), None)
     if not anchor_row:
@@ -821,7 +938,7 @@ def search_checkpoint(root, payload):
 
 
 def collect_search(br, fake, root, d0, d1, today, deadline, context_chars, persist,
-                   max_days=30, max_pages=40, on_progress=None):
+                   max_days=30, max_pages=40, on_progress=None, on_undated=None):
     """Date shards resume oldest-unattempted first; recent days refresh each run.
 
     completed_partial means the observed UI query ended, never server coverage.
@@ -850,7 +967,7 @@ def collect_search(br, fake, root, d0, d1, today, deadline, context_chars, persi
     selected = queue[:max(1, max_days-1)]
     if latest in days and latest not in selected and max_days > 1:
         selected.insert(1, latest)
-    reasons, attempted = ['search_scope_unverified'], 0
+    reasons, attempted, consecutive_empty = ['search_scope_unverified'], 0, 0
 
     def snapshot():
         counts = {state: sum(jobs.get(str(day), {}).get('state', 'pending') == state for day in days)
@@ -870,6 +987,7 @@ def collect_search(br, fake, root, d0, d1, today, deadline, context_chars, persi
             reasons.append('search_time_budget')
             break
         key, query = str(day), day.strftime('Sent:%m/%d/%Y')
+        log(f'기간 검색 {key} - 날짜 검색 지원 여부와 원문을 확인합니다')
         attempted += 1
         job = {'query': query, 'state': 'attempted', 'pages': 0, 'results': 0, 'rows': 0,
                'reasons': [], 'finished_at': time.time()}
@@ -910,7 +1028,7 @@ def collect_search(br, fake, root, d0, d1, today, deadline, context_chars, persi
                         job['reasons'].append('search_time_budget')
                         break
                     detail = ((fixture or {}).get('details') or {}).get(raw.get('key') or raw.get('id') or raw.get('url'), {}) if fake is not None else None
-                    rows, reason = search_context(br, raw, day, d0, d1, today, context_chars, detail, deadline)
+                    rows, reason = search_context(br, raw, day, d0, d1, today, context_chars, detail, deadline, on_undated)
                     if rows:
                         persist(rows)
                         saved.update(row.get('source_id') or key_of(row['time'], row['from'], row['chat'], row['summary']) for row in rows)
@@ -958,6 +1076,10 @@ def collect_search(br, fake, root, d0, d1, today, deadline, context_chars, persi
         job['reasons'] = list(dict.fromkeys(job['reasons']))
         job['finished_at'] = time.time()
         snapshot()
+        consecutive_empty = consecutive_empty + 1 if 'search_ui_empty_scope_unverified' in job['reasons'] else 0
+        if consecutive_empty >= 2:
+            reasons.append('search_empty_yield_to_chat_list')
+            break  # Date-only search may be unsupported; the chat list is independent.
         # One unsupported global UI probe is enough; preserve budget for legacy.
         if 'search_ui_or_query_unconfirmed' in job['reasons'] or 'search_input_unsupported' in job['reasons']:
             reasons.append('search_unsupported')
@@ -981,10 +1103,11 @@ def main():
     except ValueError:
         max_chats = 200
     try:
-        # run.py 가 준 상한(1200초)보다 넉넉히 짧게 — 저장·정리 시간을 남긴다
-        budget = float(arg("--budget") or cfg.get("teamsWebBudgetSec") or 900)
+        # Coordinator passes the route's remaining budget; standalone defaults to five minutes.
+        budget = max(5.0, float(arg("--budget") or cfg.get("teamsWebBudgetSec") or 300))
     except ValueError:
-        budget = 900.0
+        budget = 300.0
+    deadline = time.monotonic() + budget  # Includes browser startup and login readiness.
     selfs = self_names(cfg)
     ccfg = cfg.get("collection") or {}
     context_chars = max(200, min(20000, int(ccfg.get("contextChars") or 4000)))
@@ -993,6 +1116,8 @@ def main():
     reasons, processed = ["web_scope_not_exhaustive"], []
     search_summary = {}
     rows_seen = set()
+    diag = {"no_time": 0, "no_body": 0, "how_msg": "", "observed_messages": 0, "dated_messages": 0}
+    undated_rows = 0
     prior = {}
     try:
         with open(os.path.join(ROOT, "data", "collection_status", "teams_web.json"), encoding="utf-8-sig") as f:
@@ -1008,7 +1133,8 @@ def main():
                             reasons=list(dict.fromkeys(reasons + ([extra_reason] if extra_reason else []))),
                             completed_units=len(processed), total_units=None,
                             processed_chat_keys=list(dict.fromkeys(resume + processed))[-2000:],
-                            search=search_summary, **extra)
+                            search=search_summary, undated_rows=undated_rows,
+                            observed_messages=diag['observed_messages'], dated_messages=diag['dated_messages'], **extra)
 
     status(extra_reason="interrupted")  # 강제 종료되어도 완주로 남지 않는다.
 
@@ -1025,6 +1151,7 @@ def main():
             status("blocked", "login_required")
             return 2
     br = None
+    log(f'웹 채팅 시작 - 요청 {d0s} ~ {d1s}, 전체 예산 {budget:g}초')
     if fake is None:
         if os.environ.get("LM_NO_BROWSER"):
             log("LM_NO_BROWSER 설정 — 브라우저를 띄우지 않습니다(시험용)")
@@ -1032,6 +1159,9 @@ def main():
             return 3
         try:
             br = Browser()
+            br.deadline = deadline
+            if hasattr(br, 'cfg'):
+                br.cfg['_collection_deadline'] = deadline
             started = br.start()
         except Exception as e:              # 드라이버 부재·포트 충돌 — 사슬의 다음 경로(창 읽기)로 넘긴다
             log(f"드라이버를 쓸 수 없습니다({type(e).__name__}: {str(e)[:80]}) — 다음 대체 경로로")
@@ -1041,28 +1171,44 @@ def main():
             log("전용 Edge(디버그 포트)를 띄우지 못했습니다 — Edge 설치·config.copilotAuto.port 확인")
             status("blocked", "driver_unavailable")
             return 3
-        st = br.goto(TEAMS_URL)
+        log('Teams 웹 로그인 및 실제 대화 목록 로딩을 확인합니다')
+        try:
+            st = br.goto(TEAMS_URL)
+        except Exception:
+            br.close()
+            status('failed', 'page_load_error')
+            return 1
         if st == "login":
             log("로그인 필요 — 지금 열린 전용 Edge 창의 팀즈 탭에서 회사 계정을 한 번 선택/로그인하세요 (Copilot 과 같은 창, 1회).")
             log("           로그인 뒤 [분석 실행]을 다시 누르면 이어서 읽습니다.")
             status("blocked", "login_required")
+            br.close()
             return 2
         if st == "timeout":
             log("팀즈 웹 화면이 뜨지 않았습니다(네트워크·차단?) — 전용 Edge 창에서 teams.microsoft.com 이 열리는지 확인하세요.")
             status("failed", "page_timeout")
+            br.close()
             return 1
 
-    diag = {"no_time": 0, "no_body": 0, "how_msg": ""}
-    # 전체 시간 예산 — 이 안에 반드시 저장까지 끝낸다. run.py 가 준 상한에 걸려 강제 종료되면
-    # 그때까지 읽은 것이 통째로 사라진다(감사 실측: 최악 920초 > 상한 900초 → 15분 쓰고 0건).
-    # 예산이 다 되면 남은 대화방을 포기하고 지금까지 읽은 것을 저장한다 — 다음 실행이 이어서 채운다.
-    deadline = time.monotonic() + budget
+    # Commit each visible page; interruption retains earlier pages and pending originals.
     def persist(batch):
+        nonlocal undated_rows
         for row in batch:
             row["kind"] = "sent" if _norm(row["from"]) in selfs else "msg"
             rows_seen.add(row.get("source_id") or key_of(row["time"], row["from"], row["chat"], row["summary"]))
         save(batch, force)
+        if undated_rows:
+            undated_rows = len(read_csv(os.path.join(ROOT, 'data', 'collection_pending', 'teams_web_undated.csv')))
         status(extra_reason="interrupted")
+
+    def preserve_undated(batch):
+        nonlocal undated_rows
+        for row in batch:
+            row['kind'] = 'sent' if _norm(row['from']) in selfs else 'msg'
+        undated_rows = save_undated(batch)
+        if 'date_unknown_preserved_separately' not in reasons:
+            reasons.append('date_unknown_preserved_separately')
+        status(extra_reason='interrupted')
 
     def visit(it, key):
         idx = int(it.get("idx") or 0)
@@ -1072,13 +1218,13 @@ def main():
             if str(br.cdp.eval(JS_OPEN % json.dumps(key))) != "ok":
                 reasons.append("chat_open_failed")
                 return
-            if not wait_chat(br, it, name):
+            if not wait_chat(br, it, name, limit=min(5, max(0, deadline-time.monotonic()))):
                 reasons.append("chat_switch_unconfirmed")
                 return
         fm = fake.get("msgs") if fake else None
         fake_idx = key if fm and key in fm else idx
         got, screen = read_chat(br, fake_idx, name, d0, d1, today, fm, diag, deadline,
-                                max_scroll, context_chars, persist, str(it.get("conversation_id") or ""))
+                                max_scroll, context_chars, persist, str(it.get("conversation_id") or ""), preserve_undated)
         if (diag.get("chat_reasons") or [""])[-1] not in ("time_budget", "scroll_limit", "messages_stalled"):
             processed.append(key)
         status(extra_reason="interrupted")
@@ -1091,8 +1237,8 @@ def main():
                 status(extra_reason='interrupted')
             try:
                 collect_search(br, fake, ROOT, d0, d1, today,
-                               min(deadline, time.monotonic() + min(360, budget * 0.45)),
-                               context_chars, persist, on_progress=search_progress)
+                               min(deadline, time.monotonic() + min(60, budget * 0.25)),
+                               context_chars, persist, on_progress=search_progress, on_undated=preserve_undated)
                 reasons += search_summary.get('reasons', [])
             except Exception as error:
                 reasons.append('search_failed:' + type(error).__name__)
@@ -1103,6 +1249,7 @@ def main():
                         reasons.append('search_chat_list_restore_unconfirmed')
                 except Exception:
                     reasons.append('search_chat_list_restore_failed')
+        log('채팅 목록을 순회하며 페이지마다 저장합니다')
         _done, pages, stop = walk_chats(br, fake, max_chats, max_pages, deadline, visit, resume)
         reasons += [stop] + (diag.get("chat_reasons") or [])
         status(list_pages=pages, no_time=diag["no_time"], no_body=diag["no_body"])
