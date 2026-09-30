@@ -604,6 +604,10 @@ def main():
         for kind, v in counts.items()) + " · 전체 원본 대비 확보율은 미확인")
 
     if "--collect-only" in sys.argv or "--communications-only" in sys.argv:
+        if "--communications-only" in sys.argv:
+            print("\n[메일·Teams 수집] 실행 경로의 처리를 마쳤습니다. 수집 범위와 본문 건수를 확인하세요.")
+            print("        자료를 보충한 뒤 [모은 자료 분석]을 실행하면 업무 분석에 반영됩니다.")
+            return finish_run(collect_only=True)
         print("\n[수집만] 이 PC 의 데이터 수집을 마쳤습니다 — 분석은 하지 않았습니다.")
         print("        폴더째 본 PC 로 가져가 [분석 실행]을 누르면 두 PC 데이터가 합산됩니다")
         print("        (같은 메일·일정 등 중복 자료는 분석 때 자동 제외).")

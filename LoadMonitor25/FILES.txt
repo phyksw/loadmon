@@ -14,23 +14,23 @@ LoadMonitor25-이동준비.bat                                 1,063 B  6735729a
 LoadMonitor25-빠른이동.bat                                   125 B  6f5e3143
 agentic.py                                            50,296 B  ecfaaa3d
 freeze.py                                             52,388 B  bf9ba522
-team_report.py                                       177,419 B  d877d332
-flow.py                                               88,805 B  c5390e39
+team_report.py                                       178,561 B  e41775a7
+flow.py                                               88,626 B  55f774ab
 teamserver.py                                         24,918 B  1b26e160
 teamup.py                                             43,530 B  241f55af
-aggregate.py                                          59,298 B  39e31dfc
+aggregate.py                                          60,128 B  c7030fbb
 export.py                                              3,339 B  7bd0e652
 retag.py                                               6,128 B  8d6f81d3
 team_refine.py                                         6,565 B  474ed796
 report_out.py                                         31,160 B  8f18cad9
-README.md                                            105,596 B  c74a88e7
+README.md                                            105,596 B  58b8c8b9
 check.py                                               2,629 B  7badfe69
 judge.py                                              99,815 B  09c87051
 mine.py                                               18,586 B  dc89f32d
 refine.py                                             47,279 B  a3438ca1
 ruff.toml                                              1,004 B  aa861118
 FILES.txt                                                (이 파일)
-run.py                                                48,185 B  040c5c1e
+run.py                                                48,549 B  7d40c370
 자가점검.py                                                9,309 B  e8159835
 collect/Add-WorkLog.ps1                                1,771 B  8a921980
 collect/Get-FileActivity.ps1                          48,656 B  cfab595d
@@ -72,7 +72,7 @@ core/process_scope.py                                  2,161 B  3cf073b8
 core/projmap.py                                        7,133 B  14e8a565
 core/run_cache.py                                     30,147 B  3b559eed
 docs/LM25_수집개선.md                                     12,448 B  3c1d4de4
-docs/LM25_수집파이프라인.html                                18,281 B  1216e9e6
+docs/LM25_수집파이프라인.html                                18,281 B  76c3b95c
 docs/설정가이드.md                                         62,090 B  054c36d2
 docs/사용안내.html                                       272,444 B  26f990bb
 docs/빠른이동.md                                           9,041 B  1e599bb8
@@ -85,4 +85,4 @@ tools/Make-Package.ps1                                11,064 B  ebffe7d6
 tools/Prepare-Move.ps1                                22,997 B  b91fc8ef
 tools/transfer.py                                     22,068 B  55dd0c43
 tools/update_files.py                                  4,530 B  c8761170
-ui/app.py                                            380,489 B  6ccb0d90
+ui/app.py                                            380,898 B  448666ed

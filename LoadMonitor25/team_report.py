@@ -485,16 +485,21 @@ def merge_candidates(agentic):
             nm = str(n.get("name") or "").strip()
             if not nm:
                 continue
+            held = n.get("kpi_eligible") is False or n.get("needs_review") is True
             items.append({"name": nm, "logic": str(n.get("logic") or ""),
                           "reason": str(n.get("reason") or ""),
-                          "mm": _fnum(n.get("allocated_candidate_mm"), 0.0),
-                          "allocation_verified": n.get("allocated_candidate_mm") is not None,
+                          "mm": 0.0 if held else _fnum(n.get("allocated_candidate_mm"), 0.0),
+                          "related_work_mm": _fnum(n.get("related_work_mm"), 0.0),
+                          "needs_review": held, "kpi_eligible": not held,
+                          "allocation_verified": not held and n.get("allocated_candidate_mm") is not None,
                           "who": str(a.get("owner") or "")})
     groups = []
     for it in items:
         hit = None
         itn = _note(it["name"])
         for g in groups:
+            if g["needs_review"] != it["needs_review"]:
+                continue
             g_notes = {_note(n) for n in g["names"]} - {""}
             if itn and g_notes and itn not in g_notes:
                 continue
@@ -504,11 +509,14 @@ def merge_candidates(agentic):
         if hit is None:
             groups.append({"name": it["name"], "names": {it["name"]}, "logic": it["logic"],
                            "reason": it["reason"], "mm": it["mm"], "who": {it["who"]},
+                           "related_work_mm": it["related_work_mm"],
+                           "needs_review": it["needs_review"], "kpi_eligible": it["kpi_eligible"],
                            "allocation_verified": it["allocation_verified"]})
         else:
             hit["names"].add(it["name"])
             hit["who"].add(it["who"])
             hit["mm"] += it["mm"]
+            hit["related_work_mm"] += it["related_work_mm"]
             hit["allocation_verified"] &= it["allocation_verified"]
             if len(it["name"]) > len(hit["name"]):
                 hit["name"] = it["name"]
@@ -519,7 +527,7 @@ def merge_candidates(agentic):
     for g in groups:
         g["who"] = sorted(g["who"])
         g["names"] = sorted(g["names"])
-    groups.sort(key=lambda g: -(len(g["who"]) * 10 + g["mm"]))
+    groups.sort(key=lambda g: (g["needs_review"], 0 if g["needs_review"] else -(len(g["who"]) * 10 + g["mm"]), g["name"]))
     return groups
 
 
@@ -2204,17 +2212,19 @@ def cand_refine(share, cands, sender=None, log=say):
                 rep_n = flat[nm]
                 break
         rep_n = rep_n or g["name"]
-        hit = by_rep.get(ukey(rep_n))
+        rep_key = (ukey(rep_n), bool(g.get("needs_review")))
+        hit = by_rep.get(rep_key)
         if hit is None:
             g = dict(g)
             g["name"] = rep_n
-            by_rep[ukey(rep_n)] = g
+            by_rep[rep_key] = g
             merged.append(g)
         else:
             n += 1
             hit["names"] = sorted(set(hit["names"]) | set(g["names"]) | {g["name"]})
             hit["who"] = sorted(set(hit["who"]) | set(g["who"]))
             hit["mm"] += g["mm"]
+            hit["related_work_mm"] = hit.get("related_work_mm", 0) + g.get("related_work_mm", 0)
             hit["allocation_verified"] = (hit.get("allocation_verified", False)
                                           and g.get("allocation_verified", False))
             if len(g["logic"]) > len(hit["logic"]):
@@ -2224,7 +2234,7 @@ def cand_refine(share, cands, sender=None, log=say):
     for g in merged:
         if g["names"] and g["name"] not in set(g["names"]):
             g["name"] = max(g["names"], key=lambda x: (len(x), x))
-    merged.sort(key=lambda g: -(len(g["who"]) * 10 + g["mm"]))
+    merged.sort(key=lambda g: (bool(g.get("needs_review")), 0 if g.get("needs_review") else -(len(g["who"]) * 10 + g["mm"]), g["name"]))
     return merged, n
 
 
@@ -2903,6 +2913,7 @@ def render_full(share, html_dir, sender=None, log=say):
     # ── 5. 신규 후보(유사 병합) ──
     rows_new = "".join(
         f"<tr><td><b>{esc(g['name'])}</b>"
+        + ("<div class='sub'>검토 필요 · 후보 순위/안분 합계 제외</div>" if g.get("needs_review") else "")
         + (f"<div class='sub'>표기 {len(g['names'])}종 통합: "
            f"{esc(' / '.join(g['names'][:4]))}</div>" if len(g["names"]) > 1 else "")
         + f"</td><td>{''.join('<span class=tag>' + esc(w) + '</span>' for w in g['who'])}</td>"
@@ -3222,7 +3233,8 @@ Agent 가능성 <span class="pill" style="background:#1d8a4a">상</span> 자동�
   var ti=tasks.findIndex(function(t){{return t.id===String(x[0]);}});
   var oi=owners.indexOf(String(x[1]));
   if(ti>=0&&oi>=0)exC.add(ti+","+oi);}});
- function mmOf(hit){{return hit.allocated_candidate_mm!=null?hit.allocated_candidate_mm:0;}}
+ function held(hit){{return hit.kpi_eligible===false||hit.needs_review===true;}}
+ function mmOf(hit){{return !held(hit)&&hit.allocated_candidate_mm!=null?hit.allocated_candidate_mm:0;}}
  function heatSt(fit){{
   var al=Math.min(0.85,fit/100*0.85+0.08);
   return "background:rgba(42,120,214,"+al.toFixed(2)+");color:"+(fit>=45?"#fff":"#12151a");}}
@@ -3240,7 +3252,7 @@ Agent 가능성 <span class="pill" style="background:#1d8a4a">상</span> 자동�
    tasks.forEach(function(tk,ti){{
     if(exC.has(ti+","+oi))return;
     var hit=(a.match||[]).find(function(x){{return x.task===tk.id&&x.fit;}});
-    if(!hit)return;
+    if(!hit||held(hit))return;
     sums[ti]+=mmOf(hit); fits[ti].push(hit.fit);
    }});
   }});
@@ -3264,10 +3276,10 @@ Agent 가능성 <span class="pill" style="background:#1d8a4a">상</span> 자동�
     if(hit){{
      var mmv=mmOf(hit);
      if(!off)ptot+=mmv;
-     row+="<td class='cell num"+(off?" x":"")+"' style=\\""+(off?"":heatSt(hit.fit))
+     row+="<td class='cell num"+(off?" x":"")+"' style=\\""+(off||held(hit)?"":heatSt(hit.fit))
        +"\\" data-ti="+ti+" data-oi="+oi+" title=\\"\\u2248"+mmv.toFixed(2)
-       +" MM\\"><b>"+E(hit.fit)+"%</b><br><span style='font-size:8.5px'>"
-       +(hit.allocated_candidate_mm==null?"안분 미확인":mmv.toFixed(2))+"</span></td>";
+       +" MM\\"><b>"+(held(hit)?"검토 필요":E(hit.fit)+"%")+"</b><br><span style='font-size:8.5px'>"
+       +(held(hit)||hit.allocated_candidate_mm==null?"안분 미확인":mmv.toFixed(2))+"</span></td>";
     }}else row+="<td class='dim num'>·</td>";
    }});
    row+="<td class=num><b>"+ptot.toFixed(2)+"</b></td></tr>";

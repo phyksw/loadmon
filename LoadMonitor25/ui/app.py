@@ -1096,7 +1096,7 @@ def import_communication_job(paths, d0, d1):
         ok = result.get("status") not in {"failed", "blocked"}
         log("메일 파일 가져오기: " + json.dumps(result, ensure_ascii=False))
         message = ("메일 가져오기 " + ("부분 완료" if result.get("status") == "partial" else "완료")
-                   + f" — 관측 {result.get('observed_rows', 0)}건 · 새 저장 {result.get('imported_rows', 0)}건. 수집 범위를 확인한 뒤 [수집 자료 분석]을 실행하세요"
+                   + f" — 관측 {result.get('observed_rows', 0)}건 · 새 저장 {result.get('imported_rows', 0)}건. 수집 범위를 확인한 뒤 [모은 자료 분석]을 실행하세요"
                    if ok else "메일 가져오기 실패 — 지원 파일·날짜·읽기 권한을 확인하고 진행 로그의 사유를 확인하세요")
         summary = {"ok": ok, "message": message,
                    "import": result}
@@ -1717,7 +1717,7 @@ def run_job(d0, d1, ai, skip, collect_only=False, reuse_complete=False, force=Fa
                 cmd.append("--reuse-complete")
             if force:
                 cmd.append("--force")
-        log(f"실행: {d0} ~ {d1}" + (" · 수집만(추가 PC)" if collect_only else
+        log(f"실행: {d0} ~ {d1}" + (" · 메일·Teams 수집 (웹 포함)" if communications else " · 수집만(추가 PC)" if collect_only else
             (" · AI 정제" if ai else "") + (" · 재분석만" if skip else "")))
         p = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                              env=dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1"), creationflags=NO_WIN)
@@ -2374,6 +2374,7 @@ function render(){
    const cells=ags.map(a=>{
     const m=(a.match||[]).find(x=>x.task===t.id);
     if(!m||!m.fit)return`<td style="color:#c9cfd8">-</td>`;
+    if(m.needs_review===true||m.kpi_eligible===false)return'<td>검토 필요<br><span style="font-size:9.5px">안분 미확인</span></td>';
     tot+=m.allocated_candidate_mm||0;
     const al=Math.min(0.85,m.fit/100*0.85+0.08);
     return`<td style="background:rgba(42,120,214,${al});color:${m.fit>=45?"#fff":"#12151a"}"><b>${m.fit}%</b><br><span style="font-size:9.5px">${m.allocated_candidate_mm==null?"미확인":Number(m.allocated_candidate_mm).toFixed(2)}</span></td>`;
@@ -2389,7 +2390,7 @@ function render(){
  // 발굴 후보
  let nl="";
  ags.forEach(a=>(a.new||[]).forEach(n=>{nl+=`<div style="border-left:3px solid #6c4fb8;padding:3px 0 3px 10px;margin:8px 0">
-  <b>${esc(n.name)}</b> <span style="font-size:10.5px;color:#8b929b">제안 ${esc(a.owner)} · 안분 업무량 ${n.allocated_candidate_mm==null?"미확인":Number(n.allocated_candidate_mm).toFixed(2)} MM</span>
+  <b>${esc(n.name)}</b> ${n.needs_review===true||n.kpi_eligible===false?'<span class="note">검토 필요</span>':""}<span style="font-size:10.5px;color:#8b929b">제안 ${esc(a.owner)} · 안분 업무량 ${n.allocated_candidate_mm==null?"미확인":Number(n.allocated_candidate_mm).toFixed(2)} MM</span>
   <div style="font-size:11px;color:#5a626b">로직: ${esc(n.logic)}<br>사유: ${esc(n.reason)}</div></div>`;}));
  $("newlist").innerHTML=nl||'<div class="note">발굴된 후보가 없습니다.</div>';
  // 공통업무
@@ -2675,7 +2676,7 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
    <label><input id="communicationbody" type="checkbox">Outlook 웹 본문 포함 · 읽음 표시가 바뀔 수 있음</label></div>
   <p class="note">상단 실행 기간을 사용합니다. Edge에서 회사 계정 로그인이 필요할 수 있습니다. 이 버튼은 AI를 호출하지 않습니다. 날짜별 작업은 예산 내에서 이어받으며 미완료 범위를 남깁니다.</p>
   <details><summary>메일 접근이 막혔다면 저장한 EML / MBOX 가져오기</summary>
-   <p class="note">Outlook에서 저장한 .eml 또는 별도로 제공받은 .mbox 파일의 전체 경로를 한 줄에 하나씩 입력하세요. 폴더는 바로 아래 파일만 읽습니다. 첨부파일은 읽지 않습니다. PST·MSG는 지원하지 않습니다.</p>
+   <p class="note">Outlook에서 저장한 .eml 또는 별도로 제공받은 .mbox 파일의 전체 경로를 한 줄에 하나씩 입력하세요. 폴더는 바로 아래 파일만 읽습니다. 첨부파일은 읽지 않습니다. PST·MSG는 지원하지 않습니다. 설정에 본인 메일 주소가 없으면 발수신 방향과 담당 역할은 미확인으로 남습니다.</p>
    <textarea id="communicationpaths" rows="3" style="width:100%" aria-label="메일 파일 또는 폴더 전체 경로" placeholder="메일 파일 또는 폴더의 전체 경로"></textarea>
    <button class="ghost" id="communicationimport">선택한 메일 파일 가져오기</button>
   </details><p class="note" id="communicationfeedback" role="status" aria-live="polite"></p>
@@ -3005,7 +3006,7 @@ async function communicationAction(kind){
  try{
   const r=await fetch("/api/communication/"+kind,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body),signal:controller.signal}),d=await r.json();
   if(!r.ok||!d.ok)throw Error(d.hint||d.error||"시작하지 못했습니다");
-  feedback.textContent="요청 접수 — 진행 로그와 수집 범위를 확인하세요. 완료 후 [수집 자료 분석]을 실행할 수 있습니다.";
+  feedback.textContent="요청 접수 — 진행 로그와 수집 범위를 확인하세요. 완료 후 [모은 자료 분석]을 실행할 수 있습니다.";
   communicationFeedbackActive=true;wasRunning=true;$("dlog").open=true;if(!timer)timer=setInterval(poll,1000);
  }catch(e){feedback.textContent=e.name==="AbortError"?"응답 시간 초과 — 진행 로그에서 실행 여부를 확인하세요":String(e.message||e);}
  finally{clearTimeout(timeout);runRequestEpoch++;runSubmitting=false;runButtons(!!wasRunning);poll();}

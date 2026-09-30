@@ -616,6 +616,9 @@ def norm_agentic(a2):
     for x in candidates:
         related = fnum(x.get("related_work_mm"))
         allocated = fnum(x.get("allocated_candidate_mm"))
+        held = x.get("kpi_eligible") is False or x.get("needs_review") is True
+        if held and allocated is None:
+            allocated = fnum(x.get("review_allocated_candidate_mm"))
         if (related is None or allocated is None or related < 0 or allocated < 0
                 or allocated > related + 0.005):
             verified = False
@@ -634,6 +637,14 @@ def norm_agentic(a2):
     if not verified:
         for x in candidates:
             x["allocated_candidate_mm"] = None
+    for x in candidates:
+        if x.get("kpi_eligible") is False or x.get("needs_review") is True:
+            # 배분 정합성과 서술 근거는 별도다. 보류 배분은 검토용으로만 보존한다.
+            x["review_allocated_candidate_mm"] = x["allocated_candidate_mm"]
+            x["allocated_candidate_mm"] = None
+            x["needs_review"] = True
+            x["kpi_eligible"] = False
+            x["allocation_verified"] = False
     out["unique_related_work_mm"] = unique if verified else None
     out["expected_saved_mm"] = None
     out["allocation_verified"] = verified
@@ -799,7 +810,8 @@ def build_team_agentic(share, members):
             if hit and fint(hit.get("fit"), 0) > 0:
                 # fit·load_mm 은 업로드된 JSON 값 — 숫자로 강제한 뒤에만 쓴다(저장형 XSS, 검증 확정)
                 lm = fnum(hit.get("allocated_candidate_mm"), 0.0)
-                cells += (f"<td><b>{fint(hit.get('fit'), 0)}%</b> "
+                label = "검토 필요" if hit.get("needs_review") else f"{fint(hit.get('fit'), 0)}%"
+                cells += (f"<td><b>{label}</b> "
                           f"({format(lm, '.2f') if hit.get('allocated_candidate_mm') is not None else '안분 미확인'})</td>")
                 tot += lm
             else:
@@ -820,6 +832,7 @@ def build_team_agentic(share, members):
         for n2 in (a.get("new") or []):
             any_new = True
             h.append(f"<div style='margin:8px 0'>· <b>{esc(n2.get('name'))}</b> "
+                     f"{'<span class=dim>검토 필요 · </span>' if n2.get('needs_review') else ''}"
                      f"<span class='dim'>제안 {esc(m['owner'])} · 안분 업무 {format(n2['allocated_candidate_mm'], '.2f') if n2.get('allocated_candidate_mm') is not None else '미확인'} MM</span><br>"
                      f"<span class='dim'>로직: {esc(n2.get('logic'))} / 사유: {esc(n2.get('reason'))}</span></div>")
     if not any_new:
