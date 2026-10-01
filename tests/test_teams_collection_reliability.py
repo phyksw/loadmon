@@ -30,7 +30,7 @@ class TeamsCollectionTests(unittest.TestCase):
         for name in ("Get-TeamsWeb.py", "Get-OutlookWeb.py", "Get-TeamsChats.py",
                      "Get-TeamsViaCopilot.py", "Get-TeamsWindow.ps1"):
             shutil.copyfile(PRODUCT / "collect" / name, self.root / "collect" / name)
-        for name in ("collection_state.py", "graph_client.py", "communication_archive.py", "communication_context.py"):
+        for name in ("collection_state.py", "graph_client.py", "communication_archive.py", "communication_context.py", "collection_diagnostics.py"):
             shutil.copyfile(PRODUCT / "core" / name, self.root / "core" / name)
         (self.root / "config/config.json").write_text(json.dumps({
             "owner": "Synthetic", "teamsSelfNames": ["Synthetic"],
@@ -94,9 +94,9 @@ class TeamsCollectionTests(unittest.TestCase):
     def test_web_does_not_attribute_old_pane_to_new_chat_when_count_changes(self):
         m = self.module("Get-TeamsWeb.py")
         item = {"idx": 0, "key": "new", "name": "New room", "conversation_id": "new-id"}
-        browser = SimpleNamespace(start=lambda: True, goto=lambda _: "ok", close=lambda: None,
+        browser = SimpleNamespace(start=lambda: True, wait_ready=lambda: "ok", goto=lambda _, **kwargs: "ok", close=lambda: None,
                                   cdp=SimpleNamespace(eval=lambda js: "ok" if "const key" in js else "end"),
-                                  eval_json=lambda js: {"items": [item]} if js == m.JS_CHATS else {"chat": "Old room", "n": 2})
+                                  eval_json=lambda js, **kwargs: {"items": [item]} if js == m.JS_CHATS else {"chat": "Old room", "n": 2})
         with patch.object(m, "Browser", return_value=browser), patch.object(m, "read_chat") as read, \
                 patch.object(m, "wait_chat", return_value=False), \
                 patch.dict(os.environ, {"LM_NO_BROWSER": "", "LM_TEAMSWEB_FAKE": ""}), \
@@ -419,6 +419,29 @@ class TeamsCollectionTests(unittest.TestCase):
         self.assertEqual(status["date_unconfirmed"], 1)
         self.assertEqual(status["period_excluded"], 1)
         self.assertIn("outside_requested_period", status["reasons"])
+
+    def test_app_explicit_korean_weekday_suffix_and_short_sender_replies(self):
+        rows = self.app_replay(
+            "Synthetic chat\n2026년 9월 15일 (화)\n"
+            "Synthetic, 오전 9:00 확인\nOther, 오전 9:01 OK\n"
+            "Other, 오전 9:02 승인\nOther, 오전 9:03 네\n"
+            "Other, 오전 9:04\n오전 9:05 OK\nOK\n닫기\n"
+            "2026년 9월 18일 (금)까지 제출\nOther, 오전 9:06 Same date after body sentence\n"
+            "Unknown chat\n9월 15일 (화)\nOther, 오전 10:00 Year unconfirmed\n"
+            "Another chat\n2026. 9. 17. (목)\nOther, 오후 2:00 Explicit dated work\n"
+            "Other, 오후 2:01 Discuss 2026년 9월 18일 (금) deadline\n",
+            "-From", "2026-09-01", "-To", "2026-09-20")
+        by_text = {row["summary"]: row for row in rows}
+        self.assertEqual(len(rows), 7)
+        for minute, body in enumerate(("확인", "OK", "승인", "네")):
+            self.assertEqual(by_text[body]["time"], f"2026-09-15 09:0{minute}")
+            self.assertEqual(by_text[body]["time_precision"], "minute")
+        self.assertEqual(by_text["확인"]["kind"], "sent")
+        self.assertEqual(by_text["OK"]["kind"], "msg")
+        self.assertEqual(by_text["Same date after body sentence"]["time"], "2026-09-15 09:06")
+        self.assertEqual(by_text["Explicit dated work"]["time"], "2026-09-17 14:00")
+        self.assertEqual(by_text["Discuss 2026년 9월 18일 (금) deadline"]["time"], "2026-09-17 14:01")
+        self.assertNotIn("Year unconfirmed", by_text)
 
 
 if __name__ == "__main__":

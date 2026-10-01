@@ -12,6 +12,7 @@ import re
 import subprocess
 import time
 import uuid
+from urllib.parse import urlsplit
 
 from collection_state import status_snapshot
 
@@ -88,6 +89,9 @@ CAUSES = {
     "browser_port_unavailable": ("수집용 브라우저 포트 사용 불가", "수집용 포트를 확보하지 못했습니다. 실행 중인 다른 설치본과 포트 제한을 확인하세요."),
     "page_not_ready": ("화면 준비 실패", "수집용 웹 창에 메일·채팅 목록이 실제로 표시되는지 확인하세요."),
     "selector_unmatched": ("화면 구조 인식 실패", "원인표의 경로·화면 인식 건수로 해당 화면 형식을 점검해야 합니다."),
+    "page_evaluation_failed": ("화면 읽기 연결 오류", "원인표의 브라우저 단계와 오류 종류를 확인해야 합니다. 빈 사서함으로 판정하지 않습니다."),
+    "context_unverified": ("대화·본문 연결 확인 실패", "열린 대화가 선택한 항목과 일치하지 않아 해당 본문을 확정하지 않았습니다."),
+    "chat_read_failed": ("일부 대화 화면 읽기 실패", "읽지 못한 대화가 있습니다. 다른 대화에서 저장한 자료는 유지하며 원인표의 화면·날짜 건수를 확인하세요."),
     "date_unconfirmed": ("날짜를 확인하지 못함", "날짜가 확인되지 않은 메시지는 선택 기간의 건수에 넣지 않습니다."),
     "budget_reached": ("시간 한도 도달", "저장된 중간 자료를 보존했습니다. 같은 기간으로 다시 실행하면 체크포인트를 사용합니다."),
     "search_unverified": ("검색 범위 확인 실패", "웹 검색 결과를 전체 원문 확보로 간주하지 않습니다."),
@@ -107,7 +111,66 @@ COUNTERS = {"rows", "mail_rows", "calendar_rows", "parsed_messages", "period_exc
 WEB_COUNTERS = {"search", "items", "parsed", "sent", "cc", "date_only", "pages", "sent_pass_new",
                 "body_rows", "detail_failed", "completed_units", "search_failed", "search_unverified",
                 "search_attempts", "undated", "period_filtered", "empty_results", "unsupported_pages",
-                "navigation_failed", "visible_unverified", "total_units"}
+                "navigation_failed", "visible_unverified", "total_units", "thread_messages", "context_filtered"}
+
+BROWSER_ENUMS = {
+    "phase": {"starting", "browser_connected", "tab_connected", "navigating", "waiting_login",
+              "waiting_surface", "surface_ready", "reading", "failed"},
+    "surface": {"mail", "teams", "login", "other", "unknown"},
+    "last_error": {"TimeoutError", "OSError", "ConnectionError", "RuntimeError", "ValueError", "other"},
+}
+BROWSER_COUNTERS = {"page_checks", "page_errors", "items", "chats", "messages", "listboxes"}
+BROWSER_FLAGS = {"browser_connected", "tab_connected", "login_seen", "ready_seen", "loading", "empty", "search"}
+
+
+def browser_snapshot(value):
+    """Only fixed enums/booleans/counts; no URL, DOM text, identities or errors."""
+    value = value if isinstance(value, dict) else {}
+    result = {k: v for k, v in value.items() if k in BROWSER_ENUMS and isinstance(v, str) and v in BROWSER_ENUMS[k]}
+    result.update({k: v for k, v in value.items() if k in BROWSER_COUNTERS and type(v) is int and 0 <= v < 1e9})
+    result.update({k: v for k, v in value.items() if k in BROWSER_FLAGS and type(v) is bool})
+    return result
+
+
+def observe_browser(browser, phase, href=None, page=None, error=None):
+    """Track the actual browser readiness boundary without storing page content."""
+    state = browser_snapshot(getattr(browser, "observation", {}))
+    state["phase"] = phase
+    if phase in {"browser_connected", "tab_connected"}:
+        state[phase] = True
+    if phase == "waiting_login":
+        state["login_seen"] = True
+    if phase == "surface_ready":
+        state["ready_seen"] = True
+        state.pop("last_error", None)
+    if href is not None:
+        try:
+            host = urlsplit(str(href)).hostname or ""
+        except ValueError:
+            host = ""
+        state["surface"] = (
+            "mail" if host in {"outlook.office.com", "outlook.cloud.microsoft", "outlook.office365.com", "outlook.live.com"} else
+            "teams" if host in {"teams.microsoft.com", "teams.cloud.microsoft", "teams.office.com", "teams.live.com"} else
+            "login" if host in {"login.microsoftonline.com", "login.live.com", "login.microsoft.com"} else
+            "other" if host else "unknown")
+    if isinstance(page, dict):
+        state["page_checks"] = state.get("page_checks", 0) + 1
+        for key in ("items", "chats", "messages", "listboxes"):
+            value = page.get(key)
+            if isinstance(value, list):
+                state[key] = len(value)
+            elif type(value) is int and 0 <= value < 1e9:
+                state[key] = value
+        for key in ("loading", "empty", "search"):
+            if type(page.get(key)) is bool:
+                state[key] = page[key]
+    if error is not None:
+        state["page_errors"] = state.get("page_errors", 0) + 1
+        kind = next((kind.__name__ for kind in (TimeoutError, ConnectionError, OSError, ValueError, RuntimeError)
+                     if isinstance(error, kind)), "other")
+        state["last_error"] = kind
+    browser.observation = browser_snapshot(state)
+    return browser.observation
 
 
 def cause_code(reason):
@@ -120,8 +183,11 @@ def cause_code(reason):
         ("com_unavailable", ("com_unregistered", "classic_profile_missing")),
         ("graph_unconfigured", ("graph 앱 연결 미설정",)),
         ("access_blocked", ("access_denied", "policy", "forbidden", "403", "conditional_access")),
-        ("browser_unavailable", ("edge startup", "browser_start", "debug_port", "cdp_unavailable", "driver_unavailable")),
-        ("page_not_ready", ("page_timeout", "page timeout", "not_ready", "page_not", "shell_only")),
+        ("browser_unavailable", ("edge startup", "browser_start", "debug_port", "cdp_unavailable", "driver_unavailable", "browser_failed", "driver_error")),
+        ("page_evaluation_failed", ("page_evaluation_failed",)),
+        ("chat_read_failed", ("chat_read_failed",)),
+        ("context_unverified", ("context_room_changed", "anchor_unconfirmed", "chat_switch_unconfirmed", "chat_open_failed")),
+        ("page_not_ready", ("page_timeout", "page timeout", "not_ready", "page_not", "shell_only", "page_load_error")),
         ("selector_unmatched", ("selector", "list_not_found", "no_chat_list")),
         ("date_unconfirmed", ("date_unconfirmed", "undated", "unknown_date", "date_unknown")),
         ("budget_reached", ("budget", "시간 예산", "timed_out", "timeout", "time_limit")),
@@ -160,6 +226,7 @@ def build_diagnostics(root, d0, d1, run):
                 "causes": list(dict.fromkeys(cause_code(s) for s in state.get("reasons", []) if isinstance(s, str)))}
         item["counters"] = {k: v for k, v in state.items() if k in COUNTERS and type(v) in {int, float, bool}
                             and (type(v) is bool or 0 <= v < 1e12)}
+        item["browser"] = browser_snapshot(state.get("browser"))
         details = state.get("diagnostics") or {}
         if isinstance(details, dict):
             for kind in ("mail", "cal"):
@@ -191,8 +258,22 @@ def build_diagnostics(root, d0, d1, run):
                                       if isinstance(r, dict) and set(r) == {"name", "version"}
                                       and isinstance(r["name"], str) and r["name"] in {"outlook", "olk", "ms-teams", "teams"}
                                       and re.fullmatch(r"(?:\d+(?:\.\d+){1,5}|unknown)", str(r["version"]))]
-    return {"schema": 1, "version": "v25.11", "period": [d0, d1], "created_at": time.time(),
+    evidence = run.get("communication_evidence") or {}
+    saved = {}
+    if evidence.get("period") == [d0, d1]:
+        allowed = {"raw_rows", "in_period_rows", "unique_rows", "context_rows", "unknown_date_rows", "pending_rows",
+                   "context_filtered_rows", "files", "unreadable_files", "pending_unreadable_files", "dated_rows",
+                   "web_body_observed_rows", "web_body_partial_rows"}
+        for family in ("mail", "teams"):
+            values = (evidence.get("families") or {}).get(family) or {}
+            saved[family] = {k: v for k, v in values.items() if k in allowed and type(v) is int and 0 <= v < 1e12}
+            if saved[family].get("raw_rows", 0) and not saved[family].get("in_period_rows", 0):
+                summaries.append(f"{family}: 저장된 행은 있지만 선택 기간의 확정 신호가 없습니다. 날짜·기간·시간 보정 값을 확인하세요.")
+    offset = evidence.get("mail_time_offset_hours") if evidence.get("period") == [d0, d1] else None
+    date_settings = {"mail_time_offset_hours": offset} if type(offset) in {int, float} and -24 <= offset <= 24 else {}
+    return {"schema": 2, "version": "v25.14", "period": [d0, d1], "created_at": time.time(),
             "client_capabilities": capability, "routes": routes, "stages": stages,
+            "saved_evidence": saved, "date_settings": date_settings,
             "summary": list(dict.fromkeys(summaries)), "includes_message_content": False,
             "scope_note": "현재 실행과 이전 기록을 구분합니다. 관측 자료·웹 목록은 서버 전체 확보율이 아닙니다."}
 

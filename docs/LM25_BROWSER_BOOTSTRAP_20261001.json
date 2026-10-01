@@ -1,0 +1,83 @@
+{
+  "schema": 1,
+  "review_date": "2026-10-01",
+  "baseline_revision": "32fc062",
+  "purpose": "메일·Teams 공통 Edge 시작 경로를 실제 로컬 전송으로 확인하고, 합성 DOM 검사와 실제 회사 계정 수집 검증을 구분한다.",
+  "confirmed_issue": {
+    "source": "LoadMonitor25/tools/copilot_auto.py:http_json",
+    "mechanism": "urllib.request.urlopen이 상속한 HTTP 프록시에 127.0.0.1 CDP 요청을 전달할 수 있다.",
+    "reproduction": "TEMP에 복사한 드라이버와 실제 loopback HTTP 서버 2개를 사용했다. 정상 CDP 대역 서버는 JSON 200을, 폐쇄형 프록시 대역 서버는 502를 반환했다. 시험 프로세스에만 http_proxy/HTTP_PROXY를 지정하고 no_proxy/NO_PROXY를 비웠다.",
+    "before": "정상 로컬 서버가 있어도 urllib.error.HTTPError: HTTP Error 502: Bad Gateway로 실패했다.",
+    "after": "http_json 전용 ProxyHandler({}) opener를 적용한 뒤 직접 연결에 성공했고, 프록시에 전달된 요청은 0건이었다.",
+    "scope": "로컬 CDP HTTP에만 적용한다. 전역 urllib opener, 원격 웹사이트의 프록시 설정, 조직 정책은 변경하지 않는다.",
+    "regression_classification": "LM24 비교본에도 동일한 기본 프록시 상속 코드가 있었다. 이번 버전에서 새로 생긴 회귀 또는 사용자 회사 PC 0건의 확정 원인으로 분류하지 않는다."
+  },
+  "test_environment": {
+    "platform": "Windows",
+    "python": "제품에 동봉한 CPython 3.11.9",
+    "edge_observed": "Edg/154.0.4258.37",
+    "test_file": "tests/test_browser_bootstrap.py",
+    "account_data_accessed": false,
+    "existing_browser_profiles_accessed": false,
+    "real_mail_or_teams_services_accessed": false,
+    "credentials_recorded": false,
+    "profile_paths_recorded": false
+  },
+  "live_edge_safety_and_differences": {
+    "authorization": "현재 수집 결함 검토를 위한 격리된 TEMP about:blank 연결 시험이다.",
+    "isolation": "각 시험은 새 TEMP 사용자 데이터 디렉터리와 시험용 로컬 포트를 사용했다. 다른 포트에 대한 드라이버 조회를 시험 wrapper가 차단했다.",
+    "navigation": "about:blank만 열었다. 기존 계정 프로필이나 기존 메일·Teams 탭은 사용하지 않았다.",
+    "launch_difference": "시험 wrapper에서만 --headless=new, GPU·배경 네트워크·구성요소 업데이트·동기화·기본 앱 억제 플래그와 외부 호스트 이름 해석 차단을 추가했다. 제품의 표시 창·SSO·조직 정책 환경과 같다는 의미는 아니다.",
+    "cleanup": "시험이 시작한 브라우저의 검증된 포트에 Browser.close를 보냈고, 필요 시 해당 Popen PID만 종료하도록 했다. TEMP 정리는 Python TemporaryDirectory가 처리했다.",
+    "default_test_behavior": "실제 Edge 시험 2개는 LM_TEST_REAL_EDGE_BOOTSTRAP=1일 때만 실행된다. 일반 회귀 검사에서는 건너뛰며 브라우저를 시작하지 않는다."
+  },
+  "observations": [
+    {
+      "test": "test_loopback_debugger_does_not_use_inherited_http_proxy",
+      "execution": "실제 loopback HTTP 서버와 폐쇄형 프록시 서버",
+      "before_fix": "FAIL: HTTP 502",
+      "after_fix": "PASS",
+      "contracts": ["로컬 직접 연결", "프록시 전달 0건", "프로세스 전역 urllib opener 불변"]
+    },
+    {
+      "test": "test_local_new_tab_put_is_preserved",
+      "execution": "실제 loopback HTTP 서버",
+      "result": "PASS",
+      "contracts": ["CDP 새 탭 요청의 PUT 메서드와 경로 보존"]
+    },
+    {
+      "test": "test_fresh_headless_edge_profile_and_real_cdp",
+      "execution": "별도 opt-in 실제 Edge",
+      "result": "PASS",
+      "bootstrap_seconds": 1.484,
+      "contracts": ["신규 프로필 시작", "포트·프로필 소유 확인", "동일 브라우저 재사용", "Popen 1회", "실제 CDP에서 빈 제목과 about:blank 확인"]
+    },
+    {
+      "test": "test_legacy_headless_edge_profile_uses_windows_owner_fallback",
+      "execution": "별도 opt-in 실제 Edge, LM24 실행 형태에 맞춰 --enable-automation 제외",
+      "result": "PASS",
+      "bootstrap_seconds": 6.235,
+      "windows_owner_checks": 2,
+      "contracts": ["실제 Windows 리스너와 CIM 프로세스 조회 폴백", "프로필·포트 소유 확인", "동일 브라우저 재사용", "실제 CDP 평가"]
+    }
+  ],
+  "related_checks": [
+    {"suite": "tests/test_deep_web_review.py", "passed": 16},
+    {"suite": "tests/test_browser_bootstrap.py (일반 실행)", "passed": 2, "skipped_opt_in": 2},
+    {"suite": "실제 Edge opt-in 시험 각각 별도 실행", "passed": 2},
+    {"suite": "scripts/quality.py --quick", "result": "PASS"},
+    {"suite": "git diff --check", "result": "PASS"}
+  ],
+  "remaining_unknowns": [
+    "사용자 회사 PC에서 실제 0건이 발생한 실행 경로와 오류는 확인하지 않았다.",
+    "SSO, 로그인 소요시간, 회사 계정 권한, 조직의 원격 디버깅 정책, 실제 Outlook·Teams DOM은 시험하지 않았다.",
+    "별도 설치 경로의 새 프로필은 기존 브라우저 로그인 상태와 같지 않을 수 있다.",
+    "실제 로컬 Edge 부팅 성공은 메일·Teams 수집 성공이나 서버 전체 확보를 의미하지 않는다.",
+    "기존 LM 세션의 Windows 프로세스 조회가 다른 PC에서도 같은 시간 내 성공한다고 보장하지 않는다."
+  ],
+  "official_policy_reference": {
+    "title": "Microsoft Edge RemoteDebuggingAllowed policy",
+    "url": "https://learn.microsoft.com/en-us/deployedge/microsoft-edge-policies/remotedebuggingallowed",
+    "interpretation": "조직에서 원격 디버깅을 비활성화할 수 있다는 일반적 경계이다. 사용자 PC에 이 정책이 적용됐다는 증거는 없다."
+  }
+}

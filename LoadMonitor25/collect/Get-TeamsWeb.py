@@ -44,6 +44,7 @@ sys.path.insert(0, os.path.join(ROOT, "core"))
 from collection_state import merge_csv, read_csv, record_key, web_capture_score, write_csv, write_status  # noqa: E402
 from communication_archive import archive_records  # noqa: E402
 from communication_context import body_is_filtered, make_excerpt  # noqa: E402
+from collection_diagnostics import browser_snapshot, observe_browser  # noqa: E402
 
 OUT_DIR = os.path.join(ROOT, "data", "m365")
 HDR = "time,from,chat,kind,replied_time,summary"
@@ -544,9 +545,11 @@ class Browser:
         self.deadline = None
 
     def start(self):
+        observe_browser(self, "starting")
         if not self.ca.ensure_edge(self.cfg):
             return False
         self.port = self.cfg["port"]
+        observe_browser(self, "browser_connected")
         ws = None
         def remaining():
             seconds = (self.deadline or float('inf'))-time.monotonic()
@@ -571,6 +574,7 @@ class Browser:
         if self.deadline and time.monotonic() >= self.deadline:
             raise TimeoutError('teams_web_time_budget')
         self.cdp = DeadlineCDP(self.ca.CDP(ws, timeout=remaining()), lambda: self.deadline)
+        observe_browser(self, "tab_connected")
         try:
             self.cdp.call("Page.enable")
         except Exception:
@@ -584,6 +588,7 @@ class Browser:
             return ""
 
     def goto(self, url, wait=6.0):
+        observe_browser(self, "navigating")
         try:
             self.cdp.call("Page.navigate", {"url": url})
         except Exception:
@@ -595,31 +600,43 @@ class Browser:
         """팀즈 웹은 첫 로드가 느리다(워크로드 셸 → 채팅). → 'login' | 'ok' | 'timeout'"""
         until = min(self.deadline or float('inf'), time.monotonic() + limit)
         opened, stable, waiting_login, login_announced = False, 0, False, False
+        last_probe_failed = False
+        self.last_diagnostic = ""
+        def login_wait(href):
+            nonlocal until, login_announced
+            observe_browser(self, "waiting_login", href=href)
+            if not login_announced:
+                log('수집용 Edge에서 회사 계정을 선택·로그인하세요. 최초 로그인은 최대 120초, 전체 수집 한도 안에서 기다립니다.')
+                if not getattr(self, '_ready_once', False):
+                    until = min(self.deadline or float('inf'), max(until, time.monotonic() + 120))
+                login_announced = True
+            time.sleep(min(0.5, max(0, until-time.monotonic())))
         while time.monotonic() < until:
             h = self.href(timeout=min(5, max(0.1, until-time.monotonic())))
             host = urlparse(h).hostname or ''
             if host in ('login.microsoftonline.com', 'login.live.com', 'login.microsoft.com'):
                 waiting_login, stable = True, 0
-                if not login_announced:
-                    log('로그인 화면 확인 - 전용 Edge에서 로그인하면 이번 수집을 이어갑니다. 자동 SSO 완료도 기다립니다.')
-                    login_announced = True
-                time.sleep(min(0.5, max(0, until-time.monotonic())))
+                login_wait(h)
                 continue
             try:
                 state = self.eval_json(JS_READY, timeout=min(5, max(0.1, until-time.monotonic())))
-            except Exception:
+                observe_browser(self, "waiting_surface", href=h, page=state)
+                last_probe_failed = False
+            except Exception as error:
+                observe_browser(self, "waiting_surface", href=h, error=error)
+                last_probe_failed = True
                 state = {}
             if state.get('login'):
                 waiting_login, stable = True, 0
-                if not login_announced:
-                    log('로그인 화면 확인 - 전용 Edge에서 로그인하면 이번 수집을 이어갑니다. 자동 SSO 완료도 기다립니다.')
-                    login_announced = True
-                time.sleep(min(0.5, max(0, until-time.monotonic())))
+                login_wait(h)
                 continue
             waiting_login = False
             if state.get('chats') or state.get('messages') or (state.get('empty') and not state.get('busy')):
                 stable += 1
                 if stable >= 2:
+                    self._ready_once = True
+                    self.last_diagnostic = 'ready'
+                    observe_browser(self, "surface_ready", href=h, page=state)
                     return 'ok'
             else:
                 stable = 0
@@ -627,6 +644,8 @@ class Browser:
                     self.cdp.eval(JS_OPEN_CHAT_AREA, timeout=min(5, max(0.1, until-time.monotonic())))
                     opened = True
             time.sleep(min(0.5, max(0, until-time.monotonic())))
+        self.last_diagnostic = 'login_required' if waiting_login else (
+            'page_evaluation_failed' if last_probe_failed else 'page_timeout')
         return 'login' if waiting_login else 'timeout'
 
     def eval_json(self, js, timeout=40):
@@ -713,17 +732,50 @@ def pane_matches(item, name, pane):
 
 
 def wait_chat(br, item, name, limit=5):
-    """Wait for identity, not just a changing count in the previous chat."""
+    """Return the verified pane identity, not merely a changing message count."""
     until = time.monotonic() + limit
     while time.monotonic() < until:
         try:
             pane = br.eval_json(JS_PANE)
             if pane_matches(item, name, pane) and pane.get('n', 1) > 0 and not pane.get('busy'):
-                return True
+                return pane
         except Exception:
             pass  # A pane being replaced can be temporarily unreadable.
         time.sleep(0.25)
     return False
+
+
+def read_active_chat(br, d0, d1, today, *, deadline, context_chars, on_page, on_undated,
+                     diag, privacy_keywords=()):
+    """Preserve one verified current page before search/navigation hides it."""
+    end = min(deadline, time.monotonic() + 5)
+    if end <= time.monotonic():
+        return 0
+    pane = br.eval_json(JS_PANE, timeout=max(0.001, end-time.monotonic()))
+    if not pane.get('n') or pane.get('busy'):
+        return 0
+    name, conversation = str(pane.get('chat') or ''), str(pane.get('conversation_id') or '')
+    if not name and not conversation:
+        raise ValueError('active_chat_identity_missing')
+    expected = {'name': name, 'conversation_id': conversation}
+    page = (br.capture_messages(conversation, name, end) if hasattr(br, 'capture_messages')
+            else br.eval_json(JS_MSGS, timeout=max(0.001, end-time.monotonic())))
+    if not pane_matches(expected, name, page):
+        raise ValueError('context_room_changed')
+    if not page.get('items'):
+        return 0
+    # A one-page observation cannot establish history completion. Use the same
+    # date/privacy/persistence path without issuing a scroll or advancing a cursor.
+    local = {}
+    rows, _ = read_chat(None, 0, name, d0, d1, today, fake={'0': [page]}, diag=local,
+                       max_scroll=0, context_chars=context_chars, on_page=on_page,
+                       conversation_id=conversation, on_undated=on_undated,
+                       privacy_keywords=privacy_keywords)
+    for key in ('observed_messages', 'dated_messages', 'no_time', 'no_body'):
+        diag[key] = diag.get(key, 0) + local.get(key, 0)
+    if local.get('how_msg'):
+        diag['how_msg'] = local['how_msg']
+    return len(rows)
 
 
 def read_chat(br, idx, name, d0, d1, today, fake=None, diag=None, deadline=None,
@@ -1457,6 +1509,7 @@ def main():
     if not isinstance(chat_cursors, dict):
         chat_cursors = {}
 
+    br = None
     def status(state="partial", extra_reason="", **extra):
         return write_status(ROOT, "teams_web", d0s, d1s, status=state, rows=len(rows_seen), scope=SCOPE,
                             reasons=list(dict.fromkeys(reasons + ([extra_reason] if extra_reason else []))),
@@ -1465,6 +1518,7 @@ def main():
                             chat_context_cursors=chat_cursors,
                             capture_signature=signature,
                             search=search_summary, undated_rows=undated_rows,
+                            browser=browser_snapshot(getattr(br, "observation", {})),
                             observed_messages=diag['observed_messages'], dated_messages=diag['dated_messages'], **extra)
 
     status(extra_reason="interrupted")  # 강제 종료되어도 완주로 남지 않는다.
@@ -1495,6 +1549,8 @@ def main():
                 br.cfg['_collection_deadline'] = deadline
             started = br.start()
         except Exception as e:              # 드라이버 부재·포트 충돌 — 사슬의 다음 경로(창 읽기)로 넘긴다
+            if br:
+                observe_browser(br, "failed", error=e)
             log(f"드라이버를 쓸 수 없습니다({type(e).__name__}: {str(e)[:80]}) — 다음 대체 경로로")
             status("failed", "driver_error")
             return 3
@@ -1505,8 +1561,11 @@ def main():
             return 3
         log('Teams 웹 로그인 및 실제 대화 목록 로딩을 확인합니다')
         try:
-            st = br.goto(TEAMS_URL)
-        except Exception:
+            # start() already opens Teams for a new tab. Keep a reused tab's
+            # current conversation until its rendered page has been preserved.
+            st = br.wait_ready()
+        except Exception as error:
+            observe_browser(br, "failed", error=error)
             br.close()
             status('failed', 'page_load_error')
             return 1
@@ -1518,17 +1577,20 @@ def main():
             return 2
         if st == "timeout":
             log("팀즈 웹 화면이 뜨지 않았습니다(네트워크·차단?) — 전용 Edge 창에서 teams.microsoft.com 이 열리는지 확인하세요.")
-            status("failed", "page_timeout")
+            status("failed", getattr(br, "last_diagnostic", "") or "page_timeout")
             br.close()
             return 1
+
+        observe_browser(br, "reading")
 
     # Commit each visible page; interruption retains earlier pages and pending originals.
     def persist(batch):
         nonlocal undated_rows
         for row in batch:
             row["kind"] = "sent" if _norm(row["from"]) in selfs else "msg"
-            rows_seen.add(row.get("source_id") or key_of(row["time"], row["from"], row["chat"], row["summary"]))
         save(batch, force)
+        for row in batch:
+            rows_seen.add(row.get("source_id") or key_of(row["time"], row["from"], row["chat"], row["summary"]))
         if undated_rows:
             undated_rows = len(read_csv(os.path.join(ROOT, 'data', 'collection_pending', 'teams_web_undated.csv')))
         status(extra_reason="interrupted")
@@ -1545,14 +1607,20 @@ def main():
     def visit(it, key):
         idx = int(it.get("idx") or 0)
         name = chat_name(it)
+        conversation = str(it.get('conversation_id') or '')
         if br:
             br.eval_json(JS_CHATS)  # 가상 목록의 오래된 DOM 참조를 버린다.
             if str(br.cdp.eval(JS_OPEN % json.dumps(key))) != "ok":
                 reasons.append("chat_open_failed")
                 return
-            if not wait_chat(br, it, name, limit=min(5, max(0, deadline-time.monotonic()))):
+            pane = wait_chat(br, it, name, limit=min(5, max(0, deadline-time.monotonic())))
+            if not pane:
                 reasons.append("chat_switch_unconfirmed")
                 return
+            # Keep the complete identity that passed verification. A legacy
+            # comma-separated label can yield only its first participant in name.
+            name = str(pane.get('chat') or name)
+            conversation = str(pane.get('conversation_id') or conversation)
         fm = fake.get("msgs") if fake else None
         fake_idx = key if fm and key in fm else idx
         def checkpoint(value):
@@ -1561,14 +1629,35 @@ def main():
 
         got, screen = read_chat_resumable(br, fake_idx, name, d0, d1, today, fake=fm, diag=diag, deadline=deadline,
                                           max_scroll=max_scroll, context_chars=context_chars, on_page=persist,
-                                          conversation_id=str(it.get('conversation_id') or ''), on_undated=preserve_undated,
+                                          conversation_id=conversation, on_undated=preserve_undated,
                                           cursor=chat_cursors.get(key), on_cursor=checkpoint,
                                           privacy_keywords=cfg.get('excludePathKeywords') or [])
         if (diag.get("chat_reasons") or [""])[-1] in ('requested_start_reached', 'history_end'):
             processed.append(key)
         status(extra_reason="interrupted")
         log(f"  · {name or '(이름 없음)'} — 화면 {screen}개 → {len(got)}건")
+
+    def visit_safely(it, key):
+        try:
+            visit(it, key)
+        except (ValueError, RuntimeError, TimeoutError) as error:
+            reasons.append('chat_read_failed:' + type(error).__name__)
+            if br:
+                observe_browser(br, 'reading', error=error)
+            status(extra_reason='interrupted')
+            log('  · 대화 읽기 미완료 — 다른 대화를 계속 확인합니다')
+
     try:
+        if br:
+            try:
+                active_rows = read_active_chat(br, d0, d1, today, deadline=deadline,
+                    context_chars=context_chars, on_page=persist, on_undated=preserve_undated,
+                    diag=diag, privacy_keywords=cfg.get('excludePathKeywords') or [])
+                log(f'현재 열린 대화 페이지 — 기간 내 {active_rows}건 (화면에서 확인한 범위)')
+            except (ValueError, RuntimeError, TimeoutError) as error:
+                reasons.append('active_chat_read_failed:' + type(error).__name__)
+                observe_browser(br, 'reading', error=error)
+                status(extra_reason='interrupted')
         if fake is None or 'search' in fake:
             def search_progress(summary):
                 nonlocal search_summary
@@ -1590,7 +1679,7 @@ def main():
                 except Exception:
                     reasons.append('search_chat_list_restore_failed')
         log('채팅 목록을 순회하며 페이지마다 저장합니다')
-        _done, pages, stop = walk_chats(br, fake, max_chats, max_pages, deadline, visit, resume)
+        _done, pages, stop = walk_chats(br, fake, max_chats, max_pages, deadline, visit_safely, resume)
         reasons += [stop] + (diag.get("chat_reasons") or [])
         status(list_pages=pages, no_time=diag["no_time"], no_body=diag["no_body"])
     except Exception as e:

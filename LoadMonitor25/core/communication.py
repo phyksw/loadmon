@@ -133,7 +133,8 @@ class CommunicationCollection:
             ("outlook_index", "Outlook 보충 · Windows Search 색인", "Get-OutlookIndex.ps1", 240, True),
             ("outlook_web", "Outlook 보충 · Microsoft 365 웹 (앱 버전 무관)", "Get-OutlookWeb.py",
              _number(self.options.get("mailWebBudgetSec"), 180, 30, 1800) + 30,
-             not self.headless and self.config.get("mailViaWeb", True) and "--no-mail-web" not in self.argv),
+             not self.headless and ("--mail-web" in self.argv or self.config.get("mailViaWeb", True))
+             and "--no-mail-web" not in self.argv),
             ("outlook_copilot", "Outlook 보충 · Copilot 조회", "Get-MailViaCopilot.py", 300 + 600 * months * 2,
              not self.headless and self.config.get("mailViaCopilot", True) and "--no-mail-copilot" not in self.argv),
         ]
@@ -182,7 +183,8 @@ class CommunicationCollection:
         budget = _number(self.options.get("teamsBudgetSec"), 2400, 120, 14400)
         deadline = time.monotonic() + budget
         graph = bool((self.config.get("graph") or {}).get("clientId"))
-        web = self.config.get("teamsWeb", True) and not self.headless
+        web = (("--teams-web" in self.argv or self.config.get("teamsWeb", True)) and not self.headless
+               and "--no-teams-web" not in self.argv)
         copilot = (self.config.get("teamsViaCopilot", False) and not self.headless
                    and "--no-teams-copilot" not in self.argv)
         app = ("teams_app", "Teams 보충 · 열린 앱", self.ps + [str(self.col / "Get-TeamsWindow.ps1"),

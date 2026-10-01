@@ -13,7 +13,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
+from urllib.parse import urlsplit
 
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -136,13 +138,31 @@ def browser_dependencies():
     return node, str(playwright), browser
 
 
+BROWSER_OWNER = r"""
+const {chromium}=require(process.env.LM_PLAYWRIGHT_MODULE);
+const fs=require('fs');
+(async()=>{
+ // Install the EOF handler before launch, including setup-failure cleanup.
+ const stop=new Promise(resolve=>{
+  process.stdin.once('data',resolve);process.stdin.once('end',resolve);process.stdin.resume();
+ });
+ const ownedServer=await chromium.launchServer({host:'127.0.0.1',executablePath:process.env.LM_BROWSER_EXE,
+  headless:true,timeout:15000,args:['--disable-background-networking','--no-first-run']});
+ try{
+  fs.writeFileSync(process.env.LM_BROWSER_READY,JSON.stringify({endpoint:ownedServer.wsEndpoint()}));
+  await stop;
+ }finally{await ownedServer.kill();}
+})().catch(error=>{console.error(error.stack);process.exitCode=1;process.stdin.destroy();});
+"""
+
+
 BROWSER_PROBE = r"""
 const {chromium}=require(process.env.LM_PLAYWRIGHT_MODULE);
 (async()=>{
- const browser=await chromium.launch({executablePath:process.env.LM_BROWSER_EXE,headless:true,
-   args:['--disable-background-networking','--no-first-run']});
+ const browser=await chromium.connect(process.env.LM_BROWSER_ENDPOINT,{timeout:10000});
+ let context;
  try{
-  const context=await browser.newContext({viewport:{width:1440,height:1000}});
+  context=await browser.newContext({viewport:{width:1440,height:1000}});
   const errors=[],requests=[],blocked=[];
   const base=process.env.LM_FIXTURE_URL;
   await context.route('**/*',route=>{
@@ -224,14 +244,61 @@ const {chromium}=require(process.env.LM_PLAYWRIGHT_MODULE);
   }
   const selected=await read();
   console.log(JSON.stringify({errors,requests,blocked,dashStatus:response?.status()||null,dash,initial,selected}));
- }finally{await browser.close();}
+ }finally{try{if(context)await context.close();}finally{await browser.close();}}
 })().catch(error=>{console.error(error.stack);process.exit(1);});
 """
 
 
 class ActivityDashboardIntegrationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.node, cls.playwright, cls.browser = browser_dependencies()
+        owner_temp = tempfile.TemporaryDirectory(prefix="lm25-browser-owner-")
+        cls.addClassCleanup(owner_temp.cleanup)
+        ready = Path(owner_temp.name) / "ready.json"
+        cls.browser_owner = subprocess.Popen([cls.node, "-e", BROWSER_OWNER],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, encoding="utf-8", cwd=owner_temp.name,
+            env=dict(os.environ, LM_PLAYWRIGHT_MODULE=cls.playwright, LM_BROWSER_EXE=cls.browser,
+                     LM_BROWSER_READY=str(ready)), creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        cls.addClassCleanup(cls.stop_browser_owner)
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            if cls.browser_owner.poll() is not None:
+                raise RuntimeError("Synthetic browser owner failed: " + cls.browser_owner.stderr.read())
+            try:
+                endpoint = json.loads(ready.read_text("utf-8"))["endpoint"]
+            except (OSError, ValueError, KeyError):
+                time.sleep(0.02)
+                continue
+            address = urlsplit(endpoint)
+            if address.scheme != "ws" or address.hostname != "127.0.0.1":
+                raise ValueError("Synthetic browser endpoint must be loopback")
+            cls.browser_endpoint = endpoint
+            return
+        raise TimeoutError("Synthetic browser owner did not start within 20 seconds")
+
+    @classmethod
+    def stop_browser_owner(cls):
+        process = cls.browser_owner
+        try:
+            _, error = process.communicate(input="stop\n" if process.poll() is None else None, timeout=15)
+        except subprocess.TimeoutExpired:
+            # Last resort: only this fixture's live Popen PID and its children.
+            # Never match an executable name or an existing browser profile.
+            if process.poll() is None:
+                if os.name == "nt":
+                    subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), check=False)
+                else:
+                    process.kill()
+            process.communicate(timeout=5)
+            raise AssertionError("Synthetic browser owner cleanup exceeded 15 seconds") from None
+        if process.returncode != 0:
+            raise AssertionError("Synthetic browser owner failed: " + error)
+
     def setUp(self):
-        self.node, self.playwright, self.browser = browser_dependencies()
         self.temp = tempfile.TemporaryDirectory(prefix="lm25-page-integration-")
         self.addCleanup(self.temp.cleanup)
         self.root = fixture(Path(self.temp.name) / "app")
@@ -258,7 +325,7 @@ class ActivityDashboardIntegrationTests(unittest.TestCase):
             self.assertTrue(url.startswith("http://127.0.0.1:"),
                             "Isolated server did not start: " + (url or process.stderr.read()))
             env = dict(os.environ, LM_PLAYWRIGHT_MODULE=self.playwright, LM_BROWSER_EXE=self.browser,
-                       LM_FIXTURE_URL=url,
+                       LM_FIXTURE_URL=url, LM_BROWSER_ENDPOINT=self.browser_endpoint,
                        LM_PROBE_MAIN_PERIOD="chip" if main_period == "chip" else "1" if main_period else "0")
             result = subprocess.run([self.node, "-"], input=browser_probe, capture_output=True,
                                     text=True, encoding="utf-8", env=env, cwd=self.root, timeout=45,
@@ -291,6 +358,36 @@ class ActivityDashboardIntegrationTests(unittest.TestCase):
 
     def test_collected_files_without_any_analysis_render_activity(self):
         self.assert_activity_visible(self.probe())
+
+    def test_shared_browser_keeps_context_cookies_storage_and_pages_isolated(self):
+        probe = r"""
+const {chromium}=require(process.env.LM_PLAYWRIGHT_MODULE);
+(async()=>{
+ const results=[];
+ for(let pass=0;pass<2;pass++){
+  const browser=await chromium.connect(process.env.LM_BROWSER_ENDPOINT,{timeout:10000});
+  let context;
+  try{
+   context=await browser.newContext();
+   const pagesBefore=context.pages().length;
+   const base=process.env.LM_FIXTURE_URL;
+   await context.route('**/*',route=>route.request().url().startsWith(base+'/')?route.continue():route.abort());
+   const page=await context.newPage();
+   await page.goto(base+'/',{waitUntil:'domcontentloaded'});
+   results.push({pagesBefore,cookies:await context.cookies(base),
+    marker:await page.evaluate(()=>localStorage.getItem('synthetic-isolation-marker'))});
+   if(pass===0){
+    await context.addCookies([{name:'synthetic-marker',value:'first-context',url:base}]);
+    await page.evaluate(()=>localStorage.setItem('synthetic-isolation-marker','first-context'));
+    if(!(await context.cookies(base)).some(c=>c.name==='synthetic-marker'))throw Error('Cookie seed failed');
+   }
+  }finally{try{if(context)await context.close();}finally{await browser.close();}}
+ }
+ console.log(JSON.stringify({results}));
+})().catch(error=>{console.error(error.stack);process.exit(1);});
+"""
+        result = self.probe(browser_probe=probe)
+        self.assertEqual(result["results"], [{"pagesBefore": 0, "cookies": [], "marker": None}] * 2)
 
     def test_string_mm_in_old_metadata_does_not_hide_collected_activity(self):
         self.saved_result({"total_mm": "1.0", "avail_mm": "1.0"})
@@ -369,10 +466,10 @@ class ActivityDashboardIntegrationTests(unittest.TestCase):
         browser_probe = r"""
 const {chromium}=require(process.env.LM_PLAYWRIGHT_MODULE);
 (async()=>{
- const browser=await chromium.launch({executablePath:process.env.LM_BROWSER_EXE,headless:true,
-  args:['--disable-background-networking','--no-first-run']});
+ const browser=await chromium.connect(process.env.LM_BROWSER_ENDPOINT,{timeout:10000});
+ let context;
  try{
-  const context=await browser.newContext({viewport:{width:1440,height:1000}});
+  context=await browser.newContext({viewport:{width:1440,height:1000}});
   const base=process.env.LM_FIXTURE_URL,blocked=[],errors=[],requests=[];
   await context.route('**/*',route=>{
    if(route.request().url().startsWith(base+'/'))return route.continue();
@@ -412,7 +509,7 @@ const {chromium}=require(process.env.LM_PLAYWRIGHT_MODULE);
   const linear=await read();
   console.log(JSON.stringify({blocked,errors,requests,rawCount:raw.trend_info.counted,
    rawFiles:raw.trend.reduce((sum,row)=>sum+row.counts['파일'],0),compressed,linear}));
- }finally{await browser.close();}
+ }finally{try{if(context)await context.close();}finally{await browser.close();}}
 })().catch(error=>{console.error(error.stack);process.exit(1);});
 """
         result = self.probe(browser_probe=browser_probe)

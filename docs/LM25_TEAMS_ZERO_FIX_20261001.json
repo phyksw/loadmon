@@ -1,0 +1,52 @@
+{
+  "version": "v25.14",
+  "date": "2026-10-01",
+  "baseline_commit": "32fc062",
+  "user_report": "Mail available; Teams still missing",
+  "actual_company_pc_cause_confirmed": false,
+  "fixes": [
+    {
+      "id": "group_chat_identity",
+      "before": "Full group name was verified initially, then only the first participant name was used during message capture and the same valid room was rejected.",
+      "after": "Pass the verified pane name and conversation ID through the subsequent reader.",
+      "test": "tests/test_teams_active_collection.py"
+    },
+    {
+      "id": "active_chat_without_sidebar",
+      "before": "Readiness accepted visible messages without a sidebar, but main navigated to the home page and collected only from the sidebar; zero message reads.",
+      "after": "Keep the current Teams tab and preserve one verified active page before search/navigation, then continue the existing routes.",
+      "limits": "One observed page is not full conversation history. Unknown dates remain pending.",
+      "test": "tests/test_teams_active_collection.py"
+    },
+    {
+      "id": "single_room_failure",
+      "before": "A context/read failure in one room interrupted subsequent rooms.",
+      "after": "Isolate UI read errors by room; persistence errors still stop collection. Count saved rows only after save succeeds."
+    },
+    {
+      "id": "korean_abbreviated_weekday",
+      "before": "Explicit full date plus (화) was rejected although (화요일) was accepted.",
+      "after": "Recognize a standalone full year date with a parenthesized single Korean weekday; do not infer dates from message bodies."
+    },
+    {
+      "id": "short_acknowledgement",
+      "before": "A message shorter than three characters was dropped even with a parsed sender/time.",
+      "after": "Preserve nonempty short replies on a timed line with a parsed sender; retain the guard against bare clock/toolbar fragments.",
+      "test": "tests/test_teams_collection_reliability.py"
+    }
+  ],
+  "targeted_verification": {
+    "teams_suite": 84,
+    "browser_stage_diagnostics": 7,
+    "result": "PASS",
+    "native_before_after": "same new fixture 0 rows before, 7 expected rows after",
+    "independent_web_review": "PASS",
+    "independent_native_review": "PASS"
+  },
+  "boundaries": [
+    "No company account, existing browser profile or live Teams conversation was used.",
+    "Actual Microsoft Teams DOM on the failing PC is not yet available.",
+    "No fabricated years, dates, Graph permissions or Copilot-supplied missing originals.",
+    "Global full gate and final commit verification are recorded in the release provenance."
+  ]
+}

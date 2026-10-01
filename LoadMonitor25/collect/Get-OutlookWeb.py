@@ -42,6 +42,7 @@ sys.path.insert(0, os.path.join(ROOT, "core"))
 from collection_state import _atomic_text, merge_csv, read_csv, record_key, write_csv, write_status  # noqa: E402
 from communication_archive import archive_records  # noqa: E402
 from communication_context import body_is_filtered, make_excerpt  # noqa: E402
+from collection_diagnostics import browser_snapshot, observe_browser  # noqa: E402
 
 MAIL_HDR = "box,time,sender,subject,conversation,rcv,time_precision"
 CAL_HDR = "start,end,all_day,busy_status,subject,categories,location,response,meeting_status"
@@ -660,12 +661,14 @@ class Browser:
         time.sleep(min(seconds, self.remaining(seconds)))
 
     def start(self):
+        observe_browser(self, "starting")
         if self.deadline is not None:
             self.cfg["_collection_deadline"] = self.deadline
         if not self.ca.ensure_edge(self.cfg):
             self.last_diagnostic = self.cfg.get('_edge_reason', 'driver_unavailable')
             return False
         self.port = self.cfg["port"]
+        observe_browser(self, "browser_connected")
         tabs = [t for t in self.ca.http_json(self.port, "/json", timeout=self.remaining(3)) if t.get("type") == "page"]
         ws = None
         for t in tabs:
@@ -683,6 +686,7 @@ class Browser:
         if not ws:
             return False
         self.cdp = self.ca.CDP(ws, timeout=self.remaining(5))
+        observe_browser(self, "tab_connected")
         try:
             self.cdp.call("Page.enable", timeout=self.remaining(3))
         except Exception:
@@ -690,6 +694,7 @@ class Browser:
         return True
 
     def goto(self, url, wait=0.0):
+        observe_browser(self, "navigating")
         try:
             self.cdp.call("Page.navigate", {"url": url}, timeout=self.remaining())
         except Exception:
@@ -704,17 +709,25 @@ class Browser:
         except Exception:
             return ""
 
-    def wait_ready(self, settle=0.0, limit=18):
+    def wait_ready(self, settle=0.0, limit=45):
         """Wait for observable mail/calendar UI, not an empty generic main shell."""
         until = time.monotonic() + self.remaining(limit)
         login_since = None
-        login_grace = 2 if getattr(self, "_ready_once", False) else 8
+        # A new installation owns a separate profile. Eight seconds was too
+        # short for account selection/MFA; allow one bounded first sign-in.
+        login_grace = 2 if getattr(self, "_ready_once", False) else 120
+        login_extended = False
+        last_probe_failed = False
         while time.monotonic() < until:
             h = self.href()
             if is_login_url(h):
+                observe_browser(self, "waiting_login", href=h)
                 if login_since is None:
                     login_since = time.monotonic()
-                    log("회사 로그인 리다이렉트를 확인하고 있습니다.")
+                    log("수집용 Edge에서 회사 계정을 선택·로그인하세요. 최초 로그인은 최대 120초, 전체 수집 한도 안에서 기다립니다.")
+                    if not login_extended:
+                        until = max(until, time.monotonic() + self.remaining(login_grace))
+                        login_extended = True
                 if time.monotonic()-login_since >= login_grace:
                     self.last_diagnostic = "login_required"
                     return "login"
@@ -723,17 +736,24 @@ class Browser:
                 self.pause(min(0.2, max(0, until-time.monotonic())))
                 continue
             login_since = None
+            observe_browser(self, "waiting_surface", href=h)
             try:
                 page = self.eval_json(JS_MAIL, timeout=3)
                 calendar = "/calendar" in h and int(self.cdp.eval('document.querySelectorAll(\'[role="grid"]\').length', timeout=self.remaining(3)) or 0)
-            except Exception:
+                observe_browser(self, "waiting_surface", page=page)
+                last_probe_failed = False
+            except Exception as error:
+                observe_browser(self, "waiting_surface", error=error)
+                last_probe_failed = True
                 page, calendar = {}, False
             if urlsplit(h).hostname in HOSTS and not page.get("loading") and (calendar or page.get("items") or page.get("empty") or (page.get("search") and page.get("listboxes"))):
                 self.last_diagnostic = "ready"
                 self._ready_once = True
+                observe_browser(self, "surface_ready", href=h, page=page)
                 return "ok"
             self.pause(0.2)
-        self.last_diagnostic = "login_required" if login_since is not None else "mail_surface_not_ready"
+        self.last_diagnostic = "login_required" if login_since is not None else (
+            "page_evaluation_failed" if last_probe_failed else "mail_surface_not_ready")
         return "login" if login_since is not None else "timeout"
 
     def eval_json(self, js, timeout=8):
@@ -1399,6 +1419,7 @@ def main():
         context_chars = 4000
     body = body and context_chars > 0
     counts, diagnostics = {}, {}
+    br = None
     reasons = ["visible_search_results_only; mailbox-wide coverage is not verified"]
     if not body:
         reasons.append("metadata_only: mailWebBody is disabled; no message body collected")
@@ -1420,6 +1441,7 @@ def main():
                      total_units=sum(x.get("total_units", x.get("weeks", 0)) for x in diagnostics.values()),
                      diagnostics={kind: {key: value for key, value in diag.items() if isinstance(value, (int, float))}
                                   for kind, diag in diagnostics.items()},
+                     browser=browser_snapshot(getattr(br, "observation", {})),
                      elapsed_sec=round(time.monotonic()-started, 2), time_budget_sec=budget,
                      context_chars=context_chars)
         return code
@@ -1455,12 +1477,15 @@ def main():
                 return finish(2, "login_required", blocked=True)
             if initial == "timeout":
                 br.close()
-                return finish(1, "mail page timeout")
+                return finish(1, getattr(br, "last_diagnostic", "") or "mail page timeout")
         except Exception as error:
             if br:
+                observe_browser(br, "failed", error=error)
                 br.close()
-            return finish(3, "time_budget_reached" if isinstance(error, TimeoutError) else "browser_failed:" + type(error).__name__, blocked=True)
+            return finish(3, "time_budget_reached" if time.monotonic() >= deadline else "browser_failed:" + type(error).__name__, blocked=True)
     try:
+        if br:
+            observe_browser(br, "reading")
         for kind in todo:
             attempted.add(kind)
             saved_count = 0

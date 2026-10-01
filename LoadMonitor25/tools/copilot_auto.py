@@ -215,7 +215,10 @@ def find_edge():
 
 def http_json(port, path, method="GET", timeout=5):
     req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", method=method)
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    # CDP is a local IPC connection. Do not send it through an inherited HTTP
+    # proxy; this opener does not change proxy settings for remote websites.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(req, timeout=timeout) as r:
         return json.loads(r.read().decode("utf-8"))
 
 

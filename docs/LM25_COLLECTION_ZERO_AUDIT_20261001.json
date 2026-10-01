@@ -1,0 +1,79 @@
+{
+  "schema": 1,
+  "date": "2026-10-01",
+  "baseline_commit": "32fc062",
+  "scope": "추가 PC 수집 요청부터 경로 선택, 저장 자료 기간 집계, UI 표시와 다운로드 진단까지 독립 점검",
+  "execution_boundary": "제품 코드와 TEMP 합성 CSV만 사용. 실제 회사 계정, 브라우저 프로필, 개인 설정, 수집 자료와 서비스를 사용하지 않음.",
+  "user_pc_cause_confirmed": false,
+  "observations": [
+    {
+      "id": "explicit-web-selection",
+      "classification": "confirmed_configuration_and_UI_mismatch_fixed",
+      "baseline_behavior": "UI가 웹 포함이라고 표시해도 개인 설정 mailViaWeb=false 및 teamsWeb=false이면 두 웹 경로가 생략됨. --interactive-collect는 무인 수집 제한만 해제했음.",
+      "change": "각 UI 수집 버튼의 웹 수집 사용 선택을 web_collect boolean으로 전달. 선택 시 --mail-web/--teams-web, 해제 시 --no-mail-web/--no-teams-web. 이번 실행의 명시 선택만 개인 설정보다 우선하며 설정 파일은 변경하지 않음. CLI에서 --interactive-collect만 지정하면 기존 개인 설정을 계속 존중함. 비활성 플래그 충돌 시 --no-* 우선.",
+      "verification": {
+        "additional_pc_collection_tests": 8,
+        "actual_page_interaction_tests": 15,
+        "transfer_ui_tests": 22,
+        "quick_static_checks": "PASS",
+        "result": "PASS"
+      }
+    },
+    {
+      "id": "time-offset-can-remove-boundary-day",
+      "classification": "confirmed_existing_configuration_effect_not_confirmed_user_cause",
+      "code": "LoadMonitor25/core/communication_evidence.py build_report/_day",
+      "input": {
+        "requested_period": ["2026-10-01", "2026-10-01"],
+        "mail_csv": "TEMP/data/outlook/mail.csv",
+        "teams_csv": "TEMP/data/m365/teams_web.csv",
+        "each_file": {
+          "rows": 1,
+          "time": "2026-10-01 23:15",
+          "time_precision": "minute",
+          "context_excerpt": "Synthetic body"
+        }
+      },
+      "observed": [
+        {
+          "mm.mailTimeOffsetH": 0,
+          "mail": {"raw_rows": 1, "in_period_rows": 1, "unique_rows": 1, "unknown_date_rows": 0, "unreadable_files": 0},
+          "teams": {"raw_rows": 1, "in_period_rows": 1, "unique_rows": 1, "unknown_date_rows": 0, "unreadable_files": 0}
+        },
+        {
+          "mm.mailTimeOffsetH": 9,
+          "mail": {"raw_rows": 1, "in_period_rows": 0, "unique_rows": 0, "unknown_date_rows": 0, "unreadable_files": 0},
+          "teams": {"raw_rows": 1, "in_period_rows": 0, "unique_rows": 0, "unknown_date_rows": 0, "unreadable_files": 0}
+        }
+      ],
+      "interpretation": "저장 자료가 존재해도 분석과 같은 시각 보정이 요청 기간 경계를 넘기면 양쪽 기간 내 건수가 0으로 보일 수 있음. 넓은 기간 전체가 0인 모든 사례를 설명하지 않으며 해당 PC의 보정 설정은 확인하지 않았음. 이 감사에서 시간 보정 정책은 변경하지 않음."
+    },
+    {
+      "id": "unrecognized-csv-time-header",
+      "classification": "confirmed_diagnostic_gap_not_confirmed_user_cause",
+      "input": "TEMP의 mail.csv를 when,subject 헤더와 합성 1행으로 작성",
+      "observed": {"raw_rows": 1, "unique_rows": 0, "unknown_date_rows": 1, "unreadable_files": 0},
+      "interpretation": "CSV 문법은 읽혔으나 time 필드가 없어 날짜를 알 수 없는 행으로 분류됨. 원시행·날짜 미확인행 숫자를 진단에 포함해야 실제 빈 파일과 구분 가능. 정상 제품 수집기가 이 잘못된 헤더를 작성했다고 확인한 것은 아님."
+    },
+    {
+      "id": "sanitized-diagnostics-lost-distinctions",
+      "classification": "confirmed_baseline_diagnostic_gap",
+      "code": "LoadMonitor25/core/collection_diagnostics.py build_diagnostics/cause_code",
+      "baseline_version_output": "v25.11",
+      "baseline_reason_mapping": {
+        "browser_failed:ConnectionRefusedError": "other",
+        "browser_failed:ValueError": "other",
+        "driver_error": "other",
+        "context_room_changed": "other"
+      },
+      "baseline_dropped_counters": ["thread_messages", "context_filtered"],
+      "interpretation": "다운로드 원인표만으로 서로 다른 연결 실패·응답 해석 실패·대화 전환 검증 실패를 구분할 수 없었음. 이 문서는 수정 전 재현 기록이며 이후 진단 개선의 검증을 대신하지 않음."
+    }
+  ],
+  "diagnostic_recommendation": {
+    "evidence_source": "현재 실행 run.communication_evidence.families",
+    "allowed_integer_fields": ["raw_rows", "in_period_rows", "unique_rows", "context_rows", "unknown_date_rows", "dated_rows", "context_filtered_rows", "context_truncated_rows", "files", "unreadable_files", "pending_rows", "pending_unreadable_files", "web_body_observed_rows", "web_body_partial_rows", "observed_days"],
+    "offset": "실제 적용되는 -24..24 범위의 시각 보정 숫자를 별도 노출",
+    "exclude": "본문, 제목, 수신인, 계정, 로컬 경로, 인증 정보, 원시 로그는 진단 보고서에 포함하지 않음"
+  }
+}

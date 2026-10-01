@@ -459,8 +459,13 @@ function Parse-Lines([string]$re) {
         # Accept a date-only line, optionally followed by a weekday; never a body sentence.
         $divider = Find-HeaderDate $ln $today
         if ($divider.idx -ge 0) {
-            $remaining = ($ln.Substring(0, $divider.idx) + ' ' + $ln.Substring($divider.idx + $divider.len)).Trim(' ', ',', '.', '-', '(', ')')
-            if (-not $remaining -or $dow.ContainsKey($remaining.ToLower())) { $separatorDate = $divider.date; $separatorEstimated = $divider.est }
+            $suffix = ($ln.Substring(0, $divider.idx) + ' ' + $ln.Substring($divider.idx + $divider.len)).Trim()
+            $remaining = $suffix.Trim(' ', ',', '.', '-', '(', ')')
+            # A single Korean weekday is safe only as a parenthesized suffix of
+            # an explicit full date, never as a free-standing month/body token.
+            $dateToken = $ln.Substring($divider.idx, $divider.len)
+            $shortWeekday = (-not $divider.est -and $dateToken -match '(?<!\d)\d{4}(?!\d)' -and $suffix -match '^\(\s*[일월화수목금토]\s*\)$')
+            if (-not $remaining -or $dow.ContainsKey($remaining.ToLower()) -or $shortWeekday) { $separatorDate = $divider.date; $separatorEstimated = $divider.est }
         }
         continue
     }
@@ -496,7 +501,9 @@ function Parse-Lines([string]$re) {
     if ($from) { $rest = $rest -replace ('^\s*' + [regex]::Escape($from) + '\s*,?\s*(?:님이|says|said|wrote)?\s*[,:·-]?'), '' }
     $post = $post -replace '^\s*[,:·|-]*\s*', ''
     $body = (($rest.Trim() + ' ' + $post) -replace '\s{2,}', ' ').Trim()
-    if ($body.Length -lt 3) { continue }
+    # Short acknowledgements are messages when the same timed line identifies
+    # a sender. A bare clock plus a short toolbar label still is not a message.
+    if (-not $body -or ($body.Length -lt 3 -and -not $from)) { continue }
     $kind = if (Is-Self $from) { 'sent' } else { 'msg' }
     $summary = $body.Substring(0, [Math]::Min(200, $body.Length))
     # replied_time 은 창 읽기로는 측정할 수 없다 - '미응답'이라고 단정하지 않고 빈 값(미측정)으로 둔다

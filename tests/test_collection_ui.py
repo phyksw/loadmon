@@ -74,7 +74,7 @@ fetchWith(()=>Promise.resolve(reply(202,{ok:true})));
 byId.communicationbody.checked=true;
 await byId.communicationcollect.onclick();
 assert.equal(requests[0].url,'/api/communication/collect');
-assert.deepEqual(JSON.parse(requests[0].options.body),{from:'2026-09-01',to:'2026-09-13',mail_body:true});
+assert.deepEqual(JSON.parse(requests[0].options.body),{from:'2026-09-01',to:'2026-09-13',mail_body:true,web_collect:true});
 assert.equal(byId.communicationcollect.disabled,true);
 assert.match(byId.communicationfeedback.textContent,/요청 접수/);
 ''')
@@ -137,7 +137,7 @@ assert.equal(byId.dlog.open,true);
 assert(['go','analyzecollected','collect2','prepmove'].every(id=>byId[id].disabled));
 await byId.collect2.onclick();assert.equal(requests.length,1);
 assert.equal(requests[0].url,'/api/run');
-assert.deepEqual(JSON.parse(requests[0].options.body),{from:'2026-09-01',to:'2026-09-13',collect_only:true,mail_body:true});
+assert.deepEqual(JSON.parse(requests[0].options.body),{from:'2026-09-01',to:'2026-09-13',collect_only:true,mail_body:true,web_collect:true});
 finish(reply(200,{ok:true}));await click;
 assert.match(byId.run_feedback.textContent,/요청 접수/);assert.equal(polls,1);
 assert.equal(byId.collect2.disabled,true);
@@ -149,6 +149,19 @@ assert.equal(byId.collect2body.checked,true);
 byId.collect2body.checked=false;fetchWith(async()=>reply(200,{ok:true}));await byId.collect2.onclick();
 assert.equal(JSON.parse(requests[0].options.body).mail_body,false);
 assert.equal(byId.communicationbody.checked,true); // Its independent default must not be changed by collect2.
+''')
+
+    def test_web_use_has_independent_explicit_choices_for_both_collection_buttons(self):
+        self.run_js(r'''
+assert.equal(byId.collect2web.checked,true);assert.equal(byId.communicationweb.checked,true);
+byId.collect2web.checked=false;fetchWith(async()=>reply(200,{ok:true}));await byId.collect2.onclick();
+assert.equal(JSON.parse(requests[0].options.body).web_collect,false);
+assert.equal(JSON.parse(requests[0].options.body).mail_body,true);
+vm.runInContext('wasRunning=false;runSubmitting=false;',context);
+byId.communicationweb.checked=false;await byId.communicationcollect.onclick();
+assert.equal(requests[1].url,'/api/communication/collect');
+assert.equal(JSON.parse(requests[1].options.body).web_collect,false);
+assert.equal(JSON.parse(requests[1].options.body).mail_body,true);
 ''')
 
     def test_api_errors_are_visible_and_reenable_controls(self):

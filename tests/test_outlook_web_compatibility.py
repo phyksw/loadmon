@@ -65,7 +65,8 @@ class OutlookWebCompatibility(unittest.TestCase):
         cls.addClassCleanup(temporary.cleanup)
         root = Path(temporary.name)
         for folder, filename in [('collect', 'Get-OutlookWeb.py'), ('core', 'collection_state.py'),
-                                 ('core', 'communication_archive.py'), ('core', 'communication_context.py')]:
+                                 ('core', 'communication_archive.py'), ('core', 'communication_context.py'),
+                                 ('core', 'collection_diagnostics.py')]:
             (root / folder).mkdir(exist_ok=True)
             shutil.copyfile(ROOT / folder / filename, root / folder / filename)
         spec = importlib.util.spec_from_file_location("owa_compat", root / "collect/Get-OutlookWeb.py")
@@ -341,7 +342,7 @@ class OutlookWebCompatibility(unittest.TestCase):
         self.assertTrue(all(0 < timeout <= 20 for _, timeout in calls))
 
     def test_persistent_login_wait_is_shorter_after_ready_and_respects_route_budget(self):
-        for ready, budget, expected_limit in ((False, 30, 8.3), (True, 30, 2.3), (False, 0.5, 0.501)):
+        for ready, budget, expected_limit in ((False, 30, 30.001), (True, 30, 2.3), (False, 0.5, 0.501)):
             with self.subTest(ready=ready, budget=budget):
                 clock = [0.0]
                 browser = self.mod.Browser.__new__(self.mod.Browser)
@@ -356,6 +357,8 @@ class OutlookWebCompatibility(unittest.TestCase):
                 self.assertEqual(browser.last_diagnostic, "login_required")
                 self.assertGreater(clock[0], 0)
                 self.assertLessEqual(clock[0], expected_limit)
+                if not ready:
+                    self.assertAlmostEqual(clock[0], budget, places=5)
 
     def test_unchanged_visible_list_retains_only_explicit_period_dates_without_completing_search(self):
         module = self.mod

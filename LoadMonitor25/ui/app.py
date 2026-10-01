@@ -32,7 +32,7 @@ from tools.transfer import create_transfer  # noqa: E402
 REPORT = os.path.join(ROOT, "report")
 DATA = os.path.join(ROOT, "data")
 NO_WIN = 0x08000000
-VERSION = "v25.12"
+VERSION = "v25.14"
 LOCK = threading.Lock()
 REQUEST_LOCK = threading.Lock()      # Serialize synchronous mutations with transfer startup.
 FREEZE_LOCK = threading.Lock()       # [보고서 만들기] 직렬화 — JOB 과 별개(사본에 '실행 중'이 굳지 않게)
@@ -1806,7 +1806,7 @@ def result_rows():
 
 
 def run_job(d0, d1, ai, skip, collect_only=False, reuse_complete=False, force=False,
-            communications=False, mail_body=False):
+            communications=False, mail_body=False, web_collect=None):
     label = "메일·Teams 수집" if communications else ("추가 PC 수집" if collect_only else "분석")
     result = None
     try:
@@ -1821,6 +1821,10 @@ def run_job(d0, d1, ai, skip, collect_only=False, reuse_complete=False, force=Fa
             # Both UI collection buttons are interactive; raw CLI collection keeps its headless default.
             cmd.extend(["--collect-only", "--interactive-collect", "--no-mail-copilot", "--no-teams-copilot"])
             cmd.append("--mail-web-body" if mail_body else "--no-mail-web-body")
+            if web_collect is True:
+                cmd.extend(["--mail-web", "--teams-web"])
+            elif web_collect is False:
+                cmd.extend(["--no-mail-web", "--no-teams-web"])
             if communications:
                 cmd.append("--communications-only")
         else:
@@ -1832,10 +1836,12 @@ def run_job(d0, d1, ai, skip, collect_only=False, reuse_complete=False, force=Fa
                 cmd.append("--reuse-complete")
             if force:
                 cmd.append("--force")
-        log(f"실행: {d0} ~ {d1}" + (" · 메일·Teams 수집 (웹 포함)" if communications else " · 추가 PC 수집 (메일·Teams 웹 포함)" if collect_only else
+        web_label = "웹 수집 사용" if web_collect is True else "웹 수집 제외" if web_collect is False else "웹 수집은 개인 설정에 따름"
+        log(f"실행: {d0} ~ {d1}" + (" · 메일·Teams 수집 (" + web_label + ")" if communications else " · 추가 PC 수집 (" + web_label + ")" if collect_only else
             (" · AI 정제" if ai else "") + (" · 재분석만" if skip else "")))
         if collect_only:
-            log("웹 보충 허용 · Copilot/AI 호출 없음 · Outlook 웹 본문 " + ("포함(읽음 표시가 바뀔 수 있음)" if mail_body else "제외"))
+            log(web_label + " · Copilot/AI 호출 없음 · " + ("웹 본문 조회 없음" if web_collect is False else
+                "Outlook 웹 본문 요청 " + ("포함(보호 설정 우선 · 읽음 표시가 바뀔 수 있음)" if mail_body else "제외")))
             tag = d0.replace("-", "") + "-" + d1.replace("-", "")
             report_path = os.path.join(ROOT, "report", f"communication_evidence_{tag}.json")
             previous_report = None
@@ -1869,7 +1875,7 @@ def run_job(d0, d1, ai, skip, collect_only=False, reuse_complete=False, force=Fa
                         JOB["step"] = line.strip("─ ")
                         JOB.update(phase="", done=0, total=0)
         p.wait()
-        log("=== 완료 ===" if p.returncode == 0 else
+        log(("=== 수집 절차 종료 — 보관 건수 확인 중 ===" if collect_only else "=== 완료 ===") if p.returncode == 0 else
             "=== 부분 완료 — 실패한 단계는 로그에서 확인하세요 ===" if p.returncode == 2 else
             f"=== 종료(코드 {p.returncode}) — 로그 확인 ===")
         message = (f"{label} 완료" if p.returncode == 0 else
@@ -1877,6 +1883,7 @@ def run_job(d0, d1, ai, skip, collect_only=False, reuse_complete=False, force=Fa
                    f"{label} 실패(코드 {p.returncode}) — 진행 로그를 확인하세요")
         if collect_only and not communications and p.returncode == 0:
             message += " — 다음 PC로 옮기려면 [PC 이동 준비]를 누르세요"
+        communication_available = None
         if collect_only:
             try:
                 # write_report replaces atomically. Compare the file, not two clocks with different precision.
@@ -1888,14 +1895,18 @@ def run_job(d0, d1, ai, skip, collect_only=False, reuse_complete=False, force=Fa
                 if evidence.get("period") != [d0, d1]:
                     raise ValueError("wrong period")
                 counts = []
+                available = 0
+                unreadable_count = 0
                 for family, name in (("mail", "메일"), ("teams", "Teams")):
                     item = evidence["families"][family]
                     rows, bodies = item["unique_rows"], item["context_rows"]
                     if type(rows) is not int or type(bodies) is not int or not 0 <= bodies <= rows:
                         raise ValueError("invalid counts")
+                    available += rows
                     unreadable = item.get("unreadable_files", 0)
                     if type(unreadable) is not int or unreadable < 0:
                         raise ValueError("invalid unreadable file count")
+                    unreadable_count += unreadable
                     if unreadable:
                         counts.append(f"{name} 건수 미확인 (읽기 실패 {unreadable:,}파일 · "
                                       f"확인된 {rows:,}건 / 본문 발췌 {bodies:,}건)")
@@ -1907,6 +1918,13 @@ def run_job(d0, d1, ai, skip, collect_only=False, reuse_complete=False, force=Fa
                         counts[-1] += f" / 날짜 미확정 별도 보류 {pending:,}건"
                     if type(pending_failed) is int and pending_failed > 0:
                         counts[-1] += f" / 보류 자료 읽기 실패 {pending_failed:,}파일"
+                communication_available = bool(available)
+                if not available:
+                    if unreadable_count:
+                        communication_available = None
+                        message = f"{label} 종료 — 메일·Teams 건수 미확인(파일 읽기 실패 · 확인된 0건 · 실행 코드 {p.returncode})"
+                    else:
+                        message = f"{label} 종료 — 메일·Teams 자료 0건, 수집 성공 미확인(실행 코드 {p.returncode})"
                 message += "\n기간 내 보관 자료(이전 PC 포함): " + " · ".join(counts)
                 message += "\n서버 전체 확보율은 미확인입니다. [메일·Teams 근거 확보]에서 경로별 실패·생략 사유를 확인하세요."
             except (OSError, ValueError, TypeError, KeyError, AttributeError):
@@ -1920,7 +1938,8 @@ def run_job(d0, d1, ai, skip, collect_only=False, reuse_complete=False, force=Fa
                     message += "\n[메일·Teams 근거 확보 → 마지막 실행 원인표 다운로드]에서 경로·건수·소요시간을 확인할 수 있습니다."
             except (OSError, ValueError, TypeError, AttributeError):
                 pass
-        result = {"ok": p.returncode == 0, "message": message, "code": p.returncode}
+        result = {"ok": p.returncode == 0, "message": message, "code": p.returncode,
+                  "communication_available": communication_available}
     except Exception as e:
         log(f"오류: {e}")
         result = {"ok": False, "message": f"{label} 시작/실행 실패: {e}"}
@@ -2001,7 +2020,7 @@ def validate_run_request(body):
     if days[0] > days[1]:
         raise ValueError("시작일이 종료일보다 늦습니다")
     flags = ("ai", "skip", "collect_only", "reuse_complete", "force")
-    if any(name in body and not isinstance(body[name], bool) for name in (*flags, "mail_body")):
+    if any(name in body and not isinstance(body[name], bool) for name in (*flags, "mail_body", "web_collect")):
         raise ValueError("실행 옵션은 true 또는 false여야 합니다")
     return (body["from"], body["to"], *(body.get(name, False) for name in flags))
 
@@ -2805,7 +2824,7 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
  <button class="ghost" id="reset" style="color:#c0122f;border-color:#f0cdd5">데이터 리셋</button>
  <button class="ghost" id="quit">서버 종료</button>
 </div>
-<div class="note" style="margin-top:10px"><label><input type="checkbox" id="collect2body" checked> 추가 PC 수집: Outlook 웹 본문 포함 · 메일을 열면서 읽음 표시가 바뀔 수 있음</label><br>추가 PC 수집은 PC·파일 기록과 메일·Teams 웹 보충을 함께 실행합니다. 웹 창의 회사 계정 로그인이 필요할 수 있으며, Copilot·AI는 호출하지 않습니다.</div>
+<div class="note" style="margin-top:10px"><label><input type="checkbox" id="collect2web" checked> 추가 PC 수집: 웹 수집 사용</label> · <label><input type="checkbox" id="collect2body" checked> Outlook 웹 본문 포함 · 메일을 열면서 읽음 표시가 바뀔 수 있음</label><br>웹 사용 선택은 이번 실행에 적용되며 기존 웹 사용 설정보다 우선합니다. PC·파일 기록도 수집합니다. 웹 창의 회사 계정 로그인이 필요할 수 있으며, Copilot·AI는 호출하지 않습니다.</div>
 <div class="note" style="margin-top:10px">여러 PC를 거칠 때: 각 로컬 PC에서 <b>추가 PC 수집 → PC 이동 준비</b>, 마지막 PC에서 <b>모은 자료 분석</b>을 한 번 실행하세요. 완료된 과거 기간의 입력·결과가 같으면 검증된 결과를 재사용하고, 오늘을 포함하거나 변경된 자료는 다시 분석합니다. 보고서만 다시 만들 때는 <b>보고서 만들기</b>를 사용하세요.</div>
 <div class="note" id="move_result" style="white-space:pre-wrap;overflow-wrap:anywhere" aria-live="polite"></div>
 <div class="note" id="run_feedback" style="white-space:pre-wrap;overflow-wrap:anywhere" role="status" aria-live="polite"></div>
@@ -2846,9 +2865,10 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
  <div id="communicationevidence"></div>
  <div id="communicationactions">
  <p class="note"><a href="/api/communication/diagnostics" download="LM25-collection-diagnostics.json">마지막 실행 원인표 다운로드</a> · 메일 제목·본문·수신인 없이 앱 기능·실행 경로·처리 건수·소요시간을 저장합니다. 원인표 안의 실행 기간을 확인하세요.</p>
-  <div class="row"><button id="communicationcollect">메일·Teams만 수집 (웹 포함)</button>
+  <div class="row"><button id="communicationcollect">메일·Teams만 수집</button>
+   <label><input id="communicationweb" type="checkbox" checked>웹 수집 사용</label>
    <label><input id="communicationbody" type="checkbox" checked>Outlook 웹 본문 포함 · 읽음 표시가 바뀔 수 있음</label></div>
-  <p class="note">상단 실행 기간을 사용합니다. 연결된 Graph, Outlook 앱의 모든 연결 저장소, 화면 보충 경로를 사용합니다. 중단된 Graph 페이지는 같은 기간으로 다시 실행하면 이어받습니다. 앱·화면만으로는 서버 전체 확보를 보장할 수 없습니다. AI를 호출하지 않습니다.</p>
+  <p class="note">상단 실행 기간을 사용합니다. 웹 사용 선택은 이번 실행에 적용되며 기존 웹 사용 설정보다 우선합니다. 연결된 Graph, Outlook 앱의 모든 연결 저장소와 선택한 웹 경로를 확인합니다. 중단된 Graph 페이지는 같은 기간으로 다시 실행하면 이어받습니다. 앱·화면만으로는 서버 전체 확보를 보장할 수 없습니다. AI를 호출하지 않습니다.</p>
   <details><summary>① 서버 원문 연결 — 조직에서 허용한 Graph 앱이 있을 때</summary>
    <p class="note">Copilot 라이선스는 필요하지 않습니다. Entra에 등록한 공용 클라이언트 앱 ID와 조직의 읽기 권한 승인이 필요합니다. 차단된 권한은 자동으로 우회되지 않습니다. 로그인 주소와 코드는 아래 진행 로그에 표시됩니다.</p>
    <div class="row"><label>앱 클라이언트 ID <input id="communicationclient" size="38" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"></label><label>테넌트 ID / 도메인 <input id="communicationtenant" size="28" placeholder="organizations"></label></div>
@@ -3203,7 +3223,7 @@ async function communicationAction(kind){
   body.client_id=$("communicationclient").value.trim();body.tenant_id=$("communicationtenant").value.trim()||"organizations";body.include_channels=$("communicationchannels").checked;
   const own=$("communicationown").value.trim();if(own)body.own_addresses=own.split(/[,;\\s]+/).filter(Boolean);
   if(!body.client_id){feedback.textContent="조직에서 허용한 앱의 클라이언트 ID를 입력하세요";return;}
- }else body.mail_body=$("communicationbody").checked;
+ }else{body.mail_body=$("communicationbody").checked;body.web_collect=$("communicationweb").checked;}
  runRequestEpoch++;communicationFeedbackActive=false;runFeedbackActive=false;
  runSubmitting=true;runButtons(true);feedback.textContent="요청 중…";
  const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),15000);
@@ -3782,7 +3802,7 @@ async function tuBuild(latest){
 $("tubuild").onclick=()=>tuBuild(false);
 $("tuopen").onclick=()=>fetch("/api/teamopen",{method:"POST"});
 $("collect2").onclick=async()=>{
- const b={from:$("from").value,to:$("to").value,collect_only:true,mail_body:$("collect2body").checked};
+ const b={from:$("from").value,to:$("to").value,collect_only:true,mail_body:$("collect2body").checked,web_collect:$("collect2web").checked};
  return requestRun(b,"추가 PC 수집");
 };
 $("report").onclick=async()=>{
@@ -4400,7 +4420,7 @@ class H(BaseHTTPRequestHandler):
             try:
                 with open(os.path.join(REPORT, "communication_diagnostics.json"), encoding="utf-8") as stream:
                     result = json.load(stream)
-                if result.get("schema") != 1 or result.get("includes_message_content") is not False:
+                if result.get("schema") not in (1, 2) or result.get("includes_message_content") is not False:
                     raise ValueError("invalid diagnostics")
                 self._send(200, result, headers={"Content-Disposition": 'attachment; filename="LM25-collection-diagnostics.json"'})
             except (OSError, ValueError, TypeError, AttributeError):
@@ -4955,7 +4975,8 @@ class H(BaseHTTPRequestHandler):
                                               args=(paths, args[0], args[1], b), daemon=True)
                 else:
                     worker = threading.Thread(target=run_job, args=(args[0], args[1], False, False, True),
-                                              kwargs={"communications": True, "mail_body": b.get("mail_body", False)}, daemon=True)
+                                              kwargs={"communications": True, "mail_body": b.get("mail_body", False),
+                                                      "web_collect": b.get("web_collect", True)}, daemon=True)
                 worker.start()
             except (RuntimeError, OSError, ValueError, TypeError) as error:
                 with LOCK:
@@ -4984,7 +5005,8 @@ class H(BaseHTTPRequestHandler):
                            phase="", done=0, total=0)
             try:
                 threading.Thread(target=run_job, args=args,
-                                 kwargs={"mail_body": b.get("mail_body", True) if args[4] else False}, daemon=True).start()
+                                 kwargs={"mail_body": b.get("mail_body", True) if args[4] else False,
+                                         "web_collect": b.get("web_collect", True) if args[4] else None}, daemon=True).start()
             except (RuntimeError, OSError) as error:
                 with LOCK:
                     JOB.update(running=False, step="")

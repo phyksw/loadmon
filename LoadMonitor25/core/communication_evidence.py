@@ -331,6 +331,7 @@ def build_report(root, d0, d1, config=None, current_run=None):
     if all(f["context_rows"] and f["scope_status"] == "scoped_complete" for f in families.values()):
         status = "observed"
     return {"schema": SCHEMA, "period": [str(d0), str(d1)], "status": status, "families": families,
+            "mail_time_offset_hours": offset,
             "limits": ["수집 실행 완료·관측 건수·본문 확보·업무 이해의 충분성은 서로 다름", "업무 전체 충분성 미확인"],
             "actions": list(dict.fromkeys(a for f in families.values() for a in f["actions"])),
             "note": POLICY, "mm_effect": "none"}

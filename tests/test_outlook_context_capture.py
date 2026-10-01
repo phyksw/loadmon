@@ -26,7 +26,7 @@ class OutlookContextCapture(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         for folder, names in (("collect", ["Get-OutlookWeb.py"]),
-                              ("core", ["collection_state.py", "communication_archive.py", "communication_context.py"])):
+                              ("core", ["collection_state.py", "communication_archive.py", "communication_context.py", "collection_diagnostics.py"])):
             (self.root / folder).mkdir()
             for name in names:
                 shutil.copyfile(PRODUCT / folder / name, self.root / folder / name)
