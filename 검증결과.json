@@ -1,668 +1,95 @@
 {
-  "source": {
-    "branch": "lm24",
-    "version": "v24.0.18",
-    "commit": "53f78e5fb53f075e583a2618319c96e0ffaae44b"
+  "edition": "LM24 수집 범위와 데이터 흐름 재검토",
+  "date": "2026-10-02",
+  "status": "passed",
+  "checks": {
+    "html": {
+      "files": 4,
+      "links_checked": 195,
+      "fixed_source_links_checked": 101,
+      "javascript_blocks_checked": 3,
+      "browser_visual_review": "미수행. 로컬 file 접속 차단을 우회하지 않았음.",
+      "validation_scope": "DOM, 중복 ID, 로컬 링크와 앵커, 고정 소스 경로 및 행, JS 구문. 브라우저 렌더링 검증과 다름."
+    },
+    "pdf": {
+      "page_count": 20,
+      "bookmarks": 20,
+      "checklist_count": 48,
+      "font_embedding": {
+        "/Helvetica": null,
+        "/AAAAAA+MalgunGothicBold": true,
+        "/AAAAAB+MalgunGothicBold": true,
+        "/AAAAAA+MalgunGothic": true,
+        "/AAAAAB+MalgunGothic": true,
+        "/AAAAAC+MalgunGothic": true
+      },
+      "minimum_body_bottom_pt": 53.0,
+      "sha256": "6c77dcce46f3af0faa1b4d2888338f3ddfe41358fd1ef90125a83369bc417232",
+      "text_extraction": "passed"
+    },
+    "diagram_text_bounds": {
+      "issues": [],
+      "method": "직접 만든 벡터의 글꼴 폭과 상자 경계 검사. 화면 배치 판단은 PDF 이미지 검토로 보완."
+    },
+    "independent_reviews": {
+      "source_review": {
+        "verdict": "confirmed",
+        "remaining_mandatory_revisions": 0,
+        "scope": "수집필드·원문보관예외·대체실행조건·활동/Graph범위·48체크리스트의코드일치. 실제서비스취득성공또는보안승인을의미하지않음."
+      },
+      "pdf_visual_review": {
+        "verdict": "resolved",
+        "required_revisions_remaining": 0,
+        "conclusion": "직전 보고서의 필수 수정 2종을 모두 해소했습니다. 7쪽 추가 설명도 새 가독성 문제 없이 읽을 수 있습니다.",
+        "preserved_boundaries": "Graph 미사용과 활동 샘플러 제출 범위 제외를 실제 소스 삭제 또는 차단 검증으로 확대하지 않습니다. HTML 브라우저 화면 미검증과 실제 운영 통제 별도 확인은 유지합니다."
+      },
+      "security_scope_review": "검토한 현재 범위에서 필수 수정이나 새 연결 논리 오류를 발견하지 않았다. Graph 미사용은 회색 빗금·무활성선 및 사용자 확인으로, 활동 샘플러는 제출 제외로 표현됐다. 프로그램별 사용시간은 제공 범위에서 빠지고 라이선스 관측은 일반 수집에 포함되지 않는 별도 옵션으로 설명된다. 실제 코드/배포본 제거·차단과 기존 관측·파생 자료 정리는 SEC-04의 미확인 운영 조건으로 유지되며 문서 변경으로 완료됐다고 주장하지 않는다. 수집용/분석용 Copilot, 팀 전송/팀 AI 및 필터 한계 설명도 유지됐다. 문서 범위 정합성 판정일 뿐 실제 보안 승인이나 운영 통제 적용 확인이 아니다. 허용된 이 JSON 외 문서·제품을 수정하지 않았다.",
+      "pdf_review_coverage": "20쪽 전체 이미지 검토 후 수정한 3, 4, 5, 7, 9, 13, 17, 19쪽을 다시 확인했습니다.",
+      "report_files": [
+        "current_scope_code_recheck",
+        "current_scope_code_final",
+        "current_scope_security_recheck",
+        "current_scope_readability_recheck",
+        "current_scope_readability_final",
+        "current_review_record_recheck"
+      ],
+      "review_record_consistency": "처음 발견한 근거 링크와 조사 오류 2개는 최신 두 파일에서 해소됐다. 현재 51개 사례(41+10), 과거 활동 샘플러 사례 2개, 현재 Graph 미사용/활동 샘플러 제외, 핵심 질의답변 및 운영 미확정 6개의 구분은 20쪽 자료의 범위와 일관된다. 최종 코드·가독성 보고서도 포함됐으며 남은 필수 정정이나 실질적 과장·모순을 발견하지 않았다. 이 판정은 QA 기록의 설명 일관성에 관한 것이며 실제 코드 제거·전송 차단·민감정보 보호 성능 또는 운영 보안 승인을 확인한 결과가 아니다. 허용된 이 JSON 외 문서·제품을 수정하지 않았다."
+    },
+    "synthetic_tests": {
+      "collection_and_filter": 41,
+      "ai_and_transfer": 10,
+      "total": 51,
+      "historical_out_of_scope": 2,
+      "interpretation": "선택 함수의 예상 동작을 재현한 결과입니다. 보안 적합성, 탐지율이나 실서비스의 성공을 뜻하지 않습니다. AI 단계 사례가 이전 신호 필터도 통과했다는 뜻은 아닙니다."
+    },
+    "document_only": {
+      "root_files": [
+        "01_LM24_인프라아키텍처.html",
+        "02_LM24_데이터흐름도.html",
+        "03_LM24_사전보안검토_제출용.html",
+        "03_LM24_사전보안검토_제출용.pdf",
+        "04_가상검토팀_질의답변_및_검증기록.html",
+        "신청서_기입문안_및_체크리스트.txt",
+        "질의답변_검토기록.json",
+        "검증결과.json"
+      ],
+      "product_modified": false,
+      "source_commit": "53f78e5fb53f075e583a2618319c96e0ffaae44b"
+    },
+    "artifact_sha256": {
+      "01_LM24_인프라아키텍처.html": "0880612a02b5ffe5886cdaf6f284e1723526057956146b835cebc08c886e5979",
+      "02_LM24_데이터흐름도.html": "1a6fb08d74ffcbf832f9a6ae91d091ba4e42324b6c77a6f682922cdf6e43fff2",
+      "03_LM24_사전보안검토_제출용.html": "54b388953770068d1619139d243c4191a76b628907ef99671282f9bfc985ce57",
+      "03_LM24_사전보안검토_제출용.pdf": "6c77dcce46f3af0faa1b4d2888338f3ddfe41358fd1ef90125a83369bc417232",
+      "04_가상검토팀_질의답변_및_검증기록.html": "09e7221bb56ac1e3adc5ac571b2271a907efcd07fdbc60e84d543720d3e15784",
+      "신청서_기입문안_및_체크리스트.txt": "42d0c06ace85c68328253de064a1d6e1d91397fc6596af3a0ee0ac8a1459e139",
+      "질의답변_검토기록.json": "49013b4d87b6540bd9e812da131e582ec10cc51ab0204218f9292fe2604a4dfc"
+    },
+    "limitations": [
+      "실제 PC의 계정, 수집 성공, 조직 DLP나 접근 통제를 시험하지 않았습니다.",
+      "활동 샘플러 제외와 Graph 미사용을 반영한 제출 범위이며 제품 코드 제거를 검증한 결과가 아닙니다.",
+      "필터 합성 시험의 성공은 기대한 동작을 재현했다는 뜻이며 보안 승인이나 탐지율을 의미하지 않습니다."
+    ]
   },
-  "review_date": "2026-10-02",
-  "purpose": "타 부서의 사전 보안 검토를 위한 구동 방식·인프라·정보 취급·데이터 흐름 설명",
-  "method": "고정 소스와 기본 설정 정적 분석, 선택 함수의 메모리 합성 검증, 독립 문서 질의와 반복 재검토",
-  "review_cycle": {
-    "roles": [
-      "보안 검토자",
-      "처음 읽는 담당자·가독성 검토자",
-      "코드 검증자"
-    ],
-    "steps": [
-      "초안",
-      "1차 질의 24건",
-      "코드 근거 답변·수정",
-      "2차 독립 재검토",
-      "잔여 2항목 및 도형 범례 수정",
-      "3차 해당 부분 재확인"
-    ],
-    "unique_questions": 24,
-    "final_counts": {
-      "resolved": 18,
-      "operational_pending": 6
-    },
-    "record": "질의답변_검토기록.json",
-    "scope": "문서 설명 및 코드와의 일치성 확인. 실제 조직 보안 승인 또는 침투시험이 아님."
-  },
-  "synthetic_validation": {
-    "collection_batches_passed": 4,
-    "transfer_contract_tests_passed": 4,
-    "post_collection_cases_passed": 26,
-    "analysis_ai_team_cases_passed": 5,
-    "review_followup_cases_passed": 3,
-    "scope": "서로 다른 검증 묶음/사례 수이며 단순 합산 시험 건수로 표시하지 않음. 고정 LM24의 선택 AST 함수·메모리 합성 I/O만 실행. 수집기·회사 계정·AI·운영 서버 실행 없음."
-  },
-  "key_document_corrections": [
-    "수집 이후 취합·기간·중복·대상·제외어와 업무/시간 두 처리 경로를 도식화.",
-    "내용힌트 캐시는 신호 제외어 검사 전 생성될 수 있으며 제외는 원자료·기송신본 삭제가 아님.",
-    "UI 조회의 샘플러 자동 시작, 수집 중 현재 사용자 로그온 작업 등록, UI 종료 후 관측 가능성을 명시.",
-    "AI 판정의 재산정 실패 가능성과 업무행 정제의 총 MM 유지·비중 재배분을 구분.",
-    "추가 PC 보관은 CSV 선별이 아닌 해당 수집 하위폴더 전체 이동임을 제출본에도 반영.",
-    "AI 입력 축소와 팀 신호 추가 가림 부재를 가상 메일 예로 연결.",
-    "사람 검토가 강제 전송 승인 관문이 아님을 명시.",
-    "팀 수신 후 저장·집계·재업로드·기간 불일치·개인별 열람 범위를 추가.",
-    "운영 미확인 6건에 담당 역할·확정일·증빙 항목을 마련."
-  ],
-  "html_validation": {
-    "analysis_source": "lm24 / v24.0.18 / 53f78e5fb53f075e583a2618319c96e0ffaae44b",
-    "html_documents": [
-      {
-        "file": "01_LM24_인프라아키텍처.html",
-        "bytes": 44197,
-        "sha256": "809d9fadb5e60117342d23652dee86465101d4338320e137b692a8d9c7580da9",
-        "sections": 8,
-        "diagrams": 1,
-        "inline_javascript_syntax": "PASS",
-        "code_links": 22
-      },
-      {
-        "file": "02_LM24_데이터흐름도.html",
-        "bytes": 64602,
-        "sha256": "879d2ffb809ec8aea056f318b50d839910c2ff44a01ae24afc1f9aa616a8416e",
-        "sections": 7,
-        "diagrams": 5,
-        "inline_javascript_syntax": "PASS",
-        "code_links": 55
-      },
-      {
-        "file": "03_LM24_사전보안검토_제출용.html",
-        "bytes": 58141,
-        "sha256": "203b66e7a87f8a2890783ddfb23a675ae070a7e366484c0fb1843f1177ce797b",
-        "sections": 16,
-        "diagrams": 3,
-        "inline_javascript_syntax": "PASS",
-        "code_links": 0
-      }
-    ],
-    "checklist_items": 48,
-    "structure_and_js": "PASS",
-    "diagram_geometry_issues": [],
-    "browser_html_layout": "NOT VERIFIED: local file URL blocked by browser tool policy; no alternate serving or browser workaround used",
-    "svg_figure_qa": "Independent offline rendering of own rect/path/text diagrams only; not HTML/CSS rendering",
-    "actual_company_data_accessed": false,
-    "review_html_structure_and_js": "PASS"
-  },
-  "pdf_validation": {
-    "file": "03_LM24_사전보안검토_제출용.pdf",
-    "sha256": "a3909a3a1fb7984981c4629dbd20c5ac577f0aa0266d0d6c367c08d0bb05ade7",
-    "pages": 16,
-    "bookmarks": 16,
-    "checklist_items": 48,
-    "fonts_embedded": {
-      "/AAAAAA+MalgunGothicBold": true,
-      "/AAAAAB+MalgunGothicBold": true,
-      "/AAAAAA+MalgunGothic": true,
-      "/AAAAAB+MalgunGothic": true
-    },
-    "layout_measurements": [
-      {
-        "page": 1,
-        "content_bottom": 143.8,
-        "footer_top": 35
-      },
-      {
-        "page": 2,
-        "content_bottom": 113.3,
-        "footer_top": 35
-      },
-      {
-        "page": 3,
-        "content_bottom": 116.8,
-        "footer_top": 35
-      },
-      {
-        "page": 4,
-        "content_bottom": 114.3,
-        "footer_top": 35
-      },
-      {
-        "page": 5,
-        "content_bottom": 130.3,
-        "footer_top": 35
-      },
-      {
-        "page": 6,
-        "content_bottom": 116.8,
-        "footer_top": 35
-      },
-      {
-        "page": 7,
-        "content_bottom": 190.3,
-        "footer_top": 35
-      },
-      {
-        "page": 8,
-        "content_bottom": 190.3,
-        "footer_top": 35
-      },
-      {
-        "page": 9,
-        "content_bottom": 79.8,
-        "footer_top": 35
-      },
-      {
-        "page": 10,
-        "content_bottom": 157.8,
-        "footer_top": 35
-      },
-      {
-        "page": 11,
-        "content_bottom": 145.8,
-        "footer_top": 35
-      },
-      {
-        "page": 12,
-        "content_bottom": 129.3,
-        "footer_top": 35
-      },
-      {
-        "page": 13,
-        "content_bottom": 259.8,
-        "footer_top": 35
-      },
-      {
-        "page": 14,
-        "content_bottom": 230.8,
-        "footer_top": 35
-      },
-      {
-        "page": 15,
-        "content_bottom": 254.8,
-        "footer_top": 35
-      },
-      {
-        "page": 16,
-        "content_bottom": 234.3,
-        "footer_top": 35
-      }
-    ],
-    "rendering": "Poppler 120 dpi, 16쪽 전체 PNG",
-    "visual_review": "2차에서 16쪽 전체 확인, 3차에서 수정된 3·5·6·9·15쪽 재확인. 단독 음절 지적 해소; 겹침·잘림·페이지 넘침 발견 없음."
-  },
-  "repository_checks": {
-    "quick_gate": "최종 문서 반영 후 python -B scripts/quality.py --quick 통과: 0 failed gates.",
-    "full_gate": "동일 제품 코드에서 Test-Project.ps1 통과: 734 tests, skipped 3.",
-    "scope": "문서 브랜치의 제품 코드 보존 확인이며 LM24 서비스 실연동 성공의 증거가 아님."
-  },
-  "limits": [
-    "실제 회사 계정·개인 config·업무 자료·운영망 검증 미실시.",
-    "실제 환경의 수집 완전성·작동 성공·보안 적합성·승인을 보장하지 않음.",
-    "운영 조건 6건은 실제 적용값·책임자·확정일·증빙이 필요함.",
-    "HTML 브라우저 화면은 도구 정책상 검증하지 못함. HTML 구조·JS·링크와 독립 SVG 도형만 별도로 검사. PDF 시각 검증을 HTML 화면 검증으로 간주하지 않음."
-  ],
-  "initial_claims_rechecked": [
-    {
-      "id": "LOCAL-01",
-      "claim": "Teams 기본 수집은 네 경로 합산이 아니라 Graph 설정 시 Graph → 앱 우선 → 웹 → 선택 Copilot 대체이며 앞 단계 성공 시 뒤 단계를 생략한다.",
-      "source": [
-        "run.py:817–857",
-        "config/config.default.json:424–431",
-        "config/config.default.json:539–547"
-      ],
-      "method": "원본 run.py 분기 재독해 + 해당 분기만 AST/코드 격리하여 step·record를 메모리 스텁으로 대체한 4개 가상 실행 + 기본 JSON 직접 읽기",
-      "result": "확인. 기본 앱 성공이면 앱만, 앱 실패/웹 성공이면 앱→웹, Graph 설정/성공이면 Graph만, preferApp=false·웹 실패이면 웹→앱. Graph clientId='', Teams Copilot=false.",
-      "limitation": "실제 서비스 성공이나 권한을 검증한 결과가 아니다. 기본 템플릿과 개인 PC config.json은 다를 수 있으며 개인 설정은 읽지 않았다."
-    },
-    {
-      "id": "LOCAL-02",
-      "claim": "Outlook 대체 경로는 '0건이면 항상 실행'이 아니라 이번 실행 CSV 갱신 여부에 따라 결정한다.",
-      "source": [
-        "run.py:172–208",
-        "run.py:220–274"
-      ],
-      "method": "needs() 원본 AST 함수만 추출해 가상 경로와 mtime=실행 후 값을 주입, 네트워크·파일 읽기 없음",
-      "result": "확인. 이번 실행에 수정된 파일은 0행이어도 needs('mail')=false다. COM 0행 파일 후 색인/웹/Copilot 생략 가능성을 문서에 유지해야 한다.",
-      "limitation": "가상 테스트는 결정 조건만 검증한다. 실제 COM 폴더·권한·색인 데이터의 정상 여부는 검증하지 않았다."
-    },
-    {
-      "id": "LOCAL-03",
-      "claim": "Teams 앱은 내부 캐시 DB가 아니라 UIAutomation Name 텍스트를 창별 제한 아래 읽는다.",
-      "source": [
-        "collect/Get-TeamsWindow.ps1:13",
-        "collect/Get-TeamsWindow.ps1:116–169",
-        "collect/Get-TeamsWindow.ps1:185–210"
-      ],
-      "method": "UIA 코드 재독해 + Name 길이 조건의 원본 AST 식에 길이 3/4/600/601 가상 문자열 대입",
-      "result": "확인. 허용 길이 4~600자, 각 창 Read-TeamsTexts 호출별 기본 최대4,000요소. 3/601자 요소는 제외. 여러 창의 합산 전체가4,000이라는 뜻은 아니다.",
-      "limitation": "UIA 자체를 실행하지 않았으며 실제 Teams 렌더링·접근성 트리·읽기 성공은 미검증이다. 4,000요소는 메시지4,000건과 다르다."
-    },
-    {
-      "id": "LOCAL-04",
-      "claim": "Teams 화면 raw는 CSV에서 제외한 목록 텍스트도 저장하며 개인정보 제외어 일괄 필터 이전의 평문 자료다.",
-      "source": [
-        "collect/Get-TeamsWindow.ps1:221–232",
-        "collect/Get-TeamsWindow.ps1:532–534"
-      ],
-      "method": "raw 목록 조립 원본 구문만 메모리에서 실행; 가상 화면 문자열, sidebar 제외 문자열, '개인' 포함 문자열 사용; WriteAllLines는 실행하지 않음",
-      "result": "확인. sidebar 제외 문자열과 '개인' 포함 문자열 모두 rawAll에 남음. 실제 저장 위치 data/m365/teams_window_raw.txt 및 제외분이 있을 때 teams_window_skipped.txt. raw는 UIA 요소길이·수 제한을 통과한 스냅샷이지 Teams 전체 이력이 아니다.",
-      "limitation": "가상 문자열만 처리했다. 개인정보를 완전 식별하는 테스트가 아니며 실제 파일 저장/ACL은 실행하지 않았다. skipped 파일은 제외분이 없을 때 과거 파일이 남을 수 있다."
-    },
-    {
-      "id": "LOCAL-05",
-      "claim": "Teams UIA 날짜가 없으면 수집일로 추정하며, 연도 없는 날짜도 기준일에 따라 보충된다.",
-      "source": [
-        "collect/Get-TeamsWindow.ps1:241–243",
-        "collect/Get-TeamsWindow.ps1:302–377",
-        "collect/Get-TeamsWindow.ps1:379–424",
-        "collect/Get-TeamsWindow.ps1:532"
-      ],
-      "method": "PowerShell AST로 날짜/파싱 순수 함수만 추출, ko-KR 문화권과 기준일2026-10-02를 고정한5개 가상 메시지 검증",
-      "result": "확인. 날짜 없음→2026-10-02/est=true, 명시2025-08-15→그대로, 본문8/15는 메시지 날짜로 사용하지 않음, 연도 없는12/25→2025-12-25/est=false. 최종6열CSV에는 est/time_precision 열이 없어 추정 사실을 개별행에서 구분하지 못한다. 'OK'2자 본문은 LM24의 len<3 조건으로 제외된다.",
-      "limitation": "해당 포맷만 검증한 것이며 실제 한국어 UIA 헤더/다른 언어/모든 날짜형식을 보장하지 않는다. 내부 est=false도 서버 원본 날짜를 검증했다는 뜻은 아니다."
-    },
-    {
-      "id": "LOCAL-06",
-      "claim": "Teams 웹 기본40방·900초 및 방당 제한을 정확히 표현한다.",
-      "source": [
-        "config/config.default.json:429–431",
-        "collect/Get-TeamsWeb.py:48",
-        "collect/Get-TeamsWeb.py:460–519",
-        "collect/Get-TeamsWeb.py:605–612",
-        "collect/Get-TeamsWeb.py:625–665"
-      ],
-      "method": "설정 재확인 + read_chat 원본 AST 함수의 브라우저/CDP/시각파서를 전부 메모리 스텁으로 대체해 반복 횟수 계수",
-      "result": "정정 필요. MAX_SCROLL=12지만 range(MAX_SCROLL+1)이라 최대13회 화면읽기 및13회 scroll 호출이 재현됨. '방당 최대12회 스크롤'은 부정확. 권장 '기본40방, 방당 최대13회 화면읽기, 메시지 탐색 예산900초'. deadline은 브라우저 시작/목록 확보 이후 설정된다.",
-      "limitation": "900초는 모든 연결·로그인·명령·저장까지 포함한 절대 시간보장이 아니다. DOM 함수는 실행하지 않았고 브라우저/서버 완전성은 미검증이다. 실제 권장 문구는 숫자 전체를 생략하고 제한 존재만 표시해도 된다."
-    },
-    {
-      "id": "LOCAL-07",
-      "claim": "file_hint 저장 단서 길이는 텍스트/PPT·Word 대체단서70자, Office 내장제목80자 예외다.",
-      "source": [
-        "core/extract.py:577–651"
-      ],
-      "method": "file_hint/_cache_put AST만 실행; 메모리 StringIO 및 BytesIO ZIP 문서를 제공하고 os.stat/open/ZIP 경로 접근 대체; 실제 파일 미사용",
-      "result": "확인. 텍스트200자→70자, dc:title80자→80자, dc:title81자 DOCX→Word본문대체70자, dc:title81자 XLSX→빈값, PPT첫슬라이드→70자. '모든 단서 최대70자'는 틀리다.",
-      "limitation": "Office 내장제목은80자 초과를80자로 잘라 저장하는 방식이 아니라 정규식에 맞지 않으면 별도 대체/빈값으로 처리한다. 가상 ZIP 구조만 검증했다."
-    },
-    {
-      "id": "LOCAL-08",
-      "claim": "텍스트 파일 단서 읽기는 최대4096문자이며4KB라는 보장과 구별해야 한다.",
-      "source": [
-        "core/extract.py:543–545",
-        "core/extract.py:608–615"
-      ],
-      "method": "동일 AST 함수에 가상5000자 Unicode 텍스트 입력, StringIO.read(n) 호출 기록; 크기초과/placeholder 시 open 호출0건 검증",
-      "result": "확인/문구 정밀화. read(4096)은 문자 수다. 4096문자 뒤 의미 줄은 읽지 못함.50,000KB 초과 또는 placeholder 속성이면 열지 않음. Office ZIP XML은 해당 항목 전문을 읽은 후 단서를 줄인다.",
-      "limitation": "실제 저장장치 읽기 바이트·압축 XML 폭발·백신 지연은 검증하지 않았다. '전체 파일 내용을 절대 읽지 않는다' 또는 '항상4KB만 접근'이라고 설명하면 안 된다."
-    },
-    {
-      "id": "LOCAL-09",
-      "claim": "내용 단서 캐시는 전체경로|mtime 키와 단서를 저장하며 후단 분석 필터와 별개다.",
-      "source": [
-        "core/extract.py:549–560",
-        "core/extract.py:603–610",
-        "core/extract.py:1037–1045",
-        "core/extract.py:1225–1236"
-      ],
-      "method": "원본 저장/호출 순서 재독해 + 메모리 file_hint 캐시 결과 확인",
-      "result": "확인. data/files/file_hints.json의 key는전체경로|mtime. 파일 힌트를 만든 후 분석 신호의 개인정보 문자열 필터가 적용될 수 있어 신호 제외가 캐시에서의 삭제를 뜻하지 않는다.",
-      "limitation": "전역 개인정보 삭제/소급 삭제 기능 검증은 아니다. 실제 캐시는 읽거나 쓰지 않았다."
-    },
-    {
-      "id": "LOCAL-10",
-      "claim": "브라우저 방문시각 조회는 History DB 전체 임시복사를 동반한다.",
-      "source": [
-        "collect/Get-PcOnHints.py:67–101"
-      ],
-      "method": "visit_times/_chrome_us 원본 AST 함수만 실행, shutil.copy2/sqlite/connect/execute/remove 전부 메모리 스텁, 가상1개시각",
-      "result": "확인. History와-WAL/-SHM3개 전체 경로 복사 호출 후 SELECT visit_time만 조회,3개삭제 시도. URL열을 SQL로 조회하지 않지만 임시 사본은 전체DB이므로 URL등의 정보가 들어갈 수 있다.",
-      "limitation": "실제 History DB·프로필을 열지 않았다. 삭제 OSError는 코드상 무시되며 강제 종료/실패 시 잔존 가능성은 정적 판단이다. 임시삭제 성공을 모든 환경에 보장하지 않는다."
-    },
-    {
-      "id": "LOCAL-11",
-      "claim": "PC 브라우저 힌트는 회사 프로필로만 한정되지 않는다.",
-      "source": [
-        "collect/Get-PcOnHints.py:47–58",
-        "collect/Get-PcOnHints.py:80–85"
-      ],
-      "method": "원본 탐색경로/SQL 재독해",
-      "result": "확인. 현재 Windows 사용자의 표준 Edge/Chrome Default 및 Profile *를 탐색한다. 회사계정 식별 필터나 방문출처/동기화기기 제외 조건이 없다.",
-      "limitation": "어떤 프로필이 실제 존재하는지는 읽지 않았다. 방문시각이 현재 PC의 실제 업무를 의미하는지는 별도 측정 한계다."
-    },
-    {
-      "id": "LOCAL-12",
-      "claim": "일부400일 정책은 모든 자료의 절대 자동보관기한이 아니다.",
-      "source": [
-        "collect/Get-OutlookData.ps1:35",
-        "collect/Get-OutlookData.ps1:233–256",
-        "collect/Get-FileActivity.ps1:69–104",
-        "collect/Get-RecentFiles.ps1:96–124"
-      ],
-      "method": "원본 PowerShell AST 함수 Load-CsvByMonth/Add-Rows 및 두 Merge-History를 선택실행, Get-Date 고정·읽기/쓰기 함수메모리대체,401일전/400일경계/신규401일전 행 검증",
-      "result": "정밀화 필요. 기존401일전행은 로드에서 제외,400일경계는 유지. 그러나 이번에 새로 취득한401일전행은 Add-Rows/Merge-History로 다시 저장 후보에 포함됨. 실제 실행 시 정리이지 별도 일정삭제 작업이 아니다. 권장 '일부 이력에400일 기준 기존행 정리 로직이 있으며 전체·절대보관기한은 아님'.",
-      "limitation": "실제 CSV·디스크는 읽거나 쓰지 않았다. 본문/raw/토큰/브라우저프로필/추가PC사본 전체에 동일한 삭제가 적용되는지 보장하는 로직은 확인되지 않았다."
-    },
-    {
-      "id": "LOCAL-13",
-      "claim": "Outlook COM/색인/웹은 메타데이터를 저장하며 전문메일본문·첨부내용·참석자전체명단 저장 경로가 아니다.",
-      "source": [
-        "collect/Get-OutlookData.ps1:372–399",
-        "collect/Get-OutlookData.ps1:417–418",
-        "collect/Get-OutlookData.ps1:454–494",
-        "collect/Get-OutlookIndex.ps1:205–215",
-        "collect/Get-OutlookIndex.ps1:235–253",
-        "collect/Get-OutlookWeb.py:341–357"
-      ],
-      "method": "각 원본 수집기 필드 취득/CSV 저장 구문 재독해 및 Body/HTMLBody/Attachments 호출 검색",
-      "result": "확인. COM기본받은함/보낸함/일정, mail7열·calendar9열. To/CC/Recipients는 본인수신분류용으로 메모리에서 처리하고 CSV에는rcv등이 남음. 웹은 목록 DOM에서sender/subject등을 추출. 이LM24에는메일Graph수집기 없음.",
-      "limitation": "메일 제목/목록 미리보기/일정위치 자체에 민감내용이 들어갈 수 있다. 웹파싱/색인결과의 정확성·전체폴더·전체기간 확보를 검증한 것이 아니다."
-    },
-    {
-      "id": "LOCAL-14",
-      "claim": "전체 수신자 명단을 CSV에 쓰지 않아도 이름·메일주소는 로컬에 저장될 수 있다.",
-      "source": [
-        "collect/Get-OutlookData.ps1:614–626",
-        "collect/Get-OutlookData.ps1:718–724",
-        "collect/Get-OutlookIndex.ps1:237–238",
-        "collect/Get-OutlookIndex.ps1:307–310"
-      ],
-      "method": "계정 수집 및 mail_source writer 원본 재독해",
-      "result": "확인. mail_source.json me에본인SMTP/계정/표시명, mail.csv sender에발신자표시명 또는색인FromAddress가남을수있다. '이메일주소없음' 또는 '본인정보만' 주장불가.",
-      "limitation": "실제 계정값은 읽지 않았다. 일부값의 실제 가용성은 Outlook/AD 프로필에 달려 있다."
-    },
-    {
-      "id": "LOCAL-15",
-      "claim": "storeMailSubject=false는 최종 CSV의 제목 제한이며 Copilot 원응답 전체를 지우지 않는다.",
-      "source": [
-        "collect/Get-MailViaCopilot.py:289–300",
-        "collect/Get-MailViaCopilot.py:328–344"
-      ],
-      "method": "원응답 저장순서 재독해 + _save/_conv_token/_esc AST 함수만 메모리CSVwriter로 실행",
-      "result": "확인. 가상 제목·conversation은 최종CSV에서빈값/해시가 되지만 sender는 유지된다. reply원문은parse및기간필터이전에 data/outlook/replies에저장되므로 이미원응답에포함된제목은숨김옵션으로삭제되지않는다.",
-      "limitation": "Copilot 서비스·원응답을 호출하지 않았다. 실제 원응답의 개인정보 혼입 여부는 미확인이다."
-    },
-    {
-      "id": "LOCAL-16",
-      "claim": "활동 샘플러는 입력내용/스크린샷 대신 전경프로세스·창제목·유휴시간·사용자/PC명 등을 기록한다.",
-      "source": [
-        "collect/Start-ActivitySampler.ps1:18–27",
-        "collect/Start-ActivitySampler.ps1:42–51",
-        "collect/Start-ActivitySampler.ps1:104–132",
-        "config/config.default.json:441–444"
-      ],
-      "method": "기본옵션JSON 직접 확인 및 WinAPI/CSV 구문 재독해",
-      "result": "확인. 기본60초·창제목저장true, 설정읽기실패도제목저장true로복귀. CSV에time/process/title/idle_sec/solvers_running/user/host. 키 입력내용·화면이미지취득구문없음. 창제목저장전개인정보제외어일괄필터없음.",
-      "limitation": "실제 윈도우·프로세스·입력정보를 읽지 않았다. 제목에자유문개인정보가들어갈수있어 '활동시간만'으로설명하면안된다."
-    },
-    {
-      "id": "LOCAL-17",
-      "claim": "샘플러 자동 등록·재시작과 Teams샘플러 선택 등록을 구별한다.",
-      "source": [
-        "config/config.default.json:447–449",
-        "collect/Register-Samplers.ps1:92–94",
-        "run.py:607–618",
-        "run.py:662–664"
-      ],
-      "method": "기본템플릿 직접 파싱 및 등록/실행분기 재독해",
-      "result": "확인. autoRegisterSampler/autoRestartSampler=true, 기본등록은activity; Teams샘플러는-Teams옵션. 재분석에서도PC기록신선도조건에따라PC이력/방문시각재수집가능.",
-      "limitation": "실제 사용자 작업스케줄러 등록상태는 확인하지 않았다."
-    },
-    {
-      "id": "LOCAL-18",
-      "claim": "Graph 토큰은 JSON으로 저장하고 ACL을 시도하나 앱차원의 암호화/ACL성공보장은 없다.",
-      "source": [
-        "collect/Get-TeamsChats.py:50",
-        "collect/Get-TeamsChats.py:91–104"
-      ],
-      "method": "save_token 원본 재독해; 실행금지로인증/ACL미호출",
-      "result": "확인. data/graph_token.json OAuth응답JSON저장후icacls호출. subprocess 반환코드강제확인없고예외무시. 토큰은일반업무결과와분리보호가필요한자료임.",
-      "limitation": "OS디스크암호화·실제파일ACL·실제토큰존재는미확인이다. 여기서 '평문JSON'은앱의직접저장형식이며물리디스크암호화여부판단이아니다."
-    },
-    {
-      "id": "LOCAL-19",
-      "claim": "전용 Edge 프로필의 로그인 세션 사용과 쿠키값의 분석CSV추출은 다르다.",
-      "source": [
-        "tools/copilot_auto.py:58–61",
-        "tools/copilot_auto.py:356–379"
-      ],
-      "method": "브라우저시작구문및collect/driver의cookie/getCookies관련검색; 브라우저는실행하지않음",
-      "result": "확인. user-data-dir=data/copilot_profile 기반로그인프로필사용. 쿠키값을분석CSV로뽑는로직은확인되지않음. 단 '쿠키/로그인자료가로컬에없다'고확정할수없고인증프로필처리범위로설명해야함.",
-      "limitation": "브라우저가관리하는쿠키/세션의실제파일·암호화·보존정책은열거나검증하지않았다. 기본디버그포트가이미열려있으면재사용하므로항상자기프로필임을확인하는것도아니다."
-    },
-    {
-      "id": "LOCAL-20",
-      "claim": "라이선스 서버 조회는 별도 옵션이며 기본 실행기에 연결되지 않는다.",
-      "source": [
-        "collect/Get-LicenseUsage.ps1:45–58",
-        "collect/Get-LicenseUsage.ps1:67–76",
-        "collect/Register-Samplers.ps1:92–94",
-        "run.py:802–857"
-      ],
-      "method": "라이선스수집원본재독해및run.py/ui/Register-Samplers의호출명검색",
-      "result": "확인. 명시설정서버에lmutil lmstat -a -c 질의하고data/license/license_YYYYMMDD.csv에server/feature/user/host/start/poll저장. 기본호출연결미발견. 다른사용자행도들어갈수있고server값IP가능.",
-      "limitation": "실제 lmutil·서버·라이선스·네트워크권한은접근/검증하지않았다. 회사별외부스케줄등록이없다는뜻은아니다."
-    },
-    {
-      "id": "LOCAL-21",
-      "claim": "F개인정보 체크에서 전용필드미구현과 자유문포함가능성을 구별해야 한다.",
-      "source": [
-        "collect/Get-TeamsWindow.ps1:159",
-        "collect/Get-TeamsWindow.ps1:226–232",
-        "collect/Start-ActivitySampler.ps1:129–132",
-        "collect/Get-MailViaCopilot.py:289–294",
-        "core/extract.py:629–646"
-      ],
-      "method": "원문/자유문저장경로와별도식별/암호화필드유무재대조",
-      "result": "확인. 이름/이메일/계정/PC명은명시처리, 주소·전화·비밀번호·고유식별번호는전용필드가없어도raw/제목/업무자유문혼입가능. F7은LM자체로그인비밀번호기능과혼입위험을구분. '개인정보없음' 또는 '완전비식별' 주장불가.",
-      "limitation": "실제자료혼입·법적처리근거·사내등급·고지/동의적정성을검증하거나판정하지않는다. 해당여부확정에운영담당확인이필요하다."
-    },
-    {
-      "id": "LOCAL-22",
-      "claim": "현재 제출자료의 목적/비고는 코드검토와 운영확인을 분리해야 한다.",
-      "source": [
-        "run.py:817–857",
-        "collect/Get-TeamsWindow.ps1:241–243",
-        "collect/Get-OutlookData.ps1:718–724",
-        "collect/Get-TeamsWeb.py:659–692"
-      ],
-      "method": "수집성공/커버리지/추정한계와기존HTML목적·비고재대조",
-      "result": "기존 목적의업무근거수집·로컬분석·선택연계설명은타당. 실제계정성공,전체기간전량,근태의확정사실,보안정책충족을검증했다는표현은사용하면안됨. 이번검증도정적·가상자료단위검증으로한정해야함.",
-      "limitation": "외부송신과팀서버의전송필드는다른감사담당의별도검증범위다. 본검증은회사계정E2E나운영보안승인이아니다."
-    },
-    {
-      "id": "TRANSFER-01",
-      "claim": "HTTP 표준 허용 파일은 9종이며 member는 별도 객체",
-      "source": [
-        "teamup.py:116–118;275–285;452–457",
-        "teamserver.py:78–81"
-      ],
-      "method": "원코드 재읽기 및 기존 HTML 대조 + AST 합성 T01,T02",
-      "result": "일치",
-      "detail": "일반/정제 mm_rows 2종+signals 1종+mm_meta/pivots/ai_narratives/entities/agentic/workflow 6종. 존재한 파일만 취합."
-    },
-    {
-      "id": "TRANSFER-02",
-      "claim": "wire는 UTF-8 JSON {member,files}, 파일 내용은 문자열 그대로",
-      "source": [
-        "teamup.py:285;321–325;435–457"
-      ],
-      "method": "원코드 재읽기 및 기존 HTML 대조 + AST 합성 T02",
-      "result": "일치",
-      "detail": "built/blocked는 로컬 pending 정보이며 전송 시 제외. who/본문 조각 별도 비식별화 없음. ZIP 아님."
-    },
-    {
-      "id": "TRANSFER-03",
-      "claim": "member에 식별자·측정·호스트·시각·프로그램 사용 요약 포함",
-      "source": [
-        "teamup.py:159–239;296–317;447–448"
-      ],
-      "method": "원코드 재읽기 및 기존 HTML 대조 + AST 합성 T02",
-      "result": "일치",
-      "detail": "owner,function,period,tag,MM/로드율/시간/건수,부재/야근/결측,이상·장시간·부재추정,점심차감,measure,coverage,cfg_used,tool_usage,rehours,dropped_h,host/analyzed_at/uploaded_at/uploaded_from."
-    },
-    {
-      "id": "TRANSFER-04",
-      "claim": "자동 export와 수동 --to-folder의 HTML 범위 차이",
-      "source": [
-        "export.py:73–75;118–146",
-        "teamup.py:119–126;242–272;567–595"
-      ],
-      "method": "원코드 재읽기 및 기존 HTML 대조 + AST 합성 T03",
-      "result": "일치",
-      "detail": "자동은 9종+member. 수동은 추가 개인 HTML 2종. 요약 HTML 파일명은 목록에 없음."
-    },
-    {
-      "id": "TRANSFER-05",
-      "claim": "HTTP 자동 업로드와 공유폴더 자동 내보내기는 독립 조건",
-      "source": [
-        "run.py:1065–1079"
-      ],
-      "method": "원코드 재읽기 및 기존 HTML 대조",
-      "result": "일치",
-      "detail": "teamUpload.auto=false라도 teamShareDir 설정에 따른 export 분기는 별도로 실행."
-    },
-    {
-      "id": "TRANSFER-06",
-      "claim": "서버 기본 HTTP/0.0.0.0/9310, 업로드·조회 사용자 인증/TLS 미내장",
-      "source": [
-        "teamserver.py:57–61;289–363;435–515;518–543",
-        "teamup.py:456–459"
-      ],
-      "method": "원코드 재읽기 및 기존 HTML 대조 + AST 합성 T02",
-      "result": "일치",
-      "detail": "ThreadingHTTPServer SSL 래핑 없음. 업로드는 JSON/owner/파일명 등 검사하나 인증 헤더 검사 없음. 종료 endpoint만 루프백 제한."
-    },
-    {
-      "id": "TRANSFER-07",
-      "claim": "teamserver.token은 업로드 인증/비밀번호 해시가 아님",
-      "source": [
-        "teamserver.py:124–137;349–360;435–515"
-      ],
-      "method": "원코드 재읽기 및 기존 HTML 대조 + AST 합성 T02",
-      "result": "일치",
-      "detail": "인스턴스 식별 정보로 만들고 응답에 포함. 업로드 권한 검사에는 사용하지 않음."
-    },
-    {
-      "id": "TRANSFER-08",
-      "claim": "AI 수치 전송 범위는 단계별로 다름",
-      "source": [
-        "refine.py:188–191;446–467",
-        "mine.py:254–258",
-        "flow.py:434–438;483–485",
-        "agentic.py:136–198",
-        "judge.py:1377–1405"
-      ],
-      "method": "원코드 재읽기 및 기존 HTML 대조 + AST 합성 T04",
-      "result": "일치",
-      "detail": "refine 비중/일수·evidence 폴백 MM, flow MM+신호건수. agentic 별도 MM 필드 없음. narrate total_mm는 문자열에 쓰지 않음."
-    },
-    {
-      "id": "TRANSFER-09",
-      "claim": "팀 AI는 별도 owner/MM/raw 필드 없이 명칭 목록 전송",
-      "source": [
-        "team_report.py:275–310;1542–1548;1597–1623;1914–1923;2043–2050",
-        "team_refine.py:81–96"
-      ],
-      "method": "원코드 재읽기 및 기존 HTML 대조 + AST 합성 T04",
-      "result": "일치",
-      "detail": "명칭 안의 인명/고객명은 보존될 수 있음. 일반 집계와 명시적 AI 정리 실행 구분."
-    },
-    {
-      "id": "TRANSFER-10",
-      "claim": "who 축소는 자유텍스트 전체 익명화가 아님",
-      "source": [
-        "judge.py:196–227;691–693",
-        "refine.py:382–407"
-      ],
-      "method": "원코드 재읽기 및 기존 HTML 대조 + AST 합성 T04",
-      "result": "일치",
-      "detail": "역할 주소 예외. 원문 이름/주소는 남을 수 있음."
-    },
-    {
-      "id": "TRANSFER-11",
-      "claim": "--ai 없이 조건부 메일 Copilot 조회 가능",
-      "source": [
-        "config/config.default.json:424;433",
-        "run.py:268–274;842–852;859–865;915"
-      ],
-      "method": "원코드 재읽기 및 기존 HTML 대조",
-      "result": "일치",
-      "detail": "mailViaCopilot 기본 true, teamsViaCopilot 기본 false. --ai는 후속 판정/정제의 게이트."
-    },
-    {
-      "id": "TRANSFER-12",
-      "claim": "조회 응답 원문 보관과 제목 CSV 비저장은 별개",
-      "source": [
-        "collect/Get-MailViaCopilot.py:289–300;328–343",
-        "collect/Get-TeamsViaCopilot.py:235–240"
-      ],
-      "method": "원코드 재읽기 및 기존 HTML 대조",
-      "result": "일치",
-      "detail": "구간별 replies txt에 원문 저장. 같은 구간은 w 덮어쓰기, 다른 구간은 별도 파일. append 로그로 표현하면 안 됨."
-    },
-    {
-      "id": "TRANSFER-13",
-      "claim": "Edge 세션과 Graph 토큰은 별도이며 ACL 성공 미보장",
-      "source": [
-        "tools/copilot_auto.py:57–81;198–206;356–380",
-        "collect/Get-TeamsChats.py:91–104;115–154"
-      ],
-      "method": "원코드 재읽기 및 기존 HTML 대조",
-      "result": "일치",
-      "detail": "JSON 토큰+icacls best-effort. Graph는 데이터 수집 인증이고 Copilot prompt 필드가 아님."
-    },
-    {
-      "id": "TRANSFER-14",
-      "claim": "teamdata/<owner> 도식은 기본 저장 위치",
-      "source": [
-        "teamserver.py:46–54;366–380"
-      ],
-      "method": "원코드 재읽기 및 기존 HTML 대조",
-      "result": "보완 권고",
-      "detail": "유효한 config.teamShareDir가 있으면 서버 저장 루트도 그 경로를 사용. 기본값 표시를 추가하면 정확해짐."
-    },
-    {
-      "id": "TRANSFER-15",
-      "claim": "실제 회사망·계정·정책은 코드로 확정 불가",
-      "source": [
-        "tools/copilot_auto.py:548–583;883–893",
-        "config/config.default.json:539–561"
-      ],
-      "method": "원코드 재읽기 및 기존 HTML 대조",
-      "result": "일치",
-      "detail": "HTML의 실계정 미검증 및 정책 별도 확인 표시는 정확. 모델 선택기도 실제 성공/모델 고정 보장은 아님."
-    }
-  ],
-  "artifacts": [
-    {
-      "file": "01_LM24_인프라아키텍처.html",
-      "bytes": 44197,
-      "sha256": "809d9fadb5e60117342d23652dee86465101d4338320e137b692a8d9c7580da9"
-    },
-    {
-      "file": "02_LM24_데이터흐름도.html",
-      "bytes": 64602,
-      "sha256": "879d2ffb809ec8aea056f318b50d839910c2ff44a01ae24afc1f9aa616a8416e"
-    },
-    {
-      "file": "03_LM24_사전보안검토_제출용.html",
-      "bytes": 58141,
-      "sha256": "203b66e7a87f8a2890783ddfb23a675ae070a7e366484c0fb1843f1177ce797b"
-    },
-    {
-      "file": "03_LM24_사전보안검토_제출용.pdf",
-      "bytes": 213760,
-      "sha256": "a3909a3a1fb7984981c4629dbd20c5ac577f0aa0266d0d6c367c08d0bb05ade7"
-    },
-    {
-      "file": "04_가상검토팀_질의답변_및_검증기록.html",
-      "bytes": 37964,
-      "sha256": "3a647476bdfb0c46d5b915432d8165b61dcf6c3184e63d576a2700d17a1beee4"
-    },
-    {
-      "file": "신청서_기입문안_및_체크리스트.txt",
-      "bytes": 9592,
-      "sha256": "2d4fd45ead18056798da7e2ea37cc1eac7aa55c1c1a93841e13ef5d8883f360a"
-    },
-    {
-      "file": "질의답변_검토기록.json",
-      "bytes": 86791,
-      "sha256": "d56f733128e7030c361cc20aa0d573437ba327bfb243cf08f88511023618a101"
-    }
-  ]
+  "errors": []
 }
