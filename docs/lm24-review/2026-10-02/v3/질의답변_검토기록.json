@@ -1,0 +1,1206 @@
+{
+  "title": "가상 검토팀 질의·답변·수정·재검토 기록",
+  "scope": "문서의 정확성·이해가능성을 검토하는 가상 팀. 실제 보안 승인·침투시험·조직 정책 확정이 아님.",
+  "source_version": "LM24 v24.0.18 / 53f78e5fb53f075e583a2618319c96e0ffaae44b",
+  "round1": {
+    "questions": 24,
+    "security": 9,
+    "readability": 7,
+    "code": 8,
+    "operational_pending": 6
+  },
+  "final_counts": {
+    "resolved": 18,
+    "operational_pending": 6
+  },
+  "entries": [
+    {
+      "id": "SEC-01",
+      "reviewer": "보안 검토자",
+      "question": "사용자가 무엇을 실행하면 어떤 프로세스가 어떤 순서로 시작되는가? 개인 UI·Python 실행기·PowerShell 수집기·Edge, 팀 서버·팀 취합·팀 AI 각각의 실행 PC, 시작 주체, 실행 계정과 수동/자동 조건을 한 흐름으로 보여 줄 수 있는가?",
+      "answer": "개인 UI는 사용자 BAT→Python→로컬 브라우저 순서입니다. 분석 실행은 Python·PowerShell 자식을 호출하고 실행한 Windows 계정을 상속합니다. UI 상태 조회의 샘플러 자동 시작, 수집 시 미등록 로그온 작업 등록, UI 종료 후 분리 관측 가능성도 코드에서 확인했습니다. 팀 자동 집계는 서버 PC에서, 팀 AI는 별도 명령 실행 PC의 Edge 계정으로 수행합니다. 실제 계정·등록 상태는 미확인입니다.",
+      "evidence": [
+        "LoadMonitor24-UI.bat:14",
+        "ui/app.py:947",
+        "ui/app.py:997",
+        "ui/app.py:4016",
+        "run.py:606",
+        "collect/Register-Samplers.ps1:42",
+        "teamserver.py:180",
+        "ui/app.py:4916"
+      ],
+      "revised_location": "01 #runtime · 제출 PDF 2쪽",
+      "status": "문서 설명의 의문 해소",
+      "verdict": "resolved",
+      "last_review_round": 2,
+      "reviewer_remaining": "실행 위치·시작 주체·프로세스·자동 조건에 대한 문서 설명은 해소됐다. 실제 실행 계정, 관리자 실행 여부, 등록 작업과 정지 방법은 PDF 14쪽에 미정으로 남아 있으며 SEC-04의 운영 확인 대상이다."
+    },
+    {
+      "id": "SEC-02",
+      "reviewer": "보안 검토자",
+      "question": "취득한 자료를 모은 뒤 공통 신호·업무 분류·MM·AI 입력·팀 파일로 바꿀 때 적용하는 필터와 변환은 무엇이며, 각각 원문 저장 전후 어디에 적용되는가? 기간·중복·키워드·제목 제외와 상대 표기 축소가 어느 산출물까지 영향을 미치는가?",
+      "answer": "취득 원자료 D1과 분석 결과 D2를 나눴습니다. 본·추가PC 자료를 읽으며 형식·중복·기간·대상·제외어를 처리하고 채택·감쇠·제외한 단서를 신호와 업무 결과로 가공합니다. 시간 근거는 별도 경로입니다. 분석 중 파일 단서를 먼저 읽어 캐시한 뒤 제외어를 검사하는 경우가 있습니다. 가상 메일 예에서 원자료·신호·AI·팀의 상대 표기와 제목 잔존을 추적했습니다. 제외는 원자료·기송신본 삭제나 전체 익명화가 아닙니다.",
+      "evidence": [
+        "core/extract.py:428",
+        "core/extract.py:577",
+        "core/extract.py:974",
+        "core/extract.py:1017",
+        "core/extract.py:1205",
+        "mine.py:261",
+        "judge.py:214"
+      ],
+      "revised_location": "02 #processing/#example · PDF 3–6쪽",
+      "status": "문서 설명의 의문 해소",
+      "verdict": "resolved",
+      "last_review_round": 2,
+      "reviewer_remaining": "필터·변환의 범위와 원문/캐시/기전송본의 잔존을 자료만으로 이해할 수 있어 설명 보완 요구는 해소됐다. 실제 제외 규칙의 적정성·오분류 확인·허용 정보 기준은 SEC-07에서 계속 운영 확인한다."
+    },
+    {
+      "id": "SEC-03",
+      "reviewer": "보안 검토자",
+      "question": "팀 저장소의 개인별 파일을 누가 어디서 읽어 무엇을 기준으로 취합·필터·변환하는가? 기간·인원 선택, 같은 사람/기간의 재업로드 처리, 일반 집계와 선택 팀 AI의 전후 관계, 최종 팀 보고서에 남는 개인별 상세·근거의 범위를 설명할 수 있는가?",
+      "answer": "팀은 파일명·요청 크기 등 형식을 검사하여 개인별로 저장하고 업무명·개인 수치를 규칙 집계합니다. 같은 사용자·파일명은 교체되지만 다른 기간 파일의 일괄 삭제나 기간 일치 필터는 아닙니다. 측정 불충분 인원은 일부 비교에서 제외되어도 인원 표에 남습니다. 선택 팀 AI는 이름 목록으로 유사명을 정리합니다. 개인 식별·업무·근거는 팀 자료에 남으며 기본 인증·개인별 열람 권한 분리는 없습니다.",
+      "evidence": [
+        "teamserver.py:366",
+        "teamserver.py:510",
+        "aggregate.py:301",
+        "aggregate.py:533",
+        "team_report.py:1980"
+      ],
+      "revised_location": "02 #team · PDF 6–7쪽",
+      "status": "문서 설명의 의문 해소",
+      "verdict": "resolved",
+      "last_review_round": 2,
+      "reviewer_remaining": "수신 후 처리·갱신·기간/품질 필터 한계·최종 노출 범위에 대한 설명은 해소됐다. 실제 팀 열람자·권한·기간 정합성 운영 확인은 별도이며 SEC-04~05에 남는다."
+    },
+    {
+      "id": "SEC-04",
+      "reviewer": "보안 검토자",
+      "question": "이번 검토 신청에서 실제 사용할 기능과 연결 경로는 무엇인가? 메일 대체 Copilot, 분석 AI, Graph, HTTP 업로드, 공유폴더 자동/수동 복사, 팀 AI의 사용 여부와 실행 PC·서버·공유경로·망 위치를 확정할 담당자와 일정이 있는가?",
+      "answer": "실제 기능·계정·PC·망·서버 주소·공유경로·적용 설정은 제공되지 않았습니다. 운영 확인표에 기본값과 적용값을 분리하고 담당자·확정일·설정 증빙 기입란을 마련했습니다. 미정은 사용 허용 또는 차단 완료를 뜻하지 않습니다.",
+      "evidence": [],
+      "revised_location": "03 #operating-features · PDF 14쪽",
+      "status": "운영 확인 대기",
+      "verdict": "operational_pending",
+      "last_review_round": 2,
+      "reviewer_remaining": "운영 확인을 받기 위한 문서 틀은 충족했다. 실제 사용/미사용 범위·계정·망·주소·공유경로·적용 설정·책임자·확정일·증빙은 여전히 미정이다. 새로 드러난 자동 관측 경로도 포함해 등록 상태와 정지 방법을 확인해야 하므로 실제 항목을 resolved로 처리할 수 없다."
+    },
+    {
+      "id": "SEC-05",
+      "reviewer": "보안 검토자",
+      "question": "팀 기능을 사용할 경우 실제로 누가 업로드·전체 보고서·개인별 자료·상태 API·공유파일에 접근할 수 있고, 이를 어떤 인증·권한·망 제한·전송 보호 구성으로 강제할 것인가? HTTP 서버에 보호 프록시를 둘 경우 직접 9310 포트 접근 경로도 통제되는가?",
+      "answer": "기본 미인증 HTTP와 공유폴더 권한 의존을 명시했습니다. 실제 업로더·조회자·관리자, 인증·HTTPS·직접 9310 접근 제한·접근기록은 인프라/운영 담당자가 적용 증빙으로 답해야 합니다. 제안 보호 구성은 구현 완료로 표시하지 않습니다.",
+      "evidence": [],
+      "revised_location": "03 #operating-controls · PDF 15쪽",
+      "status": "운영 확인 대기",
+      "verdict": "operational_pending",
+      "last_review_round": 2,
+      "reviewer_remaining": "기본 미인증 HTTP와 개인별 열람 권한 분리 부재, 운영상 요구할 보호 경로는 충분히 설명했다. 실제 업로더/조회자/관리자와 인증·전송 보호·직접 서버 접근 통제·공유권한·접근기록은 미확인이다. 적용 및 차단 확인 증빙을 받은 뒤 별도 판단해야 한다."
+    },
+    {
+      "id": "SEC-06",
+      "reviewer": "보안 검토자",
+      "question": "허용할 Microsoft 365 계정·테넌트·서비스와 Graph 권한/동의 범위는 무엇이며, 해당 환경에서 Copilot 입력·응답의 보존·접근·학습 이용·DLP 조건을 누가 확인하는가? Graph 미사용·AI 미사용 범위는 각각 어떤 설정으로 확인할 것인가?",
+      "answer": "Copilot 웹과 Graph OAuth를 분리했습니다. 기본 Graph 요청 권한은 Chat.Read/User.Read/offline_access입니다. 실제 앱·테넌트·동의·허용 정보·보존/학습/DLP 정책은 M365 관리·보안 담당자의 확인 대상입니다. 분석 AI 해제만으로 수집 대체 AI까지 꺼지는 것은 아닙니다.",
+      "evidence": [
+        "collect/Get-TeamsChats.py:53"
+      ],
+      "revised_location": "03 #operating-features/#operating-controls · PDF 14–15쪽",
+      "status": "운영 확인 대기",
+      "verdict": "operational_pending",
+      "last_review_round": 2,
+      "reviewer_remaining": "Copilot 웹·Graph OAuth·대체 조회·분석/팀 AI의 구분과 기본 요청 권한 설명은 충족한다. 실제 앱·테넌트·동의 권한·허용 계정·정보·서비스 정책과 미사용 설정 적용은 미확인이다. 문서에 인용된 기본 권한은 실제 권한 승인 증빙이 아니다."
+    },
+    {
+      "id": "SEC-07",
+      "reviewer": "보안 검토자",
+      "question": "어떤 대상자·업무·정보등급을 취득 대상으로 허용하고, 그중 AI 전달과 팀 공유를 각각 어디까지 허용할 것인가? 자유텍스트 속 비밀번호·민감정보 또는 AI 응답의 부정확한 개인별 서술을 발견했을 때 누가 확인하고 공유를 중단·수정하는가?",
+      "answer": "취득·AI 입력·팀 공유의 허용 정보는 서로 별도 기준으로 확정해야 합니다. 자유텍스트 민감정보와 오분류 발견 시 정정·공유 제한 절차의 책임자도 미정입니다. 설정 필터의 구현을 조직의 정보 허용 정책으로 대체하지 않았습니다.",
+      "evidence": [],
+      "revised_location": "03 #operating-controls · PDF 15쪽",
+      "status": "운영 확인 대기",
+      "verdict": "operational_pending",
+      "last_review_round": 2,
+      "reviewer_remaining": "취득·AI·팀 공유를 따로 판단해야 하고 필터·짧은 텍스트·사람 검토 권고가 강제 보호를 뜻하지 않는다는 설명은 충분하다. 실제 대상자·정보등급·허용 범위·정정/공유 제한 기준·책임자·확정일은 미정이므로 운영 확인 대기를 유지한다."
+    },
+    {
+      "id": "SEC-08",
+      "reviewer": "보안 검토자",
+      "question": "개인 data/report, 전송 대기·완료 사본, TEMP의 History 복사본, Edge 프로필, Graph 토큰 및 팀 저장소에 어떤 파일 권한·저장 암호화·백업/동기화 제한을 적용할 것인가? Graph 토큰의 현재 사용자 ACL 적용 실패를 어떻게 발견하고 대응할 것인가?",
+      "answer": "D1/D2/D3와 별도 인증·임시자료 C1, TEMP, 업로드 대기/완료본을 보관표에 포함했습니다. 실제 ACL·암호화·백업/동기화·Graph ACL 적용 성공은 미확인입니다. 단말/서버 담당자가 해당 저장물별 접근·보호 증빙을 제공해야 합니다.",
+      "evidence": [
+        "collect/Get-TeamsChats.py:91"
+      ],
+      "revised_location": "01 #stores/#controls · PDF 7·15쪽",
+      "status": "운영 확인 대기",
+      "verdict": "operational_pending",
+      "last_review_round": 2,
+      "reviewer_remaining": "원자료·캐시·분석/전송 사본·팀 자료·인증·임시 자료의 보호 대상을 빠뜨리지 않고 구분했다. 실제 ACL·암호화·백업/동기화 범위와 Graph ACL 성공 확인 및 실패 대응 결과는 제공되지 않았다. 저장물별 적용 증빙과 담당 확인이 필요하다."
+    },
+    {
+      "id": "SEC-09",
+      "reviewer": "보안 검토자",
+      "question": "원문·수집 CSV·신호/분석·AI 요청/응답·임시 DB·전송 사본·팀 파일·백업·인증자료별 보존기간, 삭제 시점, 삭제 실패/퇴사/단말 교체 시 책임자와 검증 방법은 무엇인가?",
+      "answer": "전체 자료의 일괄 보존·삭제는 확인되지 않습니다. 400일은 일부 기존행 정리이며 새 오래된 행 재편입도 가능하고, 분석 제외가 원자료·응답·팀/백업 사본 삭제를 뜻하지 않습니다. 자료별 기간·삭제 주체·실패·퇴사/교체·세션/토큰 종료는 운영 확인표에 미정으로 남겼습니다.",
+      "evidence": [],
+      "revised_location": "01 #stores · 03 #operating-controls · PDF 15쪽",
+      "status": "운영 확인 대기",
+      "verdict": "operational_pending",
+      "last_review_round": 2,
+      "reviewer_remaining": "분석 제외·400일 정리·재업로드가 전체 삭제를 의미하지 않는다는 설명과 확인할 수명주기 범위는 충족했다. 실제 자료별 보존표, 삭제 주체/방법/실패 처리, 백업·퇴사/교체·인증 종료 절차와 검증 결과는 미정이므로 운영 확인 대기를 유지한다."
+    },
+    {
+      "id": "R01",
+      "reviewer": "처음 읽는 담당자",
+      "question": "자료를 합친 뒤 최종 분석 결과까지의 처리 순서를 한 장에 추가해 달라. 각 단계의 입력·처리·출력·적용 제외 기준을 연결하고, 해당하지 않는 처리나 아직 검증하지 않은 처리는 그렇게 표시해 달라.",
+      "answer": "취득→D1→취합·필터→업무/시간의 별도 처리→D2→AI/팀 분기를 연결했습니다. 필터 표는 실제 출처별 처리 묶음이며 하나의 전역 순차 필터라고 단정하지 않습니다.",
+      "evidence": [],
+      "revised_location": "02 표지/#processing · PDF 1·4쪽",
+      "status": "문서 설명의 의문 해소",
+      "verdict": "resolved",
+      "last_review_round": 2,
+      "reviewer_remaining": "문서 설명의 공백은 해소됐다. 실제 필터 결과·시간 재산정 성공·캐시/기송신본 삭제 여부를 검증 완료로 판단한 것은 아니다."
+    },
+    {
+      "id": "R02",
+      "reviewer": "처음 읽는 담당자",
+      "question": "PDF 1쪽의 개인 취득→Copilot→팀 공유 직렬 화살표를 실제 전송 주체가 보이는 분기 그림으로 수정해 달라.",
+      "answer": "PDF 첫 그림을 Microsoft 365↔개인 PC→팀 저장소로 바꾸었습니다. AI 응답이 PC로 돌아오고 PC가 팀에 직접 전송합니다. 상세 도식은 수집용 AI 조회와 분석용 AI 입력도 따로 연결합니다.",
+      "evidence": [],
+      "revised_location": "02 표지 · PDF 1–2쪽",
+      "status": "문서 설명의 의문 해소",
+      "verdict": "resolved",
+      "last_review_round": 2,
+      "reviewer_remaining": "그림만으로 AI 응답 귀환과 개인 PC의 팀 직접 전송을 구별할 수 있다. 추가 문서 수정 요구 없음."
+    },
+    {
+      "id": "R03",
+      "reviewer": "처음 읽는 담당자",
+      "question": "신호·근거·정제·MM을 첫 사용 위치에서 쉬운 말로 정의하고, 코드 필드명은 우리말 뒤의 보조 표기로 옮겨 달라.",
+      "answer": "신호·근거·정제·MM을 쉬운 말로 정의했습니다. MM은 추정 투입량이며 실근태나 절감 실측값이 아닙니다. 코드 필드·모듈명은 주로 상세 영역과 근거에 배치했습니다.",
+      "evidence": [],
+      "revised_location": "02 표지 · PDF 1·4쪽",
+      "status": "문서 설명의 의문 해소",
+      "verdict": "resolved",
+      "last_review_round": 2,
+      "reviewer_remaining": "코드명은 일부 본문에도 남지만 우리말 역할·처리 설명이 함께 있어 핵심 독해를 막지 않는다. 업무행 정제와 시간 재산정의 차이도 설명 가능하다."
+    },
+    {
+      "id": "R04",
+      "reviewer": "처음 읽는 담당자",
+      "question": "PDF 3쪽에 원천·로컬 취득물·파생 신호/결과·인증/임시자료를 구분하고, 하나의 가상 예를 AI와 팀 전달까지 따라가게 해 달라.",
+      "answer": "D1 취득 자료, D2 분석 자료, D3 팀 보관, C1 인증·임시자료를 구분했습니다. a@corp.example와 고객사명 제목이라는 가상 예에서 AI 상대 축소와 팀 신호의 재가림 부재, 원자료 잔존을 연결했습니다.",
+      "evidence": [],
+      "revised_location": "02 #example · PDF 3·5·6쪽",
+      "status": "문서 설명의 의문 해소",
+      "verdict": "resolved",
+      "last_review_round": 2,
+      "reviewer_remaining": "PDF에서는 가상 사례가 두 쪽에 나뉘지만 같은 가상 신호라는 연결이 있어 원문 파일 제외와 파생 텍스트 전송을 구별할 수 있다. 원문 잔존도 3~4쪽에서 설명된다."
+    },
+    {
+      "id": "R05",
+      "reviewer": "처음 읽는 담당자",
+      "question": "정보 포함 지도의 AI 처리·전송 열에서 프롬프트 본문, 로그인 인증, 파일 자체 업로드 여부를 구분해 달라.",
+      "answer": "포함 지도 열을 AI 입력 본문과 표준 팀 업로드로 좁혔습니다. 쿠키/토큰은 프롬프트 필드가 아닌 인증자료로 분리하고, 원문 파일 자체와 추출된 신호 텍스트를 구별했습니다.",
+      "evidence": [],
+      "revised_location": "02 #ledger",
+      "status": "문서 설명의 의문 해소",
+      "verdict": "resolved",
+      "last_review_round": 2,
+      "reviewer_remaining": "파일 자체 미전송과 추출된 텍스트 포함 가능성을 구별할 수 있다. 실제 런타임 전송 또는 계정 정책 시험을 완료했다는 의미는 아니다."
+    },
+    {
+      "id": "R06",
+      "reviewer": "처음 읽는 담당자",
+      "question": "PDF를 읽는 순서와 HTML 상세 절의 대응표를 짧게 추가하고, 접힌 상세 영역에서 같은 본문을 반복하는 대신 추가 근거만 보여 달라.",
+      "answer": "PDF 첫 쪽에 읽는 순서와 HTML 대응을 안내하고 16개 페이지 책갈피를 추가했습니다. 본문은 구동·처리·전송을 설명하고 전체 체크리스트·운영 확인·스키마·코드 근거는 부록/상세에 배치했습니다.",
+      "evidence": [],
+      "revised_location": "PDF 1쪽 및 책갈피 · HTML 상세 영역",
+      "status": "문서 설명의 의문 해소",
+      "verdict": "resolved",
+      "last_review_round": 2,
+      "reviewer_remaining": "본문과 상세 사이의 일부 내용 재언급은 예외·스키마를 설명하기 위한 반복으로 수용 가능하다. HTML 화면/접힘 상호작용은 정책상 미검증이며 이 판단은 DOM 본문 구조와 PDF에 한정된다."
+    },
+    {
+      "id": "R07",
+      "reviewer": "처음 읽는 담당자",
+      "question": "PDF의 한두 글자만 다음 줄에 남는 줄바꿈과 반복 주의문을 정리해 달라.",
+      "answer": "요약 문장·표 문구를 줄이고 의미 단위로 줄바꿈했습니다. PDF 16쪽 전체를 이미지로 확인한 뒤, 2차에서 남은 3·5·6·9·15쪽을 수정해 다시 검토합니다. HTML 전체 브라우저 레이아웃은 도구 정책으로 검증하지 못했다는 한계도 유지합니다.",
+      "evidence": [],
+      "revised_location": "PDF 전체 및 3차 가독성 확인 · 검증결과",
+      "status": "문서 설명의 의문 해소",
+      "verdict": "resolved",
+      "last_review_round": 3,
+      "reviewer_remaining": "R07 관련 추가 수정 요구 없음. 실제 운영 통제·승인과 HTML 브라우저 화면 검증은 별도 미확인으로 유지한다."
+    },
+    {
+      "id": "C01",
+      "reviewer": "코드 검증자",
+      "question": "개인정보 키워드로 분석 신호에서 제외된 자료는 시간/MM 계산에서도 모두 빠지는가?",
+      "answer": "항상 그렇지는 않다. load_signals는 파일 대표 신호를 만들기 전에 별도 _file_times를 계산해 전달한다. 파일 Signal 필터는 파일명+내용힌트+축약폴더명을 보지만 _file_times는 파일명+축약폴더명만 검사한다. 따라서 내용힌트에만 제외어가 있으면 Signal은 제외돼도 시각근거는 남는다. day_work_hours는 원자료의 PC·샘플러·회의 등도 별도로 읽는다.",
+      "evidence": [
+        "core/extract.py:838-860,875-897",
+        "core/extract.py:1208,1235-1236,1285-1295",
+        "mine.py:151-152",
+        "core/extract.py:2922-2931"
+      ],
+      "revised_location": "02 #processing · PDF 4쪽",
+      "status": "문서 설명의 의문 해소",
+      "verdict": "resolved",
+      "last_review_round": 2,
+      "reviewer_remaining": "검토한 구현 설명의 추가 수정은 필요하지 않다. 실제 적용 설정·자료·운영 통제는 별도 확인 대상이다."
+    },
+    {
+      "id": "C02",
+      "reviewer": "코드 검증자",
+      "question": "취합 후 개인정보 필터보다 먼저 실제 파일 내용을 다시 읽고 저장하는가? 그 단서는 어디에 남는가?",
+      "answer": "지원 확장자·크기·자리표시자 조건을 통과한 접근 가능한 파일은 load_signals의 file_hint에서 다시 연다. 호출은 대표 Signal의 add 개인정보 필터보다 앞이며, 결과는 data/files/file_hints.json에 전체 파일경로+mtime 키와 짧은 내용힌트로 캐시된다. 이후 분석 제외가 캐시 삭제를 수행하지 않는다. 기존 CSV 전체 경로를 수집기의 경로 필터와 똑같이 재검사하는 것도 아니다.",
+      "evidence": [
+        "core/extract.py:548-574,577-651",
+        "core/extract.py:1211-1236,1285-1295",
+        "core/extract.py:516-527,654-671"
+      ],
+      "revised_location": "02 #processing · PDF 4쪽",
+      "status": "문서 설명의 의문 해소",
+      "verdict": "resolved",
+      "last_review_round": 2,
+      "reviewer_remaining": "검토한 구현 설명의 추가 수정은 필요하지 않다. 실제 적용 설정·자료·운영 통제는 별도 확인 대상이다."
+    },
+    {
+      "id": "C03",
+      "reviewer": "코드 검증자",
+      "question": "AI가 비업무라고 판단하면 모든 단계에서 시간 총량이 줄고 제외 장부도 항상 남는가?",
+      "answer": "judge는 n 신호를 결과 signals에서 제외하고 rehours_meta를 통해 시간/MM 재산정을 시도한다. 계산 실패·메타 없음·갱신 실패 때는 이전 계산값을 유지한다. dropped 장부 쓰기는 계산 및 메타 저장 성공 뒤에 있고, 그 자체도 쓰기 실패를 처리하므로 항상 남는다고 단정할 수 없다. refine는 업무행 work=false를 제외하고 남은 share를 정규화해 입력 총량을 배분하며 시간 재측정을 하지 않는다.",
+      "evidence": [
+        "judge.py:1677-1709,1744-1751",
+        "judge.py:1163-1208,1258-1271",
+        "refine.py:697-747,784-805",
+        "core/extract.py:3568-3639"
+      ],
+      "revised_location": "02 #processing · PDF 4쪽",
+      "status": "문서 설명의 의문 해소",
+      "verdict": "resolved",
+      "last_review_round": 2,
+      "reviewer_remaining": "검토한 구현 설명의 추가 수정은 필요하지 않다. 실제 적용 설정·자료·운영 통제는 별도 확인 대상이다."
+    },
+    {
+      "id": "C04",
+      "reviewer": "코드 검증자",
+      "question": "추가PC 자료는 선별한 CSV만 가져오는 것인가, 화면 원문·응답·캐시도 함께 이동하는가?",
+      "answer": "확인된 자동 동작은 폴더째 이동해 온 설치에서 data/pc_name.txt와 현재 PC명이 다를 때 outlook/files/pc/m365/activity 하위폴더를 data/추가PC/<지난PC>로 os.rename하는 것이다. CSV 허용목록만 복사하지 않으므로 그 폴더의 raw TXT·Copilot replies·계정 메타·file_hints JSON도 함께 보관된다. manual은 이 자동이동 목록에 없다. 별도 추가PC ZIP import 파서는 이 고정 소스에서 확인하지 못했다.",
+      "evidence": [
+        "run.py:694-738",
+        "core/extract.py:425-450,751-761"
+      ],
+      "revised_location": "01 #stores · PDF 3쪽",
+      "status": "문서 설명의 의문 해소",
+      "verdict": "resolved",
+      "last_review_round": 3,
+      "reviewer_remaining": "C04의 문서 반영 누락은 해소되었다. 실제 추가PC 폴더의 보유 정보와 접근권한·보존·삭제 정책은 확인하지 않았다. PDF 레이아웃·픽셀 검토는 별도 가독성 검토 담당 범위이다."
+    },
+    {
+      "id": "C05",
+      "reviewer": "코드 검증자",
+      "question": "보고서를 사람이 확인해야만 팀 전송이 가능한가?",
+      "answer": "아니다. 사람 확인은 권고 운영절차로 둘 수 있지만 코드의 강제 승인 단계가 아니다. run은 보고서·대기묶음 생성 후 teamUpload.auto와 teamServerUrl이 설정되면 HTTP 업로드를 실행하고, teamShareDir이 있으면 별도로 export를 실행한다. 대화형 확인 또는 보고서 검토 완료 플래그를 요구하지 않는다.",
+      "evidence": [
+        "run.py:1025-1079",
+        "teamup.py:275-285"
+      ],
+      "revised_location": "01 #runtime · 02 #team · PDF 6쪽",
+      "status": "문서 설명의 의문 해소",
+      "verdict": "resolved",
+      "last_review_round": 2,
+      "reviewer_remaining": "검토한 구현 설명의 추가 수정은 필요하지 않다. 실제 적용 설정·자료·운영 통제는 별도 확인 대상이다."
+    },
+    {
+      "id": "C06",
+      "reviewer": "코드 검증자",
+      "question": "분석 필터를 통과하면 개인정보가 제거됐다고 볼 수 있는가?",
+      "answer": "그렇게 볼 수 없다. 현재 초안의 '분석 제외≠모든 사본 삭제', '발췌≠완전한 익명화'는 정확하다. extract는 text의 지정 키워드를 검사해 행을 제외한다. who는 로컬 Signal에 최대20자로 남고, AI who_label은 기본 표시명/일반주소를 줄이지만 역할주소 일부는 유지하며 옵션으로 원표기 일부를 보낼 수 있다. 자유텍스트 인명·메일주소·IP·URL은 자동 마스킹하지 않는다. refine의 재필터는 근거 bullet 줄에 한정하고 제목은 유지한다.",
+      "evidence": [
+        "core/extract.py:654-671,1017-1054",
+        "judge.py:196-227,691-693",
+        "refine.py:382-407,446-467"
+      ],
+      "revised_location": "02 #example/#ledger · PDF 5–6쪽",
+      "status": "문서 설명의 의문 해소",
+      "verdict": "resolved",
+      "last_review_round": 2,
+      "reviewer_remaining": "검토한 구현 설명의 추가 수정은 필요하지 않다. 실제 적용 설정·자료·운영 통제는 별도 확인 대상이다."
+    },
+    {
+      "id": "C07",
+      "reviewer": "코드 검증자",
+      "question": "분석에서 제외하면 원자료·AI 기록·기존 팀 보관본까지 삭제되는가?",
+      "answer": "아니다. load_signals는 메모리 신호를 선별하며 원천 data 파일을 삭제하지 않는다. judge는 기존 signals를 rules 백업으로 보관하고 결과 signals를 다시 쓰며 판정·응답 관련 자료가 별도로 남을 수 있다. 표준 HTTP 팀 묶음은 FILE_NAMES의9종 결과와 member를 담고 원자료 전체/원문TXT/토큰/개인HTML을 직접 넣지는 않는다. 그러나 signals·설명 JSON에는 파생된 민감 텍스트가 남을 수 있다. 서버는 받은 파일명 단위로 갱신하므로 로컬 제외가 모든 이전 기간 팀파일 삭제를 의미하지 않는다.",
+      "evidence": [
+        "core/extract.py:974-1395",
+        "judge.py:1677,1703-1709,1735-1742",
+        "teamup.py:116-124,275-285",
+        "teamserver.py:366-400,475-512",
+        "run.py:1039-1079"
+      ],
+      "revised_location": "01 #stores · 02 #team · PDF 3·6쪽",
+      "status": "문서 설명의 의문 해소",
+      "verdict": "resolved",
+      "last_review_round": 2,
+      "reviewer_remaining": "검토한 구현 설명의 추가 수정은 필요하지 않다. 실제 적용 설정·자료·운영 통제는 별도 확인 대상이다."
+    },
+    {
+      "id": "C08",
+      "reviewer": "코드 검증자",
+      "question": "분석 AI를 끄면 외부 Copilot 요청이 전혀 없는가?",
+      "answer": "아니다. 메일 수집 대체 경로의 Copilot 조회는 분석 --ai와 다른 분기이며 기본 mailViaCopilot가 허용되는 경우 앞 수집 경로 결과에 따라 실행될 수 있다. 수집 응답은 개인정보 분석 필터 전에 로컬 replies TXT로 저장된다. Teams의 수집용 Copilot 기본은 false이다.",
+      "evidence": [
+        "run.py:268-274,840-853,915-1017",
+        "collect/Get-MailViaCopilot.py:289-300,328-343",
+        "collect/Get-TeamsViaCopilot.py:235-240",
+        "config/config.default.json:424"
+      ],
+      "revised_location": "02 #ai · PDF 5쪽",
+      "status": "문서 설명의 의문 해소",
+      "verdict": "resolved",
+      "last_review_round": 2,
+      "reviewer_remaining": "검토한 구현 설명의 추가 수정은 필요하지 않다. 실제 적용 설정·자료·운영 통제는 별도 확인 대상이다."
+    }
+  ],
+  "independent_rechecks": [
+    {
+      "reviewer": "코드 검증자 / lm25_measurement (LM24 고정 소스 대조)",
+      "round": 2,
+      "items": [
+        {
+          "id": "C01",
+          "verdict": "resolved",
+          "evidence": {
+            "source": [
+              "core/extract.py:838-860,875-897",
+              "core/extract.py:1208,1235-1236,1285-1295",
+              "core/extract.py:2922-2931",
+              "mine.py:151-152"
+            ],
+            "document": [
+              "02 #processing 도식·처리 표·접힌 설명",
+              "03 제출용 1쪽·4쪽"
+            ],
+            "check": "별도 파일 시각·회의·PC·작업창 시간 경로를 신호 경로와 분리했다. 파일 내용 힌트에만 제외어가 있으면 신호 제외와 시간 근거 제외가 다를 수 있다는 설명이 실제 호출 순서 및 검사 대상과 일치한다."
+          },
+          "remaining": "검토한 구현 설명의 추가 수정은 필요하지 않다. 실제 적용 설정·자료·운영 통제는 별도 확인 대상이다."
+        },
+        {
+          "id": "C02",
+          "verdict": "resolved",
+          "evidence": {
+            "source": [
+              "core/extract.py:548-574,577-651",
+              "core/extract.py:1211-1236,1285-1295",
+              "core/extract.py:516-527,654-671"
+            ],
+            "document": [
+              "02 #processing 및 취득·보관 표",
+              "03 제출용 4쪽"
+            ],
+            "check": "분석 중 접근 가능한 일부 파일을 다시 열어 내용 힌트를 읽고 data/files/file_hints.json에 먼저 저장한 뒤 신호 제외어를 검사할 수 있음을 명시했다. 통상 70자·Office 내장 제목 최대 80자 예외, 전체 경로 키, 분석 제외가 캐시 삭제가 아님을 정확히 구별했다."
+          },
+          "remaining": "검토한 구현 설명의 추가 수정은 필요하지 않다. 실제 적용 설정·자료·운영 통제는 별도 확인 대상이다."
+        },
+        {
+          "id": "C03",
+          "verdict": "resolved",
+          "evidence": {
+            "source": [
+              "judge.py:1163-1208,1258-1271",
+              "judge.py:1677-1709,1735-1751",
+              "refine.py:697-747,784-805",
+              "core/extract.py:3568-3639"
+            ],
+            "document": [
+              "02 #processing 표·상세",
+              "03 제출용 4쪽"
+            ],
+            "check": "judge는 신호를 제외한 후 시간/MM 재산정을 시도하지만 함수/메타/계산/저장 실패 시 기존 계산값을 유지할 수 있다. 제외 장부도 항상 보장되지 않는다. refine는 시간 재측정 대신 남은 업무 비중을 정규화하여 입력 총량 기준으로 배분한다는 구분이 반영되었다."
+          },
+          "remaining": "검토한 구현 설명의 추가 수정은 필요하지 않다. 실제 적용 설정·자료·운영 통제는 별도 확인 대상이다."
+        },
+        {
+          "id": "C04",
+          "verdict": "needs_revision",
+          "evidence": {
+            "source": [
+              "run.py:694-738",
+              "core/extract.py:425-450,751-761"
+            ],
+            "document": [
+              "01 #stores에는 추가PC의 수집 하위폴더 전체·CSV만 아님이 있음",
+              "검토 당시 03 제출용 3쪽 취득·보관 본문에는 대응 설명이 없음",
+              "질의답변_검토기록.json entries[id=C04].revised_location='01 #stores · PDF 3쪽'"
+            ],
+            "check": "PC명이 변경된 설치에서 outlook/files/pc/m365/activity 하위폴더를 data/추가PC/<지난PC>로 os.rename한다. CSV 허용목록으로 선별하지 않아 그 하위에 있는 화면 TXT·조회 응답·계정 메타·file_hints 캐시도 함께 보관될 수 있다. manual은 이동 목록에 없고 별도 ZIP 가져오기 파서를 확인하지 못했다. 01 설명은 정확하나 제출용 03 대응 설명이 발견 시점에는 빠져 수정 기록과 불일치했다."
+          },
+          "remaining": "제출용 03 HTML 및 실제 PDF 3쪽에 추가PC가 CSV뿐 아니라 수집 하위폴더 전체를 보관할 수 있다는 문장을 넣고, 최종 생성 파일에서 직접 재확인해야 한다. 부모에게 보고했으며 수정 후 targeted round 3으로 분리한다."
+        },
+        {
+          "id": "C05",
+          "verdict": "resolved",
+          "evidence": {
+            "source": [
+              "run.py:1039-1079",
+              "teamup.py:275-285"
+            ],
+            "document": [
+              "01 #runtime",
+              "02 #team",
+              "03 제출용 6쪽"
+            ],
+            "check": "사람 검토는 권고 운영절차이며 코드의 강제 승인 단계가 아니라는 문구가 들어갔다. HTTP 자동 전송은 teamUpload.auto와 URL 조건으로, 공유폴더 export는 teamShareDir 조건으로 별도 실행되며 검토 완료 플래그나 대화형 승인을 요구하지 않는다."
+          },
+          "remaining": "검토한 구현 설명의 추가 수정은 필요하지 않다. 실제 적용 설정·자료·운영 통제는 별도 확인 대상이다."
+        },
+        {
+          "id": "C06",
+          "verdict": "resolved",
+          "evidence": {
+            "source": [
+              "core/extract.py:654-671,1017-1054",
+              "judge.py:196-227,691-693",
+              "refine.py:382-407,446-467"
+            ],
+            "document": [
+              "02 #example/#ledger 및 접힌 AI 필드 설명",
+              "03 제출용 5~6쪽·개인정보 체크"
+            ],
+            "check": "키워드로 분석 대상 행을 제외하는 것과 상대 표기 축소를 전체 익명화로 부르지 않는다. who는 로컬/팀 신호에 남을 수 있고 AI 상대만 도메인·대체 표기로 줄이는 예, 역할주소 예외, 자유텍스트의 이름·메일주소·IP·URL 잔존, refine 근거 bullet 재필터 한계를 구별했다."
+          },
+          "remaining": "검토한 구현 설명의 추가 수정은 필요하지 않다. 실제 적용 설정·자료·운영 통제는 별도 확인 대상이다."
+        },
+        {
+          "id": "C07",
+          "verdict": "resolved",
+          "evidence": {
+            "source": [
+              "core/extract.py:974-1395",
+              "judge.py:1677,1703-1709,1735-1742",
+              "teamup.py:116-125,275-285",
+              "teamserver.py:366-400,475-512"
+            ],
+            "document": [
+              "01 #stores/#controls",
+              "02 #team/#ledger 및 보존 상세",
+              "03 제출용 3~7쪽"
+            ],
+            "check": "분석 제외가 원자료·기송신본·백업의 삭제가 아님을 명시했다. 표준 HTTP 묶음의 최대 9종 분석 CSV/JSON 및 member 정보와 원문 TXT·프로필·토큰·개인 HTML 자체를 구별했다. 파생된 민감 텍스트는 남을 수 있으며 수동 공유폴더 HTML 경로와 팀 파일명별 교체도 별도로 설명했다."
+          },
+          "remaining": "검토한 구현 설명의 추가 수정은 필요하지 않다. 실제 적용 설정·자료·운영 통제는 별도 확인 대상이다."
+        },
+        {
+          "id": "C08",
+          "verdict": "resolved",
+          "evidence": {
+            "source": [
+              "run.py:268-274,840-853,915-1017",
+              "collect/Get-MailViaCopilot.py:289-300,328-343",
+              "collect/Get-TeamsViaCopilot.py:235-240",
+              "config/config.default.json:423-426"
+            ],
+            "document": [
+              "02 #ai 및 수집 경로·기본값 설명",
+              "03 제출용 5쪽·운영 기능 표"
+            ],
+            "check": "분석 --ai 해제와 메일 대체 Copilot 조회를 분리했다. 기본 mailViaCopilot=true 경로는 앞 수집 결과에 따라 별도로 실행될 수 있고 replies TXT가 분석 필터 전에 저장된다. storeMailSubject=false는 최종 CSV 제목 숨김이며 응답 원문 삭제가 아니라는 설명과 Teams 수집 Copilot 기본 false가 코드와 일치한다."
+          },
+          "remaining": "검토한 구현 설명의 추가 수정은 필요하지 않다. 실제 적용 설정·자료·운영 통제는 별도 확인 대상이다."
+        },
+        {
+          "id": "SEC-01",
+          "verdict": "resolved",
+          "evidence": {
+            "source": [
+              "LoadMonitor24-UI.bat:14-24,50",
+              "ui/app.py:947-1016,4007-4016",
+              "run.py:606-622,793-800",
+              "collect/Register-Samplers.ps1:24-26,42-54,92-95,149-166",
+              "config/config.default.json:444,448-449",
+              "teamserver.py:180-205",
+              "ui/app.py:4916-4932",
+              "team_refine.py:81-103",
+              "tools/copilot_auto.py:54-61,219"
+            ],
+            "document": [
+              "01 #runtime·실행 계정 설명",
+              "03 제출용 2쪽·운영 기능 표",
+              "질의답변 기록 SEC-01"
+            ],
+            "check": "UI 상태 조회는 샘플 누락/오래됨과 기본 autoRestartSampler=true 조건에서 작업 실행 또는 분리 PowerShell을 시작할 수 있다. 정상 수집은 미등록 시 기본 autoRegisterSampler=true로 현재 사용자 InteractiveToken/LeastPrivilege 로그온 작업을 등록하고 기본 즉시 시작한다. Teams 샘플러 등록은 별도 -Teams 옵션이다. 일반 자식 프로세스는 실행 Windows 계정을 상속하며 팀 자동 집계와 선택 팀 AI는 실행 PC/계정 경로가 다르다. 실제 등록·로그인 상태 미확인 문구도 적절하다."
+          },
+          "remaining": "기본 수집에서 이전 버전 샘플러 작업 정리도 코드에 있으므로 실제 운영 승인 시 기존 등록 현황을 확인해야 한다. 현재 문서의 핵심 설명과 모순되지는 않는다. 실제 사용자·권한·Edge 세션·등록 성공 여부는 미확인이다."
+        },
+        {
+          "id": "SEC-02",
+          "verdict": "resolved",
+          "evidence": {
+            "source": [
+              "core/extract.py:425-450,548-671,974-1395",
+              "mine.py:151-152,261-280",
+              "judge.py:196-227"
+            ],
+            "document": [
+              "02 전체 흐름도/#processing/#example",
+              "03 제출용 1·3~6쪽"
+            ],
+            "check": "D1 취득물, 별도 시간 근거, D2 신호·분석, 분석 AI와 팀 전달을 분기하여 설명한다. 표의 처리 묶음을 단일 전역 순차 필터로 단정하지 않으며 선별·감쇠·축약을 원자료 삭제나 전체 개인정보 가림으로 표시하지 않는다."
+          },
+          "remaining": "검토한 구현 설명의 추가 수정은 필요하지 않다. 실제 적용 설정·자료·운영 통제는 별도 확인 대상이다."
+        },
+        {
+          "id": "SEC-03",
+          "verdict": "resolved",
+          "evidence": {
+            "source": [
+              "teamup.py:116-125,275-285",
+              "teamserver.py:180-205,366-400,475-512",
+              "aggregate.py:301,533",
+              "team_report.py:1980",
+              "team_refine.py:81-103"
+            ],
+            "document": [
+              "02 #team 및 숨김 전송 항목 설명",
+              "03 제출용 6~7쪽"
+            ],
+            "check": "표준 업로드 허용 항목과 개인별 파일명 단위 교체를 전체 기간 일치 검사/오래된 파일 일괄 삭제로 설명하지 않는다. 일반 규칙 집계와 선택 팀 AI의 이름 정리, 기본 인증·개인별 권한 분리 부재, 개인 식별·근거 잔존을 구분했다."
+          },
+          "remaining": "검토한 구현 설명의 추가 수정은 필요하지 않다. 실제 적용 설정·자료·운영 통제는 별도 확인 대상이다."
+        },
+        {
+          "id": "SEC-04",
+          "verdict": "operational_pending",
+          "evidence": {
+            "source": [],
+            "document": [
+              "03 #operating-features/#operating-controls",
+              "질의답변 기록 SEC-04"
+            ],
+            "check": "실제 사용할 수집·분석 AI·Graph·팀 전송 경로를 코드 구현/기본값과 실제 운영 확정 사항으로 분리해 미확인으로 표시한 것은 타당하다."
+          },
+          "remaining": "운영 담당자가 실행 PC·망·서버·공유경로·설정 적용값·책임자·확정일을 증빙해야 한다."
+        },
+        {
+          "id": "SEC-05",
+          "verdict": "operational_pending",
+          "evidence": {
+            "source": [],
+            "document": [
+              "03 #operating-features/#operating-controls",
+              "질의답변 기록 SEC-05"
+            ],
+            "check": "팀 서버·공유폴더 접근 통제를 코드 구현/기본값과 실제 운영 확정 사항으로 분리해 미확인으로 표시한 것은 타당하다."
+          },
+          "remaining": "실제 인증·HTTPS·직접 9310 포트 차단·업로더/조회자/관리자 권한·접근 기록 적용은 미확인이다."
+        },
+        {
+          "id": "SEC-06",
+          "verdict": "operational_pending",
+          "evidence": {
+            "source": [],
+            "document": [
+              "03 #operating-features/#operating-controls",
+              "질의답변 기록 SEC-06"
+            ],
+            "check": "Microsoft 365 계정·테넌트·Graph 동의·Copilot 정책를 코드 구현/기본값과 실제 운영 확정 사항으로 분리해 미확인으로 표시한 것은 타당하다."
+          },
+          "remaining": "실제 앱·동의 범위·허용 정보·보존·학습 이용·DLP 조건은 M365 관리/보안 담당자가 확인해야 한다."
+        },
+        {
+          "id": "SEC-07",
+          "verdict": "operational_pending",
+          "evidence": {
+            "source": [],
+            "document": [
+              "03 #operating-features/#operating-controls",
+              "질의답변 기록 SEC-07"
+            ],
+            "check": "취득·AI 전달·팀 공유의 허용 정보를 코드 구현/기본값과 실제 운영 확정 사항으로 분리해 미확인으로 표시한 것은 타당하다."
+          },
+          "remaining": "대상자·업무·정보등급·자유텍스트 민감정보·오분류 정정 및 공유 제한 책임자를 확정해야 한다."
+        },
+        {
+          "id": "SEC-08",
+          "verdict": "operational_pending",
+          "evidence": {
+            "source": [],
+            "document": [
+              "03 #operating-features/#operating-controls",
+              "질의답변 기록 SEC-08"
+            ],
+            "check": "로컬/팀/임시/인증 자료의 저장 보호를 코드 구현/기본값과 실제 운영 확정 사항으로 분리해 미확인으로 표시한 것은 타당하다."
+          },
+          "remaining": "실제 ACL·저장 암호화·백업/동기화 제한·Graph 토큰 ACL 적용 성공은 확인하지 않았다."
+        },
+        {
+          "id": "SEC-09",
+          "verdict": "operational_pending",
+          "evidence": {
+            "source": [],
+            "document": [
+              "03 #operating-features/#operating-controls",
+              "질의답변 기록 SEC-09"
+            ],
+            "check": "자료별 보존·삭제·퇴사/단말 교체 절차를 코드 구현/기본값과 실제 운영 확정 사항으로 분리해 미확인으로 표시한 것은 타당하다."
+          },
+          "remaining": "일부 400일 기존행 정리는 통일된 보존 정책이 아니다. 원자료·AI·전송·팀·백업·세션/토큰별 기간·삭제 검증·실패 책임자를 확정해야 한다."
+        }
+      ],
+      "new_findings": [
+        {
+          "id": "R2-C04-FORMAT",
+          "severity": "문서 일치성",
+          "related_id": "C04",
+          "finding": "상세 HTML의 추가PC 전체 하위폴더 보관 설명이 발견 당시 제출용 본문에는 누락되어 질의답변의 'PDF 3쪽 반영'과 불일치했다.",
+          "source": "run.py:712-719",
+          "action": "발견 당시 needs_revision을 보존하고 재생성 후 C04만 별도 round 3에서 검증한다."
+        }
+      ],
+      "overall": {
+        "status": "needs_revision",
+        "summary": "C01~C08 중 C04의 제출용 문서 반영 누락 1건을 발견 당시 상태로 보존한다. 나머지 7건과 SEC-01의 구현 설명은 코드와 일치한다. 실제 운영 설정·계정·권한·보존 정책은 확인하지 않았으며 승인 또는 보안 적합 판정이 아니다.",
+        "source_version": "LM24 v24.0.18 / 53f78e5fb53f075e583a2618319c96e0ffaae44b",
+        "source_root": "<검토용 고정 소스 경로 생략>",
+        "method": "01/02/03 HTML의 SVG·표·본문·details 텍스트와 질의답변 기록을 읽고 원코드 분기·저장 필드·기본값을 정적으로 대조했다. 수집기·계정·서비스·개인 설정은 실행하거나 열지 않았다. PDF 대응 본문은 03 HTML로 먼저 검토했으며 PDF 픽셀/레이아웃은 다른 검토자가 담당한다.",
+        "snapshot_note": "C04 누락을 부모에게 보고한 시점의 2차 판정을 보존한다. 이후 수정 재생성본은 별도 round 3에서 확인한다.",
+        "limitations": [
+          "실제 Windows 실행 사용자·작업 스케줄러 등록·Edge 로그인·테넌트·망·ACL·암호화·DLP는 미검증이다.",
+          "이번 재검토는 문서와 구현의 일치성 검토이며 제품의 전체 보안감사·침투시험 또는 운영 승인으로 해석할 수 없다.",
+          "기본값은 config/config.default.json과 호출 분기 기준이며 개별 PC의 config.json은 읽지 않았다.",
+          "새 합성 수집·서비스 호출은 실행하지 않았다. 이전 라운드의 AST 합성 결과와 별개로 이번 결과는 코드 정적 대조 결과이다."
+        ]
+      },
+      "record_file": "review_round2_code.json"
+    },
+    {
+      "reviewer": "가상 외부 사전보안검토팀 - 처음 읽는 검토담당자/문서 가독성 검토자",
+      "round": 2,
+      "items": [
+        {
+          "id": "R01",
+          "verdict": "resolved",
+          "evidence": [
+            "02_LM24_데이터흐름도.html 표지 및 #processing: D1→취합·필터→업무 단서/별도 시간 근거→D2를 연결",
+            "PDF 1·4쪽: 기간·중복·대상·제외어·발췌 규칙, 필터 전 내용힌트 캐시, 신호 제외와 시간 근거의 차이",
+            "02 #processing: 출처를 읽으며 규칙을 적용하므로 표를 하나의 전역 순차 필터로 단정하지 않는다는 설명"
+          ],
+          "remaining": "문서 설명의 공백은 해소됐다. 실제 필터 결과·시간 재산정 성공·캐시/기송신본 삭제 여부를 검증 완료로 판단한 것은 아니다."
+        },
+        {
+          "id": "R02",
+          "verdict": "resolved",
+          "evidence": [
+            "PDF 1쪽 화면: Microsoft 365↔중앙 개인 PC→팀 기능의 별도 화살표",
+            "PDF 5쪽: 개인 PC 입력→Copilot→개인 PC 반영",
+            "02 표지: 분석 AI와 필터 전 조건부 수집 조회 연결을 구별"
+          ],
+          "remaining": "그림만으로 AI 응답 귀환과 개인 PC의 팀 직접 전송을 구별할 수 있다. 추가 문서 수정 요구 없음."
+        },
+        {
+          "id": "R03",
+          "verdict": "resolved",
+          "evidence": [
+            "02 표지: 신호·근거·AI 정제·MM(인월)을 설명용 문장으로 정의",
+            "PDF 1쪽: 신호는 업무 단서 한 행, MM은 월 기준 시간으로 환산한 추정 투입량",
+            "PDF 7쪽 및 02 #ledger: 실근태·검증된 절감시간과 다르다고 명시"
+          ],
+          "remaining": "코드명은 일부 본문에도 남지만 우리말 역할·처리 설명이 함께 있어 핵심 독해를 막지 않는다. 업무행 정제와 시간 재산정의 차이도 설명 가능하다."
+        },
+        {
+          "id": "R04",
+          "verdict": "resolved",
+          "evidence": [
+            "01 #stores 및 PDF 1·3·4쪽: D1 취득물, D2 분석 결과, D3 팀 보관과 C1 인증/임시자료를 분리",
+            "02 #example: 가상 메일을 중복/제외어/AI 축소/팀 전송까지 추적",
+            "PDF 5~6쪽: 같은 가상 상대 a@corp.example의 AI 도메인 표기와 팀 추가 가림 부재를 연결"
+          ],
+          "remaining": "PDF에서는 가상 사례가 두 쪽에 나뉘지만 같은 가상 신호라는 연결이 있어 원문 파일 제외와 파생 텍스트 전송을 구별할 수 있다. 원문 잔존도 3~4쪽에서 설명된다."
+        },
+        {
+          "id": "R05",
+          "verdict": "resolved",
+          "evidence": [
+            "02 #ledger: 열 제목을 AI 입력 본문/표준 팀 업로드로 변경",
+            "Teams 원문 TXT·History DB는 표준 경로의 파일 자체 입력과 추출 신호 텍스트를 구분",
+            "Edge 쿠키·Graph 토큰은 프롬프트 필드가 아닌 별도 서비스 인증자료이며 Graph는 수집 API용이라고 설명"
+          ],
+          "remaining": "파일 자체 미전송과 추출된 텍스트 포함 가능성을 구별할 수 있다. 실제 런타임 전송 또는 계정 정책 시험을 완료했다는 의미는 아니다."
+        },
+        {
+          "id": "R06",
+          "verdict": "resolved",
+          "evidence": [
+            "PDF 1쪽 읽는 순서: 본문 1~8, 체크리스트 9~13, 운영 확인 14~15, 신청서 16 및 HTML 역할 안내",
+            "pypdf로 16개 책갈피와 실제 목적지 1~16쪽의 대응 확인",
+            "02 본문은 요약, 접힘 영역은 수집 경로·AI 단계별 필드·9종 전송 파일·사본·코드 근거로 배치"
+          ],
+          "remaining": "본문과 상세 사이의 일부 내용 재언급은 예외·스키마를 설명하기 위한 반복으로 수용 가능하다. HTML 화면/접힘 상호작용은 정책상 미검증이며 이 판단은 DOM 본문 구조와 PDF에 한정된다."
+        },
+        {
+          "id": "R07",
+          "verdict": "needs_revision",
+          "evidence": [
+            "PDF 1쪽 도입문과 8쪽 반복 문장은 개선됨",
+            "PDF 3쪽 Copilot 대체 조회 정보범위 셀의 마지막 음이 단독 줄",
+            "PDF 5쪽 하단 가상 예의 다.가 단독 줄",
+            "PDF 6쪽 표준 업로드 제외 정보경계 셀의 마지막 음이 단독 줄",
+            "PDF 9쪽 A4 항목명의 솔루션이 솔루/션으로 갈라져 션이 단독 줄",
+            "PDF 15쪽 SEC-05 상태의 정, SEC-06 상태의 인, SEC-07 증빙의 차와 상태의 정이 각각 단독 줄"
+          ],
+          "remaining": "낮은 우선순위 서식 보완. 위 문구를 줄이거나 의미 단위로 줄바꿈해 한 글자 끝줄을 없앤 뒤 해당 페이지 화면을 재확인해야 한다. 내용 이해를 막거나 정보를 숨기는 중대 결함은 아니나 기존 R07의 완전 해소로 기록할 수는 없다."
+        }
+      ],
+      "new_findings": [],
+      "overall": {
+        "document_explanation": "기존 R01~R06의 설명상 공백은 해소됐다. 다섯 핵심 질문을 문서만으로 다시 설명할 수 있다.",
+        "visual_finish": "R07의 단독 음절 줄바꿈이 남아 서식 마감은 수정 필요. 심한 넘침·겹침·깨짐은 발견하지 못했다.",
+        "operational_approval": "실제 운영 승인 여부는 판단 불가. 계정·테넌트·기능 적용값·망·접근권한·보존/삭제·책임자와 증빙은 PDF 14~15쪽 및 검토기록 SEC-04~09의 운영 확인 대기로 남는다. 이는 문서의 설명 부족과 구별한다.",
+        "result_counts": {
+          "resolved": 6,
+          "needs_revision": 1,
+          "operational_pending_in_readability_items": 0
+        },
+        "review_basis": "수정 HTML 01·02·04의 텍스트/DOM, 제출 PDF 전체 텍스트와 16쪽 이미지, 질의답변_검토기록.json의 수정 답변을 읽었다. 제품 소스·개인 설정·실제 회사 계정/서비스는 읽거나 실행하지 않았다. 기록에 적힌 코드 위치는 독립 검증하지 않았다."
+      },
+      "visual_review": {
+        "pdf": "03_LM24_사전보안검토_제출용.pdf",
+        "pages_reviewed": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16
+        ],
+        "method": "제공된 _analysis/pdf_render/page-01.png~page-16.png를 모두 view_image로 전면 검사했다. pypdf로 16쪽 및 16개 책갈피 목적지를 확인했다.",
+        "overflow": "발견하지 못함",
+        "overlap": "발견하지 못함",
+        "glyph_breakage": "발견하지 못함",
+        "diagram_understanding": "PDF 1쪽 중앙 PC의 M365 왕복/팀 직접 전송, 4쪽 업무·시간 별도 처리, 5쪽 AI 응답 귀환을 읽어서 연결할 수 있다.",
+        "orphan_syllable_pages": [
+          3,
+          5,
+          6,
+          9,
+          15
+        ],
+        "pages_without_notable_visual_issue": [
+          1,
+          2,
+          4,
+          7,
+          8,
+          10,
+          11,
+          12,
+          13,
+          14,
+          16
+        ],
+        "html_visual_status": "브라우저 정책 제약으로 미검증. 우회 렌더/서버를 사용하지 않았으며 PDF 검사로 HTML 레이아웃을 검증했다고 간주하지 않는다.",
+        "retest": "R07 문구/줄바꿈 수정 후 변경 페이지를 다시 렌더해 전면 확인. 다른 페이지 레이아웃이 바뀌면 해당 페이지도 확인."
+      },
+      "first_read_answers": [
+        {
+          "question": "프로그램 실행 위치와 구성",
+          "answer": "개인 Windows PC에서 사용자가 BAT로 Python 로컬 UI를 실행하고, 분석 실행은 같은 Windows 계정을 이어받은 Python·PowerShell이 수행한다. UI는 PC 내부 9148~9167, 전용 Edge 제어는 9333이다. 활동 샘플러는 UI 상태 조회나 로그온 예약 경로로 자동 시작될 수 있고 UI를 닫아도 관측 종료가 보장되지 않는다. Microsoft 365에는 웹/선택 Graph로 접속한다. 팀은 별도 HTTP 서버(기본 9310) 또는 공유폴더로 개인 PC가 직접 전송하며, 일반 집계는 팀 서버 실행 PC에서 AI 없이 수행한다. 선택 팀 AI는 그 명령을 실행한 PC의 Edge 계정을 사용한다.",
+          "evidence": [
+            "01 #runtime/#connections",
+            "PDF 1~2쪽"
+          ],
+          "can_answer": true,
+          "unknown": "실제 실행 계정·관리자 권한·예약 등록·망·서버 위치는 운영 확인 대상이다."
+        },
+        {
+          "question": "수집한 자료를 합친 후 어떤 필터와 변환을 통과하는가",
+          "answer": "D1에 먼저 취득 파일을 보관하고 현재 PC·추가 PC의 날짜·출처·상대·텍스트를 읽어 형식을 맞춘다. 출처를 읽는 과정에서 기간·중복 키·제외어·공지/단체발송·취소/거절 같은 대상 규칙에 따라 채택·약하게 반영·분석 제외한다. 이는 한 번에 적용하는 단일 전역 필터의 고정 순서가 아니다. 분석 중 일부 파일을 추가로 읽은 짧은 내용힌트는 신호 제외어 검사 전에 캐시될 수 있다. 업무 단서 경로는 발췌 신호·분류·비중을 만들고, 시간 경로는 파일 시각·회의·PC·활동 기록 등에 별도 규칙을 적용해 일별 시간/MM을 추정한 뒤 D2에서 결합한다. 신호를 제외해도 별도 시각은 남을 수 있다. AI 신호 판정은 시간 재산정을 시도하되 실패 가능하며, 업무행 정제는 총 MM을 유지한 채 비중을 재배분한다.",
+          "evidence": [
+            "02 #processing",
+            "PDF 1·4쪽"
+          ],
+          "can_answer": true,
+          "unknown": "운영 자료에서 각 규칙이 실제로 무엇을 제외했는지와 재산정 성공 여부는 별도 시험 대상이며 문서상 완전한 제외 장부는 보장되지 않는다."
+        },
+        {
+          "question": "원자료와 파생자료의 구별",
+          "answer": "원천은 메일·일정·Teams·파일/Git·작업창/PC 기록이다. D1은 여기서 취득한 CSV·화면 TXT·조회 응답·내용힌트 캐시와 추가PC 보관 자료이며, 원천 계정 전체의 완전한 사본을 뜻하지 않는다. D2는 공통 신호·업무 분류·추정 시간/MM·근거·AI 기록·개인 보고서·전송 대기/완료 사본이다. D3는 팀에 전달된 개인별 파일과 팀 보고서다. Edge 로그인 세션·Graph 토큰·History 임시 DB는 별도 C1이다. 분석 제외·발췌·AI 상대 표기 축소는 D1·기송신본·인증/임시자료의 일괄 삭제나 완전한 익명화를 뜻하지 않는다.",
+          "evidence": [
+            "01 #stores",
+            "02 #collect/#example/#ledger",
+            "PDF 1·3·4·6쪽"
+          ],
+          "can_answer": true,
+          "unknown": "자료별 실제 권한·보존기간·백업·삭제 성공은 운영 증빙이 필요하다."
+        },
+        {
+          "question": "AI와 팀서버로 각각 무엇이 가는가",
+          "answer": "수집용 Copilot에는 메일·일정 조회 지시가 나가고 응답 원문이 D1에 남을 수 있다. 이 요청은 분석 AI를 끄거나 분석 필터를 적용하기 전에 발생할 수 있다. 분석 AI에는 단계별 날짜·출처·상대 표기·발췌·업무명·근거·비중·활동일수·표본과 일부 MM·건수가 선별되어 나가며 응답은 개인 PC의 분석/보고서에 반영된다. 기본 AI 판정은 상대 a@corp.example를 도메인으로 줄일 수 있지만 제목의 고객사명은 남을 수 있다. 팀 HTTP에는 인원 정보와 최대 9종 CSV/JSON 전체 텍스트를 JSON 요청으로 보내며 신호의 상대·텍스트를 AI용으로 다시 가리지 않는다. 원문 TXT·토큰·개인 HTML 같은 파일 자체는 표준 HTTP 목록에서 제외되지만 추출 내용은 포함될 수 있다. 공유폴더 자동 복사는 별도이고 수동 저장에는 개인 HTML도 추가될 수 있다. 팀 AI는 별도 명령으로 이름 목록을 보낸다.",
+          "evidence": [
+            "02 #ai/#example/#team/#ledger",
+            "PDF 5~6쪽"
+          ],
+          "can_answer": true,
+          "unknown": "어떤 정보·계정·AI 서비스·팀 열람자를 조직이 허용하는지는 아직 확정되지 않았다."
+        },
+        {
+          "question": "확인된 통제와 미확인 운영조건",
+          "answer": "문서가 정적 분석으로 확인했다고 설명하는 제한은 PC 내부 UI/Edge 제어, 일부 기간·중복·대상·키워드·발췌 규칙, 허용 파일명·요청 크기, Graph 토큰 사용자 ACL 설정 시도 등이다. 제한이 모든 개인정보 보호나 삭제를 보장하지 않으며 사람의 보고서 검토가 코드상 필수 전송 승인 관문도 아니다. 기본 팀 서버는 HTTP이고 업로드·조회 인증/HTTPS가 없으며 공유폴더는 파일 권한에 의존한다. 실제 사용 기능·계정/테넌트·망/서버/경로·인증/직접 포트 차단·저장 보호·보존/파기·오분류 정정·담당자/확정일은 운영 확인표에서 미정이다. 문서의 설명이 완결되어도 도입 승인이 완료된 것은 아니다.",
+          "evidence": [
+            "01 #controls",
+            "PDF 7·14~16쪽",
+            "04 검토기록 및 질의답변_검토기록.json SEC-04~09"
+          ],
+          "can_answer": true,
+          "unknown": "실제 운영 통제 적용 성공, 승인 상태, 조직 정책 적합성을 판단할 증빙은 제공되지 않았다."
+        }
+      ],
+      "record_file": "review_round2_readability.json"
+    },
+    {
+      "reviewer": "가상 외부 사전보안검토팀 보안 검토자. 수정 제출자료만 검토했으며 소스코드·실계정·서비스는 직접 확인하지 않음.",
+      "round": 2,
+      "items": [
+        {
+          "id": "SEC-01",
+          "verdict": "resolved",
+          "evidence": [
+            {
+              "document": "01_LM24_인프라아키텍처.html",
+              "location": "#runtime / 구동 계기 표",
+              "quote": "사용자가 UI BAT 실행 / 개인 PC · 실행한 Windows 사용자 계정 / 동봉 또는 설치된 Python으로 로컬 UI를 시작하고 기본 브라우저를 엽니다."
+            },
+            {
+              "document": "01_LM24_인프라아키텍처.html",
+              "location": "#runtime / UI 상태 조회·로그온 예약 등록·팀 기능 행",
+              "quote": "샘플이 없거나 오래된 경우 기본 autoRestartSampler 설정에 따라 활동 샘플러를 시작할 수 있습니다.",
+              "assessment": "수집 중 기본 autoRegisterSampler의 미등록 작업 등록·시작, 현재 사용자 최소 권한 작업, 이후 로그온 재시작까지 연결한다. 팀 일반 집계는 서버 실행 PC, 팀 AI는 명령 실행 PC의 Edge 로그인 계정으로 구분한다."
+            },
+            {
+              "document": "03_LM24_사전보안검토_제출용.pdf",
+              "location": "2쪽 / 강조문·구성 표·하단 주석",
+              "quote": "UI 종료가 관측기 종료를 보장하지 않습니다.",
+              "assessment": "개인 실행부의 계정 상속, 60초 관측과 자동 시작 경로, 팀 AI 계정의 분리가 본문에도 반영되어 있다."
+            }
+          ],
+          "remaining": "실행 위치·시작 주체·프로세스·자동 조건에 대한 문서 설명은 해소됐다. 실제 실행 계정, 관리자 실행 여부, 등록 작업과 정지 방법은 PDF 14쪽에 미정으로 남아 있으며 SEC-04의 운영 확인 대상이다."
+        },
+        {
+          "id": "SEC-02",
+          "verdict": "resolved",
+          "evidence": [
+            {
+              "document": "02_LM24_데이터흐름도.html",
+              "location": "#processing / 도식 및 처리 표",
+              "quote": "이 표는 처리 기능을 묶은 설명입니다. 실제로는 각 출처를 읽으며 중복·기간·대상 규칙을 적용합니다.",
+              "assessment": "D1 취득 자료에서 업무 단서와 시간 근거가 별도로 처리되어 D2에 합쳐짐을 표시한다. 기간·중복·제외어·약한 단서 반영·발췌·AI 판정과 업무행 정제의 차이가 연결되어 있다."
+            },
+            {
+              "document": "02_LM24_데이터흐름도.html",
+              "location": "#processing / 표 아래 설명",
+              "quote": "분석 중 접근 가능한 일부 파일에서 짧은 내용 단서를 추가로 읽어 data/files/file_hints.json에 캐시합니다. 신호의 제외어 검사보다 앞이며, 이후 제외해도 캐시 삭제를 뜻하지 않습니다."
+            },
+            {
+              "document": "03_LM24_사전보안검토_제출용.pdf",
+              "location": "4쪽 / 하단 설명과 두 경로 도식",
+              "quote": "파일 단서를 신호에서 빼도 별도 시각은 남을 수 있습니다. AI 신호 판정의 시간 재산정은 실패 가능하며, 업무행 정제는 총 MM을 유지해 비중을 재배분합니다."
+            },
+            {
+              "document": "02_LM24_데이터흐름도.html",
+              "location": "#example / 가상 메일 예시",
+              "quote": "팀 업로드 과정에서 AI용 who 축소를 다시 적용하지 않음.",
+              "assessment": "가상 메일 1건으로 원자료·분석 신호·AI 상대 축소·팀의 추가 가림 부재를 추적할 수 있다. PDF 5~6쪽도 같은 예를 이어서 사용한다."
+            }
+          ],
+          "remaining": "필터·변환의 범위와 원문/캐시/기전송본의 잔존을 자료만으로 이해할 수 있어 설명 보완 요구는 해소됐다. 실제 제외 규칙의 적정성·오분류 확인·허용 정보 기준은 SEC-07에서 계속 운영 확인한다."
+        },
+        {
+          "id": "SEC-03",
+          "verdict": "resolved",
+          "evidence": [
+            {
+              "document": "02_LM24_데이터흐름도.html",
+              "location": "#team / 수신한 뒤에도 처리가 이어집니다",
+              "quote": "같은 사용자의 같은 이름 파일은 갱신하나 다른 기간 파일 전체 삭제는 아닙니다.",
+              "assessment": "수신·개인별 저장, 규칙 집계·명칭 통합, 품질 표시·비교 제외, 선택 팀 AI, 보고서·상태 제공의 다섯 단계를 설명한다."
+            },
+            {
+              "document": "02_LM24_데이터흐름도.html",
+              "location": "#team / 규칙 집계·품질 표시·보고서 행",
+              "quote": "측정 불충분으로 표시된 인원은 일부 비교 집계에서 제외하지만 인원 표에는 남습니다. 개인정보 익명화나 수신본 삭제가 아닙니다.",
+              "assessment": "개인별 정보·업무행·피벗을 읽는다는 점, 전체 기간 일치 필터의 부재, 개인 이름·기간·수치·업무·근거의 잔존과 기본 사용자별 열람 권한 분리 부재를 확인할 수 있다."
+            },
+            {
+              "document": "03_LM24_사전보안검토_제출용.pdf",
+              "location": "6쪽 / 도식·강조문·하단 예시",
+              "quote": "팀 집계는 서로 다른 분석 기간을 자동 제외하지 않습니다.",
+              "assessment": "개인 PC가 전송하고 팀 PC가 저장·규칙 집계한다는 순서와 일반 집계의 AI 미호출, 팀 저장·열람 범위를 본문에도 반영했다."
+            }
+          ],
+          "remaining": "수신 후 처리·갱신·기간/품질 필터 한계·최종 노출 범위에 대한 설명은 해소됐다. 실제 팀 열람자·권한·기간 정합성 운영 확인은 별도이며 SEC-04~05에 남는다."
+        },
+        {
+          "id": "SEC-04",
+          "verdict": "operational_pending",
+          "evidence": [
+            {
+              "document": "03_LM24_사전보안검토_제출용.pdf",
+              "location": "14쪽 / 운영 확인표 ①",
+              "quote": "코드 기본값과 실제 적용값을 구분합니다. 실제 계정·주소·담당자·확정일은 운영부서가 기입합니다.",
+              "assessment": "메일/Teams 대체 Copilot, Graph, 개인/팀 AI, 샘플러 자동 시작·등록, HTTP/공유폴더를 나누고 기본값과 미정 적용값을 구분했다."
+            },
+            {
+              "document": "03_LM24_사전보안검토_제출용.pdf",
+              "location": "14쪽 / 하단 문구",
+              "quote": "미정은 사용 허용이나 차단 완료를 뜻하지 않습니다. 적용 설정·실행 PC·상대 주소·망 위치·담당자·확정일·증빙을 연결해 검토해야 합니다."
+            }
+          ],
+          "remaining": "운영 확인을 받기 위한 문서 틀은 충족했다. 실제 사용/미사용 범위·계정·망·주소·공유경로·적용 설정·책임자·확정일·증빙은 여전히 미정이다. 새로 드러난 자동 관측 경로도 포함해 등록 상태와 정지 방법을 확인해야 하므로 실제 항목을 resolved로 처리할 수 없다."
+        },
+        {
+          "id": "SEC-05",
+          "verdict": "operational_pending",
+          "evidence": [
+            {
+              "document": "03_LM24_사전보안검토_제출용.pdf",
+              "location": "15쪽 / SEC-05 팀 열람·전송 보호",
+              "quote": "HTTP/공유폴더별 업로더·조회자·관리자, 인증·HTTPS·직접 9310 접근 차단, 접근기록의 적용 증빙"
+            },
+            {
+              "document": "02_LM24_데이터흐름도.html",
+              "location": "#team / 보고서·상태 제공",
+              "quote": "기본 사용자별 열람 인증·권한 분리가 구현된 것은 아닙니다."
+            }
+          ],
+          "remaining": "기본 미인증 HTTP와 개인별 열람 권한 분리 부재, 운영상 요구할 보호 경로는 충분히 설명했다. 실제 업로더/조회자/관리자와 인증·전송 보호·직접 서버 접근 통제·공유권한·접근기록은 미확인이다. 적용 및 차단 확인 증빙을 받은 뒤 별도 판단해야 한다."
+        },
+        {
+          "id": "SEC-06",
+          "verdict": "operational_pending",
+          "evidence": [
+            {
+              "document": "03_LM24_사전보안검토_제출용.pdf",
+              "location": "14쪽 / Teams Graph 행",
+              "quote": "기본 clientId 공백. 요청 권한 Chat.Read / User.Read / offline_access"
+            },
+            {
+              "document": "03_LM24_사전보안검토_제출용.pdf",
+              "location": "15쪽 / SEC-06 Microsoft 365",
+              "quote": "실제 계정·테넌트·Graph 동의, AI 입력 허용 정보, 보존·접근·학습 이용·DLP 정책 및 확인일"
+            },
+            {
+              "document": "02_LM24_데이터흐름도.html",
+              "location": "#ai / 수집용 조회와 분석용 AI 입력",
+              "quote": "AI 정제를 끄는 것만으로 모든 외부 AI 조회가 차단되지는 않습니다."
+            }
+          ],
+          "remaining": "Copilot 웹·Graph OAuth·대체 조회·분석/팀 AI의 구분과 기본 요청 권한 설명은 충족한다. 실제 앱·테넌트·동의 권한·허용 계정·정보·서비스 정책과 미사용 설정 적용은 미확인이다. 문서에 인용된 기본 권한은 실제 권한 승인 증빙이 아니다."
+        },
+        {
+          "id": "SEC-07",
+          "verdict": "operational_pending",
+          "evidence": [
+            {
+              "document": "03_LM24_사전보안검토_제출용.pdf",
+              "location": "15쪽 / SEC-07 정보 허용·정정",
+              "quote": "취득/AI/팀 공유별 대상자·정보등급·허용 범위, 민감정보·오분류 발견 시 수정·공유 제한 절차"
+            },
+            {
+              "document": "03_LM24_사전보안검토_제출용.pdf",
+              "location": "7쪽 / 강조문",
+              "quote": "사람 검토는 코드상 필수 승인 관문이 아닙니다. 자동 전송·공유 설정과 실제 운영 통제는 별도로 확인해야 합니다."
+            },
+            {
+              "document": "02_LM24_데이터흐름도.html",
+              "location": "#example",
+              "quote": "신호·근거·업무명·추정 수치에도 개인정보와 중요정보가 포함될 수 있습니다."
+            }
+          ],
+          "remaining": "취득·AI·팀 공유를 따로 판단해야 하고 필터·짧은 텍스트·사람 검토 권고가 강제 보호를 뜻하지 않는다는 설명은 충분하다. 실제 대상자·정보등급·허용 범위·정정/공유 제한 기준·책임자·확정일은 미정이므로 운영 확인 대기를 유지한다."
+        },
+        {
+          "id": "SEC-08",
+          "verdict": "operational_pending",
+          "evidence": [
+            {
+              "document": "01_LM24_인프라아키텍처.html",
+              "location": "#stores / D1·D2·D3·C1 저장 표",
+              "quote": "로그인 세션·OAuth 토큰·브라우저 History 임시 DB. Graph 토큰은 평문 JSON이며 ACL 설정 시도. History 임시 삭제는 실패 시 잔존 가능."
+            },
+            {
+              "document": "02_LM24_데이터흐름도.html",
+              "location": "#ledger / data/copilot_profile·graph_token.json 행",
+              "quote": "토큰은 JSON 평문 저장 후 현재 사용자 ACL을 시도하나 성공 강제 검증은 없음."
+            },
+            {
+              "document": "03_LM24_사전보안검토_제출용.pdf",
+              "location": "15쪽 / SEC-08 저장 보호",
+              "quote": "D1/D2/D3/C1·TEMP·대기/완료본의 ACL, 저장 암호화, 백업/동기화 범위와 적용 결과"
+            }
+          ],
+          "remaining": "원자료·캐시·분석/전송 사본·팀 자료·인증·임시 자료의 보호 대상을 빠뜨리지 않고 구분했다. 실제 ACL·암호화·백업/동기화 범위와 Graph ACL 성공 확인 및 실패 대응 결과는 제공되지 않았다. 저장물별 적용 증빙과 담당 확인이 필요하다."
+        },
+        {
+          "id": "SEC-09",
+          "verdict": "operational_pending",
+          "evidence": [
+            {
+              "document": "02_LM24_데이터흐름도.html",
+              "location": "#ledger / 취득 자료 저장 행",
+              "quote": "일부 COM·파일 이력은 기존행을 불러올 때 400일 기준으로 정리하나, 새로 읽은 오래된 행은 다시 포함될 수 있음. 전체·절대 보존기한이 아님."
+            },
+            {
+              "document": "03_LM24_사전보안검토_제출용.pdf",
+              "location": "15쪽 / SEC-09 보존·파기",
+              "quote": "자료별 보존 시작점·기간·삭제 주체/방법/실패 처리, 백업·퇴사·단말 교체, 세션/토큰 종료 확인"
+            },
+            {
+              "document": "03_LM24_사전보안검토_제출용.pdf",
+              "location": "16쪽 / 비고란",
+              "quote": "분석에서 제외하거나 텍스트를 짧게 만드는 처리는 원자료·기존 AI 입력·팀 보관본의 삭제 또는 전체 익명화를 보장하지 않습니다."
+            }
+          ],
+          "remaining": "분석 제외·400일 정리·재업로드가 전체 삭제를 의미하지 않는다는 설명과 확인할 수명주기 범위는 충족했다. 실제 자료별 보존표, 삭제 주체/방법/실패 처리, 백업·퇴사/교체·인증 종료 절차와 검증 결과는 미정이므로 운영 확인 대기를 유지한다."
+        }
+      ],
+      "new_findings": [],
+      "overall": "기존 9개 항목 중 문서 설명 보완 3개(SEC-01~03)는 resolved, 실제 운영정보를 요구한 6개(SEC-04~09)는 operational_pending으로 판단한다. needs_revision 항목과 새로 발견한 중대한 설명 공백은 없다. 프로그램 시작 주체·계정·자동 관측, 취합 후 필터와 별도 시간 경로, 분석 중 캐시, AI 입력/응답 및 팀 수신 후 처리·열람을 제출자료만으로 연결할 수 있다. 운영 확인표는 미정과 미검증을 적절히 유지하므로 문서의 설명 완결성은 충족하지만 운영 통제의 적용이나 실제 보안 승인이 완료되었다는 뜻은 아니다. 검토는 HTML/PDF/질의답변 기록에 한정했고 제품 소스나 실제 환경은 직접 검증하지 않았다.",
+      "visual_review": {
+        "pdf": "03_LM24_사전보안검토_제출용.pdf",
+        "pages_text_checked": 16,
+        "pages_visually_checked": 16,
+        "bookmarks_found": 16,
+        "result": "제공된 16쪽 렌더 이미지를 모두 확인했다. 판독을 막는 잘림·겹침·누락은 발견하지 못했다. 첫 도식은 개인 PC와 Microsoft 365 사이 왕복 및 개인 PC의 직접 팀 전송으로 수정되어 통신 주체가 명료하다. 4쪽의 업무/시간 별도 처리와 14~15쪽의 운영 미정 표도 읽을 수 있다.",
+        "minor_observations": "일부 표·주석에서 단어가 줄 중간에 나뉘고 특히 15쪽 상태 열에 한 글자가 다음 줄로 남는 경우가 있다. 의미 판독이나 보안 검토를 막는 수준은 아니므로 재검토 필수 수정사항으로 올리지 않는다.",
+        "limit": "HTML은 본문·표·도식 텍스트와 구조를 읽었으며 브라우저에서의 실제 화면 배치는 이번 검토에서 확인하지 않았다."
+      },
+      "record_file": "review_round2_security.json"
+    },
+    {
+      "reviewer": "코드 검증자 / lm25_measurement (LM24 고정 소스 대조)",
+      "round": 3,
+      "items": [
+        {
+          "id": "C04",
+          "verdict": "resolved",
+          "evidence": {
+            "source": [
+              "run.py:694-738 (특히 704-719: PC명 변경, 5개 수집 하위폴더 os.rename)",
+              "core/extract.py:425-450,751-761"
+            ],
+            "documents": [
+              {
+                "path": "03_LM24_사전보안검토_제출용.html",
+                "location": "#submission-3 본문",
+                "quote": "추가PC 보관은 해당 수집 하위폴더 전체를 옮길 수 있어 CSV뿐 아니라 화면 TXT·조회 응답·캐시도 포함됩니다.",
+                "sha256": "66b07d779f8d6746b47b132dc654eed568b782fb3d28d1df0e51df247d76d8da",
+                "bytes": 58140
+              },
+              {
+                "path": "03_LM24_사전보안검토_제출용.pdf",
+                "location": "전체 16쪽 중 3쪽, 취득 표 아래 설명",
+                "quote": "추가PC 보관은 해당 수집 하위폴더 전체를 옮길 수 있어 화면 TXT·조회 응답·캐시도 포함됩니다.",
+                "sha256": "a3909a3a1fb7984981c4629dbd20c5ac577f0aa0266d0d6c367c08d0bb05ade7",
+                "bytes": 213760
+              },
+              {
+                "path": "_analysis/security_model.json",
+                "location": "pages[2].points[2]",
+                "check": "추가PC 보관의 전체 수집 하위폴더·CSV뿐 아니라 화면 TXT·조회 응답·캐시 포함 설명 확인"
+              }
+            ],
+            "method": "03 HTML의 submission-3 section을 stdlib HTMLParser로 읽고 실제 최신 PDF를 pypdf로 열어 3쪽 전체 텍스트를 확인했다. '하위폴더 전체', '화면 TXT·조회 응답·캐시' 문구가 두 산출물에 모두 있음을 assert로 검사했다. 고정 소스의 이동 대상과 os.rename 호출을 직접 대조했다.",
+            "result": "HTML_PDF_C04_CHECK PASS; 2차 파일의 C04 needs_revision 보존 확인 PASS."
+          },
+          "remaining": "C04의 문서 반영 누락은 해소되었다. 실제 추가PC 폴더의 보유 정보와 접근권한·보존·삭제 정책은 확인하지 않았다. PDF 레이아웃·픽셀 검토는 별도 가독성 검토 담당 범위이다."
+        }
+      ],
+      "overall": {
+        "status": "targeted_revision_resolved",
+        "summary": "2차에서 발견한 C04 제출용 설명 누락이 03 HTML·실제 PDF 3쪽 모두에서 수정되었고, 고정 LM24 코드의 전체 하위폴더 이동 방식과 일치한다. 다른 항목의 2차 판정과 SEC-04~09 운영 확인 대기를 변경하지 않는다.",
+        "source_version": "LM24 v24.0.18 / 53f78e5fb53f075e583a2618319c96e0ffaae44b",
+        "round2_file": "_analysis/review_round2_code.json",
+        "round2_sha256": "4b7d4711871c66dc45bf7a7d3793385cf10bcae83c5af8d3556aa40b1a6e279e",
+        "scope": "C04 수정만 대상으로 한 읽기 전용 3차 확인. 수집기 실행·실계정·개인 설정·서비스 접근 없음. 제품/본문 수정 없음."
+      },
+      "record_file": "review_round3_code.json"
+    },
+    {
+      "reviewer": "가상 외부 사전보안검토팀 - 처음 읽는 검토담당자/문서 가독성 검토자",
+      "round": 3,
+      "items": [
+        {
+          "id": "R07",
+          "verdict": "resolved",
+          "evidence": [
+            "PDF 3쪽: Copilot 대체 조회의 정보범위를 CSV 제목 숨김은 조회 응답 원문의 삭제가 아님으로 축약해 종전 음 단독 줄이 없어졌다.",
+            "PDF 5쪽: 하단 가상 메일 예가 한 줄에 들어가 종전 다. 단독 줄이 없어졌다.",
+            "PDF 6쪽: 표준 업로드 제외 행이 추출한 텍스트는 신호·결과에 포함 가능으로 정리되어 종전 음 단독 줄이 없어졌다.",
+            "PDF 9쪽: A4 항목명을 의미 단위 두 줄로 나눠 솔루션의 션 단독 줄이 없어졌다.",
+            "PDF 15쪽: SEC-05/06/07 증빙 및 상태 문구가 정리되어 종전 정·인·차 단독 줄이 없어졌다.",
+            "위 5쪽 모두 화면으로 다시 확인했으며 수정으로 인한 잘림·겹침·페이지 밖 넘침은 발견하지 못했다.",
+            "PDF 3쪽 각주에서 추가PC 보관이 수집 하위폴더 전체를 옮길 수 있고 화면 TXT·조회 응답·캐시도 포함한다는 설명을 확인했다. 각주 전체가 읽히며 앞 문장과 겹치지 않는다."
+          ],
+          "remaining": "R07 관련 추가 수정 요구 없음. 실제 운영 통제·승인과 HTML 브라우저 화면 검증은 별도 미확인으로 유지한다."
+        }
+      ],
+      "visual_review": {
+        "reviewed_pdf_pages": [
+          3,
+          5,
+          6,
+          9,
+          15
+        ],
+        "method": "같은 경로에 재생성된 page-03/05/06/09/15.png를 view_image로 전면 확인했다. 이번 회차는 변경 5쪽의 서식 재검토이며 PDF 16쪽 전체 재검사라고 주장하지 않는다.",
+        "orphan_syllables": "2차에서 지적한 단독 음절 해소. 변경 5쪽에서 새로운 단독 음절 끝줄을 발견하지 못했다.",
+        "overflow_overlap_clipping": "발견하지 못함",
+        "independent_svg": {
+          "preview": "_analysis/diagram_previews/02_diagram_1.png",
+          "readability": "취득→D1→취합·필터→가공·계산, 별도 시간 근거, 결과 저장→D2, M365 입력/응답 및 팀 선택 전송을 읽을 수 있다. 하단 조건부 대체 수집의 선과 주석이 상자·본문과 겹치지 않으며 문장도 잘리지 않는다.",
+          "minor_remaining": "하단 범례는 점선이 선택·조건부 연결이라고 설명하지만 이 독립 미리보기의 선택 전송 및 조건부 연결은 실선으로 보인다. 선택 전송/조건부 라벨 덕분에 흐름 이해는 가능하지만 범례와 선 표현을 일치시키는 편이 좋다. 범례를 라벨 설명으로 바꾸거나 실제 점선을 적용하면 된다.",
+          "severity": "낮음; R07 PDF 단독 음절 지적과 별개",
+          "scope_limit": "독립 SVG 이미지의 시각 확인이다. HTML 전체의 브라우저 레이아웃·상호작용 검증이 아니다."
+        },
+        "html_browser_validation": "정책 제약으로 여전히 미검증. 우회 브라우저·서버는 사용하지 않았다."
+      },
+      "overall": {
+        "r07": "해소",
+        "document_readability": "2차 R01~R06 해소 판단을 유지하며 R07도 해소됐다. 변경된 5쪽의 설명과 서식을 읽는 데 지장이 없다.",
+        "minor_diagram_note": "독립 SVG의 점선 범례/실선 표현 불일치 1건은 낮은 우선순위 표현 보완으로 남긴다.",
+        "operational_status": "문서 이해 가능성 및 서식 확인 결과이며 실제 계정·망·통제 적용·보안 승인·침투시험을 확인한 결과가 아니다.",
+        "scope": "허용된 PDF PNG 5개와 독립 SVG PNG만 재검토했다. 제품 코드·본문·다른 산출물은 수정하지 않았다."
+      },
+      "new_findings": [
+        {
+          "id": "R3-SVG-LEGEND",
+          "type": "followup",
+          "verdict": "resolved",
+          "original_finding_reference": "visual_review.independent_svg.minor_remaining 및 overall.minor_diagram_note의 최초 점선 범례/실선 미리보기 지적은 수정하지 않고 보존함.",
+          "evidence": [
+            "최신 _analysis/diagram_previews/02_diagram_1.png를 view_image로 다시 확인했다.",
+            "하단 범례가 선택·조건부 연결은 화살표 옆 문구로 구분합니다로 바뀌어 선 모양에 의존하지 않는다.",
+            "팀 연결 옆 선택 전송, 하단 조건부 대체 수집 조회 문구가 해당 연결의 성격을 설명하므로 최신 범례와 일치한다.",
+            "수정된 범례는 이미지 경계 안에 들어오고 화살표·상자·본문과 겹치지 않는다."
+          ],
+          "remaining": "이 사소한 범례 일치성 지적은 해소됐다. 최초 기록의 남은 지적 표현은 당시 상태의 이력이며 현재 판정은 이 후속 resolved를 따른다.",
+          "scope": "최신 독립 SVG PNG만 재확인했다. HTML 원본의 dash 속성이나 미리보기 작성기 원인은 작성자의 설명이며 이번에 독립 검증하지 않았다. HTML 전체 브라우저 검증 미실시 상태와 R07 PDF 해소 판정은 유지한다."
+        }
+      ],
+      "record_file": "review_round3_readability.json"
+    }
+  ]
+}
