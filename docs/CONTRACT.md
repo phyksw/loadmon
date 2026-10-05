@@ -2,7 +2,7 @@
 
 | 항목 | 내용 |
 |---|---|
-| 판 | **v1.1 (2026-10-05)** — W0(기반 파동) 구현 반영. v1.1 = W0 계약 보강 요청 반영 + 구현 계획 §7 CR-01~CR-16 채택(§0.6 변경 이력 · §10.P X-318~X-342). v1.0.1 = 반증 점검 보정(§10.O X-300~X-317) |
+| 판 | **v1.2 (2026-10-06)** — W1a 통합 창 계약 요청 C1~C23 결정(§0.7). v1.1 = W0(기반 파동) 구현 반영 · W0 계약 보강 요청 반영 + 구현 계획 §7 CR-01~CR-16 채택(§0.6 변경 이력 · §10.P X-318~X-342). v1.0.1 = 반증 점검 보정(§10.O X-300~X-317) |
 | 지위 | **단일 진실 원천.** 이 문서와 명세가 다르면 이 문서가 이긴다. 명세는 상세 근거다 |
 | 제품 | LoadMonitor27(LM27) · 트리 `D:\배포\loadmon27` · 브랜치 `lm27` · 파이썬 패키지 `lm27` · 배포 이름 `LoadMonitor27\` · 패키지 `LoadMonitor27_풀패키지_<시각>.zip` |
 | 독자 | LM27 의 모든 코드(`lm27\**`, `collect\**`, `web\**`, `tools\**`, `tests\**`) 구현자와 심사자 |
@@ -92,6 +92,7 @@
 | v1.0 | 2026-10-05 | 설계 확정(명세 10종 대조, §10.A~N) |
 | v1.0.1 | 2026-10-05 | 반증 점검 보정(§10.O X-300~X-317) |
 | **v1.1** | 2026-10-05 | **W0 구현 반영.** 원칙: 구현·시험을 통과한 W0 공개 API(`lm27\paths.py` · `config.py` · `cli.py` · `util\*` · `bundle\ids.py` · `time\calendar.py` · `collect\{stage_result, rcmap, watch}.py` · `tools\hook_check.py` · `lint.ps1` · `tests\fixtures\*`)가 사실이며, 계약이 다르면 계약을 구현에 맞춰 등재한다. 계약 원칙·안전 규칙과 부딪히거나 구현이 답을 주지 않는 요청은 고치지 않고 §12 에 남긴다. 구현 계획 §7 CR-01~CR-16 은 모두 채택(CR-14 = 예외 표 방식) |
+| **v1.2** | 2026-10-06 | **W1a 통합 창 계약 요청 결정(§0.7 C1~C23).** 차단급 결정(수집기 상태 줄 C1 · 문서군 꼬리 C16 · 레코드 id C6 · 감사 키 C10 · 소급 가림 C11 · 절전 원천 C14 · obs 형 C21 · 판정 C9)과 등재 결정. 해당 절의 문구 반영은 표의 '반영' 열대로 |
 
 v1.1 에서 고친 곳(근거 행은 §10.P):
 
@@ -101,6 +102,39 @@ v1.1 에서 고친 곳(근거 행은 §10.P):
 - **관문**: §11.1(L-05·07·08·09·11·12·13·16·20·21·23·24·26·27·28·29 문구 + CR-14 예외 표) · §11.2(T-07 카나리아 범위) · §11.3(주입 자료 형식) · §11.4(단계 실행기·복제 트리).
 - **미결**: §12.1 U-15(2025-05-01 근로자의날) · §12.2 O-4·O-8 갱신, O-13~O-16 추가.
 - **v1.1 반증 점검(같은 판 안 보정 — W0 코드와 다시 대조)**: §1.1·§7.2 기본 진입 bat 이름 `LoadMonitor27-UI.bat`(X-341) · §2.1·§2.5·§2.6·§2.9 에 빠졌던 공개 상수·멤버(`KeyMeta` 필드, `rcmap`·`stage_result`·`watch`·`events`·`proc`·`ids` 상수) · §2.1·§7.3 `Paths.mode()` 판정 · §2.2 `records.py`·§2.3 `writer.py` 런타임 봉인 강화(관문 수정 단계 L-11 ③ 요청) · §2.3 store 삭제 함수 자리(O-16) · §2.18 `lint.ps1` 하네스 없음 = 실패 · §3.9·§5.1-8 정제 설정 해시는 호출자가 붙임 · §5.1-11 owner 는 하나(`OWNER_RX`) · §7.1 실행 플래그 `-X utf8 -B`·`team send` 인자 없음 · §8.1 (d) 단계 state 는 원장 셀 상태로 정함(rc 1·0건 셀의 막힘 포함) · §8.3 `collect` 0·4 의 skipped·사용자 중단 rc 2 · §8.6 `run_end` · §11.1 L-17·L-19 정적/동적 경계(X-342).
+
+
+### 0.7 v1.2 결정 — W1a 통합 창 계약 요청(C1~C23)
+
+W1a(WP-10·12·14·15·16·17·19·21·23·27·28) 통합 창이 올린 계약 요청의 결정이다. **결정이 해당 절 문구와 다르면 이 표가 이긴다**(절 문구는
+'반영' 열의 시점에 고친다). '등재' 결정은 구현이 이미 그렇게 되어 있어 문서를 맞추는 것이다 — 그 전까지 세부 형은 해당 모듈의
+docstring·시험이 정본이다. 구현자: 'W1 통합 창' 은 W1b 구현 뒤의 통합 에이전트, 'W2 통합' 은 W2 구현 뒤.
+
+| # | 대상 | 결정 | 구현·반영 |
+|---|---|---|---|
+| C1 | §7.3·§8.1 수집기 상태 줄(**차단급**) | 상태 줄은 한 모양: stderr 마지막 줄(CLM 모드는 stdout 제어 줄) `{"_status": {...}}`. 필수 필드 `schema:"lm27.collector_status/1"` · `src`(경로 ID) · `rc` · `reasons[]` · `partial` · `cap_hit` · `budget_hit` · `n` · `counts{}`. 수집기별 추가 필드(예: 메일·일정의 `items_total` `items_ok` `new` `horizon_oldest` `subfolder_ratio` `recurrence_incomplete` `skipped_msg`)는 최상위 선택 필드로 허용. **경로마다 한 줄.** `_result` 키는 쓰지 않는다. 파서는 `_status` 만 읽고 모르는 필드는 무시한다 | W1 통합 창: WP-15(`_result`→`_status`)·WP-16(`schema`·`partial`·`cap_hit`·`budget_hit`·`n` 추가) 정렬. WP-13·33 은 처음부터 이 형으로 파싱. §7.3·§8.1 문구는 W1 통합 창 |
+| C2 | §3.10 커서 표 | 등재: `mail.index`·`cal.index` = `{last_item_ts_utc, read_from}` · `mail.import`·`cal.import` = `{done:{<내용 sha256 앞 16자>:[크기, mtime_ns]}}` · `mail.com`·`cal.com` = `cov_months.status ∈ done·partial·out_of_horizon` + `read_from`·`read_to`(실제 읽은 [시작, 끝) UTC) · 혼합 모드 `_in.cursor`·`_cursor` = `{경로 ID: 값}` · `pc.files` = `{last_ts_utc, poll_ts_utc?}` · `teams.uia` = `{last_ts_utc}`(날짜 확정 행의 최대, 중복은 id 로 흡수) | 문서 — W2 통합 |
+| C3 | §11.3 주입점 | 등재: `LM_PROBE_FAKE=<json>` · `LM_OUTLOOK_SELFTEST=N[,선택…]`(선택 `newol·noprof·wizard·dialog·elev·busyall·notrunning·noaddr·omg·slowb·archive·jetfail·horizon=YYYY-MM·hang=attach\|read·delay=<ms>`, 탐침도 같은 문법) · `LM_INDEX_FAKE` 선택 키(`_error·_total_outlook_items·_policy·_newol·_ext_rejected·_my_addrs`) · `Get-RecentFiles.ps1 -RecentDir·-MruRegFile` · 모든 PS 수집기 `-TestNow` · `-EventsCsv` 의 `kind=channel` 줄 · `-RawFile` JSON 스냅숏 | W1 통합 창: WP-05 `inject.py` 머리 표·`tree.py INJECT_VARS`·synth `INJECT_ENV`·`SYNTH_VERSION` 갱신 + §11.3 문구 |
+| C4 | §6.1 사유 코드 | 신설: `R-RECURINC`(품질, 확정 ✘ — 반복 일정을 일부만 펼침, 부분 결과 규칙대로 `partial=true`) · `R-NOAPP`(경고, 확정 ✘ — 대상 프로그램 미설치). 수집기는 실패에 **반드시 사유를 단다** — 'rc 3·사유 없음'이 R-TRANSPORT 로 접혀 배정 근거가 왜곡되는 일을 막는다 | §6.1 표·`rcmap.REASONS`(WP-03) 등재는 v1.2 와 같은 커밋(L-13: 표에 먼저). WP-15·17 이 이 코드를 내도록 맞추는 것은 W1 통합 창 |
+| C5 | §6.1·CP §4.1 R-NOEVT | 구현대로 확정: System 채널을 못 읽을 때만 R-NOEVT(확정 ✔) + rc 3. 보너스 채널(Security 4800/4801 등) 권한 없음은 사유 없이 채널 상태 열거로만 | 문서 — W1 통합 창 |
+| C6 | §3.1 레코드 id(**WP-11 착수 전**) | 채택: 주키가 없는 `pc_session`(pc.events)은 주키 자리에 `<layer>\|<event_class>`, `pc_compute`(라이선스)는 `app_id` 를 넣어 id 를 계산한다 — 같은 초·같은 분에 시작한 두 구간이 dedupe 로 사라지지 않게 | WP-11(`keys`·`records`) 구현, §3.1 문구 W1 통합 창 |
+| C7 | §3.2·§3.3·§3.5 원시 입력 형 | 등재: WP-14 `pc_file` 원시 힌트(`folder_role·root_id·op=save·target_mtime·pdf_sibling·flags.autosave·final_name`)·무텍스트 pc.events·라이선스 모양 · WP-16 teams `flags`(`n_part_est·author_inherited`), `is_me=null → direction unknown`, `chat_title=null`, `participants=[{name}]`, `message_id·author_addr·reply_to_id=null`, `ts_precision=unknown` 행의 `ts_utc` = 수집일 00:00 로컬의 UTC · WP-15 mail·cal `flags`(`meeting_response·utc_suspect·deferred·organizer_me`), A단·OMG 행 `rcv=unknown`, `in_reply_to` 는 bool, 반입 CSV 열(`ts_end_local·start_utc·end_utc·meeting_response`) | 문서. WP-11 은 이 형을 받아 정제·저장한다 |
+| C8 | §2.6·§3.8 번들 | 등재: `record_probe(…, *, probe_sig, date, cfg, today)` · §3.8 `history` 는 §6.4 형 `{date, status, reasons, probe_sig}` · `write_segment(created·seq·manifest·redacted_from)` · `iter_records(overlay·off_min·cfg·resanitize)` · `export_agent_streams` · `prepare_move` · `verdict(today)` · `auto_alias(now, spans)` · `merge_bundle(cfg, timeout_s)` · loader·pcreg·segment·manifest 보조 공개 함수 | 문서 — W1 통합 창 |
+| C9 | §6.4 판정 2단계 | **ok 뒤의 `transport_fail`·`unknown` 은 '가능'을 무르지 않는다**(TAB §1.5 원형). 2단계 = "`transport_fail`·`unknown` 을 뺀 가장 최근 기록이 `ok` 면 `가능`". 수송 실패는 능력이 사라졌다는 근거가 아니다 | W1 통합 창: WP-12 `verdict` 수정 + 회귀 시험, §6.4 문구 |
+| C10 | §3.13 감사 키 | 감사 이벤트 본문의 경로 ID 키는 **`path_id`**(봉투의 `src` = 단계 이름과 겹치지 않게). id 는 봉투를 붙이기 전 본문으로 계산(현행) | WP-11(`audit`)이 처음부터 `path_id`. §3.13·P §15.2 문구 W1 통합 창. WP-12 로더는 봉투 `src` 유지 |
+| C11 | §2.2·§2.6·P §3.3 소급 가림 | 행 단위 `lm27.privacy.records.redact_row(kind, row) -> dict` 와 비울 열 단일원 `lm27.privacy.records.redact_fields(kind) -> tuple`(WP-11). 세그먼트 교체는 `lm27.bundle.merge.redact_rewrite_own(...)`(WP-12)이 `write_segment` 로만 한다(X-175·L-08 유지). '`_masked` 로 끝나는 열' 기본 규칙은 폐기 | WP-11 구현 → W1 통합 창에서 WP-12 연결 |
+| C12 | §2.8 카탈로그 | 등재: `CATEGORIES`(9)·`APP_CLASSES`(18)·`KINDS`·`APP_ID_RX`·`Prog(app_id, name, vendor, kind, cat, app_class)` · `exe_norm`·`app_id_for`·`entries`·`programs_extra`·`solver_set`·`is_solver`·`guess_meta` · `app_class_of`·`cat_of` 의 `extra` 인자 · 표기: 미지 exe = `unknown:<exe 소문자.exe>`, 사내 도구 = `x.<slug>` | 문서 — W2 통합 |
+| C13 | §2.9·W 부록 A time 표 | 등재(WP-20·32 가 기댄다): `normalize(records, profile, cfg, as_of, tags=None)`(profile 선택 키 `d0·d1·leaves·coverage·shared_docs`) · `Evidence` 확장 `fam_tokens·fam_names·generic_fams·tz_offset_min·warnings`, `Meet.key·series`, `Man.id·proj` · `Envelope` 확장 `ledger`(정수 초)·`ledger_n`·`tags`·`on_leave`·`pcs`·`manual_slots` · 상수 `DEDUCT_ITEMS`·`EXCLUDE_ITEMS` 고정 | 문서 — W1 통합 창(WP-20 착수 자료) |
+| C14 | X-202 절전 원천 | 수집기(pc.events)는 **켜짐(on) 구간만** 낸다(CP §4.3 유지). 꺼짐·절전은 **시간 코어 증거층(WP-19)이 파생**한다 — 켜짐 구간 사이의 빈 곳 + 그 구간의 끝 사건 종류(sleep·shutdown 등). `event_class='sleep'` 행 읽기는 호환으로만 남긴다 | W1 통합 창: WP-19 파생 추가 + 시험 |
+| C15 | §3.2 pc.sampler `dir_keys` | 채택(선택 필드): `pc_session`(pc.sampler)에 `dir_keys` = 앞 창 문서 경로의 상위 폴더 1~2단 HMAC 키(원문 없음). 경로를 모르면 비운다 | WP-11(스키마·정제)·WP-13(표본기) |
+| C16 | §4.3 문서군 꼬리(**WP-11 착수 전**) | WP-10 제안 채택: 꼬리 낱말(`copy·final·최종·사본·복사본`)은 **앞에 구분자가 있을 때만** 지운다 · 결과가 비면 원래 이름 · 경로면 기본 이름만. P §18.2 D01~D08 기대값을 그대로 만족해야 한다(D03 '보고서 - 복사본' → '보고서') | WP-11(`keys.py`) 구현. `regress_v1.jsonl` 해당 줄·selftest·WP-19 의 가짜 doc_fam 은 W1 통합 창에서 맞춘다 |
+| C17 | §2.2 selftest | 등재: `run_selftest(…, perf=True)` · 공개 도우미 `read_lock·lock_matches·load_corpus·schema_snapshot·audit_violations·pathological_inputs` · `RULES_HASH` 범위 = classify 의 frozenset·`ABS_HINT` + 모든 `re.Pattern` | 문서 — W1 통합 창 |
+| C18 | §6.7·§3.8 능력 탐침 | 등재: 출력 형 `lm27.probe/1` = `{schema, now_utc, elapsed_ms, budget_sec, budget_hit, synthetic, groups{P-*: done\|skipped\|budget\|error}, warnings, stub_env, cfg_used, caps{키: {ok, status, reasons, value, sig}}}`, 종료 rc 0/3, caps 키 12종 · pc.sampler 키에서 탐침 값과 `agent.json` impl 을 합치는 규칙 · `probe.budgetSec` 기점 = 스크립트 시작 · 워치독 문구 '워치독 초 + 끊는 시간' | 문서 — W1 통합 창(WP-33 착수 자료) |
+| C19 | §1.3·§2.1 `Paths` 새 메서드 | 채택: `bridge_profile`·`bridge_profile_id`·`bridge_trace`·`bridge_probe_last`·`bridge_rawcap`·`bridge_diagnose`(WP-23) · `offline_registry(offline_dir)`(WP-21) · `outbox_file(state, name)`·`ai_store_dir()`·`bundle_probe(rand)`(WP-12) | W1 통합 창: WP-00 `paths.py` 구현 + 시험, WP-12 의 outbox 합집합(`outbox_merge_unavailable` 제거) 연결 |
+| C20 | §4.7·§2.15·§3.18 팀 | 등재: 관리자 토큰 헤더 `X-LM27-Admin-Token` · 레지스트리 PUT 422 코드 `validator_unavailable` · `agentic.needs[].src`(`ai`\|`rule`) · 표 이름 정정 `gantt_spans→spans`, `person.function→person.field`, `projects.domain` 은 5값 | 문서 — W2 통합(WP-34·37 착수 자료) |
+| C21 | §3.14 `attrib.jsonl` 의 `obs` | **`obs` 는 단계 코드 문자열**(`''` = 단계 아님) — R W-1 과 `lm27.vocab.steps.obs_of` 채택. §3.14 의 bool 정의를 고친다 | WP-20 구현, §3.14 문구 W1 통합 창 |
+| C22 | §11.1 관문 | 채택: L-15 앱 신원 `'LM27-team'`·`'LM27-ui'`(§4.7) 예외 · L-28 `portdiag.AVOID`(피하는 포트 목록) 예외 · L-08 팀 서버 저장소 `<store>\out\gen_N`(ROOT 밖) 예외 — 우회 표기 제거 · L-24 `.gitignore` 는 루트 고정 `'/data/'`·`'/out/'`(루트 고정이 아닌 `data/`·`out/` 줄은 지적) | L-24 는 v1.2 와 같은 커밋에 반영. 나머지는 W1 통합 창: `hook_check`(WP-04)·시험 |
+| C23 | §2.10 hier 시그니처 | 등재: `load_effective(paths, cfg, now=None, *, fetch, kr, folder_key, doc_key, person_key, learned, persist=True)` · `merge` 의 키워드 인자 · `match_tokens(text, boiler=None)` · `Err(path, code, level∈reject·drop·warn, detail)` · `blocking(errs) -> bool` | 문서 — W1 통합 창 |
 
 ---
 
@@ -1215,6 +1249,8 @@ TAB §2.3.1·§2.3.2 의 모양을 따르되 다음을 1.0 에 포함한다(구�
 | R-UIAELEV | 관리자 권한 창 | 구조 | ✔ | C §4.2 |
 | R-NOADDR | 내 주소·표시명 미확정 → rcv·direction unknown | 품질 | ✘ | C §4.2 |
 | R-NOEVT | 이벤트 채널 읽기 권한 없음 | 구조 | ✔ | C §4.2 · CP §4 |
+| R-RECURINC | 반복 일정을 일부만 펼침(`recurrence_incomplete` > 0) → partial | 품질 | ✘ | 이 문서 §0.7 C4 · CM(메일·일정 수집기) |
+| R-NOAPP | 대상 프로그램 미설치(그 경로의 수집 대상이 없음) | 경고 | ✘ | 이 문서 §0.7 C4 · 능력 탐침 |
 | R-CAP | 상한 도달(절단) → partial + cap_hit | 품질 | ✘ | C §4.2 |
 | R-BUDGET | 시간 예산 소진 → partial | 일시 | ✘ | C §4.2 |
 | R-TRANSPORT | 수송 실패(드라이버·네트워크·정제 파이프 실패·대기 초과) | 수송 | ✘ | C §4.2 · 이 문서 §8.2 |

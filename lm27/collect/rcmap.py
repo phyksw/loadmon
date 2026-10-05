@@ -69,6 +69,8 @@ REASONS = {
     "R-UIAELEV": (STRUCTURAL, True),
     "R-NOADDR": (QUALITY, False),
     "R-NOEVT": (STRUCTURAL, True),
+    "R-RECURINC": (QUALITY, False),      # 계약 v1.2 §0.7 C4 — 반복 일정 일부만 펼침
+    "R-NOAPP": (WARNING, False),         # 계약 v1.2 §0.7 C4 — 대상 프로그램 미설치
     "R-CAP": (QUALITY, False),
     "R-BUDGET": (TRANSIENT, False),
     "R-TRANSPORT": (TRANSPORT, False),

@@ -57,9 +57,11 @@ class ReasonTable(unittest.TestCase):
             self.assertEqual(rcmap.REASONS[code], (cls, ok), code)
 
     def test_snapshot_counts(self):
-        # 계약 v1.0.1 §6.1: 55개, 확정 ✔ 21개 — 표가 바뀌면 이 숫자와 함께 고친다
-        self.assertEqual(len(rcmap.REASONS), 55)
+        # 계약 v1.2 §6.1: 57개(v1.0.1 의 55 + §0.7 C4 R-RECURINC·R-NOAPP), 확정 ✔ 21개 — 표가 바뀌면 이 숫자와 함께 고친다
+        self.assertEqual(len(rcmap.REASONS), 57)
         self.assertEqual(len(rcmap.CONFIRMABLE), 21)
+        self.assertNotIn("R-RECURINC", rcmap.CONFIRMABLE)        # 품질 — '불가' 근거가 아니다
+        self.assertNotIn("R-NOAPP", rcmap.CONFIRMABLE)
         self.assertNotIn("R-TRANSPORT", rcmap.CONFIRMABLE)       # 수송 실패는 '불가' 근거가 아니다
         self.assertNotIn("R-STUCK", rcmap.CONFIRMABLE)
         self.assertNotIn("R-SAMPLER-ZOMBIE", rcmap.CONFIRMABLE)  # X-127
