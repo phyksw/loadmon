@@ -2324,9 +2324,14 @@ def _l24_repo(ctx, srcs, selected):
     if os.path.isfile(gi):
         with open(gi, "rb") as fh:
             lines = {ln.strip() for ln in fh.read().decode("utf-8", errors="replace").splitlines()}
-        for need in ("data/", "out/", "config/config.json"):
+        for need in ("/data/", "/out/", "config/config.json"):
             if need not in lines:
                 yield Finding("L-24", ".gitignore", 0, f"'{need}' 줄이 없음 — 개인 자료·설정이 커밋·패키지에 섞인다")
+        # 루트 고정이 아닌 줄은 하위의 같은 이름 폴더(lm27\hier\data\ 등 소스)까지 무시한다
+        for loose in ("data/", "out/"):
+            if loose in lines:
+                yield Finding("L-24", ".gitignore", 0,
+                              f"'{loose}' 는 루트 고정이 아님 — 하위 소스 폴더까지 무시된다('/{loose}' 로)")
 
 
 # ───────────────────────────── L-25 분류 ─────────────────────────────

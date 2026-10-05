@@ -292,9 +292,10 @@ class TestRepoConfigFiles(unittest.TestCase):
 
     def test_gitignore(self):
         ls = self.lines(".gitignore")
-        for need in ("data/", "out/", "config/config.json", ".wf/", "__pycache__/", "*.zip", "!python/python311.zip"):
+        for need in ("/data/", "/out/", "config/config.json", ".wf/", "__pycache__/", "*.zip", "!python/python311.zip"):
             self.assertIn(need, ls)
-        for gone in ("teamdata/", "config/settings.local.json"):
+        # 'data/'·'out/'(루트 고정 아님)은 lm27\hier\data\ 같은 소스 폴더까지 무시한다
+        for gone in ("teamdata/", "config/settings.local.json", "data/", "out/"):
             self.assertNotIn(gone, ls)
 
     def test_ruff_toml(self):

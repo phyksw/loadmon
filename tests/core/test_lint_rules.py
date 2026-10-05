@@ -490,7 +490,7 @@ class TestTeamAndPrivacy(RuleCase):
         self.t.write("lm27/privacy/rules.py", "RULES_VERSION = '2026.10.0'\nRULES_HASH = 'abcdef0123456789'\n")
         lock = {"rules_ver": "2026.10.0", "rules_hash": "abcdef0123456789"}
         self.t.write("lm27/privacy/rules.lock.json", json.dumps(lock) + "\n")
-        self.t.write(".gitignore", "data/\nout/\nconfig/config.json\n")
+        self.t.write(".gitignore", "/data/\n/out/\nconfig/config.json\n")
         self.clean(self.t.repo(["L-24"]), "L-24")
         lock["rules_hash"] = "0000000000000000"
         self.t.write("lm27/privacy/rules.lock.json", json.dumps(lock) + "\n")
@@ -502,7 +502,10 @@ class TestTeamAndPrivacy(RuleCase):
         self.t.write("config/settings_registry.json", json.dumps(reg, ensure_ascii=False) + "\n")
         self.hit(self.t.repo(["L-24"]), "L-24")
         self.t.remove("config/settings_registry.json")
-        self.t.write(".gitignore", "out/\n")
+        self.t.write(".gitignore", "/out/\n")
+        self.hit(self.t.repo(["L-24"]), "L-24")
+        # 루트 고정이 아닌 'data/' 는 하위 소스 폴더까지 무시하므로 잡는다
+        self.t.write(".gitignore", "data/\n/data/\n/out/\nconfig/config.json\n")
         self.hit(self.t.repo(["L-24"]), "L-24")
 
     def test_L25_hier_feedback_and_domain_literals(self):

@@ -1,6 +1,7 @@
 # 개인 자료 — 공유·커밋·패키지 금지(계약 §1.2: 번들·개인 자료는 data\, 개인 보고서는 out\)
-data/
-out/
+# 루트 고정('/') — 'data/' 로 쓰면 lm27\hier\data\ 같은 하위 data 폴더까지 무시돼 소스 파일이 커밋에서 빠진다
+/data/
+/out/
 
 # 개인 설정 덮어쓰기(배포 기본값은 config\settings_registry.json 의 default) — 사람마다 다름
 config/config.json
