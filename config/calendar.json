@@ -1,0 +1,495 @@
+{
+ "version": "kr-2025-2027.v1",
+ "std_day_min": 480,
+ "weekdays": [
+  0,
+  1,
+  2,
+  3,
+  4
+ ],
+ "note": "대한민국 관공서의 공휴일에 관한 규정 기준(2026-10-05 근거 URL 확인·독립 재계산 검증). 2025-05-01 근로자의날은 관공서 공휴일은 아니나 민간 근로자 유급휴일이라 회사 기준 휴일로 넣는다(company_off 와 같은 효과). 2026년부터 노동절(5/1)·제헌절(7/17) 공휴일. 미래 임시공휴일은 팀 서버 레지스트리 calendar 배포로 추가한다.",
+ "years": [
+  {
+   "year": 2025,
+   "holidays": [
+    {
+     "date": "2025-01-01",
+     "name": "신정",
+     "kind": "법정",
+     "source_url": "https://www.kasi.re.kr/kor/publication/post/newsMaterial/30071",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2025-01-27",
+     "name": "임시공휴일(설 연휴 연장)",
+     "kind": "임시",
+     "source_url": "https://www.korea.kr/briefing/pressReleaseView.do?newsId=156670135",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2025-01-28",
+     "name": "설날 연휴(설 전날)",
+     "kind": "법정",
+     "source_url": "https://www.kasi.re.kr/kor/publication/post/newsMaterial/30071",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2025-01-29",
+     "name": "설날",
+     "kind": "법정",
+     "source_url": "https://www.kasi.re.kr/kor/publication/post/newsMaterial/30071",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2025-01-30",
+     "name": "설날 연휴(설 다음날)",
+     "kind": "법정",
+     "source_url": "https://www.kasi.re.kr/kor/publication/post/newsMaterial/30071",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2025-03-01",
+     "name": "삼일절",
+     "kind": "법정",
+     "source_url": "https://www.kasi.re.kr/kor/publication/post/newsMaterial/30071",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2025-03-03",
+     "name": "대체공휴일(삼일절)",
+     "kind": "대체",
+     "source_url": "https://www.kasi.re.kr/kor/publication/post/newsMaterial/30071",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2025-05-01",
+     "name": "근로자의날",
+     "kind": "근로자의날(민간 유급휴일)",
+     "source_url": "https://www.moel.go.kr/news/achievements/view.do?bbs_seq=20260201197",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2025-05-05",
+     "name": "어린이날 / 부처님오신날(같은 날)",
+     "kind": "법정",
+     "source_url": "https://www.kasi.re.kr/kor/publication/post/newsMaterial/30071",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2025-05-06",
+     "name": "대체공휴일(어린이날·부처님오신날 중복)",
+     "kind": "대체",
+     "source_url": "https://www.kasi.re.kr/kor/publication/post/newsMaterial/30071",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2025-06-03",
+     "name": "제21대 대통령선거일",
+     "kind": "선거",
+     "source_url": "https://www.korea.kr/news/policyNewsView.do?newsId=148941443",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2025-06-06",
+     "name": "현충일",
+     "kind": "법정",
+     "source_url": "https://www.kasi.re.kr/kor/publication/post/newsMaterial/30071",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2025-08-15",
+     "name": "광복절",
+     "kind": "법정",
+     "source_url": "https://www.kasi.re.kr/kor/publication/post/newsMaterial/30071",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2025-10-03",
+     "name": "개천절",
+     "kind": "법정",
+     "source_url": "https://www.kasi.re.kr/kor/publication/post/newsMaterial/30071",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2025-10-05",
+     "name": "추석 연휴(추석 전날)",
+     "kind": "법정",
+     "source_url": "https://www.kasi.re.kr/kor/publication/post/newsMaterial/30071",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2025-10-06",
+     "name": "추석",
+     "kind": "법정",
+     "source_url": "https://www.kasi.re.kr/kor/publication/post/newsMaterial/30071",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2025-10-07",
+     "name": "추석 연휴(추석 다음날)",
+     "kind": "법정",
+     "source_url": "https://www.kasi.re.kr/kor/publication/post/newsMaterial/30071",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2025-10-08",
+     "name": "대체공휴일(추석)",
+     "kind": "대체",
+     "source_url": "https://www.kasi.re.kr/kor/publication/post/newsMaterial/30071",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2025-10-09",
+     "name": "한글날",
+     "kind": "법정",
+     "source_url": "https://www.kasi.re.kr/kor/publication/post/newsMaterial/30071",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2025-12-25",
+     "name": "성탄절(기독탄신일)",
+     "kind": "법정",
+     "source_url": "https://www.kasi.re.kr/kor/publication/post/newsMaterial/30071",
+     "confirmed": "2026-10-05"
+    }
+   ],
+   "expected_workdays": "2025-01:18, 2025-02:20, 2025-03:20, 2025-04:22, 2025-05:19, 2025-06:19, 2025-07:23, 2025-08:20, 2025-09:22, 2025-10:18, 2025-11:20, 2025-12:22"
+  },
+  {
+   "year": 2026,
+   "holidays": [
+    {
+     "date": "2026-01-01",
+     "name": "신정",
+     "kind": "법정",
+     "source_url": "https://www.kasa.go.kr/prog/bbsArticle/BBSMSTR_000000000010/view.do?bbsId=BBSMSTR_000000000010&nttId=B000000001860Pe2zT3",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2026-02-16",
+     "name": "설날 연휴(설 전날)",
+     "kind": "법정",
+     "source_url": "https://www.kasa.go.kr/prog/bbsArticle/BBSMSTR_000000000010/view.do?bbsId=BBSMSTR_000000000010&nttId=B000000001860Pe2zT3",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2026-02-17",
+     "name": "설날",
+     "kind": "법정",
+     "source_url": "https://www.kasa.go.kr/prog/bbsArticle/BBSMSTR_000000000010/view.do?bbsId=BBSMSTR_000000000010&nttId=B000000001860Pe2zT3",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2026-02-18",
+     "name": "설날 연휴(설 다음날)",
+     "kind": "법정",
+     "source_url": "https://www.kasa.go.kr/prog/bbsArticle/BBSMSTR_000000000010/view.do?bbsId=BBSMSTR_000000000010&nttId=B000000001860Pe2zT3",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2026-03-01",
+     "name": "삼일절",
+     "kind": "법정",
+     "source_url": "https://www.kasi.re.kr/kor/publication/post/newsMaterial/32031",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2026-03-02",
+     "name": "대체공휴일(삼일절)",
+     "kind": "대체",
+     "source_url": "https://www.kasi.re.kr/kor/publication/post/newsMaterial/32031",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2026-05-01",
+     "name": "노동절(구 근로자의날)",
+     "kind": "법정",
+     "source_url": "https://www.korea.kr/briefing/pressReleaseView.do?newsId=156758983",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2026-05-05",
+     "name": "어린이날",
+     "kind": "법정",
+     "source_url": "https://www.kasa.go.kr/prog/bbsArticle/BBSMSTR_000000000010/view.do?bbsId=BBSMSTR_000000000010&nttId=B000000001860Pe2zT3",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2026-05-24",
+     "name": "부처님오신날",
+     "kind": "법정",
+     "source_url": "https://www.kasa.go.kr/prog/bbsArticle/BBSMSTR_000000000010/view.do?bbsId=BBSMSTR_000000000010&nttId=B000000001860Pe2zT3",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2026-05-25",
+     "name": "대체공휴일(부처님오신날)",
+     "kind": "대체",
+     "source_url": "https://www.kasa.go.kr/prog/bbsArticle/BBSMSTR_000000000010/view.do?bbsId=BBSMSTR_000000000010&nttId=B000000001860Pe2zT3",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2026-06-03",
+     "name": "제9회 전국동시지방선거일",
+     "kind": "선거",
+     "source_url": "https://v.daum.net/v/20260602004738370",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2026-06-06",
+     "name": "현충일",
+     "kind": "법정",
+     "source_url": "https://www.kasa.go.kr/prog/bbsArticle/BBSMSTR_000000000010/view.do?bbsId=BBSMSTR_000000000010&nttId=B000000001860Pe2zT3",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2026-07-17",
+     "name": "제헌절",
+     "kind": "법정",
+     "source_url": "https://www.segye.com/newsView/20260714516113",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2026-08-15",
+     "name": "광복절",
+     "kind": "법정",
+     "source_url": "https://www.segye.com/newsView/20260714516113",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2026-08-17",
+     "name": "대체공휴일(광복절)",
+     "kind": "대체",
+     "source_url": "https://www.segye.com/newsView/20260714516113",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2026-09-24",
+     "name": "추석 연휴(추석 전날)",
+     "kind": "법정",
+     "source_url": "https://www.wikitree.co.kr/articles/1161815",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2026-09-25",
+     "name": "추석",
+     "kind": "법정",
+     "source_url": "https://www.wikitree.co.kr/articles/1161815",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2026-09-26",
+     "name": "추석 연휴(추석 다음날)",
+     "kind": "법정",
+     "source_url": "https://www.wikitree.co.kr/articles/1161815",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2026-10-03",
+     "name": "개천절",
+     "kind": "법정",
+     "source_url": "https://www.wikitree.co.kr/articles/1161815",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2026-10-05",
+     "name": "대체공휴일(개천절)",
+     "kind": "대체",
+     "source_url": "https://www.wikitree.co.kr/articles/1161815",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2026-10-09",
+     "name": "한글날",
+     "kind": "법정",
+     "source_url": "https://www.segye.com/newsView/20260714516113",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2026-12-25",
+     "name": "성탄절(기독탄신일)",
+     "kind": "법정",
+     "source_url": "https://www.segye.com/newsView/20260714516113",
+     "confirmed": "2026-10-05"
+    }
+   ],
+   "expected_workdays": "2026-01:21, 2026-02:17, 2026-03:21, 2026-04:22, 2026-05:18, 2026-06:21, 2026-07:22, 2026-08:20, 2026-09:20, 2026-10:20, 2026-11:21, 2026-12:22"
+  },
+  {
+   "year": 2027,
+   "holidays": [
+    {
+     "date": "2027-01-01",
+     "name": "신정",
+     "kind": "법정",
+     "source_url": "https://www.kasa.go.kr/prog/plcyBrf/brief/kor/sub01_01_04/view.do?plcyBrfNo=431",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2027-02-06",
+     "name": "설날 연휴(설 전날)",
+     "kind": "법정",
+     "source_url": "https://www.vegannews.co.kr/news/article.html?no=388618",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2027-02-07",
+     "name": "설날",
+     "kind": "법정",
+     "source_url": "https://www.vegannews.co.kr/news/article.html?no=388618",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2027-02-08",
+     "name": "설날 연휴(설 다음날)",
+     "kind": "법정",
+     "source_url": "https://www.vegannews.co.kr/news/article.html?no=388618",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2027-02-09",
+     "name": "대체공휴일(설날)",
+     "kind": "대체",
+     "source_url": "https://www.vegannews.co.kr/news/article.html?no=388618",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2027-03-01",
+     "name": "삼일절",
+     "kind": "법정",
+     "source_url": "https://www.kasa.go.kr/prog/plcyBrf/brief/kor/sub01_01_04/view.do?plcyBrfNo=431",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2027-05-01",
+     "name": "노동절",
+     "kind": "법정",
+     "source_url": "https://www.kasa.go.kr/prog/plcyBrf/brief/kor/sub01_01_04/view.do?plcyBrfNo=431",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2027-05-03",
+     "name": "대체공휴일(노동절)",
+     "kind": "대체",
+     "source_url": "https://www.vegannews.co.kr/news/article.html?no=383666",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2027-05-05",
+     "name": "어린이날",
+     "kind": "법정",
+     "source_url": "https://shiftee.io/ko/blog/article/2027-public-holiday-calendar-holiday-pay-guide",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2027-05-13",
+     "name": "부처님오신날",
+     "kind": "법정",
+     "source_url": "https://shiftee.io/ko/blog/article/2027-public-holiday-calendar-holiday-pay-guide",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2027-06-06",
+     "name": "현충일",
+     "kind": "법정",
+     "source_url": "https://www.kasa.go.kr/prog/plcyBrf/brief/kor/sub01_01_04/view.do?plcyBrfNo=431",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2027-07-17",
+     "name": "제헌절",
+     "kind": "법정",
+     "source_url": "https://www.kasa.go.kr/prog/plcyBrf/brief/kor/sub01_01_04/view.do?plcyBrfNo=431",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2027-07-19",
+     "name": "대체공휴일(제헌절)",
+     "kind": "대체",
+     "source_url": "https://www.vegannews.co.kr/news/article.html?no=383666",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2027-08-15",
+     "name": "광복절",
+     "kind": "법정",
+     "source_url": "https://www.kasa.go.kr/prog/plcyBrf/brief/kor/sub01_01_04/view.do?plcyBrfNo=431",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2027-08-16",
+     "name": "대체공휴일(광복절)",
+     "kind": "대체",
+     "source_url": "https://www.vegannews.co.kr/news/article.html?no=383666",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2027-09-14",
+     "name": "추석 연휴(추석 전날)",
+     "kind": "법정",
+     "source_url": "https://www.vegannews.co.kr/news/article.html?no=383666",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2027-09-15",
+     "name": "추석",
+     "kind": "법정",
+     "source_url": "https://www.vegannews.co.kr/news/article.html?no=383666",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2027-09-16",
+     "name": "추석 연휴(추석 다음날)",
+     "kind": "법정",
+     "source_url": "https://www.vegannews.co.kr/news/article.html?no=383666",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2027-10-03",
+     "name": "개천절",
+     "kind": "법정",
+     "source_url": "https://www.vegannews.co.kr/news/article.html?no=388618",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2027-10-04",
+     "name": "대체공휴일(개천절)",
+     "kind": "대체",
+     "source_url": "https://www.vegannews.co.kr/news/article.html?no=388618",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2027-10-09",
+     "name": "한글날",
+     "kind": "법정",
+     "source_url": "https://www.vegannews.co.kr/news/article.html?no=388618",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2027-10-11",
+     "name": "대체공휴일(한글날)",
+     "kind": "대체",
+     "source_url": "https://www.vegannews.co.kr/news/article.html?no=388618",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2027-12-25",
+     "name": "성탄절(기독탄신일)",
+     "kind": "법정",
+     "source_url": "https://shiftee.io/ko/blog/article/2027-public-holiday-calendar-holiday-pay-guide",
+     "confirmed": "2026-10-05"
+    },
+    {
+     "date": "2027-12-27",
+     "name": "대체공휴일(성탄절)",
+     "kind": "대체",
+     "source_url": "https://www.vegannews.co.kr/news/article.html?no=383666",
+     "confirmed": "2026-10-05"
+    }
+   ],
+   "expected_workdays": "2027-01:20, 2027-02:18, 2027-03:22, 2027-04:22, 2027-05:18, 2027-06:22, 2027-07:21, 2027-08:21, 2027-09:19, 2027-10:19, 2027-11:22, 2027-12:22"
+  }
+ ],
+ "company_off": []
+}

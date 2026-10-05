@@ -1,0 +1,17 @@
+{
+ "hooks": {
+  "PostToolUse": [
+   {
+    "matcher": "Edit|Write|MultiEdit",
+    "hooks": [
+     {
+      "type": "command",
+      "command": "python tools/hook_check.py",
+      "timeout": 60,
+      "statusMessage": "LM27 파일 검사 중"
+     }
+    ]
+   }
+  ]
+ }
+}

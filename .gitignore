@@ -1,0 +1,20 @@
+# 개인 데이터 — 공유 금지 (수집·분석 산출물)
+data/
+out/
+teamdata/
+
+# 파이썬 캐시
+__pycache__/
+*.pyc
+
+# 작업 산출물
+*.zip
+# 내장 파이썬의 표준 라이브러리 — 빠지면 python\python.exe 가 아무것도 못 한다
+!python/python311.zip
+
+# 개인 설정(배포 기본값은 config\settings_registry.json 의 default) — 사람마다 다른 값
+config/config.json
+config/settings.local.json
+
+# 오케스트레이터 작업 스크립트(개발용)
+.wf/
