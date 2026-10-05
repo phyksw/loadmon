@@ -1,0 +1,57 @@
+{
+ "_note": "H §2.2 전체 모양 예시(합성). agents 단계 유형은 X-236 대로 DOC_DOC. calendar 는 시험이 config\\calendar.json 으로 채운다.",
+ "schema": "lm27.registry/1",
+ "version": 7,
+ "updated_at": "2026-10-05T09:00:00+09:00",
+ "updated_label": "팀장",
+ "team": {"label": "팀A"},
+ "pepper": "abababababababababababababababababababababababababababababababab",
+ "pepper_id": "9f2c01ab",
+ "domains": ["DEV", "MP", "EXT", "COM", "AX", "UNC"],
+ "domain_meta": {
+  "EXT": {"desc": "", "keywords_add": ["기술자문"], "keywords_remove": []},
+  "COM": {"keywords_add": ["팀 워크숍"], "keywords_remove": ["교정"]}
+ },
+ "projects": [
+  {"id": "P-0007", "name": "과제A", "domain": "DEV", "status": "active", "merged_into": null,
+   "aliases": ["과제A 모듈"], "codenames": ["PROJ-A"], "mask_name": false,
+   "keywords": ["브라켓", "광학모듈"], "never": ["과제A 후속"],
+   "mail_domains": ["custa.example"], "customers": ["C01"], "partners": [],
+   "folders": ["과제A_설계"], "apps": [],
+   "default_field": "OPT", "default_func": "", "ax_link": false,
+   "shared_docs": ["팀공용_마스터"],
+   "copilot_desc": "광학 모듈 신규 개발",
+   "period": {"from": "2026-01", "to": ""},
+   "adopted": [{"person_key": "p_7fa3c2d19e01", "proposal_id": "pr_3"}],
+   "created_at": "2026-03-02", "note": ""},
+  {"id": "P-0008", "name": "과제B", "domain": "MP", "status": "active",
+   "codenames": ["PROJ-B"], "keywords": ["양산라인", "수율개선"], "customers": ["C01"],
+   "copilot_desc": "센서 모듈 양산 대응"},
+  {"id": "P-0013", "name": "과제E", "domain": "DEV", "status": "retired", "merged_into": "P-0007",
+   "codenames": ["PROJ-E"], "copilot_desc": ""}
+ ],
+ "members": [{"id": "M003", "label": "홍길동"}],
+ "vocab": {
+  "fields": [{"code": "MECH", "name": "기구", "keywords": [], "apps": [], "exts": [], "status": "active"},
+             {"code": "PHOTONICS", "name": "포토닉스", "keywords": ["광집적"], "apps": [], "exts": [],
+              "status": "active"}],
+  "functions": [{"code": "ANALYSIS", "name": "해석·분석", "keywords": ["해석"], "status": "active"}],
+  "activity_types": [{"code": "DEV", "name": "개발", "status": "active"}],
+  "step_types": [{"code": "REQ_IN", "name": "의뢰수신", "status": "active"}]
+ },
+ "rules": [
+  {"id": "TR001", "if": {"token": "광정렬"}, "then": {"project": "P-0007"}, "w": 2.0, "status": "active",
+   "note": "광정렬은 과제A 에서만 한다"},
+  {"id": "TR002", "if": {"sender_label": "고객사:C01"}, "then": {"func": "SUPPORT"}, "w": 1.0, "status": "active"},
+  {"id": "TR003", "if": {"ext": ".zmx"}, "then": {"field": "OPT"}, "w": 2.0, "status": "active"}
+ ],
+ "never_pairs": [["과제A 후속", "과제A"]],
+ "agents_meta": {"catalog_version": "ag-3", "axes": {"X1": "설계·해석 자동화", "X2": "문서·보고 자동화"}},
+ "agents": [{"id": "AG003", "name": "문서 초안 작성", "axis": "X2", "status": "running",
+             "desc": "회의록·보고서 초안을 만든다", "copilot_desc": "보고서 초안 작성 도우미",
+             "step_types": ["DOC_DOC"], "inputs": ["메일 본문 요약"], "outputs": ["보고서 초안"],
+             "keywords": ["초안"], "owner_label": ""}],
+ "internal_domains": ["example.com"],
+ "customers": [{"id": "C01", "names": [], "domains": []}],
+ "partners": []
+}

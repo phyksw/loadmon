@@ -1,0 +1,17 @@
+{
+ "_note": "H §15.1 골든 합성 레지스트리(값은 모두 자리표시자). WP-21 시험 자료.",
+ "schema": "lm27.registry/1",
+ "version": 7,
+ "projects": [
+  {"id": "P-0007", "name": "과제A", "domain": "DEV", "aliases": ["과제A 모듈"], "codenames": ["PROJ-A"],
+   "keywords": ["브라켓", "광학모듈"], "customers": ["C01"], "mail_domains": ["custa.example"],
+   "folders": ["과제A_설계"], "default_field": "OPT", "copilot_desc": "광학 모듈 신규 개발"},
+  {"id": "P-0008", "name": "과제B", "domain": "MP", "codenames": ["PROJ-B"], "keywords": ["양산라인", "수율개선"],
+   "customers": ["C01"], "never": ["과제B 후속"], "copilot_desc": "센서 모듈 양산 대응"},
+  {"id": "P-0011", "name": "과제C", "domain": "AX", "keywords": ["자동분류"], "copilot_desc": "메일 자동 분류 도구"},
+  {"id": "P-0012", "name": "과제D", "domain": "EXT", "keywords": ["산학과제"], "copilot_desc": "대학 공동연구 지원"},
+  {"id": "P-0013", "name": "과제E", "domain": "DEV", "status": "retired", "merged_into": "P-0007",
+   "codenames": ["PROJ-E"]}
+ ],
+ "customers": [{"id": "C01", "names": ["고객사A"], "domains": ["custa.example"]}]
+}

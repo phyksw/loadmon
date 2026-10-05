@@ -1,0 +1,7 @@
+From: someone@corp.example
+To: gildong.hong@corp.example
+Subject: no date header
+Message-ID: <wp15-nodate-0001@corp.example>
+Content-Type: text/plain; charset="us-ascii"
+
+body

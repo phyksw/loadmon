@@ -1,0 +1,189 @@
+{"id": "P01", "type": "pos", "text": "RE: 주민번호 900101-1234567 확인 요청", "expect": "RE: 주민번호 [주민번호] 확인 요청", "hits": {"rrn": 1}, "ctx": null}
+{"id": "P02", "type": "pos", "text": "생년 및 주민 8001012345678 기재", "expect": "생년 및 주민 [주민번호] 기재", "hits": {"rrn": 1}, "ctx": null}
+{"id": "P03", "type": "pos", "text": "등본상 900101-1****** 로 표기", "expect": "등본상 [주민번호] 로 표기", "hits": {"rrn": 1}, "ctx": null}
+{"id": "P04", "type": "pos", "text": "외국인등록번호 950505-5123456 사본", "expect": "외국인등록번호 [외국인등록번호] 사본", "hits": {"frn": 1}, "ctx": null}
+{"id": "P05", "type": "pos", "text": "신청서 8501011234566 첨부", "expect": "신청서 [주민번호] 첨부", "hits": {"rrn": 1}, "ctx": null}
+{"id": "P06", "type": "pos", "text": "카드번호 4111-1111-1111-1111 결제 확인", "expect": "카드번호 [카드] 결제 확인", "hits": {"card": 1}, "ctx": null}
+{"id": "P07", "type": "pos", "text": "법인카드 5555 5555 5555 4444 사용 내역", "expect": "법인카드 [카드] 사용 내역", "hits": {"card": 1}, "ctx": null}
+{"id": "P08", "type": "pos", "text": "3782-822463-10005 승인", "expect": "[카드] 승인", "hits": {"card": 1}, "ctx": null}
+{"id": "P09", "type": "pos", "text": "카드 1234-****-****-5678 결제 완료", "expect": "카드 [카드] 결제 완료", "hits": {"card": 1}, "ctx": null}
+{"id": "P10", "type": "pos", "text": "제 번호 010-1234-5678 로 연락주세요", "expect": "제 번호 [전화] 로 연락주세요", "hits": {"phone": 1}, "ctx": null}
+{"id": "P11", "type": "pos", "text": "연락처 01098765432", "expect": "연락처 [전화]", "hits": {"phone": 1}, "ctx": null}
+{"id": "P12", "type": "pos", "text": "+82 10 1234 5678 / 대표 02-123-4567", "expect": "[전화] / 대표 [전화]", "hits": {"phone": 2}, "ctx": null}
+{"id": "P13", "type": "pos", "text": "(031) 123-4567 로 회신", "expect": "[전화] 로 회신", "hits": {"phone": 1}, "ctx": null}
+{"id": "P14", "type": "pos", "text": "인터넷전화 070-1234-5678", "expect": "인터넷전화 [전화]", "hits": {"phone": 1}, "ctx": null}
+{"id": "P15", "type": "pos", "text": "고객센터 1588-1234 문의", "expect": "고객센터 [전화] 문의", "hits": {"phone": 1}, "ctx": null}
+{"id": "P16", "type": "pos", "text": "안심번호 0505-123-4567", "expect": "안심번호 [전화]", "hits": {"phone": 1}, "ctx": null}
+{"id": "P17", "type": "pos", "text": "사업자등록번호 123-45-67891 거래처 등록", "expect": "사업자등록번호 [사업자번호] 거래처 등록", "hits": {"brn": 1}, "ctx": null}
+{"id": "P18", "type": "pos", "text": "번호 220-81-62517 확인", "expect": "번호 [사업자번호] 확인", "hits": {"brn": 1}, "ctx": null}
+{"id": "P19", "type": "pos", "text": "여권번호 M12345678 로 출장 항공권 예약", "expect": "여권번호 [여권] 로 출장 항공권 예약", "hits": {"passport": 1}, "ctx": null}
+{"id": "P20", "type": "pos", "text": "passport M123A4567 사본 송부", "expect": "passport [여권] 사본 송부", "hits": {"passport": 1}, "ctx": null}
+{"id": "P21", "type": "pos", "text": "운전면허 11-23-456789-01 사본", "expect": "운전면허 [운전면허] 사본", "hits": {"license": 1}, "ctx": null}
+{"id": "P22", "type": "pos", "text": "운전면허증 서울 12-345678-90 갱신", "expect": "운전면허증 [운전면허] 갱신", "hits": {"license": 1}, "ctx": null}
+{"id": "P23", "type": "pos", "text": "계좌 110-123-456789 로 송금 부탁드립니다", "expect": "계좌 [계좌] 로 송금 부탁드립니다", "hits": {"account": 1}, "ctx": null}
+{"id": "P24", "type": "pos", "text": "입금 계좌 3333012345678 카카오뱅크", "expect": "입금 계좌 [계좌] 카카오뱅크", "hits": {"account": 1}, "ctx": null}
+{"id": "P25", "type": "pos", "text": "국민은행 123456-01-234567 예금주 홍길동", "expect": "국민은행 [계좌] 예금주 [사람#*]", "hits": {"account": 1, "person": 1}, "ctx": null}
+{"id": "P26", "type": "pos", "text": "보고서 송부 drafter.kim@example.co.kr", "expect": "보고서 송부 [이메일@example.co.kr]", "hits": {"email": 1}, "ctx": null}
+{"id": "P27", "type": "pos", "text": "회신: user01@corp.example", "expect": "회신: [이메일@사내]", "hits": {"email": 1}, "ctx": {"internal_domains": ["corp.example"], "customers": [{"id": "C01", "names": ["고객사A", "CustA"], "domains": ["custa.example"]}], "projects": [{"id": "P0001", "codenames": ["과제A", "PROJ-A"]}], "persons": {"김철수": "a1b2c3d4e5f60718"}, "self_names": ["홍길동"]}}
+{"id": "P28", "type": "pos", "text": "서버 10.1.2.3:8080 재기동", "expect": "서버 [IP] 재기동", "hits": {"ip": 1}, "ctx": null}
+{"id": "P29", "type": "pos", "text": "접속 IP 203.0.113.25 차단", "expect": "접속 IP [IP] 차단", "hits": {"ip": 1}, "ctx": null}
+{"id": "P30", "type": "pos", "text": "링크 https://portal.example.com/view?id=12345&user=kim 참고", "expect": "링크 [URL] 참고", "hits": {"url": 1}, "ctx": null}
+{"id": "P31", "type": "pos", "text": "C:\\Users\\hong\\Documents\\견적.xlsx", "expect": "[경로]\\견적.xlsx", "hits": {"path": 1}, "ctx": null}
+{"id": "P32", "type": "pos", "text": "[과제X] 수주 금액 12억 3400만원 확정 건", "expect": "[과제X] 수주 금액 [금액] 확정 건", "hits": {"money": 1}, "ctx": null}
+{"id": "P33", "type": "pos", "text": "고객사 견적 단가 USD 1250000 으로 회신", "expect": "고객사 견적 단가 [금액] 으로 회신", "hits": {"money": 1}, "ctx": null}
+{"id": "P34", "type": "pos", "text": "견적 단가 1,250,000 / 수량 300 ea", "expect": "견적 단가 [금액] / 수량 300 ea", "hits": {"money": 1}, "ctx": null}
+{"id": "P35", "type": "pos", "text": "계약금 3,000,000원 입금", "expect": "계약금 [금액] 입금", "hits": {"money": 1}, "ctx": null}
+{"id": "P36", "type": "pos", "text": "단가: 850 로 확정", "expect": "단가: [금액] 로 확정", "hits": {"money": 1}, "ctx": null}
+{"id": "P37", "type": "pos", "text": "Quote $1.2M for next lot", "expect": "Quote [금액] for next lot", "hits": {"money": 1}, "ctx": null}
+{"id": "P38", "type": "pos", "text": "PO 금액 12,000,000 확정", "expect": "PO 금액 [금액] 확정", "hits": {"money": 1}, "ctx": null}
+{"id": "P39", "type": "pos", "text": "고객사A 2차 미팅 준비", "expect": "[고객사:C01] 2차 미팅 준비", "hits": {"customer": 1}, "ctx": {"internal_domains": ["corp.example"], "customers": [{"id": "C01", "names": ["고객사A", "CustA"], "domains": ["custa.example"]}], "projects": [{"id": "P0001", "codenames": ["과제A", "PROJ-A"]}], "persons": {"김철수": "a1b2c3d4e5f60718"}, "self_names": ["홍길동"]}}
+{"id": "P40", "type": "pos", "text": "kim@custa.example 회신", "expect": "[이메일@고객사:C01] 회신", "hits": {"email": 1}, "ctx": {"internal_domains": ["corp.example"], "customers": [{"id": "C01", "names": ["고객사A", "CustA"], "domains": ["custa.example"]}], "projects": [{"id": "P0001", "codenames": ["과제A", "PROJ-A"]}], "persons": {"김철수": "a1b2c3d4e5f60718"}, "self_names": ["홍길동"]}}
+{"id": "P41", "type": "pos", "text": "PROJ-A 샘플 시험 결과", "expect": "[과제:P0001] 샘플 시험 결과", "hits": {"project": 1}, "ctx": {"internal_domains": ["corp.example"], "customers": [{"id": "C01", "names": ["고객사A", "CustA"], "domains": ["custa.example"]}], "projects": [{"id": "P0001", "codenames": ["과제A", "PROJ-A"]}], "persons": {"김철수": "a1b2c3d4e5f60718"}, "self_names": ["홍길동"]}}
+{"id": "P42", "type": "pos", "text": "김철수 책임님께 보고드립니다", "expect": "[사람#*] 책임님께 보고드립니다", "hits": {"person": 1}, "ctx": null}
+{"id": "P43", "type": "pos", "text": "@홍길동 확인 부탁드립니다", "expect": "@[사람#*] 확인 부탁드립니다", "hits": {"person": 1}, "ctx": null}
+{"id": "P44", "type": "pos", "text": "김철수 회신 대기", "expect": "[사람#a1b2c3] 회신 대기", "hits": {"person": 1}, "ctx": {"internal_domains": ["corp.example"], "customers": [{"id": "C01", "names": ["고객사A", "CustA"], "domains": ["custa.example"]}], "projects": [{"id": "P0001", "codenames": ["과제A", "PROJ-A"]}], "persons": {"김철수": "a1b2c3d4e5f60718"}, "self_names": ["홍길동"]}}
+{"id": "P45", "type": "pos", "text": "홍길동 작성 보고서", "expect": "[나] 작성 보고서", "hits": {"self": 1}, "ctx": {"internal_domains": ["corp.example"], "customers": [{"id": "C01", "names": ["고객사A", "CustA"], "domains": ["custa.example"]}], "projects": [{"id": "P0001", "codenames": ["과제A", "PROJ-A"]}], "persons": {"김철수": "a1b2c3d4e5f60718"}, "self_names": ["홍길동"]}}
+{"id": "P46", "type": "pos", "text": "네고율 5% 인하 합의", "expect": "네고율 [비율] 인하 합의", "hits": {"rate": 1}, "ctx": null}
+{"id": "P47", "type": "pos", "text": "㈜가나다 견적 회신", "expect": "[회사] 견적 회신", "hits": {"company": 1}, "ctx": null}
+{"id": "P48", "type": "pos", "text": "출장비 500,000원 정산", "expect": "출장비 [금액] 정산", "hits": {"money": 1}, "ctx": null}
+{"id": "P49", "type": "pos", "text": "6억 규모 사업 검토", "expect": "[금액] 규모 사업 검토", "hits": {"money": 1}, "ctx": null}
+{"id": "P50", "type": "pos", "text": "생년월일: 1990.01.01", "expect": "생년월일: [생년월일]", "hits": {"birth": 1}, "ctx": null}
+{"id": "P51", "type": "pos", "text": "주민번호 앞자리 900101 만 기재", "expect": "주민번호 앞자리 [주민번호] 만 기재", "hits": {"rrn": 1}, "ctx": null}
+{"id": "P52", "type": "pos", "text": "장애 서버 fe80::1ff:fe23:4567:890a", "expect": "장애 서버 [IP]", "hits": {"ip": 1}, "ctx": null}
+{"id": "P53", "type": "pos", "text": "\\\\fs01\\share\\팀\\보고서.pptx", "expect": "[경로]\\보고서.pptx", "hits": {"path": 1}, "ctx": null}
+{"id": "P54", "type": "pos", "text": "Fax.02-123-4568 / Tel.010-1234-5678", "expect": "Fax.[전화] / Tel.[전화]", "hits": {"phone": 2}, "ctx": null}
+{"id": "P55", "type": "pos", "text": "견적 1억 5천만 원 / 납기 2026-11-30", "expect": "견적 [금액] / 납기 2026-11-30", "hits": {"money": 1}, "ctx": null}
+{"id": "P56", "type": "pos", "text": "견적_고객사A_010-1234-5678.xlsx - Excel", "expect": "견적_고객사A_[전화].xlsx - Excel", "hits": {"phone": 1}, "ctx": null}
+{"id": "P57", "type": "pos", "text": "여권사본_M12345678.jpg", "expect": "여권사본_[여권].jpg", "hits": {"passport": 1}, "ctx": null}
+{"id": "P58", "type": "pos", "text": "사업자등록증_123-45-67891.pdf", "expect": "사업자등록증_[사업자번호].pdf", "hits": {"brn": 1}, "ctx": null}
+{"id": "P59", "type": "pos", "text": "급여계좌_110-123-456789.pdf", "expect": "급여계좌_[계좌].pdf", "hits": {"account": 1}, "ctx": null}
+{"id": "P60", "type": "pos", "text": "등본_900101-1234567.pdf", "expect": "등본_[주민번호].pdf", "hits": {"rrn": 1}, "ctx": null}
+{"id": "X01", "type": "drop", "text": "VPN 비밀번호: Abc!2345 공유"}
+{"id": "X02", "type": "drop", "text": "인증번호는 482910 입니다"}
+{"id": "X03", "type": "drop", "text": "token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.abcdefghijk_lmnop"}
+{"id": "X04", "type": "drop", "text": "api_key=sk_test_51Habcdefghijklmnop"}
+{"id": "X05", "type": "drop", "text": "-----BEGIN RSA PRIVATE KEY----- 첨부"}
+{"id": "X06", "type": "drop", "text": "pw=hunter22 로 접속"}
+{"id": "N01", "type": "neg", "text": "2026-09-01 회의록 / Rev 3.2.1"}
+{"id": "N02", "type": "neg", "text": "부품 M12345678 도면 개정"}
+{"id": "N03", "type": "neg", "text": "하우징 공차 0.05 mm, 전압 12 V, 1,500 rpm"}
+{"id": "N04", "type": "neg", "text": "DWG-2026-0012-03 배포"}
+{"id": "N05", "type": "neg", "text": "샘플 30 ea 입고검사 결과"}
+{"id": "N06", "type": "neg", "text": "시뮬레이션 메시 1250000 셀"}
+{"id": "N07", "type": "neg", "text": "PO 검토회의 14:00"}
+{"id": "N08", "type": "neg", "text": "Reminder: 주간회의"}
+{"id": "N09", "type": "neg", "text": "개인정보보호 교육 이수"}
+{"id": "N10", "type": "neg", "text": "비밀번호 변경 안내"}
+{"id": "N11", "type": "neg", "text": "password reset required"}
+{"id": "N12", "type": "neg", "text": "내구 시험 1만 회 완료"}
+{"id": "N13", "type": "neg", "text": "카메라 1200만 화소 모듈 평가"}
+{"id": "N14", "type": "neg", "text": "LOT 2609011000125 입고"}
+{"id": "N15", "type": "neg", "text": "S/N 1234-5678-9012-3456 장비 등록"}
+{"id": "N16", "type": "neg", "text": "버전 10.2.3.4 배포"}
+{"id": "N17", "type": "neg", "text": "계좌 관련 서류 정리 (문서번호 2026-0012-0034)"}
+{"id": "N18", "type": "neg", "text": "PO 4500012345 발행 요청"}
+{"id": "N19", "type": "neg", "text": "IEC 61000-4-2 정전기 시험"}
+{"id": "N20", "type": "neg", "text": "ISO 26262-6:2018 검토"}
+{"id": "N21", "type": "neg", "text": "수주 목표 3건, 견적 요청 2건"}
+{"id": "N22", "type": "neg", "text": "주파수 2.4 GHz, 5,000 mAh 배터리"}
+{"id": "N23", "type": "neg", "text": "견적서_2026Q4_rev3.xlsx 저장"}
+{"id": "N24", "type": "neg", "text": "M3 볼트 12 ea, M12x1.5 탭"}
+{"id": "N25", "type": "neg", "text": "회의실 3층 302호"}
+{"id": "N26", "type": "neg", "text": "설계 책임 검토 회의"}
+{"id": "N27", "type": "neg", "text": "고객님 요청사항 정리"}
+{"id": "N28", "type": "neg", "text": "3원색 LED 색좌표 측정"}
+{"id": "N29", "type": "neg", "text": "예산 회의 2026-10-15 10:00"}
+{"id": "N30", "type": "neg", "text": "견적 검토 3회차, 1,200 x 800 패널"}
+{"id": "N31", "type": "neg", "text": "견적서 20260901 버전 송부"}
+{"id": "N32", "type": "neg", "text": "SAP 오더 4500012345 생성"}
+{"id": "N33", "type": "neg", "text": "가격 경쟁력 분석 보고서"}
+{"id": "N34", "type": "neg", "text": "우리 팀 하나의 목표"}
+{"id": "N35", "type": "neg", "text": "좌표 37.5012, 127.0012 측정"}
+{"id": "N36", "type": "neg", "text": "펌웨어 v1.2.3 릴리스, 빌드 2026.10.1"}
+{"id": "N37", "type": "neg", "text": "도면번호 110-123-456789 은행 제출용 아님"}
+{"id": "N38", "type": "neg", "text": "신규 개발 책임자 선정"}
+{"id": "N39", "type": "neg", "text": "1억 화소 센서 검토"}
+{"id": "N40", "type": "neg", "text": "이번주 책임 회의 일정"}
+{"id": "N41", "type": "neg", "text": "3조 2교대 근무표"}
+{"id": "N42", "type": "neg", "text": "std::vector 사용"}
+{"id": "N43", "type": "neg", "text": "12:30:45 로그 확인"}
+{"id": "N44", "type": "neg", "text": "우리팀 책임 배정"}
+{"id": "N45", "type": "neg", "text": "견적_DWG_202600120003.pdf"}
+{"id": "N46", "type": "neg", "text": "rev_10.1.2.3_build 배포"}
+{"id": "N47", "type": "neg", "text": "data_2026_10_05.csv"}
+{"id": "N48", "type": "neg", "text": "PRJ_A_1234-5678-9012-3456"}
+{"id": "N49", "type": "neg", "text": "model_X1_2048x1536 견적"}
+{"id": "N50", "type": "neg", "text": "도면 2026-0012-03.1 개정"}
+{"id": "A01", "type": "ad", "meta": {"subject": "(광고) 9월 신제품 할인 프로모션 안내", "internal": false, "corresp_domain": false, "hdr": {}, "rcv": "to"}, "band": "drop"}
+{"id": "A02", "type": "ad", "meta": {"subject": "[광고] 추석 특가 쿠폰", "internal": false, "corresp_domain": false, "hdr": {}, "rcv": "to"}, "band": "drop"}
+{"id": "A03", "type": "ad", "meta": {"subject": "Webinar invitation - unsubscribe anytime", "internal": false, "corresp_domain": false, "hdr": {"list_unsubscribe": true}, "rcv": "to"}, "band": "drop"}
+{"id": "A04", "type": "ad", "meta": {"subject": "[협력사] 샘플 납기 회신", "internal": false, "corresp_domain": true, "hdr": {}, "rcv": "to"}, "band": "keep"}
+{"id": "A05", "type": "ad", "meta": {"subject": "신제품 출시 안내", "internal": false, "corresp_domain": true, "hdr": {"list_unsubscribe": true}, "rcv": "bulk"}, "band": "drop"}
+{"id": "A06", "type": "ad", "meta": {"subject": "RE: 시험 결과 공유", "internal": true, "corresp_domain": true, "hdr": {}, "rcv": "to"}, "band": "keep"}
+{"id": "A07", "type": "ad", "meta": {"subject": "사내 뉴스레터 10월호", "internal": true, "corresp_domain": true, "hdr": {}, "rcv": "bulk"}, "band": "keep"}
+{"id": "A08", "type": "ad", "meta": {"subject": "귀사에 맞는 솔루션 소개드립니다", "internal": false, "corresp_domain": false, "hdr": {}, "rcv": "to"}, "band": "suspect"}
+{"id": "A09", "type": "ad", "meta": {"subject": "FW: (광고) 전시회 무료 초청", "internal": true, "corresp_domain": true, "hdr": {}, "rcv": "to"}, "band": "drop"}
+{"id": "A10", "type": "ad", "meta": {"subject": "견적 요청 회신", "internal": false, "corresp_domain": false, "hdr": {}, "rcv": "to", "i_sent_in_conv": true}, "band": "keep"}
+{"id": "A11", "type": "ad", "meta": {"subject": "월간 기술 소식", "internal": false, "corresp_domain": false, "hdr": {"precedence_bulk": true, "esp": true}, "rcv": "bulk", "body_unsub": true}, "band": "drop"}
+{"id": "A12", "type": "ad", "meta": {"subject": "학회 등록 확인", "internal": false, "corresp_domain": false, "hdr": {"list_unsubscribe": true}, "rcv": "to", "allowed": true}, "band": "keep"}
+{"id": "A13", "type": "ad", "meta": {"subject": "업무 협의 요청", "internal": false, "corresp_domain": false, "hdr": {}, "rcv": "to", "blocked": true}, "band": "drop"}
+{"id": "A14", "type": "ad", "meta": {"subject": "정기 점검 안내", "internal": false, "corresp_domain": true, "partner": true, "hdr": {"list_unsubscribe": true}, "rcv": "to"}, "band": "keep"}
+{"id": "Q01", "type": "priv", "text": "점심 뭐 먹을래요? 오늘 퇴근하고 한잔?", "kw": {"chat_type": "1:1"}, "class": "private"}
+{"id": "Q02", "type": "priv", "text": "주말에 가족이랑 여행 가요 ㅋㅋ", "kw": {"chat_type": "1:1", "offhours": true}, "class": "private"}
+{"id": "Q03", "type": "priv", "text": "도면 검토 부탁드립니다. 점심 전까지요", "kw": {"chat_type": "1:1"}, "class": "work"}
+{"id": "Q04", "type": "priv", "text": "[과제:P0001] 샘플 시험 결과 공유드립니다", "kw": {"chat_type": "group"}, "class": "work"}
+{"id": "Q05", "type": "priv", "text": "저녁 회식 장소 투표해 주세요", "kw": {"chat_type": "group"}, "class": "social"}
+{"id": "Q06", "type": "priv", "text": "넵 알겠습니다", "kw": {"chat_type": "1:1"}, "class": "work"}
+{"id": "Q07", "type": "priv", "text": "ㅋㅋ 그거 대박", "kw": {"chat_type": "1:1", "offhours": true}, "class": "private"}
+{"id": "Q08", "type": "priv", "text": "택배 왔어요?", "kw": {"chat_type": "1:1", "room_prior": "private"}, "class": "private"}
+{"id": "Q09", "type": "priv", "text": "내일 점심 회식 대신 팀 미팅으로 변경합니다", "kw": {"chat_type": "group"}, "class": "work"}
+{"id": "Q10", "type": "priv", "text": "병원 예약 때문에 오후 반차", "kw": {"chat_type": "1:1"}, "class": "private"}
+{"id": "Q11", "type": "priv", "text": "정기 검진 일정", "kw": {"sensitivity": 2}, "class": "private"}
+{"id": "Q12", "type": "priv", "text": "주간 보고 자료 첨부", "kw": {"chat_type": "channel"}, "class": "work"}
+{"id": "Q13", "type": "priv", "text": "자료 보냈어", "kw": {"personal_mail": true}, "class": "work"}
+{"id": "Q14", "type": "priv", "text": "오랜만이야 주말에 볼까", "kw": {"personal_mail": true}, "class": "private"}
+{"id": "G01", "type": "gate", "text": "회의 후 010-1234-5678 로 연락", "canaries": [], "expect": "drop", "why": "pii:phone", "ctx": {"customers": [{"id": "C01", "names": ["고객사A"], "domains": ["custa.example"]}], "persons": {"김철수": "a1b2c3d4e5f60718"}}}
+{"id": "G02", "type": "gate", "text": "견적 [금액] 검토 요청", "canaries": [], "expect": "keep", "out": "견적 [금액] 검토 요청", "ctx": {"customers": [{"id": "C01", "names": ["고객사A"], "domains": ["custa.example"]}], "persons": {"김철수": "a1b2c3d4e5f60718"}}}
+{"id": "G03", "type": "gate", "text": "고객사A 미팅 결과 공유", "canaries": [], "expect": "keep", "out": "[고객사:C01] 미팅 결과 공유", "ctx": {"customers": [{"id": "C01", "names": ["고객사A"], "domains": ["custa.example"]}], "persons": {"김철수": "a1b2c3d4e5f60718"}}}
+{"id": "G04", "type": "gate", "text": "[사람#a1b2c3] 책임 검토 요청", "canaries": [], "expect": "keep", "out": "[사람] 책임 검토 요청", "ctx": {"customers": [{"id": "C01", "names": ["고객사A"], "domains": ["custa.example"]}], "persons": {"김철수": "a1b2c3d4e5f60718"}}}
+{"id": "G05", "type": "gate", "text": "DESKTOP-AB12CD 에서 저장", "canaries": ["DESKTOP-AB12CD"], "expect": "drop", "why": "pii:canary", "ctx": {"customers": [{"id": "C01", "names": ["고객사A"], "domains": ["custa.example"]}], "persons": {"김철수": "a1b2c3d4e5f60718"}}}
+{"id": "G06", "type": "gate", "text": "kim 님 자료", "canaries": ["kim"], "expect": "keep", "out": "kim 님 자료", "ctx": {"customers": [{"id": "C01", "names": ["고객사A"], "domains": ["custa.example"]}], "persons": {"김철수": "a1b2c3d4e5f60718"}}}
+{"id": "G07", "type": "gate", "text": "hong.gildong 폴더 정리", "canaries": ["hong.gildong"], "expect": "drop", "why": "pii:canary", "ctx": {"customers": [{"id": "C01", "names": ["고객사A"], "domains": ["custa.example"]}], "persons": {"김철수": "a1b2c3d4e5f60718"}}}
+{"id": "G08", "type": "gate", "text": "초기 비밀번호: Temp#2026 안내", "canaries": [], "expect": "drop", "why": "pii:cred", "ctx": {"customers": [{"id": "C01", "names": ["고객사A"], "domains": ["custa.example"]}], "persons": {"김철수": "a1b2c3d4e5f60718"}}}
+{"id": "L01", "type": "label", "text": "도면 검토", "violations": [], "ctx": {"customers": [{"id": "C01", "names": ["고객사A"], "domains": ["custa.example"]}], "persons": {"김철수": "a1b2c3d4e5f60718"}}}
+{"id": "L02", "type": "label", "text": "견적 [금액] 회신", "violations": [], "ctx": {"customers": [{"id": "C01", "names": ["고객사A"], "domains": ["custa.example"]}], "persons": {"김철수": "a1b2c3d4e5f60718"}}}
+{"id": "L03", "type": "label", "text": "[과제:P0001] 시험", "violations": [], "ctx": {"customers": [{"id": "C01", "names": ["고객사A"], "domains": ["custa.example"]}], "persons": {"김철수": "a1b2c3d4e5f60718"}}}
+{"id": "L04", "type": "label", "text": "김철수 책임 보고", "violations": ["not_clean"], "ctx": {"customers": [{"id": "C01", "names": ["고객사A"], "domains": ["custa.example"]}], "persons": {"김철수": "a1b2c3d4e5f60718"}}}
+{"id": "L05", "type": "label", "text": "결과 12345678 정리", "violations": ["forbidden_pattern"], "ctx": {"customers": [{"id": "C01", "names": ["고객사A"], "domains": ["custa.example"]}], "persons": {"김철수": "a1b2c3d4e5f60718"}}}
+{"id": "L06", "type": "label", "text": "[사람#a1b2c3] 협의", "violations": ["forbidden_pattern"], "ctx": {"customers": [{"id": "C01", "names": ["고객사A"], "domains": ["custa.example"]}], "persons": {"김철수": "a1b2c3d4e5f60718"}}}
+{"id": "W01", "type": "win", "exe": "KakaoTalk.exe", "title": "카카오톡", "app_class": "messenger", "class": "private"}
+{"id": "W02", "type": "win", "exe": "msedge.exe", "title": "새 InPrivate 탭 - [InPrivate] - Microsoft\u200b Edge", "app_class": "browser", "class": "private"}
+{"id": "W03", "type": "win", "exe": "msedge.exe", "title": "쿠팡! - 개인 - Microsoft Edge", "app_class": "browser", "class": "private"}
+{"id": "W04", "type": "win", "exe": "chrome.exe", "title": "Jira 이슈 PRJ-12 - Google Chrome", "app_class": "browser", "class": "work"}
+{"id": "W05", "type": "win", "exe": "chrome.exe", "title": "검색 결과 - Google Chrome", "app_class": "browser", "class": "unknown"}
+{"id": "W06", "type": "win", "exe": "msedge.exe", "title": "YouTube - Microsoft Edge", "app_class": "browser", "class": "media"}
+{"id": "W07", "type": "win", "exe": "EXCEL.EXE", "title": "견적_고객사A_010-1234-5678.xlsx - Excel", "app_class": "office", "class": "work"}
+{"id": "W08", "type": "win", "exe": "ms-teams.exe", "title": "채팅 | 김철수 | Microsoft Teams", "app_class": "chat_work", "class": "work"}
+{"id": "W09", "type": "win", "exe": "unknown_tool.exe", "title": "무언가", "app_class": "", "class": "work"}
+{"id": "S01", "type": "ext", "fn": "scan", "arg": "제 번호 010-1234-5678 로 연락주세요", "expect": [["phone", 1]]}
+{"id": "S02", "type": "ext", "fn": "scan", "arg": "견적 [금액] 검토 요청", "expect": []}
+{"id": "S03", "type": "ext", "fn": "scan", "arg": "pw=hunter22 로 접속", "expect": [["cred", 1]]}
+{"id": "S04", "type": "ext", "fn": "scan", "arg": "하우징 공차 0.05 mm, 전압 12 V, 1,500 rpm", "expect": []}
+{"id": "S05", "type": "ext", "fn": "scan", "arg": "국민은행 123456-01-234567 예금주 홍길동", "expect": [["account", 1], ["person", 1]]}
+{"id": "S06", "type": "ext", "fn": "scan_pos_idem", "expect": []}
+{"id": "K01", "type": "ext", "fn": "tokens_of", "arg": "RE: [과제:P-0001] 샘플 시험 결과 [전화]", "expect": ["RE", "[과제:P-0001]", "샘플", "시험", "결과", "[전화]"]}
+{"id": "K02", "type": "ext", "fn": "tokens_of", "arg": "", "expect": []}
+{"id": "K03", "type": "ext", "fn": "tokens_of_len", "arg": "가 가 가 가 가 가 가 가 가 가 가 가 가 가 가 가 가 가 가 가 가 가 가 가 가 가 가 가 가 가 가 가 가 가 가 가 가 가 가 가 ", "expect": 30}
+{"id": "K04", "type": "ext", "fn": "tokens_of", "arg": "견적_[전화].xlsx", "expect": ["견적_", "[전화]", "xlsx"]}
+{"id": "D01", "type": "ext", "fn": "doc_fam", "arg": "과제A_열해석_v3.wbpj", "expect": "과제a_열해석"}
+{"id": "D02", "type": "ext", "fn": "doc_fam", "arg": "보고서_최종.pptx", "expect": "보고서"}
+{"id": "D03", "type": "ext", "fn": "doc_fam", "arg": "보고서 - 복사본.pptx", "expect": "보고서 - 복", "note": "계약 §4.3(W §4.1 FAM_TAIL) 문자 그대로 — P §18.2 doc_norm 기대값과 다름(CR)"}
+{"id": "D04", "type": "ext", "fn": "doc_fam", "arg": "보고서 (1).pptx", "expect": "보고서"}
+{"id": "D05", "type": "ext", "fn": "doc_fam", "arg": "주간보고_20261005.xlsx", "expect": "주간보고", "note": "계약 §4.3(W §4.1 FAM_TAIL) 문자 그대로 — P §18.2 doc_norm 기대값과 다름(CR)"}
+{"id": "D06", "type": "ext", "fn": "doc_fam", "arg": "v2.docx", "expect": "", "note": "계약 §4.3(W §4.1 FAM_TAIL) 문자 그대로 — P §18.2 doc_norm 기대값과 다름(CR)"}
+{"id": "D07", "type": "ext", "fn": "doc_fam", "arg": "C:\\Users\\hong\\Documents\\2026 사업계획 v2 최종.pptx", "expect": "c:\\users\\hong\\documents\\2026 사업계획", "note": "계약 §4.3(W §4.1 FAM_TAIL) 문자 그대로 — P §18.2 doc_norm 기대값과 다름(CR)"}
+{"id": "D08", "type": "ext", "fn": "doc_fam", "arg": "photocopy.pdf", "expect": "photo", "note": "계약 §4.3(W §4.1 FAM_TAIL) 문자 그대로 — P §18.2 doc_norm 기대값과 다름(CR)"}
+{"id": "E01", "type": "ext", "fn": "who_key_equiv", "arg": "smtp:user01@corp.example", "master_hex": "0101010101010101010101010101010101010101010101010101010101010101"}
+{"id": "E02", "type": "ext", "fn": "doc_key_equiv", "args": ["보고서_v3.pptx", "보고서_최종.docx"], "master_hex": "0101010101010101010101010101010101010101010101010101010101010101"}
+{"id": "E03", "type": "ext", "fn": "person_tag_equiv", "arg": "김철수 책임님께 보고드립니다", "master_hex": "0101010101010101010101010101010101010101010101010101010101010101"}
+{"id": "E04", "type": "ext", "fn": "agent_key_missing", "args": ["repo", "x"], "master_hex": "0101010101010101010101010101010101010101010101010101010101010101"}

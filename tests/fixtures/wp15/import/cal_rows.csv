@@ -1,0 +1,4 @@
+ts_local,ts_end_local,subject,organizer,attendees,busy_status,response_status,location,all_day,global_appointment_id,extra_col
+2026-09-23T10:00:00+09:00,2026-09-23T11:00:00+09:00,과제A 설계 검토,홍길동 <gildong.hong@corp.example>,김철수 <chulsoo.kim@corp.example>;동료B <peer.b@corp.example>,busy,,회의실 3,false,WP15-CSV-CAL-0001,x
+2026-09-24T00:00:00+09:00,2026-09-25T00:00:00+09:00,연차,,,oof,0,,true,,
+2026-09-25T15:00:00+09:00,,짧은 통화,,,tentative,accepted,,,,

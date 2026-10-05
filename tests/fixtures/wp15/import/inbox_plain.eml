@@ -1,0 +1,28 @@
+Received: from mx.corp.example by mail.corp.example; Tue, 15 Sep 2026 01:00:05 +0000
+Date: Tue, 15 Sep 2026 10:00:00 +0900
+From: =?utf-8?b?6rmA7LKg7IiY?= <chulsoo.kim@corp.example>
+To: =?utf-8?b?7ZmN6ri464+Z?= <gildong.hong@corp.example>, =?utf-8?b?64+Z66OMQg==?= <peer.b@corp.example>
+Cc: =?utf-8?b?64+Z66OMQw==?= <peer.c@corp.example>
+Subject: =?utf-8?b?UkU6IOqzvOygnEEg7ZqM66GcIOqygO2GoCDsmpTssq0=?=
+Message-ID: <wp15-plain-0001@corp.example>
+In-Reply-To: <wp15-root-0001@corp.example>
+References: <wp15-root-0001@corp.example>
+Thread-Index: Admrze8SABEiM0RVZneImaq7zN3u/w==
+Thread-Topic: =?utf-8?b?6rO87KCcQSDtmozroZwg6rKA7YagIOyalOyyrQ==?=
+Importance: high
+Keywords: =?utf-8?b?6rO87KCcQQ==?=, =?utf-8?b?6rKA7Yag?=
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="b1"
+
+--b1
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+홍길동 선임님, 회로 검토 부탁드립니다. 내일까지 회신 바랍니다.
+--b1
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename*=utf-8''%ED%9A%8C%EB%A1%9C%EB%8F%84%5F%76%32%2E%70%70%74%78
+Content-Transfer-Encoding: base64
+
+AAECAw==
+--b1--

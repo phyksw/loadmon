@@ -1,0 +1,23 @@
+Date: Thu, 17 Sep 2026 09:15:00 +0900
+From: =?utf-8?b?7ZmN6ri464+Z?= <gildong.hong@corp.example>
+To: =?utf-8?b?6rmA7LKg7IiY?= <chulsoo.kim@corp.example>
+Subject: =?utf-8?b?7IiY6529OiDso7zqsIQg7ZqM7J2Y?=
+Message-ID: <wp15-reply-0001@corp.example>
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="b2"
+
+--b2
+Content-Type: text/plain; charset="utf-8"
+
+수락합니다.
+--b2
+Content-Type: text/calendar; charset="utf-8"; method=REPLY
+
+BEGIN:VCALENDAR
+METHOD:REPLY
+BEGIN:VEVENT
+UID:wp15-weekly-0001
+ATTENDEE;PARTSTAT=ACCEPTED:mailto:gildong.hong@corp.example
+END:VEVENT
+END:VCALENDAR
+--b2--

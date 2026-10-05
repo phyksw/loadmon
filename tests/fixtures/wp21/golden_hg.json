@@ -1,0 +1,31 @@
+{
+ "_note": "H §15.1 골든 중 WP-21 몫(참조 구현 golden.json 의 H39·H40·H43 → HG39·HG40·HG43 — X-244). 입력은 참조 시나리오 그대로(검증 입력에만 schema·version 을 더함).",
+ "HG39_input": {
+  "schema": "lm27.registry/1",
+  "version": 1,
+  "projects": [
+   {"id": "P-9904", "name": "x", "domain": "COM"},
+   {"id": "P-0001", "name": "과제A", "domain": "DEV", "codenames": ["PROJ-A"], "copilot_desc": "PROJ-A 후속 개발"},
+   {"id": "P-0002", "name": "과제 A", "domain": "XX"},
+   {"id": "P-0003", "name": "과제C", "domain": "DEV", "merged_into": "P-0004"},
+   {"id": "P-0004", "name": "과제D", "domain": "DEV", "merged_into": "P-0003"}
+  ]
+ },
+ "HG39_validate": [
+  ["projects[0].id", "reserved_id"],
+  ["projects[1].copilot_desc", "desc_has_codename"],
+  ["projects[2]", "alias_collision"],
+  ["projects[2].domain", "bad_domain"],
+  ["projects[P-0003]", "merge_cycle"],
+  ["projects[P-0004]", "merge_cycle"]
+ ],
+ "HG40_input": [["회로", "fields"], ["광학검사", "fields"]],
+ "HG40_legacy_vocab": ["ELEC", "X_E42E7B"],
+ "HG43_kw": [
+  ["정렬", ["재정렬"], "name", false],
+  ["해석", ["열해석"], "head", true],
+  ["과제A", ["과제a의"], "name", true],
+  ["ai", ["email"], "name", false],
+  ["lidar-x", ["lidar", "x"], "name", true]
+ ]
+}

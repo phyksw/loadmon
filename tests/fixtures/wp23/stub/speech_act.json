@@ -1,0 +1,16 @@
+{
+ "mode": [
+  "truncate:0.6",
+  "ok"
+ ],
+ "default": {
+  "act": "info",
+  "conf": "m"
+ },
+ "by_key": {
+  "msg:4c1d01": {
+   "act": "request",
+   "conf": "h"
+  }
+ }
+}

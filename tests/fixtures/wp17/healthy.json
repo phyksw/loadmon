@@ -1,0 +1,96 @@
+{
+ "_doc": "WP-17 능력 탐침 시험의 기준 사실(LM_PROBE_FAKE) — 모든 경로가 되는 합성 PC. 시나리오는 이 위에 덮어쓴다. 실제 PC 값 아님.",
+ "env": {
+  "language_mode": "FullLanguage",
+  "exec_policy": {"MachinePolicy": "Undefined", "UserPolicy": "Undefined", "Process": "Bypass", "CurrentUser": "Undefined", "LocalMachine": "RemoteSigned"},
+  "elevated": false,
+  "tz_offset_min": 540,
+  "tz_id": "Korea Standard Time",
+  "domain_joined": true,
+  "aad_joined": false,
+  "ctypes": "ok",
+  "addtype": "ok",
+  "ps_version": "5.1",
+  "os_build": 26200
+ },
+ "ol": {
+  "classic": true,
+  "version": "16.0.17928.20114",
+  "c2r": true,
+  "msi": false,
+  "new_installed": false,
+  "use_new": false,
+  "new_running": false,
+  "migration_policy": null,
+  "profiles": 1,
+  "profile_name": "Outlook",
+  "com_registered": true,
+  "com_server_match": true,
+  "running": true,
+  "ol_elevated": false,
+  "cached_policy": null,
+  "sync_months": 12,
+  "omg_policy": "auto",
+  "av_state": "valid"
+ },
+ "com": {
+  "mode": "ok",
+  "version_major": 16,
+  "exchange_mode": 700,
+  "cached": true,
+  "stores": 2,
+  "store_types": {"primary": 1, "delegate": 0, "public": 0, "non_exchange": 1, "additional": 0},
+  "inbox_oldest": "2025-10-06T00:10:00Z",
+  "inbox_newest": "2026-10-05T07:40:00Z",
+  "sent_oldest": "2025-10-07T01:00:00Z",
+  "sent_newest": "2026-10-05T07:10:00Z",
+  "mail_total": 9000,
+  "mail_default": 8100,
+  "folders": 42,
+  "cal_items": 640,
+  "protected_mode": "ok"
+ },
+ "idx": {
+  "service": "running",
+  "connect": true,
+  "policy_outlook": false,
+  "catalog_status": 0,
+  "paused_reason": 0,
+  "ext_props": true,
+  "mail": {"n30": 610, "n90": 1800, "n365": 7200, "newest": "2026-10-05T07:40:00Z", "oldest": "2025-10-06T00:10:00Z", "capped": false},
+  "cal": {"n30": 40, "n90": 120, "n365": 480, "newest": "2026-10-06T01:00:00Z", "oldest": "2025-10-07T00:00:00Z", "capped": false, "recurring": 12}
+ },
+ "edge": {
+  "installed": true,
+  "version": "129.0.2792.65",
+  "remote_debugging": null,
+  "devtools": null,
+  "profile": true
+ },
+ "teams": {
+  "new_installed": true,
+  "new_version": "24257.205.3165.2025",
+  "classic_installed": false,
+  "classic_version": null,
+  "processes": 4
+ },
+ "uia": {
+  "mode": "ok",
+  "windows": 2,
+  "visible": 1,
+  "lines": 180,
+  "time_matches": 36,
+  "generic_matches": 3,
+  "denied": 0
+ },
+ "pc": {
+  "events": {"system": "ok", "security": "ok", "diag_perf": "ok", "ts_lsm": "ok"},
+  "event_errors": {},
+  "recent_policy": false,
+  "lnk": 120,
+  "mru": 45,
+  "office_versions": ["16.0"],
+  "git": true,
+  "git_src": "path"
+ }
+}

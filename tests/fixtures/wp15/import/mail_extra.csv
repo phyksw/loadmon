@@ -1,0 +1,5 @@
+ts_local,box,sender_addr,sender_name,to,cc,subject,internet_message_id,attach_names,sensitivity,importance,meeting_response,unknown_extra
+2026-09-21T14:05:00+09:00,inbox,buyer@custa.example,고객사A 담당,홍길동 <gildong.hong@corp.example>,,과제D 견적 문의,<wp15-csv-0001@custa.example>,견적서_최종.xlsx;사양.pdf,0,1,,버릴 열
+2026-09-21T16:30:00Z,sent,gildong.hong@corp.example,홍길동,고객사A 담당 <buyer@custa.example>,김철수 <chulsoo.kim@corp.example>,RE: 과제D 견적 문의,<wp15-csv-0002@corp.example>,,0,1,true
+bad-time,inbox,x@corp.example,,,,시각 없음,,,,,
+2026-09-22T08:00:00+09:00,inbox,peer.b@corp.example

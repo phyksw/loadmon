@@ -1,0 +1,16 @@
+{
+ "mode": [
+  "partial:0.5",
+  "service_error",
+  "ok"
+ ],
+ "default": {
+  "project": "P0001",
+  "field": "ELEC",
+  "func": "DESIGN",
+  "wtype": "DEV",
+  "title": "회로 설계 검토",
+  "new": "",
+  "conf": "m"
+ }
+}

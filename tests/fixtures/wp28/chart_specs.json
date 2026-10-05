@@ -1,0 +1,133 @@
+{
+ "_doc": "WP-28 차트 명세 골든 입력(합성). CH-P02·CH-P07·CH-T08 은 RPT-25 vnode 골든(golden_vnodes.json), 나머지는 RPT-21 무늬·모양 검사용. CH-P07 = REPORTS §4.2.3 시제품 mine_role_A, CH-T08 줄 = 시제품 lanes 골든(u1 0 · u2 1 · u3 0 · u4 0), 밀도 119·120·1199·1200 = 단계 1·2·4·5.",
+ "CH-P02": {
+  "months": [
+   {"m": "2026-07", "env_min": 11520, "denom_min": 10560, "avail_min": 10080, "partial": null,
+    "by_tag": {"regular": 10560, "extended": 600, "night": 120, "holiday": 240}},
+   {"m": "2026-08", "env_min": 9000, "denom_min": 10080, "avail_min": 9600, "partial": null,
+    "by_tag": {"regular": 8600, "extended": 400}},
+   {"m": "2026-09", "env_min": 9480, "denom_min": 9600, "avail_min": 8880, "partial": null,
+    "by_tag": {"regular": 8880, "extended": 240, "night": 120, "holiday": 240}},
+   {"m": "2026-10", "env_min": 540, "denom_min": 10560, "avail_min": 1920, "partial": "2026-10-04",
+    "by_tag": {"regular": 540}}
+  ]
+ },
+ "CH-P07": {
+  "units_n": 4, "sample": "ok", "dropped": [],
+  "steps": [
+   {"no": 1, "type": "REQ_IN", "name": "의뢰 수신", "kind": "M", "n": 4, "median_min": 0, "wait_in_median_min": null, "label_by": "rule"},
+   {"no": 2, "type": "APP_CAE", "name": "해석 프로그램", "kind": "A", "n": 4, "median_min": 210, "p75_min": 240, "wait_in_median_min": 120, "work_share": 0.56, "label_by": "rule"},
+   {"no": 3, "type": "DOC_XLS", "name": "표 계산", "kind": "A", "n": 4, "median_min": 105, "p75_min": 180, "wait_in_median_min": 720, "work_share": 0.28, "label_by": "ai", "label": "결과 정리", "obs_share": 0.92, "agent_grade": "상", "subagent": "적합"},
+   {"no": 4, "type": "MEET", "name": "회의", "kind": "A", "n": 2, "median_min": 60, "p75_min": 60, "wait_in_median_min": 495, "work_share": 0.16, "label_by": "rule"},
+   {"no": 5, "type": "REPORT_OUT", "name": "보고 발신", "kind": "M", "n": 4, "median_min": 0, "wait_in_median_min": 270, "label_by": "rule"}
+  ],
+  "edges": [[2, 3, 5], [1, 2, 4], [3, 4, 2], [3, 5, 2], [4, 5, 2], [3, 2, 1]],
+  "rework": [[3, 2, 1]],
+  "bottlenecks": [{"kind": "wait", "no": 3, "value_min": 720}, {"kind": "work", "no": 2, "share": 0.56}]
+ },
+ "CH-T08": {
+  "months": ["2026-07", "2026-08"],
+  "as_of": "2026-08-20",
+  "team": {
+   "people": [
+    {"i": 0, "label": "팀원A", "person_key": "p_00a1", "quality": "reliable"},
+    {"i": 1, "label": "팀원B", "person_key": "p_00b2", "quality": "unreliable"}
+   ],
+   "domains": [{"code": "DEV", "name": "개발 프로젝트"}, {"code": "MP", "name": "양산 프로젝트"}],
+   "projects": [{"project_id": "P-0007", "label": "과제A"}, {"project_id": "P-0011", "label": "과제B"}],
+   "roles": [{"role_id": "r_5c0d11", "field": "ELEC", "function": "DESIGN"}, {"role_id": "r_6a1b22", "field": "MECH", "function": "TEST"}],
+   "vocab_names": {"field": {"ELEC": "회로", "MECH": "기구"}, "func": {"DESIGN": "설계", "TEST": "시험·검증"}},
+   "gantt": [
+    {"person": 0, "domain": "DEV", "project_id": "P-0007", "role_id": "r_5c0d11",
+     "row_end": {"effort_h": 66.9, "parallel": 1.6, "lead_days": 28},
+     "units": [
+      {"unit_id": "u_00000000a4", "title": "결과 보고", "spans": [["2026-07-21", "2026-07-30", "lead"]],
+       "density": {"2026-W30": 720, "2026-W31": 360}, "effort_min": 1080, "parallel": 1.5, "grade": "O", "status": "open"},
+      {"unit_id": "u_00000000a2", "title": "시험 지그 설계", "spans": [["2026-07-08", "2026-07-20", "lead"]],
+       "density": {"2026-W28": 1199, "2026-W29": 1200}, "effort_min": 2399, "parallel": 1.2, "grade": "C", "status": "estimated",
+       "start": {"kind": "S2", "precision": "none"}},
+      {"unit_id": "u_00000000a1", "title": "전원부 검증", "spans": [["2026-07-03", "2026-07-09", "lead"]],
+       "density": {"2026-W27": 119, "2026-W28": 120}, "effort_min": 239, "parallel": 1.8, "grade": "B", "status": "closed"},
+      {"unit_id": "u_00000000a3", "title": "부품 검토", "spans": [["2026-07-10", "2026-07-15", "lead"]],
+       "density": {"2026-W28": 300}, "effort_min": 300, "parallel": 2.0, "grade": "A", "status": "closed"}
+     ]},
+    {"person": 1, "domain": "MP", "project_id": "P-0011", "role_id": "r_6a1b22",
+     "units": [
+      {"unit_id": "u_00000000b1", "title": "양산 시험", "spans": [["2026-08-03", "2026-08-14", "lead"]],
+       "density": {"2026-W32": 600, "2026-W33": 480}, "effort_min": 1080, "parallel": 1.0, "grade": "B", "status": "closed"}
+     ]}
+   ]
+  }
+ },
+ "CH-H01": {
+  "axes": ["mail_in", "mail_out", "cal", "teams", "pc"],
+  "today": "2026-10-02",
+  "reasonText": {"R-UIAEMPTY": "팀즈 창 숨김"},
+  "srcNames": {"teams.uia": "팀즈 창 읽기", "teams.web": "팀즈 웹"},
+  "days": [
+   {"d": "2026-09-28", "wd": true, "hol": false,
+    "s": {"mail_in": "ok", "mail_out": "zero_ok", "cal": "partial", "teams": "transport_fail", "pc": "ok"}},
+   {"d": "2026-10-02", "wd": true, "hol": false,
+    "s": {"mail_in": "ok", "mail_out": "ok", "cal": "out_of_horizon", "teams": "blocked", "pc": "not_attempted"},
+    "why": {"teams": ["R-UIAEMPTY"]}, "src": {"teams": [["teams.uia", "blocked"], ["teams.web", "not_attempted"]]}},
+   {"d": "2026-10-03", "wd": false, "hol": true, "s": {"mail_in": "zero_ok", "mail_out": "zero_ok", "cal": "zero_ok", "teams": "zero_ok", "pc": "ok"}}
+  ]
+ },
+ "CH-P03": {
+  "month": "2026-09",
+  "days": [
+   {"d": "2026-09-22", "hol": false, "by_tag": {"regular": 480, "extended": 110}, "conf_min": {"high": 560, "mid": 30, "low": 0}, "leave": 0, "flags": ["Q08"]},
+   {"d": "2026-09-23", "hol": false, "by_tag": {"regular": 300}, "conf_min": {"high": 150, "mid": 60, "low": 90}, "leave": 0.5, "flags": []},
+   {"d": "2026-09-25", "hol": true, "by_tag": {}, "conf_min": {"high": 0, "mid": 0, "low": 0}, "leave": 0, "flags": []},
+   {"d": "2026-09-29", "hol": false, "by_tag": {}, "conf_min": {"high": 0, "mid": 0, "low": 0}, "leave": 1, "flags": []}
+  ]
+ },
+ "CH-P16": {
+  "d": "2026-09-22", "s_eff": ["09:00", "18:00"],
+  "labels": {"u_3e9a01c2d4": "전원부 검증", "u_0b1c2d3e4f": "시험 지그 설계"},
+  "intervals": [
+   {"a": "09:00", "b": "10:00", "tag": "regular", "basis": "샘플러", "targets": [["u_3e9a01c2d4", 60, "O"]], "note": ""},
+   {"a": "10:00", "b": "10:35", "tag": "regular", "basis": "회의", "targets": [["B_MEET", 18, "X"], ["u_0b1c2d3e4f", 17, "I"]], "note": "대형 회의 중 다른 업무 PC 입력(0.5/0.5)"},
+   {"a": "12:10", "b": "12:40", "tag": "regular", "basis": "사적차감", "kind": "deduct", "targets": [], "note": ""}
+  ]
+ },
+ "CH-T02": {
+  "months": ["2026-08", "2026-09"],
+  "domains": [
+   {"code": "COM", "name": "공통 업무", "color": "#a61b4a", "by_month": {"2026-09": {"mm": 0.5, "by_person": [[1, 0.5]]}}},
+   {"code": "DEV", "name": "개발 프로젝트", "color": "#2a78d6", "by_month": {"2026-08": {"mm": 3.1, "by_person": [[0, 2.0], [1, 1.1]]}, "2026-09": {"mm": 2.2, "by_person": [[0, 2.2]]}}}
+  ],
+  "unattributed": {"by_month": {"2026-09": 0.1}},
+  "people": [
+   {"i": 0, "quality": "reliable", "months": [{"m": "2026-08"}, {"m": "2026-09"}]},
+   {"i": 1, "quality": "unreliable", "months": [{"m": "2026-08"}]}
+  ]
+ },
+ "CH-P13": {
+  "center": "P-0007",
+  "nodes": [
+   {"id": "P-0007", "type": "P", "label": "과제A", "weight_min": 3000},
+   {"id": "r_1", "type": "R", "label": "회로·해석", "weight_min": 2000},
+   {"id": "r_2", "type": "R", "label": "회로·설계", "weight_min": 1000},
+   {"id": "u_1", "type": "U", "label": "전원부 검증", "weight_min": 900, "start": "2026-09-01"},
+   {"id": "u_2", "type": "U", "label": "시험 지그", "weight_min": 600, "start": "2026-09-07"},
+   {"id": "u_3", "type": "U", "label": "회로 설계", "weight_min": 500, "start": "2026-09-17"},
+   {"id": "d_1", "type": "D", "label": "결과표", "weight_min": 300},
+   {"id": "a_1", "type": "A", "label": "회로 시뮬레이터", "weight_min": 600},
+   {"id": "c_1", "type": "C", "label": "김철수", "weight_min": 200}
+  ],
+  "edges": [
+   {"from": "r_1", "to": "P-0007", "rel": "소속"}, {"from": "r_2", "to": "P-0007", "rel": "소속"},
+   {"from": "u_1", "to": "r_1", "rel": "소속"}, {"from": "u_2", "to": "r_1", "rel": "소속"}, {"from": "u_3", "to": "r_2", "rel": "소속"},
+   {"from": "d_1", "to": "u_1", "rel": "산출함", "w": 2, "h": 60},
+   {"from": "a_1", "to": "u_2", "rel": "사용함", "w": 3, "h": 300},
+   {"from": "c_1", "to": "u_1", "rel": "의뢰함", "w": 1, "h": 30},
+   {"from": "u_1", "to": "u_2", "rel": "선행함", "w": 1, "inferred": true}
+  ]
+ },
+ "malicious": {
+  "title": "</script><img src=x onerror=alert(1)>",
+  "peer": "<svg onload=alert(1)>",
+  "project": "과제 A"
+ }
+}

@@ -1,0 +1,21 @@
+{
+ "schema": "lm27.registry_local/1",
+ "updated_at": "2026-10-05T10:00:00+09:00",
+ "projects": [
+  {"id": "L-0001", "name": "광센서 선행", "domain": "DEV", "status": "active",
+   "aliases": [], "codenames": ["PROJ-X"], "mask_name": false, "keywords": ["광센서"], "never": [],
+   "mail_domains": [], "customers": [], "partners": [], "folders": [], "apps": [],
+   "default_field": "OPT", "default_func": "", "ax_link": false,
+   "copilot_desc": "광센서 선행 검토", "proposal_id": "pr_2", "maps_to": null,
+   "created_from": "user", "created_at": "2026-10-05"}
+ ],
+ "overlays": {"P-0007": {"aliases": ["A모듈"], "keywords": ["광축"], "never": [], "folders": ["A_시험"],
+                         "mail_domains": [], "default_field": ""}},
+ "roots": {"R03": "P-0007"},
+ "domain_meta": {"COM": {"keywords_add": ["팀 워크숍"], "keywords_remove": []}},
+ "vocab_add": {"fields": [{"code": "L_PHOTO", "name": "포토닉스", "keywords": ["광집적"], "maps_to": "OPT"}],
+               "functions": [], "activity_types": []},
+ "never_pairs": [["광센서 선행", "광센서 양산"]],
+ "person": {"default_field": "OPT", "default_func": ""},
+ "codename_review": {"done_at": "2026-10-05T10:00:00+09:00", "ignored": ["3f9a1c2e"], "skipped": false}
+}
