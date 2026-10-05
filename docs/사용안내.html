@@ -243,6 +243,9 @@ footer{color:var(--dim);font-size:13px;text-align:center;padding:10px 0;line-hei
   <div class="callout warn"><b>무엇이 올라가나</b> — 판정 결과(과제·업무·MM)와
   <b>근거 신호 목록</b>입니다. <b>메일 제목·회의 제목·동료 이름이 포함될 수 있습니다</b>
   (<code>excludePathKeywords</code> 로 걸러 둔 개인 폴더 신호는 제외). 사내망 전용.</div>
+  <div class="callout note"><b>올릴 주소</b> — 카드의 <b>올릴 주소</b>는 보여 주기만 합니다. 서버 IP·포트를 바꾸는 곳은
+  <code>LoadMonitor24-팀서버주소.bat</code> 하나이고(설치 폴더의 <code>config\team_server.json</code>), 폴더째 옮기거나
+  나눠 받아도 그대로입니다. (v5 — 그림의 주소 입력칸은 없어졌습니다)</div>
 </section>
 
 <section>
@@ -303,7 +306,10 @@ footer{color:var(--dim);font-size:13px;text-align:center;padding:10px 0;line-hei
       팀 다수와 다릅니다 — 팀에서 정한 값(<code>config.default.json</code>)으로 되돌리고 다시 분석.</td></tr>
     <tr><td>“포트를 다른 프로그램이 쓰고 있습니다”</td>
       <td>화면이 <b>“예전 버전 LoadMonitor”</b> 라고 한 경우에만 <b class="btn">포트 가져오기</b>.
-      모르겠으면 <b class="btn">포트 바꾸기</b>.</td></tr>
+      모르겠으면 <code>LoadMonitor24-팀서버주소.bat</code> 으로 포트를 바꾸세요(팀원도 같은 포트로).</td></tr>
+    <tr><td>팀 서버 PC·IP 가 바뀌었다</td>
+      <td><code>LoadMonitor24-팀서버주소.bat</code> 으로 서버 IP·포트를 저장하고, 그 폴더(또는 <code>config\team_server.json</code>)를
+      팀원에게 나눠 주세요 — 폴더째 옮겨도 주소가 그대로 따라갑니다. 화면에서는 주소를 바꾸지 않습니다.</td></tr>
     <tr><td>팀 화면에 사람이 안 보인다</td>
       <td>‘데이터 읽어오는 곳’ 경로 확인. 못 읽으면
       <b class="btn">이 PC 의 teamdata 로 전환</b> 버튼이 뜹니다.</td></tr>

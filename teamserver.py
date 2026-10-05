@@ -2,16 +2,21 @@
 r"""
 teamserver.py — 팀 취합 서버 (LoadMonitor24)
 
-팀 공용 PC(예: 10.115.147.68)에서 이 파일 하나를 돌려 두면:
+팀 공용 PC 에서 이 파일 하나를 돌려 두면:
   · 팀원들의 LoadMonitor 가 분석을 마칠 때마다 결과를 자동 업로드한다 (POST /api/upload)
   · 업로드가 올 때마다 기존 팀 취합(aggregate.py)을 다시 돌려 HTML 을 갱신한다
     (aggregate 가 팀 통합 보고서 team_full_report.html / _v3 까지 만든다 — Copilot 없이 캐시만)
   · 브라우저로 접속하면(GET /) 취합 대시보드가 바로 보인다 — 인별 현황·팀 리포트·Agentic 열지도·통합 보고서
     정적 보고서(/report /agentic /full /full_v3)는 CSP sandbox 로 origin 을 떼어 서빙한다.
 
-  python teamserver.py                # 기본 포트 9310, 모든 인터페이스에서 수신
-  python teamserver.py --port 9310
-  (또는 LoadMonitor24-팀서버.bat)
+  python teamserver.py                        # 팀 서버 주소 설정(config\team_server.json)의 포트로 켠다
+  python teamserver.py --port 9400            # 이번 한 번만 다른 포트(설정은 그대로)
+  (또는 LoadMonitor24-팀서버.bat — 서버 IP·포트 바꾸기는 LoadMonitor24-팀서버주소.bat)
+
+v5: 서버 IP·포트는 core\teamaddr.py(단일원)가 설치 폴더의 config\team_server.json 에서 읽는다 — 예전처럼
+config.teamServerUrl 한 줄을 쪼개 쓰지 않는다(옛 값은 teamaddr 가 이어받는다). 서버는 v4 처럼 모든
+네트워크에서 받으므로(설정된 IP 도 그 안에 든다) 따로 고를 것이 없고, 시작할 때 설정된 서버 IP 가 이 PC 의
+주소인지 확인해 알린다 — 폴더를 다른 PC 로 옮겨 서버를 켰는데 팀원은 옛 IP 로 올리는 사고를 막으려고.
 
 저장 구조: teamdata\<이름>\ — 팀 공유폴더(teamShareDir)와 같은 배치라 aggregate.py 를
 그대로 재사용한다. 사내망 전용 설계이며 인증은 없다(팀 합의 전제) — 외부망에 열지 말 것.
@@ -54,11 +59,17 @@ def _share_root():
     return os.path.join(ROOT, "teamdata")
 
 
+def _addr():
+    r"""팀 서버 주소 설정 — core\teamaddr.py 한 곳에서만 읽는다(bat·대시보드·업로드와 같은 값)."""
+    if os.path.join(ROOT, "core") not in sys.path:
+        sys.path.insert(0, os.path.join(ROOT, "core"))
+    import teamaddr
+    return teamaddr
+
+
 def _cfg_port():
-    r"""config.teamServerUrl 의 포트 — bat 과 대시보드가 서로 다른 포트를 쓰지 않게."""
-    u = str(_cfg().get("teamServerUrl") or "")
-    m = re.search(r":(\d{2,5})(?:/|$)", u)
-    return int(m.group(1)) if m else 9310
+    r"""설정된 포트 — bat 과 대시보드가 서로 다른 포트를 쓰지 않게."""
+    return _addr().load(ROOT).port
 
 
 TEAMDATA = _share_root()
@@ -159,7 +170,11 @@ def clear_pid():
 
 
 def arg(flag, d=""):
-    return sys.argv[sys.argv.index(flag) + 1] if flag in sys.argv else d
+    if flag in sys.argv:
+        i = sys.argv.index(flag) + 1
+        # 값 없이 끝난 플래그(--port 만)는 기본값 — 예전에는 IndexError 로 서버가 뜨지 않았다
+        return sys.argv[i] if i < len(sys.argv) else d
+    return d
 
 
 def esc(v):
@@ -516,11 +531,29 @@ class H(BaseHTTPRequestHandler):
 
 
 def main():
-    port = int(arg("--port", "0") or 0) or _cfg_port()
+    ta = _addr()
+    a = ta.load(ROOT)
+    for w in a.warnings:
+        print(f"[team] 주소 설정 경고: {w}")
+    port = a.port
+    if arg("--port"):
+        port, err = ta.check_port(arg("--port"))
+        if port is None:
+            print(f"[team] --port 값이 잘못됐습니다 — {err}")
+            return 2
+    # 설정된 서버 IP 가 이 PC 인가 — 팀원은 그 주소(설치 폴더의 config\team_server.json)로 올린다.
+    # 포트가 막혀 서버가 못 뜨는 경우에도 보이게, 열기 전에 알린다.
+    kind, why = ta.relation(a)
+    print(f"[team] 팀원 업로드 주소(설정): {a.url} — {why}")
+    if kind in ("member", "loopback"):
+        print(f"[team] [!] 이대로면 팀원 업로드가 이 서버로 오지 않습니다 — 이 PC 가 팀 서버라면 {ta.EDIT_BAT} 에서 "
+              "서버 IP 를 이 PC 의 IP 로 저장하고, 그 폴더(또는 config\\team_server.json)를 팀원에게 나눠 주세요.")
+    if port != a.port:
+        print(f"[team] [!] 이번에는 설정({a.port})과 다른 포트 {port} 로 켭니다 — 팀원은 설정된 포트로 올립니다.")
     PORT[0] = port
     os.makedirs(TEAMDATA, exist_ok=True)
     try:
-        srv = ThreadingHTTPServer(("0.0.0.0", port), H)
+        srv = ThreadingHTTPServer(("0.0.0.0", port), H)      # 모든 네트워크 — 설정된 서버 IP 도 그 안에 든다
     except OSError as e:
         # 예전에는 traceback 만 로그에 남아 화면이 '시작 실패' 라고만 말했다.
         # 10013(다른 프로그램이 잠깐 쓰는 중)·10048(이미 사용 중)은 조치가 서로 다르다.
@@ -528,16 +561,18 @@ def main():
         print(f"[team] 포트 {port} 을 열지 못했습니다 (WinError {code}) — {e}")
         if code == 10013:
             print("[team] 다른 프로그램이 그 번호를 잠깐 쓰고 있습니다. "
-                  "잠시 뒤 다시 시도하거나 포트를 임시 포트 범위 밖(예: 19310)으로 바꾸세요.")
+                  f"잠시 뒤 다시 시도하거나 {ta.EDIT_BAT} 에서 포트를 임시 포트 범위 밖"
+                  f"(예: {ta.DEFAULT_PORT + 10000})으로 바꾸세요 — 팀원도 같은 포트로 맞춰야 합니다.")
         elif code == 10048:
             print("[team] 이미 그 포트를 쓰는 서버가 있습니다. 대시보드의 [포트 가져오기] 를 쓰세요.")
         return 3
     SRV[0] = srv
     write_pid()
     write_token()
-    print(f"[team] 팀 서버 가동 — http://<이 PC 의 IP>:{port}  (저장: {TEAMDATA})")
+    print(f"[team] 팀 서버 가동 — 포트 {port} · 모든 네트워크에서 받음  (저장: {TEAMDATA})")
     print(f"[team] 이 서버의 설치 폴더: {ROOT}")
-    print("[team] 팀원 설정: config.teamServerUrl 에 이 주소를 넣으면 대시보드 [팀 서버 업로드] 버튼으로 올립니다(자동 전송 없음)")
+    print(f"[team] 서버 IP·포트를 바꾸려면 {ta.EDIT_BAT} (팀원 업로드 주소도 같은 파일에서 나옵니다 — 자동 전송 없음, "
+          "팀원은 분석 후 [팀 서버 업로드] 버튼이나 LoadMonitor24-팀업로드.bat 으로 올립니다)")
     print("[team] 종료: Ctrl+C (또는 대시보드의 [팀 서버 중지])")
     try:
         srv.serve_forever()

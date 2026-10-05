@@ -35,9 +35,9 @@ if not exist "teamserver.py" (
   exit /b 1
 )
 echo.
-echo  [팀 서버] 이 PC 를 팀 취합 서버로 가동합니다 (포트: config.teamServerUrl 의 번호, 기본 9310).
-echo           팀원들은 config.teamServerUrl 에 이 PC 주소를 넣고, 서버에 닿는 망에서
-echo           대시보드 [팀 서버 업로드] (또는 LoadMonitor24-팀업로드.bat) 로 올립니다.
+echo  [팀 서버] 이 PC 를 팀 취합 서버로 가동합니다 - 포트는 팀 서버 주소 설정(config\team_server.json)을 따릅니다.
+echo           서버 IP·포트 바꾸기: LoadMonitor24-팀서버주소.bat - 폴더째 옮기거나 나눠 주면 같은 주소가 따라갑니다.
+echo           팀원들은 분석 후 서버에 닿는 망에서 대시보드 [팀 서버 업로드] (또는 LoadMonitor24-팀업로드.bat) 로 올립니다.
 echo           브라우저 접속: http://이PC의IP:포트번호  (실제 번호는 아래 [team] 가동 줄에 찍힙니다)
 echo           팀 통합 보고서: /full  (인별 로드율 제외 v3: /full_v3)
 echo.

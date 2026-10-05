@@ -1140,9 +1140,11 @@ def main():
            (f"대기 {n_pend}건 — 서버망에서 [팀 서버 업로드] 버튼을 누르면 전송됩니다"
             + (" · " + _why if "보낼 수 없습니다" in _why else "")
             if rcb == 0 else (_why or "묶음 준비 실패")))
-    if (c.get("teamUpload") or {}).get("auto") and (c.get("teamServerUrl") or "").strip():
+    if (c.get("teamUpload") or {}).get("auto"):
         # 원하는 사람만 켜는 자동 전송(기본 꺼짐). 실패해도 묶음은 대기로 남는다.
-        print("\n── 팀 서버 자동 업로드 (config.teamUpload.auto)")
+        # v5: 주소는 팀 서버 주소 설정(core\teamaddr.py)이 늘 준다 — config.teamServerUrl 을 따로 보지 않는다.
+        import teamaddr
+        print(f"\n── 팀 서버 자동 업로드 (config.teamUpload.auto → {teamaddr.load(ROOT).url})")
         _t5 = time.time()
         rc3 = subprocess.run([sys.executable, os.path.join(ROOT, "teamup.py"), "--upload"],
                              cwd=ROOT, env=dict(os.environ, PYTHONIOENCODING="utf-8",

@@ -31,7 +31,7 @@ from progress import parse as parse_progress  # noqa: E402  (core 경로 등록 
 REPORT = os.path.join(ROOT, "report")
 DATA = os.path.join(ROOT, "data")
 NO_WIN = 0x08000000
-VERSION = "v4.1"          # lm24-v4 — v3 구조 위 운영 다듬기(교차 프로세스 사실은 파일이 진실) · 팀취합본 로드율 재계산기
+VERSION = "v5.0"          # lm24-v5 — 팀 서버 IP·포트를 별도 설정(config\team_server.json)으로 분리 · 바꾸기는 LoadMonitor24-팀서버주소.bat 하나
 LOCK = threading.Lock()
 FREEZE_LOCK = threading.Lock()       # [보고서 만들기] 직렬화 — JOB 과 별개(사본에 '실행 중'이 굳지 않게)
 JOB = {"running": False, "log": [], "step": "", "started": 0.0, "pid": 0,
@@ -294,16 +294,22 @@ def team_share_ex():
             ("" if n else "empty"), n)
 
 
+def _ta():
+    r"""팀 서버 주소 단일원(core\teamaddr.py — 설치 폴더의 config\team_server.json). 부를 때마다 파일을 다시
+    읽어 LoadMonitor24-팀서버주소.bat 에서 바꾼 값이 곧바로 반영된다. 화면은 주소를 보여 주기만 하고 바꾸지
+    않는다(사용자 지시: 바꾸는 곳은 별도 bat 하나). v5 이전처럼 config.teamServerUrl 을 직접 쪼개지 않는다."""
+    import teamaddr
+    return teamaddr
+
+
 def _team_port():
-    """config.teamServerUrl 의 포트 (없으면 팀 표준 9310)"""
-    try:
-        from urllib.parse import urlparse
-        u = urlparse((cfg().get("teamServerUrl") or "").strip())
-        if u.port:
-            return int(u.port)
-    except (ValueError, TypeError):
-        pass
-    return 9310
+    """설정된 팀 서버 포트(core\\teamaddr.py)"""
+    return _ta().load(ROOT).port
+
+
+def _alt_port_base():
+    """임시 포트 범위를 피할 때 권하는 번호의 시작 — 기본 포트 + 10000."""
+    return _ta().DEFAULT_PORT + 10000
 
 
 def _port_open(port, host="127.0.0.1", timeout=0.25):
@@ -319,23 +325,8 @@ def _port_open(port, host="127.0.0.1", timeout=0.25):
 
 
 def local_ips():
-    """이 PC 의 주소 — 팀원에게 알려 줄 값. (UDP connect 는 패킷을 보내지 않는다)"""
-    out = []
-    try:
-        s2 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s2.settimeout(0.2)
-        s2.connect(("10.255.255.255", 1))
-        out.append(s2.getsockname()[0])
-        s2.close()
-    except OSError:
-        pass
-    try:
-        for ip in socket.gethostbyname_ex(socket.gethostname())[2]:
-            if ip not in out and not ip.startswith("127."):
-                out.append(ip)
-    except OSError:
-        pass
-    return out
+    """이 PC 의 주소 — 팀원에게 알려 줄 값. 세는 규칙은 core\\teamaddr.local_ipv4s 한 곳(팀 서버의 '이 PC 인가' 판정과 같은 값)."""
+    return _ta().local_ipv4s()
 
 
 TS_TOKEN = os.path.join(REPORT, "teamserver.token")
@@ -637,7 +628,7 @@ def _suggest_port(cur):
 
     이 PC 실측처럼 임시 포트 범위가 1024~15000 이면 9310 은 그 안이라 언제든 다시 뺏긴다."""
     lo, hi = _dyn_range()
-    base = max(hi + 1, 19310) if (lo and lo <= cur <= hi) else cur
+    base = max(hi + 1, _alt_port_base()) if (lo and lo <= cur <= hi) else cur
     for p in range(int(base), int(base) + 40):
         if p == PORT[0] or 9148 <= p <= 9167:      # 대시보드 자신의 대역은 피한다
             continue
@@ -696,8 +687,16 @@ def teamserver_status():
             tail = " / ".join([x.strip() for x in f.readlines()[-3:] if x.strip()])[:300]
     except OSError:
         pass
+    ta = _ta()
+    a = ta.load(ROOT)
+    ips = local_ips()
+    akind, anote = ta.relation(a, ips)
     return {"ok": True, "running": running, "port": port, "pid": pid if running else 0,
-            "urls": [f"http://{ip}:{port}" for ip in local_ips()], "log": tail,
+            "urls": [f"http://{ip}:{port}" for ip in ips], "log": tail,
+            # 설정된 서버 주소(설치 폴더의 config\team_server.json) — 팀원은 분석 후 이 주소로 올린다.
+            # 화면은 보여 주기만 한다(바꾸는 곳은 LoadMonitor24-팀서버주소.bat).
+            "host": a.host, "upload_url": a.url, "addr_kind": akind, "addr_note": anote,
+            "addr_warnings": a.warnings, "edit_bat": ta.EDIT_BAT,
             # 포트는 열렸는데 내 서버가 아닐 때 — 화면이 사실대로 말할 수 있게
             "occupied": bool(open_ and not running),
             "kind": kind, "occupant": occ, "take": take,
@@ -726,20 +725,12 @@ def _save_cfg(key, val):
         return False
 
 
-def _save_team_url(url):
-    r"""화면에서 고친 팀 서버 주소를 config\config.json 에 남긴다 (설명 키·다른 값은 보존)."""
-    try:
-        p = os.path.join(ROOT, "config", "config.json")
-        with open(p, encoding="utf-8-sig") as f:
-            c = json.load(f)
-        c["teamServerUrl"] = url
-        tmp = p + ".tmp"
-        with open(tmp, "w", encoding="utf-8", newline="") as f:
-            json.dump(c, f, ensure_ascii=False, indent=1)
-        os.replace(tmp, p)
-        return True
-    except (OSError, ValueError):
-        return False
+def _addr_payload():
+    r"""화면에 줄 팀 서버 주소(보여 주기만) — 값·출처·경고·이 PC 와의 관계. 바꾸는 곳은 LoadMonitor24-팀서버주소.bat."""
+    ta = _ta()
+    a = ta.load(ROOT)
+    akind, anote = ta.relation(a, local_ips())
+    return dict(a.as_dict(), addr_kind=akind, addr_note=anote)
 
 
 def log(msg):
@@ -2205,10 +2196,13 @@ body.snap .snaponly{display:block}
   <button class="ghost" id="tsstop">중지</button>
   <button class="ghost" id="tsopen">팀 대시보드 열기</button>
   <button class="ghost" id="tstake" style="display:none">포트 가져오기</button>
-  <button class="ghost" id="tsport" style="display:none">포트 바꾸기</button></div>
+  </div>
+ <div class="note" id="tsaddr"></div>
  <div class="note" id="tsurl"></div>
- <div class="note">여기서 켜면 이 PC 가 팀 취합 서버가 됩니다. 팀원은 각자 대시보드의 저장소 주소에
- <b>위 주소</b>를 적고 [팀 서버 업로드]를 누르면 됩니다. 대시보드를 닫아도 서버는 계속 돕니다(중지는 이 버튼으로).
+ <div class="note">여기서 켜면 이 PC 가 팀 취합 서버가 됩니다. 서버 IP·포트는 설치 폴더의 <b>LoadMonitor24-팀서버주소.bat</b>
+ 에서만 바꿉니다 — config\\team_server.json 에 저장되어, 이 폴더를 통째로 옮기거나 팀원에게 나눠 주면 같은 주소가
+ 그대로 따라갑니다. 팀원은 분석 후 그 주소로 [팀 서버 업로드]를 누르면 됩니다. 포트를 바꾼 뒤에는 켜져 있던 서버를
+ [중지] 후 [팀 서버 시작]해야 새 포트로 열립니다. 대시보드를 닫아도 서버는 계속 돕니다(중지는 이 버튼으로).
  처음 켤 때 방화벽 허용 창이 뜨면 <b>허용</b>해야 다른 PC 에서 접속됩니다.</div></div>
 <div class="snaponly" id="snapinfo"></div>
 <div class="card nosnap"><h2>데이터 읽어오는 곳 — 팀 공유폴더</h2>
@@ -2453,7 +2447,7 @@ function render(){
   }).join("");
 }
 // ── 팀 서버 켜기/끄기 (팀 공용 PC 용) ──
-let TS={running:false,port:9310,urls:[]};
+let TS={running:false,port:0,urls:[]};
 function tsRender(d){
  TS=d||TS;
  $("tsstate").innerHTML=TS.running
@@ -2467,11 +2461,19 @@ function tsRender(d){
   unreadable:"확인하지 못한 프로그램",hidden:"잠깐 쓰이는 중(붙잡은 서버 없음)"};
  // 포트를 쥔 것이 '무엇인지' 이름으로 말한다 — '다른 프로그램' 으로는 손쓸 수 없다
  $("tstake").style.display=(busy&&TS.take&&TS.take!=="no")?"":"none";
- $("tsport").style.display=busy?"":"none";
+ // 설정된 서버 주소(설치 폴더의 팀 서버 주소 파일) — 보여 주기만 한다. 바꾸는 곳은 LoadMonitor24-팀서버주소.bat.
+ const AK={server:"#0f7a3d",member:"#b26a00",loopback:"#c0122f",unknown:"#98a0a8"};
+ const bat=esc(TS.edit_bat||"LoadMonitor24-팀서버주소.bat");
+ $("tsaddr").innerHTML=(TS.upload_url?`팀원 업로드 주소(설정): <b>${esc(TS.upload_url)}</b> — `
+   +`<span style="color:${AK[TS.addr_kind]||"#98a0a8"}">${esc(TS.addr_note||"")}</span>`:"")
+  +(busy&&TS.suggest_port?`<br><span style="color:#c0122f">포트 ${TS.port} 을 다른 프로그램이 쓰고 있습니다 — `
+   +`${bat} 에서 포트를 ${TS.suggest_port} 처럼 빈 번호로 바꾼 뒤 [팀 서버 시작] 하세요 `
+   +`(팀원도 같은 포트로 맞춰야 합니다 — 바뀐 설치 폴더나 팀 서버 주소 파일을 나눠 주면 됩니다).</span>`:"")
+  +((TS.addr_warnings||[]).length?`<br><span style="color:#c0122f">${TS.addr_warnings.map(esc).join(" / ")}</span>`:"");
  if(busy)$("tsstate").innerHTML=`<span style="color:#c0122f">● 포트 ${TS.port} 사용 중</span> · `
   +esc(KND[TS.kind]||"확인 중");
  $("tsurl").innerHTML=TS.running
-  ?("팀원에게 알려줄 주소: "+(TS.urls||[]).map(u=>`<b>${esc(u)}</b>`).join(" 또는 ")
+  ?("이 PC 에서 열린 주소: "+(TS.urls||[]).map(u=>`<b>${esc(u)}</b>`).join(" 또는 ")
     +'<br><span class="state">이 PC 안에서 확인된 주소입니다 — 팀원이 실제로 닿는지는 '
     +'각자 [연결 확인] 으로 봐야 합니다(방화벽 허용 필요).</span>'
     +(TS.log?`<br><span class="state">${esc(TS.log)}</span>`:""))
@@ -2482,7 +2484,7 @@ function tsRender(d){
       +((occ[0].exe&&!(occ[0].cmd||"").startsWith(occ[0].exe))?`<br><span class="state">${esc(occ[0].exe)}</span>`:"")
       +(occ[0].cmd?`<br><span class="state">${esc(occ[0].cmd)}</span>`:"")
       +(TS.foreign_root?`<br><span class="state">설치 폴더: ${esc(TS.foreign_root)}</span>`:"")
-     :"붙잡고 있는 서버를 찾지 못했습니다 — 포트를 바꾸는 편이 확실합니다")
+     :"붙잡고 있는 서버를 찾지 못했습니다 — LoadMonitor24-팀서버주소.bat 에서 포트를 바꾸는 편이 확실합니다")
     :(TS.log?`<span class="state">${esc(TS.log)}</span>`:""));
 }
 async function tsLoad(){
@@ -2507,7 +2509,7 @@ $("tsopen").onclick=()=>{if(TS.urls&&TS.urls.length)window.open(TS.urls[0],"_bla
 $("tstake").onclick=()=>{
  const occ=TS.occupant||[], NL=String.fromCharCode(10);
  if(!occ.length){alert("포트를 쥔 프로그램을 확인하지 못해 가져올 수 없습니다."+NL
-  +"[포트 바꾸기] 로 다른 번호를 쓰세요.");return;}
+  +"LoadMonitor24-팀서버주소.bat 에서 포트를 다른 번호로 바꾸세요.");return;}
  // 무엇을 죽이는지 그대로 보여 준다 — 이름만 보고 누르면 사고가 난다
  const list=occ.map(x=>" · "+x.name+" (pid "+x.pid+")"+(x.owner?"  ["+x.owner+"]":"")
   +(x.exe?NL+"   "+x.exe:"")+(x.cmd?NL+"   "+x.cmd.slice(0,140):"")).join(NL);
@@ -2526,20 +2528,6 @@ $("tstake").onclick=()=>{
   tsAct("start",true,occ[0].pid);return;
  }
  tsAct("start",true,0);
-};
-$("tsport").onclick=async()=>{
- const NL=String.fromCharCode(10);
- const v=prompt("팀 서버가 쓸 새 포트 번호"+NL
-  +"※ 팀원들이 쓰는 주소가 바뀝니다 — 각자 저장소 주소를 새 주소로 고쳐야 합니다."+NL
-  +"  (밀린 묶음은 각자 PC 에 대기로 남으니 주소만 고치면 한 번에 올라갑니다)",
-  String((TS.suggest_port||0)||TS.port||9310));
- if(!v)return;
- const r=await fetch("/api/teamport",{method:"POST",headers:{"Content-Type":"application/json"},
-   body:JSON.stringify({port:parseInt(v,10)})}).then(x=>x.json()).catch(()=>({ok:false,error:"통신 실패"}));
- if(!r.ok){alert("포트 변경 실패"+NL+NL+(r.error||""));return;}
- alert("포트를 "+r.port+" 으로 바꿨습니다."+NL+"팀원에게 새 주소를 알려 주세요: "+(r.url||"")
-  +NL+NL+"처음 켤 때 방화벽 허용 창이 다시 뜨면 [허용] 해야 다른 PC 에서 닿습니다.");
- tsLoad();
 };
 $("reload").onclick=()=>{loadDir();load();tsLoad();};
 loadDir();
@@ -2738,10 +2726,11 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
 
 <div class="card"><h2>팀 취합 업로드 <span class="state">자동 전송하지 않습니다 — 서버에 닿는 망에서 버튼으로 보냅니다</span></h2>
  <div class="row" style="align-items:center;gap:6px;margin-bottom:8px">
-  <span class="state" style="flex:none">저장소</span>
-  <input id="tuurl" placeholder="http://10.115.147.68:9310" style="flex:1;min-width:200px;padding:5px 8px;border:1px solid #d7dbe0;border-radius:5px;font-size:12px">
+  <span class="state" style="flex:none">올릴 주소</span>
+  <b id="tuurl" style="flex:1;min-width:200px;font-size:12.5px">확인 중…</b>
   <button class="ghost" id="tuping">연결 확인</button>
   <span class="state" id="tustat"></span></div>
+ <div class="note" id="tuaddr"></div>
  <div id="tuavail"></div>
  <div id="tupend"></div>
  <div class="row" style="margin-top:8px;align-items:center">
@@ -3355,14 +3344,13 @@ async function tuLoad(){
   const el=$("tupend");
   if(el)el.innerHTML='<div class="note" style="color:#c0122f">대기 목록을 확인하지 못했습니다'
    +((d&&d.error)?` — ${esc(d.error)}`:"")+'. [묶음 폴더 열기]로 report\\\\upload_pending 을 직접 확인하세요.</div>';
-  if(d&&d.url&&$("tuurl")&&!$("tuurl").value)$("tuurl").value=d.url;
+  if(d)tuFill(d);
   TU={pending:[],sent:[],url:(d&&d.url)||"",share:(d&&d.share)||"",
       unknown:true,error:(d&&d.error)||"통신 실패"};
   return;
  }
  TU=d;
- const inp=$("tuurl");
- if(inp&&document.activeElement!==inp)inp.value=d.url||"";
+ tuFill(d);
  const p=d.pending||[];
  const av=d.available||[];
  $("tuavail").innerHTML=(!p.length&&av.length)
@@ -3392,15 +3380,26 @@ async function tuLoad(){
   tuLoad();
  });
 }
+// v5: 올릴 주소는 보여 주기만 한다 — 바꾸는 곳은 LoadMonitor24-팀서버주소.bat 하나.
+// 설치 폴더의 config\\team_server.json 에 저장되어 폴더를 옮기거나 나눠 줘도 그대로 따라간다.
+function tuFill(d){
+ if($("tuurl"))$("tuurl").textContent=d.url||"(주소 없음)";
+ const SRC={file:"설치 폴더에 저장된 주소",legacy:"이전 판 설정에서 이어받은 주소",default:"기본 주소"};
+ const src=(d.source||{}).host, el=$("tuaddr");
+ if(!el)return;
+ el.innerHTML=(src&&SRC[src]?esc(SRC[src])+" · ":"")
+  +"바꾸려면 설치 폴더의 <b>"+esc(d.edit_bat||"LoadMonitor24-팀서버주소.bat")+"</b> 을 실행하세요(이 화면에서는 바꾸지 않습니다)."
+  +(d.addr_kind==="loopback"?`<div style="color:#c0122f">${esc(d.addr_note||"")}</div>`:"")
+  +((d.warnings||[]).length?`<div style="color:#c0122f">${(d.warnings||[]).map(esc).join("<br>")}</div>`:"");
+}
 $("tuping").onclick=async()=>{
  tuBusy(true,"");$("tustat").textContent="확인 중…";
  const r=await fetch("/api/teamping",{method:"POST",headers:{"Content-Type":"application/json"},
-   body:JSON.stringify({url:$("tuurl").value})}).then(x=>x.json()).catch(()=>({ok:false,error:"통신 실패"}));
+   body:"{}"}).then(x=>x.json()).catch(()=>({ok:false,error:"통신 실패"}));
  tuBusy(false,"");
  $("tustat").innerHTML=r.ok?`<span style="color:#0f7a3d">● 이 망에서 연결됨 (${r.ms||0}ms)</span>`
    :`<span style="color:#c0122f">● 이 망에서는 닿지 않음</span>`;
  if(!r.ok&&r.error)$("tumsg").textContent=String(r.error).slice(0,80);
- if(r.saved)tuLoad();
 };
 async function tuSend(){
  // v4: 판정 전에 **항상** 새로 읽는다 — 예전에는 TU(마지막 tuLoad 스냅샷)로 판정해서, 화면을
@@ -3429,10 +3428,10 @@ async function tuSend(){
  return tuSendConfirmed(p);
 }
 async function tuSendConfirmed(p){
- if(!confirm(`대기 ${p}건을 팀 서버로 보냅니다.\\n\\n${$("tuurl").value||"(주소 없음)"}\\n\\n판정 결과와 근거 신호(메일·회의 제목 포함)가 전송됩니다. 계속할까요?`))return;
+ if(!confirm(`대기 ${p}건을 팀 서버로 보냅니다.\\n\\n${(TU&&TU.url)||"(주소 없음)"}\\n\\n판정 결과와 근거 신호(메일·회의 제목 포함)가 전송됩니다. 계속할까요?`))return;
  tuBusy(true,"업로드 중… (서버가 팀 취합을 다시 계산합니다)");
  const r=await fetch("/api/teamup",{method:"POST",headers:{"Content-Type":"application/json"},
-   body:JSON.stringify({url:$("tuurl").value})}).then(x=>x.json()).catch(()=>({ok:false,error:"통신 실패"}));
+   body:"{}"}).then(x=>x.json()).catch(()=>({ok:false,error:"통신 실패"}));
  tuBusy(false,"");
  await tuLoad();
  if(r.error==="busy"){alert("다른 작업이 실행 중입니다 — 끝난 뒤 다시 누르세요.");return;}
@@ -4323,7 +4322,7 @@ class H(BaseHTTPRequestHandler):
                 if ROOT not in sys.path:        # 요청마다 쌓이지 않게
                     sys.path.insert(0, ROOT)
                 import teamup as _tu
-                st = {"url": (cfg().get("teamServerUrl") or "").strip(),
+                st = {**_addr_payload(),
                       "share": (cfg().get("teamShareDir") or "").strip(),
                       "auto": False,
                       "pending": _tu.list_pending(), "sent": _tu.list_sent(),
@@ -4354,8 +4353,7 @@ class H(BaseHTTPRequestHandler):
             except OSError as e:
                 err = f"teamup.py 실행 실패({type(e).__name__})"
             if st is None:
-                self._send(200, {"ok": False, "error": err, "pending": None, "sent": [],
-                                 "url": (cfg().get("teamServerUrl") or "").strip(),
+                self._send(200, {**_addr_payload(), "ok": False, "error": err, "pending": None, "sent": [],
                                  "share": (cfg().get("teamShareDir") or "").strip()})
             else:
                 st["ok"] = True
@@ -4593,28 +4591,17 @@ class H(BaseHTTPRequestHandler):
             except Exception:
                 self._send(400, {"ok": False, "error": "bad json"})
                 return
-            url = str(b.get("url") or "").strip().rstrip("/")
-            if url:
-                # 형식이 틀린 주소를 그대로 저장하면 멀쩡하던 주소가 사라진다(검증 확정).
-                # 연결 여부와는 무관하게 '형식'만 본다 — 서버망 밖에서 미리 적어 두는 것이 정상 흐름이라서.
-                from urllib.parse import urlparse
-                u = urlparse(url)
-                if u.scheme not in ("http", "https") or not u.netloc or any(c.isspace() for c in url):
-                    self._send(200, {"ok": False,
-                                     "error": "주소 형식이 올바르지 않습니다 — 예: http://10.115.147.68:9310"})
-                    return
-            saved = False
-            if url and url != (cfg().get("teamServerUrl") or "").strip():
-                saved = _save_team_url(url)      # 형식이 맞는 주소만 설정에 남긴다
+            # v5: 보낼 주소는 설치 폴더의 config\team_server.json(LoadMonitor24-팀서버주소.bat 에서만 바꾼다).
+            # 화면이 보낸 주소는 받지도 저장하지도 않는다 — teamup.py 가 같은 설정을 읽는다.
             cmd = [sys.executable, os.path.join(ROOT, "teamup.py"), "--json"]
             if self.path == "/api/teamping":
-                cmd += ["--ping"] + (["--url", url] if url else [])
+                cmd += ["--ping"]
                 timeout, step = 30, ""
             elif self.path == "/api/teamfolder":
                 cmd += ["--to-folder", str(b.get("share") or "")]
                 timeout, step = 600, "공유폴더 저장"
             else:
-                cmd += ["--upload"] + (["--url", url] if url else [])
+                cmd += ["--upload"]
                 timeout, step = 1800, "팀 서버 업로드"
             if step:
                 with LOCK:
@@ -4639,8 +4626,6 @@ class H(BaseHTTPRequestHandler):
                 if not isinstance(res, dict):
                     res = {}
                 res.setdefault("ok", p.returncode == 0)
-                if saved:
-                    res["saved"] = True
                 self._send(200, res)
             except subprocess.TimeoutExpired:
                 self._send(200, {"ok": False, "error": f"{timeout // 60}분 내에 끝나지 않았습니다 — 묶음은 그대로 대기합니다"})
@@ -4695,17 +4680,17 @@ class H(BaseHTTPRequestHandler):
                         msg = (f"포트 {port} 이 막혀 있는데 붙잡고 있는 서버가 없습니다.")
                         if rsv:
                             msg += (f"\n윈도우 예약 포트 범위({rsv})에 들어 있어 이 번호는 쓸 수 "
-                                    "없습니다 — [포트 바꾸기] 로 다른 번호를 쓰세요.")
+                                    "없습니다 — LoadMonitor24-팀서버주소.bat 에서 포트를 다른 번호로 바꾸세요.")
                         elif lo and lo <= port <= hi:
                             msg += (f"\n이 PC 의 임시 포트 범위가 {lo}~{hi} 이고 {port} 이 그 안에 "
                                     "듭니다 — 다른 프로그램이 '바깥으로 연결' 하며 잠깐 쓴 것입니다. "
-                                    "잠시 뒤 다시 누르거나, 번호를 " + str(max(hi + 1, 19310))
+                                    "잠시 뒤 다시 누르거나, LoadMonitor24-팀서버주소.bat 에서 번호를 " + str(max(hi + 1, _alt_port_base()))
                                     + " 처럼 그 범위 밖으로 바꾸면 다시 생기지 않습니다.")
                         else:
-                            msg += "\n잠시 뒤 다시 시도하거나 [포트 바꾸기] 를 쓰세요."
+                            msg += "\n잠시 뒤 다시 시도하거나 LoadMonitor24-팀서버주소.bat 에서 포트를 바꾸세요."
                     elif kind == "unreadable":
                         msg = (f"포트 {port} 이 쓰이고 있는데 무엇이 쥐고 있는지 확인하지 못했습니다"
-                               " (권한 또는 보안 프로그램). [포트 바꾸기] 를 쓰세요.")
+                               " (권한 또는 보안 프로그램). LoadMonitor24-팀서버주소.bat 에서 포트를 바꾸세요.")
                     else:
                         msg = (f"포트 {port} 을 LoadMonitor 가 아닌 프로그램이 쓰고 있습니다 — {who}")
                         if occ and occ[0].get("exe"):
@@ -4713,18 +4698,18 @@ class H(BaseHTTPRequestHandler):
                         if occ and occ[0].get("cmd"):
                             msg += f"\n명령줄: {occ[0]['cmd'][:160]}"
                         msg += ("\n무엇인지 모르겠으면 죽이지 마세요 — 사내 보안·백업 프로그램일 수 "
-                                "있습니다. [포트 바꾸기] 가 안전합니다.")
+                                "있습니다. LoadMonitor24-팀서버주소.bat 에서 포트를 바꾸는 편이 안전합니다.")
                     if not force:
                         if take == "no" and kind in ("legacy_lm", "other_lm", "unknown"):
                             bad = [x for x in occ if x["protected"]]
                             if bad and any(x["self"] for x in bad):
                                 msg += ("\n\n[!] 그 프로세스는 이 대시보드 자신입니다 — "
                                         "팀 서버 포트와 대시보드 포트가 같습니다. "
-                                        "[포트 바꾸기] 로 다른 번호를 쓰세요.")
+                                        "LoadMonitor24-팀서버주소.bat 에서 포트를 다른 번호로 바꾸세요.")
                             elif bad:
                                 msg += ("\n\n이 프로그램은 강제로 끝낼 수 없습니다 "
                                         "(시스템 프로세스이거나 다른 계정 소유) — "
-                                        "그 계정에서 닫거나 [포트 바꾸기] 를 쓰세요.")
+                                        "그 계정에서 닫거나 LoadMonitor24-팀서버주소.bat 에서 포트를 바꾸세요.")
                         log("[팀 서버] 시작 거절 — " + msg.splitlines()[0])
                         self._send(200, {"ok": False, "error": msg, "occupied": True,
                                          "port": port, "running": False, "kind": kind,
@@ -4735,7 +4720,7 @@ class H(BaseHTTPRequestHandler):
                         self._send(200, {"ok": False, "occupied": True, "running": False,
                                          "kind": kind, "occupant": occ, "take": take,
                                          "error": f"강제로 끝낼 수 없는 프로세스입니다 — {who}. "
-                                                  "[포트 바꾸기] 를 쓰세요."})
+                                                  "LoadMonitor24-팀서버주소.bat 에서 포트를 바꾸세요."})
                         return
                     if take == "confirm_pid" and confirm_pid not in [x["pid"] for x in occ]:
                         # LoadMonitor 가 아닌 것을 죽이려면 pid 를 직접 입력해야 한다
@@ -4810,7 +4795,7 @@ class H(BaseHTTPRequestHandler):
                                      "port": port,
                                      "error": "포트를 넘겨받지 못했습니다 — 먼저 잡고 있던 서버가 "
                                               "계속 응답합니다. 방금 띄운 것은 정리했습니다.\n"
-                                              "그 서버 창을 직접 닫거나 [포트 바꾸기] 를 쓰세요."})
+                                              "그 서버 창을 직접 닫거나 LoadMonitor24-팀서버주소.bat 에서 포트를 바꾸세요."})
                     return
                 st = teamserver_status()
                 log("[팀 서버] " + ("시작됨 · " + (st["urls"][0] if st["urls"] else f"포트 {port}")
@@ -4868,42 +4853,6 @@ class H(BaseHTTPRequestHandler):
                                      "그 계정에서 닫아야 합니다"))
             else:
                 self._send(400, {"ok": False, "error": "action 은 start/stop"})
-        elif self.path == "/api/teamport":
-            # 점유자를 죽이고 싶지 않을 때의 안전한 길. 팀원 주소가 바뀐다는 사실은 화면이 알린다.
-            n = int(self.headers.get("Content-Length", 0))
-            try:
-                b = json.loads(self.rfile.read(n) or b"{}")
-                newp = int(b.get("port") or 0)
-            except (ValueError, TypeError):
-                self._send(400, {"ok": False, "error": "포트 번호가 아닙니다"})
-                return
-            if not (1024 <= newp <= 65535):
-                self._send(200, {"ok": False, "error": "1024~65535 사이의 번호를 쓰세요"})
-                return
-            if newp == PORT[0]:
-                self._send(200, {"ok": False, "error": f"{newp} 은 이 대시보드가 쓰는 번호입니다 "
-                                                       "— 다른 번호를 쓰세요"})
-                return
-            rsv = _port_reserved(newp)
-            if rsv:
-                self._send(200, {"ok": False, "error": f"{newp} 은 윈도우 예약 포트 범위({rsv})입니다"
-                                                       " — 다른 번호를 쓰세요"})
-                return
-            free, why = _bind_free(newp)
-            if not free:
-                self._send(200, {"ok": False, "error": f"{newp} 도 지금 쓸 수 없습니다({why})"
-                                                       " — 다른 번호를 쓰세요"})
-                return
-            old = str(cfg().get("teamServerUrl") or "")
-            m = re.match(r"^(https?://)([^:/]+)", old)
-            ips = local_ips()
-            host = m.group(2) if m else (ips[0] if ips else "127.0.0.1")
-            url = f"http://{host}:{newp}"
-            ok = _save_cfg("teamServerUrl", url)
-            log(f"[팀 서버] 포트 변경 → {newp} ({url})" if ok else "[팀 서버] 포트 변경 실패")
-            self._send(200, {"ok": ok, "port": newp, "url": url,
-                             "here": [f"http://{ip}:{newp}" for ip in ips],
-                             "error": "" if ok else "config 저장에 실패했습니다"})
         elif self.path == "/api/teambuild":
             # 결과는 있는데 묶음이 없을 때 — 지금 결과로 묶음을 만든다(실측 제보 대응)
             n = int(self.headers.get("Content-Length", 0))

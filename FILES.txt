@@ -1,13 +1,14 @@
 LoadMonitor24 필수 파일 목록 - 복사 시 전부 있어야 합니다.
 (data/ report/ teamdata/ 는 복사 금지 - 개인정보)
 
-총 82개
+총 85개
 
 LoadMonitor24-UI.bat                                   2,444 B  ef09c6ae
 LoadMonitor24.bat                                      3,554 B  f030200d
 LoadMonitor24-팀취합.bat                                  1,948 B  2f2471c0
-LoadMonitor24-팀서버.bat                                  1,612 B  e2adafad
-LoadMonitor24-팀업로드.bat                                 1,713 B  9372748b
+LoadMonitor24-팀서버.bat                                  1,695 B  1733597d
+LoadMonitor24-팀업로드.bat                                 1,823 B  de5fc69f
+LoadMonitor24-팀서버주소.bat                                2,728 B  98d474ae
 LoadMonitor24-수집진단.bat                                   849 B  f9708afd
 LoadMonitor24-가동시간비교.bat                               1,048 B  2ba31119
 LoadMonitor24-샘플러등록.bat                                  868 B  4e48ca20
@@ -17,23 +18,23 @@ agentic.py                                            45,651 B  6a97765d
 freeze.py                                             53,563 B  2ffbc705
 team_report.py                                       160,391 B  56e24a91
 flow.py                                               89,019 B  23fcab48
-teamserver.py                                         27,808 B  d9325192
-teamup.py                                             39,085 B  792d5243
+teamserver.py                                         30,252 B  74f57001
+teamup.py                                             40,402 B  6d020a7e
 aggregate.py                                          50,107 B  77bba803
 export.py                                              8,906 B  a4fed94a
 retag.py                                               6,128 B  8d6f81d3
 team_refine.py                                         6,565 B  2940e54b
 team_recalc.py                                        58,110 B  8c98bffe
 report_out.py                                         30,599 B  01944b84
-README.md                                            103,857 B  f4e449f3
+README.md                                            107,056 B  a64c6067
 check.py                                               2,629 B  7badfe69
 judge.py                                             108,118 B  f0232882
 mine.py                                               18,110 B  e59b3914
 refine.py                                             50,015 B  8b9e7ba2
 ruff.toml                                              1,004 B  47a31613
 FILES.txt                                                (이 파일)
-run.py                                                76,013 B  d5015769
-자가점검.py                                                9,260 B  b3b50687
+run.py                                                76,160 B  efd70369
+자가점검.py                                               10,428 B  2b5c9b09
 collect/Add-WorkLog.ps1                                1,771 B  8a921980
 collect/Get-FileActivity.ps1                          48,656 B  cfab595d
 collect/Get-GitActivity.py                            29,162 B  0facda4f
@@ -53,8 +54,8 @@ collect/Get-TeamsWindow.ps1                           36,450 B  3995ec1e
 collect/Diagnose-Collectors.ps1                       37,278 B  84757f4e
 collect/Register-Samplers.ps1                         11,780 B  d18b9601
 collect/Start-ActivitySampler.ps1                      8,715 B  9bec0ce6
-config/config.json                                    43,641 B  e2f8d1d0
-config/config.default.json                            43,641 B  e2f8d1d0
+config/config.json                                    44,065 B  f6e02de0
+config/config.default.json                            44,065 B  f6e02de0
 config/agentic_tasks.json                              4,426 B  2c9e5bb1
 core/board.py                                         13,181 B  86eaf661
 core/extract.py                                      227,283 B  cb706498
@@ -62,16 +63,18 @@ core/pc_ledger.py                                     19,424 B  7b61fc34
 core/budget.py                                         2,968 B  3297d2b6
 core/stage_state.py                                    7,301 B  d30a0590
 core/watch.py                                          6,594 B  33e30d52
+core/teamaddr.py                                      19,891 B  9364da55
 tools/check_l1.py                                      4,770 B  cfe71d55
 tools/check_trend.py                                   7,627 B  d4724e09
 tools/check_recalc.py                                 18,812 B  a49d57bc
+tools/check_teamaddr.py                               20,066 B  be8354d9
 core/programs.py                                      15,778 B  1f1e142f
 core/details.py                                       77,855 B  b04db4f5
 core/owner.py                                          1,488 B  1f1dc049
 core/progress.py                                       1,648 B  15bfd33b
 core/projmap.py                                        7,133 B  cca7d2cb
-docs/설정가이드.md                                         88,733 B  17015058
-docs/사용안내.html                                       272,444 B  3cea5b8b
+docs/설정가이드.md                                         89,987 B  22d996c4
+docs/사용안내.html                                       273,277 B  aa3ef5c5
 tools/copilot_auto.py                                 80,681 B  013c92f2
 tools/pc_hours_compare.py                             21,674 B  c43ff972
 tools/lm20_ref/Get-PcOnHistory.ps1.txt                 9,319 B  5ce7ef54
@@ -79,9 +82,9 @@ tools/lm20_ref/Get-PcOnHints.py.txt                    9,545 B  7d4dae30
 tools/trace_summary.py                                 6,916 B  b0d0d60e
 tools/Get-EmbeddedPython.ps1                           2,472 B  b0a213eb
 tools/check_page_js.py                                 8,818 B  f6d3b95b
-tools/lint.ps1                                         8,833 B  85d3b177
-tools/Make-Package.ps1                                10,787 B  48bda4c4
-tools/Make-MovePack.py                                12,103 B  4132d2e7
+tools/lint.ps1                                         9,187 B  9c45ad33
+tools/Make-Package.ps1                                12,687 B  47fa4371
+tools/Make-MovePack.py                                12,236 B  df1d2622
 tools/Prepare-Move.ps1                                26,116 B  67389835
 tools/update_files.py                                  4,530 B  33b4a677
-ui/app.py                                            368,286 B  5370a0b2
+ui/app.py                                            366,895 B  1533eead

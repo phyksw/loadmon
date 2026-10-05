@@ -2,7 +2,7 @@
 r"""
 teamup.py — 분석 결과를 팀 저장소로 올린다 (LoadMonitor24: 자동 전송이 아니라 '대기 → 버튼')
 
-팀 서버(예: http://10.115.147.68:9310)는 특정 망에서만 닿는다. 분석은 아무 망에서나 하니
+팀 서버는 특정 망에서만 닿는다. 분석은 아무 망에서나 하니
 분석 때마다 자동 전송을 시도하면 대부분 실패하고, 그 결과가 조용히 사라진다(실측).
 그래서 LM19 는 이렇게 나눈다:
 
@@ -12,8 +12,11 @@ teamup.py — 분석 결과를 팀 저장소로 올린다 (LoadMonitor24: 자동
 
   python teamup.py --build --from 2026-05-19 --to 2026-08-17   묶음 준비(전송 안 함)
   python teamup.py --list                                      대기 목록
-  python teamup.py --ping [--url http://...]                   이 망에서 닿는지 확인(빠름)
-  python teamup.py --upload [--url http://...]                 대기분 전부 전송
+  python teamup.py --ping [--host <IP>] [--port <번호>]         이 망에서 닿는지 확인(빠름)
+  python teamup.py --upload [--host <IP>] [--port <번호>]       대기분 전부 전송
+      (주소는 팀 서버 주소 설정 config\team_server.json — core\teamaddr.py 가 읽는다.
+       --host·--port·--url 은 이번 한 번만 쓰는 값이고 설정은 바꾸지 않는다 —
+       설정을 바꾸는 곳은 LoadMonitor24-팀서버주소.bat 하나)
   python teamup.py --to-folder "\\서버\공유\LoadMonitor"          공유폴더로 대신 저장
       (개인 HTML 보고서 분석리포트_<기간>.html·보고서_<기간>.html 이 있으면
        <폴더>\개인리포트\<이름>_<파일명> 으로 함께 복사 — 팀 서버 묶음에는 넣지 않는다)
@@ -44,7 +47,7 @@ if __name__ == "__main__":
 
 
 FLAGS = {"--build", "--build-all", "--build-latest", "--scan", "--list", "--ping",
-         "--upload", "--to-folder", "--drop", "--json", "--url", "--from", "--to"}
+         "--upload", "--to-folder", "--drop", "--json", "--url", "--host", "--port", "--from", "--to"}
 
 
 def arg(flag, d=""):
@@ -96,7 +99,24 @@ def load_cfg():
 
 
 def target_url(cfg, override=""):
-    return (override or arg("--url") or cfg.get("teamServerUrl") or "").strip().rstrip("/")
+    r"""보낼 주소 — 우선순위: 함수 인자 > --url > --host/--port > 팀 서버 주소 설정(teamaddr).
+    v5: 설정은 core\teamaddr.py 한 곳에서만 읽는다(예전처럼 config.teamServerUrl 을 직접 읽지 않는다).
+    형식이 틀린 일회성 값은 빈 문자열로 돌려 '주소 없음' 으로 멈추게 한다 — 엉뚱한 곳으로 보내지 않게."""
+    import teamaddr
+    one = (override or arg("--url") or "").strip().rstrip("/")
+    if one:
+        pu = teamaddr.parse_url(one)
+        if pu is None:
+            return ""
+        return f"http://{pu[0]}:{pu[1] or teamaddr.load(ROOT).port}"
+    h, p = arg("--host"), arg("--port")
+    if h or p:
+        a = teamaddr.load(ROOT)
+        hh, pp, err = teamaddr.split_input(h or a.host, p or None)
+        if err:
+            return ""
+        return f"http://{hh}:{pp or a.port}"
+    return teamaddr.load(ROOT).url
 
 
 # 윈도우 경로 길이(260자) — 공유폴더가 깊으면 <공유폴더>\<이름>\<파일> 이 이를 넘겨 저장이 실패한다
@@ -403,7 +423,8 @@ def list_sent(limit=10):
 def ping(url, timeout=4.0):
     """이 망에서 서버에 닿는가 — 빠르게 확인한다(응답이 오면 도달로 본다)"""
     if not url:
-        return {"ok": False, "error": "주소가 비어 있습니다 (config.teamServerUrl)"}
+        return {"ok": False, "error": "팀 서버 주소가 비었거나 형식이 틀렸습니다 — "
+                                      "LoadMonitor24-팀서버주소.bat 에서 서버 IP·포트를 저장하세요"}
     t0 = time.time()
     try:
         req = urllib.request.Request(url + "/api/team", method="GET")
@@ -726,8 +747,9 @@ def main():
     if "--upload" in sys.argv:
         url = target_url(cfg)
         if not url:
-            _out(js, {"ok": False, "error": "config.teamServerUrl 미설정"},
-                 "[teamup] 팀 서버 주소가 없습니다 — config\\config.json 의 teamServerUrl 을 적으세요")
+            _out(js, {"ok": False, "error": "팀 서버 주소가 비었거나 형식이 틀렸습니다"},
+                 "[teamup] 팀 서버 주소가 비었거나 형식이 틀렸습니다 — LoadMonitor24-팀서버주소.bat 에서 "
+                 "서버 IP·포트를 저장하세요")
             return 1
         pg = ping(url)
         if not pg.get("ok"):

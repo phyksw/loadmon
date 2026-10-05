@@ -13,6 +13,7 @@ NEED = [
     "LoadMonitor24-팀취합.bat",
     "LoadMonitor24-팀서버.bat",
     "LoadMonitor24-팀업로드.bat",
+    "LoadMonitor24-팀서버주소.bat",
     "LoadMonitor24-수집진단.bat",
     "LoadMonitor24-가동시간비교.bat",
     "LoadMonitor24-샘플러등록.bat",
@@ -67,9 +68,11 @@ NEED = [
     "core/budget.py",
     "core/stage_state.py",
     "core/watch.py",
+    "core/teamaddr.py",
     "tools/check_l1.py",
     "tools/check_trend.py",
     "tools/check_recalc.py",
+    "tools/check_teamaddr.py",
     "core/programs.py",
     "core/details.py",
     "core/owner.py",
@@ -203,3 +206,18 @@ if caches:
         print(f"    {d}\\  파일 {n:,}개")
     print("    (__pycache__ 는 파이썬이 실행 때 만드는 것이라 지워도 다시 생깁니다 — 본인 PC 에서는 그대로 둬도 됩니다.")
     print(r"     .ruff_cache 는 옛 lint 실행의 잔재 — 지금은 tools\lint.ps1 --no-cache, ruff.toml cache-dir=%TEMP% 라 다시 생기지 않습니다.)")
+
+
+# ── 팀 서버 주소 (v5) ──────────────────────────────────────────────────────
+# 폴더를 옮기거나 나눠 받은 뒤 '분석 결과가 어디로 올라가는지'를 바로 확인한다 — 서버 IP·포트는 설치 폴더의
+# config\team_server.json 에 있어 폴더와 함께 다닌다(바꾸는 곳은 LoadMonitor24-팀서버주소.bat 하나).
+try:
+    import importlib.util
+    _spec = importlib.util.spec_from_file_location("lm_teamaddr", os.path.join(ROOT, "core", "teamaddr.py"))
+    _ta = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_ta)
+    print()
+    print(f"[팀 서버] 분석 결과를 올릴 주소 — 바꾸려면 {_ta.EDIT_BAT}")
+    print(_ta.describe(_ta.load(ROOT)))
+except Exception as _e:            # 주소 확인이 실패해도 파일 점검 결과는 그대로 둔다
+    print(f"[!] 팀 서버 주소를 읽지 못했습니다({type(_e).__name__}) — core\\teamaddr.py 를 확인하세요")

@@ -1,4 +1,4 @@
-﻿# lint.ps1 - single lint entry for LoadMonitor: 10 gates in one.
+﻿# lint.ps1 - single lint entry for LoadMonitor: 11 gates in one.
 #   1) ruff (python)               2) PowerShell syntax parse
 #   3) PAGE/TEAM_PAGE unescaped \n (JS SyntaxError -> 버튼 전멸 실사고 방지)
 #   4) bat encoding (CP949 + CRLF, no BOM)
@@ -153,5 +153,9 @@ if ($LASTEXITCODE -ne 0) { $fail = 1 }
 & $py8 (Join-Path $root 'tools\check_recalc.py') 2>&1 | ForEach-Object { Write-Output $_ }
 if ($LASTEXITCODE -ne 0) { $fail = 1 }
 
-if ($fail -eq 0) { Write-Output 'lint OK (10 gates)' }
+# --- gate 11: 팀 서버 주소 단일원 - 서버 IP·포트는 config\team_server.json(teamaddr)만 · 바꾸기는 LoadMonitor24-팀서버주소.bat 하나 · 폴더 이동 유지 · 서버<->업로드 끝단 ---
+& $py8 (Join-Path $root 'tools\check_teamaddr.py') 2>&1 | ForEach-Object { Write-Output $_ }
+if ($LASTEXITCODE -ne 0) { $fail = 1 }
+
+if ($fail -eq 0) { Write-Output 'lint OK (11 gates)' }
 exit $fail

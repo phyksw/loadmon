@@ -18,7 +18,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 
-# 패키징 훅: lint 10관문(ruff·PS 파서·화면 JS 문법·bat/ps1 인코딩·개발 PC 실경로·L1 어휘·추이 계약·재계산기 계약)을 통과해야 담는다.
+# 패키징 훅: lint 11관문(ruff·PS 파서·화면 JS 문법·bat/ps1 인코딩·개발 PC 실경로·L1 어휘·추이 계약·재계산기 계약·팀 서버 주소 단일원)을 통과해야 담는다.
 # 실사고 — JS 문법 오류 하나로 버튼 11개가 전부 죽은 배포본이 나간 적이 있다. 배포 직전이 마지막 관문이다.
 if (-not $SkipLint) {
     $lint = Join-Path $PSScriptRoot 'lint.ps1'
@@ -124,6 +124,31 @@ $tpl = Join-Path $root 'config\config.default.json'
 if (-not (Test-Path $tpl)) { Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue; throw 'config\config.default.json 이 없습니다 — 배포 템플릿이 있어야 합니다' }
 Copy-Item $tpl (Join-Path $dest 'config\config.json') -Force
 
+# 팀 서버 주소(서버 IP·포트)는 '팀 공용 값'이라 개인 설정(config.json)과 달리 담는다 — v5 사용자 지시:
+# "그대로 폴더를 옮기면 그 서버 IP 변경이 유지되는 채로 일반 유저는 분석 후 그쪽 IP 로 올릴 수 있게".
+# LoadMonitor24-팀서버주소.bat 으로 저장한 config\team_server.json 이 있으면 받는 사람도 같은 주소로 올린다.
+# 담기 전에 내용이 주소 두 값(host·port)뿐인지 확인한다 — 다른 것이 섞였으면 담지 않고 멈춘다.
+$teamAddr = Join-Path $root 'config\team_server.json'
+$teamAddrMsg = '팀 서버 주소 파일 없음 - 받는 사람은 기본 주소로 올립니다(바꾸려면 LoadMonitor24-팀서버주소.bat)'
+if (Test-Path $teamAddr) {
+    $ta = $null
+    try { $ta = Get-Content $teamAddr -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $ta = $null }
+    $extra = @()
+    $portOk = $false
+    if ($ta) {
+        $extra = @($ta.PSObject.Properties.Name | Where-Object { $_ -notin @('_설명', 'host', 'port', 'saved_at') })
+        $pv = 0
+        $portOk = [int]::TryParse([string]$ta.port, [ref]$pv) -and $pv -ge 1 -and $pv -le 65535
+    }
+    if (-not $ta -or $extra.Count -or -not ([string]$ta.host -match '^[A-Za-z0-9._-]{1,253}$') -or -not $portOk) {
+        Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
+        throw '배포 위생 실패: config\team_server.json 이 팀 서버 주소 형식이 아닙니다 - LoadMonitor24-팀서버주소.bat 으로 다시 저장하세요'
+    }
+    Copy-Item $teamAddr (Join-Path $dest 'config\team_server.json') -Force
+    $teamAddrMsg = "팀 서버 주소 동봉: http://$($ta.host):$($ta.port) (config\team_server.json - 받는 사람도 이 주소로 올립니다)"
+}
+Write-Host "[배포본] $teamAddrMsg"
+
 # 빈 폴더만 만들어 둔다 — 받는 사람이 처음 실행할 때 자기 데이터가 여기 쌓인다
 foreach ($d in 'data', 'report') { New-Item -ItemType Directory -Force (Join-Path $dest $d) | Out-Null }
 
@@ -158,7 +183,7 @@ if ($h1 -ne $h2) {
 }
 
 if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Force $OutDir | Out-Null }
-$kind = if ($Full) { 'LoadMonitor24_v4_풀패키지_' } else { 'LoadMonitor24_v4_' }
+$kind = if ($Full) { 'LoadMonitor24_v5_풀패키지_' } else { 'LoadMonitor24_v5_' }
 # 이름은 초 단위(HHmmss)까지, 이미 있으면 _2 _3 … 으로 비켜 간다 — 남의 zip 은 절대 지우지 않는다.
 # 압축은 임시 이름(.partial.zip)으로 한 뒤 같은 폴더 안에서 제 이름으로 옮긴다(같은 볼륨 → 원자적 rename).
 # 실측: 같은 분에 두 번 돌리면 뒤 실행이 ArchiveFileExists 로 죽거나, 앞 실행이 막 완성한 zip 을 지웠다.
@@ -181,6 +206,7 @@ $mb = [math]::Round((Get-Item $zip).Length / 1MB, 1)
 Write-Host ""
 Write-Host "[배포본] $zip  ($mb MB · 파일 $($need.Count)개)"
 Write-Host "         data\ report\ 는 빈 폴더로만 들어갔습니다 (개인정보·남의 분석결과 제외)."
+Write-Host "         $teamAddrMsg"
 if ($Full) { Write-Host '         내장 파이썬 동봉 - 받는 PC 에 아무것도 설치할 필요 없이 bat 더블클릭으로 실행됩니다.' }
 Write-Host ""
 Write-Host "받는 사람 안내:"

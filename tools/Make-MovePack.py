@@ -25,6 +25,7 @@ Edge 기동 인자의 캐시 상한(config.copilotAuto.diskCacheMB)은 Default\C
 ProvenanceData 168MB·component_crx_cache 168MB 는 그 상한과 무관해서 이 정리가 필요하다.
 
 담는 것 : data\ (copilot_profile 제외) · report\ · config\*.json (병합 맵 포함)
+  · config\team_server.json(팀 서버 IP·포트, v5)도 config\ 와 함께 담긴다 — 받는 PC 도 같은 주소로 올린다
 안 담는 것: data\copilot_profile · python\ · .git\ · __pycache__ · *.zip · 얼린보고서 과거본(--full 이면 전부)
   · python\ 은 배포본(풀패키지)에 들어 있어 다시 받으면 된다
   · config 의 detail_aliases.json·project_aliases.json 은 **반드시** 담는다 — 저장소에 없고

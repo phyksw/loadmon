@@ -19,3 +19,4 @@ __pycache__/
 # FILES.txt·자가점검 NEED 목록에도 없다. 사람마다 다른 값이라 저장소에 넣지 않는다.
 config/detail_aliases.json
 config/project_aliases.json
+config/team_server.json
