@@ -1,0 +1,3227 @@
+{
+ "schema": "lm27.settings_registry/1",
+ "contract": "CONTRACT v1.0.1 §5",
+ "fields": {"default": "선언 기본값(config\\config.json 이 덮는다)", "type": "int float bool str enum path timerange regex list list(+-) obj", "range": "수치 = {min, max, step}, 목록 = 원소 수 {min, max}, 없으면 null", "choices": "enum = 허용 값, 목록 = 원소 허용 값, bool = [false, true]", "item": "목록 원소·객체 값의 형(str path regex w16 hostport party int port_range cidr obj float bool str_list)", "keys": "obj 의 고정 키(덮어쓰기는 얕은 병합) — 없으면 통째 대체", "nullable": "null 허용", "pattern": "str 값·목록 원소가 맞아야 하는 정규식", "owner": "읽는 모듈(점 경로 또는 collect/ 스크립트 경로) — L-12 단계 적용 기준", "readers": "함께 읽는 모듈·스크립트", "spec": "근거 명세 절(계약 §5.2 표)", "uncalibrated": "★ 미보정 정책값", "secret": "값 표시·내보내기 금지(sha256 만 담는 키)", "scope": "personal · agent(agent_config.json 으로 내려감) · team_server", "restart": "바꾼 뒤 다시 띄울 것: none · ui · agent · team_server"},
+ "keys": {
+  "collect.backfillPc": {
+   "default": "cloud", "type": "str", "range": null, "choices": null, "pattern": "^\\S.{0,63}$",
+   "owner": "lm27.collect.plan", "readers": ["lm27.collect.todo"], "spec": "C §1 · CM §13",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "백필 담당 PC",
+   "help_ko": "계정 단위 자료(OWA·Teams 웹·코파일럿 증인)의 기간 전체 백필을 맡는 PC. 'cloud' = 클라우드PC, 아니면 PC 라벨."
+  },
+  "collect.lookbackDays": {
+   "default": 120, "type": "int", "range": {"min": 1, "max": 1825}, "choices": null,
+   "owner": "lm27.collect.run", "readers": ["lm27.agent.harvest", "collect/Get-EventActivity.ps1", "collect/agent/harvest.ps1"], "spec": "계약(CM·CP 기간 키 통합, O-5)",
+   "uncalibrated": true, "secret": false, "scope": "agent", "restart": "agent",
+   "label_ko": "수집 회고 기간(일)",
+   "help_ko": "수집이 거슬러 읽는 기본 기간. 전경 수집과 에이전트 수확(이벤트 로그 -Days)이 같은 값을 쓴다."
+  },
+  "collect.parallelMax": {
+   "default": 2, "type": "int", "range": {"min": 1, "max": 8}, "choices": null,
+   "owner": "lm27.collect.plan", "readers": [], "spec": "C §8.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "수집 단계 병렬 상한",
+   "help_ko": "서로 다른 수집 단계를 동시에 돌리는 최대 개수."
+  },
+  "collect.budgetSec": {
+   "default": 0, "type": "int", "range": {"min": 0, "max": 86400}, "choices": null,
+   "owner": "lm27.collect.run", "readers": [], "spec": "C §8.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "수집 전체 시간 예산(초)",
+   "help_ko": "[수집] 한 번의 전체 예산. 0 = 끔. 예산이 닿으면 남은 단계는 partial + budget_hit 로 끝난다."
+  },
+  "collect.watch.heartbeatSec": {
+   "default": 30, "type": "int", "range": {"min": 5, "max": 300}, "choices": null,
+   "owner": "lm27.collect.watch", "readers": [], "spec": "C §8.4",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "단계 감시 하트비트(초)",
+   "help_ko": "장기 단계가 생존 progress 이벤트를 내는 주기."
+  },
+  "collect.watch.stallMin": {
+   "default": 15, "type": "int", "range": {"min": 1, "max": 240}, "choices": null,
+   "owner": "lm27.collect.watch", "readers": [], "spec": "C §8.4",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "정체 판정(분)",
+   "help_ko": "하트비트가 이 시간 동안 없으면 정체(stall)로 보고 자식 트리를 끝낸다."
+  },
+  "collect.watch.noProgressMin": {
+   "default": 45, "type": "int", "range": {"min": 1, "max": 720}, "choices": null,
+   "owner": "lm27.collect.watch", "readers": [], "spec": "C §8.4",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "무진전 판정(분)",
+   "help_ko": "완료 건수(done)가 이 시간 동안 늘지 않으면 무진전(no_progress)으로 보고 자식 트리를 끝낸다."
+  },
+  "collect.confirmBlockedCount": {
+   "default": 2, "type": "int", "range": {"min": 1, "max": 10}, "choices": null,
+   "owner": "lm27.bundle.pcreg", "readers": [], "spec": "C §6.2 · B §3.4",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "'불가' 확정 횟수",
+   "help_ko": "구조 사유가 서로 다른 날 이 횟수 이상 확인되어야 '불가(확정)'로 본다(수송 실패는 세지 않음)."
+  },
+  "collect.confirmTtlDays": {
+   "default": 14, "type": "int", "range": {"min": 1, "max": 365}, "choices": null,
+   "owner": "lm27.bundle.pcreg", "readers": [], "spec": "B §3.4",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "'불가' 확정 유효 기간(일)",
+   "help_ko": "'불가(확정)'의 유효 기간. 지나면 다시 확인한다. 모든 능력에 같은 값."
+  },
+  "collect.ownerAddress": {
+   "default": "", "type": "str", "range": null, "choices": null, "pattern": "^$|^[^\\s@]+@[^\\s@]+$",
+   "owner": "lm27.collect.run", "readers": ["collect/Get-OutlookCom.ps1", "collect/Get-OutlookIndex.ps1", "lm27.privacy.context"], "spec": "CM §5.6",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "내 메일 주소(로컬 전용)",
+   "help_ko": "다른 방법으로 내 주소를 못 찾을 때 쓰는 마지막 후보. 이 PC 의 설정에만 남고 반출하지 않는다."
+  },
+  "collect.importDir": {
+   "default": "", "type": "path", "range": null, "choices": null,
+   "owner": "collect/Import-MailCal.py", "readers": [], "spec": "CM §13",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "반입 폴더",
+   "help_ko": "EML·ICS·CSV 반입 폴더. 빈 값 = 프로그램 폴더의 data\\import."
+  },
+  "ledger.mismatchRatio": {
+   "default": 1.3, "type": "float", "range": {"min": 1.0, "max": 10.0}, "choices": null,
+   "owner": "lm27.collect.ledger", "readers": [], "spec": "C §5 · CM §13",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "출처 간 건수 괴리 문턱",
+   "help_ko": "같은 셀의 색인 ÷ COM 건수가 이 배수를 넘으면 COM 누락 의심(R-COMGAP) 경고를 붙인다."
+  },
+  "probe.budgetSec": {
+   "default": 60, "type": "int", "range": {"min": 10, "max": 600}, "choices": null,
+   "owner": "lm27.collect.probe", "readers": [], "spec": "C §4.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "능력 탐침 예산(초)",
+   "help_ko": "수집 앞에 매번 도는 능력 탐침 묶음의 시간 예산."
+  },
+  "probe.subfolderRatio": {
+   "default": 0.3, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.collect.probe", "readers": ["collect/Invoke-CapabilityProbe.ps1"], "spec": "계약(C 미명명)",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "하위 폴더 비중 경고 문턱",
+   "help_ko": "기본 폴더 밖 메일 비중이 이 값 이상이면 R-SUBFOLDER 경고."
+  },
+  "probe.ostStaleH": {
+   "default": 72, "type": "int", "range": {"min": 1, "max": 8760}, "choices": null,
+   "owner": "lm27.collect.probe", "readers": ["collect/Invoke-CapabilityProbe.ps1"], "spec": "계약(C 미명명)",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "OST 신선도 경고(시간)",
+   "help_ko": "오프라인 캐시가 이 시간보다 오래되면 R-STALE 경고."
+  },
+  "mail.includeArchiveStore": {
+   "default": false, "type": "bool", "range": null, "choices": [false, true],
+   "owner": "lm27.collect.run", "readers": ["collect/Get-OutlookCom.ps1"], "spec": "CM §13",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "보관 사서함 포함",
+   "help_ko": "켜면 COM 수집에 보관(Archive) 사서함도 넣는다. 끄면 보관분은 지평선 밖으로 기록되어 OWA 백필로 간다."
+  },
+  "mail.com.budgetSec": {
+   "default": 360, "type": "int", "range": {"min": 30, "max": 7200}, "choices": null,
+   "owner": "lm27.collect.run", "readers": ["collect/Get-OutlookCom.ps1"], "spec": "CM §13",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "Outlook COM 예산(초)",
+   "help_ko": "COM 메일 수집 시간 예산(일정은 절반). 닿으면 partial + budget_hit."
+  },
+  "mail.com.watchdogSec": {
+   "default": 20, "type": "int", "range": {"min": 5, "max": 300}, "choices": null,
+   "owner": "lm27.collect.run", "readers": ["collect/Get-OutlookCom.ps1", "lm27.collect.probe", "collect/Invoke-CapabilityProbe.ps1"], "spec": "CM §5.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "COM 워치독(초)",
+   "help_ko": "COM 자식 프로세스가 이 시간 안에 응답하지 않으면 끝낸다(탐침 P-OL-COM 도 같은 값)."
+  },
+  "mail.com.protectedReadSec": {
+   "default": 2, "type": "int", "range": {"min": 1, "max": 30}, "choices": null,
+   "owner": "lm27.collect.run", "readers": ["collect/Get-OutlookCom.ps1", "lm27.collect.probe", "collect/Invoke-CapabilityProbe.ps1"], "spec": "C §4.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "보호 속성 시험 읽기(초)",
+   "help_ko": "Object Model Guard 판정용 보호 속성 1회 시험 읽기 시간 상한(내용은 읽지 않음)."
+  },
+  "mail.com.readProtected": {
+   "default": "auto", "type": "enum", "range": null, "choices": ["auto", "0", "1"],
+   "owner": "lm27.collect.plan", "readers": [], "spec": "CM §13",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "보호 열(B단) 읽기",
+   "help_ko": "auto = 탐침이 OMG 통과를 확인하면 읽음, 0 = 읽지 않음, 1 = 항상 읽음."
+  },
+  "mail.com.capMail": {
+   "default": 20000, "type": "int", "range": {"min": 100, "max": 1000000}, "choices": null,
+   "owner": "lm27.collect.run", "readers": ["collect/Get-OutlookCom.ps1"], "spec": "계약 · CM §5.7",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "COM 메일 상한(건)",
+   "help_ko": "COM 메일 한 번 수집의 건수 상한. 닿으면 조용히 자르지 않고 partial + cap_hit + R-CAP."
+  },
+  "mail.com.capCal": {
+   "default": 8000, "type": "int", "range": {"min": 100, "max": 1000000}, "choices": null,
+   "owner": "lm27.collect.run", "readers": ["collect/Get-OutlookCom.ps1"], "spec": "계약 · CM §5.7",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "COM 일정 상한(건)",
+   "help_ko": "COM 일정 한 번 수집의 건수 상한. 닿으면 partial + cap_hit + R-CAP."
+  },
+  "mail.index.capMail": {
+   "default": 20000, "type": "int", "range": {"min": 100, "max": 1000000}, "choices": null,
+   "owner": "lm27.collect.run", "readers": ["collect/Get-OutlookIndex.ps1"], "spec": "CM §13",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "색인 메일 상한(건)",
+   "help_ko": "Windows Search 색인 메일 건수 상한. 닿으면 partial + cap_hit."
+  },
+  "mail.index.capCal": {
+   "default": 8000, "type": "int", "range": {"min": 100, "max": 1000000}, "choices": null,
+   "owner": "lm27.collect.run", "readers": ["collect/Get-OutlookIndex.ps1"], "spec": "CM §13",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "색인 일정 상한(건)",
+   "help_ko": "Windows Search 색인 일정 건수 상한. 닿으면 partial + cap_hit."
+  },
+  "mail.index.excludeFolderNames": {
+   "default": ["지운 편지함", "삭제된 항목", "삭제된 편지함", "Deleted Items", "Trash", "정크 메일", "Junk E-mail", "Junk Email", "Junk", "스팸", "Spam", "임시 보관함", "Drafts", "Draft", "보낼 편지함", "Outbox", "보관", "보관함", "Archive", "동기화 문제", "Sync Issues", "대화 기록", "Conversation History", "RSS 피드", "RSS Feeds"], "type": "list(+-)", "range": null, "choices": null, "item": "str",
+   "owner": "lm27.collect.run", "readers": ["collect/Get-OutlookIndex.ps1"], "spec": "CM §6.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "색인 제외 폴더 이름",
+   "help_ko": "색인 수집에서 경로 조각 단위로 정확히 일치하면 빼는 폴더 이름(로캘별). {add, disable} 로 더하고 뺀다."
+  },
+  "teams.timeRegex": {
+   "default": "", "type": "regex", "range": null, "choices": null,
+   "owner": "lm27.agent.main", "readers": ["collect/Get-TeamsWindow.ps1", "collect/agent/agent.ps1"], "spec": "CT §16",
+   "uncalibrated": false, "secret": false, "scope": "agent", "restart": "agent",
+   "label_ko": "팀즈 시각 정규식",
+   "help_ko": "UIA 시각 해석의 최우선 탈출구(그룹 1=앞 표기, 2=시, 3=분, 4=뒤 표기). 빈 값 = 내장 지역 파서."
+  },
+  "teams.uia.intervalSec": {
+   "default": 300, "type": "int", "range": {"min": 120, "max": 300}, "choices": null,
+   "owner": "lm27.agent.main", "readers": ["collect/agent/agent.ps1"], "spec": "CT §16",
+   "uncalibrated": false, "secret": false, "scope": "agent", "restart": "agent",
+   "label_ko": "팀즈 창 읽기 주기(초)",
+   "help_ko": "상주 에이전트가 Teams 창(UIA)을 읽는 주기."
+  },
+  "teams.uia.visibleOnly": {
+   "default": true, "type": "bool", "range": null, "choices": [false, true],
+   "owner": "lm27.agent.main", "readers": ["collect/Get-TeamsWindow.ps1", "collect/agent/agent.ps1"], "spec": "CT §16",
+   "uncalibrated": false, "secret": false, "scope": "agent", "restart": "agent",
+   "label_ko": "보이는 창만 읽기",
+   "help_ko": "켜면 화면에 보이는 Teams 창만 읽는다(숨김·최소화 창은 R-UIAEMPTY)."
+  },
+  "teams.uia.maxElements": {
+   "default": 4000, "type": "int", "range": {"min": 100, "max": 100000}, "choices": null,
+   "owner": "lm27.agent.main", "readers": ["collect/Get-TeamsWindow.ps1", "collect/agent/agent.ps1"], "spec": "CT §16",
+   "uncalibrated": false, "secret": false, "scope": "agent", "restart": "agent",
+   "label_ko": "창당 UIA 요소 상한",
+   "help_ko": "Teams 창 하나에서 읽는 UIA 요소 수 상한."
+  },
+  "teams.uia.windowWatchdogSec": {
+   "default": 15, "type": "int", "range": {"min": 1, "max": 120}, "choices": null,
+   "owner": "lm27.agent.main", "readers": ["collect/Get-TeamsWindow.ps1", "collect/agent/agent.ps1"], "spec": "CT §16",
+   "uncalibrated": false, "secret": false, "scope": "agent", "restart": "agent",
+   "label_ko": "창당 UIA 워치독(초)",
+   "help_ko": "Teams 창 하나를 읽는 시간 상한."
+  },
+  "teams.uia.budgetSec": {
+   "default": 60, "type": "int", "range": {"min": 5, "max": 300}, "choices": null,
+   "owner": "lm27.agent.main", "readers": ["collect/agent/agent.ps1"], "spec": "계약(CT §7.2 미명명)",
+   "uncalibrated": false, "secret": false, "scope": "agent", "restart": "agent",
+   "label_ko": "팀즈 창 읽기 예산(초)",
+   "help_ko": "한 주기 전체(모든 Teams 창) 읽기 시간 예산."
+  },
+  "teams.web.maxChats": {
+   "default": 0, "type": "int", "range": {"min": 0, "max": 100000}, "choices": null,
+   "owner": "collect/Get-TeamsWeb.py", "readers": [], "spec": "CT §16",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "팀즈 웹 대화 수 상한",
+   "help_ko": "Teams 웹 백필에서 순회할 대화 수 상한. 0 = 예산 안에서 무제한."
+  },
+  "teams.web.budgetSec": {
+   "default": 900, "type": "int", "range": {"min": 60, "max": 86400}, "choices": null,
+   "owner": "collect/Get-TeamsWeb.py", "readers": [], "spec": "CT §16",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "팀즈 웹 백필 예산(초)",
+   "help_ko": "Teams 웹 백필 전체 시간 예산. 닿으면 partial + budget_hit."
+  },
+  "teams.web.maxScroll": {
+   "default": 12, "type": "int", "range": {"min": 0, "max": 1000}, "choices": null,
+   "owner": "collect/Get-TeamsWeb.py", "readers": [], "spec": "CT §16",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "대화당 되감기 상한",
+   "help_ko": "Teams 웹 대화 하나에서 위로 되감는 최대 횟수."
+  },
+  "teams.web.includeChannels": {
+   "default": true, "type": "bool", "range": null, "choices": [false, true],
+   "owner": "collect/Get-TeamsWeb.py", "readers": [], "spec": "CT §16",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "채널 글타래 순회",
+   "help_ko": "켜면 Teams 웹 백필이 채널 글타래도 순회한다."
+  },
+  "teams.web.includeActivity": {
+   "default": true, "type": "bool", "range": null, "choices": [false, true],
+   "owner": "collect/Get-TeamsWeb.py", "readers": [], "spec": "CT §16",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "활동(멘션) 피드 순회",
+   "help_ko": "켜면 Teams 웹 백필이 활동(멘션) 피드도 순회한다."
+  },
+  "teams.pmWhoKeys": {
+   "default": [], "type": "list", "range": null, "choices": null, "item": "w16",
+   "owner": "lm27.normalize.act", "readers": ["lm27.report.analysis.peers"], "spec": "CT §16",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "상급자·PM 가명 키",
+   "help_ko": "화행·동료 분석에서 가중을 줄 상대의 가명 키(w + 16자리 16진). 실명은 넣지 않는다."
+  },
+  "agent.impl": {
+   "default": "auto", "type": "enum", "range": null, "choices": ["auto", "py", "ps"],
+   "owner": "lm27.agent.install", "readers": [], "spec": "TAB §7.1",
+   "uncalibrated": false, "secret": false, "scope": "agent", "restart": "agent",
+   "label_ko": "에이전트 구현",
+   "help_ko": "auto = 자기 시험으로 파이썬 → PowerShell → 없음 순 선택, py·ps = 그 구현 고정."
+  },
+  "agent.sampleIntervalSec": {
+   "default": 60, "type": "int", "range": {"min": 5, "max": 600}, "choices": null,
+   "owner": "lm27.agent.main", "readers": ["collect/agent/agent.ps1"], "spec": "TAB §7.1 · CP §16",
+   "uncalibrated": false, "secret": false, "scope": "agent", "restart": "agent",
+   "label_ko": "샘플 주기(초)",
+   "help_ko": "전경 창·유휴·세션 샘플 주기."
+  },
+  "agent.flushIntervalSec": {
+   "default": 300, "type": "int", "range": {"min": 30, "max": 3600}, "choices": null,
+   "owner": "lm27.agent.main", "readers": ["collect/agent/agent.ps1"], "spec": "TAB §7.1",
+   "uncalibrated": false, "secret": false, "scope": "agent", "restart": "agent",
+   "label_ko": "플러시 주기(초)",
+   "help_ko": "샘플 버퍼를 정제해 로컬 원장에 gzip 멤버로 덧붙이는 주기."
+  },
+  "agent.flushMaxRows": {
+   "default": 120, "type": "int", "range": {"min": 1, "max": 10000}, "choices": null,
+   "owner": "lm27.agent.main", "readers": ["collect/agent/agent.ps1"], "spec": "CP §16",
+   "uncalibrated": false, "secret": false, "scope": "agent", "restart": "agent",
+   "label_ko": "플러시 버퍼 상한(행)",
+   "help_ko": "버퍼가 이 행 수에 닿으면 주기를 기다리지 않고 플러시한다."
+  },
+  "agent.harvestIntervalH": {
+   "default": 6, "type": "int", "range": {"min": 1, "max": 48}, "choices": null,
+   "owner": "lm27.agent.main", "readers": ["collect/agent/agent.ps1"], "spec": "TAB §7.1",
+   "uncalibrated": false, "secret": false, "scope": "agent", "restart": "agent",
+   "label_ko": "수확 주기(시간)",
+   "help_ko": "이벤트·파일·MRU·Recent 수확 주기. 이벤트 로그 롤오버보다 짧게."
+  },
+  "agent.harvestWaitSec": {
+   "default": 120, "type": "int", "range": {"min": 0, "max": 1800}, "choices": null,
+   "owner": "lm27.collect.run", "readers": [], "spec": "TAB §7.1",
+   "uncalibrated": false, "secret": false, "scope": "agent", "restart": "agent",
+   "label_ko": "수확 대기(초)",
+   "help_ko": "[수집] 이 에이전트에 즉시 수확을 요청하고 끝나기를 기다리는 최대 시간."
+  },
+  "agent.storeKeepDays": {
+   "default": 400, "type": "int", "range": {"min": 30, "max": 3650}, "choices": null,
+   "owner": "lm27.agent.main", "readers": ["collect/agent/agent.ps1"], "spec": "TAB §7.1",
+   "uncalibrated": false, "secret": false, "scope": "agent", "restart": "agent",
+   "label_ko": "로컬 원장 보존(일)",
+   "help_ko": "에이전트 로컬 원장(store) 파일 보존 기간."
+  },
+  "agent.heartbeatStaleSec": {
+   "default": 600, "type": "int", "range": {"min": 60, "max": 86400}, "choices": null,
+   "owner": "lm27.agent.install", "readers": [], "spec": "TAB §7.1",
+   "uncalibrated": false, "secret": false, "scope": "agent", "restart": "agent",
+   "label_ko": "에이전트 생존 판정(초)",
+   "help_ko": "heartbeat.json 의 마지막 틱이 이보다 오래되면 에이전트가 멈춘 것으로 본다."
+  },
+  "agent.filePoll.intervalSec": {
+   "default": 300, "type": "int", "range": {"min": 30, "max": 3600}, "choices": null,
+   "owner": "lm27.agent.main", "readers": ["collect/agent/agent.ps1"], "spec": "CP §16",
+   "uncalibrated": false, "secret": false, "scope": "agent", "restart": "agent",
+   "label_ko": "열린 문서 폴링 주기(초)",
+   "help_ko": "열린 문서의 수정 시각을 확인하는 주기."
+  },
+  "agent.filePoll.topN": {
+   "default": 40, "type": "int", "range": {"min": 1, "max": 500}, "choices": null,
+   "owner": "lm27.agent.main", "readers": ["collect/agent/agent.ps1"], "spec": "CP §16",
+   "uncalibrated": false, "secret": false, "scope": "agent", "restart": "agent",
+   "label_ko": "열린 문서 폴링 상위 N",
+   "help_ko": "최근 문서 목록에서 폴링할 상위 개수."
+  },
+  "pc.watchFolders": {
+   "default": [], "type": "list", "range": null, "choices": null, "item": "path",
+   "owner": "lm27.agent.harvest", "readers": ["collect/Get-FileActivity.ps1", "collect/agent/harvest.ps1"], "spec": "CP §16",
+   "uncalibrated": false, "secret": false, "scope": "agent", "restart": "agent",
+   "label_ko": "감시 폴더",
+   "help_ko": "산출물 파일 수정 시각을 읽을 폴더(사용자가 고른 바깥 경로)."
+  },
+  "pc.watchExtensions": {
+   "default": [".pptx", ".pptm", ".ppt", ".xlsx", ".xlsm", ".xlsb", ".xls", ".docx", ".docm", ".doc", ".pdf", ".hwp", ".hwpx", ".md", ".txt", ".csv", ".tsv", ".one", ".msg", ".eml", ".vsdx", ".vsd", ".xmind", ".drawio", ".mpp", ".py", ".ipynb", ".c", ".cpp", ".cc", ".h", ".hpp", ".cs", ".java", ".js", ".ts", ".tsx", ".go", ".rs", ".jl", ".r", ".m", ".mlx", ".mlapp", ".slx", ".mdl", ".tcl", ".ps1", ".sh", ".bat", ".sql", ".lua", ".zpl", ".lsf", ".yaml", ".yml", ".toml", ".sln", ".vcxproj", ".csproj", ".v", ".sv", ".vhd", ".vhdl", ".xdc", ".xpr", ".qpf", ".qsf", ".bit", ".sof", ".ioc", ".uvprojx", ".ewp", ".eww", ".hex", ".elf", ".map", ".bin", ".zmx", ".zar", ".zos", ".zsc", ".zdf", ".seq", ".len", ".lis", ".lts", ".frd", ".oml", ".inr", ".fsp", ".lms", ".ldev", ".ind", ".aedt", ".aedtz", ".wbpj", ".wbpz", ".mechdb", ".cas", ".dat", ".msh", ".rst", ".db", ".mph", ".inp", ".odb", ".cae", ".cas.gz", ".dat.gz", ".zrd", ".zbf", ".siw", ".mechdat", ".rth", ".rmg", ".cdb", ".anf", ".trn", ".jou", ".flprj", ".cas.h5", ".dat.h5", ".msh.h5", ".msh.gz", ".sta", ".op2", ".f06", ".f04", ".xdb", ".pch", ".bdf", ".nas", ".neu", ".sim", ".fem", ".afm", ".modfem", ".fno", ".fld", ".cfld", ".cpt", ".fbd", ".cwr", ".cst", ".h3d", ".hm", ".t16", ".sts", ".sdy", ".mfr", ".k", ".stt", ".rpt", ".comm", ".cvg", ".su2", ".sif", ".unv", ".vtu", ".vtk", ".pvsm", ".plt", ".sldprt", ".sldasm", ".slddrw", ".catpart", ".catproduct", ".catdrawing", ".catanalysis", ".cgr", ".3dxml", ".model", ".prt", ".asm", ".drw", ".frm", ".sec", ".lay", ".mfg", ".gph", ".ipt", ".iam", ".idw", ".par", ".psm", ".dft", ".fcstd", ".scdoc", ".scdocx", ".agdb", ".step", ".stp", ".igs", ".iges", ".x_t", ".x_b", ".sat", ".jt", ".stl", ".dwg", ".dxf", ".pcbdoc", ".schdoc", ".prjpcb", ".schlib", ".pcblib", ".kicad_pcb", ".kicad_sch", ".kicad_pro", ".kicad_sym", ".kicad_mod", ".brd", ".dsn", ".opj", ".sch", ".gbr", ".gtl", ".gbl", ".drl", ".asc", ".s2p", ".icd", ".mat", ".h5", ".hdf5", ".npy", ".npz", ".parquet", ".pkl", ".pcd", ".las", ".laz", ".ply", ".bag", ".mcap", ".db3", ".pcap", ".pcapng", ".tdms", ".lvm", ".onnx", ".pt", ".pth", ".vi", ".lvproj", ".lvlib", ".ctl"], "type": "list(+-)", "range": null, "choices": null, "item": "str", "pattern": "^\\.[a-z0-9_.]{1,20}$",
+   "owner": "lm27.agent.harvest", "readers": ["collect/Get-FileActivity.ps1", "collect/Get-RecentFiles.ps1", "collect/agent/harvest.ps1"], "spec": "CP §16",
+   "uncalibrated": false, "secret": false, "scope": "agent", "restart": "agent",
+   "label_ko": "감시 확장자",
+   "help_ko": "산출물로 볼 파일 확장자(소문자, 점 포함, 복합 확장자 허용). 이전 판 248종을 이식했다. {add, disable} 로 더하고 뺀다."
+  },
+  "pc.autoDiscoverFolders": {
+   "default": true, "type": "bool", "range": null, "choices": [false, true],
+   "owner": "lm27.agent.harvest", "readers": ["collect/Get-FileActivity.ps1", "collect/agent/harvest.ps1"], "spec": "CP §16",
+   "uncalibrated": false, "secret": false, "scope": "agent", "restart": "agent",
+   "label_ko": "작업 폴더 자동 발견",
+   "help_ko": "켜면 MRU·Recent 에서 작업 폴더를 자동으로 찾아 감시에 더한다."
+  },
+  "pc.excludeFolderNames": {
+   "default": [], "type": "list(+-)", "range": null, "choices": null, "item": "str",
+   "owner": "lm27.agent.harvest", "readers": ["collect/Get-FileActivity.ps1", "collect/Get-RecentFiles.ps1", "collect/agent/harvest.ps1"], "spec": "CP §16",
+   "uncalibrated": false, "secret": false, "scope": "agent", "restart": "agent",
+   "label_ko": "제외 폴더 이름",
+   "help_ko": "이 이름의 폴더(대소문자 무시, 완전 일치)는 파일·Recent 수집에서 뺀다. 내장 목록은 비어 있다."
+  },
+  "pc.excludePackageDirs": {
+   "default": true, "type": "bool", "range": null, "choices": [false, true],
+   "owner": "lm27.agent.harvest", "readers": ["collect/Get-FileActivity.ps1", "collect/agent/harvest.ps1"], "spec": "CP §16",
+   "uncalibrated": false, "secret": false, "scope": "agent", "restart": "agent",
+   "label_ko": "패키지·빌드 폴더 제외",
+   "help_ko": "켜면 가상환경·패키지·빌드 도구 폴더를 파일 수집에서 뺀다(빌드 표식이 있을 때만 모호한 이름 제외)."
+  },
+  "pc.files.burstN": {
+   "default": 8, "type": "int", "range": {"min": 1, "max": 1000}, "choices": null,
+   "owner": "lm27.agent.harvest", "readers": ["collect/Get-FileActivity.ps1", "lm27.time.evidence"], "spec": "CP §5.1 · W §8.2.2",
+   "uncalibrated": false, "secret": false, "scope": "agent", "restart": "agent",
+   "label_ko": "파일 뭉치 판정(건/분)",
+   "help_ko": "같은 분·같은 폴더 파일 변경이 이 수를 넘으면 동기화·복사 뭉치로 본다(수집 상한은 ×5+1)."
+  },
+  "pc.files.budgetSec": {
+   "default": 180, "type": "int", "range": {"min": 10, "max": 3600}, "choices": null,
+   "owner": "lm27.agent.harvest", "readers": ["collect/Get-FileActivity.ps1", "collect/agent/harvest.ps1"], "spec": "CP §16",
+   "uncalibrated": false, "secret": false, "scope": "agent", "restart": "agent",
+   "label_ko": "파일 스캔 예산(초)",
+   "help_ko": "파일 활동 수확 한 번의 시간 예산."
+  },
+  "pc.compute.cpuCoreThreshold": {
+   "default": 0.5, "type": "float", "range": {"min": 0.05, "max": 256.0}, "choices": null,
+   "owner": "lm27.agent.sampler", "readers": ["collect/agent/agent.ps1"], "spec": "CP §16",
+   "uncalibrated": true, "secret": false, "scope": "agent", "restart": "agent",
+   "label_ko": "배경 연산 코어 문턱",
+   "help_ko": "솔버 프로세스의 CPU 사용이 이 코어 수 이상이면 배경 연산(compute) 틱으로 센다."
+  },
+  "pc.compute.consecutiveTicks": {
+   "default": 3, "type": "int", "range": {"min": 1, "max": 100}, "choices": null,
+   "owner": "lm27.agent.sampler", "readers": ["collect/agent/agent.ps1"], "spec": "CP §16",
+   "uncalibrated": false, "secret": false, "scope": "agent", "restart": "agent",
+   "label_ko": "배경 연산 연속 틱",
+   "help_ko": "배경 연산 구간으로 인정하는 최소 연속 틱 수."
+  },
+  "pc.programsExtra": {
+   "default": [], "type": "list", "range": null, "choices": null, "item": "obj",
+   "owner": "lm27.catalog", "readers": [], "spec": "CP §16",
+   "uncalibrated": false, "secret": false, "scope": "agent", "restart": "agent",
+   "label_ko": "사내 도구 라벨",
+   "help_ko": "카탈로그에 없는 사내 도구의 이름·범주 라벨(카탈로그 형식의 객체 목록)."
+  },
+  "pc.solverProcesses": {
+   "default": ["ansys", "mapdl", "fluent", "cortex", "fl_mpi", "cfx5solve", "abaqus", "nastran", "comsol", "lsdyna", "starccm", "optistruct", "radioss", "hwsolver", "moldflow", "floefd", "icepak", "ansysedt", "simplefoam", "pimplefoam", "interfoam", "ccx", "su2_cfd", "elmersolver", "aster"], "type": "list(+-)", "range": null, "choices": null, "item": "str",
+   "owner": "lm27.catalog", "readers": ["lm27.agent.sampler"], "spec": "CP §16",
+   "uncalibrated": false, "secret": false, "scope": "agent", "restart": "agent",
+   "label_ko": "솔버 프로세스 이름",
+   "help_ko": "배경에서 도는 솔버 프로세스 이름(앞부분 일치, 소문자). 내장 = 카탈로그 SOLVER_HINTS."
+  },
+  "pc.solverProcessesExclude": {
+   "default": ["ansysli", "lmgrd", "lmadmin", "flexlm", "flexnet", "msc_licensing", "dsls", "nxlmd", "ugslmd", "armlmd", "ptcflexlm", "cdslmd", "alterad", "xilinxd"], "type": "list(+-)", "range": null, "choices": null, "item": "str",
+   "owner": "lm27.catalog", "readers": ["lm27.agent.sampler"], "spec": "CP §16",
+   "uncalibrated": false, "secret": false, "scope": "agent", "restart": "agent",
+   "label_ko": "솔버 제외 프로세스",
+   "help_ko": "앞부분 일치가 잘못 잡는 상주 라이선스 대리자 등을 솔버에서 뺀다."
+  },
+  "pc.git.exe": {
+   "default": "", "type": "path", "range": null, "choices": null,
+   "owner": "collect/Get-GitActivity.py", "readers": [], "spec": "CP §16",
+   "uncalibrated": false, "secret": false, "scope": "agent", "restart": "agent",
+   "label_ko": "git 실행 파일",
+   "help_ko": "git 실행 파일 경로. 빈 값 = 자동 탐색."
+  },
+  "pc.git.repos": {
+   "default": [], "type": "list", "range": null, "choices": null, "item": "path",
+   "owner": "collect/Get-GitActivity.py", "readers": [], "spec": "CP §16",
+   "uncalibrated": false, "secret": false, "scope": "agent", "restart": "agent",
+   "label_ko": "git 저장소",
+   "help_ko": "본인 커밋 기록을 읽을 저장소 경로 목록."
+  },
+  "pc.git.scanRoots": {
+   "default": [], "type": "list", "range": null, "choices": null, "item": "path",
+   "owner": "collect/Get-GitActivity.py", "readers": [], "spec": "CP §16",
+   "uncalibrated": false, "secret": false, "scope": "agent", "restart": "agent",
+   "label_ko": "git 저장소 자동 탐색 루트",
+   "help_ko": "이 폴더 아래에서 git 저장소를 자동으로 찾는다."
+  },
+  "pc.mru.officeVersions": {
+   "default": ["14.0", "15.0", "16.0"], "type": "list", "range": null, "choices": null, "item": "str", "pattern": "^\\d{1,2}\\.\\d$",
+   "owner": "lm27.agent.harvest", "readers": ["collect/Get-OfficeMru.ps1", "collect/agent/harvest.ps1"], "spec": "CP §16",
+   "uncalibrated": false, "secret": false, "scope": "agent", "restart": "agent",
+   "label_ko": "Office MRU 판",
+   "help_ko": "최근 문서(MRU)를 읽을 Office 레지스트리 판 번호."
+  },
+  "pc.mru.jumpList": {
+   "default": true, "type": "bool", "range": null, "choices": [false, true],
+   "owner": "lm27.agent.harvest", "readers": ["collect/Get-OfficeMru.ps1", "collect/agent/harvest.ps1"], "spec": "CP §16",
+   "uncalibrated": false, "secret": false, "scope": "agent", "restart": "agent",
+   "label_ko": "점프 목록 보조",
+   "help_ko": "켜면 Windows 점프 목록을 MRU 보조 원천으로 쓴다."
+  },
+  "pc.license.enabled": {
+   "default": false, "type": "bool", "range": null, "choices": [false, true],
+   "owner": "lm27.collect.plan", "readers": [], "spec": "CP §16",
+   "uncalibrated": false, "secret": false, "scope": "agent", "restart": "agent",
+   "label_ko": "라이선스 사용 수집(옵트인)",
+   "help_ko": "켜면 FlexLM 라이선스 사용 기록을 수집 단계에 넣는다."
+  },
+  "pc.license.lmutilPath": {
+   "default": "", "type": "path", "range": null, "choices": null,
+   "owner": "lm27.collect.run", "readers": ["collect/Get-LicenseUsage.ps1"], "spec": "CP §16",
+   "uncalibrated": false, "secret": false, "scope": "agent", "restart": "agent",
+   "label_ko": "lmutil 경로",
+   "help_ko": "FlexLM lmutil 실행 파일 경로."
+  },
+  "pc.license.servers": {
+   "default": [], "type": "list", "range": null, "choices": null, "item": "str",
+   "owner": "lm27.collect.run", "readers": ["collect/Get-LicenseUsage.ps1"], "spec": "CP §16",
+   "uncalibrated": false, "secret": false, "scope": "agent", "restart": "agent",
+   "label_ko": "라이선스 서버",
+   "help_ko": "조회할 라이선스 서버 목록(포트@호스트)."
+  },
+  "privacy.internalDomains": {
+   "default": [], "type": "list", "range": null, "choices": null, "item": "str",
+   "owner": "lm27.privacy.context", "readers": ["lm27.privacy.keys"], "spec": "P §17.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "사내 도메인",
+   "help_ko": "사내 메일 도메인(팀 레지스트리의 사내 도메인 목록과 합집합). 본인 도메인은 실행 중 자동으로 더한다."
+  },
+  "privacy.personalMailDomains": {
+   "default": ["gmail.com", "naver.com", "daum.net", "hanmail.net", "kakao.com", "nate.com", "outlook.com", "hotmail.com", "live.com", "yahoo.com", "icloud.com", "me.com", "proton.me"], "type": "list(+-)", "range": null, "choices": null, "item": "str",
+   "owner": "lm27.privacy.context", "readers": [], "spec": "P §17.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "공용 개인 메일 도메인",
+   "help_ko": "개인메일 라벨로 바꿀 공용 메일 도메인(내장 13개). {add, disable} 로 더하고 뺀다."
+  },
+  "privacy.customers": {
+   "default": [], "type": "list", "range": null, "choices": null, "item": "party",
+   "owner": "lm27.privacy.context", "readers": [], "spec": "P §17.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "개인 추가 고객사",
+   "help_ko": "가명화할 고객사 사전 {id, names, domains}(팀 레지스트리 customers 와 합집합). 배포 기본값은 비어 있다."
+  },
+  "privacy.partners": {
+   "default": [], "type": "list", "range": null, "choices": null, "item": "party",
+   "owner": "lm27.privacy.context", "readers": [], "spec": "P §17.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "개인 추가 협력사",
+   "help_ko": "가명화할 협력사 사전 {id, names, domains}. 배포 기본값은 비어 있다."
+  },
+  "privacy.allowPatterns": {
+   "default": [], "type": "list", "range": null, "choices": null, "item": "regex",
+   "owner": "lm27.privacy.context", "readers": [], "spec": "P §17.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "허용 패턴",
+   "help_ko": "부품·도면 번호처럼 가리지 않을 조직 형식(정규식). 너무 넓은 패턴은 거부된다."
+  },
+  "privacy.extraCtx.account": {
+   "default": [], "type": "list", "range": null, "choices": null, "item": "str",
+   "owner": "lm27.privacy.context", "readers": [], "spec": "P §17.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "추가 문맥어 — 계좌",
+   "help_ko": "계좌 범주 탐지에 더할 문맥어(정규식 아님, 문자 그대로)."
+  },
+  "privacy.extraCtx.passport": {
+   "default": [], "type": "list", "range": null, "choices": null, "item": "str",
+   "owner": "lm27.privacy.context", "readers": [], "spec": "P §17.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "추가 문맥어 — 여권",
+   "help_ko": "여권 범주 탐지에 더할 문맥어(정규식 아님, 문자 그대로)."
+  },
+  "privacy.extraCtx.license": {
+   "default": [], "type": "list", "range": null, "choices": null, "item": "str",
+   "owner": "lm27.privacy.context", "readers": [], "spec": "P §17.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "추가 문맥어 — 운전면허",
+   "help_ko": "운전면허 범주 탐지에 더할 문맥어(정규식 아님, 문자 그대로)."
+  },
+  "privacy.extraCtx.money": {
+   "default": [], "type": "list", "range": null, "choices": null, "item": "str",
+   "owner": "lm27.privacy.context", "readers": [], "spec": "P §17.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "추가 문맥어 — 금액",
+   "help_ko": "금액 범주 탐지에 더할 문맥어(정규식 아님, 문자 그대로)."
+  },
+  "privacy.extraCtx.ip": {
+   "default": [], "type": "list", "range": null, "choices": null, "item": "str",
+   "owner": "lm27.privacy.context", "readers": [], "spec": "P §17.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "추가 문맥어 — IP",
+   "help_ko": "IP 범주 탐지에 더할 문맥어(정규식 아님, 문자 그대로)."
+  },
+  "privacy.extraCtx.card": {
+   "default": [], "type": "list", "range": null, "choices": null, "item": "str",
+   "owner": "lm27.privacy.context", "readers": [], "spec": "P §17.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "추가 문맥어 — 카드",
+   "help_ko": "카드 범주 탐지에 더할 문맥어(정규식 아님, 문자 그대로)."
+  },
+  "privacy.maskCompanySuffix": {
+   "default": true, "type": "bool", "range": null, "choices": [false, true],
+   "owner": "lm27.privacy.context", "readers": [], "spec": "P §17.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "회사 접미 가리기",
+   "help_ko": "(주)·주식회사 등이 붙은 회사 이름을 [회사] 로 바꾼다."
+  },
+  "privacy.money.maskRates": {
+   "default": true, "type": "bool", "range": null, "choices": [false, true],
+   "owner": "lm27.privacy.context", "readers": [], "spec": "P §17.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "비율 가리기",
+   "help_ko": "할인·마진율 같은 비율을 [비율] 로 바꾼다."
+  },
+  "privacy.names.extraStopwords": {
+   "default": [], "type": "list", "range": null, "choices": null, "item": "str",
+   "owner": "lm27.privacy.context", "readers": ["lm27.privacy.detect"], "spec": "P §17.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "이름 오탐 제외어",
+   "help_ko": "호칭형 이름으로 잘못 잡히는 낱말을 더한다."
+  },
+  "privacy.path.excludeKeywords": {
+   "default": ["개인", "가족", "사진", "private", "personal"], "type": "list(+-)", "range": null, "choices": null, "item": "str",
+   "owner": "lm27.privacy.records", "readers": ["lm27.privacy.context"], "spec": "P §10.4",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "사적 폴더 낱말",
+   "help_ko": "경로에 이 낱말이 든 파일·저장소는 수집하지 않는다."
+  },
+  "privacy.ad.blockDomains": {
+   "default": [], "type": "list", "range": null, "choices": null, "item": "str",
+   "owner": "lm27.privacy.context", "readers": [], "spec": "P §11.5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "광고 차단 도메인",
+   "help_ko": "광고로 볼 발신 도메인 고정분."
+  },
+  "privacy.ad.allowDomains": {
+   "default": [], "type": "list", "range": null, "choices": null, "item": "str",
+   "owner": "lm27.privacy.context", "readers": [], "spec": "P §11.5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "광고 허용 도메인",
+   "help_ko": "광고로 보지 않을 발신 도메인 고정분."
+  },
+  "privacy.ad.blockSubjectRegex": {
+   "default": [], "type": "list", "range": null, "choices": null, "item": "regex",
+   "owner": "lm27.privacy.context", "readers": [], "spec": "P §11.5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "광고 제목 정규식",
+   "help_ko": "제목이 맞으면 광고로 보는 정규식."
+  },
+  "privacy.ad.extraWords": {
+   "default": [], "type": "list", "range": null, "choices": null, "item": "str",
+   "owner": "lm27.privacy.records", "readers": [], "spec": "P §17.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "광고어 추가",
+   "help_ko": "광고 특징 점수에 더할 낱말(문자 그대로)."
+  },
+  "privacy.private.categories": {
+   "default": ["개인", "Personal", "Private", "가족"], "type": "list(+-)", "range": null, "choices": null, "item": "str",
+   "owner": "lm27.privacy.records", "readers": [], "spec": "P §17.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "개인 범주 이름",
+   "help_ko": "Outlook 개인 범주 이름. 이 범주의 메일·일정은 사적 판정을 받는다."
+  },
+  "privacy.private.extraWords": {
+   "default": [], "type": "list", "range": null, "choices": null, "item": "str",
+   "owner": "lm27.privacy.records", "readers": [], "spec": "P §17.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "사적 어휘 추가",
+   "help_ko": "사적 판정에 더할 강한 사적 낱말."
+  },
+  "privacy.private.extraWorkWords": {
+   "default": [], "type": "list", "range": null, "choices": null, "item": "str",
+   "owner": "lm27.privacy.records", "readers": [], "spec": "P §17.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "업무 어휘 추가",
+   "help_ko": "사적 판정을 낮출 업무 낱말."
+  },
+  "privacy.window.privateExes": {
+   "default": ["kakaotalk.exe", "telegram.exe", "discord.exe", "whatsapp.exe", "line.exe", "steam.exe", "steamwebhelper.exe", "epicgameslauncher.exe", "battle.net.exe", "leagueclient.exe", "riotclientservices.exe"], "type": "list(+-)", "range": null, "choices": null, "item": "str", "pattern": "^[a-z0-9_.\\-]+\\.exe$",
+   "owner": "lm27.privacy.context", "readers": [], "spec": "P §12.6",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "비업무 프로그램",
+   "help_ko": "전경 창이 이 프로그램(소문자 exe)이면 사적 사용으로 본다. 내장 = PRIVATE_EXES."
+  },
+  "privacy.window.privateProfiles": {
+   "default": ["개인", "Personal"], "type": "list", "range": null, "choices": null, "item": "str",
+   "owner": "lm27.privacy.context", "readers": [], "spec": "P §12.6",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "사적 브라우저 프로필",
+   "help_ko": "이 이름의 브라우저 프로필 창은 사적 사용으로 본다."
+  },
+  "privacy.window.workTitlePatterns": {
+   "default": [], "type": "list", "range": null, "choices": null, "item": "regex",
+   "owner": "lm27.privacy.context", "readers": [], "spec": "P §12.6",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "사내 업무 사이트 제목어",
+   "help_ko": "브라우저 제목이 맞으면 업무 사이트로 보는 정규식(조직 고유 — 배포 기본값은 비어 있다)."
+  },
+  "privacy.time.regularPrivateRunMin": {
+   "default": 30, "type": "int", "range": {"min": 5, "max": 240, "step": 5}, "choices": null,
+   "owner": "lm27.time.envelope", "readers": [], "spec": "P §12.7",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "정규 구역 사적 차감 문턱(분)",
+   "help_ko": "정규 근무창 안에서 사적 전용 사용이 이만큼 이어지면 봉투에서 뺀다(P §12.7)."
+  },
+  "privacy.time.offhoursPrivateBreakMin": {
+   "default": 15, "type": "int", "range": {"min": 5, "max": 240, "step": 5}, "choices": null,
+   "owner": "lm27.time.envelope", "readers": [], "spec": "P §12.7",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "창 밖 사적 끊김 문턱(분)",
+   "help_ko": "근무창 밖 사적 전용 사용이 이만큼이면 다리를 끊는다(P §12.7)."
+  },
+  "privacy.copilot.personTokens": {
+   "default": "plain", "type": "enum", "range": null, "choices": ["plain", "keyed"],
+   "owner": "lm27.privacy.context", "readers": [], "spec": "P §13",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "코파일럿 사람 토큰",
+   "help_ko": "plain = [사람] 만 보낸다, keyed = [사람#6hex] 로 구분해 보낸다."
+  },
+  "privacy.audit.retentionMonths": {
+   "default": 24, "type": "int", "range": {"min": 1, "max": 120}, "choices": null,
+   "owner": "lm27.agent.main", "readers": [], "spec": "P §15",
+   "uncalibrated": false, "secret": false, "scope": "agent", "restart": "agent",
+   "label_ko": "정제 감사 보존(개월)",
+   "help_ko": "에이전트 로컬 정제 감사 원장 보존 기간."
+  },
+  "privacy.pipe.waitSec": {
+   "default": 120, "type": "int", "range": {"min": 30, "max": 1800}, "choices": null,
+   "owner": "lm27.collect.run", "readers": ["lm27.agent.main", "lm27.agent.harvest", "collect/agent/agent.ps1", "collect/agent/harvest.ps1"], "spec": "P §3.5 · X-300",
+   "uncalibrated": false, "secret": false, "scope": "agent", "restart": "agent",
+   "label_ko": "정제 파이프 대기(초)",
+   "help_ko": "수집기 출력이 끝난 뒤 정제 파이프 종료를 기다리는 시간. 넘으면 끝내고 rc 3 + R-TRANSPORT."
+  },
+  "bridge.mode": {
+   "default": "auto", "type": "enum", "range": null, "choices": ["auto", "manual", "off"],
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "브리지 동작 방식",
+   "help_ko": "auto = 자동(Edge 디버그 연결), manual = 붙여넣기 경로, off = AI 단계를 모두 규칙 폴백으로."
+  },
+  "bridge.autoManualFallback": {
+   "default": true, "type": "bool", "range": null, "choices": [false, true],
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "수동 경로 자동 전환",
+   "help_ko": "정책 차단·Edge 없음이 확인되면 이 실행부터 수동 붙여넣기로 바꾼다."
+  },
+  "bridge.url": {
+   "default": "https://m365.cloud.microsoft/chat", "type": "str", "range": null, "choices": null, "pattern": "^https://\\S+$",
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "코파일럿 주소",
+   "help_ko": "새 탭과 새 채팅 폴백이 여는 주소(https)."
+  },
+  "bridge.chatUrlPrefixes": {
+   "default": ["https://m365.cloud.microsoft/chat", "https://copilot.cloud.microsoft/"], "type": "list", "range": {"min": 1, "max": 8}, "choices": null, "item": "str", "pattern": "^https://\\S+$",
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "채팅 탭 주소 접두",
+   "help_ko": "탭 URL 이 이 접두 중 하나로 정확히 시작해야 코파일럿 탭으로 본다."
+  },
+  "bridge.loginHosts": {
+   "default": ["login.microsoftonline.com", "login.live.com", "login.microsoft.com"], "type": "list", "range": {"min": 1, "max": 8}, "choices": null, "item": "str", "pattern": "^[a-z0-9.\\-]+$",
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "로그인 화면 호스트",
+   "help_ko": "탭 호스트가 이 중 하나면 로그인이 필요한 것으로 본다."
+  },
+  "bridge.edge.port": {
+   "default": 9343, "type": "int", "range": {"min": 1024, "max": 65535}, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "Edge 디버그 포트",
+   "help_ko": "전용 Edge 의 디버그 포트 시작값(이 PC 안에서만 연결). 브리지·OWA·Teams 웹 역할이 함께 쓴다."
+  },
+  "bridge.edge.portTries": {
+   "default": 10, "type": "int", "range": {"min": 1, "max": 50}, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "포트 시도 수",
+   "help_ko": "남이 쓰는 포트면 +1 씩 시도할 개수."
+  },
+  "bridge.edge.profileDir": {
+   "default": "", "type": "path", "range": null, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "전용 Edge 프로필 폴더",
+   "help_ko": "빈 값 = PC 에 남는 LoadMonitor27\\edge_copilot. 브리지·OWA·Teams 웹 역할 공용, 번들 밖."
+  },
+  "bridge.edge.diskCacheMb": {
+   "default": 200, "type": "int", "range": {"min": 0, "max": 4096}, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "프로필 디스크 캐시(MB)",
+   "help_ko": "전용 프로필 디스크 캐시 상한. 0 = 상한 없음."
+  },
+  "bridge.edge.windowSize": {
+   "default": "1150,900", "type": "str", "range": null, "choices": null, "pattern": "^\\d{3,5},\\d{3,5}$",
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "Edge 창 크기",
+   "help_ko": "전용 Edge 창 크기(너비,높이)."
+  },
+  "bridge.edge.closeOnExit": {
+   "default": true, "type": "bool", "range": null, "choices": [false, true],
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "끝날 때 Edge 닫기",
+   "help_ko": "브리지가 띄운 Edge 를 끝날 때 닫는다(디버그 포트 노출 시간 최소화)."
+  },
+  "bridge.loginWaitMin": {
+   "default": 10, "type": "int", "range": {"min": 1, "max": 60}, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "로그인 대기(분)",
+   "help_ko": "로그인이 필요할 때 사람을 기다리는 시간(OWA·Teams 웹 로그인 대기 포함)."
+  },
+  "bridge.readyWaitSec": {
+   "default": 60, "type": "int", "range": {"min": 10, "max": 300}, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "입력창 대기(초)",
+   "help_ko": "입력창이 뜨기를 기다리는 시간."
+  },
+  "bridge.modelFast": {
+   "default": "빠른 응답", "type": "str", "range": null, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "빠른 모델 메뉴 이름",
+   "help_ko": "대량 분류용 모델 메뉴 이름(부분 일치). 빈 값 = 모델을 건드리지 않음."
+  },
+  "bridge.modelDeep": {
+   "default": "깊이 생각하기", "type": "str", "range": null, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "깊은 모델 메뉴 이름",
+   "help_ko": "합성 작업용 모델 메뉴 이름(부분 일치)."
+  },
+  "bridge.modelFallback": {
+   "default": "자동", "type": "str", "range": null, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "대체 모델 메뉴 이름",
+   "help_ko": "재시도 사다리 2단에서 쓰는 모델 메뉴 이름."
+  },
+  "bridge.preferWorkMode": {
+   "default": true, "type": "bool", "range": null, "choices": [false, true],
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "업무 모드 우선",
+   "help_ko": "업무/웹 전환이 보이면 업무 쪽으로 맞춘다."
+  },
+  "bridge.webExposure.policy": {
+   "default": "strict", "type": "enum", "range": null, "choices": ["strict", "block"],
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "웹 노출 환경 정책",
+   "help_ko": "strict = 엄격 규칙을 거쳐 전송, block = AI 단계를 보내지 않고 규칙 폴백."
+  },
+  "bridge.pollSec": {
+   "default": 3.0, "type": "float", "range": {"min": 1.0, "max": 10.0}, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "답 폴링 간격(초)",
+   "help_ko": "답 몸통을 읽는 간격."
+  },
+  "bridge.stablePolls": {
+   "default": 8, "type": "int", "range": {"min": 3, "max": 30}, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "안정 판정 폴 수",
+   "help_ko": "몸통이 이만큼 연속 같으면 답이 끝난 것으로 본다."
+  },
+  "bridge.incompleteJsonFactor": {
+   "default": 2, "type": "int", "range": {"min": 1, "max": 5}, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "미완 JSON 배수",
+   "help_ko": "봉투가 시작됐는데 엄격 파싱이 안 되면 안정 판정 폴 수를 이 배수로 늘린다."
+  },
+  "bridge.firstTokenSec": {
+   "default": 180, "type": "int", "range": {"min": 30, "max": 600}, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "첫 글자 유예(초)",
+   "help_ko": "첫 글자를 기다려 주는 시간. 지나도 비면 빈 답."
+  },
+  "bridge.replyTimeoutSec": {
+   "default": 480, "type": "int", "range": {"min": 60, "max": 1800}, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "답 대기 상한(초)",
+   "help_ko": "전송 1회의 답 대기 상한."
+  },
+  "bridge.roundtripMaxSec": {
+   "default": 900, "type": "int", "range": {"min": 120, "max": 3600}, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "질의 총 예산(초)",
+   "help_ko": "질의 1건(재시도 사다리 포함)의 총 예산."
+  },
+  "bridge.waitIdleSec": {
+   "default": 45, "type": "int", "range": {"min": 5, "max": 180}, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "앞 답 대기(초)",
+   "help_ko": "전송 전 앞 답 생성이 끝나기를 기다리는 상한."
+  },
+  "bridge.chatTurns": {
+   "default": 12, "type": "int", "range": {"min": 0, "max": 50}, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "채팅당 질의 수",
+   "help_ko": "같은 채팅에서 이어 보낼 질의 수. 0 = 질의마다 새 채팅."
+  },
+  "bridge.inputMaxChars": {
+   "default": 8000, "type": "int", "range": {"min": 2000, "max": 20000}, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "입력 패킹 예산(자)",
+   "help_ko": "보정값이 없을 때의 입력 패킹 글자 예산."
+  },
+  "bridge.answerMaxChars": {
+   "default": 5000, "type": "int", "range": {"min": 1500, "max": 12000}, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "답 패킹 예산(자)",
+   "help_ko": "보정값이 없을 때의 답 패킹 글자 예산."
+  },
+  "bridge.calibSafety": {
+   "default": 0.85, "type": "float", "range": {"min": 0.5, "max": 0.95}, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "보정 안전 계수",
+   "help_ko": "패킹 예산 = 실측 한도 × 이 값."
+  },
+  "bridge.calibrateTtlDays": {
+   "default": 30, "type": "int", "range": {"min": 1, "max": 365}, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "보정값 유효 기간(일)",
+   "help_ko": "입출력 한도 보정값의 유효 기간."
+  },
+  "bridge.autoCalibrate": {
+   "default": true, "type": "bool", "range": null, "choices": [false, true],
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "자동 보정",
+   "help_ko": "보정값이 없거나 만료면 첫 단계 전에 자동으로 보정한다."
+  },
+  "bridge.overlapItems": {
+   "default": 3, "type": "int", "range": {"min": 0, "max": 10}, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "겹침 항목 수",
+   "help_ko": "앞 묶음 끝 항목을 '참고' 줄로 다시 보일 개수."
+  },
+  "bridge.overlapChars": {
+   "default": 600, "type": "int", "range": {"min": 0, "max": 2000}, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "겹침 글자 상한",
+   "help_ko": "겹침 줄의 글자 상한."
+  },
+  "bridge.seenNamesMax": {
+   "default": 30, "type": "int", "range": {"min": 0, "max": 100}, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "앞서 쓴 이름 개수",
+   "help_ko": "'앞서 쓴 이름' 개수 상한."
+  },
+  "bridge.seenNamesChars": {
+   "default": 600, "type": "int", "range": {"min": 0, "max": 2000}, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "앞서 쓴 이름 글자",
+   "help_ko": "'앞서 쓴 이름' 글자 상한."
+  },
+  "bridge.splitMinItems": {
+   "default": 5, "type": "int", "range": {"min": 1, "max": 40}, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "반분 최소 크기",
+   "help_ko": "분류형 단계의 반분 최소 항목 수."
+  },
+  "bridge.splitMaxDepth": {
+   "default": 3, "type": "int", "range": {"min": 0, "max": 6}, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "반분 깊이 상한",
+   "help_ko": "묶음을 반으로 나누는 깊이 상한."
+  },
+  "bridge.maxAsksPerItem": {
+   "default": 3, "type": "int", "range": {"min": 1, "max": 6}, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "항목당 질의 상한",
+   "help_ko": "한 항목을 물을 수 있는 최대 횟수."
+  },
+  "bridge.circuitSoft": {
+   "default": 3, "type": "int", "range": {"min": 1, "max": 20}, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "약한 차단 문턱",
+   "help_ko": "연속 0건 질의가 이만큼이면 반분·사다리 2단을 끈다."
+  },
+  "bridge.circuitAbort": {
+   "default": 6, "type": "int", "range": {"min": 2, "max": 40}, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "단계 중단 문턱",
+   "help_ko": "연속 0건 질의가 이만큼이면 단계를 멈춘다(재개 가능)."
+  },
+  "bridge.stageBudgetMin": {
+   "default": 120, "type": "int", "range": {"min": 0, "max": 600}, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "단계 예산(분)",
+   "help_ko": "단계 1개의 자기 예산. 0 = 끔."
+  },
+  "bridge.totalBudgetMin": {
+   "default": 300, "type": "int", "range": {"min": 0, "max": 1440}, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "호출 전체 예산(분)",
+   "help_ko": "호출 1회(여러 단계)의 전체 예산. 0 = 끔."
+  },
+  "bridge.stageFloorMin": {
+   "default": 15, "type": "int", "range": {"min": 0, "max": 120}, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "단계 최소 몫(분)",
+   "help_ko": "앞 단계가 전체 예산을 다 써도 각 단계에 주는 최소 몫."
+  },
+  "bridge.finalReserveMin": {
+   "default": 30, "type": "int", "range": {"min": 0, "max": 240}, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "마지막 단계 몫(분)",
+   "help_ko": "호출의 마지막 단계 몫으로 미리 떼어 두는 시간."
+  },
+  "bridge.minAskSec": {
+   "default": 120, "type": "int", "range": {"min": 30, "max": 900}, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "새 질의 최소 잔여(초)",
+   "help_ko": "남은 예산이 이보다 적으면 새 질의를 시작하지 않는다."
+  },
+  "bridge.lookup.windowDays": {
+   "default": 7, "type": "int", "range": {"min": 1, "max": 10}, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.4",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "조회 구간(일)",
+   "help_ko": "메일·팀즈·일정 조회 공용 구간 길이."
+  },
+  "bridge.lookup.minWindowDays": {
+   "default": 1, "type": "int", "range": {"min": 1, "max": 7}, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.4",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "조회 최소 구간(일)",
+   "help_ko": "쪼갤 수 있는 최소 구간."
+  },
+  "bridge.lookup.maxRows": {
+   "default": 100, "type": "int", "range": {"min": 10, "max": 150}, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.4",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "조회 행 상한",
+   "help_ko": "조회 답 행 상한의 위 한계(실제는 답 예산식과의 작은 값)."
+  },
+  "bridge.lookup.fullRatio": {
+   "default": 0.9, "type": "float", "range": {"min": 0.5, "max": 1.0}, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.4",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "가득 참 비율",
+   "help_ko": "행 수가 상한 × 이 값 이상이면 구간을 쪼갠다."
+  },
+  "bridge.manual.maxOpenBatches": {
+   "default": 10, "type": "int", "range": {"min": 1, "max": 50}, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.4",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "수동 프롬프트 파일 수",
+   "help_ko": "수동 경로에서 한 번에 내보낼 프롬프트 파일 수."
+  },
+  "bridge.manual.ttlDays": {
+   "default": 7, "type": "int", "range": {"min": 1, "max": 30}, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.4",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "수동 프롬프트 보존(일)",
+   "help_ko": "수동 프롬프트 파일 보존 기간."
+  },
+  "bridge.rawCapture": {
+   "default": false, "type": "bool", "range": null, "choices": [false, true],
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.4",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "원문 캡처(진단)",
+   "help_ko": "켜면 게이트를 통과한 프롬프트와 입수 정제한 답을 진단 폴더에 기한부로 남긴다. 기본 꺼짐."
+  },
+  "bridge.rawCaptureTtlDays": {
+   "default": 7, "type": "int", "range": {"min": 1, "max": 14}, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.4",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "원문 캡처 보존(일)",
+   "help_ko": "진단 원문 캡처 보존 기간."
+  },
+  "bridge.traceMaxBytes": {
+   "default": 4000000, "type": "int", "range": {"min": 100000, "max": 50000000}, "choices": null,
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.4",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "계측 파일 교체 크기(바이트)",
+   "help_ko": "브리지 계측 파일을 교체하는 크기."
+  },
+  "bridge.stages": {
+   "default": {"lookup_mail": true, "lookup_teams": true, "lookup_calendar": false, "speech_act": true, "task_label": true, "taxonomy_bootstrap": true, "taxonomy_consolidate": true, "workflow_label": true, "review_text": true, "agentic_match": true, "subagent_review": true}, "type": "obj", "range": null, "choices": null, "item": "bool", "keys": ["lookup_mail", "lookup_teams", "lookup_calendar", "speech_act", "task_label", "taxonomy_bootstrap", "taxonomy_consolidate", "workflow_label", "review_text", "agentic_match", "subagent_review"],
+   "owner": "lm27.bridge.settings", "readers": ["lm27.pipeline.analyze"], "spec": "B §3.4 · H §6",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "AI 단계 켜기",
+   "help_ko": "단계 11종 켜기/끄기. 기본은 lookup_calendar 만 끔."
+  },
+  "bridge.dom.inputSelectors": {
+   "default": ["[contenteditable='true'][role='textbox']", ".fai-EditorInput__input", "span[contenteditable='true']", "div[contenteditable='true']", "textarea"], "type": "list", "range": null, "choices": null, "item": "str",
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "입력창 선택자",
+   "help_ko": "입력창 후보 CSS 선택자(보이는 첫 요소)."
+  },
+  "bridge.dom.inputAriaLabels": {
+   "default": ["Copilot에 메시지 보내기", "Message Copilot"], "type": "list", "range": null, "choices": null, "item": "str",
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "입력창 이름표",
+   "help_ko": "입력창 aria-label 부분 일치 후보."
+  },
+  "bridge.dom.sendLabels": {
+   "default": ["보내기", "전송", "Send"], "type": "list", "range": null, "choices": null, "item": "str",
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "전송 버튼 이름표",
+   "help_ko": "작성 영역 안에서만 찾는 전송 버튼 aria-label."
+  },
+  "bridge.dom.stopLabels": {
+   "default": ["생성 중지", "응답 중지", "stop generating", "stop responding", "중지", "stop"], "type": "list", "range": null, "choices": null, "item": "str",
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "생성 중 버튼 이름표",
+   "help_ko": "생성 중 버튼(앞 4개 부분 일치, 뒤 2개 완전 일치)."
+  },
+  "bridge.dom.newChatLabels": {
+   "default": ["새 채팅", "새 대화", "new chat"], "type": "list", "range": null, "choices": null, "item": "str",
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "새 채팅 버튼 이름표",
+   "help_ko": "새 채팅 버튼 이름표."
+  },
+  "bridge.dom.modelButtonLabels": {
+   "default": ["모델", "model"], "type": "list", "range": null, "choices": null, "item": "str",
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "모델 버튼 이름표",
+   "help_ko": "모델 선택 버튼 aria-label 부분 일치."
+  },
+  "bridge.dom.workModeLabels": {
+   "default": {"work": ["업무", "Work"], "web": ["웹", "Web"]}, "type": "obj", "range": null, "choices": null, "item": "str_list", "keys": ["work", "web"],
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "업무/웹 전환 이름표",
+   "help_ko": "업무/웹 전환 버튼 이름표."
+  },
+  "bridge.dom.webGroundingLabels": {
+   "default": ["웹 콘텐츠", "웹 검색", "웹 근거", "Web content", "Web search", "Web grounding"], "type": "list", "range": null, "choices": null, "item": "str",
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "웹 근거 이름표",
+   "help_ko": "웹 근거 켜기/끄기 요소의 이름표 후보. 상태만 읽고 누르지 않는다."
+  },
+  "bridge.dom.assistantSelectors": {
+   "default": [], "type": "list", "range": null, "choices": null, "item": "str",
+   "owner": "lm27.bridge.settings", "readers": [], "spec": "B §3.5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "답 메시지 선택자",
+   "help_ko": "답 메시지 노드 선택자. 빈 값 = 학습값 → 앵커 폴백."
+  },
+  "bundle.segmentMaxRecords": {
+   "default": 50000, "type": "int", "range": {"min": 100, "max": 1000000}, "choices": null,
+   "owner": "lm27.bundle.segment", "readers": [], "spec": "TAB §7.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "세그먼트 최대 레코드",
+   "help_ko": "세그먼트 하나의 레코드 상한."
+  },
+  "bundle.segmentMaxRawMb": {
+   "default": 16, "type": "int", "range": {"min": 1, "max": 256}, "choices": null,
+   "owner": "lm27.bundle.segment", "readers": [], "spec": "TAB §7.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "세그먼트 최대 크기(MB)",
+   "help_ko": "세그먼트 하나의 비압축 크기 상한."
+  },
+  "bundle.warnSizeMb": {
+   "default": 300, "type": "int", "range": {"min": 10, "max": 100000}, "choices": null,
+   "owner": "lm27.bundle.loader", "readers": [], "spec": "TAB §7.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "번들 크기 경고(MB)",
+   "help_ko": "번들이 이 크기를 넘으면 화면에 상위 소비처를 보인다(자동 삭제 없음)."
+  },
+  "bundle.lockTimeoutSec": {
+   "default": 30, "type": "int", "range": {"min": 1, "max": 600}, "choices": null,
+   "owner": "lm27.bundle.lock", "readers": [], "spec": "TAB §7.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "번들 잠금 대기(초)",
+   "help_ko": "번들 쓰기 잠금을 기다리는 시간."
+  },
+  "bundle.autoAliasVdi": {
+   "default": true, "type": "bool", "range": null, "choices": [false, true],
+   "owner": "lm27.bundle.aliases", "readers": [], "spec": "TAB §7.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "VDI 별칭 자동",
+   "help_ko": "VDI 재생성으로 바뀐 pc_id 를 같은 논리 PC 로 자동 묶는다."
+  },
+  "bundle.overlapToleranceMin": {
+   "default": 10, "type": "int", "range": {"min": 0, "max": 240}, "choices": null,
+   "owner": "lm27.bundle.aliases", "readers": [], "spec": "TAB §7.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "동시 사용 허용 겹침(분)",
+   "help_ko": "두 pc_id 의 샘플 구간이 이만큼 넘게 겹치면 서로 다른 기계로 보고 묶지 않는다."
+  },
+  "move.renameRetries": {
+   "default": 4, "type": "int", "range": {"min": 1, "max": 10}, "choices": null,
+   "owner": "lm27.bundle.move", "readers": [], "spec": "TAB §7.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "이름 바꾸기 시험 재시도",
+   "help_ko": "이동 준비의 폴더 이름 바꾸기 시험 재시도 횟수."
+  },
+  "move.stopWaitSec": {
+   "default": 15, "type": "int", "range": {"min": 1, "max": 120}, "choices": null,
+   "owner": "lm27.bundle.move", "readers": [], "spec": "TAB §7.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "이동 전 종료 대기(초)",
+   "help_ko": "이동 준비가 실행 중 프로그램 종료를 기다리는 시간."
+  },
+  "team.serverHost": {
+   "default": "10.115.147.68", "type": "str", "range": null, "choices": null, "pattern": "^[A-Za-z0-9.\\-:\\[\\]]{1,253}$",
+   "owner": "lm27.team.client", "readers": ["lm27.team.queue"], "spec": "TAB §7.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "팀 서버 주소",
+   "help_ko": "팀 서버 IP. 기본값은 바이트 고정이며 바꾸는 것은 설정 옵션으로만 한다."
+  },
+  "team.serverPort": {
+   "default": 9310, "type": "int", "range": {"min": 1, "max": 65535}, "choices": null,
+   "owner": "lm27.team.client", "readers": ["lm27.team.queue"], "spec": "TAB §7.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "팀 서버 포트",
+   "help_ko": "팀 서버 포트. 기본값 고정."
+  },
+  "team.serverAlternates": {
+   "default": [], "type": "list", "range": null, "choices": null, "item": "hostport",
+   "owner": "lm27.team.client", "readers": [], "spec": "TAB §7.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "팀 서버 대체 주소",
+   "help_ko": "기본 주소가 LM27 이 아니거나 닿지 않을 때 순서대로 시도할 host:port 목록."
+  },
+  "team.selfLabel": {
+   "default": "", "type": "str", "range": null, "choices": null, "pattern": "^.{0,40}$",
+   "owner": "lm27.team.build", "readers": [], "spec": "TAB §7.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "팀 화면 표시 라벨",
+   "help_ko": "팀 화면에 보일 본인 라벨(직접 입력, 검사 통과분만)."
+  },
+  "team.memberId": {
+   "default": "", "type": "str", "range": null, "choices": null, "pattern": "^[A-Za-z0-9_\\-]{0,32}$",
+   "owner": "lm27.team.build", "readers": [], "spec": "TAB §7.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "레지스트리 구성원 ID",
+   "help_ko": "팀 레지스트리 구성원 ID(목록에서 선택, 선택 사항)."
+  },
+  "team.unitTitleMode": {
+   "default": "label", "type": "enum", "range": null, "choices": ["label", "generic"],
+   "owner": "lm27.team.build", "readers": [], "spec": "TAB §2.5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "단위업무 제목 공유",
+   "help_ko": "label = 단위업무 라벨을 싣는다, generic = 일반 이름으로 바꿔 싣는다."
+  },
+  "team.shareUnknownApps": {
+   "default": false, "type": "bool", "range": null, "choices": [false, true],
+   "owner": "lm27.team.build", "readers": [], "spec": "TAB §7.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "미상 프로그램 라벨 제안 공유",
+   "help_ko": "켜면 미상 프로그램 라벨링 제안을 팀 묶음에 싣는다."
+  },
+  "team.autoSend": {
+   "default": false, "type": "bool", "range": null, "choices": [false, true],
+   "owner": "lm27.team.queue", "readers": ["lm27.team.build"], "spec": "TAB §7.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "승인 없이 자동 전송",
+   "help_ko": "켜면 팀 묶음을 만든 직후 승인 없이 전송한다."
+  },
+  "team.retryScheduleSec": {
+   "default": [60, 300, 900, 3600, 10800, 21600], "type": "list", "range": {"min": 1, "max": 20}, "choices": null, "item": "int",
+   "owner": "lm27.team.queue", "readers": [], "spec": "TAB §2.8",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "재시도 간격(초)",
+   "help_ko": "전송 실패 뒤 재시도 간격 목록(마지막 값을 반복)."
+  },
+  "team.retryMaxAttempts": {
+   "default": 50, "type": "int", "range": {"min": 1, "max": 1000}, "choices": null,
+   "owner": "lm27.team.queue", "readers": [], "spec": "TAB §2.8",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "재시도 최대 횟수",
+   "help_ko": "대기 묶음 전송 재시도 최대 횟수."
+  },
+  "team.maxBundleMb": {
+   "default": 8, "type": "int", "range": {"min": 1, "max": 64}, "choices": null,
+   "owner": "lm27.team.build", "readers": [], "spec": "TAB §7.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "팀 묶음 상한(MB)",
+   "help_ko": "팀 묶음 빌드 크기 상한."
+  },
+  "team.connectTimeoutSec": {
+   "default": 4, "type": "int", "range": {"min": 1, "max": 60}, "choices": null,
+   "owner": "lm27.team.client", "readers": [], "spec": "TAB §7.1 · H §3.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "연결 확인 시간 제한(초)",
+   "help_ko": "팀 서버 hello 시간 제한."
+  },
+  "team.uploadTimeoutSec": {
+   "default": 120, "type": "int", "range": {"min": 5, "max": 1800}, "choices": null,
+   "owner": "lm27.team.client", "readers": [], "spec": "TAB §7.1 · H §3.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "업로드 시간 제한(초)",
+   "help_ko": "팀 묶음 전송 시간 제한."
+  },
+  "team.registryTimeoutSec": {
+   "default": 15, "type": "int", "range": {"min": 1, "max": 300}, "choices": null,
+   "owner": "lm27.team.client", "readers": ["lm27.hier.registry"], "spec": "TAB §7.1 · H §3.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "레지스트리 받기 시간 제한(초)",
+   "help_ko": "팀 레지스트리 받기 시간 제한."
+  },
+  "team.useSystemProxy": {
+   "default": false, "type": "bool", "range": null, "choices": [false, true],
+   "owner": "lm27.team.client", "readers": [], "spec": "TAB §7.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "시스템 프록시 사용",
+   "help_ko": "켜면 팀 서버 연결에 시스템 프록시를 쓴다."
+  },
+  "team.allowPublicHost": {
+   "default": false, "type": "bool", "range": null, "choices": [false, true],
+   "owner": "lm27.team.client", "readers": [], "spec": "TAB §7.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "공인 주소 허용",
+   "help_ko": "끄면 팀 서버·대체 주소는 사설 IPv4·루프백만 허용하고 호스트 이름은 받지 않는다."
+  },
+  "team.offlineDir": {
+   "default": "", "type": "path", "range": null, "choices": null,
+   "owner": "lm27.team.offline", "readers": ["lm27.hier.registry"], "spec": "TAB §5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "오프라인 폴더",
+   "help_ko": "오프라인 내보내기·레지스트리 파일 폴더(공유폴더·USB)."
+  },
+  "team.registryRefreshH": {
+   "default": 12, "type": "int", "range": {"min": 1, "max": 720}, "choices": null,
+   "owner": "lm27.team.client", "readers": [], "spec": "TAB §7.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "레지스트리 새로 받기(시간)",
+   "help_ko": "팀 레지스트리를 다시 받는 주기."
+  },
+  "team.sentKeep": {
+   "default": 20, "type": "int", "range": {"min": 0, "max": 1000}, "choices": null,
+   "owner": "lm27.team.queue", "readers": [], "spec": "TAB §7.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "보낸 묶음 보관 수",
+   "help_ko": "전송 완료 묶음 보관 수."
+  },
+  "teamServer.bindHost": {
+   "default": "0.0.0.0", "type": "str", "range": null, "choices": null, "pattern": "^[A-Za-z0-9.\\-:\\[\\]]{1,253}$",
+   "owner": "lm27.team.server", "readers": [], "spec": "TAB §3.2",
+   "uncalibrated": false, "secret": false, "scope": "team_server", "restart": "team_server",
+   "label_ko": "팀 서버 받는 주소",
+   "help_ko": "팀 서버가 받는 주소. 이 PC 의 IPv4 중 하나 또는 모든 인터페이스."
+  },
+  "teamServer.bindPort": {
+   "default": 9310, "type": "int", "range": {"min": 1024, "max": 65535}, "choices": null,
+   "owner": "lm27.team.server", "readers": [], "spec": "TAB §3.2",
+   "uncalibrated": false, "secret": false, "scope": "team_server", "restart": "team_server",
+   "label_ko": "팀 서버 받는 포트",
+   "help_ko": "팀 서버가 받는 포트."
+  },
+  "teamServer.storeDir": {
+   "default": "", "type": "path", "range": null, "choices": null,
+   "owner": "lm27.team.server", "readers": ["lm27.team.store", "lm27.team.aggregate"], "spec": "TAB §3.2",
+   "uncalibrated": false, "secret": false, "scope": "team_server", "restart": "team_server",
+   "label_ko": "팀 서버 저장소",
+   "help_ko": "빈 값 = PC 에 남는 LoadMonitor27\\teamserver. 서버와 취합기는 같은 저장소를 쓴다."
+  },
+  "teamServer.displayName": {
+   "default": "", "type": "str", "range": null, "choices": null, "pattern": "^.{0,60}$",
+   "owner": "lm27.team.server", "readers": [], "spec": "TAB §3.2",
+   "uncalibrated": false, "secret": false, "scope": "team_server", "restart": "none",
+   "label_ko": "팀 서버 표시 이름",
+   "help_ko": "hello·대시보드 제목에 쓰는 이름."
+  },
+  "teamServer.publishDir": {
+   "default": "", "type": "path", "range": null, "choices": null,
+   "owner": "lm27.team.server", "readers": ["lm27.team.offline"], "spec": "TAB §3.2",
+   "uncalibrated": false, "secret": false, "scope": "team_server", "restart": "none",
+   "label_ko": "레지스트리 게시 폴더",
+   "help_ko": "레지스트리를 파일로도 게시할 공유폴더(오프라인 클라이언트용)."
+  },
+  "teamServer.uploadTokenSha256": {
+   "default": "", "type": "str", "range": null, "choices": null, "pattern": "^([0-9a-f]{64})?$",
+   "owner": "lm27.team.server", "readers": [], "spec": "TAB §3.2",
+   "uncalibrated": false, "secret": true, "scope": "team_server", "restart": "none",
+   "label_ko": "업로드 토큰 해시",
+   "help_ko": "업로드 토큰의 sha256(토큰 자체는 저장하지 않는다). 빈 값 = 업로드 인증 없음."
+  },
+  "teamServer.adminTokenSha256": {
+   "default": "", "type": "str", "range": null, "choices": null, "pattern": "^([0-9a-f]{64})?$",
+   "owner": "lm27.team.server", "readers": [], "spec": "TAB §3.2",
+   "uncalibrated": false, "secret": true, "scope": "team_server", "restart": "none",
+   "label_ko": "관리 토큰 해시",
+   "help_ko": "레지스트리 편집·인원 관리·재취합 토큰의 sha256. 빈 값 = 이 PC 에서만 허용."
+  },
+  "teamServer.readRequiresToken": {
+   "default": false, "type": "bool", "range": null, "choices": [false, true],
+   "owner": "lm27.team.server", "readers": [], "spec": "TAB §3.2",
+   "uncalibrated": false, "secret": false, "scope": "team_server", "restart": "none",
+   "label_ko": "읽기에도 토큰 요구",
+   "help_ko": "켜면 팀 자료 읽기 API 도 업로드 토큰을 요구한다."
+  },
+  "teamServer.allowCidrs": {
+   "default": [], "type": "list", "range": null, "choices": null, "item": "cidr",
+   "owner": "lm27.team.server", "readers": [], "spec": "TAB §3.2",
+   "uncalibrated": false, "secret": false, "scope": "team_server", "restart": "none",
+   "label_ko": "허용 대역",
+   "help_ko": "업로드·조회를 허용할 주소 대역(CIDR). 빈 값 = 모두 허용(루프백은 항상)."
+  },
+  "teamServer.allowedHosts": {
+   "default": [], "type": "list", "range": null, "choices": null, "item": "str",
+   "owner": "lm27.team.server", "readers": [], "spec": "TAB §3.2",
+   "uncalibrated": false, "secret": false, "scope": "team_server", "restart": "none",
+   "label_ko": "허용 Host 이름",
+   "help_ko": "Host 헤더 허용 이름 추가분(DNS 재바인딩 방어)."
+  },
+  "teamServer.maxBodyMb": {
+   "default": 16, "type": "int", "range": {"min": 1, "max": 256}, "choices": null,
+   "owner": "lm27.team.server", "readers": [], "spec": "TAB §3.2",
+   "uncalibrated": false, "secret": false, "scope": "team_server", "restart": "none",
+   "label_ko": "업로드 본문 상한(MB)",
+   "help_ko": "업로드 본문 크기 상한."
+  },
+  "teamServer.maxConcurrentUploads": {
+   "default": 4, "type": "int", "range": {"min": 1, "max": 64}, "choices": null,
+   "owner": "lm27.team.server", "readers": [], "spec": "TAB §3.2",
+   "uncalibrated": false, "secret": false, "scope": "team_server", "restart": "none",
+   "label_ko": "동시 업로드 수",
+   "help_ko": "동시 업로드 상한(넘으면 429)."
+  },
+  "teamServer.requestTimeoutSec": {
+   "default": 60, "type": "int", "range": {"min": 5, "max": 600}, "choices": null,
+   "owner": "lm27.team.server", "readers": [], "spec": "TAB §3.2",
+   "uncalibrated": false, "secret": false, "scope": "team_server", "restart": "none",
+   "label_ko": "요청 시간 제한(초)",
+   "help_ko": "소켓 읽기 시간 제한."
+  },
+  "teamServer.aggregateDebounceSec": {
+   "default": 3, "type": "int", "range": {"min": 0, "max": 120}, "choices": null,
+   "owner": "lm27.team.server", "readers": [], "spec": "TAB §3.2",
+   "uncalibrated": false, "secret": false, "scope": "team_server", "restart": "none",
+   "label_ko": "재취합 묶음 대기(초)",
+   "help_ko": "연속 업로드를 한 번의 재취합으로 묶는 대기."
+  },
+  "teamServer.aggregateWaitSec": {
+   "default": 20, "type": "int", "range": {"min": 0, "max": 300}, "choices": null,
+   "owner": "lm27.team.server", "readers": [], "spec": "TAB §3.2",
+   "uncalibrated": false, "secret": false, "scope": "team_server", "restart": "none",
+   "label_ko": "재취합 완료 대기(초)",
+   "help_ko": "업로드 응답이 재취합 완료를 기다리는 최대 시간."
+  },
+  "teamServer.aggregateTimeoutSec": {
+   "default": 300, "type": "int", "range": {"min": 10, "max": 7200}, "choices": null,
+   "owner": "lm27.team.server", "readers": [], "spec": "TAB §3.2",
+   "uncalibrated": false, "secret": false, "scope": "team_server", "restart": "none",
+   "label_ko": "재취합 시간 제한(초)",
+   "help_ko": "재취합 하위 프로세스 시간 제한."
+  },
+  "teamServer.historyKeep": {
+   "default": 5, "type": "int", "range": {"min": 0, "max": 100}, "choices": null,
+   "owner": "lm27.team.store", "readers": [], "spec": "TAB §3.2",
+   "uncalibrated": false, "secret": false, "scope": "team_server", "restart": "none",
+   "label_ko": "옛 묶음 보관 수",
+   "help_ko": "사람×기간별 옛 묶음 보관 수."
+  },
+  "teamServer.genKeep": {
+   "default": 3, "type": "int", "range": {"min": 1, "max": 50}, "choices": null,
+   "owner": "lm27.team.store", "readers": [], "spec": "TAB §3.2",
+   "uncalibrated": false, "secret": false, "scope": "team_server", "restart": "none",
+   "label_ko": "취합 세대 보관 수",
+   "help_ko": "취합 산출 세대 보관 수."
+  },
+  "teamServer.logKeepDays": {
+   "default": 30, "type": "int", "range": {"min": 1, "max": 3650}, "choices": null,
+   "owner": "lm27.team.store", "readers": [], "spec": "TAB §3.2",
+   "uncalibrated": false, "secret": false, "scope": "team_server", "restart": "none",
+   "label_ko": "서버 로그 보관(일)",
+   "help_ko": "팀 서버 로그 보관 일수."
+  },
+  "teamServer.inboxDirs": {
+   "default": [], "type": "list", "range": null, "choices": null, "item": "path",
+   "owner": "lm27.team.offline", "readers": [], "spec": "TAB §5.2",
+   "uncalibrated": false, "secret": false, "scope": "team_server", "restart": "none",
+   "label_ko": "반입 감시 폴더",
+   "help_ko": "오프라인 반입을 읽기 전용으로 살펴볼 폴더(저장소 inbox 는 항상)."
+  },
+  "teamServer.inboxPollSec": {
+   "default": 30, "type": "int", "range": {"min": 5, "max": 3600}, "choices": null,
+   "owner": "lm27.team.offline", "readers": [], "spec": "TAB §5.2",
+   "uncalibrated": false, "secret": false, "scope": "team_server", "restart": "none",
+   "label_ko": "반입 확인 주기(초)",
+   "help_ko": "반입 폴더 확인 주기."
+  },
+  "teamServer.suggestRanges": {
+   "default": [[19310, 19330], [9311, 9330]], "type": "list", "range": null, "choices": null, "item": "port_range",
+   "owner": "lm27.team.portdiag", "readers": [], "spec": "TAB §3.4",
+   "uncalibrated": false, "secret": false, "scope": "team_server", "restart": "none",
+   "label_ko": "대체 포트 후보 구간",
+   "help_ko": "포트가 막혔을 때 제안할 대체 포트 구간(앞 구간 우선)."
+  },
+  "teamServer.firewallHintAfterMin": {
+   "default": 30, "type": "int", "range": {"min": 1, "max": 1440}, "choices": null,
+   "owner": "lm27.team.firewall", "readers": [], "spec": "TAB §3.2",
+   "uncalibrated": false, "secret": false, "scope": "team_server", "restart": "none",
+   "label_ko": "방화벽 진단 표시(분)",
+   "help_ko": "가동 후 이 시간 동안 다른 PC 요청이 0건이면 방화벽 진단을 띄운다."
+  },
+  "teamServer.ganttMergeGapDays": {
+   "default": 2, "type": "int", "range": {"min": 0, "max": 30}, "choices": null,
+   "owner": "lm27.team.aggregate", "readers": [], "spec": "TAB §3.2",
+   "uncalibrated": false, "secret": false, "scope": "team_server", "restart": "none",
+   "label_ko": "간트 구간 잇기(일)",
+   "help_ko": "간트 활동 구간을 이을 최대 빈 날."
+  },
+  "time.tzOffsetMin": {
+   "default": 540, "type": "int", "range": {"min": -720, "max": 840}, "choices": null,
+   "owner": "lm27.time.evidence", "readers": ["lm27.team.build", "lm27.privacy.context"], "spec": "W §8.2",
+   "uncalibrated": false, "secret": false, "scope": "agent", "restart": "agent",
+   "label_ko": "근무 시간대(분)",
+   "help_ko": "근무 시간대 오프셋(분, +09:00 = 540). 팀 묶음 시간대와 정제 문맥 오프셋의 원천."
+  },
+  "time.slotCoverSec": {
+   "default": 150, "type": "int", "range": {"min": 1, "max": 300}, "choices": null,
+   "owner": "lm27.time.envelope", "readers": ["lm27.time.attribute"], "spec": "W §8.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "슬롯 덮임 문턱(초)",
+   "help_ko": "5분 슬롯이 이 초 이상 덮이면 봉투에 넣는다."
+  },
+  "time.window.std": {
+   "default": "09:00-18:00", "type": "timerange", "range": null, "choices": null,
+   "owner": "lm27.time.calendar", "readers": ["lm27.time.envelope", "lm27.time.queue"], "spec": "W §8.2.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "표준 근무창",
+   "help_ko": "표준 근무창. 시차 근무는 개인 설정으로 바꾼다. 형식 HH:MM-HH:MM."
+  },
+  "time.window.lunch": {
+   "default": "12:00-13:00", "type": "timerange", "range": null, "choices": null,
+   "owner": "lm27.time.calendar", "readers": [], "spec": "W §8.2.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "점심 창",
+   "help_ko": "흔적이 없으면 하한·다리에서 뺀다. 형식 HH:MM-HH:MM."
+  },
+  "time.window.dinner": {
+   "default": "18:00-18:30", "type": "timerange", "range": null, "choices": null,
+   "owner": "lm27.time.calendar", "readers": [], "spec": "W §8.2.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "저녁 창",
+   "help_ko": "흔적이 없으면 다리·직전 창에서 뺀다. 형식 HH:MM-HH:MM."
+  },
+  "time.window.night": {
+   "default": "22:00-06:00", "type": "timerange", "range": null, "choices": null,
+   "owner": "lm27.time.calendar", "readers": [], "spec": "W §8.2.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "야간 창",
+   "help_ko": "야간 꼬리표 구간(자정을 넘을 수 있다). 형식 HH:MM-HH:MM."
+  },
+  "time.window.halfAmOff": {
+   "default": "09:00-14:00", "type": "timerange", "range": null, "choices": null,
+   "owner": "lm27.time.calendar", "readers": ["lm27.time.envelope", "lm27.time.queue"], "spec": "W §8.2.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "오전 반차 창",
+   "help_ko": "오전 반차 4시간 창(점심 포함). 형식 HH:MM-HH:MM."
+  },
+  "time.window.halfPmOff": {
+   "default": "14:00-18:00", "type": "timerange", "range": null, "choices": null,
+   "owner": "lm27.time.calendar", "readers": [], "spec": "W §8.2.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "오후 반차 창",
+   "help_ko": "오후 반차 4시간 창. 형식 HH:MM-HH:MM."
+  },
+  "time.envelope.stuckCoverH": {
+   "default": 14.0, "type": "float", "range": {"min": 1.0, "max": 24.0}, "choices": null,
+   "owner": "lm27.time.evidence", "readers": [], "spec": "W §8.2.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "고착 판정 덮임(시간)",
+   "help_ko": "(PC, 날) 덮임이 이 시간 이상이고 유휴 비율이 낮으면 idle 고착으로 본다."
+  },
+  "time.envelope.stuckIdleRatio": {
+   "default": 0.02, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.time.evidence", "readers": [], "spec": "W §8.2.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "고착 판정 유휴 비율",
+   "help_ko": "고착 판정의 유휴 비율 문턱."
+  },
+  "time.envelope.idleActiveSec": {
+   "default": 300, "type": "int", "range": {"min": 30, "max": 3600}, "choices": null,
+   "owner": "lm27.time.evidence", "readers": [], "spec": "계약(CP·W 하드코딩 통합)",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "능동 판정 유휴(초)",
+   "help_ko": "샘플의 유휴 초가 이 값 이하면 active 로 본다."
+  },
+  "time.envelope.samplerBridgeMin": {
+   "default": 60, "type": "int", "range": {"min": 0, "max": 600}, "choices": null,
+   "owner": "lm27.time.envelope", "readers": [], "spec": "W §8.2.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "샘플러 공백 다리(분)",
+   "help_ko": "샘플러 공백을 잇는 최대 길이. 창 밖은 잠금을 잇지 않는다."
+  },
+  "time.envelope.sessionGapMin": {
+   "default": 45, "type": "int", "range": {"min": 0, "max": 600}, "choices": null,
+   "owner": "lm27.time.envelope", "readers": [], "spec": "W §8.2.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "능동 다리(분)",
+   "help_ko": "능동 구간끼리 잇는 최대 공백."
+  },
+  "time.envelope.pcBridgeMin": {
+   "default": 120, "type": "int", "range": {"min": 0, "max": 600}, "choices": null,
+   "owner": "lm27.time.envelope", "readers": [], "spec": "W §8.2.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "PC 다리(분)",
+   "help_ko": "PC 가동 구간끼리 잇는 최대 공백."
+  },
+  "time.envelope.lockBreakMin": {
+   "default": 15, "type": "int", "range": {"min": 0, "max": 600}, "choices": null,
+   "owner": "lm27.time.envelope", "readers": [], "spec": "W §8.2.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "잠금 끊김(분)",
+   "help_ko": "창 밖 전 PC 잠금이 이만큼 이어지면 다리를 놓지 않는다."
+  },
+  "time.envelope.preWindowMin.mail": {
+   "default": 20, "type": "int", "range": {"min": 0, "max": 240}, "choices": null,
+   "owner": "lm27.time.envelope", "readers": ["lm27.time.episodes"], "spec": "W §8.2.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "직전 창 — 메일 발신(분)",
+   "help_ko": "메일 발신 앵커 직전에 인정하는 최소 크레딧 창."
+  },
+  "time.envelope.preWindowMin.teams": {
+   "default": 10, "type": "int", "range": {"min": 0, "max": 240}, "choices": null,
+   "owner": "lm27.time.envelope", "readers": ["lm27.time.episodes"], "spec": "W §8.2.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "직전 창 — 팀즈 발신(분)",
+   "help_ko": "팀즈 발신 앵커 직전에 인정하는 최소 크레딧 창."
+  },
+  "time.envelope.preWindowMin.file": {
+   "default": 30, "type": "int", "range": {"min": 0, "max": 240}, "choices": null,
+   "owner": "lm27.time.envelope", "readers": ["lm27.time.episodes"], "spec": "W §8.2.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "직전 창 — 파일 저장(분)",
+   "help_ko": "파일 저장 앵커 직전에 인정하는 최소 크레딧 창."
+  },
+  "time.envelope.preWindowMin.code": {
+   "default": 45, "type": "int", "range": {"min": 0, "max": 240}, "choices": null,
+   "owner": "lm27.time.envelope", "readers": ["lm27.time.episodes"], "spec": "W §8.2.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "직전 창 — 코드 저장(분)",
+   "help_ko": "코드 저장 앵커 직전에 인정하는 최소 크레딧 창."
+  },
+  "time.envelope.preWindowMin.commit": {
+   "default": 45, "type": "int", "range": {"min": 0, "max": 240}, "choices": null,
+   "owner": "lm27.time.envelope", "readers": ["lm27.time.episodes"], "spec": "W §8.2.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "직전 창 — 커밋(분)",
+   "help_ko": "커밋 앵커 직전에 인정하는 최소 크레딧 창."
+  },
+  "time.envelope.preWindowMin.submit": {
+   "default": 30, "type": "int", "range": {"min": 0, "max": 240}, "choices": null,
+   "owner": "lm27.time.envelope", "readers": ["lm27.time.episodes"], "spec": "W §8.2.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "직전 창 — 제출(분)",
+   "help_ko": "제출 앵커 직전에 인정하는 최소 크레딧 창."
+  },
+  "time.envelope.tracePadMin": {
+   "default": 5, "type": "int", "range": {"min": 0, "max": 60}, "choices": null,
+   "owner": "lm27.time.envelope", "readers": [], "spec": "W §8.2.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "흔적 폭(분)",
+   "help_ko": "흔적 앵커 앞뒤 폭. 식사 판정은 앵커 직전 5분만."
+  },
+  "time.envelope.trimEdgesMin": {
+   "default": 10, "type": "int", "range": {"min": 0, "max": 120}, "choices": null,
+   "owner": "lm27.time.envelope", "readers": [], "spec": "W §8.2.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "하한 양끝 다듬기(분)",
+   "help_ko": "PC 하한 구간 양끝을 다듬는 길이."
+  },
+  "time.envelope.alwaysOnH": {
+   "default": 20.0, "type": "float", "range": {"min": 1.0, "max": 24.0}, "choices": null,
+   "owner": "lm27.time.envelope", "readers": [], "spec": "W §8.2.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "항상 켜진 PC(시간)",
+   "help_ko": "하루 가동이 이 시간 이상이면 하한을 흔적 범위로 좁힌다."
+  },
+  "time.envelope.traceWindowPadMin": {
+   "default": 30, "type": "int", "range": {"min": 0, "max": 240}, "choices": null,
+   "owner": "lm27.time.envelope", "readers": [], "spec": "W §8.2.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "흔적 창 폭(분)",
+   "help_ko": "흔적 창 앞뒤 폭."
+  },
+  "time.envelope.traceWindowMinAnchors": {
+   "default": 2, "type": "int", "range": {"min": 1, "max": 50}, "choices": null,
+   "owner": "lm27.time.envelope", "readers": [], "spec": "W §8.2.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "흔적 창 최소 앵커",
+   "help_ko": "흔적 창을 여는 최소 앵커 수."
+  },
+  "time.envelope.remoteSpanMinSends": {
+   "default": 2, "type": "int", "range": {"min": 1, "max": 50}, "choices": null,
+   "owner": "lm27.time.envelope", "readers": [], "spec": "W §8.2.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "원격 흔적 최소 발신",
+   "help_ko": "잠금 중 발신이 이만큼이면 원격 흔적 창을 연다."
+  },
+  "time.envelope.remoteLinkGapMin": {
+   "default": 60, "type": "int", "range": {"min": 0, "max": 600}, "choices": null,
+   "owner": "lm27.time.envelope", "readers": [], "spec": "W §8.2.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "원격 연결 다리(분)",
+   "help_ko": "원격 연결 구간을 잇는 최대 공백."
+  },
+  "time.envelope.afterHoursFgMin": {
+   "default": 15, "type": "int", "range": {"min": 0, "max": 240}, "choices": null,
+   "owner": "lm27.time.envelope", "readers": [], "spec": "W §8.2.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "창 밖 업무 앱 최소(분)",
+   "help_ko": "창 밖·점심 인정에 필요한 업무 앱 능동 최소량."
+  },
+  "time.envelope.afterHoursAnchorMin": {
+   "default": 15, "type": "int", "range": {"min": 0, "max": 240}, "choices": null,
+   "owner": "lm27.time.envelope", "readers": [], "spec": "W §8.2.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "창 밖 산출물 근접(분)",
+   "help_ko": "창 밖 인정 자격: 산출물 앵커 근접 거리."
+  },
+  "time.envelope.skeletonPadMin": {
+   "default": 30, "type": "int", "range": {"min": 0, "max": 240}, "choices": null,
+   "owner": "lm27.time.envelope", "readers": [], "spec": "W §8.2.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "골격 폭(분)",
+   "help_ko": "창 밖 인정 = 골격 앞뒤 이 폭."
+  },
+  "time.envelope.skeletonAnchorPreMin": {
+   "default": 30, "type": "int", "range": {"min": 0, "max": 240}, "choices": null,
+   "owner": "lm27.time.envelope", "readers": [], "spec": "W §8.2.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "골격 앵커 직전(분)",
+   "help_ko": "골격 = 앵커 직전 이 시간."
+  },
+  "time.envelope.passiveCreditMin": {
+   "default": 5, "type": "int", "range": {"min": 0, "max": 60}, "choices": null,
+   "owner": "lm27.time.envelope", "readers": [], "spec": "W §8.2.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "수신 크레딧(분)",
+   "help_ko": "수신 1건에 주는 크레딧."
+  },
+  "time.envelope.passiveDayCapMin": {
+   "default": 60, "type": "int", "range": {"min": 0, "max": 480}, "choices": null,
+   "owner": "lm27.time.envelope", "readers": [], "spec": "W §8.2.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "수신 하루 상한(분)",
+   "help_ko": "수신만으로 쌓이는 크레딧의 하루 상한."
+  },
+  "time.envelope.passiveMaxParticipants": {
+   "default": 10, "type": "int", "range": {"min": 1, "max": 1000}, "choices": null,
+   "owner": "lm27.time.envelope", "readers": [], "spec": "W §8.2.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "단체 수신 제외 인원",
+   "help_ko": "이 인원을 넘는 단체 수신은 크레딧을 주지 않는다."
+  },
+  "time.envelope.passiveChainGapMin": {
+   "default": 90, "type": "int", "range": {"min": 0, "max": 600}, "choices": null,
+   "owner": "lm27.time.envelope", "readers": [], "spec": "W §8.2.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "수신 연속 간격(분)",
+   "help_ko": "수신 연속형 사슬의 최대 간격."
+  },
+  "time.envelope.passiveChainMinN": {
+   "default": 3, "type": "int", "range": {"min": 1, "max": 100}, "choices": null,
+   "owner": "lm27.time.envelope", "readers": [], "spec": "W §8.2.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "수신 연속 최소 건수",
+   "help_ko": "수신 연속형 사슬의 최소 건수."
+  },
+  "time.envelope.dateOnlyGate": {
+   "default": false, "type": "bool", "range": null, "choices": [false, true],
+   "owner": "lm27.time.envelope", "readers": [], "spec": "W §8.2.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "날짜만 증거 인정",
+   "help_ko": "켜면 날짜만 있는 증거도 낮은 등급으로 인정하고 확인 질문을 만든다(기본 끔)."
+  },
+  "time.envelope.tentative": {
+   "default": "evidence", "type": "enum", "range": null, "choices": ["count", "evidence"],
+   "owner": "lm27.time.envelope", "readers": [], "spec": "W §8.2.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "미정 회의 처리",
+   "help_ko": "evidence = 회의 창 전경 비율이 문턱 이상일 때만, count = 언제나 센다."
+  },
+  "time.envelope.tentativeEvidenceRatio": {
+   "default": 0.5, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.time.envelope", "readers": [], "spec": "W §8.2.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "미정 회의 전경 비율",
+   "help_ko": "미정 회의를 인정하는 회의 창 전경 비율."
+  },
+  "time.envelope.solverMode": {
+   "default": "anchor", "type": "enum", "range": null, "choices": ["anchor", "cap"],
+   "owner": "lm27.time.envelope", "readers": [], "spec": "W §8.2.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "솔버 시간 처리",
+   "help_ko": "anchor = 기계 시간은 사람 시간이 아님(앵커만), cap = 상한까지 인정(이전 판 호환)."
+  },
+  "time.envelope.solverCapH": {
+   "default": 4.0, "type": "float", "range": {"min": 0.0, "max": 24.0}, "choices": null,
+   "owner": "lm27.time.envelope", "readers": [], "spec": "W §8.2.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "솔버 인정 상한(시간)",
+   "help_ko": "solverMode=cap 일 때 하루 인정 상한."
+  },
+  "time.envelope.futureSlackMin": {
+   "default": 5, "type": "int", "range": {"min": 0, "max": 1440}, "choices": null,
+   "owner": "lm27.time.evidence", "readers": [], "spec": "W §8.2.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "미래 시각 허용(분)",
+   "help_ko": "분석 기준 시각보다 이만큼 넘는 미래 시각 증거는 버린다."
+  },
+  "time.envelope.utcSuspectShare": {
+   "default": 0.6, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.time.evidence", "readers": [], "spec": "W §8.2.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "UTC 저장 의심 비율",
+   "help_ko": "시각이 UTC 로 저장된 것으로 의심하는 비율 문턱."
+  },
+  "time.envelope.mailTimeOffsetH": {
+   "default": null, "type": "float", "range": {"min": -14.0, "max": 14.0}, "choices": null, "nullable": true,
+   "owner": "lm27.time.evidence", "readers": [], "spec": "W §8.2.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "메일 시각 보정(시간)",
+   "help_ko": "UTC 의심 경로의 보정량(확인 후에만). 빈 값 = 보정 없음."
+  },
+  "time.envelope.longDayH": {
+   "default": 16.0, "type": "float", "range": {"min": 1.0, "max": 24.0}, "choices": null,
+   "owner": "lm27.time.queue", "readers": [], "spec": "W §8.2.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "긴 하루 표시(시간)",
+   "help_ko": "하루 근무가 이보다 길면 표시·확인 큐에만 올린다(자르지 않음)."
+  },
+  "time.attrib.pointWeightSec": {
+   "default": 60, "type": "int", "range": {"min": 1, "max": 3600}, "choices": null,
+   "owner": "lm27.time.attribute", "readers": [], "spec": "W §8.2.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "점 사건 가중(초)",
+   "help_ko": "저장·커밋 1건의 귀속 가중."
+  },
+  "time.attrib.postPadMin": {
+   "default": 30, "type": "int", "range": {"min": 0, "max": 240}, "choices": null,
+   "owner": "lm27.time.attribute", "readers": ["lm27.time.episodes"], "spec": "W §8.2.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "마무리 창(분)",
+   "help_ko": "종료 사건 뒤 마무리 창."
+  },
+  "time.attrib.meetSplitMinAtt": {
+   "default": 6, "type": "int", "range": {"min": 2, "max": 1000}, "choices": null,
+   "owner": "lm27.time.attribute", "readers": [], "spec": "W §8.2.3",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "회의 분할 최소 인원",
+   "help_ko": "이 인원 이상 회의 중 다른 업무 입력은 분할한다."
+  },
+  "time.attrib.meetSplitShare": {
+   "default": 0.5, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.time.attribute", "readers": [], "spec": "W §8.2.3",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "회의 분할 비율",
+   "help_ko": "대형 회의 중 다른 업무 입력의 분할 비율."
+  },
+  "time.attrib.meetAbsentCover": {
+   "default": 0.9, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.time.attribute", "readers": [], "spec": "W §8.2.3",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "회의 불참 의심 비율",
+   "help_ko": "회의 시간의 이 비율 이상 다른 업무 PC 능동이면 불참 의심."
+  },
+  "time.attrib.gapSplitMaxMin": {
+   "default": 30, "type": "int", "range": {"min": 0, "max": 600}, "choices": null,
+   "owner": "lm27.time.attribute", "readers": [], "spec": "W §8.2.3",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "공백 분할 한도(분)",
+   "help_ko": "PC 밖 공백을 앞뒤 업무로 나누는 한도."
+  },
+  "time.attrib.absorbGenericMaxMin": {
+   "default": 10, "type": "int", "range": {"min": 0, "max": 120}, "choices": null,
+   "owner": "lm27.time.attribute", "readers": [], "spec": "W §8.2.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "일반 앱 흡수(분)",
+   "help_ko": "같은 업무 사이의 일반 앱 사용을 흡수하는 최대 길이."
+  },
+  "time.attrib.floorNearMin": {
+   "default": 30, "type": "int", "range": {"min": 0, "max": 600}, "choices": null,
+   "owner": "lm27.time.attribute", "readers": [], "spec": "W §8.2.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "하한 근접 반경(분)",
+   "help_ko": "PC 하한 슬롯의 근접 업무 반경."
+  },
+  "time.attrib.solverAbsorbGeneric": {
+   "default": true, "type": "bool", "range": null, "choices": [false, true],
+   "owner": "lm27.time.attribute", "readers": [], "spec": "W §8.2.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "솔버 대기 흡수",
+   "help_ko": "솔버 대기 중 일반 앱 사용을 솔버 업무로 본다."
+  },
+  "time.attrib.l6MaxRatio": {
+   "default": 1.0, "type": "float", "range": {"min": 0.0, "max": 100.0}, "choices": null, "nullable": true,
+   "owner": "lm27.time.attribute", "readers": [], "spec": "W §8.2.3",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "추정 배분 상한 배수",
+   "help_ko": "추정 배분 ≤ 그날 직접 증거 × 이 값. 빈 값 = 무제한."
+  },
+  "time.queue.gapMin": {
+   "default": 90, "type": "int", "range": {"min": 5, "max": 1440}, "choices": null,
+   "owner": "lm27.time.queue", "readers": [], "spec": "W §8.2.4",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "공백 질문(분)",
+   "help_ko": "근무창 안 공백이 이 길이 이상이면 확인 질문."
+  },
+  "time.queue.bucketRunMin": {
+   "default": 60, "type": "int", "range": {"min": 5, "max": 1440}, "choices": null,
+   "owner": "lm27.time.queue", "readers": [], "spec": "W §8.2.4",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "미귀속 블록 질문(분)",
+   "help_ko": "미귀속 블록이 이 길이 이상이면 확인 질문."
+  },
+  "time.queue.minEffortH": {
+   "default": 0.5, "type": "float", "range": {"min": 0.0, "max": 100.0}, "choices": null,
+   "owner": "lm27.time.queue", "readers": [], "spec": "W §8.2.4",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "경계 확인 최소 투입(시간)",
+   "help_ko": "경계 확인 질문 대상 업무의 최소 투입."
+  },
+  "time.queue.maxPerWeek": {
+   "default": 15, "type": "int", "range": {"min": 0, "max": 200}, "choices": null,
+   "owner": "lm27.time.queue", "readers": [], "spec": "W §8.2.4",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "주당 질문 상한",
+   "help_ko": "주당 노출할 시간 확인 질문 상한."
+  },
+  "time.queue.openLongWd": {
+   "default": 20, "type": "int", "range": {"min": 1, "max": 500}, "choices": null,
+   "owner": "lm27.time.queue", "readers": [], "spec": "W §8.2.4",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "오래 열린 업무(근무일)",
+   "help_ko": "이 근무일 넘게 열린 업무는 확인 질문."
+  },
+  "time.queue.solverDayH": {
+   "default": 8.0, "type": "float", "range": {"min": 0.0, "max": 24.0}, "choices": null,
+   "owner": "lm27.time.queue", "readers": [], "spec": "W §8.2.4",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "솔버 대량(시간)",
+   "help_ko": "하루 솔버 가동이 이 시간 이상이면 확인 질문."
+  },
+  "time.queue.parallelSuspect": {
+   "default": 5.0, "type": "float", "range": {"min": 1.0, "max": 100.0}, "choices": null,
+   "owner": "lm27.time.queue", "readers": [], "spec": "W §8.2.4(개명)",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "분할 과다 의심 병행도",
+   "help_ko": "병행도가 이 값 이상이면 분할 과다 의심 질문."
+  },
+  "episode.requestMaxParticipants": {
+   "default": 5, "type": "int", "range": {"min": 1, "max": 100}, "choices": null,
+   "owner": "lm27.time.episodes", "readers": [], "spec": "W §8.2.5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "의뢰 최대 인원",
+   "help_ko": "이 인원을 넘는 단체 요청은 의뢰 시작으로 보지 않는다."
+  },
+  "episode.reworkWindowWd": {
+   "default": 10, "type": "int", "range": {"min": 0, "max": 120}, "choices": null,
+   "owner": "lm27.time.episodes", "readers": [], "spec": "W §8.2.5",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "재의뢰 창(근무일)",
+   "help_ko": "보고 뒤 같은 화제 재의뢰를 같은 업무 차수로 묶는 기간."
+  },
+  "episode.reopenQuietWd": {
+   "default": 3, "type": "int", "range": {"min": 0, "max": 60}, "choices": null,
+   "owner": "lm27.time.episodes", "readers": [], "spec": "W §8.2.5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "새 차수 조용 기간(근무일)",
+   "help_ko": "조용한 기간 뒤 추가 요청은 새 차수."
+  },
+  "episode.supplementWd": {
+   "default": 2, "type": "int", "range": {"min": 0, "max": 60}, "choices": null,
+   "owner": "lm27.time.episodes", "readers": [], "spec": "W §8.2.5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "보완 연장(근무일)",
+   "help_ko": "보완·전달 보고로 끝을 늘리는 기간."
+  },
+  "episode.preStartTolMin": {
+   "default": 60, "type": "int", "range": {"min": 0, "max": 1440}, "choices": null,
+   "owner": "lm27.time.episodes", "readers": [], "spec": "W §8.2.5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "선행 착수 허용(분)",
+   "help_ko": "의뢰 전 착수를 선행 착수로 표시하는 허용 폭."
+  },
+  "episode.preWorkH": {
+   "default": 24, "type": "int", "range": {"min": 0, "max": 720}, "choices": null,
+   "owner": "lm27.time.episodes", "readers": [], "spec": "W §8.2.5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "선행 작업 연결 창(시간)",
+   "help_ko": "의뢰 전 선행 작업을 연결하는 창."
+  },
+  "episode.linkWindowWd": {
+   "default": 3, "type": "int", "range": {"min": 0, "max": 60}, "choices": null,
+   "owner": "lm27.time.episodes", "readers": [], "spec": "W §8.2.5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "첫 손댐 보너스 창(근무일)",
+   "help_ko": "의뢰 후 첫 손댐에 시간 보너스를 주는 창."
+  },
+  "episode.link.theta": {
+   "default": 2.0, "type": "float", "range": {"min": 0.0, "max": 20.0}, "choices": null,
+   "owner": "lm27.time.episodes", "readers": [], "spec": "W §8.2.5",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "약한 키 합산 문턱",
+   "help_ko": "약한 연결 단서 점수 합이 이 값 이상이면 같은 업무로 잇는다."
+  },
+  "episode.link.wToken": {
+   "default": 2.5, "type": "float", "range": {"min": 0.0, "max": 20.0}, "choices": null,
+   "owner": "lm27.time.episodes", "readers": [], "spec": "W §8.2.5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "토큰 유사 가중",
+   "help_ko": "토큰 유사도 가중."
+  },
+  "episode.link.wTime": {
+   "default": 0.5, "type": "float", "range": {"min": 0.0, "max": 20.0}, "choices": null,
+   "owner": "lm27.time.episodes", "readers": [], "spec": "W §8.2.5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "시간 근접 가중",
+   "help_ko": "시간 근접 가중."
+  },
+  "episode.link.wProject": {
+   "default": 0.7, "type": "float", "range": {"min": 0.0, "max": 20.0}, "choices": null,
+   "owner": "lm27.time.episodes", "readers": [], "spec": "W §8.2.5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "과제 일치 가중",
+   "help_ko": "같은 과제 가중."
+  },
+  "episode.link.reportSim": {
+   "default": 0.3, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.time.episodes", "readers": [], "spec": "W §8.2.5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "보고 연결 유사도",
+   "help_ko": "다른 대화 보고를 같은 상대 열린 의뢰에 잇는 유사도 문턱."
+  },
+  "episode.link.multiCloseSim": {
+   "default": 0.6, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.time.episodes", "readers": [], "spec": "W §8.2.5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "다대다 종료 유사도",
+   "help_ko": "첨부 문서군과 다른 의뢰 토큰의 종료 연결 유사도 문턱."
+  },
+  "episode.link.sendTokenSim": {
+   "default": 0.6, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.time.episodes", "readers": [], "spec": "W §8.2.5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "발신 토큰 연결 유사도",
+   "help_ko": "무연결 발신을 업무 토큰으로 잇는 유사도 문턱."
+  },
+  "episode.tokens.minSubLen": {
+   "default": 2, "type": "int", "range": {"min": 1, "max": 10}, "choices": null,
+   "owner": "lm27.time.episodes", "readers": ["lm27.time.tokens"], "spec": "W §8.2.5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "부분 문자열 최소 길이",
+   "help_ko": "한국어 합성어 부분 문자열 일치 최소 글자 수."
+  },
+  "episode.tokens.idfMaxDf": {
+   "default": 0.3, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.time.evidence", "readers": [], "spec": "W §8.2.5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "상용 토큰 문서 비율",
+   "help_ko": "이 비율 넘게 나오는 토큰은 상용으로 보고 뺀다."
+  },
+  "episode.tokens.idfMinN": {
+   "default": 20, "type": "int", "range": {"min": 1, "max": 100000}, "choices": null,
+   "owner": "lm27.time.evidence", "readers": [], "spec": "W §8.2.5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "상용 토큰 판정 최소 노드",
+   "help_ko": "상용 토큰 판정에 필요한 최소 노드 수."
+  },
+  "episode.tokens.boilerplate": {
+   "default": ["검토", "부탁드립니다", "부탁", "요청", "요청드립니다", "드립니다", "회신", "공유", "보고", "보고드립니다", "건", "re", "fw", "fwd", "관련", "자료", "송부", "확인", "결과", "건입니다", "및", "문의", "수정", "회의", "미팅", "the", "첨부"], "type": "list(+-)", "range": null, "choices": null, "item": "str",
+   "owner": "lm27.time.episodes", "readers": ["lm27.time.evidence", "lm27.time.tokens", "lm27.hier.rules"], "spec": "W §8.2.5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "상용구",
+   "help_ko": "업무 토큰에서 빼는 상용구."
+  },
+  "episode.docs.genericStems": {
+   "default": ["보고서", "자료", "문서", "첨부", "발표자료", "회의록", "정리", "초안", "최종본", "untitled", "image", "presentation", "book", "새 microsoft excel 워크시트", "새 microsoft word 문서", "새 microsoft powerpoint 프레젠테이션", "제목 없음", "통합 문서", "document"], "type": "list(+-)", "range": null, "choices": null, "item": "str",
+   "owner": "lm27.time.tokens", "readers": ["lm27.time.episodes", "lm27.hier.groups"], "spec": "W §8.2.5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "범용 파일 이름",
+   "help_ko": "문서군을 가르지 못하는 범용 파일 이름(소문자 비교)."
+  },
+  "episode.finalWords": {
+   "default": ["최종", "final", "v1.0", "확정", "완료", "제출"], "type": "list(+-)", "range": null, "choices": null, "item": "str",
+   "owner": "lm27.time.episodes", "readers": ["lm27.privacy.context"], "spec": "W §8.2.5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "최종 이름 낱말",
+   "help_ko": "완료 후보 점수의 '최종 이름' 낱말. 수집기 final_name 판정에도 쓴다."
+  },
+  "episode.reviewWords": {
+   "default": ["리뷰", "review", "dr", "보고", "검토회의", "결과보고", "발표"], "type": "list(+-)", "range": null, "choices": null, "item": "str",
+   "owner": "lm27.time.episodes", "readers": ["lm27.report.analysis.mining"], "spec": "W §8.2.5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "리뷰 회의 낱말",
+   "help_ko": "리뷰 회의(종료 근거) 판정 낱말."
+  },
+  "episode.interimWords": {
+   "default": ["중간", "경과", "진행상황", "1차", "중간보고"], "type": "list(+-)", "range": null, "choices": null, "item": "str",
+   "owner": "lm27.time.episodes", "readers": [], "spec": "W §8.2.5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "중간 보고 낱말",
+   "help_ko": "중간 보고 판정 낱말."
+  },
+  "episode.recurringMinWeeks": {
+   "default": 4, "type": "int", "range": {"min": 1, "max": 52}, "choices": null,
+   "owner": "lm27.time.episodes", "readers": [], "spec": "W §8.2.5",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "반복 문서 최소 주",
+   "help_ko": "이 주 수 이상 반복되면 반복 문서로 본다."
+  },
+  "episode.recurringMaxDaysPerWeek": {
+   "default": 2, "type": "int", "range": {"min": 1, "max": 7}, "choices": null,
+   "owner": "lm27.time.episodes", "readers": [], "spec": "W §8.2.5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "반복 문서 주당 활동일",
+   "help_ko": "반복 문서의 주당 활동일 상한."
+  },
+  "episode.selfMergeSim": {
+   "default": 0.5, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.time.episodes", "readers": [], "spec": "W §8.2.5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "자체 업무 병합 유사도",
+   "help_ko": "자체 업무 문서군 병합 유사도 문턱."
+  },
+  "episode.selfMergeDays": {
+   "default": 3, "type": "int", "range": {"min": 0, "max": 60}, "choices": null,
+   "owner": "lm27.time.episodes", "readers": [], "spec": "W §8.2.5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "자체 업무 병합 일수",
+   "help_ko": "자체 업무 문서군 병합 거리(일)."
+  },
+  "episode.splitWd": {
+   "default": 5, "type": "int", "range": {"min": 1, "max": 120}, "choices": null,
+   "owner": "lm27.time.episodes", "readers": [], "spec": "W §8.2.5",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "휴면 분리(근무일)",
+   "help_ko": "자체 업무·앱 업무를 휴면으로 나누는 기간."
+  },
+  "episode.dormantWd": {
+   "default": 5, "type": "int", "range": {"min": 1, "max": 120}, "choices": null,
+   "owner": "lm27.time.episodes", "readers": [], "spec": "W §8.2.5",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "휴면 종료(근무일)",
+   "help_ko": "이 기간 손대지 않으면 휴면 종료로 본다."
+  },
+  "episode.quietWd": {
+   "default": 3, "type": "int", "range": {"min": 1, "max": 60}, "choices": null,
+   "owner": "lm27.time.episodes", "readers": [], "spec": "W §8.2.5",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "조용한 기간(근무일)",
+   "help_ko": "완료 후보 점수의 '조용한 기간'."
+  },
+  "episode.autosaveQuietWd": {
+   "default": 3, "type": "int", "range": {"min": 1, "max": 60}, "choices": null,
+   "owner": "lm27.time.episodes", "readers": [], "spec": "W §8.2.5",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "자동 저장 조용 기간(근무일)",
+   "help_ko": "자동 저장 문서의 조용한 기간."
+  },
+  "episode.e2Weights": {
+   "default": {"quiet": 0.4, "export": 0.3, "final": 0.2, "result": 0.3, "attached": 0.3}, "type": "obj", "range": null, "choices": null, "item": "float", "keys": ["quiet", "export", "final", "result", "attached"],
+   "owner": "lm27.time.episodes", "readers": [], "spec": "W §8.2.5",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "완료 후보 가중",
+   "help_ko": "완료 후보 점수 가중(조용·내보내기·최종 이름·결과·첨부). 단일 증거로는 완료가 되지 않게."
+  },
+  "episode.e2High": {
+   "default": 0.7, "type": "float", "range": {"min": 0.0, "max": 2.0}, "choices": null,
+   "owner": "lm27.time.episodes", "readers": [], "spec": "W §8.2.5",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "완료 후보 높음 문턱",
+   "help_ko": "완료 후보 점수 높음 문턱."
+  },
+  "episode.e2Low": {
+   "default": 0.5, "type": "float", "range": {"min": 0.0, "max": 2.0}, "choices": null,
+   "owner": "lm27.time.episodes", "readers": [], "spec": "W §8.2.5",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "완료 후보 낮음 문턱",
+   "help_ko": "완료 후보 점수 낮음 문턱."
+  },
+  "episode.e2TailMin": {
+   "default": 120, "type": "int", "range": {"min": 0, "max": 1440}, "choices": null,
+   "owner": "lm27.time.episodes", "readers": [], "spec": "W §8.2.5",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "완료 뒤 꼬리(분)",
+   "help_ko": "완료 후보 뒤 이만큼 작업이 이어지면 종료가 아니다."
+  },
+  "episode.s2PrePadMin": {
+   "default": 30, "type": "int", "range": {"min": 0, "max": 600}, "choices": null,
+   "owner": "lm27.time.episodes", "readers": [], "spec": "W §8.2.5",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "추정 시작 여유(분)",
+   "help_ko": "추정 시작 경계 여유(리드타임 전용, 투입 무관)."
+  },
+  "episode.e3PostPadMin": {
+   "default": 30, "type": "int", "range": {"min": 0, "max": 600}, "choices": null,
+   "owner": "lm27.time.episodes", "readers": [], "spec": "W §8.2.5",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "추정 종료 여유(분)",
+   "help_ko": "추정 종료 경계 여유(리드타임 전용, 투입 무관)."
+  },
+  "episode.s2MeetLookbackH": {
+   "default": 48, "type": "int", "range": {"min": 0, "max": 720}, "choices": null,
+   "owner": "lm27.time.episodes", "readers": [], "spec": "W §8.2.5",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "의뢰 회의 되돌아보기(시간)",
+   "help_ko": "의뢰자 회의로 시작을 찾는 되돌아보기."
+  },
+  "episode.e3cLookaheadH": {
+   "default": 24, "type": "int", "range": {"min": 0, "max": 720}, "choices": null,
+   "owner": "lm27.time.episodes", "readers": [], "spec": "W §8.2.5",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "리뷰 회의 내다보기(시간)",
+   "help_ko": "리뷰 회의로 종료를 찾는 내다보기."
+  },
+  "episode.meetLinkMin": {
+   "default": 2.0, "type": "float", "range": {"min": 0.0, "max": 20.0}, "choices": null,
+   "owner": "lm27.time.episodes", "readers": [], "spec": "W §8.2.5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "회의 연결 문턱",
+   "help_ko": "회의 ↔ 업무 연결 점수 문턱."
+  },
+  "episode.sharedDocMinTasks": {
+   "default": 3, "type": "int", "range": {"min": 2, "max": 100}, "choices": null,
+   "owner": "lm27.time.episodes", "readers": [], "spec": "W §8.2.5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "공용 문서 판정 업무 수",
+   "help_ko": "이 업무 수 이상에 쓰인 문서는 공용 문서로 본다."
+  },
+  "episode.giantNodes": {
+   "default": 500, "type": "int", "range": {"min": 10, "max": 100000}, "choices": null,
+   "owner": "lm27.time.episodes", "readers": [], "spec": "W §8.2.5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "거대 성분 노드 수",
+   "help_ko": "연결 성분이 이 노드 수를 넘으면 거대 성분 가드."
+  },
+  "episode.giantDays": {
+   "default": 90, "type": "int", "range": {"min": 1, "max": 3650}, "choices": null,
+   "owner": "lm27.time.episodes", "readers": [], "spec": "W §8.2.5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "거대 성분 일수",
+   "help_ko": "연결 성분이 이 일수를 넘으면 거대 성분 가드."
+  },
+  "episode.requireCommsCoverageForE3": {
+   "default": true, "type": "bool", "range": null, "choices": [false, true],
+   "owner": "lm27.time.episodes", "readers": [], "spec": "W §8.2.5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "종료 판정에 소통 커버리지 요구",
+   "help_ko": "수집 결손을 대면 보고로 오판하지 않도록 소통 커버리지가 있을 때만 종료 근거로 쓴다."
+  },
+  "episode.unstartedWd": {
+   "default": 10, "type": "int", "range": {"min": 1, "max": 120}, "choices": null,
+   "owner": "lm27.time.episodes", "readers": ["lm27.time.queue"], "spec": "W §8.2.5",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "미착수 의뢰(근무일)",
+   "help_ko": "의뢰 뒤 이 기간 손대지 않으면 확인 질문."
+  },
+  "mm.denominator": {
+   "default": "workdays", "type": "enum", "range": null, "choices": ["workdays", "weekdays"],
+   "owner": "lm27.time.mm", "readers": [], "spec": "W §8.2.6",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "MM 분모",
+   "help_ko": "workdays = 공휴일 제외 근무일, weekdays = 달력 평일(개인 표시 전용 — 팀 묶음은 늘 근무일)."
+  },
+  "mm.inferredAbsence": {
+   "default": "confirm_only", "type": "enum", "range": null, "choices": ["confirm_only", "exclude"],
+   "owner": "lm27.time.mm", "readers": [], "spec": "W §8.2.6",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "추정 부재 처리",
+   "help_ko": "confirm_only = 확인 전에는 가용에서 빼지 않음, exclude = 추정 부재도 뺀다."
+  },
+  "mm.overtimeBasis": {
+   "default": "window", "type": "enum", "range": null, "choices": ["window", "daily8h"],
+   "owner": "lm27.time.mm", "readers": [], "spec": "W §8.2.6",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "초과 기준",
+   "help_ko": "window = 슬롯 꼬리표(표준창 밖) 기준, daily8h = 하루 8시간 초과 기준."
+  },
+  "hier.rule.w.token": {
+   "default": 6.0, "type": "float", "range": {"min": 0.0, "max": 50.0}, "choices": null,
+   "owner": "lm27.hier.rules", "readers": [], "spec": "H §13.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "규칙 가중 — 과제 토큰",
+   "help_ko": "과제 규칙 점수에서 과제 토큰 단서의 가중(점)."
+  },
+  "hier.rule.w.keyRule": {
+   "default": 5.0, "type": "float", "range": {"min": 0.0, "max": 50.0}, "choices": null,
+   "owner": "lm27.hier.rules", "readers": [], "spec": "H §13.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "규칙 가중 — 학습 정확 키",
+   "help_ko": "과제 규칙 점수에서 학습 정확 키 단서의 가중(점)."
+  },
+  "hier.rule.w.alias": {
+   "default": 4.0, "type": "float", "range": {"min": 0.0, "max": 50.0}, "choices": null,
+   "owner": "lm27.hier.rules", "readers": [], "spec": "H §13.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "규칙 가중 — 평문 별칭",
+   "help_ko": "과제 규칙 점수에서 평문 별칭 단서의 가중(점)."
+  },
+  "hier.rule.w.keyword": {
+   "default": 2.0, "type": "float", "range": {"min": 0.0, "max": 50.0}, "choices": null,
+   "owner": "lm27.hier.rules", "readers": [], "spec": "H §13.1",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "규칙 가중 — 키워드",
+   "help_ko": "과제 규칙 점수에서 키워드 단서의 가중(점)."
+  },
+  "hier.rule.w.keywordCap": {
+   "default": 4.0, "type": "float", "range": {"min": 0.0, "max": 50.0}, "choices": null,
+   "owner": "lm27.hier.rules", "readers": [], "spec": "H §13.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "규칙 가중 — 키워드 합 상한",
+   "help_ko": "과제 규칙 점수에서 키워드 합 상한 단서의 가중(점)."
+  },
+  "hier.rule.w.customer": {
+   "default": 1.5, "type": "float", "range": {"min": 0.0, "max": 50.0}, "choices": null,
+   "owner": "lm27.hier.rules", "readers": [], "spec": "H §13.1",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "규칙 가중 — 고객사",
+   "help_ko": "과제 규칙 점수에서 고객사 단서의 가중(점)."
+  },
+  "hier.rule.w.partner": {
+   "default": 1.0, "type": "float", "range": {"min": 0.0, "max": 50.0}, "choices": null,
+   "owner": "lm27.hier.rules", "readers": [], "spec": "H §13.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "규칙 가중 — 협력사",
+   "help_ko": "과제 규칙 점수에서 협력사 단서의 가중(점)."
+  },
+  "hier.rule.w.mailDomain": {
+   "default": 1.5, "type": "float", "range": {"min": 0.0, "max": 50.0}, "choices": null,
+   "owner": "lm27.hier.rules", "readers": [], "spec": "H §13.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "규칙 가중 — 메일 도메인",
+   "help_ko": "과제 규칙 점수에서 메일 도메인 단서의 가중(점)."
+  },
+  "hier.rule.w.folder": {
+   "default": 3.0, "type": "float", "range": {"min": 0.0, "max": 50.0}, "choices": null,
+   "owner": "lm27.hier.rules", "readers": [], "spec": "H §13.1",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "규칙 가중 — 폴더",
+   "help_ko": "과제 규칙 점수에서 폴더 단서의 가중(점)."
+  },
+  "hier.rule.w.app": {
+   "default": 1.0, "type": "float", "range": {"min": 0.0, "max": 50.0}, "choices": null,
+   "owner": "lm27.hier.rules", "readers": [], "spec": "H §13.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "규칙 가중 — 과제 전용 앱",
+   "help_ko": "과제 규칙 점수에서 과제 전용 앱 단서의 가중(점)."
+  },
+  "hier.rule.w.teamRule": {
+   "default": 2.0, "type": "float", "range": {"min": 0.0, "max": 50.0}, "choices": null,
+   "owner": "lm27.hier.rules", "readers": [], "spec": "H §13.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "규칙 가중 — 팀 규칙 기본",
+   "help_ko": "과제 규칙 점수에서 팀 규칙 기본 단서의 가중(점)."
+  },
+  "hier.rule.w.learnedToken": {
+   "default": 2.5, "type": "float", "range": {"min": 0.0, "max": 50.0}, "choices": null,
+   "owner": "lm27.hier.rules", "readers": [], "spec": "H §13.1",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "규칙 가중 — 학습 토큰",
+   "help_ko": "과제 규칙 점수에서 학습 토큰 단서의 가중(점)."
+  },
+  "hier.rule.summaryMult": {
+   "default": 0.5, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.hier.rules", "readers": [], "spec": "H §13.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "요약 증인 배수",
+   "help_ko": "코파일럿 요약 증인 행의 점수 배수."
+  },
+  "hier.rule.periodOutsideMult": {
+   "default": 0.5, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.hier.rules", "readers": [], "spec": "H §13.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "과제 기간 밖 배수",
+   "help_ko": "과제 기간 밖 증거의 점수 배수."
+  },
+  "hier.rule.evidenceMin": {
+   "default": 4.0, "type": "float", "range": {"min": 0.0, "max": 50.0}, "choices": null,
+   "owner": "lm27.hier.rules", "readers": [], "spec": "H §13.1",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "증거 꼬리표 문턱",
+   "help_ko": "증거 꼬리표를 다는 최소 점수."
+  },
+  "hier.rule.evidenceMargin": {
+   "default": 2.0, "type": "float", "range": {"min": 0.0, "max": 50.0}, "choices": null,
+   "owner": "lm27.hier.rules", "readers": [], "spec": "H §13.1",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "증거 꼬리표 차이",
+   "help_ko": "1위와 2위 점수 차이 문턱."
+  },
+  "hier.domain.w": {
+   "default": {"EXT": 2.0, "COM": 2.0, "AX": 1.5, "MP": 1.0, "DEV": 1.0, "기관": 1.5}, "type": "obj", "range": null, "choices": null, "item": "float", "keys": ["EXT", "COM", "AX", "MP", "DEV", "기관"],
+   "owner": "lm27.hier.rules", "readers": [], "spec": "H §13.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "영역 키워드 가점",
+   "help_ko": "업무 영역별 키워드 가점."
+  },
+  "hier.domain.order": {
+   "default": ["EXT", "AX", "COM", "MP", "DEV"], "type": "list", "range": {"min": 5, "max": 5}, "choices": ["EXT", "AX", "COM", "MP", "DEV"], "item": "str",
+   "owner": "lm27.hier.rules", "readers": [], "spec": "H §13.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "영역 우선순위",
+   "help_ko": "한 증거에 여러 영역이 맞을 때의 우선순위(영역 코드 5종)."
+  },
+  "hier.domain.confirm": {
+   "default": 0.5, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.hier.rules", "readers": [], "spec": "H §13.1",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "예약 과제 확정 문턱",
+   "help_ko": "영역 예약 과제를 확정하는 점유 문턱."
+  },
+  "hier.domain.margin": {
+   "default": 0.2, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.hier.rules", "readers": [], "spec": "H §13.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "예약 과제 확정 차이",
+   "help_ko": "영역 1위와 2위 점유 차이 문턱."
+  },
+  "hier.tokens.boilerplateAdd": {
+   "default": [], "type": "list", "range": null, "choices": null, "item": "str",
+   "owner": "lm27.hier.rules", "readers": [], "spec": "H §13.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "상용구 추가",
+   "help_ko": "분류 토큰에서 더 뺄 상용구(시간 상용구에 더함)."
+  },
+  "hier.publicDomainClasses": {
+   "default": {".ac.kr": "기관", ".re.kr": "기관", ".go.kr": "기관", ".or.kr": "기관", ".edu": "기관"}, "type": "obj", "range": null, "choices": null, "item": "str",
+   "owner": "lm27.hier.features", "readers": ["lm27.hier.rules"], "spec": "H §13.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "공공 도메인 계급",
+   "help_ko": "메일 도메인 접미 → 상대 계급. 팀 레지스트리 public_domain_classes 가 덮는다."
+  },
+  "hier.unit.w": {
+   "default": {"boundary": 2.0, "msg": 1.0, "doc": 1.5, "meet": 1.0, "app": 1.0}, "type": "obj", "range": null, "choices": null, "item": "float", "keys": ["boundary", "msg", "doc", "meet", "app"],
+   "owner": "lm27.hier.unitlabel", "readers": [], "spec": "H §13.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "단위업무 단서 가중",
+   "help_ko": "단위업무 과제 판정의 단서별 가중(의뢰·보고 메시지가 가장 강함)."
+  },
+  "hier.unit.minMass": {
+   "default": 3.0, "type": "float", "range": {"min": 0.0, "max": 100.0}, "choices": null,
+   "owner": "lm27.hier.unitlabel", "readers": [], "spec": "H §13.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "최소 증거 질량",
+   "help_ko": "증거가 적은 업무의 점수를 낮추는 질량."
+  },
+  "hier.unit.confirm": {
+   "default": 0.6, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.hier.unitlabel", "readers": [], "spec": "H §13.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "규칙 확정 문턱",
+   "help_ko": "단위업무 과제 규칙 확정 점유 문턱."
+  },
+  "hier.unit.margin": {
+   "default": 0.25, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.hier.unitlabel", "readers": [], "spec": "H §13.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "규칙 확정 차이",
+   "help_ko": "1위와 2위 점유 차이 문턱."
+  },
+  "hier.unit.high": {
+   "default": 0.8, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.hier.unitlabel", "readers": [], "spec": "H §13.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "확신 높음 문턱",
+   "help_ko": "확신 높음(h) 점유 문턱."
+  },
+  "hier.unit.fallback": {
+   "default": 0.5, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.hier.unitlabel", "readers": [], "spec": "H §13.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "규칙 유력 문턱",
+   "help_ko": "규칙 유력 점유 문턱(브리지 폴백과 같음)."
+  },
+  "hier.unit.probableMargin": {
+   "default": 0.1, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.hier.unitlabel", "readers": [], "spec": "H §13.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "규칙 유력 차이",
+   "help_ko": "규칙 유력 판정의 점유 차이 문턱."
+  },
+  "hier.vocab.top": {
+   "default": 2.0, "type": "float", "range": {"min": 0.0, "max": 50.0}, "choices": null,
+   "owner": "lm27.hier.unitlabel", "readers": [], "spec": "H §13.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "분야·기능 최고 점수",
+   "help_ko": "분야·기능 확신에 필요한 최고 점수."
+  },
+  "hier.vocab.margin": {
+   "default": 1.0, "type": "float", "range": {"min": 0.0, "max": 50.0}, "choices": null,
+   "owner": "lm27.hier.unitlabel", "readers": [], "spec": "H §13.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "분야·기능 차이",
+   "help_ko": "분야·기능 1위와 2위 차이 문턱."
+  },
+  "hier.vocab.high": {
+   "default": 3.5, "type": "float", "range": {"min": 0.0, "max": 50.0}, "choices": null,
+   "owner": "lm27.hier.unitlabel", "readers": [], "spec": "H §13.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "분야·기능 높음",
+   "help_ko": "분야·기능 확신 높음 점수."
+  },
+  "hier.vocab.low": {
+   "default": 1.0, "type": "float", "range": {"min": 0.0, "max": 50.0}, "choices": null,
+   "owner": "lm27.hier.unitlabel", "readers": [], "spec": "H §13.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "분야·기능 낮음",
+   "help_ko": "분야·기능 확신 낮음 점수."
+  },
+  "hier.vocab.officeDocShare": {
+   "default": 0.6, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.hier.unitlabel", "readers": [], "spec": "H §13.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "문서 기능 사무 비율",
+   "help_ko": "기능 DOC 구조 신호의 사무 앱 비율."
+  },
+  "hier.vocab.meetShare": {
+   "default": 0.5, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.hier.unitlabel", "readers": [], "spec": "H §13.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "회의 기능 비율",
+   "help_ko": "기능 MEET 구조 신호의 회의 비율."
+  },
+  "hier.wtype.techShareDev": {
+   "default": 0.3, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.hier.unitlabel", "readers": [], "spec": "H §13.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "개발 유형 기술 비율",
+   "help_ko": "업무 유형 DEV 의 기술 앱 비율 문턱."
+  },
+  "hier.wtype.techShareHigh": {
+   "default": 0.5, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.hier.unitlabel", "readers": [], "spec": "H §13.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "개발 유형 기술 높음",
+   "help_ko": "업무 유형 DEV 확신 높음 기술 비율."
+  },
+  "hier.wtype.offpcFieldShare": {
+   "default": 0.5, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.hier.unitlabel", "readers": [], "spec": "H §13.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "현장 유형 PC 밖 비율",
+   "help_ko": "업무 유형 FIELD 의 PC 밖 비율 문턱."
+  },
+  "hier.wtype.offpcFieldBoth": {
+   "default": 0.3, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.hier.unitlabel", "readers": [], "spec": "H §13.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "현장 유형 복합 비율",
+   "help_ko": "업무 유형 FIELD 복합 판정 비율."
+  },
+  "hier.ax.minHits": {
+   "default": 2, "type": "int", "range": {"min": 1, "max": 20}, "choices": null,
+   "owner": "lm27.hier.unitlabel", "readers": [], "spec": "H §13.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "AX 연계 최소 낱말",
+   "help_ko": "AX 연계 판정 최소 낱말 수(강한 낱말은 1개로 충분)."
+  },
+  "hier.name.maxGroup": {
+   "default": 60, "type": "int", "range": {"min": 1, "max": 1000}, "choices": null,
+   "owner": "lm27.hier.groups", "readers": [], "spec": "H §13.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "명명 군집 최대 크기",
+   "help_ko": "명명 군집 하나의 최대 증거 수."
+  },
+  "hier.name.titleMax": {
+   "default": 25, "type": "int", "range": {"min": 5, "max": 80}, "choices": null,
+   "owner": "lm27.hier.groups", "readers": ["lm27.hier.copilot_io"], "spec": "H §13.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "제목 최대 글자",
+   "help_ko": "업무 제목 최대 글자(프롬프트 지시와 같음)."
+  },
+  "hier.name.cacheKeepDays": {
+   "default": 400, "type": "int", "range": {"min": 1, "max": 3650}, "choices": null,
+   "owner": "lm27.hier.groups", "readers": [], "spec": "H §13.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "제목 캐시 보존(일)",
+   "help_ko": "제목 캐시 보존 기간."
+  },
+  "hier.copilot.askTitleWeak": {
+   "default": true, "type": "bool", "range": null, "choices": [false, true],
+   "owner": "lm27.hier.copilot_io", "readers": [], "spec": "H §13.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "약한 이름도 묻기",
+   "help_ko": "이름이 약한 군집도 코파일럿에 묻는다."
+  },
+  "hier.copilot.vocabAskMinEffortH": {
+   "default": 1.0, "type": "float", "range": {"min": 0.0, "max": 100.0}, "choices": null,
+   "owner": "lm27.hier.copilot_io", "readers": [], "spec": "H §13.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "분야·기능 질문 최소 투입(시간)",
+   "help_ko": "분야·기능이 둘 다 낮은 군집을 물을 최소 투입."
+  },
+  "hier.copilot.maxGroupsPerRun": {
+   "default": 300, "type": "int", "range": {"min": 1, "max": 10000}, "choices": null,
+   "owner": "lm27.hier.copilot_io", "readers": [], "spec": "H §13.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "실행당 질의 군집 상한",
+   "help_ko": "한 실행에서 묻는 군집 상한(나머지는 다음 실행)."
+  },
+  "hier.copilot.requireCodenameReview": {
+   "default": true, "type": "bool", "range": null, "choices": [false, true],
+   "owner": "lm27.hier.copilot_io", "readers": [], "spec": "H §13.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "코드네임 검토 선행",
+   "help_ko": "초기 코드네임 검토 전에는 코파일럿에 보내지 않는다."
+  },
+  "hier.copilot.reaskGrowth": {
+   "default": 2.0, "type": "float", "range": {"min": 1.0, "max": 100.0}, "choices": null,
+   "owner": "lm27.hier.copilot_io", "readers": [], "spec": "H §13.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "재질의 증거 배수",
+   "help_ko": "낮은 확신 답을 다시 묻는 증거 건수 배수."
+  },
+  "hier.proposals.minEffortMin": {
+   "default": 60, "type": "int", "range": {"min": 0, "max": 6000}, "choices": null,
+   "owner": "lm27.hier.proposals", "readers": [], "spec": "H §13.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "제안 최소 투입(분)",
+   "help_ko": "이보다 작은 군집은 제안을 만들지 않고 예약 과제로."
+  },
+  "hier.bootstrap.minGroups": {
+   "default": 20, "type": "int", "range": {"min": 1, "max": 10000}, "choices": null,
+   "owner": "lm27.hier.bootstrap", "readers": [], "spec": "H §13.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "과제 체계 부트스트랩 — 자동 실행 최소 군집",
+   "help_ko": "레지스트리가 빈 초기의 과제 체계 제안: 자동 실행 최소 군집."
+  },
+  "hier.bootstrap.maxLines": {
+   "default": 100, "type": "int", "range": {"min": 1, "max": 1000}, "choices": null,
+   "owner": "lm27.hier.bootstrap", "readers": [], "spec": "H §13.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "과제 체계 부트스트랩 — 표본 줄 상한",
+   "help_ko": "레지스트리가 빈 초기의 과제 체계 제안: 표본 줄 상한."
+  },
+  "hier.bootstrap.maxModels": {
+   "default": 15, "type": "int", "range": {"min": 1, "max": 100}, "choices": null,
+   "owner": "lm27.hier.bootstrap", "readers": [], "spec": "H §13.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "과제 체계 부트스트랩 — 제안 과제 상한",
+   "help_ko": "레지스트리가 빈 초기의 과제 체계 제안: 제안 과제 상한."
+  },
+  "hier.bootstrap.unclassifiedShare": {
+   "default": 0.5, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.hier.bootstrap", "readers": [], "spec": "H §13.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "과제 체계 부트스트랩 — 재실행 미분류 비율",
+   "help_ko": "레지스트리가 빈 초기의 과제 체계 제안: 재실행 미분류 비율."
+  },
+  "hier.bootstrap.cooldownDays": {
+   "default": 30, "type": "int", "range": {"min": 0, "max": 365}, "choices": null,
+   "owner": "lm27.hier.bootstrap", "readers": [], "spec": "H §13.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "과제 체계 부트스트랩 — 재실행 간격(일)",
+   "help_ko": "레지스트리가 빈 초기의 과제 체계 제안: 재실행 간격(일)."
+  },
+  "hier.bootstrap.codenameTopN": {
+   "default": 30, "type": "int", "range": {"min": 1, "max": 1000}, "choices": null,
+   "owner": "lm27.hier.bootstrap", "readers": [], "spec": "H §13.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "과제 체계 부트스트랩 — 코드네임 후보 상위 N",
+   "help_ko": "레지스트리가 빈 초기의 과제 체계 제안: 코드네임 후보 상위 N."
+  },
+  "hier.bootstrap.codenameMinGroups": {
+   "default": 3, "type": "int", "range": {"min": 1, "max": 100}, "choices": null,
+   "owner": "lm27.hier.bootstrap", "readers": [], "spec": "H §13.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "과제 체계 부트스트랩 — 코드네임 후보 최소 군집",
+   "help_ko": "레지스트리가 빈 초기의 과제 체계 제안: 코드네임 후보 최소 군집."
+  },
+  "hier.bootstrap.codenameMinWeeks": {
+   "default": 2, "type": "int", "range": {"min": 1, "max": 52}, "choices": null,
+   "owner": "lm27.hier.bootstrap", "readers": [], "spec": "H §13.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "과제 체계 부트스트랩 — 코드네임 후보 최소 주",
+   "help_ko": "레지스트리가 빈 초기의 과제 체계 제안: 코드네임 후보 최소 주."
+  },
+  "hier.registry.staleWarnDays": {
+   "default": 14, "type": "int", "range": {"min": 1, "max": 365}, "choices": null,
+   "owner": "lm27.hier.registry", "readers": [], "spec": "H §13.3",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "오래된 레지스트리 표식(일)",
+   "help_ko": "팀 레지스트리를 이 일수 넘게 못 받으면 오래됨 표식."
+  },
+  "hier.merge.auto": {
+   "default": 1.0, "type": "float", "range": {"min": 0.0, "max": 10.0}, "choices": null,
+   "owner": "lm27.hier.merge", "readers": [], "spec": "H §13.4",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "자동 병합 점수",
+   "help_ko": "업무 병합 점수가 이 값 이상이면 자동 병합."
+  },
+  "hier.merge.ask": {
+   "default": 0.35, "type": "float", "range": {"min": 0.0, "max": 10.0}, "choices": null,
+   "owner": "lm27.hier.merge", "readers": [], "spec": "H §13.4",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "병합 질문 점수",
+   "help_ko": "업무 병합 점수가 이 값 이상이면 확인 질문."
+  },
+  "hier.merge.cap": {
+   "default": 5, "type": "int", "range": {"min": 2, "max": 100}, "choices": null,
+   "owner": "lm27.hier.merge", "readers": [], "spec": "H §13.4",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "병합 무리 상한",
+   "help_ko": "한 번에 묶는 무리 크기 상한."
+  },
+  "hier.merge.spanGapDays": {
+   "default": 120, "type": "int", "range": {"min": 0, "max": 3650}, "choices": null,
+   "owner": "lm27.hier.merge", "readers": [], "spec": "H §13.4",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "시기 비겹침 감점(일)",
+   "help_ko": "시기가 이만큼 떨어지면 병합 점수를 깎는다."
+  },
+  "hier.learn.tokenDfMax": {
+   "default": 0.05, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.hier.learn", "readers": [], "spec": "H §13.4",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "학습 토큰 문서 비율 상한",
+   "help_ko": "이 비율 넘게 나오는 토큰은 학습 규칙으로 쓰지 않는다."
+  },
+  "hier.learn.tokenMax": {
+   "default": 3, "type": "int", "range": {"min": 1, "max": 20}, "choices": null,
+   "owner": "lm27.hier.learn", "readers": [], "spec": "H §13.4",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "규칙당 학습 토큰 상한",
+   "help_ko": "학습 규칙 하나의 토큰 수 상한."
+  },
+  "hier.learn.tokenSupport": {
+   "default": 2, "type": "int", "range": {"min": 1, "max": 100}, "choices": null,
+   "owner": "lm27.hier.learn", "readers": [], "spec": "H §13.4",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "학습 토큰 지지 수",
+   "help_ko": "토큰 규칙을 배우는 최소 수정 건수."
+  },
+  "hier.learn.appSupport": {
+   "default": 2, "type": "int", "range": {"min": 1, "max": 100}, "choices": null,
+   "owner": "lm27.hier.learn", "readers": [], "spec": "H §13.4",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "학습 앱 지지 수",
+   "help_ko": "앱 규칙을 배우는 최소 수정 건수."
+  },
+  "hier.learn.retireMinHits": {
+   "default": 5, "type": "int", "range": {"min": 1, "max": 1000}, "choices": null,
+   "owner": "lm27.hier.learn", "readers": [], "spec": "H §13.4",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "은퇴 판정 최소 적중",
+   "help_ko": "학습 규칙 은퇴 판정의 최소 적중 수."
+  },
+  "hier.learn.retireMinPrec": {
+   "default": 0.6, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.hier.learn", "readers": [], "spec": "H §13.4",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "은퇴 판정 정밀도",
+   "help_ko": "학습 규칙 정밀도가 이보다 낮으면 은퇴."
+  },
+  "hier.queue.minEffortH": {
+   "default": 2.0, "type": "float", "range": {"min": 0.0, "max": 1000.0}, "choices": null,
+   "owner": "lm27.hier.queue", "readers": [], "spec": "H §13.4",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "분류 질문 최소 투입(시간)",
+   "help_ko": "분류 확인 질문 대상 최소 투입."
+  },
+  "hier.queue.wtypeMinEffortH": {
+   "default": 4.0, "type": "float", "range": {"min": 0.0, "max": 1000.0}, "choices": null,
+   "owner": "lm27.hier.queue", "readers": [], "spec": "H §13.4",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "유형 질문 최소 투입(시간)",
+   "help_ko": "업무 유형 질문 대상 최소 투입."
+  },
+  "hier.queue.proposalMinEffortH": {
+   "default": 4.0, "type": "float", "range": {"min": 0.0, "max": 1000.0}, "choices": null,
+   "owner": "lm27.hier.queue", "readers": [], "spec": "H §13.4",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "제안 질문 최소 투입(시간)",
+   "help_ko": "새 과제 제안 질문 대상 최소 투입."
+  },
+  "hier.queue.maxPerWeek": {
+   "default": 10, "type": "int", "range": {"min": 0, "max": 200}, "choices": null,
+   "owner": "lm27.hier.queue", "readers": [], "spec": "H §13.4",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "주당 분류 질문 상한",
+   "help_ko": "주당 분류 확인 질문 상한(시간 질문과 별도)."
+  },
+  "hier.queue.weights": {
+   "default": {"H01": 1.0, "H02": 0.8, "H03": 0.7, "H06": 0.6, "H05": 0.4, "H04": 0.3}, "type": "obj", "range": null, "choices": null, "item": "float", "keys": ["H01", "H02", "H03", "H04", "H05", "H06"],
+   "owner": "lm27.hier.queue", "readers": [], "spec": "H §13.4",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "분류 질문 우선 가중",
+   "help_ko": "분류 확인 질문 유형별 우선순위 가중."
+  },
+  "ui.port": {
+   "default": 19280, "type": "int", "range": {"min": 1024, "max": 65535}, "choices": null,
+   "owner": "lm27.ui.server", "readers": [], "spec": "R §10.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "ui",
+   "label_ko": "로컬 앱 포트",
+   "help_ko": "로컬 앱 포트(이 PC 안에서만 연결). 바꾸면 화면 서버를 다시 띄운다."
+  },
+  "ui.portFallbackCount": {
+   "default": 9, "type": "int", "range": {"min": 0, "max": 50}, "choices": null,
+   "owner": "lm27.ui.server", "readers": [], "spec": "R §10.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "ui",
+   "label_ko": "대체 포트 수",
+   "help_ko": "기본 포트가 막히면 +1…+n 시도."
+  },
+  "ui.openBrowser": {
+   "default": true, "type": "bool", "range": null, "choices": [false, true],
+   "owner": "lm27.ui.server", "readers": [], "spec": "R §10.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "ui",
+   "label_ko": "기동 때 브라우저 열기",
+   "help_ko": "화면 서버 기동 때 기본 브라우저로 연다."
+  },
+  "ui.idleShutdownMin": {
+   "default": 0, "type": "int", "range": {"min": 0, "max": 1440}, "choices": null,
+   "owner": "lm27.ui.server", "readers": [], "spec": "R §10.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "ui",
+   "label_ko": "유휴 자동 종료(분)",
+   "help_ko": "마지막 요청 뒤 자동 종료. 0 = 끔."
+  },
+  "ui.jobPollMs": {
+   "default": 1000, "type": "int", "range": {"min": 200, "max": 10000}, "choices": null,
+   "owner": "lm27.ui.jobs", "readers": [], "spec": "R §10.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "작업 진행 읽기 주기(ms)",
+   "help_ko": "작업 진행 읽기 주기."
+  },
+  "ui.jobEventsKeep": {
+   "default": 500, "type": "int", "range": {"min": 50, "max": 100000}, "choices": null,
+   "owner": "lm27.ui.jobs", "readers": [], "spec": "R §10.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "작업 이벤트 보관 줄",
+   "help_ko": "작업당 보관 이벤트 줄 수."
+  },
+  "ui.logKeepDays": {
+   "default": 14, "type": "int", "range": {"min": 1, "max": 365}, "choices": null,
+   "owner": "lm27.ui.server", "readers": [], "spec": "R §10.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "화면 로그 보관(일)",
+   "help_ko": "화면 서버 로그 보관 기간."
+  },
+  "ui.homeCoverageDays": {
+   "default": 35, "type": "int", "range": {"min": 7, "max": 366}, "choices": null,
+   "owner": "lm27.ui.api_home", "readers": [], "spec": "R §10.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "홈 히트맵 일수",
+   "help_ko": "홈 커버리지 히트맵 일수."
+  },
+  "ui.autoReanalyzeAfterAnswers": {
+   "default": true, "type": "bool", "range": null, "choices": [false, true],
+   "owner": "lm27.ui.api_report", "readers": [], "spec": "R §10.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "응답 뒤 자동 재분석",
+   "help_ko": "확인 질문 응답 뒤 빠른 재분석을 자동으로 돌린다."
+  },
+  "ui.reanalyzeDebounceSec": {
+   "default": 20, "type": "int", "range": {"min": 0, "max": 600}, "choices": null,
+   "owner": "lm27.ui.api_report", "readers": [], "spec": "R §10.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "재분석 대기(초)",
+   "help_ko": "마지막 응답 뒤 재분석까지 기다리는 시간."
+  },
+  "ui.tableMaxRows": {
+   "default": 500, "type": "int", "range": {"min": 50, "max": 100000}, "choices": null,
+   "owner": "lm27.ui.api_report", "readers": [], "spec": "R §10.1",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "표 최대 행",
+   "help_ko": "표 한 번에 보이는 행 수."
+  },
+  "report.defaultRangeMonths": {
+   "default": 3, "type": "int", "range": {"min": 1, "max": 36}, "choices": null,
+   "owner": "lm27.ui.api_analysis", "readers": [], "spec": "R §10.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "기본 분석 기간(개월)",
+   "help_ko": "분석 화면 기본 기간(이번 달 포함 최근 n개월)."
+  },
+  "report.analysisKeep": {
+   "default": 10, "type": "int", "range": {"min": 1, "max": 1000}, "choices": null,
+   "owner": "lm27.pipeline.retention", "readers": ["lm27.ui.api_analysis"], "spec": "R §10.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "분석 결과 보관 수",
+   "help_ko": "분석 결과 보관 수."
+  },
+  "report.export.formats": {
+   "default": ["html", "csv", "json"], "type": "list", "range": {"min": 1, "max": 3}, "choices": ["html", "csv", "json"], "item": "str",
+   "owner": "lm27.report.export", "readers": [], "spec": "R §10.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "내보내기 형식",
+   "help_ko": "개인 보고서 내보내기 형식."
+  },
+  "report.export.variants": {
+   "default": ["full", "redacted"], "type": "list", "range": {"min": 1, "max": 2}, "choices": ["full", "redacted"], "item": "str",
+   "owner": "lm27.report.export", "readers": [], "spec": "R §10.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "내보내기 변형",
+   "help_ko": "내보내기 변형(전체·가림판)."
+  },
+  "report.export.keep": {
+   "default": 10, "type": "int", "range": {"min": 1, "max": 1000}, "choices": null,
+   "owner": "lm27.report.export", "readers": [], "spec": "R §10.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "내보내기 보관 수",
+   "help_ko": "out\\personal 보관 폴더 수."
+  },
+  "report.export.maxHtmlMb": {
+   "default": 20, "type": "int", "range": {"min": 1, "max": 512}, "choices": null,
+   "owner": "lm27.report.export", "readers": [], "spec": "R §10.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "HTML 상한(MB)",
+   "help_ko": "자기완결 HTML 크기 상한."
+  },
+  "report.export.maxModelMb": {
+   "default": 32, "type": "int", "range": {"min": 1, "max": 1024}, "choices": null,
+   "owner": "lm27.report.export", "readers": ["lm27.report.model"], "spec": "R §10.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "보고서 모델 상한(MB)",
+   "help_ko": "보고서 모델 크기 상한(넘으면 축소 + 경고)."
+  },
+  "report.csv.bom": {
+   "default": true, "type": "bool", "range": null, "choices": [false, true],
+   "owner": "lm27.report.export", "readers": [], "spec": "R §10.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "CSV 에 BOM 붙이기",
+   "help_ko": "CSV 내보내기에 UTF-8 BOM 을 붙인다."
+  },
+  "report.drill.maxEvidencePerUnit": {
+   "default": 200, "type": "int", "range": {"min": 10, "max": 100000}, "choices": null,
+   "owner": "lm27.report.drill", "readers": [], "spec": "R §10.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "단위업무 근거 줄 상한",
+   "help_ko": "단위업무 드릴다운 근거 줄 상한."
+  },
+  "report.mining.minStepSec": {
+   "default": 600, "type": "int", "range": {"min": 0, "max": 86400}, "choices": null,
+   "owner": "lm27.report.analysis.mining", "readers": [], "spec": "R §10.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "단계 최소 길이(초)",
+   "help_ko": "과정 마이닝에서 단계로 치는 최소 실행 길이."
+  },
+  "report.mining.maxSteps": {
+   "default": 8, "type": "int", "range": {"min": 1, "max": 20}, "choices": null,
+   "owner": "lm27.report.analysis.mining", "readers": [], "spec": "R §10.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "워크플로우 최대 단계",
+   "help_ko": "역할 워크플로우 최대 단계 수."
+  },
+  "report.mining.minSupportRatio": {
+   "default": 0.3, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.report.analysis.mining", "readers": [], "spec": "R §10.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "단계 지지도 문턱",
+   "help_ko": "단계로 남기는 지지도 문턱."
+  },
+  "report.mining.maxEdges": {
+   "default": 12, "type": "int", "range": {"min": 1, "max": 200}, "choices": null,
+   "owner": "lm27.report.analysis.mining", "readers": [], "spec": "R §10.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "전이 그림 상한",
+   "help_ko": "그리는 전이 수 상한."
+  },
+  "report.mining.waitBottleneckMin": {
+   "default": 480, "type": "int", "range": {"min": 0, "max": 100000}, "choices": null,
+   "owner": "lm27.report.analysis.mining", "readers": [], "spec": "R §10.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "대기 병목(영업 분)",
+   "help_ko": "대기 병목 문턱(영업 분)."
+  },
+  "report.mining.workBottleneckShare": {
+   "default": 0.4, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.report.analysis.mining", "readers": [], "spec": "R §10.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "작업 병목 비중",
+   "help_ko": "작업 병목 비중 문턱."
+  },
+  "report.mining.minUnitsForBottleneck": {
+   "default": 3, "type": "int", "range": {"min": 1, "max": 1000}, "choices": null,
+   "owner": "lm27.report.analysis.mining", "readers": [], "spec": "R §10.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "병목 최소 단위업무",
+   "help_ko": "병목 판단 최소 단위업무 수."
+  },
+  "report.mining.handoffWd": {
+   "default": 3, "type": "int", "range": {"min": 0, "max": 120}, "choices": null,
+   "owner": "lm27.report.analysis.mining", "readers": [], "spec": "R §10.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "인계 근무일",
+   "help_ko": "역할 인계·선행 판단 근무일."
+  },
+  "report.mining.extClassExtra": {
+   "default": {}, "type": "obj", "range": null, "choices": null, "item": "str",
+   "owner": "lm27.report.analysis.mining", "readers": ["lm27.vocab.steps"], "spec": "R §10.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "확장자군 추가",
+   "help_ko": "확장자 → 확장자군 추가(제거 불가)."
+  },
+  "report.review.leadOverrunRatio": {
+   "default": 1.5, "type": "float", "range": {"min": 1.0, "max": 100.0}, "choices": null,
+   "owner": "lm27.report.analysis.review", "readers": [], "spec": "R §10.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "리드 초과 배수",
+   "help_ko": "기준 대비 리드타임 초과 배수."
+  },
+  "report.review.baselineMonths": {
+   "default": 6, "type": "int", "range": {"min": 1, "max": 60}, "choices": null,
+   "owner": "lm27.report.analysis.review", "readers": [], "spec": "R §10.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "기준 표본 기간(개월)",
+   "help_ko": "리뷰 기준 표본 기간."
+  },
+  "report.review.baselineMinUnits": {
+   "default": 3, "type": "int", "range": {"min": 1, "max": 1000}, "choices": null,
+   "owner": "lm27.report.analysis.review", "readers": [], "spec": "R §10.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "기준 최소 표본",
+   "help_ko": "리뷰 기준 최소 단위업무 수."
+  },
+  "report.review.lateStartWd": {
+   "default": 3, "type": "int", "range": {"min": 0, "max": 120}, "choices": null,
+   "owner": "lm27.report.analysis.review", "readers": [], "spec": "R §10.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "착수 지연(근무일)",
+   "help_ko": "착수 지연 판정 근무일."
+  },
+  "report.review.parallelHigh": {
+   "default": 3.0, "type": "float", "range": {"min": 1.0, "max": 100.0}, "choices": null,
+   "owner": "lm27.report.analysis.review", "readers": [], "spec": "R §10.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "병행 원인 문턱",
+   "help_ko": "병행이 원인인지 보는 병행도 문턱."
+  },
+  "report.review.scopeRatio": {
+   "default": 1.5, "type": "float", "range": {"min": 1.0, "max": 100.0}, "choices": null,
+   "owner": "lm27.report.analysis.review", "readers": [], "spec": "R §10.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "작업량 원인 배수",
+   "help_ko": "작업량이 원인인지 보는 배수."
+  },
+  "report.review.maxFacts": {
+   "default": 25, "type": "int", "range": {"min": 1, "max": 100}, "choices": null,
+   "owner": "lm27.report.analysis.review", "readers": [], "spec": "R §10.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "리뷰 사실 상한",
+   "help_ko": "리뷰 사실 상한."
+  },
+  "report.peers.minMsgs": {
+   "default": 2, "type": "int", "range": {"min": 1, "max": 1000}, "choices": null,
+   "owner": "lm27.report.analysis.peers", "readers": [], "spec": "R §10.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "대화 관계 최소 메시지",
+   "help_ko": "대화 관계로 치는 최소 메시지 수."
+  },
+  "report.peers.maxMeetingSize": {
+   "default": 10, "type": "int", "range": {"min": 2, "max": 1000}, "choices": null,
+   "owner": "lm27.report.analysis.peers", "readers": [], "spec": "R §10.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "회의 관계 최대 인원",
+   "help_ko": "회의 관계로 치는 최대 인원."
+  },
+  "report.peers.topN": {
+   "default": 20, "type": "int", "range": {"min": 1, "max": 1000}, "choices": null,
+   "owner": "lm27.report.analysis.peers", "readers": [], "spec": "R §10.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "상위 동료 수",
+   "help_ko": "화면에 보이는 상위 동료 수."
+  },
+  "report.ontology.weights": {
+   "default": {"doc": 0.4, "peer": 0.3, "app": 0.1, "seq": 0.2}, "type": "obj", "range": null, "choices": null, "item": "float", "keys": ["doc", "peer", "app", "seq"],
+   "owner": "lm27.report.analysis.ontology", "readers": [], "spec": "R §10.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "연관도 가중",
+   "help_ko": "단위업무 연관도 가중(합 1.0)."
+  },
+  "report.ontology.minRel": {
+   "default": 0.25, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.report.analysis.ontology", "readers": [], "spec": "R §10.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "추천 문턱",
+   "help_ko": "연관 추천 문턱."
+  },
+  "report.ontology.sameWorkRel": {
+   "default": 0.6, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.report.analysis.ontology", "readers": [], "spec": "R §10.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "같은 일 의심 문턱",
+   "help_ko": "같은 일로 의심하는 연관도 문턱."
+  },
+  "report.ontology.appMinMin": {
+   "default": 15, "type": "int", "range": {"min": 0, "max": 6000}, "choices": null,
+   "owner": "lm27.report.analysis.ontology", "readers": [], "spec": "R §10.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "앱 사용 최소(분)",
+   "help_ko": "'사용함'으로 치는 앱 최소 분."
+  },
+  "report.ontology.topN": {
+   "default": 12, "type": "int", "range": {"min": 1, "max": 200}, "choices": null,
+   "owner": "lm27.report.analysis.ontology", "readers": [], "spec": "R §10.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "바깥 고리 노드 수",
+   "help_ko": "온톨로지 바깥 고리 노드 수."
+  },
+  "report.ontology.maxUnits": {
+   "default": 40, "type": "int", "range": {"min": 1, "max": 1000}, "choices": null,
+   "owner": "lm27.report.analysis.ontology", "readers": [], "spec": "R §10.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "단위업무 노드 상한",
+   "help_ko": "온톨로지 단위업무 노드 상한."
+  },
+  "report.agentic.gradeHigh": {
+   "default": 0.8, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.report.analysis.agentic", "readers": [], "spec": "R §10.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "에이전트 매칭 높음",
+   "help_ko": "규칙 등급 높음 문턱."
+  },
+  "report.agentic.gradeMid": {
+   "default": 0.5, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.report.analysis.agentic", "readers": [], "spec": "R §10.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "에이전트 매칭 중간",
+   "help_ko": "규칙 등급 중간 문턱."
+  },
+  "report.subagent.fitScore": {
+   "default": 7, "type": "int", "range": {"min": 0, "max": 10}, "choices": null,
+   "owner": "lm27.report.analysis.subagent", "readers": [], "spec": "R §10.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "서브에이전트 적합 점수",
+   "help_ko": "적합 판정 점수 문턱."
+  },
+  "report.subagent.condScore": {
+   "default": 5, "type": "int", "range": {"min": 0, "max": 10}, "choices": null,
+   "owner": "lm27.report.analysis.subagent", "readers": [], "spec": "R §10.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "서브에이전트 조건부 점수",
+   "help_ko": "조건부 적합 점수 문턱."
+  },
+  "report.subagent.roleFitShare": {
+   "default": 0.5, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.report.analysis.subagent", "readers": [], "spec": "R §10.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "역할 적합 분 비율",
+   "help_ko": "역할 '적합' 분 비율 문턱."
+  },
+  "report.quality.covLow": {
+   "default": 0.8, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.report.analysis.quality", "readers": [], "spec": "R §10.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "커버리지 주의",
+   "help_ko": "커버리지 주의 문턱."
+  },
+  "report.quality.covBad": {
+   "default": 0.5, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.report.analysis.quality", "readers": [], "spec": "R §10.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "커버리지 불충분",
+   "help_ko": "커버리지 불충분 문턱."
+  },
+  "report.quality.estLow": {
+   "default": 0.25, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.report.analysis.quality", "readers": [], "spec": "R §10.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "낮은 신뢰 비율 주의",
+   "help_ko": "낮은 신뢰 비율 주의 문턱."
+  },
+  "report.quality.estBad": {
+   "default": 0.5, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.report.analysis.quality", "readers": [], "spec": "R §10.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "낮은 신뢰 비율 불충분",
+   "help_ko": "낮은 신뢰 비율 불충분 문턱."
+  },
+  "report.quality.unattrHigh": {
+   "default": 0.3, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.report.analysis.quality", "readers": [], "spec": "R §10.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "미귀속 비율 높음",
+   "help_ko": "미귀속 비율 높음 문턱."
+  },
+  "report.quality.noEvidenceDays": {
+   "default": 2, "type": "int", "range": {"min": 0, "max": 366}, "choices": null,
+   "owner": "lm27.report.analysis.quality", "readers": [], "spec": "R §10.2",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "무근거 근무일",
+   "help_ko": "근거 없는 근무일 경고 일수."
+  },
+  "report.quality.samplerLow": {
+   "default": 0.5, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.report.analysis.quality", "readers": [], "spec": "R §10.2",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "샘플러 있는 날 비율",
+   "help_ko": "샘플러가 있는 날 비율 주의 문턱."
+  },
+  "teamReport.shiftPp": {
+   "default": 5.0, "type": "float", "range": {"min": 0.0, "max": 100.0}, "choices": null,
+   "owner": "lm27.team.report", "readers": [], "spec": "R §10.3",
+   "uncalibrated": false, "secret": false, "scope": "team_server", "restart": "none",
+   "label_ko": "영역 비중 변화(%p)",
+   "help_ko": "팀 해석: 영역 비중 변화 문턱."
+  },
+  "teamReport.concentrationShare": {
+   "default": 0.4, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.team.report", "readers": [], "spec": "R §10.3",
+   "uncalibrated": false, "secret": false, "scope": "team_server", "restart": "none",
+   "label_ko": "역할 집중 비율",
+   "help_ko": "팀 해석: 역할 집중 문턱."
+  },
+  "teamReport.officeShareNote": {
+   "default": 0.3, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.team.report", "readers": [], "spec": "R §10.3",
+   "uncalibrated": false, "secret": false, "scope": "team_server", "restart": "none",
+   "label_ko": "사무 비중 표시",
+   "help_ko": "팀 해석: 사무 비중 문턱."
+  },
+  "teamReport.unattributedNote": {
+   "default": 0.15, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.team.report", "readers": [], "spec": "R §10.3",
+   "uncalibrated": false, "secret": false, "scope": "team_server", "restart": "none",
+   "label_ko": "미귀속 표시",
+   "help_ko": "팀 해석: 미귀속 비율 문턱."
+  },
+  "teamReport.axLinkNote": {
+   "default": 0.1, "type": "float", "range": {"min": 0.0, "max": 1.0}, "choices": null,
+   "owner": "lm27.team.report", "readers": [], "spec": "R §10.3",
+   "uncalibrated": false, "secret": false, "scope": "team_server", "restart": "none",
+   "label_ko": "AX 연계 표시",
+   "help_ko": "팀 해석: AX 연계 비율 문턱."
+  },
+  "teamReport.smallProjectMm": {
+   "default": 0.3, "type": "float", "range": {"min": 0.0, "max": 100.0}, "choices": null,
+   "owner": "lm27.team.report", "readers": [], "spec": "R §10.3",
+   "uncalibrated": false, "secret": false, "scope": "team_server", "restart": "none",
+   "label_ko": "작은 과제 접기(MM)",
+   "help_ko": "과제 표에서 접는 작은 과제 MM."
+  },
+  "teamReport.ganttExpandRows": {
+   "default": 150, "type": "int", "range": {"min": 0, "max": 100000}, "choices": null,
+   "owner": "lm27.team.report", "readers": [], "spec": "R §10.3",
+   "uncalibrated": false, "secret": false, "scope": "team_server", "restart": "none",
+   "label_ko": "간트 펼침 행 수",
+   "help_ko": "간트를 기본으로 모두 펼치는 최대 행 수."
+  },
+  "teamReport.maxDetailMb": {
+   "default": 12, "type": "int", "range": {"min": 1, "max": 512}, "choices": null,
+   "owner": "lm27.team.report", "readers": [], "spec": "R §10.3",
+   "uncalibrated": false, "secret": false, "scope": "team_server", "restart": "none",
+   "label_ko": "드릴다운 섬 상한(MB)",
+   "help_ko": "자기완결 팀 보고서 드릴다운 섬 상한."
+  }
+ }
+}

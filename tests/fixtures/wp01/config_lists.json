@@ -1,0 +1,19 @@
+{
+ "_설명": "WP-01 시험용 — list(+-)·obj·목록 원소 의미론(합성 값, 자리표시자만)",
+ "pc.watchExtensions": {"add": [".kicad_wks", ".pptx"], "disable": [".bin", ".map"]},
+ "privacy.window.privateExes": ["game.exe"],
+ "privacy.personalMailDomains": {"disable": ["proton.me"]},
+ "mail.index.excludeFolderNames": {"add": ["보관 2025"], "remove": ["Junk"]},
+ "privacy.path.excludeKeywords": {"add": ["개인"], "disable": ["사진", "개인"]},
+ "bridge.stages": {"lookup_calendar": true, "review_text": false},
+ "hier.unit.w": {"boundary": 3, "nope": 1.0},
+ "hier.domain.w": {"EXT": 2.5},
+ "report.mining.extClassExtra": {"kicad_pcb": "cad"},
+ "team.retryScheduleSec": [30, 60],
+ "teamServer.suggestRanges": [[20000, 20010], [30000, 29999]],
+ "team.serverAlternates": ["teamhost.example:9310"],
+ "hier.domain.order": ["EXT", "AX", "COM", "MP"],
+ "report.export.formats": ["html", "pdf"],
+ "privacy.customers": [{"id": "C01", "names": ["고객사A"], "domains": ["custa.example"]}],
+ "privacy.partners": [{"names": ["협력사"]}]
+}

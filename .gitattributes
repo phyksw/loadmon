@@ -1,6 +1,6 @@
-# 줄끝·인코딩을 바이트 그대로 보존한다.
-#   .bat = CP949 + CRLF / .ps1 = UTF-8 BOM + CRLF / .py .json .md = UTF-8 LF
-# FILES.txt 의 crc32 자가점검이 바이트 단위로 맞아야 하므로 git 자동 변환을 전부 끈다.
+# 줄끝·인코딩을 바이트 그대로 보존한다(계약 §9.2, D-2) — git 자동 변환을 전부 끈다.
+#   .bat = CP949 + CRLF / .ps1 = UTF-8 BOM + CRLF / .py .md .json .jsonl .js .css .html .svg .txt .toml = UTF-8 LF
+# 패키지 = 커밋 내용(T-20)이므로 체크아웃·커밋 어느 쪽에서도 바이트가 바뀌면 안 된다.
 * -text
 
 # 변환만 끄고 diff 는 텍스트로 보이게 한다.
@@ -9,6 +9,10 @@
 *.bat   diff
 *.md    diff
 *.json  diff
-*.txt   diff
+*.jsonl diff
+*.js    diff
+*.css   diff
 *.html  diff
+*.svg   diff
+*.txt   diff
 *.toml  diff

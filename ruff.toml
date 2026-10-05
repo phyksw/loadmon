@@ -1,21 +1,30 @@
-# LoadMonitor 린트 정책 — 실결함 중심 (스타일 소음 배제)
+# LM27 린트 정책(계약 L-03) — 실결함 중심, 스타일 소음 배제.
+# tools\lint.ps1 와 tools\hook_check.py 가 --no-cache 로 돌린다(트리 안에 캐시를 만들지 않는다).
 line-length = 120
 target-version = "py311"
 
-# 캐시는 배포 트리 밖(%TEMP%)에 둔다 — 트리 안에 생긴 .ruff_cache\ 가 "폴더 통째로 복사" 경로에
-# 딸려 갔다(실측 6개). tools\lint.ps1 은 --no-cache 로 돌려 캐시 자체를 만들지 않는다.
+# 캐시를 쓰더라도 배포 트리 밖(%TEMP%)에 둔다 — 트리 안의 .ruff_cache\ 가 "폴더 통째로 복사" 경로에
+# 딸려 간 이전 판 실측이 있다.
 cache-dir = "${TEMP}/LoadMonitor27-ruff_cache"
+# 동봉 파이썬·개인 자료·오케스트레이터 작업 폴더는 검사하지 않는다
+extend-exclude = ["python", "data", "out", ".wf"]
 
 [lint]
 # E/F: pyflakes·pycodestyle 오류, W: 경고(invalid escape 등), B: bugbear(실버그 패턴),
 # UP: 파이썬 현대화(안전한 것만), C4: comprehension 실수
 select = ["E", "F", "W", "B", "UP", "C4"]
 ignore = [
-    "E501",   # 한국어 리포트 문자열은 줄길이 예외
-    "UP009",  # -*- coding -*- 선언 유지 (구형 도구 호환)
+    "E501",   # 한국어 문구는 줄 길이 예외
+    "UP009",  # -*- coding -*- 선언 유지(구형 도구 호환)
     "B023",   # 루프 클로저 — 사용처에서 즉시 소비하므로 안전
+    "UP017",  # 계약 §9.1 'UTC 는 datetime.now(timezone.utc) 로만' — 계약 형식을 막지 않는다(datetime.UTC 는 같은 객체라 둘 다 허용)
 ]
 
 [lint.per-file-ignores]
-# 수집 CSV 파서는 방어적 blind except가 설계 의도 (한 줄 오류로 전체 중단 금지)
-"analyze/*.py" = ["E722"]
+# 진입 스크립트는 첫 실행문에서 자기 루트를 sys.path 에 넣은 뒤 lm27 을 import 한다(L-05 · 계약 §9.1 · CR-04)
+"lm27_cli.py" = ["E402"]
+"lm27_pipe.py" = ["E402"]
+"agent_main.py" = ["E402"]
+"lm27/agent/main.py" = ["E402"]
+"tools/*.py" = ["E402"]
+"collect/*.py" = ["E402"]

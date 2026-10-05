@@ -1,0 +1,19 @@
+{
+ "schema": "lm27.settings_registry/1",
+ "keys": {
+  "demo.limitSec": {
+   "default": 30, "type": "int", "range": {"min": 1, "max": 600}, "choices": null,
+   "owner": "lm27.collect.watch", "readers": [], "spec": "시험",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "시험 한도(초)",
+   "help_ko": "WP-01 시험용 작은 레지스트리의 정수 키."
+  },
+  "demo.words": {
+   "default": ["가", "나"], "type": "list(+-)", "range": null, "choices": null, "item": "str",
+   "owner": "lm27.collect.watch", "readers": [], "spec": "시험",
+   "uncalibrated": true, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "시험 낱말",
+   "help_ko": "WP-01 시험용 작은 레지스트리의 내장 목록 키."
+  }
+ }
+}
