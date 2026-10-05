@@ -1,8 +1,8 @@
 @echo off
 >nul chcp 949
 setlocal
-title LoadMonitor27
-rem LoadMonitor27 - 로컬 앱(화면) 기동. 기본 진입(계약 7.2).
+title LoadMonitor27 - UI
+rem LoadMonitor27 - UI(HTML 화면) 기동. 기본 진입(계약 7.2). LM24 의 LoadMonitor24-UI.bat 과 같은 역할.
 rem 작업 폴더를 TEMP 로 옮겨 이 폴더를 잡지 않는다 - 폴더 이동과 이름 바꾸기를 막지 않게(TAB 1.9).
 rem 화면은 pythonw 로 창 없이 띄운다. 먼저 python 의 ui --check 로 기동 가능 여부를 확인해 실패하면 안내를 남긴다.
 set "LM27_ROOT=%~dp0"

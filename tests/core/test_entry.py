@@ -24,7 +24,7 @@ WP00_PY = ["lm27_cli.py", "lm27/__init__.py", "lm27/cli.py", "lm27/paths.py", "l
 WP00_MARKERS = [f"lm27/{d}/__init__.py" for d in ("agent", "collect", "bundle", "normalize", "vocab", "pipeline", "ui",
                                                   "team")]
 BATS = {
-    "LoadMonitor27.bat": ["pythonw.exe", "ui --check", 'start "" "%LM27_PYW%" -X utf8 -B "%LM27_CLI%" ui %*'],
+    "LoadMonitor27-UI.bat": ["pythonw.exe", "ui --check", 'start "" "%LM27_PYW%" -X utf8 -B "%LM27_CLI%" ui %*'],
     "LoadMonitor27-수집.bat": ["collect --auto"],
     "LoadMonitor27-에이전트설치.bat": ["agent install --only"],
     "LoadMonitor27-이동준비.bat": ["Prepare-Move.ps1", "lm27_move_", "start ", "-NoProfile -ExecutionPolicy Bypass -File"],
@@ -84,7 +84,7 @@ class CloneCliTest(CloneTestCase):
     def test_bats_without_python_stop_rc3(self):
         """복제에는 python\\ 이 없다 → bat 은 '동봉 파이썬 없음' 안내 후 rc 3(아무것도 실행하지 않는다)."""
         self.assertFalse(self.clone.path("python", "python.exe").exists())
-        for name in ("LoadMonitor27.bat", "LoadMonitor27-수집.bat", "LoadMonitor27-에이전트설치.bat",
+        for name in ("LoadMonitor27-UI.bat", "LoadMonitor27-수집.bat", "LoadMonitor27-에이전트설치.bat",
                      "LoadMonitor27-팀서버.bat"):
             with self.subTest(bat=name):
                 bat = self.clone.path(name)
@@ -194,7 +194,7 @@ class BatTest(unittest.TestCase):
                 self.assertNotIn("cd /d \"%~dp0\"", txt)            # 작업 폴더를 ROOT 로 옮기지 않는다(TAB §1.9)
 
     def test_python_invocations_use_root_python(self):
-        for name in ("LoadMonitor27.bat", "LoadMonitor27-수집.bat", "LoadMonitor27-에이전트설치.bat",
+        for name in ("LoadMonitor27-UI.bat", "LoadMonitor27-수집.bat", "LoadMonitor27-에이전트설치.bat",
                      "LoadMonitor27-팀서버.bat"):
             with self.subTest(bat=name):
                 txt = (TREE / name).read_bytes().decode("cp949")

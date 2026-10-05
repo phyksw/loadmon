@@ -2,7 +2,7 @@
 
 | 항목 | 내용 |
 |---|---|
-| 판 | v1.0.1 (2026-10-05) — 설계 확정, 구현 전. v1.0.1 = 반증 점검 보정(§10.O X-300~X-317) |
+| 판 | **v1.1 (2026-10-05)** — W0(기반 파동) 구현 반영. v1.1 = W0 계약 보강 요청 반영 + 구현 계획 §7 CR-01~CR-16 채택(§0.6 변경 이력 · §10.P X-318~X-342). v1.0.1 = 반증 점검 보정(§10.O X-300~X-317) |
 | 지위 | **단일 진실 원천.** 이 문서와 명세가 다르면 이 문서가 이긴다. 명세는 상세 근거다 |
 | 제품 | LoadMonitor27(LM27) · 트리 `D:\배포\loadmon27` · 브랜치 `lm27` · 파이썬 패키지 `lm27` · 배포 이름 `LoadMonitor27\` · 패키지 `LoadMonitor27_풀패키지_<시각>.zip` |
 | 독자 | LM27 의 모든 코드(`lm27\**`, `collect\**`, `web\**`, `tools\**`, `tests\**`) 구현자와 심사자 |
@@ -85,6 +85,23 @@
 - 명세 문구는 이 문서와 맞추어 갱신하되, 갱신 전이라도 구현은 이 문서를 따른다.
 - 구현 코드·시험·화면 문구는 이 문서의 이름(경로·키·코드·필드)만 쓴다.
 
+### 0.6 변경 이력
+
+| 판 | 날짜 | 내용 |
+|---|---|---|
+| v1.0 | 2026-10-05 | 설계 확정(명세 10종 대조, §10.A~N) |
+| v1.0.1 | 2026-10-05 | 반증 점검 보정(§10.O X-300~X-317) |
+| **v1.1** | 2026-10-05 | **W0 구현 반영.** 원칙: 구현·시험을 통과한 W0 공개 API(`lm27\paths.py` · `config.py` · `cli.py` · `util\*` · `bundle\ids.py` · `time\calendar.py` · `collect\{stage_result, rcmap, watch}.py` · `tools\hook_check.py` · `lint.ps1` · `tests\fixtures\*`)가 사실이며, 계약이 다르면 계약을 구현에 맞춰 등재한다. 계약 원칙·안전 규칙과 부딪히거나 구현이 답을 주지 않는 요청은 고치지 않고 §12 에 남긴다. 구현 계획 §7 CR-01~CR-16 은 모두 채택(CR-14 = 예외 표 방식) |
+
+v1.1 에서 고친 곳(근거 행은 §10.P):
+
+- **모듈 지도·이름 등재**: §1.1(시험 영역 `core`·`normalize`·`pipeline`·`ui`, `tools\make_package.py`) · §1.3(사본 import 범위 — `ids.py`) · §2 머리(`__init__` 지연 import) · §2.1(`Paths`·`config`·`fsx`·`tz`·`proc`·`events` 공개 API 전부) · §2.4(`agent_main.py` 원본) · §2.5(`rcmap`·`stage_result`·`watch` 공개 API) · §2.6(`identify_pc` 확장과 CLI 가 부르는 번들 함수) · §2.9(`calendar` 공개 이름·로컬 초 원점 단일원) · §2.14·§2.15(CLI 가 부르는 보고서·화면·팀 함수) · §2.18(`hook_check`·`lint.ps1` 형식, `make_package.py`) · §2.19(공용 시험 하네스 API) · §2.20 · §4.1(`run_id`·`job_id` 생성 함수).
+- **스키마·설정**: §3.21(달력 판 `kr-2025-2027.v2`·2025-05-01) · §5.1(레지스트리 선언 필드·owner 표기·WP-01 이 정한 값) · §5.2(명세 칸 옛 이름 3곳) · §5.3(감시 키 하한) · §6.4(확정 사유 집합 단일원).
+- **진입점·rc**: §7.1(CLI 어댑터 호출 표·`agent install`) · §7.2(이동준비 bat 경로) · §8.1(돌지 않음 rc −1 · kill 은 rc 3 · 막힘 사유 · 단계 state 대응 · collect rc 3 조건) · §8.3(어댑터 반환값 해석) · §8.5(수집 단계 rc 자리) · §9.1(UTC 생성 문구) · §9.4.
+- **관문**: §11.1(L-05·07·08·09·11·12·13·16·20·21·23·24·26·27·28·29 문구 + CR-14 예외 표) · §11.2(T-07 카나리아 범위) · §11.3(주입 자료 형식) · §11.4(단계 실행기·복제 트리).
+- **미결**: §12.1 U-15(2025-05-01 근로자의날) · §12.2 O-4·O-8 갱신, O-13~O-16 추가.
+- **v1.1 반증 점검(같은 판 안 보정 — W0 코드와 다시 대조)**: §1.1·§7.2 기본 진입 bat 이름 `LoadMonitor27-UI.bat`(X-341) · §2.1·§2.5·§2.6·§2.9 에 빠졌던 공개 상수·멤버(`KeyMeta` 필드, `rcmap`·`stage_result`·`watch`·`events`·`proc`·`ids` 상수) · §2.1·§7.3 `Paths.mode()` 판정 · §2.2 `records.py`·§2.3 `writer.py` 런타임 봉인 강화(관문 수정 단계 L-11 ③ 요청) · §2.3 store 삭제 함수 자리(O-16) · §2.18 `lint.ps1` 하네스 없음 = 실패 · §3.9·§5.1-8 정제 설정 해시는 호출자가 붙임 · §5.1-11 owner 는 하나(`OWNER_RX`) · §7.1 실행 플래그 `-X utf8 -B`·`team send` 인자 없음 · §8.1 (d) 단계 state 는 원장 셀 상태로 정함(rc 1·0건 셀의 막힘 포함) · §8.3 `collect` 0·4 의 skipped·사용자 중단 rc 2 · §8.6 `run_end` · §11.1 L-17·L-19 정적/동적 경계(X-342).
+
 ---
 
 ## 1. 트리 배치
@@ -95,7 +112,7 @@
 
 ```
 <ROOT>\
-├─ LoadMonitor27.bat                 로컬 앱(화면) 기동 — 기본 진입
+├─ LoadMonitor27-UI.bat              로컬 앱(화면) 기동 — 기본 진입(X-341)
 ├─ LoadMonitor27-수집.bat            [수집] = collect --auto (무질문)
 ├─ LoadMonitor27-에이전트설치.bat    agent install --only (설치 전용, 5초 안팎)
 ├─ LoadMonitor27-이동준비.bat        move-prepare (도우미 PS 를 %TEMP% 사본으로 띄움)
@@ -115,15 +132,16 @@
 │   ├─ calendar.json                 달력 내장본(확인된 해만, §3.21) — 배포 포함
 │   └─ config.json                   개인 덮어쓰기(비밀 없음, 폴더와 동행, 패키지 제외)
 ├─ tools\                            lint.ps1 · hook_check.py · lm27_selftest.py · calibrate.py ·
-│                                    bridge.py · bridge_trace_summary.py · check_contrast.py
-├─ tests\                            privacy\ time\ hier\ bridge\ report\ web\ bundle\ team\ collect\ agent\ e2e\ fixtures\
+│                                    bridge.py · bridge_trace_summary.py · check_contrast.py · make_package.py
+├─ tests\                            core\ privacy\ time\ hier\ bridge\ report\ web\ bundle\ team\ collect\ agent\
+│                                    normalize\ pipeline\ ui\ e2e\ fixtures\
 ├─ docs\                             CONTRACT.md · ARCHITECTURE.md · 명세 10종
 ├─ python\                           동봉 CPython 3.11 embeddable(수정 금지, _pth 그대로)
 ├─ data\                             운반 번들 + 개인 자료(§1.2, .gitignore)
 └─ out\                              개인 보고서 내보내기(§1.2, .gitignore)
 ```
 
-- 모든 bat 은 `pushd "%TEMP%"` 로 작업 폴더를 옮긴 뒤 `"<ROOT>\python\python.exe" "<ROOT>\lm27_cli.py" <명령>` 을 부른다(폴더 잠금 방지, TAB §1.9). 화면은 `pythonw.exe` 로 띄운다(R §2.3.1).
+- 모든 bat 은 `pushd "%TEMP%"` 로 작업 폴더를 옮긴 뒤(폴더 잠금 방지, TAB §1.9) `"<ROOT>\python\python.exe" -X utf8 -B "<ROOT>\lm27_cli.py" <명령> %*` 을 부른다(이동준비 bat 만 도우미 PS 사본을 띄운다 — §7.2). 화면은 `pythonw.exe` 로 띄운다(R §2.3.1). 동봉 파이썬(이동준비는 도우미 PS)이 없으면 한국어 안내 + `exit /b 3`.
 - `collect\` 의 파이썬 수집기는 스크립트 첫 줄에서 `<ROOT>` 를 sys.path 에 넣는다(D-1).
 
 ### 1.2 `data\` 와 `out\`
@@ -200,7 +218,7 @@
 
 - 작업 스케줄러 이름 `LM27-<install_id>`(작업은 하나, 감독 루프), 뮤텍스 `Local\LM27-<install_id>-agent`.
 - 작업 Action 은 `agent\bin\<ver>\py311\pythonw.exe agent\bin\<ver>\agent_main.py --install-id <id>`(py 구현) 또는 `powershell.exe … -File agent\bin\<ver>\ps\agent.ps1 -InstallId <id>`(ps 구현), WorkingDirectory = `agent\`.
-- bin 사본에 든 모듈은 **사본 안 모듈과 표준 라이브러리만** import 한다(사본에 없는 `lm27.config`·`lm27.hier`·`lm27.time` 등을 최상위·지연 어느 쪽으로도 부르지 않는다 — ImportError 를 삼키는 것도 금지, L-06). 그래서 `lm27\normalize\cues.py`(정제기 훅)와 `lm27\bundle\ids.py` 는 표준 라이브러리·`lm27.util` 만 쓴다(X-305).
+- bin 사본에 든 모듈은 **사본 안 모듈과 표준 라이브러리만** import 한다(사본에 없는 `lm27.config`·`lm27.hier`·`lm27.time` 등을 최상위·지연 어느 쪽으로도 부르지 않는다 — ImportError 를 삼키는 것도 금지, L-06). 그래서 `lm27\normalize\cues.py`(정제기 훅)는 표준 라이브러리·`lm27.util` 만, `lm27\bundle\ids.py` 는 표준 라이브러리·`lm27`·`lm27.util`·`lm27.paths` 만 쓴다(X-305 · X-320 — `ids.py` 는 `agent.json` 위치를 정하려고 사본에 든 `lm27.paths` 를 함수 안에서 지연 import 한다). WP-13 의 사본 import AST 시험은 이 집합을 허용한다.
 
 ### 1.4 팀 서버 저장소
 
@@ -223,6 +241,8 @@
 
 표기: `함수(인자) -> 반환`. '소유 §' 는 상세 근거 절이다. 명세들이 다른 경로를 제안한 경우의 결정은 각 표 아래 '경로 결정'과 §10 에 적었다.
 
+여러 작업 패키지가 나눠 가진 패키지(`time`·`hier`·`bridge`·`report`)의 내용 있는 `__init__.py` 는 다른 하위 모듈을 최상위에서 import 하지 않고 공개 함수 안에서 지연 import 한다(내용 있는 `__init__` 이 생기기 전에는 namespace 패키지로 import 된다 — 구현 계획 §3.1 · CR-09). v1.1 에서 W0 구현대로 적은 시그니처는 실제 코드와 같다(§10.P).
+
 ### 2.1 루트 진입점과 공용 하위층 — `lm27\`(이 문서 소유)
 
 | 파일 | 책임 | 공개 함수 | 소유 § |
@@ -230,13 +250,13 @@
 | `<ROOT>\lm27_cli.py` | 단일 진입점. 첫 줄에서 ROOT 를 sys.path[0] 에 넣고 `lm27.cli.main()` 호출. 그 밖 코드 없음 | (스크립트) | 이 문서 §7 |
 | `<ROOT>\lm27_pipe.py` | 정제 파이프 진입점. 자기 폴더를 sys.path[0] 에 넣고 `lm27.privacy.sanitize_stream.main(sys.argv[1:])` | (스크립트) | P §3.5 |
 | `lm27\__init__.py` | 판 상수 | `LM27_VERSION = "0.1.0"` | 이 문서 |
-| `lm27\cli.py` | 명령 분배(§7 표). 모든 명령은 rc 를 돌려준다 | `main(argv: list[str] \| None = None) -> int` | 이 문서 §7·§8 |
-| `lm27\paths.py` | **경로 로더 단일원.** 모든 데이터 경로를 만든다. 다른 모듈은 경로 문자열을 조립하지 않는다 | `Paths(root: Path \| None)` · `.mode() -> "program"\|"agent"` · `.data()` `.bundle_json()` `.pcs()` `.pc_dir(pc_id)` `.seg_dir(pc_id, kind)` `.keys()` `.keyring()` `.secrets()` `.local_only()` `.hier_local()` `.team_dir()` `.registry_cache()` `.outbox(state)` `.ai_store(stage)` `.ai_run(run_id)` `.import_dir()` `.derived()` `.coverage_ledger()` `.teams_coverage()` `.todo()` `.collect_stage_results(run_id)` `.ai_in(stage)` `.ai_out(stage)` `.analysis(run_id)` `.analysis_current()` `.out_personal(from_, to, run_id)` `.logs()` · `.lad()` `.agent_dir()` `.agent_bin(ver)` `.store_dir(pc_id)` `.store_file(pc_id, kind, src, utc_date)` `.raw_cursor(pc_id)` `.privacy_audit_file(utc_date)` `.edge_profile()` `.bridge_dir()` `.edge_lock()` `.ui_dir()` `.teamserver_default()` | 이 문서 §1 |
-| `lm27\config.py` | **설정 레지스트리 단일원.** `config\settings_registry.json` 선언 + `config\config.json` 덮어쓰기. 미등록 키 = 오류, 형 불일치 = 기본값 + 경고, 읽힌 키 기록 | `load_config(paths) -> Cfg` · `Cfg.__getitem__(key)` · `Cfg.used() -> dict` · `Cfg.hash() -> str` · `Cfg.agent_subset() -> dict` · `registry_meta(key) -> KeyMeta` | 이 문서 §5 |
-| `lm27\util\fsx.py` | 쓰기 하위층 유일원(원자 쓰기·결정적 gzip·정규 JSON 바이트·긴 경로) | `canon_bytes(obj) -> bytes` · `atomic_write(path, data, *, fsync=True)` · `append_line(path, line: str)` · `read_bytes(path)` · `read_json(path, default=None, *, want=dict)` · `gzip_bytes(raw)` · `sha256_hex(b)` · `longp(p)` · `utcnow_iso()` | TAB §0.3 |
-| `lm27\util\tz.py` | 시간대(zoneinfo 금지). 수집 순간 오프셋은 ctypes `GetDynamicTimeZoneInformation`/`GetTimeZoneInformationForYear` | `capture_offset_min(utc_dt) -> int` · `fmt_offset(min) -> "+09:00"` · `parse_offset(s) -> int` · `to_local(ts_utc, off_min)` | 결정 §10.3 |
-| `lm27\util\proc.py` | 자식 프로세스 실행·감시·종료(창 없음, `taskkill /T /F`, os.kill 금지) | `run_child(argv, *, timeout_s, stdin=None, env=None) -> ChildResult` · `spawn(argv, ...) -> Child` · `kill_tree(pid)` | C §8.4 |
-| `lm27\util\events.py` | 표준 출력 이벤트(§8.6) 한 줄 JSON | `emit(ev: str, **fields)` · `Heartbeat(interval_s=30)` | 이 문서 §8.6 |
+| `lm27\cli.py` | 명령 분배(§7 표). 모든 명령은 rc 를 돌려준다. 각 명령은 소유 모듈의 계약 함수를 **지연 import** 로 부르고(§7.1 'CLI 어댑터 호출 표'), 모듈·함수가 아직 없으면 ImportError 를 삼키지 않고 rc 1 + 한국어 한 줄로 끝낸다 | `main(argv: list[str] \| None = None) -> int` · `build_parser()` · `rc_of(result, default=0) -> int`(반환값 해석 — §8.3) · `resolve(modname, attr)`(없으면 `CliError` rc 1) · `module_present(modname) -> bool`(import 없이 `find_spec`) · `CliError(msg, rc=1)` · 상수 `RC_OK` `RC_FAIL` `RC_PARTIAL` `RC_ENV` `RC_NOOP`(= 0·1·2·3·4, §8.3) `COMMANDS`(명령과 한국어 도움말) `EXPORT_FORMATS` `EXPORT_VARIANTS` | 이 문서 §7·§8 |
+| `lm27\paths.py` | **경로 로더 단일원.** 모든 경로를 만든다. 다른 모듈은 경로 문자열을 조립하지 않는다(데이터 메서드 반환값 뒤에 경로를 붙이는 것도 조립 — L-08). **순수**: 경로를 계산만 하고 폴더·파일을 만들지 않는다. 표준 라이브러리만(bin 사본 포함) | 생성자 `Paths(root=None, *, lad=None)`(root 없음 = 이 패키지의 부모 폴더, `lad` = `%LOCALAPPDATA%\LoadMonitor27` 대체 — 시험 주입) · 속성 `.root` · 반환형은 모두 `pathlib.Path` · 경로 조각이 되는 값(pc_id·run_id·job_id·kind·src·stage·판·이름·날짜)의 형식이 어긋나면 `ValueError` · `.mode() -> "program"\|"agent"`(root 옆에 `data\` 폴더나 `lm27_cli.py` 가 있으면 program, 아니면 bin 사본 agent) · 모듈 상수 `PC_ID_RX` `RUN_ID_RX` `JOB_ID_RX`(§4.1 형식) `OUTBOX_STATES` `APP_DIR = "LoadMonitor27"` · **프로그램 폴더**: `.python_dir()` `.python_exe()` `.pythonw_exe()`(agent 모드면 `py311\`) `.cli_script()` `.pipe_script()` `.agent_main_script()` `.package_dir()` `.collect_script(rel)`(agent 모드면 `ps\<파일>`) `.web_file(rel)` `.config_dir()` `.settings_registry()` `.calendar_json()` `.config_json()` · **`data\`·`out\`**: `.data()` `.bundle_json()` `.bundle_lock()` `.pc_aliases()` `.pcs()` `.pc_dir(pc_id)` `.pc_json(pc_id)` `.manifest(pc_id)` `.manifest_prev(pc_id)` `.move_ready(pc_id)` `.quarantine(pc_id)` `.seg_dir(pc_id, kind)` `.keys()` `.keyring()` `.secrets()` `.local_only()` `.local_only_file(name)` `.hier_local()` `.hier_local_file(name)` `.team_dir()` `.registry_cache()` `.registry_etag()` `.team_overrides()` `.outbox(state)` `.ai_store(stage)` `.ai_run(run_id)` `.import_dir()` `.derived()` `.coverage_ledger()` `.teams_coverage()` `.todo()` `.verify_cache()` `.collect_stage_results(run_id)` `.stage_result_file(run_id, stage)` `.blanks_file(run_id, src)`(X-315) `.ai_in(stage)` `.ai_out(stage)` `.analysis(run_id)` `.analysis_current()` `.logs()` `.out_dir()` `.out_personal(from_, to, run_id)` · **LAD**(`%LOCALAPPDATA%\LoadMonitor27\`): `.lad()` `.agent_dir()` `.agent_json()` `.agent_config()` `.context_cache()` `.heartbeat()` `.person_dir_delta()` `.export_log()` `.agent_subkeys()` `.agent_bin_root()` `.agent_bin(ver)` `.agent_run()` `.stop_flag()` `.harvest_now_flag()` `.harvest_done()` `.harvest_lock()` `.agent_logs()` `.agent_log_file(utc_date)` `.copilot_manual()` `.store_root()` `.store_dir(pc_id)` `.store_file(pc_id, kind, src, utc_date)` `.raw_cursor(pc_id)` `.raw_cursor_lock(pc_id)`(X-301) `.exe_meta(pc_id)` `.privacy_audit_file(utc_date)` `.edge_profile()` `.bridge_dir()` `.edge_lock()` `.ui_dir()` `.ui_server_json()` `.ui_start_error()` `.ui_logs()` `.ui_jobs()` `.ui_job_file(job_id)` `.teamserver_default()`. 새 경로가 필요하면 이 파일에 메서드를 더한다(CR — 구현 계획 §3.3) | 이 문서 §1 |
+| `lm27\config.py` | **설정 레지스트리 단일원.** `config\settings_registry.json`(`lm27.settings_registry/1`) 선언 + `config\config.json` 덮어쓰기. 미등록 키 = 오류, 형 불일치 = 기본값 + 경고, 읽힌 키 기록. 목록 값은 튜플(불변), 사전 값은 깊은 사본으로 돌려준다. 표준 라이브러리만, 디스크에 쓰지 않는다 | `load_config(paths=None, *, config_path=None, registry_path=None, overrides=None) -> Cfg`(`overrides` 는 엄격 — 미등록 키면 `UnknownKeyError`. cli 의 `--host`·`--port`·`--store` → `teamServer.bindHost`·`bindPort`·`storeDir`, 형·범위는 `check_value` 로 먼저 검사) · `Cfg.__getitem__(key)`(미등록 → `UnknownKeyError`) · `Cfg.__contains__(key)` · `.keys() -> list[str]` · `.meta(key) -> KeyMeta` · `.used() -> dict`(cfg_used) · `.snapshot() -> dict` · `.overridden() -> list[str]` · `.hash(keys=None) -> str`(실효 값 정규 JSON 의 sha256 앞 16자, 읽힘으로 세지 않음) · `.agent_subset() -> dict`(§5.1-8) · `.derive(overrides) -> Cfg`(보정·섭동용) · `.config_warnings -> list[{code, key, text_ko}]`(code = `unknown_key` `bad_type` `out_of_range` `bad_choice` `bad_item` `bad_pattern` `bad_list_op` `bad_file`, 값은 문구에 넣지 않는다) · `check_value(key, value, *, path=None) -> str \| None`(화면 저장·명령줄 값 사전 검사 — 통과 None, 아니면 한국어 사유) · `registry_meta(key, *, path=None) -> KeyMeta` · `load_registry(path=None) -> dict[str, KeyMeta]` · `parse_registry(raw: bytes)` · `is_agent_key(key) -> bool` · `owner_file(owner) -> str`(L-12 단계 적용 기준) · `contract_table_rows(md_text) -> list[dict]` · `parse_contract_default(piece)`(§5.2 표 ↔ 레지스트리 대조 — L-12) · 예외 `ConfigError` ⊃ `RegistryError`, `UnknownKeyError(ConfigError, KeyError)` · 선언 `KeyMeta`(불변 — `key` `default` `type` `range` `choices` `owner` `readers` `spec` `uncalibrated` `secret` `scope` `restart` `label_ko` `help_ko` `item` `keys` `nullable` `pattern`, `.is_list_merge` `.is_agent` `.owner_file()`) · 상수 `SCHEMA` `TYPES` `ITEM_TYPES` `SCOPES` `RESTARTS` `REQUIRED_FIELDS` `OPTIONAL_FIELDS` `KEY_RX` `OWNER_RX` `AGENT_SUBSET_PREFIXES` `AGENT_SUBSET_KEYS`(§5.1-8·§5.1-11) | 이 문서 §5 |
+| `lm27\util\fsx.py` | 쓰기 하위층 유일원(원자 쓰기·결정적 gzip·정규 JSON 바이트·긴 경로) | `canon_bytes(obj) -> bytes` · `loads_strict(data)`(utf-8-sig 허용, 중복 키·NaN·Infinity 거부 — 훅 `reject_dup_keys`·`reject_nan`) · `atomic_write(path, data, *, fsync=True)`(임시 `part_name(path)` → `os.replace`, PermissionError 재시도 `RETRY_WAITS` = 0.1·0.2·0.4·0.8·1.6초) · `append_line(path, line: str, *, fsync=False)` · `read_bytes(path)`(원자 교체 순간의 PermissionError 를 0.1초 × 5회 재시도 — `READ_RETRY`) · `read_json(path, default=None, *, want=dict)`(파일 없음 → `default`, 경고 없음(첫 실행의 정상 상태). 읽기 실패·형식 깨짐·`want` 형 아님 → `default` + stderr 경고 1줄(파일 basename + 예외 유형) — X-321. `want=None` 이면 형을 따지지 않는다) · `ensure_dir(path) -> str` · `gzip_bytes(raw)` · `sha256_hex(b)` · `longp(p) -> str`(`MAXP` = 240) · `utcnow_iso()` | TAB §0.3 |
+| `lm27\util\tz.py` | 시간대(zoneinfo 금지). 수집 순간 오프셋은 ctypes `GetDynamicTimeZoneInformation`/`GetTimeZoneInformationForYear`. 실행 식별자 생성(CR-01) | `capture_offset_min(utc_dt=None) -> int`(None = 지금, naive 는 UTC 로 본다, ISO 문자열 허용) · `fmt_offset(off_min) -> "+09:00"` · `parse_offset(s) -> int`(`+HH:MM`·`+HHMM`·`Z`) · `to_local(ts_utc, off_min) -> datetime`(고정 오프셋 aware datetime, `off_min` = 정수 분 또는 `"+09:00"`) · `new_run_id(now_utc=None) -> str` · `new_job_id(now_utc=None) -> str`(§4.1 형식, 시각 부분은 로컬 시각) · 상수 `OFFSET_LIMIT_MIN = 840` | 결정 §10.3 |
+| `lm27\util\proc.py` | 자식 프로세스 실행·감시·종료(창 없음, `taskkill /T /F`, os.kill 금지) | `run_child(argv, *, timeout_s, stdin=None, env=None, cwd=None) -> ChildResult(rc, stdout, stderr, timed_out, elapsed_s, pid)`(`.out_text()` `.err_text()` — UTF-8 해석) · `spawn(argv, *, stdin=DEVNULL, stdout=PIPE, stderr="tail", env=None, cwd=None, new_console=False) -> Child`(기본 stderr `STDERR_TAIL = "tail"` 은 마지막 `TAIL_LINES` = 200줄만 배수 — `Child.stderr_tail`) · `Child` = **Popen 호환**(`pid` `stdin` `stdout` `stderr` `returncode` `poll()` `wait(timeout=None)` — `lm27.collect.watch` 가 덕 타이핑으로 쓴다) + `alive()` `iter_lines()` `kill_tree()` `close()` · 컨텍스트 관리자 · `kill_tree(pid) -> bool` · `pid_alive(pid) -> bool`(ctypes) · 상수 `CREATE_NO_WINDOW` `CREATE_NEW_CONSOLE` `PIPE` `DEVNULL` `STDOUT` `KILL_TIMEOUT_S` | C §8.4 |
+| `lm27\util\events.py` | 표준 출력 이벤트(§8.6) 한 줄 JSON | `emit(ev, /, **fields) -> dict`(ev ∈ §8.6, 예약 필드 `seq`·`ts`·`ev` 덮어쓰기 금지, 값 None 필드 생략) · `configure(mode="text"\|"jsonl"\|"off", *, job=None, stream=None, err_stream=None, now=None, reset_seq=False)` · `mode()` · `job_id()` · `last_seq() -> int` · `Heartbeat(interval_s=30, *, stage=None, total=None, clock=None)`(`.tick()` `.beat()` `.update(done=None, total=None, **extra)` `.start()` `.stop()`, 컨텍스트 관리자) · 상수 `EVENTS`(§8.6 `ev` 목록) `MODES` `HEARTBEAT_SEC = 30`. `text` 모드는 사람용 한 줄을 stderr 에, `jsonl` 모드는 한 줄 JSON 을 stdout 에 쓴다. cli 는 `--job`·`--events` 를 소비해 `configure` 하고, `bridge …` 는 나머지 argv 만 `lm27.bridge.cli.main` 에 넘긴다 | 이 문서 §8.6 |
 
 ### 2.2 `lm27\privacy\` — 정제 단일 관문(P 소유, 16개)
 
@@ -248,7 +268,7 @@
 | `detect.py` | `sanitize()` 본체 | `sanitize(text, field_name="text", ctx=None, max_len=None) -> SanitizeResult` · `subkey` · `keyed_hex` |
 | `scan.py` | 치환 없는 탐지, 토큰 파생 | `scan(text, ctx=None) -> list[Hit]` · `tokens_of(masked, max_tokens=30) -> list[str]` |
 | `classify.py` | 광고·공사·창 분류·방 성향 | `ad_score(m) -> (int, band, why)` · `private_score(...)` · `room_prior(st)` · `window_class(fg_exe, title, app_class, wctx) -> WindowVerdict` |
-| `records.py` | 열 허용 목록 `SCHEMAS`, 봉인 | `sanitize_record(kind, raw, rc: RecordContext) -> RecordOutcome` · `resanitize_row(kind, row, ctx)` · `record_id(row, spec)` · `path_excluded(path, rc)` · `redact_rewrite(...)` |
+| `records.py` | 열 허용 목록 `SCHEMAS`, 봉인(v1.1 — L-11 ③: `SanitizedRow.data` 는 읽기 전용(`MappingProxyType`·튜플), `__replace__`·`__copy__`·`__deepcopy__` 는 TypeError) | `sanitize_record(kind, raw, rc: RecordContext) -> RecordOutcome` · `resanitize_row(kind, row, ctx)` · `record_id(row, spec)` · `path_excluded(path, rc)` · `redact_rewrite(...)` |
 | `keys.py` | 키링·하위 키·HMAC·문서군 정규화 | `keyed(kr, purpose, value, n=16)` · `who_key(kr, ident)` · **`doc_fam(name) -> str`**(문서군 정규화 — §4.3) · `doc_key(kr, name) -> "d"+16hex` · `peer_key(...)` · `load_keyring(data_dir, audit, *, create=False)` · `write_agent_subkeys(kr, agent_dir, audit)` · `load_agent_keys(agent_dir, audit)` |
 | `gate.py` | G3 코파일럿 게이트·G4 팀 검사 | `gate_copilot(items, stage, gctx)` · `gate_text` · `gate_prompt_text(prompt, gctx)` · `check_team_label(s, gctx, max_len=40)` · `check_team_payload(payload, gctx, spec)` — **`spec` 필수**(호출자 `lm27.team.schema`·`build`·`server` 가 `TEAM_SPEC_V1` 을 넘긴다). `lm27.privacy` 는 `lm27.team` 을 import 하지 않는다(team.schema → privacy 방향만 — 순환·에이전트 사본 깨짐 방지, X-304) |
 | `audit.py` | 감사 기록기 | `AuditSink.open(data_dir, pc_id, stage, src, agent_dir=None)` · `.add(counter, key, n=1)` · `.flush(**numbers)` |
@@ -261,11 +281,13 @@
 | 파일 | 책임 | 공개 함수 |
 |---|---|---|
 | `__init__.py` | 재수출 | — |
-| `writer.py` | **SanitizedRow 를 받는 유일한 저장 지점.** 봉인 검사(`row._seal is records._SEAL` 아니면 TypeError). 쓰기 UTC 날짜 파일에 묶음 = gzip 멤버 1개, write+flush+fsync 후 닫기 | `SegmentWriter(paths, pc_id, kind, src)` · `.append(row: SanitizedRow)` · `.flush() -> int` · `.close()` |
+| `writer.py` | **SanitizedRow 를 받는 유일한 저장 지점.** 봉인 검사(`row._seal is records._SEAL` 아니면 TypeError). `append` 는 행의 열 집합을 `SCHEMAS[kind]` 로 한 번 더 검증한다(v1.1 — L-11 ③ 런타임 봉인 강화). 쓰기 UTC 날짜 파일에 묶음 = gzip 멤버 1개, write+flush+fsync 후 닫기 | `SegmentWriter(paths, pc_id, kind, src)` · `.append(row: SanitizedRow)` · `.flush() -> int` · `.close()` |
 | `reader.py` | 완전한 gzip 멤버까지만 읽기, 커서 이후 | `read_store_since(paths, pc_id, kind, src, cursor) -> (records, new_cursor, gap\|None)` · `iter_store(paths, pc_id, kind, src, d0, d1)` |
 | `cursor.py` | 수집 증분 커서 `raw_cursor.json`(§3.10) | `load_raw_cursor(paths, pc_id) -> dict` · `save_raw_cursor(paths, pc_id, src, value)` — 그 `src` 키만 바꾼다. 잠금(`raw_cursor.json.lock`, msvcrt.locking, 10초) 안에서 읽기 → 교체 → `atomic_write`(에이전트 수확과 전경 수집이 동시에 써도 다른 src 커서를 잃지 않게 — X-301) |
 
 경로 결정: P 의 'SegmentWriter = 저장소 명세 소유', CP 의 `lm27.store.append`, TAB 의 `append_member`·`read_store_since` 를 이 패키지 하나로 모은다. 번들 세그먼트는 `lm27.bundle.segment.write_segment` 만 쓴다(§10 X-175).
+
+에이전트 제거(`lm27.agent.install.uninstall(ident, purge=True)` — `agent uninstall --purge`)의 store 삭제도 이 패키지(또는 감사 파일이면 `lm27.privacy`) 함수로만 한다(L-11 v1.1 — `install.py` 가 store 경로 메서드를 직접 쓰지 않는다). 그 함수는 아직 위 표에 없다 — WP-13 이 WP-11 에 CR 로 받고 W1 통합 창에서 이 표에 등재한다(O-16).
 
 ### 2.4 `lm27\agent\` — PC 상주 에이전트(TAB §1.6·CP §1·§3, 6개)
 
@@ -273,7 +295,7 @@
 |---|---|---|
 | `__init__.py` | — | — |
 | `install.py` | 설치·판 올림·작업 등록·생존 판정·자동 복구·제거 | `ensure_agent(ident) -> dict`(rc 0/3) · `agent_health(ident) -> {registered, action_ok, hb_fresh, store_fresh, healthy}` · `register_task(ident)` · `request_harvest_now(ident, wait_s)` · `uninstall(ident, purge)` · `self_test_impl(impl) -> bool`(-TestSamples 3) |
-| `main.py`(사본 진입 `agent_main.py`) | 감독 루프: 뮤텍스, 샘플(60초), 플러시(300초·120행), heartbeat, teams.uia 자식(300초), 수확 자식(6시간·요청 시) | `main(install_id) -> int` |
+| `main.py`(사본 진입 `agent_main.py`) | 감독 루프: 뮤텍스, 샘플(60초), 플러시(300초·120행), heartbeat, teams.uia 자식(300초), 수확 자식(6시간·요청 시). 저장소 원본은 이 파일이고, 설치가 `bin\<ver>\agent_main.py`(`Paths.agent_main_script()`)로 복사한다. 스크립트로 실행되면 자기 폴더를 sys.path 에 넣고 `main(install_id)` 를 부른다(CR-04). `lm27.collect.watch` 는 사본 밖이므로 감독 루프의 자식 감시는 `lm27.util.proc` 와 정지 플래그로 따로 한다 | `main(install_id) -> int` |
 | `sampler.py` | py 구현 샘플러(ctypes: user32·wtsapi32·kernel32). PS 구현과 같은 원시 틱 | `take_sample(prev) -> RawTick` · `idle_sec(tick64, last_input) -> int` · `session_state() -> str` |
 | `harvest.py` | 수확 자식 기동(이벤트·파일·MRU·Recent, ps 스크립트 → 파이프) | `start_harvest_child(ident, streams) -> Child` |
 | `exemeta.py` | 미지 프로그램 메타(`exe_meta.json`, 정제 통과 값만, atomic_write) | `observe_exe(exe_path) -> ExeMeta` · `save_exe_meta(paths, pc_id, meta)` |
@@ -288,9 +310,9 @@
 | `run.py` | [수집] 한 번의 흐름(TAB §1.7): 번들 확인 → 에이전트 확인 → 탐침 → 수확 요청 → 전경 수집기 → 내보내기 → 파생 재생성 → 대기 업로드 전송 | `collect_here(paths, cfg, *, mode="auto", since=None, until=None, pc_role=None, only=None, budget_sec=None) -> CollectResult` |
 | `plan.py` | 단계 순서와 병렬(C §8.2), 역할(PC1·PC2·cloud)별 단계 표 | `stage_plan(roles, caps, only) -> list[Stage]` |
 | `probe.py` | 능력 탐침 묶음 실행과 기록 | `probe_capabilities(paths, ident, cfg) -> ProbeResult` · `record_probes(pcdir, pr, loc)` |
-| `rcmap.py` | 수집기 rc·파이프 종료 코드 → 원장 상태·todo 번역(§8.1·§8.2) | `cell_status(rc, reasons, counts) -> str` · `pipe_failure(code) -> (rc, reason)` |
-| `watch.py` | 단계 감시: 30초 하트비트(생존)와 진전(커밋 수)을 따로 본다. 정체 15분·무진전 45분 → kill_tree | `watch(child, policy) -> WatchResult` |
-| `stage_result.py` | 단계 결과 파일(§8.5) 원자 기록, finally 에서 | `write_stage_result(paths, run_id, stage, **fields)` |
+| `rcmap.py` | 수집기 rc·파이프 종료 코드 → 원장 상태·단계 결과·collect rc 번역(§8.1~§8.3). 순수 함수 + 표, 부작용 없음 | `translate_cell(rc, reasons=(), counts=None) -> {status, reasons, cap_hit, budget_hit}` · `cell_status(rc, reasons=(), counts=None) -> str` · `stage_outcome(rc, reasons=(), counts=None) -> {state, stop_kind, reason, resumable, caps_hit, rc, hint, reasons}`(§6.1 에 없는 코드는 R-TRANSPORT 로 접고 `unknown_reasons` 로 센다) · `collect_rc(results) -> int`(§8.3) · `new_records(result) -> int` · `pipe_failure(code) -> (rc, reason)`(종료 0·2 → `(None, None)` = 수집기 rc 그대로, 6 → `(3, "R-NOKEY")`, 그 밖 전부 → `(3, "R-TRANSPORT")` — §8.2) · `apply_pipe(rc, reasons, code) -> (rc, reasons)` · `pipe_hint(code) -> str` · `pipe_cursor_ok(code) -> bool` · `norm_reasons(reasons) -> list` · `is_reason(code) -> bool` · `reason_class(code) -> str` · `confirmable(code) -> bool` · 표 `REASONS`(§6.1 사본 `{코드: (분류, 확정)}` — 시험으로 대조) · `CONFIRMABLE`(§6.1 '확정 ✔' 집합 단일원 — §6.4) · 분류 `CLASSES`(`structural` `human` `transient` `transport` `quality` `warning`) · `REASON_RX`(§6.1 정규식) · `CELL_STATUSES`(§6.4 셀 상태 7종) · `UNOBSERVED`(미관측 4종 — T-09) · `COLLECTOR_RCS = (0, 1, 2, 3, 4)` · `PIPE_OK = (0, 2)` · `PIPE_WAIT_KILLED = 99` · `WATCH_STOPS`(`stall` `no_progress`) · `ENV_FAIL_ALWAYS`·`ENV_FAIL_IF_FAILED`(§8.1 (e)) · `HINTS`(단계 결과 `hint` 문구) · `RC_NOT_RUN = -1` · `RC_KILLED = 3`. `counts`(모두 선택): `n`(셀 레코드 수) · `in_horizon` 또는 `date` + `horizon_oldest`/`horizon_newest` · `cap_hit`·`caps_hit`·`budget_hit` · `stop_kind` |
+| `watch.py` | 단계 감시: 30초 하트비트(생존)와 진전(`progress` 의 `done` 증가)을 따로 본다. 정체 15분·무진전 45분 → kill_tree, 결과 rc 3 + R-TRANSPORT + stop_kind `stall`·`no_progress`(§8.1) | `watch(child, policy=None, *, clock=None, kill=None, emit=None, on_line=None, on_event=None, on_err=None, cancel=None) -> WatchResult`(`child` = `lm27.util.proc.Child` 또는 Popen 호환 객체, `on_err` 를 받지 않으면 stderr 를 읽지 않는다 — spawn 기본 배수) · `WatchPolicy(heartbeat_s=30.0, stall_s=900.0, no_progress_s=2700.0, cancel_grace_s=5.0, poll_s=1.0, stage="", progress_on_lines=False)` · `WatchPolicy.from_cfg(cfg, *, stage="", progress_on_lines=False)`(`collect.watch.heartbeatSec`·`stallMin`·`noProgressMin` 을 리터럴 키로 읽는다) · `WatchResult(rc, exit_code, stop_kind, reason, killed, done, total, lines, events, heartbeats, elapsed_s, last_result)` · `Monitor(policy, now)`(순수 판정기 — `.feed(line, now)` `.verdict(now)` `.beat_due(now)` `.beat(now)` `.next_wake(now)`) · `MonoClock`(`.now()` `.wait(q, timeout)` — 시험은 가상 시계를 주입) · `parse_event(line) -> dict \| None`(§8.6 이벤트 줄 — `EVENT_NAMES`) · `is_record_line(line) -> bool`(`{` 로 시작하고 제어 줄 `CONTROL_PREFIXES`(`_meta`·`_cursor`·`_in`)가 아닌 줄. 이벤트 줄은 호출자가 `parse_event` 로 먼저 가른다) · 상수 `STOP_STALL` `STOP_NO_PROGRESS` `STOP_CANCELLED` `KILL_REASON = "R-TRANSPORT"`. 취소(`cancel`)는 stop_kind `cancelled` |
+| `stage_result.py` | 단계 결과 파일(§8.5) 원자 기록, finally 에서. 공통 스키마의 단일원(브리지·분석 단계도 같은 대조를 쓴다) | `SCHEMA = "lm27.stage/1"` · `COMMON_FIELDS` · `COLLECT_STAGES` · `STATES` · `STOP_KINDS` · `ITEM_FIELDS` · `STATE_RC`(§8.4) · `build_stage_result(run_id, stage, **fields) -> dict` · `validate_stage_result(obj, *, collect=False) -> list` · `write_stage_result(paths, run_id, stage, **fields) -> dict` · `stage_result_path(paths, run_id, stage) -> str`(조립은 `Paths.stage_result_file`) · `read_stage_result(paths, run_id, stage)` · `read_stage_results(paths, run_id) -> dict` · `stage_scope(paths, run_id, stage, **initial) -> StageScope`(with 블록 — `stage` 는 `COLLECT_STAGES` 중 하나, `.set(**fields)` `.outcome(rc, reasons=(), counts=None)`(= `rcmap.stage_outcome`) `.bump(**deltas)`(`items_*` 는 그 필드, 그 밖은 `counts`). 본문이 아무것도 정하지 않으면 skipped·rc −1, 예외면 failed·stop_kind fatal·rc 3·R-TRANSPORT·`error_type`(유형 이름만), KeyboardInterrupt 면 partial·stop_kind cancelled 로 남기고 예외는 다시 올린다. 본문이 공통 필드에 틀린 값을 넣으면 사유 `stage_result_invalid` 의 failed 결과를 남긴 뒤 ValueError) · `state_rc(state) -> int` · `worst_rc(rcs) -> int` · `input_sig(obj) -> str` · `resume_decision(prev, sig) -> "skip"\|"resume"\|"fresh"` · `may_replace(prev, new) -> bool` · `keep_nonempty(prev, new) -> dict`. 브리지·분석 시험은 `tests.core.test_stage_result.check_stage_common` 을 import 해 같은 대조를 한다 |
 | `ledger.py` | 커버리지 원장 재생성(파생) — 세그먼트·stage_result·pc.json 이력에서 | `rebuild_coverage(paths) -> int` |
 | `todo.py` | 빈칸 계획기(파생) — 백필 PC 배정·'불가' 반영 | `plan_todo(paths, cfg) -> list[Todo]` |
 | `diagnose.py` | 진단 리포트(PC 카드·출처 매트릭스·사유 분포) 모델 | `diagnose_model(paths) -> dict` |
@@ -300,15 +322,15 @@
 | 파일 | 공개 함수 |
 |---|---|
 | `__init__.py` | — |
-| `ids.py` | `identify_pc() -> PcIdentity(pc_id, id_source, install_id, agent_ver, kind_guess, tz)` |
-| `lock.py` | `BundleLock(paths, purpose, timeout_s)` (BundleBusy) |
+| `ids.py` | `identify_pc(paths=None, *, probe=None) -> PcIdentity`(paths 없음 = 기본 `Paths()` — `agent.json` 위치, `probe` = 실기계 조회 대체(시험)) · `PcIdentity(pc_id, id_source, install_id, agent_ver, kind_guess, tz)` + 보조 필드 `reasons`(튜플 — `R-NOMACHGUID`) · `kind_evidence`(원문 없는 근거: `battery` `chassis`(코드 목록) `model_virtual` `model_cloud` `rdp_session` `host_prefix_cloud`) · `install_source`(`agent_json`\|`new`). `id_source` = `machineguid`\|`fallback`, `tz` = `{utc_offset_min, windows_tz}`(`lm27.util.tz.capture_offset_min` 지연 import) · 순수 함수 `pc_id_from_guid(machine_guid)` · `pc_id_fallback(computer_name, profile_ctime)` · `guess_kind(ev) -> str`(cloud > vdi > laptop > desktop) · `kind_evidence(model, computer_name, battery, rdp_session, chassis=())` · 상수 `KINDS = ("desktop", "laptop", "vdi", "cloud")` `PC_ID_RX` `INSTALL_ID_RX` `R_NOMACHGUID`. `agent.json` 이 없으면 `install_id` 는 프로세스마다 하나 새로 만든 값(`install_source = "new"`)이고 `agent_ver` 는 `LM27_VERSION`. import 범위는 §1.3(X-320) |
+| `lock.py` | `BundleLock(paths, purpose, timeout_s)` (BundleBusy). cli 는 `timeout_s = cfg["bundle.lockTimeoutSec"]`, purpose `fg-write`(별칭·설치 기록)·`redact`(소급 가림)로 쓴다 |
 | `segment.py` | `write_segment(pcdir, kind, ident, records, *, rules_ver, kid, src_from=None, src_to=None) -> dict` · `read_segment(path, expect_sha=None)` · `verify_segment(path) -> (ok, reason)` |
 | `manifest.py` | `load_manifest(pcdir)` · `save_manifest(pcdir, m)` · `rebuild_manifest(pcdir)` · `adopt_orphans(pcdir, m)` · `add_tombstone(...)` |
 | `pcreg.py` | `ensure_pc_dir(paths, ident)` · `load_pc` · `update_pc` · `record_probe(pcdir, key, ok, value, reasons, status)` · **`verdict(history, cfg) -> str`**(§6.4 유일 판정) · `probe_bundle_location(paths)` |
-| `aliases.py` | `logical_map(paths)` · `auto_alias(paths, cfg)` · `record_alias(...)` · `undo_alias(...)` |
+| `aliases.py` | `logical_map(paths)` · `auto_alias(paths, cfg)` · `record_alias(paths, pc_id, logical, rule="manual")` · `undo_alias(paths, pc_id)`(cli 가 `fg-write` 잠금을 쥔 채 부른다) |
 | `export.py` | `export_agent_streams(pcdir, ident, cfg)` (읽기는 `lm27.store.reader`) |
-| `loader.py` | **`data\pcs` 를 읽는 유일 모듈.** `iter_records(paths, kind, d0=None, d1=None, *, pcs=None, dedupe=True)` · `bundle_status(paths)` · `load_report()` |
-| `merge.py` | `merge_bundle(paths, other_data_dir) -> MergeResult`(번들 + `data\ai\store` 합집합) · `redact_rewrite_own(pcdir)` |
+| `loader.py` | **`data\pcs` 를 읽는 유일 모듈.** `iter_records(paths, kind, d0=None, d1=None, *, pcs=None, dedupe=True)` · `bundle_status(paths)` · `verify_bundle(paths)`(`bundle verify` — v1.1 이름 확정) · `load_report()` |
+| `merge.py` | `merge_bundle(paths, other_data_dir) -> MergeResult`(번들 + `data\ai\store` 합집합) · `redact_rewrite_own(pcdir)`(cli 가 `redact` 잠금을 쥔 채 부른다) |
 | `move.py` | `prepare_move(paths, cfg) -> MoveLaunch` · `arrival_check(paths) -> list[Missing]` |
 
 ### 2.7 `lm27\normalize\` — 정규화(이 문서 소유, 6개)
@@ -332,7 +354,7 @@
 | 파일 | 공개 함수 |
 |---|---|
 | `__init__.py` | `analyze_time(person_key, records, profile, calendar_path, as_of, overrides=None, tags: HierTags \| None = None) -> TimeResult` |
-| `calendar.py` | `Calendar(path, company_off=(), weekdays=None)` · `.is_holiday(d)` · `.wd_between(d1, d2)` · `.month_workdays(y, m)` · `.month_weekdays(y, m)` · `build_days(ev, cfg, cal)` · `slot_tag(slot, days, cfg)` |
+| `calendar.py` | `Calendar(path, company_off=(), weekdays=None)`(weekdays None = 달력 값 — X-186, 회사 휴무 = 파일 `company_off` ∪ 인자) · `Calendar.from_obj(obj, company_off=(), weekdays=None, *, source="registry") -> Calendar`(CR-15) · 속성 `version` `std_day_min` `weekdays` `years` `holidays` `company_off` `note` `source`(`file`\|`registry`) `warnings` · `.missing_years(d0, d1) -> list[int]` · `.is_holiday(d)` · `.wd_between(d1, d2)`(누적합 O(1)) · `.month_workdays(y, m)` · `.month_weekdays(y, m)` · `load_calendar(paths, registry=None, *, company_off=(), weekdays=None) -> Calendar`(팀 레지스트리 `calendar` > `config\calendar.json`. 레지스트리 파일을 읽지 않고 읽은 객체를 받는다(L-22). 레지스트리 달력이 형식 오류면 내장 달력 + `warnings`) · `UnknownYearError(ValueError)`(`.years`, `.reason = "달력 미확인 연도"` = 상수 `REASON_UNKNOWN_YEAR`) · `build_days(ev, cfg, cal) -> dict[date, DayInfo]`(휴가 코드 `LEAVE_CODES = ("full", "am", "pm")`) · `DayInfo` 키 `hol` `S`(= S_eff) `lunch` `dinner` `leave` `lv` `confirmed_absence` `in_range` · `slot_tag(slot, days, cfg) -> str`(`TAGS` 중 하나 — CR-10) · 상수 `EPOCH = date(2020, 1, 1)` `SLOT = 300` `DAY = 86400` `TAGS = ("regular", "extended", "night", "holiday")` · 함수 `day0(d) -> int` `d_of(t) -> date`. **로컬 초 원점·슬롯 상수·날짜 변환은 `lm27.time.calendar` 의 `EPOCH`·`SLOT`·`DAY`·`day0`·`d_of` 하나만 쓴다**(다른 모듈이 다시 정의하지 않는다 — X-323) |
 | `intervals.py` | `U` · `I` · `SUB` · `L` · `IvIx` · `pre_iv` · `split_int(total, weights)` · `lr_minutes(sec_by_key, total_min)` |
 | `tokens.py` | `fam_key(doc_key, name_masked, dir_keys, cfg) -> str` · `is_generic(name_masked, cfg)` · `raw_tokens(parts, boiler)` · `tok_sim(a, b, min_sub_len=2)` · `fam = lm27.privacy.keys.doc_fam`(재수출, 시험용) |
 | `evidence.py` | `normalize(records, profile, cfg, as_of, tags: HierTags) -> (Evidence, audit)` · 형 `Samp` `PcSpan` `Msg` `Meet` `DocE` `Comp` `Commit` `Man` |
@@ -372,12 +394,12 @@
 
 ### 2.14 `lm27\report\` · `lm27\ui\` — 보고서·화면(R 부록 A)
 
-- `lm27\report\`(8 + analysis 10): `__init__`(`build_report` `load_model` `export`) · `inputs` · `vocab` · `fmt`(나눗셈·반올림 유일원) · `resolve` · `model` · `export` · `drill` · `analysis\{__init__, activity, mining, review, peers, ontology, agentic, subagent, quality, ai_items}`.
-- `lm27\ui\`(11): `__init__` · `server`(`/api/jobs` 포함) · `jobs` · `nextactions` · `api_home` · `api_collect` · `api_analysis`(`/api/bridge/*` 포함) · `api_report`(`/api/hier/*`·`/api/queue/answer` 포함) · `api_team`(`/api/teamserver/*` 포함) · `api_settings`(`/api/calibration` 포함) · `api_privacy`.
+- `lm27\report\`(8 + analysis 10): `__init__`(`build_report(run_id)` `load_model(run_id)` `export`) · `inputs` · `vocab` · `fmt`(나눗셈·반올림 유일원) · `resolve` · `model` · `export`(`export(run_id, formats, variant, out)`) · `drill` · `analysis\{__init__, activity, mining, review, peers, ontology, agentic, subagent, quality, ai_items}`(`ai_items.write_ai_items(run_id, stage=None) -> {stage: 건수}`). cli 가 부르는 형은 §7.1 어댑터 호출 표.
+- `lm27\ui\`(11): `__init__` · `server`(`/api/jobs` 포함 · `serve(cfg, port=None, open_browser=True)` · `check(cfg, port=None) -> rc`(`ui --check` — v1.1 이름 확정)) · `jobs` · `nextactions` · `api_home` · `api_collect` · `api_analysis`(`/api/bridge/*` 포함) · `api_report`(`/api/hier/*`·`/api/queue/answer` 포함) · `api_team`(`/api/teamserver/*` 포함) · `api_settings`(`/api/calibration` 포함) · `api_privacy`.
 
 ### 2.15 `lm27\team\` — 팀 묶음·팀 서버·취합(TAB §8.2, 12개)
 
-`__init__` · `schema`(`validate_team_bundle` · **`TEAM_SPEC_V1` 단일원** · `BYTES_GUARD` · `team_text` · `active_spans`) · `build`(`build_team_bundle` `build_and_queue`) · `queue` · `client`(`hello` `pick_target` `fetch_registry` `fetch_members`) · `server`(`serve`) · `store`(`open_store` `ingest_bytes`) · `aggregate` · `report`(R §7 내용, `render_team_report` `interpret` `build_details`) · `portdiag` · `firewall` · `offline`.
+`__init__` · `schema`(`validate_team_bundle` · **`TEAM_SPEC_V1` 단일원 = '최상위 필드명 → 규칙' 사전**(L-23) · `BYTES_GUARD` · `team_text` · `active_spans`) · `build`(`build_team_bundle` `build_and_queue(analysis, period, cfg)` `set_mask(paths, unit_id, mode)` `drop_need(paths, need_id)`) · `queue`(`list_items()` `preview(item)` `approve(item)` `send_due(cfg)` `mark(item, state, why)` — `item` 은 `list_items()` 의 QueueItem) · `client`(**`DEFAULT_TEAM_URL` 상수 한 곳**(L-21 · CR-13) · `hello(base, timeout)` `pick_target` `fetch_registry(base, etag)` `fetch_members`) · `server`(`serve(cfg)`) · `store`(`open_store(cfg)` `ingest_bytes`) · `aggregate`(`aggregate(store, gen)`) · `report`(R §7 내용, `render_team_report` `interpret` `build_details`) · `portdiag` · `firewall`(`firewall_diag(exe_path)`) · `offline`(`export_to_dir(item, dir)` `import_files(store, path, cfg)`). `preview`·`import_files` 는 v1.1 에서 이름을 확정했다. cli 가 부르는 형은 §7.1 어댑터 호출 표, 정하지 못한 자리는 O-14.
 
 ### 2.16 `web\`(R §2.2·§8)
 
@@ -414,8 +436,9 @@
 
 | 파일 | 책임 |
 |---|---|
-| `lint.ps1` | 관문 실행기(§11.1 전부, ruff `--no-cache`) |
-| `hook_check.py` | 파일 1개 즉시 검사(PostToolUse 훅·lint 공용) |
+| `lint.ps1` | 관문 실행기(§11.4 순서). `-Stage static\|selftest\|unit\|golden\|e2e\|package`(기본 static, 앞 단계부터 차례로 돌고 실패하면 멈춤) `[-Only] [-Area <영역,…>] [-Rules <L-nn,…>] [-L12Full] [-Python <exe>] [-KeepClone]`. static = `hook_check.py --repo`(ruff `--no-cache`), unit·golden·e2e = `tests\fixtures\tree.py` 로 만든 `%TEMP%` 복제 트리에서(§11.4 — unit 은 영역별 `test*.py` + node 가 있으면 `tests\web\run_node_tests.js`, golden 은 `test_golden*.py`), package = `make_package.py --check`. 대상 도구·폴더가 아직 없는 단계(`lm27_selftest.py`·`tests\e2e`·`make_package.py`·node)는 '건너뜀'(통과로 셈). 단, `tree.py` 가 없으면 unit·golden·e2e 는 실패다(복제 없이 돌리지 않는다). 기본 파이썬은 `<ROOT>\python\python.exe`(없으면 `python`). rc 0 통과 · 1 실패 · 2 인자 오류 |
+| `hook_check.py` | 관문 검사기(CR-07). `hook_check.py <파일…>` = 파일 단위 검사(훅 규칙 묶음 L-01·02·03·04·05·06·07·09·10·11·16·18·19·20·26, 문제 있으면 exit 2) · 인자 없음 = PostToolUse 훅 모드(stdin JSON) · `--repo [L-nn …]` = 저장소 전역 검사(위 규칙 + L-08·12·13·14·15·17·21·22·23·24·25·27·28·29·30, 오류 있으면 exit 1) · `--list` · 선택 `--root <트리>` `--rules L-nn,…` `--l12-full`(CR-05). 대상이 아직 없는 검사는 경고만 남긴다 |
+| `make_package.py` | 패키지 zip 생성 + T-20 자체 검사(`--check` = 검사만, rc 0 통과·1 실패 — `lint.ps1 -Stage package` 가 부른다). CR-03 · O-8 |
 | `lm27_selftest.py` | `privacy` 회귀 말뭉치 관문(`--update-lock`) |
 | `calibrate.py` | 시간 파라미터 격자 보정(W §8.3, 자동 적용 금지) |
 | `bridge.py` | 브리지 진입점(B §2.2) — `lm27 bridge …` 와 같은 `lm27.bridge.cli.main()` |
@@ -424,7 +447,14 @@
 
 ### 2.19 `tests\`
 
-`privacy\`(P §19 T1~T36) · `time\`(W G1~G12) · `hier\`(H T-H01~T-H21) · `bridge\`(B T01~T55, `fake_cdp.py` `fake_http.py` `stub_responder.py` `golden_sends.json`) · `report\`(R RPT-*) · `web\run_node_tests.js`(개발 PC 전용) · `bundle\`(TAB B01~B26) · `team\`(U·S·A·O) · `collect\`(C P1~P12, CM 1~20, CT 1~18, CP 1~14) · `agent\` · `e2e\`(합성 PC1→PC2→클라우드→분석→업로드→팀 보고서) · `fixtures\`.
+`core\`(공용 하위층·설정·달력·단계 결과·관문 — CR-02) · `privacy\`(P §19 T1~T36) · `time\`(W G1~G12) · `hier\`(H T-H01~T-H21) · `bridge\`(B T01~T55, `fake_cdp.py` `fake_http.py` `stub_responder.py` `golden_sends.json`) · `report\`(R RPT-*) · `web\run_node_tests.js`(개발 PC 전용) · `bundle\`(TAB B01~B26) · `team\`(U·S·A·O) · `collect\`(C P1~P12, CM 1~20, CT 1~18, CP 1~14) · `agent\` · `normalize\` · `pipeline\` · `ui\`(CR-02) · `e2e\`(합성 PC1→PC2→클라우드→분석→업로드→팀 보고서) · `fixtures\`. 골든 시험 파일 이름은 `test_golden*.py`(`lint.ps1 -Stage golden` 이 이 이름만 돈다).
+
+**공용 시험 하네스 API**(`tests\fixtures\`, WP-05 — X-335):
+
+- `tree.py`: `make_clone(*, parts=CLONE_PARTS, extra=(), entry=True) -> Clone`(`%TEMP%\lm27t_<rand>\` 복제, 표지 `.lm27t_clone`, 기본 복제에 `docs\`·진입 스크립트·`ruff.toml`·저장소 설정 파일 포함, `%LOCALAPPDATA%`·`%TEMP%` 는 복제 안 샌드박스, 동봉 파이썬은 원본 경로) · `Clone`(`.python` `.pythonw` `.sandbox` `.lad` `.temp` `.path(*parts)` `.env(extra=None, **kw)` `.patched_environ()` `.run_py(args, …)` `.run_cli(*args, **kw)` `.run_unittest(area, …)` `.remove()`) · `CloneTestCase` · `assert_test_root(root)` · `guard_write(path)` · `area_dirs(root)` · `FORBIDDEN_LIST` · CLI `tree.py make [--extra <폴더>]` · `discover <복제 경로> <영역> [--pattern test*.py]` · `remove <복제 경로>` · `unit [--extra <폴더>] [영역…]`. 복제 안 자식에게 넘기는 환경 변수 `LM27T_CLONE`·`LM27T_SRC_ROOT`·`LM27T_PY_HOME`·`LM27T_TMP_BASE`·`LM27T_FORBIDDEN_WORDS`.
+- `canary.py`: `canaries(seed=0, groups=None, *, weak=True)` · `find_canaries(data: bytes, canaries_=None, *, groups=None, weak=False) -> list[str]` · `find_canaries_in_tree(root, …) -> dict[str, list[str]]` · `canary_ctx(cs=None)` · `text_canaries(cs=None)`(카나리아 범위는 §11.2 T-07).
+- `synth\`: `SYNTH_VERSION` · `plan_month` · `plan_period` · `plan_3m` · `Plan` · `raw_records(kind, plan=None, *, src=None, canaries=None, seed=0)` · `raw_all(plan=None, *, canaries=None, seed=0)` · `KINDS` · `RAW_SRC` · `RAW_FIELDS` · `SRCS_BY_KIND` · `stored_rows` · `signals_3m` · `STORED_COLUMNS` · `FLAG_KEYS` · `Persona` · `default_persona` · `SynthKeys` · `synth_keys` · `load_holidays` · `doc_fam`(합성 이름 범위의 시험용 흉내 — 정본은 §4.3 `lm27.privacy.keys.doc_fam`) · `inject.*`(시험 주입 자료 — 형식은 `inject.py` 머리 표, §11.3). 출력 형을 바꾸면 `SYNTH_VERSION` 을 올린다.
+- 이 하네스의 CLI(`make`·`discover`·`remove`)와 복제 표지 이름은 `tools\lint.ps1` 이 부르는 이음매다 — 바꾸면 `lint.ps1`·`tests\core\test_hook_check.py` 를 함께 고친다(소유 WP-04·WP-05).
 
 ### 2.20 패키지별 파일 수(요약)
 
@@ -439,7 +469,7 @@
 | `lm27\bridge\` + `stages\` | 22 + 11 | `lm27\pipeline\` | 4 |
 | `lm27\report\` | 18 | `lm27\ui\` | 11 |
 | `lm27\team\` | 12 | `collect\`(+ agent·move) | 20 + 4 |
-| `web\` | 10 | `tools\` | 7 |
+| `web\` | 10 | `tools\` | 8(`make_package.py` — CR-03) |
 
 ---
 
@@ -567,7 +597,7 @@ W 가 쓰는 `notice` 는 저장 플래그가 아니라 정규화 파생값(`act
 | 파일 | 스키마 | 핵심 필드 |
 |---|---|---|
 | `agent.json` | lm27.agent/1 | `install_id`(32hex, 재설치에도 유지) · `pc_id` · `agent_ver` · `installed_at` · `impl`(py·ps·none) · `task_name`(`LM27-<install_id>`) · `mutex`(`Local\LM27-<install_id>-agent`) · `bin` · `keep_bins` · `rules_hash` · `subkeys_kid` · `prior_install_ids`(정리 대상 판정용). `root` 필드 없음 |
-| `agent_config.json` | lm27.agentcfg/1 | `Cfg.agent_subset()`: `agent.*` · `pc.*` · `teams.uia.*` · `teams.timeRegex` · `time.tzOffsetMin` · `collect.lookbackDays` · `privacy.pipe.waitSec` · `privacy.audit.retentionMonths` + 정제 설정 해시(config_hash). 에이전트·수확 자식이 읽는 비정제 키는 모두 여기 있어야 한다(X-303) |
+| `agent_config.json` | lm27.agentcfg/1 | `Cfg.agent_subset()`: `agent.*` · `pc.*` · `teams.uia.*` · `teams.timeRegex` · `time.tzOffsetMin` · `collect.lookbackDays` · `privacy.pipe.waitSec` · `privacy.audit.retentionMonths` + 정제 설정 해시(config_hash — `agent_subset()` 은 키 값만 돌려주고 해시는 호출자 `lm27.agent.install` 이 붙인다). 에이전트·수확 자식이 읽는 비정제 키는 모두 여기 있어야 한다(X-303) |
 | `context_cache.json` | lm27.ctxcache/1 | 정제 문맥 직렬화: 사전 이름 목록·허용 패턴·문맥어(`build_context` 결과) · 본인 표시명 `self_names`(`self_name_set` 결과) · 창 분류 문맥 `privacy.window.*` · 사적 폴더 낱말 `privacy.path.excludeKeywords` · 근무창 `work_window`(`time.window.*` 값 + 수집 기간 해의 달력 휴일 날짜 — `RecordContext.work_window`·offhours 판정용) · `episode.finalWords`. 키·주소 없음. 해시 = 에이전트 config_hash |
 | `heartbeat.json` | lm27.hb/1 | `install_id` `pc_id` `pid` `agent_ver` `impl` `started_at` `last_tick` `interval_s` `samples_today` `harvest{last_at, last_rc, next_at}` `last_error`(유형·코드만, 200자) |
 | `keys\subkeys.json` | lm27-subkeys/1 | `kid` · `written_utc` · `purposes{person, msg, thread, chat, doc, path, dir}`(base64 32B). 주 키 없음 |
@@ -699,9 +729,10 @@ TAB §2.3.1·§2.3.2 의 모양을 따르되 다음을 1.0 에 포함한다(구�
 
 `{version, std_day_min:480, weekdays:[0,1,2,3,4], note, years:[{year, holidays:[{date, name, kind, source_url, confirmed}]}], company_off:[DATE]}`.
 
-- 우선순위: 팀 레지스트리 `calendar`(같은 모양) > `config\calendar.json`. 분석 기간에 years 에 없는 해가 섞이면 분석 거부(사유 '달력 미확인 연도').
+- 우선순위: 팀 레지스트리 `calendar`(같은 모양) > `config\calendar.json`(`lm27.time.calendar.load_calendar` — CR-15). 레지스트리 달력이 형식 검증에 실패하면 내장 달력으로 계산하고 `Calendar.warnings` 에 남긴다(분석 결과·화면에 올린다 — 팀 화면은 `calendar_mismatch`). 분석 기간에 years 에 없는 해가 섞이면 분석 거부(`UnknownYearError`, 사유 '달력 미확인 연도'). `build_days` 의 앞뒤 여유 하루가 달력에 없는 해이면 그 날은 생략하고(정보 없는 날은 `slot_tag` 가 휴일로 본다), 분석 기간 안의 미확인 연도만 거부한다(X-324).
 - `std_day_min`·`weekdays` 는 달력 값만 쓴다(설정 키 없음).
-- `scratchpad\…\calendar_verified.json` 은 검증 산출물일 뿐 입력 형식이 아니다.
+- 필드는 위 목록뿐이다(`years[].expected_workdays` 같은 검증 수치는 두지 않는다 — 검증 기대값은 `tests\fixtures\wp02\calendar_verified_counts.json` 이 지킨다). `scratchpad\…\calendar_verified.json` 은 검증 산출물일 뿐 입력 형식이 아니다.
+- **내장 달력 = 관공서 공휴일 그대로**(대한민국 관공서의 공휴일에 관한 규정, 항목마다 `source_url`·`confirmed`). 현재 판 `kr-2025-2027.v2`. 2025-05-01 근로자의날은 관공서 공휴일이 아니어서 넣지 않는다(2025-05 근무일 20일 — 검증표와 일치, X-325). 그날 쉰 회사의 **회사 휴무는 팀 레지스트리 `calendar.company_off`** 로 넣는다(사용자 확인 U-15).
 
 ### 3.22 팀 서버 산출 `team_data.json`(`lm27.teamdata/1`, TAB §4.9 + R §7.8.1)
 
@@ -741,8 +772,8 @@ TAB §2.3.1·§2.3.2 의 모양을 따르되 다음을 1.0 에 포함한다(구�
 | 논리 PC | pc_id | `pc_aliases.json` 마지막 결정 | VDI·GUID 변동 병합(TAB §1.8) |
 | `bundle_id` | 32hex | `uuid4().hex`, 최초 1회 | bundle.json |
 | `person_key` | `^p_[0-9a-f]{12}$` | `"p_" + secrets.token_hex(6)`, 최초 1회, 복사·이동해도 불변 | **번들 소유자** 식별(팀 묶음·팀 서버). 개인 식별용 이름으로 쓰지 않는다 |
-| `run_id` | `^\d{8}-\d{6}-[0-9a-f]{4}$` | 로컬 시각 `YYYYMMDD-HHMMSS` + 무작위 4hex | collect·analyze·bridge 공통. `run8` = 끝 8자 |
-| `job_id` | `^j\d{14}[0-9a-f]{4}$` | 화면 작업 | R §2.3.5 |
+| `run_id` | `^\d{8}-\d{6}-[0-9a-f]{4}$` | 로컬 시각 `YYYYMMDD-HHMMSS` + 무작위 4hex — `lm27.util.tz.new_run_id(now_utc=None)`(CR-01) | collect·analyze·bridge 공통. `run8` = 끝 8자 |
+| `job_id` | `^j\d{14}[0-9a-f]{4}$` | 화면 작업. `j` + 로컬 시각 `YYYYMMDDHHMMSS` + 무작위 4hex — `lm27.util.tz.new_job_id(now_utc=None)`(CR-01) | R §2.3.5 |
 | `todo_id` | `<want_src>:<from>:<to>` | 결정적 | todo.json |
 | `qid` | 12hex | 시간 큐 `sha1(코드\|대상\|핵심 근거)[:12]`, 분류 큐 `sha1(코드\|군집 키\|근거)[:12]` | 확인 큐 |
 | `rid` | `^R[2-9A-HJ-NP-TV-Z]{5}$` | 브리지 요청 번호 | B §6.1 |
@@ -825,16 +856,23 @@ TAB §2.3.1·§2.3.2 의 모양을 따르되 다음을 1.0 에 포함한다(구�
 
 ### 5.1 규칙
 
-1. **선언 단일원** = `config\settings_registry.json`. 키마다 `{default, type, range 또는 choices, owner(읽는 모듈), spec, uncalibrated(★), secret, scope(personal·agent·team_server), restart, label_ko, help_ko}`. W 의 `config/schema_time.json`, P 의 `config.default.json`, W 의 `lm27\time\registry.py` 는 이것으로 합친다.
+1. **선언 단일원** = `config\settings_registry.json`(`{schema: "lm27.settings_registry/1", contract, fields, keys{키: 선언}}`). 키마다 필수 11필드 `{default, type, owner(읽는 모듈), readers, spec, uncalibrated(★), secret, scope(personal·agent·team_server), restart, label_ko, help_ko}` + `range` 또는 `choices`(형에 맞는 쪽, 없으면 null) + 선택 필드 `item`·`keys`·`nullable`·`pattern`. 필드 형식은 §5.1-11. W 의 `config/schema_time.json`, P 의 `config.default.json`, W 의 `lm27\time\registry.py` 는 이것으로 합친다.
 2. **값** = 선언 기본값 ← `config\config.json`(개인 덮어쓰기). 비밀은 설정이 아니다: 업로드 토큰은 `data\keys\secrets.json`, 서버 토큰은 sha256 만 설정에 둔다.
 3. **표기** = `네임스페이스.낱말` 의 camelCase. 단위는 접미로: `Sec` `Min` `H` `Days` `Wd`(근무일) `Mb` `Ms`. snake_case 키는 없다(§5.4 개명).
 4. 목록형 기본값이 내장 목록인 키는 P §17.1 의미론(`내장 ∪ add − disable`, 값이 그냥 목록이면 내장을 대체)을 따른다. 표의 형 `list(+-)` 가 이것이다.
 5. 미등록 키를 코드가 읽으면 **오류**(lint·실행 모두). `config.json` 에 미등록 키가 있으면 무시하고 경고(`config_warnings`, 화면 다음 할 일 N16)를 남긴다.
 6. **죽은 키 금지**: 등록된 키는 코드에서 읽혀야 하고, 수치·선택 키는 값을 바꾸면 결과가 바뀌어야 한다(W G6·R G-R9). 실행 결과에 `cfg_used`(읽힌 키·값)를 남긴다.
 7. 경로는 설정 키가 아니다(`lm27.paths`). 예외는 사용자가 고르는 바깥 경로뿐이다: `pc.watchFolders`, `collect.importDir`, `team.offlineDir`, `teamServer.storeDir`·`publishDir`·`inboxDirs`, `bridge.edge.profileDir`(빈 값 = `lm27.paths.edge_profile()`), `pc.git.exe`·`pc.git.repos`·`pc.git.scanRoots`, `pc.license.lmutilPath`(X-302).
-8. 에이전트에는 `Cfg.agent_subset()`(`agent.*` `pc.*` `teams.uia.*` `teams.timeRegex` `time.tzOffsetMin` `collect.lookbackDays` `privacy.pipe.waitSec` `privacy.audit.retentionMonths` + 정제 설정 해시)만 `agent_config.json` 으로 내려간다. 정제에 쓰는 `privacy.*` 값·근무창은 `context_cache.json` 으로 간다(§3.9).
+8. 에이전트에는 `Cfg.agent_subset()`(`agent.*` `pc.*` `teams.uia.*` `teams.timeRegex` `time.tzOffsetMin` `collect.lookbackDays` `privacy.pipe.waitSec` `privacy.audit.retentionMonths` — 키 이름순 값만)과 호출자(`lm27.agent.install`)가 붙이는 정제 설정 해시만 `agent_config.json` 으로 내려간다. 정제에 쓰는 `privacy.*` 값·근무창은 `context_cache.json` 으로 간다(§3.9).
 9. ★ = 실자료 보정 전 정책값. 화면에 '미보정' 배지, `tools\calibrate.py` 결과는 사용자 승인 뒤에만 반영.
-10. **수집 스크립트가 쓰는 키.** §5.2 '읽는 곳'이 `.ps1` 수집기인 키는 그 스크립트를 띄우는 연결자(전경 = `lm27.collect.run`, 에이전트 = `lm27.agent.main`·`lm27.agent.harvest`, ps 구현 = `agent.ps1`·`harvest.ps1` 이 `agent_config.json` 에서)가 읽어 stdin 제어 줄 `_in.cfg` 로 넘긴다(§7.3). 레지스트리 `owner` 에는 연결자 모듈과 스크립트를 함께 적고, L-12 의 '읽힘'은 연결자 쪽 읽기로 판정한다. `collect\*.py` 수집기는 `lm27.config` 를 직접 읽어도 된다(L-10, X-300).
+10. **수집 스크립트가 쓰는 키.** §5.2 '읽는 곳'이 `.ps1` 수집기인 키는 그 스크립트를 띄우는 연결자(전경 = `lm27.collect.run`, 에이전트 = `lm27.agent.main`·`lm27.agent.harvest`, ps 구현 = `agent.ps1`·`harvest.ps1` 이 `agent_config.json` 에서)가 읽어 stdin 제어 줄 `_in.cfg` 로 넘긴다(§7.3). 레지스트리 `owner` 에는 연결자 모듈을, `readers` 에 스크립트를 적고, L-12 의 '읽힘'은 연결자 쪽 읽기로 판정한다. `collect\*.py` 수집기는 `lm27.config` 를 직접 읽어도 된다(L-10, X-300).
+11. **선언 필드 형식(v1.1 — W0 구현 그대로, X-319).**
+    - `type` ∈ `int` `float` `bool` `str` `enum` `path` `timerange` `regex` `list` `list(+-)` `obj`. `range` = 수치 `{min, max, step?}` · 목록 원소 수 `{min, max}`. `choices` = enum 허용 값 · 목록 원소 허용 값 · bool `[false, true]`.
+    - `item`(목록 원소·obj 값의 형) ∈ `str` `path` `regex` `w16` `hostport` `party` `int` `port_range` `cidr` `obj` `float` `bool` `str_list`. `keys` = obj 의 고정 키(덮어쓰기는 얕은 병합, 없으면 통째 대체). `nullable` = null 허용. `pattern` = str 값·목록 원소가 맞아야 하는 정규식.
+    - `owner` = 읽는 모듈 **하나**의 점 경로(`lm27.x.y`) 또는 `collect/<스크립트>`·`collect/agent/<스크립트>` 경로(PY 수집기 자체가 읽는 키 — `collect/Get-TeamsWeb.py` 등). 형식은 `lm27.config.OWNER_RX` 이고 레지스트리 적재(`parse_registry`)가 검사한다 — 어긋나면 `RegistryError`. PS 수집기 키의 owner 는 연결자 모듈이고 스크립트는 `readers` 에 둔다(§5.1-10). `readers` = 함께 읽는 모듈·스크립트의 목록(원소마다 같은 `OWNER_RX` 형식). L-12 단계 적용(CR-05)은 owner 문자열로 '그 모듈 파일이 트리에 생겼는가'를 판정한다(`lm27.config.owner_file`) — 형식을 바꾸지 않는다. 관문(`hook_check.py`)은 `·`·`,` 로 나뉜 owner 도 읽어 전부 있을 때만 실패로 세지만, 레지스트리는 owner 를 하나만 받으므로 함께 읽는 모듈은 `readers` 에 적는다.
+    - `scope=agent` 인 키 집합 = §5.1-8 부분집합과 정확히 같다(레지스트리 적재 때 검사). `restart` ∈ `none` `ui` `agent` `team_server`.
+    - `secret=true` 는 `teamServer.uploadTokenSha256`·`teamServer.adminTokenSha256` 두 키뿐이고 sha256 만 담으며 기본값은 빈 값이다(값 표시·내보내기 금지 표식).
+12. **WP-01 이 정한 값(v1.1 확인).** §5.2 표가 형·범위를 주지 않아 WP-01 이 정한 것을 레지스트리 값 그대로 정본으로 둔다: `episode.tokens.boilerplate` = `list(+-)`(`hier.tokens.boilerplateAdd` 는 더하기만) · `pc.excludeFolderNames` 내장 목록 `[]`(이전 판 목록이 비어 있음) · `time.attrib.l6MaxRatio`·`time.envelope.mailTimeOffsetH` 는 nullable · `mail.com.readProtected` 선택지는 문자열 `"auto"`·`"0"`·`"1"` · 포트 범위 `team.serverPort` 1~65535, `teamServer.bindPort`·`ui.port`·`bridge.edge.port` 1024~65535 · 명세에 범위가 없던 수치 키(약 300개)의 min·max. 벗어난 값은 기본값 + 경고가 되므로 각 owner 작업 패키지가 W1 에서 검토하고, 바꿀 값은 CR 로 낸다(owner 배정도 같다 — 예 `bundle.warnSizeMb` → `lm27.bundle.loader`, `ui.tableMaxRows` 등 → `lm27.ui.api_report`, `report.defaultRangeMonths` → `lm27.ui.api_analysis`, `hier.publicDomainClasses` → `lm27.hier.features`, `hier.name.*` → `lm27.hier.groups`, `teams.web.*`·`pc.git.*`·`collect.importDir` → 각 PY 수집기 스크립트, 시간 키는 참조 구현의 읽는 함수 기준 — `time.envelope.stuckCoverH`·`stuckIdleRatio`·`idleActiveSec`·`futureSlackMin`·`utcSuspectShare`·`mailTimeOffsetH`·`episode.tokens.idfMaxDf`·`idfMinN` → `lm27.time.evidence`, `time.envelope.longDayH` → `lm27.time.queue`). §5.2 '읽는 곳' 칸이 패키지 이름(`ui`·`bundle` 등)이나 수집 스크립트만 적은 키의 owner 정본은 레지스트리 값이다.
 
 ### 5.2 키 표
 
@@ -843,7 +881,7 @@ TAB §2.3.1·§2.3.2 의 모양을 따르되 다음을 1.0 에 포함한다(구�
 | 키 | 기본값 | 형 | 읽는 곳 | 명세 § |
 |---|---|---|---|---|
 | `collect.backfillPc` | `"cloud"` | str(`cloud`·PC 라벨) | collect.plan | C §1 · CM §13 |
-| `collect.lookbackDays` | 120 ★ | int | collect.run · agent.harvest(Get-EventActivity `-Days` 로) | 이 문서(CM collect.mail.period·CP -Days 통합, O-5) |
+| `collect.lookbackDays` | 120 ★ | int | collect.run · agent.harvest(Get-EventActivity `-Days` 로) | 계약(CM·CP 기간 키 통합, O-5) |
 | `collect.parallelMax` | 2 | int | collect.plan | C §8.2 |
 | `collect.budgetSec` | 0(끔) | int | collect.run | C §8.1 |
 | `collect.watch.heartbeatSec` | 30 | int | collect.watch | C §8.4 |
@@ -1009,7 +1047,7 @@ TAB §2.3.1·§2.3.2 의 모양을 따르되 다음을 1.0 에 포함한다(구�
 | `time.slotCoverSec` | 150 | int | W §8.2 |
 | `time.window.std` · `.lunch` · `.dinner` · `.night` · `.halfAmOff` · `.halfPmOff` | `09:00-18:00` · `12:00-13:00` · `18:00-18:30` · `22:00-06:00` · `09:00-14:00` · `14:00-18:00` | 시각 구간 | W §8.2.1 |
 | `time.envelope.stuckCoverH` · `.stuckIdleRatio` | 14 · 0.02 | h·비 | W §8.2.2 |
-| `time.envelope.idleActiveSec` | 300 | int — 샘플 active 판정 | 이 문서(CP idleActiveSec·W 하드코딩) |
+| `time.envelope.idleActiveSec` | 300 | int — 샘플 active 판정 | 계약(CP·W 하드코딩 통합) |
 | `time.envelope.samplerBridgeMin` · `.sessionGapMin` · `.pcBridgeMin` · `.lockBreakMin` | 60★ · 45★ · 120★ · 15★ | 분 | W §8.2.2 |
 | `time.envelope.preWindowMin.mail` · `.teams` · `.file` · `.code` · `.commit` · `.submit` | 20★ · 10★ · 30★ · 45★ · 45★ · 30★ | 분 | W §8.2.2 |
 | `time.envelope.tracePadMin` · `.trimEdgesMin` · `.alwaysOnH` | 5 · 10 · 20 | 분·분·h | W §8.2.2 |
@@ -1024,7 +1062,7 @@ TAB §2.3.1·§2.3.2 의 모양을 따르되 다음을 1.0 에 포함한다(구�
 | `time.attrib.meetSplitMinAtt` · `.meetSplitShare` · `.meetAbsentCover` | 6★ · 0.5★ · 0.9★ | | W §8.2.3 |
 | `time.attrib.gapSplitMaxMin` · `.absorbGenericMaxMin` · `.floorNearMin` · `.solverAbsorbGeneric` · `.l6MaxRatio` | 30★ · 10 · 30 · true · 1.0★ | | W §8.2.3 |
 | `time.queue.gapMin` · `.bucketRunMin` · `.minEffortH` · `.maxPerWeek` · `.openLongWd` · `.solverDayH` | 90 · 60 · 0.5 · 15 · 20 · 8 | | W §8.2.4 |
-| `time.queue.parallelSuspect` | 5.0 | float(Q12) | W §8.2.4(parallelMax 개명) |
+| `time.queue.parallelSuspect` | 5.0 | float(Q12) | W §8.2.4(개명) |
 | `episode.requestMaxParticipants` · `.reworkWindowWd` · `.reopenQuietWd` · `.supplementWd` | 5 · 10★ · 3 · 2 | | W §8.2.5 |
 | `episode.preStartTolMin` · `.preWorkH` · `.linkWindowWd` | 60 · 24 · 3 | | W §8.2.5 |
 | `episode.link.theta` · `.wToken` · `.wTime` · `.wProject` | 2.0★ · 2.5 · 0.5 · 0.7 | | W §8.2.5 |
@@ -1094,6 +1132,7 @@ TAB §2.3.1·§2.3.2 의 모양을 따르되 다음을 1.0 에 포함한다(구�
 | 레지스트리 크기 · JSON 깊이 · drain 상한 | 2MB · 32 · 64MB | team |
 | 확인 큐 유형 가중 | W §7.3 | time.queue |
 | 수집 단계 절대 시간 상한 | 없음(C §8.4 '기본 꺼짐' — 켜는 키를 두지 않는다. 멈춤 판정은 `collect.watch.*`, 전체 예산은 `collect.budgetSec`) | collect.watch |
+| `collect.watch.*` 하한 | 레지스트리 하한 그대로(`heartbeatSec` ≥5, `stallMin`·`noProgressMin` ≥1) — **설정으로 정체·무진전 감시를 끌 수 없다.** `WatchPolicy` 의 '0 이하 = 그 검사 끔' 분기는 시험·내부 호출 전용(X-338) | collect.watch |
 | 광고·사적 점수 임계 | `AD_DROP` 5 · `AD_SUSPECT` 3 · `PRIV_THRESHOLD` 2(규칙 고정 — `RULES_HASH` 에 포함, 설정 키 아님. C 의 '임계(키 미명명)'은 이것) | lm27.privacy.classify |
 
 ### 5.4 개명·폐지표(명세 표기 → 정본)
@@ -1266,7 +1305,7 @@ TAB §2.3.1·§2.3.2 의 모양을 따르되 다음을 1.0 에 포함한다(구�
 | 브리지 L2 상태 · by · why | `ok` `partial` `truncated` `echo` `format` `empty` `service_error` `timeout` `refusal` `transport_fail` (+`manual_pending`) · `ai` `manual` `rule` `rule_pending` · `ai_failed` `ai_refused` `gated:<사유>` `oversize` `no_ai_out` | B §6.6 · §7.8 |
 | CopilotEnv | tier `premium` `basic` `unknown` · work_mode `work` `web` `unknown` · web_grounding `on` `off` `unknown` · web_exposed bool | B §4.11 |
 
-**verdict 판정(유일 구현 `lm27.bundle.pcreg.verdict`).** history 항목은 `{date, status, reasons, probe_sig}` 다(TAB 형에 reasons·probe_sig 추가).
+**verdict 판정(유일 구현 `lm27.bundle.pcreg.verdict`).** history 항목은 `{date, status, reasons, probe_sig}` 다(TAB 형에 reasons·probe_sig 추가). §6.1 '확정 ✔' 사유 집합의 코드 단일원은 `lm27.collect.rcmap.CONFIRMABLE`(§6.1 표와 시험으로 대조)이며, verdict 는 이것을 import 해 쓴다 — 표를 두 벌 두지 않는다(X-336).
 
 1. 기록이 없으면 `미확인`.
 2. 가장 최근 기록이 `ok` 면 `가능`.
@@ -1343,14 +1382,14 @@ todo `blocked_confirmed` ⇔ verdict `불가(확정)`, `released` ⇔ 같은 셀
 
 ## 7. CLI·bat 진입점
 
-### 7.1 `lm27 <명령>` = `"<ROOT>\python\python.exe" "<ROOT>\lm27_cli.py" <명령>`
+### 7.1 `lm27 <명령>` = `"<ROOT>\python\python.exe" -X utf8 -B "<ROOT>\lm27_cli.py" <명령>`
 
-`python -m lm27 …` 형식은 쓰지 않는다(동봉 파이썬 `_pth` 가 루트를 sys.path 에 넣지 않음, P H8). 화면이 띄우는 하위 명령은 끝에 `--job <job_id> --events jsonl` 을 붙인다.
+`python -m lm27 …` 형식은 쓰지 않는다(동봉 파이썬 `_pth` 가 루트를 sys.path 에 넣지 않음, P H8). 실행 플래그 `-X utf8 -B` 는 §9.1(bat·화면·시험이 같은 형식으로 부른다). 화면이 띄우는 하위 명령은 끝에 `--job <job_id> --events jsonl` 을 붙인다. 인자 없이 부르면 도움말 + rc 1, `--help`·`--version` 은 rc 0, 알 수 없는 명령·인자 형식 오류는 rc 1.
 
 | 명령 | 하는 일 | 모듈 | rc(§8.3) | 소유 § |
 |---|---|---|---|---|
 | `collect [--auto] [--mode auto\|probe-only\|recollect] [--since D] [--until D] [--pc-role pc1\|pc2\|cloud] [--only <src,…>] [--budget-sec N]` | [수집] 한 번(§2.5). `--auto` = `--mode auto` 무질문 + 끝에 대기 업로드 전송 | lm27.collect.run | 0·1·2·3·4 | C §8 · TAB §1.7 |
-| `agent install [--only] [--reinstall]` · `agent status` · `agent repair` · `agent uninstall [--purge]` | 에이전트 설치·확인·복구·제거. `--only` = 설치 전용(수집·탐침·내보내기 없음) | lm27.agent.install | 0·2·3·4 | TAB §1.6 |
+| `agent install [--only] [--reinstall]` · `agent status` · `agent repair` · `agent uninstall [--purge]` | 에이전트 설치·확인·복구·제거. `agent install` 은 `--only` 유무와 관계없이 **설치 전용**(설치 → 번들에 `pcs\<pc_id>\pc.json` 만, 수집·탐침·내보내기 없음 — `--only` 는 bat 표기 호환). `--reinstall` = `uninstall(ident, False)` 뒤 `ensure_agent(ident)`. pc.json 기록 실패는 rc 2(설치는 됨) — X-331 | lm27.agent.install | 0·2·3·4 | TAB §1.6 |
 | `bundle status` · `bundle verify` · `bundle merge <dir>` · `bundle alias <pc_id> <logical>` · `bundle unalias <pc_id>` · `bundle redact` | 번들 관리 | lm27.bundle | 0·1·2·4 | TAB §1.13~§1.15 |
 | `move-prepare` | 이동 준비(도우미 PS 를 `%TEMP%` 사본으로) | lm27.bundle.move | 0·2·3 | TAB §1.11 |
 | `analyze --from D --to D [--as-of T] [--no-ai]` · `analyze --rerun <run_id> --stages <ids> [--no-ai]` | 분석 파이프라인(§2.13). 빠른 재분석 = `--stages classify,time,mining,report --no-ai` | lm27.pipeline.analyze | 0·1·2·4 | 이 문서 · R A-1 |
@@ -1365,17 +1404,39 @@ todo `blocked_confirmed` ⇔ verdict `불가(확정)`, `released` ⇔ 같은 셀
 | `team-import <파일\|폴더> [--store DIR]` · `team-firewall-diag [--store DIR]` | 오프라인 반입 · 방화벽 진단 | lm27.team | 0·1·2 | TAB §5 · TAB §3.14 |
 | `selftest privacy [--update-lock]` | 정제 회귀 말뭉치(= `tools\lm27_selftest.py`) | lm27.privacy.selftest | 0·1 | P §18 |
 
+**CLI 어댑터 호출 표(v1.1 — X-330).** `lm27\cli.py`(W0 구현)가 각 명령에서 지연 import 로 부르는 계약 함수와 인자다. 명령을 소유한 작업 패키지는 이 형으로 구현한다. 고정본은 `tests\fixtures\wp00\cli_commands.json` 이고, 형을 바꿔야 하면 CR 로 `cli.py`·`cli_commands.json` 을 함께 고친다. 날짜 인자는 검증한 `'YYYY-MM-DD'` 문자열, `--as-of` 는 ISO 문자열, `--only`·`--stages`·`--formats`·`--variant` 는 목록(쉼표로 나눔)으로 넘긴다. 반환값 해석은 §8.3.
+
+| 명령 | 호출(모듈.함수(인자)) | 잠금·비고 |
+|---|---|---|
+| `collect …` | `lm27.collect.run.collect_here(paths, cfg, mode=, since=, until=, pc_role=, only=list\|None, budget_sec=)` | `--mode recollect` 는 `--since`·`--until` 필수 |
+| `agent install` · `status` · `repair` · `uninstall` | `lm27.agent.install.ensure_agent(ident)` · `agent_health(ident)` · `ensure_agent(ident)` · `uninstall(ident, purge)` · 설치 뒤 `lm27.bundle.pcreg.ensure_pc_dir(paths, ident)` | `ensure_pc_dir` 는 `BundleLock(paths, "fg-write", …)` 안. `ident` = `lm27.bundle.ids.identify_pc(paths)` |
+| `bundle status` · `verify` · `merge <dir>` | `lm27.bundle.loader.bundle_status(paths)` · `lm27.bundle.loader.verify_bundle(paths)` · `lm27.bundle.merge.merge_bundle(paths, dir)` | — |
+| `bundle alias` · `unalias` · `redact` | `lm27.bundle.aliases.record_alias(paths, pc_id, logical, rule="manual")` · `undo_alias(paths, pc_id)` · `lm27.bundle.merge.redact_rewrite_own(pcdir)`(`pcdir = paths.pc_dir(ident.pc_id)`) | alias·unalias 는 `fg-write`, redact 는 `redact` 잠금 안 |
+| `move-prepare` | `lm27.bundle.move.prepare_move(paths, cfg)` | §7.2 |
+| `analyze …` | `lm27.pipeline.analyze.analyze(paths, cfg, from_=, to=, as_of=, ai=, rerun=, stages=list\|None)` | `--rerun` 은 `--stages` 필수, `--from/--to` 와 함께 못 씀 |
+| `report build` · `export` · `ai-items` | `lm27.report.build_report(run_id)` · `lm27.report.export.export(run_id, formats, variant, out)` · `lm27.report.analysis.ai_items.write_ai_items(run_id, stage)` | `report build --force` 는 함수에 자리가 없어 rc 1 로 막는다(O-14) |
+| `bridge …` | `lm27.bridge.cli.main(argv)` | `--job`·`--events` 는 cli 가 소비(§2.1 events) |
+| `ui` · `ui --check` | `lm27.ui.server.serve(cfg, port=, open_browser=)` · `lm27.ui.server.check(cfg, port=)` | — |
+| `team build` | `lm27.team.build.build_and_queue(analysis, {"from": D, "to": D}, cfg)`, `analysis = lm27.report.load_model(<current.json 의 run_id>)` | current.json 이 없으면 rc 2(분석 먼저) |
+| `team list` · `preview` · `approve` · `drop` | `lm27.team.queue.list_items()` · `preview(item)` · `approve(item)` · `mark(item, "dropped", <사유 문구>)` | `<item>` = 대기열 파일 이름(`.json` 생략 가능) → `list_items()` 의 QueueItem, 없으면 rc 4 |
+| `team send --all` · `team send`(인자 없음 = `--all`) | `lm27.team.queue.send_due(cfg)` | `team send <item>` 은 항목 하나를 보내는 계약 함수 자리가 없어 rc 1 로 막는다(O-14). `<item>` 과 `--all` 을 함께 주면 rc 1 |
+| `team mask` · `drop-need` · `export` | `lm27.team.build.set_mask(paths, unit_id, mode)` · `drop_need(paths, need_id)` · `lm27.team.offline.export_to_dir(item, dir)` | — |
+| `team ping` · `registry-fetch` | `lm27.team.client.hello(base, cfg["team.connectTimeoutSec"])` · `fetch_registry(base, None)`(강제 갱신) | `base` = `http://<host>:<port>`(명령줄 값 또는 `team.serverHost`·`serverPort`). 캐시 저장 주체는 O-14 |
+| `team-server` · `team-aggregate` · `team-import` | `lm27.team.server.serve(cfg)` · `lm27.team.store.open_store(cfg)` → `lm27.team.aggregate.aggregate(store, gen)` · `lm27.team.offline.import_files(store, path, cfg)` | `--host`·`--port`·`--store` → `load_config(overrides=)`(§2.1) |
+| `team-firewall-diag` | `lm27.team.firewall.firewall_diag(<paths.python_exe()>)` | `--store` 는 함수에 자리가 없어 rc 1 로 막는다(O-14) |
+| `selftest privacy` | `lm27.privacy.selftest.run_selftest(update_lock=)` | — |
+
 ### 7.2 bat
 
-모든 bat: CP949 + CRLF, BOM 없음, 첫 줄 `@echo off`, 둘째 줄 `>nul chcp 949`, `pushd "%TEMP%"` … `popd`.
+모든 bat: CP949 + CRLF, BOM 없음, 첫 줄 `@echo off`, 둘째 줄 `>nul chcp 949`, `pushd "%TEMP%"` … `popd`. 파이썬 호출은 `-X utf8 -B` 를 붙이고 bat 인자(`%*`)를 명령 뒤에 그대로 넘긴다. 동봉 파이썬이 없으면 한국어 안내 + `exit /b 3`, 그 밖에는 CLI rc 를 그대로 돌려준다.
 
 | bat | 실행 |
 |---|---|
-| `LoadMonitor27.bat` | `"<ROOT>\python\pythonw.exe" "<ROOT>\lm27_cli.py" ui`. 기동 실패는 `python.exe … ui --check` 의 한국어 출력 |
-| `LoadMonitor27-수집.bat` | `"<ROOT>\python\python.exe" "<ROOT>\lm27_cli.py" collect --auto` |
-| `LoadMonitor27-에이전트설치.bat` | `… agent install --only` |
-| `LoadMonitor27-이동준비.bat` | 도우미 PS 를 `%TEMP%\lm27_move_<rand>.ps1` 로 복사 → `start "" powershell -NoProfile -ExecutionPolicy Bypass -File …` → 즉시 종료 |
-| `LoadMonitor27-팀서버.bat` | `… team-server [--host H] [--port N] [--store DIR]` |
+| `LoadMonitor27-UI.bat`(기본 진입 — X-341) | 먼저 `"<ROOT>\python\python.exe" -X utf8 -B "<ROOT>\lm27_cli.py" ui --check` — 실패(rc ≥ 1)면 그 한국어 출력을 남기고 `exit /b 3`. 통과하면 `start "" "<ROOT>\python\pythonw.exe" -X utf8 -B "<ROOT>\lm27_cli.py" ui %*`(창 없음) → `exit /b 0` |
+| `LoadMonitor27-수집.bat` | `"<ROOT>\python\python.exe" -X utf8 -B "<ROOT>\lm27_cli.py" collect --auto %*` |
+| `LoadMonitor27-에이전트설치.bat` | `… agent install --only %*` |
+| `LoadMonitor27-이동준비.bat` | 도우미 PS 를 `%TEMP%\lm27_move_<rand>.ps1` 로 복사 → `start "" powershell -NoProfile -ExecutionPolicy Bypass -File … -Root <ROOT>` → 즉시 종료. 도우미 `Prepare-Move.ps1` 은 **`-WaitPid` 없이 시작되면** 먼저 `"<ROOT>\python\python.exe" -X utf8 -B "<ROOT>\lm27_cli.py" move-prepare` 를 불러 TAB §1.11 1~3단계(마지막 내보내기·sha 검증·팀 서버 확인)를 돌리고, `prepare_move` 가 `-WaitPid` 를 붙여 띄운 새 도우미가 이름 바꾸기 시험을 이어 간다(첫 도우미는 끝난다). 그래서 bat 경로와 화면 경로가 같은 단계를 거친다(X-332) |
+| `LoadMonitor27-팀서버.bat` | `… team-server %*`(`[--host H] [--port N] [--store DIR]`) |
 
 ### 7.3 수집기·도구 호출 형식
 
@@ -1388,10 +1449,10 @@ todo `blocked_confirmed` ⇔ verdict `불가(확정)`, `released` ⇔ 같은 셀
 | PS 수집기 공통 인자 | `-Pc <pc_id>` · `-Since`/`-Until`(로컬 날짜) · 시험 주입(§11.3). `-Root`·`-PcId`·쓰기용 `-OutDir`(시험 주입 제외)·`-CursorFile` 경로 조립 인자 금지 — 커서·설정 값은 연결자가 stdin 제어 줄 `_in` 으로 넘긴다(아래 '수집기 제어 줄') |
 | PY 수집기 | `"<PY>" -X utf8 -I -B collect\<스크립트>.py --pc <pc_id> [--from D --to D] [인자]`. 예: `Get-OutlookWeb.py --kind mail\|cal [--blanks-file F]`, `Get-TeamsWeb.py [--max-chats N] [--budget-sec N] [--no-channels] [--no-activity] [--force]`(`--force` = 체크포인트 무시하고 기간 전체), `Import-MailCal.py --kind mail\|cal [--in-dir P]`, `Get-GitActivity.py [--scan P]`, `Get-*ViaCopilot.py --run-id <id>`. Edge 프로필·포트 인자 없음(`EdgeSession.open(role=…)`) |
 | 작업 등록 | `collect\agent\Register-Agent.ps1 -InstallId <32hex> -AgentVer <v> -Impl py\|ps [-Remove] [-NoStart] [-DryRun]`(COM RegisterTaskDefinition 7인자, 실패 시 `schtasks /Create /TN LM27-<id> /XML <tmp> /F`) |
-| 관문 | `powershell -NoProfile -File tools\lint.ps1` · `python\python.exe tools\hook_check.py <파일>` · `python\python.exe -B tools\lm27_selftest.py privacy` |
+| 관문 | `powershell -NoProfile -ExecutionPolicy Bypass -File tools\lint.ps1 [-Stage <단계>]`(§2.18) · `python\python.exe tools\hook_check.py <파일…>` · `python\python.exe tools\hook_check.py --repo [L-nn …]` · `python\python.exe -B tools\lm27_selftest.py privacy` · `python\python.exe -B tools\make_package.py --check` |
 | 보정 | `python\python.exe -B tools\calibrate.py --keys <k,…> [--grid <json>]`(보고서만 쓰고 자동 적용 금지) |
 
-`<PY>`·`<LM27>` = 프로그램 폴더 모드면 `<ROOT>\python\python.exe`·`<ROOT>`, 에이전트 모드면 `agent\bin\<ver>\py311\python.exe`·`agent\bin\<ver>`(옆에 `data\` 가 있으면 프로그램 폴더 모드).
+`<PY>`·`<LM27>` = 프로그램 폴더 모드면 `<ROOT>\python\python.exe`·`<ROOT>`, 에이전트 모드면 `agent\bin\<ver>\py311\python.exe`·`agent\bin\<ver>`(옆에 `data\` 폴더나 `lm27_cli.py` 가 있으면 프로그램 폴더 모드 — `Paths.mode()`).
 
 ---
 
@@ -1409,7 +1470,13 @@ todo `blocked_confirmed` ⇔ verdict `불가(확정)`, `released` ⇔ 같은 셀
 | (시간 초과·kill) | — | `transport_fail` + R-TRANSPORT | stop_kind `stall`·`no_progress` |
 | (돌지 않음) | — | `not_attempted` | |
 
-`exit 0` 고정 금지. 수집기 rc 는 `stage_result.rc` 에 그대로 남는다.
+`exit 0` 고정 금지. 수집기 rc 는 `stage_result.rc` 에 그대로 남는다. 예외 두 가지와 v1.1 보강(구현 `lm27.collect.rcmap.translate_cell`·`stage_outcome`·`collect_rc` — X-328):
+
+- **(a) 돌지 않음**: 단계 결과 `rc` 에 정수 자리표 **−1**(`RC_NOT_RUN`)을 둔다. 원장은 `not_attempted`.
+- **(b) 시간 초과·kill**: 단계 결과 `rc = 3` + reason `R-TRANSPORT` + stop_kind `stall`\|`no_progress`(CP §12 '타임아웃 → 3·R-TRANSPORT' 와 같음). 끊긴 프로세스의 실제 종료 코드(taskkill 뒤 1)를 rc 1 '대상 없음'으로 오독하지 않기 위해서다.
+- **(c) 0건 셀의 막힘 사유**: rc 1(또는 rc 0·4 의 0건 셀)에 구조·사람 사유가 있으면 `blocked`, 수송·일시 사유면 `transport_fail` 이다(X-120 '막힌 사유가 있으면 rc 3' 을 넓힌 것 — C 페르소나 12). 표의 '아니면 `out_of_horizon`' 은 지평선 밖일 때만(+ R-HORIZON) 적용한다. R-OMG·R-BUDGET 은 0건 신뢰를 깨지 않는다. rc 3 에 사유가 없으면 R-TRANSPORT 를 붙이고, 사유가 R-HORIZON 뿐이면 `out_of_horizon`.
+- **(d) 단계 `state` 대응**(`stage_outcome` — 원장 셀 상태 `translate_cell` 로 정하고 `rc` 는 수집기 원 rc 를 둔다): 돌지 않음 → `skipped`(rc −1) · 감시 종료(`stall`·`no_progress`) → `partial` + 그 stop_kind(rc 3 · R-TRANSPORT) · 취소 → `partial` + stop_kind `cancelled` · rc 2 → `partial` + stop_kind `login`(재개 가능) · 셀 `blocked`(구조·사람 사유 — rc 3, 또는 (c) 의 rc 1·0건 셀)·rc 3 의 `out_of_horizon` → `skipped` + 그 사유(이 PC 에서 쓸 수 없는 경로 — 다른 경로가 채움, C §8.4) · 셀 `transport_fail`(rc 3 수송·일시·사유 없음, (c) 의 수송·일시 사유 0건 셀, 0~4 밖의 모르는 rc) → `partial` + stop_kind `fatal` · 셀 `partial` → 예산이면 `partial` + stop_kind `budget`, 상한이면 `partial` + `caps_hit`(stop_kind 없음) · 그 밖(`ok`·`zero_ok`, rc 0·1·4 의 `out_of_horizon` — reason R-HORIZON) → `done`. §6.1 에 없는 사유 코드는 결과에 싣지 않고 R-TRANSPORT 로 접어 `unknown_reasons`(개수)로 남긴다.
+- **(e) `lm27 collect` rc 3** 은 R-BUNDLE-READONLY 이거나, `failed` 단계의 R-CLM·R-APPLOCKER 일 때만이다. 수집기 rc 3 의 구조적 막힘은 단계가 `skipped` 로 끝나 원장·todo 에 남으므로 collect rc 0·4 로 흡수된다(§8.3).
 
 ### 8.2 정제 파이프 종료 코드(P §3.5) → 수집 단계
 
@@ -1433,7 +1500,9 @@ todo `blocked_confirmed` ⇔ verdict `불가(확정)`, `released` ⇔ 같은 셀
 | 3 | 환경 실패 — 번들 쓰기 불가(R-BUNDLE-READONLY), 포트 전부 실패, 실행 차단(R-CLM·R-APPLOCKER) |
 | 4 | 할 일 없음 — 새것 0, 이미 최신, 이미 설치됨 |
 
-명령별: `collect` 0(모든 단계 done, 새 레코드 ≥1) · 4(모두 done, 새 레코드 0) · 2(partial 하나라도) · 3 · 1. `agent install` 0 · 4(이미 정상) · 2(작업 등록 실패) · 3(두 구현 자기 시험 실패, impl=none). `report build` 0 · 4(다이제스트·판 같음) · 2(입력 일부 없음, 만들되 경고) · 1. `bridge run` = 단계 rc 최악값(failed 1 > partial 2 > done·skipped 0). `team send` 0(sent) · 2(retry_wait·auth_needed·wrong_server) · 4 · 1. `ui`·`team-server` 0 · 3.
+**어댑터 반환값 해석(`lm27.cli.rc_of`, v1.1 — X-330).** 계약 함수가 돌려준 값 → rc: `None` → 명령 기본값(대개 0) · `bool` → 참 0 / 거짓 1 · `int` 0~4 그대로(그 밖 1) · `rc` 키·속성이 있으면 그 값 · `{healthy: bool}`(에이전트 상태) → 0 / 2 · 그 밖 정상 반환 → 명령 기본값. 명령별 기본값·판정: `agent status` 2, `ui --check` 3, `team-server` 0, `team list` = 목록 있음 0 / 없음 4, `report ai-items` = 건수 합 >0 이면 0 아니면 4, `team ping` = hello `result == "ok"` 이면 0 아니면 2, `team registry-fetch` = HTTP 200·304 이면 0 아니면 2. 대상 모듈·함수가 없으면 rc 1 + 한국어 한 줄(ImportError 를 삼키지 않는다). 함수 시그니처에 자리가 없는 인자(O-14)는 조용히 무시하지 않고 rc 1. 명령줄 값(`--host`·`--port` 등)이 레지스트리 범위·형식에 어긋나면 기본값으로 바꾸지 않고 rc 1. 사용자 중단(Ctrl+C — KeyboardInterrupt)은 rc 2('다시 실행하면 이어서 합니다'), 처리되지 않은 예외는 rc 1 + 예외 유형과 코드 위치(파일:줄)만 — 예외 메시지는 원문이 섞일 수 있어 내지 않는다.
+
+명령별: `collect` 0(모든 단계 done·skipped, 새 레코드 ≥1) · 4(모든 단계 done·skipped, 새 레코드 0) · 2(partial 하나라도) · 3(§8.1 (e)) · 1(failed 하나라도) — `lm27.collect.rcmap.collect_rc`. `agent install` 0 · 4(이미 정상) · 2(작업 등록 실패) · 3(두 구현 자기 시험 실패, impl=none). `report build` 0 · 4(다이제스트·판 같음) · 2(입력 일부 없음, 만들되 경고) · 1. `bridge run` = 단계 rc 최악값(failed 1 > partial 2 > done·skipped 0). `team send` 0(sent) · 2(retry_wait·auth_needed·wrong_server) · 4 · 1. `ui`·`team-server` 0 · 3.
 
 ### 8.4 브리지 단계 결과
 
@@ -1453,7 +1522,7 @@ todo `blocked_confirmed` ⇔ verdict `불가(확정)`, `released` ⇔ 같은 셀
 
 | 단계 계열 | 파일 | 추가 필드 |
 |---|---|---|
-| 수집 | `data\derived\collect\<run_id>\stage_result_<stage>.json`(finally 에서 원자 기록). stage = `probe` `pc_bundle` `mail_local` `cal_local` `teams_uia_check` `backfill_owa` `backfill_teams_web` `copilot_lookup` `import` `export` `derive` `upload` | `src`, `subfolder_ratio`, `recurrence_incomplete`, `skipped_msg`(반입 `.msg` 건수 — CM §11.5), 셀 요약. `rc` = 수집기 원 rc |
+| 수집 | `data\derived\collect\<run_id>\stage_result_<stage>.json`(`Paths.stage_result_file`, finally 에서 원자 기록 — `stage_scope`). stage = `COLLECT_STAGES` = `probe` `pc_bundle` `mail_local` `cal_local` `teams_uia_check` `backfill_owa` `backfill_teams_web` `copilot_lookup` `import` `export` `derive` `upload` | `src`, `subfolder_ratio`, `recurrence_incomplete`, `skipped_msg`(반입 `.msg` 건수 — CM §11.5), `input_sig`, `reasons`, `unknown_reasons`, `error_type`, 셀 요약. `rc` = 수집기 원 rc(돌지 않음 −1, 감시 종료 3 — §8.1) |
 | 브리지 | `data\ai\runs\<run_id>\<stage>.result.json`(결과 봉투) | B §7.11 전부(asks·sends·rungs·statuses·pack·model·env·gate…) |
 | 분석 | `data\derived\analysis\<run_id>\run_status.json` 의 `stages[]` | `id` `name_ko`(공통 필드 축약). 단계 id = `load` `normalize` `classify` `ai:task_label` `time` `mining` `ai:workflow` `review` `ai:review_text` `report` |
 
@@ -1461,7 +1530,7 @@ todo `blocked_confirmed` ⇔ verdict `불가(확정)`, `released` ⇔ 같은 셀
 
 ### 8.6 표준 출력 이벤트(한 줄 JSON)
 
-`{seq:int, ts:UTC, ev, stage?, text_ko?, done?, total?, …}`. `ev` ∈ `stage_start` `progress` `notice` `warn` `msg` `stage_end` `run_end` `result` `check`. 장기 하위 명령은 **30초마다 `progress`** 를 낸다(생존), `done` 증가가 진전이다(감시 §2.5 `watch`). `text_ko` 는 각 명세 사용자 문구 표(B §13 BR-*, R §5.8)의 문장만 쓰고 원문·경로를 넣지 않는다. B §12.5·R §2.3.5 의 이벤트는 이 형의 부분집합이다. 사람용 요약은 stderr.
+`{seq:int, ts:UTC, ev, stage?, text_ko?, done?, total?, …}`. `ev` ∈ `stage_start` `progress` `notice` `warn` `msg` `stage_end` `run_end` `result` `check`. 장기 하위 명령은 **30초마다 `progress`** 를 낸다(생존), `done` 증가가 진전이다(감시 §2.5 `watch`). `text_ko` 는 각 명세 사용자 문구 표(B §13 BR-*, R §5.8)의 문장만 쓰고 원문·경로를 넣지 않는다. B §12.5·R §2.3.5 의 이벤트는 이 형의 부분집합이다. 사람용 요약은 stderr. `lm27 <명령> --events jsonl` 은 명령이 끝날 때 마지막 줄로 `run_end`(`rc` 포함)를 낸다(`lm27.cli.main`). 알 수 없는 `ev`·예약 필드(`seq`·`ts`·`ev`) 덮어쓰기는 `emit` 이 ValueError 로 막는다.
 
 ### 8.7 종료와 취소
 
@@ -1477,7 +1546,7 @@ todo `blocked_confirmed` ⇔ verdict `불가(확정)`, `released` ⇔ 같은 셀
 - **진입점**: `lm27_cli.py`·`lm27_pipe.py`·`agent_main.py`·`tools\*.py`·`collect\*.py` 는 첫 실행문에서 자기 루트를 `sys.path.insert(0, ROOT)` 한다. `python -m` 은 쓰지 않는다. `except ImportError` 로 기능을 조용히 삼키지 않는다(이전 판 실측 결함).
 - **실행 플래그**: 수집기·파이프 `-X utf8 -I -B`, CLI·화면 `-X utf8 -B`. 작업 폴더는 `%TEMP%`(bat 의 `pushd`). 표준 출력 UTF-8 설정은 진입점에서만.
 - **PowerShell 5.1**: `-NoProfile -ExecutionPolicy Bypass`, P/Invoke 는 `Add-Type`, NDJSON 출력 전 `[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)`. 수집기는 디스크에 쓰지 않는다(예외: ps 구현 감독 `collect\agent\agent.ps1`·수확 `harvest.ps1` 의 원문 없는 운영 파일 `agent\heartbeat.json`·`agent\run\{harvest_done.json, .harvest.lock}`·`agent\logs\` — X-307).
-- **시간대**: `zoneinfo.ZoneInfo` 금지(동봉 파이썬에 tzdata 없음). 수집 순간 오프셋은 `lm27.util.tz.capture_offset_min`(ctypes `GetDynamicTimeZoneInformation`), 분석 근무 시간대는 `time.tzOffsetMin`. UTC 는 `datetime.now(timezone.utc)` 로만 만든다.
+- **시간대**: `zoneinfo.ZoneInfo` 금지(동봉 파이썬에 tzdata 없음). 수집 순간 오프셋은 `lm27.util.tz.capture_offset_min`(ctypes `GetDynamicTimeZoneInformation`), 분석 근무 시간대는 `time.tzOffsetMin`. UTC 는 `datetime.now(timezone.utc)` 또는 `datetime.now(UTC)`(`from datetime import UTC` — `datetime.UTC` 는 `timezone.utc` 와 같은 객체, 둘 다 허용)로만 만든다. naive `datetime.now()`·`utcnow()` 로 UTC 를 만들지 않는다. 저장소 ruff 는 UP017 을 꺼 두어 두 형식을 모두 통과시킨다(X-326).
 - **시계 주입**: 브리지 `lm27.bridge.clock`(time 모듈은 clock.py 에만), 시간 코어 `as_of` 인자, 수집 시험 가상 시계.
 - **프로세스**: 창 없이(`CREATE_NO_WINDOW`), 종료는 `kill_tree`. 수집 COM 호출은 자식 프로세스 + `mail.com.watchdogSec`(이전 판 `Stop-Job` 금지, PID 직접 종료).
 - **네트워크**: 로컬 앱·CDP 는 127.0.0.1 바인드, 팀 서버 바인드는 설정(`teamServer.bindHost`). 시스템 프록시 미사용(`team.useSystemProxy=false`). CDP `--remote-allow-origins=*` 금지 — 기본은 Origin 없이, 403 이면 `http://127.0.0.1:<port>` 만(B §4.4).
@@ -1513,7 +1582,7 @@ todo `blocked_confirmed` ⇔ verdict `불가(확정)`, `released` ⇔ 같은 셀
 | 로컬 날짜 | `YYYY-MM-DD` |
 | 사람에게 보이는 시각·팀 묶음 `built_at` | ISO 8601 + 오프셋 |
 | 파일 이름 스탬프 | `YYYYMMDDTHHMMZ` |
-| 시간 코어 로컬 초·분 | 2020-01-01 00:00 로컬 기준 정수 |
+| 시간 코어 로컬 초·분 | 2020-01-01 00:00 로컬 기준 정수(`lm27.time.calendar.EPOCH`·`day0`·`d_of` — §2.9) |
 | run_id | `YYYYMMDD-HHMMSS-xxxx`(로컬) |
 
 ### 9.5 이름·화면
@@ -1829,13 +1898,45 @@ v1.0 을 명세 다이제스트·원 명세에 대조해 찾은 이 문서 안�
 | X-316 | 파일 수집기 자기 제외 | CP §5.1 자기 제외 `data\bundle` 은 X-010 으로 사라진 경로 | `%LOCALAPPDATA%\LoadMonitor27\` + `data\bundle.json` 이 있는 폴더(§2.17) | CP §5.1 |
 | X-317 | 이벤트 채널 상태 표기 | CP §4.5 채널 상태 `error:<msg>`(자유 문자열)를 pc.json 에 남김 — '탐침은 숫자·열거·사유 코드만'(§6.7)과 충돌, 계약 §3.8 은 채널 상태를 `pc.sampler` 아래에 둠 | `pc.events` value 의 채널별 열거 `ok` `none` `unauthorized` `error`(+ 예외 유형명), 메시지 문자열 없음(§3.8) | CP §4.5 |
 
-해소한 불일치: **224행**(A 6 · B 23 · C 13 · D 33 · E 17 · F 29 · G 3 · H 9 · I 13 · J 19 · K 18 · L 10 · M 12 · N 1 · O 18). A~N 의 각 행은 다이제스트의 명세별 conflicts 항목 하나 이상을 묶고, O 는 v1.0 자체의 누락·자기모순이다.
+### 10.P W0 구현 반영(v1.1)
+
+W0 구현·시험에서 나온 계약 보강 요청과 구현 계획 §7 CR 채택이다. '어긋남' 열의 '계약' 은 v1.0.1 을 뜻한다(X-341·X-342 는 v1.1 초안을 W0 코드와 다시 대조한 반증 점검에서 나온 행이라 '계약' = v1.1 초안). 결정은 구현된 W0 공개 API 를 사실로 삼았다(§0.6).
+
+| ID | 주제 | 어긋남 | 결정 | 반영 요청 |
+|---|---|---|---|---|
+| X-318 | `Paths` 공개 메서드 | 계약 §2.1 은 메서드 일부만. 구현은 프로그램 폴더·`data\`·LAD 메서드, `root`, 생성자 `lad`, 형식 위반 ValueError, 반환형 Path 를 가짐(WP-00·01·02·03 이 이미 씀) | 구현 목록 그대로 등재(§2.1) | — |
+| X-319 | 설정 모듈 API·레지스트리 선언 필드 | §2.1 은 `load_config(paths)` 등 6개, §5.1-1 은 선언 필드 11개만. 구현은 `overrides`(엄격)·`derive`·`snapshot`·`check_value`·`config_warnings` 코드 8종·`readers`·`item`·`keys`·`nullable`·`pattern` | §2.1·§5.1-1·§5.1-11 등재, WP-01 이 정한 형·범위·owner 를 정본으로(§5.1-12) | P §17.3 |
+| X-320 | `ids.py` import 범위 | §1.3 'ids.py 는 표준 라이브러리·lm27.util 만' 대 구현은 `agent.json` 위치 때문에 `lm27.paths` 를 지연 import(사본에 있음). 계약 `identify_pc()` 는 인자 없음 | 'ids.py 는 표준 라이브러리·lm27·lm27.util·lm27.paths 만'(§1.3), `identify_pc(paths=None, *, probe=None)` + 보조 필드·순수 함수(§2.6) | TAB §1.2 |
+| X-321 | 공용 하위층 API·`read_json` 파일 없음 | §2.1 fsx·proc·events·tz 행이 구현보다 좁음. TAB §0.3 은 '파일 없음도 경고 1줄' | 구현 API 등재(§2.1). 파일 없음은 첫 실행의 정상 상태라 경고하지 않는다(읽기 실패·형식 깨짐·형 불일치만 경고 1줄) | TAB §0.3 |
+| X-322 | `run_id`·`job_id` 생성 자리(CR-01) | §4.1 은 형식만 | `lm27.util.tz.new_run_id`·`new_job_id`(§2.1·§4.1) | — |
+| X-323 | 달력 객체 적재(CR-15)·로컬 초 원점 | `Calendar(path)` 는 객체를 못 받음. 로컬 초 원점·슬롯 상수의 정의처가 없어 WP-19·20 이 각자 정의할 수 있음 | `Calendar.from_obj`·`load_calendar`·`UnknownYearError`·`missing_years`·속성·`EPOCH`·`SLOT`·`DAY`·`TAGS`·`day0`·`d_of`·`DayInfo` 키 등재, 다른 모듈은 다시 정의하지 않는다(§2.9) | W 부록 A |
+| X-324 | W 달력 문구 | W 부록 A `slot_tag` 한글 반환(CR-10), `time.window.weekdays`, DayInfo `S_eff`, 앞뒤 여유일 처리 미정 | 반환 = `regular`·`extended`·`night`·`holiday`, `Calendar(path, company_off=(), weekdays=None)` 의 None = 달력 값(X-186), DayInfo 키 `S`(= S_eff), 여유일이 미확인 연도면 생략하고 기간 안 미확인 연도만 거부(§3.21) | W §2.5 · 부록 A |
+| X-325 | 2025-05-01 근로자의날 | 이전 `config\calendar.json` 이 이 날을 '회사 기준 휴일'로 넣어 2025-05 근무일 19(검증표·독립 재계산 20)이고, §3.21 밖 필드 `years[].expected_workdays` 를 가짐 | 내장 달력 = 관공서 공휴일 그대로(판 `kr-2025-2027.v2`, 이 날 없음), 회사 휴무는 팀 레지스트리 `calendar.company_off`. 검증 기대값은 `tests\fixtures\wp02\` 로. 사용자 확인 U-15 | — |
+| X-326 | UTC 생성 문구 대 ruff UP017 | §9.1 'datetime.now(timezone.utc) 로만' 을 저장소 ruff(UP)가 UP017 로 막아 훅이 실패 | 두 형식 모두 허용(같은 객체), ruff.toml 에서 UP017 끔(§9.1) | — |
+| X-327 | 단계 결과·rc 번역·감시 공개 API | §2.5 세 파일 행이 함수 1~2개뿐 | `rcmap`·`stage_result`·`watch` 공개 이름 등재(§2.5), `Child` 는 Popen 호환 유지(§2.1) | — |
+| X-328 | 수집 rc 번역 보강 | §8.1 이 '돌지 않음'의 rc 자리, kill 뒤 실제 종료 코드, rc 1·0건 셀의 막힘 사유, 단계 state 대응, collect rc 3 조건을 정하지 않음 | §8.1 (a)~(e) | C §8.4 · CP §12 |
+| X-329 | 브리지 결과 봉투 예시 | B §7.11 예시가 `"schema": 1`, `reason: ""`, 공통 필드 `rc`·`updated`·`counts` 없음 | `"schema": "lm27.stage/1"`, 공통 필드 포함, `reason` 은 null(§8.5). 브리지·분석 시험은 `check_stage_common` 으로 대조 | B §7.11 |
+| X-330 | CLI 어댑터 호출 형 | §7.1 은 명령·모듈만. 함수 이름·인자·잠금·반환값 해석이 없고 `verify_bundle`·`queue.preview`·`offline.import_files`·`ui.server.check` 이름이 계약에 없음 | §7.1 'CLI 어댑터 호출 표'(고정본 `tests\fixtures\wp00\cli_commands.json`)·§8.3 반환값 해석, 네 이름 확정. 구현이 답을 주지 않은 네 자리는 O-14 | TAB §2.7 · §2.9 · §8.2 · R 부록 A |
+| X-331 | `agent install` 의 `--only` 없는 형식 | 정의 없음 | 설치 전용과 같다. `--reinstall` = `uninstall(ident, False)` → `ensure_agent`(§7.1) | TAB §1.6.6 |
+| X-332 | 이동준비 bat 대 TAB §1.11 | bat 은 도우미만 띄워 1~3단계(마지막 내보내기·sha 검증·팀 서버 확인)가 돌지 않음 | 택일 (a): `Prepare-Move.ps1` 이 `-WaitPid` 없이 시작되면 먼저 `lm27 move-prepare` 를 부른다. bat 은 그대로(§7.2) | TAB §1.11 |
+| X-333 | 관문 문구 v1.1 | §11.1 문구가 W0 관문 구현(CR-05·06·07·13·14)·예외·강화와 다름 | §11.1 L-05·07·08·09·11·12·13·16·20·21·23·24·26·27·28·29 갱신 + CR-14 예외 표 | P §3.4 · TAB §9.6 · B §15 |
+| X-334 | 카나리아 범위(T-07) | P36 '단가: 850' 은 3자리라 바이트 카나리아가 될 수 없고 짧은 형식은 흔한 바이트와 겹침 | T-07 카나리아 = P01~P60(P36 제외) + TAB U03 형식, 6자 미만·흔한 모양은 weak(기본 검사 제외). 그 형식의 정제는 회귀 말뭉치(T-08)가 지킨다(§11.2) | P §19 T19 |
+| X-335 | 시험 영역·공용 하네스(CR-02) | §1.1·§2.19 에 `core`·`normalize`·`pipeline`·`ui` 와 하네스 API 가 없음 | §1.1·§2.19 등재 | — |
+| X-336 | 확정 사유 집합 단일원 | verdict(§6.4)와 rcmap 이 '확정 ✔' 집합을 각자 둘 수 있음 | `lm27.collect.rcmap.CONFIRMABLE` 하나, verdict 는 import(§6.4) | — |
+| X-337 | 패키지 도구(CR-03) | O-8 이름 미정 | `tools\make_package.py`(`--check` = T-20 자체 검사, rc 0·1)(§1.1·§2.18·§2.20) | — |
+| X-338 | 감시 키 하한 | `WatchPolicy` 는 0 이하를 '그 검사 끔'으로 처리, 레지스트리 하한은 1(heartbeat 5) | 레지스트리 하한 유지 — 설정으로 감시를 끄지 않는다(§5.3) | — |
+| X-339 | §5.2 명세 칸의 옛 이름 | `collect.lookbackDays`·`time.envelope.idleActiveSec`·`time.queue.parallelSuspect` 의 명세 칸이 §5.4 옛 이름을 담아 L-12 옛 이름 검사가 복잡해짐 | 레지스트리 `spec` 과 같은 문구(근거 번호 유지)(§5.2) | — |
+| X-340 | 구현 계획 CR 채택(CR-04·09) | `agent_main.py` 원본 위치, 나눠 가진 패키지의 `__init__` import 규칙이 계약에 없음 | 원본 = `lm27\agent\main.py`(§2.4), 내용 있는 `__init__` 은 하위 모듈을 지연 import(§2 머리) | — |
+| X-341 | 기본 진입 bat 이름(v1.1 반증 점검) | 계약 §1.1·§7.2 는 `LoadMonitor27.bat` 인데 W0 구현·시험(`tests\core\test_entry.py`)은 `LoadMonitor27-UI.bat`(이전 판 `LoadMonitor24-UI.bat` 과 같은 자리). 구현 bat 은 `ui --check` 를 먼저 돌리고 통과할 때만 `pythonw` 로 띄운다 | 구현 이름 `LoadMonitor27-UI.bat` 과 흐름을 등재(§1.1·§7.2). 나머지 bat 4개 이름은 그대로 | R §2.3.1 · R 머리말(사용자 안내의 bat 이름) |
+| X-342 | 브리지·화면 관문의 정적/동적 경계(v1.1 반증 점검) | L-17 이 G-B1~G-B5·G-B7·G-B10·G-B11 전부를, L-19 가 데이터 섬 이스케이프를 정적 lint 로 적었으나 W0 관문(`hook_check.py`)이 볼 수 있는 것은 정적 부분뿐(WP-04 보고) | L-17 = G-B1·B2·B3·B7(정적). G-B4(단계 완결성)·G-B5(가상 시계)·G-B10(결과 봉투)·G-B11(엄격 규칙 정규식 = P §5 보호 구간 글자판 대조)은 브리지 시험(WP-24·25 — T-04·T-15). L-19 데이터 섬은 정적 부분(인라인 JS·CSS 의 `</script`·`</style` 0, HTML 문자열 값 직접 결합 0)만, G-R6 섬 문자열 이스케이프의 동적 확인은 보고서 시험(WP-31)(§11.1) | B §15 · R §12.2 |
+
+해소한 불일치: **249행**(A 6 · B 23 · C 13 · D 33 · E 17 · F 29 · G 3 · H 9 · I 13 · J 19 · K 18 · L 10 · M 12 · N 1 · O 18 · P 25). A~N 의 각 행은 다이제스트의 명세별 conflicts 항목 하나 이상을 묶고, O 는 v1.0 자체의 누락·자기모순, P 는 W0 구현이 드러낸 빈칸이다.
 
 ---
 
 ## 11. 관문
 
-관문은 1일차부터 돈다(D-13). 실패하면 머지·패키징을 막는다(성능 경고 제외). 구현은 `tools\lint.ps1`(정적)과 `tests\`(동적)이다.
+관문은 1일차부터 돈다(D-13). 실패하면 머지·패키징을 막는다(성능 경고 제외). 구현은 `tools\lint.ps1`(단계 실행기)·`tools\hook_check.py`(정적 검사 — 파일 단위 훅 모드와 `--repo` 저장소 전역 모드, CR-07)와 `tests\`(동적)이다. 검사 대상(모듈·레지스트리·스크립트)이 아직 트리에 없으면 그 검사는 경고만 남기고 건너뛰며, 대상이 생기는 순간부터 실패로 센다(W0·W1 의 다른 작업을 막지 않는다). 검사 규칙 표를 담은 `tools\hook_check.py`·`tools\lint.ps1` 은 문자열 패턴 검사(L-05 문자열·08·12 읽기 수집·13·14·15·16·19·21·22·23 사본·25·28·29)에서 빠지되 L-26 금지어는 적용된다(X-313). 관문 v1.1 문구는 X-333, 정적 lint 와 동적 시험의 경계(L-17·L-19)는 X-342.
 
 ### 11.1 lint 관문(정적)
 
@@ -1845,32 +1946,44 @@ v1.0 을 명세 다이제스트·원 명세에 대조해 찾은 이 문서 안�
 | L-02 | 인코딩(§9.2): .bat CP949+CRLF·BOM 없음·`>nul chcp 949`, .ps1 BOM+CRLF, 그 밖 UTF-8 LF | 결정 §0 · `hook_check.py` |
 | L-03 | ruff(`ruff.toml`, `--no-cache`) | 저장소 정책 |
 | L-04 | `zoneinfo.ZoneInfo` 0건 | W-G10 · 결정 §10.3 |
-| L-05 | 코드(.bat·.ps1·.py)에 `python -m lm27` 호출 0건, 진입 스크립트 첫 실행문의 ROOT sys.path 삽입 | P H8 · D-1 |
+| L-05 | 코드(.bat·.ps1·.py)에 `python -m lm27` 호출 0건, 진입 스크립트 첫 실행문의 ROOT sys.path 삽입. 시험 실행 `"<PY>" -X utf8 -B -m unittest discover -s <clone>\tests\<영역> -t <clone>` 은 허용(`-m lm27` 만 금지 — CR-08) | P H8 · D-1 |
 | L-06 | `except ImportError` 로 기능을 삼키는 코드 0 | TAB lint 6 |
-| L-07 | 최종 파일 `open(…, "w"/"a")` 는 `lm27\util\fsx.py`·`lm27\store\writer.py`·`lm27\bridge\fsio.py` 에만(`write_text_ttl` 은 `bridge\manual.py`·`bridge\exchange.py`) | TAB lint 6 · B G-B7 |
-| L-08 | 단일 로더: `data\pcs` 경로 조립·open 은 `lm27\bundle\{loader,segment,manifest,export,pcreg,merge,move}.py` 에만, 데이터 경로 문자열 조립은 `lm27\paths.py` 에만(AST) | TAB lint 2 · R G-R10 · 결정 §9 |
-| L-09 | 수집기 쓰기 금지: `collect\**\*.ps1` 의 Out-File·Set-Content·Add-Content·Export-Csv·`>`·`>>` 가 data\·store\·%LOCALAPPDATA% 를 가리키면 실패(예외 `collect\agent\agent.ps1`·`harvest.ps1` 의 `heartbeat.json`·`run\harvest_done.json`·`run\.harvest.lock`·`logs\` — §9.1) | P §3.4 · CP §14.1 |
+| L-07 | 최종 파일 `open(…, "w"/"a"/"x"/"+")`(모드가 상수가 아니면 쓰기로 본다)는 `lm27\util\fsx.py`·`lm27\store\writer.py`·`lm27\bridge\fsio.py` 에만(`write_text_ttl` 은 `bridge\manual.py`·`bridge\exchange.py`). v1.1: open 이 아닌 디스크 쓰기 API 도 같은 허용 목록 밖에서 금지 — `os.open` 쓰기 플래그·`os.write`·`logging` 파일 핸들러(`FileHandler` 등·`basicConfig(filename=)`)·`tempfile.NamedTemporaryFile`·`TemporaryFile`·`SpooledTemporaryFile`·`mkstemp`·쓰기 `sqlite3.connect`(`:memory:`·`mode=ro` 제외)·`shutil.copy`·`copy2`·`copyfile`·`copyfileobj`·`move`·`copytree`·디스크 `ZipFile` 쓰기(메모리 `BytesIO` 제외) | TAB lint 6 · B G-B7 |
+| L-08 | 단일 로더: `data\pcs` 경로 조립·open·나열·쓰기는 `lm27\bundle\{loader,segment,manifest,export,pcreg,merge,move}.py` 에만, 데이터 경로 문자열 조립은 `lm27\paths.py` 에만(AST). v1.1: `Paths` 데이터 메서드(`data`·`derived`·`analysis(run_id)`·`store_dir(pc_id)` 등)의 반환값 뒤에 경로를 붙이는 것도 조립이다 — 하위 경로(예 `analysis\<run_id>\time\`)가 필요하면 `paths.py` 메서드를 CR 로 받는다. docstring 안의 경로 표기는 조립이 아니다 | TAB lint 2 · R G-R10 · 결정 §9 |
+| L-09 | 수집기 쓰기 금지: `collect\**\*.ps1` 의 디스크 쓰기(Out-File·Set-Content·Add-Content·Export-Csv·Export-Clixml·Tee-Object·Start-Transcript·`[IO.File]::Write*`·StreamWriter·FileStream·`New-Item -Value`·`>`·`>>`)는 **대상과 무관하게** 실패(v1.1 — 원문은 stdout NDJSON 으로만, §1.5). 예외: `collect\agent\agent.ps1`·`harvest.ps1` 의 `heartbeat.json`·`run\harvest_done.json`·`run\.harvest.lock`·`logs\`(§9.1), `collect\agent\Register-Agent.ps1` 의 schtasks 작업 XML(`%TEMP%`, §1.5), `collect\move\Prepare-Move.ps1` 의 `move_ready.json`(TAB §1.11), 시험 주입 `-OutDir`(기본값이 빈 값일 때만 — §11.3) | P §3.4 · CP §14.1 |
 | L-10 | 수집기 파이썬 import: `lm27.privacy` 에서는 `lm27.privacy.sanitize` 만. 그 밖 허용 `lm27.store` `lm27.paths` `lm27.config` `lm27.util` `lm27.catalog` `lm27.bridge`(세션·조회 어댑터) | P §3.4 |
-| L-11 | 저장 경로 우회 0: `SanitizedRow` 생성은 `records.py` 안에서만, `_SEAL` 외부 참조 0, `SegmentWriter` 외 store 쓰기 0 | P I2 · T6 |
-| L-12 | 설정 키: 코드가 읽는 키 ⊂ `settings_registry.json`, 등록 키 ⊂ 코드가 읽는 키(죽은 키 0), §5.2 표 = 레지스트리(생성 대조), snake_case 키 0 | 결정 §9 · W-G6 · R G-R9 |
-| L-13 | 사유 코드: 코드·문서·화면 문구의 `R-<영문>` ⊂ §6.1 | 이 문서 |
+| L-11 | 저장 경로 우회 0: `SanitizedRow` 생성은 `records.py` 안에서만, `_SEAL` 참조는 `lm27\privacy\records.py`·`lm27\store\writer.py`(§2.3 봉인 검사)만, `SegmentWriter` 외 store 쓰기 0, 봉인 행의 복제·변경 0. v1.1: store 경로 메서드(`store_root`·`store_dir`·`store_file`·`privacy_audit_file`·`raw_cursor`·`raw_cursor_lock`)는 `lm27\store\`·`lm27\privacy\`·`lm27\paths.py` 밖에서 직접 쓰지 않는다(로컬 원장·감사·수집 커서는 `lm27.store`·`lm27.privacy` 함수로만 — 에이전트 제거의 store 삭제도 같다) | P I2 · T6 |
+| L-12 | 설정 키: 코드가 읽는 키 ⊂ `settings_registry.json`, 등록 키 ⊂ 코드가 읽는 키(죽은 키 0), §5.2 표 = 레지스트리(생성 대조), snake_case 키 0, §5.4 옛 이름 0. 옛 이름은 **온전한 토큰**으로만 맞춘다(정본 키 안의 부분 문자열 — `collect.parallelMax` 안의 `parallelMax` 등 — 은 위반 아님). 죽은 키는 단계 적용(CR-05): 등록 키의 `owner` 모듈 파일이 트리에 있을 때만 실패, 없으면 경고. W2 통합 창부터 전면 실패(`hook_check.py --l12-full` · `lint.ps1 -L12Full`) | 결정 §9 · W-G6 · R G-R9 |
+| L-13 | 사유 코드: 코드·문서·화면 문구의 `R-<영문>` 리터럴 ⊂ §6.1(문서는 §6.1 폐지 표기 허용). 시험의 부정 표본은 런타임에 조립한다(두 문자열을 이어 만든다) | 이 문서 |
 | L-14 | 경로 ID·kind 상수 ⊂ §6.5·§3.1 | 이 문서 |
 | L-15 | 작업·뮤텍스 이름에 install_id, 작업 XML Action·WorkingDirectory 가 ROOT 를 가리키지 않음, 시험 작업은 `LM27T-` | TAB lint 4 · CP §14.1 |
-| L-16 | Edge: `--remote-allow-origins=*` 0, `--user-data-dir`·`--remote-debugging-port` 문자열과 Edge 프로필·포트 키는 `lm27\bridge\` 밖에 0, `office.com` 부분 문자열 0, `os.kill(` 0 | B G-B9 · G-B12 |
-| L-17 | 브리지 G-B1~G-B5·G-B7·G-B10·G-B11(시계·숫자 상수·설정 일치·단계 완결성·쓰기·결과 봉투·ID 글자판) | B §15 |
+| L-16 | Edge: `--remote-allow-origins=*` 0, `--user-data-dir`·`--remote-debugging-port` 문자열과 Edge 프로필·포트 키(`bridge.edge.profileDir`·`port`·`portTries`)는 `lm27\bridge\` 밖 코드에 0(키를 선언하는 `config\settings_registry.json` 은 대상 아님), `office.com` 부분 문자열 0, `os.kill(` 0 | B G-B9 · G-B12 |
+| L-17 | 브리지 정적 관문 G-B1·G-B2·G-B3·G-B7(시계 주입 — `time` 은 `clock.py` 에만 · 한도 숫자 상수는 `bridge\settings.py` 에만 · 설정 키 읽기 확인(`bridge.*` — L-12 와 같은 판정) · 원문 쓰기 금지(쓰기 open 은 `fsio.py`, `write_text_ttl` 은 `manual.py`·`exchange.py` — L-07 과 함께)). G-B4(단계 완결성)·G-B5(가상 시계 시뮬·골든 전송 수)·G-B10(결과 봉투)·G-B11(웹 노출 엄격 규칙 — 정규식 ID 글자판 = P §5 보호 구간 글자판 대조 포함)은 동적 검사라 lint 밖 — 브리지 시험(WP-24·25, T-04·T-15)이 맡는다(X-342) | B §15 |
 | L-18 | 시간 미전송: send_fields 에 시간형 키 0, 프롬프트 템플릿에 `\d+(\.\d+)?\s*(MM\|M/M\|시간\|h)\b` 0 | B G-B8 · B1 |
-| L-19 | 화면: `innerHTML` `outerHTML` `insertAdjacentHTML` `document.write` `eval(` `new Function` `setTimeout("` `DOMParser` `toFixed(` 0, 16진 색은 `lm27.css`·DOMAIN_META 에만, `round(`·나눗셈은 `lm27\report\fmt.py` 에만, 외부 참조(http·CDN·웹 글꼴) 0, 데이터 섬 이스케이프 | R G-R4~G-R7·G-R11·G-R5·G-R6 |
-| L-20 | 서버 `allow_reuse_address=True`·`SO_REUSEADDR` 0(SO_EXCLUSIVEADDRUSE) | TAB lint 3 · 결정 §10.4 |
-| L-21 | `team.serverHost`·`team.serverPort` 기본값이 `DEFAULT_TEAM_URL = "http://10.115.147.68:9310"` 과 바이트 일치(사설 IP 금지 lint 의 유일 예외) | TAB lint 1 · 결정 §1 |
+| L-19 | 화면: `innerHTML` `outerHTML` `insertAdjacentHTML` `document.write` `eval(` `new Function` `setTimeout("` `DOMParser` `toFixed(` 0, 16진 색은 `lm27.css`·DOMAIN_META 에만, `round(`·나눗셈은 `lm27\report\fmt.py` 에만, 외부 참조(http·CDN·웹 글꼴) 0, 데이터 섬의 정적 부분(인라인될 JS·CSS 에 `</script`·`</style` 0, HTML 문자열에 값 직접 결합(f-string·`%`·`format`) 0 — 섬 삽입 함수만). 섬 문자열 이스케이프(G-R6)의 동적 확인은 보고서 시험(WP-31)이 맡는다(X-342) | R G-R4~G-R7·G-R11·G-R5·G-R6 |
+| L-20 | 서버 `allow_reuse_address=True`·`SO_REUSEADDR` 0(SO_EXCLUSIVEADDRUSE). 기본 `HTTPServer`·`ThreadingHTTPServer`·`TCPServer`·`ThreadingTCPServer` 는 `allow_reuse_address=1`(덧바인드 성공 실측)이므로 직접 생성도 위반이다(`bind_and_activate=False` 로 만들어 바인드 전에 옵션을 정하는 경우 제외) — 서버는 `allow_reuse_address = False` 를 둔 하위 클래스로 만든다(v1.1) | TAB lint 3 · 결정 §10.4 |
+| L-21 | `team.serverHost`·`team.serverPort` 기본값이 `DEFAULT_TEAM_URL = "http://10.115.147.68:9310"`(`lm27\team\client.py` 한 곳 — CR-13)과 바이트 일치. 사설 IP 리터럴은 아래 CR-14 예외 표의 위치 밖 저장소 텍스트 전체에서 금지 | TAB lint 1 · 결정 §1 |
 | L-22 | 팀 빌더: `**dict`·`dict(obj)`·`deepcopy(analysis…)` 통째 전달 0. `data\team\registry.json` 을 읽는 모듈은 `lm27\team\build.py`·`client.py`·`lm27\privacy\`·`lm27\hier\registry.py` 뿐. `host_display` 를 빌더가 읽지 않음 | TAB lint 5 · §2.3.3 |
-| L-23 | `TEAM_SPEC_V1`(lm27\team\schema.py) = TAB §2.3.2 표 생성 결과 = P §14.5 대조표 | TAB lint 8 · X-270 |
-| L-24 | 정제 규칙 잠금(`RULES_HASH` = `rules.lock.json`), 배포 기본 설정에 `privacy.customers`·`partners`·과제·별칭·코드네임·고객·구성원·규칙·카탈로그 0 | P §16 · T24 · H G-H13 |
+| L-23 | `TEAM_SPEC_V1`(lm27\team\schema.py 최상위, **'최상위 필드명 → 규칙' 사전**) = TAB §2.3.2 표 생성 결과 = P §14.5 대조표. 관문은 `%TEMP%` 자식 파이썬에서 import 해 최상위 키 집합을 두 표와 대조한다(사전이 아니면 '구조 해석 불가' 경고). 사본 정의 0 | TAB lint 8 · X-270 |
+| L-24 | 정제 규칙 잠금: `lm27.privacy.rules` 의 (`RULES_VERSION`, `RULES_HASH` — 없으면 `rules_hash()`) = `lm27\privacy\rules.lock.json` 의 `{rules_ver, rules_hash}`(`%TEMP%` 자식 파이썬에서 import). 배포 기본 설정에 `privacy.customers`·`partners`·과제·별칭·코드네임·고객·구성원·규칙·카탈로그 0 | P §16 · T24 · H G-H13 |
 | L-25 | 분류: `learn.py`·`rules.py` 가 ai_out·proposals 미참조(G-H7), 영역 이름·색 하드코딩 0(G-H11) | H §15.3 |
-| L-26 | 실명·코드네임·이메일 카나리아: 저장소 텍스트 전체에서 로컬 전용 금지어 목록(저장소 밖 파일) 0건, 이메일 형식은 `example.com`·`*.example` 만 | 결정 §1 |
-| L-27 | JS 문법 `node --check web\**\*.js`(개발 PC 전용, 실행 환경에 node 불필요) | R G-R3 · 결정 §9 |
-| L-28 | 별개 프로젝트·이전 판과 겹침 0: 포트 8765~8767·9333 사용 0, `LoadMonitor26`·`LM26-` 작업 이름 0 | 결정 §0 |
-| L-29 | 폐기 산출물·금지 접근 경로 0: ① `mail.csv` `replies\` `mail_prompt_*.txt` `mail_source.json` `coverage.json` `teams_window*.csv` `teams_window_raw.txt` `teams_web.csv` `sanitize_audit.jsonl` `completion_ledger.jsonl` `git_source.json` 를 쓰는 코드 0. ② D-3 금지 경로: 코드(.py·.ps1·.bat·.js)에 `graph.microsoft.com`·`IndexedDB`·`LevelDB`·`wpndatabase` 문자열 0, `.ost`·`.pst` 파일을 여는 호출 0(확장자·제외 목록 안 표기는 허용). 검사 규칙 표를 담은 `tools\lint.ps1`·`tools\hook_check.py` 와 `docs\` 는 제외, 위반 표본은 시험 중 `%TEMP%` 에만(X-313) | CM §4 · CT §2·§14.4 · D-3 · 이 문서 |
+| L-26 | 실명·코드네임·이메일 카나리아: 저장소 텍스트 전체에서 로컬 전용 금지어 목록 0건, 이메일 형식은 `example.com`·`*.example` 만(CR-14 예외 표 밖). 목록 = `%LOCALAPPDATA%\LoadMonitor27\dev\forbidden_words.txt`(UTF-8, 한 줄 한 낱말, `#` 주석 — 저장소 밖, CR-06). 없거나 비면 실패(fail-closed). 위반은 '목록 n번째 항목'으로만 알리고 낱말은 출력하지 않는다. **시험 복제 예외**: 시험 복제 트리(`LM27T_CLONE` 이 있음) 안에서 그 위치에 목록이 없을 때만 `tests\fixtures\tree.py` 가 넘긴 `LM27T_FORBIDDEN_WORDS`(실제 목록 위치)를 읽는다. 복제 밖에서는 이 변수를 보지 않으며, 목록이 없으면 여전히 실패한다 | 결정 §1 |
+| L-27 | JS 문법 `node --check web\**\*.js`(개발 PC 전용, 실행 환경에 node 불필요 — 없으면 '건너뜀'). `node --check` 는 CommonJS 로 해석하므로 `web\**\*.js` 는 고전 스크립트로 쓴다(ES module `import`·`export` 문 금지) | R G-R3 · 결정 §9 |
+| L-28 | 별개 프로젝트·이전 판과 겹침 0: 포트 8765~8767·9333 사용 0, `LoadMonitor26`·`LM26-` 작업 이름 0. 레지스트리는 포트 키의 `default`·`choices` 만 대조한다(`range` 는 연속 구간이라 언제나 옛 포트를 품는다). 사용자가 옛 포트를 고르는 것을 막는 규칙은 O-15 | 결정 §0 |
+| L-29 | 폐기 산출물·금지 접근 경로 0: ① `mail.csv` `replies\` `mail_prompt_*.txt` `mail_source.json` `coverage.json` `teams_window*.csv` `teams_window_raw.txt` `teams_web.csv` `sanitize_audit.jsonl` `completion_ledger.jsonl` `git_source.json` 를 쓰는 코드 0. ② D-3 금지 경로: 코드(.py·.ps1·.bat·.js)에 `graph.microsoft.com`·`IndexedDB`·`LevelDB`·`wpndatabase` 문자열 0, `.ost`·`.pst` 파일을 여는 호출 0(확장자·제외 목록 안 표기는 허용). 검사 규칙 표를 담은 `tools\lint.ps1`·`tools\hook_check.py` 와 `docs\` 는 제외, 위반 표본은 시험 중 `%TEMP%` 에만(X-313). v1.1 ② 확장: 자격 증명·브라우저 내부 DB 접근 0 — Windows 자격 증명 API(`CredRead*`·`CredEnumerate*`·`CredWrite*`)·`CryptUnprotectData`·`PasswordVault`·`cmdkey`·`vaultcmd`·브라우저 DB 파일(`Login Data`·`Web Data`·`Network\Cookies`). `.ost`·`.pst` 는 확장자 토큰으로만 판정한다(설정 키 `probe.ostStaleH` 같은 부분 문자열은 해당 없음) | CM §4 · CT §2·§14.4 · D-3 · 이 문서 |
 | L-30 | `lm27\bridge\stages\*` import 무부작용(세션 없는 fallback 호출 가능) | R B-2 |
+
+**CR-14 예외 표(경로 단위, v1.1 채택 — 말뭉치를 고치는 대안은 쓰지 않는다).** 관문 구현(`tools\hook_check.py`)은 이 표를 고정 상수로 가진다. 표에 없는 곳의 예외는 CR 로만 더한다.
+
+| 검사 | 허용 위치 | 허용 내용 |
+|---|---|---|
+| 사설 IP 리터럴(L-21) · 비예시 이메일(L-26) | `docs\*.md` · `lm27\privacy\corpus\regress_v1.jsonl`(합성 PII 회귀 말뭉치) | 명세 예시·회귀 말뭉치 값 |
+| 팀 서버 기본 주소 리터럴(L-21) | `lm27\team\client.py`(`DEFAULT_TEAM_URL`) · `config\settings_registry.json`(`team.serverHost` 기본값) · `tests\**`(기본값 대조 시험) | `10.115.147.68`(과 포트 9310)만 |
+| 모든 인터페이스 바인드 주소 | `config\settings_registry.json` 의 `teamServer.bindHost` 기본값 `0.0.0.0` | 사설 IP 가 아니므로 L-21 대상이 아니다(팀 서버 PC 에서만 쓰는 바인드 설정 — §9.1) |
+| 문자열 패턴 검사(L-05 문자열·08·12 읽기 수집·13·14·15·16·19·21·22·23 사본·25·28·29) | `tools\hook_check.py` · `tools\lint.ps1`(검사 규칙 표) | 규칙 정의용 문자열. L-26 금지어는 이 두 파일에도 적용 |
+| Edge 프로필·포트 키(L-16) | `config\settings_registry.json` | 키 선언 |
+| L-29 ② `.ost`·`.pst` | 확장자·제외 목록 표기 | 설정 키 이름의 부분 문자열(`probe.ostStaleH`)은 판정 대상 아님 |
+| 수집기 PS 쓰기(L-09) | §11.1 L-09 의 예외 네 가지 | 원문 없는 운영 파일·작업 XML·`move_ready.json`·시험 주입 `-OutDir` |
 
 ### 11.2 불변식·시험(동적)
 
@@ -1882,7 +1995,7 @@ v1.0 을 명세 다이제스트·원 명세에 대조해 찾은 이 문서 안�
 | T-04 | 골든: W 시나리오 83 · H HG01~HG46 · R RPT 골든 · B `golden_sends.json`(+10% 초과 실패) | W-G4 · H G-H8 · R · B G-B5 |
 | T-05 | **개인 = 팀**: 정수 분 표로 팀 재합산한 월 MM = 개인 MM(\|Δ\|≤1e-9), Σalloc ≤ env, effort = Σalloc, 화면 `fmt_mm` 문자열 일치 | W-G5 · TAB A01 · R RPT-10 |
 | T-06 | 분류가 시간 값을 바꾸지 않음(분류 전후 team_tables.json 바이트 동일) | H G-H4 · H-I5 |
-| T-07 | **PII 카나리아 0건**: 세그먼트·store·exe_meta·감사·코파일럿 프롬프트(가상 시계)·팀 페이로드·가림판 보고서 | P T19 · TAB U03 · B G-B6 · R G-R8 |
+| T-07 | **PII 카나리아 0건**: 세그먼트·store·exe_meta·감사·코파일럿 프롬프트(가상 시계)·팀 페이로드·가림판 보고서. 카나리아 = P01~P60(P36 제외 — 3자리 값이라 바이트 카나리아가 될 수 없다) + TAB U03 형식, 값은 런타임에 조립한다(`tests\fixtures\canary.py`). 6자 미만·흔한 모양(P37·P49·P51 앞 6자리 등)은 `weak` 로 표시해 기본 검사에서 뺀다 — 그 형식의 정제는 회귀 말뭉치(T-08)가 지킨다(X-334) | P T19 · TAB U03 · B G-B6 · R G-R8 |
 | T-08 | 정제 회귀 말뭉치 `run_selftest()`(lint·에이전트 설치·패키징 직전) | P §18.3 |
 | T-09 | 미관측(not_attempted·blocked·transport_fail·out_of_horizon) ≠ 0h, date·summary·unknown 시간 기여 0 | C §5.3 · 결정 §5 |
 | T-10 | 상한·예산에 걸리면 반드시 partial + cap_hit/budget_hit | C §10 |
@@ -1903,11 +2016,11 @@ v1.0 을 명세 다이제스트·원 명세에 대조해 찾은 이 문서 안�
 
 ### 11.3 시험 주입점(단일 목록)
 
-`LM_OUTLOOK_SELFTEST=N` · `LM_INDEX_FAKE=<json>` · `LM_OWA_FAKE=<json>` · `LM_TEAMSWEB_FAKE=<json>` · `LM_COPILOT_STUB=<폴더>` · `LM_NO_BROWSER=1` · 샘플러 `-TestSamples N` · `Get-TeamsWindow.ps1 -RawFile` · `Get-EventActivity.ps1 -EventsCsv -Now -BootTime -OutDir` · `Get-FileActivity.ps1 -RecentDir -MruTextDir -NoToolMru` · `Get-OfficeMru.ps1 -MruRegFile` · ps 스크립트 `-TestNow` · 브리지 `VirtualClock` · 시간 코어 `as_of`. 배포 설정·바로가기에 주입 환경 변수가 있으면 탐침이 경고한다(`stub_env_set`). 시험은 `%TEMP%` 복제 트리에서만 돈다(`assert ROOT != 실제 설치 경로`).
+`LM_OUTLOOK_SELFTEST=N` · `LM_INDEX_FAKE=<json>` · `LM_OWA_FAKE=<json>` · `LM_TEAMSWEB_FAKE=<json>` · `LM_COPILOT_STUB=<폴더>` · `LM_NO_BROWSER=1` · 샘플러 `-TestSamples N` · `Get-TeamsWindow.ps1 -RawFile` · `Get-EventActivity.ps1 -EventsCsv -Now -BootTime -OutDir` · `Get-FileActivity.ps1 -RecentDir -MruTextDir -NoToolMru` · `Get-OfficeMru.ps1 -MruRegFile` · ps 스크립트 `-TestNow` · 브리지 `VirtualClock` · 시간 코어 `as_of`. 배포 설정·바로가기에 주입 환경 변수가 있으면 탐침이 경고한다(`stub_env_set`). 시험은 `%TEMP%` 복제 트리에서만 돈다(`assert ROOT != 실제 설치 경로` — `tests\fixtures\tree.py`). 주입 파일의 형식은 명세에 정의가 없어 `tests\fixtures\synth\inject.py` 머리 표가 정본이다(색인 `System.*` 행 · OWA 달×폴더 항목 · Teams 웹 화면 응답 + mid · UIA 원문 줄 UTF-8 BOM + CRLF · 이벤트 CSV `t,kind,src` ASCII + CRLF · reg 내보내기 UTF-16 LE BOM + CRLF · 스텁 `<stage>.json {mode, default, by_key}`). 소비하는 수집기·브리지는 이 형식을 받고, 바꾸려면 CR 로 `inject.py` 를 고치고 `SYNTH_VERSION` 을 올린다.
 
 ### 11.4 실행 순서
 
-편집 즉시 `hook_check.py`(PostToolUse 훅) → `tools\lint.ps1`(L-01~L-30) → `selftest privacy` → `tests\` 단위 → 골든 → 페르소나·E2E → 패키지(T-20). 앞 단계가 실패하면 다음 단계와 패키징을 하지 않는다. 커밋은 관문 통과 후 한국어 상세 메시지로, 즉시 푸시한다(결정 §1).
+편집 즉시 `hook_check.py`(PostToolUse 훅) → `tools\lint.ps1`(L-01~L-30) → `selftest privacy` → `tests\` 단위 → 골든 → 페르소나·E2E → 패키지(T-20). 앞 단계가 실패하면 다음 단계와 패키징을 하지 않는다. `lint.ps1 -Stage static|selftest|unit|golden|e2e|package` 가 이 순서를 돈다(CR-08): unit·golden·e2e 는 `tests\fixtures\tree.py` 로 `%TEMP%` 복제 트리를 만들고(`make --extra docs` → 영역마다 `discover` → `remove`, 기본 복제에 `docs\` 포함, 복제 안 `%LOCALAPPDATA%`·`%TEMP%` 는 샌드박스) 그 안에서 `"<PY>" -X utf8 -B -m unittest discover -s <clone>\tests\<영역> -t <clone>` 을 돈다. 골든 단계는 `test_golden*.py` 만 돈다. 대상이 아직 없는 단계(selftest·golden·e2e·package·node 웹 시험)는 '건너뜀/0건 통과'로만 표시되므로 W1·W2 통합 창에서 실물로 다시 확인한다. 커밋은 관문 통과 후 한국어 상세 메시지로, 즉시 푸시한다(결정 §1).
 
 ---
 
@@ -1931,6 +2044,7 @@ v1.0 을 명세 다이제스트·원 명세에 대조해 찾은 이 문서 안�
 | U-12 | 동료 실명 전체판 생성, 로컬 화면의 동료 표시명 | 생성(경고) · 표시 | R R-Q1·R-Q2 |
 | U-13 | 시간 모델 정책값(D3~D12: 근무창·AutoSave·단독 발신·추정 부재·date-only·사적 차감·무증거 배분·반복 문서·회의 혼합·솔버) | W 기본값 | W D3~D12 |
 | U-14 | 원문 캡처(`bridge.rawCapture`) 유지 | 끔 | B Q20 |
+| U-15 | **2025-05-01 근로자의날을 회사 휴일로 볼지**(보면 2025-05 의 1MM 분모가 19일). W0 에서 `config\calendar.json` 의 이 날 항목('회사 기준 휴일')을 지우고 판을 `kr-2025-2027.v1` → `v2` 로 올렸다 — 검증표·독립 재계산이 모두 2025-05 를 20일로 본다(T-13 의 36개월 일치 조건) | 내장 달력은 관공서 공휴일 그대로(이 날 없음 — 2025-05 = 20일). 회사가 그날 쉬었다면 팀 레지스트리 `calendar.company_off` 에 `2025-05-01` 을 넣는다(내장 달력은 고치지 않는다) | X-325 · W §2.5 · D-17 |
 
 ### 12.2 남은 미결(계약 밖 작업)
 
@@ -1939,13 +2053,17 @@ v1.0 을 명세 다이제스트·원 명세에 대조해 찾은 이 문서 안�
 | O-1 | 정규화(화행 규칙 세부·병합·근태 대응)와 분석 파이프라인 명세가 없다. 이 문서 §2.7·§2.13 이 임시 정본 | 이 문서 기준으로 구현하고 명세는 뒤에 쓴다 |
 | O-2 | 명세 10종을 §10 '반영 요청' 열대로 고치는 커밋 | 구현은 이 문서를 따른다(R0-5) |
 | O-3 | 결정 메모를 `docs\` 로 옮길지(현재 작업 폴더에만 있음) | §0.4 요약으로 대체 |
-| O-4 | P Q21: `verify_doc_lm27.py` 실행으로 v1.1 신규 코드·ext 22건 검증 | 정제 관문 T-08 전에 필수 |
+| O-4 | P Q21: `verify_doc_lm27.py` 실행으로 v1.1 신규 코드·ext 22건 검증. 실행 방법은 구현 계획 CR-12(스크립트를 `%TEMP%` 로 복사해 옛 판 비교 단계만 빼고 실행 — 원본은 고치지 않는다) | 정제 관문 T-08 전에 필수(WP-10 첫 작업) |
 | O-5 | ★ 미보정 값 실자료 보정(이 문서가 새로 정한 `probe.subfolderRatio`·`probe.ostStaleH`·`collect.lookbackDays` 포함) | 기본값 + 미보정 배지 |
 | O-6 | 현장 실측: Teams v2 DOM 메시지 ID 노출, OWA 분 정밀 비율, CLM·AppLocker 허용, Edge 정책 값, 이벤트 채널 권한, WTS SessionFlags, 클라우드PC 영구형·풀링 VDI, 클립보드 정책, 계정 등급 표식 | 탐침·사유 코드로 남기고 대체 경로 |
 | O-7 | UIA 합성 chat_key 의 PC·언어 간 방 매핑 | 웹 chat_key 우선 + 날짜 포함 msg_key 병합 |
-| O-8 | 패키지 도구(T-20 검사 포함)의 명세·파일 이름 미정 | 수동 zip 금지, 도구 작성 전 배포 보류 |
+| O-8 | 패키지 도구: 이름은 v1.1 에서 `tools\make_package.py`(`--check` = T-20 자체 검사)로 정했다(CR-03 · X-337). 명세(패키지 목록 방식)는 아직 없다 | 수동 zip 금지, 도구 작성 전 배포 보류(WP-41) |
 | O-9 | **닫힘**(v1.0.1): 저장소 `.gitignore` 에 이미 `config/config.json`·`data/`·`out/` 이 있다(구현 계획 CR-11 확인). 남은 이전 판 잔재 줄(`teamdata/`·`config/settings.local.json`) 정리는 WP-04 | — |
 | O-10 | 이전 판 폴더의 `__pycache__` 생성 관찰(CP §17) — 읽기 전용 원칙 확인 | 이전 판 실행·import 금지 |
 | O-11 | 단계 유형·분야·기능 어휘와 채널 우선순위의 실데이터 조정(CT 미결 8, R R-Q3) | 기본 어휘 |
 | O-12 | `lm27.normalize.act` 의 화행 어미 규칙 세부와 act_cues 추출 규칙(P Q16) | CT §6 가중 규칙 그대로 |
+| O-13 | **새 관문 후보: `.ps1` PowerShell 구문 해석**(`[System.Management.Automation.Language.Parser]::ParseFile` — 이전 판 lint 의 관문으로 버튼·수집기 전멸 같은 실결함을 막았다). 계약에 없는 새 관문이라 W0 는 넣지 않았다. L-02 확장으로 둘지 L-31 로 둘지(관문 수·시험 표가 바뀐다) 결정 필요 | 결정 전까지 L-01~L-30 만. WP-13·14·15·16·17 은 `.ps1` 시험에서 구문 오류 0 을 스스로 확인한다 |
+| O-14 | **CLI 어댑터가 답을 얻지 못한 자리**(X-330): ① `team send <item>` 의 항목 하나 전송 함수(TAB §2.9 `send_item(item, cfg)`)의 모듈 — TAB §8.2·§2.15 에 등재 필요 ② `team registry-fetch` 에서 캐시(`data\team\registry.json`·`registry.etag`) 원자 교체를 `fetch_registry(base, etag)` 가 하는지, 저장까지 하는 상위 함수(예 `refresh_registry(paths, cfg)`)를 두는지 ③ `report build --force` 의 인자 자리(`build_report(run_id)` 에 없음) ④ `team-firewall-diag --store` 의 인자 자리(`firewall_diag(exe_path)` 에 없음) | cli 는 ①③④ 를 rc 1('아직 지원하지 않는 인자')로 막고 ② 는 `fetch_registry(base, None)` 만 부른다(cli 는 캐시 파일을 다루지 않는다 — L-22). 소유 WP-34·31·27 이 정하면 CR 로 §7.1 표·`cli.py`·`cli_commands.json` 을 함께 고친다 |
+| O-15 | 사용자가 설정으로 옛 포트(8765~8767·9333)를 고르는 것을 막는 규칙(레지스트리 포트 금지 집합 메타 또는 `check_value` 거부 규칙). L-28 은 기본값·선택지만 본다 | 막지 않음. 실행 시 대체 포트 제안이 이 포트들을 피한다(X-276) |
+| O-16 | **store 삭제 함수 자리**(v1.1 반증 점검): L-11 v1.1 은 `agent uninstall --purge` 의 store 삭제를 `lm27.store`(감사 파일은 `lm27.privacy`) 함수로만 하라고 하지만 §2.3 에 그 함수가 없다 | WP-13 이 WP-11 에 CR 로 받고(이름·시그니처·잠금 — `raw_cursor.json.lock` 과의 관계 포함) W1 통합 창에서 §2.3 에 등재한다. 그 전까지 `install.py` 는 store 경로를 직접 지우지 않는다(함수가 없으면 `--purge` 의 store 삭제는 하지 않고 그 사실을 한국어 한 줄로 알린다) |
 
