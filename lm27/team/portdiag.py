@@ -29,7 +29,7 @@ from lm27.team import schema
 
 # 피하는 포트 — 별개 프로젝트(D:\배포\LM26, 다른 도구) 개인·팀·데모 · 이전 판 대시보드 대역 · 이전 판 코파일럿 ·
 # LM27 코파일럿 CDP(계약 §4.7). 숫자는 식으로 적는다(이 값들은 '쓰지 않을' 포트다 — L-28 은 쓰는 쪽을 막는다).
-AVOID = frozenset(range(8764 + 1, 8768)) | frozenset(range(9148, 9168)) | {9332 + 1} | frozenset(range(9343, 9354))
+AVOID = frozenset(range(8765, 8768)) | frozenset(range(9148, 9168)) | {9333} | frozenset(range(9343, 9354))   # L-28 예외(C22)
 NETSH_TIMEOUT = 25
 PS_TIMEOUT = 40
 _CACHE: dict = {}

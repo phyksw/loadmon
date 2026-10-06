@@ -13,6 +13,7 @@ import io
 import json
 import os
 import tempfile
+import types
 import unittest
 from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
@@ -283,6 +284,106 @@ class GitCollectTest(unittest.TestCase):
         pats = G.author_patterns(["a.b*c", "x@example.com"])
         self.assertIn("^a\\.b\\*c <", pats)
         self.assertIn("<x@example\\.com>$", pats)
+
+
+@unittest.skipUnless(gitrepo.git_exe(), "git 실행 파일이 없는 PC")
+class GitCursorResumeTest(unittest.TestCase):
+    """W1 통합 창 회귀 — 예산 소진·실패 저장소가 있으면 커서 시각을 진전하지 않는다(계약 §3.10 '성공 전 진전 금지').
+
+    이전 결함: 첫 저장소를 읽고 예산이 끝나면 last_ts_utc 가 그 저장소의 최신 커밋으로 진전해, 다음 실행이 다른 저장소의
+    '커서 − 14일' 이전 커밋을 영구히 건너뛰었다(rc 4 · recollect 로도 회복 불가)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = Path(tempfile.mkdtemp(prefix="lm27t_wp14gitcur_"))
+        cls.env = gitrepo.isolated_env(cls.tmp / "cfg")
+        cls.a = gitrepo.make_repo(cls.tmp / "src" / "repoA", *SELF, env=cls.env)
+        cls.b = gitrepo.make_repo(cls.tmp / "src" / "repoB", *SELF, env=cls.env)
+        gitrepo.commit(cls.a, *SELF, datetime(2026, 9, 28, 10, 0, tzinfo=KST), "A recent", {"a.py": "1"}, env=cls.env)
+        gitrepo.commit(cls.b, *SELF, datetime(2026, 9, 5, 10, 0, tzinfo=KST), "B older", {"b.py": "1"}, env=cls.env)
+        cls.not_repo = cls.tmp / "src" / "그냥폴더"
+        cls.not_repo.mkdir(parents=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        gitrepo.remove_tree(cls.tmp)
+
+    def cfg(self, repos):
+        return {"pc.git.exe": "", "pc.git.repos": [str(r) for r in repos], "pc.git.scanRoots": [],
+                "collect.lookbackDays": 120, "pc.watchFolders": [], "pc.autoDiscoverFolders": False,
+                "pc.excludePackageDirs": True}
+
+    def run_collect(self, fake, repos, *, now=datetime(2026, 9, 30, 3, 0, tzinfo=UTC)):
+        with mock.patch.dict(os.environ, self.env):
+            return G.collect(_Paths(self.tmp), self.cfg(repos), PC, d0=date(2026, 9, 1), d1=date(2026, 9, 30), now=now,
+                             api=fake.api())
+
+    def test_budget_exhausted_cursor_held_then_resume_reads_rest(self):
+        clock = {"t": 0.0}
+        real_log = G.log_commits
+
+        def log_then_expire(*a, **k):
+            r = real_log(*a, **k)
+            clock["t"] += 10_000.0                       # 첫 저장소를 읽고 나면 단계 예산(240초) 소진
+            return r
+
+        f1 = FakeApi()
+        with mock.patch.object(G, "time", types.SimpleNamespace(monotonic=lambda: clock["t"])), \
+                mock.patch.object(G, "log_commits", log_then_expire):
+            st1 = self.run_collect(f1, [self.a, self.b])
+        self.assertEqual((st1["rc"], st1["partial"], st1["budget_hit"], st1["reasons"]), (0, True, True, ["R-BUDGET"]))
+        self.assertEqual([r["subject"] for r in f1.raws], ["A recent"])
+        cur1 = f1.saved[-1][2]
+        self.assertIsNone(cur1["last_ts_utc"])                          # 진전하지 않음(이전 값 = 없음)
+        self.assertTrue(st1.get("cursor_held"))
+        self.assertEqual(len(cur1["repos"]), 1)                          # 읽은 저장소 표지는 갱신
+        f2 = FakeApi(cursor=cur1)
+        st2 = self.run_collect(f2, [self.a, self.b], now=datetime(2026, 9, 30, 9, 0, tzinfo=UTC))
+        self.assertEqual(st2["rc"], 0, st2)
+        self.assertIn("B older", [r["subject"] for r in f2.raws])       # 이전 결함: rc 4 · B 영구 누락
+        self.assertEqual(f2.saved[-1][2]["last_ts_utc"], "2026-09-28T01:00:00Z")
+        self.assertFalse(st2.get("cursor_held"))
+
+    def test_budget_with_previous_cursor_keeps_previous_value(self):
+        prev = {"last_ts_utc": "2026-09-20T00:00:00Z", "repos": {}}
+        clock = {"t": 0.0}
+        real_log = G.log_commits
+
+        def log_then_expire(*a, **k):
+            r = real_log(*a, **k)
+            clock["t"] += 10_000.0
+            return r
+
+        f1 = FakeApi(cursor=prev)
+        with mock.patch.object(G, "time", types.SimpleNamespace(monotonic=lambda: clock["t"])), \
+                mock.patch.object(G, "log_commits", log_then_expire):
+            self.run_collect(f1, [self.a, self.b])
+        self.assertEqual(f1.saved[-1][2]["last_ts_utc"], prev["last_ts_utc"])
+
+    def test_failed_repo_holds_cursor(self):
+        f1 = FakeApi()
+        st1 = self.run_collect(f1, [self.a, self.not_repo])               # 한 저장소 실패(git 오류) · 나머지 정상
+        self.assertEqual(st1["repos_failed"], 1)
+        self.assertEqual(st1["rc"], 0)
+        self.assertIsNone(f1.saved[-1][2]["last_ts_utc"])
+        self.assertTrue(st1.get("cursor_held"))
+
+    def test_status_line_has_c1_required_fields_on_every_path(self):
+        """계약 §0.7 C1 — 정상·오류(BadPcId·BadArguments·예외) 경로 모두 필수 필드 ⊇ C1 집합."""
+        need = {"schema", "src", "rc", "reasons", "partial", "cap_hit", "budget_hit", "n", "counts"}
+        for argv in (["--pc", "BAD"], ["--no-such-flag"]):
+            err = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                rc = G.main(argv)
+            self.assertEqual(rc, 3)
+            obj = json.loads(err.getvalue().strip().splitlines()[-1])["_status"]
+            self.assertLessEqual(need, set(obj), argv)
+            self.assertEqual((obj["schema"], obj["src"]), ("lm27.collector_status/1", "pc.git"))
+        f = FakeApi()
+        st = self.run_collect(f, [self.a])
+        obj = G.status_line_obj(st)
+        self.assertLessEqual(need, set(obj))
+        self.assertEqual(obj["counts"]["repos"], 1)
 
 
 class GitScriptTest(CloneTestCase):

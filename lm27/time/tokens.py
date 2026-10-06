@@ -37,7 +37,8 @@ __all__ = [
 B_GENERIC = "B_GENERIC"
 SPLIT_RE = re.compile(r"[_\-\s\.,/()\[\]+&~]+")
 VER_RE = re.compile(r"^(v\d+(\.\d+)?|rev\d+|r\d+|\d+)$")
-GENERIC_RE = re.compile(r"^(book|문서|통합 문서|presentation|프레젠테이션|image|untitled|document|새 문서)\s*\d*$")
+# 범용 이름 꼴(문서군 정규화 뒤 — 구분자가 '_' 로 모인다, 계약 §4.3 · C16)
+GENERIC_RE = re.compile(r"^(book|문서|통합[\s_]문서|presentation|프레젠테이션|image|untitled|document|새[\s_]문서)[\s_]*\d*$")
 BRACKET_RE = re.compile(r"\[[^\[\]]{1,40}\]")
 _ENTITY_MARKS = (":", "#")             # 개체 ID 를 가진 정제 토큰만 낱말로 남긴다
 
@@ -64,8 +65,10 @@ def _norm(s: str) -> str:
 
 
 def generic_stems(cfg) -> frozenset[str]:
-    """범용 이름 줄기(`episode.docs.genericStems`, NFKC·소문자)."""
-    return frozenset(_norm(x) for x in cfg["episode.docs.genericStems"] if str(x).strip())
+    """범용 이름 줄기(`episode.docs.genericStems`) — 비교 대상(문서 이름)과 같은 `fam()`(= doc_fam, 계약 §4.3 · C16)으로
+    정규화한다. doc_fam 이 공백·_·-·. 묶음을 '_' 로 모으므로 '새 Microsoft Excel 워크시트' 같은 여러 낱말 줄기도 맞는다
+    (W1 통합 창 — NFKC·소문자만 하던 때는 여러 낱말 줄기가 범용으로 잡히지 않았다)."""
+    return frozenset(fam(str(x)) or _norm(x) for x in cfg["episode.docs.genericStems"] if str(x).strip())
 
 
 def boilerplate(cfg) -> frozenset[str]:

@@ -71,19 +71,25 @@ def _fake_keys():
             raise ValueError("purpose")
         return hmac.new(kr.sub(purpose), value.encode("utf-8"), hashlib.sha256).hexdigest()[:n]
 
-    tail = r"([_\-\s]?(v\d+(\.\d+)?|rev\d+|r\d+|최종|final|수정본?|사본|copy|\(\d+\)|\d{6,8}))$"   # 계약 §4.3 · W §4.1
+    # 계약 v1.2 §0.7 C16(§4.3 문구 반영): 낱말·판 꼬리는 앞에 구분자가 있을 때만, '(n)' 은 구분자 없이도 지운다 ·
+    # 날짜 숫자 꼬리는 지우지 않는다 · 결과가 비면 원래 이름 · 경로면 기본 이름만 · 구분자 묶음은 '_' — P §18.2 D01~D08
+    tail = (r"(?:[\s_\-]+(?:복사본|사본|수정본?|copy|최종|final|v\d{1,3}(?:\.\d{1,3}){0,2}|rev\.?\s?\d{1,3}|r\d{1,3})"
+            r"|\s?\(\d{1,3}\))$")
 
     def doc_fam(name):
-        x = unicodedata.normalize("NFKC", name).lower().strip()
+        x = re.split(r"[\\/]", unicodedata.normalize("NFKC", name))[-1].lower().strip()
         x = re.sub(r"\.(?:gz|zip|7z)$", "", x)
-        x = re.sub(r"\.(?:prt|asm|drw)\.\d+$", "", x)
-        x = re.sub(r"\.[0-9a-z]{1,5}$", "", x)
+        y = re.sub(r"\.(?:prt|asm|drw)\.\d{1,4}$", "", x)
+        x = (y if y != x else re.sub(r"\.[0-9a-z]{1,5}$", "", x)).strip()
+        base = x
         for _ in range(5):
-            y = re.sub(tail, "", x).strip(" _-")
+            y = re.sub(tail, "", x)
             if y == x:
                 break
             x = y
-        return x
+        if not re.sub(r"[\s_\-.]+", "", x):
+            x = base
+        return re.sub(r"[\s_\-.]+", "_", x).strip("_")
 
     m.NoKeyError, m.Keyring, m.AgentKeys, m.keyed, m.doc_fam = NoKeyError, Keyring, AgentKeys, keyed, doc_fam
     m.who_key = lambda kr, ident: "w" + keyed(kr, "person", ident, 16)
@@ -263,7 +269,7 @@ class RunSelftestTest(_Harness):
         self.assertEqual(rc, 0, out)
         self.assertIn("결과: 통과", out)
         self.assertIn("보류 0", out)
-        for name in ("양성(가림) … 통과 60/60", "멱등 … 통과 60/60", "자격증명 폐기 … 통과 6/6", "오탐 미끼 … 통과 50/50",
+        for name in ("양성(가림) … 통과 75/75", "멱등 … 통과 75/75", "자격증명 폐기 … 통과 6/6", "오탐 미끼 … 통과 54/54",
                      "광고 점수 … 통과 14/14", "공사 구분 … 통과 14/14", "창 분류 … 통과 9/9",
                      "게이트·팀 라벨 … 통과 14/14", "통과 22/22", "프롬프트 템플릿 scan 0 … 통과 3/3"):
             self.assertIn(name, out)
@@ -443,17 +449,19 @@ class HelperTest(unittest.TestCase):
         self.assertEqual(selftest.audit_violations(ref), [])
         at = chr(64)
         bad = [dict(ref, stage="a" + at + "b"), dict(ref, note="x"), dict(ref, masked={"phone": -1}),
-               dict(ref, src="한글 문장 금지"), dict(ref, ts_utc="2026-10-05"), dict(ref, ev="nope"),
+               dict(ref, path_id="한글 문장 금지"), dict(ref, ts_utc="2026-10-05"), dict(ref, ev="nope"),
                dict(ref, dropped={"x" + at + "y": 1}), dict(ref, rows_in=True), dict(ref, err={"1" * 12: 1}), "x"]
         for ev in bad:
             with self.subTest(ev=str(ev)[:40]):
                 self.assertNotEqual(selftest.audit_violations(ev), [])
         self.assertEqual(selftest.audit_violations(dict(ref, rules_hash="1234567890abcdef")), [])   # 해시는 숫자열 검사 면제
         self.assertEqual(selftest.audit_violations(dict(ref, items_in=3)), ["key:items_in"])        # 본문 키는 18개만(계약 §3.13)
-        env = dict(ref, id="1234567890abcdef", kind="privacy_audit")
+        env = dict(ref, id="1234567890abcdef", kind="privacy_audit", src="collect")
         self.assertEqual(selftest.audit_violations(env, envelope=True), [])
-        self.assertEqual(selftest.audit_violations(env), ["key:id", "key:kind"])
-        self.assertEqual(selftest.audit_violations(dict(ref, src="copilot", stage="copilot:classify")), [])
+        self.assertEqual(selftest.audit_violations(env), ["key:id", "key:kind", "key:src"])
+        self.assertEqual(selftest.audit_violations(dict(ref, src="mail.com")), ["key:src"])   # 본문 경로 ID 는 path_id(C10)
+        self.assertEqual(selftest.audit_violations(dict(ref, pc_id="pc_0123456789abcdef")), [])  # 16진 pc_id 숫자열 면제
+        self.assertEqual(selftest.audit_violations(dict(ref, path_id="copilot", stage="copilot:classify")), [])
         got = selftest.audit_violations(dict(ref, note="x" + at))
         self.assertTrue(all(":" in g or g == "ev" for g in got))
         self.assertNotIn(at, "".join(got))
@@ -467,7 +475,8 @@ class HelperTest(unittest.TestCase):
     def test_corpus_counts(self):
         rows = selftest.load_corpus()
         counts = {t: sum(r["type"] == t for r in rows) for t in selftest.TYPES}
-        self.assertEqual(counts, {"pos": 60, "drop": 6, "neg": 50, "ad": 14, "priv": 14, "gate": 8, "label": 6, "win": 9,
+        # 2026.10.1(W1 통합 창 — P §16.4): 양성 P61~P75(대시·서식 문자·띄운 구분자·경로 2단계) · 미끼 N51~N54 추가
+        self.assertEqual(counts, {"pos": 75, "drop": 6, "neg": 54, "ad": 14, "priv": 14, "gate": 8, "label": 6, "win": 9,
                                   "ext": 22})
         raw = fsx.read_bytes(selftest._resource(*selftest.CORPUS_REL))
         self.assertNotIn(b"\r", raw)

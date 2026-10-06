@@ -40,7 +40,6 @@ DRAIN_MAX = 64 * MB
 PK_RX = re.compile(r"p_[0-9a-f]{12}")
 GEN_RX = re.compile(r"gen_(\d{1,9})")
 PERIOD_RX = re.compile(r"\d{4}-\d{2}-\d{2}_\d{4}-\d{2}-\d{2}")
-_OUT = "out"                     # 저장소 안 산출 폴더(TAB §3.7) — 프로그램 폴더의 out\ 과 무관
 LOG_DATE_RX = re.compile(r"(?:server|aggregate)_(\d{8})\.log")
 
 
@@ -117,6 +116,7 @@ class TeamStore:
         self.paths = paths
         self._plocks: dict[str, threading.Lock] = {}
         self._glock = threading.Lock()
+        self._reg_lock = threading.Lock()     # PUT /api/registry 판 확인~원자 쓰기 직렬화(요청 스레드 병렬 — W1 통합 창)
         self._lock_fh = None
         self._cal_cache = None
         self.store_id = ""
@@ -159,15 +159,15 @@ class TeamStore:
     def inbox(self, *sub):
         return self.p("inbox", *sub)
 
-    def gen_root(self):
-        """취합 산출 폴더(저장소 안 산출 폴더 — 프로그램 폴더의 개인 보고서 폴더와 무관)."""
-        return self.p(_OUT)
+    def out_dir(self):
+        r"""취합 산출 폴더 ``<store>\out``(TAB §3.7 — ROOT 밖 저장소 안. 프로그램 폴더 out\ 과 무관, L-08 예외 v1.2 C22)."""
+        return self.p("out")
 
     def gen_dir(self, n: int):
-        return self.gen_root() / f"gen_{int(n)}"
+        return self.out_dir() / f"gen_{int(n)}"
 
     def out_current(self):
-        return self.gen_root() / "current.json"
+        return self.out_dir() / "current.json"
 
     def run_dir(self):
         return self.p("run")
@@ -188,7 +188,7 @@ class TeamStore:
     def ensure(self) -> TeamStore:
         """폴더·store.json·pepper 를 만든다(이미 있으면 읽기만). pepper = 32B 난수(64hex) — 정적 제공 금지."""
         for d in (self.dir, self.members_dir(), self.inbox(), self.inbox("done"), self.inbox("rejected"),
-                  self.gen_root(), self.run_dir(), self.logs_dir()):
+                  self.out_dir(), self.run_dir(), self.logs_dir()):
             fsx.ensure_dir(d)
         st = fsx.read_json(self.store_json(), None)
         if not (isinstance(st, dict) and isinstance(st.get("store_id"), str) and re.fullmatch(r"[0-9a-f]{16}",
@@ -297,9 +297,16 @@ class TeamStore:
             return 422, err_body(problems[0][1], "레지스트리 검증 실패 — 칸 옆 사유를 확인하세요",
                                  [f"{p}: {c}" for p, c in problems])
         raw = fsx.canon_bytes(body)
-        fsx.atomic_write(self.registry_history(ver), raw)
-        fsx.atomic_write(self.registry_json(), raw)
-        self._cal_cache = None
+        # 판 확인과 쓰기를 한 잠금 안에서(검증은 느릴 수 있어 잠금 밖) — 동시 PUT 두 개가 모두 200 을 받고 한쪽 변경이
+        # 사라지던 결함(W1 통합 창): 쓰기 직전에 판을 다시 보고 그새 바뀌었으면 409.
+        with self._reg_lock:
+            now_ver = self.registry_version()
+            if now_ver != cur:
+                return 409, err_body("registry_version_conflict",
+                                     f"다른 곳에서 레지스트리가 바뀌었습니다(현재 v{now_ver}) — 최신 판을 불러와 다시 저장하세요")
+            fsx.atomic_write(self.registry_history(ver), raw)
+            fsx.atomic_write(self.registry_json(), raw)
+            self._cal_cache = None
         return 200, {"ok": True, "version": ver}
 
     def _semantic_registry_errors(self, body) -> list[tuple[str, str]]:
@@ -568,7 +575,7 @@ class TeamStore:
     # ── 세대(취합 산출) ─────────────────────────────────────────────────
     def gens(self) -> list[int]:
         out = []
-        root = self.gen_root()
+        root = self.out_dir()
         for fn in os.listdir(fsx.longp(root)) if root.is_dir() else ():
             m = GEN_RX.fullmatch(fn)
             if m and root.joinpath(fn).is_dir():

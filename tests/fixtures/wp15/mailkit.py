@@ -74,11 +74,11 @@ class PsRun:
     def results(self) -> list:
         out = []
         for x in self.err:
-            if x.startswith('{"_result"'):
-                out.append(json.loads(x)["_result"])
+            if x.startswith('{"_status"'):
+                out.append(json.loads(x)["_status"])
         for x in self.out:                    # 제한 언어 모드 대체 경로(stderr 를 못 쓸 때 stdout 제어 줄)
-            if x.startswith('{"_result"'):
-                out.append(json.loads(x)["_result"])
+            if x.startswith('{"_status"'):
+                out.append(json.loads(x)["_status"])
         return out
 
     def result(self, src: str) -> dict:

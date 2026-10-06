@@ -1,0 +1,1614 @@
+{
+ "_note": "H §15.1 골든 46건(참조 구현 scenarios.py → golden.json)을 HG01~HG46 으로 옮긴 것(X-244). 입력은 참조 시나리오 그대로이고, 앱 범주는 카탈로그 한글 범주(X-245 — cad→CAD, sim→해석, office→사무, mail_work→소통)로 바꿨다. 폴더 키는 시험 전용 무키 해시. prompt 절은 HG29·HG46 의 고정 문구(단계 머리말·답 형식 — 단계 내용 소유 H §6.3·§8.2 실물)이며 시험 조립기만 쓴다.",
+ "prompt": {
+  "task_label": {
+   "first": "[LM27 요청 {rid} · 단위업무 이름·과제/역할 고르기 · 항목 {n}개]",
+   "lead": [
+    "당신은 한 엔지니어의 업무 흔적 묶음(단위업무)을 팀 과제 목록과 어휘에 맞춰 분류합니다.",
+    "항목마다 다음을 고르세요.",
+    "- project : [과제 목록]의 코드 하나. P-99 로 시작하는 코드는 과제는 모르지만 업무 영역은 알 때 씁니다. 업무가 아니거나 판단할 수 없으면 NONE, 목록에 없는 새 과제가 분명하면 NEW.",
+    "- field : [분야] 코드 하나 / func : [기능] 코드 하나 / wtype : [업무유형] 코드 하나",
+    "- title : 이 단위업무를 부르는 짧은 이름(명사구, 25자 이내). 과제 코드·사람 이름·금액·날짜는 넣지 않습니다.",
+    "- new : project 가 NEW 일 때만 새 과제의 짧은 이름(20자 이내), 아니면 \"\".",
+    "- dom : project 가 NEW 일 때만 새 과제의 업무영역 코드, 아니면 \"\".",
+    "- conf : 확신 h(높음)·m(보통)·l(낮음)",
+    "규칙:",
+    "- [과제:P-0012] 처럼 꺾쇠 안의 코드는 그 과제를 가리킵니다. 후보·규칙안은 프로그램이 계산한 참고값이며 틀릴 수 있습니다.",
+    "- 목록에 있는 코드만 씁니다. 코드를 바꾸거나 지어내지 않습니다.",
+    "- 'OO 설계'·'OO 보고서 작성' 같은 활동 이름은 새 과제가 아닙니다. 여러 업무를 묶는 제품·프로젝트·과제일 때만 NEW 입니다.",
+    "- [앞서 쓴 이름]에 같은 일이 있으면 그 이름을 그대로 다시 씁니다(같은 일은 같은 이름)."
+   ],
+   "cols": "[항목] 번호 | 흔적 | 제목 요지 | 파일 | 앱 | 상대 | 후보 | 규칙안",
+   "foot": "[답 형식]\n- 아래 형식의 JSON 하나를 ```json 코드 블록 하나에 담아 답합니다. 코드 블록 밖에는 설명을 쓰지 않습니다.\n- rid 에는 \"{rid}\" 를, n 에는 items 의 개수를 씁니다. 항목 번호 1~{n} 을 빠짐없이 한 번씩, 번호 순서대로 씁니다.\n- 문자열 값은 큰따옴표로 감싸고 값 안에서 줄을 바꾸지 않습니다.\n- 근거가 부족하면 지어내지 말고 project 는 NONE, conf 는 l 로 쓰고 title 은 흔적에서 보이는 그대로 짧게 씁니다.\n- 사람 이름·전화번호·메일 주소·금액은 쓰지 않습니다. [전화]·[금액]·[사람] 같은 꺾쇠 표기는 가려진 값입니다.\n- 웹 검색을 하지 말고 이 메시지에 적힌 내용만으로 답합니다.\n- 형식(<…> 자리에 실제 값): {\"rid\": <요청번호>, \"n\": <항목 수>, \"items\": [ {\"id\": <번호>, \"project\": <코드|NONE|NEW>, \"field\": <분야 코드>, \"func\": <기능 코드>, \"wtype\": <업무유형 코드>, \"title\": <짧은 이름>, \"new\": <새 과제 이름 또는 \"\">, \"dom\": <영역 코드 또는 \"\">, \"conf\": <h|m|l>} ]}\n- 코드 블록이 끝나면 맨 마지막 줄에 [[END {rid}]] 만 씁니다."
+  },
+  "bootstrap": {
+   "first": "[LM27 요청 {rid} · 과제 체계 제안 · 표본 {n}줄]",
+   "lead": [
+    "당신은 한 엔지니어의 업무 흔적을 팀 과제 체계로 정리하는 설계자입니다. 아래 [표본]은 이 사람의 단위업무 묶음을 투입이 큰 순서로 고른 것입니다.",
+    "이 사람의 업무를 묶는 '상위 과제' 목록을 제안하세요.",
+    "규칙(계층 규율):",
+    "- 과제는 제품·프로젝트·과제 코드·고객 대응 건처럼 여러 업무를 묶는 상위 대상만입니다.",
+    "- 'OO 설계'·'OO 보고서 작성'·'OO 검토' 같은 활동 이름은 과제가 아닙니다. 그 활동이 속한 상위 과제를 세우고 활동은 쓰지 않습니다.",
+    "- 파일 이름 조각·코드 모듈 이름·확장자·날짜·버전은 과제가 아닙니다. 한 도구의 여러 부품은 그 도구 이름 하나로 묶습니다.",
+    "- 같은 대상의 표기 변형(띄어쓰기·대소문자·한영·약칭)은 이름 하나로 씁니다. 괄호 꼬리((양산)·(선행))나 차수 숫자가 다르면 따로 씁니다.",
+    "- 과제가 아닌 팀 운영·사무는 kind 를 common 으로, 업무가 아닌 것은 nonwork 로 씁니다.",
+    "- 과제마다 업무영역 dom 을 [업무영역] 코드 하나로 고릅니다.",
+    "- [이미 있는 과제]와 같은 대상이면 새로 만들지 말고 그 코드를 code 에 씁니다(이름은 비워도 됩니다).",
+    "- obs 에는 근거가 된 [표본] 번호를 최대 5개, match 에는 그 과제를 알아볼 낱말을 최대 5개(각 20자 이내) 씁니다.",
+    "- 과제는 많아야 15개입니다. [표본]에 흔적이 없는 것은 넣지 않습니다."
+   ],
+   "cols": "[표본] 번호 | 영역후보 | 이름안 | 파일 | 제목 요지 | 상대",
+   "foot": "[답 형식]\n- 아래 형식의 JSON 하나를 ```json 코드 블록 하나에 담아 답합니다. 코드 블록 밖에는 설명을 쓰지 않습니다.\n- rid 에는 \"{rid}\" 를, n 에는 items 의 개수를 씁니다. id 는 1부터 차례로 씁니다.\n- 문자열 값은 큰따옴표로 감싸고 값 안에서 줄을 바꾸지 않습니다.\n- 근거가 부족하면 지어내지 말고 그 과제를 빼고 씁니다.\n- 사람 이름·전화번호·메일 주소·금액은 쓰지 않습니다. [전화]·[금액]·[사람] 같은 꺾쇠 표기는 가려진 값입니다.\n- 웹 검색을 하지 말고 이 메시지에 적힌 내용만으로 답합니다.\n- 형식(<…> 자리에 실제 값): {\"rid\": <요청번호>, \"n\": <과제 수>, \"items\": [ {\"id\": <1부터>, \"name\": <과제 이름 20자 이내>, \"code\": <이미 있는 과제 코드 또는 \"\">, \"dom\": <업무영역 코드>, \"kind\": <project|common|nonwork>, \"match\": [<낱말>], \"obs\": [<표본 번호>]} ]}\n- 코드 블록이 끝나면 맨 마지막 줄에 [[END {rid}]] 만 씁니다."
+  }
+ },
+ "HG01": {
+  "feat": {
+   "id": "m1",
+   "kind": "mail",
+   "text": "RE: [과제:P-0007] 브라켓 체결부 검토 부탁드립니다"
+  },
+  "tag": [
+   "P-0007",
+   8.0
+  ]
+ },
+ "HG02": {
+  "feat": {
+   "id": "m2",
+   "kind": "mail",
+   "text": "PROJ-A 일정 공유"
+  },
+  "tag": [
+   "P-0007",
+   4.0
+  ]
+ },
+ "HG03": {
+  "feat": {
+   "id": "f1",
+   "kind": "file",
+   "text": "브라켓_v3.sldprt"
+  },
+  "tag": [
+   null,
+   2.0
+  ]
+ },
+ "HG04": {
+  "feat": {
+   "id": "f2",
+   "kind": "file",
+   "text": "광학모듈 브라켓 검토.pptx"
+  },
+  "tag": [
+   "P-0007",
+   4.0
+  ]
+ },
+ "HG05": {
+  "feat": {
+   "id": "m3",
+   "kind": "mail",
+   "text": "[과제:P-0008] 과제B 후속 기획 회의"
+  },
+  "scores": {
+   "P-0008": "-inf"
+  }
+ },
+ "HG06": {
+  "feat": {
+   "id": "m4",
+   "kind": "mail",
+   "text": "[고객사:C01] 일정 문의",
+   "dom_labels": [
+    "고객사:C01"
+   ]
+  },
+  "scores": {
+   "P-0007": 0.75,
+   "P-0008": 0.75
+  }
+ },
+ "HG07": {
+  "feat": {
+   "id": "f3",
+   "kind": "file",
+   "text": "브라켓 해석.xlsx",
+   "folders": [
+    "과제A_설계"
+   ]
+  },
+  "tag": [
+   "P-0007",
+   5.0
+  ]
+ },
+ "HG08": {
+  "a": {
+   "text": "정보보안 보안교육 수강 안내",
+   "scores": {
+    "COM": 4.0
+   }
+  },
+  "b": {
+   "text": "산학 세미나 발표 자료",
+   "scores": {
+    "EXT": 4.0
+   }
+  },
+  "c": {
+   "text": "실험실 자동화 스크립트",
+   "scores": {
+    "AX": 1.5
+   }
+  },
+  "d": {
+   "text": "8월 예산 정산",
+   "scores": {
+    "COM": 4.0
+   }
+  },
+  "e": {
+   "text": "LLM 기반 메일 분류",
+   "scores": {
+    "AX": 1.5
+   }
+  }
+ },
+ "HG09": {
+  "feat": {
+   "id": "m5",
+   "kind": "mail",
+   "text": "PROJ-E 도면 송부"
+  },
+  "tag": [
+   "P-0007",
+   4.0
+  ]
+ },
+ "HG10": {
+  "unit": {
+   "id": "u_a",
+   "kind": "S1",
+   "ev": [
+    {
+     "feat": {
+      "id": "m1",
+      "kind": "mail",
+      "text": "[과제:P-0007] 공차 해석 요청"
+     },
+     "w": 2.0,
+     "role": "boundary"
+    },
+    {
+     "feat": {
+      "id": "f1",
+      "kind": "file",
+      "text": "공차해석_v3.xlsx"
+     },
+     "w": 1.5,
+     "role": "doc"
+    },
+    {
+     "feat": {
+      "id": "m2",
+      "kind": "mail",
+      "text": "RE: 공차 해석 결과 송부"
+     },
+     "w": 2.0,
+     "role": "boundary"
+    }
+   ]
+  },
+  "label": {
+   "project": "P-0007",
+   "score": 1.0,
+   "source": "token",
+   "conf": "h",
+   "cands": [
+    [
+     "P-0007",
+     0.36
+    ]
+   ],
+   "domain": "DEV"
+  }
+ },
+ "HG11": {
+  "unit": {
+   "id": "u_b",
+   "kind": "SELF",
+   "ev": [
+    {
+     "feat": {
+      "id": "f1",
+      "kind": "file",
+      "text": "광학모듈 브라켓 설계.sldprt"
+     },
+     "w": 1.5,
+     "role": "doc"
+    },
+    {
+     "feat": {
+      "id": "f2",
+      "kind": "file",
+      "text": "브라켓 공차.xlsx"
+     },
+     "w": 1.5,
+     "role": "doc"
+    },
+    {
+     "feat": {
+      "id": "w1",
+      "kind": "win",
+      "text": "광학모듈 브라켓 설계 - SOLIDWORKS"
+     },
+     "w": 1.0,
+     "role": "app"
+    }
+   ]
+  },
+  "label": {
+   "project": "P-0007",
+   "score": 0.81,
+   "source": "rule",
+   "conf": "h",
+   "cands": [
+    [
+     "P-0007",
+     0.81
+    ]
+   ],
+   "domain": "DEV"
+  }
+ },
+ "HG12": {
+  "unit": {
+   "id": "u_c",
+   "kind": "S1",
+   "ev": [
+    {
+     "feat": {
+      "id": "m1",
+      "kind": "mail",
+      "text": "[고객사:C01] 사양 문의",
+      "dom_labels": [
+       "고객사:C01"
+      ]
+     },
+     "w": 2.0,
+     "role": "boundary"
+    },
+    {
+     "feat": {
+      "id": "m2",
+      "kind": "mail",
+      "text": "RE: 사양 회신"
+     },
+     "w": 2.0,
+     "role": "boundary"
+    }
+   ]
+  },
+  "label": {
+   "project": null,
+   "score": 0.09,
+   "source": "none",
+   "conf": "l",
+   "cands": [
+    [
+     "P-0007",
+     0.09
+    ],
+    [
+     "P-0008",
+     0.09
+    ]
+   ],
+   "domain": "UNC"
+  }
+ },
+ "HG13": {
+  "unit": {
+   "id": "u_d",
+   "kind": "S1",
+   "ev": [
+    {
+     "feat": {
+      "id": "m1",
+      "kind": "mail",
+      "text": "8월 예산 정산 자료 요청"
+     },
+     "w": 2.0,
+     "role": "boundary"
+    },
+    {
+     "feat": {
+      "id": "f1",
+      "kind": "file",
+      "text": "예산정산_8월.xlsx"
+     },
+     "w": 1.5,
+     "role": "doc"
+    }
+   ]
+  },
+  "label": {
+   "project": "P-9904",
+   "score": 1.0,
+   "source": "domain_rule",
+   "conf": "m",
+   "cands": [],
+   "domain": "COM"
+  }
+ },
+ "HG14": {
+  "unit": {
+   "id": "u_e",
+   "kind": "SELF",
+   "ev": [
+    {
+     "feat": {
+      "id": "f1",
+      "kind": "file",
+      "text": "메모.txt"
+     },
+     "w": 1.5,
+     "role": "doc"
+    }
+   ]
+  },
+  "label": {
+   "project": null,
+   "score": 0.0,
+   "source": "none",
+   "conf": "l",
+   "cands": [],
+   "domain": "UNC"
+  }
+ },
+ "HG15": {
+  "unit": {
+   "id": "u_f",
+   "kind": "S1",
+   "ev": [
+    {
+     "feat": {
+      "id": "m1",
+      "kind": "mail",
+      "text": "브라켓 수율개선 요청"
+     },
+     "w": 2.0,
+     "role": "boundary"
+    },
+    {
+     "feat": {
+      "id": "f1",
+      "kind": "file",
+      "text": "양산라인 브라켓.xlsx"
+     },
+     "w": 1.5,
+     "role": "doc"
+    }
+   ]
+  },
+  "label": {
+   "project": null,
+   "score": 0.5,
+   "source": "none",
+   "conf": "l",
+   "cands": [
+    [
+     "P-0007",
+     0.5
+    ],
+    [
+     "P-0008",
+     0.5
+    ],
+    [
+     "P-9902",
+     0.36
+    ]
+   ],
+   "domain": "UNC"
+  }
+ },
+ "HG16": {
+  "unit": {
+   "id": "u_g",
+   "kind": "SELF",
+   "ev": [
+    {
+     "feat": {
+      "id": "f1",
+      "kind": "file",
+      "text": "하우징_v2.sldprt",
+      "exts": [
+       ".sldprt"
+      ],
+      "app": "solidworks",
+      "app_cat": "CAD"
+     },
+     "w": 1.5,
+     "role": "doc"
+    }
+   ],
+   "app_min": {
+    "CAD": 300,
+    "사무": 30
+   },
+   "effort_min": 360
+  },
+  "project": "P-0007",
+  "domain": "DEV",
+  "want": {
+   "field": "MECH",
+   "fconf": "h",
+   "func": "DESIGN",
+   "cconf": "m",
+   "wtype": [
+    "DEV",
+    "h"
+   ]
+  }
+ },
+ "HG17": {
+  "unit": {
+   "id": "u_h",
+   "kind": "S1",
+   "ev": [
+    {
+     "feat": {
+      "id": "m1",
+      "kind": "mail",
+      "text": "방열 열해석 요청"
+     },
+     "w": 2.0,
+     "role": "boundary"
+    }
+   ],
+   "app_min": {
+    "해석": 200,
+    "사무": 60
+   },
+   "effort_min": 280
+  },
+  "project": null,
+  "domain": "DEV",
+  "want": {
+   "field": "THERM",
+   "fconf": "m",
+   "func": "ANALYSIS",
+   "cconf": "m",
+   "wtype": [
+    "DEV",
+    "h"
+   ]
+  }
+ },
+ "HG18": {
+  "unit": {
+   "id": "u_i",
+   "kind": "COORD",
+   "ev": [
+    {
+     "feat": {
+      "id": "m1",
+      "kind": "mail",
+      "text": "회로 검토 요청"
+     },
+     "w": 2.0,
+     "role": "boundary"
+    }
+   ],
+   "app_min": {
+    "소통": 40,
+    "사무": 40
+   },
+   "meet_min": 60,
+   "effort_min": 160
+  },
+  "project": null,
+  "domain": "DEV",
+  "want": {
+   "func": "MEET",
+   "wtype": [
+    "PL",
+    "m"
+   ]
+  }
+ },
+ "HG19": {
+  "unit": {
+   "id": "u_j",
+   "kind": "COORD",
+   "ev": [
+    {
+     "feat": {
+      "id": "m1",
+      "kind": "mail",
+      "text": "[고객사:C01] 일정 조율",
+      "dom_labels": [
+       "고객사:C01"
+      ]
+     },
+     "w": 2.0,
+     "role": "boundary"
+    }
+   ],
+   "app_min": {
+    "소통": 40
+   },
+   "meet_min": 30,
+   "effort_min": 90
+  },
+  "project": null,
+  "domain": "MP",
+  "want": {
+   "func": "MEET",
+   "wtype": [
+    "PM",
+    "m"
+   ]
+  }
+ },
+ "HG20": {
+  "unit": {
+   "id": "u_k",
+   "kind": "SELF",
+   "ev": [
+    {
+     "feat": {
+      "id": "m1",
+      "kind": "mail",
+      "text": "입고검사 현장 방문"
+     },
+     "w": 2.0,
+     "role": "boundary"
+    }
+   ],
+   "offpc_min": 240,
+   "effort_min": 300
+  },
+  "project": null,
+  "domain": "MP",
+  "want": {
+   "func": "TEST",
+   "wtype": [
+    "FIELD",
+    "m"
+   ]
+  }
+ },
+ "HG21": {
+  "unit": {
+   "id": "u_l",
+   "kind": "S1",
+   "ev": [
+    {
+     "feat": {
+      "id": "m1",
+      "kind": "mail",
+      "text": "산학 세미나 발표 요청"
+     },
+     "w": 2.0,
+     "role": "boundary"
+    }
+   ],
+   "app_min": {
+    "사무": 120
+   },
+   "effort_min": 150
+  },
+  "project": null,
+  "domain": "EXT",
+  "want": {
+   "func": "DOC",
+   "wtype": [
+    "EDU",
+    "m"
+   ]
+  }
+ },
+ "HG22": {
+  "unit": {
+   "id": "u_m",
+   "kind": "S1",
+   "ev": [
+    {
+     "feat": {
+      "id": "m1",
+      "kind": "mail",
+      "text": "8월 예산 정산 요청"
+     },
+     "w": 2.0,
+     "role": "boundary"
+    }
+   ],
+   "app_min": {
+    "사무": 100
+   },
+   "effort_min": 110
+  },
+  "project": null,
+  "domain": "COM",
+  "want": {
+   "func": "DOC",
+   "wtype": [
+    "OFFICE",
+    "m"
+   ]
+  }
+ },
+ "HG23": {
+  "unit": {
+   "id": "u_n",
+   "kind": "S1",
+   "ev": [
+    {
+     "feat": {
+      "id": "m1",
+      "kind": "mail",
+      "text": "[과제:P-0007] LLM 기반 시험 성적서 자동 분류"
+     },
+     "w": 2.0,
+     "role": "boundary"
+    }
+   ]
+  },
+  "cases": [
+   [
+    "DEV",
+    "P-0007"
+   ],
+   [
+    "AX",
+    "P-0011"
+   ]
+  ],
+  "want": {
+   "dev": true,
+   "ax": false
+  }
+ },
+ "HG24": {
+  "units": [
+   {
+    "id": "u_w0",
+    "kind": "SELF",
+    "follow_of": null,
+    "fams": {
+     "d_weekly": 2
+    },
+    "start": 1000
+   },
+   {
+    "id": "u_w1",
+    "kind": "SELF",
+    "follow_of": "u_w0",
+    "fams": {
+     "d_weekly": 2
+    },
+    "start": 1001
+   },
+   {
+    "id": "u_w2",
+    "kind": "SELF",
+    "follow_of": "u_w1",
+    "fams": {
+     "d_weekly": 2
+    },
+    "start": 1002
+   },
+   {
+    "id": "u_w3",
+    "kind": "SELF",
+    "follow_of": "u_w2",
+    "fams": {
+     "d_weekly": 2
+    },
+    "start": 1003
+   },
+   {
+    "id": "u_w4",
+    "kind": "SELF",
+    "follow_of": "u_w3",
+    "fams": {
+     "d_weekly": 2
+    },
+    "start": 1004
+   },
+   {
+    "id": "u_w5",
+    "kind": "SELF",
+    "follow_of": "u_w4",
+    "fams": {
+     "d_weekly": 2
+    },
+    "start": 1005
+   },
+   {
+    "id": "u_w6",
+    "kind": "SELF",
+    "follow_of": "u_w5",
+    "fams": {
+     "d_weekly": 2
+    },
+    "start": 1006
+   },
+   {
+    "id": "u_w7",
+    "kind": "SELF",
+    "follow_of": "u_w6",
+    "fams": {
+     "d_weekly": 2
+    },
+    "start": 1007
+   },
+   {
+    "id": "u_s1",
+    "kind": "SELF",
+    "fams": {
+     "d_thermal": 2
+    },
+    "start": 2000
+   },
+   {
+    "id": "u_s2",
+    "kind": "SELF",
+    "fams": {
+     "d_thermal": 2
+    },
+    "start": 2001
+   },
+   {
+    "id": "u_r1",
+    "kind": "S1",
+    "fams": {
+     "d_report@s1+s2": 3
+    },
+    "peer": "P1",
+    "start": 3000
+   },
+   {
+    "id": "u_r2",
+    "kind": "S1",
+    "fams": {
+     "d_report@s1+s2": 3
+    },
+    "peer": "P1",
+    "start": 3001
+   },
+   {
+    "id": "u_x1",
+    "kind": "SELF",
+    "fams": {
+     "d_mix": 2
+    },
+    "start": 4000
+   },
+   {
+    "id": "u_x2",
+    "kind": "SELF",
+    "fams": {
+     "d_mix": 2
+    },
+    "start": 4001
+   }
+  ],
+  "confirmed": {
+   "u_x1": "P-0007",
+   "u_x2": "P-0008"
+  },
+  "groups": [
+   [
+    "u_r1"
+   ],
+   [
+    "u_r2"
+   ],
+   [
+    "u_s1",
+    "u_s2"
+   ],
+   [
+    "u_w0",
+    "u_w1",
+    "u_w2",
+    "u_w3",
+    "u_w4",
+    "u_w5",
+    "u_w6",
+    "u_w7"
+   ],
+   [
+    "u_x1"
+   ],
+   [
+    "u_x2"
+   ]
+  ]
+ },
+ "HG25": {
+  "material": {
+   "docs": [
+    [
+     "[과제:P-0012]_공차해석_v3.xlsx",
+     300
+    ],
+    [
+     "보고서.pptx",
+     400
+    ]
+   ]
+  },
+  "title": [
+   "공차해석",
+   "doc"
+  ]
+ },
+ "HG26": {
+  "material": {
+   "subjects": [
+    "RE: [과제:P-0012] 브라켓 체결부 검토 부탁드립니다"
+   ]
+  },
+  "title": [
+   "브라켓 체결부",
+   "subject"
+  ]
+ },
+ "HG27": {
+  "material": {
+   "docs": [
+    [
+     "주간보고_20261007.xlsx",
+     70
+    ]
+   ]
+  },
+  "title": [
+   "주간보고",
+   "doc"
+  ]
+ },
+ "HG28": {
+  "material": {
+   "field": "OPT",
+   "func": "ANALYSIS"
+  },
+  "title": [
+   "광학·해석·분석 단위업무",
+   "generic"
+  ]
+ },
+ "HG29": {
+  "item": {
+   "kinds": "메일수신 2·메일발신 3·팀즈 3·문서 2",
+   "subjects": [
+    "[과제:P-0012] 공차 해석 결과 공유 건",
+    "RE: 공차 해석 조건 확인 요청"
+   ],
+   "files": [
+    "공차해석_v3.xlsx",
+    "브라켓_조립도.pdf"
+   ],
+   "apps": [
+    "해석 프로그램",
+    "엑셀"
+   ],
+   "domains": [
+    "[고객사:C01]",
+    "사내"
+   ],
+   "cands": [
+    [
+     "P-0012",
+     0.62
+    ],
+    [
+     "P-0003",
+     0.21
+    ]
+   ],
+   "hint": "OPT/ANALYSIS/DEV"
+  },
+  "seen": [
+   "광학 모듈 공차 해석",
+   "시험 지그 설계",
+   "브라켓 체결부 검토",
+   "주간보고",
+   "열해석 모델 정리",
+   "광학 모듈 공차 해석",
+   "시험 지그 설계",
+   "브라켓 체결부 검토",
+   "주간보고",
+   "열해석 모델 정리",
+   "광학 모듈 공차 해석",
+   "시험 지그 설계",
+   "브라켓 체결부 검토",
+   "주간보고",
+   "열해석 모델 정리",
+   "광학 모듈 공차 해석",
+   "시험 지그 설계",
+   "브라켓 체결부 검토",
+   "주간보고",
+   "열해석 모델 정리"
+  ],
+  "overlap": [
+   "29 | 메일수신 1·문서 1 | 시험 성적서 | 성적서.pdf | - | 사내 | P-0012 0.40 | OPT/TEST/DEV → 시험 성적서 정리"
+  ],
+  "n_items": 60,
+  "budget": {
+   "pack_in": 8000,
+   "pack_out": 5000,
+   "est_out": 120,
+   "max_items": 30,
+   "env": 80
+  },
+  "cases": {
+   "0": {
+    "fixed": 2429,
+    "compact": false,
+    "per_batch": [
+     30,
+     30
+    ],
+    "first_prompt_chars": 7770,
+    "item_line": 180
+   },
+   "10": {
+    "fixed": 2776,
+    "compact": false,
+    "per_batch": [
+     28,
+     28,
+     4
+    ],
+    "first_prompt_chars": 7753,
+    "item_line": 180
+   },
+   "40": {
+    "fixed": 3844,
+    "compact": false,
+    "per_batch": [
+     22,
+     22,
+     16
+    ],
+    "first_prompt_chars": 7729,
+    "item_line": 180
+   },
+   "80": {
+    "fixed": 5268,
+    "compact": false,
+    "per_batch": [
+     15,
+     15,
+     15
+    ],
+    "first_prompt_chars": 7879,
+    "item_line": 180
+   },
+   "150": {
+    "fixed": 7760,
+    "compact": true,
+    "per_batch": [
+     29,
+     29,
+     2
+    ],
+    "first_prompt_chars": 7708,
+    "item_line": 180
+   }
+  },
+  "example_chars": 2818
+ },
+ "HG30": {
+  "ids": [
+   1,
+   2,
+   3
+  ],
+  "cases": [
+   {
+    "ans": {
+     "id": 1,
+     "project": "P-0099",
+     "field": "OPT",
+     "func": "ANALYSIS",
+     "wtype": "DEV",
+     "title": "공차 해석",
+     "new": "",
+     "dom": "",
+     "conf": "h"
+    },
+    "want": "unknown_code:project"
+   },
+   {
+    "ans": {
+     "id": 2,
+     "project": "NEW",
+     "field": "OPT",
+     "func": "ANALYSIS",
+     "wtype": "DEV",
+     "title": "열해석",
+     "new": "",
+     "dom": "",
+     "conf": "m"
+    },
+    "want": "missing:new"
+   },
+   {
+    "ans": {
+     "id": 3,
+     "project": "NONE",
+     "field": "ETC",
+     "func": "ADMIN",
+     "wtype": "OFFICE",
+     "title": "정산 3,000만원",
+     "new": "",
+     "dom": "",
+     "conf": "l"
+    },
+    "want": "bad_pattern:title"
+   },
+   {
+    "ans": {
+     "id": 1,
+     "project": "P-0007",
+     "field": "OPT",
+     "func": "ANALYSIS",
+     "wtype": "DEV",
+     "title": "공차 해석",
+     "new": "",
+     "dom": "",
+     "conf": "h",
+     "hours": 3
+    },
+    "want": "forbidden_field"
+   },
+   {
+    "ans": {
+     "id": 2,
+     "project": "NEW",
+     "field": "THERM",
+     "func": "ANALYSIS",
+     "wtype": "DEV",
+     "title": "열해석 모델 정리",
+     "new": "방열 모듈",
+     "dom": "DEV",
+     "conf": "m"
+    },
+    "want": ""
+   }
+  ]
+ },
+ "HG31": {
+  "rule": {
+   "project": "P-0007",
+   "source": "rule",
+   "conf": "m",
+   "cands": [
+    [
+     "P-0007",
+     0.7
+    ]
+   ]
+  },
+  "ai": {
+   "project": "P-0008",
+   "conf": "h"
+  },
+  "want": [
+   "P-0007",
+   "rule",
+   "H02"
+  ]
+ },
+ "HG32": {
+  "rule": {
+   "project": "P-0008",
+   "source": "rule_probable",
+   "conf": "l",
+   "cands": [
+    [
+     "P-0008",
+     0.55
+    ],
+    [
+     "P-0007",
+     0.2
+    ]
+   ]
+  },
+  "ai": {
+   "project": "P-0007",
+   "conf": "h"
+  },
+  "want": [
+   "P-0007",
+   "ai_h",
+   "H02"
+  ]
+ },
+ "HG33": {
+  "rule": {
+   "project": "P-0008",
+   "source": "rule_probable",
+   "conf": "l",
+   "cands": [
+    [
+     "P-0008",
+     0.55
+    ],
+    [
+     "P-0007",
+     0.2
+    ]
+   ]
+  },
+  "ai": {
+   "project": "P-0007",
+   "conf": "m"
+  },
+  "want": [
+   "P-0008",
+   "rule_probable",
+   null
+  ]
+ },
+ "HG34": {
+  "registry_names": {
+   "과제A": "P-0007",
+   "과제B": "P-0008"
+  },
+  "ai_pairs": [
+   [
+    "AX",
+    "Agentic AI"
+   ]
+  ],
+  "cases": [
+   {
+    "a": "광학설계",
+    "b": "광학 설계",
+    "want": {
+     "score": 10.0,
+     "zone": "auto",
+     "why": "표기 동일"
+    }
+   },
+   {
+    "a": "과제A 후속",
+    "b": "과제A",
+    "want": {
+     "score": 0.52,
+     "zone": "ask",
+     "why": "이름 0.67"
+    }
+   },
+   {
+    "a": "브라켓(양산)",
+    "b": "브라켓(선행)",
+    "want": {
+     "score": "-inf",
+     "zone": "reject",
+     "why": "괄호 꼬리 상이('양산'/'선행')"
+    }
+   },
+   {
+    "a": "센서 2차",
+    "b": "센서 3차",
+    "want": {
+     "score": "-inf",
+     "zone": "reject",
+     "why": "숫자 토큰 상이"
+    }
+   },
+   {
+    "a": "AX",
+    "b": "Agentic AI",
+    "want": {
+     "score": 0.99,
+     "zone": "ask",
+     "why": "AI 통합 제안 +1.0 · AI 단독 근거 → 질문 구간으로 제한"
+    }
+   },
+   {
+    "a": "과제A",
+    "b": "과제B",
+    "want": {
+     "score": "-inf",
+     "zone": "reject",
+     "why": "둘 다 레지스트리 과제(다른 ID)"
+    }
+   },
+   {
+    "a": "공차해석 자동화",
+    "b": "공차 해석 자동화 툴",
+    "want": {
+     "score": 1.135,
+     "zone": "auto",
+     "why": "이름 0.92"
+    }
+   }
+  ]
+ },
+ "HG35": {
+  "names": [
+   "열해석",
+   "열 해석",
+   "열해석(양산)"
+  ],
+  "clusters": [
+   [
+    "열 해석",
+    "열해석"
+   ],
+   [
+    "열해석(양산)"
+   ]
+  ]
+ },
+ "HG36": {
+  "df": {
+   "광정렬": 1,
+   "지그": 9,
+   "공차": 2
+  },
+  "n_groups": 100,
+  "feats": [
+   {
+    "id": "m1",
+    "kind": "mail",
+    "text": "광정렬 지그 공차 요청"
+   },
+   {
+    "id": "f1",
+    "kind": "file",
+    "text": "광정렬_지그_공차.xlsx"
+   }
+  ],
+  "corr1": {
+   "id": "c_1",
+   "scope": "similar",
+   "set": {
+    "project": "P-0007"
+   },
+   "target": {
+    "conv_keys": [
+     "t0123456789abcdef"
+    ],
+    "fam_keys": []
+   }
+  },
+  "corr2": {
+   "id": "c_2",
+   "scope": "similar",
+   "set": {
+    "project": "P-0007"
+   },
+   "target": {
+    "conv_keys": [],
+    "fam_keys": []
+   }
+  },
+  "learn1": [
+   [
+    "LK-conv-t0123456",
+    "active",
+    1
+   ],
+   [
+    "LT-df9d6881",
+    "candidate",
+    1
+   ],
+   [
+    "LT-465c0b43",
+    "candidate",
+    1
+   ]
+  ],
+  "learn2": [
+   [
+    "LT-df9d6881",
+    "active",
+    2
+   ],
+   [
+    "LT-465c0b43",
+    "active",
+    2
+   ]
+  ]
+ },
+ "HG37": {
+  "feat": {
+   "id": "m9",
+   "kind": "mail",
+   "text": "RE: 일정 회신",
+   "conv": "t0123456789abcdef"
+  },
+  "tag": [
+   "P-0007",
+   5.0
+  ]
+ },
+ "HG38": {
+  "agree": 2,
+  "disagree": 4,
+  "want": [
+   "retired",
+   0.3333333333333333
+  ]
+ },
+ "HG39": {
+  "input": {
+   "schema": "lm27.registry/1",
+   "version": 1,
+   "projects": [
+    {
+     "id": "P-9904",
+     "name": "x",
+     "domain": "COM"
+    },
+    {
+     "id": "P-0001",
+     "name": "과제A",
+     "domain": "DEV",
+     "codenames": [
+      "PROJ-A"
+     ],
+     "copilot_desc": "PROJ-A 후속 개발"
+    },
+    {
+     "id": "P-0002",
+     "name": "과제 A",
+     "domain": "XX"
+    },
+    {
+     "id": "P-0003",
+     "name": "과제C",
+     "domain": "DEV",
+     "merged_into": "P-0004"
+    },
+    {
+     "id": "P-0004",
+     "name": "과제D",
+     "domain": "DEV",
+     "merged_into": "P-0003"
+    }
+   ]
+  },
+  "validate": [
+   [
+    "projects[0].id",
+    "reserved_id"
+   ],
+   [
+    "projects[1].copilot_desc",
+    "desc_has_codename"
+   ],
+   [
+    "projects[2]",
+    "alias_collision"
+   ],
+   [
+    "projects[2].domain",
+    "bad_domain"
+   ],
+   [
+    "projects[P-0003]",
+    "merge_cycle"
+   ],
+   [
+    "projects[P-0004]",
+    "merge_cycle"
+   ]
+  ]
+ },
+ "HG40": {
+  "input": [
+   [
+    "회로",
+    "fields"
+   ],
+   [
+    "광학검사",
+    "fields"
+   ]
+  ],
+  "codes": [
+   "ELEC",
+   "X_E42E7B"
+  ]
+ },
+ "HG41": {
+  "args": [
+   "P-0007",
+   "OPT",
+   "ANALYSIS"
+  ],
+  "role_id": "r_8412d7"
+ },
+ "HG42": {
+  "before": [
+   "P-0007"
+  ],
+  "after": [
+   "P-0007",
+   "P-0020"
+  ],
+  "cases": [
+   {
+    "prev": "NONE",
+    "reg_at": "before",
+    "now": "after"
+   },
+   {
+    "prev": "P-0007",
+    "reg_at": "before",
+    "now": "after"
+   },
+   {
+    "prev": "P-9904",
+    "reg_at": "before",
+    "now": "after"
+   },
+   {
+    "prev": "NONE",
+    "reg_at": "after",
+    "now": "after"
+   }
+  ],
+  "regv": [
+   "0c7c2b15",
+   "",
+   "0c7c2b15",
+   ""
+  ]
+ },
+ "HG43": {
+  "cases": [
+   [
+    "정렬",
+    [
+     "재정렬"
+    ],
+    "name",
+    false
+   ],
+   [
+    "해석",
+    [
+     "열해석"
+    ],
+    "head",
+    true
+   ],
+   [
+    "과제A",
+    [
+     "과제a의"
+    ],
+    "name",
+    true
+   ],
+   [
+    "ai",
+    [
+     "email"
+    ],
+    "name",
+    false
+   ],
+   [
+    "lidar-x",
+    [
+     "lidar",
+     "x"
+    ],
+    "name",
+    true
+   ]
+  ]
+ },
+ "HG44": {
+  "unit": {
+   "id": "u_o",
+   "kind": "SELF",
+   "ev": [
+    {
+     "feat": {
+      "id": "f1",
+      "kind": "file",
+      "text": "광학모듈 브라켓 설계.sldprt"
+     },
+     "w": 1.5,
+     "role": "doc"
+    },
+    {
+     "feat": {
+      "id": "f2",
+      "kind": "file",
+      "text": "광학모듈 브라켓 공차.xlsx"
+     },
+     "w": 1.5,
+     "role": "doc"
+    },
+    {
+     "feat": {
+      "id": "w1",
+      "kind": "win",
+      "text": "브라켓 체결 검토 - SOLIDWORKS"
+     },
+     "w": 1.0,
+     "role": "app"
+    }
+   ]
+  },
+  "label": {
+   "project": "P-0007",
+   "score": 0.88,
+   "source": "rule",
+   "conf": "h",
+   "cands": [
+    [
+     "P-0007",
+     0.88
+    ]
+   ],
+   "domain": "DEV"
+  }
+ },
+ "HG45": {
+  "unit": {
+   "id": "u_p",
+   "kind": "SELF",
+   "ev": [
+    {
+     "feat": {
+      "id": "m1",
+      "kind": "mail",
+      "text": "입고검사 결과 정리"
+     },
+     "w": 2.0,
+     "role": "boundary"
+    }
+   ],
+   "app_min": {
+    "사무": 60
+   },
+   "effort_min": 60
+  },
+  "project": null,
+  "want": {
+   "field": "QA",
+   "func": "DOC"
+  }
+ },
+ "HG46": {
+  "sample": {
+   "dom": "DEV",
+   "title": "공차해석",
+   "files": [
+    "공차해석_v3.xlsx",
+    "브라켓_조립도.pdf"
+   ],
+   "subject": "[과제:P-0012] 공차 해석 결과 공유",
+   "peer": "[고객사:C01]"
+  },
+  "n_samples": 120,
+  "max_lines": 100,
+  "pack_in": 8000,
+  "want": {
+   "empty_registry_lines": 80,
+   "reg10_lines": 75,
+   "line_chars": 80,
+   "header_chars": 1442
+  }
+ }
+}

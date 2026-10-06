@@ -157,26 +157,30 @@ def schema_snapshot(schemas: dict) -> dict:
 # ── 감사 이벤트 형식(P §15.2·§15.3 · T20) ─────────────────────────────────────────────
 AUDIT_EVS = frozenset({"collect_batch", "load_resanitize", "gate_copilot", "gate_prompt", "gate_team", "rewrite_redact",
                        "key", "config", "selftest", "merge"})
-# 이벤트 본문 키는 P §15.2 의 18개만(계약 §3.13). 세그먼트 봉투 필드(id·kind)는 envelope=True 일 때만 허용.
+# 이벤트 본문 키는 P §15.2 의 18개만(계약 §3.13). 본문의 경로 ID 키는 path_id(계약 v1.2 C10 — 봉투 src = 단계 이름과
+# 겹치지 않게). 세그먼트 봉투 필드(id·kind·src)는 envelope=True 일 때만 허용.
 AUDIT_NUM_KEYS = frozenset({"rows_in", "rows_out", "dur_ms"})
 AUDIT_DICT_KEYS = frozenset({"dropped", "masked", "priv", "ad", "err"})
 AUDIT_STR_RX = {
     "ev": re.compile(r"^[a-z_]{2,24}$"), "ts_utc": re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$"),
     "pc_id": re.compile(r"^pcx?_[0-9a-f]{16}$"), "stage": re.compile(r"^[a-z][a-z0-9_:\-]{0,47}$"),
-    "src": re.compile(r"^(?:(?:mail|cal|teams|pc)\.[a-z]{2,10}|[a-z][a-z0-9_]{1,15})$"), "rules_ver": VER_RX,
+    "path_id": re.compile(r"^(?:(?:mail|cal|teams|pc)\.[a-z]{2,10}|[a-z][a-z0-9_]{1,15})$"), "rules_ver": VER_RX,
     "rules_hash": HASH16_RX, "config_hash": HASH16_RX, "kid": re.compile(r"^k[0-9a-f]{8}$"),
     "out_sha256": re.compile(r"^[0-9a-f]{16}(?:[0-9a-f]{48})?$")}
-AUDIT_ENVELOPE_RX = {"id": HASH16_RX, "kind": re.compile(r"^privacy_audit$")}
+AUDIT_ENVELOPE_RX = {"id": HASH16_RX, "kind": re.compile(r"^privacy_audit$"),
+                     "src": re.compile(r"^[a-z][a-z0-9_:\-]{0,47}$")}      # 봉투 src = 단계 이름(C10)
 AUDIT_SUBKEY_RX = re.compile(r"^(?:[a-z][a-z0-9_.:\-]{0,47}|[A-Z][A-Za-z0-9_]{0,47})$")   # 범주·사유 코드 또는 예외 타입명
-_HASH_KEYS = frozenset({"rules_hash", "config_hash", "out_sha256", "id"})   # 16진 해시 — 숫자열 검사 면제
+# 16진 해시·ID — 숫자열 검사 면제(pc_id 도 해시 앞 16hex 라 숫자 9자 이상이 정상으로 나온다: pc_0123456789abcdef)
+_HASH_KEYS = frozenset({"rules_hash", "config_hash", "out_sha256", "id", "pc_id"})
 _DIGITS9 = re.compile(r"\d{9,}")
 _HANGUL_SENTENCE = re.compile(r"[가-힣]{2,}\s+[가-힣]{2,}")
 
 
 def audit_violations(ev: dict, *, envelope: bool = False) -> list:
-    """감사 이벤트 1건의 형식 위반 코드 목록(빈 목록 = 통과). 본문 키는 P §15.2 의 18개만(계약 §3.13 — ``envelope=True``
-    이면 세그먼트 봉투 필드 ``id``·``kind`` 도 허용), 값은 숫자·판·16진 해시·범주 코드·경로 ID·단계 이름 뿐, 문자열에
-    ``@``·9자리 이상 숫자열·한글 문장 금지(T20). 위반 코드에는 키 이름만 넣는다(값 없음)."""
+    """감사 이벤트 1건의 형식 위반 코드 목록(빈 목록 = 통과). 본문 키는 P §15.2 의 18개만(계약 §3.13 — 경로 ID 키는
+    ``path_id``(C10), ``envelope=True`` 이면 세그먼트 봉투 필드 ``id``·``kind``·``src`` 도 허용), 값은 숫자·판·16진
+    해시·범주 코드·경로 ID·단계 이름 뿐, 문자열에 ``@``·9자리 이상 숫자열·한글 문장 금지(T20 — 16진 해시·ID 키는 숫자열
+    검사 면제). 위반 코드에는 키 이름만 넣는다(값 없음)."""
     v = []
     if not isinstance(ev, dict):
         return ["type"]
@@ -208,7 +212,7 @@ def audit_violations(ev: dict, *, envelope: bool = False) -> list:
 
 
 _AUDIT_REF = {"ev": "collect_batch", "ts_utc": "2026-10-05T01:02:03Z", "pc_id": "pc_9a1b2c3d4e5f6a7b", "stage": "collect",
-              "src": "mail.com", "rules_ver": "2026.10.0", "rules_hash": "4a684ebdcf99f956",
+              "path_id": "mail.com", "rules_ver": "2026.10.0", "rules_hash": "4a684ebdcf99f956",
               "config_hash": "9c1e0b7a22d4f3e1", "kid": "k3f9a1c2e", "rows_in": 812, "rows_out": 640,
               "dropped": {"ad": 160, "cred": 2, "bad_raw": 10},
               "masked": {"phone": 14, "email": 230, "money": 9, "person": 412, "customer": 21},
@@ -221,7 +225,7 @@ def _audit_probes():
     yield dict(_AUDIT_REF, stage="collect" + chr(64) + "x")
     yield dict(_AUDIT_REF, extra_text="x")
     yield dict(_AUDIT_REF, masked={"phone": "열네 건"})
-    yield dict(_AUDIT_REF, src="정제 시험 문장")
+    yield dict(_AUDIT_REF, path_id="정제 시험 문장")
     yield dict(_AUDIT_REF, err={"1" * 10: 1})
 
 

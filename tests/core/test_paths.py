@@ -146,6 +146,37 @@ class ContractTest(PathsCase):
         want = self.lad / "agent" / "store" / "privacy_audit" / "202610" / "20261005.jsonl"
         self.assertEqual(self.p.privacy_audit_file("2026-10-05"), want)
 
+    def test_v12_c19_and_w1_methods(self):
+        """계약 v1.2 §0.7 C19 + W1 경로 CR(W1 통합 창): 브리지 상태 파일 6 · 오프라인 레지스트리 · outbox 파일 · AI 보존소
+        폴더 · 번들 탐침 · 브리지 실행 파일 3 · 분석 time/hier 하위 — 모두 순수(폴더를 만들지 않음)·인자 검증."""
+        d, b = self.root / "data", self.lad / "bridge"
+        want = {
+            self.p.bridge_profile(): b / "bridge_profile.json", self.p.bridge_profile_id(): b / "profile_id.txt",
+            self.p.bridge_trace(): b / "trace.jsonl", self.p.bridge_probe_last(): b / "probe_last.json",
+            self.p.bridge_rawcap(): b / "rawcap", self.p.bridge_diagnose(): b / "diagnose",
+            self.p.outbox_file("pending", "lm27_team_bundle_x_0123456789ab.json"):
+                d / "outbox" / "team" / "pending" / "lm27_team_bundle_x_0123456789ab.json",
+            self.p.ai_store_dir(): d / "ai" / "store",
+            self.p.bundle_probe("a1b2c3d4"): d / ".probe_a1b2c3d4",
+            self.p.ai_journal(RUN, "task_label"): d / "ai" / "runs" / RUN / "task_label.jsonl",
+            self.p.ai_result(RUN, "task_label"): d / "ai" / "runs" / RUN / "task_label.result.json",
+            self.p.ai_capabilities(RUN): d / "ai" / "runs" / RUN / "capabilities.json",
+            self.p.analysis_time(RUN): d / "derived" / "analysis" / RUN / "time",
+            self.p.analysis_time_file(RUN, "env_slots.jsonl"): d / "derived" / "analysis" / RUN / "time" / "env_slots.jsonl",
+            self.p.analysis_hier(RUN): d / "derived" / "analysis" / RUN / "hier",
+            self.p.offline_registry(self.tmp): Path(self.tmp) / "lm27_registry.json",
+        }
+        for got, exp in want.items():
+            self.assertEqual(got, exp)
+        self.assertEqual(self.p.ai_store_dir(), self.p.ai_store("task_label").parent)
+        for fn in (lambda: self.p.outbox_file("pending", "..\\x"), lambda: self.p.outbox_file("all", "a.json"),
+                   lambda: self.p.bundle_probe("../x"), lambda: self.p.bundle_probe("XYZ"),
+                   lambda: self.p.ai_journal(RUN, "../x"), lambda: self.p.ai_result("r1", "s"),
+                   lambda: self.p.analysis_time_file(RUN, "..\\x"), lambda: self.p.analysis_hier("x"),
+                   lambda: self.p.offline_registry(""), lambda: self.p.offline_registry(None)):
+            self.assertRaises(ValueError, fn)
+        self.assertEqual(os.listdir(self.tmp), [])
+
 
 class ValidationTest(PathsCase):
     def test_bad_ids_rejected(self):

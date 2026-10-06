@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>LM27 팀 대시보드</title>
+<link rel="stylesheet" href="/static/lm27.css">
+</head>
+<body data-kind="team" data-variant="live">
+<!-- LM27 팀 대시보드 셸(팀 서버 '/' · TEAM §3.12 고정 사전 · R §7) — 데이터 없음. team.js 가 /api/team 으로 읽는다.
+     아이콘은 web/common/icons.svg 의 symbol 사본(R §8.2.9) — 시험(test_report_static)이 원본과 같은지 대조한다.
+     CSP(script-src 'self' · style-src 'self') 아래라 인라인 스크립트·스타일이 없다. -->
+<svg hidden aria-hidden="true" focusable="false"><defs>
+<symbol id="i-ok" viewBox="0 0 20 20"><path d="M4 10.5l4 4 8-9" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+<symbol id="i-warn" viewBox="0 0 20 20"><path d="M10 3.5v9" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/><circle cx="10" cy="16.2" r="1.5" fill="currentColor"/></symbol>
+<symbol id="i-serious" viewBox="0 0 20 20"><path d="M10 2.5l8.5 15h-17z" fill="currentColor"/></symbol>
+<symbol id="i-bad" viewBox="0 0 20 20"><path d="M5 5l10 10M15 5L5 15" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></symbol>
+<symbol id="i-unknown" viewBox="0 0 20 20"><path d="M6.8 7.4a3.2 3.2 0 1 1 4.6 2.9c-.9.5-1.4 1.1-1.4 2v.8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="10" cy="16.3" r="1.4" fill="currentColor"/></symbol>
+<symbol id="i-run" viewBox="0 0 20 20"><path d="M16 10a6 6 0 1 1-1.8-4.3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M15.8 2.6v4h-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+<symbol id="i-info" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10 9v5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="10" cy="6.2" r="1.2" fill="currentColor"/></symbol>
+<symbol id="i-pc" viewBox="0 0 20 20"><rect x="2.5" y="3.5" width="15" height="10" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M7 17h6M10 13.5V17" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+<symbol id="i-cloud" viewBox="0 0 20 20"><path d="M6 15.5h8.5a3.5 3.5 0 0 0 .4-7 5 5 0 0 0-9.6 1.2A3 3 0 0 0 6 15.5z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></symbol>
+<symbol id="i-mail" viewBox="0 0 20 20"><rect x="2.5" y="4.5" width="15" height="11" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M3 5.5l7 5.5 7-5.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></symbol>
+<symbol id="i-cal" viewBox="0 0 20 20"><rect x="3" y="4.5" width="14" height="12.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M3 8.5h14M7 2.5v4M13 2.5v4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+<symbol id="i-chat" viewBox="0 0 20 20"><path d="M4 4.5h12a1.5 1.5 0 0 1 1.5 1.5v7a1.5 1.5 0 0 1-1.5 1.5H9l-4 3v-3H4A1.5 1.5 0 0 1 2.5 13V6A1.5 1.5 0 0 1 4 4.5z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></symbol>
+<symbol id="i-doc" viewBox="0 0 20 20"><path d="M5 2.5h6.5l3.5 3.5v11.5H5z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M11.5 2.5V6H15M7.5 10h5M7.5 13h5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></symbol>
+<symbol id="i-app" viewBox="0 0 20 20"><rect x="3" y="3" width="6" height="6" rx="1" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="11" y="3" width="6" height="6" rx="1" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="3" y="11" width="6" height="6" rx="1" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="11" y="11" width="6" height="6" rx="1" fill="none" stroke="currentColor" stroke-width="1.6"/></symbol>
+<symbol id="i-person" viewBox="0 0 20 20"><circle cx="10" cy="6.5" r="3.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M3.5 17.5a6.5 6.5 0 0 1 13 0" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+<symbol id="i-link" viewBox="0 0 20 20"><path d="M8.5 11.5a3 3 0 0 0 4.2 0l3-3a3 3 0 0 0-4.2-4.2l-1 1M11.5 8.5a3 3 0 0 0-4.2 0l-3 3a3 3 0 0 0 4.2 4.2l1-1" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+<symbol id="i-table" viewBox="0 0 20 20"><rect x="2.5" y="3.5" width="15" height="13" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M2.5 8h15M2.5 12.3h15M8 8v8.5" fill="none" stroke="currentColor" stroke-width="1.4"/></symbol>
+<symbol id="i-download" viewBox="0 0 20 20"><path d="M10 3v9.5M6 8.5l4 4 4-4M3.5 15v2h13v-2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+<symbol id="i-upload" viewBox="0 0 20 20"><path d="M10 13V3.5M6 7.5l4-4 4 4M3.5 15v2h13v-2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+<symbol id="i-play" viewBox="0 0 20 20"><path d="M6.5 4l9 6-9 6z" fill="currentColor"/></symbol>
+<symbol id="i-stop" viewBox="0 0 20 20"><rect x="5" y="5" width="10" height="10" rx="1.5" fill="currentColor"/></symbol>
+<symbol id="i-lock" viewBox="0 0 20 20"><rect x="4" y="9" width="12" height="8.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M6.8 9V6.5a3.2 3.2 0 0 1 6.4 0V9" fill="none" stroke="currentColor" stroke-width="1.6"/></symbol>
+<symbol id="i-expand" viewBox="0 0 20 20"><path d="M7.5 5l6 5-6 5z" fill="currentColor"/></symbol>
+<symbol id="i-collapse" viewBox="0 0 20 20"><path d="M5 7.5l5 6 5-6z" fill="currentColor"/></symbol>
+<symbol id="i-close" viewBox="0 0 20 20"><path d="M5.5 5.5l9 9M14.5 5.5l-9 9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+</defs></svg>
+<div id="team-root">
+<header class="app-head" id="team-head"><h1>LM27 팀 대시보드</h1></header>
+<nav class="head-band" aria-label="바로 가기"><a href="/admin">관리 화면</a> · <a href="/report">팀 보고서 파일(전체판)</a> · <a href="/report/share">공유판</a></nav>
+<div id="team-nav"></div>
+<main id="app" tabindex="-1"><p class="empty">팀 데이터를 읽는 중입니다.</p></main>
+</div>
+<noscript><p>이 화면은 브라우저 스크립트로 그립니다 — 스크립트를 켠 브라우저에서 여세요.</p></noscript>
+<script src="/static/lm27ui.js"></script>
+<script src="/static/lm27charts.js"></script>
+<script src="/static/team.js"></script>
+</body>
+</html>

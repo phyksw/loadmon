@@ -65,6 +65,46 @@ class LockTest(BundleTestCase):
             self.assertTrue(lk.is_held_here(self.paths))
         self.assertFalse(lk.is_held_here(self.paths))
 
+    def _other_thread_can_lock(self) -> bool:
+        res = []
+
+        def worker():
+            try:
+                with lk.BundleLock(self.paths, "fg-write", 0.3):
+                    res.append(True)
+            except lk.BundleBusy:
+                res.append(False)
+        t = threading.Thread(target=worker)
+        t.start()
+        t.join(10)
+        return res == [True]
+
+    def test_same_instance_nested_with_releases(self):
+        """W1 통합 창 회귀 — 같은 인스턴스를 중첩해 잡아도 나오면 풀린다(이전: 안쪽 해제가 바깥 해제를 지워 누수)."""
+        lock = lk.BundleLock(self.paths, "export", 1)
+        with lock:
+            with lock:
+                with lock:
+                    self.assertTrue(lock.held)
+                self.assertTrue(lock.held)
+            self.assertTrue(lk.is_held_here(self.paths))
+        self.assertFalse(lock.held)
+        self.assertFalse(lk.is_held_here(self.paths))
+        self.assertTrue(self._other_thread_can_lock())
+
+    def test_same_instance_acquire_twice_release_twice(self):
+        lock = lk.BundleLock(self.paths, "export", 1)
+        lock.acquire()
+        lock.acquire()
+        lock.release()
+        self.assertTrue(lk.is_held_here(self.paths))                 # 한 번 더 풀어야 놓인다
+        self.assertFalse(self._other_thread_can_lock())
+        lock.release()
+        self.assertFalse(lk.is_held_here(self.paths))
+        lock.release()                                               # 넘치는 해제는 무해
+        self.assertFalse(lock.held)
+        self.assertTrue(self._other_thread_can_lock())
+
     def test_other_thread_waits(self):
         got = []
         outer = lk.BundleLock(self.paths, "export", 1).acquire()

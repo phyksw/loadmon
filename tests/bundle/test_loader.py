@@ -108,6 +108,26 @@ class IterRecordsTest(LoaderBase):
         raw = list(loader.iter_records(self.paths, "teams", overlay=False))
         self.assertTrue(all(r["body_masked"] for r in raw))
 
+    def test_blank_text_uses_redact_fields_single_source_C11(self):
+        """계약 v1.2 §0.7 C11(W1 통합 창): 비울 열 = lm27.privacy.records.redact_fields(kind) — 정제문 열 + act_cues
+        (옛 '_masked 로 끝나는 열' 규칙은 act_cues 를 남겼다). 키·시간·id 는 그대로, 저장 kind 가 아니면 바꾸지 않는다."""
+        from lm27.privacy.records import redact_fields
+        row = {"id": "0123456789abcdef", "kind": "teams", "ts_utc": "2026-09-01T00:00:00Z", "msg_key": "m0123456789abcdef",
+               "chat_key": "c0123456789abcdef", "body_masked": "본문", "file_names_masked": ["a.xlsx"],
+               "chat_title_masked": "방", "act_cues": ["req"], "direction": "received"}
+        out, ch = loader.blank_text(row)
+        self.assertTrue(ch)
+        self.assertEqual((out["body_masked"], out["file_names_masked"], out["chat_title_masked"], out["act_cues"]),
+                         ("", [], "", []))
+        for k in ("id", "kind", "ts_utc", "msg_key", "chat_key", "direction"):
+            self.assertEqual(out[k], row[k])
+        self.assertEqual(row["act_cues"], ["req"], "원본은 바꾸지 않는다")
+        self.assertIn("act_cues", redact_fields("teams"))
+        again, ch2 = loader.blank_text(out)
+        self.assertFalse(ch2)
+        self.assertEqual(loader.blank_text({"kind": "privacy_audit", "x_masked": "y"}), ({"kind": "privacy_audit",
+                                                                                            "x_masked": "y"}, False))
+
     def test_tombstoned_and_missing(self):
         a = self.put(self.i1, "teams", B.rows("teams", self.i1.pc_id, 2))
         b = self.put(self.i1, "teams", B.rows("teams", self.i1.pc_id, 3, start="2026-09-03T00:00:00Z"))

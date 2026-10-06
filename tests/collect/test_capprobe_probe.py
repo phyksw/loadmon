@@ -308,7 +308,10 @@ EXPECT: dict[str, dict[str, tuple[str, set | frozenset]]] = {
     "idx_zero_ok": {"mail.index": ("ok", E), "cal.index": ("ok", E)},
     "clm": {"env": ("fail", {"R-CLM"}), "mail.com": ("fail", {"R-CLM"}), "cal.com": ("fail", {"R-CLM"}),
             "mail.index": ("fail", {"R-CLM"}), "cal.index": ("fail", {"R-CLM"}), "teams.uia": ("fail", {"R-CLM"}),
-            "pc.sampler": ("fail", {"R-CLM"}), "edge_cdp_policy": ("ok", E), "pc.events": ("ok", E)},
+            "pc.sampler": ("fail", {"R-CLM"}), "edge_cdp_policy": ("ok", E),
+            # W1 통합 창 결함 수정: PS 수집기 경로(pc.events·pc.recent·pc.mru)도 CLM 이면 막힌다(수집기 rc 3 + R-CLM)
+            "pc.events": ("fail", {"R-CLM"}), "pc.recent": ("fail", {"R-CLM"}), "pc.mru": ("fail", {"R-CLM"}),
+            "pc.git": ("ok", E)},
     "clm_real": {"env": ("fail", {"R-CLM"}), "mail.com": ("fail", {"R-CLM"}), "cal.com": ("fail", {"R-CLM"}),
                  "mail.index": ("fail", {"R-CLM"}), "teams.uia": ("fail", {"R-CLM"}), "pc.sampler": ("ok", E),
                  "edge_cdp_policy": ("ok", E)},

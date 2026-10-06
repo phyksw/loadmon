@@ -201,6 +201,35 @@ class TestRegistry(StoreCase):
         self.assertEqual((code, body["code"]), (422, "bad_vocab"))
 
 
+    def test_concurrent_put_one_wins_other_409(self):
+        """W1 통합 창 결함 회귀: 같은 판(version=1) PUT 두 개가 동시에 오면 하나만 200, 다른 하나는 409 — 판 확인~원자 쓰기를
+        한 잠금 안에서(검증기가 느려도). 이전: 둘 다 200 을 받고 한쪽 변경이 조용히 사라졌다(registry_history 도 덮어씀)."""
+        import threading
+        import time
+
+        def slow(obj, side):
+            time.sleep(0.4)
+            return []
+        st = B.new_store(self.dir / "cc", validator=slow)
+        out = {}
+
+        def put(tag):
+            reg = B.registry(1)
+            reg["team"] = {"label": "팀" + tag}
+            out[tag] = st.put_registry(reg)
+        th = [threading.Thread(target=put, args=(t,)) for t in ("A", "B")]
+        for t in th:
+            t.start()
+        for t in th:
+            t.join(30)
+        codes = sorted(c for c, _b in out.values())
+        self.assertEqual(codes, [200, 409])
+        win = next(tag for tag, (c, _b) in out.items() if c == 200)
+        self.assertEqual(st.registry()["team"], {"label": "팀" + win})
+        hist = json.loads(fsx.read_bytes(st.registry_history(1)))
+        self.assertEqual(hist["team"], {"label": "팀" + win})
+        st.release_server()
+
     def test_validator_unavailable_fail_closed(self):
         import importlib.util
         st = T.TeamStore(self.dir / "nv", self.st.cfg, payload_check=B.pass_check).ensure()

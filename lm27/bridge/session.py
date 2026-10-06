@@ -39,7 +39,43 @@ DEAD_SCHEMES = ("chrome-error://", "edge-error://", "edge://")
 BLANK_URL = "about:blank"                 # 웹 수집 역할이 시작 주소 없이 열 때(그 뒤 goto(url))
 STATES = ("ready", "login_required", "dead", "loading", "wrong_page", "no_input")
 _VER_RX = re.compile(r"^\d+\.\d+\.\d+\.\d+$")
+# 전용 프로필 소유 표식(W1 통합 창 — U-4 '본인 전용 프로필'): LM27 이 만든(또는 기본 위치에서 입양한) Edge 프로필 폴더에만
+# 있다. 손상 프로필 재생성(이름 바꾸기·옛 .bad-* 정리)은 이 표식이 있고 profile_id 가 맞는 폴더에만 한다.
+PROFILE_MARK = "lm27_profile.json"
+PROFILE_MARK_SCHEMA = "lm27.edge_profile/1"
+# 브라우저 기본 사용자 데이터 루트(회사·개인 기본 프로필 — U-4 불허): 이 아래는 절대 프로필로 쓰지 않는다
+_BROWSER_ROOT_RX = re.compile(r"(?i)(?:^|[\\/])(?:microsoft[\\/]edge(?: beta| dev| sxs)?|google[\\/]chrome(?: beta| dev| sxs)?"
+                              r"|chromium|bravesoftware[\\/]brave-browser)[\\/]user data(?:[\\/]|$)")
 _STILL_ACTIVE = 259
+
+
+def profile_mark_id(prof) -> str | None:
+    """프로필 폴더의 LM27 소유 표식 profile_id(없거나 형식이 다르면 None)."""
+    d = fsio.read_json(Path(prof) / PROFILE_MARK, None)
+    if not isinstance(d, dict) or d.get("schema") != PROFILE_MARK_SCHEMA or not isinstance(d.get("profile_id"), str):
+        return None
+    return d["profile_id"]
+
+
+def foreign_profile(prof, default) -> str | None:
+    """그 폴더를 LM27 전용 Edge 프로필로 쓰면 안 되는 이유(None = 써도 됨). ``default`` = ``Paths.edge_profile()``.
+      · ``browser_default`` — 브라우저 기본 사용자 데이터 루트(…\\Microsoft\\Edge\\User Data 등) 또는 그 아래(U-4 불허)
+      · ``not_lm27`` — 비어 있지 않은데 LM27 표식이 없는 폴더(사용자 문서 폴더·다른 브라우저 프로필 등). 기본 위치는
+        LM27 전용 자리라 표식이 없어도 입양한다(이전 판이 만든 프로필)."""
+    p = Path(os.path.abspath(os.fspath(prof)))
+    if _BROWSER_ROOT_RX.search(str(p)):
+        return "browser_default"
+    if os.path.normcase(str(p)) == os.path.normcase(os.path.abspath(os.fspath(default))):
+        return None
+    if p.exists() and not p.is_dir():
+        return "not_lm27"
+    try:
+        nonempty = p.is_dir() and any(p.iterdir())
+    except OSError:
+        nonempty = True
+    if nonempty and profile_mark_id(p) is None:
+        return "browser_default" if (p / "Local State").is_file() else "not_lm27"   # 다른 위치의 브라우저 프로필 루트
+    return None
 
 
 class PhaseError(Exception):
@@ -519,7 +555,7 @@ class EdgeSession:
     def _start(self) -> str:
         if str(self.environ.get("LM_NO_BROWSER", "")).strip() not in ("", "0"):
             raise PhaseError("edge_not_found", why="no_browser")       # 시험 주입점: Edge 를 띄우지도 붙지도 않는다
-        self.info.profile_dir = str(self.cfg.profile_dir(self.paths))
+        self.info.profile_dir = str(self._resolve_profile_dir())
         self._acquire_lock()
         self._recover_dead_profile()
         self.edge = edge_info(self.edge_finder, self.policy_reader, self.environ)
@@ -602,9 +638,32 @@ class EdgeSession:
                 h["origin_mode"] = "explicit"
         self.profile.update(put)
 
+    def _resolve_profile_dir(self) -> Path:
+        """설정 프로필 폴더가 LM27 전용이 아니면(``foreign_profile``) 손대지 않고 기본 전용 프로필로 돌아간다 — U-4 '회사
+        기본 Edge 프로필 불허'·남의 폴더 보호. 사람에게 설정 변경을 요구하지 않고 안내 한 번(BR-PROFILE-FOREIGN)."""
+        prof = self.cfg.profile_dir(self.paths)
+        default = Path(self.paths.edge_profile())
+        why = foreign_profile(prof, default)
+        if why:
+            self.events.append("profile_foreign:" + why)
+            self.notices.notify("BR-PROFILE-FOREIGN")
+            prof = default
+        return prof
+
+    def _mark_profile(self, prof: Path) -> None:
+        """LM27 소유 표식(profile_id)을 프로필 폴더에 쓴다 — 새로 만들 때·기본 위치 입양 때."""
+        pid = self.profile.profile_id() or self.profile.new_profile_id()
+        fsio.write_atomic(Path(prof) / PROFILE_MARK, {"schema": PROFILE_MARK_SCHEMA, "profile_id": pid})
+
+    def _owned_profile(self, prof: Path) -> bool:
+        """표식이 있고 그 profile_id 가 지금 상태 파일(bridge_profile·profile_id)의 값과 같은가."""
+        mid = profile_mark_id(prof)
+        return mid is not None and mid == self.profile.profile_id()
+
     def _recover_dead_profile(self) -> bool:
         """서로 다른 호출 2회의 dead_session → Edge 를 닫고 프로필을 ``<이름>.bad-<시각>`` 로 바꿔 새 프로필(B §4.7).
-        사람에게 폴더 조작을 요구하지 않는다."""
+        사람에게 폴더 조작을 요구하지 않는다. LM27 소유 표식이 있고 profile_id 가 맞는 폴더만 이름을 바꾸고, 옛
+        ``.bad-*`` 도 표식이 든 것만 지운다(W1 통합 창 — 설정이 가리킨 남의 폴더를 바꾸거나 지우던 결함)."""
         runs = {x.get("run") for x in self.profile.load()["health"].get("dead_sessions") or [] if isinstance(x, dict)}
         if len(runs) < S.DEAD_SESSION_LIMIT:
             return False
@@ -613,13 +672,17 @@ class EdgeSession:
         if dap and C.debugger_alive(self.http, dap[0]) and self._owns(dap[0], dap[1]):
             self._close_browser_on(dap[0])
         if prof.exists():
+            if not self._owned_profile(prof):
+                self.events.append("bad_rename_refused")       # 우리 것이 아니면 이름을 바꾸지도 지우지도 않는다
+                return False
             bad = prof.with_name(f"{prof.name}.bad-{stamp(self.clock)}")
             try:
                 fsio.rename_dir(prof, bad)
             except OSError:
                 self.events.append("bad_rename_failed")
                 return False
-            olds = sorted((p for p in prof.parent.glob(prof.name + ".bad-*") if p.is_dir()), key=lambda p: p.name)
+            olds = sorted((p for p in prof.parent.glob(prof.name + ".bad-*")
+                           if p.is_dir() and profile_mark_id(p) is not None), key=lambda p: p.name)
             for p in olds[:-(S.BAD_PROFILE_KEEP + 1)]:
                 fsio.remove_tree(p)
         self.profile.new_profile_id()
@@ -683,6 +746,8 @@ class EdgeSession:
         prof = Path(self.info.profile_dir)
         if not prof.exists() or not self.profile.profile_id():
             self.profile.new_profile_id()
+        if profile_mark_id(prof) != self.profile.profile_id():
+            self._mark_profile(prof)                    # 새 전용 프로필(또는 기본 위치 입양) — 소유 표식
         self._proc = self.launcher(self.launch_args(port, self.info.origin_mode == "explicit"))
         self.info.launched_by_us = True
         self.events.append(f"launch:{port}")

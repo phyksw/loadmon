@@ -8,10 +8,12 @@
       (lm27_pipe.py --kind <kind> --src <경로 ID>)의 stdin 으로 잇는다. 원시 필드 이름은 P §10.2(계약 §3.5).
     · stdin 제어 줄 {"_in": {"cursor": …, "cfg": {…}}} 을 받는다(stdin 이 리디렉션되지 않았으면 기본값). 커서·설정·주소를
       명령줄로 받지 않는다(X-300). stdout 첫 줄 {"_meta": {"my_addrs": [...]}}, 레코드 줄, 끝 줄 {"_cursor": {…}}.
-    · 결과(숫자·열거·사유 코드만)는 stderr 마지막 줄 {"_result": {…}} — 메일·일정을 함께 읽으면 경로마다 한 줄.
+    · 결과(숫자·열거·사유 코드만)는 stderr 마지막 줄 {"_status": {…}}(계약 v1.2 §0.7 C1 한 모양 — schema·src·rc·reasons·
+      partial·cap_hit·budget_hit·n·counts + 수집기 필드) — 메일·일정을 함께 읽으면 경로마다 한 줄.
     · Outlook 을 띄우지 않는다(마법사 무한 대기 없음). Outlook 항목만(System.ItemUrl LIKE 'mapi%'), 날짜 리터럴은 UTC.
     · 폴더는 경로 조각 단위 정확 일치로 제외(mail.index.excludeFolderNames), '보낸 편지함/Sent' 조각이면 sent.
-    · 반복 일정 마스터는 회차가 전개되지 않는다 → 레코드에 recurrence_incomplete, 결과에 그 수, rc 3(cal.owa 로 보완).
+    · 반복 일정 마스터는 회차가 전개되지 않는다 → 레코드에 recurrence_incomplete, 결과에 그 수 + R-RECURINC + partial
+      (계약 v1.2 §0.7 C4 — 부분 결과: rc 는 새 레코드 기준 0·4, 셀은 partial 이라 cal.owa 가 빈 회차를 채운다).
     · 상한(mail.index.capMail·capCal)에 닿으면 조용히 자르지 않고 cap_hit + R-CAP(rc 0, 셀 partial).
     · 막힌 사유가 있으면 항상 rc 3 + 사유: 색인 연결 실패 R-NOIDX · 색인 일시정지 R-IDXPAUSED · 제한 언어 모드 R-CLM ·
       Outlook 항목 0 → R-IDXPOLICY(정책) / R-NEWOL(새 Outlook) / R-ONLINE(온라인 모드 — 그 밖).
@@ -36,11 +38,13 @@ param(
 )
 
 # ── 제한 언어 모드: .NET 형을 쓰기 전에 먼저 본다(R-CLM, rc 3) ─────────────────────────────────────────────
+# 계약 v1.2 §0.7 C1: 상태 줄 한 모양(_status). CLM 에서는 [Console] 호출도 막히므로 stdout 제어 줄(문자열 리터럴)로 낸다.
 if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') {
-    $clmSrc = 'mail.index'
-    if ($Only -eq 'cal') { $clmSrc = 'cal.index' }
-    $clm = '{"_result":{"src":"' + $clmSrc + '","rc":3,"reasons":["R-CLM"],"items_total":0,"items_ok":0}}'
-    try { [Console]::Error.WriteLine($clm) } catch { try { $host.UI.WriteErrorLine($clm) } catch { Write-Output $clm } }
+    if ($Only -eq 'cal') {
+        '{"_status":{"schema":"lm27.collector_status/1","src":"cal.index","rc":3,"reasons":["R-CLM"],"partial":false,"cap_hit":false,"budget_hit":false,"n":0,"counts":{},"items_total":0,"items_ok":0}}'
+    } else {
+        '{"_status":{"schema":"lm27.collector_status/1","src":"mail.index","rc":3,"reasons":["R-CLM"],"partial":false,"cap_hit":false,"budget_hit":false,"n":0,"counts":{},"items_total":0,"items_ok":0}}'
+    }
     exit 3
 }
 
@@ -306,8 +310,9 @@ $script:Cursors = [ordered]@{}
 $script:Mixed = $false
 
 function New-Result([string]$src) {
-    return [ordered]@{ src = $src; rc = 3; reasons = (New-Object System.Collections.Generic.List[string]); items_total = 0;
-        items_ok = 0; new = 0; cap_hit = $false; budget_hit = $false; horizon_oldest = $null; recurrence_incomplete = 0;
+    return [ordered]@{ schema = 'lm27.collector_status/1'; src = $src; rc = 3
+        reasons = (New-Object System.Collections.Generic.List[string]); partial = $false; n = 0; items_total = 0
+        items_ok = 0; new = 0; cap_hit = $false; budget_hit = $false; horizon_oldest = $null; recurrence_incomplete = 0
         counts = [ordered]@{} }
 }
 function Add-Reason($res, [string]$code) { if (-not $res.reasons.Contains($code)) { $res.reasons.Add($code) } }
@@ -320,7 +325,10 @@ function Write-Results {
         $o = [ordered]@{}
         foreach ($k in $r.Keys) { $o[$k] = $r[$k] }
         $o['reasons'] = @($r.reasons | Sort-Object)
-        Write-ErrLine ('{"_result":' + (ConvertTo-J $o) + '}')
+        # C1: partial = 상한·예산·반복 일부(C4), n = 새 레코드 수
+        $o['partial'] = [bool]($r.cap_hit -or $r.budget_hit -or ($r.recurrence_incomplete -gt 0) -or $r.reasons.Contains('R-RECURINC'))
+        $o['n'] = [int]$r.new
+        Write-ErrLine ('{"_status":' + (ConvertTo-J $o) + '}')
     }
 }
 
@@ -497,7 +505,9 @@ function Invoke-IndexKind([string]$kind, $ctx) {
     if ($maxTs) { $c['last_item_ts_utc'] = Format-Utc $maxTs }
     $script:Cursors[$src] = $c
     # rc(계약 §8.1 · CM §6.4 · X-120)
-    if ($kind -eq 'cal' -and ($nMasters -gt 0 -or $fallback)) { $res.rc = 3; return }
+    # 반복 마스터만·반복 속성 거부(전개 여부 모름) → R-RECURINC(계약 v1.2 §0.7 C4: 부분 결과 — rc 는 아래 새 레코드 기준).
+    # 예전의 'rc 3·사유 없음' 은 연결자에서 R-TRANSPORT(수송 실패)로 접혀 cal.owa 배정 근거가 왜곡됐다.
+    if ($kind -eq 'cal' -and ($nMasters -gt 0 -or $fallback)) { Add-Reason $res 'R-RECURINC' }
     if ($nNew -gt 0) { $res.rc = 0; return }
     if ($res.cap_hit) { $res.rc = 0; return }
     if ($rows.Count -gt 0) { $res.rc = 4; return }

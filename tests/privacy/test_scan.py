@@ -29,14 +29,26 @@ class ScanCorpusTest(unittest.TestCase):
                 self.assertEqual(scan(r["arg"]), [Hit(c, n) for c, n in r["expect"]])
 
     def test_S06_masked_positive_scans_empty(self):
-        """S06: 양성 60건의 정제문을 다시 scan → 전부 빈 목록(멱등의 다른 표현)."""
+        """S06: 양성 60건(+ 2026.10.1 회귀 양성 15건)의 정제문을 다시 scan → 전부 빈 목록(멱등의 다른 표현)."""
         n = 0
         for r in (x for x in CORPUS if x["type"] == "pos"):
             ctx = _ctx(r.get("ctx"))
             with self.subTest(rid=r["id"]):
                 self.assertEqual(scan(sanitize(r["text"], ctx=ctx).text, ctx), [])
             n += 1
-        self.assertEqual(n, 60)
+        self.assertEqual(n, 75)
+
+    def test_path_in_multiline_prompt_counted_2026_10_1(self):
+        """W1 통합 창 결함 회귀: 줄바꿈·뒤따르는 ':'·한 줄 두 경로·'/' 경로를 최종 프롬프트 검사(scan)가 센다."""
+        bs = chr(92)
+        p = bs.join(("C:", "Users", "hong", "Desktop", "견적.xlsx"))
+        q = bs.join(("D:", "share", "b.xlsx"))
+        cases = [("목록\n" + p + "\n" + p + "\n끝", 2), (p + " 수정일: 9월 30일", 1), (p + " 와 " + q + " 비교", 2),
+                 ("C:/Users/hong/Documents/a.xlsx", 1), ("file:///C:/Users/hong/a/b.xlsx", 1)]
+        for text, n in cases:
+            with self.subTest(n=n, size=len(text)):
+                self.assertEqual(scan(text), [Hit("path", n)])
+                self.assertNotIn("Users", sanitize(text).text)
 
     def test_no_values_in_hits(self):
         """Hit 에는 범주·건수만 — 값·위치 필드가 없다(I8)."""

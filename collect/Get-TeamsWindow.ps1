@@ -19,7 +19,9 @@
                   ts_precision · observed_at · confidence · flags{n_part_est, author_inherited}
     마지막 줄     {"_cursor": {"last_ts_utc": "...Z" | null}}   (원문·원 ID 없음 — 계약 §3.10)
   상태(stderr, 마지막 줄 한 개 — 숫자·사유 코드만, 원문 없음):
-    {"_status": {"src": "teams.uia", "rc": n, "reasons": [R-*], "counts": {...}}}
+    {"_status": {"schema": "lm27.collector_status/1", "src": "teams.uia", "rc": n, "reasons": [R-*], "partial": b,
+                 "cap_hit": b, "budget_hit": b, "n": <낸 레코드 줄 수>, "counts": {...}}}   (계약 v1.2 §0.7 C1 한 모양.
+    제한 언어 모드면 같은 모양을 stdout 제어 줄로 — 스크립트 첫 실행문)
   종료 코드(계약 §8.1): 0 신규 레코드 · 1 Teams 프로세스 없음 · 3 막힘·불완전(사유 코드 필수 — 창 숨김·최소화·
   트레이 R-UIAEMPTY, 관리자 창 R-UIAELEV, 판독 실패 R-TRANSPORT, 제한 언어 모드 R-CLM) · 4 읽었지만 신규 0(커서
   이후 0·메시지 줄 0).
@@ -53,6 +55,15 @@ param(
     [string]$RawFile = '',
     [string]$TestNow = ''
 )
+
+# ── 제한 언어 모드(CLM) — 다른 어떤 문(New-Object·[Console]·.NET 형·공통 도우미)보다 먼저 본다 ─────────────────────
+# 계약 v1.2 §0.7 C1·C4 · §8.1: 막힌 경로는 rc 3 + 사유(R-CLM). CLM 에서는 [Console] 호출도 막히므로 상태 줄을 stdout
+# 제어 줄로 낸다(문자열 리터럴 출력만 — 핵심 형으로 충분). 이전에는 New-Object 에서 멈춰 rc 1·출력 0바이트였고
+# 원장이 미관측을 '0건 관측(zero_ok)'으로 기록했다(W1 통합 창 결함 수정).
+if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') {
+    '{"_status":{"schema":"lm27.collector_status/1","src":"teams.uia","rc":3,"reasons":["R-CLM"],"partial":false,"cap_hit":false,"budget_hit":false,"n":0,"counts":{}}}'
+    exit 3
+}
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -1192,7 +1203,13 @@ function Invoke-Main {
 }
 
 function Send-Status {
-    $st = [ordered]@{ src = $script:Src; rc = [int]$script:Rc; reasons = @($script:Reasons); counts = $script:C }
+    # 계약 v1.2 §0.7 C1 — 필수 schema·src·rc·reasons·partial·cap_hit·budget_hit·n·counts(W1 통합 창 정렬)
+    $reasons = @($script:Reasons)
+    $cap = (($script:C.capped -gt 0) -or ($reasons -contains 'R-CAP'))
+    $bud = (($script:C.budget_hit -gt 0) -or ($reasons -contains 'R-BUDGET'))
+    $st = [ordered]@{ schema = 'lm27.collector_status/1'; src = $script:Src; rc = [int]$script:Rc; reasons = $reasons
+                      partial = [bool]($cap -or $bud); cap_hit = [bool]$cap; budget_hit = [bool]$bud
+                      n = [int]$script:OutLines.Count; counts = $script:C }
     Send-Bytes ([Console]::OpenStandardError()) (ConvertTo-LmJson ([ordered]@{ _status = $st }))
 }
 

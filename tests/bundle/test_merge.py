@@ -199,12 +199,14 @@ class SideStoresTest(B.BundleTestCase):
         self.assertFalse((self.paths.outbox("pending") / same).exists())
         self.assertEqual(mg.merge_bundle(mine, self.o.paths.data()).rc, 4)
 
-    def test_outbox_without_path_method_is_reported(self):
+    def test_outbox_union_with_real_paths_method_C19(self):
+        """계약 v1.2 §0.7 C19(W1 통합 창): ``Paths.outbox_file`` 이 생겨 실물 Paths 로도 합집합 — 'outbox_merge_unavailable' 없음."""
         _same, new = self._outbox_items()
         r = mg.merge_bundle(self.paths, self.o.paths.data())
-        self.assertEqual(r.outbox_added, 0)
-        self.assertIn({"code": "outbox_merge_unavailable", "n": 1}, r.notes)
-        self.assertFalse((self.paths.outbox("pending") / new).exists())
+        self.assertEqual(r.outbox_added, 2)
+        self.assertNotIn("outbox_merge_unavailable", [n.get("code") for n in r.notes])
+        self.assertTrue((self.paths.outbox("pending") / new).is_file())
+        self.assertEqual(self.paths.outbox_file("pending", new), self.paths.outbox("pending") / new)
 
     def test_ai_store_union_sorted(self):
         def commit(ts, ck, ans, rid="R2ABCD"):

@@ -79,8 +79,21 @@ class MailComTest(CloneTestCase):
         res = r.result("mail.com")
         self.assertEqual(res["items_ok"], len(recs))
         self.assertAlmostEqual(res["subfolder_ratio"], 0.3)
-        self.assertEqual(res["counts"]["excluded_folders"], 4)
+        # 지운·정크·임시 보관·보낼 편지함 4 + '대화 기록'(IM 대화록 — CM §5.3, W1 통합 창 결함 수정) 1
+        self.assertEqual(res["counts"]["excluded_folders"], 5)
         self.assertFalse(res["counts"]["protected_read"])
+        # 계약 v1.2 §0.7 C1 — 상태 줄 한 모양(_status): 필수 필드 + n = 새 레코드 수
+        self.assertLessEqual({"schema", "src", "rc", "reasons", "partial", "cap_hit", "budget_hit", "n", "counts"}, set(res))
+        self.assertEqual((res["schema"], res["partial"], res["n"]), ("lm27.collector_status/1", False, res["new"]))
+
+    def test_conversation_history_and_im_classes_excluded(self):
+        """W1 통합 창 결함 회귀(CM §5.3): '대화 기록' 폴더(이름으로)와 IM 대화록 클래스 IPM.Note.Microsoft.Conversation·
+        Missed(언어 무관 — 클래스로)는 메일로 읽지 않는다. 이전에는 대화 기록 폴더가 subfolder 로 수집됐다."""
+        r = self.basic()
+        subj = " ".join(x["subject"] for x in r.records)
+        self.assertNotIn("[convhist]", subj)
+        self.assertNotIn("selftest im", subj)
+        self.assertGreaterEqual(r.result("mail.com")["counts"]["skipped_class"], 2)   # 월마다 IM 클래스 1건 이상
 
     def test_sent_rows_first_within_each_month(self):
         recs = self.basic().records
@@ -220,7 +233,9 @@ class MailComTest(CloneTestCase):
         self.assertEqual(r2.result("mail.com")["reasons"], ["R-WIZARD"])
 
     def test_watchdog_hung_read_keeps_progress(self):
-        r = self.run_com("12,hang=read", "-WatchdogSec", "3")
+        # 워치독 8초(W1 통합 창 — 부하 민감 시험 보정): 3초면 기기 부하로 자식 PowerShell 이 첫 줄(붙기 단계)을 내기 전에
+        # 워치독이 먼저 터져 'attach' 단계(R-DIALOG)로 판정됐다. 읽기 중 무응답은 여전히 워치독이 끊는다(무한 대기 가짜).
+        r = self.run_com("12,hang=read", "-WatchdogSec", "8")
         self.assertEqual(r.rc, 3)
         res = r.result("mail.com")
         self.assertIn("R-TRANSPORT", res["reasons"])

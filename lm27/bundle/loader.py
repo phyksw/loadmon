@@ -8,8 +8,9 @@ r"""단일 로더(계약 §2.6, TAB §1.15) — ``data\pcs`` 를 읽는 유일�
     최신을 고른다, T-11). 출처 간 msg_key 병합은 하지 않는다(정규화 소관).
   · 기간: d0·d1 = 로컬 날짜. 일자 경계는 **사람 근무 시간대**(``time.tzOffsetMin``)로 계산한다 — PC 의 수집 오프셋이
     UTC(클라우드PC)여도 같은 날로 묶인다(TAB B09).
-  · 소급 가림 읽기 오버레이(``local_only\redact_overlay.json``, P §12.5)를 적용한다 — 걸린 행은 텍스트 열(``*_masked``)을
-    비운 사본. 재정제(G2)는 정규화 적재(``lm27.normalize.load``)가 한다(``resanitize=`` 로 넘길 수도 있다).
+  · 소급 가림 읽기 오버레이(``local_only\redact_overlay.json``, P §12.5)를 적용한다 — 걸린 행은 비울 열 단일원
+    ``lm27.privacy.records.redact_fields(kind)``(정제문 열 + ``act_cues`` — 계약 v1.2 §0.7 C11)을 비운 사본
+    (``redact_row``). 재정제(G2)는 정규화 적재(``lm27.normalize.load``)가 한다(``resanitize=`` 로 넘길 수도 있다).
   · 손상 세그먼트는 건너뛰고(다른 PC 파일은 옮기지 않는다 — 논리 격리), 없는 파일·건너뛴 수·레코드 추정치는
     ``load_report()`` 로 노출한다(조용한 손실 금지). 증거 조회는 ``privacy_audit`` 스트림을 따로 부르지 않는 한 섞지 않는다.
   · ``bundle_status`` · ``verify_bundle`` · ``session_spans`` — 화면·CLI·별칭 판단의 원천.
@@ -79,19 +80,16 @@ def _all_tombstones(paths, manifests=None) -> set:
     return dead
 
 
-def blank_text(row: dict):
-    """텍스트 열(이름이 ``_masked`` 로 끝나는 열)을 비운 사본과 바뀌었는지(행 수·키·시간 열은 그대로 — P §12.5)."""
-    out, changed = dict(row), False
-    for k, v in row.items():
-        if not (isinstance(k, str) and k.endswith("_masked")):
-            continue
-        if isinstance(v, list):
-            if v:
-                out[k], changed = [], True
-        elif isinstance(v, str):
-            if v:
-                out[k], changed = "", True
-    return out, changed
+def blank_text(row: dict, kind: str | None = None):
+    """소급 가림 한 행 — (가린 사본, 바뀌었는가). 비울 열은 ``lm27.privacy.records.redact_fields(kind)`` 단일원(정제문 열 +
+    ``act_cues``), 행 수·키·시간·열거 열과 ``id`` 는 그대로(P §12.5 · 계약 v1.2 §0.7 C11 — 옛 '``_masked`` 로 끝나는 열'
+    규칙은 폐기: act_cues 가 남았다). kind 는 인자 또는 행의 ``kind``. 저장 kind 가 아니면 바꾸지 않는다."""
+    from lm27.privacy.records import SCHEMAS, redact_row       # 지연 import(번들 모듈 import 를 가볍게)
+    k = kind or row.get("kind")
+    if k not in SCHEMAS:
+        return dict(row), False
+    out = redact_row(k, row)
+    return out, out != dict(row)
 
 
 def load_overlay(paths) -> dict:

@@ -30,10 +30,13 @@ from dataclasses import dataclass, field
 
 from .rules import (
     COUNT_AFTER,
+    CTRL_RX,
     CTX,
+    DASH_RX,
     DIM_NEAR,
     ENG_CTX,
     ENG_UNIT_AFTER,
+    FORMAT_RX,
     HONORIFIC,
     ID_BEFORE,
     LABELED_NAME,
@@ -52,7 +55,6 @@ from .rules import (
     rrn_date_ok,
 )
 
-CTRL_RX = re.compile("[\x00-\x08\x0b-\x1f\x7f\u200b-\u200f\u2028-\u202e\ufeff\ue000-\uf8ff]")
 MAX_SCAN = 4000            # 한 필드에서 검사하는 최대 글자 수(저장 상한보다 충분히 큼, 병적 입력 방어)
 
 
@@ -201,7 +203,8 @@ def sanitize(text: str, field_name: str = "text", ctx: SanitizeContext | None = 
     if not text:
         return SanitizeResult("", {})
     t = unicodedata.normalize("NFKC", text[:MAX_SCAN])
-    t = CTRL_RX.sub(" ", t)
+    t = CTRL_RX.sub(" ", FORMAT_RX.sub("", t))
+    t = DASH_RX.sub("-", t)
 
     # (1) 자격증명 → 행 폐기
     if credential_hit(t):
@@ -251,9 +254,10 @@ def sanitize(text: str, field_name: str = "text", ctx: SanitizeContext | None = 
     t = RX["email"].sub(email_rep, t)
 
     def path_rep(m):
+        # 2026.10.1: 식은 머리 + 디렉터리 부분(마지막 구분자까지)만 맞춘다 — 기본 이름은 뒤에 그대로 남는다(옛 출력
+        # '[경로]\<기본 이름>' 과 같은 모양, 종결 조건 없이도 디렉터리는 늘 가린다)
         bump("path")
-        base = m.group("base") or ""
-        return ph.put("[경로]") + ("\\" + base if base else "")
+        return ph.put("[경로]") + "\\"
     t = RX["path"].sub(path_rep, t)
 
     # (6) 사전 가명화: 고객사 → 협력사 → 과제 코드네임 → 본인 → 사람 사전. 한 범주 안에서는 항목을 가로질러

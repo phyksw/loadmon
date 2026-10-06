@@ -28,6 +28,15 @@ param(
     [string]$TestNow = ''
 )
 
+# ── 제한 언어 모드(CLM) — 다른 어떤 문(New-Object·[Console]·.NET 형·공통 도우미)보다 먼저 본다 ─────────────────────
+# 계약 v1.2 §0.7 C1·C4 · §8.1: 막힌 경로는 rc 3 + 사유(R-CLM). CLM 에서는 [Console] 호출도 막히므로 상태 줄을 stdout
+# 제어 줄로 낸다(문자열 리터럴 출력만 — 핵심 형으로 충분). 이전에는 New-Object 에서 멈춰 rc 1·출력 0바이트였고
+# 원장이 미관측을 '0건 관측(zero_ok)'으로 기록했다(W1 통합 창 결함 수정).
+if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') {
+    '{"_status":{"schema":"lm27.collector_status/1","src":"pc.recent","rc":3,"reasons":["R-CLM"],"partial":false,"cap_hit":false,"budget_hit":false,"n":0,"counts":{}}}'
+    exit 3
+}
+
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Off
 
@@ -91,8 +100,25 @@ function Write-LmLine([string]$line) { [Console]::Out.Write($line + "`n") }
 function Write-LmRecord($rec) { Write-LmLine (ConvertTo-LmJson $rec) }
 function Write-LmCursor($cur) { Write-LmLine (ConvertTo-LmJson ([ordered]@{ _cursor = $cur })) }
 function Write-LmNote([string]$text) { try { [Console]::Error.WriteLine($text) } catch { } }
+# 계약 v1.2 §0.7 C1 — 상태 줄 필수 counts{}: 최상위 정수 필드(rc·n·elapsed_ms 제외)와 정수만 담은 사전을 counts 에도 싣는다
+function Complete-LmStatusCounts($st) {
+    if ($null -eq $st['counts']) { $st['counts'] = [ordered]@{} }
+    foreach ($k in @($st.Keys)) {
+        if (@('rc', 'n', 'elapsed_ms', 'counts') -contains $k) { continue }
+        $v = $st[$k]
+        if ($null -eq $v -or $v -is [bool] -or $st['counts'].Contains($k)) { continue }
+        if ($v -is [int] -or $v -is [long]) { $st['counts'][$k] = $v; continue }
+        if ($v -is [Collections.IDictionary] -and $v.Count -gt 0) {
+            $allInt = $true
+            foreach ($x in @($v.Values)) { if (-not ($x -is [int] -or $x -is [long]) -or $x -is [bool]) { $allInt = $false; break } }
+            if ($allInt) { $st['counts'][$k] = $v }
+        }
+    }
+}
+
 function Write-LmStatus($st) {
     try { [Console]::Out.Flush() } catch { }
+    try { Complete-LmStatusCounts $st } catch { }
     try { [Console]::Error.WriteLine((ConvertTo-LmJson ([ordered]@{ _status = $st }))); [Console]::Error.Flush() } catch { }
 }
 function Add-LmReason([string]$code) { if (-not $script:Reasons.Contains($code)) { $script:Reasons.Add($code) } }
@@ -199,7 +225,7 @@ function Get-LmCursorUtc {
 
 function New-LmStatus([string]$Src) {
     return [ordered]@{ schema = 'lm27.collector_status/1'; src = $Src; rc = 3; reasons = @(); partial = $false;
-                       cap_hit = $false; budget_hit = $false; n = 0; in = 'none'; elapsed_ms = 0 }
+                       cap_hit = $false; budget_hit = $false; n = 0; counts = [ordered]@{}; in = 'none'; elapsed_ms = 0 }
 }
 # ───────────────────────── 파일 판정 도우미(파일·MRU·Recent 수집기 공통 규칙) ─────────────────────────
 # 확장자: 단일(HashSet)·복합(.cas.gz — Fluent 기본 압축 저장)·Creo 판번호(bracket.prt.12 → .prt)를 이름 끝으로 본다.

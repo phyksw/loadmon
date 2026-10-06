@@ -12,7 +12,7 @@ import os
 import shutil
 import tempfile
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from lm27.config import load_config
@@ -263,6 +263,49 @@ class ParseIcsTest(unittest.TestCase):
                              all_day=False)
         self.assertEqual(occ, [datetime(2026, 9, 1, 9), datetime(2026, 9, 3, 9), datetime(2026, 9, 5, 9)])
 
+    def test_old_series_window_occurrences_not_truncated(self):
+        """W1 통합 창 결함 회귀: 상한은 창 안 회차에 건다 — 2022년 시작 '매 평일'·'매일' 반복이 시작부터 센 1,000번째에서
+        끊겨 창 안 회차가 조용히 사라지던 결함(310 → 45건, 매일 0건 · recurrence_incomplete 0)."""
+        lo, hi = datetime(2025, 9, 1), datetime(2026, 11, 7)
+        old, new = datetime(2022, 1, 3, 9), datetime(2025, 9, 1, 9)
+        wk = M.parse_rrule("FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;WKST=SU")
+        a = M.expand_rrule(old, wk, until_local=None, lo=lo, hi=hi, all_day=False)
+        b = M.expand_rrule(new, wk, until_local=None, lo=lo, hi=hi, all_day=False)
+        self.assertEqual(a, b)
+        self.assertEqual(len(a), 310)
+        self.assertEqual((a[0], a[-1]), (datetime(2025, 9, 1, 9), datetime(2026, 11, 6, 9)))
+        d = M.expand_rrule(old, M.parse_rrule("FREQ=DAILY"), until_local=None, lo=lo, hi=hi, all_day=False)
+        self.assertEqual(len(d), (hi.date() - lo.date()).days)
+        self.assertEqual(d[0], datetime(2025, 9, 1, 9))
+        m = M.expand_rrule(datetime(2020, 1, 15, 10), M.parse_rrule("FREQ=MONTHLY;INTERVAL=2"), until_local=None,
+                           lo=lo, hi=hi, all_day=False)
+        self.assertEqual(m[0], datetime(2025, 9, 15, 10))
+        y = M.expand_rrule(datetime(2001, 10, 1, 9), M.parse_rrule("FREQ=YEARLY"), until_local=None, lo=lo, hi=hi,
+                           all_day=False)
+        self.assertEqual(y, [datetime(2025, 10, 1, 9), datetime(2026, 10, 1, 9)])
+        u = M.expand_rrule(old, wk, until_local=datetime(2025, 9, 3, 23, 59), lo=lo, hi=hi, all_day=False)
+        self.assertEqual(len(u), 3)                                               # UNTIL 은 건너뛴 뒤에도 지킨다
+        c = M.expand_rrule(old, M.parse_rrule("FREQ=DAILY;COUNT=2000"), until_local=None, lo=lo, hi=hi, all_day=False)
+        self.assertEqual(c[0], datetime(2025, 9, 1, 9))                           # COUNT 는 시작부터 센다(1,338번째부터)
+        self.assertEqual(c[-1], datetime(2026, 11, 6, 9))                         # 2,000번째(2027-06-25)보다 hi 가 먼저
+        c2 = M.expand_rrule(old, M.parse_rrule("FREQ=DAILY;COUNT=1340"), until_local=None, lo=lo, hi=hi, all_day=False)
+        want = [x for x in (old + timedelta(days=i) for i in range(1340)) if x >= lo]
+        self.assertEqual(c2, want)                                                # 창 안은 1,338~1,340번째 3건
+        self.assertEqual(len(want), 3)
+
+    def test_window_occurrences_over_cap_is_incomplete(self):
+        """창 안 회차가 RRULE_MAX 를 넘으면 조용히 자르지 않고 None(→ 마스터 1건 + recurrence_incomplete)."""
+        lo, hi = datetime(2023, 1, 1), datetime(2026, 1, 1)
+        self.assertIsNone(M.expand_rrule(datetime(2022, 1, 3, 9), M.parse_rrule("FREQ=DAILY"), until_local=None,
+                                         lo=lo, hi=hi, all_day=False))
+        ics = ("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:wp15-long-daily\r\n"
+               "DTSTART:20220103T000000Z\r\nDTEND:20220103T001500Z\r\nRRULE:FREQ=DAILY\r\nSUMMARY:x\r\n"
+               "END:VEVENT\r\nEND:VCALENDAR\r\n").encode("ascii")
+        recs, st = M.parse_ics(ics, (ME,), now=NOW, window=(datetime(2023, 1, 1, tzinfo=UTC), datetime(2026, 1, 1, tzinfo=UTC)))
+        self.assertEqual(len(recs), 1)
+        self.assertTrue(recs[0]["recurrence_incomplete"])
+        self.assertEqual(st["recurrence_incomplete"], 1)
+
 
 class ParseCsvTest(unittest.TestCase):
 
@@ -334,7 +377,7 @@ class RunTest(unittest.TestCase):
         rc = M.run(["--pc", PC, "--in-dir", str(self.inbox), "--events", "off", *args], backend=backend.Backend,
                    paths=self.paths, cfg=cfg or self.cfg, now=NOW, err=err)
         lines = err.getvalue().splitlines()
-        res = json.loads(lines[-1])["_result"]
+        res = json.loads(lines[-1])["_status"]
         return rc, res, lines
 
     def test_mail_run_cm18_and_cursor_after_flush(self):
@@ -472,7 +515,7 @@ class RunTest(unittest.TestCase):
             rc = M.run([*args, "--pc", PC] if "--pc" not in args else args, backend=FakeBackend().Backend,
                        paths=self.paths, cfg=self.cfg, now=NOW, err=err)
             self.assertEqual(rc, 3, args)
-            self.assertIn("R-TRANSPORT", json.loads(err.getvalue().splitlines()[-1])["_result"]["reasons"])
+            self.assertIn("R-TRANSPORT", json.loads(err.getvalue().splitlines()[-1])["_status"]["reasons"])
 
     def test_sources_untouched_and_no_disk_writes(self):
         before = tree_snapshot(self.tmp)
@@ -552,7 +595,7 @@ def save_raw_cursor(paths, pc_id, src, value):
         cp = c.run_py(["-I", c.path("collect", "Import-MailCal.py"), "--kind", "mail", "--pc", PC, "--in-dir", inbox],
                       flags=("-X", "utf8", "-B"))
         err = cp.stderr.decode("utf-8", "replace").splitlines()
-        res = json.loads(err[-1])["_result"]
+        res = json.loads(err[-1])["_status"]
         self.assertEqual(res["skipped_msg"], 1)
         out = [json.loads(x) for x in cp.stdout.decode("utf-8").splitlines() if x.strip()]
         self.assertEqual(out[-1]["ev"], "result")                          # --events jsonl(기본) — stdout 은 이벤트만
@@ -590,7 +633,7 @@ class ImportErrorTest(unittest.TestCase):
             events.configure("text")
             shutil.rmtree(tmp, ignore_errors=True)
         self.assertEqual(rc, 3)
-        res = json.loads(err.getvalue().splitlines()[-1])["_result"]
+        res = json.loads(err.getvalue().splitlines()[-1])["_status"]
         self.assertIn("R-TRANSPORT", res["reasons"])
         self.assertIn("import_error", res["counts"])
 

@@ -14,6 +14,8 @@ r"""번들 쓰기 잠금(계약 §2.6, TAB §1.9) — ``BundleLock(paths, purpos
   · 대기: ``POLL_S``(0.25초) 간격으로 ``timeout_s``(기본 ``bundle.lockTimeoutSec`` = 30초)까지.
   · 같은 프로세스·같은 스레드 안에서 다시 잡으면(중첩 ``with``) 횟수만 늘린다 — 같은 프로세스의 두 번째 핸들은
     자기 잠금에 막히므로 그대로 두면 스스로 교착한다. 다른 스레드는 일반 대기와 같이 기다린다.
+    **같은 인스턴스**를 중첩해 잡아도(``with lk: with lk:`` · ``acquire()`` 두 번) 인스턴스마다 깊이를 세어 잡은 횟수만큼
+    풀어야 놓인다(W1 통합 창 — 이전에는 인스턴스 플래그 하나라 안쪽 해제가 바깥 해제를 지워 잠금이 프로세스 수명 동안 샜다).
 
 purpose 어휘: ``collect-init`` ``export`` ``fg-write`` ``collect-finish`` ``team_build`` ``move`` ``merge`` ``redact``.
 """
@@ -120,7 +122,7 @@ class BundleLock:
             raise ValueError("BundleLock: timeout_s 는 0 이상")
         self.path = os.path.abspath(os.fspath(paths.bundle_lock()))
         self._key = os.path.normcase(self.path)
-        self._mine = False
+        self._depth = 0                              # 이 인스턴스가 잡은 횟수(중첩 with·acquire 마다 +1)
 
     # ── 잠금 ────────────────────────────────────────────────────────────
     def _try_once(self):
@@ -153,7 +155,7 @@ class BundleLock:
                 ent = _held.get(self._key)
                 if ent is not None and ent[0] == me:
                     ent[1] += 1
-                    self._mine = True
+                    self._depth += 1
                     return self
                 if ent is None:
                     if not compacted:
@@ -162,7 +164,7 @@ class BundleLock:
                     fh = self._try_once()
                     if fh is not None:
                         _held[self._key] = [me, 1, fh]
-                        self._mine = True
+                        self._depth += 1
                         break
             if _monotonic() >= deadline:
                 raise BundleBusy(self.purpose, self.timeout_s, read_holder(self.path))
@@ -171,10 +173,10 @@ class BundleLock:
         return self
 
     def release(self) -> None:
-        if not self._mine:
+        if self._depth <= 0:
             return
         import msvcrt
-        self._mine = False
+        self._depth -= 1
         with _held_guard:
             ent = _held.get(self._key)
             if ent is None:
@@ -194,7 +196,7 @@ class BundleLock:
 
     @property
     def held(self) -> bool:
-        return self._mine
+        return self._depth > 0
 
     def __enter__(self):
         return self.acquire()
@@ -204,7 +206,7 @@ class BundleLock:
         return False
 
     def __repr__(self):
-        return f"BundleLock(purpose={self.purpose!r}, timeout_s={self.timeout_s}, held={self._mine})"
+        return f"BundleLock(purpose={self.purpose!r}, timeout_s={self.timeout_s}, held={self._depth > 0})"
 
 
 def is_held_here(paths) -> bool:

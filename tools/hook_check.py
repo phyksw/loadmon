@@ -1204,7 +1204,13 @@ DATA_M = PCS_M | frozenset({
     "ai_store", "ai_run", "import_dir", "derived", "coverage_ledger", "teams_coverage", "todo", "verify_cache",
     "collect_stage_results", "stage_result_file", "blanks_file", "ai_in", "ai_out", "analysis", "analysis_current",
     "logs", "out_dir", "out_personal", "store_root", "store_dir", "store_file", "raw_cursor", "raw_cursor_lock",
-    "exe_meta", "privacy_audit_file"})
+    "exe_meta", "privacy_audit_file",
+    # 계약 v1.2 §0.7 C19 · W1 경로 CR(파일·폴더 그 자체 — 뒤에 경로를 붙이면 조립)
+    "outbox_file", "ai_store_dir", "ai_journal", "ai_result", "ai_capabilities", "bundle_probe", "analysis_time",
+    "analysis_time_file", "analysis_hier"})
+# 계약 v1.2 §0.7 C22: 팀 서버 저장소(TAB §3.7 — teamServer.storeDir, ROOT 밖)는 자기 산출 폴더 <store>\out\gen_N 과
+# 메서드 out_dir() 를 쓴다 — 프로그램 폴더 out\ 과 무관하므로 이 파일에서는 'out' 조각·out_dir 조립을 보지 않는다.
+L08_TEAM_STORE = "lm27/team/store.py"
 PATH_CTORS = ("Path", "pathlib.Path", "PurePath", "PureWindowsPath", "WindowsPath")
 # data\pcs 를 열거나·읽거나·쓰거나·나열·삭제하는 호출(인자에 PCS_M 이 들면 bundle 7모듈 밖에서는 금지)
 PCS_IO_FUNCS = frozenset({"open", "read_bytes", "read_json", "read_text", "read_segment", "listdir", "scandir", "walk",
@@ -1292,6 +1298,7 @@ def _l08_file(s, ctx):
     if not s.is_py or s.tree is None or not s.is_product or s.rule_table or s.rp == "lm27/paths.py":
         return
     loader = s.rp in BUNDLE_LOADERS
+    team_store = s.rp == L08_TEAM_STORE                 # C22 예외(ROOT 밖 저장소의 out\gen_N)
     seen = set()
 
     def once(line, kind):
@@ -1302,12 +1309,16 @@ def _l08_file(s, ctx):
     for n in ast.walk(s.tree):
         for v in _join_consts(n):
             seg = _path_seg0(v)
+            if team_store and seg == "out":
+                continue
             if seg in DATA_TOP:
                 yield _f("L-08", s, n.lineno, f"데이터 경로 조립('{seg}') — 경로는 lm27.paths 로만 만듭니다(단일 로더)")
             elif seg in PCS_SEGS and not loader:
                 yield _f("L-08", s, n.lineno, "data\\pcs 경로 조립 — lm27\\bundle 의 7개 모듈만(loader·segment·manifest·"
                          "export·pcreg·merge·move)")
         m = _assembles_data(n, s)
+        if team_store and m == "out_dir":
+            m = ""
         if m and not (loader and m in PCS_M) and once(n.lineno, "join"):
             if m in PCS_M:
                 yield _f("L-08", s, n.lineno, f"data\\pcs 경로 조립(paths.{m}() 뒤에 경로를 붙임) — lm27\\bundle 의 7개 "
@@ -1323,7 +1334,7 @@ def _l08_file(s, ctx):
     for n, v in s.str_consts():
         if PCS_RE.search(v) and not loader:
             yield _f("L-08", s, n.lineno, "data\\pcs 경로 문자열 — lm27\\bundle 7개 모듈·lm27.paths 만")
-        elif DATA_PREFIX_RE.match(v):
+        elif DATA_PREFIX_RE.match(v) and not (team_store and _path_seg0(v) == "out"):
             yield _f("L-08", s, n.lineno, "데이터 경로 문자열 상수 — lm27.paths 메서드를 쓰세요")
 
 
@@ -1846,6 +1857,9 @@ def _l14_file(s, ctx):
 
 # ───────────────────────────── L-15 작업·뮤텍스 이름 ─────────────────────────────
 TASK_CONST = re.compile(r"^(?:(?:Local|Global)\\)?LM27-[A-Za-z0-9]")
+# 계약 v1.2 §0.7 C22 · §4.7: 앱 신원(팀 서버 /api/hello · 로컬 앱 서버) — 작업·뮤텍스 이름이 아니다
+APP_IDENTITIES = frozenset({"LM27-team", "LM27-ui"})
+APP_IDENTITY_RX = re.compile(r"(?<![\w-])LM27-(?:team|ui)(?![\w-])")
 TASK_TEXT = re.compile(r"(?<![\w-])LM27-(?![\$\{<(\[`'\"\s]|$)[A-Za-z0-9]")
 XML_ROOT = re.compile(r"(?:lm27_cli|PSScriptRoot|\$Root\b|\bROOT\b)")
 
@@ -1864,11 +1878,11 @@ def _l15_file(s, ctx):
         for n, v in s.str_consts():
             if isinstance(s.parent(n), ast.JoinedStr):
                 continue
-            if TASK_CONST.match(v):
+            if TASK_CONST.match(v) and v not in APP_IDENTITIES:
                 yield _f("L-15", s, n.lineno, f"고정 작업·뮤텍스 이름 '{v[:40]}' — {why_t}")
     elif not s.is_py:
         for i, ln in s.code_lines():
-            if TASK_TEXT.search(ln):
+            if TASK_TEXT.search(APP_IDENTITY_RX.sub("", ln)):
                 yield _f("L-15", s, i, f"고정 작업·뮤텍스 이름 — {why_t}")
     if s.is_product:
         for i, ln in s.code_lines():
@@ -2455,6 +2469,8 @@ OLD_PORTS = frozenset({8765, 8766, 8767, 9333})
 # '--port 9333' · 'port=9333' · '$cdpPort = 9333' · 'const uiPort=8765' · '{port: 8766}' · ':9333'
 PORT_TEXT_RE = re.compile(r"(?i)(?:(?<![\w])-{0,2}port[\"']?\s*[=:]?\s*|\w*port[\"']?\s*[=:]\s*|:)(876[5-7]|9333)(?!\d)")
 OLD_NAMES = ("LoadMonitor" + "26", "LM2" + "6-")
+# 계약 v1.2 §0.7 C22: 포트 진단의 '피하는 포트' 목록(쓰지 않으려고 적은 값) — 이 파일의 AVOID 대입 안 정수는 사용이 아니다
+L28_AVOID_FILES = frozenset({"lm27/team/portdiag.py"})
 REGISTRY_RP = "config/settings_registry.json"
 
 
@@ -2508,7 +2524,15 @@ def _l28_file(s, ctx):
             if nm in ln:
                 yield _f("L-28", s, i, f"별개 프로젝트·이전 판 이름 '{nm}' — 이름·작업 이름을 겹치지 않는다")
     if s.is_py and s.tree is not None:
+        avoid_nodes = set()
+        if s.rp in L28_AVOID_FILES:
+            for st in s.tree.body:
+                tg = st.targets if isinstance(st, ast.Assign) else ([st.target] if isinstance(st, ast.AnnAssign) else [])
+                if any(isinstance(t, ast.Name) and t.id == "AVOID" for t in tg) and st.value is not None:
+                    avoid_nodes.update(id(x) for x in ast.walk(st.value))
         for n in ast.walk(s.tree):
+            if id(n) in avoid_nodes:
+                continue
             if isinstance(n, ast.Constant) and type(n.value) is int and n.value in OLD_PORTS:
                 yield _f("L-28", s, n.lineno, f"포트 {n.value} 사용 금지(별개 프로젝트 8765~8767·이전 판 9333)")
             elif isinstance(n, ast.Constant) and isinstance(n.value, str) and PORT_TEXT_RE.search(n.value):

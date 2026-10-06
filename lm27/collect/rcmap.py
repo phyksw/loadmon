@@ -16,6 +16,7 @@ r"""수집기 rc · 정제 파이프 종료 코드 → 커버리지 셀 상태 �
   · rc 3                                           → 구조·사람 사유가 있으면 blocked, R-HORIZON 뿐이면 out_of_horizon,
                                                      그 밖은 transport_fail(수송·일시 사유가 없으면 R-TRANSPORT 를 붙인다)
   · rc 0 · 1 · 4 — 상한·예산에 닿았으면 partial(+ R-CAP/R-BUDGET, cap_hit/budget_hit) — T-10, rc 는 바꾸지 않는다
+                 — rc 0·4 + R-RECURINC(반복 일정 일부만 펼침 — 계약 v1.2 §0.7 C4 '부분 결과')    → partial
                  — 그 셀 건수 n > 0(또는 rc 0·4 인데 n 을 모름)                 → ok('이미 덮인 날은 ok 유지')
                  — 0건: 구조·사람 사유 → blocked, 수송·일시 사유 → transport_fail
                          (rc 1 의 '막는 사유가 있으면 zero_ok 아님'을 X-120 에 따라 rc 3 과 같게 읽는다 — C 페르소나 12),
@@ -141,7 +142,10 @@ HINTS = {
     "stall": "응답이 없어 단계를 멈췄습니다 — 다음 실행에서 다시 시도합니다",
     "no_progress": "진행이 늘지 않아 단계를 멈췄습니다 — 다음 실행에서 다시 시도합니다",
     "cancelled": "취소했습니다 — 다음 실행이 이어서 읽습니다",
+    "recurinc": "반복 일정의 회차를 일부만 펼쳤습니다 — 다른 경로(웹·반입)가 빠진 회차를 채웁니다",
 }
+# 상한·예산 밖에서 셀을 partial 로 만드는 품질 사유(계약 v1.2 §0.7 C4 — rc 0·4 의 부분 결과)
+PARTIAL_QUALITY = frozenset({"R-RECURINC"})
 
 
 # ── 사유 코드 도구 ─────────────────────────────────────────────────────────
@@ -246,6 +250,8 @@ def translate_cell(rc, reasons=(), counts=None) -> dict:
             _add(rs, "R-CAP")
         if budget:
             _add(rs, "R-BUDGET")
+    elif code in (0, 4) and any(r in PARTIAL_QUALITY for r in rs):
+        status = "partial"                       # C4 — 반복 일정 일부만 펼침: 셀을 '덮였음'으로 두지 않는다
     elif (n is not None and n > 0) or (n is None and code in (0, 4)):
         status = "ok"
     elif any(_structural_block(r) and _blocks_zero(r) for r in rs):
@@ -375,8 +381,12 @@ def _stage_outcome(rc, reasons=(), counts=None) -> dict:
         elif st == "partial" and cell["budget_hit"]:
             out.update(state="partial", stop_kind="budget", resumable=True, reason="R-BUDGET",
                        hint=HINTS["budget"], caps_hit=bool(cell["cap_hit"]))
-        elif st == "partial":
+        elif st == "partial" and cell["cap_hit"]:
             out.update(state="partial", resumable=True, reason="R-CAP", hint=HINTS["cap"], caps_hit=True)
+        elif st == "partial":                    # C4 품질 부분 결과(R-RECURINC): 셀은 partial(다른 경로가 빈 회차를
+            # 채우게), 단계는 done + 그 사유 — 같은 경로를 다시 돌려도 채워지지 않고 사람 조치도 아니므로 collect rc 2 로
+            # 올리지 않는다(반복 회의가 있는 사람마다 매번 rc 2 가 되는 소음 방지)
+            out.update(reason=next(r for r in rs if r in PARTIAL_QUALITY), hint=HINTS["recurinc"])
         else:                                    # ok · zero_ok · out_of_horizon(rc 0·1·4)
             out.update(reason="R-HORIZON" if "R-HORIZON" in rs else None)
     out["reasons"] = sorted(rs)

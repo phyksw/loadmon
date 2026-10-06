@@ -1,0 +1,8 @@
+{
+ "schema": "lm27.bridge.golden_sends/1",
+ "note": "B §11.7 골든 — 합성 고정 입력을 무결점 가짜 Copilot(스텁 ok)으로 돌린 단계별 전송 수. 시험 전용 단계(tests/fixtures/wp24/stages.py)가 B §8.0.2 한눈표 모양을 흉내 낸다. 기본 설정(입력 8,000자·답 5,000자 예산). +10% 를 넘으면 실패, 잡음 시나리오는 합계 × 1.35 이내·2단 비율 3% 이내.",
+ "inputs": {"t_act": 400, "t_label": 300, "t_flow": 30, "t_review": 6, "t_agent": 40, "t_sub": 30},
+ "sends": {"t_act": 10, "t_label": 10, "t_flow": 5, "t_review": 6, "t_agent": 3, "t_sub": 6},
+ "noise": {"partial:0.5": 0.10, "truncate:0.5": 0.05, "empty": 0.03, "service_error": 0.02},
+ "limits": {"clean_ratio": 1.10, "noise_ratio": 1.35, "rung2_ratio": 0.03}
+}

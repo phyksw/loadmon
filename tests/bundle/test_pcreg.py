@@ -121,9 +121,17 @@ class VerdictTest(B.BundleTestCase):
         hist.insert(0, h("2026-10-03", "fail", ["R-CLM"]))
         self.assertEqual(self.v(hist, self.b.cfg(**{"collect.confirmBlockedCount": 3})), "불가(확정)")
 
-    def test_latest_transport_fail_after_ok(self):
+    def test_latest_transport_fail_after_ok_keeps_possible_C9(self):
+        """계약 v1.2 §0.7 C9(W1 통합 창): ok 뒤의 transport_fail·unknown 은 '가능' 을 무르지 않는다(TAB §1.5 원형)."""
         hist = [h("2026-10-04", "ok"), h("2026-10-05", "transport_fail", ["R-TRANSPORT"])]
-        self.assertEqual(self.v(hist), "미확인")
+        self.assertEqual(self.v(hist), "가능")
+        hist.append(h("2026-10-05", "unknown"))
+        self.assertEqual(self.v(hist), "가능")
+        hist.append(h("2026-10-05", "fail", ["R-EDGEPOL"]))                         # 판정 근거(fail)가 오면 무른다
+        self.assertEqual(self.v(hist), "불가(잠정)")
+        hist.append(h("2026-10-06", "transport_fail", ["R-TRANSPORT"]))
+        self.assertEqual(self.v(hist, today="2026-10-06"), "불가(잠정)")            # 마지막 판정 근거는 fail
+        self.assertEqual(self.v([h("2026-10-05", "transport_fail"), h("2026-10-05", "unknown")]), "미확인")
 
     def test_confirmable_single_source(self):
         from lm27.collect import rcmap
@@ -235,7 +243,9 @@ class BundleLocationTest(B.BundleTestCase):
         r = pcreg.probe_bundle_location(self.paths)
         self.assertTrue(r["value"]["writable"])
         self.assertTrue(r["ok"])
-        self.assertEqual([p.name for p in self.paths.pcs().iterdir()], [], "쓰기 시험 파일은 지운다")
+        # 쓰기 시험 파일은 data\.probe_<rand>(계약 §1.5 · Paths.bundle_probe — v1.2 C19)이고 끝나면 지운다
+        self.assertEqual([p.name for p in self.paths.data().glob(".probe_*")], [], "쓰기 시험 파일은 지운다")
+        self.assertFalse(self.paths.pcs().exists(), "탐침이 pcs 폴더를 만들지 않는다")
         self.assertEqual(set(r["value"]), {"drive_type", "onedrive", "redirected", "network", "writable", "free_mb",
                                            "root_len"})
 

@@ -1510,7 +1510,15 @@ function Decide-Sampler($E) {
     return (New-Cap $st $rs $v @('sampler', $lang, $E['addtype'], $ct))
 }
 
-function Decide-Events($F, [string]$GroupState) {
+# PS 수집기(Get-EventActivity·Get-RecentFiles·Get-OfficeMru)는 제한 언어 모드에서 돌지 못한다(첫 실행문에서 rc 3 + R-CLM —
+# 계약 v1.2 §0.7 C1·C4). 그래서 그 경로의 능력도 언어 모드를 본다(W1 통합 창 결함 수정: 전에는 CLM 에서도 '가능').
+function Test-PsClm($E) {
+    if ($null -eq $E) { return $false }
+    $lang = [string]$E['language_mode']
+    return [bool]($lang -and $lang -ne 'FullLanguage')
+}
+
+function Decide-Events($F, [string]$GroupState, $E = $null) {
     if ($null -eq $F) { return (New-MissingCap $GroupState) }
     $rs = @{}
     $evs = $F['events']
@@ -1530,20 +1538,23 @@ function Decide-Events($F, [string]$GroupState) {
     if ($sys -eq 'ok' -or $sys -eq 'none') { $st = 'ok' }
     elseif ($sys -eq 'unauthorized') { $st = 'fail' }
     else { $st = 'unknown' }
+    if (Test-PsClm $E) { $rs['R-CLM'] = 1; $st = 'fail'; $sigp += 'clm' }
     return (New-Cap $st $rs $v $sigp)
 }
 
-function Decide-Recent($F, [string]$GroupState) {
+function Decide-Recent($F, [string]$GroupState, $E = $null) {
     if ($null -eq $F) { return (New-MissingCap $GroupState) }
     $rs = @{}
     $pol = B $F['recent_policy']
     $n = S-Int $F['lnk']
     if ($pol) { $rs['R-RECENTPOLICY'] = 1; $st = 'fail' }
     else { $st = 'ok'; if ($null -ne $n -and $n -eq 0) { $rs['R-MRUEMPTY'] = 1 } }
-    return (New-Cap $st $rs ([ordered]@{ policy = $pol; lnk = $n }) @('recent', $pol))
+    $sigp = @('recent', $pol)
+    if (Test-PsClm $E) { $rs['R-CLM'] = 1; $st = 'fail'; $sigp += 'clm' }
+    return (New-Cap $st $rs ([ordered]@{ policy = $pol; lnk = $n }) $sigp)
 }
 
-function Decide-Mru($F, [string]$GroupState) {
+function Decide-Mru($F, [string]$GroupState, $E = $null) {
     if ($null -eq $F) { return (New-MissingCap $GroupState) }
     $rs = @{}
     $n = S-Int $F['mru']
@@ -1551,7 +1562,9 @@ function Decide-Mru($F, [string]$GroupState) {
     foreach ($x in @($F['office_versions'])) { $s = S-Rx $x '^\d{1,2}\.\d$'; if ($null -ne $s) { $vers += $s } }
     $st = 'ok'
     if ($null -eq $n) { $st = 'unknown' } elseif ($n -eq 0) { $rs['R-MRUEMPTY'] = 1 }
-    return (New-Cap $st $rs ([ordered]@{ items = $n; versions = $vers }) @('mru', ($vers -join ',')))
+    $sigp = @('mru', ($vers -join ','))
+    if (Test-PsClm $E) { $rs['R-CLM'] = 1; $st = 'fail'; $sigp += 'clm' }
+    return (New-Cap $st $rs ([ordered]@{ items = $n; versions = $vers }) $sigp)
 }
 
 function Decide-Git($F, [string]$GroupState) {
@@ -1663,9 +1676,9 @@ function Invoke-Main {
     if ($wPc) {
         $gs = [string]$script:G['P-PC']
         $caps['pc.sampler'] = Decide-Sampler $F.env
-        $caps['pc.events'] = Decide-Events $F.pc $gs
-        $caps['pc.recent'] = Decide-Recent $F.pc $gs
-        $caps['pc.mru'] = Decide-Mru $F.pc $gs
+        $caps['pc.events'] = Decide-Events $F.pc $gs $F.env
+        $caps['pc.recent'] = Decide-Recent $F.pc $gs $F.env
+        $caps['pc.mru'] = Decide-Mru $F.pc $gs $F.env
         $caps['pc.git'] = Decide-Git $F.pc $gs
     }
 

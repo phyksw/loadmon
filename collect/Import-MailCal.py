@@ -19,7 +19,8 @@ r"""mail.import · cal.import — 반입 폴더의 EML·ICS·CSV 를 읽어 정�
 
 rc(계약 §8.1): 0 새 레코드를 읽어 넘김(정제기가 버린 것도 '관측'이다) · 1 대상 없음(반입 폴더·파일 없음) ·
 4 읽었지만 새것 0(이미 반입한 파일뿐) · 3 정제·저장 실패(R-TRANSPORT — 커서 그대로). 2 는 쓰지 않는다(로그인 없음).
-결과: stderr 마지막 줄 ``{"_result": {…}}``(숫자·열거·사유 코드만) + ``--events jsonl``(기본)이면 stdout 에 ``result`` 이벤트.
+결과: stderr 마지막 줄 ``{"_status": {…}}``(계약 v1.2 §0.7 C1 한 모양 — 숫자·열거·사유 코드만) + ``--events jsonl``(기본)
+이면 stdout 에 ``result`` 이벤트.
 """
 import argparse
 import base64
@@ -654,50 +655,63 @@ def expand_rrule(start: datetime, rule: dict, *, until_local, lo: datetime, hi: 
     if bymonth and (freq != "YEARLY" or as_int(bymonth, 1, 12) != start.month):
         return None
     t = start.time()
+    wk0 = start.date() - timedelta(days=start.weekday())
+    days = sorted({_WD[x] for x in byday} or {start.weekday()}) if freq == "WEEKLY" else []
 
-    def gen():
-        k = 0
-        while k < RRULE_MAX * 10:
-            if freq == "DAILY":
-                yield start + timedelta(days=k * interval)
-            elif freq == "WEEKLY":
-                wk0 = start.date() - timedelta(days=start.weekday())
-                week = wk0 + timedelta(weeks=k * interval)
-                for wd in sorted({_WD[x] for x in byday} or {start.weekday()}):
-                    d = week + timedelta(days=wd)
-                    if d >= start.date():
-                        yield datetime.combine(d, t)
-            elif freq == "MONTHLY":
-                mi = start.month - 1 + k * interval
-                y, m = start.year + mi // 12, mi % 12 + 1
-                if nth:
-                    d = nth_weekday(y, m, nth[0], nth[1])
-                else:
-                    try:
-                        d = date(y, m, as_int(bymd, 1, 31) if bymd else start.day)
-                    except ValueError:
-                        d = None
-                if d is not None and d >= start.date():
-                    yield datetime.combine(d, t)
+    def period(k):
+        """주기 k(0 = 시작 주기)의 회차들(벽시계, 오름차순)."""
+        if freq == "DAILY":
+            return [start + timedelta(days=k * interval)]
+        if freq == "WEEKLY":
+            week = wk0 + timedelta(weeks=k * interval)
+            return [datetime.combine(week + timedelta(days=wd), t) for wd in days
+                    if week + timedelta(days=wd) >= start.date()]
+        if freq == "MONTHLY":
+            mi = start.month - 1 + k * interval
+            y, m = start.year + mi // 12, mi % 12 + 1
+            if nth:
+                d = nth_weekday(y, m, nth[0], nth[1])
             else:
                 try:
-                    yield datetime.combine(date(start.year + k * interval, start.month, start.day), t)
+                    d = date(y, m, as_int(bymd, 1, 31) if bymd else start.day)
                 except ValueError:
-                    pass
-            k += 1
+                    d = None
+            return [datetime.combine(d, t)] if d is not None and d >= start.date() else []
+        try:
+            return [datetime.combine(date(start.year + k * interval, start.month, start.day), t)]
+        except ValueError:
+            return []
 
-    out, n = [], 0
-    for occ in gen():
-        if until_local is not None and (occ.date() > until_local.date() if all_day else occ > until_local):
-            break
-        n += 1
-        if count is not None and n > count:
-            break
-        if occ > hi or n > RRULE_MAX:
-            break
-        if occ >= lo:
-            out.append(occ)
-    return out
+    # 상한(RRULE_MAX)은 '분석 창 안에 낸 회차' 수에 건다(W1 통합 창 결함 수정 — 전에는 시작부터 센 회차 1,000번째에서 끊겨
+    # 오래된 반복 회의의 최근 회차가 조용히 사라졌다: 2022년 시작 '매 평일'이 창 안 310건 대신 45건, 매일은 0건).
+    # COUNT 가 없으면 창 바로 앞 주기로 건너뛴다. COUNT 가 있으면 회차 번호를 시작부터 세야 하므로 처음부터 센다(COUNT ≤ 100000).
+    k0 = 0
+    if count is None and lo.date() > start.date():
+        if freq == "DAILY":
+            k0 = (lo.date() - start.date()).days // interval - 1
+        elif freq == "WEEKLY":
+            k0 = ((lo.date() - wk0).days // 7) // interval - 1
+        elif freq == "MONTHLY":
+            k0 = ((lo.year - start.year) * 12 + lo.month - start.month) // interval - 1
+        else:
+            k0 = (lo.year - start.year) // interval - 1
+        k0 = max(0, k0)
+    max_periods = (count or 0) + RRULE_MAX * 10            # 안전 상한(주기 수) — 걸리면 불완전(None)
+    out, n, k = [], 0, k0
+    while True:
+        if k - k0 > max_periods:
+            return None                                     # hi 에 못 닿았다 — 마스터 1건 + recurrence_incomplete
+        for occ in period(k):
+            if until_local is not None and (occ.date() > until_local.date() if all_day else occ > until_local):
+                return out
+            n += 1
+            if (count is not None and n > count) or occ > hi:
+                return out
+            if occ >= lo:
+                out.append(occ)
+                if len(out) > RRULE_MAX:
+                    return None                             # 창 안 회차가 상한을 넘음 — 불완전 표시(조용히 자르지 않는다)
+        k += 1
 
 
 def _cal_addr(params, value):
@@ -1158,9 +1172,20 @@ def _human(msg: str, err) -> None:
 
 
 def _finish(res: dict, err, rc: int) -> int:
+    """상태 줄(계약 v1.2 §0.7 C1 한 모양 — ``_status``, 필수 schema·src·rc·reasons·partial·cap_hit·budget_hit·n·counts).
+    반복 일정을 일부만 펼쳤으면 R-RECURINC + partial(C4 — 부분 결과, rc 는 그대로)."""
     res["rc"] = rc
-    res["reasons"] = sorted(set(res.get("reasons") or []))
-    _human(json.dumps({"_result": res}, ensure_ascii=False, separators=(",", ":"), sort_keys=True), err)
+    reasons = set(res.get("reasons") or [])
+    if res.get("recurrence_incomplete"):
+        reasons.add("R-RECURINC")
+    res["reasons"] = sorted(reasons)
+    res["schema"] = "lm27.collector_status/1"
+    res.setdefault("cap_hit", False)
+    res.setdefault("budget_hit", False)
+    res["partial"] = bool(res["cap_hit"] or res["budget_hit"] or res.get("recurrence_incomplete"))
+    res["n"] = int(res.get("items_ok") or 0)
+    res.setdefault("counts", {})
+    _human(json.dumps({"_status": res}, ensure_ascii=False, separators=(",", ":"), sort_keys=True), err)
     if events.mode() == "jsonl":
         events.emit("result", stage="import", **{k: v for k, v in res.items() if k != "stage"})
     return rc

@@ -30,7 +30,7 @@ from pathlib import Path
 
 from lm27.bundle import manifest as mf
 from lm27.bundle import segment as seg
-from lm27.util import events, fsx
+from lm27.util import fsx
 
 _PC_RX = re.compile(r"^pcx?_[0-9a-f]{16}$")
 _OUTBOX_RX = re.compile(r"^lm27_team_bundle_[0-9A-Za-z_\-]+_([0-9a-f]{12})(?:\.json|\.meta\.json|\.json\.meta\.json)$")
@@ -262,20 +262,14 @@ def _outbox_files(p) -> dict:
 
 
 def _outbox_file(p, state, name):
-    r"""outbox 파일 경로 — ``Paths.outbox_file(state, name)``(계약 §2.1 보강 CR). 아직 없으면 None."""
-    fn = getattr(p, "outbox_file", None)
-    return fn(state, name) if fn is not None else None
+    r"""outbox 파일 경로 — ``Paths.outbox_file(state, name)``(계약 v1.2 §0.7 C19 — 경로 조립은 lm27.paths 에만, L-08)."""
+    return p.outbox_file(state, name)
 
 
 def _merge_outbox(paths, op, res) -> None:
     mine = _outbox_files(paths)
     todo = [(sha, st, files) for sha, (st, files) in sorted(_outbox_files(op).items()) if sha not in mine]
     if not todo:
-        return
-    if _outbox_file(paths, "pending", "probe.json") is None:
-        # 경로 조립은 lm27.paths 에만(L-08) — outbox 파일 경로 메서드가 생길 때까지 합치지 않고 알린다(상대 쪽에 그대로 있다)
-        res.notes.append({"code": "outbox_merge_unavailable", "n": len(todo)})
-        events.emit("warn", text_ko=f"팀 업로드 대기 묶음 {len(todo)}개는 이번 합치기에서 옮기지 못했습니다(상대 폴더에 그대로 있음)")
         return
     for sha, st, files in todo:
         body = [n for n in files if not n.endswith(".meta.json")]
@@ -321,8 +315,8 @@ def _read_lines(path) -> list:
 
 
 def _ai_store_dir(p):
-    r"""``data\ai\store\`` — Paths 에 폴더 메서드가 없어 단계 파일 경로의 부모로 얻는다."""
-    return p.ai_store("stage").parent
+    r"""``data\ai\store\`` — ``Paths.ai_store_dir()``(계약 v1.2 §0.7 C19)."""
+    return p.ai_store_dir()
 
 
 def _merge_ai_store(paths, op, res) -> None:
@@ -409,7 +403,8 @@ def _paths_of(pcdir: Path):
 def redact_rewrite_own(pcdir, *, overlay=None, clear_row=None, now=None) -> dict:
     """자기 pc_id 세그먼트의 소급 가림을 디스크에 반영한다(번들 잠금 안에서 부른다).
     ``overlay`` = ``{"chat": {...}, "msg": [...]}``(기본 ``local_only\\redact_overlay.json``),
-    ``clear_row(row) -> (row, changed)`` = 텍스트 열 비우기(기본 ``loader.blank_text`` — 이름이 ``_masked`` 로 끝나는 열).
+    ``clear_row(row) -> (row, changed)`` = 텍스트 열 비우기(기본 ``loader.blank_text`` = ``lm27.privacy.records.redact_row``
+    — 비울 열 단일원 ``redact_fields(kind)``: 정제문 열 + act_cues, 계약 v1.2 §0.7 C11).
     반환 ``{rc, rewritten, rows_changed, segments}`` — rc 0 바꿈 · 4 할 일 없음."""
     from lm27.bundle import loader
     pcdir = Path(pcdir)

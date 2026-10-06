@@ -237,7 +237,8 @@ def _clean_hist(history) -> list:
 def verdict(history, cfg=None, *, today=None) -> str:
     """능력 판정 — 계약 §6.4 의 유일 구현. history = 오래된 것부터 ``{date, status, reasons, probe_sig}``.
 
-    1. 기록이 없으면 ``미확인``.  2. 가장 최근 기록이 ``ok`` 면 ``가능``.
+    1. 기록이 없으면 ``미확인``.  2. ``transport_fail``·``unknown`` 을 뺀 가장 최근 기록이 ``ok`` 면 ``가능``(계약 v1.2
+       §0.7 C9 — 수송 실패는 능력이 사라졌다는 근거가 아니므로 ok 뒤의 수송 실패·모름은 '가능' 을 무르지 않는다, TAB §1.5).
     3. 판정 창 = 마지막 ``ok`` 이후이면서 현재(가장 최근 기록의) ``probe_sig`` 와 같은 기록(탐침 값이 바뀌면 그 전 실패는
        세지 않는다 = 자동 해제).
     4. 창 안 ``fail`` 에서 '확정 ✔' 사유별로 서로 다른 날짜 수를 센다. 어떤 사유가 ``collect.confirmBlockedCount`` 이상이고
@@ -246,7 +247,8 @@ def verdict(history, cfg=None, *, today=None) -> str:
     hist = _clean_hist(history)
     if not hist:
         return "미확인"
-    if hist[-1]["status"] == "ok":
+    decisive = [x for x in hist if x["status"] not in ("transport_fail", "unknown")]
+    if decisive and decisive[-1]["status"] == "ok":
         return "가능"
     last_ok = max((i for i, h in enumerate(hist) if h["status"] == "ok"), default=-1)
     sig = hist[-1].get("probe_sig")
@@ -408,8 +410,8 @@ class _WinLocProbe:
             return -1
 
     def try_write(self, paths) -> bool:
-        r"""``data\pcs\.probe_<rand>`` 를 만들고 지운다."""
-        p = paths.pcs() / f".probe_{os.urandom(4).hex()}"
+        r"""``data\.probe_<rand>``(계약 §1.5 — ``Paths.bundle_probe``, v1.2 C19)를 만들고 지운다."""
+        p = paths.bundle_probe(os.urandom(4).hex())
         try:
             fsx.atomic_write(p, b"", fsync=False)
         except OSError:

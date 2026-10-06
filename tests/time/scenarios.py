@@ -36,24 +36,31 @@ TAG_CODES = {"정규": "regular", "연장": "extended", "야간": "night", "휴�
 _TEST_KEY = b"lm27-wp19-synthetic-test-key"          # 시험 전용(키링 아님)
 
 # ───────────────────────────── 가짜(아직 없는 WP 의 계약 함수) ─────────────────────────────
-_FAM_TAIL = re.compile(r"([_\-\s]?(v\d+(\.\d+)?|rev\d+|r\d+|최종|final|수정본?|사본|copy|\(\d+\)|\d{6,8}))$", re.I)
+# 계약 v1.2 §0.7 C16(§4.3): 낱말·판 꼬리는 앞에 구분자가 있을 때만, '(n)' 은 구분자 없이도 · 날짜 숫자 꼬리는 남긴다
+_FAM_TAIL = re.compile(r"(?:[\s_\-]+(?:복사본|사본|수정본?|copy|최종|final|v\d{1,3}(?:\.\d{1,3}){0,2}|rev\.?\s?\d{1,3}"
+                       r"|r\d{1,3})|\s?\(\d{1,3}\))$", re.I)
+_FAM_SEP = re.compile(r"[\s_\-.]+")
 MINI_CATALOG = {"ansys": "해석", "creo": "CAD", "vivado": "FPGA", "zemax": "광학", "notepad": "사무"}
 
 
 def fake_doc_fam(name: str) -> str:
-    """계약 §4.3 · W §4.1 문서군 정규화(가짜 — WP-11 `lm27.privacy.keys.doc_fam` 의 계약 규칙 그대로)."""
+    """계약 §4.3 · C16 문서군 정규화(가짜 — WP-11 `lm27.privacy.keys.doc_fam` 의 계약 규칙 그대로: 경로면 기본 이름,
+    확장자 제거, 꼬리 반복 제거(최대 5회), 비면 원래 이름, 구분자 묶음 → '_')."""
     if not name:
         return ""
-    x = unicodedata.normalize("NFKC", name).lower().strip()
+    x = re.split(r"[\\/]", unicodedata.normalize("NFKC", name))[-1].lower().strip()
     x = re.sub(r"\.(gz|zip|7z)$", "", x)
-    x = re.sub(r"\.(prt|asm|drw)\.\d+$", "", x)
-    x = re.sub(r"\.[a-z0-9]{1,5}$", "", x)
+    y = re.sub(r"\.(prt|asm|drw)\.\d{1,4}$", "", x)
+    x = (y if y != x else re.sub(r"\.[a-z0-9]{1,5}$", "", x)).strip()
+    base = x
     for _ in range(5):
-        x2 = _FAM_TAIL.sub("", x).strip(" _-")
+        x2 = _FAM_TAIL.sub("", x)
         if x2 == x:
             break
         x = x2
-    return x
+    if not _FAM_SEP.sub("", x):
+        x = base
+    return _FAM_SEP.sub("_", x).strip("_")
 
 
 def fake_cat_of(app_id: str) -> str:

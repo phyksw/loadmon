@@ -371,6 +371,7 @@ class _Norm:
         self.tags = _Tags(tags)
         self.audit: Counter = Counter()
         self.warnings: list[str] = []
+        self._l0_on: list = []                 # C14 꺼짐·절전 파생 재료(run 마다 새로)
         self.names: dict[str, tuple[int, str]] = {}
         self.dirs: dict[str, set[tuple[str, ...]]] = defaultdict(set)
         self._fam_cache: dict[tuple[str, str | None, tuple], str] = {}
@@ -433,6 +434,7 @@ class _Norm:
             rows.append(r)
         self._index_names(rows)
         S, pcon_raw, msgs_raw, meets, docs_raw, comps, commits, manual_raw = [], [], [], [], [], [], [], []
+        self._l0_on = []
         for r in rows:
             kind = r.get("kind")
             prec = r.get("ts_precision")
@@ -466,6 +468,7 @@ class _Norm:
                 self._manual(r, t, prec, manual_raw)
             else:
                 self.audit["알수없는_kind"] += 1
+        S += self._derive_off(S)
         S = self._stuck(S)
         S.sort(key=lambda s: (s.a, s.pc, s.b, s.cls, s.fam, s.state, s.priv, s.app,
                               -1 if s.idle is None else s.idle))
@@ -535,11 +538,14 @@ class _Norm:
             return
         if events and r.get("event_class") != "sleep":
             pcon_raw.append((pc, t, b, str(r.get("layer") or "L0"), bool(fl.get("end_uncertain"))))
+            if str(r.get("layer") or "L0") == "L0":                # C14 꺼짐·절전 파생 재료(켜짐 구간 + 여는 사건 종류)
+                self._l0_on.append((pc, t, b, str(r.get("event_class") or ""), bool(fl.get("end_uncertain")),
+                                    bool(fl.get("always_on"))))
             return
         if fl.get("stuck"):
             self.audit["고착_표본_폐기"] += 1
             return
-        if events:                                      # pc.events 절전 구간 = 부정 증거(X-202)
+        if events:                                      # (호환) pc.events 절전 행 = 부정 증거(X-202) — C14 이후 수집기는 내지 않는다
             S.append(Samp(pc, t, b, "sleep", "system", "", "work", None, "system"))
             return
         ss = r.get("session_state")
@@ -573,6 +579,29 @@ class _Norm:
                 if cat in ENG_CATEGORIES:
                     return "eng"
         return cls
+
+    def _derive_off(self, S: list[Samp]) -> list[Samp]:
+        """꺼짐·절전 파생(계약 v1.2 §0.7 C14 · X-202): pc.events 수집기는 켜짐(L0) 구간만 낸다. 같은 PC 의 L0 켜짐 구간
+        사이 빈 곳을 '켜져 있지 않음' 부정 증거(Samp state ``sleep``)로 만든다 — 다음 구간을 여는 사건이 ``wake`` 면 절전,
+        ``boot`` 면 꺼짐(둘 다 그 PC 에서 일하지 않은 구간). 앞 구간 끝이 불확실(end_uncertain — 충돌·종료 기록 유실)하거나
+        상시 켜짐(always_on)이면 빈 곳의 시작을 모르므로 만들지 않는다. 호환으로 남긴 ``event_class='sleep'`` 행과 겹쳐도
+        합집합이라 두 번 세지 않는다."""
+        by_pc: dict[str, list] = defaultdict(list)
+        for x in self._l0_on:
+            by_pc[x[0]].append(x)
+        have = {(s.pc, s.a, s.b) for s in S if s.state == "sleep"}
+        out = []
+        for pc, spans in sorted(by_pc.items()):
+            spans.sort(key=lambda x: (x[1], x[2]))
+            end = None
+            for _pc, a, b, cls, unc, always in spans:
+                if end is not None and end[0] < a and cls in ("wake", "boot") and not end[1]:
+                    if (pc, end[0], a) not in have:
+                        out.append(Samp(pc, end[0], a, "sleep", "system", "", "work", None, "system"))
+                        self.audit["꺼짐절전_파생"] += 1
+                if end is None or b > end[0]:
+                    end = (b, unc or always)
+        return out
 
     def _stuck(self, S: list[Samp]) -> list[Samp]:
         """(PC, 날) 커버 ≥ stuckCoverH 이고 idle>0 비율 < stuckIdleRatio → 그 PC·그날 표본 폐기(하한 폴백)."""

@@ -174,6 +174,15 @@ class TestOutputContract(CloneTestCase):
         self.assertEqual(len(err), 1, "stderr = 상태 한 줄(숫자·사유 코드만)")
         self.assertTrue(r.stderr.decode("utf-8").isascii(), "상태 줄에 원문 없음")
 
+    def test_status_c1_required_fields(self):
+        """계약 v1.2 §0.7 C1 — 상태 줄 한 모양(schema·src·rc·reasons·partial·cap_hit·budget_hit·n·counts, W1 통합 창 정렬)."""
+        st = self.res.status
+        self.assertLessEqual({"schema", "src", "rc", "reasons", "partial", "cap_hit", "budget_hit", "n", "counts"}, set(st))
+        self.assertEqual(st["schema"], "lm27.collector_status/1")
+        self.assertEqual(st["n"], len(self.res.records))
+        self.assertEqual((st["partial"], st["cap_hit"], st["budget_hit"]), (False, False, False))
+        self.assertIsInstance(st["counts"], dict)
+
     def test_stdout_is_ndjson_with_cursor_last(self):
         r = self.res
         self.assertGreater(len(r.records), 0)
@@ -284,6 +293,24 @@ class TestCursorAndControl(CloneTestCase):
         r = uia.run(self.clone, self.raw, args=("-Since", "2026-09-30", "-Until", "2026-09-30"))
         self.assertEqual([x["body_text"] for x in r.records], ["과제A 검토본 공유드립니다"])
         self.assertEqual(r.counts["out_of_range"], 1)
+
+    def test_clm_rc3_status_on_stdout(self):
+        """W1 통합 창 결함 회귀(CT §15 · C1·C4): 제한 언어 모드면 첫 실행문에서 rc 3 + R-CLM 을 stdout 상태 제어 줄로 —
+        이전에는 최상위 New-Object 에서 멈춰 rc 1·출력 0바이트였고 원장이 '0건 관측(zero_ok)'으로 적었다."""
+        path = str(self.clone.path(*uia.SCRIPT_REL)).replace("'", "''")
+        raw = str(self.raw).replace("'", "''")
+        cmd = ("$ExecutionContext.SessionState.LanguageMode='ConstrainedLanguage'; & '" + path + "' -RawFile '" + raw
+               + "'; exit $LASTEXITCODE")
+        p = subprocess.run([uia.powershell_exe(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command",
+                            cmd], input=b"", capture_output=True, timeout=180, cwd=str(self.clone.temp),
+                           env=self.clone.env(), creationflags=CREATE_NO_WINDOW if os.name == "nt" else 0, check=False)
+        self.assertEqual(p.returncode, 3, p.stderr.decode("utf-8", "replace")[-300:])
+        lines = [x for x in p.stdout.decode("utf-8").splitlines() if x.strip()]
+        self.assertEqual(len(lines), 1, lines)
+        st = json.loads(lines[0])["_status"]
+        self.assertEqual((st["schema"], st["src"], st["rc"], st["reasons"], st["n"]),
+                         ("lm27.collector_status/1", "teams.uia", 3, ["R-CLM"], 0))
+        self.assertEqual(rcmap.translate_cell(st["rc"], st["reasons"])["status"], "blocked")
 
     def test_missing_rawfile_is_rc3_and_cursor_unchanged(self):
         r = uia.run(self.clone, self.clone.temp / "없는파일.txt", cursor={"last_ts_utc": "2026-09-01T00:00:00Z"})

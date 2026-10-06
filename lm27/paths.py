@@ -33,6 +33,8 @@ _NAME_RX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,95}$")
 _DATE_RX = re.compile(r"^(\d{4})-?(\d{2})-?(\d{2})$")
 
 OUTBOX_STATES = ("pending", "sent", "failed", "dropped")
+OFFLINE_REGISTRY_NAME = "lm27_registry.json"     # team.offlineDir·teamServer.publishDir 안 오프라인 레지스트리 사본(TAB §5.3)
+_RAND_RX = re.compile(r"^[0-9a-f]{4,32}$")
 
 
 def _check(rx, value, what):
@@ -215,12 +217,36 @@ class Paths:
             raise ValueError(f"paths: outbox 상태는 {OUTBOX_STATES} 중 하나")
         return self.data() / "outbox" / "team" / state
 
+    def outbox_file(self, state: str, name: str) -> Path:
+        r"""팀 업로드 대기열 파일 ``data\outbox\team\<state>\<name>``(묶음·``.meta.json``·``.lease`` — 계약 v1.2 C19)."""
+        return self.outbox(state) / _check(_NAME_RX, name, "파일 이름")
+
     def ai_store(self, stage: str) -> Path:
         r"""AI 답 보존소 항목 커밋 ``data\ai\store\<stage>.items.jsonl``."""
         return self.data() / "ai" / "store" / (_check(_STAGE_RX, stage, "단계 이름") + ".items.jsonl")
 
+    def ai_store_dir(self) -> Path:
+        r"""AI 답 보존소 폴더 ``data\ai\store\``(번들 합치기의 단계 파일 열거 — 계약 v1.2 C19)."""
+        return self.data() / "ai" / "store"
+
     def ai_run(self, run_id: str) -> Path:
         return self.data() / "ai" / "runs" / _check(RUN_ID_RX, run_id, "run_id")
+
+    def ai_journal(self, run_id: str, stage: str) -> Path:
+        r"""브리지 단계 저널 ``data\ai\runs\<run_id>\<stage>.jsonl``(B §7.8 · 계약 §3.17)."""
+        return self.ai_run(run_id) / (_check(_STAGE_RX, stage, "단계 이름") + ".jsonl")
+
+    def ai_result(self, run_id: str, stage: str) -> Path:
+        r"""브리지 단계 결과 봉투 ``data\ai\runs\<run_id>\<stage>.result.json``(B §7.11)."""
+        return self.ai_run(run_id) / (_check(_STAGE_RX, stage, "단계 이름") + ".result.json")
+
+    def ai_capabilities(self, run_id: str) -> Path:
+        r"""그 실행의 조회 능력 기록 ``data\ai\runs\<run_id>\capabilities.json``."""
+        return self.ai_run(run_id) / "capabilities.json"
+
+    def bundle_probe(self, rand: str) -> Path:
+        r"""번들 위치 쓰기 시험 파일 ``data\.probe_<rand>``(계약 §1.5 — 만들고 곧 지운다, rand = 16진 4~32자)."""
+        return self.data() / (".probe_" + _check(_RAND_RX, rand, "임의 값"))
 
     def import_dir(self) -> Path:
         return self.data() / "import"
@@ -263,6 +289,18 @@ class Paths:
 
     def analysis_current(self) -> Path:
         return self.derived() / "analysis" / "current.json"
+
+    def analysis_time(self, run_id: str) -> Path:
+        r"""시간 코어 결과 폴더 ``data\derived\analysis\<run_id>\time\``(계약 §3.14)."""
+        return self.analysis(run_id) / "time"
+
+    def analysis_time_file(self, run_id: str, name: str) -> Path:
+        r"""시간 코어 결과 파일 ``…\time\<name>``(env_slots.jsonl · day_ledger.jsonl · tasks.json 등 9종 — 계약 §3.14)."""
+        return self.analysis_time(run_id) / _check(_NAME_RX, name, "파일 이름")
+
+    def analysis_hier(self, run_id: str) -> Path:
+        r"""분류 결과 폴더 ``data\derived\analysis\<run_id>\hier\``(계약 §3.15)."""
+        return self.analysis(run_id) / "hier"
 
     def logs(self) -> Path:
         return self.data() / "logs"
@@ -376,6 +414,25 @@ class Paths:
     def bridge_dir(self) -> Path:
         return self.lad() / "bridge"
 
+    # 브리지 상태 파일(계약 §1.3 bridge\ · B §2.4 — 계약 v1.2 C19)
+    def bridge_profile(self) -> Path:
+        return self.bridge_dir() / "bridge_profile.json"
+
+    def bridge_profile_id(self) -> Path:
+        return self.bridge_dir() / "profile_id.txt"
+
+    def bridge_trace(self) -> Path:
+        return self.bridge_dir() / "trace.jsonl"
+
+    def bridge_probe_last(self) -> Path:
+        return self.bridge_dir() / "probe_last.json"
+
+    def bridge_rawcap(self) -> Path:
+        return self.bridge_dir() / "rawcap"
+
+    def bridge_diagnose(self) -> Path:
+        return self.bridge_dir() / "diagnose"
+
     def edge_lock(self) -> Path:
         return self.bridge_dir() / "session.lock.json"
 
@@ -396,6 +453,13 @@ class Paths:
 
     def ui_job_file(self, job_id: str) -> Path:
         return self.ui_jobs() / (_check(JOB_ID_RX, job_id, "job_id") + ".json")
+
+    def offline_registry(self, offline_dir) -> Path:
+        r"""오프라인 레지스트리 사본 ``<offline_dir>\lm27_registry.json``(사용자가 고른 바깥 폴더 ``team.offlineDir`` ·
+        ``teamServer.publishDir`` — 계약 §5.1-7 예외 경로, 계약 v1.2 C19). 빈 값이면 ValueError."""
+        if offline_dir is None or not os.fspath(offline_dir) or not str(os.fspath(offline_dir)).strip():
+            raise ValueError("paths: 오프라인 폴더가 비었습니다")
+        return Path(os.fspath(offline_dir)) / OFFLINE_REGISTRY_NAME
 
     def teamserver_default(self) -> Path:
         """팀 서버 저장소 기본 위치(``teamServer.storeDir`` 가 비었을 때)."""

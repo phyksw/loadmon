@@ -25,7 +25,7 @@ def _first_num(text, rx=r"\d[\d\-]{8,}\d"):
 class VersionHashTest(unittest.TestCase):
     def test_version_format(self):
         self.assertRegex(rules.RULES_VERSION, r"^\d{4}\.\d{1,2}\.\d{1,3}$")
-        self.assertEqual(rules.RULES_VERSION, "2026.10.0")
+        self.assertEqual(rules.RULES_VERSION, "2026.10.1")          # W1 통합 창: 2026.10.0 → 2026.10.1(P §16.4)
 
     def test_hash_is_16hex_and_stable(self):
         h1, h2 = rules.rules_hash(), rules.rules_hash()
@@ -68,7 +68,9 @@ class VersionHashTest(unittest.TestCase):
             (rules, "HIGH", rules.HIGH - {"phone"}),
             (rules, "CTX", dict(rules.CTX, ip="(?:ip)")),
             (rules, "PROTECT", rules.PROTECT[:-1]),
-            (rules, "RULES_VERSION", "2026.10.1"),
+            (rules, "RULES_VERSION", "2026.10.99"),
+            (rules, "DASH_RX", re.compile(rules.DASH_RX.pattern.replace("\u2212", ""))),   # 단계 0 정규화도 해시에 든다
+            (rules, "FORMAT_RX", re.compile("[\u00ad]")),
         ]
         for mod, name, val in cases:
             with self.subTest(name=name), mock.patch.object(mod, name, val):

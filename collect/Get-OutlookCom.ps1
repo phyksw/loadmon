@@ -11,7 +11,8 @@
     · stdout 첫 줄 {"_meta":{"my_addrs":[...]}} · 원시 후보 레코드 NDJSON(P §10.2 원시 이름) · 끝 줄 {"_cursor":{…}}.
       연결자가 kind 마다 정제 파이프 하나에 잇는다(-Only mail / -Only cal — COM 2회 붙기, 두 번째는 GetActiveObject 재사용).
       -Only 를 비우면 메일·일정을 한 번에 읽고 줄마다 "_kind" 를 붙인다(혼합 라우팅용, 커서는 {경로 ID: 값}).
-    · stderr: 사람용 한 줄(숫자·사유만)과 마지막 줄들 {"_result":{…}}(경로마다 하나 — rc·사유 코드·건수·subfolder_ratio).
+    · stderr: 사람용 한 줄(숫자·사유만)과 마지막 줄들 {"_status":{…}}(경로마다 하나 — 계약 v1.2 §0.7 C1 한 모양:
+      schema·src·rc·reasons·partial·cap_hit·budget_hit·n·counts + items_total·items_ok·new·subfolder_ratio 등).
   입력: stdin 제어 줄 {"_in":{"cursor":…,"cfg":{…}}}(연결자가 쓰고 닫는다, 리디렉션이 아니면 기본값). 커서·설정·주소는
   명령줄로 받지 않는다(X-300). 쓰는 설정: mail.com.budgetSec · mail.com.watchdogSec · mail.com.protectedReadSec ·
   mail.com.capMail · mail.com.capCal · mail.com.readProtected(연결자가 auto 를 0/1 로 정해 넘긴다) · mail.includeArchiveStore ·
@@ -57,11 +58,13 @@ param(
 )
 
 # ── 제한 언어 모드: .NET 형을 쓰기 전에 먼저 본다(R-CLM, rc 3) ─────────────────────────────────────────────
+# 계약 v1.2 §0.7 C1: 상태 줄 한 모양(_status). CLM 에서는 [Console] 호출도 막히므로 stdout 제어 줄(문자열 리터럴)로 낸다.
 if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') {
-    $clmSrc = 'mail.com'
-    if ($Only -eq 'cal') { $clmSrc = 'cal.com' }
-    $clm = '{"_result":{"src":"' + $clmSrc + '","rc":3,"reasons":["R-CLM"],"items_total":0,"items_ok":0}}'
-    try { [Console]::Error.WriteLine($clm) } catch { try { $host.UI.WriteErrorLine($clm) } catch { Write-Output $clm } }
+    if ($Only -eq 'cal') {
+        '{"_status":{"schema":"lm27.collector_status/1","src":"cal.com","rc":3,"reasons":["R-CLM"],"partial":false,"cap_hit":false,"budget_hit":false,"n":0,"counts":{},"items_total":0,"items_ok":0}}'
+    } else {
+        '{"_status":{"schema":"lm27.collector_status/1","src":"mail.com","rc":3,"reasons":["R-CLM"],"partial":false,"cap_hit":false,"budget_hit":false,"n":0,"counts":{},"items_total":0,"items_ok":0}}'
+    }
     exit 3
 }
 
@@ -97,6 +100,10 @@ $HEADERS_MAX = 16000
 $RCPT_MAX = 100
 $ONLINE_RX = '(?i)teams\.microsoft\.com/l/meetup-join|zoom\.us/j/|\.webex\.com/|Microsoft Teams'
 $BUSY_OF = @{ 0 = 'free'; 1 = 'tentative'; 2 = 'busy'; 3 = 'oof'; 4 = 'elsewhere' }
+# 수집 제외(CM §5.3): '대화 기록'(Skype·Lync IM 대화록 폴더 — OlDefaultFolders 값이 없어 이름으로) — 하위 포함.
+# 같은 목록이 색인 수집기 기본 제외(mail.index.excludeFolderNames)에도 있다. 클래스로도 한 번 더 거른다(언어 무관).
+$CONV_HISTORY_NAMES = @('대화 기록', 'Conversation History')
+$IM_CLASS_RX = '^(IPM\.Note\.Microsoft\.(Conversation|Missed)|IPM\.SkypeTeams\.)'
 
 # ── 출력 ──────────────────────────────────────────────────────────────────────────────────────────────
 function Write-OutLine([string]$s) {
@@ -248,15 +255,24 @@ function Get-SelfTest {
     return @{ n = [math]::Max(0, $n); opt = $opt }
 }
 function New-Result([string]$src) {
-    return [ordered]@{ src = $src; rc = 3; reasons = (New-Object System.Collections.Generic.List[string]); items_total = 0;
-        items_ok = 0; new = 0; cap_hit = $false; budget_hit = $false; horizon_oldest = $null; subfolder_ratio = $null;
+    return [ordered]@{ schema = 'lm27.collector_status/1'; src = $src; rc = 3
+        reasons = (New-Object System.Collections.Generic.List[string]); partial = $false; n = 0; items_total = 0
+        items_ok = 0; new = 0; cap_hit = $false; budget_hit = $false; horizon_oldest = $null; subfolder_ratio = $null
         recurrence_incomplete = 0; counts = [ordered]@{} }
 }
 function Add-Reason($res, [string]$code) { if (-not $res.reasons.Contains($code)) { $res.reasons.Add($code) } }
 function ConvertTo-ResultJson($r) {
+    # 사전(자식 안·부모의 실패 경로)과 PSCustomObject(부모가 자식 _wres 를 ConvertFrom-Json 한 것) 둘 다 받는다
     $o = [ordered]@{}
-    foreach ($k in $r.Keys) { $o[$k] = $r[$k] }
-    $o['reasons'] = @($r.reasons | Sort-Object)
+    if ($r -is [System.Collections.IDictionary]) { foreach ($k in $r.Keys) { $o[$k] = $r[$k] } }
+    else { foreach ($pp in $r.PSObject.Properties) { $o[$pp.Name] = $pp.Value } }
+    $rs = @($o['reasons'] | Where-Object { $_ } | Sort-Object)
+    $o['reasons'] = $rs
+    # 계약 v1.2 §0.7 C1 필수 필드: schema · partial(= 상한·예산·반복 일부) · n(= 새 레코드 수)
+    $o['schema'] = 'lm27.collector_status/1'
+    $o['partial'] = [bool]($o['cap_hit'] -or $o['budget_hit'] -or ([int]$o['recurrence_incomplete'] -gt 0) -or ($rs -contains 'R-RECURINC'))
+    $o['n'] = [int]$o['new']
+    if ($null -eq $o['counts']) { $o['counts'] = [ordered]@{} }
     return (ConvertTo-J $o)
 }
 
@@ -361,6 +377,7 @@ function New-SelfModel($st, $w) {
     $f = @{}
     foreach ($spec in @(@('inbox', '받은 편지함', 0), @('sent', '보낸 편지함', 0), @('deleted', '지운 편지함', 0), @('junk', '정크 메일', 0),
                         @('drafts', '임시 보관함', 0), @('outbox', '보낼 편지함', 0), @('project', '과제A 자료', 0),
+                        @('convhist', '대화 기록', 0),
                         @('calendar', '일정', 1), @('contacts', '연락처', 2))) {
         $x = New-StFolder ('ST-F-' + $spec[0]) $spec[1] $s1 $spec[2]
         $f[$spec[0]] = $x
@@ -420,6 +437,13 @@ function New-SelfModel($st, $w) {
                        inreply = (($i % 3) -eq 0); hasatt = ($att.Count -gt 0); att = $att; convid = ('{0:X32}' -f ($i % 4))
                        sender = $sender; to = $to; cc = $cc; headers = $hdr; body = ('selftest body {0}' -f $i) }
             $f[$key].Items.Add($item)
+        }
+        # IM 대화록(CM §5.3 수집 제외): 대화 기록 폴더 항목 1건(폴더 이름으로 제외) + 받은 편지함의 IM 클래스 1건(클래스로 제외)
+        foreach ($im in @(@('convhist', 'IPM.Note.Microsoft.Conversation', 'C'), @('inbox', 'IPM.Note.Microsoft.Missed', 'M'))) {
+            $f[$im[0]].Items.Add(@{ EntryID = ('ST-IM{0}-{1}' -f $im[2], $mk); t = (ConvertTo-UtcFromLocal $m.AddHours(11)); Subject = ('selftest im [{0}]' -f $im[0])
+                MessageClass = $im[1]; Importance = 1; Sensitivity = 0; Categories = ''; ConversationTopic = 'im'; imid = $null
+                inreply = $false; hasatt = $false; att = @(); convid = $null; sender = $peers[0]; to = @($me); cc = @(); headers = ''
+                body = 'im' })
         }
         if ($st.opt.archive) {
             for ($i = 0; $i -lt [math]::Max(1, [math]::Floor($n / 4)); $i++) {
@@ -486,6 +510,9 @@ function Get-MailFolders {
             $id = ''
             try { $id = [string]$node.EntryID } catch { continue }
             if ($skip.ContainsKey($id)) { $script:W.excluded++; continue }     # 지운·정크·임시 보관·보낼 편지함(하위 포함) 제외
+            $fname = ''
+            try { $fname = ([string]$node.Name).Trim() } catch { $fname = '' }
+            if ($CONV_HISTORY_NAMES -contains $fname) { $script:W.excluded++; continue }   # 대화 기록(IM 대화록, 하위 포함)
             if ((Get-NodeType $node) -ne 0) { continue }                          # 메일 폴더만
             $under = $e.under
             $role = 'subfolder'; $box = 'inbox'
@@ -764,6 +791,7 @@ function Invoke-MailKind {
             $seen++
             $cls = [string]$r.cls
             if (-not (($cls -match '^IPM\.Note' -and $cls -notmatch '^IPM\.Note\.Rules') -or $cls -match '^IPM\.Schedule\.Meeting\.')) { $nSkipCls++; continue }
+            if ($cls -match $IM_CLASS_RX) { $nSkipCls++; continue }            # IM 대화록·부재중 대화 클래스(CM §5.3 — 메일 아님)
             $rec = [ordered]@{}
             if ($r.imid) { $rec['internet_message_id'] = [string]$r.imid }
             if ($r.convid) { $rec['conversation_id'] = [string]$r.convid }
@@ -1304,8 +1332,7 @@ try {
     $rcs = New-Object System.Collections.Generic.List[int]
     foreach ($k in $out.results.Keys) {
         $r = $out.results[$k]
-        if ($r -is [System.Collections.IDictionary]) { $rcs.Add([int]$r.rc); Write-ErrLine ('{"_result":' + (ConvertTo-ResultJson $r) + '}') }
-        else { $rcs.Add([int]$r.rc); Write-ErrLine ('{"_result":' + (ConvertTo-J $r) + '}') }
+        $rcs.Add([int]$r.rc); Write-ErrLine ('{"_status":' + (ConvertTo-ResultJson $r) + '}')
     }
     if ($rcs.Contains(3)) { $code = 3 } elseif ($rcs.Contains(0)) { $code = 0 } elseif ($rcs.Contains(4)) { $code = 4 } else { $code = 1 }
 } catch {
@@ -1313,7 +1340,7 @@ try {
     foreach ($s in $kindsOut) {
         $r = New-Result $s; Add-Reason $r 'R-TRANSPORT'; $r.counts['error'] = $why; $r.rc = 3
         if ($Worker) { Write-OutLine ('{"_wres":' + (ConvertTo-ResultJson $r) + '}') }
-        else { Write-ErrLine ('{"_result":' + (ConvertTo-ResultJson $r) + '}') }
+        else { Write-ErrLine ('{"_status":' + (ConvertTo-ResultJson $r) + '}') }
     }
     $code = 3
 }

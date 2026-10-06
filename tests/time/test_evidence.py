@@ -214,6 +214,31 @@ class SessionTest(unittest.TestCase):
         self.assertEqual(ev.audit["가동_끝불확실_제외"], 1)
         self.assertEqual([(s.state, s.a) for s in ev.samples], [("sleep", lt("12:00"))])
 
+    def test_off_and_sleep_derived_from_on_spans_C14(self):
+        """계약 v1.2 §0.7 C14(W1 통합 창): 수집기는 켜짐(L0) 구간만 낸다 — 같은 PC 의 L0 켜짐 구간 사이 빈 곳을 증거층이
+        '켜져 있지 않음'(Samp sleep, 부정 증거)으로 파생한다(다음 구간을 wake 로 열면 절전, boot 면 꺼짐). 앞 구간 끝이
+        불확실하거나 상시 켜짐이면 만들지 않고, 호환 sleep 행과 겹쳐도 한 번만."""
+        def l0(a, b, **kw):
+            r = events(a, b, **kw)
+            r["layer"] = "L0"
+            return r
+        rows = [l0("08:00", "12:00", event_class="boot"),
+                l0("13:00", "15:00", event_class="wake"),                       # 12:00~13:00 절전
+                l0("16:00", "18:00", event_class="boot"),                       # 15:00~16:00 꺼짐
+                l0("09:00", "10:00", pc="PC2", event_class="boot", flags={"end_uncertain": True}),
+                l0("11:00", "12:00", pc="PC2", event_class="boot"),             # 앞 끝 불확실 → 파생 없음
+                l0("09:00", "10:00", pc="PC3", event_class="boot"),
+                l0("10:00", "10:30", pc="PC3", event_class="sleep"),            # 호환 sleep 행(같은 빈 곳)
+                l0("10:30", "11:00", pc="PC3", event_class="wake"),
+                events("09:00", "10:00", pc="PC4", event_class="logon"),          # L1 은 파생 대상 아님
+                events("11:00", "12:00", pc="PC4", event_class="logon")]
+        ev = norm(rows)
+        got = sorted((s.pc, s.a, s.b) for s in ev.samples if s.state == "sleep")
+        self.assertEqual(got, sorted([(X.pc_id("PC1"), lt("12:00"), lt("13:00")), (X.pc_id("PC1"), lt("15:00"), lt("16:00")),
+                                      (X.pc_id("PC3"), lt("10:00"), lt("10:30"))]))
+        self.assertEqual(ev.audit["꺼짐절전_파생"], 2)
+        self.assertEqual(len([p for p in ev.pcon if p.pc == X.pc_id("PC1")]), 3)   # 켜짐 구간은 그대로
+
 
 class MessageTest(unittest.TestCase):
     def test_mail_fields(self):

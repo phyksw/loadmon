@@ -58,6 +58,21 @@
 {"id": "P58", "type": "pos", "text": "사업자등록증_123-45-67891.pdf", "expect": "사업자등록증_[사업자번호].pdf", "hits": {"brn": 1}, "ctx": null}
 {"id": "P59", "type": "pos", "text": "급여계좌_110-123-456789.pdf", "expect": "급여계좌_[계좌].pdf", "hits": {"account": 1}, "ctx": null}
 {"id": "P60", "type": "pos", "text": "등본_900101-1234567.pdf", "expect": "등본_[주민번호].pdf", "hits": {"rrn": 1}, "ctx": null}
+{"id": "P61", "type": "pos", "text": "연락처 010\u20111234\u20115678", "expect": "연락처 [전화]", "hits": {"phone": 1}, "ctx": null}
+{"id": "P62", "type": "pos", "text": "연락처: 010 \u2013 1234 \u2013 5678", "expect": "연락처: [전화]", "hits": {"phone": 1}, "ctx": null}
+{"id": "P63", "type": "pos", "text": "대표 02 - 123 - 4567", "expect": "대표 [전화]", "hits": {"phone": 1}, "ctx": null}
+{"id": "P64", "type": "pos", "text": "주민 900101\u22121234567", "expect": "주민 [주민번호]", "hits": {"rrn": 1}, "ctx": null}
+{"id": "P65", "type": "pos", "text": "카드 4111\u20101111\u20101111\u20101111", "expect": "카드 [카드]", "hits": {"card": 1}, "ctx": null}
+{"id": "P66", "type": "pos", "text": "사업자 123\u201145\u201167890", "expect": "사업자 [사업자번호]", "hits": {"brn": 1}, "ctx": null}
+{"id": "P67", "type": "pos", "text": "메일 hong\u00ad@corp.example.com 로", "expect": "메일 [이메일@corp.example.com] 로", "hits": {"email": 1}, "ctx": null}
+{"id": "P68", "type": "pos", "text": "연락 010\u20601234\u20605678 주세요", "expect": "연락 [전화] 주세요", "hits": {"phone": 1}, "ctx": null}
+{"id": "P69", "type": "pos", "text": "보고서 여기 있습니다\nC:\\Users\\hong\\Desktop\\견적.xlsx\n확인 부탁드려요", "expect": "보고서 여기 있습니다\n[경로]\\견적.xlsx\n확인 부탁드려요", "hits": {"path": 1}, "ctx": null}
+{"id": "P70", "type": "pos", "text": "C:\\Users\\hong\\Desktop\\견적.xlsx 수정일: 9월 30일", "expect": "[경로]\\견적.xlsx 수정일: 9월 30일", "hits": {"path": 1}, "ctx": null}
+{"id": "P71", "type": "pos", "text": "C:\\Users\\hong\\a.xlsx 와 D:\\share\\b.xlsx 비교", "expect": "[경로]\\a.xlsx 와 [경로]\\b.xlsx 비교", "hits": {"path": 2}, "ctx": null}
+{"id": "P72", "type": "pos", "text": "C:/Users/hong/Documents/급여명세.xlsx", "expect": "[경로]\\급여명세.xlsx", "hits": {"path": 1}, "ctx": null}
+{"id": "P73", "type": "pos", "text": "file:///C:/Users/hong/Documents/a.xlsx", "expect": "[경로]\\a.xlsx", "hits": {"path": 1}, "ctx": null}
+{"id": "P74", "type": "pos", "text": "경로 C:\\\\Users\\\\hong\\\\a.xlsx", "expect": "경로 [경로]\\a.xlsx", "hits": {"path": 1}, "ctx": null}
+{"id": "P75", "type": "pos", "text": "\\\\fs01\\home\\hong\\견적서.xlsx\n여기 올렸습니다", "expect": "[경로]\\견적서.xlsx\n여기 올렸습니다", "hits": {"path": 1}, "ctx": null}
 {"id": "X01", "type": "drop", "text": "VPN 비밀번호: Abc!2345 공유"}
 {"id": "X02", "type": "drop", "text": "인증번호는 482910 입니다"}
 {"id": "X03", "type": "drop", "text": "token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.abcdefghijk_lmnop"}
@@ -114,6 +129,10 @@
 {"id": "N48", "type": "neg", "text": "PRJ_A_1234-5678-9012-3456"}
 {"id": "N49", "type": "neg", "text": "model_X1_2048x1536 견적"}
 {"id": "N50", "type": "neg", "text": "도면 2026-0012-03.1 개정"}
+{"id": "N51", "type": "neg", "text": "모델 1234 - 5678 비교"}
+{"id": "N52", "type": "neg", "text": "버전 A:/B 비교 표"}
+{"id": "N53", "type": "neg", "text": "1 - 2 - 3 단계 순서"}
+{"id": "N54", "type": "neg", "text": "수량 010 - 20 - 30 개"}
 {"id": "A01", "type": "ad", "meta": {"subject": "(광고) 9월 신제품 할인 프로모션 안내", "internal": false, "corresp_domain": false, "hdr": {}, "rcv": "to"}, "band": "drop"}
 {"id": "A02", "type": "ad", "meta": {"subject": "[광고] 추석 특가 쿠폰", "internal": false, "corresp_domain": false, "hdr": {}, "rcv": "to"}, "band": "drop"}
 {"id": "A03", "type": "ad", "meta": {"subject": "Webinar invitation - unsubscribe anytime", "internal": false, "corresp_domain": false, "hdr": {"list_unsubscribe": true}, "rcv": "to"}, "band": "drop"}
@@ -157,7 +176,7 @@
 {"id": "L05", "type": "label", "text": "결과 12345678 정리", "violations": ["forbidden_pattern"], "ctx": {"customers": [{"id": "C01", "names": ["고객사A"], "domains": ["custa.example"]}], "persons": {"김철수": "a1b2c3d4e5f60718"}}}
 {"id": "L06", "type": "label", "text": "[사람#a1b2c3] 협의", "violations": ["forbidden_pattern"], "ctx": {"customers": [{"id": "C01", "names": ["고객사A"], "domains": ["custa.example"]}], "persons": {"김철수": "a1b2c3d4e5f60718"}}}
 {"id": "W01", "type": "win", "exe": "KakaoTalk.exe", "title": "카카오톡", "app_class": "messenger", "class": "private"}
-{"id": "W02", "type": "win", "exe": "msedge.exe", "title": "새 InPrivate 탭 - [InPrivate] - Microsoft\u200b Edge", "app_class": "browser", "class": "private"}
+{"id": "W02", "type": "win", "exe": "msedge.exe", "title": "새 InPrivate 탭 - [InPrivate] - Microsoft​ Edge", "app_class": "browser", "class": "private"}
 {"id": "W03", "type": "win", "exe": "msedge.exe", "title": "쿠팡! - 개인 - Microsoft Edge", "app_class": "browser", "class": "private"}
 {"id": "W04", "type": "win", "exe": "chrome.exe", "title": "Jira 이슈 PRJ-12 - Google Chrome", "app_class": "browser", "class": "work"}
 {"id": "W05", "type": "win", "exe": "chrome.exe", "title": "검색 결과 - Google Chrome", "app_class": "browser", "class": "unknown"}
@@ -177,12 +196,12 @@
 {"id": "K04", "type": "ext", "fn": "tokens_of", "arg": "견적_[전화].xlsx", "expect": ["견적_", "[전화]", "xlsx"]}
 {"id": "D01", "type": "ext", "fn": "doc_fam", "arg": "과제A_열해석_v3.wbpj", "expect": "과제a_열해석"}
 {"id": "D02", "type": "ext", "fn": "doc_fam", "arg": "보고서_최종.pptx", "expect": "보고서"}
-{"id": "D03", "type": "ext", "fn": "doc_fam", "arg": "보고서 - 복사본.pptx", "expect": "보고서 - 복", "note": "계약 §4.3(W §4.1 FAM_TAIL) 문자 그대로 — P §18.2 doc_norm 기대값과 다름(CR)"}
+{"id": "D03", "type": "ext", "fn": "doc_fam", "arg": "보고서 - 복사본.pptx", "expect": "보고서"}
 {"id": "D04", "type": "ext", "fn": "doc_fam", "arg": "보고서 (1).pptx", "expect": "보고서"}
-{"id": "D05", "type": "ext", "fn": "doc_fam", "arg": "주간보고_20261005.xlsx", "expect": "주간보고", "note": "계약 §4.3(W §4.1 FAM_TAIL) 문자 그대로 — P §18.2 doc_norm 기대값과 다름(CR)"}
-{"id": "D06", "type": "ext", "fn": "doc_fam", "arg": "v2.docx", "expect": "", "note": "계약 §4.3(W §4.1 FAM_TAIL) 문자 그대로 — P §18.2 doc_norm 기대값과 다름(CR)"}
-{"id": "D07", "type": "ext", "fn": "doc_fam", "arg": "C:\\Users\\hong\\Documents\\2026 사업계획 v2 최종.pptx", "expect": "c:\\users\\hong\\documents\\2026 사업계획", "note": "계약 §4.3(W §4.1 FAM_TAIL) 문자 그대로 — P §18.2 doc_norm 기대값과 다름(CR)"}
-{"id": "D08", "type": "ext", "fn": "doc_fam", "arg": "photocopy.pdf", "expect": "photo", "note": "계약 §4.3(W §4.1 FAM_TAIL) 문자 그대로 — P §18.2 doc_norm 기대값과 다름(CR)"}
+{"id": "D05", "type": "ext", "fn": "doc_fam", "arg": "주간보고_20261005.xlsx", "expect": "주간보고_20261005"}
+{"id": "D06", "type": "ext", "fn": "doc_fam", "arg": "v2.docx", "expect": "v2"}
+{"id": "D07", "type": "ext", "fn": "doc_fam", "arg": "C:\\Users\\hong\\Documents\\2026 사업계획 v2 최종.pptx", "expect": "2026_사업계획"}
+{"id": "D08", "type": "ext", "fn": "doc_fam", "arg": "photocopy.pdf", "expect": "photocopy"}
 {"id": "E01", "type": "ext", "fn": "who_key_equiv", "arg": "smtp:user01@corp.example", "master_hex": "0101010101010101010101010101010101010101010101010101010101010101"}
 {"id": "E02", "type": "ext", "fn": "doc_key_equiv", "args": ["보고서_v3.pptx", "보고서_최종.docx"], "master_hex": "0101010101010101010101010101010101010101010101010101010101010101"}
 {"id": "E03", "type": "ext", "fn": "person_tag_equiv", "arg": "김철수 책임님께 보고드립니다", "master_hex": "0101010101010101010101010101010101010101010101010101010101010101"}

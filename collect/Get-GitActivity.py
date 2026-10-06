@@ -174,8 +174,11 @@ def _skip_dir(dirpath, name):
     return False
 
 
-def find_repos(roots, *, max_depth=FIND_DEPTH, limit=FIND_LIMIT, pkg_on=True, deadline=None):
-    """``.git`` 을 가진 폴더 탐색(깊이 제한·개수 제한·시간 제한). 패키지·빌드 폴더는 내려가지 않는다. 중첩 저장소는 건너뛴다."""
+def find_repos(roots, *, max_depth=FIND_DEPTH, limit=FIND_LIMIT, pkg_on=True, deadline=None, state=None):
+    """``.git`` 을 가진 폴더 탐색(깊이 제한·개수 제한·시간 제한). 패키지·빌드 폴더는 내려가지 않는다. 중첩 저장소는 건너뛴다.
+
+    ``state``(dict)를 주면 시간 제한으로 탐색을 끝까지 못 했을 때 ``state["truncated"] = True`` 를 남긴다 — 그 실행은
+    못 찾은 저장소가 있을 수 있으므로 커서 시각을 진전하지 않는다(계약 §3.10 '성공 전 진전 금지')."""
     found = []
     for root in roots:
         if not root or not os.path.isdir(root):
@@ -183,6 +186,8 @@ def find_repos(roots, *, max_depth=FIND_DEPTH, limit=FIND_LIMIT, pkg_on=True, de
         base = os.path.abspath(root).rstrip("\\/").count(os.sep)
         for dirpath, dirnames, _files in os.walk(root):
             if deadline is not None and time.monotonic() > deadline:
+                if state is not None:
+                    state["truncated"] = True
                 return found
             if dirpath.rstrip("\\/").count(os.sep) - base >= max_depth:
                 dirnames[:] = []
@@ -318,7 +323,7 @@ def collect(paths, cfg, pc_id, *, d0=None, d1=None, scan=(), now=None, api=None)
     deadline = t0 + STAGE_BUDGET_S
     now_utc = now or datetime.now(UTC)
     st = {"schema": "lm27.collector_status/1", "src": SRC, "rc": 3, "reasons": [], "partial": False, "cap_hit": False,
-          "budget_hit": False, "n": 0}
+          "budget_hit": False, "n": 0, "counts": {}}
     lookback = int(_cfg(cfg, "collect.lookbackDays", 120) or 120)
     today = _local_date(now_utc)
     day1 = d1 or today
@@ -332,13 +337,14 @@ def collect(paths, cfg, pc_id, *, d0=None, d1=None, scan=(), now=None, api=None)
     st["repos_missing"] = len(conf) - len(repos)
     pkg_on = bool(_cfg(cfg, "pc.excludePackageDirs", True))
     scan_roots = [str(x) for x in (_cfg(cfg, "pc.git.scanRoots", []) or []) if str(x or "").strip()] + list(scan)
+    found_state = {}
     if scan_roots:
-        repos += find_repos(scan_roots, pkg_on=pkg_on, deadline=deadline)
+        repos += find_repos(scan_roots, pkg_on=pkg_on, deadline=deadline, state=found_state)
     if not repos and not conf and not scan_roots:
         roots = [str(x) for x in (_cfg(cfg, "pc.watchFolders", []) or []) if str(x or "").strip()]
         if bool(_cfg(cfg, "pc.autoDiscoverFolders", True)):
             roots.append(os.path.expanduser("~"))
-        repos += find_repos(roots, max_depth=FALLBACK_DEPTH, pkg_on=pkg_on, deadline=deadline)
+        repos += find_repos(roots, max_depth=FALLBACK_DEPTH, pkg_on=pkg_on, deadline=deadline, state=found_state)
     repos = _dedupe(repos)
     st["repos"] = len(repos)
     if not repos:                                          # 저장소가 없으면 대상 없음(git 유무와 무관 — 이전 판 순서)
@@ -420,11 +426,16 @@ def collect(paths, cfg, pc_id, *, d0=None, d1=None, scan=(), now=None, api=None)
         audit.flush(rows_in=st["rows_in"], rows_out=len(stored), dur_ms=int((time.monotonic() - t0) * 1000))
     new_cur = dict(cur) if isinstance(cur, dict) else {}
     repos_cur = dict(new_cur.get("repos") or {}) if isinstance(new_cur.get("repos"), dict) else {}
+    # 성공 전 진전 금지(계약 §3.10 · §8.1): 예산으로 끊겼거나(남은 저장소 미독), 실패한 저장소가 있거나, 저장소 탐색이
+    # 시간 제한으로 잘렸으면 이번 실행이 못 읽은 저장소가 있다. 그때 last_ts_utc 를 진전하면 그 저장소의 '커서 − 14일'
+    # 이전 커밋이 영구히 건너뛰어진다(--from/--to 와 무관 — recollect 로도 회복 불가). 시각은 이전 값 그대로 두고
+    # 읽은 저장소의 repos 표지만 갱신한다(Get-FileActivity 의 예산 소진 규칙과 같다).
+    incomplete = bool(budget or failed or found_state.get("truncated"))
     last = cur_utc
     for row in stored:
         data = row.data
         ts = _parse_utc(data.get("ts_utc"))
-        if ts is not None and (last is None or ts > last):
+        if not incomplete and ts is not None and (last is None or ts > last):
             last = ts
         dk, ck = data.get("doc_key"), data.get("commit_key")
         if dk and ck:
@@ -432,6 +443,8 @@ def collect(paths, cfg, pc_id, *, d0=None, d1=None, scan=(), now=None, api=None)
     new_cur = {"last_ts_utc": _utc_iso(last) if last else None, "repos": dict(sorted(repos_cur.items()))}
     api["save_raw_cursor"](paths, pc_id, SRC, new_cur)
     st["cursor_saved"] = True
+    if incomplete:
+        st["cursor_held"] = True
     if budget:
         st["partial"], st["budget_hit"] = True, True
         st["reasons"] = ["R-BUDGET"]
@@ -441,8 +454,28 @@ def collect(paths, cfg, pc_id, *, d0=None, d1=None, scan=(), now=None, api=None)
 
 
 # ───────────────────────────── 진입점 ─────────────────────────────
+STATUS_COUNT_KEYS = ("repos", "repos_missing", "repos_failed", "others_excluded", "identity_fallback", "in_range",
+                     "rows_in", "stored")
+
+
+def status_line_obj(st) -> dict:
+    """계약 §0.7 C1 상태 줄 한 모양 — 필수 필드(schema·src·rc·reasons·partial·cap_hit·budget_hit·n·counts) 기본값 위에
+    ``st`` 를 덮는다. 오류 경로(인자 오류·pc_id·예외)도 같은 필수 집합을 갖는다. 숫자 건수는 ``counts`` 에도 싣는다."""
+    out = {"schema": "lm27.collector_status/1", "src": SRC, "rc": 3, "reasons": [], "partial": False,
+           "cap_hit": False, "budget_hit": False, "n": 0, "counts": {}}
+    out.update(st or {})
+    counts = dict(out.get("counts") or {})
+    for k in STATUS_COUNT_KEYS:
+        v = out.get(k)
+        if isinstance(v, int) and not isinstance(v, bool) and k not in counts:
+            counts[k] = v
+    out["counts"] = counts
+    return out
+
+
 def _status_line(st) -> None:
-    sys.stderr.write(json.dumps({"_status": st}, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n")
+    sys.stderr.write(json.dumps({"_status": status_line_obj(st)}, ensure_ascii=False, sort_keys=True,
+                                separators=(",", ":")) + "\n")
     sys.stderr.flush()
 
 

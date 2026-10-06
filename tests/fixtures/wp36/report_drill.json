@@ -1,0 +1,24 @@
+{
+ "_note": "WP-36 합성 드릴다운 섬(REPORTS §6.10.2·§6.10.3 모양 — 자기완결 HTML 의 lm27-drill, 로컬 앱의 /api/report/day·unit 응답).",
+ "units": {
+  "u_a1a1a1a1a1": {"unit_id": "u_a1a1a1a1a1", "title": "전원부 검증", "title_by": "ai", "grade": "B", "status": "closed",
+   "cycles": [{"no": 0, "start": {"code": "S1", "t": "2026-08-03 09:30", "estimated": false, "evidence": "e1"},
+    "end": {"code": "E2h", "t": "2026-08-05 16:00", "estimated": true, "evidence": "e7", "score": 0.8}}],
+   "levels_min": {"L1": 0, "L2": 60, "L3": 2840, "L4": 300, "L5": 160, "L6": 300, "L7": 0}, "obs_min": 2900, "est_min": 760,
+   "runs": [{"type": "APP_SIM", "class": "공학", "a": "2026-08-03 13:00", "b": "2026-08-03 17:00", "min": 240, "obs_min": 240, "apps": [["spice", 240]]}],
+   "evidence": [{"id": "e1", "kind": "mail", "dir": "in", "t": "2026-08-03 09:30", "prec": "minute", "who": "김철수",
+     "title": "[과제:P-0007] 전원부 검증 요청", "role": "시작 근거(S1 디지털 의뢰)"},
+    {"id": "e7", "kind": "file", "op": "export", "t": "2026-08-05 16:00", "doc": "전원부_검증결과", "role": "완료 후보(E2h, 점수 0.8)"}],
+   "explain": "의뢰 메일로 시작해 결과 파일을 내보낸 뒤 3근무일 동안 다른 작업이 없어 그 시각을 끝으로 봤습니다(등급 B)."}},
+ "days": {
+  "2026-09-22": {"d": "2026-09-22", "hol": false, "s_eff": ["09:00", "18:00"], "leave": 0,
+   "ledger": {"total_min": 590, "components": [["샘플러", 560], ["샘플러다리", 30]], "deductions": [["사적차감", -30]],
+    "excluded": [], "by_tag": {"regular": 480, "extended": 110}, "conf_min": {"high": 560, "mid": 30, "low": 0},
+    "coverage": {"mail_out": "ok", "teams": "ok", "pc": "ok"}, "flags": []},
+   "intervals": [{"a": "09:00", "b": "10:00", "tag": "regular", "basis": "샘플러", "targets": [["u_a1a1a1a1a1", 60, "O"]], "note": ""},
+    {"a": "10:00", "b": "10:35", "tag": "regular", "basis": "회의", "targets": [["B_MEET", 18, "X"], ["u_d4d4d4d4d4", 17, "I"]],
+     "note": "대형 회의 중 다른 업무 PC 입력(0.5/0.5)"},
+    {"a": "12:10", "b": "12:40", "tag": "regular", "basis": "사적차감", "kind": "deduct", "targets": [], "note": "사적 사용"}],
+   "labels": {"u_a1a1a1a1a1": "전원부 검증", "u_d4d4d4d4d4": "회로 해석 보고"}}},
+ "trimmed": []
+}

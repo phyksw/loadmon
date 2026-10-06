@@ -9,6 +9,7 @@ import json
 import unittest
 from datetime import datetime, timedelta
 
+from lm27.collect import rcmap
 from lm27.util import tz
 from tests.fixtures import synth
 from tests.fixtures.synth import inject
@@ -215,11 +216,16 @@ class MailIndexTest(CloneTestCase):
             self.assertIn(x["busy_status"], {"free", "tentative", "busy", "oof", "elsewhere"})
         self.assertEqual(r.result("cal.index")["recurrence_incomplete"], 0)
 
-    def test_cm12_recurring_master_only_rc3(self):
+    def test_cm12_recurring_master_only_recurinc_partial(self):
+        """CM-12 · 계약 v1.2 §0.7 C4(W1 통합 창): 반복 마스터만(회차 미전개) → R-RECURINC + partial(부분 결과 — rc 는 새 레코드
+        기준 0). 예전 'rc 3·사유 없음' 은 연결자에서 R-TRANSPORT 로 접혀 cal.owa 배정 근거가 수송 실패로 왜곡됐다."""
         r = self.run_idx(self.fake_masters, only="cal")
-        self.assertEqual(r.rc, 3, r.err_text)
+        self.assertEqual(r.rc, 0, r.err_text)
         res = r.result("cal.index")
         self.assertEqual(res["recurrence_incomplete"], 1)
+        self.assertEqual(res["reasons"], ["R-RECURINC"])
+        self.assertTrue(res["partial"])
+        self.assertEqual(rcmap.translate_cell(res["rc"], res["reasons"], res)["status"], "partial")
         m = [x for x in r.records if x["subject"] == "WP15 weekly master"]
         self.assertEqual(len(m), 1)
         self.assertTrue(m[0]["recurrence_incomplete"] and m[0]["is_recurring"])
@@ -227,8 +233,21 @@ class MailIndexTest(CloneTestCase):
 
     def test_calendar_fallback_is_incomplete(self):
         r = self.run_idx(dict(self.fake, _ext_rejected=True), only="cal")
-        self.assertEqual(r.rc, 3)
-        self.assertTrue(r.result("cal.index")["counts"].get("recurrence_unknown"))
+        self.assertEqual(r.rc, 0, r.err_text)
+        res = r.result("cal.index")
+        self.assertTrue(res["counts"].get("recurrence_unknown"))
+        self.assertIn("R-RECURINC", res["reasons"])
+        self.assertTrue(res["partial"])
+
+    def test_status_line_c1_shape(self):
+        """계약 v1.2 §0.7 C1 — 경로마다 _status 한 줄, 필수 필드 ⊇ C1 집합, _result 키 없음."""
+        r = self.run_idx(self.fake, only=None)
+        self.assertNotIn('"_result"', r.err_text)
+        for src in ("mail.index", "cal.index"):
+            res = r.result(src)
+            self.assertLessEqual({"schema", "src", "rc", "reasons", "partial", "cap_hit", "budget_hit", "n", "counts"},
+                                 set(res))
+            self.assertEqual((res["schema"], res["n"]), ("lm27.collector_status/1", res["new"]))
 
     # ── 혼합 · 인자 · 무부작용 ───────────────────────────────────────────────────────────────────
     def test_mixed_mode(self):

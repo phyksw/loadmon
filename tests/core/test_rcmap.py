@@ -316,6 +316,23 @@ class StageOutcome(unittest.TestCase):
         cell = rcmap.translate_cell(o["rc"], o["reasons"], o)              # 단계 결과를 그대로 넘겨도 같은 판정
         self.assertEqual((cell["status"], cell["cap_hit"], cell["budget_hit"]), ("partial", True, True))
 
+    def test_C4_recurinc_partial_cell_done_stage(self):
+        """계약 v1.2 §0.7 C4(W1 통합 창): R-RECURINC(반복 일정 일부만 펼침)는 '부분 결과' — 셀은 partial(다른 경로가 빈
+        회차를 채우게, '덮였음' 아님), 단계는 done + 그 사유(재실행으로 채워지지 않고 사람 조치도 아님 — collect rc 2 소음 방지).
+        rc 3 + 품질 사유만이면 예전처럼 transport_fail(사유 필수 규칙) — 수집기가 rc 0·4 로 내야 한다."""
+        for rc in (0, 4):
+            cell = rcmap.translate_cell(rc, ["R-RECURINC"], {"n": 3})
+            self.assertEqual((cell["status"], cell["cap_hit"], cell["budget_hit"], cell["reasons"]),
+                             ("partial", False, False, ["R-RECURINC"]))
+            o = rcmap.stage_outcome(rc, ["R-RECURINC"], {"n": 3})
+            self.assertEqual((o["state"], o["rc"], o["reason"], o["stop_kind"], o["caps_hit"], o["resumable"]),
+                             ("done", rc, "R-RECURINC", None, False, False))
+            self.assertTrue(o["hint"] and "\n" not in o["hint"])
+        both = rcmap.translate_cell(0, ["R-RECURINC", "R-CAP"], {"cap_hit": True})
+        self.assertEqual((both["status"], both["cap_hit"]), ("partial", True))
+        self.assertEqual(rcmap.stage_outcome(0, ["R-RECURINC", "R-CAP"], {"cap_hit": True})["reason"], "R-CAP")
+        self.assertEqual(rcmap.collect_rc([rcmap.stage_outcome(0, ["R-RECURINC"], {"n": 3}) | {"items_ok": 3}]), 0)
+
     def test_stage_and_cell_agree(self):
         stage_of = {"not_attempted": {"skipped"}, "blocked": {"skipped", "partial"}, "transport_fail": {"partial"},
                     "partial": {"partial"}, "ok": {"done"}, "zero_ok": {"done"},

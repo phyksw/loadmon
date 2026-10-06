@@ -167,6 +167,74 @@ class TestScenarios(Base):
         bad = list(w.profile_dir.parent.glob(w.profile_dir.name + ".bad-*"))
         self.assertEqual(len(bad), 2)                         # 세 번 재생성해도 새 .bad + 이전 1개만
 
+    # ── W1 통합 창 결함 회귀: 설정이 가리킨 남의 폴더(U-4) ─────────────────────────────────────
+    def _dead_rounds(self, w, rounds=4):
+        for i in range(rounds):
+            for run in (f"2026100{i + 1}-101500-3fa2", f"2026100{i + 1}-111500-4ab1"):
+                w.clock.advance(120)
+                s = w.session(run_id=run)
+                s.start()
+                s.close()
+
+    def test_foreign_profile_dir_never_renamed_or_removed(self):
+        """bridge.edge.profileDir 가 사용자 문서 폴더(LM27 표식 없음)를 가리키면 쓰지도 이름 바꾸지도 지우지도 않고 기본
+        전용 프로필로 진행한다(안내 BR-PROFILE-FOREIGN 한 번). 이전: dead_session 회복이 '업무자료' 를 .bad 로 바꾸고 세 번째에
+        rmtree(문서 영구 삭제)."""
+        tmp = Path(tempfile.mkdtemp(prefix="lm27t_bridge_foreign_"))
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        user_dir = tmp / "업무자료"
+        fsio.write_atomic(user_dir / "보고서.txt", "합성 문서")
+        w = self.world(page={"url": "chrome-error://chromewebdata/"}, overrides={"bridge.edge.profileDir": str(user_dir)})
+        s = self.started(w)
+        self.assertIn("profile_foreign:not_lm27", s.events)
+        self.assertIn("BR-PROFILE-FOREIGN", w.notices.shown)
+        self.assertEqual(Path(s.info.profile_dir), w.profile_dir)
+        self.assertIn(f"--user-data-dir={w.profile_dir}", w.net.launches[0])
+        s.close()
+        self._dead_rounds(w)
+        self.assertTrue((user_dir / "보고서.txt").is_file())
+        self.assertEqual(sorted(p.name for p in tmp.iterdir()), ["업무자료"])          # .bad-* 없음
+        self.assertFalse((user_dir / "lm27_profile.json").exists())                 # 남의 폴더에 표식도 쓰지 않는다
+        self.assertEqual(len(list(w.profile_dir.parent.glob(w.profile_dir.name + ".bad-*"))), 2)   # 회복은 전용 프로필에서
+
+    def test_browser_default_user_data_refused_U4(self):
+        """U-4: 브라우저 기본 사용자 데이터 루트(…\\Microsoft\\Edge\\User Data)는 비어 있어도 쓰지 않는다 — 원격 디버깅 포트로
+        띄워 쿠키·세션을 로컬 CDP 에 노출하지 않는다."""
+        tmp = Path(tempfile.mkdtemp(prefix="lm27t_bridge_ud_"))
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        real = tmp / "Microsoft" / "Edge" / "User Data"
+        fsio.write_atomic(real / "Default" / "Bookmarks", "{}")
+        fsio.write_atomic(real / "Local State", "{}")
+        w = self.world(page={"url": "chrome-error://chromewebdata/"}, overrides={"bridge.edge.profileDir": str(real)})
+        s = self.started(w)
+        self.assertIn("profile_foreign:browser_default", s.events)
+        self.assertTrue(all(f"--user-data-dir={real}" not in a for launch in w.net.launches for a in launch))
+        s.close()
+        self._dead_rounds(w)
+        self.assertTrue((real / "Default" / "Bookmarks").is_file())
+        self.assertEqual(sorted(p.name for p in real.parent.iterdir()), ["User Data"])
+        other = tmp / "다른곳" / "edge"                                          # 다른 위치라도 'Local State' 있는 프로필 루트
+        fsio.write_atomic(other / "Local State", "{}")
+        from lm27.bridge.session import foreign_profile
+        self.assertEqual(foreign_profile(other, w.profile_dir), "browser_default")
+        self.assertIsNone(foreign_profile(tmp / "빈폴더", w.profile_dir))         # 없는(빈) 폴더는 새 전용 프로필로 쓴다
+
+    def test_profile_mark_written_and_required_for_recovery(self):
+        """기동하면 전용 프로필에 소유 표식(profile_id)을 쓴다. 표식의 profile_id 가 상태 파일과 다르면 회복이 이름을
+        바꾸지 않는다(bad_rename_refused)."""
+        from lm27.bridge.session import PROFILE_MARK, profile_mark_id
+        w = self.world()
+        s = self.started(w)
+        self.assertEqual(profile_mark_id(w.profile_dir), s.profile.profile_id())
+        s.close()
+        fsio.write_atomic(w.profile_dir / PROFILE_MARK, {"schema": "lm27.edge_profile/1", "profile_id": "00000000-0000-4000-8000-000000000000"})
+        s2 = w.session(run_id=RUN_C)
+        s2.info.profile_dir = str(w.profile_dir)
+        s2.profile.update(lambda d: d.setdefault("health", {}).__setitem__("dead_sessions", [{"run": "r1"}, {"run": "r2"}]))
+        self.assertFalse(s2._recover_dead_profile())
+        self.assertIn("bad_rename_refused", s2.events)
+        self.assertEqual(list(w.profile_dir.parent.glob(w.profile_dir.name + ".bad-*")), [])
+
     def test_T55_owa_role_blocked_by_bridge_lock(self):
         w = self.world()
         s1 = self.started(w)

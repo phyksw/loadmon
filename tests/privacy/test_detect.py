@@ -34,8 +34,9 @@ def _canary(cat):
 
 class CorpusTest(unittest.TestCase):
     def test_positive_60(self):
+        """P §18.2 양성 60 + 2026.10.1 회귀 양성 P61~P75(대시·서식 문자·띄운 구분자·경로 2단계 — W1 통합 창)."""
         rows = [r for r in CORPUS if r["type"] == "pos"]
-        self.assertEqual(len(rows), 60)
+        self.assertEqual(len(rows), 75)
         for r in rows:
             with self.subTest(rid=r["id"]):
                 ctx = _ctx(r.get("ctx"))
@@ -50,7 +51,7 @@ class CorpusTest(unittest.TestCase):
 
     def test_negative_50(self):
         rows = [r for r in CORPUS if r["type"] == "neg"]
-        self.assertEqual(len(rows), 50)
+        self.assertEqual(len(rows), 54)                                      # + N51~N54(2026.10.1)
         for r in rows:
             with self.subTest(rid=r["id"]):
                 res = sanitize(r["text"])
@@ -220,8 +221,32 @@ class InputShapeTest(unittest.TestCase):
         self.assertEqual(sanitize(None).text, "")
 
     def test_control_and_zero_width(self):
+        """제어 문자·사설 영역은 공백, 서식 문자(Cf — 폭 0 공백 등)는 삭제(2026.10.1 — 값 가운데 끼운 서식 문자가 탐지를
+        끊지 않게)."""
         res = sanitize("도면" + chr(7) + "검토" + chr(0x200B) + "요청" + chr(0xE123))
-        self.assertEqual(res.text, "도면 검토 요청")
+        self.assertEqual(res.text, "도면 검토요청")
+        self.assertEqual(sanitize("검토" + chr(0x00AD) + chr(0x2060) + chr(0xFEFF) + "요청").text, "검토요청")
+
+    def test_dash_and_format_chars_do_not_hide_pii_2026_10_1(self):
+        """W1 통합 창 결함 회귀(P §4 단계 0): 대시류·서식 문자·띄운 구분자로 쓴 전화·주민·카드·사업자·이메일."""
+        d = "".join
+        cases = [(d(("010", chr(0x2011), "1234", chr(0x2011), "5678")), "phone"),
+                 (d(("010 ", chr(0x2013), " 1234 ", chr(0x2013), " 5678")), "phone"),
+                 (d(("02 - 123 - 4567",)), "phone"),
+                 (d(("010", chr(0x2060), "1234", chr(0x2060), "5678")), "phone"),
+                 (d(("010", chr(0x00AD), "1234", chr(0x00AD), "5678")), "phone"),
+                 (d(("주민 900101", chr(0x2212), "1234567")), "rrn"),
+                 (d(("카드 4111", chr(0x2010), "1111", chr(0x2010), "1111", chr(0x2010), "1111")), "card"),
+                 (d(("사업자 123", chr(0x2011), "45", chr(0x2011), "67890")), "brn"),
+                 (d(("hong", chr(0x00AD), "@corp.example.com")), "email"),
+                 (d(("hong@", chr(0x2060), "corp.example.com")), "email"),
+                 (d(("hong", chr(0x200B), "@corp.example.com")), "email")]
+        for text, cat in cases:
+            with self.subTest(cat=cat, n=len(text)):
+                res = sanitize(text)
+                self.assertEqual(res.hits.get(cat), 1, res.hits)
+                self.assertNotRegex(res.text, r"\d{4}")
+                self.assertNotIn("hong", res.text)
 
     def test_newline_kept(self):
         self.assertEqual(sanitize("첫 줄\n둘째 줄").text, "첫 줄\n둘째 줄")

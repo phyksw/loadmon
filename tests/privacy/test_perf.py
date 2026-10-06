@@ -20,7 +20,7 @@ def _pool():
 class PerfTest(unittest.TestCase):
     def test_20000_rows_within_5s_T18(self):
         pool = _pool()
-        self.assertEqual(len(pool), 110)
+        self.assertEqual(len(pool), 129)          # 양성 75 + 미끼 54(2026.10.1)
         best = None
         for _ in range(2):
             t0 = time.perf_counter()

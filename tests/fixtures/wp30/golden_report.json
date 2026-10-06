@@ -1,0 +1,382 @@
+{
+ "biz_min_examples": {
+  "0904_1600_to_0907_1000": 180,
+  "0922_1200_to_0930_1300": 1920,
+  "0923_1700_to_0928_0900": 60
+ },
+ "density": {
+  "0": 0,
+  "1": 1,
+  "119": 1,
+  "1199": 4,
+  "120": 2,
+  "1200": 5,
+  "359": 2,
+  "360": 3,
+  "5000": 5,
+  "719": 3,
+  "720": 4
+ },
+ "fmt": {
+  "h1": {
+   "0": "0.0",
+   "1": "0.0",
+   "1260": "21.0",
+   "2": "0.0",
+   "3": "0.1",
+   "59": "1.0",
+   "60": "1.0",
+   "61": "1.0",
+   "87": "1.5",
+   "90": "1.5",
+   "9483": "158.1"
+  },
+  "mm2": {
+   "0/9600": "0.00",
+   "11520/10560": "1.09",
+   "4799/9600": "0.50",
+   "5956/9600": "0.62",
+   "9000/9600": "0.94",
+   "9480/9600": "0.99"
+  },
+  "pct0": {
+   "1/199": "1",
+   "1/200": "1",
+   "540/11520": "5",
+   "9480/8880": "107"
+  }
+ },
+ "lanes": {
+  "u1": 0,
+  "u2": 1,
+  "u3": 0,
+  "u4": 0
+ },
+ "mine_role_A": {
+  "bottlenecks": [
+   {
+    "kind": "wait",
+    "no": 3,
+    "value_min": 720
+   },
+   {
+    "kind": "work",
+    "no": 2,
+    "share": 0.56
+   }
+  ],
+  "dropped": [],
+  "edges": [
+   [
+    2,
+    3,
+    5
+   ],
+   [
+    1,
+    2,
+    4
+   ],
+   [
+    3,
+    4,
+    2
+   ],
+   [
+    3,
+    5,
+    2
+   ],
+   [
+    4,
+    5,
+    2
+   ],
+   [
+    3,
+    2,
+    1
+   ]
+  ],
+  "rework_edges": [
+   [
+    3,
+    2,
+    1
+   ]
+  ],
+  "steps": [
+   {
+    "kind": "M",
+    "median_min": 0,
+    "n": 4,
+    "name": "의뢰 수신",
+    "no": 1,
+    "pos": 0.0,
+    "type": "REQ_IN",
+    "wait_in_median_min": null
+   },
+   {
+    "kind": "A",
+    "median_min": 210,
+    "n": 4,
+    "name": "해석 프로그램",
+    "no": 2,
+    "pos": 0.011,
+    "type": "APP_CAE",
+    "wait_in_median_min": 120,
+    "work_share": 0.56
+   },
+   {
+    "kind": "A",
+    "median_min": 105,
+    "n": 4,
+    "name": "표 계산",
+    "no": 3,
+    "pos": 0.592,
+    "type": "DOC_XLS",
+    "wait_in_median_min": 720,
+    "work_share": 0.28
+   },
+   {
+    "kind": "A",
+    "median_min": 60,
+    "n": 2,
+    "name": "회의",
+    "no": 4,
+    "pos": 0.945,
+    "type": "MEET",
+    "wait_in_median_min": 495,
+    "work_share": 0.16
+   },
+   {
+    "kind": "M",
+    "median_min": 0,
+    "n": 4,
+    "name": "보고 발신",
+    "no": 5,
+    "pos": 1.0,
+    "type": "REPORT_OUT",
+    "wait_in_median_min": 270
+   }
+  ],
+  "support_threshold": 2,
+  "traces": {
+   "u_a1": [
+    "REQ_IN",
+    "APP_CAE",
+    "DOC_XLS",
+    "MEET",
+    "REPORT_OUT"
+   ],
+   "u_a2": [
+    "REQ_IN",
+    "APP_CAE",
+    "DOC_XLS",
+    "APP_CAE",
+    "DOC_XLS",
+    "REPORT_OUT"
+   ],
+   "u_a3": [
+    "REQ_IN",
+    "APP_CAE",
+    "DOC_XLS",
+    "MEET",
+    "REPORT_OUT"
+   ],
+   "u_a4": [
+    "REQ_IN",
+    "APP_CAE",
+    "DOC_XLS",
+    "REPORT_OUT"
+   ]
+  },
+  "units": 4
+ },
+ "overrun_u_a4": {
+  "baseline_biz_lead_min": 2360,
+  "result": {
+   "causes": [],
+   "overrun": false
+  },
+  "unit": {
+   "biz_lead_min": 3300,
+   "coverage_gap": false,
+   "cycles": 1,
+   "effort_min": 270,
+   "grade": "A",
+   "max_wait_biz_min": 1920,
+   "parallel": 2.4,
+   "start_to_first_wd": 1
+  }
+ },
+ "overrun_u_a5": {
+  "baseline_biz_lead_min": 2360,
+  "baseline_effort_min": 210,
+  "result": {
+   "causes": [
+    "WAIT",
+    "REWORK",
+    "PARALLEL",
+    "LATE_START"
+   ],
+   "overrun": true
+  },
+  "unit": {
+   "biz_lead_min": 5520,
+   "coverage_gap": false,
+   "cycles": 2,
+   "effort_min": 300,
+   "grade": "B",
+   "max_wait_biz_min": 2880,
+   "parallel": 3.2,
+   "start_to_first_wd": 3
+  }
+ },
+ "relatedness": {
+  "u_a1~u_a2": [
+   0.5833,
+   1.0
+  ],
+  "u_a1~u_b1": [
+   0.0,
+   0.0
+  ],
+  "u_a1~u_c1": [
+   0.0,
+   0.0
+  ],
+  "u_a2~u_b1": [
+   0.55,
+   1.0
+  ]
+ },
+ "subagent_role": {
+  "final_if_ai_부분": "조건부",
+  "final_if_ai_부적합": "부적합",
+  "final_if_ai_적합": "조건부",
+  "rule": "조건부"
+ },
+ "subagent_rows": [
+  {
+   "IO": 1,
+   "REP": 2,
+   "RISK": 0,
+   "TOOL": 1,
+   "VER": 2,
+   "flags": {
+    "B": 1,
+    "D": 1,
+    "L": 1,
+    "R": 1,
+    "S": 0,
+    "T": 0
+   },
+   "score": 8,
+   "type": "APP_CAE",
+   "verdict": "조건부",
+   "why": [
+    "digital_io",
+    "repeat_weekly",
+    "low_accountability",
+    "verifiable"
+   ]
+  },
+  {
+   "IO": 2,
+   "REP": 2,
+   "RISK": 0,
+   "TOOL": 2,
+   "VER": 2,
+   "flags": {
+    "B": 1,
+    "D": 1,
+    "L": 1,
+    "R": 1,
+    "S": 1,
+    "T": 1
+   },
+   "score": 10,
+   "type": "DOC_XLS",
+   "verdict": "적합",
+   "why": [
+    "digital_io",
+    "repeat_weekly",
+    "structured_input",
+    "low_accountability",
+    "verifiable",
+    "tool_access"
+   ]
+  },
+  {
+   "IO": 0,
+   "REP": 1,
+   "RISK": 0,
+   "TOOL": 0,
+   "VER": 0,
+   "flags": {
+    "B": 0,
+    "D": 0,
+    "L": 1,
+    "R": 0,
+    "S": 0,
+    "T": 0
+   },
+   "score": 3,
+   "type": "MEET",
+   "verdict": "부적합",
+   "why": [
+    "repeat_monthly",
+    "low_accountability"
+   ]
+  },
+  {
+   "IO": 2,
+   "REP": 1,
+   "RISK": 2,
+   "TOOL": 2,
+   "VER": 1,
+   "flags": {
+    "B": 0,
+    "D": 1,
+    "L": 0,
+    "R": 0,
+    "S": 1,
+    "T": 1
+   },
+   "score": 6,
+   "type": "REPORT_OUT",
+   "verdict": "부적합",
+   "why": [
+    "digital_io",
+    "repeat_monthly",
+    "structured_input",
+    "tool_access"
+   ]
+  },
+  {
+   "IO": 1,
+   "REP": 1,
+   "RISK": 0,
+   "TOOL": 2,
+   "VER": 0,
+   "flags": {
+    "B": 0,
+    "D": 1,
+    "L": 1,
+    "R": 0,
+    "S": 0,
+    "T": 1
+   },
+   "score": 6,
+   "type": "REQ_IN",
+   "verdict": "조건부",
+   "why": [
+    "digital_io",
+    "repeat_monthly",
+    "low_accountability",
+    "tool_access"
+   ]
+  }
+ ]
+}
