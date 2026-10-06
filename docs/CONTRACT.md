@@ -158,6 +158,7 @@ docstring·시험이 정본이다. 구현자: 'W1 통합 창' 은 W1b 구현 뒤
 | V12 | `hier.copilot.requireCodenameReview` 기본 **false** — 팀 레지스트리에 과제가 없어도 코드네임 검토를 기다리지 않고 바로 코파일럿 과제 판정(LM24 와 같음). 검토는 원하면 하는 선택 기능. 레지스트리 과제 이름·별칭·코드네임은 원래대로 `[과제:ID]` 로 가려 보낸다 | 실측: AI 를 켜도 task_label 보낼 항목 0(`copilot_blocked:codename_review`) — 개인 사용자는 레지스트리가 없어 사실상 늘 막힘 |
 | V13 | Agentic 카탈로그: 팀 레지스트리에 `agents[]` 가 없으면 로컬 `config\agentic_tasks.json`(LM24 와 같은 형식 `{axes, tasks:[{id, axis, name, desc}]}` 또는 `{agents:[…]}`)을 쓴다(`lm27.hier.registry.local_agents` — 판 `local:<해시8>`, 설명을 매칭 근거로 코파일럿에 보냄, 핵심어는 과제 이름 낱말). 사내 과제 기획 내용이라 저장소에 넣지 않는다(.gitignore) — 폴더와 함께 옮긴다 | 실측: 팀 카탈로그가 없으면 Agentic 섹션이 빈칸(`catalog_empty`) — LM24 는 12과제 파일로 늘 매칭 |
 | V14 | 분석이 AI 를 부르지 않는 실행(`--no-ai` · 빠른 재분석)도 저장된 AI 과제·분야·유형 판정(`ai_out\task_label.json`)은 그대로 쓴다. 브리지를 끈 설정(`bridge.mode=off`)·AI 가 허용되지 않는 PC·`task_label` 단계를 끈 설정일 때만 쓰지 않는다 | 확인 질문 답·분류 수정 뒤 빠른 재분석(늘 `--no-ai`)이 AI 판정을 규칙으로 되돌려 보고서가 매번 나빠졌다 |
+| V15 | 팀·개인 과제가 하나도 없고 AI 답도 없는 미분류(UNC) 군집에는 '자주 나온 이름'(H §8.1 코드네임 후보 점수 — 여러 군집·여러 주)으로 **규칙 제안 과제**를 붙인다(`hier.ruleAutoProjects`, 기본 켜짐, `lm27.hier.bootstrap.rule_auto_projects` — 출처 bootstrap·확신 l·표지 rule_auto). 제안은 사람이 받기 전까지 과제가 아니며(H-I6) MM 은 제안 과제로 계상(H §7.1). AI 답이 있는 군집(NONE 포함)·사람이 고친 단위업무는 건드리지 않는다 | 실측: 레지스트리 없는 PC 의 규칙 분석에서 업무 109개가 전부 과제 'UNC' 하나 — LM24 는 규칙만으로도 자주 나온 이름으로 과제를 나눴다 |
 | V6 | 수집 기본 시작일 = 오늘 − `collect.lookbackDays` + 1 과 올해 1월 1일 중 이른 날(`collect.sinceYearStart`, 기본 켜짐 — `lm27.collect.ledger.default_since` 단일원) | 기본 기간 '1월 1일 ~ 오늘' |
 
 ---
@@ -1168,6 +1169,7 @@ TAB §2.3.1·§2.3.2 의 모양을 따르되 다음을 1.0 에 포함한다(구�
 | `hier.copilot.askTitleWeak` · `.vocabAskMinEffortH` · `.maxGroupsPerRun` · `.requireCodenameReview` · `.reaskGrowth` | true · 1.0 · 300 · **false**(v1.3 §0.8 V12) · 2.0 | H §13.3 |
 | `hier.proposals.minEffortMin` | 60 | H §13.3 |
 | `hier.bootstrap.minGroups` · `.maxLines` · `.maxModels` · `.unclassifiedShare` · `.cooldownDays` · `.codenameTopN` · `.codenameMinGroups` · `.codenameMinWeeks` | 20 · 100 · 15 · 0.5 · 30 · 30 · 3 · 2 | H §13.3 |
+| `hier.ruleAutoProjects` | `true` | bool · hier.bootstrap | 사용자 지시(2026-10-06 LM24 기준 — §0.8 V15) |
 | `hier.registry.staleWarnDays` | 14 | H §13.3 |
 | `hier.merge.auto`★ · `.ask`★ · `.cap` · `.spanGapDays` | 1.0 · 0.35 · 5 · 120 | H §13.4 |
 | `hier.learn.tokenDfMax` · `.tokenMax` · `.tokenSupport` · `.appSupport` · `.retireMinHits` · `.retireMinPrec` | 0.05 · 3 · 2 · 2 · 5 · 0.6 | H §13.4 |

@@ -137,6 +137,92 @@ def codename_candidates(feats: Iterable, groups: Iterable, reg, cfg=None, *,
     return sorted(out, key=lambda c: (-c.score, c.token))[:top_n]
 
 
+RULE_AUTO_MAX = 8                 # 규칙 제안 과제 상한(LM24 규칙 대체 — 자주 나온 규칙 과제 8개)
+RULE_AUTO_MIN_GROUPS = 2          # 그 이름이 든 미분류 군집이 이만큼은 돼야 과제로 세운다(LM24 — 근거 2개 이상)
+
+
+def rule_auto_projects(labels: Mapping, groups: Iterable, units: Mapping, feats: Iterable, reg, cfg, props, *,
+                       ai: Mapping | None = None, at: str = "") -> dict:
+    """AI 답이 없고 과제를 못 정한(UNC) 군집에 '자주 나온 이름'(코드네임 후보 점수 — H §8.1)으로 **규칙 제안 과제**를 붙인다
+    (계약 v1.3 §0.8 V15 — LM24 의 규칙 대체 '지정 과제 + 자주 나온 규칙 과제'와 같은 자리). 팀·개인 과제가 하나도 없을 때만
+    (`hier.ruleAutoProjects`, 기본 켜짐). 제안은 사람이 받기 전까지 과제가 아니다(H-I6) — MM 은 제안 과제로 계상(H §7.1).
+    AI 답이 있는 군집(NONE 포함)·사람이 고친 단위업무는 건드리지 않는다. labels 를 제자리에서 고치고 통계를 돌려준다."""
+    from collections import Counter
+
+    from lm27.hier.apply import level_of, role_slot
+    from lm27.hier.unitlabel import role_id
+    cfg = default_cfg(cfg)
+    st: Counter = Counter()
+    if not bool(cfg["hier.ruleAutoProjects"]) or _non_reserved(reg):
+        return {}
+    ai = ai or {}
+    gl = list(groups)
+    todo = []
+    for g in gl:
+        rep = labels.get(g.rep)
+        hit = ai.get(g.key)
+        if rep is None or rep.project or rep.proposal_id or (isinstance(hit, Mapping) and hit.get("by") in ("ai", "manual")):
+            continue
+        if any(getattr(labels.get(m), "src", {}).get("project") == "user" for m in g.members):
+            continue
+        todo.append(g)
+    if not todo:
+        return {}
+    feat_groups = {}
+    toks_of: dict[str, set] = {}
+    for g in gl:
+        ks = toks_of.setdefault(g.key, set())
+        for m in g.members:
+            u = units.get(m)
+            for f, _w, _r in (get(u, "ev", ()) or ()) if u is not None else ():
+                feat_groups[f.id] = g.key
+                raw = unicodedata.normalize("NFKC", f.text or "")
+                if raw:
+                    ks.update(ukey(t) for t in set(CODE_RX.findall(raw)) | _match.match_tokens(raw))
+    cands = codename_candidates(feats, gl, reg, cfg, feat_groups=feat_groups)
+    st["todo"], st["names"] = len(todo), len(cands)
+    rank = {ukey(c.token): (i, c.token) for i, c in enumerate(cands)}
+    # LM24 의 규칙 대체처럼 '자주 나온 이름 상위 8개, 각각 근거 군집 2개 이상'만 과제로 세운다 — 이름마다 과제를 세우면 잘게 흩어진다
+    cover: dict[str, list] = defaultdict(list)
+    for g in todo:
+        for k in toks_of.get(g.key, ()):
+            if k in rank:
+                cover[k].append(g.key)
+    chosen: list[str] = []
+    for k in sorted(cover, key=lambda x: (-len(cover[x]), rank[x][0])):
+        if len(chosen) >= RULE_AUTO_MAX or len(cover[k]) < RULE_AUTO_MIN_GROUPS:
+            break
+        chosen.append(k)
+    pick_rank = {k: i for i, k in enumerate(chosen)}
+    for g in todo:
+        hits = sorted((pick_rank[k], rank[k][1]) for k in toks_of.get(g.key, ()) if k in pick_rank)
+        if not hits:
+            st["no_name"] += 1
+            continue
+        rep = labels[g.rep]
+        dom = rep.domain if rep.domain in _vocab.DOMAINS else "DEV"
+        asg = props.on_new_name(hits[0][1], dom, g.key, "bootstrap", reg, cfg=cfg, effort_min=int(g.effort_min),
+                                conf="l", at=at)
+        pid = getattr(asg, "proposal", None)
+        if not pid:
+            st["skip_" + (str(getattr(asg, "src", "") or "none"))] += 1
+            continue
+        for m in g.members:
+            lb = labels.get(m)
+            if lb is None or lb.src.get("project") == "user":
+                continue
+            lb.project, lb.proposal_id = None, pid
+            lb.domain = props.dom_of(pid)
+            for fl in ("proposal", "rule_auto"):
+                if fl not in lb.flags:
+                    lb.flags.append(fl)
+            lb.src["project"], lb.conf["project"] = "rule", "l"
+            lb.level = level_of("rule", "l", None, pid, None)
+            lb.role_id = role_id(role_slot(None, pid, reg), lb.field, lb.func)
+        st["assigned"] += 1
+    return dict(sorted(st.items()))
+
+
 def _drop_covered(cands: list[Cand], stats: Mapping[str, Mapping]) -> list[Cand]:
     """코드 모양 후보(예 PROJ-X)의 조각(proj)이 같은 군집에서만 나오면 조각은 뺀다 — 같은 이름을 두 번 묻지 않는다."""
     code = [(ukey(c.token), stats[ukey(c.token)]["groups"]) for c in cands if is_code_like(c.token)]

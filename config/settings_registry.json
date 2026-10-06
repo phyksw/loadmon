@@ -2670,6 +2670,13 @@
    "label_ko": "과제 체계 부트스트랩 — 코드네임 후보 최소 주",
    "help_ko": "레지스트리가 빈 초기의 과제 체계 제안: 코드네임 후보 최소 주."
   },
+  "hier.ruleAutoProjects": {
+   "default": true, "type": "bool", "range": null, "choices": [false, true],
+   "owner": "lm27.hier.bootstrap", "readers": [], "spec": "사용자 지시(2026-10-06 LM24 기준)",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "AI 없을 때 자주 나온 이름으로 과제 제안",
+   "help_ko": "켜면 팀·개인 과제가 없고 AI 답도 없는 미분류 업무에, 여러 묶음·여러 주에 걸쳐 나온 이름(코드네임 후보)으로 제안 과제를 붙인다(LM24 의 규칙 대체와 같음). 제안은 [내 과제로 받기] 전까지 과제가 아니다."
+  },
   "hier.registry.staleWarnDays": {
    "default": 14, "type": "int", "range": {"min": 1, "max": 365}, "choices": null,
    "owner": "lm27.hier.registry", "readers": [], "spec": "H §13.3",

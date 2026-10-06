@@ -12,7 +12,10 @@ from lm27.hier.groups import Group
 from lm27.hier.names import ukey
 from lm27.hier.proposals import ProposalQueue
 from lm27.time.calendar import day0
+from lm27.hier import proposals as PQ
 from tests.fixtures.wp22 import hierkit as K
+
+AT = "2026-10-05T10:00:00+09:00"
 
 
 def t_of(d: date) -> int:
@@ -171,3 +174,59 @@ class ResultTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RuleAutoProjectsTest(unittest.TestCase):
+    """계약 v1.3 §0.8 V15: 팀·개인 과제가 없고 AI 답도 없는 미분류 군집 — 자주 나온 이름으로 규칙 제안 과제(LM24 규칙 대체)."""
+
+    def world(self):
+        from datetime import date as _date
+
+        from lm27.hier.apply import UnitLabel
+        from lm27.hier.groups import Group
+        from lm27.time.calendar import day0
+        weeks = [_date(2026, 9, 1), _date(2026, 9, 8), _date(2026, 9, 15), _date(2026, 9, 22)]
+        feats, units, groups, labels = [], {}, [], {}
+        for i, d in enumerate(weeks):
+            t = day0(d) + 10 * 3600
+            fs = [K.F(f"m{i}", "mail", f"PROJ-X 시험 결과 {i}", t=t, subject=f"PROJ-X 시험 결과 {i}"),
+                  K.F(f"f{i}", "file", f"PROJ-X_결과_{i}.xlsx", t=t,
+                      names=((K.fake_doc(f"PROJ-X_결과_{i}"), f"PROJ-X_결과_{i}.xlsx"),))]
+            feats += fs
+            uid = f"u{i}"
+            units[uid] = K.U(uid, "S1", [(f, 1.0, "boundary") for f in fs], effort_min=300)
+            g = Group(f"grp:00000000000{i}", "a", uid, (uid,), 300)
+            groups.append(g)
+            labels[uid] = UnitLabel(unit_id=uid, group=g.key, field="OPT", func="ANALYSIS")
+        lone = K.F("z0", "mail", "기타 공지 메일", t=day0(weeks[0]) + 3600, subject="기타 공지 메일")
+        feats.append(lone)
+        units["uz"] = K.U("uz", "S1", [(lone, 1.0, "boundary")], effort_min=300)
+        groups.append(Group("grp:00000000000z", "a", "uz", ("uz",), 300))
+        labels["uz"] = UnitLabel(unit_id="uz", group="grp:00000000000z")
+        return feats, units, groups, labels
+
+    def test_recurring_name_becomes_rule_proposal(self):
+        feats, units, groups, labels = self.world()
+        q = PQ.ProposalQueue()
+        st = B.rule_auto_projects(labels, groups, units, feats, K.empty_reg(), K.cfg(), q, ai={}, at=AT)
+        self.assertEqual((st.get("assigned"), st.get("todo")), (4, 5))
+        pids = {labels[f"u{i}"].proposal_id for i in range(4)}
+        self.assertEqual(len(pids), 1)                                     # 같은 이름 → 제안 하나로
+        pid = pids.pop()
+        self.assertEqual(q.get(pid)["label"], "PROJ-X")
+        lb = labels["u0"]
+        self.assertTrue({"proposal", "rule_auto"} <= set(lb.flags))
+        self.assertEqual((lb.project, lb.src["project"], lb.conf["project"], lb.level), (None, "rule", "l", "low"))
+        self.assertIsNone(labels["uz"].proposal_id)                        # 반복되는 이름이 없으면 미분류 그대로
+
+    def test_off_ai_answer_or_registry_projects_leave_alone(self):
+        feats, units, groups, labels = self.world()
+        off = K.cfg({"hier.ruleAutoProjects": False})
+        self.assertEqual(B.rule_auto_projects(labels, groups, units, feats, K.empty_reg(), off, PQ.ProposalQueue()), {})
+        ai = {groups[0].key: {"by": "ai", "ans": {"project": "NONE"}}}   # AI 가 과제 없음이라고 답한 군집은 그대로
+        st = B.rule_auto_projects(labels, groups, units, feats, K.empty_reg(), K.cfg(), PQ.ProposalQueue(), ai=ai)
+        self.assertEqual(st.get("todo"), 4)
+        self.assertIsNone(labels["u0"].proposal_id)
+        feats, units, groups, labels = self.world()
+        self.assertEqual(B.rule_auto_projects(labels, groups, units, feats, K.golden_reg(), K.cfg(),
+                                              PQ.ProposalQueue()), {})          # 팀·개인 과제가 있으면 쓰지 않는다

@@ -288,6 +288,11 @@ def classify_all(run_ctx) -> "HierResult":
     labels, conflicts, astats = A.apply_labels(
         rule_l, ffs, wts, ai, user_set, cache, props, reg, cfg, groups=groups, units=units, titles=titles, at=at,
         label_check=_get(run_ctx, "label_check"), pub_classes=pub)
+    # AI 답이 없는 미분류 군집 — 자주 나온 이름으로 규칙 제안 과제(계약 v1.3 §0.8 V15, LM24 규칙 대체)
+    from lm27.hier.bootstrap import rule_auto_projects
+    auto = rule_auto_projects(labels, groups, units, feats, reg, cfg, props, ai=ai, at=at)
+    if auto.get("todo"):
+        warnings.append(f"rule_auto_projects:{auto.get('assigned', 0)}/{auto['todo']}")
     # 이름 병합 S1(같은 역할 업무 안 — 자동 구간은 투입 큰 쪽 이름으로, 질문 구간은 H04)
     mctx = MG.merge_ctx_for(reg, cfg)
     mitems = []
