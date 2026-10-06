@@ -684,7 +684,7 @@ class EffectiveRegistry:
 ### 3.5 레지스트리가 없거나 비었을 때(초기 상태)
 
 - 유효 레지스트리 = 예약 과제 5개 + 내장 어휘 + 내장 영역 키워드. 결정적 분류는 영역 키워드·앱·확장자로 **영역·분야·기능·유형**까지는 정하고, 과제 자리는 `P-99xx` 또는 `UNC` 가 된다.
-- 코파일럿 분류 단계는 **초기 코드네임 검토(§8.1)를 마치거나 건너뛰기를 고른 뒤에만** 열린다(`hier.copilot.requireCodenameReview`, 기본 true). 그 전에는 규칙 라벨만 쓰고 화면에 "과제 이름 후보를 확인하면 코파일럿 분류를 켭니다" 한 줄을 띄운다(분석은 막지 않는다).
+- 코파일럿 분류 단계는 `hier.copilot.requireCodenameReview` 를 **켰을 때만** 초기 코드네임 검토(§8.1)를 마치거나 건너뛰기를 고른 뒤에 열린다(계약 v1.3 §0.8 V12 — 기본 false: LM24 처럼 바로 판정). 켰는데 검토 전이면 규칙 라벨만 쓰고 화면에 "과제 이름 후보를 확인하면 코파일럿 분류를 켭니다" 한 줄을 띄운다(분석은 막지 않는다).
 - 부트스트랩 taxonomy 왕복(§8.2)은 이 상태에서 제안을 만드는 유일한 일괄 경로다.
 
 ### 3.6 팀 서버에서의 쓰임
@@ -1958,7 +1958,7 @@ def classify_all(run_ctx) -> HierResult: ...    # §4.0 의 순서. 시간 코�
 | `hier.copilot.askTitleWeak` | true | 이름이 약한 군집도 묻기 |
 | `hier.copilot.vocabAskMinEffortH` | 1.0 | 분야·기능이 둘 다 l 인 군집을 물을 최소 투입 |
 | `hier.copilot.maxGroupsPerRun` | 300 | 한 실행 상한(나머지는 다음 실행) |
-| `hier.copilot.requireCodenameReview` | true | 초기 코드네임 검토 전 코파일럿 금지(§8.1) |
+| `hier.copilot.requireCodenameReview` | false | 켜면 초기 코드네임 검토 전 코파일럿 금지(§8.1) — v1.3 §0.8 V12 |
 | `hier.copilot.reaskGrowth` | 2.0 | `conf=l` 답의 재질의: 증거 건수 배수 |
 | `hier.proposals.minEffortMin` | 60 | 이보다 작은 군집은 제안을 만들지 않고 예약 과제로 |
 | `hier.bootstrap.minGroups` | 20 | 1회차 자동 조건 |

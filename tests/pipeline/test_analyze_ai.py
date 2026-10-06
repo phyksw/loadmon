@@ -54,13 +54,21 @@ class CallOrderTest(_Base):
         self.assertTrue(self.w.status()["current"])
 
     def test_no_items_skips_bridge(self):
-        """빈 레지스트리·코드네임 검토 전 = 코파일럿 분류 안 열림(T-H05) → task_label 물을 항목 0 → 그 단계만 건너뜀."""
+        """검토 선행을 켰는데 빈 레지스트리·코드네임 검토 전 = 코파일럿 분류 안 열림(T-H05) → task_label 물을 항목 0 →
+        그 단계만 건너뜀."""
         fb = W.FakeBridge()
-        self.assertEqual(self.w.analyze(ai=True, bridge=fb), 0)
+        self.assertEqual(self.w.analyze(self.w.cfg({"hier.copilot.requireCodenameReview": True}), ai=True, bridge=fb), 0)
         self.assertNotIn("ai:task_label", fb.stages())
         self.assertEqual((self.by()["ai:task_label"]["state"], self.by()["ai:task_label"]["reason"]),
                          ("skipped", "no_items"))
         self.assertIn("ai:workflow", fb.stages())
+
+    def test_default_asks_task_label_without_registry(self):
+        """계약 v1.3 §0.8 V12: 기본값이면 팀 레지스트리가 없어도 코드네임 검토를 기다리지 않고 task_label 을 묻는다(LM24 와 같음)."""
+        fb = W.FakeBridge()
+        self.w.analyze(ai=True, bridge=fb)
+        self.assertIn("ai:task_label", fb.stages())
+        self.assertNotEqual(self.by()["ai:task_label"].get("reason"), "no_items")
 
 
 class FailSoftTest(_Base):
@@ -205,19 +213,30 @@ class GateTest(_Base):
 
 
 class NoAiLabelsTest(_Base):
-    def test_t_h16_stored_answers_unused(self):
-        """T-H16: --no-ai 면 저장된 AI 분류 답이 있어도 쓰지 않는다(규칙 라벨로 완주)."""
-        self.assertEqual(self.w.analyze(), 0)
+    def _store_answers(self) -> None:
         groups = json.loads(self.w.hier_bytes("groups.json"))
-        self.assertTrue(groups)
-        ans = {"project": "", "field": "ETC", "func": "ETC", "wtype": "OFFICE", "title": "코파일럿 이름", "new": "",
+        ans = {"project": "NONE", "field": "ETC", "func": "ETC", "wtype": "OFFICE", "title": "코파일럿 이름", "new": "",
                "dom": "", "conf": "h"}
         ai_out = {"schema": 1, "stage": "task_label", "stage_ver": "task_label/1.1", "run_id": self.w.last,
                   "items": {g: {"ans": dict(ans), "by": "ai", "rid": "R22222", "asks": 1, "at": W.AS_OF}
                             for g in groups},
                   "stats": {"total": len(groups), "ai": len(groups), "manual": 0, "rule": 0, "pending": 0}}
         fsx.atomic_write(self.w.paths.ai_out("task_label"), fsx.canon_bytes(ai_out))
+
+    def test_no_ai_run_keeps_stored_answers(self):
+        """계약 v1.3 §0.8 V14: --no-ai·빠른 재분석은 AI 를 부르지 않을 뿐 — 저장된 AI 분류 답은 그대로 쓴다(LM24 처럼)."""
+        self.assertEqual(self.w.analyze(), 0)
+        self._store_answers()
         self.assertEqual(self.w.analyze(ai=False), 0)
+        labels = json.loads(self.w.hier_bytes("labels.json"))
+        self.assertTrue(labels)
+        self.assertTrue(all(lb.get("title") == "코파일럿 이름" for lb in labels.values()))
+
+    def test_t_h16_bridge_off_ignores_stored_answers(self):
+        """T-H16: 브리지를 끈 설정(bridge.mode=off)이면 저장된 AI 분류 답이 있어도 쓰지 않는다(규칙 라벨로 완주)."""
+        self.assertEqual(self.w.analyze(), 0)
+        self._store_answers()
+        self.assertEqual(self.w.analyze(self.w.cfg({"bridge.mode": "off"}), ai=False), 0)
         labels = json.loads(self.w.hier_bytes("labels.json"))
         for lb in labels.values():
             self.assertNotEqual(lb.get("title"), "코파일럿 이름")

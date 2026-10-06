@@ -345,6 +345,15 @@ class _Run:
         en = [n for n in names if bool(sw.get(n, True))]
         return (en, None) if en else ([], "stage_off")
 
+    def stored_ai_ok(self, names) -> bool:
+        """저장된 AI 답을 써도 되는가 — 이번 실행이 AI 를 부르는지와 별개(--no-ai·빠른 재분석이어도 참, 계약 v1.3 §0.8 V14).
+        브리지를 끈 설정(``bridge.mode=off``)·AI 가 허용되지 않는 PC·그 단계를 끈 설정이면 거짓."""
+        if str(self.cfg["bridge.mode"]) == "off" or not self.copilot_ok():
+            return False
+        sw = self.cfg["bridge.stages"]
+        sw = sw if isinstance(sw, dict) else {}
+        return any(bool(sw.get(n, True)) for n in names)
+
     def copilot_ok(self) -> bool:
         if self.copilot_role is None:
             self.copilot_role = ai_any_pc(self.cfg) or _detect_copilot_role(self.paths)
@@ -947,8 +956,11 @@ def _st_classify(run: _Run, sd, act) -> _Out:
     run.tables_sig = _sha(tables)
     copilot = run.gate(("task_label",))[1] is None
     ask = copilot and run.plan.get("ai:task_label") == "run"
+    # 이번 실행이 AI 를 부르지 않을 뿐이면(--no-ai · 빠른 재분석) 저장된 AI 판정은 그대로 쓴다 — 사람 답·분류 수정 뒤의 빠른
+    # 재분석이 AI 과제·분야 판정을 규칙으로 되돌리지 않게(계약 v1.3 §0.8 V14 — LM24 처럼 다음 판정 전까지 결과 유지)
+    use_ai = copilot or run.stored_ai_ok(("task_label",))
     run.hier_ctx = {"feats": feats, "tasks": task_rows(res), "attrib": res.attribution.rows(), "team_tables": tables,
-                    "slot_basis": dict(res.env.basis), "copilot_enabled": copilot, "person_dir": pdir}
+                    "slot_basis": dict(res.env.basis), "copilot_enabled": use_ai, "person_dir": pdir}
     try:
         hres = H.classify_all(_hier_ctx(run, write_ai_in=ask, persist=False))
     except H.HierInvariantError as e:

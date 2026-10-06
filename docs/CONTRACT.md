@@ -155,6 +155,9 @@ docstring·시험이 정본이다. 구현자: 'W1 통합 창' 은 W1b 구현 뒤
 | V9 | 본인 전용 Edge 프로필(배타 잠금 하나)을 쓰는 단계(`backfill_owa`·`backfill_teams_web`·`copilot_lookup`)는 같은 단계 안 수집기도 **차례로** 돈다(`lm27.collect.plan.SERIAL_STAGES`) | 동시에 띄우면 뒤의 것이 잠금을 3분 기다리다 `R-TRANSPORT`(실측 — Outlook 웹 일정이 매번 빠질 뻔) |
 | V10 | 웹 경로(`mail.owa`·`cal.owa`·`teams.web`)의 로그인 대기는 [수집] 한 번에 **한 번**. 앞 경로가 `R-LOGIN` 이면 남은 웹 경로는 기다리지 않고 rc 2 + `R-LOGIN`(`skipped` = `login_pending`) — 다음 [수집]에서 다시 시도 | 사람이 없으면 대기(`bridge.loginWaitMin`) × 경로 수만큼 [수집]이 늘어짐 |
 | V11 | 분석의 AI(코파일럿) 판정은 **모든 PC** 에서(`report.aiAnyPc`, 기본 켜짐 — LM24 와 같음). 예전에는 pc.json 역할에 `copilot` 이 있는 PC(클라우드PC)에서만 AI 단계를 돌리고 나머지는 규칙 분류로 대신했다. 끄면 예전처럼. 수집의 코파일럿 증인 조회(`*.copilot`)는 그대로 클라우드PC | 실측: 일반 PC 분석에서 AI 단계 3개가 모두 '이 PC 는 Copilot 역할이 아닙니다'로 건너뜀 → 보고서가 규칙 분류뿐 |
+| V12 | `hier.copilot.requireCodenameReview` 기본 **false** — 팀 레지스트리에 과제가 없어도 코드네임 검토를 기다리지 않고 바로 코파일럿 과제 판정(LM24 와 같음). 검토는 원하면 하는 선택 기능. 레지스트리 과제 이름·별칭·코드네임은 원래대로 `[과제:ID]` 로 가려 보낸다 | 실측: AI 를 켜도 task_label 보낼 항목 0(`copilot_blocked:codename_review`) — 개인 사용자는 레지스트리가 없어 사실상 늘 막힘 |
+| V13 | Agentic 카탈로그: 팀 레지스트리에 `agents[]` 가 없으면 로컬 `config\agentic_tasks.json`(LM24 와 같은 형식 `{axes, tasks:[{id, axis, name, desc}]}` 또는 `{agents:[…]}`)을 쓴다(`lm27.hier.registry.local_agents` — 판 `local:<해시8>`, 설명을 매칭 근거로 코파일럿에 보냄, 핵심어는 과제 이름 낱말). 사내 과제 기획 내용이라 저장소에 넣지 않는다(.gitignore) — 폴더와 함께 옮긴다 | 실측: 팀 카탈로그가 없으면 Agentic 섹션이 빈칸(`catalog_empty`) — LM24 는 12과제 파일로 늘 매칭 |
+| V14 | 분석이 AI 를 부르지 않는 실행(`--no-ai` · 빠른 재분석)도 저장된 AI 과제·분야·유형 판정(`ai_out\task_label.json`)은 그대로 쓴다. 브리지를 끈 설정(`bridge.mode=off`)·AI 가 허용되지 않는 PC·`task_label` 단계를 끈 설정일 때만 쓰지 않는다 | 확인 질문 답·분류 수정 뒤 빠른 재분석(늘 `--no-ai`)이 AI 판정을 규칙으로 되돌려 보고서가 매번 나빠졌다 |
 | V6 | 수집 기본 시작일 = 오늘 − `collect.lookbackDays` + 1 과 올해 1월 1일 중 이른 날(`collect.sinceYearStart`, 기본 켜짐 — `lm27.collect.ledger.default_since` 단일원) | 기본 기간 '1월 1일 ~ 오늘' |
 
 ---
@@ -1162,7 +1165,7 @@ TAB §2.3.1·§2.3.2 의 모양을 따르되 다음을 1.0 에 포함한다(구�
 | `hier.vocab.top`★ · `.margin` · `.high` · `.low` · `.officeDocShare` · `.meetShare` | 2.0 · 1.0 · 3.5 · 1.0 · 0.6 · 0.5 | H §13.2 |
 | `hier.wtype.techShareDev`★ · `.techShareHigh` · `.offpcFieldShare`★ · `.offpcFieldBoth` · `hier.ax.minHits` | 0.3 · 0.5 · 0.5 · 0.3 · 2 | H §13.2 |
 | `hier.name.maxGroup` · `.titleMax` · `.cacheKeepDays` | 60 · 25 · 400 | H §13.3 |
-| `hier.copilot.askTitleWeak` · `.vocabAskMinEffortH` · `.maxGroupsPerRun` · `.requireCodenameReview` · `.reaskGrowth` | true · 1.0 · 300 · true · 2.0 | H §13.3 |
+| `hier.copilot.askTitleWeak` · `.vocabAskMinEffortH` · `.maxGroupsPerRun` · `.requireCodenameReview` · `.reaskGrowth` | true · 1.0 · 300 · **false**(v1.3 §0.8 V12) · 2.0 | H §13.3 |
 | `hier.proposals.minEffortMin` | 60 | H §13.3 |
 | `hier.bootstrap.minGroups` · `.maxLines` · `.maxModels` · `.unclassifiedShare` · `.cooldownDays` · `.codenameTopN` · `.codenameMinGroups` · `.codenameMinWeeks` | 20 · 100 · 15 · 0.5 · 30 · 30 · 3 · 2 | H §13.3 |
 | `hier.registry.staleWarnDays` | 14 | H §13.3 |

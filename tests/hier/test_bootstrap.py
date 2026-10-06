@@ -67,16 +67,18 @@ class CandidatesTest(unittest.TestCase):
 
 class GateTest(unittest.TestCase):
     def test_copilot_allowed(self):
-        """T-H05 — 빈 레지스트리·검토 전이면 코파일럿 분류 단계가 열리지 않는다(안내 1줄, 분석은 계속)."""
-        self.assertEqual(B.copilot_allowed(K.empty_reg(), K.cfg()), (False, "과제 이름 후보를 확인하면 코파일럿 분류를 켭니다"))
-        self.assertTrue(B.copilot_allowed(K.empty_reg(), K.cfg({"hier.copilot.requireCodenameReview": False}))[0])
+        """T-H05 — 검토 선행을 켰으면(hier.copilot.requireCodenameReview) 빈 레지스트리·검토 전에는 코파일럿 분류 단계가
+        열리지 않는다(안내 1줄, 분석은 계속). 기본값은 꺼짐 — LM24 처럼 바로 연다(계약 v1.3 §0.8 V12)."""
+        on = K.cfg({"hier.copilot.requireCodenameReview": True})
+        self.assertEqual(B.copilot_allowed(K.empty_reg(), on), (False, "과제 이름 후보를 확인하면 코파일럿 분류를 켭니다"))
+        self.assertEqual(B.copilot_allowed(K.empty_reg(), K.cfg()), (True, ""))            # 기본: 검토 없이 바로
         skipped = K.golden_reg(team={"schema": "lm27.registry/1", "version": 0},
                                local={"schema": "lm27.registry_local/1", "codename_review": {"skipped": True}})
-        ok, msg = B.copilot_allowed(skipped, K.cfg())
+        ok, msg = B.copilot_allowed(skipped, on)
         self.assertTrue(ok)
         self.assertIn("그대로 갈 수 있습니다", msg)
         self.assertEqual(B.review_state(K.golden_reg()), "not_needed")
-        self.assertEqual(B.copilot_allowed(K.golden_reg(), K.cfg()), (True, ""))
+        self.assertEqual(B.copilot_allowed(K.golden_reg(), on), (True, ""))
 
     def test_needs_bootstrap(self):
         done = K.golden_reg(team={"schema": "lm27.registry/1", "version": 0},

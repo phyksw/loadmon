@@ -405,8 +405,9 @@ class CanaryTest(unittest.TestCase):
         self.assertNotIn(c_name.value, "\n".join(CI.prompt_context(reg)))
 
     def test_codename_review(self):
-        """T-H06 — 검토에서 'PROJ-X' 를 [과제 이름] → L-0001(codenames), 그 뒤 프롬프트에 'PROJ-X' 0회·[과제:L-0001] 만."""
-        cfg = K.cfg()
+        """T-H06 — 검토에서 'PROJ-X' 를 [과제 이름] → L-0001(codenames), 그 뒤 프롬프트에 'PROJ-X' 0회·[과제:L-0001] 만.
+        검토 선행을 켠 경우의 흐름(기본은 꺼짐 — v1.3 §0.8 V12)."""
+        cfg = K.cfg({"hier.copilot.requireCodenameReview": True})
         weeks = [date(2026, 9, 1), date(2026, 9, 8), date(2026, 9, 15), date(2026, 9, 22)]
         feats = []
         for i, d in enumerate(weeks):

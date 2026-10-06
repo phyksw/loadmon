@@ -404,6 +404,34 @@ class LoadEffectiveTest(_Tmp):
         self.assertEqual(st.label_ko(), "팀 레지스트리 없음 — 초기 상태")
         self.assertEqual(reg.active_ids(), [])
         self.assertEqual(st.hier_hash, reg.hier_hash)
+        self.assertEqual(reg.agents, ())                                  # 로컬 카탈로그도 없으면 비어 있다
+
+    def test_local_catalog_lm24_format(self):
+        """계약 v1.3 §0.8 V13: 팀 카탈로그가 없으면 config\\agentic_tasks.json(LM24 형식)을 카탈로그로 쓴다."""
+        self.put(self.paths.config_dir() / R.LOCAL_CATALOG, {
+            "axes": {"축1": "시험 축"},
+            "tasks": [{"id": "T-2", "axis": "축1", "name": "시험 보고서 작성 보조"},
+                      {"id": "T-1", "axis": "축1", "name": "도면 검토 자동화", "desc": "도면 검토를 자동으로"},
+                      {"id": "", "name": "이름만"}, {"id": "T-1", "name": "같은 id 는 처음 것만"}]})
+        reg, st = R.load_effective(self.paths, self.cfg, NOW)
+        self.assertEqual([a.id for a in reg.agents], ["T-1", "T-2"])
+        self.assertEqual((reg.agents[0].name, reg.agents[0].copilot_desc), ("도면 검토 자동화", "도면 검토를 자동으로"))
+        self.assertIn("도면", reg.agents[0].keywords)
+        self.assertTrue(reg.catalog_version.startswith("local:"))
+        self.assertEqual(reg.agent_axes, {"축1": "시험 축"})
+        self.assertEqual(st.hier_hash, reg.hier_hash)
+
+    def test_local_catalog_ignored_when_team_has_agents_or_broken(self):
+        self.put(self.paths.config_dir() / R.LOCAL_CATALOG, {"tasks": "형식 아님"})
+        reg, st = R.load_effective(self.paths, self.cfg, NOW)
+        self.assertEqual(reg.agents, ())
+        self.assertIn("local_catalog_rejected", st.warnings)
+        team = self.golden_v(7)
+        if team.get("agents"):                                            # 팀 카탈로그가 있으면 그것이 앞선다
+            self.put(self.paths.registry_cache(), team)
+            self.put(self.paths.config_dir() / R.LOCAL_CATALOG, {"tasks": [{"id": "L-1", "name": "로컬"}]})
+            reg, _st = R.load_effective(self.paths, self.cfg_with(), NOW)
+            self.assertNotIn("L-1", [a.id for a in reg.agents])
 
     def test_t_h01_offline_newer_than_cache(self):
         self.put(self.paths.registry_cache(), self.golden_v(7))

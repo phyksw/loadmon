@@ -5,6 +5,8 @@
 
 # 개인 설정 덮어쓰기(배포 기본값은 config\settings_registry.json 의 default) — 사람마다 다름
 config/config.json
+# Agentic 로컬 카탈로그(LM24 형식 — 사내 과제 기획 내용, 폴더와 함께 옮김 · 계약 v1.3 §0.8 V13)
+config/agentic_tasks.json
 
 # 파이썬 캐시
 __pycache__/

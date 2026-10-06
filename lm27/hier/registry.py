@@ -16,6 +16,7 @@ pepper 는 유효 레지스트리에 싣지 않는다(분류기는 읽지 않는
 계약 §4.2), `shared_docs` 는 문서군 키(`doc_key`)로 바꿔 둔다. 키링이 없으면 둘 다 비고 경고를 남긴다.
 """
 import hashlib
+import json
 import os
 import re
 import unicodedata
@@ -265,6 +266,54 @@ def keyers_from(kr) -> tuple[Callable[[str], str], Callable[[str], str]]:
 # ───────────────────────── 병합(H §3.4) ─────────────────────────
 def _tuple(xs) -> tuple:
     return tuple(dict.fromkeys(x for x in (xs or ()) if x))
+
+
+# 팀 레지스트리에 에이전트 카탈로그가 없을 때 쓰는 로컬 카탈로그(계약 v1.3 §0.8 V13). LM24 의 Agentic 과제 파일과 같은 이름·형식
+# {"axes": {축: 이름}, "tasks": [{id, axis, name, desc}]} 또는 LM27 형 {"agents": [...]}. config\ 아래에 두고 폴더와 함께
+# 옮긴다 — 사내 과제 기획 내용이라 저장소에는 넣지 않는다(.gitignore).
+LOCAL_CATALOG = "agentic_tasks.json"
+_KW_SPLIT = re.compile(r"[\s·,/()\[\]{}<>'\"~+&|:;]+")
+
+
+def _kw_from(name: str) -> tuple:
+    """과제 이름 → 규칙 핵심어(두 글자 이상 낱말) — 단위업무 제목과의 부분 일치에 쓴다(R §4.7.3 의 0.1)."""
+    return _tuple(w for w in _KW_SPLIT.split(str(name or "")) if len(w) >= 2)
+
+
+def local_agents(paths, warns: list | None = None) -> tuple:
+    """로컬 카탈로그 → (Agent 묶음, 축 이름 dict, 판 'local:<해시8>'). 파일이 없거나 형식이 아니면 ((), {}, "")."""
+    try:
+        p = paths.config_dir() / LOCAL_CATALOG
+    except AttributeError:
+        return (), {}, ""
+    obj = fsx.read_json(p, default=None)
+    if obj is None:
+        return (), {}, ""
+    rows = obj.get("agents") if isinstance(obj, dict) and isinstance(obj.get("agents"), list) else (
+        obj.get("tasks") if isinstance(obj, dict) else None)
+    if not isinstance(rows, list):
+        if warns is not None:
+            warns.append("local_catalog_rejected")
+        return (), {}, ""
+    out = {}
+    for a in rows:
+        if not isinstance(a, dict):
+            continue
+        aid, name = str(a.get("id") or "").strip()[:40], str(a.get("name") or "").strip()[:80]
+        if not aid or not name or aid in out:
+            continue
+        desc = str(a.get("desc") or "")[:400]
+        out[aid] = Agent(id=aid, name=name, axis=str(a.get("axis") or "")[:20],
+                         status=str(a.get("status") or "running"), desc=desc,
+                         copilot_desc=str(a.get("copilot_desc") or desc)[:300],     # LM24 처럼 설명을 매칭 근거로 보낸다
+                         step_types=_tuple(a.get("step_types")), inputs=tuple(a.get("inputs") or ()),
+                         outputs=tuple(a.get("outputs") or ()),
+                         keywords=_tuple(a.get("keywords")) or _kw_from(name))
+    if not out:
+        return (), {}, ""
+    axes = obj.get("axes") if isinstance(obj.get("axes"), dict) else {}
+    digest = hashlib.sha1(json.dumps(obj, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:8]
+    return tuple(out[k] for k in sorted(out)), {str(k): str(v) for k, v in axes.items()}, "local:" + digest
 
 
 def _union(a, b) -> tuple:
@@ -768,6 +817,10 @@ def load_effective(paths, cfg, now=None, *, fetch=None, kr=None, folder_key=None
         doc_key = doc_key or dk
     reg = merge(team, local, cfg, person_key=person_key, learned=learned, folder_key=folder_key, doc_key=doc_key,
                 source=src)
+    if not reg.agents:                                   # 팀 카탈로그가 없으면 로컬 카탈로그(LM24 형식 — 계약 v1.3 §0.8 V13)
+        la, axes, ver = local_agents(paths, warns)
+        if la:
+            reg = _with_hash(replace(reg, agents=la, agent_axes=axes or dict(reg.agent_axes), catalog_version=ver))
     if persist and local is not None and reg.local_maps:
         persist_local_maps(paths, local, reg.local_maps, local_raw)
     stale = False

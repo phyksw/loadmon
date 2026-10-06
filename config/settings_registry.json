@@ -2594,11 +2594,11 @@
    "help_ko": "한 실행에서 묻는 군집 상한(나머지는 다음 실행)."
   },
   "hier.copilot.requireCodenameReview": {
-   "default": true, "type": "bool", "range": null, "choices": [false, true],
+   "default": false, "type": "bool", "range": null, "choices": [false, true],
    "owner": "lm27.hier.copilot_io", "readers": ["lm27.hier.bootstrap"], "spec": "H §13.3",
    "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
    "label_ko": "코드네임 검토 선행",
-   "help_ko": "초기 코드네임 검토 전에는 코파일럿에 보내지 않는다."
+   "help_ko": "켜면 초기 코드네임 검토(과제 이름 후보 확인)를 마치기 전에는 코파일럿에 과제 판정을 맡기지 않는다. 기본 꺼짐 — LM24 처럼 바로 판정(레지스트리 과제 이름은 원래 [과제:ID] 로 가려 보낸다)."
   },
   "hier.copilot.reaskGrowth": {
    "default": 2.0, "type": "float", "range": {"min": 1.0, "max": 100.0}, "choices": null,
