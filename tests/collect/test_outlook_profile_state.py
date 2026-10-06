@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """계약 v1.3 §0.8 V7 — '쓸 수 있는 Outlook 프로필' 판정(Get-OutlookProfileState)을 실제 레지스트리 모양으로 확인.
 
-HKCU 아래 시험 전용 키(LM27-test-<난수>)에 프로필 다섯 개를 만들고, COM 수집기 파일에서 함수 글을 그대로 떼어 그 키를
+HKCU 아래 시험 전용 키(LM27T-profstate-<난수>)에 프로필 다섯 개를 만들고, COM 수집기 파일에서 함수 글을 그대로 떼어 그 키를
 가리키게 해 부른다. 만들기·판정·지우기를 PowerShell 한 번 안에서 하고 finally 로 지운다(시험이 죽어도 키가 남지 않게).
 Outlook·실제 프로필은 읽지 않는다."""
 from __future__ import annotations
@@ -78,7 +78,7 @@ def function_text() -> str:
 class ProfileStateCase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        key = "LM27-test-" + uuid.uuid4().hex[:12]
+        key = "LM27T-profstate-" + uuid.uuid4().hex[:12]
         cls.key = key
         script = (DRIVER.replace("@KEY@", key).replace("@AM@", AM).replace("@MAPI@", MAPI).replace("@POP@", POP)
                   .replace("@ML@", MAIL_LIST).replace("@SL@", STORE_LIST).replace("@FN@", function_text()))

@@ -243,6 +243,20 @@ class WorkPcFlow(FlowBase):
         self.assertEqual(pd["people"][wk]["names"], ["김철수"])
         self.assertEqual(self.stage(res, "export")["counts"]["people"], 1)
 
+    def test_no_agent_skips_install_and_collects_in_foreground(self):
+        """v1.3 §0.8 V17 — --no-agent: 설치·등록·기동 0, 수확은 전경, 샘플러는 agent_skipped(수송 실패 아님), 팀즈 창은 전경 1회."""
+        d = self.deps()
+        res = self.collect(d, no_agent=True)
+        self.assert_valid(res)
+        self.assertEqual(d.agent_calls, 0)
+        self.assertIn("agent_skipped", res.notes)
+        pb = self.stage(res, "pc_bundle")
+        self.assertEqual(pb["harvest"], "foreground")
+        sm = pb["srcs"]["pc.sampler"]
+        self.assertNotIn("R-TRANSPORT", sm.get("reasons") or [])
+        self.assertIn("teams_uia_check", [s["stage"] for s in res.stages])
+        self.assertIn("mail_local", [s["stage"] for s in res.stages])
+
     def test_agent_failure_does_not_stop_collect(self):
         d = self.deps(agent=OSError("synthetic"))
         res = self.collect(d, only=["pc.sampler", "pc.events", "mail.index"])

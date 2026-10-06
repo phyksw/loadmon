@@ -161,6 +161,7 @@ docstring·시험이 정본이다. 구현자: 'W1 통합 창' 은 W1b 구현 뒤
 | V15 | 팀·개인 과제가 하나도 없고 AI 답도 없는 미분류(UNC) 군집에는 '자주 나온 이름'(H §8.1 코드네임 후보 점수 — 여러 군집·여러 주)으로 **규칙 제안 과제**를 붙인다(`hier.ruleAutoProjects`, 기본 켜짐, `lm27.hier.bootstrap.rule_auto_projects` — 출처 bootstrap·확신 l·표지 rule_auto). 제안은 사람이 받기 전까지 과제가 아니며(H-I6) MM 은 제안 과제로 계상(H §7.1). AI 답이 있는 군집(NONE 포함)·사람이 고친 단위업무는 건드리지 않는다 | 실측: 레지스트리 없는 PC 의 규칙 분석에서 업무 109개가 전부 과제 'UNC' 하나 — LM24 는 규칙만으로도 자주 나온 이름으로 과제를 나눴다 |
 | V16 | 보고서·화면 결함 수리(B1~B17)의 형 추가: 모델 `units[].cands`(전체판만 — 과제 후보 상위 3 `[과제, 점수]`) · 선택 `tree.nodes[과제].unattr_meet_min`(그 과제 회의 슬롯의 미귀속 회의 분 — 분류기 `hier\evidence_tags.jsonl` 회의 행, 입력 다이제스트 키 `meet_tags`) · `run.built_at` 은 모델 파일이 아니라 `/api/report` 응답과 내보낸 HTML 데이터 섬에만(JSON 내보내기 바이트 불변) · `/api/analysis/current` 에 `label_sources`·`built_at` · 분류 상태 API 의 제안(단위업무 수·투입·처음~마지막·한글 출처/상태)·규칙(조건·결과 이름)·알림·미적용 수정 · [내 과제로 받기] 가 `keywords`(또는 `words`)·`domain` · [고객사 이름] = `privacy.customers` 에 `{id: C9xx, names}` · 니즈 `drop:false` = 되돌리기 · 직접 붙여넣기 `items_n`·`stage_ko`·`state_ko`·반입 `rid`·`status_ko` · 대시보드 달 = 기준 시각의 달, 초과 근무 = `mm.overtimeBasis` · [분석용 Edge 창 앞으로] 실제 동작(`EdgeSession.front()` — 전용 프로필 창을 되살려 앞으로, 없으면 `bridge.url` 로 띄워 둔다, 남의 Edge·자격 증명·창 내용에는 손대지 않음, CDP 허용 목록에 `Browser.getWindowForTarget`·`Browser.setWindowBounds`) | 사용자 평가 '보고서가 LM24 에 비교할 수준도 아님' — 깨진 칸·빈 칸 17곳(관계 [object Object] · AI 요약 숫자 · 동료k 이름 · 기간 전체 신뢰도 사유 · 과제 후보 · 새 니즈 입력→출력 · Edge 창 버튼 409 등) |
 | V6 | 수집 기본 시작일 = 오늘 − `collect.lookbackDays` + 1 과 올해 1월 1일 중 이른 날(`collect.sinceYearStart`, 기본 켜짐 — `lm27.collect.ledger.default_since` 단일원) | 기본 기간 '1월 1일 ~ 오늘' |
+| V17 | `collect --no-agent`(`collect_here(…, no_agent=True)`) — 에이전트(작업 스케줄러 등록·상주 프로세스)를 설치·판 올림·기동하지 않고 이번 한 번 전경에서만 모은다. 수확(pc.events·files·mru·recent)은 `harvest_run` 의 원래 전경 경로, 팀즈 창 확인은 전경 1회, 상주 샘플러는 `agent_skipped`(수송 실패 아님). 기본(옵션 없음)은 예전처럼 설치·복구한다 | 사용자 지시(2026-10-06) '작업 완료 후 메모리를 계속 잡지 않도록' · 예약 작업은 동의 없이 등록하지 않음 — 개발 PC 실측 수집에 필요 |
 
 ---
 
@@ -1469,7 +1470,7 @@ v1.2 §0.7 C18 등재: `Invoke-CapabilityProbe.ps1`(과 `probe_owa.py`·`probe_t
 
 | 명령 | 하는 일 | 모듈 | rc(§8.3) | 소유 § |
 |---|---|---|---|---|
-| `collect [--auto] [--mode auto\|probe-only\|recollect] [--since D] [--until D] [--pc-role pc1\|pc2\|cloud] [--only <src,…>] [--budget-sec N]` | [수집] 한 번(§2.5). `--auto` = `--mode auto` 무질문 + 끝에 대기 업로드 전송 | lm27.collect.run | 0·1·2·3·4 | C §8 · TAB §1.7 |
+| `collect [--auto] [--mode auto\|probe-only\|recollect] [--since D] [--until D] [--pc-role pc1\|pc2\|cloud] [--only <src,…>] [--budget-sec N] [--no-agent]` | [수집] 한 번(§2.5). `--auto` = `--mode auto` 무질문 + 끝에 대기 업로드 전송. `--no-agent` = 에이전트를 설치·등록하지 않고 이번 한 번 전경에서만(§0.8 V17) | lm27.collect.run | 0·1·2·3·4 | C §8 · TAB §1.7 |
 | `agent install [--only] [--reinstall]` · `agent status` · `agent repair` · `agent uninstall [--purge]` | 에이전트 설치·확인·복구·제거. `agent install` 은 `--only` 유무와 관계없이 **설치 전용**(설치 → 번들에 `pcs\<pc_id>\pc.json` 만, 수집·탐침·내보내기 없음 — `--only` 는 bat 표기 호환). `--reinstall` = `uninstall(ident, False)` 뒤 `ensure_agent(ident)`. pc.json 기록 실패는 rc 2(설치는 됨) — X-331 | lm27.agent.install | 0·2·3·4 | TAB §1.6 |
 | `bundle status` · `bundle verify` · `bundle merge <dir>` · `bundle alias <pc_id> <logical>` · `bundle unalias <pc_id>` · `bundle redact` | 번들 관리 | lm27.bundle | 0·1·2·4 | TAB §1.13~§1.15 |
 | `move-prepare` | 이동 준비(도우미 PS 를 `%TEMP%` 사본으로) | lm27.bundle.move | 0·2·3 | TAB §1.11 |

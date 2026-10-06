@@ -1133,10 +1133,12 @@ def _result(ctx: _Ctx, rc=None, reasons=()) -> CollectResult:
 
 
 def collect_here(paths, cfg, *, mode="auto", since=None, until=None, pc_role=None, only=None, budget_sec=None,
-                 deps=None) -> CollectResult:
+                 no_agent=False, deps=None) -> CollectResult:
     """계약 함수: [수집] 한 번(모듈 머리말 0~8). ``mode`` = auto(무질문 — 끝에 대기 업로드 전송) · probe-only(탐침·원장만) ·
     recollect(``since``·``until`` 구간을 커서 없이 다시 — 커서는 그대로). ``only`` = 경로 ID 목록(진단 — 업로드 없음),
-    ``budget_sec`` = 전체 시간 예산(None = ``collect.budgetSec``, 0 = 끔), ``deps`` = 시험 주입(``Deps``). 반환 ``CollectResult``
+    ``budget_sec`` = 전체 시간 예산(None = ``collect.budgetSec``, 0 = 끔), ``no_agent`` = 에이전트를 설치·등록하지 않고 이번
+    한 번 전경에서만(작업 스케줄러·상주 프로세스 없음 — 수확·팀즈 창 확인은 원래의 전경 경로, 샘플러는 ``agent_skipped``,
+    계약 v1.3 §0.8 V17), ``deps`` = 시험 주입(``Deps``). 반환 ``CollectResult``
     (``rc`` = 계약 §8.3)."""
     if mode not in MODES:
         raise ValueError(f"collect: mode 는 {MODES} 중 하나")
@@ -1193,7 +1195,11 @@ def collect_here(paths, cfg, *, mode="auto", since=None, until=None, pc_role=Non
     # 2. 에이전트(설치·복구 — 번들 잠금 없이)
     pre = plan.stage_plan(ctx.roles, {}, ctx.only, cfg=cfg)
     if mode != "probe-only" and _needs_agent(pre):
-        ctx.agent = _ensure_agent(ctx)
+        if no_agent:
+            # v1.3 §0.8 V17 — 설치·등록·기동을 하지 않는다. 수확은 harvest_run 의 전경 경로, 샘플러는 agent_skipped.
+            ctx.notes.append("agent_skipped")
+        else:
+            ctx.agent = _ensure_agent(ctx)
     ctx.agent_info = _agent_info(ctx)
     if not ctx.agent.get("impl") and ctx.agent_info.get("impl"):
         ctx.agent["impl"] = ctx.agent_info["impl"]

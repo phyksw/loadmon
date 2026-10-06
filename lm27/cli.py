@@ -341,7 +341,7 @@ def _cmd_collect(ctx):
         raise CliError("--since 가 --until 보다 늦습니다")
     fn = resolve("lm27.collect.run", "collect_here")
     res = fn(ctx.paths, ctx.cfg(), mode=mode, since=a.since, until=a.until, pc_role=a.pc_role,
-             only=_csv(a.only), budget_sec=a.budget_sec)
+             only=_csv(a.only), budget_sec=a.budget_sec, **({"no_agent": True} if getattr(a, "no_agent", False) else {}))
     return rc_of(res)
 
 
@@ -820,6 +820,8 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--pc-role", dest="pc_role", choices=("pc1", "pc2", "cloud"))
     q.add_argument("--only", metavar="<src,…>", help="경로 ID 목록(쉼표)")
     q.add_argument("--budget-sec", dest="budget_sec", type=_nonneg_int, metavar="N")
+    q.add_argument("--no-agent", dest="no_agent", action="store_true",
+                   help="에이전트(작업 스케줄러·상주 프로세스)를 설치하지 않고 이번 한 번 전경에서만 모은다")
 
     # agent
     ag = group("agent")
