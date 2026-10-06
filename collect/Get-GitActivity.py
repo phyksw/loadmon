@@ -90,6 +90,22 @@ def _local_date(dt_utc: datetime):
     return (dt_utc + timedelta(minutes=_tz.capture_offset_min(dt_utc))).date()
 
 
+def _day_start_utc(day: date, ref_utc: datetime) -> datetime:
+    """로컬 날짜 ``day`` 00:00 의 UTC 순간(이 PC 오프셋 — ``_local_date`` 와 같은 셈)."""
+    off = _tz.capture_offset_min(ref_utc)
+    return datetime(day.year, day.month, day.day, tzinfo=UTC) - timedelta(minutes=off)
+
+
+def new_read_from(rf_prev, win_utc: datetime, gap: bool, incomplete: bool):
+    """새 ``read_from``(빠짐없이 낸 범위의 시작 — PS 수집기 ``Get-LmNewReadFrom`` 과 같은 규칙): 끝까지 못 냈으면(예산·실패·
+    탐색 잘림) 앞당기지 않고, 이미 더 이른 시작을 덮었으면 그대로, 아니면 이번 창의 시작."""
+    if incomplete:
+        return rf_prev
+    if rf_prev is not None and not gap and rf_prev < win_utc:
+        return rf_prev
+    return win_utc
+
+
 # ───────────────────────────── git 실행 파일 ─────────────────────────────
 def find_git(cfg_exe: str = ""):
     """git 실행 파일 → (경로 또는 None, 찾아본 곳 수). pc.git.exe(파일 또는 설치 폴더) → PATH → GUI 클라이언트 내장 git."""
@@ -356,6 +372,15 @@ def collect(paths, cfg, pc_id, *, d0=None, d1=None, scan=(), now=None, api=None)
     api = api or store_api()
     cur = (api["load_raw_cursor"](paths, pc_id) or {}).get(SRC) or {}
     cur_utc = _parse_utc(cur.get("last_ts_utc")) if isinstance(cur, dict) else None
+    rf_prev = _parse_utc(cur.get("read_from")) if isinstance(cur, dict) else None
+    win_utc = _day_start_utc(day0, now_utc)
+    # 앞쪽 공백(PS 수집기와 같은 read_from 규칙 — 계약 §3.10): 창이 '빠짐없이 낸 범위의 시작'(read_from)보다 이르거나 read_from 이
+    # 없는 예전 커서면 이번에는 커서를 무시하고 창 전체를 다시 낸다(중복은 레코드 id 로 흡수). 그래야 상태 줄 range(= 창 전체)를
+    # 원장이 '읽었다'고 적어도 거짓이 아니다(T-09 — 기본 시작일이 1월 1일로 앞당겨진 V6 뒤 '커서 − 14일' 이전 커밋 누락 방지).
+    from_gap = cur_utc is not None and (rf_prev is None or win_utc < rf_prev)
+    if from_gap:
+        st["from_gap"] = True
+        cur_utc = None
     since_day = day0 - timedelta(days=SINCE_PAD_DAYS)
     revisit = (cur_utc - timedelta(days=REVISIT_DAYS)) if cur_utc else None
     observed = _utc_iso(now_utc)
@@ -431,7 +456,8 @@ def collect(paths, cfg, pc_id, *, d0=None, d1=None, scan=(), now=None, api=None)
     # 이전 커밋이 영구히 건너뛰어진다(--from/--to 와 무관 — recollect 로도 회복 불가). 시각은 이전 값 그대로 두고
     # 읽은 저장소의 repos 표지만 갱신한다(Get-FileActivity 의 예산 소진 규칙과 같다).
     incomplete = bool(budget or failed or found_state.get("truncated"))
-    last = cur_utc
+    prev_utc = _parse_utc(cur.get("last_ts_utc")) if isinstance(cur, dict) else None
+    last = cur_utc if not from_gap else prev_utc
     for row in stored:
         data = row.data
         ts = _parse_utc(data.get("ts_utc"))
@@ -440,7 +466,9 @@ def collect(paths, cfg, pc_id, *, d0=None, d1=None, scan=(), now=None, api=None)
         dk, ck = data.get("doc_key"), data.get("commit_key")
         if dk and ck:
             repos_cur[dk] = ck
-    new_cur = {"last_ts_utc": _utc_iso(last) if last else None, "repos": dict(sorted(repos_cur.items()))}
+    rf_new = new_read_from(rf_prev, win_utc, from_gap, incomplete)
+    new_cur = {"last_ts_utc": _utc_iso(last) if last else None, "read_from": _utc_iso(rf_new) if rf_new else None,
+               "repos": dict(sorted(repos_cur.items()))}
     api["save_raw_cursor"](paths, pc_id, SRC, new_cur)
     st["cursor_saved"] = True
     if incomplete:

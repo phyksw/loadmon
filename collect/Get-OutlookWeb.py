@@ -87,7 +87,10 @@ KIND_AXES = {"mail": ("mail_in", "mail_out"), "cal": ("cal",)}
 OWA_BASE = "https://outlook.office365.com"
 MAIL_FOLDERS = (("inbox", "/mail/inbox"), ("sent", "/mail/sentitems"))
 CAL_WEEK = "/calendar/view/week/{y}/{m}/{d}"
-OWA_HOST_RX = re.compile(r"^outlook\.(?:office|office365)\.com$|^outlook\.cloud\.microsoft$|^outlook\.live\.com$")
+OWA_HOST_RX = re.compile(r"^outlook\.(?:office|office365)\.com$|^outlook\.cloud\.microsoft$")
+# 개인(Microsoft) 계정의 사서함·팀즈(Outlook.com·Teams 개인) — 회사(조직) 계정이 아니다. 업무 자료로 읽지 않고 '로그인 필요 ·
+# 개인 계정'으로 끝낸다(v1.3 §0.8 V18 '회사(조직) 계정이 아니면 메일·팀즈 웹 수집은 건너뛰고 PC 자료로'). Teams 웹도 이것을 쓴다.
+PERSONAL_HOST_RX = re.compile(r"^outlook\.live\.com$|^teams\.live\.com$")
 
 LIST_ROUNDS_MAX = 400        # 목록 한 폴더 조각에서 스크롤 회차 상한(이전 판 400 — 정지 판정이 먼저 끊는다)
 LIST_STALL = 3               # 새 항목 없는 화면이 연속 3번 = 끝
@@ -561,6 +564,20 @@ def session_failure(state: str, info=None) -> tuple:
     return SESSION_FAIL.get(state, (RC_DRIVER, "R-TRANSPORT"))
 
 
+def add_login_facts(st: dict, screen) -> None:
+    """로그인 필요(rc 2 · R-LOGIN)로 끝난 상태 줄에 로그인 사실을 싣는다(v1.3 §0.8 V18 — 열거·불리언만):
+    ``login_pending`` = 지난 대기가 로그인 없이 끝나 이번에는 짧게 확인만 함(연결자가 ``skipped=login_pending``),
+    ``login_account`` = ``personal``(로그인·도착 화면이 개인 계정 — 회사 계정 아님)."""
+    if "R-LOGIN" not in st.get("reasons", ()):
+        return
+    fn = getattr(screen, "login_facts", None)
+    f = fn() if callable(fn) else {}
+    if f.get("login_pending"):
+        st["login_pending"] = True
+    if f.get("login_account") == "personal":
+        st["login_account"] = "personal"
+
+
 def is_ca_code(code) -> bool:
     c = str(code or "")
     return bool(AADSTS_RX.match(c)) and (c in CA_CODES or c.startswith("53"))
@@ -892,6 +909,11 @@ class FakeOwaScreen:
             return "ca"
         return "login_required" if lg else "ready"
 
+    def login_facts(self) -> dict:
+        """주입 키 ``login_pending``(bool) · ``login_account``("personal") — 세션의 로그인 보류·계정 종류 흉내(V18)."""
+        return {"login_pending": self.fake.get("login_pending") is True,
+                "login_account": "personal" if self.fake.get("login_account") == "personal" else ""}
+
     def mail_pages(self, folder: str, s: date, e: date, dl):
         v = (self.fake.get("mail") or {}).get(s.strftime("%Y-%m"))
         if isinstance(v, list):
@@ -1000,15 +1022,39 @@ class CdpBase:
         v = self.eval(js_aadsts())
         return str(v) if isinstance(v, str) and AADSTS_RX.match(v) else ""
 
-    def goto(self, url: str, dl, host_rx) -> str:
+    def login_facts(self) -> dict:
+        """세션의 로그인 사실(V18): 마지막 대기가 보류 상태 짧은 확인이었나 · 개인 계정 화면을 봤나."""
+        return {"login_pending": getattr(self.s, "login_check", "") == "pending",
+                "login_account": "personal" if getattr(self.s, "login_account", "") == "personal" else ""}
+
+    def _session_call(self, name: str, *args) -> None:
+        fn = getattr(self.s, name, None)
+        if callable(fn):
+            try:
+                fn(*args)
+            except OSError:
+                pass
+
+    def _login_wait_s(self) -> float:
+        """이번 로그인 대기 상한 — 세션이 정한다(보류 중이면 짧게 — V18). 세션이 모르면 ``bridge.loginWaitMin``."""
+        fn = getattr(self.s, "login_wait_s", None)
+        if callable(fn):
+            return float(fn())
+        return float(getattr(getattr(self.s, "cfg", None), "login_wait_min", 10)) * 60.0
+
+    def goto(self, url: str, dl, host_rx, *, wait_login: bool = True) -> str:
         """이동 + 로드·로그인 판정. 로그인 화면이면 조건부 액세스(AADSTS)부터 보고, 아니면 사람이 로그인할 때까지
-        ``bridge.loginWaitMin``(예산 안) 기다린다. 알려지지 않은 호스트(회사 SSO 등)도 로그인 대기로 본다."""
+        세션의 로그인 대기(``bridge.loginWaitMin`` — 로그인 보류 중이면 짧게, V18)를 예산 안에서 기다린다. ``wait_login=False``
+        (탐침) 면 첫 판정(``GOTO_QUICK_S``)만 하고 더 기다리지 않는다. 알려지지 않은 호스트(회사 SSO 등)도 로그인 대기로 본다.
+        개인 계정의 사서함·팀즈(``PERSONAL_HOST_RX``)에 닿으면 읽지 않고 로그인 필요(개인 계정)로 끝낸다."""
         st = self.s.goto(url, dl.sub(GOTO_QUICK_S))
         if st == "login_required":
             code = self.aadsts()
             if is_ca_code(code):
                 self.c["aadsts"] = int(code)
                 return "ca"
+            if not wait_login:
+                return "login_required"
             st = self.s.wait_page(dl)
             if st == "login_required":
                 code = self.aadsts()
@@ -1018,16 +1064,35 @@ class CdpBase:
                 return "login_required"
         if st != "ready":
             return st
-        if host_rx.match(self.host()):
+        host = self.host()
+        if host_rx.match(host):
+            self._session_call("login_ok")                  # 회사 사서함·팀즈에 닿음 = 로그인 확인(보류 해제)
             return "ready"
+        if PERSONAL_HOST_RX.match(host):
+            return self._personal()
         self._bump("host_unexpected")
-        wait = min(float(getattr(getattr(self.s, "cfg", None), "login_wait_min", 10)) * 60.0,
-                   dl.left() if dl.at != INF else INF)
+        if not wait_login:
+            return "login_required"
+        want = self._login_wait_s()
+        wait = min(want, dl.left() if dl.at != INF else INF)
         end = Deadline.after(self.clock, wait)
         while not end.expired():
             self._sleep(LOGIN_POLL_S)
-            if host_rx.match(self.host()):
+            host = self.host()
+            if host_rx.match(host):
+                self._session_call("login_ok")
                 return "ready"
+            if PERSONAL_HOST_RX.match(host):
+                return self._personal()
+        if wait >= want:
+            self._session_call("mark_login_pending")       # 다 기다렸다 — 다음 수집은 짧게(V18)
+        return "login_required"
+
+    def _personal(self) -> str:
+        """개인 계정 사서함·팀즈에 닿음 — 읽지 않는다. 세션에 계정 종류를 남기고(안내 한 번) 보류로 둔다(V18)."""
+        self._bump("personal_account")
+        self._session_call("note_login_account", "personal")
+        self._session_call("mark_login_pending")
         return "login_required"
 
     def close(self) -> None:
@@ -1498,6 +1563,7 @@ def collect(opts: Opts, *, paths, cfg, api, clock, now, off_fn, environ, session
             rc, why = session_failure(state, getattr(getattr(screen, "s", None), "error", None))
             c["session"] = state
             add_reason(st, why)
+            add_login_facts(st, screen)
             st["rc"] = rc
             human(f"[OWA] {src}: {'로그인이 필요합니다(전용 Edge 창에서 1회)' if rc == RC_LOGIN else 'Edge 세션을 쓸 수 없습니다'}"
                   f" — {state}", err)
@@ -1532,6 +1598,7 @@ def collect(opts: Opts, *, paths, cfg, api, clock, now, off_fn, environ, session
         rc, why = session_failure(stop.state, stop.info)
         c["session"] = stop.state
         add_reason(st, why)
+        add_login_facts(st, screen)
         st["rc"] = rc
         st["partial"] = True
     elif c.get("sel_fail") and not c.get("sel_ok") and not c.get("items") and not c.get("events"):

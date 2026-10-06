@@ -8,7 +8,7 @@ r"""보고서 입력 단일 로더(R §2.5 · 부록 A `load_inputs`, 계약 §3
 |---|---|---|
 | `time.env_slots`·`tasks`·`team_tables`·`mm_month`·`run_meta` | 시간 코어 결과(`timecore/1.1`) | 보고서 거부(`refused` — rc 1) |
 | `time.day_ledger`·`interval_ledger`·`attrib`·`queue` | 〃 | 만들되 경고(`missing` — rc 2) |
-| `labels`(+ groups·queue·hier_meta·proposals_snapshot) | 분류 결과(`hier/1`) | 모두 미분류 + 경고(`missing`) |
+| `labels`(+ groups·queue·hier_meta·proposals_snapshot) | 분류 결과(`hier/1`) | 모두 미분류 + 경고(`missing`). 단, 그 실행의 tasks 가 0개면 빈 labels 도 정상(계약 §0.8 V20 ⑥ — W2 L03) |
 | `ai.<stage>` 4종 | `data\derived\ai_out\<stage>.json` | 단계 폴백(R §4.10.3) — 정상 상태 |
 | `registry` | 유효 레지스트리(`lm27.hier.registry.load_effective`, persist=False — 쓰지 않음) | 내장 레지스트리 + 경고 |
 | `person_dir` | `data\local_only\person_dir.json` | 동료 표시명 = `동료 #k` |
@@ -48,6 +48,7 @@ __all__ = [
     "ReportInputs",
     "TimeFiles",
     "analysis_time",
+    "chosen_of",
     "hier_file",
     "load_evidence_index",
     "load_inputs",
@@ -194,13 +195,16 @@ class ReportInputs:
     calendar: object = None
     period: tuple | None = None                         # ('YYYY-MM-DD', 'YYYY-MM-DD')
     as_of: str | None = None                            # run_meta.as_of(근무 시간대 ISO + 오프셋)
-    run: dict = field(default_factory=dict)             # {run_id, from, to, as_of, chosen, period_source}
+    run: dict = field(default_factory=dict)             # {run_id, from, to, as_of, period_source, period_months?}
     leaves: dict = field(default_factory=dict)
     absences: list = field(default_factory=list)
     missing: list = field(default_factory=list)
     refused: list = field(default_factory=list)
     warnings: list = field(default_factory=list)
     digests: dict = field(default_factory=dict)
+    # 만든(또는 받은) 증거 보기 — 비어 `evidence` 가 None 이어도 남긴다(파이프라인이 다음 load_inputs 에 그대로 넘겨 번들을
+    # 다시 읽지 않게 — C07·L11). 모델·다이제스트 재료가 아니다(다이제스트는 `digests['evidence']`).
+    evidence_index: EvidenceIndex | None = None
 
     @property
     def from_(self) -> str | None:
@@ -292,7 +296,9 @@ def _load_hier(inp: ReportInputs, paths) -> None:
     labels = got.get("labels.json")
     if isinstance(labels, Mapping) and isinstance(labels.get("labels"), Mapping):
         labels = labels["labels"]
-    if isinstance(labels, Mapping) and labels:
+    # 빈 분류 결과는 단위업무가 0개인 정상 실행이면 그대로 정상이다(W2 검토 L03) — 단위업무가 있는데 비었을 때만 '없음'
+    no_units = isinstance(inp.time.tasks, list) and not inp.time.tasks
+    if isinstance(labels, Mapping) and (labels or no_units):
         inp.labels = {str(k): v for k, v in labels.items() if isinstance(v, Mapping)}
     else:
         inp.missing.append("labels")
@@ -356,13 +362,15 @@ def _load_calendar(inp: ReportInputs, paths, cal) -> None:
 
 
 def _period(inp: ReportInputs, paths) -> None:
-    """분석 기간: current.json(같은 실행일 때) → run_status(메서드가 있으면) → 날짜 원장 날짜 → 봉투 날짜."""
+    """분석 기간: current.json(같은 실행일 때) → run_status(메서드가 있으면) → 날짜 원장 날짜 → 봉투 날짜.
+    `run` 에는 그 실행에 고정된 값만 싣는다 — '자동/직접 선택'(`chosen`)은 current.json 이 어느 실행을 가리키느냐에 따라
+    바뀌므로 모델·다이제스트에 넣지 않는다(G-R1 — 같은 입력 = 같은 모델 바이트, W2 검토 C01). 화면 응답·자기완결 HTML 섬이
+    `chosen_of` 로 덧붙인다."""
     cur = fsx.read_json(paths.analysis_current(), None, want=dict)
-    run = {"run_id": inp.run_id, "from": None, "to": None, "as_of": None, "chosen": None, "period_source": None}
+    run = {"run_id": inp.run_id, "from": None, "to": None, "as_of": None, "period_source": None}
     src = None
     if isinstance(cur, Mapping) and cur.get("run_id") == inp.run_id:
         src = cur
-        run["chosen"] = cur.get("chosen") if cur.get("chosen") in ("auto", "explicit") else None
     rs_fn = getattr(paths, "run_status_file", None)
     if rs_fn is not None:
         rs = fsx.read_json(rs_fn(inp.run_id), None, want=dict)
@@ -413,6 +421,16 @@ def analysis_time(paths, run_id: str, off_min: int) -> str | None:
     cur = fsx.read_json(paths.analysis_current(), None, want=dict)
     if isinstance(cur, Mapping) and cur.get("run_id") == run_id and isinstance(cur.get("built_at"), str):
         return cur["built_at"]
+    return None
+
+
+def chosen_of(paths, run_id: str) -> str | None:
+    """그 실행이 지금 화면 결과(current.json)이면 '자동/직접 선택' 표기 `auto`·`explicit`, 아니면 None. 모델 파일에는 넣지
+    않는다(G-R1 — current.json 은 보고서 입력이 아니다, W2 검토 C01). 화면 응답(`/api/report`)과 자기완결 HTML 섬에만
+    `run.chosen` 으로 덧붙인다 — 현재 결과가 아닌 실행은 표기를 지어내지 않는다(None)."""
+    cur = fsx.read_json(paths.analysis_current(), None, want=dict)
+    if isinstance(cur, Mapping) and cur.get("run_id") == run_id and cur.get("chosen") in ("auto", "explicit"):
+        return str(cur["chosen"])
     return None
 
 
@@ -478,30 +496,36 @@ def evidence_from(ev, rows) -> EvidenceIndex:
                          lines=lines, leaves=leaves, absences=absences)
 
 
-def load_evidence_index(paths, cfg, d0, d1, as_of) -> EvidenceIndex:
-    """번들 단일 로더 → 시간 코어 정규화(분석과 같은 함수 — conv·peer·문서군 키가 tasks.json 과 맞는다)."""
-    from lm27.normalize.load import load_evidence
+def load_evidence_index(paths, cfg, d0, d1, as_of, *, rows=None) -> EvidenceIndex:
+    """번들 단일 로더 → 시간 코어 정규화(분석과 같은 함수 — conv·peer·문서군 키가 tasks.json 과 맞는다).
+    ``rows`` = 이미 적재한 증거 행(``load_evidence(paths, cfg, d0 − 1일, d1 + 1일)`` 결과 — 분석 파이프라인의 적재 단계가
+    읽어 둔 것)이면 번들을 다시 읽지 않는다(분석 1회 = 번들 읽기 1회 — W2 검토 C07·L11)."""
     from lm27.time.evidence import normalize
     a = date.fromisoformat(d0)
     b = date.fromisoformat(d1)
-    rows = load_evidence(paths, cfg, a - timedelta(days=1), b + timedelta(days=1), audit=False)
+    if rows is None:
+        from lm27.normalize.load import load_evidence
+        rows = load_evidence(paths, cfg, a - timedelta(days=1), b + timedelta(days=1), audit=False)
     ev, _audit = normalize(rows, {"d0": a, "d1": b}, cfg, as_of, None)
     return evidence_from(ev, rows)
 
 
-def _load_evidence(inp: ReportInputs, paths, cfg, evidence) -> None:
+def _load_evidence(inp: ReportInputs, paths, cfg, evidence, rows=None) -> None:
     if isinstance(evidence, EvidenceIndex):
         idx = evidence
     elif evidence is False or not inp.period or not inp.as_of:
         inp.digests["evidence"] = MISSING
         return
     else:
+        # 넘겨받은 적재 행은 같은 기간일 때만 쓴다(기간이 다르면 번들에서 — 앞뒤 하루 여유까지 같아야 같은 증거)
+        given = rows[2] if rows is not None and (str(rows[0]), str(rows[1])) == tuple(inp.period) else None
         try:
-            idx = load_evidence_index(paths, cfg, inp.period[0], inp.period[1], inp.as_of)
+            idx = load_evidence_index(paths, cfg, inp.period[0], inp.period[1], inp.as_of, rows=given)
         except (OSError, ValueError, KeyError, TypeError, RuntimeError) as e:
             inp.digests["evidence"] = MISSING
             inp.warn("evidence_unreadable", f"근거 기록을 읽지 못해 근거 줄 없이 보입니다({type(e).__name__})")
             return
+    inp.evidence_index = idx
     inp.digests["evidence"] = idx.digest()
     inp.leaves, inp.absences = dict(idx.leaves), list(idx.absences)
     if idx.usable or idx.lines or idx.fam_names:
@@ -565,10 +589,12 @@ def _load_bundle_state(inp: ReportInputs, paths) -> None:
 
 
 def load_inputs(run_id: str, *, paths=None, cfg=None, registry=None, cal=None, evidence=True,
-                bundle_state: bool = True) -> ReportInputs:
+                bundle_state: bool = True, evidence_rows=None) -> ReportInputs:
     """R 부록 A `load_inputs(run_id) -> ReportInputs`. 키워드는 시험·파이프라인 주입점:
     paths·cfg(없으면 `Paths()`·`load_config`) · registry(유효 레지스트리 — 없으면 `load_effective`) · cal(달력 — 없으면
-    `load_calendar(paths, 레지스트리)`) · evidence(True = 번들에서 적재 · False = 읽지 않음 · `EvidenceIndex` = 그것).
+    `load_calendar(paths, 레지스트리)`) · evidence(True = 번들에서 적재 · False = 읽지 않음 · `EvidenceIndex` = 그것) ·
+    evidence_rows(`('YYYY-MM-DD', 'YYYY-MM-DD', 행 목록)` — 그 기간으로 이미 적재한 증거 행. 분석 기간이 같으면 번들을
+    다시 읽지 않고 이 행으로 증거 보기를 만든다 — 분석 파이프라인 전용, C07·L11).
     필수 시간 결과가 없으면 `refused` 에 남긴다(호출자가 rc 1 — 보고서를 만들지 않는다)."""
     if not isinstance(run_id, str) or not _RUN_RX.match(run_id):
         raise ValueError("run_id 형식이 아닙니다(YYYYMMDD-HHMMSS-xxxx)")
@@ -587,7 +613,7 @@ def load_inputs(run_id: str, *, paths=None, cfg=None, registry=None, cal=None, e
     _load_calendar(inp, paths, cal)
     _period(inp, paths)
     if not inp.refused:
-        _load_evidence(inp, paths, cfg, evidence)
+        _load_evidence(inp, paths, cfg, evidence, evidence_rows)
         _load_meet_tags(inp, paths)
     else:
         inp.digests["evidence"] = MISSING

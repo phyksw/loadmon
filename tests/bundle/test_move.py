@@ -100,6 +100,31 @@ class PrepareMoveTest(B.BundleTestCase):
         self.assertEqual(r.notes[0], {"code": "final_export_failed", "error": "OSError"})
         self.assertTrue(self.paths.move_ready(self.i1.pc_id).is_file(), "이동은 막지 않는다")
 
+    def test_helper_launched_without_std_handles(self):
+        """통합(W2 C21 근본 원인 handoff): 도우미는 표준 핸들을 물려받지 않는다 — stdin·stdout·stderr 모두 None(새 콘솔 핸들).
+        예전에는 stdin 만 DEVNULL 이라 Popen 이 CLI 의 stdout·stderr(화면 작업 파이프)를 도우미에게 넘겨 작업이 '진행 중'으로 남았다."""
+        from unittest import mock
+
+        from lm27.util import proc
+        seen = {}
+
+        class FakePopen:
+            pid = 4321
+
+            def __init__(self, argv, **kw):
+                seen["argv"], seen["kw"] = argv, kw
+                self.stdin = self.stdout = self.stderr = None
+        with mock.patch.object(proc.subprocess, "Popen", FakePopen):
+            self.assertEqual(mv.launch_helper(["powershell.exe", "-File", "x.ps1"]), 4321)
+        kw = seen["kw"]
+        self.assertEqual((kw["stdin"], kw["stdout"], kw["stderr"]), (None, None, None))
+        if os.name == "nt":
+            self.assertTrue(kw["creationflags"] & subprocess.CREATE_NEW_CONSOLE)
+        got = []
+        with mock.patch.object(mv, "launch_helper", lambda argv: got.append(argv) or 99):
+            r = self.prepare(launch=True)                        # spawn 주입이 없으면 launch_helper 로 띄운다
+        self.assertEqual((r.pid, got), (99, [r.argv]))
+
     def test_sha_mismatch_quarantined(self):
         p = self.paths.pc_dir(self.i1.pc_id) / self.a["file"]
         data = bytearray(p.read_bytes())

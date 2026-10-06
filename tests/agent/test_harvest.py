@@ -196,6 +196,54 @@ class HarvestRunTest(unittest.TestCase):
         self.assertEqual(seen[0][1]["stdout"], HV.proc.DEVNULL)
 
 
+class HarvestWindowTest(unittest.TestCase):
+    """통합(W2 C03 의 에이전트 쪽 handoff): 수확 흐름은 전경과 같은 창(-Since·-Until)을 늘 넘긴다 — 상태 줄 range 가 원장 창."""
+
+    NOW = datetime(2026, 10, 6, 15, 30, tzinfo=UTC)             # 근무 시간대(+09:00)로는 10-07
+
+    def test_window_rule_same_as_ledger_default_since(self):
+        from datetime import date
+
+        from lm27.collect.ledger import default_since
+        st = {"collect.lookbackDays": 120, "time.tzOffsetMin": 540}
+        self.assertEqual(HV.harvest_window(st, self.NOW), ("2026-01-01", "2026-10-07"))
+        self.assertEqual(HV.harvest_window({**st, "collect.sinceYearStart": False}, self.NOW), ("2026-06-10", "2026-10-07"))
+        self.assertEqual(HV.harvest_window({**st, "collect.lookbackDays": 400}, self.NOW), ("2025-09-03", "2026-10-07"))
+        self.assertEqual(HV.harvest_window({**st, "time.tzOffsetMin": 0}, self.NOW)[1], "2026-10-06")
+        for lb in (1, 30, 120, 400):
+            for ys in (True, False):
+                cfg = {"collect.lookbackDays": lb, "collect.sinceYearStart": ys, "time.tzOffsetMin": 540}
+                want = default_since(cfg, date(2026, 10, 7)).isoformat()
+                self.assertEqual(HV.harvest_window(cfg, self.NOW)[0], want, (lb, ys))
+
+    def argv_of(self, src, *, poll=False, extra=()):
+        seen = []
+
+        class _RT(HV.Runtime):
+            def collector_argv(self, spec, pc_id, extra_args=()):
+                seen.append(list(extra_args))
+                return ["x"]
+
+        def no_spawn(argv, **kw):
+            raise OSError("시험 — 띄우지 않음")
+        sb = H.Sandbox()
+        self.addCleanup(sb.cleanup)
+        sb.agent_files()
+        st = {**HV.load_settings(sb.paths), "collect.lookbackDays": 120, "time.tzOffsetMin": 540}
+        rt = _RT(paths=sb.paths, python="py", pipe="pipe", powershell="ps", cwd=str(sb.dir))
+        HV.run_connector(sb.paths, "pc_0a1b2c3d4e5f6a7b", src, settings=st, ctxcache=HV.load_ctxcache(sb.paths), rt=rt,
+                         poll=poll, extra_args=extra, spawn=no_spawn, now=self.NOW)
+        return seen[0]
+
+    def test_harvest_streams_get_window(self):
+        for src in ("pc.events", "pc.files", "pc.mru", "pc.recent"):
+            self.assertEqual(self.argv_of(src), ["-Since", "2026-01-01", "-Until", "2026-10-07"], src)
+        self.assertEqual(self.argv_of("teams.uia"), [])                       # 팀즈 창은 날짜 창이 없다
+        self.assertEqual(self.argv_of("pc.files", poll=True), [])              # 열린 문서 폴링은 range 를 내지 않는다
+        inj = ["-EventsCsv", "x.csv", "-Since", "2026-09-01", "-Until", "2026-09-30"]
+        self.assertEqual(self.argv_of("pc.events", extra=inj), inj)            # 시험 주입 창이 있으면 두 번 넘기지 않는다
+
+
 class RealPipeTest(CloneTestCase):
     """실물 이음: 복제 트리의 Get-EventActivity.ps1(시험 주입) → 복제 트리 lm27_pipe.py(프로그램 폴더 모드) → 샌드박스 store."""
 

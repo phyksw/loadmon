@@ -296,6 +296,20 @@ def _nonneg_int(s: str) -> int:
     return n
 
 
+def _pid_arg(s: str) -> int:
+    """프로세스 ID(양의 정수 — ``move-prepare --wait-pid``)."""
+    try:
+        n = int(s)
+    except ValueError:
+        raise argparse.ArgumentTypeError("프로세스 ID 는 양의 정수") from None
+    if n <= 0:
+        raise argparse.ArgumentTypeError("프로세스 ID 는 양의 정수")
+    return n
+
+
+_pid_arg.__name__ = "프로세스 ID"
+
+
 def _months_arg(s: str) -> int:
     try:
         v = int(s)
@@ -434,7 +448,10 @@ def _cmd_bundle_redact(ctx):
 
 
 def _cmd_move_prepare(ctx):
-    res = resolve("lm27.bundle.move", "prepare_move")(ctx.paths, ctx.cfg())
+    # --wait-pid = 도우미가 끝나기를 기다릴 프로세스(화면 서버 — 없으면 이 CLI). 화면 [이동 준비]는 서버 pid 를 넘겨 도우미가
+    # 서버의 정상 종료를 기다리게 한다(W2 C21 — 통합). 주지 않으면 예전 호출 그대로(키워드 없음).
+    kw = {"wait_pid": ctx.args.wait_pid} if getattr(ctx.args, "wait_pid", None) else {}
+    res = resolve("lm27.bundle.move", "prepare_move")(ctx.paths, ctx.cfg(), **kw)
     return rc_of(res)
 
 
@@ -847,7 +864,8 @@ def build_parser() -> argparse.ArgumentParser:
     leaf(bd, "redact", _cmd_bundle_redact, "소급 가림 재작성(이 PC 세그먼트)")
 
     # move-prepare
-    leaf(sub, "move-prepare", _cmd_move_prepare, help_of["move-prepare"])
+    q = leaf(sub, "move-prepare", _cmd_move_prepare, help_of["move-prepare"])
+    q.add_argument("--wait-pid", dest="wait_pid", type=_pid_arg, metavar="N")
 
     # analyze
     q = leaf(sub, "analyze", _cmd_analyze, help_of["analyze"])

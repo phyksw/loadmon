@@ -90,7 +90,8 @@ ROLE = "teams_web"
 FAKE_ENV = "LM_TEAMSWEB_FAKE"
 TEAMS_URL = "https://teams.microsoft.com/v2/"
 DEEP_LINK = "https://teams.microsoft.com/l/message/{tid}/{mid}"
-TEAMS_HOST_RX = re.compile(r"^teams\.microsoft\.com$|^teams\.cloud\.microsoft$|^teams\.live\.com$")
+# 회사(조직) Teams 만 — 개인 Teams(teams.live.com)는 W.PERSONAL_HOST_RX(로그인 필요 · 개인 계정, v1.3 §0.8 V18)
+TEAMS_HOST_RX = re.compile(r"^teams\.microsoft\.com$|^teams\.cloud\.microsoft$")
 LISTS = ("chats", "channels", "activity")
 NAV_LABELS = {"chats": ("채팅", "chat"), "channels": ("팀", "teams"), "activity": ("활동", "activity")}
 LIST_ROUNDS_MAX = 300        # 목록 가상 스크롤 회차 상한(정지 판정이 먼저 끊는다)
@@ -419,6 +420,11 @@ class FakeTeamsScreen:
             return "ca"
         return "login_required" if lg else "ready"
 
+    def login_facts(self) -> dict:
+        """주입 키 ``login_pending``(bool) · ``login_account``("personal") — 세션의 로그인 보류·계정 종류 흉내(V18)."""
+        return {"login_pending": self.fake.get("login_pending") is True,
+                "login_account": "personal" if self.fake.get("login_account") == "personal" else ""}
+
     def _pages(self, which: str) -> list:
         v = self.fake.get(which)
         if isinstance(v, dict):
@@ -485,11 +491,13 @@ class CdpTeamsScreen(W.CdpBase):
         self.view = ""
         self.pane = ("", -1)
 
+    wait_login = True            # False = 첫 판정만(탐침 — 로그인 대기는 수집기가 [수집]마다 한 번, V10)
+
     def open(self, dl) -> str:
         st = super().open(dl)
         if st != "ready":
             return st
-        st = self.goto(TEAMS_URL, dl, TEAMS_HOST_RX)
+        st = self.goto(TEAMS_URL, dl, TEAMS_HOST_RX, wait_login=self.wait_login)
         if st == "ready":
             self.view = "chats"
             self._wait_list("chats", dl)
@@ -867,6 +875,7 @@ def collect(opts: Opts, *, paths, cfg, api, clock, now, off_fn, environ, session
             rc, why = W.session_failure(state, getattr(getattr(screen, "s", None), "error", None))
             c["session"] = state
             W.add_reason(st, why)
+            W.add_login_facts(st, screen)
             st["rc"] = rc
             W.human(f"[Teams 웹] {'로그인이 필요합니다(전용 Edge 창에서 1회)' if rc == W.RC_LOGIN else 'Edge 세션을 쓸 수 없습니다'}"
                     f" — {state}", err)
@@ -944,6 +953,7 @@ def collect(opts: Opts, *, paths, cfg, api, clock, now, off_fn, environ, session
         rc, why = W.session_failure(stop.state, stop.info)
         c["session"] = stop.state
         W.add_reason(st, why)
+        W.add_login_facts(st, screen)
         st["rc"] = rc
         st["partial"] = True
     elif n_new > 0:

@@ -781,12 +781,25 @@ def _calib_for(rt: Runtime, spec):
                        rt.clock)
 
 
+def login_pending(rt: Runtime) -> bool:
+    """로그인 보류(계약 v1.3 §0.8 V18): 이 실행의 세션이 '보류 중 짧은 확인'(``login_check == "pending"`` — 지난 로그인
+    대기가 로그인 없이 끝남)에서 로그인 화면을 봤다. 그러면 AI 단계는 2-strike 치명 대신 바로 skipped(login_pending)."""
+    s = getattr(rt.transport, "s", None)
+    if s is None or getattr(s, "login_check", "") != "pending":
+        return False
+    return getattr(s, "state", "") == "login_required"
+
+
 def _skip_reason(spec, rt: Runtime) -> str | None:
     cfg = rt.cfg
     if not cfg.stage_on(spec.id) or cfg.mode == "off" or rt.transport is None:
         return "disabled"
     if rt.fatal_stop:
         return "fatal"
+    if login_pending(rt):
+        from lm27.bridge.settings import LOGIN_PENDING_CHECK_S
+        rt.notify("BR-LOGIN-PENDING", sec=int(LOGIN_PENDING_CHECK_S))     # 세션이 이미 냈으면 한 번만(Notices)
+        return "login_pending"
     if rt.env is not None and rt.env.web_exposed and cfg.web_exposure_policy == "block":
         rt.notify("BR-WEB-BLOCK")
         return "web_exposed"

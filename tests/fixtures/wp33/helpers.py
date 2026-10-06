@@ -198,6 +198,7 @@ class FakeDeps(Deps):
         self.mono = mono
         self.calls = []                 # (종류, 경로 ID, argv)
         self.harvest_calls = []
+        self.probe_calls = []
         self.agent_calls = 0
 
     def now(self):
@@ -222,7 +223,8 @@ class FakeDeps(Deps):
         self.harvest_calls.append(wait_s)
         return dict(self.harvest) if self.harvest is not None else {"rc": 2, "done": False, "timed_out": True}
 
-    def probe(self, ident_):
+    def probe(self, ident_, **kw):
+        self.probe_calls.append(dict(kw))               # web·copilot — 웹·코파일럿 탐침을 부탁했나(계약 §6.7)
         return self.probe_res
 
     def send_due(self):

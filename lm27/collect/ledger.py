@@ -129,26 +129,62 @@ def list_runs(paths) -> list:
     return sorted(n for n in names if _RUN_RX.match(n))
 
 
-def load_observations(paths) -> list:
-    """모든 수집 실행의 경로별 관측 ``[{run_id, pc_id, src, updated, …관측}]``(run_id·src 순)."""
+# 실행 폴더 → (단계 결과 파일 서명, 관측 목록) — 한 프로세스 안의 재생성([수집] 한 번에 2~3회)이 끝난 실행의 JSON 을 다시
+# 해석하지 않게(C20). 서명 = (이름, mtime_ns, 크기) — 바뀐 실행만 다시 읽는다. 파생 캐시라 틀려도 다음 프로세스가 바로잡는다.
+_OBS_CACHE: dict = {}
+_OBS_CACHE_MAX = 4096
+
+
+def _run_sig(paths, rid: str):
+    try:
+        d = fsx.longp(os.fspath(paths.collect_stage_results(rid)))
+        with os.scandir(d) as it:
+            ents = [(e.name, e.stat()) for e in it if e.name.startswith("stage_result_") and e.name.endswith(".json")]
+    except OSError:
+        return None
+    return tuple(sorted((n, s.st_mtime_ns, s.st_size) for n, s in ents))
+
+
+def _run_observations(paths, rid: str) -> list:
     out = []
-    for rid in list_runs(paths):
-        for stage, res in sorted(sr.read_stage_results(paths, rid).items()):
-            pc = res.get("pc_id")
-            srcs = res.get("srcs")
-            if not isinstance(pc, str) or not _PC_RX.match(pc) or not isinstance(srcs, dict):
+    for stage, res in sorted(sr.read_stage_results(paths, rid).items()):
+        pc = res.get("pc_id")
+        srcs = res.get("srcs")
+        if not isinstance(pc, str) or not _PC_RX.match(pc) or not isinstance(srcs, dict):
+            continue
+        for src, o in sorted(srcs.items()):
+            if not isinstance(src, str) or not _SRC_RX.match(src) or not isinstance(o, dict):
                 continue
-            for src, o in sorted(srcs.items()):
-                if not isinstance(src, str) or not _SRC_RX.match(src) or not isinstance(o, dict):
-                    continue
-                ob = observation(o.get("rc"), o.get("reasons"), n=o.get("n", 0), ranges=o.get("ranges"),
-                                 cap_hit=o.get("cap_hit"), budget_hit=o.get("budget_hit"),
-                                 stop_kind=o.get("stop_kind"), horizon_oldest=o.get("horizon_oldest"),
-                                 horizon_newest=o.get("horizon_newest"), months=o.get("months"),
-                                 probe_sig=o.get("probe_sig"), skipped=o.get("skipped", ""))
-                ob.update(run_id=rid, pc_id=pc, src=src, stage=stage,
-                          updated=res.get("updated") if isinstance(res.get("updated"), str) else "")
-                out.append(ob)
+            ob = observation(o.get("rc"), o.get("reasons"), n=o.get("n", 0), ranges=o.get("ranges"),
+                             cap_hit=o.get("cap_hit"), budget_hit=o.get("budget_hit"),
+                             stop_kind=o.get("stop_kind"), horizon_oldest=o.get("horizon_oldest"),
+                             horizon_newest=o.get("horizon_newest"), months=o.get("months"),
+                             probe_sig=o.get("probe_sig"), skipped=o.get("skipped", ""))
+            ob.update(run_id=rid, pc_id=pc, src=src, stage=stage,
+                      updated=res.get("updated") if isinstance(res.get("updated"), str) else "")
+            out.append(ob)
+    return out
+
+
+def load_observations(paths) -> list:
+    """모든 수집 실행의 경로별 관측 ``[{run_id, pc_id, src, updated, …관측}]``(run_id·src 순). 끝난 실행은 프로세스 안에서
+    서명이 같으면 다시 해석하지 않는다(``_OBS_CACHE``)."""
+    out = []
+    root = _runs_root(paths)
+    for rid in list_runs(paths):
+        key = (root, rid)
+        sig = _run_sig(paths, rid)
+        hit = _OBS_CACHE.get(key)
+        if sig is not None and hit is not None and hit[0] == sig:
+            obs = hit[1]
+        else:
+            obs = _run_observations(paths, rid)
+            if sig is not None:
+                if len(_OBS_CACHE) >= _OBS_CACHE_MAX:
+                    _OBS_CACHE.clear()
+                _OBS_CACHE[key] = (sig, obs)
+        out.extend(dict(o, ranges=[list(r) for r in o["ranges"]], months=dict(o["months"]),
+                        reasons=list(o["reasons"])) for o in obs)
     return out
 
 
@@ -256,7 +292,70 @@ def _obs_day(o: dict, day: str, n: int) -> dict:
         "cap_hit": o.get("cap_hit"), "budget_hit": o.get("budget_hit"), "stop_kind": o.get("stop_kind")})
 
 
+def _class_key(o: dict) -> tuple:
+    """관측의 '판정 갈래' — ``_obs_day`` 가 읽는 값 전부(같은 갈래의 관측은 같은 날에 같은 셀 상태를 말한다)."""
+    return (o.get("rc"), tuple(o.get("reasons") or ()), bool(o.get("cap_hit")), bool(o.get("budget_hit")),
+            o.get("stop_kind"), o.get("horizon_oldest"), o.get("horizon_newest"),
+            tuple(sorted((o.get("months") or {}).items())))
+
+
+def _paint(olist: list, d0: date, n_days: int) -> list:
+    """쌍 하나의 관측(실행 순) → 갈래마다 '그 날을 덮은 가장 늦은 관측' 표 ``[[(순번, 관측) | None] × 날]``(C20).
+    늦은 관측부터 아직 칠하지 않은 날만 칠한다(다음 빈 칸 찾기 — 경로 압축). 비용 ≈ 날 수 + 관측 수(실행이 쌓여도 날×실행이
+    아니다). 순번 = 실행 순 목록의 자리(같은 실행 안 단계 순서까지 — 예전 판정의 '같으면 뒤의 것' 규칙 그대로)."""
+    groups: dict = {}
+    for idx, o in enumerate(olist):
+        groups.setdefault(_class_key(o), []).append((idx, o))
+    out = []
+    for members in groups.values():
+        latest = [None] * n_days
+        nxt = list(range(n_days + 1))
+
+        def find(i, nxt=nxt):
+            root = i
+            while nxt[root] != root:
+                root = nxt[root]
+            while nxt[i] != root:
+                nxt[i], i = root, nxt[i]
+            return root
+        for idx, o in reversed(members):
+            for a, b in o.get("ranges") or ():
+                try:
+                    lo = (date.fromisoformat(a) - d0).days
+                    hi = (date.fromisoformat(b) - d0).days
+                except (TypeError, ValueError):
+                    continue
+                if hi < 0 or lo >= n_days:
+                    continue
+                i = find(max(lo, 0))
+                hi = min(hi, n_days - 1)
+                while i <= hi:
+                    latest[i] = (idx, o)
+                    nxt[i] = i + 1
+                    i = find(i + 1)
+        out.append(latest)
+    return out
+
+
+def _cell_painted(pc, src, axis, day, i, counts, painted, sigs) -> dict:
+    """``_cell`` 과 같은 판정 — 갈래마다 그 날을 덮은 가장 늦은 관측만 번역한다(같은 갈래는 같은 상태). 최선 상태, 같으면
+    더 늦은 관측(C20 — 결과는 예전 전수 비교와 같다: 시험이 무작위 관측으로 대조한다)."""
+    n, nm, nd, nu = counts.get((pc, src, axis, day), (0, 0, 0, 0))
+    best, src_o, best_rank, best_idx = None, None, 0, -1
+    for latest in painted:
+        hit = latest[i]
+        if hit is None:
+            continue
+        idx, o = hit
+        c = _obs_day(o, day, n)
+        r = status_rank(c["status"])
+        if best is None or r < best_rank or (r == best_rank and idx >= best_idx):
+            best, src_o, best_rank, best_idx = c, o, r, idx
+    return _cell_out(pc, src, axis, day, (n, nm, nd, nu), best, src_o, sigs)
+
+
 def _cell(pc, src, axis, day, counts, obs_list, sigs) -> dict:
+    """셀 하나(전수 비교 — 참고 구현, ``rebuild_coverage`` 는 ``_cell_painted``)."""
     n, nm, nd, nu = counts.get((pc, src, axis, day), (0, 0, 0, 0))
     best, src_o = None, None
     for o in obs_list:
@@ -266,6 +365,11 @@ def _cell(pc, src, axis, day, counts, obs_list, sigs) -> dict:
         if best is None or status_rank(c["status"]) < status_rank(best["status"]) or \
                 (status_rank(c["status"]) == status_rank(best["status"]) and o["run_id"] >= src_o["run_id"]):
             best, src_o = c, o
+    return _cell_out(pc, src, axis, day, (n, nm, nd, nu), best, src_o, sigs)
+
+
+def _cell_out(pc, src, axis, day, cnt, best, src_o, sigs) -> dict:
+    n, nm, nd, nu = cnt
     if best is None:
         best = {"status": "ok" if n else "not_attempted", "reasons": [], "cap_hit": False, "budget_hit": False}
     elif n and best["status"] in rcmap.UNOBSERVED:
@@ -332,11 +436,13 @@ def rebuild_coverage(paths, *, cfg=None, now=None, iter_records=None, obs=None) 
     pairs = set(by_pair) | {(pc, src) for pc, src, _ax, _d in counts}
     sigs = _sigs(paths)
     cells = []
+    days = list(_days(d0, d1))
     for pc, src in sorted(pairs):
         olist = sorted(by_pair.get((pc, src), ()), key=lambda o: o["run_id"])
+        painted = _paint(olist, d0, len(days))
         for axis in axes_of(src):
-            for day in _days(d0, d1):
-                cells.append(_cell(pc, src, axis, day, counts, olist, sigs))
+            for i, day in enumerate(days):
+                cells.append(_cell_painted(pc, src, axis, day, i, counts, painted, sigs))
     _comgap(cells, float(cfg["ledger.mismatchRatio"]))
     cells.sort(key=lambda c: (c["date"], c["kind_axis"], c["src"], c["pc_id"]))
     teams = [{"account": ACCOUNT, "date": day, "chat_key": chat, "src": src, "pc_id": pc, "status": "ok", "n": v[0],
@@ -376,16 +482,17 @@ def composite(cells) -> dict:
         groups[(c["date"], c["kind_axis"])].append(c)
     out = {}
     for key, grp in sorted(groups.items()):
-        non = [c for c in grp if c["src"] not in COPILOT_SRCS]
+        # 출처·PC 가 없는 셀(바깥 호출자가 합성 셀만 넘김)도 받는다 — 출처가 없으면 코파일럿 출처가 아니다(W2 C00 견고화)
+        non = [c for c in grp if c.get("src", "") not in COPILOT_SRCS]
         st = min((c["status"] for c in non), key=status_rank) if non else "not_attempted"
         for c in grp:
-            if c["src"] in COPILOT_SRCS and c["status"] != "zero_ok" and status_rank(c["status"]) < status_rank(st):
+            if c.get("src", "") in COPILOT_SRCS and c["status"] != "zero_ok" and status_rank(c["status"]) < status_rank(st):
                 st = c["status"]
         srcs = {}
-        for c in sorted(grp, key=lambda c: (c["src"], c["pc_id"])):
-            cur = srcs.get(c["src"])
+        for c in sorted(grp, key=lambda c: (c.get("src", ""), c.get("pc_id", ""))):
+            cur = srcs.get(c.get("src", ""))
             if cur is None or status_rank(c["status"]) < status_rank(cur):
-                srcs[c["src"]] = c["status"]
+                srcs[c.get("src", "")] = c["status"]
         rs = sorted({r for c in grp for r in c.get("reasons") or ()})
         out[key] = {"status": st, "reasons": rs, "srcs": srcs}
     return out

@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 from datetime import date, timedelta
 
-from lm27.ui.server import ApiError
+from lm27.ui.server import ApiError, ui_today
 
 __all__ = ["ROUTES"]
 
@@ -36,7 +36,7 @@ def _ym(ts) -> str:
 
 def get_audit(app, req):
     from lm27.bundle import loader
-    today = app.deps.now().date()
+    today = ui_today(app)
     try:
         d1 = date.fromisoformat(req.q("to", today.isoformat()))
         d0 = date.fromisoformat(req.q("from", (d1 - timedelta(days=89)).isoformat()))
@@ -110,7 +110,7 @@ def get_ad_suspects(app, req):
     from lm27.bundle import loader
     decided = _ad_lists(app)
     done = set(decided.get("block_senders") or ()) | set(decided.get("allow_senders") or ())
-    today = app.deps.now().date()
+    today = ui_today(app)
     seen: dict = {}
     try:
         for r in loader.iter_records(app.paths, "mail", today - timedelta(days=30), today, cfg=app.cfg()):

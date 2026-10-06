@@ -38,7 +38,18 @@ _last_report = {}
 
 
 # ── 작은 도구 ────────────────────────────────────────────────────────────────
+_UTC_FAST_RX = re.compile(r"^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})Z$")
+
+
 def _utc(ts):
+    """``YYYY-MM-DDTHH:MM:SSZ`` → UTC datetime. 행마다 불리므로 정규식 빠른 길을 먼저(strptime 의 몇 배 — W2 성능 handoff,
+    통합). 빠른 길이 못 받는 모양(한 자리 월 등)·값 오류는 예전과 똑같이 strptime 이 판정한다."""
+    m = _UTC_FAST_RX.match(ts) if isinstance(ts, str) else None
+    if m is not None:
+        try:
+            return datetime(*map(int, m.groups()), tzinfo=UTC)
+        except ValueError:
+            pass
     return datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
 
 

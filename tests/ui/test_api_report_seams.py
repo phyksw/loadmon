@@ -57,6 +57,34 @@ class BandTest(_Base):
         raw = fsx.read_bytes(self.p.analysis_report_file(RUN_ID, "report_model.json"))
         self.assertNotIn(b"built_at", raw)                                     # 모델 파일은 그대로(G-R1)
 
+    def test_report_chosen_only_in_response(self):
+        """통합(W2 C01 handoff): run.chosen 은 모델 파일이 아니라 응답에만 — current.json 이 그 실행일 때만(지어내지 않는다)."""
+        m = sample_model()
+        m["run"].pop("chosen", None)
+        self.model(m)
+        cur = fsx.read_json(self.p.analysis_current(), None)
+        self.sb.write_json(self.p.analysis_current(), {**cur, "chosen": "explicit"})
+        st, r, _ = self.srv.req("GET", "/api/report?variant=full")
+        self.assertEqual((st, r["run"].get("chosen")), (200, "explicit"), r.get("run"))
+        raw = fsx.read_bytes(self.p.analysis_report_file(RUN_ID, "report_model.json"))
+        self.assertNotIn(b"chosen", raw)                                       # 모델 파일은 그대로(G-R1)
+        self.sb.write_json(self.p.analysis_current(), {**cur, "run_id": "20261001-000000-0000"})   # 다른 실행이 현재 결과
+        st, r, _ = self.srv.req("GET", "/api/report?variant=full&run=" + RUN_ID)
+        self.assertEqual(st, 200, r)
+        self.assertNotIn("chosen", r["run"])
+
+    def test_forget_models_also_forgets_drill_cache(self):
+        """통합(W2 C18 handoff): 화면 모델 캐시 비우기·분석/보고서 작업 끝이 [근거] 드릴다운 캐시도 바로 놓는다."""
+        from lm27.report import drill
+        from lm27.ui import api_report
+        calls = []
+        with mock.patch.object(drill, "forget", lambda: calls.append(1)):
+            api_report.forget_models(self.app)
+            self.assertEqual(len(calls), 1)
+            for kind, n in (("report_export", 1), ("report_build", 2), ("analyze", 3), ("quick_reanalyze", 4)):
+                self.app._job_done(type("J", (), {"kind": kind, "state": "done"})())
+                self.assertEqual(len(calls), n, kind)
+
     def test_b16_home_month_is_as_of_month_and_overtime_basis(self):
         m = sample_model()
         m["run"]["as_of"] = "2026-08-31T18:00"
@@ -246,11 +274,18 @@ class CopilotTest(_Base):
         st, b, _ = self.srv.req("POST", "/api/bridge/front", {})
         self.assertEqual((st, b["restored"]), (200, True))
         self.assertIn("앞으로 가져왔습니다", b["text_ko"])
+        self.assertFalse(b["login_pending_cleared"])
+        self.assertNotIn("다시 기다립니다", b["text_ko"])
+        # 로그인 보류(V18)를 지웠으면 그 사실을 알린다 — 다음 수집·분석은 다시 로그인을 기다린다(통합 — A handoff)
+        self.app.deps.front_result = {"state": "launched", "port": 9343, "login_pending_cleared": True}
+        st, b, _ = self.srv.req("POST", "/api/bridge/front", {})
+        self.assertEqual((st, b["login_pending_cleared"]), (200, True))
+        self.assertTrue(b["text_ko"].endswith("다음 수집·분석에서 로그인을 다시 기다립니다"), b["text_ko"])
         for state, code in (("lock_busy", 409), ("policy_blocked", 409), ("edge_not_found", 409), ("launch_failed", 500)):
             self.app.deps.front_result = {"state": state}
             st, b, _ = self.srv.req("POST", "/api/bridge/front", {})
             self.assertEqual((st, b["code"]), (code, state))
-        self.assertEqual(self.app.deps.front_calls, 6)
+        self.assertEqual(self.app.deps.front_calls, 7)
 
 
 class ManualTest(_Base):

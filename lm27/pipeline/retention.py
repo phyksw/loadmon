@@ -12,8 +12,9 @@ r"""분석 결과 보관 정리(계약 §2.13 · R §5.3.4 · 설정 ``report.an
 - ``protect`` 로 넘긴 실행(진행 중인 분석·재분석 원본)도 지우지 않는다.
 - run_id 모양이 아닌 이름·파일은 건드리지 않는다(``Paths.analysis(run_id)`` 가 모양을 다시 확인한다 — 트리 밖을 가리킬 수
   없다). 지우기는 폴더째(``shutil.rmtree``) — 화면이 파일을 쥐고 있어 실패하면 그 실행은 남기고 다음 정리 때 다시 본다.
-- 파생물(``data\derived``)만 지운다. 브리지 저널·AI 답 보존소(``data\ai``)·내보내기(``out\personal`` — 자기 보관 설정
-  ``report.export.keep``)는 다른 모듈 소관이라 건드리지 않는다.
+- 지운 분석 실행과 **같은 run_id** 의 브리지 저널 폴더(``data\ai\runs\<run_id>``)도 함께 지운다(재개할 분석이 없다 — W2
+  검토 L10). 그 밖의 ``data\ai``(다른 run_id 의 저널 — 수동 내보내기·반입 등, AI 답 보존소 ``data\ai\store``)와 내보내기
+  (``out\personal`` — 자기 보관 설정 ``report.export.keep``)는 건드리지 않는다.
 
 경로는 ``lm27.paths`` 메서드로만 만든다(L-08): 실행 폴더 = ``Paths.analysis(run_id)``, 그 부모(나열용) =
 ``Paths.analysis_root()``(있으면 — CR) 또는 ``Paths.analysis_current()`` 의 부모 폴더. 표준 라이브러리만 쓴다.
@@ -90,5 +91,22 @@ def prune_analysis(paths, keep, *, protect: Iterable[str] = ()) -> list[str]:
             shutil.rmtree(fsx.longp(paths.analysis(rid)))
         except OSError:
             continue                                       # 화면이 쥐고 있음 — 다음 정리 때 다시
+        _drop_bridge_run(paths, rid)
         removed.append(rid)
     return removed
+
+
+def _drop_bridge_run(paths, rid: str) -> None:
+    r"""정리한 분석 실행과 **같은 run_id** 의 브리지 저널 폴더(``data\ai\runs\<run_id>`` — 단계 저널·결과 봉투·조회 능력,
+    B §7.8~§7.11)를 지운다. 분석 결과가 정리된 실행의 저널은 재개할 곳이 없다(W2 검토 L10 — 예전에는 끝없이 쌓였다).
+    다른 run_id 의 저널(수동 내보내기·반입, 수집의 코파일럿 조회 등 분석 밖 브리지 실행)과 AI 답 보존소(``data\ai\store`` —
+    실행을 넘어 쓰는 캐시)는 건드리지 않는다. 지우지 못하면(쥐고 있음) 남겨 둔다."""
+    fn = getattr(paths, "ai_run", None)
+    if fn is None:
+        return
+    try:
+        d = fsx.longp(fn(rid))
+    except ValueError:
+        return
+    if os.path.isdir(d):
+        shutil.rmtree(d, ignore_errors=True)

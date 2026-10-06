@@ -150,8 +150,12 @@ class UnitViewTest(unittest.TestCase):
         self.assertIsNone(o2.project_id)
         self.assertEqual(sum(o2.levels_min.values()), o2.effort_min)
         self.assertEqual(o2.levels_min["L3"] + o2.levels_min["L4"], 45)
-        self.assertIn("labels_missing", [x["code"] for x in W.World("2026-09-01", "2026-09-02", "2026-09-02T18:00")
-                                         .context(labels={}).warnings])
+        w1 = W.World("2026-09-01", "2026-09-02", "2026-09-02T18:00")
+        w1.unit("u_l1", start=("2026-09-01", "09:00"))
+        self.assertIn("labels_missing", [x["code"] for x in w1.context(labels={}).warnings])
+        # 단위업무가 0개인 실행은 분류 결과가 빈 것이 정상 — '분류 결과 없음'으로 몰지 않는다(W2 검토 L03)
+        self.assertNotIn("labels_missing", [x["code"] for x in W.World("2026-09-01", "2026-09-02", "2026-09-02T18:00")
+                                            .context(labels={}).warnings])
 
     def test_parse_local(self):
         self.assertEqual(A.parse_local("2026-10-04T18:00:00+09:00"), W.lmin("2026-10-04", "18:00"))

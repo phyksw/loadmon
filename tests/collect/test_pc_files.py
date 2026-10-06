@@ -145,7 +145,7 @@ class FilesTest(CloneTestCase):
         self.assertGreaterEqual(st["excluded"]["package"], 2)                  # build(표식) · node_modules
         self.assertEqual(st["excluded"]["folder_name"], 1)
         self.assertEqual(st["roots"], {"watch": 3, "auto": 0, "missing": 0})
-        self.assertEqual(r.cursor, {"last_ts_utc": iso(datetime(2026, 9, 11, 3, 0, tzinfo=UTC))})
+        self.assertEqual(r.cursor["last_ts_utc"], iso(datetime(2026, 9, 11, 3, 0, tzinfo=UTC)))
         ts = [x["ts_utc"] for x in r.records]
         self.assertEqual(ts, sorted(ts))
 

@@ -128,6 +128,25 @@ def kill_tree(pid: int) -> bool:
     return True
 
 
+CLOSE_WAIT_S = 2.0              # Child.close 가 읽기 스트림 하나를 닫으며 기다리는 최대 시간(막히면 데몬 스레드에 맡긴다)
+
+
+def _close_quiet(st) -> None:
+    if st is None:
+        return
+    try:
+        st.close()
+    except (OSError, ValueError):
+        pass
+
+
+def _close_bounded(st, wait_s: float) -> None:
+    """다른 스레드가 읽는 중일 수 있는 스트림을 데몬 스레드에서 닫고 ``wait_s`` 까지만 기다린다(그 뒤는 그 스레드가 마저 닫는다)."""
+    t = threading.Thread(target=_close_quiet, args=(st,), name="lm27-close", daemon=True)
+    t.start()
+    t.join(wait_s)
+
+
 class Child:
     """``spawn`` 결과 — ``subprocess.Popen`` 의 얇은 껍데기. 감시기(lm27.collect.watch)가 stdout 줄을 읽는다."""
 
@@ -194,17 +213,23 @@ class Child:
                     self.stderr_tail.append(raw.decode("utf-8", errors="replace").rstrip("\r\n"))
             except (OSError, ValueError):
                 pass
+            finally:
+                _close_quiet(err)                   # EOF(손주까지 핸들을 놓음)에서 배수 스레드가 스스로 닫는다
 
         self._drain = threading.Thread(target=_rd, name="lm27-stderr-drain", daemon=True)
         self._drain.start()
 
     def close(self):
-        for st in (self.popen.stdin, self.popen.stdout, self.popen.stderr):
-            if st is not None:
-                try:
-                    st.close()
-                except OSError:
-                    pass
+        """표준 스트림을 닫는다 — 막히지 않는다. 다른 스레드가 ``readline`` 에서 막힌 읽기 파이프(손주가 핸들을 쥐고 있음)를 닫으면
+        BufferedReader 잠금에 걸려 호출자가 손주 수명만큼 멈춘다(W2 C21·L13 과 같은 모양 — 통합). 그래서 ① 살아 있는 배수 스레드의
+        stderr 는 그 스레드가 EOF 에서 닫게 두고 ② 읽기 스트림 닫기는 데몬 스레드에서 ``CLOSE_WAIT_S`` 까지만 기다린다."""
+        _close_quiet(self.popen.stdin)
+        for st in (self.popen.stdout, self.popen.stderr):
+            if st is None:
+                continue
+            if st is self.popen.stderr and self._drain is not None and self._drain.is_alive():
+                continue
+            _close_bounded(st, CLOSE_WAIT_S)
 
     def __enter__(self):
         return self

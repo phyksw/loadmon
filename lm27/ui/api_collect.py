@@ -19,7 +19,7 @@ import os
 import re
 from datetime import UTC, date, datetime, timedelta
 
-from lm27.ui.server import ApiError
+from lm27.ui.server import ApiError, ui_today
 
 __all__ = ["KIND_KO", "ROUTES", "last_collect", "manual_raw", "pc_stale", "write_manual"]
 
@@ -153,7 +153,7 @@ def _worklog_rows(app, me: str | None) -> list:
     from lm27.bundle import loader
     cfg = app.cfg()
     off = int(cfg["time.tzOffsetMin"])
-    today = app.deps.now().date()
+    today = ui_today(app)
     d0 = today - timedelta(days=WORKLOG_DAYS)
     rows = {}
     try:
@@ -291,7 +291,7 @@ def _worklog_options(app) -> dict:
 
 def get_coverage(app, req):
     from lm27.ui.api_home import coverage_days, load_composite
-    today = app.deps.now().date()
+    today = ui_today(app)
     try:
         d1 = date.fromisoformat(req.q("to", today.isoformat()))
         d0 = date.fromisoformat(req.q("from", (d1 - timedelta(days=34)).isoformat()))
@@ -395,7 +395,7 @@ def post_worklog(app, req):
         rid = b.get("retract")
         if not isinstance(rid, str) or not _HEX16_RX.match(rid):
             raise ApiError(400, "bad_id", "취소할 기록을 고르세요")
-        raw = manual_raw(app, kind="retract", d=app.deps.now().date().isoformat(), retract_of=rid)
+        raw = manual_raw(app, kind="retract", d=ui_today(app).isoformat(), retract_of=rid)
         write_manual(app, [raw])
         return {"ok": True, "id": rid, "retracted": True}
     errs = []
@@ -484,7 +484,9 @@ def post_kind(app, req):
 
 
 def post_move(app, req):
-    return app.start_job("move_prepare", ["move-prepare"])
+    # 도우미가 이 화면 서버의 정상 종료(작업 끝 → request_shutdown)를 기다리게 서버 pid 를 넘긴다 — 예전에는 금방 끝나는 CLI 의
+    # pid 를 기다려 도우미의 Stop-Process 가 서버 정상 종료보다 먼저 올 수 있었다(W2 C21 — 통합)
+    return app.start_job("move_prepare", ["move-prepare", "--wait-pid", str(os.getpid())])
 
 
 def post_merge(app, req):

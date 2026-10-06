@@ -176,6 +176,25 @@ class SpawnTest(unittest.TestCase):
         self.assertEqual(len(ch.stderr_tail), proc.TAIL_LINES)
         self.assertEqual(ch.stderr_tail[-1], "e4999")
 
+    def test_close_does_not_block_when_grandchild_holds_pipes(self):
+        """통합(W2 C21·L13 handoff): 손주가 stdout·stderr 를 쥔 채 남고 다른 스레드가 stdout 을 읽는 중(막힘)이어도 Child.close() 는
+        막히지 않는다 — 예전에는 막힌 읽기 파이프를 닫으며 BufferedReader 잠금에 걸려 손주 수명(30초)만큼 멈췄다."""
+        import threading
+        child = ("import subprocess, sys\n"
+                 "g = subprocess.Popen([sys.executable, '-B', '-c', 'import time; time.sleep(30)'], stdout=sys.stdout,"
+                 " stderr=sys.stderr, close_fds=False, creationflags=0x08000000)\n"
+                 "print(g.pid, flush=True)\n")
+        ch = proc.spawn([PY, "-B", "-c", child])
+        gpid = int(ch.stdout.readline().decode().strip())
+        self.addCleanup(lambda: proc.pid_alive(gpid) and proc.kill_tree(gpid))
+        self.assertEqual(ch.wait(timeout=60), 0)
+        threading.Thread(target=lambda: ch.stdout.read(), name="lm27t-reader", daemon=True).start()
+        time.sleep(0.3)
+        t0 = time.monotonic()
+        ch.close()
+        self.assertLess(time.monotonic() - t0, proc.CLOSE_WAIT_S + 3, "막힌 읽기 파이프를 닫으며 멈췄습니다")
+        self.assertTrue(proc.pid_alive(gpid), "손주는 그대로(닫기만 — 시험 정리가 끝낸다)")
+
     def test_stdin_pipe_for_control_line(self):
         code = "import sys,json;d=json.loads(sys.stdin.readline());print(d['_in']['cursor'])"
         ch = proc.spawn([PY, "-B", "-c", code], stdin=proc.PIPE)

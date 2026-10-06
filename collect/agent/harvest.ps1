@@ -137,6 +137,26 @@ function Get-LmCollectorTimeout($plan, $cfg) {
     return ($ScanMaxSec + $PsSlackSec)
 }
 
+# 수확 창(로컬 날짜 since·until — 파이썬 lm27.agent.harvest.harvest_window 와 같은 셈, 계약 v1.3 §0.8 V6):
+# 오늘(근무 시간대 time.tzOffsetMin) − collect.lookbackDays + 1 과 (collect.sinceYearStart 가 false 가 아니면) 올해 1월 1일 중 이른 날 ~ 오늘
+function Get-LmWindow($cfg, [datetime]$nowUtc) {
+    $lb = Get-LmCfgInt $cfg 'collect.lookbackDays' 120 1 1825
+    $off = Get-LmCfgInt $cfg 'time.tzOffsetMin' 540 -720 840
+    if ($nowUtc.Kind -ne [DateTimeKind]::Utc) { $nowUtc = $nowUtc.ToUniversalTime() }
+    $today = $nowUtc.AddMinutes($off).Date
+    $d0 = $today.AddDays(-($lb - 1))
+    $ys = $true
+    if ($null -ne $cfg) {
+        $p = $cfg.PSObject.Properties['collect.sinceYearStart']
+        if ($null -ne $p -and $p.Value -is [bool] -and -not $p.Value) { $ys = $false }
+    }
+    if ($ys) {
+        $jan1 = New-Object DateTime ($today.Year, 1, 1)
+        if ($jan1 -lt $d0) { $d0 = $jan1 }
+    }
+    return , @($d0.ToString('yyyy-MM-dd', $script:Inv), $today.ToString('yyyy-MM-dd', $script:Inv))
+}
+
 function Get-LmCfgInt($cfg, [string]$key, [int]$default, [int]$lo, [int]$hi) {
     $v = $default
     if ($null -ne $cfg) {
@@ -225,6 +245,10 @@ function Invoke-LmStream($plan, $cfg, [string]$pc) {
     if (-not $inLine) { $res.skipped = 'settings_missing'; return $res }
     $colArgs = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + (Join-Path $script:PsDir $plan.script) + '" -Pc ' + $pc
     if ($plan.poll) { $colArgs += ' -Poll' }
+    elseif ($plan.harvest) {
+        $win = Get-LmWindow $cfg (Get-LmNow)                # 창을 늘 넘긴다(상태 줄 range = 원장 관측 창 — V6)
+        $colArgs += ' -Since ' + $win[0] + ' -Until ' + $win[1]
+    }
     $pipeArgs = '-X utf8 -I -B "' + $script:Pipe + '" --kind ' + $plan.kind + ' --src ' + $plan.src + ' --pc ' + $pc + ' --mode append'
     $pipe = $null; $col = $null
     try { $pipe = Start-LmProc $script:Py $pipeArgs $true } catch { $res.skipped = 'spawn_pipe'; $res.reasons = @('R-TRANSPORT'); return $res }

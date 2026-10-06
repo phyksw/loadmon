@@ -70,7 +70,7 @@ class EventsTest(CloneTestCase):
             self.assertEqual(x["session_state"], "active")
             self.assertRegex(x["ts_local_offset"], r"^[+-](?:0\d|1[0-4]):[0-5]\d$")
             self.assertEqual(x["observed_at"], utc("2026-09-02 09:00"))
-        self.assertEqual(r.cursor, {"last_ts_utc": utc("2026-09-01 18:10")})
+        self.assertEqual(r.cursor["last_ts_utc"], utc("2026-09-01 18:10"))
         self.assertEqual(r.status["rc"], 0)
         self.assertEqual(r.status["channels"], {"synthetic": "ok"})
         self.assertEqual(r.status["spans"], {"L0": 2, "L1": 1})
@@ -120,7 +120,7 @@ class EventsTest(CloneTestCase):
         r = self.run_ev(self.csv("unpaired.csv", rows), now="2026-09-05 15:00")
         self.assertEqual(self.spans(r), [("boot", "L0", utc("2026-09-05 09:00"), utc("2026-09-05 15:00"), True)])
         self.assertEqual(r.records[0]["confidence"], 0.4)
-        self.assertEqual(r.cursor, {"last_ts_utc": utc("2026-09-05 09:00")})          # 열린 구간 시작에서 다시 읽는다
+        self.assertEqual(r.cursor["last_ts_utc"], utc("2026-09-05 09:00"))          # 열린 구간 시작에서 다시 읽는다
         self.assertFalse(r.status["live"])
 
     def test_live_session_with_boot_time(self):
@@ -129,7 +129,7 @@ class EventsTest(CloneTestCase):
         self.assertEqual(self.spans(r), [("boot", "L0", utc("2026-09-05 09:00"), utc("2026-09-05 15:00"), False),
                                          ("logon", "L1", utc("2026-09-05 09:03"), utc("2026-09-05 15:00"), False)])
         self.assertTrue(r.status["live"])
-        self.assertEqual(r.cursor, {"last_ts_utc": utc("2026-09-05 09:00")})
+        self.assertEqual(r.cursor["last_ts_utc"], utc("2026-09-05 09:00"))
 
     def test_always_on_flag(self):
         rows = [("2026-09-01 09:00", "on", "6005"), ("2026-09-03 09:00", "on", "6005"), ("2026-09-03 09:05", "on", "7001"),
@@ -150,7 +150,7 @@ class EventsTest(CloneTestCase):
         r = self.run_ev(self.csv("empty2.csv", []), now="2026-09-05 15:00")
         self.assertEqual(r.rc, 1)
         self.assertEqual(r.records, [])
-        self.assertEqual(r.cursor, {"last_ts_utc": None})
+        self.assertEqual(r.cursor["last_ts_utc"], None)
         self.assertEqual(r.status["reasons"], [])
 
     def test_range_filters_events(self):
@@ -192,7 +192,7 @@ class EventsTest(CloneTestCase):
         r1 = self.run_ev(self.csv("roll_a.csv", a), now="2026-09-03 12:00", boot="2026-09-03 09:00")
         self.assertEqual(len(r1.records), 3)
         live_start = utc("2026-09-03 09:00")
-        self.assertEqual(r1.cursor, {"last_ts_utc": live_start})
+        self.assertEqual(r1.cursor["last_ts_utc"], live_start)
         # 6시간 뒤: 9/1 은 로그에서 롤오버로 사라졌고, 9/3 구간은 닫혔고, 9/4 가 새로 생김
         b = [("2026-09-02 09:00", "on", "6005"), ("2026-09-02 18:00", "off", "6006"),
              ("2026-09-03 09:00", "on", "6005"), ("2026-09-03 18:30", "off", "6006"),
@@ -201,15 +201,39 @@ class EventsTest(CloneTestCase):
         self.assertEqual([x["ts_utc"] for x in r2.records], [live_start, utc("2026-09-04 09:00")])
         self.assertEqual(r2.records[0]["ts_end"], utc("2026-09-03 18:30"))           # 같은 시작(같은 id) 의 새 판 — 끝이 닫힘
         self.assertEqual(r2.rc, 0)
-        self.assertEqual(r2.cursor, {"last_ts_utc": utc("2026-09-04 17:00")})
+        self.assertEqual(r2.cursor["last_ts_utc"], utc("2026-09-04 17:00"))
         r3 = self.run_ev(self.csv("roll_b.csv", b), now="2026-09-04 21:00", cursor=r2.cursor)
         self.assertEqual(r3.records, [])
         self.assertEqual(r3.rc, 4)                                                   # 읽었지만 새 구간 0
         self.assertEqual(r3.cursor, r2.cursor)
 
+    def test_window_earlier_than_read_from_reemits_gap(self):
+        """W2 검토 C03(V6): 창이 커서의 read_from 보다 이르면(기본 시작일이 1월 1일로 앞당겨짐) 그 앞쪽은 낸 적이 없다 —
+        last_ts_utc 를 무시하고 창 전체를 다시 낸다(중복은 레코드 id 로 흡수). read_from 이 없는 예전 커서도 한 번 그렇게.
+        상태 줄 range(= 맡은 창)를 원장이 '읽었다'고 적어도 거짓이 아니게(T-09)."""
+        rows = [("2026-09-01 09:00", "on", "6005"), ("2026-09-01 18:00", "off", "6006"),
+                ("2026-09-03 09:00", "on", "6005"), ("2026-09-03 18:00", "off", "6006")]
+        csv = self.csv("gap.csv", rows)
+        r1 = self.run_ev(csv, now="2026-09-04 12:00", since="2026-09-03")
+        self.assertEqual([x["ts_utc"] for x in r1.records], [utc("2026-09-03 09:00")])
+        self.assertEqual(r1.cursor["read_from"], utc("2026-09-03 00:00"))
+        self.assertEqual(r1.status["range"], ["2026-09-03", "2026-09-30"])
+        r2 = self.run_ev(csv, now="2026-09-04 13:00", since="2026-09-01", cursor=r1.cursor)   # 창이 앞당겨짐
+        self.assertEqual([x["ts_utc"] for x in r2.records], [utc("2026-09-01 09:00"), utc("2026-09-03 09:00")])
+        self.assertTrue(r2.status["from_gap"])
+        self.assertEqual(r2.cursor["read_from"], utc("2026-09-01 00:00"))
+        r3 = self.run_ev(csv, now="2026-09-04 14:00", since="2026-09-01", cursor=r2.cursor)   # 이제 증분
+        self.assertEqual((r3.rc, r3.records), (4, []))
+        self.assertNotIn("from_gap", r3.status)
+        r4 = self.run_ev(csv, now="2026-09-04 15:00", since="2026-09-02", cursor=r2.cursor)   # 창이 늦어져도 read_from 유지
+        self.assertEqual(r4.cursor["read_from"], utc("2026-09-01 00:00"))
+        legacy = {"last_ts_utc": r1.cursor["last_ts_utc"]}                                   # read_from 없는 예전 커서
+        r5 = self.run_ev(csv, now="2026-09-04 16:00", since="2026-09-01", cursor=legacy)
+        self.assertEqual(len(r5.records), 2)
+
     def test_cursor_never_moves_back(self):
         rows = [("2026-09-02 09:00", "on", "6005"), ("2026-09-02 18:00", "off", "6006")]
-        cur = {"last_ts_utc": utc("2026-09-20 00:00")}
+        cur = {"last_ts_utc": utc("2026-09-20 00:00"), "read_from": utc("2026-09-01 00:00")}   # 창 앞쪽은 이미 낸 커서
         r = self.run_ev(self.csv("back.csv", rows), now="2026-09-21 12:00", cursor=cur)
         self.assertEqual(r.cursor, cur)
         self.assertEqual(r.records, [])

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import unittest
 
+from lm27.report import vocab as V
 from lm27.report.analysis import quality as Q
 from tests.fixtures.wp30 import world as W
 
@@ -74,6 +75,40 @@ class QualityMonthTest(unittest.TestCase):
         self.assertEqual(t, [{"code": "teams_cov_low", "text": "팀즈 기록이 비어 있는 근무일이 있습니다(70%)"}])
         t = Q.quality_texts(Q.quality_month(mctx(no_ev=3), self.cfg))
         self.assertEqual(t[0]["text"], "근거가 하나도 없는 근무일이 3일 있습니다(확인 질문 Q09)")
+
+    def test_period_texts_every_reason(self):
+        """W2 검토 C09: 기간 문구는 모든 사유에 하나씩 — 그 사유를 낸 달의 숫자로(가장 나쁜 달의 사유만이 아니다)."""
+        cov_aug = dict(mctx()["cov"], pc=(0, 0), mail_out=None)
+        months = {"2026-07": Q.quality_month(mctx(cov=cov_aug, env_min=0, low_min=0, unattr_min=0), self.cfg),
+                  "2026-08": Q.quality_month(mctx(cov=cov_aug, env_min=0, low_min=0, unattr_min=0), self.cfg),
+                  "2026-09": Q.quality_month(mctx(cov=dict(mctx()["cov"], mail_out=(11, 0)), low_min=2500,
+                                                  unattr_min=3500, no_ev=3), self.cfg)}
+        p = Q.period_quality(months)
+        self.assertEqual(p["grade"], "unreliable")
+        texts = Q.period_texts(p["reasons"], months)
+        self.assertEqual([t["code"] for t in texts], p["reasons"])           # 사유마다 문구 하나(빈칸 없음)
+        by = {t["code"]: t["text"] for t in texts}
+        self.assertEqual(by["mail_cov_low"], "메일 보냄 기록이 비어 있는 근무일이 있습니다(55%)")   # 9월 값(11/20)
+        self.assertIn("26%", by["estimated_high"])                            # 2500/9600 — 9월 값
+        self.assertEqual(by["no_evidence_days"], "근거가 하나도 없는 근무일이 3일 있습니다(확인 질문 Q09)")
+        self.assertEqual(by["no_envelope"], V.QUALITY_PERIOD_TEXT["no_envelope"].format(n=2))   # 기간형 — '이 달은' 아님
+        self.assertIn("PC 기록이 있는 근무일이 0%", by["pc_cov_bad"])
+
+    def test_layer_texts_from_world(self):
+        """분석 문맥 전체로: 수집 전 달(봉투 0) + 메일 보냄이 절반만 있는 달 → 기간 문구에 mail_cov_low 가 숫자로 있다."""
+        w = W.World("2026-08-01", "2026-09-13", "2026-09-13T12:00")
+        w.unit("u_q1", start=("2026-09-01", "09:00"), end=("2026-09-11", "17:00"))
+        days = ("2026-09-01", "2026-09-02", "2026-09-03", "2026-09-04", "2026-09-07", "2026-09-08", "2026-09-09",
+                "2026-09-10", "2026-09-11")
+        for i, d in enumerate(days):
+            w.run("u_q1", "DOC_DOC", d, "09:00", "17:00")
+            w.cover(d, mail_out="ok" if i % 2 == 0 else "blocked", mail_in="ok", cal="ok", teams="ok")
+        q = Q.quality_layer(w.context())
+        self.assertEqual([t["code"] for t in q["texts"]], q["reasons"])
+        self.assertIn("mail_cov_low", q["reasons"])
+        by = {t["code"]: t["text"] for t in q["texts"]}
+        self.assertEqual(by["mail_cov_low"], q["months"]["2026-09"]["texts"][0]["text"])
+        self.assertNotIn("이 달은", by["no_envelope"])
 
 
 class MonthCtxTest(unittest.TestCase):

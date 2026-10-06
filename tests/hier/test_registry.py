@@ -433,6 +433,40 @@ class LoadEffectiveTest(_Tmp):
             reg, _st = R.load_effective(self.paths, self.cfg_with(), NOW)
             self.assertNotIn("L-1", [a.id for a in reg.agents])
 
+    def test_local_catalog_encoding_and_dup_reasons(self):
+        """W2 검토 L04 — 로컬 카탈로그를 못 쓰면 조용히 버리지 않고 까닭을 경고로 남긴다(hier_meta.warnings 까지). 메모장 'ANSI'
+        (CP949) 저장은 그대로 읽고 UTF-8 로 저장하라고 알린다."""
+        p = self.paths.config_dir() / R.LOCAL_CATALOG
+        p.parent.mkdir(parents=True, exist_ok=True)
+        body = '{"axes": {"축1": "시험 축"}, "tasks": [{"id": "T-1", "axis": "축1", "name": "도면 검토 자동화"}]}'
+
+        def run(raw: bytes):
+            p.write_bytes(raw)
+            reg, st = R.load_effective(self.paths, self.cfg, NOW)
+            return [a.id for a in reg.agents], [w for w in st.warnings if w.startswith("local_catalog")]
+
+        self.assertEqual(run(body.encode("cp949")), (["T-1"], ["local_catalog_cp949"]))
+        self.assertEqual(run(b"\xef\xbb\xbf" + body.encode()), (["T-1"], []))          # UTF-8 BOM 은 정상
+        self.assertEqual(run('{"tasks": [{"id": "T-1", "name": "가", "name": "나"}]}'.encode()),
+                         ([], ["local_catalog_rejected:dup_key"]))
+        self.assertEqual(run(b'{"tasks": [\xff\xff]}'), ([], ["local_catalog_rejected:encoding"]))
+        self.assertEqual(run(b'{"tasks": [}'), ([], ["local_catalog_rejected:json"]))
+        self.assertEqual(run('{"tasks": [{"id": "", "name": "이름만"}]}'.encode()),
+                         ([], ["local_catalog_rejected:empty"]))
+        self.assertEqual(run('{"tasks": [{"id": "T-1", "name": "가"}, {"id": "T-1", "name": "나"}]}'.encode()),
+                         (["T-1"], ["local_catalog_dup_id"]))
+        for code in ("local_catalog_rejected", "local_catalog_rejected:read", "local_catalog_rejected:encoding",
+                     "local_catalog_rejected:dup_key", "local_catalog_rejected:json", "local_catalog_rejected:empty",
+                     "local_catalog_cp949", "local_catalog_dup_id"):
+            self.assertIn("agentic_tasks.json", R.LOCAL_CATALOG_WARNS[code])             # 화면 한 줄 문구
+        p.unlink()
+        reg, st = R.load_effective(self.paths, self.cfg, NOW)
+        self.assertEqual([w for w in st.warnings if w.startswith("local_catalog")], [])    # 파일이 없으면 경고 없음
+        from lm27.hier import classify_all
+        p.write_bytes(body.encode("cp949"))
+        res = classify_all({"paths": self.paths, "cfg": self.cfg, "records": [], "tasks": [], "now": NOW})
+        self.assertIn("local_catalog_cp949", res.meta["warnings"])                        # 보고서가 읽는 곳까지 간다
+
     def test_t_h01_offline_newer_than_cache(self):
         self.put(self.paths.registry_cache(), self.golden_v(7))
         self.put(self.off / R.OFFLINE_REGISTRY_NAME, self.golden_v(8))

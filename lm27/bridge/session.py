@@ -13,7 +13,9 @@ r"""L0 세션(B §4) — Edge 탐색·정책 확인·기동·포트·소유 확�
 
 허용 동작(B §4.1): Edge 실행 파일 탐색, 정책 레지스트리 **읽기**, 전용 프로필로 기동, 127.0.0.1 디버그 포트 연결,
 자기 탭 생성·이동·닫기, 앞으로 가져오기, 새로고침, 모델 메뉴·업무 모드 버튼 클릭(자기 탭 안).
-사용자 대신 로그인하지 않는다 — 로그인 필요면 안내(BR-LOGIN) + ``bridge.loginWaitMin`` 폴링만(B4).
+사용자 대신 로그인하지 않는다 — 로그인 필요면 안내(BR-LOGIN) + ``bridge.loginWaitMin`` 폴링만(B4). 그 대기가 로그인 없이
+끝나면 '로그인 보류'(health.login_pending)를 남기고, 다음 수집·분석은 ``LOGIN_PENDING_CHECK_S`` 만 확인한다(v1.3 §0.8 V18 —
+회사 계정이 없는 PC). [분석용 Edge 창 앞으로](``front``)·로그인 확인이 보류를 지운다.
 """
 from __future__ import annotations
 
@@ -27,9 +29,18 @@ from urllib.parse import quote, urlsplit
 
 from lm27.bridge import cdp as C
 from lm27.bridge import fsio, js
+from lm27.bridge import messages as _messages
 from lm27.bridge import settings as S
 from lm27.bridge.clock import INF, Deadline, default_clock, iso_now, iso_to_epoch, stamp
 from lm27.bridge.messages import Notices, default_notices
+
+# ── 로그인 보류(v1.3 §0.8 V18 — 회사 계정이 없는 PC) ───────────────────────────────────────────────
+# 로그인 대기(bridge.loginWaitMin)가 로그인 없이 끝나면 브리지 프로필 health.login_pending 에 남긴다. 다음 수집·분석은 그 대기를
+# 다시 하지 않고 LOGIN_PENDING_CHECK_S 만 로그인 상태를 본 뒤 넘어간다(사람에게 설정 변경을 요구하지 않는다). 사람이
+# [분석용 Edge 창 앞으로]를 누르거나(front) 로그인이 확인되면 지운다. 로그인 탭이 개인 계정 화면(login.live.com)이면 안내 한 번.
+LOGIN_NOTICES = {c: _messages.BR[c] for c in ("BR-LOGIN-PENDING", "BR-LOGIN-PERSONAL")}   # 글자 정본 = 문구 표(B §13)
+LOGIN_PERSONAL_TEXT = LOGIN_NOTICES["BR-LOGIN-PERSONAL"][1].rstrip(".")      # 수집 안내(lm27.collect.run)도 같은 글자
+LOGIN_CHECKS = ("", "wait", "pending")     # 이 세션의 마지막 로그인 대기: 없음 · 다 기다림 · 보류 상태 짧은 확인
 
 APP_PATHS_KEY = r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe"
 POLICY_KEY = r"SOFTWARE\Policies\Microsoft\Edge"
@@ -514,6 +525,10 @@ class EdgeSession:
         self._ready_recorded = False
         self._hb_stop = threading.Event()
         self._hb_thread = None
+        self._last_host = ""                 # 마지막으로 본 자기 탭 호스트(로그인 화면 종류 판정 — 기록하지 않음)
+        self._pending_checked = False        # 이 세션에서 보류 상태 짧은 확인을 이미 했다(다음 확인은 한 번 보기만)
+        self.login_check = ""                # LOGIN_CHECKS — 웹 수집기가 상태 줄에 싣는다(V18 skipped=login_pending)
+        self.login_account = ""              # "personal" = 개인 계정 화면을 봄(회사 계정 아님)
         self.events: list[str] = []          # 시험·진단용 진행 기록(코드만)
 
     # ── 수명 ───────────────────────────────────────────────────────────
@@ -567,6 +582,8 @@ class EdgeSession:
                 raise PhaseError("edge_not_found")
             self._launch(port)
         self._attach(port)
+        if how == "reuse":
+            self._adopt_front_launch()
         if self.role == "bridge":
             st = self.ensure_ready()
             if st == "ready":
@@ -634,9 +651,122 @@ class EdgeSession:
             elif kind == "ready":
                 h["dead_sessions"] = []
                 h["login_ok_at"] = iso_now(self.clock)
+                h.pop("login_pending", None)                   # 로그인 확인 = 보류 해제(V18)
             elif kind == "origin_explicit":
                 h["origin_mode"] = "explicit"
         self.profile.update(put)
+
+    # ── 로그인 보류(v1.3 §0.8 V18) ─────────────────────────────────────
+    def login_pending(self) -> dict | None:
+        """브리지 프로필 ``health.login_pending``(지난 로그인 대기가 로그인 없이 끝남) — 없으면 None."""
+        v = self.profile.load()["health"].get("login_pending")
+        return v if isinstance(v, dict) else None
+
+    def login_wait_s(self, pending=None) -> float:
+        """이번 로그인 대기 상한(초). 보류 중이면 ``LOGIN_PENDING_CHECK_S``(이 세션에서 이미 짧게 확인했으면 0 — 한 번 보기만),
+        아니면 ``bridge.loginWaitMin``."""
+        if pending is None:
+            pending = self.login_pending()
+        if pending:
+            return 0.0 if self._pending_checked else S.LOGIN_PENDING_CHECK_S
+        return float(self.cfg.login_wait_min) * 60.0
+
+    def _mark_login_pending(self) -> None:
+        account = self.login_account
+
+        def put(d):
+            h = d.setdefault("health", {})
+            cur = h.get("login_pending") if isinstance(h.get("login_pending"), dict) else {}
+            now = iso_now(self.clock)
+            h["login_pending"] = {"since": str(cur.get("since") or now), "checked": now, "role": self.role,
+                                  "account": account or str(cur.get("account") or "")}
+        try:
+            self.profile.update(put)
+        except OSError:
+            pass
+
+    def clear_login_pending(self, why: str = "login_ok") -> bool:
+        """보류 해제(로그인 확인·[분석용 Edge 창 앞으로]). 보류가 없었으면 쓰지 않는다. 반환: 지웠는가."""
+        if not self.login_pending():
+            return False
+
+        def put(d):
+            d.setdefault("health", {}).pop("login_pending", None)
+        try:
+            self.profile.update(put)
+        except OSError:
+            return False
+        self._pending_checked = False
+        self.events.append("login_pending_cleared:" + why)
+        return True
+
+    def login_ok(self) -> None:
+        """웹 수집 역할이 로그인 뒤 화면(사서함·팀즈)을 확인했을 때 — 보류 해제(브리지는 ``record_health("ready")``)."""
+        self.clear_login_pending("login_ok")
+
+    def mark_login_pending(self) -> None:
+        """웹 수집 역할이 세션 대기 밖에서 로그인을 다 기다렸거나(회사 SSO 등 모르는 화면) 개인 계정 사서함에 닿았을 때 —
+        보류를 남긴다(다음 수집·분석은 짧게 확인 — V18)."""
+        was = self.login_pending()
+        self._pending_checked = True
+        self.login_check = "pending" if was else (self.login_check or "wait")
+        self._mark_login_pending()
+
+    def _see_host(self, host: str) -> None:
+        self._last_host = host or ""
+        if self._last_host in S.PERSONAL_LOGIN_HOSTS:
+            self.note_login_account("personal")
+
+    def note_login_account(self, account: str) -> None:
+        """로그인 화면·도착 화면이 회사(조직) 계정이 아님(``personal``) — 안내 한 번(BR-LOGIN-PERSONAL). 보류에 계정 종류를 남긴다."""
+        if account != "personal" or self.login_account == "personal":
+            return
+        self.login_account = "personal"
+        self.events.append("login_personal")
+        self.notices.notify("BR-LOGIN-PERSONAL")
+
+    def _login_wait(self, dl: Deadline, poll, ok=None) -> str:
+        """로그인 대기 한 번(B §4.7 · V18). ``poll(상한 초)`` → 대기 뒤 상태, ``ok(상태)`` = 로그인을 넘어섰나(기본: 로그인·로딩이
+        아님). 보류 중이면 짧게(창을 앞으로 띄우지 않음), 아니면 BR-LOGIN 안내 + ``bridge.loginWaitMin``. 로그인 화면에서 끝났고
+        다 기다렸으면(또는 보류 확인이면) 보류를 남긴다 — 바깥 마감에 잘린 대기는 남기지 않는다(사람이 기회를 다 못 받음)."""
+        ok = ok or (lambda s: s not in ("login_required", "loading"))
+        pending = self.login_pending()
+        want = self.login_wait_s(pending)
+        avail = dl.cap(want)
+        if pending:
+            self.notices.notify("BR-LOGIN-PENDING", sec=int(S.LOGIN_PENDING_CHECK_S))
+            self.events.append("login_pending_check")
+        else:
+            self.activate()
+            self.notices.notify("BR-LOGIN", loginWaitMin=self.cfg.login_wait_min)
+            self.events.append("login_wait")
+        st = poll(avail)
+        if ok(st):
+            self.notices.notify("BR-LOGIN-OK")
+            return st
+        if st in ("login_required", "loading"):
+            full = avail >= want
+            self.login_check = "pending" if pending else ("wait" if full else self.login_check)
+            if pending or full:
+                self._pending_checked = True
+                self._mark_login_pending()
+        return st
+
+    def recover(self, phase: str) -> None:
+        """치명 실패 1차 복구(B §7.7 — ``lm27.bridge.runner.recover`` 가 세션의 이 메서드를 쓴다). 로그인 보류 중이면 다시
+        기다리지 않는다(V18 — 사람이 없는 PC 에서 단계마다 1분씩 늘지 않게). 그 밖은 runner 의 기본 복구와 같다."""
+        try:
+            if phase == "login_required":
+                if self.login_pending():
+                    self.events.append("recover_login_skipped")
+                    return
+                self.navigate()
+                self.poll_identity(S.LOGIN_RECHECK_S, until=lambda st: st not in ("login_required", "loading"))
+            elif phase in ("input_not_found", "dead_session"):
+                self.reload()
+                self.poll_identity(float(self.cfg.ready_wait_sec))
+        except (OSError, C.CdpError, PhaseError):
+            pass
 
     def _resolve_profile_dir(self) -> Path:
         """설정 프로필 폴더가 LM27 전용이 아니면(``foreign_profile``) 손대지 않고 기본 전용 프로필로 돌아간다 — U-4 '회사
@@ -972,6 +1102,8 @@ class EdgeSession:
             r = self.eval(js.identity(self.cfg.dom.input_selectors))
         except C.CdpError:
             r = {}
+        if isinstance(r, dict):
+            self._see_host(host_of(r.get("url") or ""))
         st, strength = classify_identity(r, self.cfg)
         if st == "ready":
             self.info.identity = strength
@@ -1002,14 +1134,10 @@ class EdgeSession:
             if st == "loading":
                 st = self.poll_identity(dl.cap(c.ready_wait_sec), until=lambda s: s != "loading")
             if st == "login_required":
-                self.activate()
-                self.notices.notify("BR-LOGIN", loginWaitMin=c.login_wait_min)
-                self.events.append("login_wait")
-                st = self.poll_identity(dl.cap(c.login_wait_min * 60), every=S.LOGIN_POLL_S,
-                                        until=lambda s: s not in ("login_required", "loading"))
+                st = self._login_wait(dl, lambda up_to: self.poll_identity(
+                    up_to, every=S.LOGIN_POLL_S, until=lambda s: s not in ("login_required", "loading")))
                 if st in ("login_required", "loading"):
                     return "login_required"
-                self.notices.notify("BR-LOGIN-OK")
             if st == "no_input":
                 st = self.poll_identity(dl.cap(c.ready_wait_sec), until=lambda s: s != "no_input")
                 if st == "no_input":
@@ -1069,6 +1197,7 @@ class EdgeSession:
 
         def judge():
             p = self.page_state()
+            self._see_host(p["host"])
             if p["host"] in c.login_hosts:
                 return "login_required"
             if not p["url"] or p["url"].startswith(DEAD_SCHEMES):
@@ -1086,12 +1215,11 @@ class EdgeSession:
         try:
             st = poll(dl.cap(c.ready_wait_sec), S.IDENTITY_POLL_S, lambda s: s != "loading")
             if st == "login_required":
-                self.activate()
-                self.notices.notify("BR-LOGIN", loginWaitMin=c.login_wait_min)
-                st = poll(dl.cap(c.login_wait_min * 60), S.LOGIN_POLL_S, lambda s: s not in ("login_required", "loading"))
+                st = self._login_wait(dl, lambda up_to: poll(up_to, S.LOGIN_POLL_S,
+                                                             lambda s: s not in ("login_required", "loading")),
+                                      ok=lambda s: s == "ready")
                 if st != "ready":
                     return "login_required"
-                self.notices.notify("BR-LOGIN-OK")
             if st == "dead":
                 self.reload()
                 st = poll(dl.cap(S.IDENTITY_SETTLE_S), S.IDENTITY_POLL_S, lambda s: s not in ("dead", "loading"))
@@ -1189,9 +1317,16 @@ class EdgeSession:
     def front(self) -> dict:
         """전용 프로필 Edge 창을 사람 앞으로. 이 프로필의 Edge 가 떠 있으면(소유 확인 — 남의 디버그 Edge 에는 붙지 않는다) 그
         창을 앞으로(최소화면 되살림), 없으면 브리지와 같은 방식(같은 프로필·포트·기동 인자)으로 띄워 ``bridge.url``(Microsoft 365
-        — 로그인 전이면 로그인 화면)을 연다. 띄운 창은 닫지 않는다 — 사람이 로그인하도록 둔다. 자격 증명은 입력하지 않는다(B4).
-        탭 내용은 읽지 않는다(탭 id 만). 반환 ``{state: front|launched|<단계>, port, restored, foreground, notices}``."""
+        — 로그인 전이면 로그인 화면)을 연다. 띄운 창은 닫지 않는다 — 사람이 로그인하도록 둔다(다음 세션이 이어받아 끝날 때
+        ``closeOnExit`` 를 적용한다 — L09). 자격 증명은 입력하지 않는다(B4). 사람이 이 버튼을 눌렀으므로 로그인 보류(V18)를
+        지운다 — 다음 수집·분석은 로그인을 다시 기다린다. 탭 내용은 읽지 않는다(탭 id 만).
+        반환 ``{state: front|launched|<단계>, port, restored, foreground, notices, login_pending_cleared?}``."""
         out: dict = {"state": "", "port": 0, "restored": False, "foreground": False}
+        try:
+            if self.clear_login_pending("front"):          # 사람이 로그인하러 왔다 — 다음 수집·분석은 다시 기다린다(V18)
+                out["login_pending_cleared"] = True
+        except OSError:
+            pass
         try:
             if str(self.environ.get("LM_NO_BROWSER", "")).strip() not in ("", "0"):
                 raise PhaseError("edge_not_found", why="no_browser")
@@ -1214,6 +1349,7 @@ class EdgeSession:
                     if len(pages) == 1 and pages[0].get("id"):
                         self._targets[self.role] = [str(pages[0]["id"])]     # 다음 브리지 실행이 이 탭을 제 탭으로 쓴다
                     self._save_last_session()
+                    self._note_front_launch(port)       # 다음 세션이 이 Edge 를 '우리가 띄운 것'으로 이어받는다(L09)
                 finally:
                     self.lock.release()
                 if self._proc is not None and hasattr(self._proc, "close"):
@@ -1229,6 +1365,42 @@ class EdgeSession:
         out["notices"] = list(getattr(self.notices, "shown", ()))
         self.events.append("front:" + out["state"])
         return out
+
+    def _note_front_launch(self, port: int) -> None:
+        """[분석용 Edge 창 앞으로]가 띄운 Edge(브라우저 ID·포트)를 브리지 프로필 ``front_launch`` 에 적는다. 그 창은 사람이
+        로그인하도록 닫지 않지만, 다음 세션이 '재사용'으로 붙으면 그 세션이 띄운 것처럼 ``closeOnExit`` 를 적용한다(L09 —
+        디버그 포트가 열린 Edge 가 끝없이 남지 않게)."""
+        bid = self.info.browser_id
+        if not bid:
+            return
+
+        def put(d):
+            d["front_launch"] = {"browser_id": bid, "port": int(port), "at": iso_now(self.clock)}
+        try:
+            self.profile.update(put)
+        except OSError:
+            pass
+
+    def _adopt_front_launch(self) -> bool:
+        """재사용으로 붙은 Edge 가 [분석용 Edge 창 앞으로]가 띄운 그것이면(브라우저 ID 일치) 이 세션이 띄운 것으로 이어받는다 —
+        끝날 때 ``closeOnExit`` 가 적용된다(L09). 이어받은 기록은 지운다(한 번만)."""
+        fl = self.profile.load().get("front_launch")
+        if not isinstance(fl, dict) or not fl.get("browser_id"):
+            return False
+        same = fl.get("browser_id") == self.info.browser_id and fl.get("port") == self.info.port
+
+        def put(d):
+            d.pop("front_launch", None)
+        try:
+            self.profile.update(put)
+        except OSError:
+            pass
+        if not same:
+            return False                                    # 그 Edge 는 이미 닫혔다(다른 브라우저) — 기록만 정리
+        self.info.launched_by_us = True
+        self.events.append("adopt_front")
+        self.lock.update(launched_by_us=True)
+        return True
 
     def _front_connect(self, ws_url: str, port: int):
         """창 앞으로 전용 연결 — Origin 없이, 403 이면 127.0.0.1:<port> Origin 으로 한 번 더(B §4.4 와 같은 규칙)."""

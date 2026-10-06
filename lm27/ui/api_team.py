@@ -11,8 +11,13 @@ r"""팀 화면 API(R §5.5 · TAB §2.5 · §2.7~§2.9 · §3.2~§3.4 · §5.1 �
     GET  /api/teamserver/local · POST /api/teamserver/start · /stop · /diagnose
 
 - 대기열 동작은 TAB 명세 CLI 와 같은 함수(``lm27.team.queue``·``build``·``offline``·``client``)를 부른다.
-- [보내기] = 승인(``queue.approve`` — 막힌 묶음은 409) + 전송 작업 ``team send <item>``(lane net — 계약 O-14 ① 결정,
-  cli 가 ``queue.send_item(item, cfg)`` 를 부른다, W2 통합).
+- [보내기] = 승인(``queue.approve`` — 막힌 묶음·가림을 바꾼 뒤 다시 만들지 않은 묶음은 409) + 전송 작업 ``team send <item>``
+  (lane net — 계약 O-14 ① 결정, cli 가 ``queue.send_item(item, cfg)`` 를 부른다, W2 통합).
+- 첫 전송은 미리보기에서(TAB §2.8 · C17): 승인 전 묶음의 [보내기]·[승인만]은 미리보기가 그 바이트를 보여 준 기록
+  (``queue.mark_previewed`` — 미리보기 GET 이 남긴다)이 있어야 한다. 없으면 409 ``preview_first``.
+- 가림(TAB §2.5 · C16): ``POST /api/team/mask {unit_id, mode, item?}`` 는 가림을 저장하고(``build.set_mask`` — 덜 가려진 대기
+  묶음의 승인을 푼다) 그 기간 묶음을 다시 만드는 작업 ``team build`` 를 띄운다(``job_id`` — 새 sha 가 옛 것을 대체).
+  작업을 띄우지 못하면 ``job_id`` 없이 그 이유를 돌려준다(화면은 '다시 만들었다'고 말하지 않는다).
 - 이 PC 팀 서버는 분리 프로세스(``team-server``)로 띄운다 — 화면이 꺼져도 서버는 산다. 끄기는 '내 서버'(pid·instance 대조)일 때만
   그 서버의 ``/api/shutdown``(루프백)으로 한다. 남의 프로세스는 끄지 않는다(TAB §3.4).
 """
@@ -34,6 +39,7 @@ __all__ = ["ROUTES", "registry_view", "validate_address"]
 _ITEM_RX = re.compile(r"^[A-Za-z0-9_\-]{1,120}$")
 _DATE_RX = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _UNIT_RX = re.compile(r"^u_[0-9a-f]{10}$")
+_PERIOD_KEY_RX = re.compile(r"^(\d{4}-\d{2}-\d{2})_(\d{4}-\d{2}-\d{2})$")
 _REG_TTL_S = 30.0
 ALT_MAX = 5
 TS_START_WAIT_S = 3.0
@@ -271,6 +277,11 @@ def get_preview(app, req):
     p = queue.preview(it)
     if p.get("rc") == 4:
         raise ApiError(404, "no_item", "대기열에 그 항목이 없습니다")
+    if p.get("sha_ok") and p.get("sha256"):              # 사람이 이 바이트를 봤다(첫 [보내기]의 조건 — C17)
+        try:
+            queue.mark_previewed(it, p["sha256"])
+        except Exception:                                # 잠금 대기 초과 등 — 미리보기는 보이고 [보내기]가 다시 묻는다
+            pass
     s = p.get("summary") or {}
     guard = p.get("guard") or []
     return {"item": req.groups[0], "state": p.get("state"), "state_ko": STATE_KO.get(p.get("state"), p.get("state")),
@@ -283,17 +294,32 @@ def get_preview(app, req):
             "forbidden": {"n": len(guard), "paths": [str(x)[:60] for x in guard]}, "sha12": p.get("sha12"),
             "bytes": p.get("bytes"), "sha_ok": p.get("sha_ok"), "blockers": p.get("blockers") or [],
             "warnings": p.get("warnings") or [], "can_send": bool(p.get("can_send")), "mask_note": p.get("mask_note"),
+            "mask_gaps": p.get("mask_gaps") or [], "stale_mask": bool(p.get("stale_mask")),
             "approved": p.get("approved"), "message": p.get("message"), "json_text": p.get("json") or ""}
+
+
+def _require_preview(it) -> None:
+    """승인 전 묶음은 미리보기가 그 바이트를 보여 준 뒤에만 승인·전송한다(TAB §2.8 '미리보기에서 [보내기] = approved' — C17).
+    명시 명령 CLI ``team send <item>`` 은 이 조건 밖이다(계약 O-14 ①)."""
+    from lm27.team import queue
+    if not queue.previewed(it):
+        raise ApiError(409, "preview_first", "처음 보내는 묶음은 미리보기에서 내용을 확인한 뒤 [보내기]를 누르세요")
 
 
 def post_approve(app, req):
     from lm27.team import queue
-    return _res(queue.approve(_item(app, req.groups[0])))
+    it = _item(app, req.groups[0])
+    _require_preview(it)
+    r = queue.approve(it)
+    if getattr(r, "rc", 0) == 2:
+        raise ApiError(409, "blocked", getattr(r, "message", "") or "막힌 묶음은 승인할 수 없습니다")
+    return _res(r)
 
 
 def post_send(app, req):
     from lm27.team import queue
     it = _item(app, req.groups[0])
+    _require_preview(it)
     r = queue.approve(it)
     if getattr(r, "rc", 0) == 2:
         raise ApiError(409, "blocked", getattr(r, "message", "") or "막힌 묶음은 보낼 수 없습니다")
@@ -323,15 +349,46 @@ def post_export(app, req):
             "text_ko": "파일로 내보냈습니다 — 팀 서버 PC 에서 반입하면 들어갑니다"}
 
 
+def rebuild_after_mask(app, r: dict, item=None) -> dict:
+    """가림·니즈 빼기를 바꾼 뒤(``set_mask``·``drop_need`` 결과 ``r``) 그 기간 묶음을 다시 만드는 작업을 띄운다(TAB §2.5 —
+    다시 빌드 → 새 sha → 같은 기간 이전 미전송 묶음은 대체됨). 기간 = 미리보기 중이던 ``item`` 의 기간, 없으면 승인을 푼
+    대기 묶음의 첫 기간. 반환 {job_id?, text_ko} — 작업을 띄우지 못하면 job_id 없이 그 이유(C16: 화면은 '다시 만들었다'고
+    거짓으로 알리지 않는다)."""
+    stale = list(r.get("stale") or ())
+    pk = None
+    if isinstance(item, str) and _ITEM_RX.match(item):
+        try:
+            pk = _item(app, item).period_key
+        except ApiError:
+            pk = None
+    if not pk:
+        pk = next(iter(r.get("periods") or ()), None)
+    m = _PERIOD_KEY_RX.match(pk or "")
+    held = f" 가리기 전에 만든 대기 묶음 {len(stale)}개는 보내지 않습니다." if stale else ""
+    if not m:
+        return {"text_ko": (r.get("message") or "가림을 바꿨습니다") + " — 바뀐 가림은 [팀 묶음 만들기]로 다시 만들 때 들어갑니다"}
+    try:
+        job = app.start_job("team_build", ["team", "build", "--from", m.group(1), "--to", m.group(2)])
+    except ApiError as e:
+        return {"text_ko": "가림을 저장했습니다." + held + " 묶음은 아직 다시 만들지 못했습니다: " + e.error}
+    return {"job_id": job.get("job_id"), "text_ko": "가림을 바꿔 " + m.group(1) + " ~ " + m.group(2) +
+            " 묶음을 다시 만듭니다 — 끝나면 미리보기를 다시 엽니다(이전 묶음은 대체됩니다)"}
+
+
 def post_mask(app, req):
     from lm27.team.build import set_mask
-    uid, mode = req.body.get("unit_id"), req.body.get("mode")
+    uid, mode, item = req.body.get("unit_id"), req.body.get("mode"), req.body.get("item")
     if not isinstance(uid, str) or not _UNIT_RX.match(uid) or mode not in ("title", "detail", "none"):
         raise ApiError(400, "bad_mask", "단위업무와 가림 방식을 고르세요")
+    if item is not None and (not isinstance(item, str) or not _ITEM_RX.match(item)):
+        raise ApiError(400, "bad_item", "대기열 항목 이름이 아닙니다")
     r = set_mask(app.paths, uid, mode)
     if r.get("rc") == 1:
         raise ApiError(400, "bad_mask", r.get("message") or "형식이 아닙니다")
-    return {"ok": True, "changed": r.get("rc") == 0, "text_ko": r.get("message")}
+    out = {"ok": True, "changed": r.get("rc") == 0, "stale_n": len(r.get("stale") or ()), "text_ko": r.get("message")}
+    if r.get("rc") == 0:
+        out.update(rebuild_after_mask(app, r, item))
+    return out
 
 
 def post_registry_fetch(app, req):

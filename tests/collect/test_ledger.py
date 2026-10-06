@@ -124,6 +124,11 @@ class LedgerCase(unittest.TestCase):
         self.assertEqual(st[("2026-10-02", "mail_in")], "blocked")
         c4 = [c for c in cells if c["src"] == "mail.copilot" and c["date"] == "2026-10-04" and c["kind_axis"] == "mail_in"]
         self.assertEqual((c4[0]["n_date"], c4[0]["n_minute"]), (1, 0))                # date-only 는 시간 근거 아님
+        # 통합(W2 C00 견고화 handoff): 출처·PC 가 없는 셀도 합성한다(출처 없음 = 코파일럿 아님) — KeyError 없음
+        bare = [{"date": "2026-10-02", "kind_axis": "mail_in", "status": "zero_ok"},
+                {"date": "2026-10-02", "kind_axis": "mail_in", "status": "blocked", "src": "mail.com"}]
+        self.assertEqual(ledger.composite(bare)[("2026-10-02", "mail_in")]["status"], "zero_ok")
+        self.assertEqual(ledger.composite(bare[:1])[("2026-10-02", "mail_in")]["srcs"], {"": "zero_ok"})
 
     def test_comgap(self):
         rows = {"mail": [row("mail", "mail.index", PC1, "2026-10-01", i) for i in range(4)]

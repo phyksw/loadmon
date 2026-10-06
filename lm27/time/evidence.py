@@ -343,7 +343,9 @@ def normalize(records: Iterable[Mapping], profile, cfg, as_of, tags=None) -> tup
 
     profile(Mapping 또는 속성 객체, 모두 선택): `d0`·`d1`(분석 기간, 없으면 증거·as_of 로) · `leaves`
     ({날짜: full|am|pm} — `lm27.normalize.absence.leaves`) · `coverage`({(날짜, kind_axis): status} 또는
-    `[{date, kind_axis, status}]`) · `shared_docs`(공용 문서군 키).
+    `[{date, kind_axis, status}]` — 분석 파이프라인은 원장 합성 `lm27.collect.ledger.day_axis_status` 결과를 넘긴다. 행에
+    `src` 가 붙어 오면 같은 (날짜, 축)의 최선 값을 고르되 `*.copilot` 의 zero_ok 는 not_attempted 로 본다 — X-131) ·
+    `shared_docs`(공용 문서군 키).
     tags: HierTags 또는 None.
     """
     n = _Norm(profile, cfg, as_of, tags)
@@ -979,6 +981,9 @@ class _Norm:
                     self.audit["커버리지_형식오류"] += 1
         else:
             for row in cov:
-                put(_get(row, "date"), _get(row, "kind_axis"), _get(row, "status"))
+                st = _get(row, "status")
+                if st == "zero_ok" and str(_get(row, "src", "") or "").endswith(".copilot"):
+                    st = "not_attempted"     # 출처가 붙은 원장 셀: 코파일럿 0건은 미관측을 덮지 못한다(X-131 — C00)
+                put(_get(row, "date"), _get(row, "kind_axis"), st)
         return dict(sorted(out.items()))
 

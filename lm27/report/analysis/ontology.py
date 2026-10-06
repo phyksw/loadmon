@@ -30,6 +30,7 @@ half-up(결정성). seq = 1(선행 조건 성립 — 한쪽 끝 날짜 ≤ 다�
 """
 from __future__ import annotations
 
+import math
 from collections import Counter, defaultdict
 from collections.abc import Mapping
 from datetime import date
@@ -140,42 +141,120 @@ def _rec_kind(u: Mapping, v: Mapping, rel: float, seq: float, c: dict) -> str:
     return "related"
 
 
+def _neighbors(sets: Mapping[str, UnitSets], ids: list[str], same_role: bool):
+    """연관 추천 후보: (a, {b > a — ids 순}) — 문서·동료·앱 중 하나라도 같이 가진 단위업무, 그리고 ``same_role`` 이면 같은
+    역할 단위업무. 공유가 하나도 없는 쌍은 자카드 항이 모두 0 이라 연관도 ≤ seq 가중 — seq 가중이 문턱보다 작으면 같은
+    역할이어도 추천이 될 수 없다. 그래서 예전의 모든 쌍 훑기(n² — 9개월 단위업무 8천 개면 3천만 쌍, W2 검토 C07)와 **같은
+    후보**를 역색인으로 바로 얻는다. 쌍마다 한 번만 낸다(같은 쌍이 여러 열쇠를 공유해도)."""
+    inv: dict[tuple, list[str]] = defaultdict(list)
+    pos: dict[str, list[tuple[tuple, int]]] = {}
+    for a in ids:
+        s = sets[a]
+        keys = [("d", f) for f in s["docs"]] + [("p", p) for p in s["peers"]] + [("a", x) for x in s["apps"]]
+        if same_role:
+            keys.append(("r", s["role"]))
+        mine = []
+        for k in keys:
+            lst = inv[k]
+            mine.append((k, len(lst)))
+            lst.append(a)
+        pos[a] = mine
+    for a in ids:
+        nb: set[str] = set()
+        for k, j in pos[a]:
+            lst = inv[k]
+            if j + 1 < len(lst):
+                nb.update(lst[j + 1:])
+        if nb:
+            yield a, nb
+
+
+_TOP_SLACK = 32          # 단위업무별 후보 목록이 이만큼 쌓이면 상위 REC_MAX 만 남긴다(메모리 — 전체 연관 쌍을 들고 있지 않는다)
+
+
 def recommendations(sets: Mapping[str, UnitSets], cfg, *, bc=None) -> dict[str, list[dict]]:
-    """단위업무마다 연관 업무 추천 최대 5개(R §4.6.3). seq 를 1 로 둔 상한이 문턱에 못 미치는 쌍은 seq(근무일 계산)를
-    건너뛴다 — 결과는 같고 계산만 준다(큰 표본 성능)."""
+    """단위업무마다 연관 업무 추천 최대 5개(R §4.6.3). 연관도 = Σ 가중·자카드(문서·동료·앱) + 가중·seq — 정확한 정수
+    분수로 계산해 소수 4자리 half-up(`relatedness` 와 같은 값 · 같은 문턱 비교). seq 를 1 로 둔 상한이 문턱에 못 미치는
+    쌍은 seq(근무일 계산)를 건너뛴다.
+
+    큰 표본 성능(W2 검토 C07 — 3개월 단위업무 2,736개에서 보고서 빌드의 80%): 후보 쌍은 역색인(`_neighbors` — 예전 모든
+    쌍 훑기와 같은 후보)으로, 쌍 계산은 공통 분모 정수 연산(분수 객체 없이)과 근무일 수 메모로, 결과는 단위업무별 상위
+    목록만 들고 간다(전체 연관 쌍 사전을 만들지 않는다). 결과는 예전 구현과 같다(시험이 예전 구현과 대조)."""
     c = onto_cfg(cfg)
     w = c["w"]
     ids = sorted(sets)
-    rel: dict[tuple[str, str], tuple[float, float]] = {}
-    for i, a in enumerate(ids):
-        u = sets[a]
-        for b in ids[i + 1:]:
-            v = sets[b]
-            if not (u["docs"] & v["docs"] or u["peers"] & v["peers"] or u["apps"] & v["apps"]
-                    or u["role"] == v["role"]):
+    t = c["min_rel"]
+    den = math.lcm(*(x.denominator for x in (w["doc"], w["peer"], w["app"], w["seq"], t)))
+    wd_, wp_, wa_ = (int(x * den) for x in (w["doc"], w["peer"], w["app"]))   # 가중 × 공통 분모(정수)
+    ws_, tn = int(w["seq"] * den), int(t * den)
+    seq_half = {k: F.half_up(v, 1) for k, v in ((2, F.dec(1)), (1, F.dec("0.5")), (0, F.dec(0)))}   # seq×2 → 표시값
+    hwd = c["handoff_wd"]
+    wd_memo: dict[tuple, int] = {}
+    P = {}
+    for a in ids:
+        s = sets[a]
+        P[a] = (s["docs"], s["peers"], s["apps"], len(s["docs"]), len(s["peers"]), len(s["apps"]), s.get("role"),
+                s.get("start_d"), s.get("end_d"), s.get("lead_end_d", s.get("end_d")),
+                s.get("start") if s.get("start") is not None else -1)
+    top: dict[str, list] = defaultdict(list)
+    thr: dict[str, int] = {}                          # 단위업무 → 상위 목록 5위의 연관도 × 10⁴ 하한(목록을 자른 뒤에만)
+    for a, nb in _neighbors(sets, ids, w["seq"] >= t):
+        da, pa, aa, nda, npa, naa, ra, sa, ea, la, sta = P[a]
+        for b in nb:
+            db, pb, ab, ndb, npb, nab, rb, sb, eb, lb, stb = P[b]
+            # Σ (가중×공통 분모)·|∩|/|∪| = n/d (`F.wsum` 과 같은 값 — 교집합 0·가중 0 인 항은 0)
+            n, d = 0, 1
+            idoc = len(da & db)
+            ipeer = len(pa & pb)
+            if idoc and wd_:
+                n, d = wd_ * idoc, nda + ndb - idoc
+            if ipeer and wp_:
+                u_ = npa + npb - ipeer
+                n, d = n * u_ + wp_ * ipeer * d, d * u_
+            if wa_:
+                iapp = len(aa & ab)
+                if iapp:
+                    u_ = naa + nab - iapp
+                    n, d = n * u_ + wa_ * iapp * d, d * u_
+            if n + ws_ * d < tn * d:
+                continue                              # seq = 1 이어도 문턱 미만 — 추천이 될 수 없다
+            # seq = 1 상한의 소수 4자리 정수(반올림은 단조) — 양쪽 다 지금 5위보다 작으면 어느 쪽 상위 목록에도 못 든다
+            q_ub = (2 * (n + ws_ * d) * 10000 + d * den) // (2 * d * den)
+            if q_ub < thr.get(a, -1) and q_ub < thr.get(b, -1):
                 continue
-            terms = _jac_terms(u, v, w)
-            if not F.nd_ge(*F.wsum(terms + [(w["seq"], 1, 1)]), c["min_rel"]):
-                continue                                    # seq = 1 이어도 문턱 미만 — 추천이 될 수 없다
-            seq = _seq(u, v, c["handoff_wd"], bc)
-            n, d = F.wsum(terms + [(w["seq"], seq.numerator, seq.denominator)])
-            if n > 0 and F.nd_ge(n, d, c["min_rel"]):
-                rel[(a, b)] = rel[(b, a)] = (F.nd_half_up(n, d, 4), F.half_up(seq, 1))
+            s2 = 0                                    # seq × 2 (`_seq` 와 같은 판정: 인계 1 · 같은 역할 겹침 0.5 · 0)
+            if idoc or ipeer:
+                for e_, s_ in ((ea, sb), (eb, sa)):
+                    if e_ is not None and s_ is not None and e_ <= s_:
+                        k = (e_, s_)
+                        v = wd_memo.get(k)
+                        if v is None:
+                            v = wd_memo[k] = _wd(bc, e_, s_)
+                        if v <= hwd:
+                            s2 = 2
+                            break
+            if not s2 and ra == rb and None not in (sa, la, sb, lb) and not (la < sb or lb < sa):
+                s2 = 1
+            num, dd = 2 * n + ws_ * s2 * d, 2 * d * den   # 연관도 = num/dd (정확)
+            if num > 0 and num * den >= tn * dd:
+                r = F.nd_half_up(num, dd, 4)
+                q = (2 * num * 10000 + dd) // (2 * dd)    # r 의 소수 4자리 정수(= r × 10⁴)
+                sv = seq_half[s2]
+                for x, item in ((a, ((-r, stb, b), r, b, sv, q)), (b, ((-r, sta, a), r, a, sv, q))):
+                    lst = top[x]
+                    lst.append(item)
+                    if len(lst) > _TOP_SLACK:
+                        lst.sort()
+                        del lst[REC_MAX:]
+                        thr[x] = lst[-1][4]           # 지금 5위의 정수 연관도(이 뒤로 5위는 같거나 커진다 — 안전한 하한)
     out: dict[str, list[dict]] = {}
     for a in ids:
-        cand = []
-        for b in ids:
-            if b == a or (a, b) not in rel:
-                continue
-            r, s = rel[(a, b)]
-            v = sets[b]
-            cand.append((r, v["start"] if v["start"] is not None else -1, b, s))
-        cand.sort(key=lambda x: (-x[0], x[1], x[2]))
+        cand = sorted(top.get(a, ()))
         if cand:
             u = sets[a]
             out[a] = [{"unit_id": b, "rel": r, "seq": s, "kind": _rec_kind(u, sets[b], r, s, c),
                        "shared": {"docs": len(u["docs"] & sets[b]["docs"]), "peers": len(u["peers"] & sets[b]["peers"]),
-                                  "apps": len(u["apps"] & sets[b]["apps"])}} for r, _st, b, s in cand[:REC_MAX]]
+                                  "apps": len(u["apps"] & sets[b]["apps"])}} for _k, r, b, s, _q in cand[:REC_MAX]]
     return out
 
 

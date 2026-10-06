@@ -547,7 +547,11 @@
     var p = [];
     if (info.from && info.to) { p.push("기간 " + info.from + " ~ " + info.to); }
     if (info.as_of) { p.push("기준 " + mdhm(info.as_of)); }
-    if (info.built_at) { p.push("분석 " + mdhm(info.built_at) + "(" + (info.chosen === "explicit" ? "직접 선택" : "자동 선택") + ")"); }
+    if (info.built_at) {
+      // 자동/직접 선택은 현재 결과일 때만 응답·HTML 섬에 온다(W2 C01) — 없으면 지어내지 않는다
+      var ch = info.chosen === "explicit" ? "직접 선택" : (info.chosen === "auto" ? "자동 선택" : "");
+      p.push("분석 " + mdhm(info.built_at) + (ch ? "(" + ch + ")" : ""));
+    }
     var src = periodSourceText(info.period_source, info.period_months);
     if (src) { p.push("기간 출처: " + src); }
     var ls = labelTotals(info.label_sources);
@@ -1624,9 +1628,11 @@
     arr(A.catalog).forEach(function (a) { names[a.id] = a.name; });
     arr(A.matches).forEach(function (m) { if (m.name && !names[m.agent_id]) { names[m.agent_id] = m.name; } });
     var matches = arr(A.matches);
+    var note = str(A.catalog_note);   // 로컬 카탈로그(config\agentic_tasks.json)를 못 썼거나 고쳐 읽은 까닭(V13 — 있을 때만)
     if (!num(A.catalog_n) && !matches.length) {
-      out.push(u.alertLine("info", "에이전트 목록이 없습니다 — 팀 레지스트리를 받으면 채워집니다"));
+      out.push(u.alertLine(note ? "warn" : "info", "에이전트 목록이 없습니다 — " + (note || "팀 레지스트리를 받으면 채워집니다")));
     } else {
+      if (note) { out.push(u.alertLine("warn", note)); }
       var items = arr(A.items).slice().sort(function (a, b) { return (num(b.occ_week) - num(a.occ_week)) || cmp(a.type, b.type); });
       var agentIds = uniq(arr(A.catalog).map(function (a) { return a.id; }).concat(matches.map(function (m) { return m.agent_id; })));
       var showAll = st.ui.agentsAll === "1";

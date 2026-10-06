@@ -8,7 +8,9 @@ D-6 · D-7 · D-14). ``lm27 collect`` · ``LoadMonitor27-수집.bat``(``collect 
   1. ``lock("collect-init")``: ``bundle.json``·키링(없으면 만든다 — P §9.5) · ``ensure_pc_dir``(host_class 포함) ·
      미처리 소급 가림(``redact_rewrite_own``).
   2. ``ensure_agent``(번들 잠금 없이 — 설치·판 올림·등록·생존 자동 복구, 사람에게 묻지 않는다).
-  3. ``probe`` 단계: 탐침 → ``lock("fg-write")`` 안에서 pc.json 능력 기록(``record_probes``).
+  3. ``probe`` 단계: 탐침 → ``lock("fg-write")`` 안에서 pc.json 능력 기록(``record_probes``). 웹 경로를 도는 PC 는 P-OWA·
+     P-WEB(오늘 로그인 ok 기록이 없으면), 클라우드PC 는 P-CP 도(계약 §6.7). P-OWA 가 로그인 보류(V18)를 짧게 확인하고
+     R-LOGIN 이면 이 [수집]의 웹 경로는 Edge 를 다시 띄우지 않고 ``R-LOGIN · skipped=login_pending``.
   4. 계획(``lm27.collect.plan.stage_plan``) — 역할(백필 PC·클라우드PC)·탐침·'불가(확정)'.
   5. ``pc_bundle``: 상주 샘플러 생존 · 수확(``request_harvest_now`` → ``harvest_done.json`` — 에이전트가 없거나 시간 안에 끝나지
      않으면 ``.harvest.lock`` 을 쥐고 전경이 같은 수집기를 대신 돌린다) · git · 라이선스(옵트인).
@@ -24,7 +26,8 @@ D-6 · D-7 · D-14). ``lm27 collect`` · ``LoadMonitor27-수집.bat``(``collect 
 
 전경 연결자(계약 §7.3 · X-300): PS 수집기와 정제 파이프(``lm27_pipe.py --kind --src --pc --mode append`` — 로컬 원장에 쓴다)를
 둘 다 띄우고 잇는다. 수집기 stdin 에 ``{"_in": {"cursor", "cfg", "self_names"}}`` 한 줄을 쓰고 닫는다(커서·설정·이름을 명령줄에
-싣지 않는다). 수집기 stdout 은 ``lm27.collect.watch.watch`` 로 줄마다 파이프 stdin 에 넘기고(레코드 줄 = 진전 — 정체·무진전이면
+싣지 않는다). 날짜 창(-Since/-Until · --from/--to)은 늘 넘기고(V6 — 기본 ``ledger.default_since`` ~ 오늘), 상태 줄의 ``range``
+(수집기가 맡은 창)로 원장 관측을 자른다 — 안 읽은 날을 '읽었고 0건'으로 적지 않는다(T-09). 수집기 stdout 은 ``lm27.collect.watch.watch`` 로 줄마다 파이프 stdin 에 넘기고(레코드 줄 = 진전 — 정체·무진전이면
 kill_tree, rc 3 + R-TRANSPORT), 수집기 EOF 뒤 파이프가 ``privacy.pipe.waitSec`` 안에 끝나지 않으면 kill_tree 하고 코드 99
 (→ rc 3 + R-TRANSPORT, 계약 §8.2). 상태는 stderr 마지막 ``{"_status": {...}}``(C1 — 모르는 필드 무시, CLM 이면 파이프 요약의
 ``collector_status``). PY 수집기는 자식 프로세스(in-process 정제)로 띄우고 stderr ``_status`` 를 읽는다. ``--mode recollect`` 는
@@ -75,6 +78,9 @@ HINT_AGENT_ALIVE = "상주 에이전트가 팀즈 창을 주기적으로 읽습�
 HINT_BUSY = "번들이 다른 작업에 잠겨 있어 이번에는 건너뜁니다 — 다음 수집이 이어서 합니다"
 HINT_NOT_READY = "아직 설치되지 않은 수집 경로입니다"
 NOTICE_LOGIN = "웹 로그인이 필요합니다 — 전용 창에서 한 번 로그인하면 다음 수집이 이어서 읽습니다"
+NOTICE_LOGIN_PENDING = ("로그인 전이라 메일·팀즈 웹 수집을 건너뛰었습니다(로그인 상태만 잠깐 확인) — 회사 계정으로 로그인하려면 "
+                        "[분석용 Edge 창 앞으로]를 누른 뒤 그 창에서 로그인하세요. 분석은 PC 자료로 진행합니다")
+CLOSE_WAIT_S = 2.0            # 자식 스트림 닫기 대기 — 손주가 파이프를 쥐어 리더 스레드가 막혀 있으면 기다리지 않는다(L13)
 
 
 # ───────────────────────────── 실행 환경(주입점) ─────────────────────────────
@@ -115,8 +121,10 @@ class Deps:
         return request_harvest_now(ident, wait_s, paths=self.paths)
 
     # 탐침·내보내기·업로드
-    def probe(self, ident):
-        return probe_mod.probe_capabilities(self.paths, ident, self.cfg)
+    def probe(self, ident, *, web=False, copilot=False):
+        """탐침 묶음 — ``web`` = P-OWA·P-WEB(웹 경로 PC), ``copilot`` = P-CP(클라우드PC) 도 돌린다(계약 §6.7 · §2.17)."""
+        return probe_mod.probe_capabilities(self.paths, ident, self.cfg, web=web, copilot=copilot,
+                                            python=self.python_exe(), env=self.child_env())
 
     def export(self, pcdir, ident, **kw):
         from lm27.bundle.export import export_agent_streams
@@ -271,6 +279,30 @@ def _apply_status(r: SrcRun, st: dict | None) -> None:
         v = st.get(k, cnt.get(k))
         if isinstance(v, (int, float)) and not isinstance(v, bool):
             r.extra[k] = v
+    rg = status_range(st)
+    if rg is not None:                                         # 수집기가 실제로 맡은 창만 '읽었음'(V6 · T-09)
+        r.ranges = clip_ranges(r.ranges, *rg)
+
+
+def status_range(st) -> tuple | None:
+    """상태 줄의 ``range``(``[from, to]`` 로컬 날짜, 양끝 포함 — 수집기가 이번에 맡은 창: 커서로 앞쪽을 이미 읽었으면 그것까지
+    포함해 '이 창은 빠짐없이 냈다'). 없거나 형식이 다르면 None."""
+    rg = st.get("range") if isinstance(st, dict) else None
+    if isinstance(rg, (list, tuple)) and len(rg) == 2 and all(isinstance(x, str) and _date10(x) == x for x in rg) \
+            and rg[0] <= rg[1]:
+        return rg[0], rg[1]
+    return None
+
+
+def clip_ranges(ranges, a: str, b: str) -> list:
+    """날짜 구간들 ``[[d0, d1], …]`` 을 ``[a, b]`` 안으로 자른다(빈 구간은 버림)."""
+    out = []
+    for x in ranges or ():
+        if isinstance(x, (list, tuple)) and len(x) == 2:
+            lo, hi = max(x[0], a), min(x[1], b)
+            if lo <= hi:
+                out.append([lo, hi])
+    return out
 
 
 # ───────────────────────────── 실행 문맥 ─────────────────────────────
@@ -303,6 +335,10 @@ class _Ctx:
     self_names_cache: list | None = None
     loc_cache: dict | None = None
     web_login_pending: bool = False          # 이 실행에서 웹 경로가 로그인 대기를 다 쓰고 R-LOGIN(v1.3 §0.8 V10)
+    login_short: bool = False                # 로그인 보류(V18) — 짧게 확인만 하고 넘어감(안내 문구가 다르다)
+    login_personal: bool = False             # 로그인 화면·도착 화면이 개인(Microsoft) 계정(V18 안내)
+    no_agent: bool = False                   # collect --no-agent(v1.3 §0.8 V17)
+    notices_shown: set = field(default_factory=set)   # 이 [수집]에서 낸 안내 문구(같은 문구 한 번)
 
     @property
     def recollect(self) -> bool:
@@ -420,7 +456,11 @@ def _policy(ctx: _Ctx, spec, *, lines: bool) -> WatchPolicy:
 
 
 def _since_args(ctx: _Ctx, spec) -> list:
-    if not spec.since_args or not (ctx.since or ctx.until):
+    """관측 창(``_Ctx.window`` — since·until 이 없으면 ``ledger.default_since`` ~ 오늘)을 수집기에 **늘** 넘긴다(v1.3 §0.8 V6).
+    원장이 '이 창을 읽었다'고 적는 창과 수집기가 읽는 창이 같아야 한다 — 예전에는 기본 실행에서 아무것도 넘기지 않아
+    수집기는 자기 기본값(90·120일)만 읽고 원장은 1월 1일부터 읽었다고 적어 안 읽은 날이 zero_ok 가 됐다(T-09 위반).
+    증분은 수집기 커서(COM cov_months · 색인·PC read_from)가 맡는다."""
+    if not spec.since_args:
         return []
     d0, d1 = ctx.window()
     return [spec.since_args[0], d0, spec.since_args[1], d1]
@@ -537,11 +577,21 @@ def _wait_pipe(ctx: _Ctx, pipe) -> tuple:
     return code, b"".join(x for x in out if isinstance(x, (bytes, bytearray)))
 
 
-def _close(ch) -> None:
+def _close_now(ch) -> None:
     try:
         ch.close()
     except (OSError, ValueError, AttributeError):
         pass
+
+
+def _close(ch) -> None:
+    """자식 스트림을 닫는다 — 기다리지 않는다(L13). 감시(``watch``)는 자식이 끝났는데 손주가 stdout·stderr 를 쥐고 있으면
+    ``EXIT_DRAIN_S`` 뒤 돌아오는데, 그때 읽기 스레드는 그 스트림의 잠금을 쥔 채 read 에 막혀 있어 ``close()`` 가 손주가 끝날
+    때까지 멈춘다(감시 없이 [수집]이 멈춤). 닫기는 데몬 스레드에서 하고 ``CLOSE_WAIT_S`` 만 기다린다 — 못 닫은 손잡이는 그
+    손주가 끝나거나 이 프로세스가 끝날 때 풀린다."""
+    t = threading.Thread(target=_close_now, args=(ch,), name="lm27-collect-close", daemon=True)
+    t.start()
+    t.join(CLOSE_WAIT_S)
 
 
 def _close_kill(d: Deps, ch) -> None:
@@ -588,7 +638,20 @@ def run_py(ctx: _Ctx, spec, *, extra_args=(), blanks=None) -> SrcRun:
     r.stored = _int(st.get("items_ok", st.get("n", result_ev.get("items_ok", 0))))
     r.rows_in = _int(st.get("items_total", result_ev.get("items_total", 0)))
     r.elapsed_s = round(d.monotonic() - t0, 1)
+    if spec.src in WEB_SRCS:
+        _login_facts(ctx, r, st)
     return r
+
+
+def _login_facts(ctx: _Ctx, r: SrcRun, st: dict) -> None:
+    """웹 수집기 상태 줄의 로그인 사실(v1.3 §0.8 V18): ``login_pending`` = 지난 대기가 로그인 없이 끝나 이번에는 짧게 확인만
+    했다 → ``skipped = login_pending``(사람이 없는 PC 에서 [수집]마다 10분을 쓰지 않는다), ``login_account = personal`` =
+    로그인 화면이 개인(Microsoft) 계정 → 안내 문구."""
+    if "R-LOGIN" in (r.reasons or ()) and st.get("login_pending") is True:
+        r.skipped = "login_pending"
+        ctx.login_short = True
+    if st.get("login_account") == "personal":
+        ctx.login_personal = True
 
 
 def _from_harvest(src: str, ctx: _Ctx, d: dict) -> SrcRun:
@@ -604,7 +667,13 @@ def _from_harvest(src: str, ctx: _Ctx, d: dict) -> SrcRun:
             r.rc, r.reasons = rcmap.RC_KILLED, ["R-TRANSPORT"]
         return r
     r.reasons = rcmap.norm_reasons(d.get("reasons"))
-    _apply_status(r, d.get("status") if isinstance(d.get("status"), dict) else None)
+    status = d.get("status") if isinstance(d.get("status"), dict) else None
+    _apply_status(r, status)
+    if status_range(status) is None:
+        # 상태 줄에 맡은 창(range)이 없는 수확(이전 판 수집기) — 에이전트는 since 없이 collect.lookbackDays 기본 창만 읽는다.
+        # 원장이 그 앞(1월 1일~)까지 '읽었다'고 적지 않게 그 창으로 자른다(V6 · T-09).
+        lb = int(ctx.cfg["collect.lookbackDays"])
+        r.ranges = clip_ranges(r.ranges, (ctx.today - timedelta(days=lb)).isoformat(), ctx.today.isoformat())
     rc = d.get("rc") if isinstance(d.get("rc"), int) and not isinstance(d.get("rc"), bool) else None
     if d.get("timed_out") is True or rc is None:
         rc, r.stop_kind = rcmap.RC_KILLED, "stall"
@@ -753,8 +822,38 @@ def _budget_stage(ctx: _Ctx, name: str, srcs) -> None:
 
 
 # ───────────────────────────── 단계 몸통 ─────────────────────────────
+def _probe_wants(ctx: _Ctx) -> tuple:
+    """(웹 탐침 P-OWA·P-WEB, 코파일럿 탐침 P-CP)을 돌릴까 — 그 경로를 이 PC 가 돌 때만(역할·``--only``), 그리고
+    ``probe_mod.web_probe_due``(오늘 이미 로그인된 기록이 있으면 하루 한 번 — Edge 를 [수집]마다 더 띄우지 않게). 탐침만
+    돌리는 실행(probe-only)은 날짜와 관계없이 잰다."""
+    srcs = [s for s in plan.COLLECTORS if ctx.only is None or s in ctx.only]
+    web_role = plan.ROLE_BACKFILL in ctx.roles and any(s in WEB_SRCS for s in srcs)
+    cp_role = plan.ROLE_COPILOT in ctx.roles and any(s in plan.COPILOT_STAGE_OF and plan.copilot_enabled(ctx.cfg, s)
+                                                     for s in srcs)
+    force = ctx.mode == "probe-only"
+    web = web_role and (force or probe_mod.web_probe_due(ctx.pc, ctx.today))
+    cp = cp_role and (force or probe_mod.copilot_probe_due(ctx.pc, ctx.today))
+    return web, cp
+
+
+def _web_login_from_probe(ctx: _Ctx, pr) -> None:
+    """P-OWA 가 로그인 보류(V18)를 짧게 확인하고 R-LOGIN 이면 이 [수집]의 웹 경로는 Edge 를 다시 띄우지 않고 바로
+    ``R-LOGIN · skipped=login_pending``(V10 과 같은 길). 처음 보는 로그인 필요(보류 아님)는 웹 경로가 한 번 다 기다린다."""
+    wl = pr.caps.get("web_login") if isinstance(getattr(pr, "caps", None), dict) else None
+    if not isinstance(wl, dict):
+        return
+    val = wl.get("value") if isinstance(wl.get("value"), dict) else {}
+    if val.get("account") == "personal":
+        ctx.login_personal = True
+    if "R-LOGIN" in (wl.get("reasons") or ()) and val.get("login_pending") is True:
+        ctx.web_login_pending = ctx.login_short = True
+        ctx.notes.append("web_login_pending")
+
+
 def _probe_body(ctx: _Ctx, st) -> None:
-    pr = ctx.deps.probe(ctx.ident)
+    web, cp = _probe_wants(ctx)
+    pr = ctx.deps.probe(ctx.ident, web=web, copilot=cp) if (web or cp) else ctx.deps.probe(ctx.ident)
+    _web_login_from_probe(ctx, pr)
     with ctx.lock("fg-write"):
         from lm27.collect.probe import record_probes
         ents = record_probes(ctx.pcdir, pr, ctx.loc_cache, cfg=ctx.cfg, today=ctx.today, agent=ctx.agent_info)
@@ -789,7 +888,11 @@ def _sampler_run(ctx: _Ctx) -> SrcRun:
     r = SrcRun("pc.sampler", spec.kind, ranges=ctx.ranges_for(spec))
     a = ctx.agent
     h = a.get("health") if isinstance(a.get("health"), dict) else {}
-    if a.get("impl") == "none":
+    if ctx.no_agent and a.get("impl") != "none":
+        # --no-agent(v1.3 §0.8 V17): 에이전트를 확인·기동하지 않았다 — 예전 설치의 agent.json(impl py·ps)이 남아 있어도 수송
+        # 실패가 아니라 '이번에는 확인하지 않음'. impl none(실행 차단)은 아래 판정 그대로(R-CLM·R-APPLOCKER — 구조 사실).
+        r.skipped = "agent_skipped"
+    elif a.get("impl") == "none":
         r.rc, r.reasons = 3, sorted({x for x in a.get("reasons") or () if x in ("R-CLM", "R-APPLOCKER")} or {"R-CLM"})
     elif h.get("healthy"):
         r.rc = 4
@@ -842,10 +945,24 @@ def _collectors_body(stage, *, blanks_of=None, args_of=None):
             return extra, b.get("rows")
         runs += _run_many(ctx, specs, parallel=stage.parallel, args_of=per)
         runs += [_planned(s, sk, ctx) for s, sk in sorted(stage.skip.items())]
-        if any("R-LOGIN" in r.reasons for r in runs):
-            _emit("notice", stage=stage.name, text_ko=NOTICE_LOGIN)
+        _login_notices(ctx, stage.name, runs)
         st.set(**_combine(ctx, runs))
     return body
+
+
+def _login_notices(ctx: _Ctx, stage_name: str, runs) -> None:
+    """로그인 안내(단계마다 한 번 — 같은 [수집]에서는 문구마다 한 번): 처음 보는 로그인 필요 = NOTICE_LOGIN, 로그인 보류
+    (V18 — 짧게 확인만) = NOTICE_LOGIN_PENDING, 개인 계정 화면 = '회사(조직) 계정이 아니면 …'."""
+    if not any("R-LOGIN" in r.reasons for r in runs):
+        return
+    from lm27.bridge.session import LOGIN_PERSONAL_TEXT
+    texts = [NOTICE_LOGIN_PENDING if ctx.login_short else NOTICE_LOGIN]
+    if ctx.login_personal:
+        texts.append(LOGIN_PERSONAL_TEXT)
+    for t in texts:
+        if t not in ctx.notices_shown:
+            ctx.notices_shown.add(t)
+            _emit("notice", stage=stage_name, text_ko=t)
 
 
 def _teams_body(stage):
@@ -1151,6 +1268,7 @@ def collect_here(paths, cfg, *, mode="auto", since=None, until=None, pc_role=Non
     t0 = d.monotonic()
     ctx = _Ctx(paths=paths, cfg=cfg, deps=d, run_id=new_run_id(now), mode=mode, since=since, until=until,
                only=tuple(only) if only else None, t0=t0, deadline=(t0 + budget) if budget > 0 else None)
+    ctx.no_agent = bool(no_agent)
     ctx.today = _today_of(cfg, now)
     ctx.loc_cache = None
     try:

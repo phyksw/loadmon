@@ -17,7 +17,8 @@ r"""측정 품질 등급(R §4.9 · 부록 A `quality_month`, 계약 §3.16 측�
 estimated_high ⊂ estimated_bad). 봉투가 0 인 달은 no_envelope 하나가 결과(추정·미귀속·근거 없는 날·샘플러 사유는 그
 결과일 뿐이라 싣지 않는다). 커버리지 정보가 그 달에 한 번도 없는 축은 '모름'(None)으로 두고 판정하지 않는다
 (원장이 없다고 '측정 불충분'으로 몰지 않는다). `mining_coarse`(R §4.1.4)는 표시만 하고 등급에 영향이 없다.
-기간 등급 = 달 등급 중 가장 나쁜 것, reasons = 그 달들의 reasons 합집합(코드 순).
+기간 등급 = 달 등급 중 가장 나쁜 것, reasons = 그 달들의 reasons 합집합(코드 순). 기간 문구(`period_texts`)는 사유마다
+그 사유를 낸 달 가운데 가장 나쁜 달의 숫자로 채운다(모든 사유에 문구가 하나씩).
 
 설정(R §10.2): `report.quality.covLow` · `covBad` · `estLow` · `estBad` · `unattrHigh` · `noEvidenceDays` · `samplerLow`.
 표준 라이브러리만 쓴다. 나눗셈은 `fmt` 로만. 파일을 쓰지 않는다.
@@ -30,7 +31,8 @@ from datetime import date, timedelta
 from lm27.report import fmt as F
 from lm27.report import vocab as V
 
-__all__ = ["AXES", "REASONS", "month_ctx", "period_quality", "quality_layer", "quality_month", "quality_texts"]
+__all__ = ["AXES", "REASONS", "month_ctx", "period_quality", "period_texts", "quality_layer", "quality_month",
+           "quality_texts"]
 
 AXES = ("mail_in", "mail_out", "cal", "teams", "pc")
 OK_STATES = frozenset({"ok", "zero_ok"})
@@ -203,12 +205,27 @@ def quality_layer(ctx) -> dict:
         q["texts"] = quality_texts(q)
     out = period_quality(months)
     out["months"] = months
-    out["texts"] = quality_texts({"reasons": out["reasons"], **_worst(months)})
+    out["texts"] = period_texts(out["reasons"], months)
+    return out
+
+
+def period_texts(reasons, months: Mapping[str, Mapping]) -> list[dict]:
+    """기간 전체 신뢰도 사유 문구 — 사유마다 **그 사유를 낸 달** 가운데 가장 나쁜 달의 숫자로 채운다(W2 검토 C09: 예전에는
+    가장 나쁜 달 하나의 사유만 문구가 되어 다른 달에서 온 사유는 화면에서 '(—)'로 비었다). '봉투 0' 은 기간형 문구
+    (`V.QUALITY_PERIOD_TEXT`, 그런 달의 수). 반환 [{code, text}] — reasons 와 같은 순서·같은 코드."""
+    out = []
+    for code in reasons:
+        src = {m: q for m, q in months.items() if code in (q.get("reasons") or ())}
+        if code in V.QUALITY_PERIOD_TEXT:
+            out.append({"code": code, "text": V.QUALITY_PERIOD_TEXT[code].format(n=len(src))})
+            continue
+        q = {k: v for k, v in _worst(src).items() if k != "reasons"}
+        out.extend(quality_texts({**q, "reasons": [code]}))
     return out
 
 
 def _worst(months: Mapping[str, Mapping]) -> dict:
-    """기간 문구의 숫자 = 가장 나쁜 달의 값."""
+    """기간 문구의 숫자 = 가장 나쁜 달의 값(같은 등급이면 앞 달)."""
     best = None
     for _m, q in sorted(months.items()):
         if best is None or RANK.get(q.get("grade", ""), -1) > RANK.get(best.get("grade", ""), -1):

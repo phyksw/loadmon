@@ -28,7 +28,7 @@ import re
 import secrets
 import threading
 
-from lm27.ui.server import ApiError
+from lm27.ui.server import ApiError, ui_today
 
 __all__ = ["ROUTES", "current", "forget_models", "model_or_none", "schedule_reanalyze", "unit_evidence"]
 
@@ -75,8 +75,11 @@ def _run_exists(app, rid: str) -> bool:
 
 
 def forget_models(app) -> None:
+    """화면의 모델 캐시와 [근거] 드릴다운 캐시를 바로 비운다(결과 선택·보고서 다시 만들기·분석/보고서 작업 끝 — W2 C18)."""
     with _model_lock:
         app.scratch.pop("_models", None)
+    from lm27.report.drill import forget
+    forget()
 
 
 _model_lock = threading.Lock()
@@ -166,6 +169,12 @@ def get_report(app, req):
         if at:
             run["built_at"] = at
             out["run"] = run
+    if not run.get("chosen"):                           # '자동/직접 선택'도 모델 밖 값 — 현재 결과일 때만(W2 C01, V16)
+        from lm27.report.inputs import chosen_of
+        ch = chosen_of(app.paths, rid)
+        if ch:
+            run["chosen"] = ch
+            out["run"] = run
     out["export_defaults"] = {"formats": list(cfg["report.export.formats"]), "variants": list(cfg["report.export.variants"])}
     out["table_max_rows"] = int(cfg["ui.tableMaxRows"])
     return out
@@ -238,18 +247,28 @@ def post_export_open(app, req):
 
 
 def post_need_drop(app, req):
-    """{need_id, drop: true} → 팀 묶음에서 그 니즈 빼기 · {drop: false} → 되돌리기(다시 팀에 올리기). 둘 다 다음 빌드부터."""
+    """{need_id, drop: true} → 팀 묶음에서 그 니즈 빼기 · {drop: false} → 되돌리기(다시 팀에 올리기). 둘 다 다음 빌드부터.
+    빼면 그 니즈가 든 대기 묶음은 다시 만들 때까지 보내지 않는다(``build.drop_need`` — C16). 팀 묶음 미리보기에서 부르면
+    (``item`` = 대기열 항목) 그 기간 묶음을 다시 만드는 작업을 띄운다(``job_id`` — ``api_team.rebuild_after_mask``)."""
     nid = req.body.get("need_id")
     if not isinstance(nid, str) or not _NEED_RX.match(nid):
         raise ApiError(400, "bad_need", "니즈 ID 형식이 아닙니다")
     drop = req.body.get("drop", True)
     if not isinstance(drop, bool):
         raise ApiError(400, "bad_drop", "drop 은 true(빼기)·false(다시 올리기)입니다")
+    item = req.body.get("item")
+    if item is not None and not isinstance(item, str):
+        raise ApiError(400, "bad_item", "대기열 항목 이름이 아닙니다")
     from lm27.team.build import drop_need, keep_need
     r = drop_need(app.paths, nid) if drop else keep_need(app.paths, nid)
     if r.get("rc") == 1:
         raise ApiError(400, "bad_need", r.get("message") or "니즈 ID 형식이 아닙니다")
-    return {"ok": True, "dropped": drop, "changed": r.get("rc") == 0, "text_ko": r.get("message")}
+    out = {"ok": True, "dropped": drop, "changed": r.get("rc") == 0, "stale_n": len(r.get("stale") or ()),
+           "text_ko": r.get("message")}
+    if r.get("rc") == 0 and item:
+        from lm27.ui.api_team import rebuild_after_mask
+        out.update(rebuild_after_mask(app, r, item))
+    return out
 
 
 # ───────────────────────────── 빠른 재분석(디바운스) ─────────────────────────────
@@ -399,7 +418,7 @@ def _answer_raw(app, rid, model, item, kind, ans, manual_raw):
     if d is None:
         d = str(item.get("date") or "")[:10]
         if not _DATE_RX.match(d):
-            d = app.deps.now().date().isoformat()
+            d = ui_today(app).isoformat()
     proj = None
     pv = ans.get("project")
     if isinstance(pv, str) and _PROJ_RX.match(pv):

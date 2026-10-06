@@ -24,7 +24,9 @@ r"""보고서 모델 `report_model.json`(스키마 `lm27.report` 1.0 — R §9.2
 from __future__ import annotations
 
 import copy
+import json
 import re
+import unicodedata
 from collections import Counter, defaultdict
 from collections.abc import Mapping
 from datetime import date, timedelta
@@ -678,12 +680,27 @@ def _ontology(onto: Mapping, refs: Refs, res: Resolver, units: Mapping, redacted
             "centers": list(onto.get("centers", ())), "graphs": graphs}
 
 
-def _agentic(ag: Mapping, ctx, overrides) -> dict:
+def local_catalog_notes(hier_meta) -> list[str]:
+    """분류 결과 ``hier_meta.warnings`` 의 로컬 카탈로그 경고(``local_catalog_*`` — 계약 v1.3 §0.8 V13) → 화면 문구
+    (``lm27.hier.registry.LOCAL_CATALOG_WARNS``, 같은 문구는 한 번). 로컬 카탈로그를 못 쓴 까닭을 '팀 레지스트리를 받으면
+    채워집니다' 대신 알린다(W2 검토 L04 — 통합)."""
+    from lm27.hier.registry import LOCAL_CATALOG_WARNS
+    out: list[str] = []
+    for w in _g(hier_meta, "warnings", ()) or ():
+        t = LOCAL_CATALOG_WARNS.get(w) if isinstance(w, str) else None
+        if t and t not in out:
+            out.append(t)
+    return out
+
+
+def _agentic(ag: Mapping, ctx, overrides, notes=()) -> dict:
     out = copy.deepcopy(dict(ag))
     out["catalog"] = [{"id": a["id"], "name": a["name"], "axis": a.get("axis", "")} for a in ctx.catalog]
     drops = (_g(overrides, "needs", {}) or {}) if isinstance(overrides, Mapping) else {}
     for n in out.get("needs", ()):
         n["dropped"] = str(drops.get(n["need_id"], "")) == "drop"
+    if notes:
+        out["catalog_note"] = " · ".join(notes)                # 로컬 카탈로그 경고(있을 때만 — 화면 Agentic 안내)
     return out
 
 
@@ -771,6 +788,14 @@ def build_model(inp, cfg, *, cal=None, ctx=None, fallback=None) -> dict:
         if w.get("code") not in seen:
             seen.add(w.get("code"))
             all_warn.append(dict(w))
+    lc_notes = local_catalog_notes(meta)
+    if lc_notes:                                       # 로컬 카탈로그를 못 썼거나 고쳐 읽음 — 그 까닭을 그대로(V13 · L04)
+        lc_text = " · ".join(lc_notes)
+        empty = [w for w in all_warn if w.get("code") == "catalog_empty"]
+        for w in empty:
+            w["text_ko"] = "에이전트 목록이 없습니다 — " + lc_text
+        if not empty:
+            all_warn.append({"code": "local_catalog", "text_ko": lc_text})
     reg_st = inp.registry_status or {}
     rank = {p["key"]: p["k"] for p in sec["peers"].get("internal", ())}
     rank.update({w: r for w, r in refs.people.items() if w not in rank})
@@ -813,7 +838,7 @@ def build_model(inp, cfg, *, cal=None, ctx=None, fallback=None) -> dict:
                     "months": _review_rows(sec["reviews"].get("months", ()), refs, rank, res)},
         "peers": _peers(sec["peers"], refs, res),
         "ontology": _ontology(sec["ontology"], refs, res, unit_map),
-        "agentic": _agentic(sec["agentic"], ctx, inp.overrides),
+        "agentic": _agentic(sec["agentic"], ctx, inp.overrides, lc_notes),
         "subagent": copy.deepcopy(dict(sec["subagent"])),
         "team": copy.deepcopy(dict(sec["team"])),
         "queue": queue,
@@ -830,11 +855,18 @@ def build_model(inp, cfg, *, cal=None, ctx=None, fallback=None) -> dict:
                  "docs": {str(r): _doc_ref(f, res, ctx, refs) for f, r in sorted(refs.docs.items(), key=lambda kv: kv[1])},
                  "apps": {a: _app_ref(a, res) for a in refs.apps}},
     }
-    model, trimmed = fit_size(model, int(cfg["report.export.maxModelMb"]) * MB)
+    cap_mb = int(cfg["report.export.maxModelMb"])
+    model, trimmed, size = _fit(model, cap_mb * MB)
     if trimmed:
+        before = _size(model["flags"])
         model["flags"]["trimmed"] = trimmed
         model["flags"]["warnings"].append({"code": "model_trimmed", "text_ko": "보고서 모델이 크기 상한을 넘어 일부 상세를 "
                                            "요약했습니다: " + ", ".join(trimmed)})
+        size += _size(model["flags"]) - before
+    if size > cap_mb * MB:                           # 다 줄여도 넘으면 숨기지 않고 알린다(X-281 — 보고서는 그대로 만든다)
+        w = V.warn("model_over_cap", bytes=size, cap_mb=cap_mb)
+        w["text_ko"] = w["text_ko"].format(mb=F.fmt_ratio(size, MB, 1), cap=cap_mb)
+        model["flags"]["warnings"].append(w)
     problems = check_model(model)
     if problems:
         raise ModelCheckError(problems)
@@ -866,24 +898,80 @@ def _runs_summary(runs) -> list[dict]:
     return [agg[k] for k in sorted(agg)]
 
 
-def fit_size(model: dict, max_bytes: int) -> tuple[dict, list[str]]:
-    """모델 바이트가 상한을 넘으면 ① 단위업무 수준 `runs` 를 단계 유형별 요약으로 ② 다른 과제 그래프(`ontology.graphs`)를
-    뺀다(`days` 와 등식 재료는 남긴다). 반환 (모델, 줄인 것 이름 목록)."""
+REC_KEEP_TRIMMED = 3      # 크기 상한 5단계 — 단위업무별 연관 업무 추천을 이만큼만 남긴다
+_LEAD_SLIM = ("unit_id", "overrun", "causes", "cause_names")   # 4단계 — 주간 '끝낸 일' 표에 남기는 열(나머지는 단위업무·월간 표에)
+
+
+def _size(o) -> int:
+    return len(canon_bytes(o))
+
+
+def _fit(model: dict, max_bytes: int) -> tuple[dict, list[str], int]:
+    """`fit_size` 본체 — (모델, 줄인 것 이름 목록, 줄인 뒤 모델 바이트 수). 바이트 수는 처음에 한 번만 직렬화하고, 단계마다
+    바뀐 절만 다시 재어 더한다(정규 JSON 은 값 하나를 바꾸면 전체 길이가 그 값 길이 차만큼 바뀐다 — 9개월 모델 34MB 를
+    단계마다 통째로 다시 직렬화하지 않는다, W2 검토 C07)."""
     trimmed: list[str] = []
-    if len(model_bytes(model)) <= max_bytes:
-        return model, trimmed
-    for uw in (model.get("workflows") or {}).get("units", {}).values():
-        uw["runs"] = _runs_summary(uw.get("runs"))
-        uw["runs_summarized"] = True
+    size = len(model_bytes(model))
+    if size <= max_bytes:
+        return model, trimmed, size
+
+    def step(key: str, sub: str | None, fn) -> None:
+        nonlocal size
+        box = model.get(key) if sub is None else (model.get(key) or {}).get(sub)
+        before = _size(box)
+        fn()
+        box = model.get(key) if sub is None else (model.get(key) or {}).get(sub)
+        size += _size(box) - before
+
+    wu = (model.get("workflows") or {}).get("units", {})
+
+    def runs():
+        for uw in wu.values():
+            uw["runs"] = _runs_summary(uw.get("runs"))
+            uw["runs_summarized"] = True
+    step("workflows", None, runs)
     trimmed.append("단위업무 구간(runs) 요약")
-    if len(model_bytes(model)) > max_bytes and (model.get("ontology") or {}).get("graphs"):
-        model["ontology"]["graphs"] = {}
+    if size > max_bytes and (model.get("ontology") or {}).get("graphs"):
+        step("ontology", None, lambda: model["ontology"].__setitem__("graphs", {}))
         trimmed.append("다른 과제 연관 그래프")
-    if len(model_bytes(model)) > max_bytes:
-        for uw in (model.get("workflows") or {}).get("units", {}).values():
-            uw["waits"] = []
-            uw["milestones"] = []
+    if size > max_bytes:
+        def waits():
+            for uw in wu.values():
+                uw["waits"] = []
+                uw["milestones"] = []
+        step("workflows", None, waits)
         trimmed.append("단위업무 대기·점 목록")
+    weeks = (model.get("reviews") or {}).get("weeks") or []
+    if size > max_bytes and any(r.get("lead_table") for r in weeks):
+        def slim():                    # 같은 단위업무의 리드·투입·병행도·등급은 units[], 원인 설명은 월간 리뷰 표에 그대로 있다
+            for r in weeks:
+                r["lead_table"] = [{k: x[k] for k in _LEAD_SLIM if k in x} for x in r.get("lead_table") or ()]
+        step("reviews", "weeks", slim)
+        trimmed.append("주간 리뷰 끝낸 일 표 상세(월간 리뷰에 남김)")
+    recs = (model.get("ontology") or {}).get("recs") or {}
+    if size > max_bytes and any(len(v) > REC_KEEP_TRIMMED for v in recs.values()):
+        def top3():
+            for k in recs:
+                recs[k] = recs[k][:REC_KEEP_TRIMMED]
+        step("ontology", None, top3)
+        trimmed.append(f"연관 업무 추천(상위 {REC_KEEP_TRIMMED}개만)")
+    if size > max_bytes and any(r.get("lead_table") for r in weeks):
+        def drop_weeks():
+            for r in weeks:
+                r["lead_table"] = []
+        step("reviews", "weeks", drop_weeks)
+        trimmed.append("주간 리뷰 끝낸 일 표(끝낸 일 목록만)")
+    return model, trimmed, size
+
+
+def fit_size(model: dict, max_bytes: int) -> tuple[dict, list[str]]:
+    """모델 바이트가 상한을 넘으면 차례로 줄인다(X-281 · R §9.2.2 — 앞 단계로 상한 안에 들면 멈춘다):
+    ① 단위업무 수준 `runs` 를 단계 유형별 요약으로 ② 다른 과제 그래프(`ontology.graphs`)를 뺀다 ③ 단위업무 대기·점 목록을
+    뺀다 ④ 주간 리뷰 '끝낸 일' 표를 원인 코드만 남긴 얇은 행으로(같은 행이 월간 리뷰에 그대로 있다) ⑤ 연관 업무 추천을
+    단위업무마다 상위 3개로 ⑥ 주간 리뷰 '끝낸 일' 표를 비운다(화면은 `finished` 목록과 단위업무 값으로 그린다).
+    `days`·등식 재료(정수 분 표·단위업무 분)는 남긴다. 그래도 넘으면 `build_model` 이 `model_over_cap` 경고를 단다.
+    반환 (모델, 줄인 것 이름 목록)."""
+    model, trimmed, _n = _fit(model, max_bytes)
     return model, trimmed
 
 
@@ -1022,6 +1110,84 @@ def _peer_text(text, ref_of: Mapping) -> str:
     return _PEER_TOKEN.sub(sub, str(text or ""))
 
 
+# 정제기의 사람 가명 토큰 `[사람#<who_key 앞 6hex>]`(person_tokens=keyed) — 가림판에는 남기지 않는다(W2 검토 C13)
+PERSON_TOKEN_RX = re.compile(r"\[사람#[0-9a-f]{6}\]")
+# 가림판 확인 질문 대상으로 낼 수 있는 모양(단위업무·군집·날짜·제안·레지스트리 ID) — 그 밖(H04 이름 쌍 등 제목 글)은 None(C14)
+_SAFE_TARGET = re.compile(r"^(?:u_[0-9A-Za-z_]{1,40}|grp:[0-9a-f]{12}|\d{4}-\d{2}-\d{2}|pr_[0-9A-Za-z_]{1,40}|"
+                          r"[PL]-[0-9A-Za-z-]{1,40}|-)$")
+_FACT_DOING = "진행"
+
+
+def _no_person_tokens(o):
+    """가림판 객체의 모든 글자 값에서 사람 가명 토큰을 '동료' 로(키는 그대로 — 키에는 토큰이 오지 않는다)."""
+    if isinstance(o, str):
+        return PERSON_TOKEN_RX.sub("동료", o) if "[사람#" in o else o
+    if isinstance(o, list):
+        return [_no_person_tokens(v) for v in o]
+    if isinstance(o, dict):
+        return {k: _no_person_tokens(v) for k, v in o.items()}
+    return o
+
+
+def _safe_target(code: str, tgt: str) -> str | None:
+    """가림판 질문 대상: 모양 허용 목록만(H04 = 단위업무 제목 쌍이라 늘 None — 공백을 지운 제목이 이름 검사를 피한다)."""
+    if code == "H04" or not tgt or KEY_RX.search(tgt) or not _SAFE_TARGET.match(tgt):
+        return None
+    return tgt
+
+
+def _review_ai_redacted(ai: Mapping, r: Mapping, x_facts: list, titles: Mapping, full_titles: Mapping) -> dict:
+    """리뷰 AI 문장(가림판, W2 검토 C13). 문장은 코파일럿·폴백이 **전체판 사실 제목**으로 썼다 — 그대로 옮기면 가림 제목·
+    일반 제목으로 바꾼 단위업무의 원래 제목이 남는다.
+    - 규칙 폴백(by=rule): 하이라이트 = 그 사실(F 번호)의 가림 제목, 다음 = '진행' 사실의 가림 제목 — 베끼지 않고 다시 만든다.
+    - AI·수동 답: 사실·관계에 실린 원래 제목 → 가림 제목(긴 것부터) 바꿔 쓰기.
+    둘 다 동료 번호표(`동료k` → `동료 #k`)와 사람 가명 토큰 지우기를 거친다."""
+    ref_of = dict(ai.get("peers_map") or {})
+    fu = r.get("fact_units") or {}
+    pairs: dict[str, str] = {}
+    for f in r.get("facts", ()):
+        if isinstance(f, list) and len(f) >= 5 and f[2]:
+            red = titles.get(fu.get(f[0]))
+            if red is not None and str(f[2]) != red:
+                pairs[str(f[2])] = red
+    er = r.get("edge_refs") or {}
+    for e in r.get("edges", ()):
+        ref = er.get(e[0]) if isinstance(e, list) and e else None
+        for nid, lab in (((ref or {}).get("from"), e[1] if len(e) > 1 else ""), ((ref or {}).get("to"),
+                                                                                e[3] if len(e) > 3 else "")):
+            if isinstance(nid, str) and nid in titles and lab and str(lab) != titles[nid]:
+                pairs.setdefault(str(lab), titles[nid])
+    for uid, t in full_titles.items():
+        if t and uid in titles and t != titles[uid]:
+            pairs.setdefault(str(t), titles[uid])
+    order = sorted((k for k in pairs if len(k.strip()) >= 2), key=lambda s: (-len(s), s))
+
+    def clean(text) -> str:
+        s = str(text or "")
+        for k in order:
+            if k in s:
+                s = s.replace(k, pairs[k])
+        return PERSON_TOKEN_RX.sub("동료", _peer_text(s, ref_of))
+    red_fact = {f[0]: f[2] for f in x_facts}
+    rule = ai.get("by") == "rule"
+    hl = []
+    for h in ai.get("highlights", ()):
+        refs = list(h.get("refs", ()))
+        text = red_fact.get(refs[0]) if (rule and refs and refs[0] in red_fact) else None
+        hl.append({"text": clean(text if text is not None else h.get("text")), "refs": refs,
+                   "units": list(h.get("units", ())), "effort_min": h.get("effort_min"),
+                   "biz_lead_min": h.get("biz_lead_min")})
+    nxt_full = list(ai.get("next", ()))
+    if rule:
+        nxt = [clean(f[2]) for f in x_facts if f[1] == _FACT_DOING and f[2]][:len(nxt_full)]
+    else:
+        nxt = [clean(t) for t in nxt_full]
+    return {"summary": clean(ai.get("summary")), "highlights": hl,
+            "relations": [{"text": clean(h.get("text")), "refs": list(h.get("refs", ()))}
+                          for h in ai.get("relations", ())],
+            "next": nxt, "by": ai.get("by")}
+
+
 def _generic_titles(units, registry) -> dict[str, str]:
     """일반 제목 `<분야>·<기능> 단위업무 #n`(n = 같은 분야·기능 안 순번 — 단위업무 정렬 순, TAB §2.5)."""
     n: Counter = Counter()
@@ -1041,6 +1207,7 @@ def redact_model(full: Mapping, registry=None, *, person_dir=None, title_mode: s
     units_full = full.get("units") or []
     generic = _generic_titles(units_full, registry)
     titles = {u["unit_id"]: res.unit_title(u.get("title"), generic[u["unit_id"]]) for u in units_full}
+    full_titles = {u["unit_id"]: str(u.get("title") or "") for u in units_full}
     unknown = sorted({a for u in units_full for a, _m in u.get("apps", ()) if str(a).startswith(UNKNOWN_PREFIX)})
     refs = Refs({}, {}, {}, unknown)
     proj_label = {}
@@ -1090,7 +1257,8 @@ def redact_model(full: Mapping, registry=None, *, person_dir=None, title_mode: s
                                "units": p.get("units"), "shared_effort_min": p.get("shared_effort_min")}
                               for p in r.get("peers_top", ())]
             fu = r.get("fact_units") or {}
-            x["facts"] = [[f[0], f[1], titles.get(fu.get(f[0]), f[2]) if fu.get(f[0]) else f[2], f[3], f[4]]
+            # 단위업무에 이어지지 않는 사실의 제목은 가림 검사를 거치지 않았다 — 원래 제목을 내지 않는다(C13)
+            x["facts"] = [[f[0], f[1], titles.get(fu.get(f[0])) or "단위업무", f[3], f[4]]
                           for f in r.get("facts", ()) if isinstance(f, list) and len(f) >= 5]
             er = r.get("edge_refs") or {}
             x["edges"] = []
@@ -1102,14 +1270,7 @@ def redact_model(full: Mapping, registry=None, *, person_dir=None, title_mode: s
                                   "rel": v.get("rel")} for n, v in er.items()} if er else {}
             ai = r.get("ai")
             if isinstance(ai, Mapping):
-                ref_of = dict(ai.get("peers_map") or {})
-                x["ai"] = {"summary": _peer_text(ai.get("summary"), ref_of),
-                           "highlights": [{"text": _peer_text(h.get("text"), ref_of), "refs": list(h.get("refs", ())),
-                                           "units": list(h.get("units", ())), "effort_min": h.get("effort_min"),
-                                           "biz_lead_min": h.get("biz_lead_min")} for h in ai.get("highlights", ())],
-                           "relations": [{"text": _peer_text(h.get("text"), ref_of), "refs": list(h.get("refs", ()))}
-                                         for h in ai.get("relations", ())],
-                           "next": [_peer_text(t, ref_of) for t in ai.get("next", ())], "by": ai.get("by")}
+                x["ai"] = _review_ai_redacted(ai, r, x["facts"], titles, full_titles)
             else:
                 x["ai"] = None
             rows.append(x)
@@ -1137,7 +1298,7 @@ def redact_model(full: Mapping, registry=None, *, person_dir=None, title_mode: s
             prop["cands"] = [c for c in prop["cands"] if isinstance(c, str) and not KEY_RX.search(c)]
         tgt = str(q.get("target") or "")
         queue.append({"qid": q["qid"], "code": q["code"], "kind": q.get("kind"),
-                      "target": None if KEY_RX.search(tgt) else tgt, "impact_min": q["impact_min"],
+                      "target": _safe_target(str(q.get("code") or ""), tgt), "impact_min": q["impact_min"],
                       "status": q["status"], "date": q.get("date"), "week": q.get("week"), "proposal": prop})
     refs_apps = {a: keep(v) for a, v in ((full.get("refs") or {}).get("apps") or {}).items()
                  if not str(a).startswith(UNKNOWN_PREFIX)}
@@ -1168,6 +1329,9 @@ def redact_model(full: Mapping, registry=None, *, person_dir=None, title_mode: s
                      int(x) for x in ((full.get("refs") or {}).get("docs") or {}))},
                  "apps": refs_apps},
     }
+    # 통째로 옮긴 절(agentic·subagent·workflows 라벨 등)의 글에도 사람 가명 토큰이 남지 않게(C13) — 없으면 걷지 않는다
+    if "[사람#" in json.dumps(out, ensure_ascii=False, check_circular=False):
+        out = _no_person_tokens(out)
     return out
 
 
@@ -1239,13 +1403,25 @@ def _red_edges(edges, refs: Refs) -> list[dict]:
 # ───────────────────────────── 가림판 검사(G-R8) ─────────────────────────────
 def redaction_violations(model: Mapping, person_dir=None, *, extra=()) -> list[str]:
     """직렬화될 모든 글자(키 포함)에서 사람 사전 이름(한글 2자 이상·ASCII 4자 이상)·로컬 키 모양(who_key·m/e/t/h/d/r/f/s/g)·
-    추가 값(시험 카나리아)을 찾아 그 **필드 경로**만 돌려준다(값은 싣지 않는다 — R §11)."""
+    사람 가명 토큰 `[사람#hex]`·추가 값(시험 카나리아·가린 원래 제목)을 찾아 그 **필드 경로**만 돌려준다(값은 싣지 않는다 —
+    R §11). 이름은 적힌 그대로 외에 NFKC 형과, 여러 낱말 이름이면 공백을 지운 형·그 소문자형도 찾는다 — 이름 병합 키
+    (`ukey` — NFKC·소문자·공백 제거)를 거친 글이 검사를 피하지 않게(W2 검토 C14). 한 낱말 이름의 대소문자는 바꾸지 않는다
+    (영역 코드 같은 대문자 어휘와 엇갈려 공유판을 막지 않게)."""
     names = person_names(person_dir)
+    more = set()
+    for nm in names:
+        n = unicodedata.normalize("NFKC", nm)
+        more.add(n)
+        if " " in n:
+            sq = n.replace(" ", "")
+            more |= {sq, sq.casefold()}
+    names = names + sorted(more - set(names), key=lambda s: (-len(s), s))
     extra = [str(x) for x in extra if str(x)]
     out: list[str] = []
 
     def bad(s: str) -> bool:
-        return bool(KEY_RX.search(s)) or any(nm in s for nm in names) or any(x in s for x in extra)
+        return (bool(KEY_RX.search(s)) or ("[사람#" in s and bool(PERSON_TOKEN_RX.search(s)))
+                or any(nm in s for nm in names) or any(x in s for x in extra))
 
     def walk(o, path):
         if isinstance(o, Mapping):

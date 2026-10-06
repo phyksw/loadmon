@@ -117,13 +117,17 @@ def pc_card(pc: dict, cells=(), todos=()) -> dict:
     for c in mine:
         codes.update(r for r in c.get("reasons") or () if rcmap.is_reason(r))
     installs = [i for i in pc.get("installs") or () if isinstance(i, dict)]
-    st = Counter(str(_d(t).get("state")) for t in todos or () if _d(t).get("want_pc") == pid)
+    # 이 PC 의 빈칸 작업 = 이 PC 에 배정된 것 + 웹 경로 빈칸 '*'(어느 PC 든 먼저 도는 PC 가 채움 — v1.3 §0.8 V5)
+    mine_t = [t for t in todos or () if _d(t).get("want_pc") in (pid, todo.WANT_ANY)]
+    st = Counter(str(_d(t).get("state")) for t in mine_t)
+    any_n = sum(1 for t in mine_t if _d(t).get("want_pc") == todo.WANT_ANY)
     return {"pc_id": pid, "label_auto": pc.get("label_auto") or "", "label_user": pc.get("label_user") or "",
             "kind": pc.get("kind"), "roles": sorted(r for r in pc.get("roles") or () if isinstance(r, str)),
             "first_seen": pc.get("first_seen"), "last_seen": pc.get("last_seen"),
             "agent": {"installs": len(installs), "impl": installs[-1].get("impl") if installs else None},
             "flags": sorted(f for f in pc.get("flags") or () if isinstance(f, str)), "caps": rows,
-            "unobserved_cells": len(mine), "todos": dict(sorted(st.items())), "actions": _actions(codes)}
+            "unobserved_cells": len(mine), "todos": dict(sorted(st.items())), "todos_any_pc": any_n,
+            "actions": _actions(codes)}
 
 
 def _d(t) -> dict:

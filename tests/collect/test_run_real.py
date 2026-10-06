@@ -105,5 +105,95 @@ class RealPipeIndexCase(unittest.TestCase):
         self.assertIn(res2.rc, (0, 4))
 
 
+def _idx_row(subject: str, when: str) -> dict:
+    """색인 메일 행(합성 — 자리표시자 이름·주소). ``when`` = 로컬 'yyyy-MM-dd HH:mm'."""
+    return {"System.ItemUrl": f"mapi://lm27t/inbox/{subject}", "System.ItemFolderPathDisplay": "\\받은 편지함",
+            "System.Subject": subject, "System.ItemDate": when, "System.Message.DateReceived": when,
+            "System.Message.FromName": ["김철수"], "System.Message.FromAddress": ["Chulsoo.Kim@corp.example"],
+            "System.Message.ToAddress": ["gildong.hong@corp.example"], "System.Message.ToName": ["홍길동"],
+            "System.Message.CcAddress": [], "System.Message.CcName": [], "System.Kind": ["email"]}
+
+
+class DefaultWindowRealCase(unittest.TestCase):
+    """W2 검토 C03(V6) 재현 — 기본 [수집](since 없음)이 진짜 색인 수집기에 기본 시작일(1월 1일)을 넘긴다. 예전에는 아무것도
+    넘기지 않아 수집기는 89일만 읽고 원장은 1월 1일부터 읽었다고 적어 2월·6월 메일이 있는 날이 zero_ok 였다."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.clone = make_clone(parts=("lm27", "collect", "config"))
+        (cls.clone.root / "data").mkdir(exist_ok=True)
+        fake = {"mail": [_idx_row("WP33 2월 메일", "2026-02-02 10:00"), _idx_row("WP33 6월 메일", "2026-06-02 10:00"),
+                         _idx_row("WP33 10월 메일", "2026-10-01 10:00")], "calendar": [],
+                "_my_addrs": ["gildong.hong@corp.example"], "_classic": True}
+        cls.fake = guard_write(cls.clone.sandbox / "index_fake_c03.json")
+        cls.fake.write_bytes(json.dumps(fake, ensure_ascii=False).encode("utf-8"))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.clone.remove()
+
+    def setUp(self):
+        events.configure("off")
+        self.addCleanup(events.configure, "text")
+
+    def test_default_run_reads_from_year_start(self):
+        c = self.clone
+        sb = _Sb(c)
+        cfg = cfg_of(c.sandbox)                                     # 기본: lookbackDays 120 · sinceYearStart 켜짐
+        d = FakeDeps(sb, cfg, ident_=ident("C03"), probe=probe_result(CAPS), real_pipe=True,
+                     real_collectors=("mail.index",), env=c.env({"LM_INDEX_FAKE": str(self.fake)}))
+        res = R.collect_here(sb.paths, cfg, deps=d, only=["mail.index"])
+        argv = d.collector_calls("mail.index")[0][2]
+        self.assertEqual(argv[argv.index("-Since") + 1], "2026-01-01")
+        st = sr.read_stage_result(sb.paths, res.run_id, "mail_local")
+        self.assertEqual(st["srcs"]["mail.index"]["ranges"], [["2026-01-01", "2026-10-05"]])
+        self.assertEqual(st["items_ok"], 3, st)                      # 2월·6월·10월 메일 모두 읽음
+        cells = {x["date"]: x["status"] for x in ledger.load_cells(sb.paths)
+                 if x["src"] == "mail.index" and x["kind_axis"] == "mail_in"}
+        for day in ("2026-02-02", "2026-06-02", "2026-10-01"):
+            self.assertEqual(cells[day], "ok", day)                  # 예전: 2월·6월이 zero_ok(메일이 있는데 0건)
+        self.assertEqual(cells["2026-03-02"], "zero_ok")             # 읽었고 없는 날
+        self.assertEqual(cells["2026-01-15"], "out_of_horizon")      # 색인 지평선(가장 오래된 항목) 앞 — 0h 아님
+
+
+
+class LoginPendingRealCase(unittest.TestCase):
+    """v1.3 §0.8 V18 — 진짜 Get-OutlookWeb.py(LM_OWA_FAKE 화면: 로그인 보류 짧은 확인 · 개인 계정)가 상태 줄에 login_pending ·
+    login_account 를 싣고, 연결자가 그 경로를 skipped=login_pending 으로 남기며 같은 프로필의 팀즈 웹은 띄우지 않는다."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.clone = make_clone(parts=("lm27", "collect", "config"))
+        (cls.clone.root / "data").mkdir(exist_ok=True)
+        cls.fake = guard_write(cls.clone.sandbox / "owa_fake_v18.json")
+        cls.fake.write_bytes(json.dumps({"login": True, "login_pending": True, "login_account": "personal"}).encode())
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.clone.remove()
+
+    def test_web_collector_login_pending_end_to_end(self):
+        import io
+        out = io.StringIO()
+        events.configure("jsonl", stream=out, reset_seq=True)
+        self.addCleanup(events.configure, "text")
+        c = self.clone
+        sb = _Sb(c)
+        cfg = cfg_of(c.sandbox, **{"collect.lookbackDays": 10, "collect.sinceYearStart": False})
+        d = FakeDeps(sb, cfg, ident_=ident("V18"), probe=probe_result(CAPS), real_collectors=("cal.owa",),
+                     env=c.env({"LM_OWA_FAKE": str(self.fake)}))
+        res = R.collect_here(sb.paths, cfg, deps=d, only=["cal.owa", "teams.web"])
+        bo = sr.read_stage_result(sb.paths, res.run_id, "backfill_owa")
+        ob = bo["srcs"]["cal.owa"]
+        self.assertEqual((ob["rc"], ob["reasons"], ob["skipped"]), (2, ["R-LOGIN"], "login_pending"))
+        self.assertEqual(d.collector_calls("teams.web"), [])            # 같은 전용 프로필 — 다시 띄우지 않는다(V10)
+        bt = sr.read_stage_result(sb.paths, res.run_id, "backfill_teams_web")
+        self.assertEqual(bt["srcs"]["teams.web"]["skipped"], "login_pending")
+        texts = [json.loads(x).get("text_ko") for x in out.getvalue().splitlines() if '"notice"' in x]
+        self.assertIn(R.NOTICE_LOGIN_PENDING, texts)
+        from lm27.bridge.session import LOGIN_PERSONAL_TEXT
+        self.assertIn(LOGIN_PERSONAL_TEXT, texts)
+
+
 if __name__ == "__main__":
     unittest.main()

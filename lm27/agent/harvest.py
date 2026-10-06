@@ -26,15 +26,15 @@ import subprocess
 import threading
 import time
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 
 from lm27.store import LockTimeout, file_lock, load_raw_cursor
 from lm27.util import fsx, proc
 
 __all__ = [
-    "COLLECTORS", "HARVEST_DONE_SCHEMA", "HARVEST_STREAMS", "POLL", "Collector", "ConnResult", "Runtime",
-    "in_line", "load_settings", "parse_status", "parse_summary", "powershell_exe", "run_connector", "run_harvest",
-    "runtime_for", "start_harvest_child",
+    "COLLECTORS", "HARVEST_DONE_SCHEMA", "HARVEST_SRCS", "HARVEST_STREAMS", "POLL", "Collector", "ConnResult", "Runtime",
+    "harvest_window", "in_line", "load_settings", "parse_status", "parse_summary", "powershell_exe", "run_connector",
+    "run_harvest", "runtime_for", "start_harvest_child", "window_args",
 ]
 
 HARVEST_STREAMS = ("pc_session/pc.events", "pc_file/pc.files", "pc_file/pc.mru", "pc_file/pc.recent")
@@ -134,6 +134,34 @@ def collector_timeout(spec: Collector, settings: dict) -> float:
 def pipe_wait(settings: dict) -> float:
     """``privacy.pipe.waitSec``(30~1800, 기본 120)."""
     return float(_int(settings.get("privacy.pipe.waitSec"), 120, 30, 1800))
+
+
+HARVEST_SRCS = frozenset(s.partition("/")[2] for s in HARVEST_STREAMS)
+
+
+def harvest_window(settings: dict, now=None) -> tuple:
+    """수확 창 ``(since, until)``(로컬 날짜 ``YYYY-MM-DD``, 근무 시간대 ``time.tzOffsetMin``) — 전경 수집의
+    ``lm27.collect.ledger.default_since`` 와 같은 셈(에이전트 사본에는 ``lm27.collect`` 가 없어 여기서 다시 센다 — 계약
+    v1.3 §0.8 V6): 오늘 − ``collect.lookbackDays`` + 1 과 (``collect.sinceYearStart`` 가 켜져 있거나 없으면) 올해 1월 1일
+    중 이른 날 ~ 오늘. PS 수집기는 이 창을 ``-Since``·``-Until`` 로 받고 커서 ``read_from`` 으로 앞쪽 공백을 다시 낸다."""
+    lb = _int(settings.get("collect.lookbackDays"), 120, 1, 1825)
+    off = _int(settings.get("time.tzOffsetMin"), 540, -720, 840)
+    n = now if isinstance(now, datetime) else datetime.now(UTC)
+    if n.tzinfo is None:
+        n = n.replace(tzinfo=UTC)
+    today = (n.astimezone(UTC) + timedelta(minutes=off)).date()
+    d0 = today - timedelta(days=lb - 1)
+    if settings.get("collect.sinceYearStart", True) is not False:
+        d0 = min(d0, date(today.year, 1, 1))
+    return d0.isoformat(), today.isoformat()
+
+
+def window_args(spec: Collector, settings: dict, now=None, extra_args=()) -> tuple:
+    """수확 흐름(폴링 제외) 수집기에 늘 넘기는 ``-Since <d0> -Until <d1>``. 시험 주입 인자에 이미 있으면 그대로(두 번 넘기지 않음)."""
+    if spec.src not in HARVEST_SRCS or "-Poll" in spec.args or "-Since" in tuple(str(a) for a in extra_args):
+        return ()
+    d0, d1 = harvest_window(settings, now)
+    return ("-Since", d0, "-Until", d1)
 
 
 def _int(v, default: int, lo: int, hi: int) -> int:
@@ -300,9 +328,10 @@ def _kill(child) -> None:
 def run_connector(paths, pc_id: str, src: str, *, settings: dict | None = None, ctxcache: dict | None = None,
                   poll: bool = False, rt: Runtime | None = None, extra_args=(), abort=None, clock=time.monotonic,
                   spawn=proc.spawn, collector_timeout_s: float | None = None,
-                  pipe_wait_s: float | None = None) -> ConnResult:
+                  pipe_wait_s: float | None = None, now=None) -> ConnResult:
     """수집기 하나 → 정제 파이프(계약 §7.3). ``extra_args`` = 시험 주입 인자(계약 §11.3 — ``-EventsCsv`` 등).
-    ``collector_timeout_s``·``pipe_wait_s`` = 시험용 상한(없으면 설정·예산에서)."""
+    ``collector_timeout_s``·``pipe_wait_s`` = 시험용 상한(없으면 설정·예산에서). 수확 흐름은 창(``window_args`` —
+    ``now`` 기준, 없으면 지금)을 늘 넘긴다(v1.3 §0.8 V6 — 수집기 상태 줄 ``range`` 가 원장 관측 창이 된다)."""
     spec = POLL if poll else COLLECTORS[src]
     st = settings if settings is not None else load_settings(paths)
     cc = ctxcache if ctxcache is not None else load_ctxcache(paths)
@@ -314,7 +343,7 @@ def run_connector(paths, pc_id: str, src: str, *, settings: dict | None = None, 
         res.skipped = "settings_missing"
         return res
     r = rt or runtime_for(paths)
-    col_argv = r.collector_argv(spec, pc_id, extra_args)
+    col_argv = r.collector_argv(spec, pc_id, (*window_args(spec, st, now, extra_args), *extra_args))
     pipe_argv = r.pipe_argv(spec, pc_id)
     try:
         pipe = spawn(pipe_argv, stdin=proc.PIPE, stdout=proc.PIPE, stderr=proc.PIPE, env=r.env, cwd=r.cwd)
@@ -403,11 +432,12 @@ def run_harvest(paths, install_id: str, pc_id: str, streams=HARVEST_STREAMS, *, 
     tick = now or (lambda: datetime.now(UTC))
     try:
         with file_lock(paths.harvest_lock(), 0):
-            started = _utc(tick())
+            t_start = tick()
+            started = _utc(t_start)
             out = {}
             for spec in specs:
                 r = run_connector(paths, pc_id, spec.src, settings=st, ctxcache=cc, rt=rt,
-                                  extra_args=(extra_args or {}).get(spec.src, ()), clock=clock)
+                                  extra_args=(extra_args or {}).get(spec.src, ()), clock=clock, now=t_start)
                 out[spec.src] = r.as_dict()
             bad = [v for v in out.values() if v["skipped"] or v["timed_out"] or v["pipe"] not in (0, 2)
                    or v["rc"] not in (0, 1, 4)]

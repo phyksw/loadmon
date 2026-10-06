@@ -16,8 +16,8 @@
       (계약 v1.2 §0.7 C4 — 부분 결과: rc 는 새 레코드 기준 0·4, 셀은 partial 이라 cal.owa 가 빈 회차를 채운다).
     · 상한(mail.index.capMail·capCal)에 닿으면 조용히 자르지 않고 cap_hit + R-CAP(rc 0, 셀 partial).
     · 막힌 사유가 있으면 항상 rc 3 + 사유: 색인 연결 실패 R-NOIDX · 색인 일시정지 R-IDXPAUSED · 제한 언어 모드 R-CLM ·
-      Outlook 항목 0 → R-IDXPOLICY(정책) / R-NEWOL(클래식 없는 새 Outlook) / R-NOPROF(클래식은 있으나 메일 계정이 든
-      프로필 없음) / R-ONLINE(온라인 모드 — 그 밖).
+      Outlook 항목 0 → R-IDXPOLICY(정책) / R-NEWOL(클래식 없는 새 Outlook) / R-NOAPP(클래식도 새 Outlook 도 없음) /
+      R-NOPROF(클래식은 있으나 메일 계정이 든 프로필 없음) / R-ONLINE(클래식 있음 — 온라인 모드). 탐침과 같은 판정.
   rc: 0 새 레코드 · 1 기간에 항목 없음 · 3 막힘·불완전(사유) · 4 읽었지만 새것 0(커서 이후 0).
 
   커서(계약 §3.10): {"last_item_ts_utc": UTC, "read_from": UTC} — read_from 은 이미 읽은 범위의 시작(이 수집기가 더한 칸).
@@ -103,6 +103,29 @@ function Get-OutlookProfileState {
     return $r
 }
 
+# 색인에 Outlook 항목이 0 일 때의 막힘 사유(탐침 Invoke-CapabilityProbe.ps1 Decide-Index 와 같은 규칙 — v1.3 §0.8 V3·V4).
+function Get-ZeroItemsReason([bool]$policy, [bool]$classic, [bool]$newOl, [bool]$noprof) {
+    if ($policy) { return 'R-IDXPOLICY' }
+    if (-not $classic) { if ($newOl) { return 'R-NEWOL' } else { return 'R-NOAPP' } }
+    if ($noprof) { return 'R-NOPROF' }
+    return 'R-ONLINE'
+}
+# 새 Outlook 흔적(탐침 P-OL-INST 와 같은 세 가지): 전환 토글(UseNewOutlook=1) · 실행 중(olk) · 설치 패키지(Microsoft.OutlookForWindows_*).
+function Test-NewOutlookTrace {
+    try {
+        foreach ($rp in @('HKCU:\Software\Microsoft\Office\16.0\Outlook\Preferences', 'HKCU:\Software\Microsoft\Office\Outlook\Preferences')) {
+            $pref = Get-ItemProperty -LiteralPath $rp -ErrorAction SilentlyContinue
+            if ($pref -and $pref.PSObject.Properties['UseNewOutlook'] -and [int]$pref.UseNewOutlook -eq 1) { return $true }
+        }
+    } catch { }
+    try { if (Get-Process -Name olk -ErrorAction SilentlyContinue) { return $true } } catch { }
+    try {
+        $pkRoot = 'HKCU:\Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages'
+        $pk = @(Get-ChildItem -LiteralPath $pkRoot -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -like 'Microsoft.OutlookForWindows_*' })
+        if ($pk.Count -gt 0) { return $true }
+    } catch { }
+    return $false
+}
 function Find-ClassicOutlook {
     # 클래식 Outlook(OUTLOOK.EXE) 위치 — 판(2010~365)·설치 방식(MSI·Click-to-Run)·32/64비트와 상관없이 찾는다.
     # App Paths 한 곳만 보면 Microsoft 365(Click-to-Run) PC 대부분에서 못 찾아 '새 Outlook 전용' 으로 오판했다(실측).
@@ -418,6 +441,7 @@ function Write-Results {
 function Invoke-IndexKind([string]$kind, $ctx) {
     $src = $(if ($kind -eq 'mail') { 'mail.index' } else { 'cal.index' })
     $res = New-Result $src
+    $res['range'] = @($ctx.sinceDay, $ctx.untilDay)          # 이번에 맡은 창(로컬 날짜) — 원장 관측을 이 창으로(V6 · T-09)
     $script:Results.Add($res)
     foreach ($r in $ctx.reasons) { Add-Reason $res $r }
     if ($ctx.fatal) { Add-Reason $res $ctx.fatal; $res.rc = 3; return }
@@ -610,10 +634,16 @@ try {
     $untilDay = $Until
     if (-not $untilDay) { $untilDay = $nowLocal.ToString('yyyy-MM-dd', $script:Inv) }
     $sinceDay = $Since
-    if (-not $sinceDay) { $sinceDay = [datetime]::ParseExact($untilDay, 'yyyy-MM-dd', $script:Inv).AddDays(-89).ToString('yyyy-MM-dd', $script:Inv) }
+    if (-not $sinceDay) {
+        # 기본 창 = collect.lookbackDays(원장 기본 시작일과 같은 셈 — 오늘 포함 n 일). 연결자는 늘 -Since 를 넘긴다(v1.3 §0.8 V6)
+        $lb = 120
+        try { $lb = [int](Get-Cfg $in 'collect.lookbackDays' 120) } catch { $lb = 120 }
+        if ($lb -lt 1) { $lb = 120 }
+        $sinceDay = [datetime]::ParseExact($untilDay, 'yyyy-MM-dd', $script:Inv).AddDays(-($lb - 1)).ToString('yyyy-MM-dd', $script:Inv)
+    }
     $ctx = @{
         in = $in; reasons = (New-Object System.Collections.Generic.List[string]); fatal = $null; nowUtc = $nowUtc
-        sinceUtc = (Get-LocalDayUtc $sinceDay 0); untilUtc = (Get-LocalDayUtc $untilDay 1)
+        sinceUtc = (Get-LocalDayUtc $sinceDay 0); untilUtc = (Get-LocalDayUtc $untilDay 1); sinceDay = $sinceDay; untilDay = $untilDay
         capMail = [int](Get-Cfg $in 'mail.index.capMail' 20000); capCal = [int](Get-Cfg $in 'mail.index.capCal' 8000)
         exclude = @(Get-Cfg $in 'mail.index.excludeFolderNames' $DEFAULT_EXCLUDE | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ })
         fake = $null; conn = $null; extRejected = $false; horizon = $null
@@ -671,21 +701,15 @@ try {
             $pol = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search' -ErrorAction Stop
             if ($pol.PSObject.Properties['PreventIndexingOutlook'] -and [int]$pol.PreventIndexingOutlook -eq 1) { $policy = $true }
         } catch { }
-        $newOl = $false
-        try {
-            foreach ($rp in @('HKCU:\Software\Microsoft\Office\16.0\Outlook\Preferences', 'HKCU:\Software\Microsoft\Office\Outlook\Preferences')) {
-                $pref = Get-ItemProperty -LiteralPath $rp -ErrorAction SilentlyContinue
-                if ($pref -and $pref.PSObject.Properties['UseNewOutlook'] -and [int]$pref.UseNewOutlook -eq 1) { $newOl = $true }
-            }
-        } catch { }
-        try { if (Get-Process -Name olk -ErrorAction SilentlyContinue) { $newOl = $true } } catch { }
+        $newOl = Test-NewOutlookTrace
     }
     if (-not $ctx.fatal -and $total -eq 0) {
-        # 색인에 Outlook 항목이 하나도 없다 — 0건이 아니라 막힘(CM §6.4 분해, X-124·X-125)
-        # 새 Outlook 전용(클래식 없음)일 때만 R-NEWOL — 클래식이 있는데 색인에 Outlook 항목이 없으면 온라인 모드(캐시 꺼짐)다
-        if ($policy) { $ctx.fatal = 'R-IDXPOLICY' } elseif ($newOl -and -not $(if ($ctx.fake) { $classicFake } else { [bool](Find-ClassicOutlook) })) { $ctx.fatal = 'R-NEWOL' }
-        elseif ($(if ($ctx.fake) { $noprofFake } else { [bool](Find-ClassicOutlook) -and (Get-OutlookProfileState).usable -eq 0 })) { $ctx.fatal = 'R-NOPROF' }
-        else { $ctx.fatal = 'R-ONLINE' }
+        # 색인에 Outlook 항목이 하나도 없다 — 0건이 아니라 막힘(CM §6.4 분해, X-124·X-125). 탐침 Decide-Index 와 같은 판정
+        # (v1.3 §0.8 V3·V4 — W2 검토 C10): 정책 R-IDXPOLICY · 클래식 없음 → 새 Outlook 흔적이면 R-NEWOL, 없으면 R-NOAPP(미설치 —
+        # 온라인 모드 안내를 하지 않는다) · 클래식은 있으나 쓸 수 있는 프로필 없음 R-NOPROF · 그 밖(클래식 있음) R-ONLINE.
+        if ($ctx.fake) { $classicNow = $classicFake } else { $classicNow = [bool](Find-ClassicOutlook) }
+        if ($ctx.fake) { $noprofNow = $noprofFake } else { $noprofNow = ($classicNow -and (Get-OutlookProfileState).usable -eq 0) }
+        $ctx.fatal = Get-ZeroItemsReason $policy $classicNow $newOl $noprofNow
     }
     foreach ($k in $kinds) { Invoke-IndexKind $k $ctx }
     if ($script:Cursors.Count) {

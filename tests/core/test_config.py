@@ -284,6 +284,18 @@ class UsedHashSubsetTest(unittest.TestCase):
         with self.assertRaises(C.UnknownKeyError):
             a.hash(["collect.noSuchKey"])
 
+    def test_owner_rx_script_names(self):
+        """owner·readers 표기(계약 §5.1-11) — 파이썬 탐침 스크립트 이름의 밑줄(probe_owa.py 등, §2.17)도 받는다(통합)."""
+        for ok in ("lm27.collect.run", "collect/Get-OutlookIndex.ps1", "collect/probe_owa.py", "collect/agent/harvest.ps1"):
+            self.assertRegex(ok, C.OWNER_RX)
+        for bad in ("collect/../x.py", "collect/_x.py", "collect/a b.py", "tools/x.py", "lm27.Collect"):
+            self.assertIsNone(C.OWNER_RX.match(bad), bad)
+        reg = C.load_registry()
+        self.assertIn("collect/probe_owa.py", reg["probe.budgetSec"].readers)
+        self.assertIn("collect/Get-OutlookIndex.ps1", reg["collect.lookbackDays"].readers)
+        self.assertEqual((reg["collect.sinceYearStart"].scope, reg["collect.sinceYearStart"].restart), ("agent", "agent"))
+        self.assertIn("collect.sinceYearStart", load().agent_subset())          # 에이전트 수확 창(V6 — 통합)
+
     def test_agent_subset_matches_contract_rule(self):
         cfg = load("config_mixed.json")
         sub = cfg.agent_subset()

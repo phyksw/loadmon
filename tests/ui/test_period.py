@@ -103,6 +103,10 @@ class PresetRuleTest(unittest.TestCase):
         for k, s in CASES["period_source"]:
             self.assertEqual(P.period_source(k), s, k)
 
+    def test_range_for_source_non_string(self):
+        for bad in ([], {"q1": 1}, 3, True, ("q1",)):
+            self.assertIsNone(P.range_for_source(bad, "2026-10-06"), repr(bad))
+
     def test_range_for_source(self):
         today = "2026-05-20"
         self.assertEqual(P.range_for_source(None, today), ("2026-01-01", "2026-05-20"))
@@ -197,6 +201,19 @@ class ApiDefaultPeriodTest(unittest.TestCase):
         self.app.deps.now = lambda: datetime(2026, 5, 20, 3, 0, tzinfo=UTC)
         st, b, _ = self.srv.req("POST", "/api/analysis/run", {"period_source": "q4"})
         self.assertEqual((st, b["code"]), (400, "bad_period"), "아직 오지 않은 분기")
+
+    def test_non_string_period_source_400_not_500(self):
+        """L07 회귀: 문자열이 아닌 period_source(목록·객체·숫자·참거짓)는 500 internal 이 아니라 400."""
+        for ps in ([], ["q1"], {"a": 1}, 7, True):
+            for extra in ({}, {"from": "2026-07-01", "to": "2026-09-30"}):
+                st, b, _ = self.srv.req("POST", "/api/analysis/run", {"period_source": ps, **extra})
+                self.assertEqual((st, b["code"]), (400, "bad_period_source"), (ps, extra))
+        self.assertEqual(self.app.jobs.list(), [], "작업을 띄우지 않았다")
+
+    def test_runs_defaults_carry_work_offset(self):
+        """L06 바탕: 화면 기간 카드가 '오늘'을 PC 벽시계가 아니라 근무 시간대로 세도록 오프셋을 함께 준다."""
+        st, runs, _ = self.srv.req("GET", "/api/analysis/runs")
+        self.assertEqual(runs["defaults"]["period"]["tz_offset_min"], 540)
 
 
 class CliDefaultPeriodTest(unittest.TestCase):

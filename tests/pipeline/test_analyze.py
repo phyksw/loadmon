@@ -38,6 +38,7 @@ class FullRunTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.w = W.World()
+        cls.addClassCleanup(cls.w.remove)           # setUpClass 가 중간에 실패해도 임시 ROOT 를 지운다(W2 검토 L12)
         cls.rows = W.rows()
         cls.w.put(cls.rows)
         cls.w.keyring()
@@ -53,7 +54,6 @@ class FullRunTest(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         loud()
-        cls.w.remove()
 
     def test_rc_state_current(self):
         self.assertEqual(self.rc, 0)

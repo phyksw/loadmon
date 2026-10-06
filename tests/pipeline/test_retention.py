@@ -48,6 +48,24 @@ class PruneTest(unittest.TestCase):
         self.assertTrue((root / "20260901-080000-00aa").is_file())
         self.assertEqual(RT.prune_analysis(self.w.paths, "x"), [])   # 형 오류 = 하한 1
 
+    def test_bridge_journal_of_pruned_run_removed(self):
+        """W2 검토 L10: 정리한 분석과 같은 run_id 의 브리지 저널(data\\ai\\runs\\<run_id>)도 지운다 — 남긴 실행·다른 run_id
+        저널(수동 내보내기 등)·AI 답 보존소는 그대로."""
+        ids = mk_runs(self.w, 5)
+        other = "20260801-100000-0abc"                                # 분석 밖 브리지 실행(수동 내보내기 등)
+        for rid in ids + [other]:
+            fsx.atomic_write(self.w.paths.ai_journal(rid, "review_text"), b'{"t":"req"}\n')
+            fsx.atomic_write(self.w.paths.ai_result(rid, "review_text"), b"{}")
+        fsx.atomic_write(self.w.paths.ai_store("review_text"), b'{"t":"commit"}\n')
+        fsx.atomic_write(self.w.paths.analysis_current(), json.dumps({"run_id": ids[0]}).encode("utf-8"))
+        gone = RT.prune_analysis(self.w.paths, 2)
+        self.assertEqual(gone, ids[1:3])
+        for rid in gone:
+            self.assertFalse(self.w.paths.ai_run(rid).exists(), rid)
+        for rid in (ids[0], ids[3], ids[4], other):
+            self.assertTrue(self.w.paths.ai_journal(rid, "review_text").is_file(), rid)
+        self.assertTrue(self.w.paths.ai_store("review_text").is_file())
+
     def test_no_analysis_dir(self):
         self.assertEqual(RT.list_runs(self.w.paths), [])
         self.assertEqual(RT.prune_analysis(self.w.paths, 10), [])

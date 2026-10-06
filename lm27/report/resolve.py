@@ -218,9 +218,12 @@ class Resolver:
         return a if a else UNKNOWN_APP
 
     def title_safe(self, title: str) -> bool:
-        """가림판에 그대로 낼 수 있는 제목인가(사람 이름·로컬 키·사람 토큰 없음)."""
+        """가림판에 그대로 낼 수 있는 제목인가(사람 이름·로컬 키·사람 토큰·시간 코어 업무 표지 없음)."""
         s = str(title or "")
         if not s.strip() or "[사람" in s or KEY_RX.search(s):
+            return False
+        from lm27.hier.groups import is_marker          # 'MANUAL:t:…'·'APP:…' 표지는 KEY_RX 가 못 잡는다(W2 C08 — 통합)
+        if is_marker(s):
             return False
         return not any(nm in s for nm in self._names)
 

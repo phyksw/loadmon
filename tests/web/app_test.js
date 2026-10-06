@@ -799,6 +799,138 @@ scenario("팀 — 포트 검사·서버 오류 칸 표시·기본값 되돌리�
   });
 });
 
+scenario("팀 대기열 — 승인 전 묶음은 행에서 바로 보내지 않는다(미리보기·보내기만), 승인된 묶음은 [보내기]·[다시 시도](C17)", function () {
+  var routes = baseRoutes(fixture("report_model.json"));
+  var st = clone(routes["GET /api/team/status"]);
+  var base = st.outbox[0];
+  st.outbox = [Object.assign(clone(base), {item: "lm27_team_bundle_2026-09_0123456789ab", approved: false, state: "pending"}),
+    Object.assign(clone(base), {item: "lm27_team_bundle_2026-08_1111111111aa", period_key: "2026-08", approved: true, state: "pending"}),
+    Object.assign(clone(base), {item: "lm27_team_bundle_2026-07_2222222222bb", period_key: "2026-07", approved: true, state: "retry_wait"}),
+    Object.assign(clone(base), {item: "lm27_team_bundle_2026-06_3333333333cc", period_key: "2026-06", approved: false, state: "failed"})];
+  routes["GET /api/team/status"] = st;
+  var c = bootApp(routes, "#team");
+  return settle().then(function () {
+    var sends = byAct(c.main, "a-send").map(function (b) { return b.getAttribute("data-ref"); });
+    assert.deepStrictEqual(sends, ["lm27_team_bundle_2026-08_1111111111aa", "lm27_team_bundle_2026-07_2222222222bb"], "승인된 것만 행의 [보내기]");
+    var pv = byAct(c.main, "a-preview", "lm27_team_bundle_2026-09_0123456789ab")[0];
+    assert.strictEqual(text(pv), "미리보기·보내기");
+    assert.strictEqual(c.srv.count("POST", "/api/team/send/lm27_team_bundle_2026-09_0123456789ab"), 0);
+    fire(pv, "click");
+    return settle();
+  }).then(function () {
+    assert.strictEqual(c.srv.count("GET", "/api/team/preview/lm27_team_bundle_2026-09_0123456789ab"), 1, "미리보기를 먼저 연다");
+  });
+});
+
+scenario("팀 미리보기 [제목 가림] — 서버가 다시 만들기 작업을 띄웠을 때만 그 작업을 추적, 아니면 서버 문구 그대로(C16)", function () {
+  var routes = baseRoutes(fixture("report_model.json"));
+  var ITEM = "lm27_team_bundle_2026-09_0123456789ab";
+  var JID = "j20261007090000beef";
+  var reply = {ok: true, changed: true, stale_n: 1, text_ko: "가림을 저장했습니다. 가리기 전에 만든 대기 묶음 1개는 보내지 않습니다. 묶음은 아직 다시 만들지 못했습니다: 지금 '분석'이 진행 중입니다"};
+  routes["POST /api/team/mask"] = function () { return clone(reply); };
+  routes["GET /api/jobs/" + JID] = {job_id: JID, kind: "team_build", lane: "bundle", state: "running", events: []};
+  var c = bootApp(routes, "#team");
+  function drawer() { return c.doc.body.all().filter(function (n) { return n.getAttribute("role") === "dialog"; })[0]; }
+  return settle().then(function () {
+    fire(byAct(c.main, "a-preview")[0], "click");
+    return settle();
+  }).then(function () {
+    fire(byAct(drawer(), "a-mask", "u_a1a1a1a1a1|title")[0], "click");
+    return settle();
+  }).then(function () {
+    var b = c.srv.last("POST", "/api/team/mask").body;
+    assert.deepStrictEqual([b.unit_id, b.mode, b.item], ["u_a1a1a1a1a1", "title", ITEM], "미리보기 중인 항목을 함께 보낸다");
+    var al = text(c.doc.getElementById("lm27-alerts"));
+    assert.ok(al.indexOf("다시 만들었습니다") < 0, "작업이 없으면 '다시 만들었다'고 하지 않는다");
+    assert.ok(al.indexOf("묶음은 아직 다시 만들지 못했습니다") >= 0, "서버 문구 그대로");
+    reply = {ok: true, changed: true, stale_n: 1, job_id: JID, text_ko: "가림을 바꿔 2026-09-01 ~ 2026-09-30 묶음을 다시 만듭니다 — 끝나면 미리보기를 다시 엽니다(이전 묶음은 대체됩니다)"};
+    fire(byAct(c.main, "a-preview")[0], "click");
+    return settle();
+  }).then(function () {
+    fire(byAct(drawer(), "a-mask", "u_a1a1a1a1a1|detail")[0], "click");
+    return settle();
+  }).then(function () {
+    assert.ok(c.app.state.jobs[JID] && c.app.state.jobs[JID].kind === "team_build", "다시 만들기 작업을 추적");
+    assert.ok(text(c.doc.getElementById("lm27-alerts")).indexOf("묶음을 다시 만듭니다") >= 0);
+  });
+});
+
+scenario("팀 미리보기 — 가림을 바꾼 뒤의 옛 묶음은 [보내기]·[승인만]이 잠기고 이유를 보인다(C16)", function () {
+  var routes = baseRoutes(fixture("report_model.json"));
+  var ITEM = "lm27_team_bundle_2026-09_0123456789ab";
+  var pv = clone(routes["GET /api/team/preview/" + ITEM]);
+  pv.units[0].mask = "title";
+  pv.units[0].mask_applied = false;
+  pv.stale_mask = true;
+  pv.can_send = false;
+  pv.mask_gaps = ["unit:u_a1a1a1a1a1:title"];
+  pv.message = "가림을 바꾼 뒤 아직 다시 만들지 않은 묶음이라 보내지 않습니다 — [팀 묶음 만들기]로 다시 만들면 바뀐 가림으로 보냅니다";
+  routes["GET /api/team/preview/" + ITEM] = pv;
+  var c = bootApp(routes, "#team");
+  return settle().then(function () {
+    fire(byAct(c.main, "a-preview")[0], "click");
+    return settle();
+  }).then(function () {
+    var dr = c.doc.body.all().filter(function (n) { return n.getAttribute("role") === "dialog"; })[0];
+    var t = text(dr);
+    assert.ok(t.indexOf("보낼 수 없는 이유: 가림을 바꾼 뒤 아직 다시 만들지 않은 묶음") >= 0, t.slice(0, 400));
+    assert.ok(t.indexOf("이 묶음에는 아직 — 다시 만들면 적용") >= 0, "가림 칸에 적용 안 됨 표시");
+    var send = byAct(dr, "a-pv-send")[0];
+    assert.ok(send.hasAttribute("aria-disabled") || send.hasAttribute("disabled"), "[보내기] 잠김");
+    fire(send, "click");
+    return settle();
+  }).then(function () {
+    assert.strictEqual(c.srv.count("POST", "/api/team/send/" + ITEM), 0, "보내지 않는다");
+  });
+});
+
+scenario("기간 카드 '오늘' = 서버가 알려 준 근무 시간대(PC 벽시계가 아님) — 사람이 손대지 않은 기본 기간만 맞춘다(L06)", function () {
+  function boot(off) {
+    var routes = baseRoutes(fixture("report_model.json"));
+    var runs = clone(routes["GET /api/analysis/runs"]);
+    runs.defaults = {months: 3, period: {tz_offset_min: off}};
+    routes["GET /api/analysis/runs"] = runs;
+    var n = 0;
+    routes["POST /api/analysis/run"] = function () { n++; return {job_id: "j2026100700000" + n + "c0de"}; };
+    [1, 2, 3].forEach(function (k) {
+      var id = "j2026100700000" + k + "c0de";
+      routes["GET /api/jobs/" + id] = {job_id: id, kind: "analyze", state: "done", rc: 0, events: []};
+    });
+    return bootApp(routes, "#analysis", {now: new Date(Date.UTC(2026, 9, 6, 23, 30, 0))});    // UTC 10-06 23:30
+  }
+  var runsBefore = 0;
+  var a = boot(840);                                        // UTC+14 → 10-07 13:30
+  var b = boot(-720);                                       // UTC−12 → 10-06 11:30
+  return settle().then(function () {
+    assert.deepStrictEqual(dates(a), ["2026-01-01", "2026-10-07"], "근무 시간대 +14:00 의 오늘");
+    assert.deepStrictEqual(dates(b), ["2026-01-01", "2026-10-06"], "근무 시간대 −12:00 의 오늘");
+    assert.deepStrictEqual(pressedChips(a.period), ["ytd"]);
+    fire(byAct(a.period, "a-period", "q4")[0], "click");
+    assert.deepStrictEqual(dates(a), ["2026-10-01", "2026-10-07"], "분기 단추도 같은 오늘");
+    fire(byAct(b.period, "a-analyze")[0], "click");
+    return settle();
+  }).then(function () {
+    var body = b.srv.last("POST", "/api/analysis/run").body;
+    assert.deepStrictEqual([body.from, body.to, body.period_source], ["2026-01-01", "2026-10-06", "default"]);
+    b.timers.run();                                         // 분석 작업이 끝나면 전역 자료(분석 이력)를 다시 읽는다
+    return settle();
+  }).then(function () {
+    var f = b.doc.getElementById("an-from");
+    f.value = "2026-03-01";
+    fire(f, "change");
+    assert.strictEqual(b.app.state.periodAuto, false);
+    runsBefore = b.srv.count("GET", "/api/analysis/runs");
+    fire(byAct(b.period, "a-analyze")[0], "click");
+    return settle();
+  }).then(function () {
+    b.timers.run();
+    return settle();
+  }).then(function () {
+    assert.ok(b.srv.count("GET", "/api/analysis/runs") > runsBefore, "작업이 끝나 전역 자료를 다시 읽었다");
+    assert.deepStrictEqual(dates(b), ["2026-03-01", "2026-10-06"], "사람이 고친 기간은 다시 맞추지 않는다");
+  });
+});
+
 scenario("설정 — 묶음 이동·값 저장 오류는 그 줄에·개인정보 묶음은 감사·광고 큐를 읽음", function () {
   var routes = baseRoutes(fixture("report_model.json"));
   routes["PUT /api/settings"] = {status: 400, body: {ok: false, code: "invalid", error: "저장하지 않았습니다", errors: {"ui.jobPollMs": "200~10000 사이여야 합니다"}}};
@@ -1163,6 +1295,9 @@ if (require.main === module) {
       A.strictEqual(b.text, "기간 2026-07-01 ~ 2026-09-30 · 기준 09-30 18:00 · 분석 10-05 10:15(자동 선택) · 기간 출처: 기본값(최근 3개월) · AI 112 · 규칙 8");
       A.strictEqual(b.ruleHeavy, false);
       A.strictEqual(R.bandParts({label_sources: {x: {ai: 1, rule: 3}}}).ruleHeavy, true, "규칙 50% 초과 안내");
+      // 자동/직접 선택은 현재 결과일 때만 온다 — 없으면 괄호를 달지 않는다(통합 — W2 C01)
+      A.strictEqual(R.bandParts({built_at: "2026-10-05T10:15:00+09:00"}).text, "분석 10-05 10:15");
+      A.strictEqual(R.bandParts({built_at: "2026-10-05T10:15:00+09:00", chosen: "explicit"}).text, "분석 10-05 10:15(직접 선택)");
       A.strictEqual(R.periodSourceText("this_month"), "이번 달");
       A.strictEqual(R.periodSourceText("nope"), null);
       A.deepStrictEqual(R.parseRoute("#report/evidence/2026-09-22"), {section: "evidence", arg: "2026-09-22"});
@@ -1300,6 +1435,17 @@ if (require.main === module) {
       m.agentic.needs = [{need_id: "n_1a2b3c", name: "해석 결과 정리 자동화", logic: "표로 정리", "in": "디지털 입력", out: "정형 출력",
         step_type: "APP_CAE", freq_per_month: 4.3, grade: "중", by: "rule", units: ["u_a1a1a1a1a1"], dropped: false}];
       A.ok(txt(m, realState("agentic")).indexOf("디지털 입력 → 정형 출력") >= 0, "니즈 입력 → 출력(in·out)");
+      // 로컬 카탈로그(V13)를 못 썼거나 고쳐 읽은 까닭 — 있으면 그 문구(통합 — W2 L04)
+      var agNote = "config\\agentic_tasks.json 의 JSON 형식이 깨졌습니다";
+      m.agentic.catalog_note = agNote;
+      A.ok(txt(m, realState("agentic")).indexOf(agNote) >= 0, "카탈로그가 있을 때도 로컬 카탈로그 경고");
+      var m0 = realModel();
+      m0.agentic.catalog_n = 0; m0.agentic.matches = []; m0.agentic.catalog = [];
+      A.ok(txt(m0, realState("agentic")).indexOf("팀 레지스트리를 받으면 채워집니다") >= 0, "카탈로그 없음 기본 안내");
+      m0.agentic.catalog_note = agNote;
+      var t0 = txt(m0, realState("agentic"));
+      A.ok(t0.indexOf("에이전트 목록이 없습니다 — " + agNote) >= 0 && t0.indexOf("팀 레지스트리를 받으면") < 0, "로컬 카탈로그 문제면 그 까닭");
+      delete m.agentic.catalog_note;
       m.peers.internal[1].internal = null;                            // 모델: 사람 사전에서 사내로 확인 = true, 모름 = null
       m.refs.people["7"].internal = null;
       m.peers.internal[0].internal = true;

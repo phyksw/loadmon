@@ -182,6 +182,44 @@ class TestRegistryApi(ApiCase):
         self.assertEqual((code, obj["ok"]), (200, True))
 
 
+class TestCrossOrigin(ApiCase):
+    """L08 회귀: 팀 서버 PC 의 브라우저가 연 남의 웹페이지가 루프백으로 보내는 교차 출처 요청(단순 POST·다른 Origin)은
+    끄기·재취합·레지스트리·명단을 건드리지 못한다. 이 서버 화면(같은 출처)·화면 서버·CLI(Origin 없음, JSON)는 그대로 된다."""
+
+    EVIL = {"Origin": "http://evil.example", "Content-Type": "application/json"}
+
+    def test_simple_cross_site_posts_refused(self):
+        for path in ("/api/aggregate", "/api/shutdown"):
+            code, obj, _ = self.ts.call("POST", path, b"x", {"Content-Type": "text/plain"})
+            self.assertEqual((code, obj["code"]), (415, "content_type"), path)
+            code, obj, _ = self.ts.call("POST", path, b"a=1", {"Content-Type": "application/x-www-form-urlencoded"})
+            self.assertEqual(code, 415, path)
+            code, obj, _ = self.ts.call("POST", path, b"{}", self.EVIL)
+            self.assertEqual((code, obj["code"]), (403, "cross_origin"), path)
+            code, obj, _ = self.ts.call("POST", path, b"{}", {"Content-Type": "application/json", "Origin": "null"})
+            self.assertEqual(code, 403, path)
+            code, obj, _ = self.ts.call("POST", path, b"{}", {"Content-Type": "application/json",
+                                                              "Sec-Fetch-Site": "cross-site"})
+            self.assertEqual(code, 403, path)
+        self.assertEqual(self.ts.call("GET", "/api/hello")[0], 200)                # 서버 계속
+        self.assertEqual(self.ts.app.agg.req, 0, "재취합을 걸지 않았다")
+
+    def test_admin_writes_refuse_other_origin(self):
+        body = json.dumps({"label": "x"}).encode()
+        self.assertEqual(self.ts.call("PATCH", f"/api/members/{PK1}", body, self.EVIL)[0], 403)
+        self.assertEqual(self.ts.call("PUT", "/api/registry", b"{}", self.EVIL)[0], 403)
+
+    def test_same_origin_and_local_tools_allowed(self):
+        same = {"Content-Type": "application/json", "Origin": f"http://127.0.0.1:{self.ts.port}",
+                "Sec-Fetch-Site": "same-origin"}
+        code, obj, _ = self.ts.call("POST", "/api/aggregate", b"{}", same)
+        self.assertEqual((code, obj["ok"]), (200, True))
+        code, obj, _ = self.ts.call("POST", "/api/aggregate", b"{}", {"Content-Type": "application/json"})
+        self.assertEqual(code, 200)                                                  # 화면 서버·CLI(Origin 없음)
+        code, obj, _ = self.ts.call("POST", "/api/shutdown", b"{}", {"Content-Type": "application/json"})
+        self.assertEqual((code, obj["stopping"]), (200, True))
+
+
 class TestReadToken(ApiCase):
     over = {"teamServer.readRequiresToken": True, "teamServer.uploadTokenSha256": _sha("read-tok")}
 

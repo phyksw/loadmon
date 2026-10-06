@@ -57,7 +57,7 @@ _PY_SINCE = ("--from", "--to")
 _FILE_KEYS = ("pc.watchExtensions", "pc.excludeFolderNames", "pc.excludePackageDirs", "collect.lookbackDays")
 _COM_KEYS = ("mail.com.budgetSec", "mail.com.watchdogSec", "mail.com.protectedReadSec", "mail.com.capMail",
              "mail.com.capCal", "mail.com.readProtected", "mail.includeArchiveStore", "collect.ownerAddress",
-             "probe.subfolderRatio")
+             "probe.subfolderRatio", "collect.lookbackDays")
 _IDX_KEYS = ("mail.index.capMail", "mail.index.capCal", "mail.index.excludeFolderNames", "collect.ownerAddress",
              "collect.lookbackDays")
 _UIA_KEYS = ("teams.timeRegex", "teams.uia.visibleOnly", "teams.uia.maxElements", "teams.uia.windowWatchdogSec",

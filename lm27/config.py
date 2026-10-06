@@ -37,12 +37,12 @@ REQUIRED_FIELDS = ("default", "type", "owner", "readers", "spec", "uncalibrated"
                    "label_ko", "help_ko")
 OPTIONAL_FIELDS = ("range", "choices", "item", "keys", "nullable", "pattern")
 KEY_RX = re.compile(r"^[a-z][A-Za-z0-9]*(?:\.[a-z][A-Za-z0-9]*)+$")
-OWNER_RX = re.compile(r"^(?:lm27(?:\.[a-z][a-z0-9_]*)+|collect/(?:agent/)?[A-Za-z][A-Za-z0-9-]*\.(?:py|ps1))$")
+OWNER_RX = re.compile(r"^(?:lm27(?:\.[a-z][a-z0-9_]*)+|collect/(?:agent/)?[A-Za-z][A-Za-z0-9_-]*\.(?:py|ps1))$")
 
 # 계약 §5.1-8 — 에이전트로 내려가는 키(agent_config.json)
 AGENT_SUBSET_PREFIXES = ("agent.", "pc.", "teams.uia.")
-AGENT_SUBSET_KEYS = ("teams.timeRegex", "time.tzOffsetMin", "collect.lookbackDays", "privacy.pipe.waitSec",
-                     "privacy.audit.retentionMonths")
+AGENT_SUBSET_KEYS = ("teams.timeRegex", "time.tzOffsetMin", "collect.lookbackDays", "collect.sinceYearStart",
+                     "privacy.pipe.waitSec", "privacy.audit.retentionMonths")   # sinceYearStart = 수확 창(V6 — 통합)
 
 _TIMERANGE_RX = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d-(?:[01]\d|2[0-3]):[0-5]\d$")
 _W16_RX = re.compile(r"^w[0-9a-f]{16}$")

@@ -192,6 +192,17 @@ class JobArgvTest(unittest.TestCase):
         self.assertIsNotNone(jid)
         self.assertEqual(_wait_job(self.app, jid)["result"]["argv"], ["team", "send", "--all", "--trigger", "timer"])
 
+    def test_move_prepare_waits_for_ui_server(self):
+        """통합(W2 C21 handoff): [이동 준비]는 도우미가 화면 서버의 정상 종료를 기다리게 서버 pid 를 넘긴다(move-prepare --wait-pid)."""
+        import os
+        from unittest import mock
+        seen = []
+        with mock.patch.object(self.app, "start_job", lambda kind, argv: seen.append((kind, list(argv))) or
+                               {"ok": True, "job_id": "j1"}):
+            st, b, _ = self.srv.req("POST", "/api/move/prepare", {})
+        self.assertEqual(st, 200, b)
+        self.assertEqual(seen, [("move_prepare", ["move-prepare", "--wait-pid", str(os.getpid())])])
+
     def test_report_export_and_team_argv(self):
         self.assertEqual(self._argv("POST", "/api/report/export", {"run_id": RUN_ID}),
                          ["report", "export", "--run", RUN_ID, "--formats", "html,csv,json", "--variant", "full,redacted"])

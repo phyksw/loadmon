@@ -32,7 +32,8 @@ class InputsTest(unittest.TestCase):
         self.assertEqual(inp.refused, [])
         self.assertEqual(inp.missing, [])
         self.assertEqual(inp.period, ("2026-08-01", "2026-10-04"))
-        self.assertEqual(inp.run["chosen"], "auto")
+        self.assertNotIn("chosen", inp.run)                          # 화면 선택은 모델 입력이 아니다(G-R1 — C01)
+        self.assertEqual(I.chosen_of(self.t.paths, R.RUN_ID), "auto")
         self.assertEqual(inp.run["as_of"], "2026-10-04T18:00")
         self.assertEqual(len(inp.time.tasks), len(self.run.w.tasks))
         self.assertIn("u_a1", inp.labels)
@@ -79,13 +80,13 @@ class InputsTest(unittest.TestCase):
         self.run.write(self.t.paths, current=False)
         inp = self.run.inputs(self.t.paths, self.cfg)
         self.assertEqual(inp.period, ("2026-08-01", "2026-10-04"))
-        self.assertIsNone(inp.run["chosen"])
+        self.assertIsNone(I.chosen_of(self.t.paths, R.RUN_ID))
         # 다른 실행을 가리키는 current.json 은 이 실행의 선택 정보가 아니다
         atomic_write(self.t.paths.analysis_current(), b'{"run_id": "20260101-000000-abcd", "from": "2025-01-01", '
                                                        b'"to": "2025-01-31", "chosen": "explicit"}')
         inp = self.run.inputs(self.t.paths, self.cfg)
         self.assertEqual(inp.period, ("2026-08-01", "2026-10-04"))
-        self.assertIsNone(inp.run["chosen"])
+        self.assertIsNone(I.chosen_of(self.t.paths, R.RUN_ID))
 
     def test_paths_methods_missing(self):
         """경로 메서드가 없는 경로 객체(옛 판) → PathsMethodMissing(조용히 다른 경로를 조립하지 않는다 — L-08)."""

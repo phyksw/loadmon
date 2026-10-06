@@ -55,6 +55,22 @@ class FoldUkeyTest(unittest.TestCase):
         self.assertAlmostEqual(N.bigram_dice("과제A 일정", "과제A 회의"), N.bigram_dice("과제A 회의", "과제A 일정"))
         self.assertEqual(N.bigram_dice("", ""), 1.0)
 
+    def test_memo_same_as_raw(self):
+        """통합(W2 성능 handoff): 메모한 fold·ukey 는 메모 없는 계산과 같은 값 — 긴 글(MEMO_LEN 초과)은 메모하지 않는다."""
+        samples = ["과제A·광센서(양산)", "ＡＢＣ－12／시험", "  여러   칸 ", None, 12, "x" * (N.MEMO_LEN + 5) + " (끝)",
+                   "회로도_QX-12_v2.xlsx", "열해석（선행）"]
+        for s in samples * 2:                                         # 두 번째는 메모에서
+            t = str(s if s is not None else "")
+            self.assertEqual(N.fold(s), N._fold_raw(t, True), s)
+            self.assertEqual(N.fold(s, drop_note=False), N._fold_raw(t, False), s)
+            self.assertEqual(N.ukey(s), N._fold_raw(t, False).replace(" ", ""), s)
+        info = N._ukey_memo.cache_info()
+        self.assertGreater(info.hits, 0)
+        self.assertLessEqual(info.currsize, N.MEMO_MAX)
+        before = N._fold_memo.cache_info().currsize
+        N.fold("y" * (N.MEMO_LEN + 1))
+        self.assertEqual(N._fold_memo.cache_info().currsize, before)  # 긴 글은 메모에 남기지 않는다
+
     def test_single_source_import(self):
         # X-233: 팀 서버도 같은 함수를 import 한다(사본 금지)
         from lm27.hier.names import ukey

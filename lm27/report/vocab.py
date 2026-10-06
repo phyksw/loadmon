@@ -40,6 +40,7 @@ __all__ = [
     "ONTO_RELS",
     "ONTO_RELS_INFERRED",
     "QUALITY_GRADES",
+    "QUALITY_PERIOD_TEXT",
     "QUALITY_TEXT",
     "REASON_UI",
     "REC_KINDS",
@@ -188,6 +189,10 @@ QUALITY_TEXT: dict[str, str] = {
     "no_envelope": "이 달은 근무시간이 계산되지 않았습니다",
     "mining_coarse": "단계 정밀도가 낮습니다 — 시간 결과에 단계 정보가 없습니다",
 }
+# 기간 전체 카드의 문구가 달 문구와 달라야 하는 사유(그런 달의 수 {n} — `quality.period_texts`)
+QUALITY_PERIOD_TEXT: dict[str, str] = {
+    "no_envelope": "근무시간이 계산되지 않은 달이 {n}개 있습니다 — 그 달은 기록이 없거나 수집 전입니다",
+}
 
 # ───────────────────────────── 분석 경고(모델 flags.warnings — {code, text_ko}) ─────────────────────────────
 WARN_TEXT: dict[str, str] = {
@@ -196,9 +201,13 @@ WARN_TEXT: dict[str, str] = {
     "peers_unverified": "동료 관계를 기록으로 다시 확인하지 못해 시간 결과의 관계를 그대로 씁니다",
     "registry_missing": "팀 레지스트리가 없어 과제 이름 대신 ID 를, 에이전트 목록 없이 보입니다",
     "catalog_empty": "에이전트 목록이 없습니다 — 팀 레지스트리를 받으면 채워집니다",
+    # 로컬 카탈로그(config\agentic_tasks.json — V13) 경고. 모델은 lm27.hier.registry.LOCAL_CATALOG_WARNS 의 구체 문구를 싣는다
+    "local_catalog": "로컬 Agentic 카탈로그(config\\agentic_tasks.json)를 그대로 쓰지 못했습니다",
     "fallback_unavailable": "규칙 라벨 단계를 불러오지 못해 단계 이름만 보입니다",
     "units_empty": "이 기간에 만들어진 단위업무가 없습니다",
     "calendar_mismatch": "달력 판이 다릅니다 — 다시 분석하면 맞춰집니다",
+    "model_over_cap": "보고서 모델이 상세를 줄인 뒤에도 크기 상한을 넘습니다({mb}MB / 상한 {cap}MB) — 보고서는 그대로 "
+                      "보이지만 화면·내보낸 파일이 무거울 수 있습니다. 분석 기간을 나눠 보면 작아집니다",
 }
 
 

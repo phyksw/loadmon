@@ -9,6 +9,8 @@
 from __future__ import annotations
 
 import os
+import threading
+import time
 import unittest
 from datetime import UTC, datetime
 
@@ -28,6 +30,7 @@ class DrillViewTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.t = R.TmpRoot()
+        cls.addClassCleanup(cls.t.cleanup)          # setUpClass 가 중간에 실패해도 임시 ROOT 를 지운다(W2 검토 L12)
         cls.cfg = W.cfg()
         cls.srun = R.rich_run()
         cls.srun.write(cls.t.paths)
@@ -38,10 +41,6 @@ class DrillViewTest(unittest.TestCase):
                            people_ref={v["key"]: int(k) for k, v in refs["people"].items()},
                            doc_ref={v["key"]: int(k) for k, v in refs["docs"].items()})
         cls.red = M.redact_model(cls.m, cls.inp.registry, person_dir=cls.inp.person_dir)
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.t.cleanup()
 
     def test_day(self):
         v = D.day_view(self.inp, self.m, "2026-09-02", "full", cfg=self.cfg)
@@ -154,6 +153,74 @@ class DrillApiTest(unittest.TestCase):
         self.assertIsNot(D.DrillSource.load(R.RUN_ID, paths=t.paths, cfg=cfg), s1)
         with self.assertRaises(ValueError):
             D.day_drill(R.RUN_ID, "2026-09-02", "team", paths=t.paths, cfg=cfg)
+        D.forget()
+
+
+class DrillCacheLifetimeTest(unittest.TestCase):
+    """W2 검토 C18: 드릴다운 캐시가 보고서 입력 전체를 무기한 붙잡던 것 — 유휴 만료·즉시 비우기·적재 직렬화."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.t = R.TmpRoot()
+        cls.addClassCleanup(cls.t.cleanup)
+        cls.cfg = W.cfg()
+        R.rich_run().write(cls.t.paths)
+        r = RP.build_report(R.RUN_ID, paths=cls.t.paths, cfg=cls.cfg, fallback=no_fallback,
+                            now=datetime(2026, 10, 5, tzinfo=UTC))
+        assert r.rc in (0, 2), r.message
+
+    def setUp(self):
+        D.forget()
+        self.addCleanup(D.forget)
+        old = D.DrillSource.idle_s
+        self.addCleanup(setattr, D.DrillSource, "idle_s", old)
+
+    def test_forget_releases(self):
+        D.unit_drill(R.RUN_ID, "u_a2", paths=self.t.paths, cfg=self.cfg)
+        self.assertEqual(D.DrillSource.cached(), 1)
+        D.forget()
+        self.assertEqual(D.DrillSource.cached(), 0)
+        self.assertIsNone(D.DrillSource._timer)
+
+    def test_idle_expiry_by_timer(self):
+        D.DrillSource.idle_s = 0.3
+        D.day_drill(R.RUN_ID, "2026-09-02", paths=self.t.paths, cfg=self.cfg)
+        self.assertEqual(D.DrillSource.cached(), 1)
+        deadline = time.monotonic() + 10
+        while D.DrillSource.cached() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertEqual(D.DrillSource.cached(), 0)                  # 아무도 안 쓰면 스스로 놓는다
+        self.assertIsNone(D.DrillSource._timer)
+
+    def test_use_keeps_alive_and_stale_hit_reloads(self):
+        D.DrillSource.idle_s = 600
+        s1 = D.DrillSource.load(R.RUN_ID, paths=self.t.paths, cfg=self.cfg)
+        self.assertIs(D.DrillSource.load(R.RUN_ID, paths=self.t.paths, cfg=self.cfg), s1)
+        key = next(iter(D.DrillSource._cache))
+        sig, src, _ts = D.DrillSource._cache[key]
+        D.DrillSource._cache[key] = (sig, src, time.monotonic() - 601)   # 타이머보다 먼저 온 호출 — 만료로 본다
+        self.assertIsNot(D.DrillSource.load(R.RUN_ID, paths=self.t.paths, cfg=self.cfg), s1)
+
+    def test_concurrent_cold_loads_read_once(self):
+        calls = []
+        real = D.DrillSource.__init__
+
+        def counting(this, *a, **kw):
+            calls.append(1)
+            time.sleep(0.2)                                      # 적재가 느린 동안 두 번째 요청이 온다
+            real(this, *a, **kw)
+        D.DrillSource.__init__ = counting
+        self.addCleanup(setattr, D.DrillSource, "__init__", real)
+        got = []
+        ths = [threading.Thread(target=lambda: got.append(D.DrillSource.load(R.RUN_ID, paths=self.t.paths,
+                                                                            cfg=self.cfg))) for _ in range(2)]
+        for th in ths:
+            th.start()
+        for th in ths:
+            th.join(30)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(got), 2)
+        self.assertIs(got[0], got[1])
 
 
 if __name__ == "__main__":

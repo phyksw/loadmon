@@ -260,7 +260,8 @@ def _g_bundle(app, s: UiState) -> None:
     last = last_collect(app)
     if last and last.get("run_id"):
         d = date(int(last["run_id"][:4]), int(last["run_id"][4:6]), int(last["run_id"][6:8]))
-        today = now.date()
+        from lm27.ui.server import ui_today
+        today = ui_today(app)                            # run_id 날짜는 로컬 — 화면의 '오늘'도 근무 시간대(C12)
         if d < today and _workdays_between(d, today) > 2:
             s.collect_days_ago = (today - d).days
 

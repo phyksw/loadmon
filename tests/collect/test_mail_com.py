@@ -143,6 +143,12 @@ class MailComTest(CloneTestCase):
         self.assertEqual(r2.records, [])
         self.assertEqual(r2.result("mail.com")["counts"]["months_skipped"], 2)
 
+    def test_status_range_and_default_window(self):
+        """W2 검토 C03(V6): 상태 줄 range = 이번에 맡은 창. -Since 가 없으면 collect.lookbackDays(오늘 포함 n 일) — 89일 고정 아님."""
+        self.assertEqual(self.basic().result("mail.com")["range"], ["2026-08-01", "2026-09-30"])
+        r = self.run_com("3", rng=["-TestNow", "2026-10-05 09:00"], cfg={"collect.lookbackDays": 20})
+        self.assertEqual(r.result("mail.com")["range"], ["2026-09-16", "2026-10-05"])
+
     # ── CM-14 · CM-7 ──────────────────────────────────────────────────────────────────────────────
     def test_cm14_b_stage_passes_header_and_recipient_clues(self):
         r = self.protected()[0]

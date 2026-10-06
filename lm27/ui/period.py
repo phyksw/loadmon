@@ -98,7 +98,10 @@ def key_of(from_, to, today) -> str | None:
 
 def range_for_source(source, today) -> tuple[str, str] | None:
     """날짜 없이 기간 출처만 받았을 때의 기간(API·CLI): 없음·'default' → 기본(올해 1월 1일 ~ 오늘), 'q1'~'q4'·'h1'·'h2' → 그 빠른
-    선택(아직 오지 않은 기간이면 None). 그 밖(this_month·last_month·this_year·user — 날짜와 함께만 쓰는 값)은 None."""
+    선택(아직 오지 않은 기간이면 None). 그 밖(this_month·last_month·this_year·user — 날짜와 함께만 쓰는 값)과 문자열이 아닌
+    값(목록·객체 — API 본문)은 None."""
+    if source is not None and not isinstance(source, str):
+        return None
     if source in (None, "", "default"):
         return default_range(today)
     if source in _SPAN and source != DEFAULT_KEY:

@@ -93,6 +93,7 @@ def probe(*, environ, paths, cfg, clock, now, budget_sec, session_factory=None, 
         factory = session_factory or W.edge_session
         screen = T.CdpTeamsScreen(factory(T.ROLE, W.tz.new_run_id(), paths=paths, clock=clock, environ=environ),
                                   clock, counts)
+        screen.wait_login = False                          # 탐침은 로그인을 기다리지 않는다(V10 — 대기는 수집기가)
     base = (ef["edge"], ef["policy_debug"], ef["policy_devtools"])
     try:
         state = screen.open(dl)
@@ -100,7 +101,8 @@ def probe(*, environ, paths, cfg, clock, now, budget_sec, session_factory=None, 
         if state != "ready":
             rc, why = W.session_failure(state, getattr(getattr(screen, "s", None), "error", None))
             st = "fail" if rc == W.RC_LOGIN or why in ("R-EDGEPOL", "R-NOAPP") else "transport_fail"
-            out["caps"][CAP] = P.cap(st, [why], {"login": login, "aadsts": counts.get("aadsts"), "edge": ef["edge"]},
+            out["caps"][CAP] = P.cap(st, [why], {"login": login, "aadsts": counts.get("aadsts"), "edge": ef["edge"],
+                                                 **P.login_value(screen, rc)},
                                      (CAP, *base, login, counts.get("aadsts")))
             return out
         lp = screen.list_page("chats", dl) or {}
@@ -128,7 +130,8 @@ def probe(*, environ, paths, cfg, clock, now, budget_sec, session_factory=None, 
     except W.ScreenStop as x:
         rc, why = W.session_failure(x.state, x.info)
         st = "fail" if rc == W.RC_LOGIN else "transport_fail"
-        out["caps"][CAP] = P.cap(st, [why], {"login": P.login_of(x.state)}, (CAP, *base, x.state))
+        out["caps"][CAP] = P.cap(st, [why], {"login": P.login_of(x.state), **P.login_value(screen, rc)},
+                                 (CAP, *base, x.state))
         return out
     finally:
         screen.close()

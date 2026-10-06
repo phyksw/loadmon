@@ -251,3 +251,94 @@ class TestBindAndServe(unittest.TestCase):
             self.assertTrue(res["ok"], res)
             self.assertEqual(res["members"], 1)
             self.assertTrue((st.gen_dir(1) / "team_data.json").is_file())
+
+
+_SLOW_AGG = r'''
+import os, sys, time
+store = sys.argv[sys.argv.index("--store") + 1]
+with open(os.path.join(store, "agg_child.pid"), "w", encoding="utf-8") as f:
+    f.write(str(os.getpid()))
+time.sleep(60)
+'''
+
+
+class TestShutdownStopsAggregate(unittest.TestCase):
+    """C22 회귀: 재취합 자식(team-aggregate)이 도는 중에 서버를 끄면 자식 트리를 끝내고 워커를 합류한다(예전: 자식이 고아로
+    남아 잠금을 놓은 저장소의 같은 세대에 덮어썼다). 끄는 데 오래 걸리지 않는다."""
+
+    def _store(self, d, **over):
+        import sys
+
+        from lm27.paths import Paths
+        cli = d / "slow_agg.py"
+        cli.write_text(_SLOW_AGG, encoding="utf-8")
+
+        class FPaths(Paths):
+            def cli_script(self):
+                return cli
+
+            def python_exe(self):
+                from pathlib import Path
+                return Path(sys.executable)
+
+        from lm27.team.store import open_store
+        cfg = B.test_cfg(d / "store", **{"teamServer.aggregateDebounceSec": 0, **over})
+        return open_store(cfg, payload_check=B.pass_check, registry_validator=lambda _o, side: [],
+                          paths=FPaths(B.TREE))
+
+    def _child(self, st, timeout=20):
+        pidf = st.dir / "agg_child.pid"
+        t0 = time.monotonic()
+        while not pidf.is_file() and time.monotonic() - t0 < timeout:
+            time.sleep(0.05)
+        return int(pidf.read_text(encoding="utf-8"))
+
+    def test_close_kills_running_aggregate_child(self):
+        from lm27.util import proc
+        with B.temp_dir() as d:
+            st = self._store(d)
+            srv = server.TeamServer(st.cfg, st, host="127.0.0.1", port=free_port(), inbox=False,
+                                    maintenance=False).bind().start()
+            try:
+                srv.app.agg.request()
+                pid = self._child(st)
+                self.addCleanup(lambda: proc.pid_alive(pid) and proc.kill_tree(pid))
+                self.assertTrue(proc.pid_alive(pid))
+                t0 = time.monotonic()
+                srv.shutdown()
+                srv.close()
+                self.assertLess(time.monotonic() - t0, 15)
+                self.assertFalse(proc.pid_alive(pid), "재취합 자식이 고아로 남지 않는다")
+                self.assertFalse(srv.app.agg.thread.is_alive(), "워커 스레드 합류")
+                self.assertEqual(srv.app.agg.status()["state"], "failed")
+                self.assertIsNone(st.current_gen(), "멈춘 재취합은 세대를 내지 않는다")
+            finally:
+                srv.shutdown()
+                srv.close()
+
+    def test_serve_shutdown_ends_child_before_lock_release(self):
+        from lm27.util import proc
+        with B.temp_dir() as d:
+            port = free_port()
+            st = self._store(d, **{"teamServer.bindHost": "127.0.0.1", "teamServer.bindPort": port})
+            box, ready = {}, threading.Event()
+
+            def on_ready(srv):
+                box["srv"] = srv
+                srv.app.agg.request()
+                ready.set()
+            t = threading.Thread(target=lambda: box.setdefault("rc", server.serve(st.cfg, store=st, ready=on_ready)),
+                                 daemon=True)
+            with contextlib.redirect_stdout(io.StringIO()):
+                t.start()
+                self.assertTrue(ready.wait(30))
+                pid = self._child(st)
+                self.addCleanup(lambda: proc.pid_alive(pid) and proc.kill_tree(pid))
+                code, obj, _ = http("POST", f"http://127.0.0.1:{port}/api/shutdown", b"{}",
+                                    {"Content-Type": "application/json"})
+                self.assertEqual(code, 200)
+                t.join(30)
+            self.assertEqual(box.get("rc"), 0)
+            self.assertFalse(proc.pid_alive(pid), "serve 가 끝나 잠금을 놓을 때 재취합 자식은 이미 끝났다")
+            self.assertTrue(st.lock_server(), "잠금이 풀렸다")
+            st.release_server()

@@ -166,6 +166,67 @@ class ScheduleTest(unittest.TestCase):
             self.jm.start("analyze", ["analyze"])
 
 
+_HELPER_CLI = r'''
+import json, os, subprocess, sys
+# 이동 준비처럼: 손주(도우미)가 표준 출력·오류를 물려받은 채(stdin 만 DEVNULL) 오래 살고, 하위 명령은 결과를 내고 바로 끝난다
+p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], stdin=subprocess.DEVNULL,
+                     creationflags=0x08000000)
+with open(os.environ["LM27T_GC_PID"], "w", encoding="utf-8") as f:
+    f.write(str(p.pid))
+print(json.dumps({"ev": "result", "data": {"ok": True}}), flush=True)
+print(json.dumps({"ev": "run_end", "rc": 0}), flush=True)
+'''
+
+
+class GrandchildPipeTest(unittest.TestCase):
+    """C21 회귀: 하위 명령이 출력 파이프를 물려받은 손주를 남기고 끝나도, 작업은 곧 끝나고(done) on_done 이 불린다
+    (예전: 손주가 끝날 때까지 '진행 중' — 이동 준비면 서버 정상 종료가 돌지 않았다). 결과 이벤트는 잃지 않는다."""
+
+    def setUp(self):
+        self.sb = Sandbox()
+        self.addCleanup(self.sb.cleanup)
+        self.cli = self.sb.dir / "helper_cli.py"
+        self.cli.write_text(_HELPER_CLI, encoding="utf-8")
+        self.pidf = self.sb.dir / "gc.pid"
+
+    def _kill_gc(self):
+        try:
+            pid = int(self.pidf.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if proc.pid_alive(pid):
+            proc.kill_tree(pid)
+
+    def test_job_done_while_grandchild_holds_pipe(self):
+        import os
+        import sys
+        done = []
+        t0 = time.monotonic()
+
+        def spawn(argv, **kw):
+            kw["env"] = {"LM27T_GC_PID": os.fspath(self.pidf)}
+            return proc.spawn(argv, **kw)
+
+        jm = J.JobManager(self.sb.paths, None, spawn=spawn, cli=os.fspath(self.cli), python=sys.executable,
+                          on_done=lambda j: done.append((time.monotonic() - t0, j.state)))
+        self.addCleanup(self._kill_gc)
+        self.addCleanup(jm.close)
+        job = jm.start("move_prepare", ["move-prepare"])
+        _wait(lambda: done, timeout=25)
+        self.assertTrue(done, "on_done 이 불려야 한다")
+        self.assertEqual(done[0][1], "done")
+        self.assertLess(done[0][0], 8.0, "손주(30초)가 끝날 때까지 기다리지 않는다")
+        pid = int(self.pidf.read_text(encoding="utf-8"))
+        self.assertTrue(proc.pid_alive(pid), "손주는 아직 산다(작업은 그와 상관없이 끝났다)")
+        v = jm.get(job.job_id)
+        self.assertEqual((v["state"], v["rc"]), ("done", 0))
+        self.assertEqual(v["result"], {"ok": True}, "결과 이벤트를 잃지 않는다")
+        self.assertEqual(fsx.read_json(self.sb.paths.ui_job_file(job.job_id), {})["state"], "done")
+        t1 = time.monotonic()
+        jm.close()
+        self.assertLess(time.monotonic() - t1, 5.0, "서버 종료(close)가 손주가 쥔 파이프의 읽기 스레드를 기다리지 않는다")
+
+
 class StateTest(unittest.TestCase):
     def test_state_of(self):
         self.assertEqual(J.state_of(0), "done")

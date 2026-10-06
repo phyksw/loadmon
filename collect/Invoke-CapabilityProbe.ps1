@@ -1502,6 +1502,7 @@ function Decide-Index($E, $O, $I, $Com, [string]$Kind, [string]$GroupState) {
     elseif ($null -ne $n -and $n -gt 0) { $st = 'ok'; if ($paused) { $rs['R-IDXPAUSED'] = 1 } }
     elseif ($paused) { $rs['R-IDXPAUSED'] = 1; $st = 'fail' }
     elseif (Test-NewOnly $O) { $rs['R-NEWOL'] = 1; $st = 'fail' }
+    elseif ($null -ne $n -and $n -eq 0 -and $null -ne $O -and -not (B $O['classic'])) { $rs['R-NOAPP'] = 1; $st = 'fail' }   # 클래식·새 Outlook 모두 없음(수집기와 같은 판정 — W2 C10)
     elseif ($null -ne $O -and (B $O['classic']) -and (S-Int $O['profiles']) -eq 0) { $rs['R-NOPROF'] = 1; $st = 'fail' }
     elseif ($null -ne $O -and (Test-Online $O $Com)) { $rs['R-ONLINE'] = 1; $st = 'fail' }
     elseif ($null -ne $n -and $n -eq 0 -and $null -ne $O -and (B $O['classic'])) { $rs['R-ONLINE'] = 1; $st = 'fail' }   # 클래식이 있는데 색인에 Outlook 항목 0 = 온라인 모드(수집기 판정과 같게)

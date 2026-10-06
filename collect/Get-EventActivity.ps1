@@ -248,6 +248,25 @@ function Get-LmCursorUtc {
     return (ConvertFrom-LmTime $p.Value)
 }
 
+# _in.cursor.read_from — 이 경로가 빠짐없이 낸 범위의 시작(UTC). 창이 그보다 이르면(기본 시작일이 앞당겨짐 — v1.3 §0.8 V6) 그
+# 앞쪽은 아직 낸 적이 없다: 이번에는 last_ts_utc 를 무시하고 창 전체를 다시 낸다(중복은 정제기의 레코드 id 로 흡수). read_from
+# 이 없는 예전 커서도 같다(한 번). 그래야 상태 줄 range(= 이번에 맡은 창)를 원장이 '읽었다'고 적어도 거짓이 아니다(T-09).
+function Get-LmReadFrom {
+    $c = $script:InCursor
+    if ($null -eq $c) { return $null }
+    $p = $c.PSObject.Properties['read_from']
+    if ($null -eq $p -or $null -eq $p.Value) { return $null }
+    return (ConvertFrom-LmTime $p.Value)
+}
+function Get-LmFromGap($curUtc, $rfPrev, [datetime]$sinceUtc) {
+    return (($null -ne $curUtc) -and (($null -eq $rfPrev) -or ($sinceUtc -lt $rfPrev)))
+}
+function Get-LmNewReadFrom($rfPrev, [datetime]$sinceUtc, [bool]$gap, [bool]$incomplete) {
+    if ($incomplete) { return $rfPrev }                    # 끝까지 못 냈다(예산) — 앞당기지 않는다
+    if ($null -ne $rfPrev -and -not $gap -and $rfPrev -lt $sinceUtc) { return $rfPrev }
+    return $sinceUtc
+}
+
 function New-LmStatus([string]$Src) {
     return [ordered]@{ schema = 'lm27.collector_status/1'; src = $Src; rc = 3; reasons = @(); partial = $false;
                        cap_hit = $false; budget_hit = $false; n = 0; counts = [ordered]@{}; in = 'none'; elapsed_ms = 0 }
@@ -481,8 +500,13 @@ function Invoke-Main {
     $endUtc = $rg.UntilUtc
     if ($nowUtc -lt $endUtc) { $endUtc = $nowUtc }
     $curUtc = Get-LmCursorUtc
+    $rfPrev = Get-LmReadFrom
+    $gap = Get-LmFromGap $curUtc $rfPrev $rg.SinceUtc
+    if ($gap) { $script:St['from_gap'] = $true }
+    $curEmit = $curUtc
+    if ($gap) { $curEmit = $null }                       # 앞쪽 공백 — 창 전체를 다시 읽고 낸다
     $readFrom = $rg.SinceUtc
-    if ($null -ne $curUtc -and $curUtc.AddMinutes(-$BootGroupMin) -gt $readFrom) { $readFrom = $curUtc.AddMinutes(-$BootGroupMin) }
+    if ($null -ne $curEmit -and $curEmit.AddMinutes(-$BootGroupMin) -gt $readFrom) { $readFrom = $curEmit.AddMinutes(-$BootGroupMin) }
 
     $bootUtc = $null
     if ($BootTime) { $bootUtc = ConvertFrom-LmTime $BootTime }
@@ -517,7 +541,7 @@ function Invoke-Main {
     $alwaysOn = ($nBoot -gt 0 -and $nOff -eq 0 -and -not $fallback -and $rangeDays -ge 2)
 
     $obs = Format-LmUtc $nowUtc
-    $emit = @($spans | Where-Object { $_.b -gt $_.a -and ($null -eq $curUtc -or $_.a -ge $curUtc) } |
+    $emit = @($spans | Where-Object { $_.b -gt $_.a -and ($null -eq $curEmit -or $_.a -ge $curEmit) } |
               Sort-Object -Property @{ Expression = { $_.a } }, @{ Expression = { $_.layer } })
     foreach ($s in $emit) {
         $state = 'active'
@@ -537,7 +561,10 @@ function Invoke-Main {
     if ($null -ne $curUtc -and $null -ne $newCur -and $newCur -lt $curUtc) { $newCur = $curUtc }
     $curVal = $null
     if ($null -ne $newCur) { $curVal = Format-LmUtc $newCur }
-    Write-LmCursor ([ordered]@{ last_ts_utc = $curVal })
+    $rfNew = Get-LmNewReadFrom $rfPrev $rg.SinceUtc $gap ([bool]$script:BudgetHit)
+    $rfVal = $null
+    if ($null -ne $rfNew) { $rfVal = Format-LmUtc $rfNew }
+    Write-LmCursor ([ordered]@{ last_ts_utc = $curVal; read_from = $rfVal })
 
     $sys = 'ok'
     if ($script:Channels.Contains('system')) { $sys = [string]$script:Channels['system'] }

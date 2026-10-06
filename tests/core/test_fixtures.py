@@ -178,6 +178,7 @@ class CleanupTest(unittest.TestCase):
             if owner is not None:
                 (d / tree.CLONE_MARK).write_text(f"src=x\nowner={owner}\n", encoding="utf-8")
                 os.utime(d / tree.CLONE_MARK, (age, age))
+            os.utime(d / "tests", (age, age))
             os.utime(d, (age, age))
             return d
 
@@ -197,6 +198,7 @@ class CleanupTest(unittest.TestCase):
         for keep in (alive, fresh, busy, other):
             self.assertTrue(keep.is_dir(), keep.name)
         fh.close()
+        os.utime(busy / "tests", (old, old))
         os.utime(busy, (old, old))
         self.assertEqual([p.name for p in tree.sweep_stale(b)], ["lm27t_busy"])   # 다 쓰고 나면 다음 청소가 지운다
         with self.assertRaises(AssertionError):
@@ -205,8 +207,141 @@ class CleanupTest(unittest.TestCase):
     def test_mark_records_owner_and_cli_make_uses_parent(self):
         with tree.make_clone() as c:
             self.assertEqual(tree._mark_owner(c.root), os.getpid())
+            made = float(tree._mark_fields(c.root)["made"])
+            self.assertLess(abs(made - time.time()), 600)
+            self.assertFalse(tree._owner_gone(c.root))                # 주인(이 프로세스)은 복제보다 먼저 시작했다
         self.assertTrue(tree._pid_alive(os.getpid()))
         self.assertFalse(tree._pid_alive(0))
+
+    def _old_clone(self, b, name, *, owner, made, age):
+        d = b / name
+        (d / "_sandbox" / "Temp").mkdir(parents=True)
+        (d / "_sandbox" / "Temp" / "x.txt").write_text("x", encoding="utf-8")
+        (d / tree.CLONE_MARK).write_text(f"src=x\nowner={owner}\nmade={made}\n", encoding="utf-8")
+        t = time.time() - age
+        for p in (d / "_sandbox" / "Temp", d / "_sandbox", d / tree.CLONE_MARK, d):
+            os.utime(p, (t, t))
+        return d
+
+    def test_sweep_orphans_of_long_lived_owner_and_reused_pid(self):
+        """실측 회귀(2026-10-06 — %TEMP% 에 lm27t_* 136개): 주인이 오래 사는 프로세스(워크플로 실행기 등)이면 주인 확인만으로는
+        영영 지우지 못했다. 6시간 넘게 손대지 않은 표지 있는 복제는 고아로 보고, PID 가 재사용된 주인은 끝난 것으로 본다.
+        쓰는 중(열린 파일·작업 폴더 — 이름 바꾸기 거부)인 복제는 건드리지 않는다."""
+        b = self._base()
+        me = os.getpid()
+        born = tree._proc_info(me)[1]
+        self.assertIsNotNone(born)
+        made = f"{born + 10:.0f}"                                     # 복제가 주인(이 프로세스) 시작 뒤에 생김 = 진짜 주인
+        orphan = self._old_clone(b, "lm27t_orphan", owner=me, made=made, age=7 * 3600)
+        recent = self._old_clone(b, "lm27t_recent", owner=me, made=made, age=2 * 3600)
+        reused = self._old_clone(b, "lm27t_reused", owner=me, made="1", age=2 * 3600)      # 주인 PID 가 복제보다 늦게 시작
+        busy = self._old_clone(b, "lm27t_inuse", owner=me, made=made, age=7 * 3600)
+        fh = open(busy / "_sandbox" / "Temp" / "x.txt", encoding="utf-8")   # noqa: SIM115 — 쓰는 중
+        self.addCleanup(fh.close)
+        self.assertTrue(tree._owner_gone(reused))
+        self.assertFalse(tree._owner_gone(recent))
+        gone = sorted(p.name for p in tree.sweep_stale(b))
+        self.assertEqual(gone, ["lm27t_orphan", "lm27t_reused"])
+        self.assertFalse(orphan.exists())
+        self.assertFalse(reused.exists())
+        self.assertTrue(recent.is_dir())                              # 주인이 살아 있고 2시간 — 아직 쓰는 중일 수 있다
+        self.assertTrue(busy.is_dir())                                # 열린 파일이 있다
+        t = time.time() - 7 * 3600
+        (recent / "_sandbox" / "Temp" / "new.txt").write_text("y", encoding="utf-8")   # 깊은 곳(2단)을 막 손댐
+        os.utime(recent, (t, t))
+        os.utime(recent / tree.CLONE_MARK, (t, t))
+        os.utime(recent / "_sandbox", (t, t))
+        self.assertEqual(tree.sweep_stale(b), [], "2단 폴더가 방금 바뀐 복제는 쓰는 중으로 본다")
+
+    def test_remove_keeps_mark_until_last_and_retries(self):
+        b = self._base()
+        d = b / "lm27t_rm"
+        (d / "_sandbox" / "Temp").mkdir(parents=True)
+        (d / tree.CLONE_MARK).write_text("owner=0\n", encoding="utf-8")
+        lk = d / "_sandbox" / "Temp" / "잠김.txt"
+        fh = open(lk, "w", encoding="utf-8")                     # noqa: SIM115 — 잠긴 파일(곧 닫는다)
+        self.addCleanup(fh.close)
+        ro = d / "읽기전용.txt"
+        ro.write_text("x", encoding="utf-8")
+        os.chmod(ro, 0o444)
+        c = tree.Clone(d)
+        self.assertFalse(c.remove(tries=2))                           # 잠긴 동안은 못 지운다
+        self.assertTrue((d / tree.CLONE_MARK).is_file(), "남은 조각에 표지가 남는다(청소가 알아본다)")
+        self.assertFalse(ro.exists(), "읽기 전용은 풀어서 지운다")
+        fh.close()
+        self.assertTrue(c.remove())
+        self.assertFalse(d.exists())
+
+
+_GRANDCHILD = r'''
+import os, subprocess, sys, time
+out = sys.argv[1]
+mode = sys.argv[2]
+kw = {"creationflags": 0x08000000}
+if mode != "pipe":
+    kw.update(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"], cwd=os.getcwd(), **kw)
+with open(out, "w", encoding="utf-8") as f:
+    f.write(str(p.pid))
+print("child-out", flush=True)
+if mode != "exit":
+    time.sleep(120)
+'''
+
+
+class RunTreeTest(unittest.TestCase):
+    """C19·C23 회귀: 시간 초과면 트리째 끊고(손주 고아 0 · 복제 지우기 성공), 손주가 출력 파이프를 쥐어도 시간 제한이 듣는다.
+    정상 종료여도 남은 손주를 끝낸다."""
+
+    def setUp(self):
+        self.c = tree.make_clone(parts=(), entry=False)
+        self.addCleanup(self._cleanup)
+        self.pids: list[int] = []
+
+    def _cleanup(self):
+        for pid in self.pids:
+            if tree._pid_alive(pid):
+                tree._kill_tree(pid)
+        self.assertTrue(self.c.remove(), "복제를 지운다(남은 손주 없음)")
+
+    def _run(self, mode, timeout):
+        pidf = self.c.temp / f"gc_{mode}.pid"
+        t0 = time.monotonic()
+        try:
+            cp = self.c.run_py(["-c", _GRANDCHILD, pidf, mode], timeout=timeout)
+        except Exception as e:                                      # noqa: BLE001 — TimeoutExpired 를 아래에서 확인
+            cp = e
+        dt = time.monotonic() - t0
+        pid = int(pidf.read_text(encoding="utf-8"))
+        self.pids.append(pid)
+        return cp, dt, pid
+
+    def _gone(self, pid, wait=5.0):
+        end = time.monotonic() + wait
+        while tree._pid_alive(pid) and time.monotonic() < end:
+            time.sleep(0.05)
+        return not tree._pid_alive(pid)
+
+    def test_timeout_kills_grandchild_holding_pipe(self):
+        import subprocess
+        cp, dt, pid = self._run("pipe", 3)
+        self.assertIsInstance(cp, subprocess.TimeoutExpired)
+        self.assertLess(dt, 25, "손주가 파이프를 쥐어도 시간 제한이 듣는다")
+        self.assertIn(b"child-out", cp.output or b"")
+        self.assertTrue(self._gone(pid), "손주가 고아로 남지 않는다")
+
+    def test_timeout_kills_detached_grandchild(self):
+        import subprocess
+        cp, dt, pid = self._run("devnull", 3)
+        self.assertIsInstance(cp, subprocess.TimeoutExpired)
+        self.assertTrue(self._gone(pid))
+
+    def test_normal_exit_ends_leftover_grandchild(self):
+        cp, dt, pid = self._run("exit", 60)
+        self.assertEqual(cp.returncode, 0, cp.stderr)
+        self.assertIn(b"child-out", cp.stdout)
+        self.assertLess(dt, 20)
+        self.assertTrue(self._gone(pid), "정상 종료여도 남은 손주는 끝낸다(Job 닫기)")
 
 
 class LeakHelperTest(unittest.TestCase):

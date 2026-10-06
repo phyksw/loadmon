@@ -197,6 +197,20 @@ class TestModelEquality(BuildCase):
                                                {"step_no": 4, "proposal": "보고 발신 단계 보조"}])
         self.assertEqual(ag["catalog_version"], "ag-1")
 
+    def test_needs_src_manual_copilot_answer_is_ai(self):
+        """L00 회귀: 직접 붙여넣은 코파일럿 답(by=manual)의 니즈는 'ai'(코파일럿 의견) — 예전에는 'rule'(규칙 사전)로 바뀌었다."""
+        m = W.model()
+        for nd in m["agentic"]["needs"]:
+            if nd["by"] == "ai":
+                nd["by"] = "manual"
+        obj, _a = self.build(m)
+        src = {n["need_id"]: n["src"] for n in obj["agentic"]["needs"]}
+        want = {n["need_id"]: ("ai" if n["by"] == "manual" else "rule") for n in m["agentic"]["needs"]
+                if not n["dropped"]}
+        self.assertEqual(src, want)
+        self.assertIn("ai", src.values())
+        self.assertIn("rule", src.values())
+
     def test_rpt12_peers_and_quality(self):
         m = W.model()
         obj, audit = self.build(m)

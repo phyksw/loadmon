@@ -189,12 +189,22 @@ class MailIndexTest(CloneTestCase):
 
     def test_cm06_cm01_no_outlook_items(self):
         empty = {"mail": [], "calendar": [], "_my_addrs": [ME]}
-        for extra, code in (({}, "R-ONLINE"), ({"_policy": True}, "R-IDXPOLICY"), ({"_newol": True}, "R-NEWOL"),
+        for extra, code in (({}, "R-NOAPP"),                                       # 클래식·새 Outlook 모두 없음(W2 C10 — 탐침과 같게)
+                            ({"_classic": True}, "R-ONLINE"),                        # 클래식이 있는데 항목 0 = 온라인 모드(V4)
+                            ({"_policy": True}, "R-IDXPOLICY"), ({"_newol": True}, "R-NEWOL"),
                             ({"_newol": True, "_classic": True}, "R-ONLINE"),        # 클래식이 있으면 새 Outlook 아님(v1.3 V3)
                             ({"_classic": True, "_noprof": True}, "R-NOPROF")):      # 계정 설정 전 프로필(v1.3 V7)
             r = self.run_idx(dict(empty, **extra))
             self.assertEqual(r.rc, 3)
             self.assertIn(code, r.result("mail.index")["reasons"])
+
+    def test_status_range_and_default_window(self):
+        """W2 검토 C03(V6): 상태 줄 ``range`` = 이번에 맡은 창(원장이 그 창만 '읽었다'고 적는다). -Since 가 없으면 기본 창은
+        collect.lookbackDays(오늘 포함 n 일 — 원장 기본 시작일과 같은 셈), 예전처럼 89일 고정이 아니다."""
+        r = self.run_idx(self.fake)
+        self.assertEqual(r.result("mail.index")["range"], ["2026-09-01", "2026-09-30"])
+        r2 = self.run_idx(self.fake, rng=["-TestNow", "2026-10-05 09:00"], cfg={"collect.lookbackDays": 30})
+        self.assertEqual(r2.result("mail.index")["range"], ["2026-09-06", "2026-10-05"])
 
     def test_zero_rows_in_range_is_rc1(self):
         r = self.run_idx(self.fake, rng=["-Since", "2026-11-01", "-Until", "2026-11-30", "-TestNow", "2026-12-05 09:00"])

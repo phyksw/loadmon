@@ -280,27 +280,75 @@ def _kw_from(name: str) -> tuple:
     return _tuple(w for w in _KW_SPLIT.split(str(name or "")) if len(w) >= 2)
 
 
+LOCAL_CATALOG_WARNS = {
+    # 경고 코드 → 화면 한 줄(로컬 카탈로그를 못 쓴 까닭 — 조용히 버리지 않는다, W2 검토 L04). 코드는 hier_meta.warnings 로 간다
+    "local_catalog_rejected": "config\\agentic_tasks.json 의 모양이 다릅니다(최상위 객체에 tasks 또는 agents 목록)",
+    "local_catalog_rejected:read": "config\\agentic_tasks.json 을 읽지 못했습니다(다른 프로그램이 잡고 있는지 확인)",
+    "local_catalog_rejected:encoding": "config\\agentic_tasks.json 의 글자 인코딩을 알 수 없습니다 — UTF-8 로 저장하세요",
+    "local_catalog_rejected:dup_key": "config\\agentic_tasks.json 의 한 객체 안에 같은 키가 두 번 있습니다",
+    "local_catalog_rejected:json": "config\\agentic_tasks.json 의 JSON 형식이 깨졌습니다",
+    "local_catalog_rejected:empty": "config\\agentic_tasks.json 에 id·name 이 있는 과제가 없습니다",
+    "local_catalog_cp949": "config\\agentic_tasks.json 이 ANSI(CP949)로 저장돼 있어 그대로 읽었습니다 — UTF-8 로 저장하세요",
+    "local_catalog_dup_id": "config\\agentic_tasks.json 에 같은 id 가 여러 번 있어 처음 것만 썼습니다",
+}
+
+
+def _warn(warns: list | None, code: str) -> None:
+    if warns is not None:
+        warns.append(code)
+
+
+def _read_local_catalog(p, warns: list | None):
+    """로컬 카탈로그 JSON(엄격 — 중복 키·NaN 거부). UTF-8(BOM 허용)이 아니면 CP949(메모장 'ANSI')로 한 번 더 읽고 경고한다.
+    파일이 없으면 None(경고 없음). 못 읽으면 None + 사유 경고 하나(L04 — 예전에는 stderr 한 줄뿐이었다)."""
+    try:
+        raw = fsx.read_bytes(p)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        _warn(warns, "local_catalog_rejected:read")
+        return None
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        try:
+            text = raw.decode("cp949")
+        except UnicodeDecodeError:
+            _warn(warns, "local_catalog_rejected:encoding")
+            return None
+        _warn(warns, "local_catalog_cp949")
+    try:
+        return fsx.loads_strict(text)
+    except ValueError as e:
+        _warn(warns, "local_catalog_rejected:dup_key" if "dup key" in str(e) else "local_catalog_rejected:json")
+        return None
+
+
 def local_agents(paths, warns: list | None = None) -> tuple:
-    """로컬 카탈로그 → (Agent 묶음, 축 이름 dict, 판 'local:<해시8>'). 파일이 없거나 형식이 아니면 ((), {}, "")."""
+    """로컬 카탈로그 → (Agent 묶음, 축 이름 dict, 판 'local:<해시8>'). 파일이 없거나 쓸 수 없으면 ((), {}, "") — 파일이 있는데
+    못 쓰면 까닭을 warns 에 남긴다(`LOCAL_CATALOG_WARNS` 코드)."""
     try:
         p = paths.config_dir() / LOCAL_CATALOG
     except AttributeError:
         return (), {}, ""
-    obj = fsx.read_json(p, default=None)
+    obj = _read_local_catalog(p, warns)
     if obj is None:
         return (), {}, ""
     rows = obj.get("agents") if isinstance(obj, dict) and isinstance(obj.get("agents"), list) else (
         obj.get("tasks") if isinstance(obj, dict) else None)
     if not isinstance(rows, list):
-        if warns is not None:
-            warns.append("local_catalog_rejected")
+        _warn(warns, "local_catalog_rejected")
         return (), {}, ""
     out = {}
+    dup = 0
     for a in rows:
         if not isinstance(a, dict):
             continue
         aid, name = str(a.get("id") or "").strip()[:40], str(a.get("name") or "").strip()[:80]
-        if not aid or not name or aid in out:
+        if not aid or not name:
+            continue
+        if aid in out:
+            dup += 1
             continue
         desc = str(a.get("desc") or "")[:400]
         out[aid] = Agent(id=aid, name=name, axis=str(a.get("axis") or "")[:20],
@@ -309,7 +357,10 @@ def local_agents(paths, warns: list | None = None) -> tuple:
                          step_types=_tuple(a.get("step_types")), inputs=tuple(a.get("inputs") or ()),
                          outputs=tuple(a.get("outputs") or ()),
                          keywords=_tuple(a.get("keywords")) or _kw_from(name))
+    if dup:
+        _warn(warns, "local_catalog_dup_id")
     if not out:
+        _warn(warns, "local_catalog_rejected:empty")
         return (), {}, ""
     axes = obj.get("axes") if isinstance(obj.get("axes"), dict) else {}
     digest = hashlib.sha1(json.dumps(obj, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:8]

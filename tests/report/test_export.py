@@ -43,6 +43,7 @@ class ExportTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.t = R.TmpRoot()
+        cls.addClassCleanup(cls.t.cleanup)          # setUpClass 가 중간에 실패해도 임시 ROOT 를 지운다(W2 검토 L12)
         cls.cfg = W.cfg()
         cls.srun = R.rich_run(title_over={"u_a1": EVIL_TITLE, "u_a2": "=1+1", "u_a3": "-합계", "u_a4": "@SUM(A1)"})
         cls.srun.person_dir["people"][R.PEER3]["names"] = [EVIL_NAME]
@@ -52,10 +53,6 @@ class ExportTest(unittest.TestCase):
         cls.res = EX.export(R.RUN_ID, None, None, None, paths=cls.t.paths, cfg=cls.cfg, inputs=cls.inp, now=NOW,
                             fallback=no_fallback)
         cls.out = os.fspath(cls.t.paths.out_personal("2026-08-01", "2026-10-04", R.RUN_ID))
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.t.cleanup()
 
     def read(self, rel) -> bytes:
         with open(os.path.join(self.out, *rel.split("/")), "rb") as fh:
@@ -191,6 +188,45 @@ class ExportTest(unittest.TestCase):
             EX.render_html("{\"a\":\"<\"}", "{}", variant="full", run_id=R.RUN_ID,
                            built_at="2026-10-05T10:21:44+09:00",
                            assets={"css": "", "icons": "", "charts": "", "ui": "", "report": ""})
+
+    def test_export_error_is_rc1(self):
+        """ExportError(화면 자원 없음·'</script' 등)는 예외로 올리지 않고 rc 1 + 한국어 한 줄(W2 검토 L05)."""
+        class NoWeb(R.TPaths):
+            def web_file(self, rel):
+                return os.path.join(self.root, "no_web", *rel.split("/"))
+
+        class BadJs(R.TPaths):
+            def web_file(self, rel):
+                if rel.endswith("lm27ui.js"):
+                    return os.path.join(self.root, "bad.js")
+                return R.REPO.joinpath("web", *rel.split("/"))
+        t2 = R.TmpRoot()
+        self.addCleanup(t2.cleanup)
+        fsx.atomic_write(os.path.join(t2.root, "bad.js"), b"var t = '</script>';\n")
+        for cls_, word in ((NoWeb, "화면 자원"), (BadJs, "</script")):
+            p = cls_(t2.root, lad=os.path.join(t2.root, "lad"))
+            self.srun.write(p)
+            res = EX.export(R.RUN_ID, ["html"], ["full"], os.path.join(t2.root, "o_" + cls_.__name__), paths=p,
+                            cfg=self.cfg, inputs=self.srun.inputs(p, self.cfg), fallback=no_fallback, now=NOW)
+            self.assertEqual(res.rc, 1, cls_.__name__)
+            self.assertIn(word, res.failed[0]["reason"])
+
+    def test_chosen_only_in_html_island(self):
+        """'자동/직접 선택'은 current.json 의 값 — 모델 파일·JSON 내보내기에는 없고 HTML 섬에만, 현재 결과일 때만(C01)."""
+        self.assertNotIn("chosen", json.loads(self.read("report_model.json"))["run"])
+        self.assertNotIn("chosen", json.loads(self.read("report_model_redacted.json"))["run"])
+        for name in ("report_full.html", "report_redacted.html"):
+            isl = json.loads(island_of(self.read(name).decode("utf-8"), "lm27-data"))
+            self.assertEqual(isl["run"].get("chosen"), "auto", name)
+        t2 = R.TmpRoot()
+        self.addCleanup(t2.cleanup)
+        self.srun.write(t2.paths, current=False)                         # 지금 화면 결과가 아닌 실행
+        res = EX.export(R.RUN_ID, ["html", "json"], ["full"], os.path.join(t2.root, "nc"), paths=t2.paths,
+                        cfg=self.cfg, inputs=self.srun.inputs(t2.paths, self.cfg), fallback=no_fallback, now=NOW)
+        self.assertEqual(res.rc, 0, res.failed)
+        with open(os.path.join(t2.root, "nc", "report_full.html"), encoding="utf-8") as fh:
+            isl = json.loads(island_of(fh.read(), "lm27-data"))
+        self.assertNotIn("chosen", isl["run"])                           # 지어내지 않는다('자동 선택' 아님)
 
     def test_choose_formats_variants(self):
         t2 = R.TmpRoot()

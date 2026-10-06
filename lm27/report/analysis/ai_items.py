@@ -12,6 +12,7 @@ r"""코파일럿 단계 입력 `ai_in` 만들기 · `ai_out` 반영 · 폴백 �
   같은 규칙을 보고서 쪽에 다시 쓰지 않는다(RP3 · G-R12). 브리지 단계 모듈이 아직 없으면 답 없음(단계 한글명 라벨 + 경고).
 - `write_ai_items(run_id, stage=None) -> {stage: 건수}`(계약 §7.1 cli 어댑터 — 합 0 이면 rc 4): 입력을 단일 로더
   (`lm27.report.inputs.load_inputs` — WP-31)로 읽어 분석 문맥을 만들고 `data\derived\ai_in\<stage>.jsonl` 을 원자 쓰기.
+  시간 결과가 없는 실행이면 쓰지 않고 `{"rc": 1, "refused": …}`(cli rc 1 — 공유 ai_in 을 빈 값으로 덮지 않는다).
 
 표준 라이브러리만 쓴다. 쓰기는 `lm27.util.fsx.atomic_write`, 경로는 `lm27.paths` 로만(L-07 · L-08).
 """
@@ -248,8 +249,12 @@ def context_from_inputs(inp, cfg, cal, *, fallback=None):
 
 
 def write_ai_items(run_id: str, stage: str | None = None, *, paths=None, cfg=None, inputs=None, cal=None,
-                   fallback=None) -> dict[str, int]:
+                   fallback=None) -> dict:
     """`lm27 report ai-items --run <run_id> [--stage <stage>]`(계약 §7.1). 반환 {stage: 건수}(합 0 이면 cli rc 4).
+
+    그 실행의 필수 시간 결과가 없으면(없는 run_id·정리된 실행 — `load_inputs` 의 `refused`) **아무것도 쓰지 않고**
+    `{"rc": 1, "refused": [...], "message": ...}` 를 돌려준다(cli rc 1). `ai_in\\<stage>.jsonl` 은 실행별이 아니라 단계별
+    공유 파일이라 빈 값으로 덮으면 다른 실행의 질의 재료가 사라진다(빈 값으로 덮지 않음 — W2 검토 C02).
 
     paths·cfg·inputs·cal·fallback 은 시험·파이프라인 주입점(없으면 `Paths()` · `load_config` · `load_inputs(run_id)` ·
     `load_calendar(paths, 레지스트리)`)."""
@@ -263,6 +268,10 @@ def write_ai_items(run_id: str, stage: str | None = None, *, paths=None, cfg=Non
     if inputs is None:
         from lm27.report.inputs import load_inputs        # 보고서 입력 단일 로더(R §2.5 · WP-31)
         inputs = load_inputs(run_id, paths=paths, cfg=cfg)   # 받은 paths·cfg 로(W2 통합 WP-32 CR — 기본 Paths() 아님)
+    refused = sorted(str(x) for x in (_get(inputs, "refused", ()) or ()))
+    if refused:
+        return {"rc": 1, "run_id": run_id, "refused": refused,
+                "message": "그 실행의 시간 결과가 없어 AI 질의 항목을 쓰지 않았습니다 — 분석 이력에 남아 있는 실행을 고르세요"}
     if cal is None:
         from lm27.time.calendar import load_calendar
         cal = load_calendar(paths, _get(inputs, "registry"))

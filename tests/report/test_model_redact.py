@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import os
 import unittest
 
@@ -67,13 +68,10 @@ class RedactTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.t = R.TmpRoot()
+        cls.addClassCleanup(cls.t.cleanup)          # setUpClass 가 중간에 실패해도 임시 ROOT 를 지운다(W2 검토 L12)
         cls.srun = R.rich_run(title_over={"u_a3": "김철수 요청 전원부 해석"})
         cls.m, cls.inp = build(cls.srun, cls.t)
         cls.red = M.redact_model(cls.m, cls.inp.registry, person_dir=cls.inp.person_dir)
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.t.cleanup()
 
     def test_allow_list(self):
         red = self.red
@@ -154,6 +152,160 @@ class RedactTest(unittest.TestCase):
         self.assertEqual(rs["ai"]["summary"], f"동료 #{ref} 과 전원부를 검토했습니다.")
         self.assertEqual(rs["ai"]["next"], [f"동료 #{ref} 회신 확인"])
         self.assertEqual(M.redaction_violations(red, inp.person_dir), [])
+
+
+TOKEN_TITLE = "[사람#a1b2c3] 요청 견적 검토"
+ACME_TITLE = "Acme 단가 협상안"
+
+
+class ReviewTitleLeakTest(unittest.TestCase):
+    """W2 검토 C13: 리뷰 AI 문장(규칙 폴백·AI 답)이 전체판 사실 제목을 베껴 가림판에 원래 제목·`[사람#hex]` 가 남던 것.
+    폴백은 실제 브리지 단계 정의(`lm27.bridge.stages` — 주입하지 않음)가 돈다."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.t = R.TmpRoot()
+        cls.addClassCleanup(cls.t.cleanup)
+        cls.srun = R.rich_run(title_over={"u_a1": TOKEN_TITLE, "u_a2": ACME_TITLE})
+        cls.srun.write(cls.t.paths)
+        cls.cfg = W.cfg()
+        cls.inp = cls.srun.inputs(cls.t.paths, cls.cfg)
+        cls.m = M.build_model(cls.inp, cls.cfg, fallback=None)
+        cls.originals = sorted({u["title"] for u in cls.m["units"]})
+
+    def _ai_texts(self, red):
+        out = []
+        for kind in ("weeks", "months"):
+            for r in red["reviews"][kind]:
+                ai = r.get("ai") or {}
+                out += [ai.get("summary") or ""] + [h["text"] for h in ai.get("highlights") or ()]
+                out += [h["text"] for h in ai.get("relations") or ()] + list(ai.get("next") or ())
+        return out
+
+    def test_full_model_has_rule_texts_with_titles(self):
+        """시험이 유효한지: 전체판 리뷰 폴백 문장에 원래 제목이 있다."""
+        txt = json.dumps(self.m["reviews"], ensure_ascii=False)
+        self.assertIn(TOKEN_TITLE, txt)
+        self.assertIn(ACME_TITLE, txt)
+        self.assertTrue(any((r.get("ai") or {}).get("by") == "rule" for r in self.m["reviews"]["months"]))
+
+    def test_label_mode(self):
+        red = M.redact_model(self.m, self.inp.registry, person_dir=self.inp.person_dir, title_mode="label")
+        blob = json.dumps(red, ensure_ascii=False)
+        self.assertNotIn("[사람#", blob)
+        u1 = next(u for u in red["units"] if u["unit_id"] == "u_a1")
+        self.assertEqual(u1["title_mode"], "generic")
+        self.assertFalse(any(TOKEN_TITLE in s for s in self._ai_texts(red)))
+        titles = {u["title"] for u in red["units"]}
+        for r in red["reviews"]["months"]:
+            ai = r.get("ai") or {}
+            if ai.get("by") == "rule":
+                for h in ai["highlights"]:
+                    self.assertIn(h["text"], titles)                   # 사실의 가림 제목으로 다시 만든다
+                for n in ai["next"]:
+                    self.assertIn(n, titles)
+        self.assertEqual(M.redaction_violations(red, self.inp.person_dir), [])
+
+    def test_generic_mode_no_original_titles(self):
+        red = M.redact_model(self.m, self.inp.registry, person_dir=self.inp.person_dir, title_mode="generic")
+        blob = json.dumps(red, ensure_ascii=False)
+        for t in self.originals:
+            self.assertNotIn(t, blob, t)
+        self.assertNotIn("[사람#", blob)
+
+    def test_ai_answer_titles_replaced(self):
+        """AI 답(by=ai)이 사실 제목을 그대로 인용해도 가림 제목으로 바뀐다."""
+        run = R.rich_run(title_over={"u_a2": ACME_TITLE})
+        t = R.TmpRoot()
+        self.addCleanup(t.cleanup)
+        run.ai = {"review_text": {"schema": 1, "stage": "review_text", "items": {
+            "review:month:2026-09": {"ans": {"summary": f"{ACME_TITLE} 를 마쳤습니다. [사람#a1b2c3] 의뢰도 있었습니다.",
+                                             "highlights": [{"text": f"{ACME_TITLE} 완료", "refs": ["F1"]}],
+                                             "relations": [{"text": f"{ACME_TITLE} → 다음", "refs": []}],
+                                             "next": [f"{ACME_TITLE} 후속"]},
+                                     "by": "ai", "peers_map": {}}}}}
+        run.write(t.paths)
+        cfg = W.cfg()
+        inp = run.inputs(t.paths, cfg)
+        m = M.build_model(inp, cfg, fallback=no_fallback)
+        sep = next(r for r in m["reviews"]["months"] if r["key"] == "2026-09")
+        self.assertIn(ACME_TITLE, sep["ai"]["summary"])                 # 전체판은 그대로(시험 유효)
+        red = M.redact_model(m, inp.registry, person_dir=inp.person_dir, title_mode="generic")
+        rs = next(r for r in red["reviews"]["months"] if r["key"] == "2026-09")
+        gen = next(u["title"] for u in red["units"] if u["unit_id"] == "u_a2")
+        self.assertEqual(rs["ai"]["summary"], f"{gen} 를 마쳤습니다. 동료 의뢰도 있었습니다.")
+        self.assertEqual(rs["ai"]["highlights"][0]["text"], f"{gen} 완료")
+        self.assertEqual(rs["ai"]["next"], [f"{gen} 후속"])
+        self.assertNotIn(ACME_TITLE, json.dumps(red, ensure_ascii=False))
+
+    def test_export_generic_and_label_clean(self):
+        """실제 내보내기(JSON·HTML 가림판): 두 모드 모두 rc 0, 원래 제목·사람 가명 토큰 0건."""
+        for mode in ("label", "generic"):
+            cfg = self.cfg.derive({"team.unitTitleMode": mode})
+            out = os.path.join(self.t.root, "exp_" + mode)
+            res = EX.export(R.RUN_ID, ["json", "html"], ["redacted"], out, paths=self.t.paths, cfg=cfg,
+                            inputs=self.inp, model=self.m)
+            self.assertEqual(res.rc, 0, (mode, res.failed))
+            for f in res.files:
+                with open(os.path.join(out, *f["path"].split("/")), encoding="utf-8") as fh:
+                    text = fh.read()
+                self.assertNotIn("[사람#a1b2c3]", text, (mode, f["path"]))
+                if mode == "generic":
+                    for t in self.originals:
+                        self.assertNotIn(t, text, (mode, f["path"], t))
+
+    def test_backstop_blocks_leftover(self):
+        """안전망: 가림판 검사가 `[사람#hex]` 와 일반 제목으로 가린 원래 제목을 찾는다(남으면 가림판을 만들지 않는다)."""
+        red = M.redact_model(self.m, self.inp.registry, person_dir=self.inp.person_dir, title_mode="generic")
+        self.assertEqual(M.redaction_violations(red, self.inp.person_dir, extra=EX.hidden_titles(self.m, red)), [])
+        self.assertIn(ACME_TITLE, EX.hidden_titles(self.m, red))
+        bad = copy.deepcopy(red)
+        bad["reviews"]["months"][0]["ai"] = {"summary": "[사람#a1b2c3] 건", "highlights": [], "relations": [],
+                                             "next": [f"{ACME_TITLE} 후속"], "by": "ai"}
+        hits = M.redaction_violations(bad, self.inp.person_dir, extra=EX.hidden_titles(self.m, red))
+        self.assertIn("reviews.months[0].ai.summary", hits)
+        self.assertIn("reviews.months[0].ai.next[0]", hits)
+
+
+class QueueTargetTest(unittest.TestCase):
+    """W2 검토 C14: H04(이름 병합) 질문 대상 = 공백을 지운 단위업무 제목 쌍 — 가림판에 남고 이름 검사를 피했다."""
+
+    def test_h04_target_dropped_and_shapes_whitelisted(self):
+        run = R.rich_run()
+        run.hier_queue = list(run.hier_queue) + [
+            {"qid": "ab12ab12ab12", "code": "H04", "target": "acme단가협상안검토|acme단가협상안정리", "impact_min": 300,
+             "evidence_keys": [], "proposal": {"title": "이름병합애매", "ask": "같은 것인가요?", "options": ["같다", "다르다"],
+                                               "area": "분류"}, "status": "open"},
+            {"qid": "cd34cd34cd34", "code": "H04", "target": "동료둘요청단가협상안검토|동료둘요청단가협상안정리",
+             "impact_min": 200, "evidence_keys": [], "proposal": {"title": "이름병합애매"}, "status": "open"},
+            {"qid": "ef56ef56ef56", "code": "H03", "target": "pr_1", "impact_min": 100, "evidence_keys": [],
+             "proposal": {"title": "새과제확인"}, "status": "open"},
+            {"qid": "0a0a0a0a0a0a", "code": "H01", "target": "임의 제목 글", "impact_min": 90, "evidence_keys": [],
+             "proposal": {"title": "과제미정"}, "status": "open"}]
+        t = R.TmpRoot()
+        self.addCleanup(t.cleanup)
+        m, inp = build(run, t)
+        red = M.redact_model(m, inp.registry, person_dir=inp.person_dir, title_mode="generic")
+        by = {q["qid"]: q["target"] for q in red["queue"]}
+        self.assertIsNone(by["ab12ab12ab12"])
+        self.assertIsNone(by["cd34cd34cd34"])
+        self.assertIsNone(by["0a0a0a0a0a0a"])                          # 모양 허용 목록 밖
+        self.assertEqual(by["ef56ef56ef56"], "pr_1")
+        self.assertEqual(by["dd44ee55ff66"], "grp:0123456789ab")
+        self.assertEqual(by["aa11bb22cc33"], "2026-09-23")
+        self.assertTrue(any(v and v.startswith("u_") for v in by.values()))
+        blob = json.dumps(red, ensure_ascii=False)
+        self.assertNotIn("acme단가", blob)
+        self.assertNotIn("동료둘", blob)
+        self.assertEqual(M.redaction_violations(red, inp.person_dir), [])
+
+    def test_violations_catch_space_stripped_names(self):
+        """이름 검사: 여러 낱말 이름은 공백을 지운 형(·소문자형)도 찾는다 — 한 낱말 이름의 대소문자는 그대로."""
+        pd = {"people": {"w1": {"names": ["동료 둘"]}, "w2": {"names": ["Acme Kim"]}, "w3": {"names": ["Support"]}}}
+        self.assertEqual(M.redaction_violations({"a": "동료둘요청"}, pd), ["a"])
+        self.assertEqual(M.redaction_violations({"a": "acmekim단가"}, pd), ["a"])
+        self.assertEqual(M.redaction_violations({"a": "x [사람#a1b2c3] y"}, pd), ["a"])
+        self.assertEqual(M.redaction_violations({"a": "SUPPORT", "b": "동료 #2"}, pd), [])
 
 
 class CanaryTest(unittest.TestCase):

@@ -20,10 +20,14 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from collections.abc import Mapping
 from datetime import date
 
-__all__ = ["DrillSource", "day_drill", "day_view", "drill_island", "explain_text", "unit_drill", "unit_view"]
+__all__ = ["DRILL_IDLE_S", "DrillSource", "day_drill", "day_view", "drill_island", "explain_text", "forget",
+           "unit_drill", "unit_view"]
+
+DRILL_IDLE_S = 600.0          # 드릴다운 캐시를 놓는 유휴 시간(초) — 코드 상수(C18)
 
 EST_START = frozenset({"S2p", "S2m"})
 EST_END = frozenset({"E2l", "E3c", "E3i", "NEXT_REQ"})
@@ -241,9 +245,16 @@ def drill_island(inp, model: Mapping, variant: str, cfg=None, *, res=None) -> di
 
 # ───────────────────────────── 로컬 앱 API 진입 ─────────────────────────────
 class DrillSource:
-    """실행 하나의 드릴다운 재료(입력 + 모델 두 변형). 같은 실행·같은 파일 서명이면 다시 읽지 않는다."""
-    _cache: dict = {}
+    """실행 하나의 드릴다운 재료(입력 + 모델 두 변형). 같은 실행·같은 파일 서명이면 다시 읽지 않는다.
+
+    캐시 수명(W2 검토 C18 — '작업 완료 후 메모리를 계속 잡지 않도록'): 한 번에 실행 하나만 두고, ``idle_s``(기본
+    ``DRILL_IDLE_S``) 동안 아무도 쓰지 않으면 데몬 타이머가 놓는다. ``forget()`` 은 바로 놓는다(화면의 모델 캐시 비우기·
+    분석/보고서 작업 끝에 부른다). 적재는 한 번에 하나(``_load_lock``) — 같은 실행을 동시에 두 번 읽지 않는다."""
+    _cache: dict = {}                     # (root, run_id) → (서명, DrillSource, 마지막 사용 monotonic 초)
     _lock = threading.Lock()
+    _load_lock = threading.Lock()
+    _timer: threading.Timer | None = None
+    idle_s: float = DRILL_IDLE_S
 
     def __init__(self, inp, model: dict, cfg, res_full, redacted: dict | None = None):
         self.inp = inp
@@ -251,6 +262,53 @@ class DrillSource:
         self.cfg = cfg
         self.res = res_full
         self._red = redacted
+
+    @classmethod
+    def forget(cls) -> None:
+        """캐시를 바로 비운다(붙잡던 보고서 입력을 놓는다)."""
+        with cls._lock:
+            cls._cache.clear()
+            if cls._timer is not None:
+                cls._timer.cancel()
+                cls._timer = None
+
+    @classmethod
+    def cached(cls) -> int:
+        """지금 붙잡은 실행 수(시험·진단용)."""
+        with cls._lock:
+            return len(cls._cache)
+
+    @classmethod
+    def _arm(cls, delay: float) -> None:
+        """만료 타이머(잠금 안에서 부른다). 이미 있으면 그대로 — 만료 때 남은 시간으로 다시 건다."""
+        if cls._timer is None:
+            t = threading.Timer(max(0.05, float(delay)), cls._expire)
+            t.daemon = True
+            t.name = "lm27-drill-expire"
+            cls._timer = t
+            t.start()
+
+    @classmethod
+    def _expire(cls) -> None:
+        with cls._lock:
+            cls._timer = None
+            now = time.monotonic()
+            for k in [k for k, v in cls._cache.items() if now - v[2] >= cls.idle_s]:
+                del cls._cache[k]
+            if cls._cache:
+                cls._arm(min(cls.idle_s - (now - v[2]) for v in cls._cache.values()))
+
+    @classmethod
+    def _hit(cls, key, sig):
+        """잠금 안에서: 서명이 같으면 그 재료(사용 시각 갱신), 아니면 None."""
+        hit = cls._cache.get(key)
+        if hit is None or sig is None or hit[0] != sig:
+            return None
+        if time.monotonic() - hit[2] >= cls.idle_s:        # 타이머보다 먼저 온 호출 — 만료로 본다
+            del cls._cache[key]
+            return None
+        cls._cache[key] = (hit[0], hit[1], time.monotonic())
+        return hit[1]
 
     @classmethod
     def load(cls, run_id: str, *, paths=None, cfg=None, evidence=True) -> DrillSource:
@@ -269,22 +327,29 @@ class DrillSource:
             sig = (str(paths.root), run_id, st.st_mtime_ns, st.st_size)
         except OSError:
             sig = None
+        key = (str(paths.root), run_id)
         with cls._lock:
-            hit = cls._cache.get((str(paths.root), run_id))
-            if hit is not None and sig is not None and hit[0] == sig:
-                return hit[1]
-        model = load_model(run_id, paths=paths)
-        inp = load_inputs(run_id, paths=paths, cfg=cfg, evidence=evidence, bundle_state=False)
-        refs = model.get("refs") or {}
-        people = {v["key"]: int(k) for k, v in (refs.get("people") or {}).items() if v.get("key")}
-        docs = {v["key"]: int(k) for k, v in (refs.get("docs") or {}).items() if v.get("key")}
-        res = Resolver("full", inp.person_dir, inp.registry, inp.evidence, people_ref=people, doc_ref=docs,
-                       proposals=(inp.hier or {}).get("proposals"))
-        src = cls(inp, model, cfg, res)
-        if sig is not None:
+            src = cls._hit(key, sig)
+        if src is not None:
+            return src
+        with cls._load_lock:                                # 동시에 온 첫 [근거] 두 번이 입력을 두 번 읽지 않게
             with cls._lock:
-                cls._cache.clear()
-                cls._cache[(str(paths.root), run_id)] = (sig, src)
+                src = cls._hit(key, sig)
+            if src is not None:
+                return src
+            model = load_model(run_id, paths=paths)
+            inp = load_inputs(run_id, paths=paths, cfg=cfg, evidence=evidence, bundle_state=False)
+            refs = model.get("refs") or {}
+            people = {v["key"]: int(k) for k, v in (refs.get("people") or {}).items() if v.get("key")}
+            docs = {v["key"]: int(k) for k, v in (refs.get("docs") or {}).items() if v.get("key")}
+            res = Resolver("full", inp.person_dir, inp.registry, inp.evidence, people_ref=people, doc_ref=docs,
+                           proposals=(inp.hier or {}).get("proposals"))
+            src = cls(inp, model, cfg, res)
+            if sig is not None:
+                with cls._lock:
+                    cls._cache.clear()                      # 한 번에 실행 하나
+                    cls._cache[key] = (sig, src, time.monotonic())
+                    cls._arm(cls.idle_s)
         return src
 
     def variant_model(self, variant: str) -> dict:
@@ -302,6 +367,11 @@ class DrillSource:
     def unit(self, unit_id: str, variant: str = "full") -> dict | None:
         cap = int(self.cfg["report.drill.maxEvidencePerUnit"])
         return unit_view(self.inp, self.variant_model(variant), unit_id, variant, cap=cap, res=self.res)
+
+
+def forget() -> None:
+    """드릴다운 캐시를 바로 비운다 — 화면의 모델 캐시 비우기(`lm27.ui.api_report.forget_models`)·분석/보고서 작업 끝에 부른다."""
+    DrillSource.forget()
 
 
 def _variant(v: str) -> str:

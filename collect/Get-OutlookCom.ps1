@@ -75,6 +75,7 @@ $script:Inv = [Globalization.CultureInfo]::InvariantCulture
 $script:StdOut = [Console]::OpenStandardOutput()
 $script:StdErr = [Console]::OpenStandardError()
 $script:Clock = [Diagnostics.Stopwatch]::StartNew()
+$script:RangeOut = $null
 
 $PC_RX = '^pcx?_[0-9a-f]{16}$'
 $PROPTAG = 'http://schemas.microsoft.com/mapi/proptag/'
@@ -271,6 +272,7 @@ function ConvertTo-ResultJson($r) {
     $o['reasons'] = $rs
     # 계약 v1.2 §0.7 C1 필수 필드: schema · partial(= 상한·예산·반복 일부) · n(= 새 레코드 수)
     $o['schema'] = 'lm27.collector_status/1'
+    if ($script:RangeOut -and -not $o.Contains('range')) { $o['range'] = @($script:RangeOut) }
     $o['partial'] = [bool]($o['cap_hit'] -or $o['budget_hit'] -or ([int]$o['recurrence_incomplete'] -gt 0) -or ($rs -contains 'R-RECURINC'))
     $o['n'] = [int]$o['new']
     if ($null -eq $o['counts']) { $o['counts'] = [ordered]@{} }
@@ -1416,7 +1418,14 @@ try {
     $nowLocal = Get-Date
     if ($TestNow) { $nowLocal = [datetime]::ParseExact($TestNow, 'yyyy-MM-dd HH:mm', $script:Inv) }
     $untilDay = $Until; if (-not $untilDay) { $untilDay = $nowLocal.ToString('yyyy-MM-dd', $script:Inv) }
-    $sinceDay = $Since; if (-not $sinceDay) { $sinceDay = [datetime]::ParseExact($untilDay, 'yyyy-MM-dd', $script:Inv).AddDays(-89).ToString('yyyy-MM-dd', $script:Inv) }
+    if (-not $Since) {
+        # 기본 창 = collect.lookbackDays(오늘 포함 n 일 — 원장 기본 시작일과 같은 셈). 연결자는 늘 -Since 를 넘긴다(v1.3 §0.8 V6)
+        $lb = 120
+        try { $lb = [int](Get-Cfg $in 'collect.lookbackDays' 120) } catch { $lb = 120 }
+        if ($lb -lt 1) { $lb = 120 }
+        $sinceDay = [datetime]::ParseExact($untilDay, 'yyyy-MM-dd', $script:Inv).AddDays(-($lb - 1)).ToString('yyyy-MM-dd', $script:Inv)
+    } else { $sinceDay = $Since }
+    $script:RangeOut = @($sinceDay, $untilDay)          # 상태 줄 range — 이번에 맡은 창(원장 관측을 이 창으로, V6 · T-09)
     $sinceLocal = [datetime]::ParseExact($sinceDay, 'yyyy-MM-dd', $script:Inv)
     $untilLocal = [datetime]::ParseExact($untilDay, 'yyyy-MM-dd', $script:Inv).AddDays(1)
     if ($untilLocal -le $sinceLocal) { throw (New-Object System.ArgumentException('range')) }

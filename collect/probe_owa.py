@@ -79,6 +79,17 @@ def login_of(state: str) -> str:
     return {"ready": "ok", "login_required": "login", "ca": "ca"}.get(state, "unknown")
 
 
+def login_value(screen, rc: int) -> dict:
+    """로그인 필요일 때 값에 싣는 로그인 사실(v1.3 §0.8 V18 — 불리언·열거만): ``login_pending`` = 지난 대기가 로그인 없이 끝나
+    짧게 확인만 함(연결자가 이 [수집]의 웹 경로를 Edge 없이 넘긴다), ``account`` = ``personal``(개인 계정 화면)."""
+    if rc != W.RC_LOGIN:
+        return {}
+    fn = getattr(screen, "login_facts", None)
+    f = fn() if callable(fn) else {}
+    return {"login_pending": bool(f.get("login_pending")),
+            "account": "personal" if f.get("login_account") == "personal" else ""}
+
+
 def mail_sample(pages, today) -> dict:
     """받은 편지함 화면 → 최근 7일 항목 수·분 단위 비율·행 키 종류(숫자·열거만)."""
     n7 = m7 = 0
@@ -144,12 +155,14 @@ def probe(*, environ, paths, cfg, clock, now, budget_sec, session_factory=None, 
     try:
         state = screen.open(dl)
         if state == "ready" and not screen.synthetic:
-            state = screen.goto(W.OWA_BASE + dict(W.MAIL_FOLDERS)["inbox"], dl, W.OWA_HOST_RX)
+            # 탐침은 로그인을 기다리지 않는다(첫 판정만 — 로그인 대기는 수집기가 [수집]마다 한 번, V10). 로그인 보류(V18)면
+            # 세션이 그 판정을 짧은 확인으로 하고, 연결자는 이 값(login_pending)으로 웹 경로를 바로 넘긴다.
+            state = screen.goto(W.OWA_BASE + dict(W.MAIL_FOLDERS)["inbox"], dl, W.OWA_HOST_RX, wait_login=False)
         login = login_of(state)
         if state != "ready":
             rc, why = W.session_failure(state, getattr(getattr(screen, "s", None), "error", None))
             st = "fail" if rc == W.RC_LOGIN or why in ("R-EDGEPOL", "R-NOAPP") else "transport_fail"
-            val = {"login": login, "aadsts": counts.get("aadsts"), "edge": ef["edge"]}
+            val = {"login": login, "aadsts": counts.get("aadsts"), "edge": ef["edge"], **login_value(screen, rc)}
             out["caps"] = {k: cap(st, [why], val, (k, *base, login, counts.get("aadsts"))) for k in CAP_KEYS}
             return out
         pages = []
@@ -186,7 +199,8 @@ def probe(*, environ, paths, cfg, clock, now, budget_sec, session_factory=None, 
     except W.ScreenStop as x:
         rc, why = W.session_failure(x.state, x.info)
         st = "fail" if rc == W.RC_LOGIN else "transport_fail"
-        out["caps"] = {k: cap(st, [why], {"login": login_of(x.state)}, (k, *base, x.state)) for k in CAP_KEYS}
+        val = {"login": login_of(x.state), **login_value(screen, rc)}
+        out["caps"] = {k: cap(st, [why], val, (k, *base, x.state)) for k in CAP_KEYS}
         return out
     finally:
         screen.close()

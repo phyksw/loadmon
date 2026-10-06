@@ -42,7 +42,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from lm27 import LM27_VERSION
@@ -76,6 +76,7 @@ HELLO_TIMEOUT_S = 1.5
 TEAM_SEND_TRIGGERS = ("startup", "timer")      # 화면이 거는 팀 묶음 재시도 계기(TAB §2.8 — 승인된 항목만)
 TEAM_SEND_STARTUP_DELAY_S = 5.0
 TEAM_SEND_EVERY_S = 15 * 60.0                  # 화면이 떠 있는 동안 15분마다(TAB §2.8)
+FORGET_ON_DONE = frozenset({"analyze", "quick_reanalyze", "report_build"})   # 끝나면 모델·[근거] 캐시를 비우는 작업
 _TOKEN_META_RX = re.compile(rb'(<meta\s+name="lm27-ui-token"\s+content=")[^"]*(")')
 _LOG_NAME_RX = re.compile(r"^ui_(\d{8})\.log$")
 
@@ -116,6 +117,13 @@ def root_id_of(paths) -> str:
     """``sha256(ROOT 정규화 경로)[:8]``(R §2.3.1) — 두 설치본을 가린다(경로 자체는 내보내지 않는다)."""
     norm = os.path.normcase(os.path.abspath(os.fspath(paths.root)))
     return hashlib.sha256(norm.encode("utf-8")).hexdigest()[:8]
+
+
+def ui_today(app) -> date:
+    """화면 API 의 '오늘' — 근무 시간대(설정 ``time.tzOffsetMin``) 벽시계의 날짜(``lm27.ui.period.today_local``). 원장·기간
+    카드·CLI 가 같은 날을 쓴다(C12 — 예전에는 UTC 날짜라 한국 아침 0~9시에 오늘 칸이 대시보드·커버리지에서 빠졌다)."""
+    from lm27.ui.period import today_local
+    return today_local(int(app.cfg()["time.tzOffsetMin"]), app.deps.now())
 
 
 def _utc_iso(dt: datetime | None = None) -> str:
@@ -357,6 +365,12 @@ class UiApp:
         self._spawn(loop, "lm27-ui-teamsend")
 
     def _job_done(self, job) -> None:
+        if job.kind in FORGET_ON_DONE:                                # 새 결과·모델 — [근거] 캐시를 바로 놓는다(W2 C18)
+            try:
+                from lm27.ui.api_report import forget_models
+                forget_models(self)
+            except Exception:  # noqa: BLE001 — 캐시 비우기 실패가 작업 종료 처리를 막지 않는다(600초 유휴 만료가 남음)
+                pass
         if job.kind == "move_prepare" and job.state == "done":       # 이동 준비 → 도우미 창이 뜨고 서버 종료(TAB §1.11)
             self.request_shutdown(1.0)
 

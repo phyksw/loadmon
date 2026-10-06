@@ -43,7 +43,7 @@ from lm27.report import fmt as F
 from lm27.report import vocab as V
 
 __all__ = ["CSV_NAMES", "FORMATS", "VARIANTS", "ExportError", "ExportResult", "csv_bytes", "csv_cell", "csv_tables",
-           "export", "fit_html", "island", "load_assets", "prune_exports", "render_html"]
+           "export", "fit_html", "hidden_titles", "island", "load_assets", "prune_exports", "render_html"]
 
 FORMATS = ("html", "csv", "json")
 VARIANTS = ("full", "redacted")
@@ -409,11 +409,12 @@ def _choose(given, default, allowed, what: str) -> list[str]:
 
 def export(run_id: str, formats=None, variants=None, out_dir=None, **kw) -> ExportResult:
     r"""R §9.1 `lm27 report export --run … --formats … --variant … [--out <폴더>]`(계약 §7.1 — rc 0 · 1). 분석 폴더·내보내기
-    폴더의 경로 메서드가 아직 `lm27.paths` 에 없으면(CR) 만들지 않고 rc 1 + 한국어 한 줄."""
+    폴더의 경로 메서드가 아직 `lm27.paths` 에 없거나(CR), 내보내기를 만들 수 없으면(`ExportError` — 화면 자원 없음·읽기 실패·
+    인라인 자원의 `</script` 등 G-R6) 만들지 않고 rc 1 + 한국어 한 줄(예외로 올리지 않는다 — W2 검토 L05)."""
     from lm27.report.inputs import PathsMethodMissing
     try:
         return _export(run_id, formats, variants, out_dir, **kw)
-    except PathsMethodMissing as e:
+    except (PathsMethodMissing, ExportError) as e:
         return ExportResult(rc=1, run_id=run_id, failed=[{"path": "", "variant": "", "format": "", "reason": str(e)}])
 
 
@@ -454,8 +455,9 @@ def _export(run_id: str, formats=None, variants=None, out_dir=None, *, paths=Non
     inp = inputs if inputs is not None else load_inputs(run_id, paths=paths, cfg=cfg, bundle_state=False,
                                                         evidence=("html" in fmts and "full" in vrs))
     built_at = _now_iso(cfg, now)
-    from lm27.report.inputs import analysis_time
+    from lm27.report.inputs import analysis_time, chosen_of
     analyzed_at = analysis_time(paths, run_id, int(cfg["time.tzOffsetMin"]))
+    chosen = chosen_of(paths, run_id)
     if out_dir:
         base = os.path.abspath(os.fspath(out_dir))
 
@@ -496,7 +498,8 @@ def _export(run_id: str, formats=None, variants=None, out_dir=None, *, paths=Non
             vm = model
         else:
             vm = redact_model(model, inp.registry, person_dir=inp.person_dir, title_mode=title_mode)
-            bad = redaction_violations(vm, inp.person_dir, extra=extra_needles)
+            hidden = hidden_titles(model, vm)
+            bad = redaction_violations(vm, inp.person_dir, extra=[*extra_needles, *hidden])
             if bad:
                 for fmt in fmts:
                     res.failed.append({"path": FILE_NAMES.get((variant, fmt), CSV_DIR[variant]), "variant": variant,
@@ -514,7 +517,7 @@ def _export(run_id: str, formats=None, variants=None, out_dir=None, *, paths=Non
         if "html" in fmts:
             drill = drill_island(inp, vm, variant, cfg, res=res_full if variant == "full" else None)
             if variant != "full":
-                bad = redaction_violations(drill, inp.person_dir, extra=extra_needles)
+                bad = redaction_violations(drill, inp.person_dir, extra=[*extra_needles, *hidden])
                 if bad:
                     res.failed.append({"path": FILE_NAMES[(variant, "html")], "variant": variant, "format": "html",
                                        "reason": f"가림판 근거 섬 검사 실패(필드: {', '.join(bad[:3])})"})
@@ -522,7 +525,7 @@ def _export(run_id: str, formats=None, variants=None, out_dir=None, *, paths=Non
 
             def render(m_isl, d_isl, _v=variant):
                 return render_html(m_isl, d_isl, variant=_v, run_id=run_id, built_at=built_at, assets=assets)
-            html, trimmed = fit_html(_with_analysis_time(vm, analyzed_at), drill, cap, render)
+            html, trimmed = fit_html(_with_analysis_time(vm, analyzed_at, chosen), drill, cap, render)
             if trimmed:
                 res.trimmed[variant] = trimmed
             if len(html.encode("utf-8")) > cap:
@@ -541,13 +544,34 @@ def _export(run_id: str, formats=None, variants=None, out_dir=None, *, paths=Non
     return res
 
 
-def _with_analysis_time(vm: Mapping, analyzed_at: str | None) -> Mapping:
-    """자기완결 HTML 섬의 모델에만 ``run.built_at``(그 실행의 분석 시각 — 머리 띠 '분석 MM-DD HH:MM')을 덧붙인 얕은 사본.
-    모델 파일·JSON 내보내기는 그대로다(G-R1 — 같은 실행이면 같은 값이라 HTML 결정성도 그대로)."""
+HIDDEN_TITLE_MIN = 8          # 가린 원래 제목을 검사 바늘로 쓸 최소 글자 수(공백 제외 — 짧은 낱말이 다른 글과 엇갈리지 않게)
+
+
+def hidden_titles(full: Mapping, red: Mapping) -> list[str]:
+    """가림판에서 일반 제목으로 바꾼 단위업무(`title_mode=generic`)의 원래 제목 — 가림판 검사(G-R8)의 추가 바늘. 원래 제목이
+    가림판 어디에든 남으면(리뷰 AI 문장 등) 가림판을 만들지 않는다(fail-closed — W2 검토 C13)."""
+    gen = {u.get("unit_id") for u in red.get("units") or () if u.get("title_mode") == "generic"}
+    out = set()
+    for u in full.get("units") or ():
+        t = " ".join(str(u.get("title") or "").split())
+        if u.get("unit_id") in gen and len(t.replace(" ", "")) >= HIDDEN_TITLE_MIN:
+            out.add(t)
+    return sorted(out)
+
+
+def _with_analysis_time(vm: Mapping, analyzed_at: str | None, chosen: str | None = None) -> Mapping:
+    """자기완결 HTML 섬의 모델에만 ``run.built_at``(그 실행의 분석 시각 — 머리 띠 '분석 MM-DD HH:MM')과 ``run.chosen``
+    (지금 화면 결과일 때만 '자동/직접 선택' — `inputs.chosen_of`)을 덧붙인 얕은 사본. 모델 파일·JSON 내보내기는 그대로다
+    (G-R1 — current.json 은 보고서 입력이 아니다, W2 검토 C01)."""
     run = dict(vm.get("run") or {})
-    if not analyzed_at or run.get("built_at"):
+    add = {}
+    if analyzed_at and not run.get("built_at"):
+        add["built_at"] = analyzed_at
+    if chosen in ("auto", "explicit") and not run.get("chosen"):
+        add["chosen"] = chosen
+    if not add:
         return vm
-    run["built_at"] = analyzed_at
+    run.update(add)
     return {**vm, "run": run}
 
 

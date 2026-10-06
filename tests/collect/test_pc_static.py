@@ -152,7 +152,7 @@ class AgentCopyRunTest(CloneTestCase):
                        cfg={}, env={"APPDATA": str(empty_app)}, script_path=ps / "Get-OfficeMru.ps1")
             self.assertEqual(r.rc, 0, r.err())
             self.assertEqual(len(r.records), 1)
-            self.assertEqual(r.cursor, {"last_ts_utc": "2026-09-15T02:00:00Z"})
+            self.assertEqual(r.cursor["last_ts_utc"], "2026-09-15T02:00:00Z")
             self.assertEqual(sorted(os.listdir(ps)), sorted(AGENT_PS))            # 사본 폴더에 아무것도 쓰지 않음
         finally:
             shutil.rmtree(tmp, ignore_errors=True)

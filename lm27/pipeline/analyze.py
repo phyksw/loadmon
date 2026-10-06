@@ -17,10 +17,14 @@ r"""분석 파이프라인 실행기(계약 §2.13 · §3.23 · §7.1 · §8.3 �
 | classify | ``lm27.hier.prepare``(HierTags) → ``lm27.time.analyze_time`` → ``lm27.hier.classify_all``(규칙 라벨, task_label ai_in) |
 | ai:task_label · ai:workflow · ai:review_text | 브리지 프로세스 ``lm27_cli.py bridge run --run-id <run_id> --stages …
   --events jsonl``(B §2.3 — 호출 1회 = 프로세스 1개, ``lm27.collect.watch`` 감시) |
-| time | ``lm27.hier.classify_all``(AI 답 반영·로컬 상태 저장) → ``lm27.time.mm.rollup`` → ``write_time_files`` ·
-  ``lm27.hier.write_result`` |
-| mining · review | ``lm27.report.inputs.load_inputs`` → ``lm27.report.analysis.ai_items``(ai_in) |
-| report | ``lm27.report.build_report`` |
+| time | (task_label 을 물은 실행만) ``lm27.hier.classify_all``(AI 답 반영·로컬 상태 저장) → ``lm27.time.mm.rollup`` →
+  ``write_time_files`` · ``lm27.hier.write_result`` |
+| mining · review | (그 AI 단계를 묻는 실행만) ``lm27.report.inputs.load_inputs`` → ``lm27.report.analysis.ai_items``(ai_in) |
+| report | ``lm27.report.inputs.load_inputs``(증거 보기는 이 실행이 만든 것) → ``lm27.report.build_report`` |
+
+성능·메모리(W2 검토 C07 · L11 — 사용자 지시 '작업 완료 후 메모리를 계속 잡지 않도록'): 분류는 AI 답이 바뀔 수 있는
+실행에서만 두 번(그 밖에는 classify 결과가 최종 — 저장도 거기서), 번들 증거는 적재 단계에서 한 번만 읽는다(증거 보기는
+그 행으로 한 번 만들어 mining·review·report 가 같이 쓴다), 시간·분류 결과를 파일로 쓴 뒤에는 메모리 사슬을 놓는다.
 
 규칙:
 - **시간 보존은 fail-closed**(T-01): 시간 코어의 ``ConservationError`` 와 파이프라인 자체 재검사(날마다 Σ귀속 초 =
@@ -313,6 +317,7 @@ class _Run:
     tables_sig: str = ""
     hier_ctx: dict = field(default_factory=dict)
     hier_final: object = None
+    hres: object = None                   # classify 결과가 최종일 때(이번 실행에서 task_label 답이 바뀔 수 없음) — time 이 그대로 쓴다
     task_items: int = 0
     ai_in: dict = field(default_factory=dict)
     ev_index: object = None
@@ -826,7 +831,12 @@ def _st_load(run: _Run, sd, act) -> _Out:
 
 
 def _coverage(run: _Run) -> list[dict]:
-    """커버리지 원장(파생 — 계약 §3.11)의 기간 셀 → 시간 코어 프로필 ``coverage``(E3i 보류 판정 재료)."""
+    """커버리지 원장(파생 — 계약 §3.11)의 기간 셀 → 시간 코어 프로필 ``coverage``(E3i 보류 판정 재료).
+    (날짜, 축) 합성은 원장 단일원 ``lm27.collect.ledger.day_axis_status``(출처 중 최선 값 + 코파일럿 예외 — X-131 ·
+    B Q23⑤): ``*.copilot`` 의 zero_ok 는 다른 출처의 미관측을 '0건 확인'으로 바꾸지 못하고, 코파일럿만 있는 날은
+    미관측(not_attempted)이다. 시간 코어에는 합성 결과 ``{date, kind_axis, status}`` 만 넘긴다(출처를 떼고 넘기면 시간
+    코어가 최선 값만 골라 그 예외가 사라진다 — W2 검토 C00)."""
+    from lm27.collect.ledger import day_axis_status
     try:
         raw = fsx.read_bytes(run.paths.coverage_ledger())
     except FileNotFoundError:
@@ -835,7 +845,7 @@ def _coverage(run: _Run) -> list[dict]:
         run.warn("coverage_unreadable", f"커버리지 원장을 읽지 못했습니다({type(e).__name__})")
         return []
     lo, hi = (run.d0 - timedelta(days=1)).isoformat(), (run.d1 + timedelta(days=1)).isoformat()
-    out, bad = [], 0
+    cells, bad = [], 0
     for ln in raw.decode("utf-8-sig", "replace").splitlines():
         if not ln.strip():
             continue
@@ -846,10 +856,13 @@ def _coverage(run: _Run) -> list[dict]:
             continue
         d = str(r.get("date") or "") if isinstance(r, dict) else ""
         if _DATE_RX.match(d) and lo <= d <= hi:
-            out.append({"date": d, "kind_axis": r.get("kind_axis"), "status": r.get("status")})
+            # 형식이 틀린 축·상태도 글자로 넘긴다 — 시간 코어가 '커버리지_형식오류'로 센다(예전과 같게)
+            cells.append({"date": d, "kind_axis": str(r.get("kind_axis") or ""), "status": str(r.get("status") or ""),
+                          "src": str(r.get("src") or ""), "pc_id": str(r.get("pc_id") or ""), "reasons": []})
     if bad:
         run.warn("coverage_broken", f"커버리지 원장의 깨진 줄 {bad}개를 건너뛰었습니다")
-    return out
+    return [{"date": d, "kind_axis": ax, "status": st}
+            for (d, ax), st in sorted(day_axis_status(run.paths, cells).items())]
 
 
 def _st_normalize(run: _Run, sd, act) -> _Out:
@@ -952,6 +965,8 @@ def _st_classify(run: _Run, sd, act) -> _Out:
         raise _Fail("calendar_unknown_year", fatal=True, years=ys) from None
     _check_conservation(res)
     run.tres = res
+    run.tags = None                              # 꼬리표는 시간 코어 입력이었다(분류는 특징에서 다시 만든다)
+    _early_evidence(run, res)
     tables = res.tables.as_json()
     run.tables_sig = _sha(tables)
     copilot = run.gate(("task_label",))[1] is None
@@ -961,10 +976,15 @@ def _st_classify(run: _Run, sd, act) -> _Out:
     use_ai = copilot or run.stored_ai_ok(("task_label",))
     run.hier_ctx = {"feats": feats, "tasks": task_rows(res), "attrib": res.attribution.rows(), "team_tables": tables,
                     "slot_basis": dict(res.env.basis), "copilot_enabled": use_ai, "person_dir": pdir}
+    # 이번 실행이 task_label 을 묻지 않으면(--no-ai · 빠른 재분석 · 브리지 끔 · 단계 끔) AI 답이 바뀔 수 없으므로 이 분류가
+    # 최종이다 — 로컬 상태(제목 캐시·제안 큐·학습 규칙)를 여기서 저장하고 time 단계는 다시 계산하지 않는다(W2 검토 C07:
+    # 같은 분류를 두 번 — 9개월에서 분석 시간의 40%). 묻는 실행만 답을 받은 뒤 time 단계가 한 번 더 분류한다.
+    final = not ask
     try:
-        hres = H.classify_all(_hier_ctx(run, write_ai_in=ask, persist=False))
+        hres = H.classify_all(_hier_ctx(run, write_ai_in=ask, persist=final))
     except H.HierInvariantError as e:
         raise _Fail("hier_invariant", fatal=True, error_type=type(e).__name__) from None
+    run.hres = hres if final else None
     run.task_items = len(hres.ai_items) if ask else 0
     by_level = Counter(str(getattr(lb, "level", "")) for lb in hres.labels.values())
     counts = {"evidence_tags": len(tag_rows), "features": len(feats), "units": len(res.tasks),
@@ -976,16 +996,35 @@ def _st_classify(run: _Run, sd, act) -> _Out:
                 extra={"input_digest": str(res.input_digest)[:64]})
 
 
+def _early_evidence(run: _Run, res) -> None:
+    """보고서 증거 보기를 시간 코어 직후 적재 행으로 한 번 만들고 행을 놓는다 — 분류(이 실행에서 메모리가 가장 큰 구간)
+    동안 적재 행 전체를 들고 있지 않게(W2 검토 C07). 기준 시각은 시간 코어의 로컬 초(``run_meta.as_of`` 와 같은 순간 —
+    보고서 적재가 읽는 값), 기간은 이 실행의 기간(run_status 의 from·to)이라 ``load_inputs`` 가 번들에서 만든 것과 같다.
+    mining·review·report 가 하나도 돌지 않으면 만들지 않는다. 실패하면 행을 그대로 두고 뒤 단계가 예전처럼 만든다(경고는
+    ``load_inputs`` 가 단다)."""
+    if run.rows is None or not any(run.plan.get(s) in ("run", "auto") for s in ("mining", "review", "report")):
+        return
+    from lm27.report import inputs as I
+    try:
+        idx = I.load_evidence_index(run.paths, run.cfg, run.d0.isoformat(), run.d1.isoformat(), int(res.as_of),
+                                    rows=run.rows)
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError):
+        return
+    run.ev_index, run.rows = idx, None
+
+
 def _st_time(run: _Run, sd, act) -> _Out:
     if act == "reuse":
         return _reuse(run)
     import lm27.hier as H
     from lm27.time.mm import rollup
     res = run.tres
-    try:
-        hres = H.classify_all(_hier_ctx(run, write_ai_in=False, persist=True))
-    except H.HierInvariantError as e:
-        raise _Fail("hier_invariant", fatal=True, error_type=type(e).__name__) from None
+    hres, run.hres = run.hres, None
+    if hres is None:                                               # task_label 을 물은 실행 — 받은 답으로 한 번 더(저장 포함)
+        try:
+            hres = H.classify_all(_hier_ctx(run, write_ai_in=False, persist=True))
+        except H.HierInvariantError as e:
+            raise _Fail("hier_invariant", fatal=True, error_type=type(e).__name__) from None
     labels = hres.rollup_labels()
     for m in res.months.values():
         m["rollup"] = rollup(m, labels)
@@ -996,7 +1035,7 @@ def _st_time(run: _Run, sd, act) -> _Out:
     tc = importlib.import_module("lm27.time")
     tfiles = tc.write_time_files(run.paths, run.run_id, res)          # 경로 메서드는 실행 전에 확인했다
     hfiles = H.write_result(hres, paths=run.paths, run_id=run.run_id)
-    run.hier_final = hres
+    _release_chain(run)                         # 시간·분류 결과는 파일에 썼다 — 뒤 단계는 파일에서 읽는다(메모리 — C07)
     eff = res.effort()
     bucket = sum(int(v) for k, v in eff.items() if str(k).startswith("B_"))
     total = sum(int(v) for v in eff.values())
@@ -1008,6 +1047,14 @@ def _st_time(run: _Run, sd, act) -> _Out:
               "bucket_sec": bucket, "months": len(res.months), "queue": len(res.queue), "labels": len(labels),
               "label_src": dict(sorted(src.items())), "files": len(tfiles) + len(hfiles)}
     return _Out(counts=counts, items_total=len(res.tasks), items_ok=len(labels))
+
+
+def _release_chain(run: _Run) -> None:
+    """메모리 사슬(시간 코어 결과·분류 결과·분류 특징·꼬리표·프로필)을 놓는다 — 결과 파일을 쓴 뒤 뒤 단계(mining·review·
+    report)는 파일에서 읽으므로 들고 있을 까닭이 없다. 증거 행(``rows``)은 증거 보기를 만들 때까지 둔다(번들을 다시 읽지
+    않게 — ``_evidence_arg``). 사용자 지시 '작업 완료 후 메모리를 계속 잡지 않도록'(W2 검토 C07)."""
+    run.tres = run.hres = run.hier_final = run.feats = run.tags = run.profile = None
+    run.hier_ctx = {}
 
 
 def _reuse(run: _Run) -> _Out:
@@ -1042,48 +1089,66 @@ def _reuse(run: _Run) -> _Out:
                 extra={"reused_from": src})
 
 
-def _inputs(run: _Run, *, evidence=True):
+def _evidence_arg(run: _Run) -> tuple:
+    """``load_inputs`` 의 (evidence, evidence_rows) — 증거 보기는 분석 1회에 한 번만 만든다(W2 검토 C07·L11: 예전에는
+    적재·mining·report 가 번들 증거 전체를 세 번 읽고 정규화했다). 이미 만들었으면 그것, 적재 단계의 행이 아직 있으면 그
+    행으로(번들 다시 읽기 없음), 둘 다 없으면(재분석의 재사용 경로) 번들에서 한 번."""
+    if run.ev_index is not None:
+        return run.ev_index, None
+    if run.rows is not None:
+        return True, (run.d0.isoformat(), run.d1.isoformat(), run.rows)
+    return True, None
+
+
+def _keep_evidence(run: _Run, inp) -> None:
+    """만든 증거 보기를 다음 단계에 넘기려 붙잡고, 그 재료인 증거 행은 놓는다(메모리)."""
+    idx = getattr(inp, "evidence_index", None)
+    if idx is not None:
+        run.ev_index = idx
+        run.rows = None
+
+
+def _inputs(run: _Run):
     from lm27.report.inputs import load_inputs
-    inp = load_inputs(run.run_id, paths=run.paths, cfg=run.cfg, registry=run.reg, cal=run.cal, evidence=evidence)
+    ev, rows = _evidence_arg(run)
+    inp = load_inputs(run.run_id, paths=run.paths, cfg=run.cfg, registry=run.reg, cal=run.cal, evidence=ev,
+                      evidence_rows=rows)
+    _keep_evidence(run, inp)
     if inp.refused:
         raise _Fail("inputs_missing", fatal=False, missing=sorted(inp.refused))
     return inp
 
 
-def _ai_items(run: _Run, inp, stage_names, *, write: bool) -> dict:
-    """분석층(R §4.10.1)으로 ai_in 항목을 만든다 — AI 를 부를 때만 파일로 쓴다(끔이면 세기만)."""
+def _ai_items(run: _Run, inp, stage_names) -> dict:
+    """분석층(R §4.10.1)으로 ai_in 항목을 만들어 쓴다(AI 를 부르는 실행만 — `_st_items`). 반환 {브리지 단계: 건수}."""
     from lm27.report.analysis import ai_items as AI
-    if write:
-        out = {}
-        for st in stage_names:
-            out.update(AI.write_ai_items(run.run_id, st, paths=run.paths, cfg=run.cfg, inputs=inp, cal=run.cal))
-        return out
-    ctx = AI.context_from_inputs(inp, run.cfg, run.cal)
     out = {}
     for st in stage_names:
-        out.update({k: len(v) for k, v in AI.build_items(ctx, st).items()})
+        out.update(AI.write_ai_items(run.run_id, st, paths=run.paths, cfg=run.cfg, inputs=inp, cal=run.cal))
     return out
 
 
-def _st_mining(run: _Run, sd, act) -> _Out:
+def _st_items(run: _Run, ai_stage: str) -> _Out:
+    """mining · review 공통 — 그 AI 단계가 이번 실행에서 물을 때만(문 열림 + 계획 run) 분석층으로 ai_in 항목을 만들어 쓴다.
+    묻지 않는 실행(--no-ai · 빠른 재분석 · 브리지 끔 · 단계 끔)은 항목을 만들지 않는다 — 예전에는 세기만 하려고 보고서
+    입력 전체를 읽고 분석 문맥·워크플로우를 한 번씩 더 계산했다(W2 검토 C07 — 그 수는 어디에도 쓰이지 않는다)."""
+    names = S.get(ai_stage).bridge
+    ask = run.gate(names)[1] is None and run.plan.get(ai_stage) == "run"
+    if not ask:
+        return _Out(counts={"ai_in": {}, "written": 0}, extra={"items": "not_asked"})
     inp = _inputs(run)
-    run.ev_index = inp.evidence
-    names = S.get("ai:workflow").bridge
-    ask = run.gate(names)[1] is None and run.plan.get("ai:workflow") == "run"
-    counts = _ai_items(run, inp, names, write=ask)
+    counts = _ai_items(run, inp, names)
     run.ai_in.update(counts)
     tot = sum(counts.values())
-    return _Out(counts={"ai_in": dict(sorted(counts.items())), "written": int(ask)}, items_total=tot, items_ok=tot)
+    return _Out(counts={"ai_in": dict(sorted(counts.items())), "written": 1}, items_total=tot, items_ok=tot)
+
+
+def _st_mining(run: _Run, sd, act) -> _Out:
+    return _st_items(run, "ai:workflow")
 
 
 def _st_review(run: _Run, sd, act) -> _Out:
-    inp = _inputs(run, evidence=run.ev_index if run.ev_index is not None else True)
-    names = S.get("ai:review_text").bridge
-    ask = run.gate(names)[1] is None and run.plan.get("ai:review_text") == "run"
-    counts = _ai_items(run, inp, names, write=ask)
-    run.ai_in.update(counts)
-    tot = sum(counts.values())
-    return _Out(counts={"ai_in": dict(sorted(counts.items())), "written": int(ask)}, items_total=tot, items_ok=tot)
+    return _st_items(run, "ai:review_text")
 
 
 def _call_bridge(run: _Run, stage: str, names) -> BridgeRun:
@@ -1160,9 +1225,23 @@ def _st_ai(run: _Run, sd, act) -> _Out:
     return out
 
 
+def _report_inputs(run: _Run):
+    """보고서 입력 — ``build_report`` 가 스스로 읽는 것과 똑같이(레지스트리·달력도 보고서 쪽 적재 — 모델 바이트가 cli
+    ``report build`` 와 같다) 읽되 증거 보기만 이 실행이 만든 것을 넘긴다(번들 다시 읽기 0 — C07·L11). 경로 메서드가
+    없으면 None(``build_report`` 가 스스로 읽다가 rc 1 로 알린다)."""
+    from lm27.report import inputs as I
+    ev, rows = _evidence_arg(run)
+    try:
+        inp = I.load_inputs(run.run_id, paths=run.paths, cfg=run.cfg, evidence=ev, evidence_rows=rows)
+    except I.PathsMethodMissing:
+        return None
+    run.ev_index = run.rows = None              # 보고서가 마지막 소비자 — 다 쓴 증거는 놓는다(메모리)
+    return inp
+
+
 def _st_report(run: _Run, sd, act) -> _Out:
     from lm27.report import build_report
-    br = build_report(run.run_id, paths=run.paths, cfg=run.cfg, now=run.now())
+    br = build_report(run.run_id, paths=run.paths, cfg=run.cfg, now=run.now(), inputs=_report_inputs(run))
     run.report = br
     rc = _int(getattr(br, "rc", None), RC_FAIL)
     from lm27.report import vocab as RV

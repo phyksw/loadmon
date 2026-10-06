@@ -302,10 +302,11 @@ def nd_ge(n: int, d: int, thr) -> bool:
 
 
 def nd_half_up(n: int, d: int, digits: int) -> float:
-    """n/d 를 digits 자리 half-up float(정확한 정수 연산)."""
+    """n/d 를 digits 자리 half-up float(정확한 정수 연산). q/s 는 정수 나눗셈의 올바른 반올림 — `float(Fraction(q, s))` 와
+    같은 값이다(분수 객체를 만들지 않아 큰 표본의 연관도 계산이 빠르다 — W2 검토 C07)."""
     s = 10 ** digits
     q = (2 * n * s + d) // (2 * d)
-    return float(Fraction(q, s))
+    return q / s
 
 
 def jaccard(a, b) -> Fraction:

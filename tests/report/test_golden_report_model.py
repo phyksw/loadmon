@@ -25,16 +25,13 @@ class GoldenModelTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.t = R.TmpRoot()
+        cls.addClassCleanup(cls.t.cleanup)          # setUpClass 가 중간에 실패해도 임시 ROOT 를 지운다(W2 검토 L12)
         cls.srun = R.golden_run()
         cls.srun.write(cls.t.paths)
         cfg = W.cfg()
         cls.m = M.build_model(cls.srun.inputs(cls.t.paths, cfg), cfg, fallback=no_fallback)
         with open(GOLDEN, encoding="utf-8") as fh:
             cls.g = json.load(fh)["mine_role_A"]
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.t.cleanup()
 
     def role(self):
         rid = next(u["role_id"] for u in self.m["units"] if u["unit_id"] == "u_a1")

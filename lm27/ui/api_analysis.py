@@ -110,8 +110,9 @@ def list_runs(app) -> list:
 
 
 def _today(app):
-    """근무 시간대(time.tzOffsetMin) 벽시계의 오늘 — 기본 기간의 끝(lm27.ui.period.today_local)."""
-    return period.today_local(int(app.cfg()["time.tzOffsetMin"]), app.deps.now())
+    """근무 시간대(time.tzOffsetMin) 벽시계의 오늘 — 기본 기간의 끝(``lm27.ui.server.ui_today`` 단일원)."""
+    from lm27.ui.server import ui_today
+    return ui_today(app)
 
 
 def current_view(app, runs: list | None = None) -> dict | None:
@@ -144,10 +145,12 @@ def get_runs(app, req):
     f, t = period.default_range(today)
     runs = list_runs(app)
     # months 는 이전 기본(최근 n개월, report.defaultRangeMonths)의 값 — 화면은 이제 period(올해 1월 1일 ~ 오늘)를 쓴다
+    # tz_offset_min = 기간 카드가 '오늘'을 PC 벽시계가 아니라 이 근무 시간대로 세게(L06 — 서버·CLI 와 같은 오늘)
     return {"runs": runs, "current": current_view(app, runs),
             "defaults": {"months": int(app.cfg()["report.defaultRangeMonths"]),
                          "keep": int(app.cfg()["report.analysisKeep"]),
                          "period": {"today": today.isoformat(), "key": period.DEFAULT_KEY, "from": f, "to": t,
+                                    "tz_offset_min": int(app.cfg()["time.tzOffsetMin"]),
                                     "presets": period.presets(today)}}}
 
 
@@ -212,6 +215,8 @@ def post_run(app, req):
         return app.start_job(kind, argv)
     f, t = b.get("from"), b.get("to")
     ps = b.get("period_source")
+    if ps is not None and not isinstance(ps, str):      # 목록·객체·숫자 — 500 이 아니라 400(L07)
+        raise ApiError(400, "bad_period_source", "기간 출처 값이 아닙니다")
     if f in (None, "") and t in (None, ""):
         # 날짜를 주지 않으면 화면과 같은 규칙(lm27.ui.period 단일원): 기간 출처가 없거나 default → 올해 1월 1일 ~ 오늘,
         # 분기·반기(q1~q4·h1·h2) → 그 기간. 날짜와 함께만 쓰는 출처(this_month 등)·아직 오지 않은 기간은 거절.
@@ -335,7 +340,7 @@ def _limits_view(app, cfg, prof: dict) -> dict | None:
     e = max(mine, key=lambda x: (str(x.get("model") or "") == fast, str(x.get("date") or "")))
     stale = False
     try:
-        stale = (app.deps.now().date() - date.fromisoformat(str(e.get("date"))[:10])).days > int(cfg["bridge.calibrateTtlDays"])
+        stale = (_today(app) - date.fromisoformat(str(e.get("date"))[:10])).days > int(cfg["bridge.calibrateTtlDays"])
     except ValueError:
         stale = True
     return {"in": int(e["input_limit"]), "out": int(e["output_limit"]), "pack_in": e.get("pack_in"),
@@ -449,6 +454,7 @@ def post_manual_import(app, req):
 FRONT_OK = {"front": "분석용 Edge 창을 앞으로 가져왔습니다 — 로그인이 필요하면 그 창에서 회사 계정으로 한 번 로그인해 주세요",
             "launched": "분석용 Edge 창을 새로 열었습니다 — 그 창에서 회사 계정으로 한 번 로그인해 주세요(Outlook 웹·Teams 웹·Copilot "
                         "이 같은 로그인을 씁니다). 로그인을 마치면 창을 닫아도 됩니다"}
+FRONT_PENDING_CLEARED = " · 다음 수집·분석에서 로그인을 다시 기다립니다"
 FRONT_FAIL = {"edge_not_found": (409, "Edge 를 찾지 못했습니다 — Microsoft Edge 가 설치돼 있어야 분석용 창을 열 수 있습니다"),
               "policy_blocked": (409, "회사 정책이 Edge 자동 연결을 막아 분석용 창을 열지 못했습니다 — Copilot 은 직접 붙여넣기 방식으로 "
                                       "쓸 수 있습니다"),
@@ -464,8 +470,9 @@ def post_front(app, req):
     r = app.deps.bridge_front(app.cfg())
     st = str((r or {}).get("state") or "")
     if st in FRONT_OK:
+        cleared = bool((r or {}).get("login_pending_cleared"))         # 로그인 보류를 지웠다(v1.3 §0.8 V18)
         return {"ok": True, "state": st, "port": (r or {}).get("port"), "restored": bool((r or {}).get("restored")),
-                "text_ko": FRONT_OK[st]}
+                "login_pending_cleared": cleared, "text_ko": FRONT_OK[st] + (FRONT_PENDING_CLEARED if cleared else "")}
     code, msg = FRONT_FAIL.get(st, (500, "분석용 Edge 창을 앞으로 가져오지 못했습니다 — 잠시 뒤 다시 눌러 주세요"))
     raise ApiError(code, st or "front_failed", msg)
 

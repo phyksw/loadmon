@@ -337,10 +337,11 @@ def _collect_brief(app, pcs: list) -> dict:
 
 def get_home(app, req):
     from lm27.ui import nextactions
+    from lm27.ui.server import ui_today
     cfg = app.cfg()
     pc_id, pc = this_pc(app)
     pcs = all_pcs(app)
-    today = app.deps.now().date()
+    today = ui_today(app)
     try:
         comp = load_composite(app)[0]
     except Exception:                                    # 원장 없음·깨짐 — 그 카드만 빈 상태

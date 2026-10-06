@@ -13,6 +13,7 @@ LM24 의 `ukey2`·`ukey3`·`team_report.ukey` 세 벌을 한 벌로 통일했다
 
 표준 라이브러리만 쓴다(팀 서버·개인 PC·클라우드PC 공용).
 """
+import functools
 import re
 import unicodedata
 
@@ -28,9 +29,8 @@ def _sep(t: str) -> str:
     return "".join(_SEP.get(ch, ch) for ch in t)
 
 
-def fold(s, drop_note: bool = True) -> str:
-    """비교용 접기. None·숫자도 문자열로 받아 접는다."""
-    t = _sep(str(s if s is not None else ""))
+def _fold_raw(t: str, drop_note: bool) -> str:
+    t = _sep(t)
     t = unicodedata.normalize("NFKC", t)
     t = _sep(t)
     if drop_note:
@@ -38,9 +38,28 @@ def fold(s, drop_note: bool = True) -> str:
     return " ".join(t.split()).casefold()
 
 
+# 순수 함수라 짧은 이름은 메모한다(분류 한 번에 수백만 번 불린다 — W2 성능 C07 handoff, 통합). 긴 글은 메모하지 않아
+# 메모리 상한이 작다(MEMO_MAX × MEMO_LEN 글자 안팎).
+MEMO_MAX = 16384
+MEMO_LEN = 256
+_fold_memo = functools.lru_cache(maxsize=MEMO_MAX)(_fold_raw)
+
+
+@functools.lru_cache(maxsize=MEMO_MAX)
+def _ukey_memo(t: str) -> str:
+    return _fold_memo(t, False).replace(" ", "")
+
+
+def fold(s, drop_note: bool = True) -> str:
+    """비교용 접기. None·숫자도 문자열로 받아 접는다."""
+    t = str(s if s is not None else "")
+    return _fold_memo(t, bool(drop_note)) if len(t) <= MEMO_LEN else _fold_raw(t, bool(drop_note))
+
+
 def ukey(s) -> str:
     """정규화 키 — 이름·별칭 동일성의 유일한 기준(괄호 꼬리 보존, 공백 제거)."""
-    return fold(s, drop_note=False).replace(" ", "")
+    t = str(s if s is not None else "")
+    return _ukey_memo(t) if len(t) <= MEMO_LEN else _fold_raw(t, False).replace(" ", "")
 
 
 def note(s) -> str:

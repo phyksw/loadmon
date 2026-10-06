@@ -87,6 +87,19 @@ class DiagnoseCase(unittest.TestCase):
         m = diagnose.diagnose_model(self.sb.paths, cells=cells, now=NOW)
         self.assertIn({"code": "axis_unobserved", "axis": "mail_in"}, m["warnings"])
 
+    def test_pc_card_counts_any_pc_web_todos(self):
+        """W2 검토 L01 · v1.3 §0.8 V5 — 웹 경로 빈칸(want_pc '*')은 어느 PC 든 채운다: 각 PC 카드의 빈칸 작업 수에 든다."""
+        from lm27.collect import todo
+        todos = [{"todo_id": "cal.owa:2026-10-01:2026-10-02", "want_pc": todo.WANT_ANY, "state": "assigned"},
+                 {"todo_id": "teams.web:2026-10-01:2026-10-01", "want_pc": todo.WANT_ANY, "state": "open"},
+                 {"todo_id": "mail.owa:2026-09-30:2026-09-30", "want_pc": PC1.pc_id, "state": "assigned"},
+                 {"todo_id": "mail.copilot:2026-09-29:2026-09-29", "want_pc": CLOUD.pc_id, "state": "assigned"}]
+        m = diagnose.diagnose_model(self.sb.paths, todos=todos, now=NOW)
+        cards = {c["pc_id"]: c for c in m["pcs"]}
+        self.assertEqual(cards[PC1.pc_id]["todos"], {"assigned": 2, "open": 1})
+        self.assertEqual(cards[PC1.pc_id]["todos_any_pc"], 2)
+        self.assertEqual(cards[CLOUD.pc_id]["todos"], {"assigned": 2, "open": 1})
+
 
 if __name__ == "__main__":
     unittest.main()

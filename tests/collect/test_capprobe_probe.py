@@ -249,6 +249,11 @@ SCEN: dict[str, Spec] = {
     "idxpaused_zero": Spec(over={"idx": {"catalog_status": 1, "paused_reason": 9, **ZERO_IDX["idx"]}}, cfg={}, only="P-IDX"),
     "idxpaused_some": Spec(over={"idx": {"catalog_status": 3}}, cfg={}, only="P-IDX"),
     "idx_zero_ok": Spec(over=ZERO_IDX, cfg={}, only="P-IDX"),
+    # W2 검토 C10: 클래식·새 Outlook 모두 없음 → R-NOAPP(온라인 모드 아님) · 새 Outlook 패키지만 → R-NEWOL — 수집기와 같은 판정
+    "idx_zero_noapp": Spec(over={"ol": {"classic": False, "new_installed": False, "use_new": False, "new_running": False,
+                                        "running": False}, **ZERO_IDX}, cfg={}, only="P-OL-INST,P-IDX"),
+    "idx_zero_newpkg": Spec(over={"ol": {"classic": False, "new_installed": True, "use_new": False, "new_running": False,
+                                         "running": False}, **ZERO_IDX}, cfg={}, only="P-OL-INST,P-IDX"),
     # 환경·Edge·Teams·PC
     "clm": Spec(over={"env": {"language_mode": "ConstrainedLanguage", "ctypes": "fail", "addtype": "fail"}}, cfg={}),
     "applocker": Spec(over={"env": {"ctypes": "blocked", "addtype": "fail"}}, cfg={}, only="P-ENV,P-PC"),
@@ -313,6 +318,8 @@ EXPECT: dict[str, dict[str, tuple[str, set | frozenset]]] = {
     "idxpaused_some": {"mail.index": ("ok", {"R-IDXPAUSED"})},
     # v1.3 §0.8 V4: 클래식이 있는데 색인에 Outlook 항목 0 = 온라인 모드(수집기 판정과 같음)
     "idx_zero_ok": {"mail.index": ("fail", {"R-ONLINE"}), "cal.index": ("fail", {"R-ONLINE"})},
+    "idx_zero_noapp": {"mail.index": ("fail", {"R-NOAPP"}), "cal.index": ("fail", {"R-NOAPP"})},
+    "idx_zero_newpkg": {"mail.index": ("fail", {"R-NEWOL"}), "cal.index": ("fail", {"R-NEWOL"})},
     "clm": {"env": ("fail", {"R-CLM"}), "mail.com": ("fail", {"R-CLM"}), "cal.com": ("fail", {"R-CLM"}),
             "mail.index": ("fail", {"R-CLM"}), "cal.index": ("fail", {"R-CLM"}), "teams.uia": ("fail", {"R-CLM"}),
             "pc.sampler": ("fail", {"R-CLM"}), "edge_cdp_policy": ("ok", E),

@@ -180,11 +180,16 @@ class TestPreview(QCase):
         it = self.make()
         raw = fsx.read_bytes(it.path)
         obj = json.loads(raw)
+        pv0 = Q.preview(it)
+        self.assertTrue(pv0["can_send"])
+        self.assertEqual((pv0["mask_gaps"], pv0["stale_mask"]), ([], False))
         B.set_mask(self.p, W.U[1], "title")
         pv = Q.preview(it)
         self.assertEqual((pv["rc"], pv["sha_ok"], pv["sha256"], pv["bytes"]), (0, True, it.sha256, len(raw)))
         self.assertEqual(pv["json"].encode("utf-8"), raw)                           # 미리보기 = 실전송 바이트
-        self.assertTrue(pv["can_send"])
+        self.assertFalse(pv["can_send"], "가림을 바꾼 뒤의 옛 바이트는 보내지 않는다(C16)")
+        self.assertEqual((pv["mask_gaps"], pv["stale_mask"], pv["message"]), ([f"unit:{W.U[1]}:title"], True, Q.STALE_MASK))
+        self.assertEqual({u["unit_id"]: u["mask_applied"] for u in pv["units"]}[W.U[1]], False)
         self.assertEqual(pv["guard"], [])
         self.assertEqual([m["mm"] for m in pv["summary"]["months"]], [m["mm"] for m in obj["summary"]["months"]])
         self.assertEqual(sum(pv["summary"]["domains"].values()), obj["integrity"]["alloc_min"])
@@ -203,6 +208,88 @@ class TestPreview(QCase):
         self.assertEqual((pv["rc"], pv["sha_ok"], pv["can_send"]), (1, False, False))
         out = Q.send_item(it, self.cfg, now=NOW, hello_fn=refused)                  # 보내지 않고 failed
         self.assertEqual((out.rc, out.state, out.folder), (1, "failed", "failed"))
+
+
+class TestMaskChange(QCase):
+    """C16 회귀: 미리보기 [제목 가림]·[세부 가림]·니즈 빼기 뒤, 가리기 전에 만든(승인된) 묶음은 자동 전송·[보내기]·승인 모두
+    되지 않는다(예전: 승인된 옛 바이트가 가리지 않은 제목 그대로 자동 전송). 다시 만들면 새 바이트가 옛 것을 대체한다."""
+
+    def test_mask_unapproves_and_blocks_send_until_rebuilt(self):
+        it = self.make()
+        self.assertEqual(Q.approve(it, now=NOW).rc, 0)
+        obj = json.loads(fsx.read_bytes(it.path))
+        u0 = obj["units"][0]
+        self.assertEqual(u0["title_mode"], "label")
+        r = B.set_mask(self.p, u0["unit_id"], "title")
+        self.assertEqual((r["rc"], r["stale"], r["periods"]), (0, [it.name], [PER]))
+        self.assertIn("보내지 않습니다", r["message"])
+        cur = Q.find_item(self.p, it.name)
+        self.assertEqual((cur.state, cur.meta["approved"], cur.meta["history"][-1]["event"]),
+                         ("pending", False, "mask_changed"))
+        self.assertEqual(Q.mask_gaps(cur), [f"unit:{u0['unit_id']}:title"])
+        self.assertEqual((Q.approve(cur, now=NOW).rc, Q.approve(cur, now=NOW).message), (2, Q.STALE_MASK))
+        calls = []
+
+        def spy(*a, **k):
+            calls.append(a)
+            return refused(*a, **k)
+        for c in (self.cfg, W.cfg(**{"team.autoSend": True})):            # 자동 전송 설정이어도 보내지 않는다
+            res = Q.send_due(c, paths=self.p, now=NOW, trigger="startup", hello_fn=spy)
+            self.assertEqual(res.sent, 0)
+        res = Q.send_due(W.cfg(**{"team.autoSend": True}), paths=self.p, now=NOW, hello_fn=spy)
+        self.assertEqual((res.rc, res.sent), (2, 0))
+        self.assertIn("다시 만들어야", res.message)
+        self.assertEqual(calls, [], "가림이 안 들어간 바이트로는 팀 서버에 묻지도 않는다")
+        out = Q.send_item(cur, self.cfg, now=NOW, hello_fn=spy)            # 명시 전송(cli team send <item>)도 막는다
+        self.assertEqual((out.rc, out.state, out.message), (2, "pending", Q.STALE_MASK))
+        self.assertEqual(calls, [])
+        new = self.make(now=NOW + timedelta(minutes=1))                      # 다시 만들기 → 새 바이트, 옛 것은 대체됨
+        self.assertNotEqual(new.sha256, it.sha256)
+        self.assertEqual(Q.mask_gaps(new), [])
+        self.assertEqual(Q.find_item(self.p, it.name).state, "dropped")
+        nu = {u["unit_id"]: u for u in json.loads(fsx.read_bytes(new.path))["units"]}
+        self.assertEqual(nu[u0["unit_id"]]["title_mode"], "generic")
+        self.assertNotIn(u0["title"], fsx.read_bytes(new.path).decode("utf-8"))
+        self.assertEqual(Q.approve(new, now=NOW).rc, 0)
+
+    def test_detail_mask_and_drop_need_and_unmask(self):
+        it = self.make()
+        Q.approve(it, now=NOW)
+        obj = json.loads(fsx.read_bytes(it.path))
+        nid = obj["agentic"]["needs"][0]["need_id"]
+        r = B.drop_need(self.p, nid)
+        self.assertEqual((r["rc"], r["stale"]), (0, [it.name]))
+        self.assertIn(f"need:{nid}", Q.mask_gaps(Q.find_item(self.p, it.name)))
+        it2 = self.make(now=NOW + timedelta(minutes=1))
+        self.assertEqual(Q.mask_gaps(it2), [])
+        u = next(x for x in json.loads(fsx.read_bytes(it2.path))["units"] if x["peers"] or x["apps"])
+        B.set_mask(self.p, u["unit_id"], "detail")
+        gaps = Q.mask_gaps(Q.find_item(self.p, it2.name))
+        self.assertIn(f"unit:{u['unit_id']}:detail", gaps)                  # 동료·앱·근거 수가 남은 옛 바이트
+        self.assertEqual(f"unit:{u['unit_id']}:title" in gaps, u["title_mode"] != "generic")
+        it3 = self.make(now=NOW + timedelta(minutes=2))
+        self.assertEqual(Q.mask_gaps(it3), [])
+        Q.approve(it3, now=NOW)
+        r = B.set_mask(self.p, u["unit_id"], "none")                         # 되돌리기 = 더 가려진 바이트 — 틈이 아니다
+        self.assertEqual((r["rc"], r["stale"]), (0, []))
+        self.assertTrue(Q.find_item(self.p, it3.name).meta["approved"])
+        self.assertEqual(B.set_mask(self.p, u["unit_id"], "none", invalidate=False)["rc"], 4)
+
+
+class TestPreviewMark(QCase):
+    """C17 회귀 바탕: 미리보기 확인 기록 — 그 바이트(sha)를 보여 준 적이 있어야 '미리보기를 거쳤다'."""
+
+    def test_mark_previewed(self):
+        it = self.make()
+        self.assertFalse(Q.previewed(it))
+        self.assertEqual(Q.mark_previewed(it, "0" * 64, now=NOW).meta.get("previewed_sha"), None)   # 다른 바이트
+        cur = Q.mark_previewed(it, it.sha256, now=NOW)
+        self.assertEqual((cur.meta["previewed_sha"], cur.meta["previewed_at"]), (it.sha256, _ts(NOW)))
+        self.assertTrue(Q.previewed(Q.find_item(self.p, it.name)))
+        self.assertEqual(Q.find_item(self.p, it.name).meta["approved"], False)       # 기록만 — 승인하지 않는다
+        other = Q.find_item(self.p, it.name)
+        other.meta = dict(other.meta, previewed_sha="1" * 64)
+        self.assertFalse(Q.previewed(other))
 
 
 class TestPrune(QCase):

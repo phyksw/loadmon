@@ -228,11 +228,30 @@
       period: doc.getElementById("lm27-period"), sbar: doc.getElementById("lm27-sbar")};
     var S = {hello: null, runs: null, current: null, next: [], jobs: {}, jobOrder: [], notices: [], noticeSeq: 0, pollMs: 1000,
       pollTimer: null, scr: null, report: null, defaults: {}, rebuildAsked: {}, tokenOk: TOKEN_RX.test(token),
-      home: null, period: null, periodMsg: null, aiChoice: null};
+      home: null, period: null, periodMsg: null, aiChoice: null, periodAuto: true};
     S.period = (function () { var d = U0.defaultPeriod(todayText()); return {key: d.key, from: d.from, to: d.to}; }());
 
-    // 이 PC 벽시계의 오늘('YYYY-MM-DD') — 기간 빠른 선택의 기준(파이썬 lm27\ui\period.py 와 같은 규칙)
-    function todayText() { return U0.isoDate(now()); }
+    // 근무 시간대(서버가 /api/analysis/runs 의 defaults.period.tz_offset_min 으로 알려 주는 time.tzOffsetMin)의 지금 —
+    // 서버·CLI·원장과 같은 '오늘'(L06: PC 시간대가 다른 클라우드PC 에서 올해·분기 단추가 다른 기간을 보내던 것). 아직 모르면 PC 벽시계.
+    function workNow() {
+      var off = obj(obj(S.defaults).period).tz_offset_min;
+      var t = now();
+      if (!isNum(off)) { return {y: t.getFullYear(), m: t.getMonth() + 1, d: t.getDate(), hh: t.getHours(), mm: t.getMinutes()}; }
+      var w = new Date(t.getTime() + off * 60000);
+      return {y: w.getUTCFullYear(), m: w.getUTCMonth() + 1, d: w.getUTCDate(), hh: w.getUTCHours(), mm: w.getUTCMinutes()};
+    }
+
+    // 오늘('YYYY-MM-DD') — 기간 빠른 선택의 기준(파이썬 lm27\ui\period.py today_local 과 같은 규칙)
+    function todayText() { var w = workNow(); return w.y + "-" + pad2(w.m) + "-" + pad2(w.d); }
+
+    // 서버가 근무 시간대를 알려 준 뒤, 사람이 아직 손대지 않은 기본 기간이 그 '오늘'과 다르면 다시 맞춘다
+    function syncDefaultPeriod() {
+      if (!S.periodAuto) { return false; }
+      var d = U0.defaultPeriod(todayText());
+      if (d.from === S.period.from && d.to === S.period.to && d.key === S.period.key) { return false; }
+      S.period = {key: d.key, from: d.from, to: d.to};
+      return true;
+    }
 
     // ── 4.1 머리·메뉴·띠·알림 ──
     function renderNav() {
@@ -451,6 +470,7 @@
       if (!DATE_RX.test(from) || !DATE_RX.test(to) || to < from) { return; }    // 끝나지 않은 입력은 기다린다
       if (from === S.period.from && to === S.period.to) { return; }
       S.period = {key: U0.periodKeyOf(from, to, todayText()), from: from, to: to};
+      S.periodAuto = false;
       var box = doc.getElementById("an-chips");
       if (box) { U0.render(chipButtons(), box); }
       periodChanged();
@@ -476,6 +496,7 @@
         var r = U0.presetRange(key, todayText());
         if (!r) { return; }
         S.period = {key: key, from: r.from, to: r.to};
+        S.periodAuto = key === U0.PERIOD_DEFAULT;
         S.periodMsg = null;
         renderPeriod();
         periodChanged();
@@ -489,11 +510,13 @@
           setPeriodMsg("warn", "시작·끝 날짜를 넣어 주세요(끝 ≥ 시작)");
           return;
         }
-        if (asOf && asOf.replace("T", " ") > today + " " + pad2(now().getHours()) + ":" + pad2(now().getMinutes())) {
+        var wn = workNow();
+        if (asOf && asOf.replace("T", " ") > today + " " + pad2(wn.hh) + ":" + pad2(wn.mm)) {
           setPeriodMsg("warn", "기준 시각은 지금보다 늦을 수 없습니다");
           return;
         }
         var key = from === S.period.from && to === S.period.to ? S.period.key : U0.periodKeyOf(from, to, today);
+        if (from !== S.period.from || to !== S.period.to) { S.periodAuto = false; }
         S.period = {key: key, from: from, to: to};
         var body = {from: from, to: to, ai: aiHere() && checked("an-ai"), period_source: U0.periodSource(key)};
         if (asOf) { body.as_of = asOf; }
@@ -717,6 +740,7 @@
           S.defaults = obj(d.defaults);
           var row = S.runs.filter(function (r) { return r.current; })[0] || null;
           S.current = d.current && typeof d.current === "object" ? withRow(d.current, row) : row;
+          if (syncDefaultPeriod()) { S.periodSynced = true; }
         }),
         api.get("/api/home").then(function (res) {      // 단계 줄의 ✓·상태 줄의 마지막 수집(실패해도 그 표시만 빈다)
           if (res.ok) { S.home = obj(res.data); }
@@ -726,7 +750,13 @@
         renderBand();
         renderAlerts();
         renderSbar();
-        renderPeriodLive();
+        if (S.periodSynced) {                          // 기본 기간이 근무 시간대의 오늘로 바뀜 — 칩·날짜 칸까지 다시
+          S.periodSynced = false;
+          renderPeriod();
+          periodChanged();
+        } else {
+          renderPeriodLive();
+        }
         if (S.scr && S.scr.onGlobal) { S.scr.onGlobal(); }
       });
     }
@@ -1776,8 +1806,9 @@
       return list.map(function (it) {
         var id = it.item || it.name;
         var stt = str(it.state);
-        var acts = [Kt.btn("미리보기", "a-preview", id, {kind: "ghost"})];
-        if (stt === "pending" || stt === "failed" || stt === "retry_wait") { acts.push(Kt.btn(stt === "pending" ? "보내기" : "다시 시도", "a-send", id, {kind: "ghost"})); }
+        // 승인 전 묶음은 미리보기에서 내용을 본 뒤 그 자리의 [보내기]로만 보낸다(TAB §2.8 — 첫 전송은 미리보기 승인, C17)
+        var acts = [Kt.btn(it.approved ? "미리보기" : "미리보기·보내기", "a-preview", id, {kind: "ghost"})];
+        if (it.approved && (stt === "pending" || stt === "failed" || stt === "retry_wait")) { acts.push(Kt.btn(stt === "pending" ? "보내기" : "다시 시도", "a-send", id, {kind: "ghost"})); }
         if (stt !== "sent" && stt !== "delivered" && stt !== "dropped") {
           acts.push(Kt.btn("파일로 내보내기", "a-export-item", id, {kind: "ghost"}));
           acts.push(Kt.btn("치우기", "a-drop", id, {kind: "ghost"}));
@@ -1795,8 +1826,11 @@
         var sum = obj(p.summary);
         var blockers = arr(p.blockers);
         var why = blockers.length ? blockers.map(function (b) { return str(obj(b).text_ko || b); }).join(" · ") : null;
+        if (!why && (p.stale_mask || p.can_send === false) && p.message) { why = str(p.message); }
         var units = arr(p.units).map(function (u) {
-          return [str(u.title), str(u.role_label || u.role), U0.hText(u.effort_min), str(u.grade), str(u.mask_ko || u.mask || ""),
+          var mk = str(u.mask_ko || u.mask || "");
+          if (mk && u.mask_applied === false) { mk += "(이 묶음에는 아직 — 다시 만들면 적용)"; }
+          return [str(u.title), str(u.role_label || u.role), U0.hText(u.effort_min), str(u.grade), mk,
             h("span", {}, [Kt.btn("제목 가림", "a-mask", u.unit_id + "|title", {kind: "ghost"}), Kt.btn("세부 가림", "a-mask", u.unit_id + "|detail", {kind: "ghost"}),
               Kt.btn("되돌리기", "a-mask", u.unit_id + "|none", {kind: "ghost"})])];
         });
@@ -1836,15 +1870,23 @@
           "a-pv-json": function (n, it) { S.previewJson = !S.previewJson; openPreview(it); },
           "a-mask": function (n, ref) {
             var q = str(ref).split("|");
-            api.post("/api/team/mask", {unit_id: q[0], mode: q[1]}).then(function (r) {
-              trackFrom(r, "team_build", {});
-              notice(r.ok ? "info" : "bad", r.ok ? "가림을 바꿔 묶음을 다시 만들었습니다(이전 묶음은 대체됨)" : r.error);
+            api.post("/api/team/mask", {unit_id: q[0], mode: q[1], item: item}).then(function (r) {
+              var d = obj(r.data);
+              trackFrom(r, "team_build", {});              // 다시 만들기가 끝나면 새 묶음 미리보기를 연다(onJobDone)
+              // 서버 문구 그대로 — 다시 만들기 작업(job_id)이 없으면 '다시 만들었다'고 하지 않는다(C16)
+              notice(!r.ok ? "bad" : (d.job_id || d.changed === false ? "info" : "warn"),
+                r.ok ? str(d.text_ko) || "가림을 저장했습니다" : r.error);
               U0.closeDrawer();
+              if (scr && scr.name === "team") { source(scr, "status", true); }
             });
           },
           "a-drop-need": function (n, id) {
-            api.post("/api/agentic/need/drop", {need_id: id, drop: true}).then(function (r) {
-              notice(r.ok ? "info" : "bad", r.ok ? "그 니즈를 팀 묶음에서 뺍니다 — 묶음을 다시 만들면 반영됩니다" : r.error);
+            api.post("/api/agentic/need/drop", {need_id: id, drop: true, item: item}).then(function (r) {
+              var d = obj(r.data);
+              trackFrom(r, "team_build", {});
+              notice(r.ok ? (d.job_id || d.changed === false ? "info" : "warn") : "bad",
+                r.ok ? str(d.text_ko) || "그 니즈를 팀 묶음에서 뺍니다 — 묶음을 다시 만들면 반영됩니다" : r.error);
+              if (d.job_id) { U0.closeDrawer(); }
             });
           }
         }});

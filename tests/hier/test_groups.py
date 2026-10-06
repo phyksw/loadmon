@@ -86,6 +86,32 @@ class TitleTest(unittest.TestCase):
         self.assertEqual(m["subjects"], ["요청"])
 
 
+class MarkerTitleTest(unittest.TestCase):
+    """W2 검토 C08 — 시간 코어 업무 표지(W-G8 키로만 만든 label)·로컬 키 모양은 어느 단계에서도 단위업무 이름이 되지 않는다."""
+
+    def title(self, unit, ff=None):
+        g = G.Group("grp:000000000001", "a", unit.unit_id, (unit.unit_id,), 60)
+        return G.rule_title(G.title_material(g, {unit.unit_id: unit}, ff), {"reg": None, "cfg": K.cfg()})
+
+    def test_label_marker_never_title(self):
+        self.assertEqual(self.title(K.U("u_s", "SELF", [], label="SELF:rbabeca6f59162ae7@09")),
+                         ("기타·기타 단위업무", "generic"))                         # 문서·제목·앱 없으면 일반 이름
+        self.assertEqual(self.title(K.U("u_a", "APP", [], label="APP:ansys_mechanical@09-01", app_min={"해석": 120})),
+                         ("해석 프로그램 작업", "app"))                              # H §5.3 의 앱 범주 이름
+        self.assertEqual(self.title(K.U("u_m", "MANUAL", [], label="MANUAL:t:1e9f7be2940441f0")),
+                         ("기타·기타 단위업무", "generic"))
+        self.assertEqual(self.title(K.U("u_x", "S1", [], label="S1:h0123456789abcdef#1",
+                                        subjects=("SELF:d0123456789abcdef@09-01", "공차 해석 결과 공유"))),
+                         ("공차 해석", "subject"))                                   # 표지 모양 제목은 건너뛴다
+
+    def test_is_marker(self):
+        for s in ("SELF:rbabeca6f59162ae7@09", "MANUAL:t:1e9f7be2940441f0", "app:ansys@09-01", "REPORT:h0123456789abcdef",
+                  "rbabeca6f59162ae7", "결과 t:1e9f7be2940441f0"):
+            self.assertTrue(G.is_marker(s), s)
+        for s in ("공차 해석 결과", "견적서 2026", "202609301230 회의", "QX-12 시험", "SELF 점검 회의"):
+            self.assertFalse(G.is_marker(s), s)
+
+
 class TitleCacheTest(unittest.TestCase):
     def test_roundtrip_bak_prune(self):
         with K.TmpTree() as t:

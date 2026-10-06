@@ -203,5 +203,19 @@ class StatusVerifyTest(LoaderBase):
         self.assertEqual(st["rc"], 0, "상태는 크기·존재만(sha 는 verify)")
 
 
+class UtcParseTest(unittest.TestCase):
+    """통합(W2 성능 handoff): 행마다 부르는 시각 파서의 빠른 길이 예전 strptime 과 같은 값·같은 거부."""
+
+    def test_fast_path_same_as_strptime(self):
+        from datetime import UTC, datetime
+        for ts in ("2026-10-05T01:02:03Z", "2026-02-28T23:59:59Z", "2024-02-29T00:00:00Z", "2026-1-5T01:02:03Z"):
+            self.assertEqual(loader._utc(ts), datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC), ts)
+        for bad in ("2026-02-30T00:00:00Z", "2026-10-05T24:00:00Z", "2026-10-05 01:02:03", "2026-10-05T01:02:03+09:00", ""):
+            with self.assertRaises(ValueError, msg=bad):
+                loader._utc(bad)
+        with self.assertRaises(TypeError):
+            loader._utc(None)
+
+
 if __name__ == "__main__":
     unittest.main()

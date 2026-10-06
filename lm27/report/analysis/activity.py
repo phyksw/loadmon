@@ -479,8 +479,19 @@ class Unit:
         return self.start, max(e, self.start)
 
 
+GENERIC_UNIT_TITLE = "미분류 단위업무"     # 제목 재료가 시간 코어 표지·로컬 키뿐일 때(W2 C08 — 통합)
+
+
+def _unit_title_or(fallback: str) -> str:
+    """시간 코어 업무 표지(``SELF:…@MM-DD``·``MANUAL:t:…`` 등)·로컬 키 모양은 제목으로 내지 않는다(``lm27.hier.groups.is_marker``)."""
+    from lm27.hier.groups import is_marker
+    s = str(fallback or "")
+    return GENERIC_UNIT_TITLE if not s.strip() or is_marker(s) else s
+
+
 def _label_fields(lab, unit_id: str, fallback_title: str) -> dict:
     """UnitLabel(또는 labels.json 값) → 분석 필드. 라벨 없음 = UNC·ETC·ETC·OFFICE·DO(R §2.5 '없을 때')."""
+    fallback_title = _unit_title_or(fallback_title)
     if lab is None:
         from lm27.hier.unitlabel import role_id as _role_id     # R-8 식(계약 §4.4) 단일원
         return {"project_key": "UNC", "project_id": None, "proposal_id": None, "domain": "UNC", "field": "ETC",
@@ -491,7 +502,9 @@ def _label_fields(lab, unit_id: str, fallback_title: str) -> dict:
     pid = _get(lab, "proposal_id")
     p_s = str(p) if p else ""
     key = p_s if p_s.startswith("P-") else (str(pid) if pid else "UNC")
-    title = str(_get(lab, "title", "") or "") or fallback_title
+    title = str(_get(lab, "title", "") or "")
+    if not title or title != _unit_title_or(title):              # 예전 분류 결과의 표지 제목도 걸러 낸다
+        title = fallback_title
     rid = str(_get(lab, "role_id", "") or "")
     if not rid:
         from lm27.hier.unitlabel import role_id as _role_id
@@ -839,7 +852,7 @@ def make_context(*, tasks, attrib, tables, cal, cfg, labels=None, registry=None,
     warnings = []
     if log.coarse:
         warnings.append(V.warn("mining_coarse"))
-    if not labels:
+    if not labels and tasks:                       # 단위업무 0개면 분류 결과가 빈 것이 정상(units_empty 가 알린다 — L03)
         warnings.append(V.warn("labels_missing"))
     if registry is None:
         warnings.append(V.warn("registry_missing"))

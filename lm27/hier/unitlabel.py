@@ -411,6 +411,14 @@ def _one(t, uid: str, ix: _FeatIndex, rows: list[Mapping], alloc: Mapping[str, i
     for m in ix.manuals:
         if (man_ref and (m.id == man_ref or m.key == man_ref)) or (m.refs & keys):
             push(m, "manual", 1.0)
+    if kind == "MANUAL" and not any(r == "manual" for _f, _w, r in ev):
+        # 토큰 해시 키('manual:t:<해시>')의 MANUAL 업무 — 그 기록은 업무 구간과 시각이 같은 수동 기록이다(H §4.6 'MANUAL 업무의
+        # 그 기록'). 하나로 정해질 때만 붙인다(같은 날 시각 없는 기록이 여럿이면 어느 것인지 모른다 — C08)
+        c0 = cycles[0] if cycles else None
+        s0, e0 = get(c0, "s", None), get(c0, "e", None)
+        same = [m for m in ix.manuals if isinstance(s0, int) and m.t == s0 and (not m.t_end or m.t_end == e0)]
+        if len(same) == 1:
+            push(same[0], "manual", 1.0)
     # 투입 = 정수 분 표(alloc 합)가 있으면 그것, 없으면 귀속 초, 없으면 시간 코어 effort_s
     if uid in alloc:
         effort = alloc[uid]
@@ -435,12 +443,13 @@ def _one(t, uid: str, ix: _FeatIndex, rows: list[Mapping], alloc: Mapping[str, i
         fam_min=_mins(fam_sec), bkeys=frozenset(bkeys), app_ids=_mins(app_sec),
         proj=get(t, "proj", None) or None, label=str(get(t, "label", "") or ""),
         fam_names={fk: ix.latest_name(fk) for fk in docs if ix.latest_name(fk)},
-        subjects=_subjects(s_first, e_last, ev), kinds=_kinds(ev))
+        subjects=_subjects(s_first, e_last, ev, manual=kind == "MANUAL"), kinds=_kinds(ev))
 
 
-def _subjects(s_first: Feat | None, e_last: Feat | None, ev) -> tuple[str, ...]:
+def _subjects(s_first: Feat | None, e_last: Feat | None, ev, *, manual: bool = False) -> tuple[str, ...]:
     """제목 요지(H §6.2 subjects): 시작 근거 제목 · 마지막 종료 근거 제목 · 그 밖 가장 잦은 대화 제목(ukey 가 다른 것만).
-    메시지가 없으면 회의 제목."""
+    메시지가 없으면 회의 제목. MANUAL 업무(manual=True)는 그것도 없으면 사용자가 적은 수동 기록 글(W2 검토 C08 — 시간 코어
+    표지 'MANUAL:t:…' 대신)."""
     out: list[str] = []
     seen: set[str] = set()
 
@@ -462,6 +471,13 @@ def _subjects(s_first: Feat | None, e_last: Feat | None, ev) -> tuple[str, ...]:
     if not cnt:
         for f, _w, r in ev:
             if r == "meet" and f.subject:
+                k = ukey(f.subject)
+                if k and k not in seen:
+                    e = cnt.setdefault(k, [0, f.subject])
+                    e[0] += 1
+    if not cnt and not out and manual:
+        for f, _w, r in ev:
+            if r == "manual" and f.kind == "manual" and f.subject:
                 k = ukey(f.subject)
                 if k and k not in seen:
                     e = cnt.setdefault(k, [0, f.subject])

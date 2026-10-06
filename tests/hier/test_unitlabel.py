@@ -96,6 +96,45 @@ class UnitInputsTest(unittest.TestCase):
         self.assertIn("m2", {f.id for f, _w, r in u.ev if r == "msg"})
 
 
+class ManualUnitTitleTest(unittest.TestCase):
+    """W2 검토 C08 — 토큰 해시 키('manual:t:<해시>')의 MANUAL 업무도 그 수동 기록을 증거로 갖고, 사용자가 적은 글이 제목 재료다
+    (시간 코어 표지 'MANUAL:t:…' 대신). 어느 기록인지 하나로 정해지지 않으면 붙이지 않는다."""
+    DAY = 86400 * 2000
+
+    def task(self):
+        return {"unit_id": "u_man", "kind": "MANUAL", "label": "MANUAL:t:1e9f7be2940441f0",
+                "first_key": "manual:t:1e9f7be2940441f0",
+                "cycles": [{"s": self.DAY, "sb": "S2M", "e": self.DAY + 86400, "eb": "E3M", "s_ref": "수동",
+                            "e_ref": "수동"}]}
+
+    def test_manual_text_is_title(self):
+        from lm27.hier import groups as G
+        man = K.F("mr1", "manual", "사내 안전 교육 이수", t=self.DAY, subject="사내 안전 교육 이수")
+        other = K.F("mr2", "manual", "다른 날 기록", t=self.DAY + 3 * 86400, subject="다른 날 기록")
+        u = unit_inputs([self.task()], [man, other], None, None, cfg=K.cfg())["u_man"]
+        self.assertEqual([(f.id, r) for f, _w, r in u.ev], [("mr1", "manual")])
+        self.assertEqual(u.subjects, ("사내 안전 교육 이수",))
+        g = G.Group("grp:000000000001", "a", "u_man", ("u_man",), 60)
+        self.assertEqual(G.rule_title(G.title_material(g, {"u_man": u}), {"reg": None, "cfg": K.cfg()}),
+                         ("사내 안전 교육 이수", "subject"))
+
+    def test_ambiguous_record_not_linked(self):
+        a = K.F("mr1", "manual", "기록 가", t=self.DAY, subject="기록 가")
+        b = K.F("mr2", "manual", "기록 나", t=self.DAY, subject="기록 나")
+        u = unit_inputs([self.task()], [a, b], None, None, cfg=K.cfg())["u_man"]
+        self.assertEqual((u.ev, u.subjects), ((), ()))
+
+    def test_other_units_keep_spec_subjects(self):
+        """MANUAL 이 아닌 업무는 H §5.3 그대로 — 확인 응답 같은 수동 기록 글을 제목 재료로 쓰지 않는다."""
+        feats, task, attrib, _t = scenario()
+        task = dict(task, cycles=[dict(task["cycles"][0], s_ref=None, e_ref=None)], conv="")
+        fs = [f for f in feats if f.kind == "file"] + [K.F("u1", "manual", "확인 응답 글", refs=["mk1"], t=900,
+                                                          subject="확인 응답 글")]
+        u = unit_inputs([task], fs, attrib, None, cfg=K.cfg())["u_1"]
+        self.assertIn("u1", {f.id for f, _w, r in u.ev if r == "manual"})
+        self.assertEqual(u.subjects, ())
+
+
 class RuleLabelTest(unittest.TestCase):
     def test_token_and_manual(self):
         reg = K.golden_reg()

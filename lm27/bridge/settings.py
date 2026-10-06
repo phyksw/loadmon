@@ -43,6 +43,10 @@ LOCK_STALE_S = 30 * 60          # 살아 있으나 30분 무응답 = 멈춘 소�
 LOCK_BUSY_RETRIES = 3           # BR-LOCK-BUSY: 60초 간격 3회 재시도(B §13)
 LOCK_BUSY_WAIT_S = 60.0
 LOGIN_POLL_S = 5.0              # 로그인 대기 폴링(B §4.7)
+LOGIN_PENDING_CHECK_S = 30.0    # 로그인 보류(지난 대기가 로그인 없이 끝남) — 다음 실행은 이만큼만 로그인 상태를 본다(v1.3 V18)
+LOGIN_RECHECK_S = 60.0          # login_required 1차 복구: 탭 재진입 뒤 폴링 상한(B §7.7 — 보류 중이면 다시 기다리지 않음)
+# 개인(Microsoft) 계정 로그인 화면 호스트 — 회사(조직) 계정이 아니다(V18). bridge.loginHosts 의 부분집합이어야 대기 판정이 같다
+PERSONAL_LOGIN_HOSTS = ("login.live.com",)
 IDENTITY_POLL_S = 1.0           # 신원 재확인 간격
 IDENTITY_SETTLE_S = 20.0        # wrong_page 이동·dead 새로고침 뒤 재확인 상한(B §4.7)
 DEAD_SESSION_LIMIT = 2          # 서로 다른 호출 2회 dead_session → 프로필 재생성(B §4.7)

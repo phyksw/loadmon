@@ -10,6 +10,8 @@ r"""명명 군집과 이름 — `name_groups` · `rule_title` · 제목 캐시(H
   자라도 대표가 바뀌지 않으므로 키가 안정하다.
 - 규칙 이름(`rule_title`) 순서: doc(범용 아닌 문서군 중 귀속 분 최대의 최근 이름) → subject(대표 시작 근거 제목) →
   app(앱 범주 이름 + ' 작업') → generic('<분야 이름>·<기능 이름> 단위업무'). `title_src` 저장값은 `rule_` 접두(계약 §3.15).
+  시간 코어 업무 표지(`SELF:…@MM-DD`·`MANUAL:t:…` — W-G8 키로만 만든 label)와 로컬 키 모양은 어느 단계에서도 이름이 되지
+  않는다(W2 검토 C08 — `is_marker`). MANUAL 업무는 사용자가 적은 수동 기록 글이 제목 재료다(`unitlabel._subjects`).
 - 제목 캐시 `data\local_only\hier\title_cache.json`(`lm27.title_cache/1`) — 한 번 정한 이름을 고정한다(H §5.4). 군집이
   사라지면 `hier.name.cacheKeepDays` 뒤 지운다. 쓰기는 `fsx.atomic_write`, 직전 판은 `.bak`.
 
@@ -31,7 +33,8 @@ from lm27.util import fsx
 
 __all__ = [
     "APP_CAT_NAME", "CONFIRMED_SOURCES", "Group", "TITLE_SRC", "TitleCache", "app_cat_name", "clip_title", "day_of",
-    "display_stem", "group_key", "is_generic_stem", "name_groups", "rule_title", "subject_title", "title_material",
+    "display_stem", "group_key", "is_generic_stem", "is_marker", "name_groups", "rule_title", "subject_title",
+    "title_material",
 ]
 
 CONFIRMED_SOURCES = frozenset({"user", "token", "rule"})
@@ -44,6 +47,9 @@ _EXT = re.compile(r"\.[0-9A-Za-z]{1,5}$")
 _DS_TOKENS = re.compile(r"\[과제:[^\]]+\]|\[사람[^\]]*\]|\[나\]")
 _SUBJ_TOKENS = re.compile(r"\[과제:[^\]]+\]|\[사람[^\]]*\]|\[나\]|\[이메일@[^\]]*\]|\[전화\]|\[금액\]")
 _SUBJ_STEMS = ("부탁", "요청", "검토", "송부", "공유", "회신", "보고")
+# 시간 코어 업무 표지(W-G8 — 키로만 만든 'SELF:<문서군 키>@MM-DD' · 'MANUAL:t:<해시>' 등)와 로컬 키 모양은 이름이 아니다(W2 검토 C08)
+_MARKER_RX = re.compile(r"^\s*(?:S1|ACK|COORD|SELF|APP|REPORT(?:_ONLY)?|MANUAL)\s*:", re.I)
+_KEYISH_RX = re.compile(r"(?<![0-9A-Za-z])(?:[a-z]?(?=[0-9]*[a-f])[0-9a-f]{12,}|[a-z]\d*:[0-9a-f]{8,})(?![0-9a-f])")
 # 앱 범주 → 프롬프트·이름 표기(H §6.2 표). 사무·소통은 앱별, 미상은 '미상 프로그램'(exe 이름을 내보내지 않는다)
 APP_CAT_NAME = {"CAD": "CAD 프로그램", "해석": "해석 프로그램", "광학": "광학 설계 프로그램", "EDA": "회로 설계 프로그램",
                 "FPGA": "FPGA 도구", "SW": "개발 도구", "계측": "계측 프로그램"}
@@ -259,7 +265,13 @@ def is_generic_stem(stem: str, stems: Iterable[str]) -> bool:
 
 
 def _bad(st: str, stems) -> bool:
-    return len(st) < 2 or st.replace(" ", "").isdigit() or is_generic_stem(st, stems)
+    return len(st) < 2 or st.replace(" ", "").isdigit() or is_generic_stem(st, stems) or is_marker(st)
+
+
+def is_marker(s: str) -> bool:
+    """시간 코어 업무 표지·로컬 키 모양인가(C08 — 제목·이름 재료로 쓰지 않는다)."""
+    t = unicodedata.normalize("NFKC", str(s or ""))
+    return bool(_MARKER_RX.match(t) or _KEYISH_RX.search(t))
 
 
 def rule_title(group: Mapping, ctx=None) -> tuple[str, str]:
@@ -318,9 +330,8 @@ def title_material(g: Group, units: Mapping, rep_ff=None) -> dict:
             app_min[a] += int(v)
     docs = [(fam_name[fk], fam_min[fk]) for fk in sorted(fam_name)]
     rep = units.get(g.rep)
-    subjects = list(get(rep, "subjects", ()) or ()) if rep is not None else []
-    if not subjects and rep is not None and get(rep, "label", ""):
-        subjects = [get(rep, "label", "")]
+    # 제목 재료는 H §5.3 의 넷(문서·제목·앱·일반)뿐 — 시간 코어 label 은 키로만 만든 표지라 쓰지 않는다(C08)
+    subjects = [s for s in (get(rep, "subjects", ()) or ()) if not is_marker(s)] if rep is not None else []
     tech = {c: v for c, v in cat_min.items() if c in APP_CAT_NAME}
     pick = tech or dict(cat_min)
     cat = min(pick.items(), key=lambda kv: (-kv[1], kv[0]))[0] if pick else ""

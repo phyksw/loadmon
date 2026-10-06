@@ -61,6 +61,7 @@ RECENT = 20                              # 서버 재기동 뒤 보일 최근 �
 KEEP_FILES = 100                         # ui\jobs\ 에 남길 작업 기록 파일 수(오래된 것부터 지움)
 KEEP_MEMORY = 60                         # 메모리에 둘 끝난 작업 수
 BUSY_RETRY_S = 5.0                       # 예약 작업이 lane 이 비기를 기다리는 간격
+QUIET_S = 0.3                            # 하위 명령이 끝난 뒤 새 출력 줄이 이만큼 없으면 다 읽은 것으로 본다(손주가 파이프를 쥔 경우)
 _EVENT_KEYS = ("ts", "ev", "stage", "name_ko", "text_ko", "done", "total", "rc", "code", "level", "reason", "state")
 _TEXT_MAX = 300
 _RESULT_MAX = 64 * 1024
@@ -390,17 +391,65 @@ class JobManager:
                         job.add_event(ev)
         except (OSError, ValueError):
             pass
+        finally:                                        # 다 읽은 파이프는 읽은 스레드가 닫는다(다른 스레드가 닫으면 막힌다)
+            out = getattr(child, "stdout", None)
+            if out is not None:
+                try:
+                    out.close()
+                except (OSError, ValueError):
+                    pass
+
+    def _drain(self, job: Job, reader: threading.Thread) -> None:
+        """하위 명령이 끝난 뒤 남은 출력(결과 이벤트)을 읽을 때까지 기다린다 — 최대 ``proc.DRAIN_S``. 하위 명령이 띄운
+        손주(이동 준비 도우미 창 등)가 출력 파이프를 물려받아 쥐고 있으면 EOF 가 오지 않으므로, 새 줄이 ``QUIET_S`` 동안
+        없으면 다 읽은 것으로 본다(손주가 끝날 때까지 작업을 '진행 중'으로 두지 않는다 — C21)."""
+        deadline = time.monotonic() + proc.DRAIN_S
+        last_seq, quiet_since = job.seq, time.monotonic()
+        while reader.is_alive():
+            now = time.monotonic()
+            if now >= deadline:
+                return
+            reader.join(min(0.05, deadline - now))
+            if job.seq != last_seq:
+                last_seq, quiet_since = job.seq, time.monotonic()
+            elif time.monotonic() - quiet_since >= QUIET_S:
+                return
+
+    def _close_child(self, child, reader: threading.Thread) -> None:
+        """다 읽은 스트림만 닫는다(proc.run_child 와 같은 규칙). 읽는 스레드가 아직 막혀 있는 파이프(손주가 쥠)를 다른
+        스레드에서 닫으면 BufferedReader 잠금에 걸려 이 스레드가 멈춘다 — 그 파이프는 EOF 때 읽는 스레드가 닫는다."""
+        drain = getattr(child, "_drain", None)
+        live = [t for t in (reader, drain) if isinstance(t, threading.Thread) and t.is_alive()]
+        with self._lock:                                # 끝난 작업의 읽기 스레드는 close() 가 기다리지 않는다(손주가 끝날 때 끝남)
+            self._threads = [t for t in self._threads if t not in live]
+
+        def close():
+            try:
+                child.close()
+            except (OSError, ValueError):
+                pass
+        if not live:
+            close()
+            return
+        st = getattr(child, "stdin", None)
+        if st is not None:
+            try:
+                st.close()
+            except (OSError, ValueError):
+                pass
+
+        def later():                                    # 손주가 끝나 EOF 가 오면 그때 닫는다(스레드는 그때 끝난다)
+            for t in live:
+                t.join()
+            close()
+        threading.Thread(target=later, name="lm27-ui-job-close", daemon=True).start()
 
     def _wait(self, job: Job, child, reader: threading.Thread) -> None:
         try:
             rc = child.wait()
         except OSError:
             rc = None
-        reader.join(proc.DRAIN_S)
-        try:
-            child.close()
-        except OSError:
-            pass
+        self._drain(job, reader)
         with self._lock:
             job.rc = rc if isinstance(rc, int) else None
             job.state = state_of(job.rc, job.cancel_req)
@@ -416,6 +465,7 @@ class JobManager:
         except (OSError, ValueError):
             pass
         self._done(job)
+        self._close_child(child, reader)
 
     def _cancel_after(self, job: Job, child) -> None:
         deadline = time.monotonic() + CANCEL_GRACE_S

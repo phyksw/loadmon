@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """RPT-42 능력 표 해당 여부(R §5.1.3) + 홈·커버리지 API 모양(R §5.1.4·§5.1.5). 합성 pc.json·원장만."""
 import unittest
-from datetime import date
+from datetime import UTC, date, datetime
 
 from lm27.ui import api_home as H
 from tests.fixtures.wp35.harness import PC_ID, Running, Sandbox, seed_analysis
@@ -103,6 +103,39 @@ class HomeApiTest(unittest.TestCase):
         self.assertEqual(st, 400)
         st, b, _ = self.srv.req("GET", "/api/collect/coverage?from=2026-09-07&to=2026-09-01")
         self.assertEqual(st, 400)
+
+
+class UiTodayTest(unittest.TestCase):
+    """C12 회귀: 화면 API 의 '오늘'은 근무 시간대(time.tzOffsetMin, 기본 +09:00) 날짜다. 예전에는 UTC 날짜라 한국 아침 0~9시에
+    대시보드·커버리지·감사 기본 창이 하루 전에서 끝나 오늘 칸(오늘 수집 실패)이 빠졌다."""
+
+    NOW = datetime(2026, 10, 6, 23, 30, tzinfo=UTC)                  # 근무 시간대로는 2026-10-07 08:30
+
+    def setUp(self):
+        self.sb = Sandbox()
+        self.addCleanup(self.sb.cleanup)
+        self.app = self.sb.app()
+        self.app.deps.now = lambda: self.NOW
+        self.srv = Running(self.app).__enter__()
+        self.addCleanup(self.srv.close)
+
+    def test_default_windows_end_on_work_today(self):
+        from lm27.ui.server import ui_today
+        self.assertEqual(ui_today(self.app), date(2026, 10, 7))
+        st, b, _ = self.srv.req("GET", "/api/home")
+        self.assertEqual(st, 200, b)
+        self.assertEqual(b["coverage"]["to"], "2026-10-07")
+        st, b, _ = self.srv.req("GET", "/api/collect/coverage")
+        self.assertEqual(st, 200, b)
+        self.assertEqual(b["days"][-1]["d"], "2026-10-07")
+        st, b, _ = self.srv.req("GET", "/api/privacy/audit")
+        self.assertEqual(st, 200, b)
+        self.assertEqual(b["to"], "2026-10-07")
+        st, b, _ = self.srv.req("POST", "/api/worklog", {"retract": "0123456789abcdef"})
+        self.assertEqual(st, 200, b)
+        self.assertEqual(self.app.deps.pipe_calls[-1]["raws"][0]["date"], "2026-10-07")
+        self.app.deps.now = lambda: datetime(2026, 10, 7, 1, 0, tzinfo=UTC)          # 10:00 — 같은 날(대조)
+        self.assertEqual(ui_today(self.app), date(2026, 10, 7))
 
 
 if __name__ == "__main__":

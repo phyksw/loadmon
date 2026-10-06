@@ -759,6 +759,15 @@ class _Builder:
     # --- (d) 자체 업무·앱 업무·고아 보고·무연결 발신 ---
     def self_tasks(self) -> None:
         selfs: list[UnitTask] = []
+        # 병합 후보 색인(결과는 예전 '모든 자체 업무 훑기'와 같다 — W2 검토 C07, 9개월에서 시간 코어의 절반):
+        # 자체 업무의 가장 이른 진행 시각 = 만든 구간의 t0(구간 times 는 오름차순·t0 = 첫 값, 뒤에 붙는 구간은 시각순으로
+        # 더 늦다)이라 만든 순서로 단조 증가 → |구간 t0 − 그 값| ≤ selfMergeDays 인 업무는 이분 탐색한 꼬리뿐이다.
+        # 범용 문서군으로 만든 업무(docs 에 범용 키)는 병합 후보가 아니다(병합은 범용이 아닌 문서군만 붙인다). 토큰은 만든 뒤
+        # 이 고리에서 바뀌지 않는다. 조건 순서만 바꿨다(시각 → 토큰 유사도 — 둘 다 부작용 없는 판정이라 첫 일치가 같다).
+        s_min: list[int] = []
+        s_gen: list[bool] = []
+        s_tok: list[set[str]] = []
+        win = self.merge_days * DAY
         last_of: dict[str, str] = {}
         order = sorted((sg.t0, f, sg.i) for f in self.segs for sg in self.segs[f])
         for _t0, f, i in order:                    # 시각순 — 자체 업무 ID 는 '가장 이른 문서군 구간'이 정한다
@@ -767,12 +776,12 @@ class _Builder:
                 continue
             merged = None
             if not self.is_generic(f):
-                for tk in selfs:
-                    if any(self.is_generic(g) for g in tk.docs):
+                ft = self.ftoks(f)
+                for j in range(bisect.bisect_left(s_min, sg.t0 - win), len(selfs)):
+                    if s_gen[j]:
                         continue
-                    if tok_sim(self.ftoks(f), self.toks(tk.tokens), self.ml) >= self.merge_sim and \
-                            abs(sg.t0 - min(tk.p_times)) <= self.merge_days * DAY:
-                        merged = tk
+                    if tok_sim(ft, s_tok[j], self.ml) >= self.merge_sim:
+                        merged = selfs[j]
                         break
             if merged is None:
                 key = f"{f}|{d_of(sg.t0).isoformat()}"
@@ -780,6 +789,9 @@ class _Builder:
                                   follow_of=last_of.get(f))
                 merged.cycles.append(Cycle(None, "S2p"))
                 selfs.append(merged)
+                s_min.append(min(sg.times))
+                s_gen.append(self.is_generic(f))
+                s_tok.append(self.toks(merged.tokens))
             merged.docs[f] = 3
             merged.p_times += sg.times
             sg.links[merged.id] = 3
@@ -835,14 +847,16 @@ class _Builder:
                 tk.flags.append("단발보고(진행 증거 없음)")
                 self.msg_task[m.id] = tk.id
                 self.by_conv[m.conv].append(tk)
-        # 업무 대화 밖 비보고 발신: 토큰이 어떤 업무(토큰 ∪ 문서군 토큰)와 유사도 ≥ sendTokenSim → 그 업무 진행·L4 귀속
+        # 업무 대화 밖 비보고 발신: 토큰이 어떤 업무(토큰 ∪ 문서군 토큰)와 유사도 ≥ sendTokenSim → 그 업무 진행·L4 귀속.
+        # 업무 토큰 집합은 이 고리 안에서 바뀌지 않으므로 한 번만 만든다(빈 집합은 유사도 0 — 고를 수 없다). 고르는 규칙
+        # (최댓값 · 동점은 작은 id)은 훑는 순서와 무관하다(W2 검토 C07).
+        send_ts = [(tk, tt) for tk in self.tasks if tk.kind not in ("APP", "REPORT_ONLY")
+                   for tt in (self.toks(tk.tokens) | self.doc_toks(tk),) if tt] if self.unlinked_sends else []
         for m in self.unlinked_sends:
             best, bs = None, 0.0
             mt = self.toks(m.tokens)
-            for tk in self.tasks:
-                if tk.kind in ("APP", "REPORT_ONLY"):
-                    continue
-                sc = tok_sim(mt, self.toks(tk.tokens) | self.doc_toks(tk), self.ml)
+            for tk, tt in (send_ts if mt else ()):
+                sc = tok_sim(mt, tt, self.ml)
                 if sc > bs or (sc == bs and best is not None and tk.id < best.id):
                     best, bs = tk, sc
             if best is not None and bs >= self.send_sim:
@@ -885,19 +899,32 @@ class _Builder:
         return mt.organizer in tk.peers or any(a in tk.peers for a in mt.attendees)
 
     def meetings(self) -> None:
+        # 회의마다 모든 업무를 훑던 것을(9개월 회의 1천 × 업무 8천) 업무별 창 [시작 − 회의 되돌아보기, 끝(열림이면 분석
+        # 시각) + E3c 앞보기] 을 한 번만 계산해 시작순 이분 탐색으로 줄인다(W2 검토 C07). 이 고리는 업무의 차수·진행 시각·
+        # 토큰·문서군·상대(peers)를 바꾸지 않으므로(flags·meet_refs·rels 만) 창·토큰 집합은 고리 동안 그대로다. 고르는
+        # 규칙(최댓값 · 동점은 작은 id)은 훑는 순서와 무관하다.
+        win = []
+        for tk in self.tasks:
+            if tk.kind not in ("S1", "ACK", "COORD", "SELF", "REPORT_ONLY"):
+                continue
+            s0 = tk.cycles[0].s if tk.cycles[0].s is not None else (tk.p_times[0] if tk.p_times else None)
+            if s0 is None:
+                continue
+            e = tk.last_end() if not tk.is_open() else self.as_of
+            win.append((s0 - self.meet_back, (e or self.as_of) + self.e3c_ahead, tk))
+        win.sort(key=lambda x: x[0])
+        los = [x[0] for x in win]
+        tt_of: dict[str, set[str]] = {}
         for mt in self.env.counted_meetings:
             best, bs = None, 0.0
             mtoks = self.toks(mt.tokens)
-            for tk in self.tasks:
-                if tk.kind not in ("S1", "ACK", "COORD", "SELF", "REPORT_ONLY"):
+            for k in range(bisect.bisect_right(los, mt.a)):
+                _lo, hi, tk = win[k]
+                if mt.a > hi:
                     continue
-                s0 = tk.cycles[0].s if tk.cycles[0].s is not None else (tk.p_times[0] if tk.p_times else None)
-                if s0 is None:
-                    continue
-                e = tk.last_end() if not tk.is_open() else self.as_of
-                if not (s0 - self.meet_back <= mt.a <= (e or self.as_of) + self.e3c_ahead):
-                    continue
-                tt = self.toks(tk.tokens) | self.doc_toks(tk)
+                tt = tt_of.get(tk.id)
+                if tt is None:
+                    tt = tt_of[tk.id] = self.toks(tk.tokens) | self.doc_toks(tk)
                 sc = 2.0 * bool(self.requester_in(mt, tk)) + 2.5 * tok_sim(mtoks, tt, self.ml)
                 if sc > bs or (sc == bs and best is not None and tk.id < best.id):
                     best, bs = tk, sc

@@ -93,12 +93,23 @@ class RecentTest(CloneTestCase):
         self.assertEqual(r.status["excluded"]["self"], 1)
         self.assertEqual(r.status["lnk"]["found"], 7)
         self.assertEqual(r.status["lnk"]["no_target"], 1)
-        self.assertEqual(r.cursor, {"last_ts_utc": iso(datetime(2026, 9, 12, 2, 0, tzinfo=UTC))})
+        self.assertEqual(r.cursor["last_ts_utc"], iso(datetime(2026, 9, 12, 2, 0, tzinfo=UTC)))
 
     def test_cursor_rc4(self):
         r1 = self.run_recent()
         r2 = self.run_recent(cursor=r1.cursor)
         self.assertEqual((r2.rc, r2.records), (4, []))
+
+    def test_window_earlier_than_read_from_reemits_gap(self):
+        """W2 검토 C03(V6): 창이 커서의 read_from 보다 이르면 그 앞쪽을 다시 낸다(이미 낸 뒤쪽은 id 로 흡수)."""
+        r1 = self.run_recent(since="2026-09-11")
+        self.assertEqual(sorted(os.path.basename(x["path"]) for x in r1.records), ["사양서_과제B.pdf", "지운파일.xlsx"])
+        r2 = self.run_recent(cursor=r1.cursor, since="2026-09-01")
+        self.assertIn("회의록_과제A.docx", [os.path.basename(x["path"]) for x in r2.records])
+        self.assertTrue(r2.status["from_gap"])
+        self.assertEqual(r2.cursor["read_from"], iso(datetime(2026, 9, 1).astimezone(UTC)))   # 로컬 9월 1일 0시
+        r3 = self.run_recent(cursor=r2.cursor, since="2026-09-01")
+        self.assertEqual((r3.rc, r3.records), (4, []))
 
     def test_extension_filter_from_cfg(self):
         r = self.run_recent(cfg={"pc.watchExtensions": [".pdf"]})
@@ -125,7 +136,7 @@ class RecentTest(CloneTestCase):
         r = self.run_recent(self.empty)
         self.assertEqual(r.rc, 1)
         self.assertEqual(r.status["reasons"], ["R-MRUEMPTY"])
-        self.assertEqual(r.cursor, {"last_ts_utc": None})
+        self.assertEqual(r.cursor["last_ts_utc"], None)
 
     def test_final_name_flag(self):
         rec = self.base / "RecentFinal"

@@ -21,6 +21,11 @@ failed = failed, dropped = dropped.
   기다리지 않고 hello 를 한 번 해 보고, 안 닿으면 시도 횟수를 올리지 않는다(클라우드PC 에서 며칠 머물러도 소진되지 않게).
 - 중복 전송 방지: 보내기 전에 번들 잠금 안에서 lease(``{pid, until}``)를 확인·기록한다 — 살아 있는 lease 가 있으면
   건너뛴다(서버도 sha 멱등이라 겹쳐도 안전). 표준 라이브러리 + LM27 공개 함수만.
+- 가림(TAB §2.5 · C16): 미리보기 가림(``data\team\overrides.json``)을 바꾼 뒤 아직 다시 만들지 않은 묶음 — 바이트가 지금
+  가림보다 덜 가려진 것(``mask_gaps``) — 은 승인·보내기·자동 전송·미리보기 [보내기] 모두 하지 않는다(rc 2 ``STALE_MASK``).
+  가림을 바꾸는 쪽(``build.set_mask``·``drop_need``)은 ``unapprove_masked`` 로 그런 대기 묶음의 승인도 푼다.
+- 미리보기 확인 기록(TAB §2.8 · C17): 화면 미리보기가 그 바이트를 보여 줄 때 ``mark_previewed`` 가 meta 에
+  ``previewed_sha``·``previewed_at`` 을 남긴다(화면 [보내기]·[승인만]은 승인 전이면 이 기록이 있어야 한다 — ``lm27.ui.api_team``).
 """
 from __future__ import annotations
 
@@ -32,9 +37,10 @@ from datetime import UTC, datetime, timedelta
 
 from lm27.util import fsx
 
-__all__ = ["APPROVABLE", "FINAL", "FOLDER_OF", "QueueError", "QueueItem", "SENDABLE", "STATES", "SendResult",
-           "TRIGGERS", "approve", "find_item", "find_pending", "list_items", "mark", "new_meta", "preview",
-           "prune_sent", "reconcile_delivered", "send_due", "send_item", "supersede", "write_pending"]
+__all__ = ["APPROVABLE", "FINAL", "FOLDER_OF", "QueueError", "QueueItem", "SENDABLE", "STALE_MASK", "STATES",
+           "SendResult", "TRIGGERS", "approve", "find_item", "find_pending", "list_items", "mark", "mark_previewed",
+           "mask_gaps", "new_meta", "preview", "previewed", "prune_sent", "reconcile_delivered", "send_due", "send_item",
+           "supersede", "unapprove_masked", "write_pending"]
 
 STATES = ("pending", "sending", "sent", "retry_wait", "failed", "auth_needed", "wrong_server", "dropped", "exported",
           "delivered")
@@ -50,10 +56,13 @@ META_SCHEMA = "lm27.outbox/1"
 META_SUFFIX = ".meta.json"
 LEASE_SUFFIX = ".lease"
 LEASE_SEC = 600
+PREVIEW_LOCK_S = 3                      # 미리보기 확인 기록이 번들 잠금을 기다리는 최대 초(화면 GET 이 길게 막히지 않게)
 HISTORY_MAX = 50
 JITTER = 0.10
 BODY_RX = re.compile(r"lm27_team_bundle_(\d{4}-\d{2}-\d{2}_\d{4}-\d{2}-\d{2})_([0-9a-f]{12})\.json")
 _UTC_RX = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
+STALE_MASK = ("가림을 바꾼 뒤 아직 다시 만들지 않은 묶음이라 보내지 않습니다 — [팀 묶음 만들기]로 다시 만들면 바뀐 가림으로 "
+              "보냅니다")
 MASK_NOTE = ("시간 수치(근무시간·업무별 분)는 가릴 수 없습니다 — 빼면 개인과 팀 합계가 달라집니다. 업무를 통째로 숨기려면 "
              "[세부 가림]을 쓰세요.")
 
@@ -342,6 +351,9 @@ def approve(item: QueueItem, *, now=None) -> QueueItem:
         if cur.state not in APPROVABLE:
             cur.rc, cur.message = 4, "이미 보냈거나 치운 항목입니다"
             return cur
+        if mask_gaps(cur):
+            cur.rc, cur.message = 2, STALE_MASK
+            return cur
         if cur.meta.get("approved"):
             cur.rc, cur.message = 4, "이미 승인했습니다"
             return cur
@@ -395,10 +407,20 @@ def preview(item: QueueItem) -> dict:
                    for m in (obj.get("summary") or {}).get("months") or ()],
         "domains": {k: doms[k] for k in sorted(doms)}, "units": len(obj.get("units") or ()),
         "peers": len(obj.get("peers") or ()), "needs": len((obj.get("agentic") or {}).get("needs") or ())}
+    from lm27.team.build import mask_gaps as _gaps
+    gaps = _gaps(obj, ov)
+    gap_units = {g.split(":")[1] for g in gaps if g.startswith("unit:")}
     out["units"] = [{"unit_id": u.get("unit_id"), "title": u.get("title"), "title_mode": u.get("title_mode"),
                      "role_id": u.get("role_id"), "effort_min": u.get("effort_min"), "grade": u.get("grade"),
-                     "status": u.get("status"), "mask": (ov.get("units") or {}).get(u.get("unit_id"), "")}
+                     "status": u.get("status"), "mask": (ov.get("units") or {}).get(u.get("unit_id"), ""),
+                     "mask_applied": u.get("unit_id") not in gap_units}
                     for u in obj.get("units") or ()]
+    out["mask_gaps"] = gaps
+    out["stale_mask"] = bool(gaps)
+    if gaps:                                             # 가림을 바꿨지만 이 바이트는 그 전 것 — 보내지 않는다(C16)
+        out["can_send"] = False
+        if ok:
+            out["message"] = STALE_MASK
     ag = obj.get("agentic") or {}
     out["needs"] = [{"need_id": n.get("need_id"), "step_type": n.get("step_type"), "label": n.get("label"),
                      "grade": n.get("grade")} for n in ag.get("needs") or ()]
@@ -408,6 +430,71 @@ def preview(item: QueueItem) -> dict:
     out["guard"] = S.bytes_guard_hits(raw)
     out["json"] = raw.decode("utf-8")
     return out
+
+
+# ───────────────────────────── 가림 변경 · 미리보기 확인(C16 · C17) ─────────────────────────────
+def mask_gaps(item: QueueItem) -> list:
+    """그 항목 바이트가 지금 가림(``overrides.json``)보다 덜 가려진 곳(``lm27.team.build.mask_gaps`` — 'unit:<id>:title' 등).
+    빈 목록 = 지금 가림이 다 들어간 바이트(또는 읽을 수 없는 파일 — 그 판정은 sha 대조가 한다)."""
+    from lm27.team import schema as S
+    from lm27.team.build import load_overrides
+    from lm27.team.build import mask_gaps as _gaps
+    paths = _default_paths(item.paths)
+    if not item.name:
+        return []
+    try:
+        raw = fsx.read_bytes(_ofile(paths, item.folder, item.name))
+        obj = S.loads_bundle(raw)
+    except (OSError, ValueError):
+        return []
+    return _gaps(obj, load_overrides(paths))
+
+
+def _unapprove(cur: QueueItem, now: datetime, why: str) -> None:
+    m = dict(cur.meta)
+    m["approved"], m["approved_at"] = False, None
+    _history(m, now, why)
+    cur.meta = m
+    _write_meta(cur)
+
+
+def unapprove_masked(paths=None, *, now=None) -> list[QueueItem]:
+    """가림을 바꾼 뒤(TAB §2.5 — 가림을 바꾸면 이전 미전송 묶음은 보내지 않는다) 지금 가림보다 덜 가려진 대기 묶음의
+    승인을 푼다(이력 ``mask_changed``). 반환 = 그런 대기 묶음 전부(승인 여부와 무관 — 화면이 다시 만들 기간을 고른다).
+    끝난 항목(보냄·치움)과 다른 곳에서 보내는 중(lease)인 항목의 승인은 건드리지 않는다."""
+    paths = _default_paths(paths)
+    now = _now(now)
+    out = []
+    with _lock(paths):
+        for it in list_items(paths=paths):
+            if it.folder != "pending" or it.state in FINAL or not mask_gaps(it):
+                continue
+            if it.meta.get("approved") and not _lease_valid(paths, it.folder, it.name, now):
+                _unapprove(it, now, "mask_changed")
+            it.rc, it.message = 2, STALE_MASK
+            out.append(it)
+    return out
+
+
+def mark_previewed(item: QueueItem, sha: str, *, now=None) -> QueueItem | None:
+    """미리보기가 그 바이트(sha256)를 사람에게 보여 줬다는 기록(meta ``previewed_sha``·``previewed_at``). 화면의 [보내기]·
+    [승인만]은 승인 전 묶음이면 이 기록이 그 바이트와 같아야 한다(TAB §2.8 '미리보기에서 [보내기] = approved' — C17)."""
+    from lm27.bundle.lock import BundleLock
+    paths = _default_paths(item.paths)
+    now = _now(now)
+    with BundleLock(paths, "team_build", PREVIEW_LOCK_S):   # 미리보기 응답을 오래 붙잡지 않는다(못 잡으면 BundleBusy)
+        cur = _reload(QueueItem.at(paths, item.name, item.folder, item.meta)) if item.name else None
+        if cur is None or cur.sha256 != sha or cur.state in FINAL or cur.meta.get("previewed_sha") == sha:
+            return cur
+        cur.meta["previewed_sha"], cur.meta["previewed_at"] = sha, _ts(now)
+        _write_meta(cur)
+    return cur
+
+
+def previewed(item: QueueItem) -> bool:
+    """이미 승인됐거나, 미리보기가 지금 바이트를 보여 준 적이 있는가(화면 [보내기]·[승인만]의 조건 — C17)."""
+    m = item.meta or {}
+    return bool(m.get("approved")) or (bool(m.get("previewed_sha")) and m.get("previewed_sha") == m.get("sha256"))
 
 
 # ───────────────────────────── 보내기 ─────────────────────────────
@@ -455,6 +542,11 @@ def send_item(item: QueueItem, cfg, *, now=None, approve: bool = True, picked=No
             return out
         if cur.meta.get("blockers"):
             cur.rc, cur.message = 2, "막힌 묶음은 보낼 수 없습니다: " + "; ".join(map(str, cur.meta["blockers"]))
+            return cur
+        if mask_gaps(cur):                               # 가림을 바꾼 뒤 다시 만들지 않은 바이트 — 보내지 않고 승인을 푼다
+            if cur.meta.get("approved"):
+                _unapprove(cur, now, "mask_changed")
+            cur.rc, cur.message = 2, STALE_MASK
             return cur
         if not _lease_take(cur, now):
             cur.rc, cur.message = 4, "다른 곳에서 이 묶음을 보내는 중입니다"
@@ -573,13 +665,17 @@ def send_due(cfg, *, paths=None, now=None, trigger: str = "manual", only=None, h
     token = C.upload_token(paths)
     fp_now = {"targets": _targets_fp(cfg), "token": C.token_fp(token)}
     due = [it for it in items if _due(it, cfg, now, trigger, fp_now, auto)]
+    stale = [it for it in due if mask_gaps(it)]          # 가림을 바꾼 뒤 다시 만들지 않은 묶음은 보내지 않는다(C16)
+    due = [it for it in due if it not in stale]
     res.skipped = sum(1 for it in items if it.state in SENDABLE and it not in due)
     waiting_ok = sum(1 for it in items if it.state in SENDABLE and not it.meta.get("blockers")
                      and not (it.meta.get("approved") or auto))
     exported = [it for it in items if it.state == "exported"]
     if not due and not exported:
         prune_sent(paths, int(cfg["team.sentKeep"]))
-        if waiting_ok:
+        if stale:
+            res.rc, res.message = 2, f"가림을 바꾼 팀 묶음 {len(stale)}개는 다시 만들어야 보냅니다 — [팀 묶음 만들기]를 누르세요"
+        elif waiting_ok:
             res.rc, res.message = 2, f"승인을 기다리는 팀 묶음 {waiting_ok}개 — 미리보기에서 [보내기]를 누르세요"
         else:
             res.rc, res.message = 4, "보낼 묶음이 없습니다"

@@ -44,8 +44,8 @@ from lm27.team import schema as S
 from lm27.util import fsx
 
 __all__ = ["BuildEnv", "BuildFailed", "BuildRefused", "FREE_TEXT_FIELDS", "OVERRIDES_SCHEMA", "TextCtx",
-           "build_and_queue", "build_team_bundle", "drop_need", "keep_need", "load_env", "load_overrides", "pepper_of",
-           "registry_cache", "set_mask", "size_blockers"]
+           "build_and_queue", "build_team_bundle", "drop_need", "keep_need", "load_env", "load_overrides", "mask_gaps",
+           "pepper_of", "registry_cache", "set_mask", "size_blockers"]
 
 SCHEMA_VERSION = f"{S.SCHEMA_MAJOR}.{S.SCHEMA_MINOR}"
 APP_NAME = "LM27"
@@ -953,7 +953,8 @@ def build_team_bundle(analysis, period, registry, pepper, overrides, cfg, *, env
         fpm = _num(nd.get("freq_per_month"))
         needs.append({"need_id": nid, "step_type": st, "label": label, "grade": gr,
                       "freq_per_month": max(0.0, float(fpm)) if fpm is not None else 0.0, "units": us,
-                      "src": "ai" if nd.get("by") == "ai" else "rule"})
+                      # 코파일럿 의견(AI 브리지 답 'ai' · 직접 붙여넣은 답 'manual') = ai, 규칙 사전 = rule(계약 v1.2 C20)
+                      "src": "ai" if nd.get("by") in ("ai", "manual") else "rule"})
     needs.sort(key=lambda n: n["need_id"])
     subs: dict = {}
     for sa in team.get("subagents") or ():
@@ -1200,25 +1201,81 @@ def _edit_overrides(paths, part: str, key: str, value: str | None) -> bool:
     return True
 
 
-def set_mask(paths, unit_id, mode) -> dict:
-    """단위업무 가림 ``title`` · ``detail`` · ``none``(되돌리기) — 다음 빌드부터 적용(TAB §2.5). rc 0 바뀜 · 4 그대로 · 1 형식."""
+def mask_gaps(obj, overrides) -> list:
+    """묶음(파싱한 dict)이 가림(``overrides``)보다 **덜** 가려진 곳 — 가림을 바꾼 뒤 아직 다시 만들지 않은 바이트(C16).
+    'unit:<id>:title'(가린 단위업무인데 제목이 generic 이 아님) · 'unit:<id>:detail'(세부 가림인데 동료·앱·근거 수가 남음) ·
+    'need:<id>' · 'match:<agent|role|step>' · 'subagent:<role>' · 'proposal:<id>'(뺀 것이 들어 있음). 빈 목록 = 다 적용됨.
+    되돌리기(none)로 '더' 가려진 것은 틈이 아니다(개인정보가 더 나가지 않는다)."""
+    ov = overrides if isinstance(overrides, Mapping) else {}
+    o = obj if isinstance(obj, Mapping) else {}
+    out = []
+    units = {u.get("unit_id"): u for u in o.get("units") or () if isinstance(u, Mapping)}
+    for uid, mode in sorted((ov.get("units") or {}).items()):
+        u = units.get(uid)
+        if u is None or mode not in ("title", "detail"):
+            continue
+        if u.get("title_mode") != "generic":
+            out.append(f"unit:{uid}:title")
+        if mode == "detail" and (u.get("peers") or u.get("apps") or u.get("evidence_n") or u.get("apps_unknown_min")):
+            out.append(f"unit:{uid}:detail")
+    ag = o.get("agentic") if isinstance(o.get("agentic"), Mapping) else {}
+    have = {
+        "needs": {str(n.get("need_id")) for n in ag.get("needs") or () if isinstance(n, Mapping)},
+        "matches": {f"{m.get('agent_id')}|{m.get('role_id')}|{m.get('step_type')}" for m in ag.get("matches") or ()
+                    if isinstance(m, Mapping)},
+        "subagents": {str(x.get("role_id")) for x in ag.get("subagents") or () if isinstance(x, Mapping)},
+        "proposals": {str(x.get("proposal_id")) for x in o.get("proposals") or () if isinstance(x, Mapping)}}
+    tag = {"needs": "need", "matches": "match", "subagents": "subagent", "proposals": "proposal"}
+    for part in ("needs", "matches", "subagents", "proposals"):
+        for k, v in sorted((ov.get(part) or {}).items()):
+            if v == "drop" and k in have[part]:
+                out.append(f"{tag[part]}:{k}")
+    return out
+
+
+def _invalidate(paths) -> list:
+    """가림을 바꾼 뒤 — 지금 가림보다 덜 가려진 대기 묶음의 승인을 푼다(TAB §2.5 · ``queue.unapprove_masked``). 실패해도
+    (잠금 대기 초과 등) 가림 저장은 그대로 — 승인·전송·자동 전송이 바이트를 다시 대조해 막는다(``queue.mask_gaps``)."""
+    from lm27.bundle.lock import BundleBusy
+    from lm27.team import queue as Q
+    try:
+        return Q.unapprove_masked(paths)
+    except (BundleBusy, Q.QueueError, OSError, ValueError):
+        return []
+
+
+def _with_stale(out: dict, stale: list) -> dict:
+    out["stale"] = [it.name for it in stale]
+    out["periods"] = sorted({it.period_key for it in stale if it.period_key})
+    if stale:
+        out["message"] += f" — 대기 중인 묶음 {len(stale)}개는 다시 만들 때까지 보내지 않습니다"
+    return out
+
+
+def set_mask(paths, unit_id, mode, *, invalidate: bool = True) -> dict:
+    """단위업무 가림 ``title`` · ``detail`` · ``none``(되돌리기) — 다음 빌드부터 적용(TAB §2.5). rc 0 바뀜 · 4 그대로 · 1 형식.
+    바뀌면(``invalidate``) 지금 가림보다 덜 가려진 대기 묶음의 승인을 풀고 ``stale``(항목 이름)·``periods``(그 기간 키)를
+    돌려준다 — 가리기 전 바이트가 승인된 채 자동 전송되던 것(C16). 화면은 그 기간을 다시 만든다."""
     if not isinstance(unit_id, str) or not _UNIT_RX.fullmatch(unit_id):
         return {"rc": 1, "message": "단위업무 ID 형식이 아닙니다(u_ + 16진 10자리)"}
     if mode not in ("title", "detail", "none"):
         return {"rc": 1, "message": "가림은 title · detail · none 중 하나입니다"}
     changed = _edit_overrides(paths, "units", unit_id, None if mode == "none" else mode)
     msg = {"title": "제목을 가립니다", "detail": "세부를 가립니다(제목·동료·앱·단계 라벨)", "none": "가림을 되돌립니다"}[mode]
-    return {"rc": 0 if changed else 4, "unit_id": unit_id, "mode": mode,
-            "message": (msg + " — 다시 만들면 적용됩니다") if changed else "이미 그 상태입니다"}
+    out = {"rc": 0 if changed else 4, "unit_id": unit_id, "mode": mode,
+           "message": (msg + " — 다시 만들면 적용됩니다") if changed else "이미 그 상태입니다"}
+    return _with_stale(out, _invalidate(paths) if changed and invalidate else [])
 
 
-def drop_need(paths, need_id) -> dict:
-    """니즈 하나를 팀에 올리지 않기(TAB §2.5 · R §4.7.5). rc 0 바뀜 · 4 이미 뺌 · 1 형식."""
+def drop_need(paths, need_id, *, invalidate: bool = True) -> dict:
+    """니즈 하나를 팀에 올리지 않기(TAB §2.5 · R §4.7.5). rc 0 바뀜 · 4 이미 뺌 · 1 형식. 바뀌면 그 니즈가 든 대기 묶음의
+    승인을 푼다(``set_mask`` 와 같은 규칙 — ``stale``·``periods``)."""
     if not isinstance(need_id, str) or not _NEED_RX.fullmatch(need_id):
         return {"rc": 1, "message": "니즈 ID 형식이 아닙니다(n_ + 16진 6자리)"}
     changed = _edit_overrides(paths, "needs", need_id, "drop")
-    return {"rc": 0 if changed else 4, "need_id": need_id,
-            "message": "다음 묶음부터 이 니즈를 빼고 보냅니다" if changed else "이미 빼 두었습니다"}
+    out = {"rc": 0 if changed else 4, "need_id": need_id,
+           "message": "다음 묶음부터 이 니즈를 빼고 보냅니다" if changed else "이미 빼 두었습니다"}
+    return _with_stale(out, _invalidate(paths) if changed and invalidate else [])
 
 
 def keep_need(paths, need_id) -> dict:

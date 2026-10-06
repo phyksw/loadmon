@@ -155,6 +155,15 @@ def helper_argv(paths, cfg, helper_path, *, wait_pid, gen) -> list:
             "-RenameRetries", str(int(cfg["move.renameRetries"])), "-StopWaitSec", str(int(cfg["move.stopWaitSec"]))]
 
 
+def launch_helper(argv) -> int:
+    """도우미를 새 콘솔 창으로 띄우고 pid 를 돌려준다(기다리지 않는다). **표준 핸들을 물려주지 않는다** — stdin·stdout·stderr 를
+    모두 None 으로 두어 새 콘솔의 핸들을 쓰게 한다. 예전에는 stdin 만 DEVNULL 이라 Popen 이 나머지 둘을 이 CLI 의 표준 핸들
+    (화면 작업이면 작업 파이프)로 채워 도우미에게 넘겼고, 작업이 끝났는데도 도우미가 사는 동안 파이프가 열려 화면이 '진행 중'으로
+    남았다(W2 C21 근본 원인 — 통합). 도우미 창에는 [완료]·[실패] 문구가 그대로 보인다."""
+    from lm27.util import proc
+    return proc.spawn(list(argv), stdin=None, stdout=None, stderr=None, new_console=True).pid
+
+
 def copy_helper(paths, *, temp_dir=None) -> str:
     r"""도우미를 ``%TEMP%\lm27_move_<rand>.ps1`` 로 복사(바이트 그대로 — UTF-8 BOM + CRLF 유지). 반환: 사본 경로."""
     src = paths.collect_script(HELPER_REL)
@@ -216,12 +225,7 @@ def prepare_move(paths, cfg, *, ident=None, launch=True, wait_pid=None, export=T
     if not launch:
         return res
     try:
-        if spawn is not None:
-            res.pid = int(spawn(res.argv) or 0)
-        else:
-            from lm27.util import proc
-            ch = proc.spawn(res.argv, stdin=proc.DEVNULL, stdout=None, stderr=None, new_console=True)
-            res.pid = ch.pid
+        res.pid = int((spawn or launch_helper)(res.argv) or 0)
     except OSError as e:
         res.notes.append({"code": "helper_launch_failed", "error": type(e).__name__})
         res.rc = 3

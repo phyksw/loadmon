@@ -235,6 +235,23 @@ class HarvestFuncTest(unittest.TestCase):
         self.assertEqual(reasons, [HV.PIPE_FAIL[6], HV.PIPE_FAIL[99], HV.PIPE_FAIL[3], None, None])
         self.assertEqual(st, {"rc": 3, "reasons": ["R-UIAEMPTY"]})
 
+    def test_window_same_as_python(self):
+        """수확 창(-Since·-Until) — ps 구현 Get-LmWindow 가 파이썬 harvest_window 와 같은 값(통합 — W2 C03 에이전트 쪽)."""
+        cases = [({"collect.lookbackDays": 120, "time.tzOffsetMin": 540}, "2026-10-06T15:30:00"),
+                 ({"collect.lookbackDays": 120, "time.tzOffsetMin": 540, "collect.sinceYearStart": False}, "2026-10-06T15:30:00"),
+                 ({"collect.lookbackDays": 400, "time.tzOffsetMin": 540}, "2026-10-06T15:30:00"),
+                 ({"collect.lookbackDays": 30, "time.tzOffsetMin": 0, "collect.sinceYearStart": True}, "2026-01-01T03:00:00"),
+                 ({}, "2026-12-31T23:59:00")]
+        body = ""
+        for cfg, now in cases:
+            js = json.dumps(cfg).replace("'", "''")
+            body += (f"$cfg = ConvertFrom-Json '{js}'\n"
+                     f"$n = [datetime]::SpecifyKind([datetime]::ParseExact('{now}', 'yyyy-MM-ddTHH:mm:ss', $script:Inv), 'Utc')\n"
+                     "[Console]::Out.WriteLine((ConvertTo-LmJson (Get-LmWindow $cfg $n)))\n")
+        got = self.ps(["Get-LmWindow", "Get-LmCfgInt"], body)
+        want = [list(HV.harvest_window(cfg, datetime.fromisoformat(now).replace(tzinfo=UTC))) for cfg, now in cases]
+        self.assertEqual(got, want)
+
 
 class RegisterTest(unittest.TestCase):
     def setUp(self):

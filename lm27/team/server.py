@@ -8,6 +8,9 @@ r"""팀 서버(TAB §3 · 계약 §1.4 · §4.7 · D-18) — 표준 라이브러
     → ``run\server.json``(자기 pid 일 때만 지움) → 워커(재취합·반입 감시·로그 정리·방화벽 진단 타이머).
   · 모든 요청: Host 허용 목록(421 bad_host — DNS 재바인딩) · ``allow_cidrs``(403) · API ``Cache-Control: no-store`` ·
     ``X-Content-Type-Options: nosniff`` · ``Access-Control-Allow-Origin`` 없음 · OPTIONS 405.
+  · 관리 동작(``/api/shutdown`` · ``/api/aggregate`` · 레지스트리 PUT · 명단 PATCH)은 루프백이어도 브라우저 교차 출처 요청
+    (``Origin`` ≠ ``http://<Host>`` · ``Sec-Fetch-Site`` cross-site·same-site)을 403 ``cross_origin`` 으로, JSON 이 아닌 POST 를
+    415 로 거절한다(L08). 서버를 끄면 도는 재취합 자식 트리를 끝내고 워커를 합류한 뒤 저장소 잠금을 놓는다(C22).
   · ``/api/hello`` 에 경로·pid·토큰·호스트명 0. 오류 응답 = ``{ok:false, code, error, detail[경로: 코드]}`` — 값 없음.
   · 본문이 있는 요청은 '읽고' 거절한다(64MB 까지 drain — 안 읽고 답하면 RST 로 응답조차 못 간다, LM24 실측).
   · 서버는 묶음을 고치지 않고 거절(422)한다. 재취합은 하위 프로세스(``team-aggregate``)가 ``result.json`` 을 쓰고 서버는
@@ -22,6 +25,7 @@ import re
 import secrets
 import socket
 import socketserver
+import subprocess
 import sys
 import threading
 import time
@@ -89,24 +93,60 @@ class LM27HTTPServer(ThreadingHTTPServer):
 
 
 # ───────────────────────────── 재취합 워커 ─────────────────────────────
-def subprocess_runner(store, gen: int, cfg) -> dict:
+AGG_POLL_S = 0.2                            # 재취합 자식 종료·서버 끄기 확인 간격
+AGG_JOIN_S = 10.0                           # 서버를 끌 때 재취합 스레드 합류를 기다리는 최대 시간
+
+
+def subprocess_runner(store, gen: int, cfg, worker=None) -> dict:
     """``python lm27_cli.py team-aggregate --store <dir> --gen N``(시간 제한 ``teamServer.aggregateTimeoutSec``, cwd = 저장소).
-    서버는 표준출력이 아니라 ``out\\gen_N\\result.json`` 을 읽는다. stderr 끝 20줄은 aggregate 로그로."""
+    서버는 표준출력이 아니라 ``out\\gen_N\\result.json`` 을 읽는다. stderr 끝 20줄은 aggregate 로그로.
+    ``worker``(AggWorker) 가 있으면 도는 자식을 거기에 맡긴다 — 서버를 끄면(``worker.stop``) 자식 트리를 끝내고 기다린다
+    (서버가 꺼진 뒤 잠금을 놓은 저장소에 고아 자식이 쓰던 것 — C22)."""
     from lm27.paths import Paths
-    from lm27.util.proc import run_child
+    from lm27.util import proc
     paths = store.paths or Paths()
     exe = paths.python_exe() if paths.python_exe().is_file() else sys.executable
     argv = [str(exe), "-X", "utf8", "-B", str(paths.cli_script()), "team-aggregate", "--store", str(store.dir),
             "--gen", str(int(gen))]
-    r = run_child(argv, timeout_s=cfg["teamServer.aggregateTimeoutSec"], cwd=str(store.dir))
-    tail = r.stderr.decode("utf-8", "replace").splitlines()[-20:]
-    for ln in tail:
+    t0 = time.monotonic()
+    timeout = float(cfg["teamServer.aggregateTimeoutSec"])
+    ch = proc.spawn(argv, stdin=proc.DEVNULL, stdout=proc.DEVNULL, stderr=proc.STDERR_TAIL, cwd=str(store.dir))
+    stopped = worker is not None and not worker.adopt(ch)
+    timed_out = False
+    try:
+        while not stopped and ch.poll() is None:
+            if time.monotonic() - t0 >= timeout:
+                timed_out = True
+                break
+            if worker is not None and worker.stopping():
+                stopped = True
+                break
+            try:
+                ch.wait(timeout=AGG_POLL_S)
+            except subprocess.TimeoutExpired:
+                continue
+        if not (stopped or timed_out) and worker is not None and worker.stopping() and ch.poll() != 0:
+            stopped = True                               # 끄기가 자식을 끝냄(stop → kill_tree) — 제대로 끝난 결과는 그대로 쓴다
+        if timed_out or stopped:
+            ch.kill_tree()
+    finally:
+        if worker is not None:
+            worker.adopt(None)
+    drain = getattr(ch, "_drain", None)
+    if drain is not None:
+        drain.join(proc.DRAIN_S)
+    if drain is None or not drain.is_alive():           # 다 읽은 파이프만 닫는다(손주가 쥔 파이프를 닫으면 멈춘다)
+        ch.close()
+    for ln in list(ch.stderr_tail)[-20:]:
         store.log_aggregate("stderr " + ln[:200])
+    sec = time.monotonic() - t0
+    if stopped:
+        return {"ok": False, "members": 0, "warnings": ["서버 종료로 재취합을 멈춤"], "sec": sec}
+    if timed_out:
+        return {"ok": False, "members": 0, "warnings": ["재취합 시간 초과"], "sec": sec}
     res = fsx.read_json(store.gen_dir(gen) / "result.json", None)
-    if r.timed_out:
-        return {"ok": False, "members": 0, "warnings": ["재취합 시간 초과"], "sec": r.elapsed_s}
     if not isinstance(res, dict):
-        return {"ok": False, "members": 0, "warnings": [f"재취합 결과 없음(rc {r.rc})"], "sec": r.elapsed_s}
+        return {"ok": False, "members": 0, "warnings": [f"재취합 결과 없음(rc {ch.returncode})"], "sec": sec}
     return res
 
 
@@ -115,7 +155,7 @@ class AggWorker:
 
     def __init__(self, store, cfg, runner=None):
         self.store, self.cfg = store, cfg
-        self.runner = runner or (lambda st, gen: subprocess_runner(st, gen, cfg))
+        self.runner = runner or (lambda st, gen: subprocess_runner(st, gen, cfg, worker=self))
         self.cond = threading.Condition()
         self.req = 0
         self.done = 0
@@ -124,16 +164,37 @@ class AggWorker:
         self._stop = False
         self.thread = None
         self.runs = 0
+        self.child = None                       # 지금 도는 재취합 자식(subprocess_runner 가 맡김)
 
     def start(self):
         self.thread = threading.Thread(target=self._loop, name="lm27-team-agg", daemon=True)
         self.thread.start()
         return self
 
-    def stop(self):
+    def stopping(self) -> bool:
+        return self._stop
+
+    def adopt(self, child) -> bool:
+        """도는 자식을 맡긴다(None = 끝남). 이미 끄는 중이면 False(호출자가 바로 끝낸다)."""
+        with self.cond:
+            self.child = child
+            return not (self._stop and child is not None)
+
+    def stop(self, join_s: float | None = None):
+        """멈춤 깃발 + 도는 재취합 자식 트리 끝내기(kill_tree). ``join_s`` 가 있으면 워커 스레드 합류를 그만큼 기다린다."""
         with self.cond:
             self._stop = True
+            ch = self.child
             self.cond.notify_all()
+        if ch is not None:
+            try:
+                if ch.alive():
+                    ch.kill_tree()
+            except (OSError, ValueError):
+                pass
+        t = self.thread
+        if join_s is not None and t is not None and t is not threading.current_thread():
+            t.join(join_s)
 
     def request(self) -> int:
         with self.cond:
@@ -169,8 +230,11 @@ class AggWorker:
                     self.cond.wait(1.0)
                 if self._stop:
                     return
-            time.sleep(max(0.0, float(self.cfg["teamServer.aggregateDebounceSec"])))
-            with self.cond:
+                end = time.monotonic() + max(0.0, float(self.cfg["teamServer.aggregateDebounceSec"]))
+                while not self._stop and time.monotonic() < end:     # 디바운스 — 끄면 바로 깬다
+                    self.cond.wait(max(0.0, end - time.monotonic()))
+                if self._stop:
+                    return
                 take = self.req
                 self.running = True
             gen = self.store.next_gen()
@@ -404,7 +468,30 @@ def make_handler(app: TeamServerApp):
                          "토큰이 필요합니다" if not given else "토큰이 맞지 않습니다")
             return False
 
+        def _same_origin(self) -> bool:
+            """관리 동작(끄기·재취합·레지스트리·명단)은 브라우저의 교차 출처 요청을 받지 않는다(L08 — 이 PC 브라우저가 연 남의
+            웹페이지가 루프백으로 단순 POST 를 보내 서버를 내리던 것): ``Origin`` 이 있으면 ``http://<Host>``(이 서버 화면)와
+            같아야 하고, ``Sec-Fetch-Site`` 가 있으면 ``same-origin``·``none`` 만. 화면 서버·CLI(urllib)는 둘 다 보내지 않는다."""
+            host = (self.headers.get("Host") or "").strip().lower()
+            org = self.headers.get("Origin")
+            sfs = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
+            if (org is not None and org.strip().lower() != "http://" + host) or \
+                    (sfs and sfs not in ("same-origin", "none")):
+                self._reject(403, "cross_origin", "다른 사이트에서 온 요청은 받지 않습니다")
+                return False
+            return True
+
+        def _json_post_ok(self) -> bool:
+            """본문 없는 관리 POST 도 ``application/json`` 만 — 교차 출처 '단순 요청'(text/plain·폼)은 사전 요청 없이 오므로
+            형식으로 막는다(JSON 은 사전 요청 OPTIONS 405 에서 막힌다)."""
+            if not self.headers.get("Content-Type", "").lower().startswith("application/json"):
+                self._reject(415, "content_type", "application/json 만 받습니다")
+                return False
+            return True
+
         def _admin_ok(self) -> bool:
+            if not self._same_origin():
+                return False
             if app.is_loopback(app.client_ip(self)):
                 return True
             want = app.cfg["teamServer.adminTokenSha256"]
@@ -530,6 +617,8 @@ def make_handler(app: TeamServerApp):
             if path == "/api/shutdown":
                 if not app.is_loopback(app.client_ip(self)):
                     return self._reject(403, "admin_only", "로컬에서만 가능합니다")
+                if not (self._same_origin() and self._json_post_ok()):
+                    return None
                 self._drain(self._length() or 0)
                 self.close_connection = True
                 self._json(200, {"ok": True, "stopping": True})
@@ -537,7 +626,7 @@ def make_handler(app: TeamServerApp):
                     threading.Thread(target=app.shutdown_cb, daemon=True).start()
                 return None
             if path == "/api/aggregate":
-                if not self._admin_ok():
+                if not (self._admin_ok() and self._json_post_ok()):
                     return None
                 self._drain(self._length() or 0)
                 app.agg.request()
@@ -709,8 +798,14 @@ class TeamServer:
             self.httpd.shutdown()
 
     def close(self):
+        """끄기 마무리 — 도는 재취합 자식을 끝내고(트리째) 워커·보조 스레드를 합류한 뒤 소켓을 닫는다. ``serve`` 는 이것이
+        끝난 다음에 저장소 잠금을 놓는다(고아 재취합이 잠금 없는 저장소에 쓰지 않게 — C22)."""
         self._stop.set()
-        self.app.agg.stop()
+        self.app.agg.stop(join_s=AGG_JOIN_S)
+        cur = threading.current_thread()
+        for t in list(self._threads):
+            if t is not cur:
+                t.join(AGG_JOIN_S)
         if self.httpd is not None:
             self.httpd.server_close()
 

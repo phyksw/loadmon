@@ -360,6 +360,28 @@ class GitCursorResumeTest(unittest.TestCase):
             self.run_collect(f1, [self.a, self.b])
         self.assertEqual(f1.saved[-1][2]["last_ts_utc"], prev["last_ts_utc"])
 
+    def test_window_moved_earlier_rereads_gap(self):
+        """통합(W2 C03 handoff — PS 수집기와 같은 read_from 규칙): 창이 커서보다 앞당겨지면(read_from 없는 예전 커서 · 창 시작 <
+        read_from) 커서를 무시하고 창 전체를 다시 낸다 — 예전에는 '커서 − 14일' 이전 커밋(B older)을 건너뛰고도 상태 줄 range 는
+        창 전체를 주장했다(T-09)."""
+        now = datetime(2026, 9, 30, 3, 0, tzinfo=UTC)
+        win = G._utc_iso(G._day_start_utc(date(2026, 9, 1), now))
+        for prev in ({"last_ts_utc": "2026-09-29T00:00:00Z", "repos": {}},                          # 예전 커서(read_from 없음)
+                     {"last_ts_utc": "2026-09-29T00:00:00Z", "read_from": "2026-09-20T00:00:00Z", "repos": {}}):
+            f1 = FakeApi(cursor=prev)
+            st1 = self.run_collect(f1, [self.a, self.b], now=now)
+            self.assertTrue(st1.get("from_gap"), prev)
+            self.assertIn("B older", [r["subject"] for r in f1.raws])
+            cur1 = f1.saved[-1][2]
+            self.assertEqual(cur1["read_from"], win)
+            self.assertEqual(cur1["last_ts_utc"], "2026-09-29T00:00:00Z")        # 커서 시각은 뒤로 가지 않는다
+            f2 = FakeApi(cursor=cur1)                                           # 같은 창 다시 — 이제 공백 없음, 증분
+            st2 = self.run_collect(f2, [self.a, self.b], now=now)
+            self.assertNotIn("from_gap", st2)
+            self.assertNotIn("B older", [r["subject"] for r in f2.raws])
+            self.assertEqual(st2["rc"], 4)
+        self.assertEqual(G.new_read_from(None, G._parse_utc(win), True, True), None)   # 예산에 끊기면 앞당기지 않는다
+
     def test_failed_repo_holds_cursor(self):
         f1 = FakeApi()
         st1 = self.run_collect(f1, [self.a, self.not_repo])               # 한 저장소 실패(git 오류) · 나머지 정상
