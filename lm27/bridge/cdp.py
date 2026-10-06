@@ -8,6 +8,8 @@ r"""CDP 연결 층(B §4.3·§4.4, LM24 ``copilot_auto.py`` 240-374 이식) — 
     → ``reconnect()``. 이벤트 메시지(id 없음)는 버린다. 수신 프레임 길이 상한 64MB(넘으면 연결 폐기).
   · ``Runtime.evaluate`` 는 ``returnByValue=True``, JS 예외는 ``CdpError("JS: …")``(200자, 페이지 원문 없음).
   · 부를 수 있는 CDP 메서드는 허용 목록(``ALLOWED_METHODS``)뿐이다 — 쿠키·저장소 같은 도메인은 부르지 않는다(B §4.1).
+    창 상태(``Browser.getWindowForTarget``·``Browser.setWindowBounds``)는 화면 [분석용 Edge 창 앞으로]가 전용 창을 되살려
+    앞으로 가져올 때만 쓴다(창 안 내용은 읽지도 바꾸지도 않는다).
 
 시험은 ``Http``·``Connector`` 자리에 ``tests\bridge\fake_http.py``·``fake_cdp.py`` 를 끼운다.
 """
@@ -28,7 +30,8 @@ from lm27.bridge import settings as S
 
 LOCAL_HOSTS = ("127.0.0.1", "localhost")
 ALLOWED_METHODS = ("Runtime.evaluate", "Input.insertText", "Input.dispatchKeyEvent", "Page.bringToFront",
-                   "Page.reload", "Page.navigate", "Browser.close", "Browser.getVersion")
+                   "Page.reload", "Page.navigate", "Browser.close", "Browser.getVersion", "Browser.getWindowForTarget",
+                   "Browser.setWindowBounds")
 _WS_RX = re.compile(r"^ws://(127\.0\.0\.1|localhost):(\d{1,5})(/[A-Za-z0-9/_.\-]*)$")
 
 

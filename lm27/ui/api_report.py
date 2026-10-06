@@ -46,6 +46,7 @@ _VOCAB_RX = re.compile(r"^[A-Z][A-Z0-9_]{1,15}$|^L_[A-Za-z0-9_]{1,16}$")
 _NEED_RX = re.compile(r"^n_[0-9a-f]{6}$")
 _PROP_RX = re.compile(r"^pr_\d{1,4}$")
 _RULE_RX = re.compile(r"^L[KT]-[0-9A-Za-z_\-]{1,40}$")
+_DOM_RX = re.compile(r"^[A-Z]{2,3}$")
 VARIANTS = ("full", "redacted")
 REANALYZE_KEY = "quick_reanalyze"
 # 확인 질문 선택 → 수동 기록 man_kind(W §7.3 표). None = 기록 없이 응답만 남김(그대로 둠·승인·진행 중 등)
@@ -158,6 +159,13 @@ def get_report(app, req):
         raise ApiError(500, "model_unreadable", "보고서를 읽지 못했습니다 — 다시 읽으면 이어서 보입니다")
     cfg = app.cfg()
     out = dict(m)
+    run = dict(out.get("run") or {})
+    if not run.get("built_at"):                         # 머리 띠 '분석 MM-DD HH:MM' — 모델 파일 밖 값(G-R1), 응답에만
+        from lm27.report.inputs import analysis_time
+        at = analysis_time(app.paths, rid, int(cfg["time.tzOffsetMin"]))
+        if at:
+            run["built_at"] = at
+            out["run"] = run
     out["export_defaults"] = {"formats": list(cfg["report.export.formats"]), "variants": list(cfg["report.export.variants"])}
     out["table_max_rows"] = int(cfg["ui.tableMaxRows"])
     return out
@@ -230,16 +238,18 @@ def post_export_open(app, req):
 
 
 def post_need_drop(app, req):
+    """{need_id, drop: true} → 팀 묶음에서 그 니즈 빼기 · {drop: false} → 되돌리기(다시 팀에 올리기). 둘 다 다음 빌드부터."""
     nid = req.body.get("need_id")
     if not isinstance(nid, str) or not _NEED_RX.match(nid):
         raise ApiError(400, "bad_need", "니즈 ID 형식이 아닙니다")
-    if req.body.get("drop", True) is not True:
-        raise ApiError(400, "undo_unsupported", "뺀 니즈를 다시 넣는 것은 다음 분석의 새 니즈로 돌아옵니다")
-    from lm27.team.build import drop_need
-    r = drop_need(app.paths, nid)
+    drop = req.body.get("drop", True)
+    if not isinstance(drop, bool):
+        raise ApiError(400, "bad_drop", "drop 은 true(빼기)·false(다시 올리기)입니다")
+    from lm27.team.build import drop_need, keep_need
+    r = drop_need(app.paths, nid) if drop else keep_need(app.paths, nid)
     if r.get("rc") == 1:
         raise ApiError(400, "bad_need", r.get("message") or "니즈 ID 형식이 아닙니다")
-    return {"ok": True, "changed": r.get("rc") == 0, "text_ko": r.get("message")}
+    return {"ok": True, "dropped": drop, "changed": r.get("rc") == 0, "text_ko": r.get("message")}
 
 
 # ───────────────────────────── 빠른 재분석(디바운스) ─────────────────────────────
@@ -482,7 +492,15 @@ def post_proposal(app, req):
     out = {"ok": True}
     try:
         if act == "accept":
-            out["project"] = q.accept_local(pid, b.get("keywords") or (), paths=app.paths, at=at)
+            # [내 과제로 받기] 폼: 영역(domain) + 알아볼 낱말(keywords — 옛 화면은 words 로 보냈다, 둘 다 받는다)
+            kws = b.get("keywords") if b.get("keywords") is not None else b.get("words")
+            if kws is not None and (not isinstance(kws, list) or any(not isinstance(w, str) for w in kws)):
+                raise ApiError(400, "bad_keywords", "알아볼 낱말은 글자 목록입니다")
+            dom = b.get("domain")
+            if dom not in (None, "") and (not isinstance(dom, str) or not _DOM_RX.match(dom)):
+                raise ApiError(400, "bad_domain", "업무 영역을 다시 골라 주세요")
+            out["project"] = q.accept_local(pid, [w.strip() for w in kws or () if w.strip()], paths=app.paths, at=at,
+                                            dom=dom or None)
         elif act == "map":
             proj = b.get("project")
             if not isinstance(proj, str) or not _PROJ_RX.match(proj):
@@ -535,10 +553,42 @@ def post_codename(app, req):
             cr = mark_codename_review(paths=app.paths, ignore=[cand])
             return {"ok": True, "project": lid, "codename_review": cr}
         else:
-            raise ApiError(409, "customer_unsupported", "고객사 등록은 설정 › 개인정보의 고객사 목록에서 합니다")
+            cid, word, added = _add_customer(app, cand)
+            cr = mark_codename_review(paths=app.paths, ignore=[cand])
+            text = (f"'{word}' 을(를) 고객사 이름({cid})으로 등록했습니다 — 다음 [수집]부터 정제기가 가립니다" if added else
+                    f"'{word}' 은(는) 이미 고객사 이름({cid})입니다")
+            return {"ok": True, "customer": cid, "codename_review": cr, "text_ko": text}
     except ValueError:
         raise ApiError(409, "local_registry", "개인 레지스트리를 고치지 못했습니다 — 다시 누르면 이어서 합니다") from None
     return {"ok": True, "codename_review": cr}
+
+
+def _add_customer(app, cand: str) -> tuple[str, str, bool]:
+    """코드네임 검토 [고객사 이름](H §8.1) → 개인 설정 ``privacy.customers`` 에 ``{"id": "C9xx", "names": [후보]}`` 를 더한다
+    (설정 단일 검증 ``save_settings`` — 정제기가 다음 수집부터 ``[고객사:C9xx]`` 로 가린다). id 는 팀 레지스트리 고객사와
+    겹치지 않는 C901~C999. 이미 같은 이름이 있으면 쓰지 않는다. 반환 (id, 정규화한 이름, 새로 더했는가)."""
+    import unicodedata
+    from collections.abc import Mapping
+
+    from lm27.ui.api_settings import save_settings
+    from lm27.ui.api_team import registry_view
+    word = " ".join(unicodedata.normalize("NFKC", cand).split())
+    cur = []
+    for c in app.cfg()["privacy.customers"] or ():          # 설정 값은 얼린 형(튜플·읽기 전용 사전)일 수 있다
+        if isinstance(c, Mapping):
+            cur.append({"id": str(c.get("id") or ""), "names": [str(x) for x in c.get("names") or ()],
+                        "domains": [str(x) for x in c.get("domains") or ()]})
+    for c in cur:
+        if any(n.casefold() == word.casefold() for n in c["names"]):
+            return c["id"], word, False
+    reg, _st = registry_view(app)
+    used = {c["id"] for c in cur} | {str((c or {}).get("id") or "") for c in (getattr(reg, "customers", ()) or ())
+                                     if isinstance(c, Mapping)}
+    cid = next((f"C9{n:02d}" for n in range(1, 100) if f"C9{n:02d}" not in used), None)
+    if cid is None:
+        raise ApiError(409, "customer_full", "개인 고객사 이름 자리(C901~C999)가 다 찼습니다 — 설정 › 개인정보에서 정리해 주세요")
+    save_settings(app, {"privacy.customers": cur + [{"id": cid, "names": [word], "domains": []}]})
+    return cid, word, True
 
 
 def post_rule(app, req):
@@ -552,12 +602,194 @@ def post_rule(app, req):
     if rule is None:
         raise ApiError(404, "no_rule", "그 학습 규칙이 없습니다")
     if act == "copy_team":
-        cond, then = rule.get("cond") or ["", ""], rule.get("then") or ["", ""]
-        txt = f"팀 규칙 제안: 조건 {cond[0] if cond else ''} → {then[1] if len(then) > 1 else ''}(학습 규칙 {rid})"
+        reg = _registry(app)
+        v = _rule_view(rule, reg, _HierRefs(app, reg))
+        txt = f"팀 규칙 제안: {v['kind_ko']} {v['cond']} → {v['result']}(적중 {v['hits']}건 · 학습 규칙 {rid})"
         return {"ok": True, "text_ko": txt}
     rule["status"] = "active" if act == "on" else "off"
     save_learned(app.paths, lr["rules"], lr["learned_from"])
     return {"ok": True, "status": rule["status"]}
+
+
+# 분류 화면 이름표(R §6.11 · H §7.3 · §11.4) — 코드는 툴팁·CSV 에만, 화면은 이름
+PROP_STATE_KO = {"pending": "검토 대기", "accepted_local": "내 과제로 받음", "mapped": "기존 과제에 연결됨",
+                 "rejected": "거절함", "merged": "다른 제안에 합쳐짐"}
+PROP_SRC_KO = {"task_label": "AI", "bootstrap": "부트스트랩", "user": "내가 만듦", "codename_review": "코드네임 검토"}
+RULE_STATE_KO = {"active": "켜짐", "candidate": "후보(같은 과제로 한 번 더 고치면 켜짐)", "off": "끔",
+                 "retired": "은퇴(맞힌 비율이 낮음)", "superseded": "대체됨(나중 수정이 이김)"}
+RULE_KIND_KO = {"conv": "대화방", "fam": "문서", "repo": "저장소", "dir": "폴더", "token": "낱말", "app": "앱"}
+SET_KO = {"project": "과제", "field": "분야", "func": "기능", "wtype": "유형", "title": "제목"}
+_VOCAB_OF = {"field": "fields", "func": "functions", "wtype": "activity_types"}
+NOTICE_DAYS = 14                                         # 팀 과제 자동 연결 알림을 보이는 기간(H §7.6 화면 알림)
+
+
+def _registry(app):
+    from lm27.ui.api_team import registry_view
+    return registry_view(app)[0]
+
+
+def _parse_at(s):
+    from datetime import UTC, datetime
+    if not isinstance(s, str) or not s:
+        return None
+    try:
+        d = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return d if d.tzinfo is not None else d.replace(tzinfo=UTC)
+
+
+class _HierRefs:
+    """분류 화면이 로컬 키를 이름으로 풀 때 쓰는 지금 결과(전체판 모델 — 문서 이름·단위업무 제목, tasks.json — 대화 키)."""
+
+    def __init__(self, app, reg):
+        self.app, self.reg = app, reg
+        cur = current(app)
+        self.rid = cur["run_id"] if cur else None
+        self.model = (model_or_none(app, self.rid, "full") or {}) if self.rid else {}
+        self._tasks = None
+        refs = self.model.get("refs") or {}
+        self.docs = {str(v.get("key")): str(v.get("name") or "") for v in (refs.get("docs") or {}).values()
+                     if isinstance(v, dict) and v.get("key")}
+        self.titles = {u.get("unit_id"): str(u.get("title") or "") for u in self.model.get("units") or ()
+                       if isinstance(u, dict)}
+
+    def tasks(self) -> dict:
+        if self._tasks is None:
+            self._tasks = _tasks(self.app, self.rid) if self.rid else {}
+        return self._tasks
+
+    def project(self, pid) -> str:
+        pv = self.reg.project(pid) if self.reg is not None and hasattr(self.reg, "project") else None
+        return str(getattr(pv, "name", "") or pid) if pv is not None else str(pid)
+
+    def vocab(self, axis: str, code) -> str:
+        it = ((getattr(self.reg, "vocab", None) or {}).get(_VOCAB_OF.get(axis, "")) or {}).get(code)
+        return str(getattr(it, "name", "") or code)
+
+    def conv(self, key) -> str:
+        """대화 키 → 그 대화가 근거인 단위업무 제목(첫 하나) — 대화방 정제 제목은 결과 파일에 없다."""
+        for uid, t in sorted(self.tasks().items()):
+            if t.get("conv") == key and self.titles.get(uid):
+                return f"'{self.titles[uid]}' 업무의 대화"
+        return "이번 결과에 없는 대화"
+
+
+def _rule_view(r: dict, reg, hx: _HierRefs) -> dict:
+    """학습 규칙 한 줄(H §11.4 화면) — 종류·조건·결과를 이름으로. 로컬 키 자체는 보이지 않는다."""
+    cond = r.get("if") if isinstance(r.get("if"), dict) else {}
+    then = r.get("then") if isinstance(r.get("then"), dict) else {}
+    ck, cv = next(iter(sorted(cond.items())), ("", ""))
+    tk, tv = next(iter(sorted(then.items())), ("", ""))
+    if ck == "token":
+        ctext = f"'{cv}' 낱말"
+    elif ck == "app":
+        from lm27.report.resolve import Resolver
+        ctext = Resolver("full").app(str(cv))
+    elif ck in ("fam", "repo"):
+        ctext = hx.docs.get(str(cv)) or ("이번 결과에 없는 " + ("저장소" if ck == "repo" else "문서"))
+    elif ck == "conv":
+        ctext = hx.conv(cv)
+    elif ck == "dir":
+        ctext = "같은 폴더의 문서"
+    else:
+        ctext = str(cv or "")
+    if tk == "project":
+        rtext = hx.project(tv)
+    elif tk in _VOCAB_OF:
+        rtext = f"{SET_KO[tk]} {hx.vocab(tk, tv)}"
+    else:
+        rtext = str(tv or "")
+    st = str(r.get("status") or "")
+    return {"rule_id": r.get("id"), "kind": ck or r.get("kind"), "kind_ko": RULE_KIND_KO.get(ck, str(r.get("kind") or "")),
+            "cond": ctext, "result": rtext, "state": st, "state_ko": RULE_STATE_KO.get(st, st),
+            "hits": int(r.get("hits") or 0), "agree": int(r.get("agree") or 0), "disagree": int(r.get("disagree") or 0),
+            "reason": str(r.get("reason") or "")}
+
+
+def _prop_view(it: dict) -> dict:
+    """새 과제 제안 한 줄(H §7.3) — 매 실행 다시 센 근거(n_units·effort_min·first_at·last_at)와 이름표."""
+    st = str(it.get("status") or "")
+    hist = [h for h in it.get("history") or () if isinstance(h, dict)]
+    srcs = [s for s in it.get("sources") or () if isinstance(s, dict)]
+    src = str(srcs[0].get("from") or "") if srcs else str((hist[0] if hist else {}).get("by") or "")
+    st_ko = PROP_STATE_KO.get(st, st)
+    if st == "mapped" and any(h.get("event") == "mapped" and h.get("by") == "registry" for h in hist):
+        st_ko = "팀 과제로 연결됨"
+    return {"proposal_id": it.get("proposal_id"), "name": it.get("label"), "domain_guess": it.get("domain_guess"),
+            "units": int(it.get("n_units") or 0), "effort_min": int(it.get("effort_min") or 0),
+            "first": it.get("first_at"), "last": it.get("last_at"), "src": src, "src_ko": PROP_SRC_KO.get(src, src),
+            "state": st, "state_ko": st_ko, "mapped_to": it.get("mapped_to"), "merged_into": it.get("merged_into"),
+            "local_project": it.get("local_project")}
+
+
+def _notices(items, hx: _HierRefs, now) -> list:
+    """팀 레지스트리를 받아 자동으로 팀 과제에 연결된 제안 알림(H §7.6) — 최근 NOTICE_DAYS 일 안의 연결만."""
+    out = []
+    for it in items:
+        if it.get("status") != "mapped":
+            continue
+        ev = next((h for h in reversed(it.get("history") or ()) if isinstance(h, dict) and h.get("event") == "mapped"),
+                  None)
+        at = _parse_at((ev or {}).get("at"))
+        if ev is None or ev.get("by") != "registry" or at is None or (now - at).days > NOTICE_DAYS:
+            continue
+        pid = str(ev.get("project") or it.get("mapped_to") or "")
+        name = hx.project(pid)
+        out.append({"proposal_id": it.get("proposal_id"), "project": pid,
+                    "text_ko": f"제안 '{it.get('label')}' → 팀 과제 {pid}" + (f"({name})" if name != pid else "") + " 로 연결됨"})
+    return out
+
+
+def _unapplied(app, hx: _HierRefs, corrections: list) -> list:
+    """미적용 수정(H §11.3) — 지금 결과의 어느 단위업무에도 맞지 않는 수정 기록. 분석과 같은 대응 함수
+    (``lm27.hier.learn.match_units``)를 tasks.json 의 증거 키(첫 근거·경계·문서군·대화)와 군집(groups.json)으로 다시 돈다.
+    분석 뒤에 쓴 기록은 아직 적용 전(다음 분석 대기)이라 넣지 않는다. 분석이 '미적용 0' 이라고 남겼으면 빈 목록."""
+    if not hx.rid or not corrections:
+        return []
+    from lm27.hier.learn import match_units
+    from lm27.pipeline.analyze import read_run_status
+    from lm27.report.inputs import hier_file
+    from lm27.util import fsx
+    try:
+        meta = fsx.read_json(hier_file(app.paths, hx.rid, "hier_meta.json"), None, want=dict) or {}
+        groups = fsx.read_json(hier_file(app.paths, hx.rid, "groups.json"), None, want=dict) or {}
+    except (OSError, ValueError, RuntimeError):
+        meta, groups = {}, {}
+    warns = [str(w) for w in meta.get("warnings") or () if isinstance(w, str)]
+    if meta and not any(w.startswith("unapplied_corrections:") for w in warns):
+        return []
+    st = read_run_status(app.paths, hx.rid) or {}
+    started = _parse_at(st.get("started"))
+    units = {}
+    for uid, t in hx.tasks().items():
+        bk = {c.get(k) for c in t.get("cycles") or () if isinstance(c, dict) for k in ("s_ref", "e_ref")}
+        units[uid] = {"first_key": t.get("first_key") or "", "bkeys": {x for x in bk if isinstance(x, str) and x},
+                      "fams": {k: 1 for k in (t.get("docs") or {}) if isinstance(k, str)},
+                      "convs": {t["conv"]} if isinstance(t.get("conv"), str) and t.get("conv") else set()}
+    group_of = {m: k for k, g in groups.items() if isinstance(g, dict) for m in g.get("members") or ()}
+    out = []
+    for c in corrections:
+        at = _parse_at(c.get("at"))
+        if started is not None and at is not None and at > started:
+            continue
+        if match_units(c, units, group_of):
+            continue
+        tg = c.get("target") if isinstance(c.get("target"), dict) else {}
+        n_keys = len({x for k in ("unit_keys", "fam_keys", "conv_keys", "dir_keys") for x in tg.get(k) or ()} |
+                     ({tg["anchor"]} if tg.get("anchor") else set()) | ({tg["group"]} if tg.get("group") else set()))
+        parts = []
+        for k, v in sorted((c.get("set") or {}).items(), key=lambda kv: SET_FIELDS.index(kv[0]) if kv[0] in SET_FIELDS
+                           else 9):
+            if k == "project":
+                parts.append(f"과제 → {'업무 아님' if v in (None, '', 'NONE', 'UNC') else hx.project(v)}")
+            elif k in _VOCAB_OF:
+                parts.append(f"{SET_KO[k]} → {hx.vocab(k, v)}")
+            elif k == "title":
+                parts.append(f"제목 → '{v}'")
+        out.append({"id": c.get("id"), "date": str(c.get("at") or "")[:10], "set": c.get("set"),
+                    "set_ko": " · ".join(parts) or "—", "n_keys": n_keys})
+    return out
 
 
 def get_hier_state(app, req):
@@ -578,27 +810,20 @@ def get_hier_state(app, req):
         for kind in ("fields", "functions", "activity_types"):
             vocab[kind] = [{"code": c, "name": getattr(it, "name", c) or c} for c, it in (reg.vocab.get(kind) or {}).items()
                            if getattr(it, "status", "active") == "active"]
+    hx = _HierRefs(app, reg)
     q = ProposalQueue.for_paths(app.paths)
-    props = [{"proposal_id": it.get("proposal_id"), "name": it.get("label"), "domain_guess": it.get("domain_guess"),
-              "units": len(it.get("groups") or ()), "first": it.get("first"), "last": it.get("last"),
-              "src": (it.get("sources") or [""])[0] if isinstance(it.get("sources"), list) else "",
-              "state": it.get("status")} for it in q.items]
+    props = [_prop_view(it) for it in q.items]
     lr = load_learned(app.paths)
-    rules = [{"rule_id": r.get("id"), "kind": r.get("kind"), "state": r.get("status"), "hits": r.get("hits", 0),
-              "agree": r.get("agree", 0), "disagree": r.get("disagree", 0)} for r in lr["rules"]]
-    cur = current(app)
-    unapplied, ai_share = [], None
-    if cur:
-        m = model_or_none(app, cur["run_id"], "full") or {}
-        h = (m.get("flags") or {}).get("hier") if isinstance(m.get("flags"), dict) else None
-        if isinstance(h, dict):
-            ai_share = h.get("ai_share")
-    ncor = len(load_corrections(app.paths))
+    rules = [_rule_view(r, reg, hx) for r in lr["rules"] if isinstance(r, dict)]
+    h = (hx.model.get("flags") or {}).get("hier") if isinstance(hx.model.get("flags"), dict) else None
+    ai_share = h.get("ai_share") if isinstance(h, dict) else None
+    corrections = load_corrections(app.paths)
     cn = (reg.codename_review if reg is not None else None) or {}
     return {"registry": regv, "ai_share": ai_share,
             "codename": {"show": bool(cn.get("cands")) and not cn.get("done_at") and not cn.get("skipped"),
                          "skipped": bool(cn.get("skipped")), "cands": list(cn.get("cands") or ())[:30]},
-            "proposals": props, "rules": rules, "unapplied": unapplied, "corrections": ncor, "notices": [],
+            "proposals": props, "rules": rules, "unapplied": _unapplied(app, hx, corrections),
+            "corrections": len(corrections), "notices": _notices(q.items, hx, app.deps.now()),
             "projects": projects, "vocab": vocab}
 
 

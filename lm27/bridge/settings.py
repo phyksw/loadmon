@@ -78,6 +78,8 @@ MENU_SETTLE_S = 0.9
 MENU_REOPEN_S = 1.0
 MENU_PICK_S = 0.7
 WORK_MODE_SETTLE_S = 1.0        # 업무 모드 버튼 클릭 뒤 재확인까지
+FRONT_NUDGE_S = 0.3             # [분석용 Edge 창 앞으로]: 창을 내렸다 되살리는 사이(Windows 가 다른 프로세스 창을 앞으로 못 올릴 때)
+FRONT_CALL_TIMEOUT_S = 5.0      # [분석용 Edge 창 앞으로] CDP 호출 한 번(화면 요청 안에서 끝나야 한다)
 
 TRACE_STR_MAX = 60              # 계측 줄 문자열 값 상한(원문 없음)
 RUNG_REPLY_FLOOR_S = 120        # 사다리 1·2단 답 대기 하한(B §6.7)

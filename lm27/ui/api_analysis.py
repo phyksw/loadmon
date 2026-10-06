@@ -114,12 +114,37 @@ def _today(app):
     return period.today_local(int(app.cfg()["time.tzOffsetMin"]), app.deps.now())
 
 
+def current_view(app, runs: list | None = None) -> dict | None:
+    """머리 띠 재료(R §2.4.3 · RPT-04): current.json + 라벨 출처 수(AI n · 규칙 n — current.json 에는 없다).
+    출처 수는 그 실행의 보고서 모델 ``flags.label_sources``(AI 를 돌리지 않은 실행도 규칙 수가 있다), 모델이 없으면 브리지
+    결과 봉투 수. 분석 시각이 없으면 run_status 의 끝(시작) 시각."""
+    from lm27.ui.api_report import current, model_or_none
+    cur = current(app)
+    if not cur or not _RUN_RX.match(str(cur.get("run_id") or "")):
+        return cur
+    rid = cur["run_id"]
+    out = dict(cur)
+    if not isinstance(out.get("label_sources"), dict):
+        m = model_or_none(app, rid, "full") or {}
+        ls = (m.get("flags") or {}).get("label_sources") if isinstance(m.get("flags"), dict) else None
+        if not isinstance(ls, dict) or not ls:
+            row = next((r for r in runs or () if r.get("run_id") == rid and isinstance(r.get("label_sources"), dict)), None)
+            ls = row["label_sources"] if row else _label_counts(app, rid)
+        out["label_sources"] = ls
+    if not out.get("built_at"):
+        from lm27.report.inputs import analysis_time
+        at = analysis_time(app.paths, rid, int(app.cfg()["time.tzOffsetMin"]))
+        if at:
+            out["built_at"] = at
+    return out
+
+
 def get_runs(app, req):
-    from lm27.ui.api_report import current
     today = _today(app)
     f, t = period.default_range(today)
+    runs = list_runs(app)
     # months 는 이전 기본(최근 n개월, report.defaultRangeMonths)의 값 — 화면은 이제 period(올해 1월 1일 ~ 오늘)를 쓴다
-    return {"runs": list_runs(app), "current": current(app),
+    return {"runs": runs, "current": current_view(app, runs),
             "defaults": {"months": int(app.cfg()["report.defaultRangeMonths"]),
                          "keep": int(app.cfg()["report.analysisKeep"]),
                          "period": {"today": today.isoformat(), "key": period.DEFAULT_KEY, "from": f, "to": t,
@@ -237,6 +262,17 @@ def post_current(app, req):
 
 # ───────────────────────────── 코파일럿(B §10.5) ─────────────────────────────
 def get_bridge_status(app, req):
+    """Copilot 상태 카드: 방식·등급·웹 노출·역할 + 마지막 탐침 한 줄·보정 한도(브리지 상태 파일 — 읽기만)."""
+    from lm27.util import fsx
+    out = _bridge_status(app, req)
+    last = fsx.read_json(app.paths.bridge_probe_last(), None, want=dict) or {}
+    prof = fsx.read_json(app.paths.bridge_profile(), None, want=dict) or {}
+    out["last_probe"] = _probe_view(app, last, prof)
+    out["limits"] = _limits_view(app, app.cfg(), prof)
+    return out
+
+
+def _bridge_status(app, req):
     from lm27.util import fsx
     cfg = app.cfg()
     mode = str(cfg["bridge.mode"])
@@ -248,6 +284,63 @@ def get_bridge_status(app, req):
             "web_exposed": bool(env.get("web_exposed", True)), "recommend": last.get("recommend"),
             "probe_ok": last.get("ok") if isinstance(last.get("ok"), bool) else None,
             "copilot_role": _ai_here(cfg, pc)}
+
+
+# 연결 진단(B §12.2) 결과 → 화면 문구. 막힌 첫 확인 항목의 코드 → 이유
+PROBE_VERDICT = {"auto": "정상 — 자동으로 물을 수 있습니다", "manual": "자동 연결이 막혀 직접 붙여넣기 방식을 권합니다",
+                 "none": "아직 연결하지 못했습니다"}
+PROBE_WHY = {"edge_not_found": "Edge 를 찾지 못함", "policy_blocked": "회사 정책이 Edge 자동 연결을 막음",
+             "policy_blocked_suspect": "회사 정책이 Edge 자동 연결을 막은 것으로 보임", "lock_busy": "다른 작업이 Edge 창을 쓰는 중",
+             "port_exhausted": "디버그 포트를 잡지 못함", "launch_failed": "Edge 를 띄우지 못함",
+             "profile_busy": "전용 프로필이 다른 Edge 창에서 열려 있음", "tab_lost": "Copilot 탭을 잃음",
+             "login_required": "로그인 필요 — [분석용 Edge 창 앞으로]에서 한 번 로그인", "input_not_found": "Copilot 입력창을 찾지 못함",
+             "no_input": "Copilot 입력창을 찾지 못함", "stub_env_set": "시험 모드", "web_mode": "웹 모드(업무 모드 아님)",
+             "basic": "기본 등급 계정", "calib_none": "입출력 한도 보정값 없음"}
+
+
+def _short_ts(app, s) -> str:
+    """'…Z'·로컬 ISO → 근무 시간대 'MM-DD HH:MM'(모르면 '')."""
+    v = _local_ts(app, s)
+    return f"{v[5:10]} {v[11:16]}" if isinstance(v, str) and len(v) >= 16 and v[10] == "T" else ""
+
+
+def _probe_view(app, last: dict, prof: dict) -> dict | None:
+    """마지막 탐침(``probe_last.json`` — {ok, recommend, checks[]} + ``bridge_profile.health.last_probe`` 시각) → 화면 한 줄."""
+    if not isinstance(last, dict) or not last.get("recommend"):
+        return None
+    at = (prof.get("health") or {}).get("last_probe") if isinstance(prof.get("health"), dict) else None
+    rec = str(last.get("recommend") or "")
+    bad = next((c for c in last.get("checks") or () if isinstance(c, dict) and not c.get("ok")), None)
+    why = PROBE_WHY.get(str((bad or {}).get("code") or ""), str((bad or {}).get("code") or "")) if bad else ""
+    when = _short_ts(app, at)
+    text = (when + " · " if when else "") + PROBE_VERDICT.get(rec, "결과 미상") + (f"({why})" if why and rec != "auto" else "")
+    return {"at": _local_ts(app, at) if at else None, "ok": last.get("ok") is True, "recommend": rec, "text_ko": text}
+
+
+def _limits_view(app, cfg, prof: dict) -> dict | None:
+    """보정 한도(B §7.14 ``bridge_profile.calibration``) — 지금 프로필의 최신 보정값(빠른 모델 우선). 유효 기간이 지났으면 stale."""
+    from datetime import date
+
+    from lm27.util import fsx
+    try:
+        pid = fsx.read_bytes(app.paths.bridge_profile_id()).decode("utf-8", "replace").strip()
+    except OSError:
+        pid = ""
+    ents = [e for e in prof.get("calibration") or () if isinstance(e, dict) and isinstance(e.get("input_limit"), int)
+            and isinstance(e.get("output_limit"), int)]
+    mine = [e for e in ents if pid and str(e.get("profile_id") or "") == pid] or ents
+    if not mine:
+        return None
+    fast = str(cfg["bridge.modelFast"])
+    e = max(mine, key=lambda x: (str(x.get("model") or "") == fast, str(x.get("date") or "")))
+    stale = False
+    try:
+        stale = (app.deps.now().date() - date.fromisoformat(str(e.get("date"))[:10])).days > int(cfg["bridge.calibrateTtlDays"])
+    except ValueError:
+        stale = True
+    return {"in": int(e["input_limit"]), "out": int(e["output_limit"]), "pack_in": e.get("pack_in"),
+            "pack_out": e.get("pack_out"), "date": str(e.get("date") or ""), "model": str(e.get("model") or ""),
+            "stale": stale}
 
 
 def _ai_here(cfg, pc) -> bool:
@@ -262,17 +355,37 @@ def _manifest(app):
     return Manifest(app.paths, default_clock())
 
 
+# 직접 붙여넣기 묶음 상태(B §10 manifest)·반입 결과(B §7.11 상태) → 화면 이름
+MANUAL_STATE_KO = {"open": "답 기다림", "answered": "답 반영함", "expired": "기간 지남", "superseded": "새 묶음으로 대체됨"}
+IMPORT_STATUS_KO = {"ok": "반영", "partial": "일부 반영", "truncated": "잘림(다시 물음)", "echo": "질문을 되풀이함",
+                    "format": "형식 오류", "empty": "빈 답", "service_error": "서비스 오류", "timeout": "시간 초과",
+                    "refusal": "답 거절", "transport_fatal": "전송 실패"}
+IMPORT_ERROR_KO = {"BR-MANUAL-NOENV": "붙여넣은 글에서 답(요청 번호가 든 JSON 블록)을 찾지 못했습니다 — Copilot 답 전체를 복사해 주세요"}
+
+
+def _stage_names() -> dict:
+    """브리지 단계 id → 한국어 제목(단계 등록부 ``title_ko`` — 단일원). 등록부를 읽지 못하면 빈 표."""
+    from lm27.bridge import runner
+    try:
+        return {s.id: str(getattr(s, "title_ko", "") or s.id) for s in runner.resolve_specs(None)}
+    except (LookupError, AttributeError):
+        return {}
+
+
 def get_manual(app, req):
     try:
         mf = _manifest(app)
     except (OSError, ValueError):
         return {"batches": [], "open": 0}
+    names = _stage_names()
     rows = []
     for b in mf.batches:
         if b.get("state") != "open":
             continue
-        rows.append({"seq": b.get("seq"), "stage": b.get("stage"), "items": len(b.get("items") or ()),
-                     "in_chars": b.get("in_chars"), "state": b.get("state"), "created": b.get("created")})
+        n = len(b.get("items") or ())
+        rows.append({"seq": b.get("seq"), "stage": b.get("stage"), "stage_ko": names.get(b.get("stage"), b.get("stage")),
+                     "items": n, "items_n": n, "in_chars": b.get("in_chars"), "state": b.get("state"),
+                     "state_ko": MANUAL_STATE_KO.get(b.get("state"), b.get("state")), "created": b.get("created")})
     rows.sort(key=lambda r: int(r.get("seq") or 0))
     return {"batches": rows, "open": len(rows)}
 
@@ -309,16 +422,52 @@ def post_manual_import(app, req):
         runner.close_runtime(rt)
     keep = ("error", "open", "committed", "retry", "rc")
     out = {k: rep.get(k) for k in keep if k in rep}
-    out["results"] = [{k: r.get(k) for k in ("stage", "seq", "status", "committed", "retry") if k in r}
-                      for r in rep.get("results") or () if isinstance(r, dict)]
+    names = _stage_names()
+    results = []
+    for r in rep.get("results") or ():
+        if not isinstance(r, dict):
+            continue
+        x = {k: r.get(k) for k in ("rid", "stage", "seq", "status", "ok", "retry", "was") if k in r}
+        x["stage_ko"] = names.get(r.get("stage"), r.get("stage"))
+        x["status_ko"] = IMPORT_STATUS_KO.get(r.get("status"), r.get("status"))
+        x["counts_ko"] = f"반영 {int(r.get('ok') or 0)} · 다시 물음 {int(r.get('retry') or 0)}"
+        results.append(x)
+    out["results"] = results
     out["rejected"] = len(rep.get("rejected") or ())
     out["ok"] = rep.get("rc") != 1
+    if rep.get("error"):
+        out["text_ko"] = IMPORT_ERROR_KO.get(rep["error"], "답을 반입하지 못했습니다")
+    elif results:
+        out["text_ko"] = (f"답 {len(results)}묶음을 반입했습니다(반영 {int(rep.get('committed') or 0)} · 다시 물음 "
+                          f"{int(rep.get('retry') or 0)}) — 남은 묶음 {int(rep.get('open') or 0)}개")
+    elif out["rejected"]:
+        out["text_ko"] = "이미 반영했거나 목록에 없는 요청 번호의 답이라 반입하지 않았습니다"
     return out
 
 
+# [분석용 Edge 창 앞으로] 결과 → 문구·상태(R §5.3 · B §10.5). 사람에게 시키는 일은 로그인 한 번뿐(§5.0.4)
+FRONT_OK = {"front": "분석용 Edge 창을 앞으로 가져왔습니다 — 로그인이 필요하면 그 창에서 회사 계정으로 한 번 로그인해 주세요",
+            "launched": "분석용 Edge 창을 새로 열었습니다 — 그 창에서 회사 계정으로 한 번 로그인해 주세요(Outlook 웹·Teams 웹·Copilot "
+                        "이 같은 로그인을 씁니다). 로그인을 마치면 창을 닫아도 됩니다"}
+FRONT_FAIL = {"edge_not_found": (409, "Edge 를 찾지 못했습니다 — Microsoft Edge 가 설치돼 있어야 분석용 창을 열 수 있습니다"),
+              "policy_blocked": (409, "회사 정책이 Edge 자동 연결을 막아 분석용 창을 열지 못했습니다 — Copilot 은 직접 붙여넣기 방식으로 "
+                                      "쓸 수 있습니다"),
+              "profile_busy": (409, "분석용 Edge 프로필이 다른 Edge 창에서 열려 있습니다 — 작업 표시줄의 Edge 창을 확인해 주세요"),
+              "lock_busy": (409, "다른 작업(분석·수집)이 분석용 Edge 창을 여는 중입니다 — 잠시 뒤 다시 눌러 주세요"),
+              "port_exhausted": (409, "Edge 연결 포트를 잡지 못했습니다 — 잠시 뒤 다시 눌러 주세요"),
+              "launch_failed": (500, "분석용 Edge 창을 띄우지 못했습니다 — 잠시 뒤 다시 눌러 주세요")}
+
+
 def post_front(app, req):
-    raise ApiError(409, "no_window", "분석용 Edge 창이 지금 열려 있지 않습니다 — AI 분석을 실행하면 그 창이 뜨고, 로그인이 "
-                   "필요하면 그 창에서 한 번 로그인하면 이어서 합니다")
+    """분석용 Edge 창(브리지 전용 프로필 — Outlook 웹·Teams 웹·Copilot 공용) 앞으로. 떠 있으면 앞으로, 없으면 띄워 Microsoft 365
+    로그인 화면을 연다(사람이 한 번 로그인). 자격 증명은 다루지 않는다."""
+    r = app.deps.bridge_front(app.cfg())
+    st = str((r or {}).get("state") or "")
+    if st in FRONT_OK:
+        return {"ok": True, "state": st, "port": (r or {}).get("port"), "restored": bool((r or {}).get("restored")),
+                "text_ko": FRONT_OK[st]}
+    code, msg = FRONT_FAIL.get(st, (500, "분석용 Edge 창을 앞으로 가져오지 못했습니다 — 잠시 뒤 다시 눌러 주세요"))
+    raise ApiError(code, st or "front_failed", msg)
 
 
 ROUTES = (("GET", r"/api/analysis/runs", get_runs),

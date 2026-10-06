@@ -183,6 +183,12 @@ class UiDeps:
         from lm27.team.client import hello
         return hello(base, timeout)
 
+    def bridge_front(self, cfg) -> dict:
+        """[분석용 Edge 창 앞으로] — 브리지 전용 프로필 Edge 창을 앞으로(떠 있지 않으면 브리지와 같은 방식으로 띄워 Microsoft
+        365 로그인 화면). 사람 대신 로그인하지 않는다(``lm27.bridge.session.front_window``)."""
+        from lm27.bridge.session import front_window
+        return front_window(self.paths, cfg=cfg)
+
     def spawn_detached(self, argv):
         """분리 프로세스(팀 서버) — 창 없이, 표준 입출력 없이, 작업 폴더 %TEMP%. 화면이 꺼져도 산다."""
         import tempfile

@@ -405,18 +405,29 @@ class FakeTabCDP:
 
 
 class FakeBrowserCDP:
-    """브라우저 대상 가짜 CDP(``Browser.close`` 만)."""
+    """브라우저 대상 가짜 CDP(``Browser.close`` · 판 · 창 상태 — 창 하나, ``browser.window_state``)."""
 
     def __init__(self, browser):
         self.browser = browser
         self.closed = False
 
     def call(self, method, params=None, timeout=25.0):
+        if method not in ALLOWED_METHODS:
+            raise ValueError(f"허용하지 않는 CDP 메서드 {method}")
         if method == "Browser.close":
             self.browser.close_by_cdp()
             return {}
         if method == "Browser.getVersion":
             return {"product": "Edg/129.0.2792.65"}
+        if method == "Browser.getWindowForTarget":
+            if not any(t.id == (params or {}).get("targetId") for t in self.browser.tabs):
+                raise CdpError("CDP Browser.getWindowForTarget: No target with given id")
+            return {"windowId": 1, "bounds": {"windowState": self.browser.window_state}}
+        if method == "Browser.setWindowBounds":
+            st = ((params or {}).get("bounds") or {}).get("windowState")
+            self.browser.window_state = st
+            self.browser.window_log.append(st)
+            return {}
         raise CdpError(f"CDP {method}: fake 미지원")
 
     def eval(self, expr, timeout=25.0):

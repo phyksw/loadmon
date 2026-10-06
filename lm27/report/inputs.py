@@ -47,6 +47,7 @@ __all__ = [
     "PathsMethodMissing",
     "ReportInputs",
     "TimeFiles",
+    "analysis_time",
     "hier_file",
     "load_evidence_index",
     "load_inputs",
@@ -63,6 +64,7 @@ TIME_FILES = {"env_slots": "env_slots.jsonl", "day_ledger": "day_ledger.jsonl",
 REQUIRED_TIME = ("env_slots", "tasks", "team_tables", "mm_month", "run_meta")     # 없으면 보고서 거부(R §2.5)
 PARTIAL_TIME = ("day_ledger", "interval_ledger", "attrib", "queue")                # 없으면 만들되 경고(rc 2)
 HIER_FILES = ("labels.json", "groups.json", "queue.json", "hier_meta.json", "proposals_snapshot.json")
+TAGS_FILE = "evidence_tags.jsonl"                 # 분류 증거 꼬리표(레코드 id → 과제) — 회의 레코드 몫만 읽는다
 AI_STAGES = ("workflow_label", "agentic_match", "subagent_review", "review_text")
 MISSING = "missing"
 _WANT = {"tasks": list, "team_tables": dict, "mm_month": list, "queue": list, "run_meta": dict}
@@ -392,6 +394,28 @@ def _period(inp: ReportInputs, paths) -> None:
     inp.digests["run"] = sha16(fsx.canon_bytes({k: run.get(k) for k in sorted(run)}))
 
 
+def analysis_time(paths, run_id: str, off_min: int) -> str | None:
+    """그 실행의 분석 시각(근무 시간대 ISO 8601 + 오프셋) — run_status 의 끝 시각(없으면 시작), 둘 다 없으면 current.json
+    의 built_at(같은 실행일 때). 머리 띠 '분석 MM-DD HH:MM' 과 분석 이력 표의 '분석 시각' 이 같은 값을 쓴다. 모델 파일에는
+    넣지 않는다(G-R1 — 같은 입력 = 같은 모델 바이트). 화면 응답·자기완결 HTML 섬에만 덧붙인다. 모르면 None."""
+    fn = getattr(paths, "run_status_file", None)
+    st = fsx.read_json(fn(run_id), None, want=dict) if fn is not None and _RUN_RX.match(str(run_id)) else None
+    for k in ("ended", "started"):
+        v = st.get(k) if isinstance(st, Mapping) else None
+        if isinstance(v, str) and v:
+            if not v.endswith("Z"):
+                return v
+            from lm27.util.tz import to_local
+            try:
+                return to_local(v, int(off_min)).isoformat(timespec="seconds")
+            except (TypeError, ValueError):
+                continue
+    cur = fsx.read_json(paths.analysis_current(), None, want=dict)
+    if isinstance(cur, Mapping) and cur.get("run_id") == run_id and isinstance(cur.get("built_at"), str):
+        return cur["built_at"]
+    return None
+
+
 def tz_offset_of(inp: ReportInputs, cfg=None) -> int:
     """근무 시간대 오프셋(분) — run_meta.as_of 의 꼬리(+09:00), 없으면 설정 `time.tzOffsetMin`."""
     if inp.as_of:
@@ -486,6 +510,28 @@ def _load_evidence(inp: ReportInputs, paths, cfg, evidence) -> None:
         inp.warn("evidence_empty", "이 PC 의 번들에서 근거 기록을 찾지 못했습니다 — 동료 관계는 시간 결과를 그대로 씁니다")
 
 
+def _load_meet_tags(inp: ReportInputs, paths) -> None:
+    """회의 레코드의 분류 꼬리표(``hier\\evidence_tags.jsonl`` 의 ``{id, proj}`` — 규칙이 그 회의 제목·시리즈를 과제 키워드와
+    맞춘 결과) → ``inp.hier['meet_tags']`` {회의 레코드 id: 과제}. 업무 트리 과제 행의 '관련 미귀속 회의 …(MM 미포함)' 주석
+    재료(R §6.3.1). 증거(회의 목록)가 없거나 파일이 없으면 빈 값. 과제 꼬리표가 없는 줄은 풀지 않고 넘긴다(큰 파일)."""
+    ev = inp.evidence
+    meets = {str(_g(m, "id", "") or "") for m in (ev.meets if ev is not None else ())} - {""}
+    tags: dict[str, str] = {}
+    if meets:
+        raw, _err = _raw(hier_file(paths, inp.run_id, TAGS_FILE))
+        for ln in (raw or b"").splitlines():
+            if b'"proj":null' in ln or b'"proj"' not in ln:
+                continue
+            try:
+                r = fsx.loads_strict(ln)
+            except ValueError:
+                continue
+            if isinstance(r, Mapping) and str(r.get("id") or "") in meets and isinstance(r.get("proj"), str) and r["proj"]:
+                tags[str(r["id"])] = r["proj"]
+    inp.hier = {**(inp.hier or {}), "meet_tags": dict(sorted(tags.items()))}
+    inp.digests["meet_tags"] = sha16(fsx.canon_bytes(inp.hier["meet_tags"])) if tags else MISSING
+
+
 def _load_local(inp: ReportInputs, paths) -> None:
     pd = _load(inp, "person_dir", paths.local_only_file("person_dir.json"), want=dict)
     inp.person_dir = pd if isinstance(pd, Mapping) and isinstance(pd.get("people"), Mapping) else None
@@ -542,6 +588,7 @@ def load_inputs(run_id: str, *, paths=None, cfg=None, registry=None, cal=None, e
     _period(inp, paths)
     if not inp.refused:
         _load_evidence(inp, paths, cfg, evidence)
+        _load_meet_tags(inp, paths)
     else:
         inp.digests["evidence"] = MISSING
     if bundle_state:

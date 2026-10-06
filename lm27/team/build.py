@@ -44,7 +44,7 @@ from lm27.team import schema as S
 from lm27.util import fsx
 
 __all__ = ["BuildEnv", "BuildFailed", "BuildRefused", "FREE_TEXT_FIELDS", "OVERRIDES_SCHEMA", "TextCtx",
-           "build_and_queue", "build_team_bundle", "drop_need", "load_env", "load_overrides", "pepper_of",
+           "build_and_queue", "build_team_bundle", "drop_need", "keep_need", "load_env", "load_overrides", "pepper_of",
            "registry_cache", "set_mask", "size_blockers"]
 
 SCHEMA_VERSION = f"{S.SCHEMA_MAJOR}.{S.SCHEMA_MINOR}"
@@ -1219,3 +1219,12 @@ def drop_need(paths, need_id) -> dict:
     changed = _edit_overrides(paths, "needs", need_id, "drop")
     return {"rc": 0 if changed else 4, "need_id": need_id,
             "message": "다음 묶음부터 이 니즈를 빼고 보냅니다" if changed else "이미 빼 두었습니다"}
+
+
+def keep_need(paths, need_id) -> dict:
+    """``drop_need`` 되돌리기 — 그 니즈를 다시 팀에 올린다(가림 기록에서 지움, 다음 빌드부터). rc 0 바뀜 · 4 그대로 · 1 형식."""
+    if not isinstance(need_id, str) or not _NEED_RX.fullmatch(need_id):
+        return {"rc": 1, "message": "니즈 ID 형식이 아닙니다(n_ + 16진 6자리)"}
+    changed = _edit_overrides(paths, "needs", need_id, None)
+    return {"rc": 0 if changed else 4, "need_id": need_id,
+            "message": "다음 묶음부터 이 니즈를 다시 팀에 올립니다" if changed else "이미 팀에 올리는 니즈입니다"}

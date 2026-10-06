@@ -139,6 +139,11 @@ class FakeDeps(_ui_deps_base()):
         self.detached_argv = list(argv)
         return FakeChild(getattr(self, "detached_rc", None))
 
+    def bridge_front(self, cfg):
+        """[분석용 Edge 창 앞으로] — 시험에서는 Edge 를 띄우지 않는다. ``front_result`` 를 돌려주고 부른 횟수만 센다."""
+        self.front_calls = getattr(self, "front_calls", 0) + 1
+        return dict(getattr(self, "front_result", None) or {"state": "edge_not_found"})
+
 
 class FakeChild:
     def __init__(self, rc=None):

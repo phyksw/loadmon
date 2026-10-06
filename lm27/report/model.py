@@ -467,8 +467,55 @@ def _units(ctx, wf: Mapping, refs: Refs, pidx, docsets: Mapping, inp, queue_by_u
             "apps_unknown_min": sum(m for a, m in apps if a.startswith(UNKNOWN_PREFIX)),
             "docs": docs, "queue": sorted(queue_by_unit.get(u.unit_id, ())),
             "label_src": dict(_g(lab, "src", {}) or {}), "label_conf": dict(_g(lab, "conf", {}) or {}),
-            "why": [str(x) for x in (_g(lab, "why", ()) or ())]})
+            "why": [str(x) for x in (_g(lab, "why", ()) or ())], "cands": _cands(lab)})
     return out
+
+
+def _cands(lab) -> list[list]:
+    """[왜?] 과제 후보(R §6.11 ⑦) — 분류 규칙 점수 상위 3 `[[과제 키, 점수]]`(labels.json `cands`). 로컬 전용(가림판 허용
+    목록 밖)."""
+    out = []
+    for c in list(_g(lab, "cands", ()) or ())[:3]:
+        if isinstance(c, (list, tuple)) and len(c) >= 2 and isinstance(c[0], str) and c[0] \
+                and isinstance(c[1], (int, float)) and not isinstance(c[1], bool):
+            out.append([c[0], F.half_up(c[1], 3)])
+    return out
+
+
+def _unattr_meet(inp, reg) -> dict[str, int]:
+    """과제 키 → 관련 미귀속 회의 분(R §6.3.1 업무 트리 주석 'MM 미포함'): 분류 규칙이 그 과제로 꼬리표를 붙인 회의
+    (`inputs.meet_tags` — 회의 제목·시리즈가 레지스트리 과제 키워드와 맞음)의 슬롯 중 미귀속 회의 버킷(B_MEET)으로 간 초를
+    분으로. 시간 코어 귀속 행을 읽기만 한다 — MM·과제 투입에는 더하지 않는다. 예약 과제(영역 일반)는 주석을 달지 않는다."""
+    tags = (inp.hier or {}).get("meet_tags") or {}
+    ev = inp.evidence
+    if not tags or ev is None:
+        return {}
+    from lm27.hier.vocab import is_reserved_id
+    from lm27.time.calendar import SLOT
+    meet_sec: dict[int, int] = defaultdict(int)
+    for r in inp.time.attrib or ():
+        if str(_g(r, "target", "")) != "B_MEET":
+            continue
+        try:
+            slot, sec = int(_g(r, "slot")), int(_g(r, "sec", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if sec > 0:
+            meet_sec[slot] += sec
+    if not meet_sec:
+        return {}
+    slots: dict[str, set] = defaultdict(set)
+    for mt in ev.meets or ():
+        p = tags.get(str(_g(mt, "id", "") or ""))
+        a, b = _g(mt, "a"), _g(mt, "b")
+        if not p or is_reserved_id(p) or not isinstance(a, int) or not isinstance(b, int) or b <= a:
+            continue
+        if p.startswith("L-"):                       # 개인 과제는 트리에서 그 제안 ID 자리(H §12.3 role_slot)
+            p = str(_g(_reg_project(reg, p), "proposal_id", "") or p)
+        for k in range(a // SLOT, (b - 1) // SLOT + 1):
+            if k in meet_sec:
+                slots[p].add(k)
+    return {p: F.sec_min(sum(meet_sec[k] for k in ks)) for p, ks in sorted(slots.items()) if ks}
 
 
 def _bottleneck_text(rw) -> str:
@@ -480,9 +527,11 @@ def _bottleneck_text(rw) -> str:
     return "|".join(f"{b['kind']}:{b['no']}" for b in rw.get("bottlenecks", ()))
 
 
-def _tree(ctx, wf: Mapping, months: list[dict], units: list[dict]) -> dict:
-    """업무 트리 보조 정보(R §9.2.1 tree — 영역 → 과제 → 역할, 근무 중 미분류 + 버킷 5종). 과제 없음 = 노드 키 '-'."""
+def _tree(ctx, wf: Mapping, months: list[dict], units: list[dict], unattr_meet: Mapping | None = None) -> dict:
+    """업무 트리 보조 정보(R §9.2.1 tree — 영역 → 과제 → 역할, 근무 중 미분류 + 버킷 5종). 과제 없음 = 노드 키 '-'.
+    과제 노드의 `unattr_meet_min` = 관련 미귀속 회의 분(MM 미포함 주석 — `_unattr_meet`, 있을 때만)."""
     ms = [m["m"] for m in months]
+    meet = unattr_meet or {}
 
     def stat(us):
         bm = {m: sum(int(u["by_month"].get(m, 0)) for u in us) for m in ms}
@@ -511,6 +560,8 @@ def _tree(ctx, wf: Mapping, months: list[dict], units: list[dict]) -> dict:
                 nodes[rid] = {"level": "role", "parent": pn, "children": [u["unit_id"] for u in rus],
                               "bottleneck": _bottleneck_text(wf.get("roles", {}).get(rid)), **stat(rus)}
             nodes[pn] = {"level": "project", "parent": dc, "children": rids, **stat(pus)}
+            if int(meet.get(pk, 0) or 0) > 0:
+                nodes[pn]["unattr_meet_min"] = int(meet[pk])
             pkeys.append((pn, nodes[pn]["min_total"]))
         dus = [u for roles in projs.values() for us in roles.values() for u in us]
         nodes[dc] = {"level": "domain", "children": [k for k, _m in sorted(pkeys, key=lambda p: (-p[1], p[0]))], **stat(dus)}
@@ -756,7 +807,7 @@ def build_model(inp, cfg, *, cal=None, ctx=None, fallback=None) -> dict:
                       if str(p.get("proposal_id")) in {u.proposal_id for u in ctx.units.values()}],
         "roles": _roles(ctx, reg),
         "units": units,
-        "tree": _tree(ctx, sec["workflows"], months, units),
+        "tree": _tree(ctx, sec["workflows"], months, units, _unattr_meet(inp, reg)),
         "workflows": _workflows(sec["workflows"], refs, reg),
         "reviews": {"weeks": _review_rows(sec["reviews"].get("weeks", ()), refs, rank, res),
                     "months": _review_rows(sec["reviews"].get("months", ()), refs, rank, res)},

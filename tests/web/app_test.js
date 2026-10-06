@@ -933,6 +933,122 @@ scenario("R §11 자료 형이 다르면 그 카드·그 절만 멈춘다 — �
   });
 });
 
+scenario("분석 화면 Copilot 카드·직접 붙여넣기 — 마지막 탐침·보정 한도·[분석용 Edge 창 앞으로] 서버 문구·항목 수·반입 결과(B14·B15)", function () {
+  var routes = baseRoutes(fixture("report_model.json"));
+  routes["GET /api/hello"].pc.ai_here = true;
+  routes["GET /api/bridge/status"] = {mode: "auto", mode_ko: "자동", tier: "premium", web_exposed: false, copilot_role: true,
+    last_probe: {at: "2026-10-05T09:12:00+09:00", ok: true, recommend: "auto", text_ko: "10-05 09:12 · 정상 — 자동으로 물을 수 있습니다"},
+    limits: {"in": 8200, out: 6100, date: "2026-10-01", stale: false}};
+  routes["GET /api/bridge/manual"] = {open: 1, batches: [{seq: 3, stage: "task_label", stage_ko: "단위업무 이름·과제/역할 고르기", items: 12, items_n: 12,
+    in_chars: 8150, state: "open", state_ko: "답 기다림"}]};
+  routes["POST /api/bridge/front"] = {ok: true, state: "launched", text_ko: "분석용 Edge 창을 새로 열었습니다 — 그 창에서 회사 계정으로 한 번 로그인해 주세요"};
+  routes["POST /api/bridge/manual/import"] = {ok: true, rc: 0, open: 0, committed: 12, retry: 0, rejected: 0,
+    results: [{rid: "R2ABCD", stage: "task_label", stage_ko: "단위업무 이름·과제/역할 고르기", status: "ok", status_ko: "반영", ok: 12, retry: 0,
+      counts_ko: "반영 12 · 다시 물음 0"}], text_ko: "답 1묶음을 반입했습니다(반영 12 · 다시 물음 0) — 남은 묶음 0개"};
+  var c = bootApp(routes, "#analysis");
+  return settle().then(function () {
+    var cp = text(c.doc.getElementById("card-copilot"));
+    assert.ok(cp.indexOf("마지막 탐침: 10-05 09:12 · 정상") >= 0, "마지막 탐침");
+    assert.ok(cp.indexOf("보정 한도: 입력 8200자 · 답 6100자(2026-10-01 측정)") >= 0, "보정 한도");
+    var mp = text(c.doc.getElementById("card-manual"));
+    assert.ok(mp.indexOf("단위업무 이름·과제/역할 고르기") >= 0 && mp.indexOf("답 기다림") >= 0, "단계·상태 이름(코드 아님)");
+    var cells = byTag(c.doc.getElementById("card-manual"), "td").map(text);
+    assert.ok(cells.indexOf("12") >= 0 && cells.indexOf("8150") >= 0, "항목 수 12(정수 items)·글자 수");
+    fire(byAct(c.main, "a-front")[0], "click");
+    return settle();
+  }).then(function () {
+    assert.deepStrictEqual(c.srv.last("POST", "/api/bridge/front").body, {});
+    assert.ok(text(c.doc.getElementById("card-copilot")).indexOf("분석용 Edge 창을 새로 열었습니다") >= 0, "서버 문구");
+    c.doc.getElementById("mp-answer").value = "```json\n{}\n```";
+    fire(byAct(c.main, "a-import")[0], "click");
+    return settle();
+  }).then(function () {
+    var mp = text(c.doc.getElementById("card-manual"));
+    assert.ok(mp.indexOf("R2ABCD") >= 0 && mp.indexOf("반영 12 · 다시 물음 0") >= 0, "반입 결과 요청 번호·건수");
+  });
+});
+
+scenario("머리 띠·홈 타일 — current.json 에 없는 라벨 출처는 이력 줄에서·AI 비어 있음 안내·초과 근무 기준(B7·B16)", function () {
+  var routes = baseRoutes(fixture("report_model.json"));
+  var runs = routes["GET /api/analysis/runs"];
+  runs.current = {run_id: "20261005-101500-3fa2", from: "2026-08-01", to: "2026-09-30", as_of: "2026-09-30T18:00", built_at: "2026-10-05T10:15:00+09:00",
+    chosen: "auto", period_source: "default", period_months: 3};
+  routes["GET /api/home"].analysis.kpi.ot_basis = "daily8h";
+  var c = bootApp(routes, "#home");
+  var c2 = null;
+  return settle().then(function () {
+    var band = text(c.doc.getElementById("lm27-band"));
+    assert.ok(band.indexOf("분석 10-05 10:15(자동 선택)") >= 0 && band.indexOf("AI 6 · 규칙 2") >= 0, "띠: 분석 시각 + AI·규칙 수 " + band);
+    assert.ok(text(c.doc.getElementById("card-analysis")).indexOf("일 8시간 초과 기준") >= 0, "초과 근무 타일 기준 = mm.overtimeBasis");
+    var r2 = baseRoutes(fixture("report_model.json"));
+    r2["GET /api/analysis/runs"].current = {run_id: "20261005-101500-3fa2", from: "2026-08-01", to: "2026-09-30", as_of: "2026-09-30T18:00",
+      built_at: "2026-10-05T10:15:00+09:00", chosen: "auto", label_sources: {task_label: {ai: 0, manual: 0, rule: 9, user: 0},
+        workflow_label: {ai: 0, manual: 0, rule: 3}}};
+    c2 = bootApp(r2, "#home");
+    return settle();
+  }).then(function () {
+    var band = text(c2.doc.getElementById("lm27-band"));
+    assert.ok(band.indexOf("AI 0 · 규칙 12") >= 0, "서버가 준 라벨 출처(모델 flags.label_sources)");
+    assert.ok(band.indexOf("AI 라벨이 절반 넘게 비어 있습니다") >= 0, "AI 비어 있음 안내");
+    assert.ok(text(c2.doc.getElementById("card-analysis")).indexOf("근무창 밖 기준") >= 0, "기본 기준 window");
+  });
+});
+
+scenario("분류 절(앱)·니즈 — 제안 이름표·규칙 조건/결과·미적용 수정·알림·[내 과제로 받기] 폼·[팀에 올리기] 되돌리기(B10·B11·B13)", function () {
+  var model = fixture("report_model.json");
+  model.agentic.needs[0].dropped = true;
+  var routes = baseRoutes(model);
+  var hs = routes["GET /api/hier/state"];
+  hs.proposals = [{proposal_id: "pr_3", name: "과제C", domain_guess: "MP", units: 2, effort_min: 300, first: "2026-09-01", last: "2026-09-20",
+    src: "task_label", src_ko: "AI", state: "pending", state_ko: "검토 대기"},
+    {proposal_id: "pr_4", name: "과제D", domain_guess: "DEV", units: 1, effort_min: 60, src: "bootstrap", src_ko: "부트스트랩", state: "mapped",
+      state_ko: "팀 과제로 연결됨", mapped_to: "P-0021"}];
+  hs.rules = [{rule_id: "LT-0a1b2c3d", kind: "token", kind_ko: "낱말", cond: "'방열' 낱말", result: "과제A", state: "active", state_ko: "켜짐",
+    hits: 4, agree: 3, disagree: 1}];
+  hs.unapplied = [{id: "c_01", date: "2026-09-02", set_ko: "과제 → 과제A", n_keys: 3}];
+  hs.notices = [{text_ko: "제안 '과제D' → 팀 과제 P-0021 로 연결됨"}];
+  routes["POST /api/hier/proposal"] = {ok: true, project: "L-0001"};
+  routes["POST /api/agentic/need/drop"] = {ok: true, dropped: false, changed: true};
+  var c = bootApp(routes, "#report/hier");
+  return settle().then(function () {
+    var t = text(c.main);
+    ["검토 대기", "부트스트랩", "5.0h", "'방열' 낱말", "켜짐", "4 · 3 · 1", "과제 → 과제A", "제안 '과제D' → 팀 과제 P-0021 로 연결됨"].forEach(function (w) {
+      assert.ok(t.indexOf(w) >= 0, "분류 절 " + w);
+    });
+    assert.strictEqual(byAct(c.main, "r-prop", "pr_4|accept").length, 0, "연결된 제안은 처리 버튼 없음");
+    fire(byAct(c.main, "r-prop", "pr_3|accept")[0], "click");
+    var dr = c.doc.body.all().filter(function (n) { return n.getAttribute("role") === "dialog"; })[0];
+    assert.strictEqual(c.doc.getElementById("r-pr-domain").value, "MP", "영역 = 제안의 추정 영역");
+    c.doc.getElementById("r-pr-words").value = "방열, 열해석";
+    fire(byAct(dr, "r-form-ok")[0], "click");
+    return settle();
+  }).then(function () {
+    assert.deepStrictEqual(c.srv.last("POST", "/api/hier/proposal").body, {proposal_id: "pr_3", action: "accept", domain: "MP", keywords: ["방열", "열해석"]});
+    return go(c, "#report/agentic");
+  }).then(function () {
+    var b = byAct(c.main, "r-need", "n_1a2b3c")[0];
+    assert.ok(text(b).indexOf("팀에 올리기") >= 0, "뺀 니즈는 [팀에 올리기]");
+    fire(b, "click");
+    return settle();
+  }).then(function () {
+    assert.deepStrictEqual(c.srv.last("POST", "/api/agentic/need/drop").body, {need_id: "n_1a2b3c", drop: false});
+    assert.ok(text(c.main).indexOf("이 니즈를 다시 팀에 올립니다") >= 0);
+    assert.ok(text(byAct(c.main, "r-need", "n_1a2b3c")[0]).indexOf("팀에 올리지 않기") >= 0, "되돌린 뒤 버튼");
+    routes["POST /api/hier/correction"] = {ok: true};
+    return go(c, "#report/tree/u_a1a1a1a1a1");
+  }).then(function () {
+    fire(byAct(c.doc.getElementById("r-panel"), "r-fix", "u_a1a1a1a1a1")[0], "click");
+    c.doc.getElementById("r-fix-project").value = "P-0012";
+    c.doc.getElementById("r-fix-scope").value = "this";
+    var dr = c.doc.body.all().filter(function (n) { return n.getAttribute("role") === "dialog"; })[0];
+    fire(byAct(dr, "r-form-ok")[0], "click");
+    return settle();
+  }).then(function () {
+    assert.deepStrictEqual(c.srv.last("POST", "/api/hier/correction").body, {unit_id: "u_a1a1a1a1a1", set: {project: "P-0012"}, scope: "this"},
+      "범위 '이 업무만'(서랍을 닫기 전에 읽음)");
+  });
+});
+
 function runScenarios() {
   var out = {};
   var p = Promise.resolve();
@@ -1122,6 +1238,80 @@ if (require.main === module) {
       A.ok(off.spec.nodes.every(function (n) { return n.id !== "a_1"; }), "끊긴 바깥 노드 제외");
       A.strictEqual(R.graphSpec(model.ontology, "P-0007", {}, 1).hidden, 2, "바깥 노드 상위 n");
       A.strictEqual(R.graphSpec(model.ontology, "P-9999", {}, 12), null);
+    });
+
+    // ───────────── 실제 보고서 모델 모양(lm27\report\model.py 가 내는 형) ─────────────
+    function realState(sec, extra) {
+      var s = {section: sec, arg: null, month: "2026-09", ui: {}, open: {}, tables: {}, sort: {}, limit: {}, treeOpen: {}, treeSel: null,
+        treeFocus: null, gcol: {}, rels: {}, drill: {}, q: {}, qerr: {}, answered: {}, needDrop: {}, hier: null, msg: null, ev: null};
+      Object.keys(extra || {}).forEach(function (k) { s[k] = extra[k]; });
+      return s;
+    }
+
+    function realModel() {
+      var m = fixture("report_model.json");
+      var rv = m.reviews.months.filter(function (r) { return r.key === "2026-09"; })[0];
+      rv.facts = [["F1", "완료", "전원부 검증", "P-0007", "해석·분석"]];          // 모델: 사실 행 = 배열 + fact_units
+      rv.fact_units = {F1: "u_a1a1a1a1a1"};
+      rv.edges = [["E1", "동료1", "의뢰함", "전원부 검증"], ["E2", "전원부 검증", "산출함", "표 계산 문서"]];
+      rv.edge_refs = {E1: {from: "c:3", to: "u_a1a1a1a1a1", rel: "의뢰함"}, E2: {from: "u_a1a1a1a1a1", to: "d:9", rel: "산출함"}};
+      rv.ai = {summary: "동료1 의뢰로 전원부 검증을 끝냈습니다.", by: "ai", peers_map: {"동료1": 3},
+        highlights: [{text: "동료1 의뢰 건을 마쳤습니다.", refs: ["F1"], units: ["u_a1a1a1a1a1"], effort_min: 390, biz_lead_min: 1440}],
+        relations: [{text: "동료1 의 의뢰가 보고로 이어졌습니다.", refs: ["E1"]}], next: ["동료1 과 다음 단계를 맞춥니다."]};
+      rv.ot_units = {basis: "window", total_min: 150, units: [{unit_id: "u_d4d4d4d4d4", min: 120}], unattributed_min: 30};
+      delete rv.ot_unattr_min;
+      m.refs.docs = {"9": {key: "d" + "9".repeat(16), name: "검증결과.xlsx"}};
+      return m;
+    }
+
+    t.test("실제 모델 모양 — 관계 간선·하이라이트 숫자·동료 번호표(전체판만)·초과 근무 원인(B1·B2·B3)", function (c) {
+      var A = c.assert;
+      var M = mods();
+      var m = realModel();
+      var st = realState("review", {open: {"rv:2026-09": true}});
+      var full = M.C.toString({t: "div", a: {}, c: M.R.view(m, st, {mode: "file", variant: "full", canWrite: false, width: 1000})});
+      A.ok(full.indexOf("[object Object]") < 0, "관계가 [object Object] 로 나오지 않는다");
+      A.ok(full.indexOf("김철수 의뢰로 전원부 검증을 끝냈습니다.") >= 0, "요약의 동료1 → 사람 이름");
+      A.ok(full.indexOf("김철수 의뢰 건을 마쳤습니다. (투입 6.5h · 리드 3.0영업일)") >= 0, "하이라이트 끝 숫자(모델 effort_min·biz_lead_min)");
+      A.ok(full.indexOf("김철수 의 의뢰가 보고로 이어졌습니다.") >= 0 && full.indexOf("김철수 → 의뢰함 → 전원부 검증") >= 0, "관계 문장 + 근거 간선");
+      A.ok(full.indexOf("김철수 과 다음 단계를 맞춥니다.") >= 0, "다음 문장도 이름");
+      A.ok(full.indexOf("회로 해석 보고") >= 0 && full.indexOf("업무에 묶이지 않은 초과 0.5h") >= 0, "초과 근무 원인(모델 객체 모양)");
+      var red = M.C.toString({t: "div", a: {}, c: M.R.view(m, realState("review", {open: {"rv:2026-09": true}}), {mode: "file", variant: "redacted", canWrite: false, width: 1000})});
+      A.ok(red.indexOf("동료1 의뢰로 전원부 검증을 끝냈습니다.") >= 0 && red.indexOf("김철수 의뢰로") < 0, "가림판은 번호표를 이름으로 바꾸지 않는다");
+      m.reviews.months.filter(function (r) { return r.key === "2026-09"; })[0].ai.relations = [];
+      var rule = M.C.toString({t: "div", a: {}, c: M.R.view(m, realState("review", {open: {"rv:2026-09": true}}), {mode: "file", variant: "full", canWrite: false, width: 1000})});
+      A.ok(rule.indexOf("전원부 검증 → 산출함 → 검증결과.xlsx") >= 0, "AI 관계 문장이 없으면 그 달 관계 목록(전체판 문서 이름)");
+    });
+
+    t.test("실제 모델 모양 — 신뢰도 사유(기간 전체 texts)·[왜?] 과제 후보·니즈 입출력·미확인 동료·AI 분류 비율·과제 패널(B4·B5·B8·B9·B17)", function (c) {
+      var A = c.assert;
+      var M = mods();
+      var env = {mode: "file", variant: "full", canWrite: false, width: 1000};
+      function txt(m, st) { return M.C.toString({t: "div", a: {}, c: M.R.view(m, st, env)}); }
+      var m = realModel();
+      delete m.quality.cov;                                            // 기간 전체 quality 에는 cov·est_ratio 가 없다 — texts 만
+      delete m.quality.est_ratio;
+      m.quality.texts = [{code: "teams_cov_low", text: "팀즈 기록이 비어 있는 근무일이 있습니다(80%)"}];
+      var sum = txt(m, realState("summary", {month: "all", ui: {quality: "1"}}));
+      A.ok(sum.indexOf("팀즈 기록이 비어 있는 근무일이 있습니다(80%)") >= 0 && sum.indexOf("(—)") < 0, "기간 전체 사유 숫자");
+      m.units[0].cands = [["P-0007", 0.82], ["P-0012", 0.4]];
+      var why = txt(m, realState("tree", {treeSel: "u:u_a1a1a1a1a1", treeOpen: {"r:DEV/P-0007/r_5c0d11": true}, ui: {why: "u_a1a1a1a1a1"}}));
+      A.ok(why.indexOf("과제 후보: 과제A 0.82 · 과제B 0.40") >= 0, "[왜?] 과제 후보([과제, 점수] 배열)");
+      m.agentic.needs = [{need_id: "n_1a2b3c", name: "해석 결과 정리 자동화", logic: "표로 정리", "in": "디지털 입력", out: "정형 출력",
+        step_type: "APP_CAE", freq_per_month: 4.3, grade: "중", by: "rule", units: ["u_a1a1a1a1a1"], dropped: false}];
+      A.ok(txt(m, realState("agentic")).indexOf("디지털 입력 → 정형 출력") >= 0, "니즈 입력 → 출력(in·out)");
+      m.peers.internal[1].internal = null;                            // 모델: 사람 사전에서 사내로 확인 = true, 모름 = null
+      m.refs.people["7"].internal = null;
+      m.peers.internal[0].internal = true;
+      var peers = txt(m, realState("peers"));
+      A.ok(peers.indexOf("미확인") >= 0 && peers.indexOf("사내") >= 0, "사람 사전에 없는 동료는 미확인");
+      m.flags.hier = {ai_share: 0.4};
+      A.ok(txt(m, realState("hier")).indexOf("AI 분류 비율 40%") >= 0, "분류 절 AI 비율(flags.hier.ai_share)");
+      m.workflows.projects["P-0007"] = {key: "P-0007", handoffs: [{from_role: "r_5c0d11", to_role: "r_7a2b33", n: 2, gap_biz_median_min: 480,
+        via: {doc: 1, peer: 0}}], roles: [{role_id: "r_5c0d11", effort_min: 600, share: 0.8}, {role_id: "r_7a2b33", effort_min: 150, share: 0.2}]};
+      var pn = txt(m, realState("tree", {treeSel: "p:DEV/P-0007"}));
+      A.ok(pn.indexOf("회로 · 해석·분석 → 기구 · 설계") >= 0 && pn.indexOf("2회") >= 0, "역할 간 인계(from_role·to_role)");
+      A.ok(pn.indexOf("역할 구성 자료가 없습니다") < 0 && pn.indexOf("10.0h") >= 0, "역할 구성(roles[].effort_min)");
     });
 
     // ───────────── 비동기 화면 시나리오(자식 node) ─────────────

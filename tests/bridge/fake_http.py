@@ -60,6 +60,8 @@ class FakeBrowser:
         self.available_at = available_at
         self.tabs: list[FakeTab] = []
         self.closed_by_cdp = 0
+        self.window_state = "normal"                     # 창 하나의 상태(normal·minimized·maximized) — 창 앞으로 시험
+        self.window_log: list = []
 
     @property
     def ws(self) -> str:

@@ -305,18 +305,27 @@ def _analysis_brief(app) -> dict | None:
     model = api_report.model_or_none(app, cur["run_id"], "full")
     if not model:
         return {"run_id": cur["run_id"], "month": None, "kpi": None}
-    months = [m for m in model.get("months") or () if isinstance(m, dict) and m.get("env_min")]
+    months = [m for m in model.get("months") or () if isinstance(m, dict) and m.get("m")]
     if not months:
         return {"run_id": cur["run_id"], "month": None, "kpi": None}
-    m = months[-1]
+    # 달 = 개인 보고서가 처음 여는 달과 같게(R §2.4.3 — 기준 시각의 달, 그 달이 기간 밖이면 근무가 있는 마지막 달)
+    as_of = str((model.get("run") or {}).get("as_of") or cur.get("as_of") or "")[:7]
+    m = next((x for x in months if x.get("m") == as_of), None)
+    if m is None:
+        worked = [x for x in months if x.get("env_min")]
+        m = worked[-1] if worked else months[-1]
     from lm27.report import fmt
     q = m.get("quality") if isinstance(m.get("quality"), dict) else {}
+    # 초과 근무 = 설정 mm.overtimeBasis(보고서 모델 denominator.overtime_basis — 분석 때 읽은 값): window 근무창 밖 · daily8h 일 8시간 초과
+    basis = str((model.get("denominator") or {}).get("overtime_basis") or (model.get("run") or {}).get("overtime_basis")
+                or app.cfg()["mm.overtimeBasis"] or "window")
+    ot = m.get("overtime_daily8h_min") if basis == "daily8h" else m.get("overtime_window_min")
     kpi = {"mm": fmt.fmt_mm(int(m.get("env_min") or 0), int(m.get("denom_min") or 0)),
            "load_pct": fmt.fmt_pct(int(m.get("env_min") or 0), int(m.get("avail_min") or 0)),
-           "ot_h": fmt.fmt_h1(int(m.get("overtime_window_min") or 0)),
+           "ot_h": fmt.fmt_h1(int(ot or 0)), "ot_basis": "daily8h" if basis == "daily8h" else "window",
            "unattr_pct": fmt.fmt_pct(int(m.get("unattr_min") or 0), int(m.get("env_min") or 0)),
            "quality": str(q.get("grade") or "")}
-    return {"run_id": cur["run_id"], "month": m.get("m"), "kpi": kpi}
+    return {"run_id": cur["run_id"], "month": m.get("m"), "partial": bool(m.get("partial")), "kpi": kpi}
 
 
 def _collect_brief(app, pcs: list) -> dict:

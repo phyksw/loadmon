@@ -126,6 +126,17 @@
     return arr(obj(d)[key]);
   }
 
+  // 머리 띠의 지금 결과(current.json) — 라벨 출처 수·분석 시각이 없으면 이력 표의 같은 실행 줄에서 채운다(RPT-04 'AI n · 규칙 n')
+  function withRow(cur, row) {
+    var out = {};
+    Object.keys(cur).forEach(function (k) { out[k] = cur[k]; });
+    if (row && row.run_id === cur.run_id) {
+      if (!out.label_sources && row.label_sources) { out.label_sources = row.label_sources; }
+      if (!out.built_at && row.built_at) { out.built_at = row.built_at; }
+    }
+    return out;
+  }
+
   // ───────────────────────── 3. API 의뢰자(§2.3.3 — 쓰기는 JSON + 토큰) ─────────────────────────
   var HTTP_TEXT = {403: "화면 보안 확인값이 맞지 않습니다 — 화면을 새로 고치면 이어서 합니다",
     404: "찾는 자료가 없습니다", 409: "다른 작업이 진행 중입니다 — 끝나면 다시 눌러 주세요", 413: "보낼 내용이 너무 큽니다",
@@ -704,7 +715,8 @@
           S.runs = listOf(res.data, "runs");
           var d = obj(res.data);
           S.defaults = obj(d.defaults);
-          S.current = d.current && typeof d.current === "object" ? d.current : (S.runs.filter(function (r) { return r.current; })[0] || null);
+          var row = S.runs.filter(function (r) { return r.current; })[0] || null;
+          S.current = d.current && typeof d.current === "object" ? withRow(d.current, row) : row;
         }),
         api.get("/api/home").then(function (res) {      // 단계 줄의 ✓·상태 줄의 마지막 수집(실패해도 그 표시만 빈다)
           if (res.ok) { S.home = obj(res.data); }
@@ -1040,13 +1052,14 @@
     // 대시보드 KPI 타일(LM24 .kpis) — 누르면 개인 보고서의 해당 절
     function homeKpis(a) {
       var k = obj(a.kpi);
-      var mo = a.month || "이번 달";
+      var mo = a.month ? a.month + (a.partial ? "(부분월)" : "") : "이번 달";   // 개인 보고서가 처음 여는 달(기준 시각의 달)
       var q = QUALITY_UI[k.quality] || ["unknown", "판단 안 함"];
       return h("div", {"class": "kpis", role: "group", "aria-label": "최근 분석 요약(" + mo + ")"}, [
         U0.kpiCard({label: "로드율(투입 ÷ 가용)", value: k.load_pct ? k.load_pct + "%" : null,
           sub: k.load_pct ? mo + " · 100% = 가용을 꽉 채움" : "가용 시간이 0 — 계산 안 함", act: "a-goto", ref: "#report/summary"}),
         U0.kpiCard({label: mo + " 투입 MM", value: k.mm ? k.mm + " MM" : null, sub: "일한 시간 ÷ (근무일 × 8h)", act: "a-goto", ref: "#report/summary"}),
-        U0.kpiCard({label: "초과 근무", value: k.ot_h ? k.ot_h + "h" : null, sub: "근무창 밖 · 원인은 리뷰", act: "a-goto", ref: "#report/review"}),
+        U0.kpiCard({label: "초과 근무", value: k.ot_h ? k.ot_h + "h" : null,
+          sub: (k.ot_basis === "daily8h" ? "일 8시간 초과 기준" : "근무창 밖 기준") + " · 원인은 리뷰", act: "a-goto", ref: "#report/review"}),
         U0.kpiCard({label: "미귀속", value: k.unattr_pct ? k.unattr_pct + "%" : null, sub: "업무에 묶이지 않은 근무", act: "a-goto", ref: "#report/tree"}),
         U0.kpiCard({label: "측정 품질", value: U0.statusText(q[0], q[1]), sub: "사유는 보고서 요약의 신뢰도", act: "a-goto", ref: "#report/summary"})]);
     }
@@ -1507,8 +1520,12 @@
           return h("div", {}, [
             Kt.para("방식: " + str(b.mode_ko || b.mode || "미확인") + " · 계정 등급: " + str(b.tier || "unknown") + " · 웹 노출: " +
               (b.web_exposed === true ? "있음(엄격 규칙 적용 중)" : (b.web_exposed === false ? "없음" : "미확인"))),
-            b.last_probe ? Kt.para("마지막 탐침: " + str(obj(b.last_probe).text_ko || md(obj(b.last_probe).at))) : null,
-            isNum(obj(b.limits)["in"]) ? Kt.para("보정 한도: 입력 " + b.limits["in"] + "자 · 답 " + num(b.limits.out) + "자") : null,
+            b.last_probe ? Kt.para("마지막 탐침: " + str(obj(b.last_probe).text_ko || md(obj(b.last_probe).at))) :
+              Kt.muted("마지막 탐침: 아직 없음 — [수집 진단(탐침만)] 또는 AI 분석을 한 번 돌리면 채워집니다"),
+            isNum(obj(b.limits)["in"]) ? Kt.para("보정 한도: 입력 " + U0.fmtNum(b.limits["in"], 0) + "자 · 답 " + U0.fmtNum(num(b.limits.out), 0) + "자" +
+              (b.limits.date ? "(" + str(b.limits.date) + " 측정" + (b.limits.stale ? " — 유효 기간 지남, 다음 AI 분석 때 다시 잽니다" : "") + ")" : "")) :
+              Kt.muted("보정 한도: 아직 재지 않음 — 첫 AI 분석 때 잽니다(그동안은 기본 한도)"),
+            Kt.muted("Outlook 웹·Teams 웹·Copilot 은 이 PC 의 분석용 Edge 창(전용 프로필) 하나를 같이 씁니다 — 로그인은 그 창에서 한 번만 하면 됩니다."),
             h("div", {"class": "table-tools"}, [Kt.btn("분석용 Edge 창 앞으로", "a-front", "", {kind: "ghost"})])]);
         }},
         {id: "manual", title: "직접 붙여넣기", uses: ["manual"], when: function (scr) {
@@ -1518,7 +1535,8 @@
           var bs = listOf(d.manual, "batches");
           var open = bs.filter(function (b) { return b.state === "open"; }).length;
           var rows = bs.map(function (b) {
-            return [String(b.seq), str(b.stage_ko || b.stage), String(arr(b.items).length || num(b.items_n)), String(num(b.in_chars || b.chars)),
+            var n = isNum(b.items_n) ? b.items_n : (isNum(b.items) ? b.items : arr(b.items).length);   // 서버는 항목 수(정수)를 준다
+            return [String(b.seq), str(b.stage_ko || b.stage), U0.fmtNum(n, 0), U0.fmtNum(num(b.in_chars || b.chars), 0),
               str(b.state_ko || b.state), b.state === "open" ? Kt.btn("복사", "a-copy", b.seq, {kind: "ghost"}) : "",
               b.state === "open" ? Kt.btn("답 붙여넣기", "a-paste-focus", b.seq, {kind: "ghost"}) : ""];
           });
@@ -1528,8 +1546,10 @@
             scr.st.copyText ? Kt.field("mp-copytext", "복사할 글(클립보드가 막혀 직접 선택·복사)", Kt.textarea("mp-copytext", scr.st.copyText, {rows: "6", readonly: true})) : null,
             Kt.field("mp-answer", "Copilot 답(여러 답을 한꺼번에 붙여넣어도 됩니다)", Kt.textarea("mp-answer", "", {rows: "6"})),
             h("div", {"class": "table-tools"}, [Kt.btn("답 반입", "a-import", "", {kind: "primary"})]),
-            arr(res.results).length ? Kt.table(["요청 번호", "결과", "건수"], arr(res.results).map(function (r) {
-              return [str(obj(r).rid), str(obj(r).status_ko || obj(r).status), str(obj(r).counts_ko || "")];
+            arr(res.results).length ? Kt.table(["요청 번호", "단계", "결과", "건수"], arr(res.results).map(function (r) {
+              var x = obj(r);
+              return [str(x.rid || (isNum(x.seq) ? "묶음 " + x.seq : "")) || "—", str(x.stage_ko || x.stage) || "—", str(x.status_ko || x.status) || "—",
+                str(x.counts_ko || (isNum(x.ok) ? "반영 " + x.ok + " · 다시 물음 " + num(x.retry) : "")) || "—"];
             })) : null,
             res.text_ko ? Kt.para(res.text_ko) : null]);
         }},
@@ -1573,7 +1593,11 @@
         "a-export": function (scr, n, id) {
           send(scr, "history", "post", "/api/report/export", {run_id: id}, {job: "report_export", ok: "내보내기를 시작했습니다 — 끝나면 만든 파일 목록을 보여 드립니다"});
         },
-        "a-front": function (scr) { send(scr, "copilot", "post", "/api/bridge/front", {}, {ok: "분석용 Edge 창을 앞으로 띄웠습니다 — 로그인이 필요하면 그 창에서 한 번 로그인해 주세요"}); },
+        "a-front": function (scr) {
+          send(scr, "copilot", "post", "/api/bridge/front", {}, {ok: function (d) {
+            return obj(d).text_ko || "분석용 Edge 창을 앞으로 띄웠습니다 — 로그인이 필요하면 그 창에서 한 번 로그인해 주세요";
+          }});
+        },
         "a-copy": function (scr, n, seq) {
           api.post("/api/bridge/manual/copy", {seq: +seq}).then(function (res) {
             var text = str(obj(res.data).text);
@@ -1589,7 +1613,13 @@
           var text = str(val("mp-answer"));
           if (!text.trim()) { cardOf(scr, "manual").msg = {kind: "warn", text: "붙여넣은 답이 없습니다"}; rerender(scr, "manual"); return; }
           send(scr, "manual", "post", "/api/bridge/manual/import", {text: text}, {reset: true, reload: ["manual"],
-            ok: function (d) { return obj(d).text_ko || "답을 반영했습니다"; }, after: function (d) { scr.st.importRes = obj(d); }});
+            ok: function (d) { return obj(d).text_ko || "답을 반영했습니다"; },
+            after: function (d) {
+              scr.st.importRes = obj(d);
+              if (obj(d).ok === false) {                    // 하나도 반입하지 못함(봉투 없음·이미 반영) — 안내가 아니라 경고
+                cardOf(scr, "manual").msg = {kind: "warn", text: obj(d).text_ko || "붙여넣은 답을 반입하지 못했습니다 — Copilot 답 전체를 복사해 주세요"};
+              }
+            }});
         }
       },
       init: function (scr) {

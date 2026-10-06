@@ -357,7 +357,15 @@
     chain: ["이어진 일", "앞뒤로 이어진 일입니다(인계)"], reference: ["참고할 일", "다른 과제에서 같은 문서를 썼습니다"],
     ref: ["참고할 일", "다른 과제에서 같은 문서를 썼습니다"], related: ["관련 일", "같은 사람·도구를 공유합니다"]};
   var RELS = ["의뢰함", "보고함", "산출함", "사용함", "함께함", "선행함", "같은문서"];
+  // 판정 근거 코드 → 이름(lm27\report\vocab.py SUB_WHY·RULE_WHY 와 같은 표 — CSV 와 화면이 같은 말을 쓴다)
+  var SUB_WHY = {digital_io: "입출력 디지털", repeat_weekly: "주 1회 이상 반복", repeat_monthly: "월 1회 이상 반복",
+    structured_input: "정형 입력", low_accountability: "책임 낮음", verifiable: "검증 가능", tool_access: "도구 접근 가능"};
+  var RULE_WHY = {type: "단계 유형 일치", input: "입력 일치", output: "출력 일치", keyword: "핵심어 일치"};
   var AXIS_SHORT = {mail_out: "메일 발신", mail_in: "메일 받음", cal: "일정", teams: "팀즈", pc: "PC"};
+  // 봉투 근거 코드(WORKTIME §4 봉투 표) → 이름 — 날짜 원장 구성 줄에 코드 대신
+  var BASIS_NAME = {C1: "샘플러 활동", C1b: "샘플러 다리", C2: "회의", C3: "앵커 세션", C4: "원격 발신", C4L: "원격 연결 다리",
+    C5: "수신 크레딧", C6: "사슬 다리", C7: "PC 다리", C8: "PC 하한", C8d: "date-only 하한", C9: "수신 사슬 하한", C10: "흔적 창",
+    C10r: "원격 흔적 창", C11: "수동·종일 외근", C12: "솔버 cap"};
   var LEVEL_KEYS = ["L1", "L2", "L3", "L4", "L5", "L6", "L7"];
   var LEVEL_NOTE = {L1: "수동 기록(관측)", L2: "회의(관측, 분할은 추정)", L3: "PC 맥락(관측)", L4: "앵커 직전 창(추정)",
     L5: "흡수·공백(추정)", L6: "비례(추정)", L7: "버킷(미귀속)"};
@@ -580,9 +588,13 @@
     return v;
   }
 
+  // 사유 문구: 모델이 숫자까지 채운 문구(quality.texts — 달은 그 달 값, 기간 전체는 가장 나쁜 달 값)가 있으면 그것,
+  // 없으면 아래 틀에 cov·est_ratio 를 채운다(옛 모델).
   function qualityText(code, q, model) {
     var custom = obj(obj(model).quality).reason_text;
     if (custom && custom[code]) { return custom[code]; }
+    var pre = arr(obj(q).texts).filter(function (x) { return obj(x).code === code && obj(x).text; })[0];
+    if (pre) { return str(pre.text); }
     var t = QUALITY_TEXT[code];
     if (!t) { return code; }
     var cov = obj(q.cov);
@@ -794,7 +806,7 @@
     }
     if (mk !== ALL) {
       var rv = arr(obj(model.reviews).months).filter(function (r) { return r.key === mk; })[0];
-      var top = arr(obj(rv).ot_units)[0];
+      var top = otOf(rv).units[0];
       var basis = obj(model.denominator).overtime_basis || "window";
       var otAll = basis === "daily8h" ? row.overtime_daily8h_min : row.overtime_window_min;
       if (top && num(top.min) > 0 && num(otAll) > 0) {
@@ -805,6 +817,15 @@
     var r0 = arr(q.reasons)[0];
     if (r0) { out.push(qualityText(r0, q, model) + "."); }
     return out.slice(0, 3);
+  }
+
+  // 리뷰 기간의 초과 근무 원인(R §4.4.4) — 모델은 {basis, total_min, units[{unit_id, min}], unattributed_min}.
+  // 옛 모양(배열 + ot_unattr_min)도 읽는다.
+  function otOf(rv) {
+    var r = obj(rv);
+    if (Array.isArray(r.ot_units)) { return {units: r.ot_units, unattr: num(r.ot_unattr_min)}; }
+    var o = obj(r.ot_units);
+    return {units: arr(o.units).filter(function (x) { return x && typeof x === "object"; }), unattr: num(o.unattributed_min)};
   }
 
   // ───────────────────────── 8. 업무 트리(§6.3.1) ─────────────────────────
@@ -854,7 +875,9 @@
     var treeNodes = obj(obj(model.tree).nodes);
     Object.keys(byKey).forEach(function (k) {
       var n = byKey[k];
-      var src = n.kind === "domain" ? treeNodes[n.code] : (n.kind === "project" ? treeNodes[n.pkey] : (n.kind === "role" ? treeNodes[n.rid] : null));
+      // 모델 tree.nodes: 과제 없음 자리는 '-'(영역 노드 'UNC' 와 겹치지 않게) — 단위업무의 project_key 는 'UNC'
+      var pk = n.pkey === "UNC" ? "-" : n.pkey;
+      var src = n.kind === "domain" ? treeNodes[n.code] : (n.kind === "project" ? treeNodes[pk] : (n.kind === "role" ? treeNodes[n.rid] : null));
       n.info = obj(src);
       n.kids.sort(function (a, b) {
         var x = byKey[a];
@@ -1071,13 +1094,16 @@
     });
     var g = C().gantt({rows: rows, as_of: str(obj(model.run).as_of).slice(0, 10)}, {width: env.width, mode: "personal", id: "ch-p09",
       title: "역할 레인", labelHead: "역할 업무"});
+    // 모델 workflows.projects[key]: handoffs[{from_role, to_role, n, gap_biz_median_min, via}] · roles[{role_id, effort_min,
+    // share}](옛 모양 from·to · role_mix[{min}] 도 읽는다)
     var hand = arr(wp.handoffs).map(function (x) {
       var via = obj(x.via);
-      return [roleLabel(X, x.from) + " → " + roleLabel(X, x.to), (num(x.n)) + "회", isNum(x.gap_biz_median_min) ? u.daysText(x.gap_biz_median_min) : "—",
-        String(num(via.doc)), String(num(via.peer))];
+      return [roleLabel(X, x.from_role || x.from) + " → " + roleLabel(X, x.to_role || x.to), (num(x.n)) + "회",
+        isNum(x.gap_biz_median_min) ? u.daysText(x.gap_biz_median_min) : "—", String(num(via.doc)), String(num(via.peer))];
     });
-    var mixRows = arr(wp.role_mix).map(function (x) {
-      return [link(roleLabel(X, x.role_id), "#report/workflow/" + encodeURIComponent(x.role_id)), u.hText(x.min),
+    var mixSrc = arr(wp.roles).length ? arr(wp.roles) : arr(wp.role_mix);
+    var mixRows = mixSrc.filter(function (x) { return x && x.role_id; }).map(function (x) {
+      return [link(roleLabel(X, x.role_id), "#report/workflow/" + encodeURIComponent(x.role_id)), u.hText(isNum(x.effort_min) ? x.effort_min : num(x.min)),
         h("span", {}, [u.shareText(x.share), " ", shareBar(x.share)]), bottleneckText(model, x.role_id)];
     });
     return card(n.label, h("div", {}, [chart(g, "ch-p09", st),
@@ -1190,7 +1216,8 @@
       para("투입 " + u.hText(x.effort_min) + " = 관측 " + u.hText(num(x.obs_min)) + " + 추정 " + u.hText(num(x.est_min)) +
         (isNum(uw.explained_ratio) ? " · 단계로 설명된 투입 " + u.shareText(uw.explained_ratio) : "")),
       lvRows.length ? table(["단계", "뜻", {label: "투입", num: true}], lvRows) : null,
-      isNum(lw.biz_min) ? para("가장 긴 대기 " + u.daysText(lw.biz_min) + (lw.after || lw.before ? "(" + str(lw.after) + " → " + str(lw.before) + ")" : "")) : null,
+      isNum(lw.biz_min) ? para("가장 긴 대기 " + u.daysText(lw.biz_min) + (lw.after || lw.before ? "(" + str(lw.after_name || lw.after) + " → " +
+        str(lw.before_name || lw.before) + ")" : "")) : null,
       recs.length ? h("div", {}, [h("h3", {}, ["연관 업무 추천"]), h("ul", {}, recs)]) : null,
       arr(x.peers).length ? para("동료: " + arr(x.peers).map(function (r) { return peerName(X, r); }).join(", ")) : null,
       arr(x.docs).length ? para("문서: " + arr(x.docs).map(function (r) { return docName(X, r); }).join(", ")) : null,
@@ -1205,7 +1232,12 @@
     var src = obj(x.label_src);
     var conf = obj(x.label_conf);
     var rows = Object.keys(src).sort().map(function (k) { return [k, str(src[k]), isNum(conf[k]) ? U().fmtNum(conf[k], 2) : "—"]; });
-    var cands = arr(x.cands).slice(0, 3).map(function (c) { return projLabel(X, obj(c).project || c) + (isNum(obj(c).score) ? " " + U().fmtNum(c.score, 2) : ""); });
+    // 과제 후보(분류 규칙 점수 상위 3 — labels.json cands [[과제, 점수]], 옛 모양 {project, score} 도 읽는다)
+    var cands = arr(x.cands).slice(0, 3).map(function (c) {
+      var p = Array.isArray(c) ? c[0] : (obj(c).project || c);
+      var sc0 = Array.isArray(c) ? c[1] : obj(c).score;
+      return projLabel(X, str(p)) + (isNum(sc0) ? " " + U().fmtNum(sc0, 2) : "");
+    }).filter(Boolean);
     return h("div", {"class": "card"}, [h("h3", {}, ["왜 이렇게 분류했나"]),
       lines.length ? h("ul", {}, lines.map(function (s) { return h("li", {}, [s]); })) : muted("분류 근거 줄이 이 결과에 없습니다(가림판·팀에는 싣지 않습니다)."),
       rows.length ? table(["필드", "출처", {label: "신뢰", num: true}], rows) : null,
@@ -1267,12 +1299,13 @@
       ") · 귀속 " + u.pctText(num(rv.attributed_min), envm) + " · 관측 " + u.pctText(num(rv.obs_min), envm) + " · 새로 시작 " + n("started") +
       " · 끝냄 " + n("finished") + " · 미착수 의뢰 " + n("unstarted")));
     var ai = obj(rv.ai);
+    var pt = peerText(X, ai, env);
     if (ai.summary || arr(ai.highlights).length) {
-      out.push(h("div", {}, [h("h3", {}, ["요약 ", srcBadge(ai.by || "rule")]), ai.summary ? para(ai.summary) : null,
+      out.push(h("div", {}, [h("h3", {}, ["요약 ", srcBadge(ai.by || "rule")]), ai.summary ? para(pt(ai.summary)) : null,
         arr(ai.highlights).length ? h("ul", {}, arr(ai.highlights).map(function (hl) {
-          var t = typeof hl === "string" ? hl : str(hl.text);
+          var t = typeof hl === "string" ? hl : str(obj(hl).text);
           var nums = highlightNums(X, rv, hl);
-          return h("li", {}, [t + (nums ? " " + nums : "")]);
+          return h("li", {}, [pt(t) + (nums ? " " + nums : "")]);
         })) : null]));
     }
     var lt = arr(rv.lead_table);
@@ -1319,41 +1352,116 @@
       out.push(chart(C().leadDots({rows: rowsS, points: pts, std_day_min: num(obj(model.denominator).std_day_min) || 480},
         {width: env.width, id: "ch-p11-" + rv.key, title: "리드타임 점 그림 · " + rv.key}), "ch-p11-" + rv.key, st));
     }
-    var ot = arr(rv.ot_units).slice(0, 5);
-    if (ot.length || num(rv.ot_unattr_min) > 0) {
+    var otx = otOf(rv);
+    var ot = otx.units.slice(0, 5);
+    if (ot.length || otx.unattr > 0) {
       out.push(h("div", {}, [h("h3", {}, ["초과 근무 원인"]), h("ul", {}, ot.map(function (o) {
         var tg = obj(o.by_tag);
         var parts = ["extended", "night", "holiday"].filter(function (t) { return num(tg[t]) > 0; }).map(function (t) { return TAG_NAME[t] + " " + u.fmtH1(tg[t]); });
         return h("li", {}, [link(unitTitle(X, idOf(o)), "#report/tree/u:" + idOf(o)), " " + u.hText(num(o.min)) + (parts.length ? "(" + parts.join(" · ") + ")" : "")]);
-      }).concat(num(rv.ot_unattr_min) > 0 ? [h("li", {}, ["업무에 묶이지 않은 초과 " + u.hText(rv.ot_unattr_min)])] : []))]));
+      }).concat(otx.unattr > 0 ? [h("li", {}, ["업무에 묶이지 않은 초과 " + u.hText(otx.unattr)])] : []))]));
     }
-    var pt = arr(rv.peers_top).slice(0, 5);
-    if (pt.length) {
-      out.push(para("함께한 동료: " + pt.map(function (p) {
+    var ptop = arr(rv.peers_top).slice(0, 5);
+    if (ptop.length) {
+      out.push(para("함께한 동료: " + ptop.map(function (p) {
         return (obj(p).name || (isNum(obj(p).ref) ? peerName(X, p.ref) : "동료 #" + str(obj(p).k))) + (isNum(obj(p).units) ? " " + p.units + "건" : "");
       }).join(" · ")));
     }
-    if (kind === "month" && (ai.relations || arr(rv.edges).length)) {
-      out.push(h("div", {}, [h("h3", {}, ["관계"]), ai.relations ? para(typeof ai.relations === "string" ? ai.relations : arr(ai.relations).join(" ")) : null,
-        link("연관 그래프에서 보기", "#report/graph")]));
+    if (kind === "month") {
+      var rel = relationsView(X, rv, ai, pt);
+      if (rel) { out.push(rel); }
     }
-    var next = ai.next ? (typeof ai.next === "string" ? [ai.next] : arr(ai.next)) :
+    var aiNext = typeof ai.next === "string" ? [ai.next] : arr(ai.next).filter(function (s) { return typeof s === "string" && s; });
+    var next = aiNext.length ? aiNext.map(pt) :
       arr(rv.continuing).concat(arr(rv.started)).slice(0, 2).map(function (x) { return "'" + unitTitle(X, idOf(x)) + "' 를 이어서 진행합니다."; });
     if (next.length) { out.push(h("div", {}, [h("h3", {}, ["다음"]), h("ul", {}, next.map(function (s) { return h("li", {}, [s]); }))])); }
     return h("div", {}, out);
   }
 
-  function highlightNums(X, rv, hl) {
-    var refs = arr(obj(hl).refs);
-    var facts = arr(rv.facts);
-    var parts = [];
-    refs.forEach(function (ref) {
-      var f = facts.filter(function (x) { return (Array.isArray(x) ? x[0] : obj(x).id) === ref; })[0];
-      var id = f && !Array.isArray(f) ? obj(f).unit_id : null;
-      var x = id ? X.units[id] : null;
-      if (x) { parts.push("투입 " + U().hText(x.effort_min) + (isNum(x.biz_lead_min) ? " · 리드 " + U().daysText(x.biz_lead_min) : "")); }
+  // AI 문장 속 번호표 '동료k'(그 질의 안 번호 — COPILOT §8.5) → 사람 사전 이름(R §3.6). 전체판에서만 바꾼다 — 가림판은 모델이
+  // 이미 '동료 #k' 로 바꿔 두었고 peers_map 도 싣지 않는다. 대응이 없으면 글자 그대로.
+  function peerText(X, ai, env) {
+    var pm = obj(obj(ai).peers_map);
+    if (env.variant === "redacted" || !Object.keys(pm).length) { return function (s) { return str(s); }; }
+    return function (s) {
+      return str(s).replace(/동료(\d+)(?![\d#])/g, function (all, k) {
+        var ref = pm["동료" + k];
+        var p = ref === null || ref === undefined ? null : X.people[String(ref)];
+        return p && p.name ? str(p.name) : all;
+      });
+    };
+  }
+
+  // 관계 간선 끝점(모델 edge_refs — 'c:<k>' 동료 · 'd:<k>' 문서 · 'a:<앱>' · 단위업무 ID · 과제·역할 키) → 글자. 모르면 모델 라벨.
+  function edgeEnd(X, nid, label, pt) {
+    var id = str(nid);
+    var m = /^([cd]):(\d+)$/.exec(id);
+    if (m) {
+      var ref = (m[1] === "c" ? X.people : X.docs)[m[2]];
+      if (ref && ref.name) { return str(ref.name); }
+    } else if (/^a:/.test(id) && X.apps[id.slice(2)]) {
+      return appName(X, id.slice(2));
+    } else if (X.units[id]) {
+      return unitTitle(X, id);
+    } else if (X.projects[id]) {
+      return projLabel(X, id);
+    } else if (X.roles[id]) {
+      return roleLabel(X, id);
+    }
+    return pt(label) || id || "—";
+  }
+
+  function edgeText(X, rv, e, pt) {
+    var ref = obj(obj(rv.edge_refs)[e[0]]);
+    return edgeEnd(X, ref.from, e[1], pt) + " → " + str(e[2] || ref.rel) + " → " + edgeEnd(X, ref.to, e[3], pt);
+  }
+
+  // (월간) 관계(R §6.4 ⑧): AI relations 문장마다 근거 관계(E 번호 → '출발 → 관계 → 도착'). AI 문장이 없으면 그 달 관계 목록.
+  function relationsView(X, rv, ai, pt) {
+    var edges = arr(rv.edges).filter(function (e) { return Array.isArray(e) && e.length >= 4; });
+    var byE = {};
+    edges.forEach(function (e) { byE[e[0]] = e; });
+    var rels = typeof ai.relations === "string" ? [{text: ai.relations}] : arr(ai.relations);
+    var items = [];
+    rels.forEach(function (r) {
+      var t = typeof r === "string" ? r : str(obj(r).text);
+      var refs = arr(obj(r).refs).map(function (n) { return byE[n]; }).filter(Boolean);
+      if (!t && !refs.length) { return; }
+      items.push(h("li", {}, [pt(t), refs.length ? h("small", {"class": "muted"}, [(t ? " — " : "") + refs.map(function (e) {
+        return edgeText(X, rv, e, pt);
+      }).join(" · ")]) : null]));
     });
-    return parts.length ? "(" + uniq(parts).join(" / ") + ")" : "";
+    if (!items.length) {
+      edges.slice(0, 12).forEach(function (e) { items.push(h("li", {}, [edgeText(X, rv, e, pt)])); });
+    }
+    if (!items.length) { return null; }
+    return h("div", {}, [h("h3", {}, ["관계"]), h("ul", {}, items), link("연관 그래프에서 보기", "#report/graph")]);
+  }
+
+  // 하이라이트 끝 숫자(R §6.4 ②): 모델이 하이라이트마다 싣는 그 기간 투입(effort_min)·리드(biz_lead_min).
+  // 옛 모델(숫자 없음)은 refs 의 사실 행 → 단위업무 전체 투입·리드.
+  function highlightNums(X, rv, hl) {
+    var o = obj(hl);
+    var u = U();
+    if (isNum(o.effort_min) || isNum(o.biz_lead_min)) {
+      var parts = [];
+      if (num(o.effort_min) > 0) { parts.push("투입 " + u.hText(o.effort_min)); }
+      if (isNum(o.biz_lead_min)) { parts.push("리드 " + u.daysText(o.biz_lead_min)); }
+      return parts.length ? "(" + parts.join(" · ") + ")" : "";
+    }
+    var fu = obj(rv.fact_units);
+    var facts = arr(rv.facts);
+    var segs = [];
+    arr(o.refs).forEach(function (ref) {
+      var id = fu[ref];
+      if (!id) {
+        var f = facts.filter(function (x) { return (Array.isArray(x) ? x[0] : obj(x).id) === ref; })[0];
+        id = f && !Array.isArray(f) ? obj(f).unit_id : null;
+      }
+      var x = id ? X.units[id] : null;
+      if (x) { segs.push("투입 " + u.hText(x.effort_min) + (isNum(x.biz_lead_min) ? " · 리드 " + u.daysText(x.biz_lead_min) : "")); }
+    });
+    return segs.length ? "(" + uniq(segs).join(" / ") + ")" : "";
   }
 
   function viewReview(model, X, st, env) {
@@ -1394,7 +1502,7 @@
         var rl = obj(p.roles);
         var shared = X.unitList.filter(function (x) { return arr(x.peers).indexOf(p.ref) >= 0; });
         return {cells: [h("span", {}, [btn(open ? "▾" : "▸", "r-open", k, {kind: "ghost", expanded: open, aria: (open ? "접기 " : "펼치기 ") + (p.name || "")}),
-          " ", p.name || ("동료 #" + p.k)]), obj(X.people[String(p.ref)]).internal === false ? "외부" : "사내", String(num(p.units)),
+          " ", p.name || ("동료 #" + p.k)]), peerClass(p, X), String(num(p.units)),
           u.hText(num(p.shared_effort_min)), "의뢰 " + num(rl.requester) + " · 보고 " + num(rl.reporter) + " · 대화 " + num(rl.thread) +
           " · 회의 " + num(rl.meeting), arr(p.projects).slice(0, 3).map(function (k2) { return projLabel(X, k2); }).join(", "),
           str(p.first) + " ~ " + str(p.last)],
@@ -1410,6 +1518,16 @@
     out.push(para("외부 상대: 고객사 " + num(ex.customer) + "명 · 협력사 " + num(ex.partner) + "명 · 그 밖 " + num(ex.other) + "명(외부는 사람이 아니라 도메인 계급으로 묶습니다)"));
     out.push(muted("팀 보고서에서는 이 사람이 팀원이면 팀원 라벨, 아니면 '동료-xxxx' 로 보입니다."));
     return out;
+  }
+
+  // 사내/외부 칸: 사람 사전에서 사내로 확인한 사람만 '사내', 외부로 확인했으면 '외부', 사전에 없거나 모르면 '미확인'
+  // (모델 peers.internal[].internal · refs.people[k].internal 은 true 또는 null — 외부 상대는 사람 목록에 들지 않는다)
+  function peerClass(p, X) {
+    var a = obj(p).internal;
+    var b = obj(X.people[String(obj(p).ref)]).internal;
+    if (a === true || b === true) { return "사내"; }
+    if (a === false || b === false) { return "외부"; }
+    return "미확인";
   }
 
   // ───────────────────────── 13. 연관 그래프(§6.6) ─────────────────────────
@@ -1532,7 +1650,8 @@
       muted("칸 글자: 상·중·하 · '규칙' = 규칙 판정 · ◇ = 규칙 판정과 다름")]), {id: "r-ag-grid", state: "AI·규칙 매칭"}));
       var mrows = matches.map(function (m) {
         return [m.agent_id, names[m.agent_id] || m.agent_id, m.step_type, h("span", {}, [m.grade || "—", " ", srcBadge(m.by)]),
-          h("span", {}, [m.why_ai ? m.why_ai + " " : "", chips(arr(m.why_rule))]), arr(m.roles).map(function (r) { return roleLabel(X, r); }).join(", "),
+          h("span", {}, [m.why_ai ? m.why_ai + " " : "", chips(arr(m.why_rule).map(function (w) { return RULE_WHY[w] || w; }))]),
+          arr(m.roles).map(function (r) { return roleLabel(X, r); }).join(", "),
           String(arr(m.units).length), u.hText(num(m.related_min))];
       });
       out.push(card("매칭 표", h("div", {}, [table(["에이전트", "이름", "단계 유형", "등급", "근거", "쓰이는 역할", {label: "단위업무", num: true},
@@ -1542,7 +1661,10 @@
     var needs = arr(A.needs);
     var nrows = needs.map(function (nd) {
       var dropped = st.needDrop[nd.need_id] !== undefined ? st.needDrop[nd.need_id] : !!nd.dropped;
-      return [nd.name || nd.label || nd.need_id, nd.logic || "—", str(nd.input) + " → " + str(nd.output), nd.step_type || "—",
+      // 입력 → 출력: 모델 needs[].in·out(옛 모양 input·output 도 읽는다)
+      var nin = str(nd.input || nd["in"]);
+      var nout = str(nd.output || nd["out"]);
+      return [nd.name || nd.label || nd.need_id, nd.logic || "—", nin || nout ? (nin || "—") + " → " + (nout || "—") : "—", nd.step_type || "—",
         isNum(nd.freq_month) ? u.fmtNum(nd.freq_month, 1) : (isNum(nd.freq_per_month) ? u.fmtNum(nd.freq_per_month, 1) : "—"), nd.grade || "—",
         srcBadge(nd.by || nd.src), String(arr(nd.units).length),
         st.canWriteFlag ? btn(dropped ? "팀에 올리기" : "팀에 올리지 않기", "r-need", nd.need_id, {kind: "ghost", pressed: dropped}) : (dropped ? "팀 제외" : "—")];
@@ -1577,7 +1699,8 @@
         return [String(s.no), stepName(s), s.code || s.type || "—", u.scoreDots(sc(s, "REP")), u.scoreDots(sc(s, "IO")), u.scoreDots(sc(s, "TOOL")),
           u.scoreDots(sc(s, "VER")), u.scoreDots(sc(s, "RISK"), true), score + "/10", s.rule ? u.verdictBadge(s.rule) : "—",
           h("span", {"data-tip": s.final && s.rule && s.final !== s.rule ? "AI 의견보다 보수적" : null}, [s.final ? u.verdictBadge(s.final) : "—"]),
-          chips(arr(s.why)), s.check || (arr(ai.subs).some(function (x) { return arr(x.steps).indexOf("S" + s.no) >= 0; }) && s.rule === "부적합" ? "사람 확인 필요" : "—")];
+          chips(arr(s.why).map(function (w) { return SUB_WHY[w] || w; })),
+          s.check || (arr(ai.subs).some(function (x) { return arr(x.steps).indexOf("S" + s.no) >= 0; }) && s.rule === "부적합" ? "사람 확인 필요" : "—")];
       });
       var subs = arr(ai.subs).map(function (x) {
         var bad = arr(x.steps).some(function (sn) {
@@ -1589,6 +1712,7 @@
       });
       var body = h("div", {}, [
         para("규칙 판정 " + str(r.rule || "—") + " · AI 의견 " + str(ai.verdict || "없음") + (isNum(r.fit_share) ? " · 적합 단계 분 비율 " + u.shareText(r.fit_share) : "")),
+        r.basis ? muted("판정 근거: " + str(r.basis)) : null,
         table(["번호", "단계 라벨", "유형", "반복성", "입출력 정형성", "도구 접근", "검증 가능성", "위험", {label: "점수", num: true}, "규칙 판정", "최종", "근거", "사람 확인 지점"], rows,
           {label: "서브에이전트 점수 표 " + roleLabel(X, r.role_id)}),
         ai.orch || subs.length ? h("div", {}, [h("h3", {}, ["AI 구성안 ", srcBadge(ai.by)]), ai.orch ? para("오케스트레이터: " + ai.orch) : null,
@@ -1742,7 +1866,9 @@
       (reg.fetched_at || fr.fetched_at ? "(" + mdhm(reg.fetched_at || fr.fetched_at) + " 받음)" : "") +
       (isNum(reg.team_projects) ? " · 팀 과제 " + reg.team_projects : "") + (isNum(reg.my_projects) ? " · 내 과제 " + reg.my_projects : "") +
       (isNum(reg.reserved) ? " · 예약 " + reg.reserved : ""));
-    var aiShare = isNum(hs.ai_share) ? hs.ai_share : obj(model.flags).hier_ai_share;
+    // AI 분류 비율(hier_meta.ai_share) — 로컬 앱은 분류 상태 API, 파일은 모델 flags.hier.ai_share(옛 이름 hier_ai_share 도 읽는다)
+    var fh = obj(obj(model.flags).hier);
+    var aiShare = isNum(hs.ai_share) ? hs.ai_share : (isNum(fh.ai_share) ? fh.ai_share : obj(model.flags).hier_ai_share);
     var out = [card("분류 요약", h("div", {}, [para(regText), h("p", {}, ["단위업무 투입의 분류 신뢰: ", levelBar(dist, uncText(X)) || "—", " ",
       LEVELS.map(function (l) { return (l[1] || uncText(X)) + " " + U().pctText(num(dist[l[0]]), sumBy(LEVELS, function (x) { return dist[x[0]]; })); }).join(" · ")]),
     isNum(aiShare) ? para("AI 분류 비율 " + u.shareText(aiShare)) : null]), {id: "r-hier-head"})];
@@ -1773,18 +1899,23 @@
     var prows = arr(hs.proposals).map(function (p) {
       var id = p.proposal_id;
       var rej = p.state === "rejected";
+      var done = p.state === "mapped" || p.state === "merged";        // 팀 과제로 연결됨·다른 제안에 합쳐짐 — 처리할 것이 없다
+      var acts = rej ? [btn("거절 취소", "r-prop", id + "|unreject", {kind: "ghost"})] : (done ? [str(p.mapped_to || p.merged_into || "—")] : [
+        p.state === "accepted_local" ? null : btn("내 과제로 받기", "r-prop", id + "|accept", {kind: "ghost"}),
+        btn("기존 과제와 같음", "r-prop", id + "|map", {kind: "ghost"}), btn("이름 바꾸기", "r-prop", id + "|rename", {kind: "ghost"}),
+        btn("다른 제안과 합치기", "r-prop", id + "|merge", {kind: "ghost"}), btn("거절", "r-prop", id + "|reject", {kind: "ghost"})]);
       return [p.name || id, h("span", {}, [domChip(obj(X.domains[p.domain_guess]).color), " ", domName(X, p.domain_guess)]), String(num(p.units)),
-        u.hText(num(p.effort_min)), str(p.first) + " ~ " + str(p.last), str(p.src_ko || p.src), str(p.state_ko || p.state),
-        h("span", {}, rej ? [btn("거절 취소", "r-prop", id + "|unreject", {kind: "ghost"})] : [btn("내 과제로 받기", "r-prop", id + "|accept", {kind: "ghost"}),
-          btn("기존 과제와 같음", "r-prop", id + "|map", {kind: "ghost"}), btn("이름 바꾸기", "r-prop", id + "|rename", {kind: "ghost"}),
-          btn("다른 제안과 합치기", "r-prop", id + "|merge", {kind: "ghost"}), btn("거절", "r-prop", id + "|reject", {kind: "ghost"})])];
+        u.hText(num(p.effort_min)), p.first || p.last ? str(p.first) + " ~ " + str(p.last) : "—", str(p.src_ko || p.src) || "—",
+        str(p.state_ko || p.state), h("span", {}, acts)];
     });
     out.push(card("새 과제 제안", prows.length ? table(["이름", "영역 추정", {label: "단위업무", num: true}, {label: "투입", num: true}, "처음 ~ 마지막", "출처", "상태", "처리"], prows) :
       emptyP("새 과제 제안이 없습니다."), {id: "r-props"}));
     var rrows = arr(hs.rules).map(function (r) {
       var on = r.state === "active" || r.state === "candidate";
-      return [str(r.kind_ko || r.kind), str(r.cond), str(r.result), str(r.state), num(r.hits) + " · " + num(r.agree) + " · " + num(r.disagree),
-        h("span", {}, [btn(on ? "끄기" : "다시 켜기", "r-rule", r.rule_id + "|" + (on ? "off" : "on"), {kind: "ghost"}),
+      var old = r.state === "superseded";                              // 나중 수정이 대신한 옛 규칙(기록만 — 켜고 끌 수 없음)
+      return [str(r.kind_ko || r.kind), str(r.cond) || "—", str(r.result) || "—", str(r.state_ko || r.state),
+        num(r.hits) + " · " + num(r.agree) + " · " + num(r.disagree),
+        h("span", {}, old ? ["—"] : [btn(on ? "끄기" : "다시 켜기", "r-rule", r.rule_id + "|" + (on ? "off" : "on"), {kind: "ghost"}),
           btn("팀 규칙으로 제안", "r-rule", r.rule_id + "|copy_team", {kind: "ghost"})])];
     });
     out.push(card("학습한 규칙", rrows.length ? table(["종류", "조건", "결과", "상태", "적중 · 일치 · 불일치", "처리"], rrows) : emptyP("학습한 규칙이 아직 없습니다."), {id: "r-rules"}));
@@ -1830,7 +1961,7 @@
   function ledgerLine(d) {
     var u = U();
     var L = obj(d.ledger);
-    var comp = arr(L.components).map(function (c) { return str(c[0]) + " " + u.fmtH1(num(c[1])); }).join(" + ");
+    var comp = arr(L.components).map(function (c) { return (BASIS_NAME[c[0]] || str(c[0])) + " " + u.fmtH1(num(c[1])); }).join(" + ");
     var ded = arr(L.deductions).map(function (c) { return str(c[0]) + " " + u.fmtSigned(u.fmtH1, num(c[1])); }).join(" ");
     var exc = arr(L.excluded).map(function (c) { return Array.isArray(c) ? str(c[0]) + " " + u.fmtSigned(u.fmtH1, num(c[1])) : str(c); }).join(" ");
     var tags = TAG_KEYS.filter(function (t) { return num(obj(L.by_tag)[t]) > 0; }).map(function (t) { return TAG_NAME[t] + " " + u.fmtH1(L.by_tag[t]); }).join(" · ");
@@ -2153,9 +2284,10 @@
         ["field", "func", "wtype"].forEach(function (k) { var v = getVal("r-fix-" + k); if (v) { set[k] = v; } });
         var t = str(getVal("r-fix-title")).trim();
         if (t) { set.title = Array.from(t).slice(0, 25).join(""); }
+        var scope = getVal("r-fix-scope") === "this" ? "this" : "similar";   // 서랍을 닫기 전에 읽는다
         U().closeDrawer();
         if (!Object.keys(set).length) { st.msg = {kind: "info", text: "바꾼 값이 없어 저장하지 않았습니다"}; render(); return; }
-        result(actions.correction({unit_id: unitId, set: set, scope: getVal("r-fix-scope") === "this" ? "this" : "similar"}),
+        result(actions.correction({unit_id: unitId, set: set, scope: scope}),
           function (res) { return obj(res).reanalyze_job || obj(obj(res).data).reanalyze_job ? "고친 분류를 저장했습니다 — 빠른 재분석을 시작했습니다" : "고친 분류를 저장했습니다 — 다시 분석하면 반영됩니다"; },
           function () { st.hier = null; });
       });
@@ -2277,7 +2409,9 @@
       "r-codename": function (n, ref) {
         if (!env.canWrite) { return; }
         var p = str(ref).split("|");
-        result(actions.codename({cand: p[0] || null, action: p[1]}), "코드네임 검토를 저장했습니다", function () { st.hier = null; loadHier(true); });
+        result(actions.codename({cand: p[0] || null, action: p[1]}), function (res) {
+          return obj(res).text_ko || obj(obj(res).data).text_ko || "코드네임 검토를 저장했습니다";
+        }, function () { st.hier = null; loadHier(true); });
       },
       "r-rule": function (n, ref) {
         if (!env.canWrite) { return; }
@@ -2299,12 +2433,14 @@
           result(actions.proposal(body), "제안 처리를 저장했습니다", function () { st.hier = null; loadHier(true); });
         }
         if (action === "accept") {
+          var guess = str(obj(arr(hs.proposals).filter(function (pp) { return pp.proposal_id === id; })[0]).domain_guess);
           formDrawer("내 과제로 받기", [field("r-pr-domain", "업무 영역", select("r-pr-domain", X.domainList.filter(function (d) { return d.code !== "UNC"; })
-            .map(function (d) { return [d.code, d.name || d.code]; }), "")), field("r-pr-words", "알아볼 낱말(쉼표로 나눔)", input("r-pr-words", "text", null))],
+            .map(function (d) { return [d.code, d.name || d.code]; }), guess)), field("r-pr-words", "알아볼 낱말(쉼표로 나눔)", input("r-pr-words", "text", null))],
           "받기", function () {
             var words = str(getVal("r-pr-words")).split(",").map(function (w) { return w.trim(); }).filter(Boolean);
+            var dom = str(getVal("r-pr-domain"));                       // 서랍을 닫기 전에 읽는다(닫으면 칸이 사라진다)
             U().closeDrawer();
-            send({domain: getVal("r-pr-domain"), words: words});
+            send({domain: dom, keywords: words});
           });
         } else if (action === "map") {
           formDrawer("기존 과제와 같음", [field("r-pr-project", "과제", select("r-pr-project", (arr(hs.projects).length ? arr(hs.projects) : arr(model.projects))

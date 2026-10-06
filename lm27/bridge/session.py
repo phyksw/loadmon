@@ -1184,3 +1184,121 @@ class EdgeSession:
         except OSError:
             return None
         return str(p)
+
+    # ── 창 앞으로(화면 [분석용 Edge 창 앞으로] — 사람이 한 번 로그인할 창을 찾게) ──────────────────
+    def front(self) -> dict:
+        """전용 프로필 Edge 창을 사람 앞으로. 이 프로필의 Edge 가 떠 있으면(소유 확인 — 남의 디버그 Edge 에는 붙지 않는다) 그
+        창을 앞으로(최소화면 되살림), 없으면 브리지와 같은 방식(같은 프로필·포트·기동 인자)으로 띄워 ``bridge.url``(Microsoft 365
+        — 로그인 전이면 로그인 화면)을 연다. 띄운 창은 닫지 않는다 — 사람이 로그인하도록 둔다. 자격 증명은 입력하지 않는다(B4).
+        탭 내용은 읽지 않는다(탭 id 만). 반환 ``{state: front|launched|<단계>, port, restored, foreground, notices}``."""
+        out: dict = {"state": "", "port": 0, "restored": False, "foreground": False}
+        try:
+            if str(self.environ.get("LM_NO_BROWSER", "")).strip() not in ("", "0"):
+                raise PhaseError("edge_not_found", why="no_browser")
+            self.info.profile_dir = str(self._resolve_profile_dir())
+            self.info.origin_mode = self.profile.load()["health"].get("origin_mode") or "none"
+            last = self.profile.load().get("last_session") or {}
+            self._targets = {r: list(v) for r, v in (last.get("targets") or {}).items() if isinstance(v, list)}
+            port, how = self.choose_port()
+            if how == "launch":
+                self.lock.acquire(self._targets)        # 기동 순간만 잡는다(재시도 대기 없음 — 화면 요청 안)
+                try:
+                    self.edge = edge_info(self.edge_finder, self.policy_reader, self.environ)
+                    if not self.edge.path:
+                        raise PhaseError("edge_not_found")
+                    self.info.port = port
+                    self._launch(port)
+                    v = C.version(self.http, port)
+                    self.info.browser_id = C.browser_id(str((v or {}).get("webSocketDebuggerUrl") or ""))
+                    pages = self._pages()
+                    if len(pages) == 1 and pages[0].get("id"):
+                        self._targets[self.role] = [str(pages[0]["id"])]     # 다음 브리지 실행이 이 탭을 제 탭으로 쓴다
+                    self._save_last_session()
+                finally:
+                    self.lock.release()
+                if self._proc is not None and hasattr(self._proc, "close"):
+                    self._proc.close()                  # 창은 그대로 — 표준 입출력 손잡이만 놓는다
+            out["state"], out["port"] = ("launched" if how == "launch" else "front"), port
+            out["restored"], out["foreground"] = self._bring_to_front(port)
+        except PhaseError as e:
+            out["state"] = e.phase
+            out["why"] = str(e.info.get("why") or e.info.get("owner_role") or "")
+        except (OSError, C.CdpError, ValueError) as e:
+            out["state"] = "launch_failed"
+            out["why"] = type(e).__name__
+        out["notices"] = list(getattr(self.notices, "shown", ()))
+        self.events.append("front:" + out["state"])
+        return out
+
+    def _front_connect(self, ws_url: str, port: int):
+        """창 앞으로 전용 연결 — Origin 없이, 403 이면 127.0.0.1:<port> Origin 으로 한 번 더(B §4.4 와 같은 규칙)."""
+        try:
+            return self.connector.connect(ws_url, origin=self._origin())
+        except C.HandshakeRejected as e:
+            if e.status != 403 or self._origin():
+                raise
+            return self.connector.connect(ws_url, origin=f"http://127.0.0.1:{port}")
+
+    def _bring_to_front(self, port: int) -> tuple[bool, bool]:
+        """그 포트 브라우저의 창을 앞으로 — 우리 탭(지난 세션 기록)이 있으면 그 탭, 없으면 첫 페이지 탭의 창:
+        ① ``Browser.getWindowForTarget`` → 최소화면 ``setWindowBounds(normal)``, 아니면 내렸다 원래 상태로(다른 프로세스 창을
+        Windows 가 앞으로 못 올리는 제약 우회) ② ``Page.bringToFront`` ③ ``/json/activate/<id>``. 실패해도 진행.
+        반환 (최소화를 되살렸는가, 앞으로 올리기 호출이 하나라도 성공했는가)."""
+        self.info.port = port
+        pages = self._pages()
+        if not pages:
+            return False, False
+        own = {str(i) for ids in self._targets.values() for i in ids}
+        tab = next((t for t in pages if str(t.get("id")) in own), None) or pages[0]
+        tid = str(tab.get("id") or "")
+        restored = fg = False
+        v = C.version(self.http, port)
+        if v and tid:
+            try:
+                b = self._front_connect(str(v.get("webSocketDebuggerUrl") or ""), port)
+                try:
+                    w = b.call("Browser.getWindowForTarget", {"targetId": tid}, timeout=S.FRONT_CALL_TIMEOUT_S) or {}
+                    wid = w.get("windowId")
+                    state = str((w.get("bounds") or {}).get("windowState") or "normal")
+                    if isinstance(wid, int) and not isinstance(wid, bool):
+                        if state == "minimized":
+                            b.call("Browser.setWindowBounds", {"windowId": wid, "bounds": {"windowState": "normal"}},
+                                   timeout=S.FRONT_CALL_TIMEOUT_S)
+                            restored = True
+                        elif state in ("normal", "maximized"):
+                            b.call("Browser.setWindowBounds", {"windowId": wid, "bounds": {"windowState": "minimized"}},
+                                   timeout=S.FRONT_CALL_TIMEOUT_S)
+                            self.clock.sleep(S.FRONT_NUDGE_S)
+                            b.call("Browser.setWindowBounds", {"windowId": wid, "bounds": {"windowState": state}},
+                                   timeout=S.FRONT_CALL_TIMEOUT_S)
+                        fg = True
+                finally:
+                    b.close()
+            except (OSError, C.CdpError, C.HandshakeRejected, ValueError):
+                self.events.append("front_window_failed")
+        ws = str(tab.get("webSocketDebuggerUrl") or "")
+        if C.local_ws_url(ws):
+            try:
+                c = self._front_connect(ws, port)
+                try:
+                    c.call("Page.bringToFront", {}, timeout=S.FRONT_CALL_TIMEOUT_S)
+                    fg = True
+                finally:
+                    c.close()
+            except (OSError, C.CdpError, C.HandshakeRejected, ValueError):
+                self.events.append("front_tab_failed")
+        try:
+            self.http.json(port, f"/json/activate/{tid}")
+            fg = True
+        except C.HTTP_ERRORS:
+            pass
+        return restored, fg
+
+
+def front_window(paths=None, *, cfg=None, **kw) -> dict:
+    """화면 [분석용 Edge 창 앞으로](R §5.3 · B §10.5) — ``EdgeSession.front()`` 한 번(역할 bridge 의 전용 프로필).
+    ``cfg`` = ``lm27.config`` Cfg 또는 ``BridgeSettings``. 알림은 표준 출력으로 내지 않고 결과의 ``notices`` 코드로만 돌려준다
+    (화면 서버 안에서 부른다). 나머지 키워드는 ``EdgeSession`` 주입점(시험)."""
+    bs = cfg if isinstance(cfg, S.BridgeSettings) else S.load_settings(paths, cfg=cfg)
+    kw.setdefault("notices", Notices())
+    return EdgeSession("bridge", None, paths=paths, cfg=bs, **kw).front()

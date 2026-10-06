@@ -454,6 +454,8 @@ def _export(run_id: str, formats=None, variants=None, out_dir=None, *, paths=Non
     inp = inputs if inputs is not None else load_inputs(run_id, paths=paths, cfg=cfg, bundle_state=False,
                                                         evidence=("html" in fmts and "full" in vrs))
     built_at = _now_iso(cfg, now)
+    from lm27.report.inputs import analysis_time
+    analyzed_at = analysis_time(paths, run_id, int(cfg["time.tzOffsetMin"]))
     if out_dir:
         base = os.path.abspath(os.fspath(out_dir))
 
@@ -520,7 +522,7 @@ def _export(run_id: str, formats=None, variants=None, out_dir=None, *, paths=Non
 
             def render(m_isl, d_isl, _v=variant):
                 return render_html(m_isl, d_isl, variant=_v, run_id=run_id, built_at=built_at, assets=assets)
-            html, trimmed = fit_html(vm, drill, cap, render)
+            html, trimmed = fit_html(_with_analysis_time(vm, analyzed_at), drill, cap, render)
             if trimmed:
                 res.trimmed[variant] = trimmed
             if len(html.encode("utf-8")) > cap:
@@ -537,6 +539,16 @@ def _export(run_id: str, formats=None, variants=None, out_dir=None, *, paths=Non
         res.pruned = prune_exports(os.path.dirname(base), int(cfg["report.export.keep"]), protect=(base,))
     res.rc = 1 if res.failed else 0
     return res
+
+
+def _with_analysis_time(vm: Mapping, analyzed_at: str | None) -> Mapping:
+    """자기완결 HTML 섬의 모델에만 ``run.built_at``(그 실행의 분석 시각 — 머리 띠 '분석 MM-DD HH:MM')을 덧붙인 얕은 사본.
+    모델 파일·JSON 내보내기는 그대로다(G-R1 — 같은 실행이면 같은 값이라 HTML 결정성도 그대로)."""
+    run = dict(vm.get("run") or {})
+    if not analyzed_at or run.get("built_at"):
+        return vm
+    run["built_at"] = analyzed_at
+    return {**vm, "run": run}
 
 
 class _ExportModule(types.ModuleType):
