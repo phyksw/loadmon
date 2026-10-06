@@ -210,3 +210,30 @@ class LedgerFromBundleCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DefaultSinceCase(unittest.TestCase):
+    """계약 v1.3 §0.8 V6: 수집 기본 시작일 = 회고 기간과 올해 1월 1일 중 이른 날(단일원 default_since)."""
+
+    def setUp(self):
+        from tests.fixtures.wp33.helpers import Sandbox
+        self.sb = Sandbox(scripts=False)
+        self.addCleanup(self.sb.cleanup)
+
+    def test_year_start_by_default(self):
+        from datetime import date
+        from lm27.collect import ledger as lg
+        cfg = self.sb.cfg(**{"collect.lookbackDays": 10})
+        self.assertEqual(lg.default_since(cfg, date(2026, 10, 6)), date(2026, 1, 1))
+
+    def test_lookback_wins_when_earlier(self):
+        from datetime import date
+        from lm27.collect import ledger as lg
+        cfg = self.sb.cfg(**{"collect.lookbackDays": 400})
+        self.assertEqual(lg.default_since(cfg, date(2026, 10, 6)), date(2025, 9, 2))
+
+    def test_off_keeps_lookback(self):
+        from datetime import date
+        from lm27.collect import ledger as lg
+        cfg = self.sb.cfg(**{"collect.lookbackDays": 10, "collect.sinceYearStart": False})
+        self.assertEqual(lg.default_since(cfg, date(2026, 10, 6)), date(2026, 9, 27))

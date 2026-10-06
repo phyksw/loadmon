@@ -17,6 +17,20 @@
    "label_ko": "수집 회고 기간(일)",
    "help_ko": "수집이 거슬러 읽는 기본 기간. 전경 수집과 에이전트 수확(이벤트 로그 -Days)이 같은 값을 쓴다."
   },
+  "collect.sinceYearStart": {
+   "default": true, "type": "bool", "range": null, "choices": [false, true],
+   "owner": "lm27.collect.ledger", "readers": ["lm27.collect.run"], "spec": "사용자 지시(2026-10-06 기본 기간)",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "수집을 올해 1월 1일부터",
+   "help_ko": "켜면 수집 기본 시작일이 올해 1월 1일이다(회고 기간보다 이르면 그쪽). 기본 기간 '1월 1일 ~ 오늘'."
+  },
+  "collect.webEverywhere": {
+   "default": true, "type": "bool", "range": null, "choices": [false, true],
+   "owner": "lm27.collect.plan", "readers": ["lm27.collect.todo"], "spec": "사용자 지시(2026-10-06 버전 무관 수집)",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "웹 경로를 모든 PC 에서",
+   "help_ko": "켜면 Outlook 웹·팀즈 웹(버전 무관)을 모든 PC 에서 돌린다(LM24 와 같음). 끄면 백필 담당 PC 한 대만."
+  },
   "collect.parallelMax": {
    "default": 2, "type": "int", "range": {"min": 1, "max": 8}, "choices": null,
    "owner": "lm27.collect.plan", "readers": [], "spec": "C §8.2",

@@ -61,7 +61,7 @@ class FlowBase(unittest.TestCase):
         self.addCleanup(events.configure, "text")
         self.sb = Sandbox()
         self.addCleanup(self.sb.cleanup)
-        self.cfg = self.sb.cfg(**{"collect.lookbackDays": 10})
+        self.cfg = self.sb.cfg(**{"collect.lookbackDays": 10, "collect.webEverywhere": False, "collect.sinceYearStart": False})   # 예전 의미 — 새 기본값은 test_plan
 
     def deps(self, **kw):
         kw.setdefault("specs", specs())

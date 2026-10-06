@@ -218,7 +218,10 @@ SCEN: dict[str, Spec] = {
     # Outlook(P-OL-INST · P-OL-COM)
     "newol": Spec(over={"ol": {"classic": False, "new_installed": True, "use_new": True, "running": False}, **ZERO_IDX},
                   cfg={}, only=OL + ",P-IDX"),
-    "newol_toggle": Spec(over={"ol": {"use_new": True}}, cfg={}, only=OL),
+    "newol_toggle": Spec(over={"ol": {"use_new": True}}, cfg={}, only=OL),          # 토글만 — 클래식 있음(v1.3 V3)
+    "newol_only": Spec(over={"ol": {"use_new": True, "new_installed": True, "classic": False, "running": False}},
+                       cfg={}, only=OL),                                          # 진짜 새 Outlook 전용
+    "newol_running_classic": Spec(over={"ol": {"new_installed": True, "new_running": True}}, cfg={}, only=OL),
     "noprof": Spec(over={"ol": {"profiles": 0, "running": False}, **ZERO_IDX}, cfg={}, only=OL + ",P-IDX"),
     "wizard": Spec(over={"ol": {"com_registered": False, "running": False}}, cfg={}, only=OL),
     "wizard_msi": Spec(over={"ol": {"msi": True, "running": False}}, cfg={}, only=OL),
@@ -275,7 +278,10 @@ EXPECT: dict[str, dict[str, tuple[str, set | frozenset]]] = {
     "healthy_counts": OK_ALL,
     "newol": {"mail.com": ("fail", {"R-NEWOL"}), "cal.com": ("fail", {"R-NEWOL"}),
               "mail.index": ("fail", {"R-NEWOL"}), "cal.index": ("fail", {"R-NEWOL"})},
-    "newol_toggle": {"mail.com": ("fail", {"R-NEWOL"}), "cal.com": ("fail", {"R-NEWOL"})},
+    # v1.3 §0.8 V3: 클래식이 있으면 토글·새 Outlook 실행만으로 막힘이 아니다 — COM 으로 읽는다(LM24 와 같음)
+    "newol_toggle": {"mail.com": ("ok", E), "cal.com": ("ok", E)},
+    "newol_running_classic": {"mail.com": ("ok", E), "cal.com": ("ok", E)},
+    "newol_only": {"mail.com": ("fail", {"R-NEWOL"}), "cal.com": ("fail", {"R-NEWOL"})},
     "noprof": {"mail.com": ("fail", {"R-NOPROF"}), "cal.com": ("fail", {"R-NOPROF"}), "mail.index": ("fail", {"R-NOPROF"})},
     "wizard": {"mail.com": ("fail", {"R-WIZARD"}), "cal.com": ("fail", {"R-WIZARD"})},
     "wizard_msi": {"mail.com": ("fail", {"R-WIZARD"})},
@@ -305,7 +311,8 @@ EXPECT: dict[str, dict[str, tuple[str, set | frozenset]]] = {
     "idxpolicy": {"mail.index": ("fail", {"R-IDXPOLICY"}), "cal.index": ("fail", {"R-IDXPOLICY"})},
     "idxpaused_zero": {"mail.index": ("fail", {"R-IDXPAUSED"}), "cal.index": ("fail", {"R-IDXPAUSED"})},
     "idxpaused_some": {"mail.index": ("ok", {"R-IDXPAUSED"})},
-    "idx_zero_ok": {"mail.index": ("ok", E), "cal.index": ("ok", E)},
+    # v1.3 §0.8 V4: 클래식이 있는데 색인에 Outlook 항목 0 = 온라인 모드(수집기 판정과 같음)
+    "idx_zero_ok": {"mail.index": ("fail", {"R-ONLINE"}), "cal.index": ("fail", {"R-ONLINE"})},
     "clm": {"env": ("fail", {"R-CLM"}), "mail.com": ("fail", {"R-CLM"}), "cal.com": ("fail", {"R-CLM"}),
             "mail.index": ("fail", {"R-CLM"}), "cal.index": ("fail", {"R-CLM"}), "teams.uia": ("fail", {"R-CLM"}),
             "pc.sampler": ("fail", {"R-CLM"}), "edge_cdp_policy": ("ok", E),

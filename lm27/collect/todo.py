@@ -38,6 +38,7 @@ CHAIN = {"mail": ("mail.owa", "mail.copilot"), "cal": ("cal.owa", "cal.copilot")
 AXIS_GROUP = {"mail_in": "mail", "mail_out": "mail", "cal": "cal", "teams": "teams"}
 EDGE_SRCS = frozenset({"mail.owa", "cal.owa", "teams.web"})
 WANT_CLOUD = "cloud"
+WANT_ANY = "*"                                # 웹 경로 빈칸 — 어느 PC 든 먼저 도는 PC 가 채운다(collect.webEverywhere)
 ATTEMPTS_MAX = 10
 CONFIRMED = "불가(확정)"
 
@@ -117,6 +118,9 @@ def _options(group, pcs_by_id, cfg, today, backfill, copilot_pc) -> tuple:
     chain = [s for s in CHAIN[group] if s not in plan.COPILOT_STAGE_OF or plan.copilot_enabled(cfg, s)]
     for src in chain:
         pc = copilot_pc if src in ledger.COPILOT_SRCS else backfill
+        if src in EDGE_SRCS and plan.web_everywhere(cfg):
+            out.append((src, WANT_ANY, "assigned"))           # PC 마다 자기 탐침이 막히면 그 PC 계획기가 건너뛴다
+            continue
         if pc is None:
             out.append((src, WANT_CLOUD, "open"))
             continue
@@ -218,7 +222,7 @@ def plan_todo(paths, cfg, *, now=None, cells=None, pcs=None, prev=None, write=Tr
             axis = "mail_out" if axes == {"mail_out"} else ("mail_in" if grp == "mail" else grp)
             todos.append(Todo(todo_id=tid, account=ledger.ACCOUNT, date_range=[a, b], kind_axis=axis,
                               want_src=want_src, want_pc=want_pc, reasons=sorted(set(rs) | set(brs2)),
-                              attempts=_attempts(pcs_by_id, want_pc, want_src) if want_pc != WANT_CLOUD else [],
+                              attempts=_attempts(pcs_by_id, want_pc, want_src) if want_pc not in (WANT_CLOUD, WANT_ANY) else [],
                               state=st, updated=stamp))
     todos.sort(key=lambda t: (t.date_range[0], t.want_src, t.todo_id))
     if write:
@@ -239,7 +243,7 @@ def blanks_for(todos, src: str, pc_id: str | None) -> list:
         d = _as_dict(t)
         if d.get("want_src") != src or d.get("state") not in LIVE_STATES:
             continue
-        if pc_id is not None and d.get("want_pc") != pc_id:
+        if pc_id is not None and d.get("want_pc") not in (pc_id, WANT_ANY):
             continue
         out.append({"todo_id": d["todo_id"], "date_range": list(d["date_range"]), "kind_axis": d["kind_axis"]})
     return sorted(out, key=lambda x: (x["date_range"][0], x["todo_id"]))

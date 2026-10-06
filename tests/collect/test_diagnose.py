@@ -24,7 +24,7 @@ class DiagnoseCase(unittest.TestCase):
     def setUp(self):
         self.sb = Sandbox(scripts=False)
         self.addCleanup(self.sb.cleanup)
-        self.cfg = self.sb.cfg(**{"collect.lookbackDays": 10})
+        self.cfg = self.sb.cfg(**{"collect.lookbackDays": 10, "collect.webEverywhere": False, "collect.sinceYearStart": False})
         p = self.sb.paths
         cs = [c.value for c in canaries(groups=("pii",), weak=False) if c.value][:2]
         self.cs = cs

@@ -50,7 +50,8 @@ class TodoCase(unittest.TestCase):
     def setUp(self):
         self.sb = Sandbox(scripts=False)
         self.addCleanup(self.sb.cleanup)
-        self.cfg = self.sb.cfg(**{"collect.lookbackDays": 10})
+        # 예전 의미(백필 PC 한 대·10일 창)를 보는 시험 — 새 기본값(v1.3 §0.8 V5·V6)은 아래 WebEverywhereCase
+        self.cfg = self.sb.cfg(**{"collect.lookbackDays": 10, "collect.webEverywhere": False, "collect.sinceYearStart": False})
 
     def plan(self, cells, pcs_, prev=(), cfg=None):
         return todo.plan_todo(self.sb.paths, cfg or self.cfg, now=NOW, cells=cells, pcs=pcs_, prev=list(prev))
@@ -143,7 +144,7 @@ class TodoCase(unittest.TestCase):
         cells += [cell(d, "cal", "cal.index", PC1, "blocked", ["R-NOIDX"]) for d in days("2026-09-26", "2026-10-05")]
         ts = self.plan(cells, pcs(cloud_caps={"cal.owa": CONFIRMED}))
         self.assertEqual({(t.want_src, t.state) for t in ts}, {("cal.owa", "blocked_confirmed")})
-        cfg = self.sb.cfg(**{"collect.lookbackDays": 10, "bridge.stages": {"lookup_calendar": True}})
+        cfg = self.sb.cfg(**{"collect.lookbackDays": 10, "bridge.stages": {"lookup_calendar": True}, "collect.webEverywhere": False, "collect.sinceYearStart": False})
         ts = self.plan(cells, pcs(cloud_caps={"cal.owa": CONFIRMED}), cfg=cfg)
         self.assertEqual({(t.want_src, t.state) for t in ts}, {("cal.copilot", "assigned")})
 
@@ -175,3 +176,30 @@ class TodoCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WebEverywhereCase(unittest.TestCase):
+    """계약 v1.3 §0.8 V5: 버전 무관 웹 경로의 빈칸은 '아무 PC'(want_pc '*') — 백필 PC(클라우드PC)가 없어도 채워진다."""
+
+    def setUp(self):
+        self.sb = Sandbox(scripts=False)
+        self.addCleanup(self.sb.cleanup)
+        self.cfg = self.sb.cfg(**{"collect.lookbackDays": 10, "collect.sinceYearStart": False})
+
+    def test_web_blanks_go_to_any_pc_without_cloud(self):
+        ts = todo.plan_todo(self.sb.paths, self.cfg, now=NOW, cells=[], pcs=pcs(cloud=False), prev=[])
+        web = [t for t in ts if t.want_src in todo.EDGE_SRCS]
+        self.assertTrue(web)
+        self.assertTrue(all(t.want_pc == todo.WANT_ANY and t.state == "assigned" for t in web))
+        self.assertTrue(all(t.attempts == [] for t in web))
+
+    def test_blanks_for_matches_any_pc(self):
+        ts = todo.plan_todo(self.sb.paths, self.cfg, now=NOW, cells=[], pcs=pcs(cloud=False), prev=[])
+        rows = todo.blanks_for(ts, "mail.owa", "pc_0123456789abcdef")
+        self.assertTrue(rows)
+        self.assertEqual(rows, todo.blanks_for(ts, "mail.owa", "pc_fedcba9876543210"))
+
+    def test_turning_off_restores_backfill_pc(self):
+        cfg = self.sb.cfg(**{"collect.lookbackDays": 10, "collect.sinceYearStart": False, "collect.webEverywhere": False})
+        ts = todo.plan_todo(self.sb.paths, cfg, now=NOW, cells=[], pcs=pcs(cloud=False), prev=[])
+        self.assertFalse([t for t in ts if t.want_pc == todo.WANT_ANY])

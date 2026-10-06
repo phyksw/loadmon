@@ -21,7 +21,7 @@ class PlanCase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.sb = Sandbox(scripts=False)
-        cls.cfg = cls.sb.cfg()
+        cls.cfg = cls.sb.cfg(**{"collect.webEverywhere": False, "collect.sinceYearStart": False})   # 예전 의미(백필 PC 한 대) — 새 기본값은 WebEverywherePlan
 
     @classmethod
     def tearDownClass(cls):
@@ -55,7 +55,7 @@ class PlanCase(unittest.TestCase):
         self.assertNotIn("copilot_lookup", st1)
 
     def test_backfill_pc_designated_by_label(self):
-        cfg = self.sb.cfg(**{"collect.backfillPc": "홍길동 노트북"})
+        cfg = self.sb.cfg(**{"collect.backfillPc": "홍길동 노트북", "collect.webEverywhere": False})
         self.assertEqual(plan.backfill_pc_id([PC1, PC2, CLOUD], cfg), PC2["pc_id"])
         roles = plan.pc_roles(PC2, pcs=[PC1, PC2, CLOUD], cfg=cfg)
         self.assertIn("account_backfill", roles)
@@ -136,3 +136,33 @@ class PlanCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WebEverywherePlan(unittest.TestCase):
+    """계약 v1.3 §0.8 V5: 기본값이면 업무 PC 에도 Outlook 웹·팀즈 웹 단계가 있다(LM24 와 같음). 코파일럿은 그대로 클라우드PC."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.sb = Sandbox(scripts=False)
+        cls.cfg = cls.sb.cfg()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.sb.cleanup()
+
+    def test_default_is_on(self):
+        self.assertTrue(plan.web_everywhere(self.cfg))
+
+    def test_work_pc_gets_web_paths(self):
+        roles = plan.pc_roles(PC1, pcs=[PC1], cfg=self.cfg)
+        self.assertIn(plan.ROLE_BACKFILL, roles)
+        self.assertNotIn(plan.ROLE_COPILOT, roles)
+        st = {s.name: s for s in plan.stage_plan(roles, {}, None, cfg=self.cfg)}
+        self.assertIn("mail.owa", st["backfill_owa"].srcs)
+        self.assertIn("cal.owa", st["backfill_owa"].srcs)
+        self.assertIn("teams.web", st["backfill_teams_web"].srcs)
+        self.assertNotIn("copilot_lookup", st)
+
+    def test_work_pc_with_cloud_still_gets_web_paths(self):
+        roles = plan.pc_roles(PC1, pcs=[PC1, CLOUD], cfg=self.cfg)
+        self.assertIn(plan.ROLE_BACKFILL, roles)

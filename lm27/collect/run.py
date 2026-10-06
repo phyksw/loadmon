@@ -328,8 +328,7 @@ class _Ctx:
     def window(self) -> list:
         """lookback 창 ``[d0, d1]``(로컬 — 근무 시간대)."""
         d1 = date.fromisoformat(self.until) if self.until else self.today
-        d0 = date.fromisoformat(self.since) if self.since else \
-            self.today - timedelta(days=int(self.cfg["collect.lookbackDays"]) - 1)
+        d0 = date.fromisoformat(self.since) if self.since else ledger.default_since(self.cfg, self.today)
         return [d0.isoformat(), d1.isoformat()]
 
     def ranges_for(self, spec, blanks=None) -> list:

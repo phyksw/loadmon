@@ -101,7 +101,8 @@ def next_actions(s: UiState) -> list:
         add("N06", "risk", f"{pc} 기록이 {d}일째 들어오지 않았습니다", "그 PC 에서 [수집]하면 그 뒤 기록이 들어옵니다",
             _act("[수집 화면]", "#collect"), pc)
     if s.login_needed:
-        add("N07", "risk", "Outlook 웹·Copilot 로그인이 필요합니다", "분석용 Edge 창에서 회사 계정으로 한 번 로그인하면 이어서 합니다",
+        add("N07", "risk", "Outlook 웹·팀즈 웹 로그인이 필요합니다",
+            "전용 Edge 창에서 회사 계정으로 한 번 로그인하면 Outlook·팀즈 버전과 상관없이 메일·일정·대화를 이어서 읽습니다",
             _act("[분석용 Edge 창 앞으로]", "#analysis", "POST /api/bridge/front"), s.this_pc)
     for src in sorted(set(s.confirmed_blocked)):
         add("N08", "risk", f"{src} 를 이 계정에서 쓸 수 없습니다", "다른 경로(반입 폴더 등)가 그 기간을 채웁니다",
@@ -165,7 +166,7 @@ def _workdays_between(d0: date, d1: date) -> int:
 def gather(app) -> UiState:
     """화면 서버의 파일·모듈에서 UiState 를 모은다. 조각마다 따로 실패(그 조건만 빠진다 — R §11)."""
     s = UiState()
-    steps = (_g_pc, _g_agent, _g_analysis, _g_bundle, _g_todo, _g_outbox, _g_registry, _g_manual, _g_misc)
+    steps = (_g_pc, _g_weblogin, _g_agent, _g_analysis, _g_bundle, _g_todo, _g_outbox, _g_registry, _g_manual, _g_misc)
     for fn in steps:
         try:
             fn(app, s)
@@ -185,6 +186,12 @@ def _g_pc(app, s: UiState) -> None:
     s.bundle_readonly = "R-BUNDLE-READONLY" in rs
     s.location_warn = [r for r in rs if r in BUNDLE_WARN]
     roles = set(pc.get("roles") or ())
+    try:                                            # 계약 v1.3 §0.8 V5 — 웹 경로가 모든 PC 에서 돌면 로그인 안내도 모든 PC 에
+        from lm27.collect import plan
+        if plan.web_everywhere(app.cfg()):
+            roles.add(plan.ROLE_BACKFILL)
+    except Exception:
+        pass
     wl = caps.get("web_login") or {}
     if roles & {"account_backfill", "copilot"} and str(wl.get("verdict") or "").startswith("불가") and \
             "R-LOGIN" in (wl.get("reasons") or ()):
@@ -295,6 +302,34 @@ def _g_registry(app, s: UiState) -> None:
 def _g_manual(app, s: UiState) -> None:
     from lm27.ui.api_analysis import get_manual
     s.manual_batches = int(get_manual(app, None).get("open") or 0)
+
+
+def _g_weblogin(app, s: UiState) -> None:
+    """이 PC 의 최근 수집에서 버전 무관 웹 경로(Outlook 웹·팀즈 웹)가 로그인 때문에 못 돌았나(계약 v1.3 §0.8 V5).
+    웹 수집기의 R-LOGIN·R-CA 는 pc.json 능력이 아니라 수집 실행의 단계 결과에 남는다 — 그것을 본다."""
+    import json
+    from lm27.ui.api_home import this_pc
+    pc_id = (this_pc(app)[1] or {}).get("pc_id")
+    root = app.paths.collect_runs()
+    if not root.is_dir():
+        return
+    for d in sorted((x for x in root.iterdir() if x.is_dir()), key=lambda x: x.name, reverse=True)[:20]:
+        seen = hit = False
+        for st in ("backfill_owa", "backfill_teams_web"):
+            f = d / f"stage_result_{st}.json"
+            if not f.is_file():
+                continue
+            try:
+                r = json.loads(f.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if pc_id and r.get("pc_id") not in (None, pc_id):
+                continue
+            seen = True
+            hit = hit or bool({"R-LOGIN", "R-CA"} & set(r.get("reasons") or ()))
+        if seen:                                    # 웹 단계가 돈 가장 최근 실행만 본다(그 뒤 로그인했으면 사라진다)
+            s.login_needed = s.login_needed or hit
+            return
 
 
 def _g_misc(app, s: UiState) -> None:

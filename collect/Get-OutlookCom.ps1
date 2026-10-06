@@ -89,6 +89,7 @@ $P_HEADERS = $PROPTAG + '0x007D001F'      # PR_TRANSPORT_MESSAGE_HEADERS(B단)
 $P_SMTP = $PROPTAG + '0x39FE001E'         # PR_SMTP_ADDRESS(수신자, B단)
 $DT_START = 'urn:schemas:calendar:dtstart'
 $DT_END = 'urn:schemas:calendar:dtend'
+$OUTLOOK_START_GRACE_SEC = 120     # 꺼진 Outlook 을 COM 으로 띄울 때 attach 무진전 허용(초) — LM24 는 제한 없이 기다렸다
 $RPC_E_CALL_REJECTED = -2147418111        # 0x8001010A
 $REGDB_E_CLASSNOTREG = -2147221164        # 0x80040154
 $MAIL_REFRESH_DAYS = 3
@@ -1159,6 +1160,54 @@ function Invoke-Worker($a) {
 }
 
 # ═════════════════════════════════════ 부모: 사전 점검 · 워치독 ═════════════════════════════════════
+function Find-ClassicOutlook {
+    # 클래식 Outlook(OUTLOOK.EXE) 위치 — 판(2010~365)·설치 방식(MSI·Click-to-Run)·32/64비트와 상관없이 찾는다.
+    # App Paths 한 곳만 보면 Microsoft 365(Click-to-Run) PC 대부분에서 못 찾아 '새 Outlook 전용' 으로 오판했다(실측).
+    # 반환: 있는 OUTLOOK.EXE 전체 경로 또는 $null. 메모리에서만 쓰고 출력하지 않는다.
+    # 같은 함수가 Invoke-CapabilityProbe.ps1 · Get-OutlookCom.ps1 · Get-OutlookIndex.ps1 에 똑같이 있다(시험이 대조).
+    $cands = New-Object System.Collections.Generic.List[string]
+    foreach ($k in @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\OUTLOOK.EXE',
+            'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\OUTLOOK.EXE',
+            'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\OUTLOOK.EXE')) {
+        try { $d = (Get-ItemProperty -LiteralPath $k -ErrorAction Stop).'(default)'; if ($d) { $cands.Add([string]$d) } } catch { }
+    }
+    foreach ($v in @('16.0', '15.0', '14.0')) {
+        foreach ($b in @('HKLM:\SOFTWARE\Microsoft\Office', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Office')) {
+            try { $ir = (Get-ItemProperty -LiteralPath "$b\$v\Outlook\InstallRoot" -ErrorAction Stop).Path; if ($ir) { $cands.Add((Join-Path $ir 'OUTLOOK.EXE')) } } catch { }
+        }
+    }
+    try {
+        $c2r = (Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration' -ErrorAction Stop).InstallationPath
+        if ($c2r) { foreach ($o in @('Office16', 'Office15')) { $cands.Add((Join-Path $c2r "root\$o\OUTLOOK.EXE")) } }
+    } catch { }
+    foreach ($cls in @('HKLM:\SOFTWARE\Classes', 'HKLM:\SOFTWARE\WOW6432Node\Classes')) {
+        try {
+            $clsid = (Get-ItemProperty -LiteralPath "$cls\Outlook.Application\CLSID" -ErrorAction Stop).'(default)'
+            if ($clsid) {
+                $ls = (Get-ItemProperty -LiteralPath "$cls\CLSID\$clsid\LocalServer32" -ErrorAction Stop).'(default)'
+                if ($ls) { $cands.Add([string]$ls) }
+            }
+        } catch { }
+    }
+    foreach ($pf in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
+        if (-not $pf) { continue }
+        foreach ($o in @('root\Office16', 'root\Office15', 'Office16', 'Office15', 'Office14')) { $cands.Add((Join-Path $pf "Microsoft Office\$o\OUTLOOK.EXE")) }
+    }
+    foreach ($c in $cands) {
+        $s = ([string]$c).Trim()
+        try { $s = [Environment]::ExpandEnvironmentVariables($s) } catch { }
+        if ($s.StartsWith('"')) {
+            $e = $s.IndexOf('"', 1)
+            if ($e -gt 1) { $s = $s.Substring(1, $e - 1) } else { $s = $s.Trim('"') }
+        } else {
+            $i = $s.ToLowerInvariant().IndexOf('.exe')
+            if ($i -gt 0) { $s = $s.Substring(0, $i + 4) }
+        }
+        if ($s -and (Test-Path -LiteralPath $s -PathType Leaf)) { return $s }
+    }
+    return $null
+}
+
 function Get-Precheck($st) {
     # COM 을 부르지 않는 점검(레지스트리·프로세스). 새 Outlook 전용·프로필 0·COM 미등록이면 자식을 띄우지 않는다.
     $p = @{ fatal = $null; running = $true }
@@ -1179,7 +1228,9 @@ function Get-Precheck($st) {
     } catch { }
     try { if (Get-Process -Name olk -ErrorAction SilentlyContinue) { $newOl = $true } } catch { }
     if ($running) { return $p }                                      # 떠 있으면 거기에 붙어 본다(실패 판정은 자식이)
-    if ($newOl) { $p.fatal = 'R-NEWOL'; return $p }
+    # 새 Outlook 흔적(전환 토글·olk 실행)만으로 멈추지 않는다 — 클래식 Outlook 이 설치돼 있으면 COM 으로 띄워 읽는다(LM24 와 같음).
+    if ($newOl -and -not (Find-ClassicOutlook)) { $p.fatal = 'R-NEWOL'; return $p }
+    if ($newOl) { [Console]::Error.WriteLine('[outlook] 새 Outlook 사용 흔적이 있지만 클래식 Outlook 이 설치돼 있어 COM 으로 읽습니다') }
     $profVers = New-Object System.Collections.Generic.List[int]
     $legacy = $false
     foreach ($v in @(16, 15)) {
@@ -1253,7 +1304,11 @@ function Invoke-Parent($a) {
             $task = $p.StandardOutput.ReadLineAsync()
         } else {
             $now = $script:Clock.Elapsed.TotalSeconds
-            if (($now - $last) -gt $a.watchdog) { $killed = 'watchdog' }
+            # Outlook 이 꺼져 있던 PC 에서 COM 으로 띄우는 동안(attach)은 시동·프로필·서버 연결에 수십 초가 걸린다 —
+            # 그 사이 워치독(무진전 mail.com.watchdogSec, 기본 20초)이 자식을 죽여 '마법사'로 오판했다(실측). 시동 여유를 준다.
+            $limit = $a.watchdog
+            if ($phase -eq 'attach' -and -not $pre.running) { $limit = [Math]::Max($a.watchdog, $OUTLOOK_START_GRACE_SEC) }
+            if (($now - $last) -gt $limit) { $killed = 'watchdog' }
             elseif ($now -gt $hard) { $killed = 'hard' }
             if ($killed) {
                 try { Stop-Process -Id $p.Id -Force -ErrorAction Stop } catch { }

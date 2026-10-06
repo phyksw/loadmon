@@ -27,6 +27,7 @@ from lm27.collect import rcmap
 __all__ = [
     "COLLECTORS", "PROBE_KEYS", "ROLES_CLOUD", "ROLES_PC", "ROLE_BACKFILL", "ROLE_COPILOT", "RUN_ORDER", "Spec",
     "Stage", "backfill_pc_id", "copilot_enabled", "is_backfill_pc", "license_enabled", "parallel_max", "pc_roles",
+    "web_everywhere",
     "read_protected", "stage_plan", "stage_of",
 ]
 
@@ -225,8 +226,11 @@ def pc_roles(pc: dict | None, *, pcs=(), cfg=None, pc_role=None) -> tuple:
     else:
         given = [r for r in pc.get("roles") or () if isinstance(r, str)]
         roles = set(given) if given else set(ROLES_CLOUD if pc.get("kind") == "cloud" else ROLES_PC)
-    if cfg is not None:                              # 백필 담당은 한 PC(collect.backfillPc) — 설정이 역할보다 우선(D-6)
-        if is_backfill_pc(pc, pcs, cfg, pc_role):
+    if cfg is not None:
+        # 버전 무관 웹 경로(Outlook 웹·팀즈 웹)는 모든 PC 에서 돈다(collect.webEverywhere — 기본 켜짐, LM24 와 같음).
+        # 백필 PC 한 대에만 두면 그 PC(기본 클라우드PC)가 없거나 안 돈 동안 새 Outlook·온라인 모드 PC 의 메일과 팀즈가
+        # 통째로 빈다(실측 제보). 끄면 예전처럼 백필 담당 PC(collect.backfillPc) 한 대만.
+        if web_everywhere(cfg) or is_backfill_pc(pc, pcs, cfg, pc_role):
             roles.add(ROLE_BACKFILL)
         else:
             roles.discard(ROLE_BACKFILL)
@@ -236,6 +240,16 @@ def pc_roles(pc: dict | None, *, pcs=(), cfg=None, pc_role=None) -> tuple:
 
 
 # ── 설정 판단 ───────────────────────────────────────────────────────────────
+def web_everywhere(cfg) -> bool:
+    """버전 무관 웹 경로를 모든 PC 에서 돌리나(``collect.webEverywhere`` — 기본 True)."""
+    if cfg is None:
+        return True
+    try:
+        return bool(cfg["collect.webEverywhere"])
+    except KeyError:
+        return True
+
+
 def parallel_max(cfg) -> int:
     """한 단계 안에서 동시에 돌릴 수집기 수(``collect.parallelMax`` — C §8.2). COM 은 단계가 달라 늘 직렬이다."""
     v = cfg["collect.parallelMax"] if cfg is not None else 2

@@ -138,6 +138,20 @@ docstring·시험이 정본이다. 구현자: 'W1 통합 창' 은 W1b 구현 뒤
 | C22 | §11.1 관문 | 채택: L-15 앱 신원 `'LM27-team'`·`'LM27-ui'`(§4.7) 예외 · L-28 `portdiag.AVOID`(피하는 포트 목록) 예외 · L-08 팀 서버 저장소 `<store>\out\gen_N`(ROOT 밖) 예외 — 우회 표기 제거 · L-24 `.gitignore` 는 루트 고정 `'/data/'`·`'/out/'`(루트 고정이 아닌 `data/`·`out/` 줄은 지적) | L-24 는 v1.2 와 같은 커밋에 반영. 나머지는 W1 통합 창: `hook_check`(WP-04)·시험 |
 | C23 | §2.10 hier 시그니처 | 등재: `load_effective(paths, cfg, now=None, *, fetch, kr, folder_key, doc_key, person_key, learned, persist=True)` · `merge` 의 키워드 인자 · `match_tokens(text, boiler=None)` · `Err(path, code, level∈reject·drop·warn, detail)` · `blocking(errs) -> bool` | 문서 — W1 통합 창 |
 
+### 0.8 v1.3 결정 — 사용자 실측 제보(2026-10-06): 메일·팀즈를 못 읽음
+
+사용자 지시: "앱의 버전에 따라 영향을 받지 말라고 모든 버전을 아우러 불러올 수 있도록" · "기간 설정은 할 수 있되, 2026-01-01 ~ 오늘을 디폴트로".
+이 표가 C §1 · D-6 · C §4.3 · CM §2 · CT §1.1 의 해당 문구보다 우선한다.
+
+| # | 결정 | 근거(실측) |
+|---|---|---|
+| V1 | 클래식 Outlook 탐지는 App Paths · InstallRoot(14.0~16.0, 32/64) · Click-to-Run 설치 경로 · 등록된 COM 서버(LocalServer32) · 표준 설치 폴더를 모두 본다(`Find-ClassicOutlook` — 탐침·COM·색인 수집기에 같은 함수) | App Paths 만 보던 탐침이 Microsoft 365(Click-to-Run) PC 에서 `classic=false` → `R-NEWOL` 오판 |
+| V2 | Click-to-Run 이 InstallRoot 에 적은 자기 경로는 '구판 MSI 병존'이 아니다 | 같은 설치본을 둘로 세어 `R-WIZARD` 오판 |
+| V3 | `R-NEWOL` 은 새 Outlook 흔적이 있고 **클래식 Outlook 이 없을 때만**. 전환 토글(UseNewOutlook=1)·olk 실행이 있어도 클래식이 있으면 COM 으로 읽는다(필요하면 클래식을 띄운다 — LM24 와 같음) | 토글·새 Outlook 실행만으로 메일 통째 누락 |
+| V4 | 색인에 Outlook 항목 0 이고 클래식이 있으면 `R-ONLINE`(탐침·수집기 같은 판정) | 탐침은 ok·수집기는 막힘으로 달랐음 |
+| V5 | 버전 무관 웹 경로(Outlook 웹 `mail.owa`·`cal.owa`, 팀즈 웹 `teams.web`)는 **모든 PC** 에서 돈다(`collect.webEverywhere`, 기본 켜짐). 웹 경로 빈칸 작업의 `want_pc` 는 `*`(먼저 도는 PC 가 채움). 끄면 예전처럼 백필 PC 한 대 | 백필 PC(기본 클라우드PC)가 없으면 빈칸이 영영 안 채워짐 |
+| V6 | 수집 기본 시작일 = 오늘 − `collect.lookbackDays` + 1 과 올해 1월 1일 중 이른 날(`collect.sinceYearStart`, 기본 켜짐 — `lm27.collect.ledger.default_since` 단일원) | 기본 기간 '1월 1일 ~ 오늘' |
+
 ---
 
 ## 1. 트리 배치
@@ -931,6 +945,8 @@ TAB §2.3.1·§2.3.2 의 모양을 따르되 다음을 1.0 에 포함한다(구�
 |---|---|---|---|---|
 | `collect.backfillPc` | `"cloud"` | str(`cloud`·PC 라벨) | collect.plan | C §1 · CM §13 |
 | `collect.lookbackDays` | 120 ★ | int | collect.run · agent.harvest(Get-EventActivity `-Days` 로) | 계약(CM·CP 기간 키 통합, O-5) |
+| `collect.sinceYearStart` | `true` | bool | collect.ledger · collect.run | 사용자 지시(2026-10-06 기본 기간) |
+| `collect.webEverywhere` | `true` | bool | collect.plan · collect.todo | 사용자 지시(2026-10-06 버전 무관 수집) |
 | `collect.parallelMax` | 2 | int | collect.plan | C §8.2 |
 | `collect.budgetSec` | 0(끔) | int | collect.run | C §8.1 |
 | `collect.watch.heartbeatSec` | 30 | int | collect.watch | C §8.4 |

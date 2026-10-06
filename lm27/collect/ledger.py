@@ -160,11 +160,24 @@ def _today(cfg, now=None) -> date:
     return (u.astimezone(UTC) + timedelta(minutes=int(cfg["time.tzOffsetMin"]))).date()
 
 
+def default_since(cfg, today: date) -> date:
+    """수집 기본 시작일(단일원 — 원장 창·전경 수집 창이 같이 쓴다): 오늘 − ``collect.lookbackDays`` + 1 과
+    (``collect.sinceYearStart`` 가 켜져 있으면 — 기본) 올해 1월 1일 중 이른 날. 사용자 지시: 기본 기간 '1월 1일 ~ 오늘'."""
+    d0 = today - timedelta(days=int(cfg["collect.lookbackDays"]) - 1)
+    try:
+        year_start = bool(cfg["collect.sinceYearStart"])
+    except KeyError:
+        year_start = True
+    if year_start:
+        d0 = min(d0, date(today.year, 1, 1))
+    return d0
+
+
 def ledger_window(cfg, now=None, obs=()) -> tuple:
-    """원장 날짜 창 ``(d0, d1)``(로컬 날짜 — 근무 시간대 ``time.tzOffsetMin``): 오늘 − ``collect.lookbackDays`` + 1 ~ 오늘,
+    """원장 날짜 창 ``(d0, d1)``(로컬 날짜 — 근무 시간대 ``time.tzOffsetMin``): ``default_since`` ~ 오늘,
     관측 구간이 더 이르면 거기까지(``MAX_SPAN_DAYS`` 안)."""
     d1 = _today(cfg, now)
-    d0 = d1 - timedelta(days=int(cfg["collect.lookbackDays"]) - 1)
+    d0 = default_since(cfg, d1)
     floor = d1 - timedelta(days=MAX_SPAN_DAYS - 1)
     for o in obs or ():
         for a, _b in o.get("ranges") or ():

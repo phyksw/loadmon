@@ -68,6 +68,54 @@ $OVERLAP_DAYS = 1          # 마지막 시각에서 이만큼 겹쳐 다시 낸�
 $CAL_REFRESH_DAYS = 14     # 일정은 최근 이만큼과 그 뒤를 매번 다시 낸다(시각 변경·취소 반영)
 
 # ── 출력 ──────────────────────────────────────────────────────────────────────────────────────────────
+function Find-ClassicOutlook {
+    # 클래식 Outlook(OUTLOOK.EXE) 위치 — 판(2010~365)·설치 방식(MSI·Click-to-Run)·32/64비트와 상관없이 찾는다.
+    # App Paths 한 곳만 보면 Microsoft 365(Click-to-Run) PC 대부분에서 못 찾아 '새 Outlook 전용' 으로 오판했다(실측).
+    # 반환: 있는 OUTLOOK.EXE 전체 경로 또는 $null. 메모리에서만 쓰고 출력하지 않는다.
+    # 같은 함수가 Invoke-CapabilityProbe.ps1 · Get-OutlookCom.ps1 · Get-OutlookIndex.ps1 에 똑같이 있다(시험이 대조).
+    $cands = New-Object System.Collections.Generic.List[string]
+    foreach ($k in @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\OUTLOOK.EXE',
+            'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\OUTLOOK.EXE',
+            'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\OUTLOOK.EXE')) {
+        try { $d = (Get-ItemProperty -LiteralPath $k -ErrorAction Stop).'(default)'; if ($d) { $cands.Add([string]$d) } } catch { }
+    }
+    foreach ($v in @('16.0', '15.0', '14.0')) {
+        foreach ($b in @('HKLM:\SOFTWARE\Microsoft\Office', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Office')) {
+            try { $ir = (Get-ItemProperty -LiteralPath "$b\$v\Outlook\InstallRoot" -ErrorAction Stop).Path; if ($ir) { $cands.Add((Join-Path $ir 'OUTLOOK.EXE')) } } catch { }
+        }
+    }
+    try {
+        $c2r = (Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration' -ErrorAction Stop).InstallationPath
+        if ($c2r) { foreach ($o in @('Office16', 'Office15')) { $cands.Add((Join-Path $c2r "root\$o\OUTLOOK.EXE")) } }
+    } catch { }
+    foreach ($cls in @('HKLM:\SOFTWARE\Classes', 'HKLM:\SOFTWARE\WOW6432Node\Classes')) {
+        try {
+            $clsid = (Get-ItemProperty -LiteralPath "$cls\Outlook.Application\CLSID" -ErrorAction Stop).'(default)'
+            if ($clsid) {
+                $ls = (Get-ItemProperty -LiteralPath "$cls\CLSID\$clsid\LocalServer32" -ErrorAction Stop).'(default)'
+                if ($ls) { $cands.Add([string]$ls) }
+            }
+        } catch { }
+    }
+    foreach ($pf in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
+        if (-not $pf) { continue }
+        foreach ($o in @('root\Office16', 'root\Office15', 'Office16', 'Office15', 'Office14')) { $cands.Add((Join-Path $pf "Microsoft Office\$o\OUTLOOK.EXE")) }
+    }
+    foreach ($c in $cands) {
+        $s = ([string]$c).Trim()
+        try { $s = [Environment]::ExpandEnvironmentVariables($s) } catch { }
+        if ($s.StartsWith('"')) {
+            $e = $s.IndexOf('"', 1)
+            if ($e -gt 1) { $s = $s.Substring(1, $e - 1) } else { $s = $s.Trim('"') }
+        } else {
+            $i = $s.ToLowerInvariant().IndexOf('.exe')
+            if ($i -gt 0) { $s = $s.Substring(0, $i + 4) }
+        }
+        if ($s -and (Test-Path -LiteralPath $s -PathType Leaf)) { return $s }
+    }
+    return $null
+}
+
 function Write-OutLine([string]$s) {
     $b = $script:Utf8.GetBytes($s + "`n")
     $script:StdOut.Write($b, 0, $b.Length)
@@ -563,6 +611,7 @@ try {
         if ($dates.Count) { $ctx.horizon = ($dates | Sort-Object | Select-Object -First 1) }
         $policy = [bool]($ctx.fake.PSObject.Properties['_policy'] -and $ctx.fake._policy)
         $newOl = [bool]($ctx.fake.PSObject.Properties['_newol'] -and $ctx.fake._newol)
+        $classicFake = [bool]($ctx.fake.PSObject.Properties['_classic'] -and $ctx.fake._classic)   # 시험: 클래식 유무도 주입값으로(실제 레지스트리를 보지 않는다)
     } else {
         $svc = $null
         try { $svc = Get-Service -Name WSearch -ErrorAction Stop } catch { $svc = $null }
@@ -597,7 +646,8 @@ try {
     }
     if (-not $ctx.fatal -and $total -eq 0) {
         # 색인에 Outlook 항목이 하나도 없다 — 0건이 아니라 막힘(CM §6.4 분해, X-124·X-125)
-        if ($policy) { $ctx.fatal = 'R-IDXPOLICY' } elseif ($newOl) { $ctx.fatal = 'R-NEWOL' } else { $ctx.fatal = 'R-ONLINE' }
+        # 새 Outlook 전용(클래식 없음)일 때만 R-NEWOL — 클래식이 있는데 색인에 Outlook 항목이 없으면 온라인 모드(캐시 꺼짐)다
+        if ($policy) { $ctx.fatal = 'R-IDXPOLICY' } elseif ($newOl -and -not $(if ($ctx.fake) { $classicFake } else { [bool](Find-ClassicOutlook) })) { $ctx.fatal = 'R-NEWOL' } else { $ctx.fatal = 'R-ONLINE' }
     }
     foreach ($k in $kinds) { Invoke-IndexKind $k $ctx }
     if ($script:Cursors.Count) {

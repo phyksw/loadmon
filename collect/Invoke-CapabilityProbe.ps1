@@ -845,6 +845,54 @@ function Get-AvState {
     } catch { return 'unknown' }
 }
 
+function Find-ClassicOutlook {
+    # 클래식 Outlook(OUTLOOK.EXE) 위치 — 판(2010~365)·설치 방식(MSI·Click-to-Run)·32/64비트와 상관없이 찾는다.
+    # App Paths 한 곳만 보면 Microsoft 365(Click-to-Run) PC 대부분에서 못 찾아 '새 Outlook 전용' 으로 오판했다(실측).
+    # 반환: 있는 OUTLOOK.EXE 전체 경로 또는 $null. 메모리에서만 쓰고 출력하지 않는다.
+    # 같은 함수가 Invoke-CapabilityProbe.ps1 · Get-OutlookCom.ps1 · Get-OutlookIndex.ps1 에 똑같이 있다(시험이 대조).
+    $cands = New-Object System.Collections.Generic.List[string]
+    foreach ($k in @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\OUTLOOK.EXE',
+            'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\OUTLOOK.EXE',
+            'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\OUTLOOK.EXE')) {
+        try { $d = (Get-ItemProperty -LiteralPath $k -ErrorAction Stop).'(default)'; if ($d) { $cands.Add([string]$d) } } catch { }
+    }
+    foreach ($v in @('16.0', '15.0', '14.0')) {
+        foreach ($b in @('HKLM:\SOFTWARE\Microsoft\Office', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Office')) {
+            try { $ir = (Get-ItemProperty -LiteralPath "$b\$v\Outlook\InstallRoot" -ErrorAction Stop).Path; if ($ir) { $cands.Add((Join-Path $ir 'OUTLOOK.EXE')) } } catch { }
+        }
+    }
+    try {
+        $c2r = (Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration' -ErrorAction Stop).InstallationPath
+        if ($c2r) { foreach ($o in @('Office16', 'Office15')) { $cands.Add((Join-Path $c2r "root\$o\OUTLOOK.EXE")) } }
+    } catch { }
+    foreach ($cls in @('HKLM:\SOFTWARE\Classes', 'HKLM:\SOFTWARE\WOW6432Node\Classes')) {
+        try {
+            $clsid = (Get-ItemProperty -LiteralPath "$cls\Outlook.Application\CLSID" -ErrorAction Stop).'(default)'
+            if ($clsid) {
+                $ls = (Get-ItemProperty -LiteralPath "$cls\CLSID\$clsid\LocalServer32" -ErrorAction Stop).'(default)'
+                if ($ls) { $cands.Add([string]$ls) }
+            }
+        } catch { }
+    }
+    foreach ($pf in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
+        if (-not $pf) { continue }
+        foreach ($o in @('root\Office16', 'root\Office15', 'Office16', 'Office15', 'Office14')) { $cands.Add((Join-Path $pf "Microsoft Office\$o\OUTLOOK.EXE")) }
+    }
+    foreach ($c in $cands) {
+        $s = ([string]$c).Trim()
+        try { $s = [Environment]::ExpandEnvironmentVariables($s) } catch { }
+        if ($s.StartsWith('"')) {
+            $e = $s.IndexOf('"', 1)
+            if ($e -gt 1) { $s = $s.Substring(1, $e - 1) } else { $s = $s.Trim('"') }
+        } else {
+            $i = $s.ToLowerInvariant().IndexOf('.exe')
+            if ($i -gt 0) { $s = $s.Substring(0, $i + 4) }
+        }
+        if ($s -and (Test-Path -LiteralPath $s -PathType Leaf)) { return $s }
+    }
+    return $null
+}
+
 function Get-OlFacts {
     if ($script:FakeMode) {
         $f = P $script:Fake 'ol'
@@ -854,15 +902,19 @@ function Get-OlFacts {
     }
     if ($script:SelfTestOn) { return (Get-SelfTestOl) }
     $h = Copy-Facts $null $OL_KEYS
-    $exe = Get-ExePath (Get-RegDefault 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\OUTLOOK.EXE')
-    if (-not $exe) { $exe = Get-ExePath (Get-RegDefault 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\OUTLOOK.EXE') }
-    $h['classic'] = [bool]($exe -and (Test-Path -LiteralPath $exe))
+    $exe = Find-ClassicOutlook
+    $h['classic'] = [bool]$exe
     if ($h['classic']) { $h['version'] = Get-FileVersion $exe }
     $h['c2r'] = [bool](Test-Path -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration')
     $msi = $false
+    $c2rRoot = [string](Get-RegValue 'HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration' 'InstallationPath')
     foreach ($v in @('14.0', '15.0', '16.0')) {
         foreach ($b in @('HKLM:\SOFTWARE\Microsoft\Office', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Office')) {
-            if (Get-RegValue "$b\$v\Outlook\InstallRoot" 'Path') { $msi = $true }
+            $ir = [string](Get-RegValue "$b\$v\Outlook\InstallRoot" 'Path')
+            if (-not $ir) { continue }
+            # Click-to-Run 도 같은 키에 자기 경로(…\root\Office16\)를 적는다 — 그 아래면 같은 설치본이다(구판 MSI 병존 아님, 실측)
+            if ($c2rRoot -and $ir.TrimEnd('\').ToLowerInvariant().StartsWith($c2rRoot.TrimEnd('\').ToLowerInvariant())) { continue }
+            if (Test-Path -LiteralPath (Join-Path $ir 'OUTLOOK.EXE')) { $msi = $true }
         }
     }
     $h['msi'] = $msi
@@ -1149,9 +1201,11 @@ function Get-PcFacts {
 }
 
 function Test-NewOnly($O) {
+    # '새 Outlook 전용' = 새 Outlook 흔적(설치·실행·전환 토글)이 있고 클래식 Outlook 이 **없을 때만**.
+    # 전환 토글(UseNewOutlook=1)이 켜져 있거나 새 Outlook 이 떠 있어도 클래식 Outlook 이 설치돼 있으면 COM 으로 읽는다
+    # (LM24 와 같음) — 그것만으로 막힘을 선언하면 새 Outlook 이 기본 설치된 Windows 11 PC 대부분에서 메일이 통째로 빠진다.
     if ($null -eq $O) { return $false }
-    if (B $O['use_new']) { return $true }
-    return ((B $O['new_installed']) -or (B $O['new_running'])) -and -not (B $O['classic'])
+    return ((B $O['use_new']) -or (B $O['new_installed']) -or (B $O['new_running'])) -and -not (B $O['classic'])
 }
 
 function Test-OmgExpected($O) {
@@ -1420,6 +1474,7 @@ function Decide-Index($E, $O, $I, $Com, [string]$Kind, [string]$GroupState) {
     elseif (Test-NewOnly $O) { $rs['R-NEWOL'] = 1; $st = 'fail' }
     elseif ($null -ne $O -and (B $O['classic']) -and (S-Int $O['profiles']) -eq 0) { $rs['R-NOPROF'] = 1; $st = 'fail' }
     elseif ($null -ne $O -and (Test-Online $O $Com)) { $rs['R-ONLINE'] = 1; $st = 'fail' }
+    elseif ($null -ne $n -and $n -eq 0 -and $null -ne $O -and (B $O['classic'])) { $rs['R-ONLINE'] = 1; $st = 'fail' }   # 클래식이 있는데 색인에 Outlook 항목 0 = 온라인 모드(수집기 판정과 같게)
     elseif ($null -eq $n) { $st = 'unknown' }
     else { $st = 'ok' }
     $v = [ordered]@{
