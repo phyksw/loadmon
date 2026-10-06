@@ -333,6 +333,17 @@ module.exports = function (t) {
     A.ok(hasFill(sep, "url(#hatch-unattr)"), "미귀속 빗금");
     A.ok(texts(t02.svg).indexOf("1명 자료 없음") >= 0);
     var h01 = C.coverageHeatmap(SPECS["CH-H01"]);
+    // 긴 기간용 split(축 이름 열 고정 + 날짜 칸만 가로 스크롤 — 간트와 같은 .gantt 틀): 같은 마크·같은 표, 기본 출력은 그대로
+    var sp = C.coverageHeatmap(SPECS["CH-H01"], {split: true});
+    A.strictEqual(sp.svg.t, "div");
+    A.strictEqual(sp.svg.a["class"], "gantt");
+    A.deepStrictEqual(sp.svg.c.map(function (n) { return n.a["class"]; }), ["gantt-labels", "gantt-scroll", "gantt-ends"]);
+    A.strictEqual(collect(sp.svg, function (n) { return n.a && n.a["data-act"] === "cov-day"; }).length,
+      collect(h01.svg, function (n) { return n.a && n.a["data-act"] === "cov-day"; }).length, "split 도 같은 칸");
+    A.deepStrictEqual(sp.table, h01.table);
+    A.ok(texts(sp.svg.c[0]).indexOf("메일 받음") >= 0, "축 이름은 고정 열");
+    A.strictEqual(C.toString(C.coverageHeatmap(SPECS["CH-H01"], {}).svg), C.toString(h01.svg), "split 을 주지 않으면 전과 같은 출력");
+    A.strictEqual(h01.svg.t, "svg", "기본은 SVG 하나");
     A.ok(hasFill(byAttr(h01.svg, "data-ref", "2026-10-02|teams")[0], "url(#hatch-bad)"));
     A.ok(hasFill(byAttr(h01.svg, "data-ref", "2026-09-28|teams")[0], "url(#hatch-bad)"));
     A.ok(!hasFill(byAttr(h01.svg, "data-ref", "2026-09-28|cal")[0], "url(#hatch-bad)"));
@@ -563,7 +574,11 @@ module.exports = function (t) {
     var css = readText("web/common/lm27.css");
     c.assert.ok(!/@import|@font-face|url\(\s*['"]?(https?:)?\/\//i.test(css), "CSS 외부 참조·웹 글꼴");
     c.assert.ok(/color-scheme:\s*light/.test(css));
-    c.assert.ok(/--fs-body:\s*16px/.test(css) && /--fs-table:\s*14px/.test(css));
+    // 글자 크기(R §8.1.5 — LM24 밀도, 사용자 결정 2026-10-06): 본문 13px · 표 12.5px · 작은 글자 12px(하한은 check_contrast C1)
+    c.assert.ok(/--fs-body:\s*13px/.test(css) && /--fs-table:\s*12\.5px/.test(css) && /--fs-small:\s*12px/.test(css));
+    (css.match(/font-size:\s*(\d+(?:\.\d+)?)px/g) || []).forEach(function (m) {
+      c.assert.ok(parseFloat(m.replace(/[^\d.]/g, "")) >= 12, "12px 밑 글자 없음: " + m);
+    });
     c.assert.ok(!/--dom-[a-z-]*\s*:/.test(css), "--dom-* 토큰 선언 없음(계약 X-281)");
   });
 
@@ -634,5 +649,67 @@ module.exports = function (t) {
     A.ok(place.out.errors.some(function (e) { return e.check === "C6"; }), "lm27.css 밖 16진 색");
     var noScheme = runContrast(c, miniRoot(c, function (s) { return s.replace("color-scheme: light;", ""); }, GOOD_VOCAB));
     A.ok(noScheme.out.errors.some(function (e) { return e.check === "C1"; }));
+    var tiny = runContrast(c, miniRoot(c, function (s) { return s.replace("--fs-body: 13px;", "--fs-body: 11px;"); }, GOOD_VOCAB));
+    A.strictEqual(tiny.rc, 1);
+    A.ok(tiny.out.errors.some(function (e) { return e.check === "C1" && e.msg.indexOf("--fs-body") >= 0; }), "글자 크기 하한(본문 13px)");
+  });
+
+  // ───────────── 기간 빠른 선택(올해·1~4분기·상반기·하반기) — lm27\ui\period.py 와 같은 규칙 ─────────────
+  var PERIOD = JSON.parse(fs.readFileSync(path.join(ROOT, "tests", "fixtures", "wp35", "period_cases.json"), "utf8"));
+
+  function tipOf(from, to, state) {
+    if (state === "future") { return from + " ~ " + to + " — 아직 오지 않은 기간이라 고를 수 없습니다"; }
+    return from + " ~ " + to + (state === "partial" ? "(진행 중 — 끝은 오늘)" : "");
+  }
+
+  t.test("기간 빠른 선택 — 골든: 기본 올해 1월 1일 ~ 오늘 · 분기 경계(4분기 = 10-01 ~ 12-31, 오늘까지) · 상·하반기 · 미래 고를 수 없음 · 윤년", function (c) {
+    var A = c.assert;
+    Object.keys(PERIOD.presets).forEach(function (d) {
+      var want = PERIOD.order.map(function (k) {
+        var e = PERIOD.presets[d][k];
+        return {key: k, label: PERIOD.labels[k], from: e[0], to: e[1], disabled: e[2] === "future", partial: e[2] === "partial", tip: tipOf(e[0], e[1], e[2])};
+      });
+      A.deepStrictEqual(U.periodPresets(d), want, d);
+      A.deepStrictEqual(U.periodPresets(new Date(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.slice(8, 10), 23, 59)), want, d + " (Date)");
+    });
+    Object.keys(PERIOD["default"]).forEach(function (d) {
+      var r = U.defaultPeriod(d);
+      A.deepStrictEqual([r.key, r.from, r.to], ["ytd"].concat(PERIOD["default"][d]), "기본 " + d);
+    });
+    PERIOD.key_of.forEach(function (k) { A.strictEqual(U.periodKeyOf(k[0], k[1], k[2]), k[3], k.join(" ")); });
+    PERIOD.period_source.forEach(function (k) { A.strictEqual(U.periodSource(k[0]), k[1], String(k[0])); });
+    PERIOD.bad_today.forEach(function (d) { A.throws(function () { U.periodPresets(d); }, /YYYY-MM-DD/, "없는 날짜 " + d); });
+    A.strictEqual(U.presetRange("q3", "2026-05-20"), null, "아직 오지 않은 기간은 범위 없음");
+    A.strictEqual(U.presetRange("nope", "2026-05-20"), null);
+    A.strictEqual(U.isoDate(new Date(2026, 0, 5)), "2026-01-05");
+  });
+
+  t.test("기간 빠른 선택 — 파이썬 판(lm27\\ui\\period.py, 동봉 파이썬) = JS 판: 2024(윤년)·2026 모든 날 + 경계 날짜", function (c) {
+    if (!c.python) { c.skip("동봉 파이썬 없음"); }
+    var days = [];
+    [2024, 2026].forEach(function (y) {
+      var d = new Date(y, 0, 1);
+      while (d.getFullYear() === y) { days.push(U.isoDate(d)); d.setDate(d.getDate() + 1); }
+    });
+    days = days.concat(["2000-02-29", "2100-02-28", "2100-03-01", "1999-12-31", "0001-01-01", "9999-12-31"]);
+    var code = ["import json, sys", "sys.path.insert(0, sys.argv[1])", "from lm27.ui import period as P",
+      "out = {}", "for d in json.loads(sys.stdin.read()):",
+      "    ps = P.presets(d)",
+      "    out[d] = {'presets': ps, 'default': list(P.default_range(d)), 'keys': [P.key_of(p['from'], p['to'], d) for p in ps],",
+      "              'sources': [P.period_source(p['key']) for p in ps]}",
+      "print(json.dumps(out, ensure_ascii=False))"].join("\n");
+    var r = cp.spawnSync(c.python, ["-X", "utf8", "-B", "-I", "-c", code, ROOT], {cwd: require("os").tmpdir(), input: JSON.stringify(days),
+      encoding: "utf8", windowsHide: true, maxBuffer: 1 << 26});
+    c.assert.strictEqual(r.status, 0, r.stderr);
+    var py = JSON.parse(r.stdout);
+    var bad = [];
+    days.forEach(function (d) {
+      var ps = U.periodPresets(d);
+      var js = {presets: ps, "default": [U.defaultPeriod(d).from, U.defaultPeriod(d).to],
+        keys: ps.map(function (p) { return U.periodKeyOf(p.from, p.to, d); }), sources: ps.map(function (p) { return U.periodSource(p.key); })};
+      if (JSON.stringify(js) !== JSON.stringify(py[d])) { bad.push(d); }
+    });
+    c.assert.strictEqual(days.length, 366 + 365 + 6);
+    c.assert.deepStrictEqual(bad.slice(0, 5), [], "파이썬 ≠ JS");
   });
 };

@@ -93,6 +93,7 @@ class SecurityTest(unittest.TestCase):
         self.assertEqual(body["instance_id"], self.app.instance_id)
         self.assertEqual(body["root_id"], self.app.root_id)
         self.assertEqual(len(body["root_id"]), 8)
+        self.assertEqual(body["port"], self.srv.port)                  # 머리·상태 줄의 '127.0.0.1:<포트>' 표시
         self.assertFalse(body["token_meta"])
         self.assertNotIn(self.app.token, str(body))
 

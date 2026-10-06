@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
 r"""분석 화면 API(R §5.3 · §2.3.6 · COPILOT §10.5) — 분석 실행·이력·결과 선택·코파일럿 상태·직접 붙여넣기.
 
-    GET  /api/analysis/runs                실행 이력(R §5.3.4) + 지금 보는 결과(current) + 기본 기간(report.defaultRangeMonths)
+    GET  /api/analysis/runs                실행 이력(R §5.3.4) + 지금 보는 결과(current) + 기본 기간(defaults.period — 올해 1월 1일 ~
+                                           오늘과 빠른 선택 7개, lm27.ui.period 단일원)
     GET  /api/analysis/run/<run_id>        run_status.json + 라벨 출처 통계 + 시간 코어 감사 + 경고 + 확인 질문 수(R §5.3.5)
-    POST /api/analysis/run                 {from, to, as_of?, ai} → analyze 작업 · {rerun, stages, ai:false} → 빠른 재분석
+    POST /api/analysis/run                 {from, to, as_of?, ai} → analyze 작업 · from·to 를 둘 다 빼면 기본 기간(올해 1월 1일 ~
+                                           오늘, period_source 'default') · {rerun, stages, ai:false} → 빠른 재분석
     POST /api/analysis/current             {run_id} → current.json 명시 선택(``lm27.pipeline.analyze.choose_current`` 하나)
     GET  /api/bridge/status · /api/bridge/manual
     POST /api/bridge/manual/copy {seq} → {text}(프롬프트 글은 이 응답에만 — 저장·로그 금지) · /api/bridge/manual/import {text}
@@ -17,6 +19,7 @@ from __future__ import annotations
 import re
 from datetime import datetime
 
+from lm27.ui import period
 from lm27.ui.server import ApiError
 
 __all__ = ["ROUTES", "list_runs", "run_view"]
@@ -24,7 +27,7 @@ __all__ = ["ROUTES", "list_runs", "run_view"]
 _RUN_RX = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{4}$")
 _DATE_RX = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _STAGE_RX = re.compile(r"^[a-z][a-z0-9_:]{0,31}$")
-_PERIOD_SOURCES = ("default", "this_month", "last_month", "this_year", "user")    # = cli PERIOD_SOURCES(R RP8)
+_PERIOD_SOURCES = period.PERIOD_SOURCES                  # = cli PERIOD_SOURCES(R RP8 — 사본 일치는 tests\ui\test_period.py)
 AI_STAGES = ("task_label", "workflow_label", "agentic_match", "subagent_review", "review_text")
 RUNS_MAX = 50
 LABEL_RUNS = 10                          # 라벨 출처 통계를 싣는 최근 실행 수(실행마다 결과 봉투 5개를 읽는다)
@@ -74,6 +77,18 @@ def _label_counts(app, rid: str) -> dict:
     return out
 
 
+def _local_ts(app, s):
+    """run_status 의 UTC 시각('…Z') → 근무 시간대 벽시계('…+09:00'). 화면 이력 표가 머리 띠(current.json — 로컬)와
+    같은 시각을 보이게 한다(UTC 를 그대로 보이면 9시간 어긋나 보인다). 형식이 다르면 그대로."""
+    if not isinstance(s, str) or not s.endswith("Z"):
+        return s
+    from lm27.util.tz import to_local
+    try:
+        return to_local(s, int(app.cfg()["time.tzOffsetMin"])).isoformat(timespec="seconds")
+    except (ValueError, TypeError):
+        return s
+
+
 def list_runs(app) -> list:
     from lm27.pipeline.retention import list_runs as _list
     from lm27.ui.api_report import current
@@ -85,7 +100,7 @@ def list_runs(app) -> list:
             continue
         out.append({"run_id": rid, "from": st.get("from"), "to": st.get("to"), "as_of": st.get("as_of"),
                     "label_sources": _label_counts(app, rid) if i < LABEL_RUNS else None,
-                    "built_at": st.get("ended") or st.get("started"), "state": st.get("state"),
+                    "built_at": _local_ts(app, st.get("ended") or st.get("started")), "state": st.get("state"),
                     "chosen": cur.get("chosen") if cur.get("run_id") == rid else None,
                     "current": cur.get("run_id") == rid, "report_version": st.get("report_version"),
                     "period_source": st.get("period_source"), "period_months": st.get("period_months"),
@@ -94,11 +109,21 @@ def list_runs(app) -> list:
     return out
 
 
+def _today(app):
+    """근무 시간대(time.tzOffsetMin) 벽시계의 오늘 — 기본 기간의 끝(lm27.ui.period.today_local)."""
+    return period.today_local(int(app.cfg()["time.tzOffsetMin"]), app.deps.now())
+
+
 def get_runs(app, req):
     from lm27.ui.api_report import current
+    today = _today(app)
+    f, t = period.default_range(today)
+    # months 는 이전 기본(최근 n개월, report.defaultRangeMonths)의 값 — 화면은 이제 period(올해 1월 1일 ~ 오늘)를 쓴다
     return {"runs": list_runs(app), "current": current(app),
             "defaults": {"months": int(app.cfg()["report.defaultRangeMonths"]),
-                         "keep": int(app.cfg()["report.analysisKeep"])}}
+                         "keep": int(app.cfg()["report.analysisKeep"]),
+                         "period": {"today": today.isoformat(), "key": period.DEFAULT_KEY, "from": f, "to": t,
+                                    "presets": period.presets(today)}}}
 
 
 def run_view(app, rid: str) -> dict:
@@ -161,8 +186,18 @@ def post_run(app, req):
         kind = "quick_reanalyze" if tuple(stages) == _quick_stages() and not ai else "analyze"
         return app.start_job(kind, argv)
     f, t = b.get("from"), b.get("to")
+    ps = b.get("period_source")
+    if f in (None, "") and t in (None, ""):
+        # 날짜를 주지 않으면 화면과 같은 규칙(lm27.ui.period 단일원): 기간 출처가 없거나 default → 올해 1월 1일 ~ 오늘,
+        # 분기·반기(q1~q4·h1·h2) → 그 기간. 날짜와 함께만 쓰는 출처(this_month 등)·아직 오지 않은 기간은 거절.
+        rng = period.range_for_source(ps, _today(app))
+        if rng is None:
+            raise ApiError(400, "bad_period", "그 기간은 아직 오지 않았거나 시작·끝 날짜와 함께 보내야 하는 기간 출처입니다")
+        f, t = rng
+        if ps in (None, ""):
+            ps = "default"
     if not (isinstance(f, str) and _DATE_RX.match(f) and isinstance(t, str) and _DATE_RX.match(t)):
-        raise ApiError(400, "bad_date", "시작·끝 날짜를 넣어 주세요")
+        raise ApiError(400, "bad_date", "시작·끝 날짜를 넣어 주세요(둘 다 비우면 올해 1월 1일 ~ 오늘)")
     if t < f:
         raise ApiError(400, "bad_range", "끝 날짜가 시작보다 앞섭니다")
     argv = ["analyze", "--from", f, "--to", t]
@@ -172,7 +207,6 @@ def post_run(app, req):
             raise ApiError(400, "bad_as_of", "기준 시각 형식이 아닙니다(YYYY-MM-DDTHH:MM)")
         argv += ["--as-of", as_of]
     # 기간 출처(R RP8 — RPT-04 '기간 출처' 표시 근거). cli analyze --period-source·--period-months(W2 통합)
-    ps = b.get("period_source")
     if ps not in (None, ""):
         if ps not in _PERIOD_SOURCES:
             raise ApiError(400, "bad_period_source", "기간 출처 값이 아닙니다")

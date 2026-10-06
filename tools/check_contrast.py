@@ -8,7 +8,8 @@ r"""색·대비 관문(REPORTS G-R7 · 계약 L-19) — WP-28.
 토큰 이름 · 표(REPORTS §8.1)의 대비 수치 · 용도별 하한만 들고, CSS·DOMAIN_META 의 실제 값으로 WCAG 2.1 대비를 다시 계산한다.
 
 검사
-  C1 토큰    §8.1 표의 토큰이 :root 에 모두 있고 형식이 #rrggbb
+  C1 토큰    §8.1 표의 토큰이 :root 에 모두 있고 형식이 #rrggbb · color-scheme: light · 글자 크기 토큰 하한
+             (--fs-body ≥ 13px · --fs-table ≥ 12px · --fs-small ≥ 12px — LM24 밀도, 사용자 결정 2026-10-06)
   C2 대비    토큰 쌍 대비 = 표의 실측값(표기 자릿수로 half-up 반올림해 그 값 이상) · 용도 하한(글자 4.5 · 큰 글자·비글자 3.0 · 순차 밝은 끝 2.0)
   C3 팔레트  범주 팔레트 순서·같은 자리(정규 = DEV · 연장 = MP · 야간 = AX · 휴일 = COM · 무리 업무 = DEV · 산출 = EXT · 사람 = MP ·
              UNC = --ink-faint), 영역 5색 흰 바탕 3:1 이상 — DOMAIN_META 가 아직 없으면(WP-21 전) 경고만
@@ -195,13 +196,21 @@ def check_tokens(tok, rep):
             rep.add("error", "C1", f"토큰 {name} 값 형식이 #rrggbb 가 아님")
 
 
+# 글자 크기 하한(R §8.1.5 — LM24 밀도, 사용자 결정 2026-10-06: 본문 13px · 표 12.5px · 주석 12px). 이보다 작게 쓰지 않는다.
+FONT_FLOOR = (("--fs-body", 13.0, "본문"), ("--fs-table", 12.0, "표"), ("--fs-small", 12.0, "작은 글자"))
+_PX = re.compile(r"^(\d+(?:\.\d+)?)px$")
+
+
 def check_base(css_text, tok, rep):
-    """밝은 화면 선언과 글자 크기 토큰(본문 16px · 표 14px — R §8.1.5)."""
+    """밝은 화면 선언과 글자 크기 토큰 하한(본문 ≥ 13px · 표 ≥ 12px · 작은 글자 ≥ 12px — R §8.1.5)."""
     if not re.search(r":root\s*\{[^}]*color-scheme\s*:\s*light", re.sub(r"/\*.*?\*/", "", css_text, flags=re.S)):
         rep.add("error", "C1", ":root 에 color-scheme: light 선언 없음")
-    for name, want in (("--fs-body", "16px"), ("--fs-table", "14px")):
-        if tok.get(name) != want:
-            rep.add("error", "C1", f"토큰 {name} 이 {want} 가 아님(본문 16px·표 14px)")
+    for name, floor, use in FONT_FLOOR:
+        m = _PX.match(tok.get(name) or "")
+        if not m:
+            rep.add("error", "C1", f"토큰 {name} 이 없거나 px 값이 아님({use} 글자 크기)")
+        elif float(m.group(1)) + 1e-9 < floor:
+            rep.add("error", "C1", f"토큰 {name} {m.group(1)}px < 하한 {floor:g}px({use} 글자 — R §8.1.5)")
 
 
 def _hex(tok, name):

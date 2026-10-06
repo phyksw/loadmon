@@ -299,8 +299,10 @@ class UiApp:
         return dict(out)
 
     def hello(self) -> dict:
+        # port = 화면 머리의 '판 · 127.0.0.1:<포트> · 로컬 전용' 표시용(LM24 머리와 같은 자리)
         return {"app": APP_ID, "version": LM27_VERSION, "instance_id": self.instance_id, "root_id": self.root_id,
-                "pc": self.pc_brief(), "token_meta": False, "job_poll_ms": int(self.cfg()["ui.jobPollMs"])}
+                "port": self.port, "pc": self.pc_brief(), "token_meta": False,
+                "job_poll_ms": int(self.cfg()["ui.jobPollMs"])}
 
     # 작업 --------------------------------------------------------------
     def start_job(self, kind: str, argv) -> dict:

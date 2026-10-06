@@ -494,7 +494,7 @@
       badges.push(h("button", {type: "button", "class": "btn btn-ghost", "data-act": "show-warnings",
         "aria-label": "경고 " + warns.length + "건 보기"}, [U().icon("warn"), "경고 " + warns.length]));
     }
-    return [h("h1", {}, [title])].concat(bits, [h("span", {"class": "spacer"}, [])], badges);
+    return [h("h1", {}, [title, h("small", {}, ["LoadMonitor27"])])].concat(bits, [h("span", {"class": "spacer"}, [])], badges);
   }
 
   function navView(S) {
@@ -942,7 +942,7 @@
         h("thead", {}, [h("tr", {}, cols.map(function (c, k) { return h("th", {scope: "col", "class": k >= 2 ? "num" : null}, [c]); }))]),
         h("tbody", {}, rows.map(function (x) { return rowOf(x, weak); }))])]);
     }
-    var kids = [pm.rows.length ? table(pm.rows, "사람별 월 투입(비교 대상)", false) : U().emptyState("자료가 없습니다.")];
+    var kids = [pm.rows.length ? table(pm.rows, "사람별 월 투입(비교 대상)", false) : U().emptyState("비교할 사람별 월 투입 자료가 없습니다 — 측정 불충분이 아닌 팀원 묶음이 들어오면 보입니다.")];
     if (pm.weakRows.length) { kids.push(table(pm.weakRows, "측정 불충분 인원(비교에서 제외 — 합계에는 포함)", true)); }
     if (!pm.full) { kids.push(h("p", {"class": "muted small"}, ["공유판에는 사람별 로드율·가용일·꼬리표(초과 시간) 열이 없습니다."])); }
     return [card("사람별 월 투입", kids, {id: "c-people"})];
@@ -1927,7 +1927,7 @@
         h("h3", {}, ["서버 명단(업로드한 사람)"]),
         srvRows.length ? h("div", {"class": "table-wrap"}, [h("table", {"class": "tbl"}, [h("thead", {}, [h("tr", {}, ["사람 키", "라벨", "연결", "퇴직", "바꾸기"].map(function (c) {
           return h("th", {scope: "col"}, [c]);
-        }))]), h("tbody", {}, srvRows)])]) : U().emptyState("아직 업로드한 사람이 없습니다.")];
+        }))]), h("tbody", {}, srvRows)])]) : U().emptyState("아직 업로드한 사람이 없습니다 — 팀원이 로컬 앱의 [팀 묶음 만들기] → 미리보기 → [보내기]를 하면 여기에 나타납니다.")];
     }
 
     function proposals() {
@@ -1978,7 +1978,7 @@
       return [h("div", {"class": "table-tools"}, [h("button", {type: "button", "class": "btn", "data-act": "aggregate"}, ["지금 다시 취합"])]),
         rows.length ? h("div", {"class": "table-wrap"}, [h("table", {"class": "tbl"}, [h("thead", {}, [h("tr", {}, ["사람", "기간", "받은 시각", "사용한 달", "판", "품질", "표식", ""].map(function (c) {
           return h("th", {scope: "col"}, [c]);
-        }))]), h("tbody", {}, rows)])]) : U().emptyState("받은 묶음이 없습니다.")];
+        }))]), h("tbody", {}, rows)])]) : U().emptyState("받은 묶음이 없습니다 — 팀원이 [보내기]를 하거나, 오프라인 묶음을 반입하면 여기에 쌓입니다.")];
     }
 
     function tabJson() {

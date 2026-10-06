@@ -173,11 +173,11 @@
   function muted(text) { return h("p", {"class": "muted small"}, [text]); }
   function link(text, href) { return h("a", {href: href}, [text]); }
 
-  // 카드(§8.2.3): 제목 h2 + 오른쪽 상태 글자 + 도구
+  // 카드(§8.2.3 — LM24 .card): 제목 h2 + 오른쪽 상태 글자 + 도구. o.cls = 덧붙일 클래스(예 card-bare — 테두리 없는 KPI 줄)
   function card(title, body, o) {
     o = o || {};
     var hid = o.id ? o.id + "-h" : null;
-    return h("section", {"class": "card", id: o.id || null, "aria-labelledby": title && hid ? hid : null}, [
+    return h("section", {"class": "card" + (o.cls ? " " + o.cls : ""), id: o.id || null, "aria-labelledby": title && hid ? hid : null}, [
       title ? h("div", {"class": "card-head"}, [h("h2", {id: hid}, [title]),
         o.state ? h("span", {"class": "state"}, [o.state]) : null,
         o.tools && o.tools.length ? h("div", {"class": "tools"}, o.tools) : null]) : null,
@@ -245,7 +245,7 @@
   function checkbox(id, label, checked, attrs) {
     var a = {id: id, name: id, type: "checkbox", checked: checked ? true : null};
     Object.keys(attrs || {}).forEach(function (k) { a[k] = attrs[k]; });
-    return h("label", {"for": id}, [h("input", a), " ", label]);
+    return h("label", {"for": id, "class": "check"}, [h("input", a), label]);
   }
 
   function select(id, options, value, attrs) {
@@ -510,12 +510,14 @@
   function idOf(x) { return typeof x === "string" ? x : str(obj(x).unit_id); }
 
   // ───────────────────────── 5. 머리 띠(§2.4.3 · §3.5 · RPT-04) — app.js 도 쓴다 ─────────────────────────
+  // 기간 출처 → 글자. default = 기본 기간(올해 1월 1일 ~ 오늘 — 2026-10-06 사용자 결정). 개월 수가 실린 default 는 그 전 규칙
+  // (최근 n개월)으로 분석한 옛 실행이라 그대로 보인다. q1~q4·h1·h2 = 빠른 선택(lm27ui.js periodPresets).
   var PERIOD_SRC = {this_month: "이번 달", last_month: "지난달", this_year: "올해", user: "직접 지정", manual: "직접 지정",
-    rerun: "이전 분석과 같음"};
+    rerun: "이전 분석과 같음", q1: "1분기", q2: "2분기", q3: "3분기", q4: "4분기", h1: "상반기", h2: "하반기"};
 
   function periodSourceText(src, n) {
     if (!src) { return null; }
-    if (src === "default") { return "기본값(최근 " + (isNum(n) && n > 0 ? n : 3) + "개월)"; }
+    if (src === "default") { return isNum(n) && n > 0 ? "기본값(최근 " + n + "개월)" : "기본값(올해 1월 1일 ~ 오늘)"; }
     if (src === "recent") { return "최근 " + (isNum(n) && n > 0 ? n : 3) + "개월"; }
     return PERIOD_SRC[src] || null;
   }
@@ -634,7 +636,7 @@
   function viewSummary(model, X, st, env) {
     var mk = st.month;
     var row = mk === ALL ? X.period : X.monthBy[mk];
-    if (!row || (!X.months.length)) { return [card(null, emptyP("이 기간의 분석 결과가 없습니다. [분석] 화면에서 기간을 정해 실행하세요."))]; }
+    if (!row || (!X.months.length)) { return [card(null, emptyP("이 기간의 분석 결과가 없습니다 — 로컬 앱 위쪽 기간 카드에서 기간을 정해 [분석 실행]을 누르세요."))]; }
     var u = U();
     var out = [];
     var std = num(obj(model.denominator).std_day_min) || 480;
@@ -999,7 +1001,8 @@
     }));
     var tbl = h("div", {"class": "table-wrap"}, [h("table", {"class": "tbl", role: "treegrid", "aria-label": "업무 트리 — 방향키로 이동·펼침, Enter 로 패널",
       id: "r-treegrid"}, [h("thead", {}, [head]), h("tbody", {}, rows.map(function (n) { return treeRowV(model, X, st, env, n, focusKey, mk); }))])]);
-    out.push(h("div", {"class": "grid2"}, [card("업무 트리", h("div", {}, [tools, tbl]), {id: "r-tree-card",
+    // 트리(넓게) | 수준 패널(오른쪽에 붙어 따라옴) — 좁으면 아래로(§6.3.2 나란한 칸)
+    out.push(h("div", {"class": "tree-layout"}, [card("업무 트리", h("div", {}, [tools, tbl]), {id: "r-tree-card",
       state: "영역 → 과제 → 역할 → 단위업무"}), panel]));
     return out;
   }

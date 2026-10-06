@@ -255,6 +255,19 @@ class PcAndRunsTest(unittest.TestCase):
         st, b, _ = self.srv.req("GET", "/api/analysis/runs")
         self.assertEqual(b["runs"][0]["state"], "cancelled")
 
+    def test_run_time_shown_in_work_timezone(self):
+        """이력 표의 '분석 시각' — run_status 의 UTC('…Z')를 근무 시간대 벽시계로(머리 띠와 같은 시각, 9시간 어긋남 없음)."""
+        seed_analysis(self.sb)
+        st0 = fsx.read_json(self.sb.paths.run_status_file(RUN_ID), None)
+        st0.update(started="2026-10-06T05:00:10Z", ended="2026-10-06T05:05:59Z")
+        fsx.atomic_write(self.sb.paths.run_status_file(RUN_ID), fsx.canon_bytes(st0))
+        st, b, _ = self.srv.req("GET", "/api/analysis/runs")
+        self.assertEqual(b["runs"][0]["built_at"], "2026-10-06T14:05:59+09:00")
+        st0["ended"] = "2026-10-06T14:05:59+09:00"                          # 이미 로컬 형식이면 그대로
+        fsx.atomic_write(self.sb.paths.run_status_file(RUN_ID), fsx.canon_bytes(st0))
+        st, b, _ = self.srv.req("GET", "/api/analysis/runs")
+        self.assertEqual(b["runs"][0]["built_at"], "2026-10-06T14:05:59+09:00")
+
     def test_collect_status_empty_bundle(self):
         st, b, _ = self.srv.req("GET", "/api/collect/status")
         self.assertEqual(st, 200, b)

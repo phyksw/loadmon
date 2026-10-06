@@ -435,6 +435,14 @@
     var legend = COV_ORDER.map(function (st) {
       return {label: COV[st][0], swatch: swRect({"class": "cv " + COV[st][1]}, COV[st][2] ? "bad" : null)};
     });
+    if (opt.split) {
+      // 긴 기간(올해 전체 등): 축 이름 열은 고정하고 날짜 칸만 카드 안에서 가로로 넘긴다(간트와 같은 틀 — .gantt)
+      var labelSvg = h("svg", {"class": "chart", viewBox: "0 0 " + LW + " " + f1(hh), width: LW, height: round1(hh), role: "group",
+        "aria-label": "축 이름", focusable: "false"}, labels);
+      var bodySvg = svgRoot(w - LW + 4, hh, id, cap, [h("g", {transform: "translate(" + (4 - LW) + " 0)"}, bg.concat(marks))]);
+      return result(h("div", {"class": "gantt", "data-view": "coverage"}, [h("div", {"class": "gantt-labels"}, [labelSvg]),
+        h("div", {"class": "gantt-scroll", tabindex: "-1"}, [bodySvg]), h("div", {"class": "gantt-ends"}, [])]), cols, rows, legend, cap);
+    }
     return result(svgRoot(w, hh, id, cap, bg.concat(labels, marks)), cols, rows, legend, cap);
   }
 

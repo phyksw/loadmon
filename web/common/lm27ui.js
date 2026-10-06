@@ -644,6 +644,80 @@
     return true;
   }
 
+  // ───────────────────────── 7. 기간 빠른 선택(올해·1~4분기·상반기·하반기) ─────────────────────────
+  // 파이썬 lm27\ui\period.py 와 같은 규칙·같은 글자(교차 시험 tests\web\common_test.js — 동봉 파이썬과 날짜 수백 개 대조).
+  // 기본 = 올해 1월 1일 ~ 오늘. 분기·반기는 오늘이 속한 해 기준 — 진행 중이면 끝 = 오늘(partial), 아직 시작 전이면 고를 수 없음
+  // (disabled + 이유 tip). 날짜는 'YYYY-MM-DD' 글자(ISO 날짜는 글자 비교 = 날짜 비교).
+  var PERIOD_PRESETS = [["ytd", "올해"], ["q1", "1분기"], ["q2", "2분기"], ["q3", "3분기"], ["q4", "4분기"], ["h1", "상반기"],
+    ["h2", "하반기"]];
+  var PERIOD_SPAN = {ytd: ["01-01", "12-31"], q1: ["01-01", "03-31"], q2: ["04-01", "06-30"], q3: ["07-01", "09-30"],
+    q4: ["10-01", "12-31"], h1: ["01-01", "06-30"], h2: ["07-01", "12-31"]};
+  var PERIOD_DEFAULT = "ytd";
+  var DATE_RX = /^\d{4}-\d{2}-\d{2}$/;
+
+  function pad2(n) { return (n < 10 ? "0" : "") + n; }
+
+  // Date → 그 PC 벽시계의 'YYYY-MM-DD'
+  function isoDate(d) {
+    var y = String(d.getFullYear());
+    while (y.length < 4) { y = "0" + y; }
+    return y + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate());
+  }
+
+  // 오늘(Date 또는 'YYYY-MM-DD') → 'YYYY-MM-DD'. 없는 날짜(2026-02-30)·다른 형이면 오류(파이썬 판의 ValueError 와 같은 자리)
+  function dayText(today) {
+    if (today && typeof today.getFullYear === "function") { return isoDate(today); }
+    var s = String(today === null || today === undefined ? "" : today);
+    if (DATE_RX.test(s)) {
+      var y = +s.slice(0, 4);
+      var m = +s.slice(5, 7);
+      var dd = +s.slice(8, 10);
+      var d = new Date(2000, 0, 1);
+      d.setFullYear(y, m - 1, dd);
+      if (y >= 1 && d.getFullYear() === y && d.getMonth() === m - 1 && d.getDate() === dd) { return s; }
+    }
+    throw new Error("오늘 날짜는 YYYY-MM-DD 입니다");
+  }
+
+  // 빠른 선택 7개 [{key, label, from, to, disabled, partial, tip}] — 고를 수 없는 기간은 from·to 에 그 기간 전체(표시용)
+  function periodPresets(today) {
+    var t = dayText(today);
+    var y = t.slice(0, 4);
+    return PERIOD_PRESETS.map(function (p) {
+      var a = y + "-" + PERIOD_SPAN[p[0]][0];
+      var b = y + "-" + PERIOD_SPAN[p[0]][1];
+      if (a > t) {
+        return {key: p[0], label: p[1], from: a, to: b, disabled: true, partial: false,
+          tip: a + " ~ " + b + " — 아직 오지 않은 기간이라 고를 수 없습니다"};
+      }
+      if (b >= t) {
+        return {key: p[0], label: p[1], from: a, to: t, disabled: false, partial: true, tip: a + " ~ " + t + "(진행 중 — 끝은 오늘)"};
+      }
+      return {key: p[0], label: p[1], from: a, to: b, disabled: false, partial: false, tip: a + " ~ " + b};
+    });
+  }
+
+  // 그 빠른 선택의 {key, from, to} — 모르는 키·아직 오지 않은 기간이면 null
+  function presetRange(key, today) {
+    var hit = periodPresets(today).filter(function (p) { return p.key === key; })[0];
+    return hit && !hit.disabled ? {key: hit.key, from: hit.from, to: hit.to} : null;
+  }
+
+  // 기본 기간 = 올해 1월 1일 ~ 오늘
+  function defaultPeriod(today) { return presetRange(PERIOD_DEFAULT, today); }
+
+  // (from, to) 와 같은 고를 수 있는 빠른 선택 키(여럿이면 PRESETS 순서로 첫 번째 — 1분기 안에서는 '올해'), 없으면 null(직접 지정)
+  function periodKeyOf(from, to, today) {
+    var hit = periodPresets(today).filter(function (p) { return !p.disabled && p.from === from && p.to === to; })[0];
+    return hit ? hit.key : null;
+  }
+
+  // 빠른 선택 키 → analyze 기간 출처('ytd' → 'default', 분기·반기 → 그 키, 그 밖 → 'user')
+  function periodSource(key) {
+    if (key === PERIOD_DEFAULT) { return "default"; }
+    return Object.prototype.hasOwnProperty.call(PERIOD_SPAN, key) ? key : "user";
+  }
+
   return {
     // 숫자(§3.1)
     fmtH1: fmtH1, fmtRatio: fmtRatio, fmtMM: fmtMM, fmtPct: fmtPct, fmtDays: fmtDays, fmtSigned: fmtSigned,
@@ -661,6 +735,10 @@
     delegate: delegate, tooltip: tooltip, hideTip: hideTip, openDrawer: openDrawer, closeDrawer: closeDrawer,
     navPick: navPick, navMove: navMove, setCurrent: setCurrent,
     // 섬·무늬
-    readIsland: readIsland, ensureDefs: ensureDefs
+    readIsland: readIsland, ensureDefs: ensureDefs,
+    // 기간 빠른 선택(파이썬 lm27\ui\period.py 와 같은 규칙)
+    PERIOD_PRESETS: PERIOD_PRESETS, PERIOD_DEFAULT: PERIOD_DEFAULT, isoDate: isoDate, dayText: dayText,
+    periodPresets: periodPresets, presetRange: presetRange, defaultPeriod: defaultPeriod, periodKeyOf: periodKeyOf,
+    periodSource: periodSource
   };
 }));

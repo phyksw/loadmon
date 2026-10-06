@@ -40,8 +40,9 @@ EXPORT_FORMATS = ("html", "csv", "json")
 EXPORT_VARIANTS = ("full", "redacted")
 # report ai-items --stage(WP-30 이 ai_in 을 쓰는 단계 — task_label 은 hier 쪽 단계라 여기 없다, W2 통합 WP-30 CR)
 AI_ITEM_STAGES = ("workflow_label", "agentic_match", "subagent_review", "review_text")
-# analyze --period-source(R RP8 기간 출처 — 화면 값, 'rerun' 은 파이프라인이 스스로 붙인다)
-PERIOD_SOURCES = ("default", "this_month", "last_month", "this_year", "user")
+# analyze --period-source(R RP8 기간 출처 — 화면 값, 'rerun' 은 파이프라인이 스스로 붙인다). lm27.ui.period.PERIOD_SOURCES 의
+# 사본(--help 가 하위 모듈을 import 하지 않게 — 같은지는 tests\ui\test_period.py). default = 올해 1월 1일 ~ 오늘, q1~q4·h1·h2 = 분기·반기
+PERIOD_SOURCES = ("default", "this_month", "last_month", "this_year", "q1", "q2", "q3", "q4", "h1", "h2", "user")
 # team send --trigger(TAB §2.8 재시도 계기 — 화면 기동·15분 타이머. collect·build 는 각 명령이 스스로 건다)
 SEND_TRIGGERS = ("manual", "startup", "timer")
 
@@ -51,7 +52,7 @@ COMMANDS = (
     ("agent", "에이전트 설치·확인·복구·제거(install [--only] [--reinstall] · status · repair · uninstall [--purge])"),
     ("bundle", "번들 관리(status · verify · merge <dir> · alias <pc_id> <logical> · unalias <pc_id> · redact)"),
     ("move-prepare", "이동 준비(도우미 PS 를 임시 폴더 사본으로 띄움)"),
-    ("analyze", "분석 파이프라인(--from D --to D 또는 --rerun <run_id> --stages <ids>)"),
+    ("analyze", "분석 파이프라인(--from D --to D — 둘 다 빼면 올해 1월 1일 ~ 오늘 · 또는 --rerun <run_id> --stages <ids>)"),
     ("report", "보고서(build · export · ai-items)"),
     ("bridge", "코파일럿 브리지(run · probe · calibrate · diagnose · manual-export · manual-import · replay · unlock)"),
     ("ui", "로컬 앱(127.0.0.1) — --check 는 기동 가능 여부만 확인"),
@@ -445,10 +446,23 @@ def _cmd_analyze(ctx):
         if not a.stages:
             raise CliError("--rerun 에는 --stages 가 필요합니다")
     else:
-        if not (a.from_ and a.to):
-            raise CliError("--from 과 --to 가 필요합니다(또는 --rerun <run_id> --stages <ids>)")
         if a.stages:
             raise CliError("--stages 는 --rerun 과 함께만 씁니다")
+        if not a.from_ and not a.to:
+            # 날짜를 주지 않으면 화면과 같은 규칙(lm27.ui.period 단일원, 오늘 = 근무 시간대 time.tzOffsetMin 의 오늘):
+            # --period-source 가 없거나 default → 올해 1월 1일 ~ 오늘, q1~q4·h1·h2 → 그 분기·반기(진행 중이면 오늘까지).
+            src = getattr(a, "period_source", None)
+            today = resolve("lm27.ui.period", "today_local")(int(ctx.cfg()["time.tzOffsetMin"]))
+            rng = resolve("lm27.ui.period", "range_for_source")(src, today)
+            if rng is None:
+                raise CliError(f"--period-source {src}: 아직 오지 않은 기간이거나 --from/--to 와 함께 써야 하는 값입니다")
+            a.from_, a.to = rng
+            if not src:
+                a.period_source = "default"
+            label = dict(resolve("lm27.ui.period", "PRESETS")).get(a.period_source, "기본(올해 1월 1일 ~ 오늘)")
+            events.emit("msg", text_ko=f"날짜를 주지 않아 {label} 기간으로 분석합니다: {a.from_} ~ {a.to}")
+        elif not (a.from_ and a.to):
+            raise CliError("--from 과 --to 는 함께 주세요(둘 다 빼면 올해 1월 1일 ~ 오늘 — 또는 --rerun <run_id> --stages <ids>)")
         if a.from_ > a.to:
             raise CliError("--from 이 --to 보다 늦습니다")
     stages = _csv(a.stages)

@@ -206,17 +206,25 @@ function fileDoc(model, drill, variant) {
   return {doc: doc, win: win, main: doc.getElementById("app")};
 }
 
-function appDoc(token) {
+// index.html 과 같은 틀(LM24 — 머리·단계 줄·기간 카드·보기 탭·띠·알림·본문·아래 상태 줄). frame=false 면 옛 틀(머리·탭·본문만)
+function appDoc(token, frame) {
   var doc = new Doc();
   el(doc, "meta", {name: "lm27-ui-token", content: token}, doc.head);
   var head = el(doc, "header", {"class": "app-head", id: "lm27-head"}, doc.body);
-  el(doc, "h1", {}, head).textContent = "LoadMonitor27";
+  var h1 = el(doc, "h1", {}, head);
+  h1.appendChild(doc.createTextNode("LoadMonitor27"));
+  if (frame !== false) { el(doc, "small", {id: "lm27-ver"}, h1).textContent = "로컬 전용 · 외부 전송 없음"; }
   el(doc, "span", {id: "lm27-pc"}, head);
   el(doc, "button", {type: "button", id: "lm27-jobs", "data-act": "a-jobs", hidden: ""}, head);
+  if (frame !== false) {
+    el(doc, "nav", {"class": "steps", id: "lm27-steps"}, doc.body);
+    el(doc, "section", {"class": "card period-card", id: "lm27-period"}, doc.body);
+  }
   el(doc, "div", {id: "lm27-nav"}, doc.body);
   el(doc, "div", {id: "lm27-band", hidden: ""}, doc.body);
   el(doc, "div", {id: "lm27-alerts"}, doc.body);
   el(doc, "main", {id: "app", tabindex: "-1"}, doc.body);
+  if (frame !== false) { el(doc, "footer", {"class": "sbar", id: "lm27-sbar"}, doc.body); }
   return {doc: doc, win: new Win(doc)};
 }
 
@@ -262,14 +270,22 @@ function baseRoutes(model) {
 function bootApp(routes, hash, opt) {
   opt = opt || {};
   var M = mods();
-  var d = appDoc(opt.token === undefined ? TOKEN : opt.token);
+  var d = appDoc(opt.token === undefined ? TOKEN : opt.token, opt.frame);
   d.win.location.hash = hash || "#home";
   var srv = new Server(routes);
   var timers = new Timers();
+  var at = opt.now || new Date(2026, 9, 5, 10, 0, 0);
   var app = M.A.boot({doc: d.doc, win: d.win, fetch: srv.fetch, timer: timers, storage: opt.storage || memStorage(),
-    now: function () { return new Date(2026, 9, 5, 10, 0, 0); }});
-  return {doc: d.doc, win: d.win, srv: srv, timers: timers, app: app, main: d.doc.getElementById("app"), M: M};
+    now: function () { return at; }});
+  return {doc: d.doc, win: d.win, srv: srv, timers: timers, app: app, main: d.doc.getElementById("app"), M: M,
+    period: d.doc.getElementById("lm27-period"), sbar: d.doc.getElementById("lm27-sbar"), steps: d.doc.getElementById("lm27-steps")};
 }
+
+function pressedChips(root) {
+  return byAct(root, "a-period").filter(function (b) { return b.getAttribute("aria-pressed") === "true"; }).map(function (b) { return b.getAttribute("data-ref"); });
+}
+
+function dates(c) { return [c.doc.getElementById("an-from").value, c.doc.getElementById("an-to").value]; }
 
 function go(ctx, hash) { ctx.win.location.hash = hash; return settle(); }
 function text(n) { return n.textContent; }
@@ -437,13 +453,20 @@ scenario("로컬 앱 부트 — 홈 카드·pill 배지(막힘·위험)·머리 
     assert.strictEqual(badge("#team"), "1");
     assert.strictEqual(badge("#collect"), "1");
     assert.strictEqual(badge("#analysis"), undefined);
-    assert.strictEqual(pills.filter(function (p) { return p.getAttribute("aria-current") === "page"; }).map(text)[0].indexOf("홈"), 0);
+    assert.strictEqual(pills.filter(function (p) { return p.getAttribute("aria-current") === "page"; }).map(text)[0].indexOf("대시보드"), 0);
     assert.ok(t.indexOf("0.99 MM") >= 0 && t.indexOf("107%") >= 0, "최근 분석 KPI");
+    var kc = c.doc.getElementById("card-analysis");
+    assert.ok(/\bcard-bare\b/.test(kc.getAttribute("class")), "KPI 줄은 테두리 없는 카드(LM24 타일)");
+    assert.strictEqual(byTag(kc, "button").filter(function (b) { return /\bkpi\b/.test(b.getAttribute("class") || ""); }).length, 5, "KPI 타일 5개 — 누르면 보고서");
+    var grid = c.main.all().filter(function (n) { return n.getAttribute("class") === "grid2"; })[0];
+    assert.ok(grid && grid.textContent.indexOf("다음 할 일") >= 0 && grid.textContent.indexOf("팀 업로드") >= 0, "다음 할 일 | 팀 나란히(LM24 grid2)");
     assert.ok(t.indexOf("해당 없음") >= 0, "능력 표 해당 없음");
     var cell = byAct(c.main, "a-cell", "0|teams.uia")[0];
     fire(cell, "click");
     assert.ok(text(c.doc.getElementById("card-matrix")).indexOf("팀즈 창이 최소화·숨김이라 읽지 못했습니다") >= 0, "사유 문구는 서버 표");
     assert.ok(c.srv.count("GET", "/api/collect/coverage") === 1, "히트맵 자료");
+    fire(byAct(kc, "a-goto", "#report/review")[0], "click");
+    assert.strictEqual(c.win.location.hash, "#report/review", "KPI → 개인 보고서 절");
   });
 });
 
@@ -576,32 +599,165 @@ scenario("KB-9 확인 질문 응답 — 오류는 첫 오류 칸 초점, 보내�
   });
 });
 
-scenario("분석 실행 — 빠른 선택·기간 출처·Copilot 역할 없으면 AI 끔", function () {
+scenario("기간 카드 — 기본 올해(1월 1일 ~ 오늘)·분기·반기 빠른 선택·기간 출처·Copilot 역할 없으면 AI 끔", function () {
   var routes = baseRoutes(fixture("report_model.json"));
-  routes["POST /api/analysis/run"] = {job_id: "j20261005100300dead"};
-  routes["GET /api/jobs/j20261005100300dead"] = {job_id: "j20261005100300dead", kind: "analyze", state: "running", events: []};
+  routes["POST /api/analysis/run"] = {ok: true};                  // 작업 id 없음 — 이 시나리오는 보낸 본문만 본다
   var c = bootApp(routes, "#analysis");
+  function analyze() { fire(byAct(c.period, "a-analyze")[0], "click"); return settle(); }
+  function body() { return c.srv.last("POST", "/api/analysis/run").body; }
   return settle().then(function () {
-    assert.strictEqual(c.doc.getElementById("an-from").value, "2026-08-01", "기본 = 최근 3개월");
+    assert.deepStrictEqual(dates(c), ["2026-01-01", "2026-10-05"], "기본 = 올해 1월 1일 ~ 오늘");
+    assert.deepStrictEqual(byAct(c.period, "a-period").map(text), ["올해", "1분기", "2분기", "3분기", "4분기", "상반기", "하반기"]);
+    assert.deepStrictEqual(pressedChips(c.period), ["ytd"], "올해(기본)가 눌린 칩");
+    assert.ok(/\bon\b/.test(byAct(c.period, "a-period", "ytd")[0].getAttribute("class")), "LM24 .chip.on");
+    assert.ok(byAct(c.period, "a-period").every(function (b) { return b.getAttribute("aria-disabled") === null; }), "10월이면 모든 분기·반기를 고를 수 있다");
     assert.ok(c.doc.getElementById("an-ai").hasAttribute("disabled"), "역할 없으면 AI 끔");
-    fire(byAct(c.main, "a-analyze")[0], "click");
-    return settle();
+    assert.ok(text(c.period).indexOf("Copilot 역할이 아닙니다") >= 0, "끈 이유");
+    assert.strictEqual(byAct(c.main, "a-analyze").length, 0, "분석 화면에는 실행 카드가 따로 없다(기간 카드 하나)");
+    return analyze();
   }).then(function () {
-    var b = c.srv.last("POST", "/api/analysis/run").body;
-    assert.deepStrictEqual([b.from, b.to, b.ai, b.period_source, b.period_months], ["2026-08-01", "2026-10-05", false, "default", 3]);
-    fire(byAct(c.main, "a-range", "this_month")[0], "click");
-    assert.strictEqual(c.doc.getElementById("an-from").value, "2026-10-01");
-    fire(byAct(c.main, "a-analyze")[0], "click");
-    return settle();
+    var b = body();
+    assert.deepStrictEqual([b.from, b.to, b.ai, b.period_source, b.period_months], ["2026-01-01", "2026-10-05", false, "default", undefined]);
+    assert.ok(text(c.period).indexOf("분석을 시작했습니다(2026-01-01 ~ 2026-10-05)") >= 0, "기간 카드 알림");
+    fire(byAct(c.period, "a-period", "q3")[0], "click");
+    assert.deepStrictEqual(dates(c), ["2026-07-01", "2026-09-30"], "3분기 = 07-01 ~ 09-30");
+    assert.deepStrictEqual(pressedChips(c.period), ["q3"]);
+    fire(byAct(c.period, "a-period", "q4")[0], "click");
+    assert.deepStrictEqual(dates(c), ["2026-10-01", "2026-10-05"], "진행 중인 4분기 = 10-01 ~ 오늘");
+    assert.ok(byAct(c.period, "a-period", "q4")[0].getAttribute("data-tip").indexOf("진행 중") >= 0);
+    fire(byAct(c.period, "a-period", "h1")[0], "click");
+    assert.deepStrictEqual(dates(c), ["2026-01-01", "2026-06-30"], "상반기");
+    return analyze();
   }).then(function () {
-    var b = c.srv.last("POST", "/api/analysis/run").body;
-    assert.strictEqual(b.period_source, "this_month");
-    c.doc.getElementById("an-from").value = "2026-09-15";
-    fire(byAct(c.main, "a-analyze")[0], "click");
-    return settle();
+    assert.deepStrictEqual([body().from, body().to, body().period_source], ["2026-01-01", "2026-06-30", "h1"]);
+    var f = c.doc.getElementById("an-from");
+    f.value = "2026-02-15";
+    fire(f, "change");
+    assert.deepStrictEqual(pressedChips(c.period), [], "손으로 바꾸면 칩 선택이 풀린다");
+    return analyze();
   }).then(function () {
-    assert.strictEqual(c.srv.last("POST", "/api/analysis/run").body.period_source, "user", "손으로 바꾸면 직접 지정");
+    assert.deepStrictEqual([body().from, body().period_source], ["2026-02-15", "user"], "직접 지정");
+    c.doc.getElementById("an-from").value = "2026-04-01";
+    fire(c.doc.getElementById("an-from"), "change");
+    assert.deepStrictEqual(pressedChips(c.period), ["q2"], "날짜가 2분기(04-01 ~ 06-30)와 같아지면 2분기 칩");
+    c.doc.getElementById("an-to").value = "2026-03-01";
+    return analyze();
+  }).then(function () {
+    assert.ok(text(c.period).indexOf("끝 ≥ 시작") >= 0, "끝이 시작보다 앞서면 보내지 않음");
+    assert.strictEqual(c.srv.count("POST", "/api/analysis/run"), 3);
     assert.ok(text(c.main).indexOf("현재 표시") >= 0, "이력 현재 표시");
+  });
+});
+
+scenario("기간 카드 — 아직 오지 않은 분기·반기는 고를 수 없음(이유 툴팁)·윤년 2월 29일", function () {
+  var c = bootApp(baseRoutes(fixture("report_model.json")), "#home", {now: new Date(2024, 1, 29, 9, 0, 0)});
+  return settle().then(function () {
+    assert.deepStrictEqual(dates(c), ["2024-01-01", "2024-02-29"], "윤년 — 오늘(2월 29일)까지");
+    var dis = byAct(c.period, "a-period").filter(function (b) { return b.getAttribute("aria-disabled") === "true"; });
+    assert.deepStrictEqual(dis.map(function (b) { return b.getAttribute("data-ref"); }), ["q2", "q3", "q4", "h2"]);
+    assert.ok(dis[0].getAttribute("data-tip").indexOf("아직 오지 않은 기간") >= 0, "이유 툴팁");
+    fire(dis[1], "click");
+    assert.deepStrictEqual(dates(c), ["2024-01-01", "2024-02-29"], "눌러도 바뀌지 않음");
+    assert.deepStrictEqual(pressedChips(c.period), ["ytd"]);
+    fire(byAct(c.period, "a-period", "q1")[0], "click");
+    assert.deepStrictEqual(dates(c), ["2024-01-01", "2024-02-29"], "1분기(진행 중) = 01-01 ~ 오늘");
+    assert.deepStrictEqual(pressedChips(c.period), ["q1"], "같은 기간이어도 고른 칩이 눌림");
+  });
+});
+
+scenario("기간 카드 동작 단추·진행 — [분석 실행] 중엔 잠김·[중지]·상태 줄·단계 줄·사용 안내", function () {
+  var routes = baseRoutes(fixture("report_model.json"));
+  var JID = "j20261005100300dead";
+  var st = {n: 0};
+  routes["POST /api/analysis/run"] = {job_id: JID};
+  routes["GET /api/jobs/" + JID] = function () {
+    st.n++;
+    return st.n < 2 ? {job_id: JID, kind: "analyze", state: "running", events: [{seq: 1, ev: "progress", stage: "time", done: 3, total: 10,
+      text_ko: "근무시간 계산 중"}]} : {job_id: JID, kind: "analyze", state: "done", rc: 0, events: []};
+  };
+  routes["POST /api/collect/run"] = {ok: true};
+  routes["POST /api/report/build"] = {ok: true};
+  var c = bootApp(routes, "#home");
+  return settle().then(function () {
+    var sb = text(c.sbar);
+    assert.ok(sb.indexOf("대기") >= 0 && sb.indexOf("마지막 분석") >= 0 && sb.indexOf("v0.1.0") >= 0, "상태 줄: 대기 · 마지막 분석 · 판");
+    assert.ok(sb.indexOf("마지막 수집 10-05 09:02(PC1)") >= 0, "상태 줄: 마지막 수집");
+    assert.ok(text(c.doc.getElementById("lm27-ver")).indexOf("v0.1.0") === 0, "머리 작은 글자 = 판");
+    var steps = byTag(c.steps, "a");
+    assert.deepStrictEqual(steps.map(function (a) { return a.getAttribute("href"); }), ["#collect", "#analysis", "#report", "#team"]);
+    assert.ok(text(steps[1]).indexOf("✓") === 0 && text(steps[0]).indexOf("✓") === 0, "마친 단계 ✓(분석 결과·수집 기록 있음)");
+    fire(byAct(c.steps, "a-guide")[0], "click");
+    var dr = c.doc.body.all().filter(function (n) { return n.getAttribute("role") === "dialog"; })[0];
+    assert.ok(dr && text(dr).indexOf("기본은 올해 1월 1일 ~ 오늘") >= 0, "사용 안내 서랍");
+    fire(byAct(dr, "drawer-close")[0], "click");
+    fire(byAct(c.period, "a-do", "collect")[0], "click");
+    fire(byAct(c.period, "a-do", "rebuild")[0], "click");
+    return settle();
+  }).then(function () {
+    assert.deepStrictEqual(c.srv.last("POST", "/api/collect/run").body, {mode: "auto"}, "[수집]");
+    assert.deepStrictEqual(c.srv.last("POST", "/api/report/build").body, {run_id: "20261005-101500-3fa2"}, "[보고서 다시 만들기] = 지금 보는 결과");
+    fire(byAct(c.period, "a-analyze")[0], "click");
+    return settle();
+  }).then(function () {
+    c.timers.run();
+    return settle();
+  }).then(function () {
+    var run = byAct(c.period, "a-analyze")[0];
+    assert.strictEqual(run.getAttribute("aria-disabled"), "true", "분석 중엔 [분석 실행] 잠김(이유 툴팁)");
+    assert.strictEqual(byAct(c.period, "a-period-cancel", JID).length, 1, "[중지]");
+    assert.ok(text(c.period).indexOf("근무시간 계산 중") >= 0, "진행 글");
+    assert.ok(text(c.sbar).indexOf("분석 진행 중") >= 0 && byTag(c.sbar, "svg").length === 1, "상태 줄 진행 막대");
+    c.timers.run();
+    return settle();
+  }).then(function () {
+    assert.strictEqual(byAct(c.period, "a-analyze")[0].getAttribute("aria-disabled"), null, "끝나면 다시 누를 수 있다");
+    assert.ok(text(c.doc.getElementById("lm27-alerts")).indexOf("'분석' 작업을 마쳤습니다.") >= 0);
+    assert.ok(text(c.sbar).indexOf("대기") >= 0);
+  });
+});
+
+scenario("틀 요소(단계 줄·기간 카드·상태 줄)가 없는 옛 껍데기에서도 화면은 돈다", function () {
+  var c = bootApp(baseRoutes(fixture("report_model.json")), "#analysis", {frame: false});
+  return settle().then(function () {
+    assert.strictEqual(c.period, null);
+    assert.ok(text(c.main).indexOf("분석 이력") >= 0 && text(c.main).indexOf("현재 표시") >= 0, "분석 화면 카드");
+    return go(c, "#collect");
+  }).then(function () {
+    assert.ok(text(c.doc.getElementById("card-coverage")).indexOf("2026-01-01 ~ 2026-10-05") >= 0, "기간 카드가 없어도 기본 기간(올해)");
+  });
+});
+
+scenario("수집 화면 — 커버리지 원장·기간 다시 수집은 기간 카드를 따른다(기본 올해)·셀 표 접힘", function () {
+  var routes = baseRoutes(fixture("report_model.json"));
+  routes["POST /api/collect/run"] = {ok: true};
+  var c = bootApp(routes, "#collect");
+  function covQuery() {
+    var l = c.srv.calls.filter(function (x) { return x.path.indexOf("/api/collect/coverage") === 0; });
+    return l[l.length - 1].path.split("?")[1];
+  }
+  return settle().then(function () {
+    assert.strictEqual(covQuery(), "from=2026-01-01&to=2026-10-05", "커버리지 = 올해 1월 1일 ~ 오늘");
+    assert.ok(text(c.doc.getElementById("card-coverage")).indexOf("2026-01-01 ~ 2026-10-05 · 278일") >= 0, "기간 표시");
+    assert.deepStrictEqual([c.doc.getElementById("rc-since").value, c.doc.getElementById("rc-until").value], ["2026-01-01", "2026-10-05"]);
+    assert.strictEqual(byTag(c.doc.getElementById("card-coverage"), "details").length, 1, "출처별 셀 표는 접혀 있다");
+    assert.strictEqual(c.doc.getElementById("cov-from"), null, "커버리지 자체 날짜 칸 없음(기간 카드 하나)");
+    fire(byAct(c.period, "a-period", "q2")[0], "click");
+    return settle();
+  }).then(function () {
+    assert.strictEqual(covQuery(), "from=2026-04-01&to=2026-06-30", "2분기로 다시 읽음");
+    assert.deepStrictEqual([c.doc.getElementById("rc-since").value, c.doc.getElementById("rc-until").value], ["2026-04-01", "2026-06-30"]);
+    fire(byAct(c.main, "a-collect", "recollect")[0], "click");
+    return settle();
+  }).then(function () {
+    assert.deepStrictEqual(c.srv.last("POST", "/api/collect/run").body, {mode: "recollect", since: "2026-04-01", until: "2026-06-30"});
+    fire(byAct(c.period, "a-period", "ytd")[0], "click");
+    var f = c.doc.getElementById("an-from");
+    f.value = "2024-01-01";
+    fire(f, "change");
+    return settle();
+  }).then(function () {
+    assert.strictEqual(covQuery(), "from=2025-09-01&to=2026-10-05", "400일 넘으면 끝에서 400일만(서버 상한)");
+    assert.ok(text(c.doc.getElementById("card-coverage")).indexOf("끝에서 400일만") >= 0);
   });
 });
 
@@ -864,6 +1020,16 @@ if (require.main === module) {
       A.ok(nav, "주 메뉴");
       A.deepStrictEqual((nav[1].match(/href="#[a-z]+"/g) || []), ["href=\"#home\"", "href=\"#collect\"", "href=\"#analysis\"", "href=\"#report\"",
         "href=\"#team\"", "href=\"#settings\""]);
+      // LM24 틀: 머리(제품 이름 + 작은 글자) → 단계 줄 → 한 줄 설명 → 기간 카드 → 보기 탭 → 본문 → 아래 상태 줄(순서 그대로)
+      A.ok(/<h1>LoadMonitor27<small id="lm27-ver">/.test(s), "머리 작은 글자(판·주소·로컬 전용)");
+      var steps = /<nav class="steps" id="lm27-steps" aria-label="진행 단계">([\s\S]*?)<\/nav>/.exec(s);
+      A.ok(steps, "단계 줄");
+      A.deepStrictEqual(steps[1].match(/href="#[a-z]+"/g), ["href=\"#collect\"", "href=\"#analysis\"", "href=\"#report\"", "href=\"#team\""]);
+      var order = ["id=\"lm27-head\"", "id=\"lm27-steps\"", "id=\"lm27-intro\"", "id=\"lm27-period\"", "id=\"lm27-nav\"", "id=\"lm27-band\"",
+        "id=\"lm27-alerts\"", "<main id=\"app\"", "id=\"lm27-sbar\""].map(function (k) { return s.indexOf(k); });
+      A.ok(order.every(function (v, i) { return v > 0 && (i === 0 || v > order[i - 1]); }), "틀 순서 " + order.join(","));
+      A.ok(/<section class="card period-card" id="lm27-period" aria-label="[^"]+"><\/section>/.test(s), "기간 카드 자리(app.js 가 채움)");
+      A.ok(/<footer class="sbar" id="lm27-sbar" aria-label="상태 표시줄">/.test(s), "아래 상태 줄");
       var icons = readText("web/common/icons.svg").match(/<symbol id="i-[a-z-]+"[^\n]*?<\/symbol>/g);
       var inl = s.match(/<symbol id="i-[a-z-]+"[^\n]*?<\/symbol>/g);
       A.strictEqual(icons.length, 25);

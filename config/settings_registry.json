@@ -2864,7 +2864,7 @@
    "owner": "lm27.ui.api_analysis", "readers": [], "spec": "R §10.2",
    "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
    "label_ko": "기본 분석 기간(개월)",
-   "help_ko": "분석 화면 기본 기간(이번 달 포함 최근 n개월)."
+   "help_ko": "지금은 쓰지 않음 — 분석 기본 기간은 올해 1월 1일 ~ 오늘(기간 카드의 [올해]·분기·반기 버튼, lm27.ui.period). 예전 판의 '최근 n개월' 값으로 화면 응답 defaults.months 에만 실린다."
   },
   "report.analysisKeep": {
    "default": 10, "type": "int", "range": {"min": 1, "max": 1000}, "choices": null,

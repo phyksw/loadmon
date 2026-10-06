@@ -1,5 +1,8 @@
 /*
- * LM27 로컬 앱 화면 — 껍데기(머리·pill 메뉴·머리 띠·알림)·해시 라우터·작업(job) 진행·화면 6개(홈·수집·분석·개인 보고서·팀·설정).
+ * LM27 로컬 앱 화면 — 껍데기(LM24 틀: 머리·단계 줄·기간 카드·보기 탭·머리 띠·알림·아래 상태 줄)·해시 라우터·작업(job) 진행
+ * ·화면 6개(대시보드·수집·분석·개인 보고서·팀·설정).
+ * 기간 카드(모든 화면 위 — LM24 기간 줄): 빠른 선택 칩(올해(기본)·1~4분기·상반기·하반기) + 시작·끝 + [분석 실행] + 동작 단추.
+ * 기간 규칙은 lm27ui.js 의 periodPresets(= 파이썬 lm27\ui\period.py) 하나 — 기본 = 올해 1월 1일 ~ 오늘(사용자 결정 2026-10-06).
  * 근거: REPORTS §5(전부) · §2.3.3(토큰)·§2.3.5(작업)·§2.3.6(API 목록) · §5.7 · §5.8 · §8.2 · §8.5 · §11 · 계약 §9.5 · D-12.
  * 개인 보고서 절은 web\app\report.js 가 그린다(자기완결 HTML 과 같은 파일 — 이 파일은 API 에서 모델을 읽어 넘길 뿐).
  * 원칙: ① DOM 은 lm27ui.js 마운트로만(문자열을 HTML 로 해석하는 API 0 — G-R4) ② 숫자 글자는 lm27ui 표시 함수만(G-R11)
@@ -53,7 +56,17 @@
   function str(x) { return x === null || x === undefined ? "" : String(x); }
 
   // ───────────────────────── 1. 상수(화면 문구 — R §5) ─────────────────────────
-  var SCREENS = [["home", "홈"], ["collect", "수집"], ["analysis", "분석"], ["report", "개인 보고서"], ["team", "팀"], ["settings", "설정"]];
+  var SCREENS = [["home", "대시보드"], ["collect", "수집"], ["analysis", "분석"], ["report", "개인 보고서"], ["team", "팀"], ["settings", "설정"]];
+  // 단계 줄(LM24 .steps) — [화면, 글자, 툴팁]
+  var STEPS = [["collect", "① 내 PC 수집", "[수집]으로 이 PC 의 사용 기록·메일·일정·팀즈 기록을 모읍니다(에이전트가 평소에도 기록합니다)"],
+    ["analysis", "② 분석 실행", "위 기간 카드에서 기간을 고르고 [분석 실행]을 누릅니다(기본: 올해 1월 1일 ~ 오늘)"],
+    ["report", "③ 결과 확인", "개인 보고서에서 요약·업무 트리·워크플로우·리뷰·근거를 봅니다"],
+    ["team", "④ 팀 업로드", "팀 화면에서 [팀 묶음 만들기] → 미리보기에서 가림 확인 → [보내기]"]];
+  var DATE_RX = /^\d{4}-\d{2}-\d{2}$/;
+  var COVERAGE_MAX_DAYS = 400;                    // = 서버 lm27\ui\api_collect.COVERAGE_MAX_DAYS(커버리지 원장 한 번에 보는 최대 일수)
+  var QUALITY_UI = {reliable: ["good", "신뢰"], caution: ["warn", "주의"], unreliable: ["bad", "측정 불충분"]};
+  // 화면이 더 쓰지 않는 설정(레지스트리에는 남아 있다 — 줄에 이유를 함께 보인다)
+  var SUPERSEDED = {"report.defaultRangeMonths": "지금은 쓰지 않습니다 — 분석 기본 기간은 올해 1월 1일 ~ 오늘입니다(위 기간 카드의 [올해])"};
   var JOB_NAME = {collect: "수집", move_prepare: "이동 준비", bundle_merge: "번들 합치기", analyze: "분석", report_build: "보고서 만들기",
     report_export: "보고서 내보내기", quick_reanalyze: "빠른 재분석", team_build: "팀 묶음 만들기", team_send: "팀 묶음 보내기",
     registry_fetch: "레지스트리 받기", team_server: "팀 서버", agent_repair: "에이전트 복구"};
@@ -89,23 +102,16 @@
 
   function ymd(d) { return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate()); }
 
-  function addMonths(y, m, k) {                   // (y, m 1~12) + k 달 → [y, m]
-    var t = y * 12 + (m - 1) + k;
-    return [Math.floor(t / 12), (t % 12 + 12) % 12 + 1];
-  }
-
-  function monthFirst(ym) { return ym[0] + "-" + pad2(ym[1]) + "-01"; }
-
-  function monthLast(ym) {
-    var n = addMonths(ym[0], ym[1], 1);
-    var d = new Date(n[0], n[1] - 1, 1);
-    d.setDate(0);
-    return ymd(d);
-  }
-
   function daysBetween(a, b) {                    // 'YYYY-MM-DD' 두 날의 일수 차(b − a)
     var C = deps().C;
     return C.dayNum(b) - C.dayNum(a);
+  }
+
+  function addDays(iso, k) {                      // 'YYYY-MM-DD' + k 일(달·해 넘김은 Date 가 맞춘다)
+    var d = new Date(2000, 0, 1);
+    d.setFullYear(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10));
+    d.setDate(d.getDate() + k);
+    return U().isoDate(d);
   }
 
   function md(s) { return K().mdhm(s); }
@@ -207,9 +213,15 @@
     var api = makeApi(fetchFn, function () { return token; });
     var el = {nav: doc.getElementById("lm27-nav"), band: doc.getElementById("lm27-band"), alerts: doc.getElementById("lm27-alerts"),
       main: doc.getElementById("app"), pc: doc.getElementById("lm27-pc"), jobs: doc.getElementById("lm27-jobs"),
-      head: doc.getElementById("lm27-head")};
+      head: doc.getElementById("lm27-head"), ver: doc.getElementById("lm27-ver"), steps: doc.getElementById("lm27-steps"),
+      period: doc.getElementById("lm27-period"), sbar: doc.getElementById("lm27-sbar")};
     var S = {hello: null, runs: null, current: null, next: [], jobs: {}, jobOrder: [], notices: [], noticeSeq: 0, pollMs: 1000,
-      pollTimer: null, scr: null, report: null, defaults: {}, rebuildAsked: {}, tokenOk: TOKEN_RX.test(token)};
+      pollTimer: null, scr: null, report: null, defaults: {}, rebuildAsked: {}, tokenOk: TOKEN_RX.test(token),
+      home: null, period: null, periodMsg: null, aiChoice: null};
+    S.period = (function () { var d = U0.defaultPeriod(todayText()); return {key: d.key, from: d.from, to: d.to}; }());
+
+    // 이 PC 벽시계의 오늘('YYYY-MM-DD') — 기간 빠른 선택의 기준(파이썬 lm27\ui\period.py 와 같은 규칙)
+    function todayText() { return U0.isoDate(now()); }
 
     // ── 4.1 머리·메뉴·띠·알림 ──
     function renderNav() {
@@ -233,6 +245,7 @@
       if (keepHref) {                                 // 배경 갱신이 메뉴의 키보드 초점을 빼앗지 않게
         Kt.walk(el.nav, function (n) { if (n.getAttribute("href") === keepHref && n.focus) { n.focus(); } });
       }
+      renderSteps();
     }
 
     function renderBand() {
@@ -265,13 +278,277 @@
       renderAlerts();
     }
 
+    function portText() {
+      var p = obj(S.hello).port;
+      if (!isNum(p)) { p = Number(str(win.location && win.location.port)); }
+      return isNum(p) && p > 0 ? "127.0.0.1:" + p : "";
+    }
+
     function renderHead() {
       var hp = obj(obj(S.hello).pc);
       if (el.pc) {
         var t = hp.label_user || hp.label_auto || hp.label;
         U0.render(t ? ["[" + t + (PC_KIND[hp.kind] ? " · " + PC_KIND[hp.kind] : "") + "]"] : [], el.pc);
       }
+      if (el.ver) {                                   // LM24 머리: 제품 이름 옆 작은 글자 — 판 · 주소 · 로컬 전용
+        var v = obj(S.hello).version;
+        U0.render([(v ? "v" + v + " · " : "") + (portText() ? portText() + " · " : "") + "로컬 전용 · 외부 전송 없음"], el.ver);
+      }
       updateJobsButton();
+    }
+
+    // ── 4.1a 단계 줄(LM24 .steps) — 지금 화면은 파랑 바탕, 마친 단계는 ✓ ──
+    function renderSteps() {
+      if (!el.steps) { return; }
+      var cur = S.scr ? S.scr.name : "home";
+      var home = obj(S.home);
+      var hasRun = !!(S.current && S.current.run_id);
+      var done = {collect: !!obj(obj(home.collect).last).at, analysis: hasRun, report: hasRun,
+        team: num(obj(obj(home.team).outbox).sent) > 0};
+      var act = doc.activeElement;
+      var keepHref = act && el.steps.contains && el.steps.contains(act) && act.getAttribute ? act.getAttribute("href") : null;
+      U0.render(STEPS.map(function (s) {
+        var on = cur === s[0];
+        return h("a", {href: "#" + s[0], "class": on ? "on" : null, "aria-current": on ? "page" : null, "data-tip": s[2]}, [
+          done[s[0]] ? h("span", {"class": "done", "aria-label": "마침"}, ["✓"]) : null, s[1] + (on ? " (지금 화면)" : "")]);
+      }).concat([h("button", {type: "button", "data-act": "a-guide", "aria-haspopup": "dialog"}, ["사용 안내"])]), el.steps);
+      if (keepHref) {
+        Kt.walk(el.steps, function (n) { if (n.getAttribute("href") === keepHref && n.focus) { n.focus(); } });
+      }
+    }
+
+    function guideDrawer() {
+      U0.openDrawer(h("div", {}, [
+        h("ol", {}, [
+          h("li", {}, [h("strong", {}, ["내 PC 수집"]), " — [수집]을 누르면 이 PC 의 사용 기록·메일·일정·팀즈 기록을 모읍니다. 에이전트가 평소에도 기록하고, 다른 PC 의 기록은 그 PC 에서 [수집]하면 이 번들로 들어옵니다."]),
+          h("li", {}, [h("strong", {}, ["분석 실행"]), " — 위 기간 카드에서 기간을 고릅니다. 기본은 올해 1월 1일 ~ 오늘이고, 1~4분기·상반기·하반기 단추나 시작·끝 날짜로 바꿀 수 있습니다. [분석 실행]을 누르면 진행이 아래 상태 줄과 [분석] 화면에 보입니다."]),
+          h("li", {}, [h("strong", {}, ["결과 확인"]), " — [개인 보고서]에서 요약·업무 트리·워크플로우·리뷰·근거를 봅니다. 확인 질문에 답하면 다음 분석이 더 정확해집니다."]),
+          h("li", {}, [h("strong", {}, ["팀 업로드"]), " — [팀] 화면에서 [팀 묶음 만들기] → 미리보기에서 가림을 확인 → [보내기]. 팀 서버에 닿지 않는 망에서는 [승인만] 해 두면 닿는 PC 의 다음 [수집] 때 보냅니다."])]),
+        Kt.muted("숫자의 뜻: 투입 MM = 일한 시간 ÷ (그 달 근무일 × 8h) · 로드율 = 일한 시간 ÷ 가용 시간(부재는 뺌). 이 화면은 이 PC 안(127.0.0.1)에서만 열립니다.")]),
+      {doc: doc, title: "사용 안내"});
+    }
+
+    // ── 4.1b 기간 카드(LM24 기간 줄) — 빠른 선택 칩 · 시작·끝 · AI · [분석 실행] · 동작 단추 · 진행 ──
+    function runningOf(kinds) {
+      var j = jobOfKind(kinds);
+      return j && !FINISHED[j.state] ? j : null;
+    }
+
+    function analyzeJob() { return runningOf(["analyze", "quick_reanalyze"]); }
+
+    function chipButtons() {
+      return U0.periodPresets(todayText()).map(function (x) {
+        var on = !x.disabled && S.period.key === x.key;
+        return h("button", {type: "button", "class": "chip" + (on ? " on" : ""), "data-act": "a-period", "data-ref": x.key,
+          "aria-pressed": on ? "true" : "false", "aria-disabled": x.disabled ? "true" : null,
+          "data-tip": (x.key === U0.PERIOD_DEFAULT ? "기본 기간 · " : "") + x.tip}, [x.label]);
+      });
+    }
+
+    function runBox() {
+      var j = analyzeJob();
+      var state = j ? "분석 중" + (lastText(j) ? " — " + lastText(j) : "") : "대기 중";
+      return [Kt.btn("분석 실행", "a-analyze", "", {kind: "primary", icon: "play", why: j ? "분석이 진행 중입니다 — 끝나면 다시 누를 수 있습니다" : null}),
+        j ? Kt.btn("중지", "a-period-cancel", j.job_id, {kind: "danger", icon: "stop"}) : null,
+        h("span", {"class": "state"}, [state])];
+    }
+
+    function actionButtons() {
+      var hasRun = !!(S.current && S.current.run_id);
+      var needRun = hasRun ? null : "분석 결과가 있어야 합니다 — 먼저 [분석 실행]을 누르세요";
+      var col = runningOf(["collect"]) ? "수집이 진행 중입니다" : null;
+      return [Kt.btn("수집", "a-do", "collect", {icon: "play", why: col}),
+        Kt.btn("수집 진단(탐침만)", "a-do", "probe", {why: col}),
+        Kt.btn("보고서 다시 만들기", "a-do", "rebuild", {why: needRun}),
+        Kt.btn("보고서 내보내기", "a-do", "export", {icon: "download", why: needRun}),
+        Kt.btn("팀 묶음 만들기", "a-do", "team-build", {kind: "accent", icon: "upload", why: needRun}),
+        Kt.btn("레지스트리 받기", "a-do", "registry"),
+        Kt.btn("에이전트 복구", "a-do", "agent"),
+        Kt.btn("이동 준비", "a-do", "move"),
+        Kt.btn("서버 종료", "a-do", "shutdown", {kind: "danger"})];
+    }
+
+    function progressRow() {
+      var ids = runningJobs();
+      if (!ids.length) { return []; }
+      var j = S.jobs[ids[ids.length - 1]];
+      var pg = lastProgress(j);
+      return [h("div", {"class": "period-prog"}, [h("strong", {}, [jobLabel(j) + " 진행 중"]),
+        pg ? U0.progressBar(pg.done, pg.total, jobLabel(j) + " 진행") : null, pg ? h("span", {}, [pg.done + " / " + pg.total]) : null,
+        lastText(j) ? h("span", {"class": "muted"}, [lastText(j)]) : null])];
+    }
+
+    function periodMsg() { return S.periodMsg ? [U0.alertLine(S.periodMsg.kind, S.periodMsg.text)] : []; }
+
+    function periodCard() {
+      var copilot = hasRole("copilot");
+      return [
+        h("div", {"class": "row"}, [
+          h("div", {"class": "chips", id: "an-chips", role: "group", "aria-label": "기간 빠른 선택(올해·분기·반기)"}, chipButtons()),
+          h("label", {"for": "an-from"}, ["시작", Kt.input("an-from", "date", S.period.from)]),
+          h("label", {"for": "an-to"}, ["끝", Kt.input("an-to", "date", S.period.to)]),
+          copilot ? Kt.checkbox("an-ai", "AI 분석 사용", S.aiChoice !== false) : Kt.checkbox("an-ai", "AI 분석 사용", false, {disabled: true}),
+          h("span", {"class": "row", id: "an-runbox"}, runBox())]),
+        h("div", {"class": "row"}, [
+          h("label", {"for": "an-asof"}, ["기준 시각", Kt.input("an-asof", "datetime-local", null)]),
+          h("span", {"class": "state"}, ["비우면 지금(미래는 고를 수 없음)" + (copilot ? "" :
+            " · 이 PC 는 Copilot 역할이 아닙니다 — 규칙 분류로 분석합니다. 클라우드PC 에서 분석하면 AI 라벨이 붙습니다")])]),
+        h("div", {"class": "row row-actions", id: "an-actions", role: "group", "aria-label": "동작"}, actionButtons()),
+        h("div", {id: "an-prog"}, progressRow()),
+        h("div", {id: "an-msg"}, periodMsg()),
+        h("p", {"class": "note"}, ["기본 기간은 올해 1월 1일 ~ 오늘입니다. 1~4분기·상반기·하반기는 올해 기준이고, 진행 중인 기간은 오늘까지 · 아직 오지 않은 기간은 고를 수 없습니다. 고른 기간은 [수집] 화면의 커버리지 원장과 [기간 다시 수집]에도 쓰입니다."])];
+    }
+
+    // 전체 다시 그리기 — 날짜·AI 선택은 상태(S.period·S.aiChoice)에서, 기준 시각 등 나머지 입력은 그대로 둔다
+    function renderPeriod() {
+      if (!el.period) { return; }
+      var vals = Kt.collectValues(el.period);
+      var fk = Kt.focusKeyOf(doc.activeElement, el.period);
+      U0.render(periodCard(), el.period);
+      Kt.restoreValues(el.period, vals, {"an-from": true, "an-to": true, "an-ai": true});
+      Kt.restoreFocus(el.period, fk);
+    }
+
+    // 작업·결과가 바뀔 때 — 입력 칸은 건드리지 않고 단추·상태·진행·알림만 다시 그린다(쓰던 날짜를 지우지 않게)
+    function renderPeriodLive() {
+      if (!el.period) { return; }
+      var fk = Kt.focusKeyOf(doc.activeElement, el.period);
+      [["an-runbox", runBox], ["an-actions", actionButtons], ["an-prog", progressRow], ["an-msg", periodMsg]].forEach(function (p) {
+        var box = doc.getElementById(p[0]);
+        if (box) { U0.render(p[1](), box); }
+      });
+      Kt.restoreFocus(el.period, fk);
+    }
+
+    function setPeriodMsg(kind, text) {
+      S.periodMsg = text ? {kind: kind, text: text} : null;
+      renderPeriodLive();
+    }
+
+    function periodChanged() {
+      if (S.scr && S.scr.onPeriod) { S.scr.onPeriod(); }
+    }
+
+    // 날짜를 손으로 바꾸면 그 기간이 빠른 선택과 같은지 다시 본다(칩 표시만 바꾼다 — 입력 칸을 다시 만들지 않음)
+    function onPeriodInput(ev) {
+      var t = ev && ev.target;
+      var id = t && t.getAttribute ? t.getAttribute("id") : null;
+      if (id === "an-ai") { S.aiChoice = !!t.checked; return; }
+      if (id !== "an-from" && id !== "an-to") { return; }
+      var from = val("an-from");
+      var to = val("an-to");
+      if (!DATE_RX.test(from) || !DATE_RX.test(to) || to < from) { return; }    // 끝나지 않은 입력은 기다린다
+      if (from === S.period.from && to === S.period.to) { return; }
+      S.period = {key: U0.periodKeyOf(from, to, todayText()), from: from, to: to};
+      var box = doc.getElementById("an-chips");
+      if (box) { U0.render(chipButtons(), box); }
+      periodChanged();
+    }
+
+    function jobStarted(res, kind, okText) {
+      trackFrom(res, kind, {});
+      if (res.ok) { setPeriodMsg("info", okText); } else {
+        if (res.status === 403) { S.tokenOk = false; renderAlerts(); }
+        setPeriodMsg(res.status === 409 ? "warn" : "bad", res.error);
+      }
+      return res;
+    }
+
+    function confirmDrawer(title, text, okLabel, kind, onOk) {
+      U0.openDrawer(h("div", {}, [Kt.para(text), h("div", {"class": "table-tools"}, [Kt.btn(okLabel, "a-confirm-ok", "", {kind: kind}),
+        Kt.btn("취소", "drawer-close", "", {kind: "ghost"})])]),
+      {doc: doc, title: title, handlers: {"a-confirm-ok": function () { U0.closeDrawer(); onOk(); }}});
+    }
+
+    var periodHandlers = {
+      "a-period": function (n, key) {
+        var r = U0.presetRange(key, todayText());
+        if (!r) { return; }
+        S.period = {key: key, from: r.from, to: r.to};
+        S.periodMsg = null;
+        renderPeriod();
+        periodChanged();
+      },
+      "a-analyze": function () {
+        var from = val("an-from");
+        var to = val("an-to");
+        var asOf = str(val("an-asof"));
+        var today = todayText();
+        if (!DATE_RX.test(from) || !DATE_RX.test(to) || to < from) {
+          setPeriodMsg("warn", "시작·끝 날짜를 넣어 주세요(끝 ≥ 시작)");
+          return;
+        }
+        if (asOf && asOf.replace("T", " ") > today + " " + pad2(now().getHours()) + ":" + pad2(now().getMinutes())) {
+          setPeriodMsg("warn", "기준 시각은 지금보다 늦을 수 없습니다");
+          return;
+        }
+        var key = from === S.period.from && to === S.period.to ? S.period.key : U0.periodKeyOf(from, to, today);
+        S.period = {key: key, from: from, to: to};
+        var body = {from: from, to: to, ai: hasRole("copilot") && checked("an-ai"), period_source: U0.periodSource(key)};
+        if (asOf) { body.as_of = asOf; }
+        api.post("/api/analysis/run", body).then(function (res) {
+          jobStarted(res, "analyze", "분석을 시작했습니다(" + from + " ~ " + to + ") — 진행은 아래 상태 줄과 [분석] 화면에 보입니다");
+        });
+      },
+      "a-period-cancel": function (n, id) {
+        api.post("/api/jobs/" + encodeURIComponent(id) + "/cancel", {}).then(function (res) {
+          setPeriodMsg(res.ok ? "info" : "bad", res.ok ? "중지를 요청했습니다 — 다음 분석이 남은 것부터 이어 합니다." : res.error);
+          schedulePoll(true);
+        });
+      },
+      "a-do": function (n, what) {
+        var cur = S.current && S.current.run_id ? S.current : null;
+        if (what === "collect") {
+          api.post("/api/collect/run", {mode: "auto"}).then(function (res) { jobStarted(res, "collect", "수집을 시작했습니다 — 단계는 [수집] 화면과 아래 상태 줄에 보입니다"); });
+        } else if (what === "probe") {
+          api.post("/api/collect/run", {mode: "probe-only"}).then(function (res) { jobStarted(res, "collect", "수집 진단(탐침)을 시작했습니다 — 결과는 [대시보드]의 PC × 출처 능력 표에 보입니다"); });
+        } else if (what === "rebuild" && cur) {
+          api.post("/api/report/build", {run_id: cur.run_id}).then(function (res) { jobStarted(res, "report_build", "보고서를 다시 만듭니다"); });
+        } else if (what === "export" && cur) {
+          api.post("/api/report/export", {run_id: cur.run_id}).then(function (res) { jobStarted(res, "report_export", "내보내기를 시작했습니다 — 끝나면 만든 파일 목록을 보여 드립니다"); });
+        } else if (what === "team-build" && cur) {
+          api.post("/api/team/build", {from: cur.from, to: cur.to}).then(function (res) { jobStarted(res, "team_build", "팀 묶음을 만듭니다(" + str(cur.from) + " ~ " + str(cur.to) + ") — 끝나면 미리보기를 엽니다"); });
+        } else if (what === "registry") {
+          api.post("/api/team/registry/fetch", {}).then(function (res) { jobStarted(res, "registry_fetch", "레지스트리를 받는 중입니다"); });
+        } else if (what === "agent") {
+          api.post("/api/agent/repair", {}).then(function (res) { jobStarted(res, "agent_repair", "에이전트 복구를 시작했습니다"); });
+        } else if (what === "move") {
+          confirmDrawer("이동 준비", "이 화면을 닫고 이동 시험 창을 엽니다. 창에 '[완료]'가 나오면 폴더를 옮기세요.", "이동 준비 시작", "primary", function () {
+            api.post("/api/move/prepare", {}).then(function (res) { jobStarted(res, "move_prepare", "이동 준비를 시작했습니다"); });
+          });
+        } else if (what === "shutdown") {
+          confirmDrawer("서버 종료", "화면 서버를 끝냅니다. 다시 열려면 LoadMonitor27-UI 를 누르세요.", "서버 종료", "danger", function () {
+            api.post("/api/shutdown", {}).then(function (res) {
+              setPeriodMsg(res.ok ? "info" : "bad", res.ok ? "화면 서버를 끝냈습니다 — 다시 열려면 LoadMonitor27-UI 를 누르세요" : res.error);
+            });
+          });
+        }
+      }
+    };
+
+    // ── 4.1c 아래 고정 상태 줄(LM24 #sbar) — 상태 점 + 글자 · 진행 · 마지막 분석·수집 · 판·주소 ──
+    function renderSbar() {
+      if (!el.sbar) { return; }
+      var ids = runningJobs();
+      var j = ids.length ? S.jobs[ids[ids.length - 1]] : null;
+      var lastId = S.jobOrder.length ? S.jobOrder[S.jobOrder.length - 1] : null;
+      var failed = !j && lastId && S.jobs[lastId].state === "failed";
+      var pg = j ? lastProgress(j) : null;
+      var cur = S.current && S.current.run_id ? S.current : null;
+      var last = obj(obj(obj(S.home).collect).last);
+      var hv = obj(S.hello);
+      U0.render([
+        h("span", {"class": "sb-state"}, [h("span", {"class": "sb-dot" + (j ? " run" : (failed ? " bad" : "")), "aria-hidden": "true"}),
+          j ? jobLabel(j) + " 진행 중" + (ids.length > 1 ? "(작업 " + ids.length + "개)" : "") : (failed ? "최근 작업 실패 — [작업]에서 이유 보기" : "대기")]),
+        j ? h("span", {"class": "sb-prog"}, [lastText(j) ? h("span", {}, [lastText(j)]) : null,
+          pg ? U0.progressBar(pg.done, pg.total, jobLabel(j) + " 진행") : null,
+          pg ? h("span", {"class": "sb-muted"}, [pg.done + " / " + pg.total]) : null]) : null,
+        h("span", {"class": "sb-muted"}, [cur ? "마지막 분석 " + md(cur.built_at || cur.ended) + " · 기간 " + str(cur.from) + " ~ " + str(cur.to) :
+          "분석 결과 없음 — 기간 카드의 [분석 실행]"]),
+        last.at ? h("span", {"class": "sb-muted"}, ["마지막 수집 " + md(last.at) + (last.pc ? "(" + last.pc + ")" : "")]) : null,
+        h("span", {"class": "sb-spacer"}),
+        h("span", {"class": "sb-muted"}, ["LoadMonitor27" + (hv.version ? " v" + hv.version : "") + (portText() ? " · " + portText() : "") + " · 로컬 전용"])],
+      el.sbar);
     }
 
     function runningJobs() {
@@ -279,6 +556,8 @@
     }
 
     function updateJobsButton() {
+      renderSbar();                                   // 작업이 바뀌면 상태 줄·기간 카드의 단추·진행도 함께(입력 칸은 그대로)
+      renderPeriodLive();
       if (!el.jobs) { return; }
       var n = runningJobs().length;
       if (!n && !S.jobOrder.length) { el.jobs.setAttribute("hidden", ""); return; }
@@ -426,11 +705,16 @@
           var d = obj(res.data);
           S.defaults = obj(d.defaults);
           S.current = d.current && typeof d.current === "object" ? d.current : (S.runs.filter(function (r) { return r.current; })[0] || null);
+        }),
+        api.get("/api/home").then(function (res) {      // 단계 줄의 ✓·상태 줄의 마지막 수집(실패해도 그 표시만 빈다)
+          if (res.ok) { S.home = obj(res.data); }
         })
       ]).then(function () {
         renderNav();
         renderBand();
         renderAlerts();
+        renderSbar();
+        renderPeriodLive();
         if (S.scr && S.scr.onGlobal) { S.scr.onGlobal(); }
       });
     }
@@ -485,14 +769,23 @@
             Kt.btn("다시 읽기", "a-reload", d.id, {kind: "ghost"})]);
         }
       }
-      var title = typeof d.title === "function" ? d.title(scr, data) : d.title;
+      var ready = !failed && !waiting;
+      var title = typeof d.title === "function" ? d.title(scr, data, ready) : d.title;
+      var cls = typeof d.cls === "function" ? (ready ? d.cls(scr, data) : null) : d.cls;
       var vals = Kt.collectValues(c.el);
       var fk = Kt.focusKeyOf(doc.activeElement, c.el);
       U0.render(Kt.card(title, h("div", {}, [c.msg ? U0.alertLine(c.msg.kind, c.msg.text) : null, body]),
-        {id: "card-" + d.id, tools: tools || null, state: d.state ? d.state(scr, data) : null}), c.el);
+        {id: "card-" + d.id, tools: tools || null, state: d.state && ready ? d.state(scr, data) : null, cls: cls || null}), c.el);
       if (!c.reset) { Kt.restoreValues(c.el, vals); }
       c.reset = false;
       Kt.restoreFocus(c.el, fk);
+      if (ready && d.after) {
+        try {
+          d.after(scr, data, c);
+        } catch (e) {
+          // 그린 뒤 손질(스크롤 위치 등)은 실패해도 카드는 그대로 둔다
+        }
+      }
     }
 
     function cardOf(scr, id) { return scr.cards.filter(function (c) { return c.def.id === id; })[0] || null; }
@@ -560,10 +853,20 @@
       Object.keys(obj(def.handlers)).forEach(function (k) { hd[k] = def.handlers[k].bind(null, scr); });
       scr.off = U0.delegate(host, hd);
       if (def.init) { def.init(scr); }
-      def.cards.forEach(function (cd) {
-        var slot = U0.mount(h("div", {"class": "slot"}), host);
-        scr.cards.push({def: cd, el: slot, msg: null, reset: false});
+      // 배치(LM24 .grid2): def.layout = [[카드 id], [카드 id, 카드 id], …] — 두 개짜리 줄은 나란히(좁으면 아래로)
+      var slots = {};
+      def.cards.forEach(function (cd) { slots[cd.id] = {def: cd, el: null, msg: null, reset: false}; });
+      var order = [];
+      (def.layout || def.cards.map(function (cd) { return [cd.id]; })).forEach(function (row) {
+        var ids = arr(row).filter(function (id) { return slots[id] && !slots[id].el; });
+        if (!ids.length) { return; }
+        var parent = ids.length > 1 ? U0.mount(h("div", {"class": "grid2"}), host) : host;
+        ids.forEach(function (id) { slots[id].el = U0.mount(h("div", {"class": "slot"}), parent); order.push(slots[id]); });
       });
+      def.cards.forEach(function (cd) {
+        if (!slots[cd.id].el) { slots[cd.id].el = U0.mount(h("div", {"class": "slot"}), host); order.push(slots[cd.id]); }
+      });
+      scr.cards = order;
       rerender(scr);
       Object.keys(def.sources || {}).forEach(function (k) { if (!def.lazy || !def.lazy[k]) { source(scr, k); } });
     }
@@ -591,6 +894,7 @@
         if (f) { var k = "lim:" + f.getAttribute("data-chart"); scr.st[k] = (scr.st[k] || 500) + 500; rerender(scr); }
       },
       "a-open": function (scr, n, ref) { scr.st["open:" + ref] = !scr.st["open:" + ref]; rerender(scr); },
+      "a-goto": function (scr, n, ref) { if (/^#[a-z]/.test(str(ref))) { win.location.hash = ref; } },
       "a-next": function (scr, n, ref) { runNextAction(scr, +ref); },
       "cov-day": function (scr, n, ref) {
         var d = str(ref).split("|")[0];
@@ -637,7 +941,9 @@
 
     function coverageChart(scr, cov, id) {
       var C = deps().C;
-      var res = C.coverageHeatmap(covSpec(cov), {id: id});
+      var spec = covSpec(cov);
+      // 두 달 넘는 기간(올해 전체 등)은 축 이름 열을 고정하고 날짜 칸만 가로로 넘긴다(lm27charts split — 간트와 같은 틀)
+      var res = C.coverageHeatmap(spec, {id: id, split: arr(spec.days).length > 62});
       var srt = scr.st["sort:" + id];
       return U0.chartView(res, {id: id, table: !!scr.st["tbl:" + id], tableOpt: {sortCol: srt ? srt.col : null, desc: srt ? srt.desc : false,
         limit: scr.st["lim:" + id] || 500, id: "t-" + id}});
@@ -707,6 +1013,7 @@
       var cov = obj(home.coverage);
       var r30 = obj(cov.ratio30);
       var parts = [];
+      if (!last.at && !num(pcs.total)) { return ""; }       // 기록이 하나도 없으면 빈 상태 문장(다음 행동)을 보인다
       if (last.at) { parts.push("마지막 수집 " + md(last.at) + (last.pc ? "(" + last.pc + ")" : "")); }
       if (isNum(pcs.total)) { parts.push("PC " + pcs.total + "대(정상 " + num(pcs.ok) + " · 기록 끊김 " + num(pcs.stale) + ")"); }
       var rs = AXES.filter(function (a) { return isNum(r30[a[0]]); }).map(function (a) { return a[1] + " " + U0.shareText(r30[a[0]]); });
@@ -720,11 +1027,28 @@
       return parts.join(" · ");
     }
 
+    // 축별 근무일 커버리지(최근 30근무일) — LM24 '수집 데이터 현황' 처럼 한 줄 목록(이름 · % · 막대)
     function axisBars(home) {
       var r30 = obj(obj(home.coverage).ratio30);
-      return Kt.table(["축", {label: "최근 30근무일", num: true}, ""], AXES.map(function (a) {
-        return [a[1], isNum(r30[a[0]]) ? U0.shareText(r30[a[0]]) : "—", isNum(r30[a[0]]) ? Kt.shareBar(r30[a[0]]) : null];
-      }), {label: "축별 근무일 커버리지"});
+      return h("ul", {"class": "axis-list", "aria-label": "축별 근무일 커버리지(최근 30근무일)"}, AXES.map(function (a) {
+        var v = r30[a[0]];
+        return h("li", {}, [h("span", {}, [a[1]]), h("strong", {"class": "num"}, [isNum(v) ? U0.shareText(v) : "기록 없음"]),
+          isNum(v) ? Kt.shareBar(v) : null]);
+      }));
+    }
+
+    // 대시보드 KPI 타일(LM24 .kpis) — 누르면 개인 보고서의 해당 절
+    function homeKpis(a) {
+      var k = obj(a.kpi);
+      var mo = a.month || "이번 달";
+      var q = QUALITY_UI[k.quality] || ["unknown", "판단 안 함"];
+      return h("div", {"class": "kpis", role: "group", "aria-label": "최근 분석 요약(" + mo + ")"}, [
+        U0.kpiCard({label: "로드율(투입 ÷ 가용)", value: k.load_pct ? k.load_pct + "%" : null,
+          sub: k.load_pct ? mo + " · 100% = 가용을 꽉 채움" : "가용 시간이 0 — 계산 안 함", act: "a-goto", ref: "#report/summary"}),
+        U0.kpiCard({label: mo + " 투입 MM", value: k.mm ? k.mm + " MM" : null, sub: "일한 시간 ÷ (근무일 × 8h)", act: "a-goto", ref: "#report/summary"}),
+        U0.kpiCard({label: "초과 근무", value: k.ot_h ? k.ot_h + "h" : null, sub: "근무창 밖 · 원인은 리뷰", act: "a-goto", ref: "#report/review"}),
+        U0.kpiCard({label: "미귀속", value: k.unattr_pct ? k.unattr_pct + "%" : null, sub: "업무에 묶이지 않은 근무", act: "a-goto", ref: "#report/tree"}),
+        U0.kpiCard({label: "측정 품질", value: U0.statusText(q[0], q[1]), sub: "사유는 보고서 요약의 신뢰도", act: "a-goto", ref: "#report/summary"})]);
     }
 
     var HOME = {
@@ -740,43 +1064,55 @@
           });
         }
       },
+      layout: [["analysis"], ["next", "team"], ["collect"], ["matrix"]],
       cards: [
-        {id: "next", title: "다음 할 일", uses: [], view: function (scr) {
+        {id: "analysis", uses: ["home"], title: function (scr, d, ready) {
+          var a = obj(obj(d.home).analysis);
+          return ready && a.run_id && a.kpi ? null : "최근 분석";
+        }, cls: function (scr, d) {
+          var a = obj(obj(d.home).analysis);
+          return a.run_id && a.kpi ? "card-bare" : null;
+        }, view: function (scr, d) {
+          var a = obj(obj(d.home).analysis);
+          if (!a.run_id) {
+            return Kt.emptyP("아직 분석 결과가 없습니다 — 위 기간 카드에서 기간(기본: 올해 1월 1일 ~ 오늘)을 확인하고 [분석 실행]을 누르세요.");
+          }
+          if (!a.kpi) {
+            return Kt.emptyP("지금 보는 분석 결과의 보고서가 아직 없습니다 — [개인 보고서]를 열면 다시 만들고, 기간 카드의 [보고서 다시 만들기]로도 만들 수 있습니다.");
+          }
+          return homeKpis(a);
+        }},
+        {id: "next", title: "다음 할 일", uses: [], state: function () {
+          var n = S.next.filter(function (a) { return a.level === "block" || a.level === "risk"; }).length;
+          return n ? "막힘·위험 " + n + "건" : (S.next.length ? "막힘·위험 없음" : null);
+        }, view: function (scr) {
           var top = S.next.slice(0, 8);
           if (!top.length) { return Kt.emptyP("지금 할 일이 없습니다. 수집과 분석이 제때 돌고 있습니다."); }
-          return h("ul", {}, top.map(function (a) { return nextActionRow(a, S.next.indexOf(a)); }));
+          return h("ul", {"class": "next-list"}, top.map(function (a) { return nextActionRow(a, S.next.indexOf(a)); }));
         }, tools: function () {
           return S.next.length > 8 ? [Kt.btn("모두 보기", "a-next-all", "", {kind: "ghost"})] : null;
         }},
-        {id: "collect", title: "수집 현황", uses: ["home", "cov"], view: function (scr, d) {
-          return h("div", {}, [Kt.para(collectLine(d.home) || "수집 기록이 아직 없습니다. [수집]을 누르면 이 PC 부터 기록합니다."),
-            coverageChart(scr, d.cov, "ch-h01-home"), axisBars(d.home)]);
-        }},
-        {id: "matrix", title: "PC × 출처 능력 표", uses: ["home"], view: function (scr, d) { return matrixView(scr, obj(d.home).matrix, obj(d.home).reason_text); }},
-        {id: "analysis", title: "최근 분석", uses: ["home"], view: function (scr, d) {
-          var a = obj(obj(d.home).analysis);
-          var k = obj(a.kpi);
-          if (!a.run_id) { return Kt.emptyP("아직 분석 결과가 없습니다. [분석] 화면에서 기간을 정해 실행하세요."); }
-          var q = {reliable: ["good", "신뢰"], caution: ["warn", "주의"], unreliable: ["bad", "측정 불충분"]}[k.quality] || ["unknown", "판단 안 함"];
-          return h("div", {}, [h("div", {"class": "kpis"}, [
-            U0.kpiCard({label: (a.month || "이번 달") + " MM", value: k.mm ? k.mm + " MM" : null}),
-            U0.kpiCard({label: "로드율", value: k.load_pct ? k.load_pct + "%" : null}),
-            U0.kpiCard({label: "초과 근무", value: k.ot_h ? k.ot_h + "h" : null}),
-            U0.kpiCard({label: "미귀속", value: k.unattr_pct ? k.unattr_pct + "%" : null}),
-            U0.kpiCard({label: "측정 품질", value: U0.statusText(q[0], q[1])})]),
-          Kt.link("개인 보고서 열기", "#report/summary")]);
-        }},
-        {id: "team", title: "팀", uses: ["home"], view: function (scr, d) {
+        {id: "team", title: "팀 업로드", uses: ["home"], state: function () { return "보내기 전에 미리보기에서 가림을 정합니다"; }, view: function (scr, d) {
           var t = obj(obj(d.home).team);
           var reg = obj(t.registry);
           var ob = obj(t.outbox);
           var reach = obj(t.reach);
           return h("div", {}, [
-            Kt.para(isNum(reg.version) ? "레지스트리 v" + reg.version + (reg.fetched_at ? "(" + md(reg.fetched_at) + " 받음)" : "") : "팀 레지스트리를 아직 받지 못했습니다."),
-            Kt.para("대기열: 승인 대기 " + num(ob.pending) + " · 승인됨 " + num(ob.approved) + " · 실패 " + num(ob.failed) + " · 보냄 " + num(ob.sent)),
-            reach.text_ko ? Kt.para("마지막 팀 서버 도달: " + reach.text_ko) : null,
-            Kt.link("팀 화면", "#team")]);
-        }}],
+            Kt.dl([["레지스트리", isNum(reg.version) ? "v" + reg.version + (reg.fetched_at ? " · " + md(reg.fetched_at) + " 받음" : "") :
+              "아직 받지 못했습니다 — 기간 카드의 [레지스트리 받기]"],
+            ["대기열", "승인 대기 " + num(ob.pending) + " · 승인됨 " + num(ob.approved) + " · 실패 " + num(ob.failed) + " · 보냄 " + num(ob.sent)],
+            ["팀 서버 도달", reach.text_ko || "아직 확인하지 않았습니다 — [팀] 화면의 [연결 확인]"]]),
+            h("div", {"class": "table-tools"}, [Kt.link("팀 화면 열기", "#team")])]);
+        }},
+        {id: "collect", title: "수집 현황", uses: ["home", "cov"], state: function (scr, d) {
+          var cv = obj(obj(d.home).coverage);
+          return cv.from && cv.to ? "최근 " + (daysBetween(cv.from, cv.to) + 1) + "일 · 전체 기간은 [수집] 화면의 커버리지 원장" : null;
+        }, view: function (scr, d) {
+          return h("div", {}, [Kt.para(collectLine(d.home) || "수집 기록이 아직 없습니다. [수집]을 누르면 이 PC 부터 기록합니다."),
+            coverageChart(scr, d.cov, "ch-h01-home"), axisBars(d.home)]);
+        }},
+        {id: "matrix", title: "PC × 출처 능력 표", uses: ["home"], state: function () { return "칸을 누르면 사유·최근 측정이 보입니다"; },
+          view: function (scr, d) { return matrixView(scr, obj(d.home).matrix, obj(d.home).reason_text); }}],
       handlers: {
         "a-next-all": function () {
           U0.openDrawer(h("ul", {}, S.next.map(nextActionRow)), {doc: doc, title: "다음 할 일 — 모두", handlers: {
@@ -848,7 +1184,7 @@
       var e = obj(scr.st.wlErr);
       var projs = [["", "모름"]].concat(arr(o.projects).map(function (p) { return [p.key, p.label || p.key]; }));
       function vopts(list) { return [["", "고르지 않음"]].concat(arr(list).map(function (v) { return [v.code, v.name || v.code]; })); }
-      return h("div", {}, [
+      return h("div", {}, [h("div", {"class": "form-grid"}, [
         Kt.field("wl-date", "날짜", Kt.input("wl-date", "date", ymd(now()), {required: true, "aria-invalid": e.date ? "true" : null}), {error: e.date}),
         Kt.field("wl-a", "시작(선택)", Kt.input("wl-a", "time", null, {"aria-invalid": e.a ? "true" : null}), {error: e.a}),
         Kt.field("wl-b", "끝(선택)", Kt.input("wl-b", "time", null, {"aria-invalid": e.b ? "true" : null}), {error: e.b,
@@ -861,7 +1197,7 @@
         Kt.field("wl-func", "기능(선택)", Kt.select("wl-func", vopts(o.functions), "")),
         Kt.field("wl-ref", "관련 문서·대화(선택)", Kt.select("wl-ref", [["", "고르지 않음"]].concat(arr(o.refs).map(function (r) {
           return [r.ref || r.key, r.label || r.ref || r.key];
-        })), "")),
+        })), ""))]),
         Kt.field("wl-memo", "메모(200자 이하)", Kt.textarea("wl-memo", "", {maxlength: "200", rows: "2", "aria-invalid": e.memo ? "true" : null}),
           {error: e.memo, help: "저장할 때 개인정보·금액은 자동으로 가려집니다"}),
         h("div", {"class": "table-tools"}, [Kt.btn("기록하기", "a-wl-save", "", {kind: "primary"})])]);
@@ -893,30 +1229,37 @@
       return {body: body, errs: errs};
     }
 
-    function covDefaults(scr) {
-      var to = scr.st.covTo || ymd(now());
-      var from = scr.st.covFrom || ymd(new Date(now().getTime() - 34 * 86400000));
-      return {from: from, to: to};
+    // 커버리지 원장 기간 = 기간 카드의 기간(기본 올해 1월 1일 ~ 오늘). 서버 상한(400일)을 넘으면 끝에서 400일만
+    function covRange() {
+      var p = S.period;
+      var clipped = daysBetween(p.from, p.to) > COVERAGE_MAX_DAYS - 1;
+      var from = clipped ? addDays(p.to, -(COVERAGE_MAX_DAYS - 1)) : p.from;
+      return {from: from, to: p.to, days: daysBetween(from, p.to) + 1, clipped: clipped};
     }
 
     var COLLECT = {
       sources: {
         status: function () { return api.get("/api/collect/status"); },
-        cov: function (scr) {
-          var p = covDefaults(scr);
+        cov: function () {
+          var p = covRange();
           return api.get("/api/collect/coverage?from=" + encodeURIComponent(p.from) + "&to=" + encodeURIComponent(p.to));
         }
       },
+      layout: [["run"], ["pc", "import"], ["coverage"], ["bundle"], ["worklog"]],
       cards: [
-        {id: "run", title: "수집 실행", uses: ["status"], view: function (scr, d) {
+        {id: "run", title: "수집 실행", uses: ["status"], state: function () {
+          return "평소에는 에이전트가 기록합니다 — [수집]은 지금 바로 모으고 다른 PC 기록을 합칩니다";
+        }, view: function (scr, d) {
           var j = jobOfKind(["collect"]);
           var running = j && !FINISHED[j.state];
           return h("div", {}, [
             h("div", {"class": "table-tools"}, [Kt.btn("수집", "a-collect", "auto", {kind: "primary", icon: "play", why: running ? "수집이 진행 중입니다" : null}),
-              Kt.btn("탐침만", "a-collect", "probe-only", {kind: "ghost", why: running ? "수집이 진행 중입니다" : null})]),
+              Kt.btn("탐침만(수집 진단)", "a-collect", "probe-only", {kind: "ghost", why: running ? "수집이 진행 중입니다" : null})]),
             h("div", {"class": "table-tools", role: "group", "aria-label": "기간 다시 수집"}, [
-              Kt.field("rc-since", "시작 날짜", Kt.input("rc-since", "date", null)), Kt.field("rc-until", "끝 날짜", Kt.input("rc-until", "date", null)),
+              Kt.field("rc-since", "다시 수집할 시작", Kt.input("rc-since", "date", S.period.from)),
+              Kt.field("rc-until", "끝", Kt.input("rc-until", "date", S.period.to)),
               Kt.btn("기간 다시 수집", "a-collect", "recollect", {kind: "ghost", why: running ? "수집이 진행 중입니다" : null})]),
+            Kt.muted("기간 다시 수집의 날짜는 위 기간 카드의 기간(기본 올해 1월 1일 ~ 오늘)으로 채워 둡니다 — 바꿔서 누를 수 있습니다."),
             running ? h("div", {}, [U0.statusText("run", "진행 중"), stageTable(j), Kt.btn("중지", "a-cancel", j.job_id, {kind: "danger", icon: "stop"})]) :
               (j ? stageTable(j) : null),
             collectResult(obj(d.status).last)]);
@@ -951,7 +1294,7 @@
           var ar = obj(s.arrival);
           return h("div", {}, [
             rows.length ? Kt.table(["PC", "종류", "처음 ~ 마지막 방문", "마지막 내보내기", {label: "세그먼트", num: true}, {label: "MB", num: true}, "에이전트", "이동 준비"], rows,
-              {label: "번들 PC 현황"}) : Kt.emptyP("이 번들에는 아직 PC 기록이 없습니다."),
+              {label: "번들 PC 현황"}) : Kt.emptyP("이 번들에는 아직 PC 기록이 없습니다 — [수집]을 누르면 이 PC 부터 기록합니다."),
             ar.text_ko ? U0.alertLine(arr(ar.missing).length ? "warn" : "info", ar.text_ko) : null,
             arr(ar.missing).length ? Kt.table(["PC", "세그먼트"], arr(ar.missing).map(function (m) { return [str(obj(m).pc), str(obj(m).seg || m)]; })) : null,
             arr(obj(s.space).top).length ? Kt.para("용량을 많이 쓰는 곳: " + arr(s.space.top).map(function (t) { return str(obj(t).name || t) + (isNum(obj(t).mb) ? " " + U0.fmtNum(t.mb, 1) + "MB" : ""); }).join(" · ")) : null,
@@ -959,8 +1302,11 @@
             h("div", {"class": "table-tools", role: "group", "aria-label": "다른 번들 합치기"}, [Kt.field("merge-dir", "합칠 번들 폴더", Kt.input("merge-dir", "text", null)),
               Kt.btn("다른 번들 합치기", "a-merge", "", {kind: "ghost"})])]);
         }},
-        {id: "coverage", title: "커버리지 원장", uses: ["cov", "status"], view: function (scr, d) {
-          var p = covDefaults(scr);
+        {id: "coverage", title: "커버리지 원장", uses: ["cov", "status"], state: function () {
+          var p = covRange();
+          return p.from + " ~ " + p.to + " · " + p.days + "일" + (p.clipped ? "(기간이 길어 끝에서 " + COVERAGE_MAX_DAYS + "일만)" : "") +
+            " · 위 기간 카드를 따릅니다";
+        }, view: function (scr, d) {
           var todo = arr(obj(d.status).todo).map(function (t) {
             var row = [str(t.from) + " ~ " + str(t.to), str(t.axis_ko || t.axis), str(t.want_src) + "@" + str(t.want_pc), arr(t.reasons).map(function (c) {
               return obj(obj(d.status).reason_text)[c] || c;
@@ -969,16 +1315,22 @@
           });
           var cells = arr(obj(d.cov).cells).map(function (c) { return [str(c.week), str(c.src), String(num(c.n)), String(num(c.n_minute)), String(num(c.n_date)), str(c.status_ko || c.status)]; });
           return h("div", {}, [
-            h("div", {"class": "table-tools", role: "group", "aria-label": "커버리지 기간(최대 92일)"}, [
-              Kt.field("cov-from", "시작", Kt.input("cov-from", "date", p.from)), Kt.field("cov-to", "끝", Kt.input("cov-to", "date", p.to)),
-              Kt.btn("기간 바꾸기", "a-cov", "", {kind: "ghost"})]),
-            scr.st.covErr ? Kt.errLine("cov-from", scr.st.covErr) : null,
             scr.st.covDay ? Kt.para("고른 날: " + scr.st.covDay) : null,
             coverageChart(scr, d.cov, "ch-h01"),
-            cells.length ? Kt.table(["주", "출처", {label: "n", num: true}, {label: "분 단위", num: true}, {label: "날짜만", num: true}, "상태"], cells, {label: "출처별 셀"}) : null,
+            cells.length ? h("details", {"class": "fold"}, [h("summary", {}, ["출처별 셀 표(주 × 출처 " + cells.length + "행) — 펼치기"]),
+              Kt.table(["주", "출처", {label: "n", num: true}, {label: "분 단위", num: true}, {label: "날짜만", num: true}, "상태"], cells, {label: "출처별 셀"})]) :
+              null,
             h("h3", {}, ["할 일(todo)"]),
             todo.length ? Kt.table(["대상 기간", "축", "원하는 출처@PC", "사유", {label: "시도", num: true}, "상태"], todo, {label: "할 일 — 이 PC 에 배정된 것은 굵게"}) :
-              Kt.emptyP("남은 할 일이 없습니다.")]);
+              Kt.emptyP("남은 할 일이 없습니다 — 비어 있는 날이 생기면 프로그램이 다음 [수집]에서 채울 일을 여기에 적습니다.")]);
+        }, after: function (scr, d, c) {
+          // 긴 기간(올해 전체 등)은 히트맵이 카드보다 넓다 — 가장 최근 날이 보이게 날짜 칸 상자를 오른쪽 끝으로
+          Kt.walk(c.el, function (n) {
+            var k = n.getAttribute("class") || "";
+            if ((k === "gantt-scroll" || k === "chart-body") && typeof n.scrollWidth === "number" && n.scrollWidth > n.clientWidth) {
+              n.scrollLeft = n.scrollWidth;
+            }
+          });
         }},
         {id: "worklog", title: "수동 업무 기록", uses: ["status"], view: function (scr, d) {
           var list = arr(obj(d.status).worklog).slice(0, 30).map(function (w) {
@@ -1034,7 +1386,7 @@
         "a-agent-repair": function (scr) { send(scr, "pc", "post", "/api/agent/repair", {}, {job: "agent_repair", ok: "에이전트 복구를 시작했습니다"}); },
         "a-quick": function (scr) {
           var cur = S.current;
-          if (!cur || !cur.run_id) { cardOf(scr, "worklog").msg = {kind: "info", text: "아직 분석 결과가 없습니다 — 분석 화면에서 기간을 정해 실행하면 반영됩니다"}; rerender(scr, "worklog"); return; }
+          if (!cur || !cur.run_id) { cardOf(scr, "worklog").msg = {kind: "info", text: "아직 분석 결과가 없습니다 — 위 기간 카드에서 [분석 실행]을 누르면 이 기록도 반영됩니다"}; rerender(scr, "worklog"); return; }
           send(scr, "worklog", "post", "/api/analysis/run", {rerun: cur.run_id, stages: ["classify", "time", "mining", "report"], ai: false},
             {job: "quick_reanalyze", ok: "빠른 재분석을 시작했습니다 — 끝나면 개인 보고서에 반영됩니다"});
         },
@@ -1050,19 +1402,6 @@
           var dir = str(val("merge-dir")).trim();
           if (!dir) { cardOf(scr, "bundle").msg = {kind: "warn", text: "합칠 번들 폴더를 넣어 주세요"}; rerender(scr, "bundle"); return; }
           send(scr, "bundle", "post", "/api/bundle/merge", {dir: dir}, {job: "bundle_merge", ok: "번들 합치기를 시작했습니다"});
-        },
-        "a-cov": function (scr) {
-          var f = val("cov-from");
-          var t = val("cov-to");
-          if (!/^\d{4}-\d{2}-\d{2}$/.test(f) || !/^\d{4}-\d{2}-\d{2}$/.test(t) || t < f || daysBetween(f, t) > 91) {
-            scr.st.covErr = "기간은 최대 92일입니다(끝 ≥ 시작)";
-            rerender(scr, "coverage");
-            return;
-          }
-          scr.st.covErr = null;
-          scr.st.covFrom = f;
-          scr.st.covTo = t;
-          source(scr, "cov", true);
         },
         "a-wl-save": function (scr) {
           var r = readWorklog();
@@ -1084,22 +1423,17 @@
       init: function (scr) {
         if (/^\d{4}-\d{2}-\d{2}$/.test(str(scr.arg))) { scr.st.covDay = scr.arg; }
         scr.onJobs = function () { rerender(scr, "run"); };
+        scr.onPeriod = function () {                  // 기간 카드가 바뀌면 커버리지 원장·기간 다시 수집 날짜도 따라간다
+          var c = cardOf(scr, "run");
+          if (c) { c.reset = true; }
+          rerender(scr, "run");
+          source(scr, "cov", true);
+          rerender(scr, "coverage");
+        };
       }
     };
 
     // ── 4.7 분석(§5.3) ──
-    function rangeOf(kind, months) {
-      var d = now();
-      var y = d.getFullYear();
-      var m = d.getMonth() + 1;
-      var today = ymd(d);
-      if (kind === "this_month") { return {from: monthFirst([y, m]), to: today}; }
-      if (kind === "last_month") { var p = addMonths(y, m, -1); return {from: monthFirst(p), to: monthLast(p)}; }
-      if (kind === "this_year") { return {from: y + "-01-01", to: today}; }
-      var n = months > 0 ? months : 3;
-      return {from: monthFirst(addMonths(y, m, -(n - 1))), to: today};
-    }
-
     function hasRole(r) { return arr(obj(obj(S.hello).pc).roles).indexOf(r) >= 0; }
 
     function runRow(r) {
@@ -1149,26 +1483,8 @@
         bridge: function () { return api.get("/api/bridge/status"); },
         manual: function () { return api.get("/api/bridge/manual"); }
       },
+      layout: [["progress"], ["result"], ["history"], ["copilot"], ["manual"]],
       cards: [
-        {id: "run", title: "분석 실행", uses: [], view: function (scr) {
-          var months = num(S.defaults.months) || 3;
-          var src = scr.st.src || "default";
-          var rg = scr.st.range || rangeOf(src === "default" ? "recent" : src, months);
-          var copilot = hasRole("copilot");
-          return h("div", {}, [
-            h("div", {"class": "table-tools", role: "group", "aria-label": "빠른 선택"}, [["this_month", "이번 달"], ["last_month", "지난달"],
-              ["default", "최근 " + months + "개월(기본)"], ["this_year", "올해"]].map(function (q) {
-              return Kt.btn((src === q[0] ? "✓ " : "") + q[1], "a-range", q[0], {kind: "ghost", pressed: src === q[0]});
-            })),
-            Kt.field("an-from", "시작 날짜", Kt.input("an-from", "date", rg.from)),
-            Kt.field("an-to", "끝 날짜", Kt.input("an-to", "date", rg.to)),
-            Kt.field("an-asof", "기준 시각(비우면 지금 — 미래는 고를 수 없음)", Kt.input("an-asof", "datetime-local", null)),
-            copilot ? Kt.checkbox("an-ai", "AI 분석 사용", true) :
-              h("p", {}, [Kt.checkbox("an-ai", "AI 분석 사용", false, {disabled: true}),
-                Kt.muted("이 PC 는 Copilot 역할이 아닙니다 — 규칙 분류로 분석합니다. 클라우드PC 에서 분석하면 AI 라벨이 붙습니다")]),
-            scr.st.runErr ? Kt.errLine("an-from", scr.st.runErr) : null,
-            h("div", {"class": "table-tools"}, [Kt.btn("분석 실행", "a-analyze", "", {kind: "primary", icon: "play"})])]);
-        }},
         {id: "progress", title: "진행", uses: [], when: function () { var j = jobOfKind(["analyze", "quick_reanalyze"]); return !!(j && !FINISHED[j.state]); },
           view: function () {
             var j = jobOfKind(["analyze", "quick_reanalyze"]);
@@ -1217,13 +1533,13 @@
         }},
         {id: "history", title: "분석 이력", uses: ["runs"], view: function (scr, d) {
           var runs = listOf(d.runs, "runs");
-          if (!runs.length) { return Kt.emptyP("아직 분석 결과가 없습니다. 위에서 기간을 정해 [분석 실행]을 누르세요."); }
+          if (!runs.length) { return Kt.emptyP("아직 분석 결과가 없습니다 — 위 기간 카드에서 기간(기본: 올해 1월 1일 ~ 오늘)을 확인하고 [분석 실행]을 누르세요."); }
           return h("div", {}, [Kt.table(["실행", "기간", "기준 시각", "분석 시각", "상태", {label: "AI 비율", num: true}, "보고서 판", "", "동작"], runs.map(runRow),
             {label: "분석 이력"}), Kt.muted("분석 결과는 설정한 개수까지 두고 오래된 것부터 정리합니다(지금 보는 결과는 지우지 않음).")]);
         }},
         {id: "result", title: "결과 요약", uses: ["cur"], view: function (scr, d) {
           var r = obj(d.cur);
-          if (!d.cur) { return Kt.emptyP("아직 분석 결과가 없습니다. [분석] 화면에서 기간을 정해 실행하세요."); }
+          if (!d.cur) { return Kt.emptyP("아직 분석 결과가 없습니다 — 위 기간 카드에서 기간(기본: 올해 1월 1일 ~ 오늘)을 확인하고 [분석 실행]을 누르세요."); }
           var rc = analysisRc(r.status);
           var labels = obj(r.labels);
           var lrows = Object.keys(labels).sort().map(function (k) {
@@ -1241,36 +1557,6 @@
             Kt.link("개인 보고서 열기", "#report/summary")]);
         }}],
       handlers: {
-        "a-range": function (scr, n, kind) {
-          scr.st.src = kind;
-          scr.st.range = rangeOf(kind === "default" ? "recent" : kind, num(S.defaults.months) || 3);
-          var c = cardOf(scr, "run");
-          c.reset = true;
-          rerender(scr, "run");
-        },
-        "a-analyze": function (scr) {
-          var from = val("an-from");
-          var to = val("an-to");
-          var asOf = str(val("an-asof"));
-          var months = num(S.defaults.months) || 3;
-          var src = scr.st.src || "default";
-          var exp = scr.st.range || rangeOf(src === "default" ? "recent" : src, months);
-          if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || to < from) {
-            scr.st.runErr = "시작·끝 날짜를 넣어 주세요(끝 ≥ 시작)";
-            rerender(scr, "run");
-            return;
-          }
-          if (asOf && asOf.replace("T", " ") > ymd(now()) + " " + pad2(now().getHours()) + ":" + pad2(now().getMinutes())) {
-            scr.st.runErr = "기준 시각은 지금보다 늦을 수 없습니다";
-            rerender(scr, "run");
-            return;
-          }
-          scr.st.runErr = null;
-          var body = {from: from, to: to, ai: hasRole("copilot") && checked("an-ai"),
-            period_source: from === exp.from && to === exp.to ? src : "user", period_months: src === "default" ? months : null};
-          if (asOf) { body.as_of = asOf; }
-          send(scr, "run", "post", "/api/analysis/run", body, {job: "analyze", ok: "분석을 시작했습니다 — 진행은 아래 카드와 오른쪽 위 [작업]에서 보입니다"});
-        },
         "a-cancel": function (scr, n, id) {
           api.post("/api/jobs/" + encodeURIComponent(id) + "/cancel", {}).then(function (res) {
             notice(res.ok ? "info" : "bad", res.ok ? "중지를 요청했습니다 — 다음 분석이 남은 것부터 이어 합니다." : res.error);
@@ -1306,7 +1592,7 @@
       },
       init: function (scr) {
         scr.onJobs = function () { rerender(scr, "progress"); };
-        scr.onGlobal = function () { rerender(scr, "run"); rerender(scr, "history"); };
+        scr.onGlobal = function () { rerender(scr, "history"); };
       },
       lazy: {}
     };
@@ -1354,7 +1640,7 @@
             return;
           }
           if (code === "no_current" || res.status === 404) {
-            U0.render(Kt.card("개인 보고서", h("div", {}, [Kt.emptyP("아직 분석 결과가 없습니다. [분석] 화면에서 기간을 정해 실행하세요."),
+            U0.render(Kt.card("개인 보고서", h("div", {}, [Kt.emptyP("아직 분석 결과가 없습니다 — 위 기간 카드에서 기간(기본: 올해 1월 1일 ~ 오늘)을 확인하고 [분석 실행]을 누르세요."),
               Kt.link("분석 화면", "#analysis")]), {id: "rp-msg"}), host);
             return;
           }
@@ -1427,11 +1713,11 @@
       var s = obj(obj(d.status).settings);
       var e = obj(scr.st.teamErr);
       var members = arr(obj(d.status).members);
-      return h("div", {}, [
+      return h("div", {}, [h("div", {"class": "form-grid"}, [
         Kt.field("tm-host", "IP", Kt.input("tm-host", "text", s.server_host, {"aria-invalid": e.server_host ? "true" : null, autocomplete: "off"}),
           {error: e.server_host}),
         Kt.field("tm-port", "포트", Kt.input("tm-port", "number", s.server_port, {min: "1", max: "65535", "aria-invalid": e.server_port ? "true" : null}),
-          {error: e.server_port}),
+          {error: e.server_port})]),
         h("div", {"class": "table-tools"}, [Kt.btn("연결 확인", "a-ping", "", {kind: "ghost"}), Kt.btn("기본값으로", "a-reset-addr", "", {kind: "ghost"})]),
         scr.st.ping ? U0.alertLine(scr.st.ping.ok ? "info" : "warn", scr.st.ping.text) : null,
         Kt.field("tm-alt", "대체 주소(한 줄에 host:port, 최대 5줄 — 순서 = 시도 순서)", Kt.textarea("tm-alt", arr(s.server_alternates).join("\n"),
@@ -1440,13 +1726,14 @@
           Kt.btn("변경", "a-open", "token", {kind: "ghost", expanded: !!scr.st["open:token"]})]),
         scr.st["open:token"] ? h("div", {"class": "table-tools"}, [Kt.field("tm-token", "새 업로드 토큰", Kt.input("tm-token", "password", null, {autocomplete: "off"})),
           Kt.btn("토큰 저장", "a-token", "", {kind: "ghost"})]) : null,
+        h("div", {"class": "form-grid"}, [
         Kt.field("tm-label", "내 표시 라벨(20자 이하)", Kt.input("tm-label", "text", s.self_label, {maxlength: "20", "aria-invalid": e.self_label ? "true" : null}),
           {error: e.self_label}),
         Kt.field("tm-member", "구성원 ID", Kt.select("tm-member", [["", "고르지 않음"]].concat(members.map(function (m) {
           return [m.member_id || m.id, m.label || m.member_id || m.id];
         })), s.member_id || "")),
         Kt.field("tm-title", "단위업무 제목", Kt.select("tm-title", [["label", "label — 분류 제목 그대로(기본)"], ["generic", "generic — '<분야>·<기능> 단위업무 #n'"]],
-          s.unit_title_mode || "label"), {help: "generic 은 모든 제목을 '<분야>·<기능> 단위업무 #n' 으로 바꿔 보냅니다"}),
+          s.unit_title_mode || "label"), {help: "generic 은 모든 제목을 '<분야>·<기능> 단위업무 #n' 으로 바꿔 보냅니다"})]),
         Kt.checkbox("tm-unknown", "미상 프로그램 이름 제안 보내기", !!s.share_unknown_apps),
         Kt.checkbox("tm-auto", "자동 전송", !!s.auto_send),
         Kt.muted("자동 전송을 끄면 기간마다 처음 한 번 미리보기에서 [보내기]를 눌러야 합니다"),
@@ -1538,9 +1825,12 @@
         local: function () { return api.get("/api/teamserver/local"); }
       },
       lazy: {local: true},
+      layout: [["outbox"], ["addr", "registry"], ["server"]],
       cards: [
-        {id: "addr", title: "팀 서버 주소", uses: ["status"], view: teamSettingsBody},
-        {id: "outbox", title: "팀 묶음 대기열", uses: ["status"], view: function (scr, d) {
+        {id: "addr", title: "팀 서버 주소", uses: ["status"], state: function () { return "팀원 쪽 — 내 팀 묶음을 보낼 곳"; }, view: teamSettingsBody},
+        {id: "outbox", title: "팀 묶음 대기열", uses: ["status"], state: function () {
+          return S.current && S.current.run_id ? "지금 보는 분석 기간 " + str(S.current.from) + " ~ " + str(S.current.to) + " 으로 만듭니다" : null;
+        }, view: function (scr, d) {
           var list = listOf(obj(d.status).outbox, "items");
           return h("div", {}, [h("div", {"class": "table-tools"}, [Kt.btn("팀 묶음 만들기", "a-team-build", "", {kind: "primary",
             why: S.current ? null : "분석 결과가 있어야 묶음을 만들 수 있습니다"})]),
@@ -1550,7 +1840,7 @@
         {id: "registry", title: "레지스트리", uses: ["status"], view: function (scr, d) {
           var r = obj(obj(d.status).registry);
           return h("div", {}, [Kt.para(isNum(r.version) ? "판 v" + r.version + (r.fetched_at ? " · " + md(r.fetched_at) + " 받음" : "") +
-            (r.source ? " · 출처 " + (r.source_ko || r.source) : "") : "레지스트리를 아직 받지 못했습니다."),
+            (r.source ? " · 출처 " + (r.source_ko || r.source) : "") : "레지스트리를 아직 받지 못했습니다 — 팀 서버에 닿는 망에서 [지금 받기]를 누르세요."),
           isNum(r.projects_n) ? Kt.para("과제 " + r.projects_n + " · 에이전트 " + num(r.agents_n) + (r.calendar_version ? " · 달력 " + r.calendar_version : "")) : null,
           r.note_ko ? Kt.para(r.note_ko) : null,
           h("div", {"class": "table-tools"}, [Kt.btn("지금 받기", "a-reg-fetch", "", {kind: "ghost"})])]);
@@ -1741,12 +2031,14 @@
       var dv = item.secret ? "—" : (typeof item["default"] === "object" ? JSON.stringify(item["default"]) : str(item["default"]));
       return h("tr", {}, [
         h("th", {scope: "row"}, [h("label", {"for": item.type === "timerange" ? id + "-a" : id}, [item.label_ko || item.key]),
-          item.help_ko ? h("small", {"class": "muted"}, [" " + item.help_ko]) : null, h("br", {}), h("code", {}, [item.key])]),
+          item.help_ko ? h("small", {"class": "muted"}, [" " + item.help_ko]) : null,
+          SUPERSEDED[item.key] ? h("small", {"class": "muted"}, [" " + SUPERSEDED[item.key]]) : null, h("br", {}), h("code", {}, [item.key])]),
         h("td", {}, [controlFor(item, id), err ? Kt.errLine(id, err) : null]),
         h("td", {}, [dv]),
-        h("td", {}, [item.uncalibrated ? U0.badge("★ 미보정", null, "실측 근거가 없는 정책값 — 내 자료로 조정 대상") : null,
+        h("td", {}, [SUPERSEDED[item.key] ? U0.badge("지금은 쓰지 않음", null, SUPERSEDED[item.key]) : null,
+          item.uncalibrated ? U0.badge("★ 미보정", null, "실측 근거가 없는 정책값 — 내 자료로 조정 대상") : null,
           item.restart && item.restart !== "none" ? U0.badge("다시 띄워야 반영") : null, item.scope === "team_server" ? U0.badge("팀 서버 PC") : null]),
-        h("td", {}, [Kt.btn("저장", "a-set-save", item.key, {kind: "ghost"}), Kt.btn("기본값", "a-set-reset", item.key, {kind: "ghost"})])]);
+        h("td", {"class": "acts"}, [Kt.btn("저장", "a-set-save", item.key, {kind: "ghost"}), Kt.btn("기본값", "a-set-reset", item.key, {kind: "ghost"})])]);
     }
 
     function settingsTable(scr, items) {
@@ -1765,7 +2057,7 @@
       },
       lazy: {audit: true, ads: true, calib: true},
       cards: [
-        {id: "groups", title: null, uses: [], view: function (scr) {
+        {id: "groups", title: null, cls: "card-bare", uses: [], view: function (scr) {
           return h("nav", {"class": "pills pills-sm", "aria-label": "설정 묶음"}, SET_GROUPS.map(function (g) {
             return h("a", {"class": "pill", href: "#settings/" + g[0], "aria-current": scr.st.group === g[0] ? "page" : null}, [g[1]]);
           }));
@@ -1921,11 +2213,16 @@
     var headRoot = el.head || (el.jobs && el.jobs.parentNode) || null;
     if (headRoot) { headOff = U0.delegate(headRoot, headHandlers); }
     var alertOff = el.alerts && el.alerts !== headRoot ? U0.delegate(el.alerts, {"a-dismiss": headHandlers["a-dismiss"]}) : null;
+    var stepsOff = el.steps ? U0.delegate(el.steps, {"a-guide": function () { guideDrawer(); }}) : null;
+    var periodOff = el.period ? U0.delegate(el.period, periodHandlers) : null;
+    if (el.period) { el.period.addEventListener("change", onPeriodInput); }
 
     // ── 4.13 시작 ──
     U0.ensureDefs(doc, deps().C);
     renderNav();
     renderAlerts();
+    renderPeriod();
+    renderSbar();
     if (win.addEventListener) { win.addEventListener("hashchange", route); }
     var ready = Promise.all([
       api.get("/api/hello").then(function (res) {
@@ -1934,6 +2231,7 @@
           if (isNum(S.hello.job_poll_ms) && S.hello.job_poll_ms >= 200) { S.pollMs = S.hello.job_poll_ms; }
         }
         renderHead();
+        renderPeriod();                               // 이 PC 역할(Copilot)에 따라 AI 칸이 바뀐다
       }),
       api.get("/api/jobs").then(function (res) {
         listOf(res.data, "jobs").forEach(function (j) {
@@ -1959,6 +2257,9 @@
         closeScreen();
         if (headOff) { headOff(); }
         if (alertOff) { alertOff(); }
+        if (stepsOff) { stepsOff(); }
+        if (periodOff) { periodOff(); }
+        if (el.period) { el.period.removeEventListener("change", onPeriodInput); }
         if (win.removeEventListener) { win.removeEventListener("hashchange", route); }
         if (S.pollTimer !== null) { timer.clear(S.pollTimer); S.pollTimer = null; }
       }
