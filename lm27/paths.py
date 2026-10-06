@@ -318,8 +318,14 @@ class Paths:
 
     # ── %LOCALAPPDATA%\LoadMonitor27\ (PC 에 남는 것) ─────────────────────
     def lad(self) -> Path:
+        r"""``%LOCALAPPDATA%\LoadMonitor27``. 에이전트 사본(``…\LoadMonitor27\agent\bin\<ver>\``)에서는 환경 변수가 아니라
+        사본 위치에서 정한다(W1 통합 창 — WP-13 CR: 폴더 리디렉션·runas 세션에서 lm27_pipe 와 감독 루프가 서로 다른 LAD 로
+        가지 않게, ``lm27.agent.main.bin_paths`` 와 같은 규칙)."""
         if self._lad is not None:
             return self._lad
+        r = self.root
+        if r.parent.name.lower() == "bin" and r.parent.parent.name.lower() == "agent" and self.mode() == "agent":
+            return r.parent.parent.parent
         base = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Local")
         return Path(os.path.abspath(base)) / APP_DIR
 
@@ -368,6 +374,11 @@ class Paths:
 
     def harvest_lock(self) -> Path:
         return self.agent_run() / ".harvest.lock"
+
+    def harvest_pid(self) -> Path:
+        """감독 루프가 띄운 수확 자식의 pid(``{pid, install_id, started_at}`` — 원문 없음). 감독 루프가 먼저 죽어도
+        ``stop_agent``·``uninstall`` 이 남은 수확 트리를 끌 수 있게(W1b)."""
+        return self.agent_run() / "harvest.pid"
 
     def agent_logs(self) -> Path:
         return self.agent_dir() / "logs"

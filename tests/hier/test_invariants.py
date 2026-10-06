@@ -254,8 +254,11 @@ class PipelineTest(unittest.TestCase):
             ids = [json.loads(x)["id"] for x in lines]
             self.assertEqual(ids, sorted(ids))
             self.assertEqual(set(json.loads(lines[0])), {"id", "proj", "score", "top2"})
+            # out_dir 도 paths·run_id 도 없으면 ValueError(Paths.analysis_hier 는 W1 통합 창에서 lm27.paths 에 생김)
             with self.assertRaises(ValueError):
-                write_result(res, paths=object(), run_id="r1")
+                write_result(res, paths=None, run_id="r1")
+            with self.assertRaises(ValueError):
+                write_result(res, paths=FakePaths(), run_id="")
 
     def test_copilot_off(self):
         """T-H16 — 코파일럿 꺼짐: 저장된 답이 있어도 쓰지 않고 ai_in 도 만들지 않는다. 규칙 라벨로 완주."""

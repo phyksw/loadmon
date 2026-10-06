@@ -27,11 +27,11 @@ from lm27.hier import registry_schema as _schema
 from lm27.hier import vocab as _vocab
 from lm27.hier.names import ukey
 from lm27.hier.vocab import VocabItem
+from lm27.paths import OFFLINE_REGISTRY_NAME  # noqa: F401 — 오프라인 사본 이름(TAB §5.3) 단일원 = lm27.paths(시험이 R. 로 씀)
 from lm27.util import fsx
 
 BUILTIN_EMPTY: dict = {"schema": _schema.SCHEMA, "version": 0}
 EMPTY_LOCAL: dict = {"schema": _schema.LOCAL_SCHEMA}
-OFFLINE_REGISTRY_NAME = "lm27_registry.json"           # team.offlineDir 안 오프라인 사본(TAB §5.3)
 LOCAL_FILE = "registry_local.json"
 LOCAL_BAK = "registry_local.json.bak"
 LEARNED_FILE = "rules_learned.json"
@@ -747,7 +747,7 @@ def load_effective(paths, cfg, now=None, *, fetch=None, kr=None, folder_key=None
             team, src, fetched_at = cache, "cache", now.strftime("%Y-%m-%dT%H:%M:%SZ")
         else:
             off = None
-            off_path = os.path.join(os.fspath(offline_dir), OFFLINE_REGISTRY_NAME) if offline_dir else None
+            off_path = paths.offline_registry(offline_dir) if offline_dir else None   # 계약 v1.2 §0.7 C19
             if off_path:
                 off = fsx.read_json(off_path, default=None)
                 if off is not None and not _usable(off):

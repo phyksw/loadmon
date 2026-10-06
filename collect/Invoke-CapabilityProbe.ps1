@@ -1301,7 +1301,7 @@ function Decide-Outlook($E, $O, $Com, [string]$ComState, [string]$InstState) {
     $mismatch = ($O['com_registered'] -eq $false) -or ($O['com_server_match'] -eq $false) -or ((B $O['c2r']) -and (B $O['msi']))
     if ($lang -and $lang -ne 'FullLanguage') { $rs['R-CLM'] = 1; $st = 'fail' }
     elseif ($newOnly) { $rs['R-NEWOL'] = 1; $st = 'fail' }
-    elseif (-not $classic) { $st = 'fail' }
+    elseif (-not $classic) { $rs['R-NOAPP'] = 1; $st = 'fail' }          # 계약 v1.2 §0.7 C4 — 실패에는 사유(클래식 Outlook 미설치)
     elseif ($profiles -eq 0) { $rs['R-NOPROF'] = 1; $st = 'fail' }
     if ($classic -and (Test-OfficeEol $O)) { $rs['R-OFFICE'] = 1 }
     if ($classic -and -not $newOnly -and $mismatch -and $profiles -ne 0) { $rs['R-WIZARD'] = 1 }
@@ -1444,7 +1444,7 @@ function Decide-Edge($F, [string]$GroupState) {
     $rs = @{}
     $rd = S-Int $F['remote_debugging']
     $dt = S-Int $F['devtools']
-    if (-not (B $F['installed'])) { $st = 'fail' }
+    if (-not (B $F['installed'])) { $rs['R-NOAPP'] = 1; $st = 'fail' }    # C4 — Edge 미설치
     elseif (($null -ne $rd -and $rd -eq 0) -or ($null -ne $dt -and $dt -eq 2)) { $rs['R-EDGEPOL'] = 1; $st = 'fail' }
     else { $st = 'ok' }
     $v = [ordered]@{ installed = (B $F['installed']); version = (S-Rx $F['version'] $RX_VER); remote_debugging = $rd; devtools = $dt
@@ -1465,7 +1465,7 @@ function Decide-Teams($E, $T, $U, [string]$UState, [string]$GroupState) {
     $vis = S-Int (P $u 'visible')
     $uia = $UState
     if ($lang -and $lang -ne 'FullLanguage') { $rs['R-CLM'] = 1; $st = 'fail' }
-    elseif (-not $inst) { $st = 'fail' }
+    elseif (-not $inst) { $rs['R-NOAPP'] = 1; $st = 'fail' }             # C4 — Teams 미설치
     elseif ($UState -eq 'not_running') { $st = 'unknown' }
     elseif ($UState -eq 'not_attempted') { $st = 'unknown' }
     elseif ($UState -eq 'budget') {
@@ -1529,7 +1529,9 @@ function Decide-Events($F, [string]$GroupState, $E = $null) {
         $s = S-Enum (P $evs $k) $CH_STATES
         $v[$k] = $s
         $sigp += [string]$s
-        if ($s -eq 'unauthorized') { $rs['R-NOEVT'] = 1 }
+        # 계약 v1.2 §0.7 C5: R-NOEVT 는 System 채널을 못 읽을 때만(수집기 Get-EventActivity 와 같다). 보너스 채널
+        # (Security 4800/4801 등) 권한 없음은 사유 없이 채널 상태 열거(value)로만 남긴다
+        if ($s -eq 'unauthorized' -and $k -eq 'system') { $rs['R-NOEVT'] = 1 }
     }
     $et = [ordered]@{}
     foreach ($k in $CHANNELS.Keys) { $t = S-Rx (P $errs $k) $RX_TYPE; if ($null -ne $t) { $et[$k] = $t } }

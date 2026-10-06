@@ -90,7 +90,9 @@ class TestOverlapAndPersonEqTeam(AggCase):
         self.assertEqual(td["schema"], "lm27.teamdata/1")
         self.assertEqual(td["workdays"], {"2026-07": 22, "2026-08": 20})
         files = sorted(os.listdir(self.st.gen_dir(1)))
-        self.assertEqual(files[-1], "team_data.json")
+        # W1 통합 창: 팀 보고서 렌더러(WP-37 lm27.team.report)가 생겨 보고서 두 벌도 같은 세대에 쓴다
+        self.assertEqual(files, ["details.json", "result.json", "team_data.json", "team_report.html",
+                                 "team_report_share.html"])
         self.assertEqual(json.loads(fsx.read_bytes(self.st.gen_dir(1) / "result.json"))["members"], 2)
 
     def test_raw_values_not_rounded(self):

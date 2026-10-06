@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -25,6 +26,7 @@ def setUpModule():
 class StoreTest(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.mkdtemp(prefix="lm27t_wp24_")
+        self.addCleanup(shutil.rmtree, tmp, True)        # 잔여물 0(W1 통합 창)
         self.paths = Paths(tmp + "/root", lad=tmp + "/lad")
         self.clk = VirtualClock()
 

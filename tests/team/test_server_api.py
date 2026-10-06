@@ -5,6 +5,7 @@
 import hashlib
 import http.client
 import json
+import os
 import socket
 import unittest
 
@@ -212,4 +213,9 @@ class TestTeamData(ApiCase):
         code, body, hdr = self.ts.call("GET", "/report")
         self.assertEqual(code, 200)
         self.assertEqual(hdr["Content-Security-Policy"], "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox")
+        # 공유본은 취합이 함께 만든다(WP-37 렌더러 — W1 통합 창). 같은 CSP, 파일이 없으면 404
+        code, body, hdr = self.ts.call("GET", "/report/share")
+        self.assertEqual(code, 200)
+        self.assertEqual(hdr["Content-Security-Policy"], "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox")
+        os.remove(self.ts.store.gen_dir(g) / "team_report_share.html")
         self.assertEqual(self.ts.call("GET", "/report/share")[0], 404)

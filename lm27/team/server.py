@@ -343,7 +343,8 @@ def make_handler(app: TeamServerApp):
             if v is None:
                 return None
             v = v.strip()
-            return int(v) if v.isdigit() else -1
+            # ASCII 숫자만(str.isdigit 은 위첨자 '²' 도 참이지만 int() 는 ValueError — 응답 없이 끊기던 것, W1 반증 검토 LOW)
+            return int(v) if v.isascii() and v.isdigit() else -1
 
         def _drain(self, n):
             left = min(max(n or 0, 0), DRAIN_MAX)

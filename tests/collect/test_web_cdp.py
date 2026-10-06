@@ -8,6 +8,7 @@
 import unittest
 from datetime import date
 
+from lm27.collect import rcmap
 from tests.fixtures.wp26 import webkit as K
 from tests.fixtures.wp26.cdpfake import FakeSession, factory
 
@@ -87,6 +88,18 @@ class OwaCdpTest(_Base):
             self.assertEqual((rc, st["reasons"], st["counts"]["session"]), (3, [why], state), state)
             self.assertTrue(s.closed)
 
+    def test_edge_not_found_stage_skipped_not_transport(self):
+        """W1b 회귀(계약 §0.7 C4 보강): Edge 없는 백필 PC — 수집기 rc 3 + R-NOAPP(경고) 가 수송 실패로 접히지 않고
+        원장 blocked · 단계 skipped · collect rc 4(다른 단계가 저장했으면 0)가 된다(매 실행 partial·rc 2 가 아님)."""
+        s = self.session(start_state="edge_not_found", error={})
+        rc, st, _ = self.owa(s)
+        self.assertEqual((rc, st["reasons"]), (3, [R_ + "NOAPP"]))
+        self.assertEqual(rcmap.translate_cell(rc, st["reasons"], st)["status"], "blocked")
+        o = rcmap.stage_outcome(rc, st["reasons"], st)
+        self.assertEqual((o["state"], o["reason"], o["stop_kind"]), ("skipped", R_ + "NOAPP", None))
+        self.assertEqual(rcmap.collect_rc([o]), 4)
+        self.assertEqual(rcmap.collect_rc([o, {"state": "done", "items_ok": 3}]), 0)
+
     def test_calendar_weeks(self):
         cal = {"2026-09-01": [K.owa_event("과제A 주간 회의", date(2026, 9, 1), (9, 0), (10, 0), "3층 회의실")],
                "2026-09-09": [K.owa_event("검토 회의", date(2026, 9, 9), (14, 0), (15, 0), "Microsoft Teams 모임")]}
@@ -138,6 +151,12 @@ class TeamsCdpTest(_Base):
         self.assertTrue(s.closed)
         rc, st, _ = K.run_tw(self.sb, ["--no-channels"], environ={"LM_NO_BROWSER": "1"})
         self.assertEqual((rc, st["reasons"], st["counts"]["session"]), (3, [R_ + "TRANSPORT"], "edge_not_found"))
+        s = FakeSession(start_state="edge_not_found", teams={})                          # C4 보강 — Edge 미설치
+        rc, st, _ = K.run_tw(self.sb, ["--no-channels"], session_factory=factory(s))
+        self.assertEqual((rc, st["reasons"]), (3, [R_ + "NOAPP"]))
+        o = rcmap.stage_outcome(rc, st["reasons"], st)
+        self.assertEqual((o["state"], o["reason"]), ("skipped", R_ + "NOAPP"))
+        self.assertEqual(rcmap.collect_rc([o]), 4)
 
 
 class JsTest(unittest.TestCase):

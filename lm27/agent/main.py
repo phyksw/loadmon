@@ -146,17 +146,38 @@ def _mtime(p) -> float:
         return 0.0
 
 
+class WallMono:
+    """주입한 벽시계만 있을 때의 단조 초 — 시계가 뒤로 가면(NTP 역보정·수동 변경) 그 폭은 세지 않고, 앞으로 간 것만 센다.
+    실제 실행(clock 을 주지 않음)은 ``time.monotonic`` 을 쓴다."""
+
+    def __init__(self, clock):
+        self.clock, self.last, self.acc = clock, None, 0.0
+
+    def __call__(self) -> float:
+        now = self.clock()
+        if self.last is not None:
+            d = (now - self.last).total_seconds()
+            if d > 0:
+                self.acc += d
+        self.last = now
+        return self.acc
+
+
 class Agent:
-    """감독 루프(py 구현). 시험은 ``api``(가짜 Win32)·``clock``(지금 UTC)·``wait``(초)·``mutex``·``spawn_harvest``·
-    ``run_conn``·``probe``·``rules_ok``·``exe_reader``·``recent_dir`` 를 주입한다."""
+    """감독 루프(py 구현). 시험은 ``api``(가짜 Win32)·``clock``(지금 UTC)·``wait``(초)·``mono``(단조 초)·``mutex``·
+    ``spawn_harvest``·``run_conn``·``probe``·``rules_ok``·``exe_reader``·``recent_dir`` 를 주입한다.
+
+    일정(틱·수확·teams.uia·폴링·플러시·감사·보존 정리·설정 다시 읽기)은 **단조 시계**로 잰다 — 벽시계가 뒤로 보정되면
+    그 폭만큼 표본·heartbeat 가 멈추던 결함(W1b) 방지. 벽시계(``clock``)는 표본·heartbeat·로그의 시각 기록에만 쓴다."""
 
     def __init__(self, install_id: str, *, paths=None, api=None, clock=None, wait=None, mutex=None, spawn_harvest=None,
-                 run_conn=None, probe=None, rules_ok=None, exe_reader=None, recent_dir=None):
+                 run_conn=None, probe=None, rules_ok=None, exe_reader=None, recent_dir=None, mono=None):
         self.L = _lm()
         self.install_id = install_id
         self.paths = paths or bin_paths()
         self.api = api
         self.clock = clock or (lambda: datetime.now(UTC))
+        self.mono = mono or (time.monotonic if clock is None else WallMono(self.clock))
         self._stop_ev = threading.Event()
         self.wait = wait or (lambda s: self._stop_ev.wait(s))
         self.mutex = mutex or win_mutex
@@ -188,11 +209,13 @@ class Agent:
         self.samples_today = 0
         self.day = None
         self.harvest_child = None
-        self.harvest_started = None
-        self.next_harvest = None
+        self.harvest_started = None              # 벽시계(harvest_done.started_at 대조용)
+        self.harvest_started_m = None            # 단조 초(시간 초과 판정)
+        self.next_harvest = None                 # 벽시계 표시용(heartbeat next_at)
+        self.next_harvest_m = None               # 단조 초(일정)
         self.last_harvest = {}
         self.jobs: dict = {}                     # 이름 → (스레드, 결과 상자)
-        self.job_at: dict = {}
+        self.job_at: dict = {}                   # 이름 → 마지막 시작(단조 초)
         self.abort = threading.Event()
         self.maint_at = None
         self.exe_seen: set = set()
@@ -250,14 +273,18 @@ class Agent:
         self._load_settings()
         self.exe_seen = set(L.exemeta.load_exe_meta(self.paths, self.pc_id))
         self.started_at = now
-        self.rc_checked = now
+        m = self.mono()
+        self.rc_checked = m
         done = L.fsx.read_json(self.paths.harvest_done(), default={}) or {}
         last = _parse_utc(done.get("finished_at")) if done.get("install_id") == self.install_id else None
         if last is not None:
             self.last_harvest = {"last_at": done.get("finished_at"), "last_rc": done.get("rc")}
         hours = self._num("agent.harvestIntervalH", 1, 48)
-        self.next_harvest = now if last is None or now - last >= timedelta(hours=hours) else last + timedelta(hours=hours)
-        self.maint_at = now + timedelta(seconds=MAINT_FIRST_S)
+        left = 0.0 if last is None else (last + timedelta(hours=hours) - now).total_seconds()
+        left = min(max(left, 0.0), hours * 3600.0)        # 마지막 수확이 '미래'(시계 역행)여도 한 주기 안에 다시 돈다
+        self.next_harvest_m = m + left
+        self.next_harvest = now + timedelta(seconds=left)
+        self.maint_at = m + MAINT_FIRST_S
         self.state = "running" if self.rules_ok else "rules_mismatch"
         self._log(now, "start", impl=self.impl, rules=int(self.rules_ok))
         return True
@@ -330,7 +357,7 @@ class Agent:
     def _maybe_flush(self, now: datetime) -> None:
         if not self.buf_s and not self.buf_c:
             return
-        age = (now - self.last_flush).total_seconds() if self.last_flush else None
+        age = self.mono() - self.last_flush if self.last_flush is not None else None
         due = (not self.first_flush_done or self.flush_reason or age is None
                or age >= self._num("agent.flushIntervalSec", 30, 3600)
                or len(self.buf_s) >= self._num("agent.flushMaxRows", 1, 10000))
@@ -368,10 +395,11 @@ class Agent:
         self.buf_s, self.buf_c = [], []
         self.first_flush_done = True
         self.flush_reason = ""
-        self.last_flush = now
-        if self.audit_at is None or (now - self.audit_at).total_seconds() >= AUDIT_EVERY_S or final:
+        m = self.mono()
+        self.last_flush = m
+        if self.audit_at is None or m - self.audit_at >= AUDIT_EVERY_S or final:
             self._flush_audit()
-            self.audit_at = now
+            self.audit_at = m
         return n
 
     def _exe_meta(self, tick) -> None:
@@ -425,9 +453,10 @@ class Agent:
     def _harvest(self, now: datetime) -> None:
         L = self.L
         ch = self.harvest_child
+        m = self.mono()
         if ch is not None:
             if ch.poll() is None:
-                if (now - self.harvest_started).total_seconds() > HARVEST_MAX_S:
+                if m - self.harvest_started_m > HARVEST_MAX_S:
                     ch.kill_tree()
                     self._log(now, "harvest_killed")
                 else:
@@ -439,9 +468,10 @@ class Agent:
                 self.last_harvest = {"last_at": _utc(now), "last_rc": ch.returncode if ch.returncode is not None else 3}
             self._log(now, "harvest_end", rc=self.last_harvest.get("last_rc"))
             self.harvest_child = None
+            self._clear_harvest_pid()
         flag = self.paths.harvest_now_flag()
         requested = flag.is_file()
-        if not requested and (self.next_harvest is None or now < self.next_harvest):
+        if not requested and (self.next_harvest_m is None or m < self.next_harvest_m):
             return
         spawn = self.spawn_harvest or (lambda ident, streams, requested: L.harvest.start_harvest_child(
             ident, streams, paths=self.paths, impl="py", requested=requested))
@@ -449,10 +479,15 @@ class Agent:
             self.harvest_child = spawn(AgentIdent(self.install_id, self.pc_id), HARVEST_STREAMS, requested)
         except OSError as e:
             self.err = (type(e).__name__, now)
+            self.next_harvest_m = m + 600.0
             self.next_harvest = now + timedelta(minutes=10)
             return
         self.harvest_started = now
-        self.next_harvest = now + timedelta(hours=self._num("agent.harvestIntervalH", 1, 48))
+        self.harvest_started_m = m
+        every = self._num("agent.harvestIntervalH", 1, 48) * 3600.0
+        self.next_harvest_m = m + every
+        self.next_harvest = now + timedelta(seconds=every)
+        self._save_harvest_pid(self.harvest_child, now)
         if requested:
             try:
                 os.remove(flag)
@@ -460,13 +495,46 @@ class Agent:
                 pass
         self._log(now, "harvest_start", requested=int(requested))
 
+    def _save_harvest_pid(self, child, now: datetime) -> None:
+        """수확 자식 pid → ``run\\harvest.pid``(원문 없음). 감독 루프가 먼저 죽어도 정지·제거가 남은 수확 트리를 끈다."""
+        pid = getattr(child, "pid", None)
+        if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+            return
+        L = self.L
+        try:
+            L.fsx.atomic_write(self.paths.harvest_pid(), L.fsx.canon_bytes(
+                {"pid": pid, "install_id": self.install_id, "started_at": _utc(now)}) + b"\n", fsync=False)
+        except OSError as e:
+            self.err = (type(e).__name__, now)
+
+    def _clear_harvest_pid(self) -> None:
+        try:
+            os.remove(self.paths.harvest_pid())
+        except OSError:
+            pass
+
+    def _stop_harvest(self, now: datetime) -> None:
+        """정지 때 살아 있는 수확 자식을 끈다(수확은 흐름별 커서로 다음 기동이 이어 한다) — 정지·제거 뒤 고아 수집 0."""
+        ch = self.harvest_child
+        if ch is None:
+            return
+        try:
+            if ch.poll() is None:
+                ch.kill_tree()
+                self._log(now, "harvest_stopped")
+        except (OSError, AttributeError) as e:
+            self.err = (type(e).__name__, now)
+        self.harvest_child = None
+        self._clear_harvest_pid()
+
     def _job(self, now: datetime, name: str, every_s: int, *, poll: bool) -> None:
         if name in self.jobs:
             return
         last = self.job_at.get(name)
-        if last is not None and (now - last).total_seconds() < every_s:
+        m = self.mono()
+        if last is not None and m - last < every_s:
             return
-        self.job_at[name] = now
+        self.job_at[name] = m
         box: dict = {}
         src = "pc.files" if poll else name
 
@@ -497,16 +565,18 @@ class Agent:
 
     # ── 보존 정리 ──────────────────────────────────────────────────────
     def _maintain(self, now: datetime) -> None:
-        if self.maint_at is None or now < self.maint_at:
+        m = self.mono()
+        if self.maint_at is None or m < self.maint_at:
             return
-        self.maint_at = now + timedelta(seconds=MAINT_EVERY_S)
+        self.maint_at = m + MAINT_EVERY_S
         self.maintain(now)
 
     def maintain(self, now: datetime) -> dict:
         L = self.L
         out = {}
         try:
-            out["store"] = L.prune_store(self.paths, self.pc_id, self._num("agent.storeKeepDays", 30, 3650),
+            # 모든 pc_id(옛 pc_id 원장 포함 — TAB-B26 MachineGuid 변경 뒤에도 보존 기한에 정리, W1 통합 창 WP-13 CR)
+            out["store"] = L.prune_store(self.paths, None, self._num("agent.storeKeepDays", 30, 3650),
                                          today=now.astimezone(UTC).date())
             out["audit"] = L.paudit.prune_audit(self.paths, self._num("privacy.audit.retentionMonths", 1, 120),
                                                 today=now.astimezone(UTC).date())
@@ -529,9 +599,10 @@ class Agent:
         return self._stop_ev.is_set() or self.paths.stop_flag().is_file()
 
     def _reload(self, now: datetime) -> None:
-        if self.rc_checked is not None and (now - self.rc_checked).total_seconds() < RELOAD_EVERY_S:
+        m = self.mono()
+        if self.rc_checked is not None and m - self.rc_checked < RELOAD_EVERY_S:
             return
-        self.rc_checked = now
+        self.rc_checked = m
         self._load_settings()
 
     def run(self, max_ticks: int | None = None) -> int:
@@ -547,11 +618,12 @@ class Agent:
             now = self.clock()
             if self._stopping() or not self._start(now):
                 return 0
-            next_tick = now
+            next_tick = self.mono()                          # 단조 초 — 벽시계가 뒤로 가도 틱이 멈추지 않는다
             self._heartbeat(now)
             while not self._stopping():
-                now = self.clock()
-                if now >= next_tick:
+                m = self.mono()
+                if m >= next_tick:
+                    now = self.clock()
                     self._reload(now)
                     try:
                         self._tick(now)
@@ -561,11 +633,12 @@ class Agent:
                     self.ticks += 1
                     if max_ticks is not None and self.ticks >= max_ticks:
                         break
-                    next_tick += timedelta(seconds=self.interval)
-                    if next_tick <= now:                     # 절전·멈춤 뒤 — 지금부터 다시 센다
-                        next_tick = now + timedelta(seconds=self.interval)
+                    next_tick += self.interval
+                    m = self.mono()
+                    if next_tick <= m:                       # 절전·멈춤 뒤 — 지금부터 다시 센다
+                        next_tick = m + self.interval
                 else:
-                    self.wait(min(WAKE_S, max(0.0, (next_tick - now).total_seconds())))
+                    self.wait(min(WAKE_S, max(0.0, next_tick - m)))
             self._shutdown(self.clock())
             return 0
         finally:
@@ -574,6 +647,7 @@ class Agent:
 
     def _shutdown(self, now: datetime) -> None:
         self.abort.set()
+        self._stop_harvest(now)
         if self.pending is not None and self.rules_ok:
             dt = (now - self.pending.ts).total_seconds()
             self._finalize(self.pending, min(max(dt, 1.0), float(self.interval)))

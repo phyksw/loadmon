@@ -626,6 +626,7 @@ class WebRun:
         self.stored = 0
         self.dropped: dict = {}
         self.errors: dict = {}
+        self.batch_errors = 0                    # 마지막 commit 묶음의 정제 error 행 수(그 날·방은 커서·체크포인트 제외)
         self.rows_in = 0
         work_off = self.cfg_get("time.tzOffsetMin", None)
         self.tz_mismatch = isinstance(work_off, int) and not isinstance(work_off, bool) and off_fn(now) != work_off
@@ -669,6 +670,7 @@ class WebRun:
     def commit_aligned(self, raws) -> list:
         """``commit`` 과 같되 원시 목록과 같은 순서의 [봉인 행 | None](버림·오류는 None) — 새 메시지·표지 판정용.
         저장이 실패하면 StoreError(그 묶음은 쓰지 않는다 — with 블록이 반쪽 묶음을 버린다)."""
+        self.batch_errors = 0
         if not raws:
             return []
         rctx = self.context()
@@ -685,6 +687,8 @@ class WebRun:
                     why = str(o.reason or ("other" if o.status == "dropped" else "error"))
                     bucket = self.dropped if o.status == "dropped" else self.errors
                     bucket[why] = bucket.get(why, 0) + 1
+                    if o.status != "dropped":
+                        self.batch_errors += 1
                     out.append(None)
                 w.flush()
         except StoreError:
@@ -694,6 +698,15 @@ class WebRun:
         self.stored += sum(1 for r in out if r is not None)
         self.bump("flushes")
         return out
+
+    def flag_row_errors(self) -> bool:
+        """정제 error 행이 있었으면 상태 줄에 partial + R-TRANSPORT(정제 실패 — 계약 §6.1 수송)를 단다. 그 행이 든 날·방은
+        커서(done 구간)·체크포인트에 넣지 않았으므로 다음 실행이 다시 읽는다(조용한 영구 누락 금지). 있었는가."""
+        if not self.errors:
+            return False
+        self.st["partial"] = True
+        add_reason(self.st, "R-TRANSPORT")
+        return True
 
     def save_cursor(self, value) -> None:
         try:
@@ -748,7 +761,10 @@ def _js(name: str, body: str) -> str:
     return f"/*LM27:{name}*/(function(){{{body}}})()"
 
 
-_LEAF = ("var leafs=function(e,n){return Array.prototype.slice.call(e.querySelectorAll('span,div,a,p'))"
+_CUT = ("var cut=function(s,n){s=String(s||'');if(s.length<=n)return s;var c=s.charCodeAt(n-1);"
+        "return s.slice(0,(c>=0xD800&&c<=0xDBFF)?n-1:n);};")
+# ↑ UTF-16 코드 단위로 자르되 앞 서로게이트에서 끊지 않는다(이모지를 반으로 잘라 외톨이 서로게이트를 넘기지 않게)
+_LEAF = (_CUT + "var leafs=function(e,n){return Array.prototype.slice.call(e.querySelectorAll('span,div,a,p'))"
          ".filter(function(x){return x.childElementCount===0;}).map(function(x){return (x.textContent||'').trim();})"
          ".filter(function(x){return x;}).slice(0,n);};"
          "var titles=function(e,n){return Array.prototype.slice.call(e.querySelectorAll('[title]'))"
@@ -768,9 +784,9 @@ for(var i=0;i<SELS.length;i++){opts=Array.prototype.slice.call(document.querySel
 window.__lm_mail=opts;
 out.n=opts.length;
 out.items=opts.slice(0,600).map(function(o,i){return {idx:i,
- key:(o.getAttribute('data-convid')||o.getAttribute('data-item-id')||o.id||'')+'|'+(o.getAttribute('aria-label')||'').slice(0,80),
+ key:(o.getAttribute('data-convid')||o.getAttribute('data-item-id')||o.id||'')+'|'+cut(o.getAttribute('aria-label'),80),
  ck:o.getAttribute('data-convid')?'c':(o.getAttribute('data-item-id')?'i':''),
- label:(o.getAttribute('aria-label')||'').slice(0,400),titles:titles(o,12),texts:leafs(o,24)};});
+ label:cut(o.getAttribute('aria-label'),400),titles:titles(o,12),texts:leafs(o,24)};});
 return out;""")
 
 
@@ -819,12 +835,12 @@ return 'ok';""")
 
 def js_owa_head() -> str:
     """읽기 창 머리의 보낸 시각 조각만(title·datetime·글자 120자) — 본문은 읽지 않는다."""
-    return _js("owa_head", """
+    return _js("owa_head", _CUT + """
 var SELS=['[data-testid="SentReceivedSavedTime"]','[role="main"] [data-testid*="Time"]','[role="main"] time'];
 var out={found:false,head:[]};
 for(var i=0;i<SELS.length;i++){var els=document.querySelectorAll(SELS[i]);
  for(var j=0;j<els.length&&out.head.length<4;j++){var e=els[j];
-  var t=((e.getAttribute('title')||'')+' '+(e.getAttribute('datetime')||'')+' '+(e.textContent||'')).trim().slice(0,120);
+  var t=cut(((e.getAttribute('title')||'')+' '+(e.getAttribute('datetime')||'')+' '+(e.textContent||'')).trim(),120);
   if(t)out.head.push(t);}
  if(out.head.length){out.found=true;break;}}
 return out;""")
@@ -840,8 +856,8 @@ var seen={};
 for(var i=0;i<cands.length;i++){var l=cands[i].getAttribute('aria-label')||'';
  if(!/\\d{1,2}[:.]\\d{2}|종일|all[- ]day|終日/i.test(l))continue;
  if(!/\\d/.test(l))continue;
- var k=l.slice(0,160);if(seen[k])continue;seen[k]=1;
- out.events.push({label:l.slice(0,400),texts:leafs(cands[i],10)});
+ var k=cut(l,160);if(seen[k])continue;seen[k]=1;
+ out.events.push({label:cut(l,400),texts:leafs(cands[i],10)});
  if(out.events.length>=400)break;}
 out.n=out.events.length;
 return out;""")
@@ -1511,6 +1527,7 @@ def collect(opts: Opts, *, paths, cfg, api, clock, now, off_fn, environ, session
     run.fill_counts()
     n = run.stored + sum(run.dropped.values())
     st["n"] = n
+    row_err = run.flag_row_errors()
     if stop is not None:                                   # 중간에 로그인 만료·탭 잃음
         rc, why = session_failure(stop.state, stop.info)
         c["session"] = stop.state
@@ -1522,6 +1539,8 @@ def collect(opts: Opts, *, paths, cfg, api, clock, now, off_fn, environ, session
         st["rc"] = RC_DRIVER
     elif n > 0:
         st["rc"] = RC_SAVED
+    elif row_err:                                          # 읽은 행이 전부 정제 오류 — 0건(rc 1 · zero_ok)으로 적지 않는다
+        st["rc"] = RC_DRIVER
     else:
         st["rc"] = RC_NONE
     nd = sum(run.dropped.values())
@@ -1607,7 +1626,9 @@ def _collect_mail(run: WebRun, screen, slices, blanks, box: dict, opts: Opts, hb
         rows = None
         if stop is not None:
             return stop
-        if complete and all(known.values()):
+        if complete and all(known.values()) and run.batch_errors:
+            run.bump("slices_row_errors")                  # 정제 오류 행이 든 조각은 '읽음'으로 두지 않는다(다음 실행이 다시)
+        elif complete and all(known.values()):
             _mark_done(run, box, s, e, blanks)
             run.bump("slices_done")
         if hb is not None:
@@ -1674,6 +1695,9 @@ def _collect_cal(run: WebRun, screen, weeks, todo, blanks, box: dict, opts: Opts
         if hb is not None:
             hb.update(done=i + 1)
         if not known:                                      # 주 보기를 못 알아봤다 — 0건으로 '읽음' 처리하지 않는다
+            continue
+        if run.batch_errors:                               # 정제 오류 행이 든 주도 '읽음'으로 두지 않는다(다음 실행이 다시)
+            run.bump("slices_row_errors")
             continue
         for a, b in part:
             if b < run.today:

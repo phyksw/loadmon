@@ -5,6 +5,7 @@ B-T49(무라이선스: 세 조회 함께 기록, 같은 호출의 다른 조회�
 from __future__ import annotations
 
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -31,6 +32,7 @@ def setUpModule():
 class Machine(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="lm27t_wp24_")
+        self.addCleanup(shutil.rmtree, self.tmp, True)   # 잔여물 0(W1 통합 창)
         self.paths = Paths(self.tmp + "/root", lad=self.tmp + "/lad")
         self.cfg, self.raw = settings(self.tmp)
         self.clk = VirtualClock()

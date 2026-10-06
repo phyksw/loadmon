@@ -100,8 +100,8 @@ def oracle(rc, n, in_h, block, cap, budget):
         return "transport_fail"
     if rc == 2:
         return "blocked"
-    if rc == 3:
-        return "blocked" if block == STRUCT else "transport_fail"
+    if rc == 3:                                              # C4 보강: 경고 사유뿐(R-NOAPP 등)도 blocked
+        return "blocked" if block in (STRUCT, WARN) else "transport_fail"
     if cap or budget:                                        # T-10
         return "partial"
     if (n is not None and n > 0) or (n is None and rc in (0, 4)):
@@ -181,6 +181,26 @@ class CellStatusMatrix(unittest.TestCase):
         self.assertEqual(rcmap.cell_status(3, ["R-HORIZON", "R-TRANSPORT"]), "transport_fail")
         self.assertEqual(rcmap.cell_status(3, ["R-HORIZON", "R-NEWOL"]), "blocked")
         self.assertEqual(rcmap.cell_status(3, ["R-LOGIN"]), "blocked")     # 사람 사유도 막힘
+
+    def test_C4_rc3_warning_only_is_blocked_not_transport(self):
+        """W1b 회귀: rc 3 + 경고 사유뿐(R-NOAPP — Edge·대상 프로그램 미설치)은 수송 실패(R-TRANSPORT)로 접지 않는다.
+        셀 blocked · 단계 skipped + 그 사유 · collect rc 0/4(단계가 partial 이 아니므로). 확정 근거는 아니다(✘)."""
+        t = rcmap.translate_cell(3, ["R-NOAPP"])
+        self.assertEqual((t["status"], t["reasons"]), ("blocked", ["R-NOAPP"]))
+        o = rcmap.stage_outcome(3, ["R-NOAPP"])
+        self.assertEqual((o["state"], o["reason"], o["stop_kind"], o["rc"], o["reasons"]),
+                         ("skipped", "R-NOAPP", None, 3, ["R-NOAPP"]))
+        self.assertEqual(rcmap.collect_rc([o]), 4)
+        self.assertEqual(rcmap.collect_rc([o, res("done", items_ok=2)]), 0)
+        self.assertFalse(rcmap.confirmable("R-NOAPP"))
+        # 수송·일시 사유가 섞이면 예전대로 transport_fail, 표 밖 코드는 '경고뿐'에 들지 않는다
+        self.assertEqual(rcmap.cell_status(3, ["R-NOAPP", "R-TRANSPORT"]), "transport_fail")
+        self.assertEqual(rcmap.cell_status(3, ["R-NOAPP", UNKNOWN]), "transport_fail")
+        self.assertEqual(rcmap.cell_status(3, ["R-NOAPP", "R-NEWOL"]), "blocked")
+        self.assertEqual(rcmap.stage_outcome(3, ["R-NOAPP", "R-NEWOL"])["reason"], "R-NEWOL")   # 구조 사유가 주 원인
+        self.assertEqual(rcmap.stage_outcome(3, ["R-HORIZON", "R-SUBFOLDER"])["reason"], "R-HORIZON")
+        # rc 1 의 경고(R-MRUEMPTY 등)는 0건 신뢰를 깨지 않는다 — 바뀌지 않음
+        self.assertEqual(rcmap.cell_status(1, [WARN], {"n": 0, "in_horizon": True}), "zero_ok")
 
     def test_zero_trust_exceptions(self):
         self.assertEqual(rcmap.cell_status(1, ["R-OMG"], {"n": 0}), "zero_ok")       # B단만 막힘 — A단 0건은 믿는다

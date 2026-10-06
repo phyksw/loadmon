@@ -782,6 +782,16 @@ def _l02(s, ctx):
 
 # ───────────────────────────── L-03 ruff ─────────────────────────────
 RUFF_LINE = re.compile(r"^(.*?):(\d+):(\d+): (.*)$")
+ANSI_RX = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+# 색 강제 환경 변수(FORCE_COLOR·CLICOLOR_FORCE — 터미널·에이전트 세션이 켠다)가 있으면 ruff 가 파이프에도 ANSI 색을 섞어
+# 'path:line:col:' 줄을 못 읽고 위반 0으로 보였다(W1 통합 창). 색을 끄고, 남은 이스케이프는 지운다.
+RUFF_ENV_DROP = ("FORCE_COLOR", "CLICOLOR_FORCE", "CLICOLOR")
+
+
+def _ruff_env():
+    env = {k: v for k, v in os.environ.items() if k.upper() not in RUFF_ENV_DROP}
+    env["NO_COLOR"] = "1"
+    return env
 
 
 def ruff_args(ctx, paths):
@@ -807,11 +817,12 @@ def _run_ruff(ctx, srcs):
         try:
             # --config 를 주면 ruff 는 per-file-ignores·exclude 를 작업 폴더 기준으로 푼다 → 트리 루트에서 돈다
             p = subprocess.run(ruff_args(ctx, [s.path for s in chunk]), capture_output=True, timeout=180,
-                               cwd=ctx.root, creationflags=NO_WINDOW)
+                               cwd=ctx.root, creationflags=NO_WINDOW, env=_ruff_env())
         except (OSError, subprocess.SubprocessError) as e:
             out.append(Finding("L-03", "", 0, f"ruff 실행 실패({type(e).__name__})"))
             continue
         text = (p.stdout or b"").decode("utf-8", errors="replace") + (p.stderr or b"").decode("utf-8", errors="replace")
+        text = ANSI_RX.sub("", text)
         if p.returncode not in (0, 1):
             out.append(Finding("L-03", "", 0, "ruff 오류: " + " | ".join(text.strip().splitlines()[-3:])))
             continue

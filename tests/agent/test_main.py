@@ -72,6 +72,43 @@ class LoopTest(_Base):
         self.assertTrue(all(s == 60 for s in spans[:-1]), spans)         # 3시간이 활동으로 새지 않는다
         self.assertLessEqual(spans[-1], 60)
 
+    def test_wall_clock_step_back_does_not_stall(self):
+        """W1b 회귀: 벽시계가 뒤로 2시간 보정돼도(NTP 역보정·수동 변경) 틱·heartbeat·표본·teams.uia 일정이 멈추지 않는다 —
+        일정은 단조 시계로 잰다. 주입 단조 시계(실행의 time.monotonic 대역)와, 벽시계만 줄 때의 WallMono 둘 다."""
+        for explicit in (True, False):
+            sb = H.Sandbox()
+            self.addCleanup(sb.cleanup)
+            sb.agent_files()
+            calls = []
+            ag, clk = H.make_agent(sb, run_conn=lambda paths, pc_id, src, **kw: calls.append(src))
+            mono = [0.0]
+
+            def wait(s, clk=clk, mono=mono):
+                mono[0] += max(float(s), 0.001)
+                clk.wait(s)
+            ag.wait = wait
+            if explicit:
+                ag.mono = lambda mono=mono: mono[0]
+            seen = []
+            orig = ag._tick
+
+            def tick(now, ag=ag, orig=orig, clk=clk, seen=seen, mono=mono):
+                seen.append(mono[0])
+                orig(now)
+                if ag.ticks == 2:
+                    clk.t -= timedelta(hours=2)
+            ag._tick = tick
+            ag.run(max_ticks=6)
+            gaps = [round(b - a) for a, b in zip(seen, seen[1:], strict=False)]
+            self.assertEqual(gaps, [60] * 5, explicit)                        # 예전: [60, 60, 7260, 60, 60]
+            self.assertLess(max(gaps), 600)                                   # agent.heartbeatStaleSec 안
+            recs, _c, _g = read_store_since(sb.paths, ag.pc_id, "pc_session", "pc.sampler", None)
+            self.assertEqual(len(recs), 6, explicit)
+            for t, _box in list(ag.jobs.values()):
+                t.join(5)
+            # teams.uia·열린 문서 폴링(기본 300초 주기) — 0초·300초 두 번(예전: 역행 뒤 2시간 동안 0번)
+            self.assertEqual((calls.count("teams.uia"), calls.count("pc.files")), (2, 2), (explicit, calls))
+
     def test_first_flush_immediate_and_heartbeat_fields(self):
         ag, _clk = H.make_agent(self.sb)
         ag.run(max_ticks=1)
@@ -163,6 +200,43 @@ class HarvestScheduleTest(_Base):
         self.assertEqual((ag.spawned[0][2], ag.spawned[1][2]), (False, True))
         self.assertEqual(ag.spawned[0][0].install_id, H.IID)
         self.assertFalse(sb.paths.harvest_now_flag().exists())            # 요청 깃발은 자식을 띄운 뒤 지운다
+
+    def test_stop_kills_running_harvest_child(self):
+        """W1b 회귀: 정상 정지(stop.flag)에도 살아 있는 수확 자식을 끈다(수확은 커서로 다음 기동이 이어 한다) — 정지·제거 뒤
+        고아 수집 0. 자식 pid 는 run\\harvest.pid 에 있다가(감독 루프가 먼저 죽었을 때 stop_agent·uninstall 용) 정리된다."""
+        import sys
+
+        from lm27.util import proc
+        kids = []
+
+        def spawn(ident, streams, requested):
+            ch = proc.spawn([sys.executable, "-X", "utf8", "-I", "-B", "-c", "import time; time.sleep(60)"],
+                            stdout=proc.DEVNULL)
+            kids.append(ch)
+            return ch
+
+        def cleanup():
+            for k in kids:
+                k.kill_tree()
+                k.close()
+        self.addCleanup(cleanup)
+        sb = self.sb
+        ag, _clk = H.make_agent(sb, spawn=spawn)
+        orig = ag._tick
+        seen = {}
+
+        def tick(now):
+            orig(now)
+            if ag.ticks == 0:
+                rec = sb.read_json(sb.paths.harvest_pid())
+                seen["pid"] = (rec.get("pid"), rec.get("install_id"))
+                sb.paths.stop_flag().write_bytes(b"")
+        ag._tick = tick
+        self.assertEqual(ag.run(max_ticks=10), 0)
+        self.assertEqual(len(kids), 1)
+        self.assertEqual(seen["pid"], (kids[0].pid, H.IID))
+        self.assertFalse(kids[0].alive())
+        self.assertFalse(sb.paths.harvest_pid().exists())
 
     def test_recent_harvest_not_repeated_at_start(self):
         sb = self.sb

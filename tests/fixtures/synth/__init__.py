@@ -21,7 +21,7 @@ from .month import Plan, load_holidays, plan_3m, plan_month, plan_period, signal
 from .persona import Persona, SynthKeys, default_persona, doc_fam, synth_keys
 from .stored import FLAG_KEYS, KINDS, SRCS_BY_KIND, STORED_COLUMNS, stored_rows
 
-SYNTH_VERSION = "1"
+SYNTH_VERSION = "2"   # 2 = 계약 v1.2 C3 주입점 등재(LM_PROBE_FAKE·선택 문법) · C16 문서군 꼬리
 
 RAW_SRC = {   # kind 별 기본 원시 경로
     "mail": "mail.com", "cal": "cal.com", "teams": "teams.uia", "pc_session": "pc.sampler", "pc_file": "pc.files",

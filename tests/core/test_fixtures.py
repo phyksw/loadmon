@@ -132,6 +132,106 @@ class TreeTest(unittest.TestCase):
             self.assertNotIn("fixtures", areas)
 
 
+class CleanupTest(unittest.TestCase):
+    """W1 통합 창 잔여물 회귀: 지우기는 긴 경로·읽기 전용·잠깐 잠긴 파일을 처리하고, make 의 청소는 오래되고 주인이 끝났고
+    아무도 쓰지 않는 lm27t_* 만 지운다(재부팅 전 %TEMP% 에 복제 136개가 남았던 결함)."""
+
+    def _base(self) -> Path:
+        b = Path(tempfile.mkdtemp(prefix="lm27t_cleanup_", dir=str(tree._TMP_BASE)))
+        self.addCleanup(tree._rmtree, b)
+        return b
+
+    def test_rmtree_long_path_readonly_and_briefly_locked(self):
+        import stat
+        import threading
+        b = self._base()
+        deep = b
+        for i in range(18):                                   # 300자 넘는 경로(MAX_PATH 260 초과)
+            deep = deep / f"폴더_{i:02d}_가나다라마바사아자차"
+        os.makedirs(tree.long_path(deep))
+        self.assertGreater(len(str(deep)), 300)
+        ro = tree.long_path(deep / "읽기전용.txt")
+        with open(ro, "w", encoding="utf-8") as f:
+            f.write("x")
+        os.chmod(ro, stat.S_IREAD)
+        held = open(tree.long_path(b / "잠김.txt"), "w", encoding="utf-8")   # noqa: SIM115 — 0.6초 뒤 닫는다
+        t = threading.Timer(0.6, held.close)
+        t.start()
+        self.addCleanup(t.cancel)
+        self.addCleanup(held.close)
+        self.assertTrue(tree._rmtree(b))
+        self.assertFalse(os.path.lexists(tree.long_path(b)))
+
+    def test_sweep_only_old_ownerless_unused(self):
+        import subprocess
+        import sys
+        b = self._base()
+        dead = subprocess.run([sys.executable, "-c", "import os; print(os.getpid())"], capture_output=True, text=True,
+                              check=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        dead_pid = int(dead.stdout.strip())
+        old = time.time() - 2 * tree.STALE_AGE_S
+
+        def mk(name, owner=None, age=old):
+            d = b / name
+            (d / "tests").mkdir(parents=True)
+            (d / "tests" / "a.py").write_text("x", encoding="utf-8")
+            if owner is not None:
+                (d / tree.CLONE_MARK).write_text(f"src=x\nowner={owner}\n", encoding="utf-8")
+                os.utime(d / tree.CLONE_MARK, (age, age))
+            os.utime(d, (age, age))
+            return d
+
+        gone_old = mk("lm27t_dead", dead_pid)
+        alive = mk("lm27t_alive", os.getpid())
+        fresh = mk("lm27t_fresh", dead_pid, age=time.time())
+        bare = mk("lm27t_bare")                                # 표지 없는 시험 임시 폴더(오래됨·아무도 안 씀)
+        busy = mk("lm27t_busy")
+        fh = open(busy / "tests" / "a.py", encoding="utf-8")   # noqa: SIM115 — 쓰는 중(이름 바꾸기 거부)
+        self.addCleanup(fh.close)
+        other = mk("notclone_old")
+        gone = tree.sweep_stale(b)
+        self.assertEqual(sorted(p.name for p in gone), ["lm27t_bare", "lm27t_dead"])
+        self.assertFalse(gone_old.exists())
+        self.assertFalse(bare.exists())
+        self.assertFalse((b / "lm27t_dead.sweep").exists())
+        for keep in (alive, fresh, busy, other):
+            self.assertTrue(keep.is_dir(), keep.name)
+        fh.close()
+        os.utime(busy, (old, old))
+        self.assertEqual([p.name for p in tree.sweep_stale(b)], ["lm27t_busy"])   # 다 쓰고 나면 다음 청소가 지운다
+        with self.assertRaises(AssertionError):
+            tree.sweep_stale(tree.SOURCE_ROOT)                 # %TEMP% 밖은 청소하지 않는다
+
+    def test_mark_records_owner_and_cli_make_uses_parent(self):
+        with tree.make_clone() as c:
+            self.assertEqual(tree._mark_owner(c.root), os.getpid())
+        self.assertTrue(tree._pid_alive(os.getpid()))
+        self.assertFalse(tree._pid_alive(0))
+
+
+class LeakHelperTest(unittest.TestCase):
+    """누수 관문 도우미(tests\\fixtures\\leak.py) 자체 시험 — 일부러 새는 반복은 잡고, 새지 않는 반복은 통과시킨다."""
+
+    def test_detects_memory_and_thread_growth(self):
+        import threading
+
+        from tests.fixtures import leak
+        keep = []
+        with self.assertRaises(AssertionError):
+            leak.assert_bounded(self, lambda i: keep.append(bytearray(20000)), warm=2, n=20)
+        keep.clear()
+        stop = threading.Event()
+        self.addCleanup(stop.set)
+        with self.assertRaises(AssertionError):
+            leak.assert_bounded(self, lambda i: threading.Thread(target=stop.wait, daemon=True).start(), warm=1, n=3)
+        stop.set()
+        leak.assert_bounded(self, lambda i: bytearray(20000), warm=2, n=20)
+        self.assertGreater(leak.handle_count(), 0)
+        self.assertEqual(leak.child_pids(), set())
+        self.assertGreaterEqual(leak.temp_entries(), 0)
+        self.assertLess(tree.best_of(lambda: None, n=3), 1.0)
+
+
 class CloneCaseTest(tree.CloneTestCase):
     def test_class_clone(self):
         self.assertTrue(self.clone.path("tests", "fixtures", "canary.py").is_file())
@@ -308,8 +408,12 @@ class PersonaTest(unittest.TestCase):
         self.assertEqual(k.doc("회로도_과제A_v3.xlsx"), k.doc("회로도_과제A.docx"))
         cases = {"보고서_최종.pptx": "보고서", "v2.docx": "v2", "photocopy.pdf": "photocopy", "보고서 (1).pptx": "보고서",
                  "2026 사업계획 v2 최종.pptx": "2026_사업계획", "과제A_열해석_v3.wbpj": "과제a_열해석"}
+        from lm27.privacy.keys import doc_fam as real_doc_fam
+        cases |= {"보고서 - 복사본.pptx": "보고서", "주간보고_20261005.xlsx": "주간보고_20261005",   # C16 · P §18.2 D03·D05·D07
+                  "C:\\Users\\hong\\Documents\\2026 사업계획 v2 최종.pptx": "2026_사업계획"}
         for name, fam in cases.items():
             self.assertEqual(synth.doc_fam(name), fam, name)
+            self.assertEqual(real_doc_fam(name), fam, name)                  # 합성 가짜 = 실물(계약 §4.3 · C16)
         self.assertEqual(P.mask("회로도_과제A_v3.xlsx", k), ("회로도_[과제:P-0001]_v3.xlsx", {"project": 1}))
         raw, masked, san = P.render(("@", ("person", "self"), " ", ("proj", 2), " 검토 ", ("org", "C01")), k)
         self.assertEqual(raw, "@홍길동 과제C 검토 고객사A")
@@ -501,13 +605,19 @@ class InjectTest(unittest.TestCase):
         cls.plan = synth.plan_month(2026, 9)
 
     def test_env_names(self):
-        contract = {"LM_OUTLOOK_SELFTEST", "LM_INDEX_FAKE", "LM_OWA_FAKE", "LM_TEAMSWEB_FAKE", "LM_COPILOT_STUB",
-                    "LM_NO_BROWSER"}
+        contract = {"LM_OUTLOOK_SELFTEST", "LM_PROBE_FAKE", "LM_INDEX_FAKE", "LM_OWA_FAKE", "LM_TEAMSWEB_FAKE",
+                    "LM_COPILOT_STUB", "LM_NO_BROWSER"}                      # 계약 §11.3 + v1.2 C3
         self.assertEqual(set(inject.INJECT_ENV.values()), contract)
         self.assertEqual(set(tree.INJECT_VARS), contract)
         self.assertEqual(inject.env_for(outlook_selftest=5, no_browser=True, owa_fake=None),
                          {"LM_OUTLOOK_SELFTEST": "5", "LM_NO_BROWSER": "1"})
         self.assertEqual(inject.outlook_selftest_env(3), {"LM_OUTLOOK_SELFTEST": "3"})
+        self.assertEqual(inject.outlook_selftest_env(5, "newol", "horizon=2026-01", "hang=read"),
+                         {"LM_OUTLOOK_SELFTEST": "5,newol,horizon=2026-01,hang=read"})       # v1.2 C3 문법
+        for bad in ("graph", "horizon=26-1", "hang=x"):
+            with self.assertRaises(ValueError):
+                inject.outlook_selftest_env(1, bad)
+        self.assertEqual(synth.SYNTH_VERSION, "2")
         with self.assertRaises(KeyError):
             inject.env_for(graph=1)
 

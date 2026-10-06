@@ -14,7 +14,9 @@ r"""수집기 rc · 정제 파이프 종료 코드 → 커버리지 셀 상태 �
   · 감시 종료(stop_kind stall·no_progress)·모르는 rc → transport_fail + R-TRANSPORT
   · rc 2                                           → blocked + R-LOGIN(사람) 또는 R-CA(구조)
   · rc 3                                           → 구조·사람 사유가 있으면 blocked, R-HORIZON 뿐이면 out_of_horizon,
+                                                     사유가 경고뿐(예: R-NOAPP 대상 프로그램 미설치)이면 blocked,
                                                      그 밖은 transport_fail(수송·일시 사유가 없으면 R-TRANSPORT 를 붙인다)
+                                                     — 'rc 3 + 경고 사유'를 수송 실패로 접지 않는다(계약 §0.7 C4 보강)
   · rc 0 · 1 · 4 — 상한·예산에 닿았으면 partial(+ R-CAP/R-BUDGET, cap_hit/budget_hit) — T-10, rc 는 바꾸지 않는다
                  — rc 0·4 + R-RECURINC(반복 일정 일부만 펼침 — 계약 v1.2 §0.7 C4 '부분 결과')    → partial
                  — 그 셀 건수 n > 0(또는 rc 0·4 인데 n 을 모름)                 → ok('이미 덮인 날은 ok 유지')
@@ -267,13 +269,24 @@ def translate_cell(rc, reasons=(), counts=None) -> dict:
             "budget_hit": bool(budget and status == "partial")}
 
 
+def _warning_only(rs) -> bool:
+    """사유가 하나 이상이고 모두 §6.1 '경고'인가(표에 없는 코드는 수송으로 보므로 여기 들지 않는다)."""
+    return bool(rs) and all(is_reason(r) and reason_class(r) == WARNING for r in rs)
+
+
 def _failed_status(rs):
-    """rc 3: 구조·사람 사유 → blocked, 사유가 R-HORIZON 뿐(수송·일시 없음) → out_of_horizon, 그 밖 → transport_fail."""
+    """rc 3: 구조·사람 사유 → blocked, 사유가 R-HORIZON 뿐(수송·일시 없음) → out_of_horizon,
+    사유가 경고뿐 → blocked, 그 밖 → transport_fail.
+    '경고뿐'(예: Edge 미설치 R-NOAPP — 경고·확정 ✘)은 수집기가 실패 원인을 이름 붙인 것이다. 이것을 R-TRANSPORT 로 접으면
+    그 PC 의 그 경로가 매번 partial(fatal)·collect rc 2 가 되고 todo 도 계속 같은 경로를 배정한다(계약 §0.7 C4 가 막으려던
+    왜곡). 그래서 셀은 blocked(단계 skipped)로 두되, 경고는 확정 근거가 아니므로 '불가(확정)'에는 이르지 않는다."""
     if any(_structural_block(r) for r in rs):
         return "blocked"
     transportish = any(reason_class(r) in (TRANSPORT, TRANSIENT) for r in rs)
     if "R-HORIZON" in rs and not transportish:
         return "out_of_horizon"
+    if _warning_only(rs):
+        return "blocked"
     if not transportish:
         _add(rs, "R-TRANSPORT")                  # rc 3 은 사유 필수 — 없으면 수송 실패로 본다
     return "transport_fail"
@@ -327,6 +340,7 @@ def stage_outcome(rc, reasons=(), counts=None) -> dict:
       · rc 0·1·4                                → done(상한 → partial + caps_hit, 예산 → partial + stop_kind budget)
       · rc 2                                    → partial + stop_kind login(재개 가능)
       · rc 3 · 0건 + 구조·사람 사유(원장 blocked) → skipped + 그 사유(이 PC 에서 쓸 수 없는 경로 — 다른 경로가 채움)
+      · rc 3 + 경고 사유뿐(R-NOAPP 등, 원장 blocked) → skipped + 그 경고 사유(C4 보강 — 수송 실패로 접지 않는다)
       · rc 3 지평선 밖                          → skipped + R-HORIZON
       · rc 3 수송·일시 · 모르는 rc               → partial + stop_kind fatal(다음 실행에서 다시)
       · 감시 종료(stall·no_progress)·취소        → partial + 그 stop_kind
@@ -372,7 +386,9 @@ def _stage_outcome(rc, reasons=(), counts=None) -> dict:
             out.update(state="partial", stop_kind="login", resumable=True, hint=HINTS["login"],
                        reason="R-LOGIN" if "R-LOGIN" in rs else "R-CA")
         elif st == "blocked" or (st == "out_of_horizon" and code == 3):
-            main = next((r for r in rs if _structural_block(r)), "R-HORIZON")
+            main = "R-HORIZON" if st == "out_of_horizon" else next(
+                (r for r in rs if _structural_block(r)),
+                next((r for r in rs if is_reason(r) and reason_class(r) == WARNING), "R-HORIZON"))
             out.update(state="skipped", reason=main, hint=HINTS["structural"])
         elif st == "transport_fail":
             main = "R-TRANSPORT" if "R-TRANSPORT" in rs else next(

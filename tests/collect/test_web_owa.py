@@ -13,7 +13,6 @@ from datetime import date
 from lm27.bridge.clock import VirtualClock
 from lm27.collect.rcmap import confirmable
 from lm27.privacy import context as C
-from lm27.privacy.sanitize import sanitize
 from tests.fixtures.canary import canaries, canary_ctx, find_canaries
 from tests.fixtures.synth import inject, month
 from tests.fixtures.wp26 import webkit as K
@@ -21,11 +20,6 @@ from tests.fixtures.wp26 import webkit as K
 W = K.OWA
 R_ = "R-"                                    # 사유 코드는 런타임에 조립(L-13 — 시험의 표본 문자열)
 TODO = "mail.owa:2026-09-01:2026-09-15"
-
-
-def _path_gap() -> bool:
-    """WP-10 rules.RX['path'] 가 뒤에 ' / '·줄바꿈이 오는 경로를 통째로 놓치는가(WP-11 보고 CR #1) — 고쳐지면 False."""
-    return "abc" in sanitize(r"C:\Users\abc\Documents\a.xlsx / b").text
 
 
 def mail_fake(**extra) -> dict:
@@ -188,6 +182,37 @@ class MailTest(_Base):
         self.assertTrue(st["counts"]["store_error"].startswith("store:"))
         self.assertEqual(self.sb.cursor("mail.owa"), {})
 
+    def _erroring_api(self, pred):
+        """정제 관문이 ``pred(raw)`` 인 원시를 error 로 돌려주는 api(정제 내부 오류 흉내 — 원문 없음)."""
+        from lm27.privacy.records import RecordOutcome
+        api = self.sb.api()
+        real = api["sanitize_record"]
+
+        def flaky(kind, raw, rctx):
+            if pred(raw):
+                return RecordOutcome("error", None, "UnicodeEncodeError", {})
+            return real(kind, raw, rctx)
+
+        api["sanitize_record"] = flaky
+        return api
+
+    def test_row_errors_not_marked_done_and_not_zero_ok(self):
+        """W1b 회귀: 정제 error 행이 든 조각은 done 구간에 넣지 않고(다음 실행이 다시), 상태 줄에 partial + R-TRANSPORT.
+        읽은 행이 전부 오류면 rc 1(zero_ok)이 아니라 rc 3 — 0건 관측으로 기록하지 않는다."""
+        rc, st, _ = self.mail(api=self._erroring_api(lambda raw: True))
+        self.assertEqual((rc, st["partial"], st["reasons"]), (3, True, [R_ + "TRANSPORT"]))
+        self.assertEqual(st["counts"]["errors"], {"UnicodeEncodeError": 4})
+        self.assertNotIn("done_ranges", self.sb.cursor("mail.owa"))
+        self.assertEqual(self.sb.rows("mail", "mail.owa"), [])
+        # 일부만 오류 — 저장한 것은 rc 0, 그래도 그 조각은 '읽음'이 아니어서 다음 실행이 다시 읽는다
+        rc, st, _ = self.mail(api=self._erroring_api(lambda raw: "견적" in str(raw.get("subject") or "")))
+        self.assertEqual((rc, st["partial"], st["reasons"]), (0, True, [R_ + "TRANSPORT"]))
+        self.assertNotIn("done_ranges", self.sb.cursor("mail.owa"))
+        rc, st, _ = self.mail()                                                        # 고쳐진 뒤 — 빠짐 없이 다시
+        self.assertEqual((rc, st["partial"]), (0, False))
+        self.assertEqual(self.sb.cursor("mail.owa")["done_ranges"], [["2026-09-01", "2026-09-15"]])
+        self.assertEqual(len({r["id"] for r in self.sb.rows("mail", "mail.owa")}), 4)
+
     def test_tz_mismatch_utc_suspect(self):
         self.sb.cfg = self.sb.cfg.derive({"time.tzOffsetMin": 0})
         rc, st, _ = self.mail()
@@ -286,7 +311,7 @@ class CanaryTest(_Base):
                                     fake=fake, api=api)
         self.assertEqual(rc2, 0)
         self.assertGreater(len(self.sb.rows("mail", "mail.owa")), len(cs))
-        known = {c.cid for c in cs if c.cat in ("path_win", "path_unc")} if _path_gap() else set()
+        known = set()   # W1 통합 창: 정제 규칙 2026.10.1 이 경로 카나리아까지 가린다 — 예외 없이 전부 검사
         found = set(find_canaries(self.sb.store_bytes(), cs))
         self.assertEqual(sorted(found - known), [])
         audit = json.dumps(self.sb.audit_lines(), ensure_ascii=False).encode("utf-8")

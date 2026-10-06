@@ -124,6 +124,7 @@ SENDER_LABEL_RX = re.compile(r"^(?:사내|개인메일|미상|고객사:[A-Za-z0
 REF_KEY_RX = re.compile(r"^(?:[me][0-9a-f]{24}|[dh][0-9a-f]{16})$")
 SAN_CODE_RX = re.compile(r"^[a-z][a-z0-9_]{0,23}$")
 _CTRL_RX = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f]")
+_SURR_RX = re.compile("[\ud800-\udfff]")          # UTF-16 서로게이트 코드 포인트(파이썬 str 에 남은 것 — 외톨이 판정용)
 _UTC_IN = re.compile(r"^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,9})?)?\s*(Z|[+-]\d{2}:?\d{2})?$")
 _DATE_IN = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
 _HHMM = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
@@ -565,6 +566,29 @@ class RecordContext:
 def _s(v) -> str:
     """원시 문자열 필드(아니면 ""). 앞뒤 공백 제거."""
     return v.strip() if isinstance(v, str) else ""
+
+
+def _has_surr(v) -> bool:
+    if isinstance(v, str):
+        return _SURR_RX.search(v) is not None
+    if isinstance(v, dict):
+        return any(_has_surr(k) or _has_surr(x) for k, x in v.items())
+    if isinstance(v, (list, tuple)):
+        return any(_has_surr(x) for x in v)
+    return False
+
+
+def _fix_surr(v):
+    """외톨이 서로게이트 → U+FFFD(짝이 맞는 둘은 한 글자로 합친다). 페이지 JS 의 UTF-16 자르기(``.slice(0,n)``)가 이모지를
+    반으로 자르면 CDP JSON(ensure_ascii 이스케이프)이 외톨이 하나를 넘긴다 — 그대로 두면 키·id 를 만들 때
+    UnicodeEncodeError 로 행 전체가 error 가 되고(방 제목이면 그 방 메시지 전부) 수집기는 커서를 진전시킨다(영구 누락)."""
+    if isinstance(v, str):
+        return v.encode("utf-16", "surrogatepass").decode("utf-16", "replace") if _SURR_RX.search(v) else v
+    if isinstance(v, dict):
+        return {_fix_surr(k): _fix_surr(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return type(v)(_fix_surr(x) for x in v)
+    return v
 
 
 def _name_norm(n) -> str:
@@ -1571,6 +1595,8 @@ def sanitize_record(kind: str, raw: dict, rc: RecordContext) -> RecordOutcome:
         raise ValueError("sanitize_record: 경로 ID 와 kind 가 맞지 않습니다")
     b = _Build(spec, rc)
     try:
+        if _has_surr(raw):                       # 입력 정규화 첫 단계 — 외톨이 서로게이트(원문 사본은 메모리에만)
+            raw = _fix_surr(raw)
         out = b.run(raw)
     except _Drop as d:
         out = RecordOutcome("dropped", None, d.reason, dict(d.hits))

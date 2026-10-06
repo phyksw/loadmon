@@ -140,6 +140,16 @@ def build_reply(mode: str, rid: str, ids: list[int], answers: dict | None = None
     return "stub", envelope_text(rid, [first] + items[1:], more=more if lookup else None)
 
 
+def _registry_stub(stage: str):
+    """단계 등록부(``lm27.bridge.stages.REGISTRY``)의 (kind, 스텁 답) — 등록되지 않은 단계면 (None, None). 등록부는 이
+    모듈을 쓰는 쪽이므로 함수 안에서 지연 import 한다(순환 방지)."""
+    from lm27.bridge.stages import REGISTRY
+    spec = REGISTRY.get(stage)
+    if spec is None:
+        return None, None
+    return spec.kind, spec.stub_answer()
+
+
 class FileResponder:
     """``LM_COPILOT_STUB`` 폴더의 ``<stage>.json`` 으로 답을 만든다. 단계 파일이 없으면 ``ok`` + 빈 답."""
 
@@ -165,6 +175,9 @@ class FileResponder:
         mode = modes[min(k, len(modes) - 1)]
         ids = item_ids(prompt)
         default = sp.get("default") if isinstance(sp.get("default"), dict) else {}
+        kind, reg = _registry_stub(stage) if (not default or not isinstance(sp.get("rows"), list)) else (None, None)
+        if not default and kind not in (None, "lookup") and isinstance(reg, dict):
+            default = reg                     # 파일에 기본 답이 없으면 단계 등록부의 스텁 답(W1 통합 창 — WP-25 CR)
         by_key = sp.get("by_key") if isinstance(sp.get("by_key"), dict) else {}
         answers = {}
         for i in ids:
@@ -173,7 +186,12 @@ class FileResponder:
             if key is not None and isinstance(by_key.get(key), dict):
                 ans.update(by_key[key])
             answers[i] = ans
-        rows = sp.get("rows") if isinstance(sp.get("rows"), list) else ([] if not ids else None)
+        if isinstance(sp.get("rows"), list):
+            rows = sp["rows"]
+        elif ids:
+            rows = None
+        else:                                 # 조회형: 파일에 행이 없으면 등록부 스텁 행 하나(구간 밖이면 L2 가 버린다)
+            rows = [dict(reg)] if kind == "lookup" and isinstance(reg, dict) else []
         return build_reply(mode, rid, ids, answers, rows=rows, more=bool(sp.get("more")), prompt=prompt)
 
     def __call__(self, prompt: str, rid: str, stage: str) -> tuple[str, str]:

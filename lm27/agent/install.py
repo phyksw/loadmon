@@ -423,10 +423,29 @@ def _ours(paths: Paths, image: str) -> bool:
     return img.startswith(root + os.sep) or os.path.basename(img) == "powershell.exe"
 
 
+def stop_harvest(paths: Paths, install_id: str, ops) -> bool:
+    """``run\\harvest.pid`` 의 수확 자식이 살아 있고 이 사본의 프로세스면 kill_tree(감독 루프가 먼저 죽어 고아가 된 수확 포함 —
+    W1b). pid 파일은 지운다. 남은 수확이 없으면 True."""
+    rec = _read(paths.harvest_pid())
+    pid = rec.get("pid") if rec.get("install_id") in (None, install_id) else None
+    gone = True
+    if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0 and pid != os.getpid() and ops.pid_alive(pid) \
+            and _ours(paths, ops.image_path(pid)):
+        ops.kill_tree(pid)
+        end = ops.now() + timedelta(seconds=5)
+        while ops.pid_alive(pid) and ops.now() < end:
+            ops.sleep(0.5)
+        gone = not ops.pid_alive(pid)
+    if gone:
+        _remove(paths.harvest_pid())
+    return gone
+
+
 def stop_agent(paths: Paths, install_id: str, ops, wait_s: float = STOP_WAIT_S) -> bool:
     """정지 깃발 → wait_s 동안 뮤텍스가 사라지기를 → 남았으면 heartbeat.pid(이 사본의 프로세스일 때만) kill_tree. 깃발은 지운다.
-    정지했거나 처음부터 없었으면 True."""
+    감독 루프가 끝난 뒤(또는 처음부터 없었어도) 남은 수확 자식은 ``stop_harvest`` 로 끈다. 정지했거나 처음부터 없었으면 True."""
     if not ops.mutex_exists(install_id):
+        stop_harvest(paths, install_id, ops)
         return True
     flag = paths.stop_flag()
     fsx.atomic_write(flag, b"")
@@ -445,7 +464,10 @@ def stop_agent(paths: Paths, install_id: str, ops, wait_s: float = STOP_WAIT_S) 
                 ops.sleep(0.5)
     finally:
         _remove(flag)
-    return not ops.mutex_exists(install_id)
+    stopped = not ops.mutex_exists(install_id)
+    if stopped:
+        stop_harvest(paths, install_id, ops)
+    return stopped
 
 
 def _wait_fresh(ident, paths, cfg, ops, wait_s: float, *, store: bool) -> dict:
@@ -676,7 +698,16 @@ def request_harvest_now(ident, wait_s: float, *, paths: Paths | None = None, ops
 
 # ───────────────────────────── 제거 ─────────────────────────────
 OPS_FILES = ("agent_json", "heartbeat", "agent_config", "person_dir_delta", "export_log", "harvest_done", "harvest_lock",
-             "harvest_now_flag", "stop_flag")
+             "harvest_now_flag", "stop_flag", "harvest_pid")
+
+
+BIN_RETRY_S = 2.0
+
+
+def _bins_left(paths: Paths) -> list:
+    """``bin\\`` 아래 남은 판 폴더(지우지 못한 것)."""
+    root = paths.agent_bin_root()
+    return sorted(d.name for d in root.iterdir() if d.is_dir() and VER_RX.match(d.name)) if root.is_dir() else []
 
 
 def _rm_empty_dirs(base: Path) -> None:
@@ -699,9 +730,18 @@ def uninstall(ident, purge: bool, *, paths: Paths | None = None, ops=None) -> di
     iid = ident.install_id
     res = {"rc": 0, "stopped": stop_agent(paths, iid, ops), "task_removed": ops.remove(iid) == 0, "purged": 0,
            "notes": []}
+    if res["stopped"] and not stop_harvest(paths, iid, ops):
+        res["rc"] = 2
+        res["notes"].append("harvest_running")
     for p in (paths.agent_subkeys(), paths.context_cache()):
         _remove(p)
     res["bins_removed"] = prune_bins(paths, set())
+    if _bins_left(paths):                                     # 쓰는 중(잠김)이면 잠깐 뒤 한 번 더
+        ops.sleep(BIN_RETRY_S)
+        res["bins_removed"] += prune_bins(paths, set())
+    if _bins_left(paths):
+        res["rc"] = 2
+        res["notes"].append("bin_locked")
     _remove(paths.harvest_now_flag())
     if purge:
         from lm27.privacy.audit import purge_audit
@@ -721,6 +761,10 @@ def uninstall(ident, purge: bool, *, paths: Paths | None = None, ops=None) -> di
                 if f.is_file() and _remove(f):
                     res["purged"] += 1
         _rm_empty_dirs(paths.agent_dir())
+        run = paths.agent_run()
+        if run.is_dir() and any(run.iterdir()):               # 제거 뒤 다시 생긴 운영 파일(고아 자식 등) — 성공으로 숨기지 않는다
+            res["rc"] = 2
+            res["notes"].append("run_not_empty")
     if not res["stopped"]:
         res["rc"] = 2
         res["notes"].append("still_running")

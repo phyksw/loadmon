@@ -402,14 +402,13 @@ def _meta(reg, status, labels, units, groups, items, astats, ai, warnings, cfg, 
 
 def write_result(res: "HierResult", out_dir=None, *, paths=None, run_id: str | None = None) -> list[str]:
     """`hier/1` 결과 파일 6개를 원자 쓰기(계약 §3.15). 폴더 = out_dir(호출자가 `lm27.paths` 로 만든
-    분석 폴더의 hier 하위 폴더), 없으면 `paths.analysis_hier(run_id)`(paths.py CR — 그 메서드가 생기면 바로 쓴다).
+    분석 폴더의 hier 하위 폴더), 없으면 `paths.analysis_hier(run_id)`(계약 §3.15 — W1 통합 창에서 lm27.paths 에 생김).
     반환: 쓴 파일 이름."""
     from lm27.util import fsx
     if out_dir is None:
-        fn = getattr(paths, "analysis_hier", None) if paths is not None and run_id else None
-        if fn is None:
+        if paths is None or not run_id:
             raise ValueError("write_result: out_dir 또는 paths·run_id(Paths.analysis_hier)가 필요합니다")
-        out_dir = fn(run_id)
+        out_dir = paths.analysis_hier(run_id)
     d = os.fspath(out_dir)
     fsx.ensure_dir(d)
     labels = {uid: res.labels[uid].to_obj() for uid in sorted(res.labels)}

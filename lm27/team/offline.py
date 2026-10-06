@@ -19,10 +19,10 @@ import os
 import re
 import time
 
+from lm27.paths import OFFLINE_REGISTRY_NAME as REGISTRY_FILE   # 오프라인 사본 이름 단일원(계약 v1.2 C19)
 from lm27.util import fsx
 
 NAME_RX = re.compile(r"lm27_team_bundle(_[0-9A-Za-z_\-]{1,80})?\.json")
-REGISTRY_FILE = "lm27_registry.json"
 COPY_QUIET_SEC = 60                                  # 1분 이내 수정 = 복사 중 → 다음 회차
 _FILE_ATTRIBUTE_HIDDEN = 0x2
 

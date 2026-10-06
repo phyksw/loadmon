@@ -140,11 +140,19 @@ def _src_dir(paths, pc_id: str, kind: str, src: str) -> Path:
     return paths.store_file(pc_id, kind, src, "2020-01-01").parent.parent
 
 
-def prune_store(paths, pc_id: str, keep_days: int, *, today=None) -> int:
+def prune_store(paths, pc_id: str | None, keep_days: int, *, today=None) -> int:
     """보존(``agent.storeKeepDays``): 쓰기 날짜가 오늘(UTC) − keep_days 보다 이른 일자 파일을 지운다. 지운 파일 수.
-    커서보다 앞선 파일이 지워지면 내보내기가 manifest ``gaps`` 에 ``store_pruned`` 로 남긴다(조용한 손실 금지)."""
+    커서보다 앞선 파일이 지워지면 내보내기가 manifest ``gaps`` 에 ``store_pruned`` 로 남긴다(조용한 손실 금지).
+    ``pc_id=None`` = store 아래 모든 pc_id(W1 통합 창 — WP-13 CR: MachineGuid 변경 TAB-B26 뒤 옛 pc_id 원장도 보존 기한에
+    정리된다. 에이전트는 store 경로를 직접 지울 수 없다 — L-11)."""
     if isinstance(keep_days, bool) or not isinstance(keep_days, int) or keep_days < 1:
         raise ValueError("prune_store: keep_days 는 1 이상")
+    if pc_id is None:
+        root = paths.store_root()
+        if not root.is_dir():
+            return 0
+        return sum(prune_store(paths, d.name, keep_days, today=today) for d in sorted(root.iterdir())
+                   if d.is_dir() and _PC_RX.match(d.name))
     t = today if isinstance(today, date) else datetime.now(UTC).date()
     cutoff = t - timedelta(days=keep_days)
     n = 0

@@ -150,7 +150,7 @@ class LedgerFilesTest(unittest.TestCase):
             for p in out:
                 self.assertEqual(Path(p).read_bytes(), r.files()[Path(p).name])
             self.assertFalse([x for x in os.listdir(Path(td, "20261030-180000-abcd", "time")) if x.endswith(".part")])
-        with self.assertRaises(RuntimeError):
+        with self.assertRaises(AttributeError):          # Paths.analysis_time_file 하나로만(W1 통합 창에서 생김 — 대체 경로 없음)
             write_time_files(object(), "20261030-180000-abcd", r)
 
     def test_period_clip(self):

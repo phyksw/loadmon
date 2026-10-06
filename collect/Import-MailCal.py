@@ -1363,8 +1363,14 @@ def _sanitize_and_store(kind, src, pc_id, paths, backend, my_addrs, raws):
 def run(argv=None, *, backend: Backend | None = None, paths: Paths | None = None, cfg=None,
         now: datetime | None = None, err=None) -> int:
     err = err if err is not None else sys.stderr
-    res = {"src": None, "stage": "import", "items_total": 0, "items_ok": 0, "items_failed": 0, "skipped_msg": 0,
-           "recurrence_incomplete": 0, "reasons": ["R-TRANSPORT"], "counts": {}}
+    # 상태 줄의 src 는 인자 오류 때도 경로 ID(계약 v1.2 §0.7 C1 필수) — --kind 를 미리 읽고, 없거나 틀리면 첫 종류
+    # (Get-OutlookWeb.py 와 같은 규칙). 예전에는 null 이라 연결자가 어느 경로의 실패인지 몰랐다(W1 통합 창).
+    av = list(sys.argv[1:] if argv is None else argv)
+    k0 = next((av[i + 1] for i, x in enumerate(av[:-1]) if x == "--kind"),
+              next((x.split("=", 1)[1] for x in av if x.startswith("--kind=")), ""))
+    res = {"src": SRC_OF.get(k0) or SRC_OF[KINDS_HERE[0]], "stage": "import", "items_total": 0, "items_ok": 0,
+           "items_failed": 0, "skipped_msg": 0, "recurrence_incomplete": 0, "reasons": ["R-TRANSPORT"],
+           "counts": {"error": "BadArguments"}}
     try:
         a = build_parser().parse_args(argv)
         if not PC_ID_RX.match(a.pc or ""):
@@ -1377,7 +1383,7 @@ def run(argv=None, *, backend: Backend | None = None, paths: Paths | None = None
         _human(f"[반입] 인자 오류: {e}", err)
         return _finish(res, err, RC_DRIVER)
     events.configure(a.events)
-    res["src"] = SRC_OF[a.kind]
+    res["src"], res["counts"] = SRC_OF[a.kind], {}
     paths = paths or Paths(ROOT)
     cfg = cfg if cfg is not None else load_config(paths)
     if backend is None:

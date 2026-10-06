@@ -6,7 +6,6 @@
 정제기(sanitize_record) 훅 연결."""
 import ast
 import sys
-import time
 import unittest
 from pathlib import Path
 
@@ -140,14 +139,13 @@ class TextHandlingTest(unittest.TestCase):
 
     def test_pathological_input_is_bounded(self):
         big = ("검토 부탁드립니다 " * 50) + ("가" * 400_000) + "?" * 1000
-        t0 = time.perf_counter()
+        from tests.fixtures.tree import best_of                 # 부하에 민감 — 여러 번 재서 최솟값(W1 통합 창 R8)
         got = extract(big)
-        self.assertLess(time.perf_counter() - t0, 2.0)
+        self.assertLess(best_of(lambda: extract(big), under=2.0), 2.0)
         self.assertIn("req", got)
         self.assertNotIn("ask", got, "MAX_SCAN 뒤의 글은 보지 않는다")
-        t0 = time.perf_counter()
-        extract(("[" * 3000) + ("까지" * 3000) + ("주 " * 3000))
-        self.assertLess(time.perf_counter() - t0, 2.0)
+        evil = ("[" * 3000) + ("까지" * 3000) + ("주 " * 3000)
+        self.assertLess(best_of(lambda: extract(evil), under=2.0), 2.0)
 
 
 class AgentCopyImportTest(unittest.TestCase):

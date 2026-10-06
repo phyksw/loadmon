@@ -7,14 +7,19 @@ r"""시험 주입점 자료(WP-05) — 계약 §11.3 단일 목록의 파일·�
 
 | 주입점                         | 만드는 것                                           | 읽는 쪽 인코딩(PS 5.1 고려)          |
 |--------------------------------|-----------------------------------------------------|--------------------------------------|
-| LM_OUTLOOK_SELFTEST=N          | outlook_selftest_env(n) — 수집기가 가짜 N건 생성     | —                                    |
-| LM_INDEX_FAKE=<json>           | write_index_fake — {"mail":[System.* 행], "calendar":[…]} | UTF-8(BOM 없음, JSON)            |
-| LM_OWA_FAKE=<json>             | write_owa_fake — {"login", "mail":{YYYY-MM:{inbox,sent}}, "cal":{날짜:[…]}} | UTF-8             |
-| LM_TEAMSWEB_FAKE=<json>        | write_teamsweb_fake — {"login", "chats":{…}, "msgs":{idx:[화면 응답…]}} | UTF-8                 |
+| LM_OUTLOOK_SELFTEST=N[,선택…]  | outlook_selftest_env(n, *opts) — COM 수집기·탐침이 가짜 N건(선택 newol·noprof·wizard·dialog·elev·busyall·notrunning·noaddr·omg·slowb·archive·jetfail·horizon=YYYY-MM·hang=attach\|read·delay=<ms>) | — |
+| LM_PROBE_FAKE=<json>           | 탐침(Invoke-CapabilityProbe.ps1) 사실 표 — 실기계 조회 대신 이 사실로 판정(WP-17) | UTF-8(BOM 없음, JSON)  |
+| LM_INDEX_FAKE=<json>           | write_index_fake — {"mail":[System.* 행], "calendar":[…]}. 선택 키 _error·_total_outlook_items·_policy·_newol·_ext_rejected·_my_addrs | UTF-8(BOM 없음, JSON) |
+| LM_OWA_FAKE=<json>             | write_owa_fake — {"login", "mail":{YYYY-MM:{inbox,sent}}, "cal":{날짜:[…]}}. 선택: 항목 open:{head:[…]}(보낸 항목 읽기 창 머리 — 분 단위), 폴더 값 {"pages":[[…]]}·{"how":"","items":[]}, "cal_grid": false, "login": "ca"(WP-26) | UTF-8 |
+| LM_TEAMSWEB_FAKE=<json>        | write_teamsweb_fake — {"login", "chats":{…}, "msgs":{idx:[화면 응답…]}}. 선택: chats 를 회차 목록으로 + "chats_end": false, channels · activity(tid·mid·mention), 방 gone:true, 메시지 me·files·mentions·reply_to, 회차 ctype·n_part(WP-26) | UTF-8 |
 | LM_COPILOT_STUB=<폴더>         | write_copilot_stub — <stage>.json(B §11.4)          | UTF-8                                |
-| Get-TeamsWindow.ps1 -RawFile   | write_teams_rawfile — UIA 원문 줄(작성자, 날짜 시각, 본문) | UTF-8 BOM + CRLF                |
-| Get-EventActivity.ps1 -EventsCsv -Now -BootTime | write_events_csv + events_args — t,kind,src | ASCII + CRLF                    |
+| Get-TeamsWindow.ps1 -RawFile   | write_teams_rawfile — UIA 원문 줄(작성자, 날짜 시각, 본문) 또는 JSON 스냅숏 | UTF-8 BOM + CRLF  |
+| Get-EventActivity.ps1 -EventsCsv -Now -BootTime | write_events_csv + events_args — t,kind,src(kind=channel 줄 = 채널 상태) | ASCII + CRLF |
 | Get-OfficeMru.ps1 -MruRegFile  | write_mru_reg — reg 내보내기 텍스트(User MRU)        | UTF-16 LE BOM + CRLF(reg.exe 기본)   |
+| Get-RecentFiles.ps1 -RecentDir -MruRegFile | Recent 바로가기 폴더·reg 내보내기(위와 같은 형)  | —                                    |
+| 모든 PS 수집기 -TestNow        | 'YYYY-MM-DD HH:MM' 로컬 시각(가상 현재)              | —                                    |
+
+(계약 v1.2 §0.7 C3 등재 — SYNTH_VERSION 2. 환경 변수 주입점 이름은 INJECT_ENV 에서만 꺼내 쓴다.)
 
 수집기 stdout·stdin 제어 줄(계약 §7.3): ndjson(records, meta=…, cursor=…) · in_line(cursor=…, cfg=…, self_names=…).
 """
@@ -35,6 +40,7 @@ from .raw_teams import room_title
 
 INJECT_ENV = {   # 계약 §11.3 환경 변수 주입점(이름은 이 표에서만 꺼내 쓴다)
     "outlook_selftest": "LM_OUTLOOK_SELFTEST",
+    "probe_fake": "LM_PROBE_FAKE",                 # 계약 v1.2 §0.7 C3(WP-17 탐침)
     "index_fake": "LM_INDEX_FAKE",
     "owa_fake": "LM_OWA_FAKE",
     "teamsweb_fake": "LM_TEAMSWEB_FAKE",
@@ -90,9 +96,20 @@ def env_for(**values) -> dict[str, str]:
     return out
 
 
-def outlook_selftest_env(n: int) -> dict[str, str]:
-    """LM_OUTLOOK_SELFTEST=N — COM 수집기가 가짜 메일·일정 N건을 스스로 만든다(CM §5.1)."""
-    return {"LM_OUTLOOK_SELFTEST": str(int(n))}
+SELFTEST_OPTS = frozenset({"newol", "noprof", "wizard", "dialog", "elev", "busyall", "notrunning", "noaddr", "omg",
+                           "slowb", "archive", "jetfail"})
+SELFTEST_KV = {"horizon": r"\d{4}-\d{2}", "hang": r"attach|read", "delay": r"\d{1,6}"}
+
+
+def outlook_selftest_env(n: int, *opts: str) -> dict[str, str]:
+    """LM_OUTLOOK_SELFTEST=N[,선택…] — COM 수집기·탐침이 가짜 메일·일정 N건을 스스로 만든다(CM §5.1 · 계약 v1.2 C3 문법:
+    선택 = SELFTEST_OPTS 낱말 또는 horizon=YYYY-MM · hang=attach|read · delay=<ms>). 모르는 선택은 ValueError."""
+    import re
+    for o in opts:
+        k, eq, v = str(o).partition("=")
+        if not ((not eq and k in SELFTEST_OPTS) or (eq and k in SELFTEST_KV and re.fullmatch(SELFTEST_KV[k], v))):
+            raise ValueError(f"LM_OUTLOOK_SELFTEST 선택이 아닙니다: {o}")
+    return {"LM_OUTLOOK_SELFTEST": ",".join([str(int(n)), *map(str, opts)])}
 
 
 def _put(path: str | os.PathLike, data: bytes) -> Path:

@@ -21,26 +21,21 @@ from pathlib import Path
 
 from lm27.util import fsx
 
-# 브리지 상태 파일(계약 §1.3 ``%LOCALAPPDATA%\LoadMonitor27\bridge\``). lm27.paths 에 메서드가 생기면 그쪽을 쓴다(CR).
+# 브리지 상태 파일(계약 §1.3 ``%LOCALAPPDATA%\LoadMonitor27\bridge\``) — 경로는 ``lm27.paths.Paths`` 메서드(계약 v1.2 §0.7 C19)
 BRIDGE_FILES = {
-    "bridge_profile": ("bridge_profile", "bridge_profile.json"),
-    "profile_id": ("bridge_profile_id", "profile_id.txt"),
-    "trace": ("bridge_trace", "trace.jsonl"),
-    "probe_last": ("bridge_probe_last", "probe_last.json"),
-    "rawcap": ("bridge_rawcap", "rawcap"),
-    "diagnose": ("bridge_diagnose", "diagnose"),
+    "bridge_profile": "bridge_profile",
+    "profile_id": "bridge_profile_id",
+    "trace": "bridge_trace",
+    "probe_last": "bridge_probe_last",
+    "rawcap": "bridge_rawcap",
+    "diagnose": "bridge_diagnose",
 }
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.+-]{0,120}$")
 
 
 def bridge_file(paths, which: str) -> Path:
-    """브리지 상태 파일·폴더 경로. ``lm27.paths.Paths`` 에 해당 메서드(예: ``bridge_profile()``)가 있으면 그것,
-    없으면 ``paths.bridge_dir()`` 아래 고정 이름(계약 §1.3·B §2.4)."""
-    meth, name = BRIDGE_FILES[which]
-    fn = getattr(paths, meth, None)
-    if callable(fn):
-        return Path(fn())
-    return Path(paths.bridge_dir()) / name
+    """브리지 상태 파일·폴더 경로 = ``Paths.bridge_profile()`` 등(계약 §1.3·B §2.4 · v1.2 C19 — 조립은 lm27.paths 한 벌)."""
+    return Path(getattr(paths, BRIDGE_FILES[which])())
 
 
 def child(base, name: str) -> Path:
@@ -61,10 +56,11 @@ def _to_bytes(data) -> bytes:
 
 
 # ── 쓰기 세 함수 ────────────────────────────────────────────────────────────
-def append_line(path, row) -> None:
-    """jsonl 한 줄 덧붙이기. dict 는 정규 JSON 한 줄로, str 은 그대로(줄바꿈 금지)."""
+def append_line(path, row, *, fsync: bool = False) -> None:
+    """jsonl 한 줄 덧붙이기. dict 는 정규 JSON 한 줄로, str 은 그대로(줄바꿈 금지). ``fsync=True`` 면 디스크까지 밀어 낸 뒤
+    돌아온다(저널 커밋 — B §7.8 '커밋 = fsync 뒤', W1 통합 창 WP-24 CR)."""
     line = fsx.canon_bytes(row).decode("utf-8") if isinstance(row, dict) else row
-    fsx.append_line(path, line)
+    fsx.append_line(path, line, fsync=fsync)
 
 
 def write_atomic(path, data, *, fsync: bool = True) -> None:

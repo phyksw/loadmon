@@ -23,8 +23,14 @@ TEST_PORTS = range(19350, 19400)
 
 
 def free_port(skip=()) -> int:
+    """시험 포트(19350~19399) 하나. 시작 위치를 프로세스·호출마다 돌린다 — 시험 파일을 여러 프로세스로 함께 돌릴 때
+    모두 19350 부터 집어 같은 포트를 두고 다투던 것(바인드 실패 → 포트 진단 수십 초 → 준비 대기 초과)을 막는다."""
+    import os
+    import secrets
     from lm27.team.portdiag import bind_test
-    for p in TEST_PORTS:
+    ports = list(TEST_PORTS)
+    k = (os.getpid() * 7 + secrets.randbelow(len(ports))) % len(ports)
+    for p in ports[k:] + ports[:k]:
         if p not in skip and bind_test(p):
             return p
     raise RuntimeError("시험 포트(19350~19399)가 모두 쓰이고 있습니다")

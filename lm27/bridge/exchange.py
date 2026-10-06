@@ -386,6 +386,15 @@ def _sha(s: str) -> str:
     return hashlib.sha256((s or "").encode("utf-8")).hexdigest()
 
 
+def ingest_schema(spec) -> tuple:
+    """입수 정제 ③ 의 스키마 — 조회형(과 단건 행 봉투)의 답 ``{rows, n, more}`` 는 ``rows`` 의 각 행을 행 스키마의 글 필드로
+    정제한다(W1 통합 창 — WP-25 CR: 행 글이 ai_out·저널에 원문으로 닿던 것. 단계 쪽 우회와 겹쳐도 정제는 멱등)."""
+    sch = tuple(spec.item_schema)
+    if (spec.kind == "lookup" or getattr(spec, "row_envelope", False)) and not any(f.name == "rows" for f in sch):
+        sch += (B.F("rows", "list", required=False, item=tuple(spec.item_schema)),)
+    return sch
+
+
 def ask(spec, batch, ac: AskCtx) -> AskResult:
     """질의 1건(B §6.8). 프롬프트 게이트 실패는 ``StageGateError``(호출자 L3 가 단계 중지)."""
     from lm27.bridge.gate import StageGateError
@@ -396,7 +405,8 @@ def ask(spec, batch, ac: AskCtx) -> AskResult:
     rung, resent_fmt, rephrased, strict = 0, False, False, False
     fresh = chat.need_fresh(spec)
     ar = AskResult(status="")
-    ingest = (lambda a: ac.gate.answer(a, spec.item_schema)) if ac.gate is not None else None
+    sch = ingest_schema(spec)
+    ingest = (lambda a: ac.gate.answer(a, sch)) if ac.gate is not None else None
     first_send = True
     rid_ok = getattr(ac.gate, "rid_ok", None) if ac.gate is not None else None
     while True:

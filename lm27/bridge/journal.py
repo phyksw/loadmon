@@ -28,18 +28,14 @@ LINE_MAX = 64 * 1024                 # 저널·커밋 한 줄 상한(B §7.8)
 COMPACT_BYTES = 20 * 1024 * 1024     # 저장소 정리 문턱(B §7.8)
 LOCK_WAIT_S = 5.0                    # 저장소 정리 번들 잠금 대기(못 잡으면 이번엔 정리하지 않는다)
 BY_VALUES = ("ai", "manual", "rule")
-_RUN_FILES = {"journal": ("ai_journal", "{stage}.jsonl"), "result": ("ai_result", "{stage}.result.json"),
-              "capabilities": ("ai_capabilities", "capabilities.json")}
+_RUN_FILES = {"journal": "ai_journal", "result": "ai_result", "capabilities": "ai_capabilities"}
 
 
 def run_file(paths, run_id: str, which: str, stage: str | None = None) -> Path:
-    """실행 폴더 안 파일 경로(저널·결과 봉투·조회 능력). ``Paths`` 메서드가 있으면 그것."""
-    meth, pattern = _RUN_FILES[which]
-    fn = getattr(paths, meth, None)
-    if callable(fn):
-        return Path(fn(run_id, stage) if stage is not None else fn(run_id))
-    base = Path(paths.ai_run(run_id))
-    return fsio.child(base, pattern.format(stage=stage or ""))
+    """실행 폴더 안 파일 경로(저널·결과 봉투·조회 능력) — ``Paths.ai_journal``·``ai_result``·``ai_capabilities``
+    (계약 v1.2 W1 통합 창에서 lm27.paths 에 생김 — 경로 조립은 Paths 한 벌, L-08)."""
+    fn = getattr(paths, _RUN_FILES[which])
+    return Path(fn(run_id, stage) if stage is not None else fn(run_id))
 
 
 def _clip_line(rec: dict) -> dict:
@@ -146,7 +142,7 @@ class Store:
         out = {"t": "commit", "ts": iso_now(self.clock), "stage": self.stage}
         out.update({k: v for k, v in rec.items() if v is not None or k == "ans"})
         out = _clip_line(out)
-        fsio.append_line(self.path, out)
+        fsio.append_line(self.path, out, fsync=True)          # 커밋 = 디스크에 닿은 뒤(B §7.8 — 정전에도 커밋은 남는다)
         if self.loaded:
             self._take(out)
         return out

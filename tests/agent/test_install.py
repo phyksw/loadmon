@@ -391,6 +391,43 @@ class UninstallTest(_Root):
         self.assertEqual(left, [], left)
 
 
+    def test_orphan_harvest_killed_before_purge(self):
+        """W1b 회귀: 감독 루프가 먼저 끝나 고아가 된 수확 자식(run\\harvest.pid)을 정지·제거가 끈다 — purge 가 rc 0·notes []
+        로 '성공'을 보고하면서 bin 반쪽 사본·run 파일을 남기지 않는다. 실 프로세스(잠자는 파이썬) 하나만 쓴다."""
+        import sys
+
+        from lm27.util import proc
+        ops = self.install()
+        child = proc.spawn([sys.executable, "-X", "utf8", "-I", "-B", "-c", "import time; time.sleep(60)"],
+                           stdout=proc.DEVNULL)
+        self.addCleanup(child.close)
+        self.addCleanup(child.kill_tree)
+        fsx.atomic_write(self.paths.harvest_pid(), fsx.canon_bytes({"pid": child.pid, "install_id": H.IID}) + b"\n")
+        base = {"alive": ops.pid_alive, "kill": ops.kill_tree, "img": ops.image_path}
+        ops.pid_alive = lambda pid: proc.pid_alive(pid) if pid == child.pid else base["alive"](pid)
+        ops.kill_tree = lambda pid: proc.kill_tree(pid) if pid == child.pid else base["kill"](pid)
+        bin_py = str(self.paths.agent_bin_root() / "0.1.0-x" / "py311" / "python.exe")          # 이 사본의 수확 자식
+        ops.image_path = lambda pid: bin_py if pid == child.pid else base["img"](pid)
+        res = I.uninstall(ops.ident, True, paths=self.paths, ops=ops)
+        self.assertEqual((res["rc"], res["notes"]), (0, []), res)
+        self.assertFalse(child.alive())
+        left = sorted(p.relative_to(self.paths.agent_dir()).as_posix() for p in self.paths.agent_dir().rglob("*"))
+        self.assertEqual(left, [], left)
+
+    def test_locked_bin_reported_not_success(self):
+        """W1b 회귀: 판 폴더를 지우지 못하면(쓰는 중 — 잠긴 파일) rc 2 + 'bin_locked'(rmtree 실패를 숨기지 않는다)."""
+        ops = self.install()
+        ver = next(d for d in self.paths.agent_bin_root().iterdir() if d.is_dir())
+        fh = open(next(ver.rglob("*.py")), "rb")                     # noqa: SIM115 — 시험 전용: 지우기를 막는 열린 핸들
+        self.addCleanup(fh.close)
+        res = I.uninstall(ops.ident, False, paths=self.paths, ops=ops)
+        self.assertEqual(res["rc"], 2, res)
+        self.assertIn("bin_locked", res["notes"])
+        fh.close()
+        res = I.uninstall(ops.ident, False, paths=self.paths, ops=ops)                    # 풀린 뒤 다시 — 깨끗이
+        self.assertEqual((res["rc"], res["notes"]), (0, []), res)
+
+
 class StopAndOpsTest(_Root):
     def test_stop_kills_only_own_process(self):
         ops = H.FakeOps(self.sb, ident(), stubborn=True)

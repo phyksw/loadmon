@@ -101,6 +101,14 @@ class ProgramPipeTest(_Base):
         self.assertEqual(load_raw_cursor(self.paths, H.PC1), {"pc.sampler": 7})
         self.assertNotIn("not json", err)
 
+    def test_lone_surrogate_row_not_lost(self):
+        """W1b 회귀: 원시 줄의 외톨이 서로게이트(JSON 이스케이프) — 행이 error 로 버려지고 커서만 진전하지 않는다."""
+        line = json.dumps(H.raw_teams(body_text="최종 도면 공유 \ud83d", message_id="mS"), ensure_ascii=True).encode("ascii")
+        code, sm, _err = self.run_pipe(self.args("teams", "teams.uia"), line + b"\n" + jl({"_cursor": {"last_ts_utc": H.TS}}))
+        self.assertEqual((code, sm["stored"], sm["errors"], sm["cursor_saved"]), (S.EXIT_OK, 1, {}, True))
+        (row,) = self.store_rows("teams", "teams.uia")
+        self.assertIn("�", row["body_masked"])
+
     def test_args_exit5(self):
         save = {"pc.sampler": 1}
         from lm27.store import save_raw_cursor

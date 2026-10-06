@@ -319,14 +319,15 @@ EXPECT: dict[str, dict[str, tuple[str, set | frozenset]]] = {
     "tz": {"env": ("ok", {"R-TZ"})},
     "edgepol_rd": {"edge_cdp_policy": ("fail", {"R-EDGEPOL"})},
     "edgepol_dt": {"edge_cdp_policy": ("fail", {"R-EDGEPOL"})},
-    "edge_none": {"edge_cdp_policy": ("fail", E)},
+    "edge_none": {"edge_cdp_policy": ("fail", {"R-NOAPP"})},          # C4 — 실패에는 사유(미설치)
     "uia_novisible": {"teams.uia": ("fail", {"R-UIAEMPTY"})},
     "uia_denied": {"teams.uia": ("fail", {"R-UIAELEV"})},
     "uia_nolines": {"teams.uia": ("fail", {"R-UIAEMPTY"})},
     "uia_hang": {"teams.uia": ("transport_fail", {"R-TRANSPORT"})},
     "teams_not_running": {"teams.uia": ("unknown", E)},
-    "teams_none": {"teams.uia": ("fail", E)},
-    "pc_a": {"pc.events": ("ok", {"R-NOEVT"}), "pc.recent": ("fail", {"R-RECENTPOLICY"}), "pc.mru": ("ok", {"R-MRUEMPTY"}),
+    "teams_none": {"teams.uia": ("fail", {"R-NOAPP"})},              # C4
+    "pc_a": {"pc.events": ("ok", E),   # C5 — 보너스 채널 권한 없음은 사유 없이
+              "pc.recent": ("fail", {"R-RECENTPOLICY"}), "pc.mru": ("ok", {"R-MRUEMPTY"}),
              "pc.git": ("fail", {"R-NOGIT"}), "pc.sampler": ("ok", E)},
     "pc_b": {"pc.events": ("fail", {"R-NOEVT"}), "pc.recent": ("ok", {"R-MRUEMPTY"}), "pc.mru": ("ok", E), "pc.git": ("ok", E)},
     "budget": {"mail.com": ("unknown", {"R-BUDGET"}), "cal.com": ("unknown", {"R-BUDGET"}),

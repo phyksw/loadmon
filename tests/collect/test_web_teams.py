@@ -12,7 +12,6 @@ from datetime import UTC, date, datetime, timedelta
 
 from lm27.bridge.clock import VirtualClock
 from lm27.privacy import context as C
-from lm27.privacy.sanitize import sanitize
 from tests.fixtures.canary import canaries, canary_ctx, find_canaries
 from tests.fixtures.synth import inject, month
 from tests.fixtures.wp26 import webkit as K
@@ -20,10 +19,6 @@ from tests.fixtures.wp26 import webkit as K
 R_ = "R-"
 D = date(2026, 9, 21)
 RANGE = ["--from", "2026-09-01", "--to", "2026-09-30"]
-
-
-def _path_gap() -> bool:
-    return "abc" in sanitize(r"C:\Users\abc\Documents\a.xlsx / b").text
 
 
 def room_msgs(n_days: int = 3, *, start: date = D, mid_prefix: str = "") -> list:
@@ -264,6 +259,40 @@ class CheckpointTest(_Base):
         self.assertEqual(sorted(r["body_masked"] for r in self.rows()), ["m0", "m2"])
         self.assertEqual(len(self.sb.cursor("teams.web")["rooms"]), 2)                  # 못 찾은 방은 다음 실행이 다시
 
+    def test_lone_surrogate_room_title_keeps_messages(self):
+        """W1b 회귀: 방 라벨이 이모지 반쪽(외톨이 서로게이트 — CDP JSON 이스케이프)이어도 그 방 메시지가 사라지지 않는다."""
+        fake = K.tw_fake([K.tw_room(0, K.tid(40, "group"), "과제A 설계 \ud83c")], {0: [{"items": room_msgs(3)}]})
+        p = self.sb.dir / "tw_fake_surr.json"
+        p.write_bytes(json.dumps(fake, ensure_ascii=True).encode("ascii"))
+        rc, st, _ = K.run_tw(self.sb, [*RANGE, "--no-channels", "--no-activity"], environ={"LM_TEAMSWEB_FAKE": str(p)})
+        self.assertEqual((rc, st["n"], st["counts"]["errors"], st["partial"]), (0, 6, {}, False))
+        self.assertEqual(len(self.rows()), 6)
+        self.assertTrue(all("�" in r["chat_title_masked"] for r in self.rows()))
+
+    def test_row_errors_keep_checkpoint_and_mark_partial(self):
+        """W1b 회귀: 정제 error 행이 있는 방은 체크포인트를 옮기지 않고(다음 실행이 다시 읽음) 상태 줄에 partial +
+        R-TRANSPORT. 새로 남길 행이 전부 오류면 rc 4('새것 0')가 아니라 rc 3."""
+        from lm27.privacy.records import RecordOutcome
+        fake = K.tw_fake([K.tw_room(0, K.tid(41, "group"), "과제A 설계")], {0: [{"items": room_msgs(3)}]})
+        api = self.sb.api()
+        real = api["sanitize_record"]
+        broken = {"on": True}
+
+        def flaky(kind, raw, rctx):
+            if broken["on"] and raw.get("body_text"):
+                return RecordOutcome("error", None, "UnicodeEncodeError", {})
+            return real(kind, raw, rctx)
+
+        api["sanitize_record"] = flaky
+        rc, st, _ = self.run_tw(fake, "--no-channels", "--no-activity", api=api)
+        self.assertEqual((rc, st["partial"], st["reasons"]), (3, True, [R_ + "TRANSPORT"]))
+        self.assertEqual((st["counts"]["errors"], st["counts"]["rooms_row_errors"]), ({"UnicodeEncodeError": 6}, 1))
+        self.assertEqual(self.sb.cursor("teams.web").get("rooms") or {}, {})
+        broken["on"] = False                                                             # 고쳐진 뒤 — 영구 누락 없음
+        rc, st, _ = self.run_tw(fake, "--no-channels", "--no-activity", api=api)
+        self.assertEqual((rc, st["n"], st["partial"]), (0, 6, False))
+        self.assertEqual(len(self.sb.cursor("teams.web")["rooms"]), 1)
+
     def test_ct12_login_rc2(self):
         rc, st, _ = self.run_tw({"login": True})
         self.assertEqual((rc, st["reasons"], st["partial"]), (2, [R_ + "LOGIN"], False))
@@ -312,7 +341,7 @@ class CanaryTest(_Base):
         rc, st, err = self.run_tw(fake, "--no-channels", "--no-activity", api=api)
         self.assertEqual(rc, 0, err)
         self.assertGreaterEqual(len(self.rows()), len(cs) - 2)
-        known = {c.cid for c in cs if c.cat in ("path_win", "path_unc")} if _path_gap() else set()
+        known = set()   # W1 통합 창: 정제 규칙 2026.10.1 이 경로 카나리아까지 가린다 — 예외 없이 전부 검사
         self.assertEqual(sorted(set(find_canaries(self.sb.store_bytes(), cs)) - known), [])
         self.assertTrue(self.sb.audit_lines())
         self.assertEqual(find_canaries(json.dumps(self.sb.audit_lines(), ensure_ascii=False).encode("utf-8"), cs), [])

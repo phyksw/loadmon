@@ -149,6 +149,29 @@ def _res(body, phase="replied"):
     return SendResult(phase=phase, body=body)
 
 
+class IngestRows(unittest.TestCase):
+    def test_lookup_rows_sanitized_by_row_schema_wp25_cr(self):
+        """W1 통합 창(WP-25 CR): 조회형 답 {rows, n, more} 의 rows 각 행도 입수 정제 ③ — 글 필드는 정제, 열거·코드는 그대로."""
+        from types import SimpleNamespace
+
+        from lm27.bridge import gate as G
+        spec = SimpleNamespace(kind="lookup", item_schema=(B.F("s", "str"), B.F("d", "enum", enum=("in", "out"))))
+        sch = X.ingest_schema(spec)
+        self.assertEqual([f.name for f in sch], ["s", "d", "rows"])
+        self.assertEqual(X.ingest_schema(SimpleNamespace(kind="items", item_schema=spec.item_schema)), spec.item_schema)
+
+        class Gate:                                         # 정제 = 'X' 로 바꾸기(실 정제기 대신 — 걷는 범위만 본다)
+            _walk = G.StageGate._walk
+            answer = G.StageGate.answer
+
+            @staticmethod
+            def text(v):
+                return "X"
+        out = Gate().answer({"rows": [{"s": "원문 행", "d": "in"}], "n": 1, "more": False}, sch)
+        self.assertEqual(out["rows"], [{"s": "X", "d": "in"}])
+        self.assertEqual((out["n"], out["more"]), (1, False))
+
+
 class Classify(unittest.TestCase):
     def setUp(self):
         self.spec = ActStage()

@@ -10,7 +10,6 @@ import random
 import re
 import sys
 import tempfile
-import time
 import unittest
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -229,10 +228,12 @@ class WdBetweenTest(unittest.TestCase):
     def test_constant_time(self):
         c = cal()
         a, b = date(2025, 1, 1), date(2027, 12, 30)
-        t0 = time.perf_counter()
-        for _ in range(100_000):
-            c.wd_between(a, b)
-        self.assertLess(time.perf_counter() - t0, 3.0, "누적합 O(1) — 날짜 순회면 수백 초")
+        from tests.fixtures.tree import best_of                 # 부하에 민감 — 여러 번 재서 최솟값(W1 통합 창 R8)
+
+        def run():
+            for _ in range(100_000):
+                c.wd_between(a, b)
+        self.assertLess(best_of(run, under=3.0), 3.0, "누적합 O(1) — 날짜 순회면 수백 초")
 
 
 class ArgsTest(unittest.TestCase):

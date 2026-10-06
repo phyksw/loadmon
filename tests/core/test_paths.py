@@ -112,6 +112,7 @@ class ContractTest(PathsCase):
             "agent_subkeys": a / "keys" / "subkeys.json", "agent_bin_root": a / "bin", "agent_run": a / "run",
             "stop_flag": a / "run" / "stop.flag", "harvest_now_flag": a / "run" / "harvest_now.flag",
             "harvest_done": a / "run" / "harvest_done.json", "harvest_lock": a / "run" / ".harvest.lock",
+            "harvest_pid": a / "run" / "harvest.pid",
             "agent_logs": a / "logs", "copilot_manual": a / "copilot_manual", "store_root": a / "store",
             "edge_profile": L / "edge_copilot", "bridge_dir": L / "bridge", "edge_lock": L / "bridge" / "session.lock.json",
             "ui_dir": L / "ui", "ui_server_json": L / "ui" / "ui_server.json",
@@ -238,6 +239,21 @@ class ModeTest(PathsCase):
             p = Paths(self.root)
             self.assertEqual(p.lad(), Path(fake) / "LoadMonitor27")
             self.assertEqual(p.agent_json(), Path(fake) / "LoadMonitor27" / "agent" / "agent.json")
+
+    def test_lad_from_agent_copy_location_wp13_cr(self):
+        """W1 통합 창(WP-13 CR): 에이전트 사본 ``…\\LoadMonitor27\\agent\\bin\\<ver>\\`` 에서는 LAD = 사본 위치(환경 변수 무관) —
+        파이프와 감독 루프가 같은 LAD 를 쓴다. 프로그램 폴더 모드·다른 배치는 그대로 환경 변수."""
+        lad = Path(self.tmp) / "LoadMonitor27"
+        b = lad / "agent" / "bin" / "0.1.0-0123abcd"
+        os.makedirs(b)
+        with mock.patch.dict(os.environ, {"LOCALAPPDATA": os.path.join(self.tmp, "Other")}):
+            p = Paths(b)
+            self.assertEqual(p.mode(), "agent")
+            self.assertEqual(p.lad(), lad)
+            self.assertEqual(p.heartbeat().parent, lad / "agent")
+            fsx.atomic_write(b / "lm27_cli.py", b"")                     # 프로그램 폴더 모양이면 환경 변수
+            self.assertEqual(Paths(b).lad(), Path(self.tmp) / "Other" / "LoadMonitor27")
+            self.assertEqual(Paths(b, lad=lad / "x").lad(), lad / "x")      # 명시 인자가 늘 이긴다
 
     def test_relative_root_is_absolutized(self):
         p = Paths(".")

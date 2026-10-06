@@ -157,6 +157,10 @@ class TestEncodingRules(RuleCase):
         self.t.write("lm27/utc.py", "from datetime import UTC, datetime, timezone\n\n"
                                     "A = datetime.now(timezone.utc)\nB = datetime.now(UTC)\n")
         self.hit(self.t.file("lm27/bad.py", ["L-03"]), "L-03")
+        # W1 통합 창 회귀: 색 강제 환경(FORCE_COLOR — 터미널·에이전트 세션)에서도 ruff 출력을 읽는다(ANSI 색이 섞이면 0건으로 보였다)
+        from unittest import mock
+        with mock.patch.dict(os.environ, {"FORCE_COLOR": "3", "CLICOLOR_FORCE": "1"}):
+            self.hit(self.t.file("lm27/bad.py", ["L-03"]), "L-03")
         self.clean(self.t.file("lm27/good.py", ["L-03"]), "L-03")
         self.clean(self.t.file("tools/entry.py", ["L-03"]), "L-03")
         self.clean(self.t.file("lm27/utc.py", ["L-03"]), "L-03")
@@ -571,6 +575,28 @@ class TestRepoWideRules(RuleCase):
         found = self.t.repo(["L-28"])
         bad = {f.rel.replace("\\", "/") for f in errs(found, "L-28")}
         self.assertEqual(bad, {"lm27/ui/server.py", "collect/Get-X.ps1", "lm27/agent/n.py"}, found)
+
+    def test_C22_exceptions_L15_L28_L08(self):
+        """계약 v1.2 §0.7 C22(W1 통합 창): 앱 신원 'LM27-team'·'LM27-ui' 는 작업 이름이 아니다(L-15) · portdiag.AVOID 의
+        피하는 포트는 사용이 아니다(L-28) · 팀 서버 저장소의 <store>\\out\\gen_N 은 프로그램 out\\ 이 아니다(L-08).
+        예외 밖 같은 꼴은 그대로 지적한다."""
+        app = J(["LM27", "-team"])
+        self.t.write("lm27/team/schema.py", "APP_ID = '" + app + "'\n")
+        self.t.write("lm27/ui/ident.py", "APP = '" + J(["LM27", "-ui"]) + "'\n")
+        self.t.write("web/team/hello.js", "const app = '" + app + "';\n")
+        self.t.write("lm27/team/bad_task.py", "TASK = '" + J(["LM27", "-teamsync"]) + "'\n")   # 신원이 아닌 이름 — 지적
+        found = self.t.repo(["L-15"])
+        self.assertEqual({f.rel.replace("\\", "/") for f in errs(found, "L-15")}, {"lm27/team/bad_task.py"}, found)
+        old = 9000 + 333
+        self.t.write("lm27/team/portdiag.py", "AVOID = frozenset({" + str(old) + "}) | frozenset(range(8765, 8768))\n")
+        self.t.write("lm27/team/other.py", "AVOID = {" + str(old) + "}\n")                     # portdiag 밖 — 지적
+        found = self.t.repo(["L-28"])
+        self.assertEqual({f.rel.replace("\\", "/") for f in errs(found, "L-28")}, {"lm27/team/other.py"}, found)
+        self.t.write("lm27/team/store.py", "class S:\n    def out_dir(self):\n        return self.p('out')\n"
+                                           "    def gen(self, n):\n        return self.out_dir() / f'gen_{n}'\n")
+        self.t.write("lm27/team/notstore.py", "def g(r):\n    return r / 'out' / 'x'\n")         # store.py 밖 — 지적
+        found = self.t.repo(["L-08"])
+        self.assertEqual({f.rel.replace("\\", "/") for f in errs(found, "L-08")}, {"lm27/team/notstore.py"}, found)
 
     def test_L29_retired_outputs(self):
         self.t.write("lm27/collect/x.py", "OUT = '" + J(["mail", ".csv"]) + "'\n")

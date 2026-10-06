@@ -8,7 +8,6 @@ import importlib.util
 import json
 import shutil
 import tempfile
-import time
 import unittest
 from pathlib import Path
 
@@ -388,12 +387,14 @@ class RegistryFailClosedTest(unittest.TestCase):
 
 class PerformanceTest(unittest.TestCase):
     def test_load_and_read_fast(self):
-        t0 = time.perf_counter()
-        cfg = C.load_config(config_path=FIX / "config_lists.json")
-        for _ in range(20000):
-            cfg["time.slotCoverSec"]
-            cfg["pc.watchExtensions"]
-        self.assertLess(time.perf_counter() - t0, 3.0)
+        from tests.fixtures.tree import best_of                 # 부하에 민감 — 여러 번 재서 최솟값(W1 통합 창 R8)
+
+        def run():
+            cfg = C.load_config(config_path=FIX / "config_lists.json")
+            for _ in range(20000):
+                cfg["time.slotCoverSec"]
+                cfg["pc.watchExtensions"]
+        self.assertLess(best_of(run, under=3.0), 3.0)
 
 
 if __name__ == "__main__":

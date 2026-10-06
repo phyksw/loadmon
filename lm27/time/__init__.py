@@ -120,15 +120,11 @@ def analyze_time(person_key, records, profile, calendar_path, as_of, overrides=N
 
 def write_time_files(paths, run_id: str, result) -> list[str]:
     """결과 파일 9종을 원자 쓰기(`fsx.atomic_write`). 경로는 `paths.analysis_time_file(run_id, name)` 하나로만
-    만든다(계약 L-08 — 그 메서드는 `lm27.paths` 소유 작업 패키지에 요청한 것, 없으면 RuntimeError).
-    반환 = 쓴 파일 경로 목록(이름순)."""
+    만든다(계약 L-08 — W1 통합 창에서 `lm27.paths` 에 생김). 반환 = 쓴 파일 경로 목록(이름순)."""
     from lm27.util.fsx import atomic_write
-    fn = getattr(paths, "analysis_time_file", None)
-    if fn is None:
-        raise RuntimeError("Paths.analysis_time_file(run_id, name) 이 아직 없다 — lm27.paths 에 메서드가 생겨야 쓴다(CR)")
     out = []
     for name, data in sorted(result.files().items()):
-        p = fn(run_id, name)
+        p = paths.analysis_time_file(run_id, name)
         atomic_write(p, data)
         out.append(str(p))
     return out

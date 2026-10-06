@@ -615,6 +615,8 @@ def after_ask(run, items, depth: int, ar, *, pinned: Pinned | None = None, resen
         run.chat.force_fresh = True
         if run.trunc_out_count % BG.TRUNC_SHRINK_EVERY == 0:
             run.pack_out = BG.shrink_out(run.pack_out)
+            if getattr(run, "ctx", None) is not None:
+                run.ctx.pack_out = run.pack_out           # 조회 머리말 '최대 N행' 도 줄인 예산으로(W1 통합 창 — WP-25 CR)
             BG.Adjust(rt.profile, rt.clock).shrink(spec.id)
     if ar.status == "ok":
         run.ok_streak += 1

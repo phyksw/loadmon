@@ -3,6 +3,7 @@
 truncated(input) 재패킹(B-T08 의 L3 몫: 입력 예산 = 확인 글자 × calibSafety)."""
 from __future__ import annotations
 
+import shutil
 import tempfile
 import unittest
 
@@ -28,6 +29,7 @@ def setUpModule():
 class Deadlines(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="lm27t_wp24_")
+        self.addCleanup(shutil.rmtree, self.tmp, True)   # 잔여물 0(W1 통합 창)
         self.cfg, _ = settings(self.tmp)
         self.clk = VirtualClock()
 
@@ -59,6 +61,7 @@ class Deadlines(unittest.TestCase):
 class Packing(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="lm27t_wp24_")
+        self.addCleanup(shutil.rmtree, self.tmp, True)   # 잔여물 0(W1 통합 창)
         self.cfg, _ = settings(self.tmp)
 
     def test_bounds_from_registry(self):

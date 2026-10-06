@@ -303,7 +303,7 @@ var which={json.dumps(which)};var els=[],how='';
 for(var i=0;i<SELS.length;i++){{els=Array.prototype.slice.call(document.querySelectorAll(SELS[i]));if(els.length){{how=SELS[i];break;}}}}
 window['__lm_'+which]=els;
 return {{how:how,n:els.length,items:els.slice(0,400).map(function(e,i){{
- var l=(e.getAttribute('aria-label')||e.getAttribute('title')||'').slice(0,300);
+ var l=cut(e.getAttribute('aria-label')||e.getAttribute('title'),300);
  return {{idx:i,tid:idOf(e),mid:which==='activity'?midOf(e):'',label:l,texts:leafs(e,8),mention:/멘션|mention|@/i.test(l)}};}})}};""")
 
 
@@ -341,7 +341,7 @@ var SEP='[role="separator"],[data-tid*="divider"]';
 var msel='';for(var i=0;i<MSG.length;i++){if(document.querySelector(MSG[i])){msel=MSG[i];break;}}
 if(!msel)return out;out.how=msel;
 var head=document.querySelector('[data-tid="chat-header-title"],[data-tid="chatTitle"],[data-tid="chat-header"] [role="heading"],[role="main"] h1');
-out.chat=head?((head.getAttribute('title')||head.textContent||'').trim()).slice(0,120):'';
+out.chat=head?cut((head.getAttribute('title')||head.textContent||'').trim(),120):'';
 var href=location.href||'';
 if(/thread\\.tacv2|\\/channel\\//i.test(href))out.ctype='channel';else if(/meeting_/i.test(href))out.ctype='meeting';
 var r=document.querySelector('[data-tid*="roster"],[data-tid*="participant"]');
@@ -356,10 +356,10 @@ for(var j=0;j<all.length;j++){var e=all[j];
  var cls=(e.className&&e.className.baseVal!==undefined)?e.className.baseVal:(e.className||'');
  var mine=/ChatMyMessage|message-mine/i.test(cls)||!!e.querySelector('[class*="ChatMyMessage"]');
  var other=!mine&&(/ChatMessage/i.test(cls)||!!e.querySelector('[class*="ChatMessage"]'));
- out.items.push({t:'msg',label:(e.getAttribute('aria-label')||'').slice(0,400),author:au?(au.textContent||'').trim():'',
+ out.items.push({t:'msg',label:cut(e.getAttribute('aria-label'),400),author:au?(au.textContent||'').trim():'',
   ts:ts?((ts.getAttribute('title')||ts.getAttribute('datetime')||ts.textContent||'').trim()):'',
   iso:Array.prototype.slice.call(e.querySelectorAll('time[datetime]')).map(function(x){return x.getAttribute('datetime');}).filter(function(x){return x;}).slice(0,3),
-  titles:titles(e,6),body:bd?(bd.textContent||'').trim().slice(0,1200):'',texts:leafs(e,20),mid:mid,
+  titles:titles(e,6),body:bd?cut((bd.textContent||'').trim(),1200):'',texts:leafs(e,20),mid:mid,
   me:mine?true:(other?false:null),
   files:Array.prototype.slice.call(e.querySelectorAll('[data-tid*="file"] [title],[data-tid*="attachment"] [title]')).map(function(x){return (x.getAttribute('title')||'').trim();}).filter(function(x){return x;}).slice(0,10),
   mentions:Array.prototype.slice.call(e.querySelectorAll('[itemtype*="Mention"],[data-tid*="mention"]')).map(function(x){return (x.textContent||'').trim();}).filter(function(x){return x;}).slice(0,5)});}
@@ -379,11 +379,11 @@ el.dispatchEvent(new Event('scroll',{bubbles:true}));return el.scrollTop<before?
 
 
 def js_tw_pane() -> str:
-    return W._js("tw_pane", """
+    return W._js("tw_pane", W._CUT + """
 var MSG=['[data-tid="chat-pane-item"]','[data-tid="chat-pane-message"]','[data-tid="message-pane"] [role="listitem"]','[role="log"] [role="listitem"]','[role="main"] [role="listitem"]'];
 var n=0;for(var i=0;i<MSG.length;i++){var k=document.querySelectorAll(MSG[i]).length;if(k){n=k;break;}}
 var head=document.querySelector('[data-tid="chat-header-title"],[data-tid="chatTitle"],[data-tid="chat-header"] [role="heading"],[role="main"] h1');
-return {n:n,chat:head?((head.getAttribute('title')||head.textContent||'').trim()).slice(0,120):''};""")
+return {n:n,chat:head?cut((head.getAttribute('title')||head.textContent||'').trim(),120):''};""")
 
 
 def js_tw_nav(which: str) -> str:
@@ -939,6 +939,7 @@ def collect(opts: Opts, *, paths, cfg, api, clock, now, off_fn, environ, session
     if c.get("rooms_gone"):
         st["partial"] = True
         W.add_reason(st, "R-ROOMGONE")
+    row_err = run.flag_row_errors()                        # 정제 오류 행이 든 방은 체크포인트를 남기지 않았다
     if stop is not None:
         rc, why = W.session_failure(stop.state, stop.info)
         c["session"] = stop.state
@@ -947,6 +948,8 @@ def collect(opts: Opts, *, paths, cfg, api, clock, now, off_fn, environ, session
         st["partial"] = True
     elif n_new > 0:
         st["rc"] = W.RC_SAVED
+    elif row_err:                                          # 새로 남길 행이 전부 정제 오류 — '새것 0'(rc 4)이 아니다
+        st["rc"] = W.RC_DRIVER
     elif n_read > 0:
         st["rc"] = W.RC_NONEW
     else:
@@ -1031,6 +1034,7 @@ def _process_room(run, screen, room: dict, cps: dict, d0, d1, newest_new, max_sc
         if m["inherited"]:
             run.bump("inherited")
     rows = run.commit_aligned(raws)
+    row_errors = run.batch_errors
     raws = None
     out["kept"] = len(kept)
     new_last = cp.last
@@ -1042,6 +1046,9 @@ def _process_room(run, screen, room: dict, cps: dict, d0, d1, newest_new, max_sc
             new_last = stored.data.get("msg_key")
         if ck is None:
             ck = stored.data.get("chat_key")
+    if row_errors:                                         # 정제 오류 행이 있으면 체크포인트를 옮기지 않는다 — 다음 실행이
+        run.bump("rooms_row_errors")                       # 그 방을 다시 읽는다(저장된 행은 id 로 흡수, 영구 누락 금지)
+        return out
     if not res["pages"] or ck is None:
         return out
     rng = _new_checkpoint(cp, res, msgs, d0, newest_new)

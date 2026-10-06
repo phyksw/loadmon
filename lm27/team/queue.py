@@ -86,10 +86,8 @@ def _default_paths(paths=None):
 
 
 def _ofile(paths, folder: str, name: str):
-    fn = getattr(paths, "outbox_file", None)
-    if fn is None:
-        raise QueueError("Paths.outbox_file 이 아직 없습니다 — 팀 대기열 파일 경로를 만들 수 없습니다(계약 v1.2 C19 — 통합 창)")
-    return fn(folder, name)
+    """대기열 파일 경로 — ``Paths.outbox_file(state, name)``(계약 v1.2 §0.7 C19, W1 통합 창에서 생김 · L-08)."""
+    return paths.outbox_file(folder, name)
 
 
 # ───────────────────────────── 항목 ─────────────────────────────

@@ -13,6 +13,9 @@ r"""%TEMP% 복제 트리 하네스(WP-05) — 시험은 실제 트리가 아니�
 - 복제 안의 %LOCALAPPDATA% 는 <clone>\_sandbox\LocalAppData 로 돌린다(c.env() / c.patched_environ()) — 실제 에이전트 폴더를 건드리지 않는다.
   로컬 금지어 목록(CR-06)은 복사하지 않고 위치만 LM27T_FORBIDDEN_WORDS 로 넘긴다(hook_check 가 복제 안에서만 읽음).
 - assert_test_root(root): 실제 트리·설치 경로면 AssertionError(계약 §11.3 'assert ROOT != 실제 설치 경로').
+- 정리(잔여물 0 — W1 통합 창): 지우기는 긴 경로('\\?\' 접두)·읽기 전용 속성·잠깐 잠긴 파일(재시도)을 처리하고, 못 지우면
+  stderr 에 알린다. make 때마다(프로세스당 한 번) %TEMP% 의 오래된 lm27t_* 를 청소한다 — 1시간 넘었고, 복제 표지의 주인
+  프로세스가 끝났고, 이름 바꾸기가 되는(= 그 안을 쓰는 프로세스가 없는) 것만(sweep_stale).
 
 명령줄(관문 실행기 tools\lint.ps1 이 그대로 쓴다 — 표준 라이브러리만 import):
     "<PY>" -X utf8 -B tests\fixtures\tree.py unit [영역 ...]      복제 → 영역별 unittest discover → 삭제. rc 0 = 전부 통과
@@ -47,8 +50,8 @@ REPO_FILES = (".gitattributes", ".gitignore", ".claude/settings.json")   # 저�
 FORBIDDEN_REL = Path("LoadMonitor27", "dev", "forbidden_words.txt")     # CR-06 로컬 금지어 목록(저장소 밖)
 SKIP_NAMES = frozenset({"__pycache__", ".ruff_cache", ".pytest_cache", ".git", CLONE_MARK})
 SKIP_REL = frozenset({"config/config.json", "config/settings.local.json"})
-INJECT_VARS = ("LM_OUTLOOK_SELFTEST", "LM_INDEX_FAKE", "LM_OWA_FAKE", "LM_TEAMSWEB_FAKE", "LM_COPILOT_STUB",
-               "LM_NO_BROWSER")                          # 계약 §11.3 환경 변수 주입점 — 시험이 명시할 때만 넘긴다
+INJECT_VARS = ("LM_OUTLOOK_SELFTEST", "LM_PROBE_FAKE", "LM_INDEX_FAKE", "LM_OWA_FAKE", "LM_TEAMSWEB_FAKE",
+               "LM_COPILOT_STUB", "LM_NO_BROWSER")       # 계약 §11.3(+ v1.2 C3 LM_PROBE_FAKE) 환경 변수 주입점 — 시험이 명시할 때만 넘긴다
 CREATE_NO_WINDOW = 0x08000000
 # 시스템 %TEMP% — 가져올 때 한 번 고정. 복제 안 자식 프로세스는 TEMP 가 복제 안으로 바뀌므로 원래 값을 LM27T_TMP_BASE 로 받는다.
 _TMP_BASE = Path(os.environ.get("LM27T_TMP_BASE") or tempfile.gettempdir()).resolve()
@@ -128,20 +131,135 @@ def guard_write(path: str | os.PathLike) -> Path:
     return p
 
 
-def _rmtree(p: Path, tries: int = 5) -> bool:
+STALE_AGE_S = 3600                                       # 이보다 오래된 lm27t_* 만 청소 대상(주인·사용 확인 뒤)
+_SWEPT = False                                           # 프로세스당 한 번만 청소
+
+
+def long_path(p: str | os.PathLike) -> str:
+    r"""Windows 긴 경로 접두('\\?\' · UNC 는 '\\?\UNC\') — 260자 넘는 경로도 지우고 열 수 있게. 다른 OS 는 그대로."""
+    s = os.path.abspath(os.fspath(p))
+    if os.name != "nt" or s.startswith("\\\\?\\"):
+        return s
+    if s.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + s[2:]
+    return "\\\\?\\" + s
+
+
+def _rmtree(p: str | os.PathLike, tries: int = 6) -> bool:
+    """복제·임시 폴더 지우기: 긴 경로 접두로, 읽기 전용 속성은 풀고(파일·폴더), 잠깐 잠긴 파일(막 끝난 자식 프로세스의
+    핸들·백신 검사)은 물러섰다가 다시 시도한다. 다 지웠으면 True."""
+    lp = long_path(p)
+
     def _onerror(func, path, _exc):
         with contextlib.suppress(OSError):
             os.chmod(path, stat.S_IWRITE)
             func(path)
 
     for i in range(tries):
-        if not p.exists():
+        if not os.path.lexists(lp):
             return True
-        shutil.rmtree(p, onerror=_onerror)
-        if not p.exists():
+        with contextlib.suppress(OSError):
+            os.chmod(lp, stat.S_IWRITE)
+        shutil.rmtree(lp, onerror=_onerror)
+        if not os.path.lexists(lp):
             return True
-        time.sleep(0.2 * (i + 1))                        # 자식 프로세스가 막 끝나 핸들이 남은 경우
-    return not p.exists()
+        time.sleep(min(2.0, 0.25 * (i + 1)))             # 0.25+0.5+…(최대 약 5초) — 자식 프로세스가 막 끝나 핸들이 남은 경우
+    return not os.path.lexists(lp)
+
+
+def _pid_alive(pid: int) -> bool:
+    """그 프로세스가 아직 살아 있는가(Windows: OpenProcess + GetExitCodeProcess). 판단할 수 없으면 True(지우지 않는 쪽)."""
+    if pid <= 0:
+        return False
+    if os.name != "nt":
+        return True
+    import ctypes
+    from ctypes import wintypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    k32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+    k32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    h = k32.OpenProcess(0x1000, False, int(pid))        # PROCESS_QUERY_LIMITED_INFORMATION
+    if not h:
+        return ctypes.get_last_error() == 5             # 권한 없음 = 있다 · 그 밖(87 등) = 없다
+    try:
+        code = wintypes.DWORD()
+        if not k32.GetExitCodeProcess(h, ctypes.byref(code)):
+            return True
+        return code.value == 259                        # STILL_ACTIVE
+    finally:
+        k32.CloseHandle(h)
+
+
+def _mark_owner(d: Path) -> int:
+    """복제 표지의 주인 PID(owner=, 옛 표지는 0)."""
+    try:
+        txt = (d / CLONE_MARK).read_text(encoding="utf-8")
+    except OSError:
+        return 0
+    for line in txt.splitlines():
+        k, _, v = line.partition("=")
+        if k.strip() == "owner" and v.strip().isdigit():
+            return int(v.strip())
+    return 0
+
+
+def sweep_stale(base: str | os.PathLike | None = None, *, age_s: float = STALE_AGE_S, now: float | None = None,
+                keep: Sequence[os.PathLike] = ()) -> list[Path]:
+    r"""%TEMP%(또는 그 아래 base)의 오래된 lm27t_* 폴더를 지운다 — 지운 목록. 조건 셋이 모두 맞을 때만:
+    ① 폴더(과 복제 표지)가 age_s 보다 오래됨 ② 복제 표지의 주인 프로세스(owner=)가 끝남(표지 없으면 이 조건 통과)
+    ③ 이름 바꾸기가 됨 — 그 안에 작업 폴더·열린 파일을 가진 프로세스가 없다. 지우다 남은 것은 다음 청소가 이어서 지운다."""
+    b = Path(base).resolve() if base is not None else _TMP_BASE
+    if not (_is_under(b, _TMP_BASE)):
+        raise AssertionError(f"청소 위치는 %TEMP% 아래여야 합니다: {b}")
+    t = time.time() if now is None else now
+    keep_n = {os.path.normcase(str(Path(k).resolve())) for k in keep}
+    out = []
+    try:
+        names = sorted(os.listdir(b))
+    except OSError:
+        return out
+    for n in names:
+        if not n.startswith(CLONE_PREFIX):
+            continue
+        d = b / n
+        if os.path.normcase(str(d)) in keep_n:
+            continue
+        try:
+            st = os.lstat(d)
+            if not stat.S_ISDIR(st.st_mode):
+                continue
+            mt = st.st_mtime
+            with contextlib.suppress(OSError):
+                mt = max(mt, os.stat(d / CLONE_MARK).st_mtime)
+        except OSError:
+            continue
+        if t - mt < age_s:
+            continue
+        owner = _mark_owner(d)
+        if owner and _pid_alive(owner):
+            continue
+        trash = d if n.endswith(".sweep") else b / (n + ".sweep")
+        if trash != d:
+            try:
+                os.rename(long_path(d), long_path(trash))
+            except OSError:
+                continue                                 # 누군가 그 안을 쓰고 있다(작업 폴더·열린 파일)
+        if _rmtree(trash, tries=2):
+            out.append(d)
+    return out
+
+
+def _sweep_once() -> None:
+    global _SWEPT
+    if _SWEPT:
+        return
+    _SWEPT = True
+    with contextlib.suppress(OSError, AssertionError):
+        gone = sweep_stale()
+        if gone:
+            sys.stderr.write(f"[tree] 오래된 시험 폴더 {len(gone)}개를 청소했습니다\n")
 
 
 def _ignore_for(src: Path):
@@ -264,12 +382,17 @@ class Clone:
 
     # ── 정리 ───────────────────────────────────────────────────────────────
     def remove(self) -> bool:
+        """복제를 지운다(긴 경로·읽기 전용·잠깐 잠김 처리). 못 지우면 stderr 에 남기고 False — 다음 make 의 청소가
+        주인이 끝난 뒤 이어서 지운다(sweep_stale)."""
         root = assert_test_root(self.root)
-        if not root.exists():
+        if not os.path.lexists(long_path(root)):
             return True
-        if not _is_clone_dir(root):
+        if not _is_clone_dir(root) and not os.path.lexists(long_path(root / "_sandbox")):
             raise AssertionError(f"복제 표지가 없어 지우지 않습니다: {root}")
-        return _rmtree(root)
+        ok = _rmtree(root)
+        if not ok:
+            sys.stderr.write(f"[tree] 복제를 지우지 못했습니다(잠긴 파일): {root}\n")
+        return ok
 
     def __enter__(self) -> Clone:
         return self
@@ -281,9 +404,14 @@ class Clone:
         return f"Clone({str(self.root)!r})"
 
 
-def make_clone(*, parts: Sequence[str] = CLONE_PARTS, extra: Sequence[str] = (), entry: bool = True) -> Clone:
+def make_clone(*, parts: Sequence[str] = CLONE_PARTS, extra: Sequence[str] = (), entry: bool = True,
+               owner_pid: int | None = None) -> Clone:
     """%TEMP%\\lm27t_<rand>\\ 에 트리를 복제해 Clone 을 돌려준다. with 문으로 쓰면 끝에 지운다.
-    parts = 복제할 최상위 폴더(없는 것은 건너뜀), extra = 더 넣을 폴더·파일(예: "docs"), entry = 진입 스크립트·bat·ruff.toml."""
+    parts = 복제할 최상위 폴더(없는 것은 건너뜀), extra = 더 넣을 폴더·파일(예: "docs"), entry = 진입 스크립트·bat·ruff.toml.
+    owner_pid = 복제를 쓰는 프로세스(표지 owner= — 기본 자기 자신, CLI make 는 부른 쪽). 그 프로세스가 끝난 뒤 1시간이
+    지나도 남아 있으면 다음 make 가 청소한다."""
+    _sweep_once()
+    owner = int(owner_pid) if owner_pid else os.getpid()
     root = None
     for _ in range(20):
         cand = _TMP_BASE / (CLONE_PREFIX + secrets.token_hex(4))
@@ -296,7 +424,7 @@ def make_clone(*, parts: Sequence[str] = CLONE_PARTS, extra: Sequence[str] = (),
     if root is None:
         raise RuntimeError("복제 폴더 이름을 정하지 못했습니다")
     try:
-        (root / CLONE_MARK).write_text(f"src={SOURCE_ROOT}\ntree={TREE_ROOT}\n", encoding="utf-8")
+        (root / CLONE_MARK).write_text(f"src={SOURCE_ROOT}\ntree={TREE_ROOT}\nowner={owner}\n", encoding="utf-8")
         src = TREE_ROOT
         ignore = _ignore_for(src)
         for part in dict.fromkeys((*parts, *extra)):    # 같은 부분을 두 번 주면(예: extra=docs) 한 번만 복제
@@ -339,6 +467,19 @@ class CloneTestCase(unittest.TestCase):
         cls.addClassCleanup(cls.clone.remove)
 
 
+def best_of(fn, *, n: int = 3, under: float | None = None) -> float:
+    """부하에 민감한 시간 시험용(W1 통합 창 R8): ``fn()`` 을 최대 n 번 재서 가장 짧은 경과(초). ``under`` 보다 짧으면
+    바로 멈춘다 — 다른 무거운 작업이 함께 도는 PC 에서 한 번 느린 측정으로 실패하지 않게(최솟값이 실제 비용에 가장 가깝다)."""
+    best = float("inf")
+    for _ in range(max(1, int(n))):
+        t0 = time.perf_counter()
+        fn()
+        best = min(best, time.perf_counter() - t0)
+        if under is not None and best < under:
+            break
+    return best
+
+
 def area_dirs(root: str | os.PathLike) -> list[str]:
     """시험 파일이 있는 tests\\<영역> 이름 목록(fixtures·밑줄 시작 폴더 제외)."""
     t = Path(root) / "tests"
@@ -365,7 +506,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     dc.add_argument("--pattern", default="test*.py")
     a = ap.parse_args(argv)
     if a.cmd == "make":
-        print(make_clone(extra=tuple(a.extra)).root)
+        # 복제를 쓰는 쪽은 이 프로세스가 아니라 부른 쪽(lint.ps1 등) — 그 PID 를 주인으로 적는다(청소 판단)
+        print(make_clone(extra=tuple(a.extra), owner_pid=os.getppid() or None).root)
         return 0
     if a.cmd == "remove":
         return 0 if Clone(a.path).remove() else 1

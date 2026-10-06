@@ -3,7 +3,6 @@
 (개인 = 팀, TAB R-3 · A01 의 개인 쪽), W §4.11 대응표, 워크플로우·agentic·동료·품질 = 보고서 모델 값(RPT-12 · RP15),
 결정성(U02), 기간 일부·분석 기간 밖, 측정 품질 선택 필드(커버리지 원장·PC 표)·정제 감사 합계·미상 프로그램 제안, 감사 gate_team."""
 import json
-import os
 import unittest
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -396,17 +395,11 @@ class TestFailClosed(BuildCase):
                 self.build()
         self.assertEqual(cm.exception.problems, ["(bytes): email"])
 
-    def test_outbox_paths_method_missing(self):
-        """Paths.outbox_file(계약 C19) 가 아직 없으면 rc 1 + 한국어 한 줄(경로를 다른 곳에서 조립하지 않는다 — L-08)."""
-        from lm27.paths import Paths
-
-        class Bare(Paths):
-            def calendar_json(self):
-                return W.TREE / "config" / "calendar.json"
-        bare = Bare(self.w.root, lad=os.path.join(self.w.root, "lad"))
-        it = B.build_and_queue(W.model(), PERIOD, self.cfg, paths=bare, now=NOW, env=self.w.env(self.cfg))
-        self.assertEqual(it.rc, 1)
-        self.assertIn("outbox_file", it.message)
+    def test_outbox_path_is_paths_method(self):
+        """대기열 파일 경로는 Paths.outbox_file(계약 v1.2 C19 — W1 통합 창에서 생김)로만 만든다(L-08 — 다른 곳에서 조립 금지)."""
+        it = B.build_and_queue(W.model(), PERIOD, self.cfg, paths=self.w.paths, now=NOW, env=self.w.env(self.cfg))
+        self.assertEqual(it.rc, 0, it.message)
+        self.assertTrue(self.w.paths.outbox_file("pending", it.name).is_file())
 
 
 if __name__ == "__main__":

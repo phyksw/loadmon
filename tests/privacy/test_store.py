@@ -183,6 +183,44 @@ class ReaderTest(_Base):
         self.assertEqual(gap["reason"], "store_corrupt")
         self.assertEqual(cur["offset"], f.stat().st_size)
 
+    def test_truncated_member_mid_file_resyncs_with_gap(self):
+        """W1b 회귀: 쓰다 끊긴(잘린) 멤버 뒤에 완전한 멤버가 이어 붙은 파일 — 잘린 deflate 가 뒤 바이트를 삼켜 오류 없이 파일
+        끝까지 가도(고엔트로피 행에서 흔함) 뒤의 완전한 멤버를 읽고 gap(store_corrupt)을 남긴다. 무작위 자르기 위치 전부."""
+        import random
+        rnd = random.Random(3)
+
+        def member(tag, n):
+            return gzip.compress(b"".join(fsx.canon_bytes({"id": f"{tag}{i}", "ts_utc": D1, "k": f"{rnd.getrandbits(128):032x}"})
+                                          + b"\n" for i in range(n)), mtime=0)
+
+        from lm27.store import reader as RD
+        a, p, q, r = member("a", 10), member("p", 30), member("q", 30), member("r", 30)
+        want = {f"{t}{i}" for t in "qr" for i in range(30)} | {f"a{i}" for i in range(10)}
+        for cut in range(11, len(p) - 1, max(1, len(p) // 120)):
+            data = a + p[:cut] + q + r
+            recs, end, corrupt = RD._read_gz(data, 0)
+            self.assertLessEqual(want, {x["id"] for x in recs}, cut)
+            self.assertEqual((end, corrupt), (len(data), True), cut)
+        # 쓰는 중인 마지막 멤버(뒤에 완전한 멤버 없음)는 깨짐이 아니다 — 그 앞에서 기다린다
+        for cut in (11, len(p) // 2, len(p) - 2):
+            recs, end, corrupt = RD._read_gz(a + p[:cut], 0)
+            self.assertEqual((len(recs), end, corrupt), (10, len(a), False))
+        # 어제 파일(마지막 아님)에 잘린 조각 + 완전한 멤버, 오늘 파일에 멤버 — 영구 누락 0 · gap
+        y = self.paths.store_file(H.PC1, "pc_session", "pc.sampler", "2026-09-15")
+        t = self.paths.store_file(H.PC1, "pc_session", "pc.sampler", "2026-09-16")
+        for f in (y, t):
+            f.parent.mkdir(parents=True, exist_ok=True)
+        y.write_bytes(a + p[: len(p) // 3] + q + r)
+        t.write_bytes(member("s", 5))
+        recs, cur, gap = read_store_since(self.paths, H.PC1, "pc_session", "pc.sampler", None)
+        self.assertEqual(len(recs), 10 + 60 + 5)
+        self.assertEqual(gap["reason"], "store_corrupt")
+        self.assertTrue(cur["file"].endswith("20260916.jsonl.gz"))
+        # 지난 일자 파일이 끝나지 않은 꼬리로 끝나면(뒤에 멤버 없음) 커서가 넘어가므로 gap 을 남긴다
+        y.write_bytes(a + p[: len(p) // 2])
+        recs, cur, gap = read_store_since(self.paths, H.PC1, "pc_session", "pc.sampler", None)
+        self.assertEqual((len(recs), gap["reason"]), (15, "store_corrupt"))
+
     def test_pruned_cursor_file_gap(self):
         self.write(self.rows(1), D2)
         cur = {"file": f"{H.PC1}/evidence/pc_session/pc.sampler/202610/20261001.jsonl.gz", "offset": 99,
@@ -227,6 +265,17 @@ class RetentionTest(_Base):
         self.assertEqual(sorted(p.name for p in base.iterdir()), ["202609", "202610"])   # 빈 달 폴더(202608) 정리
         with self.assertRaises(ValueError):
             prune_store(self.paths, H.PC1, 0)
+
+    def test_prune_store_all_pcs_wp13_cr(self):
+        """pc_id=None = store 아래 모든 pc_id(옛 pc_id 원장도 보존 기한에 정리 — W1 통합 창 WP-13 CR)."""
+        self.write(self.rows(1), "2026-08-01T00:00:00Z")
+        self.write(self.rows(1), "2026-10-05T00:00:00Z")
+        self.write(self.rows(1, pc_id=H.PC2), "2026-08-01T00:00:00Z", pc_id=H.PC2)     # 옛 pc_id 원장
+        n = prune_store(self.paths, None, 30, today=date(2026, 10, 5))
+        self.assertEqual(n, 2)
+        self.assertEqual([d for _r, _p, d in store_files(self.paths, H.PC1, "pc_session", "pc.sampler")], ["20261005"])
+        self.assertEqual(list(store_files(self.paths, H.PC2, "pc_session", "pc.sampler")), [])
+        self.assertEqual(prune_store(self.paths, None, 30, today=date(2026, 10, 5)), 0)
 
     def test_purge_store_O16(self):
         self.write(self.rows(2), D1)

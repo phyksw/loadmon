@@ -13,18 +13,12 @@ from lm27.privacy import context as C
 from lm27.privacy import keys as K
 from lm27.privacy import records as R
 from lm27.privacy import selftest
-from lm27.privacy.detect import sanitize
+from lm27.privacy.rules import RULES_VERSION
 from lm27.store import SegmentWriter
 from lm27.util import fsx
 from tests.fixtures import synth
 from tests.fixtures.canary import canaries, canary_ctx, find_canaries
 from tests.fixtures.wp11 import helpers as H
-
-
-def _wp10_path_gap() -> bool:
-    """WP-10 ``rules.RX["path"]`` 가 뒤에 ' / '·줄바꿈이 오는 경로를 통째로 놓치는가(WP-10 CR). 고쳐지면 False 가 되어
-    T-07 시험이 경로 카나리아까지 전부 검사한다(이 WP 는 detect·rules 를 고치지 않는다)."""
-    return "abc" in sanitize(r"C:\Users\abc\Documents\a.xlsx / b").text
 
 
 class _Base(unittest.TestCase):
@@ -127,7 +121,7 @@ class KindsTest(_Base):
             with self.subTest(kind):
                 d = self.stored(kind)
                 self.assertEqual(R.validate_columns(kind, d), [])
-                self.assertEqual((d["act"], d["rules_ver"], d["kid"]), ("", "2026.10.0", H.keyring().kid))
+                self.assertEqual((d["act"], d["rules_ver"], d["kid"]), ("", RULES_VERSION, H.keyring().kid))
                 self.assertRegex(d["id"], r"^[0-9a-f]{16}$")
 
     def test_synth_all_paths_store(self):
@@ -417,6 +411,32 @@ class NoKeyTest(_Base):
         self.assertNotIn("[사람#", d["title_masked"])
 
 
+class SurrogateTest(_Base):
+    """W1b 회귀: 짝 없는 서로게이트(페이지 JS 의 UTF-16 자르기가 이모지를 자름 — CDP JSON 이 외톨이를 넘김) 한 글자 때문에
+    행 전체가 정제 error(UnicodeEncodeError)로 사라지지 않는다 — 입력 정규화 첫 단계에서 U+FFFD 로 바꾸고, 짝이 맞는 둘은
+    한 글자로 합친다."""
+
+    def test_lone_surrogates_replaced_row_kept(self):
+        d = self.stored("teams", chat_title="과제A 설계 \ud83c", body_text="도면 공유 \ud83d", file_names=["도면\udc00.dwg"],
+                        participants=[{"name": "김철수\ud83d"}, {"name": "홍길동"}])
+        self.assertIn("�", d["chat_title_masked"])
+        self.assertIn("�", d["body_masked"])
+        for v in d.values():
+            self.assertFalse(isinstance(v, str) and R._SURR_RX.search(v), v)
+        m = self.stored("mail", subject="견적 \udc81 검토", sender_name="김철수\ud800")
+        self.assertIn("�", m["subject_masked"])
+
+    def test_paired_surrogate_code_points_merge(self):
+        self.assertEqual(R._fix_surr("a😀b"), "a\U0001f600b")
+        self.assertEqual(R._fix_surr({"k\ud83c": ["x\udfff", ("y",)], "n": 1}), {"k�": ["x�", ("y",)], "n": 1})
+        self.assertFalse(R._has_surr({"a": ["b", {"c": "d"}], "e": 2}))
+
+    def test_raw_input_not_mutated(self):
+        raw = H.raw_teams(body_text="회신 \ud83d")
+        self.stored("teams", raw=raw)
+        self.assertEqual(raw["body_text"], "회신 \ud83d")                 # 수집기 원시(메모리)는 그대로 — 사본만 고친다
+
+
 class IdTest(_Base):
     def test_deterministic_and_text_sensitive(self):
         a = self.stored("mail")
@@ -452,7 +472,7 @@ class ResanitizeRedactTest(_Base):
         old = dict(d, rules_ver="2025.1.0", subject_masked="연락처 010-1234-5678 확인")
         new, hits = R.resanitize_row("mail", old, None)
         self.assertEqual(new["subject_masked"], "연락처 [전화] 확인")
-        self.assertEqual((hits, new["rules_ver"], new["id"]), ({"phone": 1}, "2026.10.0", d["id"]))
+        self.assertEqual((hits, new["rules_ver"], new["id"]), ({"phone": 1}, RULES_VERSION, d["id"]))   # 현행 규칙 판(W1 통합 창 2026.10.1)
         self.assertEqual(old["subject_masked"], "연락처 010-1234-5678 확인")       # 원본 불변
         same, h2 = R.resanitize_row("mail", d, None)
         self.assertIs(same, d)
@@ -516,7 +536,7 @@ class CanaryStoreTest(_Base):
             if f.is_file() and not f.name.endswith(".lock"):
                 parts.append(gzip.decompress(f.read_bytes()) if f.suffix == ".gz" else f.read_bytes())
         found = set(find_canaries(b"\n".join(parts), cs, groups=["pii", "ctx"]))
-        known = {c.cid for c in cs if c.cat in ("path_win", "path_unc")} if _wp10_path_gap() else set()
+        known = set()   # W1 통합 창: 정제 규칙 2026.10.1 이 경로 카나리아까지 가린다 — 예외 없이 전부 검사
         self.assertEqual(sorted(found - known), [])
 
     def test_manual_note_entity_joined_after_masking(self):

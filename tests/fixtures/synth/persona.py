@@ -22,7 +22,11 @@ RULES_VER = "2026.10.0"            # 계약 §2.2 RULES_VERSION 모양(합성 �
 OFFSET_KST = 540
 INTERNAL_DOMAIN = "corp.example"
 
-_TAILS = re.compile(r"(?:[ _\-.]+(?:v\d+(?:\.\d+)?|rev\d+|r\d+|최종|final|수정본?|사본|copy|\(\d\)))+$")
+# 문서군 꼬리(계약 §4.3 · v1.2 C16 — lm27.privacy.keys.DOC_TAIL 과 같은 식): 낱말·판 꼬리는 앞에 구분자가 있을 때만,
+# '(n)' 은 구분자 없이도. 날짜 숫자 꼬리는 남긴다. 구분자 묶음은 '_'.
+_TAILS = re.compile(r"(?:[\s_\-]+(?:복사본|사본|수정본?|copy|최종|final|v\d{1,3}(?:\.\d{1,3}){0,2}|rev\.?\s?\d{1,3}|r\d{1,3})"
+                    r"|\s?\(\d{1,3}\))$")
+_FAM_SEP = re.compile(r"[\s_\-.]+")
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,17 +190,21 @@ def norm_person(name: str) -> str:
 
 
 def doc_fam(name: str) -> str:
-    """합성 문서 이름의 문서군(계약 §4.3 의 단계를 합성 이름 범위에서 흉내 — 정본은 lm27.privacy.keys.doc_fam).
-    NFKC → 소문자 → 확장자 제거 → 구분자 뒤 꼬리(v3·rev1·최종·사본·(1)) 제거 → 공백은 밑줄."""
-    s = unicodedata.normalize("NFKC", name.rsplit("\\", 1)[-1]).lower().strip()
-    if "." in s:
-        s = s.rsplit(".", 1)[0]
+    """합성 문서 이름의 문서군(계약 §4.3 · C16 규칙 그대로 — 정본은 lm27.privacy.keys.doc_fam, 같음을 시험이 본다).
+    NFKC → 경로면 기본 이름 → 소문자 → 확장자 제거 → 꼬리 반복 제거(최대 5회) → 비면 원래 이름 → 구분자 묶음은 '_'."""
+    s = re.split(r"[\\/]", unicodedata.normalize("NFKC", name))[-1].lower().strip()
+    s = re.sub(r"\.(?:gz|zip|7z)$", "", s)
+    t = re.sub(r"\.(?:prt|asm|drw)\.\d{1,4}$", "", s)
+    s = (t if t != s else re.sub(r"\.[0-9a-z]{1,5}$", "", s)).strip()
+    base = s
     for _ in range(5):
         t = _TAILS.sub("", s)
-        if t == s or not t:
+        if t == s:
             break
         s = t
-    return re.sub(r"\s+", "_", s.strip())
+    if not _FAM_SEP.sub("", s):
+        s = base
+    return _FAM_SEP.sub("_", s).strip("_")
 
 
 class SynthKeys:

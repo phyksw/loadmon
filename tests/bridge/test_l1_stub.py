@@ -115,10 +115,26 @@ class TestStubTransport(unittest.TestCase):
         r = t.roundtrip(req("[LM27 요청 R7F3QK · 메일 조회 · 구간 2026-09-01~2026-09-07]\n[답 형식]", "lookup_mail"))
         e = env_of(r.body)
         self.assertEqual((e["n"], e["more"]), (2, False))
-        r2 = t.roundtrip(req(make_prompt(RID, 2), "review_text"))            # 단계 파일 없음 → ok + 빈 답
+        r2 = t.roundtrip(req(make_prompt(RID, 2), "review_text"))            # 단계 파일 없음 → ok + 등록부 스텁 답
         self.assertEqual(len(env_of(r2.body)["items"]), 2)
         with self.assertRaises(ValueError):
             t.roundtrip(req(make_prompt(RID, 2), "../evil"))
+
+    def test_file_responder_registry_stub_default(self):
+        """W1 통합 창(WP-25 CR): 단계 파일에 기본 답이 없으면 등록부(REGISTRY) 스텁 답 — 필수 필드가 있는 단계도
+        LM_COPILOT_STUB 종단 시험에서 유효한 AI 답을 본다. 조회형은 행 하나."""
+        from lm27.bridge.stages import REGISTRY
+        with tempfile.TemporaryDirectory(prefix="lm27t_stub_") as d:
+            Path(d, "task_label.json").write_text(json.dumps({"mode": ["ok"], "default": {}}), encoding="utf-8")
+            t = T.StubTransport(stub_dir=d)
+            e = env_of(t.roundtrip(req(make_prompt(RID, 2), "task_label")).body)
+            want = REGISTRY["task_label"].stub_answer()
+            self.assertEqual([{k: x[k] for k in want} for x in e["items"]], [want, want])
+            e2 = env_of(t.roundtrip(req("[LM27 요청 R7F3QK · 일정 조회 · 구간 2026-09-01~2026-09-07]\n[답 형식]",
+                                        "lookup_calendar", rid="R7F3QM")).body)
+            self.assertEqual((len(e2["items"]), e2["more"]), (1, False))        # 조회 봉투의 행 = items
+            self.assertEqual({k: e2["items"][0][k] for k in REGISTRY["lookup_calendar"].stub_answer()},
+                             REGISTRY["lookup_calendar"].stub_answer())
 
     def test_from_env(self):
         self.assertIsNone(T.from_env({}))
