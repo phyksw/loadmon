@@ -49,6 +49,12 @@ outer:for(const s of sels){{for(const c of document.querySelectorAll(s)){{
 return {{url:location.href,ready:document.readyState,input:{{found:found,aria:aria,sel:sel}}}};""")
 
 
+def aadsts() -> str:
+    """로그인 화면의 AADSTS 오류 번호(숫자만 — 조건부 액세스 판별, H1). 페이지 글·계정은 돌려주지 않는다. 로그인 호스트에서만 부른다."""
+    return _wrap("aadsts", """var t=(document.body&&document.body.innerText)||'';var m=t.match(/AADSTS(\\d{5,6})/);
+return m?m[1]:'';""")
+
+
 def focus_input(input_selectors, aria_labels) -> str:
     """입력창 찾기·포커스(B §5.3.1): 보이는 후보 중 aria-label 일치를 우선. ``window.__lm_input``·``__lm_composer`` 기록."""
     return _wrap("focus_input", _VIS40 + f"""
@@ -188,13 +194,20 @@ const c=[...document.querySelectorAll('button,a')].filter(vis).filter(e=>{{
 if(!c.length)return {{ok:false}};c[0].click();return {{ok:true}};""")
 
 
-def pick_model(model: str, button_labels) -> str:
-    """모델 선택 버튼(aria-label 부분 일치)을 열거나, 이미 그 모델이면 건너뜀(LM24 ``js_pick_model``)."""
-    return _wrap("pick_model", _VIS4 + _NRM + f"""const want={_j(model)},bl={_j(button_labels)}.map(x=>x.toLowerCase());
+def _wants(model) -> list:
+    """모델 이름 하나 또는 별칭 목록(``settings.model_names``) → 비지 않은 표기 목록."""
+    if isinstance(model, list | tuple):
+        return [str(m) for m in model if str(m or "").strip()]
+    return [str(model)] if str(model or "").strip() else []
+
+
+def pick_model(model, button_labels) -> str:
+    """모델 선택 버튼(aria-label 부분 일치)을 열거나, 이미 그 모델(별칭 중 하나)이면 건너뜀(LM24 ``js_pick_model`` · L11)."""
+    return _wrap("pick_model", _VIS4 + _NRM + f"""const want={_j(_wants(model))},bl={_j(button_labels)}.map(x=>x.toLowerCase());
 const btns=[...document.querySelectorAll('button')].filter(b=>vis(b)&&bl.some(x=>(b.getAttribute('aria-label')||'').toLowerCase().includes(x)));
 if(!btns.length)return {{ok:false,err:'selector_not_found'}};
 const btn=btns[0];const cur=((btn.getAttribute('aria-label')||'')+' '+(btn.innerText||'')).trim();
-if(nrm(cur).includes(nrm(want)))return {{ok:true,already:true,cur:cur.slice(0,60)}};
+if(want.some(w=>nrm(cur).includes(nrm(w))))return {{ok:true,already:true,cur:cur.slice(0,60)}};
 const open=[...document.querySelectorAll("[role='menuitem'],[role='menuitemradio']")].filter(vis).length;
 if(open>0)return {{ok:true,opened:true,alreadyOpen:true,cur:cur.slice(0,60)}};
 btn.click();return {{ok:true,opened:true,cur:cur.slice(0,60)}};""")
@@ -205,17 +218,17 @@ def menu_open() -> str:
   .filter(vis).length};""")
 
 
-def pick_model_item(model: str) -> str:
-    """열린 메뉴에서 목표 모델 클릭, 없으면 하위 메뉴 후보를 연다(LM24 ``js_pick_model_item``)."""
-    return _wrap("pick_model_item", _VIS4 + _NRM + f"""const want={_j(model)};
+def pick_model_item(model) -> str:
+    """열린 메뉴에서 목표 모델(별칭 중 앞의 것부터) 클릭, 없으면 하위 메뉴 후보를 연다(LM24 ``js_pick_model_item`` · L11)."""
+    return _wrap("pick_model_item", _VIS4 + _NRM + f"""const want={_j(_wants(model))};
 const nodes=[...document.querySelectorAll("[role='menuitemradio'],[role='menuitem'],[role='option']")].filter(vis);
-const txt=e=>(e.innerText||e.getAttribute('aria-label')||'').trim();const wn=nrm(want);
-const hit=nodes.find(e=>nrm(txt(e)).includes(wn));
+const txt=e=>(e.innerText||e.getAttribute('aria-label')||'').trim();const wns=want.map(nrm).filter(Boolean);
+let hit=null;for(const wn of wns){{hit=nodes.find(e=>nrm(txt(e)).includes(wn));if(hit)break;}}
 if(hit){{hit.click();return {{ok:true,picked:txt(hit).slice(0,60)}};}}
-const head=wn.replace(/[0-9].*$/,'')||wn;
+const heads=wns.map(wn=>wn.replace(/[0-9].*$/,'')||wn);
 const sub=nodes.find(e=>{{const t=nrm(txt(e));if(!t||t.length>40)return false;
   const par=e.getAttribute('aria-haspopup')||e.getAttribute('aria-expanded')!==null||/[›>❯»]/.test(txt(e));
-  return t.includes(head)&&par;}});
+  return par&&heads.some(h=>t.includes(h));}});
 if(sub){{sub.click();return {{ok:false,submenu:txt(sub).slice(0,40)}};}}
 return {{ok:false,err:'item_not_found',seen:nodes.slice(0,12).map(txt).filter(Boolean).slice(0,8).map(x=>x.slice(0,40))}};""")
 
@@ -224,28 +237,50 @@ def close_menu() -> str:
     return _wrap("close_menu", "document.body.click();return 1;")
 
 
-def _mode_fn(work_labels, web_labels) -> str:
-    return (_VIS4 + f"const wl={_j(work_labels)}.map(x=>x.toLowerCase()),bl={_j(web_labels)}.map(x=>x.toLowerCase());"
+def _mode_fn(work_labels, web_labels, toggle_labels=()) -> str:
+    """업무 모드 판별 함수 ``modeState(click)`` 정의. ① 업무·웹 버튼 한 쌍(이름표 정확 일치 — 옛 화면) ② 없으면 단일 토글
+    'Work IQ'(이름표 부분 일치 — 2026-08 개편, H13): 누름 상태 aria-pressed·aria-checked·aria-selected(또는 체크 상자)가 true 면
+    work, false 면 web, 속성이 없으면 unknown. ``click`` 이면 꺼진 쪽만 한 번 누른다(상태를 모르면 누르지 않는다)."""
+    return (_VIS4 + f"const wl={_j(work_labels)}.map(x=>x.toLowerCase()),bl={_j(web_labels)}.map(x=>x.toLowerCase()),"
+            f"tl={_j(toggle_labels)}.map(x=>x.toLowerCase());"
             "const lab=e=>[(e.getAttribute('aria-label')||'').trim().toLowerCase(),(e.innerText||'').trim().toLowerCase()];"
             "const q=\"button,[role='tab'],[role='radio'],[role='switch'],[role='menuitemradio']\";"
             "const els=[...document.querySelectorAll(q)].filter(vis);"
             "const fw=els.find(e=>lab(e).some(t=>wl.includes(t)));const fb=els.find(e=>lab(e).some(t=>bl.includes(t)));"
-            "const on=e=>!!e&&['aria-pressed','aria-checked','aria-selected'].some(a=>e.getAttribute(a)==='true');")
+            "const ATTRS=['aria-pressed','aria-checked','aria-selected'];"
+            "const on=e=>!!e&&ATTRS.some(a=>e.getAttribute(a)==='true');"
+            "const has=e=>!!e&&ATTRS.some(a=>e.getAttribute(a)!==null);"
+            "const tq=\"button,[role='switch'],[role='checkbox'],[role='menuitemcheckbox'],input[type='checkbox']\";"
+            "const ft=(fw||fb||!tl.length)?null:[...document.querySelectorAll(tq)].filter(vis).find(e=>{"
+            "const t=((e.getAttribute('aria-label')||'')+' '+(e.innerText||'')+' '+(e.getAttribute('title')||''))"
+            ".toLowerCase();return tl.some(x=>t.includes(x));});"
+            "const tst=e=>{if(!e)return null;for(const a of ATTRS){const v=e.getAttribute(a);if(v==='true')return true;"
+            "if(v==='false')return false;}if(e.tagName==='INPUT'&&typeof e.checked==='boolean')return e.checked;return null;};"
+            "const modeState=click=>{let clicked=false;"
+            "if(fw||fb){if(click&&fw&&!on(fw)){fw.click();clicked=true;}"
+            "return {found:true,kind:'pair',stateful:has(fw)||has(fb),mode:on(fw)?'work':(on(fb)?'web':'unknown'),"
+            "work:on(fw),web:on(fb),clicked:clicked};}"
+            "if(ft){const s=tst(ft);if(click&&s===false){ft.click();clicked=true;}"
+            "return {found:true,kind:'toggle',stateful:s!==null,mode:s===true?'work':(s===false?'web':'unknown'),"
+            "work:s===true,web:s===false,clicked:clicked};}"
+            "return {found:false,kind:'',stateful:false,mode:'unknown',work:false,web:false,clicked:false};};")
 
 
-def work_mode(work_labels, web_labels, click_work: bool = False) -> str:
-    """업무(Work)/웹 전환 상태 ``{found, mode, work, web}``. ``click_work`` 면 업무 쪽을 1회 누른다(B §4.8)."""
-    return _wrap("work_mode", _mode_fn(work_labels, web_labels) + f"""
-const found=!!(fw||fb);let clicked=false;
-if({'true' if click_work else 'false'}&&fw&&!on(fw)){{fw.click();clicked=true;}}
-const mode=on(fw)?'work':(on(fb)?'web':'unknown');
-return {{found:found,mode:mode,work:on(fw),web:on(fb),clicked:clicked}};""")
+def work_mode(work_labels, web_labels, click_work: bool = False, toggle_labels=()) -> str:
+    """업무 모드 상태 ``{found, kind(pair|toggle|''), stateful, mode, work, web, clicked}``. ``click_work`` 면 업무 쪽(쌍)·꺼진
+    토글을 1회 누른다(B §4.8 · H13)."""
+    return _wrap("work_mode", _mode_fn(work_labels, web_labels, toggle_labels) + f"""
+const CLICK={'true' if click_work else 'false'};
+return modeState(CLICK);""")
 
 
-def env(work_labels, web_labels, wg_labels) -> str:
-    """계정 등급·업무 모드·웹 근거 판별 재료(B §4.11) — ``{toggle:{found, work, web}, wg:{found, checked}}``.
-    웹 근거 요소는 **읽기만** 한다(누르지 않고, 설정 메뉴도 열지 않는다)."""
-    return _wrap("env", _mode_fn(work_labels, web_labels) + f"""
+def env(work_labels, web_labels, wg_labels, toggle_labels=(), account_labels=(), shield_labels=()) -> str:
+    """계정 등급·업무 모드·웹 근거·회사 계정 표시 판별 재료(B §4.11 · H4·H13·L11) —
+    ``{toggle:{found, kind, stateful, work, web}, wg:{found, checked}, acct:{label, shield}, tier}``. **읽기만** 한다(누르지
+    않고 설정 메뉴도 열지 않는다). 회사(Entra) 계정 표시 = 탐색 창·머리 영역의 짧은 'Work' 표시(정확 일치) 또는 데이터 보호
+    방패의 aria-label·title(부분 일치). 등급 = 'copilot' 이 든 짧은 글의 '(Premium)'·'(Basic)'. 글은 돌려주지 않는다(참·거짓만)."""
+    tiers = {k: list(v) for k, v in S.TIER_LABELS.items()}
+    return _wrap("env", _mode_fn(work_labels, web_labels, toggle_labels) + f"""
 const gl={_j(wg_labels)}.map(x=>x.toLowerCase());
 const wq="[role='switch'],[role='menuitemcheckbox'],[role='checkbox'],input[type='checkbox']";
 const wg=[...document.querySelectorAll(wq)].filter(vis).find(e=>{{
@@ -253,7 +288,23 @@ const wg=[...document.querySelectorAll(wq)].filter(vis).find(e=>{{
 let checked=null;
 if(wg){{const a=wg.getAttribute('aria-checked');if(a==='true')checked=true;else if(a==='false')checked=false;
   else if(typeof wg.checked==='boolean')checked=wg.checked;}}
-return {{toggle:{{found:!!(fw||fb),work:on(fw),web:on(fb)}},wg:{{found:!!wg,checked:checked}}}};""")
+const al={_j(account_labels)}.map(x=>x.toLowerCase().trim()),sl={_j(shield_labels)}.map(x=>x.toLowerCase());
+let acct=false;
+if(al.length){{outer:for(const r of document.querySelectorAll("nav,aside,header,[role='navigation'],[role='banner'],[role='complementary']")){{
+  for(const e of r.querySelectorAll('*')){{if(e.children.length)continue;
+    const t=(e.innerText||e.textContent||'').trim().toLowerCase(),a=(e.getAttribute('aria-label')||'').trim().toLowerCase();
+    if((t&&t.length<=20&&al.includes(t))||(a&&al.includes(a))){{acct=true;break outer;}}}}}}}}
+let shield=false;
+if(sl.length){{for(const e of document.querySelectorAll('[aria-label],[title]')){{
+  const t=((e.getAttribute('aria-label')||'')+' '+(e.getAttribute('title')||'')).toLowerCase();
+  if(sl.some(x=>t.includes(x))){{shield=true;break;}}}}}}
+const tp={_j(tiers)};let tier='';
+for(const e of document.querySelectorAll('span,div,p,a,button,h1,h2,h3,h4')){{if(e.children.length)continue;
+  const t=(e.innerText||'').trim().toLowerCase();if(!t||t.length>40||!t.includes('copilot'))continue;
+  if(tp.premium.some(x=>t.includes(x))){{tier='premium';break;}}if(tp.basic.some(x=>t.includes(x))){{tier='basic';break;}}}}
+const m=modeState(false);
+return {{toggle:{{found:m.found,kind:m.kind,stateful:m.stateful,work:m.work,web:m.web}},wg:{{found:!!wg,checked:checked}},
+  acct:{{label:acct,shield:shield}},tier:tier}};""")
 
 
 def diagnose(input_selectors, keep_labels) -> str:
@@ -286,4 +337,4 @@ return {{url_host:location.hostname,url_path:location.pathname,ready:document.re
 
 ALL = ("identity", "focus_input", "editor_text", "clear_editor", "insert_fallback", "click_send", "generating", "poll",
        "counts", "chat_text", "learn_asst", "new_chat", "pick_model", "menu_open", "pick_model_item", "close_menu",
-       "work_mode", "env", "diagnose")
+       "work_mode", "env", "diagnose", "aadsts")

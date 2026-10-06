@@ -170,13 +170,16 @@ class MailComTest(CloneTestCase):
         self.assertTrue(all("to" not in x for x in r0.records))
 
     def test_cm07_omg_keeps_a_rows(self):
-        r = self.run_com("12,omg", "-ReadProtected", "1")
+        # 항목 단위 B단만 거부(omgitem — 카나리아인 내 주소 읽기는 됨): 연속 3회 거부면 B단을 멈추고 A단 행은 그대로.
+        # 보호 멤버 전체 거부(omg)는 B단 카나리아에서 걸린다 — test_mail_com_m365(M17)
+        r = self.run_com("12,omgitem", "-ReadProtected", "1")
         self.assertEqual(r.rc, 0, r.err_text)
         res = r.result("mail.com")
         self.assertIn("R-OMG", res["reasons"])
         self.assertEqual(len(r.records), 2 * selftest_mail_expect(12)["emit"])   # 행 폐기 0
         self.assertTrue(all("to" not in x for x in r.records))
         self.assertGreaterEqual(res["counts"]["protected_fail"], 1)
+        self.assertNotIn("omg_canary", res["counts"])
 
     def test_cm07_slow_protected_read_stops_b_stage(self):
         r = self.run_com("12,slowb", "-ReadProtected", "1")
@@ -284,11 +287,17 @@ class MailComTest(CloneTestCase):
         self.assertFalse(any(x["ts_utc"].startswith("2026-08") for x in r.records))
 
     def test_cm04_archive_store_toggle(self):
+        # M365 조사 M16: OlExchangeStoreType 3 = olNotExchange(PST·IMAP 개인 데이터 파일) — 보관 사서함이 아니다. 보관 사서함
+        # 식별은 회사 PC 실측 전까지 미정이라 설정을 켜도 기본 사서함만 읽고 counts.archive_store=unverified 로 알린다
         on = self.run_com("12,archive", cfg={"mail.includeArchiveStore": True})
         off = self.run_com("12,archive", cfg={"mail.includeArchiveStore": False})
-        self.assertTrue(any(x["folder_role"] == "archive" for x in on.records))
-        self.assertFalse(any(x["folder_role"] == "archive" for x in off.records))
-        self.assertGreater(len(on.records), len(off.records))
+        for r in (on, off):
+            self.assertEqual(r.rc, 0, r.err_text)
+            self.assertFalse(any(x["folder_role"] == "archive" for x in r.records))
+            self.assertEqual(r.result("mail.com")["counts"]["stores_non_exchange"], 1)
+        self.assertEqual(len(on.records), len(off.records))
+        self.assertEqual(on.result("mail.com")["counts"]["archive_store"], "unverified")
+        self.assertNotIn("archive_store", off.result("mail.com")["counts"])
 
     def test_subfolder_ratio_warning_from_cfg(self):
         r = self.run_com("12", cfg={"probe.subfolderRatio": 0.2})
@@ -344,7 +353,7 @@ class MailComTest(CloneTestCase):
 
     def test_calendar_omg_keeps_rows(self):
         full = self.run_com("12", only="cal")
-        r = self.run_com("12,omg", "-ReadProtected", "1", only="cal")
+        r = self.run_com("12,omgitem", "-ReadProtected", "1", only="cal")
         self.assertEqual(r.rc, 0, r.err_text)
         res = r.result("cal.com")
         self.assertIn("R-OMG", res["reasons"])

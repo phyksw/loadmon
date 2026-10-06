@@ -65,7 +65,7 @@ ENUMS = {
     "Restricted", "AllSigned", "RemoteSigned", "Unrestricted", "Bypass", "Undefined", "Default",
     "blocked", "missing", "unavailable", "rejected", "timeout", "crash", "not_attempted", "not_running",
     "auto", "always", "never", "valid", "invalid", "running", "stopped", "disabled", "none", "unauthorized",
-    "denied", "empty", "cfg", "path", "candidate", "on", "off",
+    "denied", "empty", "cfg", "path", "candidate", "on", "off", "policy", "newacct_default",
 }
 RX = {
     "version": r"\d{1,6}(\.\d{1,6}){0,3}", "date": r"\d{4}-\d{2}-\d{2}", "iso": r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z",
@@ -260,6 +260,21 @@ SCEN: dict[str, Spec] = {
     "tz": Spec(over={"env": {"tz_offset_min": 0, "tz_id": "UTC"}}, cfg={}, only="P-ENV"),
     "edgepol_rd": Spec(over={"edge": {"remote_debugging": 0}}, cfg={}, only="P-EDGE"),
     "edgepol_dt": Spec(over={"edge": {"devtools": 2}}, cfg={}, only="P-EDGE"),
+    # ── M365 조사(계정 있는 회사 PC) ──
+    # H7: 프로필 판정이 0 이어도 Outlook 이 떠 있으면 붙기 결과로(문서화되지 않은 레지스트리 모양으로 COM 을 막지 않는다)
+    "noprof_running": Spec(over={"ol": {"profiles": 0, "profiles_total": 2}}, cfg={}, only=OL),
+    # M13: 관리자 전환 정책 — 값만 남기고 막지 않는다(떠 있는 클래식에는 붙는다)
+    "migration": Spec(over={"ol": {"migration_auto": 1, "migration_retry": 1}}, cfg={}, only=OL),
+    # L7: 동기화 기간 정책 키(일 단위)
+    "sync_policy": Spec(over={"ol": {"sync_months": 0, "sync_days": 14, "sync_src": "policy"}}, cfg={}, only="P-OL-INST"),
+    # M2: 0 건이지만 옛 항목만 있음(색인이 멈춤) · 0 건 + Outlook 꺼짐(원인 미상)
+    "idx_zero_old": Spec(over={"idx": {"mail": {"n30": 0, "n90": 0, "n365": 0, "newest": "2025-06-01T00:00:00Z",
+                                                "oldest": "2024-01-02T00:00:00Z"}}}, cfg={}, only="P-IDX"),
+    "idx_zero_notrunning": Spec(over={"ol": {"running": False}, **ZERO_IDX}, cfg={}, only="P-IDX"),
+    # L7: HKCU 정책 값만(문서 경로 HKLM 아님) — 판정에 쓰지 않는다
+    "idxpolicy_hkcu": Spec(over={"idx": {"policy_hkcu": True}}, cfg={}, only="P-IDX"),
+    # H10(색인 쪽 경고): 메일 최신 항목이 오래됐고 Outlook 이 꺼져 있다
+    "idx_stale": Spec(over={"ol": {"running": False}, "idx": {"mail": {"newest": "2026-09-20T00:00:00Z"}}}, cfg={}, only="P-IDX"),
     "edge_none": Spec(over={"edge": {"installed": False, "version": None}}, cfg={}, only="P-EDGE"),
     "uia_novisible": Spec(over={"uia": {"visible": 0, "lines": 0}}, cfg={}, only="P-TEAMS"),
     "uia_denied": Spec(over={"uia": {"mode": "denied"}}, cfg={}, only="P-TEAMS"),
@@ -288,6 +303,13 @@ EXPECT: dict[str, dict[str, tuple[str, set | frozenset]]] = {
     "newol_running_classic": {"mail.com": ("ok", E), "cal.com": ("ok", E)},
     "newol_only": {"mail.com": ("fail", {"R-NEWOL"}), "cal.com": ("fail", {"R-NEWOL"})},
     "noprof": {"mail.com": ("fail", {"R-NOPROF"}), "cal.com": ("fail", {"R-NOPROF"}), "mail.index": ("fail", {"R-NOPROF"})},
+    "noprof_running": {"mail.com": ("ok", E), "cal.com": ("ok", E)},
+    "migration": {"mail.com": ("ok", E), "cal.com": ("ok", E)},
+    "sync_policy": {"mail.com": ("unknown", E)},
+    "idx_zero_old": {"mail.index": ("unknown", {"R-STALE"}), "cal.index": ("ok", E)},
+    "idx_zero_notrunning": {"mail.index": ("unknown", E), "cal.index": ("unknown", E)},
+    "idxpolicy_hkcu": {"mail.index": ("ok", E), "cal.index": ("ok", E)},
+    "idx_stale": {"mail.index": ("ok", {"R-STALE"}), "cal.index": ("ok", E)},
     "wizard": {"mail.com": ("fail", {"R-WIZARD"}), "cal.com": ("fail", {"R-WIZARD"})},
     "wizard_msi": {"mail.com": ("fail", {"R-WIZARD"})},
     "wizard_running": {"mail.com": ("ok", {"R-WIZARD"})},
@@ -316,8 +338,9 @@ EXPECT: dict[str, dict[str, tuple[str, set | frozenset]]] = {
     "idxpolicy": {"mail.index": ("fail", {"R-IDXPOLICY"}), "cal.index": ("fail", {"R-IDXPOLICY"})},
     "idxpaused_zero": {"mail.index": ("fail", {"R-IDXPAUSED"}), "cal.index": ("fail", {"R-IDXPAUSED"})},
     "idxpaused_some": {"mail.index": ("ok", {"R-IDXPAUSED"})},
-    # v1.3 §0.8 V4: 클래식이 있는데 색인에 Outlook 항목 0 = 온라인 모드(수집기 판정과 같음)
-    "idx_zero_ok": {"mail.index": ("fail", {"R-ONLINE"}), "cal.index": ("fail", {"R-ONLINE"})},
+    # M365 조사 M2: 클래식이 있는데 색인에 Outlook 항목 0 — 온라인 모드의 양의 증거(붙은 COM 캐시 아님·정책 끔)가 없으면
+    # 원인 미상(unknown, 사유 없음). 예전 V4 는 R-ONLINE(구조·확정 가능)으로 굳히고 '온라인 모드' 안내를 냈다
+    "idx_zero_ok": {"mail.index": ("unknown", E), "cal.index": ("unknown", E)},
     "idx_zero_noapp": {"mail.index": ("fail", {"R-NOAPP"}), "cal.index": ("fail", {"R-NOAPP"})},
     "idx_zero_newpkg": {"mail.index": ("fail", {"R-NEWOL"}), "cal.index": ("fail", {"R-NEWOL"})},
     "clm": {"env": ("fail", {"R-CLM"}), "mail.com": ("fail", {"R-CLM"}), "cal.com": ("fail", {"R-CLM"}),
@@ -332,7 +355,8 @@ EXPECT: dict[str, dict[str, tuple[str, set | frozenset]]] = {
     "applocker": {"env": ("fail", {"R-APPLOCKER"}), "pc.sampler": ("fail", {"R-APPLOCKER"})},
     "tz": {"env": ("ok", {"R-TZ"})},
     "edgepol_rd": {"edge_cdp_policy": ("fail", {"R-EDGEPOL"})},
-    "edgepol_dt": {"edge_cdp_policy": ("fail", {"R-EDGEPOL"})},
+    # M365 조사 M3: DeveloperToolsAvailability=2 만으로는 원격 디버깅 금지가 아니다(문서 — RemoteDebuggingAllowed 가 정본)
+    "edgepol_dt": {"edge_cdp_policy": ("ok", E)},
     "edge_none": {"edge_cdp_policy": ("fail", {"R-NOAPP"})},          # C4 — 실패에는 사유(미설치)
     "uia_novisible": {"teams.uia": ("fail", {"R-UIAEMPTY"})},
     "uia_denied": {"teams.uia": ("fail", {"R-UIAELEV"})},
@@ -550,6 +574,42 @@ class ReasonCodes(unittest.TestCase):
                     if "R-TRANSPORT" in c["reasons"]:
                         self.assertEqual(c["status"], "transport_fail")
                     self.assertRegex(c["sig"], r"^[0-9a-f]{12}$")
+
+
+class CompanyPcFacts(unittest.TestCase):
+    """계정 있는 회사 PC 위험(M365 조사 — 공식 문서 대조) 반영 값."""
+
+    def test_h7_running_outlook_not_blocked_by_profile_shape(self):
+        v = _cap(self, "noprof_running", "mail.com")["value"]
+        self.assertEqual((v["attach"], v["profiles"], v["profiles_total"]), ("ok", 0, 2))
+        self.assertEqual(_cap(self, "healthy", "mail.com")["value"]["profiles_total"], 1)
+
+    def test_m13_migration_policy_values(self):
+        v = _cap(self, "migration", "mail.com")["value"]
+        self.assertEqual((v["migration_auto"], v["migration_retry"]), (1, 1))
+        self.assertIsNone(_cap(self, "healthy", "mail.com")["value"]["migration_auto"])
+        self.assertNotEqual(_cap(self, "migration", "mail.com")["sig"], _cap(self, "healthy", "mail.com")["sig"])
+
+    def test_l7_sync_window_source(self):
+        v = _cap(self, "sync_policy", "mail.com")["value"]
+        self.assertEqual((v["sync_months"], v["sync_days"], v["sync_src"]), (0, 14, "policy"))
+        self.assertEqual(_cap(self, "healthy", "mail.com")["value"]["sync_src"], "newacct_default")
+
+    def test_m3_devtools_policy_is_value_only(self):
+        v = _cap(self, "edgepol_dt", "edge_cdp_policy")["value"]
+        self.assertEqual((v["devtools"], v["devtools_blocked"], v["remote_debugging"]), (2, True, None))
+        self.assertFalse(_cap(self, "healthy", "edge_cdp_policy")["value"]["devtools_blocked"])
+        self.assertEqual(_cap(self, "edgepol_rd", "edge_cdp_policy")["reasons"], ["R-EDGEPOL"])
+
+    def test_l7_index_policy_hklm_only(self):
+        v = _cap(self, "idxpolicy_hkcu", "mail.index")["value"]
+        self.assertEqual((v["policy"], v["policy_hkcu"]), (False, True))
+
+    def test_m2_online_evidence_values(self):
+        v = _cap(self, "idx_zero_notrunning", "mail.index")["value"]
+        self.assertEqual((v["online"], v["outlook_running"], v["n_365d"]), (False, False, 0))
+        self.assertTrue(_cap(self, "online_com", "mail.index")["value"]["online"])
+        self.assertTrue(_cap(self, "online_policy", "mail.index")["value"]["online"])
 
 
 class Watchdog(unittest.TestCase):

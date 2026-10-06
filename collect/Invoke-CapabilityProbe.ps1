@@ -34,6 +34,19 @@
   New-Object Outlook.Application 은 부르지 않는다 — 떠 있는 Outlook 에 GetActiveObject 로 붙기만 한다(C §4.3).
   보호 속성 시험 읽기는 경고가 없다고 판단될 때만(정책·백신 상태) 1회, 결과는 ok/blocked/timeout 뿐이다.
 
+  계정 있는 회사 PC 위험(M365 조사 — Microsoft 공식 문서 대조) 반영:
+    · '쓸 수 있는 프로필'(V7)은 주소록만 든 긍정 증거가 있을 때만 0 으로 센다(계정 관리자 레지스트리 모양은 문서에 없다 — H7).
+      Outlook 이 떠 있으면 프로필 판정으로 막지 않고 붙기 결과로 정한다. 값에 profiles(쓸 수 있는)·profiles_total 을 따로.
+    · 백신 상태는 문서화된 WscGetSecurityProviderHealth(WSC_SECURITY_PROVIDER_ANTIVIRUS)로 — GOOD 만 valid(M17).
+    · 관리자 주도 새 Outlook 전환 정책(DoNewOutlookAutoMigration·NewOutlookAutoMigrationRetryIntervals)을 값으로 남긴다(M13).
+    · 색인: Outlook 항목 0 을 R-ONLINE(구조·확정 가능)으로 단정하지 않는다 — 온라인 모드의 양의 증거(붙은 COM 의 캐시 아님 ·
+      캐시 모드 정책 끔)가 있을 때만. 그 밖의 0 은 unknown(색인은 Outlook 이 떠 있을 때만 갱신 · 색인 범위 · 첫 색인 —
+      문서상 원인이 여럿, M2). 365일 안 0 이지만 더 옛 항목이 있으면 R-STALE. Outlook 색인 금지 정책은 문서 경로(HKLM)만 판정에
+      쓰고 HKCU 값은 policy_hkcu 로만(L7). 메일 최신 항목이 probe.ostStaleH 보다 오래됐고 Outlook 이 꺼져 있으면 R-STALE(경고).
+    · Edge: 원격 디버깅을 막는 문서화된 정책은 RemoteDebuggingAllowed=0 뿐이다 — DeveloperToolsAvailability=2 는 막힘으로
+      판정하지 않고 값 devtools_blocked 로만 남긴다(M3 — 최종 판단은 브리지의 기능 확인, B §4.3).
+    · 보호 멤버(Object Model Guard)는 B단 시험 읽기(pr_start 단계 워치독 안) 한 곳에서만 읽는다.
+
   시험 주입(계약 §11.3): LM_PROBE_FAKE=<json>(이 탐침의 사실 묶음 — 계약 §11.3 등재 CR), LM_OUTLOOK_SELFTEST=N[,선택…]
   (Outlook·COM 가짜 — 앞 정수만 쓰고, 값이 있으면 실물 COM 을 건드리지 않는다), LM_INDEX_FAKE=<json>(색인 행 — WP-05
   synth 형식), -TestNow. LM_PROBE_FAKE 가 있으면 실제 환경을
@@ -95,15 +108,16 @@ $CFG_DEFAULT = [ordered]@{
 $CFG_NUMERIC = @('probe.budgetSec', 'probe.subfolderRatio', 'probe.ostStaleH', 'mail.com.watchdogSec',
     'mail.com.protectedReadSec', 'teams.uia.windowWatchdogSec', 'teams.uia.maxElements')
 $OL_KEYS = @('classic', 'version', 'c2r', 'msi', 'new_installed', 'use_new', 'new_running', 'migration_policy', 'profiles',
-    'profile_name', 'com_registered', 'com_server_match', 'running', 'ol_elevated', 'cached_policy', 'sync_months', 'omg_policy',
-    'av_state')
+    'profiles_total', 'profile_name', 'com_registered', 'com_server_match', 'running', 'ol_elevated', 'cached_policy', 'sync_months',
+    'sync_days', 'sync_src', 'omg_policy', 'av_state', 'migration_auto', 'migration_retry')
+$SYNC_SRC = @('policy', 'newacct_default')        # 동기화 기간 값을 읽은 곳(정책 키 · '새 Exchange 계정' 기본값 키 — KB3115009)
 $STORE_TYPES = @('primary', 'delegate', 'public', 'non_exchange', 'additional')   # Outlook OlExchangeStoreType 0~4
 $ENV_KEYS = @('language_mode', 'exec_policy', 'elevated', 'tz_offset_min', 'tz_id', 'domain_joined', 'aad_joined', 'ctypes',
     'addtype', 'ps_version', 'os_build')
 $EDGE_KEYS_F = @('installed', 'version', 'remote_debugging', 'devtools', 'profile')
 $TEAMS_KEYS = @('new_installed', 'new_version', 'classic_installed', 'classic_version', 'processes')
 $PC_KEYS = @('events', 'event_errors', 'recent_policy', 'lnk', 'mru', 'office_versions', 'git', 'git_src')
-$IDX_KEYS = @('service', 'connect', 'policy_outlook', 'catalog_status', 'paused_reason', 'ext_props', 'mail', 'cal')
+$IDX_KEYS = @('service', 'connect', 'policy_outlook', 'policy_hkcu', 'catalog_status', 'paused_reason', 'ext_props', 'mail', 'cal')
 $OFFICE_APPS = @('Word', 'Excel', 'PowerPoint', 'OneNote', 'Visio', 'Access', 'Publisher', 'Project')
 $PKG_ROOT = 'HKCU:\Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages'
 
@@ -702,6 +716,14 @@ namespace Lm27Probe {
     public static class Native {
         [StructLayout(LayoutKind.Sequential)] public struct LASTINPUTINFO { public uint cbSize; public uint dwTime; }
         [DllImport("user32.dll")] public static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
+        // Windows 보안 센터 — 문서화된 백신 상태 API(wscapi.h). providers 4 = WSC_SECURITY_PROVIDER_ANTIVIRUS.
+        // health 0 GOOD · 1 NOTMONITORED · 2 POOR · 3 SNOOZE. WSC 서비스가 꺼져 있으면 S_FALSE(1) + POOR. 서버 OS 미지원.
+        [DllImport("wscapi.dll")] static extern int WscGetSecurityProviderHealth(int providers, out int health);
+        public static int[] AvHealth() {
+            int h;
+            int hr = WscGetSecurityProviderHealth(4, out h);
+            return new int[] { hr, h };
+        }
         public static int[] CatalogStatus() {
             Type t = Type.GetTypeFromCLSID(new Guid("7D096C5F-AC08-4F1F-BEB7-5C22C517CE39"));
             object o = Activator.CreateInstance(t);
@@ -796,7 +818,7 @@ function Get-EnvFacts([bool]$Full) {
 function Get-SelfTestOl {
     $h = Copy-Facts $null $OL_KEYS
     $h['classic'] = $true; $h['version'] = '16.0.4000'; $h['c2r'] = $true; $h['msi'] = $false
-    $h['new_installed'] = $false; $h['use_new'] = $false; $h['new_running'] = $false; $h['profiles'] = 1
+    $h['new_installed'] = $false; $h['use_new'] = $false; $h['new_running'] = $false; $h['profiles'] = 1; $h['profiles_total'] = 1
     $h['profile_name'] = 'selftest'; $h['com_registered'] = $true; $h['com_server_match'] = $true; $h['running'] = $true
     $h['ol_elevated'] = $false; $h['sync_months'] = 0; $h['omg_policy'] = 'never'; $h['av_state'] = 'valid'
     return $h
@@ -833,48 +855,95 @@ function Get-OmgPolicy([string]$Ov) {
     return 'auto'
 }
 
+function ConvertTo-AvState($Hr, $Health) {
+    # WscGetSecurityProviderHealth 결과 → 백신 상태. Outlook 개체 모델 보안은 'WSC 가 백신을 Good 으로 볼 때' 경고 없이 돈다
+    # (security-behavior-of-the-outlook-object-model) — GOOD(0) 만 valid. S_FALSE(서비스 꺼짐)·POOR·NOTMONITORED·SNOOZE 는 invalid,
+    # 그 밖의 오류는 unknown(모르면 B단을 켜지 않는다 — Test-OmgExpected).
+    if ($null -eq $Hr -or $null -eq $Health) { return 'unknown' }
+    if ([int]$Hr -eq 0 -and [int]$Health -eq 0) { return 'valid' }
+    if ([int]$Hr -eq 0 -or [int]$Hr -eq 1) { return 'invalid' }
+    return 'unknown'
+}
+
 function Get-AvState {
-    try {
-        $av = @(Get-CimInstance -Namespace 'root/SecurityCenter2' -ClassName AntiVirusProduct -ErrorAction Stop)
-        if ($av.Count -eq 0) { return 'invalid' }
-        foreach ($a in $av) {
-            $s = [int]$a.productState
-            if (((($s -shr 12) -band 15) -eq 1) -and ((($s -shr 4) -band 15) -eq 0)) { return 'valid' }
-        }
-        return 'invalid'
-    } catch { return 'unknown' }
+    # 문서화된 API(wscapi WscGetSecurityProviderHealth)만 쓴다 — SecurityCenter2 productState 비트 해석은 문서화된 계약이 아니라
+    # 쓰지 않는다(M365 조사 M17). 서버 OS(미지원)·Add-Type 불가면 unknown.
+    if (-not (Initialize-Native)) { return 'unknown' }
+    try { $x = [Lm27Probe.Native]::AvHealth(); return (ConvertTo-AvState $x[0] $x[1]) } catch { return 'unknown' }
+}
+
+function Get-MigrationPolicy {
+    # 관리자 주도 새 Outlook 전환 정책(문서 admin-controlled-migration-policy) — 정책 키가 사용자 키보다 우선. 값만 읽는다.
+    # DoNewOutlookAutoMigration=1: 클래식을 띄울 때 전환 안내(3단계 — 마지막은 막는 프롬프트, 그 뒤 다음 실행에서 새 Outlook 으로
+    # 넘어감). NewOutlookAutoMigrationRetryIntervals=1: 클래식을 띄울 때마다 막는 프롬프트. 같은 함수가 탐침에도 같다.
+    $r = @{ auto = $null; retry = $null }
+    foreach ($k in @('HKCU:\Software\Policies\Microsoft\Office\16.0\Outlook\Options\General',
+                     'HKCU:\Software\Microsoft\Office\16.0\Outlook\Options\General')) {
+        $p = $null
+        try { $p = Get-ItemProperty -LiteralPath $k -ErrorAction Stop } catch { $p = $null }
+        if ($null -eq $p) { continue }
+        if ($null -eq $r.auto -and $p.PSObject.Properties['DoNewOutlookAutoMigration']) { try { $r.auto = [int]$p.DoNewOutlookAutoMigration } catch { } }
+        if ($null -eq $r.retry -and $p.PSObject.Properties['NewOutlookAutoMigrationRetryIntervals']) { try { $r.retry = [int]$p.NewOutlookAutoMigrationRetryIntervals } catch { } }
+    }
+    return $r
 }
 
 function Get-OutlookProfileState {
-    # Outlook 프로필 수와 '쓸 수 있는' 프로필 수(메일 계정·데이터 파일이 하나라도 든 것) — 계약 v1.3 §0.8 V7.
-    # 주소록(CONTAB·LDAP)만 든 프로필은 Outlook 을 띄우면 'Outlook 시작' 마법사가 뜬다(실측) — 쓸 수 없다고 센다.
-    # 계정 관리자 키가 없거나 읽을 수 없으면 예전처럼 쓸 수 있다고 본다(모르면 막힘으로 단정하지 않는다).
+    # Outlook 프로필 수와 '쓸 수 있는' 프로필 수 — 계약 v1.3 §0.8 V7. 계정 관리자 레지스트리 모양은 문서화돼 있지 않다(계정 관리
+    # API 는 CLSID 상수만 정의 — M365 조사 H7). 그래서 '쓸 수 없음'은 주소록만 든 긍정 증거가 있을 때만 센다: 메일 계정 목록
+    # {ED475418}·데이터 파일 목록{ED475420}이 없거나 비었고, 계정 하위 키가 모두 주소록(LDAP 계정 CLSID 또는 MAPI 계정의 서비스
+    # 이름 CONTAB·EMABLT)이며, 주소록 계정이나 주소록 목록{ED475419}이 하나라도 있을 때. 그 밖(Exchange·POP·IMAP·Hotmail/EAS·
+    # 서비스 이름 없는 MAPI 계정·모르는 모양·계정 관리자 키 없음)은 쓸 수 있다고 본다 — 회사 PC 의 Exchange 프로필을 막힘으로
+    # 오판하지 않게(모르면 막힘으로 단정하지 않는다). 주소록만 든 프로필은 띄우면 'Outlook 시작' 마법사가 뜬다(개발 PC 실측).
+    # -Shapes = 시험 주입(레지스트리에서 읽은 것과 같은 모양 @{am; vals; accts}). 같은 함수가 탐침·COM·색인 수집기에 같다.
     param([string[]]$Roots = @('HKCU:\Software\Microsoft\Office\16.0\Outlook\Profiles',
                                'HKCU:\Software\Microsoft\Office\15.0\Outlook\Profiles',
-                               'HKCU:\Software\Microsoft\Windows NT\CurrentVersion\Windows Messaging Subsystem\Profiles'))
-    $r = @{ total = 0; usable = 0 }
-    foreach ($root in $Roots) {
-        foreach ($pk in @(Get-ChildItem -LiteralPath $root -ErrorAction SilentlyContinue)) {
-            $r.total++
-            $am = $null
-            try { $am = Get-Item -LiteralPath (Join-Path $pk.PSPath '9375CFF0413111d3B88A00104B2A6676') -ErrorAction Stop } catch { $am = $null }
-            if ($null -eq $am) { $r.usable++; continue }
-            $listed = 0
-            foreach ($n in @('{ED475418-B0D6-11D2-8C3B-00104B2A6676}', '{ED475420-B0D6-11D2-8C3B-00104B2A6676}')) {   # 메일 계정 목록 · 데이터 파일 목록
-                $v = $am.GetValue($n)
-                if ($v -is [byte[]]) { $listed += $v.Length } elseif ($null -ne $v -and [string]$v) { $listed++ }
+                               'HKCU:\Software\Microsoft\Windows NT\CurrentVersion\Windows Messaging Subsystem\Profiles'),
+          [object[]]$Shapes = $null)
+    $MAPI = '{ED475414-B0D6-11D2-8C3B-00104B2A6676}'                   # OlkMAPIAccount(Exchange·주소록 모두 이 CLSID)
+    $LDAP = '{4DB5CBF2-3B77-4852-BC8E-BB81908861F3}'                   # OlkLDAPAccount
+    $LISTS = @('{ED475418-B0D6-11D2-8C3B-00104B2A6676}', '{ED475420-B0D6-11D2-8C3B-00104B2A6676}')   # 메일 계정 목록 · 데이터 파일 목록
+    $ABLIST = '{ED475419-B0D6-11D2-8C3B-00104B2A6676}'                 # 주소록 목록
+    if ($null -eq $Shapes) {
+        $sh = New-Object System.Collections.Generic.List[object]
+        foreach ($root in $Roots) {
+            foreach ($pk in @(Get-ChildItem -LiteralPath $root -ErrorAction SilentlyContinue)) {
+                $am = $null
+                try { $am = Get-Item -LiteralPath (Join-Path $pk.PSPath '9375CFF0413111d3B88A00104B2A6676') -ErrorAction Stop } catch { $am = $null }
+                if ($null -eq $am) { $sh.Add(@{ am = $false }); continue }
+                $vals = @{}
+                foreach ($n in @($LISTS + $ABLIST)) { $vals[$n] = $am.GetValue($n) }
+                $accts = New-Object System.Collections.Generic.List[object]
+                foreach ($ak in @(Get-ChildItem -LiteralPath $am.PSPath -ErrorAction SilentlyContinue)) {
+                    $accts.Add(@{ clsid = $ak.GetValue('clsid'); svc = $ak.GetValue('Service Name') })
+                }
+                $sh.Add(@{ am = $true; vals = $vals; accts = $accts.ToArray() })
             }
-            $mail = $false
-            foreach ($ak in @(Get-ChildItem -LiteralPath $am.PSPath -ErrorAction SilentlyContinue)) {
-                $svc = $ak.GetValue('Service Name')
-                if ($svc -is [byte[]]) { $svc = [Text.Encoding]::Unicode.GetString($svc) }
-                $svc = ([string]$svc).Trim([char]0).Trim().ToUpperInvariant()
-                $cls = ([string]$ak.GetValue('clsid')).Trim().ToUpperInvariant()
-                if ($cls -and $cls -ne '{ED475414-B0D6-11D2-8C3B-00104B2A6676}') { $mail = $true }        # POP·IMAP·EAS 같은 MAPI 밖 계정
-                elseif ($svc -and @('CONTAB', 'EMABLT') -notcontains $svc) { $mail = $true }              # Exchange(MSEMS)·데이터 파일 등
-            }
-            if ($listed -gt 0 -or $mail) { $r.usable++ }
         }
+        $Shapes = $sh.ToArray()
+    }
+    $r = @{ total = 0; usable = 0 }
+    foreach ($p in $Shapes) {
+        $r.total++
+        if (-not $p.am) { $r.usable++; continue }
+        $listed = 0
+        foreach ($n in $LISTS) {
+            $v = $p.vals[$n]
+            if ($v -is [byte[]]) { $listed += $v.Length } elseif ($null -ne $v -and [string]$v) { $listed++ }
+        }
+        $ab = 0
+        $v = $p.vals[$ABLIST]
+        if (($v -is [byte[]] -and $v.Length -gt 0) -or ($v -isnot [byte[]] -and $null -ne $v -and [string]$v)) { $ab = 1 }
+        $other = 0
+        foreach ($ac in @($p.accts)) {
+            if ($null -eq $ac) { continue }
+            $svc = $ac.svc
+            if ($svc -is [byte[]]) { $svc = [Text.Encoding]::Unicode.GetString($svc) }
+            $svc = ([string]$svc).Trim([char]0).Trim().ToUpperInvariant()
+            $cls = ([string]$ac.clsid).Trim().ToUpperInvariant()
+            if ($cls -eq $LDAP -or ($cls -eq $MAPI -and @('CONTAB', 'EMABLT') -contains $svc)) { $ab++ } else { $other++ }
+        }
+        if ($listed -gt 0 -or $other -gt 0 -or $ab -eq 0) { $r.usable++ }
     }
     return $r
 }
@@ -962,8 +1031,13 @@ function Get-OlFacts {
     $h['new_running'] = [bool](@(Get-Process -Name olk -ErrorAction SilentlyContinue).Count)
     $mig = Get-RegValue 'HKCU:\Software\Policies\Microsoft\Office\16.0\Outlook\Preferences' 'NewOutlookMigrationUserSetting'
     if ($null -ne $mig) { try { $h['migration_policy'] = [int]$mig } catch { } }
-    # 쓸 수 있는 프로필(메일 계정·데이터 파일이 든 것)만 센다 — 주소록만 든 프로필은 띄우면 '시작' 마법사(계약 v1.3 §0.8 V7)
-    $h['profiles'] = [int](Get-OutlookProfileState).usable
+    $am = Get-MigrationPolicy                                          # 관리자 주도 전환 정책(M13) — 값만
+    $h['migration_auto'] = $am.auto
+    $h['migration_retry'] = $am.retry
+    # 쓸 수 있는 프로필(주소록만 든 긍정 증거가 없는 것) — 계약 v1.3 §0.8 V7 · M365 조사 H7. 전체 수도 따로 남긴다
+    $pst = Get-OutlookProfileState
+    $h['profiles'] = [int]$pst.usable
+    $h['profiles_total'] = [int]$pst.total
     $ov = '16.0'
     if ($h['version'] -match '^(\d+)\.') { $ov = $Matches[1] + '.0' }
     $h['profile_name'] = Get-RegValue "HKCU:\Software\Microsoft\Office\$ov\Outlook" 'DefaultProfile'
@@ -981,9 +1055,19 @@ function Get-OlFacts {
     $cm = "HKCU:\Software\Policies\Microsoft\Office\$ov\Outlook\Cached Mode"
     $en = Get-RegValue $cm 'Enable'
     if ($null -ne $en) { if ([int]$en -eq 0) { $h['cached_policy'] = 'off' } else { $h['cached_policy'] = 'on' } }
+    # 동기화 기간(정보값 — 수집기는 지평선을 실측한다): 정책 키(SyncWindowSetting 개월·SyncWindowSettingDays 일)가 있으면 그것,
+    # 없으면 사용자 키 — 문서(KB3115009)상 사용자 키는 '새 Exchange 계정'의 기본값이고 실제 설정은 프로필 안에 있다(sync_src)
     $sw = Get-RegValue $cm 'SyncWindowSetting'
-    if ($null -eq $sw) { $sw = Get-RegValue "HKCU:\Software\Microsoft\Office\$ov\Outlook\Cached Mode" 'SyncWindowSetting' }
-    if ($null -ne $sw) { $h['sync_months'] = [int]$sw }
+    $sd = Get-RegValue $cm 'SyncWindowSettingDays'
+    if ($null -ne $sw -or $null -ne $sd) { $h['sync_src'] = 'policy' }
+    else {
+        $uk = "HKCU:\Software\Microsoft\Office\$ov\Outlook\Cached Mode"
+        $sw = Get-RegValue $uk 'SyncWindowSetting'
+        $sd = Get-RegValue $uk 'SyncWindowSettingDays'
+        if ($null -ne $sw -or $null -ne $sd) { $h['sync_src'] = 'newacct_default' }
+    }
+    if ($null -ne $sw) { try { $h['sync_months'] = [int]$sw } catch { } }
+    if ($null -ne $sd) { try { $h['sync_days'] = [int]$sd } catch { } }
     $h['omg_policy'] = Get-OmgPolicy $ov
     $h['av_state'] = Get-AvState
     return $h
@@ -1049,7 +1133,8 @@ function Get-IdxFromIndexFake([string]$Path) {
     # 날짜·반복 표시만 읽는다(제목·주소·장소 칸은 보지 않는다).
     $o = Read-JsonFile $Path
     $h = Copy-Facts $null $IDX_KEYS
-    $h['service'] = 'running'; $h['connect'] = $true; $h['policy_outlook'] = $false; $h['catalog_status'] = 0; $h['paused_reason'] = 0
+    $h['service'] = 'running'; $h['connect'] = $true; $h['policy_outlook'] = $false; $h['policy_hkcu'] = $false; $h['catalog_status'] = 0
+    $h['paused_reason'] = 0
     $h['ext_props'] = $true
     $ma = New-IdxAcc
     foreach ($row in @(P $o 'mail')) {
@@ -1089,9 +1174,10 @@ function Get-IdxFacts {
         elseif ([string]$svc.Status -eq 'Running') { $h['service'] = 'running' }
         else { $h['service'] = 'stopped' }
     } catch { $h['service'] = 'missing' }
-    foreach ($b in @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search', 'HKCU:\SOFTWARE\Policies\Microsoft\Windows\Windows Search')) {
-        if ((Get-RegValue $b 'PreventIndexingOutlook') -eq 1) { $h['policy_outlook'] = $true }
-    }
+    # Outlook 색인 금지 정책 — 문서 경로는 HKLM 뿐(support 'Outlook search might not display recent emails'). HKCU 값은 판정에
+    # 쓰지 않고 policy_hkcu 로만 남긴다(색인 수집기와 같은 판정 — M365 조사 L7)
+    $h['policy_outlook'] = ((Get-RegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search' 'PreventIndexingOutlook') -eq 1)
+    $h['policy_hkcu'] = ((Get-RegValue 'HKCU:\SOFTWARE\Policies\Microsoft\Windows\Windows Search' 'PreventIndexingOutlook') -eq 1)
     if ($h['service'] -ne 'running') { return $h }
     if (Initialize-Native) {
         try { $cs = [Lm27Probe.Native]::CatalogStatus(); $h['catalog_status'] = [int]$cs[0]; $h['paused_reason'] = [int]$cs[1] } catch { }
@@ -1246,9 +1332,9 @@ function Test-OmgExpected($O) {
 }
 
 function Test-ComEligible($E, $O) {
+    # 떠 있는 클래식 Outlook 에만 붙는다(띄우지 않음). 떠 있으면 프로필 판정(문서화되지 않은 레지스트리 모양 — H7)으로 막지 않는다
     if ([string]$E['language_mode'] -ne 'FullLanguage') { return $false }
     if ($null -eq $O -or -not (B $O['classic']) -or (Test-NewOnly $O)) { return $false }
-    if ((S-Int $O['profiles']) -eq 0) { return $false }
     return (B $O['running'])
 }
 
@@ -1386,7 +1472,7 @@ function Decide-Outlook($E, $O, $Com, [string]$ComState, [string]$InstState) {
     if ($lang -and $lang -ne 'FullLanguage') { $rs['R-CLM'] = 1; $st = 'fail' }
     elseif ($newOnly) { $rs['R-NEWOL'] = 1; $st = 'fail' }
     elseif (-not $classic) { $rs['R-NOAPP'] = 1; $st = 'fail' }          # 계약 v1.2 §0.7 C4 — 실패에는 사유(클래식 Outlook 미설치)
-    elseif ($profiles -eq 0) { $rs['R-NOPROF'] = 1; $st = 'fail' }
+    elseif ($profiles -eq 0 -and -not (B $O['running'])) { $rs['R-NOPROF'] = 1; $st = 'fail' }   # 떠 있으면 붙기 결과로(H7)
     if ($classic -and (Test-OfficeEol $O)) { $rs['R-OFFICE'] = 1 }
     if ($classic -and -not $newOnly -and $mismatch -and $profiles -ne 0) { $rs['R-WIZARD'] = 1 }
     $attach = [string](P $Com 'attach')
@@ -1439,7 +1525,8 @@ function Decide-Outlook($E, $O, $Com, [string]$ComState, [string]$InstState) {
     $vp = Get-VersionParts ([string]$O['version'])
     $common = [ordered]@{
         classic = $classic; version = (S-Rx $O['version'] $RX_VER); c2r = (S-Bool $O['c2r']); msi = (S-Bool $O['msi'])
-        new_outlook = $newOnly; use_new = (S-Bool $O['use_new']); profiles = $profiles
+        new_outlook = $newOnly; use_new = (S-Bool $O['use_new']); profiles = $profiles; profiles_total = (S-Int $O['profiles_total'])
+        migration_auto = (S-Int $O['migration_auto']); migration_retry = (S-Int $O['migration_retry'])
         com_registered = (S-Bool $O['com_registered']); com_server_match = (S-Bool $O['com_server_match'])
         running = (S-Bool $O['running']); attach = $attach; hresult = $hr; omg = $omg
         omg_policy = (S-Enum $O['omg_policy'] $OMG_POLICIES); av_state = (S-Enum $O['av_state'] $AV_STATES)
@@ -1451,6 +1538,8 @@ function Decide-Outlook($E, $O, $Com, [string]$ComState, [string]$InstState) {
     $mv['cached'] = $cached
     $mv['cached_policy'] = S-Enum $O['cached_policy'] @('on', 'off')
     $mv['sync_months'] = S-Int $O['sync_months']
+    $mv['sync_days'] = S-Int $O['sync_days']
+    $mv['sync_src'] = S-Enum $O['sync_src'] $SYNC_SRC
     $mv['stores'] = S-Int (P $Com 'stores')
     $sty = [ordered]@{}
     $styIn = P $Com 'store_types'
@@ -1477,16 +1566,23 @@ function Decide-Outlook($E, $O, $Com, [string]$ComState, [string]$InstState) {
     foreach ($k in $common.Keys) { $cv[$k] = $common[$k] }
     $cv['cal_items'] = S-Int (P $Com 'cal_items')
     $sig = @('ol', $lang, $classic, $newOnly, $vp[0], (B $O['c2r']), (B $O['msi']), ($profiles -gt 0), (Get-Fnv ([string]$O['profile_name'])),
-        $mismatch, (S-Bool $E['elevated']), (S-Bool $O['ol_elevated']), [string]$O['omg_policy'], [string]$O['av_state'])
+        $mismatch, (S-Bool $E['elevated']), (S-Bool $O['ol_elevated']), [string]$O['omg_policy'], [string]$O['av_state'],
+        (S-Int $O['migration_auto']))
     return @((New-Cap $st $mrs $mv $sig), (New-Cap $st $crs $cv $sig))
 }
 
 function Test-Online($O, $Com) {
+    # 온라인 모드(캐시 끔)의 양의 증거만: 붙은 COM 의 기본 저장소가 캐시 모드 아님 · 캐시 모드 정책 끔
     if ([string](P $Com 'attach') -eq 'ok' -and (P $Com 'cached') -eq $false) { return $true }
     return ([string]$O['cached_policy'] -eq 'off')
 }
 
 function Decide-Index($E, $O, $I, $Com, [string]$Kind, [string]$GroupState) {
+    # 색인 판정(계약 v1.3 §0.8 V4 + M365 조사 M2·L7). Outlook 항목이 0 일 때: 정책(HKLM) R-IDXPOLICY · 일시정지 R-IDXPAUSED ·
+    # 클래식 없음 → 새 Outlook 흔적 R-NEWOL 없으면 R-NOAPP · 클래식 있고 꺼져 있고 쓸 수 있는 프로필 0 R-NOPROF · 온라인 모드의
+    # 양의 증거 R-ONLINE · 그 밖은 unknown(사유 없음). 문서상 색인이 빌 원인이 여럿이다 — Outlook 데이터 색인은 Outlook 이 떠
+    # 있을 때만 · 색인 옵션에서 'Microsoft Outlook' 제외 · VDI 재색인 · 첫 색인 중(FULL_CRAWL) — 그래서 증거 없이 '온라인 모드
+    # (구조·확정 가능)'로 굳히지 않는다. 365일 안 0 이지만 더 옛 항목이 있으면 낡은 색인(R-STALE, unknown).
     if ($null -eq $I) { return (New-MissingCap $GroupState) }
     $rs = @{}
     $st = $null
@@ -1496,31 +1592,37 @@ function Decide-Index($E, $O, $I, $Com, [string]$Kind, [string]$GroupState) {
     $n = S-Int (P $cnt 'n365')
     $cs = S-Int $I['catalog_status']
     $paused = ($null -ne $cs -and $cs -ge 1 -and $cs -le 3)
+    $nw = Parse-Utc (P $cnt 'newest')
+    $od = Parse-Utc (P $cnt 'oldest')
+    $running = $null
+    if ($null -ne $O) { $running = S-Bool $O['running'] }
+    $online = $false
+    if ($null -ne $O) { $online = Test-Online $O $Com }
     if ($lang -and $lang -ne 'FullLanguage') { $rs['R-CLM'] = 1; $st = 'fail' }
     elseif ($svc -eq 'stopped' -or $svc -eq 'disabled' -or $svc -eq 'missing' -or -not (B $I['connect'])) { $rs['R-NOIDX'] = 1; $st = 'fail' }
     elseif (B $I['policy_outlook']) { $rs['R-IDXPOLICY'] = 1; $st = 'fail' }
-    elseif ($null -ne $n -and $n -gt 0) { $st = 'ok'; if ($paused) { $rs['R-IDXPAUSED'] = 1 } }
+    elseif ($null -ne $n -and $n -gt 0) {
+        $st = 'ok'
+        if ($paused) { $rs['R-IDXPAUSED'] = 1 }
+        # 메일 최신 항목이 오래됐고 Outlook 이 꺼져 있다 — 색인은 Outlook 이 떠 있을 때만 갱신된다(경고 — 수집기가 지평선으로)
+        if ($Kind -eq 'mail' -and $null -ne $nw -and $running -ne $true -and ((Get-NowUtc) - $nw).TotalHours -gt [double]$script:Cfg['probe.ostStaleH']) { $rs['R-STALE'] = 1 }
+    }
     elseif ($paused) { $rs['R-IDXPAUSED'] = 1; $st = 'fail' }
     elseif (Test-NewOnly $O) { $rs['R-NEWOL'] = 1; $st = 'fail' }
     elseif ($null -ne $n -and $n -eq 0 -and $null -ne $O -and -not (B $O['classic'])) { $rs['R-NOAPP'] = 1; $st = 'fail' }   # 클래식·새 Outlook 모두 없음(수집기와 같은 판정 — W2 C10)
-    elseif ($null -ne $O -and (B $O['classic']) -and (S-Int $O['profiles']) -eq 0) { $rs['R-NOPROF'] = 1; $st = 'fail' }
-    elseif ($null -ne $O -and (Test-Online $O $Com)) { $rs['R-ONLINE'] = 1; $st = 'fail' }
-    elseif ($null -ne $n -and $n -eq 0 -and $null -ne $O -and (B $O['classic'])) { $rs['R-ONLINE'] = 1; $st = 'fail' }   # 클래식이 있는데 색인에 Outlook 항목 0 = 온라인 모드(수집기 판정과 같게)
-    elseif ($null -eq $n) { $st = 'unknown' }
-    else { $st = 'ok' }
+    elseif ($null -ne $O -and (B $O['classic']) -and (S-Int $O['profiles']) -eq 0 -and $running -ne $true) { $rs['R-NOPROF'] = 1; $st = 'fail' }
+    elseif ($null -ne $O -and $online) { $rs['R-ONLINE'] = 1; $st = 'fail' }
+    elseif ($null -ne $n -and $n -eq 0 -and $null -ne $od) { $rs['R-STALE'] = 1; $st = 'unknown' }      # 옛 항목만 — 색인이 멈춤
+    else { $st = 'unknown' }                                              # 0 건·원인 미상(n 모름 포함) — 막힘으로 단정하지 않는다
     $v = [ordered]@{
-        service = $svc; connect = (S-Bool $I['connect']); policy = (S-Bool $I['policy_outlook']); catalog_status = $cs
-        paused_reason = (S-Int $I['paused_reason']); ext_props = (S-Bool $I['ext_props'])
+        service = $svc; connect = (S-Bool $I['connect']); policy = (S-Bool $I['policy_outlook']); policy_hkcu = (S-Bool $I['policy_hkcu'])
+        catalog_status = $cs; paused_reason = (S-Int $I['paused_reason']); ext_props = (S-Bool $I['ext_props'])
         n_30d = (S-Int (P $cnt 'n30')); n_90d = (S-Int (P $cnt 'n90')); n_365d = $n
-        newest = $null; oldest = $null; capped = (S-Bool (P $cnt 'capped'))
+        newest = $null; oldest = $null; capped = (S-Bool (P $cnt 'capped')); online = $online; outlook_running = $running
     }
-    $nw = Parse-Utc (P $cnt 'newest')
-    $od = Parse-Utc (P $cnt 'oldest')
     if ($null -ne $nw) { $v['newest'] = $nw.ToString('yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture) }
     if ($null -ne $od) { $v['oldest'] = $od.ToString('yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture) }
     if ($Kind -eq 'cal') { $v['recurring'] = S-Int (P $cnt 'recurring') }
-    $online = $false
-    if ($null -ne $O) { $online = Test-Online $O $Com }
     return (New-Cap $st $rs $v @('idx', $Kind, $lang, $svc, (B $I['connect']), (B $I['policy_outlook']), (Test-NewOnly $O),
             ($null -ne $O -and (S-Int $O['profiles']) -gt 0), $online))
 }
@@ -1530,11 +1632,14 @@ function Decide-Edge($F, [string]$GroupState) {
     $rs = @{}
     $rd = S-Int $F['remote_debugging']
     $dt = S-Int $F['devtools']
+    # 원격 디버깅을 통제하는 문서화된 정책은 RemoteDebuggingAllowed(0 = 금지)뿐이다. DeveloperToolsAvailability=2 의 문서는 개발자
+    # 도구·요소 검사만 말하고 원격 디버깅을 언급하지 않는다 — 막힘으로 판정하지 않고 devtools_blocked 로만 남긴다(M365 조사 M3,
+    # 최종 판단은 브리지의 기능 확인 — B §4.3)
     if (-not (B $F['installed'])) { $rs['R-NOAPP'] = 1; $st = 'fail' }    # C4 — Edge 미설치
-    elseif (($null -ne $rd -and $rd -eq 0) -or ($null -ne $dt -and $dt -eq 2)) { $rs['R-EDGEPOL'] = 1; $st = 'fail' }
+    elseif ($null -ne $rd -and $rd -eq 0) { $rs['R-EDGEPOL'] = 1; $st = 'fail' }
     else { $st = 'ok' }
     $v = [ordered]@{ installed = (B $F['installed']); version = (S-Rx $F['version'] $RX_VER); remote_debugging = $rd; devtools = $dt
-        profile = (S-Bool $F['profile']) }
+        devtools_blocked = ($null -ne $dt -and $dt -eq 2); profile = (S-Bool $F['profile']) }
     return (New-Cap $st $rs $v @('edge', (B $F['installed']), $rd, $dt))
 }
 

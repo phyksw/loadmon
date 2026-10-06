@@ -124,6 +124,36 @@ class PlanCase(unittest.TestCase):
         self.assertEqual(plan.read_protected(self.cfg, {}), "0")
         self.assertEqual(plan.read_protected(self.sb.cfg(**{"mail.com.readProtected": "1"}), {}), "1")
 
+    def test_read_protected_when_outlook_was_closed(self):
+        """M365 조사 M17: 탐침 때 Outlook 이 꺼져 있었어도 정책·백신(WSC GOOD)으로 OMG 없음이면 B단을 켠다 — 예전에는 늘 0 이라
+        백신이 정상인 보통 회사 PC 도 주소 없이 모였다. 추정이 틀리면 수집기의 B단 카나리아가 B단 없이 다시 붙는다."""
+        self.assertEqual(plan.read_protected(self.cfg, {"mail.com": {"value": {"omg": False, "attach": "not_running"}}}), "1")
+        self.assertEqual(plan.read_protected(self.cfg, {"mail.com": {"value": {"omg": True, "attach": "not_running"}}}), "0")
+        for at in ("timeout", "crash", "unavailable", "not_attempted", "budget", None):
+            self.assertEqual(plan.read_protected(self.cfg, {"mail.com": {"value": {"omg": False, "attach": at}}}), "0", at)
+        self.assertEqual(plan.read_protected(self.sb.cfg(**{"mail.com.readProtected": "0"}),
+                                             {"mail.com": {"value": {"omg": False, "attach": "not_running"}}}), "0")
+
+    def test_edge_devtools_only_record_does_not_skip_web(self):
+        """M365 조사 M3: 원격 디버깅을 막는 문서화된 정책은 RemoteDebuggingAllowed(0) 뿐 — DeveloperToolsAvailability=2 만으로 낸
+        예전 R-EDGEPOL 기록으로 웹 경로를 건너뛰지 않는다. RemoteDebuggingAllowed=0 이면 그대로 건너뛴다."""
+        roles = plan.pc_roles(CLOUD, pcs=[CLOUD], cfg=self.cfg)
+        legacy = {"edge_cdp_policy": {"status": "fail", "reasons": ["R-EDGEPOL"],
+                                      "value": {"remote_debugging": None, "devtools": 2}}}
+        st = {s.name: s for s in plan.stage_plan(roles, legacy, None, cfg=self.cfg)}
+        self.assertEqual(st["backfill_owa"].srcs, ("mail.owa", "cal.owa"))
+        self.assertFalse(st["backfill_owa"].skip)
+        self.assertEqual(st["backfill_teams_web"].srcs, ("teams.web",))
+        blocked = {"edge_cdp_policy": {"status": "fail", "reasons": ["R-EDGEPOL"],
+                                       "value": {"remote_debugging": 0, "devtools": None}}}
+        st2 = {s.name: s for s in plan.stage_plan(roles, blocked, None, cfg=self.cfg)}
+        self.assertEqual(sorted(st2["backfill_owa"].skip), ["cal.owa", "mail.owa"])
+
+    def test_com_collector_gets_stale_threshold(self):
+        # H10 — OST 신선도 기준(probe.ostStaleH)을 COM 수집기 _in.cfg 로 넘긴다
+        self.assertIn("probe.ostStaleH", plan.COLLECTORS["mail.com"].cfg)
+        self.assertIn("probe.ostStaleH", plan.COLLECTORS["cal.com"].cfg)
+
     def test_spec_limits_and_stage_of(self):
         self.assertEqual(plan.stage_of("mail.com"), "mail_local")
         self.assertEqual(plan.COLLECTORS["mail.com"].limit_s(self.cfg), 360 + plan.PS_SLACK_S)

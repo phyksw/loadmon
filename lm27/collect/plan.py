@@ -57,7 +57,7 @@ _PY_SINCE = ("--from", "--to")
 _FILE_KEYS = ("pc.watchExtensions", "pc.excludeFolderNames", "pc.excludePackageDirs", "collect.lookbackDays")
 _COM_KEYS = ("mail.com.budgetSec", "mail.com.watchdogSec", "mail.com.protectedReadSec", "mail.com.capMail",
              "mail.com.capCal", "mail.com.readProtected", "mail.includeArchiveStore", "collect.ownerAddress",
-             "probe.subfolderRatio", "collect.lookbackDays")
+             "probe.subfolderRatio", "probe.ostStaleH", "collect.lookbackDays")
 _IDX_KEYS = ("mail.index.capMail", "mail.index.capCal", "mail.index.excludeFolderNames", "collect.ownerAddress",
              "collect.lookbackDays")
 _UIA_KEYS = ("teams.timeRegex", "teams.uia.visibleOnly", "teams.uia.maxElements", "teams.uia.windowWatchdogSec",
@@ -275,15 +275,22 @@ def copilot_enabled(cfg, src: str) -> bool:
     return bool(stages.get(st)) if isinstance(stages, dict) else False
 
 
+B_ATTACH_OK = ("ok", "not_running")          # B단 auto 를 켤 수 있는 탐침 붙기 상태
+
+
 def read_protected(cfg, caps) -> str:
-    """COM B단(보호 열) 읽기 허용 ``"0"``·``"1"``(``mail.com.readProtected`` — auto 는 탐침이 OMG 없음을 확인한 PC 만 1,
-    CM §5.4 · WP-17). 탐침 값이 없거나 OMG 미상이면 0(경고창을 띄우지 않는 쪽)."""
+    """COM B단(보호 열) 읽기 허용 ``"0"``·``"1"``(``mail.com.readProtected`` — auto 는 탐침이 OMG 없음을 판정한 PC 만 1,
+    CM §5.4 · WP-17). 탐침 값이 없거나 OMG 미상(None)이면 0(경고창을 띄우지 않는 쪽).
+
+    탐침 때 Outlook 이 꺼져 있었으면(``attach == "not_running"``) 탐침의 ``omg`` 는 정책·백신 상태(WSC GOOD)만으로 정한
+    추정이다 — 예전에는 그런 PC(백신이 정상인 보통 회사 PC 대부분)에서 B단이 늘 꺼져 주소 없이 모였다(M365 조사 M17).
+    추정이 틀려 경고창이 뜨면 수집기가 B단 카나리아(``pr_start`` 단계 워치독)에서 끊고 B단 없이 다시 붙는다(R-OMG)."""
     v = str(cfg["mail.com.readProtected"]) if cfg is not None else "auto"
     if v in ("0", "1"):
         return v
     cap = (caps or {}).get("mail.com") or {}
     val = cap.get("value") if isinstance(cap.get("value"), dict) else {}
-    return "1" if val.get("omg") is False and val.get("attach") == "ok" else "0"
+    return "1" if val.get("omg") is False and val.get("attach") in B_ATTACH_OK else "0"
 
 
 # ── 계획 ────────────────────────────────────────────────────────────────────
@@ -304,9 +311,22 @@ def _skip_for(spec: Spec, caps: dict) -> dict | None:
     cap = caps.get(spec.probe_key) if isinstance(caps.get(spec.probe_key), dict) else {}
     if cap.get("status") == "fail":
         rs = _blocking(cap.get("reasons"))
+        if spec.probe_key == "edge_cdp_policy" and not _edge_debug_blocked(cap):
+            rs = [r for r in rs if r != "R-EDGEPOL"]
         if rs:
             return {"rc": 3, "reasons": sorted(set(rs)), "why": "probe"}
     return None
+
+
+def _edge_debug_blocked(cap: dict) -> bool:
+    """Edge 원격 디버깅이 정책으로 막혔나 — 문서화된 통제는 ``RemoteDebuggingAllowed``(0 = 금지)뿐이다. 값이 남아 있으면 그것만
+    본다(예전 탐침은 ``DeveloperToolsAvailability=2`` 만으로도 R-EDGEPOL 을 냈다 — 그런 기록으로 웹 경로를 건너뛰지 않는다,
+    M365 조사 M3). 값이 없으면 사유를 믿는다."""
+    val = cap.get("value") if isinstance(cap.get("value"), dict) else None
+    if val is None or "remote_debugging" not in val:
+        return True
+    rd = val.get("remote_debugging")
+    return isinstance(rd, int) and not isinstance(rd, bool) and rd == 0
 
 
 def stage_plan(roles, caps, only, *, cfg=None) -> list:

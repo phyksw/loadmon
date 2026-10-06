@@ -35,8 +35,12 @@ role="owa")`` 하나로만 연다 — Edge 인자·프로필·포트 설정을 �
   · 커서는 그 조각의 ``SegmentWriter.flush()`` 성공 뒤에만 ``save_raw_cursor(paths, pc_id, src, value)`` 로 저장한다.
     원문·원 ID 를 키로 쓰지 않는다.
 
-rc(계약 §8.1): 0 새 레코드(정제기가 버린 행도 관측) · 1 대상 없음·0건 · 2 로그인 필요(R-LOGIN, 조건부 액세스 R-CA —
-로그인 전 '불가' 확정 0) · 3 드라이버 불가·불완전(R-EDGEPOL · R-NOAPP · R-WEBSEL · R-TRANSPORT — 사유 필수) · 4 읽을 구간이
+rc(계약 §8.1): 0 새 레코드(정제기가 버린 행도 관측) · 1 대상 없음·0건 · 2 로그인 필요(R-LOGIN, 조직 정책 조건부 액세스 R-CA —
+로그인 전 '불가' 확정 0. AADSTS 번호는 ``aadsts_kind`` 로 나눈다: 조직 정책 차단만 R-CA, 장치 기반(Edge 프로필 로그인으로
+풀림)·외부 보안 과제(사용 약관·타사 MFA)는 로그인 대기를 이어 R-LOGIN — counts ``aadsts``·``aadsts_kind``. 로그인 대기가
+Microsoft 밖 호스트에서 끝나면 counts ``host_class=nonms``·``login_detail=nonms_host``(하이브리드 Exchange 온프레미스 사서함
+또는 회사 로그인 화면 — 호스트 이름은 남기지 않음). *.cloud.microsoft 도착은 정상이고 다음 이동의 기준이 된다 — counts
+``app_host``) · 3 드라이버 불가·불완전(R-EDGEPOL · R-NOAPP · R-WEBSEL · R-TRANSPORT — 사유 필수) · 4 읽을 구간이
 모두 이미 읽음. 예산(``--budget-sec``, 0 = 없음) 소진은 rc 0/1 + partial + budget_hit + R-BUDGET(조각 단위로 저장하고 다음
 실행이 커서로 이어 읽는다). ``exit 0`` 고정 금지.
 상태(계약 v1.2 C1): stderr 마지막 줄 ``{"_status": {schema:"lm27.collector_status/1", src, rc, reasons[], partial, cap_hit,
@@ -84,10 +88,19 @@ KIND_AXES = {"mail": ("mail_in", "mail_out"), "cal": ("cal",)}
 
 # Outlook 웹 — 이동 주소(로그인 뒤 같은 사서함의 정식 호스트로 넘어갈 수 있다). 호스트는 파싱 뒤 **완전 일치**로만 본다
 # (G-B9: 부분 문자열로 호스트를 고르지 않는다 — 다른 탭을 내 탭으로 오인한 이전 판 결함).
+# 시작 주소는 문서의 회사 계정 로그인 주소(support.microsoft.com 'sign in directly at outlook.office365.com')이고, Microsoft 365
+# 엔드포인트 표(ID 1 — outlook.cloud.microsoft 와 OWA_HOST_RX 의 두 호스트)의 어느 호스트에 닿아도 정상이다.
+# *.cloud.microsoft 로 넘어갔으면 그다음 이동은 그 호스트로 한다(매 이동마다 리디렉션·재인증을 겪지 않게).
 OWA_BASE = "https://outlook.office365.com"
 MAIL_FOLDERS = (("inbox", "/mail/inbox"), ("sent", "/mail/sentitems"))
 CAL_WEEK = "/calendar/view/week/{y}/{m}/{d}"
 OWA_HOST_RX = re.compile(r"^outlook\.(?:office|office365)\.com$|^outlook\.cloud\.microsoft$")
+CLOUD_SUFFIX = ".cloud.microsoft"
+# Microsoft 쪽 호스트(로그인 대기가 끝난 마지막 화면의 분류 — 호스트 이름은 남기지 않고 열거값만, L2). 그 밖 = 회사 호스트
+# (AD FS 등 페더레이션 로그인 화면이거나 하이브리드 Exchange 온프레미스 사서함 — 어느 쪽인지는 화면 글을 읽지 않고는 모른다).
+# 호스트 이름 끝 일치(앞이 '.' 또는 시작)로만 본다 — 부분 문자열 금지(G-B9).
+MS_HOST_RX = re.compile(r"(?:^|\.)(?:microsoft|microsoft\.com|office\.com|office365\.com|microsoftonline\.com|live\.com|"
+                        r"windows\.net|office\.net|sharepoint\.com)$")
 # 개인(Microsoft) 계정의 사서함·팀즈(Outlook.com·Teams 개인) — 회사(조직) 계정이 아니다. 업무 자료로 읽지 않고 '로그인 필요 ·
 # 개인 계정'으로 끝낸다(v1.3 §0.8 V18 '회사(조직) 계정이 아니면 메일·팀즈 웹 수집은 건너뛰고 PC 자료로'). Teams 웹도 이것을 쓴다.
 PERSONAL_HOST_RX = re.compile(r"^outlook\.live\.com$|^teams\.live\.com$")
@@ -107,7 +120,16 @@ DONE_IDS_MAX = 500
 DONE_RANGES_MAX = 400
 MAX_EVENT_DAYS = 120         # 여러 날 일정으로 인정하는 최대 길이(넘으면 날짜 오독으로 보고 첫날만)
 CONF_MINUTE, CONF_DATE = 0.8, 0.4     # 계약 §3.4: OWA minute 0.8 · date-only 0.4
-CA_CODES = frozenset({"50005", "50097", "50158", "53000", "53001", "53002", "53003", "53004", "530032"})
+# 로그인 화면 AADSTS 번호 분류(Microsoft Entra 오류 코드 문서 · ``lm27.bridge.session.aadsts_kind`` 와 같은 표):
+#   policy      조직 정책 차단(53002 승인 앱 아님 · 53003 조건부 액세스 차단 · 53004 위험 · 530032 보안 정책, 그 밖 53xxx)
+#               → 'ca'(R-CA — 사람이 이 PC 에서 풀 수 없음)
+#   device      장치 기반 조건부 액세스(50005 · 50097 · 53000 준수 장치 아님 · 53001 도메인 가입 아님) — 'Edge 85+ 는 브라우저
+#               (Edge 프로필)에 로그인해야 장치 신원을 넘긴다'(Entra 조건부 액세스 문서). 전용 프로필이 Edge 에 로그인하지 않아
+#               생길 수 있으므로 사람이 풀 수 있는 로그인 단계 → 로그인 대기·R-LOGIN(구조적 '불가' 확정 근거가 아니다 — H1)
+#   interactive 50158 외부 보안 과제(사용 약관·타사 MFA 리디렉션) — 사람이 그 화면에서 마치는 단계 → 로그인 대기(M12)
+DEVICE_CA_CODES = frozenset({"50005", "50097", "53000", "53001"})
+POLICY_CA_CODES = frozenset({"53002", "53003", "53004", "530032"})
+INTERACTIVE_CODES = frozenset({"50158"})
 AADSTS_RX = re.compile(r"^\d{5,6}$")
 
 # 세션 상태(B §5.8 단계 문자열) → (rc, 사유). 그 밖은 모두 rc 3 + R-TRANSPORT(수송 — '불가' 확정 근거 아님).
@@ -578,9 +600,50 @@ def add_login_facts(st: dict, screen) -> None:
         st["login_account"] = "personal"
 
 
+def aadsts_kind(code) -> str:
+    """AADSTS 번호 → ``policy`` · ``device`` · ``interactive`` · ``other`` · ``''``(번호 아님). 위 표 참조."""
+    c = str(code or "").strip()
+    if not AADSTS_RX.match(c):
+        return ""
+    if c in DEVICE_CA_CODES:
+        return "device"
+    if c in INTERACTIVE_CODES:
+        return "interactive"
+    if c in POLICY_CA_CODES or c.startswith("53"):
+        return "policy"
+    return "other"
+
+
+def login_hint(counts: dict) -> str:
+    """로그인 필요로 끝난 웹 경로의 사람용 덧붙임(원문·호스트 이름 없음) — 상태 counts 의 열거값으로 고른다."""
+    c = counts if isinstance(counts, dict) else {}
+    if c.get("aadsts_kind") == "device":
+        return (" — 회사 장치 확인(조건부 액세스)에 막혔습니다: 분석용 Edge 창 오른쪽 위 프로필에서 회사 계정으로 Edge 에"
+                " 로그인하면 풀릴 수 있습니다")
+    if c.get("aadsts_kind") == "interactive":
+        return " — 추가 확인 화면(사용 약관·추가 인증)을 분석용 Edge 창에서 마쳐 주세요"
+    if c.get("login_detail") == "nonms_host":
+        return (" — 회사 쪽 화면에서 멈췄습니다(회사 로그인 화면이거나 사서함이 회사 서버 — 온프레미스 Exchange 일 수 있음)."
+                " 그 경우 이 PC 의 Outlook(COM·검색 색인) 경로가 메일·일정을 채웁니다")
+    return ""
+
+
 def is_ca_code(code) -> bool:
-    c = str(code or "")
-    return bool(AADSTS_RX.match(c)) and (c in CA_CODES or c.startswith("53"))
+    """조직 정책 조건부 액세스 차단(R-CA)인가 — 장치 기반·외부 과제는 사람이 풀 수 있으므로 아니다."""
+    return aadsts_kind(code) == "policy"
+
+
+def host_class(host: str) -> str:
+    """호스트 → ``ms``(Microsoft 쪽) · ``nonms``(회사 호스트) · ``''``(모름). 호스트 이름 자체는 어디에도 남기지 않는다."""
+    h = str(host or "").strip().lower().rstrip(".")
+    if not h:
+        return ""
+    return "ms" if MS_HOST_RX.search(h) else "nonms"
+
+
+def app_host_kind(host: str) -> str:
+    """앱 호스트 열거(진단) — ``cloud``(*.cloud.microsoft) · ``classic``(outlook.office365.com 등)."""
+    return "cloud" if str(host or "").lower().endswith(CLOUD_SUFFIX) else "classic"
 
 
 def load_fake(environ, name: str):
@@ -969,6 +1032,11 @@ class CdpBase:
         self.clock = clock
         self.c = counts
         self._errs = self._error_types()
+        self.base_host = ""                  # 마지막으로 닿은 앱 호스트(*.cloud.microsoft 포함) — 다음 이동의 기준
+
+    def base_url(self, default: str) -> str:
+        """다음 이동의 기준 주소 — 앱 호스트에 닿은 적이 있으면 그 호스트(https), 아니면 문서 기본 주소."""
+        return ("https://" + self.base_host) if self.base_host else default
 
     @staticmethod
     def _error_types() -> tuple:
@@ -1049,25 +1117,18 @@ class CdpBase:
         개인 계정의 사서함·팀즈(``PERSONAL_HOST_RX``)에 닿으면 읽지 않고 로그인 필요(개인 계정)로 끝낸다."""
         st = self.s.goto(url, dl.sub(GOTO_QUICK_S))
         if st == "login_required":
-            code = self.aadsts()
-            if is_ca_code(code):
-                self.c["aadsts"] = int(code)
+            if self._login_code() == "policy":
                 return "ca"
             if not wait_login:
                 return "login_required"
             st = self.s.wait_page(dl)
             if st == "login_required":
-                code = self.aadsts()
-                if is_ca_code(code):
-                    self.c["aadsts"] = int(code)
-                    return "ca"
-                return "login_required"
+                return "ca" if self._login_code() == "policy" else "login_required"
         if st != "ready":
             return st
         host = self.host()
         if host_rx.match(host):
-            self._session_call("login_ok")                  # 회사 사서함·팀즈에 닿음 = 로그인 확인(보류 해제)
-            return "ready"
+            return self._arrived(host)
         if PERSONAL_HOST_RX.match(host):
             return self._personal()
         self._bump("host_unexpected")
@@ -1080,13 +1141,41 @@ class CdpBase:
             self._sleep(LOGIN_POLL_S)
             host = self.host()
             if host_rx.match(host):
-                self._session_call("login_ok")
-                return "ready"
+                return self._arrived(host)
             if PERSONAL_HOST_RX.match(host):
                 return self._personal()
+        self._end_class(host)
         if wait >= want:
             self._session_call("mark_login_pending")       # 다 기다렸다 — 다음 수집은 짧게(V18)
         return "login_required"
+
+    def _login_code(self) -> str:
+        """로그인 화면의 AADSTS 번호(숫자만)를 읽어 분류를 남긴다 → ``policy`` 면 조건부 액세스 차단(R-CA). 장치 기반
+        (Edge 프로필 로그인으로 풀림)·외부 보안 과제(사용 약관·타사 MFA)는 사람이 풀 수 있는 로그인 단계라 대기를 잇는다
+        (H1 · M12 — 세션이 그 화면에서 Edge 프로필 로그인 안내를 낸다)."""
+        code = self.aadsts()
+        kind = aadsts_kind(code)
+        if kind:
+            self.c["aadsts"] = int(code)
+            self.c["aadsts_kind"] = kind
+        return kind
+
+    def _arrived(self, host: str) -> str:
+        """회사 사서함·팀즈 호스트에 닿음 = 로그인 확인(보류 해제). *.cloud.microsoft 도착도 정상(엔드포인트 표 ID 1·12)."""
+        self.c["app_host"] = app_host_kind(host)
+        self.base_host = host
+        self._session_call("login_ok")
+        return "ready"
+
+    def _end_class(self, host: str) -> None:
+        """로그인 대기가 앱 호스트에 닿지 못하고 끝남 — 마지막 화면 호스트의 분류만(이름 없음, L2). 회사 호스트면 하이브리드
+        Exchange 온프레미스 사서함(클라우드 Outlook 웹이 회사 OWA 로 넘김)이거나 회사 로그인(AD FS 등)에서 멈춘 것이다."""
+        cls = host_class(host)
+        if not cls:
+            return
+        self.c["host_class"] = cls
+        if cls == "nonms":
+            self.c["login_detail"] = "nonms_host"
 
     def _personal(self) -> str:
         """개인 계정 사서함·팀즈에 닿음 — 읽지 않는다. 세션에 계정 종류를 남기고(안내 한 번) 보류로 둔다(V18)."""
@@ -1143,7 +1232,7 @@ class CdpOwaScreen(CdpBase):
 
     def mail_pages(self, folder: str, s: date, e: date, dl):
         path = dict(MAIL_FOLDERS)[folder]
-        st = self.goto(OWA_BASE + path, dl, OWA_HOST_RX)
+        st = self.goto(self.base_url(OWA_BASE) + path, dl, OWA_HOST_RX)
         if st != "ready":
             raise ScreenStop(st)
         self._wait_list(dl)
@@ -1186,7 +1275,7 @@ class CdpOwaScreen(CdpBase):
             self._sleep(OPEN_POLL_S)
 
     def week(self, wk: date, dl) -> dict:
-        st = self.goto(OWA_BASE + CAL_WEEK.format(y=wk.year, m=wk.month, d=wk.day), dl, OWA_HOST_RX)
+        st = self.goto(self.base_url(OWA_BASE) + CAL_WEEK.format(y=wk.year, m=wk.month, d=wk.day), dl, OWA_HOST_RX)
         if st != "ready":
             raise ScreenStop(st)
         end = dl.sub(READY_WAIT_S)
@@ -1566,7 +1655,7 @@ def collect(opts: Opts, *, paths, cfg, api, clock, now, off_fn, environ, session
             add_login_facts(st, screen)
             st["rc"] = rc
             human(f"[OWA] {src}: {'로그인이 필요합니다(전용 Edge 창에서 1회)' if rc == RC_LOGIN else 'Edge 세션을 쓸 수 없습니다'}"
-                  f" — {state}", err)
+                  f" — {state}{login_hint(c) if rc == RC_LOGIN else ''}", err)
             return st
         state_box = {"done": done, "todos": todos_done}
         if opts.kind == "mail":
@@ -1601,6 +1690,8 @@ def collect(opts: Opts, *, paths, cfg, api, clock, now, off_fn, environ, session
         add_login_facts(st, screen)
         st["rc"] = rc
         st["partial"] = True
+        if rc == RC_LOGIN:
+            human(f"[OWA] {src}: 로그인이 필요합니다(전용 Edge 창에서 1회) — {stop.state}{login_hint(c)}", err)
     elif c.get("sel_fail") and not c.get("sel_ok") and not c.get("items") and not c.get("events"):
         add_reason(st, "R-WEBSEL")                         # 화면 구조를 하나도 못 알아봄(선택자 전부 실패)
         st["rc"] = RC_DRIVER

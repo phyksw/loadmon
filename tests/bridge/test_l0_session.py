@@ -524,7 +524,13 @@ class TestPureHelpers(unittest.TestCase):
             ({"url": "https://login.microsoftonline.com/x", "ready": "complete"}, ("login_required", "")),
             ({"url": "about:blank", "ready": "loading"}, ("loading", "")),
             ({"url": "chrome-error://chromewebdata/", "ready": "complete"}, ("dead", "")),
-            ({"url": "edge://newtab", "ready": "complete"}, ("dead", "")),
+            ({"url": "edge://newtab", "ready": "complete"}, ("edge_page", "")),        # 죽은 세션 아님(M6)
+            ({"url": "edge-error://x", "ready": "complete"}, ("dead", "")),
+            ({"url": "https://certauth.login.microsoftonline.com/t/certauth", "ready": "complete"},
+             ("login_required", "")),                                                  # '.' 접미사 호스트(H3)
+            ({"url": "https://login.windows.net/common/oauth2", "ready": "complete"}, ("login_required", "")),
+            ({"url": "https://mysignins.microsoft.com/register", "ready": "complete"}, ("login_required", "")),
+            ({"url": "https://m365copilot.com/chat", "ready": "complete", "input": inp}, ("ready", "strong")),  # L11
             ({"url": OUTLOOK_WEB, "ready": "complete", "input": inp}, ("wrong_page", "")),
             ({"url": CHAT_URL, "ready": "interactive", "input": {"found": False}}, ("loading", "")),
             ({"url": CHAT_URL, "ready": "complete", "input": inp}, ("ready", "strong")),

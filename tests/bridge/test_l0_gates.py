@@ -140,8 +140,9 @@ class TestJsSnippets(unittest.TestCase):
             "chat_text": js.chat_text(), "learn_asst": js.learn_asst("[[END R7F3QK]]", "[LM27 요청 R7F3"),
             "new_chat": js.new_chat(("새 채팅",)), "pick_model": js.pick_model("빠른 응답", ("모델", "model")),
             "menu_open": js.menu_open(), "pick_model_item": js.pick_model_item("깊이 생각하기"),
-            "close_menu": js.close_menu(), "work_mode": js.work_mode(("업무", "Work"), ("웹", "Web"), True),
-            "env": js.env(("업무",), ("웹",), ("웹 검색",)), "diagnose": js.diagnose(self.SELS, ("보내기",)),
+            "close_menu": js.close_menu(), "work_mode": js.work_mode(("업무", "Work"), ("웹", "Web"), True, ("Work IQ",)),
+            "env": js.env(("업무",), ("웹",), ("웹 검색",), ("Work IQ",), ("Work", "회사"), ("data protection",)),
+            "diagnose": js.diagnose(self.SELS, ("보내기",)), "aadsts": js.aadsts(),
         }
 
     def test_markers(self):
@@ -152,9 +153,15 @@ class TestJsSnippets(unittest.TestCase):
         self.assertEqual(js.marker("1+1"), "")
 
     def test_env_reads_web_grounding_without_click(self):
-        e = js.env(("업무",), ("웹",), ("웹 검색",))
+        e = js.env(("업무",), ("웹",), ("웹 검색",), ("Work IQ",), ("Work",), ("data protection",))
         tail = e.split("const gl=", 1)[1]
         self.assertNotIn(".click()", tail)
+        self.assertIn("modeState(false)", tail)                        # 판별은 누르지 않는다(H4·H13 표식도 읽기만)
+
+    def test_model_aliases_in_js(self):
+        p = js.pick_model(("빠른 응답", "Quick response"), ("모델",))
+        self.assertIn('const want=["빠른 응답", "Quick response"]', p)
+        self.assertIn('const want=["깊이 생각하기"]', js.pick_model_item("깊이 생각하기"))
 
     def test_node_syntax(self):
         node = shutil.which("node")

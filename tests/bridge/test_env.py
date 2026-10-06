@@ -55,7 +55,8 @@ class TestDeriveTable(unittest.TestCase):
                        prefer_work_mode=True, checked_at="2026-10-05T10:15:42+09:00")
         e2 = CopilotEnv.from_dict(e.to_dict())
         self.assertEqual(e2, e)
-        self.assertEqual(set(e.brief()), {"tier", "work_toggle", "work_mode", "web_grounding", "web_exposed"})
+        self.assertEqual(set(e.brief()), {"tier", "work_toggle", "work_mode", "web_grounding", "web_exposed", "account"})
+        self.assertEqual(e.account, "unknown")                         # 계정 근거 없이는 회사 계정이 아니다(H4)
         bad = CopilotEnv.from_dict({"tier": "gold", "work_mode": "work", "web_grounding": "off", "evidence": ["x"]})
         self.assertEqual((bad.tier, bad.web_exposed, bad.evidence), ("unknown", False, []))
 

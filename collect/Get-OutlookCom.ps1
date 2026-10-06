@@ -4,24 +4,53 @@
 
 .DESCRIPTION
   계약 §2.17 · §3.5 · §3.10 · §7.3 · §8.1, CM §5 · §8 · §9 · §10 · §11.1, C §4.3. LM24 Get-OutlookData.ps1 을 옮겨 다시 설계했다
-  (최상위 폴더만 읽던 결함 → 모든 메일 폴더 재귀 + EntryID 역할 태그, 로캘 'g' 날짜 필터 → DASL ISO UTC 리터럴,
-  Stop-Job 대기 → 자식 PID 직접 종료, 수신자 열람 실패 시 'to' 오판정 → rcv 는 정제기가 정하고 B단 실패는 R-OMG).
+  (최상위 폴더만 읽던 결함 → 모든 메일 폴더 재귀 + EntryID 역할 태그, Stop-Job 대기 → 자식 PID 직접 종료, 수신자 열람 실패 시
+  'to' 오판정 → rcv 는 정제기가 정하고 B단 실패는 R-OMG).
+  계정 있는 회사 PC 위험(M365 조사 — Microsoft 공식 문서 대조) 반영:
+    · DASL 날짜 리터럴은 문서 형식이 먼저다 — 'Outlook 은 지역 설정의 날짜·시각 형식으로, 시각은 초 없이 읽는다. 초를 넣으면
+      필터가 기대대로 동작하지 않는다'(filtering-items-using-a-date-time-comparison). 현재 로캘 'g'(VBA Format 'General Date'
+      의 초 없는 꼴, 값은 UTC) → 'yyyy-MM-dd HH:mm' → ISO(초 포함) 순. 붙은 직후 **필터 카나리아**가 받은 편지함(없으면 보낸
+      편지함) 최신 항목 시각 T 의 [T−2분, T+2분) 을 형식마다 걸어 그 항목이 실제로 돌아오는 첫 형식을 쓴다(counts.filter_fmt).
+      문서는 잘못된 필터의 처리를 정하지 않는다(GetTable) — 예외 없이 0건이 와도 그 달을 0건 done 으로 굳히지 않으려는 것.
+      아무 형식도 맞지 않으면 메일은 rc 3 + R-TRANSPORT(done 0), 일정은 Jet(로컬 'g')만. 읽은 행이 요청 범위 밖이면 버리고
+      (counts.filter_mismatch) 그 달은 done 으로 적지 않는다.
+    · 보호 멤버(Object Model Guard — Account.SmtpAddress·NameSpace.CurrentUser·Recipients·PropertyAccessor·Sender*·Body 등)는
+      B단(ReadProtected=1)에서만 읽는다. B단 첫 읽기(내 주소)는 'pr_start' 단계 — 부모가 이 단계에만 짧은 워치독
+      (mail.com.protectedReadSec × 3, 5~워치독 초)을 걸고, 넘기면(보안 경고창으로 멈춤) 자식을 끊고 B단 없이 한 번 다시 붙는다
+      (R-OMG · counts.omg_canary=timeout). 거부(예외)면 그 실행은 B단을 끈다(omg_canary=denied). B단을 끈 실행의 내 주소는
+      계정 표시 이름(비보호 — 주소 꼴일 때만)과 collect.ownerAddress.
+    · Namespace.Logon 을 부르지 않는다 — 문서: 프로필이 여럿이면 기본 프로필에 Logon 해도 선택 창이 뜬다. 권장대로
+      GetNamespace('MAPI') + GetDefaultFolder(받은 편지함)로 MAPI 를 초기화한다. 붙기 세부 단계를 하트비트로 내 멈춘 곳을
+      counts.attach_step 에 남긴다(attach:get → attach:new → attach:ns → attach:inbox → attach:stores → pr_start).
+    · OlExchangeStoreType 3 = olNotExchange(PST·IMAP — 개인 데이터 파일). 보관 사서함 값은 열거형에 없다 — 기본 저장소만
+      읽는다(mail.includeArchiveStore 는 보관 사서함 식별을 실측으로 정하기 전까지 counts.archive_store=unverified 만).
+    · 캐시 지평선(가장 오래된 메일)이 든 달은 지평선 뒤만 읽고 cov_months 에 적지 않는다 — 원장이 상태 줄 horizon_oldest 로
+      날마다 판정(그 앞 0건 날 = out_of_horizon → 웹 경로가 채움). 캐시 모드인데 받은·보낸 편지함 최신 메일이 probe.ostStaleH
+      시간보다 오래됐으면(OST 가 낡음 — 새 Outlook 전환·Outlook 꺼짐) R-STALE + 상태 줄 horizon_newest, 그 뒤 날이 든 달도
+      적지 않는다. 이 수집이 Outlook 을 띄웠으면 동기화를 잠깐(하트비트) 기다린다 — 보내기/받기(SyncObject.Start)는 보낼
+      편지함까지 보내는 사용자 동작이라 부르지 않는다.
+    · 관리자 주도 새 Outlook 전환 정책(DoNewOutlookAutoMigration=1 — admin-controlled-migration-policy)이 켜져 있고 Outlook 이
+      꺼져 있으면 COM 으로 띄우지 않는다(R-NEWOL · counts.migration_auto). 떠 있는 클래식에는 붙는다.
+    · 폴더 열거·지평선 계산 중에도 하트비트(25폴더마다 'folders', 폴더마다 'horizon'), 폴더 3000개 상한(counts.folders_capped).
+    · 일정 회차 전개 순서 = Sort('[Start]') → IncludeRecurrences → Restrict(Items.IncludeRecurrences 문서), 창과 겹치지 않는
+      회차는 버린다(counts.cal_out_of_range).
 
   출력(디스크에 쓰지 않는다 — L-09):
     · stdout 첫 줄 {"_meta":{"my_addrs":[...]}} · 원시 후보 레코드 NDJSON(P §10.2 원시 이름) · 끝 줄 {"_cursor":{…}}.
       연결자가 kind 마다 정제 파이프 하나에 잇는다(-Only mail / -Only cal — COM 2회 붙기, 두 번째는 GetActiveObject 재사용).
       -Only 를 비우면 메일·일정을 한 번에 읽고 줄마다 "_kind" 를 붙인다(혼합 라우팅용, 커서는 {경로 ID: 값}).
     · stderr: 사람용 한 줄(숫자·사유만)과 마지막 줄들 {"_status":{…}}(경로마다 하나 — 계약 v1.2 §0.7 C1 한 모양:
-      schema·src·rc·reasons·partial·cap_hit·budget_hit·n·counts + items_total·items_ok·new·subfolder_ratio 등).
+      schema·src·rc·reasons·partial·cap_hit·budget_hit·n·counts + items_total·items_ok·new·subfolder_ratio·horizon_oldest·
+      horizon_newest 등).
   입력: stdin 제어 줄 {"_in":{"cursor":…,"cfg":{…}}}(연결자가 쓰고 닫는다, 리디렉션이 아니면 기본값). 커서·설정·주소는
   명령줄로 받지 않는다(X-300). 쓰는 설정: mail.com.budgetSec · mail.com.watchdogSec · mail.com.protectedReadSec ·
   mail.com.capMail · mail.com.capCal · mail.com.readProtected(연결자가 auto 를 0/1 로 정해 넘긴다) · mail.includeArchiveStore ·
-  collect.ownerAddress · probe.subfolderRatio(있으면 R-SUBFOLDER 판정).
+  collect.ownerAddress · probe.subfolderRatio(있으면 R-SUBFOLDER 판정) · probe.ostStaleH(OST 신선도).
 
-  구조: 부모(이 스크립트)가 사전 점검(새 Outlook·프로필·COM 등록 — COM 호출 없음)을 하고, 같은 스크립트를 -Worker 로 자식
-  PowerShell 에 띄운다. 자식은 COM 에 붙어 레코드·하트비트({"_hb"})·진행 커서({"_cur"})·결과({"_wres"})를 stdout 으로 낸다.
-  부모는 레코드를 그대로 통과시키고, -WatchdogSec(기본 mail.com.watchdogSec=20) 동안 아무 줄도 없으면 자식을
-  Stop-Process 로 끝낸다 — 붙는 중(attach)이면 R-DIALOG(Outlook 실행 중)·R-WIZARD, 읽는 중이면 R-TRANSPORT.
+  구조: 부모(이 스크립트)가 사전 점검(새 Outlook·전환 정책·프로필·COM 등록 — COM 호출 없음)을 하고, 같은 스크립트를 -Worker 로
+  자식 PowerShell 에 띄운다. 자식은 COM 에 붙어 레코드·하트비트({"_hb"})·진행 커서({"_cur"})·결과({"_wres"})를 stdout 으로
+  낸다. 부모는 레코드를 그대로 통과시키고, -WatchdogSec(기본 mail.com.watchdogSec=20) 동안 아무 줄도 없으면 자식을
+  Stop-Process 로 끝낸다 — 붙는 중(attach*)이면 R-DIALOG(Outlook 실행 중)·R-WIZARD, 읽는 중이면 R-TRANSPORT.
   Outlook 이 실행 중인데 붙지 못하면 New-Object 를 부르지 않는다(대화상자). 프로필 0·COM 미등록은 자식을 띄우지 않고 건너뛴다.
 
   읽기: 달 단위·최신 달부터, 보낸 편지함을 먼저(CM §10). A단(비보호 — GetTable 지정 열)은 항상, B단(보호 — 주소·수신자·헤더·
@@ -34,12 +63,17 @@
   커서(계약 §3.10): mail.com {"box":{inbox|sent|other:{last_ts_utc,last_msg_key}},"cov_months":{"YYYY-MM":{status,read_from,
   read_to}}} · cal.com {"last_start_utc","cov_months"}. last_msg_key 는 HMAC 이 필요해 null 로 낸다(파이프가 채운다).
   status ∈ done · partial · out_of_horizon. 이미 읽은 달은 건너뛰고, 최근 달(메일 3일·일정 14일)은 매번 다시 읽는다.
+  지평선이 걸친 달 · OST 최신 시각 뒤 날이 든 달 · 필터 범위가 어긋난 달은 적지 않는다(다음 실행이 다시 읽고, 원장은
+  상태 줄 지평선으로 날마다 판정).
 
   시험 주입(계약 §11.3): LM_OUTLOOK_SELFTEST=N[,선택…] — Outlook 없이 달마다 가짜 메일 N건·일정 N/2건(+매주 반복 회의).
-  선택: newol · noprof · wizard · dialog · elev · busyall · notrunning · noaddr · omg · slowb · archive · jetfail ·
-  horizon=YYYY-MM · hang=attach|read · delay=<ms>. 이 모드에서는 레지스트리·프로세스·COM 을 전혀 건드리지 않는다.
-  -TestNow 'yyyy-MM-dd HH:mm'(로컬).
-  일정은 DASL(ISO UTC)과 Jet(현재 로캘 'g', 로컬 시각) 두 Restrict 결과의 합집합이다 — 반복 회차 전개를 Jet 으로 보장하고,
+  선택: newol · noprof · wizard · dialog · elev · busyall · notrunning · noaddr · omg(보호 멤버 거부) · omgitem(항목 단위 B단만
+  거부) · omghang(보호 멤버에서 경고창으로 멈춤) · slowb · archive(PST 저장소 — olNotExchange) · jetfail · online(캐시 모드 아님) ·
+  automig(관리자 전환 정책) · recurleak(Restrict 가 창 앞 회차도 줌) · horizon=YYYY-MM[-DD] · stale=YYYY-MM-DD(그날 뒤 메일이
+  OST 에 없음) · syncafter=<초>(기다리면 동기화) · syncwait=<초> · daslok=<g+plain+iso|none>(받는 DASL 날짜 형식 — 밖이면 예외
+  없이 0건) · daslshift=<분>(리터럴을 어긋나게 읽음) · folders=<N> · fdelay=<ms> · hang=attach|read · delay=<ms>.
+  이 모드에서는 레지스트리·프로세스·COM 을 전혀 건드리지 않는다. -TestNow 'yyyy-MM-dd HH:mm'(로컬).
+  일정은 DASL(UTC)과 Jet(현재 로캘 'g', 로컬 시각) 두 Restrict 결과의 합집합이다 — 반복 회차 전개를 Jet 으로 보장하고,
   로캘이 어긋나 Jet 이 0건이어도 DASL 이 단발 일정을 지킨다. 키 = GlobalAppointmentID·시작·끝.
 
 .EXAMPLE
@@ -54,6 +88,7 @@ param(
     [string]$BudgetSec = '',
     [string]$WatchdogSec = '',
     [string]$TestNow = '',
+    [string]$OlState = '',
     [switch]$Worker
 )
 
@@ -96,11 +131,18 @@ $REGDB_E_CLASSNOTREG = -2147221164        # 0x80040154
 $MAIL_REFRESH_DAYS = 3
 $CAL_REFRESH_DAYS = 14
 $HB_EVERY = 25
+$FOLDERS_MAX = 3000                # 메일 폴더 열거 상한(탐침 Measure-Subfolders 와 같은 값) — 넘으면 counts.folders_capped
+$DASL_FORMATS = @('g', 'plain', 'iso')    # DASL 날짜 리터럴 형식(문서 형식 먼저 — Format-DaslDate)
+$CANARY_MIN = 2                    # 필터 카나리아 창 ±분 · 같은 항목으로 볼 시각 차(초)는 CANARY_TOL_SEC
+$CANARY_TOL_SEC = 61
+$STALE_SYNC_WAIT_SEC = 30          # 이 수집이 띄운 캐시 모드 Outlook 의 동기화를 기다리는 상한(초)
+$PR_LIMIT_MIN = 5                  # B단 카나리아(pr_start) 워치독 하한(초)
 $BODY_HEAD = 1000
 $BODY_TAIL = 4000
 $HEADERS_MAX = 16000
 $RCPT_MAX = 100
 $ONLINE_RX = '(?i)teams\.microsoft\.com/l/meetup-join|zoom\.us/j/|\.webex\.com/|Microsoft Teams'
+$ADDR_RX = '^[^@\s<>"]+@[^@\s<>"]+\.[^@\s<>"]+$'
 $BUSY_OF = @{ 0 = 'free'; 1 = 'tentative'; 2 = 'busy'; 3 = 'oof'; 4 = 'elsewhere' }
 # 수집 제외(CM §5.3): '대화 기록'(Skype·Lync IM 대화록 폴더 — OlDefaultFolders 값이 없어 이름으로) — 하위 포함.
 # 같은 목록이 색인 수집기 기본 제외(mail.index.excludeFolderNames)에도 있다. 클래스로도 한 번 더 거른다(언어 무관).
@@ -191,17 +233,23 @@ function ConvertFrom-UtcText($s) {
 }
 function Get-MinDate($a, $b) { if ($null -eq $a) { return $b }; if ($null -eq $b) { return $a }; if ($a -lt $b) { return $a }; return $b }
 function Get-MaxDate($a, $b) { if ($null -eq $a) { return $b }; if ($null -eq $b) { return $a }; if ($a -gt $b) { return $a }; return $b }
-function Get-Dasl([string]$prop, [datetime]$lo, [datetime]$hi, [bool]$plain) {
-    # 로캘 무관 DASL — 날짜 리터럴은 UTC(ISO). 실물 Outlook 이 ISO 를 거부하면 'yyyy-MM-dd HH:mm'(역시 UTC)로 다시(CM §5.5)
-    if ($plain) { $f = 'yyyy-MM-dd HH:mm' } else { $f = "yyyy-MM-dd'T'HH:mm:ss'Z'" }
-    $a = ([DateTime]::SpecifyKind($lo, 'Utc')).ToString($f, $script:Inv)
-    $b = ([DateTime]::SpecifyKind($hi, 'Utc')).ToString($f, $script:Inv)
+function Format-DaslDate([datetime]$u, [string]$fmt) {
+    # DASL 날짜 리터럴 — 값은 UTC(네임스페이스로 쓴 속성 비교는 UTC). 문서: Outlook 은 지역 설정의 날짜·시각 형식으로, 시각은
+    # 초 없이 읽는다('초를 넣으면 필터가 기대대로 동작하지 않는다' — VBA 예제는 Format(…, "General Date")). 그래서 'g'(현재
+    # 로캘 짧은 날짜 + 짧은 시각)가 먼저고, 'plain'(yyyy-MM-dd HH:mm)·'iso'(초 포함 — 예전 기본)는 카나리아가 고를 때만 쓴다.
+    $d = [DateTime]::SpecifyKind($u, 'Utc')
+    if ($fmt -eq 'iso') { return $d.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", $script:Inv) }
+    if ($fmt -eq 'plain') { return $d.ToString('yyyy-MM-dd HH:mm', $script:Inv) }
+    return $d.ToString('g', [Globalization.CultureInfo]::CurrentCulture)
+}
+function Get-Dasl([string]$prop, [datetime]$lo, [datetime]$hi, [string]$fmt) {
+    $a = Format-DaslDate $lo $fmt
+    $b = Format-DaslDate $hi $fmt
     return ('@SQL="{0}" >= ''{1}'' AND "{0}" < ''{2}''' -f $prop, $a, $b)
 }
-function Get-CalDasl([datetime]$lo, [datetime]$hi, [bool]$plain) {
-    if ($plain) { $f = 'yyyy-MM-dd HH:mm' } else { $f = "yyyy-MM-dd'T'HH:mm:ss'Z'" }
-    $a = ([DateTime]::SpecifyKind($lo, 'Utc')).ToString($f, $script:Inv)
-    $b = ([DateTime]::SpecifyKind($hi, 'Utc')).ToString($f, $script:Inv)
+function Get-CalDasl([datetime]$lo, [datetime]$hi, [string]$fmt) {
+    $a = Format-DaslDate $lo $fmt
+    $b = Format-DaslDate $hi $fmt
     return ('@SQL="{0}" < ''{1}'' AND "{2}" > ''{3}''' -f $DT_START, $b, $DT_END, $a)
 }
 
@@ -259,8 +307,8 @@ function Get-SelfTest {
 function New-Result([string]$src) {
     return [ordered]@{ schema = 'lm27.collector_status/1'; src = $src; rc = 3
         reasons = (New-Object System.Collections.Generic.List[string]); partial = $false; n = 0; items_total = 0
-        items_ok = 0; new = 0; cap_hit = $false; budget_hit = $false; horizon_oldest = $null; subfolder_ratio = $null
-        recurrence_incomplete = 0; counts = [ordered]@{} }
+        items_ok = 0; new = 0; cap_hit = $false; budget_hit = $false; horizon_oldest = $null; horizon_newest = $null
+        subfolder_ratio = $null; recurrence_incomplete = 0; counts = [ordered]@{} }
 }
 function Add-Reason($res, [string]$code) { if (-not $res.reasons.Contains($code)) { $res.reasons.Add($code) } }
 function ConvertTo-ResultJson($r) {
@@ -268,7 +316,7 @@ function ConvertTo-ResultJson($r) {
     $o = [ordered]@{}
     if ($r -is [System.Collections.IDictionary]) { foreach ($k in $r.Keys) { $o[$k] = $r[$k] } }
     else { foreach ($pp in $r.PSObject.Properties) { $o[$pp.Name] = $pp.Value } }
-    $rs = @($o['reasons'] | Where-Object { $_ } | Sort-Object)
+    $rs = @($o['reasons'] | Where-Object { $_ } | Sort-Object -Unique)
     $o['reasons'] = $rs
     # 계약 v1.2 §0.7 C1 필수 필드: schema · partial(= 상한·예산·반복 일부) · n(= 새 레코드 수)
     $o['schema'] = 'lm27.collector_status/1'
@@ -375,6 +423,7 @@ function New-StFolder([string]$id, [string]$name, [string]$store, [int]$type) {
 }
 function New-SelfModel($st, $w) {
     $n = [int]$st.opt_n
+    $o = $st.opt
     $s1 = 'ST-STORE-1'
     $root = New-StFolder 'ST-ROOT-1' 'Top' $s1 0
     $f = @{}
@@ -388,34 +437,47 @@ function New-SelfModel($st, $w) {
     }
     $f['rules'] = New-StFolder 'ST-F-rules' '규칙폴더' $s1 0
     $f['inbox'].Children.Add($f['rules'])
-    $stores = New-Object System.Collections.Generic.List[object]
-    $stores.Add(@{ id = $s1; root = $root; archive = $false; defaults = @{ inbox = 'ST-F-inbox'; sent = 'ST-F-sent'; deleted = 'ST-F-deleted';
-                   junk = 'ST-F-junk'; drafts = 'ST-F-drafts'; outbox = 'ST-F-outbox' } })
-    if ($st.opt.archive) {
+    if ($o.folders) {                                                   # 폴더가 많은 사서함(M14)
+        for ($k = 1; $k -le [int]$o.folders; $k++) { $f['project'].Children.Add((New-StFolder ('ST-F-x{0}' -f $k) ('폴더{0}' -f $k) $s1 0)) }
+    }
+    # 저장소 후보(실물 Get-ComStores 와 같은 판정 — Resolve-StoreRole): 기본 사서함 + 선택 archive 면 개인 데이터 파일(PST,
+    # OlExchangeStoreType 3 olNotExchange — 사적 메일이 있을 수 있다)
+    $cands = New-Object System.Collections.Generic.List[object]
+    $cands.Add(@{ id = $s1; root = $root; isDefault = $true; xtype = 0; defaults = @{ inbox = 'ST-F-inbox'; sent = 'ST-F-sent'; deleted = 'ST-F-deleted';
+                  junk = 'ST-F-junk'; drafts = 'ST-F-drafts'; outbox = 'ST-F-outbox' } })
+    if ($o.archive) {
         $s2 = 'ST-STORE-2'
-        $root2 = New-StFolder 'ST-ROOT-2' 'Archive' $s2 0
+        $root2 = New-StFolder 'ST-ROOT-2' '개인 폴더' $s2 0
         $f['arch'] = New-StFolder 'ST-F-arch' '받은 편지함' $s2 0
         $f['archdel'] = New-StFolder 'ST-F-archdel' '지운 편지함' $s2 0
         $root2.Children.Add($f['arch']); $root2.Children.Add($f['archdel'])
-        $stores.Add(@{ id = $s2; root = $root2; archive = $true; defaults = @{ deleted = 'ST-F-archdel' } })
+        $cands.Add(@{ id = $s2; root = $root2; isDefault = $false; xtype = 3; defaults = @{ deleted = 'ST-F-archdel' } })
     }
     $me = @{ addr = 'gildong.hong@corp.example'; name = '홍길동' }
     $peers = @(@{ addr = 'chulsoo.kim@corp.example'; name = '김철수' }, @{ addr = 'peer.b@corp.example'; name = '동료B' },
                @{ addr = 'peer.c@corp.example'; name = '동료C' })
     $cyc = @('inbox', 'inbox', 'inbox', 'rules', 'sent', 'sent', 'project', 'X')
     $junkCyc = @('deleted', 'junk', 'drafts', 'outbox')
-    $horizon = $null
-    if ($st.opt.horizon) { $horizon = [datetime]::ParseExact([string]$st.opt.horizon + '-01', 'yyyy-MM-dd', $script:Inv) }
-    # 모델 기간 = 요청 기간의 앞 한 달 ~ 요청 끝(실물 사서함처럼 요청과 무관하게 항목이 있다)
+    $horizon = $null                                                    # 캐시 지평선(로컬) — 이 앞 메일은 OST 에 없다
+    if ($o.horizon) { $hs = [string]$o.horizon; if ($hs.Length -eq 7) { $hs += '-01' }; $horizon = [datetime]::ParseExact($hs, 'yyyy-MM-dd', $script:Inv) }
+    $stale = $null                                                      # 이날(로컬 0시) 뒤 메일은 서버에만(OST 가 낡음)
+    if ($o.stale) { $stale = [datetime]::ParseExact([string]$o.stale, 'yyyy-MM-dd', $script:Inv) }
+    $hidden = New-Object System.Collections.Generic.List[object]
+    $nowL = $w.nowLocal
+    # 모델 기간 = 요청 기간의 앞 한 달 ~ max(요청 끝, 오늘) — 실물 사서함처럼 요청과 무관하게 지금까지 항목이 있다
     $m = (New-Object DateTime ($w.sinceLocal.Year, $w.sinceLocal.Month, 1)).AddMonths(-1)
+    $endL = $w.untilLocal; if ($nowL.Date.AddDays(1) -gt $endL) { $endL = $nowL.Date.AddDays(1) }
     $cal = $f['calendar'].Items
-    while ($m -lt $w.untilLocal) {
+    while ($m -lt $endL) {
         $mEnd = $m.AddMonths(1)
-        if ($horizon -and $m -lt $horizon) { $m = $mEnd; continue }
         $mk = $m.ToString('yyyyMM', $script:Inv)
-        for ($i = 0; $i -lt $n; $i++) {
-            $t = $mEnd.AddMinutes(-1 - $i * 97)
+        $anchor = $mEnd; if ($anchor -gt $nowL) { $anchor = $nowL }          # 이번 달 메일은 지금까지만
+        $span = ($anchor - $m).TotalMinutes
+        for ($i = 0; $i -lt $n -and $m -lt $nowL; $i++) {
+            # 0번은 달(또는 지금)의 마지막 1분, 나머지는 달 전체에 고르게(경계·지평선·신선도 판정이 실물처럼 드러나게)
+            if ($i -eq 0) { $t = $anchor.AddMinutes(-1) } else { $t = $m.AddMinutes([math]::Floor($span * ($n - $i) / ($n + 1))) }
             if ($t -lt $m) { $t = $m.AddMinutes($i) }
+            if ($horizon -and $t -lt $horizon) { continue }
             $key = $cyc[$i % 8]
             if ($key -eq 'X') { $key = $junkCyc[[math]::Floor($i / 8) % 4] }
             $isSent = ($key -eq 'sent')
@@ -439,18 +501,21 @@ function New-SelfModel($st, $w) {
                        Categories = $cat; ConversationTopic = ($subj -replace '^RE: ', ''); imid = ('<st-{0}-{1}@selftest.example>' -f $mk, $i)
                        inreply = (($i % 3) -eq 0); hasatt = ($att.Count -gt 0); att = $att; convid = ('{0:X32}' -f ($i % 4))
                        sender = $sender; to = $to; cc = $cc; headers = $hdr; body = ('selftest body {0}' -f $i) }
-            $f[$key].Items.Add($item)
+            if ($stale -and $t -ge $stale) { $hidden.Add(@{ key = $key; item = $item }) } else { $f[$key].Items.Add($item) }
         }
         # IM 대화록(CM §5.3 수집 제외): 대화 기록 폴더 항목 1건(폴더 이름으로 제외) + 받은 편지함의 IM 클래스 1건(클래스로 제외)
-        foreach ($im in @(@('convhist', 'IPM.Note.Microsoft.Conversation', 'C'), @('inbox', 'IPM.Note.Microsoft.Missed', 'M'))) {
-            $f[$im[0]].Items.Add(@{ EntryID = ('ST-IM{0}-{1}' -f $im[2], $mk); t = (ConvertTo-UtcFromLocal $m.AddHours(11)); Subject = ('selftest im [{0}]' -f $im[0])
-                MessageClass = $im[1]; Importance = 1; Sensitivity = 0; Categories = ''; ConversationTopic = 'im'; imid = $null
-                inreply = $false; hasatt = $false; att = @(); convid = $null; sender = $peers[0]; to = @($me); cc = @(); headers = ''
-                body = 'im' })
+        if ($m.AddHours(11) -lt $nowL -and -not ($horizon -and $m.AddHours(11) -lt $horizon)) {
+            foreach ($im in @(@('convhist', 'IPM.Note.Microsoft.Conversation', 'C'), @('inbox', 'IPM.Note.Microsoft.Missed', 'M'))) {
+                $item = @{ EntryID = ('ST-IM{0}-{1}' -f $im[2], $mk); t = (ConvertTo-UtcFromLocal $m.AddHours(11)); Subject = ('selftest im [{0}]' -f $im[0])
+                    MessageClass = $im[1]; Importance = 1; Sensitivity = 0; Categories = ''; ConversationTopic = 'im'; imid = $null
+                    inreply = $false; hasatt = $false; att = @(); convid = $null; sender = $peers[0]; to = @($me); cc = @(); headers = ''
+                    body = 'im' }
+                if ($stale -and $m.AddHours(11) -ge $stale) { $hidden.Add(@{ key = $im[0]; item = $item }) } else { $f[$im[0]].Items.Add($item) }
+            }
         }
-        if ($st.opt.archive) {
+        if ($o.archive -and $m -lt $nowL) {
             for ($i = 0; $i -lt [math]::Max(1, [math]::Floor($n / 4)); $i++) {
-                $t = $mEnd.AddMinutes(-30 - $i * 211); if ($t -lt $m) { $t = $m.AddMinutes($i) }
+                $t = $anchor.AddMinutes(-30 - $i * 211); if ($t -lt $m) { $t = $m.AddMinutes($i) }
                 $f['arch'].Items.Add(@{ EntryID = ('ST-A-{0}-{1}' -f $mk, $i); t = (ConvertTo-UtcFromLocal $t); Subject = ('selftest archive {0} [arch]' -f $i)
                     MessageClass = 'IPM.Note'; Importance = 1; Sensitivity = 0; Categories = ''; ConversationTopic = 'archive'
                     imid = ('<st-a-{0}-{1}@selftest.example>' -f $mk, $i); inreply = $false; hasatt = $false; att = @(); convid = 'A0'
@@ -484,7 +549,39 @@ function New-SelfModel($st, $w) {
         }
         $m = $mEnd
     }
-    return @{ stores = $stores; folders = $f; me = $me }
+    $accts = @()
+    if (-not $o.noaddr) { $accts = @($me.addr) }                        # 계정 표시 이름(비보호) — 기본은 주소 꼴
+    return @{ cands = $cands; folders = $f; me = $me; hidden = $hidden; accounts = $accts }
+}
+function Update-StSync {
+    # 시험 모델: 선택 syncafter=<초> 면 붙은 뒤 그만큼 지나 OST 에 없던 메일이 들어온다(이 수집이 띄운 Outlook 의 동기화)
+    $w = $script:W
+    if (-not $w.st.opt.syncafter -or $w.model.hidden.Count -eq 0) { return }
+    if (($script:Clock.Elapsed.TotalSeconds - $w.t0) -lt [double]$w.st.opt.syncafter) { return }
+    foreach ($h in $w.model.hidden) { $w.model.folders[$h.key].Items.Add($h.item) }
+    $w.model.hidden.Clear()
+}
+function Get-StDaslWindow([string]$flt) {
+    # 시험 모델 Outlook 의 DASL 날짜 해석 → @(앞 리터럴, 뒤 리터럴)(UTC). 받는 형식(선택 daslok, 기본 g+plain+iso) 밖이면 예외
+    # 없이 0건($null — 문서: 잘못된 필터의 처리는 정의돼 있지 않다), 선택 daslshift=<분> 이면 그만큼 어긋나게 읽는다.
+    $lits = [regex]::Matches($flt, "'([^']*)'")
+    if ($lits.Count -ne 2) { return $null }
+    $vals = New-Object System.Collections.Generic.List[datetime]
+    foreach ($l in $lits) {
+        $s = $l.Groups[1].Value
+        $kind = 'g'
+        if ($s -match '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$') { $kind = 'iso' } elseif ($s -match '^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$') { $kind = 'plain' }
+        if ($script:W.daslOk -notcontains $kind) { return $null }
+        $d = $null
+        try {
+            if ($kind -eq 'iso') { $d = ConvertFrom-UtcText $s }
+            elseif ($kind -eq 'plain') { $d = [DateTime]::SpecifyKind([datetime]::ParseExact($s, 'yyyy-MM-dd HH:mm', $script:Inv), 'Utc') }
+            else { $d = [DateTime]::SpecifyKind([datetime]::Parse($s, [Globalization.CultureInfo]::CurrentCulture), 'Utc') }
+        } catch { return $null }
+        if ($null -eq $d) { return $null }
+        $vals.Add($d.AddMinutes($script:W.daslShift))
+    }
+    return , $vals.ToArray()
 }
 
 # ── 공급자(시험 모델 · 실물 COM) ─────────────────────────────────────────────────────────────────────
@@ -495,21 +592,51 @@ function Get-NodeChildren($node) {
     return , $out
 }
 function Get-NodeType($node) { try { return [int]$node.DefaultItemType } catch { return -1 } }
-function Get-MailFolders {
-    # 저장소마다 루트(보이는 트리 — 숨김 폴더 없음)에서 메일 폴더를 재귀로 모으고 역할을 EntryID 로 정한다(이름 아님, CM §5.3)
+function Resolve-StoreRole([bool]$isDefault, [int]$xtype) {
+    # 저장소 역할 — 기본 저장소만 읽는다. OlExchangeStoreType: 0 기본 사서함 · 1 위임 · 2 공용 폴더 · 3 olNotExchange(Exchange
+    # 아님 — PST·IMAP 개인 데이터 파일) · 4 추가 사서함. 보관 사서함을 가리키는 값은 이 열거형에 없다(문서). 예전에는 3 을 보관
+    # 사서함으로 보고 includeArchiveStore 면 읽어 개인 PST(사적 메일)가 role=archive 로 나갈 수 있었다(M365 조사 M16).
+    if ($isDefault) { return 'primary' }
+    if ($xtype -eq 3) { return 'non_exchange' }
+    return 'other'
+}
+function Select-Stores($cands) {
     $out = New-Object System.Collections.Generic.List[object]
+    foreach ($c in $cands) {
+        $role = Resolve-StoreRole ([bool]$c.isDefault) ([int]$c.xtype)
+        if ($role -eq 'primary') { $out.Add($c) } else { $script:W.storeSkip[$role] = [int]$script:W.storeSkip[$role] + 1 }
+    }
+    return , $out
+}
+function Get-MailFolders {
+    # 저장소마다 루트(보이는 트리 — 숨김 폴더 없음)에서 메일 폴더를 재귀로 모으고 역할을 EntryID 로 정한다(이름 아님, CM §5.3).
+    # 폴더가 수백~수천인 회사 사서함·온라인 모드에서도 워치독(무진전)에 걸리지 않게 25폴더마다 하트비트, 3000개 상한(M14).
+    # 너비 우선 + 받은·보낸 편지함 먼저 — 상한에 닿아도 기본 폴더는 빠지지 않는다.
+    $out = New-Object System.Collections.Generic.List[object]
+    $nf = 0
     foreach ($store in $script:W.stores) {
-        if ($store.archive -and -not $script:W.includeArchive) { continue }
+        if ($script:W.foldersCapped) { break }
         $def = $store.defaults
         $skip = @{}
         foreach ($k in @('deleted', 'junk', 'drafts', 'outbox', 'conflicts', 'syncissues', 'localfail', 'serverfail', 'rss')) {
             if ($def.ContainsKey($k) -and $def[$k]) { $skip[[string]$def[$k]] = $k }
         }
-        $stack = New-Object System.Collections.Generic.Stack[object]
-        foreach ($c in (Get-NodeChildren $store.root)) { $stack.Push(@{ node = $c; under = '' }) }
-        while ($stack.Count) {
-            $e = $stack.Pop()
+        $first = @(); $rest = @()
+        foreach ($c in (Get-NodeChildren $store.root)) {
+            $cid = ''
+            try { $cid = [string]$c.EntryID } catch { }
+            if ($cid -and (($def.ContainsKey('inbox') -and $cid -eq [string]$def['inbox']) -or ($def.ContainsKey('sent') -and $cid -eq [string]$def['sent']))) { $first += , $c }
+            else { $rest += , $c }
+        }
+        $queue = New-Object System.Collections.Generic.Queue[object]
+        foreach ($c in @($first + $rest)) { $queue.Enqueue(@{ node = $c; under = '' }) }
+        while ($queue.Count) {
+            if ($nf -ge $FOLDERS_MAX) { $script:W.foldersCapped = $true; break }
+            $e = $queue.Dequeue()
             $node = $e.node
+            $nf++
+            if (($nf % $HB_EVERY) -eq 0) { Write-Hb 'folders' $nf }
+            if ($script:W.st -and $script:W.st.opt.fdelay) { Start-Sleep -Milliseconds ([int]$script:W.st.opt.fdelay) }
             $id = ''
             try { $id = [string]$node.EntryID } catch { continue }
             if ($skip.ContainsKey($id)) { $script:W.excluded++; continue }     # 지운·정크·임시 보관·보낼 편지함(하위 포함) 제외
@@ -519,42 +646,40 @@ function Get-MailFolders {
             if ((Get-NodeType $node) -ne 0) { continue }                          # 메일 폴더만
             $under = $e.under
             $role = 'subfolder'; $box = 'inbox'
-            if ($store.archive) { $role = 'archive' }
-            elseif ($def.ContainsKey('inbox') -and $id -eq [string]$def['inbox']) { $role = 'inbox'; $under = 'inbox' }
+            if ($def.ContainsKey('inbox') -and $id -eq [string]$def['inbox']) { $role = 'inbox'; $under = 'inbox' }
             elseif ($def.ContainsKey('sent') -and $id -eq [string]$def['sent']) { $role = 'sent'; $box = 'sent'; $under = 'sent' }
             elseif ($under -eq 'sent') { $box = 'sent' }
             $cnt = -1
             try { $cnt = [int]$node.Items.Count } catch { $cnt = -1 }
             if ($cnt -ne 0) { $out.Add(@{ node = $node; role = $role; box = $box; store = $store.id; sent = ($box -eq 'sent') }) }
             else { $script:W.emptyFolders++ }
-            foreach ($c in (Get-NodeChildren $node)) { $stack.Push(@{ node = $c; under = $under }) }
+            foreach ($c in (Get-NodeChildren $node)) { $queue.Enqueue(@{ node = $c; under = $under }) }
         }
     }
+    $script:W.foldersSeen = $nf
     return , $out
 }
-function Read-FolderRows($fd, [datetime]$lo, [datetime]$hi) {
+function Read-FolderRowsFmt($fd, [datetime]$lo, [datetime]$hi, [string]$fmt, [int]$max) {
+    # 그 폴더의 [lo, hi) 행(A단 열만)을 날짜 형식 $fmt 의 DASL 로. GetTable 이 필터를 거부하면 $null(예외), 받으면 행 목록
+    # (0건일 수 있다 — 문서는 잘못된 필터의 처리를 정하지 않는다). $max > 0 이면 그만큼만(카나리아).
     $prop = $P_DELIVERY; if ($fd.sent) { $prop = $P_SUBMIT }
+    $flt = Get-Dasl $prop $lo $hi $fmt
     $rows = New-Object System.Collections.Generic.List[object]
     if ($script:W.st) {
-        $flt = Get-Dasl $prop $lo $hi $false
-        $lits = [regex]::Matches($flt, "'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)'")
-        if ($lits.Count -ne 2) { return , $rows }          # 시험 모델은 ISO UTC 리터럴만 이해한다(로캘 의존 필터면 0건)
-        $a = ConvertFrom-UtcText $lits[0].Groups[1].Value
-        $b = ConvertFrom-UtcText $lits[1].Groups[1].Value
+        $win = Get-StDaslWindow $flt
+        if ($null -eq $win) { return , $rows }                                # 시험 모델 Outlook: 예외 없이 0건
         foreach ($it in $fd.node.Items) {
-            if ($it.t -ge $a -and $it.t -lt $b) {
+            if ($it.t -ge $win[0] -and $it.t -lt $win[1]) {
                 $rows.Add(@{ id = $it.EntryID; store = $fd.store; t = $it.t; subject = $it.Subject; cls = $it.MessageClass; imp = $it.Importance
                              sens = $it.Sensitivity; cats = $it.Categories; topic = $it.ConversationTopic; imid = $it.imid; inreply = $it.inreply
                              hasatt = $it.hasatt; convid = $it.convid; fd = $fd; st = $it })
+                if ($max -gt 0 -and $rows.Count -ge $max) { break }
             }
         }
         return , $rows
     }
     $tbl = $null
-    foreach ($plain in @($false, $true)) {
-        try { $tbl = $fd.node.GetTable((Get-Dasl $prop $lo $hi $plain), 0); break } catch { $tbl = $null }
-    }
-    if (-not $tbl) { $script:W.tableErrors++; return , $rows }
+    try { $tbl = $fd.node.GetTable($flt, 0) } catch { return $null }
     $tbl.Columns.RemoveAll()
     $cols = @('EntryID', 'Subject', 'MessageClass', 'Importance', 'Sensitivity', 'Categories', 'ConversationTopic', $prop, $P_IMID, $P_INREPLY,
               $P_HASATT, $P_CONVID)
@@ -587,8 +712,27 @@ function Read-FolderRows($fd, [datetime]$lo, [datetime]$hi) {
         if ($ok[$P_HASATT]) { try { $h.hasatt = [bool]$r.Item($P_HASATT) } catch { } }
         if ($ok[$P_CONVID]) { try { $h.convid = [string]$r.BinaryToString($P_CONVID) } catch { } }
         $rows.Add($h)
+        if ($max -gt 0 -and $rows.Count -ge $max) { break }
     }
     return , $rows
+}
+function Read-FolderRows($fd, [datetime]$lo, [datetime]$hi) {
+    # 카나리아가 고른 형식으로 읽는다(못 골랐으면 문서 순서대로 — 예외가 나면 다음 형식). 요청 범위 밖 행은 버리고 센다
+    # (filter_mismatch — 그 달은 done 으로 적지 않는다).
+    $rows = $null
+    if ($script:W.daslFmt) { $rows = Read-FolderRowsFmt $fd $lo $hi $script:W.daslFmt 0 }
+    else {
+        foreach ($f in $DASL_FORMATS) {
+            $rows = Read-FolderRowsFmt $fd $lo $hi $f 0
+            if ($null -ne $rows) { break }
+        }
+    }
+    $keep = New-Object System.Collections.Generic.List[object]
+    if ($null -eq $rows) { $script:W.tableErrors++; return , $keep }
+    foreach ($r in $rows) {
+        if ($r.t -lt $lo -or $r.t -ge $hi) { $script:W.mismatch++ } else { $keep.Add($r) }
+    }
+    return , $keep
 }
 function Open-MailItem($row) {
     if ($script:W.st) { return $row.st }
@@ -607,12 +751,12 @@ function Read-AttachNames($row) {
 function Read-Protected($row) {
     # B단(보호 열) — 발신 SMTP·이름·수신자·헤더·본문. 실패는 예외로 올린다(부르는 쪽이 R-OMG 로 센다)
     if ($script:W.st) {
-        if ($script:W.st.opt.omg) { throw (New-Object System.UnauthorizedAccessException('omg')) }
+        if ($script:W.st.opt.omg -or $script:W.st.opt.omgitem) { throw (New-Object System.UnauthorizedAccessException('omg')) }
         if ($script:W.st.opt.slowb) { Start-Sleep -Milliseconds ([int]($script:W.protSec * 1000) + 300) }
         $x = $row.st
         $to = @($x.to | ForEach-Object { [ordered]@{ addr = $_.addr; name = $_.name } })
         $cc = @($x.cc | ForEach-Object { [ordered]@{ addr = $_.addr; name = $_.name } })
-        return @{ sender_addr = $x.sender.addr; sender_name = $x.sender.name; to = $to; cc = $cc; headers = $x.headers; body = $x.body }
+        return @{ sender_addr = $x.sender.addr; sender_name = $x.sender.name; to_list = $to; cc_list = $cc; headers = $x.headers; body_text = $x.body }
     }
     $it = Open-MailItem $row
     $sa = ''
@@ -637,18 +781,23 @@ function Read-Protected($row) {
     try { $hd = [string]$it.PropertyAccessor.GetProperty($P_HEADERS) } catch { }
     $bd = ''
     try { $bd = [string]$it.Body } catch { }
-    return @{ sender_addr = $(if ($sa) { $sa.ToLower() } else { $null }); sender_name = [string]$it.SenderName; to = $to.ToArray(); cc = $cc.ToArray()
-              headers = $hd; body = $bd }
+    return @{ sender_addr = $(if ($sa) { $sa.ToLower() } else { $null }); sender_name = [string]$it.SenderName; to_list = $to.ToArray()
+              cc_list = $cc.ToArray(); headers = $hd; body_text = $bd }
 }
 
 function Connect-Outlook {
-    # 붙기(CM §5.2 — LM24 :567-601 이식). 실행 중인데 못 붙으면 대화상자(New-Object 금지). 반환 @{ok; reason}
+    # 붙기(CM §5.2 — LM24 :567-601 이식). 실행 중인데 못 붙으면 대화상자(New-Object 금지). 반환 @{ok; reason}.
+    # 세부 단계를 하트비트로 낸다(attach:get → attach:new → attach:ns → attach:inbox) — 부모가 멈춘 단계를 counts.attach_step
+    # 에 남겨 회사 PC 에서 프로필 선택·인증·전환 창 중 어디서 멈췄는지 가른다(M365 조사 L6).
     if ($script:W.st) {
         $o = $script:W.st.opt
-        if ($o.hang -eq 'attach') { Start-Sleep -Seconds 3600 }
+        Write-Hb 'attach:get' 0
         if ($o.dialog) { return @{ ok = $false; reason = 'R-DIALOG' } }
         if ($o.elev) { return @{ ok = $false; reason = 'R-ELEV' } }
         if ($o.busyall) { return @{ ok = $false; reason = 'R-COM-BUSY' } }
+        Write-Hb 'attach:ns' 0
+        Write-Hb 'attach:inbox' 0
+        if ($o.hang -eq 'attach') { Start-Sleep -Seconds 3600 }
         return @{ ok = $true }
     }
     $running = $false
@@ -656,6 +805,7 @@ function Connect-Outlook {
     $elevated = $false
     try { $elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) } catch { }
     $ol = $null; $hr = 0
+    Write-Hb 'attach:get' 0
     for ($i = 1; $i -le 3 -and -not $ol; $i++) {
         try { $ol = [Runtime.InteropServices.Marshal]::GetActiveObject('Outlook.Application') }
         catch {
@@ -664,37 +814,51 @@ function Connect-Outlook {
             $hr = $e.HResult
             $ol = $null
         }
-        if (-not $ol -and $i -lt 3) { Start-Sleep -Seconds 2; Write-Hb 'attach' 0 }
+        if (-not $ol -and $i -lt 3) { Start-Sleep -Seconds 2; Write-Hb 'attach:get' 0 }
     }
+    if ($hr) { $script:W.attachHr = ('0x{0:X8}' -f $hr) }
     if (-not $ol -and $running) {
         if ($hr -eq $RPC_E_CALL_REJECTED) { return @{ ok = $false; reason = 'R-COM-BUSY' } }
         if ($elevated) { return @{ ok = $false; reason = 'R-ELEV' } }
         return @{ ok = $false; reason = 'R-DIALOG' }        # 시작 마법사·프로필 선택·암호 창 — New-Object 를 부르지 않는다
     }
     if (-not $ol) {
+        Write-Hb 'attach:new' 0
         try { $ol = New-Object -ComObject Outlook.Application }
         catch {
             $e = $_.Exception
             while ($e.InnerException) { $e = $e.InnerException }
+            $script:W.attachHr = ('0x{0:X8}' -f $e.HResult)
             if ($e.HResult -eq $REGDB_E_CLASSNOTREG) { return @{ ok = $false; reason = 'R-WIZARD' } }
             return @{ ok = $false; reason = 'R-TRANSPORT' }
         }
     }
     $script:W.ol = $ol
+    Write-Hb 'attach:ns' 0
     $script:W.ns = $ol.GetNamespace('MAPI')
-    try { $script:W.ns.Logon($null, $null, $false, $false) } catch { }
+    # Namespace.Logon 은 부르지 않는다 — 문서: 'Outlook 2010 부터 프로필이 여럿이면, 기본 프로필을 쓰도록 했고 Logon 으로 묻지
+    # 않고 기본 프로필에 로그온해도 프로필 선택 창이 뜬다. 피하려면 Logon 을 쓰지 말라'. 권장대로 기본 폴더로 MAPI 를 초기화한다(H8).
+    Write-Hb 'attach:inbox' 0
+    try { [void]$script:W.ns.GetDefaultFolder(6) }
+    catch {
+        $e = $_.Exception
+        while ($e.InnerException) { $e = $e.InnerException }
+        $script:W.attachHr = ('0x{0:X8}' -f $e.HResult)
+        return @{ ok = $false; reason = 'R-TRANSPORT' }
+    }
     return @{ ok = $true }
 }
 function Get-ComStores {
-    $out = New-Object System.Collections.Generic.List[object]
+    $cands = New-Object System.Collections.Generic.List[object]
     $ns = $script:W.ns
     $defStoreId = ''
     try { $defStoreId = [string]$ns.DefaultStore.StoreID } catch { }
+    try { $script:W.cached = [bool]$ns.DefaultStore.IsCachedExchange } catch { $script:W.cached = $false }
     foreach ($s in $ns.Stores) {
-        $isDef = $false; $isArch = $false
+        $isDef = $false; $xtype = -1
         try { $isDef = ([string]$s.StoreID -eq $defStoreId) } catch { }
-        try { $isArch = ([int]$s.ExchangeStoreType -eq 3) } catch { }       # olExchangeArchiveMailbox
-        if (-not $isDef -and -not $isArch) { continue }
+        try { $xtype = [int]$s.ExchangeStoreType } catch { }
+        if ((Resolve-StoreRole $isDef $xtype) -ne 'primary') { $cands.Add(@{ isDefault = $isDef; xtype = $xtype }); continue }
         $def = @{}
         foreach ($pair in @(@('inbox', 6), @('sent', 5), @('deleted', 3), @('junk', 23), @('drafts', 16), @('outbox', 4), @('conflicts', 19),
                             @('syncissues', 20), @('localfail', 21), @('serverfail', 22), @('rss', 25))) {
@@ -702,33 +866,119 @@ function Get-ComStores {
         }
         $root = $null
         try { $root = $s.GetRootFolder() } catch { continue }
-        $out.Add(@{ id = [string]$s.StoreID; root = $root; archive = $isArch; defaults = $def })
+        $cands.Add(@{ id = [string]$s.StoreID; root = $root; isDefault = $isDef; xtype = $xtype; defaults = $def })
     }
+    return (Select-Stores $cands)
+}
+function Get-AccountNames {
+    # 계정 표시 이름(Account.DisplayName — 보호 목록 밖) 중 주소 꼴인 것. Exchange·M365 계정은 대개 주소가 표시 이름이다.
+    # B단을 끈 실행에서도 내 주소를 알기 위해서다(보호 멤버 SmtpAddress·CurrentUser 는 B단에서만 — Get-ProtectedAddrs).
+    $out = New-Object System.Collections.Generic.List[string]
+    if ($script:W.st) { foreach ($a in $script:W.model.accounts) { $out.Add([string]$a) }; return , $out }
+    try { foreach ($a in $script:W.ns.Accounts) { try { $d = ([string]$a.DisplayName).Trim(); if ($d -match $ADDR_RX) { $out.Add($d.ToLower()) } } catch { } } } catch { }
+    return , $out
+}
+function Get-ProtectedAddrs {
+    # B단(보호) 내 주소 — Account.SmtpAddress · NameSpace.CurrentUser · ExchangeUser.PrimarySmtpAddress 는 Object Model Guard 보호
+    # 멤버다(백신 상태가 정상이 아니거나 정책이 '항상 경고'면 주소록 경고창이 떠 사람이 답할 때까지 멈춘다). readProt 1 이고
+    # 'pr_start' 단계(부모의 짧은 워치독) 안에서만 부른다(M365 조사 H6 — 예전에는 B단을 끈 실행도 붙기 단계에서 읽었다).
+    $out = New-Object System.Collections.Generic.List[string]
+    if ($script:W.st) {
+        $o = $script:W.st.opt
+        if ($o.omghang) { Start-Sleep -Seconds 3600 }                          # 경고창이 떠 멈춘 것
+        if ($o.omg) { throw (New-Object System.UnauthorizedAccessException('omg')) }   # 정책 '자동 거부'
+        if (-not $o.noaddr) { $out.Add($script:W.model.me.addr) }
+        return , $out
+    }
+    foreach ($a in $script:W.ns.Accounts) { try { if ($a.SmtpAddress) { $out.Add(([string]$a.SmtpAddress).ToLower()) } } catch { } }
+    try {
+        $xu = $script:W.ns.CurrentUser.AddressEntry.GetExchangeUser()
+        if ($xu -and $xu.PrimarySmtpAddress) { $out.Add(([string]$xu.PrimarySmtpAddress).ToLower()) }
+    } catch { }
     return , $out
 }
 function Get-WorkerAddrs {
     $me = New-Object System.Collections.Generic.List[string]
-    if ($script:W.st) {
-        if (-not $script:W.st.opt.noaddr) { $me.Add($script:W.model.me.addr) }
-    } else {
-        try { foreach ($a in $script:W.ns.Accounts) { try { if ($a.SmtpAddress) { $me.Add(([string]$a.SmtpAddress).ToLower()) } } catch { } } } catch { }
-        if ($script:W.readProt) {
-            try {
-                $xu = $script:W.ns.CurrentUser.AddressEntry.GetExchangeUser()
-                if ($xu -and $xu.PrimarySmtpAddress) { $me.Add(([string]$xu.PrimarySmtpAddress).ToLower()) }
-            } catch { }
-        }
+    foreach ($x in (Get-AccountNames)) { $me.Add($x) }
+    if ($script:W.readProt) {
+        Write-Hb 'pr_start' 0                       # B단 카나리아 — 부모가 이 단계에만 짧은 워치독을 건다(경고창이면 B단 없이 다시)
+        try { foreach ($x in (Get-ProtectedAddrs)) { $me.Add($x) } }
+        catch { $script:W.readProt = $false; $script:W.omgCanary = 'denied' }      # 거부 — 이번 실행은 B단 끔 + R-OMG
+        Write-Hb 'pr_done' 0
     }
     if ($script:W.owner) { $me.Add($script:W.owner) }
     return @($me | Where-Object { $_ -and $_ -match '@' -and $_.Length -ge 3 } | Select-Object -Unique)
 }
+function Get-CanaryItem {
+    # 필터 카나리아 기준 항목 — 기본 저장소 받은 편지함(비었으면 보낸 편지함)의 가장 최근 항목 시각(UTC)
+    $w = $script:W
+    if ($w.st) {
+        foreach ($k in @('inbox', 'sent')) {
+            $t = $null
+            foreach ($it in $w.model.folders[$k].Items) { $t = Get-MaxDate $t $it.t }
+            if ($t) { return @{ fd = @{ node = $w.model.folders[$k]; sent = ($k -eq 'sent'); store = 'ST-STORE-1' }; t = $t } }
+        }
+        return $null
+    }
+    $defId = ''
+    try { $defId = [string]$w.ns.DefaultStore.StoreID } catch { }
+    foreach ($pair in @(@(6, $false, '[ReceivedTime]'), @(5, $true, '[SentOn]'))) {
+        try {
+            $node = $w.ns.GetDefaultFolder($pair[0])
+            $items = $node.Items
+            $items.Sort($pair[2], $true)                                        # 내림차순 — 맨 앞이 가장 최근
+            $first = $items.GetFirst()
+            if ($first) {
+                $loc = $first.ReceivedTime; if ($pair[1]) { $loc = $first.SentOn }
+                return @{ fd = @{ node = $node; sent = $pair[1]; store = $defId }; t = (ConvertTo-UtcFromLocal ([datetime]$loc)) }
+            }
+        } catch { }
+    }
+    return $null
+}
+function Select-DaslFormat {
+    # 필터 카나리아(M365 조사 H9): 기준 항목 시각 T 로 [T−2분, T+2분) 을 형식마다 걸어 그 항목이 실제로 돌아오는 첫 형식을
+    # 이 실행의 형식으로 쓴다. 항목이 하나도 없으면 'none'(문서 순서 + 예외 대체), 모두 못 맞히면 'fail'.
+    $w = $script:W
+    Write-Hb 'canary' 0
+    $c = Get-CanaryItem
+    if (-not $c) { $w.canary = 'none'; return }
+    foreach ($f in $DASL_FORMATS) {
+        Write-Hb 'canary' 0
+        $rows = Read-FolderRowsFmt $c.fd ($c.t.AddMinutes(-$CANARY_MIN)) ($c.t.AddMinutes($CANARY_MIN)) $f 50
+        if ($null -eq $rows) { continue }
+        foreach ($r in $rows) {
+            if ([math]::Abs(($r.t - $c.t).TotalSeconds) -le $CANARY_TOL_SEC) { $w.daslFmt = $f; $w.canary = 'ok'; return }
+        }
+    }
+    $w.canary = 'fail'
+}
+function Get-FolderNewest($fd) {
+    if ($script:W.st) {
+        $t = $null
+        foreach ($it in $fd.node.Items) { $t = Get-MaxDate $t $it.t }
+        return $t
+    }
+    try {
+        $items = $fd.node.Items
+        $field = '[ReceivedTime]'; if ($fd.sent) { $field = '[SentOn]' }
+        $items.Sort($field, $true)
+        $first = $items.GetFirst()
+        if ($first) {
+            $loc = $first.ReceivedTime; if ($fd.sent) { $loc = $first.SentOn }
+            return (ConvertTo-UtcFromLocal ([datetime]$loc))
+        }
+    } catch { }
+    return $null
+}
 function Get-MailHorizon($folders) {
-    # 가장 오래된 메일(받은·보낸 편지함) — 캐시 동기화 기간 밖 판정용
-    $min = $null
+    # 가장 오래된·가장 최근 메일(기본 저장소 받은·보낸 편지함) — 캐시 동기화 기간(지평선)·OST 신선도 판정용. 폴더마다 하트비트(M14)
+    $min = $null; $max = $null
     foreach ($fd in $folders) {
         if ($fd.role -notin @('inbox', 'sent')) { continue }
+        Write-Hb 'horizon' 0
         if ($script:W.st) {
-            foreach ($it in $fd.node.Items) { $min = Get-MinDate $min $it.t }
+            foreach ($it in $fd.node.Items) { $min = Get-MinDate $min $it.t; $max = Get-MaxDate $max $it.t }
             continue
         }
         try {
@@ -740,15 +990,56 @@ function Get-MailHorizon($folders) {
                 $loc = $first.ReceivedTime; if ($fd.sent) { $loc = $first.SentOn }
                 $min = Get-MinDate $min (ConvertTo-UtcFromLocal ([datetime]$loc))
             }
+            $last = $items.GetLast()
+            if ($last) {
+                $loc = $last.ReceivedTime; if ($fd.sent) { $loc = $last.SentOn }
+                $max = Get-MaxDate $max (ConvertTo-UtcFromLocal ([datetime]$loc))
+            }
         } catch { }
     }
-    return $min
+    return @{ oldest = $min; newest = $max }
+}
+function Test-OstStale($newest, $folders, $res) {
+    # OST 신선도(M365 조사 H10): 캐시 모드인데 받은·보낸 편지함의 가장 최근 메일이 probe.ostStaleH 시간보다 오래됐으면 그 시각
+    # 뒤의 날을 '메일 0건'으로 굳히지 않는다(상태 줄 horizon_newest + R-STALE → 원장 out_of_horizon → 웹 경로가 채움). 문서:
+    # 캐시 범위 밖 항목은 서버에만 있고, 색인은 Outlook 이 떠 있을 때만 갱신된다. 이 수집이 Outlook 을 띄웠으면 캐시 모드
+    # Outlook 이 서버와 맞추는 동안 잠깐(하트비트를 내며) 기다린다. 보내기/받기(SyncObject.Start)는 부르지 않는다 — 보낼
+    # 편지함의 메일까지 보내는 사용자 동작이라 읽기 전용 원칙에 어긋난다. 반환 = 낡았으면 그 최신 시각(UTC), 아니면 $null.
+    $w = $script:W
+    if (-not $newest -or -not $w.cached -or [double]$w.staleH -le 0) { return $null }
+    $ageH = ($w.nowUtc - $newest).TotalHours
+    if ($ageH -gt $w.staleH -and $w.olStarted -and $w.syncWait -gt 0) {
+        $t0 = $script:Clock.Elapsed.TotalSeconds
+        $step = 5; if ($w.st) { $step = 1 }
+        $news = @($folders | Where-Object { $_.role -in @('inbox', 'sent') })
+        while (($script:Clock.Elapsed.TotalSeconds - $t0) -lt $w.syncWait) {
+            Start-Sleep -Seconds $step
+            Write-Hb 'sync' 0
+            if ($w.st) { Update-StSync }
+            foreach ($fd in $news) { $newest = Get-MaxDate $newest (Get-FolderNewest $fd) }
+            $ageH = ($w.nowUtc - $newest).TotalHours
+            if ($ageH -le $w.staleH) { break }
+        }
+        $res.counts['sync_wait_s'] = [int][math]::Round($script:Clock.Elapsed.TotalSeconds - $t0)
+    }
+    $res.counts['newest_age_h'] = [int][math]::Floor($ageH)
+    if ($ageH -le $w.staleH) { return $null }
+    Add-Reason $res 'R-STALE'
+    $res.horizon_newest = (ConvertTo-LocalFromUtc $newest).ToString('yyyy-MM-dd', $script:Inv)
+    return $newest
 }
 
 function Invoke-MailKind {
     $w = $script:W
     $res = New-Result 'mail.com'
     $w.results['mail.com'] = $res
+    if ($w.canary -eq 'fail') {
+        # 필터 카나리아 실패 — 이 PC 의 Outlook 이 받는 DASL 날짜 형식을 찾지 못했다. 0건을 '그 달 메일 없음'으로 굳히지 않도록
+        # 아무 달도 적지 않고 수송 실패로 끝낸다(원장 미관측 → 색인·웹 경로가 채운다, M365 조사 H9)
+        Add-Reason $res 'R-TRANSPORT'
+        $res.rc = 3
+        return
+    }
     if ($w.my.Count -eq 0) { Add-Reason $res 'R-NOADDR' }
     $cur = Get-SrcCursor $w.in 'mail.com' $w.mixed
     $covIn = Get-CovIn $cur
@@ -761,11 +1052,13 @@ function Invoke-MailKind {
     $covOut = @{}
     foreach ($k in $covIn.Keys) { $covOut[$k] = $covIn[$k] }
     $folders = Get-MailFolders
-    $horizon = Get-MailHorizon $folders
+    $hz = Get-MailHorizon $folders
+    $horizon = $hz.oldest
     if ($horizon) { $res.horizon_oldest = (ConvertTo-LocalFromUtc $horizon).ToString('yyyy-MM-dd', $script:Inv) }
+    $stale = Test-OstStale $hz.newest $folders $res
     $refreshFrom = $w.nowUtc.AddDays(-$MAIL_REFRESH_DAYS)
     $emitted = 0; $nNew = 0; $seen = 0; $nSub = 0; $nSkipCls = 0; $nResp = 0; $nAtt = 0; $bFail = 0; $bCons = 0; $bOn = $w.readProt
-    $stop = $null; $monthsRead = 0; $monthsSkipped = 0; $hb = 0
+    $stop = $null; $monthsRead = 0; $monthsSkipped = 0; $monthsHeld = 0; $hb = 0
     foreach ($m in $w.months) {
         $prior = $covIn[$m.key]
         if ($horizon -and $m.hi -le $horizon) {
@@ -773,9 +1066,13 @@ function Invoke-MailKind {
             Add-Reason $res 'R-HORIZON'
             continue
         }
+        # 지평선이 걸친 달(M365 조사 M15): 지평선 앞은 캐시에 없다(서버에만) — 지평선 뒤만 읽고 그 달은 적지 않는다(원장이 날마다)
+        $straddle = [bool]($horizon -and $m.lo -lt $horizon)
         $rr = Get-ReadRange $m $prior $refreshFrom 1
-        if (-not $rr) { $monthsSkipped++; continue }
+        if ($rr -and $straddle -and $rr.lo -lt $horizon) { $rr = @{ lo = $horizon; hi = $rr.hi } }
+        if (-not $rr -or $rr.hi -le $rr.lo) { $monthsSkipped++; continue }
         if (Test-Budget $w.mailBudget) { $stop = 'budget'; break }
+        $mis0 = $w.mismatch
         $sentRows = New-Object System.Collections.Generic.List[object]
         $otherRows = New-Object System.Collections.Generic.List[object]
         foreach ($fd in $folders) {
@@ -810,10 +1107,10 @@ function Invoke-MailKind {
                 if ($bp) {
                     if ($bp.sender_addr) { $rec['sender_addr'] = $bp.sender_addr }
                     if ($bp.sender_name) { $rec['sender_name'] = $bp.sender_name }
-                    $rec['to'] = @($bp.to)
-                    $rec['cc'] = @($bp.cc)
+                    $rec['to'] = @($bp.to_list)
+                    $rec['cc'] = @($bp.cc_list)
                     if ($bp.headers) { $h = [string]$bp.headers; if ($h.Length -gt $HEADERS_MAX) { $h = $h.Substring(0, $HEADERS_MAX) }; $rec['headers_text'] = $h }
-                    $bw = Get-BodyWindow ([string]$bp.body)
+                    $bw = Get-BodyWindow ([string]$bp.body_text)
                     if ($bw) { $rec['body_text'] = $bw }
                 }
             }
@@ -849,12 +1146,17 @@ function Invoke-MailKind {
             if (($emitted % $HB_EVERY) -eq 0) { Write-Hb 'read' $emitted }
             if ($w.st -and $w.st.opt.hang -eq 'read' -and $monthsRead -ge 1) { Start-Sleep -Seconds 3600 }
         }
+        # 이 달을 적지 않는 경우: 지평선이 걸침 · OST 최신 시각 뒤 날이 듦(낡음) · 필터가 범위 밖 행을 돌려줌 — 다음 실행이
+        # 다시 읽고, 원장은 상태 줄 horizon_oldest·horizon_newest 로 날마다 판정한다(0건 날을 zero_ok 로 굳히지 않는다)
+        $hold = $straddle -or ($stale -and $m.hi -gt $stale) -or ($w.mismatch -gt $mis0)
+        if ($straddle) { Add-Reason $res 'R-HORIZON'; $res.counts['horizon_month'] = $m.key }
         if ($stop) {
-            if ($inOther -and $oldestOther) { $covOut[$m.key] = Merge-Cov $prior $oldestOther $rr.hi $m; $covOut[$m.key].status = 'partial' }
+            if ($hold) { [void]$covOut.Remove($m.key) }
+            elseif ($inOther -and $oldestOther) { $covOut[$m.key] = Merge-Cov $prior $oldestOther $rr.hi $m; $covOut[$m.key].status = 'partial' }
             Write-MailCursor $box $covOut
             break
         }
-        $covOut[$m.key] = Merge-Cov $prior $rr.lo $rr.hi $m
+        if ($hold) { [void]$covOut.Remove($m.key); $monthsHeld++ } else { $covOut[$m.key] = Merge-Cov $prior $rr.lo $rr.hi $m }
         $monthsRead++
         Write-MailCursor $box $covOut
     }
@@ -868,7 +1170,10 @@ function Invoke-MailKind {
     if ($null -ne $w.subRatio -and $null -ne $res.subfolder_ratio -and $res.subfolder_ratio -ge [double]$w.subRatio) { Add-Reason $res 'R-SUBFOLDER' }
     $res.counts['months_read'] = $monthsRead
     $res.counts['months_skipped'] = $monthsSkipped
+    $res.counts['months_held'] = $monthsHeld
     $res.counts['folders'] = $folders.Count
+    $res.counts['folders_seen'] = $w.foldersSeen
+    $res.counts['folders_capped'] = [bool]$w.foldersCapped
     $res.counts['excluded_folders'] = $w.excluded
     $res.counts['empty_folders'] = $w.emptyFolders
     $res.counts['skipped_class'] = $nSkipCls
@@ -877,6 +1182,7 @@ function Invoke-MailKind {
     $res.counts['protected_fail'] = $bFail
     $res.counts['protected_read'] = [bool]$w.readProt
     $res.counts['table_errors'] = $w.tableErrors
+    $res.counts['filter_mismatch'] = $w.mismatch
     if ($nNew -gt 0 -or $stop) { $res.rc = 0 }
     elseif ($emitted -gt 0 -or $monthsSkipped -gt 0) { $res.rc = 4 }
     else { $res.rc = 1 }
@@ -914,7 +1220,8 @@ function Invoke-CalKind {
             if ($emitted -ge $w.capCal) { $stop = 'cap'; break }
             if (Test-Budget $w.calBudget) { $stop = 'budget'; break }
             if ($w.st -and $w.st.opt.delay) { Start-Sleep -Milliseconds ([int]$w.st.opt.delay) }
-            if (-not ($en.s -ge $rr.lo -or $m.first)) { continue }      # 앞 달에서 시작한 회의는 그 달이 낸다(경계 중복 방지)
+            # 앞 달에서 시작한 회의는 그 달이 낸다(경계 중복 방지) — 기간 첫 달만 창과 겹치는 앞선 시작을 받는다(L5)
+            if (-not (($en.s -ge $rr.lo) -or ($m.first -and $en.e -gt $rr.lo))) { continue }
             $rec = Convert-CalItem $en.it ([ref]$bOn) ([ref]$bFail) $res
             if ($null -eq $rec) { continue }
             $s = $rec['_s']; $rec.Remove('_s')
@@ -950,27 +1257,30 @@ function Invoke-CalKind {
     $res.counts['cancelled'] = $nCancel
     $res.counts['recurring_occurrences'] = $nRec
     $res.counts['protected_fail'] = $bFail
+    $res.counts['protected_read'] = [bool]$w.readProt
+    $res.counts['cal_out_of_range'] = $w.calOutOfRange
     if ($nNew -gt 0 -or $stop) { $res.rc = 0 }
     elseif ($emitted -gt 0 -or $monthsSkipped -gt 0) { $res.rc = 4 }
     else { $res.rc = 1 }
 }
 function Get-CalJet([datetime]$lo, [datetime]$hi) {
-    # Jet 필터(로컬 시각, 현재 로캘의 짧은 날짜·시각 'g') — Outlook 의 회차 전개(IncludeRecurrences)는 이 꼴에서 확실하다.
-    # 로캘이 어긋나면 0건일 수 있으므로 DASL(ISO UTC) 결과와 합집합으로만 쓴다(CM §5.5 · LM24 'g' 결함 보완).
+    # Jet 필터(로컬 시각, 현재 로캘의 짧은 날짜·시각 'g' — 문서 예제와 같은 꼴) — Outlook 의 회차 전개(IncludeRecurrences)는
+    # 이 꼴에서 확실하다. 로캘이 어긋나면 0건일 수 있으므로 DASL 결과와 합집합으로만 쓴다(CM §5.5 · LM24 'g' 결함 보완).
     $cc = [Globalization.CultureInfo]::CurrentCulture
     $a = (ConvertTo-LocalFromUtc $lo).ToString('g', $cc)
     $b = (ConvertTo-LocalFromUtc $hi).ToString('g', $cc)
     return ("[Start] < '{0}' AND [End] > '{1}'" -f $b, $a)
 }
-function Get-StCalItems([string]$mode, [datetime]$lo, [datetime]$hi) {
-    # 시험 모델의 Restrict 흉내 — DASL 은 ISO UTC 리터럴만 이해하고 반복 회차를 전개하지 않는다(실물의 비관적 가정),
-    # Jet 은 현재 로캘 'g' 문자열(로컬)을 이해하고 회차를 전개한다(선택 jetfail = 로캘 불일치로 0건).
+function Get-StCalItems([string]$mode, [datetime]$lo, [datetime]$hi, [string]$fmt) {
+    # 시험 모델의 Restrict 흉내 — DASL 은 받는 날짜 형식만 이해하고 반복 회차를 전개하지 않는다(실물의 비관적 가정),
+    # Jet 은 현재 로캘 'g' 문자열(로컬)을 이해하고 회차를 전개한다(선택 jetfail = 로캘 불일치로 0건, recurleak = 창 앞에서
+    # 시작해 창과 겹치지 않는 회차도 함께 돌려줌 — 문서는 DASL·IncludeRecurrences 의 전개 범위를 정하지 않는다).
     $out = New-Object System.Collections.Generic.List[object]
     $w = $script:W
     if ($mode -eq 'dasl') {
-        $lits = [regex]::Matches((Get-CalDasl $lo $hi $false), "'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)'")
-        if ($lits.Count -ne 2) { return , $out }
-        $b = ConvertFrom-UtcText $lits[0].Groups[1].Value; $a = ConvertFrom-UtcText $lits[1].Groups[1].Value
+        $win = Get-StDaslWindow (Get-CalDasl $lo $hi $fmt)
+        if ($null -eq $win) { return , $out }
+        $b = $win[0]; $a = $win[1]
         foreach ($it in $w.model.folders['calendar'].Items) { if (-not $it.IsRecurring -and $it.s -lt $b -and $it.e -gt $a) { $out.Add($it) } }
         return , $out
     }
@@ -980,18 +1290,29 @@ function Get-StCalItems([string]$mode, [datetime]$lo, [datetime]$hi) {
     $cc = [Globalization.CultureInfo]::CurrentCulture
     $b = ConvertTo-UtcFromLocal ([datetime]::Parse($lits[0].Groups[1].Value, $cc))
     $a = ConvertTo-UtcFromLocal ([datetime]::Parse($lits[1].Groups[1].Value, $cc))
-    foreach ($it in $w.model.folders['calendar'].Items) { if ($it.s -lt $b -and $it.e -gt $a) { $out.Add($it) } }
+    foreach ($it in $w.model.folders['calendar'].Items) {
+        if ($it.s -lt $b -and $it.e -gt $a) { $out.Add($it) }
+        elseif ($w.st.opt.recurleak -and $it.IsRecurring -and $it.s -lt $a -and $it.s -ge $a.AddDays(-7)) { $out.Add($it) }
+    }
     return , $out
 }
 function Get-CalEntries([datetime]$lo, [datetime]$hi) {
-    # 그 범위와 겹치는 일정(회차 포함) — DASL 과 Jet 결과의 합집합, 시작 오름차순. 키 = GlobalAppointmentID·시작·끝
+    # 그 범위와 겹치는 일정(회차 포함) — DASL 과 Jet 결과의 합집합, 시작 오름차순. 키 = GlobalAppointmentID·시작·끝.
+    # 창과 겹치지 않는 회차(끝 ≤ lo · 시작 ≥ hi)는 버린다(counts.cal_out_of_range — L5). DASL 날짜 형식은 필터 카나리아가
+    # 고른 것(없으면 문서 순서 + 예외 대체), 카나리아가 실패한 PC 는 DASL 을 건너뛰고 Jet 만.
     $w = $script:W
     $seen = @{}
     $list = New-Object System.Collections.Generic.List[object]
     $guard = [int]$w.capCal * 3 + 100                                  # 깨진 반복(끝 없는 회차) 가드
+    $fmts = $DASL_FORMATS; if ($w.daslFmt) { $fmts = @($w.daslFmt) }
     foreach ($mode in @('dasl', 'jet')) {
+        if ($mode -eq 'dasl' -and $w.canary -eq 'fail') { continue }
         if ($w.st) {
-            foreach ($x in (Get-StCalItems $mode $lo $hi)) {
+            $src = $null
+            if ($mode -eq 'jet') { $src = Get-StCalItems 'jet' $lo $hi '' }
+            else { foreach ($f in $fmts) { $src = Get-StCalItems 'dasl' $lo $hi $f; if ($src.Count) { break } } }
+            foreach ($x in $src) {
+                if ($x.e -le $lo -or $x.s -ge $hi) { $w.calOutOfRange++; continue }
                 $key = '{0}|{1}|{2}' -f $x.GlobalAppointmentID, $x.s.Ticks, $x.e.Ticks
                 if (-not $seen.ContainsKey($key)) { $seen[$key] = 1; $list.Add(@{ s = $x.s; e = $x.e; it = $x }) }
             }
@@ -999,11 +1320,12 @@ function Get-CalEntries([datetime]$lo, [datetime]$hi) {
         }
         try {
             $citems = $w.ns.GetDefaultFolder(9).Items
+            # 문서(Items.IncludeRecurrences): 반복 일정을 정렬·필터하려면 '시작 오름차순 정렬 → IncludeRecurrences=True → 필터' 순서
+            $citems.Sort('[Start]')
             $citems.IncludeRecurrences = $true
-            $citems.Sort('[Start]')                                       # 회차 전개는 오름차순 정렬이 먼저(COM 규칙)
             $sel = $null
             if ($mode -eq 'dasl') {
-                foreach ($plain in @($false, $true)) { try { $sel = $citems.Restrict((Get-CalDasl $lo $hi $plain)); break } catch { $sel = $null } }
+                foreach ($f in $fmts) { try { $sel = $citems.Restrict((Get-CalDasl $lo $hi $f)); break } catch { $sel = $null } }
             } else {
                 try { $sel = $citems.Restrict((Get-CalJet $lo $hi)) } catch { $sel = $null }
             }
@@ -1020,9 +1342,12 @@ function Get-CalEntries([datetime]$lo, [datetime]$hi) {
                 } catch { $s = $null }
                 if ($null -ne $s) {
                     if ($s -ge $hi) { break }
-                    $tag = ''; if (-not $gaid) { try { $tag = [string]$it.Subject } catch { } }
-                    $key = '{0}|{1}|{2}|{3}' -f $gaid, $s.Ticks, $e.Ticks, $tag.GetHashCode()
-                    if (-not $seen.ContainsKey($key)) { $seen[$key] = 1; $list.Add(@{ s = $s; e = $e; it = $it }) }
+                    if ($e -le $lo) { $w.calOutOfRange++ }
+                    else {
+                        $tag = ''; if (-not $gaid) { try { $tag = [string]$it.Subject } catch { } }
+                        $key = '{0}|{1}|{2}|{3}' -f $gaid, $s.Ticks, $e.Ticks, $tag.GetHashCode()
+                        if (-not $seen.ContainsKey($key)) { $seen[$key] = 1; $list.Add(@{ s = $s; e = $e; it = $it }) }
+                    }
                 }
                 if (($n % $HB_EVERY) -eq 0) { Write-Hb 'read' $n }
                 $it = $sel.GetNext()
@@ -1058,7 +1383,7 @@ function Convert-CalItem($it, [ref]$bOn, [ref]$bFail, $res) {
         $t0 = $script:Clock.Elapsed.TotalSeconds
         try {
             if ($w.st) {
-                if ($w.st.opt.omg) { throw (New-Object System.UnauthorizedAccessException('omg')) }
+                if ($w.st.opt.omg -or $w.st.opt.omgitem) { throw (New-Object System.UnauthorizedAccessException('omg')) }
                 $org = [ordered]@{ addr = $it.organizer.addr; name = $it.organizer.name }
                 $att = @($it.attendees | ForEach-Object { [ordered]@{ addr = $_.addr; name = $_.name } })
                 $body = [string]$it.body
@@ -1120,10 +1445,21 @@ function Write-CalCursor($last, $covOut) {
 function Invoke-Worker($a) {
     $script:W = @{ in = $a.in; mixed = $a.mixed; st = $a.st; readProt = ($a.readProt -eq 1); protSec = $a.protSec; owner = $a.owner
                    capMail = $a.capMail; capCal = $a.capCal; includeArchive = $a.includeArchive; subRatio = $a.subRatio
-                   nowUtc = $a.nowUtc; nowIso = (Format-Utc $a.nowUtc); sinceLocal = $a.sinceLocal; untilLocal = $a.untilLocal
-                   months = (Get-Months $a.sinceLocal $a.untilLocal); results = [ordered]@{}; excluded = 0; emptyFolders = 0; tableErrors = 0
-                   ol = $null; ns = $null; model = $null; stores = $null; my = @() }
-    if ($a.st) { $script:W.st = @{ opt = $a.st.opt; opt_n = $a.st.n } }
+                   nowUtc = $a.nowUtc; nowLocal = $a.nowLocal; nowIso = (Format-Utc $a.nowUtc); sinceLocal = $a.sinceLocal
+                   untilLocal = $a.untilLocal; months = (Get-Months $a.sinceLocal $a.untilLocal); results = [ordered]@{}; excluded = 0
+                   emptyFolders = 0; tableErrors = 0; mismatch = 0; calOutOfRange = 0; foldersSeen = 0; foldersCapped = $false
+                   storeSkip = @{}; ol = $null; ns = $null; model = $null; stores = $null; my = @(); attachHr = $null
+                   daslFmt = $null; canary = 'none'; omgCanary = $null; cached = $true; olStarted = ($a.olState -eq 'started')
+                   staleH = [double]$a.staleH; syncWait = $STALE_SYNC_WAIT_SEC; daslOk = @($DASL_FORMATS); daslShift = 0
+                   t0 = $script:Clock.Elapsed.TotalSeconds }
+    if ($a.st) {
+        $script:W.st = @{ opt = $a.st.opt; opt_n = $a.st.n }
+        $o = $a.st.opt
+        if ($o.daslok) { $script:W.daslOk = @(([string]$o.daslok).Split('+') | Where-Object { $_ }) }
+        if ($o.daslshift) { $script:W.daslShift = [int]$o.daslshift }
+        if ($o.syncwait) { $script:W.syncWait = [int]$o.syncwait }
+        $script:W.cached = -not $o.online
+    }
     $kinds = $a.kinds
     # 예산: 일정은 절반까지, 메일은 전체 예산 안에서(혼합이면 일정 다음 남은 시간)
     $script:W.calBudget = [double]$a.budget / 2
@@ -1135,24 +1471,34 @@ function Invoke-Worker($a) {
             foreach ($k in $kinds) {
                 $src = $(if ($k -eq 'mail') { 'mail.com' } else { 'cal.com' })
                 $r = New-Result $src; Add-Reason $r $att.reason; $r.counts['attach'] = 'failed'; $r.rc = 3
+                if ($script:W.attachHr) { $r.counts['attach_hr'] = $script:W.attachHr }
                 Write-OutLine ('{"_wres":' + (ConvertTo-ResultJson $r) + '}')
             }
             return 3
         }
+        Write-Hb 'attach:stores' 0
         if ($script:W.st) {
             $script:W.model = New-SelfModel $script:W.st $script:W
-            $script:W.stores = $script:W.model.stores
+            $script:W.stores = Select-Stores $script:W.model.cands
         } else {
             $script:W.stores = Get-ComStores
         }
         $script:W.my = @(Get-WorkerAddrs)
         Write-OutLine ('{"_meta":{"my_addrs":' + (ConvertTo-J ([object[]]$script:W.my)) + '}}')
+        Select-DaslFormat
         Write-Hb 'read' 0
         foreach ($k in $kinds) {
             if ($k -eq 'cal') { Invoke-CalKind } else { Invoke-MailKind }
         }
         foreach ($k in $script:W.results.Keys) {
-            Write-OutLine ('{"_wres":' + (ConvertTo-ResultJson $script:W.results[$k]) + '}')
+            $r = $script:W.results[$k]
+            $r.counts['filter_canary'] = $script:W.canary
+            $r.counts['filter_fmt'] = $script:W.daslFmt
+            $r.counts['stores_non_exchange'] = [int]$script:W.storeSkip['non_exchange']
+            $r.counts['stores_other'] = [int]$script:W.storeSkip['other']
+            if ($script:W.includeArchive) { $r.counts['archive_store'] = 'unverified' }
+            if ($script:W.omgCanary) { $r.counts['omg_canary'] = $script:W.omgCanary; Add-Reason $r 'R-OMG' }
+            Write-OutLine ('{"_wres":' + (ConvertTo-ResultJson $r) + '}')
         }
         return 0
     } finally {
@@ -1163,35 +1509,77 @@ function Invoke-Worker($a) {
 
 # ═════════════════════════════════════ 부모: 사전 점검 · 워치독 ═════════════════════════════════════
 function Get-OutlookProfileState {
-    # Outlook 프로필 수와 '쓸 수 있는' 프로필 수(메일 계정·데이터 파일이 하나라도 든 것) — 계약 v1.3 §0.8 V7.
-    # 주소록(CONTAB·LDAP)만 든 프로필은 Outlook 을 띄우면 'Outlook 시작' 마법사가 뜬다(실측) — 쓸 수 없다고 센다.
-    # 계정 관리자 키가 없거나 읽을 수 없으면 예전처럼 쓸 수 있다고 본다(모르면 막힘으로 단정하지 않는다).
+    # Outlook 프로필 수와 '쓸 수 있는' 프로필 수 — 계약 v1.3 §0.8 V7. 계정 관리자 레지스트리 모양은 문서화돼 있지 않다(계정 관리
+    # API 는 CLSID 상수만 정의 — M365 조사 H7). 그래서 '쓸 수 없음'은 주소록만 든 긍정 증거가 있을 때만 센다: 메일 계정 목록
+    # {ED475418}·데이터 파일 목록{ED475420}이 없거나 비었고, 계정 하위 키가 모두 주소록(LDAP 계정 CLSID 또는 MAPI 계정의 서비스
+    # 이름 CONTAB·EMABLT)이며, 주소록 계정이나 주소록 목록{ED475419}이 하나라도 있을 때. 그 밖(Exchange·POP·IMAP·Hotmail/EAS·
+    # 서비스 이름 없는 MAPI 계정·모르는 모양·계정 관리자 키 없음)은 쓸 수 있다고 본다 — 회사 PC 의 Exchange 프로필을 막힘으로
+    # 오판하지 않게(모르면 막힘으로 단정하지 않는다). 주소록만 든 프로필은 띄우면 'Outlook 시작' 마법사가 뜬다(개발 PC 실측).
+    # -Shapes = 시험 주입(레지스트리에서 읽은 것과 같은 모양 @{am; vals; accts}). 같은 함수가 탐침·COM·색인 수집기에 같다.
     param([string[]]$Roots = @('HKCU:\Software\Microsoft\Office\16.0\Outlook\Profiles',
                                'HKCU:\Software\Microsoft\Office\15.0\Outlook\Profiles',
-                               'HKCU:\Software\Microsoft\Windows NT\CurrentVersion\Windows Messaging Subsystem\Profiles'))
-    $r = @{ total = 0; usable = 0 }
-    foreach ($root in $Roots) {
-        foreach ($pk in @(Get-ChildItem -LiteralPath $root -ErrorAction SilentlyContinue)) {
-            $r.total++
-            $am = $null
-            try { $am = Get-Item -LiteralPath (Join-Path $pk.PSPath '9375CFF0413111d3B88A00104B2A6676') -ErrorAction Stop } catch { $am = $null }
-            if ($null -eq $am) { $r.usable++; continue }
-            $listed = 0
-            foreach ($n in @('{ED475418-B0D6-11D2-8C3B-00104B2A6676}', '{ED475420-B0D6-11D2-8C3B-00104B2A6676}')) {   # 메일 계정 목록 · 데이터 파일 목록
-                $v = $am.GetValue($n)
-                if ($v -is [byte[]]) { $listed += $v.Length } elseif ($null -ne $v -and [string]$v) { $listed++ }
+                               'HKCU:\Software\Microsoft\Windows NT\CurrentVersion\Windows Messaging Subsystem\Profiles'),
+          [object[]]$Shapes = $null)
+    $MAPI = '{ED475414-B0D6-11D2-8C3B-00104B2A6676}'                   # OlkMAPIAccount(Exchange·주소록 모두 이 CLSID)
+    $LDAP = '{4DB5CBF2-3B77-4852-BC8E-BB81908861F3}'                   # OlkLDAPAccount
+    $LISTS = @('{ED475418-B0D6-11D2-8C3B-00104B2A6676}', '{ED475420-B0D6-11D2-8C3B-00104B2A6676}')   # 메일 계정 목록 · 데이터 파일 목록
+    $ABLIST = '{ED475419-B0D6-11D2-8C3B-00104B2A6676}'                 # 주소록 목록
+    if ($null -eq $Shapes) {
+        $sh = New-Object System.Collections.Generic.List[object]
+        foreach ($root in $Roots) {
+            foreach ($pk in @(Get-ChildItem -LiteralPath $root -ErrorAction SilentlyContinue)) {
+                $am = $null
+                try { $am = Get-Item -LiteralPath (Join-Path $pk.PSPath '9375CFF0413111d3B88A00104B2A6676') -ErrorAction Stop } catch { $am = $null }
+                if ($null -eq $am) { $sh.Add(@{ am = $false }); continue }
+                $vals = @{}
+                foreach ($n in @($LISTS + $ABLIST)) { $vals[$n] = $am.GetValue($n) }
+                $accts = New-Object System.Collections.Generic.List[object]
+                foreach ($ak in @(Get-ChildItem -LiteralPath $am.PSPath -ErrorAction SilentlyContinue)) {
+                    $accts.Add(@{ clsid = $ak.GetValue('clsid'); svc = $ak.GetValue('Service Name') })
+                }
+                $sh.Add(@{ am = $true; vals = $vals; accts = $accts.ToArray() })
             }
-            $mail = $false
-            foreach ($ak in @(Get-ChildItem -LiteralPath $am.PSPath -ErrorAction SilentlyContinue)) {
-                $svc = $ak.GetValue('Service Name')
-                if ($svc -is [byte[]]) { $svc = [Text.Encoding]::Unicode.GetString($svc) }
-                $svc = ([string]$svc).Trim([char]0).Trim().ToUpperInvariant()
-                $cls = ([string]$ak.GetValue('clsid')).Trim().ToUpperInvariant()
-                if ($cls -and $cls -ne '{ED475414-B0D6-11D2-8C3B-00104B2A6676}') { $mail = $true }        # POP·IMAP·EAS 같은 MAPI 밖 계정
-                elseif ($svc -and @('CONTAB', 'EMABLT') -notcontains $svc) { $mail = $true }              # Exchange(MSEMS)·데이터 파일 등
-            }
-            if ($listed -gt 0 -or $mail) { $r.usable++ }
         }
+        $Shapes = $sh.ToArray()
+    }
+    $r = @{ total = 0; usable = 0 }
+    foreach ($p in $Shapes) {
+        $r.total++
+        if (-not $p.am) { $r.usable++; continue }
+        $listed = 0
+        foreach ($n in $LISTS) {
+            $v = $p.vals[$n]
+            if ($v -is [byte[]]) { $listed += $v.Length } elseif ($null -ne $v -and [string]$v) { $listed++ }
+        }
+        $ab = 0
+        $v = $p.vals[$ABLIST]
+        if (($v -is [byte[]] -and $v.Length -gt 0) -or ($v -isnot [byte[]] -and $null -ne $v -and [string]$v)) { $ab = 1 }
+        $other = 0
+        foreach ($ac in @($p.accts)) {
+            if ($null -eq $ac) { continue }
+            $svc = $ac.svc
+            if ($svc -is [byte[]]) { $svc = [Text.Encoding]::Unicode.GetString($svc) }
+            $svc = ([string]$svc).Trim([char]0).Trim().ToUpperInvariant()
+            $cls = ([string]$ac.clsid).Trim().ToUpperInvariant()
+            if ($cls -eq $LDAP -or ($cls -eq $MAPI -and @('CONTAB', 'EMABLT') -contains $svc)) { $ab++ } else { $other++ }
+        }
+        if ($listed -gt 0 -or $other -gt 0 -or $ab -eq 0) { $r.usable++ }
+    }
+    return $r
+}
+
+function Get-MigrationPolicy {
+    # 관리자 주도 새 Outlook 전환 정책(문서 admin-controlled-migration-policy) — 정책 키가 사용자 키보다 우선. 값만 읽는다.
+    # DoNewOutlookAutoMigration=1: 클래식을 띄울 때 전환 안내(3단계 — 마지막은 막는 프롬프트, 그 뒤 다음 실행에서 새 Outlook 으로
+    # 넘어감). NewOutlookAutoMigrationRetryIntervals=1: 클래식을 띄울 때마다 막는 프롬프트. 같은 함수가 탐침에도 같다.
+    $r = @{ auto = $null; retry = $null }
+    foreach ($k in @('HKCU:\Software\Policies\Microsoft\Office\16.0\Outlook\Options\General',
+                     'HKCU:\Software\Microsoft\Office\16.0\Outlook\Options\General')) {
+        $p = $null
+        try { $p = Get-ItemProperty -LiteralPath $k -ErrorAction Stop } catch { $p = $null }
+        if ($null -eq $p) { continue }
+        if ($null -eq $r.auto -and $p.PSObject.Properties['DoNewOutlookAutoMigration']) { try { $r.auto = [int]$p.DoNewOutlookAutoMigration } catch { } }
+        if ($null -eq $r.retry -and $p.PSObject.Properties['NewOutlookAutoMigrationRetryIntervals']) { try { $r.retry = [int]$p.NewOutlookAutoMigrationRetryIntervals } catch { } }
     }
     return $r
 }
@@ -1245,16 +1633,22 @@ function Find-ClassicOutlook {
 }
 
 function Get-Precheck($st) {
-    # COM 을 부르지 않는 점검(레지스트리·프로세스). 새 Outlook 전용·프로필 0·COM 미등록이면 자식을 띄우지 않는다.
-    $p = @{ fatal = $null; running = $true }
+    # COM 을 부르지 않는 점검(레지스트리·프로세스). 새 Outlook 전용·전환 정책·프로필 0·COM 미등록이면 자식을 띄우지 않는다.
+    $p = @{ fatal = $null; running = $true; migAuto = $null; migRetry = $null; profTotal = $null; profUsable = $null }
     if ($st) {
-        if ($st.opt.newol) { $p.fatal = 'R-NEWOL' } elseif ($st.opt.noprof) { $p.fatal = 'R-NOPROF' } elseif ($st.opt.wizard) { $p.fatal = 'R-WIZARD' }
+        if ($st.opt.automig) { $p.migAuto = 1 }
         $p.running = -not $st.opt.notrunning
+        if ($st.opt.newol) { $p.fatal = 'R-NEWOL' } elseif ($st.opt.noprof) { $p.fatal = 'R-NOPROF' } elseif ($st.opt.wizard) { $p.fatal = 'R-WIZARD' }
+        elseif (-not $p.running -and $p.migAuto -eq 1) { $p.fatal = 'R-NEWOL' }
         return $p
     }
     $running = $false
     try { $running = [bool](Get-Process -Name outlook -ErrorAction SilentlyContinue) } catch { }
     $p.running = $running
+    $mig = Get-MigrationPolicy
+    $p.migAuto = $mig.auto; $p.migRetry = $mig.retry
+    $pst = Get-OutlookProfileState
+    $p.profTotal = $pst.total; $p.profUsable = $pst.usable
     $newOl = $false
     try {
         foreach ($rp in @('HKCU:\Software\Microsoft\Office\16.0\Outlook\Preferences', 'HKCU:\Software\Microsoft\Office\Outlook\Preferences')) {
@@ -1266,6 +1660,9 @@ function Get-Precheck($st) {
     if ($running) { return $p }                                      # 떠 있으면 거기에 붙어 본다(실패 판정은 자식이)
     # 새 Outlook 흔적(전환 토글·olk 실행)만으로 멈추지 않는다 — 클래식 Outlook 이 설치돼 있으면 COM 으로 띄워 읽는다(LM24 와 같음).
     if ($newOl -and -not (Find-ClassicOutlook)) { $p.fatal = 'R-NEWOL'; return $p }
+    # 관리자 주도 전환 정책이 켜진 PC 에서 꺼진 클래식을 COM 으로 띄우지 않는다 — 문서상 클래식을 띄우면 전환 안내(막는 프롬프트)가
+    # 뜨거나 새 Outlook 으로 넘어간다(M365 조사 M13). 색인·웹 경로가 채운다. 떠 있는 클래식에는 위에서 붙는다.
+    if ($p.migAuto -eq 1) { $p.fatal = 'R-NEWOL'; return $p }
     if ($newOl) { [Console]::Error.WriteLine('[outlook] 새 Outlook 사용 흔적이 있지만 클래식 Outlook 이 설치돼 있어 COM 으로 읽습니다') }
     $profVers = New-Object System.Collections.Generic.List[int]
     $legacy = $false
@@ -1274,7 +1671,6 @@ function Get-Precheck($st) {
     }
     try { if (Get-ChildItem -LiteralPath 'HKCU:\Software\Microsoft\Windows NT\CurrentVersion\Windows Messaging Subsystem\Profiles' -ErrorAction SilentlyContinue | Select-Object -First 1) { $legacy = $true } } catch { }
     if ($profVers.Count -eq 0 -and -not $legacy) { $p.fatal = 'R-NOPROF'; return $p }
-    $pst = Get-OutlookProfileState
     if ($pst.total -gt 0 -and $pst.usable -eq 0) { $p.fatal = 'R-NOPROF'; return $p }   # 주소록만 든 프로필 — 띄우면 '시작' 마법사(v1.3 §0.8 V7)
     $curVer = ''
     try { $curVer = [string](Get-ItemProperty -LiteralPath 'Registry::HKEY_CLASSES_ROOT\Outlook.Application\CurVer' -ErrorAction Stop).'(default)' } catch { $curVer = '' }
@@ -1287,40 +1683,82 @@ function Get-Precheck($st) {
     return $p
 }
 
+$WINCLOSE_CS = @'
+using System;
+using System.Runtime.InteropServices;
+namespace Lm27Com {
+    public static class Win {
+        delegate bool EnumProc(IntPtr h, IntPtr l);
+        [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr l);
+        [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+        [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+        [DllImport("user32.dll")] static extern bool PostMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
+        public static int CloseTop(int pid) {
+            int n = 0;
+            EnumProc cb = delegate(IntPtr h, IntPtr l) {
+                uint p;
+                GetWindowThreadProcessId(h, out p);
+                if (p == (uint)pid && IsWindowVisible(h) && PostMessage(h, 0x0010, IntPtr.Zero, IntPtr.Zero)) { n++; }
+                return true;
+            };
+            EnumWindows(cb, IntPtr.Zero);
+            GC.KeepAlive(cb);
+            return n;
+        }
+    }
+}
+'@
+function Close-ProcessWindows([int]$procId) {
+    # 그 프로세스의 보이는 최상위 창(시작 마법사·프로필 선택·경고 대화상자)에 WM_CLOSE(= 취소)를 보낸다. 반환 = 보낸 창 수.
+    try { if (-not ('Lm27Com.Win' -as [type])) { Add-Type -TypeDefinition $WINCLOSE_CS -Language CSharp -ErrorAction Stop } } catch { return 0 }
+    try { return [int][Lm27Com.Win]::CloseTop($procId) } catch { return 0 }
+}
 function Stop-OutlookWeStarted([datetime]$Since) {
     # 꺼져 있던 Outlook 을 이 수집이 COM 으로 띄웠는데 붙기에서 멈췄으면(설정 마법사·암호 창 등) 화면에 남기지 않는다 —
-    # 계약 v1.3 §0.8 V8. COM 이 띄운 것(명령줄 -Embedding)이고 자식을 띄운 뒤 생긴 것만: 먼저 창 닫기, 5초 안에 안 끝나면 끝낸다.
-    # 사용자가 직접 띄운 Outlook(-Embedding 없음)·그 전부터 떠 있던 Outlook 은 건드리지 않는다. 반환 = 닫은 수.
-    $n = 0
+    # 계약 v1.3 §0.8 V8. COM 이 띄운 것(명령줄 -Embedding — LocalServer32 문서)이고 자식을 띄운 뒤 생긴 것만: 먼저 그 프로세스의
+    # 보이는 창에 WM_CLOSE(취소), 없으면 주 창 닫기 → 10초 안에 안 끝나면 끝낸다(L6 — 강제 종료는 counts.forced_kill).
+    # 사용자가 직접 띄운 Outlook(-Embedding 없음)·그 전부터 떠 있던 Outlook 은 건드리지 않는다. 반환 @{closed; forced}.
+    $r = @{ closed = 0; forced = 0 }
     $procs = @()
-    try { $procs = @(Get-CimInstance -ClassName Win32_Process -Filter "Name='OUTLOOK.EXE'" -ErrorAction Stop) } catch { return 0 }
+    try { $procs = @(Get-CimInstance -ClassName Win32_Process -Filter "Name='OUTLOOK.EXE'" -ErrorAction Stop) } catch { return $r }
     foreach ($w in $procs) {
         if ([string]$w.CommandLine -notmatch '(?i)[-/]embedding') { continue }
         if ($null -ne $w.CreationDate -and $w.CreationDate -lt $Since.AddSeconds(-2)) { continue }
         try {
             $gp = Get-Process -Id ([int]$w.ProcessId) -ErrorAction Stop
-            [void]$gp.CloseMainWindow()
-            if (-not $gp.WaitForExit(5000)) { Stop-Process -Id $gp.Id -Force -ErrorAction Stop }
-            $n++
+            if ((Close-ProcessWindows $gp.Id) -eq 0) { [void]$gp.CloseMainWindow() }
+            if (-not $gp.WaitForExit(10000)) { Stop-Process -Id $gp.Id -Force -ErrorAction Stop; $r.forced++ }
+            $r.closed++
         } catch { }
     }
-    return $n
+    return $r
 }
 
-function Invoke-Parent($a) {
-    $srcs = @($a.kinds | ForEach-Object { if ($_ -eq 'mail') { 'mail.com' } else { 'cal.com' } })
-    $results = [ordered]@{}
-    $pre = Get-Precheck $a.st
-    if ($pre.fatal) {
-        foreach ($s in $srcs) { $r = New-Result $s; Add-Reason $r $pre.fatal; $r.counts['attach'] = 'skipped'; $r.rc = 3; $results[$s] = $r }
-        Write-ErrLine ('[outlook-com] 건너뜀({0}) — 이 PC 에서는 Outlook COM 을 쓸 수 없습니다. 다른 경로가 빈칸을 채웁니다' -f $pre.fatal)
-        return @{ rc = 3; results = $results; cursors = @{} }
+function Set-Count($r, [string]$k, $v) {
+    # 결과(사전 또는 자식 _wres 의 PSCustomObject)의 counts 에 값 하나
+    if ($r -is [System.Collections.IDictionary]) {
+        if ($null -eq $r['counts']) { $r['counts'] = [ordered]@{} }
+        $r['counts'][$k] = $v
+        return
     }
+    if ($null -eq $r.counts) { $r | Add-Member -NotePropertyName counts -NotePropertyValue ([ordered]@{}) -Force }
+    if ($r.counts -is [System.Collections.IDictionary]) { $r.counts[$k] = $v }
+    else { $r.counts | Add-Member -NotePropertyName $k -NotePropertyValue $v -Force }
+}
+function Add-ReasonAny($r, [string]$code) {
+    if ($r -is [System.Collections.IDictionary]) { Add-Reason $r $code; return }
+    $r.reasons = @(@($r.reasons) + $code | Where-Object { $_ } | Select-Object -Unique)
+}
+
+function Invoke-ChildRun($a, [int]$readProt, $pre) {
+    # 자식(-Worker) 한 번 — 줄을 통과시키며 워치독을 건다. 붙는 중(attach*)이고 이 수집이 Outlook 을 띄우면 시동 여유,
+    # B단 카나리아(pr_start)는 짧은 워치독(경고창 추정).
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
     $onlyArg = $(if ($a.mixed) { 'both' } else { $a.kinds[0] })
-    $argv = ('-NoProfile -ExecutionPolicy Bypass -File "{0}" -Worker -Only {1} -Since {2} -Until {3} -ReadProtected {4} -BudgetSec {5} -TestNow "{6}"' -f
-             $PSCommandPath, $onlyArg, $a.sinceDay, $a.untilDay, $a.readProt, $a.budget, $a.nowLocalText)
+    $olState = $(if ($pre.running) { 'running' } else { 'started' })
+    $argv = ('-NoProfile -ExecutionPolicy Bypass -File "{0}" -Worker -Only {1} -Since {2} -Until {3} -ReadProtected {4} -BudgetSec {5} -TestNow "{6}" -OlState {7}' -f
+             $PSCommandPath, $onlyArg, $a.sinceDay, $a.untilDay, $readProt, $a.budget, $a.nowLocalText, $olState)
     $psi.Arguments = $argv
     $psi.UseShellExecute = $false
     $psi.RedirectStandardInput = $true
@@ -1338,9 +1776,10 @@ function Invoke-Parent($a) {
     $errTask = $p.StandardError.ReadToEndAsync()
     $task = $p.StandardOutput.ReadLineAsync()
     $last = $script:Clock.Elapsed.TotalSeconds
-    $hard = [double]$a.budget + [double]$a.watchdog + 30
+    $hard = $last + [double]$a.budget + [double]$a.watchdog + 30
+    $prLimit = [Math]::Min([double]$a.watchdog, [Math]::Max($PR_LIMIT_MIN, [double]$a.protSec * 3))
     $phase = 'attach'; $killed = $null
-    $cursors = [ordered]@{}; $nRec = @{ 'mail.com' = 0; 'cal.com' = 0 }
+    $results = [ordered]@{}; $cursors = [ordered]@{}; $nRec = @{ 'mail.com' = 0; 'cal.com' = 0 }
     while ($true) {
         if ($task.Wait(200)) {
             $line = $task.Result
@@ -1355,7 +1794,7 @@ function Invoke-Parent($a) {
             } elseif ($line) {
                 Write-OutLine $line
                 if (-not $line.StartsWith('{"_')) {
-                    $s = $srcs[0]
+                    $s = $a.srcs[0]
                     if ($a.mixed) { if ($line.Contains('"_kind":"cal"')) { $s = 'cal.com' } else { $s = 'mail.com' } }
                     $nRec[$s]++
                 }
@@ -1363,10 +1802,11 @@ function Invoke-Parent($a) {
             $task = $p.StandardOutput.ReadLineAsync()
         } else {
             $now = $script:Clock.Elapsed.TotalSeconds
-            # Outlook 이 꺼져 있던 PC 에서 COM 으로 띄우는 동안(attach)은 시동·프로필·서버 연결에 수십 초가 걸린다 —
+            # Outlook 이 꺼져 있던 PC 에서 COM 으로 띄우는 동안(attach*)은 시동·프로필·서버 연결에 수십 초가 걸린다 —
             # 그 사이 워치독(무진전 mail.com.watchdogSec, 기본 20초)이 자식을 죽여 '마법사'로 오판했다(실측). 시동 여유를 준다.
             $limit = $a.watchdog
-            if ($phase -eq 'attach' -and -not $pre.running) { $limit = [Math]::Max($a.watchdog, $OUTLOOK_START_GRACE_SEC) }
+            if ($phase -like 'attach*' -and -not $pre.running) { $limit = [Math]::Max($a.watchdog, $OUTLOOK_START_GRACE_SEC) }
+            elseif ($phase -eq 'pr_start') { $limit = $prLimit }
             if (($now - $last) -gt $limit) { $killed = 'watchdog' }
             elseif ($now -gt $hard) { $killed = 'hard' }
             if ($killed) {
@@ -1377,39 +1817,88 @@ function Invoke-Parent($a) {
     }
     [void]$p.WaitForExit(5000)
     try { if ($errTask.Wait(2000)) { foreach ($ln in ($errTask.Result -split "`r?`n")) { if ($ln) { Write-ErrLine $ln } } } } catch { }
-    if (-not $a.st -and -not $pre.running -and $phase -eq 'attach') {
-        # 꺼져 있던 Outlook 을 이 수집이 띄웠는데 붙기에서 멈췄다 — 그 창(마법사·대화상자)을 화면에 남기지 않는다(v1.3 §0.8 V8)
-        $closed = Stop-OutlookWeStarted $launchedAt
-        if ($closed -gt 0) { Write-ErrLine ('[outlook-com] 이 수집이 띄운 Outlook 이 시작 단계에서 멈춰 닫았습니다({0}개)' -f $closed) }
-    }
-    $rc = 0
-    foreach ($s in $srcs) {
-        if (-not $results.Contains($s)) {
-            # 자식이 결과 없이 끝났다(워치독·예외) — 붙는 중이면 대화상자·마법사, 읽는 중이면 수송 실패
-            $r = New-Result $s
-            $why = 'R-TRANSPORT'
-            if ($phase -eq 'attach') { if ($pre.running) { $why = 'R-DIALOG' } else { $why = 'R-WIZARD' } }
-            Add-Reason $r $why
-            $r.items_ok = $nRec[$s]
-            $r.counts['watchdog'] = [bool]($killed)
-            $r.counts['phase'] = $phase
-            $r.rc = 3
-            $results[$s] = $r
-            Write-ErrLine ('[outlook-com] {0}: 응답 없음({1}) — 자식을 끝냈습니다. 다음 실행에서 다시 시도합니다' -f $s, $phase)
+    return @{ results = $results; cursors = $cursors; phase = $phase; killed = $killed; nRec = $nRec; launchedAt = $launchedAt }
+}
+
+function Invoke-Parent($a) {
+    $srcs = @($a.kinds | ForEach-Object { if ($_ -eq 'mail') { 'mail.com' } else { 'cal.com' } })
+    $a.srcs = $srcs
+    $results = [ordered]@{}
+    $pre = Get-Precheck $a.st
+    if ($pre.fatal) {
+        foreach ($s in $srcs) { $r = New-Result $s; Add-Reason $r $pre.fatal; $r.counts['attach'] = 'skipped'; $r.rc = 3; $results[$s] = $r }
+        if ($pre.migAuto -eq 1 -and $pre.fatal -eq 'R-NEWOL') {
+            Write-ErrLine '[outlook-com] 건너뜀(R-NEWOL) — 관리자 새 Outlook 전환 정책이 켜져 있어 꺼진 클래식 Outlook 을 띄우지 않습니다. 색인·웹 경로가 빈칸을 채웁니다'
+        } else {
+            Write-ErrLine ('[outlook-com] 건너뜀({0}) — 이 PC 에서는 Outlook COM 을 쓸 수 없습니다. 다른 경로가 빈칸을 채웁니다' -f $pre.fatal)
         }
+    } else {
+        if ($a.includeArchive) { Write-ErrLine '[outlook-com] 보관 사서함 읽기(mail.includeArchiveStore)는 보관 사서함 식별을 확인하기 전까지 쓰지 않습니다 — 기본 사서함만 읽습니다' }
+        $omgTimeout = $false
+        $run = Invoke-ChildRun $a ([int]$a.readProt) $pre
+        if ($run.killed -and $run.phase -eq 'pr_start' -and [int]$a.readProt -eq 1) {
+            # B단 첫 보호 읽기(내 주소)가 멈췄다 — Object Model Guard 경고창 추정(백신 상태·정책). 이번 실행은 B단 없이 다시 붙는다
+            Write-ErrLine '[outlook-com] 보호 주소 읽기가 응답하지 않아(보안 경고창 추정) 주소·본문 없이 다시 읽습니다'
+            $omgTimeout = $true
+            $run = Invoke-ChildRun $a 0 $pre
+        }
+        $results = $run.results
+        $phase = $run.phase
+        $closed = @{ closed = 0; forced = 0 }
+        if (-not $a.st -and -not $pre.running -and $phase -like 'attach*') {
+            # 꺼져 있던 Outlook 을 이 수집이 띄웠는데 붙기에서 멈췄다 — 그 창(마법사·대화상자)을 화면에 남기지 않는다(v1.3 §0.8 V8)
+            $closed = Stop-OutlookWeStarted $run.launchedAt
+            if ($closed.closed -gt 0) { Write-ErrLine ('[outlook-com] 이 수집이 띄운 Outlook 이 시작 단계에서 멈춰 닫았습니다({0}개)' -f $closed.closed) }
+        }
+        foreach ($s in $srcs) {
+            if (-not $results.Contains($s)) {
+                # 자식이 결과 없이 끝났다(워치독·예외) — 붙는 중이면 대화상자·마법사, 읽는 중이면 수송 실패
+                $r = New-Result $s
+                $why = 'R-TRANSPORT'
+                if ($phase -like 'attach*') { if ($pre.running) { $why = 'R-DIALOG' } else { $why = 'R-WIZARD' } }
+                Add-Reason $r $why
+                $r.items_ok = $run.nRec[$s]
+                $r.counts['watchdog'] = [bool]($run.killed)
+                $r.counts['phase'] = $phase
+                if ($phase -like 'attach*') { $r.counts['attach_step'] = $phase }
+                if ($closed.forced -gt 0) { $r.counts['forced_kill'] = $true }
+                $r.rc = 3
+                $results[$s] = $r
+                Write-ErrLine ('[outlook-com] {0}: 응답 없음({1}) — 자식을 끝냈습니다. 다음 실행에서 다시 시도합니다' -f $s, $phase)
+            }
+        }
+        if ($omgTimeout) {
+            foreach ($s in @($results.Keys)) {
+                Add-ReasonAny $results[$s] 'R-OMG'
+                Set-Count $results[$s] 'omg_canary' 'timeout'
+                Set-Count $results[$s] 'protected_read' $false
+            }
+        }
+        $script:CursorsOut = $run.cursors
     }
-    return @{ rc = $rc; results = $results; cursors = $cursors }
+    foreach ($s in @($results.Keys)) {
+        $r = $results[$s]
+        Set-Count $r 'started_outlook' (-not $pre.running)
+        if ($null -ne $pre.migAuto) { Set-Count $r 'migration_auto' $pre.migAuto }
+        if ($null -ne $pre.migRetry) { Set-Count $r 'migration_retry' $pre.migRetry }
+        if ($null -ne $pre.profTotal) { Set-Count $r 'profiles_total' $pre.profTotal; Set-Count $r 'profiles_usable' $pre.profUsable }
+    }
+    $cursors = @{}
+    if ($script:CursorsOut) { $cursors = $script:CursorsOut }
+    return @{ rc = 0; results = $results; cursors = $cursors }
 }
 
 # ═════════════════════════════════════ 진입 ═════════════════════════════════════
 $code = 3
 $kindsOut = @('mail.com', 'cal.com')
+$script:CursorsOut = $null
 try {
     if ($args.Count) { throw (New-Object System.ArgumentException('unknown-argument')) }
     $onlyN = $Only
     if ($Worker -and $Only -eq 'both') { $onlyN = '' }
     if ($onlyN -notin @('', 'mail', 'cal')) { throw (New-Object System.ArgumentException('only')) }
     if ($Pc -and $Pc -notmatch $PC_RX) { throw (New-Object System.ArgumentException('pc')) }
+    if ($OlState -notin @('', 'running', 'started')) { throw (New-Object System.ArgumentException('olstate')) }
     $kinds = @('cal', 'mail')
     if ($onlyN) { $kinds = @($onlyN) }
     $kindsOut = @($kinds | ForEach-Object { if ($_ -eq 'mail') { 'mail.com' } else { 'cal.com' } })
@@ -1433,6 +1922,8 @@ try {
     if ($rpRaw -eq '') { $rpRaw = [string](Get-Cfg $in 'mail.com.readProtected' '0') }
     $readProt = 0; if ($rpRaw -eq '1') { $readProt = 1 }                # auto 는 연결자가 탐침으로 정한다 — 못 받았으면 안전하게 0
     $sub = Get-Cfg $in 'probe.subfolderRatio' $null
+    $staleH = 72
+    try { $staleH = [double](Get-Cfg $in 'probe.ostStaleH' 72) } catch { $staleH = 72 }
     $a = @{
         in = $in; st = $st; kinds = $kinds; mixed = ($kinds.Count -gt 1); readProt = $readProt
         budget = (Get-IntArg $BudgetSec (Get-Cfg $in 'mail.com.budgetSec' 360) 1)
@@ -1441,9 +1932,9 @@ try {
         capMail = [int](Get-Cfg $in 'mail.com.capMail' 20000); capCal = [int](Get-Cfg $in 'mail.com.capCal' 8000)
         includeArchive = [bool](Get-Cfg $in 'mail.includeArchiveStore' $false)
         owner = ([string](Get-Cfg $in 'collect.ownerAddress' '')).Trim().ToLower()
-        subRatio = $sub
+        subRatio = $sub; staleH = $staleH; olState = $OlState
         sinceDay = $sinceDay; untilDay = $untilDay; sinceLocal = $sinceLocal; untilLocal = $untilLocal
-        nowLocalText = $nowLocal.ToString('yyyy-MM-dd HH:mm', $script:Inv); nowUtc = (ConvertTo-UtcFromLocal $nowLocal)
+        nowLocalText = $nowLocal.ToString('yyyy-MM-dd HH:mm', $script:Inv); nowLocal = $nowLocal; nowUtc = (ConvertTo-UtcFromLocal $nowLocal)
     }
     if ($Worker) {
         $code = Invoke-Worker $a

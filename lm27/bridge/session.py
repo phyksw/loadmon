@@ -10,6 +10,13 @@ r"""L0 세션(B §4) — Edge 탐색·정책 확인·기동·포트·소유 확�
         st = sess.goto(owa_url)                          # 이동 + 로드·로그인 대기(BR-LOGIN 안내 + 5초 폴링)
     # __exit__: 우리가 띄운 Edge 이고 closeOnExit 면 Browser.close(5초 안에 안 닫혀도 강제 종료하지 않음),
     #           아니면 자기 탭만 닫는다. 잠금 해제. 남의 탭은 닫지도 읽지도 않는다(B13).
+    #           단 작업 보류(``edge_hold`` — 한 작업 수집→분석) 중이면 닫지 않고 다음 세션에 넘기고(kept_launch), 보류가 끝나면
+    #           ``release_edge_hold`` 가 닫는다(H2 — 로그인 상태 유지가 없는 회사에서 '한 번 로그인'으로 한 작업을 마치게).
+
+회사 PC 위험 대응(2026-10 공식 문서 대조): 로그인 호스트 접미사·회사 IdP 화면에서 떠나지 않음(H3) · 장치 기반 조건부 액세스
+AADSTS 는 'Edge 프로필 로그인' 안내(H1) · SSO 로 한순간 지나가는 로그인 화면은 조용히(L1) · edge:// 화면은 죽은 세션이 아니라
+브라우저 로그인(M6) · UserDataDir 정책이면 띄우지 않고 남의 Edge 는 죽이지 않음(H5) · 로그인 화면 종류(회사·개인)를 남겨 개인 계정
+Copilot 에는 보내지 않게(H4 — ``env.derive_account``) · 입력창 없는 Copilot 화면 반복은 채팅 차단 의심(M5).
 
 허용 동작(B §4.1): Edge 실행 파일 탐색, 정책 레지스트리 **읽기**, 전용 프로필로 기동, 127.0.0.1 디버그 포트 연결,
 자기 탭 생성·이동·닫기, 앞으로 가져오기, 새로고침, 모델 메뉴·업무 모드 버튼 클릭(자기 탭 안).
@@ -19,6 +26,7 @@ r"""L0 세션(B §4) — Edge 탐색·정책 확인·기동·포트·소유 확�
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import threading
@@ -46,9 +54,35 @@ APP_PATHS_KEY = r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe
 POLICY_KEY = r"SOFTWARE\Policies\Microsoft\Edge"
 EDGE_REL = ("Microsoft", "Edge", "Application", "msedge.exe")
 EDGE_ROOT_VARS = ("ProgramFiles(x86)", "ProgramFiles", "LOCALAPPDATA")
-DEAD_SCHEMES = ("chrome-error://", "edge-error://", "edge://")
+# 오류 화면만 '죽은 세션'이다. edge:// 내부 화면(강제 Edge 로그인 BrowserSignin=2 등)은 사람이 풀 수 있는 브라우저 로그인으로
+# 따로 본다(M6 — 로그인하지 않은 프로필을 '손상'으로 보고 다시 만들지 않는다)
+DEAD_SCHEMES = ("chrome-error://", "edge-error://")
+EDGE_SCHEME = "edge://"
 BLANK_URL = "about:blank"                 # 웹 수집 역할이 시작 주소 없이 열 때(그 뒤 goto(url))
-STATES = ("ready", "login_required", "dead", "loading", "wrong_page", "no_input")
+STATES = ("ready", "login_required", "dead", "loading", "wrong_page", "no_input", "edge_page")
+# 로그인 화면 AADSTS 오류 번호(숫자만 읽음 — 계정·글 없음) 분류(Microsoft Entra 오류 코드 문서). 장치 기반 조건부 액세스는
+# '브라우저(Edge 프로필) 로그인'으로 사람이 풀 수 있다(H1 — 구조적 차단으로 확정하지 않는다). 웹 수집기도 같은 분류를 쓴다.
+DEVICE_CA_CODES = frozenset({"50005", "50097", "53000", "53001"})
+POLICY_CA_CODES = frozenset({"53002", "53003", "53004", "530032"})
+INTERACTIVE_CODES = frozenset({"50158"})   # 외부 보안 과제(사용 약관·타사 MFA) — 사람이 그 화면에서 마친다
+LOGIN_HINTS = ("", "edge_profile", "edge_signin", "ca_policy")
+ACCOUNT_KINDS = ("work", "personal")       # health.account.kind — 계정 식별 정보 없이 종류만(H4)
+OPEN_STAGES = ("probe", "calibrate")       # 계정과 무관하게 보낼 수 있는 글 — 연결 확인 시험 낱말·보정 합성 글(업무 자료 아님)
+
+
+def aadsts_kind(code) -> str:
+    """AADSTS 번호(문자열·정수) → ``device``(Edge 프로필 로그인으로 풀림) · ``policy``(조직 정책 차단) · ``interactive``
+    (사람이 그 화면에서 마칠 과제) · ``other`` · ``''``(번호 아님)."""
+    c = str(code or "").strip()
+    if not re.fullmatch(r"\d{5,6}", c):
+        return ""
+    if c in DEVICE_CA_CODES:
+        return "device"
+    if c in POLICY_CA_CODES:
+        return "policy"
+    if c in INTERACTIVE_CODES:
+        return "interactive"
+    return "other"
 _VER_RX = re.compile(r"^\d+\.\d+\.\d+\.\d+$")
 # 전용 프로필 소유 표식(W1 통합 창 — U-4 '본인 전용 프로필'): LM27 이 만든(또는 기본 위치에서 입양한) Edge 프로필 폴더에만
 # 있다. 손상 프로필 재생성(이름 바꾸기·옛 .bad-* 정리)은 이 표식이 있고 profile_id 가 맞는 폴더에만 한다.
@@ -104,6 +138,12 @@ class EdgeInfo:
     version: str = ""
     policy_debug: str = "unset"       # allowed | blocked | unset
     policy_devtools: str = "unset"
+    # 읽기만 하는 Edge 정책(값의 종류만 — 경로·글 없음, H2·H5·M6)
+    policy_user_data_dir: str = "unset"    # forced | unset — UserDataDir 이 있으면 --user-data-dir 가 무시된다
+    policy_browser_signin: str = "unset"   # force | enable | disable | unset — BrowserSignin
+    policy_inprivate: str = "unset"        # enable | disable | force | unset — InPrivateModeAvailability
+    policy_clear_on_exit: str = "unset"    # on | off | unset — ClearBrowsingDataOnExit
+    policy_save_cookies: str = "unset"     # set | unset — SaveCookiesOnExit
 
     @property
     def major(self) -> int:
@@ -115,6 +155,13 @@ class EdgeInfo:
     @property
     def policy_blocked(self) -> bool:
         return "blocked" in (self.policy_debug, self.policy_devtools)
+
+    def policies(self) -> dict:
+        """탐침·진단에 싣는 정책 값(열거값만)."""
+        return {"remote_debugging": self.policy_debug, "devtools": self.policy_devtools,
+                "user_data_dir": self.policy_user_data_dir, "browser_signin": self.policy_browser_signin,
+                "inprivate": self.policy_inprivate, "clear_on_exit": self.policy_clear_on_exit,
+                "save_cookies_on_exit": self.policy_save_cookies}
 
 
 @dataclass
@@ -203,10 +250,43 @@ def read_policy(reg=winreg_read) -> tuple[str, str]:
     return judge("RemoteDebuggingAllowed", 0), judge("DeveloperToolsAvailability", 2)
 
 
-def edge_info(finder=None, policy_reader=None, environ=None) -> EdgeInfo:
+def read_edge_policies(reg=winreg_read) -> dict:
+    """원격 디버깅 밖의 Edge 정책을 **읽기만** 한다(HKLM 이 HKCU 보다 먼저 — 값의 종류만, 경로 원문은 버린다).
+    ``UserDataDir``(REG_SZ — 있으면 forced) · ``BrowserSignin``(0 disable·1 enable·2 force) · ``InPrivateModeAvailability``
+    (0 enable·1 disable·2 force) · ``ClearBrowsingDataOnExit``(1 on) · ``SaveCookiesOnExit``(목록 키가 있으면 set)."""
+    def first(name):
+        for hive in ("HKLM", "HKCU"):
+            v = reg(hive, POLICY_KEY, name)
+            if v is not None:
+                return v
+        return None
+    udd = first("UserDataDir")
+    bs = first("BrowserSignin")
+    ip = first("InPrivateModeAvailability")
+    co = first("ClearBrowsingDataOnExit")
+    sc = None
+    for hive in ("HKLM", "HKCU"):
+        sc = sc or reg(hive, POLICY_KEY + r"\SaveCookiesOnExit", "1")
+    return {"user_data_dir": "forced" if isinstance(udd, str) and udd.strip() else "unset",
+            "browser_signin": {0: "disable", 1: "enable", 2: "force"}.get(bs, "unset") if isinstance(bs, int) else "unset",
+            "inprivate": {0: "enable", 1: "disable", 2: "force"}.get(ip, "unset") if isinstance(ip, int) else "unset",
+            "clear_on_exit": ("on" if co else "off") if isinstance(co, int) else "unset",
+            "save_cookies": "set" if sc else "unset"}
+
+
+def edge_info(finder=None, policy_reader=None, environ=None, extra_reader=None) -> EdgeInfo:
     path = (finder or (lambda: find_edge(environ=environ)))() or ""
     dbg, dev = (policy_reader or read_policy)()
-    return EdgeInfo(path=path, version=edge_version(path), policy_debug=dbg, policy_devtools=dev)
+    try:
+        ex = (extra_reader or read_edge_policies)() or {}
+    except OSError:
+        ex = {}
+    return EdgeInfo(path=path, version=edge_version(path), policy_debug=dbg, policy_devtools=dev,
+                    policy_user_data_dir=str(ex.get("user_data_dir") or "unset"),
+                    policy_browser_signin=str(ex.get("browser_signin") or "unset"),
+                    policy_inprivate=str(ex.get("inprivate") or "unset"),
+                    policy_clear_on_exit=str(ex.get("clear_on_exit") or "unset"),
+                    policy_save_cookies=str(ex.get("save_cookies") or "unset"))
 
 
 # ───────────────────────── 프로세스 생존(ctypes — os.kill 금지) ─────────────────────────
@@ -310,8 +390,10 @@ def classify_identity(r: dict, cfg) -> tuple[str, str]:
     r = r if isinstance(r, dict) else {}
     url, ready = str(r.get("url") or ""), str(r.get("ready") or "")
     inp = r.get("input") if isinstance(r.get("input"), dict) else {}
-    if host_of(url) in cfg.login_hosts:
+    if S.host_in(host_of(url), cfg.login_hosts):
         return "login_required", ""
+    if url.startswith(EDGE_SCHEME):
+        return "edge_page", ""                       # Edge 내부 화면(강제 로그인 등) — 죽은 세션이 아니다(M6)
     if not url or url == "about:blank" or url.startswith(DEAD_SCHEMES):
         return ("loading" if ready not in ("complete", "") else "dead"), ""
     if not any(url_matches(url, p) for p in cfg.chat_url_prefixes):
@@ -482,7 +564,7 @@ class EdgeSession:
     def __init__(self, role: str = "bridge", run_id: str | None = None, *, url: str | None = None, paths=None,
                  cfg=None, clock=None, http=None, connector=None, launcher=None, can_bind=None, edge_finder=None,
                  policy_reader=None, proc_probe=None, in_use=None, notices: Notices | None = None, environ=None,
-                 tracer=None, pid: int | None = None, pid_ctime: int | None = None):
+                 tracer=None, pid: int | None = None, pid_ctime: int | None = None, policy_extra_reader=None):
         if role not in S.ROLES:
             raise ValueError(f"EdgeSession: role 은 {S.ROLES} 중 하나")
         if paths is None:
@@ -501,6 +583,8 @@ class EdgeSession:
         self.can_bind = can_bind or C.can_bind
         self.edge_finder = edge_finder
         self.policy_reader = policy_reader
+        self.policy_extra_reader = policy_extra_reader
+        self.proc_probe = proc_probe or process_alive
         self.in_use = in_use or profile_in_use
         self.notices = notices if notices is not None else default_notices()
         self.environ = os.environ if environ is None else environ
@@ -510,7 +594,7 @@ class EdgeSession:
         self.url = url or (cfg.url if role == "bridge" else BLANK_URL)
         self.profile = BridgeProfile(paths)
         self.lock = SessionLock(paths, self.clock, role=role, run_id=self.run_id,
-                                proc_probe=proc_probe or process_alive, pid=pid, pid_ctime=pid_ctime)
+                                proc_probe=self.proc_probe, pid=pid, pid_ctime=pid_ctime)
         self.info = SessionInfo(role=role)
         self.edge = EdgeInfo()
         self.state = ""
@@ -529,6 +613,12 @@ class EdgeSession:
         self._pending_checked = False        # 이 세션에서 보류 상태 짧은 확인을 이미 했다(다음 확인은 한 번 보기만)
         self.login_check = ""                # LOGIN_CHECKS — 웹 수집기가 상태 줄에 싣는다(V18 skipped=login_pending)
         self.login_account = ""              # "personal" = 개인 계정 화면을 봄(회사 계정 아님)
+        self.login_seen: set = set()         # 이 세션이 본 로그인 화면 종류 {"org", "personal"}(호스트 원문은 두지 않는다, H4)
+        self.login_hint = ""                 # LOGIN_HINTS — 사람이 풀 길(Edge 프로필 로그인 등, H1·M6)
+        self.aadsts = ""                     # 로그인 화면의 AADSTS 번호(숫자만 — 진단)
+        self._held = False                   # 마지막 로그인 대기가 로그인 없이 끝나 보류가 남음(O-18 ⑤ — runner 가 본다)
+        self._in_login_wait = False
+        self._launched_fresh = False         # 이 세션이 Edge 를 새로 띄웠다(로그인 유지 진단 — H2)
         self.events: list[str] = []          # 시험·진단용 진행 기록(코드만)
 
     # ── 수명 ───────────────────────────────────────────────────────────
@@ -572,15 +662,20 @@ class EdgeSession:
             raise PhaseError("edge_not_found", why="no_browser")       # 시험 주입점: Edge 를 띄우지도 붙지도 않는다
         self.info.profile_dir = str(self._resolve_profile_dir())
         self._acquire_lock()
+        self.edge = edge_info(self.edge_finder, self.policy_reader, self.environ, self.policy_extra_reader)
         self._recover_dead_profile()
-        self.edge = edge_info(self.edge_finder, self.policy_reader, self.environ)
         port, how = self.choose_port()
         self.info.port = port
         self.info.origin_mode = self.profile.load()["health"].get("origin_mode") or "none"
         if how == "launch":
             if not self.edge.path:
                 raise PhaseError("edge_not_found")
+            if self.edge.policy_user_data_dir == "forced":
+                # UserDataDir 정책이면 --user-data-dir 가 무시되고 사용자 본 Edge(회사 기본 프로필)가 뜬다 — 띄우지 않는다(H5·U-4)
+                self.events.append("udd_forced")
+                raise PhaseError("policy_blocked", why="user_data_dir_forced")
             self._launch(port)
+            self._launched_fresh = True
         self._attach(port)
         if how == "reuse":
             self._adopt_front_launch()
@@ -601,7 +696,11 @@ class EdgeSession:
         self._closed = True
         try:
             if self.info.launched_by_us and self.cfg.edge.close_on_exit and self.info.port:
-                self._browser_close()
+                if self.hold_active():
+                    self._keep_open()                      # 한 작업(수집→분석) 동안은 로그인된 창을 이어 쓴다(H2)
+                else:
+                    self._browser_close()
+                    self._forget_launch(("front_launch", "kept_launch"))
             elif self.cdp is not None:
                 self._close_own_tab()
         finally:
@@ -651,6 +750,7 @@ class EdgeSession:
             elif kind == "ready":
                 h["dead_sessions"] = []
                 h["login_ok_at"] = iso_now(self.clock)
+                h["login_ok_browser"] = self.info.browser_id   # 로그인 유지 진단(H2) — 브라우저 실행 표지(계정 아님)
                 h.pop("login_pending", None)                   # 로그인 확인 = 보류 해제(V18)
             elif kind == "origin_explicit":
                 h["origin_mode"] = "explicit"
@@ -679,7 +779,8 @@ class EdgeSession:
             cur = h.get("login_pending") if isinstance(h.get("login_pending"), dict) else {}
             now = iso_now(self.clock)
             h["login_pending"] = {"since": str(cur.get("since") or now), "checked": now, "role": self.role,
-                                  "account": account or str(cur.get("account") or "")}
+                                  "account": account or str(cur.get("account") or ""),
+                                  "hint": self.login_hint or str(cur.get("hint") or "")}
         try:
             self.profile.update(put)
         except OSError:
@@ -701,8 +802,18 @@ class EdgeSession:
         return True
 
     def login_ok(self) -> None:
-        """웹 수집 역할이 로그인 뒤 화면(사서함·팀즈)을 확인했을 때 — 보류 해제(브리지는 ``record_health("ready")``)."""
+        """웹 수집 역할이 로그인 뒤 화면(사서함·팀즈)을 확인했을 때 — 보류 해제 + 로그인 확인 시각(브리지는 ``ensure_ready``)."""
         self.clear_login_pending("login_ok")
+        self._held = False
+        try:
+            self.record_health("ready")
+        except OSError:
+            pass
+
+    def login_held(self) -> bool:
+        """이 세션의 마지막 로그인 대기가 로그인 없이 끝나 보류가 남았는가(다 기다렸거나 보류 중 짧은 확인). 바깥 마감에 잘린
+        대기는 아니다. runner 는 이때 AI 단계를 2-strike 치명 대신 바로 skipped(login_pending)로 넘긴다(O-18 ⑤)."""
+        return bool(self._held) and self.login_pending() is not None
 
     def mark_login_pending(self) -> None:
         """웹 수집 역할이 세션 대기 밖에서 로그인을 다 기다렸거나(회사 SSO 등 모르는 화면) 개인 계정 사서함에 닿았을 때 —
@@ -714,8 +825,57 @@ class EdgeSession:
 
     def _see_host(self, host: str) -> None:
         self._last_host = host or ""
-        if self._last_host in S.PERSONAL_LOGIN_HOSTS:
+        if S.host_in(self._last_host, S.PERSONAL_LOGIN_HOSTS):
+            self.login_seen.add("personal")
             self.note_login_account("personal")
+        elif S.host_in(self._last_host, self.cfg.login_hosts):
+            self.login_seen.add("org")
+
+    # ── 계정 종류(H4 — 개인 Microsoft 계정 Copilot 에는 업무 자료를 보내지 않는다) ─────────────────────
+    def saved_account(self) -> str:
+        """브리지 프로필 ``health.account.kind``(work|personal|'') — 이 프로필에서 마지막으로 확인한 로그인 계정 종류."""
+        a = self.profile.load()["health"].get("account")
+        k = a.get("kind") if isinstance(a, dict) else ""
+        return k if k in ACCOUNT_KINDS else ""
+
+    def record_account(self, kind: str, by: str) -> None:
+        """계정 종류를 남긴다(식별 정보 없이 종류·근거 코드·시각만). 같은 값이면 쓰지 않는다."""
+        if kind not in ACCOUNT_KINDS:
+            return
+        cur = self.profile.load()["health"].get("account")
+        if isinstance(cur, dict) and cur.get("kind") == kind and cur.get("by") == by:
+            return
+
+        def put(d):
+            d.setdefault("health", {})["account"] = {"kind": kind, "by": by, "at": iso_now(self.clock)}
+        try:
+            self.profile.update(put)
+        except OSError:
+            pass
+
+    def send_block(self, stage: str = "") -> str:
+        """전송 직전 계정 관문(H4) — 회사(Entra) 계정으로 확인되지 않았으면 업무 자료를 넣지 않는다. 연결 확인(probe)의 시험
+        낱말과 보정(calibrate)의 합성 글은 예외(화면 조작 확인). 세션이 열 때 준비되지 않아 판별이 아직이면 지금 한다.
+        반환: '' = 보내도 됨, 아니면 ``personal_account``·``account_unknown``."""
+        if self.role != "bridge" or stage in OPEN_STAGES:
+            return ""
+        if getattr(self.env, "account", None) is None:
+            try:
+                self.ensure_work_mode()
+                from lm27.bridge.env import detect_env
+                detect_env(self)
+                self.info.env = self.env
+            except (OSError, C.CdpError, PhaseError):
+                return "account_unknown"
+        acct = getattr(self.env, "account", "unknown")
+        return "" if acct == "work" else ("personal_account" if acct == "personal" else "account_unknown")
+
+    def _note_account_after_login(self) -> None:
+        """로그인 흐름을 거쳐 Copilot 이 준비됐을 때 — 이 세션이 본 로그인 화면 종류를 남긴다(개인 계정 화면이 우선)."""
+        if "personal" in self.login_seen:
+            self.record_account("personal", "personal_login")
+        elif "org" in self.login_seen:
+            self.record_account("work", "org_login")
 
     def note_login_account(self, account: str) -> None:
         """로그인 화면·도착 화면이 회사(조직) 계정이 아님(``personal``) — 안내 한 번(BR-LOGIN-PERSONAL). 보류에 계정 종류를 남긴다."""
@@ -724,25 +884,43 @@ class EdgeSession:
         self.login_account = "personal"
         self.events.append("login_personal")
         self.notices.notify("BR-LOGIN-PERSONAL")
+        self.record_account("personal", "personal_login")      # 같은 프로필의 Copilot 도 개인 계정일 수 있다(H4)
 
     def _login_wait(self, dl: Deadline, poll, ok=None) -> str:
-        """로그인 대기 한 번(B §4.7 · V18). ``poll(상한 초)`` → 대기 뒤 상태, ``ok(상태)`` = 로그인을 넘어섰나(기본: 로그인·로딩이
-        아님). 보류 중이면 짧게(창을 앞으로 띄우지 않음), 아니면 BR-LOGIN 안내 + ``bridge.loginWaitMin``. 로그인 화면에서 끝났고
-        다 기다렸으면(또는 보류 확인이면) 보류를 남긴다 — 바깥 마감에 잘린 대기는 남기지 않는다(사람이 기회를 다 못 받음)."""
+        """로그인 대기 한 번(B §4.7 · V18). ``poll(상한 초, 간격 초)`` → 대기 뒤 상태, ``ok(상태)`` = 로그인을 넘어섰나(기본:
+        로그인·로딩이 아님). 보류 중이면 짧게(창을 앞으로 띄우지 않음), 아니면 먼저 ``LOGIN_GRACE_S`` 동안 1초 간격으로 보고 —
+        SSO 로 한순간 지나가는 로그인 화면이면 창을 앞으로 띄우지도 안내하지도 않는다(L1) — 그래도 로그인 화면이면 BR-LOGIN 안내
+        + ``bridge.loginWaitMin``. 로그인 화면의 AADSTS 번호가 장치 기반 조건부 액세스면 'Edge 프로필 로그인' 안내(H1). 로그인
+        화면에서 끝났고 다 기다렸으면(또는 보류 확인이면) 보류를 남긴다 — 바깥 마감에 잘린 대기는 남기지 않는다."""
         ok = ok or (lambda s: s not in ("login_required", "loading"))
         pending = self.login_pending()
         want = self.login_wait_s(pending)
         avail = dl.cap(want)
-        if pending:
-            self.notices.notify("BR-LOGIN-PENDING", sec=int(S.LOGIN_PENDING_CHECK_S))
-            self.events.append("login_pending_check")
-        else:
-            self.activate()
-            self.notices.notify("BR-LOGIN", loginWaitMin=self.cfg.login_wait_min)
-            self.events.append("login_wait")
-        st = poll(avail)
+        t0 = self.clock.mono()
+        self._in_login_wait = True
+        try:
+            if pending:
+                if str(pending.get("hint") or "") in ("edge_profile", "edge_signin"):
+                    self.notices.notify("BR-LOGIN-EDGE")      # 지난번에 본 원인(장치 확인·Edge 로그인)을 먼저 알린다
+                self.notices.notify("BR-LOGIN-PENDING", sec=int(S.LOGIN_PENDING_CHECK_S))
+                self.events.append("login_pending_check")
+                st = poll(avail, S.LOGIN_POLL_S)
+            else:
+                st = poll(min(avail, S.LOGIN_GRACE_S), S.IDENTITY_POLL_S)
+                if ok(st):
+                    self.events.append("login_passed")      # SSO 통과 — 안내·창 앞으로 없음(L1)
+                    self._held = False
+                    return st
+                self._check_nopersist()
+                self.activate()
+                self.notices.notify("BR-LOGIN", loginWaitMin=self.cfg.login_wait_min)
+                self.events.append("login_wait")
+                st = poll(max(0.0, avail - (self.clock.mono() - t0)), S.LOGIN_POLL_S)
+        finally:
+            self._in_login_wait = False
         if ok(st):
             self.notices.notify("BR-LOGIN-OK")
+            self._held = False
             return st
         if st in ("login_required", "loading"):
             full = avail >= want
@@ -750,7 +928,49 @@ class EdgeSession:
             if pending or full:
                 self._pending_checked = True
                 self._mark_login_pending()
+                self._held = True
         return st
+
+    def _check_aadsts(self) -> None:
+        """로그인 화면의 AADSTS 번호(숫자만)를 읽어 사람이 풀 길을 정한다 — 장치 기반 조건부 액세스면 Edge 프로필 로그인 안내(H1).
+        로그인 대기 중 로그인 호스트에서만 부른다(페이지 글은 돌려받지 않는다)."""
+        try:
+            v = self.eval(js.aadsts())
+        except (OSError, C.CdpError, PhaseError):
+            return
+        kind = aadsts_kind(v)
+        if not kind or str(v) == self.aadsts:
+            return
+        self.aadsts = str(v)
+        self.events.append("aadsts:" + kind)
+        if kind == "device" and self.login_hint != "edge_profile":
+            self.login_hint = "edge_profile"
+            self.notices.notify("BR-LOGIN-EDGE")
+        elif kind == "policy" and not self.login_hint:
+            self.login_hint = "ca_policy"
+
+    def _check_nopersist(self) -> None:
+        """새로 띄운 Edge 가 로그인 화면인데 직전 로그인 확인이 다른 Edge 실행에서 ``LOGIN_PERSIST_DAYS`` 안이었다 — 로그인이
+        Edge 를 닫으며 풀렸다(KMSI 없음·종료 시 삭제 정책 등). 안내 한 번 + ``health.login_nopersist``(H2)."""
+        if not self._launched_fresh:
+            return
+        h = self.profile.load()["health"]
+        t = iso_to_epoch(str(h.get("login_ok_at") or ""))
+        if t is None or self.clock.now() - t > S.LOGIN_PERSIST_DAYS * 86400.0:
+            return
+        if not h.get("login_ok_browser") or h.get("login_ok_browser") == self.info.browser_id:
+            return
+        prev = h.get("login_nopersist") if isinstance(h.get("login_nopersist"), dict) else {}
+
+        def put(d):
+            d.setdefault("health", {})["login_nopersist"] = {"at": iso_now(self.clock), "n": int(prev.get("n") or 0) + 1,
+                                                            "clear_on_exit": self.edge.policy_clear_on_exit}
+        try:
+            self.profile.update(put)
+        except OSError:
+            pass
+        self.events.append("login_nopersist")
+        self.notices.notify("BR-LOGIN-NOPERSIST")
 
     def recover(self, phase: str) -> None:
         """치명 실패 1차 복구(B §7.7 — ``lm27.bridge.runner.recover`` 가 세션의 이 메서드를 쓴다). 로그인 보류 중이면 다시
@@ -793,9 +1013,13 @@ class EdgeSession:
     def _recover_dead_profile(self) -> bool:
         """서로 다른 호출 2회의 dead_session → Edge 를 닫고 프로필을 ``<이름>.bad-<시각>`` 로 바꿔 새 프로필(B §4.7).
         사람에게 폴더 조작을 요구하지 않는다. LM27 소유 표식이 있고 profile_id 가 맞는 폴더만 이름을 바꾸고, 옛
-        ``.bad-*`` 도 표식이 든 것만 지운다(W1 통합 창 — 설정이 가리킨 남의 폴더를 바꾸거나 지우던 결함)."""
+        ``.bad-*`` 도 표식이 든 것만 지운다(W1 통합 창 — 설정이 가리킨 남의 폴더를 바꾸거나 지우던 결함). Edge 정책이
+        브라우저 로그인을 강제하거나(BrowserSignin=2) InPrivate 만 허용하면(=2) 다시 만들어도 같으므로 하지 않는다(M6)."""
         runs = {x.get("run") for x in self.profile.load()["health"].get("dead_sessions") or [] if isinstance(x, dict)}
         if len(runs) < S.DEAD_SESSION_LIMIT:
+            return False
+        if self.edge.policy_browser_signin == "force" or self.edge.policy_inprivate == "force":
+            self.events.append("recreate_skipped_policy")
             return False
         prof = Path(self.info.profile_dir)
         dap = C.read_devtools_active_port(prof)
@@ -898,9 +1122,16 @@ class EdgeSession:
                 raise PhaseError("profile_busy")
             self._launch(port, retried=True)
             return
-        if alive:
-            self._proc.kill_tree()                         # 우리가 띄운 응답 없는 Edge 는 정리한다
         self.info.launched_by_us = False
+        if alive and not self.in_use(prof):
+            # 살아 있는데 우리 프로필 폴더를 쥐고 있지 않다 — 정책(UserDataDir 등)으로 다른 폴더(사용자 본 Edge)로 떴을 수 있다.
+            # 남의 Edge 는 죽이지 않는다(H5·U-4). 포트도 열리지 않았으니 자동 연결은 못 한다.
+            self.events.append("kill_refused_not_ours")
+            if self.edge.policy_blocked:
+                raise PhaseError("policy_blocked", alive=True)
+            raise PhaseError("launch_failed", alive=True, why="not_our_profile")
+        if alive:
+            self._proc.kill_tree()                         # 우리 프로필로 뜬 응답 없는 Edge 는 정리한다
         if alive and self.edge.policy_blocked:
             raise PhaseError("policy_blocked")
         raise PhaseError("launch_failed", alive=alive)
@@ -1102,9 +1333,22 @@ class EdgeSession:
             r = self.eval(js.identity(self.cfg.dom.input_selectors))
         except C.CdpError:
             r = {}
+        url = str(r.get("url") or "") if isinstance(r, dict) else ""
+        host = host_of(url)
         if isinstance(r, dict):
-            self._see_host(host_of(r.get("url") or ""))
+            self._see_host(host)
         st, strength = classify_identity(r, self.cfg)
+        if st == "login_required":
+            if self._in_login_wait:
+                self._check_aadsts()
+        elif st == "wrong_page" and url.startswith("https://") and host and not S.MS_APP_HOST_RX.search(host):
+            # Copilot 도 Microsoft 앱도 아닌 호스트 = 회사 IdP(AD FS·PingFederate 등) 로그인 화면일 수 있다 — 사람이 입력 중일
+            # 수 있으니 떠나지 않고 로그인 대기로 본다(H3). 우리 탭은 Copilot 으로만 이동하므로 다른 까닭은 드물다.
+            if "idp_host" not in self.events:
+                self.events.append("idp_host")
+            st = "login_required"
+        elif st == "edge_page" and self.login_hint == "edge_signin":
+            st = "login_required"                      # Edge 로그인 화면에 머묾 — 사람이 Edge 에 로그인할 때까지(M6)
         if st == "ready":
             self.info.identity = strength
         return st
@@ -1126,24 +1370,41 @@ class EdgeSession:
             return self.state or "tab_lost"
         dl = dl or Deadline(self.clock, INF)
         c = self.cfg
+
+        def reopen(from_state):
+            """Copilot 주소로 한 번 다시 연다(대기 중에는 하지 않는다 — 사람이 입력 중인 로그인 화면을 떠나지 않게, H3)."""
+            self.navigate()
+            return self.poll_identity(dl.cap(S.IDENTITY_SETTLE_S), until=lambda s: s not in ("loading", from_state))
         try:
             st = self.identity()
             if st == "wrong_page":
-                self.navigate()
-                st = self.poll_identity(dl.cap(S.IDENTITY_SETTLE_S), until=lambda s: s not in ("loading", "wrong_page"))
+                st = reopen("wrong_page")
+            if st == "edge_page":
+                st = reopen("edge_page")
+                if st == "edge_page":                      # Edge 로그인(강제)·내부 화면에 머묾 — 사람이 Edge 에 로그인(M6)
+                    self.login_hint = "edge_signin"
+                    self.events.append("edge_page")
+                    self.notices.notify("BR-LOGIN-EDGE")
+                    st = "login_required"
             if st == "loading":
                 st = self.poll_identity(dl.cap(c.ready_wait_sec), until=lambda s: s != "loading")
             if st == "login_required":
-                st = self._login_wait(dl, lambda up_to: self.poll_identity(
-                    up_to, every=S.LOGIN_POLL_S, until=lambda s: s not in ("login_required", "loading")))
+                st = self._login_wait(dl, lambda up_to, every: self.poll_identity(
+                    up_to, every=every, until=lambda s: s not in ("login_required", "loading")))
                 if st in ("login_required", "loading"):
                     return "login_required"
+                if st in ("wrong_page", "edge_page"):      # 로그인을 마치고 Copilot 이 아닌 Microsoft 화면에 닿음 — 한 번 다시 연다
+                    st = reopen(st)
+                if st == "loading":
+                    st = self.poll_identity(dl.cap(c.ready_wait_sec), until=lambda s: s != "loading")
             if st == "no_input":
                 st = self.poll_identity(dl.cap(c.ready_wait_sec), until=lambda s: s != "no_input")
                 if st == "no_input":
                     self.reload()
                     st = self.poll_identity(dl.cap(c.ready_wait_sec), until=lambda s: s != "no_input")
                 if st in ("no_input", "loading"):
+                    if st == "no_input":
+                        self._observe_chat(False)          # Copilot 주소·로드 끝·입력창 없음 — 조직 차단 안내 화면일 수 있다(M5)
                     self.dump_diagnose()
                     self.notices.notify("BR-INPUT")
                     return "input_not_found"
@@ -1155,11 +1416,14 @@ class EdgeSession:
                     return "dead_session"
             if st == "wrong_page":
                 return "wrong_tab"
-            if st == "login_required":
+            if st in ("login_required", "edge_page"):
                 return "login_required"
             if st == "ready" and not self._ready_recorded:
                 self._ready_recorded = True
+                self._held = False
                 self.record_health("ready")
+                self._note_account_after_login()
+                self._observe_chat(True)
             return st if st == "ready" else "input_not_found"
         except PhaseError as e:
             return e.phase
@@ -1198,7 +1462,15 @@ class EdgeSession:
         def judge():
             p = self.page_state()
             self._see_host(p["host"])
-            if p["host"] in c.login_hosts:
+            if c.login_host(p["host"]):
+                if self._in_login_wait:
+                    self._check_aadsts()
+                return "login_required"
+            if p["url"].startswith(EDGE_SCHEME):
+                if self.login_hint != "edge_signin":     # 이동했는데 Edge 내부 화면(강제 Edge 로그인 등) — 사람이 Edge 에 로그인(M6)
+                    self.login_hint = "edge_signin"
+                    self.events.append("edge_page")
+                    self.notices.notify("BR-LOGIN-EDGE")
                 return "login_required"
             if not p["url"] or p["url"].startswith(DEAD_SCHEMES):
                 return "dead" if p["ready"] == "complete" else "loading"
@@ -1215,8 +1487,8 @@ class EdgeSession:
         try:
             st = poll(dl.cap(c.ready_wait_sec), S.IDENTITY_POLL_S, lambda s: s != "loading")
             if st == "login_required":
-                st = self._login_wait(dl, lambda up_to: poll(up_to, S.LOGIN_POLL_S,
-                                                             lambda s: s not in ("login_required", "loading")),
+                st = self._login_wait(dl, lambda up_to, every: poll(up_to, every,
+                                                                    lambda s: s not in ("login_required", "loading")),
                                       ok=lambda s: s == "ready")
                 if st != "ready":
                     return "login_required"
@@ -1231,15 +1503,17 @@ class EdgeSession:
 
     # ── 업무 모드·모델(B §4.8) ─────────────────────────────────────────
     def ensure_work_mode(self) -> str:
-        """업무/웹 전환 상태를 읽고, preferWorkMode 이고 웹이면 업무 쪽을 1회 누른 뒤 다시 확인. 판별 불가면 unknown."""
+        """업무/웹 전환 상태를 읽고, preferWorkMode 이고 웹이면 업무 쪽을 1회 누른 뒤 다시 확인. 판별 불가면 unknown.
+        단일 토글 'Work IQ'(2026-08 개편 — 업무·웹 탭을 대체)는 누름 상태가 false 일 때만 한 번 누른다(H13 — 상태를 모르면
+        누르지 않는다: 켜져 있는 토글을 끄지 않게)."""
         c = self.cfg.dom
         try:
-            r = self.eval(js.work_mode(c.work_labels, c.web_labels, False)) or {}
+            r = self.eval(js.work_mode(c.work_labels, c.web_labels, False, c.toggle_labels)) or {}
             mode = r.get("mode") if r.get("found") else "unknown"
             if self.cfg.prefer_work_mode and mode == "web":
-                self.eval(js.work_mode(c.work_labels, c.web_labels, True))
+                self.eval(js.work_mode(c.work_labels, c.web_labels, True, c.toggle_labels))
                 self.clock.sleep(S.WORK_MODE_SETTLE_S)
-                r = self.eval(js.work_mode(c.work_labels, c.web_labels, False)) or {}
+                r = self.eval(js.work_mode(c.work_labels, c.web_labels, False, c.toggle_labels)) or {}
                 mode = r.get("mode") if r.get("found") else "unknown"
         except (OSError, C.CdpError, PhaseError):
             mode = "unknown"
@@ -1262,8 +1536,9 @@ class EdgeSession:
 
     def _select_model(self, model: str) -> ModelNote:
         c = self.cfg.dom
+        names = S.model_names(model)                       # '|' 별칭 + 한국어 기본 이름의 영어 표기(L11)
         try:
-            r1 = self.eval(js.pick_model(model, c.model_button_labels)) or {}
+            r1 = self.eval(js.pick_model(names, c.model_button_labels)) or {}
             if r1.get("already"):
                 return ModelNote(model, str(r1.get("cur") or model)[:S.MODEL_NOTE_MAX], True, (), "already")
             if not r1.get("ok"):
@@ -1271,11 +1546,11 @@ class EdgeSession:
             self.clock.sleep(S.MENU_SETTLE_S)
             if not r1.get("alreadyOpen"):
                 if not (self.eval(js.menu_open()) or {}).get("open"):
-                    self.eval(js.pick_model(model, c.model_button_labels))
+                    self.eval(js.pick_model(names, c.model_button_labels))
                     self.clock.sleep(S.MENU_REOPEN_S)
             seen: tuple = ()
             for _depth in range(S.MENU_DEPTH):
-                r2 = self.eval(js.pick_model_item(model)) or {}
+                r2 = self.eval(js.pick_model_item(names)) or {}
                 if r2.get("ok"):
                     self.clock.sleep(S.MENU_PICK_S)
                     return ModelNote(model, str(r2.get("picked") or model)[:S.MODEL_NOTE_MAX], True, seen, "picked")
@@ -1294,7 +1569,8 @@ class EdgeSession:
         """화면 구조 덤프(형식 보존 마스킹)를 ``bridge\\diagnose\\diagnose_<시각>.json`` 에. 원문 없음."""
         c = self.cfg.dom
         keep = (c.input_aria_labels + c.send_labels + c.stop_labels + c.new_chat_labels + c.model_button_labels
-                + c.work_labels + c.web_labels + c.web_grounding_labels)
+                + c.work_labels + c.web_labels + c.web_grounding_labels + c.toggle_labels + c.account_labels
+                + c.shield_labels)
         try:
             d = self.eval(js.diagnose(c.input_selectors, keep)) or {}
         except (OSError, C.CdpError, PhaseError):
@@ -1335,12 +1611,16 @@ class EdgeSession:
             last = self.profile.load().get("last_session") or {}
             self._targets = {r: list(v) for r, v in (last.get("targets") or {}).items() if isinstance(v, list)}
             port, how = self.choose_port()
+            if how == "reuse":
+                self._touch_launch(port)                # 사람이 쓰는 중 — 유휴 정리(L12) 시계를 다시 맞춘다
             if how == "launch":
                 self.lock.acquire(self._targets)        # 기동 순간만 잡는다(재시도 대기 없음 — 화면 요청 안)
                 try:
-                    self.edge = edge_info(self.edge_finder, self.policy_reader, self.environ)
+                    self.edge = edge_info(self.edge_finder, self.policy_reader, self.environ, self.policy_extra_reader)
                     if not self.edge.path:
                         raise PhaseError("edge_not_found")
+                    if self.edge.policy_user_data_dir == "forced":     # 사용자 본 Edge 가 뜬다 — 띄우지 않는다(H5)
+                        raise PhaseError("policy_blocked", why="user_data_dir_forced")
                     self.info.port = port
                     self._launch(port)
                     v = C.version(self.http, port)
@@ -1382,15 +1662,20 @@ class EdgeSession:
             pass
 
     def _adopt_front_launch(self) -> bool:
-        """재사용으로 붙은 Edge 가 [분석용 Edge 창 앞으로]가 띄운 그것이면(브라우저 ID 일치) 이 세션이 띄운 것으로 이어받는다 —
-        끝날 때 ``closeOnExit`` 가 적용된다(L09). 이어받은 기록은 지운다(한 번만)."""
-        fl = self.profile.load().get("front_launch")
-        if not isinstance(fl, dict) or not fl.get("browser_id"):
+        """재사용으로 붙은 Edge 가 [분석용 Edge 창 앞으로]가 띄운 그것(``front_launch``)이거나 작업 보류 동안 앞 세션이 닫지 않고
+        남긴 그것(``kept_launch`` — H2)이면(브라우저 ID·포트 일치) 이 세션이 띄운 것으로 이어받는다 — 끝날 때 ``closeOnExit`` 가
+        적용된다(L09). 이어받은 기록은 지운다(한 번만 — 이 세션이 닫거나 보류 중이면 다시 남긴다)."""
+        d0 = self.profile.load()
+        found = {k: d0.get(k) for k in ("front_launch", "kept_launch")
+                 if isinstance(d0.get(k), dict) and d0[k].get("browser_id")}
+        if not found:
             return False
-        same = fl.get("browser_id") == self.info.browser_id and fl.get("port") == self.info.port
+        same = [k for k, fl in found.items()
+                if fl.get("browser_id") == self.info.browser_id and fl.get("port") == self.info.port]
 
         def put(d):
-            d.pop("front_launch", None)
+            for k in found:
+                d.pop(k, None)
         try:
             self.profile.update(put)
         except OSError:
@@ -1398,9 +1683,167 @@ class EdgeSession:
         if not same:
             return False                                    # 그 Edge 는 이미 닫혔다(다른 브라우저) — 기록만 정리
         self.info.launched_by_us = True
-        self.events.append("adopt_front")
+        self.events.extend("adopt_front" if k == "front_launch" else "adopt_kept" for k in same)
         self.lock.update(launched_by_us=True)
         return True
+
+    # ── 한 작업(수집→분석) 동안 로그인된 창 이어 쓰기(H2) · 남은 디버그 포트 Edge 정리(L12) ─────────────────
+    def hold_active(self) -> bool:
+        """작업 보류 표지(``edge_hold``)가 살아 있는가 — 주인 프로세스가 살아 있고 최대 수명(``EDGE_HOLD_MAX_S``) 안."""
+        h = self.profile.load().get("edge_hold")
+        if not isinstance(h, dict):
+            return False
+        try:
+            until = float(h.get("until_s") or 0)
+        except (TypeError, ValueError):
+            return False
+        pid = h.get("pid")
+        if self.clock.now() >= until or not isinstance(pid, int) or isinstance(pid, bool):
+            return False
+        return bool(self.proc_probe(pid, h.get("pid_ctime") or None))
+
+    def begin_hold(self, max_s: float | None = None) -> str:
+        """작업 보류 시작 — 이 프로세스(주인)가 살아 있는 동안(최대 ``max_s``) 브리지·웹 수집 세션은 우리가 띄운 Edge 를 닫지 않고
+        다음 세션에 넘긴다(로그인 쿠키가 브라우저를 닫을 때 사라지는 회사에서 '한 번 로그인'으로 한 작업을 마치게). 반환: 표지."""
+        tok = uuid.uuid4().hex[:12]
+        span = float(max_s if max_s is not None else S.EDGE_HOLD_MAX_S)
+        rec = {"token": tok, "pid": self.lock.pid, "pid_ctime": self.lock.pid_ctime or 0, "since": iso_now(self.clock),
+               "until_s": round(self.clock.now() + span, 1)}
+
+        def put(d):
+            d["edge_hold"] = rec
+        self.profile.update(put)
+        self.events.append("hold_begin")
+        return tok
+
+    def end_hold(self, token: str | None = None) -> dict:
+        """작업 보류 끝 — 표지를 지우고(같은 표지일 때만, None 이면 무조건), 보류 동안 남겨 둔 우리 Edge 를 닫는다(잠금이 바쁘면
+        그 세션이 끝날 때 닫는다). 반환 ``{released, closed[], busy}``."""
+        released = False
+
+        def put(d):
+            nonlocal released
+            h = d.get("edge_hold")
+            if isinstance(h, dict) and (token is None or h.get("token") == token):
+                d.pop("edge_hold", None)
+                released = True
+        try:
+            self.profile.update(put)
+        except OSError:
+            pass
+        out = self.sweep(("kept_launch",))
+        out["released"] = released
+        self.events.append("hold_end")
+        return out
+
+    def sweep(self, kinds=("front_launch", "kept_launch")) -> dict:
+        """남은 디버그 포트 Edge 정리(L12·H2) — ``kept_launch`` 는 작업 보류가 끝났으면, ``front_launch`` 는 ``FRONT_TTL_S``
+        넘게 손대지 않았으면, 그 포트의 브라우저 ID 가 기록과 같고 우리 프로필의 것일 때만 ``Browser.close``. 다른 세션이 잠금을
+        쥐고 있으면 건드리지 않는다(그 세션이 이어받아 끝날 때 닫는다). 반환 ``{closed[], kept[], busy}``."""
+        out: dict = {"closed": [], "kept": [], "busy": False}
+        d = self.profile.load()
+        recs = {k: d.get(k) for k in kinds if isinstance(d.get(k), dict) and d[k].get("browser_id")}
+        if not recs:
+            return out
+        hold = self.hold_active()
+        due = []
+        for k, rec in recs.items():
+            t = iso_to_epoch(str(rec.get("at") or ""))
+            if (k == "kept_launch" and hold) or (k == "front_launch" and t is not None
+                                                 and self.clock.now() - t < S.FRONT_TTL_S):
+                out["kept"].append(k)
+            else:
+                due.append(k)
+        if not due:
+            return out
+        try:
+            self.lock.acquire({})
+        except PhaseError:
+            out["busy"] = True
+            return out
+        try:
+            if not self.info.profile_dir:
+                self.info.profile_dir = str(self._resolve_profile_dir())
+            self.info.origin_mode = d["health"].get("origin_mode") or "none"
+            dap = C.read_devtools_active_port(self.info.profile_dir)
+            for k in due:
+                rec = recs[k]
+                port = rec.get("port")
+                if isinstance(port, int):
+                    self.info.port = port
+                v = C.version(self.http, port) if isinstance(port, int) else None
+                bid = C.browser_id(str((v or {}).get("webSocketDebuggerUrl") or ""))
+                if v and bid == rec.get("browser_id") and dap and dap[0] == port and self._owns(port, dap[1]):
+                    self._close_browser_on(port)
+                    out["closed"].append(k)
+            self._forget_launch(tuple(due), any_browser=True)
+        finally:
+            self.lock.release()
+        if out["closed"]:
+            self.events.append("sweep_closed")
+        return out
+
+    def _keep_open(self) -> None:
+        """작업 보류 중 세션 끝 — 우리가 띄운 Edge 를 닫지 않고 다음 세션에 넘긴다. 웹 수집 탭은 빈 화면으로 돌려 사서함·팀즈
+        화면을 남기지 않는다(Copilot 탭은 다음 단계가 이어 쓴다). 기록 ``kept_launch``."""
+        if self.role != "bridge" and self.cdp is not None:
+            try:
+                self.call("Page.navigate", {"url": BLANK_URL})
+            except (OSError, C.CdpError, PhaseError):
+                pass
+        bid, port = self.info.browser_id, self.info.port
+
+        def put(d):
+            d["kept_launch"] = {"browser_id": bid, "port": int(port), "at": iso_now(self.clock)}
+        try:
+            self.profile.update(put)
+        except OSError:
+            pass
+        self.events.append("kept_open")
+
+    def _touch_launch(self, port: int) -> None:
+        """사람이 [분석용 Edge 창 앞으로]로 다시 찾은 Edge — 기록의 시각을 지금으로(유휴 정리 기준, L12)."""
+        v = C.version(self.http, port)
+        bid = C.browser_id(str((v or {}).get("webSocketDebuggerUrl") or ""))
+
+        def put(d):
+            for k in ("front_launch", "kept_launch"):
+                r = d.get(k)
+                if isinstance(r, dict) and r.get("browser_id") == bid and r.get("port") == port:
+                    r["at"] = iso_now(self.clock)
+        if bid:
+            try:
+                self.profile.update(put)
+            except OSError:
+                pass
+
+    def _forget_launch(self, keys, *, any_browser: bool = False) -> None:
+        """기록을 지운다 — 기본은 이 세션의 브라우저를 가리키는 것만(``any_browser`` 면 무조건)."""
+        bid = self.info.browser_id
+
+        def put(d):
+            for k in keys:
+                r = d.get(k)
+                if isinstance(r, dict) and (any_browser or r.get("browser_id") == bid):
+                    d.pop(k, None)
+        try:
+            self.profile.update(put)
+        except OSError:
+            pass
+
+    def _observe_chat(self, ok: bool) -> None:
+        """Copilot 채팅 입력창 관찰(브리지만, M5) — 조직 정책 차단 안내 화면을 서로 다른 날 반복해 보면 한동안 열지 않는다."""
+        if self.role != "bridge":
+            return
+        from lm27.bridge.capability import ChatAccess
+        try:
+            ca = ChatAccess(self.profile, self.cfg, self.clock)
+            if ok:
+                ca.observe_ok()
+            elif ca.observe_blocked():
+                self.events.append("chat_unavailable")
+        except OSError:
+            pass
 
     def _front_connect(self, ws_url: str, port: int):
         """창 앞으로 전용 연결 — Origin 없이, 403 이면 127.0.0.1:<port> Origin 으로 한 번 더(B §4.4 와 같은 규칙)."""
@@ -1474,3 +1917,37 @@ def front_window(paths=None, *, cfg=None, **kw) -> dict:
     bs = cfg if isinstance(cfg, S.BridgeSettings) else S.load_settings(paths, cfg=cfg)
     kw.setdefault("notices", Notices())
     return EdgeSession("bridge", None, paths=paths, cfg=bs, **kw).front()
+
+
+def _bare(paths, cfg, kw) -> EdgeSession:
+    bs = cfg if isinstance(cfg, S.BridgeSettings) else S.load_settings(paths, cfg=cfg)
+    kw.setdefault("notices", Notices())
+    return EdgeSession("bridge", None, paths=paths, cfg=bs, **kw)
+
+
+def hold_edge(paths=None, *, cfg=None, max_s: float | None = None, **kw) -> str:
+    r"""작업 보류 시작(H2) — 한 작업(수집 → 분석)을 묶는 쪽(화면 작업 관리자·수집 연결자 등)이 부른다. 이 프로세스가 살아 있는
+    동안(최대 ``EDGE_HOLD_MAX_S``) 우리가 띄운 분석용 Edge 를 세션마다 닫지 않고 다음 세션이 이어 쓴다 — 로그인 상태 유지(KMSI)가
+    없는 회사에서도 사람이 한 번 로그인한 창으로 그 작업을 마친다. 디버그 포트는 그대로 127.0.0.1 뿐이고, 작업이 끝나면
+    ``release_edge_hold`` 가 닫는다(주인이 죽거나 최대 수명이 지나면 다음 세션·정리가 닫는다). 반환: 표지."""
+    return _bare(paths, cfg, kw).begin_hold(max_s)
+
+
+def release_edge_hold(paths=None, *, cfg=None, token: str | None = None, **kw) -> dict:
+    """작업 보류 끝(H2) — 표지를 지우고 보류 동안 남은 우리 Edge 를 ``Browser.close`` 로 닫는다. 반환 ``{released, closed, busy}``."""
+    return _bare(paths, cfg, kw).end_hold(token)
+
+
+@contextlib.contextmanager
+def edge_hold(paths=None, *, cfg=None, **kw):
+    """``with edge_hold(paths):`` — 블록 동안 작업 보류, 나갈 때(예외여도) 풀고 남은 Edge 를 닫는다."""
+    tok = hold_edge(paths, cfg=cfg, **dict(kw))
+    try:
+        yield tok
+    finally:
+        release_edge_hold(paths, cfg=cfg, token=tok, **dict(kw))
+
+
+def sweep_edge(paths=None, *, cfg=None, **kw) -> dict:
+    """남은 디버그 포트 Edge 정리(L12) — 화면 요청·에이전트 틱이 부른다(빠름: 기록이 없으면 파일 하나만 읽는다)."""
+    return _bare(paths, cfg, kw).sweep()

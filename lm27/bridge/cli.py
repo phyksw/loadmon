@@ -30,7 +30,7 @@ from lm27.bridge.stages import base as B
 RUN_ID_RX = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{4}$")
 JOB_RX = re.compile(r"^j\d{14}[0-9a-f]{4}$")
 STAGE_RX = re.compile(r"^[a-z][a-z0-9_]{0,47}$")
-REQUIRED_CHECKS = ("edge", "launch", "tab", "identity", "login", "roundtrip")
+REQUIRED_CHECKS = ("edge", "launch", "tab", "identity", "login", "account", "roundtrip")
 LIST_PROBE_MODEL = "목록확인용모델"            # 없는 이름으로 메뉴를 열어 항목만 읽는다(진단)
 
 
@@ -272,6 +272,10 @@ def cmd_replay(a, env) -> int:
         raise CliError(str(e)) from None
     rt = runner.open_runtime(env.get("paths"), a.run_id, **env.get("rt_kw", {}))
     try:
+        block = runner.send_block(rt)                  # 로그인 보류·회사 계정 미확인이면 업무 자료를 다시 보내지 않는다(H4)
+        if block:
+            _out("replay", {"rc": 1, "error": block})
+            return 1
         req = next((r for r in J.read_journal(rt.paths, a.run_id, a.stage) if r.get("t") == "req"
                     and int(r.get("seq") or -1) == a.seq), None)
         if req is None:
@@ -361,15 +365,19 @@ def do_probe(env, *, roundtrip: bool = True, lookup: bool = False) -> dict:
     stub = any(str(environ.get(k) or "").strip() not in ("", "0") for k in ("LM_COPILOT_STUB", "LM_NO_BROWSER"))
     add("stub_env", not stub, code="stub_env_set" if stub else "")
     rt_kw = dict(env.get("rt_kw", {}))
+    rt_kw.setdefault("check_chat", False)              # 연결 진단은 '채팅 차단' 기록과 무관하게 늘 다시 본다(M5)
     rt = runner.open_runtime(env.get("paths"), run_id, mode="auto", environ=environ, heartbeat=False, **rt_kw)
-    sess = getattr(rt.transport, "s", None)
+    # 정책 차단 등으로 수동 경로로 바뀌었어도 진단은 그 직전 세션(Edge·정책·단계)을 읽는다(M4 — 'Edge 없음' 오진 방지)
+    sess = getattr(rt.transport, "s", None) or getattr(rt, "prev_session", None)
     try:
         st = getattr(sess, "state", "") if sess is not None else getattr(rt.transport, "kind", "")
         ed = getattr(sess, "edge", None)
         info = getattr(sess, "info", None)
         add("edge", bool(ed and ed.path), getattr(ed, "version", ""), "" if ed and ed.path else "edge_not_found")
         blocked = bool(ed and ed.policy_blocked)
-        add("policy", not blocked, code="policy_blocked_suspect" if blocked else "")
+        udd = getattr(ed, "policy_user_data_dir", "unset") == "forced"
+        add("policy", not (blocked or udd), getattr(ed, "policies", dict)() if ed is not None else {},
+            "policy_blocked_suspect" if blocked else ("user_data_dir_forced" if udd else ""))
         add("lock", st != "lock_busy", code="lock_busy" if st == "lock_busy" else "")
         add("port", bool(info and info.port), str(getattr(info, "port", "") or ""),
             "" if info and info.port else "port_exhausted")
@@ -392,6 +400,10 @@ def do_probe(env, *, roundtrip: bool = True, lookup: bool = False) -> dict:
         add("web_grounding", wg == "off", wg, "web_on" if wg == "on" else ("wg_missing" if wg == "unknown" else ""))
         wx = bool(getattr(envv, "web_exposed", True))
         add("web_exposed", not wx, wx, "web_exposed" if wx else "")
+        acct = getattr(envv, "account", "unknown") if st == "ready" else ""
+        # 회사(Entra) 계정 확인(H4) — 아니면 분석 단계는 보내지 않는다. 아래 시험 낱말 왕복은 계정과 무관하게 한다(화면 조작 확인)
+        add("account", acct == "work", acct, "" if acct == "work" else
+            ("personal_account" if acct == "personal" else ("account_unknown" if st == "ready" else (st or "no_session"))))
         ready = st == "ready" and isinstance(rt.transport, CdpTransport)
         if ready:
             nf = sess.select_model(rt.cfg.model_fast)
@@ -424,8 +436,11 @@ def do_probe(env, *, roundtrip: bool = True, lookup: bool = False) -> dict:
             add("roundtrip", False, code=st or "no_session")
         cal = CAL.current(rt.profile.load(), rt.profile_id, rt.cfg.model_fast, rt.edge_major, rt.cfg, rt.clock)
         add("calib", cal is not None, (cal or {}).get("date", ""), "" if cal else "calib_none")
-        if lookup and ready:
-            _probe_lookup(rt, add)
+        if lookup and ready and acct == "work":
+            _probe_lookup(rt, add)                     # 조회는 회사 계정에서만(개인 계정이면 능력 기록도 하지 않는다)
+        elif lookup and ready:
+            for sid in ("lookup_mail", "lookup_teams"):
+                add(sid, False, code="personal_account" if acct == "personal" else "account_unknown")
     finally:
         runner.close_runtime(rt)
     by = {c["id"]: c for c in checks}

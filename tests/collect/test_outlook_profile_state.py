@@ -1,9 +1,16 @@
 # -*- coding: utf-8 -*-
-"""계약 v1.3 §0.8 V7 — '쓸 수 있는 Outlook 프로필' 판정(Get-OutlookProfileState)을 실제 레지스트리 모양으로 확인.
+"""계약 v1.3 §0.8 V7 — '쓸 수 있는 Outlook 프로필' 판정(Get-OutlookProfileState)을 계정 관리자 값 모양으로 확인.
 
-HKCU 아래 시험 전용 키(LM27T-profstate-<난수>)에 프로필 다섯 개를 만들고, COM 수집기 파일에서 함수 글을 그대로 떼어 그 키를
-가리키게 해 부른다. 만들기·판정·지우기를 PowerShell 한 번 안에서 하고 finally 로 지운다(시험이 죽어도 키가 남지 않게).
-Outlook·실제 프로필은 읽지 않는다."""
+계정 관리자 레지스트리 모양은 문서화돼 있지 않다(계정 관리 API 는 CLSID 상수만 정의 —
+https://learn.microsoft.com/en-us/office/client-developer/outlook/auxiliary/constants-account-management-api). 그래서 판정은
+'주소록만 든' 긍정 증거가 있을 때만 쓸 수 없다고 센다(M365 조사 H7): 실제 Exchange 계정(OlkMAPIAccount {ED475414} ·
+'Service Name' 없음 · 목록 값 모양 다름)을 쓸 수 없음으로 오판하면 탐침 R-NOPROF → 계획기가 COM 을 통째로 건너뛰었다.
+CLSID 는 문서 값(POP3 {ED475411} · IMAP4 {ED475412} · MAPI {ED475414} · Hotmail/EAS {4DB5CBF0-3B77-…} · LDAP
+{4DB5CBF2-3B77-…} · 범주 OlkMail {ED475418} · OlkAddressBook {ED475419} · OlkStore {ED475420}).
+
+레지스트리에 쓰지 않는다: 함수의 시험 주입점 ``-Shapes``(레지스트리에서 읽은 것과 같은 모양 — 값 원본 byte[]·계정 하위 키의
+clsid·Service Name)로 판정만 부른다. COM 수집기·탐침 두 파일의 함수 글을 그대로 떼어 같은 결과인지 본다. 레지스트리 읽기
+쪽은 없는 키(빈 결과)로만 확인한다 — 실제 모양은 회사 PC 첫 실측 항목. Outlook·실제 프로필은 읽지 않는다."""
 from __future__ import annotations
 
 import json
@@ -16,99 +23,128 @@ import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-AM = "9375CFF0413111d3B88A00104B2A6676"
 MAPI = "{ED475414-B0D6-11D2-8C3B-00104B2A6676}"
-POP = "{ED475410-B0D6-11D2-8C3B-00104B2A6676}"
+POP = "{ED475411-B0D6-11D2-8C3B-00104B2A6676}"
+IMAP = "{ED475412-B0D6-11D2-8C3B-00104B2A6676}"
+EAS = "{4DB5CBF0-3B77-4852-BC8E-BB81908861F3}"
+LDAP = "{4DB5CBF2-3B77-4852-BC8E-BB81908861F3}"
 MAIL_LIST = "{ED475418-B0D6-11D2-8C3B-00104B2A6676}"
+AB_LIST = "{ED475419-B0D6-11D2-8C3B-00104B2A6676}"
 STORE_LIST = "{ED475420-B0D6-11D2-8C3B-00104B2A6676}"
+SCRIPTS = ("Get-OutlookCom.ps1", "Invoke-CapabilityProbe.ps1")
+
+# 프로필 이름 → (기대 usable, 설명)
+CASES = {
+    "p1": (0, "주소록만(계정 설정 전 — 개발 PC 실측 모양): 메일·저장소 목록 비어 있음 + CONTAB"),
+    "p2": (1, "Exchange: 메일 목록에 계정"),
+    "p3": (1, "계정 관리자 키 없음(판을 모름)"),
+    "p4": (1, "POP3 계정(문서 CLSID {ED475411}) — 목록 값 없음"),
+    "p5": (1, "빈 계정 관리자 키(주소록이라는 긍정 증거 없음)"),
+    "p6": (0, "LDAP 주소록만(MAPI + EMABLT)"),
+    "p7": (1, "Exchange 계정(MAPI CLSID)인데 Service Name 없음·목록 없음 — H7 핵심"),
+    "p8": (0, "실제 LDAP 계정 CLSID {4DB5CBF2…} + 주소록 목록만"),
+    "p9": (1, "목록이 비어 있어도 Exchange(MSEMS) 계정이 있음"),
+    "p10": (1, "IMAP4 계정 + CONTAB, 목록 비어 있음"),
+    "p11": (1, "Hotmail/EAS 계정"),
+    "p12": (0, "주소록 목록만 있고 계정 하위 키 없음"),
+    "p13": (1, "모르는 하위 키(clsid 없음)만 — 모르면 쓸 수 있다고 본다"),
+}
 
 DRIVER = r"""
 $ErrorActionPreference = 'Stop'
-$base = 'HKCU:\Software\@KEY@'
 function Svc([string]$s) { return [Text.Encoding]::Unicode.GetBytes($s + [char]0) }
-function Acct($prof, $id, $clsid, $svc) {
-    $k = New-Item -Path (Join-Path $base "$prof\@AM@\$id") -Force
-    New-ItemProperty -LiteralPath $k.PSPath -Name 'clsid' -Value $clsid -PropertyType String | Out-Null
-    if ($svc) { New-ItemProperty -LiteralPath $k.PSPath -Name 'Service Name' -Value (Svc $svc) -PropertyType Binary | Out-Null }
+function A($clsid, $svc) { $s = $null; if ($svc) { $s = [byte[]](Svc $svc) }; return @{ clsid = $clsid; svc = $s } }   # 레지스트리 REG_BINARY 처럼 byte[]
+function Shape([bool]$am, $ml, $sl, $al, $accts) {
+    $v = @{}
+    if ($null -ne $ml) { $v['@ML@'] = [byte[]]$ml }
+    if ($null -ne $sl) { $v['@SL@'] = [byte[]]$sl }
+    if ($null -ne $al) { $v['@AL@'] = [byte[]]$al }
+    return @{ am = $am; vals = $v; accts = @($accts) }
 }
-function Lists($prof, [byte[]]$mail, [byte[]]$store) {
-    $k = New-Item -Path (Join-Path $base "$prof\@AM@") -Force
-    New-ItemProperty -LiteralPath $k.PSPath -Name '@ML@' -Value $mail -PropertyType Binary | Out-Null
-    New-ItemProperty -LiteralPath $k.PSPath -Name '@SL@' -Value $store -PropertyType Binary | Out-Null
-}
-try {
-    # 1 주소록만(계정 설정 전 — 실측 모양): 목록 비어 있음 + CONTAB → 쓸 수 없음
-    Lists 'p1' ([byte[]]@()) ([byte[]]@()); Acct 'p1' '00000001' '@MAPI@' 'CONTAB'
-    # 2 Exchange: 메일 목록에 계정 → 쓸 수 있음
-    Lists 'p2' ([byte[]]@(2, 0, 0, 0)) ([byte[]]@()); Acct 'p2' '00000001' '@MAPI@' 'CONTAB'; Acct 'p2' '00000002' '@MAPI@' 'MSEMS'
-    # 3 계정 관리자 키 없음(판을 모름) → 예전처럼 쓸 수 있다고 본다
-    New-Item -Path (Join-Path $base 'p3\0a0d020000000000c000000000000046') -Force | Out-Null
-    # 4 POP 계정(MAPI 밖 clsid) — 목록 값이 없어도 → 쓸 수 있음
-    Acct 'p4' '00000001' '@POP@' $null
-    # 5 빈 계정 관리자 키(값·계정 없음) → 쓸 수 없음
-    New-Item -Path (Join-Path $base 'p5\@AM@') -Force | Out-Null
-    # 6 LDAP 주소록만 → 쓸 수 없음
-    Acct 'p6' '00000001' '@MAPI@' 'EMABLT'
-    @FN@
-    $all = Get-OutlookProfileState -Roots @($base)
-    $none = Get-OutlookProfileState -Roots @((Join-Path $base 'nope'))
-    $one = @{}
-    foreach ($n in 'p1', 'p2', 'p3', 'p4', 'p5', 'p6') {
-        $tmp = 'HKCU:\Software\@KEY@-one'
-        try {
-            New-Item -Path $tmp -Force | Out-Null
-            Copy-Item -LiteralPath (Join-Path $base $n) -Destination $tmp -Recurse
-            $one[$n] = (Get-OutlookProfileState -Roots @($tmp)).usable
-        } finally { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
-    }
-    [Console]::Out.WriteLine((ConvertTo-Json -Compress @{ total = $all.total; usable = $all.usable; none = $none; one = $one }))
-} finally {
-    Remove-Item -LiteralPath $base -Recurse -Force -ErrorAction SilentlyContinue
-}
+$S = [ordered]@{}
+$S['p1'] = Shape $true @() @() $null @((A '@MAPI@' 'CONTAB'))
+$S['p2'] = Shape $true @(2, 0, 0, 0) @() $null @((A '@MAPI@' 'CONTAB'), (A '@MAPI@' 'MSEMS'))
+$S['p3'] = @{ am = $false }
+$S['p4'] = Shape $true $null $null $null @((A '@POP@' $null))
+$S['p5'] = Shape $true $null $null $null @()
+$S['p6'] = Shape $true $null $null $null @((A '@MAPI@' 'EMABLT'))
+$S['p7'] = Shape $true $null $null $null @((A '@MAPI@' $null))
+$S['p8'] = Shape $true $null $null @(1, 0, 0, 0) @((A '@LDAP@' $null))
+$S['p9'] = Shape $true @() @() $null @((A '@MAPI@' 'CONTAB'), (A '@MAPI@' 'MSEMS'))
+$S['p10'] = Shape $true @() @() $null @((A '@MAPI@' 'CONTAB'), (A '@IMAP@' $null))
+$S['p11'] = Shape $true $null $null $null @((A '@EAS@' $null))
+$S['p12'] = Shape $true $null $null @(1, 0, 0, 0) @()
+$S['p13'] = Shape $true $null $null $null @(@{ clsid = $null; svc = $null })
+@FN@
+$all = Get-OutlookProfileState -Shapes @($S.Values)
+$none = Get-OutlookProfileState -Roots @('HKCU:\Software\@KEY@')
+$empty = Get-OutlookProfileState -Roots @()
+$one = [ordered]@{}
+foreach ($n in $S.Keys) { $one[$n] = (Get-OutlookProfileState -Shapes @($S[$n])).usable }
+[Console]::Out.WriteLine((ConvertTo-Json -Compress @{ total = $all.total; usable = $all.usable; none = $none; empty = $empty; one = $one }))
 """
 
 
-def function_text() -> str:
-    t = (ROOT / "collect" / "Get-OutlookCom.ps1").read_text(encoding="utf-8-sig").replace("\r\n", "\n")
+def function_text(script: str) -> str:
+    t = (ROOT / "collect" / script).read_text(encoding="utf-8-sig").replace("\r\n", "\n")
     m = re.search(r"\nfunction Get-OutlookProfileState \{\n.*?\n\}\n", t, re.S)
-    assert m, "Get-OutlookProfileState 없음"
+    assert m, f"{script}: Get-OutlookProfileState 없음"
     return m.group(0)
+
+
+def run_driver(fn: str) -> tuple[dict | None, str]:
+    key = "LM27T-profstate-none-" + uuid.uuid4().hex[:12]           # 만들지 않는 키(읽기 쪽 빈 결과 확인)
+    script = (DRIVER.replace("@KEY@", key).replace("@MAPI@", MAPI).replace("@POP@", POP).replace("@IMAP@", IMAP)
+              .replace("@EAS@", EAS).replace("@LDAP@", LDAP).replace("@ML@", MAIL_LIST).replace("@SL@", STORE_LIST)
+              .replace("@AL@", AB_LIST).replace("@FN@", fn))
+    tmp = Path(tempfile.mkdtemp(prefix="lm27t_profstate_"))
+    try:
+        f = tmp / "drive.ps1"
+        f.write_bytes(script.replace("\n", "\r\n").encode("utf-8-sig"))     # BOM — 한글 주석이 든 함수 글
+        cp = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(f)],
+                            capture_output=True, timeout=120, creationflags=0x08000000)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    out = cp.stdout.decode("utf-8", "replace").strip().splitlines()
+    res = json.loads(out[-1]) if out and out[-1].startswith("{") else None
+    return res, cp.stderr.decode("utf-8", "replace")
 
 
 class ProfileStateCase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        key = "LM27T-profstate-" + uuid.uuid4().hex[:12]
-        cls.key = key
-        script = (DRIVER.replace("@KEY@", key).replace("@AM@", AM).replace("@MAPI@", MAPI).replace("@POP@", POP)
-                  .replace("@ML@", MAIL_LIST).replace("@SL@", STORE_LIST).replace("@FN@", function_text()))
-        tmp = Path(tempfile.mkdtemp(prefix="lm27t_profstate_"))
-        try:
-            f = tmp / "drive.ps1"
-            f.write_bytes(script.replace("\n", "\r\n").encode("utf-8-sig"))     # BOM — 한글 주석이 든 함수 글
-            cp = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(f)],
-                                capture_output=True, timeout=120)
-        finally:
-            shutil.rmtree(tmp, ignore_errors=True)
-        cls.err = cp.stderr.decode("utf-8", "replace")
-        out = cp.stdout.decode("utf-8", "replace").strip().splitlines()
-        cls.res = json.loads(out[-1]) if out and out[-1].startswith("{") else None
+        cls.res = {}
+        cls.err = {}
+        for s in SCRIPTS:
+            cls.res[s], cls.err[s] = run_driver(function_text(s))
 
     def test_counts(self):
-        self.assertIsNotNone(self.res, self.err)
-        self.assertEqual(self.res["total"], 6)
-        self.assertEqual(self.res["usable"], 3)
-        self.assertEqual(self.res["none"], {"total": 0, "usable": 0})
+        for s in SCRIPTS:
+            with self.subTest(script=s):
+                r = self.res[s]
+                self.assertIsNotNone(r, self.err[s])
+                self.assertEqual(r["total"], len(CASES))
+                self.assertEqual(r["usable"], sum(v for v, _d in CASES.values()))
+                self.assertEqual(r["none"], {"total": 0, "usable": 0})
+                self.assertEqual(r["empty"], {"total": 0, "usable": 0})
 
     def test_each_profile(self):
-        self.assertIsNotNone(self.res, self.err)
-        self.assertEqual(self.res["one"], {"p1": 0, "p2": 1, "p3": 1, "p4": 1, "p5": 0, "p6": 0})
+        want = {k: v for k, (v, _d) in CASES.items()}
+        for s in SCRIPTS:
+            with self.subTest(script=s):
+                self.assertIsNotNone(self.res[s], self.err[s])
+                self.assertEqual(self.res[s]["one"], want)
 
-    def test_no_residue(self):
-        cp = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command",
-                             f"[bool](Test-Path 'HKCU:\\Software\\{self.key}') -or [bool](Test-Path 'HKCU:\\Software\\{self.key}-one')"],
-                            capture_output=True, timeout=60)
-        self.assertEqual(cp.stdout.decode("utf-8", "replace").strip(), "False")
+    def test_exchange_without_service_name_is_usable(self):
+        # H7 회귀 — 예전 판정은 p7(Service Name 없는 MAPI 계정)을 0 으로, p8(실제 LDAP CLSID)을 1 로 셌다
+        for s in SCRIPTS:
+            self.assertIsNotNone(self.res[s], self.err[s])
+            self.assertEqual((self.res[s]["one"]["p7"], self.res[s]["one"]["p8"]), (1, 0), s)
+
+    def test_function_does_not_write_registry(self):
+        for s in SCRIPTS:
+            fn = function_text(s)
+            self.assertIsNone(re.search(r"(?i)\b(New-Item|New-ItemProperty|Set-ItemProperty|Remove-Item|Set-Item)\b", fn))
 
 
 if __name__ == "__main__":

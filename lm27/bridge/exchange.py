@@ -46,6 +46,8 @@ UNAVAILABLE_MARKS = ("조회 도구가 없", "연결된 도구가 없", "데이�
                      "접근할 수 없", "권한이 없", "검색할 수 없", "work content isn't available")
 NOLIC_MARKS = ("업무 데이터에 액세스할 수 없", "업무 데이터에 접근할 수 없", "work content isn't available",
                "work data isn't available")
+# 답이 'Work IQ'(업무 데이터 접근 토글 — 2026-08 개편)를 말하면 업무 모드가 꺼진 것이지 계정 등급(R-NOLIC)이 아니다(H13)
+WORKIQ_MARKS = ("work iq", "업무 iq")
 CONTENT_PHASES = ("replied", "no_reply", "empty_reply", "stub", "manual")
 
 
@@ -144,6 +146,9 @@ def _has(text: str, marks) -> bool:
 
 
 def _lic(text: str) -> str:
+    """조회 불가 답의 까닭: ``workiq_off``(업무 모드 토글이 꺼짐 — 능력 기록 안 함) · ``nolic``(계정 단위) · ``noconn``(단계별)."""
+    if _has(text, WORKIQ_MARKS):
+        return "workiq_off"
     return "nolic" if _has(text, NOLIC_MARKS) else "noconn"
 
 
@@ -267,7 +272,7 @@ def classify(spec, res, meta: AsmMeta, ctx=None, ingest=None) -> tuple[str, dict
     if x.kind in ("echo", "stale"):
         info["reason"] = "stale" if x.kind == "stale" else "example"
         return "echo", info
-    if spec.kind == "lookup" and _has(body, UNAVAILABLE_MARKS):
+    if spec.kind == "lookup" and (_has(body, UNAVAILABLE_MARKS) or _has(body, WORKIQ_MARKS)):
         info["reason"] = "unavailable"
         info["lic"] = _lic(body)
         return "refusal", info

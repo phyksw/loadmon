@@ -174,6 +174,12 @@ class RangeTest(unittest.TestCase):
             self.assertEqual(W.session_failure(st), (3, "R-" + "TRANSPORT"), st)
         self.assertTrue(W.is_ca_code("53003"))
         self.assertFalse(W.is_ca_code("50058"))
+        for code in ("50158", "53000", "53001", "50097", "50005"):                     # M12 · H1 — 사람이 풀 수 있는 단계
+            self.assertFalse(W.is_ca_code(code), code)
+        self.assertEqual((W.host_class("mail.corp.example"), W.host_class("login.microsoftonline.com"),
+                          W.host_class("www.office.com"), W.host_class("outlook.cloud.microsoft"), W.host_class("")),
+                         ("nonms", "ms", "ms", "ms", ""))
+        self.assertEqual(W.host_class("evilmicrosoft.com.example"), "nonms")             # 끝 일치만(부분 문자열 아님 — G-B9)
 
 
 class TeamsParseTest(unittest.TestCase):

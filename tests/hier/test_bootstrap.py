@@ -362,8 +362,9 @@ class NameQualityTest(unittest.TestCase):
         self.assertIn(("loadmon27", "folder", False), parts)
         self.assertIn(("get", "code", True), parts)
         self.assertFalse({t.lower() for t, _r, _p in parts} & {"visual", "studio", "code", "host", "ssh"})
-        self.assertIn(("loadmon27", "folder", False),
-                      B.name_parts(K.F("w", "win", "loadmon27 - Visual Studio Code", app="vscode", app_cat="SW")))
+        # VS Code 의 홀로 남은 마디는 약한 폴더(folder1) — 작업 폴더가 없는 창의 탭 이름일 수도 있어 글 조각으로도 낸다(N2 남은 것)
+        self.assertEqual(B.name_parts(K.F("w", "win", "loadmon27 - Visual Studio Code", app="vscode", app_cat="SW")),
+                         (("loadmon27", "folder1", False), ("loadmon27", "text", False)))
         tab = B.name_parts(K.F("w", "win", "Welcome - loadmon27 - Visual Studio Code", app="vscode", app_cat="SW"))
         self.assertEqual([p for p in tab if p[1] == "folder"], [("loadmon27", "folder", False)])
         office = B.name_parts(K.F("w", "win", "견적서.xlsx - Excel", app="excel", app_cat="사무"))
@@ -382,6 +383,73 @@ class NameQualityTest(unittest.TestCase):
         st, names, cands = dev_auto(None)
         self.assertEqual((names, st.get("assigned"), st.get("no_name")), ({None}, None, 6))
         self.assertEqual(cands, [])
+
+    def test_n2_editor_tabs_and_terminals_not_folders(self):
+        """N2 남은 것(재현 확인 still_broken 1): 작업 폴더가 없는 VS Code 창('<탭> - Visual Studio Code')의 편집기 고유 탭과
+        터미널 창 제목은 작업 폴더 후보가 아니다. 작업 폴더는 개발 편집기(창 분류 ide) 창 제목의 자리로 정한다."""
+        for title in ("Untitled-1 - Visual Studio Code", "● Untitled-2 - Visual Studio Code", "Welcome - Visual Studio Code",
+                      "Settings - Visual Studio Code", "Extension: Python - Visual Studio Code",
+                      "Keyboard Shortcuts - Visual Studio Code", "Release Notes: 1.95 - Visual Studio Code",
+                      "제목 없음-1 - Visual Studio Code", "Get Started - Visual Studio Code"):
+            self.assertEqual(B.name_parts(K.F("w", "win", title, app="vscode", app_cat="SW")), (), title)
+        for title in ("Windows PowerShell", "관리자: Windows PowerShell", "MINGW64:/d/ /loadmon27"):
+            parts = B.name_parts(K.F("w", "win", title, app="terminal", app_cat="SW"))      # 터미널 = SW 범주·창 분류 other
+            self.assertFalse([p for p in parts if p[1].startswith("folder")], (title, parts))
+        prof = B.name_parts(K.F("w", "win", "main.py - loadmon27 - Data Lab - Visual Studio Code", app="vscode",
+                                app_cat="SW"))
+        self.assertEqual([p for p in prof if p[1] == "folder"], [("loadmon27", "folder", False)])
+        self.assertFalse({"data", "lab", "Data Lab"} & {t for t, _r, _p in prof})       # 폴더 뒤 마디 = 프로필 이름
+        jb = B.name_parts(K.F("w", "win", "signal_lab – get_signals.py", app="jetbrains_ide", app_cat="SW"))
+        self.assertIn(("signal_lab", "folder", False), jb)                                # '<프로젝트> – <파일>'
+        vs = B.name_parts(K.F("w", "win", "SensorFw - Microsoft Visual Studio", app="visual_studio", app_cat="SW"))
+        self.assertEqual(vs, (("SensorFw", "folder", False),))                            # 솔루션 이름 하나 — 탭이 아니다
+
+    def test_n2_lone_segment_needs_folder_evidence(self):
+        """VS Code 의 홀로 남은 마디는 같은 이름이 다른 창 제목('<파일> - <폴더> - 앱')에서 작업 폴더로 나왔을 때만 폴더다.
+        아니면 글 조각으로만 센다(폴더 점수 없음) — 'Untitled-1' 같은 탭 이름은 어느 쪽으로도 후보가 아니다."""
+        def cands(titles):
+            feats, fg = [], {}
+            for w in range(4):
+                for j, title in enumerate(titles):
+                    f = K.F(f"w{w}_{j}", "win", title, t=t_of(WEEKS6[w]) + j * 60, app="vscode", app_cat="SW")
+                    feats.append(f)
+                    fg[f.id] = f"g{w}"
+            return {c.token: c.folder for c in B.codename_candidates(feats, [], K.empty_reg(), K.cfg(), feat_groups=fg)}
+        self.assertEqual(cands(["loadmon27 - Visual Studio Code"]), {"loadmon27": False})
+        self.assertEqual(cands(["loadmon27 - Visual Studio Code", "main.py - loadmon27 - Visual Studio Code"]),
+                         {"loadmon27": True})
+        self.assertEqual(cands(["Untitled-1 - Visual Studio Code", "Untitled-1 - loadmon27 - Visual Studio Code"]),
+                         {"loadmon27": True})
+
+    def test_n2_generic_forms(self):
+        """범용 낱말(단일원 common_words.txt — 한국어·영어)과 그 꼴바뀜: 서술어 어미 · 일반어 + 번호 · 일반어 + 조사·높임 꼬리."""
+        common = B._match.common_words()
+
+        def generic(t):
+            return B._junk(t, ukey(t)) or B._generic(t, ukey(t), common)
+        for t in ("공유드립니다", "확인했습니다", "가능하실까요", "가능하세요", "부탁드려요", "검토하고", "수고하셨습니다",
+                  "Untitled-1", "system32", "Book1", "문서1", "프레젠테이션1", "mingw64", "자료를", "팀장님", "공유건", "검토용",
+                  "회의중", "참고", "상황", "채널", "이거", "가능", "여부", "FYI", "thanks", "regards", "attached", "question",
+                  "following", "windows", "welcome", "extension"):
+            self.assertTrue(generic(t), t)
+        for t in ("방열모듈", "QX-12", "PROJ-X", "loadmon27", "lm27", "signal_lab", "센서사양", "납기표", "견적서", "회로도",
+                  "품질지표", "교육자료", "P-12"):
+            self.assertFalse(generic(t), t)
+
+    def test_n2_greeting_phrases_never_names(self):
+        """N2 남은 것(재현 확인 still_broken 2): 메일·팀즈 제목의 인사·요청·응답 상투어(한국어 서술어·범용 명사, 영어 기능어)는
+        규칙 제안 과제 이름이 아니다 — 의미 있는 이름이 없으면 '과제 없음', 있으면 그 이름."""
+        for subj in ("자료 공유드립니다", "넵 확인했습니다", "내일 회의 가능하실까요?", "이거 가능하세요?", "참고 부탁드립니다",
+                     "견적 문의드립니다", "채널 공지", "진행 상황 공유", "확인 부탁드려요", "회의 참석 가능 여부", "잘 받았습니다",
+                     "수고하셨습니다", "자료를 공유합니다", "팀장님 보고 건", "Please find attached", "Thanks for the update",
+                     "FYI regarding the call", "Quick question", "Following up on this", "Can you check", "Kind regards"):
+            for kind in ("mail", "teams"):
+                spec = [(f"p{i}", [(w, subj) for w in range(4)]) for i in range(3)]
+                st, names, cands, _q, _l = auto(spec, kind)
+                self.assertEqual((cands, set(names.values()), st.get("assigned")), ([], {None}, None), (kind, subj))
+        spec = [(f"p{i}", [(w, "방열모듈 시험 결과 공유드립니다") for w in range(4)]) for i in range(3)]
+        _st, names, cands, _q, _l = auto(spec, "mail")
+        self.assertEqual((set(names.values()), cands), ({"방열모듈"}, ["방열모듈"]))   # 전에는 '공유드립니다'(사전순 동률)
 
     def test_display_form_and_hash_seed(self):
         """표기는 가장 많이 나온 꼴(동률 사전순)이고, 해시 씨앗이 달라도 결과가 같다(C06 별도 관찰 — 결정성)."""
@@ -422,7 +490,8 @@ class DevPcEndToEndTest(unittest.TestCase):
     """개발 PC 모양 합성 행(`tests.fixtures.wp22.devpc`) → 실물 시간 코어 → classify_all(레지스트리 없음): 규칙 제안 과제가
     파일 이름 조각이 아니라 작업 폴더이거나, 그것도 없으면 '과제 없음'(N2)."""
 
-    def run_dev(self, folder):
+    def run_dev(self, folder, tab=None, every=1):
+        """tab = 날마다(every 일에 한 번) 09:00 표본 한 줄(10분)의 창 제목을 이것으로(문서 키 없음) — 재현 확인 N2 절차."""
         from datetime import UTC, datetime
 
         from lm27.hier import classify_all, prepare
@@ -431,6 +500,12 @@ class DevPcEndToEndTest(unittest.TestCase):
         K.install_fakes()
         cfg, reg = K.cfg(), K.empty_reg()
         rows = D.rows(folder)
+        if tab:
+            days = sorted({r["ts_utc"][:10] for r in rows})
+            for r in rows:
+                if (r.get("src") == "pc.sampler" and r["ts_utc"][11:16] == "00:00"          # 09:00 KST
+                        and days.index(r["ts_utc"][:10]) % every == 0):
+                    r["title_masked"], r["doc_key"] = tab, None
         feats, tags, _trows = prepare(rows, reg, cfg)
         tr = analyze_time(K.fake_unit_id, rows, {}, K.CALENDAR, datetime(2026, 9, 30, 23, 0, tzinfo=UTC), cfg=cfg,
                           tags=tags)
@@ -454,3 +529,17 @@ class DevPcEndToEndTest(unittest.TestCase):
         res, eff, _D = self.run_dev(None)
         self.assertEqual(set(eff), {"UNC"})                                 # 쓰레기 이름 대신 '과제 없음'
         self.assertEqual(res.proposals["items"], [])
+
+    def test_no_folder_editor_tab_is_not_a_project(self):
+        """N2 남은 것 재현(날마다 · 닷새에 한 번 10분): 작업 폴더가 없는 VS Code 창의 편집기 고유 탭 이름이 코딩 시간 전체의
+        과제가 되지 않는다(수정 전: 'Untitled-1' 14,370분 · 'Welcome' · 'Extension: Python')."""
+        for tab, every in (("Untitled-1 - Visual Studio Code", 1), ("Untitled-1 - Visual Studio Code", 5),
+                           ("Welcome - Visual Studio Code", 1), ("Extension: Python - Visual Studio Code", 1)):
+            res, eff, _D = self.run_dev(None, tab, every)
+            self.assertEqual((set(eff), res.proposals["items"]), ({"UNC"}, []), (tab, every))
+
+    def test_folder_with_editor_tab_still_named(self):
+        _res, eff, D = self.run_dev("loadmon27", "Untitled-1 - loadmon27 - Visual Studio Code", 1)
+        self.assertEqual(set(eff) - {"UNC"}, {"loadmon27"})
+        self.assertGreater(eff["loadmon27"], 10 * eff.get("UNC", 0))
+        self.assertFalse({t.lower() for t in eff} & (D.JUNK | {"untitled-1", "untitled"}))

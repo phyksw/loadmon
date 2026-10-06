@@ -6,6 +6,11 @@ r"""WP-26 시험용 EdgeSession 대역 — 실제 화면 코드(``CdpOwaScreen``
 으로 처리기를 고른다(브리지 ``tests\bridge\fake_cdp.py`` 와 같은 방식 — 이 파일은 WP-26 자기 대역).
 화면 모형은 합성 dict: OWA ``{"inbox": [[항목…], …(스크롤 회차)], "sent": [...], "cal": {날짜: [일정…]}}`` ·
 Teams ``{"chats": [[항목…], …], "msgs": {tid: [[메시지…], …]}, "gone": [tid…]}``.
+Teams 선택 키(M365 조사 M7·M8·M9 재현): ``"stuck": [tid…]``(누르면 'ok' 지만 화면이 이전 방 그대로 — 큰 대화·느린 회사
+PC 흉내) · ``"start_room": tid``(앱이 처음부터 이 방을 열어 둔 상태) · ``"sel": bool``(목록 항목의 aria-selected 를 알려
+줌, 기본 참) · ``"cid": bool | "fixed:<tid>"``(주소에 대화 ID 가 보임 · 갱신되지 않는 주소, 기본 거짓) · ``"titles": {tid: 머리 제목}`` · ``"nav_none": [보기…]``
+(앱 막대에 그 단추가 없음 — 통합 보기) · ``"deep": {tid: 방}``(딥 링크로 이동하면 열리는 방 — 없으면 처음 방) ·
+``"deep_state": 상태``(딥 링크 이동 결과, 기본 ready). ``host`` = 이동 뒤 호스트(``*.cloud.microsoft`` 도착 흉내).
 """
 from __future__ import annotations
 
@@ -41,8 +46,9 @@ class FakeSession:
         self.pos: dict = {}
         self.window: list = []
         self.head = None
-        self.room = None
+        self.room = (teams or {}).get("start_room")
         self.rpos = 0
+        self.navs: list = []
 
     # ── 세션 ──
     def start(self) -> str:
@@ -61,7 +67,19 @@ class FakeSession:
     def goto(self, url: str, dl=None) -> str:
         self.url = url
         self.gotos.append(url)
-        return "login_required" if self._login_now() else "ready"
+        if self._login_now():
+            return "login_required"
+        if "/l/message/" in url:                       # Teams 딥 링크 — 열리는 방은 모형이 정한다
+            st = self.teams.get("deep_state") or "ready"
+            if st == "ready":
+                m = re.search(r"/l/message/([^/?#]+)/", url)
+                from urllib.parse import unquote
+                want = unquote(m.group(1)) if m else ""
+                deep = self.teams.get("deep") or {}
+                self.room = deep.get(want, want if want in (self.teams.get("msgs") or {}) else self.room)
+                self.rpos = 0
+            return st
+        return "ready"
 
     def wait_page(self, dl=None) -> str:
         return "login_required" if self._login_now() else "ready"
@@ -142,7 +160,10 @@ class FakeSession:
         return json.loads(m.group(1)) if m else "chats"
 
     def _js_tw_nav(self, expr):
-        return "ok"
+        labels = json.loads(re.search(r"var labels=(\[[^\]]*\])", expr).group(1))
+        which = {"채팅": "chats", "팀": "channels", "활동": "activity"}.get(labels[0] if labels else "", "")
+        self.navs.append(which)
+        return "none" if which in (self.teams.get("nav_none") or []) else "ok"
 
     def _js_tw_list(self, expr):
         w = self._which(expr, r"var which=" + _JSON_STR)
@@ -161,10 +182,19 @@ class FakeSession:
 
     def _js_tw_open(self, expr):
         t = self._which(expr, r"tid=" + _JSON_STR)
-        if t in (self.teams.get("gone") or []) or t not in (self.teams.get("msgs") or {}):
-            return "gone"
-        self.room, self.rpos = t, 0
+        if not t:                                          # 대화 ID 없는 항목 — 순번으로 누름(머리 항목이면 화면 그대로)
+            m = re.search(r"idx=(-?\d+)", expr)
+            self.opened.append(("index", int(m.group(1)) if m else -1))
+            return "ok"
+        w = self._which(expr, r"var which=" + _JSON_STR)
+        listed = {it.get("tid") for pg in (self.teams.get(w) or []) for it in pg}
+        if t in (self.teams.get("gone") or []) or t not in (self.teams.get("msgs") or {}) or t not in listed:
+            return "gone"                                  # 그 목록에 없는 대화 ID 는 찾지 못한다(실제 JS 와 같게)
         self.opened.append(("room", t))
+        if t in (self.teams.get("stuck") or []):
+            return "ok"                                    # 눌렀지만 화면이 바뀌지 않음(이전 방 그대로)
+        if t != self.room:
+            self.room, self.rpos = t, 0
         return "ok"
 
     def _rounds(self):
@@ -182,7 +212,23 @@ class FakeSession:
         return "top"
 
     def _js_tw_pane(self, expr):
-        return {"n": len(self._rounds()[min(self.rpos, len(self._rounds()) - 1)]), "chat": f"{self.room}|{self.rpos}"}
+        if self.room is None:
+            return {"n": 0, "chat": "", "cid": self._cid(), "sel": None}
+        m = re.search(r"var tid=" + _JSON_STR, expr or "")
+        want = json.loads(m.group(1)) if m else ""
+        titles = self.teams.get("titles") or {}
+        chat = titles.get(self.room, f"{self.room}|{self.rpos}") if titles else f"{self.room}|{self.rpos}"
+        listed = any(it.get("tid") == want for pg in (self.teams.get("chats") or []) + (self.teams.get("channels") or [])
+                     for it in pg)
+        sel = (want == self.room) if (want and listed and self.teams.get("sel", True)) else None
+        return {"n": len(self._rounds()[min(self.rpos, len(self._rounds()) - 1)]), "chat": chat,
+                "cid": self._cid(), "sel": sel}
+
+    def _cid(self) -> str:
+        c = self.teams.get("cid")
+        if isinstance(c, str) and c.startswith("fixed:"):
+            return c[6:]                                   # 갱신되지 않는 주소(늘 같은 대화 ID)
+        return (self.room or "") if c else ""
 
 
 def factory(session: FakeSession):

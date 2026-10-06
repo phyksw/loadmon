@@ -24,7 +24,7 @@ from urllib.parse import unquote
 from lm27.bridge.cdp import HandshakeRejected
 from lm27.bridge.clock import VirtualClock
 from lm27.bridge.messages import Notices
-from lm27.bridge.session import EdgeSession, read_policy
+from lm27.bridge.session import EdgeSession, read_edge_policies, read_policy
 from lm27.bridge.settings import load_settings
 from lm27.config import load_config
 from lm27.paths import Paths
@@ -94,12 +94,13 @@ class FakeBrowser:
 class FakeProc:
     _next = 41000
 
-    def __init__(self, net, browser: FakeBrowser | None, alive: bool):
+    def __init__(self, net, browser: FakeBrowser | None, alive: bool, holds: str = ""):
         FakeProc._next += 1
         self.pid = FakeProc._next
         self.net = net
         self.browser = browser
         self._alive = alive
+        self.holds = holds                        # 이 프로세스가 쥔 프로필 잠금(lockfile) — 정책 차단 Edge 는 우리 프로필로 뜬다
         self.killed = 0
 
     def alive(self) -> bool:
@@ -108,6 +109,8 @@ class FakeProc:
     def kill_tree(self) -> bool:
         self.killed += 1
         self._alive = False
+        if self.holds:
+            self.net.in_use_profiles.discard(self.holds)
         if self.browser is not None:
             self.browser.shutdown()
         return True
@@ -127,7 +130,9 @@ class FakeNet:
         self.launches: list[list[str]] = []
         self.procs: list[FakeProc] = []
         self.closed_tabs: list[tuple] = []
-        self.launch_mode = "ok"                  # ok | exit | policy | busy | slow:<초>
+        self.launch_mode = "ok"                  # ok | exit | policy | foreign | busy | slow:<초>
+        # policy = 우리 프로필로 떴지만 포트가 안 열림(RemoteDebuggingAllowed=0) · foreign = 살아 있지만 다른 폴더(UserDataDir
+        # 정책 — 사용자 본 Edge)로 떴고 포트도 우리 프로필 잠금도 없음(H5)
         self.reject_no_origin = False            # True 면 Origin 없는 핸드셰이크를 403 으로 거절
         self.browser_close_works = True
         self.put_supported = True
@@ -222,6 +227,10 @@ class FakeNet:
         if mode == "exit":
             p = FakeProc(self, None, alive=False)
         elif mode == "policy":
+            key = os.path.normcase(os.path.abspath(prof))
+            self.in_use_profiles.add(key)
+            p = FakeProc(self, None, alive=True, holds=key)
+        elif mode == "foreign":
             p = FakeProc(self, None, alive=True)
         elif mode == "busy":
             self.in_use_profiles.add(os.path.normcase(os.path.abspath(prof)))
@@ -252,6 +261,16 @@ def no_edge_reg(hive, key, value):
 def policy_blocked_reg(hive, key, value):
     """정책: RemoteDebuggingAllowed = 0(금지)."""
     return 0 if value == "RemoteDebuggingAllowed" else None
+
+
+def user_data_dir_reg(hive, key, value):
+    """정책: UserDataDir 강제(값은 가짜 경로 — 세션은 종류만 본다, H5)."""
+    return r"C:\Corp\EdgeData" if (hive, value) == ("HKLM", "UserDataDir") else None
+
+
+def browser_signin_reg(hive, key, value):
+    """정책: BrowserSignin = 2(Edge 프로필 로그인 강제, M6)."""
+    return 2 if value == "BrowserSignin" else None
 
 
 TREE = Path(__file__).resolve().parents[2]
@@ -288,7 +307,8 @@ class World:
     def session(self, role="bridge", run_id=RUN_A, **kw) -> EdgeSession:
         opts = {"paths": self.paths, "cfg": self.cfg, "clock": self.clock, "http": self.net, "connector": self.net,
                 "launcher": self.net.launch, "can_bind": self.net.can_bind, "edge_finder": lambda: self.edge_path,
-                "policy_reader": lambda: read_policy(self.policy_reg), "proc_probe": self.probe,
+                "policy_reader": lambda: read_policy(self.policy_reg),
+                "policy_extra_reader": lambda: read_edge_policies(self.policy_reg), "proc_probe": self.probe,
                 "in_use": self.net.in_use, "notices": self.notices, "environ": self.environ, "pid_ctime": 1}
         opts.update(kw)
         return EdgeSession(role, run_id, **opts)

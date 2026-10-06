@@ -153,16 +153,52 @@ class ClassicFinderSame(unittest.TestCase):
         for src in ("App Paths", "InstallRoot", "ClickToRun", "LocalServer32", "ProgramFiles"):
             self.assertIn(src, bodies[0])
 
+    @staticmethod
+    def _fn(name: str, fn: str) -> str | None:
+        t = (ROOT / "collect" / name).read_text(encoding="utf-8-sig").replace("\r\n", "\n")
+        m = re.search(r"\nfunction " + re.escape(fn) + r" \{\n.*?\n\}\n", t, re.S)
+        return m.group(0) if m else None
+
     def test_profile_state_identical(self):
-        """계약 v1.3 §0.8 V7: '쓸 수 있는 프로필' 판정도 세 스크립트에 글자까지 같다."""
-        import re
-        from pathlib import Path
-        root = Path(__file__).resolve().parents[2]
-        bodies = []
-        for name in ("Invoke-CapabilityProbe.ps1", "Get-OutlookCom.ps1", "Get-OutlookIndex.ps1"):
-            t = (root / "collect" / name).read_text(encoding="utf-8-sig").replace("\r\n", "\n")
-            m = re.search(r"\nfunction Get-OutlookProfileState \{\n.*?\n\}\n", t, re.S)
-            self.assertIsNotNone(m, name)
-            bodies.append(m.group(0))
-        self.assertEqual(bodies[0], bodies[1])
-        self.assertEqual(bodies[0], bodies[2])
+        """계약 v1.3 §0.8 V7: '쓸 수 있는 프로필' 판정은 탐침·COM 수집기에 글자까지 같다(M365 조사 H7 — 주소록만 든 긍정 증거)."""
+        a = self._fn("Invoke-CapabilityProbe.ps1", "Get-OutlookProfileState")
+        self.assertIsNotNone(a)
+        self.assertEqual(a, self._fn("Get-OutlookCom.ps1", "Get-OutlookProfileState"))
+        self.assertIn("[object[]]$Shapes", a)
+
+    def test_profile_state_index_copy(self):
+        """색인 수집기(Get-OutlookIndex.ps1 — 색인 묶음 소유)의 사본도 같아야 한다 — 다르면 COM 수집기의 함수를 그대로 옮긴다."""
+        self.assertEqual(self._fn("Get-OutlookIndex.ps1", "Get-OutlookProfileState"),
+                         self._fn("Get-OutlookCom.ps1", "Get-OutlookProfileState"))
+
+    def test_migration_policy_identical(self):
+        """M365 조사 M13: 관리자 전환 정책 읽기는 탐침·COM 수집기에 글자까지 같다."""
+        a = self._fn("Invoke-CapabilityProbe.ps1", "Get-MigrationPolicy")
+        self.assertIsNotNone(a)
+        self.assertEqual(a, self._fn("Get-OutlookCom.ps1", "Get-MigrationPolicy"))
+        self.assertIn("DoNewOutlookAutoMigration", a)
+        self.assertIn("NewOutlookAutoMigrationRetryIntervals", a)
+
+
+@unittest.skipUnless(os.name == "nt" and PS.is_file(), "Windows PowerShell 5.1 없음")
+class AvState(unittest.TestCase):
+    """M365 조사 M17: 백신 상태 = 문서화된 WscGetSecurityProviderHealth(GOOD 만 valid) — SecurityCenter2 productState 비트 해석
+    금지. 실제 PC 의 백신 상태는 읽지 않는다(매핑 함수만 부르고, C# 정의는 컴파일만)."""
+
+    def test_mapping_and_native_compiles(self):
+        t = _text().replace("\r\n", "\n")
+        fn = re.search(r"\nfunction ConvertTo-AvState\(.*?\n\}\n", t, re.S).group(0)
+        cs = re.search(r"\$NATIVE_CS = @'\n(.*?)\n'@", t, re.S).group(1)
+        self.assertIn("WscGetSecurityProviderHealth", cs)
+        av = re.search(r"\nfunction Get-AvState \{\n.*?\n\}\n", t, re.S).group(0)
+        code = "\n".join(ln for ln in av.split("\n") if not ln.strip().startswith("#"))
+        self.assertNotIn("SecurityCenter2", code)
+        self.assertIn("AvHealth", code)
+        drv = (fn + "\n$r = @((ConvertTo-AvState 0 0), (ConvertTo-AvState 0 2), (ConvertTo-AvState 1 2), (ConvertTo-AvState 0 1),"
+               " (ConvertTo-AvState -2147024894 0), (ConvertTo-AvState $null $null))\n"
+               "Add-Type -TypeDefinition $env:LM27T_CS -Language CSharp -ErrorAction Stop\n"
+               "[Console]::Out.WriteLine(($r -join ',') + '|' + [bool]('Lm27Probe.Native' -as [type]))")
+        cp = subprocess.run([str(PS), "-NoProfile", "-NonInteractive", "-Command", drv], capture_output=True, timeout=120,
+                            env=dict(os.environ, LM27T_CS=cs), creationflags=CREATE_NO_WINDOW, check=False)
+        out = cp.stdout.decode("utf-8", "replace").strip()
+        self.assertEqual(out, "valid,invalid,invalid,invalid,unknown,unknown|True", cp.stderr.decode("utf-8", "replace")[-800:])

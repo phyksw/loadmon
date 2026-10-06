@@ -141,16 +141,19 @@ def _rec_kind(u: Mapping, v: Mapping, rel: float, seq: float, c: dict) -> str:
     return "related"
 
 
-def _neighbors(sets: Mapping[str, UnitSets], ids: list[str], same_role: bool):
+def _neighbors(sets: Mapping[str, UnitSets], ids: list[str], same_role: bool, apps: bool = True):
     """연관 추천 후보: (a, {b > a — ids 순}) — 문서·동료·앱 중 하나라도 같이 가진 단위업무, 그리고 ``same_role`` 이면 같은
     역할 단위업무. 공유가 하나도 없는 쌍은 자카드 항이 모두 0 이라 연관도 ≤ seq 가중 — seq 가중이 문턱보다 작으면 같은
     역할이어도 추천이 될 수 없다. 그래서 예전의 모든 쌍 훑기(n² — 9개월 단위업무 8천 개면 3천만 쌍, W2 검토 C07)와 **같은
-    후보**를 역색인으로 바로 얻는다. 쌍마다 한 번만 낸다(같은 쌍이 여러 열쇠를 공유해도)."""
+    후보**를 역색인으로 바로 얻는다. 쌍마다 한 번만 낸다(같은 쌍이 여러 열쇠를 공유해도). ``apps`` 가 거짓이면 앱 열쇠를
+    빼고 문서·동료(·역할)로만 후보를 낸다 — 앱만 같이 가진 쌍이 추천이 될 수 없을 때(`recommendations` 가 판정, O-18④)."""
     inv: dict[tuple, list[str]] = defaultdict(list)
     pos: dict[str, list[tuple[tuple, int]]] = {}
     for a in ids:
         s = sets[a]
-        keys = [("d", f) for f in s["docs"]] + [("p", p) for p in s["peers"]] + [("a", x) for x in s["apps"]]
+        keys = [("d", f) for f in s["docs"]] + [("p", p) for p in s["peers"]]
+        if apps:
+            keys += [("a", x) for x in s["apps"]]
         if same_role:
             keys.append(("r", s["role"]))
         mine = []
@@ -198,7 +201,11 @@ def recommendations(sets: Mapping[str, UnitSets], cfg, *, bc=None) -> dict[str, 
                 s.get("start") if s.get("start") is not None else -1)
     top: dict[str, list] = defaultdict(list)
     thr: dict[str, int] = {}                          # 단위업무 → 상위 목록 5위의 연관도 × 10⁴ 하한(목록을 자른 뒤에만)
-    for a, nb in _neighbors(sets, ids, w["seq"] >= t):
+    # 문서·동료를 하나도 같이 갖지 않은 쌍은 seq 가 인계(1)일 수 없어(인계는 문서·동료 공유가 조건) 연관도 ≤ 앱 가중 + seq
+    # 가중/2 — 그것이 문턱보다 작으면 앱만 같이 가진 쌍은 추천이 될 수 없다(같은 결과). 흔한 앱(메일·메신저)은 거의 모든
+    # 단위업무가 가져 후보 쌍이 n² 에 가까웠다(3개월 성능 밀도 보고서 빌드의 큰 몫 — O-18④).
+    apps_ok = w["app"] + w["seq"] / 2 >= t
+    for a, nb in _neighbors(sets, ids, w["seq"] >= t, apps_ok):
         da, pa, aa, nda, npa, naa, ra, sa, ea, la, sta = P[a]
         for b in nb:
             db, pb, ab, ndb, npb, nab, rb, sb, eb, lb, stb = P[b]

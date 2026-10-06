@@ -4,7 +4,8 @@ r"""P-WEB 능력 탐침(CT §12 · C §4 · 계약 §2.17 · §6.7 · v1.2 C18) 
 
     "<PY>" -X utf8 -I -B collect\probe_teamsweb.py [--pc <pc_id>] [--budget-sec N]
 
-재는 것: teams.microsoft.com 로그인 상태(R-LOGIN · 조건부 액세스 → R-CA), Edge 설치·원격 디버깅 정책(R-NOAPP · R-EDGEPOL —
+재는 것: Teams 웹(teams.microsoft.com — teams.cloud.microsoft 도착도 정상) 로그인 상태(R-LOGIN · 조직 정책 조건부 액세스 → R-CA,
+장치 기반·외부 보안 과제는 R-LOGIN), Edge 설치·원격 디버깅 정책(R-NOAPP · R-EDGEPOL —
 레지스트리 읽기만), 채팅 목록을 알아보는가(R-WEBSEL)·목록이 가상화되어 내려야 더 나오는가, 첫 대화 화면의 메시지 중
 ``data-mid``(메시지 ID)·``<time datetime>`` 이 보이는 비율(CT 미결 3 — 정밀 시각과 경로 간 중복 키가 한 번에 풀리는지).
 Edge 는 ``lm27.bridge.session.EdgeSession.open(role="teams_web")`` 로만 연다(G-B12). 사용자 대신 로그인하지 않는다.
@@ -101,7 +102,8 @@ def probe(*, environ, paths, cfg, clock, now, budget_sec, session_factory=None, 
         if state != "ready":
             rc, why = W.session_failure(state, getattr(getattr(screen, "s", None), "error", None))
             st = "fail" if rc == W.RC_LOGIN or why in ("R-EDGEPOL", "R-NOAPP") else "transport_fail"
-            out["caps"][CAP] = P.cap(st, [why], {"login": login, "aadsts": counts.get("aadsts"), "edge": ef["edge"],
+            out["caps"][CAP] = P.cap(st, [why], {"login": login, "aadsts": counts.get("aadsts"),
+                                                 "aadsts_kind": counts.get("aadsts_kind"), "edge": ef["edge"],
                                                  **P.login_value(screen, rc)},
                                      (CAP, *base, login, counts.get("aadsts")))
             return out
@@ -110,19 +112,26 @@ def probe(*, environ, paths, cfg, clock, now, budget_sec, session_factory=None, 
         sel_ok = bool(lp.get("how"))
         virtualized = None
         ms = {"sample_n": 0, "mid_ratio": None, "time_ratio": None, "msg_sel_ok": False}
+        opened = None
         if items:
             virtualized = screen.list_scroll("chats", dl) == "scrolled"
-            first = items[0]
-            room = {"rid": "probe:0", "idx": first.get("idx", 0), "tid": str(first.get("tid") or ""), "mid": "",
-                    "label": "", "source": "chats", "gone": bool(first.get("gone"))}
-            if screen.open_room(room, dl) == "ok":
-                ms = msg_sample(screen.room_page(room, dl))
+            # 앞 두 방까지(머리 항목 제외) — 앱이 처음부터 열어 둔 방은 눌러도 화면이 그대로라 확인되지 않을 수 있다(M8)
+            cands = [x for x in items if not (x.get("hdr") and not x.get("tid"))][:2]
+            opened = False
+            for k, it in enumerate(cands):
+                room = {"rid": f"probe:{k}", "idx": it.get("idx", k), "tid": str(it.get("tid") or ""), "mid": "",
+                        "label": str(it.get("label") or ""), "source": "chats", "gone": bool(it.get("gone"))}
+                if screen.open_room(room, dl) == "ok":
+                    opened = True
+                    ms = msg_sample(screen.room_page(room, dl))
+                    break
         out["budget_hit"] = dl.at != INF and dl.expired()
         if out["budget_hit"]:
             out["groups"][GROUP] = "budget"
-        value = {"login": "ok", "chats_n": len(items), "list_virtualized": virtualized, "sample_n": ms["sample_n"],
-                 "mid_ratio": ms["mid_ratio"], "time_ratio": ms["time_ratio"]}
-        ok = sel_ok and (ms["msg_sel_ok"] or not items)
+        value = {"login": "ok", "chats_n": len(items), "list_virtualized": virtualized, "room_opened": opened,
+                 "sample_n": ms["sample_n"], "mid_ratio": ms["mid_ratio"], "time_ratio": ms["time_ratio"]}
+        # 방을 열어 확인하지 못했으면(화면 전환 미확인) 메시지 화면 구조는 '모름' — R-WEBSEL(구조·확정) 근거로 쓰지 않는다
+        ok = sel_ok and (ms["msg_sel_ok"] or not items or opened is False)
         sig = (CAP, *base, "ok", sel_ok, ms["msg_sel_ok"], bool(ms["mid_ratio"]), bool(ms["time_ratio"]),
                virtualized)
         out["caps"][CAP] = P.cap("ok" if ok else "fail", [] if ok else ["R-WEBSEL"], value, sig)

@@ -96,6 +96,11 @@ class FakePage:
     work_mode: str = "work"
     work_toggle: bool = True
     work_switch_ok: bool = True
+    workiq: str | None = None                      # 단일 토글 'Work IQ'(2026-08 개편): "on"·"off"·"nostate"(누름 상태 없음), None = 없음
+    account_label: bool = False                    # 탐색 창의 회사 계정 'Work' 표시(H4)
+    shield: bool = False                           # 녹색 데이터 보호 방패(H4)
+    tier_label: str = ""                           # 'Copilot (Premium)'·'(Basic)' 등급 표식 → "premium"·"basic"
+    aadsts_code: str = ""                          # 로그인 화면의 AADSTS 번호(H1)
     web_grounding: str | None = None
     model_menu: tuple = ("자동", "빠른 응답", "깊이 생각하기")
     model_current: str = "자동"
@@ -288,11 +293,15 @@ class FakePage:
     def _norm(self, s):
         return re.sub(r"[-\s._]", "", str(s or "").lower())
 
+    def _wants(self, expr):
+        w = json.JSONDecoder().raw_decode(expr, expr.index("const want=") + len("const want="))[0]
+        return [x for x in (w if isinstance(w, list) else [w]) if x]
+
     def js_pick_model(self, expr):
-        want = json.JSONDecoder().raw_decode(expr, expr.index("const want=") + len("const want="))[0]
+        wants = self._wants(expr)
         if not self.model_menu:
             return {"ok": False, "err": "selector_not_found"}
-        if self._norm(want) in self._norm(self.model_current):
+        if any(self._norm(w) in self._norm(self.model_current) for w in wants):
             return {"ok": True, "already": True, "cur": self.model_current}
         if self.menu_open:
             return {"ok": True, "opened": True, "alreadyOpen": True}
@@ -304,15 +313,16 @@ class FakePage:
         return {"open": len(self.model_menu) if self.menu_open else 0}
 
     def js_pick_model_item(self, expr):
-        want = json.JSONDecoder().raw_decode(expr, expr.index("const want=") + len("const want="))[0]
+        wants = self._wants(expr)
         if not self.menu_open:
             return {"ok": False, "err": "item_not_found", "seen": []}
-        for item in self.model_menu:
-            if self._norm(want) in self._norm(item):
-                self.model_current = item
-                self.menu_open = False
-                self.clicks.append("model_item")
-                return {"ok": True, "picked": item}
+        for want in wants:
+            for item in self.model_menu:
+                if self._norm(want) in self._norm(item):
+                    self.model_current = item
+                    self.menu_open = False
+                    self.clicks.append("model_item")
+                    return {"ok": True, "picked": item}
         return {"ok": False, "err": "item_not_found", "seen": list(self.model_menu)}
 
     def js_close_menu(self, expr):
@@ -320,22 +330,43 @@ class FakePage:
         return 1
 
     def _mode(self):
-        if not self.work_toggle:
-            return {"found": False, "mode": "unknown", "work": False, "web": False}
-        return {"found": True, "mode": self.work_mode, "work": self.work_mode == "work", "web": self.work_mode == "web"}
+        """JS ``modeState`` 흉내: 업무·웹 버튼 한 쌍(work_toggle) → 없으면 단일 토글 Work IQ(workiq)."""
+        if self.work_toggle:
+            return {"found": True, "kind": "pair", "stateful": True, "mode": self.work_mode,
+                    "work": self.work_mode == "work", "web": self.work_mode == "web"}
+        if self.workiq is not None:
+            s = {"on": True, "off": False}.get(self.workiq)
+            return {"found": True, "kind": "toggle", "stateful": s is not None,
+                    "mode": "work" if s is True else ("web" if s is False else "unknown"), "work": s is True,
+                    "web": s is False}
+        return {"found": False, "kind": "", "stateful": False, "mode": "unknown", "work": False, "web": False}
 
     def js_work_mode(self, expr):
-        if "if(true&&fw" in expr and self.work_toggle and self.work_mode != "work":
-            self.clicks.append("work_toggle")
-            if self.work_switch_ok:
-                self.work_mode = "work"
+        if "const CLICK=true" in expr:
+            if self.work_toggle and self.work_mode != "work":
+                self.clicks.append("work_toggle")
+                if self.work_switch_ok:
+                    self.work_mode = "work"
+            elif not self.work_toggle and self.workiq == "off":
+                self.clicks.append("workiq_toggle")                  # 꺼진 Work IQ 만 누른다
+                if self.work_switch_ok:
+                    self.workiq = "on"
+            elif not self.work_toggle and self.workiq in ("on", "nostate"):
+                self.clicks.append("workiq_wrong_click")             # 켜졌거나 상태를 모르는 토글은 누르면 안 된다
         return {**self._mode(), "clicked": False}
 
     def js_env(self, expr):
         m = self._mode()
         wg = self.web_grounding
-        return {"toggle": {"found": m["found"], "work": m["work"], "web": m["web"]},
-                "wg": {"found": wg is not None, "checked": True if wg == "on" else (False if wg == "off" else None)}}
+        return {"toggle": {k: m[k] for k in ("found", "kind", "stateful", "work", "web")},
+                "wg": {"found": wg is not None, "checked": True if wg == "on" else (False if wg == "off" else None)},
+                "acct": {"label": bool(self.account_label), "shield": bool(self.shield)}, "tier": self.tier_label}
+
+    def js_aadsts(self, expr):
+        return self.aadsts_code if self.on_login() else ""
+
+    def on_login(self) -> bool:
+        return "login." in self.current_url()
 
     def js_diagnose(self, expr):
         return {"url_host": "m365.cloud.microsoft", "url_path": "/chat/0123456789abcdef", "ready": self.ready,

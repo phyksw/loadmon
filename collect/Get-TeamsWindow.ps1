@@ -36,11 +36,21 @@
   메시지에 적용한다. 날짜를 끝내 못 짚은 줄은 ts_precision = unknown 으로 격리해 넘긴다(수집일로 추정하지 않는다 —
   ts_utc 는 수집일 00:00 로컬의 자리값이며 시간 근거가 아니다).
 
+  R-UIAEMPTY 는 사람·확정 ✘(M365 조사 M1 — Teams 기본은 '시작 시 백그라운드 실행, 닫아도 백그라운드에서 계속 실행' 이라
+  보이는 창이 없는 것이 흔하다. 창을 열어 두면(최소화 아님 — 다른 창 뒤여도 된다) 읽힌다). 하위 원인을 counts 에 숫자로
+  남긴다: no_window · hidden · iconic · cloaked · offscreen, 고른 원인 하나는 empty_cause(empty_tree · iconic · cloaked ·
+  offscreen · hidden · no_window · excluded). 보이는 창의 첫 판독이 요소 20개 미만이면 1.5초 뒤 한 번 더 읽는다
+  (retry_reads · retry_gain — L10). 개인 계정 제품 창('… Microsoft Teams (free)'·'(무료)' 로 끝나는 제목)은 읽지 않는다
+  (제목만 보고 — personal_title, M10). 창 분포(pids · secondary)를 남긴다. 내 세션의 Teams 프로세스만 센다
+  (procs_other_session · 이름별 procs_new·procs_classic·procs_other).
+
   시험 주입(계약 §11.3): -RawFile <파일> 은 창 대신 합성 판독 결과를 읽는다(UIA·Add-Type 를 쓰지 않음).
     · 일반 텍스트 = 한 줄이 UIA 요소 이름 하나인 가시 창 하나(WP-05 write_teams_rawfile 형).
-    · JSON = 창 열거·판독 스냅숏 {"procs": n, "windows": [{"title", "class", "visible", "iconic", "on_screen",
-      "cloaked", "elevated", "hang", "error", "read_ms", "rect": [l, t, w, h], "elements": [{"name", "type", "rect"}]}]}
-      (read_ms = 그 창 판독에 걸리는 시간 — 창 워치독·예산을 실제 시간으로 흉내 낸다).
+    · JSON = 창 열거·판독 스냅숏 {"procs": n, "procs_other_session": n, "windows": [{"title", "class", "pid", "visible",
+      "iconic", "on_screen", "cloaked", "elevated", "hang", "error", "read_ms", "rect": [l, t, w, h],
+      "elements": [{"name", "type", "rect"}], "elements_seq": [[요소…], [요소…]]}]}
+      (read_ms = 그 창 판독에 걸리는 시간 — 창 워치독·예산을 실제 시간으로 흉내 낸다. elements_seq = 판독 회차별 요소 —
+      재판독 시험, 있으면 elements 대신).
   -TestNow <ISO 시각(오프셋 포함)> 은 '지금'(관측 시각·수집 순간 오프셋·상대 날짜 기준)을 고정한다.
 
 .EXAMPLE
@@ -80,6 +90,12 @@ $script:C = [ordered]@{
     elements = 0; lines = 0; list_skipped = 0; list_restored = 0; time_lines = 0; generic = 0; cfg_regex = 0
     rows = 0; n_minute = 0; n_unknown = 0; n_inherited = 0; n_self = 0; n_new = 0; dup = 0; out_of_range = 0
     budget_hit = 0; in_given = 0; self_given = 0
+    # 읽지 못한 창의 하위 원인(M1 — 사람이 할 일을 고르게): 창 없음(닫아 백그라운드 실행 — Teams 기본) · 숨김 · 최소화 ·
+    # 가려짐(cloaked — 다른 가상 데스크톱 등) · 화면 밖. 첫 판독 0·소수 요소의 재판독(L10). 읽지 않은 창(M10): 개인 계정
+    # 제품 창(Teams (free)). 창 분포(프로세스 수 · 주 창 밖 창). 다른 세션 프로세스.
+    no_window = 0; hidden = 0; iconic = 0; cloaked = 0; offscreen = 0; retry_reads = 0; retry_gain = 0
+    personal_title = 0; pids = 0; secondary = 0
+    procs_new = 0; procs_classic = 0; procs_other = 0; procs_other_session = 0
 }
 $script:OutLines = New-Object 'System.Collections.Generic.List[string]'
 $script:PrevCursor = $null
@@ -891,11 +907,24 @@ foreach ($x in @('IME', 'MSCTFIME UI', 'tooltips_class32', 'GDI+ Hook Window Cla
 
 function New-WinRecord {
     return @{
-        live = $false; hwnd = [IntPtr]::Zero; title = ''; cls = ''; visible = $true; iconic = $false; on_screen = $true
+        live = $false; hwnd = [IntPtr]::Zero; pid = 0; title = ''; cls = ''; visible = $true; iconic = $false; on_screen = $true
         cloaked = $false; elev = 0; hang = $false; error = $null; readMs = 0; hasRect = $false; L = 0.0; T = 0.0; W = 0.0; H = 0.0
         items = (New-Object 'System.Collections.Generic.List[object]'); total = 0; capped = $false
+        retry = (New-Object 'System.Collections.Generic.List[object]')    # -RawFile elements_seq 의 둘째 판독부터(L10 시험)
         roomName = ''; roomSelf = $false
     }
+}
+
+function ConvertTo-RawItems($Elements) {
+    $list = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($e in @($Elements)) {
+        if ($null -eq $e) { continue }
+        $it = @{ Name = [string](Get-JsonProp $e 'name' ''); Type = [string](Get-JsonProp $e 'type' 'Text'); HasRect = $false; L = 0.0; T = 0.0; W = 0.0; H = 0.0 }
+        $er = @(Get-JsonProp $e 'rect' @())
+        if ($er.Count -ge 4) { $it.HasRect = $true; $it.L = [double]$er[0]; $it.T = [double]$er[1]; $it.W = [double]$er[2]; $it.H = [double]$er[3] }
+        $list.Add($it)
+    }
+    return ,$list
 }
 
 function ConvertTo-Rect($Win, $Rect) {
@@ -934,18 +963,21 @@ function Read-RawFileSnapshot([string]$Path) {
             $win.readMs = [int](Get-JsonProp $w 'read_ms' 0)
             $err = Get-JsonProp $w 'error' $null
             if ($null -ne $err) { $win.error = [string]$err }
+            $win.pid = [int](Get-JsonProp $w 'pid' 0)
             ConvertTo-Rect $win (Get-JsonProp $w 'rect' @())
-            foreach ($e in @(Get-JsonProp $w 'elements' @())) {
-                if ($null -eq $e) { continue }
-                $it = @{ Name = [string](Get-JsonProp $e 'name' ''); Type = [string](Get-JsonProp $e 'type' 'Text'); HasRect = $false; L = 0.0; T = 0.0; W = 0.0; H = 0.0 }
-                $er = @(Get-JsonProp $e 'rect' @())
-                if ($er.Count -ge 4) { $it.HasRect = $true; $it.L = [double]$er[0]; $it.T = [double]$er[1]; $it.W = [double]$er[2]; $it.H = [double]$er[3] }
-                $win.items.Add($it)
+            $seq = @(Get-JsonProp $w 'elements_seq' @())
+            if ($seq.Count -gt 0) {
+                # 판독 회차별 요소(접근성 트리 지연 흉내 — 첫 판독 0, 다시 읽으면 N)
+                foreach ($it in (ConvertTo-RawItems $seq[0])) { $win.items.Add($it) }
+                for ($k = 1; $k -lt $seq.Count; $k++) { $win.retry.Add((ConvertTo-RawItems $seq[$k])) }
+            } else {
+                foreach ($it in (ConvertTo-RawItems (Get-JsonProp $w 'elements' @()))) { $win.items.Add($it) }
             }
             $snap.windows.Add($win)
         }
         $pv = Get-JsonProp $o 'procs' $null
         if ($null -ne $pv) { $snap.procs = [int]$pv } elseif ($snap.windows.Count -gt 0) { $snap.procs = 1 }
+        $snap.other = [int](Get-JsonProp $o 'procs_other_session' 0)
     } else {
         $win = New-WinRecord
         foreach ($ln in ($text.TrimStart([char]0xFEFF) -split "`r?`n")) {
@@ -958,8 +990,15 @@ function Read-RawFileSnapshot([string]$Path) {
 }
 
 function Get-LiveSnapshot {
-    $snap = @{ procs = 0; windows = (New-Object 'System.Collections.Generic.List[object]') }
-    $procs = @(Get-Process -Name 'ms-teams', 'Teams', 'msteams' -ErrorAction SilentlyContinue)
+    $snap = @{ procs = 0; windows = (New-Object 'System.Collections.Generic.List[object]'); other = 0; byName = @{} }
+    # 내 세션의 프로세스만(다중 세션 호스트 — 다른 사용자의 Teams 는 UIA 로 닿지도 않는다: 'UI Automation does not enable
+    # communication between processes started by different users'). 세션을 모르면 거르지 않는다.
+    $all = @(Get-Process -Name 'ms-teams', 'Teams', 'msteams' -ErrorAction SilentlyContinue)
+    $sid = -1
+    try { $sid = [int](Get-Process -Id $PID).SessionId } catch { $sid = -1 }
+    $procs = @($all | Where-Object { $sid -lt 0 -or $_.SessionId -eq $sid })
+    $snap.other = $all.Count - $procs.Count
+    foreach ($p in $procs) { $n = ([string]$p.ProcessName).ToLowerInvariant(); $snap.byName[$n] = 1 + [int]$snap.byName[$n] }
     $snap.procs = $procs.Count
     if ($procs.Count -eq 0) { return $snap }
     Initialize-UiaHelper
@@ -970,7 +1009,7 @@ function Get-LiveSnapshot {
     foreach ($w in [Lm27Teams.Native]::TopWindows($pids)) {
         if (-not $w.Title -or $w.Tool -or $script:DenyClass.Contains([string]$w.ClassName)) { continue }
         $win = New-WinRecord
-        $win.live = $true; $win.hwnd = $w.Hwnd; $win.title = [string]$w.Title; $win.cls = [string]$w.ClassName
+        $win.live = $true; $win.hwnd = $w.Hwnd; $win.pid = [int]$w.Pid; $win.title = [string]$w.Title; $win.cls = [string]$w.ClassName
         $win.visible = [bool]$w.Visible; $win.iconic = [bool]$w.Iconic; $win.on_screen = [bool]$w.OnScreen; $win.cloaked = [bool]$w.Cloaked
         $e = $elevBy[$w.Pid]
         if ($selfElev -ne 1 -and $e -eq 1) { $win.elev = 1 } elseif ($selfElev -ne 1 -and $e -eq -1) { $win.elev = -1 }
@@ -987,6 +1026,63 @@ function Read-LiveWindow($Win, [int]$Max, [int]$TimeoutMs) {
     $Win.total = [int]$r.Total
     if ($r.HasRect) { $Win.hasRect = $true; $Win.L = $r.L; $Win.T = $r.T; $Win.W = $r.W; $Win.H = $r.H }
     foreach ($it in $r.Items) { $Win.items.Add($it) }
+}
+
+# ── 재판독(L10): 보이는 창의 첫 판독이 0·소수 요소면 잠깐 쉬고 한 번 더 — 접근성 트리가 UIA 클라이언트를 본 뒤 늦게 채워지는
+# 경우(문서 미확인 — 추정)에 전경 1회 수집이 늘 R-UIAEMPTY 로 끝나지 않게. 더 많이 읽힌 쪽을 쓴다 ────────────────────────
+$script:RetryBelow = 20
+$script:RetryDelayMs = 1500
+# 개인 계정 제품 창(M10): 'Microsoft Teams (free)'(한국어 '(무료)')는 개인용 Teams 의 제품 이름이다 — 회사 창 제목은
+# '… | Microsoft Teams' 로 끝난다. 창 제목에 계정이 드러나는지는 문서에 없어(실측 확인 항목) 제목 끝 제품 이름만 본다
+$script:PersonalTitleRx = New-Rx 'Microsoft Teams\s*\((?:free|무료)\)\s*$'
+
+function Invoke-Reread($Win, [int]$Max, [int]$TimeoutMs) {
+    if ($Win.live) {
+        Start-Sleep -Milliseconds $script:RetryDelayMs
+        $script:C.retry_reads++
+        $t = New-WinRecord
+        $t.live = $true; $t.hwnd = $Win.hwnd
+        Read-LiveWindow $t $Max $TimeoutMs
+        if (-not $t.hang -and -not $t.error -and $t.items.Count -gt $Win.items.Count) {
+            $Win.items = $t.items; $Win.total = $t.total; $Win.capped = $t.capped
+            if ($t.hasRect) { $Win.hasRect = $true; $Win.L = $t.L; $Win.T = $t.T; $Win.W = $t.W; $Win.H = $t.H }
+            $script:C.retry_gain++
+        }
+        return
+    }
+    if ($Win.retry.Count -eq 0) { return }        # 합성 판독은 회차가 주어졌을 때만(같은 내용을 다시 읽어도 같다)
+    Start-Sleep -Milliseconds $script:RetryDelayMs
+    $script:C.retry_reads++
+    $next = $Win.retry[0]
+    $Win.retry.RemoveAt(0)
+    if ($next.Count -gt $Win.items.Count) {
+        $Win.items = $next; $Win.total = $next.Count; $Win.capped = $false
+        if ($next.Count -gt $Max) { $Win.capped = $true; $Win.items.RemoveRange($Max, $next.Count - $Max) }
+        $script:C.retry_gain++
+    }
+}
+
+function Test-SkipWindow($Win) {
+    # M10 — 읽지 않을 창(제목만 본다, 창 내용은 읽지 않는다): 개인 계정 제품 창
+    if ((Get-Match $script:PersonalTitleRx ([string]$Win.title)).Success) { $script:C.personal_title++; return $true }
+    return $false
+}
+
+function Add-HiddenCause($Win) {
+    # M1 — 가시 아님의 하위 원인(창 하나에 하나: 숨김 → 최소화 → 가려짐 → 화면 밖)
+    if (-not $Win.visible) { $script:C.hidden++ }
+    elseif ($Win.iconic) { $script:C.iconic++ }
+    elseif ($Win.cloaked) { $script:C.cloaked++ }
+    elseif (-not $Win.on_screen) { $script:C.offscreen++ }
+}
+
+function Get-EmptyCause {
+    # 읽은 창 0 일 때 사람에게 가장 쉬운 조치 순: 창이 안 읽힘(보이는데 빔) → 최소화 → 가려짐 → 화면 밖 → 숨김(닫힘)
+    $c = $script:C
+    if ($c.windows -eq 0) { if ($c.personal_title -gt 0) { return 'excluded' } else { return 'no_window' } }
+    if ($c.empty -gt 0) { return 'empty_tree' }
+    foreach ($k in 'iconic', 'cloaked', 'offscreen', 'hidden') { if ($c[$k] -gt 0) { return $k } }
+    return 'other'
 }
 
 # ── 본체 ───────────────────────────────────────────────────────────────────
@@ -1061,15 +1157,22 @@ function Invoke-Main {
     # 창 열거
     if ($RawFile) { $snap = Read-RawFileSnapshot $RawFile } else { $snap = Get-LiveSnapshot }
     $script:C.procs = [int]$snap.procs
+    $script:C.procs_other_session = [int]$snap.other
+    if ($null -ne $snap.byName) {
+        $script:C.procs_new = [int]$snap.byName['ms-teams']; $script:C.procs_classic = [int]$snap.byName['teams']
+        $script:C.procs_other = [int]$snap.byName['msteams']
+    }
     $script:Rooms = [ordered]@{}
     $allRows = New-Object 'System.Collections.Generic.List[object]'
     $budgetMs = [long]$budgetSec * 1000
     $wdMs = $wdSec * 1000
     $readable = 0
+    $readPids = New-Object 'System.Collections.Generic.HashSet[int]'
     foreach ($win in $snap.windows) {
+        if (Test-SkipWindow $win) { continue }
         $script:C.windows++
         $isVis = $win.visible -and -not $win.iconic -and $win.on_screen -and -not $win.cloaked
-        if ($isVis) { $script:C.visible++ }
+        if ($isVis) { $script:C.visible++ } else { Add-HiddenCause $win }
         if ($visibleOnly -and -not $isVis) { continue }
         if ($win.elev -eq 1) { $script:C.elevated++; Add-Reason 'R-UIAELEV'; continue }
         $readable++
@@ -1094,6 +1197,14 @@ function Invoke-Main {
         }
         if ($win.hang -and $budgetCut) { $script:C.budget_hit = 1; Add-Reason 'R-BUDGET'; break }
         if ($win.hang) { $script:C.timeout++; Add-Reason 'R-CAP'; continue }
+        if (-not $win.error -and $win.elev -ne -1 -and $win.items.Count -lt $script:RetryBelow) {
+            $left2 = $budgetMs - $script:Clock.ElapsedMilliseconds
+            if ($budgetMs -le 0 -or $left2 -gt ($script:RetryDelayMs + 2000)) {
+                $to2 = $wdMs
+                if ($budgetMs -gt 0 -and ($left2 - $script:RetryDelayMs) -lt $wdMs) { $to2 = [int][Math]::Max(1000, [double]($left2 - $script:RetryDelayMs)) }
+                Invoke-Reread $win $maxEl $to2
+            }
+        }
         if ($win.error -or $win.items.Count -eq 0) {
             if ($win.elev -eq -1) { $script:C.elevated++; Add-Reason 'R-UIAELEV'; continue }
             if ($win.error) { $script:C.errors++; continue }
@@ -1101,6 +1212,7 @@ function Invoke-Main {
         }
         if ($win.capped) { $script:C.capped++; Add-Reason 'R-CAP' }
         $script:C.read++
+        if ($win.pid -gt 0) { [void]$readPids.Add([int]$win.pid) }
         $script:C.elements += $win.items.Count
         $room = Get-RoomFromTitle $win.title
         $win.roomName = $room.name
@@ -1188,14 +1300,22 @@ function Invoke-Main {
     if ($null -ne $last) { $script:NewCursor = $last.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", $script:Inv) }
 
     # rc(계약 §8.1) — 막힌 사유가 있으면 rc 3, exit 0 고정 금지
+    $script:C.pids = $readPids.Count
+    if ($script:C.read -gt 1) { $script:C.secondary = $script:C.read - 1 }      # 주 창 밖에서 읽은 창(팝아웃·다른 계정 창 후보)
     if ($script:C.rows -gt 0 -and $script:SelfGiven -eq 0) { Add-Reason 'R-NOADDR' }
-    if ($script:C.procs -le 0 -and $script:C.windows -eq 0) { $script:Rc = 1; return }
-    if ($script:C.windows -eq 0) { Add-Reason 'R-UIAEMPTY'; $script:Rc = 3; return }
+    if ($script:C.procs -le 0 -and $script:C.windows -eq 0 -and $script:C.personal_title -eq 0) {
+        $script:Rc = 1; return
+    }
+    if ($script:C.windows -eq 0) {
+        if ($script:C.personal_title -eq 0) { $script:C.no_window = 1 }
+        Add-Reason 'R-UIAEMPTY'; $script:C.empty_cause = (Get-EmptyCause); $script:Rc = 3; return
+    }
     if ($script:C.read -eq 0) {
         if ($readable -eq 0 -and $script:C.elevated -eq 0) { Add-Reason 'R-UIAEMPTY' }
         elseif ($script:C.empty -gt 0) { Add-Reason 'R-UIAEMPTY' }
         if ($script:C.errors -gt 0 -or $script:C.timeout -gt 0) { Add-Reason 'R-TRANSPORT' }
         if ($script:Reasons.Count -eq 0) { Add-Reason 'R-UIAEMPTY' }
+        if ($script:Reasons.Contains('R-UIAEMPTY')) { $script:C.empty_cause = (Get-EmptyCause) }
         $script:Rc = 3
         return
     }

@@ -9,7 +9,7 @@ r"""스텁 전송(B §11.4) — 브라우저 층 없이 L2·L3 를 돌리는 ``S
          "rows": [ … ], "more": false}
 
     ``mode`` 는 그 단계의 질의 순번별 모드 목록(마지막 것이 반복). 모드: ``ok`` ``partial:<비율>`` ``truncate:<비율>``
-    ``echo`` ``stale`` ``empty`` ``format`` ``refusal`` ``unavailable`` ``nolic`` ``service_error`` ``forbidden_time``
+    ``echo`` ``stale`` ``empty`` ``format`` ``refusal`` ``unavailable`` ``nolic`` ``workiq_off`` ``service_error`` ``forbidden_time``
     ``unknown_code`` ``pii_in_answer``. 답에는 rid 와 항목 번호가 자동으로 채워진다. 조회 단계(``[항목]`` 줄이 없는
     프롬프트)는 ``rows`` 를 행으로 돌려준다.
   · 받은 프롬프트는 메모리(``sent_texts``)에만 둔다 — 카나리아 검사용, 디스크에 쓰지 않는다.
@@ -28,7 +28,7 @@ from lm27.bridge.transport import RID_RX, SendRequest, SendResult, norm, pledge_
 
 ENV_VAR = "LM_COPILOT_STUB"
 MODES = ("ok", "partial", "truncate", "echo", "stale", "empty", "format", "refusal", "unavailable", "nolic",
-         "service_error", "forbidden_time", "unknown_code", "pii_in_answer")
+         "workiq_off", "service_error", "forbidden_time", "unknown_code", "pii_in_answer")
 _STAGE_RX = re.compile(r"^[a-z][a-z0-9_]{0,47}$")
 _ITEM_HEAD_RX = re.compile(r"^\s*\[항목\]")
 _ITEM_LINE_RX = re.compile(r"^\s*(\d{1,4})\s*\|")
@@ -39,6 +39,7 @@ _RID_ALPHA = "23456789ABCDEFGHJKMNPQRSTVWXYZ"
 REFUSAL_TEXT = "죄송합니다. 이 요청은 도와드릴 수 없습니다."
 UNAVAILABLE_TEXT = "조회 도구가 없어 요청하신 기간의 내용을 찾을 수 없습니다."
 NOLIC_TEXT = "업무 데이터에 액세스할 수 없습니다. 이 계정에서는 메일과 채팅을 근거로 쓸 수 없습니다."
+WORKIQ_OFF_TEXT = "To answer from your emails and chats, turn on Work IQ at the top of the chat."
 SERVICE_ERROR_TEXT = "죄송합니다. 지금은 응답할 수 없습니다. 잠시 후 다시 시도해 주세요."
 FORMAT_TEXT = "요청하신 항목을 검토했습니다. 대부분 업무 관련 내용으로 보입니다."
 UNKNOWN_CODE = "X_UNKNOWN_CODE"
@@ -126,6 +127,8 @@ def build_reply(mode: str, rid: str, ids: list[int], answers: dict | None = None
         return "stub", UNAVAILABLE_TEXT
     if name == "nolic":
         return "stub", NOLIC_TEXT
+    if name == "workiq_off":
+        return "stub", WORKIQ_OFF_TEXT
     if name == "service_error":
         return "stub", SERVICE_ERROR_TEXT
     first = dict(items[0]) if items else {"id": ids[0] if ids else 1}

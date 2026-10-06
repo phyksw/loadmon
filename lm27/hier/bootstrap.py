@@ -9,11 +9,17 @@ r"""레지스트리가 빈 초기 — 코드네임 후보 검토 · 코파일럿
   **과제 이름이 될 수 없는 것**(W2 검토 C06·C15 · 개발 PC 실측 N2)도 후보 재료에서 먼저 뺀다: 정제 토큰(`[사람#…]`·`[고객사:…]`
   ·`[과제:…]` 등 계약 §4.6 — 그 안의 조각 'a1b'·'C01' 이 이름이 되지 않게) · 판·차수·기간 표기(v2·rev3·w2·q3·2026·20260930·
   1차) · 낱말 + 연도·날짜 꼬리(signals_2026) · 기술 표기(utf8·x64·sha256) · 파일 확장자 조각(py·json·xlsx) · 두 글자 이하
-  영문 · 앱 범주 이름(CAD·해석 …) · 프로그래밍 동사·범용 낱말(`common_words.txt` 의 개발 절 — get·load·judge·refine …) ·
+  영문 · 앱 범주 이름(CAD·해석 …) · 업무 일반어·프로그래밍 동사·인사·요청 상투어·편집기 고유 탭 낱말(`common_words.txt`
+  — 단일원, 한국어·영어)과 그 꼴바뀜(일반어 + 번호 'untitled-1'·'system32' · 한국어 일반어 + 조사·높임 꼬리 '자료를'·
+  '팀장님') · 한국어 서술어 어미('공유드립니다'·'확인했습니다'·'가능하실까요'·'가능하세요' — `_KO_PRED_RX`) ·
   **프로그램·자료 파일 이름 안에서만 나온 조각**(get_signals.py 의 signals — 다른 출처에 한 번도 안 나온 것).
-  창 제목은 ' - ' 마디로 읽는다: 앱 이름 마디는 버리고, 확장자가 있는 마디는 파일 이름, 개발 도구(카탈로그 범주 SW) 창의
-  나머지 마디는 **작업 폴더(저장소·프로젝트 폴더) 이름** — 마디 통째가 후보 하나다(`Cand.folder`). 표기는 가장 많이 나온
-  꼴(동률은 사전순 — 해시 씨앗과 무관하게 결정적).
+  창 제목은 ' - ' 마디로 읽는다: 앱 이름 마디는 버리고, 확장자가 있는 마디는 파일 이름이다. **작업 폴더(저장소·프로젝트
+  폴더) 이름**은 개발 편집기(카탈로그 범주 SW · 창 분류 ide — 터미널·Docker·가상 머신 제외) 창에서 자리로 정한다: 파일 마디
+  바로 뒤(VS Code '<파일> - <폴더> - <프로필> - 앱'), 없으면 바로 앞(JetBrains '<프로젝트> – <파일>'), 파일 마디가 없으면
+  둘째 마디('<탭> - <폴더>'), 마디가 하나뿐이면 그 마디 — 마디 통째가 후보 하나다(`Cand.folder`). 다만 VS Code 의 홀로 남은
+  마디는 작업 폴더가 없는 창의 탭 이름일 수 있어(제목 없는 탭은 첫 줄 내용이 이름) 같은 이름이 다른 창 제목에서 폴더로
+  나왔을 때만 폴더로 센다. 범용 낱말뿐인 마디('Untitled-1'·'Welcome'·'Extension: Python'·'Windows PowerShell')는 폴더가
+  아니다. 폴더 뒤 마디(프로필 이름)는 버린다. 표기는 가장 많이 나온 꼴(동률은 사전순 — 해시 씨앗과 무관하게 결정적).
 - `copilot_allowed(reg, cfg)` — `hier.copilot.requireCodenameReview` 이면 레지스트리에 비예약 과제가 하나도 없고 검토를 마치거나
   건너뛰지 않은 동안 코파일럿 분류를 열지 않는다(H §3.5 · T-H05 — 분석은 막지 않고 안내 한 줄).
 - `needs_bootstrap(reg, labels, last_run, cfg)` — 1회차 자동 조건(H §8.2): 비예약 active 과제 0 · 명명 군집 ≥ `minGroups` ·
@@ -63,6 +69,20 @@ _JUNK_SURF = re.compile(r"^(?:(?:v|ver|rev|r)[._]?\d{1,3}[a-z]?|[a-z]\d{1,2}"
 _JUNK_KEY = re.compile(r"^(?:(?:19|20)\d{2}(?:[01]\d(?:[0-3]\d)?)?|\d{6,8}|\d+[a-z가-힣]{0,2}|[qh][1-4]|(?:fy|cy)\d{2,4}"
                        r"|[a-z가-힣]+(?:19|20)\d{2}(?:[01]\d(?:[0-3]\d)?)?)$")
 _SHORT_ASCII = re.compile(r"[a-z]{1,2}")
+# 한국어 서술어 어미 — 인사·요청·응답 상투어('공유드립니다'·'확인했습니다'·'가능하실까요'·'가능하세요'·'부탁드려요')는 낱말이
+# 아니라 문장이다(N2 남은 것). 명사로 끝나는 과제 이름과 겹치지 않는 꼴만 둔다('드림'·'함'·'됨' 처럼 명사와 겹치는 꼬리는 뺀다).
+_KO_PRED_RX = re.compile(r"[가-힣](?:니다|니까|까요|세요|나요|가요|네요|군요|어요|아요|해요|에요|예요|려요|워요|져요|줘요|봐요"
+                         r"|와요|래요|돼요|되요|서요|지요|죠|십시오|하고|하며|하여|해서|했고|했다|한다|된다|됐다)$")
+# 업무 일반어 + 번호(untitled-1 · system32 · sheet1 · 문서1 — ukey 는 구분자를 지운다)
+_NUM_TAIL_RX = re.compile(r"([a-z가-힣]{2,})\d{1,4}")
+# 한국어 업무 일반어 + 조사·높임·묶음 꼬리('자료를'·'팀장님'·'공유건'·'검토용') — 머리가 일반어일 때만 일반어다(긴 꼬리 먼저)
+_KO_TAILS = ("에서", "에게", "께서", "으로", "까지", "부터", "보다", "처럼", "마다", "이나", "이랑", "관련", "은", "는", "이", "가",
+             "을", "를", "의", "에", "께", "로", "와", "과", "만", "나", "랑", "님", "들", "중", "건", "용", "별")
+_HANGUL_END = re.compile(r"[가-힣]$")
+# 창 제목 마디를 그 자체로(파일 이름 없이) 내는 개발 도구 — VS Code 의 창 제목은 `${activeEditorShort} - ${rootName} -
+# ${profileName} - ${appName}` 순이고 작업 폴더가 없으면 탭 이름 하나만 남는다(제목 없는 탭은 첫 줄 내용이 탭 이름 —
+# workbench.editor.untitled.labelFormat 기본 content). 그래서 이 앱의 '홀로 남은 마디'는 작업 폴더라고 단정하지 않는다.
+_BARE_TAB_APPS = frozenset({"vscode"})
 # 파일 확장자(조각이 이름이 되지 않게) · 그중 프로그램·자료 파일(이름 조각은 모듈·함수 이름이지 과제가 아니다 — N2)
 CODE_EXTS = frozenset((
     "py pyw pyi ipynb js mjs cjs ts tsx jsx json jsonl ndjson yaml yml toml ini cfg conf env xml html htm css scss less "
@@ -145,10 +165,67 @@ def _tokens(s: str) -> set[str]:
     return set(CODE_RX.findall(s)) | _match.match_tokens(s)
 
 
+@lru_cache(maxsize=256)
+def _ide_app(app: str) -> bool:
+    """개발 편집기(카탈로그 창 분류 ide)인가 — 터미널·Docker·가상 머신(같은 SW 범주, 창 분류 other·remote)은 아니다.
+    사내 도구(`x.<slug>` — 로컬 카탈로그 SW 범주)는 범주 기본 창 분류(ide)로 본다."""
+    if app.startswith("x."):
+        return True
+    from lm27 import catalog                        # 지연 import
+    return catalog.app_class_of(app) == "ide"
+
+
+def _generic(t: str, k: str, common: frozenset[str]) -> bool:
+    """업무 일반어(`common_words.txt` — 단일원)와 그 꼴바뀜인가: 일반어 그대로 · 일반어 + 번호(untitled-1·system32·문서1) ·
+    한국어 일반어 + 조사·높임·묶음 꼬리(자료를·팀장님·공유건·검토용)."""
+    if t.lower() in common or k in common:
+        return True
+    m = _NUM_TAIL_RX.fullmatch(k)
+    if m and m.group(1) in common:
+        return True
+    if _HANGUL_END.search(k):
+        for tail in _KO_TAILS:
+            if len(k) > len(tail) and k.endswith(tail) and k[:-len(tail)] in common:
+                return True
+    return False
+
+
+def _generic_seg(seg: str, apps: frozenset[str]) -> bool:
+    """창 제목 마디가 범용 낱말뿐인가 — 편집기 고유 탭('Untitled-1'·'Welcome'·'Settings'·'Extension: Python'·'Keyboard
+    Shortcuts'·'Release Notes: 1.95'·'제목 없음-1')·터미널 제목('Windows PowerShell'·'관리자: …')은 작업 폴더가 아니다(N2)."""
+    common = _match.common_words()
+    for w in _match.SPLIT_RX.split(unicodedata.normalize("NFKC", seg).lower()):
+        if not w:
+            continue
+        k = ukey(w)
+        if not (_junk(w, k) or _generic(w, k, common) or k in apps or w in _APP_WORDS):
+            return False
+    return True
+
+
+def _folder_at(segs: list[str], files: list[int], app: str) -> tuple[int | None, bool]:
+    """개발 편집기 창 제목 마디(앱 이름 마디를 뺀 것)에서 작업 폴더 마디의 자리와 '약함'(다른 근거로 확인돼야 폴더) 여부.
+    - 파일 마디가 있으면 그 바로 뒤 마디(VS Code '<파일> - <폴더> - <프로필>'), 없으면 바로 앞 마디(JetBrains '<프로젝트> – <파일>').
+    - 파일 마디가 없고 마디가 둘 이상이면 둘째 마디(VS Code '<탭> - <폴더>' — 첫째는 파일이 아닌 탭).
+    - 마디가 하나뿐이면 그 마디 — 다만 VS Code 처럼 탭 이름만 남을 수 있는 앱(`_BARE_TAB_APPS`)이면 약함."""
+    if files:
+        fi = files[0]
+        for j in (fi + 1, fi - 1):
+            if 0 <= j < len(segs) and j not in files:
+                return j, False
+        return None, False
+    if len(segs) >= 2:
+        return 1, False
+    if len(segs) == 1:
+        return 0, app in _BARE_TAB_APPS
+    return None, False
+
+
 def name_parts(f, apps: frozenset[str] | None = None) -> tuple[tuple[str, str, bool], ...]:
-    """특징 하나 → 후보 재료 [(표기, 역할, 파일 이름 접두)]. 역할: folder(개발 도구 창 제목의 작업 폴더 마디 — 통째) ·
-    doc(문서 파일 이름 조각) · code(프로그램·자료 파일 이름 조각) · text(제목·본문·커밋 메시지 등 사람이 쓴 글).
-    정제 토큰은 먼저 지운다(C15)."""
+    """특징 하나 → 후보 재료 [(표기, 역할, 파일 이름 접두)]. 역할: folder(개발 편집기 창 제목의 작업 폴더 마디 — 통째) ·
+    folder1(작업 폴더일 수도 있는 홀로 남은 마디 — 같은 이름이 다른 창 제목에서 folder 로 나왔을 때만 폴더로 센다, 아니면
+    통째로는 후보가 아니다) · doc(문서 파일 이름 조각) · code(프로그램·자료 파일 이름 조각) · text(제목·본문·커밋 메시지 등
+    사람이 쓴 글). 정제 토큰은 먼저 지운다(C15)."""
     apps = _app_names() if apps is None else apps
     raw = strip_san_tokens(getattr(f, "text", "") or "")
     if not raw.strip():
@@ -172,19 +249,25 @@ def name_parts(f, apps: frozenset[str] | None = None) -> tuple[tuple[str, str, b
             add_name(nm, ext if ext in FILE_EXTS else "")
         return tuple(out)
     if kind == "win":
-        sw = getattr(f, "app_cat", "") == "SW"
+        app = str(getattr(f, "app", "") or "")
+        ide = getattr(f, "app_cat", "") == "SW" and _ide_app(app)          # 터미널·Docker·가상 머신 창은 폴더를 보지 않는다
         segs = [_seg_clean(s) for s in _SEG_RX.split(raw)]
         segs = [s for s in segs if s and not _is_app_seg(s, apps)]
-        plain = [s for s in segs if not _name_ext(s)]
-        for s in segs:
-            if _name_ext(s):
-                add_name(s)
-        lead = segs[0] if (len(plain) >= 2 and segs and segs[0] == plain[0]) else None   # 'Welcome - 폴더 - 앱' 의 탭 이름
-        for s in plain:
-            if sw and s is not lead and 2 <= len(s) <= 40 and not s.replace(" ", "").isdigit():
-                out.append((s, "folder", False))
-            else:
-                out.extend((t, "text", False) for t in sorted(_tokens(s)))
+        files = [i for i, s in enumerate(segs) if _name_ext(s)]
+        for i in files:
+            add_name(segs[i])
+        at, weak = _folder_at(segs, files, app) if ide else (None, False)
+        tail = at + 1 if at is not None and (not files or at > files[0]) else len(segs)
+        for i, s in enumerate(segs):
+            if i in files or i >= tail:                                     # 폴더 뒤 마디 = VS Code 프로필 이름
+                continue
+            if i == at and 2 <= len(s) <= 40 and not s.replace(" ", "").isdigit():
+                if _generic_seg(s, apps):
+                    continue                                                # 편집기 고유 탭·범용 낱말뿐(N2)
+                out.append((s, "folder1" if weak else "folder", False))
+                if not weak:
+                    continue
+            out.extend((t, "text", False) for t in sorted(_tokens(s)))
         return tuple(out)
     rest = raw
     for nm in names:
@@ -195,10 +278,12 @@ def name_parts(f, apps: frozenset[str] | None = None) -> tuple[tuple[str, str, b
 
 
 def _junk(t: str, k: str) -> bool:
-    """과제 이름이 될 수 없는 낱말(C06 · N2): 판·차수·기간·연도·날짜 꼬리·기술 표기·확장자·짧은 영문·토큰 조각."""
+    """과제 이름이 될 수 없는 낱말(C06 · N2): 판·차수·기간·연도·날짜 꼬리·기술 표기·확장자·짧은 영문·토큰 조각 ·
+    한국어 서술어(인사·요청 상투어 — '공유드립니다'·'가능하실까요')."""
     low = t.lower()
     return (len(k) < 2 or k.isdigit() or bool(_JUNK_SURF.match(low)) or bool(_JUNK_KEY.match(k))
-            or bool(_SHORT_ASCII.fullmatch(k)) or k in FILE_EXTS or "#" in t or "@" in t)
+            or bool(_SHORT_ASCII.fullmatch(k)) or k in FILE_EXTS or "#" in t or "@" in t
+            or bool(_KO_PRED_RX.search(k)))
 
 
 def _candidates(feats: Iterable, reg, cfg, feat_groups: Mapping | None, parts: dict | None) -> tuple[list, dict]:
@@ -265,9 +350,9 @@ def _candidates(feats: Iterable, reg, cfg, feat_groups: Mapping | None, parts: d
         s = stats[k]
         t = min(s["forms"].items(), key=lambda kv: (-kv[1], kv[0]))[0]    # 가장 많이 나온 꼴(동률 사전순)
         s["tok"] = t
-        if _junk(t, k) or s["roles"] <= {"code"}:                       # 프로그램·자료 파일 이름 조각뿐(N2)
+        if _junk(t, k) or s["roles"] <= {"code", "folder1"}:             # 파일 이름 조각뿐 · 확인 안 된 홀로 남은 마디뿐(N2)
             continue
-        if t.lower() in excl or k in excl or t.lower() in common or k in common or k in apps or k in exts:
+        if t.lower() in excl or k in excl or _generic(t, k, common) or k in apps or k in exts:
             continue
         if k in reg.alias_ix or _hash8(t) in ignored:
             continue
@@ -295,7 +380,7 @@ RULE_AUTO_MAX = 8                 # 규칙 제안 과제 상한(LM24 규칙 대�
 RULE_AUTO_MIN_GROUPS = 2          # 그 이름이 든 미분류 단위업무가 이만큼은 돼야 과제로 세운다(LM24 — 근거 2개 이상)
 
 
-def _feat_units(gl: list, units: Mapping, feats: list) -> dict[str, set]:
+def _feat_units(gl: list, units: Mapping, feats: list) -> dict[str, frozenset]:
     """원 특징 id → 그 특징이 든 단위업무 id 들(군집 구성원). 단위업무 증거 모음의 합집합 특징('fam:<문서군>'·
     'app:<업무>:<앱>')은 원 특징으로 풀어 센다 — 문서군은 같은 문서군 키를 가진 특징, 앱은 그 업무 구간에 겹친 같은 앱 창 특징."""
     from bisect import bisect_left
@@ -308,7 +393,11 @@ def _feat_units(gl: list, units: Mapping, feats: list) -> dict[str, set]:
         if f.kind == "win" and f.app:
             by_app[f.app].append(f)
     app_t = {a: [x.t for x in fs] for a, fs in by_app.items()}       # feats 는 (t, id) 순
-    out: dict[str, set] = defaultdict(set)
+    # 메모리(O-18②): 특징마다 단위업무 집합을 바로 쌓으면 (특징 × 단위업무) 쌍이 기간의 제곱으로 늘어난다(문서군 하나가 그
+    # 문서군을 가진 단위업무마다 수천 특징으로 풀린다 — 3개월 280만 쌍). 직접 든 것은 목록으로, 문서군은 문서군 키 → 단위업무로
+    # 모은 뒤 특징마다 합쳐 만들고, 같은 집합은 한 객체를 나눠 쓴다(3개월 3.5만 특징의 집합이 2.5천 가지). 내용은 예전과 같다.
+    direct: dict[str, list] = defaultdict(list)
+    fam_u: dict[str, list] = defaultdict(list)
     for g in gl:
         for m in g.members:
             u = units.get(m)
@@ -317,10 +406,10 @@ def _feat_units(gl: list, units: Mapping, feats: list) -> dict[str, set]:
             for f, _w, _r in get(u, "ev", ()) or ():
                 fid = f.id
                 if fid in ids:
-                    out[fid].add(m)
+                    direct[fid].append(m)
                 elif fid.startswith("fam:"):
-                    for x in by_fam.get(fid[4:], ()):
-                        out[x.id].add(m)
+                    if fid[4:] in by_fam:
+                        fam_u[fid[4:]].append(m)
                 elif fid.startswith("app:") and f.app in by_app:
                     s = int(get(u, "start", 0) or 0)
                     e = int(get(u, "end", 0) or 0) or s + 86400
@@ -329,7 +418,17 @@ def _feat_units(gl: list, units: Mapping, feats: list) -> dict[str, set]:
                     lst, ts = by_app[f.app], app_t[f.app]
                     for x in lst[bisect_left(ts, s - 3600):bisect_left(ts, e)]:
                         if x.t < e and (x.t_end or x.t + 60) > s:
-                            out[x.id].add(m)
+                            direct[x.id].append(m)
+    fam_sets = {fk: frozenset(us) for fk, us in fam_u.items()}
+    fams_of: dict[str, set] = defaultdict(set)
+    for f in feats:
+        fams_of[f.id].update(fk for fk in f.fams if fk in fam_sets)
+    out: dict[str, frozenset] = {}
+    canon: dict[frozenset, frozenset] = {}
+    for fid in dict.fromkeys(f.id for f in feats):
+        us = frozenset(direct.get(fid, ())).union(*(fam_sets[fk] for fk in fams_of.get(fid, ())))
+        if us:
+            out[fid] = canon.setdefault(us, us)
     return out
 
 
@@ -374,14 +473,20 @@ def rule_auto_projects(labels: Mapping, groups: Iterable, units: Mapping, feats:
     order = sorted(cands, key=lambda c: (-c.auto_score(), -c.n_groups, c.token))
     rank = {ukey(c.token): i for i, c in enumerate(order)}
     unit_cnt: dict[str, Counter] = defaultdict(Counter)
+    by_us: dict[frozenset, Counter] = {}            # 같은 단위업무 집합(나눠 쓰는 객체)끼리 이름 수를 먼저 모은다(같은 합 — O-18②)
     for f in feats:
         us = fu.get(f.id)
         if not us:
             continue
         ks = {ukey(t) for t, _r, _p in parts.get(f.id) or ()} & rank.keys()
         if ks:
-            for uid in us:
-                unit_cnt[uid].update(ks)
+            agg = by_us.get(us)
+            if agg is None:
+                agg = by_us[us] = Counter()
+            agg.update(ks)
+    for us, agg in by_us.items():
+        for uid in us:
+            unit_cnt[uid].update(agg)
     # 군집마다 그 군집 증거에서 가장 많이 나온 이름(동률은 순위) — 군집이 한 번 스친 이름이 아니라 그 군집의 이름(C06)
     dom_name: dict[str, str] = {}
     support: Counter = Counter()

@@ -46,6 +46,63 @@ def _d(s) -> date | None:
         return None
 
 
+class ChatAccess:
+    """Copilot 채팅 접근(M5) — ``bridge_profile.chat_access`` = ``{state, checks[{date, result}], until}``. 관리자가 Copilot Chat
+    을 막으면 같은 주소에 입력창 없는 안내 화면이 나온다(문서: 'shown an in-product message explaining that access is disabled
+    by organizational policy'). Copilot 주소·로드 끝인데 입력창이 없는(input_not_found) 날이 서로 다른
+    ``collect.confirmBlockedCount`` 날 쌓이면 ``unavailable``(``collect.confirmTtlDays`` 동안 분석은 세션을 열지 않고 AI 단계
+    skipped(chat_unavailable)), 입력창을 한 번이라도 보면 ok 로 되돌린다. 조회 능력(``Capabilities``)과 따로 둔다 — 계정 등급
+    판별에 섞이지 않게. 연결 진단(probe)은 이 상태와 무관하게 늘 다시 본다."""
+
+    KEY = "chat_access"
+
+    def __init__(self, profile, cfg, clock):
+        self.profile = profile
+        self.cfg = cfg
+        self.clock = clock
+
+    def _load(self) -> dict:
+        d = (self.profile.load().get(self.KEY) if self.profile is not None else None) or {}
+        st = d.get("state") if d.get("state") in ("ok", "suspect", "unavailable") else "unknown"
+        checks = [x for x in d.get("checks") or [] if isinstance(x, dict) and _d(x.get("date"))]
+        return {"state": st, "checks": checks[-CHECKS_MAX:], "until": d.get("until")}
+
+    def _save(self, c: dict) -> None:
+        if self.profile is None:
+            return
+
+        def put(d):
+            d[self.KEY] = c
+        self.profile.update(put)
+
+    def state(self) -> str:
+        c = self._load()
+        if c["state"] == "unavailable":
+            until = _d(c.get("until"))
+            if until is not None and _d(today(self.clock)) > until:
+                return "unknown"                                    # TTL 지남 — 다시 확인
+        return c["state"]
+
+    def observe_ok(self) -> None:
+        c = self._load()
+        if c["state"] == "ok" and not c["checks"]:
+            return
+        self._save({"state": "ok", "checks": [], "until": None})
+
+    def observe_blocked(self) -> bool:
+        """입력창 없는 Copilot 화면 관찰(그 날 한 번). 반환: 이번 관찰로 unavailable 이 되었는가."""
+        c = self._load()
+        d = today(self.clock)
+        checks = c["checks"] + ([] if any(x.get("date") == d for x in c["checks"]) else [{"date": d, "result": "no_input"}])
+        days = {x.get("date") for x in checks}
+        if len(days) >= int(self.cfg.confirm_count):
+            until = (_d(d) + timedelta(days=int(self.cfg.confirm_ttl_days))).isoformat()
+            self._save({"state": "unavailable", "checks": checks[-CHECKS_MAX:], "until": until})
+            return c["state"] != "unavailable"
+        self._save({"state": "suspect", "checks": checks[-CHECKS_MAX:], "until": None})
+        return False
+
+
 class Capabilities:
     """``bridge_profile.json`` 의 조회 능력. ``profile`` = ``session.BridgeProfile``(None 이면 메모리에만)."""
 

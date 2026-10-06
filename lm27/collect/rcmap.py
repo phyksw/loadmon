@@ -68,7 +68,9 @@ REASONS = {
     "R-NOCONN": (STRUCTURAL, True),
     "R-TZ": (WARNING, False),
     "R-OFFICE": (WARNING, False),
-    "R-UIAEMPTY": (STRUCTURAL, True),
+    # 사람·확정 ✘(M365 조사 M1): Teams 의 문서상 기본은 '기기 시작 시 백그라운드 실행, 닫아도 백그라운드에서 계속 실행'(보이는
+    # 창 없음) — 창을 열어 두면 풀리는 사용자 상태이지 PC 능력이 아니다. 계획 건너뜀(_blocking 은 사람도 셈)·셀 blocked 는 그대로.
+    "R-UIAEMPTY": (HUMAN, False),
     "R-UIAELEV": (STRUCTURAL, True),
     "R-NOADDR": (QUALITY, False),
     "R-NOEVT": (STRUCTURAL, True),

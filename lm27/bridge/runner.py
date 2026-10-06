@@ -44,6 +44,9 @@ MANUAL_RESEND = ("echo", "format", "empty", "service_error")
 ITEM_BY = ("ai", "manual", "rule")
 _BR_STOP = {"budget": "BR-BUDGET", "circuit": "BR-CIRCUIT", "gate": "BR-GATE-BLOCKED", "header": "BR-HEADER",
             "manual_wait": "BR-MANUAL-SWITCH"}
+# 건너뜀 사유 → 결과 봉투 hint 의 문구 코드(로그인 보류는 _login_hold_code)
+_SKIP_BR = {"personal_account": "BR-LOGIN-PERSONAL", "account_unknown": "BR-ACCOUNT-UNKNOWN",
+            "chat_unavailable": "BR-CHAT-BLOCKED", "web_exposed": "BR-WEB-BLOCK", "mode_web": "BR-WEB-MODE"}
 
 
 class StageConfigError(Exception):
@@ -103,6 +106,9 @@ class Runtime:
     write_files: bool = True
     seq: int = 0
     heartbeat: bool = False
+    blocked: str = ""            # 이 호출의 모든 AI 단계를 건너뛸 사유(세션을 열지 않음 — chat_unavailable, M5)
+    login_stop: bool = False     # 단계 중 로그인 보류가 정해짐 — 남은 단계도 skipped(login_pending)(O-18 ⑤)
+    prev_session: object = None  # 수동 전환 전 세션(정책 차단 진단 — probe 가 Edge·정책 상태를 읽는다, M4)
 
     def notify(self, code: str, **kw) -> None:
         if self.notices is not None:
@@ -475,6 +481,9 @@ def switch_to_manual(rt: Runtime, phase: str) -> bool:
         return False
     from lm27.bridge.env import manual_env
     from lm27.bridge.manual import ManualTransport
+    sess = getattr(rt.transport, "s", None)
+    if sess is not None:
+        rt.prev_session = sess                             # 닫아도 edge·info·state·error 는 남는다(probe 진단, M4)
     try:
         if rt.transport is not None:
             rt.transport.close()
@@ -484,7 +493,8 @@ def switch_to_manual(rt: Runtime, phase: str) -> bool:
     rt.transport.open()
     rt.env = manual_env(rt.clock)
     rt.manual_switched = True
-    rt.notify(PHASE_BR.get(phase, "BR-EDGE"))
+    why = str((getattr(sess, "error", None) or {}).get("why") or "") if sess is not None else ""
+    rt.notify("BR-POLICY-UDD" if why == "user_data_dir_forced" else PHASE_BR.get(phase, "BR-EDGE"))
     return True
 
 
@@ -494,6 +504,29 @@ def handle_fatal(run, ar) -> None:
         run.fatal_strikes = 0
         run.sgate_prev = run.sgate                         # 건수는 새 게이트가 이어받는다(carry)
         run.sgate = None                                   # 수동 경로 = 웹 노출(엄격 규칙) — 게이트를 다시 연다
+        return
+    if phase == "account_unconfirmed":
+        # 전송 직전 계정 관문(H4) — 세션이 늦게 준비되어 그때 판별한 계정이 회사 계정이 아니다. 이 단계와 남은 단계는 보내지 않는다
+        s = getattr(rt.transport, "s", None)
+        if getattr(s, "env", None) is not None:
+            rt.env = s.env
+        reason = send_block(rt) or "account_unknown"
+        if run.stats["commits"]:
+            run.stop("refused", resumable=True, reason=reason)
+        else:
+            run.skipped = reason
+        run.hint = render(_SKIP_BR.get(reason, "BR-ACCOUNT-UNKNOWN"))["title"]
+        return
+    if phase == "login_required" and login_pending(rt):
+        # 세션의 로그인 대기가 로그인 없이 끝나 보류가 남았다 — 실패(2-strike 치명)가 아니라 로그인 보류: 이 단계는 남은 것을
+        # 규칙 분류로 두고 멈추고(이번에 AI 답이 하나도 없으면 skipped), 남은 단계도 skipped(login_pending)(O-18 ⑤ · V18)
+        rt.login_stop = True
+        code = _notify_login_hold(rt)
+        if run.stats["commits"]:
+            run.stop("login", resumable=True, reason="login_pending")
+        else:
+            run.skipped = "login_pending"
+        run.hint = render(code)["title"]
         return
     run.fatal_strikes += 1
     if run.fatal_strikes >= FATAL_STRIKES:
@@ -563,6 +596,21 @@ def after_ask(run, items, depth: int, ar, *, pinned: Pinned | None = None, resen
         handle_fatal(run, ar)
         return newly
     if ar.status == "refusal":
+        if spec.kind == "lookup" and ar.reason == "unavailable" and ar.lic == "workiq_off":
+            # 답이 'Work IQ 를 켜라'는 것 — 업무 모드가 꺼진 것이지 계정 등급(R-NOLIC)이 아니다. 능력 기록 없이 이 조회를
+            # 멈추고 남은 조회는 skipped(mode_web)(H13)
+            if rt.env is not None:
+                rt.env.work_mode, rt.env.web_exposed = "web", True
+                if "workiq_off" not in rt.env.evidence:
+                    rt.env.evidence.append("workiq_off")
+            rt.notify("BR-WEB-MODE")
+            _requeue_front(run, unresolved)
+            if run.stats["commits"]:
+                run.stop("refused", resumable=True, reason="mode_web")
+            else:
+                run.skipped = "mode_web"                     # 아무것도 얻지 못함 — 업무 모드가 아니어서 생략한 조회와 같다
+                run.hint = render("BR-WEB-MODE")["title"]
+            return newly
         if spec.kind == "lookup" and ar.reason == "unavailable":
             reason = "R-NOLIC" if ar.lic == "nolic" else "R-NOCONN"
             if rt.caps is not None:
@@ -782,24 +830,67 @@ def _calib_for(rt: Runtime, spec):
 
 
 def login_pending(rt: Runtime) -> bool:
-    """로그인 보류(계약 v1.3 §0.8 V18): 이 실행의 세션이 '보류 중 짧은 확인'(``login_check == "pending"`` — 지난 로그인
-    대기가 로그인 없이 끝남)에서 로그인 화면을 봤다. 그러면 AI 단계는 2-strike 치명 대신 바로 skipped(login_pending)."""
+    """로그인 보류(계약 v1.3 §0.8 V18 · O-18 ⑤): 이 실행의 세션의 마지막 로그인 대기가 로그인 없이 끝나 보류가 남았다 —
+    '보류 중 짧은 확인'이든 이번에 ``bridge.loginWaitMin`` 을 다 기다렸든(바깥 마감에 잘린 대기는 아님). 그러면 AI 단계는
+    2-strike 치명(실패) 대신 바로 skipped(login_pending) — 분석은 'PC 자료로'. 세션이 ``login_held`` 를 모르면(시험 대역)
+    예전 판정(보류 중 짧은 확인에서 로그인 화면)."""
     s = getattr(rt.transport, "s", None)
-    if s is None or getattr(s, "login_check", "") != "pending":
+    if s is None:
+        return False
+    held = getattr(s, "login_held", None)
+    if callable(held):
+        return bool(held())
+    if getattr(s, "login_check", "") != "pending":
         return False
     return getattr(s, "state", "") == "login_required"
 
 
+def _login_hold_code(rt: Runtime) -> str:
+    """로그인 보류 안내 코드 — 이번에 다 기다렸으면 BR-LOGIN-HELD, 보류 중 짧은 확인이면 BR-LOGIN-PENDING."""
+    s = getattr(rt.transport, "s", None)
+    return "BR-LOGIN-HELD" if getattr(s, "login_check", "") == "wait" else "BR-LOGIN-PENDING"
+
+
+def _notify_login_hold(rt: Runtime) -> str:
+    from lm27.bridge.settings import LOGIN_PENDING_CHECK_S
+    code = _login_hold_code(rt)
+    rt.notify(code, sec=int(LOGIN_PENDING_CHECK_S))                   # 세션이 이미 냈으면 한 번만(Notices)
+    return code
+
+
+def send_block(rt: Runtime) -> str | None:
+    """업무 자료를 보내면 안 되는 사유(모든 전송 경로 공용 — 단계·replay). 로그인 보류 · 회사(Entra) 계정 미확인(H4 — 개인
+    Microsoft 계정 Copilot 에는 보내지 않는다; 연결 확인의 시험 낱말 왕복은 여기에 걸리지 않는다). 없으면 None."""
+    if login_pending(rt) or rt.login_stop:
+        _notify_login_hold(rt)
+        return "login_pending"
+    if getattr(rt.transport, "kind", "") == "cdp":
+        senv = getattr(getattr(rt.transport, "s", None), "env", None)
+        if senv is None:
+            return None                                  # 세션이 아직 준비 전 — 판별은 전송 직전 관문(transport)이 한다
+        acct = getattr(senv, "account", "unknown")
+        if acct == "personal":
+            rt.notify("BR-LOGIN-PERSONAL")
+            return "personal_account"
+        if acct != "work":
+            rt.notify("BR-ACCOUNT-UNKNOWN")
+            return "account_unknown"
+    return None
+
+
 def _skip_reason(spec, rt: Runtime) -> str | None:
     cfg = rt.cfg
-    if not cfg.stage_on(spec.id) or cfg.mode == "off" or rt.transport is None:
+    if not cfg.stage_on(spec.id) or cfg.mode == "off":
+        return "disabled"
+    if rt.blocked:
+        return rt.blocked
+    if rt.transport is None:
         return "disabled"
     if rt.fatal_stop:
         return "fatal"
-    if login_pending(rt):
-        from lm27.bridge.settings import LOGIN_PENDING_CHECK_S
-        rt.notify("BR-LOGIN-PENDING", sec=int(LOGIN_PENDING_CHECK_S))     # 세션이 이미 냈으면 한 번만(Notices)
-        return "login_pending"
+    block = send_block(rt)
+    if block:
+        return block
     if rt.env is not None and rt.env.web_exposed and cfg.web_exposure_policy == "block":
         rt.notify("BR-WEB-BLOCK")
         return "web_exposed"
@@ -868,6 +959,11 @@ def _stage_body(run, imports, box) -> None:
         return
     if reason:
         run.skipped = reason
+        code = _SKIP_BR.get(reason)
+        if reason == "login_pending":
+            code = _login_hold_code(rt)
+        if code:
+            run.hint = render(code)["title"]                 # 결과 봉투 hint — 화면이 '실패'가 아니라 까닭을 보인다
         return
     if not items and not imports:
         run.skipped = "no_input"
@@ -986,7 +1082,7 @@ def _heartbeat(rt: Runtime, spec, total: int):
 
 def _loop(run, hb) -> None:
     spec, rt, cfg = run.spec, run.rt, run.rt.cfg
-    while not run.stopped:
+    while not run.stopped and not run.skipped:
         if not BG.can_ask(run.deadline, cfg, rt.clock):
             if run.pending or run.pinned:
                 left = len(run.pending) + sum(len(p.items) for p in run.pinned)
@@ -1191,7 +1287,8 @@ def resolve_specs(stage_ids=None) -> list:
 
 def open_runtime(paths=None, run_id: str | None = None, *, mode: str | None = None, clock=None, environ=None,
                  session_factory=None, transport=None, emit=None, notices=None, env=None, registry=None, gate_base=None,
-                 pc_id=None, calibrate_model: str | None = None, heartbeat: bool = True, raw_cfg=None) -> Runtime:
+                 pc_id=None, calibrate_model: str | None = None, heartbeat: bool = True, raw_cfg=None,
+                 check_chat: bool = True) -> Runtime:
     """실제 호출 1회 조립: 설정 → 전송(스텁 ``LM_COPILOT_STUB`` · 수동 · CDP 세션) → 환경 → 레지스트리·게이트 → 자동 보정.
     ``raw_cfg``(``lm27.config.Cfg``)·``registry``·``gate_base``·``pc_id``·``session_factory`` 는 시험 주입점.
     전송을 연 뒤의 어느 단계(키·레지스트리·게이트·자동 보정 3~6분)에서든 예외(Ctrl+C·CdpError 포함)가 나면 여기서 연
@@ -1223,16 +1320,22 @@ def open_runtime(paths=None, run_id: str | None = None, *, mode: str | None = No
     sess = None
     owned = transport is None                          # 여기서 만든 전송·세션만 닫는다(주입은 호출자 몫)
     made: dict = {}
+    blocked = ""
     try:
         if transport is None:
             transport = transport_stub.from_env(environ)
             made["transport"] = transport
+        if transport is None and mode == "auto" and check_chat:
+            from lm27.bridge.capability import ChatAccess
+            if ChatAccess(profile, cfg, clock).state() == "unavailable":
+                blocked = "chat_unavailable"           # 입력창 없는 Copilot 화면이 날마다 반복 — 한동안 열지 않는다(M5)
+                notices.notify("BR-CHAT-BLOCKED", confirmDays=cfg.confirm_count, ttlDays=cfg.confirm_ttl_days)
         if transport is None and mode == "manual":
             from lm27.bridge.manual import ManualTransport
             transport = ManualTransport(paths, cfg, clock, run_id=run_id)
             made["transport"] = transport
             transport.open()
-        elif transport is None and mode == "auto":
+        elif transport is None and mode == "auto" and not blocked:
             from lm27.bridge.session import EdgeSession
             from lm27.bridge.transport import CdpTransport
             mk = session_factory or (lambda: EdgeSession.open("bridge", run_id, paths=paths, cfg=cfg, clock=clock,
@@ -1256,6 +1359,7 @@ def open_runtime(paths=None, run_id: str | None = None, *, mode: str | None = No
                           raw_cfg=raw_cfg, pc_id=pc_id)
         made["rt"] = rt
         rt.heartbeat = heartbeat
+        rt.blocked = blocked
         if sess is not None:
             rt.edge_major = int(getattr(sess.edge, "major", 0) or 0)
             st = getattr(sess, "state", "")
@@ -1263,7 +1367,8 @@ def open_runtime(paths=None, run_id: str | None = None, *, mode: str | None = No
                 switch_to_manual(rt, st)
             elif env is None:
                 rt.env = sess.env or manual_env(clock)
-            if st == "ready" and cfg.auto_calibrate and calibrate_model:
+            if st == "ready" and cfg.auto_calibrate and calibrate_model and getattr(rt.env, "account", "") == "work":
+                # 보정 글은 합성 문장뿐이지만 단계가 보내지 않을 계정(개인·미확인)이면 몇 분짜리 보정을 하지 않는다(H4)
                 from lm27.bridge import calibrate as CAL
                 CAL.run_calibration(rt, model_class=calibrate_model)
         return rt

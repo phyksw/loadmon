@@ -45,8 +45,20 @@ LOCK_BUSY_WAIT_S = 60.0
 LOGIN_POLL_S = 5.0              # 로그인 대기 폴링(B §4.7)
 LOGIN_PENDING_CHECK_S = 30.0    # 로그인 보류(지난 대기가 로그인 없이 끝남) — 다음 실행은 이만큼만 로그인 상태를 본다(v1.3 V18)
 LOGIN_RECHECK_S = 60.0          # login_required 1차 복구: 탭 재진입 뒤 폴링 상한(B §7.7 — 보류 중이면 다시 기다리지 않음)
+LOGIN_GRACE_S = 3.0             # 로그인 화면이 이만큼(폴링 2회 이상) 이어질 때만 창을 앞으로·BR-LOGIN — SSO 로 한순간 지나가면 조용히(L1)
+LOGIN_PERSIST_DAYS = 7          # 직전 로그인 확인 뒤 이 안에 새로 띄운 Edge 가 다시 로그인 화면이면 '로그인 유지 안 됨' 안내(H2)
 # 개인(Microsoft) 계정 로그인 화면 호스트 — 회사(조직) 계정이 아니다(V18). bridge.loginHosts 의 부분집합이어야 대기 판정이 같다
-PERSONAL_LOGIN_HOSTS = ("login.live.com",)
+# (Microsoft 365 URL 목록 ID 97·116 — login.live.com · account.live.com)
+PERSONAL_LOGIN_HOSTS = ("login.live.com", "account.live.com")
+# 로그인 흐름이 끝난 뒤의 Microsoft 앱 호스트(접미사 — Microsoft 365 URL 목록 ID 1·12·147·184). 브리지가 로그인 화면을 본 뒤
+# 이 밖의 호스트(회사 IdP — AD FS·PingFederate 등)에 있으면 아직 로그인 중으로 본다(H3). 부분 문자열이 아니라 마디 단위 접미사.
+MS_APP_HOST_RX = re.compile(r"(?:^|\.)(?:cloud\.microsoft|microsoft\.com|microsoft365\.com|office\.com|office365\.com"
+                            r"|outlook\.com|live\.com|bing\.com|m365copilot\.com)$")
+EDGE_HOLD_MAX_S = 4 * 3600.0    # 한 작업(수집→분석) 동안 Edge 를 닫지 않고 이어 쓰는 표지의 최대 수명(주인이 풀지 못한 경우의 안전판, H2)
+FRONT_TTL_S = 3600.0            # [분석용 Edge 창 앞으로]·작업 보류가 남긴 디버그 포트 Edge 를 정리하는 유휴 한도(L12)
+MODEL_ALIASES = {"빠른 응답": ("Quick response",), "깊이 생각하기": ("Think deeper",), "자동": ("Auto",)}  # 영어 화면(L11)
+# 화면 등급 표식(제품 안 라벨 'Copilot (Premium)'·'Copilot Chat (Basic)' — 읽기만, 'copilot' 이 든 짧은 글에서만, L11)
+TIER_LABELS = {"premium": ("(premium)", "(프리미엄)"), "basic": ("(basic)", "(기본)")}
 IDENTITY_POLL_S = 1.0           # 신원 재확인 간격
 IDENTITY_SETTLE_S = 20.0        # wrong_page 이동·dead 새로고침 뒤 재확인 상한(B §4.7)
 DEAD_SESSION_LIMIT = 2          # 서로 다른 호출 2회 dead_session → 프로필 재생성(B §4.7)
@@ -90,9 +102,38 @@ RUNG_REPLY_FLOOR_S = 120        # 사다리 1·2단 답 대기 하한(B §6.7)
 RUNG_FIRST_FLOOR_S = 30         # 사다리 1·2단 첫 글자 유예 하한
 
 _URL_PREFIX = "https://"
-_HOST_RX = re.compile(r"^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$")
+# 로그인 호스트: 정확 일치 또는 '.' 으로 시작하면 마디 단위 접미사(예 '.microsoftonline.com' — certauth·logincert 등, H3)
+_HOST_RX = re.compile(r"^\.?[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$")
 _WINDOW_RX = re.compile(r"^\d{2,5},\d{2,5}$")
 _PORT_MAX = 65535
+
+
+def host_in(host: str, entries) -> bool:
+    """호스트가 목록에 드는가 — 정확 일치, '.' 으로 시작하는 항목은 마디 단위 접미사(부분 문자열 비교 금지, G-B9)."""
+    h = str(host or "").lower().rstrip(".")
+    if not h:
+        return False
+    for e in entries or ():
+        e = str(e or "").lower()
+        if e.startswith("."):
+            if h.endswith(e) and len(h) > len(e):
+                return True
+        elif h == e:
+            return True
+    return False
+
+
+def model_names(name: str) -> tuple[str, ...]:
+    """모델 메뉴 이름(설정 값) → 찾아볼 표기 목록. '|' 로 나눈 별칭 + 한국어 기본 이름의 영어 표기(L11 — 영어 화면)."""
+    out: list[str] = []
+    for part in str(name or "").split("|"):
+        p = part.strip()
+        if p and p not in out:
+            out.append(p)
+        for alias in MODEL_ALIASES.get(p, ()):
+            if alias not in out:
+                out.append(alias)
+    return tuple(out)
 
 
 # ───────────────────────── 설정 묶음 ─────────────────────────
@@ -132,6 +173,9 @@ class DomCfg:
     web_labels: tuple[str, ...]           # bridge.dom.workModeLabels.web
     web_grounding_labels: tuple[str, ...]
     assistant_selectors: tuple[str, ...]
+    toggle_labels: tuple[str, ...] = ()   # bridge.dom.workModeLabels.toggle — 단일 토글 'Work IQ'(부분 일치, H13)
+    account_labels: tuple[str, ...] = ()  # bridge.dom.workModeLabels.account — 탐색 창 프로필 아래 'Work' 표시(정확 일치, H4)
+    shield_labels: tuple[str, ...] = ()   # bridge.dom.workModeLabels.shield — 녹색 데이터 보호 방패 aria·title(부분 일치, H4)
 
 
 @dataclass(frozen=True)
@@ -200,6 +244,10 @@ class BridgeSettings:
     def model_for(self, model_class: str) -> str:
         """단계 등급(fast·deep·fallback) → 모델 메뉴 이름. 빈 문자열 = 건드리지 않음."""
         return {"fast": self.model_fast, "deep": self.model_deep, "fallback": self.model_fallback}.get(model_class, "")
+
+    def login_host(self, host: str) -> bool:
+        """``bridge.loginHosts`` 판정 — 정확 일치, '.' 으로 시작하는 항목은 마디 단위 접미사(H3)."""
+        return host_in(host, self.login_hosts)
 
     def rung_timeouts(self, rung: int) -> tuple[float, float]:
         """재시도 사다리 단 → (답 대기 초, 첫 글자 유예 초)(B §6.7 한 벌). 0단 = 설정값, 1·2단 = 절반(하한 120·30)."""
@@ -371,8 +419,10 @@ def from_cfg(cfg) -> BridgeSettings:
     wml = raw["bridge.dom.workModeLabels"] or {}
     work_labels, web_labels = _tup(wml.get("work")), _tup(wml.get("web"))
     if not work_labels or not web_labels:
-        d = r.revert("bridge.dom.workModeLabels", "업무·웹 라벨이 비었습니다")
-        work_labels, web_labels = _tup(d.get("work")), _tup(d.get("web"))
+        wml = r.revert("bridge.dom.workModeLabels", "업무·웹 라벨이 비었습니다")
+        work_labels, web_labels = _tup(wml.get("work")), _tup(wml.get("web"))
+    toggle_labels = _tup(wml.get("toggle"))
+    account_labels, shield_labels = _tup(wml.get("account")), _tup(wml.get("shield"))
     stages_raw = raw["bridge.stages"] or {}
     stages = tuple((sid, bool(stages_raw.get(sid, True))) for sid in STAGE_IDS)
 
@@ -438,7 +488,8 @@ def from_cfg(cfg) -> BridgeSettings:
                    model_button_labels=_tup(raw["bridge.dom.modelButtonLabels"]),
                    work_labels=work_labels, web_labels=web_labels,
                    web_grounding_labels=_tup(raw["bridge.dom.webGroundingLabels"]),
-                   assistant_selectors=_tup(raw["bridge.dom.assistantSelectors"])),
+                   assistant_selectors=_tup(raw["bridge.dom.assistantSelectors"]),
+                   toggle_labels=toggle_labels, account_labels=account_labels, shield_labels=shield_labels),
         confirm_count=int(raw["collect.confirmBlockedCount"]),
         confirm_ttl_days=int(raw["collect.confirmTtlDays"]),
         warnings=cfg_warn + tuple(r.warnings),

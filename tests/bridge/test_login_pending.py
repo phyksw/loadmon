@@ -206,7 +206,14 @@ class AnalysisFlowTest(Base):
         spent1, res1, n1 = self.run_analysis(w, RUN_A)
         self.assertGreaterEqual(spent1, w.cfg.login_wait_min * 60)          # 첫 분석: 다 기다림(BR-LOGIN)
         self.assertIn("BR-LOGIN", n1.shown)
-        self.assertEqual(res1["t_act"]["reason"], "login_required")
+        # 다 기다렸는데 로그인되지 않음 = 로그인 보류 — 실패(2-strike 치명·rc 1)가 아니라 skipped(login_pending)(O-18 ⑤)
+        for st in ("t_act", "t_label"):
+            self.assertEqual((res1[st]["state"], res1[st]["reason"], res1[st]["stop_kind"], res1[st]["rc"]),
+                             ("skipped", "login_pending", None, 0), st)
+        self.assertEqual(res1["t_act"]["hint"], messages.render("BR-LOGIN-HELD")["title"])
+        self.assertIn("BR-LOGIN-HELD", n1.shown)
+        self.assertNotIn("BR-LOGIN-TIMEOUT", n1.shown)
+        self.assertEqual(sum(len(p.sent_texts) for p in w.net.our_pages()), 0)
         self.assertIsNotNone(self.pending(w))
         spent2, res2, n2 = self.run_analysis(w, RUN_B)
         self.assertLessEqual(spent2, S.LOGIN_PENDING_CHECK_S + 15)         # 다음 분석: 짧게 확인만
@@ -231,7 +238,7 @@ class AnalysisFlowTest(Base):
         class _Rt:
             transport = _T()
 
-        self.assertTrue(runner.login_pending(_Rt()))
+        self.assertTrue(runner.login_pending(_Rt()))                       # login_held 가 없는 대역 — 예전 판정
         _Rt.transport.s.state = "ready"                                    # 짧은 확인 사이 로그인됨 → 단계를 돈다
         self.assertFalse(runner.login_pending(_Rt()))
         _Rt.transport.s.state, _Rt.transport.s.login_check = "login_required", "wait"   # 이번에 다 기다림 → 2-strike 경로

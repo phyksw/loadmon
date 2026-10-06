@@ -4,7 +4,8 @@ r"""P-OWA 능력 탐침(CM §14 · C §4 · 계약 §2.17 · §6.7 · v1.2 C18) 
 
     "<PY>" -X utf8 -I -B collect\probe_owa.py [--pc <pc_id>] [--budget-sec N]
 
-재는 것: 웹 로그인 상태(R-LOGIN · 조건부 액세스 AADSTS → R-CA), Edge 설치·원격 디버깅 정책(R-NOAPP · R-EDGEPOL — 정책
+재는 것: 웹 로그인 상태(R-LOGIN · 조직 정책 조건부 액세스 AADSTS → R-CA — 장치 기반·외부 보안 과제는 사람이 풀 수 있어 R-LOGIN,
+값 ``aadsts``·``aadsts_kind``), Edge 설치·원격 디버깅 정책(R-NOAPP · R-EDGEPOL — 정책
 레지스트리 **읽기만**), 받은 편지함 목록의 최근 7일 항목 중 분 단위 시각이 보이는 비율, 행 키 종류(대화 보기 여부), 이번 주
 주 보기를 알아보는가. Edge 는 ``lm27.bridge.session.EdgeSession.open(role="owa")`` 로만 연다(G-B12). 사용자 대신
 로그인하지 않으며, 탐침은 로그인을 오래 기다리지 않는다(예산 ``probe.budgetSec`` 안).
@@ -162,7 +163,8 @@ def probe(*, environ, paths, cfg, clock, now, budget_sec, session_factory=None, 
         if state != "ready":
             rc, why = W.session_failure(state, getattr(getattr(screen, "s", None), "error", None))
             st = "fail" if rc == W.RC_LOGIN or why in ("R-EDGEPOL", "R-NOAPP") else "transport_fail"
-            val = {"login": login, "aadsts": counts.get("aadsts"), "edge": ef["edge"], **login_value(screen, rc)}
+            val = {"login": login, "aadsts": counts.get("aadsts"), "aadsts_kind": counts.get("aadsts_kind"),
+                   "edge": ef["edge"], **login_value(screen, rc)}
             out["caps"] = {k: cap(st, [why], val, (k, *base, login, counts.get("aadsts"))) for k in CAP_KEYS}
             return out
         pages = []

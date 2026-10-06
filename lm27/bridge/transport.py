@@ -531,6 +531,10 @@ class CdpTransport:
         st = self.s.ensure_ready(dl)
         if st != "ready":
             return SendResult(phase=st, error=st, chat_seq=self.s.info.chat_seq)
+        gate = getattr(self.s, "send_block", None)
+        block = gate(req.stage) if callable(gate) else ""
+        if block:                                        # 회사(Entra) 계정이 아니면 아무것도 넣지 않는다(H4 — 시험 낱말·보정 글 제외)
+            return SendResult(phase="account_unconfirmed", error=block, chat_seq=self.s.info.chat_seq)
         dom = self.s.profile.load().get("dom") or {}
         self._learned = str(dom.get("assistant_sel") or "") if not self.cfg.dom.assistant_selectors else ""
         self._learned_src = "learned" if self._learned else ""

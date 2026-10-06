@@ -17,7 +17,13 @@ EdgeSession.open(role="teams_web")`` 하나로만 연다(Edge 인자·프로필�
     ``--include-channels``(기본 켬)이면 채널 글타래, ``--include-activity``(기본 켬)이면 활동(멘션) 피드도 — 활동 항목은
     읽을 대화방을 알려 주는 표지로만 쓴다(미리보기를 레코드로 만들지 않는다 — 잘린 미리보기가 같은 메시지를 두 번 세지 않게).
   · 대화방은 **대화 ID 로 다시 찾아** 연다(요소 핸들·순번이 아님 — 재렌더 'gone' 대응). 못 찾은 방만 R-ROOMGONE(그 방만 건너뜀,
-    경로 전체 실패 아님). 선택자를 여러 벌 두고 '무엇으로 몇 개를 잡았는지' 숫자만 남긴다. 화면 구조를 하나도 못 알아보면
+    경로 전체 실패 아님). 연 뒤 화면이 실제로 그 방으로 바뀌었는지 확인한다(누르기 전·뒤 머리 제목·메시지 수, 목록 항목의
+    선택 상태, 주소의 대화 ID) — 바뀌지 않았거나 다른 방이면 그 방은 gone(이전 방 메시지를 이 방 chat_id 로 저장하지 않고
+    체크포인트도 옮기지 않는다, counts ``pane_stuck``·``pane_mismatch``·``pane_already``). 목록 머리 항목(펼침 단추 — 대화 ID
+    없음)은 열지 않는다. 새 채팅·채널 '통합' 보기(앱 막대에 '팀' 단추 없음 · 채팅 목록에 채널)면 채널 목록 순회를 건너뛰고
+    채팅 목록의 채널을 channel 유형으로 읽는다(counts ``layout``). 활동 항목은 화면이 준 메시지 링크를 그대로, 없으면 문서
+    형식 딥 링크(대화만 — 채널은 목록에서 다시 찾는다)로 연다. 원격·가상 데스크톱 세션이면 counts ``remote_session=1``
+    (문서상 Teams 웹은 VDI 미지원 — 진단). 선택자를 여러 벌 두고 '무엇으로 몇 개를 잡았는지' 숫자만 남긴다. 화면 구조를 하나도 못 알아보면
     R-WEBSEL(rc 3).
   · 메시지마다 ``data-mid``(메시지 ID)와 ``<time datetime>``(UTC)을 1순위로 — 있으면 ts_precision exact. 없으면 머리 조각
     (시각 표시·title·aria-label)과 날짜 구분선에서 minute, 날짜만이면 date, 날짜를 끝내 못 짚으면 unknown 으로 **격리해 넘긴다**
@@ -46,7 +52,8 @@ R-NOAPP · R-WEBSEL · R-TRANSPORT) · 4 읽었지만 새 메시지 0. ``--max-c
 ``{"login": bool|"ca", "chats": {how, n, items:[{idx, label, texts, tid}]}, "msgs": {"<idx>": [{how, chat, n,
 items:[{t:"sep", text} | {t:"msg", label, author, ts, iso[], titles[], body, texts[], mid}]}, …(스크롤 회차)]}}``.
 이 수집기가 더 받는 선택 키: ``chats`` 를 화면 목록(가상 스크롤 회차)으로 · ``"chats_end": false``(목록 끝에 못 닿음) ·
-``channels``·``activity``(같은 목록 모양, 활동 항목은 ``tid``·``mid``·``mention``) · 방 항목 ``gone: true``(재탐색 실패) ·
+``channels``·``activity``(같은 목록 모양, 활동 항목은 ``tid``·``mid``·``href``·``mention``) · 방 항목 ``gone: true``(재탐색
+실패) · 목록 항목 ``hdr: true``(머리 항목) · ``"nav_none": ["channels"]``(앱 막대에 그 단추 없음 — 통합 보기) ·
 메시지 ``me``(구조상 내 말풍선)·``files``·``mentions``. ``LM_NO_BROWSER=1`` 이면 Edge 를 띄우지 않는다(rc 3).
 날짜·시각 해석·상태 줄·정제·저장·커서 묶음은 같은 폴더의 ``Get-OutlookWeb.py`` 를 경로로 불러 쓴다.
 """
@@ -61,7 +68,7 @@ import importlib.util
 import json
 import re
 from datetime import UTC, date, datetime, timedelta
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from lm27.bridge.clock import default_clock
 from lm27.util import events, tz
@@ -88,10 +95,20 @@ SRC = "teams.web"
 STAGE = "backfill_teams_web"
 ROLE = "teams_web"
 FAKE_ENV = "LM_TEAMSWEB_FAKE"
-TEAMS_URL = "https://teams.microsoft.com/v2/"
-DEEP_LINK = "https://teams.microsoft.com/l/message/{tid}/{mid}"
+# 시작 주소 = 문서의 Teams 웹 주소('Find Teams on the web at https://teams.microsoft.com' — 경로 /v2/ 는 문서에 없다). Microsoft 365
+# 엔드포인트 표 ID 12 의 teams.microsoft.com · teams.cloud.microsoft 어느 쪽에 닿아도 정상이고, 닿은 호스트를 다음 이동(딥 링크)의
+# 기준으로 쓴다(teams.cloud.microsoft 에서 teams.microsoft.com 으로 되돌아가 앱을 다시 띄우지 않게).
+TEAMS_URL = "https://teams.microsoft.com/"
+# 메시지 딥 링크(Microsoft Learn 'Deep link to a chat or channel message'): 1:1·그룹 채팅 =
+# /l/message/<chatId>/<messageId>?context={"contextType":"chat"} — chatId 는 문서 예시처럼 그대로(':'·'@' 를 바꾸지 않는다).
+# 채널 메시지는 tenantId·groupId·parentMessageId 등이 있어야 하므로 화면이 준 원래 링크(href)가 없으면 만들지 않는다.
+DEEP_PATH = "/l/message/"
+CHAT_CONTEXT = '{"contextType":"chat"}'
 # 회사(조직) Teams 만 — 개인 Teams(teams.live.com)는 W.PERSONAL_HOST_RX(로그인 필요 · 개인 계정, v1.3 §0.8 V18)
 TEAMS_HOST_RX = re.compile(r"^teams\.microsoft\.com$|^teams\.cloud\.microsoft$")
+# 이동 결과가 이 상태면 화면 쪽에서 더 갈 수 없다(로그인 만료·탭 잃음) — 그 밖(로드 실패 등)은 그 방만 'gone'
+STOP_STATES = frozenset({"login_required", "ca", "tab_lost", "cdp_error", "dead_session", "policy_blocked",
+                         "edge_not_found", "lock_busy", "profile_busy"})
 LISTS = ("chats", "channels", "activity")
 NAV_LABELS = {"chats": ("채팅", "chat"), "channels": ("팀", "teams"), "activity": ("활동", "activity")}
 LIST_ROUNDS_MAX = 300        # 목록 가상 스크롤 회차 상한(정지 판정이 먼저 끊는다)
@@ -291,7 +308,9 @@ _ID_FN = ("var idOf=function(e){var c=[e.getAttribute('data-item-key'),e.getAttr
           "if(a)c.push(a.getAttribute('href'));for(var i=0;i<c.length;i++){var v=c[i]||'';try{v=decodeURIComponent(v);}"
           "catch(x){}var m=v.match(/(19:[^\\s\\/?#\"']+@[A-Za-z0-9.\\-]+|48:notes)/);if(m)return m[1];}return '';};"
           "var midOf=function(e){var a=e.querySelector('a[href*=\"/l/message/\"]');var h=a?(a.getAttribute('href')||''):'';"
-          "var m=h.match(/\\/l\\/message\\/[^\\/]+\\/(\\d{6,})/);return m?m[1]:(e.getAttribute('data-mid')||'');};")
+          "var m=h.match(/\\/l\\/message\\/[^\\/]+\\/(\\d{6,})/);return m?m[1]:(e.getAttribute('data-mid')||'');};"
+          "var hrefOf=function(e){var a=e.querySelector('a[href*=\"/l/message/\"]');var h=a?(a.getAttribute('href')||''):'';"
+          "return h.length<=1200?h:'';};")
 
 
 def _sel_js(which: str) -> str:
@@ -305,7 +324,8 @@ for(var i=0;i<SELS.length;i++){{els=Array.prototype.slice.call(document.querySel
 window['__lm_'+which]=els;
 return {{how:how,n:els.length,items:els.slice(0,400).map(function(e,i){{
  var l=cut(e.getAttribute('aria-label')||e.getAttribute('title'),300);
- return {{idx:i,tid:idOf(e),mid:which==='activity'?midOf(e):'',label:l,texts:leafs(e,8),mention:/멘션|mention|@/i.test(l)}};}})}};""")
+ return {{idx:i,tid:idOf(e),mid:which==='activity'?midOf(e):'',href:which==='activity'?hrefOf(e):'',label:l,
+  texts:leafs(e,8),hdr:e.getAttribute('aria-expanded')!==null,mention:/멘션|mention|@/i.test(l)}};}})}};""")
 
 
 def js_tw_list_scroll(which: str) -> str:
@@ -379,12 +399,22 @@ var before=el.scrollTop;el.scrollTop=Math.max(0,el.scrollTop-Math.max(400,el.cli
 el.dispatchEvent(new Event('scroll',{bubbles:true}));return el.scrollTop<before?'scrolled':'top';""")
 
 
-def js_tw_pane() -> str:
-    return W._js("tw_pane", W._CUT + """
+def js_tw_pane(tid: str = "") -> str:
+    """대화 화면 상태(숫자·짧은 제목만): 메시지 수 · 머리 제목 · 주소에 보이는 대화 ID(딥 링크 주소 그대로면 비움) · 목록에서
+    ``tid`` 항목의 선택 상태(aria-selected·aria-current — 표준 ARIA, 항목이 없으면 null). 방 열기 확인(M8)에 쓴다."""
+    lists = json.dumps(_SELS["chats"] + _SELS["channels"], ensure_ascii=False)
+    return W._js("tw_pane", W._CUT + _ID_FN + f"var tid={json.dumps(tid or '')};var ALL={lists};" + """
 var MSG=['[data-tid="chat-pane-item"]','[data-tid="chat-pane-message"]','[data-tid="message-pane"] [role="listitem"]','[role="log"] [role="listitem"]','[role="main"] [role="listitem"]'];
 var n=0;for(var i=0;i<MSG.length;i++){var k=document.querySelectorAll(MSG[i]).length;if(k){n=k;break;}}
 var head=document.querySelector('[data-tid="chat-header-title"],[data-tid="chatTitle"],[data-tid="chat-header"] [role="heading"],[role="main"] h1');
-return {n:n,chat:head?cut((head.getAttribute('title')||head.textContent||'').trim(),120):''};""")
+var h='';try{h=decodeURIComponent(location.href||'');}catch(x){h=location.href||'';}
+var cid='';if(h.indexOf('/l/')<0){var m=h.match(/(19:[^\\s\\/?#&"']+@[A-Za-z0-9.\\-]+|48:notes)/);if(m)cid=m[1];}
+var sel=null;
+if(tid){for(var q=0;q<ALL.length&&sel===null;q++){var L=document.querySelectorAll(ALL[q]);
+ for(var j=0;j<L.length;j++){if(idOf(L[j])!==tid)continue;var e=L[j],a=e.getAttribute('aria-selected'),c=e.getAttribute('aria-current');
+  var yes=(a==='true')||(c!==null&&c!=='false')||!!e.querySelector('[aria-selected="true"],[aria-current="page"],[aria-current="true"]');
+  sel=yes?true:((a!==null||c!==null||e.querySelector('[aria-selected],[aria-current]'))?false:null);break;}}}
+return {n:n,chat:head?cut((head.getAttribute('title')||head.textContent||'').trim(),120):'',cid:cid,sel:sel};""")
 
 
 def js_tw_nav(which: str) -> str:
@@ -409,6 +439,7 @@ class FakeTeamsScreen:
         self.cost_s = float(cost_s)
         self.lpos = dict.fromkeys(LISTS, 0)
         self.rpos: dict = {}
+        self.nav_missing: set = set()        # 앱 막대에 그 보기 단추가 없음(주입 키 nav_none — 통합 보기 흉내, M9)
 
     def _cost(self) -> None:
         if self.cost_s > 0:
@@ -435,6 +466,9 @@ class FakeTeamsScreen:
 
     def list_page(self, which: str, dl) -> dict:
         self._cost()
+        if which in (self.fake.get("nav_none") or ()):
+            self.nav_missing.add(which)
+            return {"how": "", "n": 0, "items": []}
         pages = self._pages(which)
         if not pages:
             return {"how": "", "n": 0, "items": []}
@@ -484,12 +518,19 @@ class FakeTeamsScreen:
 
 
 class CdpTeamsScreen(W.CdpBase):
-    """Teams 웹 실제 화면: 채팅·팀·활동 보기, 목록 가상 스크롤, 대화 ID 로 다시 찾아 열기, 위로 되감기."""
+    """Teams 웹 실제 화면: 채팅·팀·활동 보기, 목록 가상 스크롤, 대화 ID 로 다시 찾아 열기, 위로 되감기.
+
+    방 열기 확인(M8): 누르기 전 화면(머리 제목·메시지 수)을 적어 두고, 누른 뒤 바뀌었는지 본다(``PANE_WAIT_S`` 두 번). 바뀌지
+    않았으면 — 그 방이 이미 열려 있었다는 것을 목록 항목의 선택 상태·주소의 대화 ID·제목으로 확인할 때만 읽고, 아니면 그 방은
+    'gone'(R-ROOMGONE — 체크포인트를 옮기지 않아 다음 실행이 다시 읽는다). 바뀌었어도 선택 상태·대화 ID 가 다른 방을 가리키면
+    'gone'. 이전 방 화면을 이번 방 chat_id 로 저장하지 않는다(오귀속 → 영구 누락 방지)."""
 
     def __init__(self, session, clock, counts: dict):
         super().__init__(session, clock, counts)
         self.view = ""
         self.pane = ("", -1)
+        self.nav_missing: set = set()        # 앱 막대에 그 보기 단추가 없음(통합 보기 — M9)
+        self.listed: set = set()             # 이번 실행에서 읽은 목록(활동 채널 방을 목록에서 다시 찾을 때)
 
     wait_login = True            # False = 첫 판정만(탐침 — 로그인 대기는 수집기가 [수집]마다 한 번, V10)
 
@@ -511,16 +552,24 @@ class CdpTeamsScreen(W.CdpBase):
                 return pg
             self._sleep(W.READY_POLL_S)
 
-    def ensure_view(self, which: str, dl) -> None:
+    def ensure_view(self, which: str, dl) -> bool:
+        """그 보기로 간다. 앱 막대에 단추가 없으면(통합 보기의 '팀' 등) False — 지금 보기를 그 보기로 착각하지 않는다."""
         if self.view == which or which not in NAV_LABELS:
-            return
-        if str(self.eval(js_tw_nav(which), dl) or "") == "ok":
-            self._sleep(1.0)
-            self._wait_list(which, dl)
+            return True
+        if which in self.nav_missing:
+            return False
+        if str(self.eval(js_tw_nav(which), dl) or "") != "ok":
+            self.nav_missing.add(which)
+            return False
+        self._sleep(1.0)
+        self._wait_list(which, dl)
         self.view = which
+        return True
 
     def list_page(self, which: str, dl) -> dict:
-        self.ensure_view(which, dl)
+        if not self.ensure_view(which, dl):
+            return {"how": "", "n": 0, "items": []}
+        self.listed.add(which)
         return self.eval(js_tw_list(which), dl) or {"how": "", "n": 0, "items": []}
 
     def list_scroll(self, which: str, dl) -> str:
@@ -529,36 +578,138 @@ class CdpTeamsScreen(W.CdpBase):
             self._sleep(0.8)
         return r
 
+    def _pane(self, tid: str, dl) -> dict:
+        p = self.eval(js_tw_pane(tid), dl) or {}
+        return {"chat": str(p.get("chat") or ""), "n": int(p.get("n") or 0), "cid": str(p.get("cid") or ""),
+                "sel": p.get("sel") if isinstance(p.get("sel"), bool) else None}
+
     def _wait_pane(self, dl) -> None:
-        """화면이 바뀔 때까지(대화방 이름 또는 메시지 수) 확인하며 기다린다 — 무조건 자는 대기를 대신한다."""
+        """되감기 뒤 화면이 바뀔 때까지(대화방 이름 또는 메시지 수) 확인하며 기다린다 — 무조건 자는 대기를 대신한다."""
         end = dl.sub(PANE_WAIT_S)
         last = self.pane
         while not end.expired():
             self._sleep(PANE_POLL_S)
-            p = self.eval(js_tw_pane(), dl) or {}
-            got = (str(p.get("chat") or ""), int(p.get("n") or 0))
+            p = self._pane("", dl)
+            got = (p["chat"], p["n"])
             if got[1] > 0 and got != last:
                 self.pane = got
                 return
 
-    def open_room(self, room: dict, dl) -> str:
-        if room.get("source") == "activity":
-            tid, mid = room.get("tid") or "", room.get("mid") or ""
-            if not (tid and mid):
+    @staticmethod
+    def _changed(before: dict, p: dict) -> bool:
+        """누른 뒤 다른 방 화면이 됐나 — 제목이 보이면 제목으로(같은 방에 새 메시지가 와 수만 늘어난 것은 바뀜이 아니다),
+        제목이 없으면 메시지 수로."""
+        if p["n"] <= 0:
+            return False
+        if p["chat"] or before["chat"]:
+            return p["chat"] != before["chat"]
+        return p["n"] != before["n"]
+
+    def _wait_change(self, before: dict, tid: str, dl) -> tuple:
+        end = dl.sub(PANE_WAIT_S)
+        p = before
+        while not end.expired():
+            self._sleep(PANE_POLL_S)
+            p = self._pane(tid, dl)
+            if self._changed(before, p):
+                return True, p
+        return False, p
+
+    @staticmethod
+    def _title_matches(room: dict, p: dict):
+        """방 제목 대조(약한 단서 — 화면이 안 바뀌었을 때 '이미 열린 방'인지 확인에만): 목록 라벨·머리 제목의 첫 마디가
+        서로를 포함하면 참. 어느 쪽이든 비면 None."""
+        a = norm_name(re.split(r"[,|·\n]", str(room.get("label") or ""))[0])
+        b = norm_name(re.split(r"[,|·\n]", str(p.get("chat") or ""))[0])
+        if not a or not b:
+            return None
+        return a in b or b in a
+
+    @staticmethod
+    def _strong_match(room: dict, p: dict, before: dict):
+        """강한 단서 — 주소의 대화 ID(이번에 주소가 바뀌었거나 이 방을 가리킬 때만 — 갱신되지 않는 주소에 속지 않게) ·
+        목록 항목 선택 상태(aria-selected·aria-current 가 있을 때만 — 속성이 없으면 모름). 모르면 None."""
+        tid = str(room.get("tid") or "")
+        cid = p.get("cid") or ""
+        if tid and cid and (cid == tid or cid != before.get("cid")):
+            return cid == tid
+        if tid and p.get("sel") is not None:
+            return bool(p["sel"])
+        return None
+
+    def _confirm(self, room: dict, before: dict, dl) -> str:
+        tid = str(room.get("tid") or "")
+        changed, p = self._wait_change(before, tid, dl)
+        if not changed:                                    # 큰 대화·느린 회사 PC — 한 번 더 기다린다
+            changed, p = self._wait_change(before, tid, dl)
+        strong = self._strong_match(room, p, before)
+        if changed:
+            if strong is False:
+                self._bump("pane_mismatch")                # 다른 방이 열렸다
                 return "gone"
-            st = self.goto(DEEP_LINK.format(tid=quote(tid, safe=""), mid=quote(mid, safe="")), dl, TEAMS_HOST_RX)
-            if st != "ready":
-                raise W.ScreenStop(st)
+        else:
+            same = strong if strong is not None else self._title_matches(room, p)
+            if not (same and p["n"] > 0):
+                self._bump("pane_stuck")                   # 화면이 그대로 — 이전 방 메시지를 이 방으로 읽지 않는다
+                return "stuck"                             # 수집기가 다른 방을 연 뒤 한 번 더 시도한다
+            self._bump("pane_already")                     # 이미 열려 있던 방
+        self.pane = (p["chat"], p["n"])
+        return "ok"
+
+    def deep_link(self, room: dict):
+        """활동 항목의 메시지 링크 — 화면이 준 원래 링크(Teams 호스트 + /l/message/ 일 때만)가 먼저, 없으면 문서 형식(대화)으로
+        만든다. 채널(@thread.tacv2·@thread.skype)은 tenantId·groupId 없이 만들지 않는다(None — 목록에서 연다)."""
+        base = self.base_url(TEAMS_URL).rstrip("/")
+        href = str(room.get("href") or "").strip()
+        if href:
+            if href.startswith(DEEP_PATH):
+                return base + href
+            u = urlsplit(href)
+            if u.scheme == "https" and TEAMS_HOST_RX.match(u.hostname or "") and u.path.startswith(DEEP_PATH):
+                return href
+            self._bump("href_ignored")
+        tid, mid = str(room.get("tid") or ""), str(room.get("mid") or "")
+        if chat_type_of(tid) == "channel":
+            return None
+        return (f"{base}{DEEP_PATH}{quote(tid, safe=':@')}/{quote(mid, safe='')}?context="
+                + quote(CHAT_CONTEXT, safe=""))
+
+    def _open_listed(self, room: dict, dl) -> str:
+        """대화 ID 로 이번 실행에서 읽은 목록(채팅 → 채널)에서 다시 찾아 연다 — 없으면 'gone'."""
+        tid = str(room.get("tid") or "")
+        for which in ("chats", "channels"):
+            if which not in self.listed or not self.ensure_view(which, dl):
+                continue
+            before = self._pane(tid, dl)
+            if str(self.eval(js_tw_open(which, tid, -1), dl) or "gone") == "ok":
+                return self._confirm(room, before, dl)
+        return "gone"
+
+    def open_room(self, room: dict, dl) -> str:
+        tid = str(room.get("tid") or "")
+        if room.get("source") == "activity":
+            if not (tid and room.get("mid")):
+                return "gone"
+            url = self.deep_link(room)
+            if url is None:
+                self._bump("deep_channel")
+                return self._open_listed(room, dl)
+            before = self._pane(tid, dl)
+            st = self.goto(url, dl, TEAMS_HOST_RX)
             self.view = "deeplink"
-            self._wait_pane(dl)
-            return "ok"
-        self.ensure_view(room.get("source") or "chats", dl)
-        r = str(self.eval(js_tw_open(room.get("source") or "chats", room.get("tid") or "", int(room.get("idx") or 0)),
-                          dl) or "gone")
+            if st in STOP_STATES:
+                raise W.ScreenStop(st)
+            if st != "ready":
+                self._bump("deep_failed")                  # 다른 화면에 닿음·로드 실패 — 그 방만
+                return "gone"
+            return self._confirm(room, before, dl)
+        src = room.get("source") or "chats"
+        self.ensure_view(src, dl)
+        before = self._pane(tid, dl)
+        r = str(self.eval(js_tw_open(src, tid, int(room.get("idx") or 0)), dl) or "gone")
         if r != "ok":
             return "gone"
-        self._wait_pane(dl)
-        return "ok"
+        return self._confirm(room, before, dl)
 
     def room_page(self, room: dict, dl) -> dict:
         return self.eval(js_tw_msgs(), dl) or {"how": "", "n": 0, "items": []}
@@ -579,6 +730,20 @@ def make_screen(environ, *, paths, clock, run_id, counts, session_factory=None, 
 
 
 # ───────────────────────────── 수집 ─────────────────────────────
+REMOTE_TEXT = ("[Teams 웹] 원격·가상 데스크톱 세션입니다 — Microsoft 문서상 Teams 웹은 VDI(Cloud PC·가상 데스크톱)에서 지원되지 않아"
+               " 느리거나 불안정할 수 있습니다. 실물 PC 의 팀즈 웹·팀즈 창 읽기가 더 안정적입니다")
+
+
+def remote_session() -> bool:
+    """이 프로세스가 원격 데스크톱(터미널 서비스) 클라이언트 세션에 있는가 — ``GetSystemMetrics(SM_REMOTESESSION)``(문서화된
+    Win32 API). Windows 365 Cloud PC·Azure Virtual Desktop 같은 VDI 세션이 여기에 든다(L13 — 진단 숫자만, 동작은 바꾸지 않는다)."""
+    try:
+        import ctypes
+        return bool(ctypes.windll.user32.GetSystemMetrics(0x1000))
+    except (AttributeError, OSError):
+        return False
+
+
 class Opts:
     def __init__(self, *, pc: str, d0=None, d1=None, max_chats=None, budget_sec=None, channels=None, activity=None,
                  force: bool = False, run_id: str = ""):
@@ -629,15 +794,33 @@ def _rooms(run, screen, opts) -> tuple:
     c["chats_listed"], c["chats_how"] = len(chats), how
     listvirt = bool(chats) and not done
     sel_ok = bool(how)
-    for it in chats:
-        _add_room(rooms, by_tid, it, "chats")
+    # 목록 머리 항목(펼침 단추 — 즐겨찾기·채팅·팀 구역, 통합 보기의 팀 머리)은 대화방이 아니다(대화 ID 없음). 순번으로 누르면
+    # 화면이 바뀌지 않아 직전 방을 이 방으로 읽게 된다(M9 → M8).
+    heads = [it for it in chats if it.get("hdr") and not it.get("tid")]
+    if heads:
+        c["list_headers"] = len(heads)
+        chats = [it for it in chats if not (it.get("hdr") and not it.get("tid"))]
+    chans = []
     if opts.channels:
         chans, cdone, chow = _list_all(run, screen, "channels")
-        c["channels_listed"], c["channels_how"] = len(chans), chow
-        sel_ok = sel_ok or bool(chow)
-        listvirt = listvirt or (bool(chans) and not cdone)
-        for it in chans:
-            _add_room(rooms, by_tid, it, "channels")
+        if "channels" in getattr(screen, "nav_missing", ()):
+            chans = []                                     # '팀' 단추 없음 = 통합 보기 — 채널은 채팅 목록에 함께 있다
+        else:
+            c["channels_listed"], c["channels_how"] = len(chans), chow
+            sel_ok = sel_ok or bool(chow)
+            listvirt = listvirt or (bool(chans) and not cdone)
+    # 보기 판정(M9 — 새 채팅·채널 환경: 통합 Combined · 분리 Separate): 채팅 목록에 채널 대화 ID 가 있거나 '팀' 단추가 없으면 통합
+    combined = (any(chat_type_of(str(it.get("tid") or "")) == "channel" for it in chats)
+                or "channels" in getattr(screen, "nav_missing", ()))
+    if combined or opts.channels:
+        c["layout"] = "combined" if combined else "separate"
+    for it in chats:
+        if combined and not it.get("tid"):
+            run.bump("rooms_no_tid_skipped")               # 통합 보기에서 대화 ID 없는 항목은 순번으로 열지 않는다
+            continue
+        _add_room(rooms, by_tid, it, "chats")
+    for it in chans:
+        _add_room(rooms, by_tid, it, "channels")
     mentions = set()
     if opts.activity:
         acts, _adone, ahow = _list_all(run, screen, "activity")
@@ -661,7 +844,7 @@ def _add_room(rooms: list, by_tid: dict, it: dict, source: str) -> None:
         return
     room = {"rid": f"{source}:{it.get('idx', len(rooms))}", "idx": it.get("idx", len(rooms)), "tid": tid,
             "mid": str(it.get("mid") or ""), "label": str(it.get("label") or ""), "source": source,
-            "gone": bool(it.get("gone"))}
+            "href": str(it.get("href") or ""), "gone": bool(it.get("gone"))}
     if tid:
         by_tid[tid] = room
     rooms.append(room)
@@ -694,8 +877,10 @@ def _read_room(run, screen, room: dict, cp: Checkpoint, d0: date, d1: date, max_
     """한 방을 맨 아래(최신)부터 위로 되감으며 읽는다. 체크포인트 구간은 건너고(세지 않음), 기간 시작·대화 처음·정지·
     되감기 상한·예산에서 멈춘다."""
     res = {"pages": [], "top": False, "start": False, "done_stop": False, "cut": None, "mode": "new", "gone": False}
-    if screen.open_room(room, run.dl) != "ok":
+    r = screen.open_room(room, run.dl)
+    if r != "ok":
         res["gone"] = True
+        res["stuck"] = r == "stuck"                        # 눌렀는데 화면이 그대로(이미 열린 방일 수도) — 뒤에서 한 번 더
         return res
     seen, stall, scrolls, skips, mode = set(), 0, 0, 0, "new"
     while True:
@@ -868,6 +1053,9 @@ def collect(opts: Opts, *, paths, cfg, api, clock, now, off_fn, environ, session
         st["rc"] = W.RC_DRIVER
         return st
     c["synthetic"] = bool(screen.synthetic)
+    c["remote_session"] = 1 if remote_session() else 0
+    if c["remote_session"]:
+        W.human(REMOTE_TEXT, err)
     hb, stop, n_new, n_read = None, None, 0, 0
     try:
         state = screen.open(run.dl)
@@ -878,7 +1066,7 @@ def collect(opts: Opts, *, paths, cfg, api, clock, now, off_fn, environ, session
             W.add_login_facts(st, screen)
             st["rc"] = rc
             W.human(f"[Teams 웹] {'로그인이 필요합니다(전용 Edge 창에서 1회)' if rc == W.RC_LOGIN else 'Edge 세션을 쓸 수 없습니다'}"
-                    f" — {state}", err)
+                    f" — {state}{W.login_hint(c) if rc == W.RC_LOGIN else ''}", err)
             return st
         rctx = run.context()
         self_texts = [n for n in (getattr(getattr(rctx, "sctx", None), "self_names", None) or []) if len(n) >= 2]
@@ -907,6 +1095,7 @@ def collect(opts: Opts, *, paths, cfg, api, clock, now, off_fn, environ, session
         cps = dict(cursor.get("rooms") or {}) if isinstance(cursor.get("rooms"), dict) else {}
         hb = W.heartbeat(STAGE, total=len(rooms))
         msg_sel_ok = msg_sel_fail = 0
+        stuck = []
         for i, room in enumerate(rooms):
             if stop is not None:
                 break
@@ -920,12 +1109,33 @@ def collect(opts: Opts, *, paths, cfg, api, clock, now, off_fn, environ, session
             except W.ScreenStop as x:
                 stop = x
                 break
+            if got.get("stuck"):
+                stuck.append(room)
             n_new += got["new"]
             n_read += got["seen"]
             msg_sel_ok += got["sel_ok"]
             msg_sel_fail += got["sel_fail"]
             if hb is not None:
                 hb.update(done=i + 1)
+        # 눌러도 화면이 그대로였던 방(M8): 다른 방이 열린 지금 한 번 더 — 처음부터 열려 있던 방은 이제 바뀜으로 확인된다.
+        # 그래도 그대로면 그 방만 R-ROOMGONE(체크포인트 미전진 — 다음 실행이 다시).
+        for room in stuck:
+            room["retried"] = True
+            if stop is not None or run.out_of_time():
+                run.bump("rooms_gone")
+                continue
+            run.bump("rooms_retried")
+            try:
+                got = _process_room(run, screen, room, cps, d0, d1, newest_new, max_scroll, opts, self_norms,
+                                    self_texts, mention_ids)
+            except W.ScreenStop as x:
+                stop = x
+                run.bump("rooms_gone")
+                continue
+            n_new += got["new"]
+            n_read += got["seen"]
+            msg_sel_ok += got["sel_ok"]
+            msg_sel_fail += got["sel_fail"]
         if stop is None and rooms and msg_sel_fail and not msg_sel_ok and not n_read:
             W.add_reason(st, "R-WEBSEL")                   # 방은 열리는데 메시지 화면을 하나도 못 알아봄
             st["rc"] = W.RC_DRIVER
@@ -956,6 +1166,8 @@ def collect(opts: Opts, *, paths, cfg, api, clock, now, off_fn, environ, session
         W.add_login_facts(st, screen)
         st["rc"] = rc
         st["partial"] = True
+        if rc == W.RC_LOGIN:
+            W.human(f"[Teams 웹] 로그인이 필요합니다(전용 Edge 창에서 1회) — {stop.state}{W.login_hint(c)}", err)
     elif n_new > 0:
         st["rc"] = W.RC_SAVED
     elif row_err:                                          # 새로 남길 행이 전부 정제 오류 — '새것 0'(rc 4)이 아니다
@@ -1017,6 +1229,9 @@ def _process_room(run, screen, room: dict, cps: dict, d0, d1, newest_new, max_sc
     cp = Checkpoint(None if (opts.force or ck is None) else cps.get(ck))
     res = _read_room(run, screen, room, cp, d0, d1, max_scroll)
     if res["gone"]:
+        if res.get("stuck") and not room.get("retried"):
+            out["stuck"] = True                            # 다른 방을 연 뒤 다시(앱이 처음부터 열어 둔 방 — 확인 단서가 없을 때)
+            return out
         run.bump("rooms_gone")
         return out
     for p in res["pages"]:

@@ -15,8 +15,22 @@ import string
 # 코드: (화면 제목, 본문, 프로그램이 스스로 하는 일) — B §13 글자 그대로
 BR: dict[str, tuple[str, str, str]] = {
     "BR-LOGIN": ("Copilot 로그인이 필요합니다",
-                 "분석용 Edge 창을 앞으로 띄웠습니다. 그 창에서 회사 계정으로 한 번 로그인해 주세요. 로그인하면 자동으로 이어서 진행합니다.",
+                 "분석용 Edge 창을 앞으로 띄웠습니다. 그 창에서 회사 계정으로 한 번 로그인해 주세요. 로그인하면 자동으로 이어서 진행합니다. "
+                 "장치·Edge 프로필 관련 회사 정책 안내가 보이면 그 창 오른쪽 위 프로필 단추에서 회사 계정으로 Edge 에 "
+                 "로그인해 주세요(이 분석용 창에만 적용됩니다).",
                  "최대 {loginWaitMin}분 동안 5초마다 확인"),
+    # 장치 기반 조건부 액세스(AADSTS 50005·50097·53000·53001)·Edge 강제 로그인 화면(edge://) — 사람이 풀 수 있는 '브라우저 로그인'(H1·M6)
+    "BR-LOGIN-EDGE": ("분석용 Edge 에 회사 계정 로그인이 필요합니다",
+                      "회사 정책이 이 브라우저의 장치 확인을 요구합니다. 분석용 Edge 창 오른쪽 위 프로필 단추에서 회사 계정으로 "
+                      "Edge 에 로그인해 주세요(이 분석용 창에만 적용되고, 평소 쓰는 Edge 는 그대로입니다). 로그인하면 자동으로 "
+                      "이어서 진행합니다.",
+                      "로그인 대기 계속(다음부터 이 안내를 먼저)"),
+    # 직전 로그인이 Edge 를 닫은 뒤 풀림 — 회사 정책상 '로그인 상태 유지'(KMSI)가 없을 수 있다(H2)
+    "BR-LOGIN-NOPERSIST": ("지난 로그인이 유지되지 않았습니다",
+                           "지난번 로그인이 분석용 Edge 를 닫은 뒤 풀렸습니다. 로그인할 때 '로그인 상태를 유지하시겠습니까?'가 "
+                           "나오면 [예]를 누르거나, 분석용 Edge 창 오른쪽 위 프로필 단추에서 회사 계정으로 Edge 에 로그인하면 "
+                           "다음부터 유지됩니다.",
+                           "로그인 대기(한 작업 동안은 창을 닫지 않고 이어 씀)"),
     "BR-LOGIN-OK": ("로그인을 확인했습니다", "남은 AI 분석을 이어서 진행합니다.", "—"),
     "BR-LOGIN-TIMEOUT": ("로그인을 기다리다 AI 분석을 멈췄습니다",
                          "지금까지 처리한 {done}건은 저장했습니다. 남은 {left}건은 규칙 분류로 임시 표시했고, "
@@ -31,6 +45,24 @@ BR: dict[str, tuple[str, str, str]] = {
     "BR-LOGIN-PERSONAL": ("회사(조직) 계정이 아닌 로그인 화면입니다",
                           "회사(조직) 계정이 아니면 메일·팀즈 웹 수집과 AI 판정은 건너뛰고 PC 자료로 분석합니다.",
                           "개인 계정으로는 로그인을 기다리지 않음(다음부터 짧게 확인)"),
+    # 이번에 로그인을 다 기다렸지만 로그인되지 않음 — AI 단계는 실패가 아니라 로그인 보류(O-18 ⑤)
+    "BR-LOGIN-HELD": ("로그인 보류 — AI 판정은 PC 자료로 대신합니다",
+                      "로그인을 기다렸지만 로그인되지 않아 이번 분석의 AI 단계는 건너뛰고 PC 자료(규칙 분류)로 분석합니다. "
+                      "다음 수집·분석에서는 로그인 상태만 짧게 확인합니다. 회사 계정으로 로그인하려면 화면의 [분석용 Edge 창 "
+                      "앞으로]를 누른 뒤 그 창에서 로그인하세요.",
+                      "AI 단계 skipped(login_pending)"),
+    # Copilot 화면에서 회사(Entra) 계정 표시('Work' 표시·데이터 보호 방패·업무 모드 토글)를 확인하지 못함 — 보내지 않는다(H4)
+    "BR-ACCOUNT-UNKNOWN": ("회사 계정임을 확인하지 못해 AI 판정을 보내지 않았습니다",
+                           "Copilot 화면에서 회사(조직) 계정 표시(Work 표시·데이터 보호 방패)를 찾지 못했습니다. 개인 계정일 수 "
+                           "있어 업무 자료는 보내지 않고 PC 자료로 분석합니다. 회사 계정으로 쓰려면 화면의 [분석용 Edge 창 "
+                           "앞으로]를 누른 뒤 그 창에서 회사 계정으로 로그인하세요.",
+                           "AI 단계 skipped(account_unknown), 다음 분석에서 다시 확인"),
+    # 같은 Copilot 주소에 입력창 없는 화면이 서로 다른 날 반복 — 조직 정책 차단 안내 화면일 수 있다(M5)
+    "BR-CHAT-BLOCKED": ("Copilot 입력창이 계속 보이지 않습니다",
+                        "서로 다른 날 {confirmDays}번 Copilot 화면에 입력창이 없었습니다. 회사 정책으로 Copilot Chat 이 "
+                        "꺼졌거나 화면이 바뀌었을 수 있습니다. {ttlDays}일 동안 AI 판정은 건너뛰고 PC 자료로 분석하며, 그 뒤 "
+                        "자동으로 다시 확인합니다(연결 진단은 언제든 다시 확인합니다).",
+                        "AI 단계 skipped(chat_unavailable)"),
     "BR-EDGE": ("Microsoft Edge 를 찾지 못했습니다",
                 "이 PC 에서는 Copilot 자동 연결을 쓸 수 없어 '직접 붙여넣기' 방식으로 바꿨습니다.",
                 "수동 경로 전환(설정에 따라)"),
@@ -38,6 +70,11 @@ BR: dict[str, tuple[str, str, str]] = {
                   "이 PC 의 Edge 는 자동 조작(디버그 포트)이 허용되지 않습니다. '직접 붙여넣기' 방식으로 바꿨습니다. "
                   "결과는 같은 검증을 거칩니다.",
                   "수동 경로 전환"),
+    # Edge 정책 UserDataDir — 전용 프로필을 쓸 수 없다(사용자 본 Edge 에는 손대지 않는다, H5)
+    "BR-POLICY-UDD": ("회사 정책이 Edge 사용자 폴더를 고정해 두었습니다",
+                      "이 PC 의 Edge 는 회사 정책으로 사용자 데이터 폴더가 고정되어 분석 전용 Edge 를 따로 띄울 수 없습니다. "
+                      "평소 쓰는 Edge 에는 손대지 않고 '직접 붙여넣기' 방식으로 바꿨습니다.",
+                      "수동 경로 전환"),
     "BR-MANUAL-SWITCH": ("직접 붙여넣기 방식으로 진행합니다",
                          "AI 에게 보낼 묶음 {k}개를 준비했습니다. [복사] → Copilot 창에 붙여넣기 → 답 전체를 복사해 "
                          "[답 붙여넣기]에 넣어 주세요. 순서는 상관없습니다.",
@@ -55,6 +92,9 @@ BR: dict[str, tuple[str, str, str]] = {
                  "다음 분석 때 자동으로 다시 시도합니다.",
                  "진단 덤프, 재개 표시"),
     "BR-TAB": ("Copilot 창이 닫혔습니다", "분석용 탭을 다시 열어 이어서 진행합니다.", "자기 탭 재생성"),
+    "BR-TAB-PAGE": ("분석용 탭이 Copilot 이 아닌 화면에 있습니다",
+                    "분석용 탭을 Copilot 주소로 다시 열었지만 다른 화면에 머물렀습니다. 다음 분석 때 자동으로 다시 시도합니다.",
+                    "재개 표시"),
     "BR-DEAD-PROFILE": ("분석용 Edge 의 로그인 정보가 손상되었습니다",
                         "새 분석용 프로필을 만들었습니다. 열린 Edge 창에서 한 번 로그인해 주세요.", "프로필 재생성 → BR-LOGIN"),
     "BR-LAUNCH": ("분석용 Edge 를 띄우지 못했습니다",
@@ -106,13 +146,15 @@ BR: dict[str, tuple[str, str, str]] = {
                  "계정 등급상 사서함·Teams 를 근거로 쓸 수 없습니다. 메일·Teams 조회는 건너뛰고, 분석은 정리된 글을 붙여 "
                  "보내는 방식으로 계속합니다. 로컬 색인·웹 수집 결과는 그대로 씁니다.",
                  "조회 단계 생략(능력 기록), 엄격 규칙"),
+    # 웹 검색 설정은 Copilot 설정 화면(개인 설정 > 고급)에 있어 브리지가 읽지 않는다 — 화면에서 꺼짐을 확인할 길이 없으므로
+    # '다음에 재판별' 같은 약속을 하지 않는다(M11). 꺼짐이 보이는 화면(채팅 화면의 토글)이면 그때만 풀린다.
     "BR-WEB-STRICT": ("웹 검색이 켜질 수 있어 더 가려서 보냅니다",
-                      "업무 모드와 웹 검색 꺼짐을 둘 다 확인하지 못했습니다. 고객사·협력사 번호를 지워 보내고, 금액과 고객사가 "
-                      "함께 나오는 {n}건은 보내지 않고 규칙 분류로 표시했습니다.",
-                      "엄격 규칙(§9.7), 다음 호출에서 재판별"),
+                      "웹 검색 설정은 Copilot 채팅 화면에서 확인할 수 없어, 웹 검색이 켜져 있다고 보고 보냅니다. 고객사·협력사 "
+                      "번호를 지워 보내고, 금액과 고객사가 함께 나오는 {n}건은 보내지 않고 규칙 분류로 표시했습니다.",
+                      "엄격 규칙(§9.7)"),
     "BR-WEB-BLOCK": ("웹 검색이 켜질 수 있어 AI 분석을 보내지 않았습니다",
-                     "설정(웹 노출 시 전송 안 함)에 따라 이번 분석은 규칙 분류로만 표시했습니다. 업무 모드와 웹 검색 꺼짐이 "
-                     "확인되면 다음 분석에서 남은 것부터 자동으로 이어 합니다.",
+                     "설정(웹 노출 시 전송 안 함)에 따라 이번 분석은 규칙 분류로만 표시했습니다. 웹 검색 설정은 Copilot 채팅 "
+                     "화면에서 확인할 수 없어, 이 설정이 켜져 있는 동안은 AI 분석을 보내지 않습니다.",
                      "전 단계 skipped(web_exposed)"),
     "BR-WEB-MODE": ("업무(Work) 모드로 바꾸지 못했습니다",
                     "Copilot 화면이 웹 모드에 머물러 있어 이번에는 메일·Teams 조회를 건너뜁니다. 다음 분석 때 다시 시도합니다.",
@@ -122,7 +164,8 @@ BR: dict[str, tuple[str, str, str]] = {
 # ── L1 단계(phase) — B §5.8 ─────────────────────────────────────────────────
 CONTENT_PHASES = ("replied", "no_reply", "empty_reply", "stub")
 SEND_PHASES = ("input_overflow", "inject_mismatch", "busy_before_send", "send_failed", "cdp_error")
-SESSION_PHASES = ("login_required", "dead_session", "input_not_found", "wrong_tab", "tab_lost")
+SESSION_PHASES = ("login_required", "dead_session", "input_not_found", "wrong_tab", "tab_lost",
+                  "account_unconfirmed")      # 회사(Entra) 계정 미확인 — 업무 자료를 보내지 않음(H4, 전송 직전 관문)
 LAUNCH_PHASES = ("edge_not_found", "launch_failed", "policy_blocked", "port_exhausted", "profile_busy", "lock_busy")
 MANUAL_PHASES = ("manual_pending",)
 ALL_PHASES = CONTENT_PHASES + SEND_PHASES + SESSION_PHASES + LAUNCH_PHASES + MANUAL_PHASES
@@ -135,7 +178,8 @@ PHASE_BR = {
     "policy_blocked": "BR-POLICY",
     "input_not_found": "BR-INPUT",
     "tab_lost": "BR-TAB",
-    "wrong_tab": "BR-TAB",
+    "wrong_tab": "BR-TAB-PAGE",
+    "account_unconfirmed": "BR-ACCOUNT-UNKNOWN",
     "dead_session": "BR-DEAD-PROFILE",
     "launch_failed": "BR-LAUNCH",
     "port_exhausted": "BR-LAUNCH",

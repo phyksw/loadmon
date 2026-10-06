@@ -96,12 +96,33 @@ class Flows(FullBase):
         self.assertEqual(b2.closed_by_cdp, 0)                              # 원래 떠 있던 Edge 는 그대로
         self.assertTrue(b2.alive)
 
-    def test_T15_login_never_two_strikes_and_rest_skipped(self):
+    def test_T15_login_never_held_not_failed(self):
+        """처음부터 로그인 화면이고 사람이 로그인하지 않음 — 세션이 로그인 대기를 다 하고 보류를 남겼다: 단계는 실패(2-strike
+        치명·rc 1)가 아니라 skipped(login_pending)·rc 0(O-18 ⑤ · V18)."""
         w = self.world(page={"login_until_s": 10 ** 9})
         notices = Notices()
         self.write(w, "t_act", act_rows(3))
         self.write(w, "t_label", [{"key": "grp:1", "fields": {"kinds": "메일 1", "subjects": ["회의 준비"]}}])
         rt = self.open(w, notices)
+        res = runner.run_stages(rt, [ActStage(), LabelStage()])
+        runner.close_runtime(rt)
+        for st in ("t_act", "t_label"):
+            self.assertEqual((res[st]["state"], res[st]["stop_kind"], res[st]["reason"], res[st]["rc"]),
+                             ("skipped", None, "login_pending", 0), st)
+        self.assertIn("BR-LOGIN-HELD", notices.shown)
+        self.assertNotIn("BR-LOGIN-TIMEOUT", notices.shown)
+        self.assertEqual(runner.worst_rc(res), 0)
+
+    def test_T15_login_lost_midrun_two_strikes_and_rest_skipped(self):
+        """B-T15 의 L3 몫 — 실행 중 로그인이 풀렸고 질의 마감 안에서 로그인 대기가 잘렸다(보류 아님): strike 1 → 확인 재전송
+        실패 → 단계 중지 fatal(login_required), 남은 단계 skipped(fatal)."""
+        w = self.world(overrides={"bridge.loginWaitMin": 30})          # 30분 > 질의 마감(roundtripMaxSec 900초)
+        notices = Notices()
+        self.write(w, "t_act", act_rows(3))
+        self.write(w, "t_label", [{"key": "grp:1", "fields": {"kinds": "메일 1", "subjects": ["회의 준비"]}}])
+        rt = self.open(w, notices)
+        for p in w.net.our_pages():
+            p.login_until_s = 10 ** 9                                   # 세션이 준비된 뒤 로그인이 풀림
         res = runner.run_stages(rt, [ActStage(), LabelStage()])
         runner.close_runtime(rt)
         a, b = res["t_act"], res["t_label"]
