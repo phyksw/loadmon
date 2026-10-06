@@ -24,6 +24,7 @@ __all__ = ["ROUTES", "list_runs", "run_view"]
 _RUN_RX = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{4}$")
 _DATE_RX = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _STAGE_RX = re.compile(r"^[a-z][a-z0-9_:]{0,31}$")
+_PERIOD_SOURCES = ("default", "this_month", "last_month", "this_year", "user")    # = cli PERIOD_SOURCES(R RP8)
 AI_STAGES = ("task_label", "workflow_label", "agentic_match", "subagent_review", "review_text")
 RUNS_MAX = 50
 LABEL_RUNS = 10                          # 라벨 출처 통계를 싣는 최근 실행 수(실행마다 결과 봉투 5개를 읽는다)
@@ -170,6 +171,17 @@ def post_run(app, req):
         if not _as_of_ok(as_of):
             raise ApiError(400, "bad_as_of", "기준 시각 형식이 아닙니다(YYYY-MM-DDTHH:MM)")
         argv += ["--as-of", as_of]
+    # 기간 출처(R RP8 — RPT-04 '기간 출처' 표시 근거). cli analyze --period-source·--period-months(W2 통합)
+    ps = b.get("period_source")
+    if ps not in (None, ""):
+        if ps not in _PERIOD_SOURCES:
+            raise ApiError(400, "bad_period_source", "기간 출처 값이 아닙니다")
+        argv += ["--period-source", ps]
+    pm = b.get("period_months")
+    if pm not in (None, ""):
+        if isinstance(pm, bool) or not isinstance(pm, int) or not 1 <= pm <= 36:
+            raise ApiError(400, "bad_period_months", "기간 개월 수는 1~36 입니다")
+        argv += ["--period-months", str(pm)]
     if not ai:
         argv.append("--no-ai")
     return app.start_job("analyze", argv)

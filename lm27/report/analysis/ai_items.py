@@ -106,7 +106,9 @@ def subagent_items(ctx, wf: Mapping, sub: Mapping) -> list[dict]:
         sr = rows.get(rid)
         if u0 is None or sr is None or not rw["steps"]:
             continue
-        role = rw.get("ai_role") or f"{V.field_name(u0.field, ctx.registry)}·{V.func_name(u0.func, ctx.registry)}"
+        # 코파일럿이 답한 역할 한 줄만 쓴다. 규칙 답(브리지 폴백 — role '판단 유보' 자리표)은 역할 이름이 아니다(W2 통합)
+        ai_role = rw.get("ai_role") if rw.get("ai_by") in ("ai", "manual", "rule_pending") else ""
+        role = ai_role or f"{V.field_name(u0.field, ctx.registry)}·{V.func_name(u0.func, ctx.registry)}"
         fl = {r["no"]: r["flags"] for r in sr["steps"]}
         steps = [[f"S{s['no']}", scrub_time(s["label"])[:20], s["code"], flags_text(fl.get(s["no"], {}))]
                  for s in rw["steps"]]
@@ -260,7 +262,7 @@ def write_ai_items(run_id: str, stage: str | None = None, *, paths=None, cfg=Non
         cfg = load_config(paths)
     if inputs is None:
         from lm27.report.inputs import load_inputs        # 보고서 입력 단일 로더(R §2.5 · WP-31)
-        inputs = load_inputs(run_id)
+        inputs = load_inputs(run_id, paths=paths, cfg=cfg)   # 받은 paths·cfg 로(W2 통합 WP-32 CR — 기본 Paths() 아님)
     if cal is None:
         from lm27.time.calendar import load_calendar
         cal = load_calendar(paths, _get(inputs, "registry"))

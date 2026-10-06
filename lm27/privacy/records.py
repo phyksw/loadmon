@@ -26,6 +26,7 @@ C7(수집기 원시 모양 — teams ``is_me=null → direction unknown``·``par
 """
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import importlib
 import importlib.util
@@ -56,13 +57,14 @@ from .classify import (
 )
 from .classify import RoomStat as RoomStat
 from .classify import window_class as _window_class
-from .detect import SanitizeContext, norm_person, sanitize
-from .rules import RULES_VERSION
+from .detect import SanitizeContext, _dict_rx, norm_person, sanitize
+from .rules import COMPOUND_SURNAMES, NAME_STOP, RULES_VERSION
 
 __all__ = [
     "ACT_CUES", "COPILOT_SRCS", "KINDS", "SCHEMAS", "SRCS_BY_KIND",
     "KindSpec", "RecordContext", "RecordOutcome", "RoomStat", "SanitizedRow", "WorkWindow",
-    "check_row", "path_excluded", "record_id", "redact_fields", "redact_row", "resanitize_row", "row_dict",
+    "check_row", "dict_name", "path_excluded", "record_id", "redact_fields", "redact_row", "remask_persons",
+    "resanitize_row", "row_dict",
     "sanitize_record", "validate_columns",
 ]
 
@@ -591,6 +593,19 @@ def _fix_surr(v):
     return v
 
 
+def dict_name(n, self_low=frozenset()) -> str | None:
+    """사람 사전(표시명 → who_key)에 넣을 이름(P §9.6 — ``context._persons`` 와 같은 규칙): NFKC·앞뒤 공백 제거, 40자 이하,
+    정규화 핵심(norm_person) 2자 이상, 복성만(남궁…)·일반어(NAME_STOP)·본인 이름(``self_low`` 소문자)·이메일 모양 제외.
+    통과하면 그 이름, 아니면 None."""
+    n2 = unicodedata.normalize("NFKC", str(n or "")).strip()
+    if not n2 or len(n2) > 40 or _EMAIL_RX.match(n2):
+        return None
+    core = norm_person(n2)
+    if len(core) <= 1 or core in COMPOUND_SURNAMES or n2 in NAME_STOP or n2.lower() in self_low:
+        return None
+    return n2
+
+
 def _name_norm(n) -> str:
     """본인 이름 비교용 정규화: norm_person(NFKC·소문자·괄호·호칭 꼬리·구분자 제거) 뒤 '님'·'씨' 꼬리 제거."""
     x = norm_person(str(n or ""))
@@ -861,6 +876,8 @@ class _Build:
         self.ad_partial = False
         self.no_key = False
         self.after: list = []                    # 저장 성공 뒤 문맥 갱신(같은 배치의 뒤 행이 쓴다)
+        self.party_names: dict = {}              # 이 레코드 당사자 표시명 → 사람 키 16hex(글 정제 2차 — W1b)
+        self._party_sctx = None
 
     # ── 키 ──
     def key(self, fn, material):
@@ -883,6 +900,42 @@ class _Build:
         return self.key_opt(K.who_key, ident) if ident else None
 
     # ── 텍스트 ──
+    def parties_ctx(self, parties) -> None:
+        """이 레코드 당사자(보낸·받는 사람·주최자·참석자·팀즈 작성자·참여자)의 표시명을 이 레코드 글 정제에 쓴다 — 첫 수집
+        (빈 사람 사전)에서도 제목·본문·방 제목·파일 이름의 동료 실명이 원문으로 남지 않게(I1 · W1b). 이름 → 그 사람의
+        who_key(주소가 있으면 smtp, 없으면 name — P §9.3). 본인·성만 이름·일반어·이미 사전에 있는 이름은 뺀다."""
+        rc = self.rc
+        self_low = {str(s).lower() for s in (rc.sctx.self_names or ())}
+        base = rc.sctx.persons or {}
+        extra: dict = {}
+        for a, n in parties:
+            if not n or self.is_self(a, n):
+                continue
+            nm = dict_name(n, self_low)
+            if nm is None or nm in base or nm in extra or _name_norm(nm) in rc.self_norms:
+                continue
+            k = self.who(a, nm)
+            extra[nm] = k[1:] if k else "0" * 16        # 키 없음 → 토큰은 마무리에서 [사람] 으로 강등(no_key)
+        self.party_names = extra
+        self._party_sctx = None
+
+    def _remask_parties(self, r, col: str, max_len: int):
+        """1차 정제문에 당사자 이름이 남았으면 그 이름만 든 사전으로 한 번 더 정제(기존 토큰은 보호 구간 — 멱등).
+        큰 사람 사전 정규식을 레코드마다 다시 만들지 않으려고 작은 사전으로 2차를 돈다."""
+        if not self.party_names or not r.text:
+            return r
+        low = r.text.casefold()
+        if not any(n.casefold() in low for n in self.party_names):
+            return r
+        if self._party_sctx is None:
+            self._party_sctx = dataclasses.replace(self.rc.sctx, persons=dict(self.party_names))
+        r2 = sanitize(r.text, col, self._party_sctx, max_len)
+        if r2.drop:
+            return r
+        hits = dict(r.hits)
+        _merge(hits, r2.hits)
+        return dataclasses.replace(r2, hits=hits)
+
     def text(self, col: str, value, max_len: int) -> str:
         v = value if isinstance(value, str) else ""
         if not v.strip():
@@ -891,6 +944,7 @@ class _Build:
         r = sanitize(v, col, self.rc.sctx, max_len)
         if r.drop:
             raise _Drop("cred", {"cred": 1})
+        r = self._remask_parties(r, col, max_len)
         _merge(self.hits, r.hits)
         self.texts[col] = r.text
         return r.text
@@ -901,6 +955,7 @@ class _Build:
             r = sanitize(v, col, self.rc.sctx, max_len)
             if r.drop:
                 raise _Drop("cred", {"cred": 1})
+            r = self._remask_parties(r, col, max_len)
             _merge(self.hits, r.hits)
             if r.text:
                 out.append(r.text)
@@ -979,11 +1034,16 @@ class _Build:
         return out[:20]
 
     def learn(self, parties, when: str) -> None:
-        """사람 사전 갱신 재료(P §9.6 — 주소가 있는 사람만, 메모리). 저장은 ``rc.commit_local()``."""
+        """사람 사전 갱신 재료(P §9.6, 메모리). 저장은 ``rc.commit_local()``. 주소 없는 이름(팀즈·OWA 표시명)도 사전 규칙
+        (``dict_name``)을 통과하면 이름 기반 키(``name:`` — P §9.3)로 배운다(W1b — 주소가 없다고 사전에 오르지 않으면 그 동료
+        실명이 영영 가려지지 않는다). 배운 이름은 저장 성공 뒤 같은 실행의 다음 레코드부터 바로 쓴다(``_apply_after``)."""
         day = when[:10]
+        self_low = {str(s).lower() for s in (self.rc.sctx.self_names or ())}
         for a, n in parties:
             if not a:
-                continue
+                n = dict_name(n, self_low)
+                if n is None:
+                    continue
             k = self.who(a, n)
             if not k:
                 continue
@@ -1067,7 +1127,8 @@ class _Build:
             self.flags["bulk"] = True
         elif rcv == "cc":
             self.flags["cc"] = True
-        # 텍스트
+        # 텍스트(당사자 표시명도 가린다 — 첫 수집의 빈 사람 사전에서도, W1b)
+        self.parties_ctx(sender + to + cc)
         subj_m = self.text("subject_masked", subject, 120)
         names = _strlist(r.get("attach_names"), 10)
         self.textlist("attach_names_masked", names, 80, 5)
@@ -1234,6 +1295,7 @@ class _Build:
                 self.flags[fk] = True
         if online:
             self.flags["online_meeting"] = True
+        self.parties_ctx(org + att)                     # 주최자·참석자 표시명도 가린다(W1b)
         subj_m = self.text("subject_masked", subject, 120)
         cats = _strlist(r.get("categories"), 10)
         self.textlist("categories_masked", cats, 30, 3)
@@ -1303,6 +1365,7 @@ class _Build:
         self.learn(parts + ([(a_addr, a_name)] if is_me is True else []), ts)   # P §9.6 — 주소 있는 작성자·참여자만
         if _bool(r.get("mentions_me")):
             self.flags["mentions_me"] = True
+        self.parties_ctx(parts + ([(a_addr, a_name)] if (a_addr or a_name) else []))   # 작성자·참여자 표시명(W1b)
         files = _strlist(r.get("file_names"), 10)
         self.textlist("file_names_masked", files, 80, 5)
         self.row["file_keys"] = [k for k in (self.key_opt(K.doc_key, n) for n in files[:10]) if k]
@@ -1576,10 +1639,15 @@ class _Build:
                                               "first": day, "last": day})
                 if name and not _EMAIL_RX.match(name):
                     p["names"].add(_CTRL_RX.sub(" ", name)[:60])
-                p["smtp"].add(addr)
+                if addr:
+                    p["smtp"].add(addr)
                 p["self"] = p["self"] or is_self
                 p["internal"] = p["internal"] or internal
                 p["first"], p["last"] = min(p["first"], day), max(p["last"], day)
+                if not p["self"] and name:               # 같은 실행의 다음 레코드부터 이 이름을 가린다(W1b)
+                    nm = dict_name(name, {str(s).lower() for s in (rc.sctx.self_names or ())})
+                    if nm is not None and _name_norm(nm) not in rc.self_norms:
+                        rc.sctx.persons.setdefault(nm, wk[1:])
 
 
 # ───────────────────────────── 공개 함수 ─────────────────────────────
@@ -1618,12 +1686,45 @@ def _ver(v) -> tuple:
         return (0,)
 
 
-def resanitize_row(kind: str, row, ctx: SanitizeContext | None = None):
-    """적재 시 재정제(G2 · P §10.5): ``rules_ver`` 가 지금보다 낮은 행만 텍스트 열을 지금 규칙으로 다시 정제한다.
-    → ``(행, 범주별 건수)``. 원본은 바꾸지 않는다(사본). 자격증명이 뒤늦게 걸리면 그 값만 비운다(행·시간 근거 유지).
-    ``id`` 는 다시 계산하지 않는다(행 정체성은 최초 저장 때 고정). 가림은 늘기만 한다(I5 — 토큰은 보호 구간)."""
-    if _ver(row.get("rules_ver", "0.0.0")) >= _ver(RULES_VERSION):
+def remask_persons(kind: str, row, ctx: SanitizeContext | None = None):
+    """G2 보강(W1b): 지금 사람 사전(``ctx.persons``)의 이름이 저장 행 텍스트 열에 남아 있으면 **그 열만** 지금 문맥으로 다시
+    정제한다(규칙 판이 같아도 — 행을 쓴 뒤에 배운 이름). → ``(행, 범주별 건수)``. 남은 이름이 없으면 같은 행 객체를 돌려준다
+    (바뀌었는지는 ``is`` 로 본다). 원본은 바꾸지 않는다. 기존 토큰은 보호 구간이라 멱등이다(I5)."""
+    if ctx is None or not ctx.persons or kind not in SCHEMAS:
         return row, {}
+    rx = _dict_rx(ctx.persons)
+    if rx is None:
+        return row, {}
+    out, hits, changed = None, {}, False
+    for col in SCHEMAS[kind].text_fields:
+        v = row.get(col)
+        if not v:
+            continue
+        vals = list(v) if isinstance(v, (list, tuple)) else [v]
+        if not any(isinstance(x, str) and x and rx.search(x) for x in vals):
+            continue
+        new = []
+        for x in vals:
+            if isinstance(x, str) and x and rx.search(x):
+                r = sanitize(x, col, ctx)
+                new.append("" if r.drop else r.text)
+                _merge(hits, {"cred": 1} if r.drop else r.hits)
+            else:
+                new.append(x)
+        if out is None:
+            out = dict(row)
+        out[col] = new if isinstance(v, (list, tuple)) else new[0]
+        changed = True
+    return (out, hits) if changed else (row, {})
+
+
+def resanitize_row(kind: str, row, ctx: SanitizeContext | None = None):
+    """적재 시 재정제(G2 · P §10.5): ``rules_ver`` 가 지금보다 낮은 행은 텍스트 열을 지금 규칙으로 다시 정제하고, 같은 판인
+    행도 지금 사람 사전의 이름이 남은 열은 다시 가린다(``remask_persons`` — W1b, 첫 실행에 남은 실명). → ``(행, 범주별 건수)``.
+    원본은 바꾸지 않는다(사본). 자격증명이 뒤늦게 걸리면 그 값만 비운다(행·시간 근거 유지). ``id`` 는 다시 계산하지 않는다
+    (행 정체성은 최초 저장 때 고정). 가림은 늘기만 한다(I5 — 토큰은 보호 구간). 바뀐 것이 없으면 같은 행 객체."""
+    if _ver(row.get("rules_ver", "0.0.0")) >= _ver(RULES_VERSION):
+        return remask_persons(kind, row, ctx)
     out, hits = dict(row), {}
     for col in SCHEMAS[kind].text_fields:
         v = out.get(col)

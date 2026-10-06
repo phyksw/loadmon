@@ -370,9 +370,9 @@ def from_cfg(cfg) -> BridgeSettings:
     stages_raw = raw["bridge.stages"] or {}
     stages = tuple((sid, bool(stages_raw.get(sid, True))) for sid in STAGE_IDS)
 
-    cfg_warn = tuple(w for w in getattr(cfg, "config_warnings", ())
-                     if str(w.get("key", "")).startswith("bridge.") or w.get("key") in
-                     ("collect.confirmBlockedCount", "collect.confirmTtlDays"))
+    # 경고 거르기도 리터럴 키 표(KEYS)로만 — 접두 조립을 두지 않아 L-12 죽은 키 검사가 접두로 가려지지 않는다(W1a R11)
+    key_set = frozenset(key for key, _attr in KEYS)
+    cfg_warn = tuple(w for w in getattr(cfg, "config_warnings", ()) if w.get("key") in key_set)
     return BridgeSettings(
         mode=raw["bridge.mode"],
         auto_manual_fallback=bool(raw["bridge.autoManualFallback"]),

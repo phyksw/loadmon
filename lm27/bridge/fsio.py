@@ -182,3 +182,18 @@ def read_text(path, default: str | None = None) -> str | None:
         return fsx.read_bytes(path).decode("utf-8-sig")
     except (OSError, UnicodeDecodeError):
         return default
+
+
+def read_text_any(path) -> tuple[str | None, str]:
+    """사람이 저장한 텍스트 파일 → ``(글, 상태)``. UTF-8(BOM 허용) → 안 되면 CP949(한국어 Windows 메모장 'ANSI').
+    상태 ``ok`` · ``enc``(둘 다 실패 — 글 None) · ``io``(잠김·없음 — 글 None, 다음에 다시 볼 수 있다)."""
+    try:
+        data = fsx.read_bytes(path)
+    except OSError:
+        return None, "io"
+    for enc in ("utf-8-sig", "cp949"):
+        try:
+            return data.decode(enc), "ok"
+        except UnicodeDecodeError:
+            continue
+    return None, "enc"

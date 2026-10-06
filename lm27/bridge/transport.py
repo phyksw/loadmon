@@ -314,7 +314,16 @@ class CdpTransport:
                 return _Inj("input_not_found", len(want), 0)
             self._sleep(S.FOCUS_POLL_S)
         self.clear_editor()
-        self.s.call("Input.insertText", {"text": text})
+        try:
+            self.s.call("Input.insertText", {"text": text})
+        except (C.CdpError, PhaseError) as e:                  # 보정(주입만)도 예외 대신 단계 문자열을 받는다(W1b)
+            phase = e.phase if isinstance(e, PhaseError) else ""
+            if not phase:
+                try:
+                    phase = "cdp_error" if self.s.tab_alive() else "tab_lost"
+                except OSError:
+                    phase = "tab_lost"
+            return _Inj(phase, len(want), 0)
         self._sleep(S.INJECT_SETTLE_S)
         got = self._editor()
         if not match(got, want):

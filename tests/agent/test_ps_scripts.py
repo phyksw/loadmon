@@ -76,6 +76,22 @@ class StaticTest(unittest.TestCase):
         self.assertIn("RestartOnFailure", t)
         self.assertNotRegex(t, r"PSScriptRoot")                            # 등록 Action 은 에이전트 폴더(사본)만
 
+    def test_loop_schedule_monotonic_and_children_stopped(self):
+        """W1b 회귀(정적 — ps 는 벽시계를 흉내 낼 수 없다): 감독 루프 일정은 Stopwatch(단조 초)로 잡고 벽시계 비교로 틱·수확·
+        자식·플러시·보존 정리를 잡지 않는다(시계가 뒤로 가면 그 폭만큼 멈추던 결함). 루프가 끝나면 세 자식(수확·teams.uia·
+        폴링)을 Stop-LmTree 로 끈다(정지·제거 뒤 고아 수집 0)."""
+        t = AGENT_PS.read_text(encoding="utf-8-sig")
+        body = t[t.index("function Invoke-LmAgent"):]
+        start = body.index("while (-not [IO.File]::Exists($stopFlag))")
+        stop = body.index("# 종료: 살아 있는 자식")
+        loop, tail = body[start:stop], body[stop:body.index("# 종료: 마지막 틱")]
+        self.assertIn("[Diagnostics.Stopwatch]::StartNew()", body)
+        self.assertNotRegex(loop, r"\$(?:nextTick|nextHarvest|maintAt|cfgAt|catAt|teamsAt|pollAt|lastFlush|harvestStarted)\b")
+        self.assertIn("$m -lt $nextTickM", loop)
+        for v in ("$harvestChild", "$teamsChild", "$pollChild"):
+            self.assertIn(v, tail)
+        self.assertIn("Stop-LmTree $ch.Id", tail)
+
     def test_bad_args_exit_without_work(self):
         sb = H.Sandbox()
         self.addCleanup(sb.cleanup)

@@ -212,5 +212,68 @@ class Probe(FullBase):
         self.assertEqual(out["rc"], 2)
 
 
+class OpenFailureCleanup(FullBase):
+    """W1b 회귀: open_runtime 이 세션을 연 뒤 자동 보정(3~6분) 중 예외(Ctrl+C·CdpError)가 나도 우리가 띄운 디버그 포트
+    Edge·CDP·session.lock.json 이 남지 않는다(다음 실행이 그 Edge 를 '재사용'해 closeOnExit 가 영영 적용되지 않던 결함)."""
+
+    def _world(self, exc):
+        class Page(FakePage):
+            def cdp_call(self, method, params):
+                if method == "Input.insertText":
+                    raise exc
+                return super().cdp_call(method, params)
+        w = World(page_factory=lambda url: Page(w.clock, url=url))
+        self.addCleanup(w.cleanup)
+        return w
+
+    def _ours(self, w):
+        return [b for b in w.net.browsers.values() if not b.foreign]
+
+    def test_ctrl_c_during_calibration_closes_edge_and_lock(self):
+        w = self._world(KeyboardInterrupt())
+        with self.assertRaises(KeyboardInterrupt):
+            self.open(w, Notices(), calibrate_model="fast")
+        (b,) = self._ours(w)
+        self.assertEqual((b.alive, b.closed_by_cdp), (False, 1))                       # 우리가 띄운 Edge → Browser.close
+        self.assertFalse(Path(w.paths.edge_lock()).exists())                           # 잠금 해제
+
+    def test_cdp_error_in_inject_is_a_phase_not_an_exception(self):
+        from lm27.bridge.cdp import CdpError
+        w = self._world(CdpError("Target closed"))
+        rt = self.open(w, Notices(), calibrate_model="fast")                         # 보정은 실패로 끝나고 실행은 이어진다
+        try:
+            from lm27.bridge.clock import Deadline
+            r = rt.transport.inject("가나다", Deadline.after(w.clock, 30))
+            self.assertIn(r.phase, ("cdp_error", "tab_lost"))
+        finally:
+            runner.close_runtime(rt)
+        (b,) = self._ours(w)
+        self.assertEqual((b.alive, b.closed_by_cdp), (False, 1))
+        self.assertFalse(Path(w.paths.edge_lock()).exists())
+
+    def test_owned_vs_injected_transport_on_failure(self):
+        """전송을 연 뒤 조립 단계(레지스트리)에서 실패 — 여기서 만든 CDP 세션은 닫고, 주입받은 전송은 호출자 몫으로 둔다."""
+        from unittest import mock
+        w = self.world()
+        with mock.patch.object(runner, "_registry", side_effect=RuntimeError("조립 실패 흉내")),                 self.assertRaises(RuntimeError):
+            runner.open_runtime(w.paths, RUN, mode="auto", clock=w.clock, environ=w.environ,
+                                session_factory=lambda: w.session("bridge", RUN, notices=Notices()), emit=None,
+                                notices=Notices(), registry=None, gate_base=None, pc_id=PC, raw_cfg=settings(w.tmp)[1],
+                                heartbeat=False)
+        (b,) = self._ours(w)
+        self.assertEqual((b.alive, b.closed_by_cdp), (False, 1))
+        self.assertFalse(Path(w.paths.edge_lock()).exists())
+        closed = []
+
+        class T(StubTransport):
+            def close(self):
+                closed.append(1)
+        with mock.patch.object(runner, "_registry", side_effect=RuntimeError("조립 실패 흉내")),                 self.assertRaises(RuntimeError):
+            runner.open_runtime(w.paths, RUN, mode="auto", clock=w.clock, environ=w.environ,
+                                transport=T(lambda prompt, rid, stage: ("ok", "")), emit=None, notices=Notices(),
+                                registry=None, gate_base=None, pc_id=PC, raw_cfg=settings(w.tmp)[1], heartbeat=False)
+        self.assertEqual(closed, [])                                                   # 주입받은 전송은 닫지 않는다
+
+
 if __name__ == "__main__":
     unittest.main()

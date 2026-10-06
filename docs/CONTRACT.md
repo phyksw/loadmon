@@ -93,6 +93,7 @@
 | v1.0.1 | 2026-10-05 | 반증 점검 보정(§10.O X-300~X-317) |
 | **v1.1** | 2026-10-05 | **W0 구현 반영.** 원칙: 구현·시험을 통과한 W0 공개 API(`lm27\paths.py` · `config.py` · `cli.py` · `util\*` · `bundle\ids.py` · `time\calendar.py` · `collect\{stage_result, rcmap, watch}.py` · `tools\hook_check.py` · `lint.ps1` · `tests\fixtures\*`)가 사실이며, 계약이 다르면 계약을 구현에 맞춰 등재한다. 계약 원칙·안전 규칙과 부딪히거나 구현이 답을 주지 않는 요청은 고치지 않고 §12 에 남긴다. 구현 계획 §7 CR-01~CR-16 은 모두 채택(CR-14 = 예외 표 방식) |
 | **v1.2** | 2026-10-06 | **W1a 통합 창 계약 요청 결정(§0.7 C1~C23).** 차단급 결정(수집기 상태 줄 C1 · 문서군 꼬리 C16 · 레코드 id C6 · 감사 키 C10 · 소급 가림 C11 · 절전 원천 C14 · obs 형 C21 · 판정 C9)과 등재 결정. 해당 절의 문구 반영은 표의 '반영' 열대로 |
+| | 2026-10-06 | **반영 완료(W2 통합 창)** — 판은 v1.2 그대로. §0.7 'W2 통합'·'문서 — W2 통합' 항목 C2(§3.10 커서 표)·C7(§3.5 원시 입력 형)·C12(§2.8 카탈로그)·C20(§4.7·§3.18 팀) 문구, W2 완료 보고 CR 처리(§10.Q X-343~X-354 — Paths 하위 경로 · O-14 ①②③ 닫음 · 기간 출처 · 협조형 취소 · 팀 재시도 계기 · L-12 전면 실패), 남은 결정은 §12 O-17 |
 | | 2026-10-06 | **반영 완료(W1 통합 창)** — 판은 v1.2 그대로. '구현·반영' 열이 'W1 통합 창' 인 C1·C3·C4·C5·C6·C8·C9·C10·C11·C13·C14·C16·C17·C18·C19·C21·C22·C23 의 구현과 절 문구: §1.3(bridge 경로·전용 프로필 소유 표식) · §2.1(Paths 새 메서드) · §2.2(규칙 2026.10.1·`redact_row`·`redact_fields`·selftest 도우미·감사 `path_id`) · §2.3(store 보존·삭제 함수 — O-16 닫음) · §2.6(번들 시그니처) · §2.9·§2.10(시간·분류 시그니처, 꺼짐·절전 파생) · §3.1(id 주키 대체) · §3.8(history 형·record_probe) · §3.13(`path_id`) · §3.14(`obs` = 단계 코드) · §4.3(문서군 꼬리) · §6.4(판정 2단계) · §6.7(탐침 출력 형) · §7.3·§8.1(상태 줄 한 모양·사유 필수·CLM·R-RECURINC·R-NOAPP·R-NOEVT) · §11.1(L-08·L-15·L-28 예외) · §11.3(주입점) · §10 X-202. 'W2 통합'·'문서 — W2 통합' 항목(C2·C7·C12·C20)과 명세 10종 문구(O-2)는 그대로 남는다 |
 
 v1.1 에서 고친 곳(근거 행은 §10.P):
@@ -383,7 +384,9 @@ docstring·시험이 정본이다. 구현자: 'W1 통합 창' 은 W1b 구현 뒤
 
 ### 2.8 `lm27\catalog.py` — 프로그램 카탈로그(CP §6·H X10, 1개)
 
-`classify(proc, extra) -> Prog | None` · `is_noise(proc) -> bool` · `solver_names() -> list[str]` · `app_class_of(app_id) -> str` · `cat_of(app_id) -> str`(한글 범주 CAD·해석·광학·EDA·FPGA·SW·계측·사무·소통) · `CATALOG_VERSION`. LM24 `core/programs.py` 를 옮겨 다시 설계한다. 에이전트 bin 사본에 포함한다.
+`classify(proc, extra=()) -> Prog | None` · `is_noise(proc) -> bool` · `solver_names() -> list[str]` · `app_class_of(app_id, extra=()) -> str` · `cat_of(app_id, extra=()) -> str`(한글 범주 CAD·해석·광학·EDA·FPGA·SW·계측·사무·소통) · `CATALOG_VERSION`. LM24 `core/programs.py` 를 옮겨 다시 설계한다. 에이전트 bin 사본에 포함한다.
+
+v1.2 C12 등재(W2 통합): 상수 `CATEGORIES`(위 9범주) · `APP_CLASSES`(18종 — office·cad·sim·eda·ide·pdf·viewer·browser·chat_work·mail_work 등) · `KINDS = ("상용", "비상용")` · `APP_ID_RX`(`^[a-z0-9_.:\-]{1,48}$`) · 형 `Prog(app_id, name, vendor, kind, cat, app_class)` · 함수 `exe_norm(proc)` · `app_id_for(proc, extra=()) -> str | None` · `entries() -> list[Prog]` · `programs_extra(cfg=None) -> tuple`(`pc.programsExtra`) · `solver_set(cfg=None) -> frozenset`(`pc.solverProcesses` − `pc.solverProcessesExclude`) · `is_solver(proc, cfg=None, *, solvers=None) -> bool` · `guess_meta(company="", product="", desc="", signer="") -> dict`(exe 메타 → 범주·종류 추정, 원문은 남기지 않는다). 표기: 카탈로그에 없는 exe = `unknown:<exe 소문자.exe>`(`UNKNOWN_PREFIX`), 사내 도구(설정 `pc.programsExtra`) = `x.<slug>`(`EXTRA_PREFIX`).
 
 ### 2.9 `lm27\time\` — 시간 코어(W 부록 A, 11개)
 
@@ -605,6 +608,11 @@ W 가 쓰는 `notice` 는 저장 플래그가 아니라 정규화 파생값(`act
 
 반입 CSV(`Import-MailCal.py`) 헤더는 위 원시 이름(영문)을 그대로 쓴다. 시각 열은 `ts_local`(오프셋 포함 ISO)이며 남는 열은 버리고 모자란 열은 빈칸이다.
 
+v1.2 C7 등재(W2 통합 — 수집기 원시 입력 형, 정제·저장은 WP-11 이 이 형을 받는다):
+- `pc_file`(WP-14) 원시 힌트: `folder_role` · `root_id` · `op="save"` · `target_mtime` · `pdf_sibling` · `flags.autosave` · `final_name`. `pc.events` 는 텍스트 없는 행, 라이선스(`pc_compute`)는 `app_id` 중심 모양(§3.1 id 주키 대체 — C6).
+- teams(WP-16): `flags.n_part_est`·`flags.author_inherited` · `is_me=null` 이면 `direction=unknown` · `chat_title=null` 허용 · `participants=[{name}]` · `message_id`·`author_addr`·`reply_to_id` 는 null 허용 · `ts_precision=unknown` 행의 `ts_utc` = 수집일 00:00 로컬의 UTC.
+- mail·cal(WP-15): `flags.meeting_response`·`flags.utc_suspect`·`flags.deferred`·`flags.organizer_me` · A단·OMG 행은 `rcv=unknown` · `in_reply_to` 는 bool · 반입 CSV 의 추가 열 `ts_end_local`·`start_utc`·`end_utc`·`meeting_response`.
+
 ### 3.6 세그먼트 파일 `lm27.seg/1`(TAB §1.3)
 
 - 위치·이름: `data\pcs\<pc_id>\seg\<kind>\<seq:06d>-<inst8>-<t0>-<t1>-<sha8>.jsonl.gz`. `t0`·`t1` = `YYYYMMDDTHHMMZ`(콜론 없음), `inst8` = install_id 앞 8자, `sha8` = 압축 바이트 sha256 앞 8자. kind = 8종 + `privacy_audit`.
@@ -646,13 +654,16 @@ W 가 쓰는 `notice` 는 저장 플래그가 아니라 정규화 파생값(`act
 
 | src | 커서 내용 |
 |---|---|
-| mail.com | `{box: {inbox\|sent\|other: {last_ts_utc, last_msg_key}}, cov_months: {"YYYY-MM": {status, read_from, read_to}}}` |
-| cal.com | `{last_start_utc, cov_months}` |
-| mail.index · cal.index | `{last_item_ts_utc}` |
+| mail.com | `{box: {inbox\|sent\|other: {last_ts_utc, last_msg_key}}, cov_months: {"YYYY-MM": {status, read_from, read_to}}}` — `status` ∈ `done`·`partial`·`out_of_horizon`, `read_from`·`read_to` = 실제 읽은 [시작, 끝) UTC(v1.2 C2) |
+| cal.com | `{last_start_utc, cov_months}`(`cov_months` 형은 mail.com 과 같다 — C2) |
+| mail.index · cal.index | `{last_item_ts_utc, read_from}`(C2) |
+| mail.import · cal.import | `{done: {<내용 sha256 앞 16자>: [크기, mtime_ns]}}` — 반입한 파일 지문(이름·경로 없음, C2) |
+| 혼합 모드(한 수집기가 여러 경로) | `_in.cursor`·`_cursor` = `{경로 ID: 그 경로의 커서 값}`(C2) |
 | mail.owa · cal.owa | `{assigned_todo_ids[], done_ranges[[from, to]]}` |
 | teams.web | `{rooms: {<chat_key>: {last_msg_key, oldest_done, newest_done}}}` — CT 의 `teams.web.checkpoint.json` 을 대체 |
 | *.copilot | `{witnessed_days[]}` |
-| pc.events · pc.files · pc.mru · pc.recent · pc.git | `{last_ts_utc}` (+ pc.git `repos{<doc_key>: last_commit_key}`) |
+| pc.events · pc.files · pc.mru · pc.recent · pc.git | `{last_ts_utc}` (+ pc.git `repos{<doc_key>: last_commit_key}` · pc.files 선택 `poll_ts_utc` — C2) |
+| teams.uia | `{last_ts_utc}` — 날짜가 확정된 행의 최대(중복은 레코드 id 로 흡수, C2) |
 
 ### 3.11 커버리지 원장(파생) — `data\derived\coverage_ledger.jsonl`
 
@@ -742,6 +753,7 @@ TAB §2.3.1·§2.3.2 의 모양을 따르되 다음을 1.0 에 포함한다(구�
 | `units[].grade` | `A`~`E` + `M`(수동 기록 전용 업무) |
 | `workflows[].steps[]` | `type` = 단계 유형 코드(§6.6), `why[]` 어휘에 `tool_access` 추가, `wait_in_median_min` `work_share` `bottleneck(wait\|work\|both\|"")` `sample(ok\|thin)` 추가 |
 | `agentic.needs[].need_id` | `"n_"+sha1(type+"\|"+ukey(name))[:6]` |
+| `agentic.needs[].src` | `ai` \| `rule` — 그 니즈를 낸 쪽(코파일럿 의견 · 규칙 사전, v1.2 C20). 팀 표 CSV `needs.csv` 의 AI·규칙 열이 이 값을 센다 |
 | `peers[]` | `{peer_key, scope, units, shared_effort_min}` |
 | `privacy_counts` · `catalog_proposals[]{exe, company, product, n_days, minutes}` | 포함(P §14.5 표에 추가) |
 | `quality` | `grade`·`reasons` 는 `lm27.report.analysis.quality.quality_month()` 계산 |
@@ -881,7 +893,8 @@ TAB §2.3.1·§2.3.2 의 모양을 따르되 다음을 1.0 에 포함한다(구�
 |---|---|
 | 작업 스케줄러 | `LM27-<install_id>`(시험은 `LM27T-` 접두, 끝에 삭제). 옛 작업 정리는 `agent.json.prior_install_ids` 에 있는 `LM27-<32hex>` 만. `LoadMonitorNN-*` 등 남의 작업은 건드리지 않는다 |
 | 뮤텍스 | `Local\LM27-<install_id>-agent` |
-| 팀 서버 신원 · 프로토콜 | `app = "LM27-team"` · `proto = "lm27-team/1"` · 헤더 `X-LM27-Bundle-SHA256` `X-LM27-Client` `X-LM27-Sent-At` `X-LM27-Upload-Token` |
+| 팀 서버 신원 · 프로토콜 | `app = "LM27-team"` · `proto = "lm27-team/1"` · 헤더 `X-LM27-Bundle-SHA256` `X-LM27-Client` `X-LM27-Sent-At` `X-LM27-Upload-Token` · 관리자 토큰 헤더 `X-LM27-Admin-Token`(v1.2 C20) · 레지스트리 PUT 의 검증기 없음 422 코드 `validator_unavailable`(C20) |
+| 로컬 앱 쓰기 토큰 | 헤더 `X-LM27-UI-Token`(index.html 응답 때만 `<meta name="lm27-ui-token">` 에 채운 `token_hex(16)` — 파일은 그대로, R §2.3.3, W2 통합 등재) |
 | 로컬 앱 신원 | `app = "LM27-ui"` |
 | JS 표식 · 프롬프트 머리표 | `/*LM27:<이름>*/` · `[LM27 요청 …]` |
 | 포트 | 로컬 앱 19280(+9) · 팀 서버 9310 · CDP 9343(+10). 피하는 포트: 8765~8767(별개 프로젝트), 9148~9167, 9333(이전 판 코파일럿) |
@@ -1432,13 +1445,13 @@ v1.2 §0.7 C18 등재: `Invoke-CapabilityProbe.ps1`(과 `probe_owa.py`·`probe_t
 | `agent install [--only] [--reinstall]` · `agent status` · `agent repair` · `agent uninstall [--purge]` | 에이전트 설치·확인·복구·제거. `agent install` 은 `--only` 유무와 관계없이 **설치 전용**(설치 → 번들에 `pcs\<pc_id>\pc.json` 만, 수집·탐침·내보내기 없음 — `--only` 는 bat 표기 호환). `--reinstall` = `uninstall(ident, False)` 뒤 `ensure_agent(ident)`. pc.json 기록 실패는 rc 2(설치는 됨) — X-331 | lm27.agent.install | 0·2·3·4 | TAB §1.6 |
 | `bundle status` · `bundle verify` · `bundle merge <dir>` · `bundle alias <pc_id> <logical>` · `bundle unalias <pc_id>` · `bundle redact` | 번들 관리 | lm27.bundle | 0·1·2·4 | TAB §1.13~§1.15 |
 | `move-prepare` | 이동 준비(도우미 PS 를 `%TEMP%` 사본으로) | lm27.bundle.move | 0·2·3 | TAB §1.11 |
-| `analyze --from D --to D [--as-of T] [--no-ai]` · `analyze --rerun <run_id> --stages <ids> [--no-ai]` | 분석 파이프라인(§2.13). 빠른 재분석 = `--stages classify,time,mining,report --no-ai` | lm27.pipeline.analyze | 0·1·2·4 | 이 문서 · R A-1 |
+| `analyze --from D --to D [--as-of T] [--no-ai] [--period-source default\|this_month\|last_month\|this_year\|user] [--period-months N]` · `analyze --rerun <run_id> --stages <ids> [--no-ai]` | 분석 파이프라인(§2.13). 빠른 재분석 = `--stages classify,time,mining,report --no-ai`. 기간 출처·개월 수(R RP8 — 화면이 넘김, N = 1~36)는 W2 통합 | lm27.pipeline.analyze | 0·1·2·4 | 이 문서 · R A-1 |
 | `report build --run <run_id> [--force]` | 보고서 모델 | lm27.report | 0·1·2·4 | R §2.4 |
 | `report export --run <run_id> --formats html,csv,json --variant full,redacted [--out <dir>]` | 내보내기 | lm27.report.export | 0·1 | R §9 |
-| `report ai-items --run <run_id> [--stage <stage>]` | 코파일럿 단계 ai_in 쓰기 | lm27.report.analysis.ai_items | 0·4 | R §4.10 |
+| `report ai-items --run <run_id> [--stage workflow_label\|agentic_match\|subagent_review\|review_text]` | 코파일럿 단계 ai_in 쓰기(단계는 이 넷만 — W2 통합) | lm27.report.analysis.ai_items | 0·4 | R §4.10 |
 | `bridge run --run-id <id> --stages <a,b> [--mode auto\|manual]` · `bridge probe [--no-roundtrip] [--lookup]` · `bridge calibrate [--force] [--model fast\|deep]` · `bridge diagnose [--model]` · `bridge manual-export [--stages]` · `bridge manual-import [--file <경로>\|--clipboard]` · `bridge replay …` · `bridge unlock` | 코파일럿 브리지(= `tools\bridge.py`) | lm27.bridge.cli | B §12.1 | B §12 |
 | `ui [--port N] [--no-browser] [--check]` | 로컬 앱(127.0.0.1) | lm27.ui.server | 0·3 | R §2.3 |
-| `team build --from D --to D` · `team list` · `team preview <item>` · `team approve <item>` · `team send [<item>\|--all]` · `team drop <item>` · `team mask <unit_id> title\|detail\|none` · `team drop-need <need_id>` · `team export <item> --dir <폴더>` · `team ping [--host H --port N]` · `team registry-fetch` | 팀 묶음 | lm27.team | 0·1·2·4 | TAB §8.1 |
+| `team build --from D --to D` · `team list` · `team preview <item>` · `team approve <item>` · `team send [<item>\|--all [--trigger manual\|startup\|timer]]` · `team drop <item>` · `team mask <unit_id> title\|detail\|none` · `team drop-need <need_id>` · `team export <item> --dir <폴더>` · `team ping [--host H --port N]` · `team registry-fetch` | 팀 묶음 | lm27.team | 0·1·2·4 | TAB §8.1 |
 | `team-server [--host H] [--port N] [--store DIR]` | 팀 서버 | lm27.team.server | 0·3 | TAB §3 |
 | `team-aggregate --store <dir> --gen N` | 재취합(서버 하위 프로세스) | lm27.team.aggregate | 0·1 | TAB §3.9 |
 | `team-import <파일\|폴더> [--store DIR]` · `team-firewall-diag [--store DIR]` | 오프라인 반입 · 방화벽 진단 | lm27.team | 0·1·2 | TAB §5 · TAB §3.14 |
@@ -1453,18 +1466,20 @@ v1.2 §0.7 C18 등재: `Invoke-CapabilityProbe.ps1`(과 `probe_owa.py`·`probe_t
 | `bundle status` · `verify` · `merge <dir>` | `lm27.bundle.loader.bundle_status(paths)` · `lm27.bundle.loader.verify_bundle(paths)` · `lm27.bundle.merge.merge_bundle(paths, dir)` | — |
 | `bundle alias` · `unalias` · `redact` | `lm27.bundle.aliases.record_alias(paths, pc_id, logical, rule="manual")` · `undo_alias(paths, pc_id)` · `lm27.bundle.merge.redact_rewrite_own(pcdir)`(`pcdir = paths.pc_dir(ident.pc_id)`) | alias·unalias 는 `fg-write`, redact 는 `redact` 잠금 안 |
 | `move-prepare` | `lm27.bundle.move.prepare_move(paths, cfg)` | §7.2 |
-| `analyze …` | `lm27.pipeline.analyze.analyze(paths, cfg, from_=, to=, as_of=, ai=, rerun=, stages=list\|None)` | `--rerun` 은 `--stages` 필수, `--from/--to` 와 함께 못 씀 |
-| `report build` · `export` · `ai-items` | `lm27.report.build_report(run_id)` · `lm27.report.export.export(run_id, formats, variant, out)` · `lm27.report.analysis.ai_items.write_ai_items(run_id, stage)` | `report build --force` 는 함수에 자리가 없어 rc 1 로 막는다(O-14) |
+| `analyze …` | `lm27.pipeline.analyze.analyze(paths, cfg, from_=, to=, as_of=, ai=, rerun=, stages=list\|None)` + 있을 때만 `period_source=`·`period_months=`·`cancel=`(`--job` 이면 정지 플래그 확인 함수) | `--rerun` 은 `--stages` 필수, `--from/--to` 와 함께 못 씀 |
+| `report build` · `export` · `ai-items` | `lm27.report.build_report(run_id)`(`--force` 면 `build_report(run_id, force=True)` — O-14 ③ 닫음) · `lm27.report.export.export(run_id, formats, variant, out)` · `lm27.report.analysis.ai_items.write_ai_items(run_id, stage)` | — |
 | `bridge …` | `lm27.bridge.cli.main(argv)` | `--job`·`--events` 는 cli 가 소비(§2.1 events) |
 | `ui` · `ui --check` | `lm27.ui.server.serve(cfg, port=, open_browser=)` · `lm27.ui.server.check(cfg, port=)` | — |
 | `team build` | `lm27.team.build.build_and_queue(analysis, {"from": D, "to": D}, cfg)`, `analysis = lm27.report.load_model(<current.json 의 run_id>)` | current.json 이 없으면 rc 2(분석 먼저) |
 | `team list` · `preview` · `approve` · `drop` | `lm27.team.queue.list_items()` · `preview(item)` · `approve(item)` · `mark(item, "dropped", <사유 문구>)` | `<item>` = 대기열 파일 이름(`.json` 생략 가능) → `list_items()` 의 QueueItem, 없으면 rc 4 |
-| `team send --all` · `team send`(인자 없음 = `--all`) | `lm27.team.queue.send_due(cfg)` | `team send <item>` 은 항목 하나를 보내는 계약 함수 자리가 없어 rc 1 로 막는다(O-14). `<item>` 과 `--all` 을 함께 주면 rc 1 |
+| `team send --all` · `team send`(인자 없음 = `--all`) · `team send <item>` | `lm27.team.queue.send_due(cfg)`(`--trigger` 가 있으면 `send_due(cfg, trigger=…)` — 화면 기동 `startup`·15분 `timer` 계기, TAB §2.8) · `lm27.team.queue.send_item(item, cfg)`(승인 + 전송, rc = item.rc — O-14 ① 닫음) | `<item>` 은 `list_items()` 의 QueueItem(없으면 rc 4). `<item>` 과 `--all` 을 함께 주면 rc 1 |
 | `team mask` · `drop-need` · `export` | `lm27.team.build.set_mask(paths, unit_id, mode)` · `drop_need(paths, need_id)` · `lm27.team.offline.export_to_dir(item, dir)` | — |
-| `team ping` · `registry-fetch` | `lm27.team.client.hello(base, cfg["team.connectTimeoutSec"])` · `fetch_registry(base, None)`(강제 갱신) | `base` = `http://<host>:<port>`(명령줄 값 또는 `team.serverHost`·`serverPort`). 캐시 저장 주체는 O-14 |
+| `team ping` · `registry-fetch` | `lm27.team.client.hello(base, cfg["team.connectTimeoutSec"])` · `lm27.team.client.refresh_registry(paths, cfg, force=True)`(받아서 캐시 원자 교체 — O-14 ② 닫음, rc 0 저장 · 4 이미 최신 · 2 받지 못함) | `base` = `http://<host>:<port>`(명령줄 값 또는 `team.serverHost`·`serverPort`). cli 는 캐시 파일을 다루지 않는다(L-22) |
 | `team-server` · `team-aggregate` · `team-import` | `lm27.team.server.serve(cfg)` · `lm27.team.store.open_store(cfg)` → `lm27.team.aggregate.aggregate(store, gen)` · `lm27.team.offline.import_files(store, path, cfg)` | `--host`·`--port`·`--store` → `load_config(overrides=)`(§2.1) |
 | `team-firewall-diag` | `lm27.team.firewall.firewall_diag(<paths.python_exe()>)` | `--store` 는 함수에 자리가 없어 rc 1 로 막는다(O-14) |
 | `selftest privacy` | `lm27.privacy.selftest.run_selftest(update_lock=)` | — |
+
+**협조형 취소(W2 통합 — §8.7).** `--job <job_id>` 가 붙은 명령은 실행하는 동안 `Paths.ui_job_stop_flag(job_id)`(`ui\jobs\<job_id>.stop`)를 0.5초마다 본다. 화면 [취소]가 그 플래그를 쓰면 주 스레드에 KeyboardInterrupt 를 보내 명령이 저널·커서·`run_status` 를 정리하고 rc 2(사용자 중단)로 끝난다. `analyze` 는 같은 플래그로 단계 사이에서도 멈춘다(`cancel=`). 화면은 5초 뒤에도 살아 있으면 `kill_tree` 한다(마지막 수단).
 
 ### 7.2 bat
 
@@ -1482,7 +1497,7 @@ v1.2 §0.7 C18 등재: `Invoke-CapabilityProbe.ps1`(과 `probe_owa.py`·`probe_t
 
 | 대상 | 형식 |
 |---|---|
-| PS 수집기 → 정제 파이프 | `powershell -NoProfile -ExecutionPolicy Bypass -File collect\<스크립트>.ps1 -Pc <pc_id> [-Since D -Until D] [스크립트 인자]` 의 stdout 을 `"<PY>" -X utf8 -I -B "<LM27>\lm27_pipe.py" --kind <kind> --src <경로 ID> --pc <pc_id> --out "<store 일자 파일>" --mode append` 의 stdin 으로. **연결자**(수집기와 파이프를 둘 다 띄우고 잇는 쪽) = 전경 `lm27.collect.run`, 에이전트 `lm27.agent.main`(teams.uia·샘플)·`lm27.agent.harvest`(수확), ps 구현은 `agent.ps1`·`harvest.ps1`. P §3.5 골격의 '수집기가 파이프를 띄우는' 방식은 쓰지 않는다. 연결자가 `privacy.pipe.waitSec` 대기·kill_tree(code 99)를 맡는다. 메일·일정은 kind 마다 파이프 하나(COM 2회 붙기, GetActiveObject 재사용) |
+| PS 수집기 → 정제 파이프 | `powershell -NoProfile -ExecutionPolicy Bypass -File collect\<스크립트>.ps1 -Pc <pc_id> [-Since D -Until D] [스크립트 인자]` 의 stdout 을 `"<PY>" -X utf8 -I -B "<LM27>\lm27_pipe.py" --kind <kind> --src <경로 ID> --pc <pc_id> [--out "<store 일자 파일>"] --mode append` 의 stdin 으로(`--out` 은 선택 — `append` 모드는 파이프가 store 일자 파일을 스스로 고르므로 연결자는 넘기지 않는다: 연결자가 store 경로를 조립하지 않게, L-11 · W2 통합 WP-33 CR). **연결자**(수집기와 파이프를 둘 다 띄우고 잇는 쪽) = 전경 `lm27.collect.run`, 에이전트 `lm27.agent.main`(teams.uia·샘플)·`lm27.agent.harvest`(수확), ps 구현은 `agent.ps1`·`harvest.ps1`. P §3.5 골격의 '수집기가 파이프를 띄우는' 방식은 쓰지 않는다. 연결자가 `privacy.pipe.waitSec` 대기·kill_tree(code 99)를 맡는다. 메일·일정은 kind 마다 파이프 하나(COM 2회 붙기, GetActiveObject 재사용) |
 | 수집기 제어 줄 | **입력**: 연결자가 수집기 stdin 에 한 줄 `{"_in": {"cursor": <그 src 의 raw_cursor 값\|null>, "cfg": {<그 스크립트가 쓰는 §5.2 키: 값>}, "self_names": [..](팀즈 수집기만)}}` 을 쓰고 닫는다 — 커서·설정·이름·주소를 명령줄에 싣지 않는다(프로세스 목록·감사 로그 노출 방지). stdin 이 리디렉션되지 않았으면 기본값으로 돈다(시험 편의). **출력**: stdout 첫 줄 `{"_meta": {"my_addrs": [...]}}`(선택, §3.5), 레코드 줄들, 마지막 줄 `{"_cursor": {...}}`(§3.10 형, 원문·원 ID 없음). 파이프는 `_` 로 시작하는 제어 줄을 레코드로 세지 않는다. PY 수집기(`collect\*.py`)는 `_in` 대신 `lm27.store.cursor.load_raw_cursor`·`lm27.config` 를 직접 쓰고 `SegmentWriter.flush()` 성공 뒤 `save_raw_cursor` 를 부른다(X-300) |
 | 수집기 상태 줄(v1.2 §0.7 C1) | 수집기마다 **경로마다 한 줄** `{"_status": {...}}` — 위치는 stderr 마지막 줄(제한 언어 모드에서는 `[Console]` 도 막히므로 stdout 제어 줄 하나로 내고 파이프가 요약 줄 `collector_status` 에 싣는다). 필수 필드 `schema: "lm27.collector_status/1"` · `src`(경로 ID — 인자 오류 때도) · `rc` · `reasons[]`(rc 3 이면 비지 않는다 — C4) · `partial` · `cap_hit` · `budget_hit` · `n`(이번에 낸 레코드 수) · `counts{}`(숫자·열거만). 수집기별 추가 필드(메일·일정의 `items_total` `items_ok` `new` `horizon_oldest` `subfolder_ratio` `recurrence_incomplete` `skipped_msg`, git 의 `cursor_held` 등)는 최상위 선택 필드. `_result` 키는 쓰지 않는다. 파서(`lm27.collect.run.parse_status`·`lm27.agent.harvest.parse_status`·`harvest.ps1`)는 `_status` 만 읽고 모르는 필드는 무시한다. 원문 0(숫자·열거·사유 코드만) |
 | 백필 빈칸 파일 | `Get-OutlookWeb.py --blanks-file F` 의 F = `lm27.collect.todo` 가 그 실행 폴더에 쓰는 `data\derived\collect\<run_id>\blanks_<src>.json` = `[{todo_id, date_range:[from,to], kind_axis}]`(파생, 원문 없음 — X-315) |
@@ -1972,6 +1987,24 @@ W0 구현·시험에서 나온 계약 보강 요청과 구현 계획 §7 CR 채�
 | X-341 | 기본 진입 bat 이름(v1.1 반증 점검) | 계약 §1.1·§7.2 는 `LoadMonitor27.bat` 인데 W0 구현·시험(`tests\core\test_entry.py`)은 `LoadMonitor27-UI.bat`(이전 판 `LoadMonitor24-UI.bat` 과 같은 자리). 구현 bat 은 `ui --check` 를 먼저 돌리고 통과할 때만 `pythonw` 로 띄운다 | 구현 이름 `LoadMonitor27-UI.bat` 과 흐름을 등재(§1.1·§7.2). 나머지 bat 4개 이름은 그대로 | R §2.3.1 · R 머리말(사용자 안내의 bat 이름) |
 | X-342 | 브리지·화면 관문의 정적/동적 경계(v1.1 반증 점검) | L-17 이 G-B1~G-B5·G-B7·G-B10·G-B11 전부를, L-19 가 데이터 섬 이스케이프를 정적 lint 로 적었으나 W0 관문(`hook_check.py`)이 볼 수 있는 것은 정적 부분뿐(WP-04 보고) | L-17 = G-B1·B2·B3·B7(정적). G-B4(단계 완결성)·G-B5(가상 시계)·G-B10(결과 봉투)·G-B11(엄격 규칙 정규식 = P §5 보호 구간 글자판 대조)은 브리지 시험(WP-24·25 — T-04·T-15). L-19 데이터 섬은 정적 부분(인라인 JS·CSS 의 `</script`·`</style` 0, HTML 문자열 값 직접 결합 0)만, G-R6 섬 문자열 이스케이프의 동적 확인은 보고서 시험(WP-31)(§11.1) | B §15 · R §12.2 |
 
+### 10.Q W2 통합 창 반영(v1.2 유지)
+
+W2(WP-30~37) 구현 뒤 통합 창이 처리한 완료 보고 CR 과 §0.7 'W2 통합' 항목(C2·C7·C12·C20)이다. 판은 v1.2 그대로이며, 구현·시험을 통과한 공개 형을 사실로 등재한다(§0.6 원칙). 세부 필드의 정본은 각 모듈 docstring·시험이다.
+
+| ID | 주제 | 어긋남 | 결정 | 반영 요청 |
+|---|---|---|---|---|
+| X-343 | `Paths` 분석·수집·화면 하위 경로 | WP-31·32·33·35 가 L-08 때문에 메서드를 요청(없으면 analyze·report·export rc 1, 화면 이력 빈 목록) | §2.1 에 `run_status_file(run_id)` · `analysis_root()` · `analysis_hier_file(run_id, name)` · `analysis_report(run_id)` · `analysis_report_file(run_id, name)` · `out_personal_file(from_, to, run_id, rel)`(rel 은 '/' 조각, 조각마다 이름 검증) · `collect_runs()` · `calibration_report()`(`data\derived\calibration_report.json`) · `ui_log_file(utc_date)`(`ui\logs\ui_YYYYMMDD.log`) · `ui_job_stop_flag(job_id)`(`ui\jobs\<job_id>.stop`) 추가 | — |
+| X-344 | CLI 어댑터 O-14 ①②③ | `team send <item>`·`report build --force` 를 rc 1 로 막고 `registry-fetch` 가 캐시를 바꾸지 않음 | §7.1: `send_item(item, cfg)` · `refresh_registry(paths, cfg, force=True)` · `build_report(run_id, force=True)`. O-14 ④(`team-firewall-diag --store`)만 미결 | TAB §8.2 |
+| X-345 | 기간 출처(R RP8 · RPT-04) | 화면이 보내는 `period_source`·`period_months` 를 cli 가 넘길 자리가 없음 | `analyze --period-source default\|this_month\|last_month\|this_year\|user --period-months N(1~36)`. `run_status.json`·`current.json`·모델 run 에 실림(파이프라인 기본: 기간을 주면 `user`, 재분석이면 `rerun`) | R §2.4 |
+| X-346 | 협조형 취소(§8.7) | 화면 [취소]가 5초 뒤 kill_tree 뿐 — 분석 run_status 가 running 으로 남음 | `--job` 명령은 정지 플래그(`Paths.ui_job_stop_flag`)를 0.5초마다 보고 KeyboardInterrupt → rc 2. `analyze` 는 `cancel=` 로 단계 사이에서도 멈춘다(§7.1 끝) | R §2.3.5 |
+| X-347 | 팀 묶음 재시도 계기(TAB §2.8) | 화면 기동·15분 타이머 계기가 화면에 없었다 | 화면이 승인된(또는 autoSend) 막힘 없는 대기분이 있을 때만 `team send --all --trigger startup\|timer` 작업을 건다(net 차선 — 바쁘면 다음 계기). [수집] 끝은 `send_due(cfg, paths=, trigger="collect")`(안 닿아도 시도 횟수 그대로), 빌드 직후는 `build_and_queue` 가 `trigger="build"` | R §5.5 |
+| X-348 | `report ai-items --stage` | 모르는 단계가 ValueError → '내부 오류' rc 1, 고정본 예시 `task_label` 은 hier 단계 | argparse 선택지 `workflow_label·agentic_match·subagent_review·review_text`(인자 오류 rc 1) | — |
+| X-349 | 분석층 규칙 답(브리지 폴백) | 폴백 단계 모듈이 생기자 `workflow_label` 폴백의 자리표 role('판단 유보')이 subagent_review 역할 이름으로, `subagent_review` 폴백의 subs 가 체인 제안으로 쓰였다(D-19 '코파일럿 의견만 합침' 과 어긋남) | 역할 이름은 코파일럿·붙여넣기 답(`ai_by` ∈ ai·manual·rule_pending)만, 체인은 코파일럿 의견이 있을 때만 그 구성안 — 규칙 답(by=rule)은 화면에 출처 배지로 보이기만 한다(WP-30 회귀 시험) | R §4.8·§4.10.3 |
+| X-350 | 팀 취합 산출(WP-27 ↔ WP-37) | 대시보드 team_data·details 에 표시 메타가 없고 렌더러가 설정을 새로 읽음(T-14 read-check 누락), 팀 표 CSV 를 쓰는 곳 없음, 간트 단위에 `ax_link` 없음(TI-06 불가) | `aggregate` 가 쓰기 전 `lm27.team.report.decorate(td, store.cfg, details)` · `render_team_report(island, share=, cfg=store.cfg)` · `out\gen_N\team_tables\*.csv`(+ `share\`) 원자 쓰기 · `gantt[].units[].ax_link` | R §7.8 · §9.1.2 |
+| X-351 | 막힌 묶음 내보내기(U11) | 승인·전송은 막혔지만 `export_to_dir` 는 막힌 묶음도 공유폴더로 냈다 | `meta.blockers` 가 있으면 `UserError`(파일 0 · 상태 표시 0) | TAB §5.1 |
+| X-352 | 표시 함수 단일원(RPT-11) | 팀 보고서가 `fmt_ratio`·`fmt_num`·Math.round 지역 사본을 가짐 | `lm27.team.report` 가 `lm27.report.fmt` 의 것을 그대로 씀(숫자 글자 한 벌) | — |
+| X-353 | L-12 전면 실패(CR-05) | W2 통합 창부터 전면 실패 예정, `BridgeSettings` 의 `startswith("bridge.")` 가 접두 읽기로 잡혀 죽은 키 검사를 가릴 수 있었다 | `tools\lint.ps1 -Stage static` 은 늘 `--l12-full`, `hook_check --repo` 의 기본도 전면 실패(`--l12-staged` = 옛 단계 규칙). 브리지 설정 경고 거르기는 리터럴 키 표(`KEYS`)로만. 레지스트리 readers 를 실제 읽는 모듈로 보강(값·형 변경 0) | 구현 계획 §6.3 |
+| X-354 | W2 공개 형 등재 | 완료 보고가 공개 API·파일 형 등재를 요청 | 등재(세부 = docstring·시험): 분석층 `make_context(…)`·`analyze(ctx)`·`ANALYSIS_VERSION` 과 R 부록 A 대응 함수(WP-30) · `load_model(run_id, variant)`·`model_status(run_id)`·`BuildResult`·`ExportResult`·`drill.day_drill/unit_drill`, 모델 추가 필드(tables·team·proposals·flags.hier 등, WP-31) · `analyze` 키워드(period_source·period_months·now·run_id·bridge·team_client·copilot_role·cancel)·`choose_current`·`read_run_status`·`read_current`·`stages.QUICK_RERUN`·`plan_run`·`retention.prune_analysis`, run_status 추가 필드·단계 사유 어휘 23개(WP-32) · 수집 단계 결과 추가 필드·관측 형 `ledger.observation`·`todo.json` 그릇 `lm27.todo/1`·진단 `lm27.diagnose/1`·공개 도우미 `ledger.load_cells`·`composite`(WP-33) · `secrets.json`(`lm27.secrets/1`)·outbox meta 추가 필드·상태 → 폴더 대응·`send_due` rc(승인 대기만 = 2)(WP-34) · 화면 서버 `serve`·`check` 시험 키워드·`JobManager`·작업 기록 필드·이벤트 seq·추가 경로(report/build·agent/repair·pc/kind·bridge/front·report/export/open·teamserver/diagnose·worklog retract)·`/api/hello.job_poll_ms`(WP-35) · 팀 보고서 `decorate`·`team_tables`·`build_details`·`strip_for_share`(WP-37) | R 부록 A · TAB §8.2 |
 해소한 불일치: **249행**(A 6 · B 23 · C 13 · D 33 · E 17 · F 29 · G 3 · H 9 · I 13 · J 19 · K 18 · L 10 · M 12 · N 1 · O 18 · P 25). A~N 의 각 행은 다이제스트의 명세별 conflicts 항목 하나 이상을 묶고, O 는 v1.0 자체의 누락·자기모순, P 는 W0 구현이 드러낸 빈칸이다.
 
 ---
@@ -2105,7 +2138,8 @@ W0 구현·시험에서 나온 계약 보강 요청과 구현 계획 §7 CR 채�
 | O-11 | 단계 유형·분야·기능 어휘와 채널 우선순위의 실데이터 조정(CT 미결 8, R R-Q3) | 기본 어휘 |
 | O-12 | `lm27.normalize.act` 의 화행 어미 규칙 세부와 act_cues 추출 규칙(P Q16) | CT §6 가중 규칙 그대로 |
 | O-13 | **새 관문 후보: `.ps1` PowerShell 구문 해석**(`[System.Management.Automation.Language.Parser]::ParseFile` — 이전 판 lint 의 관문으로 버튼·수집기 전멸 같은 실결함을 막았다). 계약에 없는 새 관문이라 W0 는 넣지 않았다. L-02 확장으로 둘지 L-31 로 둘지(관문 수·시험 표가 바뀐다) 결정 필요 | 결정 전까지 L-01~L-30 만. WP-13·14·15·16·17 은 `.ps1` 시험에서 구문 오류 0 을 스스로 확인한다 |
-| O-14 | **CLI 어댑터가 답을 얻지 못한 자리**(X-330): ① `team send <item>` 의 항목 하나 전송 함수(TAB §2.9 `send_item(item, cfg)`)의 모듈 — TAB §8.2·§2.15 에 등재 필요 ② `team registry-fetch` 에서 캐시(`data\team\registry.json`·`registry.etag`) 원자 교체를 `fetch_registry(base, etag)` 가 하는지, 저장까지 하는 상위 함수(예 `refresh_registry(paths, cfg)`)를 두는지 ③ `report build --force` 의 인자 자리(`build_report(run_id)` 에 없음) ④ `team-firewall-diag --store` 의 인자 자리(`firewall_diag(exe_path)` 에 없음) | cli 는 ①③④ 를 rc 1('아직 지원하지 않는 인자')로 막고 ② 는 `fetch_registry(base, None)` 만 부른다(cli 는 캐시 파일을 다루지 않는다 — L-22). 소유 WP-34·31·27 이 정하면 CR 로 §7.1 표·`cli.py`·`cli_commands.json` 을 함께 고친다 |
+| O-14 | **CLI 어댑터가 답을 얻지 못한 자리**(X-330): ① `team send <item>` 의 항목 하나 전송 함수(TAB §2.9 `send_item(item, cfg)`)의 모듈 — TAB §8.2·§2.15 에 등재 필요 ② `team registry-fetch` 에서 캐시(`data\team\registry.json`·`registry.etag`) 원자 교체를 `fetch_registry(base, etag)` 가 하는지, 저장까지 하는 상위 함수(예 `refresh_registry(paths, cfg)`)를 두는지 ③ `report build --force` 의 인자 자리(`build_report(run_id)` 에 없음) ④ `team-firewall-diag --store` 의 인자 자리(`firewall_diag(exe_path)` 에 없음) | **①②③ 닫음(W2 통합)**: ① `lm27.team.queue.send_item(item, cfg)` ② `lm27.team.client.refresh_registry(paths, cfg, force=True)`(저장 주체 — `fetch_registry` 는 HTTP 만) ③ `build_report(run_id, *, force=False)` — §7.1 표·`cli.py`·`cli_commands.json` 반영. ④ 는 그대로 rc 1(팀 서버 저장소 인자가 진단에 필요 없다 — 미결 유지) |
+| O-17 | **W2 통합 창이 남긴 결정**(구현은 기본값으로 동작): ① `/api/bridge/front`(분석용 Edge 창 앞으로) — 브리지 계약 함수 없음(지금 409 안내) ② `/api/team/status.members` — 유효 레지스트리에 구성원 라벨 노출 형 없음(L-22) ③ 코드네임 검토 '고객사로 등록'의 저장 주체(설정 `privacy.customers` 대 개인 로컬 레지스트리 — 지금 409) ④ `taxonomy_bootstrap`·`consolidate` 호출 주체(ai:task_label 단계 안 대 화면 작업) ⑤ 시간 코어 구간 원장의 사적 차감·창 밖 제외 구간(드릴다운 CH-P16 deduct·excluded 줄) ⑥ `data\derived\collect\<run_id>\` 보존 규칙(새 키 `collect.keepRuns` 후보 — 원장이 옛 관측을 잃지 않는 범위) ⑦ `ensure_bundle` 을 `lm27.bundle.pcreg` 로 옮길지 · `pcreg.local_dict_words(paths)` ⑧ `teamServer.readRequiresToken` 모드의 보고서 내려받기 API ⑨ `tasks.json biz_lead_s`(휴가 뺌) 대 R §3.2 영업 분(휴가 포함) 정합 | 지금 동작 유지 — 각 소유 WP 개정 작업 |
 | O-15 | 사용자가 설정으로 옛 포트(8765~8767·9333)를 고르는 것을 막는 규칙(레지스트리 포트 금지 집합 메타 또는 `check_value` 거부 규칙). L-28 은 기본값·선택지만 본다 | 막지 않음. 실행 시 대체 포트 제안이 이 포트들을 피한다(X-276) |
 | O-16 | **store 삭제 함수 자리**(v1.1 반증 점검): L-11 v1.1 은 `agent uninstall --purge` 의 store 삭제를 `lm27.store`(감사 파일은 `lm27.privacy`) 함수로만 하라고 하지만 §2.3 에 그 함수가 없다 | WP-13 이 WP-11 에 CR 로 받고(이름·시그니처·잠금 — `raw_cursor.json.lock` 과의 관계 포함) W1 통합 창에서 §2.3 에 등재한다. 그 전까지 `install.py` 는 store 경로를 직접 지우지 않는다(함수가 없으면 `--purge` 의 store 삭제는 하지 않고 그 사실을 한국어 한 줄로 알린다) |
 

@@ -112,7 +112,11 @@ def observation(rc, reasons=(), *, n=0, ranges=(), cap_hit=False, budget_hit=Fal
 
 
 def _runs_root(paths) -> str:
-    """수집 실행 폴더들의 부모(``data\\derived\\collect``) — ``Paths.collect_stage_results`` 의 부모(경로 조립 없이)."""
+    """수집 실행 폴더들의 부모(``data\\derived\\collect``) — ``Paths.collect_runs()``(W2 통합). 그 메서드가 없는 시험용
+    경로 객체만 ``collect_stage_results`` 의 부모(경로 조립 없이)."""
+    fn = getattr(paths, "collect_runs", None)
+    if callable(fn):
+        return os.fspath(fn())
     return os.path.dirname(os.fspath(paths.collect_stage_results(_ANY_RUN)))
 
 

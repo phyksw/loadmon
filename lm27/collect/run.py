@@ -123,11 +123,12 @@ class Deps:
         return export_agent_streams(pcdir, ident, self.cfg, paths=self.paths, **kw)
 
     def send_due(self):
-        """승인된 팀 묶음 대기분 전송(``lm27.team.queue.send_due`` — TAB §2.8). 그 모듈이 아직 없으면 None."""
+        """승인된 팀 묶음 대기분 전송(``lm27.team.queue.send_due`` — TAB §2.8). 그 모듈이 아직 없으면 None.
+        trigger="collect": 안 닿으면 시도 횟수를 올리지 않는다(클라우드PC 에서 재시도가 소진되지 않게 — U14, W2 통합 WP-34 CR)."""
         if importlib.util.find_spec("lm27.team.queue") is None:
             return None
         from lm27.team.queue import send_due
-        return send_due(self.cfg)
+        return send_due(self.cfg, paths=self.paths, trigger="collect")
 
     # 자식 프로세스
     def spawn(self, argv, **kw):
@@ -862,8 +863,9 @@ FG_STREAMS = tuple(sorted({f"{s.kind}/{s.src}" for s in plan.COLLECTORS.values()
 
 
 class _Resanitize:
-    """내보낼 때 현재 규칙으로 한 번 더(P §10.5 — G2, 단조: 가린 값은 되살아나지 않음). 규칙 판이 낮은 행만, 문맥은 처음
-    필요할 때 만든다(유효 레지스트리·로컬 사전·키링 — 프로그램 폴더 모드)."""
+    """내보낼 때 현재 규칙으로 한 번 더(P §10.5 — G2, 단조: 가린 값은 되살아나지 않음). 규칙 판이 낮은 행 + 같은 판이라도
+    지금 사람 사전의 이름이 남은 행(``resanitize_row`` 가 판정 — W1b). 문맥은 처음 필요할 때 만든다(유효 레지스트리·로컬
+    사전·키링 — 프로그램 폴더 모드)."""
 
     def __init__(self, ctx: _Ctx):
         self.ctx = ctx
@@ -885,8 +887,8 @@ class _Resanitize:
         return self.sctx
 
     def __call__(self, kind, row):
-        from lm27.privacy import RULES_VERSION, SCHEMAS, resanitize_row
-        if kind not in SCHEMAS or row.get("rules_ver") == RULES_VERSION:
+        from lm27.privacy import SCHEMAS, resanitize_row
+        if kind not in SCHEMAS:
             return row
         ctx = self._context()
         if ctx is None:
@@ -1016,8 +1018,11 @@ def _upload_body(ctx: _Ctx, st) -> None:
     if rc in (0, 4):
         st.set(state="done", rc=rc, hint="")
     else:
-        st.set(state="partial", resumable=True, reason="upload_retry", rc=rc,
-               hint="보내지 못한 팀 묶음은 대기열에 남아 다음 수집에서 다시 보냅니다")
+        # rc 2 에는 '승인 대기'도 들어 있다 — 대기열이 낸 고정 문구(SendResult.message)를 그대로 보인다(W2 통합 WP-34 CR)
+        msg = r.get("message") if isinstance(r, dict) else getattr(r, "message", None)
+        hint = msg.strip()[:200] if isinstance(msg, str) and msg.strip() else \
+            "보내지 못한 팀 묶음은 대기열에 남아 다음 수집에서 다시 보냅니다"
+        st.set(state="partial", resumable=True, reason="upload_retry", rc=rc, hint=hint)
 
 
 # ───────────────────────────── 백필·코파일럿 입력 ─────────────────────────────

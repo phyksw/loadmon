@@ -42,10 +42,10 @@ from lm27.util import fsx
 from . import keys as K
 from .audit import AuditSink
 from .classify import PRIVATE_EXES, W_WORK, WindowContext
-from .detect import SanitizeContext, norm_person, sanitize
+from .detect import SanitizeContext, sanitize
 from .gate import GateContext
-from .records import SRCS_BY_KIND, RecordContext, WorkWindow
-from .rules import COMPOUND_SURNAMES, NAME_STOP, PERSONAL_MAIL_DOMAINS
+from .records import SRCS_BY_KIND, RecordContext, WorkWindow, dict_name
+from .rules import NAME_STOP, PERSONAL_MAIL_DOMAINS
 
 __all__ = [
     "CTXCACHE_SCHEMA", "PERSONDIR_FORMAT", "SELF_FIXED", "LocalOnly", "build_context", "context_cache_obj",
@@ -330,10 +330,8 @@ def _persons(local, selfs) -> dict:
         if not isinstance(wk, str) or not _WKEY_RX.match(wk) or not isinstance(p, dict) or p.get("self"):
             continue
         for n in p.get("names") or ():
-            n2 = _nfkc(n)
-            core = norm_person(n2)
-            if not n2 or len(n2) > 40 or len(core) <= 1 or core in COMPOUND_SURNAMES or n2 in NAME_STOP \
-                    or n2.lower() in self_low:
+            n2 = dict_name(n, self_low)                  # 규칙 단일원(records.dict_name — 레코드 당사자 가림과 같음)
+            if n2 is None:
                 continue
             pairs.append((n2, wk[1:]))
     out: dict = {}

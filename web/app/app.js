@@ -58,7 +58,7 @@
     report_export: "보고서 내보내기", quick_reanalyze: "빠른 재분석", team_build: "팀 묶음 만들기", team_send: "팀 묶음 보내기",
     registry_fetch: "레지스트리 받기", team_server: "팀 서버", agent_repair: "에이전트 복구"};
   var JOB_STATE = {queued: ["run", "대기"], running: ["run", "진행 중"], done: ["good", "완료"], partial: ["warn", "일부"],
-    failed: ["bad", "실패"], cancelled: ["unknown", "중지됨"]};
+    failed: ["bad", "실패"], cancelled: ["unknown", "중지됨"], skipped: ["unknown", "건너뜀"], pending: ["run", "대기"]};
   var FINISHED = {done: true, partial: true, failed: true, cancelled: true};
   var LEVEL_ORDER = {block: 0, risk: 1, improve: 2, info: 3};
   var LEVEL_UI = {block: ["bad", "막힘"], risk: ["serious", "위험"], improve: ["info", "향상"], info: ["info", "정보"]};
@@ -1129,7 +1129,7 @@
         return ["bad", (st.year || obj(bad).year || "그") + "년 공휴일 달력이 확인되지 않아 분석하지 않았습니다(MM 분모가 틀어질 수 있음). 팀 레지스트리를 받으면 다시 시도합니다 — 팀 화면의 [지금 받기]"];
       }
       if (/conserv|preserv/.test(reason)) {
-        return ["bad", "계산 검사(근무시간 보존)에 실패해 결과를 만들지 않았습니다. 이전 결과를 그대로 보여 줍니다. 오류 기록은 이 PC 의 data\\logs\\ 에 남았습니다."];
+        return ["bad", "계산 검사(근무시간 보존)에 실패해 결과를 만들지 않았습니다. 이전 결과를 그대로 보여 줍니다. 어긋난 날짜와 차이는 이 분석 실행의 상태 기록(run_status.json)에 남았습니다."];
       }
       if (st.state === "failed") { return ["bad", "분석을 끝내지 못했습니다(" + str(obj(bad).name_ko || obj(bad).id || "단계") + ": " + (obj(bad).reason_ko || reason || "사유 미상") + "). 이전 결과를 그대로 보여 줍니다."]; }
       return null;

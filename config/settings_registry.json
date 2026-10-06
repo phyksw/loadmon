@@ -33,21 +33,21 @@
   },
   "collect.watch.heartbeatSec": {
    "default": 30, "type": "int", "range": {"min": 5, "max": 300}, "choices": null,
-   "owner": "lm27.collect.watch", "readers": [], "spec": "C §8.4",
+   "owner": "lm27.collect.watch", "readers": ["lm27.pipeline.analyze"], "spec": "C §8.4",
    "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
    "label_ko": "단계 감시 하트비트(초)",
    "help_ko": "장기 단계가 생존 progress 이벤트를 내는 주기."
   },
   "collect.watch.stallMin": {
    "default": 15, "type": "int", "range": {"min": 1, "max": 240}, "choices": null,
-   "owner": "lm27.collect.watch", "readers": [], "spec": "C §8.4",
+   "owner": "lm27.collect.watch", "readers": ["lm27.pipeline.analyze"], "spec": "C §8.4",
    "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
    "label_ko": "정체 판정(분)",
    "help_ko": "하트비트가 이 시간 동안 없으면 정체(stall)로 보고 자식 트리를 끝낸다."
   },
   "collect.watch.noProgressMin": {
    "default": 45, "type": "int", "range": {"min": 1, "max": 720}, "choices": null,
-   "owner": "lm27.collect.watch", "readers": [], "spec": "C §8.4",
+   "owner": "lm27.collect.watch", "readers": ["lm27.pipeline.analyze"], "spec": "C §8.4",
    "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
    "label_ko": "무진전 판정(분)",
    "help_ko": "완료 건수(done)가 이 시간 동안 늘지 않으면 무진전(no_progress)으로 보고 자식 트리를 끝낸다."
@@ -313,7 +313,7 @@
   },
   "agent.heartbeatStaleSec": {
    "default": 600, "type": "int", "range": {"min": 60, "max": 86400}, "choices": null,
-   "owner": "lm27.agent.install", "readers": [], "spec": "TAB §7.1",
+   "owner": "lm27.agent.install", "readers": ["lm27.ui.api_collect"], "spec": "TAB §7.1",
    "uncalibrated": false, "secret": false, "scope": "agent", "restart": "agent",
    "label_ko": "에이전트 생존 판정(초)",
    "help_ko": "heartbeat.json 의 마지막 틱이 이보다 오래되면 에이전트가 멈춘 것으로 본다."
@@ -677,14 +677,14 @@
   },
   "privacy.pipe.waitSec": {
    "default": 120, "type": "int", "range": {"min": 30, "max": 1800}, "choices": null,
-   "owner": "lm27.collect.run", "readers": ["lm27.agent.main", "lm27.agent.harvest", "collect/agent/agent.ps1", "collect/agent/harvest.ps1"], "spec": "P §3.5 · X-300",
+   "owner": "lm27.collect.run", "readers": ["lm27.agent.main", "lm27.agent.harvest", "collect/agent/agent.ps1", "collect/agent/harvest.ps1", "lm27.ui.server"], "spec": "P §3.5 · X-300",
    "uncalibrated": false, "secret": false, "scope": "agent", "restart": "agent",
    "label_ko": "정제 파이프 대기(초)",
    "help_ko": "수집기 출력이 끝난 뒤 정제 파이프 종료를 기다리는 시간. 넘으면 끝내고 rc 3 + R-TRANSPORT."
   },
   "bridge.mode": {
    "default": "auto", "type": "enum", "range": null, "choices": ["auto", "manual", "off"],
-   "owner": "lm27.bridge.settings", "readers": ["lm27.pipeline.analyze"], "spec": "B §3.1",
+   "owner": "lm27.bridge.settings", "readers": ["lm27.pipeline.analyze", "lm27.ui.api_analysis"], "spec": "B §3.1",
    "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
    "label_ko": "브리지 동작 방식",
    "help_ko": "auto = 자동(Edge 디버그 연결), manual = 붙여넣기 경로, off = AI 단계를 모두 규칙 폴백으로."
@@ -1153,7 +1153,7 @@
   },
   "bundle.lockTimeoutSec": {
    "default": 30, "type": "int", "range": {"min": 1, "max": 600}, "choices": null,
-   "owner": "lm27.bundle.lock", "readers": ["lm27.cli"], "spec": "TAB §7.1",
+   "owner": "lm27.bundle.lock", "readers": ["lm27.cli", "lm27.ui.api_collect"], "spec": "TAB §7.1",
    "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
    "label_ko": "번들 잠금 대기(초)",
    "help_ko": "번들 쓰기 잠금을 기다리는 시간."
@@ -1188,56 +1188,56 @@
   },
   "team.serverHost": {
    "default": "10.115.147.68", "type": "str", "range": null, "choices": null, "pattern": "^[A-Za-z0-9.\\-:\\[\\]]{1,253}$",
-   "owner": "lm27.team.client", "readers": ["lm27.team.queue", "lm27.cli", "lm27.collect.probe"], "spec": "TAB §7.1",
+   "owner": "lm27.team.client", "readers": ["lm27.team.queue", "lm27.cli", "lm27.collect.probe", "lm27.ui.api_team"], "spec": "TAB §7.1",
    "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
    "label_ko": "팀 서버 주소",
    "help_ko": "팀 서버 IP. 기본값은 바이트 고정이며 바꾸는 것은 설정 옵션으로만 한다."
   },
   "team.serverPort": {
    "default": 9310, "type": "int", "range": {"min": 1, "max": 65535}, "choices": null,
-   "owner": "lm27.team.client", "readers": ["lm27.team.queue", "lm27.cli", "lm27.collect.probe"], "spec": "TAB §7.1",
+   "owner": "lm27.team.client", "readers": ["lm27.team.queue", "lm27.cli", "lm27.collect.probe", "lm27.ui.api_team", "lm27.ui.server"], "spec": "TAB §7.1",
    "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
    "label_ko": "팀 서버 포트",
    "help_ko": "팀 서버 포트. 기본값 고정."
   },
   "team.serverAlternates": {
    "default": [], "type": "list", "range": null, "choices": null, "item": "hostport",
-   "owner": "lm27.team.client", "readers": ["lm27.team.queue"], "spec": "TAB §7.1",
+   "owner": "lm27.team.client", "readers": ["lm27.team.queue", "lm27.ui.api_team"], "spec": "TAB §7.1",
    "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
    "label_ko": "팀 서버 대체 주소",
    "help_ko": "기본 주소가 LM27 이 아니거나 닿지 않을 때 순서대로 시도할 host:port 목록."
   },
   "team.selfLabel": {
    "default": "", "type": "str", "range": null, "choices": null, "pattern": "^.{0,40}$",
-   "owner": "lm27.team.build", "readers": [], "spec": "TAB §7.1",
+   "owner": "lm27.team.build", "readers": ["lm27.ui.api_team"], "spec": "TAB §7.1",
    "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
    "label_ko": "팀 화면 표시 라벨",
    "help_ko": "팀 화면에 보일 본인 라벨(직접 입력, 검사 통과분만)."
   },
   "team.memberId": {
    "default": "", "type": "str", "range": null, "choices": null, "pattern": "^[A-Za-z0-9_\\-]{0,32}$",
-   "owner": "lm27.team.build", "readers": [], "spec": "TAB §7.1",
+   "owner": "lm27.team.build", "readers": ["lm27.ui.api_team"], "spec": "TAB §7.1",
    "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
    "label_ko": "레지스트리 구성원 ID",
    "help_ko": "팀 레지스트리 구성원 ID(목록에서 선택, 선택 사항)."
   },
   "team.unitTitleMode": {
    "default": "label", "type": "enum", "range": null, "choices": ["label", "generic"],
-   "owner": "lm27.team.build", "readers": ["lm27.hier.team_out", "lm27.report.drill", "lm27.report.export"], "spec": "TAB §2.5",
+   "owner": "lm27.team.build", "readers": ["lm27.hier.team_out", "lm27.report.drill", "lm27.report.export", "lm27.ui.api_team"], "spec": "TAB §2.5",
    "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
    "label_ko": "단위업무 제목 공유",
    "help_ko": "label = 단위업무 라벨을 싣는다, generic = 일반 이름으로 바꿔 싣는다."
   },
   "team.shareUnknownApps": {
    "default": false, "type": "bool", "range": null, "choices": [false, true],
-   "owner": "lm27.team.build", "readers": [], "spec": "TAB §7.1",
+   "owner": "lm27.team.build", "readers": ["lm27.ui.api_team"], "spec": "TAB §7.1",
    "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
    "label_ko": "미상 프로그램 라벨 제안 공유",
    "help_ko": "켜면 미상 프로그램 라벨링 제안을 팀 묶음에 싣는다."
   },
   "team.autoSend": {
    "default": false, "type": "bool", "range": null, "choices": [false, true],
-   "owner": "lm27.team.queue", "readers": ["lm27.team.build"], "spec": "TAB §7.1",
+   "owner": "lm27.team.queue", "readers": ["lm27.team.build", "lm27.ui.api_team"], "spec": "TAB §7.1",
    "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
    "label_ko": "승인 없이 자동 전송",
    "help_ko": "켜면 팀 묶음을 만든 직후 승인 없이 전송한다."
@@ -1265,7 +1265,7 @@
   },
   "team.connectTimeoutSec": {
    "default": 4, "type": "int", "range": {"min": 1, "max": 60}, "choices": null,
-   "owner": "lm27.team.client", "readers": ["lm27.cli", "lm27.collect.probe", "lm27.team.queue"], "spec": "TAB §7.1 · H §3.1",
+   "owner": "lm27.team.client", "readers": ["lm27.cli", "lm27.collect.probe", "lm27.team.queue", "lm27.ui.api_team"], "spec": "TAB §7.1 · H §3.1",
    "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
    "label_ko": "연결 확인 시간 제한(초)",
    "help_ko": "팀 서버 hello 시간 제한."
@@ -1293,7 +1293,7 @@
   },
   "team.allowPublicHost": {
    "default": false, "type": "bool", "range": null, "choices": [false, true],
-   "owner": "lm27.team.client", "readers": [], "spec": "TAB §7.1",
+   "owner": "lm27.team.client", "readers": ["lm27.ui.api_team"], "spec": "TAB §7.1",
    "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
    "label_ko": "공인 주소 허용",
    "help_ko": "끄면 팀 서버·대체 주소는 사설 IPv4·루프백만 허용하고 호스트 이름은 받지 않는다."
@@ -1321,28 +1321,28 @@
   },
   "teamServer.bindHost": {
    "default": "0.0.0.0", "type": "str", "range": null, "choices": null, "pattern": "^[A-Za-z0-9.\\-:\\[\\]]{1,253}$",
-   "owner": "lm27.team.server", "readers": ["lm27.cli"], "spec": "TAB §3.2",
+   "owner": "lm27.team.server", "readers": ["lm27.cli", "lm27.ui.api_team"], "spec": "TAB §3.2",
    "uncalibrated": false, "secret": false, "scope": "team_server", "restart": "team_server",
    "label_ko": "팀 서버 받는 주소",
    "help_ko": "팀 서버가 받는 주소. 이 PC 의 IPv4 중 하나 또는 모든 인터페이스."
   },
   "teamServer.bindPort": {
    "default": 9310, "type": "int", "range": {"min": 1024, "max": 65535}, "choices": null,
-   "owner": "lm27.team.server", "readers": ["lm27.cli"], "spec": "TAB §3.2",
+   "owner": "lm27.team.server", "readers": ["lm27.cli", "lm27.ui.api_team", "lm27.ui.server"], "spec": "TAB §3.2",
    "uncalibrated": false, "secret": false, "scope": "team_server", "restart": "team_server",
    "label_ko": "팀 서버 받는 포트",
    "help_ko": "팀 서버가 받는 포트."
   },
   "teamServer.storeDir": {
    "default": "", "type": "path", "range": null, "choices": null,
-   "owner": "lm27.team.server", "readers": ["lm27.team.store", "lm27.team.aggregate", "lm27.cli"], "spec": "TAB §3.2",
+   "owner": "lm27.team.server", "readers": ["lm27.team.store", "lm27.team.aggregate", "lm27.cli", "lm27.ui.api_team"], "spec": "TAB §3.2",
    "uncalibrated": false, "secret": false, "scope": "team_server", "restart": "team_server",
    "label_ko": "팀 서버 저장소",
    "help_ko": "빈 값 = PC 에 남는 LoadMonitor27\\teamserver. 서버와 취합기는 같은 저장소를 쓴다."
   },
   "teamServer.displayName": {
    "default": "", "type": "str", "range": null, "choices": null, "pattern": "^.{0,60}$",
-   "owner": "lm27.team.server", "readers": [], "spec": "TAB §3.2",
+   "owner": "lm27.team.server", "readers": ["lm27.ui.api_team"], "spec": "TAB §3.2",
    "uncalibrated": false, "secret": false, "scope": "team_server", "restart": "none",
    "label_ko": "팀 서버 표시 이름",
    "help_ko": "hello·대시보드 제목에 쓰는 이름."
@@ -1468,7 +1468,7 @@
   },
   "teamServer.suggestRanges": {
    "default": [[19310, 19330], [9311, 9330]], "type": "list", "range": null, "choices": null, "item": "port_range",
-   "owner": "lm27.team.portdiag", "readers": [], "spec": "TAB §3.4",
+   "owner": "lm27.team.portdiag", "readers": ["lm27.ui.server"], "spec": "TAB §3.4",
    "uncalibrated": false, "secret": false, "scope": "team_server", "restart": "none",
    "label_ko": "대체 포트 후보 구간",
    "help_ko": "포트가 막혔을 때 제안할 대체 포트 구간(앞 구간 우선)."
@@ -1489,7 +1489,7 @@
   },
   "time.tzOffsetMin": {
    "default": 540, "type": "int", "range": {"min": -720, "max": 840}, "choices": null,
-   "owner": "lm27.time.evidence", "readers": ["lm27.team.build", "lm27.privacy.context", "collect/Get-MailViaCopilot.py", "collect/Get-OutlookWeb.py", "lm27.bundle.loader", "lm27.collect.ledger", "lm27.collect.run", "lm27.hier.features", "lm27.normalize.load", "lm27.pipeline.analyze", "lm27.report.inputs"], "spec": "W §8.2",
+   "owner": "lm27.time.evidence", "readers": ["lm27.team.build", "lm27.privacy.context", "collect/Get-MailViaCopilot.py", "collect/Get-OutlookWeb.py", "lm27.bundle.loader", "lm27.collect.ledger", "lm27.collect.run", "lm27.hier.features", "lm27.normalize.load", "lm27.pipeline.analyze", "lm27.report.inputs", "lm27.ui.api_collect", "lm27.ui.api_report", "lm27.ui.api_settings"], "spec": "W §8.2",
    "uncalibrated": false, "secret": false, "scope": "agent", "restart": "agent",
    "label_ko": "근무 시간대(분)",
    "help_ko": "근무 시간대 오프셋(분, +09:00 = 540). 팀 묶음 시간대와 정제 문맥 오프셋의 원천."
@@ -1503,14 +1503,14 @@
   },
   "time.window.std": {
    "default": "09:00-18:00", "type": "timerange", "range": null, "choices": null,
-   "owner": "lm27.time.calendar", "readers": ["lm27.time.envelope", "lm27.time.queue", "lm27.privacy.context", "lm27.report.drill", "lm27.report.fmt", "lm27.team.aggregate", "lm27.time.episodes", "lm27.time.mm"], "spec": "W §8.2.1",
+   "owner": "lm27.time.calendar", "readers": ["lm27.time.envelope", "lm27.time.queue", "lm27.privacy.context", "lm27.report.drill", "lm27.report.fmt", "lm27.team.aggregate", "lm27.time.episodes", "lm27.time.mm", "lm27.report.analysis.quality"], "spec": "W §8.2.1",
    "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
    "label_ko": "표준 근무창",
    "help_ko": "표준 근무창. 시차 근무는 개인 설정으로 바꾼다. 형식 HH:MM-HH:MM."
   },
   "time.window.lunch": {
    "default": "12:00-13:00", "type": "timerange", "range": null, "choices": null,
-   "owner": "lm27.time.calendar", "readers": ["lm27.report.fmt", "lm27.team.aggregate"], "spec": "W §8.2.1",
+   "owner": "lm27.time.calendar", "readers": ["lm27.report.fmt", "lm27.team.aggregate", "lm27.report.analysis.quality"], "spec": "W §8.2.1",
    "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
    "label_ko": "점심 창",
    "help_ko": "흔적이 없으면 하한·다리에서 뺀다. 형식 HH:MM-HH:MM."
@@ -2070,7 +2070,7 @@
   },
   "episode.reviewWords": {
    "default": ["리뷰", "review", "dr", "보고", "검토회의", "결과보고", "발표"], "type": "list(+-)", "range": null, "choices": null, "item": "str",
-   "owner": "lm27.time.episodes", "readers": ["lm27.report.analysis.mining"], "spec": "W §8.2.5",
+   "owner": "lm27.time.episodes", "readers": [], "spec": "W §8.2.5",
    "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
    "label_ko": "리뷰 회의 낱말",
    "help_ko": "리뷰 회의(종료 근거) 판정 낱말."
@@ -2798,7 +2798,7 @@
   },
   "ui.jobPollMs": {
    "default": 1000, "type": "int", "range": {"min": 200, "max": 10000}, "choices": null,
-   "owner": "lm27.ui.jobs", "readers": [], "spec": "R §10.1",
+   "owner": "lm27.ui.jobs", "readers": ["lm27.ui.server"], "spec": "R §10.1",
    "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
    "label_ko": "작업 진행 읽기 주기(ms)",
    "help_ko": "작업 진행 읽기 주기."
@@ -2861,14 +2861,14 @@
   },
   "report.export.formats": {
    "default": ["html", "csv", "json"], "type": "list", "range": {"min": 1, "max": 3}, "choices": ["html", "csv", "json"], "item": "str",
-   "owner": "lm27.report.export", "readers": [], "spec": "R §10.2",
+   "owner": "lm27.report.export", "readers": ["lm27.ui.api_report"], "spec": "R §10.2",
    "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
    "label_ko": "내보내기 형식",
    "help_ko": "개인 보고서 내보내기 형식."
   },
   "report.export.variants": {
    "default": ["full", "redacted"], "type": "list", "range": {"min": 1, "max": 2}, "choices": ["full", "redacted"], "item": "str",
-   "owner": "lm27.report.export", "readers": [], "spec": "R §10.2",
+   "owner": "lm27.report.export", "readers": ["lm27.ui.api_report"], "spec": "R §10.2",
    "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
    "label_ko": "내보내기 변형",
    "help_ko": "내보내기 변형(전체·가림판)."

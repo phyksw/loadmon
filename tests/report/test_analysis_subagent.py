@@ -67,8 +67,20 @@ class GoldenTest(unittest.TestCase):
 
 
 class LayerTest(unittest.TestCase):
+    def test_rule_fallback_shown_but_not_opinion(self):
+        """W2 통합: 브리지 단계 폴백(by = rule)이 있으면 보여 주되, 최종 판정·체인은 규칙 판정에서(D-19 — 코파일럿 의견만 합침)."""
+        no_fb = analyze(W.golden_role_a().context(fallback=lambda stage, item, ns: None))["subagent"]["roles"][0]
+        self.assertIsNone(no_fb["ai"])
+        with_fb = analyze(W.golden_role_a().context())["subagent"]["roles"][0]
+        if with_fb["ai"] is not None:                                         # 폴백 단계 모듈이 있는 트리
+            self.assertEqual(with_fb["ai"]["by"], "rule")
+        self.assertEqual(with_fb["final"], with_fb["rule"])
+        self.assertEqual(with_fb["chain"], no_fb["chain"])
+        self.assertTrue(all(c["proposal"].endswith("단계 보조") for c in with_fb["chain"]))
+
     def test_stats_from_world(self):
-        sec = analyze(W.golden_role_a().context())
+        # 폴백 없이(답 없음) — 규칙 수치만 본다(폴백이 있을 때는 위 시험)
+        sec = analyze(W.golden_role_a().context(fallback=lambda stage, item, ns: None))
         role = sec["subagent"]["roles"][0]
         st = {r["code"]: r for r in role["steps"]}
         self.assertEqual(st["APP_CAE"]["stats"]["weeks_active"], 5)

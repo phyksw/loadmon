@@ -184,6 +184,19 @@ class TestExportRegistry(OfflineCase):
         with self.assertRaises(O.UserError):
             O.export_to_dir(item, str(out), mark=lambda *a: None)
 
+    def test_blocked_item_not_exported(self):
+        """TAB §2.8·U11 — 막힌 묶음(meta.blockers)은 내보내기도 막는다(W2 통합 WP-34 CR): 파일 0 · 상태 표시 0."""
+        raw = B.canon(_b())
+        item = self._item(raw)
+        item.meta["blockers"] = ["team_text_rejected"]
+        out = self.dir / "share_blocked"
+        fsx.ensure_dir(out)
+        marks = []
+        with self.assertRaises(O.UserError):
+            O.export_to_dir(item, str(out), mark=lambda it, st, msg: marks.append(st))
+        self.assertEqual(os.listdir(out), [])
+        self.assertEqual(marks, [])
+
     def test_publish_and_read_offline_registry(self):
         self.st.put_registry(B.registry(1))
         pub = self.dir / "pub"

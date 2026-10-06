@@ -464,7 +464,10 @@ function Invoke-LmAgent {
         $ver = ''
         if ($null -ne $aj) { $ver = [string]$aj.agent_ver }
         $cfg = Read-LmJsonFile (Join-Path $script:AgentDir 'agent_config.json')
-        $cfgAt = [datetime]::UtcNow
+        # 일정(틱·수확·teams.uia·폴링·플러시·설정 다시 읽기·보존 정리)은 단조 시계(초)로 잰다 — 벽시계가 뒤로 보정돼도
+        # 그 폭만큼 표본·heartbeat 가 멈추지 않게(W1b). 벽시계(UtcNow)는 표본·heartbeat·로그의 시각 기록에만 쓴다.
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        $cfgAtM = 0.0
         $old = Read-LmJsonFile (Join-Path $script:AgentDir 'heartbeat.json')
         $lastErr = ''; $lastErrAt = [datetime]::MinValue
         if ($null -ne $old -and [string]$old.install_id -eq $InstallId -and [int]$old.buffered -gt 0 -and [int]$old.pid -ne $PID) {
@@ -473,31 +476,34 @@ function Invoke-LmAgent {
         $started = [datetime]::UtcNow
         $buf = New-Object 'Collections.Generic.List[object]'
         $comp = New-Object 'Collections.Generic.List[object]'
-        $pending = $null; $firstDone = $false; $flushWhy = ''; $lastFlush = $null; $noKey = $false
+        $pending = $null; $firstDone = $false; $flushWhy = ''; $lastFlushM = $null; $noKey = $false
         $samplesToday = 0; $day = ''
         $runs = @{}; $prevCpu = @{}
-        $harvestChild = $null; $harvestStarted = $null
+        $harvestChild = $null; $harvestStartedM = $null
         $done = Read-LmJsonFile (Join-Path $script:RunDir 'harvest_done.json')
         $hInfo = [ordered]@{ last_at = $null; last_rc = $null; next_at = $null }
-        $nextHarvest = $started
+        $nextHarvestM = $sw.Elapsed.TotalSeconds
         if ($null -ne $done -and [string]$done.install_id -eq $InstallId) {
             $hInfo.last_at = [string]$done.finished_at; $hInfo.last_rc = $done.rc
             try {
                 $fin = [datetime]::Parse([string]$done.finished_at, $script:Inv, [Globalization.DateTimeStyles]'AdjustToUniversal, AssumeUniversal')
                 $h = Get-LmCfgNum $cfg 'agent.harvestIntervalH' 6 1 48
-                if (($started - $fin).TotalHours -lt $h) { $nextHarvest = $fin.AddHours($h) }
+                # 마지막 수확이 '미래'(시계 역행)여도 한 주기 안에 다시 돈다
+                $left = [math]::Min([math]::Max(($fin.AddHours($h) - $started).TotalSeconds, 0.0), $h * 3600.0)
+                $nextHarvestM = $sw.Elapsed.TotalSeconds + $left
             } catch { }
         }
-        $teamsChild = $null; $teamsAt = [datetime]::MinValue; $pollChild = $null; $pollAt = [datetime]::MinValue
-        $catAt = [datetime]::MinValue
-        $maintAt = $started.AddSeconds(120)
+        $teamsChild = $null; $teamsAtM = -1e9; $pollChild = $null; $pollAtM = -1e9
+        $catAtM = -1e9
+        $maintAtM = $sw.Elapsed.TotalSeconds + 120
         Write-LmLog ('start impl=ps rules=' + [int]$rulesOk)
-        $nextTick = $started
+        $nextTickM = $sw.Elapsed.TotalSeconds
         while (-not [IO.File]::Exists($stopFlag)) {
+            $m = $sw.Elapsed.TotalSeconds
+            if ($m -lt $nextTickM) { Start-Sleep -Milliseconds ([int][math]::Min(1000, ($nextTickM - $m) * 1000) + 1); continue }
             $now = [datetime]::UtcNow
-            if ($now -lt $nextTick) { Start-Sleep -Milliseconds ([int][math]::Min(1000, ($nextTick - $now).TotalMilliseconds) + 1); continue }
             $interval = [int](Get-LmCfgNum $cfg 'agent.sampleIntervalSec' 60 5 600)
-            if (($now - $cfgAt).TotalSeconds -ge 60) { $cfg = Read-LmJsonFile (Join-Path $script:AgentDir 'agent_config.json'); $cfgAt = $now }
+            if (($m - $cfgAtM) -ge 60) { $cfg = Read-LmJsonFile (Join-Path $script:AgentDir 'agent_config.json'); $cfgAtM = $m }
             if ($rulesOk) {
                 try {
                     $tick = Get-LmTick $now
@@ -519,8 +525,8 @@ function Invoke-LmAgent {
                     $samplesToday++
                     # 연산 구간(솔버 CPU — 판정은 카탈로그 캐시, 실행 중 프로세스 이름은 10분마다 한꺼번에 판정)
                     $procs = @(Get-Process -ErrorAction SilentlyContinue)
-                    if (($now - $catAt).TotalSeconds -ge 600) {
-                        $catAt = $now
+                    if (($m - $catAtM) -ge 600) {
+                        $catAtM = $m
                         Update-LmCatalog @($procs | ForEach-Object { ([string]$_.ProcessName).ToLowerInvariant() + '.exe' })
                     }
                     $cpu = @{}
@@ -534,7 +540,7 @@ function Invoke-LmAgent {
                     foreach ($k in $cpu.Keys) {
                         $pv = $prevCpu[$k]
                         if ($null -ne $pv -and $pv[0] -eq $cpu[$k][0] -and $cpu[$k][1] -ge $pv[1]) {
-                            $dts = ($now - $pv[2]).TotalSeconds
+                            $dts = $m - $pv[3]
                             if ($dts -gt 0) {
                                 $aid = $script:Cat[$cpu[$k][0]].app_id
                                 if (-not $per.ContainsKey($aid)) { $per[$aid] = @(0.0, $cpu[$k][0], $pv[2], $dts) }
@@ -543,7 +549,7 @@ function Invoke-LmAgent {
                         }
                     }
                     $prevCpu = @{}
-                    foreach ($k in $cpu.Keys) { $prevCpu[$k] = @($cpu[$k][0], $cpu[$k][1], $now) }
+                    foreach ($k in $cpu.Keys) { $prevCpu[$k] = @($cpu[$k][0], $cpu[$k][1], $now, $m) }
                     $thr = [double](Get-LmCfgNum $cfg 'pc.compute.cpuCoreThreshold' 0.5 0.05 256.0)
                     $need = [int](Get-LmCfgNum $cfg 'pc.compute.consecutiveTicks' 3 1 100)
                     foreach ($aid in @($runs.Keys)) {
@@ -559,14 +565,14 @@ function Invoke-LmAgent {
                     }
                     # 플러시
                     $age = $null
-                    if ($null -ne $lastFlush) { $age = ($now - $lastFlush).TotalSeconds }
+                    if ($null -ne $lastFlushM) { $age = $m - $lastFlushM }
                     $due = (-not $firstDone) -or $flushWhy -or ($null -eq $age) -or ($age -ge (Get-LmCfgNum $cfg 'agent.flushIntervalSec' 300 30 3600)) -or
                            ($buf.Count -ge (Get-LmCfgNum $cfg 'agent.flushMaxRows' 120 1 10000))
                     if ($due -and ($buf.Count -gt 0 -or $comp.Count -gt 0)) {
                         $flushOk = Invoke-LmFlush $buf $comp $runs $need $pc $cfg $tick.off_min $now $false
                         $noKey = ($flushOk -eq 6)
                         if ($flushOk -eq 0 -or $flushOk -eq 2 -or $flushOk -eq 6) {
-                            $buf.Clear(); $comp.Clear(); $firstDone = $true; $flushWhy = ''; $lastFlush = $now
+                            $buf.Clear(); $comp.Clear(); $firstDone = $true; $flushWhy = ''; $lastFlushM = $m
                         } else {
                             $lastErr = 'R-TRANSPORT'; $lastErrAt = $now
                             $cap = [int](Get-LmCfgNum $cfg 'agent.flushMaxRows' 120 1 10000) * 20
@@ -578,27 +584,27 @@ function Invoke-LmAgent {
                         $dn = Read-LmJsonFile (Join-Path $script:RunDir 'harvest_done.json')
                         if ($null -ne $dn) { $hInfo.last_at = [string]$dn.finished_at; $hInfo.last_rc = $dn.rc }
                         $harvestChild = $null
-                    } elseif ($null -ne $harvestChild -and ($now - $harvestStarted).TotalSeconds -gt $HarvestMaxSec) {
+                    } elseif ($null -ne $harvestChild -and ($m - $harvestStartedM) -gt $HarvestMaxSec) {
                         Stop-LmTree $harvestChild.Id; $harvestChild = $null
                     }
                     $req = [IO.File]::Exists($nowFlag)
-                    if ($null -eq $harvestChild -and ($req -or $now -ge $nextHarvest)) {
+                    if ($null -eq $harvestChild -and ($req -or $m -ge $nextHarvestM)) {
                         $harvestChild = Start-LmChild $HarvestStreams $false $req
-                        $harvestStarted = $now
-                        $nextHarvest = $now.AddHours((Get-LmCfgNum $cfg 'agent.harvestIntervalH' 6 1 48))
+                        $harvestStartedM = $m
+                        $nextHarvestM = $m + 3600.0 * (Get-LmCfgNum $cfg 'agent.harvestIntervalH' 6 1 48)
                         if ($req -and $null -ne $harvestChild) { try { Remove-Item -LiteralPath $nowFlag -Force } catch { } }
                     }
-                    $hInfo.next_at = Format-LmUtc $nextHarvest
+                    $hInfo.next_at = Format-LmUtc ($now.AddSeconds($nextHarvestM - $m))
                     if ($tick.session_state -ne 'locked' -and $tick.session_state -ne 'disconnected') {
-                        if (($null -eq $teamsChild -or $teamsChild.HasExited) -and ($now - $teamsAt).TotalSeconds -ge (Get-LmCfgNum $cfg 'teams.uia.intervalSec' 300 120 300)) {
-                            $teamsChild = Start-LmChild 'teams/teams.uia' $false $false; $teamsAt = $now
+                        if (($null -eq $teamsChild -or $teamsChild.HasExited) -and ($m - $teamsAtM) -ge (Get-LmCfgNum $cfg 'teams.uia.intervalSec' 300 120 300)) {
+                            $teamsChild = Start-LmChild 'teams/teams.uia' $false $false; $teamsAtM = $m
                         }
-                        if (($null -eq $pollChild -or $pollChild.HasExited) -and ($now - $pollAt).TotalSeconds -ge (Get-LmCfgNum $cfg 'agent.filePoll.intervalSec' 300 30 3600)) {
-                            $pollChild = Start-LmChild 'pc_file/pc.files' $true $false; $pollAt = $now
+                        if (($null -eq $pollChild -or $pollChild.HasExited) -and ($m - $pollAtM) -ge (Get-LmCfgNum $cfg 'agent.filePoll.intervalSec' 300 30 3600)) {
+                            $pollChild = Start-LmChild 'pc_file/pc.files' $true $false; $pollAtM = $m
                         }
                     }
-                    if ($now -ge $maintAt) {
-                        $maintAt = $now.AddSeconds($MaintEverySec)
+                    if ($m -ge $maintAtM) {
+                        $maintAtM = $m + $MaintEverySec
                         [void](Invoke-LmPy ('-X utf8 -I -B "' + $script:Main + '" --install-id ' + $InstallId + ' --maintain') '' 120000)
                     }
                 } catch { $lastErr = $_.Exception.GetType().Name; $lastErrAt = $now; Write-LmLog ('tick_error ' + $lastErr) }
@@ -610,9 +616,15 @@ function Invoke-LmAgent {
             Save-LmHeartbeat ([ordered]@{ schema = 'lm27.hb/1'; install_id = $InstallId; pc_id = $pc; pid = $PID; agent_ver = $ver; impl = 'ps';
                 started_at = (Format-LmUtc $started); last_tick = (Format-LmUtc $now); interval_s = $interval; samples_today = $samplesToday;
                 harvest = $hInfo; last_error = $le; buffered = $nb; state = $(if ($rulesOk) { 'running' } else { 'rules_mismatch' }) })
-            $nextTick = $nextTick.AddSeconds($interval)
-            if ($nextTick -le $now) { $nextTick = $now.AddSeconds($interval) }
+            $nextTickM += $interval
+            $m = $sw.Elapsed.TotalSeconds
+            if ($nextTickM -le $m) { $nextTickM = $m + $interval }      # 절전·멈춤 뒤 — 지금부터 다시 센다
         }
+        # 종료: 살아 있는 자식(수확·teams.uia·폴링)을 끈다 — 정지·제거 뒤 고아 수집 0(수확은 흐름별 커서로 다음 기동이 이어 한다)
+        foreach ($ch in @($harvestChild, $teamsChild, $pollChild)) {
+            if ($null -ne $ch) { try { if (-not $ch.HasExited) { Stop-LmTree $ch.Id } } catch { } }
+        }
+        $harvestChild = $null; $teamsChild = $null; $pollChild = $null
         # 종료: 마지막 틱 확정 → 플러시(진행 중 연산 구간은 확정판) → heartbeat
         $now = [datetime]::UtcNow
         $interval = [int](Get-LmCfgNum $cfg 'agent.sampleIntervalSec' 60 5 600)

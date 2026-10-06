@@ -44,6 +44,8 @@ def export_to_dir(item, folder, *, mark=None) -> str:
     if not os.path.isdir(fsx.longp(folder)):
         raise UserError("폴더가 없거나 이 망에서 닿지 않습니다")
     meta = _get(item, "meta") or {}
+    if meta.get("blockers"):                                  # TAB §2.8·U11 — 막힌 묶음은 보내기·내보내기 모두 막는다(W2 통합)
+        raise UserError("막힌 묶음은 내보낼 수 없습니다 — 미리보기의 막힘 사유를 먼저 해결하세요")
     want = str(meta.get("sha256") or "")
     raw = fsx.read_bytes(_get(item, "path"))
     if not want or fsx.sha256_hex(raw) != want:

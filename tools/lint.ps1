@@ -21,7 +21,7 @@
   powershell -NoProfile -ExecutionPolicy Bypass -File tools\lint.ps1
   powershell -NoProfile -ExecutionPolicy Bypass -File tools\lint.ps1 -Stage unit -Area core
   powershell -NoProfile -ExecutionPolicy Bypass -File tools\lint.ps1 -Stage static -Only -Rules L-02,L-13
-  powershell -NoProfile -ExecutionPolicy Bypass -File tools\lint.ps1 -L12Full     # W2 통합 창부터(CR-05)
+  powershell -NoProfile -ExecutionPolicy Bypass -File tools\lint.ps1 -L12Staged   # 옛 단계 규칙(L-12 는 W2 통합 창부터 늘 전면 실패 — CR-05)
 #>
 [CmdletBinding()]
 param(
@@ -30,7 +30,8 @@ param(
     [switch]$Only,
     [string[]]$Area = @(),
     [string[]]$Rules = @(),
-    [switch]$L12Full,
+    [switch]$L12Full,      # 호환(W2 통합 창부터 기본이 전면 실패라 효과 없음)
+    [switch]$L12Staged,
     [string]$Python = '',
     [switch]$KeepClone
 )
@@ -131,7 +132,7 @@ function Invoke-Stage([string]$Name) {
         'static' {
             $hc = Join-Path $Root 'tools\hook_check.py'
             $pa = @('-X', 'utf8', '-B', $hc, '--repo', '--root', $Root)
-            if ($L12Full) { $pa += '--l12-full' }
+            if ($L12Staged) { $pa += '--l12-staged' } else { $pa += '--l12-full' }   # CR-05 — W2 통합 창부터 전면 실패
             if ($Rules.Count -gt 0) { $pa += $Rules }
             return (Invoke-Py $pa)
         }

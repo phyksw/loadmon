@@ -11,8 +11,8 @@ r"""팀 화면 API(R §5.5 · TAB §2.5 · §2.7~§2.9 · §3.2~§3.4 · §5.1 �
     GET  /api/teamserver/local · POST /api/teamserver/start · /stop · /diagnose
 
 - 대기열 동작은 TAB 명세 CLI 와 같은 함수(``lm27.team.queue``·``build``·``offline``·``client``)를 부른다.
-- [보내기] = 승인(``queue.approve``) + 전송 작업 ``team send --all``(lane net — 승인된 대기분을 보낸다. 항목 하나만 보내는
-  ``team send <item>`` 은 cli 가 아직 막는다 — 계약 O-14 ①, CR).
+- [보내기] = 승인(``queue.approve`` — 막힌 묶음은 409) + 전송 작업 ``team send <item>``(lane net — 계약 O-14 ① 결정,
+  cli 가 ``queue.send_item(item, cfg)`` 를 부른다, W2 통합).
 - 이 PC 팀 서버는 분리 프로세스(``team-server``)로 띄운다 — 화면이 꺼져도 서버는 산다. 끄기는 '내 서버'(pid·instance 대조)일 때만
   그 서버의 ``/api/shutdown``(루프백)으로 한다. 남의 프로세스는 끄지 않는다(TAB §3.4).
 """
@@ -293,10 +293,11 @@ def post_approve(app, req):
 
 def post_send(app, req):
     from lm27.team import queue
-    r = queue.approve(_item(app, req.groups[0]))
+    it = _item(app, req.groups[0])
+    r = queue.approve(it)
     if getattr(r, "rc", 0) == 2:
         raise ApiError(409, "blocked", getattr(r, "message", "") or "막힌 묶음은 보낼 수 없습니다")
-    return app.start_job("team_send", ["team", "send", "--all"])
+    return app.start_job("team_send", ["team", "send", str(getattr(it, "name", "") or req.groups[0])])
 
 
 def post_drop(app, req):

@@ -82,6 +82,23 @@ class ContractTest(PathsCase):
         self.assertEqual(self.rel(self.p.ai_in("task_label"), d), "derived/ai_in/task_label.jsonl")
         self.assertEqual(self.rel(self.p.ai_out("task_label"), d), "derived/ai_out/task_label.json")
         self.assertEqual(self.rel(self.p.analysis(RUN), d), f"derived/analysis/{RUN}")
+        # W2 통합 — 분석·수집·내보내기 하위 경로(WP-31·32·33·35 CR)
+        self.assertEqual(self.rel(self.p.analysis_root(), d), "derived/analysis")
+        self.assertEqual(self.rel(self.p.collect_runs(), d), "derived/collect")
+        self.assertEqual(self.p.collect_stage_results(RUN).parent, self.p.collect_runs())
+        self.assertEqual(self.rel(self.p.run_status_file(RUN), d), f"derived/analysis/{RUN}/run_status.json")
+        self.assertEqual(self.rel(self.p.analysis_hier_file(RUN, "labels.json"), d), f"derived/analysis/{RUN}/hier/labels.json")
+        self.assertEqual(self.rel(self.p.analysis_report(RUN), d), f"derived/analysis/{RUN}/report")
+        self.assertEqual(self.rel(self.p.analysis_report_file(RUN, "report_model.json"), d),
+                         f"derived/analysis/{RUN}/report/report_model.json")
+        self.assertEqual(self.rel(self.p.calibration_report(), d), "derived/calibration_report.json")
+        self.assertEqual(self.rel(self.p.out_personal_file("2026-07-01", "2026-09-30", RUN, "csv_full/units.csv"),
+                                  self.root), "out/personal/2026-07-01_2026-09-30_000-a1b2/csv_full/units.csv")
+        for bad in ("../x", "a/../b", "C:/x", "", "\\\\srv\\x"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                self.p.out_personal_file("2026-07-01", "2026-09-30", RUN, bad)
+        with self.assertRaises(ValueError):
+            self.p.analysis_report_file(RUN, "..")
         self.assertEqual(self.rel(self.p.local_only_file("person_dir.json"), d), "local_only/person_dir.json")
         self.assertEqual(self.rel(self.p.hier_local_file("corrections.jsonl"), d), "local_only/hier/corrections.jsonl")
 
@@ -128,6 +145,11 @@ class ContractTest(PathsCase):
         self.assertEqual(self.p.raw_cursor_lock(PC), a / "store" / PC / "raw_cursor.json.lock")
         self.assertEqual(self.p.exe_meta(PC), a / "store" / PC / "exe_meta.json")
         self.assertEqual(self.p.ui_job_file(JOB), L / "ui" / "jobs" / f"{JOB}.json")
+        self.assertEqual(self.p.ui_job_stop_flag(JOB), L / "ui" / "jobs" / f"{JOB}.stop")          # W2 통합(협조형 취소)
+        kst = timezone(timedelta(hours=9))
+        self.assertEqual(self.p.ui_log_file(datetime(2026, 10, 6, 8, 0, tzinfo=kst)), L / "ui" / "logs" / "ui_20261005.log")
+        with self.assertRaises(ValueError):
+            self.p.ui_job_stop_flag("../x")
         self.assertEqual(self.p.agent_log_file("2026-10-05"), a / "logs" / "agent_20261005.log")
 
     def test_store_file_is_utc_write_date(self):

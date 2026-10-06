@@ -266,9 +266,13 @@ class Paths:
     def verify_cache(self) -> Path:
         return self.derived() / "verify_cache.json"
 
+    def collect_runs(self) -> Path:
+        r"""수집 실행 폴더들의 부모 ``data\derived\collect\``(원장이 모든 실행의 단계 결과를 나열 — W2 통합, WP-33 CR)."""
+        return self.derived() / "collect"
+
     def collect_stage_results(self, run_id: str) -> Path:
         r"""수집 실행 폴더 ``data\derived\collect\<run_id>\``."""
-        return self.derived() / "collect" / _check(RUN_ID_RX, run_id, "run_id")
+        return self.collect_runs() / _check(RUN_ID_RX, run_id, "run_id")
 
     def stage_result_file(self, run_id: str, stage: str) -> Path:
         r"""``data\derived\collect\<run_id>\stage_result_<stage>.json``(계약 §8.5)."""
@@ -284,11 +288,19 @@ class Paths:
     def ai_out(self, stage: str) -> Path:
         return self.derived() / "ai_out" / (_check(_STAGE_RX, stage, "단계 이름") + ".json")
 
+    def analysis_root(self) -> Path:
+        r"""분석 실행 폴더들의 부모 ``data\derived\analysis\``(보관 정리·이력 나열 — W2 통합, WP-32 CR)."""
+        return self.derived() / "analysis"
+
     def analysis(self, run_id: str) -> Path:
-        return self.derived() / "analysis" / _check(RUN_ID_RX, run_id, "run_id")
+        return self.analysis_root() / _check(RUN_ID_RX, run_id, "run_id")
 
     def analysis_current(self) -> Path:
-        return self.derived() / "analysis" / "current.json"
+        return self.analysis_root() / "current.json"
+
+    def run_status_file(self, run_id: str) -> Path:
+        r"""분석 실행 상태 ``data\derived\analysis\<run_id>\run_status.json``(``lm27.runstatus/1`` — 계약 §3.23, W2 통합)."""
+        return self.analysis(run_id) / "run_status.json"
 
     def analysis_time(self, run_id: str) -> Path:
         r"""시간 코어 결과 폴더 ``data\derived\analysis\<run_id>\time\``(계약 §3.14)."""
@@ -301,6 +313,23 @@ class Paths:
     def analysis_hier(self, run_id: str) -> Path:
         r"""분류 결과 폴더 ``data\derived\analysis\<run_id>\hier\``(계약 §3.15)."""
         return self.analysis(run_id) / "hier"
+
+    def analysis_hier_file(self, run_id: str, name: str) -> Path:
+        r"""분류 결과 파일 ``…\hier\<name>``(labels.json · groups.json · queue.json · hier_meta.json 등 — 계약 §3.15)."""
+        return self.analysis_hier(run_id) / _check(_NAME_RX, name, "파일 이름")
+
+    def analysis_report(self, run_id: str) -> Path:
+        r"""보고서 모델 폴더 ``data\derived\analysis\<run_id>\report\``(계약 §3.16)."""
+        return self.analysis(run_id) / "report"
+
+    def analysis_report_file(self, run_id: str, name: str) -> Path:
+        r"""보고서 모델 파일 ``…\report\<name>``(report_model.json · model_meta.json — 계약 §3.16·§3.23)."""
+        return self.analysis_report(run_id) / _check(_NAME_RX, name, "파일 이름")
+
+    def calibration_report(self) -> Path:
+        r"""보정 보고서 기본 위치 ``data\derived\calibration_report.json``(``lm27.calibration/1`` — W §8.3, 화면 [보정] 이
+        읽는다. ``tools\calibrate.py --out`` 으로 이 파일을 고르면 화면에 보인다 — 자동 적용 없음)."""
+        return self.derived() / "calibration_report.json"
 
     def logs(self) -> Path:
         return self.data() / "logs"
@@ -315,6 +344,11 @@ class Paths:
         t = "-".join(_ymd(to, "to"))
         rid = _check(RUN_ID_RX, run_id, "run_id")
         return self.out_dir() / "personal" / f"{f}_{t}_{rid[-8:]}"
+
+    def out_personal_file(self, from_, to, run_id: str, rel: str) -> Path:
+        r"""개인 보고서 내보내기 파일 ``out\personal\<from>_<to>_<run8>\<rel>``(rel = ``report_full.html`` ·
+        ``csv_full/units.csv`` 처럼 '/' 조각 — 조각마다 이름 검증, W2 통합 WP-31 CR)."""
+        return self.out_personal(from_, to, run_id).joinpath(*_rel_parts(rel, "내보내기 파일 이름"))
 
     # ── %LOCALAPPDATA%\LoadMonitor27\ (PC 에 남는 것) ─────────────────────
     def lad(self) -> Path:
@@ -462,8 +496,17 @@ class Paths:
     def ui_jobs(self) -> Path:
         return self.ui_dir() / "jobs"
 
+    def ui_log_file(self, utc_date) -> Path:
+        r"""화면 요청 로그 ``ui\logs\ui_YYYYMMDD.log``(UTC 날짜 — 메서드·경로·상태·ms 만, W2 통합 WP-35 CR)."""
+        y, m, d = _ymd(utc_date, "utc_date")
+        return self.ui_logs() / f"ui_{y}{m}{d}.log"
+
     def ui_job_file(self, job_id: str) -> Path:
         return self.ui_jobs() / (_check(JOB_ID_RX, job_id, "job_id") + ".json")
+
+    def ui_job_stop_flag(self, job_id: str) -> Path:
+        r"""화면 작업 정지 플래그 ``ui\jobs\<job_id>.stop``(협조형 취소 — cli ``--job`` 이 감시, 계약 §8.7, W2 통합)."""
+        return self.ui_jobs() / (_check(JOB_ID_RX, job_id, "job_id") + ".stop")
 
     def offline_registry(self, offline_dir) -> Path:
         r"""오프라인 레지스트리 사본 ``<offline_dir>\lm27_registry.json``(사용자가 고른 바깥 폴더 ``team.offlineDir`` ·

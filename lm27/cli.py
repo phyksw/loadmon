@@ -38,6 +38,12 @@ _LOGICAL_RX = re.compile(r"^[^\\/:*?\"<>|\x00-\x1f]{1,40}$")
 
 EXPORT_FORMATS = ("html", "csv", "json")
 EXPORT_VARIANTS = ("full", "redacted")
+# report ai-items --stage(WP-30 이 ai_in 을 쓰는 단계 — task_label 은 hier 쪽 단계라 여기 없다, W2 통합 WP-30 CR)
+AI_ITEM_STAGES = ("workflow_label", "agentic_match", "subagent_review", "review_text")
+# analyze --period-source(R RP8 기간 출처 — 화면 값, 'rerun' 은 파이프라인이 스스로 붙인다)
+PERIOD_SOURCES = ("default", "this_month", "last_month", "this_year", "user")
+# team send --trigger(TAB §2.8 재시도 계기 — 화면 기동·15분 타이머. collect·build 는 각 명령이 스스로 건다)
+SEND_TRIGGERS = ("manual", "startup", "timer")
 
 # 최상위 명령(계약 §7.1 표 순서) — --help 와 시험이 이 표를 쓴다
 COMMANDS = (
@@ -289,6 +295,16 @@ def _nonneg_int(s: str) -> int:
     return n
 
 
+def _months_arg(s: str) -> int:
+    try:
+        v = int(s)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError("개월 수는 정수") from None
+    if not 1 <= v <= 36:
+        raise argparse.ArgumentTypeError("개월 수는 1~36")
+    return v
+
+
 def _csv(s):
     if s is None:
         return None
@@ -440,9 +456,71 @@ def _cmd_analyze(ctx):
         if not _STAGE_ID_RX.match(s):
             raise CliError("--stages 형식이 아닙니다(예 classify,time,mining,report)")
     fn = resolve("lm27.pipeline.analyze", "analyze")
+    kw = {}
+    # 기간 출처(R RP8 — 화면이 넘긴다, W2 통합 WP-32·36 CR). 없으면 넘기지 않는다(파이프라인 기본: user·rerun).
+    if getattr(a, "period_source", None):
+        kw["period_source"] = a.period_source
+    if getattr(a, "period_months", None) is not None:
+        kw["period_months"] = a.period_months
+    cancel = _job_cancel(ctx)
+    if cancel is not None:
+        kw["cancel"] = cancel
     res = fn(ctx.paths, ctx.cfg(), from_=a.from_, to=a.to, as_of=a.as_of, ai=not a.no_ai, rerun=a.rerun,
-             stages=stages)
+             stages=stages, **kw)
     return rc_of(res)
+
+
+# ── 협조형 취소(계약 §8.7 — W2 통합 WP-35 CR) ─────────────────────────────────
+_STOP_POLL_S = 0.5
+
+
+def _job_stop_flag(ctx):
+    r"""화면 작업이면 그 작업의 정지 플래그 경로(``Paths.ui_job_stop_flag``), 아니면 None."""
+    job = getattr(ctx.args, "job", None)
+    fn = getattr(ctx.paths, "ui_job_stop_flag", None) if job else None
+    if not callable(fn):
+        return None
+    try:
+        return fn(job)
+    except ValueError:
+        return None
+
+
+def _job_cancel(ctx):
+    """분석처럼 단계 사이에서 멈출 수 있는 명령에 넘길 ``cancel()`` — 정지 플래그가 생기면 참."""
+    flag = _job_stop_flag(ctx)
+    if flag is None:
+        return None
+    return lambda: os.path.exists(os.fspath(flag))
+
+
+class _StopWatch:
+    r"""``--job`` 명령의 정지 플래그 감시(데몬 스레드). 화면이 [취소] 로 플래그를 쓰면 주 스레드에 KeyboardInterrupt 를
+    보내 명령이 저널·커서를 정리하고 rc 2(사용자 중단)로 끝나게 한다 — 5초 뒤 kill_tree 는 화면 쪽 마지막 수단."""
+
+    def __init__(self, flag):
+        import threading
+        self.flag = os.fspath(flag)
+        self.stop = threading.Event()
+        self.fired = False
+        self.thread = threading.Thread(target=self._loop, name="lm27-cli-stopwatch", daemon=True)
+
+    def _loop(self):
+        import _thread
+        while not self.stop.wait(_STOP_POLL_S):
+            if os.path.exists(self.flag):
+                self.fired = True
+                _thread.interrupt_main()
+                return
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.stop.set()
+        self.thread.join(2.0)
+        return False
 
 
 def _unsupported(flag: str, why: str):
@@ -451,10 +529,9 @@ def _unsupported(flag: str, why: str):
 
 
 def _cmd_report_build(ctx):
-    # R 부록 A: build_report(run_id) -> Path. --force 의 자리가 계약에 없다(CR) — 넘기지 않는다.
-    if ctx.args.force:
-        _unsupported("--force", "build_report(run_id) 에 강제 재생성 인자가 없습니다")
-    res = resolve("lm27.report", "build_report")(ctx.args.run)
+    # R 부록 A: build_report(run_id, *, force=False) — 계약 O-14 ③ 해소(W2 통합, WP-31 CR). force 는 있을 때만 넘긴다.
+    fn = resolve("lm27.report", "build_report")
+    res = fn(ctx.args.run, force=True) if ctx.args.force else fn(ctx.args.run)
     return rc_of(res)
 
 
@@ -548,14 +625,23 @@ def _cmd_team_approve(ctx):
 
 
 def _cmd_team_send(ctx):
-    """TAB §8.2: ``send_due(cfg)`` — 승인된 대기분 전송. 항목 하나만 보내는 계약 함수는 없다(§2.9 send_item 은 모듈 미정 —
-    CR) — ``team send <item>`` 은 그때까지 막는다."""
+    """TAB §8.2: ``send_due(cfg)`` — 승인된 대기분 전송. ``team send <item>`` = 계약 O-14 ① 결정(W2 통합, WP-34 CR):
+    ``lm27.team.queue.send_item(item, cfg)``(승인 + 전송, rc = item.rc — 0 보냄 · 2 대기·인증·다른 서버·막힘 · 1 실패 ·
+    4 보낼 상태 아님)."""
     a = ctx.args
     if a.item and a.all:
         raise CliError("<item> 과 --all 은 함께 쓸 수 없습니다")
+    if a.item and getattr(a, "trigger", None):
+        raise CliError("--trigger 는 대기분 전송(--all)에만 씁니다")
     if a.item:
-        _unsupported("<item>", "항목 하나만 보내는 계약 함수가 없습니다 — 승인 뒤 'lm27 team send --all'")
-    res = resolve("lm27.team.queue", "send_due")(ctx.cfg())
+        item = _queue_item(a.item)
+        res = resolve("lm27.team.queue", "send_item")(item, ctx.cfg())
+        _show(res, text=False)
+        return rc_of(res)
+    trig = getattr(a, "trigger", None)
+    fn = resolve("lm27.team.queue", "send_due")
+    # --trigger(화면 기동·15분 타이머 — TAB §2.8): 안 닿아도 시도 횟수를 올리지 않는 계기. 없으면 수동(manual)
+    res = fn(ctx.cfg(), trigger=trig) if trig else fn(ctx.cfg())
     _show(res, text=False)
     return rc_of(res)
 
@@ -605,9 +691,14 @@ def _cmd_team_ping(ctx):
 
 
 def _cmd_team_registry_fetch(ctx):
-    r"""TAB §8.2: ``fetch_registry(base, etag)``. 명령줄 '지금 받기' 는 강제 갱신(etag 없음). 캐시 교체는 팀 클라이언트 몫
-    (H §3.1 — cli 는 팀 레지스트리 캐시 파일을 다루지 않는다, L-22). 저장까지 하는 상위 함수 이름은 CR."""
-    r = resolve("lm27.team.client", "fetch_registry")(_team_base(ctx), None)
+    r"""'지금 받기' — 계약 O-14 ② 결정(W2 통합, WP-34 CR): ``lm27.team.client.refresh_registry(paths, cfg, force=True)``
+    가 받아서 캐시까지 교체한다(``fetch_registry`` 는 HTTP 만 — cli 는 캐시 파일을 다루지 않는다, L-22).
+    rc = 결과의 rc(0 받아 저장 · 4 이미 최신 · 2 받지 못함). rc 가 없고 HTTP 상태만 있으면 200·304 → 0, 그 밖 → 2."""
+    r = resolve("lm27.team.client", "refresh_registry")(ctx.paths, ctx.cfg(), force=True)
+    _show(r, text=False)
+    rc = _field(r, "rc")
+    if isinstance(rc, int) and not isinstance(rc, bool):
+        return rc_of(r)
     st = _field(r, "status")
     if isinstance(st, int) and not isinstance(st, bool):
         return RC_OK if st in (200, 304) else RC_PARTIAL
@@ -750,6 +841,9 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--no-ai", dest="no_ai", action="store_true")
     q.add_argument("--rerun", type=_rx_arg(_RUN_RX, "run_id"), metavar="<run_id>")
     q.add_argument("--stages", metavar="<ids>", help="예 classify,time,mining,report")
+    q.add_argument("--period-source", dest="period_source", choices=PERIOD_SOURCES,
+                   help="기간 출처(R RP8 — 화면이 넘긴다)")
+    q.add_argument("--period-months", dest="period_months", type=_months_arg, metavar="N", help="기간 개월 수(1~36)")
 
     # report
     rp = group("report")
@@ -763,7 +857,8 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--out", metavar="<dir>")
     q = leaf(rp, "ai-items", _cmd_report_ai_items, "코파일럿 단계 ai_in 쓰기")
     q.add_argument("--run", required=True, type=_rx_arg(_RUN_RX, "run_id"), metavar="<run_id>")
-    q.add_argument("--stage", metavar="<stage>")
+    q.add_argument("--stage", choices=AI_ITEM_STAGES, metavar="<stage>",
+                   help="코파일럿 단계(" + "·".join(AI_ITEM_STAGES) + ")")
 
     # bridge — 도움말용(실행은 _bridge 가 인자를 그대로 넘긴다)
     q = sub.add_parser("bridge", help=help_of["bridge"], description=help_of["bridge"], add_help=False)
@@ -789,6 +884,7 @@ def build_parser() -> argparse.ArgumentParser:
     q = leaf(tm, "send", _cmd_team_send, "전송(<item> 하나 또는 --all)")
     q.add_argument("item", nargs="?", type=_rx_arg(_ITEM_RX, "item"), metavar="<item>")
     q.add_argument("--all", action="store_true")
+    q.add_argument("--trigger", choices=SEND_TRIGGERS, help="재시도 계기(화면이 붙인다 — 기본 수동)")
     q = leaf(tm, "mask", _cmd_team_mask, "단위업무 제목 가림")
     q.add_argument("unit_id", type=_rx_arg(_UNIT_RX, "unit_id"), metavar="<unit_id>")
     q.add_argument("mode", choices=("title", "detail", "none"))
@@ -857,7 +953,12 @@ def _run(argv) -> int:
     func = getattr(args, "func", None)
     if func is None:
         raise CliError("명령이 필요합니다", RC_FAIL)
-    return func(Ctx(args))
+    ctx = Ctx(args)
+    flag = _job_stop_flag(ctx)
+    if flag is None:
+        return func(ctx)
+    with _StopWatch(flag):                       # 화면 [취소] = 정지 플래그 → KeyboardInterrupt → rc 2(계약 §8.7)
+        return func(ctx)
 
 
 def main(argv: list[str] | None = None) -> int:

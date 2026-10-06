@@ -109,6 +109,29 @@ class ProgramPipeTest(_Base):
         (row,) = self.store_rows("teams", "teams.uia")
         self.assertIn("�", row["body_masked"])
 
+    def test_T07_party_names_first_run_not_in_store(self):
+        """W1b 회귀(T-07 · I1): 첫 수집(빈 사람 사전)에서 단톡방 참여자·작성자·보낸 사람 표시명이 store 바이트에 0건,
+        주소 없는 팀즈 이름도 로컬 사람 사전(person_dir)에 이름 기반 키로 오른다."""
+        names = ("이영희", "박민수", "최지훈")
+        for i in range(2):
+            raw = H.raw_teams(chat_title="이영희, 박민수, 최지훈", chat_type="group", chat_id="19:" + "d" * 32 + "@thread.v2",
+                              participants=[{"name": n} for n in names], author_name="박민수",
+                              body_text=f"최지훈 이영희 오늘 도면 공유했어요 {i}", message_id=f"mN{i}")
+            code, sm, _err = self.run_pipe(self.args("teams", "teams.web"), jl(raw))
+            self.assertEqual((code, sm["stored"]), (S.EXIT_OK, 1))
+        mail = H.raw_mail(sender_addr="park.ms@corp.example", sender_name="박민수", subject="박민수 견적 검토 1차",
+                          internet_message_id="<m9.p@corp.example>")
+        self.assertEqual(self.run_pipe(self.args("mail", "mail.com"), jl(mail))[0], S.EXIT_OK)
+        blob = self.sb.all_bytes()
+        store = b"".join(gzip.decompress(p.read_bytes()) for p in self.paths.store_root().rglob("*.jsonl.gz"))
+        self.assertGreater(len(store), 0)
+        for n in names:
+            self.assertNotIn(n.encode("utf-8"), store, n)
+        pd = fsx.read_json(self.paths.local_only_file("person_dir.json"), default={}) or {}
+        learned = {x for p in (pd.get("people") or {}).values() for x in p.get("names") or ()}
+        self.assertLessEqual(set(names), learned)                           # 로컬 전용 사전(원장·번들 밖)에만
+        self.assertTrue(blob)
+
     def test_args_exit5(self):
         save = {"pc.sampler": 1}
         from lm27.store import save_raw_cursor

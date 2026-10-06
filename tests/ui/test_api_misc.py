@@ -164,13 +164,33 @@ class JobArgvTest(unittest.TestCase):
                                                                   "as_of": "2026-09-30T18:00",
                                                                   "period_source": "default", "period_months": 3}),
                          ["analyze", "--from", "2026-07-01", "--to", "2026-09-30", "--as-of", "2026-09-30T18:00",
-                          "--no-ai"])
+                          "--period-source", "default", "--period-months", "3", "--no-ai"])     # W2 통합 — 기간 출처 전달
+        for bad in ({"period_source": "rerun"}, {"period_months": 0}, {"period_months": "3"}):
+            st, b, _ = self.srv.req("POST", "/api/analysis/run", dict({"from": "2026-07-01", "to": "2026-09-30"}, **bad))
+            self.assertEqual(st, 400, bad)
         self.assertEqual(self._argv("POST", "/api/analysis/run", {"rerun": RUN_ID,
                                                                   "stages": ["classify", "time", "mining", "report"],
                                                                   "ai": False}),
                          ["analyze", "--rerun", RUN_ID, "--stages", "classify,time,mining,report", "--no-ai"])
         st, b, _ = self.srv.req("POST", "/api/analysis/run", {"from": "2026-09-30", "to": "2026-09-01"})
         self.assertEqual(st, 400)
+
+    def test_auto_team_send_triggers(self):
+        """TAB §2.8 재시도 계기(W2 통합): 화면 기동·15분 타이머 — 승인된 막힘 없는 대기분이 있을 때만 작업
+        'team send --all --trigger <계기>'. 대기분이 없거나 막혔거나 모르는 계기면 작업 0."""
+        from types import SimpleNamespace
+        from unittest import mock
+        self.assertIsNone(self.app.auto_team_send("timer"))                            # 빈 대기열
+        ok = SimpleNamespace(folder="pending", meta={"approved": True})
+        blocked = SimpleNamespace(folder="pending", meta={"approved": True, "blockers": ["team_text_rejected"]})
+        sent = SimpleNamespace(folder="sent", meta={"approved": True})
+        with mock.patch("lm27.team.queue.list_items", lambda paths=None: [blocked, sent]):
+            self.assertIsNone(self.app.auto_team_send("startup"))
+        with mock.patch("lm27.team.queue.list_items", lambda paths=None: [ok]):
+            self.assertIsNone(self.app.auto_team_send("manual"))
+            jid = self.app.auto_team_send("timer")
+        self.assertIsNotNone(jid)
+        self.assertEqual(_wait_job(self.app, jid)["result"]["argv"], ["team", "send", "--all", "--trigger", "timer"])
 
     def test_report_export_and_team_argv(self):
         self.assertEqual(self._argv("POST", "/api/report/export", {"run_id": RUN_ID}),

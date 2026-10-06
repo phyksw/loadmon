@@ -863,7 +863,8 @@ def _gantt(UN, order, idx, people, P, reg_proj, agent_names, store, roster, reg_
                    "parallel": (sum(day_par) / len(day_par)) if day_par else 0.0, "lead_days": len(lead_days)}
         uo = [{"unit_id": u["unit_id"], "title": u["title"], "spans": u["spans"], "density": u["density"],
                "effort_min": u["effort_min"], "parallel": u["parallel"], "grade": u["grade"], "status": u["status"],
-               "start": u["start"], "end": u["end"], "lead_time_h": u["lead_time_h"]} for u in units]
+               "start": u["start"], "end": u["end"], "lead_time_h": u["lead_time_h"],
+               "ax_link": bool(u.get("ax_link"))} for u in units]           # TI-06 AX 연계 비중(W2 통합 WP-37 CR)
         gantt.append({"person": idx[k[0]], "domain": k[1], "project_id": u0["project_id"],
                       "proposal_id": u0["proposal_id"] if u0["proposal"] else None, "role_id": u0["role_id"],
                       "role_key": k[3], "row_end": row_end, "units": uo})
@@ -944,7 +945,7 @@ def check_invariants(td, *, people=None, used=None, picks=None, gap: int = 2) ->
 
 # ───────────────────────────── 실행 ─────────────────────────────
 def aggregate(store, gen: int, *, ukey=None, now=None, write: bool = True) -> AggResult:
-    """재취합 1회 → ``out\\gen_<gen>\\`` 에 산출(team_data.json · details.json · 보고서 HTML · 마지막에 result.json).
+    """재취합 1회 → ``out\\gen_<gen>\\`` 에 산출(team_data.json · details.json · 보고서 HTML · 팀 표 CSV · 마지막에 result.json).
     현재 세대 전환(``out\\current.json``)은 호출자(서버 워커·반입 CLI)가 ``store.publish_gen`` 으로 한다."""
     t0 = time.monotonic()
     warnings: list[str] = []
@@ -961,13 +962,14 @@ def aggregate(store, gen: int, *, ukey=None, now=None, write: bool = True) -> Ag
             fsx.atomic_write(store.gen_dir(gen) / "result.json", fsx.canon_bytes(res.as_result_json()))
         store.log_aggregate(f"gen {gen} 실패 {type(e).__name__}")
         return res
-    _interpret(td, store, warnings)
+    _interpret(td, store, warnings, details)
     res = AggResult(ok=True, rc=0, gen=gen, members=len(td["people"]), warnings=warnings, td=td, details=details)
     if write:
         gd = store.gen_dir(gen)
         fsx.atomic_write(gd / "team_data.json", fsx.canon_bytes(td))
         fsx.atomic_write(gd / "details.json", fsx.canon_bytes(details))
-        _render(td, details, gd, warnings)
+        _render(td, details, gd, warnings, store.cfg)
+        _tables(td, gd, warnings)
         res.sec = time.monotonic() - t0
         fsx.atomic_write(gd / "result.json", fsx.canon_bytes(res.as_result_json()))
     res.sec = time.monotonic() - t0
@@ -982,8 +984,13 @@ def _report_module():
     return importlib.import_module("lm27.team.report")
 
 
-def _interpret(td, store, warnings) -> None:
+def _interpret(td, store, warnings, details=None) -> None:
+    """표시 메타(``decorate`` — 영역 이름·색·순서, 단계 어휘, view)를 먼저 채우고 해석 문장을 붙인다(W2 통합 WP-37 CR).
+    대시보드(``/api/team``·``/api/team/detail``)가 쓰는 team_data·details 에 같은 메타가 실린다. 설정은 서버 cfg(T-14)."""
     mod = _report_module()
+    deco = getattr(mod, "decorate", None) if mod else None
+    if deco is not None:
+        deco(td, store.cfg, details)
     fn = getattr(mod, "interpret", None) if mod else None
     if fn is None:
         warnings.append("해석 문장 모듈(lm27.team.report.interpret)이 아직 없어 interpretation 을 비웠습니다")
@@ -991,7 +998,7 @@ def _interpret(td, store, warnings) -> None:
     td["interpretation"] = list(fn(td, store.cfg) or [])
 
 
-def _render(td, details, gd, warnings) -> None:
+def _render(td, details, gd, warnings, cfg=None) -> None:
     mod = _report_module()
     fn = getattr(mod, "render_team_report", None) if mod else None
     if fn is None:
@@ -1000,4 +1007,18 @@ def _render(td, details, gd, warnings) -> None:
     island = dict(td)
     island["details"] = details                       # 자기완결 보고서 데이터 섬 = team_data + details(R §7.8.2)
     for share, name in ((False, "team_report.html"), (True, "team_report_share.html")):
-        fsx.atomic_write(gd / name, str(fn(island, share=share)).encode("utf-8"))
+        # 서버 cfg 를 넘긴다 — 렌더러가 설정을 새로 읽으면 서버 read-check(T-14)에 teamReport 키가 빠진다(WP-37 CR)
+        fsx.atomic_write(gd / name, str(fn(island, share=share, cfg=cfg)).encode("utf-8"))
+
+
+def _tables(td, gd, warnings) -> None:
+    r"""팀 표 CSV(R §9.1.2 · §9.3.3 · R §13 T-5) — ``out\gen_N\team_tables\*.csv`` · 공유판 ``team_tables\share\*.csv``.
+    바이트는 ``lm27.team.report.team_tables``(UTF-8 BOM·CRLF·수식 주입 방어), 쓰기는 취합기(원자 쓰기, W2 통합 WP-37 CR)."""
+    mod = _report_module()
+    fn = getattr(mod, "team_tables", None) if mod else None
+    if fn is None:
+        warnings.append("팀 표 CSV 모듈(lm27.team.report.team_tables)이 아직 없어 team_tables 를 만들지 않았습니다")
+        return
+    for share, sub in ((False, gd / "team_tables"), (True, gd / "team_tables" / "share")):
+        for name, data in sorted(fn(td, share=share).items()):
+            fsx.atomic_write(sub / name, data)

@@ -289,7 +289,9 @@ def subagent_layer(ctx, roles_wf: Mapping[str, dict], traces: Mapping[str, Mappi
                 s["subagent"] = r["final"]
                 s["why"] = list(r["why"])
         chain = []
-        if ai and ai["subs"]:
+        # 체인 제안도 코파일럿 의견(ai·manual)의 구성안일 때만 그것을 쓴다 — 규칙 답(브리지 폴백)의 subs 는 보여 주기만 하고
+        # 체인은 규칙 판정(적합·조건부 단계)에서 만든다(W2 통합: 폴백 단계 모듈이 생긴 뒤 규칙 답이 체인을 덮던 문제)
+        if ai_v is not None and ai and ai["subs"]:
             seen = set()
             for sub in ai["subs"]:
                 for n in sub["steps"]:

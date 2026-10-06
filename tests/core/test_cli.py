@@ -214,7 +214,7 @@ class DispatchTest(CliCase):
     def _placeholders(self, rec):
         def ph(x):
             return {"@ITEM@": rec.items[0] if rec.items else None, "@CFG@": FAKE_CFG, "@TMPDIR@": self.tmp,
-                    "@PYEXE@": str(self.paths.python_exe())}.get(x, x) if isinstance(x, str) else x
+                    "@PYEXE@": str(self.paths.python_exe()), "@PATHS@": self.paths}.get(x, x) if isinstance(x, str) else x
         return ph
 
     def test_collect_passes_paths_and_cfg_positionally(self):
@@ -257,12 +257,34 @@ class DispatchTest(CliCase):
         self.assertEqual(rc, 0)
         self.assertEqual(rec.calls[("lm27.team.client", "hello")][0][0], "http://[::1]:9310")
 
-    def test_registry_fetch_status_to_rc(self):
-        for st, want in ((200, 0), (304, 0), (503, 2), (404, 2)):
-            with self.subTest(status=st):
-                rec = _Recorder(rets={("lm27.team.client", "fetch_registry"): {"status": st}})
+    def test_registry_fetch_refresh_rc(self):
+        # 계약 O-14 ② (W2 통합): refresh_registry(paths, cfg, force=True) 의 rc — 0 저장 · 4 이미 최신 · 2 받지 못함
+        for ret, want in (({"rc": 0, "status": 200}, 0), ({"rc": 4, "status": 304}, 4), ({"rc": 2, "status": None}, 2),
+                          ({"status": 200}, 0), ({"status": 503}, 2)):
+            with self.subTest(ret=ret):
+                rec = _Recorder(rets={("lm27.team.client", "refresh_registry"): ret})
                 rc, _o, _e, _c = self._run_case({"argv": ["team", "registry-fetch"]}, rec)
                 self.assertEqual(rc, want)
+                args, kw = rec.calls[("lm27.team.client", "refresh_registry")]
+                self.assertIs(args[0], self.paths)
+                self.assertEqual(kw, {"force": True})
+                self.assertNotIn(("lm27.team.client", "fetch_registry"), rec.resolved)
+
+    def test_team_send_item_rc_is_item_rc(self):
+        for item_rc in (0, 1, 2, 4):
+            with self.subTest(item_rc=item_rc):
+                rec = _Recorder(rets={("lm27.team.queue", "send_item"): {"rc": item_rc}})
+                rc, _o, err, _c = self._run_case({"argv": ["team", "send", ITEM]}, rec)
+                self.assertEqual(rc, item_rc, err)
+                self.assertNotIn(("lm27.team.queue", "send_due"), rec.calls)
+
+    def test_report_build_force_passes_force(self):
+        rec = _Recorder()
+        rc, _o, err, _c = self._run_case({"argv": ["report", "build", "--run", RUN, "--force"]}, rec)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(rec.calls[("lm27.report", "build_report")], ((RUN,), {"force": True}))
+        rc, _o, err, _c = self._run_case({"argv": ["report", "build", "--run", RUN]}, rec)
+        self.assertEqual(rec.calls[("lm27.report", "build_report")], ((RUN,), {}))
 
     def test_team_build_loads_current_analysis(self):
         rec = _Recorder(rets={("lm27.report", "load_model"): {"model": "합성"}})
@@ -281,8 +303,7 @@ class DispatchTest(CliCase):
         self.assertNotIn(("lm27.team.build", "build_and_queue"), rec.calls)
 
     def test_unsupported_args_rc1_without_calling(self):
-        for argv in (["team", "send", ITEM], ["report", "build", "--run", RUN, "--force"],
-                     ["team-firewall-diag", "--store", "@TMPDIR@"]):
+        for argv in (["team-firewall-diag", "--store", "@TMPDIR@"],):
             with self.subTest(argv=argv):
                 rec = _Recorder()
                 rc, _o, err, _c = self._run_case({"argv": argv}, rec)
@@ -403,6 +424,74 @@ class LazyImportTest(CliCase):
                 mock.patch.object(cli.Ctx, "paths", self.paths):
             rc, _out, _err = self.run_main(["collect", "--auto"])
         self.assertEqual(rc, 2)
+
+
+class JobCancelTest(CliCase):
+    """--job 명령의 협조형 취소(계약 §8.7 · W2 통합 WP-35 CR): 정지 플래그가 생기면 KeyboardInterrupt → rc 2,
+    analyze 에는 cancel() 이 넘어간다. 감시 스레드는 명령이 끝나면 남지 않는다."""
+
+    def _patched(self, res):
+        return (mock.patch.object(cli, "resolve", res),
+                mock.patch.object(cli.Ctx, "cfg", lambda s, overrides=None: dict(FAKE_CFG)),
+                mock.patch.object(cli.Ctx, "paths", self.paths))
+
+    def test_stop_flag_interrupts_command_rc2(self):
+        import threading
+        import time
+        flag = self.paths.ui_job_stop_flag(JOB)
+        seen = {}
+
+        def res(mod, attr):
+            def slow(*a, **k):
+                os.makedirs(flag.parent, exist_ok=True)
+                flag.write_bytes(b"stop\n")
+                t0 = time.monotonic()
+                while time.monotonic() - t0 < 10:      # 감시 스레드가 0.5초 안에 끊는다
+                    time.sleep(0.05)
+                seen["timeout"] = True
+                return 0
+            return slow
+
+        before = {t.name for t in threading.enumerate()}
+        p1, p2, p3 = self._patched(res)
+        with p1, p2, p3:
+            rc, _out, err = self.run_main(["collect", "--auto", "--job", JOB, "--events", "jsonl"])
+        self.assertEqual(rc, 2, err)
+        self.assertNotIn("timeout", seen)
+        self.assertNotIn("lm27-cli-stopwatch", {t.name for t in threading.enumerate()} - before)
+
+    def test_no_flag_no_interrupt_and_thread_gone(self):
+        import threading
+
+        def res(mod, attr):
+            return lambda *a, **k: 0
+
+        p1, p2, p3 = self._patched(res)
+        with p1, p2, p3:
+            rc, _out, err = self.run_main(["collect", "--auto", "--job", JOB])
+        self.assertEqual(rc, 0, err)
+        self.assertNotIn("lm27-cli-stopwatch", {t.name for t in threading.enumerate()})
+
+    def test_analyze_gets_cancel_only_with_job(self):
+        got = []
+
+        def res(mod, attr):
+            def analyze(*a, **k):
+                got.append(k)
+                return 0
+            return analyze
+
+        p1, p2, p3 = self._patched(res)
+        with p1, p2, p3:
+            self.run_main(["analyze", "--from", "2026-09-01", "--to", "2026-09-30"])
+            self.run_main(["analyze", "--from", "2026-09-01", "--to", "2026-09-30", "--job", JOB])
+        self.assertNotIn("cancel", got[0])
+        self.assertTrue(callable(got[1]["cancel"]))
+        self.assertFalse(got[1]["cancel"]())
+        flag = self.paths.ui_job_stop_flag(JOB)
+        os.makedirs(flag.parent, exist_ok=True)
+        flag.write_bytes(b"stop\n")
+        self.assertTrue(got[1]["cancel"]())
 
 
 class EventsModeTest(CliCase):

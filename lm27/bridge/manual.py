@@ -171,17 +171,22 @@ class ManualTransport:
                           chat_seq=self.chat_seq)
 
 
+def inbox_dir(paths) -> Path:
+    r"""``copilot_manual\inbox``(붙여넣은 답을 사람이 떨어뜨리는 곳)."""
+    return fsio.child(manual_dir(paths), INBOX_NAME)
+
+
 def scan_inbox(paths) -> list:
-    r"""``copilot_manual\inbox\*.txt`` → [(경로, 글)]. 읽은 파일은 반입 뒤 호출자가 지운다(``fsio.remove``)."""
-    d = fsio.child(manual_dir(paths), INBOX_NAME)
+    r"""``copilot_manual\inbox\*.txt`` → [(경로, 글 | None, 상태)] — 상태는 ``fsio.read_text_any``(ok · enc · io).
+    UTF-8 이 아니면 CP949(메모장 'ANSI' 저장)로 다시 읽는다. 훑은 파일은 반입 시도 뒤 호출자가 지운다(``fsio.remove``)."""
+    d = inbox_dir(paths)
     if not d.is_dir():
         return []
     out = []
     for p in sorted(d.iterdir()):
         if p.is_file() and p.suffix.lower() == ".txt":
-            t = fsio.read_text(p)
-            if t is not None:
-                out.append((p, t))
+            t, st = fsio.read_text_any(p)
+            out.append((p, t, st))
     return out
 
 

@@ -7,7 +7,9 @@ r"""LM27 관문 검사기 — 계약 §11.1 lint L-01~L-30 의 정적 부분(WP-
                                                 편집한 파일 경로를 꺼내 같은 검사(exit 2 = 결과가 편집자에게 되돌아간다)
   python tools\hook_check.py --repo [L-nn …]    저장소 전역 검사(인자 없으면 L-01~L-30 전부). 오류 있으면 exit 1
   python tools\hook_check.py --list             규칙 목록
-  선택: --root <트리>   --rules L-nn,…(파일 모드 규칙 지정)   --l12-full(W2 통합 창부터 L-12 죽은 키 전면 실패 — CR-05)
+  선택: --root <트리>   --rules L-nn,…(파일 모드 규칙 지정)
+        --l12-full(L-12 죽은 키 전면 실패 — CR-05. W2 통합 창부터 --repo 의 기본값)   --l12-staged(옛 단계 규칙: owner 모듈이
+        아직 없는 키는 경고만 — W0·W1 판 재현용)
 
 훅 규칙 묶음(파일 단위 부분, 한 파일 2초 안): L-01·02·03·04·05·06·07·09·10·11·16·18·19·20·26.
 저장소 전역(--repo): 위 규칙을 모든 파일에 + L-08·12·13·14·15·17·21·22·23·24·25·27·28·29·30.
@@ -1746,7 +1748,7 @@ def l12_problems(ctx, srcs, only_ns=None):
             errs.append(Finding(rule, rel_reg, 0, f"죽은 키 '{k}' — 읽는 모듈(owner)이 있는데 코드에서 읽히지 않습니다"))
         if dead_warn:
             warns.append(Finding(rule, rel_reg, 0, f"아직 읽히지 않는 키 {len(dead_warn)}개 — owner 모듈 미생성이라 경고만"
-                                 f"(CR-05, W2 통합 창부터 --l12-full 로 실패). 예: {dead_warn[:3]}", warn=True))
+                                 f"(CR-05 — --l12-staged 단계 규칙에서만 경고, 기본은 실패). 예: {dead_warn[:3]}", warn=True))
     return errs, warns
 
 
@@ -2848,7 +2850,7 @@ def _reconf():
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
-    root, rules, repo, l12_full, listing, files = None, None, False, False, False, []
+    root, rules, repo, l12_full, listing, files = None, None, False, True, False, []    # L-12 전면 실패 = 기본(W2 통합 창)
     i = 0
     try:
         while i < len(argv):
@@ -2863,6 +2865,8 @@ def main(argv=None):
                 repo = True
             elif a == "--l12-full":
                 l12_full = True
+            elif a == "--l12-staged":
+                l12_full = False
             elif a == "--list":
                 listing = True
             elif a in ("-h", "--help"):

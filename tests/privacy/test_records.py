@@ -437,6 +437,75 @@ class SurrogateTest(_Base):
         self.assertEqual(raw["body_text"], "회신 \ud83d")                 # 수집기 원시(메모리)는 그대로 — 사본만 고친다
 
 
+class PartyNamesTest(_Base):
+    """W1b 회귀(I1 · T-07): 레코드 자기 당사자(보낸·받는 사람·주최자·참석자·팀즈 작성자·참여자)의 표시명으로 그 레코드의 글을
+    가린다 — 첫 수집(빈 사람 사전)에서도 제목·본문·방 제목에 동료 실명이 원문으로 남지 않는다. 배운 이름은 같은 실행의 다음
+    레코드부터 바로 쓰고, 주소 없는 팀즈 이름도 이름 기반 키로 배운다. 같은 규칙 판의 저장 행도 G2 가 다시 가린다."""
+    NAMES = ("이영희", "박민수", "최지훈")
+
+    def assertNoNames(self, d):
+        blob = repr(d)
+        for n in self.NAMES:
+            self.assertNotIn(n, blob)
+
+    def test_teams_group_title_and_body_first_run(self):
+        rc = self.sb.rc("teams.web")
+        for i in range(2):
+            d = self.stored("teams", src="teams.web", rc=rc, chat_title="이영희, 박민수, 최지훈", chat_type="group",
+                            chat_id="19:" + "d" * 32 + "@thread.v2", author_name="박민수", message_id=f"mN{i}",
+                            participants=[{"name": n} for n in self.NAMES], body_text="최지훈 이영희 오늘 도면 공유했어요")
+            self.assertNoNames(d)
+            self.assertEqual(d["chat_title_masked"].count("[사람#"), 3)
+        self.assertEqual(d["body_masked"].count("[사람#"), 2)
+        # 주소 없는 이름도 이름 기반 키로 배운다(같은 실행의 사전·로컬 사전 재료)
+        for n in self.NAMES:
+            self.assertEqual(rc.sctx.persons.get(n), K.who_key(H.keyring(), "name:" + n)[1:])
+        self.assertEqual({tuple(sorted(p["names"])) for p in rc.people.values()}, {(n,) for n in self.NAMES})
+        self.assertTrue(all(not p["smtp"] for p in rc.people.values()))
+
+    def test_mail_sender_name_in_first_subject(self):
+        rc = self.sb.rc("mail.com")
+        d1 = self.stored("mail", rc=rc, sender_addr="park.ms@corp.example", sender_name="박민수",
+                         subject="박민수 견적 검토 1차", internet_message_id="<m1.p@corp.example>")
+        self.assertNotIn("박민수", d1["subject_masked"])
+        tok = "[사람#" + K.who_key(H.keyring(), "smtp:park.ms@corp.example")[1:7] + "]"
+        self.assertEqual(d1["subject_masked"], tok + " 견적 검토 1차")
+        # 같은 실행의 다음 레코드: 당사자가 아닌 메일의 제목에 나와도 가린다(방금 배운 이름)
+        d2 = self.stored("mail", rc=rc, subject="박민수 님 회신 요청", internet_message_id="<m2.p@corp.example>")
+        self.assertNotIn("박민수", d2["subject_masked"])
+        self.assertIn(tok, d2["subject_masked"])
+
+    def test_self_and_surname_only_not_masked_as_person(self):
+        rc = self.sb.rc("teams.web")
+        d = self.stored("teams", src="teams.web", rc=rc, author_name="김", participants=[{"name": "홍길동"}, {"name": "김"}],
+                        body_text="홍길동 김 회의", message_id="mS")
+        self.assertNotIn("[사람#", d["body_masked"])                       # 본인([나])·성만(1자)은 사람 사전에 넣지 않는다
+        self.assertNotIn("김", rc.sctx.persons)
+
+    def test_g2_remasks_same_rules_ver_rows_with_learned_names(self):
+        rc = self.sb.rc("mail.com")
+        old = self.stored("mail", rc=rc, subject="이영희 보고 검토", internet_message_id="<m3@corp.example>")
+        self.assertIn("이영희", old["subject_masked"])                      # 그때는 당사자도 사전에도 없던 이름
+        self.assertEqual(old["rules_ver"], RULES_VERSION)
+        ctx = dataclasses.replace(rc.sctx, persons={**rc.sctx.persons, "이영희": K.who_key(H.keyring(), "name:이영희")[1:]})
+        new, hits = R.resanitize_row("mail", old, ctx)
+        self.assertIsNot(new, old)
+        self.assertNotIn("이영희", new["subject_masked"])
+        self.assertEqual((new["id"], hits.get("person")), (old["id"], 1))
+        self.assertIn("이영희", old["subject_masked"])                      # 원본은 바꾸지 않는다(사본)
+        same, h2 = R.resanitize_row("mail", new, ctx)
+        self.assertIs(same, new)                                            # 남은 이름이 없으면 같은 객체(멱등)
+        self.assertEqual(h2, {})
+
+    def test_gate_masks_learned_names(self):
+        from lm27.privacy.gate import GateContext, gate_text
+        rc = self.sb.rc("teams.web")
+        self.stored("teams", src="teams.web", rc=rc, participants=[{"name": n} for n in self.NAMES], message_id="mG")
+        t, _h = gate_text("이영희, 박민수, 최지훈 / 최지훈 이영희 오늘 도면 공유했어요", GateContext(sctx=rc.sctx))
+        for n in self.NAMES:
+            self.assertNotIn(n, t)
+
+
 class IdTest(_Base):
     def test_deterministic_and_text_sensitive(self):
         a = self.stored("mail")

@@ -213,7 +213,13 @@ class ExportTest(unittest.TestCase):
     def test_paths_methods_missing_rc1(self):
         """분석·내보내기 하위 경로 메서드가 아직 `lm27.paths` 에 없으면(CR) rc 1 + 한국어 한 줄(예외로 죽지 않는다)."""
         from lm27.paths import Paths
-        p = Paths(self.t.root, lad=os.path.join(self.t.root, "lad"))
+
+        class Old(Paths):                   # W2 통합: 실제 Paths 에는 메서드가 생겼다 — 옛 판을 흉내 낸다
+            analysis_time_file = None
+            analysis_report_file = None
+            analysis_report = None
+            out_personal_file = None
+        p = Old(self.t.root, lad=os.path.join(self.t.root, "lad"))
         res = EX.export(R.RUN_ID, ["json"], ["full"], None, paths=p, cfg=self.cfg)
         self.assertEqual(res.rc, 1)
         self.assertIn("Paths.", res.failed[0]["reason"])

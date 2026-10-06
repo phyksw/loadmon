@@ -73,6 +73,9 @@ WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 BIND_FAIL = frozenset({10048, 10013, 98, 13, 48})        # WinError 주소 사용 중·접근 거부(POSIX 대응 값 포함)
 SHUTDOWN_DELAY_S = 0.5
 HELLO_TIMEOUT_S = 1.5
+TEAM_SEND_TRIGGERS = ("startup", "timer")      # 화면이 거는 팀 묶음 재시도 계기(TAB §2.8 — 승인된 항목만)
+TEAM_SEND_STARTUP_DELAY_S = 5.0
+TEAM_SEND_EVERY_S = 15 * 60.0                  # 화면이 떠 있는 동안 15분마다(TAB §2.8)
 _TOKEN_META_RX = re.compile(rb'(<meta\s+name="lm27-ui-token"\s+content=")[^"]*(")')
 _LOG_NAME_RX = re.compile(r"^ui_(\d{8})\.log$")
 
@@ -306,6 +309,39 @@ class UiApp:
         except J.BusyError as e:
             raise ApiError(409, "busy", str(e), [e.job.kind]) from None
         return {"ok": True, "job_id": job.job_id}
+
+    # 팀 묶음 자동 재시도(TAB §2.8 — 화면 기동·떠 있는 동안 15분마다; 빌드 직후는 team build, [수집] 끝은 collect) -----
+    def _team_due(self) -> bool:
+        """승인된(또는 ``team.autoSend``) 막힘 없는 대기 묶음이 있는가 — 대기열 meta 만 읽는다(네트워크 0)."""
+        try:
+            from lm27.team import queue
+            auto = bool(self.cfg()["team.autoSend"])
+            for it in queue.list_items(paths=self.paths) or ():
+                m = getattr(it, "meta", None) or {}
+                if getattr(it, "folder", "") == "pending" and (m.get("approved") or auto) and not m.get("blockers"):
+                    return True
+        except Exception:                          # 대기열·번들이 아직 없거나 읽기 실패 — 이번 계기는 건너뛴다
+            return False
+        return False
+
+    def auto_team_send(self, trigger: str):
+        """보낼 것이 있고 net 차선이 비어 있을 때만 작업 ``team send --all --trigger <계기>``(하위 프로세스 — 서버 안에서
+        네트워크 일을 하지 않는다). 반환 job_id 또는 None."""
+        if trigger not in TEAM_SEND_TRIGGERS or not self._team_due():
+            return None
+        try:
+            return self.jobs.start("team_send", ["team", "send", "--all", "--trigger", trigger]).job_id
+        except J.BusyError:
+            return None
+
+    def start_team_send_watch(self) -> None:
+        def loop():
+            if self._stop.wait(TEAM_SEND_STARTUP_DELAY_S):
+                return
+            self.auto_team_send("startup")
+            while not self._stop.wait(TEAM_SEND_EVERY_S):
+                self.auto_team_send("timer")
+        self._spawn(loop, "lm27-ui-teamsend")
 
     def _job_done(self, job) -> None:
         if job.kind == "move_prepare" and job.state == "done":       # 이동 준비 → 도우미 창이 뜨고 서버 종료(TAB §1.11)
@@ -827,6 +863,7 @@ def serve(cfg, port=None, open_browser=True, *, paths=None, deps=None, jobs=None
             pass
         app.prune_logs()
         app.start_idle_watch()
+        app.start_team_send_watch()
         url = f"http://{HOST}:{app.port}/"
         _say(f"[화면] 열림 — {url}")
         if want_open:

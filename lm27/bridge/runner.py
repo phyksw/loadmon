@@ -1180,7 +1180,9 @@ def open_runtime(paths=None, run_id: str | None = None, *, mode: str | None = No
                  session_factory=None, transport=None, emit=None, notices=None, env=None, registry=None, gate_base=None,
                  pc_id=None, calibrate_model: str | None = None, heartbeat: bool = True, raw_cfg=None) -> Runtime:
     """실제 호출 1회 조립: 설정 → 전송(스텁 ``LM_COPILOT_STUB`` · 수동 · CDP 세션) → 환경 → 레지스트리·게이트 → 자동 보정.
-    ``raw_cfg``(``lm27.config.Cfg``)·``registry``·``gate_base``·``pc_id``·``session_factory`` 는 시험 주입점."""
+    ``raw_cfg``(``lm27.config.Cfg``)·``registry``·``gate_base``·``pc_id``·``session_factory`` 는 시험 주입점.
+    전송을 연 뒤의 어느 단계(키·레지스트리·게이트·자동 보정 3~6분)에서든 예외(Ctrl+C·CdpError 포함)가 나면 여기서 연
+    전송·세션을 닫고 다시 올린다 — 남은 Edge 를 다음 실행이 '재사용'해 closeOnExit 가 영영 적용되지 않던 결함(W1b) 방지."""
     from lm27.bridge import gate as G
     from lm27.bridge import settings as S
     from lm27.bridge import transport_stub
@@ -1206,44 +1208,71 @@ def open_runtime(paths=None, run_id: str | None = None, *, mode: str | None = No
     tracer = Tracer(paths, cfg, clock, run_id=run_id)
     mode = mode or cfg.mode
     sess = None
-    if transport is None:
-        transport = transport_stub.from_env(environ)
-    if transport is None and mode == "manual":
-        from lm27.bridge.manual import ManualTransport
-        transport = ManualTransport(paths, cfg, clock, run_id=run_id)
-        transport.open()
-    elif transport is None and mode == "auto":
-        from lm27.bridge.session import EdgeSession
-        from lm27.bridge.transport import CdpTransport
-        mk = session_factory or (lambda: EdgeSession.open("bridge", run_id, paths=paths, cfg=cfg, clock=clock,
-                                                          notices=notices, tracer=tracer, environ=environ))
-        sess = mk()
-        transport = CdpTransport(sess)
-        transport.open()
-    if pc_id is None:
-        pc_id = _pc_id(paths)
-    kr = G.load_keys(paths) if (registry is None or gate_base is None) else None
-    if registry is None:
-        registry = _registry(paths, raw_cfg, kr)
-    if gate_base is None:
-        gate_base = G.GateBase.open(paths, raw_cfg, kr=kr, registry=registry, pc_id=pc_id,
-                                    policy=cfg.web_exposure_policy, clock_iso=G.clock_iso_of(clock))
-    caps = Capabilities(profile, cfg, clock)
-    rt = make_runtime(paths, run_id, cfg=cfg, clock=clock, transport=transport, gate_base=gate_base, env=env,
-                      caps=caps, profile=profile, tracer=tracer, notices=notices, emit=emit, registry=registry,
-                      raw_cfg=raw_cfg, pc_id=pc_id)
-    rt.heartbeat = heartbeat
-    if sess is not None:
-        rt.edge_major = int(getattr(sess.edge, "major", 0) or 0)
-        st = getattr(sess, "state", "")
-        if st in MANUAL_SWITCH_PHASES and cfg.auto_manual_fallback:
-            switch_to_manual(rt, st)
-        elif env is None:
-            rt.env = sess.env or manual_env(clock)
-        if st == "ready" and cfg.auto_calibrate and calibrate_model:
-            from lm27.bridge import calibrate as CAL
-            CAL.run_calibration(rt, model_class=calibrate_model)
-    return rt
+    owned = transport is None                          # 여기서 만든 전송·세션만 닫는다(주입은 호출자 몫)
+    made: dict = {}
+    try:
+        if transport is None:
+            transport = transport_stub.from_env(environ)
+            made["transport"] = transport
+        if transport is None and mode == "manual":
+            from lm27.bridge.manual import ManualTransport
+            transport = ManualTransport(paths, cfg, clock, run_id=run_id)
+            made["transport"] = transport
+            transport.open()
+        elif transport is None and mode == "auto":
+            from lm27.bridge.session import EdgeSession
+            from lm27.bridge.transport import CdpTransport
+            mk = session_factory or (lambda: EdgeSession.open("bridge", run_id, paths=paths, cfg=cfg, clock=clock,
+                                                              notices=notices, tracer=tracer, environ=environ))
+            sess = mk()
+            made["sess"] = sess
+            transport = CdpTransport(sess)
+            made["transport"] = transport
+            transport.open()
+        if pc_id is None:
+            pc_id = _pc_id(paths)
+        kr = G.load_keys(paths) if (registry is None or gate_base is None) else None
+        if registry is None:
+            registry = _registry(paths, raw_cfg, kr)
+        if gate_base is None:
+            gate_base = G.GateBase.open(paths, raw_cfg, kr=kr, registry=registry, pc_id=pc_id,
+                                        policy=cfg.web_exposure_policy, clock_iso=G.clock_iso_of(clock))
+        caps = Capabilities(profile, cfg, clock)
+        rt = make_runtime(paths, run_id, cfg=cfg, clock=clock, transport=transport, gate_base=gate_base, env=env,
+                          caps=caps, profile=profile, tracer=tracer, notices=notices, emit=emit, registry=registry,
+                          raw_cfg=raw_cfg, pc_id=pc_id)
+        made["rt"] = rt
+        rt.heartbeat = heartbeat
+        if sess is not None:
+            rt.edge_major = int(getattr(sess.edge, "major", 0) or 0)
+            st = getattr(sess, "state", "")
+            if st in MANUAL_SWITCH_PHASES and cfg.auto_manual_fallback:
+                switch_to_manual(rt, st)
+            elif env is None:
+                rt.env = sess.env or manual_env(clock)
+            if st == "ready" and cfg.auto_calibrate and calibrate_model:
+                from lm27.bridge import calibrate as CAL
+                CAL.run_calibration(rt, model_class=calibrate_model)
+        return rt
+    except BaseException:
+        if owned:
+            _close_opened(made.get("rt"), made.get("transport"), made.get("sess"))
+        raise
+
+
+def _close_opened(rt, transport, sess) -> None:
+    """open_runtime 실패 정리 — 연 전송(수동 전환 뒤면 rt 의 새 전송)과 세션을 닫는다. 정리 중 오류는 삼키고 원 예외를
+    올린다(W1b — 우리가 띄운 디버그 포트 Edge·CDP 소켓·session.lock.json 이 남지 않게)."""
+    for t in dict.fromkeys(x for x in (getattr(rt, "transport", None), transport) if x is not None):
+        try:
+            t.close()
+        except Exception:                                # noqa: BLE001 — 정리 실패가 원 예외를 가리지 않게
+            pass
+    if sess is not None and not getattr(sess, "_closed", True):
+        try:
+            sess.close()
+        except Exception:                                # noqa: BLE001
+            pass
 
 
 def close_runtime(rt: Runtime) -> None:
@@ -1272,12 +1301,23 @@ def _registry(paths, raw_cfg, kr):
 
 
 def inbox_import(rt: Runtime, specs: dict) -> list:
-    r"""``copilot_manual\inbox\*.txt`` 반입(브리지 시작 때마다) — 반입한 파일은 지운다. 반환: 보고 목록."""
-    from lm27.bridge.manual import scan_inbox
+    r"""``copilot_manual\inbox\*.txt`` 반입(브리지 시작 때마다). 반환: 보고 목록.
+
+    훑은 파일은 **결과와 관계없이 1회 시도한 뒤 지운다** — 봉투 없는 답(BR-MANUAL-NOENV)·다른 rid·CP949(메모장 'ANSI')로
+    저장한 답도. 붙여넣은 코파일럿 답 원문(조회 단계면 제목·이름·전화)이 디스크에 무기한 남지 않게(B9 · B §9.5 — W1b).
+    UTF-8·CP949 둘 다 아닌 글은 봉투 없음과 같이 알리고 지운다. 잠겨 읽지 못한 파일만 다음 시작에 다시 본다. 확장자와
+    관계없이 inbox 의 모든 파일은 ``bridge.manual.ttlDays`` 가 지나면 지운다(B §2.4 TTL)."""
+    from lm27.bridge.manual import inbox_dir, scan_inbox
+    fsio.prune_ttl(inbox_dir(rt.paths), rt.cfg.manual.ttl_days, rt.clock)
     out = []
-    for p, text in scan_inbox(rt.paths):
-        rep = manual_import(text, rt=rt, specs=specs)
-        out.append(rep)
-        if rep.get("rc") != 1 or rep.get("rejected"):
-            fsio.remove(p)
+    for p, text, st in scan_inbox(rt.paths):
+        if st == "io":
+            continue
+        try:
+            out.append(manual_import(text or "", rt=rt, specs=specs))
+        finally:
+            try:
+                fsio.remove(p)
+            except OSError:                                # 잠김(편집기가 연 채) — 다음 시작에 다시(이미 반입한 rid 는 거부)
+                pass
     return out

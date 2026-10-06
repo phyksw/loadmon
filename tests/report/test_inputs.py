@@ -88,15 +88,37 @@ class InputsTest(unittest.TestCase):
         self.assertIsNone(inp.run["chosen"])
 
     def test_paths_methods_missing(self):
+        """경로 메서드가 없는 경로 객체(옛 판) → PathsMethodMissing(조용히 다른 경로를 조립하지 않는다 — L-08)."""
+        class Old(Paths):
+            analysis_time_file = None
         with self.assertRaises(I.PathsMethodMissing):
-            I.load_inputs(R.RUN_ID, paths=Paths(self.t.root, lad=os.path.join(self.t.root, "lad")), cfg=self.cfg,
+            I.load_inputs(R.RUN_ID, paths=Old(self.t.root, lad=os.path.join(self.t.root, "lad")), cfg=self.cfg,
                           evidence=False)
+
+    def test_real_paths_has_methods_and_same_layout(self):
+        """W2 통합: 실제 lm27.paths 에 분석·내보내기 하위 경로 메서드가 있고 시험용 TPaths 와 같은 곳을 가리킨다."""
+        real = Paths(self.t.root, lad=os.path.join(self.t.root, "lad"))
+        for m in ("analysis_time_file", "analysis_hier_file", "analysis_report_file", "out_personal_file",
+                  "run_status_file"):
+            self.assertTrue(callable(getattr(real, m, None)), m)
+        tp = self.t.paths
+        self.assertEqual(real.analysis_hier_file(R.RUN_ID, "labels.json"), tp.analysis_hier_file(R.RUN_ID, "labels.json"))
+        self.assertEqual(real.analysis_report_file(R.RUN_ID, "report_model.json"),
+                         tp.analysis_report_file(R.RUN_ID, "report_model.json"))
+        self.assertEqual(real.out_personal_file("2026-08-01", "2026-10-04", R.RUN_ID, "csv_full/units.csv"),
+                         tp.out_personal_file("2026-08-01", "2026-10-04", R.RUN_ID, "csv_full/units.csv"))
+        with self.assertRaises(ValueError):
+            real.out_personal_file("2026-08-01", "2026-10-04", R.RUN_ID, "../x.csv")
 
     def test_hier_dir_method_fallback(self):
         """WP-22 의 `analysis_hier(run_id)` 폴더 메서드만 있어도 분류 결과를 읽는다."""
         self.run.write(self.t.paths)
 
-        class P2(Paths):
+        class P2(Paths):                    # W2 통합: 실제 Paths 에 파일 메서드가 생겼으므로 옛 판을 흉내 내 지운다
+            analysis_hier_file = None
+            analysis_report_file = None
+            analysis_report = None
+
             def analysis_time_file(self, run_id, name):
                 return self.analysis(run_id) / "time" / name
 

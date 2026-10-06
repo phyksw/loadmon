@@ -91,8 +91,18 @@ class TestOverlapAndPersonEqTeam(AggCase):
         self.assertEqual(td["workdays"], {"2026-07": 22, "2026-08": 20})
         files = sorted(os.listdir(self.st.gen_dir(1)))
         # W1 통합 창: 팀 보고서 렌더러(WP-37 lm27.team.report)가 생겨 보고서 두 벌도 같은 세대에 쓴다
+        # W2 통합: 팀 표 CSV(team_tables\ · team_tables\share\ — R §9.1.2)도 같은 세대에
         self.assertEqual(files, ["details.json", "result.json", "team_data.json", "team_report.html",
-                                 "team_report_share.html"])
+                                 "team_report_share.html", "team_tables"])
+        tdir = self.st.gen_dir(1) / "team_tables"
+        names = sorted(n for n in os.listdir(tdir) if n.endswith(".csv"))
+        self.assertIn("person_monthly.csv", names)
+        self.assertEqual(sorted(n for n in os.listdir(tdir / "share") if n.endswith(".csv")), names)
+        self.assertTrue(fsx.read_bytes(tdir / "person_monthly.csv").startswith("\ufeff".encode("utf-8")))
+        td1 = json.loads(fsx.read_bytes(self.st.gen_dir(1) / "team_data.json"))
+        self.assertTrue(all("name" in d and "color" in d for d in td1["domains"]))      # decorate(WP-37 CR)
+        self.assertIn("step", td1["vocab_names"])
+        self.assertTrue(all("ax_link" in u for g in td1["gantt"] for u in g["units"]))
         self.assertEqual(json.loads(fsx.read_bytes(self.st.gen_dir(1) / "result.json"))["members"], 2)
 
     def test_raw_values_not_rounded(self):

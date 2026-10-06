@@ -165,6 +165,34 @@ class Import(Base):
         self.assertEqual(reps[0]["committed"], 1)
         self.assertFalse((inbox / "답.txt").exists())
 
+    def test_inbox_never_keeps_pasted_text(self):
+        """W1b 회귀(B9 · B §9.5 · B §2.4 TTL): 반입하지 못한 inbox 파일도 남지 않는다 — 봉투 없는 산문 답(NOENV)은 1회 시도 후
+        삭제, 메모장 'ANSI'(CP949)로 저장한 답은 CP949 로 읽어 반입 후 삭제, UTF-8·CP949 둘 다 아닌 글은 NOENV 로 알리고 삭제,
+        .txt 가 아닌 파일은 TTL(bridge.manual.ttlDays)이 지나면 삭제. 붙여넣은 원문(전화번호 모양)이 디스크에 0."""
+        import os
+        spec = _One()
+        r = self.rig(spec, act_rows(1))
+        r.run()
+        (b,) = self.batches(r)
+        inbox = Path(manual_dir(r.paths), "inbox")
+        inbox.mkdir(parents=True, exist_ok=True)
+        phone = "010-" + "4321" + "-" + "8765"                                      # 원문 표지(런타임 조립)
+        (inbox / "산문.txt").write_bytes(f"9월 3일 김철수 책임: 견적 회신 (연락처 {phone})".encode())
+        (inbox / "답_ansi.txt").write_bytes((_answer(b) + f"\n메모 {phone}").encode("cp949"))
+        (inbox / "깨짐.txt").write_bytes(b"\xff\xfe\x00\xd8 " + phone.encode("ascii") + b" \x81\xff")
+        (inbox / "메모.md").write_bytes(f"메모 {phone}".encode())
+        reps = runner.inbox_import(r.rt, {spec.id: spec})
+        self.assertEqual(sorted((x["rc"], x["error"], x["committed"]) for x in reps),
+                         sorted([(1, "BR-MANUAL-NOENV", 0), (1, "BR-MANUAL-NOENV", 0), (0, None, 1)]))
+        self.assertEqual(sorted(p.name for p in inbox.iterdir()), ["메모.md"])        # .txt 는 1회 시도 뒤 모두 삭제
+        self.assertEqual([x["state"] for x in self.batches(r)], ["answered"])          # CP949 답은 반입됐다
+        old = r.clock.now() - (r.cfg.manual.ttl_days + 1) * 86400                       # 시계는 가상 — mtime 을 그 앞으로
+        os.utime(inbox / "메모.md", (old, old))
+        self.assertEqual(runner.inbox_import(r.rt, {spec.id: spec}), [])
+        self.assertEqual(list(inbox.iterdir()), [])
+        hits = [p for p in Path(r.paths.lad()).rglob("*") if p.is_file() and phone.encode() in p.read_bytes()]
+        self.assertEqual(hits, [])
+
 
 class Manifests(unittest.TestCase):
     def test_superseded_and_expire(self):

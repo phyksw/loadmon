@@ -135,14 +135,16 @@ class _Hook:
         if self.ov and (self.ov.get("chat") or self.ov.get("msg")) and loader.overlay_hit(row, self.ov):
             row = redact_row(kind, row)
             self.overlay += 1
-        if kind in SCHEMAS and _ver(row.get("rules_ver", "0.0.0")) < _CUR:
+        if kind in SCHEMAS:
+            # 규칙 판이 낮은 행 + 같은 판이라도 지금 사람 사전의 이름이 남은 행(W1b — 첫 수집에 남은 동료 실명)
             new, hits = resanitize_row(kind, row, self.ctx())
-            if self.plain:
-                _plain_new(row, new, kind)
-            for k, v in hits.items():
-                self.hits[k] += int(v)
-            self.resanitized += 1
-            row = new
+            if new is not row:
+                if self.plain:
+                    _plain_new(row, new, kind)
+                for k, v in hits.items():
+                    self.hits[k] += int(v)
+                self.resanitized += 1
+                row = new
         return row
 
 

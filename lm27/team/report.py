@@ -32,6 +32,7 @@ import re
 import statistics
 
 from lm27.hier import vocab as hvocab
+from lm27.report import fmt as _fmt
 from lm27.util import fsx
 from lm27.vocab import steps as vsteps
 
@@ -78,27 +79,11 @@ def report_view(cfg) -> dict:
 
 
 # ───────────────────────────── 표시 숫자(R §3.1 — lm27ui.js 와 글자 단위로 같음) ─────────────────────────────
-def _js_round(x: float) -> int:
-    """JS ``Math.round`` 와 같은 정수(동률은 +∞ 쪽) — 부동소수 덧셈 오차 없이."""
-    f = math.floor(x)
-    return int(f) + 1 if x - f >= 0.5 else int(f)
-
-
-def fmt_ratio(num: int, den: int, digits: int) -> str | None:
-    """정수 num/den 을 digits 자리 half-up(lm27ui.fmtRatio · R §3.1 fmt_ratio). den ≤ 0 이면 None."""
-    if den <= 0:
-        return None
-    s = 10 ** digits
-    q = (num * s * 2 + den) // (2 * den)
-    return f"{q // s}.{q % s:0{digits}d}" if digits else str(q)
-
-
-def fmt_num(v, digits: int) -> str | None:
-    """JSON 소수 값(MM·비율) 표시 — 1e-6 단위 정수로 바꾼 뒤 정수 half-up(lm27ui.fmtNum 과 같은 글자)."""
-    if v is None or isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
-        return None
-    s = fmt_ratio(_js_round(abs(v) * 1_000_000), 1_000_000, digits)
-    return "−" + s if v < 0 and any(c in "123456789" for c in s) else s
+# fmt_ratio · fmt_num · Math.round 는 표시 함수 단일원 lm27.report.fmt 의 것을 그대로 쓴다(RPT-11 — 파이썬 = JS, 개인 보고서와
+# 팀 보고서의 표시 글자가 한 벌로 같다, W2 통합 WP-30 CR). 아래 % ·영업일 글자는 숫자만(기호·단위 없음 — 팀 표 CSV·문장용).
+_js_round = _fmt._js_round
+fmt_ratio = _fmt.fmt_ratio
+fmt_num = _fmt.fmt_num
 
 
 def pct_int_text(num: int, den: int) -> str | None:
