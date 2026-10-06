@@ -154,6 +154,7 @@ docstring·시험이 정본이다. 구현자: 'W1 통합 창' 은 W1b 구현 뒤
 | V8 | 꺼져 있던 Outlook 을 COM 으로 띄우는 붙기 단계는 무진전 여유 120초(워치독 `mail.com.watchdogSec` 보다 길면 그쪽). 그래도 붙기에서 멈추면 이 수집이 띄운 Outlook(명령줄 `-Embedding`, 자식 시작 뒤 생긴 것)만 창 닫기 → 5초 뒤 끝내기. 사용자가 띄운 Outlook 은 건드리지 않는다 | 시동 20초 안에 못 붙으면 '마법사'로 오판 · 멈춘 창이 남음 |
 | V9 | 본인 전용 Edge 프로필(배타 잠금 하나)을 쓰는 단계(`backfill_owa`·`backfill_teams_web`·`copilot_lookup`)는 같은 단계 안 수집기도 **차례로** 돈다(`lm27.collect.plan.SERIAL_STAGES`) | 동시에 띄우면 뒤의 것이 잠금을 3분 기다리다 `R-TRANSPORT`(실측 — Outlook 웹 일정이 매번 빠질 뻔) |
 | V10 | 웹 경로(`mail.owa`·`cal.owa`·`teams.web`)의 로그인 대기는 [수집] 한 번에 **한 번**. 앞 경로가 `R-LOGIN` 이면 남은 웹 경로는 기다리지 않고 rc 2 + `R-LOGIN`(`skipped` = `login_pending`) — 다음 [수집]에서 다시 시도 | 사람이 없으면 대기(`bridge.loginWaitMin`) × 경로 수만큼 [수집]이 늘어짐 |
+| V11 | 분석의 AI(코파일럿) 판정은 **모든 PC** 에서(`report.aiAnyPc`, 기본 켜짐 — LM24 와 같음). 예전에는 pc.json 역할에 `copilot` 이 있는 PC(클라우드PC)에서만 AI 단계를 돌리고 나머지는 규칙 분류로 대신했다. 끄면 예전처럼. 수집의 코파일럿 증인 조회(`*.copilot`)는 그대로 클라우드PC | 실측: 일반 PC 분석에서 AI 단계 3개가 모두 '이 PC 는 Copilot 역할이 아닙니다'로 건너뜀 → 보고서가 규칙 분류뿐 |
 | V6 | 수집 기본 시작일 = 오늘 − `collect.lookbackDays` + 1 과 올해 1월 1일 중 이른 날(`collect.sinceYearStart`, 기본 켜짐 — `lm27.collect.ledger.default_since` 단일원) | 기본 기간 '1월 1일 ~ 오늘' |
 
 ---
@@ -1176,6 +1177,7 @@ TAB §2.3.1·§2.3.2 의 모양을 따르되 다음을 1.0 에 포함한다(구�
 | `ui.port` · `ui.portFallbackCount` · `ui.openBrowser` · `ui.idleShutdownMin` | 19280 · 9 · true · 0 | ui.server | R §10.1 |
 | `ui.jobPollMs` · `ui.jobEventsKeep` · `ui.logKeepDays` · `ui.homeCoverageDays` | 1000 · 500 · 14 · 35 | ui | R §10.1 |
 | `ui.autoReanalyzeAfterAnswers` · `ui.reanalyzeDebounceSec` · `ui.tableMaxRows` | true · 20 · 500 | ui | R §10.1 |
+| `report.aiAnyPc` | `true` | bool · pipeline.analyze · ui | 사용자 지시(2026-10-06 LM24 기준 — §0.8 V11) |
 | `report.defaultRangeMonths` · `report.analysisKeep` | 3 · 10 | ui · pipeline.retention | R §10.2(앞 키는 v1.3 부터 쓰지 않음 — 기본 기간 = 올해 1월 1일 ~ 오늘, `lm27.ui.period`) |
 | `report.export.formats` · `.variants` · `.keep` · `.maxHtmlMb` · `.maxModelMb` | `["html","csv","json"]` · `["full","redacted"]` · 10 · 20 · 32 | report.export | R §10.2 |
 | `report.csv.bom` · `report.drill.maxEvidencePerUnit` | true · 200 | report | R §10.2 |

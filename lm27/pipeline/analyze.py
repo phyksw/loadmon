@@ -347,8 +347,16 @@ class _Run:
 
     def copilot_ok(self) -> bool:
         if self.copilot_role is None:
-            self.copilot_role = _detect_copilot_role(self.paths)
+            self.copilot_role = ai_any_pc(self.cfg) or _detect_copilot_role(self.paths)
         return bool(self.copilot_role)
+
+
+def ai_any_pc(cfg) -> bool:
+    """AI 판정을 모든 PC 에서 하는가(``report.aiAnyPc`` — 기본 켜짐, LM24 와 같음 · 계약 v1.3 §0.8 V11). 끄면 클라우드PC 만."""
+    try:
+        return bool(cfg["report.aiAnyPc"])
+    except KeyError:
+        return True
 
 
 def _detect_copilot_role(paths) -> bool:

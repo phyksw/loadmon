@@ -381,7 +381,7 @@
     function periodMsg() { return S.periodMsg ? [U0.alertLine(S.periodMsg.kind, S.periodMsg.text)] : []; }
 
     function periodCard() {
-      var copilot = hasRole("copilot");
+      var copilot = aiHere();
       return [
         h("div", {"class": "row"}, [
           h("div", {"class": "chips", id: "an-chips", role: "group", "aria-label": "기간 빠른 선택(올해·분기·반기)"}, chipButtons()),
@@ -392,7 +392,7 @@
         h("div", {"class": "row"}, [
           h("label", {"for": "an-asof"}, ["기준 시각", Kt.input("an-asof", "datetime-local", null)]),
           h("span", {"class": "state"}, ["비우면 지금(미래는 고를 수 없음)" + (copilot ? "" :
-            " · 이 PC 는 Copilot 역할이 아닙니다 — 규칙 분류로 분석합니다. 클라우드PC 에서 분석하면 AI 라벨이 붙습니다")])]),
+            " · 이 PC 에서는 AI 판정을 쓰지 않도록 설정돼 있습니다(설정 'AI 판정을 모든 PC 에서') — 규칙 분류로 분석합니다")])]),
         h("div", {"class": "row row-actions", id: "an-actions", role: "group", "aria-label": "동작"}, actionButtons()),
         h("div", {id: "an-prog"}, progressRow()),
         h("div", {id: "an-msg"}, periodMsg()),
@@ -484,7 +484,7 @@
         }
         var key = from === S.period.from && to === S.period.to ? S.period.key : U0.periodKeyOf(from, to, today);
         S.period = {key: key, from: from, to: to};
-        var body = {from: from, to: to, ai: hasRole("copilot") && checked("an-ai"), period_source: U0.periodSource(key)};
+        var body = {from: from, to: to, ai: aiHere() && checked("an-ai"), period_source: U0.periodSource(key)};
         if (asOf) { body.as_of = asOf; }
         api.post("/api/analysis/run", body).then(function (res) {
           jobStarted(res, "analyze", "분석을 시작했습니다(" + from + " ~ " + to + ") — 진행은 아래 상태 줄과 [분석] 화면에 보입니다");
@@ -1435,6 +1435,8 @@
 
     // ── 4.7 분석(§5.3) ──
     function hasRole(r) { return arr(obj(obj(S.hello).pc).roles).indexOf(r) >= 0; }
+    // 이 PC 에서 분석하면 AI 판정을 하는가 — 서버가 분석과 같은 판단으로 준다(계약 v1.3 §0.8 V11 — 예전에는 클라우드PC 역할만)
+    function aiHere() { var p = obj(obj(S.hello).pc); return p.ai_here === true || (p.ai_here === undefined && hasRole("copilot")); }
 
     function runRow(r) {
       var ls = obj(r.label_sources || r.labels);
@@ -1500,7 +1502,7 @@
             return h("div", {}, notes.concat([pg ? U0.progressBar(pg.done, pg.total, "분석 진행") : null, stageTable(j),
               Kt.btn("중지", "a-cancel", j.job_id, {kind: "danger", icon: "stop"})]));
           }},
-        {id: "copilot", title: "Copilot 상태", uses: ["bridge"], when: function () { return hasRole("copilot"); }, view: function (scr, d) {
+        {id: "copilot", title: "Copilot 상태", uses: ["bridge"], when: function () { return aiHere(); }, view: function (scr, d) {
           var b = obj(d.bridge);
           return h("div", {}, [
             Kt.para("방식: " + str(b.mode_ko || b.mode || "미확인") + " · 계정 등급: " + str(b.tier || "unknown") + " · 웹 노출: " +
@@ -1511,7 +1513,7 @@
         }},
         {id: "manual", title: "직접 붙여넣기", uses: ["manual"], when: function (scr) {
           var m = obj(obj(scr.src.manual).data);
-          return hasRole("copilot") && listOf(m, "batches").some(function (b) { return b.state === "open"; });
+          return aiHere() && listOf(m, "batches").some(function (b) { return b.state === "open"; });
         }, view: function (scr, d) {
           var bs = listOf(d.manual, "batches");
           var open = bs.filter(function (b) { return b.state === "open"; }).length;

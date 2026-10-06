@@ -612,7 +612,7 @@ scenario("기간 카드 — 기본 올해(1월 1일 ~ 오늘)·분기·반기 �
     assert.ok(/\bon\b/.test(byAct(c.period, "a-period", "ytd")[0].getAttribute("class")), "LM24 .chip.on");
     assert.ok(byAct(c.period, "a-period").every(function (b) { return b.getAttribute("aria-disabled") === null; }), "10월이면 모든 분기·반기를 고를 수 있다");
     assert.ok(c.doc.getElementById("an-ai").hasAttribute("disabled"), "역할 없으면 AI 끔");
-    assert.ok(text(c.period).indexOf("Copilot 역할이 아닙니다") >= 0, "끈 이유");
+    assert.ok(text(c.period).indexOf("AI 판정을 쓰지 않도록 설정돼 있습니다") >= 0, "끈 이유(서버가 ai_here 를 주지 않는 예전 판 + 역할 없음)");
     assert.strictEqual(byAct(c.main, "a-analyze").length, 0, "분석 화면에는 실행 카드가 따로 없다(기간 카드 하나)");
     return analyze();
   }).then(function () {

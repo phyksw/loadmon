@@ -247,7 +247,13 @@ def get_bridge_status(app, req):
     return {"mode": mode, "mode_ko": MODE_KO.get(mode, mode), "tier": env.get("tier") or "unknown",
             "web_exposed": bool(env.get("web_exposed", True)), "recommend": last.get("recommend"),
             "probe_ok": last.get("ok") if isinstance(last.get("ok"), bool) else None,
-            "copilot_role": "copilot" in (pc.get("roles") or ()) if pc else False}
+            "copilot_role": _ai_here(cfg, pc)}
+
+
+def _ai_here(cfg, pc) -> bool:
+    """이 PC 에서 분석하면 AI 판정을 하는가 — 분석과 같은 판단(``report.aiAnyPc`` 또는 pc.json 역할 copilot)."""
+    from lm27.pipeline.analyze import ai_any_pc
+    return ai_any_pc(cfg) or ("copilot" in (pc.get("roles") or ()) if pc else False)
 
 
 def _manifest(app):

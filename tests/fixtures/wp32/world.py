@@ -47,25 +47,8 @@ HIER_FILES = ("labels.json", "groups.json", "evidence_tags.jsonl", "queue.json",
 
 
 class TPaths(Paths):
-    """시험용 Paths — 분석 하위 경로 메서드(CR 흉내)와 저장소 원본 달력(읽기만)."""
-
-    def run_status_file(self, run_id):
-        return self.analysis(run_id) / "run_status.json"
-
-    def analysis_root(self):
-        return self.analysis_current().parent
-
-    def analysis_time_file(self, run_id, name):
-        return self.analysis(run_id) / "time" / name
-
-    def analysis_hier(self, run_id):
-        return self.analysis(run_id) / "hier"
-
-    def analysis_hier_file(self, run_id, name):
-        return self.analysis(run_id) / "hier" / name
-
-    def analysis_report_file(self, run_id, name):
-        return self.analysis(run_id) / "report" / name
+    """시험용 Paths — 저장소 원본 달력(읽기만). 분석 하위 경로 메서드는 이제 lm27.paths.Paths 의 것을 쓴다(W2 통합에서
+    들어옴 — 예전 대역 메서드를 두면 analysis_root ↔ analysis_current 가 서로를 불러 끝없이 돈다)."""
 
     def calendar_json(self):
         return CALENDAR

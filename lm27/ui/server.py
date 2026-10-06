@@ -294,6 +294,11 @@ class UiApp:
                    "roles": sorted(str(r) for r in pc.get("roles") or () if isinstance(r, str))}
         except Exception:                          # 번들이 아직 없거나 식별 실패 — 빈 값(화면은 '정보 없음')
             pass
+        try:                                       # 이 PC 에서 분석하면 AI 판정을 하는가 — 분석과 같은 판단(계약 v1.3 §0.8 V11)
+            from lm27.ui.api_analysis import _ai_here
+            out["ai_here"] = bool(_ai_here(self.cfg(), {"roles": out["roles"]}))
+        except Exception:
+            out["ai_here"] = "copilot" in out["roles"]
         with self._lock:
             self.scratch["_pc_brief"] = (time.monotonic(), out)
         return dict(out)

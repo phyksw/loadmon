@@ -196,9 +196,13 @@ class ArgsTest(unittest.TestCase):
         self.assertEqual(rc, 1, "이전 실행 폴더를 덮지 않는다")
 
     def test_paths_method_missing(self):
-        """분석 폴더 하위 경로 메서드(CR)가 없는 Paths 면 실행을 만들지 않고 rc 1."""
-        plain = Paths(self.w.root, lad=self.w.lad)
-        rc = A.analyze(plain, self.w.cfg(), from_=W.D0, to=W.D1, now=W.NOW, team_client=None, copilot_role=True)
+        """분석 폴더 하위 경로 메서드가 없는 경로 로더(예전 판)면 실행을 만들지 않고 rc 1. 지금 lm27.paths.Paths 에는
+        메서드가 다 있으므로(W2 통합) 메서드 하나를 지운 예전 판을 흉내 낸다."""
+        class OldPaths(Paths):
+            run_status_file = None
+
+        old = OldPaths(self.w.root, lad=self.w.lad)
+        rc = A.analyze(old, self.w.cfg(), from_=W.D0, to=W.D1, now=W.NOW, team_client=None, copilot_role=True)
         self.assertEqual(rc, 1)
         self.assertEqual(A.last_result()["reason"], "paths_method_missing")
         self.no_runs()

@@ -551,7 +551,7 @@
     var b = bandParts(info);
     if (!b.text) { return []; }
     return [h("p", {"class": "head-band", role: "status"}, [b.text]),
-      b.ruleHeavy ? U().alertLine("info", "AI 라벨이 절반 넘게 비어 있습니다 — 클라우드PC 에서 분석하면 채워집니다") : null];
+      b.ruleHeavy ? U().alertLine("info", "AI 라벨이 절반 넘게 비어 있습니다 — 분석용 Edge 창에서 회사 계정으로 한 번 로그인한 뒤 [분석 실행]하면 채워집니다") : null];
   }
 
   function bandInfoOfModel(model) {

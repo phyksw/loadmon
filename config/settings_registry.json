@@ -2859,6 +2859,13 @@
    "label_ko": "표 최대 행",
    "help_ko": "표 한 번에 보이는 행 수."
   },
+  "report.aiAnyPc": {
+   "default": true, "type": "bool", "range": null, "choices": [false, true],
+   "owner": "lm27.pipeline.analyze", "readers": ["lm27.ui.api_analysis"], "spec": "사용자 지시(2026-10-06 LM24 기준)",
+   "uncalibrated": false, "secret": false, "scope": "personal", "restart": "none",
+   "label_ko": "AI 판정을 모든 PC 에서",
+   "help_ko": "켜면 어느 PC 에서 분석해도 Copilot 이 업무·과제를 판정한다(LM24 와 같음 — 분석용 Edge 창에서 회사 계정 1회 로그인). 끄면 클라우드PC 에서만."
+  },
   "report.defaultRangeMonths": {
    "default": 3, "type": "int", "range": {"min": 1, "max": 36}, "choices": null,
    "owner": "lm27.ui.api_analysis", "readers": [], "spec": "R §10.2",
