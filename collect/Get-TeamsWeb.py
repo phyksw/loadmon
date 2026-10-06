@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 r"""teams.web — Teams 웹 백필 수집기(CT §8 · §11 · §12 · §14.3 · §15, 계약 §2.17 · §3.10 · §6.5 · §7.3 · X-023 · X-140 ·
-X-148 · X-184). 백필 PC(기본 클라우드PC)에서만, 기간 전체를 읽는다. 본인 전용 Edge 프로필은 ``lm27.bridge.session.
+X-148 · X-184). 모든 PC 에서(계약 v1.3 §0.8 V5 — 버전 무관 경로) 기간 전체를 읽는다. 본인 전용 Edge 프로필은 ``lm27.bridge.session.
 EdgeSession.open(role="teams_web")`` 하나로만 연다(Edge 인자·프로필·포트 설정 없음 — G-B12 · L-16). 사용자 대신 로그인하지
 않는다(로그인 필요 → rc 2 + R-LOGIN, 로그인 전 '불가' 확정 0).
 

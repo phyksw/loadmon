@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 r"""mail.owa · cal.owa — Outlook 웹 백필 수집기(CM §11.3 · §14 · §15, 계약 §2.17 · §3.10 · §6.5 · §7.3 · D-14 · X-132 ·
-X-184 · X-315). 백필 PC(기본 클라우드PC)에서만 돈다. 본인 전용 Edge 프로필은 ``lm27.bridge.session.EdgeSession.open(
+X-184 · X-315). 모든 PC 에서 돈다(계약 v1.3 §0.8 V5 — 버전 무관 경로). 본인 전용 Edge 프로필은 ``lm27.bridge.session.EdgeSession.open(
 role="owa")`` 하나로만 연다 — Edge 인자·프로필·포트 설정을 두지 않는다(G-B12 · L-16). 사용자 대신 로그인하지 않는다.
 
     "<PY>" -X utf8 -I -B collect\Get-OutlookWeb.py --kind mail|cal --pc <pc_id> [--from D --to D]

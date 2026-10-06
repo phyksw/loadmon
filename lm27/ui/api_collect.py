@@ -140,10 +140,11 @@ def _todo_rows(app, me: str | None) -> list:
         out.append({"todo_id": d.get("todo_id"), "from": rng[0] if rng else None, "to": rng[1] if rng else None,
                     "axis": d.get("kind_axis"), "axis_ko": AXIS_KO.get(d.get("kind_axis"), d.get("kind_axis")),
                     "want_src": d.get("want_src"),
-                    "want_pc": "클라우드PC" if want_pc == "cloud" else labels.get(want_pc, "다른 PC"),
+                    "want_pc": ("클라우드PC" if want_pc == T.WANT_CLOUD else
+                                "모든 PC(먼저 도는 PC)" if want_pc == T.WANT_ANY else labels.get(want_pc, "다른 PC")),
                     "reasons": list(d.get("reasons") or ()), "tries": len(d.get("attempts") or ()),
                     "state": d.get("state"), "state_ko": TODO_KO.get(d.get("state"), d.get("state")),
-                    "mine": bool(me) and want_pc == me})
+                    "mine": bool(me) and want_pc in (me, T.WANT_ANY)})   # '*' = 이 PC 도 채울 수 있다(v1.3 §0.8 V5)
     return out
 
 

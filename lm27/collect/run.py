@@ -302,6 +302,7 @@ class _Ctx:
     export_total: dict = field(default_factory=dict)
     self_names_cache: list | None = None
     loc_cache: dict | None = None
+    web_login_pending: bool = False          # 이 실행에서 웹 경로가 로그인 대기를 다 쓰고 R-LOGIN(v1.3 §0.8 V10)
 
     @property
     def recollect(self) -> bool:
@@ -643,10 +644,18 @@ def harvest_run(ctx: _Ctx, srcs) -> tuple:
 
 
 def _run_one(ctx: _Ctx, spec, blanks=None, extra_args=()) -> SrcRun:
+    if spec.src in WEB_SRCS and ctx.web_login_pending:
+        # 앞 웹 경로가 로그인 대기(bridge.loginWaitMin)를 다 쓰고 R-LOGIN — 같은 전용 Edge 프로필이라 이 경로도 로그인 전이다.
+        # 다시 기다리지 않고 '로그인 필요'로 남긴다(사람이 없을 때 [수집] 한 번이 대기 × 경로 수로 늘지 않게 — v1.3 §0.8 V10).
+        # 다음 [수집]에서 다시 시도한다(R-LOGIN 은 사람 사유 — 확정 안 됨).
+        return SrcRun(spec.src, spec.kind, rc=2, reasons=["R-LOGIN"], ranges=ctx.ranges_for(spec), skipped="login_pending")
     if spec.lang == "ps":
         return run_ps(ctx, spec, extra_args=extra_args)
     if spec.lang == "py":
-        return run_py(ctx, spec, extra_args=extra_args, blanks=blanks)
+        r = run_py(ctx, spec, extra_args=extra_args, blanks=blanks)
+        if spec.src in WEB_SRCS and "R-LOGIN" in (r.reasons or ()):
+            ctx.web_login_pending = True
+        return r
     raise ValueError(f"실행할 수 없는 수집기 종류: {spec.lang}")
 
 

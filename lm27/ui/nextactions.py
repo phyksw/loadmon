@@ -102,7 +102,7 @@ def next_actions(s: UiState) -> list:
             _act("[수집 화면]", "#collect"), pc)
     if s.login_needed:
         add("N07", "risk", "Outlook 웹·팀즈 웹 로그인이 필요합니다",
-            "전용 Edge 창에서 회사 계정으로 한 번 로그인하면 Outlook·팀즈 버전과 상관없이 메일·일정·대화를 이어서 읽습니다",
+            "분석용 Edge 창에서 회사 계정으로 한 번 로그인하면 Outlook·팀즈 버전과 상관없이 메일·일정·대화를 이어서 읽습니다",
             _act("[분석용 Edge 창 앞으로]", "#analysis", "POST /api/bridge/front"), s.this_pc)
     for src in sorted(set(s.confirmed_blocked)):
         add("N08", "risk", f"{src} 를 이 계정에서 쓸 수 없습니다", "다른 경로(반입 폴더 등)가 그 기간을 채웁니다",
@@ -186,10 +186,9 @@ def _g_pc(app, s: UiState) -> None:
     s.bundle_readonly = "R-BUNDLE-READONLY" in rs
     s.location_warn = [r for r in rs if r in BUNDLE_WARN]
     roles = set(pc.get("roles") or ())
-    try:                                            # 계약 v1.3 §0.8 V5 — 웹 경로가 모든 PC 에서 돌면 로그인 안내도 모든 PC 에
-        from lm27.collect import plan
-        if plan.web_everywhere(app.cfg()):
-            roles.add(plan.ROLE_BACKFILL)
+    try:                                            # 계약 v1.3 §0.8 V5 — 실제로 도는 역할(웹 경로는 모든 PC)로 판정
+        from lm27.ui.api_home import all_pcs, effective_roles
+        roles = set(effective_roles(pc, all_pcs(app), app.cfg()))
     except Exception:
         pass
     wl = caps.get("web_login") or {}
@@ -273,7 +272,7 @@ def _g_todo(app, s: UiState) -> None:
     for t in T.load_todo(app.paths):
         d = t if isinstance(t, dict) else getattr(t, "__dict__", {})
         st = d.get("state")
-        if st in ("open", "assigned") and me and d.get("want_pc") == me:
+        if st in ("open", "assigned") and me and d.get("want_pc") in (me, T.WANT_ANY):   # '*' = 아무 PC(v1.3 §0.8 V5)
             s.todo_mine += 1
         elif st == "blocked_confirmed":
             s.confirmed_blocked.append(SRC_NAMES.get(d.get("want_src"), str(d.get("want_src") or "출처")))

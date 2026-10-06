@@ -845,6 +845,40 @@ function Get-AvState {
     } catch { return 'unknown' }
 }
 
+function Get-OutlookProfileState {
+    # Outlook 프로필 수와 '쓸 수 있는' 프로필 수(메일 계정·데이터 파일이 하나라도 든 것) — 계약 v1.3 §0.8 V7.
+    # 주소록(CONTAB·LDAP)만 든 프로필은 Outlook 을 띄우면 'Outlook 시작' 마법사가 뜬다(실측) — 쓸 수 없다고 센다.
+    # 계정 관리자 키가 없거나 읽을 수 없으면 예전처럼 쓸 수 있다고 본다(모르면 막힘으로 단정하지 않는다).
+    param([string[]]$Roots = @('HKCU:\Software\Microsoft\Office\16.0\Outlook\Profiles',
+                               'HKCU:\Software\Microsoft\Office\15.0\Outlook\Profiles',
+                               'HKCU:\Software\Microsoft\Windows NT\CurrentVersion\Windows Messaging Subsystem\Profiles'))
+    $r = @{ total = 0; usable = 0 }
+    foreach ($root in $Roots) {
+        foreach ($pk in @(Get-ChildItem -LiteralPath $root -ErrorAction SilentlyContinue)) {
+            $r.total++
+            $am = $null
+            try { $am = Get-Item -LiteralPath (Join-Path $pk.PSPath '9375CFF0413111d3B88A00104B2A6676') -ErrorAction Stop } catch { $am = $null }
+            if ($null -eq $am) { $r.usable++; continue }
+            $listed = 0
+            foreach ($n in @('{ED475418-B0D6-11D2-8C3B-00104B2A6676}', '{ED475420-B0D6-11D2-8C3B-00104B2A6676}')) {   # 메일 계정 목록 · 데이터 파일 목록
+                $v = $am.GetValue($n)
+                if ($v -is [byte[]]) { $listed += $v.Length } elseif ($null -ne $v -and [string]$v) { $listed++ }
+            }
+            $mail = $false
+            foreach ($ak in @(Get-ChildItem -LiteralPath $am.PSPath -ErrorAction SilentlyContinue)) {
+                $svc = $ak.GetValue('Service Name')
+                if ($svc -is [byte[]]) { $svc = [Text.Encoding]::Unicode.GetString($svc) }
+                $svc = ([string]$svc).Trim([char]0).Trim().ToUpperInvariant()
+                $cls = ([string]$ak.GetValue('clsid')).Trim().ToUpperInvariant()
+                if ($cls -and $cls -ne '{ED475414-B0D6-11D2-8C3B-00104B2A6676}') { $mail = $true }        # POP·IMAP·EAS 같은 MAPI 밖 계정
+                elseif ($svc -and @('CONTAB', 'EMABLT') -notcontains $svc) { $mail = $true }              # Exchange(MSEMS)·데이터 파일 등
+            }
+            if ($listed -gt 0 -or $mail) { $r.usable++ }
+        }
+    }
+    return $r
+}
+
 function Find-ClassicOutlook {
     # 클래식 Outlook(OUTLOOK.EXE) 위치 — 판(2010~365)·설치 방식(MSI·Click-to-Run)·32/64비트와 상관없이 찾는다.
     # App Paths 한 곳만 보면 Microsoft 365(Click-to-Run) PC 대부분에서 못 찾아 '새 Outlook 전용' 으로 오판했다(실측).
@@ -928,12 +962,8 @@ function Get-OlFacts {
     $h['new_running'] = [bool](@(Get-Process -Name olk -ErrorAction SilentlyContinue).Count)
     $mig = Get-RegValue 'HKCU:\Software\Policies\Microsoft\Office\16.0\Outlook\Preferences' 'NewOutlookMigrationUserSetting'
     if ($null -ne $mig) { try { $h['migration_policy'] = [int]$mig } catch { } }
-    $nProf = 0
-    foreach ($pp in @('HKCU:\Software\Microsoft\Windows NT\CurrentVersion\Windows Messaging Subsystem\Profiles',
-            'HKCU:\Software\Microsoft\Office\16.0\Outlook\Profiles', 'HKCU:\Software\Microsoft\Office\15.0\Outlook\Profiles')) {
-        $nProf += @(Get-RegSubkeys $pp).Count
-    }
-    $h['profiles'] = $nProf
+    # 쓸 수 있는 프로필(메일 계정·데이터 파일이 든 것)만 센다 — 주소록만 든 프로필은 띄우면 '시작' 마법사(계약 v1.3 §0.8 V7)
+    $h['profiles'] = [int](Get-OutlookProfileState).usable
     $ov = '16.0'
     if ($h['version'] -match '^(\d+)\.') { $ov = $Matches[1] + '.0' }
     $h['profile_name'] = Get-RegValue "HKCU:\Software\Microsoft\Office\$ov\Outlook" 'DefaultProfile'

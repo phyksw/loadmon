@@ -64,7 +64,7 @@
    메일의 주 원천.
 2. **COM(mail.com/cal.com)**: 되면 **분 단위 정밀 원장**. 모든 메일 폴더 재귀, 반복 회의 전개, 응답 상태,
    보호 열(주소·수신자). 범위 = `min(요청 기간, 지평선)`.
-3. **OWA(mail.owa/cal.owa)**: **백필 PC(기본 클라우드PC)에서만**. 일정은 **기간 전체**(색인이 못 하는 반복
+3. **OWA(mail.owa/cal.owa)**: **모든 PC 에서**(계약 v1.3 §0.8 V5 — Outlook 판·새 Outlook 과 상관없는 경로. `collect.webEverywhere` 를 끄면 예전처럼 백필 PC 한 대). 일정은 **기간 전체**(색인이 못 하는 반복
    회의 보완), 메일은 **원장의 빈 셀**(지평선 밖·blocked 일자)만. date-only 행은 존재·건수 증거.
 4. **Copilot(mail.copilot)**: **클라우드PC에서만**, 위 1~3 뒤에도 비어 있는 일자의 **건수·스레드 존재만**.
    시간 근거로 승격하지 않는다(`ts_precision="summary"`).

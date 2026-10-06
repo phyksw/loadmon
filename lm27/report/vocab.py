@@ -69,11 +69,11 @@ _COPILOT_LOOKUP = "이 계정의 Copilot 은 메일·팀즈를 조회할 수 없
 
 REASON_UI: dict[str, tuple[str, str]] = {
     "R-NEWOL": ("새 Outlook 전용",
-                "이 PC 는 새 Outlook 만 있어 앱으로 메일을 읽을 수 없습니다. 이 기간은 백필 PC 의 Outlook 웹이 채웁니다"),
-    "R-NOPROF": ("Outlook 프로필 없음", "Outlook 프로필이 없어 앱 경로를 건너뜁니다"),
+                "이 PC 에는 새 Outlook 만 있고 클래식 Outlook 이 없어 앱으로 메일을 읽을 수 없습니다. 이 PC 의 Outlook 웹 경로가 채웁니다"),
+    "R-NOPROF": ("Outlook 계정 미설정", "Outlook 에 메일 계정이 설정돼 있지 않아 앱 경로를 건너뜁니다. Outlook 웹 경로가 채웁니다"),
     "R-WIZARD": ("Outlook 시작 마법사 위험",
-                 "Outlook 을 자동으로 띄우면 멈출 수 있어 앱 경로를 건너뜁니다. Outlook 을 직접 한 번 열어 두면 다음 수집에서 "
-                 "다시 확인합니다"),
+                 "Outlook 을 자동으로 띄우면 시작 마법사에서 멈출 수 있어 앱 경로를 건너뜁니다. 색인·Outlook 웹 경로가 "
+                 "채웁니다"),
     "R-DIALOG": ("Outlook 대화상자", "Outlook 에 열린 대화상자가 있어 읽지 못했습니다. 닫아 두면 다음 수집에서 다시 시도합니다"),
     "R-CLM": ("실행 제한", "이 PC 의 보안 설정이 스크립트 일부를 막습니다. 되는 경로만 씁니다"),
     "R-APPLOCKER": ("실행 차단", "회사 보안 정책이 이 PC 에서 일부 프로그램 실행을 막습니다. 되는 경로만 씁니다"),
@@ -94,7 +94,7 @@ REASON_UI: dict[str, tuple[str, str]] = {
     "R-NOCONN": ("Copilot 조회 불가", _COPILOT_LOOKUP),
     "R-TZ": ("시간대 주의", "이 PC 의 시간대가 다릅니다(클라우드PC UTC 등). 시각은 근무 시간대로 바꿔 계산합니다"),
     "R-OFFICE": ("지원 종료 Office", "오래된 Office 라 일부 경로가 불안정할 수 있습니다"),
-    "R-UIAEMPTY": ("팀즈 창 숨김", "팀즈 창이 최소화·숨김이라 읽지 못했습니다. 팀즈 웹 백필이 채웁니다"),
+    "R-UIAEMPTY": ("팀즈 창 숨김", "팀즈 창이 최소화·숨김이라 읽지 못했습니다. 팀즈 웹 경로가 채웁니다"),
     "R-UIAELEV": ("팀즈 창 권한", "관리자 권한 창은 읽을 수 없습니다"),
     "R-NOADDR": ("내 주소 미확인", "내 메일 주소를 확인하지 못해 받는 메일의 직접/참조 구분이 '모름' 입니다"),
     "R-NOEVT": ("이벤트 로그 권한", "이 PC 의 일부 이벤트 기록을 읽을 권한이 없습니다"),

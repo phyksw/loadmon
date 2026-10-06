@@ -16,15 +16,16 @@
       (계약 v1.2 §0.7 C4 — 부분 결과: rc 는 새 레코드 기준 0·4, 셀은 partial 이라 cal.owa 가 빈 회차를 채운다).
     · 상한(mail.index.capMail·capCal)에 닿으면 조용히 자르지 않고 cap_hit + R-CAP(rc 0, 셀 partial).
     · 막힌 사유가 있으면 항상 rc 3 + 사유: 색인 연결 실패 R-NOIDX · 색인 일시정지 R-IDXPAUSED · 제한 언어 모드 R-CLM ·
-      Outlook 항목 0 → R-IDXPOLICY(정책) / R-NEWOL(새 Outlook) / R-ONLINE(온라인 모드 — 그 밖).
+      Outlook 항목 0 → R-IDXPOLICY(정책) / R-NEWOL(클래식 없는 새 Outlook) / R-NOPROF(클래식은 있으나 메일 계정이 든
+      프로필 없음) / R-ONLINE(온라인 모드 — 그 밖).
   rc: 0 새 레코드 · 1 기간에 항목 없음 · 3 막힘·불완전(사유) · 4 읽었지만 새것 0(커서 이후 0).
 
   커서(계약 §3.10): {"last_item_ts_utc": UTC, "read_from": UTC} — read_from 은 이미 읽은 범위의 시작(이 수집기가 더한 칸).
   색인은 싸므로 겹침 재조회를 허용하고(마지막 시각 −1일부터 다시 냄) 중복은 정제기의 레코드 id 로 흡수된다.
 
   시험 주입(계약 §11.3): LM_INDEX_FAKE=<json> — 색인 대신 {"mail": [System.* 행], "calendar": [...]}(시각은 로컬
-  'yyyy-MM-dd HH:mm'). 선택 키: "_error" = noidx|paused · "_total_outlook_items"(정수) · "_policy" · "_newol" ·
-  "_ext_rejected" · "_my_addrs"(시험용 내 주소 — 실제 PC 신원 조회를 하지 않는다). -TestNow 'yyyy-MM-dd HH:mm'(로컬).
+  'yyyy-MM-dd HH:mm'). 선택 키: "_error" = noidx|paused · "_total_outlook_items"(정수) · "_policy" · "_newol" · "_classic" ·
+  "_noprof" · "_ext_rejected" · "_my_addrs"(시험용 내 주소 — 실제 PC 신원 조회를 하지 않는다). -TestNow 'yyyy-MM-dd HH:mm'(로컬).
 
 .EXAMPLE
   powershell -NoProfile -ExecutionPolicy Bypass -File collect\Get-OutlookIndex.ps1 -Only mail -Pc pc_0123456789abcdef -Since 2026-09-01 -Until 2026-09-30
@@ -68,6 +69,40 @@ $OVERLAP_DAYS = 1          # 마지막 시각에서 이만큼 겹쳐 다시 낸�
 $CAL_REFRESH_DAYS = 14     # 일정은 최근 이만큼과 그 뒤를 매번 다시 낸다(시각 변경·취소 반영)
 
 # ── 출력 ──────────────────────────────────────────────────────────────────────────────────────────────
+function Get-OutlookProfileState {
+    # Outlook 프로필 수와 '쓸 수 있는' 프로필 수(메일 계정·데이터 파일이 하나라도 든 것) — 계약 v1.3 §0.8 V7.
+    # 주소록(CONTAB·LDAP)만 든 프로필은 Outlook 을 띄우면 'Outlook 시작' 마법사가 뜬다(실측) — 쓸 수 없다고 센다.
+    # 계정 관리자 키가 없거나 읽을 수 없으면 예전처럼 쓸 수 있다고 본다(모르면 막힘으로 단정하지 않는다).
+    param([string[]]$Roots = @('HKCU:\Software\Microsoft\Office\16.0\Outlook\Profiles',
+                               'HKCU:\Software\Microsoft\Office\15.0\Outlook\Profiles',
+                               'HKCU:\Software\Microsoft\Windows NT\CurrentVersion\Windows Messaging Subsystem\Profiles'))
+    $r = @{ total = 0; usable = 0 }
+    foreach ($root in $Roots) {
+        foreach ($pk in @(Get-ChildItem -LiteralPath $root -ErrorAction SilentlyContinue)) {
+            $r.total++
+            $am = $null
+            try { $am = Get-Item -LiteralPath (Join-Path $pk.PSPath '9375CFF0413111d3B88A00104B2A6676') -ErrorAction Stop } catch { $am = $null }
+            if ($null -eq $am) { $r.usable++; continue }
+            $listed = 0
+            foreach ($n in @('{ED475418-B0D6-11D2-8C3B-00104B2A6676}', '{ED475420-B0D6-11D2-8C3B-00104B2A6676}')) {   # 메일 계정 목록 · 데이터 파일 목록
+                $v = $am.GetValue($n)
+                if ($v -is [byte[]]) { $listed += $v.Length } elseif ($null -ne $v -and [string]$v) { $listed++ }
+            }
+            $mail = $false
+            foreach ($ak in @(Get-ChildItem -LiteralPath $am.PSPath -ErrorAction SilentlyContinue)) {
+                $svc = $ak.GetValue('Service Name')
+                if ($svc -is [byte[]]) { $svc = [Text.Encoding]::Unicode.GetString($svc) }
+                $svc = ([string]$svc).Trim([char]0).Trim().ToUpperInvariant()
+                $cls = ([string]$ak.GetValue('clsid')).Trim().ToUpperInvariant()
+                if ($cls -and $cls -ne '{ED475414-B0D6-11D2-8C3B-00104B2A6676}') { $mail = $true }        # POP·IMAP·EAS 같은 MAPI 밖 계정
+                elseif ($svc -and @('CONTAB', 'EMABLT') -notcontains $svc) { $mail = $true }              # Exchange(MSEMS)·데이터 파일 등
+            }
+            if ($listed -gt 0 -or $mail) { $r.usable++ }
+        }
+    }
+    return $r
+}
+
 function Find-ClassicOutlook {
     # 클래식 Outlook(OUTLOOK.EXE) 위치 — 판(2010~365)·설치 방식(MSI·Click-to-Run)·32/64비트와 상관없이 찾는다.
     # App Paths 한 곳만 보면 Microsoft 365(Click-to-Run) PC 대부분에서 못 찾아 '새 Outlook 전용' 으로 오판했다(실측).
@@ -611,6 +646,7 @@ try {
         if ($dates.Count) { $ctx.horizon = ($dates | Sort-Object | Select-Object -First 1) }
         $policy = [bool]($ctx.fake.PSObject.Properties['_policy'] -and $ctx.fake._policy)
         $newOl = [bool]($ctx.fake.PSObject.Properties['_newol'] -and $ctx.fake._newol)
+        $noprofFake = [bool]($ctx.fake.PSObject.Properties['_noprof'] -and $ctx.fake._noprof)
         $classicFake = [bool]($ctx.fake.PSObject.Properties['_classic'] -and $ctx.fake._classic)   # 시험: 클래식 유무도 주입값으로(실제 레지스트리를 보지 않는다)
     } else {
         $svc = $null
@@ -647,7 +683,9 @@ try {
     if (-not $ctx.fatal -and $total -eq 0) {
         # 색인에 Outlook 항목이 하나도 없다 — 0건이 아니라 막힘(CM §6.4 분해, X-124·X-125)
         # 새 Outlook 전용(클래식 없음)일 때만 R-NEWOL — 클래식이 있는데 색인에 Outlook 항목이 없으면 온라인 모드(캐시 꺼짐)다
-        if ($policy) { $ctx.fatal = 'R-IDXPOLICY' } elseif ($newOl -and -not $(if ($ctx.fake) { $classicFake } else { [bool](Find-ClassicOutlook) })) { $ctx.fatal = 'R-NEWOL' } else { $ctx.fatal = 'R-ONLINE' }
+        if ($policy) { $ctx.fatal = 'R-IDXPOLICY' } elseif ($newOl -and -not $(if ($ctx.fake) { $classicFake } else { [bool](Find-ClassicOutlook) })) { $ctx.fatal = 'R-NEWOL' }
+        elseif ($(if ($ctx.fake) { $noprofFake } else { [bool](Find-ClassicOutlook) -and (Get-OutlookProfileState).usable -eq 0 })) { $ctx.fatal = 'R-NOPROF' }
+        else { $ctx.fatal = 'R-ONLINE' }
     }
     foreach ($k in $kinds) { Invoke-IndexKind $k $ctx }
     if ($script:Cursors.Count) {

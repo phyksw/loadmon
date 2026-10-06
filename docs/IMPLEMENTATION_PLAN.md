@@ -622,7 +622,7 @@ CR 처리: 막히지 않는 CR 은 통합 창에서 묶어 반영한다. 막히�
 - **이식 참조**: `<LM24>\collect\Get-OutlookWeb.py` · `Get-TeamsWeb.py`(CT §14.3 수정표: 가상 스크롤 순회·메시지 ID·`<time datetime>` 우선·방별 체크포인트) · `Get-TeamsChats.py`(참고); `<SURVEY>\ms-mail.md` · `teams.md`(조사).
 - **완료 기준**: CT-5 · 6(수집 측 — 날짜 포함 msg_key) · 7 · 11 · 12 · 16 · CM-11(OWA date-only → `ts_precision=date`); OWA 는 원장 **빈칸만**(일정은 기간 전체), 보낸 편지함은 항목을 열어 분 단위·받은 메일은 날짜만; 로그인 필요 → rc 2 + `R-LOGIN`, 로그인 전 '불가' 확정 0; `R-WEBSEL` · `R-LISTVIRT` · `R-ROOMGONE`; 예산 소진 → `partial` + `R-BUDGET` + 체크포인트 재개; L-16(Edge 인자·키 0 — `EdgeSession` 만); 실 웹 접속 0(fake 만).
 - **규모**: 4 파일 · 코드 약 2,200줄 · 시험 약 800줄.
-- **주의**: 백필 PC(기본 클라우드PC)에서만 돈다. 체크포인트는 `raw_cursor.json` 의 `teams.web.rooms{<chat_key>}`(원 ID 를 키로 쓰지 않음 — X-023).
+- **주의**: 모든 PC 에서 돈다(계약 v1.3 §0.8 V5 — 예전 '백필 PC 에서만'을 바꿈). 체크포인트는 `raw_cursor.json` 의 `teams.web.rooms{<chat_key>}`(원 ID 를 키로 쓰지 않음 — X-023).
   - v1.1: `LM_OWA_FAKE`·`LM_TEAMSWEB_FAKE` 형식은 `inject.py` 머리 표(OWA 달×폴더 항목, Teams 웹 화면 응답 + mid — 계약 §11.3)를 받는다. 바꾸면 CR + `SYNTH_VERSION`.
 
 #### WP-27 팀 서버·취합·오프라인 — W1 · XL

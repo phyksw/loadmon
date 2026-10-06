@@ -132,11 +132,24 @@ def matrix_cell(pc: dict, key: str) -> dict:
     return out
 
 
-def matrix(pcs: list, this_id: str | None, comp: dict | None = None, today: date | None = None) -> dict:
-    """CH-H02 PC × 출처 능력 표 + 계정 합성 행 + 설명 문장(R §5.1.3)."""
+def effective_roles(pc: dict, pcs: list, cfg) -> list:
+    """그 PC 에서 실제로 도는 역할(수집 계획과 같은 계산 — ``lm27.collect.plan.pc_roles``). pc.json ``roles`` 는 바탕일 뿐이라
+    설정(``collect.webEverywhere``·``collect.backfillPc``)으로 더하고 빼는 역할(웹 경로 등)이 빠진다. 설정이 없으면 바탕 그대로."""
+    base = [str(r) for r in pc.get("roles") or () if isinstance(r, str)]
+    if cfg is None:
+        return sorted(base)
+    try:
+        from lm27.collect import plan
+        return list(plan.pc_roles(pc, pcs=[p for p in pcs if isinstance(p, dict)], cfg=cfg))
+    except Exception:                                    # 계산 실패(설정 깨짐 등) — 바탕 역할로
+        return sorted(base)
+
+
+def matrix(pcs: list, this_id: str | None, comp: dict | None = None, today: date | None = None, cfg=None) -> dict:
+    """CH-H02 PC × 출처 능력 표 + 계정 합성 행 + 설명 문장(R §5.1.3). ``cfg`` 가 있으면 역할은 실제로 도는 역할."""
     cols = [{"key": k, "group": g, "label": lb} for k, g, lb, _r in MATRIX_COLS]
     rows, codes = [], set()
-    by_id = {p.get("pc_id"): p for p in pcs if isinstance(p, dict)}
+    by_id = {p.get("pc_id"): dict(p, roles=effective_roles(p, pcs, cfg)) for p in pcs if isinstance(p, dict)}
     order = sorted(by_id.values(), key=lambda p: (p.get("pc_id") != this_id, pc_label(p), str(p.get("pc_id"))))
     explain = []
     for pc in order:
@@ -327,14 +340,14 @@ def get_home(app, req):
     d0 = today - timedelta(days=max(1, ndays) - 1)
     cov = {"from": d0.isoformat(), "to": today.isoformat(),
            "ratio30": {ax: axis_ratio(comp, ax, today)[0] for ax in AXES}, "last_gap": _last_gap(comp, today)}
-    mx = matrix(pcs, pc_id, comp, today)
+    mx = matrix(pcs, pc_id, comp, today, cfg=cfg)
     codes = set(mx.pop("reasons"))
     if cov["last_gap"]:
         codes.update(cov["last_gap"]["reasons"])
     team = _team_brief(app)
     team["reach"] = _reach(pc)
     out = {"pc": {"label": pc_label(pc) if pc else "", "kind": pc.get("kind") if pc else None,
-                  "roles": sorted(str(r) for r in pc.get("roles") or ()) if pc else [], "is_this": True},
+                  "roles": effective_roles(pc, pcs, cfg) if pc else [], "is_this": True},
            "collect": _collect_brief(app, pcs), "coverage": cov, "matrix": mx,
            "next_actions": [a.as_dict() for a in nextactions.next_actions(nextactions.gather(app))][:8],
            "analysis": _analysis_brief(app), "team": team}

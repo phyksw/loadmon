@@ -166,3 +166,13 @@ class WebEverywherePlan(unittest.TestCase):
     def test_work_pc_with_cloud_still_gets_web_paths(self):
         roles = plan.pc_roles(PC1, pcs=[PC1, CLOUD], cfg=self.cfg)
         self.assertIn(plan.ROLE_BACKFILL, roles)
+
+    def test_edge_profile_stages_run_serially(self):
+        """v1.3 §0.8 V9: 전용 Edge 프로필(잠금 하나)을 같이 쓰는 단계는 차례로 — 로컬 단계는 그대로 동시에."""
+        roles = plan.pc_roles(CLOUD, pcs=[CLOUD], cfg=self.cfg)
+        st = {s.name: s for s in plan.stage_plan(roles, {}, None, cfg=self.cfg)}
+        for n in ("backfill_owa", "backfill_teams_web", "copilot_lookup", "teams_uia_check"):
+            if n in st:
+                self.assertFalse(st[n].parallel, n)
+        self.assertTrue(st["mail_local"].parallel)
+        self.assertTrue(st["pc_bundle"].parallel)

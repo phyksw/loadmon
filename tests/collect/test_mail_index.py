@@ -189,7 +189,9 @@ class MailIndexTest(CloneTestCase):
 
     def test_cm06_cm01_no_outlook_items(self):
         empty = {"mail": [], "calendar": [], "_my_addrs": [ME]}
-        for extra, code in (({}, "R-ONLINE"), ({"_policy": True}, "R-IDXPOLICY"), ({"_newol": True}, "R-NEWOL")):
+        for extra, code in (({}, "R-ONLINE"), ({"_policy": True}, "R-IDXPOLICY"), ({"_newol": True}, "R-NEWOL"),
+                            ({"_newol": True, "_classic": True}, "R-ONLINE"),        # 클래식이 있으면 새 Outlook 아님(v1.3 V3)
+                            ({"_classic": True, "_noprof": True}, "R-NOPROF")):      # 계정 설정 전 프로필(v1.3 V7)
             r = self.run_idx(dict(empty, **extra))
             self.assertEqual(r.rc, 3)
             self.assertIn(code, r.result("mail.index")["reasons"])

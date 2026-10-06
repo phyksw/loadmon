@@ -152,3 +152,17 @@ class ClassicFinderSame(unittest.TestCase):
         self.assertEqual(bodies[0], bodies[2])
         for src in ("App Paths", "InstallRoot", "ClickToRun", "LocalServer32", "ProgramFiles"):
             self.assertIn(src, bodies[0])
+
+    def test_profile_state_identical(self):
+        """계약 v1.3 §0.8 V7: '쓸 수 있는 프로필' 판정도 세 스크립트에 글자까지 같다."""
+        import re
+        from pathlib import Path
+        root = Path(__file__).resolve().parents[2]
+        bodies = []
+        for name in ("Invoke-CapabilityProbe.ps1", "Get-OutlookCom.ps1", "Get-OutlookIndex.ps1"):
+            t = (root / "collect" / name).read_text(encoding="utf-8-sig").replace("\r\n", "\n")
+            m = re.search(r"\nfunction Get-OutlookProfileState \{\n.*?\n\}\n", t, re.S)
+            self.assertIsNotNone(m, name)
+            bodies.append(m.group(0))
+        self.assertEqual(bodies[0], bodies[1])
+        self.assertEqual(bodies[0], bodies[2])

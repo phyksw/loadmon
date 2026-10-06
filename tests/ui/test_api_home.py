@@ -39,6 +39,23 @@ class MatrixTest(unittest.TestCase):
         self.assertTrue(any("새 Outlook" in e for e in m["explain"]))
         self.assertIn("R-NEWOL", m["reasons"])
 
+    def test_web_columns_apply_on_every_pc_by_default(self):
+        """계약 v1.3 §0.8 V5: pc.json 바탕 역할만 있는 업무 PC 도 기본 설정이면 Outlook 웹·팀즈 웹·웹 로그인 칸이 '해당'.
+        설정을 끄면 예전처럼 '해당 없음'(백필 PC 아님)."""
+        from tests.fixtures.wp33.helpers import Sandbox as CSandbox
+        sb = CSandbox(scripts=False)
+        self.addCleanup(sb.cleanup)
+        pc = _pc(["pc_usage", "mail_local", "teams_window"], {})
+        on = H.matrix([pc], PC_ID, cfg=sb.cfg())
+        cells = on["rows"][0]["cells"]
+        for k in ("mail.owa", "cal.owa", "teams.web", "web_login", "edge_cdp_policy"):
+            self.assertTrue(cells[k]["applies"], k)
+        self.assertFalse(cells["mail.copilot"]["applies"])                  # 코파일럿은 클라우드PC 만
+        self.assertIn("account_backfill", on["rows"][0]["roles"])
+        off = H.matrix([pc], PC_ID, cfg=sb.cfg(**{"collect.webEverywhere": False}))
+        self.assertFalse(off["rows"][0]["cells"]["mail.owa"]["applies"])
+        self.assertFalse(H.matrix([pc], PC_ID)["rows"][0]["cells"]["mail.owa"]["applies"])   # cfg 없으면 바탕 그대로
+
     def test_applies_table(self):
         self.assertTrue(H.applies("web_login", ["copilot"]))
         self.assertFalse(H.applies("web_login", ["pc_usage"]))

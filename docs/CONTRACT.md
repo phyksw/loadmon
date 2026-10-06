@@ -150,6 +150,10 @@ docstring·시험이 정본이다. 구현자: 'W1 통합 창' 은 W1b 구현 뒤
 | V3 | `R-NEWOL` 은 새 Outlook 흔적이 있고 **클래식 Outlook 이 없을 때만**. 전환 토글(UseNewOutlook=1)·olk 실행이 있어도 클래식이 있으면 COM 으로 읽는다(필요하면 클래식을 띄운다 — LM24 와 같음) | 토글·새 Outlook 실행만으로 메일 통째 누락 |
 | V4 | 색인에 Outlook 항목 0 이고 클래식이 있으면 `R-ONLINE`(탐침·수집기 같은 판정) | 탐침은 ok·수집기는 막힘으로 달랐음 |
 | V5 | 버전 무관 웹 경로(Outlook 웹 `mail.owa`·`cal.owa`, 팀즈 웹 `teams.web`)는 **모든 PC** 에서 돈다(`collect.webEverywhere`, 기본 켜짐). 웹 경로 빈칸 작업의 `want_pc` 는 `*`(먼저 도는 PC 가 채움). 끄면 예전처럼 백필 PC 한 대 | 백필 PC(기본 클라우드PC)가 없으면 빈칸이 영영 안 채워짐 |
+| V7 | '쓸 수 있는 Outlook 프로필' = 메일 계정·데이터 파일이 하나라도 든 프로필(`Get-OutlookProfileState` — 탐침·COM·색인 수집기에 같은 함수). 주소록(CONTAB·LDAP)만 든 프로필뿐이면 `R-NOPROF` — COM 으로 Outlook 을 띄우지 않는다. 계정 관리자 키를 읽을 수 없으면 쓸 수 있다고 본다 | 계정 설정 전 PC 에서 COM 이 Outlook 을 띄워 'Outlook 시작' 마법사가 화면에 남음 |
+| V8 | 꺼져 있던 Outlook 을 COM 으로 띄우는 붙기 단계는 무진전 여유 120초(워치독 `mail.com.watchdogSec` 보다 길면 그쪽). 그래도 붙기에서 멈추면 이 수집이 띄운 Outlook(명령줄 `-Embedding`, 자식 시작 뒤 생긴 것)만 창 닫기 → 5초 뒤 끝내기. 사용자가 띄운 Outlook 은 건드리지 않는다 | 시동 20초 안에 못 붙으면 '마법사'로 오판 · 멈춘 창이 남음 |
+| V9 | 본인 전용 Edge 프로필(배타 잠금 하나)을 쓰는 단계(`backfill_owa`·`backfill_teams_web`·`copilot_lookup`)는 같은 단계 안 수집기도 **차례로** 돈다(`lm27.collect.plan.SERIAL_STAGES`) | 동시에 띄우면 뒤의 것이 잠금을 3분 기다리다 `R-TRANSPORT`(실측 — Outlook 웹 일정이 매번 빠질 뻔) |
+| V10 | 웹 경로(`mail.owa`·`cal.owa`·`teams.web`)의 로그인 대기는 [수집] 한 번에 **한 번**. 앞 경로가 `R-LOGIN` 이면 남은 웹 경로는 기다리지 않고 rc 2 + `R-LOGIN`(`skipped` = `login_pending`) — 다음 [수집]에서 다시 시도 | 사람이 없으면 대기(`bridge.loginWaitMin`) × 경로 수만큼 [수집]이 늘어짐 |
 | V6 | 수집 기본 시작일 = 오늘 − `collect.lookbackDays` + 1 과 올해 1월 1일 중 이른 날(`collect.sinceYearStart`, 기본 켜짐 — `lm27.collect.ledger.default_since` 단일원) | 기본 기간 '1월 1일 ~ 오늘' |
 
 ---
@@ -448,7 +452,7 @@ v1.2 C12 등재(W2 통합): 상수 `CATEGORIES`(위 9범주) · `APP_CLASSES`(18
 ### 2.14 `lm27\report\` · `lm27\ui\` — 보고서·화면(R 부록 A)
 
 - `lm27\report\`(8 + analysis 10): `__init__`(`build_report(run_id)` `load_model(run_id)` `export`) · `inputs` · `vocab` · `fmt`(나눗셈·반올림 유일원) · `resolve` · `model` · `export`(`export(run_id, formats, variant, out)`) · `drill` · `analysis\{__init__, activity, mining, review, peers, ontology, agentic, subagent, quality, ai_items}`(`ai_items.write_ai_items(run_id, stage=None) -> {stage: 건수}`). cli 가 부르는 형은 §7.1 어댑터 호출 표.
-- `lm27\ui\`(11): `__init__` · `server`(`/api/jobs` 포함 · `serve(cfg, port=None, open_browser=True)` · `check(cfg, port=None) -> rc`(`ui --check` — v1.1 이름 확정)) · `jobs` · `nextactions` · `api_home` · `api_collect` · `api_analysis`(`/api/bridge/*` 포함) · `api_report`(`/api/hier/*`·`/api/queue/answer` 포함) · `api_team`(`/api/teamserver/*` 포함) · `api_settings`(`/api/calibration` 포함) · `api_privacy`.
+- `lm27\ui\`(12): `__init__` · `period`(기간 버튼 규칙의 단일원 — 기본 = 올해 1월 1일 ~ 오늘 · 분기 q1~q4 · 반기 h1·h2, 진행 중이면 오늘까지 · 아직 오지 않은 기간은 고를 수 없음, JS 사본 `web\common\lm27ui.js` 와 같은지는 시험이 대조) · `server`(`/api/jobs` 포함 · `serve(cfg, port=None, open_browser=True)` · `check(cfg, port=None) -> rc`(`ui --check` — v1.1 이름 확정)) · `jobs` · `nextactions` · `api_home` · `api_collect` · `api_analysis`(`/api/bridge/*` 포함) · `api_report`(`/api/hier/*`·`/api/queue/answer` 포함) · `api_team`(`/api/teamserver/*` 포함) · `api_settings`(`/api/calibration` 포함) · `api_privacy`.
 
 ### 2.15 `lm27\team\` — 팀 묶음·팀 서버·취합(TAB §8.2, 12개)
 
@@ -463,15 +467,15 @@ v1.2 C12 등재(W2 통합): 상수 `CATEGORIES`(위 9범주) · `APP_CLASSES`(18
 | 스크립트 | 경로 ID | 실행 위치 | 출력 | 소유 § |
 |---|---|---|---|---|
 | `Invoke-CapabilityProbe.ps1` | P-ENV·P-OL-INST·P-OL-COM·P-IDX·P-EDGE·P-TEAMS·P-PC | 모든 PC, 전경 | stdout JSON(숫자·열거·사유만) | C §4 |
-| `probe_owa.py` · `probe_teamsweb.py` | P-OWA · P-WEB | 백필 PC | stdout JSON | CM §14 · CT §12 |
+| `probe_owa.py` · `probe_teamsweb.py` | P-OWA · P-WEB | 모든 PC(§0.8 V5) | stdout JSON | CM §14 · CT §12 |
 | `probe_copilot.py` | P-CP | 클라우드PC | `lm27.bridge.probe(lookup=True)` 어댑터 | B §8.1 |
 | `Get-OutlookCom.ps1` | mail.com · cal.com | 전경 | NDJSON → 파이프(kind 단일, COM 2회 붙기) | CM §5 |
 | `Get-OutlookIndex.ps1` | mail.index · cal.index | 전경 | NDJSON → 파이프 | CM §6 |
-| `Get-OutlookWeb.py` | mail.owa · cal.owa | 백필 PC | in-process → `lm27.store.SegmentWriter` | CM §11.3 |
+| `Get-OutlookWeb.py` | mail.owa · cal.owa | 모든 PC(§0.8 V5 — 끄면 백필 PC) | in-process → `lm27.store.SegmentWriter` | CM §11.3 |
 | `Get-MailViaCopilot.py` · `Get-TeamsViaCopilot.py` · `Get-CalViaCopilot.py` | mail.copilot · teams.copilot · cal.copilot | 클라우드PC | 브리지 lookup_* 를 부르는 얇은 어댑터 → SegmentWriter | B §8.1 |
 | `Import-MailCal.py` | mail.import · cal.import | 전경 | in-process | CM §11.5 |
 | `Get-TeamsWindow.ps1` | teams.uia | 에이전트(감독 루프 자식) | NDJSON → 파이프 | CT §7 |
-| `Get-TeamsWeb.py` | teams.web | 백필 PC | in-process | CT §8 |
+| `Get-TeamsWeb.py` | teams.web | 모든 PC(§0.8 V5 — 끄면 백필 PC) | in-process | CT §8 |
 | `collect\agent\agent.ps1`(ps 구현) / `lm27\agent\sampler.py`(py 구현) | pc.sampler(+ pc.compute 구간) | 에이전트 | 파이프 `--mode append` / in-process | CP §3·TAB §1.6 |
 | `Get-EventActivity.ps1` | pc.events | 에이전트 수확(6시간) | NDJSON → 파이프 | CP §4 |
 | `Get-FileActivity.ps1` | pc.files(+ 열린 문서 폴링) | 에이전트 수확 | NDJSON → 파이프 | CP §5.1·§5.2 |
@@ -1172,7 +1176,7 @@ TAB §2.3.1·§2.3.2 의 모양을 따르되 다음을 1.0 에 포함한다(구�
 | `ui.port` · `ui.portFallbackCount` · `ui.openBrowser` · `ui.idleShutdownMin` | 19280 · 9 · true · 0 | ui.server | R §10.1 |
 | `ui.jobPollMs` · `ui.jobEventsKeep` · `ui.logKeepDays` · `ui.homeCoverageDays` | 1000 · 500 · 14 · 35 | ui | R §10.1 |
 | `ui.autoReanalyzeAfterAnswers` · `ui.reanalyzeDebounceSec` · `ui.tableMaxRows` | true · 20 · 500 | ui | R §10.1 |
-| `report.defaultRangeMonths` · `report.analysisKeep` | 3 · 10 | ui · pipeline.retention | R §10.2 |
+| `report.defaultRangeMonths` · `report.analysisKeep` | 3 · 10 | ui · pipeline.retention | R §10.2(앞 키는 v1.3 부터 쓰지 않음 — 기본 기간 = 올해 1월 1일 ~ 오늘, `lm27.ui.period`) |
 | `report.export.formats` · `.variants` · `.keep` · `.maxHtmlMb` · `.maxModelMb` | `["html","csv","json"]` · `["full","redacted"]` · 10 · 20 · 32 | report.export | R §10.2 |
 | `report.csv.bom` · `report.drill.maxEvidencePerUnit` | true · 200 | report | R §10.2 |
 | `report.mining.minStepSec`★ · `.maxSteps` · `.minSupportRatio`★ · `.maxEdges` · `.waitBottleneckMin`★ · `.workBottleneckShare`★ · `.minUnitsForBottleneck` · `.handoffWd`★ · `.extClassExtra` | 600 · 8 · 0.3 · 12 · 480 · 0.4 · 3 · 3 · `{}` | report.analysis.mining | R §10.2 |
@@ -1255,7 +1259,7 @@ TAB §2.3.1·§2.3.2 의 모양을 따르되 다음을 1.0 에 포함한다(구�
 | 코드 | 뜻 | 분류 | 확정 | 정의 |
 |---|---|---|---|---|
 | R-NEWOL | 새 Outlook 전용(COM·색인 Outlook 항목 없음) | 구조 | ✔ | C §4.2 |
-| R-NOPROF | Outlook 프로필 0 | 구조 | ✔ | C §4.2 |
+| R-NOPROF | 메일 계정·데이터 파일이 든 Outlook 프로필 0(주소록만 든 프로필 포함 — §0.8 V7) | 구조 | ✔ | C §4.2 |
 | R-WIZARD | 구판 MSI 등록·시작 마법사(New-Object 금지) | 구조 | ✔ | C §4.2 |
 | R-DIALOG | 모달 대화상자에 막힘 | 구조 | ✔ | C §4.2 |
 | R-CLM | 제한 언어 모드·실행 정책(샘플러 두 구현 모두 실패 포함) | 구조 | ✔ | C §4.2 · CP §12.1 |
@@ -1461,7 +1465,7 @@ v1.2 §0.7 C18 등재: `Invoke-CapabilityProbe.ps1`(과 `probe_owa.py`·`probe_t
 | `agent install [--only] [--reinstall]` · `agent status` · `agent repair` · `agent uninstall [--purge]` | 에이전트 설치·확인·복구·제거. `agent install` 은 `--only` 유무와 관계없이 **설치 전용**(설치 → 번들에 `pcs\<pc_id>\pc.json` 만, 수집·탐침·내보내기 없음 — `--only` 는 bat 표기 호환). `--reinstall` = `uninstall(ident, False)` 뒤 `ensure_agent(ident)`. pc.json 기록 실패는 rc 2(설치는 됨) — X-331 | lm27.agent.install | 0·2·3·4 | TAB §1.6 |
 | `bundle status` · `bundle verify` · `bundle merge <dir>` · `bundle alias <pc_id> <logical>` · `bundle unalias <pc_id>` · `bundle redact` | 번들 관리 | lm27.bundle | 0·1·2·4 | TAB §1.13~§1.15 |
 | `move-prepare` | 이동 준비(도우미 PS 를 `%TEMP%` 사본으로) | lm27.bundle.move | 0·2·3 | TAB §1.11 |
-| `analyze --from D --to D [--as-of T] [--no-ai] [--period-source default\|this_month\|last_month\|this_year\|user] [--period-months N]` · `analyze --rerun <run_id> --stages <ids> [--no-ai]` | 분석 파이프라인(§2.13). 빠른 재분석 = `--stages classify,time,mining,report --no-ai`. 기간 출처·개월 수(R RP8 — 화면이 넘김, N = 1~36)는 W2 통합 | lm27.pipeline.analyze | 0·1·2·4 | 이 문서 · R A-1 |
+| `analyze [--from D --to D] [--as-of T] [--no-ai] [--period-source default\|this_month\|last_month\|this_year\|q1\|q2\|q3\|q4\|h1\|h2\|user] [--period-months N]` · `analyze --rerun <run_id> --stages <ids> [--no-ai]` | 분석 파이프라인(§2.13). 빠른 재분석 = `--stages classify,time,mining,report --no-ai`. 기간 출처·개월 수(R RP8 — 화면이 넘김, N = 1~36)는 W2 통합. **날짜를 안 주면 기본 = 올해 1월 1일 ~ 오늘**(`--period-source` 가 q1~q4·h1·h2 면 그 분기·반기 — 진행 중이면 오늘까지, `lm27.ui.period` 단일원). `--from`·`--to` 는 둘 다 주거나 둘 다 빼야 한다(하나만 = rc 1) | lm27.pipeline.analyze | 0·1·2·4 | 이 문서 · R A-1 |
 | `report build --run <run_id> [--force]` | 보고서 모델 | lm27.report | 0·1·2·4 | R §2.4 |
 | `report export --run <run_id> --formats html,csv,json --variant full,redacted [--out <dir>]` | 내보내기 | lm27.report.export | 0·1 | R §9 |
 | `report ai-items --run <run_id> [--stage workflow_label\|agentic_match\|subagent_review\|review_text]` | 코파일럿 단계 ai_in 쓰기(단계는 이 넷만 — W2 통합) | lm27.report.analysis.ai_items | 0·4 | R §4.10 |
@@ -2011,7 +2015,7 @@ W2(WP-30~37) 구현 뒤 통합 창이 처리한 완료 보고 CR 과 §0.7 'W2 �
 |---|---|---|---|---|
 | X-343 | `Paths` 분석·수집·화면 하위 경로 | WP-31·32·33·35 가 L-08 때문에 메서드를 요청(없으면 analyze·report·export rc 1, 화면 이력 빈 목록) | §2.1 에 `run_status_file(run_id)` · `analysis_root()` · `analysis_hier_file(run_id, name)` · `analysis_report(run_id)` · `analysis_report_file(run_id, name)` · `out_personal_file(from_, to, run_id, rel)`(rel 은 '/' 조각, 조각마다 이름 검증) · `collect_runs()` · `calibration_report()`(`data\derived\calibration_report.json`) · `ui_log_file(utc_date)`(`ui\logs\ui_YYYYMMDD.log`) · `ui_job_stop_flag(job_id)`(`ui\jobs\<job_id>.stop`) 추가 | — |
 | X-344 | CLI 어댑터 O-14 ①②③ | `team send <item>`·`report build --force` 를 rc 1 로 막고 `registry-fetch` 가 캐시를 바꾸지 않음 | §7.1: `send_item(item, cfg)` · `refresh_registry(paths, cfg, force=True)` · `build_report(run_id, force=True)`. O-14 ④(`team-firewall-diag --store`)만 미결 | TAB §8.2 |
-| X-345 | 기간 출처(R RP8 · RPT-04) | 화면이 보내는 `period_source`·`period_months` 를 cli 가 넘길 자리가 없음 | `analyze --period-source default\|this_month\|last_month\|this_year\|user --period-months N(1~36)`. `run_status.json`·`current.json`·모델 run 에 실림(파이프라인 기본: 기간을 주면 `user`, 재분석이면 `rerun`) | R §2.4 |
+| X-345 | 기간 출처(R RP8 · RPT-04) | 화면이 보내는 `period_source`·`period_months` 를 cli 가 넘길 자리가 없음 | `analyze --period-source default\|this_month\|last_month\|this_year\|q1\|q2\|q3\|q4\|h1\|h2\|user --period-months N(1~36)`(q1~q4·h1·h2 = 올해 분기·반기 버튼, 날짜 없이 주면 그 범위 — v1.3). `run_status.json`·`current.json`·모델 run 에 실림(파이프라인 기본: 기간을 주면 `user`, 재분석이면 `rerun`) | R §2.4 |
 | X-346 | 협조형 취소(§8.7) | 화면 [취소]가 5초 뒤 kill_tree 뿐 — 분석 run_status 가 running 으로 남음 | `--job` 명령은 정지 플래그(`Paths.ui_job_stop_flag`)를 0.5초마다 보고 KeyboardInterrupt → rc 2. `analyze` 는 `cancel=` 로 단계 사이에서도 멈춘다(§7.1 끝) | R §2.3.5 |
 | X-347 | 팀 묶음 재시도 계기(TAB §2.8) | 화면 기동·15분 타이머 계기가 화면에 없었다 | 화면이 승인된(또는 autoSend) 막힘 없는 대기분이 있을 때만 `team send --all --trigger startup\|timer` 작업을 건다(net 차선 — 바쁘면 다음 계기). [수집] 끝은 `send_due(cfg, paths=, trigger="collect")`(안 닿아도 시도 횟수 그대로), 빌드 직후는 `build_and_queue` 가 `trigger="build"` | R §5.5 |
 | X-348 | `report ai-items --stage` | 모르는 단계가 ValueError → '내부 오류' rc 1, 고정본 예시 `task_label` 은 hier 단계 | argparse 선택지 `workflow_label·agentic_match·subagent_review·review_text`(인자 오류 rc 1) | — |

@@ -32,7 +32,7 @@
 
 - **문서화·지원되는 사용자 인터페이스만** 쓴다. 팀즈에서 쓰는 것: ① Teams 데스크톱 창의 **UI Automation
   (접근성 API)** 판독(`teams.uia`), ② **사용자 본인 전용 Edge 프로필**의 Teams 웹(teams.microsoft.com/v2)을
-  CDP(127.0.0.1)로 판독(`teams.web`, 백필 PC), ③ M365 Copilot Chat 왕복(`teams.copilot`, 클라우드PC, 요약
+  CDP(127.0.0.1)로 판독(`teams.web`, 모든 PC — 계약 v1.3 §0.8 V5), ③ M365 Copilot Chat 왕복(`teams.copilot`, 클라우드PC, 요약
   증인), ④ 사용자 수동 태깅.
 - **설계에 넣지 않는 것(경계 금지, 명시)**: Microsoft Graph(권한 없음), **앱 내부 캐시 직접 판독(Teams
   IndexedDB/LevelDB)**, **Windows 알림 DB(`wpndatabase.db`)**, 숨김 메일함 폴더(비 IPM 루트·`TeamsMessagesData`),
@@ -55,12 +55,12 @@
 | 경로 ID | 수집기 스크립트 | 언어 | PC 역할 | 메커니즘(문서화된 UI만) |
 |---|---|---|---|---|
 | `teams.uia` | `Get-TeamsWindow.ps1` | PS 5.1 | 모든 PC(상주 샘플러) | Teams 데스크톱 **모든 최상위·팝아웃 창**의 UIA ContentView 판독, 가시일 때만, 2~5분 주기 |
-| `teams.web` | `Get-TeamsWeb.py` | PY 3.11 | 백필 PC(기본 클라우드PC)만 | 본인 전용 Edge 프로필 CDP 로 teams.microsoft.com/v2 DOM 판독, **기간 전체 백필**, 채팅·채널·활동 피드 |
+| `teams.web` | `Get-TeamsWeb.py` | PY 3.11 | 모든 PC(계약 v1.3 §0.8 V5 · `collect.webEverywhere` 끄면 백필 PC 만) | 본인 전용 Edge 프로필 CDP 로 teams.microsoft.com/v2 DOM 판독, **기간 전체 백필**, 채팅·채널·활동 피드 |
 | `teams.copilot` | `Get-TeamsViaCopilot.py` | PY 3.11 | 클라우드PC만 | 커넥터 탐침 통과 시만, 요약 **증인**(시간 근거 아님) |
 | (상주) | `Start-TeamsSampler.ps1` | PS 5.1 | 모든 PC | `teams.uia` 를 주기 실행하는 상주 루프(작업 스케줄러 등록) |
 | (수동) | 보고서 UI 태깅 → `lm27.tagfeed` | — | 로컬 | 사람이 '이 메시지=지시/보고' 태그를 다는 분류기 보정 피드백 |
 
-- 팀즈 '내용'은 **계정 단위** 자료다. **기간 전체 백필은 백필 PC(기본 클라우드PC)에서 한 번**만(`teams.web`).
+- 팀즈 '내용'은 **계정 단위** 자료다. 기간 전체 백필(`teams.web`)은 **먼저 도는 PC 가 채운다**(빈칸 작업 `want_pc` `*` — 계약 v1.3 §0.8 V5). 여러 PC 가 같은 대화를 읽어도 레코드 id 로 한 번만 남는다.
   PC1·PC2 는 그 PC에서 실시간으로 되는 경로(`teams.uia`)와 '이 PC Teams 사용 시간'만 담당한다. 중복은
   `msg_key` 로 병합(§5·§8).
 - 백필 담당 PC 는 공통 설정 `collect.backfillPc`(기본 `"cloud"`). 클라우드PC 가 없으면 사용자가 1대를 지정.

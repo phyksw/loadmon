@@ -240,6 +240,11 @@ def pc_roles(pc: dict | None, *, pcs=(), cfg=None, pc_role=None) -> tuple:
 
 
 # ── 설정 판단 ───────────────────────────────────────────────────────────────
+# 같은 단계 안 수집기도 차례로 도는 단계(계약 v1.3 §0.8 V9). 웹·코파일럿 경로는 본인 전용 Edge 프로필 하나(배타 잠금)를
+# 같이 쓴다 — 동시에 띄우면 뒤의 것이 잠금을 3분(60초 × 3) 기다리다 끝난다(실측: mail.owa 가 잠금을 쥔 동안 cal.owa
+# R-TRANSPORT). 팀즈 창 판독은 화면 하나라 원래 차례로.
+SERIAL_STAGES = ("teams_uia_check", "backfill_owa", "backfill_teams_web", "copilot_lookup")
+
 def web_everywhere(cfg) -> bool:
     """버전 무관 웹 경로를 모든 PC 에서 돌리나(``collect.webEverywhere`` — 기본 True)."""
     if cfg is None:
@@ -344,5 +349,5 @@ def stage_plan(roles, caps, only, *, cfg=None) -> list:
             else:
                 run.append(src)
         if run or skip:
-            out.append(Stage(name, tuple(run), skip, parallel=name not in ("teams_uia_check",)))
+            out.append(Stage(name, tuple(run), skip, parallel=name not in SERIAL_STAGES))
     return out

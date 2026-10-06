@@ -282,11 +282,16 @@ class CloudFlow(FlowBase):
         owa = d.collector_calls("mail.owa")[0][2]
         self.assertEqual(owa[owa.index("--blanks-file") + 1], str(blanks))
         self.assertEqual(owa[owa.index("--run-id") + 1], res.run_id)
-        cal = d.collector_calls("cal.owa")[0][2]
-        self.assertNotIn("--blanks-file", cal)                               # 일정은 기간 전체(CM §2)
+        # 로그인 대기는 실행마다 한 번(v1.3 §0.8 V10) — 같은 전용 Edge 프로필의 일정·팀즈 웹은 다시 기다리지 않는다
+        self.assertEqual(d.collector_calls("cal.owa"), [])
+        self.assertEqual(d.collector_calls("teams.web"), [])
         bo = self.stage(res, "backfill_owa")
         self.assertEqual((bo["state"], bo["stop_kind"], bo["reason"]), ("partial", "login", "R-LOGIN"))
         self.assertEqual(bo["srcs"]["mail.owa"]["ranges"], [r["date_range"] for r in rows])
+        self.assertEqual(bo["srcs"]["cal.owa"]["skipped"], "login_pending")
+        self.assertEqual(bo["srcs"]["cal.owa"]["rc"], 2)
+        bt = self.stage(res, "backfill_teams_web")
+        self.assertEqual((bt["state"], bt["reason"]), ("partial", "R-LOGIN"))
         self.assertEqual(res.rc, 2)
         notices = [e for e in self.events() if e["ev"] == "notice"]
         self.assertEqual(notices[0]["text_ko"], R.NOTICE_LOGIN)
@@ -299,11 +304,30 @@ class CloudFlow(FlowBase):
         self.assertEqual(cpa[cpa.index("--run-id") + 1], res.run_id)
         cp = self.stage(res, "copilot_lookup")
         self.assertEqual((cp["state"], cp["items_ok"]), ("done", 2))
-        self.assertEqual(cp["skipped_srcs"], {"teams.copilot": "no_blanks"})       # 팀즈는 웹이 읽어 빈칸 없음
+        # 팀즈 웹이 로그인 대기로 못 읽어 빈칸이 남았다 — 이 시험에는 팀즈 코파일럿 어댑터가 없어 돌지 않음
+        self.assertEqual(cp["skipped_srcs"], {"teams.copilot": "script_missing"})
         ex = self.stage(res, "export")
         self.assertGreaterEqual(ex["counts"]["passes"], 2)                   # 백필 뒤 내보내기 다시
         # 로그인 필요는 '불가' 근거가 아니다 — 확정되지 않는다(R-LOGIN = 사람 사유)
         self.assertFalse(rcmap.confirmable("R-LOGIN"))
+
+    def test_logged_in_web_paths_all_run_in_order(self):
+        """로그인돼 있으면 웹 경로가 차례로 다 돈다(v1.3 §0.8 V9) — 일정은 기간 전체라 빈칸 파일을 넘기지 않는다(CM §2)."""
+        sp = specs(**{"mail.index": {"rc": 3, "records": [], "status": {"rc": 3, "reasons": ["R-NOIDX"]}},
+                      "mail.owa": {"rc": 0, "status": {"rc": 0, "reasons": [], "n": 1, "items_ok": 1}},
+                      "cal.owa": {"rc": 0, "status": {"rc": 0, "reasons": [], "n": 3, "items_ok": 3}},
+                      "teams.web": {"rc": 4, "status": {"rc": 4, "reasons": []}}})
+        caps = dict(CAPS, **{"mail.com": {"status": "fail", "reasons": ["R-NOPROF"]}})   # 메일 빈칸이 남게(앱 경로 없음)
+        d = self.deps(ident_=self.who, specs=sp, probe=probe_result(caps))
+        res = self.collect(d)
+        self.assert_valid(res)
+        cal = d.collector_calls("cal.owa")[0][2]
+        self.assertNotIn("--blanks-file", cal)
+        self.assertEqual(len(d.collector_calls("mail.owa")), 1)
+        self.assertEqual(len(d.collector_calls("teams.web")), 1)
+        bo = self.stage(res, "backfill_owa")
+        self.assertNotIn("R-LOGIN", bo["reasons"])
+        self.assertEqual(bo["srcs"]["cal.owa"]["skipped"], "")
 
     def test_recollect_owa_reads_requested_range(self):
         sp = specs(**{"mail.owa": {"rc": 0, "status": {"rc": 0, "reasons": [], "n": 2, "items_ok": 2}}})

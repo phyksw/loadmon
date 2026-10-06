@@ -59,6 +59,57 @@ class NextActionsTest(unittest.TestCase):
         self.assertIn("N13", codes)
         self.assertIn("N04", codes)
 
+    def test_web_login_needed_on_any_pc(self):
+        """계약 v1.3 §0.8 V5: 웹 경로(Outlook 웹·팀즈 웹)가 로그인 때문에 못 돌았으면 어느 PC 든 N07 — 가장 최근 웹 단계 실행만 본다."""
+        import json
+        sb = Sandbox()
+        self.addCleanup(sb.cleanup)
+        app = sb.app()
+        root = app.paths.collect_runs()
+
+        def run(run_id, **stages):
+            d = root / run_id
+            d.mkdir(parents=True, exist_ok=True)
+            for st, reasons in stages.items():
+                (d / f"stage_result_{st}.json").write_text(json.dumps({"stage": st, "reasons": reasons}), encoding="utf-8")
+
+        run("20261006-090000-aaaa", backfill_owa=["R-LOGIN"], backfill_teams_web=[])
+        self.assertTrue(N.gather(app).login_needed)
+        self.assertIn("N07", [a.code for a in N.next_actions(N.gather(app))])
+        run("20261006-100000-bbbb", mail_local=[])                     # 웹 단계가 없는 실행은 건너뛰고 앞 실행을 본다
+        self.assertTrue(N.gather(app).login_needed)
+        run("20261006-110000-cccc", backfill_owa=[], backfill_teams_web=[])   # 그 뒤 로그인해서 웹 단계가 돌았다
+        self.assertFalse(N.gather(app).login_needed)
+        run("20261006-120000-dddd", backfill_teams_web=["R-CA"])        # 조건부 액세스도 같은 안내
+        self.assertTrue(N.gather(app).login_needed)
+
+    def test_any_pc_todo_counts_as_mine(self):
+        """계약 v1.3 §0.8 V5: 웹 경로 빈칸(want_pc '*')은 어느 PC 든 채운다 — 이 PC 의 할 일(N09)로 세고, 표에는 '모든 PC'."""
+        import json
+        from lm27.collect import todo as T
+        from lm27.ui.api_collect import _todo_rows
+        sb = Sandbox()
+        self.addCleanup(sb.cleanup)
+        app = sb.app()
+        me = "pc_" + "a" * 16
+        rows = [{"todo_id": "mail.owa:2026-09-01", "account": "me", "date_range": ["2026-09-01", "2026-09-01"],
+                 "kind_axis": "mail_in", "want_src": "mail.owa", "want_pc": T.WANT_ANY, "state": "assigned"},
+                {"todo_id": "mail.copilot:2026-09-01", "account": "me", "date_range": ["2026-09-01", "2026-09-01"],
+                 "kind_axis": "mail_in", "want_src": "mail.copilot", "want_pc": T.WANT_CLOUD, "state": "assigned"}]
+        f = app.paths.todo()
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps({"schema": T.SCHEMA, "todos": rows}), encoding="utf-8")
+        import lm27.ui.api_home as H
+        orig = H.this_pc
+        H.this_pc = lambda _app: (me, {"pc_id": me})
+        self.addCleanup(setattr, H, "this_pc", orig)
+        self.assertEqual(N.gather(app).todo_mine, 1)                    # 클라우드PC 몫은 세지 않는다
+        out = {r["want_src"]: r for r in _todo_rows(app, me)}
+        self.assertEqual(out["mail.owa"]["want_pc"], "모든 PC(먼저 도는 PC)")
+        self.assertTrue(out["mail.owa"]["mine"])
+        self.assertEqual(out["mail.copilot"]["want_pc"], "클라우드PC")
+        self.assertFalse(out["mail.copilot"]["mine"])
+
 
 if __name__ == "__main__":
     unittest.main()

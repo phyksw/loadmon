@@ -1160,6 +1160,40 @@ function Invoke-Worker($a) {
 }
 
 # ═════════════════════════════════════ 부모: 사전 점검 · 워치독 ═════════════════════════════════════
+function Get-OutlookProfileState {
+    # Outlook 프로필 수와 '쓸 수 있는' 프로필 수(메일 계정·데이터 파일이 하나라도 든 것) — 계약 v1.3 §0.8 V7.
+    # 주소록(CONTAB·LDAP)만 든 프로필은 Outlook 을 띄우면 'Outlook 시작' 마법사가 뜬다(실측) — 쓸 수 없다고 센다.
+    # 계정 관리자 키가 없거나 읽을 수 없으면 예전처럼 쓸 수 있다고 본다(모르면 막힘으로 단정하지 않는다).
+    param([string[]]$Roots = @('HKCU:\Software\Microsoft\Office\16.0\Outlook\Profiles',
+                               'HKCU:\Software\Microsoft\Office\15.0\Outlook\Profiles',
+                               'HKCU:\Software\Microsoft\Windows NT\CurrentVersion\Windows Messaging Subsystem\Profiles'))
+    $r = @{ total = 0; usable = 0 }
+    foreach ($root in $Roots) {
+        foreach ($pk in @(Get-ChildItem -LiteralPath $root -ErrorAction SilentlyContinue)) {
+            $r.total++
+            $am = $null
+            try { $am = Get-Item -LiteralPath (Join-Path $pk.PSPath '9375CFF0413111d3B88A00104B2A6676') -ErrorAction Stop } catch { $am = $null }
+            if ($null -eq $am) { $r.usable++; continue }
+            $listed = 0
+            foreach ($n in @('{ED475418-B0D6-11D2-8C3B-00104B2A6676}', '{ED475420-B0D6-11D2-8C3B-00104B2A6676}')) {   # 메일 계정 목록 · 데이터 파일 목록
+                $v = $am.GetValue($n)
+                if ($v -is [byte[]]) { $listed += $v.Length } elseif ($null -ne $v -and [string]$v) { $listed++ }
+            }
+            $mail = $false
+            foreach ($ak in @(Get-ChildItem -LiteralPath $am.PSPath -ErrorAction SilentlyContinue)) {
+                $svc = $ak.GetValue('Service Name')
+                if ($svc -is [byte[]]) { $svc = [Text.Encoding]::Unicode.GetString($svc) }
+                $svc = ([string]$svc).Trim([char]0).Trim().ToUpperInvariant()
+                $cls = ([string]$ak.GetValue('clsid')).Trim().ToUpperInvariant()
+                if ($cls -and $cls -ne '{ED475414-B0D6-11D2-8C3B-00104B2A6676}') { $mail = $true }        # POP·IMAP·EAS 같은 MAPI 밖 계정
+                elseif ($svc -and @('CONTAB', 'EMABLT') -notcontains $svc) { $mail = $true }              # Exchange(MSEMS)·데이터 파일 등
+            }
+            if ($listed -gt 0 -or $mail) { $r.usable++ }
+        }
+    }
+    return $r
+}
+
 function Find-ClassicOutlook {
     # 클래식 Outlook(OUTLOOK.EXE) 위치 — 판(2010~365)·설치 방식(MSI·Click-to-Run)·32/64비트와 상관없이 찾는다.
     # App Paths 한 곳만 보면 Microsoft 365(Click-to-Run) PC 대부분에서 못 찾아 '새 Outlook 전용' 으로 오판했다(실측).
@@ -1238,6 +1272,8 @@ function Get-Precheck($st) {
     }
     try { if (Get-ChildItem -LiteralPath 'HKCU:\Software\Microsoft\Windows NT\CurrentVersion\Windows Messaging Subsystem\Profiles' -ErrorAction SilentlyContinue | Select-Object -First 1) { $legacy = $true } } catch { }
     if ($profVers.Count -eq 0 -and -not $legacy) { $p.fatal = 'R-NOPROF'; return $p }
+    $pst = Get-OutlookProfileState
+    if ($pst.total -gt 0 -and $pst.usable -eq 0) { $p.fatal = 'R-NOPROF'; return $p }   # 주소록만 든 프로필 — 띄우면 '시작' 마법사(v1.3 §0.8 V7)
     $curVer = ''
     try { $curVer = [string](Get-ItemProperty -LiteralPath 'Registry::HKEY_CLASSES_ROOT\Outlook.Application\CurVer' -ErrorAction Stop).'(default)' } catch { $curVer = '' }
     if (-not $curVer) { $p.fatal = 'R-WIZARD'; return $p }             # COM 미등록 — New-Object 가 마법사·오류로 멈춘다
@@ -1247,6 +1283,26 @@ function Get-Precheck($st) {
         if ($rv -ge 15 -and $profVers.Count -and -not $profVers.Contains($rv)) { $p.fatal = 'R-WIZARD' }   # 등록된 판에 프로필 없음(구판 MSI 병존)
     }
     return $p
+}
+
+function Stop-OutlookWeStarted([datetime]$Since) {
+    # 꺼져 있던 Outlook 을 이 수집이 COM 으로 띄웠는데 붙기에서 멈췄으면(설정 마법사·암호 창 등) 화면에 남기지 않는다 —
+    # 계약 v1.3 §0.8 V8. COM 이 띄운 것(명령줄 -Embedding)이고 자식을 띄운 뒤 생긴 것만: 먼저 창 닫기, 5초 안에 안 끝나면 끝낸다.
+    # 사용자가 직접 띄운 Outlook(-Embedding 없음)·그 전부터 떠 있던 Outlook 은 건드리지 않는다. 반환 = 닫은 수.
+    $n = 0
+    $procs = @()
+    try { $procs = @(Get-CimInstance -ClassName Win32_Process -Filter "Name='OUTLOOK.EXE'" -ErrorAction Stop) } catch { return 0 }
+    foreach ($w in $procs) {
+        if ([string]$w.CommandLine -notmatch '(?i)[-/]embedding') { continue }
+        if ($null -ne $w.CreationDate -and $w.CreationDate -lt $Since.AddSeconds(-2)) { continue }
+        try {
+            $gp = Get-Process -Id ([int]$w.ProcessId) -ErrorAction Stop
+            [void]$gp.CloseMainWindow()
+            if (-not $gp.WaitForExit(5000)) { Stop-Process -Id $gp.Id -Force -ErrorAction Stop }
+            $n++
+        } catch { }
+    }
+    return $n
 }
 
 function Invoke-Parent($a) {
@@ -1271,6 +1327,7 @@ function Invoke-Parent($a) {
     $psi.StandardOutputEncoding = $script:Utf8
     $psi.StandardErrorEncoding = $script:Utf8
     $psi.CreateNoWindow = $true
+    $launchedAt = Get-Date
     $p = [Diagnostics.Process]::Start($psi)
     $inJson = 'null'
     if ($a.in) { $inJson = ConvertTo-J $a.in }
@@ -1318,6 +1375,11 @@ function Invoke-Parent($a) {
     }
     [void]$p.WaitForExit(5000)
     try { if ($errTask.Wait(2000)) { foreach ($ln in ($errTask.Result -split "`r?`n")) { if ($ln) { Write-ErrLine $ln } } } } catch { }
+    if (-not $a.st -and -not $pre.running -and $phase -eq 'attach') {
+        # 꺼져 있던 Outlook 을 이 수집이 띄웠는데 붙기에서 멈췄다 — 그 창(마법사·대화상자)을 화면에 남기지 않는다(v1.3 §0.8 V8)
+        $closed = Stop-OutlookWeStarted $launchedAt
+        if ($closed -gt 0) { Write-ErrLine ('[outlook-com] 이 수집이 띄운 Outlook 이 시작 단계에서 멈춰 닫았습니다({0}개)' -f $closed) }
+    }
     $rc = 0
     foreach ($s in $srcs) {
         if (-not $results.Contains($s)) {

@@ -26,9 +26,9 @@ CAPS_ORDER = ("env", "mail.com", "cal.com", "mail.index", "cal.index", "edge_cdp
               "mail.copilot", "teams.copilot", "cal.copilot", "bundle_location", "team_server_reach")
 # 사유 → 그 PC 에서 할 수 있는 조치(사람 조작은 로그인·대화상자 정도 — 다른 경로가 빈칸을 채운다)
 REASON_ACTIONS = {
-    "R-NEWOL": "클래식 Outlook 이 없는 새 Outlook 전용 PC 입니다 — 메일·일정은 Outlook 웹 경로가 채웁니다(전용 Edge 창에서 회사 계정 1회 로그인)",
-    "R-NOPROF": "Outlook 프로필이 없습니다 — 메일·일정은 백필 PC 의 OWA 가 채웁니다",
-    "R-WIZARD": "Outlook 시작 마법사 위험으로 COM 을 건너뜁니다 — 색인·OWA 가 채웁니다",
+    "R-NEWOL": "클래식 Outlook 이 없는 새 Outlook 전용 PC 입니다 — 메일·일정은 Outlook 웹 경로가 채웁니다(분석용 Edge 창에서 회사 계정 1회 로그인)",
+    "R-NOPROF": "Outlook 에 메일 계정이 설정돼 있지 않습니다 — 메일·일정은 Outlook 웹 경로가 채웁니다(분석용 Edge 창에서 회사 계정 1회 로그인)",
+    "R-WIZARD": "Outlook 시작 마법사 위험으로 COM 을 건너뜁니다 — 색인·Outlook 웹 경로가 채웁니다",
     "R-DIALOG": "Outlook 에 대화상자가 열려 있습니다 — 닫으면 다음 수집에서 다시 읽습니다",
     "R-CLM": "실행 정책이 막고 있습니다 — 되는 경로만 씁니다",
     "R-APPLOCKER": "실행 차단 정책이 있습니다 — 되는 경로만 씁니다",
