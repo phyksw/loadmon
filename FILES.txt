@@ -101,5 +101,5 @@ tools/Make-MovePack.py                                12,653 B  0e5c2ca0
 tools/Prepare-Move.ps1                                26,409 B  30b59a38
 tools/update_files.py                                  4,530 B  d98dd7d5
 tools/lm_fixenc.py                                     6,690 B  0b6df0b4
-tools/diag_bundle.py                                   8,982 B  f98fc6f7
+tools/diag_bundle.py                                  10,116 B  0653a9aa
 ui/app.py                                            404,494 B  ee447f91

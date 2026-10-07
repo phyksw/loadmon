@@ -156,6 +156,19 @@ def build(root):
         rows, months, by, dcol = csv_month_counts(p)
         counts[os.path.relpath(p, root)] = {"행": rows, "날짜열": dcol, "월별": months, "구분": by}
     section("수집 CSV 월별 건수(내용 없음)", counts or "(CSV 없음)")
+    # MM 산정 근거 — 가장 최근 분석의 mm_meta(숫자만): 투입 MM 이 실제 시간에서 나왔는지(1 로 맞춰지지 않았는지) 확인용
+    metas = sorted(glob.glob(os.path.join(rep, "mm_meta_*.json")), key=os.path.getmtime)
+    if metas:
+        mj = _read_json(metas[-1])
+        keep = {k: mj.get(k) for k in ("period", "months", "total_mm", "avail_mm", "load_pct", "mm_months",
+                                       "unobserved_days", "measure", "coverage", "cfg_used") if isinstance(mj, dict) and k in mj}
+        dh = mj.get("day_hours") if isinstance(mj, dict) else None
+        if isinstance(dh, dict) and dh:
+            vals = [float(v) for v in dh.values() if isinstance(v, (int, float))]
+            keep["day_hours_요약"] = {"일수": len(vals), "0h": sum(1 for v in vals if v <= 0),
+                                     "평균h(>0)": round(sum(v for v in vals if v > 0) / max(1, sum(1 for v in vals if v > 0)), 2),
+                                     "최대h": round(max(vals), 2) if vals else 0}
+        section(f"MM 산정 {os.path.relpath(metas[-1], root)}(숫자만)", mask_obj(keep))
     diag = os.path.join(rep, "collect_diag.txt")
     if os.path.exists(diag):
         with open(diag, encoding="utf-8-sig", errors="replace") as f:
