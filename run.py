@@ -41,7 +41,6 @@ import coverage  # noqa: E402
 import proc  # noqa: E402
 _RUN_STEP = proc.run_step      # 시험이 바꿔 끼운다(사슬 시험 — 실제 수집기를 띄우지 않는다)
 _CLOSE_EDGE = None             # 시험 주입 — None 이면 tools\copilot_auto.close_own_edge
-_START_PROCESS = None          # 시험 주입 — 샘플러 분리 실행(None 이면 _spawn_detached)
 REPORT_DIR = {"p": os.path.join(ROOT, "report")}     # last_run.json 위치(시험은 임시 폴더로 바꾼다)
 MAIL_AXES = coverage.MAIL_AXES
 EDGE = {"closed": False}       # 이 실행에서 Edge 정리를 이미 했나(수집만·웹만은 수집 끝, 전체 실행은 마지막 finally 1회)
@@ -167,10 +166,10 @@ def _run_rc(cmd, timeout):
 
 
 def collect_headless(c):
-    r"""[수집만] 모드의 무창 수집 — 창을 여는 경로(아웃룩 웹·Copilot·팀즈 웹·팀즈 Copilot)를 생략한다.
-    추가 PC 의 메일·팀즈는 계정 단위라 **본 PC 가 같은 사서함을 수집**하고 분석이 중복을 제거한다 —
-    추가 PC 의 몫은 그 기계의 로그(PC 가동·파일·git·샘플러)다(제보: "로그만 가져오면 되는 것 아닌가").
-    본 PC 분석 실행에는 영향이 없다. 추가 PC 가 유일한 아웃룩인 예외 환경만 false 로."""
+    r"""[수집만] 모드에서 생략하는 것은 **Copilot 경로(메일·팀즈)만**이다(Copilot 은 판정 전용).
+    LM28: 예전(LM24)에는 Outlook 웹·팀즈 웹도 '본 PC 가 같은 사서함을 수집' 한다고 보고 건너뛰었다. 그런데 새 Outlook 인 PC
+    (COM·색인 없음)에서는 그러면 메일·일정·팀즈를 가져올 길이 하나도 남지 않았다(실측 2026-10-07 — 279일 전부 관측 없음).
+    그래서 웹 경로는 수집만 모드에서도 원장의 미검증 날에 대해 돈다 — 겹치는 행은 분석이 중복 제거한다."""
     return "--collect-only" in sys.argv and bool(c.get("collectOnlyHeadless", True))
 
 
@@ -385,8 +384,6 @@ def mail_fallbacks(c, d0, d1, data, ps, col, t_run=None, led=None, state=None):
     name2 = "Outlook 대체② Outlook 웹 (전용 Edge 프로필 — 미검증 날만)"
     if not sp:
         record(name2, True, 0.0, "건너뜀 — 원장에 미검증 날 없음(COM·색인이 기간을 확인)")
-    elif headless:
-        record(name2, True, 0.0, "수집만 모드 — 창 여는 경로 생략(메일은 본 PC 가 같은 계정으로 수집 · 분석 때 중복 제거)")
     elif state.get("login_pending"):
         _skip_login(name2)
     elif c.get("mailViaWeb", True) and "--no-mail-web" not in sys.argv:
@@ -497,116 +494,6 @@ def collect_outlook(c, d0, d1, data, ps, col, led=None):
             record("Outlook 수집 범위", False, 0.0,
                    f"미수집 달 {len(unc)}개: {', '.join(unc)} — 다음 실행이 이어서 수집(그 달의 메일·회의는 아직 빠짐)")
     return ok
-
-
-def _mutex_exists(name):
-    """이름 있는 뮤텍스가 있나(= 그 샘플러가 살아 있다) — OpenMutexW, 프로세스를 띄우지 않는다. 확인 불가면 None."""
-    if os.name != "nt" or not name:
-        return None
-    try:
-        import ctypes
-        from ctypes import wintypes
-        k = ctypes.WinDLL("kernel32", use_last_error=True)
-        k.OpenMutexW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
-        k.OpenMutexW.restype = wintypes.HANDLE
-        k.CloseHandle.argtypes = [wintypes.HANDLE]
-        h = k.OpenMutexW(0x00100000, False, name)          # SYNCHRONIZE
-        if h:
-            k.CloseHandle(h)
-            return True
-        return False
-    except (OSError, AttributeError, ValueError):
-        return None
-
-
-def sampler_state(data, now=None, mutex_name=None):
-    r"""창 샘플러 생존 판정 재료(LM28 — 외부 프로세스 없음) → dict:
-    seen(한 번이라도 돈 흔적: activity CSV 나 sampler_status.json) · age_min(마지막 CSV 기록) · status(sampler_status.json,
-    utf-8-sig) · hb_age(heartbeat 경과 초) · mutex(뮤텍스 존재) · alive(heartbeat 가 interval_s+15초 안이고 ok ·
-    또는 뮤텍스가 있음 · 또는 CSV 가 10분 안에 쓰임)."""
-    import glob
-    now = time.time() if now is None else now
-    act = glob.glob(os.path.join(data, "activity", "activity_*.csv"))
-    age_min = ((now - max((_mtime(p) or 0) for p in act)) / 60) if act else None
-    st = _read_json(os.path.join(data, "activity", "sampler_status.json"))
-    hb_age = None
-    try:
-        hb = datetime.strptime(str(st.get("heartbeat") or ""), "%Y-%m-%d %H:%M:%S").timestamp()
-        hb_age = now - hb
-    except ValueError:
-        pass
-    try:
-        iv = float(st.get("interval_s") or 60)
-    except (TypeError, ValueError):
-        iv = 60.0
-    if mutex_name is None:
-        try:
-            import lmname
-            mutex_name = lmname.MUTEX_ACTIVITY
-        except ImportError:
-            mutex_name = ""
-    mx = _mutex_exists(mutex_name)
-    alive = bool((hb_age is not None and hb_age <= iv + 15 and st.get("ok") is not False) or mx
-                 or (age_min is not None and age_min <= 10))
-    return {"seen": bool(act) or bool(st), "age_min": age_min, "status": st, "hb_age": hb_age, "mutex": mx,
-            "alive": alive}
-
-
-def _spawn_detached(cmd):
-    """분리 실행 1회 — run.py 의 Job(화면이 건 것 포함)에서 이탈해 띄운다(분석이 끝나도 샘플러는 산다). 이탈이 거부되면
-    플래그 없이 1회. 입출력은 넘기지 않는다. → 성공 여부"""
-    base = NO_WIN | 0x00000200                                # CREATE_NEW_PROCESS_GROUP
-    kw = {"cwd": ROOT, "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
-    for flags in (base | proc.CREATE_BREAKAWAY_FROM_JOB, base):
-        try:
-            subprocess.Popen(cmd, creationflags=flags, **kw)
-            return True
-        except OSError:
-            continue
-    return False
-
-
-def ensure_sampler(c, data, col):
-    r"""수집 시작 시 창 샘플러 생존 점검(LM28 P6·REQ-45) — 판정은 CSV 시각·sampler_status.json heartbeat·뮤텍스(OpenMutexW)로만
-    한다(예전의 CIM 조회 PowerShell 없음). 멈췄으면:
-      · sampler_status.ok=false(R-CLM 제한 언어 모드·R-ADDTYPE) → 재기동해도 같은 이유로 멈추므로 사유만 남긴다.
-      · config.autoRestartSampler(기본 false)가 켜져 있고, 사용자가 등록한 흔적(sampler_status.registered)이 있을 때만
-        Start-ActivitySampler.ps1 을 분리 실행 1회(Job 밖). 그 밖은 안내 한 줄 — 동의 없이 상주 프로세스를 띄우지 않는다.
-    샘플러를 한 번도 켜지 않은 PC(흔적 없음)는 건드리지 않는다."""
-    if "--no-sampler" in sys.argv:
-        return
-    s = sampler_state(data)
-    if s["alive"] or not s["seen"]:
-        return
-    st = s["status"]
-    age = (f"마지막 기록 {s['age_min']:.0f}분 전" if s["age_min"] is not None
-           else (f"마지막 신호 {s['hb_age'] / 60:.0f}분 전" if s["hb_age"] is not None else "기록 없음"))
-    name = "창 샘플러 점검"
-    if st.get("ok") is False and st.get("reason"):
-        why = (f"{age} · 샘플러가 {st.get('reason')} 로 멈췄습니다(의심·실측 전 — 보안 정책: 제한 언어 모드·Add-Type 차단)"
-               " — 재기동해도 같은 이유로 멈추므로 띄우지 않습니다")
-        print(f"\n── {name}: {why}")
-        record(name, False, 0.0, why, rc=3, reason=st.get("reason"))
-        return
-    if not c.get("autoRestartSampler", False):
-        why = (f"{age} — 멈춘 것 같습니다. 자동 재기동은 꺼져 있습니다(config.autoRestartSampler=false) → "
-               "LoadMonitor28-샘플러등록.bat 또는 대시보드 버튼으로 다시 켜세요")
-        print(f"\n── {name}: {why}")
-        record(name, True, 0.0, why)
-        return
-    if not st.get("registered"):
-        why = f"{age} — 등록 흔적(sampler_status.registered)이 없어 재기동하지 않습니다(사용자가 등록한 PC 만 자동 재기동)"
-        print(f"\n── {name}: {why}")
-        record(name, True, 0.0, why)
-        return
-    script = os.path.join(col, "Start-ActivitySampler.ps1")
-    if not os.path.exists(script):
-        return
-    cmd = ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", script]
-    ok = (_START_PROCESS or _spawn_detached)(cmd)
-    print(f"\n── 창 샘플러 재기동: {age} → collect\\Start-ActivitySampler.ps1 분리 실행 1회 (config.autoRestartSampler · 등록됨)"
-          + ("" if ok else " — 실패"))
-    record("창 샘플러 재기동", ok, 0.0, f"{age} — 분리 실행" + ("" if ok else " 실패(정책?)"))
 
 
 def run_ai_stage(script, d0, d1, retry_wait=15):
@@ -774,38 +661,6 @@ def machine_id():
         return ""
 
 
-def register_sampler_once(ps, col, c=None):
-    r"""창 샘플러 등록이 없으면 1회 등록한다(schtasks/COM 은 Register-Samplers.ps1 이 판단).
-    이미 등록돼 있으면 그 스크립트가 아무것도 바꾸지 않는다 — 매 실행 호출해도 부작용이 없다.
-    실패(정책·권한)는 기록만 하고 진행한다.
-    LM28(P6·F-22): config.autoRegisterSampler(기본 false)가 꺼져 있으면 schtasks 를 부르지 않고 안내 한 줄만 낸다 —
-    예약 작업 등록은 사용자 동작(LoadMonitor28-샘플러등록.bat·대시보드 버튼)이 있을 때만."""
-    c = c if isinstance(c, dict) else {}
-    st = _read_json(os.path.join(ROOT, "data", "activity", "sampler_status.json"))
-    if st.get("registered"):
-        return True                         # 등록 흔적(Register-Samplers 가 남김) — schtasks 조회도 하지 않는다
-    if not c.get("autoRegisterSampler", False):
-        print("\n   (창 샘플러 자동 등록은 꺼져 있습니다 — 근무시간 정밀도를 높이려면 LoadMonitor28-샘플러등록.bat 을 한 번"
-              " 실행하세요 · config.autoRegisterSampler)")
-        return False
-    try:
-        import lmname       # 작업 이름 LM28-Sampler-<폴더해시6> — collect\Register-Samplers.ps1 과 같은 규칙
-        r = subprocess.run(["schtasks", "/Query", "/TN", lmname.TASK_SAMPLER],
-                           capture_output=True, timeout=30, creationflags=NO_WIN)
-        if r.returncode == 0:
-            return True                     # 이미 등록돼 있다
-    except (OSError, subprocess.SubprocessError):
-        pass
-    ok = step("창 샘플러 자동 등록(1회 · 등록 즉시 + 로그온마다 시작)",
-              ps + [os.path.join(col, "Register-Samplers.ps1")], 180)
-    if ok:
-        print("   샘플러가 지금부터 백그라운드로 기록합니다(창 1분·팀즈 5분 주기) — 수집의 일부입니다.")
-    if not ok:
-        print("   샘플러 자동 등록이 되지 않았습니다 — 보안 정책이 막는 환경일 수 있습니다."
-              " LoadMonitor28-샘플러등록.bat 을 한 번 실행해 주세요(없어도 분석은 됩니다).")
-    return ok
-
-
 def pc_history_gap(data, d0, d1, fresh_hours=None):
     r"""저장된 PC 가동 기록이 요청 기간을 못 덮거나 오래됐나 → (갱신 필요, 사유).
     화면의 추이 선과 분석의 PC 하한은 **저장된 data\pc** 만 본다. 그래서 수집이 그 기간에 대해
@@ -838,9 +693,9 @@ def pc_history_gap(data, d0, d1, fresh_hours=None):
         return True, f"저장된 기록은 {dates[-1]} 까지입니다 (요청 {d1})"
     _hint_floor = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
     if dates[0] > d0 and dates[0] > _hint_floor:
-        # 시작 쪽 확장 — 브라우저 힌트(≈90일)·샘플러가 아직 닿는 범위만. 그보다 먼 과거는 어떤
+        # 시작 쪽 확장 — 브라우저 힌트(≈90일)가 아직 닿는 범위만. 그보다 먼 과거는 어떤
         # 재수집으로도 못 메우므로 매 실행 헛수고를 만들지 않는다(최종 검증 INFO).
-        return True, f"저장된 기록은 {dates[0]} 부터입니다 (요청 {d0} — 힌트·샘플러가 닿는 만큼 보강)"
+        return True, f"저장된 기록은 {dates[0]} 부터입니다 (요청 {d0} — 힌트가 닿는 만큼 보강)"
     if fresh_hours > 0:
         age_h = (time.time() - os.path.getmtime(on_p)) / 3600.0
         if age_h > fresh_hours:
@@ -949,11 +804,8 @@ def archive_other_pc(data):
                     moved.append(sub)
                 except OSError as ex2:
                     failed.append(f"{sub}({type(ex2).__name__})")
-            # 보관하며 data\activity 를 통째로 옮기면 그 폴더가 사라진다. 그런데 샘플러는 루프에 들어가기
-            # **전에 한 번만** 폴더를 만들므로, 돌고 있던 샘플러는 살아서 CPU 만 쓰고 한 줄도 못 쓰는
-            # 좀비가 된다(오류 로그도 같은 사라진 폴더에 쓰려 해서 안 남는다 — 실측). 게다가 그 좀비가
-            # 뮤텍스를 쥐고 있어 자동 재기동도 '이미 실행 중' 으로 즉사한다. 폴더만 되만들어 주면
-            # 다음 틱에 스스로 기록을 재개하는 것을 확인했다.
+            # 보관하며 data\activity·data\pc 를 통째로 옮기면 그 폴더가 사라진다 — 빈 폴더를 되만들어
+            # 둔다(이 PC 의 새 수집이 같은 자리에 쌓인다).
             for sub in ("activity", "pc"):
                 try:
                     os.makedirs(os.path.join(data, sub), exist_ok=True)
@@ -1094,11 +946,7 @@ def collect_teams(c, d0, d1, data, ps, col, led=None, state=None):
                         120, src="teams_window", led=led)
     present = present or bool(stw["counts"].get("teams_present"))
     name_w = "팀즈 채팅 (웹 — 전용 Edge, 앱이 꺼져 있어도)"
-    if headless:
-        print("\n── 팀즈 채팅 (수집만 모드 — 웹·Copilot 경로 생략)")
-        print("   추가 PC 의 팀즈는 앱 창 읽기·Graph·상시 샘플러로만 — 창을 열지 않습니다.")
-        record("팀즈 채팅", True, 0.0, "수집만 모드 — 창 여는 경로 생략(본 PC 가 같은 계정으로 수집)")
-    elif graph_full:
+    if graph_full:
         record(name_w, True, 0.0, "건너뜀 — Graph 가 기간 전체를 확인")
     elif state.get("login_pending"):
         _skip_login(name_w)
@@ -1117,7 +965,7 @@ def collect_teams(c, d0, d1, data, ps, col, led=None, state=None):
         pass
     elif not c.get("teamsViaCopilot"):
         print("\n── 팀즈 채팅 (Copilot 경로 건너뜀 — config.teamsViaCopilot=false)")
-        print("   팀즈는 웹 경로(전용 Edge)·상시 샘플러(collect\\Start-TeamsSampler.ps1)·Graph 로 모읍니다.")
+        print("   팀즈는 앱 창 읽기·웹 경로(전용 Edge)·Graph 로 모읍니다.")
         print("   Copilot 은 AI 판정 전용으로 아껴 둡니다.")
         record("팀즈 채팅", True, 0.0, "Copilot 경로 건너뜀(설정)")
     elif state.get("login_pending"):
@@ -1234,10 +1082,6 @@ def _main():
     if not _skip:
         archive_other_pc(data)
         migrate_extra_pc_ledgers(data)     # 추가PC 보관본 1회 이행(v3 원장·멱등) — 실패해도 계속
-        ensure_sampler(c, data, col)       # 멈춘 창 샘플러 — 등록 흔적이 있고 autoRestartSampler 일 때만 재기동(LM28)
-        # 등록이 없으면 — config.autoRegisterSampler(기본 false)일 때만 1회 등록, 아니면 안내 한 줄(LM28 P6: 예약 작업은
-        # 사용자 동작이 있을 때만). 이벤트 로그는 롤오버되지만 샘플러가 돌면 그 뒤 구간은 pc_spans 에 쌓인다.
-        register_sampler_once(ps, col, c)
         led = open_ledger(c, data)         # 일자×축 원장 — 수집기 LMSTATUS ranges 가 쌓이고, 메일·팀즈 사슬이 공백을 본다
         step("PC 가동 이력", ps + [os.path.join(col, "Get-PcOnHistory.ps1"), "-From", d0, "-To", d1], 300,
              src="pc_events", led=led)
@@ -1287,10 +1131,6 @@ def _main():
         print("\n[수집만] 이 PC 의 데이터 수집을 마쳤습니다 — 분석은 하지 않았습니다.")
         print("        폴더째 본 PC 로 가져가 [분석 실행]을 누르면 두 PC 데이터가 합산됩니다")
         print("        (같은 메일·일정 등 중복 자료는 분석 때 자동 제외).")
-        print("        ※ 창 샘플러(1분 주기)·팀즈 샘플러(5분 주기)는 **백그라운드로 계속** 활동을")
-        print("          기록합니다 — 이것이 수집의 일부입니다(끝난 뒤 도는 프로그램이 그것입니다).")
-        import lmname
-        print(f"          멈추려면: schtasks /End /TN {lmname.TASK_SAMPLER} (등록 해제는 /Delete)")
         RUN["finished"] = time.strftime("%Y-%m-%d %H:%M")
         record("완료(수집만)", True, 0.0, "추가 PC 수집 모드 — 분석은 본 PC 에서")
         return 0

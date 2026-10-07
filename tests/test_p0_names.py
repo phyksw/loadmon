@@ -52,8 +52,7 @@ GENERIC_NOTICE = {
 
 BAT_NAMES = ["LoadMonitor28-UI.bat", "LoadMonitor28.bat", "LoadMonitor28-팀취합.bat", "LoadMonitor28-팀서버.bat",
              "LoadMonitor28-팀업로드.bat", "LoadMonitor28-팀서버주소.bat", "LoadMonitor28-수집진단.bat",
-             "LoadMonitor28-가동시간비교.bat", "LoadMonitor28-샘플러등록.bat", "LoadMonitor28-이동준비.bat",
-             "LoadMonitor28-팀로드율재계산.bat"]
+             "LoadMonitor28-가동시간비교.bat", "LoadMonitor28-이동준비.bat", "LoadMonitor28-팀로드율재계산.bat"]
 
 
 def _ops_files(exts=(".py", ".ps1", ".bat")):
@@ -117,7 +116,6 @@ class OldNamesGone(unittest.TestCase):
             "LoadMonitor28.bat": ["lm28_from.txt", "lm28_to.txt"],
             "LoadMonitor28-이동준비.bat": ["LM28-Prepare-Move.ps1"],
             os.path.join("collect", "Get-PcOnHints.py"): ["lm28_hist_copy"],
-            os.path.join("collect", "Register-Samplers.ps1"): ["lm28_task_"],
             os.path.join("tools", "Make-Package.ps1"): ["LM28pkg_", "'LoadMonitor28'", "LoadMonitor28_v1_"],
             os.path.join("ui", "app.py"): ["LM28-Prepare-Move.ps1"],
             "ruff.toml": ["LoadMonitor28-ruff_cache"],
@@ -128,47 +126,22 @@ class OldNamesGone(unittest.TestCase):
                 self.assertIn(fr, txt, f"{rel} 에 {fr} 없음")
 
 
-class TaskAndMutexNames(unittest.TestCase):
-    """(2) 작업·뮤텍스 이름 — LM24 정리 정규식 밖, 폴더 해시 h6"""
-
-    LM24_RX = re.compile(r"^LoadMonitor\d+-(Teams)?Sampler$")
-
-    def test_task_names_outside_lm24_regex(self):
-        for t in (lmname.TASK_SAMPLER, lmname.TASK_TEAMS):
-            self.assertIsNone(self.LM24_RX.match(t), t)
-            self.assertIsNotNone(lmname.TASK_RE.match(t), t)
-        self.assertTrue(lmname.TASK_SAMPLER.startswith("LM28-Sampler-"))
-        self.assertTrue(lmname.MUTEX_ACTIVITY.startswith("Local\\LM28-ActivitySampler-"))
-        self.assertTrue(lmname.MUTEX_TEAMS.startswith("Local\\LM28-TeamsSampler-"))
-        self.assertNotEqual(lmname.MUTEX_ACTIVITY, "Local\\LoadMonitor" + "24-ActivitySampler")
-
-    def test_task_regex_never_touches_other_editions(self):
-        for t in ("LoadMonitor24-Sampler", "LoadMonitor24-TeamsSampler", "LoadMonitor22-Sampler",
-                  "LM28-Sampler", "LM28-Sampler-ABCDEF", "LM28-Sampler-abc12", "LM27-abc"):
-            self.assertIsNone(lmname.TASK_RE.match(t), t)
-        self.assertIsNotNone(lmname.TASK_RE.match("LM28-TeamsSampler-0a1b2c"))
+class FolderHashAndPorts(unittest.TestCase):
+    """(2) 설치 폴더 해시 h6 · 포트 — LM28 에는 예약 작업·뮤텍스(샘플러)가 없다"""
 
     def test_fixed_path_h6(self):
         self.assertEqual(lmname.h6(FIXED_PATH), FIXED_H6)
         for v in (FIXED_PATH + "\\", FIXED_PATH.lower(), FIXED_PATH.upper(), "C:/LM28test/Sample Folder/"):
             self.assertEqual(lmname.h6(v), FIXED_H6, v)
-        nm = lmname.names(FIXED_PATH)
-        self.assertEqual(nm["TaskSampler"], "LM28-Sampler-" + FIXED_H6)
-        self.assertEqual(nm["TaskTeams"], "LM28-TeamsSampler-" + FIXED_H6)
-        self.assertEqual(nm["MutexActivity"], "Local\\LM28-ActivitySampler-" + FIXED_H6)
+        self.assertEqual(lmname.names(FIXED_PATH), {"H6": FIXED_H6})
         self.assertNotEqual(lmname.h6(r"C:\LM28test\Other Folder"), FIXED_H6)
 
-    def test_register_samplers_cleanup_rule(self):
-        txt = _boot.read_text(os.path.join(ROOT, "collect", "Register-Samplers.ps1"))
-        self.assertIn("[string]$TaskPrefix = 'LM28'", txt)
-        self.assertIn("LmName.ps1", txt)
-        self.assertIn("$lmNames.TaskRegex", txt)
-        self.assertNotIn(r"^LoadMonitor\d+-(Teams)?Sampler$", txt, "LM24 작업 정리 정규식이 남아 있다")
-        self.assertIn("Get-TaskActionDir", txt)             # 폴더가 없어진 작업만 지운다
+    def test_no_task_or_mutex_names(self):
+        for k in ("TASK_RE", "TASK_SAMPLER", "TASK_TEAMS", "MUTEX_ACTIVITY", "MUTEX_TEAMS"):
+            self.assertFalse(hasattr(lmname, k), k)
         ps_names = _boot.read_text(os.path.join(ROOT, "collect", "LmName.ps1"))
-        self.assertIn(lmname.TASK_RE.pattern, ps_names, "PS 와 Python 의 작업 정규식이 다르다")
-        sampler = _boot.read_text(os.path.join(ROOT, "collect", "Start-ActivitySampler.ps1"))
-        self.assertIn("MutexActivity", sampler)
+        for k in ("TaskSampler", "TaskTeams", "MutexActivity", "MutexTeams", "TaskRegex"):
+            self.assertNotIn(k, ps_names, k)
 
     def test_ui_ports_and_cdp(self):
         self.assertEqual(lmname.UI_PORTS, range(9248, 9268))
@@ -245,7 +218,7 @@ class TeamCompatUnchanged(unittest.TestCase):
 
 
 class BatRenameTogether(unittest.TestCase):
-    """(4) bat 11개 일괄 개명 — NEED·FILES.txt·update_files·Make-Package·EDIT_BAT 이 한 번에"""
+    """(4) bat 10개 일괄 개명 — NEED·FILES.txt·update_files·Make-Package·EDIT_BAT 이 한 번에"""
 
     def test_need_bats_exist(self):
         need = _ast_assign(os.path.join(ROOT, "자가점검.py"), "NEED")
@@ -317,7 +290,7 @@ class Encoding(unittest.TestCase):
     def test_all_scripts(self):
         import lm_fixenc
         items = lm_fixenc.scan(ROOT)
-        self.assertGreater(len([1 for _p, k in items if k == "bat"]), 10)
+        self.assertGreaterEqual(len([1 for _p, k in items if k == "bat"]), len(BAT_NAMES))
         self.assertGreater(len([1 for _p, k in items if k == "ps1"]), 15)
         bad = lm_fixenc.check_files(items)
         self.assertEqual({os.path.relpath(p, ROOT): v for p, v in bad.items()}, {})
@@ -346,7 +319,7 @@ class Encoding(unittest.TestCase):
 
 
 class EdgeConfigOverride(unittest.TestCase):
-    """(7) copilot_auto 실효 설정 — 옛 포트·옛 프로필을 LM28 값으로 덮는다 · 샘플러 자동 등록/재기동 꺼짐"""
+    """(7) copilot_auto 실효 설정 — 옛 포트·옛 프로필을 LM28 값으로 덮는다 · 배포 설정의 포트·팀즈 웹 상한"""
 
     def test_old_values_overridden(self):
         import copilot_auto
@@ -376,13 +349,11 @@ class EdgeConfigOverride(unittest.TestCase):
         self.assertTrue(lmname.is_old_edge(profile_dir="X:\\" + lmname.OLD_PROFILE.upper()))
         self.assertFalse(lmname.is_old_edge(port=9533, profile_dir=lmname.EDGE_PROFILE))
 
-    def test_sampler_auto_off(self):
+    def test_config_port_and_teams_web(self):
         for name in ("config.default.json", "config.json"):
             if not os.path.isfile(os.path.join(ROOT, "config", name)):
                 continue
             c = _cfg(name)
-            self.assertIs(c.get("autoRegisterSampler"), False, name)
-            self.assertIs(c.get("autoRestartSampler"), False, name)
             self.assertEqual(c["copilotAuto"]["port"], 9533, name)
             self.assertEqual(c.get("teamsWebMaxChats"), 200, name)
 
@@ -436,9 +407,7 @@ class PsLmName(unittest.TestCase):
         for k in ("h6_plain", "h6_slash", "h6_case", "h6_fwd"):
             self.assertEqual(r[k], FIXED_H6, k)
         self.assertEqual(r["norm"], lmname.norm_root(FIXED_PATH))
-        nm = lmname.names(FIXED_PATH)
-        self.assertEqual((r["task"], r["task_teams"], r["mutex"], r["mutex_teams"]),
-                         (nm["TaskSampler"], nm["TaskTeams"], nm["MutexActivity"], nm["MutexTeams"]))
+        self.assertEqual(r["names_h6"], lmname.names(FIXED_PATH)["H6"])
         self.assertEqual(r["root_h6"], lmname.H6, "설치 폴더(한글 경로) 해시가 Python 과 다르다")
 
 

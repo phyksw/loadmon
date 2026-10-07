@@ -1,12 +1,11 @@
 # -*- coding: utf-8 -*-
-r"""test_p4_pc.py — WP4: PC 수집기·창 샘플러 보강(외부 프로세스 최소).
+r"""test_p4_pc.py — WP4: PC 수집기 보강(외부 프로세스 최소).
 
   · Get-PcOnHints : 합성 History(visit_source 에 source=0 1건) → 방문 2건(동기화 1건 제외) · includeSynced 면 3건
   · Get-GitActivity: git 실행기 주입 — 저장소 20 → git 21회(전역 설정 1 + 저장소별 log) · git 없음 → rc 3 R-NOGIT
   · pc_ledger     : 잠금 선점 상태에서 ingest → append 0 · rc 3 · 관측 파일 보존 → 풀면 반영
-  · 정적          : 확인 경로 BEL 없음 · 샘플러 새 열·외부 프로세스 0 · 파일 새 열 · LMSTATUS
-  · --ps          : tests\ps\Test-PcCollect.ps1 결과 단언(샘플러 R-CLM·세션·CPU 차분·MRU 5건·등록 흔적·Add-WorkLog 구간·
-                    Get-PcOnHistory 원장 반영 실패 rc 3)
+  · 정적          : 확인 경로 BEL 없음 · 파일 새 열 · LMSTATUS
+  · --ps          : tests\ps\Test-PcCollect.ps1 결과 단언(MRU 5건·Add-WorkLog 구간·Get-PcOnHistory 원장 반영 실패 rc 3)
 실 Outlook·Edge·작업 스케줄러·git 은 띄우지 않는다. 임시 파일은 tempfile.TemporaryDirectory 안에만 만든다.
 """
 import contextlib
@@ -23,9 +22,7 @@ from datetime import datetime, timedelta
 import _boot
 
 ROOT = _boot.ROOT
-NEW_ACT_HEADER = "time,process,title,idle_sec,solvers_running,user,host,gap_s,sess,solver_cpu_s"
-MY_PS = ["Start-ActivitySampler.ps1", "Register-Samplers.ps1", "Get-PcOnHistory.ps1", "Get-RecentFiles.ps1",
-         "Get-FileActivity.ps1", "Add-WorkLog.ps1"]
+MY_PS = ["Get-PcOnHistory.ps1", "Get-RecentFiles.ps1", "Get-FileActivity.ps1", "Add-WorkLog.ps1"]
 
 
 def _load(name, rel):
@@ -245,29 +242,6 @@ class StaticChecks(unittest.TestCase):
             with open(os.path.join(ROOT, "collect", f), "rb") as fh:
                 self.assertNotIn(b"\x07", fh.read(), f)
 
-    def test_register_heartbeat_20s(self):
-        s = _src(os.path.join("collect", "Register-Samplers.ps1"))
-        self.assertIn("$actDir = Join-Path (Join-Path $root 'data') 'activity'", s)
-        self.assertNotIn("Start-Sleep -Seconds 5", s)                   # 60초 고정 대기 없앰
-        self.assertIn("for ($i = 0; $i -lt 20 -and -not $hb; $i++)", s)
-        i_reg = s.index("RegisterTaskDefinition(")
-        i_set = s.index("Set-SamplerRegistered $actDir $name $true")
-        self.assertLess(i_reg, i_set)
-        self.assertIn("Set-SamplerRegistered $actDir $name $false", s)  # 해제하면 거둔다
-        self.assertIn("$regLibOnly = [bool]$LibOnly", s)
-
-    def test_sampler_columns_and_no_external_process(self):
-        s = _src(os.path.join("collect", "Start-ActivitySampler.ps1"))
-        self.assertIn(f"return '{NEW_ACT_HEADER}'", s)
-        self.assertIn("R-CLM", s)
-        self.assertIn("R-ADDTYPE", s)
-        self.assertIn("MutexActivity", s)
-        body = s[s.index("if ($LibOnly) { return }"):]
-        for bad in ("Start-Process", "schtasks", "tasklist", "quser", "cmd /c", "cmd.exe", "& powershell"):
-            self.assertNotIn(bad, body, bad)
-        # 기존 열 순서는 그대로 · 새 열은 끝에
-        self.assertTrue(NEW_ACT_HEADER.startswith("time,process,title,idle_sec,solvers_running,user,host,"))
-
     def test_file_activity_new_columns(self):
         s = _src(os.path.join("collect", "Get-FileActivity.ps1"))
         m = re.search(r"\$header = @\(([^)]*)\)", s)
@@ -312,46 +286,7 @@ class PsPcCollect(unittest.TestCase):
     def test_files_clean(self):
         self.assertEqual(self.r["bel_files"], [])
         self.assertEqual(self.r["parse_errors"], [])
-        self.assertTrue(self.r["act_dir_ok"])
-        self.assertFalse(self.r["act_dir_bel"])
         self.assertTrue(self.r["tmp_removed"])
-
-    def test_register_writes_registered(self):
-        r = self.r
-        self.assertTrue(r["reg_write_ok"])
-        self.assertIs(r["reg_registered"], True)
-        self.assertEqual(r["reg_task"], "LM28-Sampler-abcdef")
-        self.assertTrue(r["reg_at_ok"])
-        self.assertEqual(r["reg_keeps_heartbeat"], "2026-01-01 09:00:00")   # 남의 키를 지우지 않는다
-        self.assertIs(r["hb_keeps_registered"], True)
-        self.assertEqual((r["hb_fresh"], r["hb_stale"], r["hb_fail"]), ("ok", "", "R-ADDTYPE"))
-        self.assertIs(r["unreg"], False)
-        self.assertEqual(r["status_tmp_left"], 0)
-
-    def test_session_and_cpu(self):
-        r = self.r
-        for k in ("sess_logonui_fg", "sess_lockapp_fg", "sess_logonui_present"):
-            self.assertEqual(r[k], "locked", k)
-        self.assertEqual((r["sess_active"], r["sess_disc"], r["sess_unknown"]), ("active", "disconnected", ""))
-        self.assertIsNone(r["cpu_first"])
-        self.assertAlmostEqual(r["cpu_delta"], 33.5)
-        self.assertAlmostEqual(r["cpu_delta2"], 0.5)
-        self.assertEqual(r["fmt_num_de"], "33.5")
-
-    def test_header_upgrade(self):
-        r = self.r
-        self.assertTrue(r["hdr_upgraded"])
-        self.assertEqual(r["hdr_line"], NEW_ACT_HEADER)
-        self.assertEqual(r["hdr_rows"], 2)
-        self.assertEqual(r["hdr_row1"], "2026-03-02 09:00:00,excel,a,0,,u,h")
-        self.assertFalse(r["hdr_unknown"])
-
-    def test_constrained_language(self):
-        r = self.r
-        self.assertEqual(r["clm_reason"], "R-CLM", r.get("clm_errors"))
-        self.assertIs(r["clm_ok"], False)
-        self.assertEqual(r["clm_lang"], "ConstrainedLanguage")
-        self.assertEqual(r["clm_csv"], 0)
 
     def test_mru_fake_hash(self):
         r = self.r

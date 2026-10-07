@@ -740,7 +740,7 @@ try {
 } catch { Write-Host ("[files] files_history.csv 누적 실패: " + $_.Exception.Message) }
 
 # 기간 커버리지 진단 - mtime 은 '마지막 수정'만 남으므로 여러 달에 걸쳐 고친 파일은
-# 마지막 달에만 잡힌다. 앞쪽 달이 비면 숨기지 말고 알린다(회의·메일·샘플러가 보완).
+# 마지막 달에만 잡힌다. 앞쪽 달이 비면 숨기지 말고 알린다(회의·메일·PC 가동 기록이 보완).
 $byMon = @{}
 foreach ($ln in $rows) {
     if ($ln -match '^(\d{4}-\d{2})') { $byMon[$Matches[1]] = 1 + $(if ($byMon.ContainsKey($Matches[1])) { $byMon[$Matches[1]] } else { 0 }) }
@@ -753,5 +753,5 @@ Write-Host ("[files] 월별 커버: {0}" -f $cover)
 $empty = @($mons | Where-Object { -not $byMon.ContainsKey($_) })
 if ($empty.Count -gt 0 -and ($rows.Count - 1) -gt 0) {
     Write-Host ("[files] 주의: {0} 월의 파일 흔적이 0건 - 파일 mtime 은 마지막 수정만 남습니다 (files_history.csv 의 지난 관측이 있으면 분석이 보완)." -f ($empty -join ', '))
-    Write-Host '        그 달에도 일했다면 같은 파일을 이후에 또 고쳤을 가능성이 큽니다 (메일·회의·창 샘플러가 그 달을 보완).'
+    Write-Host '        그 달에도 일했다면 같은 파일을 이후에 또 고쳤을 가능성이 큽니다 (메일·회의·PC 가동 기록이 그 달을 보완).'
 }

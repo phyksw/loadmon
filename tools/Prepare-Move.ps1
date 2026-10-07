@@ -2,7 +2,8 @@
 #
 # 왜 필요한가: 분석이 끝난 뒤 폴더를 옮기려 하면 "사용 중" 이라 옮겨지지 않는다.
 # 잡고 있는 것은 대개 우리 자신이다 - 대시보드(python ui\app.py), 팀 서버(teamserver.py),
-# Copilot 전용 Edge(data\lm28_edge), 상시 샘플러(powershell), 그리고 그 폴더를 열어 둔 탐색기.
+# Copilot 전용 Edge(data\lm28_edge), 끝나지 않은 수집 스크립트(powershell), 그리고 그 폴더를 열어 둔 탐색기.
+# LM28 에는 상주 샘플러가 없다 - 예약 작업은 만들지도 지우지도 않는다.
 #
 # 중요: 이 스크립트는 %TEMP% 로 복사돼 실행된다. LoadMonitor 폴더 안에서 실행하면
 # 스크립트 파일 자체가 폴더를 잡아 '옮길 수 있는가' 시험이 항상 실패한다.
@@ -59,7 +60,7 @@ function Say([string]$text, [string]$color) {
 function Friendly([string]$name, [string]$cmdline) {
     $n = ($name -replace '\.exe$', '').ToLower()
     if ($n -eq 'msedge') { return 'Copilot 전용 Edge 창' }
-    if ($n -eq 'powershell' -or $n -eq 'pwsh') { return '상시 샘플러' }
+    if ($n -eq 'powershell' -or $n -eq 'pwsh') { return '수집 스크립트' }
     if ($n -eq 'cmd') { return 'LoadMonitor28 실행 창' }
     if ($n -eq 'python' -or $n -eq 'pythonw') {
         if ($cmdline -match 'teamserver\.py') { return '팀 서버' }
@@ -161,9 +162,9 @@ $killedLog = New-Object System.Collections.Generic.List[string]  # 기록용 - �
 if (-not $CheckOnly) {
     # 우리가 띄운 창(대시보드·LoadMonitor28 실행 창)이 곧 사라진다. 예고 없이 사라지면 그것 자체가
     # '오류로 꺼졌다' 로 읽힌다(감사 확정) — 죽이기 전에 먼저 알린다.
-    Say '  LoadMonitor28 창(대시보드·팀 서버·샘플러)을 닫습니다 - 창이 사라지는 것은 정상입니다.' 'DarkGray'
+    Say '  LoadMonitor28 창(대시보드·팀 서버)을 닫습니다 - 창이 사라지는 것은 정상입니다.' 'DarkGray'
     Start-Sleep -Milliseconds 400
-    # ① 우리 것부터 - 대시보드·팀 서버·수집기(python), 상시 샘플러(powershell)
+    # ① 우리 것부터 - 대시보드·팀 서버·수집기(python), 끝나지 않은 수집 스크립트(powershell)
     foreach ($p in Procs-Under $Root) {
         if ($p.ProcessId -eq $PID) { continue }
         $nm = $p.Name
@@ -321,7 +322,7 @@ if ($movable) {
         }
     } catch {}
     Write-Host ''
-    Say '   [완료] 준비 끝 - 다시 실행하지 않으셔도 됩니다. 대시보드·팀 서버·샘플러는 모두 닫혔습니다.' 'Green'
+    Say '   [완료] 준비 끝 - 다시 실행하지 않으셔도 됩니다. 대시보드·팀 서버는 모두 닫혔습니다.' 'Green'
 } else {
     try { $Host.UI.RawUI.WindowTitle = 'LoadMonitor28 - PC 이동 준비 [미완료]' } catch {}
     Say '  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!' 'Red'

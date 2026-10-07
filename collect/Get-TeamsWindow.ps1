@@ -23,7 +23,6 @@
 #    마지막 줄 LMSTATUS {v,src:'teams_window',rc,reason,counts,ranges} — 창 읽기는 그 날을 다 읽었다고 말할 수 없어 ranges 는
 #    이번에 날짜를 짚은 날의 partial(증인)뿐이다. counts.teams_present: 새 Teams(Appx MSTeams)·클래식 설치·프로세스가 있나.
 #  · 함수로도 쓴다: . collect\Get-TeamsWindow.ps1 (직접 실행 가드 — 점 소싱이면 함수만 정의) 후 Invoke-TeamsWindowRead.
-#    상시 샘플러(Start-TeamsSampler.ps1)가 이렇게 1번 불러 루프에서 함수를 부른다(주기마다 powershell 을 띄우지 않는다).
 #    시험 주입: -Windows(창 기록 @{title;visible;iconic;cloaked;on_screen;texts;retry}) · -Present · -Cfg · -OutDir · -Today.
 param([int]$MaxElements = 4000, [string]$RawFile = '', [switch]$KeepChatList)
 
@@ -83,7 +82,7 @@ function Is-Self([string]$from) {
 
 # ── 창 찾기(C-18): 팀즈 프로세스의 모든 최상위 창 ──────────────────────────────────────────
 # user32 를 Add-Type(C# 컴파일 = csc.exe 프로세스)이 아니라 메모리 안 동적 형식(DefinePInvokeMethod)으로 부른다 —
-# 샘플러가 오래 돌아도 프로세스를 하나도 띄우지 않고, 임시 DLL 을 쓰지 않아 AppLocker 의 DLL 규칙에도 덜 걸린다.
+# 컴파일러 프로세스를 하나도 띄우지 않고, 임시 DLL 을 쓰지 않아 AppLocker 의 DLL 규칙에도 덜 걸린다.
 # 콜백이 필요한 EnumWindows 대신 FindWindowEx(바탕 화면 자식 = 최상위 창)를 차례로 부른다(같은 창 목록).
 function Get-TwWin32 {
     if ($script:TwWin32) { return $script:TwWin32 }
@@ -485,7 +484,7 @@ function Parse-TwLines([object[]]$Lines, [string]$re, [datetime]$Today) {
     return @{ rows = $out; n = $n }
 }
 # ── 누적 저장 (append + dedupe) ──────────────────────────────────────────
-# 덮어쓰면 상시 샘플러(Start-TeamsSampler)가 모아둔 이력이 1회 실행에 지워진다.
+# 덮어쓰면 지난 수집이 모아둔 이력이 1회 실행에 지워진다.
 # 기존 행을 읽어 (time|from|chat|summary 앞 40자) 키로 중복을 거르고 신규만 보탠다. kind 는 키에 넣지 않는다 -
 # 같은 메시지가 본인 판정만 달라져 두 번 들어가지 않게.
 function Split-CsvLine([string]$ln2) {
@@ -778,7 +777,7 @@ function Invoke-TeamsWindowRead {
         Write-TwLine '               (본인 발신 0건 - 팀즈에 보이는 내 표시명이 계정명과 다르면 config.teamsSelfNames 에 적어 두세요)'
     }
     if ($RawFile) { Write-TwLine ('               (재생 모드 - 결과는 ' + $outDir + ' 에만 기록, 실데이터는 건드리지 않음)') }
-    Write-TwLine '               (열려 있는 대화의 화면 렌더분만 - 상시 수집은 Start-TeamsSampler.ps1 을 켜두세요)'
+    Write-TwLine '               (열려 있는 대화의 화면 렌더분만 - 지난 대화까지 읽으려면 대시보드 [팀즈 웹 읽기])'
     if ($undated.Count -gt 0) { Write-TwLine ('               (날짜 표기가 없는 ' + $undated.Count + '줄은 수집일로 추정하지 않고 undated_teams_window.csv 에만 적음)') }
     # 종료코드로 '무엇이 됐는지' 를 알린다 - 0: 새 줄을 얻었다 / 4: 읽었지만 새 줄 0건(렌더된 것이 없거나 이미 있음).
     if ($C.rows_new -gt 0) { $res.rc = 0 } else { $res.rc = 4; if ($nTime -eq 0) { $res.reason = 'R-NOTIME' } }
@@ -793,7 +792,7 @@ function Format-TwStatus($res) {
 }
 function Write-TwStatus($res) { Write-Host (Format-TwStatus $res) }
 
-# 직접 실행 가드 — 점 소싱(. Get-TeamsWindow.ps1)이면 위 함수만 정의하고 끝난다(샘플러·시험)
+# 직접 실행 가드 — 점 소싱(. Get-TeamsWindow.ps1)이면 위 함수만 정의하고 끝난다(시험)
 if ($MyInvocation.InvocationName -ne '.') {
     try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}   # run.py 가 UTF-8 로 읽는다
     $r = $null

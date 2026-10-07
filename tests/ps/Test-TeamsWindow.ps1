@@ -2,12 +2,12 @@
 # 단언은 tests\test_p3_teams.py 가 한다. 결과 값만 돌려준다.
 #  · 창 주입(일반·팝아웃·개인용 free·최소화) → 대상 2 · 제외 2 · 날짜 미상 줄은 undated 파일로만 · 다시 읽기(요소 20개 미만)
 #  · 읽을 창이 없을 때 rc 3 R-UIAEMPTY · empty_cause / 팀즈 없음 rc 1
-#  · 샘플러: Get-TeamsWindow.ps1 을 점 소싱해 루프 1회 - 새 프로세스(powershell·csc) 0
+#  · 점 소싱한 함수 호출 1회 - 새 프로세스(powershell·csc) 0
 #  · user32 동적 형식(Add-Type 없이)으로 최상위 창 열거가 되는가(읽기만)
 $root = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path))
 . (Join-Path $root 'collect\Get-TeamsWindow.ps1')
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ('lm28_tw_' + [guid]::NewGuid().ToString('N').Substring(0, 8))
-$tmp2 = Join-Path $tmp 'sampler'
+$tmp2 = Join-Path $tmp 'inproc'
 New-Item -ItemType Directory -Force -Path $tmp2 | Out-Null
 try {
     $today = [datetime]'2026-10-07'
@@ -37,22 +37,22 @@ try {
     $c3.Present = @{ present = $false; appx = $false; classic = $false; proc = $false }
     $r3 = @(Invoke-TeamsWindowRead -Windows @() @c3)[-1]                                        # 팀즈 없음
 
-    # 샘플러 루프 1회 - 함수 호출만(새 프로세스 0). powershell 을 부르면 세는 가로채기 함수를 잠깐 둔다.
+    # 점 소싱한 함수를 새 폴더로 1회 - 함수 호출만(새 프로세스 0). powershell 을 부르면 세는 가로채기 함수를 잠깐 둔다.
     $names = '^(powershell|pwsh|csc|cvtres)$'
     $before = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -match $names } | ForEach-Object { $_.Id })
     $global:LmTwSpawnCalls = 0
     function global:powershell { $global:LmTwSpawnCalls++ }
     try {
-        $ra = @{ Windows = @($win1, $win2); Present = $pres; Cfg = $cfg; OutDir = $tmp2; Today = $today; RetryDelayMs = 0 }
-        & (Join-Path $root 'collect\Start-TeamsSampler.ps1') -IntervalSec 0 -MaxLoops 1 -ReadArgs $ra *> $null
+        $ra = @{ Windows = @($win1, $win2); Root = $root; Present = $pres; Cfg = $cfg; OutDir = $tmp2; Today = $today; RetryDelayMs = 0; Quiet = $true }
+        $null = @(Invoke-TeamsWindowRead @ra)
     } finally {
         Remove-Item -Path function:global:powershell -ErrorAction SilentlyContinue
     }
     $after = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -match $names } | ForEach-Object { $_.Id })
     $spawned = @($after | Where-Object { $before -notcontains $_ }).Count
-    $sampCsv = Join-Path $tmp2 'teams_window.csv'
-    $sampRows = 0
-    if (Test-Path -LiteralPath $sampCsv) { $sampRows = @([System.IO.File]::ReadAllLines($sampCsv, [System.Text.Encoding]::UTF8)).Count - 1 }
+    $ipCsv = Join-Path $tmp2 'teams_window.csv'
+    $ipRows = 0
+    if (Test-Path -LiteralPath $ipCsv) { $ipRows = @([System.IO.File]::ReadAllLines($ipCsv, [System.Text.Encoding]::UTF8)).Count - 1 }
 
     # 직접 실행 가드 - & 로 부르면 본체가 돌고 마지막 줄이 LMSTATUS, 종료 코드 = rc (없는 원문 파일 → rc 1, 폴더를 만들지 않는다)
     $direct = @(& (Join-Path $root 'collect\Get-TeamsWindow.ps1') -RawFile (Join-Path $tmp 'nope_raw.txt') 6>&1 | ForEach-Object { [string]$_ })
@@ -81,7 +81,7 @@ try {
         r1b_rc = [int]$r1b.rc; r1b_rows_new = [int]$r1b.counts.rows_new
         r2_rc = [int]$r2.rc; r2_reason = [string]$r2.reason; r2_cause = [string]$r2.counts.empty_cause
         r3_rc = [int]$r3.rc; r3_reason = [string]$r3.reason; r3_cause = [string]$r3.counts.empty_cause
-        sampler_rows = $sampRows; spawned = $spawned; spawn_calls = [int]$global:LmTwSpawnCalls
+        inproc_rows = $ipRows; spawned = $spawned; spawn_calls = [int]$global:LmTwSpawnCalls
         win32_count = $wc; win32_titled = $wt; win32_error = $werr
         direct_rc = [int]$directRc; direct_status = [string]$directStatus
     }

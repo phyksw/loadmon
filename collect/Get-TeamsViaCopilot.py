@@ -427,7 +427,7 @@ def collect_ranges(spans, one_slice=None, dst=None):
             # 커넥터 부재는 이번 실행에서 재질의로 해결되지 않는다 — 남은 조각을 접는다. 다음 실행을 막는 기억은
             # 서로 다른 날 2회일 때만(main — LM24 의 'if True' 는 한 번의 거절로 영구 생략했다)
             print("[teams-copilot] '조회 불가' — 이번 실행의 남은 조각을 생략합니다 (헛왕복 방지).")
-            print("               대안: 상시 샘플러(collect\\Start-TeamsSampler.ps1) 또는 config.graph(Graph API)")
+            print("               대안: 대시보드 [팀즈 웹 읽기] 또는 config.graph(Graph API)")
             chunks.append((s0, s1, st))
             unable = True
             break
@@ -480,7 +480,7 @@ def main():
         mvc.unable_clear(flag_p)
     if mvc.unable_active(ust, today):
         print(f"[teams-copilot] 이 계정의 Copilot 은 팀즈 조회 불가로 확인됨(서로 다른 날 2회 — {ust['until']} 까지 왕복 생략)")
-        print("               팀즈는 상시 샘플러(collect\\Start-TeamsSampler.ps1)로 따로 모으세요.")
+        print("               팀즈는 대시보드 [팀즈 웹 읽기](전용 Edge)로 따로 모으세요.")
         print(f"               (커넥터가 생겨 재시도하려면: --retry-copilot 또는 {flag_p} 삭제)")
         emit_status(3, ["R-UNABLE"], {"unable_until": ust["until"]})
         return 3

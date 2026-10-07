@@ -156,7 +156,7 @@ if ($events.Count -eq 0) {
         $events.Add([pscustomobject]@{ t = $bs; kind = 'on'; src = 'boot'; boot = $true })
         $fallbackBoot = $true
         Write-Host ("[pc-on] fallback: current boot session since {0}" -f $bs.ToString('yyyy-MM-dd HH:mm'))
-        Write-Host '[pc-on] TIP: 과거 이력까지 정확하려면 창 샘플러(Start-ActivitySampler.ps1)를 켜 두세요.'
+        Write-Host '[pc-on] TIP: [분석 실행]을 자주 하면 이벤트 로그가 지워지기 전에 켜기·끄기 기록이 원장에 남습니다.'
     }
 }
 $sorted = @($events | Sort-Object t)
@@ -234,7 +234,7 @@ if ($lockStatus -eq 'unauthorized') {
     Write-Host ("[pc-on] " + $w); $warnings.Add($w)
 }
 if ($alwaysOn) {
-    $w = '절전·종료 이벤트 없음(항상 켜두는 PC) - 정확한 근무 구간은 창 샘플러(Start-ActivitySampler.ps1) 필요.'
+    $w = '절전·종료 이벤트 없음(항상 켜두는 PC) - 켜진 시간은 활동 흔적이 있는 날만 근무로 봅니다. 퇴근 때 끄거나 절전으로 두면 정확해집니다.'
     Write-Host ("[pc-on] " + $w); $warnings.Add($w)
 }
 if ($diagStatus -like 'unauthorized*' -or $diagStatus -like 'error*') {

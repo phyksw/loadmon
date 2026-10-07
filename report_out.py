@@ -850,8 +850,8 @@ def build(tag, summary=False):
              "capacity로 본다 — 회의·전환비용을 감안하면 로드율 75~85%가 '꽉 찬 상태'에 가깝고, "
              "지속적 100% 초과는 과부하 신호다.</div>")
     if not b.get("sampler_days"):
-        h.append("<div class='dim'>※ 창 샘플러가 꺼져 있어 투입 시간이 과소 집계됐을 수 있습니다 — "
-                 "LoadMonitor28-샘플러등록.bat(또는 대시보드 [상주 샘플러 등록])으로 켜면 정확도가 크게 올라갑니다.</div>")
+        h.append("<div class='dim'>※ 투입 시간은 PC 켜기·끄기 기록과 활동 흔적(회의·산출물·메일·커밋)으로 계산했습니다 "
+                 "(LM28 에는 창 샘플러가 없습니다).</div>")
     # ★ 사용자 지시(2026-10-07 ②): 산출 방식 — PC 가동 하한의 근거 + 날짜별 방식·하한을 연 흔적·깎은 시간
     h += floor_section(meta, b)
 

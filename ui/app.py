@@ -1021,152 +1021,12 @@ def _age(ts):
     return f"{d/60:.0f}분 전" if d < 5400 else (f"{d/3600:.0f}시간 전" if d < 172800 else f"{d/86400:.0f}일 전")
 
 
-# ── 창 샘플러 상태·재기동 (A26 · W3-15) ───────────────────────────────────────
-# schtasks 한 줄로 등록한 샘플러는 기본 3일 실행 제한(PT72H)으로 로그온 3일 뒤 조용히 죽는다 —
-# 멈춘 날은 하한 모드로 떨어져 PC 유형 편차가 되살아난다.
-# LM28(W3-15·P6): 대시보드는 프로세스를 주기적으로 띄우지 않는다. 예전에는 /api/status(1초 폴링)가 5분마다 schtasks
-# /Query, 10분마다 /Run(또는 powershell 2개)을 띄웠다 — 누수 PC 에서는 화면을 켜 둔 동안 프로세스가 쌓였다.
-#   · 등록 작업 조회는 화면을 열 때와 [새로고침] 때만(POST /api/sampler {"action":"refresh"}).
-#   · 재기동은 [샘플러 다시 시작] 버튼으로만(자동 /Run 없음). 등록은 [상주 샘플러 등록](확인 창 뒤).
-#   · 살아 있는지는 data\activity\sampler_status.json 의 heartbeat 와 마지막 CSV 시각으로 본다(파일만 읽는다).
-SAMPLER_STALE_MIN = 10                      # 마지막 샘플이 이보다 오래됐으면 '멈춤'
-SAMPLER_TASK = lmname.TASK_SAMPLER          # LM28-Sampler-<폴더해시6> — collect\Register-Samplers.ps1 의 작업 이름(core\lmname.py)
-SAMPLER_RESTART = {"at": 0.0, "busy": False, "when": "", "how": "", "note": ""}
-SAMPLER_TASK_STATE = {"at": 0.0, "exists": None}   # 등록 작업 유무 — 화면 열기·[새로고침] 때만 갱신(캐시)
-
-
-def _sampler_status_file(data_dir=None):
-    r"""data\activity\sampler_status.json(샘플러·Register-Samplers 가 쓴다 — utf-8-sig) → dict | {}.
-    키: ok·reason(R-CLM·R-ADDTYPE)·heartbeat('yyyy-MM-dd HH:mm:ss' 로컬)·interval_s·registered·task·at."""
-    try:
-        with open(os.path.join(data_dir or DATA, "activity", "sampler_status.json"), encoding="utf-8-sig") as f:
-            o = json.load(f)
-        return o if isinstance(o, dict) else {}
-    except (OSError, ValueError):
-        return {}
-
-
-def _sampler_mutex_alive():
-    r"""이 설치본의 샘플러 뮤텍스(Local\LM28-ActivitySampler-<h6>)가 있는가 — True/False, 못 보면 None. 프로세스를 띄우지 않는다."""
-    try:
-        import ctypes
-        k = ctypes.windll.kernel32
-        h = k.OpenMutexW(0x00100000, False, lmname.MUTEX_ACTIVITY)      # SYNCHRONIZE
-        if h:
-            k.CloseHandle(h)
-            return True
-        return False
-    except (AttributeError, OSError):
-        return None
-
-
-def _sampler_task_exists(refresh=False):
-    """로그온 자동 시작 작업이 등록돼 있는가 — True/False, 확인 실패·아직 안 봄은 None.
-    refresh=True 일 때만 schtasks /Query 를 1회 띄운다(화면 열기·[새로고침]) — 그 밖에는 캐시만 돌려준다.
-    '꺼짐' 안내가 '등록이 안 된 것'인지 '등록은 됐는데 안 도는 것'인지 사용자가 알아야 조치할 수 있다."""
-    if not refresh:
-        with LOCK:
-            return SAMPLER_TASK_STATE["exists"]
-    with LOCK:
-        SAMPLER_TASK_STATE["at"] = time.time()
-    ok = None
-    try:
-        r = subprocess.run(["schtasks", "/Query", "/TN", SAMPLER_TASK],
-                           capture_output=True, timeout=20, creationflags=NO_WIN)
-        ok = (r.returncode == 0)
-    except Exception:  # noqa: BLE001 - 조회 실패는 '모름' 이지 '없음' 이 아니다
-        ok = None
-    with LOCK:
-        SAMPLER_TASK_STATE["exists"] = ok
-    return ok
-
-
 def _cfg_bool(v, dflt=True):
     if isinstance(v, bool):
         return v
     if v is None:
         return dflt
     return str(v).strip().lower() in ("1", "true", "yes", "y", "on")
-
-
-def _sampler_restart_worker(ps1):
-    """(백그라운드 스레드 — [샘플러 다시 시작] 버튼으로만) ① 이미 도는 인스턴스(뮤텍스)가 있으면 띄우지 않는다
-    ② 등록 작업이 있으면 schtasks /Run — 작업의 IgnoreNew 정책이 중복 기동을 막는다 ③ 없으면 콘솔 없이 분리 실행."""
-    how, note = "", ""
-    try:
-        if _sampler_mutex_alive():
-            how, note = "skip", "샘플러가 이미 떠 있습니다(뮤텍스) — 샘플이 안 쌓이면 sampler_status.json 의 사유를 보세요"
-            return
-        st = _sampler_status_file()
-        if st.get("ok") is False and str(st.get("reason") or "") in ("R-CLM", "R-ADDTYPE"):
-            how, note = "skip", (f"이 PC 정책이 샘플러를 막습니다({st.get('reason')}) — 다시 띄워도 같은 이유로 멈춥니다. "
-                                 "IT 정책(제한 언어 모드·Add-Type 차단)을 확인하세요")
-            return
-        if _sampler_task_exists() is not False:
-            r = subprocess.run(["schtasks", "/Run", "/TN", SAMPLER_TASK], capture_output=True,
-                               timeout=30, creationflags=NO_WIN)
-            if r.returncode == 0:
-                how = "schtasks"
-                return
-        # 콘솔 없이(CREATE_NO_WINDOW|CREATE_NEW_PROCESS_GROUP) — 대시보드를 닫아도 샘플러는 남는다.
-        # ★ 예전에는 DETACHED_PROCESS(0x8) 를 썼는데, 그러면 powershell.exe 가 스크립트를 **한 줄도
-        #   실행하지 않고 즉시 exit 0** 한다(실측 플래그 행렬: 0x8 이 든 조합은 전부 0줄, 빼면 정상).
-        #   그래서 이 경로는 한 번도 작동한 적이 없고, 화면에는 '재시작 시도' 만 10분마다 새로 찍혔다.
-        #   CREATE_NO_WINDOW 로 띄운 자식도 부모(대시보드)가 죽은 뒤 계속 도는 것을 실측 확인했다.
-        p = subprocess.Popen(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-                              "-WindowStyle", "Hidden", "-File", ps1],
-                             cwd=ROOT, creationflags=NO_WIN | 0x00000200, close_fds=True,
-                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        # 띄웠다고 도는 것이 아니다 — 3초 뒤에도 살아 있는지 본다. 즉사했으면 그 사실을 화면에 적는다
-        # (예전에는 how="direct" 로 기록만 하고 안 도는 상태를 구분할 방법이 없었다).
-        time.sleep(3.0)
-        if p.poll() is not None:
-            how, note = "error", (f"기동 직후 종료(rc={p.returncode}) — 실행 정책·보안 정책이 막았을 수 있습니다. "
-                                  "LoadMonitor28-샘플러등록.bat 으로 등록해 보세요")
-            return
-        how = "direct"
-    except Exception as e:  # noqa: BLE001 - 감시 스레드가 죽어도 UI 는 계속
-        how, note = "error", f"{type(e).__name__}: {str(e)[:80]}"
-    finally:
-        with LOCK:
-            SAMPLER_RESTART.update(busy=False, how=how, note=note, when=time.strftime("%H:%M"))
-        log("[샘플러] " + {"schtasks": f"[샘플러 다시 시작] — 등록 작업({SAMPLER_TASK}) 실행",
-                           "direct": "[샘플러 다시 시작] — collect\\Start-ActivitySampler.ps1 기동(등록 작업 없음)",
-                           "skip": "[샘플러 다시 시작] 보류 — " + note,
-                           "error": "재기동 실패 — " + note}.get(how, note))
-
-
-def sampler_restart():
-    """[샘플러 다시 시작] 버튼 — 사용자 동작이 있을 때만(P6 · W3-15). 한 번에 하나, 30초 안 재요청은 무시. → 안내 문구"""
-    ps1 = os.path.join(ROOT, "collect", "Start-ActivitySampler.ps1")
-    if not os.path.exists(ps1):
-        return "collect\\Start-ActivitySampler.ps1 없음"
-    now = time.time()
-    with LOCK:
-        if SAMPLER_RESTART["busy"] or now - SAMPLER_RESTART["at"] < 30:
-            return "이미 시작 중입니다 — 잠시 뒤 상태줄을 보세요"
-        SAMPLER_RESTART.update(at=now, busy=True)
-    threading.Thread(target=_sampler_restart_worker, args=(ps1,), daemon=True).start()
-    return "시작을 요청했습니다 — 1~2분 뒤 상태줄이 '가동 중' 으로 바뀌면 됩니다"
-
-
-def sampler_register():
-    r"""[상주 샘플러 등록](화면의 확인 창 뒤) — collect\Register-Samplers.ps1 을 1회 실행(LoadMonitor28-샘플러등록.bat 과 같다).
-    → (ok, 마지막 줄들). 등록 결과는 data\activity\sampler_status.json(registered·task·at)에도 남는다."""
-    ps1 = os.path.join(ROOT, "collect", "Register-Samplers.ps1")
-    if not os.path.exists(ps1):
-        return False, "collect\\Register-Samplers.ps1 없음"
-    try:
-        r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ps1],
-                           capture_output=True, timeout=180, cwd=ROOT, creationflags=NO_WIN)
-    except (OSError, subprocess.TimeoutExpired) as e:
-        return False, f"실행 실패({type(e).__name__})"
-    txt = (r.stdout or b"").decode("utf-8", "replace") or (r.stdout or b"").decode("cp949", "replace")
-    lines = [x.strip() for x in txt.splitlines() if x.strip()]
-    for ln in lines[-8:]:
-        log("[샘플러 등록] " + ln[:200])
-    _sampler_task_exists(refresh=True)
-    return r.returncode == 0, " / ".join(lines[-3:])[:400]
 
 
 def _ledger_path(rt=None):
@@ -1588,16 +1448,14 @@ def sources(period=None):
         ("파일·Recent", ["files/files.csv", "files/recent.csv"], "config.watchFolders 를 실제 작업 폴더로"),
         ("git 커밋", ["files/git_commits.csv"], "config.gitRepos 설정 (선택)"),
         ("팀즈 채팅", ["m365/teams_*.csv"], r"[팀즈 웹 읽기] 버튼 — 앱이 꺼져 있어도 됩니다 (전용 Edge 창에서 회사 계정 1회 로그인)"),
-        ("창 샘플러", ["activity/activity_*.csv"],
-         "LoadMonitor28-샘플러등록.bat 으로 1회 등록하면 로그온 때마다 자동 시작 (선택 · 없으면 PC 가동 하한으로 계산)"),
         ("추가 PC", ["추가PC/*/outlook/mail.csv", "추가PC/*/files/files.csv",
                      "추가PC/*/pc/pc_on.csv", "추가PC/*/m365/teams_*.csv"],
          "폴더째 옮겨 [추가 PC 수집] → 본 PC 에서 [분석 실행] — 자동 합산 · 중복 자동 제외 (선택)"),
     ):
-        # '창 샘플러'(이 PC 의 샘플러 상태)와 '추가 PC'(추가PC 자체) 행은 본 폴더만, 나머지는 본 PC + 추가PC\* 를 합쳐 센다.
+        # '추가 PC'(추가PC 자체) 행은 본 폴더만, 나머지는 본 PC + 추가PC\* 를 합쳐 센다.
         # 폴더째 옮긴 직후에는 지난 PC 수집물이 전부 추가PC\ 에 있어, 본 폴더만 세면 '메일·일정 0건 · 없음' 같은 거짓
         # 경고가 KPI·현황표에 떴다(감사 재현 — 추가PC 에 716건이 있는데도). 분석·추이와 같은 뿌리를 본다.
-        here_only = name in ("창 샘플러", "추가 PC")
+        here_only = name in ("추가 PC",)
         always = ""                 # 상태가 ok 여도 화면에 남길 사실(수집 경로 등)
         n, mt, n_here = 0, 0.0, 0
         for p in pats:
@@ -1611,7 +1469,7 @@ def sources(period=None):
                     n += max(0, len(_rows(f)))
                     mt = max(mt, _mtime(f))
         n += n_here
-        opt = name in ("git 커밋", "팀즈 채팅", "창 샘플러", "추가 PC")
+        opt = name in ("git 커밋", "팀즈 채팅", "추가 PC")
         st = "ok" if n else ("off" if opt else "bad")
         # 건수가 있어도 기간 대비 몇 건뿐이면 '찾긴 했지만 못 찾은' 것이다(실측: 3개월에
         # PC 2건·팀즈 1건이 초록으로 표시됨) — 부족을 노랑으로 드러낸다.
@@ -1685,7 +1543,7 @@ def sources(period=None):
             st, hint = "warn", "기간 대비 부족 — 재분석 시 브라우저 힌트로 보강됩니다"
         elif name == "팀즈 채팅":
             # 이 계정의 Copilot 이 팀즈 조회 불가로 확인된 PC(실측: 커넥터 부재)에서는
-            # '재수집'이 아니라 상시 샘플러가 정답이다 — 안내를 상황에 맞게 바꾼다.
+            # '재수집'이 아니라 [팀즈 웹 읽기]가 정답이다 — 안내를 상황에 맞게 바꾼다.
             # LM28: 파일이 있다고 '불가' 가 아니다 — 1회 관측만 담길 수 있다(서로 다른 날 2회 + 14일 TTL · P13).
             # until 이 오늘 이후일 때만 불가로 본다(Get-TeamsViaCopilot unable_active 와 같은 규칙).
             no_cp = False
@@ -1698,7 +1556,7 @@ def sources(period=None):
             if no_cp and n < 5:
                 st = "warn" if n else "off"
                 hint = ("이 계정 Copilot은 팀즈 조회 불가 의심(서로 다른 날 2회 확인 · 14일 뒤 다시 물음) — [팀즈 웹 읽기] 를 쓰세요"
-                        "(앱이 꺼져 있어도 됩니다). 상시 누적은 collect\\Start-TeamsSampler.ps1")
+                        "(앱이 꺼져 있어도 됩니다)")
             elif 0 < n < 5:
                 st, hint = "warn", "회수 부족 — [팀즈 웹 읽기] 로 보강 (창 읽기는 화면에 보인 부분만 긁습니다)"
         # 본 PC 와 추가 PC 의 몫을 갈라 적는다 — 합만 보이면 이 PC 의 수집 실패(0건)가 가려진다
@@ -2232,7 +2090,7 @@ def run_job(d0, d1, ai, skip, collect_only=False):
             (" · AI 정제" if ai else "") + (" · 재분석만" if skip else "")))
         p = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                              env=dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1"), creationflags=NO_WIN)
-        job = proc.attach(p)                 # LM28: Job(KILL_ON_JOB_CLOSE+BREAKAWAY_OK) — Edge·샘플러 재기동은 이탈해 산다
+        job = proc.attach(p)                 # LM28: Job(KILL_ON_JOB_CLOSE+BREAKAWAY_OK) — 전용 Edge 는 이탈해 산다
         with LOCK:
             JOB["pid"] = p.pid
 
@@ -2444,7 +2302,7 @@ import watch as _watch_mod  # noqa: E402
 from watch import stage_limits as _core_stage_limits  # noqa: E402
 from watch import watch_child as _core_watch_child  # noqa: E402
 
-# 이 프로세스 안에서만 감시기의 종료를 Job 으로 바꾼다(run.py 와 같은 방식) — 전용 Edge·샘플러는 Job 에서 이탈해 산다
+# 이 프로세스 안에서만 감시기의 종료를 Job 으로 바꾼다(run.py 와 같은 방식) — 전용 Edge 는 Job 에서 이탈해 산다
 _watch_mod.kill_tree = proc.kill_tree
 kill_tree = proc.kill_tree  # 기존 호출부 이름 유지
 
@@ -2827,7 +2685,7 @@ function render(){
      <td>${up?esc(up):`<span class="state">${esc(fa)||"–"}</span>`}</td>
      <td>${esc(upf)||"–"}</td><td>${esc(an)||"–"}</td><td>${esc(hs)||"–"}</td></tr>`;
    }).join("")+"</table>"
-  +(exm.length?`<div class="note">측정 불충분(수집기 결측)으로 <b>팀 평균·순위·과제 매트릭스에서 제외</b>한 인원: ${esc(exm.map(m=>m.owner).join(", "))} — 그 PC 에서 PC 가동·Outlook·창 샘플러 수집을 살린 뒤 다시 올리면 비교에 들어갑니다.</div>`:"")
+  +(exm.length?`<div class="note">측정 불충분(수집기 결측)으로 <b>팀 평균·순위·과제 매트릭스에서 제외</b>한 인원: ${esc(exm.map(m=>m.owner).join(", "))} — 그 PC 에서 PC 가동·Outlook 수집을 살린 뒤 다시 올리면 비교에 들어갑니다.</div>`:"")
   :'<div class="note">아직 취합된 사람이 없습니다.</div>';
  // 인별 로드율 막대 — 비교 가능 인원 먼저, 측정 불충분은 아래 회색으로
  $("loadbars").innerHTML=okm.concat(exm).map(m=>{
@@ -3185,13 +3043,10 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
  <div class="row" style="margin-top:8px">
   <button class="ghost" id="cvrefresh">새로고침</button>
   <button class="ghost" id="cvreset" title="다음 [분석 실행]이 기간 전체를 처음부터 다시 읽게 합니다(수집한 자료는 지우지 않음)">커서 초기화</button>
-  <button class="ghost" id="smprestart">샘플러 다시 시작</button>
-  <button class="ghost" id="smpreg">상주 샘플러 등록</button>
   <span class="state" id="cvmsg"></span></div>
  <div class="note">날 수는 한 원천(data\\coverage_ledger.json)에서 셉니다. <b>읽음</b>=확인된 날(0건 확인 포함) · <b>일부</b>=읽었지만 끝까지 확인하지 못한 날 ·
  <b>미관측</b>=못 읽은 날(0시간이 아니라 '근거 없음' — 부재로 추정하지 않습니다) · <b>해당 없음</b>=이 PC 에서 팀즈를 쓰지 않음.
- '불가' 사유는 실측 전이라 <b>의심</b>으로 적습니다. 이 PC 의 원장인지 모르면 PC 이름 대신 출처만 보입니다.
- 화면은 프로세스를 주기적으로 띄우지 않습니다 — 샘플러 등록 확인은 화면을 열 때와 [새로고침] 때만, 다시 시작은 버튼으로만 합니다.</div></div>
+ '불가' 사유는 실측 전이라 <b>의심</b>으로 적습니다. 이 PC 의 원장인지 모르면 PC 이름 대신 출처만 보입니다.</div></div>
 
 <div class="card"><h2>수동 기록 <span class="state">PC 밖 업무(출장·현장·장비 점검) — data\\manual\\worklog.csv (collect\\Add-WorkLog.ps1 과 같은 열)</span></h2>
  <div class="row">
@@ -3276,7 +3131,6 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
   <span id="sb_eta" style="color:#8b929b"></span></span>
  <span id="sb_last" style="color:#8b929b"></span>
  <span id="sb_load" style="color:#8b929b"></span>
- <span id="sb_sampler"></span>
  <span style="flex:1"></span>
  <span id="sb_ver" style="color:#5a626b"></span>
 </div>
@@ -3424,19 +3278,6 @@ async function poll(){
    $("sb_eta").textContent=`경과 ${fmt(s.elapsed)}`;
   }else{$("sb_prog").style.display="none";}
   $("sb_last").textContent=s.last_run?`마지막 분석 ${s.last_run} (${s.last_tag})`:"분석 결과 없음";
-  const sr=s.sampler_restart||{};
-  const srTxt=(sr.when?` · ${sr.how==="skip"||sr.how==="error"?"다시 시작 보류":"다시 시작 요청"} ${esc(sr.when)}`:"")+(sr.note?` — ${esc(sr.note)}`:"");
-  // '꺼짐'(기록이 하나도 없음)일 때 예전에는 원인도 조치도 없이 같은 문장만 반복했다 — 무엇을 하면
-  // 되는지 적고, 자동 기동 시도 결과도 함께 보여 준다.
-  const tk=s.sampler_task;
-  const tkTxt=(tk===false)?' · 로그온 자동 시작 작업이 <b>등록돼 있지 않습니다</b>'
-             :((tk===true)?' · 등록 작업은 있습니다(정책·권한으로 안 돌 수 있음)':'');
-  const ss=s.sampler_state||{};
-  const ssTxt=(ss.ok===false&&ss.reason)?` · <b>${esc(ss.reason==="R-CLM"?"이 PC 정책(제한 언어 모드)이 샘플러를 막습니다":(ss.reason==="R-ADDTYPE"?"이 PC 정책이 샘플러의 창 읽기(Add-Type)를 막습니다":ss.reason))}</b>`:"";
-  $("sb_sampler").innerHTML=(s.sampler_age_min==null)
-   ?`<span style="color:#e08a00" title="창 샘플러가 없으면 투입시간이 PC 가동 하한으로만 계산돼 과소 집계될 수 있습니다">샘플러 꺼짐 — 아직 기록이 하나도 없습니다${tkTxt}${ssTxt}${srTxt}<br><span class="dim">켜기: 아래 '수집 현황' 카드의 [상주 샘플러 등록] 또는 <b>LoadMonitor28-샘플러등록.bat</b>(1회 등록 · 로그온 시 자동 시작). 화면은 스스로 띄우지 않습니다.</span></span>`
-   :(s.sampler_age_min<=10?'<span style="color:#4fc47f">샘플러 가동 중</span>'
-     :`<span style="color:#e08a00" title="마지막 샘플 ${esc(s.last_sample||"")} — 멈춘 날은 PC 하한 모드로 계산됩니다">샘플러 멈춤 (${s.sampler_age_min}분 전${s.last_sample?` · 마지막 샘플 ${esc(s.last_sample)}`:""})${tkTxt}${ssTxt}${srTxt} — [샘플러 다시 시작]</span>`);
   $("go").disabled=s.running;
   // 분석·웹 읽기 중에는 웹 읽기·커서 초기화를 끈다 — 같은 전용 Edge·원장을 두 작업이 함께 쓰지 않게(F-16)
   ["owa","teamsweb","cvreset"].forEach(id=>{const b=$(id);if(b)b.disabled=!!s.running;});
@@ -3655,9 +3496,9 @@ async function refresh(){
      +(pd.generated?` · 마지막 수집 ${esc(pd.generated)}`:"")
      +(pd.dropped?` · <span style="color:#c0122f">읽지 못한 행 ${pd.dropped}개</span>`:"")
      +((pd.roots||[]).length>1?" — 합계는 구간 합집합이라 폴더별 단순 합과 다릅니다(같은 시간대 중복 제거)":""));
-    if(pd.fallback_boot) notes.push(`⚠ 이 기간 <b>Windows 이벤트 로그가 0건</b>이라 '부팅 후 경과시간' 한 구간만으로 PC 선을 그렸습니다(수집만 한 PC·권한 차단·Modern Standby). 그 달의 '${(sum||0).toFixed(1)}h' 는 합산이 아니라 <b>하루치 부팅 시간</b>입니다 — 샘플러(LoadMonitor28-샘플러등록.bat)를 켜 두면 앞으로 정확해집니다.`);
+    if(pd.fallback_boot) notes.push(`⚠ 이 기간 <b>Windows 이벤트 로그가 0건</b>이라 '부팅 후 경과시간' 한 구간만으로 PC 선을 그렸습니다(수집만 한 PC·권한 차단·Modern Standby). 그 달의 '${(sum||0).toFixed(1)}h' 는 합산이 아니라 <b>하루치 부팅 시간</b>입니다 — 이 PC 에서 [분석 실행]을 하면 켜기·끄기 기록이 쌓여 앞으로 정확해집니다.`);
     if(pd.dropped) notes.push(`⚠ PC 기록 파일에서 <b>읽지 못한 행 ${pd.dropped}개</b>가 있었습니다(이동 중 잘렸을 수 있음) — 그 파일만 빼고 나머지로 그렸습니다. [분석 실행]으로 다시 수집하면 복구됩니다.`);
-    if(pd.warn) notes.push(`⚠ ${esc(pd.warn)} — 롤오버된 과거는 되살릴 수 없지만, 브라우저 사용기록 힌트와 창 샘플러가 <b>앞으로의 구간</b>을 메웁니다(샘플러 등록이 없으면 [분석 실행]이 자동으로 1회 등록합니다 · config.autoRegisterSampler).`);
+    if(pd.warn) notes.push(`⚠ ${esc(pd.warn)} — 롤오버된 과거는 되살릴 수 없지만, 브라우저 사용기록 힌트가 닿는 만큼 보강합니다. [분석 실행]을 자주 하면 <b>앞으로의 구간</b>은 로그가 지워지기 전에 PC 기록 원장(추가 전용)에 남습니다.`);
    }}
   if(ti.wk_note) notes.push(`⚠ ${esc(ti.wk_note)}`);
   if(ti.raw_outside_n>0&&(ti.sig_span||[]).length===2)
@@ -4041,8 +3882,8 @@ async function webRead(kind,btn){
 $("owa").onclick=()=>webRead("mail",$("owa"));
 $("teamsweb").onclick=()=>webRead("teams",$("teamsweb"));
 $("prepmove").onclick=async()=>{
- // 폴더를 다른 PC 로 옮기려면 우리(대시보드·팀 서버·Copilot Edge·샘플러)가 먼저 손을 놓아야 한다
- if(!confirm("이 폴더를 다른 PC 로 옮길 수 있도록 정리합니다.\\n\\n· 팀 서버·Copilot 창·샘플러를 종료합니다\\n· 정리 창이 열리고, 이 대시보드도 함께 닫힙니다\\n· 수집 데이터와 분석 결과는 그대로 둡니다\\n· 정리 창이 '빠르게 옮기는 방법'(Edge 캐시 제외)도 함께 알려 줍니다\\n\\n계속할까요?"))return;
+ // 폴더를 다른 PC 로 옮기려면 우리(대시보드·팀 서버·Copilot Edge)가 먼저 손을 놓아야 한다
+ if(!confirm("이 폴더를 다른 PC 로 옮길 수 있도록 정리합니다.\\n\\n· 팀 서버·Copilot 창을 종료합니다\\n· 정리 창이 열리고, 이 대시보드도 함께 닫힙니다\\n· 수집 데이터와 분석 결과는 그대로 둡니다\\n· 정리 창이 '빠르게 옮기는 방법'(Edge 캐시 제외)도 함께 알려 줍니다\\n\\n계속할까요?"))return;
  $("prepmove").disabled=true;$("state").textContent="이동 준비 중…";
  const r=await fetch("/api/prepmove",{method:"POST"}).then(x=>x.json()).catch(()=>({ok:false}));
  if(!r.ok){$("prepmove").disabled=false;$("state").textContent="대기 중";
@@ -4503,7 +4344,7 @@ async function loadAgentic(){
   else alert("제외 실패: "+(r.error||""));
  });
 }
-// ── 수집 현황 카드(원장 한 원천 — F-33) · 커서 초기화 · 샘플러 버튼(사용자 동작으로만 — W3-15) · 수동 기록(W1-19) ──
+// ── 수집 현황 카드(원장 한 원천 — F-33) · 커서 초기화 · 수동 기록(W1-19) ──
 async function cvLoad(){
  const el=$("cvbody");if(!el)return;
  let d;
@@ -4534,14 +4375,8 @@ async function cvLoad(){
   +`(${Math.round((d.owa.ratio||0)*100)}%) — 그만큼 시간 계상에서 빠집니다.</div>`;}
  el.innerHTML=h;$("cvstate").textContent="확인 "+(d.as_of||"");
 }
-async function smpPost(action){
- return fetch("/api/sampler",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:action})})
-  .then(x=>x.json()).catch(e=>({ok:false,error:String(e)}));
-}
-$("cvrefresh").onclick=async()=>{
- $("cvmsg").textContent="확인 중…";
- const r=await smpPost("refresh");
- $("cvmsg").textContent=r.task===true?"샘플러 등록 작업 있음":(r.task===false?"샘플러 등록 작업 없음 — [상주 샘플러 등록]":"샘플러 등록 작업 확인 불가");
+$("cvrefresh").onclick=()=>{
+ $("cvmsg").textContent="";
  cvLoad();poll();
 };
 $("cvreset").onclick=async()=>{
@@ -4549,19 +4384,6 @@ $("cvreset").onclick=async()=>{
  const r=await fetch("/api/reset_cursors",{method:"POST"}).then(x=>x.json()).catch(e=>({ok:false,error:String(e)}));
  $("cvmsg").textContent=r.ok?("초기화했습니다 — "+((r.removed||[]).length?r.removed.join(", "):"커서 파일 없음")+(r.ledger?" · 원장":"")):("실패: "+(r.hint||r.error||""));
  cvLoad();
-};
-$("smprestart").onclick=async()=>{
- const r=await smpPost("restart");
- $("cvmsg").textContent=r.note||r.error||"";
- setTimeout(poll,4000);
-};
-$("smpreg").onclick=async()=>{
- if(!confirm("창 샘플러를 로그온할 때마다 자동으로 시작되게 1회 등록합니다(작업 스케줄러 — 이 폴더 전용 이름).\\n1분마다 맨 앞 창 이름과 무입력 시간만 이 PC 안의 CSV 에 적습니다(내용은 읽지 않습니다).\\n해제: collect\\\\Register-Samplers.ps1 -Remove\\n\\n등록할까요?"))return;
- $("smpreg").disabled=true;$("cvmsg").textContent="등록 중… (최대 1분)";
- const r=await smpPost("register");
- $("smpreg").disabled=false;
- $("cvmsg").textContent=(r.ok?"등록 완료 — ":"등록 실패 — ")+(r.note||r.error||"");
- setTimeout(poll,2000);
 };
 $("wl_date").value=iso(new Date());
 $("wl_save").onclick=async()=>{
@@ -4655,26 +4477,6 @@ class H(BaseHTTPRequestHandler):
             payload["last_run"] = _age(_mtime(mp)) if mp else ""
             payload["last_tag"] = (os.path.basename(mp)[len("mm_meta_"):-len(".json")]
                                    if mp else "")
-            act = sorted(glob.glob(os.path.join(DATA, "activity", "activity_*.csv")),
-                         key=_mtime, reverse=True)
-            last_ts = _mtime(act[0]) if act else 0.0
-            age_min = round((time.time() - last_ts) / 60) if last_ts else None
-            payload["sampler_age_min"] = age_min
-            # A26 — 멈춤 판정·마지막 샘플 시각·자동 재기동 결과(10분에 1회 시도)
-            payload["sampler_stale"] = bool(age_min is not None and age_min > SAMPLER_STALE_MIN)
-            # '꺼짐'(기록이 하나도 없음)과 '멈춤'(있는데 오래됨)은 조치가 다르다 — 화면이 구분해 말한다.
-            payload["sampler_never"] = age_min is None
-            # LM28(W3-15): 여기서는 schtasks 를 띄우지 않는다 — 화면 열기·[새로고침] 때 조회한 캐시만 싣는다
-            payload["sampler_task"] = (_sampler_task_exists()
-                                       if (age_min is None or payload["sampler_stale"]) else None)
-            payload["last_sample"] = (time.strftime("%Y-%m-%d %H:%M", time.localtime(last_ts))
-                                      if last_ts else "")
-            _ss = _sampler_status_file()
-            payload["sampler_state"] = {k: _ss.get(k) for k in ("ok", "reason", "heartbeat", "registered")
-                                        if k in _ss}
-            with LOCK:
-                payload["sampler_restart"] = {"when": SAMPLER_RESTART["when"], "how": SAMPLER_RESTART["how"],
-                                              "note": SAMPLER_RESTART["note"]}
             payload["busy_web"] = bool(JOB["running"])      # 분석·웹 읽기 중 — 화면이 웹 읽기 버튼을 끈다(F-16)
             self._send(200, payload)
         elif self.path == "/api/dash":
@@ -5776,24 +5578,6 @@ class H(BaseHTTPRequestHandler):
             log("[커서 초기화] " + ("커서 " + ", ".join(gone) if gone else "커서 파일 없음")
                 + (" · 원장 초기화" if led_ok else " · 원장 없음") + " — 다음 [분석 실행]이 기간 전체를 다시 읽습니다")
             self._send(200, {"ok": True, "removed": gone, "ledger": led_ok})
-        elif self.path == "/api/sampler":
-            # 샘플러 — 사용자 동작으로만(W3-15·P6): refresh(등록 작업 조회 1회)·restart([샘플러 다시 시작])·register(확인 뒤)
-            n = int(self.headers.get("Content-Length", 0) or 0)
-            try:
-                b = json.loads(self.rfile.read(n) or b"{}") if n else {}
-            except ValueError:
-                b = {}
-            act = str((b or {}).get("action") or "")
-            if act == "refresh":
-                self._send(200, {"ok": True, "task": _sampler_task_exists(refresh=True),
-                                 "state": _sampler_status_file(), "mutex": _sampler_mutex_alive()})
-            elif act == "restart":
-                self._send(200, {"ok": True, "note": sampler_restart()})
-            elif act == "register":
-                ok, msg = sampler_register()
-                self._send(200, {"ok": ok, "note": msg, "task": _sampler_task_exists()})
-            else:
-                self._send(400, {"ok": False, "error": "action 은 refresh·restart·register 중 하나"})
         elif self.path == "/api/worklog":
             # 수동 기록 폼(W1-19) — PC 밖 업무(출장·현장)를 화면에서. data\manual\worklog.csv(Add-WorkLog.ps1 과 같은 열)
             n = int(self.headers.get("Content-Length", 0) or 0)
@@ -5968,7 +5752,6 @@ def main():
         # 로그인 대기 중이면 두고(P6), 사람이 띄운 Edge·LM24 의 Edge 는 건드리지 않는다.
         close_edge("ui_start")
         drop_foreign_profile()
-        _sampler_task_exists(refresh=True)      # 화면 열 때 1회 — 등록 작업 유무(이후는 [새로고침] 때만)
     threading.Thread(target=_startup_cleanup, daemon=True).start()
     url = f"http://127.0.0.1:{port}/"
     print(f"[ui] LoadMonitor28 {VERSION} — {url}  (Ctrl+C 종료)")

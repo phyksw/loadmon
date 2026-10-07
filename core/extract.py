@@ -2708,7 +2708,7 @@ def _activity_spans(data_dir, d0, d1, interval_sec=60, idle_active=IDLE_ACTIVE_S
     LM28(WP8):
     · 고착 판정은 (PC, 날짜) 단위다 — PC = 행의 host 열(없으면 그 파일의 데이터 루트). 한 PC 가 고착인 날도 다른 PC 의
       실측은 남는다(예전엔 그 날짜 전체를 버렸다). stuck_days 는 어느 PC 든 고착이 나온 날짜.
-    · sess=locked 틱(잠금 화면·LogonUI — 수집기 Start-ActivitySampler 의 sess 열)은 활동이 아니다. 덮은 구간(cov)에는
+    · sess=locked 틱(잠금 화면·LogonUI — activity CSV 의 sess 열)은 활동이 아니다. 덮은 구간(cov)에는
       남기고(샘플러가 돌았고 사람이 없었다 — 그 시간에 하한을 걸지 않게) 활동·같은 제목 이어붙임에서는 뺀다.
       고착 판정에서는 '입력 없음' 쪽(idle>0)으로 센다.
     · aux(dict) 를 주면 부가 재료를 채운다(시간 계산은 그대로):
@@ -2913,8 +2913,8 @@ def tool_usage(data_dir, d0, d1, cfg=None):
 
     if not n_samples:
         out = {"samples": 0, "days": 0, "programs": [],
-                "why": "창 샘플러 기록(data\\activity\\activity_*.csv)이 이 기간에 없습니다 — "
-                       "collect\\Register-Samplers.ps1 로 등록하면 다음 분석부터 채워집니다"}
+                "why": "창 기록(data\\activity\\activity_*.csv)이 이 기간에 없습니다 — "
+                       "LM28 에는 창 샘플러가 없어 이 표는 옛 기록이 있을 때만 채워집니다"}
         _TOOL_USAGE_CACHE[ck] = out
         return out
 

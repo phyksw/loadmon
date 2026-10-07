@@ -443,7 +443,7 @@ class TeamsGraph(unittest.TestCase):
 
 # ── 창 읽기(PowerShell — run_tests --ps) ───────────────────────────────────────
 class TeamsWindowPs(unittest.TestCase):
-    def test_window_inject_undated_sampler(self):
+    def test_window_inject_undated_inproc(self):
         r = _boot.ps_result("TeamsWindow")
         if r is None:
             self.skipTest("--ps 로 돌지 않음")
@@ -460,7 +460,7 @@ class TeamsWindowPs(unittest.TestCase):
         self.assertEqual((r["r1b_rc"], r["r1b_rows_new"]), (4, 0))
         self.assertEqual((r["r2_rc"], r["r2_reason"], r["r2_cause"]), (3, "R-UIAEMPTY", "iconic"))
         self.assertEqual((r["r3_rc"], r["r3_reason"], r["r3_cause"]), (1, "R-NOTEAMS", "no_process"))
-        self.assertEqual((r["sampler_rows"], r["spawned"], r["spawn_calls"]), (3, 0, 0))
+        self.assertEqual((r["inproc_rows"], r["spawned"], r["spawn_calls"]), (3, 0, 0))
         self.assertEqual(r["win32_error"], "")
         self.assertGreater(r["win32_count"], 0)                      # Add-Type 없이 user32 최상위 창 열거
         ds = json.loads(r["direct_status"][len("LMSTATUS "):])         # 직접 실행 가드 — 본체가 돌고 종료 코드 = rc

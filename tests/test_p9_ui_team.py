@@ -127,7 +127,7 @@ class DiagBundle(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="lm28_p9_") as root:
             os.makedirs(os.path.join(root, "report"))
             os.makedirs(os.path.join(root, "data", "outlook", "src"))
-            prof = os.environ.get("USERPROFILE", r"C:\Users\someone")
+            prof = os.environ.get("USERPROFILE", r"C:\Users\홍길동")
             with open(os.path.join(root, "report", "last_run.json"), "w", encoding="utf-8") as f:
                 json.dump({"steps": [{"name": "mail.com", "rc": 3, "reason": "R-NOPROF",
                                       "msg": f"hong@example.com · {prof}\\data"}]}, f, ensure_ascii=False)

@@ -12,7 +12,7 @@ r"""test_p6_chain.py — WP6: 수집 사슬·일자×축 원장·메일 병합·
   · G1             : 같은 팀즈 메시지 2회 수집 + G1 2회 → 1행
   · proc           : 잠드는 자식+손자 → 시간 초과 뒤 둘 다 끝남 · Job 이탈 손자는 산다(시험이 PID 로 정리) · 시계 주입 진행 줄
                      (만드는 프로세스 3개)
-  · ensure_sampler : 등록 흔적 없음 → 분리 실행 0회
+  · 샘플러 없음    : run.py·화면이 상주 프로세스를 등록·기동하지 않는다(LM28 — 창·팀즈 샘플러 제거)
 임시 파일은 tempfile.TemporaryDirectory 안에만 만든다. 실제 Outlook·Edge·Teams·schtasks 는 띄우지 않는다.
 """
 import contextlib
@@ -103,8 +103,7 @@ class _RunEnv(unittest.TestCase):
         self.tmp = self._td.name
         self.data = os.path.join(self.tmp, "data")
         os.makedirs(self.data)
-        self._saved = (R._RUN_STEP, R._CLOSE_EDGE, R._START_PROCESS, dict(R.REPORT_DIR), list(R.RUN["stages"]),
-                       dict(R.EDGE), R._mutex_exists)
+        self._saved = (R._RUN_STEP, R._CLOSE_EDGE, dict(R.REPORT_DIR), list(R.RUN["stages"]), dict(R.EDGE))
         R.REPORT_DIR["p"] = os.path.join(self.tmp, "report")
         R.RUN["stages"] = []
         R.EDGE["closed"] = False
@@ -112,13 +111,12 @@ class _RunEnv(unittest.TestCase):
         R._CLOSE_EDGE = lambda cfg, why: self.closed.append(why) or {"closed": True, "why": why}
 
     def tearDown(self):
-        (R._RUN_STEP, R._CLOSE_EDGE, R._START_PROCESS, rep, stages, edge, mx) = self._saved
+        (R._RUN_STEP, R._CLOSE_EDGE, rep, stages, edge) = self._saved
         R.REPORT_DIR.clear()
         R.REPORT_DIR.update(rep)
         R.RUN["stages"] = stages
         R.EDGE.clear()
         R.EDGE.update(edge)
-        R._mutex_exists = mx
         self._td.cleanup()
 
     def quiet(self):
@@ -591,68 +589,38 @@ class ProcTests(unittest.TestCase):
                         self.assertFalse(_alive(p, 5000))
 
 
-# ── 샘플러·등록 ─────────────────────────────────────────────────────────────
-class SamplerTests(_RunEnv):
-    def _stale(self, status):
-        act = os.path.join(self.data, "activity")
-        os.makedirs(act)
-        p = os.path.join(act, "activity_2026-10-01.csv")
-        with open(p, "w", encoding="utf-8") as f:
-            f.write("time,process\n")
-        old = time.time() - 3600
-        os.utime(p, (old, old))
-        with open(os.path.join(act, "sampler_status.json"), "w", encoding="utf-8-sig") as f:
-            json.dump(status, f)
-        self.spawned = []
-        R._START_PROCESS = lambda cmd: self.spawned.append(cmd) or True
-        R._mutex_exists = lambda name: False
+# ── 샘플러 없음(LM28) ─────────────────────────────────────────────────────────
+class NoSamplerTests(unittest.TestCase):
+    """LM28 에는 창·팀즈 샘플러가 없다 — 시간은 PC 켜기·끄기 기록과 활동 흔적으로만 계산한다."""
 
-    def test_no_registered_no_spawn(self):
-        self._stale({"ok": True, "heartbeat": "2026-10-01 10:00:00", "interval_s": 60})
-        with self.quiet():
-            R.ensure_sampler({"autoRestartSampler": True}, self.data, COL)
-        self.assertEqual(self.spawned, [])
-        self.assertIn("등록 흔적", self.stage("창 샘플러 점검")[0]["note"])
+    def test_no_sampler_files(self):
+        self.assertEqual([f for f in os.listdir(ROOT) if "샘플러" in f], [])
+        self.assertEqual([f for f in os.listdir(COL) if "sampler" in f.lower()], [])
 
-    def test_default_off_no_spawn(self):
-        self._stale({"ok": True, "heartbeat": "2026-10-01 10:00:00", "interval_s": 60, "registered": True})
-        with self.quiet():
-            R.ensure_sampler({}, self.data, COL)                    # autoRestartSampler 키 없음 = false
-        self.assertEqual(self.spawned, [])
+    def test_run_py_never_registers_or_starts(self):
+        src = _boot.read_text(os.path.join(ROOT, "run.py"))
+        for bad in ("Sampler", "sampler", "샘플러", "schtasks"):
+            self.assertNotIn(bad, src, bad)
 
-    def test_registered_and_on_spawns_once(self):
-        self._stale({"ok": True, "heartbeat": "2026-10-01 10:00:00", "interval_s": 60, "registered": True})
-        with self.quiet():
-            R.ensure_sampler({"autoRestartSampler": True}, self.data, COL)
-        self.assertEqual(len(self.spawned), 1)
-        self.assertTrue(self.spawned[0][-1].endswith("Start-ActivitySampler.ps1"))
+    def test_dashboard_has_no_sampler_controls(self):
+        app = _boot.read_text(os.path.join(ROOT, "ui", "app.py"))
+        for bad in ("schtasks", "SAMPLER_", "smprestart", "smpreg", "sb_sampler", "Sampler.ps1"):
+            self.assertNotIn(bad, app, bad)
 
-    def test_clm_not_restarted(self):
-        self._stale({"ok": False, "reason": "R-CLM", "registered": True})
-        with self.quiet():
-            R.ensure_sampler({"autoRestartSampler": True}, self.data, COL)
-        self.assertEqual(self.spawned, [])
-        self.assertEqual(self.stage("창 샘플러 점검")[0]["reason"], "R-CLM")
-
-    def test_register_off_no_schtasks(self):
-        calls = []
-        saved = R.subprocess.run
-        R._RUN_STEP = lambda *a, **k: calls.append(a) or (0, [], "ok")
-        R.subprocess.run = lambda *a, **k: calls.append(a)
-        try:
-            with self.quiet():
-                R.register_sampler_once(PS, COL, {"autoRegisterSampler": False})
-        finally:
-            R.subprocess.run = saved
-        self.assertEqual(calls, [])
+    def test_config_has_no_sampler_switches(self):
+        for name in ("config.default.json", "config.json"):
+            p = os.path.join(ROOT, "config", name)
+            if not os.path.isfile(p):
+                continue
+            with open(p, encoding="utf-8-sig") as f:
+                c = json.load(f)
+            self.assertEqual([k for k in c if k.startswith("auto") and "Sampler" in k], [], name)
 
 
 class StaticTests(unittest.TestCase):
     def test_run_py_rules(self):
         src = _boot.read_text(os.path.join(ROOT, "run.py"))
         self.assertNotIn('"taskkill"', src)                       # taskkill 을 띄우지 않는다(주석의 낱말은 괜찮다)
-        self.assertNotIn('get("autoRestartSampler", True)', src)
-        self.assertNotIn('get("autoRegisterSampler", True)', src)
         self.assertNotIn("from mine import EXCLUDE", src)
         self.assertNotIn("os.remove(cov_p)", src)                 # COM 달별 완료 표 삭제 없음
         self.assertNotIn('c.get("preferApp", True)', src)         # 앱 창 단락 없음(W1-01)

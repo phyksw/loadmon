@@ -1,8 +1,7 @@
 ﻿# LmName.ps1 - LM28 이름 단일원(PowerShell 쪽). core\lmname.py 와 같은 규칙이다 - 하나를 바꾸면 둘 다 바꾼다.
-# 같은 PC 의 LM24(LoadMonitor<숫자>-*Sampler 작업 · 같은 이름의 뮤텍스)와 예약 작업·뮤텍스가 겹치지 않게
-# 이름에 'LM28' 과 설치 폴더 해시 6자리(h6)를 넣는다. LM24 의 정리 정규식 ^LoadMonitor\d+-(Teams)?Sampler$ 밖이다.
+# 같은 PC 의 LM28 두 벌(개발 사본·배포본)을 가르는 설치 폴더 해시 6자리(h6)를 낸다. LM28 에는 예약 작업·뮤텍스가 없다.
 # h6 = sha1(UTF-8(소문자(끝 구분자 제거(GetLongPathName(GetFullPath(경로))))))[:6]
-# 사용(dot-source):  . (Join-Path $PSScriptRoot 'LmName.ps1');  $nm = Get-LmNames $root;  $nm.TaskSampler
+# 사용(dot-source):  . (Join-Path $PSScriptRoot 'LmName.ps1');  $nm = Get-LmNames $root;  $nm.H6
 # 시험: tests\ps\Test-LmName.ps1 (같은 고정 경로의 h6 를 Python 과 비교)
 
 function Get-LmLongPath([string]$p) {
@@ -50,11 +49,6 @@ function Get-LmNames([string]$Root) {
         H6            = $h
         Short         = 'LM28'
         Product       = 'LoadMonitor28'
-        TaskSampler   = "LM28-Sampler-$h"
-        TaskTeams     = "LM28-TeamsSampler-$h"
-        MutexActivity = "Local\LM28-ActivitySampler-$h"
-        MutexTeams    = "Local\LM28-TeamsSampler-$h"
-        TaskRegex     = '^LM28-(Teams)?Sampler-[0-9a-f]{6}$'
         TmpPrefix     = 'lm28_'
     }
 }

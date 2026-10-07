@@ -1,13 +1,11 @@
 # -*- coding: utf-8 -*-
 r"""
-lmname.py — LM28 이름 단일원 (예약 작업·뮤텍스·포트·Edge 프로필·%TEMP% 접두·bat 이름).
+lmname.py — LM28 이름 단일원 (포트·Edge 프로필·%TEMP% 접두·bat 이름·설치 폴더 해시).
 
-왜: 같은 PC 에 LM24(LoadMonitor<숫자>-*Sampler 작업·같은 이름 뮤텍스·OLD_CDP_PORT·data\<OLD_PROFILE>·
-    대시보드 91xx 대역·%TEMP%\lm_*)가 함께 있어도 서로의 작업을 지우거나, 뮤텍스를 뺏거나, Edge 를 조종하거나,
-    임시 파일을 덮어쓰지 않게 한다. LM24 코드는 고칠 수 없으므로 LM28 쪽 이름을 그 규칙 밖에 둔다.
-    · 예약 작업  LM28-Sampler-<h6> / LM28-TeamsSampler-<h6>   (LM24 정리 정규식 ^LoadMonitor\d+-(Teams)?Sampler$ 밖)
-    · 뮤텍스     Local\LM28-ActivitySampler-<h6> / Local\LM28-TeamsSampler-<h6>
-    · <h6> 는 설치 폴더 해시 — 같은 PC 의 LM28 두 벌(개발 사본·배포본)도 서로 겹치지 않는다.
+왜: 같은 PC 에 LM24(OLD_CDP_PORT·data\<OLD_PROFILE>·대시보드 91xx 대역·%TEMP%\lm_*)가 함께 있어도
+    Edge 를 조종하거나 임시 파일을 덮어쓰지 않게 한다. LM24 코드는 고칠 수 없으므로 LM28 쪽 이름을 그 규칙 밖에 둔다.
+    · LM28 에는 창·팀즈 샘플러가 없다 — 예약 작업·뮤텍스 이름을 두지 않는다.
+    · <h6> 는 설치 폴더 해시 — 같은 PC 의 LM28 두 벌(개발 사본·배포본)을 가른다.
     · 이 값이 config.json 의 옛 값(OLD_CDP_PORT·OLD_PROFILE)보다 우선한다 — LM24 config.json 을 옮겨 와도
       옛 포트·프로필로 붙지 않는다(fix_edge_cfg).
     · %LOCALAPPDATA% 는 쓰지 않는다 — 모든 상태는 설치 폴더 안(폴더째 이동 모델 유지).
@@ -17,12 +15,11 @@ PowerShell 쪽은 collect\LmName.ps1(Get-LmH6·Get-LmNames)이 같은 규칙을 
 """
 import hashlib
 import os
-import re
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 PRODUCT = "LoadMonitor28"          # bat·창 제목·배포 폴더 이름
-SHORT = "LM28"                     # 예약 작업·뮤텍스·임시 이름 접두
+SHORT = "LM28"                     # 짧은 이름 접두
 BAT_PREFIX = PRODUCT               # LoadMonitor28.bat · LoadMonitor28-*.bat
 UI_PORTS = range(9248, 9268)       # 대시보드 대역 9248~9267 (LM24 대역과 겹치지 않음)
 CDP_PORT = 9533                    # 전용 Edge 디버그 포트 (LM24 는 OLD_CDP_PORT)
@@ -35,9 +32,6 @@ TEAM_ADDR_ENV = ("LM28_TA_HOST", "LM28_TA_PORT")   # 팀서버주소.bat → tea
 # 옛 값 판별용(이 값을 쓰지 않는다 — config 에 남아 있으면 덮는다). 이름 검사 시험의 허용 목록에 있다.
 OLD_CDP_PORT = 9333
 OLD_PROFILE = "copilot_profile"
-
-# 우리 예약 작업 이름(다른 폴더의 LM28 포함). LoadMonitor\d+-* 는 절대 이 규칙에 들지 않는다.
-TASK_RE = re.compile(r"^LM28-(Teams)?Sampler-[0-9a-f]{6}$")
 
 
 def norm_root(path=None):
@@ -67,22 +61,10 @@ def h6(path=None):
 
 def names(path=None):
     """폴더별 이름 묶음 — 키는 LmName.ps1 Get-LmNames 와 같다."""
-    h = h6(path)
-    return {
-        "H6": h,
-        "TaskSampler": f"{SHORT}-Sampler-{h}",
-        "TaskTeams": f"{SHORT}-TeamsSampler-{h}",
-        "MutexActivity": f"Local\\{SHORT}-ActivitySampler-{h}",
-        "MutexTeams": f"Local\\{SHORT}-TeamsSampler-{h}",
-    }
+    return {"H6": h6(path)}
 
 
-_N = names(ROOT)
-H6 = _N["H6"]
-TASK_SAMPLER = _N["TaskSampler"]
-TASK_TEAMS = _N["TaskTeams"]
-MUTEX_ACTIVITY = _N["MutexActivity"]
-MUTEX_TEAMS = _N["MutexTeams"]
+H6 = names(ROOT)["H6"]
 
 
 def edge_profile(root=None):

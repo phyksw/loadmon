@@ -1,7 +1,7 @@
 LoadMonitor28 필수 파일 목록 - 복사 시 전부 있어야 합니다.
 (data/ report/ teamdata/ 는 복사 금지 - 개인정보)
 
-총 100개
+총 96개
 
 LoadMonitor28-UI.bat                                   2,444 B  2d8726cc
 LoadMonitor28.bat                                      4,557 B  b58b23f7
@@ -11,7 +11,6 @@ LoadMonitor28-팀업로드.bat                                 1,823 B  104641c1
 LoadMonitor28-팀서버주소.bat                                2,799 B  bf50940f
 LoadMonitor28-수집진단.bat                                 1,185 B  6ffca18b
 LoadMonitor28-가동시간비교.bat                               1,048 B  0954c0ba
-LoadMonitor28-샘플러등록.bat                                  868 B  ea8037a2
 LoadMonitor28-이동준비.bat                                 1,405 B  25340d85
 LoadMonitor28-팀로드율재계산.bat                              2,083 B  6457ef97
 agentic.py                                            48,973 B  4e6bb07f
@@ -25,51 +24,48 @@ export.py                                             10,133 B  44211506
 retag.py                                               6,128 B  8d6f81d3
 team_refine.py                                         6,565 B  8c9ab214
 team_recalc.py                                        58,731 B  5f9b0e7f
-report_out.py                                         54,407 B  c40bc879
-README.md                                            115,388 B  6f089d9f
+report_out.py                                         54,351 B  8bd8df3a
+README.md                                            115,318 B  f0edb4e4
 check.py                                               2,629 B  7badfe69
 judge.py                                             132,863 B  1623a307
 mine.py                                               20,494 B  a348cc94
 refine.py                                             54,124 B  547693cf
 ruff.toml                                              1,004 B  413927e1
 FILES.txt                                                (이 파일)
-run.py                                                95,425 B  0ed22060
-자가점검.py                                               11,018 B  7104a8f1
+run.py                                                85,391 B  03c1ac06
+자가점검.py                                               10,861 B  5b13223a
 collect/Add-WorkLog.ps1                                3,873 B  7a375f51
-collect/Get-FileActivity.ps1                          50,391 B  925a5787
+collect/Get-FileActivity.ps1                          50,401 B  a0dca613
 collect/Get-GitActivity.py                            33,451 B  ac747427
 collect/Get-LicenseUsage.ps1                           4,093 B  c2df1eda
 collect/Get-OutlookData.ps1                           82,595 B  b1cca0ff
 collect/Get-OutlookIndex.ps1                          33,982 B  1283c896
 collect/Get-MailViaCopilot.py                         40,427 B  ef7ad538
 collect/Get-OutlookWeb.py                             80,815 B  700e4393
-collect/Get-PcOnHistory.ps1                           27,067 B  deece650
+collect/Get-PcOnHistory.ps1                           27,148 B  438f101c
 collect/Get-PcOnHints.py                              15,662 B  b2d98d52
-collect/Start-TeamsSampler.ps1                         4,245 B  c22dd1ce
 collect/Get-RecentFiles.ps1                           27,534 B  f0586ee2
 collect/Get-TeamsChats.py                             22,341 B  16cb91e1
-collect/Get-TeamsViaCopilot.py                        28,900 B  cfe59b7d
+collect/Get-TeamsViaCopilot.py                        28,879 B  bd599e6d
 collect/Get-TeamsWeb.py                               68,154 B  7fca966f
-collect/Get-TeamsWindow.ps1                           54,791 B  14fdd672
-collect/Diagnose-Collectors.ps1                       41,075 B  e6ff502c
-collect/Register-Samplers.ps1                         16,764 B  fc2dd9ee
-collect/Start-ActivitySampler.ps1                     21,550 B  3db48bb5
-collect/LmName.ps1                                     2,799 B  01700435
+collect/Get-TeamsWindow.ps1                           54,594 B  87655e60
+collect/Diagnose-Collectors.ps1                       32,495 B  b7b324b2
+collect/LmName.ps1                                     2,409 B  ad1ff079
 collect/OutlookCommon.ps1                             42,050 B  1aa79c60
 collect/owa_parse.py                                  21,831 B  360642e7
 collect/teams_parse.py                                 8,027 B  b50af6fd
 collect/Import-MailCal.py                             12,353 B  bec541e0
-config/config.json                                    44,068 B  ffcb4553
-config/config.default.json                            49,992 B  f04068ab
+config/config.json                                    43,236 B  ae52a9fb
+config/config.default.json                            48,691 B  f1c99b1f
 config/agentic_tasks.json                              4,426 B  2c9e5bb1
 core/board.py                                         13,181 B  86eaf661
-core/extract.py                                      264,864 B  d8866f45
+core/extract.py                                      264,842 B  e322f9e8
 core/pc_ledger.py                                     21,509 B  c1f9d9e5
 core/budget.py                                         2,968 B  3297d2b6
 core/stage_state.py                                    7,301 B  d30a0590
 core/watch.py                                          6,594 B  33e30d52
 core/teamaddr.py                                      20,045 B  b2433bb4
-core/lmname.py                                         5,622 B  314a4320
+core/lmname.py                                         4,771 B  c781496a
 core/privacy.py                                       68,484 B  15be852d
 core/coverage.py                                      13,867 B  6598c534
 core/proc.py                                          10,482 B  ba43b829
@@ -80,13 +76,13 @@ tools/check_l1.py                                      4,770 B  cfe71d55
 tools/check_trend.py                                   7,627 B  d4724e09
 tools/check_recalc.py                                 18,812 B  a49d57bc
 tools/check_teamaddr.py                               20,527 B  957c3acc
-core/programs.py                                      15,778 B  1f1e142f
+core/programs.py                                      15,772 B  a5c9c6e5
 core/details.py                                       87,401 B  0ca089b7
 core/owner.py                                          1,488 B  1f1dc049
 core/progress.py                                       1,648 B  15bfd33b
 core/projmap.py                                        8,988 B  37a47159
-docs/설정가이드.md                                         94,582 B  35856a01
-docs/사용안내.html                                       273,277 B  baec8e1c
+docs/설정가이드.md                                         91,349 B  13c18aa5
+docs/사용안내.html                                       272,860 B  5c5e39d8
 docs/현장점검_LM28.md                                      3,437 B  7eae4e3b
 tools/copilot_auto.py                                124,020 B  d2084f26
 tools/pc_hours_compare.py                             21,674 B  c43ff972
@@ -98,8 +94,8 @@ tools/check_page_js.py                                 8,818 B  f6d3b95b
 tools/lint.ps1                                        10,868 B  c9759196
 tools/Make-Package.ps1                                12,752 B  665eff56
 tools/Make-MovePack.py                                12,653 B  0e5c2ca0
-tools/Prepare-Move.ps1                                26,409 B  30b59a38
+tools/Prepare-Move.ps1                                26,528 B  3d6569ab
 tools/update_files.py                                  4,530 B  d98dd7d5
 tools/lm_fixenc.py                                     6,690 B  0b6df0b4
 tools/diag_bundle.py                                  10,116 B  0653a9aa
-ui/app.py                                            404,494 B  ee447f91
+ui/app.py                                            388,744 B  eecad68f

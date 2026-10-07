@@ -195,9 +195,6 @@ if (Test-Path -LiteralPath $rawP) {
 }
 $uf = Join-Path $dM 'teams_copilot_unavailable.json'
 if (Test-Path -LiteralPath $uf) { try { W ("  teams_copilot_unavailable.json: " + ((Get-Content -LiteralPath $uf -Raw -Encoding UTF8).Trim() -replace '\s+', ' ')) } catch {} }
-$sampler = 0
-try { $sampler = @(Get-CimInstance Win32_Process -Filter "Name LIKE 'powershell%'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -match 'TeamsSampler' }).Count } catch {}
-W ("  상시 샘플러(Start-TeamsSampler) 실행: {0}" -f $(if ($sampler) { "예 ($sampler)" } else { '아니오' }))
 
 # ── PC 가동 ──────────────────────────────────────────────────────────────────
 # PC 가동 하한은 로드율의 주 추정기인데 그 재료(이벤트 로그·권한·전원 정책)가 PC 마다 다르다.
@@ -231,10 +228,8 @@ $nWake = (Count-Ev @{ LogName='System'; ProviderName='Microsoft-Windows-Power-Tr
 W ("  최근 30일 이벤트: 부팅 {0} · 종료 {1} · 절전/대기 진입 {2} · 해제 {3}{4}" -f $nBoot, $nShut, $nSleep, $nWake, $(if ($nBoot -gt 0 -and $nSleep -eq 0 -and $nShut -le 1) { ' ← 절전·종료 없음(항상 켜두는 PC)' } else { '' }))
 $boot = $null; try { $boot = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime } catch {}
 $upDays = [Environment]::TickCount64 / 86400000.0
-$tick32Neg = ([Environment]::TickCount -lt 0)
 $hiber = '?'; try { $hiber = [string](Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power' -ErrorAction Stop).HiberbootEnabled } catch {}
 W ("  마지막 부팅: {0}   가동 {1:N1}일(TickCount)   빠른 시작(HiberbootEnabled): {2}{3}" -f $(if ($boot) { $boot.ToString('yyyy-MM-dd HH:mm') } else { '?' }), $upDays, $hiber, $(if ($hiber -eq '1') { ' - 종료해도 TickCount 가 이어짐' } else { '' }))
-if ($tick32Neg) { W ("  ※ 가동 24.85~49.7일 구간(int32 TickCount 음수): 2026-09 이전 창 샘플러는 이 구간에서 idle 이 항상 0 으로 기록됨 - 이 버전은 보정됨(아래 idle=0 비율 확인)") }
 $powerAvail = ''
 try {
     $pa = @(& powercfg /a 2>$null)
@@ -259,82 +254,6 @@ if ($pcSrc) {
     W ("  pc_source.json: lock_events={0} diag_perf={1} live_session={2} always_on_suspect={3} coverage {4}/{5}일 capped={6} (수집 {7})" -f $pcSrc.lock_events, $pcSrc.diag_perf, $pcSrc.live_session, $pcSrc.always_on_suspect, $pcSrc.coverage_days, $pcSrc.range_days, $pcSrc.capped_spans, $pcSrc.generated)
     foreach ($wm in @($pcSrc.warnings)) { if ($wm) { W ("    경고: " + $wm) } }
 }
-
-# ── 창 샘플러 ────────────────────────────────────────────────────────────────
-# schtasks 기본 등록은 3일 실행 제한(PT72H)으로 조용히 멈춘다 - 작업 설정·프로세스·마지막 샘플·idle 고착을 함께 본다.
-W '[창 샘플러]'
-$dA = Join-Path $root 'data\activity'
-function Task-Info([string]$name) {
-    try {
-        $svc = New-Object -ComObject 'Schedule.Service'; $svc.Connect()
-        $t = $svc.GetFolder('\').GetTask($name)
-        $st = @('알 수 없음', '사용 안 함', '대기열', '준비', '실행 중')[[int]$t.State]
-        $lrt = '?'; try { $lrt = $t.LastRunTime.ToString('yyyy-MM-dd HH:mm') } catch {}
-        # TASK_INSTANCES_POLICY: 0 Parallel · 1 Queue · 2 IgnoreNew · 3 StopExisting
-        $mi = @('Parallel', 'Queue', 'IgnoreNew', 'StopExisting')[[int]$t.Definition.Settings.MultipleInstances]
-        return [pscustomobject]@{ found=$true; state=$st; etl=[string]$t.Definition.Settings.ExecutionTimeLimit; mi=$mi; last=$lrt; result=[int]$t.LastTaskResult }
-    } catch { return [pscustomobject]@{ found=$false } }
-}
-$tiS = $null
-# 작업 이름은 LM28-Sampler-<폴더해시6> (collect\LmName.ps1 = core\lmname.py)
-. (Join-Path $root 'collect\LmName.ps1')
-$lmNames = Get-LmNames $root
-foreach ($tn in @($lmNames.TaskSampler, $lmNames.TaskTeams)) {
-    $ti = Task-Info $tn
-    if ($tn -eq $lmNames.TaskSampler) { $tiS = $ti }
-    if ($ti.found) {
-        $etlNote = if (-not $ti.etl -or $ti.etl -eq 'PT0S') { 'PT0S(제한 없음)' } else { $ti.etl + ' ← 실행 시간 제한(이 시간 뒤 조용히 정지)' }
-        W ("  작업 {0}: 등록됨 · 상태 {1} · 마지막 실행 {2} (결과 {3}) · ExecutionTimeLimit {4} · 겹침 {5}" -f $tn, $ti.state, $ti.last, $ti.result, $etlNote, $ti.mi)
-    } else { W ("  작업 {0}: 미등록" -f $tn) }
-}
-# 다른 판·다른 폴더 작업 - LoadMonitor<숫자>-* (LM24 등)는 **다른 판(공존 정상)** 정보로만 보인다(지우지 않는다).
-# 다른 폴더의 LM28 작업은 그 폴더가 없어졌을 때만 '버려진 작업' 으로 알린다(Register-Samplers.ps1 이 등록할 때 정리).
-try {
-    $svcD = New-Object -ComObject 'Schedule.Service'; $svcD.Connect()
-    foreach ($t in @($svcD.GetFolder('\').GetTasks(1))) {
-        $tn2 = [string]$t.Name
-        if ($tn2 -match "^LoadMonitor\d+-") {
-            W ("  [정보] 다른 판 작업 {0} - 다른 판(공존 정상). 이 판의 기록과 섞이지 않습니다." -f $tn2)
-        } elseif ($tn2 -cmatch $lmNames.TaskRegex -and $tn2 -notlike ("*-" + $lmNames.H6)) {
-            $adir = ''
-            try { foreach ($a in @($t.Definition.Actions)) { if ([int]$a.Type -eq 0 -and $a.WorkingDirectory) { $adir = [string]$a.WorkingDirectory; break } } } catch {}
-            if ($adir -and -not (Test-Path -LiteralPath $adir)) {
-                W ("  [!] 버려진 LM28 작업 {0} - 폴더({1})가 없습니다." -f $tn2, $adir)
-                W  "      해제: powershell -ExecutionPolicy Bypass -File collect\Register-Samplers.ps1  (등록할 때 자동으로 지웁니다)"
-            } else { W ("  [정보] 다른 폴더의 LM28 작업 {0} ({1})" -f $tn2, $(if ($adir) { $adir } else { '?' })) }
-        }
-    }
-} catch {}
-# 샘플러는 `powershell … -File <경로>\Start-ActivitySampler.ps1` 로 뜬다 - 이 문자열을 인자로 품은 다른 셸(진단·테스트)은 세지 않는다
-$sp = @(); try { $sp = @(Get-CimInstance Win32_Process -Filter "Name LIKE 'powershell%'" -ErrorAction SilentlyContinue | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -match '(?i)-File\s+"?[^"\s]*Start-ActivitySampler\.ps1' }) } catch {}
-$spTxt = if ($sp.Count) { (($sp | ForEach-Object { 'pid {0} 시작 {1}' -f $_.ProcessId, $(if ($_.CreationDate) { $_.CreationDate.ToString('MM-dd HH:mm') } else { '?' }) }) -join ', ') } else { '' }
-W ("  샘플러 프로세스(Start-ActivitySampler): {0}개 {1}" -f $sp.Count, $spTxt)
-$actF = @(); try { $actF = @(Get-ChildItem -LiteralPath $dA -Filter 'activity_*.csv' -ErrorAction Stop | Sort-Object LastWriteTime -Descending) } catch {}
-$age = -1; $tot = 0; $zero = 0; $ratio = 0
-if ($actF.Count) {
-    $lf = $actF[0]
-    $lastLine = ''; try { $lastLine = [string](Get-Content -LiteralPath $lf.FullName -Tail 1) } catch {}
-    $lastT = $null; if ($lastLine -match '^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})') { $lastT = [datetime]::ParseExact($Matches[1], 'yyyy-MM-dd HH:mm:ss', $null) }
-    if ($lastT) { $age = [int]((Get-Date) - $lastT).TotalMinutes }
-    W ("  최신 파일 {0}: 마지막 샘플 {1}{2} · 파일 {3}개 (가장 오래된 {4})" -f $lf.Name, $(if ($lastT) { $lastT.ToString('yyyy-MM-dd HH:mm') } else { '?' }), $(if ($age -ge 0) { " (${age}분 전)" } else { '' }), $actF.Count, $actF[-1].Name)
-    # idle=0 비율은 파일(하루) 단위로 본다 - 고착된 하루가 정상 이틀에 섞여 희석되지 않게. 300행 이상인데 98% 이상이면 TickCount 랩 고착.
-    $stuckNames = New-Object System.Collections.Generic.List[string]
-    foreach ($f in ($actF | Select-Object -First 3)) {
-        $ft = 0; $fz = 0
-        try {
-            foreach ($r in @(Import-Csv -LiteralPath $f.FullName -Encoding UTF8)) {
-                $ft++
-                $iv = 0.0; if ([double]::TryParse([string]$r.idle_sec, [ref]$iv) -and $iv -eq 0) { $fz++ }
-            }
-        } catch {}
-        $tot += $ft; $zero += $fz
-        if ($ft -ge 300 -and $fz * 100.0 / $ft -ge 98) { $stuckNames.Add($f.Name); $ratio = [math]::Max($ratio, [math]::Round(100.0 * $fz / $ft, 1)) }
-    }
-    if ($tot -and -not $stuckNames.Count) { $ratio = [math]::Round(100.0 * $zero / $tot, 1) }
-    W ("  idle=0 비율(최근 {0}개 파일 {1}행): {2}%{3}" -f [math]::Min(3, $actF.Count), $tot, $ratio, $(if ($stuckNames.Count) { ' ← 고착 의심(TickCount 랩 - 모든 샘플이 활동으로 계상): ' + ($stuckNames -join ', ') } else { '' }))
-} else { W '  activity_*.csv 없음 (창 샘플러가 한 번도 돌지 않음 - 선택 기능)' }
-$elog = Join-Path $dA 'sampler_errors.log'
-if (Test-Path -LiteralPath $elog) { try { W ("  sampler_errors.log: {0:N1} KB · 마지막: {1}" -f ((Get-Item -LiteralPath $elog).Length / 1KB), (Mask ([string](Get-Content -LiteralPath $elog -Tail 1)))) } catch {} }
 
 # ── git ──────────────────────────────────────────────────────────────────────
 # git 이 PATH 에 없으면 커밋 신호가 조용히 0건이 된다(감사 A2) - 어디에 있는지 찾아 보여준다.
@@ -386,16 +305,10 @@ elseif (-not $vis.Count) { $findings.Add('Teams 는 켜져 있지만 창 핸들 
 elseif (-not $texts.Count) { $findings.Add('Teams 창은 있으나 UIA 텍스트 0줄 → 접근성 트리가 비어 있음(보안 정책·앱 버전). Copilot 팀즈 경로(config.teamsViaCopilot) 또는 Graph 를 쓰세요.') }
 elseif ($nTime -eq 0 -and $nGen -gt 0) { $findings.Add('Teams 시각 표기가 이 PC 의 지역 설정 형식과 다릅니다(일반 형식 숫자:숫자는 ' + $nGen + '줄 일치) → 수집기가 일반 형식으로 자동 재시도하므로 대개 그대로 수집됩니다. 더 정확히 하려면 Windows 지역 설정(제어판 > 국가 또는 지역 > 형식)을 Teams 표시 언어와 맞추세요.') }
 elseif ($nTime -eq 0) { $findings.Add('Teams 텍스트는 읽히는데 시각 패턴이 0줄 → 메시지 영역이 아직 화면에 그려지지 않았거나(대화를 열어 스크롤) 표기 형식이 특수합니다. 조치(이 PC 안에서): 채팅 창을 열어 메시지가 보이는 상태로 다시 실행 → 그래도 0이면 위 "불일치 예"(마스킹)의 형식을 보고 config.teamsTimeRegex 에 지정(docs\설정가이드 §7). 원문을 밖으로 보낼 필요는 없습니다.') }
-# PC 가동 · 창 샘플러 · git
-if ($nBoot -gt 0 -and $nSleep -eq 0 -and $nShut -le 1 -and $lockP -notlike 'ok*') { $findings.Add('최근 30일 절전·종료 이벤트 없음 + 잠금 이벤트(' + $lockP.Split(' ')[0] + ') → 항상 켜두는 PC 는 켜짐=근무가 되어 과대 위험. 창 샘플러를 등록하세요: powershell -ExecutionPolicy Bypass -File collect\Register-Samplers.ps1') }
-if ($reachDays -ge 0 -and $reachDays -lt 45) { $findings.Add("System 로그가 ${reachDays}일 전까지만 남아 있음(롤오버) → 그 이전 PC 가동은 브라우저 방문 힌트·창 샘플러로만 보강됩니다.") }
+# PC 가동 · git
+if ($nBoot -gt 0 -and $nSleep -eq 0 -and $nShut -le 1 -and $lockP -notlike 'ok*') { $findings.Add('최근 30일 절전·종료 이벤트 없음 + 잠금 이벤트(' + $lockP.Split(' ')[0] + ') → 항상 켜두는 PC 는 켜진 시간이 근무로 과대 계상될 위험이 있습니다. 퇴근 때 PC 를 끄거나 절전으로 두면 켜기·끄기 기록이 정확해집니다.') }
+if ($reachDays -ge 0 -and $reachDays -lt 45) { $findings.Add("System 로그가 ${reachDays}일 전까지만 남아 있음(롤오버) → 그 이전 PC 가동은 브라우저 방문 힌트로만 보강됩니다.") }
 if ($n20 -gt 0) { $findings.Add("pc_on.csv 에 on=20h 행 ${n20}개(옛 20h 캡 흔적) → 이 버전 수집기로 재수집하면 항상 켜진 날의 기록이 살아납니다.") }
-if ($actF.Count -or $tiS.found -or $sp.Count) {
-    if (-not $tiS.found) { $findings.Add('창 샘플러 작업(' + $lmNames.TaskSampler + ') 미등록 → 로그온 때마다 수동 시작해야 합니다. 등록: LoadMonitor28-샘플러등록.bat 또는 powershell -ExecutionPolicy Bypass -File collect\Register-Samplers.ps1 (관리자 불필요, 실행 시간 제한 없음)') }
-    elseif ($tiS.etl -and $tiS.etl -ne 'PT0S') { $findings.Add('창 샘플러 작업에 실행 시간 제한 ' + $tiS.etl + ' → 로그온 3일 뒤 조용히 정지합니다. Register-Samplers.ps1 로 재등록하세요(제한 없음·겹침 무시로 덮어씀).') }
-    if ($age -gt 10 -and -not $sp.Count) { $findings.Add("창 샘플러 멈춤(마지막 샘플 ${age}분 전, 프로세스 없음) → 재시작: powershell -WindowStyle Hidden -ExecutionPolicy Bypass -File collect\Start-ActivitySampler.ps1 (등록돼 있으면 schtasks /Run /TN $($lmNames.TaskSampler))") }
-    if ($stuckNames.Count) { $findings.Add("창 샘플러 idle=0 고착(${ratio}%, " + ($stuckNames -join ', ') + ") → 구버전 샘플러의 TickCount 랩(가동 " + [math]::Round($upDays, 1) + "일). 샘플러를 이 버전으로 재시작하세요. 분석은 고착일을 PC 하한 모드로 대체합니다.") }
-} elseif (-not $tiS.found) { $findings.Add('창 샘플러 미사용(선택) → 켜면 하한 추정 대신 실측이 쓰여 정확도가 크게 오릅니다: powershell -ExecutionPolicy Bypass -File collect\Register-Samplers.ps1') }
 if (-not $gitUse) { $findings.Add('git.exe 를 찾지 못함 → 커밋 신호가 0건이 됩니다. Git 설치 후 config.gitExe 에 경로를 적거나 PATH 에 추가하세요(GitHub Desktop·SourceTree 내장 git 경로도 가능).') }
 elseif (-not $gitPath -and -not $gitExeCfg) { $findings.Add('git 이 PATH 에 없고 config.gitExe 도 비어 있음(후보 ' + $gitUse + ') → config.gitExe 에 이 경로를 적으세요.') }
 if (-not $findings.Count) { $findings.Add('특이사항 없음 - 수집 경로가 막혀 있지 않습니다. 그래도 비면 기간 안에 자료가 없거나 수집 중 오류입니다(last_run.json 의 note 참고).') }

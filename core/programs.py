@@ -142,7 +142,7 @@ _CATALOG = (
     (("explorer", "7zfm", "winrar", "bandizip", "notepad", "everything"), "파일·유틸", "각사", "비상용", "기타", "prefix"),
 )
 
-# 배경에서 '돌려 놓고 기다리는' 솔버 이름 — collect\Start-ActivitySampler.ps1 의 solvers_running 과
+# 배경에서 '돌려 놓고 기다리는' 솔버 이름 — activity CSV 의 solvers_running(옛 창 기록)과
 # config.solverProcesses 기본값이 여기서 나온다. GUI 만 있는 것(hypermesh·patran)은 넣지 않는다.
 SOLVER_HINTS = ("ansys", "mapdl", "fluent", "cortex", "fl_mpi", "cfx5solve", "abaqus", "nastran",
                 "comsol", "lsdyna", "starccm", "optistruct", "radioss", "hwsolver", "moldflow",

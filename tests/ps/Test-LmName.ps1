@@ -11,9 +11,6 @@ return @{
     h6_case     = (Get-LmH6 $p.ToLower())
     h6_fwd      = (Get-LmH6 'C:/LM28test/Sample Folder/')
     norm        = (Get-LmNormRoot $p)
-    task        = $nm.TaskSampler
-    task_teams  = $nm.TaskTeams
-    mutex       = $nm.MutexActivity
-    mutex_teams = $nm.MutexTeams
+    names_h6    = $nm.H6
     root_h6     = $rn.H6
 }
