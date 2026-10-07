@@ -1,7 +1,7 @@
 LoadMonitor28 필수 파일 목록 - 복사 시 전부 있어야 합니다.
 (data/ report/ teamdata/ 는 복사 금지 - 개인정보)
 
-총 99개
+총 100개
 
 LoadMonitor28-UI.bat                                   2,444 B  2d8726cc
 LoadMonitor28.bat                                      4,557 B  b58b23f7
@@ -9,7 +9,7 @@ LoadMonitor28-팀취합.bat                                  1,948 B  c01b6f50
 LoadMonitor28-팀서버.bat                                  1,695 B  1110da0a
 LoadMonitor28-팀업로드.bat                                 1,823 B  104641c1
 LoadMonitor28-팀서버주소.bat                                2,799 B  bf50940f
-LoadMonitor28-수집진단.bat                                   849 B  cecbe469
+LoadMonitor28-수집진단.bat                                 1,185 B  6ffca18b
 LoadMonitor28-가동시간비교.bat                               1,048 B  0954c0ba
 LoadMonitor28-샘플러등록.bat                                  868 B  ea8037a2
 LoadMonitor28-이동준비.bat                                 1,405 B  25340d85
@@ -34,7 +34,7 @@ refine.py                                             54,124 B  547693cf
 ruff.toml                                              1,004 B  413927e1
 FILES.txt                                                (이 파일)
 run.py                                                95,425 B  0ed22060
-자가점검.py                                               10,990 B  c884ddc5
+자가점검.py                                               11,018 B  7104a8f1
 collect/Add-WorkLog.ps1                                3,873 B  7a375f51
 collect/Get-FileActivity.ps1                          50,391 B  925a5787
 collect/Get-GitActivity.py                            33,451 B  ac747427
@@ -101,4 +101,5 @@ tools/Make-MovePack.py                                12,653 B  0e5c2ca0
 tools/Prepare-Move.ps1                                26,409 B  30b59a38
 tools/update_files.py                                  4,530 B  d98dd7d5
 tools/lm_fixenc.py                                     6,690 B  0b6df0b4
+tools/diag_bundle.py                                   8,982 B  f98fc6f7
 ui/app.py                                            404,494 B  ee447f91

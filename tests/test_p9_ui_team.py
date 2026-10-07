@@ -3,6 +3,7 @@ r"""WP9 — 화면 기간 칩(분기·반기)·팀 호환(lm_ver·판 표시)·�
 
 화면 서버(ui\app.py)는 띄우지 않는다 — quarter_range 는 소스에서 함수만 꺼내 같은 프로세스에서 부른다."""
 import ast
+import csv
 import os
 import re
 import unittest
@@ -114,6 +115,40 @@ class SelfCheckList(unittest.TestCase):
         listed = [m.group(1) for m in (re.match(r"^(\S.*?)\s{2,}[\d,]+ B\s+[0-9a-f]{8}\s*$", ln)
                                        for ln in _read("FILES.txt").splitlines()) if m]
         self.assertEqual(sorted(set(need) - set(listed) - {"FILES.txt"}), [])   # FILES.txt 는 자기 줄에 크기·crc 가 없다
+
+
+class DiagBundle(unittest.TestCase):
+    """회사 PC 에서 보내 줄 진단 묶음 — 건수·사유만, 주소·이름·경로는 가린다."""
+
+    def test_masks_and_counts(self):
+        import json
+        import tempfile
+        import diag_bundle
+        with tempfile.TemporaryDirectory(prefix="lm28_p9_") as root:
+            os.makedirs(os.path.join(root, "report"))
+            os.makedirs(os.path.join(root, "data", "outlook", "src"))
+            prof = os.environ.get("USERPROFILE", r"C:\Users\someone")
+            with open(os.path.join(root, "report", "last_run.json"), "w", encoding="utf-8") as f:
+                json.dump({"steps": [{"name": "mail.com", "rc": 3, "reason": "R-NOPROF",
+                                      "msg": f"hong@example.com · {prof}\\data"}]}, f, ensure_ascii=False)
+            with open(os.path.join(root, "data", "outlook", "mail_source.json"), "w", encoding="utf-8") as f:
+                json.dump({"source": "owa", "me": ["hong@example.com"], "display_name": "홍길동", "mail_rows": 12}, f,
+                          ensure_ascii=False)
+            with open(os.path.join(root, "data", "outlook", "mail.csv"), "w", encoding="utf-8", newline="") as f:
+                w = csv.writer(f)
+                w.writerow(["time", "subject", "src"])
+                w.writerows([["2026-09-01 09:00", "과제A 회의", "com"], ["2026-09-02 10:00", "견적", "owa"],
+                             ["2026-10-01 11:00", "보고", "owa"]])
+            text = diag_bundle.build(root)
+        self.assertNotIn("hong@example.com", text)
+        self.assertNotIn("홍길동", text)
+        self.assertNotIn("과제A 회의", text)
+        if os.environ.get("USERPROFILE"):
+            self.assertNotIn(os.environ["USERPROFILE"], text)
+        self.assertIn("R-NOPROF", text)
+        self.assertIn('"2026-09": 2', text)
+        self.assertIn('"src=owa": 2', text)
+        self.assertIn('"mail_rows": 12', text)
 
 
 if __name__ == "__main__":

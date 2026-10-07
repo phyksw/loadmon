@@ -107,6 +107,7 @@ NEED = [
     "tools/Prepare-Move.ps1",
     "tools/update_files.py",
     "tools/lm_fixenc.py",
+    "tools/diag_bundle.py",
     "ui/app.py",
 ]
 miss = [p for p in NEED if not os.path.exists(os.path.join(ROOT, p.replace("/", os.sep)))]
