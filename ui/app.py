@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-app.py — LoadMonitor24 로컬 HTML UI (표준 라이브러리만).
+app.py — LoadMonitor28 로컬 HTML UI (표준 라이브러리만).
 
-  python ui\\app.py          또는  LoadMonitor24-UI.bat 더블클릭
+  python ui\\app.py          또는  LoadMonitor28-UI.bat 더블클릭
 
 탭: 대시보드(요약 시각화) · 주간/월간 리뷰(raw 근거가 들어간 기간 리뷰) · 상세 리뷰(업무별 딥다이브+연결성)
 로컬 전용(127.0.0.1). 외부 전송 없음. Copilot 왕복만 사용자의 기존 세션으로 나간다.
@@ -27,11 +27,12 @@ sys.path.insert(0, os.path.join(ROOT, "core"))
 if ROOT not in sys.path:          # judge·aggregate 등 루트 모듈 임포트용
     sys.path.insert(0, ROOT)      # (ui\app.py 로 실행하면 sys.path[0]이 ui\ 라 루트가 안 잡힌다)
 from progress import parse as parse_progress  # noqa: E402  (core 경로 등록 뒤에 임포트)
+import lmname  # noqa: E402  — LM28 이름 단일원(작업·포트·Edge 프로필·%TEMP% 접두)
 
 REPORT = os.path.join(ROOT, "report")
 DATA = os.path.join(ROOT, "data")
 NO_WIN = 0x08000000
-VERSION = "v5.0"          # lm24-v5 — 팀 서버 IP·포트를 별도 설정(config\team_server.json)으로 분리 · 바꾸기는 LoadMonitor24-팀서버주소.bat 하나
+VERSION = "v5.0"          # lm24-v5 — 팀 서버 IP·포트를 별도 설정(config\team_server.json)으로 분리 · 바꾸기는 LoadMonitor28-팀서버주소.bat 하나
 LOCK = threading.Lock()
 FREEZE_LOCK = threading.Lock()       # [보고서 만들기] 직렬화 — JOB 과 별개(사본에 '실행 중'이 굳지 않게)
 JOB = {"running": False, "log": [], "step": "", "started": 0.0, "pid": 0,
@@ -39,22 +40,44 @@ JOB = {"running": False, "log": [], "step": "", "started": 0.0, "pid": 0,
 
 
 def kill_job():
-    """실행 중인 분석 프로세스 트리(run→mine/judge→copilot_auto)를 통째로 종료"""
+    """실행 중인 분석 프로세스 트리(run→mine/judge→copilot_auto)를 통째로 종료.
+    LM28: taskkill 대신 Job 째(core\\proc.kill_tree — 띄울 때 proc.attach 로 넣어 둔다). Job 에서 이탈한 전용 Edge 는
+    남고, 그 Edge 는 close_edge(CDP)가 닫는다(P6)."""
     with LOCK:
         pid = JOB.get("pid") or 0
     if pid:
-        subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)],
-                       capture_output=True, creationflags=NO_WIN, timeout=30)
+        try:
+            import proc as _proc
+            _proc.kill_tree(pid)
+        except Exception:  # noqa: BLE001 - 종료 실패가 [중지] 응답을 막지 않는다
+            pass
         with LOCK:
             JOB["pid"] = 0
 
 
+def close_edge(reason="ui"):
+    r"""우리가 띄운 전용 Edge 만 CDP Browser.close 로 닫는다(tools\copilot_auto.close_own_edge — owner.json 표식).
+    프로세스를 띄우지 않는다(예전 시작·종료 정리는 매번 powershell 을 띄웠다 — W3-15). 로그인 대기 중이거나
+    keepEdgeOpen 이면 닫지 않고, 사람이 띄운 Edge·LM24 의 Edge 는 표식이 없어 건드리지 않는다(P6)."""
+    try:
+        tools = os.path.join(ROOT, "tools")
+        if tools not in sys.path:
+            sys.path.insert(0, tools)
+        import copilot_auto
+        return copilot_auto.close_own_edge(None, reason)
+    except Exception as e:  # noqa: BLE001 - 정리 실패가 화면·종료를 막지 않는다
+        return {"closed": False, "why": f"error:{type(e).__name__}"}
+
+
 def kill_copilot_edge():
-    """Copilot 왕복용 전용 Edge(작업이 끝나도 재사용 대기로 남는다)를 종료 —
-    일반 Edge는 건드리지 않고 copilot_profile 프로필로 뜬 것만"""
+    r"""(수동 진단용 — LM28 은 자동으로 부르지 않는다. 시작·종료·[중지] 는 close_edge 가 CDP 로 닫는다.)
+    Copilot 왕복용 전용 Edge 를 명령줄 패턴으로 종료 —
+    일반 Edge·LM24 의 전용 Edge 는 건드리지 않고 **이 설치본의** 프로필(<ROOT>\data\lm28_edge)로 뜬 것만.
+    예전 패턴(프로필 폴더 이름만 비교)은 같은 PC 의 다른 판·다른 폴더 Edge 까지 죽였다(W3-03)."""
+    prof = lmname.edge_profile(ROOT).lower().replace("'", "''")     # PS 작은따옴표 문자열 이스케이프
     subprocess.run(["powershell", "-NoProfile", "-Command",
                     "Get-CimInstance Win32_Process -Filter \"Name='msedge.exe'\" | "
-                    "Where-Object {$_.CommandLine -like '*copilot_profile*'} | "
+                    "Where-Object {$_.CommandLine -and $_.CommandLine.ToLower().Contains('" + prof + "')} | "
                     "ForEach-Object {Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue}"],
                    capture_output=True, creationflags=NO_WIN, timeout=20)
 
@@ -74,7 +97,7 @@ def drop_foreign_profile():
     덤으로 도착 즉시 수백 MB 가 사라진다(실측 프로필 100~529MB).
     """
     try:
-        prof = os.path.join(DATA, "copilot_profile")
+        prof = lmname.edge_profile(ROOT)       # <ROOT>\data\lm28_edge — 이 설치본의 전용 프로필만
         if not os.path.isdir(prof):
             return
         # 판정 기준은 run.py.archive_other_pc 와 **같아야 한다** — 한쪽만 '다른 PC' 라고 보면
@@ -128,7 +151,7 @@ def cleanup_children():
     except Exception:
         pass
     try:
-        kill_copilot_edge()
+        close_edge("ui_exit")
     except Exception:
         pass
 
@@ -296,7 +319,7 @@ def team_share_ex():
 
 def _ta():
     r"""팀 서버 주소 단일원(core\teamaddr.py — 설치 폴더의 config\team_server.json). 부를 때마다 파일을 다시
-    읽어 LoadMonitor24-팀서버주소.bat 에서 바꾼 값이 곧바로 반영된다. 화면은 주소를 보여 주기만 하고 바꾸지
+    읽어 LoadMonitor28-팀서버주소.bat 에서 바꾼 값이 곧바로 반영된다. 화면은 주소를 보여 주기만 하고 바꾸지
     않는다(사용자 지시: 바꾸는 곳은 별도 bat 하나). v5 이전처럼 config.teamServerUrl 을 직접 쪼개지 않는다."""
     import teamaddr
     return teamaddr
@@ -630,7 +653,7 @@ def _suggest_port(cur):
     lo, hi = _dyn_range()
     base = max(hi + 1, _alt_port_base()) if (lo and lo <= cur <= hi) else cur
     for p in range(int(base), int(base) + 40):
-        if p == PORT[0] or 9148 <= p <= 9167:      # 대시보드 자신의 대역은 피한다
+        if p == PORT[0] or p in lmname.UI_PORTS:   # 대시보드 자신의 대역(9248~9267)은 피한다
             continue
         if _port_reserved(p):
             continue
@@ -639,13 +662,34 @@ def _suggest_port(cur):
     return 0
 
 
+def _same_root(r, root=None):
+    """신원 응답의 root 가 이 설치 폴더인가(대소문자·구분자 무시)"""
+    if not r:
+        return False
+    return os.path.normcase(os.path.abspath(str(r))) == os.path.normcase(os.path.abspath(root or ROOT))
+
+
+def _take_policy(ident, occ, root=None):
+    r"""[포트 가져오기] 허용 — 'one_click' 또는 'no'(W3-08).
+
+    LM28 은 LM24 와 기본 포트(9310)를 함께 쓴다(업로드 호환 — 바꾸지 않는다). 예전 규칙(리스너가 모두 teamserver.py 면
+    한 번에 종료)은 같은 PC 의 **LM24 팀 서버**까지 내렸다. 이제 신원 응답(/api/whoami)의 root 가 이 설치 폴더일 때만
+    (= 이 폴더의 옛 서버가 토큰·pid 증명 없이 남은 경우) 끈다. 그때도 종료 판단은 OS 사실로만 한다 — 리스너가 모두
+    teamserver.py 이고 보호 대상이 아닐 것. 다른 폴더(LM24 포함)·구버전·남의 프로그램은 끄지 않고, 화면이
+    LoadMonitor28-팀서버주소.bat 의 대체 포트를 제안만 한다(LM27 portdiag '제안만, 남의 프로세스는 안 죽임')."""
+    if not occ or not _same_root((ident or {}).get("root"), root):
+        return "no"
+    if any(x.get("protected") for x in occ) or not all(x.get("teamserver") for x in occ):
+        return "no"
+    return "one_click"
+
+
 def teamserver_status():
     port = _team_port()
     lis = _listeners(port)                      # None = 알아내지 못함
     open_ = _port_open(port) or bool(lis)       # 특정 NIC 에만 붙은 리스너도 놓치지 않는다
     ident = _ts_identity(port) if open_ else {}
-    same_root = bool(ident.get("root")) and \
-        os.path.normcase(os.path.abspath(ident["root"])) == os.path.normcase(os.path.abspath(ROOT))
+    same_root = _same_root(ident.get("root"))
     tok = _my_token()
     # '내 서버' 의 증명은 두 가지 — 내 report\ 의 토큰을 알거나, 그 pid 가 실제 리스너 목록에 있거나.
     # 신원 응답만 믿으면 그 포트에 먼저 붙은 아무 프로그램이나 우리 행세를 할 수 있다(반박 검증).
@@ -677,10 +721,8 @@ def teamserver_status():
             kind = "legacy_lm"
         else:
             kind = "unknown"
-    # 강제로 가져올 수 있는가 — OS 사실로만 정한다(네트워크 응답은 근거가 아니다)
-    take = "no"
-    if occ and not any(x["protected"] for x in occ):
-        take = "one_click" if all(x["teamserver"] for x in occ) else "confirm_pid"
+    # 강제로 가져올 수 있는가 — whoami.root 가 이 폴더일 때만, 그리고 OS 사실(명령줄·보호 목록)로 확인될 때만(W3-08)
+    take = _take_policy(ident, occ)
     tail = ""
     try:
         with open(TS_LOG, encoding="utf-8", errors="replace") as f:
@@ -694,7 +736,7 @@ def teamserver_status():
     return {"ok": True, "running": running, "port": port, "pid": pid if running else 0,
             "urls": [f"http://{ip}:{port}" for ip in ips], "log": tail,
             # 설정된 서버 주소(설치 폴더의 config\team_server.json) — 팀원은 분석 후 이 주소로 올린다.
-            # 화면은 보여 주기만 한다(바꾸는 곳은 LoadMonitor24-팀서버주소.bat).
+            # 화면은 보여 주기만 한다(바꾸는 곳은 LoadMonitor28-팀서버주소.bat).
             "host": a.host, "upload_url": a.url, "addr_kind": akind, "addr_note": anote,
             "addr_warnings": a.warnings, "edit_bat": ta.EDIT_BAT,
             # 포트는 열렸는데 내 서버가 아닐 때 — 화면이 사실대로 말할 수 있게
@@ -726,7 +768,7 @@ def _save_cfg(key, val):
 
 
 def _addr_payload():
-    r"""화면에 줄 팀 서버 주소(보여 주기만) — 값·출처·경고·이 PC 와의 관계. 바꾸는 곳은 LoadMonitor24-팀서버주소.bat."""
+    r"""화면에 줄 팀 서버 주소(보여 주기만) — 값·출처·경고·이 PC 와의 관계. 바꾸는 곳은 LoadMonitor28-팀서버주소.bat."""
     ta = _ta()
     a = ta.load(ROOT)
     akind, anote = ta.relation(a, local_ips())
@@ -979,24 +1021,54 @@ def _age(ts):
     return f"{d/60:.0f}분 전" if d < 5400 else (f"{d/3600:.0f}시간 전" if d < 172800 else f"{d/86400:.0f}일 전")
 
 
-# ── 창 샘플러 감시·재기동 (A26) ─────────────────────────────────────────────
+# ── 창 샘플러 상태·재기동 (A26 · W3-15) ───────────────────────────────────────
 # schtasks 한 줄로 등록한 샘플러는 기본 3일 실행 제한(PT72H)으로 로그온 3일 뒤 조용히 죽는다 —
-# 멈춘 날은 하한 모드로 떨어져 PC 유형 편차가 되살아난다. 상태바 표시에 더해 10분에 한 번만
-# 재기동을 시도한다(config.autoRestartSampler, 기본 true).
+# 멈춘 날은 하한 모드로 떨어져 PC 유형 편차가 되살아난다.
+# LM28(W3-15·P6): 대시보드는 프로세스를 주기적으로 띄우지 않는다. 예전에는 /api/status(1초 폴링)가 5분마다 schtasks
+# /Query, 10분마다 /Run(또는 powershell 2개)을 띄웠다 — 누수 PC 에서는 화면을 켜 둔 동안 프로세스가 쌓였다.
+#   · 등록 작업 조회는 화면을 열 때와 [새로고침] 때만(POST /api/sampler {"action":"refresh"}).
+#   · 재기동은 [샘플러 다시 시작] 버튼으로만(자동 /Run 없음). 등록은 [상주 샘플러 등록](확인 창 뒤).
+#   · 살아 있는지는 data\activity\sampler_status.json 의 heartbeat 와 마지막 CSV 시각으로 본다(파일만 읽는다).
 SAMPLER_STALE_MIN = 10                      # 마지막 샘플이 이보다 오래됐으면 '멈춤'
-SAMPLER_TASK = "LoadMonitor24-Sampler"      # docs\설정가이드 §4 · collect\Register-Samplers.ps1 의 작업 이름
+SAMPLER_TASK = lmname.TASK_SAMPLER          # LM28-Sampler-<폴더해시6> — collect\Register-Samplers.ps1 의 작업 이름(core\lmname.py)
 SAMPLER_RESTART = {"at": 0.0, "busy": False, "when": "", "how": "", "note": ""}
-SAMPLER_TASK_STATE = {"at": 0.0, "exists": None}   # 등록 작업 유무 — /api/status 는 1초 폴링이라 캐시한다
+SAMPLER_TASK_STATE = {"at": 0.0, "exists": None}   # 등록 작업 유무 — 화면 열기·[새로고침] 때만 갱신(캐시)
 
 
-def _sampler_task_exists():
-    """로그온 자동 시작 작업이 등록돼 있는가 — True/False, 확인 실패는 None. 5분 캐시.
+def _sampler_status_file(data_dir=None):
+    r"""data\activity\sampler_status.json(샘플러·Register-Samplers 가 쓴다 — utf-8-sig) → dict | {}.
+    키: ok·reason(R-CLM·R-ADDTYPE)·heartbeat('yyyy-MM-dd HH:mm:ss' 로컬)·interval_s·registered·task·at."""
+    try:
+        with open(os.path.join(data_dir or DATA, "activity", "sampler_status.json"), encoding="utf-8-sig") as f:
+            o = json.load(f)
+        return o if isinstance(o, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _sampler_mutex_alive():
+    r"""이 설치본의 샘플러 뮤텍스(Local\LM28-ActivitySampler-<h6>)가 있는가 — True/False, 못 보면 None. 프로세스를 띄우지 않는다."""
+    try:
+        import ctypes
+        k = ctypes.windll.kernel32
+        h = k.OpenMutexW(0x00100000, False, lmname.MUTEX_ACTIVITY)      # SYNCHRONIZE
+        if h:
+            k.CloseHandle(h)
+            return True
+        return False
+    except (AttributeError, OSError):
+        return None
+
+
+def _sampler_task_exists(refresh=False):
+    """로그온 자동 시작 작업이 등록돼 있는가 — True/False, 확인 실패·아직 안 봄은 None.
+    refresh=True 일 때만 schtasks /Query 를 1회 띄운다(화면 열기·[새로고침]) — 그 밖에는 캐시만 돌려준다.
     '꺼짐' 안내가 '등록이 안 된 것'인지 '등록은 됐는데 안 도는 것'인지 사용자가 알아야 조치할 수 있다."""
-    now = time.time()
-    with LOCK:
-        if now - SAMPLER_TASK_STATE["at"] < 300:
+    if not refresh:
+        with LOCK:
             return SAMPLER_TASK_STATE["exists"]
-        SAMPLER_TASK_STATE["at"] = now
+    with LOCK:
+        SAMPLER_TASK_STATE["at"] = time.time()
     ok = None
     try:
         r = subprocess.run(["schtasks", "/Query", "/TN", SAMPLER_TASK],
@@ -1018,27 +1090,24 @@ def _cfg_bool(v, dflt=True):
 
 
 def _sampler_restart_worker(ps1):
-    """(백그라운드 스레드) ① 등록 작업이 있으면 schtasks /Run — 작업의 IgnoreNew 정책이 중복 기동을 막는다
-    ② 없으면 이미 도는 인스턴스가 없을 때만 스크립트를 콘솔 없이 분리 실행."""
+    """(백그라운드 스레드 — [샘플러 다시 시작] 버튼으로만) ① 이미 도는 인스턴스(뮤텍스)가 있으면 띄우지 않는다
+    ② 등록 작업이 있으면 schtasks /Run — 작업의 IgnoreNew 정책이 중복 기동을 막는다 ③ 없으면 콘솔 없이 분리 실행."""
     how, note = "", ""
     try:
-        r = subprocess.run(["schtasks", "/Run", "/TN", SAMPLER_TASK], capture_output=True,
-                           timeout=30, creationflags=NO_WIN)
-        if r.returncode == 0:
-            how = "schtasks"
+        if _sampler_mutex_alive():
+            how, note = "skip", "샘플러가 이미 떠 있습니다(뮤텍스) — 샘플이 안 쌓이면 sampler_status.json 의 사유를 보세요"
             return
-        q = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             "@(Get-CimInstance Win32_Process -Filter \"Name='powershell.exe'\" | "
-             "Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -match 'Start-ActivitySampler' }).Count"],
-            capture_output=True, timeout=40, creationflags=NO_WIN)
-        try:
-            n = int((q.stdout or b"0").decode("utf-8", "replace").strip().splitlines()[-1] or 0)
-        except (ValueError, IndexError):
-            n = 0
-        if n > 0:
-            how, note = "skip", f"샘플러 프로세스 {n}개가 이미 떠 있는데 샘플이 안 쌓임 — 수동 확인"
+        st = _sampler_status_file()
+        if st.get("ok") is False and str(st.get("reason") or "") in ("R-CLM", "R-ADDTYPE"):
+            how, note = "skip", (f"이 PC 정책이 샘플러를 막습니다({st.get('reason')}) — 다시 띄워도 같은 이유로 멈춥니다. "
+                                 "IT 정책(제한 언어 모드·Add-Type 차단)을 확인하세요")
             return
+        if _sampler_task_exists() is not False:
+            r = subprocess.run(["schtasks", "/Run", "/TN", SAMPLER_TASK], capture_output=True,
+                               timeout=30, creationflags=NO_WIN)
+            if r.returncode == 0:
+                how = "schtasks"
+                return
         # 콘솔 없이(CREATE_NO_WINDOW|CREATE_NEW_PROCESS_GROUP) — 대시보드를 닫아도 샘플러는 남는다.
         # ★ 예전에는 DETACHED_PROCESS(0x8) 를 썼는데, 그러면 powershell.exe 가 스크립트를 **한 줄도
         #   실행하지 않고 즉시 exit 0** 한다(실측 플래그 행렬: 0x8 이 든 조합은 전부 0줄, 빼면 정상).
@@ -1053,7 +1122,7 @@ def _sampler_restart_worker(ps1):
         time.sleep(3.0)
         if p.poll() is not None:
             how, note = "error", (f"기동 직후 종료(rc={p.returncode}) — 실행 정책·보안 정책이 막았을 수 있습니다. "
-                                  "LoadMonitor24-샘플러등록.bat 으로 등록해 보세요")
+                                  "LoadMonitor28-샘플러등록.bat 으로 등록해 보세요")
             return
         how = "direct"
     except Exception as e:  # noqa: BLE001 - 감시 스레드가 죽어도 UI 는 계속
@@ -1061,60 +1130,79 @@ def _sampler_restart_worker(ps1):
     finally:
         with LOCK:
             SAMPLER_RESTART.update(busy=False, how=how, note=note, when=time.strftime("%H:%M"))
-        log("[샘플러] " + {"schtasks": f"멈춤 감지 — 등록 작업({SAMPLER_TASK}) 재실행",
-                           "direct": "멈춤 감지 — collect\\Start-ActivitySampler.ps1 재기동(등록 작업 없음)",
-                           "skip": "멈춤 감지 — " + note,
+        log("[샘플러] " + {"schtasks": f"[샘플러 다시 시작] — 등록 작업({SAMPLER_TASK}) 실행",
+                           "direct": "[샘플러 다시 시작] — collect\\Start-ActivitySampler.ps1 기동(등록 작업 없음)",
+                           "skip": "[샘플러 다시 시작] 보류 — " + note,
                            "error": "재기동 실패 — " + note}.get(how, note))
 
 
-def _sampler_autorestart(age_min):
-    """/api/status 마다 호출된다(1초 폴링) — 멈춤(>10분)이거나 **아직 한 번도 안 켜졌을 때**,
-    10분에 한 번만, 스레드로 시도한다. returns 상태바에 실을 사유(자동 재기동이 꺼져 있으면 그 사실).
-
-    ★ 예전에는 첫 줄이 'age_min is None 이면 return' 이라, 샘플이 하나도 없는 PC(=한 번도 켜진 적 없음)
-      에서는 자동 기동을 아예 시도하지 않았다. 그래서 화면은 영원히 '샘플러 꺼짐' 만 띄우고 아무 일도
-      일어나지 않았다(제보: "샘플러가 계속 꺼짐 상태 안내인데"). 그 경우야말로 켜 줘야 하는 상황이다."""
-    if age_min is not None and age_min <= SAMPLER_STALE_MIN:
-        return ""
-    if not _cfg_bool(cfg().get("autoRestartSampler"), True):
-        return "자동 재시작 꺼짐(config.autoRestartSampler)"
+def sampler_restart():
+    """[샘플러 다시 시작] 버튼 — 사용자 동작이 있을 때만(P6 · W3-15). 한 번에 하나, 30초 안 재요청은 무시. → 안내 문구"""
     ps1 = os.path.join(ROOT, "collect", "Start-ActivitySampler.ps1")
     if not os.path.exists(ps1):
         return "collect\\Start-ActivitySampler.ps1 없음"
     now = time.time()
     with LOCK:
-        if SAMPLER_RESTART["busy"] or now - SAMPLER_RESTART["at"] < 600:
-            return ""
+        if SAMPLER_RESTART["busy"] or now - SAMPLER_RESTART["at"] < 30:
+            return "이미 시작 중입니다 — 잠시 뒤 상태줄을 보세요"
         SAMPLER_RESTART.update(at=now, busy=True)
     threading.Thread(target=_sampler_restart_worker, args=(ps1,), daemon=True).start()
-    return ""
+    return "시작을 요청했습니다 — 1~2분 뒤 상태줄이 '가동 중' 으로 바뀌면 됩니다"
+
+
+def sampler_register():
+    r"""[상주 샘플러 등록](화면의 확인 창 뒤) — collect\Register-Samplers.ps1 을 1회 실행(LoadMonitor28-샘플러등록.bat 과 같다).
+    → (ok, 마지막 줄들). 등록 결과는 data\activity\sampler_status.json(registered·task·at)에도 남는다."""
+    ps1 = os.path.join(ROOT, "collect", "Register-Samplers.ps1")
+    if not os.path.exists(ps1):
+        return False, "collect\\Register-Samplers.ps1 없음"
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ps1],
+                           capture_output=True, timeout=180, cwd=ROOT, creationflags=NO_WIN)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return False, f"실행 실패({type(e).__name__})"
+    txt = (r.stdout or b"").decode("utf-8", "replace") or (r.stdout or b"").decode("cp949", "replace")
+    lines = [x.strip() for x in txt.splitlines() if x.strip()]
+    for ln in lines[-8:]:
+        log("[샘플러 등록] " + ln[:200])
+    _sampler_task_exists(refresh=True)
+    return r.returncode == 0, " / ".join(lines[-3:])[:400]
+
+
+def _ledger_path(rt=None):
+    r"""일자×축 원장 경로(core\coverage — data\coverage_ledger.json)"""
+    return os.path.join(rt or DATA, "coverage_ledger.json")
+
+
+def _ledger(rt=None):
+    r"""원장 읽기(판·PC 검사 없이 — 화면은 있는 그대로 보여 준다). 모듈이 없거나 깨졌으면 None."""
+    try:
+        import coverage as _cv
+        p = _ledger_path(rt)
+        if not os.path.exists(p):
+            return None
+        return _cv.Ledger.load(p)
+    except Exception:  # noqa: BLE001 - 화면 카드 하나가 /api/dash 를 죽이지 않게
+        return None
 
 
 def outlook_coverage(period=None):
-    r"""Outlook COM 수집의 달별 완료 표(data\outlook\coverage.json) 와 화면 기간을 맞춰 본다.
+    r"""메일·일정 수집 범위(달 단위)를 화면 기간과 맞춰 본다.
 
-    수집기는 달 단위로 최신 달부터 읽고 예산에 닿으면 멈춘다(다음 실행이 잇는다). 그 사이 화면은 '메일·회의가
-    M월부터만 있는' 상태라 주간 활동 추이·로드율이 앞 달에서 비어 보인다 — 화면이 그것을 말해야 한다.
-    반환 {"months": n, "covered": [...], "uncovered": [...]} — 표가 없거나 COM 이 아닌 경로(색인·웹·Copilot)가
-    채운 자료면 None (그 경로들은 달 단위 표를 남기지 않는다)."""
-    from datetime import date
+    LM28: 옛 data\outlook\coverage.json(LM24 COM 표 — 이제 갱신되지 않는다)을 읽지 않는다. 한 원천에서 센다(F-33):
+      ① data\coverage_ledger.json(일자×축 원장) — 달 안의 지난 날(오늘 제외)이 mail_in·mail_out·cal 모두 ok·zero_ok 면 그 달은 확인됨.
+      ② 원장이 없으면 COM 표(data\outlook\src\coverage_com.json — 검증된 달만 실린다).
+    지난 PC(추가PC\*)가 확인한 달도 확인으로 친다(옮긴 직후 과잉 경고 방지). 반환 {"months", "covered", "uncovered",
+    "basis": "ledger"|"com"} — 기간을 모르거나 둘 다 없으면 None."""
+    from datetime import date, timedelta
 
-    def _load(rt):
+    per = period if isinstance(period, (list, tuple)) and len(period) >= 2 else []
+    if not per:
         try:
-            with open(os.path.join(rt, "outlook", "mail_source.json"), encoding="utf-8-sig") as f:
-                s = json.load(f)
-            with open(os.path.join(rt, "outlook", "coverage.json"), encoding="utf-8-sig") as f:
-                c = json.load(f)
-        except (OSError, ValueError):
-            return None, None
-        if not isinstance(s, dict) or s.get("source") != "com" or not isinstance(c, dict):
-            return None, None
-        return s, c
-
-    src, cov = _load(DATA)
-    if src is None:
-        return None
-    per = period if isinstance(period, (list, tuple)) and len(period) >= 2 else (src.get("period") or [])
+            with open(os.path.join(DATA, "outlook", "mail_source.json"), encoding="utf-8-sig") as f:
+                per = (json.load(f) or {}).get("period") or []
+        except (OSError, ValueError, AttributeError):
+            per = []
     try:
         d0, d1 = date.fromisoformat(str(per[0])[:10]), date.fromisoformat(str(per[-1])[:10])
     except (TypeError, ValueError, IndexError):
@@ -1125,18 +1213,305 @@ def outlook_coverage(period=None):
     while (y, m) <= (d1.year, d1.month):
         months.append(f"{y:04d}-{m:02d}")
         y, m = (y + 1, 1) if m == 12 else (y, m + 1)
-    # 지난 PC(추가PC\*) 가 COM 으로 이미 읽은 달은 '미수집' 이 아니다 — 옮긴 직후 본 PC 표만 보면 1~5월을
-    # 미수집으로 과잉 경고하고, 안내를 따르면 Outlook 재수집을 헛되이 돌린다(감사 실측).
+    last = min(d1, date.today() - timedelta(days=1))           # 오늘은 늘 진행 중(partial) — 판정에서 뺀다
+    leds = [x for x in (_ledger(rt) for rt in _data_roots()) if x is not None]
+    if leds:
+        covered = []
+        for mk in months:
+            y, mo = int(mk[:4]), int(mk[5:7])
+            a = max(d0, date(y, mo, 1))
+            b = min(last, (date(y + (mo == 12), mo % 12 + 1, 1) - timedelta(days=1)))
+            if a > b:                                           # 이번 달이 오늘 하루뿐 — 판정 보류(확인으로 둔다)
+                covered.append(mk)
+                continue
+            ok = True
+            dd = a
+            while dd <= b and ok:
+                k = dd.isoformat()
+                ok = all(any(ld.is_verified(k, ax) for ld in leds) for ax in ("mail_in", "mail_out", "cal"))
+                dd += timedelta(days=1)
+            if ok:
+                covered.append(mk)
+        unc = [k for k in months if k not in covered]
+        return {"months": len(months), "covered": covered, "uncovered": unc, "basis": "ledger"}
+
+    def _load(rt):
+        try:
+            with open(os.path.join(rt, "outlook", "src", "coverage_com.json"), encoding="utf-8-sig") as f:
+                c = json.load(f)
+        except (OSError, ValueError):
+            return None
+        return c if isinstance(c, dict) else None
+
+    cov = _load(DATA)
+    if cov is None:
+        return None
     mail = set(cov["mail"].keys()) if isinstance(cov.get("mail"), dict) else set()
     cal = set(cov["calendar"].keys()) if isinstance(cov.get("calendar"), dict) else set()
     for rt in _data_roots()[1:]:
-        _s, _c = _load(rt)
+        _c = _load(rt)
         if _c is None:
             continue
         mail |= set(_c["mail"].keys()) if isinstance(_c.get("mail"), dict) else set()
         cal |= set(_c["calendar"].keys()) if isinstance(_c.get("calendar"), dict) else set()
     unc = [k for k in months if k not in mail or k not in cal]
-    return {"months": len(months), "covered": [k for k in months if k not in unc], "uncovered": unc}
+    return {"months": len(months), "covered": [k for k in months if k not in unc], "uncovered": unc, "basis": "com"}
+
+
+# ── 수집 현황 카드(F-01·F-33·REQ-36) ──────────────────────────────────────────────────────
+# 숫자는 한 원천(원장)에서만 센다 — 요약과 표가 따로 세면 어긋난다(F-33). '불가'는 실측 전이라 '의심'으로 적고(P13),
+# 이 PC 인지 모르면 PC 이름을 지어내지 않고 출처만 적는다(F-01). 시각은 로컬(원장·last_run 이 로컬로 쓴다).
+AXIS_KO = {"mail_in": "받은 메일", "mail_out": "보낸 메일", "cal": "일정", "teams": "팀즈", "pc": "PC 가동"}
+SRC_KO = {"com": "Outlook 앱(COM)", "index": "검색 색인", "owa": "Outlook 웹", "copilot": "Copilot(증인)",
+          "import": "반입 파일", "legacy": "예전 수집분", "teams_web": "팀즈 웹", "teams_window": "팀즈 앱 창",
+          "teams_graph": "팀즈 Graph", "teams_copilot": "팀즈 Copilot(증인)", "pc_events": "이벤트 로그",
+          "pc_hints": "브라우저 기록", "recent": "Recent", "git": "git"}
+
+
+def _machine_guid():
+    """이 PC 의 MachineGuid(원장 host 와 같은 값) — 못 읽으면 ''."""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography",
+                            0, winreg.KEY_READ | winreg.KEY_WOW64_64KEY) as k:
+            return str(winreg.QueryValueEx(k, "MachineGuid")[0]).strip()
+    except (OSError, ImportError, IndexError, ValueError):
+        return ""
+
+
+def collect_status_payload(d0="", d1="", data_dir=None, report_dir=None, here_id=None):
+    r"""수집 현황 카드 재료 — {"ledger": {...}|None, "stages": [...], "owa": {...}|None, "as_of": 로컬 시각}.
+
+    ledger.axes[축] = {ok, zero_ok, partial, unobserved, na, days, srcs:[출처 이름]} — 기간 [d0, min(d1, 오늘)] 의 날 수.
+      unobserved = 그 밖(unverified·blocked·asked·not_attempted). na 는 팀즈를 쓰지 않는 PC 의 해당 없음.
+    ledger.pc = '이 PC' | '' — 원장 host 가 이 PC 의 MachineGuid 와 같을 때만 '이 PC'. 모르면 비워 출처만 보인다(F-01).
+    stages = last_run.json 의 수집기 단계(rc 가 있는 것) — name·ok·rc·reason·counts(짧은 것만)·note.
+    owa = data\outlook\src\mail_source_owa.json 의 date_only/mail_rows(시각 없이 날짜만 읽힌 메일 비율)."""
+    from datetime import date
+    data_dir = data_dir or DATA
+    report_dir = report_dir or REPORT
+    out = {"ledger": None, "stages": [], "owa": None, "as_of": time.strftime("%Y-%m-%d %H:%M")}
+    lp = _ledger_path(data_dir)
+    led = _ledger(data_dir)
+    if led is not None:
+        today = date.today().isoformat()
+        days_all = sorted(led.days)
+        a = str(d0 or (days_all[0] if days_all else today))[:10]
+        b = min(str(d1 or today)[:10], today)
+        try:
+            summ = led.summary(a, b)
+        except Exception:  # noqa: BLE001 - 날짜가 이상하면 카드만 비운다
+            summ = {}
+        axes = {}
+        for ax in AXIS_KO:
+            c = summ.get(ax) or {}
+            n = sum(c.values())
+            ok, zo, pa, na = c.get("ok", 0), c.get("zero_ok", 0), c.get("partial", 0), c.get("na", 0)
+            srcs = sorted({s for day in led.days if a <= day <= b
+                           for s in ((led.days.get(day) or {}).get(ax) or {})})
+            axes[ax] = {"label": AXIS_KO[ax], "days": n, "ok": ok, "zero_ok": zo, "partial": pa, "na": na,
+                        "unobserved": max(0, n - ok - zo - pa - na),
+                        "srcs": [SRC_KO.get(s, s) for s in srcs]}
+        host = ""
+        try:
+            with open(lp, encoding="utf-8-sig") as f:
+                host = str((json.load(f) or {}).get("host") or "")
+        except (OSError, ValueError, AttributeError):
+            host = ""
+        me = _machine_guid() if here_id is None else here_id
+        last = {SRC_KO.get(k, k): {"rc": v.get("rc"), "reason": v.get("reason", ""), "at": v.get("at", "")}
+                for k, v in (led.last or {}).items() if isinstance(v, dict)}
+        out["ledger"] = {"period": [a, b], "axes": axes, "suspect": int(summ.get("_suspect") or 0),
+                         "na": list(summ.get("_na") or []), "last": last,
+                         "pc": "이 PC" if (host and me and host == me) else ""}
+    try:
+        with open(os.path.join(report_dir, "last_run.json"), encoding="utf-8-sig") as f:
+            lr = json.load(f)
+        for x in (lr.get("stages") or []) if isinstance(lr, dict) else []:
+            if isinstance(x, dict) and x.get("rc") is not None:
+                cnt = x.get("counts") if isinstance(x.get("counts"), dict) else {}
+                keep = {k: v for k, v in cnt.items() if isinstance(v, (int, float, str, bool)) and len(str(v)) <= 24}
+                out["stages"].append({"name": str(x.get("name") or ""), "ok": bool(x.get("ok")), "rc": x.get("rc"),
+                                      "reason": str(x.get("reason") or ""), "note": str(x.get("note") or "")[:160],
+                                      "counts": dict(list(keep.items())[:8])})
+    except (OSError, ValueError, AttributeError):
+        pass
+    try:
+        with open(os.path.join(data_dir, "outlook", "src", "mail_source_owa.json"), encoding="utf-8-sig") as f:
+            ms = json.load(f)
+        mr, dn = int(ms.get("mail_rows") or 0), int(ms.get("date_only") or 0)
+        out["owa"] = {"mail_rows": mr, "date_only": dn, "ratio": round(dn / mr, 3) if mr else 0.0}
+    except (OSError, ValueError, AttributeError, TypeError):
+        pass
+    return out
+
+
+def reset_cursors_local(data_dir=None):
+    r"""[커서 초기화] — run.py --reset-cursors 와 같은 일을 이 프로세스에서(파이썬을 새로 띄우지 않는다):
+    COM 달별 완료 표·옛 표·팀즈 웹 방 커서를 지우고 원장의 모든 축을 not_attempted 로. 수집한 행(CSV)은 그대로.
+    원장의 판(ver)·PC(host)는 보존한다(다음 수집이 그대로 이어 쓴다). → (지운 파일 목록, 원장 초기화 여부)"""
+    data_dir = data_dir or DATA
+    gone = []
+    for rel in (("outlook", "src", "coverage_com.json"), ("outlook", "coverage.json"), ("m365", "teams_web_rooms.json")):
+        p = os.path.join(data_dir, *rel)
+        try:
+            os.remove(p)
+            gone.append("\\".join(rel))
+        except OSError:
+            pass
+    ok = False
+    lp = _ledger_path(data_dir)
+    if os.path.exists(lp):
+        try:
+            import coverage as _cv
+            with open(lp, encoding="utf-8-sig") as f:
+                raw = json.load(f) or {}
+            led = _cv.Ledger.load(lp, ver=str(raw.get("ver") or ""), host=str(raw.get("host") or ""))
+            led.reset()
+            ok = led.save()
+        except Exception:  # noqa: BLE001 - 초기화 실패는 결과로 알린다
+            ok = False
+    return gone, ok
+
+
+def web_period(d0="", d1=""):
+    r"""웹 읽기 기간 — 화면이 보낸 기간 → 없으면 마지막 실행(last_run.period) → 없으면 올해 1월 1일 ~ 오늘. 끝은 오늘로 자른다."""
+    import datetime as _dt
+    today = _dt.date.today().isoformat()
+
+    def _ok(s):
+        try:
+            return _dt.date.fromisoformat(str(s)[:10]).isoformat()
+        except (TypeError, ValueError):
+            return ""
+    a, b = _ok(d0), _ok(d1)
+    if not (a and b):
+        try:
+            with open(os.path.join(REPORT, "last_run.json"), encoding="utf-8-sig") as f:
+                per = json.load(f).get("period") or []
+            if len(per) == 2:
+                a, b = _ok(per[0]), _ok(per[1])
+        except (OSError, ValueError, AttributeError):
+            pass
+    if not (a and b):
+        a, b = quarter_range(today, "ytd")
+    if a > b:
+        a, b = b, a
+    return a, min(b, today)
+
+
+def web_read(kind, d0, d1, timeout=1500):
+    r"""run.py --web-only mail|teams --from d0 --to d1 → 화면 응답 dict. Job 으로 감싸 [중지]·시간 초과 때 트리째 끊는다.
+    마지막 줄들의 'LMSTATUS {…}' 는 사람용 요약에서 뺀다(수집기 계약 줄 — 화면 문구가 아니다)."""
+    tag = "Outlook 웹" if kind == "mail" else "팀즈 웹"
+    cmd = [sys.executable, os.path.join(ROOT, "run.py"), "--from", d0, "--to", d1, "--web-only", kind]
+    try:
+        p = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             env=dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1"),
+                             creationflags=NO_WIN)
+    except OSError as e:
+        return {"ok": False, "rc": -1, "error": f"실행 실패({type(e).__name__})", "period": [d0, d1]}
+    job = proc.attach(p)
+    with LOCK:
+        JOB["pid"] = p.pid
+    try:
+        out, _ = p.communicate(timeout=timeout)
+        rc = p.returncode
+    except subprocess.TimeoutExpired:
+        proc.kill_tree(p.pid)
+        try:
+            p.communicate(timeout=10)
+        except (subprocess.TimeoutExpired, OSError, ValueError):
+            pass
+        proc.release(job, p.pid)
+        log(f"[{tag}] {timeout // 60}분 안에 끝나지 않아 끊었습니다")
+        return {"ok": False, "rc": -1, "error": f"{timeout // 60}분 내 끝나지 않음", "period": [d0, d1]}
+    proc.release(job, p.pid)
+    lines = [ln.rstrip() for ln in (out or b"").decode("utf-8", "replace").splitlines()
+             if ln.strip() and not ln.lstrip().startswith("LMSTATUS ")]
+    for ln in lines[-12:]:
+        log(f"[{tag}] {ln[:200]}")
+    tail = lines[-4:]
+    why = {0: "", 2: "로그인 필요 — 전용 Edge 창에서 회사 계정으로 1회 로그인한 뒤 다시 누르세요"}.get(rc, "일부 실패 — 진행 로그를 보세요")
+    return {"ok": rc == 0, "rc": rc, "period": [d0, d1], "login": rc == 2, "error": why,
+            "summary": " / ".join(t.strip() for t in tail)[:600]}
+
+
+# ── 수동 기록 폼(W1-19) — collect\Add-WorkLog.ps1 과 같은 열 ─────────────────────────────────
+WORKLOG_COLS = ["date", "category", "hours", "entity", "note", "user", "start", "end"]
+
+
+def _hhmm(s):
+    s = str(s or "").strip()
+    if not s:
+        return ""
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})", s)
+    if not m or int(m.group(1)) > 23 or int(m.group(2)) > 59:
+        raise ValueError(f"시각은 HH:mm 입니다: {s}")
+    return f"{int(m.group(1)):02d}:{m.group(2)}"
+
+
+def add_worklog(rec, data_dir=None):
+    r"""data\manual\worklog.csv 에 한 줄 — Add-WorkLog.ps1 과 같은 파일·8열(date,category,hours,entity,note,user,start,end).
+    옛 6열 머리말이면 머리말 한 줄만 8열로 바꾼다(Add-WorkLog 와 같은 처리 — 읽는 쪽 core\extract 는 열 이름으로 읽는다).
+    시작·끝(HH:mm)을 주면 시간은 그 차이(자정 넘김 허용) — 시간을 함께 주면 그 값을 쓴다(구간은 기록만). → 쓴 행 dict"""
+    from datetime import date as _date
+    data_dir = data_dir or DATA
+    d = _date.fromisoformat(str(rec.get("date") or "")[:10]).isoformat()
+    st, en = _hhmm(rec.get("start")), _hhmm(rec.get("end"))
+    if bool(st) != bool(en):
+        raise ValueError("시작·끝 시각은 둘 다 적거나 둘 다 비우세요")
+    try:
+        hours = float(rec.get("hours") or 0)
+    except (TypeError, ValueError):
+        raise ValueError("시간은 숫자입니다") from None
+    if st and hours <= 0:
+        m0 = int(st[:2]) * 60 + int(st[3:])
+        m1 = int(en[:2]) * 60 + int(en[3:])
+        hours = round(((m1 - m0) % 1440 or 1440) / 60.0, 2)
+    if not (0 < hours <= 24):
+        raise ValueError("시간은 0 보다 크고 24 이하여야 합니다")
+    cat = str(rec.get("category") or "기타").strip()[:20] or "기타"
+    row = {"date": d, "category": cat, "hours": f"{hours:g}",
+           "entity": str(rec.get("entity") or "").strip()[:80], "note": str(rec.get("note") or "").strip()[:200],
+           "user": os.environ.get("USERNAME", ""), "start": st, "end": en}
+    p = os.path.join(data_dir, "manual", "worklog.csv")
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    if os.path.exists(p):
+        with open(p, encoding="utf-8-sig", newline="") as f:
+            body = f.read()
+        lines = body.splitlines()
+        if lines and lines[0].strip() == ",".join(WORKLOG_COLS[:6]):
+            lines[0] = ",".join(WORKLOG_COLS)          # 옛 6열 머리말 → 8열(Add-WorkLog.ps1 과 같은 처리)
+            with open(p, "w", encoding="utf-8-sig", newline="") as f:
+                f.write("\r\n".join(lines) + "\r\n")
+    else:
+        with open(p, "w", encoding="utf-8-sig", newline="") as f:
+            f.write(",".join(WORKLOG_COLS) + "\r\n")
+    with open(p, "a", encoding="utf-8", newline="") as f:
+        csv.writer(f, lineterminator="\r\n").writerow([row[k] for k in WORKLOG_COLS])
+    return row
+
+
+# ── 기간 빠른 선택(UD-18·W3-06) — 올해(기본)·1~4분기·상반기·하반기 ─────────────────────────────
+# LM27 lm27\ui\period.py 의 규칙만 가져왔다: 모두 오늘이 속한 해, 진행 중인 기간은 끝을 오늘로 자르고, 아직 시작하지
+# 않은 기간은 고를 수 없다(None). 같은 규칙의 JS 판 = PAGE 의 periodRange(), bat 판 = LoadMonitor28.bat 의 날짜 계산 1줄.
+PERIOD_SPANS = {"ytd": ("01-01", "12-31"), "q1": ("01-01", "03-31"), "q2": ("04-01", "06-30"),
+                "q3": ("07-01", "09-30"), "q4": ("10-01", "12-31"), "h1": ("01-01", "06-30"),
+                "h2": ("07-01", "12-31")}
+
+
+def quarter_range(today, key):
+    """빠른 선택 key(ytd·q1~q4·h1·h2)의 (from, to) — 'YYYY-MM-DD' 글자. 끝이 오늘보다 뒤면 오늘로 자른다.
+    아직 시작하지 않은 기간·모르는 키면 None. today 는 'YYYY-MM-DD'(date 도 받는다)."""
+    t = today.isoformat() if hasattr(today, "isoformat") else str(today)[:10]
+    span = PERIOD_SPANS.get(str(key or "").lower())
+    if not span or len(t) != 10:
+        return None
+    a, b = t[:4] + "-" + span[0], t[:4] + "-" + span[1]
+    if a > t:
+        return None
+    return a, min(b, t)
 
 
 def dash_period(meta, lastrun=None):
@@ -1214,7 +1589,7 @@ def sources(period=None):
         ("git 커밋", ["files/git_commits.csv"], "config.gitRepos 설정 (선택)"),
         ("팀즈 채팅", ["m365/teams_*.csv"], r"[팀즈 웹 읽기] 버튼 — 앱이 꺼져 있어도 됩니다 (전용 Edge 창에서 회사 계정 1회 로그인)"),
         ("창 샘플러", ["activity/activity_*.csv"],
-         "LoadMonitor24-샘플러등록.bat 으로 1회 등록하면 로그온 때마다 자동 시작 (선택 · 없으면 PC 가동 하한으로 계산)"),
+         "LoadMonitor28-샘플러등록.bat 으로 1회 등록하면 로그온 때마다 자동 시작 (선택 · 없으면 PC 가동 하한으로 계산)"),
         ("추가 PC", ["추가PC/*/outlook/mail.csv", "추가PC/*/files/files.csv",
                      "추가PC/*/pc/pc_on.csv", "추가PC/*/m365/teams_*.csv"],
          "폴더째 옮겨 [추가 PC 수집] → 본 PC 에서 [분석 실행] — 자동 합산 · 중복 자동 제외 (선택)"),
@@ -1311,10 +1686,18 @@ def sources(period=None):
         elif name == "팀즈 채팅":
             # 이 계정의 Copilot 이 팀즈 조회 불가로 확인된 PC(실측: 커넥터 부재)에서는
             # '재수집'이 아니라 상시 샘플러가 정답이다 — 안내를 상황에 맞게 바꾼다.
-            no_cp = os.path.exists(os.path.join(DATA, "m365", "teams_copilot_unavailable.json"))
+            # LM28: 파일이 있다고 '불가' 가 아니다 — 1회 관측만 담길 수 있다(서로 다른 날 2회 + 14일 TTL · P13).
+            # until 이 오늘 이후일 때만 불가로 본다(Get-TeamsViaCopilot unable_active 와 같은 규칙).
+            no_cp = False
+            try:
+                with open(os.path.join(DATA, "m365", "teams_copilot_unavailable.json"), encoding="utf-8-sig") as f:
+                    _un = json.load(f)
+                no_cp = isinstance(_un, dict) and str(_un.get("until") or "")[:10] >= time.strftime("%Y-%m-%d")
+            except (OSError, ValueError):
+                no_cp = False
             if no_cp and n < 5:
                 st = "warn" if n else "off"
-                hint = ("이 계정 Copilot은 팀즈 조회 불가 — [팀즈 웹 읽기] 를 쓰세요"
+                hint = ("이 계정 Copilot은 팀즈 조회 불가 의심(서로 다른 날 2회 확인 · 14일 뒤 다시 물음) — [팀즈 웹 읽기] 를 쓰세요"
                         "(앱이 꺼져 있어도 됩니다). 상시 누적은 collect\\Start-TeamsSampler.ps1")
             elif 0 < n < 5:
                 st, hint = "warn", "회수 부족 — [팀즈 웹 읽기] 로 보강 (창 읽기는 화면에 보인 부분만 긁습니다)"
@@ -1630,11 +2013,66 @@ def trend(d0="", d1="", tag="", info=None):
             info["pc_diag"] = {}
     return out
 
-def review(gran="week"):
+def _review_meta(sig_path):
+    r"""리뷰가 쓰는 mm_meta — 신호 파일과 같은 기간(tag)의 report\mm_meta_<tag>.json. 없으면 {}."""
+    m = re.search(r"signals_(\d{8}-\d{8})\.csv$", str(sig_path or ""))
+    if not m:
+        return {}
+    try:
+        with open(os.path.join(REPORT, f"mm_meta_{m.group(1)}.json"), encoding="utf-8-sig") as f:
+            o = json.load(f)
+        return o if isinstance(o, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def review_mm(meta, gran, key, days=None):
+    r"""리뷰 묶음 하나의 투입 MM — mm_meta 기준(W2-09: 대시보드·리포트와 같은 값).
+      month: mm_months[YYYY-MM].mm(그 달 투입 MM) · week: 그 주 날마다 day_hours ÷ 그 달 1 MM 시간(capacity_h)의 합
+      · all: total_mm. mm_meta 에 값이 없으면 None(호출측이 예전 달력 개략치로 내려간다)."""
+    from datetime import date, timedelta
+    if not isinstance(meta, dict) or not meta:
+        return None
+    mmm = meta.get("mm_months") if isinstance(meta.get("mm_months"), dict) else {}
+    try:
+        if gran == "month":
+            v = (mmm.get(key) or {}).get("mm")
+            return float(v) if v is not None else None
+        if gran == "week":
+            dh = meta.get("day_hours") if isinstance(meta.get("day_hours"), dict) else {}
+            if not dh or not mmm:
+                return None
+            d0 = date.fromisoformat(key)
+            tot = 0.0
+            for i in range(7):
+                d = (d0 + timedelta(days=i)).isoformat()
+                h = float(dh.get(d) or 0)
+                if not h:
+                    continue
+                cap = float((mmm.get(d[:7]) or {}).get("capacity_h") or 0)
+                if cap <= 0:
+                    wd = int((mmm.get(d[:7]) or {}).get("workdays") or 0)
+                    cap = 8.0 * max(1, wd or 21)
+                tot += h / cap
+            return tot
+        v = meta.get("total_mm")
+        return float(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def review(gran="week", rows=None, meta=None):
     """주간/월간/전체 업무 리뷰 — 신호별 귀속 내역(signals_*.csv)을 기간으로 묶어
-    프로젝트별 raw 근거·타임라인·사람/산출물 연결까지 만든다. '요약'이 아니라 원문이 들어간 리뷰."""
+    프로젝트별 raw 근거·타임라인·사람/산출물 연결까지 만든다. '요약'이 아니라 원문이 들어간 리뷰.
+    LM28(W2-09): 과제 MM = 그 묶음의 투입 MM(mm_meta — 달 mm·주 day_hours·전체 total_mm) × 과제 몫(신호 가중치 비중).
+    예전에는 달력일/30.44 × 비중이라 대시보드·리포트의 투입 MM 과 어긋났다. mm_meta 가 없을 때만 예전 개략치(mm_basis='calendar')."""
     from datetime import datetime, timedelta
-    rows = _rows(latest_signals())
+    if rows is None:
+        sp = latest_signals()
+        rows = _rows(sp)
+        if meta is None:
+            meta = _review_meta(sp)
+    meta = meta if isinstance(meta, dict) else {}
     if not rows:
         return []
     groups = {}
@@ -1684,11 +2122,15 @@ def review(gran="week"):
         tot = g["w"] or 1e-9
         span = g["span"] or (max(g["days"]) - min(g["days"])).days + 1
         months = span / 30.44
+        gmm = review_mm(meta, gran, key)
+        basis = "mm_meta" if gmm is not None else "calendar"
+        if gmm is None:
+            gmm = months                     # mm_meta 가 없을 때만 — 예전 개략치(달력일 ÷ 30.44)
         projs = []
         for pj, pp in sorted(g["proj"].items(), key=lambda kv: -kv[1]["w"]):
             projs.append({
                 "name": pj, "share": round(pp["w"] / tot, 4),
-                "mm": round(pp["w"] / tot * months, 3), "n": pp["n"],
+                "mm": round(pp["w"] / tot * gmm, 3), "n": pp["n"],
                 # pw 가드: 가중치 합 0(잘린 행 등)이면 ZeroDivision 으로 리뷰 탭 전체가 죽는다
                 "acts": [{"name": a, "pct": round(v / (pp["w"] or 1e-9) * 100)} for a, v in pp["acts"].most_common(4)],
                 "wt": [[k, round(v / (pp["w"] or 1e-9) * 100)] for k, v in pp["wt"].most_common()],
@@ -1706,7 +2148,7 @@ def review(gran="week"):
             for fname in p["files"][:5]:
                 a_edges.append([p["name"], fname[:24], 1])
         out.append({"key": key, "label": g["label"], "signals": g["n"], "days": len(g["days"]),
-                    "months": round(months, 2), "projects": projs,
+                    "months": round(months, 2), "mm": round(gmm, 3), "mm_basis": basis, "projects": projs,
                     "wt": [[k, round(v / tot * 100)] for k, v in (g.get("wt") or Counter()).most_common()],
                     "timeline": timeline, "p_edges": p_edges[:24], "a_edges": a_edges[:24]})
     return out
@@ -1790,6 +2232,7 @@ def run_job(d0, d1, ai, skip, collect_only=False):
             (" · AI 정제" if ai else "") + (" · 재분석만" if skip else "")))
         p = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                              env=dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1"), creationflags=NO_WIN)
+        job = proc.attach(p)                 # LM28: Job(KILL_ON_JOB_CLOSE+BREAKAWAY_OK) — Edge·샘플러 재기동은 이탈해 산다
         with LOCK:
             JOB["pid"] = p.pid
 
@@ -1815,6 +2258,7 @@ def run_job(d0, d1, ai, skip, collect_only=False):
         # 못했다(제보 '무한 정지'). 이제 무출력이 한도를 넘으면 트리를 끊고 이유를 로그에 남긴다.
         stopped = watch_child(p, _on, "분석 실행")
         p.wait()
+        proc.release(job, p.pid)             # 남은 손자(고아)까지 정리 — 이미 닫혔으면 아무것도 안 한다
         if stopped:
             log(stopped)
             log("=== 중단(정체 감지) — [AI 연결 진단]으로 Copilot 창 상태를 확인한 뒤 다시 실행하세요 ===")
@@ -1995,9 +2439,14 @@ def _tag_args():
 
 
 # v3: 감시기 한 벌 — core/watch 임포트(복제 3함수 삭제 · 구조 감사 4계층)
-from watch import kill_tree  # noqa: E402,F401
+import proc  # noqa: E402  — LM28: 자식은 Job 에 넣고 끊을 때 Job 째(taskkill 을 띄우지 않는다 · P6)
+import watch as _watch_mod  # noqa: E402
 from watch import stage_limits as _core_stage_limits  # noqa: E402
 from watch import watch_child as _core_watch_child  # noqa: E402
+
+# 이 프로세스 안에서만 감시기의 종료를 Job 으로 바꾼다(run.py 와 같은 방식) — 전용 Edge·샘플러는 Job 에서 이탈해 산다
+_watch_mod.kill_tree = proc.kill_tree
+kill_tree = proc.kill_tree  # 기존 호출부 이름 유지
 
 
 def _stage_limits():
@@ -2034,6 +2483,7 @@ def tool_job(kind, extra=()):
         p = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                              env=dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1"),
                              creationflags=NO_WIN)
+        job = proc.attach(p)                 # LM28: 끊을 때 Job 째(taskkill 없음)
         with LOCK:
             JOB["pid"] = p.pid
         last, tail = None, ""
@@ -2065,6 +2515,7 @@ def tool_job(kind, extra=()):
         # 정체 감시 — 자식이 멈추면 트리를 끊고 이유를 남긴다(제보 '무한 정지': 화면이 실행 중에서 못 벗어났다)
         stopped = watch_child(p, _on, step)
         p.wait()
+        proc.release(job, p.pid)
         last, tail = box["last"], box["tail"]
         if stopped:
             res = {"ok": False, "error": "중단(정체 감지)", "hint": stopped}
@@ -2112,6 +2563,7 @@ def narrate_job():
                                       PYTHONUNBUFFERED="1"), creationflags=NO_WIN)
         with LOCK:
             JOB["pid"] = p.pid
+        job = proc.attach(p)
 
         def _on(line):
             line = line.rstrip()
@@ -2129,6 +2581,7 @@ def narrate_job():
 
         stopped = watch_child(p, _on, "리뷰 코멘트")      # 멈추면 끊는다 — 화면이 '실행 중' 에 갇히지 않게
         p.wait()
+        proc.release(job, p.pid)
         if stopped:
             log(stopped)
             log("=== 리뷰 생성 중단(정체 감지) ===")
@@ -2143,7 +2596,7 @@ def narrate_job():
 
 
 TEAM_PAGE = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
-<title>LoadMonitor24 — 팀 취합</title><style>
+<title>LoadMonitor28 — 팀 취합</title><style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Malgun Gothic',system-ui,sans-serif;background:#f2f4f7;color:#12151a;padding:22px}
 .wrap{max-width:1180px;margin:0 auto}
@@ -2176,7 +2629,7 @@ body.snap .snaponly{display:block}
 .steps a,.steps span{display:inline-block;padding:5px 10px;border-radius:14px;border:1px solid #d7dbe0;background:#fff;color:#4a5159;text-decoration:none}
 .steps .on{background:#2a78d6;border-color:#2a78d6;color:#fff;font-weight:700}
 </style></head><body><div class="wrap">
-<h1>팀 취합<small id="ver">LoadMonitor24</small></h1>
+<h1>팀 취합<small id="ver">LoadMonitor28</small></h1>
 <div class="sub">공유폴더의 인별 결과를 실시간으로 읽어 시각화합니다. 원본 파일은 수정하지 않습니다.</div>
 <div class="steps nosnap">
  <a href="/" target="_blank">① 내 PC 분석</a>
@@ -2199,7 +2652,7 @@ body.snap .snaponly{display:block}
   </div>
  <div class="note" id="tsaddr"></div>
  <div class="note" id="tsurl"></div>
- <div class="note">여기서 켜면 이 PC 가 팀 취합 서버가 됩니다. 서버 IP·포트는 설치 폴더의 <b>LoadMonitor24-팀서버주소.bat</b>
+ <div class="note">여기서 켜면 이 PC 가 팀 취합 서버가 됩니다. 서버 IP·포트는 설치 폴더의 <b>LoadMonitor28-팀서버주소.bat</b>
  에서만 바꿉니다 — config\\team_server.json 에 저장되어, 이 폴더를 통째로 옮기거나 팀원에게 나눠 주면 같은 주소가
  그대로 따라갑니다. 팀원은 분석 후 그 주소로 [팀 서버 업로드]를 누르면 됩니다. 포트를 바꾼 뒤에는 켜져 있던 서버를
  [중지] 후 [팀 서버 시작]해야 새 포트로 열립니다. 대시보드를 닫아도 서버는 계속 돕니다(중지는 이 버튼으로).
@@ -2255,7 +2708,7 @@ v3 는 인별 로드율을 뺀 공유용, [스냅샷 저장]은 팀통합보고�
  <div class="card"><h2>업무유형 분포 (인별)</h2><div id="wtstack"></div></div>
 </div>
 
-<div class="card"><h2>Agentic AI 12과제 적합률 — 과제 × 인원 <span class="state" style="font-weight:400;font-size:11px;color:#8b929b">셀 색이 진할수록 적합 · 숫자 = 적합%(대체 가능 MM)</span></h2>
+<div class="card"><h2>Agentic AI 과제 적합률 — 과제 × 인원 <span class="state" style="font-weight:400;font-size:11px;color:#8b929b">등록된 과제 기준 · 셀 색이 진할수록 적합 · 숫자 = 적합%(근거 업무 실측 MM)</span></h2>
  <div style="overflow-x:auto"><table class="heat" id="heat"></table></div>
  <div class="note" id="heatrank"></div></div>
 
@@ -2407,7 +2860,7 @@ function render(){
   return `<div style="display:flex;align-items:center;gap:8px;margin:4px 0">
    <span style="width:80px;font-size:11.5px;text-align:right">${esc(m.owner)}</span><span>${segs}</span></div>`;
  }).join("")+`<div class="row" style="margin-top:6px">${Object.entries(WTC).map(([k,c])=>`<span style="font-size:11px"><span class="dot" style="background:${c}"></span>${k}</span>`).join("")}</div>`;
- // 12과제 히트맵
+ // 등록된 과제 히트맵
  const ags=D.agentic||[];const tks=D.tasks||[];
  if(tks.length){
   let h=`<tr><th style="text-align:left">과제</th>${ags.map(a=>`<th>${esc(a.owner)}</th>`).join("")}<th>팀 합계</th></tr>`;
@@ -2432,7 +2885,7 @@ function render(){
  // 발굴 후보
  let nl="";
  ags.forEach(a=>(a.new||[]).forEach(n=>{nl+=`<div style="border-left:3px solid #6c4fb8;padding:3px 0 3px 10px;margin:8px 0">
-  <b>${esc(n.name)}</b> <span style="font-size:10.5px;color:#8b929b">제안 ${esc(a.owner)} · ≈${(n.load_mm||0).toFixed(2)} MM</span>
+  <b>${esc(n.name)}</b> <span style="font-size:10.5px;color:#8b929b">제안 ${esc(a.owner)}${n.evidence_rows!=null?" · 근거 업무 "+n.evidence_rows+"행":""}</span>
   <div style="font-size:11px;color:#5a626b">로직: ${esc(n.logic)}<br>사유: ${esc(n.reason)}</div></div>`;}));
  $("newlist").innerHTML=nl||'<div class="note">발굴된 후보가 없습니다.</div>';
  // 공통업무
@@ -2461,9 +2914,9 @@ function tsRender(d){
   unreadable:"확인하지 못한 프로그램",hidden:"잠깐 쓰이는 중(붙잡은 서버 없음)"};
  // 포트를 쥔 것이 '무엇인지' 이름으로 말한다 — '다른 프로그램' 으로는 손쓸 수 없다
  $("tstake").style.display=(busy&&TS.take&&TS.take!=="no")?"":"none";
- // 설정된 서버 주소(설치 폴더의 팀 서버 주소 파일) — 보여 주기만 한다. 바꾸는 곳은 LoadMonitor24-팀서버주소.bat.
+ // 설정된 서버 주소(설치 폴더의 팀 서버 주소 파일) — 보여 주기만 한다. 바꾸는 곳은 LoadMonitor28-팀서버주소.bat.
  const AK={server:"#0f7a3d",member:"#b26a00",loopback:"#c0122f",unknown:"#98a0a8"};
- const bat=esc(TS.edit_bat||"LoadMonitor24-팀서버주소.bat");
+ const bat=esc(TS.edit_bat||"LoadMonitor28-팀서버주소.bat");
  $("tsaddr").innerHTML=(TS.upload_url?`팀원 업로드 주소(설정): <b>${esc(TS.upload_url)}</b> — `
    +`<span style="color:${AK[TS.addr_kind]||"#98a0a8"}">${esc(TS.addr_note||"")}</span>`:"")
   +(busy&&TS.suggest_port?`<br><span style="color:#c0122f">포트 ${TS.port} 을 다른 프로그램이 쓰고 있습니다 — `
@@ -2484,7 +2937,7 @@ function tsRender(d){
       +((occ[0].exe&&!(occ[0].cmd||"").startsWith(occ[0].exe))?`<br><span class="state">${esc(occ[0].exe)}</span>`:"")
       +(occ[0].cmd?`<br><span class="state">${esc(occ[0].cmd)}</span>`:"")
       +(TS.foreign_root?`<br><span class="state">설치 폴더: ${esc(TS.foreign_root)}</span>`:"")
-     :"붙잡고 있는 서버를 찾지 못했습니다 — LoadMonitor24-팀서버주소.bat 에서 포트를 바꾸는 편이 확실합니다")
+     :"붙잡고 있는 서버를 찾지 못했습니다 — LoadMonitor28-팀서버주소.bat 에서 포트를 바꾸는 편이 확실합니다")
     :(TS.log?`<span class="state">${esc(TS.log)}</span>`:""));
 }
 async function tsLoad(){
@@ -2509,7 +2962,7 @@ $("tsopen").onclick=()=>{if(TS.urls&&TS.urls.length)window.open(TS.urls[0],"_bla
 $("tstake").onclick=()=>{
  const occ=TS.occupant||[], NL=String.fromCharCode(10);
  if(!occ.length){alert("포트를 쥔 프로그램을 확인하지 못해 가져올 수 없습니다."+NL
-  +"LoadMonitor24-팀서버주소.bat 에서 포트를 다른 번호로 바꾸세요.");return;}
+  +"LoadMonitor28-팀서버주소.bat 에서 포트를 다른 번호로 바꾸세요.");return;}
  // 무엇을 죽이는지 그대로 보여 준다 — 이름만 보고 누르면 사고가 난다
  const list=occ.map(x=>" · "+x.name+" (pid "+x.pid+")"+(x.owner?"  ["+x.owner+"]":"")
   +(x.exe?NL+"   "+x.exe:"")+(x.cmd?NL+"   "+x.cmd.slice(0,140):"")).join(NL);
@@ -2579,7 +3032,7 @@ load();tsLoad();
 </script></body></html>"""
 
 PAGE = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
-<title>LoadMonitor24</title><style>
+<title>LoadMonitor28</title><style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Malgun Gothic',system-ui,sans-serif;background:#f2f4f7;color:#12151a;padding:22px}
 .wrap{max-width:1080px;margin:0 auto}
@@ -2631,7 +3084,7 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
 .tl .s{color:#8b929b}.tl .p{font-weight:700}
 .tag{display:inline-block;background:#f0f3f7;border-radius:3px;padding:1px 7px;margin:1px 3px 1px 0;font-size:10.5px;color:#3d444c}
 </style></head><body><div class="wrap">
-<h1>LoadMonitor24<small id="ver">로컬 전용 · 외부 전송 없음</small></h1>
+<h1>LoadMonitor28<small id="ver">로컬 전용 · 외부 전송 없음</small></h1>
 <div id="stub_banner" style="display:none;background:#fff1c2;border:2px solid #e08a00;color:#6b3a00;border-radius:6px;padding:10px 14px;margin:8px 0 12px;font-size:13px;line-height:1.6"></div>
 <div class="steps">
  <span class="on">① 내 PC 분석 (지금 화면)</span>
@@ -2644,7 +3097,10 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
  나란히 내고 <b>로드율 = 투입 ÷ 가용</b>으로 비교합니다. 1 MM = 8h × 그 달 평일수(주40시간). 야근은 상한 없이 그대로 반영됩니다.</div>
 
 <div class="card"><div class="row">
- <span class="chip on" data-d="ytd">올해</span> <span class="chip" data-d="30">1개월</span><span class="chip" data-d="90">3개월</span>
+ <span class="chip on" data-d="ytd">올해</span>
+ <span class="chip" data-d="q1">1분기</span><span class="chip" data-d="q2">2분기</span><span class="chip" data-d="q3">3분기</span><span class="chip" data-d="q4">4분기</span>
+ <span class="chip" data-d="h1">상반기</span><span class="chip" data-d="h2">하반기</span>
+ <span class="chip" data-d="30">1개월</span><span class="chip" data-d="90">3개월</span>
  <span class="chip" data-d="180">6개월</span><span class="chip" data-d="365">1년</span>
  <label>시작 <input type="date" id="from"></label><label>끝 <input type="date" id="to"></label>
  <label><input type="checkbox" id="ai" checked> AI 정제</label>
@@ -2724,6 +3180,30 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
 <div class="card"><h2>수집 데이터 현황</h2><div class="row" id="src"></div>
  <div class="note">빨간 항목이 결과 품질을 떨어뜨립니다. 노란 항목은 수집은 됐지만 기간 대비 부족한 것, 회색은 선택 항목입니다.</div></div>
 
+<div class="card"><h2>수집 현황 — 날짜별 원장 <span class="state" id="cvstate"></span></h2>
+ <div id="cvbody"><div class="note">불러오는 중…</div></div>
+ <div class="row" style="margin-top:8px">
+  <button class="ghost" id="cvrefresh">새로고침</button>
+  <button class="ghost" id="cvreset" title="다음 [분석 실행]이 기간 전체를 처음부터 다시 읽게 합니다(수집한 자료는 지우지 않음)">커서 초기화</button>
+  <button class="ghost" id="smprestart">샘플러 다시 시작</button>
+  <button class="ghost" id="smpreg">상주 샘플러 등록</button>
+  <span class="state" id="cvmsg"></span></div>
+ <div class="note">날 수는 한 원천(data\\coverage_ledger.json)에서 셉니다. <b>읽음</b>=확인된 날(0건 확인 포함) · <b>일부</b>=읽었지만 끝까지 확인하지 못한 날 ·
+ <b>미관측</b>=못 읽은 날(0시간이 아니라 '근거 없음' — 부재로 추정하지 않습니다) · <b>해당 없음</b>=이 PC 에서 팀즈를 쓰지 않음.
+ '불가' 사유는 실측 전이라 <b>의심</b>으로 적습니다. 이 PC 의 원장인지 모르면 PC 이름 대신 출처만 보입니다.
+ 화면은 프로세스를 주기적으로 띄우지 않습니다 — 샘플러 등록 확인은 화면을 열 때와 [새로고침] 때만, 다시 시작은 버튼으로만 합니다.</div></div>
+
+<div class="card"><h2>수동 기록 <span class="state">PC 밖 업무(출장·현장·장비 점검) — data\\manual\\worklog.csv (collect\\Add-WorkLog.ps1 과 같은 열)</span></h2>
+ <div class="row">
+  <label>날짜 <input type="date" id="wl_date"></label>
+  <label>시작 <input type="time" id="wl_start"></label><label>끝 <input type="time" id="wl_end"></label>
+  <label>또는 시간 <input type="number" id="wl_hours" min="0" max="24" step="0.5" style="width:64px"></label>
+  <label>분류 <input type="text" id="wl_cat" value="현장" style="width:80px"></label>
+  <label>과제 <input type="text" id="wl_entity" style="width:120px"></label>
+  <label>메모 <input type="text" id="wl_note" style="width:160px"></label>
+  <button class="ghost" id="wl_save">기록</button><span class="state" id="wl_msg"></span></div>
+ <div class="note">시작·끝을 적으면 그 구간 길이가 시간이 됩니다(자정을 넘겨도 됩니다). 기록은 그날의 하한이 되어 다음 [분석 실행]부터 반영됩니다.</div></div>
+
 <div class="card"><h2>팀 취합 업로드 <span class="state">자동 전송하지 않습니다 — 서버에 닿는 망에서 버튼으로 보냅니다</span></h2>
  <div class="row" style="align-items:center;gap:6px;margin-bottom:8px">
   <span class="state" style="flex:none">올릴 주소</span>
@@ -2741,7 +3221,7 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
   <span class="state" id="tumsg"></span></div>
  <div class="note" id="tusent"></div>
  <div class="note">팀 서버를 켜고 끄는 것과 취합 결과 보기는 <b><a href="/team" target="_blank">팀 취합 화면</a></b>에 있습니다
- (LoadMonitor24-팀취합.bat 과 같은 화면).</div>
+ (LoadMonitor28-팀취합.bat 과 같은 화면).</div>
  <div class="note">분석이 끝나면 보낼 묶음이 <b>대기</b>로 쌓입니다. 팀 서버에 닿는 망(사내망)에서 [팀 서버 업로드]를
  한 번 누르면 <b>밀린 기간까지 함께</b> 올라가고, 보낸 묶음은 <code>report\\upload_sent\\</code> 로 옮겨집니다.
  닿지 않는 망에서 눌러도 아무것도 잃지 않고 그대로 대기합니다. 서버 대신 공유폴더로 낼 수도 있습니다.</div>
@@ -2814,13 +3294,23 @@ const WTCOL={"개발":"#2a78d6","사무":"#e08a00","현장":"#0e8c7a","협업":"
 const PAL=["#2a78d6","#0e8c7a","#a61b4a","#e08a00","#6c4fb8","#3d8f3d","#c05a78","#4a7f9e","#8a6d3b","#556270"];
 const esc=s=>String(s??"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/"/g,"&quot;");
 const iso=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
-function setDays(n,el){const t=new Date();
- // 'ytd' = 올해 1월 1일부터. 팀 전체가 같은 기간이어야 취합이 맞아 이것을 기본으로 둔다
- const a=(n==="ytd")?new Date(t.getFullYear(),0,1):new Date(t.getTime()-n*86400000);
- $("from").value=iso(a);$("to").value=iso(t);
+// 기간 빠른 선택 — 서버 quarter_range(ui\\app.py)·LoadMonitor28.bat 과 같은 규칙: 오늘이 속한 해, 끝이 미래면 오늘로,
+// 아직 시작하지 않은 분기·반기는 고를 수 없다(칩이 흐려진다). 'ytd' = 올해 1월 1일부터(팀 전체가 같은 기간이어야 취합이 맞다).
+const PSPAN={ytd:["01-01","12-31"],q1:["01-01","03-31"],q2:["04-01","06-30"],q3:["07-01","09-30"],q4:["10-01","12-31"],h1:["01-01","06-30"],h2:["07-01","12-31"]};
+function periodRange(k,today){const t=today||iso(new Date());const s=PSPAN[k];if(!s)return null;
+ const a=t.slice(0,4)+"-"+s[0],b=t.slice(0,4)+"-"+s[1];if(a>t)return null;return [a,b>t?t:b];}
+function setRange(a,b,el){const t=iso(new Date());
+ // 끝이 미래면 오늘로 자른다 — 미래 평일이 가용에 남아 로드율이 떨어지던 것(A34)과 같은 이유
+ $("from").value=a;$("to").value=(b>t?t:b);
  document.querySelectorAll("[data-d]").forEach(c=>c.classList.toggle("on",c===el));}
-document.querySelectorAll("[data-d]").forEach(c=>c.onclick=()=>{
- const v=c.dataset.d;setDays(v==="ytd"?"ytd":+v,c);});
+function setDays(n,el){const t=new Date();
+ if(PSPAN[n]){const r=periodRange(n);if(r)setRange(r[0],r[1],el);return;}
+ setRange(iso(new Date(t.getTime()-n*86400000)),iso(t),el);}
+document.querySelectorAll("[data-d]").forEach(c=>{
+ const v=c.dataset.d;
+ if(PSPAN[v]&&!periodRange(v)){c.style.opacity="0.45";c.style.cursor="default";c.title="아직 오지 않은 기간이라 고를 수 없습니다";}
+ else if(PSPAN[v]){const r=periodRange(v);c.title=r[0]+" ~ "+r[1];}
+ c.onclick=()=>{if(PSPAN[v]&&!periodRange(v))return;setDays(PSPAN[v]?v:+v,c);};});
 setDays("ytd",document.querySelector('[data-d="ytd"]'));
 
 function donut(el,data,center,unit){
@@ -2935,23 +3425,27 @@ async function poll(){
   }else{$("sb_prog").style.display="none";}
   $("sb_last").textContent=s.last_run?`마지막 분석 ${s.last_run} (${s.last_tag})`:"분석 결과 없음";
   const sr=s.sampler_restart||{};
-  const srTxt=(sr.when?` · ${sr.how==="skip"||sr.how==="error"?"재시작 보류":"재시작 시도"} ${esc(sr.when)}`:"")+(sr.note?` — ${esc(sr.note)}`:"");
+  const srTxt=(sr.when?` · ${sr.how==="skip"||sr.how==="error"?"다시 시작 보류":"다시 시작 요청"} ${esc(sr.when)}`:"")+(sr.note?` — ${esc(sr.note)}`:"");
   // '꺼짐'(기록이 하나도 없음)일 때 예전에는 원인도 조치도 없이 같은 문장만 반복했다 — 무엇을 하면
   // 되는지 적고, 자동 기동 시도 결과도 함께 보여 준다.
   const tk=s.sampler_task;
   const tkTxt=(tk===false)?' · 로그온 자동 시작 작업이 <b>등록돼 있지 않습니다</b>'
              :((tk===true)?' · 등록 작업은 있습니다(정책·권한으로 안 돌 수 있음)':'');
+  const ss=s.sampler_state||{};
+  const ssTxt=(ss.ok===false&&ss.reason)?` · <b>${esc(ss.reason==="R-CLM"?"이 PC 정책(제한 언어 모드)이 샘플러를 막습니다":(ss.reason==="R-ADDTYPE"?"이 PC 정책이 샘플러의 창 읽기(Add-Type)를 막습니다":ss.reason))}</b>`:"";
   $("sb_sampler").innerHTML=(s.sampler_age_min==null)
-   ?`<span style="color:#e08a00" title="창 샘플러가 없으면 투입시간이 PC 가동 하한으로만 계산돼 과소 집계될 수 있습니다">샘플러 꺼짐 — 아직 기록이 하나도 없습니다${tkTxt}${srTxt}<br><span class="dim">켜기: <b>LoadMonitor24-샘플러등록.bat</b> 실행(1회 등록 · 로그온 시 자동 시작). 이 화면도 10분에 한 번 자동 기동을 시도합니다.</span></span>`
+   ?`<span style="color:#e08a00" title="창 샘플러가 없으면 투입시간이 PC 가동 하한으로만 계산돼 과소 집계될 수 있습니다">샘플러 꺼짐 — 아직 기록이 하나도 없습니다${tkTxt}${ssTxt}${srTxt}<br><span class="dim">켜기: 아래 '수집 현황' 카드의 [상주 샘플러 등록] 또는 <b>LoadMonitor28-샘플러등록.bat</b>(1회 등록 · 로그온 시 자동 시작). 화면은 스스로 띄우지 않습니다.</span></span>`
    :(s.sampler_age_min<=10?'<span style="color:#4fc47f">샘플러 가동 중</span>'
-     :`<span style="color:#e08a00" title="마지막 샘플 ${esc(s.last_sample||"")} — 멈춘 날은 PC 하한 모드로 계산됩니다">샘플러 멈춤 (${s.sampler_age_min}분 전${s.last_sample?` · 마지막 샘플 ${esc(s.last_sample)}`:""})${tkTxt}${srTxt}</span>`);
+     :`<span style="color:#e08a00" title="마지막 샘플 ${esc(s.last_sample||"")} — 멈춘 날은 PC 하한 모드로 계산됩니다">샘플러 멈춤 (${s.sampler_age_min}분 전${s.last_sample?` · 마지막 샘플 ${esc(s.last_sample)}`:""})${tkTxt}${ssTxt}${srTxt} — [샘플러 다시 시작]</span>`);
   $("go").disabled=s.running;
+  // 분석·웹 읽기 중에는 웹 읽기·커서 초기화를 끈다 — 같은 전용 Edge·원장을 두 작업이 함께 쓰지 않게(F-16)
+  ["owa","teamsweb","cvreset"].forEach(id=>{const b=$(id);if(b)b.disabled=!!s.running;});
   $("stop").style.display=s.running?"":"none";
   $("state").textContent=s.running?"실행 중…":"대기 중";
   if(s.running)$("dlog").open=true;
   if(!s.running&&timer){clearInterval(timer);timer=null;}
   // 실행 중 새로고침하면 timer 가 없어 완료를 놓친다 — 상태 전이(running→멈춤)로 판정한다
-  if(wasRunning&&!s.running){loaded={};refresh();}
+  if(wasRunning&&!s.running){loaded={};refresh();cvLoad();}
   wasRunning=s.running;
  }catch(e){$("state").textContent="서버 연결 끊김 — 창을 닫고 다시 실행하세요";}
 }
@@ -3161,7 +3655,7 @@ async function refresh(){
      +(pd.generated?` · 마지막 수집 ${esc(pd.generated)}`:"")
      +(pd.dropped?` · <span style="color:#c0122f">읽지 못한 행 ${pd.dropped}개</span>`:"")
      +((pd.roots||[]).length>1?" — 합계는 구간 합집합이라 폴더별 단순 합과 다릅니다(같은 시간대 중복 제거)":""));
-    if(pd.fallback_boot) notes.push(`⚠ 이 기간 <b>Windows 이벤트 로그가 0건</b>이라 '부팅 후 경과시간' 한 구간만으로 PC 선을 그렸습니다(수집만 한 PC·권한 차단·Modern Standby). 그 달의 '${(sum||0).toFixed(1)}h' 는 합산이 아니라 <b>하루치 부팅 시간</b>입니다 — 샘플러(LoadMonitor24-샘플러등록.bat)를 켜 두면 앞으로 정확해집니다.`);
+    if(pd.fallback_boot) notes.push(`⚠ 이 기간 <b>Windows 이벤트 로그가 0건</b>이라 '부팅 후 경과시간' 한 구간만으로 PC 선을 그렸습니다(수집만 한 PC·권한 차단·Modern Standby). 그 달의 '${(sum||0).toFixed(1)}h' 는 합산이 아니라 <b>하루치 부팅 시간</b>입니다 — 샘플러(LoadMonitor28-샘플러등록.bat)를 켜 두면 앞으로 정확해집니다.`);
     if(pd.dropped) notes.push(`⚠ PC 기록 파일에서 <b>읽지 못한 행 ${pd.dropped}개</b>가 있었습니다(이동 중 잘렸을 수 있음) — 그 파일만 빼고 나머지로 그렸습니다. [분석 실행]으로 다시 수집하면 복구됩니다.`);
     if(pd.warn) notes.push(`⚠ ${esc(pd.warn)} — 롤오버된 과거는 되살릴 수 없지만, 브라우저 사용기록 힌트와 창 샘플러가 <b>앞으로의 구간</b>을 메웁니다(샘플러 등록이 없으면 [분석 실행]이 자동으로 1회 등록합니다 · config.autoRegisterSampler).`);
    }}
@@ -3380,7 +3874,7 @@ async function tuLoad(){
   tuLoad();
  });
 }
-// v5: 올릴 주소는 보여 주기만 한다 — 바꾸는 곳은 LoadMonitor24-팀서버주소.bat 하나.
+// v5: 올릴 주소는 보여 주기만 한다 — 바꾸는 곳은 LoadMonitor28-팀서버주소.bat 하나.
 // 설치 폴더의 config\\team_server.json 에 저장되어 폴더를 옮기거나 나눠 줘도 그대로 따라간다.
 function tuFill(d){
  if($("tuurl"))$("tuurl").textContent=d.url||"(주소 없음)";
@@ -3388,7 +3882,7 @@ function tuFill(d){
  const src=(d.source||{}).host, el=$("tuaddr");
  if(!el)return;
  el.innerHTML=(src&&SRC[src]?esc(SRC[src])+" · ":"")
-  +"바꾸려면 설치 폴더의 <b>"+esc(d.edit_bat||"LoadMonitor24-팀서버주소.bat")+"</b> 을 실행하세요(이 화면에서는 바꾸지 않습니다)."
+  +"바꾸려면 설치 폴더의 <b>"+esc(d.edit_bat||"LoadMonitor28-팀서버주소.bat")+"</b> 을 실행하세요(이 화면에서는 바꾸지 않습니다)."
   +(d.addr_kind==="loopback"?`<div style="color:#c0122f">${esc(d.addr_note||"")}</div>`:"")
   +((d.warnings||[]).length?`<div style="color:#c0122f">${(d.warnings||[]).map(esc).join("<br>")}</div>`:"");
 }
@@ -3524,36 +4018,40 @@ $("diag").onclick=async()=>{
  if(!d.ok)L.push("\\n대개는 전용 Edge 창에서 회사 계정 재로그인으로 해결됩니다.");
  alert(L.join("\\n"));
 };
-$("owa").onclick=async()=>{
- // Outlook 버전과 무관한 경로 — 전용 Edge 프로필(Copilot 과 같은 창)에 회사 계정 로그인 1회 후 읽는다
- if(!confirm("Outlook 웹(outlook.office.com)을 전용 Edge 창으로 열어 메일·일정을 읽습니다.\\n처음이면 그 창의 Outlook 탭에서 회사 계정을 한 번 선택/로그인해야 합니다.\\n계속할까요?"))return;
- $("owa").disabled=true;$("state").textContent="Outlook 웹 읽는 중… (기간은 최근 실행 기준, 수 분)";
- const d=await fetch("/api/owa",{method:"POST"}).then(r=>r.json()).catch(e=>({ok:false,error:String(e)}));
- $("owa").disabled=false;$("state").textContent="대기 중";
- if(d.rc===2){alert("로그인이 필요합니다.\\n지금 열린 전용 Edge 창의 Outlook 탭에서 회사 계정을 선택/로그인한 뒤 [Outlook 웹 읽기]를 다시 누르세요.");return;}
- alert((d.ok?"읽기 완료 — ":"읽기 실패 — ")+(d.summary||d.error||"")+"\\n\\n[재분석만]으로 다시 분석하면 반영됩니다.");
-};
-$("teamsweb").onclick=async()=>{
- // 팀즈 앱이 꺼져 있어도 되는 경로 — 창 읽기(UIA)와 달리 화면 렌더에 좌우되지 않는다
- if(!confirm("팀즈 웹(teams.microsoft.com)을 전용 Edge 창으로 열어 채팅을 읽습니다.\\n처음이면 그 창의 팀즈 탭에서 회사 계정을 한 번 선택/로그인해야 합니다.\\n\\n팀즈 앱은 켜져 있지 않아도 됩니다.\\n계속할까요?"))return;
- $("teamsweb").disabled=true;$("state").textContent="팀즈 웹 읽는 중… (대화방을 하나씩 열어 되감습니다, 수 분)";
- const d=await fetch("/api/teamsweb",{method:"POST"}).then(r=>r.json()).catch(e=>({ok:false,error:String(e)}));
- $("teamsweb").disabled=false;$("state").textContent="대기 중";
- if(d.rc===2){alert("로그인이 필요합니다.\\n지금 열린 전용 Edge 창의 팀즈 탭에서 회사 계정을 선택/로그인한 뒤 [팀즈 웹 읽기]를 다시 누르세요.");return;}
- alert((d.ok?"읽기 완료 — ":"읽기 실패 — ")+(d.summary||d.error||"")+"\\n\\n[재분석만]으로 다시 분석하면 반영됩니다.");
-};
+// [Outlook 웹 읽기]·[팀즈 웹 읽기] — LM28: 화면 기간(시작~끝)을 넘기고 run.py --web-only 가 정제·병합·원장·Edge 정리까지 한다.
+// 분석·다른 작업 중에는 버튼이 꺼진다(poll) — 같은 전용 Edge 를 두 작업이 함께 쓰지 않게(F-16).
+async function webRead(kind,btn){
+ const nm=kind==="mail"?"Outlook 웹":"팀즈 웹";
+ const msg=kind==="mail"
+  ?"Outlook 웹(outlook.office.com)을 전용 Edge 창으로 열어 메일·일정을 읽습니다.\\n처음이면 그 창의 Outlook 탭에서 회사 계정을 한 번 선택/로그인해야 합니다."
+  :"팀즈 웹(teams.microsoft.com)을 전용 Edge 창으로 열어 채팅을 읽습니다.\\n처음이면 그 창의 팀즈 탭에서 회사 계정을 한 번 선택/로그인해야 합니다.\\n팀즈 앱은 켜져 있지 않아도 됩니다.";
+ const f=$("from").value,t=$("to").value;
+ if(!confirm(msg+"\\n\\n기간: "+f+" ~ "+t+" (위 기간 카드)\\n계속할까요?"))return;
+ btn.disabled=true;$("state").textContent=nm+" 읽는 중… ("+f+" ~ "+t+", 수 분)";
+ if(!timer){timer=setInterval(poll,1000);}
+ const r=await fetch(kind==="mail"?"/api/owa":"/api/teamsweb",{method:"POST",headers:{"Content-Type":"application/json"},
+   body:JSON.stringify({from:f,to:t})});
+ const d=await r.json().catch(e=>({ok:false,error:String(e)}));
+ btn.disabled=false;$("state").textContent="대기 중";
+ if(r.status===409){alert(d.hint||"다른 작업이 도는 중입니다 — 끝난 뒤 누르세요");return;}
+ if(d.rc===2){alert("로그인이 필요합니다.\\n지금 열린 전용 Edge 창의 "+(kind==="mail"?"Outlook":"팀즈")+" 탭에서 회사 계정을 선택/로그인한 뒤 ["+nm+" 읽기]를 다시 누르세요.\\n(로그인을 기다리는 동안 그 창은 닫지 않습니다)");return;}
+ alert((d.ok?"읽기 완료 — ":"읽기 일부 실패(의심 — 실측 전) — ")+(d.summary||d.error||"")+"\\n\\n[재분석만]으로 다시 분석하면 반영됩니다.");
+ cvLoad();
+}
+$("owa").onclick=()=>webRead("mail",$("owa"));
+$("teamsweb").onclick=()=>webRead("teams",$("teamsweb"));
 $("prepmove").onclick=async()=>{
  // 폴더를 다른 PC 로 옮기려면 우리(대시보드·팀 서버·Copilot Edge·샘플러)가 먼저 손을 놓아야 한다
  if(!confirm("이 폴더를 다른 PC 로 옮길 수 있도록 정리합니다.\\n\\n· 팀 서버·Copilot 창·샘플러를 종료합니다\\n· 정리 창이 열리고, 이 대시보드도 함께 닫힙니다\\n· 수집 데이터와 분석 결과는 그대로 둡니다\\n· 정리 창이 '빠르게 옮기는 방법'(Edge 캐시 제외)도 함께 알려 줍니다\\n\\n계속할까요?"))return;
  $("prepmove").disabled=true;$("state").textContent="이동 준비 중…";
  const r=await fetch("/api/prepmove",{method:"POST"}).then(x=>x.json()).catch(()=>({ok:false}));
  if(!r.ok){$("prepmove").disabled=false;$("state").textContent="대기 중";
-  alert("정리 창을 띄우지 못했습니다 — LoadMonitor24-이동준비.bat 을 직접 실행하세요."+(r.error?"\\n"+r.error:""));return;}
+  alert("정리 창을 띄우지 못했습니다 — LoadMonitor28-이동준비.bat 을 직접 실행하세요."+(r.error?"\\n"+r.error:""));return;}
  alert("정리 창이 열렸습니다.\\n그 창의 안내를 따라 주세요 — 잠시 뒤 이 대시보드는 닫힙니다.");
  fetch("/api/quit",{method:"POST"}).catch(()=>{});
  document.body.innerHTML='<div class="wrap"><h1>PC 이동 준비</h1>'
   +'<div class="card"><div class="note">대시보드를 종료했습니다. 열린 정리 창의 결과를 확인한 뒤 폴더를 옮기세요.<br>'
-  +'옮긴 PC 에서는 LoadMonitor24-UI.bat 을 실행하면 됩니다 — 지난 PC 데이터는 자동으로 합산됩니다.</div></div></div>';
+  +'옮긴 PC 에서는 LoadMonitor28-UI.bat 을 실행하면 됩니다 — 지난 PC 데이터는 자동으로 합산됩니다.</div></div></div>';
 };
 $("cdiag").onclick=async()=>{
  // PC 마다 Outlook·Teams 버전이 달라 메일·팀즈가 비는 실측 — 무엇이 막혔는지 이 PC 에서 바로 본다
@@ -3924,7 +4422,7 @@ async function loadReview(kind){
   const body=`${narH}${bar}${psec}${connSVG(x,col)}
    <details style="margin-top:6px"><summary style="padding:8px 12px;font-size:12px">원문 근거 타임라인 (해석 검증용 — 판정된 업무 신호만)</summary>
    <div class="body tl" style="max-height:420px;overflow:auto">${tl}</div></details>
-   <div class="note" style="margin-top:6px">프로젝트 MM은 기간×신호 비중 개략치 — 확정 MM은 대시보드 기준</div>`;
+   <div class="note" style="margin-top:6px">${x.mm_basis==="mm_meta"?`과제 MM = 이 기간 투입 ${(x.mm||0).toFixed(2)} MM(대시보드·리포트와 같은 mm_meta) × 과제 몫(신호 비중)`:"과제 MM 은 기간×신호 비중 개략치 — 이 기간의 mm_meta 가 없어 대시보드 확정 MM 과 다를 수 있습니다"}</div>`;
   // 카드가 길어 접이식으로 — 첫 기간만 펼침. 상세 리뷰(deep)는 표 중심이라 기존 유지.
   if(kind==="deep")return `<div class="card"><h2>${head}</h2>${body}</div>`;
   return `<details${gi===0?" open":""}><summary>${head}</summary><div class="body">${body}</div></details>`;
@@ -3937,7 +4435,7 @@ async function loadAgentic(){
  const d=await fetch("/api/agentic").then(r=>r.json()).catch(()=>({}));
  const t=d.tasks||[];const a=d.analysis||null;
  const pend=a&&a.rows_pending?a.rows_pending:0;
- let h=`<div class="card"><h2>Agentic AI 과제 매칭 <span class="state">계획 12과제 ↔ 현재 업무 로드 — [분석 실행](AI 판정) 후 자동으로 매칭됩니다</span></h2>
+ let h=`<div class="card"><h2>Agentic AI 과제 매칭 <span class="state">등록된 과제 ${t.length}개 ↔ 현재 업무 로드 — [분석 실행](AI 판정) 후 자동으로 매칭됩니다</span></h2>
   <div class="row" style="margin-bottom:8px">
    <button class="${a?"ghost":"run"}" id="agrun" style="padding:7px 18px;font-size:12.5px">${a?(pend?`이어서 매칭(남은 ${pend}행)`:"재매칭"):"Agentic AI 매칭 실행"}</button>
    <span class="state" id="agmsg">${d.running?"Agentic 매칭 진행 중… (진행률은 상단 진행 바)":(a?"과제 지정·제외를 바꿨거나 agentic_tasks.json 을 수정했을 때 다시 돌리세요 (묶음마다 왕복 1회, 수십 초~수 분)":"분석이 아직 없거나 자동 매칭이 실패한 경우 수동 실행 (묶음마다 왕복 1회, 수십 초~수 분)")}</span>
@@ -3945,14 +4443,14 @@ async function loadAgentic(){
  if(!a){h+=`<div class="note">아직 매칭 결과가 없습니다${d.tag?` (기간 ${esc(d.tag)})`:""}${d.other_tag?` — <b>${esc(d.other_tag)}</b> 기간 결과는 있습니다`:""}${d.stage_note?` <span class="state">· 최근 실행 기록: ${esc(d.stage_note)}</span>`:""}${whyEmpty(d.stage_kind,"[재매칭]")} — [분석 실행](AI 판정 포함)을 돌리면 자동으로 생성됩니다. 이미 분석을 마쳤다면 위 버튼으로 매칭만 실행하세요.</div></div>`;}
  else{
   const lastErr=a.last_error&&a.last_error.error?`<div class="note" style="color:#c0122f">마지막 실패 사유: ${esc(a.last_error.error)}${a.last_error.hint?` — ${esc(a.last_error.hint)}`:""}</div>`:"";
-  h+=`<div class="note">기간 ${esc(a.tag)} · 업무 ${a.rows_analyzed}행 분석${a.rows_total&&a.rows_total!==a.rows_analyzed?` / 전체 ${a.rows_total}행`:""}${a.chunks?` · 묶음 ${a.chunks}회`:""}${a.failed_chunks?` <span style="color:#c0122f">· ${a.failed_chunks}/${a.chunks||"?"} 묶음 실패</span>`:""}${pend?` <span style="color:#c0122f">· ${pend}행 미판정 — 결과가 실제보다 적을 수 있음. 위 버튼으로 남은 행만 이어서 판정</span>`:""}${a.salvaged_chunks?` · 잘린 답 복구 ${a.salvaged_chunks}묶음(부분 결과)`:""}${a.mm_recalc?` · 로드 MM 은 업무 실측 합(겹침 과제는 안분)`:""}${!(a.match||[]).length&&!pend&&!(a.unknown_task_count||0)?` · <b>12과제에 걸치는 현업이 없습니다(매칭 0건 — 실패 아님)</b>`:""}${a.unknown_task_count?` <span style="color:#c0122f">· 답이 목록에 없는 과제 코드 ${a.unknown_task_count}건(${(a.unknown_tasks||[]).slice(0,4).map(esc).join(", ")}) — 그만큼 매칭이 빠졌습니다</span>`:""}</div>${(function(){const r=a.mm_recalc||{};if(r.matched_rows==null)return "";const tot=r.rows_total||a.rows_total||0, mr=r.matched_rows||0;const pct=tot?Math.round(mr/tot*100):0;const warn=pct<80?' style="color:#c0122f"':"";return `<div class="note"${warn}>근거로 잡힌 업무 <b>${mr}/${tot}행</b> (${pct}%) · ${(r.matched_mm||0).toFixed(2)} MM — 미계상 ${r.unmatched_rows||0}행 · ${(r.unmatched_mm||0).toFixed(2)} MM${r.work_cap?` · 과제별 근거 상한 ${r.work_cap}개(config.copilotAuto.agenticMaxWork)`:""}${pct<80?" — 상한을 올리거나 [재매칭]으로 다시 물으면 늘어납니다":""}</div>`;})()}${lastErr}${d.reextracted?`<div class="note" style="color:#8a5a00">⚠ <b>${esc(d.reextracted_title||"재추출 이후 결과")}</b> — ${esc(d.reextracted_note||"이 매칭은 마지막 업무 로드 재추출 이전의 것입니다")}</div>`:""}</div>`;
+  h+=`<div class="note">기간 ${esc(a.tag)} · 업무 ${a.rows_analyzed}행 분석${a.rows_total&&a.rows_total!==a.rows_analyzed?` / 전체 ${a.rows_total}행`:""}${a.chunks?` · 묶음 ${a.chunks}회`:""}${a.failed_chunks?` <span style="color:#c0122f">· ${a.failed_chunks}/${a.chunks||"?"} 묶음 실패</span>`:""}${pend?` <span style="color:#c0122f">· ${pend}행 미판정 — 결과가 실제보다 적을 수 있음. 위 버튼으로 남은 행만 이어서 판정</span>`:""}${a.salvaged_chunks?` · 잘린 답 복구 ${a.salvaged_chunks}묶음(부분 결과)`:""}${a.mm_recalc?` · 로드 MM 은 업무 실측 합(겹침 과제는 안분)`:""}${!(a.match||[]).length&&!pend&&!(a.unknown_task_count||0)?` · <b>등록된 과제에 걸치는 현업이 없습니다(매칭 0건 — 실패 아님)</b>`:""}${a.unknown_task_count?` <span style="color:#c0122f">· 답이 목록에 없는 과제 코드 ${a.unknown_task_count}건(${(a.unknown_tasks||[]).slice(0,4).map(esc).join(", ")}) — 그만큼 매칭이 빠졌습니다</span>`:""}</div>${(function(){const r=a.mm_recalc||{};if(r.matched_rows==null)return "";const tot=r.rows_total||a.rows_total||0, mr=r.matched_rows||0;const pct=tot?Math.round(mr/tot*100):0;const warn=pct<80?' style="color:#c0122f"':"";return `<div class="note"${warn}>근거로 잡힌 업무 <b>${mr}/${tot}행</b> (${pct}%) · ${(r.matched_mm||0).toFixed(2)} MM — 미계상 ${r.unmatched_rows||0}행 · ${(r.unmatched_mm||0).toFixed(2)} MM${r.work_cap?` · 과제별 근거 상한 ${r.work_cap}개(config.copilotAuto.agenticMaxWork)`:""}${pct<80?" — 상한을 올리거나 [재매칭]으로 다시 물으면 늘어납니다":""}</div>`;})()}${lastErr}${d.reextracted?`<div class="note" style="color:#8a5a00">⚠ <b>${esc(d.reextracted_title||"재추출 이후 결과")}</b> — ${esc(d.reextracted_note||"이 매칭은 마지막 업무 로드 재추출 이전의 것입니다")}</div>`:""}</div>`;
   const axCol={"축1":"#2a78d6","축2":"#0e8c7a","축3":"#a61b4a"};
   const FITC=["#e1e0d9","#cde2fb","#9ec5f4","#6da7ec","#3987e5","#256abf","#184f95"];
   const fitBar=f=>{const v=Math.max(0,Math.min(100,Number(f)||0));
    const w=v>0?Math.max(3,Math.round(v*0.9)):0;
    const c=FITC[v<=0?0:Math.min(6,Math.floor(v/17)+1)];
    return `<svg width="90" height="12" style="vertical-align:middle"><rect width="90" height="12" rx="2" fill="#eef0f3"/><rect width="${w}" height="12" rx="2" fill="${c}"/><text x="${v>=45?4:(w+4)}" y="9.3" style="font-size:9px;font-weight:700;fill:${v>=45?"#fff":"#52514e"}">${v}%</text></svg>`;};
-  h+=`<div class="card"><h2>① 12과제 × 현업 매칭</h2>
+  h+=`<div class="card"><h2>① 등록된 과제 ${t.length}개 × 현업 매칭</h2>
    <table><tr><th style="width:46px">축</th><th style="width:60px">과제</th><th style="width:190px">과제명</th>
    <th style="width:60px">적합률</th><th style="width:95px"></th><th style="width:66px">현재 로드</th><th>매칭 현업 · 사유</th></tr>`;
   const byId={};(a.match||[]).forEach(m=>byId[m.task]=m);
@@ -3966,7 +4464,7 @@ async function loadAgentic(){
   h+=`<div class="card"><h2>② 신규 Agentic AI 후보 발굴</h2>`;
   if((a.new||[]).length){(a.new||[]).forEach(n=>{
    h+=`<div style="border-left:3px solid #6c4fb8;padding:4px 0 4px 12px;margin:10px 0">
-    <b>${esc(n.name)}</b> <span class="state">대체 가능 로드 ≈ ${(n.load_mm||0).toFixed(2)} MM</span>
+    <b>${esc(n.name)}</b>${n.evidence_rows!=null?` <span class="state">근거 업무 ${n.evidence_rows}행</span>`:""}
     <div style="font-size:12px;margin-top:3px"><b>동작 로직:</b> ${esc(n.logic)}</div>
     <div style="font-size:11.5px;color:#5a626b;margin-top:2px"><b>발굴 사유:</b> ${esc(n.reason)}</div></div>`;});}
   else h+=`<div class="note">근거가 충분한 신규 후보가 없습니다 — 신호가 쌓일수록 발굴 정확도가 올라갑니다.</div>`;
@@ -4005,8 +4503,76 @@ async function loadAgentic(){
   else alert("제외 실패: "+(r.error||""));
  });
 }
+// ── 수집 현황 카드(원장 한 원천 — F-33) · 커서 초기화 · 샘플러 버튼(사용자 동작으로만 — W3-15) · 수동 기록(W1-19) ──
+async function cvLoad(){
+ const el=$("cvbody");if(!el)return;
+ let d;
+ try{d=await fetch("/api/collect_status?from="+encodeURIComponent($("from").value)+"&to="+encodeURIComponent($("to").value)).then(r=>r.json());}
+ catch(e){el.innerHTML='<div class="note">수집 현황을 읽지 못했습니다</div>';return;}
+ const L=d.ledger;let h="";
+ if(L){
+  const ax=L.axes||{};
+  h+='<table><tr><th>축</th><th>읽음</th><th>0건 확인</th><th>일부</th><th>미관측</th><th>해당 없음</th><th>출처</th></tr>';
+  Object.keys(ax).forEach(k=>{const a=ax[k];
+   h+=`<tr><td><b>${esc(a.label)}</b></td><td>${a.ok}</td><td>${a.zero_ok}</td><td>${a.partial}</td>`
+    +`<td${a.unobserved?' style="color:#b54708;font-weight:700"':""}>${a.unobserved}</td><td>${a.na}</td>`
+    +`<td class="state">${esc((a.srcs||[]).join(" · "))||"–"}</td></tr>`;});
+  h+=`</table><div class="note">기간 ${esc(L.period[0])} ~ ${esc(L.period[1])}${L.pc?" · "+esc(L.pc):""}`
+   +`${L.suspect?` · COM 누락 의심 ${L.suspect}일(다른 경로가 확인할 때까지 미관측으로 둡니다)`:""}</div>`;
+ }else h+='<div class="note">원장이 아직 없습니다 — [분석 실행](수집 포함) 뒤에 생깁니다.</div>';
+ const stg=d.stages||[];
+ if(stg.length){
+  const bad=stg.filter(x=>[0,1,4].indexOf(x.rc)<0||x.reason);
+  h+='<details style="margin-top:6px"><summary style="padding:6px 10px;font-size:12px">마지막 실행의 수집기 결과 '
+   +`(${stg.length}단계${bad.length?` · 확인 필요 ${bad.length}`:""})</summary><div class="body"><table>`
+   +'<tr><th>단계</th><th>rc</th><th>사유(의심 — 실측 전)</th><th>세부</th></tr>';
+  stg.forEach(x=>{h+=`<tr><td>${esc(x.name)}</td><td>${esc(x.rc)}</td><td>${esc(x.reason||"")}</td>`
+   +`<td class="state">${esc(Object.entries(x.counts||{}).map(([k,v])=>k+"="+v).join(" · "))}</td></tr>`;});
+  h+='</table></div></details>';
+ }
+ if(d.owa&&d.owa.mail_rows){h+=`<div class="note">Outlook 웹: 메일 ${d.owa.mail_rows}통 중 시각 없이 날짜만 읽힌 것 ${d.owa.date_only}통`
+  +`(${Math.round((d.owa.ratio||0)*100)}%) — 그만큼 시간 계상에서 빠집니다.</div>`;}
+ el.innerHTML=h;$("cvstate").textContent="확인 "+(d.as_of||"");
+}
+async function smpPost(action){
+ return fetch("/api/sampler",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:action})})
+  .then(x=>x.json()).catch(e=>({ok:false,error:String(e)}));
+}
+$("cvrefresh").onclick=async()=>{
+ $("cvmsg").textContent="확인 중…";
+ const r=await smpPost("refresh");
+ $("cvmsg").textContent=r.task===true?"샘플러 등록 작업 있음":(r.task===false?"샘플러 등록 작업 없음 — [상주 샘플러 등록]":"샘플러 등록 작업 확인 불가");
+ cvLoad();poll();
+};
+$("cvreset").onclick=async()=>{
+ if(!confirm("수집 커서와 날짜별 원장을 초기화합니다.\\n다음 [분석 실행]이 기간 전체를 처음부터 다시 읽습니다(수집한 자료는 지우지 않습니다).\\n계속할까요?"))return;
+ const r=await fetch("/api/reset_cursors",{method:"POST"}).then(x=>x.json()).catch(e=>({ok:false,error:String(e)}));
+ $("cvmsg").textContent=r.ok?("초기화했습니다 — "+((r.removed||[]).length?r.removed.join(", "):"커서 파일 없음")+(r.ledger?" · 원장":"")):("실패: "+(r.hint||r.error||""));
+ cvLoad();
+};
+$("smprestart").onclick=async()=>{
+ const r=await smpPost("restart");
+ $("cvmsg").textContent=r.note||r.error||"";
+ setTimeout(poll,4000);
+};
+$("smpreg").onclick=async()=>{
+ if(!confirm("창 샘플러를 로그온할 때마다 자동으로 시작되게 1회 등록합니다(작업 스케줄러 — 이 폴더 전용 이름).\\n1분마다 맨 앞 창 이름과 무입력 시간만 이 PC 안의 CSV 에 적습니다(내용은 읽지 않습니다).\\n해제: collect\\\\Register-Samplers.ps1 -Remove\\n\\n등록할까요?"))return;
+ $("smpreg").disabled=true;$("cvmsg").textContent="등록 중… (최대 1분)";
+ const r=await smpPost("register");
+ $("smpreg").disabled=false;
+ $("cvmsg").textContent=(r.ok?"등록 완료 — ":"등록 실패 — ")+(r.note||r.error||"");
+ setTimeout(poll,2000);
+};
+$("wl_date").value=iso(new Date());
+$("wl_save").onclick=async()=>{
+ const b={date:$("wl_date").value,start:$("wl_start").value,end:$("wl_end").value,hours:$("wl_hours").value,
+  category:$("wl_cat").value,entity:$("wl_entity").value,note:$("wl_note").value};
+ const r=await fetch("/api/worklog",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)})
+  .then(x=>x.json()).catch(e=>({ok:false,error:String(e)}));
+ $("wl_msg").textContent=r.ok?`기록됨 — ${r.row.date} ${r.row.category} ${r.row.hours}h${r.row.start?" ("+r.row.start+"~"+r.row.end+")":""}`:("실패: "+(r.error||""));
+};
 setInterval(()=>{if(!timer)poll();},3000);
-refresh();poll();tuLoad();
+refresh();poll();tuLoad();cvLoad();
 </script>
 </body></html>"""
 
@@ -4098,14 +4664,18 @@ class H(BaseHTTPRequestHandler):
             payload["sampler_stale"] = bool(age_min is not None and age_min > SAMPLER_STALE_MIN)
             # '꺼짐'(기록이 하나도 없음)과 '멈춤'(있는데 오래됨)은 조치가 다르다 — 화면이 구분해 말한다.
             payload["sampler_never"] = age_min is None
+            # LM28(W3-15): 여기서는 schtasks 를 띄우지 않는다 — 화면 열기·[새로고침] 때 조회한 캐시만 싣는다
             payload["sampler_task"] = (_sampler_task_exists()
                                        if (age_min is None or payload["sampler_stale"]) else None)
             payload["last_sample"] = (time.strftime("%Y-%m-%d %H:%M", time.localtime(last_ts))
                                       if last_ts else "")
-            why = _sampler_autorestart(age_min)
+            _ss = _sampler_status_file()
+            payload["sampler_state"] = {k: _ss.get(k) for k in ("ok", "reason", "heartbeat", "registered")
+                                        if k in _ss}
             with LOCK:
                 payload["sampler_restart"] = {"when": SAMPLER_RESTART["when"], "how": SAMPLER_RESTART["how"],
-                                              "note": SAMPLER_RESTART["note"] or why}
+                                              "note": SAMPLER_RESTART["note"]}
+            payload["busy_web"] = bool(JOB["running"])      # 분석·웹 읽기 중 — 화면이 웹 읽기 버튼을 끈다(F-16)
             self._send(200, payload)
         elif self.path == "/api/dash":
             fn, rows = result_rows()
@@ -4307,7 +4877,7 @@ class H(BaseHTTPRequestHandler):
                 else:
                     msg = ("<meta charset='utf-8'><body style=\"font-family:'Malgun Gothic'\">"
                            "<h3>팀 취합 결과가 아직 없습니다</h3>"
-                           "<p>대시보드의 [팀 취합] 버튼을 누르거나 LoadMonitor24-팀취합.bat 을 실행하세요.<br>"
+                           "<p>대시보드의 [팀 취합] 버튼을 누르거나 LoadMonitor28-팀취합.bat 을 실행하세요.<br>"
                            "config.teamShareDir 설정과 팀원들의 내보내기가 선행돼야 합니다.</p></body>")
                 self._send(200, msg.encode("utf-8"), "text/html; charset=utf-8")
         elif self.path == "/api/teamserver":
@@ -4527,6 +5097,11 @@ class H(BaseHTTPRequestHandler):
             elif "g=all" in self.path:
                 g = "all"
             self._send(200, {"gran": g, "groups": review(g)})
+        elif self.path.startswith("/api/collect_status"):
+            # 수집 현황 카드 — 원장 축별 일수·last_run rc/reason/counts·OWA 날짜만 비율(파일만 읽는다)
+            from urllib.parse import parse_qs, urlparse
+            q = parse_qs(urlparse(self.path).query)
+            self._send(200, collect_status_payload((q.get("from") or [""])[0], (q.get("to") or [""])[0]))
         elif self.path.startswith("/api/data"):
             src = (self.path.split("src=")[-1] if "src=" in self.path else "files")
             pats = {"mail": "outlook/mail.csv", "cal": "outlook/calendar.csv",
@@ -4591,7 +5166,7 @@ class H(BaseHTTPRequestHandler):
             except Exception:
                 self._send(400, {"ok": False, "error": "bad json"})
                 return
-            # v5: 보낼 주소는 설치 폴더의 config\team_server.json(LoadMonitor24-팀서버주소.bat 에서만 바꾼다).
+            # v5: 보낼 주소는 설치 폴더의 config\team_server.json(LoadMonitor28-팀서버주소.bat 에서만 바꾼다).
             # 화면이 보낸 주소는 받지도 저장하지도 않는다 — teamup.py 가 같은 설정을 읽는다.
             cmd = [sys.executable, os.path.join(ROOT, "teamup.py"), "--json"]
             if self.path == "/api/teamping":
@@ -4680,17 +5255,17 @@ class H(BaseHTTPRequestHandler):
                         msg = (f"포트 {port} 이 막혀 있는데 붙잡고 있는 서버가 없습니다.")
                         if rsv:
                             msg += (f"\n윈도우 예약 포트 범위({rsv})에 들어 있어 이 번호는 쓸 수 "
-                                    "없습니다 — LoadMonitor24-팀서버주소.bat 에서 포트를 다른 번호로 바꾸세요.")
+                                    "없습니다 — LoadMonitor28-팀서버주소.bat 에서 포트를 다른 번호로 바꾸세요.")
                         elif lo and lo <= port <= hi:
                             msg += (f"\n이 PC 의 임시 포트 범위가 {lo}~{hi} 이고 {port} 이 그 안에 "
                                     "듭니다 — 다른 프로그램이 '바깥으로 연결' 하며 잠깐 쓴 것입니다. "
-                                    "잠시 뒤 다시 누르거나, LoadMonitor24-팀서버주소.bat 에서 번호를 " + str(max(hi + 1, _alt_port_base()))
+                                    "잠시 뒤 다시 누르거나, LoadMonitor28-팀서버주소.bat 에서 번호를 " + str(max(hi + 1, _alt_port_base()))
                                     + " 처럼 그 범위 밖으로 바꾸면 다시 생기지 않습니다.")
                         else:
-                            msg += "\n잠시 뒤 다시 시도하거나 LoadMonitor24-팀서버주소.bat 에서 포트를 바꾸세요."
+                            msg += "\n잠시 뒤 다시 시도하거나 LoadMonitor28-팀서버주소.bat 에서 포트를 바꾸세요."
                     elif kind == "unreadable":
                         msg = (f"포트 {port} 이 쓰이고 있는데 무엇이 쥐고 있는지 확인하지 못했습니다"
-                               " (권한 또는 보안 프로그램). LoadMonitor24-팀서버주소.bat 에서 포트를 바꾸세요.")
+                               " (권한 또는 보안 프로그램). LoadMonitor28-팀서버주소.bat 에서 포트를 바꾸세요.")
                     else:
                         msg = (f"포트 {port} 을 LoadMonitor 가 아닌 프로그램이 쓰고 있습니다 — {who}")
                         if occ and occ[0].get("exe"):
@@ -4698,18 +5273,24 @@ class H(BaseHTTPRequestHandler):
                         if occ and occ[0].get("cmd"):
                             msg += f"\n명령줄: {occ[0]['cmd'][:160]}"
                         msg += ("\n무엇인지 모르겠으면 죽이지 마세요 — 사내 보안·백업 프로그램일 수 "
-                                "있습니다. LoadMonitor24-팀서버주소.bat 에서 포트를 바꾸는 편이 안전합니다.")
+                                "있습니다. LoadMonitor28-팀서버주소.bat 에서 포트를 바꾸는 편이 안전합니다.")
                     if not force:
                         if take == "no" and kind in ("legacy_lm", "other_lm", "unknown"):
+                            # LM28: 다른 폴더(LM24 포함)·구버전·남의 프로그램은 끄지 않는다 — 대체 포트를 제안만(W3-08)
+                            alt = int(st0.get("suggest_port") or 0)
+                            msg += ("\n\n이 화면은 그 프로그램을 끄지 않습니다(같은 PC 의 LM24 팀 서버일 수 있습니다)."
+                                    + (f" 따로 켜려면 LoadMonitor28-팀서버주소.bat 에서 포트를 {alt} 처럼 비어 있는 번호로"
+                                       " 바꾸세요 — 팀원도 같은 주소로 맞춰야 합니다." if alt else
+                                       " 따로 켜려면 LoadMonitor28-팀서버주소.bat 에서 포트를 바꾸세요."))
                             bad = [x for x in occ if x["protected"]]
                             if bad and any(x["self"] for x in bad):
                                 msg += ("\n\n[!] 그 프로세스는 이 대시보드 자신입니다 — "
                                         "팀 서버 포트와 대시보드 포트가 같습니다. "
-                                        "LoadMonitor24-팀서버주소.bat 에서 포트를 다른 번호로 바꾸세요.")
+                                        "LoadMonitor28-팀서버주소.bat 에서 포트를 다른 번호로 바꾸세요.")
                             elif bad:
                                 msg += ("\n\n이 프로그램은 강제로 끝낼 수 없습니다 "
                                         "(시스템 프로세스이거나 다른 계정 소유) — "
-                                        "그 계정에서 닫거나 LoadMonitor24-팀서버주소.bat 에서 포트를 바꾸세요.")
+                                        "그 계정에서 닫거나 LoadMonitor28-팀서버주소.bat 에서 포트를 바꾸세요.")
                         log("[팀 서버] 시작 거절 — " + msg.splitlines()[0])
                         self._send(200, {"ok": False, "error": msg, "occupied": True,
                                          "port": port, "running": False, "kind": kind,
@@ -4720,7 +5301,7 @@ class H(BaseHTTPRequestHandler):
                         self._send(200, {"ok": False, "occupied": True, "running": False,
                                          "kind": kind, "occupant": occ, "take": take,
                                          "error": f"강제로 끝낼 수 없는 프로세스입니다 — {who}. "
-                                                  "LoadMonitor24-팀서버주소.bat 에서 포트를 바꾸세요."})
+                                                  "LoadMonitor28-팀서버주소.bat 에서 포트를 바꾸세요."})
                         return
                     if take == "confirm_pid" and confirm_pid not in [x["pid"] for x in occ]:
                         # LoadMonitor 가 아닌 것을 죽이려면 pid 를 직접 입력해야 한다
@@ -4795,7 +5376,7 @@ class H(BaseHTTPRequestHandler):
                                      "port": port,
                                      "error": "포트를 넘겨받지 못했습니다 — 먼저 잡고 있던 서버가 "
                                               "계속 응답합니다. 방금 띄운 것은 정리했습니다.\n"
-                                              "그 서버 창을 직접 닫거나 LoadMonitor24-팀서버주소.bat 에서 포트를 바꾸세요."})
+                                              "그 서버 창을 직접 닫거나 LoadMonitor28-팀서버주소.bat 에서 포트를 바꾸세요."})
                     return
                 st = teamserver_status()
                 log("[팀 서버] " + ("시작됨 · " + (st["urls"][0] if st["urls"] else f"포트 {port}")
@@ -5118,11 +5699,12 @@ class H(BaseHTTPRequestHandler):
                 had_pid = bool(JOB.get("pid"))
             # 정리 중 예외가 나도 반드시 응답해야 한다 — 응답이 안 나가면 [중지] 버튼이
             # disabled 인 채로 영구히 남아 사용자가 다시 누를 수 없다.
-            for fn2 in (kill_job, kill_copilot_edge):
+            # LM28: 전용 Edge 는 CDP 로 우리가 띄운 것만 닫는다(로그인 대기 중이면 두고 — P6). powershell 을 띄우지 않는다.
+            for fn2 in (kill_job, lambda: close_edge("ui_stop")):
                 try:
                     fn2()
                 except Exception as e:
-                    log(f"[중지] {fn2.__name__} 실패({type(e).__name__}) — 계속 진행")
+                    log(f"[중지] {getattr(fn2, '__name__', '정리')} 실패({type(e).__name__}) — 계속 진행")
             if had_pid:
                 log("[중지] 사용자 요청으로 분석을 중단했습니다 — 지금까지의 결과는 report\\에 남아 있습니다")
             elif was:
@@ -5151,7 +5733,7 @@ class H(BaseHTTPRequestHandler):
             keep_q = not b.get("drop_queue")      # 아직 못 보낸 팀 업로드 묶음은 기본 보존
             for base in targets:
                 for root, _dirs, files in os.walk(base):
-                    if "copilot_profile" in root:     # Copilot 로그인 세션은 보존
+                    if lmname.EDGE_PROFILE_NAME in root:   # Copilot 로그인 세션(data\lm28_edge)은 보존
                         continue
                     if keep_q and "upload_pending" in root:
                         continue                      # 보내야 할 것을 리셋으로 잃지 않게(검증 지적)
@@ -5184,64 +5766,70 @@ class H(BaseHTTPRequestHandler):
                 self._send(200, make_reports())
             finally:
                 FREEZE_LOCK.release()
-        elif self.path == "/api/owa":
-            # Outlook 웹 읽기(대체②)를 손으로 — 로그인 직후 재수집용. 기간은 최근 실행(last_run.period) 또는 90일.
-            d0 = d1 = ""
+        elif self.path == "/api/reset_cursors":
+            # [커서 초기화] — 다음 수집이 기간 전체를 처음부터 읽게(수집한 행은 그대로). 분석 중에는 하지 않는다.
+            with LOCK:
+                if JOB["running"]:
+                    self._send(409, {"ok": False, "error": "busy", "hint": "분석·웹 읽기가 끝난 뒤 누르세요"})
+                    return
+            gone, led_ok = reset_cursors_local()
+            log("[커서 초기화] " + ("커서 " + ", ".join(gone) if gone else "커서 파일 없음")
+                + (" · 원장 초기화" if led_ok else " · 원장 없음") + " — 다음 [분석 실행]이 기간 전체를 다시 읽습니다")
+            self._send(200, {"ok": True, "removed": gone, "ledger": led_ok})
+        elif self.path == "/api/sampler":
+            # 샘플러 — 사용자 동작으로만(W3-15·P6): refresh(등록 작업 조회 1회)·restart([샘플러 다시 시작])·register(확인 뒤)
+            n = int(self.headers.get("Content-Length", 0) or 0)
             try:
-                with open(os.path.join(REPORT, "last_run.json"), encoding="utf-8-sig") as f:
-                    per = json.load(f).get("period") or []
-                if len(per) == 2:
-                    d0, d1 = per
-            except (OSError, ValueError):
-                pass
-            if not (d0 and d1):
-                import datetime as _dt
-                d1 = _dt.date.today().isoformat()
-                # 화면 기본값과 같게 — 올해 1월 1일부터
-                d0 = _dt.date(_dt.date.today().year, 1, 1).isoformat()
+                b = json.loads(self.rfile.read(n) or b"{}") if n else {}
+            except ValueError:
+                b = {}
+            act = str((b or {}).get("action") or "")
+            if act == "refresh":
+                self._send(200, {"ok": True, "task": _sampler_task_exists(refresh=True),
+                                 "state": _sampler_status_file(), "mutex": _sampler_mutex_alive()})
+            elif act == "restart":
+                self._send(200, {"ok": True, "note": sampler_restart()})
+            elif act == "register":
+                ok, msg = sampler_register()
+                self._send(200, {"ok": ok, "note": msg, "task": _sampler_task_exists()})
+            else:
+                self._send(400, {"ok": False, "error": "action 은 refresh·restart·register 중 하나"})
+        elif self.path == "/api/worklog":
+            # 수동 기록 폼(W1-19) — PC 밖 업무(출장·현장)를 화면에서. data\manual\worklog.csv(Add-WorkLog.ps1 과 같은 열)
+            n = int(self.headers.get("Content-Length", 0) or 0)
             try:
-                r2 = subprocess.run([sys.executable, os.path.join(ROOT, "collect", "Get-OutlookWeb.py"),
-                                     "--from", d0, "--to", d1, "--force"],
-                                    capture_output=True, timeout=1500, cwd=ROOT,
-                                    env=dict(os.environ, PYTHONIOENCODING="utf-8"), creationflags=NO_WIN)
-                txt = (r2.stdout or b"").decode("utf-8", "replace")
-                tail = [ln for ln in txt.strip().splitlines() if ln.strip()][-4:]
-                log(f"[Outlook 웹] rc={r2.returncode} " + (tail[-1] if tail else "")[:120])
-                self._send(200, {"ok": r2.returncode == 0, "rc": r2.returncode, "period": [d0, d1],
-                                 "summary": " / ".join(t.replace("[outlook-web] ", "") for t in tail)[:600]})
-            except subprocess.TimeoutExpired:
-                self._send(200, {"ok": False, "rc": -1, "error": "25분 내 끝나지 않음"})
-            except OSError as e:
-                self._send(200, {"ok": False, "rc": -1, "error": f"실행 실패({type(e).__name__})"})
-        elif self.path == "/api/teamsweb":
-            # 팀즈 웹 읽기를 손으로 — 로그인 직후 재수집용. 기간은 Outlook 웹과 같은 규칙.
-            # --force 는 주지 않는다: 이 파일은 '그때 화면에 보인 대화'만 담으므로 누적이 자산이다.
-            d0 = d1 = ""
+                b = json.loads(self.rfile.read(n) or b"{}") if n else {}
+                row = add_worklog(b if isinstance(b, dict) else {})
+            except (ValueError, OSError) as e:
+                self._send(200, {"ok": False, "error": str(e)[:200]})
+                return
+            log(f"[수동 기록] {row['date']} {row['category']} {row['hours']}h"
+                + (f" {row['start']}~{row['end']}" if row["start"] else "") + " — 다음 분석부터 반영됩니다")
+            self._send(200, {"ok": True, "row": row})
+        elif self.path in ("/api/owa", "/api/teamsweb"):
+            # [Outlook 웹 읽기]·[팀즈 웹 읽기] — LM28: 수집기를 직접 부르지 않고 run.py --web-only 로(화면 기간 · G1 정제 ·
+            # 출처 병합 · 원장 · Edge 정리 · login_pending 이 한 번에). 분석 중에는 하지 않는다(전용 Edge 를 함께 쓴다 — F-16).
+            n = int(self.headers.get("Content-Length", 0) or 0)
             try:
-                with open(os.path.join(REPORT, "last_run.json"), encoding="utf-8-sig") as f:
-                    per = json.load(f).get("period") or []
-                if len(per) == 2:
-                    d0, d1 = per
-            except (OSError, ValueError):
-                pass
-            if not (d0 and d1):
-                import datetime as _dt
-                d1 = _dt.date.today().isoformat()
-                d0 = _dt.date(_dt.date.today().year, 1, 1).isoformat()
+                b = json.loads(self.rfile.read(n) or b"{}") if n else {}
+            except ValueError:
+                b = {}
+            kind = "mail" if self.path == "/api/owa" else "teams"
+            d0, d1 = web_period((b or {}).get("from"), (b or {}).get("to"))
+            with LOCK:
+                if JOB["running"]:
+                    self._send(409, {"ok": False, "error": "busy",
+                                     "hint": "분석·다른 작업이 도는 중에는 웹 읽기를 하지 않습니다(전용 Edge 를 함께 씁니다) — 끝난 뒤 누르세요"})
+                    return
+                if self._freezing():
+                    return
+                JOB.update(running=True, step=("Outlook 웹 읽기" if kind == "mail" else "팀즈 웹 읽기"),
+                           started=time.time())
             try:
-                r2 = subprocess.run([sys.executable, os.path.join(ROOT, "collect", "Get-TeamsWeb.py"),
-                                     "--from", d0, "--to", d1],
-                                    capture_output=True, timeout=1500, cwd=ROOT,
-                                    env=dict(os.environ, PYTHONIOENCODING="utf-8"), creationflags=NO_WIN)
-                txt = (r2.stdout or b"").decode("utf-8", "replace")
-                tail = [ln for ln in txt.strip().splitlines() if ln.strip()][-4:]
-                log(f"[팀즈 웹] rc={r2.returncode} " + (tail[-1] if tail else "")[:120])
-                self._send(200, {"ok": r2.returncode == 0, "rc": r2.returncode, "period": [d0, d1],
-                                 "summary": " / ".join(t.replace("[teams-web] ", "") for t in tail)[:600]})
-            except subprocess.TimeoutExpired:
-                self._send(200, {"ok": False, "rc": -1, "error": "25분 내 끝나지 않음"})
-            except OSError as e:
-                self._send(200, {"ok": False, "rc": -1, "error": f"실행 실패({type(e).__name__})"})
+                self._send(200, web_read(kind, d0, d1))
+            finally:
+                with LOCK:
+                    JOB.update(running=False, step="", pid=0)
         elif self.path == "/api/prepmove":
             # 정리 작업은 TEMP 로 복사된 스크립트가 한다 — 이 폴더 안에서 돌리면
             # 그 스크립트 자신이 폴더를 잡아 '옮길 수 있는가' 확인이 항상 실패한다.
@@ -5252,7 +5840,7 @@ class H(BaseHTTPRequestHandler):
             try:
                 import shutil as _sh
                 import tempfile as _tf
-                tmp = os.path.join(_tf.gettempdir(), "LM22-Prepare-Move.ps1")
+                tmp = os.path.join(_tf.gettempdir(), "LM28-Prepare-Move.ps1")   # LM24 의 사본과 겹치지 않게
                 _sh.copy2(ps1, tmp)
                 # 새 콘솔 창으로 띄운다 — 사용자가 결과를 봐야 하고, 우리가 죽어도 살아남아야 한다
                 flags = 0x00000010                       # CREATE_NEW_CONSOLE (DETACHED 는 쓰지 않는다 —
@@ -5303,7 +5891,7 @@ class H(BaseHTTPRequestHandler):
             # 30초 안에 '판정이 가능한 상태인가'만 확인한다 — 분석 전체를 돌릴 필요 없이
             # 사용자가 스스로 원인(로그인 만료·모델 선택·차단)을 알 수 있게.
             import tempfile
-            pf = os.path.join(tempfile.gettempdir(), "lm_diag_prompt.txt")
+            pf = os.path.join(tempfile.gettempdir(), lmname.TMP_PREFIX + "diag_prompt.txt")   # LM24 와 겹치지 않게
             try:
                 with open(pf, "w", encoding="utf-8") as f:
                     f.write("연결 확인용 질문입니다. 아래 JSON 한 줄만 그대로 출력하세요.\n"
@@ -5354,7 +5942,7 @@ class H(BaseHTTPRequestHandler):
 
 def main():
     port = None
-    for p in range(9148, 9168):
+    for p in lmname.UI_PORTS:          # 9248~9267 — LM24 대시보드 대역과 나눠 북마크·탭이 섞이지 않게
         try:
             s = socket.socket()
             s.bind(("127.0.0.1", p))
@@ -5364,7 +5952,7 @@ def main():
         except OSError:
             continue
     if port is None:
-        print("사용 가능한 포트가 없습니다 (9148-9167)")
+        print(f"사용 가능한 포트가 없습니다 ({lmname.UI_PORTS[0]}-{lmname.UI_PORTS[-1]})")
         return 1
     PORT[0] = port
     os.makedirs(REPORT, exist_ok=True)
@@ -5376,11 +5964,14 @@ def main():
     # 이어서 '다른 PC 에서 온 프로필 버리기' 를 같은 스레드에서 한다 — Edge 가 확실히 죽은 뒤라야
     # 잠긴 파일 없이 지워진다(별도 스레드로 띄우면 종료와 삭제가 겹친다).
     def _startup_cleanup():
-        kill_copilot_edge()
+        # LM28: 지난 실행이 남긴 전용 Edge 는 owner.json 표식이 있을 때만 CDP 로 닫는다(powershell 을 띄우지 않는다 · W3-15).
+        # 로그인 대기 중이면 두고(P6), 사람이 띄운 Edge·LM24 의 Edge 는 건드리지 않는다.
+        close_edge("ui_start")
         drop_foreign_profile()
+        _sampler_task_exists(refresh=True)      # 화면 열 때 1회 — 등록 작업 유무(이후는 [새로고침] 때만)
     threading.Thread(target=_startup_cleanup, daemon=True).start()
     url = f"http://127.0.0.1:{port}/"
-    print(f"[ui] LoadMonitor24 {VERSION} — {url}  (Ctrl+C 종료)")
+    print(f"[ui] LoadMonitor28 {VERSION} — {url}  (Ctrl+C 종료)")
     # LM_NO_BROWSER(수집기·드라이버와 같은 환경변수)도 존중한다 — bat 은 인자 없이 띄우므로 회귀 실행이
     # 실제 브라우저를 열던 결함(PK-03)
     if "--no-browser" not in sys.argv and not os.environ.get("LM_NO_BROWSER"):

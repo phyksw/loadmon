@@ -7,7 +7,7 @@ Make-MovePack.py — 다른 PC 로 옮길 **최소 이동본**을 zip 한 개로
   tools\Prepare-Move.ps1 의 Trim-Profile 이 [PC 이동 준비] 안에서 **자동으로** 한다.
   이 파일은 그 규칙의 사본(trim_profile)과, 원하는 사람을 위한 zip 묶기를 갖고 있다.
 
-폴더가 큰 원인은 '데이터가 많아서' 가 아니라 폴더 하나다: data\copilot_profile(Copilot 로그인용
+폴더가 큰 원인은 '데이터가 많아서' 가 아니라 폴더 하나다: data\lm28_edge(Copilot 로그인용
 Edge 프로필)이 **파일 수의 94%·용량의 96%** 를 차지한다(실측 8개 설치본 100~529MB).
 정작 옮겨야 할 수집 CSV·보고서는 0.06~0.27MB 다. 그리고 로그인 세션은 Windows DPAPI 로
 '이 PC·이 계정' 에 묶여 있어 **가져가도 살아나지 않는다** — 받는 PC 에서 [AI 연결 진단] 으로
@@ -24,9 +24,9 @@ Edge 프로필)이 **파일 수의 94%·용량의 96%** 를 차지한다(실측 
 Edge 기동 인자의 캐시 상한(config.copilotAuto.diskCacheMB)은 Default\Cache 31MB 만 제어한다 —
 ProvenanceData 168MB·component_crx_cache 168MB 는 그 상한과 무관해서 이 정리가 필요하다.
 
-담는 것 : data\ (copilot_profile 제외) · report\ · config\*.json (병합 맵 포함)
+담는 것 : data\ (전용 Edge 프로필 lm28_edge 제외) · report\ · config\*.json (병합 맵 포함)
   · config\team_server.json(팀 서버 IP·포트, v5)도 config\ 와 함께 담긴다 — 받는 PC 도 같은 주소로 올린다
-안 담는 것: data\copilot_profile · python\ · .git\ · __pycache__ · *.zip · 얼린보고서 과거본(--full 이면 전부)
+안 담는 것: data\lm28_edge(·LM24 에서 옮겨 온 옛 프로필) · python\ · .git\ · __pycache__ · *.zip · 얼린보고서 과거본(--full 이면 전부)
   · python\ 은 배포본(풀패키지)에 들어 있어 다시 받으면 된다
   · config 의 detail_aliases.json·project_aliases.json 은 **반드시** 담는다 — 저장소에 없고
     사람마다 달라서, 빠지면 같은 데이터에서 다른 병합 결과가 나온다(정확성 회귀)
@@ -46,7 +46,10 @@ if __name__ == "__main__":
         (sys.stdout.encoding or "utf-8") if sys.stdout.isatty() else "utf-8"))
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SKIP_DIRS = {"copilot_profile", "__pycache__", ".ruff_cache", ".git", "python"}
+sys.path.insert(0, os.path.join(ROOT, "core"))
+import lmname  # noqa: E402  — 전용 Edge 프로필 이름(data\lm28_edge)·옛 판 프로필 이름
+# 전용 Edge 프로필은 담지 않는다 — 이 판(lm28_edge)과, LM24 폴더를 옮겨 오며 딸려 온 옛 프로필(OLD_PROFILE) 둘 다
+SKIP_DIRS = {lmname.EDGE_PROFILE_NAME, lmname.OLD_PROFILE, "__pycache__", ".ruff_cache", ".git", "python"}
 SKIP_EXT = {".zip", ".pyc", ".partial", ".tmp"}
 KEEP_FROZEN = 2                 # report\얼린보고서\ 는 최근 몇 개만(한 장 0.5MB 씩 쌓인다)
 
@@ -149,7 +152,7 @@ def trim_profile():
     로그인(Default 안의 쿠키·MSAL 토큰, 루트 Local State)은 남는다.
     회수량은 **삭제 후 재측정**으로 낸다 — 삭제 전에 세면 잠겨서 못 지운 것까지 '지웠다' 로 집계돼
     '정리했다는데 폴더는 그대로' 가 된다(옛 구현의 결함)."""
-    prof = os.path.join(ROOT, "data", "copilot_profile")
+    prof = lmname.edge_profile(ROOT)       # <ROOT>\data\lm28_edge — 이 설치본의 프로필만
     if not os.path.isdir(prof):
         log("전용 Edge 프로필이 없습니다 — 비울 것이 없습니다.")
         return 0, 0
@@ -198,7 +201,7 @@ def main():
 
     log(f"담을 파일 {len(items):,}개 · {total / 1048576:.1f} MB"
         + (f" (얼린보고서 과거본 {n_trim}개 제외 — 전부 담으려면 --full)" if n_trim else ""))
-    log("data\\copilot_profile 은 담지 않습니다 — Edge 캐시이고 로그인은 이 PC 에 묶여 있어 "
+    log(f"{lmname.EDGE_PROFILE_REL} 은 담지 않습니다 — Edge 캐시이고 로그인은 이 PC 에 묶여 있어 "
         "가져가도 살아나지 않습니다(받는 PC 에서 [AI 연결 진단] 1회).")
     t0 = time.monotonic()
     tmp = dst + ".partial"

@@ -2,8 +2,9 @@
 # Retroactive file-activity evidence WITHOUT configuring watch folders:
 #   1) Windows Recent items (%APPDATA%\...\Recent\*.lnk) - every file opened via Explorer/Office,
 #      regardless of drive or network share. Reaches back weeks~months.
-#   2) Office File MRU registry (Word/Excel/PowerPoint) - per-app recent files with timestamps.
-#      Office signed in with a M365/organisation account writes ONLY under
+#   2) Office File MRU registry - per-app recent files with timestamps. Office 14.0(2010)·15.0(2013)·16.0(2016~M365)
+#      × 모든 앱(Word·Excel·PowerPoint·Visio …) × (<App>\File MRU, <App>\User MRU\*\File MRU) 를 전부 본다 -
+#      16.0 고정이면 Office 2010/2013 PC 가 0건(실측). Office signed in with a M365/organisation account writes ONLY under
 #      <App>\User MRU\{LiveId_|ADAL_}<id>\File MRU - the top-level <App>\File MRU stays empty (measured: 0 vs 139).
 # This is the main fix for "file evidence too thin" - work files live everywhere, not one folder.
 # Output: ..\data\files\recent.csv          (overwrite)  mtime,ext,size_kb,folder,name,src,target_mtime
@@ -12,13 +13,92 @@
 #         ..\data\files\recent_history.csv  (accumulated union of every run, same header, 400 days)
 #         ..\data\files_excluded.json      ("recent" section)
 # ext:    watchExtensions 판정은 이름 끝 기준(Get-FileActivity.ps1 과 같은 규칙) - 복합 확장자(.cas.gz)·Creo 판번호(bracket.prt.12 → .prt)
+# 마지막 줄: LMSTATUS {v,src:'recent',rc,reason,counts,ranges:[]} - Recent·MRU 가 모두 0건이면
+#   최근 문서 정책(NoRecentDocsHistory·ClearRecentDocsOnExit·Start_TrackDocs=0)이 있으면 rc 3 R-RECENTPOLICY(exit 3),
+#   없으면 rc 1 R-MRUEMPTY(대상 없음 - exit 0). Recent 는 있는데 MRU 만 0건이면 rc 0 + reason R-MRUEMPTY(경고).
 param(
     [string]$From = '',
     [string]$To = '',
     [int]$Days = 90,
     [string]$RecentDir = '',     # 시험용: Recent 폴더 대신 이 폴더의 .lnk
-    [switch]$NoMru               # 시험용: 레지스트리 MRU 생략
+    [switch]$NoMru,              # 시험용: 레지스트리 MRU 생략
+    [switch]$LibOnly             # 시험용: MRU 함수만 정의하고 돌아간다(tests\ps 가 dot-source)
 )
+
+# ── Office MRU (C-26) - 판(14/15/16) × 앱 × (File MRU, User MRU\*\File MRU) 전수. 레지스트리 읽기와 해석을 나눠
+#    해석(Get-MruItemsFromReg)은 가짜 해시로 시험한다 ──
+$OfficeMruVersions = @('14.0', '15.0', '16.0')
+function Get-OfficeMruReg([string[]]$versions) {
+    # 레지스트리 → @{ '<키 이름>' = @{ 'Item 1' = '[F..][T<FILETIME>]*경로'; … } } (File MRU 키만 · Item* 값만)
+    # 키 이름은 'HKEY_CURRENT_USER\Software\Microsoft\Office\16.0\Word\User MRU\ADAL_…\File MRU' 꼴
+    $reg = @{}
+    foreach ($ver in $versions) {
+        $base = 'HKCU:\Software\Microsoft\Office\' + $ver
+        if (-not (Test-Path -LiteralPath $base)) { continue }
+        foreach ($app in @(Get-ChildItem -LiteralPath $base -ErrorAction SilentlyContinue)) {
+            $keys = New-Object System.Collections.Generic.List[object]
+            $keys.Add(@((Join-Path $app.PSPath 'File MRU'), ($app.Name + '\File MRU')))
+            $um = Join-Path $app.PSPath 'User MRU'
+            if (Test-Path -LiteralPath $um) {
+                # M365/조직 계정으로 로그인한 Office 는 User MRU\{LiveId_|ADAL_}<id>\File MRU 에만 쓴다 (Place MRU 는 폴더 목록이라 제외)
+                foreach ($u in @(Get-ChildItem -LiteralPath $um -ErrorAction SilentlyContinue)) {
+                    $keys.Add(@((Join-Path $u.PSPath 'File MRU'), ($u.Name + '\File MRU')))
+                }
+            }
+            foreach ($k in $keys) {
+                if (-not (Test-Path -LiteralPath $k[0])) { continue }
+                $vals = @{}
+                try {
+                    $props = Get-ItemProperty -LiteralPath $k[0] -ErrorAction Stop
+                    foreach ($p in $props.PSObject.Properties) { if ($p.Name -like 'Item*') { $vals[$p.Name] = [string]$p.Value } }
+                } catch {}
+                $reg[[string]$k[1]] = $vals
+            }
+        }
+    }
+    return $reg
+}
+function Get-MruItemsFromReg($reg, [string[]]$versions) {
+    # → @{ keys = 읽은 File MRU 키 수; items = [ @{ t = 로컬 시각; path; key } … ] }
+    # 키: ...\Office\<판>\<앱>\File MRU 또는 ...\Office\<판>\<앱>\User MRU\<계정>\File MRU (판은 $versions 안만)
+    # 값: 'Item N' = '[F00000000][T<16진 FILETIME>][O00000000]*<경로>'
+    $keyRe = '\\office\\(\d+\.\d+)\\[^\\]+\\(?:user mru\\[^\\]+\\)?file mru$'
+    $valRe = '\[T([0-9A-Fa-f]{16})\](?:\[[^\]]*\])*\*(.+)$'
+    $items = New-Object System.Collections.Generic.List[object]
+    $nKeys = 0
+    foreach ($k in @($reg.Keys | Sort-Object)) {
+        if ([string]$k -notmatch $keyRe) { continue }
+        if ($versions -notcontains $Matches[1]) { continue }
+        $nKeys++
+        $vals = $reg[$k]
+        foreach ($vn in @($vals.Keys | Sort-Object)) {
+            if ([string]$vn -notlike 'Item*') { continue }
+            if ([string]$vals[$vn] -notmatch $valRe) { continue }
+            $hex = $Matches[1]; $path = $Matches[2].Trim()
+            if (-not $path) { continue }
+            try { $items.Add(@{ t = [DateTime]::FromFileTime([Convert]::ToInt64($hex, 16)); path = $path; key = [string]$k }) } catch {}
+        }
+    }
+    return @{ keys = $nKeys; items = $items.ToArray() }      # @($List[object]) 를 해시 리터럴 안에 쓰면 PS 5.1 이 'Argument types do not match' 로 죽는다
+}
+function Get-RecentPolicy {
+    # 최근 문서 기록을 막는 정책·설정 → 걸린 이름 목록(없으면 빈 배열)
+    $hits = @()
+    foreach ($b in @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer', 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer')) {
+        try {
+            $p = Get-ItemProperty -LiteralPath $b -ErrorAction Stop
+            foreach ($n in @('NoRecentDocsHistory', 'ClearRecentDocsOnExit')) {
+                if ($p.PSObject.Properties[$n] -and [long]$p.$n -ne 0) { $hits += $n }
+            }
+        } catch {}
+    }
+    try {
+        $a = Get-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' -ErrorAction Stop
+        if ($a.PSObject.Properties['Start_TrackDocs'] -and [long]$a.Start_TrackDocs -eq 0) { $hits += 'Start_TrackDocs=0' }
+    } catch {}
+    return @($hits | Select-Object -Unique)
+}
+if ($LibOnly) { return }
 
 $ErrorActionPreference = 'Stop'
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}   # run.py 가 UTF-8 로 읽는다
@@ -244,13 +324,14 @@ $rowKeys = New-Object System.Collections.Generic.List[string]
 $script:nSelf = 0
 
 # 자기 설치 폴더 제외 - 결과 CSV·MD 를 '열어보기만 해도' Recent/MRU 를 타고
-# 다음 수집에 업무 신호로 들어온다(자기 출력의 되먹임). LoadMonitor24.bat 이
+# 다음 수집에 업무 신호로 들어온다(자기 출력의 되먹임). LoadMonitor28.bat 이
 # 결과 폴더를 자동으로 열어주므로 이 경로는 반드시 막아야 한다. 다른 LoadMonitor 설치는 산출물
 # 폴더(data|report|teamdata|python)만 - core|collect|ui 까지 막으면 이 도구의 개발 흔적이 지워진다.
-$selfRoot = $root.ToLower()
+# LM28: 이 설치본 절대경로 접두(끝 '\' 포함)를 먼저 보고, 폴더명 loadmonitor* 와 loadmon<숫자>* 둘 다 본다.
+$selfRoot = $root.ToLower().TrimEnd('\') + '\'
 function Test-SelfPath([string]$pl) {
     if ($pl.StartsWith($selfRoot)) { return $true }
-    if ($pl -match '\\loadmonitor[^\\]*\\(data|report|teamdata|python)\\') { return $true }
+    if ($pl -match '\\(loadmonitor[^\\]*|loadmon\d+[^\\]*)\\(data|report|teamdata|python)\\') { return $true }
     return $false
 }
 
@@ -302,38 +383,24 @@ try {
     }
 } catch { Write-Host "[recent] Recent folder scan failed: $($_.Exception.Message)" }
 
-# --- 2) Office File MRU (registry, [T<hex FILETIME>]*<path>) ---
+# --- 2) Office File MRU (registry, [T<hex FILETIME>]*<path>) - 14/15/16 × 앱 × (File MRU, User MRU\*\File MRU) ---
 $nMru = 0; $nMruKeys = 0
 if (-not $NoMru) {
-    $mruKeys = New-Object System.Collections.Generic.List[string]
-    foreach ($app in @('Word', 'Excel', 'PowerPoint')) {
-        $base = "HKCU:\Software\Microsoft\Office\16.0\$app"
-        $mruKeys.Add("$base\File MRU")                       # 로컬 계정(로그인 안 한 Office)
-        # M365/조직 계정으로 로그인한 Office 는 User MRU\{LiveId_|ADAL_}<id>\File MRU 에만 쓴다 (Place MRU 는 폴더 목록이라 제외)
-        foreach ($u in @(Get-ChildItem -Path "$base\User MRU" -ErrorAction SilentlyContinue)) {
-            $mruKeys.Add((Join-Path $u.PSPath 'File MRU'))
-        }
-    }
-    foreach ($key in $mruKeys) {
-        if (-not (Test-Path -LiteralPath $key)) { continue }
-        $nMruKeys++
-        try { $props = Get-ItemProperty -LiteralPath $key } catch { continue }
-        foreach ($p in $props.PSObject.Properties) {
-            if ($p.Name -notlike 'Item*') { continue }
-            if ([string]$p.Value -match '\[T([0-9A-Fa-f]{16})\]\[?[^\]]*\]?\*(.+)$') {
-                try {
-                    $ft = [DateTime]::FromFileTime([Convert]::ToInt64($Matches[1], 16))
-                    Add-Row $ft $Matches[2] 'mru'
-                    $nMru++
-                } catch {}
-            }
-        }
+    $mr = Get-MruItemsFromReg (Get-OfficeMruReg $OfficeMruVersions) $OfficeMruVersions
+    $nMruKeys = [int]$mr.keys
+    foreach ($it in $mr.items) {
+        Add-Row $it.t $it.path 'mru'
+        $nMru++
     }
 }
 
 Write-Lines (Join-Path $outDir 'recent.csv') $rows
 Write-Host ("[recent] lnk scanned={0}, mru keys={1}, mru scanned={2}, rows in range={3}" -f $nRecent, $nMruKeys, $nMru, ($rows.Count - 1))
-if (-not $NoMru -and $nMruKeys -eq 0) { Write-Host '[recent] Office File MRU 키 없음 (Office 16 미설치 또는 아직 문서를 연 적 없음)' }
+if (-not $NoMru -and $nMruKeys -eq 0) { Write-Host '[recent] Office File MRU 키 없음 (Office 2010/2013/2016~M365 미설치 또는 아직 문서를 연 적 없음)' }
+# 0건 사유(C-26) - '조용한 0건' 을 남기지 않는다
+$recentPolicy = @()
+if ($nRecent -eq 0 -or $nMru -eq 0) { $recentPolicy = @(Get-RecentPolicy) }
+if ($recentPolicy.Count -gt 0) { Write-Host ('[recent] 주의: 최근 문서 기록을 막는 정책·설정 - ' + ($recentPolicy -join ' · ')) }
 
 $kwStat = [ordered]@{}
 foreach ($k in ($exclStat.Keys | Sort-Object)) { $kwStat[$k] = @{ files = $exclStat[$k]['files']; folders = $exclStat[$k]['dirs'].Count } }
@@ -358,6 +425,7 @@ try {
         lnk_scanned = $nRecent
         mru_keys = $nMruKeys
         mru_scanned = $nMru
+        recent_policy = @($recentPolicy)
         by_keyword = $kwStat
         folder_names = $fnOut
         package_dirs = $pkgOut
@@ -372,3 +440,15 @@ try {
     $h = Merge-History (Join-Path $outDir 'recent_history.csv') $header @($rows | Select-Object -Skip 1) $rowKeys 'recent'
     Write-Host ("[recent] history: {0:n0}행 ({1}개월 · 이전 {2:n0}행과 합집합 · 400일 보관)" -f $h['total'], $h['months'], $h['old'])
 } catch { Write-Host ("[recent] recent_history.csv 누적 실패: " + $_.Exception.Message) }
+
+# LMSTATUS - 수집기 공통 마지막 줄. 종료 코드는 rc 3 일 때만 3(그 밖은 0 - 0건은 실패가 아니다)
+$lmRc = 0; $lmReason = ''
+if (($nRecent + $nMru) -eq 0) {
+    if ($recentPolicy.Count -gt 0) { $lmRc = 3; $lmReason = 'R-RECENTPOLICY' } else { $lmRc = 1; $lmReason = 'R-MRUEMPTY' }
+} elseif (-not $NoMru -and $nMru -eq 0) {
+    $lmReason = $(if ($recentPolicy.Count -gt 0) { 'R-RECENTPOLICY' } else { 'R-MRUEMPTY' })     # Recent 는 있음 - 경고만
+}
+$lmCounts = [ordered]@{ lnk = $nRecent; mru_keys = $nMruKeys; mru = $nMru; rows = ($rows.Count - 1); self_excluded = $script:nSelf
+                        recent_policy = @($recentPolicy); office_versions = @($OfficeMruVersions) }
+Write-Host ('LMSTATUS ' + ([ordered]@{ v = 1; src = 'recent'; rc = $lmRc; reason = $lmReason; counts = $lmCounts; ranges = @() } | ConvertTo-Json -Depth 5 -Compress))
+if ($lmRc -eq 3) { exit 3 }

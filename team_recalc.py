@@ -283,10 +283,16 @@ def read_signals(p):
     return out
 
 
-def version_of(meta):
-    """판별 — 명시 버전 필드가 두 판 어디에도 없어 키 유무로 본다(기간 tag 파일 단위)."""
+def version_of(meta, member=None, tag=None):
+    """판별 — LM28 은 member.json 의 lm_ver(teamup 이 'LM28' 을 싣는다)로 먼저 본다. member.json 은 그 사람의
+    마지막 업로드 한 기간(tag)의 것이라, tag 를 주면 그 기간일 때만 믿는다(옛 기간 파일을 LM28 로 오표기하지 않게).
+    lm_ver 가 없으면 예전처럼 키 유무로 본다(LM24·LM20 은 명시 버전 필드가 없다 — 기간 tag 파일 단위).
+    'lm28' 은 산식이 v3 와 같다 — 표시(LM28(v3))만 다르다."""
     if not meta:
         return "unknown"
+    mv = str((member or {}).get("lm_ver") or "").strip().upper()
+    if mv.startswith("LM28") and (tag is None or str((member or {}).get("tag") or "") == str(tag)):
+        return "lm28"
     if any(k in meta for k in ("measure", "coverage", "cfg_used")):
         return "v3"
     mb = meta.get("mm_basis") or {}
@@ -565,7 +571,7 @@ def load_team(root, cal, now, std, log, use_inferred=False):
         for tag in tags:
             d0, d1 = _tag_dates(tag)
             meta = _jload(metas[tag]) if tag in metas else None
-            ver = version_of(meta)
+            ver = version_of(meta, member, tag)
             if meta and isinstance(meta.get("period"), list) and len(meta["period"]) == 2:
                 p0, p1 = _parse_date(meta["period"][0]), _parse_date(meta["period"][1])
                 d0, d1 = p0 or d0, p1 or d1
@@ -668,7 +674,7 @@ def pct_cls(v):
     return "hi" if v >= 120 else ("ok" if v >= 70 else "lo")
 
 
-VER_LABEL = {"v3": "LM24(v3)", "lm20": "LM20(추정)", "unknown": "판 불명"}
+VER_LABEL = {"lm28": "LM28(v3)", "v3": "LM24(v3)", "lm20": "LM20(추정)", "unknown": "판 불명"}
 
 
 def person_sums(p, std):

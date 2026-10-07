@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 r"""
-freeze.py — 분석 결과를 '파일 하나' 보고서 3종으로 만든다 (LoadMonitor24).
+freeze.py — 분석 결과를 '파일 하나' 보고서 3종으로 만든다 (LoadMonitor28).
 
   python freeze.py --from 2026-01-01 --to 2026-08-25            # 3종 전부 (= --all)
   python freeze.py --from ... --to ... --freeze [--summary]     # 얼린 보고서만 (--summary: 원문 제외)
@@ -425,7 +425,7 @@ def _freeze(tag, full, base_url, log, info):
     # stub: 판정이 스텁(LM_COPILOT_STUB, 테스트 전용)이었던 결과 — 취합이 실자료와 구분한다.
     baked["_lm"] = {"kind": "frozen", "owner": owner, "host": host,
                     "period": [d0, d1], "tag": tag, "full": bool(full), "stub": stub,
-                    "generated": time.strftime("%Y-%m-%d %H:%M"), "generator": "LoadMonitor24 freeze.py"}
+                    "generated": time.strftime("%Y-%m-%d %H:%M"), "generator": "LoadMonitor28 freeze.py"}
     who = f"{os.environ.get('USERNAME', '?')}@{host or '?'}"
     ts = time.strftime("%Y-%m-%d %H:%M")
     mode_txt = ("메일·회의 제목 등 원문 근거가 들어 있습니다 — <b>팀 밖 공유 금지</b>"
@@ -748,10 +748,12 @@ def report_island(tag, full=True, log=_say):
         + (f"<div class='sub'>{_esc(m.get('reason'))}</div>" if m.get("reason") else "")
         + "</td></tr>"
         for m in match[:12]) or "<tr><td colspan=5 class='dim'>매칭 결과 없음</td></tr>"
+    # '대체 가능 MM' 은 보이지 않는다(A-33 RP4) — 신규 후보는 근거 업무 행 수만
     new_html = "".join(
         f'<div style="border-left:3px solid #6c4fb8;padding:4px 0 4px 12px;margin:10px 0">'
-        f'<b>{_esc(n.get("name"))}</b> <span class="state">대체 가능 로드 ≈ '
-        f'{_num(n.get("load_mm")):.2f} MM</span>'
+        f'<b>{_esc(n.get("name"))}</b>'
+        + (f' <span class="state">근거 업무 {int(_num(n.get("evidence_rows")))}행</span>'
+           if n.get("evidence_rows") is not None else "")
         + (f'<div style="font-size:12px;margin-top:3px"><b>동작 로직:</b> '
            f'{_esc(n.get("logic"))}</div>' if n.get("logic") else "")
         + "</div>"
@@ -760,6 +762,27 @@ def report_island(tag, full=True, log=_say):
     if ag.get("failed_chunks"):
         ag_note = (f'<div class="note" style="color:#c0392b">묶음 {ag.get("failed_chunks")}/'
                    f'{ag.get("chunks") or "?"}개 실패 — 결과가 실제보다 적을 수 있습니다</div>')
+
+    # LM28(WP9): 초과근무 세분·미관측 · 산출 방식(PC 가동 하한의 근거·날짜별 방식) · 동료 · 연관 업무 · 업무 영역·과제
+    # 워크플로 요약(단위업무 등급) — 리포트(report_out)와 같은 함수. 요약판(--summary)은 동료 이름을 [사람] 으로.
+    extra_html, n_tasks = "", 0
+    try:
+        import report_out as _ro
+        n_tasks = _ro._task_count()
+        _b = meta.get("mm_basis") if isinstance(meta.get("mm_basis"), dict) else {}
+        _ot = _ro.overtime_rows(meta, _b)
+        if _ot:
+            extra_html += ('<div class="card"><h2>5. 근무 꼬리표 · 초과근무 세분 · 미관측</h2><table>'
+                           + "".join(f"<tr><th style='width:260px'>{_esc(k)}</th><td>{_esc(v)}</td></tr>" for k, v in _ot)
+                           + "</table></div>")
+        extra_html += '<div class="card">' + "\n".join(_ro.floor_section(meta, _b)) + "</div>"
+        _sig = _ro._rows(os.path.join(REPORT, f"signals_{tag}.csv"))
+        _pv = _read_json(os.path.join(REPORT, f"pivots_{tag}.json")) or {}
+        extra_html += ('<div class="card">'
+                       + "\n".join(_ro.new_sections(_sig, wf, rows, _pv, summary=not full, ctx=_ro._privacy_ctx(), n0=6))
+                       + "</div>")
+    except Exception as e:  # noqa: BLE001 - 새 절의 실패가 분석리포트를 막지 않는다
+        log(f"    [!] 분석리포트 보조 절 건너뜀({type(e).__name__}: {str(e)[:80]})")
 
     generated = time.strftime("%Y-%m-%d %H:%M")
     stub = _is_stub()
@@ -770,7 +793,7 @@ def report_island(tag, full=True, log=_say):
         "period": [d0, d1], "tag": tag, "total_mm": total,
         "avail_mm": avail, "load_pct": pct, "rows_file": rows_file,
         "rows": rows, "workflow": wf, "agentic": ag,
-        "generated": generated, "generator": "LoadMonitor24 freeze.py",
+        "generated": generated, "generator": "LoadMonitor28 freeze.py",
         "merged_rows": n_merged, "full": bool(full), "stub": stub},
         ensure_ascii=False).replace("<", "\\u003c")
     stub_txt = " · <b>스텁 판정(테스트 전용 — 실제 Copilot 판정 아님)</b>" if stub else ""
@@ -841,24 +864,25 @@ margin:1px 3px 1px 0;font-size:10.5px;color:#3d444c}}
 <div class="nt">과제 {len(by_pj)}개</div></div>
 </div>
 
-<div class="card"><h2>1. 프로젝트 내 업무 로드 <span class="state">과제별 MM 배분</span></h2>
+<div class="card"><h2>1. 과제별 업무 로드 <span class="state">과제별 MM 배분</span></h2>
 {pj_bar or '<div class="note">표시할 배분이 없습니다</div>'}{tool_note}</div>
 
-<div class="card"><h2>2. 업무별 상세 <span class="state">MM 순</span></h2>
-<table><tr><th style="width:70px">Level 1</th><th style="width:52px">유형</th>
-<th style="width:140px">과제</th><th style="width:120px">담당 업무</th><th>상세설명</th>
+<div class="card"><h2>2. 업무별 상세 <span class="state">MM 순 · 업무 영역 / 과제 / 세부업무 / 업무분류</span></h2>
+<table><tr><th style="width:70px">업무 영역</th><th style="width:52px">업무분류</th>
+<th style="width:140px">과제</th><th style="width:120px">세부업무</th><th>상세설명</th>
 <th class="num" style="width:52px">MM</th><th></th></tr>{row_html}</table></div>
 
 <h1 style="font-size:15px;margin:18px 0 8px">3. 담당자 워크플로우
 <span class="state">역할 → 일의 순서 → 단계별 Agent 가능성</span></h1>
 {flows_html}
 
-<div class="card"><h2>4. Agentic AI 12과제 매칭
-<span class="state">적합률 = 그 과제가 내 업무를 자동화·대체할 수 있는 정도</span></h2>
+<div class="card"><h2>4. Agentic AI 과제 매칭
+<span class="state">등록된 과제{f' {n_tasks}개' if n_tasks else ''} · 적합률 = 그 과제가 내 업무를 자동화·대체할 수 있는 정도</span></h2>
 <table><tr><th>과제</th><th class="num" style="width:52px">적합률</th><th></th>
-<th class="num" style="width:78px">대체 로드 MM</th><th>관련 업무 · 사유</th></tr>{m_html}</table>
+<th class="num" style="width:78px">근거 업무 실측 MM</th><th>관련 업무 · 사유</th></tr>{m_html}</table>
 {ag_note}
 {('<h2 style="margin:16px 0 6px">신규 자동화 후보</h2>' + new_html) if new_html else ''}</div>
+{extra_html}
 
 <div class="note">이 파일 하나로 공유됩니다. 팀 취합 분석은 아래 데이터 섬을 읽어 수행합니다.</div>
 </div>

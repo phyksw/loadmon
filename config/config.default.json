@@ -1,5 +1,5 @@
 ﻿{
- "_설명": "LoadMonitor24 — raw 판정은 Copilot(GPT-5.6)이 과제↔업무유형 계층으로 수행. MM은 투입/가용을 나란히 낸다: 투입 MM(실제 활동 흔적 시간) ÷ 가용 MM(일할 수 있었던 양) = 로드율",
+ "_설명": "LoadMonitor28 — raw 판정은 Copilot(GPT-5.6)이 과제↔업무유형 계층으로 수행. MM은 투입/가용을 나란히 낸다: 투입 MM(실제 활동 흔적 시간) ÷ 가용 MM(일할 수 있었던 양) = 로드율",
  "owner": "",
  "function": "",
  "_MM_설명": "1 MM = 8h × 그 달 평일수(주40시간). 가용 MM 은 연차·휴가(+부재 추정)를 일자에서 뺀 값. 투입 MM = 그날 활동 흔적(회의+창 샘플러+신호 세션)의 시간 합집합 — 능동 흔적(산출물·발신·수락 회의·샘플러)이 있는 날은 PC 가동 구간(data\\pc\\pc_spans.csv ∩ 주간 창, ≤11h, 점심·야근일 저녁 차감)을 하한으로 합친다(usePcFloor, '3시간 일하고 저장 1번'의 과소 방지). 흔적이 전혀 없는 날은 PC가 켜져 있어도 0, 수동 흔적(수신·CC·열람)만 있는 날은 하루 passiveDayMaxMin 분까지만. 종일 출장·현장·교육 일정(offsiteAsWork)과 수동 기록(collect\\Add-WorkLog.ps1)은 표준일·기록 시간을 하한으로 인정한다. 상한 없이 실측 그대로라 야근·주말 근무가 많으면 로드율이 100%를 넘는다 — 하루 24h 물리 한계만 두고(PC on≤24·night≤13·주간≤11h 입력 검증), 이상치(PC 기록 오류·부재일 흔적·16h 초과)는 잘라내지 않고 근거 카드에 표시한다. method='workday'는 비교용. 창 샘플러를 켜면 하한 대신 실측이 쓰인다 — 단 샘플러는 키보드·마우스 활동 기준이라 캘린더 없는 대면 업무는 samplerGapBridgeMin 으로 잇는다. 측정 방식(샘플러 실측/PC 하한/흔적 창)과 신뢰도 등급(reliable 신뢰·caution 주의·unreliable 측정 불충분)은 mm_meta 의 measure·coverage 에 남아 리포트·팀 취합에 배지로 보인다. 세부 키는 _mm_옵션_설명",
@@ -59,7 +59,17 @@
   "simNight": "span",
   "simNightCapH": 4.0,
   "simNightHumanUnlock": true,
-  "simNightNeedsPc": false
+  "simNightNeedsPc": false,
+  "shareBasis": "weight",
+  "nightWindow": [
+   22,
+   6
+  ],
+  "privateRunMin": 30,
+  "pcFloorWindow": [
+   8,
+   19
+  ]
  },
  "_mm_옵션_설명": {
   "usePcFloor": "능동 흔적(산출물·발신·수락 회의·샘플러)이 있는 평일의 주간 투입을 PC 가동 구간(pc_spans ∩ 주간 창, 최대 11h)과 구간 단위로 합쳐 인정 — '3시간 일하고 저장 1번'의 과소 방지. PC 가 꺼진 시간의 수락 회의는 따로 더해진다. 항상 켜 두는 PC(절전·종료 없음)는 첫 능동 흔적 −30분 ~ 마지막 능동 흔적 +30분까지만",
@@ -91,7 +101,11 @@
   "simNightHumanUnlock": "true(기본): 그 밤의 **첫 해석 출력 이후**에 사람 흔적(능동 신호·'파일(열람)'·샘플러·회의)이 있으면 = 새벽에 결과를 보고 다시 돌린 밤이라 simNightCapH 상한을 풀고 구간 전체를 인정한다(mm_meta.sim_night_unlocked_days 로 계수). 제출 시각(첫 출력 전)의 흔적은 해제 사유가 아니다",
   "simNightNeedsPc": "false(기본): 내 PC 가 꺼져 있어도 인정한다 — 해석은 보통 서버·클러스터에서 돌기 때문(인정분 중 PC 야간 가동 밖은 mm_meta.sim_night_remote_h 로 따로 집계) / true: 내 PC 야간 가동 구간(pc_spans, 없으면 pc_on 가동 창의 야간부)과 겹치는 만큼만 인정",
   "signalMinutes": "신호별 최소 작업시간(분) 덮어쓰기 {\"파일\":60,\"파일(코드)\":90,\"커밋\":90,\"메일(발신)\":20,\"메일(수신)\":5,\"메일(CC)\":3,\"메일(수신전용)\":2,\"팀즈(단체)\":3,\"회의\":0 …}. 회의 0 = 캘린더 구간만 계상. 목록에 없는 라벨은 세션을 만들지 않는다",
-  "sessionGapMin": "능동 흔적끼리 같은 세션으로 묶는 간격(분, 기본 45). 수동 신호(수신·CC)는 다리를 놓지 않는다"
+  "sessionGapMin": "능동 흔적끼리 같은 세션으로 묶는 간격(분, 기본 45). 수동 신호(수신·CC)는 다리를 놓지 않는다",
+  "shareBasis": "과제별 몫을 무엇으로 나눌지. \"weight\"(기본, LM24 와 같음): 신호 가중치 비율 / \"time\": 그날 투입 시간을 과제별 시간으로 나눈다(합계는 그날 투입과 같다)",
+  "nightWindow":"야간 시간대 [시작시, 끝시] (기본 [22, 6] = 22시~다음날 06시). 야간·휴일·연장 시간 구분에 쓴다",
+  "privateRunMin": "창 샘플러에서 사적 사용(개인 웹·미디어 등)으로 분류된 창이 정규 시간에 이 분 이상 이어지면 투입에서 뺀다(기본 30)",
+  "pcFloorWindow":"PC 가동 하한을 적용하는 시간 창 [시작시, 끝시] (기본 [8, 19] = LM24 와 같음). dayWindow 는 그대로 두고 하한에만 쓴다 — 줄이면(예: [9, 18]) 하한이 줄어든다"
  },
  "_holidays_설명": "음력 명절·대체공휴일·선거일. 양력 고정 공휴일·근로자의날과 연도별 표(core\\extract.py KR_HOLIDAYS — 설·추석·대체공휴일·선거일, 2025~2027)는 내장돼 있어 비워 둬도 된다. 내장 표에 없는 연도·임시 공휴일만 [\"2028-02-14\", …] 로 추가. 팀 전원이 같은 값을 써야 한다(분모가 달라지면 팀 비교가 어긋남). 해가 바뀌면 정부 공고로 내장 표를 갱신할 것",
  "holidays": [],
@@ -367,6 +381,8 @@
  "gitRepos": [],
  "_워크플로우단위_설명": "담당자 워크플로우에서 한 흐름을 무엇으로 볼지. \"과제/담당업무\"(기본, LM20+보완2 와 같음) = 담당 업무(중위개체)마다 따로 흐름을 만든다 — 잘게 갈라진 세부업무는 흐름을 만들기 전에 별칭 맵(규칙·Copilot·정제 결과)으로 먼저 합친다. \"과제\" = 과제 하나를 한 흐름으로 — 서로 관계 없는 업무가 한 줄로 엮이므로 권하지 않는다",
  "workflowUnit": "과제/담당업무",
+ "_episodeTop_설명": "단위업무(에피소드)를 보고서에 몇 개까지 싣는지(기본 50). 시작·종료 단서와 3단계 등급이 붙은 상위 항목만 남긴다",
+ "episodeTop": 50,
  "_상위분류_설명": "상위(업무 성격)는 **개발 / 양산 / AX / 공통** 네 가지입니다(level1Set 에 적으면 더 늘어납니다). 개발·양산 과제는 보통 프로젝트 코드네임으로 불리므로 level1Codenames 에 그 이름을 넣어 두면 확정됩니다. AX = AI 를 활용한 자동화 과제, 공통 = 회계·재무·총무·실험실 관리 같은 일반 사무입니다. 옛 이름(신제품개발·기술 내재화·양산준비·일반업무)도 계속 받습니다 — 예전 결과와 사내 엑셀 축이 그대로 읽힙니다. AI 정제가 판정하고, **비어 있을 때만** 아래 규칙으로 채웁니다(규칙이 판정을 덮지 않습니다). level1Codenames = 과제 코드네임 목록 — 양산·개발 과제는 코드네임으로 부르므로 그 이름을 여기에 넣으면 그 과제의 상위가 확정됩니다(사내 코드네임은 배포본에 넣지 않았습니다. 받는 분이 채우세요). level1AxKeywords = AI·자동화 과제로 볼 키워드. level1CommonKeywords = 회계·실험실관리 같은 일반 사무로 볼 키워드. 규칙 순서는 코드네임 → AX → 공통입니다('실험실 자동화'는 사무가 아니라 AX 로 봅니다).",
  "level1Codenames": {
   "양산": [],
@@ -413,6 +429,13 @@
   "임시",
   "본인_개인폴더명을_여기에_추가"
  ],
+ "_개인정보_설명": "개인정보 정제(core\\privacy) — 수집 직후·적재·Copilot 직전·팀 반출 네 곳에 같은 규칙을 건다. customers = 고객사 이름, partners = 협력사 이름(둘 다 Copilot·팀 반출에서 가린다), allowPatterns = 가리지 말아야 할 표기(정규식 — 과제 코드 등), maskCodenames = true 면 과제 코드네임도 가명으로 바꾼다(기본 false). 이름은 이 PC 안에만 두고 배포본에 넣지 마세요",
+ "privacy": {
+  "customers": [],
+  "partners": [],
+  "allowPatterns": [],
+  "maskCodenames": false
+ },
  "_패키지폴더_설명": "true(기본): 패키지·도구 폴더(.venv·venv·site-packages·node_modules·__pycache__·.git·.idea·.vs·.vscode·.conda·cmake-build-*)는 이름만으로 파일·Recent·git 수집에서 제외 — pip/npm 설치 시각의 수천 파일이 '파일(코드)' 로 잡혀 과제 배분을 지배하던 왜곡 방지. 이름이 업무 폴더와 겹치는 build·dist·target·release·debug·x64·env·packages 는 그 폴더(또는 바로 위)에 빌드 표식(CMakeCache.txt·pyvenv.cfg·*.obj/*.pdb/*.o·*.sln/*.vcxproj·package.json·Cargo.toml 등)이 있을 때만 제외한다 — 시뮬레이션 결과를 Release\\ 에 두는 조직에서 그날 해석 작업이 통째로 사라지던 것 방지. 펌웨어 빌드 산출물(.hex .elf .bin .map .bit .sof)은 빌드 폴더 안이라도 남긴다. 이름만으로 더 빼고 싶은 폴더는 excludeFolderNames",
  "excludePackageDirs": true,
  "_폴더제외_설명": "폴더명 완전 일치(대소문자 무시)로 파일·Recent 수집에서 뺄 이름 목록(예: [\"backup\", \"old_results\"]). 패키지·빌드 폴더 판정이 '표식이 있는 폴더' 기준으로 바뀌어 Release·build·target·dist·x64·debug 같은 이름은 더 이상 이름만으로 지워지지 않는다 — 해석 결과·도면 배포본이 그런 이름의 폴더에 있는 조직을 위한 변경. 특정 결과·백업 폴더를 빼고 싶으면 여기에 이름을 적는다. 무엇이 빠졌는지는 수집 로그와 data\\files_excluded.json(folder_names)에 남는다",
@@ -425,13 +448,30 @@
  "_앱우선_설명": "true(기본): 팀즈·Outlook 은 **앱을 먼저** 씁니다. 팀즈는 켜져 있는 앱 창을 먼저 읽고(새 줄을 얻으면 웹·Copilot 경로를 건너뜁니다 — 전용 Edge 탭이 뜨지 않습니다), Outlook 은 원래부터 COM(앱)이 1순위입니다. false 로 두면 예전 순서(웹 먼저)로 돌아갑니다. 앱이 꺼져 있거나 화면에 렌더된 대화가 없으면 자동으로 웹 경로로 넘어갑니다.",
  "preferApp": true,
  "teamsWeb": true,
- "_teamsWebMaxChats_설명": "웹 경로에서 훑을 대화방 수(최근 순). 대화방마다 지난 메시지를 위로 되감으므로 늘리면 그만큼 오래 걸립니다. 0 이하·비정상 값은 40 으로 봅니다.",
- "teamsWebMaxChats": 40,
+ "_teamsWebMaxChats_설명": "웹 경로에서 훑을 대화방 수(최근 순, 기본 200). 대화방마다 지난 메시지를 위로 되감으므로 늘리면 그만큼 오래 걸립니다 — 다 못 읽은 방은 다음 실행이 이어서 읽습니다. 0 이하·비정상 값은 기본값으로 봅니다.",
+ "teamsWebMaxChats": 200,
  "_teamsWebBudgetSec_설명": "웹 경로 전체 시간 예산(초). 이 안에 반드시 저장까지 끝내고, 남은 대화방은 다음 실행으로 미룹니다. 분석 실행이 주는 상한(1200초)보다 짧아야 합니다 — 상한에 걸려 강제 종료되면 그때까지 읽은 것이 통째로 사라집니다.",
  "teamsWebBudgetSec": 900,
+ "_teamsWebMaxScroll_설명": "웹 경로에서 대화방 하나를 위로 되감는 스크롤 횟수 상한(기본 60). 분석 시작일 이전에 닿으면 그 방은 '다 읽음' 으로 표시되고, 상한에 걸리면 '일부' 로 남아 다음 실행이 이어서 읽습니다",
+ "teamsWebMaxScroll": 60,
+ "_teamsWindowRawDump_설명": "true 면 팀즈 창 읽기의 원문 줄을 진단용 파일로 남깁니다(기본 false — 이 PC 안에만 남지만 채팅 원문이 들어가므로 진단할 때만 켜세요)",
+ "teamsWindowRawDump": false,
  "_메일수집_설명": "Outlook 메일·일정 수집 경로. 기본은 클래식 Outlook COM. 이 PC 에서 COM 결과가 비면(새 Outlook 전용·2016 시작 마법사·COM 미등록) ① Windows Search 색인 → ② Outlook 웹(전용 Edge 프로필, mailViaWeb) → ③ Copilot 메일·일정 왕복(mailViaCopilot) 순으로 자동 대체합니다. ②는 Outlook 버전과 무관하고 LLM 을 거치지 않아 정확하며, Copilot 과 같은 전용 Edge 창에서 회사 계정으로 한 번 로그인(계정 선택)만 하면 됩니다. 왕복·읽기는 메일이 비었을 때만 일어납니다.",
  "mailViaCopilot": true,
  "mailViaWeb": true,
+ "_수집커서_설명": "collect.cursorEpoch = '어디까지 읽었는지' 기록(메일 달 완료표·팀즈 방 커서)의 세대 번호. 수집기 판과 이 값이 기록과 다르면 그 기록을 버리고 처음부터 다시 읽습니다 — 잘못 '읽음' 으로 남은 기록을 한 번에 무효로 할 때 1 올리세요(python run.py --reset-cursors 와 같은 효과). collect.mailAllPaths = true 면 앞 경로가 성공해도 메일 경로(COM·색인·웹)를 모두 돌려 합칩니다(기본 false — 검증되지 않은 날이 남을 때만 다음 경로를 돈다)",
+ "collect": {
+  "cursorEpoch": 1,
+  "mailAllPaths": false
+ },
+ "_outlook_설명": "클래식 Outlook(COM) 수집 옵션. subfolders = 받은 편지함·보낸 편지함의 하위 폴더까지 읽기(기본 true, 기본 저장소만·상한 있음). attachWaitSec = Outlook 이 바쁘다고 답할 때(다른 창·동기화 중) 다시 붙어 보는 최대 초(기본 120). ostStaleH = 최근 달에서 가장 최근 받은 메일이 이 시간(기본 72)보다 오래됐으면 오프라인 사본(OST)이 멈춘 것으로 보고 그 달을 '다 읽음' 으로 표시하지 않습니다",
+ "outlook": {
+  "subfolders": true,
+  "attachWaitSec": 120,
+  "ostStaleH": 72
+ },
+ "_owaTimeRecoverMax_설명": "Outlook 웹 목록에 시각이 없는 메일(날짜만 보이는 줄)을 읽기 창 머리에서 시각을 다시 얻는 최대 건수(기본 150)",
+ "owaTimeRecoverMax": 150,
  "_outlookBudgetSec_설명": "Outlook COM 수집 한 회차의 시간 예산(초). 0(기본) = 자동: 240 + 60×개월(360~900). 수집기는 기간을 달로 쪼개 최신 달부터 읽고 달마다 data\\outlook\\coverage.json 에 완료 표를 남기므로, 예산에 닿아 못 읽은 달은 같은 실행 안에서 최대 2회, 그리고 다음 [분석 실행]이 이어서 읽습니다(완료된 달은 건너뜀·최신 2개월은 매번 다시 읽음). 미수집 달이 남으면 수집 데이터 현황과 주간 활동 추이 밑에 표시됩니다. Outlook 이 느린 PC 에서 한 번에 끝내고 싶으면 1200 처럼 크게 두세요",
  "outlookBudgetSec": 0,
  "_팀즈형식_설명": "팀즈 창 읽기의 시각 형식. 비우면 이 PC 의 Windows 지역 설정에서 자동 구성하고(0줄이면 일반 형식 재시도), 특수한 표기면 .NET 정규식을 직접 지정 — 그룹 1=앞 오전/오후 표기, 2=시, 3=분, 4=뒤 표기(빈 그룹 허용). 예: 14h10 → ()?\\b(\\d{1,2})h(\\d{2})\\b()?   (docs\\설정가이드 §7)",
@@ -442,13 +482,17 @@
  "storeMailSubject": true,
  "idleThresholdSec": 180,
  "samplerIntervalSec": 60,
- "_샘플러_설명": "true(기본): 대시보드가 창 샘플러의 마지막 샘플이 10분 이상 오래된 것을 보면 등록 작업(LoadMonitor24-Sampler) 또는 Start-ActivitySampler 를 다시 띄운다(작업 스케줄러 3일 실행 제한 등으로 조용히 멈춘 것 복구, 10분에 한 번). 로그온 자동 시작은 collect\\Register-Samplers.ps1 로 1회 등록(실행 제한 없음·실패 시 재시작, -Teams 로 팀즈 샘플러까지, -Remove 로 해제). 샘플러 기록은 키보드·마우스 활동 기준",
- "_PC기록자동_설명": "v3 부터 PC 가동 기록은 **원장(pc_spans.csv · 추가 전용)** 하나에만 저장되고 pc_on.csv 는 원장에서 재생성되는 캐시입니다 — 수집을 아무리 다시 돌려도 지난 기록이 깎이지 않습니다. PC 가동 기록은 화면의 추이 선과 PC 가동 하한의 유일한 근거입니다. pcRefreshHours(기본 12) 안에 수집된 기록이 없거나 저장된 기록이 분석 기간을 못 덮으면, [재분석만] 이어도 **PC 이력·브라우저 힌트만** 자동으로 다시 모읍니다(수집 전체는 하지 않습니다). 0 으로 두면 시간 기준 갱신을 끄고 기간이 모자랄 때만 모읍니다. autoRegisterSampler(기본 true)는 창 샘플러 작업이 등록돼 있지 않으면 1회 등록합니다 — 이벤트 로그는 롤오버되지만 샘플러가 돌면 그 뒤 구간은 로그와 무관하게 남습니다.",
+ "_샘플러_설명": "autoRestartSampler — false(기본): 사용자가 등록·시작하지 않은 샘플러를 프로그램이 스스로 띄우지 않는다. true: 대시보드가 창 샘플러의 마지막 샘플이 10분 이상 오래된 것을 보면 등록 작업(LM28-Sampler-<폴더해시6>) 또는 Start-ActivitySampler 를 다시 띄운다(작업 스케줄러 3일 실행 제한 등으로 조용히 멈춘 것 복구, 10분에 한 번). 로그온 자동 시작은 LoadMonitor28-샘플러등록.bat(= collect\\Register-Samplers.ps1)로 1회 등록(실행 제한 없음·실패 시 재시작, -Teams 로 팀즈 샘플러까지, -Remove 로 해제). 작업 이름이 LM24(LoadMonitor24-*)와 달라 같은 PC 에서 함께 써도 서로 지우지 않는다. 샘플러 기록은 키보드·마우스 활동 기준",
+ "_PC기록자동_설명": "v3 부터 PC 가동 기록은 **원장(pc_spans.csv · 추가 전용)** 하나에만 저장되고 pc_on.csv 는 원장에서 재생성되는 캐시입니다 — 수집을 아무리 다시 돌려도 지난 기록이 깎이지 않습니다. PC 가동 기록은 화면의 추이 선과 PC 가동 하한의 유일한 근거입니다. pcRefreshHours(기본 12) 안에 수집된 기록이 없거나 저장된 기록이 분석 기간을 못 덮으면, [재분석만] 이어도 **PC 이력·브라우저 힌트만** 자동으로 다시 모읍니다(수집 전체는 하지 않습니다). 0 으로 두면 시간 기준 갱신을 끄고 기간이 모자랄 때만 모읍니다. autoRegisterSampler(기본 false)를 true 로 두면 [분석 실행]이 창 샘플러 작업이 등록돼 있지 않을 때 1회 등록합니다 — 기본은 동의 없이 예약 작업을 만들지 않고, 사용자가 LoadMonitor28-샘플러등록.bat 이나 화면 버튼으로 등록합니다. 이벤트 로그는 롤오버되지만 샘플러가 돌면 그 뒤 구간은 로그와 무관하게 남습니다.",
  "pcRefreshHours": 12,
+ "_pcHints_설명": "브라우저 사용기록 힌트(Get-PcOnHints). includeSynced = true 면 다른 기기에서 동기화된 방문도 이 PC 가동 근거로 센다(기본 false — 이 PC 에서 본 방문만)",
+ "pcHints": {
+  "includeSynced": false
+ },
  "_수집만무창_설명": "[수집만](추가 PC) 모드는 기본으로 창을 여는 경로를 생략합니다 — 아웃룩 웹·Copilot 메일·팀즈 웹·팀즈 Copilot. 메일·일정·팀즈는 계정 단위 데이터라 본 PC 가 같은 사서함을 수집하고 분석이 중복을 제거하므로, 추가 PC 의 몫은 그 기계의 로그(PC 가동·파일·git·샘플러)입니다. Copilot 은 판정 전용으로 아껴 둡니다. 추가 PC 가 유일한 아웃룩인 예외 환경만 false 로 두세요(그때는 예전처럼 폴백 전체가 돕니다).",
  "collectOnlyHeadless": true,
- "autoRegisterSampler": true,
- "autoRestartSampler": true,
+ "autoRegisterSampler": false,
+ "autoRestartSampler": false,
  "_프로그램사용_설명": "어떤 프로그램을 얼마나 붙잡고 있었나 — 창 샘플러의 process 열(맨 앞 창의 실행 파일 이름)을 집계해 mm_meta 의 tool_usage 로 싣는다. ★ 참고 지표이고 투입 MM·로드율 계산에는 들어가지 않는다(신호로 넣으면 가중치 비율이 바뀌어 지금까지의 MM 이 통째로 달라진다). 프로그램 이름표는 core\\programs.py 의 카탈로그(Creo·CATIA·NX·ANSYS·FloEFD·Abaqus·Zemax·Altium·MATLAB… 상용/비상용 구분 포함)를 쓰고, 사내 제작 도구처럼 카탈로그에 없는 것은 programsExtra 로 보탠다. 창 제목은 집계에 쓰지 않는다(과제명·사람 이름이 들어가므로)",
  "programsExtra": [],
  "_솔버감시_설명": "배경에서 돌아가는 솔버 이름(앞부분 일치, 소문자). 창을 안 보고 있어도 프로세스가 살아 있으면 활동 기록의 solvers_running 에 적히고, 야간 해석 인정(mm.simNight)과 프로그램 사용 이력의 '배경 가동' 시간이 여기서 나온다. 비우면 그 열이 늘 비어 밤새 돌린 해석이 흔적 없이 사라진다. solverProcessesExclude 는 앞부분 일치가 잘못 잡는 것을 뺀다 — ansys 는 라이선스 대리자 ansysli_client 까지 잡는데, 그것은 로그온 내내 떠 있어서 빼지 않으면 '해석을 하루 종일 돌렸다' 가 된다",
@@ -550,7 +594,7 @@
  "_copilot_설명": "무개입 Copilot 왕복(전용 Edge 프로필). 최초 1회만 로그인. model 은 표기를 대충 적어도 된다 — 하이픈·공백·점 차이를 무시하고 찾는다 (설정 'GPT-5.6' → 메뉴의 'GPT 5.6 깊이 생각하기' 매칭). 메뉴가 [자동/빠른 응답/깊이 생각하기/GPT >] 구조면 GPT 하위 메뉴까지 열고 들어간다. stablePolls x pollSec = 응답이 이 시간 동안 안 변하면 완료로 판정",
  "copilotAuto": {
   "url": "https://m365.cloud.microsoft/chat",
-  "port": 9333,
+  "port": 9533,
   "stablePolls": 8,
   "pollSec": 3,
   "replyTimeoutSec": 480,
@@ -560,21 +604,28 @@
   "refineChunk": 20,
   "agenticMaxWork": 60,
   "chatTurns": 12,
-  "sendSenderAddress": false
+  "sendSenderAddress": false,
+  "inProcess": true,
+  "requireWorkAccount": true,
+  "keepEdgeOpen": false
  },
  "_copilotAuto_옵션_설명": {
   "judgeChunk": "판정 한 왕복에 넣는 신호 수(기본 40). 응답이 잘리거나 실패하면 줄인다 — python judge.py --chunk N 이 있으면 그것이 우선",
   "refineChunk": "정제 한 왕복에 넣는 행 수(기본 20). 40행은 근거 포함 12,000자로 입력 한도(9,000자)를 넘겼다(실측) — python refine.py --chunk N 이 우선",
   "chatTurns": "한 채팅에서 이어 보내는 왕복(청크) 수. 기본 12. 판정·정제·Agentic·워크플로우의 묶음은 같은 채팅에서 이어 보내 Copilot 이 앞 묶음의 과제·세부업무 표기를 기억하게 한다(묶음마다 새 채팅을 열면 기억이 끊겨 표기가 흔들린다). 첫 왕복·실패한 왕복 뒤·이 수에 닿으면 새 채팅. 0 이면 묶음마다 새 채팅(LM22 1차 방식 — 긴 대화에서 답이 자꾸 끊기는 PC 용)",
   "sendSenderAddress": "false(기본): 메일 상대의 주소 대신 도메인(@회사.com)만 프롬프트에 넣는다. true 면 주소 전체. 어느 쪽이든 사람 이름·MM 은 보내지 않는다",
-  "분할전송": "설정 없음 — 프롬프트가 Copilot 입력 한도(9,000자)를 넘으면 줄 경계 8,000자 조각으로 나눠 보내고 답 끝의 [[전송끝]] 서약으로 완료를 판정한다(tools\\copilot_auto.py). replyTimeoutSec 은 조각 수만큼 곱해 기다린다"
+  "분할전송": "설정 없음 — 프롬프트가 Copilot 입력 한도(9,000자)를 넘으면 줄 경계 8,000자 조각으로 나눠 보내고 답 끝의 [[전송끝]] 서약으로 완료를 판정한다(tools\\copilot_auto.py). replyTimeoutSec 은 조각 수만큼 곱해 기다린다",
+  "port": "전용 Edge 디버그 포트(기본 9533). 전용 프로필은 설치 폴더의 data\\lm28_edge — LM24 의 포트·프로필 값이 이 파일에 남아 있어도 LM28 값으로 바꿔 쓴다(같은 PC 의 LM24 Edge 를 건드리지 않게). 프로필이 바뀌므로 처음 한 번은 [AI 연결 진단]에서 다시 로그인해야 한다",
+  "inProcess": "true(기본): Copilot 왕복을 별도 파이썬 프로세스 없이 같은 프로세스에서 돈다(프로세스 수 절감). 문제가 있으면 false 로 예전 방식(자식 프로세스)으로 되돌린다",
+  "requireWorkAccount": "true(기본): 전용 Edge 가 회사(업무) 계정이 아닌 개인 계정으로 로그인돼 있으면 프롬프트를 보내지 않는다",
+  "keepEdgeOpen": "false(기본): 작업이 끝나면 우리가 띄운 전용 Edge 를 닫는다. 회사 정책이 브라우저를 닫을 때 쿠키를 지워 매번 다시 로그인해야 하는 PC 만 true"
  },
- "_notice_설명": "공지·시스템 발신자 — 업무·연결성에서 완전 제외. 회사 알림 계정을 추가하세요. 명단에 없어도 '5통 이상 받았는데 회신 0회'인 발신자는 자동으로 알림성(0.2배) 처리됩니다",
+ "_agentic_설명": "Agentic 과제 매칭 옵션. domainHint = 프롬프트에 넣을 팀 업무 영역 한 줄(예: '광학 설계·시험'). 비우면 일반 문구를 쓴다 — 사내 코드네임·고객사 이름은 넣지 마세요",
+ "agentic": {
+  "domainHint": ""
+ },
+ "_notice_설명": "공지·시스템 발신자 — 업무·연결성에서 완전 제외. 배포 템플릿에는 일반어만 들어 있습니다 — 회사 알림 계정(교육·윤리·인사 시스템 등)은 받은 사람이 자기 config.json 에 추가하세요. 명단에 없어도 '5통 이상 받았는데 회신 0회'인 발신자는 자동으로 알림성(0.2배) 처리됩니다",
  "noticeSenders": [
-  "정부24",
-  "인화원",
-  "윤리사무국",
-  "innoHR",
   "no-reply",
   "noreply",
   "do-not-reply",
@@ -604,7 +655,7 @@
  ],
  "_팀취합_설명": "팀 배포용 — 공유폴더 경로를 넣으면 분석 후 결과가 <폴더>\\<이름>\\ 으로 자동 복사됩니다. 팀장은 python aggregate.py <폴더> 로 팀 총괄 리포트 생성. 빈 값이면 비활성",
  "teamShareDir": "",
- "_팀서버_설명": "팀 서버 주소 — v5 부터 이 파일에 두지 않고 설치 폴더의 config\\team_server.json 에 서버 IP·포트를 따로 둡니다. 바꾸는 곳은 LoadMonitor24-팀서버주소.bat 하나입니다(대시보드는 보여 주기만 합니다). 설치 폴더 안의 파일이라 폴더를 통째로 옮기거나 팀원에게 나눠 주면 바꾼 주소가 그대로 따라갑니다. 그 파일이 없으면 기본 주소를 쓰고, 이전 판에서 쓰던 teamServerUrl 값이 이 파일에 남아 있으면 그 값을 이어받습니다. 팀 공용 PC 에서 LoadMonitor24-팀서버.bat 을 켜 두면 그 포트로 열려 팀원 결과를 취합합니다. LM19 부터는 분석이 끝나도 자동 전송하지 않고 report\\upload_pending\\ 에 묶음만 만들어 둡니다. 서버에 닿는 망에서 대시보드 [팀 서버 업로드] 버튼(또는 LoadMonitor24-팀업로드.bat)을 누르면 밀린 기간까지 한 번에 올라갑니다.",
+ "_팀서버_설명": "팀 서버 주소 — v5 부터 이 파일에 두지 않고 설치 폴더의 config\\team_server.json 에 서버 IP·포트를 따로 둡니다. 바꾸는 곳은 LoadMonitor28-팀서버주소.bat 하나입니다(대시보드는 보여 주기만 합니다). 설치 폴더 안의 파일이라 폴더를 통째로 옮기거나 팀원에게 나눠 주면 바꾼 주소가 그대로 따라갑니다. 그 파일이 없으면 기본 주소를 쓰고, 이전 판에서 쓰던 teamServerUrl 값이 이 파일에 남아 있으면 그 값을 이어받습니다. 팀 공용 PC 에서 LoadMonitor28-팀서버.bat 을 켜 두면 그 포트로 열려 팀원 결과를 취합합니다. LM19 부터는 분석이 끝나도 자동 전송하지 않고 report\\upload_pending\\ 에 묶음만 만들어 둡니다. 서버에 닿는 망에서 대시보드 [팀 서버 업로드] 버튼(또는 LoadMonitor28-팀업로드.bat)을 누르면 밀린 기간까지 한 번에 올라갑니다.",
  "_팀업로드_설명": "auto=true 로 두면 예전처럼 분석 직후 자동 전송까지 시도합니다(닿지 않으면 대기로 남습니다). 기본은 false — 사용자가 가능한 망에서 버튼으로 보냅니다.",
  "teamUpload": {
   "auto": false

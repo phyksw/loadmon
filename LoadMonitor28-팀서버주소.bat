@@ -1,7 +1,7 @@
 @echo off
 >nul chcp 949
 cd /d "%~dp0"
-title LoadMonitor24 - 팀 서버 주소 설정
+title LoadMonitor28 - 팀 서버 주소 설정
 
 set "PY_EXE="
 set "PY_ARGS="
@@ -36,7 +36,7 @@ if not exist "core\teamaddr.py" (
 )
 echo.
 echo  [팀 서버 주소] 팀 서버의 IP 와 포트를 따로 저장합니다 - 설치 폴더의 config\team_server.json
-echo     팀원 PC    : 분석 후 이 주소로 올립니다 - 대시보드 [팀 서버 업로드] 또는 LoadMonitor24-팀업로드.bat
+echo     팀원 PC    : 분석 후 이 주소로 올립니다 - 대시보드 [팀 서버 업로드] 또는 LoadMonitor28-팀업로드.bat
 echo     팀 서버 PC : 이 포트로 팀 서버가 열리고, 이 IP 로 들어온 결과를 모아 취합합니다.
 echo     이 폴더를 통째로 옮기거나 팀원에게 나눠 주면 바꾼 주소가 그대로 따라갑니다.
 echo     대시보드는 주소를 보여 주기만 합니다 - 바꾸는 곳은 이 파일 하나입니다.
@@ -45,10 +45,11 @@ echo.
 echo.
 echo  바꿀 값만 입력하고, 그대로 둘 값은 Enter 만 누르세요.
 rem 입력값은 명령줄에 끼워 넣지 않고 환경변수로만 넘긴다 - 특수문자가 섞여도 명령으로 해석되지 않게.
-set "LM24_TA_HOST="
-set "LM24_TA_PORT="
-set /p "LM24_TA_HOST=  새 서버 IP (예: 10.0.0.5) : "
-set /p "LM24_TA_PORT=  새 포트 (1~65535)        : "
+rem 이름은 LM28_TA_* (core\teamaddr.py --set-env 가 읽는 이름과 같다)
+set "LM28_TA_HOST="
+set "LM28_TA_PORT="
+set /p "LM28_TA_HOST=  새 서버 IP (예: 10.0.0.5) : "
+set /p "LM28_TA_PORT=  새 포트 (1~65535)        : "
 echo.
 "%PY_EXE%" %PY_ARGS% core\teamaddr.py --set-env
 if errorlevel 1 (

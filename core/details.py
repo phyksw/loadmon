@@ -23,6 +23,7 @@ import csv
 import json
 import os
 import re
+import sys
 import time
 import unicodedata
 from datetime import date as _date2
@@ -414,7 +415,10 @@ MIN_SPAN_GAP2 = 14     # 신호 시간대 비겹침 판정의 최소 간격(일)
 #   공통  = 일반 사무 — 회계·재무·총무·실험실 관리 등
 # config.level1Set 으로 범주를 늘릴 수 있다(제보의 "등등"). 옛 어휘(신제품개발·기술 내재화·양산준비·
 # 일반업무·표준 특허)는 아래 동의어 표로 계속 받는다 — 예전 결과 파일과 사내 엑셀 축이 그대로 읽힌다.
-LEVEL1_SET = ("개발", "양산", "AX", "공통")
+# LM28(WP8 — REQ-30·A-28): '외부 업무지원'(국책·산학·포럼·파견·교육 — 팀의 직접 업무가 아닌 대외 지원)을 고정 범주에 더한다.
+# LM24 의 '지원 → 공통' 동의어는 외부 업무지원과 충돌해 지웠다(교육·지원이 공통으로 잘못 분류되던 문제).
+EXT_L1 = "외부 업무지원"
+LEVEL1_SET = ("개발", "양산", EXT_L1, "AX", "공통")
 LEVEL1_ALIAS = {
     # 옛 어휘 → 새 이름
     "신제품개발": "개발", "기술 내재화": "개발", "기술내재화": "개발", "양산준비": "양산",
@@ -422,7 +426,8 @@ LEVEL1_ALIAS = {
     # 현장에서 쓰는 말
     "양산화": "양산", "양산이관": "양산", "생산": "양산", "제조": "양산",
     "선행": "개발", "선행개발": "개발", "신제품": "개발", "요소기술": "개발", "내재화": "개발",
-    "사무": "공통", "일반": "공통", "지원": "공통", "관리": "공통",
+    "사무": "공통", "일반": "공통", "관리": "공통",
+    "외부지원": EXT_L1, "국책": EXT_L1, "산학": EXT_L1, "대외": EXT_L1, "ext": EXT_L1, "대외협력": EXT_L1,
     "ax": "AX", "자동화": "AX", "agentic": "AX", "에이전틱": "AX", "ai": "AX", "에이아이": "AX",
     "ｱx": "AX", "ＡＸ": "AX", "ＡＸ자동화": "AX",     # 반각 가타카나·전각 표기
 }
@@ -445,7 +450,9 @@ def _level1_extra():
     return ()
 
 
-LEVEL1_ALL = LEVEL1_SET + tuple(x for x in _level1_extra() if x not in LEVEL1_SET)
+# 추가 범주 중 고정 범주의 별칭과 같은 이름(예: 예전 config.level1Set 의 '외부지원')은 따로 세우지 않는다 — 별칭으로 접힌다
+LEVEL1_ALL = LEVEL1_SET + tuple(x for x in _level1_extra()
+                                if x not in LEVEL1_SET and ukey1(x) not in {ukey1(k) for k in LEVEL1_ALIAS})
 _L1_BY_KEY = {ukey1(x): x for x in LEVEL1_ALL}
 
 # ── 상위 어휘의 **표현 속성 단일원** — 색·정렬·엑셀 단계·프롬프트 문구 전부 여기서 파생한다.
@@ -458,17 +465,19 @@ L1_META = {
              "desc": "선행·신제품·요소기술 개발 (과제 이름이 프로젝트 코드네임인 경우가 많다)"},
     "양산": {"color": "#e08a00", "order": 1, "stage": "양산준비",
              "desc": "양산 이관·양산 대응 (역시 코드네임)"},
-    "AX": {"color": "#6c4fb8", "order": 2, "stage": "기타",
+    EXT_L1: {"color": "#0e8c7a", "order": 2, "stage": "기타",
+             "desc": "외부 지원 — 국책·산학·포럼·학회·파견·교육(팀의 직접 업무가 아닌 대외 업무)"},
+    "AX": {"color": "#6c4fb8", "order": 3, "stage": "기타",
            "desc": "AI 를 활용한 자동화 과제(도구를 만들거나 업무에 적용하는 일)"},
-    "공통": {"color": "#8b929b", "order": 3, "stage": "기타",
-             "desc": "일반 사무 — 회계·재무·총무·실험실 관리 등"},
+    "공통": {"color": "#8b929b", "order": 4, "stage": "기타",
+             "desc": "일반 사무 — 회계·재무·예산·총무·실험실 관리·특허·정보보안 등"},
 }
 # config.level1Set 추가 범주 — 표 순서 기반 예약 팔레트(이름 해시가 아니라 순서라, 타 판 PC 와
-# 취합해도 같은 순서면 같은 색 — 결정론). 단계는 '기타'.
-_L1_EXTRA_PALETTE = ("#0e8c7a", "#a61b4a", "#3d8f3d", "#c05a78", "#4a7f9e", "#8a6d3b")
+# 취합해도 같은 순서면 같은 색 — 결정론). 단계는 '기타'. #0e8c7a 는 외부 업무지원 몫이라 뺐다(LM28).
+_L1_EXTRA_PALETTE = ("#a61b4a", "#3d8f3d", "#c05a78", "#4a7f9e", "#8a6d3b", "#556270")
 for _i, _x in enumerate(x for x in LEVEL1_ALL if x not in L1_META):
     L1_META[_x] = {"color": _L1_EXTRA_PALETTE[_i % len(_L1_EXTRA_PALETTE)],
-                   "order": 4 + _i, "stage": "기타", "desc": "config.level1Set 추가 범주"}
+                   "order": 5 + _i, "stage": "기타", "desc": "config.level1Set 추가 범주"}
 
 
 def l1_color(name, default="#8b929b"):
@@ -526,14 +535,93 @@ def snap1(s):
 # 제보: "양산·개발은 코드네임이고, 공통은 회계·실험실관리 같은 일반 사무, ax 는 AI 자동화".
 # 코드네임은 **사람이 아는 사실**이라 설정으로 받는다(사내 이름을 코드에 넣지 않는다 — 배포본은 빈 배열).
 # 규칙은 AI 판정을 덮지 않는다: 호출자가 **AI 가 비운 자리에만** 쓴다(refine·judge).
-_L1_AX_DEFAULT = ("ax", "agentic", "copilot", "rpa", "llm", "gpt", "프롬프트", "에이전트",
-                  "자동화", "자동 분류", "자동분류", "챗봇", "머신러닝", "딥러닝")
-_L1_AX_WORD = ("ai",)          # 단어 경계로만(문자열 끝의 'AI' 도 잡되 'brain' 의 ai 는 아니게)
+# LM28(WP8 — A-31·REQ-31): 영역 키워드 표(LM27 hier/rules.score_domains 의 표·우선순위). 판정은 ① 코드네임 ② 표의 키워드 —
+#   긴 키워드가 그 안에 든 짧은 키워드를 덮고('보안교육'이 맞으면 '교육'은 버린다), 남은 영역 중 우선순위
+#   외부 업무지원 > AX > 공통 > 양산 > 개발 의 첫 영역 하나. 매칭은 projmap._kw_hit head 모드(한글 앞 경계 + 접두 ≤3자,
+#   'ai' 는 단어 경계) — LM24 의 부분 문자열 전면 허용('라인'⊂'온라인')은 쓰지 않는다. 회식·경조사는 공통이 아니다(UD-33).
+_L1_EXT_DEFAULT = ("국책", "정부과제", "산학", "산학협력", "공동연구", "위탁연구", "포럼", "학회", "세미나", "컨퍼런스",
+                   "파견", "교육", "강의", "강연", "워크숍", "외부심사", "자문", "위원회", "전시회", "기술지도")
+_L1_AX_DEFAULT = ("ai", "llm", "gpt", "copilot", "코파일럿", "rpa", "에이전트", "agentic", "에이전틱", "프롬프트",
+                  "자동화", "머신러닝", "딥러닝", "챗봇", "rag", "생성형", "ax", "자동 분류", "자동분류")
+_L1_AX_WORD = ("ai",)          # 단어 경계로만(문자열 끝의 'AI' 도 잡되 'brain'·'email' 의 ai 는 아니게)
+AX_STRONG = frozenset({"llm", "rag", "copilot", "코파일럿", "에이전트", "agentic", "에이전틱", "생성형"})  # 하나만 맞아도 연계
 # 공통(일반 사무) 키워드 — 제보: "공통은 일반사무 회계·재무·총무·실험실 관리 등등"
-_L1_COMMON_DEFAULT = ("회계", "재무", "자금", "세무", "결산", "예산", "품의", "정산", "자산", "실사",
-                      "구매요청", "발주 요청", "사무용품", "비품", "법인카드", "총무", "인사", "근태",
-                      "노무", "교육", "안전", "보건", "감사", "내부통제", "실험실", "실험실관리",
-                      "장비 관리", "교정", "검교정", "표준", "특허", "회식", "연말정산", "출장 정산")
+_L1_COMMON_DEFAULT = ("회계", "재무", "자금", "세무", "결산", "예산", "품의", "정산", "법인카드", "자산실사", "총무",
+                      "비품", "사무용품", "구매요청", "인사", "근태", "노무", "연말정산", "출장 정산", "실험실",
+                      "실험실관리", "랩관리", "장비관리", "장비 관리", "검교정", "교정", "안전점검", "보건", "소방",
+                      "정보보안", "보안점검", "보안교육", "법정교육", "안전교육", "사내교육", "의무교육", "특허",
+                      "지재권", "출원", "내부감사", "내부통제", "팀운영")
+_L1_MP_DEFAULT = ("양산", "양산이관", "생산", "라인", "수율", "공정불량", "8d", "출하", "ppap", "초도품", "양산대응")
+_L1_DEV_DEFAULT = ("선행", "신제품", "시제품", "프로토", "요소기술", "개발샘플", "목업")
+L1_KW_ORDER = (EXT_L1, "AX", "공통", "양산", "개발")
+# head 모드에서 키워드 조각으로 오인되는 흔한 낱말 — 이 토큰은 영역·분야 키워드 판정에서 뺀다('라인'⊂'온라인' 등)
+_KW_STOP_TOKENS = frozenset({"온라인", "오프라인", "가이드라인", "파이프라인", "데드라인", "헤드라인", "타임라인",
+                             "베이스라인", "개인사", "생산성", "코드네임", "대시보드", "키보드", "화이트보드"})
+# 분야(REQ-33 — mm_rows 끝 field 열): 일반어 키워드 표. 레지스트리 없음 — 규칙으로만 붙이는 참고 열이다.
+FIELD_KW = (
+    ("기구", ("기구", "기구설계", "금형", "사출", "하우징", "브라켓", "브래킷", "판금", "체결", "조립도", "공차", "도면",
+             "cad", "creo", "solidworks", "catia", "3d모델")),
+    ("회로", ("회로", "회로도", "pcb", "pcba", "아트웍", "보드", "전원부", "하네스", "커넥터", "소자", "schematic", "fpga")),
+    ("SW", ("sw", "소프트웨어", "펌웨어", "firmware", "알고리즘", "코드", "코딩", "빌드", "디버그", "debug", "커밋",
+            "commit", "git", "python", "프로그램")),
+    ("광학", ("광학", "렌즈", "광원", "조명", "광량", "배광", "레이저", "zemax", "codev", "미러")),
+    ("열", ("열해석", "열설계", "방열", "냉각", "발열", "히트싱크", "thermal", "온도")),
+    ("시험", ("시험", "테스트", "test", "검증", "평가", "측정", "신뢰성", "실험", "계측", "시험성적서")),
+    ("인증", ("인증", "kc", "ce", "fcc", "ul", "rohs", "reach", "규격", "전파인증", "안전인증", "emc")),
+    ("구매", ("구매", "발주", "견적", "자재", "bom", "조달", "단가", "입고")),
+    ("외주", ("외주", "용역", "위탁", "협력사", "업체", "계약")),
+    ("PM", ("pm", "일정관리", "프로젝트관리", "wbs", "마일스톤", "진척", "킥오프", "주간보고", "리스크", "이슈관리")),
+)
+
+
+def _kw_tokens(text):
+    """규칙 키워드 판정용 토큰 — NFKC·소문자, projmap 과 같은 구분자. 흔한 오인 낱말(_KW_STOP_TOKENS)은 뺀다."""
+    hay = unicodedata.normalize("NFKC", str(text or "")).lower()
+    try:
+        from projmap import _text_tokens
+        toks = _text_tokens(hay)
+    except ImportError:
+        toks = {t for t in re.split(r"[\s_\-.\\/\[\]()<>:,·|~!?\"'+§]+", hay) if len(t) >= 2}
+    return hay, toks - _KW_STOP_TOKENS
+
+
+def _kw_table_hits(table, text):
+    """[(이름, 키워드들)] 표 × 글 → 긴 키워드가 짧은 키워드를 덮은 뒤 남은 [(키워드, 이름)](표 순서)."""
+    hay, toks = _kw_tokens(text)
+    try:
+        from projmap import _kw_hit
+    except ImportError:
+        _kw_hit = None
+    hits = []
+    for name, keys in table:
+        for k in keys:
+            k = unicodedata.normalize("NFKC", str(k or "")).strip().lower()
+            if not k:
+                continue
+            if k in _L1_AX_WORD:
+                ok = re.search(r"(?<![a-z])" + re.escape(k) + r"(?![a-z])", hay) is not None
+            elif _kw_hit is not None:
+                ok = _kw_hit(k, toks, mode="head")
+            else:
+                ok = k in hay
+            if ok:
+                hits.append((k, name))
+    keys_hit = {k for k, _n in hits}
+    return [(k, n) for k, n in hits if not any(k != k2 and k in k2 for k2 in keys_hit)]
+
+
+def ax_flag(text, ax=None):
+    """AX 연계 표식(REQ-32 — mm_rows ax 열): 강한 AX어(llm·rag·copilot·에이전트·agentic·생성형 …) 1개 또는 AX어 2개면 1.
+    MM 은 원래 영역에 둔다(이중 계상 없음 — 표식만)."""
+    hits = {k for k, _n in _kw_table_hits([("AX", ax or _L1_AX_DEFAULT)], text)}
+    return 1 if (hits & AX_STRONG or len(hits) >= 2) else 0
+
+
+def field_of(text):
+    """분야(REQ-33 — mm_rows field 열): FIELD_KW 표의 첫 분야(긴 키워드 우선). 못 정하면 ""."""
+    hits = _kw_table_hits(FIELD_KW, text)
+    names = {n for _k, n in hits}
+    return next((n for n, _ks in FIELD_KW if n in names), "")
 
 
 def _l1_cfg(root):
@@ -558,8 +646,9 @@ def _l1_cfg(root):
 
 def level1_of(text, l2="", root=None, cfg=None):
     """규칙으로 상위(Level 1)를 정한다 — 못 정하면 ""(억지로 찍지 않는다).
-    우선순위: ① 과제명(l2)에 코드네임이 있으면 그 범주 ② ax 키워드 ③ 공통(사무) 키워드.
-    ax 를 공통보다 먼저 보는 이유: '실험실 자동화' 는 사무가 아니라 AX 다(제보의 정의)."""
+    우선순위: ① 과제명(l2)에 코드네임이 있으면 그 범주 ② 영역 키워드 표(LM28 — A-31): 긴 키워드 우선, 남은 영역 중
+    외부 업무지원 > AX > 공통 > 양산 > 개발. ax 를 공통보다 먼저 보는 이유: '실험실 자동화' 는 사무가 아니라 AX 다(제보의 정의).
+    config.level1AxKeywords·level1CommonKeywords 를 적으면 AX·공통 키워드 목록을 그것으로 바꾼다(LM24 그대로)."""
     root = root or ROOT
     codes, ax, common = cfg if cfg else _l1_cfg(root)
     # NFKC 정규화 — 전각 'ＡＸ'·반각 가타카나 표기도 같은 축으로 본다(제보 ③)
@@ -569,11 +658,10 @@ def level1_of(text, l2="", root=None, cfg=None):
         for k in keys:
             if k and (k in hay2 or k in hay):
                 return snap1(name) or ""
-    if any(k and k in hay for k in ax) or re.search(r"(?<![a-z])ai(?![a-z])", hay):
-        return "AX"
-    if any(k and k in hay for k in common):
-        return "공통"
-    return ""
+    table = ((EXT_L1, _L1_EXT_DEFAULT), ("AX", ax), ("공통", common),
+             ("양산", _L1_MP_DEFAULT), ("개발", _L1_DEV_DEFAULT))
+    names = {n for _k, n in _kw_table_hits(table, hay)}
+    return next((n for n in L1_KW_ORDER if n in names), "")
 
 
 def ukey2(s):
@@ -1314,7 +1402,7 @@ PHASE_TEXT = {
                        "전용 Edge 창(자동 프로필)에서 회사 계정으로 로그인한 뒤 다시 실행 — [AI 연결 진단]으로 확인"),
     "edge_not_found": ("Microsoft Edge 실행 파일을 찾지 못함", "Edge 설치 확인 후 다시 실행"),
     "launch_failed": ("Edge(자동 프로필)를 디버그 포트로 띄우거나 Copilot 탭을 만들지 못함",
-                      "이미 열려 있는 자동 프로필 Edge 창(data\\copilot_profile)을 모두 닫고 다시 실행 · "
+                      "이미 열려 있는 자동 프로필 Edge 창(data\\lm28_edge)을 모두 닫고 다시 실행 · "
                       "회사 보안 정책이 디버그 포트를 막으면 [AI 연결 진단]으로 확인"),
     "input_not_found": ("Copilot 채팅 입력창을 찾지 못함",
                         "Copilot 화면이 바뀌었을 수 있습니다 — data\\copilot_auto_debug.json 을 확인"),
@@ -1322,16 +1410,55 @@ PHASE_TEXT = {
     "copilot_error": ("Copilot 일시 오류 응답", "잠시 뒤 다시 실행 — 반복되면 Copilot 창 상태 확인"),
     "stub": ("스텁 응답 없음(LM_COPILOT_STUB)", "스텁 폴더에 응답 파일을 두거나 환경 변수를 지우세요"),
     "timeout": ("왕복 시간 초과", "Copilot 응답 지연 — 잠시 뒤 다시 실행"),
+    # LM28(WP5 G3): 최종 프롬프트 검사에 걸려 보내지 않은 묶음 — 그 묶음만 규칙 판정(비치명)
+    "blocked": ("개인정보 관문 — 보내지 않음",
+                "사적·자격증명·본인 식별자가 섞인 묶음이라 Copilot 에 보내지 않고 규칙으로 판정했습니다 — 조치 필요 없음"),
 }
 _FATAL_ERRORS = ("드라이버 실행 실패", "프롬프트 파일 쓰기 실패")
+# LM28 사유 코드(드라이버 결과의 reason — tools\copilot_auto.REASON_HINT) → 한 줄 사유. 조치 문구는 드라이버의 REASON_HINT 를
+# 그대로 쓴다(단일원). 예전에는 R-PERSONAL 이 phase login_required 의 일반 문구 'Copilot 로그인 필요(만료)' 로 보였다.
+REASON_WHY = {
+    "R-PERSONAL": "개인 Microsoft 계정 화면 — 업무 자료를 보내지 않음",
+    "R-ACCOUNT": "업무용 Copilot 화면이 아님(계정 종류 확인 불가) — 보내지 않음",
+    "R-LOGIN": "Copilot 로그인 필요",
+    "R-LOGIN-DEVICE": "회사 장치 조건부 액세스 — Edge 프로필 로그인 필요",
+    "R-LOGIN-WAIT": "로그인 화면에 남은 단계(약관·추가 인증)",
+    "R-CA": "조건부 액세스 정책이 접속을 막음",
+    "R-EDGEPOL": "회사 Edge 정책이 전용 Edge 를 막음",
+    "R-EDGEKEEP": "Edge 정책이 종료 때 쿠키를 지움",
+    "R-EDGEBUSY": "다른 작업이 전용 Edge 를 쓰는 중",
+    "R-EDGEFOREIGN": "디버그 포트를 다른 Edge 가 쓰는 중",
+    "R-EDGELAUNCH": "전용 Edge 를 띄우지 못함",
+    "R-DEADPROFILE": "전용 Edge 프로필이 오류 화면만 냄",
+    "R-NET": "네트워크 오류 화면",
+    "R-GATE": "개인정보 관문 — 보내지 않음",
+}
+
+
+def _reason_hint(reason):
+    """사유 코드 → 드라이버(tools\\copilot_auto.REASON_HINT)의 조치 문구 — 드라이버를 못 읽으면 ""."""
+    try:
+        tools = os.path.join(ROOT, "tools")
+        if tools not in sys.path:
+            sys.path.append(tools)
+        import copilot_auto
+        return copilot_auto._hint(reason)
+    except Exception:  # noqa: BLE001 - 안내 문구 하나 때문에 실패 해석이 멈추면 안 된다
+        return ""
 
 
 def explain_failure(res):
-    """실패 dict(드라이버·judge.copilot_send) → (사유 한 줄, 조치, fatal)."""
+    """실패 dict(드라이버·judge.copilot_send) → (사유 한 줄, 조치, fatal).
+    LM28: res["reason"](사유 코드)이 있으면 그 사유·드라이버 REASON_HINT 조치를 쓴다(fatal 판정은 phase 그대로)."""
     res = res if isinstance(res, dict) else {}
     phase = str(res.get("phase") or "").strip()
     err = str(res.get("error") or "").strip()
     hint = str(res.get("hint") or "").strip()
+    reason = str(res.get("reason") or "").strip()
+    if reason and (reason in REASON_WHY or phase in PHASE_TEXT):
+        why = REASON_WHY.get(reason) or PHASE_TEXT.get(phase, ("왕복 실패", ""))[0]
+        how = _reason_hint(reason) or hint or PHASE_TEXT.get(phase, ("", ""))[1]
+        return why, how, phase in FATAL_PHASES
     if phase in PHASE_TEXT and phase != "error":
         why, how = PHASE_TEXT[phase]
         if phase == "no_reply" and hint:

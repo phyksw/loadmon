@@ -15,14 +15,20 @@ from datetime import date
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "core"))
 from progress import progress  # noqa: E402
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, errors="replace", encoding=(
-        (sys.stdout.encoding or "utf-8") if sys.stdout.isatty() else "utf-8"))  # 콘솔(bat)=콘솔 코드페이지 · 파이프(UI)=utf-8
 import extract  # noqa: E402
 
+
+def _wrap_stdout():
+    """콘솔(bat)=콘솔 코드페이지 · 파이프(UI)=utf-8. 스크립트로 돌 때만 바꿔 끼운다(LM28 — 예전엔 임포트만 해도 바꿔 끼워
+    run.py·시험의 sys.stdout 이 갈렸다)."""
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, errors="replace", encoding=(
+        (sys.stdout.encoding or "utf-8") if sys.stdout.isatty() else "utf-8"))
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
-# 개인 파일 제외 — 리포트·AI 프롬프트에 실리면 안 되는 경로 키워드
-EXCLUDE = ["개인", "사생활", "가족", "취미", "이력서", "면접", "취준", "자소서", "이직",
-           "downloads", "다운로드", "temp", "임시", "공부", "인강"]
+# 개인 파일 제외 — 리포트·AI 프롬프트에 실리면 안 되는 경로 키워드. 단일원은 core\privacy(EXCLUDE ∪
+# config.excludePathKeywords = privacy.excluded_keywords — WP7). 이 이름은 run.py(--collect-only) 호환용으로만 남긴다.
+import privacy  # noqa: E402
+EXCLUDE = list(privacy.EXCLUDE)
 
 
 def arg(flag, dflt=""):
@@ -116,6 +122,28 @@ def _locked_writes(jobs):
     return locked
 
 
+def meta_doc(d0, d1, months, sig, meta, total_mm, avail_mm, load_pct, mm_months, cfg_warns, day_hours, hinfo,
+             ts_stat=None):
+    """mm_meta_<기간>.json 본문. measure·coverage·cfg_used(D5)는 mm_basis 에도 남고 최상위에도 싣는다 — 팀 취합(teamup)·
+    리포트·UI 가 읽는다. LM28: unobserved_days(원장이 미관측이라 한 흔적 없는 평일)·time_share(shareBasis=time 일 때)를
+    최상위에 더한다(추가 키만 — 팀 호환 불변)."""
+    doc = {"period": [d0.isoformat(), d1.isoformat()], "months": round(months, 2),
+           "signals": len(sig), "counted": meta["counted"],
+           "excluded": meta["excluded"], "weights": meta["weights"],
+           "total_mm": total_mm, "avail_mm": avail_mm,
+           "load_pct": round(load_pct, 1), "mm_months": mm_months,
+           "config_warnings": cfg_warns,
+           "worked_h": round(sum(day_hours.values()), 1),
+           "measure": hinfo.get("measure"), "coverage": hinfo.get("coverage"),
+           "cfg_used": hinfo.get("cfg_used"), "tool_usage": hinfo.get("tool_usage"),
+           "unobserved_days": list(hinfo.get("unobserved_days") or []),
+           "mm_basis": hinfo,
+           "day_hours": {k.isoformat(): round(v, 2) for k, v in day_hours.items()}}
+    if ts_stat:
+        doc["time_share"] = ts_stat
+    return doc
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     if not args:
@@ -129,8 +157,7 @@ def main():
     months = max(0.5, (d1 - d0).days / 30.44)
 
     cfg = extract.load_cfg()
-    exclude = sorted(set(EXCLUDE) | {str(k) for k in extract.cfg_list(cfg, "excludePathKeywords")
-                                     if str(k).strip()})
+    exclude = privacy.excluded_keywords(cfg)      # 내장 EXCLUDE ∪ config.excludePathKeywords(judge·refine 와 같은 단일원)
     progress("신호 수집", 0, 3)
     sig, meta = extract.load_signals(data_dir, d0, d1, exclude, cfg)
     if not sig:
@@ -171,6 +198,13 @@ def main():
     print(f"     부재 {hinfo['absence_days']}일 차감 · 초과근무 {hinfo['overtime_h']:.0f}h · "
           f"주말근무 {hinfo['weekend_days']}일 · 야근일 {hinfo['night_days']}일 · "
           f"PC가동 하한 보정 {hinfo.get('pc_floor_h', 0):.0f}h/{hinfo.get('pc_floor_days', 0)}일")
+    # LM28(WP8) — 시간 꼬리표(휴일 > 야간 > 정규 > 연장)·퇴근 후 인정·PC 밖 발신·사적 차감·미관측
+    print(f"     정규 {hinfo.get('regular_h', 0):.1f}h · 연장 {hinfo.get('extended_h', 0):.1f}h · "
+          f"야간 {hinfo.get('night_h', 0):.1f}h · 휴일 {hinfo.get('holiday_h', 0):.1f}h"
+          f"(휴일 야간 {hinfo.get('holiday_night_h', 0):.1f}h) · 퇴근 후 인정 창 {hinfo.get('evening_window_h', 0):.1f}h · "
+          f"PC 밖 발신 {hinfo.get('remote_send', 0)}건 · 사적 차감 {hinfo.get('private_deducted_h', 0):.1f}h"
+          + (f" · 미관측 평일 {len(hinfo.get('unobserved_days') or [])}일(부재 추정 안 함 "
+             f"{hinfo.get('inferred_absence_blocked_unobserved', 0)}일)" if hinfo.get("coverage_ledger") else ""))
     print(f"     점심 차감 {hinfo.get('lunch_deducted_h', 0):.0f}h · "
           f"저녁 식사 차감 {hinfo.get('dinner_deducted_h', 0):.1f}h · "
           f"저녁·새벽 인정 {hinfo.get('evening_credit_h', 0):.0f}h · "
@@ -225,7 +259,12 @@ def main():
               f"PC 밖 {hinfo.get('sim_night_remote_h', 0):.1f}h)")
     progress("신호 수집", 2, 3)
     items, assigns = extract.build_items2(sig, known_projects(cfg))
-    rows = extract.to_rows(items, total_mm, owner, func)
+    # 과제 몫 — 기본 'weight'(LM24 가중치 비율). mm.shareBasis="time" 이면 그날 투입 분을 과제에 나눈다(core\timeshare, LM28)
+    shares, ts_stat = None, None
+    if extract.norm_cfg(cfg)[0]["shareBasis"] == "time":
+        shares, ts_stat = extract.time_shares(assigns, day_hours, cfg)
+        print(f"     과제 몫 = 시간(shareBasis=time) · 근무 중 미분류 {ts_stat.get('unclassified_min', 0) / 60:.1f}h")
+    rows = extract.to_rows(items, total_mm, owner, func, shares=shares)
     progress("신호 수집", 3, 3)
     # 총계는 [MM] 줄과 같은 total_mm 으로 — 행별 반올림 합(7.585→'7.58')과 총계('7.59')가 어긋나던 표시 결함
     print(f"[mine] 업무 항목 {len(rows)}개 · 총 {total_mm:.2f} MM (주40h 근무일 기준)\n")
@@ -243,8 +282,9 @@ def main():
     ev = os.path.join(out_dir, f"evidence_{tag2}.md")
     sp = os.path.join(out_dir, f"signals_{tag2}.csv")
     meta_path = os.path.join(out_dir, f"mm_meta_{tag2}.json")
+    # ax(AX 연계 표식)·field(분야)는 끝에 더한 열(LM28 — 기존 열·순서 불변, 읽는 쪽은 열 이름으로 읽는다)
     cols = ["Function", "Level 1", "제품", "Level 2", "Level 3", "이름", "상세설명",
-            "share", "mm", "근거", "확신도", "활동일수"]
+            "share", "mm", "근거", "확신도", "활동일수", "ax", "field"]
 
     def _w_rows(f):
         w = csv.DictWriter(f, fieldnames=cols)
@@ -274,30 +314,21 @@ def main():
                 return s[:100 - len(tail)].rstrip() + tail
         return s[:100]
 
+    sig_flags = meta.get("flags") or {}        # G2(WP7): 광고 의심 메일 = 'ad' — Copilot 관문이 빼고, 팀 반출은 열째 뺀다
+
     def _w_sig(f):
         w = csv.writer(f)
-        w.writerow(["time", "source", "who", "project", "activity", "weight", "text"])
+        w.writerow(["time", "source", "who", "project", "activity", "weight", "text", "flag"])
         for t, src, text, wt, who, proj, act in assigns:
             # S2: activity·text 는 한 줄로(개행·탭·앞뒤 공백 정규화) — 열 이름·text ≤100자 계약은 그대로
             w.writerow([t.strftime("%Y-%m-%d %H:%M"), src, who, proj, extract._one_line(act), round(wt, 3),
-                        _sig_text(src, text)])
+                        _sig_text(src, text), sig_flags.get((t, src, text), "")])
 
     import json
 
     def _w_meta(f):
-        # measure·coverage·cfg_used(D5)는 mm_basis 에도 남고 최상위에도 싣는다 — 팀 취합(teamup)·리포트·UI 가 읽는다
-        json.dump({"period": [d0.isoformat(), d1.isoformat()], "months": round(months, 2),
-                   "signals": len(sig), "counted": meta["counted"],
-                   "excluded": meta["excluded"], "weights": meta["weights"],
-                   "total_mm": total_mm, "avail_mm": avail_mm,
-                   "load_pct": round(load_pct, 1), "mm_months": mm_months,
-                   "config_warnings": cfg_warns,
-                   "worked_h": round(sum(day_hours.values()), 1),
-                   "measure": hinfo.get("measure"), "coverage": hinfo.get("coverage"),
-                   "cfg_used": hinfo.get("cfg_used"), "tool_usage": hinfo.get("tool_usage"),
-                   "mm_basis": hinfo,
-                   "day_hours": {k.isoformat(): round(v, 2) for k, v in day_hours.items()}},
-                  f, ensure_ascii=False, indent=1)
+        json.dump(meta_doc(d0, d1, months, sig, meta, total_mm, avail_mm, load_pct, mm_months, cfg_warns,
+                           day_hours, hinfo, ts_stat), f, ensure_ascii=False, indent=1)
 
     locked = _locked_writes([(out, _w_rows), (ev, _w_ev), (sp, _w_sig), (meta_path, _w_meta)])
     if locked:
@@ -310,6 +341,7 @@ def main():
 
 
 if __name__ == "__main__":
+    _wrap_stdout()
     try:
         sys.exit(main())
     except SystemExit:

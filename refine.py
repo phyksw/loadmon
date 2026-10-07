@@ -22,6 +22,9 @@ refine.py — AI 정제: 추출된 업무 항목을 Copilot이 '원문 근거를
   · 병합 행의 제품·유형·Level 2/3 다수결은 결정적이다(_majority — 동률이면 비중 큰 원본 행의 값). 정제 행 → 원본
     (Level 2, Level 3) 매핑을 report\\refine_map_<tag>.json 에 남겨 UI 오할당 제외가 병합 행의 신호를 전부 찾는다.
   · mm_rows 의 share·mm·활동일수 가 빈칸·비숫자(엑셀 재저장·손편집)여도 죽지 않는다 — 0 으로 두고 행 수를 로그·JSON 에 남긴다.
+  · LM28 G3: 근거 줄은 제외어(privacy.excluded_keywords — mine·judge 와 같은 단일원) 줄을 빼고, 남은 줄은 관문
+    (judge.g3_rows)을 거친 재정제 줄만 보낸다. 광고 의심(signals flag 'ad') 신호는 근거에 넣지 않는다. 관문에 막힌 청크는
+    보내지 않고 원본 그대로 둔다 — 실패가 아니다(skipped_chunks·gated_items, 연속 실패 계수 밖).
 """
 import csv
 import io
@@ -105,9 +108,26 @@ def copilot_send(prompt_text, tag, name, fresh=None):
 
 
 def _send_via_driver(prompt_text, tag, name, fresh=None):
-    """예비 경로 — 드라이버 직접 호출(judge 부재 시에만). 분할·서약은 드라이버가 처리."""
+    """예비 경로 — 드라이버 직접 호출(judge 부재 시에만). 분할·서약은 드라이버가 처리.
+    LM28: config.copilotAuto.inProcess(기본 true)면 드라이버를 임포트해 같은 프로세스에서(send_inproc — G3 최종 검사 포함),
+    false 면 예전처럼 자식 프로세스(--send 도 같은 검사를 한다). 한도를 넘기면 드라이버 프로세스만 끝난다(taskkill 없음)."""
     pf = os.path.join(ROOT, "report", f"judge_{name}_{tag}.md")
     try:
+        try:
+            with open(os.path.join(ROOT, "config", "config.json"), encoding="utf-8-sig") as _cf:
+                _ip = (json.load(_cf).get("copilotAuto") or {}).get("inProcess", True)
+        except (OSError, ValueError, TypeError, AttributeError):
+            _ip = True
+        if not (_ip is False or str(_ip).strip().lower() in ("0", "false", "no", "n", "off")):
+            import importlib.util
+            ca = sys.modules.get("copilot_auto")
+            if ca is None:
+                spec = importlib.util.spec_from_file_location(
+                    "copilot_auto", os.path.join(ROOT, "tools", "copilot_auto.py"))
+                ca = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(ca)
+                sys.modules["copilot_auto"] = ca
+            return ca.send_inproc(prompt_text, fresh=bool(fresh), stage=str(name or "")[:40])
         os.makedirs(os.path.dirname(pf), exist_ok=True)
         with open(pf, "w", encoding="utf-8") as f:
             f.write(prompt_text)
@@ -328,6 +348,8 @@ def load_signal_evidence(rep, tag):
     k2, k3 = ("model", "detail") if judged else ("project", "activity")
     by = {}
     for r in rows:
+        if re.search(r"(?<![a-z])ad(?![a-z])", str(r.get("flag") or ""), re.I):
+            continue                     # G3 — 광고 의심(G2 flag 'ad') 신호는 근거로 보내지 않는다
         key = (str(r.get(k2) or "").strip(), str(r.get(k3) or "").strip())
         line = (f"- {(r.get('time') or '')[:10]} [{r.get('source') or ''}] "
                 f"{(r.get('text') or '')[:100]}")
@@ -383,16 +405,22 @@ def _evidence_slice(ev_text, names):
 
 
 def load_exclude():
+    """개인 폴더·파일 제외어 — 단일원 privacy.excluded_keywords(내장 EXCLUDE ∪ config.excludePathKeywords).
+    예전에는 설정 목록만 읽어 mine·judge 와 거르는 범위가 달랐다(W2-16)."""
     try:
         with open(os.path.join(ROOT, "config", "config.json"), encoding="utf-8-sig") as f:
-            return [k for k in json.load(f).get("excludePathKeywords", []) if k and len(k) >= 2]
-    except Exception:
-        return []
+            cfg = json.load(f)
+    except Exception:  # noqa: BLE001 - 설정이 깨져도 내장 제외어는 쓴다
+        cfg = {}
+    import privacy
+    return [k for k in privacy.excluded_keywords(cfg if isinstance(cfg, dict) else {}) if k and len(k) >= 2]
 
 
 def sanitize_evidence(ev_text, kws):
     """개인정보가 있는 '근거 줄'만 빼고 나머지는 보낸다.
-    (전체 중단은 도구를 멈추게 하고, 통째 전송은 유출을 낳는다 — 줄 단위가 안전선)"""
+    (전체 중단은 도구를 멈추게 하고, 통째 전송은 유출을 낳는다 — 줄 단위가 안전선)
+    ① 제외어(개인 폴더·파일)가 든 근거 줄 삭제 ② 남은 근거 줄은 G3 관문(judge.g3_rows → privacy.gate_items)을 거친다 —
+    자격증명·고위험 잔여·카나리아 줄은 빼고, 나머지는 재정제한 줄로 바꾼다. 반환 형식은 그대로(글, 뺀 줄 수, 걸린 제외어·사유)."""
     # 경로 전용 토큰·ASCII 부분일치 오탐 방지 — extract.load_signals 와 같은 규칙
     # ('temp'⊂'temperature' 로 정상 근거 줄이 삭제되던 결함의 자매 지점)
     from extract import PATH_ONLY_KW
@@ -403,6 +431,7 @@ def sanitize_evidence(ev_text, kws):
     pat = (re.compile("|".join(f"(?<![a-z0-9]){re.escape(k)}(?![a-z0-9])" for k in asc))
            if asc else None)
     keep, dropped, hits = [], 0, set()
+    ev_lines = []                                   # (keep 안 위치, 줄) — 관문에 함께 넘긴다
     for ln in ev_text.splitlines():
         low = ln.lower()
         h = [k for k in kr if k in low]
@@ -414,7 +443,19 @@ def sanitize_evidence(ev_text, kws):
             dropped += 1
             hits.update(h)
             continue
+        if ln.strip().startswith("-"):
+            ev_lines.append((len(keep), ln))
         keep.append(ln)
+    if ev_lines and _judge is not None and hasattr(_judge, "g3_rows"):
+        kept, why = _judge.g3_rows([{"text": ln, "_k": k} for k, ln in ev_lines], ("text",))
+        ok = {it["_k"]: it["text"] for it in kept}
+        for k, _ln in ev_lines:
+            keep[k] = ok.get(k)
+        n_g = len(ev_lines) - len(kept)
+        if n_g:
+            dropped += n_g
+            hits.update(f"관문:{w}" for w in why)
+        keep = [ln for ln in keep if ln is not None]
     return "\n".join(keep), dropped, sorted(hits)
 
 
@@ -498,8 +539,14 @@ class Refiner:
             res = copilot_send(prompt, self.tag, f"refine{label}")
         except Exception as e:  # noqa: BLE001 - 한 청크의 왕복 예외가 정제 전체를 멈추지 않게
             res = {"ok": False, "error": f"드라이버 실패({type(e).__name__})"}
-        self.st["roundtrips"] += 1
         res = res if isinstance(res, dict) else {}
+        if res.get("phase") == "blocked":
+            # 개인정보 관문(G3) — 보내지 않았다. 재시도·반분 없이 이 청크의 항목은 원본 그대로 둔다(실패 계수 밖)
+            self.st["gated_items"] = self.st.get("gated_items", 0) + len({i for i, _ in ch} - set(ov))
+            self.st["_skipped"] = True
+            self.say("        개인정보 관문에 걸려 보내지 않았습니다 — 이 청크의 항목은 원본 그대로 둡니다")
+            return 0
+        self.st["roundtrips"] += 1
         got, info = [], {}
         if res.get("ok"):
             got, info = extract_items_ex(res.get("reply", ""))
@@ -650,7 +697,7 @@ def main():
     print(f"[refine] {len(rows)}항목 → {len(plan)}회 왕복 (청크 {chunk_n}항목 · 겹침 {OV_N}항목 · "
           f"예산 {PROMPT_BUDGET:,}자)")
     rf = Refiner(tag, rep, sig_by, ev, model_names)
-    failed, consec = 0, 0
+    failed, consec, skipped = 0, 0, 0
     _dl, _bud = _stage_budget()
     _stopped = ""
     for ci, (ch, ov) in enumerate(plan):
@@ -671,8 +718,11 @@ def main():
             continue
         progress("AI 정제", ci, len(plan))
         before = len(rf.items)
+        rf.st["_skipped"] = False
         rf.run(ch, ov, str(ci + 1))
-        if len(rf.items) == before:
+        if len(rf.items) == before and rf.st.pop("_skipped", False):
+            skipped += 1                 # 개인정보 관문 — 실패가 아니므로 연속 실패 계수에 넣지 않는다
+        elif len(rf.items) == before:
             failed += 1
             consec += 1
             if consec >= FAIL_STOP_RETRY and not rf.soft:
@@ -684,7 +734,9 @@ def main():
     st = rf.st
     tail = {"chunks": len(plan), "failed_chunks": failed, "roundtrips": st["roundtrips"],
             "repaired": st["repaired"], "retries": st["retries"], "failed_items": st["failed_items"],
-            "bad_rows": bad_rows}
+            "bad_rows": bad_rows,
+            # G3 — 개인정보 관문에 막혀 보내지 않은 청크·원본 그대로 둔 항목(실패 아님)
+            "skipped_chunks": skipped, "gated_items": st.get("gated_items", 0)}
     if _stopped:                     # 화면이 '왜 일부만 정제됐는지' 를 말할 수 있게 마지막 JSON 에 싣는다
         tail["stopped"] = _stopped
         tail["hint"] = _stopped

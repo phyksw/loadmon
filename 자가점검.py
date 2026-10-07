@@ -8,17 +8,17 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, errors="replace", encoding=(
         (sys.stdout.encoding or "utf-8") if sys.stdout.isatty() else "utf-8"))  # 콘솔(bat)=콘솔 코드페이지 · 파이프(UI)=utf-8
 ROOT = os.path.dirname(os.path.abspath(__file__))
 NEED = [
-    "LoadMonitor24-UI.bat",
-    "LoadMonitor24.bat",
-    "LoadMonitor24-팀취합.bat",
-    "LoadMonitor24-팀서버.bat",
-    "LoadMonitor24-팀업로드.bat",
-    "LoadMonitor24-팀서버주소.bat",
-    "LoadMonitor24-수집진단.bat",
-    "LoadMonitor24-가동시간비교.bat",
-    "LoadMonitor24-샘플러등록.bat",
-    "LoadMonitor24-이동준비.bat",
-    "LoadMonitor24-팀로드율재계산.bat",
+    "LoadMonitor28-UI.bat",
+    "LoadMonitor28.bat",
+    "LoadMonitor28-팀취합.bat",
+    "LoadMonitor28-팀서버.bat",
+    "LoadMonitor28-팀업로드.bat",
+    "LoadMonitor28-팀서버주소.bat",
+    "LoadMonitor28-수집진단.bat",
+    "LoadMonitor28-가동시간비교.bat",
+    "LoadMonitor28-샘플러등록.bat",
+    "LoadMonitor28-이동준비.bat",
+    "LoadMonitor28-팀로드율재계산.bat",
     "agentic.py",
     "freeze.py",
     "team_report.py",
@@ -59,6 +59,12 @@ NEED = [
     "collect/Diagnose-Collectors.ps1",
     "collect/Register-Samplers.ps1",
     "collect/Start-ActivitySampler.ps1",
+    "collect/LmName.ps1",
+    # LM28 새 파일 — 빠지면 배포본이 시작부터 죽는다(run.py·수집기·app.py 가 모듈 머리에서 임포트·dot-source)
+    "collect/OutlookCommon.ps1",
+    "collect/owa_parse.py",
+    "collect/teams_parse.py",
+    "collect/Import-MailCal.py",
     "config/config.json",
     "config/config.default.json",
     "config/agentic_tasks.json",
@@ -69,6 +75,13 @@ NEED = [
     "core/stage_state.py",
     "core/watch.py",
     "core/teamaddr.py",
+    "core/lmname.py",
+    "core/privacy.py",
+    "core/coverage.py",
+    "core/proc.py",
+    "core/collect_status.py",
+    "core/mailmerge.py",
+    "core/timeshare.py",
     "tools/check_l1.py",
     "tools/check_trend.py",
     "tools/check_recalc.py",
@@ -80,6 +93,7 @@ NEED = [
     "core/projmap.py",
     "docs/설정가이드.md",
     "docs/사용안내.html",
+    "docs/현장점검_LM28.md",
     "tools/copilot_auto.py",
     "tools/pc_hours_compare.py",
     "tools/lm20_ref/Get-PcOnHistory.ps1.txt",
@@ -92,6 +106,7 @@ NEED = [
     "tools/Make-MovePack.py",
     "tools/Prepare-Move.ps1",
     "tools/update_files.py",
+    "tools/lm_fixenc.py",
     "ui/app.py",
 ]
 miss = [p for p in NEED if not os.path.exists(os.path.join(ROOT, p.replace("/", os.sep)))]
@@ -101,7 +116,7 @@ if miss:
     for m in miss:
         print("    " + m)
     sys.exit(1)
-print("[OK] 전부 있습니다. LoadMonitor24-UI.bat 을 실행하세요.")
+print("[OK] 전부 있습니다. LoadMonitor28-UI.bat 을 실행하세요.")
 
 
 # ── git 실행 파일 ────────────────────────────────────────────────────────
@@ -184,7 +199,7 @@ if leak:
         extra = ""
         if d == "teamdata":
             extra = "  <- 팀원들의 분석 결과 포함, 팀 밖 공유 금지"
-        if d == "data" and os.path.isdir(os.path.join(ROOT, d, "copilot_profile")):
+        if d == "data" and os.path.isdir(os.path.join(ROOT, d, "lm28_edge")):     # 이 설치본의 전용 Edge 프로필
             extra = "  <- Edge 로그인 정보 포함, 절대 공유 금지"
         print(f"    {d}\\  파일 {n:,}개{extra}")
     print("    (본인 PC 에서 쓰는 건 정상입니다. 배포본에만 없으면 됩니다.)")
@@ -210,7 +225,7 @@ if caches:
 
 # ── 팀 서버 주소 (v5) ──────────────────────────────────────────────────────
 # 폴더를 옮기거나 나눠 받은 뒤 '분석 결과가 어디로 올라가는지'를 바로 확인한다 — 서버 IP·포트는 설치 폴더의
-# config\team_server.json 에 있어 폴더와 함께 다닌다(바꾸는 곳은 LoadMonitor24-팀서버주소.bat 하나).
+# config\team_server.json 에 있어 폴더와 함께 다닌다(바꾸는 곳은 LoadMonitor28-팀서버주소.bat 하나).
 try:
     import importlib.util
     _spec = importlib.util.spec_from_file_location("lm_teamaddr", os.path.join(ROOT, "core", "teamaddr.py"))

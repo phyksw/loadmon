@@ -3,10 +3,14 @@
 #   System 6005/6006  = event log service start/stop (boot / shutdown)
 #   Kernel-Power 42   = entering sleep · Power-Troubleshooter 1 = wake · Kernel-Power 506/507 = Modern Standby
 #   Winlogon 7001/7002 · Kernel-General 12/13 · Kernel-Power 107 · Diag-Perf 100/200 · Security 4800/4801 (잠금 — 권한 필요)
+#   TerminalServices-LocalSessionManager 21/25 = 세션 로그온·재연결 · 23/24 = 로그오프·연결 끊김 (내 계정만 — VDI·원격 PC)
 # Output (..\data\pc\):
 #   pc_on.csv       date, on_hours, first_on, last_off, night_hours, weekend   (구간의 일별 파생값 - 헤더 불변)
 #   pc_spans.csv    start, end, src   (켜짐 구간 원본 - 로컬 시각, 자정 분할 없음, src=event|event-gap|event-cap|live|boot)
 #   pc_source.json  lock_events(ok|unauthorized|none) · diag_perf · live_session · warnings[] … (수집 환경 진단)
+#                   channels{system,diag_perf,ts_session,security} = ok|none|unauthorized|error (채널별 — 권한·이미지 차이 진단)
+# 마지막 줄: LMSTATUS {v,src:'pc_events',rc,reason,counts,ranges[{axis:'pc',from,to,st}]} - 원장 반영(core\pc_ledger.py --ingest)이
+#   실패하면 rc 3 R-INGEST 로 끝낸다(exit 3). 관측은 pc_events_new.csv 에 남아 다음 실행이 먼저 회수한다.
 # 짝 없는 마지막 'on' 이 현재 부팅 세션(LastBootUpTime 이후)이면 20h 캡 없이 '지금까지 켜짐' 으로 잇고 자정 분할한다 -
 # 항상 켜두고 잠그기만 하는 데스크톱이 부팅일에만 행을 갖던 결함(감사 A3) 수정. 20h 캡은 종료 이벤트 없이 다음 부팅이
 # 나타난 세션(전원 차단·로그 공백)에만 남는다. 잠금(4800/4801)·Diag-Perf 읽기 실패는 숨기지 않고 pc_source.json 에 남긴다.
@@ -52,6 +56,7 @@ $events = New-Object System.Collections.Generic.List[object]
 $srcStatus = [ordered]@{}
 $mySid = ''
 try { $mySid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value } catch {}
+$myUser = ([string]$env:USERNAME).ToLower()
 
 function Read-Src([hashtable]$filter, [scriptblock]$kindOf, [bool]$perUser = $false) {
     # 반환: ok | none | unauthorized | error: … (조용히 삼키지 않는다 - pc_source.json 에 기록)
@@ -59,12 +64,15 @@ function Read-Src([hashtable]$filter, [scriptblock]$kindOf, [bool]$perUser = $fa
         $got = 0
         Get-WinEvent -FilterHashtable $filter -ErrorAction Stop | ForEach-Object {
             $ev = $_
-            if ($perUser -and $mySid) {
-                # 로그온/로그오프(7001/7002)는 이 PC 의 모든 세션이 남긴다 - 다른 사용자의 로그오프가 내 구간을 닫지 않게
+            if ($perUser) {
+                # 로그온/로그오프(7001/7002)는 이 PC 의 모든 세션이 남긴다 - 다른 사용자의 로그오프가 내 구간을 닫지 않게.
+                # TS-LocalSessionManager(21~25)는 SID 대신 UserData.EventXML.User = '도메인\계정' 을 남긴다 - 계정 이름으로 대조
                 try {
                     $x = [xml]$ev.ToXml()
                     $sidNode = $x.Event.EventData.Data | Where-Object { $_.Name -eq 'UserSid' } | Select-Object -First 1
-                    if ($sidNode -and $sidNode.'#text' -and $sidNode.'#text' -ne $mySid) { return }
+                    if ($mySid -and $sidNode -and $sidNode.'#text' -and $sidNode.'#text' -ne $mySid) { return }
+                    $u = [string]$x.Event.UserData.EventXML.User
+                    if ($u -and $myUser -and (($u -split '\\')[-1]).ToLower() -ne $myUser) { return }
                 } catch {}
             }
             $events.Add([pscustomobject]@{ t = $ev.TimeCreated; kind = (& $kindOf $ev.Id); src = [string]$ev.Id; boot = ($BOOT_IDS -contains $ev.Id) })
@@ -109,10 +117,34 @@ if ($EventsCsv) {
     $srcStatus['diag_perf_100_200'] = Read-Src @{ LogName='Microsoft-Windows-Diagnostics-Performance/Operational'; Id=@(100,200); StartTime=$since; EndTime=$until } { param($id) if ($id -eq 100) { 'on' } else { 'off' } }
     # 잠금/해제(Security 4800/4801) - 권한이 있으면 가장 정확한 근무 구간. 없으면 '없음' 이 아니라 'unauthorized' 로 남긴다.
     $srcStatus['lock_4800_4801'] = Read-Src @{ LogName='Security'; Id=@(4800,4801); StartTime=$since; EndTime=$until } { param($id) if ($id -eq 4801) { 'on' } else { 'off' } }
+    # 세션 채널(C-25) - VDI·클라우드 PC·원격 접속은 6005/7001 이 거의 없고 세션 로그온·재연결(21/25)·로그오프·끊김(23/24)만 남는다.
+    # 권한은 이미지마다 다르다(없으면 unauthorized). 내 계정 것만 센다.
+    $srcStatus['ts_session_21_25'] = Read-Src @{ LogName='Microsoft-Windows-TerminalServices-LocalSessionManager/Operational'; Id=@(21,23,24,25); StartTime=$since; EndTime=$until } { param($id) if ($id -eq 21 -or $id -eq 25) { 'on' } else { 'off' } } $true
 }
 $lockStatus = if ($srcStatus.Contains('lock_4800_4801')) { [string]$srcStatus['lock_4800_4801'] } else { 'none' }
 $diagStatus = if ($srcStatus.Contains('diag_perf_100_200')) { [string]$srcStatus['diag_perf_100_200'] } else { 'none' }
 Write-Host ("[pc-on] sources: " + (($srcStatus.GetEnumerator() | ForEach-Object { '{0}={1}' -f $_.Key, $_.Value }) -join ' · '))
+# 채널별 상태 ok|none|unauthorized|error - 한 채널 안 여러 읽기 중 하나라도 ok 면 ok
+function Get-ChanState([string[]]$keys) {
+    $v = @($keys | Where-Object { $srcStatus.Contains($_) } | ForEach-Object { [string]$srcStatus[$_] })
+    if ($v.Count -eq 0) { return 'none' }
+    if ($v -contains 'ok') { return 'ok' }
+    if (@($v | Where-Object { $_ -like 'unauthorized*' }).Count) { return 'unauthorized' }
+    if (@($v | Where-Object { $_ -like 'error*' }).Count) { return 'error' }
+    return 'none'
+}
+$channels = [ordered]@{}
+if ($EventsCsv) { $channels['synthetic'] = 'ok' } else {
+    $channels['system'] = Get-ChanState @('boot_6005_6006', 'sleep_42', 'wake_1', 'modern_standby_506_507', 'shutdown_1074_6008', 'logon_7001_7002', 'os_12_13', 'resume_107')
+    $channels['diag_perf'] = Get-ChanState @('diag_perf_100_200')
+    $channels['ts_session'] = Get-ChanState @('ts_session_21_25')
+    $channels['security'] = Get-ChanState @('lock_4800_4801')
+}
+# LMSTATUS - 수집기 공통 마지막 줄(run.py 가 rc·사유·범위를 읽는다)
+function Write-LmStatus([int]$rc, [string]$reason, $counts, $ranges) {
+    $o = [ordered]@{ v = 1; src = 'pc_events'; rc = $rc; reason = $reason; counts = $counts; ranges = @($ranges) }
+    Write-Host ('LMSTATUS ' + ($o | ConvertTo-Json -Depth 6 -Compress))
+}
 
 $warnings = New-Object System.Collections.Generic.List[string]
 $fallbackBoot = $false
@@ -263,23 +295,27 @@ $spansPath = Join-Path $OutDir 'pc_spans.csv'
 $keptDays = 0; $keptSpans = 0; $replacedDays = 0    # v3: 보존 특례 소멸 — 진단 JSON 호환용 0
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $evPath = Join-Path $OutDir 'pc_events_new.csv'
-$ledger0 = Join-Path $root 'core\pc_ledger.py'
-$py0 = if ($Python) { $Python } else { Join-Path $root 'python\python.exe' }
-if ((Test-Path $evPath) -and (Test-Path $py0) -and (Test-Path $ledger0)) {
-    # 지난 실행이 ingest 전에 끊겼다 — 그 관측을 먼저 원장에 회수한 뒤 새 관측을 쓴다(덮어쓰면 영구 소실)
-    $env:PYTHONIOENCODING = 'utf-8'
-    & $py0 $ledger0 --ingest $OutDir 2>&1 | ForEach-Object { Write-Host ('[pc-on] 잔존 관측 회수: ' + $_) }
-}
 $erow = New-Object System.Collections.Generic.List[string]
 $erow.Add('start,end,src')
 foreach ($s in @($spans | Sort-Object a)) { $erow.Add(('{0},{1},{2}' -f $s.a.ToString('yyyy-MM-dd HH:mm:ss'), $s.b.ToString('yyyy-MM-dd HH:mm:ss'), $s.src)) }
-[System.IO.File]::WriteAllLines($evPath, $erow, $utf8NoBom)
+if (Test-Path -LiteralPath $evPath) {
+    # 지난 실행이 원장 반영 전에 끊겼거나 반영에 실패했다 — 덮어쓰면 그 관측이 영구 소실된다. 이번 관측을 뒤에 덧붙여
+    # 한 번의 반영으로 함께 넣는다(완전 일치 중복은 원장이 거르고, live 는 뒤에 온 더 긴 끝으로 갱신된다 · 파이썬 1회).
+    [System.IO.File]::AppendAllLines($evPath, [string[]]@($erow | Select-Object -Skip 1), $utf8NoBom)
+    Write-Host '[pc-on] 지난 실행이 원장에 반영하지 못한 관측을 이번 관측과 함께 반영합니다'
+} else {
+    [System.IO.File]::WriteAllLines($evPath, $erow, $utf8NoBom)
+}
 $ledger = Join-Path $root 'core\pc_ledger.py'
 $py = if ($Python) { $Python } else { Join-Path $root 'python\python.exe' }
 if (-not (Test-Path $py)) { $pyCmd = Get-Command python -ErrorAction SilentlyContinue; if ($pyCmd) { $py = $pyCmd.Source } }
+$ingRc = $null          # 원장 반영 rc - 0 이 아니면 끝에서 exit 3 + LMSTATUS R-INGEST
 if ((Test-Path $py) -and (Test-Path $ledger)) {
     $env:PYTHONIOENCODING = 'utf-8'
-    & $py $ledger --ingest $OutDir 2>&1 | ForEach-Object { Write-Host $_ }
+    # stderr(파이썬 예외)가 $ErrorActionPreference='Stop' 아래에서 종료 오류로 던져지지 않게 잠시 Continue 로 받는다
+    $ingOut = & { $ErrorActionPreference = 'Continue'; & $py $ledger --ingest $OutDir 2>&1 }
+    $ingRc = $LASTEXITCODE
+    foreach ($ln in @($ingOut)) { Write-Host ([string]$ln) }
 } elseif (-not (Test-Path $pcOnPath) -and -not (Test-Path $spansPath)) {
     # 파이썬이 없는 임시 트리(수집기 단독 시험) — **빈 폴더에만** 이번 관측으로 새로 쓴다.
     [System.IO.File]::WriteAllLines($pcOnPath, $rows, [System.Text.Encoding]::UTF8)
@@ -290,6 +326,7 @@ if ((Test-Path $py) -and (Test-Path $ledger)) {
     Write-Host '[pc-on] 파이썬 없음 — 빈 폴더라 이번 관측만 새로 썼습니다(원장 반영은 본 트리 실행에서)'
 } else {
     Write-Host '[pc-on] 주의: python 또는 core\pc_ledger.py 가 없어 원장 반영을 보류했습니다 — 기존 기록은 건드리지 않습니다'
+    $ingRc = -1
 }
 
 # 수집 환경 진단 - 권한·전원 정책 차이를 사람 차이로 읽지 않게 리포트·진단이 참조한다
@@ -317,9 +354,40 @@ $srcInfo = [ordered]@{
     preserved_spans = [int]$keptSpans
     reach_from = $reachT.ToString('yyyy-MM-dd HH:mm')
     sources = $srcStatus
+    channels = $channels
+    ingest_rc = $ingRc
     warnings = @($warnings)
 }
 try {
     [System.IO.File]::WriteAllText((Join-Path $OutDir 'pc_source.json'), ($srcInfo | ConvertTo-Json -Depth 5), $utf8NoBom)
 } catch { Write-Host ('[pc-on] pc_source.json 저장 실패: ' + $_.Exception.Message) }
 Write-Host ("[pc-on] observed: {0}일 · 구간 {1} (live={2}, gap-closed={3}, capped={4}) — 원장 반영 결과는 [pc-ledger] 줄" -f ($rows.Count - 1), $spans.Count, $live, $gapClosed, $capped)
+
+# LMSTATUS - 이벤트 로그가 닿은 날(도달 시작~기간 끝)은 읽음(ok), 롤오버로 못 닿은 앞쪽은 unverified
+$d0s = $since.ToString('yyyy-MM-dd'); $d1s = $until.AddDays(-1).ToString('yyyy-MM-dd')
+$counts = [ordered]@{ events = [int]$sorted.Count; spans = [int]$spans.Count; days = [int]($rows.Count - 1); live = [bool]$live
+                      capped = [int]$capped; gap_closed = [int]$gapClosed; coverage_days = [int]$covDays; range_days = [int]$rangeDays
+                      ingest_rc = $ingRc; channels = $channels }
+$ranges = @()
+if ($sorted.Count -gt 0 -and -not $fallbackBoot -and $reachStart) {
+    $okFrom = $d0s
+    if ($reachStart -gt $d0s) {
+        $ranges += @{ axis = 'pc'; from = $d0s; to = ([datetime]$reachStart).AddDays(-1).ToString('yyyy-MM-dd'); st = 'unverified' }
+        $okFrom = $reachStart
+    }
+    $ranges += @{ axis = 'pc'; from = $okFrom; to = $d1s; st = 'ok' }
+} elseif ($fallbackBoot -and $bootNow) {
+    # 이벤트 0건 - 현재 부팅 세션만 안다
+    $bd = $(if ($bootNow -gt $since) { $bootNow } else { $since }).ToString('yyyy-MM-dd')
+    if ($bd -gt $d0s) { $ranges += @{ axis = 'pc'; from = $d0s; to = ([datetime]$bd).AddDays(-1).ToString('yyyy-MM-dd'); st = 'unverified' } }
+    $ranges += @{ axis = 'pc'; from = $bd; to = $d1s; st = 'partial' }
+} else {
+    $ranges += @{ axis = 'pc'; from = $d0s; to = $d1s; st = 'unverified' }
+}
+if ($null -ne $ingRc -and $ingRc -ne 0) {
+    # 원장 반영 실패(잠금 대기 초과 rc 3 · 파이썬 오류 · 파이썬 없음) - 관측은 pc_events_new.csv 에 남아 다음 실행이 먼저 회수한다
+    Write-Host ("[pc-on] 원장 반영 실패(rc {0}) - 이번 관측은 pc_events_new.csv 에 남겨 다음 실행이 회수합니다" -f $ingRc)
+    Write-LmStatus 3 'R-INGEST' $counts @(@{ axis = 'pc'; from = $d0s; to = $d1s; st = 'unverified' })
+    exit 3
+}
+Write-LmStatus 0 '' $counts $ranges

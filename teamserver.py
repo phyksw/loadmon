@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 r"""
-teamserver.py — 팀 취합 서버 (LoadMonitor24)
+teamserver.py — 팀 취합 서버 (LoadMonitor28 — LM24 서버와 업로드 호환)
 
 팀 공용 PC 에서 이 파일 하나를 돌려 두면:
   · 팀원들의 LoadMonitor 가 분석을 마칠 때마다 결과를 자동 업로드한다 (POST /api/upload)
@@ -11,12 +11,14 @@ teamserver.py — 팀 취합 서버 (LoadMonitor24)
 
   python teamserver.py                        # 팀 서버 주소 설정(config\team_server.json)의 포트로 켠다
   python teamserver.py --port 9400            # 이번 한 번만 다른 포트(설정은 그대로)
-  (또는 LoadMonitor24-팀서버.bat — 서버 IP·포트 바꾸기는 LoadMonitor24-팀서버주소.bat)
+  (또는 LoadMonitor28-팀서버.bat — 서버 IP·포트 바꾸기는 LoadMonitor28-팀서버주소.bat)
 
 v5: 서버 IP·포트는 core\teamaddr.py(단일원)가 설치 폴더의 config\team_server.json 에서 읽는다 — 예전처럼
 config.teamServerUrl 한 줄을 쪼개 쓰지 않는다(옛 값은 teamaddr 가 이어받는다). 서버는 v4 처럼 모든
 네트워크에서 받으므로(설정된 IP 도 그 안에 든다) 따로 고를 것이 없고, 시작할 때 설정된 서버 IP 가 이 PC 의
 주소인지 확인해 알린다 — 폴더를 다른 PC 로 옮겨 서버를 켰는데 팀원은 옛 IP 로 올리는 사고를 막으려고.
+LM28: 포트는 배타 bind(SO_EXCLUSIVEADDRUSE)한다. 같은 PC 의 LM24 서버가 그 포트를 쥐고 있으면 시작을 거부하고
+/api/whoami 로 누구인지 알린 뒤 대체 포트를 '제안만' 한다(남의 프로세스는 끄지 않고, 설정도 자동으로 바꾸지 않는다).
 
 저장 구조: teamdata\<이름>\ — 팀 공유폴더(teamShareDir)와 같은 배치라 aggregate.py 를
 그대로 재사용한다. 사내망 전용 설계이며 인증은 없다(팀 합의 전제) — 외부망에 열지 말 것.
@@ -24,10 +26,12 @@ config.teamServerUrl 한 줄을 쪼개 쓰지 않는다(옛 값은 teamaddr 가 
 """
 import io
 import html
+import http.client
 import json
 import os
 import re
 import secrets
+import socket
 import subprocess
 import sys
 import threading
@@ -180,6 +184,78 @@ def arg(flag, d=""):
 def esc(v):
     """업로드로 들어온 남의 값을 화면에 낼 때 반드시 거친다 — 저장형 XSS 방지"""
     return html.escape(str("" if v is None else v), quote=True)
+
+
+class ExclusiveServer(ThreadingHTTPServer):
+    r"""배타 bind 서버(W3-08) — 같은 PC 의 LM24 팀 서버와 기본 포트(9310)를 함께 쓰지 않게.
+
+    http.server.HTTPServer 는 allow_reuse_address=1 이라 윈도우에서 SO_REUSEADDR 이 켜진다. 그러면 이미
+    LISTEN 중인 포트 위에 덧바인딩이 성공해, 업로드가 어느 서버로 갈지 모르는 상태가 된다(실측).
+    SO_REUSEADDR 을 끄고 SO_EXCLUSIVEADDRUSE 를 켜서 '이미 쓰는 중이면 실패' 로 만든다."""
+    allow_reuse_address = False
+
+    def server_bind(self):
+        ex = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+        if ex is not None:
+            try:
+                self.socket.setsockopt(socket.SOL_SOCKET, ex, 1)
+            except OSError:
+                pass
+        super().server_bind()
+
+
+def whoami(port, timeout=2.0):
+    r"""127.0.0.1:port 를 쥔 서버의 신원(/api/whoami) — 없으면 {}. 문구를 고르는 데만 쓴다(죽일 근거가 아니다)."""
+    try:
+        c = http.client.HTTPConnection("127.0.0.1", int(port), timeout=timeout)
+        c.request("GET", "/api/whoami")
+        r = c.getresponse()
+        body = r.read(400000)
+        c.close()
+        if r.status != 200:
+            return {}
+        o = json.loads(body.decode("utf-8", "replace"))
+        return o if isinstance(o, dict) else {}
+    except (OSError, ValueError, http.client.HTTPException):
+        return {}
+
+
+def occupant_note(ident, root=None):
+    r"""포트를 쥔 쪽의 안내 한 줄 — (종류, 문구). 종류: same(이 폴더의 서버) · other_lm(다른 폴더·LM24 등) · unknown.
+    LM27 portdiag 원칙: 남의 프로세스는 죽이지 않고 알리기만 한다. 대체 포트는 bat 으로 바꾸도록 제안만 한다."""
+    root = root or ROOT
+    r = str((ident or {}).get("root") or "")
+    if r:
+        if os.path.normcase(os.path.abspath(r)) == os.path.normcase(os.path.abspath(root)):
+            return "same", f"이 폴더의 팀 서버가 이미 돌고 있습니다(pid {ident.get('pid') or '?'}) — 그 창을 쓰세요."
+        return "other_lm", (f"다른 폴더의 LoadMonitor 팀 서버가 쓰고 있습니다: {r}"
+                            f" (저장 위치 {ident.get('store') or '알 수 없음'}) — 같은 PC 의 LM24 서버일 수 있습니다."
+                            " 그 서버를 끄지 않습니다.")
+    return "unknown", "LoadMonitor 가 아닌 프로그램(또는 응답하지 않는 서버)이 쓰고 있습니다 — 그 프로그램을 끄지 않습니다."
+
+
+def suggest_port(cur, span=21):
+    r"""충돌을 피할 대체 포트 하나(제안만 — 설정은 바꾸지 않는다). 기본 포트+10000(19310)부터 span 개를 실제로
+    배타 bind 해 본다. 없으면 0."""
+    try:
+        base = _addr().DEFAULT_PORT + 10000
+    except Exception:  # noqa: BLE001 - 제안 실패는 안내만 줄인다
+        base = 19310
+    for p in range(base, base + span):
+        if p == int(cur):
+            continue
+        so = socket.socket()
+        try:
+            ex = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+            if ex is not None:
+                so.setsockopt(socket.SOL_SOCKET, ex, 1)
+            so.bind(("0.0.0.0", p))
+            return p
+        except OSError:
+            continue
+        finally:
+            so.close()
+    return 0
 
 
 def run_aggregate():
@@ -553,18 +629,24 @@ def main():
     PORT[0] = port
     os.makedirs(TEAMDATA, exist_ok=True)
     try:
-        srv = ThreadingHTTPServer(("0.0.0.0", port), H)      # 모든 네트워크 — 설정된 서버 IP 도 그 안에 든다
+        # 배타 bind — 같은 PC 에서 LM24 서버가 9310 을 쥐고 있으면 덧바인딩하지 않고 시작을 거부한다(W3-08)
+        srv = ExclusiveServer(("0.0.0.0", port), H)      # 모든 네트워크 — 설정된 서버 IP 도 그 안에 든다
     except OSError as e:
         # 예전에는 traceback 만 로그에 남아 화면이 '시작 실패' 라고만 말했다.
-        # 10013(다른 프로그램이 잠깐 쓰는 중)·10048(이미 사용 중)은 조치가 서로 다르다.
+        # 10013(다른 프로그램이 잠깐 쓰는 중 · 배타 bind 충돌)·10048(이미 사용 중)은 조치가 서로 다르다.
         code = getattr(e, "winerror", 0) or e.errno or 0
         print(f"[team] 포트 {port} 을 열지 못했습니다 (WinError {code}) — {e}")
-        if code == 10013:
-            print("[team] 다른 프로그램이 그 번호를 잠깐 쓰고 있습니다. "
-                  f"잠시 뒤 다시 시도하거나 {ta.EDIT_BAT} 에서 포트를 임시 포트 범위 밖"
-                  f"(예: {ta.DEFAULT_PORT + 10000})으로 바꾸세요 — 팀원도 같은 포트로 맞춰야 합니다.")
-        elif code == 10048:
-            print("[team] 이미 그 포트를 쓰는 서버가 있습니다. 대시보드의 [포트 가져오기] 를 쓰세요.")
+        # 누가 쥐고 있는지 /api/whoami 로 물어 알린다 — 남의 프로세스는 끄지 않는다(제안만)
+        kind, note = occupant_note(whoami(port))
+        print(f"[team] {note}")
+        alt = suggest_port(port) if kind != "same" else 0
+        if code == 10013 and kind == "unknown":
+            print("[team] 다른 프로그램이 그 번호를 잠깐 쓰고 있을 수 있습니다 — 잠시 뒤 다시 시도하세요.")
+        if alt:
+            print(f"[team] 제안: {ta.EDIT_BAT} 에서 포트를 {alt} 처럼 비어 있는 번호로 바꿀 수 있습니다"
+                  " — 팀원도 같은 주소로 맞춰야 합니다(설정은 자동으로 바꾸지 않습니다).")
+        elif kind != "same":
+            print(f"[team] {ta.EDIT_BAT} 에서 포트를 다른 번호로 바꾸세요 — 팀원도 같은 주소로 맞춰야 합니다.")
         return 3
     SRV[0] = srv
     write_pid()
@@ -572,7 +654,7 @@ def main():
     print(f"[team] 팀 서버 가동 — 포트 {port} · 모든 네트워크에서 받음  (저장: {TEAMDATA})")
     print(f"[team] 이 서버의 설치 폴더: {ROOT}")
     print(f"[team] 서버 IP·포트를 바꾸려면 {ta.EDIT_BAT} (팀원 업로드 주소도 같은 파일에서 나옵니다 — 자동 전송 없음, "
-          "팀원은 분석 후 [팀 서버 업로드] 버튼이나 LoadMonitor24-팀업로드.bat 으로 올립니다)")
+          "팀원은 분석 후 [팀 서버 업로드] 버튼이나 LoadMonitor28-팀업로드.bat 으로 올립니다)")
     print("[team] 종료: Ctrl+C (또는 대시보드의 [팀 서버 중지])")
     try:
         srv.serve_forever()

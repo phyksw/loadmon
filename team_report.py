@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 r"""
-team_report.py — 팀 통합 보고서(HTML 한 장) + 유사 항목 정리 엔진 (LoadMonitor24, 팀장용).
+team_report.py — 팀 통합 보고서(HTML 한 장) + 유사 항목 정리 엔진 (LoadMonitor28, 팀장용).
+LM28: 9-1 담당자 → 업무 영역 → 과제 간트(막대 = 10절 (담당자, 과제) 블록 wf-<담당자>-<과제 sha1 8> 링크 · signals 없는
+인원은 '자료 없음' 행) · '대체 가능 MM' 표시 없음(신규 후보는 근거 업무 행 수) · Agentic 과제 수는 등록된 목록 기준.
 
 옛 '팀보완툴.py' 를 본체 모듈로 옮긴 것이다. 하는 일:
   · refine_once(share, sender)   — 과제·세부업무 표기 통합(규칙 + Copilot ≤3회) → team_aliases.json
@@ -483,9 +485,12 @@ def merge_candidates(agentic):
             nm = str(n.get("name") or "").strip()
             if not nm:
                 continue
+            # LM28(A-33 RP4): '대체 가능 MM≈' 은 만들지도 보이지도 않는다 — 후보의 무게는 근거 업무 행 수(evidence_rows)로만.
+            # 옛 결과 파일의 new[].load_mm 은 읽지 않는다(mm 은 정렬 호환용 0 — 표시하지 않는다).
             items.append({"name": nm, "logic": str(n.get("logic") or ""),
                           "reason": str(n.get("reason") or ""),
-                          "mm": _fnum(n.get("load_mm"), 0.0), "who": str(a.get("owner") or "")})
+                          "mm": 0.0, "ev": int(_fnum(n.get("evidence_rows"), 0.0) or 0),
+                          "who": str(a.get("owner") or "")})
     groups = []
     for it in items:
         hit = None
@@ -499,11 +504,12 @@ def merge_candidates(agentic):
                 break
         if hit is None:
             groups.append({"name": it["name"], "names": {it["name"]}, "logic": it["logic"],
-                           "reason": it["reason"], "mm": it["mm"], "who": {it["who"]}})
+                           "reason": it["reason"], "mm": it["mm"], "ev": it["ev"], "who": {it["who"]}})
         else:
             hit["names"].add(it["name"])
             hit["who"].add(it["who"])
             hit["mm"] += it["mm"]
+            hit["ev"] += it["ev"]
             if len(it["name"]) > len(hit["name"]):
                 hit["name"] = it["name"]
             if len(it["logic"]) > len(hit["logic"]):
@@ -513,7 +519,7 @@ def merge_candidates(agentic):
     for g in groups:
         g["who"] = sorted(g["who"])
         g["names"] = sorted(g["names"])
-    groups.sort(key=lambda g: -(len(g["who"]) * 10 + g["mm"]))
+    groups.sort(key=lambda g: (-len(g["who"]), -g["ev"]))
     return groups
 
 
@@ -1966,6 +1972,7 @@ def cand_refine(share, cands, sender=None, log=say):
             hit["names"] = sorted(set(hit["names"]) | set(g["names"]) | {g["name"]})
             hit["who"] = sorted(set(hit["who"]) | set(g["who"]))
             hit["mm"] += g["mm"]
+            hit["ev"] = int(hit.get("ev") or 0) + int(g.get("ev") or 0)
             if len(g["logic"]) > len(hit["logic"]):
                 hit["logic"] = g["logic"]
             if len(g["reason"]) > len(hit["reason"]):
@@ -1973,7 +1980,7 @@ def cand_refine(share, cands, sender=None, log=say):
     for g in merged:
         if g["names"] and g["name"] not in set(g["names"]):
             g["name"] = max(g["names"], key=lambda x: (len(x), x))
-    merged.sort(key=lambda g: -(len(g["who"]) * 10 + g["mm"]))
+    merged.sort(key=lambda g: (-len(g["who"]), -int(g.get("ev") or 0)))
     return merged, n
 
 
@@ -2161,7 +2168,7 @@ def build_gantt(share, members, clusters, groups, owners=()):
             counts[(ci, mon)] = counts.get((ci, mon), 0) + 1
             pcounts[(ci, who9, mon)] = pcounts.get((ci, who9, mon), 0) + 1
     if not counts:
-        return ('<div class="card"><h2>9-1. 담당 업무 활동 간트</h2>'
+        return ('<div class="card"><h2>9-2. 담당 업무 활동 간트</h2>'
                 '<div class="note">판정 신호(signals) 파일이 취합 폴더에 없어 활동 간트를 '
                 "만들 수 없습니다 — 팀원이 [팀 서버 업로드]를 하면 함께 올라옵니다.</div></div>")
     active = sorted({m9 for (_c9, m9) in counts})
@@ -2347,7 +2354,7 @@ def build_gantt(share, members, clusters, groups, owners=()):
           'var k=/\\bm(\\d+)\\b/.exec(t.className);'
           't.title=(k?M[+k[1]]:"")+" \\u00b7 \\uc2e0\\ud638 "+(t.getAttribute("data-n")||"?")+"\\uac74";});})();</script>')
     return ('<div class="card gnt"><style>' + "\n".join(css) + "</style>"
-            '<h2>9-1. 담당 업무 활동 간트 '
+            '<h2>9-2. 담당 업무 활동 간트(과제 → 담당 업무) '
             '<span class="state">과제를 접고 펼 수 있습니다 · 담당 업무를 누르면 사람별 '
             '타임라인(§2와 같은 사람 색)과 워크플로우 단계가 열립니다 · 진할수록 그 달 '
             '활동 많음' + old_note + '</span></h2>'
@@ -2361,11 +2368,248 @@ def build_gantt(share, members, clusters, groups, owners=()):
             "보일 수 있습니다.</div>" + js + "</div>")
 
 
+def wf_anchor(owner, project):
+    r"""10절 (담당자, 과제) 하위 블록의 id — 'wf-<담당자 안전 문자>-<과제 sha1 앞 8자>'(REQ-44·A-41).
+    9-1 간트 막대의 href 가 이것을 가리킨다. 과제는 ukey(띄어쓰기·대소문자 무시)로 해시해 표기 변형이 같은 id 가 된다."""
+    import hashlib
+    safe = re.sub(r"[^0-9A-Za-z가-힣_-]+", "_", str(owner or "").strip()).strip("_") or "_"
+    return f"wf-{safe}-{hashlib.sha1(ukey(project).encode('utf-8')).hexdigest()[:8]}"
+
+
+def _member_signal_rows(m):
+    """인원 한 명의 판정 신호 행(signals_<tag>.csv — 없으면 최신) → list[dict] | None(파일 없음)"""
+    if not m.get("dir"):
+        return None
+    sp = find_member_any(m["dir"], "signals", str(m.get("tag") or ""), exts=(".csv",))
+    if not sp:
+        return None
+    try:
+        with open(sp, encoding="utf-8-sig", errors="replace") as f:
+            return [r for r in csv.DictReader(f) if isinstance(r, dict)]
+    except (OSError, ValueError, csv.Error):
+        return None
+
+
+def _project_area(members):
+    r"""과제 → 업무 영역(Level 1) — 인원 mm_rows 의 Level 1(details.snap1 로 접음). 없으면 details.level1_of(과제명)."""
+    out = {}
+    for m in members:
+        for r in (m.get("rows") or []):
+            if not isinstance(r, dict):
+                continue
+            pj, l1 = str(r.get("Level 2") or "").strip(), str(r.get("Level 1") or "").strip()
+            if pj and l1 and ukey(pj) not in out:
+                out[ukey(pj)] = l1
+    try:
+        import details as _dl
+        out = {k: (_dl.snap1(v) or v) for k, v in out.items()}
+    except Exception:  # noqa: BLE001 - 영역은 표시용 — 못 접어도 원래 이름으로
+        _dl = None
+
+    def area(pj):
+        a = out.get(ukey(pj))
+        if not a and _dl is not None:
+            try:
+                a = _dl.level1_of(pj, pj)
+            except Exception:  # noqa: BLE001
+                a = ""
+        return a or "영역 미분류"
+    return area
+
+
+def build_owner_gantt(share, members, owners=(), signal_rows=None):
+    r"""9-1 간트 — 담당자 → 업무 영역 → 과제 묶음 행(보기 바꾸기: 과제 → 담당자) · 막대 = 그 달 신호 수(진할수록 많음).
+    막대는 10절의 (담당자, 과제) 블록(wf_anchor)으로 가는 링크다 — 누르면 그 사람의 그 과제 워크플로우로 이동한다(REQ-44).
+    signals 가 없는 인원은 빠지지 않고 '자료 없음' 행으로 남는다(W3-13). signal_rows 는 시험 주입({owner: rows}).
+    반환 (html, pairs{(owner, 과제): 신호 수}) — 10절은 pairs 의 모든 쌍에 대상 블록을 만든다(href 가 늘 실존)."""
+    try:
+        al2 = _agg().load_aliases(share)
+        pmap2 = al2["projects"]
+    except Exception:  # noqa: BLE001 - 별칭이 없어도 간트는 그린다
+        pmap2 = {}
+    area_of = _project_area(members)
+    counts, names, nodata = {}, {}, []          # (owner, ukey(pj), mon) → n · ukey(pj) → 표시 이름
+    seen_owner = []
+    for m in members:
+        who9 = str(m.get("owner") or "")
+        if not who9 or who9 in seen_owner:
+            continue
+        seen_owner.append(who9)
+        rows = (signal_rows or {}).get(who9) if signal_rows is not None else _member_signal_rows(m)
+        got = 0
+        for r in rows or []:
+            mon = str(r.get("time") or "")[:7]
+            if not _MON_RE.fullmatch(mon):
+                continue
+            pj = str(r.get("model") or r.get("project") or "").strip()
+            if " / " in pj:
+                pj = pj.rsplit(" / ", 1)[0]
+            pj = pmap2.get(pj, pj) or "(과제 미상)"
+            k = ukey(pj)
+            names.setdefault(k, pj)
+            counts[(who9, k, mon)] = counts.get((who9, k, mon), 0) + 1
+            got += 1
+        if not got:
+            nodata.append(who9)
+    for o in owners:                              # 인원 목록에 있는데 폴더·신호가 없는 사람도 '자료 없음'
+        if o not in seen_owner:
+            nodata.append(o)
+    pairs = {}
+    for (o, k, _mon), n in counts.items():
+        pairs[(o, names[k])] = pairs.get((o, names[k]), 0) + n
+    if not counts and not nodata:
+        return "", pairs
+    active = sorted({mon for (_o, _k, mon) in counts})
+    months, old = _month_window(active) if active else ([], [])
+    mset = set(months)
+    cmax = max([v for (_o, _k, mon), v in counts.items() if mon in mset] or [1]) or 1
+    LW, CW = 250, max(28, min(64, 760 // max(1, len(months) or 1)))
+
+    def _cells(get, href=""):
+        out = []
+        for i, mon in enumerate(months):
+            n = get(mon)
+            if not n:
+                continue
+            a = 0.25 + 0.7 * min(1.0, n / cmax)
+            st = (f"left:{i * CW}px;width:{CW - 2}px;background:rgba(42,120,214,{a:.2f})")
+            if href:
+                out.append(f'<a class="ob" href="#{href}" style="{st}" title="{mon} · 신호 {n}건"></a>')
+            else:
+                out.append(f'<i class="ob" style="{st}" title="{mon} · 신호 {n}건"></i>')
+        return f'<span class="otr" style="width:{len(months) * CW}px">{"".join(out)}</span>'
+
+    def _row(label, cells, lvl, cls=""):
+        return (f'<div class="orow {cls}"><span class="olb" style="padding-left:{lvl * 14}px">{label}</span>'
+                f"{cells}</div>")
+
+    hdr = ('<div class="orow ohd"><span class="olb"></span><span class="otr" style="width:'
+           f'{len(months) * CW}px">' + "".join(
+               f'<span class="omh" style="left:{i * CW}px;width:{CW}px">{mon[2:4]}.{mon[5:7]}</span>'
+               for i, mon in enumerate(months)) + "</span></div>")
+    # ① 담당자 → 영역 → 과제
+    v1 = [hdr]
+    for o in seen_owner + [x for x in owners if x not in seen_owner]:
+        ks = sorted({k for (oo, k, _m) in counts if oo == o},
+                    key=lambda k: -sum(v for (oo, kk, _m), v in counts.items() if oo == o and kk == k))
+        if not ks:
+            v1.append(_row(f"<b>{esc(o)}</b>", '<span class="dim" style="margin-left:6px">자료 없음 — 판정 신호(signals)가 '
+                                               "올라오지 않았습니다(업로드 전·수집 실패)</span>", 0, "onone"))
+            continue
+        v1.append(_row(f"<b>{esc(o)}</b>",
+                       _cells(lambda mon, o=o: sum(v for (oo, _k, mm), v in counts.items() if oo == o and mm == mon)), 0))
+        by_area = {}
+        for k in ks:
+            by_area.setdefault(area_of(names[k]), []).append(k)
+        for ar, aks in by_area.items():
+            v1.append(_row(esc(ar), _cells(lambda mon, o=o, aks=tuple(aks): sum(
+                counts.get((o, k, mon), 0) for k in aks)), 1, "oar"))
+            for k in aks:
+                v1.append(_row(esc(names[k]), _cells(lambda mon, o=o, k=k: counts.get((o, k, mon), 0),
+                                                     wf_anchor(o, names[k])), 2))
+    # ② 과제 → 담당자(보기 바꾸기)
+    v2 = [hdr]
+    for k in sorted(names, key=lambda k: -sum(v for (_o, kk, _m), v in counts.items() if kk == k)):
+        v2.append(_row(f"<b>{esc(names[k])}</b> <span class='dim'>{esc(area_of(names[k]))}</span>",
+                       _cells(lambda mon, k=k: sum(v for (_o, kk, mm), v in counts.items() if kk == k and mm == mon)), 0))
+        for o in sorted({oo for (oo, kk, _m) in counts if kk == k}):
+            v2.append(_row(esc(o), _cells(lambda mon, o=o, k=k: counts.get((o, k, mon), 0), wf_anchor(o, names[k])), 1))
+    for o in nodata:
+        v2.append(_row(f"<b>{esc(o)}</b>", '<span class="dim" style="margin-left:6px">자료 없음</span>', 0, "onone"))
+    css = ("<style>.ogn .orow{display:flex;align-items:center;min-height:18px;margin:1px 0}"
+           f".ogn .olb{{flex:0 0 {LW}px;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}"
+           ".ogn .otr{position:relative;display:inline-block;height:14px;flex:0 0 auto;"
+           f"background:repeating-linear-gradient(90deg,transparent 0 {CW - 1}px,#eef1f5 {CW - 1}px {CW}px)}}"
+           ".ogn .ob{position:absolute;top:1px;bottom:1px;border-radius:3px;display:block}"
+           ".ogn a.ob:hover{outline:2px solid #1c4e8a}"
+           ".ogn .ohd .otr{background:none;height:16px}.ogn .omh{position:absolute;font-size:9px;color:#8b929b;text-align:center}"
+           ".ogn .oar .olb{color:#5a626b}.ogn .onone .olb{color:#8b929b}</style>")
+    old_note = (f" · 오래된 활동 {len(old)}개월은 생략(최근 {GANTT_MAX_MONTHS}개월 창)" if old else "")
+    js = ("<script>(function(){var b=document.getElementById('ogn-tg');if(b)b.onclick=function(){"
+          "var a=document.getElementById('ogn-v1'),c=document.getElementById('ogn-v2');"
+          "var s=a.style.display!=='none';a.style.display=s?'none':'';c.style.display=s?'':'none';"
+          "b.textContent=s?'보기: 과제 → 담당자 (바꾸기)':'보기: 담당자 → 영역 → 과제 (바꾸기)';};"
+          # 막대를 누르면 10절의 그 블록이 접힌 <details> 안에 있어도 펼쳐서 보여 준다
+          "function op(){var h=decodeURIComponent((location.hash||'').slice(1));if(!h)return;"
+          "var t=document.getElementById(h);if(!t)return;var p=t.parentElement;"
+          "while(p){if(p.tagName==='DETAILS')p.open=true;p=p.parentElement;}t.scrollIntoView();}"
+          "window.addEventListener('hashchange',op);op();})();</script>")
+    return ('<div class="card ogn"><h2>9-1. 담당자 → 업무 영역 → 과제 간트 '
+            '<span class="state">막대 = 그 달 판정 신호 수(진할수록 많음) · 막대를 누르면 10절의 그 사람·그 과제 '
+            '워크플로우로 갑니다' + old_note + '</span> <button id="ogn-tg" type="button">'
+            "보기: 담당자 → 영역 → 과제 (바꾸기)</button></h2>" + css
+            + '<div style="overflow-x:auto"><div id="ogn-v1">' + "".join(v1) + "</div>"
+            '<div id="ogn-v2" style="display:none">' + "".join(v2) + "</div></div>"
+            '<div class="note">signals 가 없는 인원은 0이 아니라 <b>자료 없음</b>입니다(업로드 전이거나 그 PC 의 수집 실패).</div>'
+            + js + "</div>"), pairs
+
+
+def wf_owner_blocks(groups, items, pairs, pmap=None):
+    r"""10절 (담당자, 과제) 하위 블록 — 간트 막대의 이동 대상(id = wf_anchor). → ({ukey(과제): html}, 고아 html).
+    · 과제(groups)마다 그 과제의 흐름이 있는 사람 + 간트 신호가 있는 사람에게 한 블록씩. 흐름이 있으면 담당 업무별 단계
+      사슬, 없으면 '이 사람의 이 과제 워크플로우 자료 없음(신호 N건)'.
+    · 워크플로우가 하나도 없는 과제(간트에만 있는 쌍)는 고아 html 의 접이식에 모은다 — 막대의 href 대상이 늘 실존한다."""
+    pmap = pmap or {}
+    flows_by, names = {}, {}                         # (owner, ukey(과제)) → [(담당 업무, 단계 이름들)] · ukey → 표시 이름
+    for it in items or []:
+        fl = it.get("fl") or {}
+        p0, d0 = flow_unit(fl)
+        pj = pmap.get(p0, p0)
+        k = (str(it.get("owner") or ""), ukey(pj))
+        names.setdefault(k[1], pj)
+        flows_by.setdefault(k, []).append((d0 or str(fl.get("model") or ""),
+                                           [str(s.get("name") or "") for s in (fl.get("steps") or [])
+                                            if isinstance(s, dict) and s.get("name")]))
+    sig_by = {}
+    for (o, pj), n in (pairs or {}).items():
+        sig_by[(o, ukey(pj))] = sig_by.get((o, ukey(pj)), 0) + n
+        names.setdefault(ukey(pj), pj)
+
+    def _block(o, pj):
+        k = (o, ukey(pj))
+        fls = flows_by.get(k) or []
+        n = sig_by.get(k, 0)
+        head = (f'<div class="unit" id="{wf_anchor(o, pj)}"><div class="uhead"><b>{esc(o)}</b> · {esc(pj)}'
+                f'<span class="state">{"신호 " + str(n) + "건 · " if n else ""}흐름 {len(fls)}건</span></div>')
+        if not fls:
+            return head + ('<div class="dim">이 사람의 이 과제 워크플로우 자료가 없습니다 — 그 PC 에서 '
+                           "[담당자 워크플로우] 분석 후 다시 올리면 채워집니다.</div></div>")
+        body = "".join(
+            f'<div style="margin:3px 0"><b>{esc(d)}</b> '
+            + "".join(f'<span class="tag">{esc(s)}</span>' + ('<span class="sub"> → </span>' if i < len(ss) - 1 else "")
+                      for i, s in enumerate(ss[:12]))
+            + (f'<span class="sub"> … +{len(ss) - 12}단계</span>' if len(ss) > 12 else "") + "</div>"
+            for d, ss in fls)
+        return head + body + "</div>"
+
+    out, done = {}, set()
+    for g in groups or []:
+        k = ukey(g.get("project"))
+        who = sorted({o for (o, kk) in flows_by if kk == k} | {o for (o, kk) in sig_by if kk == k})
+        if not who:
+            continue
+        out[k] = ('<div style="margin-top:10px;border-top:1px dashed #e4e7eb;padding-top:6px">'
+                  '<div style="font-size:12px;font-weight:700">담당자별 <span class="state">간트 막대에서 오는 자리 — '
+                  "그 사람의 이 과제 워크플로우</span></div>"
+                  + "".join(_block(o, g.get("project")) for o in who) + "</div>")
+        done.add(k)
+    orphan = []
+    for k in sorted({kk for (_o, kk) in sig_by} | {kk for (_o, kk) in flows_by} - done):
+        if k in done:
+            continue
+        pj = names.get(k) or k
+        who = sorted({o for (o, kk) in flows_by if kk == k} | {o for (o, kk) in sig_by if kk == k})
+        orphan.append(f'<details><summary>{esc(pj)}<span class="state">담당 업무 단위 워크플로우 없음 · '
+                      f'인원 {len(who)}명</span></summary><div class="body">'
+                      + "".join(_block(o, pj) for o in who) + "</div></details>")
+    return out, "".join(orphan)
+
+
 def render_full(share, html_dir, sender=None, log=say):
     r"""팀 통합 보고서 본문 렌더 — (doc_v2, doc_v3, info). **파일을 쓰지 않는다**.
 
     로드율·과제 배분·Agentic·워크플로우를 한 장으로. 표는 원본 팀 화면(TEAM_PAGE)의 도식을
-    따른다: 과제·업무는 누적바, Agentic 12과제는 히트맵 색. sender 가 있으면 계열/세부/후보/
+    따른다: 과제·업무는 누적바, Agentic 과제(등록된 목록)는 히트맵 색. sender 가 있으면 계열/세부/후보/
     과제분류 캐시를 Copilot 으로 채우고(캐시 누적), 없으면 저장된 캐시만 적용한다."""
     ag = _agg()
     data = ag.collect_team_data(share)
@@ -2645,7 +2889,7 @@ def render_full(share, html_dir, sender=None, log=say):
                      f'<span class="dot" style="background:{WTC[k]}"></span>{esc(k)}</span>'
                      for k in wt_keys)
 
-    # ── 4. Agentic 12과제 × 인원 (히트맵 색 — 원본 팀 화면 방식) ──
+    # ── 4. Agentic 과제(등록된 목록) × 인원 (히트맵 색 — 원본 팀 화면 방식) ──
     other_period = [a["owner"] for a in agentic if a.get("other_period")]
     task_legend = "".join(
         f'<span class="tag" title="{esc(t.get("desc"))}"><b>{esc(t.get("id"))}</b> '
@@ -2657,7 +2901,7 @@ def render_full(share, html_dir, sender=None, log=say):
         + (f"<div class='sub'>표기 {len(g['names'])}종 통합: "
            f"{esc(' / '.join(g['names'][:4]))}</div>" if len(g["names"]) > 1 else "")
         + f"</td><td>{''.join('<span class=tag>' + esc(w) + '</span>' for w in g['who'])}</td>"
-        f"<td class='num'>{g['mm']:.2f}</td>"
+        f"<td class='num'>{int(g.get('ev') or 0) or '–'}</td>"
         f"<td class='dim'>{esc(g['logic'][:130])}</td></tr>"
         for g in cands) or "<tr><td colspan=4 class='dim'>발굴된 후보가 없습니다</td></tr>"
 
@@ -2705,8 +2949,15 @@ def render_full(share, html_dir, sender=None, log=say):
         [{"name": f"{c['detail']}", "names": {c["detail"]}, "row": c["mm_by"],
           "total": c["mm"]} for c in clusters[:14]], wf_owners, 280, 160)
 
-    # ── 9-1. 담당 업무 활동 간트 (월별 · 신호 기준) ──
+    # ── 9-1. 담당자 → 영역 → 과제 간트 · 9-2. 담당 업무 활동 간트 (월별 · 신호 기준) ──
     gantt_html = build_gantt(share, members, clusters, groups, owners_all)   # 간트는 본인 자료 — 전원
+    # LM28(REQ-44·A-41·W3-13): 담당자 → 영역 → 과제 간트(막대 → 10절 (담당자, 과제) 블록) · signals 없는 인원은 '자료 없음'
+    owner_gantt, gpairs = build_owner_gantt(share, lm or members, owners_all)
+    try:
+        _pmap10 = _agg().load_aliases(share)["projects"]
+    except Exception:  # noqa: BLE001
+        _pmap10 = {}
+    wf_by_owner, wf_orphan = wf_owner_blocks(groups, items, gpairs, _pmap10)
 
     # ── 10. 과제별 워크플로우 (접이식) ──
     def _steps_tbl(steps, total=None):
@@ -2761,7 +3012,11 @@ def render_full(share, html_dir, sender=None, log=say):
             f'<details{" open" if gi == 0 else ""}><summary>{esc(g["project"])}'
             f'<span class="state">담당 업무 {len(g["types"])}종 · {g["mm"]:.2f} MM · '
             f'수행 인원 {len(g["who"])}명 · 여러 명이 하는 업무 {g["shared"]}종</span></summary>'
-            f'<div class="body">{"".join(inner)}</div></details>')
+            f'<div class="body">{"".join(inner)}{wf_by_owner.get(ukey(g["project"]), "")}</div></details>')
+    if wf_orphan:
+        wf_cards.append('<div style="margin:10px 0 4px;font-size:12px;color:#4a5159"><b>담당 업무 단위 워크플로우가 '
+                        '없는 과제</b> <span class="dim">— 간트에는 신호가 있어 담당자별 자리만 둡니다</span></div>'
+                        + wf_orphan)
 
     coarse_html = ""
     if coarse:
@@ -2773,7 +3028,7 @@ def render_full(share, html_dir, sender=None, log=say):
             f'<span class="state">{len(coarse)}건 · 유형 분석에서 제외</span></h2>'
             '<div class="note" style="margin:0 0 8px">프로젝트 하나에는 성격이 다른 업무가 여럿 '
             '섞여 있어 하나의 일의 순서로 정의할 수 없습니다. 아래 인원은 담당 업무 단위 '
-            '워크플로우가 아직 없어 유형 분석에 넣지 않았습니다 — 그 PC 에서 LoadMonitor24 로 '
+            '워크플로우가 아직 없어 유형 분석에 넣지 않았습니다 — 그 PC 에서 LoadMonitor28(또는 LoadMonitor24) 로 '
             '[분석 실행](AI 판정)을 다시 돌리면 담당 업무 단위로 만들어집니다.</div>'
             '<table><tr><th style="width:120px">이름</th><th>과제</th></tr>'
             + "".join(f"<tr><td><b>{esc(w)}</b></td><td>"
@@ -2887,8 +3142,8 @@ textarea{{width:100%;height:64px;font:11px Consolas,monospace;margin-top:6px}}
 그대로(HTML 이 없는 사람만 개인 자료 구성비 × ①의 투입 MM)</span></h2>
 {wt_stack}<div class="row" style="margin-top:6px">{wt_leg}</div></div>
 
-<div class="card"><h2>4. Agentic AI 12과제 적합률 × 인원
-<span class="state">세로 = 인원 · 가로 = 12과제(인원이 많아도 표 폭이 늘지 않습니다) ·
+<div class="card"><h2>4. Agentic AI 과제 적합률 × 인원
+<span class="state">등록된 과제 {len(data.get('tasks') or [])}개 · 세로 = 인원 · 가로 = 등록된 과제(인원이 많아도 표 폭이 늘지 않습니다) ·
 색이 진할수록 적합률 높음 · 셀 클릭 = 제외/복원 · 이름 체크 해제 = 그 사람 제외</span></h2>
 {('<div class="note" style="margin:0 0 6px">다른 기간 결과를 쓴 인원: '
   + esc(', '.join(other_period)) + ' — 기간이 달라도 결과를 가져왔습니다.</div>')
@@ -2902,7 +3157,7 @@ textarea{{width:100%;height:64px;font:11px Consolas,monospace;margin-top:6px}}
 
 <div class="card"><h2>5. 팀에서 발굴된 신규 Agentic AI 후보
 <span class="state">담당자별로 나온 후보 중 비슷한 것은 합쳤습니다</span></h2>
-<div style='overflow-x:auto'><table><tr><th>후보</th><th>제안 인원</th><th class="num">대체 가능 ≈MM</th><th>로직</th></tr>
+<div style='overflow-x:auto'><table><tr><th>후보</th><th>제안 인원</th><th class="num">근거 업무(행)</th><th>로직</th></tr>
 {rows_new}</table></div></div>
 
 <div class="card"><h2>6. 공통업무 — 자동화 우선 후보</h2>
@@ -2930,10 +3185,11 @@ Agent 가능성 <span class="pill" style="background:#1d8a4a">상</span> 자동�
 <div class="card"><h2>9. 담당 업무 × 인원 <span class="state">누적바 = 사람별 MM</span></h2>
 {wf_stack}<div class="row" style="margin-top:8px">{stack_legend(wf_owners)}</div></div>
 
+{owner_gantt}
 {gantt_html}
 
 <h1 style="font-size:15px;margin:18px 0 8px">10. 과제별 워크플로우
-<span class="state">과제를 펼치면 그 안의 담당 업무 워크플로우가 나옵니다</span></h1>
+<span class="state">과제를 펼치면 그 안의 담당 업무 워크플로우와 담당자별 자리(간트 막대가 가리키는 곳)가 나옵니다</span></h1>
 {''.join(wf_cards) or '<div class="card"><div class="note">담당 업무 단위 워크플로우가 없습니다.</div></div>'}
 {coarse_html}
 {prog_html}
@@ -2970,7 +3226,7 @@ Agent 가능성 <span class="pill" style="background:#1d8a4a">상</span> 자동�
   var h="<tr><th class=stick>이름</th>";
   tasks.forEach(function(tk){{
    h+="<th title=\\""+E(tk.name)+" — "+E(tk.desc)+"\\">"+E(tk.id)+"</th>";}});
-  h+="<th class=num>합계 ≈MM</th></tr>";
+  h+="<th class=num>근거 업무 MM</th></tr>";
   var sums=tasks.map(function(){{return 0;}}), fits=tasks.map(function(){{return [];}});
   ags.forEach(function(a,oi){{
    if(exP.has(oi))return;
@@ -3002,7 +3258,7 @@ Agent 가능성 <span class="pill" style="background:#1d8a4a">상</span> 자동�
      var mmv=mmOf(hit);
      if(!off)ptot+=mmv;
      row+="<td class='cell num"+(off?" x":"")+"' style=\\""+(off?"":heatSt(hit.fit))
-       +"\\" data-ti="+ti+" data-oi="+oi+" title=\\"\\u2248"+mmv.toFixed(2)
+       +"\\" data-ti="+ti+" data-oi="+oi+" title=\\"근거 업무 실측 "+mmv.toFixed(2)
        +" MM\\"><b>"+E(hit.fit)+"%</b><br><span style='font-size:8.5px'>"
        +mmv.toFixed(2)+"</span></td>";
     }}else row+="<td class='dim num'>·</td>";

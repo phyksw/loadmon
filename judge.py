@@ -42,6 +42,15 @@ core/details)이 공유하는 Copilot 왕복 1회 접점이다 — 드라이버(
 긴 프롬프트 분할·[[전송끝]] 서약을 처리하므로 여기서는 왕복 예산만 조각 수에 맞춘다.
 프롬프트 파일(report\\judge_<name>_<tag>.md)은 성공한 왕복이면 회수 직후 지우고, 실패한 왕복·해석 못 한
 답(note_bad_reply)의 것만 남긴다 — 그 파일이 '직접 붙여넣기' 안내 대상이다.
+
+LM28 — G3 Copilot 직전 관문과 인프로세스 왕복:
+  · 프롬프트에 넣는 행(판정 행·체계 표본·통합 표본·월별 표본)은 먼저 g3_rows(privacy.gate_items)를 거친다 — 사적·광고 의심·
+    자격증명·고위험 잔여·카나리아 행은 보내지 않고(그 행만 규칙 판정), 나머지는 재정제한 사본을 보낸다. 원본 행은 그대로다.
+  · signals 의 flag 'ad'(광고 의심) 행은 Copilot 에 보내지 않고 비업무로 둔다(LM24 에서 AI 가 'n' 으로 거르던 것).
+  · copilot_send 는 보내기 전에 최종 검사(g3_prompt)를 하고, 걸리면 보내지 않고 {"phase":"blocked"} 를 돌려준다. 관문에 막힌
+    청크는 skipped 로 따로 센다 — 연속 실패 계수(SOFT/ABORT_FAIL_CHUNKS)에 넣지 않는다(개인정보가 많은 사람이 AI 판정 전체를
+    규칙으로 잃지 않게). ai_judgments 에 gated_rows·skipped_chunks 를 남긴다.
+  · config.copilotAuto.inProcess(기본 true)면 드라이버를 임포트해 같은 프로세스에서 왕복한다(send_inproc). taskkill 은 쓰지 않는다.
 """
 import csv
 import io
@@ -52,15 +61,22 @@ import shutil
 import subprocess
 import sys
 import time
+import unicodedata
 from collections import Counter, defaultdict
 from datetime import date, datetime
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(ROOT, "core"))
 from details import explain_failure  # noqa: E402  - 로그인 필요 등 "사람이 손대야 풀리는" 실패 판정
-from details import level1_of  # noqa: E402  - 상위 규칙 분류(코드네임·ax·공통)
+from details import level1_of  # noqa: E402  - 상위 규칙 분류(코드네임·영역 키워드 표 — LM28)
+from details import ax_flag, field_of  # noqa: E402  - mm_rows 끝 열 ax(AX 연계 표식)·field(분야) — LM28
 from details import ukey2  # noqa: E402  - 과제 신원 축(공백·구분자·대소문자 무시, 괄호 꼬리 보존)
 from progress import progress  # noqa: E402
+try:                       # 과제 몫 시간화(옵션 mm.shareBasis="time") — LM28. 없으면 LM24 가중치 몫으로 계속
+    import timeshare  # noqa: E402
+    from timeshare import UNCLASSIFIED  # noqa: E402
+except ImportError:
+    timeshare, UNCLASSIFIED = None, "근무 중 미분류"
 NO_WIN = 0x08000000
 _DEC = json.JSONDecoder()
 WORKTYPES = ["개발", "사무", "현장", "협업"]
@@ -88,6 +104,7 @@ MAX_SPLIT_DEPTH = 3         # 40 → 20 → 10 → 5
 MIN_RETRY_ROWS = 3          # 부분 성공(잘린 답 복구) 뒤 빠진 행이 이 수 이상이면 그 행만 다시 묻는다
 SOFT_FAIL_CHUNKS = 3        # 연속으로 이만큼 청크가 0건이면 적응 재시도를 끄고 1회씩만 시도
 ABORT_FAIL_CHUNKS = 6       # 연속으로 이만큼 0건이면 남은 청크를 규칙으로 둔다(수 시간 공회전 방지)
+                            # — 개인정보 관문(G3)에 막혀 보내지 않은 청크는 실패가 아니라 skipped 다(이 계수에 넣지 않는다)
 SEEN_MAX_NAMES = 30         # 청크에 동봉하는 '앞서 쓴 세부업무 이름' 상한
 SEEN_MAX_CHARS = 600
 
@@ -227,21 +244,63 @@ def who_label(who, n=16):
     return "(상대)"
 
 
-def kill_tree(pid):
-    r"""프로세스와 자손 전부 종료(윈도) — 드라이버만 죽이면 그 아래 Edge·CDP 가 남아 다음 왕복을 막는다."""
-    try:
-        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
-                       capture_output=True, timeout=30, creationflags=NO_WIN)
-    except (OSError, subprocess.SubprocessError):
+def _ca():
+    """드라이버 모듈(tools/copilot_auto.py) — 인프로세스 왕복·G3 관문용. 임포트에 부작용이 없다(stdout 재설정은 CLI 만).
+    이미 올라와 있으면(시험·다른 호출자) 그것을 쓴다."""
+    m = sys.modules.get("copilot_auto")
+    if m is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("copilot_auto", os.path.join(ROOT, "tools", "copilot_auto.py"))
+        m = importlib.util.module_from_spec(spec)
+        sys.modules["copilot_auto"] = m
         try:
-            os.kill(pid, 9)
-        except OSError:
-            pass
+            spec.loader.exec_module(m)
+        except BaseException:
+            sys.modules.pop("copilot_auto", None)
+            raise
+    return m
+
+
+def _inproc():
+    """config.copilotAuto.inProcess — 기본 true(config.default.json). false 면 예전처럼 드라이버를 자식 프로세스로."""
+    v = _copilot_cfg().get("inProcess", True)
+    return not (v is False or str(v).strip().lower() in ("0", "false", "no", "n", "off"))
+
+
+def g3_rows(rows, fields=("text",)):
+    """G3 행 관문(copilot_auto.gate_rows → privacy.gate_items) → (보낼 행 사본, {제외 사유: 건수})."""
+    return _ca().gate_rows(rows, fields)
+
+
+def g3_prompt(text):
+    """G3 최종 프롬프트 검사 → True = 보내도 됨(관문을 세우지 못하면 False)."""
+    try:
+        return bool(_ca().gate_ok(text))
+    except Exception:  # noqa: BLE001 - 관문 오류 = 보내지 않음(fail-closed)
+        return False
+
+
+def g3_pick(rows, k, fields=("text",)):
+    """표본용 — rows 전체에 고르게 퍼진 2k 행(끝 포함)만 관문에 통과시킨다(전체를 정제하지 않는다). 순서는 유지."""
+    if not rows:
+        return []
+    n = len(rows)
+    m = min(n, max(1, 2 * int(k)))
+    idx = sorted({round(j * (n - 1) / (m - 1)) for j in range(m)}) if m > 1 else [n - 1]
+    return g3_rows([rows[i] for i in idx], fields)[0]
+
+
+_AD_FLAG = re.compile(r"(?<![a-z])ad(?![a-z])", re.I)
+
+
+def is_ad_row(r):
+    """signals 의 flag 열에 'ad'(G2 광고 의심)가 있는가."""
+    return bool(_AD_FLAG.search(str((r or {}).get("flag") or "")))
 
 
 def copilot_send(prompt_text, tag, name, fresh=None):
     """Copilot 왕복 1회 — 프롬프트를 report\\judge_{name}_{tag}.md 로 쓰고 드라이버를
-    자식 프로세스로 부른다(분할·서약은 드라이버 몫). 반환 {"ok","reply",...,"error","hint"}.
+    부른다(분할·서약은 드라이버 몫 · inProcess 면 같은 프로세스, 아니면 자식 프로세스). 반환 {"ok","reply",...,"error","hint"}.
     fresh: True = 새 채팅에서 시작, None(기본) = **같은 채팅에서 이어서** — 이 프로세스의 첫 성공 왕복까지만 새 채팅
            (+ 직전 왕복이 실패/해석 불가·끊김이면 새 채팅, + 한 채팅의 왕복이 config.copilotAuto.chatTurns 에 닿으면 새 채팅,
            chatTurns=0 이면 매번 새 채팅), False = 무조건 이어서.
@@ -251,7 +310,14 @@ def copilot_send(prompt_text, tag, name, fresh=None):
     반환 dict 의 cut=True 는 답이 생성 중단 문구로 끝났다는 뜻 — 잘린 JSON 복구 대상.
     프롬프트 파일은 **성공한 왕복이면 회수 직후 지운다**(V-06: 실행당 64~83개가 report\\ 에 누적돼 신호 원문
     사본이 쌓였다) — 실패한 왕복(왕복 자체 실패, 답에 JSON 꼴이 없음)의 것만 남겨 '직접 붙여넣기' 안내에 쓴다.
-    답은 왔지만 호출자가 해석하지 못한 경우는 note_bad_reply() 가 방금 지운 파일을 되살린다."""
+    답은 왔지만 호출자가 해석하지 못한 경우는 note_bad_reply() 가 방금 지운 파일을 되살린다.
+    LM28: 먼저 G3 최종 검사(g3_prompt) — 걸리면 파일도 쓰지 않고(직접 붙여넣기 안내 대상이 아니다) {"phase":"blocked"} 를
+    돌려준다. 호출자는 그 묶음을 skipped 로 세고 그 행만 규칙으로 둔다(재시도·새 채팅 전환 없음).
+    config.copilotAuto.inProcess(기본 true)면 같은 프로세스에서 왕복(_transport → copilot_auto.send_inproc)."""
+    if not g3_prompt(prompt_text):
+        return {"ok": False, "status": "blocked", "phase": "blocked", "reason": "R-GATE",
+                "error": "개인정보 관문(G3) — 고위험 잔여·카나리아가 있어 보내지 않음",
+                "hint": "이 묶음은 PC 자료(규칙)로 처리합니다 — 재시도하지 않습니다"}
     pf = os.path.join(ROOT, "report", f"judge_{name}_{tag}.md")
     _LAST_PROMPT[0] = None                   # 새 왕복이 시작되면 앞 왕복의 파일은 더 되살리지 않는다
     try:
@@ -263,64 +329,19 @@ def copilot_send(prompt_text, tag, name, fresh=None):
         return {"ok": False, "error": f"프롬프트 파일 쓰기 실패({type(e).__name__})",
                 "hint": f"{pf} 를 잠근 프로그램을 닫고 재실행"}
     n_parts = n_parts_of(prompt_text)                          # 드라이버와 같은 규칙으로 센다
-    try:
-        cmd = [sys.executable, os.path.join(ROOT, "tools", "copilot_auto.py"), "--send", pf]
-        limit = chat_turns()
-        want_fresh = (fresh is True
-                      or (fresh is None and (_FIRST_SEND[0] or _NEED_FRESH[0] or limit <= 0 or _TURNS[0] >= limit)))
-        if want_fresh:
-            # 판정의 첫 왕복은 새 채팅에서 — 수집 단계의 실패 대화가 판정을 오염시키지 않게.
-            # 직전 왕복이 실패했을 때도 새 채팅 — 끊긴 생성·오류 문구가 남은 채팅은 다음 답을 오염시킨다.
-            # 한 채팅의 왕복이 chatTurns 에 닿아도 새 채팅 — 너무 길어진 대화는 답이 끊기거나 앞 답을 되풀이한다.
-            cmd.append("--fresh")
-            _TURNS[0] = 0
-        # LM_STAGE — 드라이버가 report\copilot_trace.jsonl 에 '어느 단계의 왕복인지' 를 남기게 한다.
-        # 이름만 넘긴다(chunk3·narr_2026-06·wf1 …). 프롬프트 원문은 계측에 들어가지 않는다.
-        # 왕복은 최장 roundtrip_timeout(기본 27분 × 조각 수)이다. 예전에는 그 동안 **출력이 한 줄도 없어**
-        # 화면이 멈춘 것으로 보였고(제보 '무한 정지'), 시간 초과 때 드라이버만 죽여 그 아래 Edge 가 남았다.
-        # 이제 1분마다 경과를 찍고, 초과하면 프로세스 트리를 끊는다.
-        _lim = roundtrip_timeout(n_parts)
-        _p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                              cwd=ROOT, env=dict(os.environ, PYTHONIOENCODING="utf-8",
-                                                 LM_STAGE=str(name or "")[:40]),
-                              creationflags=NO_WIN)
-        # 답은 길다(워크플로우 판정은 수십~수백 KB). 파이프를 **읽으면서** 기다려야 한다 —
-        # 끝난 뒤 한 번에 읽으면 자식이 윈도 파이프 버퍼를 넘겨 쓰다 막혀 영원히 끝나지 않는다(실측).
-        import threading
-        _buf = []
-        _rd = threading.Thread(target=lambda: _buf.append(_p.stdout.read() if _p.stdout else b""),
-                               daemon=True)
-        _rd.start()
-        _t0 = _beat = time.time()
-        while _p.poll() is None:
-            time.sleep(1)
-            _now = time.time()
-            if _now - _t0 > _lim:
-                kill_tree(_p.pid)
-                try:
-                    _p.wait(timeout=30)
-                except (subprocess.TimeoutExpired, OSError):
-                    pass
-                raise subprocess.TimeoutExpired(cmd, _lim)
-            if _now - _beat >= 60:
-                _beat = _now
-                print(f"        … Copilot 응답 대기 {int((_now - _t0) / 60)}분 / 최대 {int(_lim / 60)}분 ({name})",
-                      flush=True)
-        _rd.join(timeout=30)
-        out = subprocess.CompletedProcess(cmd, _p.returncode, b"".join(_buf), b"")
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "error": "왕복 시간 초과",
-                "hint": "Copilot 응답 지연 — 이 청크는 규칙 판정으로 진행"}
-    except OSError as e:
-        return {"ok": False, "error": f"드라이버 실행 실패({type(e).__name__})",
-                "hint": str(e)[:150]}
-    txt = (out.stdout or b"").decode("utf-8", "replace").strip()
-    try:
-        res = json.loads(txt.splitlines()[-1])
-    except Exception:
-        return {"ok": False, "error": "드라이버 출력 해석 실패", "hint": txt[:150]}
+    limit = chat_turns()
+    want_fresh = (fresh is True
+                  or (fresh is None and (_FIRST_SEND[0] or _NEED_FRESH[0] or limit <= 0 or _TURNS[0] >= limit)))
+    if want_fresh:
+        # 판정의 첫 왕복은 새 채팅에서 — 수집 단계의 실패 대화가 판정을 오염시키지 않게.
+        # 직전 왕복이 실패했을 때도 새 채팅 — 끊긴 생성·오류 문구가 남은 채팅은 다음 답을 오염시킨다.
+        # 한 채팅의 왕복이 chatTurns 에 닿아도 새 채팅 — 너무 길어진 대화는 답이 끊기거나 앞 답을 되풀이한다.
+        _TURNS[0] = 0
+    res = _transport(prompt_text, pf, name, want_fresh, roundtrip_timeout(n_parts))
     if not isinstance(res, dict):
-        return {"ok": False, "error": "드라이버 출력 형식 오류", "hint": txt[-150:]}
+        return {"ok": False, "error": "드라이버 출력 형식 오류", "hint": str(res)[-150:]}
+    if res.get("phase") == "blocked":
+        return res                           # 드라이버의 최종 검사에 걸렸다 — 보내지 않았으니 채팅 상태를 바꾸지 않는다
     if res.get("phase") == "stub" and not _STUB_NOTED[0]:
         _STUB_NOTED[0] = True
         print("        ※ LM_COPILOT_STUB 스텁 응답 — 테스트 전용, 실제 Copilot 판정이 아닙니다")
@@ -340,6 +361,84 @@ def copilot_send(prompt_text, tag, name, fresh=None):
                 _LAST_PROMPT[0] = None
     else:
         _NEED_FRESH[0] = True
+    return res
+
+
+def _transport(prompt_text, pf, name, want_fresh, lim):
+    """드라이버 왕복 1회 → 결과 dict(--send 의 JSON 과 같은 꼴).
+    · inProcess(기본): copilot_auto.send_inproc — 왕복마다 파이썬을 띄우지 않는다. 상한은 드라이버의 내부 데드라인
+      (deadline = 지금 + lim → roundtripMaxSec·잠금 대기·CDP 소켓 timeout).
+    · inProcess=false: 예전처럼 자식 프로세스(--send pf). 1분마다 경과를 찍고, 한도를 넘기면 **드라이버 프로세스만**
+      끝낸다(taskkill 트리 종료는 쓰지 않는다 — Edge 는 Job 에서 떨어져 있어 다음 왕복이 이어 쓰고, 닫기는 close_own_edge)."""
+    import threading
+    if _inproc():
+        try:
+            ca = _ca()
+        except Exception as e:  # noqa: BLE001 - 드라이버를 못 읽으면 사람이 손대야 한다(설치 손상)
+            return {"ok": False, "error": f"드라이버 실행 실패({type(e).__name__})", "hint": str(e)[:150]}
+        # 자식 프로세스 경로와 같이 1분마다 경과를 찍는다(스레드 — 프로세스를 띄우지 않는다). 화면이 멈춘 것처럼 보이지
+        # 않게, 그리고 상태 파일이 없는 단계의 감시기(stdout 침묵 한도)가 정상 왕복을 끊지 않게.
+        _stop = threading.Event()
+        _t0 = time.time()
+
+        def _beat_loop():
+            while not _stop.wait(60):
+                print(f"        … Copilot 응답 대기 {int((time.time() - _t0) / 60)}분 / 최대 {int(lim / 60)}분 ({name})",
+                      flush=True)
+        threading.Thread(target=_beat_loop, daemon=True).start()
+        try:
+            return ca.send_inproc(prompt_text, fresh=bool(want_fresh), deadline=time.time() + float(lim),
+                                  stage=str(name or "")[:40])
+        finally:
+            _stop.set()
+    try:
+        cmd = [sys.executable, os.path.join(ROOT, "tools", "copilot_auto.py"), "--send", pf]
+        if want_fresh:
+            cmd.append("--fresh")
+        # LM_STAGE — 드라이버가 report\copilot_trace.jsonl 에 '어느 단계의 왕복인지' 를 남기게 한다.
+        # 이름만 넘긴다(chunk3·narr_2026-06·wf1 …). 프롬프트 원문은 계측에 들어가지 않는다.
+        # 왕복은 최장 roundtrip_timeout(기본 27분 × 조각 수)이다. 예전에는 그 동안 **출력이 한 줄도 없어**
+        # 화면이 멈춘 것으로 보였다(제보 '무한 정지'). 이제 1분마다 경과를 찍는다.
+        _p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                              cwd=ROOT, env=dict(os.environ, PYTHONIOENCODING="utf-8",
+                                                 LM_STAGE=str(name or "")[:40]),
+                              creationflags=NO_WIN)
+        # 답은 길다(워크플로우 판정은 수십~수백 KB). 파이프를 **읽으면서** 기다려야 한다 —
+        # 끝난 뒤 한 번에 읽으면 자식이 윈도 파이프 버퍼를 넘겨 쓰다 막혀 영원히 끝나지 않는다(실측).
+        _buf = []
+        _rd = threading.Thread(target=lambda: _buf.append(_p.stdout.read() if _p.stdout else b""),
+                               daemon=True)
+        _rd.start()
+        _t0 = _beat = time.time()
+        while _p.poll() is None:
+            time.sleep(1)
+            _now = time.time()
+            if _now - _t0 > lim:
+                try:
+                    _p.kill()                    # 드라이버만(TerminateProcess) — 자식이 스스로 접지 못한 경우의 안전판
+                    _p.wait(timeout=30)
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
+                raise subprocess.TimeoutExpired(cmd, lim)
+            if _now - _beat >= 60:
+                _beat = _now
+                print(f"        … Copilot 응답 대기 {int((_now - _t0) / 60)}분 / 최대 {int(lim / 60)}분 ({name})",
+                      flush=True)
+        _rd.join(timeout=30)
+        out = subprocess.CompletedProcess(cmd, _p.returncode, b"".join(_buf), b"")
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "왕복 시간 초과",
+                "hint": "Copilot 응답 지연 — 이 청크는 규칙 판정으로 진행"}
+    except OSError as e:
+        return {"ok": False, "error": f"드라이버 실행 실패({type(e).__name__})",
+                "hint": str(e)[:150]}
+    txt = (out.stdout or b"").decode("utf-8", "replace").strip()
+    try:
+        res = json.loads(txt.splitlines()[-1])
+    except Exception:
+        return {"ok": False, "error": "드라이버 출력 해석 실패", "hint": txt[:150]}
+    if not isinstance(res, dict):
+        return {"ok": False, "error": "드라이버 출력 형식 오류", "hint": txt[-150:]}
     return res
 
 
@@ -518,6 +617,9 @@ CONSOLIDATE_EXAMPLE = '{"models":[{"name":"대표이름","match":["키워드"],"
 
 
 def taxonomy_prompt(rows, hints, pinned=()):
+    # G3 — 표본 후보(고르게 퍼진 200행)만 관문에 통과시킨 사본에서 고른다(광고·고위험 잔여·카나리아 행 제외, 재정제)
+    rows = g3_pick(rows, 100)
+
     def fmt(r):
         return f"- [{r['source']}] {who_label(r.get('who'), 12)} {(r.get('text') or '')[:80]}"
     lines = [
@@ -582,6 +684,7 @@ def consolidate_prompt(models, rows):
         "",
         "[raw 표본]"]
     head_len = sum(len(x) + 1 for x in lines)
+    rows = g3_pick(rows, 40)                   # G3 — 표본은 관문을 통과한 사본에서
     return "\n".join(lines + _fit_samples(rows, 40, lambda r: f"- {(r.get('text') or '')[:70]}", head_len))
 
 
@@ -603,7 +706,7 @@ def apply_merges(models):
 def fallback_models(rows, known):
     """taxonomy 왕복 실패 시 — 등록 프로젝트 + 규칙 귀속에서 자주 나온 프로젝트를 후보로"""
     freq = Counter(r.get("project") for r in rows
-                   if r.get("project") and r["project"] not in ("미지정", "공통"))
+                   if r.get("project") and r["project"] not in ("미지정", "공통") and _rule_name_ok(r["project"]))
     auto = [p for p, n in freq.most_common(8) if n >= 2]
     names = list(dict.fromkeys(list(known or []) + auto))
     return [{"name": p, "match": [p.lower()]} for p in names] + [{"name": "공통", "match": []}]
@@ -664,9 +767,19 @@ def to_model(name, models):
     return canon.get(ukey2(n), n)
 
 
+def _rule_name_ok(s):
+    """규칙 과제명·매칭어로 쓸 수 있는가 — 상투어·버전·6~8자리 날짜·Untitled·copy 는 아니다(F-19·W2-13, extract 와 같은 규칙)."""
+    try:
+        from extract import rule_name_ok
+        return rule_name_ok(s)
+    except ImportError:
+        return bool(str(s or "").strip())
+
+
 def rule_model(r, models):
     """미판정(청크 실패) 행을 taxonomy의 match 키워드로 과제 축에 매핑 —
-    규칙 토큰('agentic' 조각 등)이 과제명 네임스페이스에 그대로 섞이는 것 방지"""
+    규칙 토큰('agentic' 조각 등)이 과제명 네임스페이스에 그대로 섞이는 것 방지.
+    LM28: 잡음 매칭어(상투어·버전·날짜·Untitled·copy)는 쓰지 않는다 — 'untitled' 매칭어가 편집기 탭 신호를 끌어오던 것."""
     low = f"{r.get('project') or ''} {r.get('text') or ''}".lower()
     # 토큰 경계 매칭 — raw 부분문자열은 오탐이 실측됐다('AX'⊂'tax/max', 'ai'⊂'email').
     # projmap 이 같은 이유로 이미 버린 방식이라 그 판정기를 그대로 재사용한다.
@@ -678,7 +791,8 @@ def rule_model(r, models):
     for m in models:
         if m["name"] == "공통":
             continue
-        keys = [m["name"].lower()] + [str(k).lower() for k in _as_list(m.get("match"))]
+        keys = [k for k in [m["name"].lower()] + [str(k).lower() for k in _as_list(m.get("match"))]
+                if _rule_name_ok(k)]
         if _kw_hit is not None:
             if any(k and _kw_hit(k, toks) for k in keys):
                 return m["name"]
@@ -709,7 +823,7 @@ def judge_prompt(chunk, start, models, first=True, seen_details=(), idxs=None):
         "당신은 업무 로드율 분석의 판정자입니다. 각 raw 신호를 직접 읽고 판정하세요.",
         "",
         "판정 형식: [번호, \"y\"|\"n\", \"과제\", \"유형\", \"세부업무\"] — 비업무(n)는 [번호,\"n\"] 두 칸만.",
-        "· y/n : 업무 여부. 공지·알림(정부24·인화원·윤리사무국·innoHR·뉴스레터·시스템),",
+        "· y/n : 업무 여부. 공지·알림(행정·교육·윤리·인사 시스템의 자동 알림·뉴스레터·시스템 발송),",
         "  광고·프로모션, 개인 용무, 의미 없는 잡음은 n. 과감하게 걸러낼 것.",
         "· 과제 : 아래 목록에서 고르되 목록의 표기를 그대로 쓴다(변형 금지). 목록에 없어도",
         "  원문에 상위 과제·제품명이 분명히 보이면 그 이름을 새로 쓴다(새 과제 발견) —",
@@ -824,13 +938,33 @@ def judge_rows(idxs, rows, models, seen, tag, label, depth, st):
     · 완전한 JSON → 그대로(모델이 빠뜨린 행은 omitted_rows — 재왕복 없이 규칙).
     · 잘린 답(cut·복구·정규식) → 복구된 행은 쓰고, 빠진 행이 MIN_RETRY_ROWS 이상이면 그 행만 다시 묻는다.
     · 통째 실패(왕복 실패·JSON 없음) → 2*MIN_SPLIT 행 이상이면 반으로 나눠 각각 재시도(깊이 MAX_SPLIT_DEPTH).
-    · st: roundtrips·repaired·retries·failed_rows·omitted_rows·notes·last_err·soft(재시도 끔) 누적."""
+    · st: roundtrips·repaired·retries·failed_rows·omitted_rows·notes·last_err·soft(재시도 끔) 누적.
+    · G3(LM28): 행은 먼저 관문(g3_rows)을 거친다 — 걸린 행은 보내지 않고 규칙 판정으로 남는다(gated_rows). 보낼 행이 없거나
+      최종 프롬프트 검사(copilot_send → phase 'blocked')에 걸리면 왕복하지 않고 빈 결과 — 깊이 0 이면 st['_skipped'] 를 세워
+      호출자가 연속 실패로 세지 않게 한다(재시도·반분도 하지 않는다)."""
     idxs = list(idxs)
-    chunk = [rows[i] for i in idxs]
+    kept, why = g3_rows([dict(rows[i], _gi=i) for i in idxs], ("text",))
+    n_gated = len(idxs) - len(kept)
+    if n_gated:
+        st["gated_rows"] = st.get("gated_rows", 0) + n_gated
+        st["notes"].append(f"{label}: 개인정보 관문 {n_gated}행 제외(" + ", ".join(sorted(why)) + ")")
+    if not kept:
+        if depth == 0:
+            st["_skipped"] = True
+        return {}
+    idxs = [it["_gi"] for it in kept]
+    chunk = kept                                 # 재정제한 사본 — 원본 행(signals 되쓰기)은 그대로
     # 묶음은 같은 채팅에서 이어 보낸다(fresh=None — 첫 왕복·실패 뒤·chatTurns 마다만 새 채팅). 프롬프트는 혼자서 완결이라
     # 새 채팅에 떨어져도 답이 나오고, 이어지면 앞 묶음의 표기를 Copilot 이 기억한다
     res = copilot_send(judge_prompt(chunk, idxs[0], models, seen_details=seen, idxs=idxs),
                        tag, label)
+    if res.get("phase") == "blocked":
+        # 최종 프롬프트 검사에 걸렸다 — 보내지 않았고 재시도도 하지 않는다. 이 행들은 규칙 판정으로 남는다.
+        st["gated_rows"] = st.get("gated_rows", 0) + len(idxs)
+        st["notes"].append(f"{label}: 개인정보 관문 — 묶음을 보내지 않음(규칙 판정)")
+        if depth == 0:
+            st["_skipped"] = True
+        return {}
     st["roundtrips"] += 1
     got, info = {}, {}
     if res.get("ok"):
@@ -883,8 +1017,10 @@ def judge_rows(idxs, rows, models, seen, tag, label, depth, st):
 
 
 # ── 피벗·공통업무·에피소드 ─────────────────────────────────────────────────
-def build_pivots(kept, total_mm):
-    tot_w = sum(float(r["weight"] or 0) for r in kept) or 1e-9
+def build_pivots(kept, total_mm, tot=None):
+    """과제↔유형↔세부업무 피벗. tot(LM28)를 주면 분모로 쓴다 — shareBasis=time 에서 행 weight 가 배분된 분이고 분모에
+    '근무 중 미분류' 분이 들어갈 때(그 몫은 어느 과제에도 붙지 않는다)."""
+    tot_w = tot or sum(float(r["weight"] or 0) for r in kept) or 1e-9
 
     def mm(w):
         return round(w / tot_w * total_mm, 3)
@@ -921,9 +1057,10 @@ def build_pivots(kept, total_mm):
     return pv
 
 
-def build_episodes(kept):
+def build_episodes(kept, cfg=None):
     """업무의 시작·끝 근사 — 외부요청(오더 수신)→내 산출(발신·파일·커밋) 페어링 리드타임,
-    자체진행은 같은 과제 신호의 연속 구간(3일 초과 공백이면 분리)으로 본다."""
+    자체진행은 같은 과제 신호의 연속 구간(3일 초과 공백이면 분리)으로 본다.
+    LM28: units(단위업무 — 시작·종료 단서와 3단계 등급, config.episodeTop 개)·unit_grades·units_total 을 더한다(build_units)."""
     def ts(r):
         try:
             return datetime.strptime(r["time"][:16], "%Y-%m-%d %H:%M")
@@ -960,6 +1097,9 @@ def build_episodes(kept):
         # 확인된 산출만 페어하고, 못 찾으면 페어하지 않는다.
         for i, (t, r) in enumerate(lst):
             if r["source"] not in ORDER:
+                continue
+            # 받은 메일 전체가 오더는 아니다 — 요청 단서가 있는 직접 수신만(LM28 W2-05·REQ-06, 팀즈 오더는 그대로)
+            if r["source"] == "메일(수신)" and not _ep_is_request(r.get("text")):
                 continue
             req_t = _ep_tokens(r.get("text"))
             # detail 동일성 폴백은 detail 이 실질 토큰을 가질 때만 — '기타'·'자료 작성' 같은
@@ -1007,8 +1147,200 @@ def build_episodes(kept):
             best[k] = x
     leads = list(best.values())
     leads.sort(key=lambda x: -x["lead_h"])
-    return {"orders": leads[:20], "spans": sorted(episodes, key=lambda x: x["start"], reverse=True)[:20],
-            "avg_lead_h": round(sum(x["lead_h"] for x in leads) / len(leads), 1) if leads else None}
+    out = {"orders": leads[:20], "spans": sorted(episodes, key=lambda x: x["start"], reverse=True)[:20],
+           "avg_lead_h": round(sum(x["lead_h"] for x in leads) / len(leads), 1) if leads else None}
+    out.update(build_units(kept, cfg))          # LM28 — 단위업무(시작·종료 단서·3단계 등급), 기존 키는 그대로
+    return out
+
+
+# ── 단위업무(LM28 WP8 — REQ-06~10·24·34, A-25·26): 시작·종료 단서와 3단계 등급 ─────────────────────
+# LM27 time/episodes 의 단서·등급 규칙을 신호 행(과제 × 세부업무) 위에서 근사한다 — 대화 상태기계·문서군 키 사슬·
+# 확인 질문 큐·5분 슬롯은 들이지 않는다. 메일·팀즈 신호의 text 는 제목·요약(정제문)이다.
+#   시작: S1 = 나에게 직접 온 메일(수신 — CC·수신전용 아님)의 요청 단서 또는 팀즈 오더 · S2p = 디지털 시작이 없으면
+#         첫 진행 −30분(오프라인 지시 추정, REQ-07).
+#   종료: E1 = 보고 단서가 있는 내 발신(중간 보고 제외, REQ-08) · E2h = 최종 이름 저장 또는 앞서 저장한 문서와 같은
+#         이름(stem)의 PDF(REQ-09) · E2l = 같은 문서를 2번 이상 고친 뒤 3근무일 정체(revision 정체) · E3i = 5근무일 휴면 →
+#         마지막 진행 +30분(REQ-10). 아무것도 아니면 진행 중(open).
+#   등급(3단계, A-26 을 줄임): 확정 = 시작·종료 모두 디지털(S1 × E1) · 근거 = 종료가 문서 완료(E2h) 또는 진행 중인 S1 ·
+#         추정 = 시작이나 종료가 추정(S2p·E2l·E3i, 진행 중인 S2p).
+EP_REQ_RX = re.compile(
+    r"[\[【](?:요청|의뢰|검토\s*요청|검토\s*의뢰|확인\s*요청|작성\s*요청|제출\s*요청|승인\s*요청|결재\s*요청|협조|협조\s*요청|"
+    r"회신\s*요망|회신\s*요청|action|request|req|todo)[\]】]"
+    r"|요청|의뢰|부탁|요망|해\s*주세요|주십시오|주시기\s*바랍|please|request|action\s*required|could\s*you|can\s*you", re.I)
+EP_REP_RX = re.compile(
+    r"[\[【](?:보고|결과|결과\s*보고|결과\s*공유|송부|공유|제출|완료|report|result|done)[\]】]"
+    r"|보고|결과|송부|공유\s*드|공유드|제출|완료|첨부와\s*같이|report|result|attached|done|completed", re.I)
+EP_INTERIM_RX = re.compile(r"중간|경과|진행\s*상황|1차|interim|progress", re.I)
+EP_FINAL_WORDS = ("최종", "final", "v1.0", "확정", "완료", "제출")
+EP_PROGRESS = ("메일(발신)", "메일(발신·일자)", "팀즈(발신)", "파일", "파일(코드)", "파일(해석출력)", "커밋", "수동기록",
+               "작업창", "작업창(IDE)")
+EP_DORMANT_WD = 5           # 이 근무일 동안 진행이 없으면 끝(E3i — 마지막 진행 +30분, 추정)
+EP_STALL_WD = 3             # 같은 문서를 2번 이상 고친 뒤 이 근무일 정체 → 끝(E2l — 마지막 저장, 추정)
+EP_PAD_MIN = 30
+EP_TOP_DEFAULT = 50         # config.episodeTop
+_EP_STEM_TAIL = re.compile(r"[\s_\-.]*(?:v\d+(?:\.\d+)*|rev\.?\d+|r\d+|최종|final|수정본|수정|사본|copy|\(\d+\)|\d{6,8})$", re.I)
+_EP_SG = {"S1": "A", "S2p": "C"}
+_EP_EG = {"E1": "A", "E2h": "B", "E2l": "C", "E3i": "D"}
+
+
+def _ep_stem(name):
+    """문서 이름 → 문서군 줄기(A-25 fam 근사) — 확장자·판 표기(v2·rev3·최종·final·사본·copy·(1)·날짜)를 최대 5번 뗀다."""
+    s = unicodedata.normalize("NFKC", str(name or "")).strip().lower()
+    s = re.sub(r"(\.[a-z0-9]{1,5}){1,2}$", "", s)
+    for _ in range(5):
+        t = _EP_STEM_TAIL.sub("", s).strip(" _-.")
+        if t == s:
+            break
+        s = t
+    return s
+
+
+def _ep_file(text):
+    """파일 신호 text → (이름 소문자, 확장자)."""
+    try:
+        from extract import _sig_name
+        nm = _sig_name(text)
+    except ImportError:
+        nm = str(text or "").split(" § ")[0].split(" | 폴더:")[0].strip().lower()
+    return nm, os.path.splitext(nm)[1]
+
+
+def _ep_is_request(text):
+    return bool(EP_REQ_RX.search(text or "")) and not EP_REP_RX.search(text or "")
+
+
+def _ep_is_report(text):
+    return bool(EP_REP_RX.search(text or "")) and not EP_INTERIM_RX.search(text or "")
+
+
+def _ep_grade(sc, ec):
+    """(시작 단서, 종료 단서|None) → 3단계 등급."""
+    if ec is None:
+        return "근거" if sc == "S1" else "추정"
+    g = max(_EP_SG[sc], _EP_EG[ec])
+    return "확정" if g == "A" else ("근거" if g == "B" else "추정")
+
+
+def _workdays_between(a, b):
+    """a 다음 날 ~ b 날짜 사이 근무일 수(주말·공휴일 제외 — extract._is_off_day)."""
+    try:
+        from extract import _is_off_day
+    except ImportError:
+        def _is_off_day(d, _h):
+            return d.isoweekday() > 5
+    n, d = 0, a.date()
+    end = b.date()
+    while d < end:
+        d = date.fromordinal(d.toordinal() + 1)
+        if not _is_off_day(d, set()):
+            n += 1
+    return n
+
+
+def build_units(kept, cfg=None):
+    """판정된 신호 행 → {"units": [단위업무 …](config.episodeTop 개, 기본 50), "unit_grades": {등급: 수}, "units_total"}.
+    단위업무 = 과제 × 세부업무 안에서 시작 단서 ~ 종료 단서(위 머리말). 신호가 많은 것부터 episodeTop 개를 남기고
+    시작 시각 역순으로 싣는다."""
+    from datetime import timedelta as _td2
+    try:
+        top = int((cfg or {}).get("episodeTop") or EP_TOP_DEFAULT)
+    except (TypeError, ValueError, AttributeError):
+        top = EP_TOP_DEFAULT
+    top = max(1, min(1000, top))
+    rows = []
+    for r in kept:
+        try:
+            t = datetime.strptime(str(r.get("time") or "")[:16], "%Y-%m-%d %H:%M")
+        except ValueError:
+            continue
+        rows.append((t, r))
+    if not rows:
+        return {"units": [], "unit_grades": {}, "units_total": 0}
+    as_of = max(t for t, _r in rows)
+    by_key = defaultdict(list)
+    for t, r in rows:
+        by_key[(r.get("model") or "공통", r.get("detail") or r.get("activity") or "기타")].append((t, r))
+    units = []
+
+    def _fmt(t):
+        return t.strftime("%Y-%m-%d %H:%M")
+
+    for (md, dt), lst in by_key.items():
+        lst.sort(key=lambda x: x[0])
+        cur = None
+
+        def _close(u, t_end, cue, by):
+            u.update(end=_fmt(t_end), end_cue=cue, end_by=str(by or "")[:60],
+                     status="closed" if cue in ("E1", "E2h") else "estimated",
+                     grade=_ep_grade(u["start_cue"], cue),
+                     lead_h=round(max(0.0, (t_end - u["_s"]).total_seconds()) / 3600.0, 1))
+            units.append(u)
+
+        def _quiet_end(u, t_now):
+            """조용한 동안 끝났나 — 정체(E2l)·휴면(E3i) 판정, 끝났으면 닫고 True."""
+            if u["_last"] is None:
+                return False
+            wd = _workdays_between(u["_last"], t_now)
+            stalled = u["_last_stem"] and u["_stems"][u["_last_stem"]] >= 2
+            if wd >= EP_DORMANT_WD or (stalled and wd >= EP_STALL_WD):
+                if stalled:
+                    _close(u, u["_last"], "E2l", u["_last_by"])
+                else:
+                    _close(u, u["_last"] + _td2(minutes=EP_PAD_MIN), "E3i", u["_last_by"])
+                return True
+            return False
+
+        for t, r in lst:
+            src, text = r.get("source") or "", r.get("text") or ""
+            if cur and _quiet_end(cur, t):
+                cur = None
+            is_req = (src == "팀즈(오더)") or (src == "메일(수신)" and _ep_is_request(text))
+            if is_req:
+                if cur is None:
+                    cur = {"model": md, "detail": dt, "start": _fmt(t), "start_cue": "S1", "start_by": text[:60],
+                           "signals": 1, "_s": t, "_last": None, "_last_by": "", "_last_stem": "",
+                           "_stems": Counter()}
+                else:
+                    cur["signals"] += 1              # 열린 업무에 온 추가 지시 — 같은 업무로 둔다
+                continue
+            if src not in EP_PROGRESS:
+                continue
+            if cur is None:
+                s = t - _td2(minutes=EP_PAD_MIN)     # 디지털 시작이 없다 — 오프라인 지시 추정(S2p)
+                cur = {"model": md, "detail": dt, "start": _fmt(s), "start_cue": "S2p", "start_by": text[:60],
+                       "signals": 0, "_s": s, "_last": None, "_last_by": "", "_last_stem": "", "_stems": Counter()}
+            cur["signals"] += 1
+            cur["_last"], cur["_last_by"], cur["_last_stem"] = t, text, ""
+            if src in ("메일(발신)", "팀즈(발신)") and _ep_is_report(text):
+                _close(cur, t, "E1", text)
+                cur = None
+                continue
+            if src.startswith("파일"):
+                nm, ext = _ep_file(text)
+                stem = _ep_stem(nm)
+                if ext == ".pdf":
+                    if stem and cur["_stems"].get(stem):
+                        _close(cur, t, "E2h", text)      # 앞서 고친 문서의 PDF 내보내기 — 작성 완료
+                        cur = None
+                    continue
+                if any(w in nm for w in EP_FINAL_WORDS):
+                    _close(cur, t, "E2h", text)          # 최종 이름 저장
+                    cur = None
+                    continue
+                if stem:
+                    cur["_stems"][stem] += 1
+                    cur["_last_stem"] = stem
+        if cur and not _quiet_end(cur, as_of):
+            cur.update(end=None, end_cue=None, end_by="", status="open", grade=_ep_grade(cur["start_cue"], None),
+                       lead_h=None)
+            units.append(cur)
+    for u in units:
+        for k in [k for k in u if k.startswith("_")]:
+            del u[k]
+    grades = Counter(u["grade"] for u in units)
+    keep = sorted(units, key=lambda u: (-u["signals"], u["start"]))[:top]
+    keep.sort(key=lambda u: u["start"], reverse=True)
+    return {"units": keep, "unit_grades": dict(grades), "units_total": len(units)}
 
 
 _MERGE_STOP = {"관리", "업무", "작업", "진행", "기타", "관련", "대응", "지원", "및",
@@ -1106,22 +1438,10 @@ def merge_details(rows, amap=None):
 
 
 def _mine_exclude(cfg):
-    """mine.py 가 신호·시간 근거에 쓴 것과 같은 제외어 — mine.EXCLUDE ∪ config.excludePathKeywords.
-    mine 을 임포트하지 않는다(모듈 최상위에서 sys.stdout 을 다시 감싸 이 프로세스의 출력을 끊는다) —
-    소스에서 EXCLUDE 리터럴만 ast 로 읽고, 못 읽으면 설정 목록만 쓴다."""
-    import ast
-    import extract
-    base = []
-    try:
-        tree = ast.parse(open(os.path.join(ROOT, "mine.py"), encoding="utf-8").read())
-        for node in tree.body:
-            if (isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") == "EXCLUDE"):
-                base = [str(x) for x in ast.literal_eval(node.value)]
-                break
-    except (OSError, SyntaxError, ValueError, TypeError):
-        base = []
-    return sorted(set(base) | {str(k) for k in extract.cfg_list(cfg, "excludePathKeywords")
-                               if str(k).strip()})
+    """mine.py 가 신호·시간 근거에 쓴 것과 같은 제외어 — 단일원 privacy.excluded_keywords(내장 EXCLUDE ∪
+    config.excludePathKeywords). mine 을 임포트하지 않는다(모듈 최상위에서 sys.stdout 을 다시 감싸 이 프로세스의 출력을 끊는다)."""
+    import privacy
+    return privacy.excluded_keywords(cfg)
 
 
 def _period_of(mj, tag):
@@ -1272,6 +1592,8 @@ def rehours_meta(kept, dropped, tag, cfg, rep, data_dir=None, say=print):
         for k in ("coverage", "measure", "cfg_used", "tool_usage"):   # mine 과 같이 최상위에도 싣는다(팀 취합이 읽는다)
             if isinstance(info.get(k), dict):
                 mj[k] = info[k]
+        if isinstance(info.get("unobserved_days"), list):              # LM28 — mine.meta_doc 과 같이 최상위에도
+            mj["unobserved_days"] = info["unobserved_days"]
     mj["rehours"] = True
     mj["dropped_n"] = len(dropped)
     mj["dropped_h"] = round(max(0.0, dropped_h), 2)
@@ -1291,6 +1613,39 @@ def rehours_meta(kept, dropped, tag, cfg, rep, data_dir=None, say=print):
     _write_dropped(rep, tag, dropped)          # 누적 장부 — 다음 UI 제외가 이번 버림분을 함께 넘긴다
     return {"dropped_n": len(dropped), "dropped_h": mj["dropped_h"], "before_mm": before_mm,
             "total_mm": total_mm, "avail_mm": avail_mm, "load_pct": mj["load_pct"]}
+
+
+def _time_alloc(kept, mj, cfg):
+    """mm.shareBasis="time" 이면 ({(과제, 세부업무)|UNCLASSIFIED: 몫}, {(과제, 세부업무): 분}, 미분류 분) — 아니면 ({}, {}, 0).
+    그날 투입은 mm_meta.day_hours(재산정이 있으면 그 값). 신호 행: time·source·weight(signals CSV)."""
+    try:
+        import extract
+        mc = extract.norm_cfg(cfg)[0]
+    except Exception:  # noqa: BLE001 - 시간 몫을 못 만들면 LM24 가중치 몫으로
+        return {}, {}, 0
+    if mc.get("shareBasis") != "time" or timeshare is None:
+        return {}, {}, 0
+    day_min = {}
+    for k, v in (mj.get("day_hours") or {}).items():
+        try:
+            day_min[date.fromisoformat(str(k)[:10])] = int(round(float(v or 0) * 60))
+        except (TypeError, ValueError):
+            continue
+    rows = []
+    for r in kept:
+        try:
+            t = datetime.strptime(str(r.get("time") or "")[:16], "%Y-%m-%d %H:%M")
+            w = float(r.get("weight") or 0)
+        except (TypeError, ValueError):
+            continue
+        rows.append((t, r.get("source") or "", w, (r["model"], r["detail"])))
+    alloc, st = timeshare.allocate(day_min, rows, mc["signalMinutes"])
+    tot = sum(alloc.values())
+    if not tot:
+        return {}, {}, 0
+    print(f"        과제 몫 = 시간(shareBasis=time) · 근무 중 미분류 {st.get('unclassified_min', 0) / 60:.1f}h")
+    return ({k: v / tot for k, v in alloc.items()}, {k: v for k, v in alloc.items() if k != UNCLASSIFIED},
+            alloc.get(UNCLASSIFIED, 0))
 
 
 def write_outputs(kept, tag, cfg, rep):
@@ -1332,10 +1687,13 @@ def write_outputs(kept, tag, cfg, rep):
         a["days"].add(r["time"][:10])
         a["src"][r["source"]] += 1
         a["wt"][r.get("worktype") or "사무"] += 1
+    # 과제 몫 — 기본 'weight'(LM24 가중치 비율). mm.shareBasis="time"(LM28 옵션)이면 mm_meta.day_hours(그날 투입)를
+    # 분 단위로 (과제, 세부업무)에 나눈다(core\timeshare — 날마다 Σ = 투입). 넘친 몫은 '근무 중 미분류' 행.
+    tshare, t_alloc, unc_min = _time_alloc(kept, mj, cfg)
     owner = cfg.get("owner") or os.environ.get("USERNAME", "")
     out_rows = []
-    for (md, dt), a in sorted(agg.items(), key=lambda kv: -kv[1]["w"]):
-        share = a["w"] / tot_w
+    for (md, dt), a in sorted(agg.items(), key=lambda kv: -(tshare.get(kv[0], 0.0) if tshare else kv[1]["w"])):
+        share = tshare.get((md, dt), 0.0) if tshare else a["w"] / tot_w
         srcs = len({s.split("(")[0] for s in a["src"]})
         # 상위 초안 — 규칙(코드네임·ax·공통)으로 채운다. AI 정제가 돌면 그 판정이 이 값을 덮는다.
         # 예전에는 판정 단계에서 늘 빈칸이라, 정제가 실패한 실행에서는 상위가 화면에서 전멸했다.
@@ -1348,16 +1706,38 @@ def write_outputs(kept, tag, cfg, rep):
                          "근거": " · ".join(f"{s}{n}" for s, n in a["src"].most_common()),
                          "확신도": "상" if (srcs >= 2 and len(a["days"]) >= 3) else
                                   ("중" if srcs >= 2 or len(a["days"]) >= 3 else "하"),
-                         "활동일수": len(a["days"])})
+                         "활동일수": len(a["days"]),
+                         # LM28 끝 열 — AX 연계 표식(MM 은 원래 영역)·분야(규칙). 기존 열·순서는 그대로
+                         "ax": ax_flag(f"{md} {dt}"), "field": field_of(f"{md} {dt}")})
+    if tshare and tshare.get(UNCLASSIFIED):
+        share = tshare[UNCLASSIFIED]
+        out_rows.append({"Function": cfg.get("function", ""), "Level 1": "", "제품": "", "유형": "",
+                         "Level 2": UNCLASSIFIED, "Level 3": UNCLASSIFIED, "이름": owner,
+                         "상세설명": "신호가 덮지 않은 근무 분 중 과제별 직접 분 비례 상한을 넘친 몫",
+                         "share": round(share, 4), "mm": round(share * total_mm, 3), "근거": "", "확신도": "하",
+                         "활동일수": 0, "ax": 0, "field": ""})
+        out_rows.sort(key=lambda x: -x["share"])
     cols2 = ["Function", "Level 1", "제품", "유형", "Level 2", "Level 3", "이름", "상세설명",
-             "share", "mm", "근거", "확신도", "활동일수"]
+             "share", "mm", "근거", "확신도", "활동일수", "ax", "field"]
     with open(os.path.join(rep, f"mm_rows_{tag}.csv"), "w", encoding="utf-8-sig", newline="") as f:
         w = csv.DictWriter(f, fieldnames=cols2)
         w.writeheader()
         for r in out_rows:
             w.writerow(r)
-    pv = build_pivots(kept, total_mm)
-    pv["episodes"] = build_episodes(kept)
+    if tshare:
+        # 피벗도 같은 시간 몫으로 — 행 가중치를 그 (과제, 세부업무)의 배분 분으로 바꾼 사본, 분모 = 미분류 포함 총 분
+        cnt = Counter((r["model"], r["detail"]) for r in kept)
+        tw = {k: (a["w"], float(t_alloc.get(k, 0)), cnt[k] or 1) for k, a in agg.items()}
+        kept_pv = []
+        for r in kept:
+            aw, am, n = tw[(r["model"], r["detail"])]
+            r2 = dict(r)
+            r2["weight"] = am * float(r["weight"] or 0) / aw if aw > 0 else am / n
+            kept_pv.append(r2)
+        pv = build_pivots(kept_pv, total_mm, tot=float(sum(t_alloc.values()) + unc_min) or None)
+    else:
+        pv = build_pivots(kept, total_mm)
+    pv["episodes"] = build_episodes(kept, cfg)
     with open(os.path.join(rep, f"pivots_{tag}.json"), "w", encoding="utf-8") as f:
         json.dump(pv, f, ensure_ascii=False, indent=1)
     return total_mm, pv
@@ -1414,9 +1794,13 @@ def narrate(kept, total_mm, tag):
         # 한도를 넘겨 2조각으로 나뉘었다(실측). 달 전체에 고르게 퍼진 표본을 예산 안에서 보낸다.
         # 시각에 **연도를 포함**한다 — 예전에는 'MM-DD HH:MM' 이라 다른 달 문맥이 남았을 때
         # 모델이 어느 달 것인지 구분할 근거가 프롬프트 안에 없었다.
-        lines = _fit_samples(rows, 90, lambda r: (
+        # G3 — 표본 후보(고르게 퍼진 180행)만 관문에 통과시킨 사본에서 고른다(원본 rows 는 이름 검증에 그대로 쓴다)
+        lines = _fit_samples(g3_pick(rows, 90), 90, lambda r: (
             f"- {r['time'][:16]} [{r['source']}] {r.get('model', '')}/{r.get('worktype', '')} "
             f"{who_label(r.get('who'), 10)} {(r.get('text') or '')[:80]}"), head_len)
+        if not lines:
+            print(f"        {mk} 내러티브 — 관문을 통과한 신호가 없어 보내지 않습니다")
+            continue
         prompt = "\n".join(head + lines)
         # ★ 달마다 **새 채팅**에서 묻는다. 예전에는 fresh 를 주지 않아 '같은 채팅에서 이어서' 가 됐고,
         # narrate 는 judge.main 끝에서 돌므로 그 채팅에는 이미 **분석 기간 전체**(최근 달 포함)의 판정
@@ -1424,6 +1808,10 @@ def narrate(kept, total_mm, tag):
         # 판정 청크는 앞 묶음의 과제 표기를 이어받는 이득이 있어 같은 채팅을 쓰지만, 월별 리뷰는
         # 프롬프트가 혼자서 완결이라 이어받을 이득이 없고 오염만 남는다.
         res = copilot_send(prompt, tag, f"narr_{mk}", fresh=True)
+        if res.get("phase") == "blocked":
+            # 개인정보 관문 — 보내지 않았다. 실패가 아니므로 연속 실패에 넣지 않는다(그 달은 코멘트 없음)
+            print(f"        {mk} 내러티브 — 개인정보 관문에 걸려 보내지 않았습니다")
+            continue
         if res.get("ok"):
             o = rfind_json(res.get("reply", ""), "summary", skip=(NARRATIVE_EXAMPLE,)) \
                 or repair_json(res.get("reply", ""), "summary", skip=(NARRATIVE_EXAMPLE,))
@@ -1650,7 +2038,11 @@ def main():
             _resumed = len(judged)
         except (OSError, ValueError, TypeError, AttributeError):
             _resumed = 0
-    _todo = [i for i in range(len(rows)) if i not in judged]
+    # G3 — 광고 의심(signals flag 'ad') 행은 Copilot 에 보내지 않고 비업무로 둔다(LM24 에서 AI 가 'n' 으로 거르던 것)
+    ad_idx = {i for i, r in enumerate(rows) if i not in judged and is_ad_row(r)}
+    _todo = [i for i in range(len(rows)) if i not in judged and i not in ad_idx]
+    if ad_idx:
+        print(f"[judge] 광고 의심 신호 {len(ad_idx)}건은 보내지 않고 비업무로 둡니다(개인정보 관문 G3)")
     if _resumed:
         print(f"[judge] 이어서 판정 — 지난 실행 {_resumed}건 재사용 · 남은 {len(_todo)}건만 왕복")
     _sub = [rows[i] for i in _todo]
@@ -1660,7 +2052,8 @@ def main():
         print(f"        글자 예산({PROMPT_BUDGET:,}자)에 맞춰 청크 {n_chunks}→{len(chunks)}개"
               f" (머리말 {head_len:,}자 · 행 최대 {max((n for _s, n in plan), default=0)}개)")
     st = {"roundtrips": 0, "repaired": 0, "retries": 0, "failed_rows": 0, "omitted_rows": 0,
-          "notes": [], "last_err": "", "soft": False, "aborted": False}
+          "notes": [], "last_err": "", "soft": False, "aborted": False, "gated_rows": 0}
+    n_skip = 0                                 # 개인정보 관문에 막혀 보내지 않은 청크(연속 실패 계수 밖)
     if _fatal0:
         # ★ 체계 수립 왕복 **한 번**으로 '사람이 손대야 풀리는 실패' 라고 단정하지 않는다.
         # 일시적 실패(입력창을 아직 못 찾음 등)도 같은 얼굴로 오는데, 예전 판본은 그 한 번에
@@ -1696,13 +2089,18 @@ def main():
             continue
         print(f"[judge] {ci+1}/{len(chunks)} 신호 판정 왕복 (#{idxs[0]}~#{idxs[-1]})")
         st["notes"] = []
+        st["_skipped"] = False
+        _g0 = st["gated_rows"]
         got = judge_rows(idxs, rows, models, recent_details(judged, prev_idxs), tag, f"chunk{ci+1}", 0, st)
         judged.update(got)
         prev_idxs = idxs
         if got:
             consec = 0
-            if len(got) < n:
+            if len(got) < n - (st["gated_rows"] - _g0):     # 관문에 걸린 행은 '부분 판정' 이 아니다
                 n_partial += 1
+        elif st.get("_skipped"):
+            # 개인정보 관문(G3)에 막혀 보내지 않았다 — 실패가 아니므로 연속 실패 계수에 넣지 않는다(그 행만 규칙 판정)
+            n_skip += 1
         else:
             consec += 1
             n_fail += 1
@@ -1723,12 +2121,18 @@ def main():
             print(f"        연속 {consec}청크 0건 — 적응 재시도(반분·빠진 행)를 끄고 1회씩만 시도합니다")
     if st["aborted"]:
         print(f"        중단으로 건너뛴 청크 포함 0건 청크 {n_fail}/{len(chunks)}")
+    if n_skip or st["gated_rows"]:
+        print(f"        개인정보 관문(G3): 보내지 않은 청크 {n_skip}개 · 규칙 판정으로 둔 행 {st['gated_rows']}건"
+              " (연속 실패로 세지 않음)")
 
     # 판정 반영 — 과제명은 체계의 대표 표기로 정규화, 미판정 행은 match 키워드로 매핑
     shutil.copy2(sp, os.path.join(rep, f"signals_{tag}_rules.csv"))
     kept, dropped_rows = [], []
     for i, r in enumerate(rows):
         j = judged.get(i)
+        if j is None and i in ad_idx:
+            dropped_rows.append(r)          # 광고 의심 — 비업무(시간 재산정에서도 뺀다)
+            continue
         if j is None:
             r.update(model=rule_model(r, models), worktype="사무",
                      detail=r.get("activity") or "기타", judge="규칙")
@@ -1749,8 +2153,9 @@ def main():
     # 유사 세부업무 통합을 signals 저장 '전에' 끝낸다 — 리뷰 탭(signals)과 대시보드(mm_rows)의
     # 세부업무 이름이 갈리지 않게. write_outputs 가 다시 불러도 결과는 같다(멱등).
     merge_details(kept)
+    # flag(G2 광고 의심 표식 — mine 이 끝 열에 둔다)는 되쓸 때도 끝에 남긴다(관문·팀 반출이 읽는다)
     cols = ["time", "source", "who", "project", "activity", "weight", "text",
-            "model", "worktype", "detail", "judge"]
+            "model", "worktype", "detail", "judge", "flag"]
     with open(sp, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.DictWriter(f, fieldnames=cols)
         w.writeheader()
@@ -1804,6 +2209,8 @@ def main():
                    "omitted_rows": st["omitted_rows"], "repaired": st["repaired"],
                    "retries": st["retries"], "roundtrips": st["roundtrips"],
                    "aborted": st["aborted"], "chunk_rows": chunk_n, "prompt_budget": PROMPT_BUDGET,
+                   # G3 — 관문에 막혀 보내지 않은 청크·규칙으로 둔 행·광고 의심으로 비업무 처리한 행(실패 아님)
+                   "skipped_chunks": n_skip, "gated_rows": st["gated_rows"], "ad_rows": len(ad_idx),
                    "items": {str(k): dict(v, sig=signal_sig(rows[k])) for k, v in judged.items()
                              if 0 <= k < len(rows)}}, f, ensure_ascii=False, indent=1)
 
@@ -1833,6 +2240,7 @@ def main():
             err = "AI 판정 실패(왕복 전부 실패)"
         else:
             err = (f"AI 판정 0건(청크 {len(chunks)}개 전부 0건 · 왕복 {st['roundtrips']}회"
+                   + (f" · 개인정보 관문으로 보내지 않은 청크 {n_skip}개" if n_skip else "")
                    + (" · 연속 실패로 중단" if st["aborted"] else "") + ")")
         # 성공 왕복의 프롬프트 파일은 지워진다(V-06) — 남아 있는 실패 청크 파일 하나를 안내한다
         left = sorted(_glob.glob(os.path.join(rep, f"judge_chunk*_{tag}.md")))

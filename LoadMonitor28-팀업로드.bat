@@ -1,7 +1,7 @@
 @echo off
 >nul chcp 949
 cd /d "%~dp0"
-title LoadMonitor24 - 팀 업로드
+title LoadMonitor28 - 팀 업로드
 
 set "PY_EXE="
 set "PY_ARGS="
@@ -41,7 +41,7 @@ echo             닿지 않으면 아무것도 잃지 않고 그대로 대기합니다.
 echo.
 "%PY_EXE%" %PY_ARGS% teamup.py --list
 echo.
-echo  [보낼 주소] 바꾸려면 LoadMonitor24-팀서버주소.bat
+echo  [보낼 주소] 바꾸려면 LoadMonitor28-팀서버주소.bat
 "%PY_EXE%" %PY_ARGS% core\teamaddr.py --show
 echo.
 echo  [연결 확인] ...

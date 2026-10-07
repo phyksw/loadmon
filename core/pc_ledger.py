@@ -28,7 +28,6 @@ v3 계약 — 네 문장:
 '그 폴더에 pc_anchor.json 이 있는가' 하나가 신·구 판단의 전부다.
 """
 import csv
-import io
 import json
 import os
 import sys
@@ -36,13 +35,21 @@ import time
 from datetime import datetime, timedelta
 
 SPAN_FMT = "%Y-%m-%d %H:%M:%S"
+LOCK_WAIT_S = 10.0      # 원장 잠금 대기 상한(초) — 넘기면 쓰지 않는다(LedgerBusy · --ingest rc 3)
+
+
+class LedgerBusy(OSError):
+    """원장 잠금을 LOCK_WAIT_S 안에 얻지 못했다(다른 수집이 쓰는 중이거나 잠금 파일을 열 수 없음).
+    쓰지 않고 호출자에게 알린다 — 관측 파일(pc_events_new.csv)은 지우지 않으므로 다음 실행이 회수한다.
+    OSError 의 하위형이라 기존 `except OSError` 호출자(run.py 이행·힌트 추가PC 보강)는 '보류' 로 처리한다."""
 
 
 class _dir_lock:
     r"""폴더 잠금 — 동시 실행(UI + bat)의 read-modify-write 유실을 막는다(최종 검증 실측: 잠금
     없이는 2프로세스 동시 append 에서 43% 유실 + os.replace PermissionError 크래시).
-    윈도 msvcrt 바이트 잠금 · 못 얻으면 최대 10초 재시도 후 그냥 진행(잠그다 굶기지 않는다 —
-    최악이 v2 의 평소 상태다)."""
+    윈도 msvcrt 바이트 잠금 · 못 얻으면 LOCK_WAIT_S(10초)까지 재시도하고, 그래도 못 얻으면 LedgerBusy 를 올린다.
+    예전엔 10초 뒤 잠금 없이 그냥 진행해 동시 실행의 append 가 유실될 수 있었다(추가 전용 원장이라 고칠 길이 없다).
+    msvcrt 가 없는 환경(윈도 밖 개발·시험)은 잠금 수단이 없어 예전처럼 그냥 진행한다."""
 
     def __init__(self, pcdir):
         self.path = os.path.join(pcdir, ".ledger.lock")
@@ -51,19 +58,30 @@ class _dir_lock:
     def __enter__(self):
         try:
             import msvcrt
+        except ImportError:
+            self.f = None
+            return self
+        try:
             os.makedirs(os.path.dirname(self.path), exist_ok=True)
             self.f = open(self.path, "a+")
-            for _ in range(100):
-                try:
-                    msvcrt.locking(self.f.fileno(), msvcrt.LK_NBLCK, 1)
-                    return self
-                except OSError:
-                    time.sleep(0.1)
+        except OSError as e:
+            self.f = None
+            raise LedgerBusy(f"원장 잠금 파일을 열 수 없음({e.__class__.__name__})") from None
+        deadline = time.monotonic() + max(0.0, float(LOCK_WAIT_S))
+        while True:
+            try:
+                msvcrt.locking(self.f.fileno(), msvcrt.LK_NBLCK, 1)
+                return self
+            except OSError:
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.1)
+        try:
             self.f.close()
-            self.f = None
-        except (ImportError, OSError):
-            self.f = None
-        return self
+        except OSError:
+            pass
+        self.f = None
+        raise LedgerBusy(f"원장 잠금을 {LOCK_WAIT_S:g}초 안에 얻지 못함 — 다른 수집이 쓰는 중")
 
     def __exit__(self, *a):
         if self.f is not None:
@@ -163,6 +181,7 @@ def append_spans(pcdir, new_spans, src=None, seen=None, anchor=None):
       upsert — 부팅당 1행. 로그가 롤오버돼도 원장에 남아 '도달 창' 개념 자체가 사라진다.
     · anchor(datetime)를 주면 그보다 앞선 구간은 앵커로 자르고, 통째로 앞이면 버린다
       (이동 PC 의 동기화 방문이 저장소에 들어오지 못하게 — 쓰기 시점 방어).
+    · 잠금을 LOCK_WAIT_S 안에 못 얻으면 아무것도 쓰지 않고 LedgerBusy 를 올린다.
     반환 (추가된 수, live 갱신 수, 앵커로 거른 수)."""
     os.makedirs(pcdir, exist_ok=True)
     with _dir_lock(pcdir):
@@ -382,6 +401,7 @@ def ingest(pcdir, own_pc=True, events_file=None):
     """수집 후 원장 반영의 표준 경로 — 수집기(PS)와 힌트(PY)와 run.py 가 전부 이것만 부른다.
     ① 관측 파일(pc_events_new.csv)이 있으면 원장에 append 하고 지운다
     ② 앵커 확보(첫 실행 1회) ③ 구판 행 이행(1회·멱등) ④ pc_on 캐시 재생성.
+    잠금을 못 얻으면 LedgerBusy — 관측 파일은 지우지 않는다(다음 실행이 회수).
     반환 dict(사람용 요약은 호출자가 찍는다)."""
     ev = events_file or os.path.join(pcdir, "pc_events_new.csv")
     added = live_up = clipped = 0
@@ -410,19 +430,31 @@ def ingest(pcdir, own_pc=True, events_file=None):
             "anchor": since.strftime(SPAN_FMT) if since else ""}
 
 
+def _say(s):
+    """UTF-8 로 한 줄 — sys.stdout.buffer 를 TextIOWrapper 로 감싸면 그 래퍼가 GC 될 때 표준 출력을 닫는다
+    (시험처럼 같은 프로세스에서 main 을 부르면 이후 출력이 전부 죽는다). 버퍼에 직접 쓰고, 없으면 print."""
+    try:
+        sys.stdout.buffer.write((s + chr(10)).encode("utf-8", "replace"))
+        sys.stdout.buffer.flush()
+    except AttributeError:
+        print(s)
+
+
 def main(argv):
-    io_out = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    """--ingest <pc폴더> [--foreign] → 0 반영됨 · 3 잠금 대기 초과(LedgerBusy — 아무것도 쓰지 않음) · 1 사용법."""
     if "--ingest" in argv:
         pcdir = argv[argv.index("--ingest") + 1]
         own = "--foreign" not in argv
-        r = ingest(pcdir, own_pc=own)
+        try:
+            r = ingest(pcdir, own_pc=own)
+        except LedgerBusy as e:
+            _say(f"[pc-ledger] 원장 반영 보류: {e} — 관측은 pc_events_new.csv 에 남겨 다음 실행이 회수합니다")
+            return 3
         tail = (" · 앵커 " + r["anchor"][:10]) if r["anchor"] else ""
-        io_out.write(f"[pc-ledger] 원장 반영: 추가 {r['added']} · live 갱신 {r['live_up']}"
-                     f" · 이행 {r['migrated']} · 파생 {r['days']}일(+carry {r['carried']}){tail}" + chr(10))
-        io_out.flush()
+        _say(f"[pc-ledger] 원장 반영: 추가 {r['added']} · live 갱신 {r['live_up']}"
+             f" · 이행 {r['migrated']} · 파생 {r['days']}일(+carry {r['carried']}){tail}")
         return 0
-    io_out.write("사용: python core\\pc_ledger.py --ingest <pc폴더> [--foreign]\n")
-    io_out.flush()
+    _say("사용: python core\\pc_ledger.py --ingest <pc폴더> [--foreign]")
     return 1
 
 

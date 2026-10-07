@@ -14,7 +14,9 @@ LoadMonitor20 과 다른 점:
     만들어 적용한다: '레이아웃 검토/수정/리뷰 회의' 처럼 조각난 이름이 한 단위가 된다. --no-merge 면
     규칙 병합만.
   · MM 은 AI 가 만들지 않는다 — mm_rows(정제본 우선) 실측 합을 프로그램이 붙인다(프롬프트에는
-    신호 건수만 보낸다).
+    신호 건수만 보낸다 — LM28: 단위 머리말의 '실측 MM'·세부업무 MM 값도 지웠다, W2-11).
+  · LM28 G3: 표본 신호·요청→산출 페어는 관문(judge.g3_rows)을 거친 재정제 사본만 보낸다. 관문에 막힌 묶음은
+    실패가 아니다(연속 실패·적응 분할에 넣지 않는다).
   · 판정(model) 열이 없는 기간은 규칙 축(project/activity)으로 만들되 basis:"규칙" 을 남긴다.
 
   python flow.py                          # 최신 결과 대상
@@ -121,6 +123,21 @@ def _spread(lst, n):
         return lst[:1]
     step = (len(lst) - 1) / (n - 1)
     return [lst[round(i * step)] for i in range(n)]
+
+
+def _g3_rows(rows):
+    """G3 관문 — judge.g3_rows(privacy.gate_items)를 통과한 재정제 사본(원본 행은 그대로). judge 와 같은 문맥을 쓴다."""
+    if not rows:
+        return []
+    import judge
+    return judge.g3_rows(rows, ("text",))[0]
+
+
+def _g3_texts(lines):
+    """요청→산출 페어 같은 글 조각 목록 — 관문을 통과한 것만 재정제해서."""
+    if not lines:
+        return []
+    return [it["text"] for it in _g3_rows([{"text": str(s)} for s in lines])]
 
 
 THIN = []                       # gather 가 문턱 미달로 뺀 (과제, 담당업무, 신호수) — main 이 알린다
@@ -335,9 +352,11 @@ def gather(rep, tag, amap=None, pmap=None):
         if len(ss) < floor:
             continue
         ss.sort(key=lambda r: str(r.get("time") or ""))
+        # G3 — 표본 행은 관문(judge.g3_rows → privacy.gate_items)을 거친 사본으로: 광고 의심·자격증명·고위험 잔여·
+        # 카나리아 행은 빼고 나머지는 재정제한다. 표본 후보를 두 배 뽑아 걸러도 표본 수가 줄지 않게 한다.
         ev = [f"- {(r.get('time') or '')[5:16]} [{r.get('source')}] "
               f"{' '.join((r.get('text') or '').split())[:80]}"
-              for r in _spread(ss, per_cap)]
+              for r in _spread(_g3_rows(_spread(ss, per_cap * 2)), per_cap)]
         f2 = fold(md)
         if dt:
             mm = round(mm_by.get((f2, fold(dt)), 0.0), 3)
@@ -373,7 +392,7 @@ def gather(rep, tag, amap=None, pmap=None):
                     # 요청→산출 페어 — 파일 스스로 '흐름을 잇는 핵심 재료' 라 부르는 것인데 담당업무 카드에는
                     # 한 건도 안 실려 모델이 시간순 나열만 보고 순서를 지어냈다(실측: 페어 0). 되살린다.
                     # 과제 전체 페어라 다른 업무 것이 섞일 수 있으므로 '이 과제의 페어' 라고 밝혀 붙인다.
-                    "episodes": (eps_by.get(f2) or [])[:(5 if not dt else 3)], "evidence": ev})
+                    "episodes": _g3_texts((eps_by.get(f2) or [])[:(5 if not dt else 3)]), "evidence": ev})
     if not out:
         return [], basis, (f"흐름을 만들 단위가 없습니다 (단위 {len(groups)}개 · 신호 {len(sigs)}건)")
     # 상위(업무 성격)로 먼저 묶고 그 안에서 무거운 순 — LM20 처럼 상위 단위로도 읽히게 한다.
@@ -441,7 +460,8 @@ def build_prompt(mats):
                 for e in (m.get("episodes") or []):
                     lines.append(f"    [요청→산출] {e}")
                 _pj_prev = _pj
-            lines.append(f"## {m['key']}  (신호 {m['signals']}건 · 실측 {m['mm']} MM)")
+            # MM 은 보내지 않는다(W2-11 — 미전송 원칙 · 모델이 MM 크기에 끌려 판정하지 않게). 신호 건수만.
+            lines.append(f"## {m['key']}  (신호 {m['signals']}건)")
             if m.get("desc"):
                 lines.append(f"[정제 설명] {m['desc']}")
             lines.append("[시간순 신호 표본]")
@@ -491,8 +511,9 @@ def build_prompt(mats):
         for e in (m.get("episodes") or []):
             lines.append(f"[요청→산출] {e}")
         if m.get("parts"):
-            # 과제 단위일 때 그 안의 세부업무 배분을 알려 준다 — 단계를 나눌 재료가 된다(LM20 과 같은 정보량)
-            lines.append("[세부업무] " + " · ".join(f"{n} {v}MM" for n, v in m["parts"]))
+            # 과제 단위일 때 그 안의 세부업무를 알려 준다 — 단계를 나눌 재료가 된다. MM 값은 보내지 않고
+            # 순서(투입이 큰 순)만 남긴다(W2-11 — MM 미전송 원칙).
+            lines.append("[세부업무 · 투입 큰 순] " + " · ".join(str(n) for n, _v in m["parts"]))
         if m.get("desc"):
             lines.append(f"[정제 설명] {m['desc']}")
         if m.get("evidence"):
@@ -1196,6 +1217,10 @@ def main():
             break
         progress("워크플로우 분석", ci - 1, len(chunks))
         got, info = ask(part, f"wf{ci}")
+        if info.get("phase") == "blocked":
+            # 개인정보 관문(G3)에 막혀 보내지 않았다 — 실패가 아니므로 연속 실패·적응 분할에 넣지 않는다(그 업무는 미판정)
+            print(f"[flow] {ci}/{len(chunks)} 개인정보 관문에 걸려 보내지 않았습니다 — 다음 묶음으로")
+            continue
         if info.get("ok"):
             flows.extend(got)
             consec = 0
@@ -1323,6 +1348,8 @@ def main():
                     flows.extend(got3)
                     fin_consec = 0
                     print(f"[flow] 마무리 {rnd}-{si} — 업무 {len(sub)}개 중 {len(got3)}개 판정")
+                elif info3.get("phase") == "blocked":
+                    print(f"[flow] 마무리 {rnd}-{si} — 개인정보 관문에 걸려 보내지 않았습니다(실패로 세지 않음)")
                 else:
                     fails.append(info3)
                     fin_consec += 1

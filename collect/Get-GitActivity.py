@@ -16,8 +16,13 @@ Get-GitActivity.py — 로컬 git 저장소의 내 커밋 이력을 수집 (SW �
       data\\files_excluded.json 의 "git" 절 (개인정보 키워드로 뺀 저장소 집계)
 
 git 실행 파일: config.gitExe → PATH → Git for Windows·GitHub Desktop·SourceTree·Visual Studio 내장 git 순.
-  하나도 없으면 '커밋 0건' 으로 조용히 성공하지 않고 rc 1 + 메시지 (예전엔 rc 0 이라 GUI git 사용자의
+  하나도 없으면 '커밋 0건' 으로 조용히 성공하지 않고 rc 3 + R-NOGIT (예전엔 rc 0 이라 GUI git 사용자의
   개발 신호가 통째로 빠져도 알 수 없었다).
+git 실행 횟수: 1 + 저장소 수 (LM28). 신원은 `git config --global --get-regexp` 1회 + 저장소별 .git\\config 텍스트 파싱 —
+  예전엔 저장소마다 user.name·user.email 을 따로 물어 저장소 20개면 git 이 약 60회 떴다(개발 PC 는 끝난 프로세스가
+  커널에 남는다).
+마지막 줄: LMSTATUS {v,src:'git',rc,reason,counts,ranges:[]} — rc 0 정상(일부 저장소 실패는 reason R-GITPART) ·
+  1 저장소 없음(종료 코드 0) · 3 R-NOGIT/R-TIMEOUT/R-GITFAIL(모든 저장소 실패 — 종료 코드 3).
 브랜치: HEAD 만이 아니라 모든 로컬·원격 추적 브랜치(--branches --remotes)를 훑고 같은 해시는 1건.
 시각: 작성일(%ad)을 이 PC 로컬 시각으로(format-local) — UTC 환경(WSL·CI)의 커밋이 9시간 어긋나지 않는다.
       git 에는 --since=(from−60일) 만 주고 기간 필터는 파이썬이 작성일로 다시 건다(rebase·amend 로
@@ -74,6 +79,7 @@ _MARK_CACHE = {}
 
 GIT_EXE = None          # main() 또는 첫 git() 호출 때 _find_git 으로 채운다
 _GIT_TRIED = None
+GIT_CALLS = 0           # 이번 실행에서 git 을 띄운 횟수(LMSTATUS counts) — 목표: 1 + 저장소 수
 
 
 def load_cfg():
@@ -187,18 +193,25 @@ def filter_repos(repos, excl):
     return keep, dropped
 
 
+def _spawn(cmd, timeout, env):
+    """git 프로세스 1회 → (stdout bytes, rc, stderr bytes). 시험은 이 함수를 바꿔 끼워 실행 횟수를 센다."""
+    r = subprocess.run(cmd, capture_output=True, timeout=timeout, creationflags=NO_WIN, env=env)
+    return r.stdout, r.returncode, r.stderr
+
+
 def git(repo, args, timeout=60):
     """→ (stdout, rc, stderr). 실행 파일 없음은 rc 127, 시간 초과는 rc 124 — 다른 실패(128 등)와 구분해 집계한다.
-    메시지 언어를 C 로 고정한다: 한국어 git 은 --shortstat 을 'N개 파일 변경' 으로 찍어 정규식이 0 을 읽는다."""
+    메시지 언어를 C 로 고정한다: 한국어 git 은 --shortstat 을 'N개 파일 변경' 으로 찍어 정규식이 0 을 읽는다.
+    repo 가 비면 -C 없이(전역 설정 조회용) 돈다."""
+    global GIT_CALLS
     exe = _git_exe()
     if not exe:
         return "", RC_NOT_FOUND, "git 실행 파일 없음"
     env = dict(os.environ, LC_ALL="C", LANG="C", GIT_TERMINAL_PROMPT="0", GIT_OPTIONAL_LOCKS="0")
+    GIT_CALLS += 1
     try:
-        r = subprocess.run([exe, "-C", repo] + args, capture_output=True,
-                           timeout=timeout, creationflags=NO_WIN, env=env)
-        return (r.stdout.decode("utf-8", "replace"), r.returncode,
-                r.stderr.decode("utf-8", "replace"))
+        out, rc, err = _spawn([exe] + (["-C", repo] if repo else []) + args, timeout, env)
+        return ((out or b"").decode("utf-8", "replace"), rc, (err or b"").decode("utf-8", "replace"))
     except OSError as ex:
         return "", RC_NOT_FOUND, str(ex)
     except subprocess.TimeoutExpired:
@@ -271,17 +284,71 @@ def find_repos(roots, max_depth=4, limit=40, pkg_on=True):
     return found
 
 
+def _git_dir(repo):
+    """저장소의 .git 폴더 — 워크트리·서브모듈은 .git 이 'gitdir: <경로>' 파일이다. 못 찾으면 ''."""
+    g = os.path.join(repo, ".git")
+    if os.path.isdir(g):
+        return g
+    try:
+        with open(g, encoding="utf-8-sig", errors="replace") as f:
+            ln = f.readline().strip()
+        if ln.lower().startswith("gitdir:"):
+            p = ln.split(":", 1)[1].strip()
+            p = p if os.path.isabs(p) else os.path.normpath(os.path.join(repo, p))
+            return p if os.path.isdir(p) else ""
+    except OSError:
+        pass
+    return ""
+
+
+def parse_git_config_user(text):
+    """git config 텍스트의 [user] name/email → [값…] (프로세스 없이 — 저장소별 git config --get 을 대신한다).
+    섹션·키는 대소문자 무시, 값의 따옴표·끝 주석(; #)은 벗긴다. [user "x"] 같은 하위 절은 보지 않는다."""
+    out, sect = [], ""
+    for raw in (text or "").splitlines():
+        ln = raw.strip()
+        if not ln or ln[0] in "#;":
+            continue
+        if ln.startswith("["):
+            sect = ln[1:ln.find("]")].strip().lower() if "]" in ln else ""
+            continue
+        if sect != "user" or "=" not in ln:
+            continue
+        k, v = ln.split("=", 1)
+        if k.strip().lower() not in ("name", "email"):
+            continue
+        v = v.strip()
+        if v.startswith('"') and '"' in v[1:]:
+            v = v[1:v.index('"', 1)]
+        else:
+            v = re.split(r"\s[;#]", v, maxsplit=1)[0].strip()
+        if v:
+            out.append(v)
+    return out
+
+
 def my_identities(repos):
-    """'나' 의 git 신원 집합 — 저장소별(·전역) git config user.name / user.email.
+    """'나' 의 git 신원 집합 — 전역(git config --global --get-regexp 1회) + 저장소별 .git\\config 의 [user] (텍스트 파싱).
+    예전엔 저장소마다 git config --get user.name·user.email 을 따로 띄워 git 이 2×저장소 수만큼 떴다.
     Windows 계정명(USERNAME)은 git 신원이 하나도 없을 때만 보조로 쓴다 — 'User'·'kim' 같은 짧은 계정명이
     --author 부분일치로 동료('Userman'·'kimchulsoo@…')의 커밋을 내 것으로 세던 결함(C2).
     대조는 collect() 가 정규화(공백 정리·소문자) 정확 일치로 한다."""
     ids = set()
-    for r in repos[:20]:
-        for key in ("user.name", "user.email"):
-            out, rc, _ = git(r, ["config", "--get", key])
-            if rc == 0 and out.strip():
-                ids.add(out.strip())
+    out, rc, _ = git("", ["config", "--global", "--get-regexp", r"^user\.(name|email)$"])
+    if rc == 0:
+        for ln in out.splitlines():
+            parts = ln.strip().split(None, 1)
+            if len(parts) == 2 and parts[1].strip():
+                ids.add(parts[1].strip())
+    for r in repos:
+        gd = _git_dir(r)
+        if not gd:
+            continue
+        try:
+            with open(os.path.join(gd, "config"), encoding="utf-8-sig", errors="replace") as f:
+                ids.update(parse_git_config_user(f.read()))
+        except OSError:
+            continue
     if not ids:
         u = (os.environ.get("USERNAME") or "").strip()
         if u:
@@ -473,13 +540,21 @@ def update_excluded_json(section, payload):
         print(f"[git] files_excluded.json 기록 실패: {ex}")
 
 
-def main():
-    global GIT_EXE, _GIT_TRIED
+def lmstatus(rc, reason="", **counts):
+    """수집기 공통 마지막 줄 — run.py 가 rc·사유를 읽는다(git 은 커버리지 축이 아니라 ranges 는 비운다)."""
+    counts.setdefault("git_calls", GIT_CALLS)
+    print("LMSTATUS " + json.dumps({"v": 1, "src": "git", "rc": rc, "reason": reason, "counts": counts,
+                                    "ranges": []}, ensure_ascii=False, separators=(",", ":")))
+
+
+def main(argv=None):
+    global GIT_EXE, _GIT_TRIED, GIT_CALLS
     ap = argparse.ArgumentParser()
     ap.add_argument("--from", dest="d0", default="")
     ap.add_argument("--to", dest="d1", default="")
     ap.add_argument("--scan", default="", help="이 경로 아래 git 저장소를 찾아 config에 기록")
-    a = ap.parse_args()
+    a = ap.parse_args(argv)
+    GIT_CALLS = 0
     cfg = load_cfg()
     GIT_EXE, _GIT_TRIED = _find_git(cfg)
     pkg_on = cfg.get("excludePackageDirs", True) is not False
@@ -515,16 +590,18 @@ def main():
     if not repos:
         print("[git] 저장소 없음 — --scan D:\\src 로 탐색하거나 config.gitRepos 설정")
         write_source("no_repos", repos=0, failed=0, commits=0, missing=missing)
+        lmstatus(1, "", repos=0, missing=len(missing))     # 대상 없음 — 실패가 아니다(종료 코드 0)
         return 0
     if not GIT_EXE:
         # 예전엔 여기서 '커밋 0건' 으로 rc 0 — GitHub Desktop·SourceTree·VS 내장 git 만 쓰는 PC 의
-        # 커밋 신호가 통째로 빠져도 '원래 없는 것' 과 구분할 수 없었다.
+        # 커밋 신호가 통째로 빠져도 '원래 없는 것' 과 구분할 수 없었다. LM28: rc 3 R-NOGIT('불가' — 화면이 사유를 보인다)
         print(f"[git] git 실행 파일 없음 — 커밋 신호 수집 불가 (저장소 {len(repos)}개는 있음)")
-        print("      찾아본 곳: " + " · ".join(_GIT_TRIED))
+        print("      찾아본 곳: " + " · ".join(_GIT_TRIED or []))
         print('      Git for Windows 를 설치하거나 config.json 에 "gitExe": "C:\\\\...\\\\git.exe" 를 적으세요')
         print("      기존 git_commits.csv 는 덮어쓰지 않았습니다")
         write_source("no_git", repos=len(repos), failed=len(repos), commits=0, missing=missing)
-        return 1
+        lmstatus(3, "R-NOGIT", repos=len(repos))
+        return 3
     print(f"[git] git: {GIT_EXE}")
     ids = my_identities(repos)
     stats = {}
@@ -541,13 +618,17 @@ def main():
         print("      기존 git_commits.csv 는 덮어쓰지 않았습니다")
         write_source("all_failed", repos=len(repos), failed=len(failed), commits=0, failures=fails,
                      missing=missing, identities=len(ids))
-        return 1
+        reason = ("R-NOGIT" if set(rcs) == {RC_NOT_FOUND} else "R-TIMEOUT" if rcs.get(RC_TIMEOUT) else "R-GITFAIL")
+        lmstatus(3, reason, repos=len(repos), failed=len(failed))
+        return 3
     path = write_csv(rows)
     print(f"[git] 저장소 {len(repos)}개 · 커밋 {len(rows)}건 → {path}"
           + (f" · 실패 {len(failed)}개(위 메시지)" if failed else "")
           + (f" · 설정 저장소 없음 {len(missing)}개(위 메시지)" if missing else ""))
     write_source("ok", repos=len(repos), failed=len(failed), commits=len(rows), failures=fails,
                  missing=missing, identities=len(ids), others_excluded=stats.get("others_excluded", 0))
+    lmstatus(0, "R-GITPART" if failed else "", repos=len(repos), failed=len(failed), commits=len(rows),
+             identities=len(ids), missing=len(missing))
     return 0
 
 

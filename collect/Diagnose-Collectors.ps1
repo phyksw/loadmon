@@ -42,40 +42,46 @@ $cu = Get-Culture; $ui = Get-UICulture
 W ("  문화권: {0} (UI {1})   시각 형식: '{2}'   오전/오후 표기: '{3}'/'{4}'   날짜 형식: '{5}'" -f $cu.Name, $ui.Name, $cu.DateTimeFormat.ShortTimePattern, $cu.DateTimeFormat.AMDesignator, $cu.DateTimeFormat.PMDesignator, $cu.DateTimeFormat.ShortDatePattern)
 
 # ── Outlook ──────────────────────────────────────────────────────────────────
+# LM28(WP1): 판·설치 방식·새 Outlook 흔적·프로필·권한·보호 멤버 판정은 수집기와 같은 collect\OutlookCommon.ps1 결과를 표시만 한다.
+# App Paths 한 곳만 보던 판정은 M365(Click-to-Run) PC 에서 '설치 안 됨'으로 오진했다(F-11). 결과는 진단용이고 수집을 막지 않는다
+# (수집기는 먼저 시도하고 결과로 판정한다 - 띄우면 모달이 확실할 때만 건너뛴다).
+. (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'OutlookCommon.ps1')
 W '[Outlook]'
-$classicExe = ''
-try { $classicExe = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\OUTLOOK.EXE' -ErrorAction Stop).'(default)' } catch {}
-if (-not $classicExe) { try { $classicExe = (Get-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths\OUTLOOK.EXE' -ErrorAction Stop).'(default)' } catch {} }
-$classicOk = [bool]($classicExe -and (Test-Path -LiteralPath $classicExe))
-if ($classicOk) { W ("  클래식 Outlook: 설치됨  v{0}  ({1})" -f (Ver $classicExe), $classicExe) } else { W '  클래식 Outlook: 설치 안 됨 (App Paths 에 OUTLOOK.EXE 없음)' }
-$newOl = $null
-try { $newOl = Get-AppxPackage -Name 'Microsoft.OutlookForWindows' -ErrorAction SilentlyContinue | Select-Object -First 1 } catch {}
-$useNew = $false
-foreach ($rp in @('HKCU:\Software\Microsoft\Office\16.0\Outlook\Preferences', 'HKCU:\Software\Microsoft\Office\Outlook\Preferences')) {
-    try { $pref = Get-ItemProperty $rp -ErrorAction SilentlyContinue; if ($pref -and $pref.UseNewOutlook -eq 1) { $useNew = $true } } catch {}
+$classic = Find-ClassicOutlook
+$classicOk = [bool]$classic.found
+if ($classicOk) {
+    W ("  클래식 Outlook: 설치됨  v{0}  ({1})  설치 방식: {2}{3}" -f $classic.ver, $classic.path,
+       $(if ($classic.c2r -and $classic.msi) { 'Click-to-Run + MSI(두 벌)' } elseif ($classic.c2r) { 'Click-to-Run(M365)' } else { 'MSI' }),
+       $(if (@($classic.paths).Count -gt 1) { '  · 찾은 OUTLOOK.EXE ' + @($classic.paths).Count + '개' } else { '' }))
+} else {
+    W ("  클래식 Outlook: 찾지 못함(의심) - App Paths·InstallRoot 14~16·Click-to-Run·COM LocalServer32·표준 폴더 모두 없음 · COM 등록: {0}" -f $(if ($classic.comReg) { '있음(' + $classic.curVer + ')' } else { '없음' }))
 }
-if ($newOl) { W ("  새 Outlook(olk): 설치됨  v{0}   UseNewOutlook 토글: {1}" -f $newOl.Version, $(if ($useNew) { '켜짐' } else { '꺼짐' })) } else { W ("  새 Outlook(olk): 설치 안 됨   UseNewOutlook 토글: {0}" -f $(if ($useNew) { '켜짐' } else { '꺼짐' })) }
+$trace = Get-NewOutlookTrace
+$useNew = [bool]$trace.useNew
+$newOl = [bool]$trace.appx
+W ("  새 Outlook(olk): 앱 {0}   UseNewOutlook 토글: {1}   전환 정책(DoNewOutlookAutoMigration): {2}" -f $(if ($newOl) { '설치됨' } else { '설치 안 됨' }),
+   $(if ($useNew) { '켜짐' } else { '꺼짐' }), $(if ($null -eq $trace.autoMig) { '없음' } else { [string]$trace.autoMig }))
 $pOl = @(Get-Process outlook -ErrorAction SilentlyContinue); $pOlk = @(Get-Process olk -ErrorAction SilentlyContinue)
 W ("  실행 중: 클래식 {0}개 / 새 Outlook {1}개" -f $pOl.Count, $pOlk.Count)
 if ($pOl.Count) { $ttl = @($pOl | ForEach-Object { $_.MainWindowTitle } | Where-Object { $_ }); if ($ttl.Count) { W ("    클래식 창 제목: " + (($ttl | ForEach-Object { Mask $_ }) -join ' / ')) } }
-$nProf = 0
-foreach ($pp in @('HKCU:\Software\Microsoft\Windows NT\CurrentVersion\Windows Messaging Subsystem\Profiles', 'HKCU:\Software\Microsoft\Office\16.0\Outlook\Profiles', 'HKCU:\Software\Microsoft\Office\15.0\Outlook\Profiles')) {
-    try { $nProf += @(Get-ChildItem -Path $pp -ErrorAction SilentlyContinue).Count } catch {}
-}
-W ("  메일 프로필: {0}개" -f $nProf)
+$prof = Get-OutlookProfileState
+$nProf = [int]$prof.total
+W ("  메일 프로필: {0}개 (쓸 수 있음 {1}개 · 위치 {2}) · COM 등록 판(CurVer): {3}{4}" -f $nProf, $prof.usable, $(if (@($prof.locs).Count) { @($prof.locs) -join '·' } else { '없음' }),
+   $(if ($prof.curver) { $prof.curver } else { '없음' }), $(if ($prof.curverMismatch) { ' ← 등록된 판에 프로필 없음(구판 병존 의심)' } else { '' }))
+$elev = Test-OcElevated
+W ("  이 진단의 권한: {0}" -f $(if ($elev) { '관리자(상승) - 일반 권한 Outlook 의 COM 에 붙지 못합니다(R-ELEV)' } else { '일반' }))
+$pst = Get-ProtectedState
+W ("  보호 멤버(받는 사람·보낸 사람 이름) 읽기: {0} (근거 {1}, 백신 {2})" -f $(if ($pst.safe) { '읽음' } else { '읽지 않음 - rcv=unknown' }), $pst.why, $pst.av)
+$verdict = Get-ProfileVerdict -Running ($pOl.Count -gt 0) -Prof $prof -Trace $trace -Classic $classic
+W ("  수집기 사전 판정: {0}" -f $(if ($verdict) { $verdict + ' - Outlook 이 꺼져 있고 띄우면 모달이 확실해 COM 을 건너뜁니다' } else { '시도함(먼저 붙어 보고 결과로 판정)' }))
 # COM: 떠 있는 Outlook 에 '붙기'만 시도한다 (New-Object 는 마법사를 띄워 무한 대기 - 절대 호출 안 함)
 $comMsg = '시도 안 함 (클래식 Outlook 이 실행 중이 아님)'
 if ($pOl.Count) {
-    # 잡이 먼저 자기 PID 를 내보낸다 - 막힌 COM 호출은 Stop-Job 으로 멈추지 않는다(검증: 100초 블로킹 호출에 97초 대기).
-    # 시간 초과면 잡 프로세스를 직접 끝낸다.
-    $job = Start-Job -ScriptBlock { $PID; try { $o = [Runtime.InteropServices.Marshal]::GetActiveObject('Outlook.Application'); '붙음 (버전 ' + $o.Version + ')' } catch { '실행 중이지만 붙지 못함 - ' + $_.Exception.Message.Split([char]10)[0] } }
-    if (Wait-Job $job -Timeout 25) {
-        $comMsg = [string](@(Receive-Job $job) | Select-Object -Last 1)
-    } else {
-        $comMsg = '25초 무응답 (Outlook 이 COM 호출에 응답하지 않음 - 대화상자/멈춤 의심)'
-        try { $cpid = [int](@(Receive-Job $job -Keep) | Select-Object -First 1); if ($cpid) { Stop-Process -Id $cpid -Force -ErrorAction SilentlyContinue } } catch {}
-    }
-    Remove-Job $job -Force -ErrorAction SilentlyContinue
+    # LM28: 같은 프로세스의 다른 스레드(런스페이스)에서 25초까지만 기다린다 - Start-Job 은 powershell 프로세스를 하나 더 띄웠다.
+    # 막힌 COM 호출은 멈출 수 없어 그 스레드는 버린다(이 진단이 끝날 때 함께 사라진다).
+    $tr = Invoke-OcTimed -Sec 25 -Script { try { $o = [Runtime.InteropServices.Marshal]::GetActiveObject('Outlook.Application'); '붙음 (버전 ' + $o.Version + ')' } catch { $e = $_.Exception; while ($e.InnerException) { $e = $e.InnerException }; ('실행 중이지만 붙지 못함 - 0x{0:X8} {1}' -f $e.HResult, $e.Message.Split([char]10)[0]) } }
+    if ($tr.done) { $comMsg = [string](@($tr.out) | Select-Object -Last 1); if (-not $comMsg) { $comMsg = '응답 없음 - ' + $tr.error } }
+    else { $comMsg = '25초 무응답 (Outlook 이 COM 호출에 응답하지 않음 - 대화상자/멈춤 의심)' }
 }
 W ("  COM 연결: {0}" -f $comMsg)
 # Windows Search 색인 - 최근 30일 메일·일정 건수
@@ -94,9 +100,14 @@ try {
     $rd.Close(); $conn.Close()
     W ("  Windows Search 색인: 최근 30일 Outlook 메일 {0}건{1} / 일정 {2}건 (2000 상한, 디스크의 .msg/.ics 파일 제외)" -f $idxMail, $(if ($idxNewest) { " (최신 $idxNewest)" } else { '' }), $idxCal)
 } catch { W ('  Windows Search 색인: 연결 불가 - ' + $_.Exception.Message.Split([char]10)[0]) }
+$idxPol = Get-OcReg $null 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search' 'PreventIndexingOutlook'
+if ($null -ne $idxPol -and [string]$idxPol -eq '1') { W '  Outlook 색인 금지 정책(PreventIndexingOutlook=1): 켜짐 - 색인 경로는 R-IDXPOLICY 로 건너뜁니다' }
 $dO = Join-Path $root 'data\outlook'
 W ("  수집 파일: mail.csv {0} / calendar.csv {1}" -f (RowsTxt (Join-Path $dO 'mail.csv')), (RowsTxt (Join-Path $dO 'calendar.csv')))
-foreach ($jf in @('outlook_skip.json', 'mail_source.json', 'mail_copilot_unavailable.json')) {
+# 출처별 상태 파일(LM28 - data\outlook\src\mail_source_<출처>.json)이 있으면 함께 보인다
+$srcJsons = @()
+try { $srcJsons = @(Get-ChildItem -LiteralPath (Join-Path $dO 'src') -Filter 'mail_source_*.json' -ErrorAction Stop | ForEach-Object { 'src\' + $_.Name }) } catch {}
+foreach ($jf in (@('outlook_skip.json', 'mail_source.json', 'mail_copilot_unavailable.json') + $srcJsons)) {
     $p = Join-Path $dO $jf
     if (Test-Path -LiteralPath $p) {
         try {
@@ -265,23 +276,32 @@ function Task-Info([string]$name) {
     } catch { return [pscustomobject]@{ found=$false } }
 }
 $tiS = $null
-foreach ($tn in @('LoadMonitor24-Sampler', 'LoadMonitor24-TeamsSampler')) {
+# 작업 이름은 LM28-Sampler-<폴더해시6> (collect\LmName.ps1 = core\lmname.py)
+. (Join-Path $root 'collect\LmName.ps1')
+$lmNames = Get-LmNames $root
+foreach ($tn in @($lmNames.TaskSampler, $lmNames.TaskTeams)) {
     $ti = Task-Info $tn
-    if ($tn -eq 'LoadMonitor24-Sampler') { $tiS = $ti }
+    if ($tn -eq $lmNames.TaskSampler) { $tiS = $ti }
     if ($ti.found) {
         $etlNote = if (-not $ti.etl -or $ti.etl -eq 'PT0S') { 'PT0S(제한 없음)' } else { $ti.etl + ' ← 실행 시간 제한(이 시간 뒤 조용히 정지)' }
         W ("  작업 {0}: 등록됨 · 상태 {1} · 마지막 실행 {2} (결과 {3}) · ExecutionTimeLimit {4} · 겹침 {5}" -f $tn, $ti.state, $ti.last, $ti.result, $etlNote, $ti.mi)
     } else { W ("  작업 {0}: 미등록" -f $tn) }
 }
-# 옛 버전 작업 - 이전 판(LoadMonitor20/22 …)에서 등록한 것이 남아 있으면 **옛 폴더의 스크립트**가 계속 돌아
-# 샘플러가 둘이 된다. Register-Samplers.ps1 이 등록할 때 지우지만, 등록을 안 한 PC 는 그대로 남는다.
+# 다른 판·다른 폴더 작업 - LoadMonitor<숫자>-* (LM24 등)는 **다른 판(공존 정상)** 정보로만 보인다(지우지 않는다).
+# 다른 폴더의 LM28 작업은 그 폴더가 없어졌을 때만 '버려진 작업' 으로 알린다(Register-Samplers.ps1 이 등록할 때 정리).
 try {
     $svcD = New-Object -ComObject 'Schedule.Service'; $svcD.Connect()
     foreach ($t in @($svcD.GetFolder('\').GetTasks(1))) {
         $tn2 = [string]$t.Name
-        if ($tn2 -match "^LoadMonitor\d+-(Teams)?Sampler$" -and $tn2 -notlike 'LoadMonitor24-*') {
-            W ("  [!] 옛 버전 작업 {0} 이 남아 있습니다 - 옛 폴더의 샘플러가 함께 돌아 기록이 갈립니다." -f $tn2)
-            W  "      해제: powershell -ExecutionPolicy Bypass -File collect\Register-Samplers.ps1  (등록할 때 자동으로 지웁니다)"
+        if ($tn2 -match "^LoadMonitor\d+-") {
+            W ("  [정보] 다른 판 작업 {0} - 다른 판(공존 정상). 이 판의 기록과 섞이지 않습니다." -f $tn2)
+        } elseif ($tn2 -cmatch $lmNames.TaskRegex -and $tn2 -notlike ("*-" + $lmNames.H6)) {
+            $adir = ''
+            try { foreach ($a in @($t.Definition.Actions)) { if ([int]$a.Type -eq 0 -and $a.WorkingDirectory) { $adir = [string]$a.WorkingDirectory; break } } } catch {}
+            if ($adir -and -not (Test-Path -LiteralPath $adir)) {
+                W ("  [!] 버려진 LM28 작업 {0} - 폴더({1})가 없습니다." -f $tn2, $adir)
+                W  "      해제: powershell -ExecutionPolicy Bypass -File collect\Register-Samplers.ps1  (등록할 때 자동으로 지웁니다)"
+            } else { W ("  [정보] 다른 폴더의 LM28 작업 {0} ({1})" -f $tn2, $(if ($adir) { $adir } else { '?' })) }
         }
     }
 } catch {}
@@ -350,10 +370,14 @@ if (Test-Path -LiteralPath $lr) {
 
 # ── 판정 ─────────────────────────────────────────────────────────────────────
 W '[판정]'
-if (-not $classicOk -and $newOl) { $findings.Add('클래식 Outlook 없음(새 Outlook 만) → COM 수집 불가. Windows Search 색인 폴백 → Copilot 메일 수집(config.mailViaCopilot) 순으로 자동 대체됩니다. 새 Outlook 은 색인도 제공하지 않는 경우가 많아 Copilot 경로가 핵심입니다.') }
-elseif (-not $classicOk) { $findings.Add('클래식 Outlook 을 찾지 못함 → COM 수집 불가. 색인·Copilot 폴백이 대신 동작합니다.') }
-if ($classicOk -and $nProf -eq 0) { $findings.Add('메일 프로필 0개 → COM 기동 시 "Outlook 시작" 마법사가 뜹니다. Outlook 을 직접 실행해 계정 설정을 마치세요.') }
-if ($pOl.Count -and $comMsg -notmatch '^붙음') { $findings.Add('클래식 Outlook 이 실행 중인데 COM 에 붙지 못함 → 마법사·프로필 선택·암호 창이 떠 있을 가능성. 그 창을 닫고 메일 화면까지 연 뒤 재수집.') }
+if (-not $classicOk -and ($newOl -or $useNew)) { $findings.Add('클래식 Outlook 을 찾지 못함(새 Outlook 흔적 있음 - 의심) → COM 수집은 시도해도 실패할 가능성이 큽니다. Windows Search 색인 → Outlook 웹 → Copilot 메일 수집(config.mailViaCopilot) 순으로 대체됩니다. 새 Outlook 은 색인도 제공하지 않는 경우가 많아 웹 경로가 핵심입니다.') }
+elseif (-not $classicOk) { $findings.Add('클래식 Outlook 을 찾지 못함(의심 - 찾는 위치 밖에 설치됐을 수 있음, 수집기는 그래도 COM 을 시도합니다) → 실패하면 색인·웹·Copilot 경로가 대신 동작합니다.') }
+if ($classicOk -and $nProf -eq 0) { $findings.Add('메일 프로필 0개 → COM 기동 시 "Outlook 시작" 마법사가 뜹니다. Outlook 을 직접 실행해 계정 설정을 마치세요.' + $(if ($newOl -or $useNew -or $pOlk.Count) { ' (새 Outlook 흔적이 있어 수집기는 R-NEWOL 로 COM 을 건너뜁니다 - 새 Outlook 을 쓰는 PC 면 정상)' } else { '' })) }
+elseif ($nProf -gt 0 -and $prof.usable -eq 0) { $findings.Add('모든 메일 프로필이 주소록만 든 것으로 보입니다(R-NOPROF) → 띄우면 "Outlook 시작" 마법사가 뜹니다. Outlook 을 직접 실행해 메일 계정을 추가하세요.') }
+if ($null -ne $trace.autoMig -and [int]$trace.autoMig -eq 1) { $findings.Add('관리자 새 Outlook 전환 정책(DoNewOutlookAutoMigration=1) → Outlook 이 꺼져 있으면 수집기는 띄우지 않습니다(R-NEWOLPOL). 클래식 Outlook 을 켜 둔 채로 수집하세요.') }
+if ($elev -and $pOl.Count) { $findings.Add('이 진단(=수집)이 관리자 권한으로 돌고 있어 일반 권한 Outlook 에 붙지 못할 수 있습니다(R-ELEV) → LoadMonitor28 을 일반 권한으로 실행하세요.') }
+if (-not $pst.safe) { $findings.Add('보호 멤버 경고창 위험(' + $pst.why + ') → 수집기는 받는 사람·보낸 사람 이름을 읽지 않고 rcv=unknown 으로 둡니다(CC·단체 메일 구분이 흐려짐). 백신 상태·Outlook 보안 정책을 확인하세요.') }
+if ($pOl.Count -and $comMsg -notmatch '^붙음') { $findings.Add('클래식 Outlook 이 실행 중인데 COM 에 붙지 못함 → 마법사·프로필 선택·암호 창이 떠 있을 가능성(의심). 그 창을 닫고 메일 화면까지 연 뒤 재수집.') }
 if ($classicOk -and $useNew) { $findings.Add('UseNewOutlook 토글 켜짐 → 평소 새 Outlook 을 쓰는 PC. 클래식 Outlook 을 한 번 실행해 두면 COM 으로 붙습니다.') }
 if ($idxMail -eq 0 -and (-not $classicOk -or $comMsg -notmatch '^붙음')) { $findings.Add('Windows Search 색인에 최근 30일 Outlook 메일 0건 → COM 이 안 되는 PC 에서는 색인 폴백이 비므로 Copilot 메일 수집이 쓰입니다(제어판 > 색인 옵션에서 Outlook 포함 여부 확인). COM 이 정상인 PC 면 무관합니다.') }
 if ((Rows (Join-Path $dO 'mail.csv')) -le 0) { $findings.Add('mail.csv 가 비어 있음 → 메일 수집이 아직 성공한 적 없음.') }
@@ -367,9 +391,9 @@ if ($nBoot -gt 0 -and $nSleep -eq 0 -and $nShut -le 1 -and $lockP -notlike 'ok*'
 if ($reachDays -ge 0 -and $reachDays -lt 45) { $findings.Add("System 로그가 ${reachDays}일 전까지만 남아 있음(롤오버) → 그 이전 PC 가동은 브라우저 방문 힌트·창 샘플러로만 보강됩니다.") }
 if ($n20 -gt 0) { $findings.Add("pc_on.csv 에 on=20h 행 ${n20}개(옛 20h 캡 흔적) → 이 버전 수집기로 재수집하면 항상 켜진 날의 기록이 살아납니다.") }
 if ($actF.Count -or $tiS.found -or $sp.Count) {
-    if (-not $tiS.found) { $findings.Add('창 샘플러 작업(LoadMonitor24-Sampler) 미등록 → 로그온 때마다 수동 시작해야 합니다. 등록: powershell -ExecutionPolicy Bypass -File collect\Register-Samplers.ps1 (관리자 불필요, 실행 시간 제한 없음)') }
+    if (-not $tiS.found) { $findings.Add('창 샘플러 작업(' + $lmNames.TaskSampler + ') 미등록 → 로그온 때마다 수동 시작해야 합니다. 등록: LoadMonitor28-샘플러등록.bat 또는 powershell -ExecutionPolicy Bypass -File collect\Register-Samplers.ps1 (관리자 불필요, 실행 시간 제한 없음)') }
     elseif ($tiS.etl -and $tiS.etl -ne 'PT0S') { $findings.Add('창 샘플러 작업에 실행 시간 제한 ' + $tiS.etl + ' → 로그온 3일 뒤 조용히 정지합니다. Register-Samplers.ps1 로 재등록하세요(제한 없음·겹침 무시로 덮어씀).') }
-    if ($age -gt 10 -and -not $sp.Count) { $findings.Add("창 샘플러 멈춤(마지막 샘플 ${age}분 전, 프로세스 없음) → 재시작: powershell -WindowStyle Hidden -ExecutionPolicy Bypass -File collect\Start-ActivitySampler.ps1 (등록돼 있으면 schtasks /Run /TN LoadMonitor24-Sampler)") }
+    if ($age -gt 10 -and -not $sp.Count) { $findings.Add("창 샘플러 멈춤(마지막 샘플 ${age}분 전, 프로세스 없음) → 재시작: powershell -WindowStyle Hidden -ExecutionPolicy Bypass -File collect\Start-ActivitySampler.ps1 (등록돼 있으면 schtasks /Run /TN $($lmNames.TaskSampler))") }
     if ($stuckNames.Count) { $findings.Add("창 샘플러 idle=0 고착(${ratio}%, " + ($stuckNames -join ', ') + ") → 구버전 샘플러의 TickCount 랩(가동 " + [math]::Round($upDays, 1) + "일). 샘플러를 이 버전으로 재시작하세요. 분석은 고착일을 PC 하한 모드로 대체합니다.") }
 } elseif (-not $tiS.found) { $findings.Add('창 샘플러 미사용(선택) → 켜면 하한 추정 대신 실측이 쓰여 정확도가 크게 오릅니다: powershell -ExecutionPolicy Bypass -File collect\Register-Samplers.ps1') }
 if (-not $gitUse) { $findings.Add('git.exe 를 찾지 못함 → 커밋 신호가 0건이 됩니다. Git 설치 후 config.gitExe 에 경로를 적거나 PATH 에 추가하세요(GitHub Desktop·SourceTree 내장 git 경로도 가능).') }

@@ -1,7 +1,7 @@
 @echo off
 >nul chcp 949
 cd /d "%~dp0"
-title LoadMonitor24 - PC 가동시간 비교
+title LoadMonitor28 - PC 가동시간 비교
 echo.
 echo  [PC 가동시간 비교] 이 PC 에서 LM20 수집기와 현재 수집기를 같은 기간으로 나란히 돌려
 echo                     달별 PC 가동시간을 비교합니다 (1~3분).

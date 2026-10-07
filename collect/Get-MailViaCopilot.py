@@ -7,6 +7,7 @@ Get-MailViaCopilot.py — Outlook 메일·일정을 M365 Copilot 무개입 왕�
 Outlook 버전·설치 형태와 무관하게 동작한다(최초 1회 로그인만 필요).
 
   python collect\\Get-MailViaCopilot.py --from 2026-05-19 --to 2026-08-17 [--force]
+  python collect\\Get-MailViaCopilot.py --ranges 2026-03-02:2026-03-08,2026-04-01 --out-dir data\\outlook\\src --tag copilot
 
 출력: data\\outlook\\mail.csv      (box,time,sender,subject,conversation,rcv,time_precision)   ← COM 스키마 + 정밀도 열
                                   time_precision: minute(시각 있음) | date(날짜만 답해 12:00 으로 둔 행 — 시간 근거로 쓰지 말 것)
@@ -16,7 +17,21 @@ Outlook 버전·설치 형태와 무관하게 동작한다(최초 1회 로그인
                                   ※ response/meeting_status 는 COM 수집기(Get-OutlookData.ps1)만 채운다 — 여기선 빈값
 기존 파일에 자료가 있으면 덮어쓰지 않는다(--force 로 강제) — COM·색인이 이미 모은 것을 지키기 위해.
 시각 표기는 ISO 'T'/'Z'·슬래시·점·한국어 연월일·오전/오후 를 모두 받는다(예전엔 행째 버렸다). 한 조각의 회수가
-140행 이상이면(요청 상한 150 에 근접 = 잘림) 5일 조각으로 다시 묻는다.
+140행 이상이면(요청 상한 150 에 근접 = 잘림) 2일 조각으로 다시 묻는다.
+
+LM28(C-16·C-34·W1-04·W1-13):
+  · --ranges 'A:B,C~D,E' (또는 '@파일') — run.py 가 다른 출처가 못 본 날(미관측일)만 준다. 없으면 --from~--to.
+    구간은 7일 조각으로 묻는다(LM24 30일 → 회수 부족·잘림 재질의가 잦았다).
+  · 왕복은 copilot_auto.send_inproc(같은 프로세스 — 조각마다 파이썬을 띄우지 않는다, 결과 dict 는 --send 와 같다).
+    G3 관문에 막힌 조각(phase 'blocked')은 보내지 않은 것으로 둔다(실패로 세지 않음).
+  · 'empty'(없음)·'other'(표 아닌 답)는 실패로 세지 않는다 — 진짜 빈 주도 있다. 드라이버가 답을 못 받은 조각만 연속 ERR_MAX 번이면 멈춘다.
+  · 저장은 병합(owa_parse.merge_slices) — 표를 받은 조각의 옛 행만 바꾸고 나머지 옛 행은 둔다(통째 덮어쓰기 금지).
+    --out-dir·--tag 면 <폴더>\\mail_<tag>.csv·cal_<tag>.csv·mail_source_<tag>.json(병합 규칙은 mailmerge — WP6).
+    행의 time_precision(minute|date)이 정밀도 표식이다(Copilot 은 대개 날짜만 — 시간 근거로 쓰지 않는다).
+  · '조회 불가(unable)'는 서로 다른 날 2회일 때만 14일 동안 생략한다(TTL — 한 번의 거절로 영구 생략하지 않는다).
+    로그인 필요 같은 '사람이 풀 실패'는 불가로 기록하지 않는다.
+  · 마지막 줄: LMSTATUS {v,src,rc,reason,counts,ranges} — rc 0 표를 받음(또는 '없음' 답) · 2 로그인 · 3 불가(R-UNABLE·
+    R-NOREPLY·R-GATE·Edge 사유). ranges 의 st 는 표를 받은 조각 partial(증인 — '읽음'이 아니다) · 그 밖 unverified.
 """
 import csv
 import hashlib
@@ -24,22 +39,33 @@ import io
 import json
 import os
 import re
-import subprocess
 import sys
-from datetime import datetime, timedelta
+import time
+from datetime import date, datetime, timedelta
 
 if __name__ == "__main__":      # import 시(파서 재사용·테스트) stdout을 건드리지 않는다
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, errors="replace", encoding=(
         (sys.stdout.encoding or "utf-8") if sys.stdout.isatty() else "utf-8"))  # 콘솔(bat)=콘솔 코드페이지 · 파이프(UI)=utf-8
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-NO_WIN = 0x08000000
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+import owa_parse  # noqa: E402  — LM28 병합(merge_slices)·ranges 조각
+
 OUT_DIR = os.path.join(ROOT, "data", "outlook")
+CHUNK_DAYS = 7                 # LM28: 조각 길이(일)
+REFINE_DAYS = 2                 # 조각 회수가 FULL_N 이상(잘림)이면 이 길이로 다시 묻는다
+ERR_MAX = 4                     # 드라이버가 답을 못 받은(무응답·오류) 조각이 연속 이만큼이면 멈춘다(판정용 세션 보호)
+UNABLE_TTL_DAYS = 14            # '조회 불가' 확정(서로 다른 날 2회) 뒤 생략하는 날 수
+FATAL_PHASES = ("login_required", "edge_not_found", "launch_failed", "input_not_found")
+LAST_FATAL = {}                 # 마지막 '사람이 풀 실패'의 phase·reason(LMSTATUS 사유)
+SAVE_REPLIES = True             # 원문 응답 보존(진단용) — storeMailSubject=false 면 끈다(제목이 남지 않게)
 MAIL_HDR = "box,time,sender,subject,conversation,rcv,time_precision"
 MAIL_HDR_ASK = "box,time,sender,subject,conversation,rcv"      # Copilot 에 묻는 열 — time_precision 은 묻지 않는다(C1)
 CAL_HDR = "start,end,all_day,busy_status,subject,categories,location,response,meeting_status"
 CAL_HDR_ASK = "start,end,all_day,busy_status,subject,categories,location"   # Copilot 에 묻는 열 — 응답 상태는 물을 수 없다
-UNAVAILABLE_FLAG = os.path.join(OUT_DIR, "mail_copilot_unavailable.json")
-FULL_N = 140                    # 한 조각 회수가 이 이상이면 150행 상한에 잘린 것으로 보고 5일 조각으로 재질의
+UNAVAILABLE_FLAG = os.path.join(OUT_DIR, "mail_copilot_unavailable.json")   # 기본 위치(LM28: --out-dir 를 주면 그 폴더)
+FULL_N = 140                    # 한 조각 회수가 이 이상이면 150행 상한에 잘린 것으로 보고 REFINE_DAYS 조각으로 재질의
 
 
 def arg(flag, d=""):
@@ -254,46 +280,59 @@ def _timeout():
     return max(900.0, sec * 3 + 180)
 
 
+_CA = {}
+
+
+def _ca():
+    """copilot_auto 모듈(같은 프로세스) — 처음 쓸 때 한 번 불러온다(시험이 one_slice 를 주입하면 불리지 않는다)."""
+    if "m" not in _CA:
+        tools = os.path.join(ROOT, "tools")
+        if tools not in sys.path:
+            sys.path.insert(0, tools)
+        import copilot_auto
+        _CA["m"] = copilot_auto
+    return _CA["m"]
+
+
+def _send(prompt):
+    """한 조각 왕복 — copilot_auto.send_inproc(LM28 W2-12: 조각마다 copilot_auto.py 를 자식 프로세스로 띄우지 않는다).
+    결과 dict 는 --send 의 JSON 과 같다. 마감은 조각마다 _timeout() 초."""
+    return _ca().send_inproc(prompt, fresh=True, deadline=time.time() + _timeout(), stage="mail_copilot")
+
+
 def _one_slice(kind, s0, s1, alt=False):
-    """한 조각(<=30일) 왕복 → (행 목록, 상태) — 상태: table|unable|empty|other"""
+    """한 조각(<=7일) 왕복 → (행 목록, 상태) — 상태: table|unable|empty|other|blocked(G3 — 보내지 않음)|
+    error(드라이버가 답을 못 받음)|fatal(로그인 등 사람이 풀 실패 — LAST_FATAL 에 phase·reason)"""
     prompt = build_prompt(kind, s0, s1, alt)
-    tf = os.path.join(ROOT, "data", f"mail_prompt_{kind}.txt")
-    os.makedirs(os.path.dirname(tf), exist_ok=True)
-    with open(tf, "w", encoding="utf-8") as f:
-        f.write(prompt)
     try:
-        out = subprocess.run([sys.executable, os.path.join(ROOT, "tools", "copilot_auto.py"),
-                              "--send", tf], capture_output=True, timeout=_timeout(), cwd=ROOT,
-                             env=dict(os.environ, PYTHONIOENCODING="utf-8"), creationflags=NO_WIN)
-    except subprocess.TimeoutExpired:
-        print(f"[mail-copilot]   {kind} {s0}~{s1}: 왕복 시간 초과 — 이 조각 건너뜀")
-        return [], "other"
-    except OSError as e:
-        print(f"[mail-copilot]   {kind} {s0}~{s1}: 드라이버 실행 실패({type(e).__name__})")
-        return [], "other"
-    txt = (out.stdout or b"").decode("utf-8", "replace").strip()
-    try:
-        res = json.loads(txt.splitlines()[-1])
-    except Exception:
+        res = _send(prompt)
+    except Exception as e:  # noqa: BLE001 — 드라이버 예외는 이 조각만 건너뛴다
+        print(f"[mail-copilot]   {kind} {s0}~{s1}: 드라이버 오류({type(e).__name__})")
+        return [], "error"
+    if not isinstance(res, dict):
         print(f"[mail-copilot]   {kind} {s0}~{s1}: 드라이버 응답 해석 실패")
-        return [], "other"
+        return [], "error"
+    if res.get("status") == "blocked" or res.get("phase") == "blocked":
+        print(f"[mail-copilot]   {kind} {s0}~{s1}: 개인정보 관문(G3) — 보내지 않음")
+        return [], "blocked"
     if not res.get("ok"):
         print(f"[mail-copilot]   {kind} {s0}~{s1}: 실패 — {res.get('error', '')}")
         # 로그인 필요·Edge 없음 같은 '사람이 손대야 풀리는' 실패는 조각을 나눠 다시 물어도 똑같다.
         # 예전에는 이것을 18회 되풀이해 9~10분을 버렸다(감사 실측) — 한 번에 접는다.
-        if str(res.get("phase") or "") in ("login_required", "edge_not_found",
-                                           "launch_failed", "input_not_found"):
+        if str(res.get("phase") or "") in FATAL_PHASES:
             print(f"[mail-copilot]   {res.get('hint', '')}")
+            LAST_FATAL.update(phase=str(res.get("phase") or ""), reason=str(res.get("reason") or ""))
             return [], "fatal"
-        return [], "other"
+        return [], "error"
     reply = res.get("reply", "")
-    try:                                    # 원문 응답 보존 — 진위·누락 진단용
-        rd = os.path.join(OUT_DIR, "replies")
-        os.makedirs(rd, exist_ok=True)
-        with open(os.path.join(rd, f"{kind}_{s0}_{s1}.txt"), "w", encoding="utf-8") as f:
-            f.write(reply)
-    except OSError:
-        pass
+    if SAVE_REPLIES:
+        try:                                # 원문 응답 보존 — 진위·누락 진단용(storeMailSubject=false 면 남기지 않는다)
+            rd = os.path.join(OUT_DIR, "replies")
+            os.makedirs(rd, exist_ok=True)
+            with open(os.path.join(rd, f"{kind}_{s0}_{s1}.txt"), "w", encoding="utf-8") as f:
+                f.write(reply)
+        except OSError:
+            pass
     diag = {}
     rows = parse_mail_rows(reply, diag) if kind == "mail" else parse_cal_rows(reply, diag)
     # 환각 방어: 요청 구간 밖 날짜의 행은 버린다 (팀즈 경로와 동일 규칙)
@@ -325,23 +364,141 @@ def _has_data(path):
         return False
 
 
-def _save(kind, rows, store_subject):
-    dst = os.path.join(OUT_DIR, "mail.csv" if kind == "mail" else "calendar.csv")
-    os.makedirs(OUT_DIR, exist_ok=True)
-    with open(dst, "w", encoding="utf-8-sig", newline="") as f:
-        f.write((MAIL_HDR if kind == "mail" else CAL_HDR) + "\n")
-        hdr_n = (MAIL_HDR if kind == "mail" else CAL_HDR).count(",") + 1
-        for r in rows:
-            r = list(r)
-            r += [""] * (hdr_n - len(r))     # 새 열(response,meeting_status)은 빈값 — 열 수가 모자라면 extract._read 가 행을 버린다
-            if not store_subject:           # config.storeMailSubject=false 면 제목을 남기지 않는다(COM 경로와 동일) — conversation 은 해시
-                if kind == "mail":
-                    r[3] = ""
-                    r[4] = _conv_token(r[4])
-                else:
-                    r[4] = ""
-            f.write(",".join(_esc(c) for c in r) + "\n")
+def _read_rows(path, min_cols):
+    """기존 CSV 의 행(머리 제외) — 없거나 못 읽으면 []."""
+    try:
+        with open(path, encoding="utf-8-sig", errors="replace", newline="") as f:
+            rd = csv.reader(f)
+            next(rd, None)
+            return [list(r) for r in rd if r and len(r) >= min_cols]
+    except OSError:
+        return []
+
+
+def _save(kind, rows, store_subject, dst=None, spans=None):
+    """LM28: 병합해 쓴다 — spans(이번에 표를 받은 조각 [(from, to)])의 옛 행만 새 행으로 바꾸고 그 밖의 옛 행은 둔다
+    (owa_parse.merge_slices · 통째 덮어쓰기 금지 W1-04). 임시 파일에 쓴 뒤 바꿔 넣는다. → 쓴 경로"""
+    dst = dst or os.path.join(OUT_DIR, "mail.csv" if kind == "mail" else "calendar.csv")
+    hdr = MAIL_HDR if kind == "mail" else CAL_HDR
+    hdr_n = hdr.count(",") + 1
+    new = []
+    for r in rows:
+        r = list(r)
+        r += [""] * (hdr_n - len(r))     # 새 열(response,meeting_status)은 빈값 — 열 수가 모자라면 extract._read 가 행을 버린다
+        if not store_subject:           # config.storeMailSubject=false 면 제목을 남기지 않는다(COM 경로와 동일) — conversation 은 해시
+            if kind == "mail":
+                r[3] = ""
+                r[4] = _conv_token(r[4])
+            else:
+                r[4] = ""
+        new.append(r)
+    axes = ("mail_in", "mail_out") if kind == "mail" else ("cal",)
+    ver = {ax: list(spans or []) for ax in axes}
+    old = [r + [""] * (hdr_n - len(r)) for r in _read_rows(dst, 6 if kind == "mail" else 7)]
+    merged = owa_parse.merge_slices(old, new, ver, "mail" if kind == "mail" else "cal")
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    tmp = dst + ".tmp"
+    with open(tmp, "w", encoding="utf-8-sig", newline="") as f:
+        f.write(hdr + "\n")
+        for r in merged:
+            f.write(",".join(_esc(c) for c in r[:hdr_n]) + "\n")
+    os.replace(tmp, dst)
     return dst
+
+
+# ── '조회 불가' 기억(C-34·W1-13) — 서로 다른 날 2회일 때만 14일 생략 ─────────────────────────
+def unable_load(path):
+    """기억 파일 → {"hits": ['YYYY-MM-DD'…], "until": 'YYYY-MM-DD'|''}. LM24 판({when, note})은 1회 관측으로 바꿔 읽는다."""
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            o = json.load(f)
+    except (OSError, ValueError):
+        return {"hits": [], "until": ""}
+    if not isinstance(o, dict):
+        return {"hits": [], "until": ""}
+    hits = [str(h)[:10] for h in (o.get("hits") or []) if re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(h)[:10])]
+    if not hits and re.match(r"\d{4}-\d{2}-\d{2}", str(o.get("when") or "")):
+        hits = [str(o["when"])[:10]]             # LM24 의 영구 플래그 — 한 번 관측으로만 센다
+    return {"hits": sorted(set(hits)), "until": str(o.get("until") or "")[:10]}
+
+
+def unable_active(st, today):
+    """지금 생략할 때인가 — 확정(until)이 있고 오늘이 그날 이하."""
+    u = str((st or {}).get("until") or "")
+    return bool(u) and today.isoformat() <= u
+
+
+def unable_note(st, today):
+    """오늘 '조회 불가'를 받았다 → (새 기억, 이번에 확정됐나). TTL 밖 관측은 버리고, 서로 다른 날 2회면 오늘+14일까지 생략."""
+    lo = (today - timedelta(days=UNABLE_TTL_DAYS)).isoformat()
+    hits = sorted({h for h in (st or {}).get("hits") or [] if h >= lo} | {today.isoformat()})
+    until = str((st or {}).get("until") or "")
+    confirmed = False
+    if len(hits) >= 2:
+        until = (today + timedelta(days=UNABLE_TTL_DAYS)).isoformat()
+        confirmed = True
+    return {"hits": hits, "until": until}, confirmed
+
+
+def unable_save(path, st):
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"hits": st.get("hits") or [], "until": st.get("until") or "",
+                       "note": "Copilot 이 메일 조회 불가로 답한 날들 — 서로 다른 날 2회면 until 까지 생략(재시도: --retry-copilot "
+                               "또는 이 파일 삭제)"}, f, ensure_ascii=False, indent=1)
+    except OSError:
+        pass
+
+
+def unable_clear(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def parse_ranges(text):
+    """--ranges 'A:B,C~D,E' 또는 '@파일'(같은 글 또는 JSON [[A,B],…]) → [('YYYY-MM-DD','YYYY-MM-DD')] 날짜순·겹침 합침.
+    잘못된 조각은 버린다."""
+    t = str(text or "").strip()
+    if t.startswith("@"):
+        try:
+            with open(t[1:], encoding="utf-8-sig") as f:
+                raw = f.read()
+        except OSError:
+            return []
+        try:
+            o = json.loads(raw)
+            t = ",".join(f"{x[0]}:{x[-1]}" if isinstance(x, (list, tuple)) else str(x) for x in o)
+        except (ValueError, TypeError, IndexError):
+            t = raw
+    out = []
+    for part in re.split(r"[,;\s]+", t):
+        ds = re.findall(r"\d{4}-\d{2}-\d{2}", part)
+        if not ds:
+            continue
+        try:
+            a, b = date.fromisoformat(ds[0]), date.fromisoformat(ds[-1])
+        except ValueError:
+            continue
+        out.append((min(a, b), max(a, b)))
+    out.sort()
+    merged = []
+    for a, b in out:
+        if merged and a <= merged[-1][1] + timedelta(days=1):
+            merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+        else:
+            merged.append((a, b))
+    return [(a.isoformat(), b.isoformat()) for a, b in merged]
+
+
+def emit_status(rc, reasons=(), counts=None, ranges=None, src="copilot"):
+    """수집기 마지막 줄(LM28 P3) — 'LMSTATUS ' + JSON 한 줄."""
+    rs = ",".join(dict.fromkeys(r for r in reasons if r))
+    print("LMSTATUS " + json.dumps({"v": 1, "src": src, "rc": int(rc), "reason": rs, "counts": counts or {},
+                                    "ranges": ranges or []}, ensure_ascii=False))
+    sys.stdout.flush()
 
 
 def slices_of(d0, d1, days=30):
@@ -356,6 +513,7 @@ def slices_of(d0, d1, days=30):
 
 
 def need_subdivide(n_rows, span_days):
+    """LM24 의 30일 조각 재질의 규칙(LM28 은 7일 조각이라 쓰지 않는다 — 12일 이하는 늘 False)."""
     return span_days > 12 and (n_rows < 5 or n_rows >= 35)
 
 
@@ -364,7 +522,7 @@ def _span_days(s0, s1):
 
 
 def _refine(kind, s0, s1, alt, days, take, one_slice=None):
-    """s0~s1 을 days 일 조각으로 다시 물어 take 에 넣는다. 조각이 또 140행 이상이면 5일까지 쪼갠다(그 아래는 경고만).
+    """s0~s1 을 days 일 조각으로 다시 물어 take 에 넣는다. 조각이 또 140행 이상이면 1일까지 쪼갠다(그 아래는 경고만).
     one_slice 는 시험용 주입점(기본 _one_slice)."""
     q = one_slice or _one_slice
     for t0s, t1s in slices_of(s0, s1, days):
@@ -372,21 +530,22 @@ def _refine(kind, s0, s1, alt, days, take, one_slice=None):
         add = take(got)
         full = len(got) >= FULL_N
         print(f"[mail-copilot]     {t0s}~{t1s}: +{add}건"
-              + (" (140행 이상 — 5일 조각에서도 잘림 가능)" if full and days <= 5 else ""))
-        if full and days > 5:
-            print(f"[mail-copilot]     {t0s}~{t1s}: {len(got)}건(잘림 의심) → 5일 조각 재질의")
-            _refine(kind, t0s, t1s, alt, 5, take, q)
+              + (" (140행 이상 — 1일 조각에서도 잘림 가능)" if full and days <= 1 else ""))
+        if full and days > 1:
+            print(f"[mail-copilot]     {t0s}~{t1s}: {len(got)}건(잘림 의심) → 1일 조각 재질의")
+            _refine(kind, t0s, t1s, alt, 1, take, q)
 
 
-def collect_kind(kind, d0, d1, store_subject, one_slice=None):
-    """한 종류(mail|cal)를 30일 조각으로 왕복 → (저장 행 수, 'unable' 여부).
-    회수가 140행 이상(150행 상한에 잘림)이면 5일, 35~139행이면 10일 조각(그 안에서 140행이면 다시 5일)로 재질의.
-    one_slice 는 시험용 주입점(기본 _one_slice)."""
+def collect_kind(kind, d0, d1, store_subject, one_slice=None, ranges=None, dst=None):
+    """한 종류(mail|cal)를 7일 조각으로 왕복 → (받은 행 수, unable 여부, fatal 여부, 조각 결과 [(from, to, 상태)]).
+    ranges(LM28 — 미관측일 구간 목록)가 있으면 그 구간만, 없으면 d0~d1. 회수가 140행 이상(150행 상한에 잘림)이면 2일 조각으로
+    재질의. 'empty'·'other' 는 실패로 세지 않고(진짜 빈 주), 드라이버 무응답(error)만 연속 ERR_MAX 번이면 멈춘다.
+    표를 받은 조각마다 병합 저장(증분 — 그 조각의 옛 행만 바뀐다). one_slice 는 시험용 주입점(기본 _one_slice)."""
     q = one_slice or _one_slice
-    sl = slices_of(d0, d1)
-    print(f"[mail-copilot] {kind}: {d0}~{d1} → {len(sl)}조각 왕복 (30일 단위)")
-    rows, seen = [], set()
-    kidx = 0 if kind == "cal" else 1
+    spans = list(ranges) if ranges else [(d0, d1)]
+    sl = [c for a, b in spans for c in slices_of(a, b, CHUNK_DAYS)]
+    print(f"[mail-copilot] {kind}: {len(spans)}구간 → {len(sl)}조각 왕복 ({CHUNK_DAYS}일 단위)")
+    rows, seen, chunks = [], set(), []
 
     def take(batch):
         n = 0
@@ -399,15 +558,15 @@ def collect_kind(kind, d0, d1, store_subject, one_slice=None):
                 n += 1
         return n
 
-    alt, fails, unable = False, 0, False
+    alt, errs, unable, fatal = False, 0, False, False
     for i, (s0, s1) in enumerate(sl):
         print(f"[mail-copilot] {kind} {i + 1}/{len(sl)} 조각 {s0}~{s1}")
         got, st = q(kind, s0, s1, alt)
         if st == "fatal":
-            # 로그인이 안 된 PC — 조각을 더 물어도 똑같다. 한 조각에서 접는다.
+            # 로그인이 안 된 PC — 조각을 더 물어도 똑같다. 한 조각에서 접는다('조회 불가'로 기억하지는 않는다).
             print(f"[mail-copilot] Copilot 을 쓸 수 없어 남은 {len(sl) - i}조각을 생략합니다 "
                   "(로그인 뒤 다시 실행하면 이어서 모읍니다)")
-            unable = True
+            fatal = True
             break
         if st == "unable" and not alt:
             print("[mail-copilot]   '조회 불가' 응답 — 검색형 화법으로 전환해 재시도")
@@ -417,36 +576,30 @@ def collect_kind(kind, d0, d1, store_subject, one_slice=None):
             print(f"[mail-copilot] Copilot 이 {kind} 조회를 지원하지 않는 응답 — 남은 조각 생략")
             unable = True
             break
-        if st in ("other", "empty") and not got:
-            fails += 1
-            if fails >= 3:
-                print("[mail-copilot] 3조각에서 표를 얻지 못해 중단 (판정용 Copilot 세션 보호)")
+        if st == "error":
+            errs += 1
+            chunks.append((s0, s1, st))
+            if errs >= ERR_MAX:
+                print(f"[mail-copilot] {ERR_MAX}조각 연속 답을 받지 못해 중단 (판정용 Copilot 세션 보호)")
                 break
-        take(got)
-        if st == "empty":
-            print(f"[mail-copilot]   이 조각은 {kind} 없음 · 누적 {len(rows)}건")
             continue
-        span = _span_days(s0, s1)
-        if len(got) >= FULL_N and span > 5:
-            print(f"[mail-copilot]   {len(got)}건 (150행 상한에 잘림) → 5일 조각 재질의")
-            _refine(kind, s0, s1, alt, 5, take, q)
-        elif need_subdivide(len(got), span):
-            print(f"[mail-copilot]   {len(got)}건 ({'회수 부족' if len(got) < 5 else '잘림 의심'}) → 10일 조각 재질의")
-            _refine(kind, s0, s1, alt, 10, take, q)
-        if rows:
-            rows.sort(key=lambda r: r[kidx])
-            _save(kind, rows, store_subject)          # 증분 저장
-        print(f"[mail-copilot]   누적 {len(rows)}건" + (" (증분 저장됨)" if rows else ""))
-    if rows:
-        rows.sort(key=lambda r: r[kidx])
-        _save(kind, rows, store_subject)
-    return len(rows), unable
+        errs = 0
+        n0 = len(rows)
+        take(got)
+        if st == "table" and len(got) >= FULL_N and _span_days(s0, s1) > REFINE_DAYS:
+            print(f"[mail-copilot]   {len(got)}건 (150행 상한에 잘림) → {REFINE_DAYS}일 조각 재질의")
+            _refine(kind, s0, s1, alt, REFINE_DAYS, take, q)
+        chunks.append((s0, s1, st))
+        if st == "table" and len(rows) > n0:
+            _save(kind, rows[n0:], store_subject, dst, [(s0, s1)])     # 증분 병합 저장 — 이 조각의 옛 행만 바뀐다
+        print(f"[mail-copilot]   {'없음' if st == 'empty' else st} · 누적 {len(rows)}건")
+    return len(rows), unable, fatal, chunks
 
 
-def _precision_counts(out_dir):
-    """방금 쓴 mail.csv 의 (전체, 시각을 못 읽은) 통수 — mail_source.json 에 남겨 화면이 손실을 말할 수 있게 한다."""
+def _precision_counts(out_dir, name="mail.csv"):
+    """방금 쓴 메일 파일의 (전체, 시각을 못 읽은) 통수 — mail_source.json 에 남겨 화면이 손실을 말할 수 있게 한다."""
     import csv as _csv
-    p = os.path.join(out_dir, "mail.csv")
+    p = os.path.join(out_dir, name)
     n_all = n_date = 0
     try:
         with open(p, encoding="utf-8-sig", errors="replace") as f:
@@ -459,85 +612,138 @@ def _precision_counts(out_dir):
     return n_all, n_date
 
 
+def chunk_ranges(kind, chunks):
+    """조각 결과 → LMSTATUS ranges — 표를 받은 조각은 partial(Copilot 은 증인이지 '읽음'이 아니다), 그 밖은 unverified."""
+    axes = ("mail_in", "mail_out") if kind == "mail" else ("cal",)
+    out = []
+    for a, b, st in chunks:
+        for ax in axes:
+            out.append({"axis": ax, "from": a, "to": b, "st": "partial" if st == "table" else "unverified"})
+    return out
+
+
 def main():
+    global SAVE_REPLIES
     d0 = arg("--from") or (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
     d1 = arg("--to") or datetime.now().strftime("%Y-%m-%d")
     force = "--force" in sys.argv
     only = arg("--only")            # 'mail' | 'cal' — run.py 가 필요한 종류만 지정
+    tag = arg("--tag")
+    src_name = tag or "copilot"
+    if tag and not re.fullmatch(r"[A-Za-z0-9_-]{1,24}", tag):
+        print(f"[mail-copilot] --tag 값이 올바르지 않습니다: {tag}")
+        emit_status(3, ["R-ARGS"])
+        return 3
+    out_arg = arg("--out-dir")
+    out_dir = (out_arg if os.path.isabs(out_arg) else os.path.join(ROOT, out_arg)) if out_arg else OUT_DIR
+    paths = {"mail": os.path.join(out_dir, f"mail_{tag}.csv" if tag else "mail.csv"),
+             "cal": os.path.join(out_dir, f"cal_{tag}.csv" if tag else "calendar.csv")}
+    src_p = os.path.join(out_dir, f"mail_source_{tag}.json" if tag else "mail_source.json")
+    flag_p = os.path.join(out_dir, "mail_copilot_unavailable.json")
+    ranges = parse_ranges(arg("--ranges")) if "--ranges" in sys.argv else None
+    if ranges is not None and not ranges:
+        print("[mail-copilot] --ranges 에 물을 날이 없습니다 — 왕복 생략")
+        emit_status(0, [], {"chunks": 0}, src=src_name)
+        return 0
     try:
         cfg = json.load(open(os.path.join(ROOT, "config", "config.json"), encoding="utf-8-sig"))
     except (OSError, ValueError):
         cfg = {}
     store_subject = bool(cfg.get("storeMailSubject", True))
-    if os.path.exists(UNAVAILABLE_FLAG) and "--retry-copilot" not in sys.argv:
-        try:
-            info = json.load(open(UNAVAILABLE_FLAG, encoding="utf-8-sig"))
-        except (OSError, ValueError):
-            info = {}
-        print(f"[mail-copilot] 이 계정의 Copilot 은 메일 조회 불가로 확인됨({info.get('when', '?')}) — 왕복 생략")
-        print("               (재시도: --retry-copilot 또는 data\\outlook\\mail_copilot_unavailable.json 삭제)")
-        return 1
+    SAVE_REPLIES = store_subject
+    today = date.today()
+    ust = unable_load(flag_p)
+    if "--retry-copilot" in sys.argv:
+        ust = {"hits": [], "until": ""}
+        unable_clear(flag_p)
+    if unable_active(ust, today):
+        print(f"[mail-copilot] 이 계정의 Copilot 은 메일 조회 불가로 확인됨(서로 다른 날 2회 — {ust['until']} 까지 왕복 생략)")
+        print(f"               (재시도: --retry-copilot 또는 {flag_p} 삭제)")
+        emit_status(3, ["R-UNABLE"], {"unable_until": ust["until"]}, src=src_name)
+        return 3
     todo = []
-    for kind, fn in (("mail", "mail.csv"), ("cal", "calendar.csv")):
+    for kind in ("mail", "cal"):
         if only and kind != only:
             continue
-        p = os.path.join(OUT_DIR, fn)
-        if _has_data(p) and not force:
-            print(f"[mail-copilot] {fn} 에 이미 자료가 있어 건너뜀 (덮어쓰려면 --force)")
+        # 출처별 파일(--tag)은 이 수집기 것이라 늘 묻는다. LM24 경로(공용 파일)는 COM·색인이 모은 것을 지키려 --force 때만.
+        if not tag and _has_data(paths[kind]) and not force:
+            print(f"[mail-copilot] {os.path.basename(paths[kind])} 에 이미 자료가 있어 건너뜀 (덮어쓰려면 --force)")
         else:
             todo.append(kind)
     if not todo:
+        emit_status(0, [], {"skipped": 1}, src=src_name)
         return 0
-    total, unable_kinds, counts = 0, set(), {}
+    total, unable_kinds, counts, out_ranges = 0, set(), {}, []
+    tally = {"chunks": 0, "table": 0, "empty": 0, "other": 0, "error": 0, "blocked": 0}
+    fatal = False
+    LAST_FATAL.clear()
     for kind in todo:
-        n, unable = collect_kind(kind, d0, d1, store_subject)
+        n, unable, fat, chunks = collect_kind(kind, d0, d1, store_subject, ranges=ranges, dst=paths[kind])
         total += n
         counts[kind] = n
         if unable:
             unable_kinds.add(kind)
-        print(f"[mail-copilot] {kind}: {n}건 저장")
-    try:
-        os.makedirs(OUT_DIR, exist_ok=True)
-        _pa, _pd = _precision_counts(OUT_DIR)
-        src = {"source": "copilot", "when": datetime.now().strftime("%Y-%m-%d %H:%M"),
-               "kinds": todo, "rows": total, "mail": counts.get("mail", 0), "calendar": counts.get("cal", 0),
-               "me": [], "mail_rows": _pa, "date_only": _pd,       # 시각을 못 읽은 통수(시간 계상 제외 — extract A38)
-               "warnings": ([f"시각을 못 읽은 메일 {_pd}/{_pa}통 — 시간 계상 제외(클래식 Outlook 을 켜고 재수집 권장)"]
-                            if _pd else [])}
-        if "cal" in todo:
-            # 프롬프트가 회차마다 한 행을 요구한다 — 반복 마스터만 남는 색인 폴백과 달리 '완전' 로 표시(LLM 회수 한계는 별개)
-            src["calendar_complete"] = bool(counts.get("cal"))
-            src["calendar_recurring_masters"] = 0
-        with open(os.path.join(OUT_DIR, "mail_source.json"), "w", encoding="utf-8") as f:
-            json.dump(src, f, ensure_ascii=False)
-    except OSError:
-        pass
-    if total == 0:
-        # '불가' 기억은 메일 조회가 막혔을 때만 남긴다(메일이 핵심). 일정만 시도해 막힌 경우는 기록하지 않는다 —
-        # 전역 플래그가 다음 실행의 메일 왕복까지 막아 버리기 때문.
-        if "mail" in unable_kinds:
-            try:
-                os.makedirs(OUT_DIR, exist_ok=True)     # 아무것도 저장 못 한 경로라 폴더가 없을 수 있다
-                with open(UNAVAILABLE_FLAG, "w", encoding="utf-8") as f:
-                    json.dump({"when": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                               "note": "Copilot 응답이 메일/일정 조회 불가 유형 — 재시도는 --retry-copilot 또는 이 파일 삭제"},
-                              f, ensure_ascii=False, indent=1)
-                print("               (기록됨 — 다음 분석부터 Copilot 메일 왕복을 자동 생략합니다)")
-            except OSError:
-                pass
-        print("[mail-copilot] 표를 얻지 못함 — 실제 응답 원문은 data\\outlook\\replies\\ 에서 확인")
-        return 1
-    if os.path.exists(UNAVAILABLE_FLAG):
+        for _a, _b, st in chunks:
+            tally["chunks"] += 1
+            tally[st] = tally.get(st, 0) + 1
+        out_ranges += chunk_ranges(kind, chunks)
+        print(f"[mail-copilot] {kind}: {n}건 받음(병합 저장)")
+        if fat:
+            fatal = True
+            break                       # 로그인 등 사람이 풀 실패 — 다음 종류도 똑같다
+    if total or not tag:
+        # LM24 경로는 늘(옛 동작), 출처별 파일은 받은 것이 있을 때만 — 0행 파일이 병합 출처로 잡히지 않게
         try:
-            os.remove(UNAVAILABLE_FLAG)
+            os.makedirs(out_dir, exist_ok=True)
+            _pa, _pd = _precision_counts(out_dir, os.path.basename(paths["mail"]))
+            src = {"source": "copilot", "when": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                   "kinds": todo, "rows": total, "mail": counts.get("mail", 0), "calendar": counts.get("cal", 0),
+                   "me": [], "mail_rows": _pa, "date_only": _pd,       # 시각을 못 읽은 통수(시간 계상 제외 — extract A38)
+                   "warnings": ([f"시각을 못 읽은 메일 {_pd}/{_pa}통 — 시간 계상 제외(클래식 Outlook 을 켜고 재수집 권장)"]
+                                if _pd else []),
+                   "ranges": [list(x) for x in ranges] if ranges else [[d0, d1]], "counts": dict(tally)}
+            if "cal" in todo:
+                # 프롬프트가 회차마다 한 행을 요구한다 — 반복 마스터만 남는 색인 폴백과 달리 '완전' 로 표시(LLM 회수 한계는 별개)
+                src["calendar_complete"] = bool(counts.get("cal"))
+                src["calendar_recurring_masters"] = 0
+            with open(src_p, "w", encoding="utf-8") as f:
+                json.dump(src, f, ensure_ascii=False)
         except OSError:
             pass
+    counts_out = dict(tally, rows=total, mail=counts.get("mail", 0), cal=counts.get("cal", 0))
+    if fatal:
+        ph = LAST_FATAL.get("phase") or ""
+        why = LAST_FATAL.get("reason") or ("R-LOGIN" if ph == "login_required" else "R-EDGELAUNCH")
+        emit_status(2 if ph == "login_required" else 3, [why], counts_out, out_ranges, src=src_name)
+        return 2 if ph == "login_required" else 3
+    if total == 0:
+        # '불가' 기억은 메일 조회가 막혔을 때만(메일이 핵심) — 서로 다른 날 2회여야 14일 생략(C-34). 일정만 막힌 경우는
+        # 기록하지 않는다(다음 실행의 메일 왕복까지 막지 않게).
+        if "mail" in unable_kinds:
+            ust, confirmed = unable_note(ust, today)
+            unable_save(flag_p, ust)
+            print("               (" + (f"서로 다른 날 2회 확인 — {ust['until']} 까지 Copilot 메일 왕복을 생략합니다)"
+                                       if confirmed else "1회 기록 — 다른 날 한 번 더 같은 답이면 14일 동안 생략합니다)"))
+            emit_status(3, ["R-UNABLE"], counts_out, out_ranges, src=src_name)
+            return 3
+        answered = tally.get("empty", 0) + tally.get("other", 0)
+        if not answered:
+            why = "R-GATE" if tally.get("blocked") and not tally.get("error") else "R-NOREPLY"
+            print("[mail-copilot] 표를 얻지 못함 — 실제 응답 원문은 data\\outlook\\replies\\ 에서 확인")
+            emit_status(3, [why], counts_out, out_ranges, src=src_name)
+            return 3
+        print("[mail-copilot] 표를 얻지 못함('없음' 또는 표 아닌 답) — 실제 응답 원문은 data\\outlook\\replies\\ 에서 확인")
+        emit_status(0, [], counts_out, out_ranges, src=src_name)
+        return 0
+    if ust.get("hits") or ust.get("until"):
+        unable_clear(flag_p)           # 표를 받았다 — 조건이 바뀌었다(기억 해제)
     # 메일이 채워졌으면 COM 단계가 남긴 '건너뜀 사유'는 더 이상 화면에 낼 이유가 없다
     try:
-        if "mail" in todo and _has_data(os.path.join(OUT_DIR, "mail.csv")):
+        if not tag and "mail" in todo and _has_data(paths["mail"]):
             os.remove(os.path.join(OUT_DIR, "outlook_skip.json"))
     except OSError:
         pass
+    emit_status(0, [], counts_out, out_ranges, src=src_name)
     return 0
 
 

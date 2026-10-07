@@ -6,8 +6,13 @@ Get-PcOnHints.py — 브라우저 사용기록의 '방문 시각'만으로 과�
     Edge/Chrome 사용기록은 기본 90일 보존이라 기간 전체를 덮는 유일한 상시 소스다.
 
 프라이버시: visits.visit_time 컬럼(시각)만 SELECT 한다 — URL·제목·검색어는 조회 자체를
-    하지 않는다. 산출물은 날짜별 가동시간 숫자뿐이다. 방문은 LM20 과 같이 전부 센다 — '동기화 방문'
-    표식(visit_source·originator_cache_guid)은 이 PC 에서 본 방문에도 붙어 제외 근거가 못 된다(실측, visit_times 주석).
+    하지 않는다. 산출물은 날짜별 가동시간 숫자뿐이다. 방문은 LM20 과 같이 대부분 센다 — 다만
+    visit_source.source = 0(SOURCE_SYNCED: 다른 기기에서 동기화돼 넘어온 방문)은 이 PC 가동 근거가 아니라 뺀다
+    (LM28 · config pcHints.includeSynced=true 로 되돌릴 수 있다). source=8 등 그 밖의 표식·originator_cache_guid 는
+    이 PC 에서 본 방문에도 붙어 제외 근거가 못 된다(실측, visit_times 주석).
+    추가 전용 원장이라 한 번 들어간 동기화 방문은 고칠 길이 없다 — 그래서 쓰기 전에 거른다.
+
+마지막 줄: LMSTATUS {v,src:'pc_hints',rc,reason,counts,ranges} — 원장 잠금을 못 얻으면 rc 3(R-LEDGERBUSY, exit 3).
 
 동작: 방문 시각을 30분 갭으로 세션화(+마지막 방문 5분 여유) → 힌트 구간.
     data\pc\pc_spans.csv(이벤트 구간, Get-PcOnHistory.ps1) 가 있으면 **이벤트 구간 ∪ 힌트 구간** 을
@@ -21,6 +26,7 @@ Get-PcOnHints.py — 브라우저 사용기록의 '방문 시각'만으로 과�
 import csv
 import glob
 import io
+import json
 import os
 import shutil
 import sqlite3
@@ -50,8 +56,25 @@ def arg(flag, d=""):
     return sys.argv[sys.argv.index(flag) + 1] if flag in sys.argv else d
 
 
+def load_cfg():
+    """config\\config.json (없거나 깨졌으면 {}) — pcHints.includeSynced 만 본다."""
+    try:
+        with open(os.path.join(ROOT, "config", "config.json"), encoding="utf-8-sig") as f:
+            c = json.load(f)
+        return c if isinstance(c, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def lmstatus(rc, reason="", counts=None):
+    """수집기 공통 마지막 줄 — run.py 가 rc·사유를 읽는다(힌트는 '검증' 출처가 아니라 ranges 는 비운다)."""
+    print("LMSTATUS " + json.dumps({"v": 1, "src": "pc_hints", "rc": rc, "reason": reason,
+                                    "counts": counts or {}, "ranges": []},
+                                   ensure_ascii=False, separators=(",", ":")))
+
+
 def history_files():
-    """Edge/Chrome 전 프로필의 History 경로 (LM 전용 copilot_profile 은 여기 없음)"""
+    r"""Edge/Chrome 전 프로필의 History 경로 (LM 전용 Edge 프로필 data\lm28_edge 는 설치 폴더 안이라 여기 없음)"""
     la = os.environ.get("LOCALAPPDATA", "")
     outs = []
     for base in (os.path.join(la, "Microsoft", "Edge", "User Data"),
@@ -70,10 +93,18 @@ def _chrome_us(t):
     return int((t.timestamp() + CHROME_EPOCH_OFFSET) * 1e6)
 
 
-def visit_times(hist_path, t0, t1):
+def _has_table(con, name):
+    try:
+        return con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone() is not None
+    except sqlite3.Error:
+        return False
+
+
+def visit_times(hist_path, t0, t1, include_synced=False, stats=None):
     """방문 시각 목록 — 브라우저가 잠그고 있어도 사본으로 읽는다 (URL 은 조회하지 않음).
-    반환 방문 시각 목록."""
-    tmp = os.path.join(tempfile.gettempdir(), "lm_hist_copy")
+    include_synced=False 면 visit_source.source=0(SOURCE_SYNCED — 다른 기기에서 동기화된 방문)을 뺀다.
+    stats(dict)를 주면 synced(뺀 방문 수)를 더한다. 반환 방문 시각 목록."""
+    tmp = os.path.join(tempfile.gettempdir(), "lm28_hist_copy")     # LM24(lm_hist_copy)와 동시 실행해도 겹치지 않게
     times = []
     try:
         shutil.copy2(hist_path, tmp)
@@ -83,12 +114,22 @@ def visit_times(hist_path, t0, t1):
         con = sqlite3.connect(tmp)
         try:
             lo, hi = _chrome_us(t0), _chrome_us(t1)
-            # 방문은 **전부** 이 PC 의 가동 근거로 센다 — LM20 과 같다. LM22~LM24 는 visit_source(source≠1)·
+            # 방문은 거의 **전부** 이 PC 의 가동 근거로 센다 — LM20 과 같다. LM22~LM24 는 visit_source(source≠1)·
             # originator_cache_guid 로 '다른 기기 동기화' 를 걸렀는데, 이 PC 이벤트 로그 가동 구간과 로컬 시각으로 대조하니
             # 거른 방문도 이 PC 가 켜진 시간의 것이었다(남긴 방문 89% · source=8 1,946건 95% · guid 532건 70% — guid 의 나머지는
             # 전부 종료 이벤트가 빠진 하루(이벤트 구간이 20h 에서 잘린 날)에 몰려 있고 그날도 일반 방문이 PC 가 켜져 있었음을
             # 보인다). 그 필터가 보강 시간을 LM20 보다 줄였다(보강만 8월 60.1h → 38.0h).
-            for (v,) in con.execute("SELECT visit_time FROM visits WHERE visit_time >= ? AND visit_time < ?", (lo, hi)):
+            # LM28: source=0(SOURCE_SYNCED)만 뺀다 — Chromium 이 '다른 기기에서 동기화돼 들어온 방문' 에만 붙이는 값이라
+            # 이 PC 의 가동이 아니다(W1-16). visit_source 에 행이 없는 방문은 직접 본 방문(SOURCE_BROWSED)이다.
+            q = "SELECT visit_time FROM visits WHERE visit_time >= ? AND visit_time < ?"
+            if not include_synced and _has_table(con, "visit_source"):
+                n_sync = con.execute("SELECT COUNT(*) FROM visits v JOIN visit_source s ON s.id = v.id "
+                                     "WHERE v.visit_time >= ? AND v.visit_time < ? AND s.source = 0", (lo, hi)).fetchone()[0]
+                if stats is not None:
+                    stats["synced"] = stats.get("synced", 0) + int(n_sync or 0)
+                q = ("SELECT v.visit_time FROM visits v LEFT JOIN visit_source s ON s.id = v.id "
+                     "WHERE v.visit_time >= ? AND v.visit_time < ? AND (s.source IS NULL OR s.source != 0)")
+            for (v,) in con.execute(q, (lo, hi)):
                 try:
                     t = datetime.fromtimestamp(v / 1e6 - CHROME_EPOCH_OFFSET)
                 except (OSError, OverflowError, ValueError):
@@ -161,7 +202,8 @@ def main():
     t1 = datetime.strptime(d1, "%Y-%m-%d") + timedelta(days=1)
     if _ledger is None:
         print("[pc-hint] core\\pc_ledger 가 없어 보강을 보류합니다 — 기존 기록은 건드리지 않습니다")
-        return 0
+        lmstatus(3, "R-NOLEDGER")
+        return 3
     pc_dir = os.path.join(ROOT, "data", "pc")
     anchor = _ledger.ensure_anchor(pc_dir, own_pc=True)
     if anchor is not None and anchor > t0:
@@ -172,29 +214,45 @@ def main():
     files = history_files()
     if not files:
         print("[pc-hint] Edge/Chrome 사용기록 없음(정책 차단 가능) — 샘플러 시각으로만 보강 시도")
-    times = []
+    inc_sync = bool((load_cfg().get("pcHints") or {}).get("includeSynced", False))
+    times, vstat = [], {}
     for h in files:
-        vt = visit_times(h, t0, t1)
+        vt = visit_times(h, t0, t1, include_synced=inc_sync, stats=vstat)
         times += vt
         prof = os.path.basename(os.path.dirname(h))
         brand = "Edge" if "\\Edge\\" in h else "Chrome"
         print(f"[pc-hint] {brand}\\{prof}: 방문 시각 {len(vt)}건 (URL 미조회)")
+    n_visits = len(times)
+    if vstat.get("synced"):
+        print(f"[pc-hint] 다른 기기에서 동기화된 방문 {vstat['synced']}건 제외(visit_source=0 · pcHints.includeSynced=false)")
     st = sampler_times(t0, t1)
     if st:
         print(f"[pc-hint] 창 샘플러: 샘플 시각 {len(st)}건 합류")
     times += st
+    counts = {"visits": n_visits, "synced_excluded": int(vstat.get("synced", 0)), "sampler": len(st),
+              "profiles": len(files)}
     if not times:
         print("[pc-hint] 보강 근거 없음(방문 기록·샘플러 모두 0건) — 원장 그대로")
         extra_sampler(t0, t1)          # 본 PC 근거가 없어도 옮겨 온 PC 의 샘플러는 보강한다
+        lmstatus(1, "", counts)        # 대상 없음(실패 아님 — 종료 코드 0)
         return 0
     # TAIL_MIN 여유가 --to 자정을 넘겨 기간 밖 구간을 만들지 않게 t1 로 자른다
     hint_spans = [(a, min(b, t1), HINT_SRC) for a, b in to_spans(times) if a < t1]
-    added, _lu, clipped = _ledger.append_spans(pc_dir, hint_spans, anchor=anchor)
-    days, carried = _ledger.regen_pc_on(pc_dir, anchor=anchor)
-    extra_sampler(t0, t1)            # 요약 줄보다 먼저 — run.py 가 마지막 줄을 수집 단계 요약으로 남긴다
+    counts["hint_spans"] = len(hint_spans)
+    try:
+        added, _lu, clipped = _ledger.append_spans(pc_dir, hint_spans, anchor=anchor)
+        days, carried = _ledger.regen_pc_on(pc_dir, anchor=anchor)
+    except _ledger.LedgerBusy as e:
+        # 잠금 없이 쓰면 동시 실행의 추가가 유실된다(추가 전용 원장이라 고칠 수 없다) — 이번 보강은 쓰지 않고 다음 실행에 맡긴다
+        print(f"[pc-hint] 원장 반영 보류: {e} — 다음 실행에서 다시 보강합니다")
+        lmstatus(3, "R-LEDGERBUSY", counts)
+        return 3
+    extra_sampler(t0, t1)            # 요약 줄보다 먼저 — run.py 가 마지막 줄 근처를 수집 단계 요약으로 남긴다
+    counts.update({"added": added, "clipped": clipped, "days": days})
     print(f"[pc-hint] 힌트 구간 {len(hint_spans)}개 → 원장 추가 {added}"
           + (f" · 앵커 이전 제외 {clipped}" if clipped else "")
           + f" · 캐시 재생성 {days}일(+이월 {carried})")
+    lmstatus(0, "", counts)
     return 0
 
 

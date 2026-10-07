@@ -16,6 +16,11 @@ LoadMonitor20 과 다른 점:
     프로그램이 **내 mm_rows 실측**으로 붙인다(recalc_mm): 근거 업무명 → 행 대조 → 실측 합.
     같은 업무를 여러 과제가 물면 겹친 과제 수로 안분한 load_mm_split 도 남긴다.
     근거 업무명을 내 자료에서 못 찾으면 '[근거 없음]' 표식(억지 매칭 의심).
+  · LM28: '대체 가능 MM≈' 은 만들지 않는다(보고서 원칙 RP4 — 실측 투입·빈도만). 신규 후보(new)에는 MM 을 붙이지 않고
+    근거 행 수(evidence_rows)만, AI 원 추정치(load_mm_ai)·sum_new_load_mm 도 남기지 않는다(옛 결과는 재계산 때 지운다).
+  · LM28 G3: 업무 행의 상세설명·근거는 관문(judge.g3_rows)을 거친 재정제 사본으로 보낸다. 관문에 막힌 묶음은 실패가
+    아니다(연속 실패·적응 분할에 넣지 않고 그 행은 판정 끝으로 둔다 — gate_skipped_rows).
+  · 프롬프트 첫 줄의 팀 업무 영역은 config.agentic.domainHint(비면 일반 문구) — 조직 고유 문구를 코드에 두지 않는다.
 
 묶음이 많은 사람(업무 수백 행)이 통째로 실패하던 것(S2)에 대한 보강:
   · 묶음은 **같은 채팅에서 이어** 보낸다(fresh=None) — Copilot 이 앞 묶음의 매칭·표기를 기억해 묶음 간 판정이 일관되게
@@ -38,9 +43,9 @@ LoadMonitor20 과 다른 점:
 
 출력: report\agentic_<기간>.json  → UI 'Agentic AI' 탭 · 리포트 · 팀 취합(team_agentic.html)
   {tag, axes, match[{task,axis,name,fit,load_mm,work,reason, load_mm_split,evidence_rows,
-   evidence_missing,shared_tasks,load_mm_ai}], new[{name,logic,reason,load_mm,work}],
+   evidence_missing,shared_tasks}], new[{name,logic,reason,work,evidence_rows,evidence_missing}],
    misassigned[{row,reason}], rows_analyzed, rows_total, rows_pending, rows_done[], partial,
-   chunks, failed_chunks, salvaged_chunks, note, last_error, generated, mm_recalc}
+   chunks, failed_chunks, salvaged_chunks, gate_skipped_rows, note, last_error, generated, mm_recalc}
 """
 import glob
 import io
@@ -122,6 +127,29 @@ def latest_tag():
     return os.path.basename(fs[-1])[len("mm_meta_"):-len(".json")] if fs else ""
 
 
+DOMAIN_HINT_DEFAULT = "엔지니어링 팀"
+
+
+def domain_hint():
+    """config.agentic.domainHint — 프롬프트 첫 줄에 넣을 팀 업무 영역 한 줄(W2-14: 특정 팀 문구를 코드에 두지 않는다).
+    비었거나 못 읽으면 일반 문구. 60자·한 줄로 자른다."""
+    try:
+        with open(os.path.join(ROOT, "config", "config.json"), encoding="utf-8-sig") as f:
+            v = (json.load(f).get("agentic") or {}).get("domainHint")
+    except (OSError, ValueError, TypeError, AttributeError):
+        v = ""
+    return " ".join(str(v or "").split())[:60]
+
+
+def g3_part(rows):
+    """G3 관문 — 업무 행의 상세설명·근거를 재정제한 사본(자격증명·고위험 잔여·카나리아 행은 뺀다). 과제·세부업무 이름은
+    답의 work 표기와 대조하는 열쇠라 바꾸지 않는다(그 이름의 잔여는 최종 프롬프트 검사가 본다)."""
+    if not rows:
+        return []
+    import judge
+    return judge.g3_rows(rows, ("상세설명", "근거"))[0]
+
+
 def rfind_json(reply, want_key):
     """호환 — 정상 파싱 + 정규화 + 잘린 JSON 복구까지(core/details.find_json)."""
     return details.find_json(reply, want_key)[0]
@@ -163,8 +191,10 @@ def ag_prompt(tasks, rows, stats=None):
     """rows: 업무 행 목록(MM 미전송) · stats: {row_key: (총 신호, 수동 신호)} — 행 끝 '(수동 m/n)'.
     출력 예시는 <...> 자리표시자 — **예시 자체가 유효한 JSON 이 아니게** 한다: 회수가 어긋나 우리
     프롬프트가 되돌아와도 예시가 답으로 파싱되지 않는다(실측 사고: 'AL-1 70% 렌즈 시뮬레이션' 저장)."""
+    hint = domain_hint()
     lines = [
-        "당신은 LiDAR 개발팀의 Agentic AI 과제 기획 분석가입니다.",
+        (f"당신은 '{hint}' 업무를 하는 팀의 Agentic AI 과제 기획 분석가입니다." if hint
+         else f"당신은 {DOMAIN_HINT_DEFAULT}의 Agentic AI 과제 기획 분석가입니다."),
         "[계획 과제]는 팀이 개발하기로 한 Agentic AI 과제이고,",
         "[현재 업무]는 한 팀원의 실제 업무(PC 흔적 기반 자동 분석) 목록입니다.",
         "",
@@ -341,8 +371,9 @@ def merge_new(news, o):
     for x in (o.get("new") or []):
         if not isinstance(x, dict) or not str(x.get("name") or "").strip() or _placeholder(x.get("name")):
             continue
+        # 신규 후보에는 MM 을 붙이지 않는다('대체 가능 MM≈' 은 만들지 않는다 — RP4). 근거는 recalc_mm 의 evidence_rows.
         item = {"name": str(x["name"]).strip()[:60], "logic": str(x.get("logic") or "")[:300],
-                "reason": str(x.get("reason") or "")[:300], "load_mm": 0.0,
+                "reason": str(x.get("reason") or "")[:300],
                 "work": _clean_list(x.get("work"))}
         dup = next((u for u in news if fold(u["name"]) == fold(item["name"])), None)
         if dup is None:
@@ -422,7 +453,8 @@ def recalc_mm(out, rows, amap=None, rows_file=""):
       실측 합(load_mm)과 함께, 겹치는 과제 수로 나눈 안분값(load_mm_split)을 남긴다.
     · 근거 업무명이 내 자료에 없으면 evidence_missing + reason 표식 '[근거 없음 …]'.
     · amap(세부업무 병합 맵)이 있으면 행 Level 3 에 먼저 적용해 인덱스를 만든다.
-    · load_mm_ai(AI 원 추정치)는 setdefault — 두 번째 실행부터 실측값을 덮지 않는다."""
+    · LM28: '대체 가능 MM≈' 은 만들지 않는다(RP4) — load_mm_ai(AI 원 추정치)는 지우고, 신규 후보(new)에는 MM 대신 근거
+      행 수만 남긴다(옛 결과 파일의 new[].load_mm·sum_new_load_mm 도 여기서 지운다)."""
     rows = [dict(r) for r in rows]
     for r in rows:
         if "_mm" not in r:
@@ -451,7 +483,7 @@ def recalc_mm(out, rows, amap=None, rows_file=""):
             claims.setdefault(id(r), []).append(m.get("task"))
 
     for m in match:
-        m.setdefault("load_mm_ai", m.get("load_mm", 0))
+        m.pop("load_mm_ai", None)
         if not m.get("fit"):
             m.update(load_mm=0.0, load_mm_split=0.0, evidence_rows=0,
                      evidence_missing=[], shared_tasks=[])
@@ -475,11 +507,11 @@ def recalc_mm(out, rows, amap=None, rows_file=""):
             marks.append(f"[겹침 {', '.join(shared[:3])} · 안분 {split:.2f} MM]")
         m["reason"] = (base + (" " + " ".join(marks) if marks else ""))[:400]
 
-    new_sum = 0.0
     for n in (out.get("new") or []):
         if not isinstance(n, dict):
             continue
-        n.setdefault("load_mm_ai", n.get("load_mm", 0))
+        n.pop("load_mm_ai", None)
+        n.pop("load_mm", None)                         # '대체 가능 MM≈' 산출 없음 — 빈도(근거 행 수)만
         hit, miss = [], []
         for w in _clean_list(n.get("work")):
             rs = find_rows(w, idx, idx_ns)
@@ -488,10 +520,8 @@ def recalc_mm(out, rows, amap=None, rows_file=""):
             else:
                 miss.append(w)
         hit = list({id(r): r for r in hit}.values())
-        n["load_mm"] = round(sum(r["_mm"] for r in hit), 3)
         n["evidence_rows"] = len(hit)
         n["evidence_missing"] = miss[:6]
-        new_sum += n["load_mm"]
 
     hits = [m for m in match if m.get("fit")]
     no_ev = [m for m in hits if not m.get("evidence_rows")]
@@ -507,7 +537,6 @@ def recalc_mm(out, rows, amap=None, rows_file=""):
         "rows_total_mm": _total_mm,
         "sum_load_mm": round(sum(m["load_mm"] for m in hits), 2),
         "sum_load_mm_split": round(sum(m["load_mm_split"] for m in hits), 2),
-        "sum_new_load_mm": round(new_sum, 2),
         "matched_tasks": len(hits), "no_evidence": len(no_ev), "overlapped": len(dup),
         "matched_rows": len(_matched_ids), "rows_total": len(rows),
         "matched_mm": _matched_mm,
@@ -592,8 +621,7 @@ def _seed_prev(prev, tmap):
             continue
         best[tid] = {"task": tid, "axis": tmap[tid].get("axis", ""), "name": tmap[tid].get("name", tid),
                      "fit": int(m.get("fit") or 0), "load_mm": 0.0, "work": _clean_list(m.get("work")),
-                     "reason": _MARK_RE.sub("", str(m.get("reason") or "")).strip()[:300],
-                     "load_mm_ai": m.get("load_mm_ai", 0)}
+                     "reason": _MARK_RE.sub("", str(m.get("reason") or "")).strip()[:300]}
     merge_new(news, {"new": prev.get("new") or []})
     merge_mis(mis, {"misassigned": prev.get("misassigned") or []})
     return best, news, mis
@@ -691,13 +719,19 @@ def main():
     done_sigs = set(done_prev)
     failed, salvaged, model_name, fails = 0, 0, str((prev or {}).get("model_name") or "") if done_prev else "", []
     consec, stopped, n_sent = 0, "", 0
+    gate_skipped = [0]                           # 개인정보 관문에 막혀 보내지 않고 판정 끝으로 둔 행 수
 
     def ask(part, name):
         nonlocal model_name, n_sent
+        # G3 — 업무 행은 관문을 거친 재정제 사본으로. 보낼 행이 하나도 없으면 왕복하지 않는다(blocked — 실패 아님)
+        sendable = g3_part(part)
+        if part and not sendable:
+            return {}, {"ok": False, "kind": "roundtrip", "phase": "blocked", "fatal": False,
+                        "error": "개인정보 관문 — 보낼 업무 행이 없음", "hint": ""}
         n_sent += 1
         # fresh=None — 묶음을 같은 채팅에서 이어 보낸다(첫 왕복·실패 뒤·chatTurns 마다만 새 채팅). 앞 묶음의 과제 매칭·표기를
         # Copilot 이 기억해 묶음 간 판정이 일관된다(제보: 묶음마다 새 채팅이라 기억이 안 이어짐)
-        o, info = details.ask_json(judge.copilot_send, ag_prompt(tasks, part, stats_by), f"{tag}-{name}",
+        o, info = details.ask_json(judge.copilot_send, ag_prompt(tasks, sendable, stats_by), f"{tag}-{name}",
                                    "agentic", "match", fresh=None)
         if info.get("ok"):
             model_name = model_name or str(info.get("model") or "")
@@ -726,7 +760,7 @@ def main():
                "rows_analyzed": analyzed, "rows_total": len(rows), "rows_pending": len(pending),
                "rows_done": sorted(done_sigs), "rows_file": rows_fn,
                "partial": bool(pending), "chunks": len(parts), "failed_chunks": failed,
-               "salvaged_chunks": salvaged, "roundtrips": n_sent,
+               "salvaged_chunks": salvaged, "roundtrips": n_sent, "gate_skipped_rows": gate_skipped[0],
                # 답이 적어 온 과제 코드가 목록에 없어 버린 건수 — 예전에는 조용히 버리고 화면은
                # '매칭 0건(실패 아님)' 이라고 단정했다
                "unknown_tasks": sorted(set(unknown_tids))[:12],
@@ -753,6 +787,15 @@ def main():
             break
         progress("Agentic 분석", ci - 1, len(parts))
         o, info = ask(part, f"ag{ci}")
+        if info.get("phase") == "blocked":
+            # 개인정보 관문(G3)에 막혀 보내지 않았다 — 실패가 아니므로 연속 실패·적응 분할에 넣지 않는다. 다시 물어도 같으므로
+            # 그 행은 판정 끝으로 둔다(매칭 없음 · gate_skipped_rows 로 정직히 센다).
+            for r in part[-n_new:]:
+                done_sigs.add(row_sig(r))
+            gate_skipped[0] += n_new
+            print(f"[agentic] {ci}/{len(parts)} 개인정보 관문에 걸려 보내지 않았습니다 — 업무 {n_new}행은 매칭 없이 둡니다")
+            write_out()
+            continue
         if info.get("ok"):
             if info.get("how") == "salvaged":
                 salvaged += 1
@@ -832,7 +875,7 @@ def main():
     out = write_out(final=True)
     hit = out["match"]
     if not hit and not out["new"] and not out["rows_pending"]:
-        print(f"[agentic] 업무 {len(rows)}행을 모두 판정했지만 12과제에 걸치는 현업이 없습니다 — 매칭 0건(실패 아님)")
+        print(f"[agentic] 업무 {len(rows)}행을 모두 판정했지만 계획 과제에 걸치는 현업이 없습니다 — 매칭 0건(실패 아님)")
     print(f"[agentic] 매칭 {len(hit)}/{len(tasks)}과제 · 신규 후보 {len(out['new'])}건 · "
           f"오할당 의심 {len(out['misassigned'])}건 → agentic_{tag}.json")
     for m in hit[:6]:

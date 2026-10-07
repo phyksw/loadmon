@@ -1,11 +1,14 @@
 ﻿# Get-FileActivity.ps1
 # Scans configured work folders for recently modified files (proxy for untracked work,
 # e.g. verbally-ordered tasks that only show up as file edits).
-# Output: ..\data\files\files.csv          (overwrite, UTF-8)  mtime,ext,size_kb,folder,name,author
+# Output: ..\data\files\files.csv          (overwrite, UTF-8)  mtime,ext,size_kb,folder,name,author,total_time,revision
 #         ..\data\files\files_history.csv  (accumulated union of every run, same header, 400 days)
 #         ..\data\files_excluded.json      ("files" section: what was dropped, by keyword / package dir)
 # author: Office(OOXML) 문서는 docProps/core.xml 의 lastModifiedBy, UNC 공유의 다른 파일은 NTFS 소유자,
 #         로컬 폴더의 그 외 파일은 '' (ACL 비용 회피). 동료가 동기화 폴더에 저장한 파일을 extract 가 거른다.
+# total_time·revision (LM28, 끝에 더한 열 - 읽는 쪽은 열 이름으로 읽는다): author 를 읽으려고 이미 여는 OOXML ZIP 에서
+#         docProps/app.xml 의 TotalTime(편집 누계 분)과 core.xml 의 revision(저장 횟수)을 함께 읽는다 - '작성 완료' 단서
+#         (저장 이력이 멈췄는가)의 재료(C-27). 못 읽거나 Office 문서가 아니면 ''. 추가로 여는 파일은 없다.
 # ext:    watchExtensions 판정은 이름 끝 기준 - 복합 확장자(.cas.gz)·Creo 판번호(bracket.prt.12 → .prt)도 잡는다.
 #         내용은 열지 않는다(수 GB 해석 결과도 시각·크기만) - Office author 읽기만 예외.
 param(
@@ -262,11 +265,13 @@ function Note-Pkg([string]$tok, [string]$dir) {
 # 수집되면(실측 의심: 회사 PC 파일 6,662건) 자기 출력이 다음 분석의 입력이 되는
 # 되먹임이 생긴다. 이 설치본 전체와, 다른 LoadMonitor 설치의 산출물 폴더(data|report|teamdata|python)를
 # 스캔에서 뺀다. core|collect|ui 까지 막던 예전 패턴은 이 도구를 개발하는 사람의 개발 흔적을 지웠다.
-$selfRoot = $root.ToLower()
+# LM28: 이 설치본 절대경로 접두(끝 '\' 포함 - 형제 폴더 loadmon28_old 는 남긴다)를 먼저 보고, 다른 설치는
+# 폴더명 loadmonitor* 와 loadmon<숫자>* (개발 사본 loadmon24·loadmon28 …) 둘 다 산출물 폴더만 뺀다.
+$selfRoot = $root.ToLower().TrimEnd('\') + '\'
 $script:nSelf = 0
 function Test-SelfPath([string]$pl) {
     if ($pl.StartsWith($selfRoot)) { return $true }
-    if ($pl -match '\\loadmonitor[^\\]*\\(data|report|teamdata|python)\\') { return $true }
+    if ($pl -match '\\(loadmonitor[^\\]*|loadmon\d+[^\\]*)\\(data|report|teamdata|python)\\') { return $true }
     return $false
 }
 
@@ -314,7 +319,10 @@ function Clean-Owner([string]$o) {
     if ($genericOwners -contains $n.ToLower()) { return '' }
     return $n
 }
+$script:ooTotal = ''; $script:ooRev = ''
 function Get-Author($fi, [string]$shared) {
+    # 부수 결과: $script:ooTotal(app.xml TotalTime 분) · $script:ooRev(core.xml revision) - 같은 ZIP 을 한 번만 연다
+    $script:ooTotal = ''; $script:ooRev = ''
     if ($script:authorTimedOut) { return '' }
     $ext = $fi.Extension.ToLower()
     $isOffice = $ooxml -contains $ext
@@ -329,20 +337,31 @@ function Get-Author($fi, [string]$shared) {
         $z = $null
         try {
             $z = [System.IO.Compression.ZipFile]::OpenRead($fi.FullName)
+            $who = ''
             $e = $z.GetEntry('docProps/core.xml')
-            if ($null -eq $e) { return '' }
-            $sr = New-Object System.IO.StreamReader($e.Open())
-            try { $xml = $sr.ReadToEnd() } finally { $sr.Dispose() }
-            if ($xml -match '<cp:lastModifiedBy>([^<]*)</cp:lastModifiedBy>') {
-                return [System.Net.WebUtility]::HtmlDecode($Matches[1]).Trim()
+            if ($null -ne $e) {
+                $sr = New-Object System.IO.StreamReader($e.Open())
+                try { $xml = $sr.ReadToEnd() } finally { $sr.Dispose() }
+                if ($xml -match '<cp:lastModifiedBy>([^<]*)</cp:lastModifiedBy>') {
+                    $who = [System.Net.WebUtility]::HtmlDecode($Matches[1]).Trim()
+                }
+                if ($xml -match '<(?:cp:)?revision>\s*(\d{1,9})\s*</(?:cp:)?revision>') { $script:ooRev = $Matches[1] }
             }
+            # 편집 누계(분) - Office 가 저장할 때마다 늘린다. 같은 파일에서 더 늘지 않으면 손을 놓은 것(완료 단서)
+            $ea = $z.GetEntry('docProps/app.xml')
+            if ($null -ne $ea) {
+                $sr = New-Object System.IO.StreamReader($ea.Open())
+                try { $ax = $sr.ReadToEnd() } finally { $sr.Dispose() }
+                if ($ax -match '<TotalTime>\s*(\d{1,9})\s*</TotalTime>') { $script:ooTotal = $Matches[1] }
+            }
+            return $who
         } catch {} finally { if ($null -ne $z) { $z.Dispose() } }
         return ''
     }
     try { return (Clean-Owner ((Get-Acl -LiteralPath $fi.FullName).Owner)) } catch { return '' }
 }
 
-$header = @('mtime', 'ext', 'size_kb', 'folder', 'name', 'author')
+$header = @('mtime', 'ext', 'size_kb', 'folder', 'name', 'author', 'total_time', 'revision')
 $rows = New-Object System.Collections.Generic.List[string]
 $rows.Add(($header -join ','))
 $rowKeys = New-Object System.Collections.Generic.List[string]     # history 합집합 키 (mtime|folder|name)
@@ -629,9 +648,9 @@ foreach ($f in $allDirs) {
                 $script:nAuthor++
                 if (-not $shared) { $script:localAuthors[$author] = 1 + $(if ($script:localAuthors.ContainsKey($author)) { $script:localAuthors[$author] } else { 0 }) }
             }
-            $rows.Add(('{0},{1},{2},{3},{4},{5}' -f `
+            $rows.Add(('{0},{1},{2},{3},{4},{5},{6},{7}' -f `
                 $mt, $ext, [math]::Round($_.Length / 1KB, 0), `
-                (Csv-Escape $dir), (Csv-Escape $_.Name), (Csv-Escape $author)))
+                (Csv-Escape $dir), (Csv-Escape $_.Name), (Csv-Escape $author), $script:ooTotal, $script:ooRev))
             $rowKeys.Add($key)
             $pk = $mt + '|' + $dk
             $perMin[$pk] = 1 + $(if ($perMin.ContainsKey($pk)) { $perMin[$pk] } else { 0 })

@@ -5,8 +5,9 @@ export.py -- 본인 분석 결과를 팀 공유폴더로 내보낸다 (config.te
   python export.py --from 2026-05-19 --to 2026-08-17
 
 공유폴더의 <이름> 하위에 복사되는 것: mm_rows / signals(판정 반영) / mm_meta / pivots /
-ai_narratives / entities + member.json(요약). raw 단서(신호 원문)가 포함되므로
-팀 취합 시 오해석을 줄일 수 있다. 개인 폴더 신호는 이미 excludePathKeywords 로 걸러진 상태.
+ai_narratives / entities + member.json(요약). 개인 폴더 신호는 이미 excludePathKeywords 로 걸러진 상태.
+signals 는 팀 반출 변환(G4 — core\\privacy.team_export_rows, teamup 서버 묶음과 같은 함수)을 거친다:
+who(상대 표시 이름)는 사내|고객사|협력사|외부 로만, text 는 재정제, 개인정보가 남은 행은 빼고, flag 열은 뺀다.
 """
 import io
 import json
@@ -85,8 +86,22 @@ def main():
     except OSError as e:
         print(f"[export] 임시 폴더를 만들지 못했습니다: {e}")
         return 1
-    for n in want:
+    sig_n = f"signals_{tag}.csv"
+    for n in list(want):
         try:
+            if n == sig_n:
+                # G4 팀 반출 변환(core\privacy.team_export_rows — teamup 묶음·--to-folder 와 같은 함수, WP7):
+                # who → 사내|고객사|협력사|외부, text 재정제, 고위험 잔여 행만 빼고 flag 열 제거.
+                # 이 PC·본인 식별자(카나리아)가 남으면 이 파일만 내보내지 않는다(안내 1줄).
+                import privacy
+                inf = privacy.team_export_file(os.path.join(rep, n), longp(os.path.join(stage, n)), cfg=cfg,
+                                               data_dir=os.path.join(ROOT, "data"))
+                if not inf.get("written"):
+                    want.remove(n)
+                    print(f"[export] {n} 은 내보내지 않습니다 — {inf.get('why') or '변환 실패'}")
+                elif inf.get("high_dropped"):
+                    print(f"[export] {n}: 개인정보가 남은 신호 {inf['high_dropped']}행은 빼고 내보냅니다")
+                continue
             shutil.copy2(os.path.join(rep, n), longp(os.path.join(stage, n)))
         except OSError as e:
             bad.append(f"{n}({type(e).__name__})")

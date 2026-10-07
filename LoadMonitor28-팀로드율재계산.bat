@@ -1,14 +1,14 @@
 @echo off
 >nul chcp 949
 cd /d "%~dp0"
-title LoadMonitor24 - 팀 로드율 재계산 (판 무관)
+title LoadMonitor28 - 팀 로드율 재계산 (판 무관)
 
 rem 팀취합본(인별 폴더의 signals_*.csv + mm_meta_*.json)만으로 모든 인원의 로드율을 하나의 산식·달력으로 다시 잰다.
 rem  - LM20 과 LM24 가 섞인 팀 폴더도 그대로 (판은 파일 키로 자동 판별)
 rem  - 기존 team_report.html 등은 건드리지 않고 팀로드율_재계산_<시각>.html + CSV 2개를 새로 만든다
 rem  - 이 bat 과 team_recalc.py 두 파일을 팀 폴더(인별 폴더가 있는 곳 / teamdata)에 붙여 넣고 실행하면 된다.
-rem    LoadMonitor24 설치 폴더에서 실행하면 teamdata\ 또는 config.teamShareDir 를 자동으로 찾는다.
-rem    인자로 팀 폴더를 줄 수도 있다(끝의 \ 는 빼고):  LoadMonitor24-팀로드율재계산.bat "\서버\팀공유\LoadMonitor"
+rem    LoadMonitor28 설치 폴더에서 실행하면 teamdata\ 또는 config.teamShareDir 를 자동으로 찾는다.
+rem    인자로 팀 폴더를 줄 수도 있다(끝의 \ 는 빼고):  LoadMonitor28-팀로드율재계산.bat "\서버\팀공유\LoadMonitor"
 rem    지정한 폴더가 없거나 인별 폴더가 없으면 실패한다 - 다른 폴더로 조용히 바꾸지 않는다.
 
 set "PY_EXE="
@@ -29,7 +29,7 @@ if not defined PY_EXE (
 )
 if not defined PY_EXE (
   echo  [!] 실행 가능한 Python 이 없습니다 - python.org 에서 Python 3.11+ 설치하거나
-  echo      LoadMonitor24 폴더의 python\ 을 이 폴더에 함께 복사하세요.
+  echo      LoadMonitor28 폴더의 python\ 을 이 폴더에 함께 복사하세요.
   pause
   exit /b 1
 )

@@ -11,26 +11,49 @@
 # rcv(to/cc/bulk): 내 주소·이름을 whoami /upn → UserPrincipal → AD(도메인 PC) → Outlook 프로필 레지스트리 →
 #   config.owner 순으로 모아 To/CC 주소와 표시 이름 양쪽에 맞춘다. 내 주소를 끝내 모르면 'unknown' 으로 남긴다
 #   (To 4명 이상을 bulk 로 버리거나 CC 를 to 로 올리지 않는다 - 분석기는 unknown 을 직접 수신처럼 계상).
-# 종료 코드: 0 저장 / 1 아무것도 못 읽음 / 3 저장했지만 일정 불완전(반복 회의 미전개)
+# 종료 코드(= LMSTATUS rc, LM28): 0 저장 / 3 불가·불완전 - 사유: R-NOIDX(색인 연결 실패) · R-IDXPOLICY(Outlook 색인 금지 정책) ·
+#   R-IDXEMPTY(0건 - 원인 미상·일시, '계정 미설정'으로 단정하지 않는다) · R-RECURINC(저장했지만 일정 불완전 - 반복 회의 미전개)
+#   · 4 새 행 0(LM24 모드에서 기존 자료가 있어 건너뜀)
+# LM28 보강(WP1): 질의 시간 제한(CommandTimeout 60초) · 날짜 리터럴은 앞뒤 하루 여유로 묻고 정확한 [시작, 끝) 로 다시 거른다 ·
+#   주 저장소 필터(폴더 경로 첫 조각이 내 주소인 행이 있을 때만 - 없으면 거르지 않고 store_scope=unknown) · 상한에 걸리면 조용히
+#   자르지 않고 partial + 잘린 가장 오래된 날(R-CAP) · 끝에 LMSTATUS 한 줄 - 색인은 zero_ok 를 주지 않는다(메일은 행이 있는 날만 ok,
+#   일정은 반복 마스터가 있으면 기간 전체 partial). -OutDir·-Tag 를 주면 mail_<tag>.csv·cal_<tag>.csv·mail_source_<tag>.json 만 쓴다.
 # 시험용: LM_INDEX_FAKE=<json> 이면 색인 대신 그 파일의 행을 쓴다 -
 #   {"mail":[{"System.ItemUrl":"mapi://…","System.Message.DateReceived":"2026-06-03 10:00", …}], "calendar":[…]}
-#   (키 = System.* 속성명, 시각은 로컬 'yyyy-MM-dd HH:mm')
+#   (키 = System.* 속성명, 시각은 로컬 'yyyy-MM-dd HH:mm'). 선택 키: "_my_addrs"(내 주소 - 이 PC 의 신원 조회를 하지 않는다) ·
+#   "_error":"noidx" · "_policy":1 · "_cap"(상한 대신 쓸 행 수)
 param(
     [string]$From = '',
     [string]$To = '',
     [int]$Days = 90,
     [switch]$Force,
-    [string]$Only = ''      # 'mail' | 'cal' - run.py 가 필요한 종류만 지정 (빈 값 = 둘 다)
+    [string]$Only = '',     # 'mail' | 'cal' - run.py 가 필요한 종류만 지정 (빈 값 = 둘 다)
+    [string]$OutDir = '',   # LM28: 출처별 폴더(예 data\outlook\src) - 없으면 data\outlook
+    [string]$Tag = ''       # LM28: 출처 표식(예 index) - 주면 자기 파일만 쓰고 기존 자료와 상관없이 매번 다시 읽는다
 )
 $ErrorActionPreference = 'Stop'
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+. (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'OutlookCommon.ps1')   # 주 저장소 판정·LMSTATUS
 $cfg = $null
 try { $cfg = Get-Content -Raw -Encoding UTF8 (Join-Path $root 'config\config.json') | ConvertFrom-Json } catch {}
 $storeSubject = $true
 if ($cfg -and $cfg.PSObject.Properties['storeMailSubject'] -and -not $cfg.storeMailSubject) { $storeSubject = $false }
-$outDir = Join-Path $root 'data\outlook'
+$outArg = $OutDir                            # PowerShell 변수는 대소문자를 가리지 않는다 - 아래 $outDir 가 덮기 전에 받아 둔다
+$skipDir = Join-Path $root 'data\outlook'    # outlook_skip.json 은 늘 여기(화면이 읽는다)
+$outDir = $skipDir
+if ($outArg) { $outDir = $(if ([System.IO.Path]::IsPathRooted($outArg)) { $outArg } else { Join-Path $root $outArg }) }
+$srcName = $(if ($Tag) { $Tag } else { 'index' })
+if ($Tag -and $Tag -notmatch '^[A-Za-z0-9_-]{1,24}$') {
+    Write-Host ("[outlook-index] -Tag 값이 올바르지 않습니다: {0}" -f $Tag)
+    Write-LmStatus -Src 'index' -Rc 3 -Reasons @('R-ARGS')
+    exit 3
+}
 if (-not (Test-Path $outDir)) { New-Item -ItemType Directory -Force -Path $outDir | Out-Null }
+$counts = [ordered]@{ store_scope = ''; stores = 0; other_store = 0; mail_capped = $false; cal_capped = $false; cap_oldest = '';
+                      literal_edge = 0; recurring_masters = 0; rcv_unknown = 0; me_known = $false; query_timeout = 60; policy_hkcu = $false }
+$reasons = [System.Collections.Generic.List[string]]::new()
+$ranges = [System.Collections.Generic.List[object]]::new()
 
 function Csv-Escape([string]$s) {
     if ($null -eq $s) { return '' }
@@ -54,19 +77,36 @@ function Conv-Token([string]$s) {
 
 if ($From) { $since = [datetime]::ParseExact($From, 'yyyy-MM-dd', $null) } else { $since = (Get-Date).Date.AddDays(-$Days) }
 if ($To)   { $until = ([datetime]::ParseExact($To, 'yyyy-MM-dd', $null)).AddDays(1) } else { $until = (Get-Date).Date.AddDays(1) }
-$mailP = Join-Path $outDir 'mail.csv'
-$calP  = Join-Path $outDir 'calendar.csv'
-$doMail = $Force -or -not (Has-Data $mailP)
-$doCal  = $Force -or -not (Has-Data $calP)
+$sfx = $(if ($Tag) { '_' + $Tag } else { '' })
+$mailP = Join-Path $outDir ('mail' + $sfx + '.csv')
+$calP  = Join-Path $outDir $(if ($Tag) { 'cal' + $sfx + '.csv' } else { 'calendar.csv' })
+$srcP  = Join-Path $outDir ('mail_source' + $sfx + '.json')
+if ($Tag) {
+    # LM28: 자기 파일만 쓴다 - COM·웹 자료와 상관없이 매번 다시 읽는다(색인은 싸고, 병합은 mailmerge 가 한다)
+    $doMail = $true; $doCal = $true
+} else {
+    $doMail = $Force -or -not (Has-Data $mailP)
+    $doCal  = $Force -or -not (Has-Data $calP)
+}
 if ($Only -eq 'mail') { $doCal = $false } elseif ($Only -eq 'cal') { $doMail = $false }
 if (-not $doMail -and $Only -ne 'cal') { Write-Host '[outlook-index] mail.csv 에 이미 자료가 있어 건너뜀 (덮어쓰려면 -Force)' }
 if (-not $doCal -and $Only -ne 'mail') { Write-Host '[outlook-index] calendar.csv 에 이미 자료가 있어 건너뜀 (덮어쓰려면 -Force)' }
-if (-not $doMail -and -not $doCal) { exit 0 }
+if (-not $doMail -and -not $doCal) { Write-LmStatus -Src $srcName -Rc 4 -Reasons @('R-HASDATA') -Counts $counts; exit 4 }
+
+$fake = $null
+if ($env:LM_INDEX_FAKE) {
+    try { $fake = Get-Content -Raw -Encoding UTF8 $env:LM_INDEX_FAKE | ConvertFrom-Json } catch { $fake = $null }
+    Write-Host '[outlook-index] LM_INDEX_FAKE - 색인 대신 시험용 행을 씁니다'
+}
+function Get-FakeOpt([string]$k) { if ($fake -and $fake.PSObject.Properties[$k]) { return $fake.PSObject.Properties[$k].Value }; return $null }
 
 # 내 주소·이름 - rcv(to/cc/bulk) 판정용. 도메인 미가입 PC 는 whoami /upn 이 실패한다(실측: 종료코드 1·빈값)
 # 그래서 여러 출처를 겹쳐 본다. USERNAME 은 약한 단서라 매칭에는 쓰되 '내 주소를 안다' 로 치지 않는다.
 $me = @(); $meSrc = @()
-if ($doMail) {
+if ($doMail -and $null -ne (Get-FakeOpt '_my_addrs')) {
+    # 시험 주입 - 이 PC 의 신원 조회(whoami 등)를 하지 않는다
+    foreach ($v in @(Get-FakeOpt '_my_addrs')) { if ($v) { $me += ([string]$v).Trim().ToLower(); $meSrc += 'fake' } }
+} elseif ($doMail) {
     try {
         $u = (& whoami /upn 2>$null)
         if ($LASTEXITCODE -eq 0 -and $u) { $me += ([string]$u).Trim().ToLower(); $meSrc += 'upn' }
@@ -119,38 +159,77 @@ if ($doMail) {
     Write-Host ("[outlook-index] 내 주소/이름 후보 {0}개 (출처: {1}){2}" -f $me.Count, (($meSrc | Select-Object -Unique) -join ','),
         $(if ($meKnown) { '' } else { ' - 내 주소를 확정하지 못해 rcv 는 unknown(To 다수를 bulk 로 버리지 않음)' }))
 }
+$counts.me_known = $meKnown
+if ($doMail -and -not $meKnown) { $reasons.Add('R-NOADDR') }
 
-$fake = $null
-if ($env:LM_INDEX_FAKE) {
-    try { $fake = Get-Content -Raw -Encoding UTF8 $env:LM_INDEX_FAKE | ConvertFrom-Json } catch { $fake = $null }
-    Write-Host '[outlook-index] LM_INDEX_FAKE - 색인 대신 시험용 행을 씁니다'
+function Exit-Index([int]$rc, [string]$code, [string]$st) {
+    # 막힘(rc 3) - 기간 전체를 그 상태로 싣고 끝낸다(색인은 0건을 '없음'으로 확정하지 않는다)
+    $reasons.Insert(0, $code)
+    $axes = @(); if ($doMail) { $axes += 'mail_in', 'mail_out' }; if ($doCal) { $axes += 'cal' }
+    foreach ($ax in $axes) {
+        $ranges.Add([ordered]@{ axis = $ax; from = $since.ToString('yyyy-MM-dd'); to = $until.AddDays(-1).ToString('yyyy-MM-dd'); st = $st })
+    }
+    if ($Tag) {
+        # 자기 상태 파일은 늘 남긴다(출처별 - P5). 지난 CSV 는 그대로 둔다
+        try {
+            $o = [ordered]@{ source = 'index'; when = (Get-Date).ToString('yyyy-MM-dd HH:mm'); mail = 0; calendar = 0; rc = $rc;
+                             reason = ((@($reasons) | Select-Object -Unique) -join ','); me = @($me); me_known = [bool]$meKnown }
+            ($o | ConvertTo-Json -Compress) | Set-Content -Path $srcP -Encoding UTF8
+        } catch {}
+    }
+    Write-LmStatus -Src $srcName -Rc $rc -Reasons @($reasons) -Counts $counts -Ranges @($ranges)
+    exit $rc
+}
+
+# Outlook 색인 금지 정책(HKLM - C-10): 건수와 무관하게 막힘 - 남은 옛 색인을 최신으로 믿지 않는다
+$pol = $null
+if ($fake) { $pol = Get-FakeOpt '_policy' }
+else {
+    $pol = Get-OcReg $null 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search' 'PreventIndexingOutlook'
+    $ph = Get-OcReg $null 'HKCU:\Software\Policies\Microsoft\Windows\Windows Search' 'PreventIndexingOutlook'
+    try { $counts.policy_hkcu = ([int]$ph -eq 1) } catch {}
+}
+if ($null -ne $pol -and [string]$pol -eq '1') {
+    Write-Host '[outlook-index] 건너뜀: Outlook 색인 금지 정책(PreventIndexingOutlook=1)이 켜져 있습니다(R-IDXPOLICY).'
+    Exit-Index 3 'R-IDXPOLICY' 'blocked'
 }
 $conn = $null
 if (-not $fake) {
     $conn = New-Object System.Data.OleDb.OleDbConnection("Provider=Search.CollatorDSO;Extended Properties='Application=Windows';")
     try { $conn.Open() } catch {
         Write-Host ('[outlook-index] Windows Search 색인에 연결할 수 없습니다: ' + $_.Exception.Message.Split([char]10)[0])
-        Write-Host '                (Windows Search 서비스가 꺼져 있거나 색인이 비활성화된 PC)'
-        exit 1
+        Write-Host '                (Windows Search 서비스가 꺼져 있거나 색인이 비활성화된 PC - R-NOIDX)'
+        Exit-Index 3 'R-NOIDX' 'blocked'
     }
+} elseif ([string](Get-FakeOpt '_error') -eq 'noidx') {
+    Write-Host '[outlook-index] Windows Search 색인에 연결할 수 없습니다(시험 주입 - R-NOIDX)'
+    Exit-Index 3 'R-NOIDX' 'blocked'
 }
+$QUERY_TIMEOUT_SEC = 60        # OleDbCommand.CommandTimeout(문서 기본 30초 · 0 = 무제한은 쓰지 않는다 - 멈춘 색인에 붙잡히지 않게)
+$script:qCapped = $false
 function Query([string]$sql, [int]$cap) {
-    $rows = New-Object System.Collections.Generic.List[object]
+    # 결과는 늘 목록(List) 하나다 - `return , $rows`(LM27 F-29). 호출측은 @() 로 감싸지 않는다(감싸면 목록이 원소 하나가 된다).
+    # 상한에 닿으면 $script:qCapped - 최신순(DESC)이라 잘린 것은 가장 오래된 쪽이다(조용히 자르지 않는다, W1-14).
+    $rows = [System.Collections.Generic.List[object]]::new()
+    $script:qCapped = $false
     $cmd = $conn.CreateCommand(); $cmd.CommandText = $sql
+    $cmd.CommandTimeout = $QUERY_TIMEOUT_SEC
     $rd = $cmd.ExecuteReader()
     try {
         while ($rd.Read()) {
             $o = @{}
             for ($i = 0; $i -lt $rd.FieldCount; $i++) { $o[$rd.GetName($i)] = $rd.GetValue($i) }
             $rows.Add($o)
-            if ($rows.Count -ge $cap) { break }
+            if ($rows.Count -ge $cap) { $script:qCapped = $true; break }
         }
     } finally { $rd.Close() }
-    return $rows
+    return , $rows
 }
-function Fake-Rows([string]$kind) {
+function Fake-Rows([string]$kind, [int]$cap) {
     # 시험용 JSON → 색인 행과 같은 모양(hashtable). 시각 문자열은 UTC Kind 의 datetime 으로 - D() 가 ToLocalTime 하므로
-    $rows = New-Object System.Collections.Generic.List[object]
+    $rows = [System.Collections.Generic.List[object]]::new()
+    $script:qCapped = $false
+    $fc = Get-FakeOpt '_cap'; if ($null -ne $fc) { $cap = [int]$fc }
     foreach ($o in @($fake.$kind)) {
         if ($null -eq $o) { continue }
         $h = @{}
@@ -162,28 +241,30 @@ function Fake-Rows([string]$kind) {
             $h[$p.Name] = $v
         }
         $rows.Add($h)
+        if ($rows.Count -ge $cap) { $script:qCapped = $true; break }
     }
-    return $rows
+    return , $rows
 }
 function Run-Query([string]$kind, [string]$sqlNew, [string]$sqlOld, [int]$cap) {
     # 확장 속성(ToName/CcName·IsRecurring)이 이 PC 의 색인에서 거부되면 기본 속성으로 재시도한다 - 회귀 방지
-    if ($fake) { return @{ rows = @(Fake-Rows $kind); fallback = $false } }
-    try { return @{ rows = @(Query $sqlNew $cap); fallback = $false } }
+    if ($fake) { $q = Fake-Rows $kind $cap; return @{ rows = $q; fallback = $false; capped = $script:qCapped } }
+    try { $q = Query $sqlNew $cap; return @{ rows = $q; fallback = $false; capped = $script:qCapped } }
     catch {
         Write-Host ('[outlook-index] ' + $kind + ' 조회(확장 속성) 실패: ' + $_.Exception.Message.Split([char]10)[0] + ' - 기본 속성으로 재시도')
-        try { return @{ rows = @(Query $sqlOld $cap); fallback = $true } }
+        try { $q = Query $sqlOld $cap; return @{ rows = $q; fallback = $true; capped = $script:qCapped } }
         catch {
             Write-Host ('[outlook-index] ' + $kind + ' 조회 실패: ' + $_.Exception.Message.Split([char]10)[0])
-            return @{ rows = @(); fallback = $true }
+            return @{ rows = ([System.Collections.Generic.List[object]]::new()); fallback = $true; capped = $false; failed = $true }
         }
     }
 }
 function V($o, [string]$k) { $v = $o[$k]; if ($null -eq $v -or $v -is [System.DBNull]) { return '' } ; if ($v -is [array]) { return (($v | ForEach-Object { [string]$_ }) -join ';') } ; return [string]$v }
 function D($o, [string]$k) { $v = $o[$k]; if ($v -is [datetime]) { return $v.ToLocalTime() } ; return $null }
-# Windows Search SQL 의 날짜 리터럴은 UTC 로 해석된다 - 현지 자정을 UTC 로 바꿔 넣어야 경계가 밀리지 않는다
+# Windows Search SQL 의 날짜 리터럴은 UTC 로 해석된다 - 현지 자정을 UTC 로 바꿔 넣어야 경계가 밀리지 않는다.
+# LM28(F-29): 그 해석은 문서에 없다(LM24 실측) - 앞뒤 하루 여유로 묻고 행을 정확한 [since, until)(로컬)로 다시 거른다.
 $fmt = 'yyyy-MM-dd HH:mm:ss'
-$sinceU = $since.ToUniversalTime().ToString($fmt)
-$untilU = $until.ToUniversalTime().ToString($fmt)
+$sinceU = $since.AddDays(-1).ToUniversalTime().ToString($fmt)
+$untilU = $until.AddDays(1).ToUniversalTime().ToString($fmt)
 function Is-Me([string]$list) {
     # 내 주소·이름이 수신자 목록에 '한 항목으로' 들어 있는가 - 부분 문자열(kim ⊂ kimchulsoo@) 오판 방지
     if (-not $list) { return $false }
@@ -199,7 +280,7 @@ function Count-Rcpt([string]$list) {
 }
 
 $nMail = 0; $nCal = 0; $nRec = 0; $nUnk = 0
-$warnings = New-Object System.Collections.Generic.List[string]
+$warnings = [System.Collections.Generic.List[string]]::new()
 # ---------- mail ----------
 if ($doMail) {
     $selBase = ("SELECT System.ItemDate, System.Message.DateReceived, System.Message.DateSent, System.Message.FromName, " +
@@ -210,10 +291,25 @@ if ($doMail) {
     $sqlNew = $selBase -f ', System.Message.ToName, System.Message.CcName', $sinceU, $untilU   # 표시 이름으로도 나를 찾는다(X500·별칭 주소 대응)
     $sqlOld = $selBase -f '', $sinceU, $untilU
     $res = Run-Query 'mail' $sqlNew $sqlOld 20000
-    $mailRows = New-Object System.Collections.Generic.List[string]
+    if ($res.failed) { $reasons.Add('R-IDXQUERY') }
+    $mailRows = [System.Collections.Generic.List[string]]::new()
     # time_precision - 색인의 시각도 분 단위다. 열을 안 쓰면 7열 파일과 섞일 때 '날짜만' 행이 승격된다(COM 과 같은 이유)
     $mailRows.Add('box,time,sender,subject,conversation,rcv,time_precision')
     $nIn = 0; $nSent = 0; $nSkip = 0; $nCc = 0; $nBulk = 0
+    $inDays = @{}; $outDays = @{}; $mailCapDay = ''
+    # 주 저장소(LM28 F-29): 폴더 경로 첫 조각이 내 주소인 행이 1건 이상일 때만 그 저장소로 거른다(공유·추가 사서함 행 제외).
+    # 0건이면(표시명 저장소 등) 거르지 않고 store_scope=unknown - 내 메일을 잃어 0건으로 확정하는 쪽이 더 나쁘다
+    $scope = Get-StoreScope -Paths @($res.rows | ForEach-Object { V $_ 'System.ItemFolderPathDisplay' }) -My $me
+    $counts.store_scope = [string]$scope.mode; $counts.stores = [int]$scope.n
+    if ($res.capped) {
+        # 상한(최신순)에 닿았다 - 잘린 것은 가장 오래된 쪽. 받은 행 중 가장 이른 날 = 일부만 읽은 날(W1-14)
+        $mn = $null
+        foreach ($r in $res.rows) { $d = D $r 'System.ItemDate'; if ($d -and ($null -eq $mn -or $d -lt $mn)) { $mn = $d } }
+        if ($mn) { $mailCapDay = $mn.ToString('yyyy-MM-dd') }
+        $counts.mail_capped = $true; $counts.cap_oldest = $mailCapDay
+        $reasons.Add('R-CAP')
+        $warnings.Add(('메일 상한 20000건 - {0} 이전은 읽지 않음(그날은 일부)' -f $mailCapDay))
+    }
     foreach ($r in $res.rows) {
         try {
             $folder = (V $r 'System.ItemFolderPathDisplay')
@@ -222,6 +318,7 @@ if ($doMail) {
             # 폴더는 경로 조각 단위로 정확히 본다 - '지운 편지함'(한국어 삭제함)을 놓치거나 'Presentations' 를 Sent 로 오인하지 않게
             $segs = @(($folder -split '[\\/]') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
             if (@($segs | Where-Object { $_ -match '^(지운 편지함|삭제된 항목|삭제된 편지함|Deleted Items|Trash|정크 메일|Junk E-?mail|Junk|스팸|Spam|임시 보관함|Drafts?|보낼 편지함|Outbox|보관|보관함|Archive|동기화 문제|Sync Issues|대화 기록|Conversation History|RSS 피드|RSS Feeds)$' }).Count) { $nSkip++; continue }
+            if (Test-OtherStore $folder $scope) { $counts.other_store = [int]$counts.other_store + 1; continue }
             $box = 'inbox'
             if (@($segs | Where-Object { $_ -match '^(보낸\s*(편지함|메일함|항목)|Sent(\s+(Items|Mail|Messages))?)$' }).Count) { $box = 'sent' }
             $t = $null
@@ -229,6 +326,8 @@ if ($doMail) {
             if (-not $t) { $t = D $r 'System.Message.DateReceived' }
             if (-not $t) { $t = D $r 'System.ItemDate' }
             if (-not $t) { continue }
+            if ($t -lt $since -or $t -ge $until) { $counts.literal_edge = [int]$counts.literal_edge + 1; continue }   # 앞뒤 하루 여유 - 정확한 창으로 다시 거른다
+            if ($box -eq 'sent') { $outDays[$t.ToString('yyyy-MM-dd')] = $true } else { $inDays[$t.ToString('yyyy-MM-dd')] = $true }
             $subjRaw = (V $r 'System.Subject')
             $conv = $subjRaw
             while ($conv -match '^\s*(RE|FW|FWD|답장|전달|회신)\s*:\s*') { $conv = $conv -replace '^\s*(RE|FW|FWD|답장|전달|회신)\s*:\s*', '' }
@@ -265,22 +364,39 @@ if ($doMail) {
 # ---------- calendar ----------
 $calComplete = $true
 if ($doCal) {
+    # LM28: 폴더 경로(주 저장소 판정)를 함께 묻고, 최신순으로 정렬해 상한에 걸려도 잘리는 쪽이 가장 오래된 일정이 되게 한다
     $selCal = ("SELECT System.StartDate, System.EndDate, System.Subject, System.Calendar.Location, System.Calendar.ShowTimeAs{0}, " +
-               "System.ItemUrl FROM SYSTEMINDEX WHERE System.Kind = 'calendar' AND System.ItemUrl LIKE 'mapi%' " +
-               "AND System.EndDate >= '{1}' AND System.StartDate < '{2}'")
+               "System.ItemFolderPathDisplay, System.ItemUrl FROM SYSTEMINDEX WHERE System.Kind = 'calendar' AND System.ItemUrl LIKE 'mapi%' " +
+               "AND System.EndDate >= '{1}' AND System.StartDate < '{2}' ORDER BY System.StartDate DESC")
     $sqlNew = $selCal -f ', System.Calendar.IsRecurring', $sinceU, $untilU
     $sqlOld = $selCal -f '', $sinceU, $untilU
     $res = Run-Query 'calendar' $sqlNew $sqlOld 8000
+    if ($res.failed) { $reasons.Add('R-IDXQUERY') }
     $recUnknown = [bool]$res.fallback          # 반복 여부를 읽지 못했다 - 마스터가 섞여 있어도 가려낼 수 없다
-    $calRows = New-Object System.Collections.Generic.List[string]
+    $calRows = [System.Collections.Generic.List[string]]::new()
     $calRows.Add('start,end,all_day,busy_status,subject,categories,location,response,meeting_status')   # response/meeting_status 는 색인에 없어 빈값
+    $calDays = @{}; $calCapDay = ''
+    $cscope = Get-StoreScope -Paths @($res.rows | ForEach-Object { V $_ 'System.ItemFolderPathDisplay' }) -My $me
+    if (-not $counts.store_scope) { $counts.store_scope = [string]$cscope.mode; $counts.stores = [int]$cscope.n }
+    if ($res.capped) {
+        $mn = $null
+        foreach ($r in $res.rows) { $d = D $r 'System.StartDate'; if ($d -and ($null -eq $mn -or $d -lt $mn)) { $mn = $d } }
+        if ($mn) { $calCapDay = $mn.ToString('yyyy-MM-dd') }
+        $counts.cal_capped = $true
+        if (-not $counts.cap_oldest) { $counts.cap_oldest = $calCapDay }
+        $reasons.Add('R-CAP')
+        $warnings.Add(('일정 상한 8000건 - {0} 이전은 읽지 않음' -f $calCapDay))
+    }
     foreach ($r in $res.rows) {
         try {
             if ((V $r 'System.ItemUrl') -notmatch '^mapi\d*:') { continue }     # 디스크의 .ics 파일 제외
+            if (Test-OtherStore (V $r 'System.ItemFolderPathDisplay') $cscope) { $counts.other_store = [int]$counts.other_store + 1; continue }   # 공유 일정
             $isRec = $r['System.Calendar.IsRecurring']
             if (($isRec -is [bool] -and $isRec) -or ([string]$isRec -match '^(True|1|-1)$')) { $nRec++; continue }   # 반복 마스터 - 회차 전개 불가, 쓰지 않는다
             $st = D $r 'System.StartDate'; $en = D $r 'System.EndDate'
             if (-not $st -or -not $en) { continue }
+            if ($en -lt $since -or $st -ge $until) { $counts.literal_edge = [int]$counts.literal_edge + 1; continue }   # 앞뒤 하루 여유 - 정확한 창으로 다시 거른다
+            $calDays[$st.ToString('yyyy-MM-dd')] = $true
             $allDay = 'False'
             if ($st.TimeOfDay.TotalMinutes -eq 0 -and ($en - $st).TotalHours -ge 23) { $allDay = 'True' }
             $busy = (V $r 'System.Calendar.ShowTimeAs'); if (-not $busy) { $busy = '2' }
@@ -301,22 +417,59 @@ if ($doCal) {
     elseif ($recUnknown) { $warnings.Add('반복 여부(IsRecurring)를 읽지 못해 일정 완전성을 보증할 수 없음') }
 }
 try { if ($conn) { $conn.Close() } } catch {}
+$counts.recurring_masters = [int]$nRec; $counts.rcv_unknown = [int]$nUnk
+if ($counts.store_scope -eq 'addr' -and $counts.other_store -gt 0) {
+    Write-Host ("[outlook-index] 주 저장소만 읽음 - 다른 저장소(공유·추가 사서함) 행 {0}건 제외" -f $counts.other_store)
+}
+
+# ranges(LM28 P4): 색인은 zero_ok 를 주지 않는다 - 메일은 행이 있는 날만 ok(상한에 걸린 날은 partial, 그 앞은 싣지 않음).
+# 일정은 반복 마스터가 1건이라도 있거나 반복 여부를 못 읽었으면 기간 전체 partial(회차 미전개 - 웹 경로가 다시 읽는다, C-11)
+$dFrom = $since.ToString('yyyy-MM-dd'); $dTo = $until.AddDays(-1).ToString('yyyy-MM-dd')
+if ($doMail) {
+    $din = @($inDays.Keys); $dout = @($outDays.Keys)
+    if ($mailCapDay) {
+        $din = @($din | Where-Object { $_ -gt $mailCapDay }); $dout = @($dout | Where-Object { $_ -gt $mailCapDay })
+        foreach ($ax in @('mail_in', 'mail_out')) { $ranges.Add([ordered]@{ axis = $ax; from = $mailCapDay; to = $mailCapDay; st = 'partial' }) }
+    }
+    foreach ($x in @(ConvertTo-DayRanges 'mail_in' $din 'ok')) { $ranges.Add($x) }
+    foreach ($x in @(ConvertTo-DayRanges 'mail_out' $dout 'ok')) { $ranges.Add($x) }
+}
+if ($doCal) {
+    if ($nRec -gt 0 -or $recUnknown) {
+        $ranges.Add([ordered]@{ axis = 'cal'; from = $dFrom; to = $dTo; st = 'partial' })
+    } else {
+        $dc = @($calDays.Keys)
+        if ($calCapDay) {
+            $dc = @($dc | Where-Object { $_ -gt $calCapDay })
+            $ranges.Add([ordered]@{ axis = 'cal'; from = $calCapDay; to = $calCapDay; st = 'partial' })
+        }
+        foreach ($x in @(ConvertTo-DayRanges 'cal' $dc 'ok')) { $ranges.Add($x) }
+    }
+}
 
 if ($nMail -gt 0 -or $nCal -gt 0 -or $nRec -gt 0) {
+    $stRc = 0
+    if ($doCal -and -not $calComplete) { $stRc = 3; $reasons.Insert(0, 'R-RECURINC') }    # 저장했지만 일정 불완전(LM24 exit 3 그대로)
     try {
         $o = [ordered]@{ source = 'index'; when = (Get-Date).ToString('yyyy-MM-dd HH:mm'); mail = $nMail; calendar = $nCal;
                          calendar_complete = [bool]$calComplete; calendar_recurring_masters = $nRec;
-                         me = @($me); me_known = [bool]$meKnown; rcv_unknown = $nUnk; warnings = @($warnings) }
-        ($o | ConvertTo-Json -Compress) | Set-Content -Path (Join-Path $outDir 'mail_source.json') -Encoding UTF8
+                         me = @($me); me_known = [bool]$meKnown; rcv_unknown = $nUnk; warnings = @($warnings);
+                         rc = $stRc; reason = ((@($reasons) | Select-Object -Unique) -join ','); store_scope = [string]$counts.store_scope;
+                         other_store = [int]$counts.other_store; mail_truncated = [bool]$counts.mail_capped; cap_oldest = [string]$counts.cap_oldest }
+        ($o | ConvertTo-Json -Compress) | Set-Content -Path $srcP -Encoding UTF8
     } catch {}
-    if ($nMail -gt 0) { try { Remove-Item (Join-Path $outDir 'outlook_skip.json') -ErrorAction SilentlyContinue } catch {} }
+    if ($nMail -gt 0 -and -not $fake) { try { Remove-Item (Join-Path $skipDir 'outlook_skip.json') -ErrorAction SilentlyContinue } catch {} }
     if ($doCal -and -not $calComplete) {
         Write-Host ("[outlook-index] 일정 불완전: 반복 회의 마스터 {0}건은 회차가 전개되지 않아 쓰지 않음 - Outlook 웹(주 보기)으로 일정 재수집 (exit 3)" -f $nRec)
-        exit 3
+    } else {
+        Write-Host '[outlook-index] done (Windows Search 색인 폴백).'
     }
-    Write-Host '[outlook-index] done (Windows Search 색인 폴백).'
-    exit 0
+    Write-LmStatus -Src $srcName -Rc $stRc -Reasons @($reasons) -Counts $counts -Ranges @($ranges)
+    exit $stRc
 }
-Write-Host '[outlook-index] 색인 폴백으로도 메일·일정을 얻지 못했습니다 - 이 PC 의 색인이 Outlook 을 포함하지 않거나'
-Write-Host '                (새 Outlook 은 색인을 제공하지 않음) 기간에 항목이 없습니다. 다음 폴백: Outlook 웹 → Copilot 메일 수집.'
-exit 1
+# 0건(F-10): 원인을 단정하지 않는다 - '앱 메일 계정 미설정'이 아니다. 색인이 Outlook 을 포함하지 않음 · Outlook 이 꺼져 있어 색인이
+# 갱신되지 않음 · 새 Outlook(색인 없음) · 기간에 항목 없음 중 무엇인지 모른다(R-IDXEMPTY - 일시, 0건으로 확정하지 않는다)
+Write-Host '[outlook-index] 색인 폴백으로도 메일·일정을 얻지 못했습니다(R-IDXEMPTY - 원인 미상·일시). 이 PC 의 색인이 Outlook 을 포함하지 않거나'
+Write-Host '                Outlook 이 꺼져 있어 색인이 갱신되지 않았거나(새 Outlook 은 색인을 제공하지 않음) 기간에 항목이 없습니다. 다음 폴백: Outlook 웹 → Copilot 메일 수집.'
+$ranges.Clear()
+Exit-Index 3 'R-IDXEMPTY' 'unverified'

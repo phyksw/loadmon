@@ -5,17 +5,31 @@
 #   5) ps1 encoding (UTF-8 BOM + CRLF - BOM 없으면 CP949 오독으로 한글 끝 줄이 다음 줄을 삼킴)
 #   6) 화면 JS 문법(tools\check_page_js.py)
 #   7) 개발 PC 실경로 흔적(C:\Users\<실제 계정>·이 PC 프로필·알려진 개발 폴더) - 자리표시자만 허용
-# exit 0 = clean, exit 1 = findings. Used by humans and the Claude Code PostToolUse hook.
+# exit 0 = clean, exit 1 = findings. Used by humans and tools\Make-Package.ps1 (-Full).
+#   -Full: 관문 11(팀 서버 주소 끝단 - 하위 프로세스 여러 개 + 팀 서버 기동)까지. 없으면 11은 건너뛴다.
+#   편집할 때마다 전체를 돌리면 좀비 프로세스가 쌓이는 PC 가 있어(W3-10) 묶음 끝·배포 직전 1회만 돌린다.
+param([switch]$Full)
 $ErrorActionPreference = 'Continue'
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $fail = 0
+$skipped = New-Object System.Collections.Generic.List[string]
 
 # --- 1) python: ruff (policy in ruff.toml) ---
 # --no-cache: 트리 안에 .ruff_cache\ 를 만들지 않는다 — '폴더 통째로 복사' 경로에 딸려 갔다(실측).
-Push-Location $root
-python -m ruff check --no-cache core collect tools *.py --output-format=concise
-if ($LASTEXITCODE -ne 0) { $fail = 1 }
-Pop-Location
+# 내장 파이썬(python\python.exe)에 ruff 가 있을 때만 돈다 — 시스템 python·ruff 에 기대면 ruff 없는 PC 에서
+# 관문 1이 늘 실패해 배포본을 못 만들었다(W3-10). 없으면 '건너뜀(경고)' 로 두고 실패로 치지 않는다(프로세스 1개).
+$pyRuff = Join-Path $root 'python\python.exe'
+if (Test-Path $pyRuff) {
+    Push-Location $root
+    $ruffOut = @(& $pyRuff -m ruff check --no-cache core collect tools *.py --output-format=concise 2>&1)
+    $ruffRc = $LASTEXITCODE
+    Pop-Location
+    if (($ruffOut | Out-String) -match 'No module named ruff') {
+        $skipped.Add('1(ruff)'); Write-Output '[lint] 건너뜀(경고): 내장 파이썬에 ruff 가 없습니다 - 관문 1(ruff) 생략'
+    } elseif ($ruffRc -ne 0) {
+        $fail = 1; $ruffOut | ForEach-Object { Write-Output $_ }
+    }
+} else { $skipped.Add('1(ruff)'); Write-Output '[lint] 건너뜀(경고): python\python.exe 가 없습니다 - 관문 1(ruff) 생략' }
 
 # --- 2) powershell: syntax parse of every collector/runner script ---
 $psFiles = @(Get-ChildItem "$root\collect\*.ps1", "$root\tools\*.ps1", "$root\*.ps1" -ErrorAction SilentlyContinue)
@@ -100,7 +114,7 @@ if (Test-Path $jsChk) {
 # (<사용자>·%USERNAME%·홍길동·D:\src·D:\작업·D:\LoadMonitor24 …)는 두고, 실제 계정 홈(C:\Users\<ASCII 계정>)·
 # 이 PC 의 프로필 경로·알려진 개발 폴더만 잡는다. data\ report\ python\ teamdata\ 와 캐시는 보지 않는다.
 # 예시 경로가 필요하면 <사용자>·홍길동 같은 자리표시자를 쓴다(이 파일 자신은 패턴을 담고 있어 검사에서 뺀다).
-$skipTop = @('data', 'report', 'python', 'teamdata')
+$skipTop = @('data', 'report', 'python', 'teamdata', '.git', '.wf', '.claude')   # .wf·.claude = 작업 기록·도구 설정(배포 밖)
 $exts = @('.py', '.ps1', '.bat', '.md', '.json', '.html', '.txt', '.toml')
 $selfPath = $MyInvocation.MyCommand.Path
 $cp949 = [System.Text.Encoding]::GetEncoding(949)
@@ -153,9 +167,13 @@ if ($LASTEXITCODE -ne 0) { $fail = 1 }
 & $py8 (Join-Path $root 'tools\check_recalc.py') 2>&1 | ForEach-Object { Write-Output $_ }
 if ($LASTEXITCODE -ne 0) { $fail = 1 }
 
-# --- gate 11: 팀 서버 주소 단일원 - 서버 IP·포트는 config\team_server.json(teamaddr)만 · 바꾸기는 LoadMonitor24-팀서버주소.bat 하나 · 폴더 이동 유지 · 서버<->업로드 끝단 ---
-& $py8 (Join-Path $root 'tools\check_teamaddr.py') 2>&1 | ForEach-Object { Write-Output $_ }
-if ($LASTEXITCODE -ne 0) { $fail = 1 }
+# --- gate 11: 팀 서버 주소 단일원 - 서버 IP·포트는 config\team_server.json(teamaddr)만 · 바꾸기는 LoadMonitor28-팀서버주소.bat 하나 · 폴더 이동 유지 · 서버<->업로드 끝단 ---
+# 하위 프로세스(teamaddr CLI·teamup --ping) 여러 개와 팀 서버를 띄우므로 -Full(배포 직전)일 때만 돈다.
+if ($Full) {
+    & $py8 (Join-Path $root 'tools\check_teamaddr.py') 2>&1 | ForEach-Object { Write-Output $_ }
+    if ($LASTEXITCODE -ne 0) { $fail = 1 }
+} else { $skipped.Add('11(팀 서버 주소 - -Full 일 때만)') }
 
-if ($fail -eq 0) { Write-Output 'lint OK (11 gates)' }
+if ($skipped.Count) { Write-Output ('[lint] 건너뛴 관문: ' + ($skipped -join ', ')) }
+if ($fail -eq 0) { Write-Output ('lint OK (11 gates' + $(if ($skipped.Count) { ', 건너뜀 ' + $skipped.Count } else { '' }) + ')') }
 exit $fail

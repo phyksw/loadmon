@@ -14,7 +14,8 @@ projmap.py — 사용자 지정 과제 (LoadMonitor24)
 유사성 규칙 (보수적 — 확실할 때만 옮긴다):
   1.0  이름 또는 식별 키워드가 신호 텍스트에 직접 등장
   0.67 설명(desc) 토큰 중 2개 이상이 신호 텍스트에 등장
-  그 외 0 — 재귀속하지 않음 (임계 RETAG_THRESHOLD=0.5)
+  그 외 0 — 재귀속하지 않음 (임계 RETAG_THRESHOLD=0.5 · 1·2위 차 RETAG_MARGIN=0.3 — 동점이면 옮기지 않음, LM28)
+키워드 판정(_kw_hit)은 LM28 에서 LM27 경계(한글 앞 경계·head 접두 ≤3·'ai' 단어 경계)로 바꿨다(A-30).
 사용자가 지정한 다른 프로젝트로 이미 판정된 신호는 존중하고 건드리지 않는다.
 """
 import difflib
@@ -23,7 +24,8 @@ import os
 import re
 
 RETAG_THRESHOLD = 0.5
-_WORD = re.compile(r"[\s_\-\.\\/\[\]()<>:,·|~!?\"'+§]+")
+RETAG_MARGIN = 0.3           # 1위 − 2위 점수 차 문턱(LM28) — 동점(두 과제 모두 1.0)이면 재귀속하지 않는다
+_WORD =re.compile(r"[\s_\-\.\\/\[\]()<>:,·|~!?\"'+§]+")
 _STOP = {"관련", "업무", "프로젝트", "과제", "내용", "설명", "개발", "진행", "관리", "the", "and", "for"}
 
 
@@ -90,21 +92,41 @@ def _text_tokens(text):
             if len(t) >= 2 and not t.isdigit()}
 
 
-def _kw_hit(k, toks):
-    """키워드 ↔ 텍스트 토큰: 완전일치, 또는 4자 이상 키워드의 접두/접미 합성만 인정.
-    부분문자열 전면 허용은 오탐('정렬'⊂'재정렬', 'ai'⊂'email')이 실측돼 금지.
+_HANGUL = re.compile(r"[가-힣]")
+_AI_RX = re.compile(r"(?<![a-z])ai(?![a-z])")
+HEAD_PREFIX_MAX = 3          # head 모드: 한글 키워드 앞에 붙어도 되는 글자 수('열해석' ⊃ '해석')
+FUZZY_MIN = 0.9              # 영문 5자 이상 오탈자 흡수 임계(difflib)
+
+
+def _kw_hit(k, toks, mode="name"):
+    """키워드 ↔ 텍스트 토큰(LM28 — LM27 hier/match.kw_hit 경계, A-30). 부분 문자열 전면 허용은 오탐
+    ('정렬'⊂'재정렬', 'ai'⊂'email')이 실측돼 금지.
+      · 완전 일치는 늘 인정.
+      · 한글 조각: 앞 경계 — 토큰이 그 조각으로 **시작**하면 인정(조사 붙은 꼴 '과제a의'). mode="head"(영역·분야 어휘)면
+        앞에 HEAD_PREFIX_MAX(3)자 이하가 붙은 꼴도 인정('열해석' ⊃ '해석'). 한글은 오탈자 흡수를 하지 않는다.
+      · 영문·숫자 조각: 4자 이상이면 접두/접미 합성, 5자 이상이면 오탈자 흡수(difflib ≥ 0.9). 'ai' 는 단어 경계로만
+        ('ai기반' ○, 'email'·'detail' ×).
     'lidar-x' 같은 구분자 포함 키워드는 같은 규칙으로 조각내 모든 조각 일치를 요구한다."""
+    if mode not in ("name", "head"):
+        raise ValueError("_kw_hit: mode 는 'name' 또는 'head'")
+
     def one(p):
         if p in toks:
             return True
+        if p == "ai":
+            return any(_AI_RX.search(t) for t in toks)
+        if _HANGUL.search(p):
+            if any(t.startswith(p) for t in toks):
+                return True
+            return mode == "head" and any(t.endswith(p) and len(t) - len(p) <= HEAD_PREFIX_MAX for t in toks)
         if len(p) >= 4 and any(t.startswith(p) or t.endswith(p) for t in toks):
             return True
         if len(p) >= 5:
             # 오탈자·표기 변형 흡수 — stdlib difflib, 임계 0.9 라 '정렬/재정렬'류 오탐 없음
             return any(len(t) >= 4
-                       and difflib.SequenceMatcher(None, p, t).ratio() >= 0.9 for t in toks)
+                       and difflib.SequenceMatcher(None, p, t).ratio() >= FUZZY_MIN for t in toks)
         return False
-    parts = [p for p in _WORD.split(k) if len(p) >= 2]
+    parts = [p for p in _WORD.split(str(k or "").lower()) if len(p) >= 2]
     if not parts:
         return False
     return all(one(p) for p in parts)
@@ -141,12 +163,15 @@ def retag_rows(rows, projects):
         if cur.lower() in user_names_l:      # 이미 사용자 지정 프로젝트로 판정됨 → 존중
             continue
         text = r.get("text") or ""           # who(발신자명)는 오귀속 위험이라 매칭에서 제외
-        best, best_p = 0.0, None
+        best, best_p, second = 0.0, None, 0.0
         for p in projects:
             s = match_score(text, p)
             if s > best:
-                best, best_p = s, p
-        if best_p and best >= RETAG_THRESHOLD:
+                best, best_p, second = s, p, best
+            elif s > second:
+                second = s
+        # 1·2위가 같은 점수면(두 지정 과제의 키워드가 함께 걸림) 옮기지 않는다 — 확실할 때만(LM28, A-30 '2위와 차' 문턱)
+        if best_p and best >= RETAG_THRESHOLD and best - second >= RETAG_MARGIN:
             r["model"] = best_p["name"]
             r["project"] = best_p["name"]
             r["judge"] = (r.get("judge") or "") + "+지정재분류"

@@ -2,7 +2,7 @@
 #
 # 왜 필요한가: 분석이 끝난 뒤 폴더를 옮기려 하면 "사용 중" 이라 옮겨지지 않는다.
 # 잡고 있는 것은 대개 우리 자신이다 - 대시보드(python ui\app.py), 팀 서버(teamserver.py),
-# Copilot 전용 Edge(data\copilot_profile), 상시 샘플러(powershell), 그리고 그 폴더를 열어 둔 탐색기.
+# Copilot 전용 Edge(data\lm28_edge), 상시 샘플러(powershell), 그리고 그 폴더를 열어 둔 탐색기.
 #
 # 중요: 이 스크립트는 %TEMP% 로 복사돼 실행된다. LoadMonitor 폴더 안에서 실행하면
 # 스크립트 파일 자체가 폴더를 잡아 '옮길 수 있는가' 시험이 항상 실패한다.
@@ -22,7 +22,7 @@
 #  · 창 제목이 비어 있었다. → 스스로 제목을 잡고 끝에 [완료]/[미완료] 를 붙인다.
 #  · 이미 준비된 상태를 몰라 반복 실행을 못 막았다. → 지난 기록을 읽어 '이미 준비돼 있습니다' 를 알린다.
 #
-# Usage:  powershell -ExecutionPolicy Bypass -File Prepare-Move.ps1 -Root "D:\...\LoadMonitor24"
+# Usage:  powershell -ExecutionPolicy Bypass -File Prepare-Move.ps1 -Root "D:\...\LoadMonitor28"
 param(
     [Parameter(Mandatory = $true)][string]$Root,
     [switch]$NoWait,
@@ -32,10 +32,10 @@ param(
 )
 $ErrorActionPreference = 'Continue'
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
-try { $Host.UI.RawUI.WindowTitle = 'LoadMonitor24 - PC 이동 준비' } catch {}
-# 경로 정규화 — bat 가 "…\LoadMonitor24\." 처럼 넘겨도(끝 역슬래시가 닫는 따옴표를 삼키지 않게 붙이던 점)
+try { $Host.UI.RawUI.WindowTitle = 'LoadMonitor28 - PC 이동 준비' } catch {}
+# 경로 정규화 — bat 가 "…\LoadMonitor28\." 처럼 넘겨도(끝 역슬래시가 닫는 따옴표를 삼키지 않게 붙이던 점)
 # '\.'·'..'·끝 역슬래시를 지운 정규 경로로 만든다. 실사고: '…\.' 그대로 Split-Path 하면 부모가 폴더 자신이 되어
-# 폴더를 '_이동확인_임시' 로 바꿔 놓고 되돌리지 못한 채, 빈 껍데기 LoadMonitor24\report\move_ready.txt 만 만들었다.
+# 폴더를 '_이동확인_임시' 로 바꿔 놓고 되돌리지 못한 채, 빈 껍데기 LoadMonitor28\report\move_ready.txt 만 만들었다.
 if ($Root -match '^[A-Za-z]:$') { $Root += '\' }          # 'D:' 는 '그 드라이브의 현재 폴더' 라 뜻이 달라진다
 try {
     if (-not [System.IO.Path]::IsPathRooted($Root)) { $Root = Join-Path (Get-Location).Path $Root }
@@ -43,10 +43,10 @@ try {
 } catch {}
 if ($Root.Length -gt 3) { $Root = $Root.TrimEnd('\') }     # 드라이브 루트('D:\')는 그대로
 if (-not (Test-Path -LiteralPath $Root -PathType Container)) { Write-Host "[이동준비] 폴더가 없습니다: $Root"; if (-not $NoWait) { pause }; exit 1 }
-if ($Root -match '^[A-Za-z]:\\$') { Write-Host "[이동준비] 드라이브 루트($Root)는 이름을 바꿔 확인할 수 없습니다 - LoadMonitor24 를 하위 폴더에 두세요"; if (-not $NoWait) { pause }; exit 1 }
+if ($Root -match '^[A-Za-z]:\\$') { Write-Host "[이동준비] 드라이브 루트($Root)는 이름을 바꿔 확인할 수 없습니다 - LoadMonitor28 를 하위 폴더에 두세요"; if (-not $NoWait) { pause }; exit 1 }
 Set-Location ([System.IO.Path]::GetTempPath())     # 이 창이 폴더를 잡지 않게
 # Set-Location 은 PowerShell 의 위치만 바꾸고 프로세스의 현재 폴더(Win32 cwd)는 그대로다 — bat(cd /d "%~dp0" 뒤 start)
-# 나 대시보드(app.py 의 cwd)에서 띄우면 우리 프로세스 자신이 LoadMonitor24 안에 서 있어 이름 바꾸기 시험이
+# 나 대시보드(app.py 의 cwd)에서 띄우면 우리 프로세스 자신이 LoadMonitor28 안에 서 있어 이름 바꾸기 시험이
 # "다른 프로세스가 사용 중" 으로 항상 실패했다(실측). 프로세스 cwd 도 TEMP 로 옮겨 손을 뗀다.
 try { [Environment]::CurrentDirectory = [System.IO.Path]::GetTempPath() } catch {}
 
@@ -60,7 +60,7 @@ function Friendly([string]$name, [string]$cmdline) {
     $n = ($name -replace '\.exe$', '').ToLower()
     if ($n -eq 'msedge') { return 'Copilot 전용 Edge 창' }
     if ($n -eq 'powershell' -or $n -eq 'pwsh') { return '상시 샘플러' }
-    if ($n -eq 'cmd') { return 'LoadMonitor24 실행 창' }
+    if ($n -eq 'cmd') { return 'LoadMonitor28 실행 창' }
     if ($n -eq 'python' -or $n -eq 'pythonw') {
         if ($cmdline -match 'teamserver\.py') { return '팀 서버' }
         if ($cmdline -match 'app\.py') { return '대시보드' }
@@ -159,9 +159,9 @@ function Procs-Under([string]$root) {
 $killed = New-Object System.Collections.Generic.List[string]     # 화면용 - 사람 말 이름
 $killedLog = New-Object System.Collections.Generic.List[string]  # 기록용 - 이름 + PID
 if (-not $CheckOnly) {
-    # 우리가 띄운 창(대시보드·LoadMonitor24 실행 창)이 곧 사라진다. 예고 없이 사라지면 그것 자체가
+    # 우리가 띄운 창(대시보드·LoadMonitor28 실행 창)이 곧 사라진다. 예고 없이 사라지면 그것 자체가
     # '오류로 꺼졌다' 로 읽힌다(감사 확정) — 죽이기 전에 먼저 알린다.
-    Say '  LoadMonitor24 창(대시보드·팀 서버·샘플러)을 닫습니다 - 창이 사라지는 것은 정상입니다.' 'DarkGray'
+    Say '  LoadMonitor28 창(대시보드·팀 서버·샘플러)을 닫습니다 - 창이 사라지는 것은 정상입니다.' 'DarkGray'
     Start-Sleep -Milliseconds 400
     # ① 우리 것부터 - 대시보드·팀 서버·수집기(python), 상시 샘플러(powershell)
     foreach ($p in Procs-Under $Root) {
@@ -175,9 +175,11 @@ if (-not $CheckOnly) {
             $killedLog.Add("$nm (pid $($p.ProcessId)) = $fr")
         } catch {}
     }
-    # ② Copilot 전용 Edge - 일반 Edge 는 건드리지 않는다
+    # ② Copilot 전용 Edge - 일반 Edge·다른 판(LM24)·다른 폴더의 전용 Edge 는 건드리지 않는다.
+    #    이 폴더의 프로필(<Root>\data\lm28_edge)로 뜬 것만 - 이름 패턴만 보면 같은 PC 의 다른 판 Edge 까지 죽였다(W3-03).
+    $edgeProf = (Join-Path $Root 'data\lm28_edge').ToLower()
     Get-CimInstance Win32_Process -Filter "Name='msedge.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -like '*copilot_profile*' } | ForEach-Object {
+        Where-Object { $_.CommandLine -and $_.CommandLine.ToLower().Contains($edgeProf) } | ForEach-Object {
             try {
                 Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop
                 $killed.Add('Copilot 전용 Edge 창')
@@ -191,7 +193,7 @@ if (-not $CheckOnly) {
         Write-Host ("  닫았습니다: " + $show)
     } else {
         # 부정문('없습니다')은 이 도구에서 오류 문구라 성공 화면에 쓰지 않는다 — 능동 서술로 적는다.
-        Write-Host '  확인했습니다: 이 폴더를 쓰고 있는 LoadMonitor24 프로그램은 이미 모두 닫혀 있었습니다'
+        Write-Host '  확인했습니다: 이 폴더를 쓰고 있는 LoadMonitor28 프로그램은 이미 모두 닫혀 있었습니다'
     }
     Start-Sleep -Milliseconds 700
 }
@@ -204,7 +206,7 @@ try {
     foreach ($w in $sh.Windows()) {
         try {
             $p = $w.Document.Folder.Self.Path
-            # 구분자까지 봐야 형제 폴더(LoadMonitor24_old)를 오탐하지 않는다
+            # 구분자까지 봐야 형제 폴더(LoadMonitor28_old)를 오탐하지 않는다
             if ($p -and ($p -eq $Root -or $p.StartsWith($Root + '\', [System.StringComparison]::OrdinalIgnoreCase))) { $explorer += $p }
         } catch {}
     }
@@ -241,7 +243,7 @@ if ($movable) {
 
 Write-Host ''
 if ($movable) {
-    try { $Host.UI.RawUI.WindowTitle = 'LoadMonitor24 - PC 이동 준비 [완료]' } catch {}
+    try { $Host.UI.RawUI.WindowTitle = 'LoadMonitor28 - PC 이동 준비 [완료]' } catch {}
     Say '  ============================================================' 'Green'
     Say '   [완료] PC 이동 준비가 끝났습니다.' 'Green'
     Say '          이제 이 폴더를 통째로 옮기거나 복사하세요.' 'Green'
@@ -251,13 +253,13 @@ if ($movable) {
         Write-Host ("   이미 " + $prevWhen.ToString('M월 d일 HH:mm') + " 에 준비를 마친 폴더입니다 - 다시 확인해도 옮길 수 있는 상태입니다.")
     }
     Write-Host ''
-    Write-Host '   · 다른 PC 로 옮긴 뒤 LoadMonitor24-UI.bat 을 실행하면'
+    Write-Host '   · 다른 PC 로 옮긴 뒤 LoadMonitor28-UI.bat 을 실행하면'
     Write-Host '     지난 PC 의 수집 데이터는 자동으로 data\추가PC\ 로 보관되고'
     Write-Host '     분석은 두 PC 를 합쳐 계산합니다.'
     Write-Host '   · report\upload_pending\ 의 업로드 대기 묶음도 함께 따라갑니다.'
 
     # ── 옮기기 전 정리 — 폴더 용량의 대부분은 옮길 필요가 없는 Edge 컴포넌트다 ──────────────
-    # 실측(설치본 8개): data\copilot_profile 이 폴더 용량의 96%(LoadMonitor18 은 2,679개 551.6MB 중
+    # 실측(설치본 8개): 전용 Edge 프로필(data\<프로필>)이 폴더 용량의 96%(LoadMonitor18 은 2,679개 551.6MB 중
     # 2,507개 529.2MB). 그 안에서 ProvenanceData 168.6MB + component_crx_cache 168~185MB 가 65% 인데
     # 둘 다 Edge 가 새 PC 에서 다시 받는 컴포넌트다. 로그인 세션은 Local State 의 암호 키가 DPAPI 로
     # '이 PC·이 계정' 에 묶여 있어(마스터키는 %APPDATA%\Microsoft\Protect\) 폴더째 복사로 따라가지 않는다.
@@ -266,7 +268,7 @@ if ($movable) {
     if (-not $CheckOnly) {
         try {
             $where2 = if ($restored) { $Root } else { $probe }
-            $profDir = Join-Path $where2 'data\copilot_profile'
+            $profDir = Join-Path $where2 'data\lm28_edge'
             if (Test-Path -LiteralPath $profDir -PathType Container) {
                 $before = Folder-Size $where2
                 Write-Host ''
@@ -287,7 +289,7 @@ if ($movable) {
     # 드래그로도 빠르다. zip(tools\Make-MovePack.py)·robocopy 는 docs 의 설정가이드로 내렸다.
     Write-Host ''
     Say '   [옮기는 방법] 이 폴더를 탐색기에서 그대로 드래그해 옮기세요.' 'Cyan'
-    Write-Host '      새 PC 에서 LoadMonitor24-UI.bat 을 실행하면 이어서 바로 쓸 수 있습니다.'
+    Write-Host '      새 PC 에서 LoadMonitor28-UI.bat 을 실행하면 이어서 바로 쓸 수 있습니다.'
     Write-Host '      원본 폴더는 지우지 마세요 - 새 PC 가 잘 도는 것을 확인한 뒤에 정리하시면 됩니다.'
     if (-not $restored) {
         # 이것은 실패가 아니다 - 옮길 수 있다는 사실은 이미 증명됐고, 이름만 임시 이름으로 남았다.
@@ -321,7 +323,7 @@ if ($movable) {
     Write-Host ''
     Say '   [완료] 준비 끝 - 다시 실행하지 않으셔도 됩니다. 대시보드·팀 서버·샘플러는 모두 닫혔습니다.' 'Green'
 } else {
-    try { $Host.UI.RawUI.WindowTitle = 'LoadMonitor24 - PC 이동 준비 [미완료]' } catch {}
+    try { $Host.UI.RawUI.WindowTitle = 'LoadMonitor28 - PC 이동 준비 [미완료]' } catch {}
     Say '  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!' 'Red'
     Say '   [실패] 아직 무언가가 이 폴더를 잡고 있습니다.' 'Red'
     Say '  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!' 'Red'

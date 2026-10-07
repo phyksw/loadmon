@@ -7,24 +7,56 @@ M365 Copilot은 테넌트(내 팀즈 채팅) 데이터에 접근할 수 있고, 
 전용 Edge 프로필로 자동 왕복한다(최초 1회 로그인만 필요).
 
   python collect\\Get-TeamsViaCopilot.py --from 2026-05-19 --to 2026-08-17
+  python collect\\Get-TeamsViaCopilot.py --ranges 2026-03-02:2026-03-08,2026-04-01      (run.py 가 팀즈 미관측일만)
 
 출력: data\\m365\\teams_copilot.csv  (time,from,chat,kind,replied_time,summary)
       kind: order(업무요청) / sent(내 발신) / msg(일반수신)
+
+LM28(W1-13·W1-17·W2-12):
+  · --ranges 'A:B,C~D,E'(또는 '@파일') — 다른 출처가 못 본 날만 묻는다(Get-MailViaCopilot.parse_ranges 와 같은 규칙). 없으면 --from~--to.
+  · 왕복은 copilot_auto.send_inproc(같은 프로세스 — 조각마다 파이썬을 띄우지 않는다). G3 관문에 막힌 조각은 보내지 않은 것으로 둔다.
+  · 저장은 teams_parse.merge_keep_outside — 표를 받은 조각 기간의 옛 행만 이번 행으로 바꾸고 그 밖의 옛 행은 둔다
+    (LM24 는 이번 기간 행만 'w' 로 써서 짧은 기간으로 다시 돌리면 다른 기간 자료가 사라졌다).
+  · '조회 불가'는 서로 다른 날 2회일 때만 14일 동안 생략한다(TTL — 메일 Copilot 과 같은 규칙. LM24 의 'if True' 는 한 번의
+    거절로 영구 생략했다). 로그인 같은 '사람이 풀 실패'는 불가로 기록하지 않는다. 드라이버 무응답만 연속 4번이면 멈춘다.
+  · 마지막 줄: LMSTATUS {v,src:'teams_copilot',rc,reason,counts,ranges} — rc 0 표를 받음(또는 '없음' 답) · 2 로그인 ·
+    3 불가(R-UNABLE·R-NOREPLY·R-GATE·Edge 사유). ranges(axis teams)의 st 는 표를 받은 조각 partial(증인 — '읽음'이 아니다)
+    · 그 밖 unverified.
 """
 import csv
+import importlib.util
 import io
 import json
 import os
 import re
-import subprocess
 import sys
-from datetime import datetime, timedelta
+import time
+from datetime import date, datetime, timedelta
 
 if __name__ == "__main__":      # import 시(파서 재사용·테스트) stdout을 건드리지 않는다
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, errors="replace", encoding=(
         (sys.stdout.encoding or "utf-8") if sys.stdout.isatty() else "utf-8"))  # 콘솔(bat)=콘솔 코드페이지 · 파이프(UI)=utf-8
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-NO_WIN = 0x08000000
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+import teams_parse  # noqa: E402  — LM28 병합(merge_keep_outside)
+OUT_DIR = os.path.join(ROOT, "data", "m365")
+HDR = "time,from,chat,kind,replied_time,summary"
+ERR_MAX = 4                     # 드라이버가 답을 못 받은 조각이 연속 이만큼이면 멈춘다(판정용 세션 보호 — 메일 Copilot 과 같다)
+FATAL_PHASES = ("login_required", "edge_not_found", "launch_failed", "input_not_found")
+LAST_FATAL = {}                 # 마지막 '사람이 풀 실패'의 phase·reason(LMSTATUS 사유)
+_MVC = {}
+
+
+def _mvc():
+    """메일 Copilot 수집기 모듈 — '조회 불가' 기억(unable_*)·--ranges 해석을 같은 규칙으로 쓴다(WP2)."""
+    if "m" not in _MVC:
+        spec = importlib.util.spec_from_file_location("_mvc", os.path.join(_HERE, "Get-MailViaCopilot.py"))
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        _MVC["m"] = m
+    return _MVC["m"]
 
 
 def arg(flag, d=""):
@@ -193,7 +225,7 @@ def normalize_rows(rows, names=None):
 
 
 def _timeout():
-    """자식(copilot_auto)의 재시도 사다리 예산에 맞춘 타임아웃 (judge.roundtrip_timeout 과 동일 규칙)"""
+    """한 조각 왕복의 마감(초) — copilot_auto 재시도 사다리 예산에 맞춘다(judge.roundtrip_timeout 과 동일 규칙)"""
     try:
         with open(os.path.join(ROOT, "config", "config.json"), encoding="utf-8-sig") as f:
             sec = float(((json.load(f).get("copilotAuto") or {}).get("replyTimeoutSec")) or 240)
@@ -202,39 +234,54 @@ def _timeout():
     return max(900.0, sec * 3 + 180)
 
 
+_CA = {}
+
+
+def _ca():
+    """copilot_auto 모듈(같은 프로세스) — 처음 쓸 때 한 번 불러온다(시험이 _send 를 바꾸면 불리지 않는다)."""
+    if "m" not in _CA:
+        tools = os.path.join(ROOT, "tools")
+        if tools not in sys.path:
+            sys.path.insert(0, tools)
+        import copilot_auto
+        _CA["m"] = copilot_auto
+    return _CA["m"]
+
+
+def _send(prompt):
+    """한 조각 왕복 — copilot_auto.send_inproc(LM28 W2-12: 조각마다 copilot_auto.py 를 자식 프로세스로 띄우지 않는다).
+    결과 dict 는 --send 의 JSON 과 같다."""
+    return _ca().send_inproc(prompt, fresh=True, deadline=time.time() + _timeout(), stage="teams_copilot")
+
+
 def _one_slice(s0, s1, alt=False):
-    """한 조각(<=30일) 왕복 → (행 목록, 상태) — 상태: table|unable|empty|other"""
+    """한 조각(<=30일) 왕복 → (행 목록, 상태) — 상태: table|unable|empty|other|blocked(G3 — 보내지 않음)|
+    error(드라이버가 답을 못 받음)|fatal(로그인 등 사람이 풀 실패 — LAST_FATAL 에 phase·reason)"""
     prompt = build_prompt(s0, s1, alt)
-    tf = os.path.join(ROOT, "data", "teams_prompt.txt")
-    os.makedirs(os.path.dirname(tf), exist_ok=True)
-    with open(tf, "w", encoding="utf-8") as f:
-        f.write(prompt)
-    # 타임아웃이 예외로 터지면 조각 루프 전체가 죽어 앞서 모은 행이 전량 소실된다 —
-    # 반드시 이 조각만 실패로 처리한다. 타임아웃 값도 자식의 재시도 예산(최소 900s)에 맞춘다.
+    # 예외가 터지면 조각 루프 전체가 죽어 앞서 모은 행이 전량 소실된다 — 반드시 이 조각만 실패로 처리한다.
     try:
-        out = subprocess.run([sys.executable, os.path.join(ROOT, "tools", "copilot_auto.py"),
-                              "--send", tf], capture_output=True, timeout=_timeout(), cwd=ROOT,
-                             env=dict(os.environ, PYTHONIOENCODING="utf-8"), creationflags=NO_WIN)
-    except subprocess.TimeoutExpired:
-        print(f"[teams-copilot]   {s0}~{s1}: 왕복 시간 초과 — 이 조각 건너뜀")
-        return [], "other"
-    except OSError as e:
-        print(f"[teams-copilot]   {s0}~{s1}: 드라이버 실행 실패({type(e).__name__})")
-        return [], "other"
-    txt = (out.stdout or b"").decode("utf-8", "replace").strip()
-    try:
-        res = json.loads(txt.splitlines()[-1])
-    except Exception:
+        res = _send(prompt)
+    except Exception as e:  # noqa: BLE001 — 드라이버 예외는 이 조각만 건너뛴다
+        print(f"[teams-copilot]   {s0}~{s1}: 드라이버 오류({type(e).__name__})")
+        return [], "error"
+    if not isinstance(res, dict):
         print(f"[teams-copilot]   {s0}~{s1}: 드라이버 응답 해석 실패")
-        return [], "other"
+        return [], "error"
+    if res.get("status") == "blocked" or res.get("phase") == "blocked":
+        print(f"[teams-copilot]   {s0}~{s1}: 개인정보 관문(G3) — 보내지 않음")
+        return [], "blocked"
     if not res.get("ok"):
         print(f"[teams-copilot]   {s0}~{s1}: 실패 — {res.get('error', '')}")
-        return [], "other"
+        if str(res.get("phase") or "") in FATAL_PHASES:     # 조각을 나눠 다시 물어도 똑같다 — 한 번에 접는다
+            print(f"[teams-copilot]   {res.get('hint', '')}")
+            LAST_FATAL.update(phase=str(res.get("phase") or ""), reason=str(res.get("reason") or ""))
+            return [], "fatal"
+        return [], "error"
     if res.get("retry"):
         print(f"[teams-copilot]   {s0}~{s1}: {res['retry']}")
     reply = res.get("reply", "")
     try:                                    # 원문 응답 보존 — '왜 1건뿐인가'를 진단할 수 있게
-        rd = os.path.join(ROOT, "data", "m365", "replies")
+        rd = os.path.join(OUT_DIR, "replies")
         os.makedirs(rd, exist_ok=True)
         with open(os.path.join(rd, f"teams_{s0}_{s1}.txt"), "w", encoding="utf-8") as f:
             f.write(reply)
@@ -252,20 +299,35 @@ def _one_slice(s0, s1, alt=False):
     return good, ("table" if good else _reply_status(reply))
 
 
-def _save_rows(rows):
-    """지금까지 모은 행을 즉시 CSV 로 — 부모(run.py) 타임아웃·강제 종료가 와도
-    이미 회수한 조각은 잃지 않는다(검증 확정: 끝에서 한 번만 쓰면 전량 소실)."""
-    dst = os.path.join(ROOT, "data", "m365", "teams_copilot.csv")
+def _esc(s):
+    s = re.sub(r"[\r\n]+", " ", str(s or ""))
+    return '"' + s.replace('"', '""') + '"' if ("," in s or '"' in s) else s
+
+
+def _read_rows(path):
+    """기존 CSV 의 행(머리 제외, 6열 미만은 버림) — 없거나 못 읽으면 []."""
+    try:
+        with open(path, encoding="utf-8-sig", errors="replace", newline="") as f:
+            rd = csv.reader(f)
+            next(rd, None)
+            return [list(r[:6]) for r in rd if r and len(r) >= 6]
+    except OSError:
+        return []
+
+
+def _save_span(rows, s0, s1, dst=None):
+    """표를 받은 조각(s0~s1)을 바로 저장 — 부모(run.py) 타임아웃·강제 종료가 와도 이미 회수한 조각은 잃지 않는다.
+    LM28(W1-17): 그 조각 기간의 옛 행만 이번 행으로 바꾸고 그 밖 기간의 옛 행은 그대로 둔다(teams_parse.merge_keep_outside).
+    임시 파일에 쓴 뒤 바꿔 넣는다."""
+    dst = dst or os.path.join(OUT_DIR, "teams_copilot.csv")
+    merged = teams_parse.merge_keep_outside(_read_rows(dst), [list(r[:6]) for r in rows], s0, s1)
     os.makedirs(os.path.dirname(dst), exist_ok=True)
-
-    def esc(s):
-        s = re.sub(r"[\r\n]+", " ", str(s or ""))
-        return '"' + s.replace('"', '""') + '"' if ("," in s or '"' in s) else s
-
-    with open(dst, "w", encoding="utf-8-sig", newline="") as f:
-        f.write("time,from,chat,kind,replied_time,summary\n")
-        for r in rows:
-            f.write(",".join([esc(c) for c in r[:6]]) + "\n")
+    tmp = dst + ".tmp"
+    with open(tmp, "w", encoding="utf-8-sig", newline="") as f:
+        f.write(HDR + "\n")
+        for r in merged:
+            f.write(",".join([_esc(c) for c in r[:6]]) + "\n")
+    os.replace(tmp, dst)
     return dst
 
 
@@ -287,37 +349,47 @@ def need_subdivide(n_rows, span_days):
     return span_days > 12 and (n_rows < 5 or n_rows >= 35)
 
 
-UNAVAILABLE_FLAG = os.path.join(ROOT, "data", "m365", "teams_copilot_unavailable.json")
+UNAVAILABLE_NAME = "teams_copilot_unavailable.json"   # OUT_DIR 아래 — {hits, until}(LM24 판 {when, note} 는 1회 관측으로 읽는다)
 
 
-def main():
-    d0 = arg("--from") or (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
-    d1 = arg("--to") or datetime.now().strftime("%Y-%m-%d")
-    # 이 계정의 Copilot 이 팀즈 조회 자체를 못 한다고 전에 확인됐으면(테넌트에 Teams
-    # 커넥터 부재 — 실측) 분석 때마다 수십 분 헛왕복하지 않는다. 회사가 커넥터를 켜준 뒤
-    # 다시 시도하려면 --retry-copilot 을 붙이거나 플래그 파일을 지우면 된다.
-    if os.path.exists(UNAVAILABLE_FLAG) and "--retry-copilot" not in sys.argv:
-        try:
-            info = json.load(open(UNAVAILABLE_FLAG, encoding="utf-8-sig"))
-        except (OSError, ValueError):
-            info = {}
-        print(f"[teams-copilot] 이 계정의 Copilot 은 팀즈 조회 불가로 확인됨({info.get('when', '?')}) — 왕복 생략")
-        print("               팀즈는 상시 샘플러(collect\\Start-TeamsSampler.ps1)로 따로 모으세요.")
-        print("               (커넥터가 생겨 재시도하려면: --retry-copilot 또는 "
-              "data\\m365\\teams_copilot_unavailable.json 삭제)")
-        return 1
+def emit_status(rc, reasons=(), counts=None, ranges=None, src="teams_copilot"):
+    """수집기 마지막 줄(LM28 P3) — 'LMSTATUS ' + JSON 한 줄."""
+    rs = ",".join(dict.fromkeys(r for r in reasons if r))
+    print("LMSTATUS " + json.dumps({"v": 1, "src": src, "rc": int(rc), "reason": rs, "counts": counts or {},
+                                    "ranges": ranges or []}, ensure_ascii=False))
+    sys.stdout.flush()
+
+
+def _unable_save(path, st):
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"hits": st.get("hits") or [], "until": st.get("until") or "",
+                       "note": "Copilot 이 팀즈 조회 불가로 답한 날들(커넥터 부재 유형) — 서로 다른 날 2회면 until 까지 생략"
+                               "(재시도: --retry-copilot 또는 이 파일 삭제)"}, f, ensure_ascii=False, indent=1)
+    except OSError:
+        pass
+
+
+def slices_of(d0, d1, days=30):
+    return sub_slices(d0, d1, days)
+
+
+def chunk_ranges(chunks):
+    """조각 결과 → LMSTATUS ranges(axis teams) — 표를 받은 조각은 partial(Copilot 은 증인이지 '읽음'이 아니다), 그 밖은 unverified."""
+    return [{"axis": "teams", "from": a, "to": b, "st": "partial" if st == "table" else "unverified"} for a, b, st in chunks]
+
+
+def collect_ranges(spans, one_slice=None, dst=None):
+    """구간들을 30일 조각으로 왕복 → (받은 행 수, unable 여부, fatal 여부, 조각 결과 [(from, to, 상태)]).
+    표를 받은 조각마다 merge_keep_outside 로 바로 저장(그 조각 기간의 옛 행만 바뀐다). 'empty'·'other' 는 실패로 세지 않고,
+    드라이버 무응답(error)만 연속 ERR_MAX 번이면 멈춘다. one_slice 는 시험용 주입점(기본 _one_slice)."""
+    q = one_slice or _one_slice
     # 90일 통짜 요청은 응답이 잘리거나 '응답할 수 없습니다'가 잦다(실측 — 팀즈 데이터 누락의
     # 주원인). 30일 조각으로 나눠 왕복하고 합친다. 각 왕복은 재시도 사다리의 보호를 받는다.
-    t0 = datetime.strptime(d0, "%Y-%m-%d")
-    t1 = datetime.strptime(d1, "%Y-%m-%d")
-    slices = []
-    cur = t0
-    while cur <= t1:
-        end = min(cur + timedelta(days=29), t1)
-        slices.append((cur.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")))
-        cur = end + timedelta(days=1)
-    print(f"[teams-copilot] {d0}~{d1} → {len(slices)}조각 왕복 (30일 단위) — 조각당 수십 초")
-    rows, seen = [], set()
+    slices = [c for a, b in spans for c in slices_of(a, b, 30)]
+    print(f"[teams-copilot] {len(spans)}구간 → {len(slices)}조각 왕복 (30일 단위) — 조각당 수십 초")
+    rows, seen, chunks = [], set(), []
 
     def take(batch):
         n = 0
@@ -334,77 +406,121 @@ def main():
         return n
 
     alt_mode = False        # '조회 불가' 후 검색형 화법으로 전환됐는지
-    fails = 0               # 표를 못 얻은 조각 수(유형 무관) — 연속이 아니라 '누적'으로 센다.
-    #                         연속 카운터는 unable↔other 가 섞이면 계속 초기화돼 끝까지
-    #                         물어보게 되고, 그 사이 판정용 Copilot 세션이 소진된다(실측).
+    errs = 0                # 드라이버가 답을 못 받은 조각이 연속 몇 번인지(empty·other 는 세지 않는다 — 진짜 빈 달도 있다)
+    unable = fatal = False
     for i, (s0, s1) in enumerate(slices):
         print(f"[teams-copilot] {i + 1}/{len(slices)} 조각 {s0}~{s1}")
-        got, st = _one_slice(s0, s1, alt_mode)
+        got, st = q(s0, s1, alt_mode)
+        if st == "fatal":
+            # 로그인이 안 된 PC — 조각을 더 물어도 똑같다. 한 조각에서 접는다('조회 불가'로 기억하지는 않는다).
+            print(f"[teams-copilot] Copilot 을 쓸 수 없어 남은 {len(slices) - i}조각을 생략합니다 "
+                  "(로그인 뒤 다시 실행하면 이어서 모읍니다)")
+            fatal = True
+            break
         if st == "unable" and not alt_mode:
             # 실측(스크린샷): 회사 Copilot이 "조회 불가" 한마디로 거절 — 일괄 내보내기 화법이
             # 원인일 수 있어 검색형 화법으로 같은 조각을 한 번 더 시도한다.
             print("[teams-copilot]   '조회 불가' 응답 — 검색형 화법으로 전환해 재시도")
             alt_mode = True
-            got, st = _one_slice(s0, s1, alt_mode)
+            got, st = q(s0, s1, alt_mode)
         if st == "unable":
-            # 커넥터 부재는 재질의로 해결되지 않는다 — 한 번 확인되면 즉시 접는다
-            fails += 1
-            if True:
-                print("[teams-copilot] 2조각 연속 '조회 불가' — 이 계정의 Copilot은 팀즈 채팅 검색을")
-                print("               지원하지 않는 것으로 보고 남은 조각을 생략합니다 (헛왕복 방지).")
-                print("               대안: 상시 샘플러(collect\\Start-TeamsSampler.ps1) 또는 config.graph(Graph API)")
-                try:                        # 다음 분석부터는 왕복 자체를 생략 (능력 기억)
-                    os.makedirs(os.path.dirname(UNAVAILABLE_FLAG), exist_ok=True)
-                    with open(UNAVAILABLE_FLAG, "w", encoding="utf-8") as f:
-                        json.dump({"when": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                                   "note": "Copilot 응답이 팀즈 조회 불가 유형(커넥터 부재) — "
-                                           "재시도는 --retry-copilot 또는 이 파일 삭제"},
-                                  f, ensure_ascii=False, indent=1)
-                    print("               (기록됨 — 다음 분석부터 Copilot 팀즈 왕복을 자동 생략합니다)")
-                except OSError:
-                    pass
+            # 커넥터 부재는 이번 실행에서 재질의로 해결되지 않는다 — 남은 조각을 접는다. 다음 실행을 막는 기억은
+            # 서로 다른 날 2회일 때만(main — LM24 의 'if True' 는 한 번의 거절로 영구 생략했다)
+            print("[teams-copilot] '조회 불가' — 이번 실행의 남은 조각을 생략합니다 (헛왕복 방지).")
+            print("               대안: 상시 샘플러(collect\\Start-TeamsSampler.ps1) 또는 config.graph(Graph API)")
+            chunks.append((s0, s1, st))
+            unable = True
+            break
+        if st == "error":
+            errs += 1
+            chunks.append((s0, s1, st))
+            if errs >= ERR_MAX:
+                print(f"[teams-copilot] {ERR_MAX}조각 연속 답을 받지 못해 중단합니다 — 판정용 Copilot 세션을 아끼기 위해서입니다.")
                 break
             continue
-        if st in ("other", "empty") and not got:
-            fails += 1
-            if fails >= 3:
-                print("[teams-copilot] 3조각에서 표를 얻지 못해 중단합니다 — 판정용 Copilot "
-                      "세션을 아끼기 위해서입니다.")
-                print("               팀즈는 상시 샘플러(collect\\Start-TeamsSampler.ps1)로 모으세요.")
-                break
+        errs = 0
+        n0 = len(rows)
         take(got)
-        if st == "empty":
-            print("[teams-copilot]   이 조각은 메시지 없음 (재질의 생략)")
-            print(f"[teams-copilot]   누적 {len(rows)}건")
-            continue
-        # 30일 조각이 몇 건만 돌아오거나(검색 누락) 표가 크면(응답 잘림) — 실측 '기간 3개월에
-        # 1건'의 원인 — 10일 하위 조각으로 다시 물어 회수율을 끌어올린다.
-        span = (datetime.strptime(s1, "%Y-%m-%d") - datetime.strptime(s0, "%Y-%m-%d")).days + 1
-        if need_subdivide(len(got), span):
-            why = "회수 부족" if len(got) < 5 else "잘림 의심"
-            print(f"[teams-copilot]   {len(got)}건 ({why}) → 10일 조각 재질의")
-            for t0s, t1s in sub_slices(s0, s1):
-                add = take(_one_slice(t0s, t1s, alt_mode)[0])
-                print(f"[teams-copilot]     {t0s}~{t1s}: +{add}건")
-        if rows:
-            _save_rows(rows)               # 증분 저장 — 부모 타임아웃이 와도 회수분 보존
-        print(f"[teams-copilot]   누적 {len(rows)}건" + (" (증분 저장됨)" if rows else ""))
-    if not rows:
+        table = st == "table"
+        if st in ("table", "other"):
+            # 30일 조각이 몇 건만 돌아오거나(검색 누락) 표가 크면(응답 잘림) — 실측 '기간 3개월에
+            # 1건'의 원인 — 10일 하위 조각으로 다시 물어 회수율을 끌어올린다.
+            span = (datetime.strptime(s1, "%Y-%m-%d") - datetime.strptime(s0, "%Y-%m-%d")).days + 1
+            if need_subdivide(len(got), span):
+                why = "회수 부족" if len(got) < 5 else "잘림 의심"
+                print(f"[teams-copilot]   {len(got)}건 ({why}) → 10일 조각 재질의")
+                for t0s, t1s in sub_slices(s0, s1):
+                    g2, st2 = q(t0s, t1s, alt_mode)
+                    add = take(g2)
+                    table = table or st2 == "table"
+                    print(f"[teams-copilot]     {t0s}~{t1s}: +{add}건")
+        chunks.append((s0, s1, "table" if table else st))
+        if table and len(rows) > n0:
+            _save_span(rows[n0:], s0, s1, dst)  # 증분 저장 — 그 조각 기간의 옛 행만 바뀐다(부모 타임아웃이 와도 회수분 보존)
+        print(f"[teams-copilot]   {'메시지 없음(재질의 생략)' if st == 'empty' else st} · 누적 {len(rows)}건")
+    return len(rows), unable, fatal, chunks
+
+
+def main():
+    d0 = arg("--from") or (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+    d1 = arg("--to") or datetime.now().strftime("%Y-%m-%d")
+    mvc = _mvc()
+    ranges = mvc.parse_ranges(arg("--ranges")) if "--ranges" in sys.argv else None
+    if ranges is not None and not ranges:
+        print("[teams-copilot] --ranges 에 물을 날이 없습니다 — 왕복 생략")
+        emit_status(0, [], {"chunks": 0})
+        return 0
+    flag_p = os.path.join(OUT_DIR, UNAVAILABLE_NAME)
+    today = date.today()
+    # 이 계정의 Copilot 이 팀즈 조회 자체를 못 한다고 서로 다른 날 2번 확인됐으면(테넌트에 Teams 커넥터 부재 — 실측)
+    # 14일 동안 헛왕복하지 않는다. 회사가 커넥터를 켜준 뒤 바로 다시 시도하려면 --retry-copilot 또는 기억 파일 삭제.
+    ust = mvc.unable_load(flag_p)
+    if "--retry-copilot" in sys.argv:
+        ust = {"hits": [], "until": ""}
+        mvc.unable_clear(flag_p)
+    if mvc.unable_active(ust, today):
+        print(f"[teams-copilot] 이 계정의 Copilot 은 팀즈 조회 불가로 확인됨(서로 다른 날 2회 — {ust['until']} 까지 왕복 생략)")
+        print("               팀즈는 상시 샘플러(collect\\Start-TeamsSampler.ps1)로 따로 모으세요.")
+        print(f"               (커넥터가 생겨 재시도하려면: --retry-copilot 또는 {flag_p} 삭제)")
+        emit_status(3, ["R-UNABLE"], {"unable_until": ust["until"]})
+        return 3
+    LAST_FATAL.clear()
+    spans = ranges or [(d0, d1)]
+    n, unable, fatal, chunks = collect_ranges(spans, dst=os.path.join(OUT_DIR, "teams_copilot.csv"))
+    tally = {"chunks": 0, "table": 0, "empty": 0, "other": 0, "error": 0, "blocked": 0, "unable": 0}
+    for _a, _b, st in chunks:
+        tally["chunks"] += 1
+        tally[st] = tally.get(st, 0) + 1
+    counts = dict(tally, rows=n)
+    out_ranges = chunk_ranges(chunks)
+    if fatal:
+        ph = LAST_FATAL.get("phase") or ""
+        why = LAST_FATAL.get("reason") or ("R-LOGIN" if ph == "login_required" else "R-EDGELAUNCH")
+        rc = 2 if ph == "login_required" else 3
+        emit_status(rc, [why], counts, out_ranges)
+        return rc
+    if n == 0:
+        if unable:
+            ust, confirmed = mvc.unable_note(ust, today)
+            _unable_save(flag_p, ust)
+            print("               (" + (f"서로 다른 날 2회 확인 — {ust['until']} 까지 Copilot 팀즈 왕복을 생략합니다)"
+                                       if confirmed else "1회 기록 — 다른 날 한 번 더 같은 답이면 14일 동안 생략합니다)"))
+            emit_status(3, ["R-UNABLE"], counts, out_ranges)
+            return 3
         print("[teams-copilot] 전 조각에서 표를 얻지 못함 — Copilot이 팀즈 검색을 지원하지 않는")
         print("               계정이거나 기간에 채팅이 없을 수 있음 (창 읽기 폴백이 이어집니다)")
         print("               실제 응답 원문은 data\\m365\\replies\\ 에서 확인할 수 있습니다")
-        return 1
-    _save_rows(rows)
-    if os.path.exists(UNAVAILABLE_FLAG):    # 재시도가 성공했으면 '불가' 기록을 해제
-        try:
-            os.remove(UNAVAILABLE_FLAG)
-            print("[teams-copilot] 팀즈 조회가 다시 가능해짐 — '불가' 기록 해제")
-        except OSError:
-            pass
-    kinds = {}
-    for r in rows:
-        kinds[r[3]] = kinds.get(r[3], 0) + 1
-    print(f"[teams-copilot] {len(rows)}건 저장 ({', '.join(f'{k} {v}' for k, v in kinds.items())}))")
+        if not (tally["empty"] or tally["other"]):
+            why = "R-GATE" if tally["blocked"] and not tally["error"] else "R-NOREPLY"
+            emit_status(3, [why], counts, out_ranges)
+            return 3
+        emit_status(0, [], counts, out_ranges)
+        return 0
+    if ust.get("hits") or ust.get("until"):     # 재시도가 성공했으면 '불가' 기억을 해제
+        mvc.unable_clear(flag_p)
+        print("[teams-copilot] 팀즈 조회가 다시 가능해짐 — '불가' 기억 해제")
+    print(f"[teams-copilot] {n}건 받음 — 표를 받은 조각 기간만 교체해 저장(그 밖 기간의 옛 행은 그대로)")
+    emit_status(0, [], counts, out_ranges)
     return 0
 
 

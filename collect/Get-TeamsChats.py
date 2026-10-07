@@ -26,8 +26,15 @@ Get-TeamsChats.py — Microsoft Graph로 '내 팀즈 채팅'을 직접 수집 (d
       낮 발신이 새벽 '야간 산출물'이 됐다). since/until 도 로컬 자정을 UTC 로 바꿔 비교한다.
       채팅방·메시지는 since 에 닿을 때까지 페이지를 넘기고(서버 필터 $filter=lastModifiedDateTime gt since),
       안전 상한에 걸리면 '미수집' 경고를 낸다. 총 시간 예산(기본 240초) 안에서만 돈다.
+LM28(W1-17): 저장은 통째로 덮어쓰지 않는다. 예산·상한 안에서 기간을 다 읽었으면(완주) teams_parse.merge_keep_outside —
+      기간 안의 옛 행만 이번 행으로 바꾸고 기간 밖 옛 행은 그대로 둔다. 다 못 읽었으면 옛 행을 지우지 않고 합치기만 한다
+      (teams_parse.merge_union — 같은 키는 한 번).
+      마지막 줄: LMSTATUS {v,src:'teams_graph',rc,reason,counts,ranges[{axis:'teams',…}]} — 완주면 기간 전체 ok(오늘은 partial),
+      아니면 partial. rc 0 수집 / 1 설정 없음(R-NOCONFIG) / 3 토큰 없음(R-GRAPH-LOGIN — 전용 Edge 로그인과 별개라 웹 경로를
+      막지 않게 2 가 아니다)·권한·오류(R-GRAPH-DENIED·R-GRAPH-ERROR).
 """
 import argparse
+import csv
 import io
 import json
 import os
@@ -37,7 +44,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 LOCAL_TZ = None     # None = 이 PC 의 시스템 시간대(astimezone() 기본, DST 반영). 테스트에서 고정 tz 로 바꿀 수 있다
 
@@ -46,6 +53,10 @@ if __name__ == "__main__":      # import 시엔 건드리지 않는다 — 임�
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, errors="replace", encoding=(
         (sys.stdout.encoding or "utf-8") if sys.stdout.isatty() else "utf-8"))  # 콘솔(bat)=콘솔 코드페이지 · 파이프(UI)=utf-8
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+import teams_parse  # noqa: E402  — LM28 병합(merge_keep_outside·merge_union)·키·일자 판정
 CFG_PATH = os.path.join(ROOT, "config", "config.json")
 TOKEN_PATH = os.path.join(ROOT, "data", "graph_token.json")
 OUT_DIR = os.path.join(ROOT, "data", "m365")
@@ -200,11 +211,56 @@ def local_day(d):
         datetime.strptime(d, "%Y-%m-%d").astimezone()
 
 
+LAST = {"reason": ""}            # 마지막 collect 실패 사유(LMSTATUS reason)
+HDR = "time,from,summary,replied_time,chat,kind"
+
+
+def _read_rows(path):
+    """기존 teams_chats.csv 행(머리 제외, 6열 미만은 버림) — 없거나 못 읽으면 []."""
+    try:
+        with open(path, encoding="utf-8-sig", errors="replace", newline="") as f:
+            rd = csv.reader(f)
+            next(rd, None)
+            return [list(r[:6]) for r in rd if r and len(r) >= 6]
+    except OSError:
+        return []
+
+
+def _row_key(r):
+    """teams_chats.csv 행(time,from,summary,replied_time,chat,kind) → teams_parse.key_of(정제된 요지·날짜 포함)."""
+    return teams_parse.row_key(r[0], r[1], r[4], r[2])
+
+
+def save_rows(out, new_rows, d0, d1, complete):
+    """병합 저장 → 파일 행 수. 완주면 기간 안의 옛 행을 이번 행으로 바꾸고(기간 밖은 그대로), 아니면 합치기만 한다."""
+    old = _read_rows(out)
+    if complete:
+        merged = teams_parse.merge_keep_outside(old, new_rows, d0, d1)
+    else:
+        merged = teams_parse.merge_union(old, new_rows, _row_key)
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+
+    def esc(s):
+        s = re.sub(r"[\r\n]+", " ", str(s or ""))
+        return '"' + s.replace('"', '""') + '"' if ("," in s or '"' in s) else s
+
+    tmp = out + ".tmp"
+    with open(tmp, "w", encoding="utf-8-sig", newline="") as f:
+        f.write(HDR + "\n")
+        for r in merged:
+            f.write(",".join(esc(c) for c in r[:6]) + "\n")
+    os.replace(tmp, out)
+    return len(merged)
+
+
 def collect(d0, d1, max_chats=500, max_msgs=None, interactive=True, time_budget=240.0):
-    """d0~d1(로컬 날짜) 의 내 채팅을 모아 CSV 로. max_msgs 는 방당 안전 상한(None = 기간 길이 비례, 최소 1000)"""
+    """d0~d1(로컬 날짜) 의 내 채팅을 모아 CSV 로. max_msgs 는 방당 안전 상한(None = 기간 길이 비례, 최소 1000)
+    → {path, rows, complete, warns, file_rows} | None(실패 — LAST['reason'])"""
+    LAST["reason"] = ""
     token, err = acquire_token(interactive)
     if not token:
         print(f"[graph] {err}")
+        LAST["reason"] = "R-NOCONFIG" if "clientId" in str(err) else "R-GRAPH-LOGIN"
         return None
     t_start = time.time()
     me = get_json(f"{GRAPH}/me", token)
@@ -237,6 +293,7 @@ def collect(d0, d1, max_chats=500, max_msgs=None, interactive=True, time_budget=
                 pages -= 1
                 continue
             print(f"[graph] /me/chats 실패 {e.code} — 권한(Chat.Read) 동의 여부 확인")
+            LAST["reason"] = "R-GRAPH-DENIED"
             return None
         for ch in page.get("value", []):
             last = parse_graph_time(((ch.get("lastMessagePreview") or {}).get("createdDateTime")) or "")
@@ -321,24 +378,33 @@ def collect(d0, d1, max_chats=500, max_msgs=None, interactive=True, time_budget=
             if nxt["chat"] == r["chat"] and nxt["kind"] == "sent":
                 r["replied_time"] = nxt["time"]
                 break
-    os.makedirs(OUT_DIR, exist_ok=True)
     out = os.path.join(OUT_DIR, "teams_chats.csv")
-
-    def esc(s):
-        s = re.sub(r"[\r\n]+", " ", str(s or ""))
-        return '"' + s.replace('"', '""') + '"' if ("," in s or '"' in s) else s
-
-    with open(out, "w", encoding="utf-8-sig", newline="") as f:
-        f.write("time,from,summary,replied_time,chat,kind\n")
-        for r in rows:
-            f.write(",".join(esc(r[k]) for k in
-                             ("time", "from", "summary", "replied_time", "chat", "kind")) + "\n")
+    # 완주(경고 없음 — 방 목록·방마다 since 에 닿음·예산 안)면 기간 안을 이번 행으로 바꾸고, 아니면 옛 행을 지우지 않는다
+    complete = not warns
+    new_rows = [[r[k] for k in ("time", "from", "summary", "replied_time", "chat", "kind")] for r in rows]
+    n_file = save_rows(out, new_rows, d0, d1, complete)
     n_order = sum(1 for r in rows if r["kind"] == "order")
     n_sent = sum(1 for r in rows if r["kind"] == "sent")
-    print(f"[graph] 메시지 {len(rows)}건 (업무 오더 후보 {n_order}건 · 내 발신 {n_sent}건, 로컬 시각) → {out}")
+    print(f"[graph] 메시지 {len(rows)}건 (업무 오더 후보 {n_order}건 · 내 발신 {n_sent}건, 로컬 시각) → {out}"
+          f" (파일 {n_file}행 · {'기간 안 교체' if complete else '덜 읽어 합치기만'})")
     for w in warns:
         print(f"[graph] 경고: {w}")
-    return out
+    return {"path": out, "rows": len(rows), "complete": complete, "warns": len(warns), "file_rows": n_file}
+
+
+def emit_status(rc, reasons=(), counts=None, ranges=None, src="teams_graph"):
+    """수집기 마지막 줄(LM28 P3) — 'LMSTATUS ' + JSON 한 줄."""
+    rs = ",".join(dict.fromkeys(r for r in reasons if r))
+    print("LMSTATUS " + json.dumps({"v": 1, "src": src, "rc": int(rc), "reason": rs, "counts": counts or {},
+                                    "ranges": ranges or []}, ensure_ascii=False))
+    sys.stdout.flush()
+
+
+def graph_ranges(d0, d1, complete, today=None):
+    """Graph 결과 → teams 축 ranges — 예산 안 완주면 기간 전체 ok(오늘은 partial — 아직 메시지가 더 온다), 아니면 partial."""
+    a, b = date.fromisoformat(d0), date.fromisoformat(d1)
+    rooms = [] if complete else [{"last": None, "verdict": None, "read_to": None}]
+    return teams_parse.day_ranges(rooms, True, a, b, cap=today or date.today())
 
 
 def main():
@@ -370,8 +436,25 @@ def main():
         return 0 if tok else 1
     d0 = a.d0 or (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
     d1 = a.d1 or datetime.now().strftime("%Y-%m-%d")
-    return 0 if collect(d0, d1, max_chats=max(1, a.max_chats), max_msgs=(a.max_msgs or None),
-                        interactive=not a.non_interactive, time_budget=max(30.0, a.time_budget)) else 1
+    if not client_id:
+        print("[graph] config.json 의 graph.clientId 가 비어 있습니다 — Graph 경로를 건너뜁니다")
+        emit_status(1, ["R-NOCONFIG"])
+        return 1
+    try:
+        res = collect(d0, d1, max_chats=max(1, a.max_chats), max_msgs=(a.max_msgs or None),
+                      interactive=not a.non_interactive, time_budget=max(30.0, a.time_budget))
+    except (urllib.error.URLError, OSError, ValueError) as e:     # 네트워크·응답 해석 실패 — 이 경로만 접는다
+        print(f"[graph] 수집 실패({type(e).__name__}: {str(e)[:80]})")
+        emit_status(3, ["R-GRAPH-ERROR"])
+        return 3
+    if not res:
+        why = LAST.get("reason") or "R-GRAPH-ERROR"
+        rc = 1 if why == "R-NOCONFIG" else 3
+        emit_status(rc, [why])
+        return rc
+    counts = {"rows": res["rows"], "file_rows": res["file_rows"], "complete": res["complete"], "warns": res["warns"]}
+    emit_status(0, [] if res["complete"] else ["R-PARTIAL"], counts, graph_ranges(d0, d1, res["complete"]))
+    return 0
 
 
 if __name__ == "__main__":

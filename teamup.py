@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 r"""
-teamup.py — 분석 결과를 팀 저장소로 올린다 (LoadMonitor24: 자동 전송이 아니라 '대기 → 버튼')
+teamup.py — 분석 결과를 팀 저장소로 올린다 (LoadMonitor28: 자동 전송이 아니라 '대기 → 버튼')
 
 팀 서버는 특정 망에서만 닿는다. 분석은 아무 망에서나 하니
 분석 때마다 자동 전송을 시도하면 대부분 실패하고, 그 결과가 조용히 사라진다(실측).
@@ -16,7 +16,7 @@ teamup.py — 분석 결과를 팀 저장소로 올린다 (LoadMonitor24: 자동
   python teamup.py --upload [--host <IP>] [--port <번호>]       대기분 전부 전송
       (주소는 팀 서버 주소 설정 config\team_server.json — core\teamaddr.py 가 읽는다.
        --host·--port·--url 은 이번 한 번만 쓰는 값이고 설정은 바꾸지 않는다 —
-       설정을 바꾸는 곳은 LoadMonitor24-팀서버주소.bat 하나)
+       설정을 바꾸는 곳은 LoadMonitor28-팀서버주소.bat 하나)
   python teamup.py --to-folder "\\서버\공유\LoadMonitor"          공유폴더로 대신 저장
       (개인 HTML 보고서 분석리포트_<기간>.html·보고서_<기간>.html 이 있으면
        <폴더>\개인리포트\<이름>_<파일명> 으로 함께 복사 — 팀 서버 묶음에는 넣지 않는다)
@@ -24,6 +24,10 @@ teamup.py — 분석 결과를 팀 저장소로 올린다 (LoadMonitor24: 자동
 
 묶음 내용은 팀 공유폴더 내보내기(export.py)와 동일하다 — 이미 excludePathKeywords 로 걸러진
 판정 결과다. 사내망 전용.
+LM28: signals 는 G4 팀 반출 변환(core\privacy.team_export_rows — export.py 와 같은 함수)을 거친다 — who 는
+사내|고객사|협력사|외부 로 접고, text 는 다시 정제하고, 고위험 잔여 행과 flag 열은 빼고, 이 PC·본인 식별자(카나리아)가
+남은 파일은 보내지 않는다. 묶음을 만들 때(build)와 보내기 직전(upload_one) 두 번 건다(다시 걸어도 같은 결과).
+member 에는 판 표식 lm_ver='LM28' 을 추가 키로 싣는다(기존 키·파일명·measure·coverage·cfg_used 는 그대로).
 """
 import io
 import json
@@ -41,6 +45,7 @@ REPORT = os.path.join(ROOT, "report")
 PENDING = os.path.join(REPORT, "upload_pending")
 SENT = os.path.join(REPORT, "upload_sent")
 MAX_BYTES = 30 * 1024 * 1024        # 서버 상한과 같다 — 넘으면 보내기 전에 알려 준다
+LM_VER = "LM28"                     # member.lm_ver — 묶음을 만든 판(추가 키만, 기존 키·파일명 불변)
 if __name__ == "__main__":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, errors="replace", encoding=(
         (sys.stdout.encoding or "utf-8") if sys.stdout.isatty() else "utf-8"))  # 콘솔(bat)=콘솔 코드페이지 · 파이프(UI)=utf-8
@@ -292,9 +297,24 @@ def push_reports(share, owner, tag):
     return copied, bad
 
 
+def team_signals(name, text, cfg):
+    r"""G4 팀 반출 변환(core\privacy.team_export_rows — export.py 공유폴더와 같은 함수, WP7) → (본문 또는 None, 안내).
+    who → 사내|고객사|협력사|외부, text 재정제, 고위험 잔여 행만 빼고 flag 열 제거. 이미 변환한 본문에 다시 걸어도 같다.
+    None = 이 PC·본인 식별자(카나리아)가 남아 그 파일만 보내지 않는다. 신호 파일이 아니면 그대로 돌려준다."""
+    if not re.match(r"^signals_\d{8}-\d{8}\.csv$", str(name)):
+        return text, ""
+    import privacy
+    out, inf = privacy.team_export_csv(text, cfg=cfg, data_dir=os.path.join(ROOT, "data"))
+    if out is None:
+        return None, f"{name} 은 보내지 않습니다 — {inf.get('why') or '변환 실패'}"
+    note = f"{name}: 개인정보가 남은 신호 {inf['high_dropped']}행은 빼고 보냅니다" if inf.get("high_dropped") else ""
+    return out, note
+
+
 def build(cfg, d0, d1):
     """report 의 산출물로 업로드 묶음(서버 전송 본문 그대로)을 만든다 → 경로 또는 None.
-    같은 기간을 다시 분석하면 그 기간 대기 묶음을 갈아끼운다(같은 것이 쌓이지 않게)."""
+    같은 기간을 다시 분석하면 그 기간 대기 묶음을 갈아끼운다(같은 것이 쌓이지 않게).
+    signals 는 팀 반출 변환(team_signals)을 거친 본문을 싣는다 — 서버·공유폴더 어느 쪽으로 가도 같은 행."""
     tag = f"{d0.replace('-', '')}-{d1.replace('-', '')}"
     files = {}
     for pat in FILE_NAMES:
@@ -305,6 +325,14 @@ def build(cfg, d0, d1):
                 files[n] = open(p, encoding="utf-8-sig", errors="replace").read()
             except OSError:
                 pass
+            if n in files:
+                txt, note = team_signals(n, files[n], cfg)
+                if note:
+                    print(f"[teamup] {note}")
+                if txt is None:
+                    del files[n]
+                else:
+                    files[n] = txt
     if not files:
         return None
     meta_p = os.path.join(REPORT, f"mm_meta_{tag}.json")
@@ -334,7 +362,10 @@ def build(cfg, d0, d1):
               "rehours": bool(mj.get("rehours")), "dropped_h": _hours(mj.get("dropped_h")),
               "host": os.environ.get("COMPUTERNAME", ""),
               # 누가·언제·어디서 — 팀장이 "이 숫자는 누구 것이고 언제 것인가"를 묻는다(사용자 요청)
-              "analyzed_at": time.strftime("%Y-%m-%d %H:%M")}
+              "analyzed_at": time.strftime("%Y-%m-%d %H:%M"),
+              # LM28 판 표식 — 추가 키라 LM24 서버·취합은 그대로 받는다(team_recalc 가 'LM28(v3)' 로 표시).
+              # measure·coverage·cfg_used 키는 바꾸지 않는다(팀 호환 불변 — 없으면 'LM20(추정)' 으로 오분류된다)
+              "lm_ver": LM_VER}
     os.makedirs(PENDING, exist_ok=True)
     dst = os.path.join(PENDING, f"{tag}.json")
     tmp = dst + ".tmp"
@@ -424,7 +455,7 @@ def ping(url, timeout=4.0):
     """이 망에서 서버에 닿는가 — 빠르게 확인한다(응답이 오면 도달로 본다)"""
     if not url:
         return {"ok": False, "error": "팀 서버 주소가 비었거나 형식이 틀렸습니다 — "
-                                      "LoadMonitor24-팀서버주소.bat 에서 서버 IP·포트를 저장하세요"}
+                                      "LoadMonitor28-팀서버주소.bat 에서 서버 IP·포트를 저장하세요"}
     t0 = time.time()
     try:
         req = urllib.request.Request(url + "/api/team", method="GET")
@@ -467,6 +498,19 @@ def upload_one(url, path, timeout=360.0):
         # 보내는 시점의 흔적 — 대리 업로드여도 '올린 PC'는 여기서 찍힌다(이름은 원저자 유지)
         member["uploaded_at"] = time.strftime("%Y-%m-%d %H:%M")
         member["uploaded_from"] = os.environ.get("COMPUTERNAME", "")
+        # G4 — 보내기 직전에도 팀 반출 변환을 한 번 더 건다. LM28 build 묶음은 이미 변환됐지만(다시 걸어도 같다),
+        # 예전 판이 만든 묶음이 upload_pending 에 남아 있으면 신호 원문이 그대로 나갔다(WP7 지적).
+        _cfg0 = load_cfg()
+        for _n in list(files):
+            _txt, _note = team_signals(_n, files[_n], _cfg0)
+            if _note:
+                print(f"[teamup] {_note}")
+            if _txt is None:
+                del files[_n]
+            else:
+                files[_n] = _txt
+        if not files:
+            return False, "보낼 수 있는 파일이 없습니다 — 신호 파일이 개인정보 관문에 막혔습니다(다시 분석하세요)"
         stop = blockers(member, files)
         if stop:
             return False, stop[0]
@@ -574,7 +618,14 @@ def to_folder(share):
                             "msg": f"공유폴더 접근 실패: {e}{hint} — 이 망에서 닿지 않을 수 있습니다"})
             failed += 1
             continue
-        want = d.get("files") or {}
+        want, cfg0 = {}, load_cfg()
+        for name, text in (d.get("files") or {}).items():
+            # 예전 판이 만든 묶음도 같은 팀 반출 변환을 거친다(이미 변환한 본문이면 그대로 — 멱등)
+            txt, note = team_signals(name, text, cfg0)
+            if note:
+                print(f"[teamup] {note}")
+            if txt is not None:
+                want[name] = txt
         n_ok, bad = 0, []
         for name, text in want.items():
             try:
@@ -748,7 +799,7 @@ def main():
         url = target_url(cfg)
         if not url:
             _out(js, {"ok": False, "error": "팀 서버 주소가 비었거나 형식이 틀렸습니다"},
-                 "[teamup] 팀 서버 주소가 비었거나 형식이 틀렸습니다 — LoadMonitor24-팀서버주소.bat 에서 "
+                 "[teamup] 팀 서버 주소가 비었거나 형식이 틀렸습니다 — LoadMonitor28-팀서버주소.bat 에서 "
                  "서버 IP·포트를 저장하세요")
             return 1
         pg = ping(url)

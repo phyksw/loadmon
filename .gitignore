@@ -20,3 +20,6 @@ __pycache__/
 config/detail_aliases.json
 config/project_aliases.json
 config/team_server.json
+
+# 작업 메모(로컬 전용)
+.wf/
