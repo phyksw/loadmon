@@ -11,6 +11,9 @@ r"""collect\teams_parse.py — 팀즈 수집 판정용 순수 함수(LM28 WP3). 
   · day_ranges(rooms, list_end, d0, d1, cap) → teams 축 LMSTATUS ranges(P4 — 검증된 날만 ok).
   · merge_keep_outside(old, new, d0, d1) — 기간 밖 옛 행은 그대로, 기간 안은 이번 행으로(W1-17 — Graph·Copilot 의 'w' 덮어쓰기 대신).
   · merge_union(old, new, keyf) — 덮지 않고 합치기(기간을 다 읽지 못한 Graph).
+  · name_keys(name, label) — 방 이름 후보(정규화): 목록 이름 + aria-label 앞 조각 1~4개를 이은 것(CSV 방 이름 규칙).
+  · title_fits(chat, name, label) — 머리 제목이 그 방인가(전환 확인용 — 외부·괄호·'외 n명'·단체방 이름 순서 같은 표기 차이 허용).
+  · overlap(fp, pool) — 화면 메시지 지문 중 pool 에 든 비율(앞 방 화면 그대로 판정).
 """
 import functools
 import hashlib
@@ -74,6 +77,68 @@ def room_id(ident):
 
 def iso_local(s):
     return owa_parse.iso_local(s)
+
+
+def name_keys(name, label=""):
+    """방 이름 후보(정규화) — 목록 이름, 그리고 aria-label 앞 조각 1~4개를 이은 것(단체방 머리 'A, B, C' 와 맞춘다)."""
+    out = {norm_name(name)}
+    parts = [x.strip() for x in re.split(r"[,|·]", str(label or "")) if x.strip()]
+    for k in range(1, min(4, len(parts)) + 1):
+        out.add(norm_name(",".join(parts[:k])))
+    return {x for x in out if len(x) >= 2}
+
+
+_NOTE = re.compile(r"[(\[（【][^)\]）】]{0,40}[)\]）】]")
+_MORE = re.compile(r"\s*(?:외|및)\s*\d+\s*명.*$|\s*(?:and|\+)\s*\d+\s*(?:others?|more|people)?\s*$", re.I)
+_SPLIT = re.compile(r"[,、，;·|/&]")
+
+
+def strip_notes(s):
+    """머리 제목의 덧붙임을 뗀다 — 괄호 표기('(외부)'·'[External]'·'(게스트)')와 '외 2명'·'and 3 others'·'+2'."""
+    return _MORE.sub("", _NOTE.sub(" ", str(s or ""))).strip()
+
+
+def name_parts(s, k=8):
+    """이름 조각(정규화) — 덧붙임을 뗀 뒤 쉼표·가운뎃점 등으로 나눈 앞 k 개(2자 이상)."""
+    out = []
+    for x in _SPLIT.split(strip_notes(s))[:k]:
+        x = norm_name(x)
+        if len(x) >= 2:
+            out.append(x)
+    return out
+
+
+def title_fits(chat, name, label=""):
+    """머리 제목이 그 방인가 — 방 전환 확인용(CSV 방 이름은 이 규칙을 쓰지 않는다: 정확히 같을 때만 머리 제목을 쓴다).
+    ① 정규화해 같음(name_keys) ② 덧붙임('(외부)'·'[External]'·'외 2명')을 떼면 같음 ③ 단체방 이름 순서만 다름 — 머리 조각
+    2개 이상이 모두 목록 aria-label 조각 안 ④ 한쪽이 다른 쪽을 품고 짧은 쪽이 긴 쪽의 절반 이상(2자 이상).
+    (비슷한 이름의 다른 방을 고를 위험은 호출 쪽이 '누른 뒤 화면이 바뀜'·'앞 방 지문 아님'으로 함께 막는다.)"""
+    c = norm_name(chat)
+    if len(c) < 2:
+        return False
+    keys = name_keys(name, label)
+    if c in keys:
+        return True
+    c2 = norm_name(strip_notes(chat))
+    keys2 = keys | {x for x in (norm_name(strip_notes(name)),) if len(x) >= 2}
+    if len(c2) >= 2 and c2 in keys2:
+        return True
+    hp = name_parts(chat)
+    if len(hp) >= 2 and set(hp) <= set(name_parts(label or name, 12)):
+        return True
+    for n in keys2:
+        a, b = (n, c2) if len(n) <= len(c2) else (c2, n)
+        if len(a) >= 2 and a in b and 2 * len(a) >= len(b):
+            return True
+    return False
+
+
+def overlap(fp, pool):
+    """화면 메시지 지문 fp 중 pool(집합)에 든 비율 0..1 — fp 나 pool 이 비면 0."""
+    fp = [x for x in (fp or ()) if x]
+    if not fp or not pool:
+        return 0.0
+    return sum(1 for x in fp if x in pool) / len(fp)
 
 
 def room_verdict(events):

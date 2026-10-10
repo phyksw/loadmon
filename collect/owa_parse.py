@@ -12,6 +12,10 @@ r"""collect\owa_parse.py — Outlook 웹(OWA) 화면 판정용 순수 함수(LM2
   · iso_local(s) — <time datetime> ISO(Z·오프셋) → 이 PC 로컬 (date, (시, 분))(C-35).
   · apply_ranges(day_st, rngs, cap) · ranges_of(day_st, axis) — {날짜: st} 에 판정 반영(나은 상태만 · 오늘은 partial) →
     LMSTATUS ranges 조각(이어진 같은 상태끼리).
+  · pick_list(cands) · mail_list_ok(lst, parsed, total) — 화면의 목록 칸 후보(JS 가 센 구조 사실) 중 메일 목록 칸 고르기·확인
+    (LM28 현장 2026-10-08: 화면의 첫 listbox 가 메일 목록이 아니었다).
+  · weekday_date(text, d0, d1) — 날짜 없이 요일만 있는 일정 글 → 그 주 안의 그 요일.
+  · mask_shape(s) · skeleton(node) · fmt_flags(text) — 화면 구조 진단용(글자 → x · 태그·role·aria-label 길이 · 날짜 표기 꼴만).
 """
 import re
 from datetime import date, datetime, timedelta, timezone
@@ -45,6 +49,8 @@ RE_WEEKDAY_ANY = re.compile(r"(?i)\b(?:monday|tuesday|wednesday|thursday|friday|
                             r"thur|thurs|fri|sat|sun)\b\.?|[월화수목금토일]요일|(?<![가-힣])[월화수목금토일](?![가-힣])")
 _PUNCT_RX = re.compile(r"[\s,，.·|:：()\[\]~\-–—/]+")
 RE_ISO = re.compile(r"(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?\s*(Z|[+-]\d{2}:?\d{2})?")
+# 온전한 요일 낱말만(한 글자 '월'·'화'는 '9월' 같은 날짜 조각과 섞여 쓰지 않는다) — 날짜 없는 일정 막대의 요일
+RE_WEEKDAY_FULL = re.compile(r"(?i)\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b|([월화수목금토일])요일")
 
 
 def _safe(y, mo, dd):
@@ -245,8 +251,10 @@ def slice_verdict(item_dates, s, e, empty_marker=False, scrolled_contiguous=Fals
         조각 밖(앞뒤 1일 여유 밖) 날짜가 하나라도 → filter_ineffective(검색이 안 걸린 화면 — 받은 편지함 첫 화면 등)
         조각 날짜가 하나도 없음 → unverified · 끝까지 내림(reached_end) → ok · 못 내림 → list_verified(맨 아래 항목 날짜)
     · 목록 화면(scrolled_contiguous=True — 검색 없이 최신부터 끊김 없이 내린 것):
-        항목 0 + '비어 있음' 표식 → empty_verified · 날짜 순서가 아니면 unverified · 목록 전체가 한 화면(reached_end — 부르는
-        쪽이 'fits' 일 때만 준다)이면 ok · 그 밖은 list_verified(맨 아래 날짜 D — 'end' 는 지연 로드일 수 있어 믿지 않는다)
+        항목 0 + '비어 있음' 표식 → empty_verified · 날짜 순서가 아니면 unverified · 목록 끝 확인(reached_end)이면 ok ·
+        그 밖은 list_verified(맨 아래 날짜 D — 기간 시작 앞에 닿았으면 D < s 라 기간 전체가 ok)
+    reached_end 는 부르는 쪽이 '끝 근거'가 있을 때만 준다(LM28 현장 2026-10-08 이후): 바닥에서 새 행 0 이 여러 번(사이에 휠·
+    '더 보기'·긴 대기, 불러오는 중 표시 없음) + 그 칸이 메일 목록(mail_list_ok). 'fits'(칸이 화면에 다 들어감)는 근거가 아니다.
     list_verified(D) = [D+1, e] 는 끝까지 읽음, D 이하는 일부(그 날 항목이 더 아래 있을 수 있다)."""
     ds = [d for d in item_dates if d]
     if scrolled_contiguous:
@@ -445,3 +453,131 @@ def merge_slices(old, new, verified, kind="mail"):
     out = [r for i, r in enumerate(out) if i not in drop]
     out.sort(key=lambda r: str(r[1] if kind == "mail" else r[0]))
     return out
+
+
+# ── 목록 칸 고르기(LM28 현장 2026-10-08) ─────────────────────────────────────────
+def _int(v, d=0):
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return d
+
+
+def pick_list(cands):
+    """화면의 목록 칸 후보(JS 가 센 구조 사실 {i, opts, mailish, conv, main, vis, …}) → 메일 목록 칸 번호 | None.
+    메일 행처럼 보이는 행(data-convid 또는 시각·날짜 조각)이 가장 많은 칸 — data-convid 가 있는 칸·본문(main·data-app-section)
+    안쪽·보이는 칸을 앞세운다. 메일 행이 하나도 없는 칸은 고르지 않는다(현장: 첫 listbox 는 짧은 다른 칸이었다)."""
+    best, top = None, 0
+    for c in cands or ():
+        if not isinstance(c, dict):
+            continue
+        m = _int(c.get("mailish"))
+        if m <= 0:
+            continue
+        sc = m * 10 + (40 if _int(c.get("conv")) else 0) + (20 if _int(c.get("main")) else 0) + (5 if _int(c.get("vis")) else 0)
+        if sc > top:
+            best, top = _int(c.get("i"), None), sc
+    return best
+
+
+def mail_list_ok(lst, parsed=0, total=0):
+    """고른 칸이 메일 목록으로 확인되는가 — 칸의 행 대부분(60%)이 메일 행(또는 data-convid 가 있음)이고, 읽은 항목 대부분(60%)의
+    날짜를 풀었을 때. 목록 '끝'을 근거로 쓰려면(owa_parse.slice_verdict reached_end) 이것이 참이어야 한다."""
+    if not isinstance(lst, dict):
+        return False
+    opts, m, cv = _int(lst.get("opts")), _int(lst.get("mailish")), _int(lst.get("conv"))
+    if opts <= 0 or not (cv > 0 or m * 10 >= opts * 6):
+        return False
+    return total > 0 and parsed * 10 >= total * 6
+
+
+def weekday_date(text, d0, d1):
+    """날짜 없이 요일만 있는 일정 글('주간 회의, 화요일 오후 2:00 ~ 오후 3:00') → 그 주(d0~d1, 7일 이내) 안의 그 요일 | None.
+    서로 다른 요일 낱말이 둘 이상이면(반복 설명·제목 속 요일) 고르지 않는다."""
+    if not (d0 and d1) or not (0 <= (d1 - d0).days <= 6):
+        return None
+    wds = set()
+    for m in RE_WEEKDAY_FULL.finditer(str(text or "")):
+        w = (m.group(1) or "").lower() or (m.group(2) + "요일")
+        if w in WDAY:
+            wds.add(WDAY[w])
+    if len(wds) != 1:
+        return None
+    wd, d = wds.pop(), d0
+    while d <= d1:
+        if d.weekday() == wd:
+            return d
+        d += DAY
+    return None
+
+
+# ── 화면 구조 진단(구조만 — 회사 PC 화면을 볼 수 없어 사진 한 장·진단 묶음으로 원인을 확정하려는 것) ─────────────────
+RE_LETTER = re.compile(r"[^\W\d_]")                  # 모든 문자 체계의 글자(한글·한자·가나·라틴·키릴)
+RE_KEEP_WORD = re.compile(r"오전|오후|어제|Yesterday|yesterday|AM|PM|am|pm")
+
+
+def mask_shape(s, n=24):
+    """글자 → x(숫자·구두점·공백과 오전/오후·AM/PM·어제 표기는 그대로) — Diagnose-Collectors.ps1 Mask 와 같은 규칙. n 자에서 자른다."""
+    t, out, i = str(s or ""), [], 0
+    for m in RE_KEEP_WORD.finditer(t):
+        out.append(RE_LETTER.sub("x", t[i:m.start()]))
+        out.append(m.group(0))
+        i = m.end()
+    out.append(RE_LETTER.sub("x", t[i:]))
+    t = re.sub(r"\s+", " ", "".join(out)).strip()
+    return t[:n] + ("…" if len(t) > n else "")
+
+
+def skeleton(node, n=320):
+    """JS 가 낸 행 골격({t 태그, r role, al aria-label 길이, cv data-convid, x 잎 글, c 자식[], k 자식 수}) → 한 줄
+    'div[option,al87,cv]{div{span'xxx'|span'2026-09-02'}}' — 태그·role·길이·표식만 남기고 잎 글은 mask_shape 로 가린다."""
+    def one(o, d):
+        if not isinstance(o, dict) or d > 6:
+            return ""
+        s = re.sub(r"[^a-z0-9-]", "", str(o.get("t") or "?").lower())[:12] or "?"
+        at = []
+        if o.get("r"):
+            at.append(re.sub(r"[^A-Za-z-]", "", str(o["r"]))[:16])
+        if o.get("al"):
+            at.append(f"al{_int(o['al'])}")
+        if o.get("cv"):
+            at.append("cv")
+        if o.get("k"):
+            at.append(f"k{_int(o['k'])}")
+        if at:
+            s += "[" + ",".join(a for a in at if a) + "]"
+        if o.get("x"):
+            s += "'" + mask_shape(o["x"], 16) + "'"
+        kids = [k for k in (one(c, d + 1) for c in (o.get("c") or [])[:6]) if k]
+        if kids:
+            s += "{" + "|".join(kids) + "}"
+        return s
+    out = one(node, 0)
+    return out[:n] + ("…" if len(out) > n else "")
+
+
+def fmt_flags(text):
+    """글의 날짜·시각 표기 꼴(내용 없이) → 'ymd+t2+wd' 꼴 — ymd·mdy·mon(영문 월)·kmd('n월 n일')·md(M/D) · tN(시각 수) ·
+    wd(요일 낱말) · rel(오늘·어제) · ad(종일). 진단용으로 어떤 표기가 화면에 있는지만 남긴다."""
+    t = hm_words(str(text or ""))
+    f = []
+    if RE_YMD.search(t):
+        f.append("ymd")
+    elif RE_MDY.search(t):
+        f.append("mdy")
+    elif RE_MONEN.search(t) or RE_DMONEN.search(t):
+        f.append("mon")
+    elif RE_MD_KO.search(t):
+        f.append("kmd")
+    elif RE_MD.search(RE_TIME.sub(" ", t)):
+        f.append("md")
+    n = len(find_times(t))
+    if n:
+        f.append(f"t{min(n, 9)}")
+    if RE_WEEKDAY_FULL.search(t):
+        f.append("wd")
+    if re.search(r"(?i)어제|오늘|yesterday|today", t):
+        f.append("rel")
+    if re.search(r"(?i)종일|all[- ]day|終日|全天", t):
+        f.append("ad")
+    return "+".join(f) or "-"

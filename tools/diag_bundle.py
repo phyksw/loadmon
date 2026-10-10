@@ -146,7 +146,8 @@ def build(root):
     rooms = glob.glob(os.path.join(data, "**", "teams_web_rooms.json"), recursive=True)
     for p in rooms:
         j = _read_json(p)
-        n = len(j) if isinstance(j, (list, dict)) else 0
+        rm = j.get("rooms") if isinstance(j, dict) and "rooms" in j else j      # 방 커서 {ver, rooms, dom_census}
+        n = len(rm) if isinstance(rm, (list, dict)) else 0
         section(f"팀즈 방 목록 {os.path.relpath(p, root)}", f"방 {n}개(이름은 담지 않음)")
     csvs = sorted(glob.glob(os.path.join(data, "outlook", "*.csv")) + glob.glob(os.path.join(data, "outlook", "src", "*.csv"))
                   + glob.glob(os.path.join(data, "teams*", "*.csv")) + glob.glob(os.path.join(data, "*teams*.csv"))

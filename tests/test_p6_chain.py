@@ -153,6 +153,18 @@ class StatusTests(unittest.TestCase):
         self.assertIn("의심(실측 전)", collect_status.describe(st))
         self.assertEqual(collect_status.compact(st["counts"]), {"rows": 12})       # 긴 값은 싣지 않는다
 
+    def test_dom_census_kept_and_capped(self):
+        """화면 구조 진단(dom_census)은 last_run.json 에 모양 그대로 — 상한을 넘으면 뺀다. '구조:' 줄은 따로 집는다."""
+        cen = {"listbox": 4, "pick": {"i": 1, "options": 37}, "scroll": "found"}
+        many = {f"k{i}": i for i in range(60)}
+        out = collect_status.compact(dict(many, dom_census=cen))
+        self.assertEqual(out["dom_census"], cen)                                   # 스칼라 상한(40)에 밀리지 않는다
+        self.assertNotIn("dom_census", collect_status.compact({"dom_census": {"x": "y" * 5000}}))
+        st = collect_status.parse(["[outlook-web] 구조: listbox 4 · 끝 근거 없음", "[outlook-web] 메일 17건",
+                                   LM("owa", 3, "R-WEBSEL", [], {"rows": 1})], 3, src="owa")
+        self.assertEqual(collect_status.census_line(st), "[outlook-web] 구조: listbox 4 · 끝 근거 없음")
+        self.assertEqual(collect_status.census_line({"lines": ["x"]}), "")
+
     def test_ps_single_range_dict(self):
         line = "LMSTATUS " + json.dumps({"v": 1, "src": "index", "rc": 3, "reason": "R-RECURINC",
                                          "ranges": rng("cal", D0, D1, "partial")})
@@ -173,6 +185,23 @@ class StatusTests(unittest.TestCase):
         st = collect_status.parse([LM("owa", 0, "", [rng("mail_in", D0, D1, "ok")])], -1, src="owa", how="timeout")
         self.assertEqual((st["rc"], st["reasons"][0]), (3, "R-TIMEOUT"))
         self.assertEqual(st["ranges"][0]["st"], "partial")
+
+
+class CensusRecordTests(_RunEnv):
+    def test_census_reaches_last_run(self):
+        """웹 수집기의 '구조:' 줄과 dom_census 가 last_run.json 단계에 남는다 — 수집 진단 화면·진단 묶음이 그것을 보여 준다."""
+        R._RUN_STEP = lambda cmd, timeout, name="": (3, ["[teams-web] 구조: 목록 61 · 화면멈춤 61", "[teams-web] 방 0",
+                                                         LM("teams_web", 3, "R-ROOMGONE", [],
+                                                            {"opened": 61, "dom_census": {"pane_stuck": 61}})], "ok")
+        with self.quiet():
+            R.run_collector("팀즈 웹", ["python", "Get-TeamsWeb.py"], src="teams_web")
+        ent = R.RUN["stages"][-1]
+        self.assertEqual(ent["census"], "[teams-web] 구조: 목록 61 · 화면멈춤 61")
+        self.assertEqual(ent["counts"]["dom_census"], {"pane_stuck": 61})
+        with open(os.path.join(R.REPORT_DIR["p"], "last_run.json"), encoding="utf-8") as f:
+            self.assertIn("화면멈춤 61", f.read())
+        ps1 = _boot.read_text(os.path.join(ROOT, "collect", "Diagnose-Collectors.ps1"))
+        self.assertIn("$s.census", ps1)                                            # 수집 진단 화면이 그 줄을 찍는다
 
 
 # ── coverage ────────────────────────────────────────────────────────────────
@@ -237,6 +266,26 @@ class CoverageTests(unittest.TestCase):
             self.assertEqual(coverage.Ledger.load(p, "v|1", "other").dropped, "host")
             L.reset()
             self.assertEqual(L.composite("2026-01-05", "mail_in"), "not_attempted")
+
+    def test_src_rules_drop_only_that_source(self):
+        """판정 규칙의 판이 없는(옛) 원장 — OWA 칸만 지우고 COM 칸은 둔다. 새로 저장한 원장은 다시 지우지 않는다."""
+        with tempfile.TemporaryDirectory(prefix="lm28_p6r_") as td:
+            p = os.path.join(td, coverage.FILE_NAME)
+            days = {"2026-03-02": {"mail_in": {"owa": "ok", "com": "ok"}, "cal": {"owa": "ok"}},
+                    "2026-03-03": {"mail_out": {"owa": "zero_ok"}}}
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump({"v": 1, "ver": "v|1", "host": "h", "days": days, "suspect": {}, "na": {}, "last": {}}, f)
+            L = coverage.Ledger.load(p, "v|1", "h")
+            self.assertEqual(L.dropped_src, ["owa"])                                 # 칸이 있던 출처만 알린다
+            self.assertEqual(L.src_status("2026-03-02", "mail_in", "com"), "ok")
+            self.assertIsNone(L.src_status("2026-03-02", "mail_in", "owa"))
+            self.assertEqual(L.composite("2026-03-02", "cal"), "not_attempted")       # 다음 실행이 다시 읽는다
+            self.assertEqual(L.gaps(("mail_out",), "2026-03-03", "2026-03-03"), {"mail_out": [("2026-03-03", "2026-03-03")]})
+            L.apply({"src": "owa", "rc": 0, "ranges": rngs(("cal",), "2026-03-02", "2026-03-02", "ok")})
+            L.save()
+            L2 = coverage.Ledger.load(p, "v|1", "h")
+            self.assertEqual(L2.dropped_src, [])
+            self.assertTrue(L2.is_verified("2026-03-02", "cal"))
 
 
 # ── 사슬(run_step 주입) ─────────────────────────────────────────────────────

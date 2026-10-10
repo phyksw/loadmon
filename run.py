@@ -80,11 +80,14 @@ def arg(flag, dflt=""):
 RUN = {"stages": [], "host": os.environ.get("COMPUTERNAME", "")}
 
 
-def record(name, ok, sec=0.0, note="", rc=None, reason="", counts=None):
+def record(name, ok, sec=0.0, note="", rc=None, reason="", counts=None, census=""):
     r"""단계 결과를 report\last_run.json 에 즉시 반영 (강제 종료돼도 흔적 보존).
-    LM28(F-34): 수집기 단계는 rc·reason·counts(짧은 숫자만)도 싣는다 — '불가' 사유는 실측 전까지 '의심'으로 적는다."""
+    LM28(F-34): 수집기 단계는 rc·reason·counts(짧은 숫자만)도 싣는다 — '불가' 사유는 실측 전까지 '의심'으로 적는다.
+    census = 수집기가 찍은 화면 구조 한 줄(웹 경로) — 수집 진단 화면이 note 아래에 그대로 보여 준다(사진 한 장으로 원인 확정)."""
     RUN["stages"] = [x for x in RUN["stages"] if x["name"] != name]
     ent = {"name": name, "ok": bool(ok), "sec": round(sec, 1), "note": (note or "")[:300]}
+    if census:
+        ent["census"] = str(census)[:400]
     if rc is not None:
         ent.update(rc=int(rc), reason=str(reason or "")[:120], counts=collect_status.compact(counts))
     RUN["stages"].append(ent)
@@ -113,7 +116,7 @@ def run_collector(name, cmd, timeout=420, src="", led=None):
     if st["rc"] or st["reason"]:
         print("   → " + collect_status.describe(st))
     record(name, st["ok"], time.time() - t0, collect_status.note(st),
-           rc=st["rc"], reason=st["reason"], counts=st["counts"])
+           rc=st["rc"], reason=st["reason"], counts=st["counts"], census=collect_status.census_line(st))
     if led is not None:
         led.apply(st)
         led.save()
@@ -851,6 +854,10 @@ def open_ledger(c, data):
     if led.dropped:
         print("   (수집 원장을 처음부터 — " + ("collect.cursorEpoch 가 바뀌었습니다" if led.dropped == "ver"
                                           else "다른 PC 의 원장입니다") + ")")
+    elif led.dropped_src:
+        names = {"owa": "Outlook 웹", "teams_web": "팀즈 웹"}
+        print("   (" + "·".join(names.get(s, s) for s in led.dropped_src)
+              + " 의 지난 '읽음' 표시를 지우고 그 날들을 다시 읽습니다 — 확인 규칙이 바뀌었습니다)")
     return led
 
 

@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 r"""tests\test_p2_owa.py — WP2: Outlook 웹 검증 수집(F-03·F-04·F-05) · 시각 복원(UD-08) · 병합(W1-04) · 반입 파일(C-17) ·
-Copilot 메일 축소(C-16·C-34·W1-13).
+Copilot 메일 축소(C-16·C-34·W1-13) · LM28 현장(2026-10-08) 수정: 메일 목록 칸 고르기·'fits' 를 끝 근거에서 뺌·검색 표기 확인·
+일정 주소 이동·화면 구조 진단(구조 줄·dom_census).
 
 실제 Edge·Outlook·네트워크를 쓰지 않는다 — tests\fakes\fake_browser.py(FakeBrowser: Get-OutlookWeb 의 JS 상수 머리 표식에
 각본 응답)와 주입한 왕복 함수로 돈다. 운영 data\ 에 쓰지 않는다(파일은 tempfile 폴더만, 모듈 OUT_DIR 도 임시로 돌린다).
@@ -151,9 +152,11 @@ class OwaMail(unittest.TestCase):
         box = fb.make_mailbox(D("2025-12-01"), TODAY)
         br = fb.FakeBrowser(TODAY, mail=box, ignore_search=True)
         run, rows, day_st = self._run(br)
-        self.assertEqual(br.calls["search"], 2)                       # 첫 조각에서 폴더마다 한 번 — 그 뒤 조각은 폴백이 덮었다
+        # 최신 달 받은 편지함에서 한 번 — 결과가 조각 밖(검색이 화면에 안 걸림)이라 이 실행의 검색을 접고 폴더마다 목록으로
+        self.assertEqual(br.calls["search"], 1)
         self.assertEqual(run.c["fallback_scroll"], 2)                 # 폴백은 폴더당 1회
-        self.assertEqual(run.c["filter_ineffective"], 2)
+        self.assertEqual(run.c["filter_ineffective"], 1)
+        self.assertTrue(run.srch["broken"])
         for ax in ("mail_in", "mail_out"):
             self.assertEqual(_st_days(day_st[ax], self.d0, self.d1, "ok"), [], ax)
             rg = op.ranges_of(day_st[ax], ax)
@@ -174,13 +177,18 @@ class OwaMail(unittest.TestCase):
                              [{"axis": ax, "from": "2026-01-01", "to": "2026-03-10", "st": "partial"},
                               {"axis": ax, "from": "2026-03-11", "to": "2026-09-30", "st": "ok"}])
 
-    def test_small_folder_fits_is_complete(self):
+    def test_true_end_of_list_is_complete(self):
+        """목록이 정말 끝 — 바닥에서 새 항목 0 이 여러 번(그 사이 '더 보기'·실제 휠, '불러오는 중' 없음) + 메일 목록 확인.
+        바닥의 '불러오는 중'(지연 로드)은 끝이 아니다 — 다 불러온 뒤에야 끝이다."""
         box = fb.make_mailbox(D("2026-09-01"), TODAY)
         box["sent"] = box["sent"][:5]                                 # 보낸 편지함 5통 — 목록 전체가 한 화면
-        br = fb.FakeBrowser(TODAY, mail=box, ignore_search=True)
-        _run, _rows, day_st = self._run(br)
-        self.assertEqual(_st_days(day_st["mail_out"], self.d0, self.d1, "ok"), [])   # 끝까지 보였으니 기간 전체 읽음(0건)
-        self.assertEqual(day_st["mail_in"][D("2026-08-31")], "partial")              # 'end' 만으로는 더 오래된 메일이 없다고 보지 않는다
+        br = fb.FakeBrowser(TODAY, mail=box, ignore_search=True, lazy_batch=10)   # 받은 편지함은 10통씩 지연 로드
+        run, rows, day_st = self._run(br)
+        self.assertEqual(_st_days(day_st["mail_out"], self.d0, self.d1, "ok"), [])   # 끝까지 보였으니 기간 전체 읽음(0건 날 포함)
+        self.assertEqual(_st_days(day_st["mail_in"], self.d0, self.d1, "ok"), [])
+        self.assertEqual(len([r for r in rows if r[0] == "inbox"]), 30)              # 9월 받은 메일 30통(10월은 기간 밖)
+        self.assertGreater(br.calls["wheel"], 0)                      # 끝으로 보기 전에 실제 휠로 한 번 더 깨웠다
+        self.assertEqual(run.cen["mail"]["box"]["inbox"]["fb"], "bottom")
 
     def test_search_works_month_slices_ok(self):
         box = fb.make_mailbox(D("2026-01-01"), D("2026-03-31"))
@@ -245,6 +253,92 @@ class OwaMail(unittest.TestCase):
         self.assertEqual(br.calls["open"], 0)                         # 받은 메일은 열지 않는다(읽음 표시)
 
 
+class OwaMailList(unittest.TestCase):
+    """LM28 현장(2026-10-08 · 새 Outlook 웹): 화면에 listbox 가 여럿이고 첫째는 짧은 다른 칸, 메일 목록은 가상 목록(스크롤 칸이
+    listbox 안쪽) — 예전 JS 는 첫째 칸의 'fits'(다 들어감)로 끝을 확인해 받은·보낸 17건으로 281일을 '읽음'으로 적었다."""
+    d0, d1 = D("2026-01-01"), D("2026-09-30")
+
+    def _run(self, br, d0=None, d1=None):
+        d0, d1 = d0 or self.d0, d1 or self.d1
+        run = owa.Run(d0, d1, today=TODAY, recover_max=0)
+        rows, _st, _diag, day_st = owa.collect_mail(br, d0, d1, run=run)
+        return run, rows, day_st
+
+    def test_many_listboxes_long_virtual_list_reads_whole_period(self):
+        box = fb.make_mailbox(D("2025-12-01"), TODAY)
+        br = fb.FakeBrowser(TODAY, mail=box, ignore_search=True, decoys=3, lazy_batch=40)
+        run, rows, day_st = self._run(br)
+        n_days = (self.d1 - self.d0).days + 1
+        self.assertEqual(len(rows), 2 * n_days)                        # 기간 메일을 다 읽었다(가상 목록·지연 로드)
+        self.assertEqual(len({(r[0], r[1][:10]) for r in rows}), len(rows))
+        for ax in ("mail_in", "mail_out"):
+            self.assertEqual(_st_days(day_st[ax], self.d0, self.d1, "ok"), [], ax)   # 끝 근거 = 기간 시작 앞 날짜 도달
+        cm = run.cen["mail"]["l"]
+        self.assertEqual((cm["lb"], cm["pick"]), (4, 3))               # listbox 4개 중 메일 행이 있는 넷째 칸(첫째 아님)
+        self.assertEqual(cm["lst"]["how"], "anc")                      # 행에서 위로 찾은 '실제로 넘치는' 스크롤 칸
+        self.assertEqual(run.cen["mail"]["box"]["inbox"]["fb"], "d0")
+        self.assertGreater(br.calls["scroll"], 20)                     # 창(20통)을 여러 번 내려 모았다
+
+    def test_first_short_listbox_fits_is_not_verification(self):
+        box = fb.make_mailbox(D("2026-09-01"), TODAY)
+        br = fb.FakeBrowser(TODAY, mail=box, ignore_search=True, decoys=1, no_mail_list=True)
+        run, rows, day_st = self._run(br)
+        self.assertEqual(rows, [])
+        for ax in ("mail_in", "mail_out"):
+            self.assertEqual(set(day_st[ax].values()), {"unverified"}, ax)   # 짧은 칸('다 들어감')은 메일 목록이 아니다
+        self.assertIsNone(run.cen["mail"]["l"]["pick"])
+        self.assertEqual(run.cen["mail"]["box"]["inbox"]["fb"], "nolist")
+
+    def test_no_end_evidence_gives_no_ok_to_older_days(self):
+        box = fb.make_mailbox(D("2025-12-01"), TODAY)
+        # 스크롤 칸을 못 찾는 화면 — 첫 창(20통: 10-07~09-18)만 읽고 끝을 모른다 → 그보다 오래된 날은 확인 표시가 없다
+        br = fb.FakeBrowser(TODAY, mail=box, ignore_search=True, no_scroller=True, decoys=2)
+        _run, _rows, day_st = self._run(br)
+        for ax in ("mail_in", "mail_out"):
+            self.assertEqual(_st_days(day_st[ax], self.d0, D("2026-09-18"), "partial"), [], ax)
+            self.assertEqual(_st_days(day_st[ax], D("2026-09-19"), self.d1, "ok"), [], ax)
+
+    def test_wheel_when_scrolltop_does_not_move(self):
+        box = fb.make_mailbox(D("2026-08-25"), TODAY)
+        br = fb.FakeBrowser(TODAY, mail=box, ignore_search=True, wheel_only=True)
+        d0, d1 = D("2026-09-01"), D("2026-09-30")
+        _run, rows, day_st = self._run(br, d0, d1)
+        self.assertGreaterEqual(br.calls["wheel"], 2)                  # scrollTop 대입이 안 먹으면 실제 휠로 내린다
+        self.assertEqual(len(rows), 2 * 30)
+        self.assertEqual(_st_days(day_st["mail_in"], d0, d1, "ok"), [])
+
+    def test_more_results_button_is_pressed(self):
+        box = fb.make_mailbox(D("2026-03-01"), D("2026-03-31"), per_day=2)
+        br = fb.FakeBrowser(TODAY, mail=box, more_page=15)            # 검색 결과 15통씩 · 바닥에 '더 보기'
+        d0, d1 = D("2026-03-01"), D("2026-03-31")
+        _run, rows, day_st = self._run(br, d0, d1)
+        self.assertGreater(br.calls["more"], 3)
+        self.assertEqual(len(rows), 2 * 62)
+        self.assertEqual(_st_days(day_st["mail_in"], d0, d1, "ok"), [])
+
+    def test_search_syntax_tried_then_proven(self):
+        box = fb.make_mailbox(D("2026-01-01"), D("2026-03-31"))
+        br = fb.FakeBrowser(TODAY, mail=box, syntax={"kql"})          # 공개 도움말 표기(AQS)는 못 알아듣는 화면
+        d0, d1 = D("2026-01-01"), D("2026-03-31")
+        run, rows, day_st = self._run(br, d0, d1)
+        self.assertTrue(br.queries[0].startswith("received:03/01/2026..03/31/2026"))   # AQS 부터 · 최신 달부터
+        self.assertEqual(run.srch["proven"], "kql")
+        self.assertEqual((run.c["slices_ok"], run.c["fallback_scroll"]), (6, 0))
+        self.assertEqual(len(rows), 2 * 90)
+        self.assertEqual((run.srch["slices"], run.srch["hit"]), (6, 6))
+
+    def test_empty_search_is_not_zero_until_syntax_proven(self):
+        box = fb.make_mailbox(D("2026-03-01"), D("2026-03-31"))
+        br = fb.FakeBrowser(TODAY, mail=box, syntax=set(), no_scroller=True)   # 어느 표기도 안 걸림 + 목록도 끝을 모름
+        d0, d1 = D("2026-03-01"), D("2026-03-31")
+        run, _rows, day_st = self._run(br, d0, d1)
+        for ax in ("mail_in", "mail_out"):
+            self.assertNotIn("zero_ok", set(day_st[ax].values()), ax)   # '결과 없음'을 0건 확인으로 치지 않는다
+            self.assertEqual(day_st[ax][d0], "partial", ax)
+        self.assertEqual(run.srch["proven"], "")
+        self.assertEqual(run.c["fallback_scroll"], 2)
+
+
 class OwaCal(unittest.TestCase):
     def test_f05_url_ignored_sequential_prev_week(self):
         d0, d1 = D("2026-08-03"), TODAY
@@ -276,6 +370,83 @@ class OwaCal(unittest.TestCase):
         self.assertEqual(st, "unverified")
         self.assertEqual(rows, [])
         self.assertEqual(set(day_st.values()), {"unverified"})
+        self.assertFalse(run.c["cal_complete"])
+
+    def test_prev_and_url_both_ignored_is_incomplete(self):
+        """현장(일정 2건·cal_stale 1 인데 calendar_complete true)의 모순 — '이전 주'가 안 먹고(머리 그대로) 주소 이동도 무시되면
+        실제로 지나간 주(이번 주)만 확인이고, 남은 주는 미확인 · calendar_complete=false."""
+        d0, d1 = D("2026-08-03"), TODAY
+        evs = fb.make_events(D("2026-07-27"), D("2026-10-09"))
+        br = fb.FakeBrowser(TODAY, events=evs, ignore_url=True, prev_dead=True)
+        run = owa.Run(d0, d1, today=TODAY)
+        rows, _st, _diag, day_st = owa.collect_cal(br, d0, d1, run=run)
+        self.assertEqual(run.c["weeks_ok"], 1)
+        self.assertEqual(run.c["weeks_unverified"], 9)
+        self.assertFalse(run.c["cal_complete"])
+        self.assertEqual(_st_days(day_st, d0, D("2026-10-04"), "unverified"), [])
+        self.assertEqual({r[0][:10] for r in rows} - {"2026-10-05", "2026-10-06", "2026-10-07"}, set())
+        self.assertEqual(run.c["cal_clicks"], 1 + owa.CAL_RETRY)       # 다시 누르기는 CAL_RETRY 번까지
+        self.assertEqual(run.cen["cal"]["url"], {"start": "unknown", "tries": 1, "ok": 0})
+        self.assertGreaterEqual(run.cen["cal"]["prev"]["stuck"], 1)
+
+    def test_prev_dead_url_navigation_reaches_start_week(self):
+        d0, d1 = D("2026-08-03"), TODAY
+        evs = fb.make_events(D("2026-07-27"), D("2026-10-09"))
+        br = fb.FakeBrowser(TODAY, events=evs, prev_dead=True)        # 단추는 안 먹지만 주소(/calendar/view/week/Y/M/D)는 먹는다
+        run = owa.Run(d0, d1, today=TODAY)
+        rows, _st, _diag, day_st = owa.collect_cal(br, d0, d1, run=run)
+        self.assertEqual(run.c["weeks_ok"], 10)
+        self.assertTrue(run.c["cal_complete"])
+        self.assertEqual(br.calls["goto"], 10)                         # 시작 주 1번 + 주소로 9주
+        self.assertEqual(_st_days(day_st, d0, D("2026-10-06"), "ok"), [])
+        self.assertIn("2026-08-03", {r[0][:10] for r in rows})
+
+    def test_zero_event_weeks_need_proof_and_unreadable_bars_are_partial(self):
+        d0, d1 = D("2026-09-07"), D("2026-09-27")
+        br = fb.FakeBrowser(TODAY, events=[])                         # 일정 0개 — 선택자가 빗나간 화면과 구별할 수 없다
+        run = owa.Run(d0, d1, today=TODAY)
+        _rows, _st, _diag, day_st = owa.collect_cal(br, d0, d1, run=run)
+        self.assertEqual(set(day_st.values()), {"partial"})
+        self.assertFalse(run.c["cal_complete"])
+        self.assertEqual(run.sd.get("cal_zero_unproven"), 1)
+        evs = fb.make_events(D("2026-09-07"), D("2026-09-25"))
+        # 날짜 없이 요일만 있는 막대 — 그 주의 그 요일로 읽는다
+        br2 = fb.FakeBrowser(TODAY, events=evs, nodate=True, calid=True)
+        run2 = owa.Run(d0, d1, today=TODAY)
+        rows2, _st, _diag, day_st2 = owa.collect_cal(br2, d0, d1, run=run2)
+        self.assertEqual(_st_days(day_st2, d0, d1, "ok"), [])
+        self.assertIn("2026-09-15 14:00", {r[0] for r in rows2})
+        self.assertEqual(len(rows2), 15)
+        # data-calitemid 막대인데 날짜도 요일도 못 읽음 — 그 주는 일부만(다음 경로·다음 실행이 다시 읽는다)
+        br3 = fb.FakeBrowser(TODAY, events=evs, undated_calitem=True)
+        run3 = owa.Run(d0, d1, today=TODAY)
+        _rows3, _st, _diag, day_st3 = owa.collect_cal(br3, d0, d1, run=run3)
+        self.assertEqual(set(day_st3.values()), {"partial"})
+        self.assertEqual(run3.cen["cal"]["ev"]["unparsed"], 15)
+
+
+class DomCensus(unittest.TestCase):
+    def test_pick_list_prefers_mail_rows_not_first_listbox(self):
+        cands = [{"i": 0, "opts": 2, "mailish": 0, "conv": 0, "main": 0, "vis": 1},     # 짧은 다른 칸(현장의 첫 listbox)
+                 {"i": 1, "opts": 3, "mailish": 1, "conv": 0, "main": 0, "vis": 1},     # 날짜 조각 하나(검색 제안 등)
+                 {"i": 2, "opts": 18, "mailish": 18, "conv": 18, "main": 1, "vis": 1}]  # 메일 목록(data-convid·본문 안)
+        self.assertEqual(op.pick_list(cands), 2)
+        self.assertIsNone(op.pick_list(cands[:1]))
+        self.assertTrue(op.mail_list_ok(cands[2], 18, 18))
+        self.assertFalse(op.mail_list_ok(cands[0], 2, 2))
+        self.assertFalse(op.mail_list_ok(cands[2], 3, 18))            # 읽은 항목 대부분의 날짜를 못 풀면 메일 목록 확인 아님
+
+    def test_mask_skeleton_flags_weekday(self):
+        self.assertEqual(op.mask_shape("홍길동 오후 3:12"), "xxx 오후 3:12")
+        self.assertEqual(op.mask_shape("Report Q3 2026-09-02"), "xxxxxx x3 2026-09-02")
+        sk = op.skeleton({"t": "DIV", "r": "option", "al": 57, "cv": 1,
+                          "c": [{"t": "span", "x": "김철수"}, {"t": "span", "x": "2026-09-02"}]})
+        self.assertEqual(sk, "div[option,al57,cv]{span'xxx'|span'2026-09-02'}")
+        self.assertEqual(op.fmt_flags("회의, 오후 2:00 ~ 오후 3:00, 2026년 9월 15일 화요일"), "ymd+t2+wd")
+        self.assertEqual(op.fmt_flags("어제"), "rel")
+        self.assertEqual(op.weekday_date("회의, 화요일 오후 2:00", D("2026-09-14"), D("2026-09-20")), D("2026-09-15"))
+        self.assertIsNone(op.weekday_date("월요일 회의, 화요일 오후 2:00", D("2026-09-14"), D("2026-09-20")))
+        self.assertIsNone(op.weekday_date("9월 회의 오후 2:00", D("2026-09-14"), D("2026-09-20")))   # '9월'의 '월'은 요일이 아니다
 
 
 class MergeSave(unittest.TestCase):
@@ -350,6 +521,53 @@ class OwaMain(unittest.TestCase):
             for k in ("slices_ok", "list_verified", "filter_ineffective", "fallback_scroll", "weeks_ok", "weeks_unverified",
                       "cal_clicks", "date_only", "recovered", "rows", "selector_diag"):
                 self.assertIn(k, st["counts"])
+
+    def test_main_census_line_and_dom_census(self):
+        """현장 구조 진단 — 마지막 요약 줄 앞의 '구조:' 한 줄(run.py 가 남기는 마지막 12줄 안) + counts.dom_census(4KB 이내 ·
+        이름·제목 글자 없음) + mail_source 의 calendar_complete 는 기간이 다 확인됐을 때만."""
+        today = date.today()
+        box = fb.make_mailbox(today - timedelta(days=70), today)
+        evs = fb.make_events(today - timedelta(days=30), today)
+        br = fb.FakeBrowser(today, mail=box, events=evs, ignore_search=True, decoys=3, lazy_batch=25,
+                            prev_dead=True, ignore_url=True)
+
+        @contextlib.contextmanager
+        def lock(cfg=None, timeout=600):
+            yield "x"
+        br.ca = types.SimpleNamespace(edge_lock=lock, EdgeBusy=RuntimeError)
+        br.cfg = {}
+        lines = []
+        d0, d1 = today - timedelta(days=40), today
+        env = dict.fromkeys(("LM_OWA_FAKE", "LM_NO_BROWSER"), "")
+        with tempfile.TemporaryDirectory(prefix="lm28_t_") as tmp, mock.patch.object(owa, "Browser", lambda: br), \
+                mock.patch.object(owa, "log", lines.append):
+            rc, text = self._main(["--from", d0.isoformat(), "--to", d1.isoformat(), "--out-dir", tmp, "--tag", "owa"], env)
+            st = _status_of(text)
+            self.assertEqual(rc, 0)
+            cen_lines = [ln for ln in lines if ln.startswith("구조: ")]
+            self.assertEqual(len(cen_lines), 1)
+            line = cen_lines[0]
+            self.assertLessEqual(len(line), 300)
+            self.assertGreaterEqual(lines.index(line), len(lines) - 12)    # run.py 가 화면·last_run.json 에 남기는 마지막 12줄 안
+            for frag in ("listbox 4(메일 후보 #4 option ", "검색창 예", "조각 검색 걸림 0/1", "끝 근거 받은 시작 앞 도달·보낸 시작 앞 도달",
+                         "→ 확인", "일정 주 1/", "주소 모름·이동 0/1", "→ 미완"):
+                self.assertIn(frag, line)
+            cen = st["counts"]["dom_census"]
+            dumped = json.dumps(cen, ensure_ascii=False)
+            self.assertLessEqual(len(dumped), 4096)                     # collect_status.KEEP_NESTED 상한 안 — last_run.json 에 실린다
+            for word in ("동료", "주간 보고", "회신 드립니다", "정기 회의", "나,"):   # 이름·제목 글자는 남기지 않는다
+                self.assertNotIn(word, dumped)
+            self.assertEqual((cen["mail"]["l"]["lb"], cen["mail"]["l"]["pick"]), (4, 3))
+            self.assertIn("'xx xx'", cen["mail"]["skel"])               # 행 골격의 잎 글은 x 로(제목 '주간 보고' → 'xx xx')
+            self.assertEqual(cen["mail"]["srch"]["broken"], True)
+            self.assertFalse(cen["cal"]["complete"])
+            self.assertEqual(st["counts"]["collector_ver"], owa.COLLECTOR_VER)
+            with open(os.path.join(tmp, "mail_source_owa.json"), encoding="utf-8") as f:
+                src = json.load(f)
+            self.assertFalse(src["calendar_complete"])                  # 이전 주·주소 이동이 다 안 먹었다
+            self.assertIn("dom_census", src["counts"])
+            first = [r["st"] for r in st["ranges"] if r["axis"] == "cal" and r["from"] == d0.isoformat()]
+            self.assertEqual(first, ["unverified"])                     # 지나가지 못한 주는 미확인(다음 실행이 다시 읽는다)
 
     def test_main_edge_busy_and_login(self):
         @contextlib.contextmanager

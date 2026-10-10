@@ -16,6 +16,8 @@ gaps() 가 빈 날이 남는 동안 다음 경로를 돈다(P3 — 첫 성공에
      (지난 실행이 확인한 날을 이번 실행의 막힘이 지우지 않게). 오늘 이후 날은 받지 않는다.
    · 판(LM28-COV-1|collect.cursorEpoch)·PC(host)가 다르면 원장을 버린다 — cursorEpoch 를 올리거나 폴더째 다른 PC 로
      옮기면 처음부터. --reset-cursors 는 reset() 으로 모든 축을 not_attempted 로 되돌린다.
+   · 출처별 판정 규칙의 판(SRC_RULES)이 원장과 다르면 그 출처의 칸만 지운다 — 웹 경로의 확인 규칙을 고친 판이 나가면
+     지난 판이 잘못 '읽음'으로 적은 날을 다음 실행이 다시 읽는다(다른 출처의 표시는 그대로).
 읽기 쪽(WP8·WP9): Ledger.load(path).composite(day, axis) · day_status(d0, d1) · summary(d0, d1).
 """
 import csv
@@ -33,6 +35,10 @@ WITNESS = frozenset({"copilot", "teams_copilot"})
 COMGAP_RATIO = 1.3
 COMGAP_MIN_DIFF = 2             # 비율 규칙의 최소 차이(통) — 하루 1~2통 날의 흔들림을 의심으로 만들지 않는다
 LEDGER_VER = "LM28-COV-1"
+# 출처별 '읽음' 판정 규칙의 판 — 웹 경로의 확인 규칙을 고치면 여기를 올린다. 불러올 때 판이 다른(또는 판이 없는) 출처의
+# 칸만 지우고 그 날들을 다시 읽게 한다(다른 출처의 표시는 둔다). 2: 회사 PC 실측 — 첫 listbox 'fits' 로 메일 17건에
+# 281일을 확인 처리했고(OWA), 팀즈 웹 전환 확인이 전부 빗나갔다(LM28 OWA-2·TW-2).
+SRC_RULES = {"owa": "2", "teams_web": "2"}
 FILE_NAME = "coverage_ledger.json"
 DAY = timedelta(days=1)
 
@@ -130,6 +136,7 @@ class Ledger:
         self.na = {}            # {축: bool}
         self.last = {}          # {출처: {rc, reason, at}}
         self.dropped = ""       # 불러올 때 버린 이유(판·PC 가 다름 — 화면 안내용)
+        self.dropped_src = []   # 불러올 때 판정 규칙의 판이 달라 칸을 지운 출처(SRC_RULES)
 
     @classmethod
     def load(cls, path, ver="", host="", today=None):
@@ -147,13 +154,34 @@ class Ledger:
         for k in ("days", "suspect", "na", "last"):
             if isinstance(o.get(k), dict):
                 setattr(led, k, o[k])
+        old = o.get("src_rules") if isinstance(o.get("src_rules"), dict) else {}
+        stale = sorted(s for s, v in SRC_RULES.items() if str(old.get(s) or "") != v)
+        if stale:
+            led.dropped_src = sorted(s for s, n in led.drop_sources(stale).items() if n)
         return led
+
+    def drop_sources(self, srcs):
+        """그 출처들의 칸을 모두 지운다 → {출처: 지운 칸 수}. 판정 규칙이 바뀐 출처의 지난 '읽음'을 믿지 않게(SRC_RULES)."""
+        n = dict.fromkeys(srcs, 0)
+        for day in list(self.days):
+            row = self.days[day] if isinstance(self.days[day], dict) else {}
+            for ax in list(row):
+                cell = row[ax] if isinstance(row[ax], dict) else {}
+                for s in srcs:
+                    if s in cell:
+                        del cell[s]
+                        n[s] += 1
+                if not cell:
+                    del row[ax]
+            if not row:
+                del self.days[day]
+        return n
 
     def save(self):
         if not self.path:
             return False
         o = {"v": 1, "ver": self.ver, "host": self.host, "updated": time.strftime("%Y-%m-%d %H:%M:%S"),
-             "days": self.days, "suspect": self.suspect, "na": self.na, "last": self.last}
+             "src_rules": dict(SRC_RULES), "days": self.days, "suspect": self.suspect, "na": self.na, "last": self.last}
         tmp = f"{self.path}.{os.getpid()}.tmp"
         try:
             os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)

@@ -104,16 +104,36 @@ def note(st, n_lines=2):
     return base[:300]
 
 
+KEEP_NESTED = {"dom_census": 4096, "selector_diag": 1024}   # 화면 구조 진단 — 직렬화 크기 상한(글자는 수집기가 이미 가렸다)
+
+
 def compact(counts, max_keys=40):
-    """last_run.json 에 싣는 counts — 짧은 스칼라만(원격 진단용 숫자·짧은 사유). 원문·긴 목록은 싣지 않는다."""
+    """last_run.json 에 싣는 counts — 짧은 스칼라만(원격 진단용 숫자·짧은 사유). 원문·긴 목록은 싣지 않는다.
+    예외(LM28): 화면 구조 진단(dom_census·selector_diag)은 상한 안이면 모양 그대로 싣는다 — 회사 PC 화면을 볼 수 없어
+    다음 실행의 진단 묶음 한 장으로 선택자가 왜 빗나갔는지 확정하려는 것. 상한을 넘으면 싣지 않는다."""
     out = {}
     if not isinstance(counts, dict):
         return out
     for k, v in counts.items():
         if len(out) >= max_keys:
             break
+        if k in KEEP_NESTED:
+            continue
         if isinstance(v, bool) or isinstance(v, (int, float)):
             out[str(k)[:40]] = v
         elif isinstance(v, str) and len(v) <= 60:
             out[str(k)[:40]] = v
+    for k, cap in KEEP_NESTED.items():
+        v = counts.get(k)
+        if isinstance(v, (dict, list, str)) and v:
+            try:
+                if len(json.dumps(v, ensure_ascii=False, default=str)) <= cap:
+                    out[k] = v
+            except (TypeError, ValueError):
+                pass
     return out
+
+
+def census_line(st):
+    """수집기가 찍은 화면 구조 한 줄('[outlook-web] 구조: …')— 마지막 것. 없으면 ''."""
+    return next((ln for ln in reversed(st.get("lines") or []) if "구조:" in ln), "")[:400]

@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 r"""tests\test_p3_teams.py — WP3: 팀즈 웹 목록·스크롤 검증·증분(F-06·F-07·F-30·C-21·W1-05) · 창 읽기(C-18·C-19·C-20 — PS 결과) ·
-Graph·Copilot 병합(W1-17·W1-13).
+Graph·Copilot 병합(W1-17·W1-13) · 새 Teams 웹(v2) 화면(2026-10-08 실측 '61개 모두 전환 실패')의 방 전환 확인·누르기 방법·
+'앞 방 그대로' 차단·화면 구조 진단(구조 줄·dom_census).
 
 실제 Edge·Teams·네트워크를 쓰지 않는다 — tests\fakes\fake_teams.py(FakeTeams: Get-TeamsWeb 의 JS 머리 표식에 각본 응답 +
 가짜 시계)와 주입한 왕복·Graph 함수로 돈다. 파일은 tempfile 폴더에만 쓴다(모듈 OUT_DIR 를 임시로 돌린다).
@@ -19,6 +20,7 @@ from datetime import date, datetime, timedelta
 from unittest import mock
 
 import _boot  # noqa: F401  — 경로 등록
+import collect_status  # noqa: E402  — run.py 가 수집기 출력을 읽는 해석기(구조 줄이 그 꼬리에 드는지 본다 — 읽기만)
 import privacy  # noqa: E402
 import teams_parse as tp  # noqa: E402
 
@@ -126,6 +128,21 @@ class TeamsParse(unittest.TestCase):
                          [("2026-09-01", "2026-09-04", "partial"), ("2026-09-05", "2026-09-29", "ok"),
                           ("2026-09-30", "2026-09-30", "partial")])
 
+    def test_title_fits_and_overlap(self):
+        lb = "홍길동, 자료 부탁드립니다, 오후 3:12"
+        self.assertTrue(tp.title_fits("홍길동", "홍길동", lb))
+        self.assertTrue(tp.title_fits("홍길동 (외부)", "홍길동", lb))               # 외부·괄호 표기
+        self.assertTrue(tp.title_fits("홍길동 [External]", "홍길동", lb))
+        g = "김철수, 이영희, 박민수, 회의록 공유, 어제"
+        self.assertTrue(tp.title_fits("이영희, 박민수, 김철수", "김철수", g))         # 단체방 이름 순서만 다름
+        self.assertTrue(tp.title_fits("김철수, 이영희 외 1명", "김철수", g))          # '외 n명'
+        self.assertFalse(tp.title_fits("개발팀 회의", "홍길동", lb))
+        self.assertFalse(tp.title_fits("", "홍길동", lb))
+        self.assertFalse(tp.title_fits("최영수, 박민수", "김철수", g))                # 조각 하나가 목록에 없다
+        self.assertFalse(tw._title_ok({"nname": "홍길동", "label": lb}, "홍길동 (외부)"))   # CSV 방 이름은 정확히 같을 때만
+        self.assertEqual(tp.overlap(["m:1", "m:2", "m:3", "m:4"], {"m:2", "m:4"}), 0.5)
+        self.assertEqual((tp.overlap([], {"m:1"}), tp.overlap(["m:1"], set())), (0.0, 0.0))
+
     def test_merge_keep_outside_and_union(self):
         old = [["2026-02-10 09:00", "A", "옛 2월"], ["2026-03-05 09:00", "B", "옛 3월"], ["2026-04-02 10:00", "C", "옛 4월"]]
         new = [["2026-03-07 11:00", "D", "새 3월"], ["2026-03-07 11:00", "D", "새 3월"]]
@@ -230,21 +247,194 @@ class TeamsWebCollect(unittest.TestCase):
                              [("갑돌", "msg"), ("갑돌", "msg"), ("나", "sent"), ("을순", "msg"), ("을순", "msg")])
 
 
+# ── 새 Teams 웹(v2) 화면 — 2026-10-08 회사 PC 실측('방 61개 모두 전환 실패')의 재현 ─────────────────────────────
+# 지난 판(LM28 첫 판)의 메시지·머리 후보 — 각본의 전제(이 후보로는 v2 화면에서 메시지 0·머리 없음)를 확인하는 데만 쓴다
+OLD_MSG_SELS = ['[data-tid="chat-pane-item"]', '[data-tid="chat-pane-message"]', '[data-tid="message-pane"] [role="listitem"]',
+                '[role="log"] [role="listitem"]', '[role="main"] [role="listitem"]']
+OLD_HEAD_SELS = ['[data-tid="chat-header-title"]', '[data-tid="chatTitle"]', '[data-tid="chat-header"] [role="heading"]',
+                 '[role="main"] h1']
+
+
+def _finish(run, got, end, store):
+    """finish 를 돌려 사람용 줄(log)·LMSTATUS 를 받는다."""
+    logs, out = [], io.StringIO()
+    with mock.patch.object(tw, "log", logs.append), contextlib.redirect_stdout(out):
+        rc = tw.finish(run, None, (got, end, "fake-list"), store)
+    return rc, logs, _status_of(out.getvalue())
+
+
+def _census_of(logs):
+    return next(x for x in logs if x.startswith("구조:"))
+
+
+class TeamsWebV2(unittest.TestCase):
+    d0, d1 = D("2026-09-01"), TODAY
+
+    def test_premise_old_selectors_miss_v2(self):
+        """각본의 전제 — 지난 판 후보표로는 v2 화면에서 메시지 0·머리 없음(= 61개 모두 '전환 실패'의 모양), 새 후보표엔 들어 있다."""
+        br = ft.FakeTeams(TODAY, [ft.daily("가방", D("2026-09-20"), TODAY, key="19:a")], dom="v2", start_open=0)
+        old = ("/*LM28:tw_pane*/\nconst MSGS = " + json.dumps(OLD_MSG_SELS) + ";\nconst HEADS = "
+               + json.dumps(OLD_HEAD_SELS) + ";\n")
+        p = br._eval(old)
+        self.assertEqual((p["n"], p["chat"]), (0, ""))
+        self.assertNotIn(ft.V2_MSG, OLD_MSG_SELS)
+        self.assertNotIn(ft.V2_HEAD, OLD_HEAD_SELS)
+        new = br._eval(tw._js(tw.Run(self.d0, self.d1, TODAY), tw.JS_PANE, {"key": "19:a", "nname": "가방"}))
+        self.assertGreater(new["n"], 0)
+        self.assertEqual(new["chat"], "가방")
+
+    def test_v2_opens_reads_and_remembers(self):
+        """v2 화면: 항목 자체를 눌러선 안 열리고 안쪽 요소를 눌러야 열린다 · 머리 제목은 목록 이름과 표기만 다르다 — 모두 읽는다.
+        통한 누르기(안쪽)·맞은 메시지/머리 후보를 기억해 다음 방부터 먼저 쓴다. 구조 줄에 사유별 수가 찍힌다."""
+        rooms = [ft.daily("홍길동", D("2026-09-20"), TODAY - timedelta(days=1), key="19:a@thread.v2", head="홍길동 (외부)"),
+                 ft.daily("김철수, 이영희", D("2026-09-22"), TODAY - timedelta(days=2), key="19:b@thread.v2",
+                          head="이영희, 김철수"),
+                 ft.daily("개발 협의", D("2026-09-15"), TODAY - timedelta(days=3), key="19:c@thread.v2")]
+        br = ft.FakeTeams(TODAY, rooms, dom="v2", click_modes={"inner"})
+        with tempfile.TemporaryDirectory(prefix="lm28_t_") as tmp:
+            got, end, run, store, st = _collect(br, tmp, self.d0, self.d1)
+            self.assertEqual(_verdicts(got), {"홍길동": "complete", "김철수": "complete", "개발 협의": "complete"})
+            rows = _csv_rows(os.path.join(tmp, "teams_web.csv"))
+            want = sum(1 for r in rooms for m in r["msgs"] if self.d0 <= m["when"].date() <= self.d1)
+            self.assertEqual(len(rows), want)
+            self.assertEqual({r["chat"] for r in rows}, {"홍길동", "김철수", "개발 협의"})   # CSV 방 이름 규칙은 그대로
+            self.assertEqual((run.c["open_by_title"], run.c["pane_stuck"], run.c["open_notfound"], run.c["open_same_pane"]),
+                             (3, 0, 0, 0))
+            self.assertEqual(run.sd["how_click"], "inner")
+            self.assertEqual((br.calls["open_item"], br.calls["open_inner"]), (1, 3))   # 안쪽 누르기를 기억 — 다음 방부터 먼저
+            self.assertEqual(tw._MSG_SELS[run.pref["msg"]], ft.V2_MSG)
+            self.assertEqual(tw._HEAD_SELS[run.pref["head"]], ft.V2_HEAD)
+            self.assertEqual(br.calls["census"], 1)                                     # 성공 화면 구조는 한 번만
+            rc, logs, stl = _finish(run, got, end, store)
+            line = _census_of(logs)
+            for frag in ("목록 3(", "열기 못찾음 0", "화면멈춤 0(", "앞방그대로 0", "제목3", "메시지 list-li=", "머리 hdr-h2(",
+                         "선택표시 없음", "클릭 안쪽"):
+                self.assertIn(frag, line)
+            self.assertLessEqual(len("[teams-web] " + line), 260)
+            self.assertEqual(rc, 0)
+            cen = stl["counts"]["dom_census"]
+            self.assertEqual(cen["line"], "[teams-web] " + line)
+            self.assertEqual((cen["pane"]["msg"], cen["pane"]["head"]), ({"list-li": 15}, {"hdr-h2": len("홍길동 (외부)")}))
+            self.assertEqual((cen["pref"], cen["worked"]), ({"msg": "list-li", "head": "hdr-h2"}, "inner"))
+
+    def test_v2_stale_pane_blocked_even_if_title_fits(self):
+        """단체방 '가방, 나방'(목록 이름 첫 조각 '가방')을 눌렀는데 1:1 '가방' 화면이 남음 — 머리 제목은 맞아 보여도 메시지가 앞 방
+        그대로라 막는다(내용 지문). 머리를 못 찾는 화면(no_head)에서도 같다. 앞 방 메시지를 이 방으로 적지 않는다."""
+        def mk(name, key, **fl):
+            return ft.room(name, [ft.msg(datetime(2026, 8, 25, 9, 0), "갑돌", f"{name} 지난 안내"),
+                                  ft.msg(datetime(2026, 10, 5, 10, 0), "갑돌", f"{name} 방의 업무 메시지")], key=key, **fl)
+        for flags, how in (({}, "open_by_title"), ({"no_head": True}, "open_by_content")):
+            rooms = [mk("가방", "19:p1"), mk("가방, 나방", "19:g1", stuck=True), mk("다방", "19:p3")]
+            br = ft.FakeTeams(TODAY, rooms, dom="v2", start_open=2, **flags)
+            with tempfile.TemporaryDirectory(prefix="lm28_t_") as tmp:
+                got, end, run, store, st = _collect(br, tmp, self.d0, self.d1)
+                self.assertEqual({r["key"]: r["verdict"] for r in got},
+                                 {"19:p1": "complete", "19:g1": "roomgone", "19:p3": "complete"}, flags)
+                rows = _csv_rows(os.path.join(tmp, "teams_web.csv"))
+                self.assertFalse([r for r in rows if "나방" in r["summary"]], flags)
+                self.assertEqual(sum(1 for r in rows if r["summary"] == "가방 방의 업무 메시지"), 1)   # 두 번 적히지 않는다
+                self.assertEqual((run.c["open_same_pane"], run.c["roomgone"], run.c[how]), (1, 1, 2), flags)
+                self.assertNotIn("newest_read", st[tp.room_id("19:g1")])
+                self.assertEqual(br.calls["census"], 2)                                 # 성공 1 + 첫 실패 1
+                self.assertEqual(run.cen["pane_kind"], "fail")                           # 실패 화면이 이긴다
+                _rc, logs, _stl = _finish(run, got, end, store)
+                self.assertIn("앞방그대로 1", _census_of(logs))
+
+    def test_v2_key_fallback_and_conv(self):
+        """항목·안쪽 누르기로는 안 열리고(안쪽 요소도 없음) 키보드 Enter 로만 열림 · 머리 없음 — 탭 세션 기록의 대화 ID 로 확인."""
+        rooms = [ft.daily("가방", D("2026-09-20"), TODAY - timedelta(days=1), key="19:k1@thread.v2"),
+                 ft.daily("나방", D("2026-09-21"), TODAY - timedelta(days=2), key="19:k2@thread.v2")]
+        br = ft.FakeTeams(TODAY, rooms, dom="v2", click_modes={"key"}, inner=False, no_head=True, conv="nav")
+        with tempfile.TemporaryDirectory(prefix="lm28_t_") as tmp:
+            got, end, run, store, st = _collect(br, tmp, self.d0, self.d1)
+            self.assertEqual(set(_verdicts(got).values()), {"complete"})
+            self.assertEqual((run.c["open_by_conv"], run.sd["how_click"], run.sd.get("how_conv")), (2, "key", "nav"))
+            self.assertEqual((br.calls["open_item"], br.calls["open_inner"], br.calls["open_key"]), (1, 0, 2))
+            _rc, logs, _stl = _finish(run, got, end, store)
+            line = _census_of(logs)
+            self.assertIn("ID nav", line)
+            self.assertIn("클릭 키", line)
+
+    def test_selection_moved_but_pane_not_is_blocked(self):
+        """첫 방(앞 방 지문이 아직 없다): 눌렀더니 목록 선택 표시만 이 방으로 옮고 화면은 처음부터 열려 있던 방 그대로 —
+        선택 표시만 믿고 읽으면 그 방 메시지를 이 방으로 적는다. 화면이 바뀌지 않았으니 막는다(그다음 방들은 정상)."""
+        rooms = [ft.daily("가방", D("2026-09-20"), TODAY - timedelta(days=1), key="19:q1", sel_only=True),
+                 ft.daily("나방", D("2026-09-21"), TODAY - timedelta(days=2), key="19:q2"),
+                 ft.daily("다방", D("2026-09-22"), TODAY - timedelta(days=3), key="19:q3")]
+        br = ft.FakeTeams(TODAY, rooms, start_open=2)
+        with tempfile.TemporaryDirectory(prefix="lm28_t_") as tmp:
+            got, end, run, store, st = _collect(br, tmp, self.d0, self.d1)
+            self.assertEqual(_verdicts(got), {"가방": "roomgone", "나방": "complete", "다방": "complete"})
+            rows = _csv_rows(os.path.join(tmp, "teams_web.csv"))
+            self.assertFalse([r for r in rows if r["chat"] == "가방"])
+            self.assertFalse([r for r in rows if r["chat"] != r["summary"].split(" ")[0]])   # 방마다 제 방 메시지만
+            self.assertEqual((run.c["pane_unchanged"], run.c["open_by_sel"]), (1, 2))
+
+    def test_all_stuck_aborts_early_and_reports(self):
+        """처음부터 OPEN_ABORT 방 연속 전환 실패(확인 0) — 남은 방은 열지 않고(다음 실행이 다시) 구조 줄에 사유별 수가 찍힌다."""
+        n = tw.OPEN_ABORT + 5
+        rooms = [ft.daily(f"방{i:02d}", D("2026-09-20"), TODAY - timedelta(days=1), key=f"19:s{i}", stuck=True)
+                 for i in range(n)]
+        br = ft.FakeTeams(TODAY, rooms, dom="v2", start_open=None)
+        with tempfile.TemporaryDirectory(prefix="lm28_t_") as tmp:
+            got, end, run, store, st = _collect(br, tmp, self.d0, self.d1)
+            self.assertEqual((run.c["opened"], run.c["roomgone"], run.c["open_aborted"], run.c["not_opened"]),
+                             (tw.OPEN_ABORT, tw.OPEN_ABORT, 5, 5))
+            self.assertEqual(run.c["pane_stuck"], tw.OPEN_ABORT)
+            self.assertEqual(run.c["pane_empty"], tw.OPEN_ABORT)                         # 빈 화면 — 눌러도 열린 대화 없음
+            rc, logs, stl = _finish(run, got, end, store)
+            line = _census_of(logs)
+            self.assertIn(f"화면멈춤 {tw.OPEN_ABORT}(빈{tw.OPEN_ABORT}", line)
+            self.assertIn("중단 5", line)
+            self.assertEqual((rc, stl["reason"]), (3, "R-ROOMGONE"))
+            self.assertFalse(any("시간 예산" in x for x in logs))                        # 예산 탓이 아니다
+            self.assertEqual({r["st"] for r in stl["ranges"]}, {"partial"})
+
+
 # ── 팀즈 웹 main(LMSTATUS·커서 파일) ───────────────────────────────────────────
 class TeamsWebMain(unittest.TestCase):
-    def _main(self, br, tmp, d0, d1, cfg=None, extra=()):
+    def _main(self, br, tmp, d0, d1, cfg=None, extra=(), show_log=False):
         @contextlib.contextmanager
         def lock(cfg=None, timeout=600):
             yield "x"
         br.ca = types.SimpleNamespace(edge_lock=lock, EdgeBusy=RuntimeError)
         br.cfg = {}
         out = io.StringIO()
+        logf = (lambda m: print("[teams-web] " + m)) if show_log else (lambda m: None)
         with mock.patch.object(tw, "Browser", lambda: br), mock.patch.object(tw, "OUT_DIR", tmp), \
                 mock.patch.object(tw, "_load_cfg", lambda: dict(cfg or {})), _fake_time(br), \
+                mock.patch.object(tw, "log", logf), \
                 mock.patch.object(sys, "argv", ["Get-TeamsWeb.py", "--from", d0.isoformat(), "--to", d1.isoformat(), *extra]), \
                 mock.patch.dict(os.environ, {"LM_NO_BROWSER": ""}), contextlib.redirect_stdout(out):
             rc = tw.main()
+        if show_log:
+            return rc, _status_of(out.getvalue()), out.getvalue()
         return rc, _status_of(out.getvalue())
+
+    def test_census_in_status_state_and_tail(self):
+        """'구조:' 줄은 사람용 요약 줄 바로 앞(run.py 가 싣는 마지막 12줄 안) · dom_census 는 LMSTATUS counts 와 방 커서 파일에
+        같은 것 · 4KB 안 · 방 이름·본문 없음."""
+        today = date.today()
+        rooms = [ft.daily("가방", today - timedelta(days=20), today - timedelta(days=1), key="19:c1"),
+                 ft.daily("나방", today - timedelta(days=20), today - timedelta(days=2), key="19:c2", stuck=True)]
+        br = ft.FakeTeams(today, rooms, dom="v2")
+        with tempfile.TemporaryDirectory(prefix="lm28_t_") as tmp:
+            rc, st, text = self._main(br, tmp, today - timedelta(days=30), today, show_log=True)
+            cen = st["counts"]["dom_census"]
+            self.assertTrue(cen["line"].startswith("[teams-web] 구조: "))
+            self.assertEqual((cen["open"]["open_same_pane"], cen["open"]["open_by_title"]), (1, 1))
+            raw = json.dumps(cen, ensure_ascii=False)
+            self.assertLessEqual(len(raw.encode("utf-8")), 4096)
+            for s in ("가방", "나방", "업무 진행", "19:c"):
+                self.assertNotIn(s, raw)                                       # 방 이름·본문·대화 ID 없음
+            with open(os.path.join(tmp, tw.STATE_NAME), encoding="utf-8") as f:
+                saved = json.load(f)
+            self.assertEqual(saved["dom_census"], cen)
+            self.assertEqual(set(saved), {"ver", "rooms", "dom_census"})
+            parsed = collect_status.parse(text.splitlines(), rc, src="teams_web")
+            self.assertEqual(collect_status.census_line(parsed), cen["line"])
+            self.assertIn(cen["line"], parsed["lines"][-12:])
+            self.assertTrue(parsed["lines"][-2].startswith("[teams-web] 방: "))   # 수집 진단 note(마지막 2줄)는 지난 판 그대로
 
     def test_no_scroller_rc3_websel(self):
         today = date.today()

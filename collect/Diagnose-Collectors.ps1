@@ -114,6 +114,8 @@ foreach ($jf in (@('outlook_skip.json', 'mail_source.json', 'mail_copilot_unavai
             $jt = ((Get-Content -LiteralPath $p -Raw -Encoding UTF8).Trim() -replace '\s+', ' ')
             # outlook_skip.json 의 '열린 창: ...' 은 Outlook 창 제목(메일 제목·계정 주소 포함 가능) - 마스킹
             $jt = [regex]::Replace($jt, '\(열린 창: ([^)]*)\)', { param($m) '(열린 창: ' + (Mask $m.Groups[1].Value) + ')' })
+            # 화면 구조 골격(dom_censusㆍ수 KB)은 사진 한 줄을 덮는다 - 요약은 [최근 실행]의 '구조:' 줄에, 전체는 진단 묶음 파일에 있다
+            $jt = [regex]::Replace($jt, '"dom_census"\s*:\s*\{(?>[^{}]+|\{(?<d>)|\}(?<-d>))*(?(d)(?!))\}', '"dom_census": "(진단 묶음 파일에)"')
             W ("  {0}: {1}" -f $jf, $jt)
         } catch {}
     }
@@ -283,7 +285,12 @@ if (Test-Path -LiteralPath $lr) {
     try {
         $j = Get-Content -LiteralPath $lr -Raw -Encoding UTF8 | ConvertFrom-Json
         W ("  기간 {0}  시작 {1}" -f ($j.period -join '~'), $j.started)
-        foreach ($s in $j.stages) { if ($s.name -match 'Outlook|팀즈|메일') { W ("  {0} {1}{2}" -f $(if ($s.ok) { 'OK ' } else { 'NG ' }), $s.name, $(if ($s.note) { ' - ' + $s.note } else { '' })) } }
+        foreach ($s in $j.stages) {
+            if ($s.name -match 'Outlook|팀즈|메일') {
+                W ("  {0} {1}{2}" -f $(if ($s.ok) { 'OK ' } else { 'NG ' }), $s.name, $(if ($s.note) { ' - ' + $s.note } else { '' }))
+                if ($s.census) { W ('      ' + $s.census) }   # 웹 경로 화면 구조 한 줄(LM28) — 이 줄을 사진에 담아 보내면 원인이 확정된다
+            }
+        }
     } catch { W '  last_run.json 해석 실패' }
 } else { W '  last_run.json 없음 (아직 실행 전)' }
 

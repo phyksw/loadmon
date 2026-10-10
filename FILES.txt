@@ -32,7 +32,7 @@ mine.py                                               20,494 B  a348cc94
 refine.py                                             54,124 B  547693cf
 ruff.toml                                              1,004 B  413927e1
 FILES.txt                                                (이 파일)
-run.py                                                85,391 B  03c1ac06
+run.py                                                85,971 B  28824832
 자가점검.py                                               10,861 B  5b13223a
 collect/Add-WorkLog.ps1                                3,873 B  7a375f51
 collect/Get-FileActivity.ps1                          50,401 B  a0dca613
@@ -41,19 +41,19 @@ collect/Get-LicenseUsage.ps1                           4,093 B  c2df1eda
 collect/Get-OutlookData.ps1                           82,595 B  b1cca0ff
 collect/Get-OutlookIndex.ps1                          33,982 B  1283c896
 collect/Get-MailViaCopilot.py                         40,427 B  ef7ad538
-collect/Get-OutlookWeb.py                             80,815 B  700e4393
+collect/Get-OutlookWeb.py                            123,664 B  eac544ec
 collect/Get-PcOnHistory.ps1                           27,148 B  438f101c
 collect/Get-PcOnHints.py                              15,662 B  b2d98d52
 collect/Get-RecentFiles.ps1                           27,534 B  f0586ee2
 collect/Get-TeamsChats.py                             22,341 B  16cb91e1
 collect/Get-TeamsViaCopilot.py                        28,879 B  bd599e6d
-collect/Get-TeamsWeb.py                               68,154 B  7fca966f
+collect/Get-TeamsWeb.py                              104,919 B  b53f5ea4
 collect/Get-TeamsWindow.ps1                           54,594 B  87655e60
-collect/Diagnose-Collectors.ps1                       32,495 B  b7b324b2
+collect/Diagnose-Collectors.ps1                       33,047 B  bed893c1
 collect/LmName.ps1                                     2,409 B  ad1ff079
 collect/OutlookCommon.ps1                             42,050 B  1aa79c60
-collect/owa_parse.py                                  21,831 B  360642e7
-collect/teams_parse.py                                 8,027 B  b50af6fd
+collect/owa_parse.py                                  28,493 B  5939a619
+collect/teams_parse.py                                11,166 B  bed2da9b
 collect/Import-MailCal.py                             12,353 B  bec541e0
 config/config.json                                    43,236 B  ae52a9fb
 config/config.default.json                            48,691 B  f1c99b1f
@@ -67,9 +67,9 @@ core/watch.py                                          6,594 B  33e30d52
 core/teamaddr.py                                      20,045 B  b2433bb4
 core/lmname.py                                         4,771 B  c781496a
 core/privacy.py                                       68,484 B  15be852d
-core/coverage.py                                      13,867 B  6598c534
+core/coverage.py                                      15,760 B  bfdbe0a3
 core/proc.py                                          10,482 B  ba43b829
-core/collect_status.py                                 5,508 B  1b67d1cd
+core/collect_status.py                                 6,542 B  33bd4107
 core/mailmerge.py                                     13,205 B  082dd3cf
 core/timeshare.py                                      7,160 B  c7302bf2
 tools/check_l1.py                                      4,770 B  cfe71d55
@@ -97,5 +97,5 @@ tools/Make-MovePack.py                                12,653 B  0e5c2ca0
 tools/Prepare-Move.ps1                                26,528 B  3d6569ab
 tools/update_files.py                                  4,530 B  d98dd7d5
 tools/lm_fixenc.py                                     6,690 B  0b6df0b4
-tools/diag_bundle.py                                  10,116 B  0653a9aa
+tools/diag_bundle.py                                  10,236 B  9cca2c30
 ui/app.py                                            388,744 B  eecad68f

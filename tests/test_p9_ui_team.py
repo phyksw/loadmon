@@ -134,6 +134,10 @@ class DiagBundle(unittest.TestCase):
             with open(os.path.join(root, "data", "outlook", "mail_source.json"), "w", encoding="utf-8") as f:
                 json.dump({"source": "owa", "me": ["hong@example.com"], "display_name": "홍길동", "mail_rows": 12}, f,
                           ensure_ascii=False)
+            os.makedirs(os.path.join(root, "data", "m365"))
+            with open(os.path.join(root, "data", "m365", "teams_web_rooms.json"), "w", encoding="utf-8") as f:
+                json.dump({"ver": "LM28-TW-1|1", "rooms": {"a1": {"status": "complete"}, "b2": {"status": "roomgone"}},
+                           "dom_census": {"list": 61, "pane_stuck": 61}}, f)
             with open(os.path.join(root, "data", "outlook", "mail.csv"), "w", encoding="utf-8", newline="") as f:
                 w = csv.writer(f)
                 w.writerow(["time", "subject", "src"])
@@ -149,6 +153,8 @@ class DiagBundle(unittest.TestCase):
         self.assertIn('"2026-09": 2', text)
         self.assertIn('"src=owa": 2', text)
         self.assertIn('"mail_rows": 12', text)
+        self.assertIn("방 2개", text)                                              # 방 커서의 rooms 수(최상위 키 수가 아니다)
+        self.assertIn('"pane_stuck": 61', text)                                   # 구조 진단은 숫자 그대로
 
 
 if __name__ == "__main__":
