@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 r"""tests\test_p2_owa.py — WP2: Outlook 웹 검증 수집(F-03·F-04·F-05) · 시각 복원(UD-08) · 병합(W1-04) · 반입 파일(C-17) ·
 Copilot 메일 축소(C-16·C-34·W1-13) · LM28 현장(2026-10-08) 수정: 메일 목록 칸 고르기·'fits' 를 끝 근거에서 뺌·검색 표기 확인·
-일정 주소 이동·화면 구조 진단(구조 줄·dom_census).
+일정 주소 이동·화면 구조 진단(구조 줄·dom_census) · LM28 현장(2026-10-11) 수정: 일정 막대 위치 해석(요일 열·시간 눈금·종일 줄)·
+칩/옆 창 제외·작은 달력 주 이동·'구조+:' 줄(못 읽은 막대 꼴 — 글자 없음).
 
 실제 Edge·Outlook·네트워크를 쓰지 않는다 — tests\fakes\fake_browser.py(FakeBrowser: Get-OutlookWeb 의 JS 상수 머리 표식에
 각본 응답)와 주입한 왕복 함수로 돈다. 운영 data\ 에 쓰지 않는다(파일은 tempfile 폴더만, 모듈 OUT_DIR 도 임시로 돌린다).
@@ -425,6 +426,184 @@ class OwaCal(unittest.TestCase):
         self.assertEqual(run3.cen["cal"]["ev"]["unparsed"], 15)
 
 
+class OwaCalGeo(unittest.TestCase):
+    """LM28 현장(2026-10-11 — 새 Outlook 웹): 막대 108 중 16 을 날짜·시각으로 못 읽어 9주 중 1주만 확인, '이전 주' 34번.
+    라벨 꼴에 걸지 않고 위치(요일 열·시간 눈금·종일 줄)로 보충하고, 칩·옆 창은 빼고, 작은 달력으로 시작 주에 바로 간다."""
+    wk = (D("2026-09-28"), D("2026-10-04"))
+
+    def _cal(self, d0, d1, **flags):
+        br = fb.FakeBrowser(TODAY, **flags)
+        run = owa.Run(d0, d1, today=TODAY)
+        rows, _st, _diag, day_st = owa.collect_cal(br, d0, d1, run=run)
+        return br, run, rows, day_st
+
+    def test_header_hour_and_picker_parsers(self):
+        wk = self.wk
+        self.assertEqual(op.header_date("28 월", *wk), D("2026-09-28"))
+        self.assertEqual(op.header_date("1 목", *wk), D("2026-10-01"))
+        self.assertEqual(op.header_date("2026년 10월 2일 금요일", *wk), D("2026-10-02"))
+        self.assertEqual(op.header_date("(토) 10/3", *wk), D("2026-10-03"))
+        for s in ("오전 9시", "오후 2:00", "2026년 9월", "41주"):
+            self.assertIsNone(op.header_date(s, *wk), s)
+        self.assertEqual([op.hour_label(s) for s in ("오전 9시", "오후 12시", "오전 12시", "9 AM", "21:00", "9", "정오")],
+                         [540, 720, 0, 540, 1260, 540, 720])
+        self.assertIsNone(op.hour_label("오후 15시"))
+        p = op.picker_date
+        for s in ("2026년 10월 5일 월요일", "5, October, 2026", "5, 10월, 2026", "October 5, 2026", "10/5/2026"):
+            self.assertEqual(p(s), D("2026-10-05"), s)
+        self.assertEqual(p("10월 5일", D("2026-12-30")), D("2026-10-05"))
+        self.assertEqual(p("1월 3일", D("2026-12-30")), D("2027-01-03"))           # 해가 없으면 목표에 가까운 해
+        self.assertIsNone(p("5"))
+        self.assertIsNone(p("오전 9:00"))
+        n = op.cal_nonevent
+        self.assertEqual(n("+2 더 보기", ["+2"]), "more")
+        self.assertEqual(n("", ["2개 더"]), "more")
+        self.assertEqual(n("2026년 9월 21일 월요일, 일정 2개"), "head")
+        self.assertEqual(n("더 보기", ["더 보기"]), "btn")
+        self.assertEqual(n("주간 회의", ["주간 회의", "+3"]), "")                   # 막대 안 '+3'(참석자)은 칩이 아니다
+        self.assertEqual(n("Weekly sync, 9:00 AM to 10:00 AM, Monday, October 5, 2026, and 2 more"), "")
+        self.assertEqual(n("주간 회의, 오전 9:00 ~ 오전 10:00"), "")
+
+    def test_columns_and_time_scale_geometry(self):
+        wk = self.wk
+        days = [wk[0] + timedelta(days=i) for i in range(7)]
+        hdr = [{"s": f"{d.day} {fb.KWD[d.weekday()]}", "x": 370 + i * 120, "y": 120} for i, d in enumerate(days)]
+        mini = [{"s": str(d.day), "x": 30 + i * 28, "y": 448} for i, d in enumerate(days)]   # 작은 달력의 같은 주 줄
+        cols = op.day_columns(mini + hdr, *wk, xs=[490, 970])
+        self.assertEqual((cols["n"], round(cols["s"])), (7, 120))                     # 막대를 품는 머리 줄(작은 달력 줄 아님)
+        self.assertEqual(op.col_date(cols, 600), D("2026-09-30"))
+        self.assertIsNone(op.col_date(cols, 285))                                     # 시간 눈금 칸
+        self.assertIsNone(op.col_date(cols, 1250))                                    # 옆 창
+        self.assertEqual(op.col_span(cols, 434, 786), (D("2026-09-29"), D("2026-10-01")))
+        self.assertIsNone(op.day_columns(mini, *wk, xs=[490]))                        # 칸 28px — 요일 열이 아니다
+        part = op.day_columns(hdr[1:6:2], *wk, xs=[370])                              # 머리 3개만 읽혀도 간격으로 잇는다
+        self.assertEqual(op.col_date(part, 370), D("2026-09-28"))
+        labels = [{"s": f"오전 {h}시" if h < 12 else f"오후 {h - 12 or 12}시", "x": 285, "y": 188 + (h - 8) * 48}
+                  for h in range(1, 24)]                                              # 선보다 8px 아래 붙은 눈금 글
+        sc = op.time_scale(labels)
+        self.assertEqual(round(sc["k"] * 60), 48)
+        self.assertLessEqual(abs(op.y_to_min(sc, 277) - 600), 10)                    # 보정 없으면 ±10분
+        sc2 = op.time_scale(labels, [(469, 840, 515, 900)])                         # 라벨로 14:00~15:00 인 막대로 보정
+        self.assertEqual((op.y_to_min(sc2, 277), op.y_to_min(sc2, 347, "b")), (600, 690))
+        self.assertIsNone(op.time_scale([{"s": str(n), "x": 30, "y": 300 + i * 28} for i, n in enumerate((5, 12, 19))]))
+        for stray in ({"s": "오후 10:45", "x": 285, "y": 888}, {"s": "오후 10:50", "x": 285, "y": 900}):   # 눈금 칸의 '현재 시각'
+            self.assertEqual(op.time_scale(labels + [stray])["n"], 23, stray)
+        self.assertEqual((op.hour_label("9AM"), op.hour_label("오후1시")), (540, 780))     # 나뉜 글을 묶은 꼴
+        self.assertIsNone(op.time_scale(labels, [(469, 840, 515, 900), (300, 840, 346, 900)]))   # 보정이 어긋남(다른 스크롤 칸)
+        only = op.time_scale([], [(277, 600, 347, 690), (469, 840, 515, 900)])      # 눈금 글 없이 막대 둘로
+        self.assertEqual(op.y_to_min(only, 373), 720)                               # 12:00 막대 위 끝
+
+    def test_mask_cal_keeps_shape_only(self):
+        m = op.mask_cal
+        self.assertEqual(m("주간 회의, 오전 9:00 ~ 오전 10:00, 회의실 1203"), "xx xx, 오전 9:00 ~ 오전 10:00, xxx ####")
+        self.assertEqual(m("Weekly sync, Monday, October 5, 2026 9:00 AM to 10:00 AM"),
+                         "xxxxxx xxxx, Monday, October 5, 2026 9:00 AM xx 10:00 AM")
+        self.assertEqual(m("휴가, 2026년 10월 5일 화요일, 종일"), "xx, 2026년 10월 5일 화요일, 종일")
+        self.assertEqual(m("June Kim 010-1234-5678"), "xxxx xxx 010-####-####")      # 숫자 곁이 아닌 달 이름(사람 이름)은 x
+        self.assertLessEqual(len(m("가" * 100)), 61)
+
+    def test_undated_recurring_bars_by_weekday_column(self):
+        """라벨에 날짜 없이 시각만 있는 반복 막대 — 가로 가운데가 든 요일 열의 날짜로(현장 '못 읽음 16'의 유력한 꼴)."""
+        d0, d1 = D("2026-09-07"), D("2026-09-27")
+        evs = fb.make_events(D("2026-09-07"), D("2026-09-25"))
+        _br, run, rows, day_st = self._cal(d0, d1, events=evs, undated_calitem=True, geo=True)
+        self.assertEqual(_st_days(day_st, d0, d1, "ok"), [])
+        self.assertEqual(len(rows), 15)
+        self.assertIn(("2026-09-15 14:00", "2026-09-15 15:00", "False"), {tuple(r[:3]) for r in rows})
+        ev, cc = run.cen["cal"]["ev"], run.cen["cal"]
+        self.assertEqual((ev["unparsed"], ev["pos"], cc["ps"]["col"]), (0, 15, 15))
+        self.assertEqual((cc["geo"]["cols"], cc["geo"]["s"], cc["geo"]["hl"], cc["geo"]["px"]), (7, 120, 23, 48))
+        self.assertTrue(run.c["cal_complete"])
+
+    def test_bare_bars_time_grid_and_allday_row(self):
+        """이름이 제목뿐인 막대 — 시간 칸 안이면 세로 위치를 눈금으로(라벨로 시각을 안 막대로 보정), 종일 줄이면 걸친 열들의 종일."""
+        d0, d1 = self.wk
+        evs = (fb.make_events(d0, D("2026-10-02"))                                   # 날짜·시각이 든 라벨 — 눈금 보정용
+               + fb.make_events(d0, D("2026-10-02"), hour=10, minute=30, mins=90, style="bare", subject="주간 점검")
+               + [fb.make_allday(D("2026-09-29"), D("2026-10-01"))])
+        _br, run, rows, day_st = self._cal(d0, d1, events=evs, geo=True)
+        got = {tuple(r[:3]) for r in rows}
+        self.assertIn(("2026-09-30 10:30", "2026-09-30 12:00", "False"), got)      # 보정 뒤 분 단위로 정확
+        self.assertIn(("2026-09-29 00:00", "2026-10-01 23:59", "True"), got)       # 종일 줄 · 걸친 열들
+        self.assertEqual(len(rows), 11)
+        self.assertEqual(_st_days(day_st, d0, d1, "ok"), [])
+        ps, g = run.cen["cal"]["ps"], run.cen["cal"]["geo"]
+        self.assertEqual((ps["col"], ps["grid"], ps["span"], ps["ad"]), (5, 5, 1, 1))
+        self.assertEqual((g["cal"], g["in"], g["ad"]), (5, 10, 1))
+        self.assertEqual(run.cen["cal"]["ev"]["unparsed"], 0)
+
+    def test_more_chip_is_not_unreadable_bar(self):
+        """'+2 더 보기' 칩은 막대 수·못 읽음에서 빠진다 — 다만 다 안 그려진 일정이 있다는 뜻이라 그 주는 일부(P4)."""
+        d0, d1 = self.wk
+        evs = fb.make_events(d0, D("2026-10-02"))
+        _br, run, rows, day_st = self._cal(d0, d1, events=evs, geo=True, chips=2)
+        ev = run.cen["cal"]["ev"]
+        self.assertEqual((ev["unparsed"], ev["chip"], ev["more"], ev["seen"]), (0, 1, 1, 5))
+        self.assertEqual(len(rows), 5)
+        self.assertEqual(set(day_st.values()), {"partial"})
+        self.assertEqual(run.sd.get("cal_more_hidden"), 1)
+        self.assertNotIn("bad", run.cen["cal"])
+
+    def test_side_pane_bars_are_not_week_bars(self):
+        """옆 창(오늘 일정 — 어느 주를 보든 날짜 없이)의 막대는 그 주의 못 읽은 막대가 아니다 — 본문(role=main) 밖이거나,
+        role=main 이 없는 화면이면 요일 열 밖(열이 막대 대부분을 품을 때만)."""
+        d0, d1 = self.wk
+        evs = fb.make_events(d0, D("2026-10-09")) + [fb.make_allday(D("2026-09-29"), D("2026-09-30"))]
+        for flags in ({}, {"no_main": True}, {"allday_nomain": True}):
+            _br, run, rows, day_st = self._cal(d0, d1, events=evs, geo=True, myday=True, **flags)
+            self.assertEqual(_st_days(day_st, d0, d1, "ok"), [], flags)
+            ev = run.cen["cal"]["ev"]
+            self.assertEqual((ev["side"], ev["unparsed"], len(rows)), (1, 0, 6), flags)   # 열 안 종일 줄은 본문 밖이라도 남는다
+            self.assertIn(("2026-09-29 00:00", "2026-09-30 23:59", "True"), {tuple(r[:3]) for r in rows}, flags)
+
+    def test_without_position_still_partial(self):
+        """위치로도 못 풀면 그대로 일부 — 위치 없음(옛 화면)·열 머리 못 찾음·시간 눈금 없음. 까닭은 구조 진단에."""
+        d0, d1 = self.wk
+        evs = fb.make_events(d0, D("2026-10-02"))
+        for flags, why in (({"undated_calitem": True}, "nd"),
+                           ({"undated_calitem": True, "geo": True, "geo_nocols": True}, "nh"),
+                           ({"bare_calitem": True, "geo": True, "geo_nogrid": True}, "ng")):
+            _br, run, rows, day_st = self._cal(d0, d1, events=evs, **flags)
+            self.assertEqual(set(day_st.values()), {"partial"}, flags)
+            self.assertEqual(run.cen["cal"]["ev"]["unparsed"], 5, flags)
+            self.assertEqual(run.cen["cal"]["bad"][0]["w"], why, flags)
+            self.assertFalse(run.c["cal_complete"], flags)
+
+    def test_mini_calendar_jumps_to_start_week(self):
+        """주소가 무시되는 화면(이번 주가 보임)에서 기간이 몇 달 전 — 작은 달력의 달 넘기기·날 누르기로 시작 주에 바로 가고
+        (머리로 확인) '이전 주'는 기간 안에서만 누른다. 작은 달력이 없거나 눌러도 안 바뀌면 예전처럼 '이전 주'로."""
+        d0, d1 = D("2026-06-01"), D("2026-07-31")                                   # 9주(06-01 ~ 07-27 주)
+        evs = fb.make_events(D("2026-05-25"), D("2026-08-07"))
+        for flags in ({"picker": True}, {"picker": True, "picker_label": "fluent"}, {"picker": "popup", "picker_label": "en"}):
+            br, run, rows, day_st = self._cal(d0, d1, events=evs, ignore_url=True, **flags)
+            self.assertEqual(run.c["weeks_ok"], 9, flags)
+            self.assertEqual(_st_days(day_st, d0, d1, "ok"), [], flags)
+            self.assertEqual(br.calls["prev"], 8, flags)                                # 작은 달력 없이는 18번
+            self.assertEqual((br.calls["pick_day"], br.calls["pick_nav"]), (1, 2), flags)
+            self.assertEqual(br.calls["goto"], 1, flags)
+            self.assertEqual(run.cen["cal"]["pick"]["ok"], 1, flags)
+            self.assertEqual(len(rows), 45, flags)
+        br, run, _rows, _ds = self._cal(d0, d1, events=evs, ignore_url=True, picker=True, picker_label="num")
+        self.assertEqual((run.c["weeks_ok"], br.calls["prev"], br.calls["pick_day"]), (9, 18, 0))   # 날 번호만 — 고를 수 없다
+        self.assertEqual(run.cen["cal"]["pick"]["why"], "nodate")
+        br, run, _rows, _ds = self._cal(d0, d1, events=evs, ignore_url=True, picker=True, picker_dead=True)
+        self.assertEqual((run.c["weeks_ok"], br.calls["prev"], run.cen["cal"]["pick"]["why"]), (9, 18, "head"))
+        br, run, _rows, _ds = self._cal(d0, d1, events=evs, ignore_url=True)
+        self.assertEqual((run.c["weeks_ok"], br.calls["prev"], run.cen["cal"]["pick"]["why"]), (9, 18, "nogrid"))
+
+    def test_prev_dead_mini_calendar_each_week(self):
+        """'이전 주'가 안 먹고 주소도 무시되는 화면 — 작은 달력으로 한 주씩(예전엔 이번 주만 읽고 멈췄다)."""
+        d0, d1 = D("2026-08-03"), TODAY
+        evs = fb.make_events(D("2026-07-27"), D("2026-10-09"))
+        br, run, rows, day_st = self._cal(d0, d1, events=evs, ignore_url=True, prev_dead=True, picker=True)
+        self.assertEqual(run.c["weeks_ok"], 10)
+        self.assertEqual(run.c["cal_clicks"], 1 + owa.CAL_RETRY)
+        self.assertEqual(run.cen["cal"]["pick"]["ok"], 9)
+        self.assertEqual(br.calls["goto"], 1)
+        self.assertEqual(_st_days(day_st, d0, D("2026-10-06"), "ok"), [])
+        self.assertIn("2026-08-03", {r[0][:10] for r in rows})
+
+
 class DomCensus(unittest.TestCase):
     def test_pick_list_prefers_mail_rows_not_first_listbox(self):
         cands = [{"i": 0, "opts": 2, "mailish": 0, "conv": 0, "main": 0, "vis": 1},     # 짧은 다른 칸(현장의 첫 listbox)
@@ -568,6 +747,47 @@ class OwaMain(unittest.TestCase):
             self.assertIn("dom_census", src["counts"])
             first = [r["st"] for r in st["ranges"] if r["axis"] == "cal" and r["from"] == d0.isoformat()]
             self.assertEqual(first, ["unverified"])                     # 지나가지 못한 주는 미확인(다음 실행이 다시 읽는다)
+
+    def test_main_census_plus_line_unreadable_shapes(self):
+        """'구조+:' 둘째 줄 — '구조:' 줄 바로 뒤(마지막 12줄 안 · 400자 안)에 위치 해석·작은 달력·못 읽은 막대 꼴(가린 것). 이름·제목
+        글자는 줄에도 dom_census 에도 없다(숫자·구두점·오전/오후만 — 4자리 넘는 숫자는 #)."""
+        today = date.today()
+        mon = today - timedelta(days=today.weekday())
+        d0, d1 = mon - timedelta(days=14), mon - timedelta(days=1)                  # 지난 두 주(다 지난 날)
+        evs = fb.make_events(d0, d1)
+        for ev in evs:
+            ev["subject"] = "정기 회의"                                              # 날마다 같은 이름(반복 회의) — 꼴 하나
+        br = fb.FakeBrowser(today, mail={}, events=evs, undated_calitem=True)
+
+        @contextlib.contextmanager
+        def lock(cfg=None, timeout=600):
+            yield "x"
+        br.ca = types.SimpleNamespace(edge_lock=lock, EdgeBusy=RuntimeError)
+        br.cfg = {}
+        lines = []
+        env = dict.fromkeys(("LM_OWA_FAKE", "LM_NO_BROWSER"), "")
+        with tempfile.TemporaryDirectory(prefix="lm28_t_") as tmp, mock.patch.object(owa, "Browser", lambda: br), \
+                mock.patch.object(owa, "log", lines.append):
+            rc, text = self._main(["--from", d0.isoformat(), "--to", d1.isoformat(), "--only", "cal", "--out-dir", tmp,
+                                   "--tag", "owa"], env)
+            st = _status_of(text)
+        self.assertEqual(rc, 0)
+        plus = [ln for ln in lines if ln.startswith("구조+: ")]
+        self.assertEqual(len(plus), 1)
+        i = lines.index(plus[0])
+        self.assertTrue(lines[i - 1].startswith("구조: 일정 주 0/2(일부 2·"), lines[i - 1])
+        self.assertGreaterEqual(i, len(lines) - 12)
+        self.assertLessEqual(len("[outlook-web] " + plus[0]), 400)
+        self.assertIn("위치 해석 0(", plus[0])
+        self.assertIn("위치없음 10", plus[0])                                        # 막대 위치가 안 왔다(옛 화면 JS)
+        self.assertIn("못읽음 예 xx xx, 오후 2:00 ~ 오후 3:00, xx | xx xx[t2/날짜없음]", plus[0])
+        cen = st["counts"]["dom_census"]
+        self.assertLessEqual(len(json.dumps(cen, ensure_ascii=False).encode("utf-8")), owa.CENSUS_MAX)
+        self.assertEqual([(b["w"], b["f"], b["cal"]) for b in cen["cal"]["bad"]], [("nd", "t2", 1)])   # 같은 꼴은 한 번
+        dumped = json.dumps(cen, ensure_ascii=False) + plus[0]
+        for word in ("정기", "회의", "바쁨"):
+            self.assertNotIn(word, dumped)
+        self.assertEqual([r["st"] for r in st["ranges"] if r["axis"] == "cal"], ["partial"])
 
     def test_main_edge_busy_and_login(self):
         @contextlib.contextmanager

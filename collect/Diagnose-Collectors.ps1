@@ -288,7 +288,8 @@ if (Test-Path -LiteralPath $lr) {
         foreach ($s in $j.stages) {
             if ($s.name -match 'Outlook|팀즈|메일') {
                 W ("  {0} {1}{2}" -f $(if ($s.ok) { 'OK ' } else { 'NG ' }), $s.name, $(if ($s.note) { ' - ' + $s.note } else { '' }))
-                if ($s.census) { W ('      ' + $s.census) }   # 웹 경로 화면 구조 한 줄(LM28) — 이 줄을 사진에 담아 보내면 원인이 확정된다
+                # 웹 경로 화면 구조 줄(LM28 '구조:'·'구조+:') — 이 줄들을 사진에 담아 보내면 원인이 확정된다
+                if ($s.census) { foreach ($cl in ([string]$s.census -split "`n")) { if ($cl.Trim()) { W ('      ' + $cl.Trim()) } } }
             }
         }
     } catch { W '  last_run.json 해석 실패' }

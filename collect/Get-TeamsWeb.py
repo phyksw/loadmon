@@ -21,20 +21,39 @@ Get-OutlookWeb.py 와 같은 방식이다: Copilot 에 쓰는 전용 Edge 프로
           (LM24 의 '기존 누적이 있으면 0' 은 없앴다 — 이번 실행이 읽은 것으로만 정한다.)
 마지막 줄: LMSTATUS {v,src:'teams_web',rc,reason,counts,ranges[{axis:'teams',from,to,st}]}
           counts: rooms_listed·list_end·opened·complete·incremental_ok·cut_budget·cut_no_scroller·roomgone·rows_new·teams_present
-                  · open_notfound·pane_stuck·open_same_pane·open_by_sel·open_by_title·open_by_conv·open_by_content(+진단 · dom_census)
+                  · open_notfound·pane_stuck·open_same_pane·open_by_sel·open_by_title·open_by_conv·open_by_doc·open_by_content
+                  · click_<방법>·click_<방법>_doc·read_cand·read_gen·list_expanded·list_collapsed(+진단 · dom_census)
 
 LM28 '읽음' 규칙(F-06·F-07·F-30·C-21·W1-05 — 검증된 방만 읽음으로 적는다):
-  · 목록은 가상 스크롤을 끝까지 내린다(새 이름 0 화면 3번 또는 끝). 상한 teamsWebMaxChats(기본 200, 0 = 무제한).
+  · 목록은 가상 스크롤을 끝까지 내린다(새 방 0 화면 3번 또는 끝). 상한 teamsWebMaxChats(기본 200, 0 = 무제한).
     마지막 활동이 기간 시작 전인 방은 열지 않는다. 지난 실행에서 잘린 방(cut·roomgone)을 먼저 연다.
-  · 방 전환은 확인한다(LM28 — 2026-10 새 Teams 웹 v2 실측 '61개 모두 전환 실패' 뒤 다시 짬): 먼저 '앞 방 그대로'를 막는다 —
-    지금 화면 메시지 지문(data-mid 등)의 절반 이상이 앞 방에서 본 것이면 아니다(내용 지문 비교). 그다음 ① 목록 항목(또는 그
-    treeitem·option 조상·안쪽)의 선택 표시가 이 방 ② 지금 대화 ID(주소·탭 세션 기록·머리 id)가 이 방 키 ③ 머리 제목이 이 방
-    이름과 맞고(외부·괄호·'외 n명'·단체방 이름 순서 같은 표기 차이 허용) 누른 뒤 화면이 바뀜 ④ 머리 제목을 못 찾는 화면에서
-    메시지가 모두 새 ID 로 바뀜 — 중 하나면 읽는다. 아니면 R-ROOMGONE — 그 방 행은 0, 다음 실행이 먼저 연다.
-    누르기: 항목 자체 → 안쪽 링크·단추 → 키보드 Enter(통한 방법을 다음 방부터 먼저). 처음부터 12방 연속 실패면 남은 방은 열지 않는다.
-  · 화면 구조 진단(현장 사진 한 장으로 원인 확정): 끝의 요약 줄 앞에 '[teams-web] 구조: …' 한 줄(후보별 개수·실패 사유별 수·
-    확인 근거별 수·선택 표시·대화 ID 출처·통한 누르기)을 찍고, 같은 것과 가린 골격을 LMSTATUS counts.dom_census 와
-    teams_web_rooms.json 의 dom_census 에 남긴다(글자 없음 — 태그·role·data-tid·aria 이름·값 길이·개수, 4KB 안).
+  · LM28-TW-2(2026-10-11 회사 PC 실측 '목록 61 · 열기 못찾음 10 · 화면멈춤 2(빈2)' 뒤 다시 짬) — 방을 이름으로 다시 찾지 않는다:
+    목록을 위에서부터 한 화면씩 걸으며(1차: 끝까지 모으며 잘린 방을 연다 · 2차: 맨 위로 되돌려 남은 방을 연다) 그 화면 스냅샷의
+    항목을 그 자리에서 누른다. 누르기 직전에 같은 순번의 항목이 같은 대화 ID/안정 이름인지 확인하고, 다르면 그 화면에서
+    ID → 안정 이름(가장 가까운 순번) 순으로 다시 맞춘다. 방 커서 열쇠는 대화 ID, 없으면 안정 이름(teams_parse.room_id).
+    안정 이름 = aria-label 첫 조각(항목의 잎 글과 같을 때) → aria-labelledby 첫 요소 글 → 첫 줄의 잎(시각·숫자뿐인 배지·단추·
+    아바타 글·두 번째 줄 미리보기 제외, 굵은 잎 먼저). 마우스를 올리면 바뀌는 시각·단추 글은 이름이 되지 않는다.
+    구역 머리(aria-expanded 가 있거나 안에 다른 항목을 품은 항목)는 방이 아니다 — 누르지 않는다(지난 판은 머리가 안쪽 방의 대화
+    ID 를 물려받아 방으로 보였고, 누르면 구역이 접혀 나머지 방을 못 찾았을 수 있다). 닫힌 최상위 구역은 1차에서 펼친다
+    (실행마다 EXPAND_MAX 번) — 못 펼친 구역이 남으면 목록 끝이 아니다(그 안의 방이 기간에 활동했을 수 있다).
+  · 방 전환은 확인한다: 먼저 '앞 방 그대로'를 막는다 — 지금 화면 메시지 지문(data-mid·<time datetime>+글 해시)의 절반 이상이
+    앞 방에서 본 것이면 아니다. 그다음 ① 목록 항목의 선택 표시가 이 방 ② 지금 대화 ID(주소·탭 세션 기록·머리 id)가 이 방 키
+    ③ 머리 제목이 이 방 이름과 맞고 누른 뒤 화면이 바뀜 ④ 창 제목(document.title '채팅 | <방> + n | Microsoft Teams')의 방 조각이
+    이 방(teams_parse.doc_fits)이고 메시지가 바뀜(또는 누르기 전부터 이 방이 열려 있었음) ⑤ 머리 제목을 못 찾는 화면에서 메시지가
+    모두 새 ID 로 바뀜 — 중 하나면 읽는다(창 제목이 다른 방을 말하면 ①·⑤ 는 쓰지 않는다). 아니면 R-ROOMGONE.
+    누르기(통한 방법을 다음 방부터 먼저): 신뢰 입력 마우스(CDP Input.dispatchMouseEvent 옮김→누름→뗌 — 항목 왼쪽~가운데의 보이는
+    점, 오른쪽 '…' 단추·좁은 단추·링크는 피하고 scrollIntoView 뒤 뷰포트 안인지 확인) → 합성 사건(isTrusted=false 를 받는 화면) →
+    포커스 + CDP 키 Enter. 앞 시도가 연 메뉴는 CDP Escape 로 닫는다. 처음부터 12방 연속 실패면 남은 방은 열지 않는다.
+  · 메시지 후보(data-tid)가 하나도 안 맞으면(또는 맞은 후보에 시각이 없으면) 일반 읽기: 대화 영역(목록 밖)의 time[datetime] 을
+    붙잡아 메시지 단위(그 시각만 품은 가장 큰 조상 — li·listitem·article·group·data-tid*=message 한 메시지가 시각 둘을 품으면 그것,
+    같은 부모 아래 비슷한 형제 행은 함께)로 묶고, 작성자 = [data-tid*=author]·[id^=author-] 또는 시각 앞 같은 줄의 짧은 잎,
+    본문 = 작성자·시각을 뺀 가장 긴 글 덩어리. 날짜 구분선·되감기·지문도 이 단위로 한다. 머리 후보가 없으면 창 제목의 방 조각을
+    CSV 방 이름으로 쓴다(정규화해 목록 이름과 같을 때만 — 지난 판 규칙).
+  · 화면 구조 진단(현장 사진 한 장으로 원인 확정): 끝의 요약 줄 앞에 '[teams-web] 구조: …'(후보별 개수·실패 사유별 수·확인 근거별 수·
+    선택 표시·대화 ID 출처·통한 누르기)와 '[teams-web] 구조+: …'(창 제목 꼴·누르기 방법별 시도/창 제목 바뀜·대화 영역 시각 수·
+    대화 영역 data-tid 상위 8·목록 항목 잎 꼴·aria-level/expanded·읽은 경로·문서 보임) 두 줄을 찍고, 같은 것과 가린 골격을
+    LMSTATUS counts.dom_census 와 teams_web_rooms.json 의 dom_census 에 남긴다(글자 없음 — 태그·role·data-tid·aria 이름·값 길이·
+    개수·가린 꼴, 4KB 안).
   · 위로 되감기: 'top' 이면 6초까지 지난 메시지 로드를 기다린다(3번 연속 높이 증가가 없을 때만 맨 위 확인 = complete).
     'no-scroller' 면 스크롤되는 조상을 다시 찾고, 그래도 없으면 cut_no_scroller('처음까지 읽음'이 아니다).
     되감기 상한 teamsWebMaxScroll(기본 60). 기간 시작 전 날짜에 닿으면 complete.
@@ -82,7 +101,7 @@ import teams_parse  # noqa: E402  — LM28 순수 판정(키·방 판정·일자
 
 OUT_DIR = os.path.join(ROOT, "data", "m365")
 HDR = "time,from,chat,kind,replied_time,summary"
-COLLECTOR_VER = "LM28-TW-1"            # 방 커서 판 — teams_web_rooms.json 의 ver '판|collect.cursorEpoch'
+COLLECTOR_VER = "LM28-TW-2"            # 방 커서 판 — teams_web_rooms.json 의 ver '판|collect.cursorEpoch'(TW-2: 방 열쇠가 안정 이름으로 바뀜)
 STATE_NAME = "teams_web_rooms.json"
 TEAMS_URL = "https://teams.microsoft.com/"          # LM28: 문서에 없는 /v2/ 경로 대신 시작 주소(도착 호스트는 cloud.microsoft 일 수 있다)
 HOSTS = ("teams.microsoft.com", "teams.cloud.microsoft", "teams.office.com")
@@ -92,8 +111,9 @@ MAX_CHATS = 200                 # teamsWebMaxChats 기본(0 = 무제한)
 MAX_SCROLL = 60                 # teamsWebMaxScroll 기본 — 방 하나를 위로 되감는 횟수 상한
 LIST_STALL = 3                  # 목록: 새 이름 0 화면이 이만큼 이어지면 끝
 LIST_SCREENS = 400              # 목록 화면 상한(안전)
-SEEK_SCREENS = 80               # 열 방을 목록에서 다시 찾을 때 내리는 화면 상한
-ROOM_STALL = 3                  # 방: 되감아도 새 항목이 없는 화면이 이만큼 이어지면 그 방은 여기까지(cut)
+EXPAND_MAX = 4                  # 닫힌 최상위 구역을 펼쳐 보는 횟수 상한(실행마다)
+INPUT_TIMEOUT = 8               # CDP 입력(마우스·키) 한 번의 응답 상한(초) — 넘으면 연결을 다시 잇고 그 방법은 그만 쓴다
+ROOM_STALL = 3                 # 방: 되감아도 새 항목이 없는 화면이 이만큼 이어지면 그 방은 여기까지(cut)
 TOP_CONFIRM = 3                 # 'top' 뒤 높이 증가 없는 확인 횟수(× TOP_WAIT = 6초)
 TOP_WAIT = 2.0
 SCROLL_WAIT = 1.8               # 되감기 뒤 지난 메시지가 붙기를 기다리는 상한
@@ -288,6 +308,9 @@ _LIST_SELS = ['[data-tid="chat-list"] [data-tid="chat-list-item"]', '[data-tid="
               '[data-tid="chat-list"] [role="treeitem"]', '[role="tree"] [role="treeitem"]',
               '[role="list"] [role="listitem"][data-tid]', '[role="listbox"] [role="option"]']
 _LIST_CODE = ["chat-list>item", "chat-list-item", "chat-list>treeitem", "tree>treeitem", "list>listitem", "listbox>option"]
+# 목록 후보마다 '항목 하나'의 선택자(맨 끝 조각) — 항목 안에 이것이 또 있으면 구역 머리(중첩 트리), 대화 ID·잎 글은 제 것만 본다
+_LIST_ITEM = ['[data-tid="chat-list-item"]', '[data-tid="chat-list-item"]', '[role="treeitem"]', '[role="treeitem"]',
+              '[role="listitem"][data-tid]', '[role="option"]']
 # 메시지 후보 (선택자, 구조 줄 약칭, 본문 단위 — True 면 메시지 본문 요소라 항목은 가장 가까운 li·listitem·article)
 _MSG = [('[data-tid="chat-pane-item"]', "pane-item", False),
         ('[data-tid="chat-pane-message"]', "pane-msg", False),
@@ -314,17 +337,25 @@ _VP = [('[data-tid="message-pane-list-viewport"]', "vp"), ('[data-tid="chat-mess
        ('[data-tid="channel-pane-runway"]', "chan-runway"), ('[data-tid="message-pane"]', "mpane"), ('[role="log"]', "log")]
 _VP_SELS = [v[0] for v in _VP]
 _SEP_SEL = '[role="separator"],[data-tid*="divider"],.fui-Divider__wrapper,[data-testid="timestamp-divider"]'
-CLICK_MODES = ("item", "inner", "key")   # 항목 자체 → 안쪽 링크·단추(손가락이 닿는 요소) → 키보드 Enter
-_CLICK_KO = {"item": "항목", "inner": "안쪽", "key": "키"}
-# 공통 조각: 후보표 · 대화 ID(19:…@thread / 48:notes — LM27 idOf 이식, 글 속성은 보지 않는다) · 목록 항목 이름 · 이름 정규화
-# (teams_parse.norm_name 과 같은 규칙) · 선택 표시(항목·그 treeitem/option 조상·안쪽) · 메시지 지문(data-mid → 본문 id → 글 해시) ·
-# 후보 고르기(run.pref 먼저) · 지금 대화 ID(주소 → 탭 세션 기록 → 머리 id)
+GEN = -2                                  # 메시지 후보 순번 자리의 '일반 읽기'(time[datetime] 단위) 표지
+CLICK_MODES = ("mouse", "synth", "key")   # 신뢰 입력 마우스(CDP) → 합성 사건 → 포커스 + CDP 키 Enter
+_CLICK_KO = {"mouse": "마우스", "synth": "합성", "key": "키"}
+_CLICK_ACT = {"mouse": "aim", "synth": "synth", "key": "focus"}
+# 공통 조각: 후보표 · 대화 ID(19:…@thread / 48:notes — LM27 idOf 이식, 글 속성은 보지 않는다. 항목 '제 것'만 — 안에 품은 다른 항목의
+# ID 를 물려받지 않는다) · 잎 글(글 노드를 직접 가진 요소 — 제 것만) · 행 사각형(구역 머리는 제 줄만) · 구역 머리 판정 · 안정 이름
+# 맞춤(sigHit) · 이름 정규화(teams_parse.norm_name 과 같은 규칙) · 선택 표시 · 메시지 지문(data-mid → 본문 id → <time datetime>+글
+# 해시) · 후보 고르기(run.pref 먼저 — 맞은 후보에 시각이 없으면 일반 읽기) · 일반 읽기 단위(genUnits) · 지금 대화 ID
 _JS_COMMON = ("const SELS = " + json.dumps(_LIST_SELS) + ";\n"
+              "const SELI = " + json.dumps(_LIST_ITEM) + ";\n"
               "const MSGS = " + json.dumps(_MSG_SELS) + ";\n"
               "const MSGUP = " + json.dumps([i for i, m in enumerate(_MSG) if m[2]]) + ";\n"
               "const HEADS = " + json.dumps(_HEAD_SELS) + ";\n"
               "const VPS = " + json.dumps(_VP_SELS) + ";\n"
+              "const SEP = " + json.dumps(_SEP_SEL) + ";\n"
+              "const GEN = " + str(GEN) + ";\n"
               "const PREF = __PREF__;\n" + r"""
+const TSEL = 'time[datetime],[datetime]';
+const MARK = 'li,[role="listitem"],[role="article"],[role="group"],[data-tid*="message" i]';
 const RXID = /(19:[^\s\/?#"'&,;<>]+@[A-Za-z0-9.\-]+|48:notes)/;
 const pickId = v => { v = String(v || ""); if (!v) return ""; try { v = decodeURIComponent(v); } catch (x) {}
   const m = v.match(RXID); return m ? m[1] : ""; };
@@ -332,22 +363,47 @@ const ID_SKIP = /^(aria-label|aria-description|aria-roledescription|title|alt|cl
 const attrId = e => { if (!e || !e.attributes) return "";
   for (const a of e.attributes) { if (ID_SKIP.test(a.name)) continue; const c = pickId(a.value); if (c) return c; }
   return ""; };
-const idOf = e => { let c = attrId(e); if (c) return c;
-  for (const s of ['[data-item-key]', '[data-conversation-id]', '[data-chat-id]', '[data-fui-tree-item-value]', 'a[href*="/l/"]']) {
-    const x = e.querySelector(s); if (x) { c = attrId(x); if (c) return c; } }
+const ownOf = (x, e, isel) => !isel || x.closest(isel) === e;
+const idOf = (e, isel) => { if (!e) return ""; let c = attrId(e); if (c) return c;
+  for (const s of ['[data-item-key]', '[data-conversation-id]', '[data-chat-id]', '[data-fui-tree-item-value]', 'a[href*="/l/"]', '[id*="19:"]']) {
+    for (const x of e.querySelectorAll(s)) { if (!ownOf(x, e, isel)) continue; c = attrId(x); if (c) return c; } }
   return ""; };
-const leafs = (e, n) => [...e.querySelectorAll("span,div,p,a")].filter(x => x.childElementCount === 0)
-  .map(x => (x.textContent || "").trim()).filter(Boolean).slice(0, n);
-const nameOf = e => { const l = ((e.getAttribute("aria-label") || e.getAttribute("title") || "").split(/[,|·]| - /)[0] || "").trim();
-  return l || (leafs(e, 1)[0] || ""); };
+const ownText = x => { let s = ""; for (const n of x.childNodes) { if (n.nodeType === 3) s += n.textContent; }
+  return s.replace(/\s+/g, " ").trim(); };
+const textEls = (e, isel, n) => { const out = [], seen = new Set(); if (!e) return out;
+  const w = document.createTreeWalker(e, NodeFilter.SHOW_TEXT);
+  for (let t = w.nextNode(); t && out.length < n; t = w.nextNode()) {
+    const p = t.parentElement;
+    if (!p || seen.has(p) || !(t.textContent || "").trim()) continue;
+    seen.add(p);
+    if (!ownOf(p, e, isel) || p.closest("script,style,template,noscript")) continue;
+    out.push(p); }
+  return out; };
+const leafs = (e, n) => textEls(e, "", n).map(ownText).filter(Boolean);
 const nm = s => (s || "").replace(/[\s.·,()\[\]\-]+/g, "").toLowerCase();
 const hookOf = s => { s = String(s || ""); const m = s.match(/^[A-Za-z][A-Za-z0-9_.\-]{0,39}/);
   if (!m) return s ? "?" : ""; const h = m[0].replace(/\d{4,}.*$/, ""); return h + (h.length < s.length ? "~" : ""); };
 const order = (n, p) => { const o = []; if (typeof p === "number" && p >= 0 && p < n) o.push(p);
   for (let i = 0; i < n; i++) if (i !== p) o.push(i); return o; };
-const listEls = () => { for (const s of SELS) { const els = [...document.querySelectorAll(s)]; if (els.length) return [els, s]; } return [[], ""]; };
-const findItem = (key, name) => { const els = listEls()[0];
-  return (key && els.find(e => idOf(e) === key)) || (name && els.find(e => nm(nameOf(e)) === name)) || null; };
+const listEls = () => { for (let i = 0; i < SELS.length; i++) { const els = [...document.querySelectorAll(SELS[i])];
+    if (els.length) return [els, SELS[i], i]; }
+  return [[], "", -1]; };
+const iselOf = i => (i >= 0 && i < SELI.length) ? SELI[i] : "";
+const nestOf = (e, isel) => (e && isel) ? e.querySelectorAll(isel).length : 0;
+const isHdr = (e, isel) => !!e && (e.getAttribute("aria-expanded") !== null || nestOf(e, isel) > 0);
+const okRect = q => !!q && q.width > 4 && q.height > 4;
+const rowRect = (e, isel) => { const r = e.getBoundingClientRect();
+  if (nestOf(e, isel) > 0 || !okRect(r)) {
+    for (const c of e.children) { if (isel && (c.matches(isel) || c.querySelector(isel))) continue;
+      const q = c.getBoundingClientRect(); if (okRect(q)) return q; } }
+  return r; };
+const lblOf = e => ((e && (e.getAttribute("aria-label") || e.getAttribute("title"))) || "").trim();
+const lbyOf = e => { const v = (e && e.getAttribute("aria-labelledby")) || ""; const id = v.split(/\s+/).filter(Boolean)[0];
+  const x = id ? document.getElementById(id) : null; return x ? (x.textContent || "").replace(/\s+/g, " ").trim().slice(0, 120) : ""; };
+const sigHit = (e, isel, sig) => { if (!e || !sig) return false;
+  const l = lblOf(e).split(/[,|·]| - /)[0].trim(); if (l && l === sig) return true;
+  if (lbyOf(e) === sig) return true;
+  return textEls(e, isel, 24).some(x => ownText(x) === sig); };
 const SELMARK = '[aria-selected="true"],[aria-current="page"],[aria-current="true"],[aria-current="location"],[data-is-selected="true"],[data-selected="true"]';
 const SELATTR = '[aria-selected],[aria-current],[data-is-selected],[data-selected]';
 const hostOf = e => e.closest('[role="treeitem"],[role="option"],[role="listitem"],[role="row"],[role="tab"]') || e;
@@ -360,12 +416,50 @@ const midOf = e => { let v = e.getAttribute("data-mid");
   if (!v) { const x = e.querySelector("[data-mid]"); if (x) v = x.getAttribute("data-mid"); }
   if (!v) { const B = '[id^="content-"],[id^="message-body-"]'; const x = e.matches(B) ? e : e.querySelector(B); if (x) v = x.id; }
   return v || ""; };
-const fidOf = e => { const v = midOf(e); return v ? "m:" + String(v).slice(0, 60) : "h:" + hsh((e.textContent || "").trim().slice(0, 200)); };
+const fidOf = e => { const v = midOf(e); if (v) return "m:" + String(v).slice(0, 60);
+  const tm = e.matches(TSEL) ? e : e.querySelector(TSEL); const d = tm ? String(tm.getAttribute("datetime") || "").slice(0, 32) : "";
+  let s = e.textContent || ""; if (tm && tm !== e) s = s.replace(tm.textContent || "", " ");   // 시각 글('방금'·'1분')은 흔들린다 — 뺀다
+  const h = hsh(s.replace(/\s+/g, " ").trim().slice(0, 200)); return d ? "t:" + d + ":" + h : "h:" + h; };
+const docOrder = (a, b) => a === b ? 0 : ((a.compareDocumentPosition(b) & 4) ? -1 : 1);
+const lcaOf = els => { if (!els.length) return null; const b = els[els.length - 1]; let c = els[0].parentElement;
+  while (c && !c.contains(b)) c = c.parentElement; return c; };
+const listBox = els => { const c = lcaOf(els);
+  if (!c || c === document.body || c === document.documentElement || c.matches('[role="main"],main') || c.querySelector('[role="main"],main')) return null;
+  return c; };
+const primTimes = () => { const [els, , li] = listEls(); const isel = iselOf(li); const lb = listBox(els);
+  return [...document.querySelectorAll(TSEL)].filter(x => (lb ? !lb.contains(x) : !(isel && x.closest(isel)))
+    && !x.closest(SEP) && !x.closest('[role="tree"],[role="menu"],[role="tooltip"]')); };
+const scrollerish = x => { try { return /(auto|scroll|overlay)/.test(getComputedStyle(x).overflowY); } catch (z) { return false; } };
+const genUnits = () => { const T = primTimes(); if (!T.length) return [];
+  const lb = listBox(listEls()[0]);
+  const cnt = (a, k) => { let c = 0; for (const x of T) { if (a.contains(x) && ++c > k) break; } return c; };
+  const stop = x => !x || x === document.body || x === document.documentElement || (lb && x.contains(lb))
+    || x.matches('[role="main"],main') || scrollerish(x);
+  const us = new Set();
+  for (const t of T) {
+    let a = t, up = t.parentElement;
+    while (!stop(up) && cnt(up, 1) === 1) { a = up; up = up.parentElement; }
+    let u = a;
+    if (!stop(up) && up.matches(MARK) && cnt(up, 3) <= 3 && ((a.textContent || "").length - (t.textContent || "").length) <= 40
+        && ![...up.querySelectorAll(MARK)].some(m => T.some(y => m.contains(y)))) u = up;
+    us.add(u); }
+  const par = new Map();
+  for (const u of us) { const p = u.parentElement; if (p) par.set(p, (par.get(p) || 0) + 1); }
+  for (const [p, k] of par) { if (k < 2) continue;
+    const ref = [...us].find(u => u.parentElement === p);
+    const same = [...p.children].filter(c => c.tagName === ref.tagName && (c.getAttribute("role") || "") === (ref.getAttribute("role") || ""));
+    if (same.length < 3) continue;
+    for (const c of same) { if (us.has(c) || c.matches(SEP) || (c.querySelector(SEP) && !c.querySelector(TSEL))) continue;
+      if ((c.textContent || "").trim()) us.add(c); } }
+  const all = [...us];
+  return all.filter(u => !all.some(v => v !== u && v.contains(u))).sort(docOrder).slice(0, 400); };
 const msgPick = () => { for (const i of order(MSGS.length, PREF.msg)) { let els = [...document.querySelectorAll(MSGS[i])];
     if (!els.length) continue;
     if (MSGUP.includes(i)) els = [...new Set(els.map(x => x.closest('li,[role="listitem"],[role="article"]') || x))];
+    if (!els.some(x => x.matches(TSEL) || x.querySelector(TSEL))) { const g = genUnits(); if (g.length) return [GEN, g]; }
     return [i, els]; }
-  return [-1, []]; };
+  const g = genUnits();
+  return g.length ? [GEN, g] : [-1, []]; };
 const headPick = () => { for (const i of order(HEADS.length, PREF.head)) { const e = document.querySelector(HEADS[i]); if (!e) continue;
     const s = (e.getAttribute("title") || e.textContent || "").trim(); if (s) return [i, s.slice(0, 120)]; }
   return [-1, ""]; };
@@ -382,24 +476,47 @@ const convNow = () => { let c = pickId(location.href); if (c) return [c, "url"];
     c = attrId(document.querySelector(s)); if (c) return [c, "dom"]; }
   return ["", ""]; };
 """)
+# 목록 한 화면 스냅샷(LM28-TW-2) — 항목마다 순번·대화 ID(제 것)·aria-label·aria-labelledby 첫 요소 글·aria-level·aria-expanded·
+# 품은 항목 수(nest — 구역 머리)·행 사각형 r[왼, 위, 폭, 높이]·잎 lf[[글, 줄(0 첫 줄 · 1 아래 줄 · -1 모름), 굵게(≥600), 표지]].
+# 표지: B 좁은 단추·메뉴 단추 안 · I 아바타·그림·svg 안 · H aria-hidden 안 · S 크기 없음(숨김). 안정 이름은 파이썬이 고른다
+# (stable_name — 시험이 그 규칙을 직접 본다). 글은 메모리에서만 쓴다(디스크·진단에 쓰지 않는다).
 JS_CHATS = r"""/*LM28:tw_list*/
 (() => {
 """ + _JS_COMMON + r"""
-  const out = {href: location.href, how: "", n: 0, items: [], cen: null};
-  const [els, how] = listEls();
+  const out = {href: "", how: "", n: 0, items: [], cen: null, vw: innerWidth, vh: innerHeight};
+  const [els, how, li] = listEls(); const isel = iselOf(li);
   out.how = how;
   window.__lm_chats = els;
   out.n = els.length;
-  out.items = els.slice(0, 400).map((e, i) => { const k = idOf(e); return {
-    idx: i, key: k, jn: nm(nameOf(e)).slice(0, 80),
-    label: (e.getAttribute("aria-label") || e.getAttribute("title") || "").slice(0, 300),
-    hdr: e.getAttribute("aria-expanded") !== null && !k,
-    texts: leafs(e, 8)}; });
-  // 목록 구조(글자 없이): 첫 항목의 태그·role·data-tid, 대화 ID 를 가진 항목 수, 선택 표시가 '예'·'있음' 인 항목 수
-  const f = els[0];
-  if (f) out.cen = {role: hookOf(f.getAttribute("role")), tag: f.tagName.toLowerCase(), tid: hookOf(f.getAttribute("data-tid")),
-    keyed: out.items.filter(x => x.key).length, selT: els.filter(e => selOf(e) === true).length,
-    selA: els.filter(e => selOf(e) !== null).length, exp: els.filter(e => e.getAttribute("aria-expanded") !== null).length};
+  const lfOf = (e, rw) => { const xs = textEls(e, isel, 12); const rs = xs.map(x => x.getBoundingClientRect());
+    const ok = rs.filter(r => r.width > 2 && r.height > 2);
+    const top0 = ok.length ? Math.min(...ok.map(r => r.top)) : 0;
+    const band = ok.length ? Math.max(6, Math.min(...ok.map(r => r.height)) * 0.6) : 0;
+    return xs.map((x, k) => { const r = rs[k]; let f = "";
+      const b = x.closest('button,[role="button"],[aria-haspopup]');
+      if (b && b !== e && e.contains(b) && b.getBoundingClientRect().width < rw * 0.5) f += "B";
+      if (x.closest('[role="img"],svg,[class*="vatar"]')) f += "I";
+      if (x.closest('[aria-hidden="true"]')) f += "H";
+      const vis = r.width > 2 && r.height > 2; if (!vis) f += "S";
+      let w = 400; try { w = parseInt(getComputedStyle(x).fontWeight, 10) || 400; } catch (z) {}
+      return [ownText(x).slice(0, 80), vis ? (r.top - top0 < band ? 0 : 1) : -1, w >= 600 ? 1 : 0, f]; }); };
+  out.items = els.slice(0, 400).map((e, i) => { const r = rowRect(e, isel); return {
+    idx: i, key: idOf(e, isel), label: lblOf(e).slice(0, 300), lby: lbyOf(e),
+    lv: parseInt(e.getAttribute("aria-level") || "0", 10) || 0, ex: e.getAttribute("aria-expanded") || "", nest: nestOf(e, isel),
+    r: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)], lf: lfOf(e, r.width)}; });
+  // 목록 구조(글자 없이): 첫 '방' 항목(구역 머리 아님)의 태그·role·data-tid · 방 항목 수·대화 ID 가진 수·aria-label/labelledby 가진 수 ·
+  // 선택 표시 '예'·'있음' 수 · aria-level 분포 · aria-expanded 참/거짓 수 · 다른 항목을 품은 항목(중첩 구역 머리) 수
+  const room = out.items.filter(x => !(x.ex || x.nest));
+  const f = els.find(e => !isHdr(e, isel)) || els[0];
+  if (f) { const lv = {};
+    for (const x of out.items) { const k = String(x.lv || "-"); lv[k] = (lv[k] || 0) + 1; }
+    out.cen = {role: hookOf(f.getAttribute("role")), tag: f.tagName.toLowerCase(), tid: hookOf(f.getAttribute("data-tid")),
+      rooms: room.length, keyed: room.filter(x => x.key).length, lbl: room.filter(x => x.label).length,
+      lby: room.filter(x => x.lby).length, selT: els.filter(e => selOf(e) === true).length,
+      selA: els.filter(e => selOf(e) !== null).length, exp: out.items.filter(x => x.ex).length,
+      lv: Object.entries(lv).slice(0, 6).map(x => x[0] + ":" + x[1]),
+      ex: [out.items.filter(x => x.ex === "true").length, out.items.filter(x => x.ex === "false").length,
+           out.items.filter(x => x.nest).length]}; }
   return JSON.stringify(out);
 })()
 """
@@ -430,105 +547,161 @@ JS_LIST_SCROLL = r"""/*LM28:tw_list_scroll*/
   return el.scrollTop > before ? "scrolled" : "end";
 })()
 """
+# 목록 맨 위로(2차 걷기 시작) — 기억한 스크롤 영역이 다시 그려져 문서에서 빠졌으면 목록 항목에서 다시 찾는다(못 찾으면 'none')
 JS_LIST_TOP = r"""/*LM28:tw_list_top*/
-(() => { const el = window.__lm_listsc; if (!el || !el.isConnected) return "none";
-  el.scrollTop = 0; el.dispatchEvent(new Event("scroll", {bubbles: true})); return "ok"; })()
-"""
-# 방 열기 — 대화 ID(없으면 JS 가 만든 이름 열쇠 jn)로 지금 화면의 목록에서 다시 찾는다(순번이 아니다 — 재렌더 'gone' 대응).
-# 누르는 방법(MODE): item = 항목 자체에 포인터·마우스 전체 순서(pointerdown 으로 라우팅하는 스킨 대응) · inner = 항목 왼쪽 가운데에
-# 실제로 그려진 요소(elementFromPoint — 손가락이 닿는 곳, 오른쪽 '…' 단추를 피한다. 사건이 그 요소에서 항목까지 거슬러 올라간다),
-# 없으면 대화 링크(/l/chat/·19:…@ — 미리보기 속 일반 링크는 제외), 없으면 폭이 항목 절반 이상인 단추(메뉴 단추 aria-haspopup 제외)
-# — 처리기가 안쪽 요소에 달린 화면 · key = 포커스 후 Enter.
-# 지난판은 '항목 안 첫 단추'를 눌렀다 — 새 Teams 목록 항목 안의 첫 단추는 '…'(더 보기) 같은 메뉴 단추일 수 있다.
-# 앞 시도가 연 메뉴([role=menu])는 Escape 로 닫고 시작한다. 안쪽에 누를 것이 없으면 'noinner'(다음 방법으로).
-JS_OPEN = r"""/*LM28:tw_open*/
 (() => {
-  const KEY = __KEY__, NAME = __NAME__, MODE = __MODE__;
 """ + _JS_COMMON + r"""
-  const t = findItem(KEY, NAME);
-  if (!t || !t.isConnected) return "gone";
-  if (document.querySelector('[role="menu"]')) {
-    const a = document.activeElement || document.body;
-    for (const ev of ["keydown", "keyup"]) a.dispatchEvent(new KeyboardEvent(ev, {key: "Escape", code: "Escape", keyCode: 27, which: 27, bubbles: true, cancelable: true}));
+  let el = window.__lm_listsc;
+  if (!el || !el.isConnected) {
+    el = null;
+    const els = listEls()[0]; let c = els.length ? els[0] : null;
+    for (let i = 0; i < 14 && c; i++) {
+      if (c.scrollHeight > c.clientHeight + 20 && getComputedStyle(c).overflowY !== "visible") { el = c; break; }
+      c = c.parentElement;
+    }
+    if (!el) return "none";
+    window.__lm_listsc = el;
   }
-  try { t.scrollIntoView({block: "center"}); } catch (x) {}
-  const r = t.getBoundingClientRect();
-  const x = r.left + Math.min(r.width / 2, 140), y = r.top + r.height / 2;
-  const fire = el => {
+  el.scrollTop = 0; el.dispatchEvent(new Event("scroll", {bubbles: true})); return "ok";
+})()
+"""
+# 방 항목 겨누기·누르기(LM28-TW-2 — 이름으로 다시 찾지 않는다): 스냅샷 순번 IDX 의 항목이 대화 ID(KEY)·안정 이름(SIG — aria-label
+# 첫 조각·labelledby 글·제 잎 글 중 하나와 같음)이 맞는지 보고, 아니면 지금 목록에서 맞는 항목 중 순번이 가장 가까운 것.
+# HDR = 구역 머리를 겨누는가(닫힌 구역 펼치기) — 방을 겨눌 때는 구역 머리를 고르지 않는다. scrollIntoView 뒤 뷰포트 안인지 보고,
+# 행의 왼쪽~가운데(폭의 30·45·15·60%) 중 elementFromPoint 가 그 항목 안이고 좁은 단추('…'·메뉴)·링크가 아닌 점을 고른다.
+# ACT: aim = 점만 돌려준다(파이썬이 CDP 신뢰 입력으로 누른다) · synth = 그 점의 요소에 합성 포인터·마우스 사건 · focus = 항목에
+# 포커스(파이썬이 CDP 키 Enter). menu = 열린 메뉴가 있다(파이썬이 CDP Escape 로 닫는다).
+JS_AIM = r"""/*LM28:tw_aim*/
+(() => {
+  const IDX = __IDX__, KEY = __KEY__, SIG = __SIG__, ACT = __ACT__, HDR = __HDR__;
+""" + _JS_COMMON + r"""
+  const [els, , li] = listEls(); const isel = iselOf(li);
+  const hit = e => !!e && e.isConnected && isHdr(e, isel) === HDR && (KEY ? idOf(e, isel) === KEY : sigHit(e, isel, SIG));
+  const prev = window.__lm_chats || [];
+  let t = (IDX >= 0 && hit(prev[IDX])) ? prev[IDX] : ((IDX >= 0 && hit(els[IDX])) ? els[IDX] : null);
+  if (!t) { let bd = 1e9; els.forEach((e, i) => { if (hit(e)) { const d = Math.abs(i - IDX); if (d < bd) { bd = d; t = e; } } }); }
+  if (!t) return JSON.stringify({r: "gone"});
+  window.__lm_target = t;
+  const inView = q => okRect(q) && q.top >= 0 && q.left >= 0 && q.bottom <= innerHeight && q.right <= innerWidth;
+  let r = rowRect(t, isel);
+  if (!inView(r)) { try { t.scrollIntoView({block: "center", inline: "nearest"}); } catch (z) {} r = rowRect(t, isel); }
+  const y = Math.round(r.top + r.height / 2);
+  let px = -1, why = "";
+  for (const f of [0.3, 0.45, 0.15, 0.6]) {
+    const x = Math.round(r.left + r.width * f);
+    const h = document.elementFromPoint(x, y);
+    if (!h || !(h === t || t.contains(h))) { why = h ? "cover" : "none"; continue; }
+    const b = h.closest('button,[role="button"],[aria-haspopup],a[href]');
+    if (b && b !== t && t.contains(b) && b.getBoundingClientRect().width < r.width * 0.5) { why = "btn"; continue; }
+    px = x; why = ""; break; }
+  const out = {r: "ok", x: px >= 0 ? px : Math.round(r.left + r.width * 0.3), y: y, hit: px >= 0 ? 1 : 0, why: why,
+    vis: inView(r) ? 1 : 0, i: els.indexOf(t), menu: document.querySelector('[role="menu"]') ? 1 : 0};
+  if (ACT === "synth") {
+    const el = (out.hit ? document.elementFromPoint(out.x, out.y) : null) || t;
     for (const ev of ["pointerover", "mouseover", "pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
-      const o = {bubbles: true, cancelable: true, composed: true, view: window, clientX: x, clientY: y, button: 0,
+      const o = {bubbles: true, cancelable: true, composed: true, view: window, clientX: out.x, clientY: out.y, button: 0,
                  buttons: (ev === "pointerdown" || ev === "mousedown") ? 1 : 0};
       let e2 = null;
       if (ev.startsWith("pointer") && typeof PointerEvent === "function") {
         try { e2 = new PointerEvent(ev, Object.assign({pointerId: 1, isPrimary: true, pointerType: "mouse"}, o)); } catch (z) { e2 = null; }
       }
-      el.dispatchEvent(e2 || new MouseEvent(ev, o));
-    } };
-  window.__lm_target = t;
-  if (MODE === "key") {
+      el.dispatchEvent(e2 || new MouseEvent(ev, o)); }
+    out.r = "fired";
+  } else if (ACT === "focus") {
     try { if (!t.hasAttribute("tabindex")) t.setAttribute("tabindex", "-1"); t.focus({preventScroll: true}); } catch (z) {}
-    const k = (document.activeElement && t.contains(document.activeElement)) ? document.activeElement : t;
-    for (const ev of ["keydown", "keypress", "keyup"]) {
-      k.dispatchEvent(new KeyboardEvent(ev, {key: "Enter", code: "Enter", keyCode: 13, which: 13, charCode: ev === "keypress" ? 13 : 0,
-                                             bubbles: true, cancelable: true}));
-    }
-    return "ok";
+    const a = document.activeElement; out.focus = (a && (a === t || t.contains(a))) ? 1 : 0;
   }
-  if (MODE === "inner") {
-    const chatHref = a => { let v = a.getAttribute("href") || ""; try { v = decodeURIComponent(v); } catch (z) {}
-      return /\/l\/(chat|message)\/|19:[^@\s]+@/.test(v); };
-    let b = null;
-    const h = document.elementFromPoint(x, y); if (h && h !== t && t.contains(h)) b = h;
-    if (!b) b = [...t.querySelectorAll("a[href]")].find(chatHref) || null;      // 미리보기 속 일반 링크는 누르지 않는다
-    if (!b) b = [...t.querySelectorAll('[role="button"],button')].find(z => !z.hasAttribute("aria-haspopup")
-                                                                          && z.getBoundingClientRect().width >= r.width * 0.5) || null;
-    if (!b) return "noinner";
-    fire(b);
-    return "ok";
-  }
-  fire(t);
-  return "ok";
+  return JSON.stringify(out);
 })()
 """
-# 대화 화면 상태(숫자·짧은 제목만 — 디스크에 쓰지 않는다): 메시지 수·맞은 후보 · 머리 제목·맞은 후보 · 연 목록 항목의 선택 상태
-# (예/아님/표시 없음 null) · 메시지 지문 fp(맨 앞 4 + 맨 뒤 4 — 'm:'=메시지 ID, 'h:'=글 해시) · 지금 대화 ID 와 그 출처
+# 대화 화면 상태(메모리에서만 비교 — 디스크에 쓰지 않는다): 메시지 수·맞은 후보(GEN = 일반 읽기) · 머리 제목·맞은 후보 · 이 방 항목의
+# 선택 상태(예/아님/표시 없음 null) · 메시지 지문 fp(맨 앞 4 + 맨 뒤 4 — 'm:' 메시지 ID · 't:' 시각+글 해시 · 'h:' 글 해시) ·
+# 지금 대화 ID 와 그 출처 · 창 제목(document.title) · 주소
 JS_PANE = r"""/*LM28:tw_pane*/
 (() => {
-  const KEY = __KEY__, NAME = __NAME__;
+  const KEY = __KEY__, SIG = __SIG__;
 """ + _JS_COMMON + r"""
   const [mi, els] = msgPick();
   const [hi, chat] = headPick();
+  const [lels, , li] = listEls(); const isel = iselOf(li);
   // 선택 표시는 '이 방' 항목의 것 — 누르기 전 스냅샷에서 마지막으로 누른 항목은 앞 방이다
-  const mine = e => !!e && e.isConnected && ((KEY && idOf(e) === KEY) || (!KEY && !!NAME && nm(nameOf(e)) === NAME));
+  const mine = e => !!e && e.isConnected && !isHdr(e, isel) && (KEY ? idOf(e, isel) === KEY : sigHit(e, isel, SIG));
   let t = window.__lm_target;
-  if (!mine(t)) t = findItem(KEY, NAME);
+  if (!mine(t)) t = lels.find(mine) || null;
   const fp = [...new Set([...els.slice(0, 4), ...els.slice(-4)].map(fidOf))];
   const [conv, cv] = convNow();
-  return JSON.stringify({n: els.length, mi: mi, chat: chat, hi: hi, sel: selOf(t), fp: fp, conv: conv, cv: cv});
+  return JSON.stringify({n: els.length, mi: mi, chat: chat, hi: hi, sel: selOf(t), fp: fp, conv: conv, cv: cv,
+    doc: String(document.title || "").slice(0, 200), url: String(location.href || "").slice(0, 400)});
 })()
 """
-# 대화 화면 한 장 — 메시지(맞은 후보)와 날짜 구분선을 문서 순서로. 구분선은 메시지 목록 안에서만 찾는다(왼쪽 목록의 구역 선 제외).
+# 대화 화면 한 장 — 메시지(맞은 후보 또는 일반 읽기 단위)와 날짜 구분선을 문서 순서로. 구분선은 메시지 목록 안에서만 찾고
+# (왼쪽 목록의 구역 선 제외), 메시지 안의 구분선은 날짜 구분선이 아니다. 구분선에 <time datetime> 이 있으면 그 값도 싣는다.
+# 일반 읽기(GEN): 작성자 = [data-tid*=author]·[id^=author-] 또는 시각 앞 같은 줄의 짧은 잎(단추·아바타 글 제외) · 본문 = 시각·작성자를
+# 품지 않은 가장 긴 글 덩어리 · 내 말풍선 = 클래스(ChatMyMessage 등) → 없으면 위치(오른쪽 붙음·작성자 없음 = 나, 왼쪽 = 남).
 JS_MSGS = r"""/*LM28:tw_msgs*/
 (() => {
-""" + _JS_COMMON + "  const SEP = " + json.dumps(_SEP_SEL) + ";\n" + r"""
-  const out = {href: location.href, how: "", mi: -1, chat: "", hi: -1, n: 0, items: []};
+""" + _JS_COMMON + r"""
+  const out = {href: "", how: "", mi: -1, chat: "", hi: -1, n: 0, items: [], doc: String(document.title || "").slice(0, 200)};
   const [mi, els] = msgPick();
   if (!els.length) return JSON.stringify(out);
-  out.how = MSGS[mi];
+  out.how = mi === GEN ? "gen" : MSGS[mi];
   out.mi = mi;
   const hp = headPick();
   out.hi = hp[0];
   out.chat = hp[1];
-  const box = els[0].closest('[data-tid="message-pane-list-viewport"],[data-tid="chat-message-list"],[data-tid="message-pane-list-runway"],[role="log"],[role="main"]') || document;
+  const box = (mi === GEN ? lcaOf(els) : null)
+    || els[0].closest('[data-tid="message-pane-list-viewport"],[data-tid="chat-message-list"],[data-tid="message-pane-list-runway"],[role="log"],[role="main"]')
+    || document;
+  const clsOf = x => (typeof x.className === "string") ? x.className : ((x.className && x.className.baseVal) || "");
+  const MYQ = '[class*="ChatMyMessage"],[class*="myMessage"],[class*="message-mine"]';
+  const genItem = u => {
+    const tms = [...(u.matches(TSEL) ? [u] : []), ...u.querySelectorAll(TSEL)];
+    const tm = tms[0] || null;
+    let au = u.querySelector('[data-tid*="author" i],[id^="author-"]');
+    let author = au ? (au.textContent || "").replace(/\s+/g, " ").trim() : "";
+    const lf = textEls(u, "", 30);
+    if (!author && tm) { const tr = tm.getBoundingClientRect();
+      for (const x of lf) {
+        if (x === tm || tm.contains(x) || (tm.compareDocumentPosition(x) & 4)) break;
+        if (x.closest('button,[role="button"],[role="img"],svg,[class*="vatar"]')) continue;
+        const s = ownText(x); if (s.length < 2 || s.length > 40) continue;
+        const xr = x.getBoundingClientRect();
+        if (tr.height > 0 && xr.height > 0 && Math.abs(xr.top - tr.top) > Math.max(12, tr.height)) continue;
+        author = s; au = x; break; } }
+    const uw = u.getBoundingClientRect().width;
+    let best = null, bl = 0;
+    for (const x of u.querySelectorAll("*")) {
+      if (tm && (x.contains(tm) || tm.contains(x))) continue;
+      if (au && (x.contains(au) || au.contains(x))) continue;
+      if (x.closest('[role="img"],svg')) continue;
+      const b = x.closest('button,[role="button"]');
+      if (b && u.contains(b) && b.getBoundingClientRect().width < uw * 0.5) continue;
+      const n = (x.textContent || "").trim().length; if (n > bl) { bl = n; best = x; } }
+    let mine = null;
+    const myA = u.closest(MYQ);
+    if (/ChatMyMessage|message-mine|myMessage/i.test(clsOf(u)) || u.querySelector(MYQ) || (myA && myA !== box && box.contains(myA))) mine = true;
+    else if (/ChatMessage/i.test(clsOf(u)) || u.querySelector('[class*="ChatMessage"]')) mine = false;
+    else if (best && box !== document) { const bx = box.getBoundingClientRect(), q = best.getBoundingClientRect();
+      if (bx.width > 200 && q.width > 0) {
+        if (!author && q.left - bx.left >= bx.width * 0.3 && bx.right - q.right <= bx.width * 0.12) mine = true;
+        else if (q.left - bx.left < bx.width * 0.25) mine = false; } }
+    return {t: "msg", gen: 1, mid: midOf(u), fid: fidOf(u), label: (u.getAttribute("aria-label") || "").slice(0, 400),
+      author: author.slice(0, 60),
+      ts: tm ? String(tm.getAttribute("title") || tm.getAttribute("aria-label") || tm.textContent || "").trim().slice(0, 80) : "",
+      iso: tms.map(x => x.getAttribute("datetime")).filter(Boolean).slice(0, 3),
+      titles: [...u.querySelectorAll("[title]")].map(x => (x.getAttribute("title") || "").trim()).filter(Boolean).slice(0, 6),
+      body: best ? (best.textContent || "").replace(/\s+/g, " ").trim().slice(0, 600) : "",
+      texts: lf.map(ownText).filter(Boolean).slice(0, 20), mine: mine}; };
   const mset = new Set(els);
-  const seps = [...box.querySelectorAll(SEP)].filter(s => !mset.has(s));
-  const all = els.concat(seps).sort((a, b) => a === b ? 0 : ((a.compareDocumentPosition(b) & 4) ? -1 : 1));
+  const seps = [...box.querySelectorAll(SEP)].filter(s => !mset.has(s) && !els.some(u => u.contains(s)));
+  const all = els.concat(seps).sort(docOrder);
   for (const e of all) {
     if (!mset.has(e)) {
-      const s = (e.textContent || "").trim();
-      if (s && s.length <= 60) out.items.push({t: "sep", text: s});
+      const s = (e.textContent || "").trim(); const tm = e.matches(TSEL) ? e : e.querySelector(TSEL);
+      if (s && s.length <= 60) out.items.push({t: "sep", text: s, iso: tm ? String(tm.getAttribute("datetime") || "") : ""});
       continue;
     }
+    if (mi === GEN) { out.items.push(genItem(e)); continue; }
     const au = e.querySelector('[data-tid="message-author-name"],[data-tid="messageAuthorName"],[id^="author-"]');
     const ts = e.querySelector('[data-tid="message-timestamp"],time,[data-tid="message-status"] time');
     const bd = e.querySelector('[data-tid="messageBodyContent"],[id^="content-"],[data-tid="message-content"],[data-tid="message-body"],[id^="message-body-"]');
@@ -650,7 +823,27 @@ JS_CENSUS = r"""/*LM28:tw_census*/
   const tc = {};
   for (const e of region.querySelectorAll("[data-tid]")) { const k = hookOf(e.getAttribute("data-tid")); if (k) tc[k] = (tc[k] || 0) + 1; }
   out.tids = Object.entries(tc).sort((a, b) => b[1] - a[1]).slice(0, 24).map(x => x[0] + ":" + x[1]);
-  let it = window.__lm_target; if (!it || !it.isConnected) it = lels[0] || null;
+  // LM28-TW-2 '구조+' 원자료: 대화 영역(목록 밖) data-tid 상위 8 · 일반 읽기 단위 수 · 대화 영역 시각(time[datetime]) 수 · 문서 전체 시각 수 ·
+  // 창 제목(파이썬이 글자를 가린 꼴만 남긴다) · 문서 보임·초점 · iframe(수·열리는 수·그 안 시각 수) · shadow root 수
+  const li0 = listEls()[2]; const isel0 = iselOf(li0); const lb0 = listBox(lels);
+  const tc2 = {};
+  for (const e of document.querySelectorAll("[data-tid]")) { if (lb0 ? lb0.contains(e) : (isel0 && e.closest(isel0))) continue;
+    const k = hookOf(e.getAttribute("data-tid")); if (k) tc2[k] = (tc2[k] || 0) + 1; }
+  out.tids2 = Object.entries(tc2).sort((a, b) => b[1] - a[1]).slice(0, 8).map(x => x[0] + ":" + x[1]);
+  try { out.gen = genUnits().length; } catch (z) { out.gen = -1; }
+  try { out.times = primTimes().length; } catch (z) { out.times = -1; }
+  out.tall = document.querySelectorAll(TSEL).length;
+  out.doc = String(document.title || "").slice(0, 200);
+  out.vis = String(document.visibilityState || "");
+  try { out.foc = document.hasFocus() ? 1 : 0; } catch (z) { out.foc = -1; }
+  let ifr = 0, ifa = 0, ift = 0;
+  for (const f of document.querySelectorAll("iframe")) { ifr++;
+    try { const d = f.contentDocument; if (d) { ifa++; ift += d.querySelectorAll(TSEL).length; } } catch (z) {} }
+  out.ifr = [ifr, ifa, ift];
+  let sh = 0; for (const e of document.querySelectorAll("*")) { if (e.shadowRoot) sh++; }
+  out.sh = sh;
+  let it = window.__lm_target; if (!it || !it.isConnected) it = lels.find(e => !isHdr(e, isel0)) || lels[0] || null;
+  const hx = lels.find(e => isHdr(e, isel0)) || null;
   const hh = document.querySelector('[role="main"] h1,[role="main"] h2,main h1,main h2');
   const hd = document.querySelector('[id^="chat-header-"],[data-tid="message-pane-header"],[data-tid="chat-header"],[data-tid="channel-header"]')
     || (hh ? hh.parentElement : null);
@@ -658,21 +851,26 @@ JS_CENSUS = r"""/*LM28:tw_census*/
   let me = mels.length ? (mels.find(x => x.querySelector("time")) || mels[mels.length - 1]) : null;
   if (!me) { const vp = VPS.map(s => document.querySelector(s)).find(Boolean) || document.querySelector('[role="main"]');
     if (vp) me = vp.querySelector('li,[role="listitem"],[role="article"]') || vp; }
-  out.skel = {item: skel(it, 4, 14), head: skel(hd, 3, 8), msg: skel(me, 5, 18)};
+  out.skel = {item: skel(it, 4, 14), head: skel(hd, 3, 8), msg: skel(me, 5, 18), hdr: skel(hx, 2, 6)};
   out.mi = mi;
   return JSON.stringify(out);
 })()
 """
 
 
-def _js(run, js, room=None, mode="item", deep=False):
-    """JS 자리표 채우기 — __PREF__(실제로 맞은 후보 순번 run.pref) · __KEY__/__NAME__(방 — 대화 ID, 없으면 JS 이름 열쇠 jn) ·
-    __MODE__(누르는 방법) · __DEEP__(스크롤 영역 다시 찾기). 공통 조각이 든 모든 스크립트는 이것을 거쳐 보낸다."""
-    s = js.replace("__PREF__", json.dumps(getattr(run, "pref", None) or {"msg": -1, "head": -1}))
-    if room is not None:
-        s = (s.replace("__KEY__", json.dumps(room.get("key") or ""))
-              .replace("__NAME__", json.dumps(room.get("jn") or room.get("nname") or "")))
-    return s.replace("__MODE__", json.dumps(mode)).replace("__DEEP__", "1" if deep else "0")
+_PH = re.compile(r"__(PREF|KEY|SIG|ACT|IDX|HDR|DEEP)__")
+
+
+def _js(run, js, room=None, deep=False, idx=-1, act="aim", hdr=False):
+    """JS 자리표 채우기(한 번에 — 값 속 글이 다른 자리표로 다시 바뀌지 않게) — __PREF__(실제로 맞은 후보 순번 run.pref) ·
+    __KEY__/__SIG__(방 — 대화 ID · 안정 이름) · __IDX__(스냅샷 순번) · __ACT__(aim·synth·focus) · __HDR__(구역 머리를 겨눔) ·
+    __DEEP__(스크롤 영역 다시 찾기). 공통 조각이 든 모든 스크립트는 이것을 거쳐 보낸다."""
+    room = room or {}
+    vals = {"PREF": json.dumps(getattr(run, "pref", None) or {"msg": -1, "head": -1}),
+            "KEY": json.dumps(str(room.get("key") or "")), "SIG": json.dumps(str(room.get("sig") or "")),
+            "ACT": json.dumps(str(act)), "IDX": str(_int(idx, -1)), "HDR": "true" if hdr else "false",
+            "DEEP": "1" if deep else "0"}
+    return _PH.sub(lambda m: vals[m.group(1)], js)
 
 
 class Browser:
@@ -714,6 +912,11 @@ class Browser:
             self.cdp.call("Page.enable")
         except Exception:
             pass
+        # LM28-TW-2: 탭을 앞으로 — 숨은 탭(다른 탭 뒤)은 크로미움이 그리기 단계(가상 목록의 크기 측정·IntersectionObserver)를 돌리지
+        # 않아 대화 화면이 비어 보일 수 있고, 신뢰 입력(CDP 마우스)도 보이는 탭이어야 확실하다. 실패해도 계속(문서 보임은 '구조+' 줄에).
+        act = getattr(self.ca, "activate", None)
+        if callable(act):
+            act(self.cdp)
         return True
 
     def href(self):
@@ -840,13 +1043,15 @@ class Run:
                   "no_time": 0, "no_body": 0, "no_author": 0,
                   # 방 전환 — 실패 사유(그 방은 roomgone)·확인 근거(방마다 하나). last_run.json 의 counts 에 남도록 앞쪽에 둔다.
                   "open_notfound": 0, "pane_stuck": 0, "open_same_pane": 0, "open_by_sel": 0, "open_by_title": 0,
-                  "open_by_conv": 0, "open_by_content": 0}
+                  "open_by_conv": 0, "open_by_doc": 0, "open_by_content": 0}
         self.sd = {}
         self.pref = {"msg": -1, "head": -1}     # 이 화면에서 실제로 맞은 메시지·머리 후보 순번 — 다음 방부터 먼저 쓴다
         self.cen = {}                           # 화면 구조 진단 원자료(list: 목록 구조 · pane: JS_CENSUS · pane_kind: fail|ok|page)
+        self.diag = {}                          # '구조+' 줄 원자료(가린 꼴만 — doc: 창 제목 꼴 · leaf: 목록 항목 잎 꼴)
         self.open_ok = 0                        # 이번 실행에서 전환을 확인한 방 수
         self.open_fail_streak = 0               # 연속 전환 실패(확인 0 일 때 OPEN_ABORT 에 닿으면 남은 방은 열지 않는다)
         self.aborted = False
+        self.no_mouse = False                   # CDP 마우스 입력이 오류·시간 초과 — 이번 실행에서는 다음 방법부터
 
     def out_of_time(self):
         if self.deadline is not None and _mono() > self.deadline:
@@ -858,8 +1063,67 @@ class Run:
         self.c[k] = self.c.get(k, 0) + n
 
 
+_BADGE = re.compile(r"^[(\[]?\d{1,4}\+?[)\]]?$")                     # 숫자뿐인 배지(안 읽음 수 '3'·'99+')
+_REL_W = re.compile(r"^(방금|지금|now|just now)$|^\d{1,3}\s*(분|시간|일|주|min|mins|h|hr|hrs|d|w)(\s*(전|ago))?$", re.I)
+
+
+def _timeish(s):
+    """시각·날짜·요일·상대 시각뿐인 글('오후 3:12'·'15:12'·'어제'·'화요일'·'10/5'·'방금'·'5분 전') — 이름이 될 수 없다."""
+    s = str(s or "").strip()
+    return bool(s) and (owa_parse.is_datetime_text(s) or bool(_REL_W.match(s)))
+
+
+def _lf(it):
+    """JS 잎 묘사 → [(글, 줄, 굵게, 표지)] — 줄 0 첫 줄 · 1 아래 줄 · -1 모름. 잎 묘사가 없는 각본(texts 만)은 줄 모름으로."""
+    out = []
+    for x in it.get("lf") or ():
+        if isinstance(x, (list, tuple)) and x:
+            out.append((str(x[0] or "").strip()[:80], _int(x[1] if len(x) > 1 else -1, -1),
+                        _int(x[2] if len(x) > 2 else 0), str(x[3] if len(x) > 3 else "")))
+    if not out:
+        out = [(str(t).strip()[:80], -1, 0, "") for t in (it.get("texts") or ()) if str(t).strip()]
+    return [x for x in out if x[0]]
+
+
+def _texts(it):
+    """잎 글(단추·아바타 글 빼고) — 마지막 활동·미리보기 판단 재료."""
+    return [x[0] for x in _lf(it) if not ({"B", "I"} & set(x[3]))]
+
+
+def _is_hdr(it):
+    """구역 머리 — aria-expanded 가 있거나(펼침 단추) 안에 다른 항목을 품었다(중첩 트리). 방이 아니다(누르면 구역이 접힌다)."""
+    return bool(it.get("hdr")) or bool(str(it.get("ex") or "")) or _int(it.get("nest")) > 0
+
+
+def stable_name(it):
+    """목록 항목의 안정 이름 → (이름, 출처 'label'|'lby'|'leaf'|'') — 화면을 내리거나 마우스를 올려도 바뀌지 않는 글.
+    첫 줄 후보 = 잎 중 시각·날짜·상대 시각·숫자뿐인 배지·좁은 단추(B)·아바타/그림(I)·크기 없는 잎(S)·두 번째 줄(미리보기) 제외.
+    ① aria-label 첫 조각 — 첫 줄 후보 하나와 같을 때(쓸 만한 잎이 아예 없으면 그대로. '읽지 않음, …' 같은 상태 머리말·단체방
+       'A, B' 의 첫 사람만 남는 조각은 후보와 달라 버린다)
+    ② aria-labelledby 첫 요소 글 — 첫 줄 후보 하나와 같을 때
+    ③ 첫 줄 후보 중 aria-hidden(H) 아닌 것 → 굵은 것(≥600) → 문서 순서. 줄을 모르면(잎 묘사 없음) 모든 후보에서 같은 순서."""
+    lf = _lf(it)
+    cands = [x for x in lf if 1 < len(x[0]) <= 80 and not ({"B", "I", "S"} & set(x[3])) and not _BADGE.match(x[0])
+             and not _timeish(x[0])]
+    pool = cands
+    if any(x[1] >= 0 for x in cands):
+        pool = [x for x in cands if x[1] == 0] or [x for x in cands if x[1] < 0]
+    pool = sorted(pool, key=lambda x: ("H" in x[3], not x[2]))     # 안정 정렬 — 같은 등급이면 문서 순서
+    leaf = pool[0][0] if pool else ""
+    norms = {_norm(x[0]) for x in pool}
+    lb = str(it.get("label") or "").strip()
+    if lb:
+        head = re.split(r"[,|·]| - ", lb)[0].strip()
+        if 1 < len(head) <= 80 and not _timeish(head) and not find_times(head) and (_norm(head) in norms or not cands):
+            return head, "label"
+    lby = str(it.get("lby") or "").strip()
+    if 1 < len(lby) <= 80 and _norm(lby) in norms:
+        return lby, "lby"
+    return (leaf, "leaf") if leaf else ("", "")
+
+
 def chat_name(item):
-    """대화방 이름 — aria-label 의 첫 조각이 대개 상대/팀 이름이다. 시각·미리보기 조각은 버린다."""
+    """대화방 이름(안정 이름이 없을 때의 예비) — aria-label 의 첫 조각, 없으면 시각·날짜가 아닌 첫 잎."""
     lb = (item.get("label") or "").strip()
     if lb:
         head = re.split(r"[,|·]| - ", lb)[0].strip()
@@ -867,7 +1131,7 @@ def chat_name(item):
             return head
     for s in (item.get("texts") or []):
         s = s.strip()
-        if 1 < len(s) <= 60 and not find_times(s) and not find_date(s):
+        if 1 < len(s) <= 60 and not find_times(s) and not find_date(s) and not _BADGE.match(s):
             return s
     return ""
 
@@ -883,71 +1147,213 @@ def last_activity(item, today):
 
 
 def _preview(item, name):
-    """미리보기 해시 — 이름·날짜 조각을 뺀 잎 글자(없으면 aria-label 조각). 원문은 남기지 않는다."""
-    parts = [str(x).strip() for x in (item.get("texts") or [])]
+    """미리보기 해시 — 이름·날짜·배지·단추·아바타·숨은 잎을 뺀 잎 글자(없으면 aria-label 조각). 원문은 남기지 않는다."""
+    parts = [x[0] for x in _lf(item) if not ({"B", "I", "S"} & set(x[3]))]
     if not parts:
         parts = owa_parse.frags_of(item.get("label"))
-    keep = [p for p in parts if p and _norm(p) != _norm(name) and not owa_parse.is_datetime_text(p)]
+    keep = [p for p in parts if p and _norm(p) != _norm(name) and not owa_parse.is_datetime_text(p) and not _BADGE.match(p)]
     if not keep:
         return ""
     return hashlib.sha1(teams_parse.clean(" ".join(keep)).encode("utf-8")).hexdigest()[:12]
 
 
 def _room_of(item, run):
-    name = chat_name(item)
+    """목록 항목 → 방 기록. 열쇠(ident)는 대화 ID, 없으면 안정 이름 — 방 커서(teams_web_rooms.json)의 rid 가 된다.
+    sig(안정 이름 원문)는 누르기 직전 그 화면에서 항목을 다시 맞추는 데 쓴다(JS sigHit)."""
+    sn, src = stable_name(item)
+    name = sn or chat_name(item)
     key = str(item.get("key") or "")
-    ident = key or ("n:" + _norm(name))
+    ident = key or ("n:" + _norm(sn))
     la = last_activity(item, run.today)
-    # jn: 화면(JS)이 같은 규칙으로 만든 이름 열쇠 — 방을 다시 찾을 때 쓴다(파이썬 chat_name 은 긴 aria-label·시각 조각을 건너뛰어
-    # JS 의 첫 조각과 다를 수 있다 → 대화 ID 가 없는 방은 '못 찾음'이 됐다)
     return {"rid": teams_parse.room_id(ident), "ident": ident, "key": key, "name": name, "nname": _norm(name),
-            "jn": str(item.get("jn") or "")[:80],
-            "label": str(item.get("label") or ""), "last": la[0] if la else None, "preview": _preview(item, name),
-            "verdict": None, "read_to": None}
+            "sig": sn, "src": src, "label": str(item.get("label") or ""), "last": la[0] if la else None,
+            "preview": _preview(item, name), "verdict": None, "read_to": None, "skip": None}
 
 
-def list_all(br, run):
-    """목록을 가상 스크롤로 끝까지 → (방 목록, 끝에 닿았나, 선택자). 새 이름 0 화면 LIST_STALL 번 · 'end'·'fits' 면 끝.
-    상한(max_chats, 0 = 무제한)에 닿거나 스크롤 영역을 못 찾으면 끝이 아니다(F-07)."""
-    rooms, seen, stall, how = [], set(), 0, ""
+def _items(pg):
+    """JS_CHATS 응답의 항목 → 정리한 항목(texts·hdr·idx 채움)."""
+    out = []
+    for it in pg.get("items") or ():
+        if isinstance(it, dict):
+            it = dict(it)
+            it["idx"] = _int(it.get("idx"), -1)
+            it["texts"] = _texts(it)
+            it["hdr"] = _is_hdr(it)
+            out.append(it)
+    return out
+
+
+def _snap(br, run):
+    """목록 한 화면 스냅샷 → (응답, 항목들). 첫 화면의 목록 구조(글자 없음)는 진단으로 남긴다."""
+    pg = br.eval_json(_js(run, JS_CHATS)) or {}
+    if isinstance(pg.get("cen"), dict) and not run.cen.get("list"):
+        run.cen["list"] = pg["cen"]
+    return pg, _items(pg)
+
+
+def _leaf_shape(items):
+    """'구조+' 의 목록 항목 잎 꼴(글자 없음) — 첫 방 항목의 잎 종류 순서('시각·이름*·미리보기·배지' — * 굵게 · (숨김) 크기 없음) +
+    이 화면 방 항목 중 aria-label·labelledby 를 가진 수."""
+    rooms = [it for it in items if not it["hdr"]]
+    if not rooms:
+        return "방 항목 없음(머리 " + str(sum(1 for it in items if it["hdr"])) + ")"
+    it = rooms[0]
+    sn = stable_name(it)[0]
+    kinds = []
+    for t, ln, b, f in _lf(it)[:8]:
+        if "I" in f:
+            k = "그림"
+        elif "B" in f:
+            k = "단추"
+        elif _BADGE.match(t):
+            k = "배지"
+        elif _timeish(t):
+            k = "시각"
+        elif sn and t == sn:
+            k = "이름"
+        elif ln >= 1:
+            k = "미리보기"
+        else:
+            k = "글"
+        kinds.append(k + ("*" if b else "") + ("(숨김)" if "S" in f else ""))
+    lbl = sum(1 for x in rooms if x.get("label"))
+    lby = sum(1 for x in rooms if x.get("lby"))
+    return f"{'·'.join(kinds) or '없음'} (라벨{lbl}·lby{lby}/{len(rooms)})"
+
+
+class _Walk:
+    """목록 걷기 상태 — 방 목록(목록 순서)·열쇠 → 방 · 방 커서 · 저장소 · 앞서 확인한 방 화면(cur) · 닫힌 구역 펼치기 기록."""
+
+    def __init__(self, state, store, save_state):
+        self.rooms, self.by, self.state, self.store, self.save_state = [], {}, state, store, save_state
+        self.cur, self.how, self.capped, self.exp_tried = None, "", False, set()
+
+
+def _register(run, w, it, first):
+    """처음 보는 방이면 방 목록 끝에 더한다(1차 걷기·상한 안). 마지막 활동이 기간 시작 전이면 '기간 전'으로 표시한다. → 방 | None."""
+    r = _room_of(it, run)
+    if r["ident"] == "n:":
+        if first:
+            run.bump("list_noname")
+        return None
+    room = w.by.get(r["ident"])
+    if room is not None or w.capped:
+        return room
+    room = r
+    if room["last"] is not None and room["last"] < run.d0:
+        room["skip"] = "old"
+        run.bump("skipped_old")                  # 마지막 활동이 기간 시작 전 — 열지 않는다
+    w.by[room["ident"]] = room
+    w.rooms.append(room)
+    if run.max_chats and len(w.rooms) >= run.max_chats:
+        w.capped = True
+        run.bump("list_capped")
+    return room
+
+
+def _due(w, room, phase):
+    """이번 걷기에서 열 방인가 — 1차는 지난 실행에서 잘린 방(cut·roomgone)만, 2차는 아직 정하지 않은 모든 방."""
+    if room.get("verdict") is not None or room.get("skip"):
+        return False
+    if phase == "first":
+        return (w.state.get(room["rid"]) or {}).get("status") in CUT_STATES
+    return True
+
+
+def _expand(br, run, w, items):
+    """닫힌 최상위 구역(aria-expanded=false · 단계 1 이하 · 대화 ID 없음)을 펼친다 — 지난 판이 구역 머리를 방으로 알고 눌러
+    접어 두었을 수 있다(새 Teams 는 접힘을 기억한다). 신뢰 마우스 → 합성 사건 순, 다시 찍어 aria-expanded=true 면 펼침.
+    → 이 화면에서 하나라도 펼쳤으면 True(같은 화면을 다시 본다). 실행마다 EXPAND_MAX 번 · 못 펼친 구역은 list_collapsed."""
+    for it in items:
+        if not (it["hdr"] and str(it.get("ex")) == "false" and _int(it.get("lv")) <= 1 and not it.get("key")):
+            continue
+        sig = stable_name(it)[0]
+        k = _norm(sig) + "|" + str(_int(it.get("lv")))
+        if k in w.exp_tried:
+            continue
+        w.exp_tried.add(k)
+        if len(w.exp_tried) > EXPAND_MAX or not sig:
+            run.bump("list_collapsed")
+            continue
+        ok = False
+        for mode in ("mouse", "synth"):
+            if mode == "mouse" and run.no_mouse:
+                continue
+            a = _aim(br, run, {"sig": sig}, it["idx"], act=_CLICK_ACT[mode], hdr=True)
+            if a.get("r") not in ("ok", "fired"):
+                break
+            if mode == "mouse" and not _mouse(br, run, a):
+                continue
+            _sleep(0.8)
+            _, again = _snap(br, run)
+            h = next((x for x in again if x["hdr"] and stable_name(x)[0] == sig), None)
+            if h is not None and str(h.get("ex")) == "true":
+                ok = True
+                break
+        run.bump("list_expanded" if ok else "list_collapsed")
+        if ok:
+            return True
+    return False
+
+
+def _walk(br, run, w, phase):
+    """목록을 위에서부터 한 화면씩 걷는다(LM28-TW-2 — 이름으로 다시 찾지 않고 그 화면 스냅샷의 항목을 그 자리에서 연다).
+    phase 'first': 방 목록을 끝까지 모으며(닫힌 최상위 구역은 펼친다) 지난 실행에서 잘린 방을 연다 · 'rest': 맨 위로 되돌려
+    남은 방을 연다(열 방이 다 끝나면 멈춘다). 끝: 이 걷기에서 처음 본 방이 없는 화면 LIST_STALL 번 · 'end'·'fits'.
+    → 목록 끝에 닿았나(상한·예산·스크롤 영역 없음이면 False — F-07)."""
+    if phase == "rest":
+        try:
+            if str(br.cdp.eval(_js(run, JS_LIST_TOP)) or "") != "ok":
+                run.bump("list_top_none")        # 스크롤 영역 없음('다 들어감') 또는 못 찾음 — 지금 자리부터
+        except Exception:  # noqa: BLE001 — 되돌리기 실패면 지금 자리부터(못 본 방은 not_reached)
+            run.bump("list_top_err")
+        _sleep(0.6)
+    seen, stall = set(), 0
     for _ in range(LIST_SCREENS):
         if run.out_of_time():
-            return rooms, False, how
-        pg = br.eval_json(_js(run, JS_CHATS)) or {}
-        how = how or str(pg.get("how") or "")
-        if isinstance(pg.get("cen"), dict) and not run.cen.get("list"):
-            run.cen["list"] = pg["cen"]
-        items = [it for it in (pg.get("items") or []) if isinstance(it, dict)]
-        new = 0
-        for it in items:
-            if it.get("hdr"):
-                run.bump("list_headers")          # 구역 머리(즐겨찾기·최근 — 펼침 단추)는 방이 아니다
-                continue
-            r = _room_of(it, run)
-            if r["ident"] == "n:":
-                run.bump("list_noname")
-                continue
-            if r["ident"] in seen:
-                continue
-            seen.add(r["ident"])
-            rooms.append(r)
-            new += 1
-            if run.max_chats and len(rooms) >= run.max_chats:
-                run.bump("list_capped")
-                return rooms, False, how
+            return False
+        pg, items = _snap(br, run)
+        w.how = w.how or str(pg.get("how") or "")
         if not items:
-            return rooms, False, how
+            return False
+        if phase == "first":
+            if not run.diag.get("leaf_rooms"):               # 방 항목이 처음 보이는 화면의 잎 꼴(접힌 구역 뒤에도)
+                run.diag["leaf"] = _leaf_shape(items)
+                run.diag["leaf_rooms"] = any(not it["hdr"] for it in items)
+            if _expand(br, run, w, items):
+                continue
+        new, here = 0, []
+        for it in items:
+            if it["hdr"]:
+                if phase == "first":
+                    run.bump("list_headers")      # 구역 머리(즐겨찾기·최근 — 펼침 단추·품은 항목)는 방이 아니다
+                continue
+            room = _register(run, w, it, phase == "first")
+            if room is None or room["ident"] in seen:
+                continue
+            seen.add(room["ident"])
+            new += 1
+            here.append((room, it))
+        for room, it in here:
+            if _due(w, room, phase):
+                _visit(br, run, w, room, it)
+                if run.out_of_time():
+                    return False
+        if phase == "first" and w.capped:
+            return False
+        if phase == "rest" and not any(_due(w, r, "rest") for r in w.rooms):
+            return True
         stall = 0 if new else stall + 1
         if stall >= LIST_STALL:
-            return rooms, True, how
+            return True
         r = str(br.cdp.eval(_js(run, JS_LIST_SCROLL)) or "")
         if r in ("end", "fits"):
-            return rooms, True, how
+            return True
         if r != "scrolled":
             run.bump("list_" + re.sub(r"\W", "_", r or "none"))
-            return rooms, False, how
-        _sleep(0.6 if new else 1.5)              # 새 이름이 없던 화면 뒤에는 목록이 채워질 시간을 더 준다(자리표시자만 보인 화면)
-    return rooms, False, how
+            return False
+        _sleep(0.6 if new else 1.5)              # 새 방이 없던 화면 뒤에는 목록이 채워질 시간을 더 준다(자리표시자만 보인 화면)
+    return False
 
 
 def _int(v, d=0):
@@ -965,7 +1371,18 @@ def _pane(br, run, room):
             "sel": sel if isinstance(sel, bool) else None,
             "fp": [str(x)[:64] for x in (p.get("fp") or []) if x][:8],
             "conv": str(p.get("conv") or "")[:160], "cv": str(p.get("cv") or "")[:8],
+            "doc": str(p.get("doc") or "")[:200], "url": str(p.get("url") or "")[:400],
             "mi": _int(p.get("mi"), -1), "hi": _int(p.get("hi"), -1)}
+
+
+def _doc_match(room, doc):
+    """창 제목이 이 방인가 → True | False | None(창 제목에 방 조각이 없다) — teams_parse.doc_fits."""
+    return teams_parse.doc_fits(doc, room.get("name") or room.get("nname") or "", room.get("label") or "")
+
+
+def _doc_shape(doc):
+    """창 제목의 가린 꼴(글자→x · 숫자·구두점·'|'·'+'·오전/오후 유지) — '구조+' 줄·dom_census 용(방 이름은 나가지 않는다)."""
+    return owa_parse.mask_shape(re.sub(r"\s+", " ", str(doc or "")), 40) if doc else ""
 
 
 def _title_names(room):
@@ -984,33 +1401,72 @@ def _title_match(room, chat):
     return teams_parse.title_fits(chat, room.get("name") or room.get("nname") or "", room.get("label") or "")
 
 
-def _seek_open(br, run, room, mode="item"):
-    """목록에서 그 방 항목을 찾아 mode 로 누른다 — 지금 화면 → 아래로 내리며 → 맨 위부터 다시.
-    → 'ok' · 'noinner'(안쪽에 누를 요소가 없는 항목 — 다음 방법) · 'gone'(목록에서 못 찾음)."""
-    js = _js(run, JS_OPEN, room, mode=mode)
-    r = str(br.cdp.eval(js) or "")
-    if r in ("ok", "noinner"):
-        return r
-    for phase in ("down", "top"):
-        if phase == "top":
-            br.cdp.eval(JS_LIST_TOP)
-            run.bump("list_rewind")
-            _sleep(0.4)
-            r = str(br.cdp.eval(js) or "")
-            if r in ("ok", "noinner"):
-                return r
-        for _ in range(SEEK_SCREENS):
-            if run.out_of_time():
-                return "gone"
-            s = str(br.cdp.eval(_js(run, JS_LIST_SCROLL)) or "")
-            if s == "scrolled":
-                _sleep(0.4)
-            r = str(br.cdp.eval(js) or "")
-            if r in ("ok", "noinner"):
-                return r
-            if s != "scrolled":
-                break
-    return "gone"
+def _aim(br, run, room, idx, act="aim", hdr=False):
+    """JS_AIM — 스냅샷 순번 idx 의 항목을 대화 ID·안정 이름으로 확인(다르면 그 화면에서 다시 맞춤)하고 누를 점을 받는다
+    (act synth·focus 는 JS 가 그 자리에서 합성 사건·포커스까지). → {r: ok|fired|gone, x, y, hit, why, vis, i, menu, focus?}."""
+    try:
+        a = br.eval_json(_js(run, JS_AIM, room, idx=idx, act=act, hdr=hdr)) or {}
+    except Exception as e:  # noqa: BLE001 — 겨누기 실패는 '못 찾음'과 같다(그 방은 roomgone — 다음 실행이 다시)
+        run.bump("aim_err")                      # 우리 스크립트 오류 문구만(화면 글 아님) — '구조+' 줄에 싣는다
+        run.sd["aim_err"] = _scrub(str(e), 80)
+        if isinstance(e, TimeoutError):          # 프레임 중간에 끊긴 연결은 재사용 금지(copilot_auto.CDP)
+            try:
+                br.cdp.reconnect()
+            except Exception:  # noqa: BLE001
+                pass
+        return {"r": "error"}
+    return a if isinstance(a, dict) else {}
+
+
+def _input_fail(br, run, mode, e):
+    """CDP 입력 오류 — 숫자·사유 이름만 남기고, 시간 초과면 연결을 다시 잇는다(프레임 중간에 끊긴 연결은 재사용 금지).
+    마우스가 안 되면 이번 실행에서는 다음 방법부터."""
+    run.bump("input_err")
+    run.sd["input_err"] = f"{mode}:{type(e).__name__}"
+    if mode == "mouse":
+        run.no_mouse = True
+    if isinstance(e, TimeoutError):
+        try:
+            br.cdp.reconnect()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _mouse(br, run, a):
+    """신뢰 입력 누르기 — CDP Input.dispatchMouseEvent 옮김 → 누름(왼쪽, 1번) → 뗌을 겨눈 점에. → 보냈나."""
+    x, y = _int(a.get("x")), _int(a.get("y"))
+    if x <= 0 or y <= 0:
+        return False
+    try:
+        br.cdp.call("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": x, "y": y, "button": "none", "buttons": 0},
+                    timeout=INPUT_TIMEOUT)
+        for t, b in (("mousePressed", 1), ("mouseReleased", 0)):
+            br.cdp.call("Input.dispatchMouseEvent", {"type": t, "x": x, "y": y, "button": "left", "buttons": b, "clickCount": 1},
+                        timeout=INPUT_TIMEOUT)
+        return True
+    except Exception as e:  # noqa: BLE001 — 입력이 막힌 화면·시간 초과 — 다음 방법으로
+        _input_fail(br, run, "mouse", e)
+        return False
+
+
+_KEYS = {"Enter": (13, "\r"), "Escape": (27, "")}
+
+
+def _key(br, run, name):
+    """신뢰 입력 키 — CDP Input.dispatchKeyEvent(rawKeyDown → char → keyUp, copilot_auto.press_enter 와 같은 꼴). → 보냈나."""
+    code, text = _KEYS[name]
+    try:
+        for t in ("rawKeyDown", "char", "keyUp"):
+            if t == "char" and not text:
+                continue
+            p = {"type": t, "key": name, "code": name, "windowsVirtualKeyCode": code, "nativeVirtualKeyCode": code}
+            if t == "char":
+                p["text"] = text
+            br.cdp.call("Input.dispatchKeyEvent", p, timeout=INPUT_TIMEOUT)
+        return True
+    except Exception as e:  # noqa: BLE001
+        _input_fail(br, run, "key", e)
+        return False
 
 
 def _switched(room, cur, pre, p):
@@ -1022,35 +1478,44 @@ def _switched(room, cur, pre, p):
       conv    지금 대화 ID(주소·탭 세션 기록·머리 id 의 19:…@…)가 이 방 키 + (바뀜 또는 누르기 전부터 이 방) —
               키가 없는 방은 대화 ID 가 누르기 전과 달라졌고 바뀌었고 머리 제목이 반대하지 않을 때
       title   머리 제목이 이 방 이름과 맞고(표기만 다른 경우 포함 — 외부·괄호·'외 n명'·단체방 이름 순서) + 바뀜
-      content 머리 제목을 못 찾는 화면 — 누른 뒤 메시지가 모두 새것(메시지 ID 지문 'm:' 끼리만 — 글 해시는 '방금' 같은 시각
-              표기만 바뀌어도 달라진다). 선택 표시가 '아님'이면 아니다.
+      doc     창 제목(document.title)의 방 조각이 이 방(teams_parse.doc_fits — '+ n'·쉼표 나열·앞부분 일치 허용) + (바뀜 또는
+              누르기 전부터 창 제목이 이 방 — 이미 열려 있던 방). 창 제목은 메시지보다 먼저 바뀔 수 있어 창 제목 바뀜만으로는 아니다.
+      content 머리 제목을 못 찾는 화면 — 누른 뒤 메시지가 모두 새것(메시지 ID 'm:' 또는 <time datetime>+글 해시 't:' 지문끼리만 —
+              시각 없는 글 해시 'h:' 는 '방금' 같은 표기만 바뀌어도 달라진다. 't:' 의 글 해시는 JS fidOf 가 시각 요소의 글을 빼고
+              만든다). 선택 표시가 '아님'이면 아니다.
+    창 제목이 다른 방을 말하면(dm False) sel·content·키 없는 conv 는 쓰지 않는다(약한 근거끼리 맞서면 읽지 않는다 — P4).
     (선택 표시만 먼저 옮고 화면은 앞 방 그대로인 순간을 첫 방에서도 막으려고 sel·conv 에도 '바뀜'을 건다 — 앞 방 지문이 없는 첫 방.)
-    실패 사유: empty · same_pane · unchanged(누른 뒤 그대로) · title_diff(바뀌었는데 머리 제목이 다름) · unverified(바뀌었는데 확인할
-    표지 없음). 첫 방이 이미 열려 있던 방이고 선택 표시·대화 ID 가 없으면 '그대로'라 확인하지 못한다(P4 — 다음 실행이 먼저 연다)."""
+    실패 사유: empty · same_pane · unchanged(누른 뒤 메시지·머리·창 제목·주소 모두 그대로) · title_diff(바뀌었는데 머리 제목이나
+    창 제목이 다른 방) · unverified(바뀌었는데 확인할 표지 없음)."""
     if p["n"] <= 0:
         return False, "", "empty"
+    fp = list(p["fp"])
     pool = (cur or {}).get("fids") or set()
-    if pool and teams_parse.overlap(p["fp"], pool) >= STALE_RATIO:
+    if pool and teams_parse.overlap(fp, pool) >= STALE_RATIO:
         return False, "", "same_pane"
     pre_fp = set(pre.get("fp") or ())
-    moved = (not pre_fp) or teams_parse.overlap(p["fp"], pre_fp) < STALE_RATIO
+    moved = (not pre_fp) or teams_parse.overlap(fp, pre_fp) < STALE_RATIO
     head_moved = _norm(p["chat"]) != _norm(pre.get("chat"))
+    doc_moved = (p.get("doc") or "") != (pre.get("doc") or "") or (p.get("url") or "") != (pre.get("url") or "")
     key = room.get("key") or ""
     tm = _title_match(room, p["chat"]) if p["chat"] else None       # None = 머리 제목을 못 찾는 화면
-    if p["sel"] is True and (moved or pre.get("sel") is True):
+    dm = _doc_match(room, p.get("doc"))                              # None = 창 제목에 방 조각이 없다
+    if p["sel"] is True and (moved or pre.get("sel") is True) and dm is not False:
         return True, "sel", ""
     if p["conv"] and key and p["conv"] == key and (moved or pre.get("conv") == key):
         return True, "conv", ""
-    if p["conv"] and not key and pre.get("conv") and p["conv"] != pre["conv"] and moved and tm is not False:
+    if p["conv"] and not key and pre.get("conv") and p["conv"] != pre["conv"] and moved and tm is not False and dm is not False:
         return True, "conv", ""
     if tm and moved:
         return True, "title", ""
-    ids = bool(p["fp"]) and bool(pre_fp) and all(x.startswith("m:") for x in list(p["fp"]) + list(pre_fp))
-    if tm is None and p["sel"] is not False and ids and teams_parse.overlap(p["fp"], pre_fp) == 0:
+    if dm and (moved or _doc_match(room, pre.get("doc"))):
+        return True, "doc", ""
+    ids = bool(fp) and bool(pre_fp) and all(x[:2] in ("m:", "t:") for x in fp + list(pre_fp))
+    if tm is None and dm is not False and p["sel"] is not False and ids and teams_parse.overlap(fp, pre_fp) == 0:
         return True, "content", ""
-    if not moved and not head_moved:
+    if not moved and not head_moved and not doc_moved:
         return False, "", "unchanged"
-    return False, "", ("title_diff" if tm is False else "unverified")
+    return False, "", ("title_diff" if (tm is False or dm is False) else "unverified")
 
 
 def _confirm(br, run, room, cur, pre, limit):
@@ -1069,8 +1534,10 @@ def _confirm(br, run, room, cur, pre, limit):
 
 
 def _click_order(run):
+    """누르는 방법 순서 — 통한 방법을 먼저, 그다음 마우스(신뢰 입력) → 합성 사건 → 포커스 + 키. 마우스 입력이 막혔으면 뺀다."""
+    modes = [x for x in CLICK_MODES if not (x == "mouse" and run.no_mouse)]
     m = run.sd.get("how_click")
-    return ([m] if m in CLICK_MODES else []) + [x for x in CLICK_MODES if x != m]
+    return ([m] if m in modes else []) + [x for x in modes if x != m]
 
 
 def _remember(run, p):
@@ -1092,29 +1559,42 @@ def _capture(br, run, kind):
         return
     try:
         r = br.eval_json(_js(run, JS_CENSUS)) or {}
-    except Exception:  # noqa: BLE001 — 진단은 수집을 막지 않는다
+    except Exception as e:  # noqa: BLE001 — 진단은 수집을 막지 않는다(우리 스크립트 오류 문구만 남긴다)
+        run.sd["census_err"] = _scrub(str(e), 80)
         return
     if isinstance(r, dict) and r:
         run.cen["pane"], run.cen["pane_kind"] = r, kind
 
 
-def open_room(br, run, room, cur):
-    """방을 열고 전환을 확인한다 → 확인한 화면 상태(dict — n·chat·fp…) | None(R-ROOMGONE — 그 방 행 0).
-    누르는 방법: 검증된 방법이 있으면 그것부터, 없으면 항목 자체 → 안쪽 링크·단추 → 키보드 Enter. 방법마다 _switched 로 확인한다
-    (첫 방법은 OPEN_WAIT×2 — 느린 회사 PC). 실패는 사유별로 센다: open_notfound(목록에서 못 찾음) · open_same_pane(앞 방 그대로) ·
-    pane_stuck(+ pane_empty·pane_unchanged·pane_title_diff·pane_unverified).
-    cur = 앞서 확인한 방 {rid, chat, n, fids} — 첫 방이면 None. 확인 못 한 화면의 지문은 cur.fids 에 보탠다(다음 방 비교)."""
+def open_room(br, run, room, it, cur):
+    """방을 그 화면 스냅샷 항목(it — 순번·행 사각형)에서 열고 전환을 확인한다 → 확인한 화면 상태(dict — n·chat·fp…) | None
+    (R-ROOMGONE — 그 방 행 0). 누르기 직전마다 JS_AIM 이 같은 순번의 항목이 이 방(대화 ID·안정 이름)인지 보고 다르면 그 화면에서
+    다시 맞춘다(못 맞추면 open_notfound). 누르는 방법: 통한 방법 먼저, 없으면 신뢰 마우스 → 합성 사건 → 포커스 + CDP Enter.
+    방법마다 _switched 로 확인한다(첫 방법은 OPEN_WAIT×2 — 느린 회사 PC). 방법별 시도(click_<방법>)와 그 뒤 창 제목이 바뀐 수
+    (click_<방법>_doc)를 센다. 실패는 사유별로: open_notfound · open_same_pane(앞 방 그대로) · pane_stuck(+ pane_empty·
+    pane_unchanged·pane_title_diff·pane_unverified). cur = 앞서 확인한 방 {rid, chat, n, fids} — 첫 방이면 None.
+    확인 못 한 화면의 지문은 cur.fids 에 보탠다(다음 방 비교)."""
     pre = _pane(br, run, room)                    # 누르기 전 화면 — '바뀌었나'의 기준
     found, why, last = False, "unchanged", None
     for k, mode in enumerate(_click_order(run)):
-        r = _seek_open(br, run, room, mode)
-        if r == "noinner":
-            continue                              # 안쪽에 누를 요소가 없는 항목 — 다음 방법
-        if r != "ok":
+        a = _aim(br, run, room, it.get("idx", -1), act=_CLICK_ACT[mode])
+        if a.get("r") not in ("ok", "fired"):
+            if found:
+                continue                          # 앞 방법이 화면을 바꿔 항목이 잠깐 빠졌다 — 다음 방법으로
             break                                 # 목록에서 그 방을 찾지 못함(재렌더·가상 목록)
         found = True
         run.bump("click_" + mode)
+        if a.get("menu"):
+            _key(br, run, "Escape")              # 앞 시도가 연 메뉴('…')를 신뢰 입력으로 닫는다
+        if mode == "mouse" and not _mouse(br, run, a):
+            continue
+        if mode == "key" and not _key(br, run, "Enter"):
+            continue
         ok, how, last = _confirm(br, run, room, cur, pre, OPEN_WAIT * (2 if k == 0 else 1))
+        if last is not None:
+            if (last.get("doc") or "") != (pre.get("doc") or ""):
+                run.bump("click_" + mode + "_doc")
+            run.diag["doc"] = _doc_shape(last.get("doc"))
         if ok:
             run.bump("open_by_" + how)
             run.sd["how_click"], run.sd["how_open"] = mode, how
@@ -1146,6 +1626,9 @@ def parse_page(page, run, chat):
     for it in items:
         if it.get("t") == "sep":
             d = find_date(it.get("text"), run.d0, run.d1) or rel_date(it.get("text"), run.today)
+            if not d and it.get("iso"):          # 구분선의 <time datetime> (일반 읽기 화면)
+                v = iso_dt(it.get("iso"))
+                d = v.date() if v else None
             if d:
                 cur = d
             continue
@@ -1243,13 +1726,15 @@ def _usable(st, run):
 def read_room(br, run, room, st, fids=None):
     """한 방을 맨 아래(최신)부터 위로 되감으며 읽는다 → (rows, events, newest(해시, 날짜)|None, pages).
     멈춤: 지난 newest_read 와 겹침(overlap) · 기간 시작 전 날짜(reached_d0) · 맨 위 확인 · 스크롤 영역 없음 · 정체 · 되감기 상한 ·
-    예산 · 머리 제목이 다른 방으로 바뀜(gone — 그 방 행 0 · 같은 머리 후보로 읽은 제목끼리만 비교).
+    예산 · 머리 제목이 다른 방으로 바뀜(gone — 그 방 행 0 · 같은 머리 후보로 읽은 제목끼리만 비교. 창 제목은 알림으로 깜박일 수
+    있어 gone 판정에 쓰지 않는다). 머리 후보가 없는 화면은 창 제목의 방 조각을 CSV 방 이름 후보로(정규화해 목록 이름과 같을 때만 —
+    목록 이름이 없는 방은 그것을). 읽은 경로(후보 data-tid · 일반 읽기)를 방마다 센다(read_cand·read_gen).
     fids: 이 방에서 본 메시지 지문을 모으는 집합(다음 방의 '앞 방 그대로' 판정 — 메모리에만)."""
     prev = st.get("newest_read") if _usable(st, run) else ""
     rows, seen, events = {}, set(), set()
     stall = scrolls = pages = 0
     newest, oldest = None, None
-    chat, head0, hi0 = room["name"], "", None
+    chat, head0, hi0, gen = room["name"], "", None, False
     while True:
         if run.out_of_time():
             events.add("budget")
@@ -1258,7 +1743,9 @@ def read_room(br, run, room, st, fids=None):
         pages += 1
         run.bump("pages")
         if page.get("how"):
-            run.sd["how_msg"] = str(page["how"])
+            run.sd["how_msg"] = str(page["how"])[:80]
+        if _int(page.get("mi"), -1) == GEN:
+            gen = True
         if fids is not None:
             fids.update(str(it["fid"])[:64] for it in (page.get("items") or ())
                         if isinstance(it, dict) and it.get("t") == "msg" and it.get("fid"))
@@ -1271,6 +1758,10 @@ def read_room(br, run, room, st, fids=None):
             head0, hi0 = head, hi
         if page.get("chat") and _title_ok(room, page.get("chat")):
             chat = str(page["chat"]).strip()
+        elif not page.get("chat") and page.get("doc"):
+            frag = (teams_parse.doc_room(page.get("doc")) or [""])[0]
+            if frag and (_title_ok(room, frag) or not room.get("name")):
+                chat = frag
         new = 0
         for m in parse_page(page, run, chat):
             if m["ident"] in seen:
@@ -1312,6 +1803,8 @@ def read_room(br, run, room, st, fids=None):
             break
         scrolls += 1
         run.bump("scrolls")
+    if pages:
+        run.bump("read_gen" if gen else "read_cand")
     nw = (newest[1], newest[0].date().isoformat()) if newest else None
     return list(rows.values()), events, nw, pages
 
@@ -1456,8 +1949,9 @@ def state_save(path, ver, rooms, census=None):
 
 # ── 화면 구조 진단('구조' 줄 · dom_census) ──────────────────────────────────────
 OPEN_KEYS = ("open_notfound", "pane_stuck", "open_same_pane", "open_by_sel", "open_by_title", "open_by_conv",
-             "open_by_content", "pane_empty", "pane_unchanged", "pane_title_diff", "pane_unverified", "open_aborted",
-             "room_error")
+             "open_by_doc", "open_by_content", "pane_empty", "pane_unchanged", "pane_title_diff", "pane_unverified",
+             "open_aborted", "room_error", "input_err")
+PLUS_MAX = 380                  # '구조+' 줄 길이 상한(글자) — '[teams-web] ' 를 붙여도 run.py·last_run.json 의 census 400자 안
 _RX_MAIL = re.compile(r"[\w.+-]+@[\w-]+(\.[\w-]+)+")
 
 
@@ -1497,9 +1991,10 @@ def _sel_desc(sc, lc):
 
 
 def census_line(run):
-    """'구조:' 한 줄(200자 안팎 — 현장 사진 한 장으로 원인 확정): 목록(맞은 후보·첫 항목 role·data-tid·대화 ID 가진 수) ·
-    전환 실패 사유별 수(못찾음·화면멈춤(빈 화면·그대로·제목 다름·표지 없음)·앞방그대로) · 확인 근거별 수 · 메시지 후보별 개수 ·
-    머리 후보(글자 수) · 선택 표시 종류 · 대화 ID 출처 · 통한 누르기 방법."""
+    """'구조:' 한 줄(200자 안팎 — 현장 사진 한 장으로 원인 확정): 목록(맞은 후보·첫 방 항목 role·data-tid·대화 ID 가진 수) ·
+    전환 실패 사유별 수(못찾음·화면멈춤(빈 화면·그대로·제목 다름·표지 없음)·앞방그대로) · 확인 근거별 수(창제목 = document.title) ·
+    메시지 후보별 개수(없으면 일반 읽기 단위 수 '일반=n') · 머리 후보(글자 수 · 없으면 창 제목에 방 조각이 있었나) · 선택 표시 종류 ·
+    대화 ID 출처 · 통한 누르기 방법(마우스 = CDP 신뢰 입력 · 합성 · 키)."""
     c, lc, pc = run.c, run.cen.get("list") or {}, run.cen.get("pane") or {}
     li = _LIST_CODE[_LIST_SELS.index(run.sd["how_list"])] if run.sd.get("how_list") in _LIST_SELS else "-"
     tid = _hook(lc.get("tid"))
@@ -1510,13 +2005,15 @@ def census_line(run):
            f"·제목다름{_int(c.get('pane_title_diff'))}·표지없음{_int(c.get('pane_unverified'))})",
            f"앞방그대로 {_int(c.get('open_same_pane'))}",
            f"확인 선택{_int(c.get('open_by_sel'))}·제목{_int(c.get('open_by_title'))}·ID{_int(c.get('open_by_conv'))}"
-           f"·내용{_int(c.get('open_by_content'))}"]
+           f"·창제목{_int(c.get('open_by_doc'))}·내용{_int(c.get('open_by_content'))}"]
     msg = [x if isinstance(x, int) else 0 for x in (pc.get("msg") or [])][:len(_MSG)]
     hits = [f"{_MSG[i][1]}={v}" for i, v in enumerate(msg) if v > 0]
-    out.append("메시지 " + ("·".join(hits[:3]) if hits else ("0" if msg else "-")))
+    gen = _int(pc.get("gen"), -1)
+    out.append("메시지 " + ("·".join(hits[:3]) if hits else (f"일반={gen}" if gen > 0 else ("0" if msg else "-"))))
     hd = [x if isinstance(x, int) else -1 for x in (pc.get("head") or [])][:len(_HEAD)]
     hh = [f"{_HEAD[i][1]}({v}자)" for i, v in enumerate(hd) if v > 0]
-    out.append("머리 " + (hh[0] if hh else ("없음" if hd else "-")))
+    doc_room = bool(teams_parse.doc_room(pc.get("doc"))) if pc else False
+    out.append("머리 " + (hh[0] if hh else ("창제목" if doc_room else ("없음" if hd else "-"))))
     out.append("선택표시 " + _sel_desc(pc.get("sel"), lc))
     out.append("ID " + ((str(pc.get("conv") or "") or "없음") if pc else "-"))
     out.append("클릭 " + _CLICK_KO.get(run.sd.get("how_click"), "-"))
@@ -1527,19 +2024,93 @@ def census_line(run):
     return "구조: " + " · ".join(out)
 
 
-def build_census(run, line):
-    """dom_census — 구조 줄 + 숫자 + 가린 골격(LMSTATUS counts·방 커서 파일에 같은 것). 글자 없음 · 4KB 안(넘으면 골격부터 덜어 낸다)."""
+def _tids2(v, n=8):
+    """대화 영역 data-tid 'hook:개수' 목록 → 다시 가린 것(ASCII 앞머리·4자리 이상 숫자 버림·개수는 숫자만)."""
+    out = []
+    for x in (v if isinstance(v, list) else [])[:n]:
+        h, _, k = str(x).rpartition(":")
+        h = _hook(h)[:20]
+        if h:
+            out.append(f"{h}:{_int(k)}")
+    return out
+
+
+def _lvs(v):
+    """aria-level 분포 '단계:수' 목록 → 다시 가린 것(숫자·'-' 만)."""
+    out = []
+    for x in (v if isinstance(v, list) else [])[:6]:
+        a, _, b = str(x).partition(":")
+        a = a if (a == "-" or a.isdigit()) else "?"
+        out.append(f"{a[:3]}:{_int(b)}")
+    return out
+
+
+def census_plus(run):
+    """'구조+:' 한 줄(LM28-TW-2 — 선택자와 무관한 신호로 원인 확정): 창 제목 꼴(글자 x · '|'·'+'·숫자 유지) · 누르기 방법별
+    시도/그 뒤 창 제목이 바뀐 수 · 대화 영역(목록 밖) time[datetime] 수(문서 전체·iframe 안) · 대화 영역 data-tid 상위 8 · 목록 항목
+    잎 꼴 · aria-level 분포·aria-expanded 참/거짓 · 펼친/못 펼친 구역 · 읽은 경로(후보·일반) · 문서 보임·초점. 글자 없음."""
+    c, lc, pc, dg = run.c, run.cen.get("list") or {}, run.cen.get("pane") or {}, run.diag
+    doc = dg.get("doc") or (_doc_shape(pc.get("doc")) if pc else "")
+    out = ["창 " + (doc or "-"),
+           "누르기 " + "·".join(f"{_CLICK_KO[m]}{_int(c.get('click_' + m))}/{_int(c.get('click_' + m + '_doc'))}"
+                              for m in CLICK_MODES)]
+    tids = []
+    if pc:
+        s = f"시각 {_int(pc.get('times'), -1)}"
+        if _int(pc.get("tall")) > _int(pc.get("times")):
+            s += f"(문서{_int(pc.get('tall'))})"
+        ifr = _ints(pc.get("ifr"), 3)
+        if len(ifr) == 3 and ifr[0]:
+            s += f"·틀{ifr[0]}(열림{ifr[1]}·시각{ifr[2]})"
+        if _int(pc.get("sh")):
+            s += f"·섀도{_int(pc.get('sh'))}"
+        out.append(s)
+        tids = _tids2(pc.get("tids2"))
+        out.append("tid " + ("·".join(tids) if tids else "없음"))
+    out.append("잎 " + str(dg.get("leaf") or "-")[:80])       # 우리가 만든 낱말(시각·이름·미리보기…)과 숫자뿐 — 화면 글 없음
+    ex = _ints(lc.get("ex"), 3)
+    s = f"단계 {'·'.join(_lvs(lc.get('lv'))) or '-'}"
+    if len(ex) == 3:
+        s += f" 펼침{ex[0]}·닫힘{ex[1]}·품음{ex[2]}"
+    if c.get("list_expanded") or c.get("list_collapsed"):
+        s += f" 펼쳐봄{_int(c.get('list_expanded'))}·못펼침{_int(c.get('list_collapsed'))}"
+    out.append(s)
+    out.append(f"읽기 후보{_int(c.get('read_cand'))}·일반{_int(c.get('read_gen'))}")
+    if pc:
+        out.append(f"보임 {re.sub(r'[^a-z]', '', str(pc.get('vis') or ''))[:10] or '-'}·초점{_int(pc.get('foc'), -1)}")
+    if c.get("input_err"):
+        out.append(f"입력오류 {_int(c.get('input_err'))}({re.sub(r'[^A-Za-z:]', '', str(run.sd.get('input_err') or ''))[:30]})")
+    if c.get("aim_err"):
+        out.append(f"겨눔오류 {_int(c.get('aim_err'))}({_scrub(run.sd.get('aim_err'), 50)})")
+    if run.sd.get("census_err"):
+        out.append(f"진단오류({_scrub(run.sd.get('census_err'), 40)})")
+    line = "구조+: " + " · ".join(out)
+    while len(line) > PLUS_MAX and tids:          # 길면 data-tid 부터 덜어 낸다(dom_census 에는 다 있다)
+        tids.pop()
+        out = [("tid " + ("·".join(tids) if tids else "…")) if x.startswith("tid ") else x for x in out]
+        line = "구조+: " + " · ".join(out)
+    return line[:PLUS_MAX]
+
+
+def build_census(run, line, line2=""):
+    """dom_census — 구조 두 줄 + 숫자 + 가린 꼴·골격(LMSTATUS counts·방 커서 파일에 같은 것). 글자 없음 · 4KB 안(넘으면 골격부터
+    덜어 낸다)."""
     c, lc, pc = run.c, run.cen.get("list") or {}, run.cen.get("pane") or {}
-    d = {"v": 1, "line": str(line)[:400],
+    d = {"v": 2, "line": str(line)[:400], "line2": str(line2)[:400],
          "open": {k: _int(c.get(k)) for k in OPEN_KEYS},
-         "click": {m: _int(c.get("click_" + m)) for m in CLICK_MODES},
+         "click": {m: [_int(c.get("click_" + m)), _int(c.get("click_" + m + "_doc"))] for m in CLICK_MODES},
          "worked": str(run.sd.get("how_click") or ""), "how": str(run.sd.get("how_open") or ""),
          "pref": {"msg": _MSG[run.pref["msg"]][1] if 0 <= run.pref.get("msg", -1) < len(_MSG) else "",
-                  "head": _HEAD[run.pref["head"]][1] if 0 <= run.pref.get("head", -1) < len(_HEAD) else ""}}
+                  "head": _HEAD[run.pref["head"]][1] if 0 <= run.pref.get("head", -1) < len(_HEAD) else ""},
+         "read": {"cand": _int(c.get("read_cand")), "gen": _int(c.get("read_gen"))},
+         "doc": str(run.diag.get("doc") or (_doc_shape(pc.get("doc")) if pc else ""))[:48],
+         "leaf": str(run.diag.get("leaf") or "")[:80]}
     if lc:
         d["list"] = {"n": _int(c.get("rooms_listed")), "role": _hook(lc.get("role")), "tag": _hook(lc.get("tag")),
                      "tid": _hook(lc.get("tid")), "keyed": _int(lc.get("keyed")), "selT": _int(lc.get("selT")),
-                     "selA": _int(lc.get("selA")), "exp": _int(lc.get("exp"))}
+                     "selA": _int(lc.get("selA")), "exp": _int(lc.get("exp")), "rooms": _int(lc.get("rooms")),
+                     "lbl": _int(lc.get("lbl")), "lby": _int(lc.get("lby")), "lv": _lvs(lc.get("lv")), "ex": _ints(lc.get("ex"), 3),
+                     "expanded": _int(c.get("list_expanded")), "collapsed": _int(c.get("list_collapsed"))}
     if pc:
         sel = pc.get("sel") if isinstance(pc.get("sel"), dict) else {}
 
@@ -1554,10 +2125,13 @@ def build_census(run, line):
                      "vp": named(pc.get("vp"), [v[1] for v in _VP], lambda v: isinstance(v, list)),
                      "sel": {k: _int(sel.get(k)) for k in ("n", "ast", "asa", "ac", "ds", "cls")},
                      "conv": str(pc.get("conv") or "") if pc.get("conv") in ("url", "nav", "dom") else "",
+                     "gen": _int(pc.get("gen"), -1), "times": _int(pc.get("times"), -1), "tall": _int(pc.get("tall"), -1),
+                     "vis": re.sub(r"[^a-z]", "", str(pc.get("vis") or ""))[:10], "foc": _int(pc.get("foc"), -1),
+                     "ifr": _ints(pc.get("ifr"), 3), "sh": _int(pc.get("sh"), -1), "tids2": _tids2(pc.get("tids2")),
                      "tids": [_scrub(x, 48) for x in (pc.get("tids") or []) if isinstance(x, str)][:24]}
         sk = pc.get("skel") if isinstance(pc.get("skel"), dict) else {}
         d["skel"] = {k: [_scrub(x) for x in (sk.get(k) or []) if isinstance(x, str)][:n]
-                     for k, n in (("item", 14), ("head", 8), ("msg", 18))}
+                     for k, n in (("item", 14), ("head", 8), ("msg", 18), ("hdr", 6))}
 
     def size():
         return len(json.dumps(d, ensure_ascii=False).encode("utf-8"))
@@ -1578,11 +2152,12 @@ def build_census(run, line):
 
 
 def emit_census(run, save_census=None):
-    """'구조:' 줄을 찍고(사람용 요약 줄 바로 앞 — run.py 가 last_run.json census·화면 마지막 12줄에 싣는다) dom_census 를
+    """'구조:'·'구조+:' 두 줄을 찍고(사람용 요약 줄 바로 앞 — run.py 가 last_run.json census·화면 마지막 12줄에 싣는다) dom_census 를
     counts 와 방 커서 파일에 남긴다."""
-    s = census_line(run)
+    s, s2 = census_line(run), census_plus(run)
     log(s)
-    cen = build_census(run, "[teams-web] " + s)
+    log(s2)
+    cen = build_census(run, "[teams-web] " + s, "[teams-web] " + s2)
     run.c["dom_census"] = cen
     if save_census:
         try:
@@ -1592,10 +2167,75 @@ def emit_census(run, save_census=None):
     return cen
 
 
+def _visit(br, run, w, room, it):
+    """걷는 중 만난 방 하나 — 그대로면 건너뛰고(증분 확인), 처음부터 OPEN_ABORT 방 연속 전환 실패면 열지 않고, 아니면 그 화면
+    스냅샷 항목(it)에서 열기·확인·되감기·저장·커서 갱신."""
+    st = w.state.get(room["rid"]) or {}
+    if _unchanged(room, st, run):
+        room["verdict"], room["read_to"] = "incremental_ok", teams_parse._as_date(st.get("oldest"))
+        run.bump("unchanged_skip")
+        run.bump("incremental_ok")
+        return
+    if not run.open_ok and run.open_fail_streak >= OPEN_ABORT:
+        # 처음부터 OPEN_ABORT 번 연속 전환 실패 — 같은 화면 구조라면 남은 방도 같다. 시간만 쓰지 않고 '구조' 줄로 원인을 받는다.
+        if not run.aborted:
+            run.aborted = True
+            log(f"방 전환이 처음부터 {OPEN_ABORT}번 연속 확인되지 않아 남은 방은 열지 않습니다 — 다음 실행이 다시 시도합니다"
+                f"('구조' 줄 참고)")
+        room["skip"] = "aborted"
+        run.bump("not_opened")
+        run.bump("open_aborted")
+        return
+    run.bump("opened")
+    events, rows, newest, pages = set(), [], None, 0
+    try:
+        p = open_room(br, run, room, it, w.cur)
+        if p is not None:
+            run.open_ok += 1
+            run.open_fail_streak = 0
+            w.cur = {"rid": room["rid"], "chat": p["chat"], "n": p["n"], "fids": set(p.get("fp") or ())}
+            rows, events, newest, pages = read_room(br, run, room, st, w.cur["fids"])
+        else:
+            run.open_fail_streak += 1
+            events.add("gone")
+    except Exception as e:  # noqa: BLE001 — 화면 연결 오류(CDP 시간 초과 등)는 이 방만 '잘림'으로 — 읽음으로 적지 않는다
+        run.bump("room_error")
+        run.sd["room_error"] = type(e).__name__
+        run.sd["room_error_msg"] = _scrub(str(e), 120)     # 'JS: TypeError: …' — 우리 스크립트 오류 문구(화면 글이 아니다)
+        events, rows, newest = {"error"}, [], None
+    v = teams_parse.room_verdict(events)
+    room["verdict"] = v
+    if v == "complete":
+        room["read_to"] = (teams_parse.TOP_DATE if "top_confirmed" in events and "reached_d0" not in events
+                           else run.d0)
+    elif v == "incremental_ok":
+        room["read_to"] = teams_parse._as_date(st.get("oldest"))
+    run.bump(v)
+    added = 0
+    if rows and v != "roomgone":
+        added, dup = w.store.add(rows)
+        run.bump("dup_other", dup)
+        if added:
+            w.store.flush()                      # 방마다 저장 — 예산에 끊기거나 강제 종료돼도 앞 방은 남는다
+        run.bump("rows_new", added)
+    w.state[room["rid"]] = next_state(st, v, events, newest, room, run)
+    if w.save_state:
+        w.save_state()
+    log(f"  · {room['name'] or '(이름 없음)'} — {v} · 화면 {pages} → {len(rows)}건(새 {added})")
+
+
 def collect(br, run, state, store, save_state=None):
-    """목록 → 방 순서(잘린 방 먼저) → 방마다 열기·확인·되감기·저장. → (방 목록, 목록 끝, 목록 선택자)
+    """목록 걷기 두 번(LM28-TW-2) → (방 목록, 목록 끝, 목록 선택자).
+    1차: 목록을 끝까지 내리며 방을 모으고(닫힌 최상위 구역은 펼친다) 지난 실행에서 잘린 방(cut·roomgone)을 그 자리에서 연다.
+    2차: 맨 위로 되돌려 남은 방을 그 자리에서 연다(방마다 열기·확인·되감기·저장). 마지막 활동이 기간 시작 전인 방은 열지 않는다.
+    못 펼친 구역이 남으면 목록 끝이 아니다. 끝나고도 정하지 못한 방: 예산이면 not_opened, 아니면(목록이 바뀌어 2차에서 못 만남)
+    not_reached — 둘 다 '읽음' 아님(다음 실행이 다시).
     state: 방 커서 dict(rid → 상태, 제자리에서 갱신) · save_state(): 방마다 커서를 파일에 남기는 함수(없으면 생략)."""
-    rooms, list_end, how = list_all(br, run)
+    w = _Walk(state, store, save_state)
+    list_end = _walk(br, run, w, "first")
+    if run.c.get("list_collapsed"):
+        list_end = False                         # 펼치지 못한 구역 안의 방이 기간에 활동했을 수 있다
+    rooms, how = w.rooms, w.how
     run.c["rooms_listed"] = len(rooms)
     run.c["list_end"] = bool(list_end)
     run.c["teams_present"] = bool(rooms)
@@ -1603,70 +2243,11 @@ def collect(br, run, state, store, save_state=None):
     log(f"대화 목록 {len(rooms)}개 (선택자 {how or '못 찾음'}{' · 끝까지' if list_end else ' · 끝 미확인'})")
     if not rooms:
         _capture(br, run, "page")                # 목록을 못 찾은 화면 — 무엇이 떠 있는지 구조만 남긴다(R-WEBSEL 원인 확정)
-    todo = []
+    elif any(_due(w, r, "rest") for r in rooms) and not run.out_of_time():
+        _walk(br, run, w, "rest")
     for r in rooms:
-        if r["last"] is not None and r["last"] < run.d0:
-            run.bump("skipped_old")              # 마지막 활동이 기간 시작 전 — 열지 않는다
-        else:
-            todo.append(r)
-    first = [r for r in todo if (state.get(r["rid"]) or {}).get("status") in CUT_STATES]
-    order = first + [r for r in todo if r not in first]
-    cur = None
-    for i, room in enumerate(order):
-        if run.out_of_time():
-            run.bump("not_opened", len(order) - i)
-            break
-        st = state.get(room["rid"]) or {}
-        if _unchanged(room, st, run):
-            room["verdict"], room["read_to"] = "incremental_ok", teams_parse._as_date(st.get("oldest"))
-            run.bump("unchanged_skip")
-            run.bump("incremental_ok")
-            continue
-        if not run.open_ok and run.open_fail_streak >= OPEN_ABORT:
-            # 처음부터 OPEN_ABORT 번 연속 전환 실패 — 같은 화면 구조라면 남은 방도 같다. 시간만 쓰지 않고 '구조' 줄로 원인을 받는다.
-            if not run.aborted:
-                run.aborted = True
-                log(f"방 전환이 처음부터 {OPEN_ABORT}번 연속 확인되지 않아 남은 방은 열지 않습니다 — 다음 실행이 다시 시도합니다"
-                    f"('구조' 줄 참고)")
-            run.bump("not_opened")
-            run.bump("open_aborted")
-            continue
-        run.bump("opened")
-        events, rows, newest, pages = set(), [], None, 0
-        try:
-            p = open_room(br, run, room, cur)
-            if p is not None:
-                run.open_ok += 1
-                run.open_fail_streak = 0
-                cur = {"rid": room["rid"], "chat": p["chat"], "n": p["n"], "fids": set(p.get("fp") or ())}
-                rows, events, newest, pages = read_room(br, run, room, st, cur["fids"])
-            else:
-                run.open_fail_streak += 1
-                events.add("gone")
-        except Exception as e:  # noqa: BLE001 — 화면 연결 오류(CDP 시간 초과 등)는 이 방만 '잘림'으로 — 읽음으로 적지 않는다
-            run.bump("room_error")
-            run.sd["room_error"] = type(e).__name__
-            run.sd["room_error_msg"] = _scrub(str(e), 120)     # 'JS: TypeError: …' — 우리 스크립트 오류 문구(화면 글이 아니다)
-            events, rows, newest = {"error"}, [], None
-        v = teams_parse.room_verdict(events)
-        room["verdict"] = v
-        if v == "complete":
-            room["read_to"] = (teams_parse.TOP_DATE if "top_confirmed" in events and "reached_d0" not in events
-                               else run.d0)
-        elif v == "incremental_ok":
-            room["read_to"] = teams_parse._as_date(st.get("oldest"))
-        run.bump(v)
-        added = 0
-        if rows and v != "roomgone":
-            added, dup = store.add(rows)
-            run.bump("dup_other", dup)
-            if added:
-                store.flush()                    # 방마다 저장 — 예산에 끊기거나 강제 종료돼도 앞 방은 남는다
-            run.bump("rows_new", added)
-        state[room["rid"]] = next_state(st, v, events, newest, room, run)
-        if save_state:
-            save_state()
-        log(f"  · {room['name'] or '(이름 없음)'} — {v} · 화면 {pages} → {len(rows)}건(새 {added})")
+        if r.get("verdict") is None and not r.get("skip"):
+            run.bump("not_opened" if run.timed_out else "not_reached")
     return rooms, list_end, how
 
 
@@ -1765,7 +2346,8 @@ def main():
 
     def save_state(cen=None):
         # 방마다 커서와 함께 그때까지의 구조 진단도 남긴다(강제 종료돼도 진단 묶음이 원인을 싣는다)
-        state_save(sp, ver, state, cen if cen is not None else build_census(run, "[teams-web] " + census_line(run)))
+        state_save(sp, ver, state, cen if cen is not None else build_census(run, "[teams-web] " + census_line(run),
+                                                                             "[teams-web] " + census_plus(run)))
     try:
         with br.ca.edge_lock(br.cfg):   # 같은 전용 Edge 를 쓰는 작업(Copilot·Outlook 웹·진단)과 직렬(F-16)
             fail, res = _web(br, run, state, store, save_state)
@@ -1803,6 +2385,8 @@ def finish(run, fail, res, store, save_census=None):
     left = c["not_opened"] - _int(c.get("open_aborted"))
     if left > 0:
         log(f"시간 예산에 닿아 남은 대화방 {left}개는 다음 실행이 먼저 읽습니다 — 지금까지 읽은 것은 방마다 저장했습니다.")
+    if _int(c.get("not_reached")):
+        log(f"목록이 바뀌어 다시 만나지 못한 대화방 {_int(c.get('not_reached'))}개는 다음 실행이 읽습니다.")
     if run.timed_out:
         reasons.append("R-TIMEOUT")
     emit_census(run, save_census)

@@ -4,7 +4,7 @@ r"""tests\fakes\fake_browser.py — Outlook 웹 화면 흉내(LM28 WP2 · WP3 �
 Get-OutlookWeb 의 수집 루프(collect_mail·collect_cal)가 부르는 것만 흉내 낸다:
   br.goto(url) · br.search(query) · br.eval_json(JS) · br.cdp.eval(JS) · br.cdp.call(method, params) · br.href() · br.start() ·
   br.close(keep_tab)
-JS 는 머리 표식(/*LM28:이름*/ — owa_list·owa_scroll·owa_more·owa_cal·owa_cal_prev·owa_open·owa_head)으로 알아보고 각본 응답을
+JS 는 머리 표식(/*LM28:이름*/ — owa_list·owa_scroll·owa_more·owa_cal·owa_cal_prev·owa_cal_pick·owa_open·owa_head)으로 알아보고 각본 응답을
 돌려준다. JS 를 실행하지는 않는다 — 그 화면에서 운영 JS 가 '무엇을 보고했을지'를 낸다(운영 JS 를 바꿔도 표식이 같으면 따라온다).
 기존 LM_OWA_FAKE(달별 항목 주입)는 회귀용으로 따로 남아 있다.
 
@@ -35,7 +35,18 @@ JS 는 머리 표식(/*LM28:이름*/ — owa_list·owa_scroll·owa_more·owa_cal
   bad_header     — 이 주(시작 date)들은 머리 글이 2주 뒤 주를 말한다(머리·바탕 불일치)
   week_start     — 주 보기 첫 요일(0=월 기본 · 6=일)
   calid          — 일정 막대에 data-calitemid 가 있다(cal:1) · nodate — 막대 이름에 날짜 없이 요일만 · undated_calitem —
-                   data-calitemid 막대인데 날짜도 요일도 없다(못 읽음)
+                   data-calitemid 막대인데 날짜도 요일도 없다(시각만 — 위치 없이는 못 읽음) · bare_calitem — 이름이 제목뿐(날짜·
+                   시각 없음). 일정마다 'style'(dated·undated·bare·nodate·allday)을 주면 그것이 앞선다.
+  geo            — LM28(현장 2026-10-11): 운영 JS_CAL 처럼 막대 위치(x·l·r·t·b·ad·in·m)와 짧은 숫자 글(pts — 툴바 머리·열 머리·
+                   시간 눈금, picker 면 왼쪽 작은 달력 칸도)·시간 눈금 스크롤 칸(sc)을 낸다. 화면: 열 7개(GX0 부터 GCW 너비) · 열 머리
+                   GHY · 종일 줄 GAD · 시간 칸(GTOP 에 8시, 시간당 GPH px — 그 위 시각은 스크롤에 가려짐) · 눈금 글은 선보다 GLAB 아래.
+                   geo_nocols — 열 머리 글 없음 · geo_nogrid — 시간 눈금 글 없음 · header_style 'num'('5 월' 기본)|'full'('2026년 …')
+  chips          — 주마다 '+N 더 보기' 칩(data-calitemid — 숨은 일정) · myday — 오늘 일정이 옆 창(본문 밖 m=0)에도 날짜 없이 ·
+                   no_main — role=main 이 없는 화면(모든 막대 m=0 — 옆 창은 열 밖 위치로만 가린다) · allday_nomain — 종일 줄만
+                   본문(role=main) 밖(열 안이라 그 주의 막대로 남아야 한다)
+  picker         — 왼쪽 작은 달력(owa_cal_pick: read·day·prev·next) · 'popup' 이면 머리 단추(open)로 여는 날짜 고르기 창 ·
+                   picker_label 'ko'('2026년 10월 5일' 기본)|'fluent'('5, 10월, 2026')|'en'('October 5, 2026')|'num'('5') ·
+                   picker_dead — 날을 눌러도 주가 안 바뀐다 · picker_nonav — 달 넘기기 단추 없음
   pivot          — 받은 편지함에 '중요' 탭이 선택돼 있다 · login — 어느 주소든 로그인 화면
 """
 import re
@@ -44,8 +55,18 @@ from datetime import date, datetime, timedelta
 from urllib.parse import urlparse
 
 KWD = "월화수목금토일"
+EN_MON = ("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November",
+          "December")
 FOLDER_NAME = {"inbox": "받은 편지함", "sent": "보낸 편지함"}
 ROWH = 60                                      # 행 높이(px) — 스크롤 수치 흉내
+GX0, GCW, GHY = 310, 120, 120                  # 주 보기: 첫 열 왼쪽 x · 열 너비 · 열 머리 가운데 y
+GAD = (150, 172)                               # 종일 줄 위·아래 y
+GTOP, GPH, GFIRST, GLAB = 180, 48, 8, 8        # 시간 칸 보이는 위 y · 시간당 px · 맨 위에 보이는 시 · 눈금 글이 선보다 아래(px)
+
+
+def _add_month(d, n):
+    k = d.month - 1 + n
+    return date(d.year + k // 12, k % 12 + 1, 1)
 
 
 def ampm(dt):
@@ -72,15 +93,24 @@ def make_mailbox(d_from, d_to, per_day=1, hour_in=9, hour_out=14):
     return box
 
 
-def make_events(d_from, d_to, hour=14):
-    """평일마다 한 시간짜리 회의 하나 → [ev]."""
+def make_events(d_from, d_to, hour=14, style=None, minute=0, mins=60, subject="정기 회의"):
+    """평일마다 회의 하나(hour:minute 부터 mins 분) → [ev]. style: 막대 이름 꼴(FakeBrowser._style — 없으면 각본 깃발)."""
     out, d = [], d_from
     while d <= d_to:
         if d.weekday() < 5:
-            st = datetime(d.year, d.month, d.day, hour, 0)
-            out.append({"start": st, "end": st + timedelta(hours=1), "subject": f"정기 회의 {d.month}{d.day:02d}"})
+            st = datetime(d.year, d.month, d.day, hour, minute)
+            ev = {"start": st, "end": st + timedelta(minutes=mins), "subject": f"{subject} {d.month}{d.day:02d}"}
+            if style:
+                ev["style"] = style
+            out.append(ev)
         d += timedelta(days=1)
     return out
+
+
+def make_allday(d_from, d_to, subject="휴가"):
+    """d_from~d_to 종일 일정 하나(종일 줄 — 이름은 제목뿐) → ev."""
+    return {"start": datetime(d_from.year, d_from.month, d_from.day), "subject": subject, "style": "allday",
+            "end": datetime(d_to.year, d_to.month, d_to.day, 23, 59)}
 
 
 def query_dates(q):
@@ -128,6 +158,7 @@ class FakeBrowser:
         self.mail_shown, self.mail_loaded = 0, 0
         self.queries = []
         self.reason, self.closed = "", None
+        self.pk_month, self.pk_open = None, False          # 작은 달력이 보이는 달 · 날짜 고르기 창(popup)이 열렸나
 
     # ── Browser 흉내 ──
     def start(self):
@@ -362,24 +393,150 @@ class FakeBrowser:
             tail = f"{we.day}일"
         return f"{ws.year}년 {ws.month}월 {ws.day}일–{tail}"
 
+    def _style(self, ev):
+        if ev.get("style"):
+            return ev["style"]
+        for flag, st in (("undated_calitem", "undated"), ("bare_calitem", "bare"), ("nodate", "nodate")):
+            if self.f.get(flag):
+                return st
+        return "dated"
+
+    def _label(self, ev, style):
+        d, e, s = ev["start"], ev["end"], ev["subject"]
+        if style == "undated":
+            return f"{s}, {ampm(d)} ~ {ampm(e)}, 바쁨"
+        if style in ("bare", "allday"):
+            return s
+        if style == "nodate":
+            return f"{s}, {KWD[d.weekday()]}요일 {ampm(d)} ~ {ampm(e)}, 바쁨"
+        return f"{s}, {d.year}년 {d.month}월 {d.day}일 {KWD[d.weekday()]}요일 {ampm(d)} ~ {ampm(e)}, 바쁨"
+
+    @staticmethod
+    def _gy(dt):
+        """시간 칸의 그 시각 선 y(px) — 8시가 GTOP(그 위 시각은 스크롤에 가려 화면 위쪽 밖)."""
+        return GTOP + ((dt.hour * 60 + dt.minute) - GFIRST * 60) * GPH / 60
+
+    def _geo_ev(self, ws, ev, style):
+        """운영 JS_CAL 의 막대 위치 — 시간 칸 막대(in 1)·종일 줄 막대(ad 1 · 걸친 열들)."""
+        main = 0 if self.f.get("no_main") else 1
+        if style == "allday":
+            i0, i1 = max(0, (ev["start"].date() - ws).days), min(6, (ev["end"].date() - ws).days)
+            lft, rgt = GX0 + i0 * GCW + 4, GX0 + (i1 + 1) * GCW - 4
+            return {"x": (lft + rgt) // 2, "l": lft, "r": rgt, "t": GAD[0], "b": GAD[1], "z": 0, "vz": 1, "ad": 1, "in": 0,
+                    "m": 0 if self.f.get("allday_nomain") else main}
+        i = (ev["start"].date() - ws).days
+        lft, rgt = GX0 + i * GCW + 4, GX0 + (i + 1) * GCW - 4
+        t, b = round(self._gy(ev["start"])) + 1, round(self._gy(ev["end"])) - 1
+        return {"x": (lft + rgt) // 2, "l": lft, "r": rgt, "t": t, "b": b, "z": 0, "vz": 1 if t >= GTOP else 0, "ad": 0, "in": 1,
+                "m": main}
+
+    def _geo_pts(self, ws):
+        """운영 JS_CAL 의 짧은 숫자 글(pts) — 툴바 머리(주 범위) · 열 머리 · 시간 눈금 · 왼쪽 작은 달력 칸(열·눈금으로 읽히면 안 된다)."""
+        pts = [{"s": self._header(ws), "x": 640, "y": 60, "w": 300, "h": 30}]
+        if not self.f.get("geo_nocols"):
+            for i in range(7):
+                d = ws + timedelta(days=i)
+                s = (f"{d.year}년 {d.month}월 {d.day}일 {KWD[d.weekday()]}요일" if self.f.get("header_style") == "full"
+                     else f"{d.day} {KWD[d.weekday()]}")
+                pts.append({"s": s, "x": GX0 + i * GCW + GCW // 2, "y": GHY, "w": GCW - 4, "h": 36})
+        if not self.f.get("geo_nogrid"):
+            for h in range(1, 24):
+                y = GTOP + (h - GFIRST) * GPH + GLAB
+                pts.append({"s": f"{'오전' if h < 12 else '오후'} {h % 12 or 12}시", "x": 285, "y": y, "w": 44, "h": 16})
+        if self.f.get("picker") is True:
+            for k, d in enumerate(self._pk_cells()):
+                pts.append({"s": str(d.day), "x": 30 + (k % 7) * 28, "y": 420 + (k // 7) * 28, "w": 24, "h": 24})
+        return pts
+
     def _cal(self):
         ws = self.week
         we = ws + timedelta(days=6)
-        cal = 1 if (self.f.get("calid") or self.f.get("undated_calitem")) else 0
+        geo = bool(self.f.get("geo"))
         evs = []
         for ev in self.events:
             if ev["start"].date() <= we and ev["end"].date() >= ws:
-                d = ev["start"]
-                if self.f.get("undated_calitem"):
-                    label = f"{ev['subject']}, {ampm(d)} ~ {ampm(ev['end'])}, 바쁨"
-                elif self.f.get("nodate"):
-                    label = f"{ev['subject']}, {KWD[d.weekday()]}요일 {ampm(d)} ~ {ampm(ev['end'])}, 바쁨"
-                else:
-                    label = (f"{ev['subject']}, {d.year}년 {d.month}월 {d.day}일 {KWD[d.weekday()]}요일 "
-                             f"{ampm(d)} ~ {ampm(ev['end'])}, 바쁨")
-                evs.append({"label": label, "cal": cal, "texts": [ev["subject"]]})
-        return {"href": self.url, "grid": True, "n": len(evs), "events": evs, "heads": [self._header(ws), "오늘"],
-                "cols": [], "nc": len(evs) if cal else 0, "nb": len(evs) + 6, "nt": 0 if cal else len(evs)}
+                style = self._style(ev)
+                cal = 1 if (self.f.get("calid") or geo or style != "dated") else 0
+                o = {"label": self._label(ev, style), "cal": cal, "texts": [ev["subject"]]}
+                if geo:
+                    o.update(self._geo_ev(ws, ev, style))
+                evs.append(o)
+        if self.f.get("chips"):                       # 숨은 일정 칩 — 첫 열 종일 줄
+            n = int(self.f["chips"])
+            o = {"label": f"+{n} 더 보기", "cal": 1, "texts": [f"+{n}"]}
+            if geo:
+                o.update({"x": GX0 + 40, "l": GX0 + 4, "r": GX0 + 76, "t": GAD[0], "b": GAD[1], "z": 0, "vz": 1, "ad": 1, "in": 0,
+                          "m": 0 if self.f.get("no_main") else 1})
+            evs.append(o)
+        if self.f.get("myday"):                       # 옆 창의 오늘 일정 — 어느 주를 보든 보인다(날짜 없이 시각만)
+            for ev in self.events:
+                if ev["start"].date() == self.today:
+                    o = {"label": f"{ev['subject']}, {ampm(ev['start'])} ~ {ampm(ev['end'])}", "cal": 1, "texts": [ev["subject"]]}
+                    if geo:                   # 열(GX0~GX0+7·GCW) 오른쪽 밖
+                        o.update({"x": 1250, "l": 1200, "r": 1300, "t": 300, "b": 340, "z": 0, "vz": 1, "ad": 0, "in": 0, "m": 0})
+                    evs.append(o)
+        nc = sum(1 for o in evs if o["cal"])
+        out = {"href": self.url, "grid": True, "n": len(evs), "events": evs, "heads": [self._header(ws), "오늘"],
+               "cols": [], "nc": nc, "nb": len(evs) + 6, "nt": len(evs) - nc}
+        if geo:
+            out["pts"] = self._geo_pts(ws)
+            out["sc"] = None if self.f.get("geo_nogrid") else {"t": GTOP, "b": 880, "n": 23}
+        return out
+
+    # ── 작은 달력(날짜 고르기) ──
+    def _pk_cells(self):
+        """작은 달력 한 장 — 보이는 달 1일이 든 주의 월요일부터 6주(42칸)."""
+        if self.pk_month is None:
+            self.pk_month = ((self.week or self.today) + timedelta(days=3)).replace(day=1)
+        first = self.pk_month - timedelta(days=self.pk_month.weekday())
+        return [first + timedelta(days=i) for i in range(42)]
+
+    def _pk_label(self, d):
+        style = self.f.get("picker_label") or "ko"
+        if style == "fluent":
+            return f"{d.day}, {d.month}월, {d.year}"
+        if style == "en":
+            return f"{EN_MON[d.month - 1]} {d.day}, {d.year}"
+        if style == "num":
+            return str(d.day)
+        return f"{d.year}년 {d.month}월 {d.day}일"
+
+    def _picker(self, js):
+        """owa_cal_pick 흉내 — read(칸 이름·달 넘기기 유무) · day(K 번째 칸 → 그 주) · prev·next(달) · open(날짜 고르기 창)."""
+        act, k = self._arg(js, "ACT", "read"), self._arg(js, "K", -1)
+        mode = self.f.get("picker")
+        shown = bool(mode) and self.view == "cal" and (mode is True or self.pk_open)
+        if act == "open":
+            self.calls["pick_open"] += 1
+            if mode == "popup" and self.view == "cal":
+                self.pk_open = True
+                return "ok"
+            return "none"
+        if act == "read":
+            self.calls["pick_read"] += 1
+            if not shown:
+                return {"grids": 0, "cells": [], "prev": 0, "next": 0}
+            nav = 0 if self.f.get("picker_nonav") else 1
+            return {"grids": 1, "cells": [{"k": i, "l": self._pk_label(d)} for i, d in enumerate(self._pk_cells())],
+                    "prev": nav, "next": nav}
+        if not shown:
+            return "none"
+        if act == "day":
+            cells = self._pk_cells()
+            if not isinstance(k, int) or not 0 <= k < len(cells):
+                return "gone"
+            self.calls["pick_day"] += 1
+            d = cells[k]
+            if not self.f.get("picker_dead"):
+                self.week = self._wstart(d)
+            self.pk_month, self.pk_open = d.replace(day=1), False
+            return "ok"
+        if act in ("prev", "next") and not self.f.get("picker_nonav"):
+            self.calls["pick_nav"] += 1
+            self._pk_cells()
+            self.pk_month = _add_month(self.pk_month, -1 if act == "prev" else 1)
+            return "ok"
+        return "none"
 
     def _prev(self):
         self.calls["prev"] += 1
@@ -403,6 +560,8 @@ class FakeBrowser:
             return self._cal()
         if name == "owa_cal_prev":
             return self._prev()
+        if name == "owa_cal_pick":
+            return self._picker(js)
         if name == "owa_open":
             self.calls["open"] += 1
             i = int(re.search(r"\[(\d+)\]", js).group(1))

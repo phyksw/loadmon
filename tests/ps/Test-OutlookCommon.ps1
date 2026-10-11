@@ -94,6 +94,9 @@ $v9 = Test-MonthDone -Rows 4 -Canary 'none' -Start $mS -End $mE -Now $now -Cache
 function Seg($v) { return [ordered]@{ done = [bool]$v.done; st = [string]$v.st } }
 $r.month = [ordered]@{ zero_ok = Seg $v1; before_horizon = Seg $v2; horizon_inside = Seg $v3; no_canary = Seg $v4; mismatch = Seg $v5;
                        stale = Seg $v6; online = Seg $v7; stopped = Seg $v8; rows_no_canary = Seg $v9 }
+# 차가운 COM(이 수집이 띄운 캐시 모드 Outlook) - 0행 달은 unverified, 행 있는 달은 partial, 완료 표에는 적지 않는다
+$r.cold = [ordered]@{ zero = Seg (Limit-ColdVerdict $v1 $true); rows = Seg (Limit-ColdVerdict $v9 $true); warm = Seg (Limit-ColdVerdict $v1 $false);
+                      horizon = Seg (Limit-ColdVerdict $v2 $true); none = ($null -eq (Limit-ColdVerdict $null $true)) }
 $r.month_ranges = [ordered]@{
     horizon_inside = @(ConvertTo-LmRanges 'mail_in' $mS $mE $v3)
     stale          = @(ConvertTo-LmRanges 'mail_in' $cS $cE $v6)

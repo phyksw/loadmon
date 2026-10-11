@@ -354,6 +354,16 @@ function Test-MonthDone {
     $whole = ($lo -eq $Start -and $hi -eq $End)
     return @{ done = ($whole -and ($st -eq 'ok' -or $st -eq 'zero_ok')); st = $st; lo = $lo; hi = $hi }
 }
+function Limit-ColdVerdict($V, [bool]$Cold) {
+    # 이 수집이 직접 띄운 Outlook(캐시 모드이거나 새 Outlook 흔적이 있는 PC - '차가운 COM')의 판정을 낮춘다(LM28 회사 PC 실측:
+    # 새 Outlook 을 쓰는 PC 에서 클래식을 띄워 읽었더니 받은 53건·보낸 0건으로 열 달을 '0건 확인' 했다). 그 캐시(OST)가 사서함 전체를
+    # 담았는지 이 수집은 증명할 수 없다 - 행이 있는 창은 partial(행은 쓰되 확인 아님), 0행 창은 unverified, 완료 표에는 적지 않는다.
+    # 원장은 그 날들을 색인·Outlook 웹으로 계속 확인한다. 지평선 밖(out_of_horizon)·미확인은 그대로.
+    if (-not $Cold -or $null -eq $V) { return $V }
+    $st = [string]$V.st
+    if ($st -eq 'ok') { $st = 'partial' } elseif ($st -eq 'zero_ok') { $st = 'unverified' }
+    return @{ done = $false; st = $st; lo = $V.lo; hi = $V.hi }
+}
 function Test-CoverageUsable($J, [string]$Ver, [string]$Writer, [bool]$StoreSubject) {
     # 달별 완료 표 머리 검사 - 형식 3 · 판('수집기판|collect.cursorEpoch') · 작성자(com/selftest) · 제목 저장 설정이 이번 실행과 같을
     # 때만 쓴다. 판이 다르면(규칙이 바뀌었거나 cursorEpoch 를 올림) 그 표의 '완료'를 믿지 않는다(F-09). 다른 경로(색인·웹·Copilot)

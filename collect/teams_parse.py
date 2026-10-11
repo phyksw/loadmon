@@ -13,6 +13,8 @@ r"""collect\teams_parse.py — 팀즈 수집 판정용 순수 함수(LM28 WP3). 
   · merge_union(old, new, keyf) — 덮지 않고 합치기(기간을 다 읽지 못한 Graph).
   · name_keys(name, label) — 방 이름 후보(정규화): 목록 이름 + aria-label 앞 조각 1~4개를 이은 것(CSV 방 이름 규칙).
   · title_fits(chat, name, label) — 머리 제목이 그 방인가(전환 확인용 — 외부·괄호·'외 n명'·단체방 이름 순서 같은 표기 차이 허용).
+  · doc_room(title) · doc_fits(title, name, label) — 창 제목(document.title '채팅 | <방> + n | Microsoft Teams')의 방 조각과
+    그것이 그 방인가(LM28-TW-2 — 선택자와 무관한 전환 신호. 단체방은 '+ n'·쉼표 나열·'…' 로 잘린 앞부분 일치도 허용).
   · overlap(fp, pool) — 화면 메시지 지문 중 pool 에 든 비율(앞 방 화면 그대로 판정).
 """
 import functools
@@ -130,6 +132,62 @@ def title_fits(chat, name, label=""):
         a, b = (n, c2) if len(n) <= len(c2) else (c2, n)
         if len(a) >= 2 and a in b and 2 * len(a) >= len(b):
             return True
+    return False
+
+
+# 창 제목(document.title) — 새 Teams 는 '채팅 | <방 이름> + n | Microsoft Teams' 꼴(2026-10 회사 PC 새 Teams 앱 창 제목 실측의
+# 가린 꼴 'xx | xxxxxxxx + xxx | xxxxxxxxx xxamx'). 앞의 '(3) ' 은 안 읽음 수, 맨 앞 조각은 앱 이름, 맨 뒤는 제품 이름이다.
+_DOC_UNREAD = re.compile(r"^\s*[(\[]\s*\d+\+?\s*[)\]]\s*")
+_DOC_APPS = {"채팅", "chat", "chats", "활동", "activity", "팀", "teams", "teams및채널", "teamsandchannels", "일정", "캘린더",
+             "calendar", "통화", "calls", "파일", "files", "앱", "apps", "커뮤니티", "communities", "onedrive", "검색", "search"}
+_DOC_PRODUCT = {"microsoftteams", "teams", "msteams", "microsoftteamsfree", "microsoftteamsforwork"}
+_DOC_TAIL = re.compile(r"\s*\+\s*\S{1,8}\s*$")          # '+ 2' · '+ 외부' — 단체방 이름 뒤 덧붙임
+_ELL = re.compile(r"\s*(?:…|\.\.\.)\s*$")
+
+
+def _doc_cands(title):
+    """창 제목 → [(방 조각, 느슨)] — 느슨 = 앞부분 일치를 허용하는 단체방 꼴('+ n' 을 뗀 것·쉼표 나열·'…' 로 잘림)."""
+    t = _DOC_UNREAD.sub("", str(title or ""))
+    parts = [p.strip() for p in t.split("|") if p.strip()]
+    if parts and norm_name(parts[-1]) in _DOC_PRODUCT:
+        parts = parts[:-1]
+    if parts and norm_name(parts[0]) in _DOC_APPS:
+        parts = parts[1:]
+    if not parts:
+        return []
+    mids = [" | ".join(parts)] + (parts if len(parts) > 1 else [])
+    out, seen = [], set()
+    for m in mids:
+        tail = _DOC_TAIL.sub("", m).strip()
+        for s, loose in ((m, "," in m or "、" in m or bool(_ELL.search(m))), (tail, True)):
+            if len(norm_name(_ELL.sub("", s))) >= 2 and s not in seen:
+                seen.add(s)
+                out.append((s, loose))
+    return out
+
+
+def doc_room(title):
+    """창 제목 → 방 이름 조각 후보(원문) — '채팅 | 홍길동 | Microsoft Teams' → ['홍길동'] · '채팅 | 김철수, 이영희 + 2 | …' →
+    ['김철수, 이영희 + 2', '김철수, 이영희']. 열린 대화가 없는 제목('채팅 | Microsoft Teams')이면 []."""
+    return [s for s, _ in _doc_cands(title)]
+
+
+def doc_fits(title, name, label=""):
+    """창 제목이 그 방인가 → True | False | None(창 제목에 방 조각이 없다 — 판단 못 함).
+    title_fits 규칙(정규화·덧붙임·단체방 순서·절반 이상 포함) + 단체방 꼴(느슨)이면 앞부분 일치(짧은 쪽 정규화 4자 이상)."""
+    cands = _doc_cands(title)
+    if not cands:
+        return None
+    keys = name_keys(name, label)
+    for s, loose in cands:
+        if title_fits(s, name, label):
+            return True
+        if loose:
+            a = norm_name(_ELL.sub("", s))
+            for k in keys:
+                sh, lo = (a, k) if len(a) <= len(k) else (k, a)
+                if len(sh) >= 4 and lo.startswith(sh):
+                    return True
     return False
 
 

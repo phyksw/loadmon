@@ -45,14 +45,20 @@ LM28 '읽음' 규칙(F-03·F-04·F-05 — 검증된 조각만 읽음으로 적�
     범위가 기대한 주와 같을 때만 그 주를 읽음으로 하고(실제로 지나간 주만 weeks_ok), 다르면 그 주의 행을 버린다(클릭 수 ≤
     주 수 + 3). 일정 0개인 주는 이 실행에서 일정을 한 번이라도 읽었을 때만 ok(선택자가 빗나가면 모든 주가 0개로 보인다),
     못 읽은 일정 막대(data-calitemid)가 있는 주는 partial. calendar_complete 는 기간의 지난 날이 모두 확인됐을 때만 true.
+  · LM28 현장(2026-10-11 — 막대 108 중 16 못 읽음 · 9주 중 1주 확인 · '이전 주' 34번): 라벨로 못 읽은 막대는 화면 구조와
+    무관한 위치로 보충한다 — 가로 가운데가 든 요일 열(열 머리 칸의 날짜·위치)이 날짜, 종일 줄이면 종일, 시간 칸 안이면 세로
+    위치를 시간 눈금(시각 글의 세로 위치 — 라벨로 시각을 안 막대로 보정)으로 시각. 열·눈금을 못 찾으면 그 주는 그대로 일부.
+    칩('+2 더 보기')·머리 칸·본문 밖 옆 창의 막대는 막대 수·못 읽음에서 뺀다(숨은 일정 칩이 있는 주는 일부). 주소가 무시된
+    화면에서 시작 주가 2주 이상 뒤면 왼쪽 작은 달력(날짜 고르기)에서 그 주의 날을 눌러 바로 가고(머리로 확인) — 안 되면 예전 길.
   · 전용 Edge 는 copilot_auto.edge_lock 안에서만 쓰고(다른 작업과 직렬), 이 수집기가 연 탭만 닫는다(로그인 대기면 둔다).
     메일·일정을 함께 읽으면 메일은 시간 예산의 끝 일부(최대 300초)를 일정에 남기고 멈춘다.
 
 화면 구조는 Microsoft 가 바꿀 수 있어 '역할(role)·aria-label·title' 같은 접근성 속성만 의지하고, 무엇을 몇 개
 인식했는지 남긴다(회사 PC 의 원문을 밖으로 보낼 수 없으므로 진단은 구조로 한다): 마지막 요약 줄 앞에
-'[outlook-web] 구조: …' 한 줄(사진 한 장으로 원인 확정용 — run.py 가 '구조:' 줄을 last_run.json 단계에 따로 싣는다)과
-LMSTATUS counts.dom_census(같은 내용 + 행 골격 — 태그·role·aria-label 길이·data-convid 표식·data-app-section 값·개수·크기·
-스크롤 상태만, 글자는 x · 4KB 이내)를 낸다.
+'[outlook-web] 구조: …' 한 줄(사진 한 장으로 원인 확정용 — run.py 가 '구조:' 줄을 last_run.json 단계에 따로 싣는다)과,
+일정을 읽었으면 바로 뒤에 '[outlook-web] 구조+: …'(위치 해석으로 살린 수·요일 열·시간 눈금·작은 달력·못 읽은 막대 꼴 최대
+3개 — 글자 x, 숫자·구두점·오전/오후·요일·종일만), LMSTATUS counts.dom_census(같은 내용 + 행 골격 — 태그·role·aria-label 길이·
+data-convid 표식·data-app-section 값·개수·크기·위치·스크롤 상태만, 글자는 x · 3.9KB 이내)를 낸다.
 발신/수신 구분: 받은 편지함·보낸 편지함 폴더 URL 을 따로 열어 슬라이스마다 검색하고(폴더가 곧 box), 화면에
 폴더명 조각('보낸 편지함')이 있으면 그것을 우선한다 — 제목·미리보기의 영어 단어(presentation·consent·
 'Sent from my iPhone')로 발신을 판정하던 부분 문자열 규칙은 폐기(감사 outlook-5).
@@ -84,7 +90,8 @@ _sleep = time.sleep                        # 시험(FakeBrowser)이 대기를 0 
 OUT_DIR = os.path.join(ROOT, "data", "outlook")
 # 판정 규칙의 판 — mail_source 에 '판|collect.cursorEpoch' 로, LMSTATUS counts.collector_ver 로 싣는다.
 # 2: 'fits' 를 끝 근거에서 뺌 · 메일 목록 칸 고르기 · 검색 표기 확인(결과 없음은 걸린 표기에서만 0건) · 일정 주소 이동·0개 주 증명
-COLLECTOR_VER = "LM28-OWA-2"
+# 3: 일정 막대 위치 해석(요일 열·시간 눈금·종일 줄) · 칩/옆 창 제외(숨은 일정 칩이 있는 주는 일부) · 작은 달력 주 이동
+COLLECTOR_VER = "LM28-OWA-3"
 SEARCH_SCREENS = 150                       # 검색 결과 한 조각을 내리는 화면 수 상한(LM24 의 달마다 400회 대신)
 LIST_SCREENS = 800                         # 폴백(검색 없이 최신부터) 한 폴더를 내리는 화면 수 상한
 STALL_MAX = 3                              # 내렸는데 새 항목 없는 화면이 이만큼 이어지면 멈춘다(끝을 모른다)
@@ -92,6 +99,10 @@ END_CONFIRM = 3                            # 바닥에서 새 항목 0 이 이�
 BUSY_MAX = 4                               # 바닥의 '불러오는 중' 표시를 기다리는 횟수 — 그래도 남으면 끝을 모른다(partial)
 MORE_MAX = 40                              # 결과 '더 보기' 단추를 누르는 횟수 상한(한 번 읽기)
 CAL_RETRY = 3                              # '이전 주' 단추가 안 먹었을 때(머리 그대로) 다시 누르는 횟수(전체) — 그 뒤는 주소로 주를 옮긴다
+PICK_MIN_WEEKS = 2                         # 시작 주가 이만큼 이상 뒤면 '이전 주' 대신 작은 달력(날짜 고르기)으로 바로 간다
+PICK_MONTHS = 30                           # 작은 달력의 달 넘기기 상한(한 번 이동 — 기간은 1년 안팎)
+MORE_PARTIAL = True                        # 숨은 일정 칩('+2'·'2개 더')이 있는 주는 일부 — 주 보기에 다 안 그려진 일정이 있다(P4)
+CENSUS_MAX = 3900                          # dom_census 직렬화 상한(UTF-8 바이트) — collect_status.KEEP_NESTED(4096)·진단 묶음 안
 # 기간 검색 표기 — 공개 도움말(Outlook 웹 AQS: 'Received:01/01/2017', 날짜는 MM/DD/YYYY, 범위는 '..')을 먼저, LM28 처음 표기(KQL)·ISO 범위를
 # 다음으로. 이 실행에서 조각 안 결과를 한 번 본 표기만 계속 쓴다(Run.srch.proven).
 SEARCH_FORMS = (("aqs", lambda s, e: f"received:{s:%m/%d/%Y}..{e:%m/%d/%Y}"),
@@ -447,15 +458,29 @@ def parse_mail_item(item, d0, d1, folder="", today=None, info=None):
     return [box, t, sender, subject, conv, rcv, precision]
 
 
-def parse_event(ev, d0, d1):
+def _pos_ok(ev):
+    """일정 막대의 화면 위치(JS_CAL x·t·b)가 있는가 — 크기 0(숨은 사본·그려지지 않은 요소)은 위치가 없다."""
+    try:
+        return not ev.get("z") and ev.get("x") is not None and float(ev["b"]) - float(ev["t"]) > 2
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def parse_event(ev, d0, d1, geo=None, info=None):
     """일정 요소(aria-label·texts) → [start,end,all_day,busy,subject,categories,location] 또는 None
-    날짜가 2개 이상이면(다일 일정) start=첫 날짜(+첫 시각), end=마지막 날짜(+둘째 시각 또는 23:59) 한 행."""
+    날짜가 2개 이상이면(다일 일정) start=첫 날짜(+첫 시각), end=마지막 날짜(+둘째 시각 또는 23:59) 한 행.
+    LM28(현장 2026-10-11 — 막대 108 중 16 못 읽음): geo(그 주 화면의 요일 열·시간 눈금 — _cal_geo)가 있으면, data-calitemid
+    막대(또는 라벨에 시각 범위가 있는 막대)는 위치로 보충한다 — 라벨·글에 날짜가 없으면 가로 가운데가 든 요일 열의 날짜(종일 줄
+    막대는 걸친 열들), 시각이 없으면 종일 줄 막대는 종일, 시간 칸 안 막대는 세로 위치를 눈금으로(5분 단위). 열·눈금을 못 찾으면
+    지금처럼 None(그 주는 일부). info(dict): d 날짜 출처(label·col·span) · t 시각 출처(label·ad·grid) · nt 라벨 시각 수 ·
+    why 못 읽은 까닭(nd 날짜 없음 · np 위치 없음 · nh 열 머리 못 찾음 · nc 열 밖 · nt 시각 없음 · ng 눈금 없음)."""
+    info = info if info is not None else {}
     label = ev.get("label") or ""
+    alt = [t for t in (ev.get("alt") or []) if t]       # 막대 안 다른 aria-label(반복·Teams 표지 등) — 날짜·시각 찾기에만
     texts = [t for t in (ev.get("texts") or []) if t]
-    pool = [label] + texts
-    joined = " | ".join(pool)
+    joined = " | ".join([label] + alt + texts)
     dates = []
-    for cand in pool:
+    for cand in [label] + alt + texts:
         dates = find_dates(cand, d0, d1)
         if dates:
             break
@@ -463,7 +488,20 @@ def parse_event(ev, d0, d1):
         # LM28: 날짜 없이 요일만 있는 막대('주간 회의, 화요일 오후 2:00 ~ 오후 3:00') — 그 주(d0~d1) 안의 그 요일(요일이 하나일 때만)
         wd = owa_parse.weekday_date(label, d0, d1)
         dates = [wd] if wd else []
+    info["d"] = "label" if dates else ""
+    usable = geo is not None and bool(ev.get("cal") or len(find_times(label)) >= 2)
+    has_pos = usable and _pos_ok(ev)
+    ad_row = has_pos and _int(ev.get("ad")) == 1
+    cols = geo.get("cols") if has_pos else None
+    if not dates and cols:
+        if ad_row:                              # 종일 줄 막대 — 걸친 열들(여러 날 일정)
+            sp = owa_parse.col_span(cols, ev.get("l"), ev.get("r"))
+            dates, info["d"] = (list(sp), "span") if sp else ([], "")
+        else:
+            cd = owa_parse.col_date(cols, ev.get("x"))
+            dates, info["d"] = ([cd], "col") if cd else ([], "")
     if not dates:
+        info["why"] = "np" if (usable and not has_pos) else ("nc" if cols else ("nh" if has_pos else "nd"))
         return None
     d_st, d_en = min(dates), max(dates)
     if (d_en - d_st).days > MAX_EVENT_DAYS:     # 주 보기 라벨에 넉 달짜리 일정은 없다 — 날짜 오독이면 첫 날짜만
@@ -474,22 +512,39 @@ def parse_event(ev, d0, d1):
     pos = _first_date_pos(label)
     ts = (find_times(label[pos:]) if pos is not None else []) or find_times(label) or find_times(joined)
     all_day = bool(re.search(r"종일|all[- ]day|終日|全天", joined, re.I))
+    info["nt"], info["t"] = len(ts), ("label" if (ts or all_day) else "")
+    sc = geo.get("scale") if (has_pos and not ad_row and _int(ev.get("in")) == 1) else None
+    day0 = datetime(d_st.year, d_st.month, d_st.day)
     if len(ts) >= 2:
         st = datetime(d_st.year, d_st.month, d_st.day, ts[0][0], ts[0][1])
         en = datetime(d_en.year, d_en.month, d_en.day, ts[1][0], ts[1][1])
         if en <= st:
             en = en + timedelta(days=1) if en < st else st + timedelta(minutes=30)
         ad = "False"
-    elif all_day or not ts:
+    elif ts and not all_day:
+        st = datetime(d_st.year, d_st.month, d_st.day, ts[0][0], ts[0][1])
+        en = datetime(d_en.year, d_en.month, d_en.day, 23, 59) if multi else st + timedelta(minutes=30)
+        m1 = owa_parse.y_to_min(sc, ev.get("b"), "b") if (sc and not multi) else None
+        if m1 is not None and day0 + timedelta(minutes=m1) > st:
+            en = day0 + timedelta(minutes=m1)   # 시작만 보이는 막대 — 끝은 막대 아래 끝(눈금)
+        ad = "False"
+    elif all_day or ad_row:
         st = datetime(d_st.year, d_st.month, d_st.day, 0, 0)
         en = datetime(d_en.year, d_en.month, d_en.day, 23, 59)
         ad = "True"
-        if not all_day and not ts:
+        if not all_day:
+            info["t"] = "ad"
+    elif sc:                                    # 시간 칸 안 막대 — 세로 위치를 눈금으로(위 끝 = 시작 · 아래 끝 = 끝)
+        m0, m1 = owa_parse.y_to_min(sc, ev.get("t"), "t"), owa_parse.y_to_min(sc, ev.get("b"), "b")
+        if m0 is None or m0 >= 1440:
+            info["why"] = "ng"
             return None
+        st = day0 + timedelta(minutes=m0)
+        en = day0 + timedelta(minutes=m1) if (m1 is not None and m1 > m0) else st + timedelta(minutes=30)
+        ad, info["t"] = "False", "grid"
     else:
-        st = datetime(d_st.year, d_st.month, d_st.day, ts[0][0], ts[0][1])
-        en = datetime(d_en.year, d_en.month, d_en.day, 23, 59) if multi else st + timedelta(minutes=30)
-        ad = "False"
+        info["why"] = "ng" if (has_pos and _int(ev.get("in")) == 1) else "nt"
+        return None
     # 제목: 날짜·시각·'이벤트:' 같은 접두를 뗀 첫 조각
     subj = ""
     for cand in ([label] + texts):
@@ -676,11 +731,20 @@ __LIB__
 })()
 """
 # LM28: 일정 화면 머리(heads — 날짜 범위가 든 짧은 글)·열 머리(cols)·바탕(grid) 도 낸다(F-05 — 그 주가 맞는지 확인).
-#   일정 막대는 data-calitemid(공개 스크립트들이 쓰는 표지 — cal:1, 이름은 aria-label·title·글자 순)를 먼저, 그다음 시각·종일이 든
-#   aria-label 요소. 구조 진단용 수: nc(data-calitemid 수)·nb(aria-label 후보 수)·nt(그중 시각·종일이 든 수).
+#   일정 막대는 data-calitemid(공개 스크립트들이 쓰는 표지 — cal:1)를 먼저, 그다음 시각·종일이 든 aria-label 요소.
+#   구조 진단용 수: nc(data-calitemid 수)·nb(aria-label 후보 수)·nt(그중 시각·종일이 든 수).
+# LM28(현장 2026-10-11 — 막대 108 중 16 을 못 읽어 9주 중 8주가 '일부'): 화면 구조와 무관한 신호를 함께 낸다 —
+#   · 막대 이름: 막대 자신과 안쪽 aria-label 중 시각·날짜가 든 것(예전엔 '안쪽 첫 aria-label' — 반복 표지 '반복 이벤트' 같은
+#     아이콘 이름이 막대 이름이 될 수 있었다). 나머지 이름은 alt(날짜·시각 찾기에만), 이름 수는 na.
+#   · 막대 위치: x(가로 가운데)·l·r·t·b(px) · z(크기 0) · vz(가운데 점에 실제로 보임) · in(시간 눈금과 같은 스크롤 칸 안) ·
+#     ad(종일 줄 — 시간 칸 위에 보이거나 '종일' 이름 칸 안) · m(본문 role=main 안 — 옆 창의 오늘 일정 등은 0).
+#   · pts: 짧은 숫자 글과 위치(열 머리의 날짜·시간 눈금의 시각 — '9'+'AM' 처럼 나뉜 눈금 글은 묶어서) — 어느 것이 열·눈금인지는
+#     파이썬(owa_parse.day_columns·time_scale)이 위치로 가린다. sc: 시간 눈금 글이 가장 많이 든 스크롤 칸(눈금 글이 DOM 글자가
+#     아니면 막대들의 스크롤 칸)의 위·아래.
+#   · 같은 이름의 막대는 겹친(조상·자손) 것과 크기 0 사본만 하나로 — 날짜 없는 반복 막대(같은 이름)가 날마다 따로 남게.
 JS_CAL = r"""/*LM28:owa_cal*/
 (() => {
-  const out = {href: location.href, n: 0, events: [], heads: [], cols: [], grid: false, nc: 0, nb: 0, nt: 0};
+  const out = {href: location.href, n: 0, events: [], heads: [], cols: [], grid: false, nc: 0, nb: 0, nt: 0, pts: [], sc: null};
   out.grid = !!document.querySelector('[role="grid"], [role="main"] [role="row"]');
   const hs = new Set();
   for (const e of document.querySelectorAll('[role="heading"], h1, h2, h3, button, [aria-live]')) {
@@ -691,33 +755,154 @@ JS_CAL = r"""/*LM28:owa_cal*/
   }
   out.heads = [...hs];
   out.cols = [...document.querySelectorAll('[role="columnheader"]')].map(x => (x.getAttribute("aria-label") || x.textContent || "").trim()).filter(v => v && v.length <= 60).slice(0, 10);
-  const seen = new Set();
-  const push = (e, l, cal) => {
-    const k = l.slice(0, 160);
-    if (!k || seen.has(k)) return;
-    seen.add(k);
-    out.events.push({label: l, cal, texts: [...e.querySelectorAll("span,div")].filter(x => x.childElementCount === 0).map(x => (x.textContent || "").trim()).filter(Boolean).slice(0, 10)});
-  };
+  const main = document.querySelector('[role="main"]');
+  const root = main || document.body;
+  const RX_H = /^(?:(?:오전|오후|AM|PM)\s*)?\d{1,2}(?::\d{2})?\s*(?:시|AM|PM)?$/i;
+  const OVF = /(auto|scroll|overlay)/;
+  const scOf = e => { let p = e.parentElement, d = 0;
+    while (p && p !== document.body && p !== document.documentElement && d < 30) {
+      if (OVF.test(getComputedStyle(p).overflowY) && p.scrollHeight > p.clientHeight + 8) return p;
+      p = p.parentElement; d++; }
+    return null; };
+  const gerr = x => { out.gerr = (x && x.name) || "err"; };   // 위치 재료에서 난 오류는 이름만 — 예전처럼 라벨로만 읽는다
+  let sc = null, scR = null;
+  try {
+    const votes = new Map(), skip = new WeakSet();
+    for (const e of root.querySelectorAll("*")) {
+      if (out.pts.length >= 240) break;
+      if (skip.has(e)) continue;
+      const n = e.childElementCount;
+      let s = n === 0 ? (e.textContent || "").trim() : "";
+      if (n > 0 && n <= 3 && [...e.children].every(c => c.childElementCount === 0)) {
+        const t = (e.textContent || "").trim();     // 눈금 글이 '9'+'AM'·'오후'+'1시' 처럼 나뉜 칸 — 묶어서 한 번
+        if (t.length <= 16 && RX_H.test(t)) { s = t; for (const c of e.children) skip.add(c); }
+      }
+      if (!s || s.length > 16) { const al = (e.getAttribute("aria-label") || "").trim(); s = al.length <= 48 ? al : ""; }
+      if (!s || !/\d/.test(s) || e.closest("[data-calitemid]")) continue;
+      const r = e.getBoundingClientRect();
+      if (r.width < 2 || r.height < 2) continue;
+      out.pts.push({s, x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), w: Math.round(r.width), h: Math.round(r.height)});
+      if (RX_H.test(s)) { const p = scOf(e); if (p) votes.set(p, (votes.get(p) || 0) + (/[^\d\s]/.test(s) ? 3 : 1)); }
+    }
+    if (!votes.size) {                              // 눈금 글이 DOM 글자가 아니면(그림·::before) — 막대들의 스크롤 칸으로
+      for (const e of [...document.querySelectorAll("[data-calitemid]")].slice(0, 200)) { const p = scOf(e); if (p) votes.set(p, (votes.get(p) || 0) + 1); }
+    }
+    let nv = -1;                                    // 막대를 품은 스크롤 칸 우선(작은 달력의 날 번호 '5'·'12' 는 눈금이 아니다)
+    for (const [p, n] of votes) { const v = n + (p.querySelector("[data-calitemid]") ? 10000 : 0); if (v > nv) { sc = p; nv = v; } }
+    scR = sc ? sc.getBoundingClientRect() : null;
+    if (sc) out.sc = {t: Math.round(scR.top), b: Math.round(scR.bottom), n: votes.get(sc) || 0};
+  } catch (x) { gerr(x); sc = null; scR = null; }
+  const AD = '[aria-label*="종일"], [aria-label*="all day" i], [aria-label*="all-day" i]';
+  const geo = e => { try {
+    let r = e.getBoundingClientRect();
+    if ((r.width < 1 || r.height < 1) && e.firstElementChild) r = e.firstElementChild.getBoundingClientRect();
+    const z = (r.width < 1 || r.height < 1) ? 1 : 0, cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    const inG = sc && sc.contains(e) ? 1 : 0;
+    let vz = 0;
+    if (!z) { const h = document.elementFromPoint(cx, cy); vz = h && (h === e || e.contains(h)) ? 1 : 0; }
+    let ad = (!z && sc && !inG && vz && r.bottom <= scR.top + 4) ? 1 : 0;
+    if (!z && !ad) { let a = null; try { a = e.closest(AD); } catch (x) { a = null; }
+      if (a && a !== root && !(sc && a.contains(sc))) ad = 1; }
+    return {x: Math.round(cx), l: Math.round(r.left), r: Math.round(r.right), t: Math.round(r.top), b: Math.round(r.bottom),
+            z, vz, ad, in: inG, m: main && main.contains(e) ? 1 : 0};
+  } catch (x) { gerr(x); return {}; } };
+  const RXT = /\d{1,2}[:.]\d{2}|종일|all[- ]day|終日/i;
+  const RXD = /\d{4}|\d{1,2}\s*[월月]\s*\d{1,2}|\d{1,2}\s*\/\s*\d{1,2}|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2}|[월화수목금토일]요일|day\b/i;
+  const recs = [];
   const items = [...document.querySelectorAll("[data-calitemid]")];
   out.nc = items.length;
   for (const e of items) {
-    if (out.events.length >= 400) break;
-    const inner = e.querySelector("[aria-label]");
-    const l = (e.getAttribute("aria-label") || (inner && inner.getAttribute("aria-label")) || e.getAttribute("title") || (e.textContent || "").trim()).slice(0, 300);
-    if (l) push(e, l, 1);
+    if (recs.length >= 400) break;
+    let l = "", alt = [], na = 0;
+    try {
+      const als = [e.getAttribute("aria-label") || "", ...[...e.querySelectorAll("[aria-label]")].slice(0, 12).map(x => x.getAttribute("aria-label") || "")].map(v => v.trim()).filter(Boolean);
+      const best = als.find(a => RXT.test(a) && RXD.test(a)) || als.find(a => RXT.test(a)) || als.find(a => RXD.test(a)) || als.slice().sort((a, b) => b.length - a.length)[0] || "";
+      l = (best || e.getAttribute("title") || (e.textContent || "").trim()).slice(0, 300);
+      alt = als.filter(a => a !== best).slice(0, 6).map(a => a.slice(0, 120));
+      na = als.length;
+    } catch (x) {
+      gerr(x);
+      const inner = e.querySelector("[aria-label]");
+      l = (e.getAttribute("aria-label") || (inner && inner.getAttribute("aria-label")) || e.getAttribute("title") || (e.textContent || "").trim()).slice(0, 300);
+    }
+    if (l) recs.push({e, l, cal: 1, alt, na});
   }
   const cands = [...document.querySelectorAll('[role="main"] [aria-label], [role="grid"] [aria-label], [role="button"][aria-label], [role="listitem"][aria-label]')];
   out.nb = cands.length;
   for (const e of cands) {
-    if (out.events.length >= 400) break;
+    if (recs.length >= 400) break;
     if (e.closest("[data-calitemid]")) continue;
     const l = e.getAttribute("aria-label") || "";
-    if (!/\d{1,2}[:.]\d{2}|종일|all[- ]day|終日/i.test(l)) continue;
-    if (!/\d/.test(l)) continue;
+    if (!RXT.test(l) || !/\d/.test(l)) continue;
     out.nt++;
-    push(e, l, 0);
+    recs.push({e, l: l.slice(0, 300), cal: 0, alt: [], na: 1});
+  }
+  const kept = [];
+  for (const r of recs) {
+    r.g = geo(r.e);
+    const i = kept.findIndex(o => o.l === r.l && (o.e.contains(r.e) || r.e.contains(o.e) || o.g.z || r.g.z
+      || !("x" in r.g) || !("x" in o.g)));          // 위치를 못 잰 막대는 예전처럼 같은 이름끼리 하나로
+    if (i < 0) kept.push(r);
+    else if (kept[i].g.z && !r.g.z) kept[i] = r;
+  }
+  for (const r of kept) {
+    const texts = [...r.e.querySelectorAll("span,div")].filter(x => x.childElementCount === 0).map(x => (x.textContent || "").trim()).filter(Boolean).slice(0, 10);
+    out.events.push(Object.assign({label: r.l, cal: r.cal, alt: r.alt, na: r.na, texts}, r.g));
   }
   out.n = out.events.length;
+  return JSON.stringify(out);
+})()
+"""
+# LM28(현장 2026-10-11 — '이전 주' 34번으로 9주): 작은 달력(날짜 고르기)으로 목표 주에 바로 간다. 주소 이동이 무시되는 화면에서도
+#   된다. __ACT__: read(칸 이름·달 넘기기 단추 유무 — 칸은 window.__lm_pk 에 둔다) · day(__K__ 번째 칸을 누름) · prev·next(달 넘기기)
+#   · open(왼쪽 달력이 없을 때 머리 날짜 범위 단추 __HEAD__ 를 눌러 날짜 고르기 창을 연다). 칸: role=grid·table 안의 이름(aria-label·
+#   title)에 숫자가 든 보이는 단추·gridcell 20~60개(달 한 장) — 숨김·사용 안 함은 뺀다. 날짜는 파이썬(owa_parse.picker_date)이 읽는다.
+JS_CAL_PICK = r"""/*LM28:owa_cal_pick*/
+(() => {
+  const ACT = "__ACT__", K = __K__, HEAD = __HEAD__;
+  const vis = e => { const r = e.getBoundingClientRect(); return r.width > 2 && r.height > 2; };
+  const nm = e => (e.getAttribute("aria-label") || e.getAttribute("title") || "").trim();
+  const fire = e => { for (const t of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
+    e.dispatchEvent(new MouseEvent(t, {bubbles: true, cancelable: true, view: window})); } };
+  const st = window.__lm_pk || {};
+  if (ACT === "day") { const c = (st.cells || [])[K]; if (!c || !c.isConnected) return "gone"; fire(c); return "ok"; }
+  if (ACT === "prev" || ACT === "next") { const b = st[ACT]; if (!b || !b.isConnected) return "none"; fire(b); return "ok"; }
+  if (ACT === "open") {
+    if (!HEAD) return "none";
+    const txt = b => (b.textContent || "").trim();
+    const bs = [...document.querySelectorAll('button, [role="button"]')].filter(b => vis(b) && !b.closest("[data-calitemid]"));
+    const b = bs.find(b => nm(b) === HEAD || txt(b) === HEAD) || bs.find(b => txt(b).length <= 80 && (txt(b).includes(HEAD) || nm(b).includes(HEAD)));
+    if (!b) return "none";
+    fire(b);
+    return "ok";
+  }
+  const out = {grids: 0, cells: [], prev: 0, next: 0};
+  let best = null;
+  for (const g of document.querySelectorAll('[role="grid"], table')) {
+    if (g.closest("[data-calitemid]") || !vis(g)) continue;
+    let cs = [...g.querySelectorAll('button, [role="gridcell"], td')].filter(c => vis(c) && /\d/.test(nm(c))
+      && c.getAttribute("aria-hidden") !== "true" && !c.disabled && c.getAttribute("aria-disabled") !== "true");
+    cs = cs.filter(c => !cs.some(o => o !== c && c.contains(o)));
+    if (cs.length < 20 || cs.length > 60) continue;
+    out.grids++;
+    if (!best || cs.length > best.cs.length) best = {g, cs};
+  }
+  if (!best) { window.__lm_pk = {}; return JSON.stringify(out); }
+  const PRV = /(이전|지난)\s*(달|월)|previous month|prev(ious)?\s*month|last month/i, NXT = /다음\s*(달|월)|next month/i;
+  let prev = null, next = null, p = best.g.parentElement;
+  for (let d = 0; p && d < 6 && !(prev && next); d++, p = p.parentElement) {
+    if (p.querySelector("[data-calitemid]") || p.matches('[role="main"]')) break;
+    for (const b of p.querySelectorAll('button, [role="button"]')) {
+      if (best.g.contains(b) || !vis(b)) continue;
+      const n = nm(b);
+      if (!prev && PRV.test(n)) prev = b;
+      if (!next && NXT.test(n)) next = b;
+    }
+  }
+  window.__lm_pk = {cells: best.cs, prev, next};
+  out.cells = best.cs.map((c, k) => ({k, l: nm(c).slice(0, 60)}));
+  out.prev = prev ? 1 : 0;
+  out.next = next ? 1 : 0;
   return JSON.stringify(out);
 })()
 """
@@ -1614,6 +1799,164 @@ def _cen_cal_page(run, pg):
     cc["grid"] = 1 if (cc.get("grid") or pg.get("grid")) else 0
 
 
+def _mins(s):
+    """'YYYY-MM-DD HH:MM' → 자정부터 분."""
+    return int(s[11:13]) * 60 + int(s[14:16])
+
+
+def _cal_geo(pg, hs, he, evs):
+    """주 보기 한 장의 위치 재료 → {cols: 요일 열(owa_parse.day_columns) | None, scale: 시간 눈금(나중에 채운다), pts} | None
+    (위치 있는 막대가 없으면). 열은 그 주(hs~he) 날짜로 읽히는 머리 줄 중 막대 가운데를 가장 많이 품는 것."""
+    if not isinstance(pg, dict):
+        return None
+    bars = [ev for ev in evs if _pos_ok(ev)]
+    if not bars:
+        return None
+    pts = [p for p in pg.get("pts") or [] if isinstance(p, dict)][:400]
+    return {"cols": owa_parse.day_columns(pts, hs, he, [ev.get("x") for ev in bars]), "scale": None, "pts": pts}
+
+
+def _cen_geo(cc, pg, geo, live, calib):
+    """위치 해석 구조 진단(최댓값·누계) — 열 머리 수·하루 간격 px·눈금 글 수·시간당 px·보정 막대 수·시간 칸/종일 줄 막대 수·
+    위치 없는 막대 수·시간 눈금 스크롤 칸 유무·숫자 글 수."""
+    g = cc.setdefault("geo", {"cols": 0, "s": 0, "hl": 0, "px": 0, "cal": 0, "in": 0, "ad": 0, "np": 0, "sc": 0, "pts": 0})
+    pos = [ev for ev in live if _pos_ok(ev)]
+    g["np"] += len(live) - len(pos)
+    g["in"] = max(g["in"], sum(1 for ev in pos if _int(ev.get("in"))))
+    g["ad"] = max(g["ad"], sum(1 for ev in pos if _int(ev.get("ad"))))
+    g["sc"] = max(g["sc"], 1 if isinstance(pg.get("sc"), dict) else 0)
+    g["pts"] = max(g["pts"], len(pg.get("pts") or []))
+    if pg.get("gerr"):                                # 위치 재료 JS 오류 이름(TypeError 등) — 그 화면은 라벨로만 읽었다
+        g["err"] = re.sub(r"[^A-Za-z]", "", str(pg["gerr"]))[:20]
+    g["cal"] = max(g["cal"], len(calib))
+    cols, sc = (geo or {}).get("cols"), (geo or {}).get("scale")
+    if cols:
+        g["cols"], g["s"] = max(g["cols"], cols["n"]), int(round(abs(cols["s"])))
+    if sc:
+        g["hl"], g["px"] = max(g["hl"], sc["n"]), int(round(sc["k"] * 60))
+
+
+def _bad_shape(cc, ev, why):
+    """못 읽은 일정 막대의 꼴(최대 3개 — 구조만): 라벨·글은 owa_parse.mask_cal 로 가린 것(글자 x — 숫자·구두점·오전/오후·요일·
+    종일만) · 날짜 표기 꼴(fmt_flags) · 까닭(why) · 막대 안 aria-label 수(al) · 위치 요약(p). 같은 꼴은 한 번, 칸이 찼으면 새
+    (표기 꼴·까닭) 조합이 같은 조합 둘째 것을 밀어낸다 — 사진 한 장에 서로 다른 꼴이 보이게."""
+    bl = cc.setdefault("bad", [])
+    label = str(ev.get("label") or "")
+    texts = [str(x) for x in ev.get("texts") or [] if x]
+    lm = owa_parse.mask_cal(label, 60)
+    tm = owa_parse.mask_cal(" · ".join(texts[:4]), 30) if texts else ""
+    if any(b.get("l") == lm and b.get("t") == tm for b in bl):
+        return
+    fm, w = owa_parse.fmt_flags(" , ".join([label] + texts)), str(why or "")
+    kinds = [(b.get("f"), b.get("w")) for b in bl]
+    slot = len(bl)
+    if slot >= 3:
+        if (fm, w) in kinds:
+            return
+        slot = next((i for i in range(len(bl) - 1, -1, -1) if kinds.count(kinds[i]) > 1), None)
+        if slot is None:
+            return
+    if _pos_ok(ev):
+        p = (f"x{_int(ev.get('x'))} y{_int(ev.get('t'))} h{_int(ev.get('b')) - _int(ev.get('t'))}"
+             + (" 종일줄" if _int(ev.get("ad")) else "") + (" 시간칸" if _int(ev.get("in")) else ""))
+    else:
+        p = "크기0" if ev.get("z") else ("위치없음" if ev.get("x") is None else "")
+    b = {"l": lm, "t": tm, "f": fm, "w": w, "al": _int(ev.get("na")), "p": p, "cal": 1 if ev.get("cal") else 0}
+    if slot < len(bl):
+        bl[slot] = b
+    else:
+        bl.append(b)
+
+
+def _pick_js(act, k=-1, head=""):
+    """JS_CAL_PICK 자리표 채우기 — 머리 글은 JSON 문자열(따옴표·역슬래시 그대로 안전)."""
+    return (JS_CAL_PICK.replace("__ACT__", act).replace("__K__", str(int(k)))
+            .replace("__HEAD__", json.dumps(str(head or "")[:80], ensure_ascii=False)))
+
+
+def _pick_act(br, act, k=-1, head=""):
+    try:
+        return str(br.cdp.eval(_pick_js(act, k, head)) or "")
+    except Exception:
+        return ""
+
+
+def _esc_key(br):
+    """Esc 한 번(CDP 키 입력) — 우리가 연 날짜 고르기 창을 못 쓰고 나올 때 닫는다(창이 일정 막대를 가리지 않게)."""
+    for t in ("rawKeyDown", "keyUp"):
+        try:
+            br.cdp.call("Input.dispatchKeyEvent", {"type": t, "key": "Escape", "code": "Escape", "windowsVirtualKeyCode": 27,
+                                                   "nativeVirtualKeyCode": 27})
+        except Exception:
+            return
+
+
+def _pick_week(br, run, tgt, head=""):
+    """작은 달력(왼쪽 날짜 고르기 — 없으면 머리 날짜 범위 단추가 여는 것)에서 목표 주(tgt)의 가운데 날을 눌러 그 주로 간다 →
+    (화면 범위 | None, 화면 | None — 날을 눌렀을 때만). 칸 이름(aria-label·title)의 날짜를 owa_parse.picker_date 로 읽고, 목표 날이
+    달력에 없으면 달 넘기기 단추로 목표 달까지(PICK_MONTHS 번 안). 확인은 머리로 — 범위 == tgt 일 때만 성공(pick.ok)."""
+    pk = run.cen["cal"].setdefault("pick", {"try": 0, "ok": 0, "cells": 0, "nav": 0, "open": 0, "fmt": "", "why": ""})
+    pk["try"] += 1
+    want = tgt[0] + timedelta(days=min(3, max(0, (tgt[1] - tgt[0]).days)))
+    opened = [False, False]                     # 머리 단추를 눌러 봤나 · 그래서 날짜 고르기 창이 열렸나
+
+    def fail(why):
+        pk["why"] = why
+        if opened[1]:
+            _esc_key(br)                        # 우리가 연 창은 닫고 나온다
+        return None, None
+
+    for _ in range(PICK_MONTHS + 2):
+        if run.out_of_time():
+            return fail("time")
+        try:
+            info = br.eval_json(_pick_js("read")) or {}
+        except Exception:
+            info = {}
+        cells = [c for c in info.get("cells") or [] if isinstance(c, dict)]
+        if not cells:
+            if not opened[0] and head:
+                opened[0] = True
+                if _pick_act(br, "open", head=head) == "ok":
+                    opened[1] = True
+                    pk["open"] += 1
+                    _sleep(1.2)
+                    continue
+            return fail("nogrid")
+        pk["cells"] = max(pk["cells"], len(cells))
+        if not pk["fmt"]:
+            pk["fmt"] = owa_parse.fmt_flags(str(cells[len(cells) // 2].get("l") or ""))
+        ds = [(_int(c.get("k"), -1), owa_parse.picker_date(c.get("l"), want)) for c in cells]
+        ds = [(k, d) for k, d in ds if k >= 0 and d]
+        if len(ds) * 10 < len(cells) * 6:
+            return fail("nodate")               # 칸 이름에 온전한 날짜가 없다(날 번호만) — 고를 수 없다
+        hit = [k for k, d in ds if d == want]
+        if hit:
+            if _pick_act(br, "day", hit[0]) != "ok":
+                return fail("gone")
+            _sleep(2.0)
+            pg = _cal_page(br)
+            rng = cal_screen_range(pg, run.today)
+            if rng != tgt:
+                _sleep(1.5)
+                pg = _cal_page(br)
+                rng = cal_screen_range(pg, run.today)
+            pk["why"] = "" if rng == tgt else "head"
+            pk["ok"] += 1 if rng == tgt else 0
+            if rng != tgt and opened[1]:
+                _esc_key(br)
+            return rng, pg
+        lo, hi = min(d for _k, d in ds), max(d for _k, d in ds)
+        act = "prev" if want < lo else ("next" if want > hi else "")
+        if not act:
+            return fail("nocell")
+        if not info.get(act) or _pick_act(br, act) != "ok":
+            return fail("nonav")
+        pk["nav"] += 1
+        _sleep(0.6)
+    return fail("cap")
+
+
 def collect_cal(br, d0, d1, fake=None, today=None, run=None):
     """주 보기로 일정을 읽는다. LM28(F-05): 가장 최근 주(d1 이 든 주)만 URL 로 열고, 그다음은 '이전 주' 단추를 1회씩 눌러
     순차로 읽는다. 매번 화면 머리의 날짜 범위(cal_screen_range)가 기대한 주와 같을 때만 그 주를 읽음(ok)으로 하고 행을 받는다 —
@@ -1625,6 +1968,12 @@ def collect_cal(br, d0, d1, fake=None, today=None, run=None):
     P4: 일정 0개인 주는 이 실행에서 일정을 한 번이라도 읽었을 때만 ok(일정 칸 선택자가 빗나가면 모든 주가 0개다 — 그때는
     partial), 못 읽은 일정 막대(data-calitemid 인데 날짜·시각을 못 읽음)가 있는 주는 partial. run.c.cal_complete = 기간의 지난
     날이 모두 확인됨.
+    LM28(현장 2026-10-11 — 막대 108 중 16 못 읽음 · '이전 주' 34번):
+    · 라벨로 못 읽은 막대는 위치로 보충한다(parse_event geo — 요일 열·시간 눈금·종일 줄). 열·눈금을 못 찾으면 그 주는 그대로 일부.
+    · 일정이 아닌 칸은 막대 수·못 읽음에서 뺀다 — 칩·머리 칸(owa_parse.cal_nonevent), 본문(role=main) 밖 옆 창의 막대, 요일 열이
+      막대 대부분을 품을 때 열 밖의 막대. 숨은 일정 칩('+2' — 다 안 그려진 일정)이 있는 주는 일부(MORE_PARTIAL).
+    · 시작 주가 PICK_MIN_WEEKS 주 이상 뒤면(주소 이동이 무시된 화면) 작은 달력으로 그 주에 바로 가고(머리로 확인), '이전 주'가
+      안 먹을 때도 주소보다 먼저 작은 달력을 쓴다. 작은 달력이 없거나 틀리면 이 실행은 끄고 예전 길('이전 주'·주소)로.
     → (행, 상태 ok|empty|login|personal|timeout|unverified, diag, {날짜: st})"""
     run = run or Run(d0, d1, today)
     rows, seen = [], set()
@@ -1632,32 +1981,84 @@ def collect_cal(br, d0, d1, fake=None, today=None, run=None):
     day_st = dict.fromkeys(_days(d0, d1), "unverified")
     one = timedelta(days=1)
     cc = run.cen["cal"]
-    ev_n = cc.setdefault("ev", {"seen": 0, "cal": 0, "parsed": 0, "unparsed": 0})
+    ev_n = cc.setdefault("ev", {"seen": 0, "cal": 0, "parsed": 0, "unparsed": 0, "chip": 0, "more": 0, "side": 0,
+                                "pos": 0})
+    ps_n = cc.setdefault("ps", {"col": 0, "span": 0, "grid": 0, "ad": 0})
     wk = {"ok": 0, "zero": 0, "part": 0, "unv": 0}
     zero_weeks = []                         # 일정 0개로 확인한 주 — 끝에 '이 실행에서 일정을 읽었나'로 ok·partial 을 정한다
     n_weeks = ((d1 - timedelta(days=d1.weekday())) - (d0 - timedelta(days=d0.weekday()))).days // 7 + 1
     run.c["weeks_total"] = n_weeks
 
-    def keep(evs, hs, he, check):
-        """그 주 화면의 일정 → (그 주의 행 | None, 못 읽은 일정 막대 수). 기간과 겹치는 것만·중복 한 번 rows 에 더한다.
-        check 면 일정이 그 주 밖일 때(바탕이 아직 앞 주) (None, 0)."""
-        got, bad = [], 0
+    def keep(evs, hs, he, check, pg=None):
+        """그 주 화면의 일정 → (그 주의 행 | None, 못 읽은 일정 막대 수, 숨은 일정 칩 수). 기간과 겹치는 것만·중복 한 번 rows 에
+        더한다. check 면 일정이 그 주 밖일 때(바탕이 아직 앞 주) (None, 0, 0). pg(그 화면 — JS_CAL)가 있으면 위치로 보충한다:
+        ① 라벨만으로 읽고 ② 라벨로 시각을 안 막대로 시간 눈금을 맞춘 뒤(보정) ③ 못 읽은 막대를 위치로(parse_event geo)."""
+        live, chip, more, side = [], 0, 0, 0
         for ev in evs:
-            r = parse_event(ev, hs, he)
+            kind = owa_parse.cal_nonevent(ev.get("label"), ev.get("texts") or [])
+            if kind:                         # 칩·머리 칸 — 막대가 아니다
+                chip += 1
+                more += kind == "more"
+                continue
+            live.append(ev)
+        geo = _cal_geo(pg, hs, he, live) if pg is not None else None
+        cols = geo["cols"] if geo else None
+        if any(_int(ev.get("m")) for ev in live):     # 본문(role=main) 밖 막대 — 옆 창(오늘 일정 등)은 그 주의 막대가 아니다
+            outm = [ev for ev in live if not _int(ev.get("m"))]
+            if cols:                         # 요일 열을 알면 열 안의 막대는 본문 밖이라도 그 주의 막대로 둔다(종일 줄을 잃지 않게)
+                outm = [ev for ev in outm if not (_pos_ok(ev) and owa_parse.col_date(cols, ev.get("x")) is not None)]
+            ids = {id(ev) for ev in outm}
+            live = [ev for ev in live if id(ev) not in ids]
+            side += len(ids)
+        if cols:                             # 요일 열이 막대 대부분(60% 이상)을 품을 때만 — 열 밖 막대는 옆 칸
+            pos = [ev for ev in live if _pos_ok(ev)]
+            outs = {id(ev) for ev in pos if owa_parse.col_date(cols, ev.get("x")) is None}
+            if outs and len(outs) * 10 <= len(pos) * 4:
+                live = [ev for ev in live if id(ev) not in outs]
+                side += len(outs)
+        got, todo, calib = [], [], []
+        for ev in live:
+            info = {}
+            r = parse_event(ev, hs, he, None, info)
             if not r:
-                if ev.get("cal"):
-                    bad += 1                 # data-calitemid 막대인데 날짜·시각을 못 읽었다 — 그 주는 '읽음'이 아니다
+                todo.append((ev, info))
                 continue
             if check and (r[1][:10] < (hs - one).isoformat() or r[0][:10] > (he + one).isoformat()):
-                return None, 0
+                return None, 0, 0
             got.append(r)
+            if (geo and info.get("nt", 0) >= 2 and r[2] == "False" and r[0][:10] == r[1][:10] and _pos_ok(ev)
+                    and _int(ev.get("in")) == 1 and not _int(ev.get("ad"))):
+                calib.append((ev.get("t"), _mins(r[0]), ev.get("b"), _mins(r[1])))
+        if geo and any(_int(ev.get("in")) for ev in live if _pos_ok(ev)):
+            geo["scale"] = owa_parse.time_scale(geo["pts"], calib)
+        bad = 0
+        for ev, info in todo:
+            r = None
+            if geo:
+                info = {}
+                r = parse_event(ev, hs, he, geo, info)
+            if r:
+                got.append(r)
+                ev_n["pos"] += 1
+                for k in (info.get("d"), info.get("t")):
+                    if k in ps_n:
+                        ps_n[k] += 1
+                continue
+            if ev.get("cal"):
+                bad += 1                     # data-calitemid 막대인데 날짜·시각을 못 읽었다 — 그 주는 '읽음'이 아니다
+                _bad_shape(cc, ev, info.get("why") or "nd")
+        if pg is not None:
+            _cen_geo(cc, pg, geo, live, calib)
         diag["events"] += len(evs)
-        ev_n["seen"] += len(evs)
-        ev_n["cal"] += sum(1 for ev in evs if ev.get("cal"))
+        ev_n["seen"] += len(live)
+        ev_n["cal"] += sum(1 for ev in live if ev.get("cal"))
         ev_n["parsed"] += len(got)
         ev_n["unparsed"] += bad
-        if "fmt" not in cc and evs:
-            cc["fmt"] = owa_parse.fmt_flags(str(evs[0].get("label") or ""))
+        ev_n["chip"] += chip
+        ev_n["more"] += more
+        ev_n["side"] += side
+        if "fmt" not in cc and live:
+            cc["fmt"] = owa_parse.fmt_flags(str(live[0].get("label") or ""))
         for r in got:
             # 기간과 겹치는 일정만 — 다일 일정은 기간 전에 시작해 기간 안에서 끝나도 남긴다(extract 가 일자로 전개)
             if r[1][:10] < d0.isoformat() or r[0][:10] > d1.isoformat():
@@ -1670,7 +2071,7 @@ def collect_cal(br, d0, d1, fake=None, today=None, run=None):
             if r[0][:10] != r[1][:10]:
                 diag["multi_day"] = diag.get("multi_day", 0) + 1
             rows.append(r)
-        return got, bad
+        return got, bad, more
 
     def done(st):
         proven = ev_n["parsed"] > 0
@@ -1728,13 +2129,45 @@ def collect_cal(br, d0, d1, fake=None, today=None, run=None):
         log("일정: 주 보기 머리(날짜 범위)를 읽지 못해 어느 주인지 확인할 수 없습니다 — 일정은 읽음으로 적지 않습니다")
         return done("unverified")
     # 주소 이동이 먹는가 — 연 주가 d1 의 주면 먹었다(단 이번 주면 무시돼도 같은 화면이라 모른다), 다른 주면 무시됐다
-    nav = {"mode": "click", "url": None}
+    nav = {"mode": "click", "url": None, "pick": True}
     if ref[0] <= d1 <= ref[1]:
         nav["url"] = None if ref[0] <= run.today <= ref[1] else True
     else:
         nav["url"] = False
         run.bump("cal_url_ignored" if ref[0] > d1 else "cal_url_other")
     cc["url"] = {"start": {True: "ok", False: "ignored", None: "unknown"}[nav["url"]], "tries": 0, "ok": 0}
+    last = {"head": head}
+
+    def jump(tgt):
+        """작은 달력으로 tgt 주에 → (화면 범위 | None, 화면 | None). 확인(범위 == tgt)은 부르는 쪽이 한다."""
+        rng, pg2 = _pick_week(br, run, tgt, last["head"])
+        if pg2:
+            last["head"] = _head_of(pg2, run.today) or last["head"]
+        return rng, pg2
+
+    if ref[0] > d1:                         # 주소가 무시돼 더 뒤 주(이번 주 등)가 보인다 — 작은 달력으로 시작 주에 바로
+        k = -(-(ref[0] - d1).days // 7)
+        if k >= PICK_MIN_WEEKS:
+            tgt = (ref[0] - k * w7, ref[1] - k * w7)
+            rng, pg2 = jump(tgt)
+            if rng == tgt:
+                ref, pg = rng, pg2
+                log(f"일정: 작은 달력으로 시작 주({tgt[0].isoformat()})에 바로 갔습니다('이전 주' {k - 1}번 아낌)")
+            else:
+                nav["pick"] = False          # 없거나 틀렸다 — 이 실행은 예전 길('이전 주')로
+                if pg2 and rng != ref:
+                    if rng is not None and d1 < rng[0] < ref[0] and (rng[1] - rng[0]) == (ref[1] - ref[0]):
+                        ref, pg = rng, pg2   # 덜 갔지만 여전히 뒤 주 — 거기서 '이전 주'로 잇는다
+                    else:                    # 머리를 못 읽거나(일 보기 등) 지나쳤다 — 처음 주소로 되돌린다
+                        run.bump("cal_pick_restore")
+                        g = br.goto(_cal_url(br, d1), wait=5.0)
+                        if g in ("login", "personal"):
+                            return rows, g, diag, day_st
+                        pg = _cal_page(br) if g == "ok" else {}
+                        ref = cal_screen_range(pg, run.today) if pg else None
+                        if ref is None:
+                            run.bump("cal_header_none")
+                            return done("unverified")
     st_ = {"clicks": 0, "retries": 0, "cap": n_weeks + CAL_RETRY}
     if ref[0] > d1:                         # URL 이 무시돼 더 뒤 주(이번 주 등)가 보인다 — 거슬러 가는 만큼 상한에 더한다
         st_["cap"] += (ref[0] - d1).days // 7 + 1
@@ -1757,7 +2190,8 @@ def collect_cal(br, d0, d1, fake=None, today=None, run=None):
         """한 주 과거로 → (새 기준, 대안, 화면, 확인됨, 사유). 머리가 기준-7일(또는 대안-7일)이면 확인됨.
         ① '이전 주' 단추 — 머리가 그대로면 CAL_RETRY(전체) 번까지 다시 누른다. 그 밖(머리 못 읽음·다른 주)은 미확인: 기준은
            기대한 주로 두고, 읽은 머리는 대안으로 남긴다(다음 화면에서 어느 쪽이 맞았는지 가린다).
-        ② 단추가 없거나 끝내 안 먹으면 주소로 기대한 주를 연다 — 먹으면 이후도 주소로. 주소도 무시되면(머리 그대로) 멈춘다."""
+        ② 단추가 없거나 끝내 안 먹으면 작은 달력으로 기대한 주에 — 먹으면 이후도 작은 달력으로(LM28 현장 2026-10-11).
+        ③ 그것도 안 되면 주소로 기대한 주를 연다 — 먹으면 이후도 주소로. 주소도 무시되면(머리 그대로) 멈춘다."""
         exps = [(ref[0] - w7, ref[1] - w7)] + ([(alt[0] - w7, alt[1] - w7)] if alt else [])
         if nav["mode"] == "click":
             while True:
@@ -1782,6 +2216,12 @@ def collect_cal(br, d0, d1, fake=None, today=None, run=None):
                     return rng, None, pg2, True, "ok"
                 run.bump("cal_header_none" if rng is None else "cal_header_mismatch")
                 return exps[0], rng, pg2, False, "ok"
+        if nav["pick"] and nav["mode"] in ("click", "pick"):
+            rng, pg2 = jump(exps[0])
+            if rng is not None and rng in exps:
+                nav["mode"] = "pick"
+                return rng, None, pg2, True, "ok"
+            nav["pick"] = False              # 없거나 틀렸다 — 주소로(주소가 화면을 다시 맞춘다)
         if nav["url"] is False:
             return None, None, None, False, "stuck"
         g = br.goto(_cal_url(br, exps[0][0]), wait=5.0)
@@ -1816,19 +2256,23 @@ def collect_cal(br, d0, d1, fake=None, today=None, run=None):
             diag["weeks"] += 1
             _cen_cal_page(run, pg)
             evs = [ev for ev in pg.get("events") or [] if isinstance(ev, dict)]
-            got, bad = keep(evs, ref[0], ref[1], True) if ok_week else (None, 0)
+            got, bad, hid = keep(evs, ref[0], ref[1], True, pg) if ok_week else (None, 0, 0)
             if ok_week and got is None:     # 일정이 그 주 밖 — 바탕이 아직 앞 주다. 한 번 더 읽는다
                 _sleep(1.5)
                 pg = _cal_page(br)
                 if cal_screen_range(pg, run.today) == ref:
-                    got, bad = keep([ev for ev in pg.get("events") or [] if isinstance(ev, dict)], ref[0], ref[1], True)
+                    got, bad, hid = keep([ev for ev in pg.get("events") or [] if isinstance(ev, dict)], ref[0], ref[1],
+                                         True, pg)
                 if got is None:
                     run.bump("cal_stale")
             a, b = max(ref[0], d0), min(ref[1], d1)
             if ok_week and got is not None:
-                if bad:                      # 못 읽은 일정 막대가 있다 — 행은 받되 그 주는 일부만
+                if bad or (hid and MORE_PARTIAL):   # 못 읽은 막대·숨은 일정 칩이 있다 — 행은 받되 그 주는 일부만
                     wk["part"] += 1
-                    run.bump("cal_unparsed", bad)
+                    if bad:
+                        run.bump("cal_unparsed", bad)
+                    if hid:
+                        run.bump("cal_more_hidden", hid)
                     owa_parse.apply_ranges(day_st, [(a, b, "partial")], run.today)
                 elif got:
                     wk["ok"] += 1
@@ -2070,19 +2514,26 @@ def _verdict_ko(day_st_by_axis, today, axes=("mail_in", "mail_out")):
     return "일부" if any(x in ("ok", "zero_ok") for x in sts) else "미확인"
 
 
-def _fit(cen, cap=4000):
-    """dom_census 를 직렬화 cap 자 안으로(collect_status.KEEP_NESTED 4096 — 넘치면 last_run.json 에서 빠진다).
-    넘치면 행 골격 → 후보 칸 표 → data-app-section 값 → 폴더별 세부 순으로 덜어 낸다."""
+def _fit(cen, cap=CENSUS_MAX):
+    """dom_census 를 직렬화 cap 바이트(UTF-8) 안으로(collect_status.KEEP_NESTED 4096 — 넘치면 last_run.json 에서 빠진다).
+    넘치면 메일 행 골격 → 후보 칸 표 → data-app-section 값 → 일정 못 읽은 막대 꼴(1개만 남김) → 폴더별 세부 → 막대 꼴·위치 해석·
+    작은 달력 순으로 덜어 낸다."""
     def size(o):
-        return len(json.dumps(o, ensure_ascii=False, default=str))
+        return len(json.dumps(o, ensure_ascii=False, default=str).encode("utf-8"))
     if size(cen) <= cap:
         return cen
     m = cen.get("mail") if isinstance(cen.get("mail"), dict) else {}
-    for drop in (("skel",), ("l", "cands"), ("s", "cands"), ("l", "sec"), ("s", "sec"), ("box",)):
-        tgt = m
-        for k in drop[:-1]:
-            tgt = tgt.get(k) if isinstance(tgt.get(k), dict) else {}
-        tgt.pop(drop[-1], None)
+    c = cen.get("cal") if isinstance(cen.get("cal"), dict) else {}
+    for root, drop in ((m, ("skel",)), (m, ("l", "cands")), (m, ("s", "cands")), (m, ("l", "sec")), (m, ("s", "sec")),
+                       (c, ("bad1",)), (m, ("box",)), (c, ("bad",)), (c, ("geo",)), (c, ("pick",)), (c, ("ps",))):
+        if drop == ("bad1",):
+            if isinstance(c.get("bad"), list) and len(c["bad"]) > 1:
+                c["bad"] = c["bad"][:1]
+        else:
+            tgt = root
+            for k in drop[:-1]:
+                tgt = tgt.get(k) if isinstance(tgt.get(k), dict) else {}
+            tgt.pop(drop[-1], None)
         if size(cen) <= cap:
             return cen
     return {"v": cen.get("v"), "ver": cen.get("ver"), "cut": 1}
@@ -2137,11 +2588,46 @@ def _census(run, todo, results):
         if ul.get("tries"):
             url += f"·이동 {ul.get('ok', 0)}/{ul['tries']}"
         ev = cc.get("ev") or {}
-        parts.append(f"일정 주 {w.get('ok', 0)}/{w.get('total', 0)}(머리 {'예' if cc.get('hdr') else '아니오'}·이전 주 {prev}·"
-                     f"주소 {url}·막대 {ev.get('seen', 0)}·못 읽음 {ev.get('unparsed', 0)}) → "
+        pk = cc.get("pick") or {}
+        pick = f"·작은 달력 {pk.get('ok', 0)}/{pk['try']}" if pk.get("try") else ""
+        pos = f"·위치로 {ev['pos']}" if ev.get("pos") else ""
+        parts.append(f"일정 주 {w.get('ok', 0)}/{w.get('total', 0)}(일부 {w.get('part', 0)}·머리 {'예' if cc.get('hdr') else '아니오'}·"
+                     f"이전 주 {prev}{pick}·주소 {url}·막대 {ev.get('seen', 0)}·못 읽음 {ev.get('unparsed', 0)}{pos}) → "
                      f"{'완료' if run.c.get('cal_complete') else '미완'}")
         cen["cal"] = dict(cc, complete=bool(run.c.get("cal_complete")))
     return "구조: " + " | ".join(parts), _fit(cen)
+
+
+WHY_KO = {"nd": "날짜없음", "np": "위치없음", "nh": "열머리없음", "nc": "열밖", "nt": "시각없음", "ng": "눈금없음"}
+PICK_KO = {"nogrid": "달력 없음", "nodate": "칸 날짜 못 읽음", "nocell": "칸 없음", "nonav": "달 넘기기 없음", "gone": "칸 사라짐",
+           "head": "머리 다름", "cap": "달 상한", "time": "시간 예산"}
+
+
+def _census_plus(run, todo, results):
+    """'구조+:' 둘째 줄(사진 한 장으로 원인 확정 — '구조:' 줄 바로 뒤, collect_status.census_line 이 함께 싣는다) — 일정 위치
+    해석(살린 수: 열·눈금·종일 줄)·요일 열/시간 눈금이 잡힌 모양(머리 수·간격 px·눈금 수·시간당 px·보정 막대 수)·뺀 칸(칩·숨은
+    일정·옆 창)·작은 달력·못 읽은 막대 꼴 최대 3개(owa_parse.mask_cal — 글자 x). 380자 안. 일정을 읽지 않았으면 ''."""
+    cc = run.cen["cal"]
+    if not ("cal" in todo and "cal" in results and cc.get("url")):
+        return ""
+    ev, ps, g, pk = cc.get("ev") or {}, cc.get("ps") or {}, cc.get("geo") or {}, cc.get("pick") or {}
+    out = [f"위치 해석 {ev.get('pos', 0)}(열 {ps.get('col', 0) + ps.get('span', 0)}·눈금 {ps.get('grid', 0)}·"
+           f"종일줄 {ps.get('ad', 0)})",
+           f"열머리 {g.get('cols', 0)}" + (f"({g['s']}px)" if g.get("s") else "") + f"·눈금 {g.get('hl', 0)}"
+           + (f"({g['px']}px/시)" if g.get("px") else "") + f"·보정 {g.get('cal', 0)}·시간칸 {g.get('in', 0)}·"
+           f"종일줄 {g.get('ad', 0)}·위치없음 {g.get('np', 0)}" + (f"·위치오류 {g['err']}" if g.get("err") else "")]
+    if ev.get("chip") or ev.get("side"):
+        out.append(f"뺌 칩 {ev.get('chip', 0)}(숨은일정 {ev.get('more', 0)})·옆칸 {ev.get('side', 0)}")
+    if pk.get("try"):
+        out.append(f"작은달력 {pk.get('ok', 0)}/{pk['try']}(칸 {pk.get('cells', 0)}·{pk.get('fmt') or '-'}·달넘김 {pk.get('nav', 0)}"
+                   + (f"·{PICK_KO.get(pk['why'], pk['why'])}" if pk.get("why") else "") + ")")
+    shapes = []
+    for b in (cc.get("bad") or [])[:3]:
+        s = str(b.get("l") or "")[:44] + (" | " + str(b["t"])[:16] if b.get("t") else "")
+        shapes.append(f"{s}[{b.get('f') or '-'}/{WHY_KO.get(b.get('w'), b.get('w') or '?')}]")
+    if shapes:
+        out.append("못읽음 예 " + " ／ ".join(shapes))
+    return ("구조+: " + " · ".join(out))[:380]
 
 
 def finish(results, fail, run, todo, paths, src_p, out_dir, tag, src_name, store_subject, cfg):
@@ -2170,6 +2656,9 @@ def finish(results, fail, run, todo, paths, src_p, out_dir, tag, src_name, store
         line, cen = _census(run, todo, results)
         run.c["dom_census"] = cen
         log(line)
+        plus = _census_plus(run, todo, results)      # 둘째 줄 '구조+:' — 일정 위치 해석·작은 달력·못 읽은 막대 꼴(가린 것)
+        if plus:
+            log(plus)
     for kind in todo:
         if kind not in results:
             continue

@@ -164,6 +164,8 @@ class StatusTests(unittest.TestCase):
                                    LM("owa", 3, "R-WEBSEL", [], {"rows": 1})], 3, src="owa")
         self.assertEqual(collect_status.census_line(st), "[outlook-web] 구조: listbox 4 · 끝 근거 없음")
         self.assertEqual(collect_status.census_line({"lines": ["x"]}), "")
+        two = {"lines": ["[teams-web] 구조: 목록 61", "[teams-web] 구조+: 제목 xx | xxx", "[teams-web] 방: 읽음 3"]}
+        self.assertEqual(collect_status.census_line(two), "[teams-web] 구조: 목록 61\n[teams-web] 구조+: 제목 xx | xxx")
 
     def test_ps_single_range_dict(self):
         line = "LMSTATUS " + json.dumps({"v": 1, "src": "index", "rc": 3, "reason": "R-RECURINC",
@@ -268,17 +270,18 @@ class CoverageTests(unittest.TestCase):
             self.assertEqual(L.composite("2026-01-05", "mail_in"), "not_attempted")
 
     def test_src_rules_drop_only_that_source(self):
-        """판정 규칙의 판이 없는(옛) 원장 — OWA 칸만 지우고 COM 칸은 둔다. 새로 저장한 원장은 다시 지우지 않는다."""
+        """판정 규칙의 판이 없는(옛) 원장 — 판이 바뀐 출처(OWA·COM)의 칸만 지우고 색인 칸은 둔다. 새로 저장한 원장은 다시 지우지 않는다."""
         with tempfile.TemporaryDirectory(prefix="lm28_p6r_") as td:
             p = os.path.join(td, coverage.FILE_NAME)
-            days = {"2026-03-02": {"mail_in": {"owa": "ok", "com": "ok"}, "cal": {"owa": "ok"}},
-                    "2026-03-03": {"mail_out": {"owa": "zero_ok"}}}
+            days = {"2026-03-02": {"mail_in": {"owa": "ok", "index": "ok"}, "cal": {"owa": "ok"}},
+                    "2026-03-03": {"mail_out": {"owa": "zero_ok", "com": "zero_ok"}}}
             with open(p, "w", encoding="utf-8") as f:
                 json.dump({"v": 1, "ver": "v|1", "host": "h", "days": days, "suspect": {}, "na": {}, "last": {}}, f)
             L = coverage.Ledger.load(p, "v|1", "h")
-            self.assertEqual(L.dropped_src, ["owa"])                                 # 칸이 있던 출처만 알린다
-            self.assertEqual(L.src_status("2026-03-02", "mail_in", "com"), "ok")
+            self.assertEqual(L.dropped_src, ["com", "owa"])                          # 칸이 있던 출처만 알린다
+            self.assertEqual(L.src_status("2026-03-02", "mail_in", "index"), "ok")
             self.assertIsNone(L.src_status("2026-03-02", "mail_in", "owa"))
+            self.assertIsNone(L.src_status("2026-03-03", "mail_out", "com"))       # 차가운 COM 의 '0건 확인'도 다시 읽는다
             self.assertEqual(L.composite("2026-03-02", "cal"), "not_attempted")       # 다음 실행이 다시 읽는다
             self.assertEqual(L.gaps(("mail_out",), "2026-03-03", "2026-03-03"), {"mail_out": [("2026-03-03", "2026-03-03")]})
             L.apply({"src": "owa", "rc": 0, "ranges": rngs(("cal",), "2026-03-02", "2026-03-02", "ok")})
@@ -286,6 +289,16 @@ class CoverageTests(unittest.TestCase):
             L2 = coverage.Ledger.load(p, "v|1", "h")
             self.assertEqual(L2.dropped_src, [])
             self.assertTrue(L2.is_verified("2026-03-02", "cal"))
+
+    def test_cold_com_lowers_index(self):
+        """차가운 COM(이 수집이 띄운 캐시 Outlook) 뒤의 색인 '읽음'은 partial — 같은 캐시를 비춘다. 따뜻한 COM 이면 그대로."""
+        for cold, want in ((True, "partial"), (False, "ok")):
+            L = coverage.Ledger(None, "v|1", "h")
+            L.apply({"src": "com", "rc": 0, "counts": {"cold": cold},
+                     "ranges": rngs(("mail_in",), "2026-03-02", "2026-03-02", "partial" if cold else "ok")})
+            L.apply({"src": "index", "rc": 0, "ranges": rngs(("mail_in",), "2026-03-02", "2026-03-02", "ok")})
+            self.assertEqual(L.src_status("2026-03-02", "mail_in", "index"), want)
+            self.assertEqual(L.is_verified("2026-03-02", "mail_in"), not cold)    # 차가우면 웹 경로가 그날을 다시 읽는다
 
 
 # ── 사슬(run_step 주입) ─────────────────────────────────────────────────────

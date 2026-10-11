@@ -87,7 +87,7 @@ def record(name, ok, sec=0.0, note="", rc=None, reason="", counts=None, census="
     RUN["stages"] = [x for x in RUN["stages"] if x["name"] != name]
     ent = {"name": name, "ok": bool(ok), "sec": round(sec, 1), "note": (note or "")[:300]}
     if census:
-        ent["census"] = str(census)[:400]
+        ent["census"] = str(census)[:820]
     if rc is not None:
         ent.update(rc=int(rc), reason=str(reason or "")[:120], counts=collect_status.compact(counts))
     RUN["stages"].append(ent)

@@ -135,5 +135,7 @@ def compact(counts, max_keys=40):
 
 
 def census_line(st):
-    """수집기가 찍은 화면 구조 한 줄('[outlook-web] 구조: …')— 마지막 것. 없으면 ''."""
-    return next((ln for ln in reversed(st.get("lines") or []) if "구조:" in ln), "")[:400]
+    """수집기가 찍은 화면 구조 줄 — 마지막 '[…] 구조:' 줄과(있으면) 마지막 '[…] 구조+:' 줄을 줄바꿈으로 잇는다. 없으면 ''."""
+    lines = st.get("lines") or []
+    out = [next((ln for ln in reversed(lines) if mark in ln), "")[:400] for mark in ("구조:", "구조+:")]
+    return "\n".join(x for x in out if x)

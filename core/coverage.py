@@ -7,6 +7,7 @@ gaps() 가 빈 날이 남는 동안 다음 경로를 돈다(P3 — 첫 성공에
   순위: ok > zero_ok > partial > unverified = out_of_horizon = blocked(= asked) > not_attempted · na 는 축 단위로 따로.
   규칙(LM27 ledger 의 순위·_comgap 1.3 만 가져왔다 — 계획기·rcmap·셀 키는 들이지 않는다):
    · 색인은 zero_ok 를 줄 수 없다(0행이 '없음'의 증거가 아니다). 반복 마스터가 있으면(counts.recurring_masters>0) cal ok 도 없다.
+     마지막 COM 이 차가웠으면(counts.cold — 이 수집이 띄운 캐시 Outlook) 같은 캐시를 비추는 색인의 ok 도 partial 이다.
    · Copilot(copilot·teams_copilot)은 증인이다 — ok·zero_ok 를 만들지 않고, 합성에서 다른 출처의 미관측을 덮지 않는다.
      Copilot 이 답했는데 표가 없던 날은 'asked'(다시 묻지 않는다 — gaps(witness=…)).
    · COM 이 zero_ok 인데 색인 행이 있거나, 색인/COM > 1.3(차이 2통 이상)이면 그날 그 축은 suspect — COM·색인의 '읽음'을
@@ -38,7 +39,7 @@ LEDGER_VER = "LM28-COV-1"
 # 출처별 '읽음' 판정 규칙의 판 — 웹 경로의 확인 규칙을 고치면 여기를 올린다. 불러올 때 판이 다른(또는 판이 없는) 출처의
 # 칸만 지우고 그 날들을 다시 읽게 한다(다른 출처의 표시는 둔다). 2: 회사 PC 실측 — 첫 listbox 'fits' 로 메일 17건에
 # 281일을 확인 처리했고(OWA), 팀즈 웹 전환 확인이 전부 빗나갔다(LM28 OWA-2·TW-2).
-SRC_RULES = {"owa": "2", "teams_web": "2"}
+SRC_RULES = {"owa": "2", "teams_web": "2", "com": "2"}   # com 2: 차가운 COM(이 수집이 띄운 캐시 Outlook)의 '0건 확인' 무효
 FILE_NAME = "coverage_ledger.json"
 DAY = timedelta(days=1)
 
@@ -154,9 +155,11 @@ class Ledger:
         for k in ("days", "suspect", "na", "last"):
             if isinstance(o.get(k), dict):
                 setattr(led, k, o[k])
+        # 판정 규칙의 판이 바뀐 출처의 칸 지우기는 쓰는 쪽(수집 — 판 ver 를 주고 연다)만 한다. 읽기만 하는 분석·화면은 파일 그대로 —
+        # 수집이 그 칸을 지우고 src_rules 를 적어 저장한 뒤에 읽는다.
         old = o.get("src_rules") if isinstance(o.get("src_rules"), dict) else {}
         stale = sorted(s for s, v in SRC_RULES.items() if str(old.get(s) or "") != v)
-        if stale:
+        if ver and stale:
             led.dropped_src = sorted(s for s, n in led.drop_sources(stale).items() if n)
         return led
 
@@ -210,6 +213,8 @@ class Ledger:
                 st = "unverified"          # 색인 0행은 '없음'의 증거가 아니다
             if axis == "cal" and st == "ok" and int((counts or {}).get("recurring_masters") or 0) > 0:
                 st = "partial"             # 반복 회의 미전개(C-11) — 웹이 다시 읽게
+            if st == "ok" and (self.last.get("com") or {}).get("cold"):
+                st = "partial"             # 색인은 같은 캐시(OST)를 비춘다 — 차가운 COM 이 본 캐시면 색인의 '읽음'도 믿지 않는다
         return st
 
     def put(self, src, axis, day, st):
@@ -243,6 +248,8 @@ class Ledger:
                 n += self.put(src, ax, day, s)
         self.last[src] = {"rc": rc, "reason": str(st.get("reason") or "")[:120],
                           "at": time.strftime("%Y-%m-%d %H:%M")}
+        if src == "com":
+            self.last[src]["cold"] = bool(counts.get("cold"))   # 뒤에 오는 색인(같은 OST)의 '읽음'을 낮추는 근거
         return n
 
     def comgap(self, com_counts, idx_counts, d0, d1, ratio=COMGAP_RATIO):

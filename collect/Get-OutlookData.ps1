@@ -64,7 +64,7 @@ if ($SelfTest -le 0 -and $env:LM_OUTLOOK_SELFTEST) { try { $SelfTest = [int]$env
 if ($SelfTestDelayMs -le 0 -and $env:LM_OUTLOOK_SELFTEST_DELAY_MS) { try { $SelfTestDelayMs = [int]$env:LM_OUTLOOK_SELFTEST_DELAY_MS } catch {} }
 $writer = $(if ($SelfTest) { 'selftest' } else { 'com' })
 . (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) 'OutlookCommon.ps1')   # 판 판정·카나리아·폴더 재귀·LMSTATUS
-$COLLECTOR_VER = 'LM28-COM-1'          # 완료 표 판정 규칙의 판 - 규칙을 바꾸면 올린다(옛 표의 '완료'를 버린다, F-09)
+$COLLECTOR_VER = 'LM28-COM-2'          # 완료 표 판정 규칙의 판 - 규칙을 바꾸면 올린다(옛 표의 '완료'를 버린다, F-09). 2: 차가운 COM(Limit-ColdVerdict)
 $covVer = '{0}|{1}' -f $COLLECTOR_VER, [int](Get-OcCfg $cfg 'collect' 'cursorEpoch' 1)
 $attachWait = [math]::Max(20, [math]::Min(600, [int](Get-OcCfg $cfg 'outlook' 'attachWaitSec' 120)))
 $staleH = [double](Get-OcCfg $cfg 'outlook' 'ostStaleH' 72)
@@ -651,6 +651,7 @@ $script:fatal = ''
 $launched = $false; $launchT = $null; $wd = $null
 $hz = @{ oldest = $null; newest = $null }
 $cached = $false
+$script:coldCom = $false
 
 try {
     # ── 지난 표·CSV 읽기(여기서 실패해도 사유가 남게 try 안) ──
@@ -828,6 +829,10 @@ try {
         # PST·IMAP·공유·보관 사서함은 읽지 않는다(기본 저장소만).
         $store = $null; try { $store = $ns.DefaultStore } catch {}
         try { $cached = [bool]$store.IsCachedExchange } catch { $cached = $false }
+        # 차가운 COM(LM28 회사 PC 실측): 이 수집이 Outlook 을 직접 띄웠고 캐시 모드이거나 새 Outlook 흔적이 있으면, 그 캐시가 사서함
+        # 전체를 담았는지 증명할 수 없다 - 판정을 낮춰(Limit-ColdVerdict) 원장이 색인·Outlook 웹으로 계속 확인하게 한다
+        $script:coldCom = ($launched -and ($cached -or $newOutlook))
+        $counts.cached = $cached; $counts.cold = $script:coldCom
         $defs = @{}
         foreach ($n in (@(6, 5) + $script:OC_SKIP_FOLDERS)) {
             $fd = $null
@@ -890,6 +895,10 @@ try {
             $(if ($subOn) { '(하위 폴더 포함)' } else { '' }),
             $(if ($hz.oldest) { $hz.oldest.ToString('yyyy-MM-dd') } else { '?' }), $(if ($hz.newest) { $hz.newest.ToString('yyyy-MM-dd') } else { '?' }),
             $(if ($cached) { ' · 캐시 모드' } else { '' }))
+        if ($script:coldCom) {
+            $reasons.Add('R-COMCOLD')
+            Write-Host ("[outlook] 주의: 이 수집이 Outlook 을 직접 띄웠습니다({0}) - 캐시가 사서함 전체를 담았는지 알 수 없어 '0건 확인'·'읽음'으로 적지 않습니다. 메일·일정 확인은 색인·Outlook 웹이 이어 갑니다(R-COMCOLD)." -f $(if ($cached) { '캐시 모드' } else { '새 Outlook 사용 흔적' }))
+        }
     }
     try { Remove-Item -LiteralPath (Join-Path $outDir 'mail.csv.part') -ErrorAction SilentlyContinue } catch {}   # 구판의 중간 저장은 더 쓰지 않는다
 
@@ -928,7 +937,7 @@ try {
         Add-Rows $calBy $rows 0 $mo.key
         $cnt = $(if ($calBy.ContainsKey($mo.key)) { $calBy[$mo.key].Count } else { 0 })
         # LM28: 0행 달은 카나리아가 성공했을 때만 완료(zero_ok) - 일정은 동기화 창이 걸리지 않아 지평선은 보지 않는다
-        $v = Test-MonthDone -Rows $cnt -Canary $canary -Start $mo.start -End $mo.end -Cached $false
+        $v = Limit-ColdVerdict (Test-MonthDone -Rows $cnt -Canary $canary -Start $mo.start -End $mo.end -Cached $false) $script:coldCom
         Add-Verdict 'cal' $mo $v
         if ($v.done) { $script:cov.calendar[$mo.key] = @{ rows = $cnt; when = $now; start = $mo.start; end = $mo.end; st = $v.st } }
         else { $script:cov.calendar.Remove($mo.key) }
@@ -985,6 +994,7 @@ try {
         # 일 때만 zero_ok. 두 축이 모두 검증된 달만 완료 표에 적는다(나머지는 다음 실행이 다시 읽고 원장은 웹 경로를 돌린다)
         $vIn = Test-MonthDone -Rows $cIn -Canary $canary -Oldest $hz.oldest -Newest $hz.newest -Start $mo.start -End $mo.end -StaleH $staleH -Cached $cached -Mismatch $script:monthMismatch
         $vOut = Test-MonthDone -Rows $cOut -Canary $canary -Oldest $hz.oldest -Newest $hz.newest -Start $mo.start -End $mo.end -StaleH $staleH -Cached $cached -Mismatch $script:monthMismatch
+        $vIn = Limit-ColdVerdict $vIn $script:coldCom; $vOut = Limit-ColdVerdict $vOut $script:coldCom
         Add-Verdict 'mail_in' $mo $vIn; Add-Verdict 'mail_out' $mo $vOut
         if ($vIn.done -and $vOut.done) {
             $script:cov.mail[$mo.key] = @{ rows = $cnt; rows_in = $cIn; rows_out = $cOut; st_in = $vIn.st; st_out = $vOut.st; when = $now; start = $mo.start; end = $mo.end }

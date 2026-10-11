@@ -140,6 +140,21 @@ class MonthDone(_Ps):
         self.assertEqual(m["stopped"], {"done": False, "st": "partial"})
         self.assertEqual(m["rows_no_canary"], {"done": True, "st": "ok"})
 
+    def test_cold_com(self):
+        """이 수집이 띄운 캐시 모드 Outlook — 0건 달을 '0건 확인'으로, 행 있는 달을 '읽음'으로 굳히지 않는다(회사 PC 실측)."""
+        c = self.r["cold"]
+        self.assertEqual(c["zero"], {"done": False, "st": "unverified"})
+        self.assertEqual(c["rows"], {"done": False, "st": "partial"})
+        self.assertEqual(c["warm"], {"done": True, "st": "zero_ok"})                 # 사용자가 띄운 Outlook 은 그대로
+        self.assertEqual(c["horizon"], {"done": False, "st": "out_of_horizon"})
+        self.assertTrue(c["none"])
+        s = _src("Get-OutlookData.ps1")
+        self.assertIn("$script:coldCom = ($launched -and ($cached -or $newOutlook))", s)
+        for call in ("Limit-ColdVerdict (Test-MonthDone", "Limit-ColdVerdict $vIn $script:coldCom",
+                     "Limit-ColdVerdict $vOut $script:coldCom"):                   # 일정·받은·보낸 판정 세 곳
+            self.assertIn(call, s)
+        self.assertIn("'R-COMCOLD'", s)
+
     def test_ranges(self):
         mr = self.r["month_ranges"]
         t = lambda xs: [(x["from"], x["to"], x["st"]) for x in xs]  # noqa: E731

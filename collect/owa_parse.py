@@ -16,6 +16,9 @@ r"""collect\owa_parse.py — Outlook 웹(OWA) 화면 판정용 순수 함수(LM2
     (LM28 현장 2026-10-08: 화면의 첫 listbox 가 메일 목록이 아니었다).
   · weekday_date(text, d0, d1) — 날짜 없이 요일만 있는 일정 글 → 그 주 안의 그 요일.
   · mask_shape(s) · skeleton(node) · fmt_flags(text) — 화면 구조 진단용(글자 → x · 태그·role·aria-label 길이 · 날짜 표기 꼴만).
+  · 일정 위치 해석(LM28 현장 2026-10-11 — 라벨에 날짜·시각이 없는 막대): header_date · day_columns · col_date · col_span(요일 열)
+    · hour_label · time_scale · y_to_min(시간 눈금) · cal_nonevent(칩·머리 칸) · picker_date(작은 달력 칸) · mask_cal(못 읽은
+    막대 꼴 — 글자 x, 숫자·구두점·오전/오후·요일·종일만).
 """
 import re
 from datetime import date, datetime, timedelta, timezone
@@ -581,3 +584,324 @@ def fmt_flags(text):
     if re.search(r"(?i)종일|all[- ]day|終日|全天", t):
         f.append("ad")
     return "+".join(f) or "-"
+
+
+# ── 일정 위치 해석(LM28 현장 2026-10-11 — 회사 PC: 막대 108 · 날짜·시각을 못 읽음 16 · 9주 중 1주만 확인) ─────────────────
+# 라벨 꼴(반복 회의·종일 줄·자식 요소에만 있는 시각 …)은 화면마다 달라 고를 수 없다. 화면 구조와 무관한 신호로 푼다 — 막대 가로
+# 가운데가 든 요일 열(열 머리 칸의 날짜·가로 위치)이 날짜, 세로 위치가 시간 눈금(시각 글의 세로 위치)으로 시각. 열·눈금을 못
+# 찾으면 풀지 않는다(정직하게 일부). JS 가 내는 재료: 짧은 숫자 글 [{s, x, y, w, h}](가운데 좌표 px) · 막대 {x, l, r, t, b, ad, in}.
+def _num(v):
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if f == f else None             # NaN 제외
+
+
+def _median(xs):
+    s = sorted(xs)
+    n = len(s)
+    if not n:
+        return None
+    return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
+
+
+def header_date(text, d0, d1):
+    """주 보기 열 머리 글 → 그 주(d0~d1) 안의 날짜 | None. 온전한 날짜('2026년 10월 5일 월요일'·'Mon 10/5') → 날 번호('5 월'·'5'
+    — 그 주에 그 날이 하나뿐일 때) → 요일('월요일') 순. 시각·'시'·오전/오후가 든 글(시간 눈금)은 머리가 아니다."""
+    t = hm_words(str(text or "")).strip()
+    if not t or len(t) > 48 or not (d0 and d1) or find_times(t) or RE_DESIG.search(t) or re.search(r"\d\s*[시時]", t):
+        return None
+    d = _abs_date(t, d1, d0, d1)
+    if d is None and is_datetime_text(t):
+        d = _abs_date(t, d1, d0, d1, weak=True)
+    if d is not None:
+        return d if d0 <= d <= d1 else None
+    nums = {int(x) for x in re.findall(r"(?<!\d)(\d{1,2})(?!\d)", t)}
+    if nums:
+        hits, d = [], d0
+        while d <= d1:
+            if d.day in nums:
+                hits.append(d)
+            d += DAY
+        return hits[0] if len(hits) == 1 else None
+    return weekday_date(t, d0, d1)
+
+
+def day_columns(pts, d0, d1, xs=()):
+    """열 머리 후보(짧은 숫자 글 [{s, x, y}]) → 요일 열 {x: 기준 열 가운데, d: 그 날짜, s: 하루 간격 px(오른쪽이 앞날이면 −),
+    n: 읽힌 머리 수, lo·hi: 그 주} | None.
+    같은 가로줄(y ±8px)에서 그 주의 날짜로 읽히는 칸 2개 이상 · 날짜가 x 순으로 한쪽으로만 늘고 · 하루 간격이 고르고(±35%) ·
+    36px 이상인 줄. 여럿이면 막대 가운데 x(xs)를 가장 많이 품는 줄 — 왼쪽 작은 달력의 한 주 줄(칸 28px 안팎)은 간격에서 빠지고
+    막대도 품지 않는다. 머리가 빠진 날은 간격으로 잇는다(col_date)."""
+    if not (d0 and d1):
+        return None
+    cands = []
+    for p in pts or ():
+        if not isinstance(p, dict):
+            continue
+        x, y = _num(p.get("x")), _num(p.get("y"))
+        d = header_date(p.get("s"), d0, d1) if x is not None and y is not None else None
+        if d:
+            cands.append((y, x, d))
+    cands.sort(key=lambda c: (c[0], c[1]))
+    rows, cur = [], []
+    for c in cands:
+        if cur and c[0] - cur[-1][0] > 8:
+            rows.append(cur)
+            cur = []
+        cur.append(c)
+    if cur:
+        rows.append(cur)
+    xs = [v for v in (_num(x) for x in xs or ()) if v is not None]
+    best, key = None, None
+    for row in rows:
+        byd = {}
+        for _y, x, d in row:
+            byd.setdefault(d, []).append(x)                # 한 칸의 숫자 글과 이름(aria-label)이 같은 날로 둘 다 잡힐 수 있다
+        if len(byd) < 2:
+            continue
+        pairs = sorted((_median(v), d) for d, v in byd.items())
+        steps = [(xb - xa) / (db - da).days for (xa, da), (xb, db) in zip(pairs, pairs[1:], strict=False) if db != da]
+        if len(steps) != len(pairs) - 1:
+            continue
+        s = _median(steps)
+        if abs(s) < 36 or any(st * s <= 0 or abs(st - s) > 0.35 * abs(s) for st in steps):
+            continue
+        if any(max(v) - min(v) > 0.5 * abs(s) for v in byd.values()):
+            continue                                       # 같은 날이 서로 다른 열에 — 머리 줄이 아니다
+        dref = pairs[0][1]
+        cols = {"x": _median([x - (d - dref).days * s for x, d in pairs]), "d": dref, "s": s, "n": len(pairs),
+                "lo": d0, "hi": d1}
+        k = (sum(1 for x in xs if col_date(cols, x) is not None), len(pairs), abs(s))
+        if key is None or k > key:
+            best, key = cols, k
+    return best
+
+
+def col_date(cols, x):
+    """요일 열(day_columns)에서 가로 위치 x 가 든 열의 날짜 | None(그 주 밖 — 시간 눈금 칸·옆 창)."""
+    v = _num(x)
+    if not cols or v is None:
+        return None
+    k = round((v - cols["x"]) / cols["s"])
+    d = cols["d"] + timedelta(days=k)
+    return d if cols["lo"] <= d <= cols["hi"] else None
+
+
+def col_span(cols, left, right):
+    """종일 줄 막대의 왼쪽·오른쪽 끝 → 걸친 첫날·마지막 날 (a, b) | None(가장자리 몇 px 안쪽으로 잰다)."""
+    lv, rv = _num(left), _num(right)
+    if not cols or lv is None or rv is None or rv <= lv:
+        return None
+    pad = min(8.0, (rv - lv) / 4)
+    a, b = col_date(cols, lv + pad), col_date(cols, rv - pad)
+    if a is None or b is None:
+        return None
+    return min(a, b), max(a, b)
+
+
+def _line(pts):
+    """[(y, 분)] → (k, a) — y = a + k·분. 기울기는 모든 쌍 기울기의 가운데값(Theil–Sen), a 는 가운데값."""
+    sl = [(y2 - y1) / (m2 - m1) for i, (y1, m1) in enumerate(pts) for y2, m2 in pts[i + 1:] if m2 != m1]
+    k = _median(sl) or 0.0
+    return k, _median([y - k * m for y, m in pts])
+
+
+RE_HOUR_LABEL = re.compile(r"^(?:(오전|오후|AM|PM|A\.M\.|P\.M\.)\s*)?(\d{1,2})(?::([0-5]\d))?\s*(?:시|(AM|PM|A\.M\.|P\.M\.))?$",
+                           re.I)
+
+
+def hour_label(s):
+    """시간 눈금 글('오전 9시'·'9 AM'·'09:00'·'21:00'·'9'·'정오') → 자정부터 분 | None."""
+    t = str(s or "").strip()
+    if t.lower() in ("정오", "noon"):
+        return 720
+    m = RE_HOUR_LABEL.match(t)
+    if not m:
+        return None
+    ap = (m.group(1) or m.group(4) or "").upper()
+    h, mm = int(m.group(2)), int(m.group(3) or 0)
+    if ap and not 1 <= h <= 12:
+        return None
+    if ap in PM_WORDS and h < 12:
+        h += 12
+    elif ap in AM_WORDS and h == 12:
+        h = 0
+    if h > 24 or (h == 24 and mm):
+        return None
+    return h * 60 + mm
+
+
+def time_scale(pts, calib=()):
+    """시간 눈금 → {a, k, ot, ob, n, c}(막대 위 y = a + k·분 + ot · 아래 y = a + k·분 + ob) | None.
+    pts: 짧은 숫자 글 [{s, x, y}] — 같은 세로줄(x ±24px)의 시각 글('오전 9시'·'9 AM'·'09:00' — 15분 단위만) 중 한 직선(모든 쌍
+    기울기의 가운데값 · 벗어난 글은 버림)에 3개 이상(60% 이상) 놓이고, 위에서 아래로 분이 늘고, 가장 흔한 간격이 15·30·60분이며,
+    시간당 12~600px 인 무리 중 가장 긴 것. 작은 달력의 세로줄(5·12·19 — 7시간 간격)은 기울기·간격에서 빠지고, 눈금 칸의 '현재 시각'
+    같은 글 하나는 직선에서 벗어나 빠진다. calib: 라벨로 시각을 안 막대 [(위 y, 시작 분, 아래 y, 끝 분)] — 눈금 글이 선 위·아래·가운데
+    어디에 붙는지 몰라 막대로 맞춘다(ot·ob). 눈금 글이 없으면 그런 막대 2개 이상(시작 60분 이상 차이)으로 직선을 맞춘다.
+    보정이 서로 15분 넘게 어긋나거나 45분 넘게 벗어나면(막대와 눈금이 다른 스크롤 칸) None — 위치로 시각을 풀지 않는다."""
+    hp = []
+    for p in pts or ():
+        if not isinstance(p, dict):
+            continue
+        x, y, m = _num(p.get("x")), _num(p.get("y")), hour_label(p.get("s"))
+        if x is not None and y is not None and m is not None:
+            hp.append((x, y, m))
+    hp.sort()
+    groups, cur = [], []
+    for q in hp:
+        if cur and q[0] - cur[0][0] > 24:
+            groups.append(cur)
+            cur = []
+        cur.append(q)
+    if cur:
+        groups.append(cur)
+    best = None
+    for g in groups:
+        bym = {}
+        for _x, y, m in g:
+            if m % 15 == 0:                               # 눈금은 정시·15분 단위 — '현재 시각 오후 10:50' 같은 글은 뺀다
+                bym.setdefault(m, []).append(y)
+        pts_ = sorted((_median(v), m) for m, v in bym.items())
+        if len(pts_) < 3:
+            continue
+        k, a = _line(pts_)                                # 모든 쌍 기울기의 가운데값 — 벗어난 글 하나에 흔들리지 않는다
+        if not 0.2 <= k <= 10:
+            continue
+        inl = [(y, m) for y, m in pts_ if abs(y - (a + k * m)) <= max(3.0, 9 * k)]
+        ms = [m for _y, m in inl]
+        if len(inl) < 3 or len(inl) * 10 < len(pts_) * 6 or any(b <= a2 for a2, b in zip(ms, ms[1:], strict=False)):
+            continue
+        dms = [b - a2 for a2, b in zip(ms, ms[1:], strict=False)]
+        step = max(set(dms), key=dms.count)
+        if step not in (15, 30, 60) or dms.count(step) * 10 < len(dms) * 6:
+            continue
+        k, a = _line(inl)
+        if best is None or len(inl) > best[2]:
+            best = (k, a, len(inl))
+    cal = []
+    for c in calib or ():
+        v = [_num(x) for x in (tuple(c) + (None,) * 4)[:4]]
+        if None not in v and v[3] > v[1] and v[2] > v[0]:
+            cal.append(tuple(v))
+    if best is None:
+        tops = [(m, t) for t, m, _b, _e in cal]
+        if len({m for m, _t in tops}) < 2 or max(m for m, _t in tops) - min(m for m, _t in tops) < 60:
+            return None
+        n = len(tops)
+        mx, my = sum(m for m, _t in tops) / n, sum(t for _m, t in tops) / n
+        sxx = sum((m - mx) ** 2 for m, _t in tops)
+        k = sum((m - mx) * (t - my) for m, t in tops) / sxx
+        a = my - k * mx
+        if not 0.2 <= k <= 10 or any(abs(t - (a + k * m)) > max(4.0, 6 * k) for m, t in tops):
+            return None
+        best = (k, a, 0)
+    k, a, n = best
+    ot = ob = 0.0
+    if cal:
+        offt = [t - (a + k * m) for t, m, _b, _e in cal]
+        offb = [b - (a + k * e) for _t, _m, b, e in cal]
+        if max(offt) - min(offt) > 15 * k or max(offb) - min(offb) > 15 * k or abs(_median(offt)) > 45 * k:
+            return None
+        ot, ob = _median(offt), _median(offb)
+    return {"a": a, "k": k, "ot": ot, "ob": ob, "n": n, "c": len(cal)}
+
+
+def y_to_min(sc, y, edge="t", step=5):
+    """시간 눈금(time_scale)으로 세로 위치 → 자정부터 분(step 분 단위로 반올림) | None(하루 밖). edge: 't' 막대 위 · 'b' 아래."""
+    v = _num(y)
+    if not sc or v is None:
+        return None
+    m = (v - sc["a"] - (sc["ot"] if edge == "t" else sc["ob"])) / sc["k"]
+    m = int(round(m / step)) * step
+    return m if 0 <= m <= 1440 else None
+
+
+RE_MORE_N = re.compile(r"(?i)^.{0,8}?(?:\+\s*\d+|(?<!\d)\d+\s*개\s*더|(?<![\w:])\d+\s*more\b)|^\s*더\s*보기\s*[(\[]?\s*\+?\d+")
+RE_BTN_W = re.compile(r"(?i)^\s*(?:더\s*보기|more|see more|show more|view more|모두\s*보기|자세히|옵션|options?)\s*$")
+RE_HEAD_W = re.compile(r"(?i)하루\s*종일|종일|all[- ]day|오늘|today|이벤트|일정|약속|항목|events?|items?|appointments?|선택됨|"
+                       r"selected|week|[개건주]")
+
+
+def cal_nonevent(label, texts=()):
+    """일정이 아닌 칸 → 'more'(숨은 일정 칩 — '+2'·'+2 더 보기'·'2개 더'·'2 more' — 주 보기에 다 안 그려진 일정이 있다는 뜻) ·
+    'btn'(수 없는 '더 보기'·'옵션' 단추뿐) · 'head'(날짜·요일·종일·개수 낱말뿐 — 주 머리 칸) · ''(일정 막대).
+    머리 글은 라벨(없으면 첫 글) 하나만, 칩 낱말은 짧은 글(40자 이하)의 앞머리에서만 본다 — 막대 안의 '+3'(참석자 수)·
+    'and 3 more'(참석자) 같은 글을 칩으로 읽지 않게."""
+    lab = str(label or "").strip()
+    tx = [str(x).strip() for x in texts or () if str(x or "").strip()]
+    head = lab or (tx[0] if tx else "")
+    if not head:
+        return ""
+    if len(head) <= 40 and RE_MORE_N.search(head):
+        return "more"
+    if find_times(" ".join([lab] + tx)):
+        return ""
+    if all(RE_BTN_W.match(x) for x in [head] + tx):
+        return "btn"
+    if re.search(r"\d", head):
+        r = RE_MD.sub(" ", _strip_dates(hm_words(head)))
+        r = re.sub(r"\d+", " ", RE_HEAD_W.sub(" ", RE_WEEKDAY_ANY.sub(" ", r)))
+        if _PUNCT_RX.sub("", r) == "":
+            return "head"
+    return ""
+
+
+def picker_date(text, near=None):
+    """작은 달력(날짜 고르기) 칸 이름 → date | None — '2026년 10월 5일 월요일'·'October 5, 2026'·'5, October, 2026'·'5, 10월, 2026'
+    (Fluent Calendar 기본 꼴: 날, 달 이름, 해)·'10/5/2026'. 해가 없으면 near(목표 날짜)에 가장 가까운 해. 날 번호만('5')이면 None."""
+    t = hm_words(str(text or "")).strip()
+    if not t or find_times(t):
+        return None
+    ref = near or date.today()
+    ym = re.search(r"(?<!\d)(\d{4})(?!\d)", t)
+    if ym:
+        d = _abs_date(t, ref)
+        if d:
+            return d
+    rest = t
+    m = re.search(r"(?i)\b" + _MON, rest)
+    if m:
+        mo = MON_EN[m.group(1)[:3].lower()]
+    else:
+        m = re.search(r"(?<!\d)(\d{1,2})\s*[월月]", rest)
+        mo = int(m.group(1)) if m else None
+    if mo is None:
+        return None
+    rest = rest[:m.start()] + " " + rest[m.end():]
+    if ym:
+        rest = rest.replace(ym.group(1), " ", 1)
+    ds = re.findall(r"(?<!\d)(\d{1,2})(?!\d)", rest)
+    if len(ds) != 1:
+        return None
+    if ym:
+        return _safe(ym.group(1), mo, ds[0])
+    cands = [x for x in (_safe(ref.year + k, mo, ds[0]) for k in (-1, 0, 1)) if x]
+    return min(cands, key=lambda x: abs((x - ref).days)) if cands else None
+
+
+_MONTHS_EN = ("January|February|March|April|May|June|July|August|September|October|November|December|"
+              "Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec")
+RE_KEEP_CAL = re.compile(
+    r"오전|오후|(?<![A-Za-z])(?:AM|PM|am|pm|A\.M\.|P\.M\.)(?![A-Za-z])|하루\s?종일|종일|(?i:all[- ]day)|"
+    r"[월화수목금토일]요일|\([월화수목금토일]\)|(?i:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|"
+    r"(?<=\d)\s?[년월일시분]|"
+    r"(?i:(?<![A-Za-z])(?:" + _MONTHS_EN + r")\.?(?=,?\s*\d))|(?i:(?<=\d\s)(?:" + _MONTHS_EN + r")(?![A-Za-z]))|"
+    r"(?i:(?<=\d,\s)(?:" + _MONTHS_EN + r")(?![A-Za-z]))")
+
+
+def mask_cal(s, n=60):
+    """못 읽은 일정 막대 꼴(구조 진단 — 회사 PC 화면을 볼 수 없어 사진 한 장으로 라벨 꼴을 확정하려는 것): 글자 → x, 숫자·구두점·
+    공백과 오전/오후·AM/PM·요일·종일·날짜 단위(숫자 뒤 년·월·일·시·분)·숫자 곁의 영문 달 이름만 그대로. 4자리 넘는 숫자 무리와
+    해(19xx·20xx)가 아닌 4자리 숫자는 #(회의실·전화·회의 번호). n 자에서 자른다."""
+    t, out, i = str(s or ""), [], 0
+    for m in RE_KEEP_CAL.finditer(t):
+        out.append(RE_LETTER.sub("x", t[i:m.start()]))
+        out.append(m.group(0))
+        i = m.end()
+    out.append(RE_LETTER.sub("x", t[i:]))
+    t = re.sub(r"\s+", " ", "".join(out)).strip()
+    t = re.sub(r"\d{4,}", lambda m: m.group(0) if (len(m.group(0)) == 4 and m.group(0)[:2] in ("19", "20"))
+               else "#" * len(m.group(0)), t)
+    return t[:n] + ("…" if len(t) > n else "")
