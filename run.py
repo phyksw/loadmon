@@ -34,6 +34,7 @@ if __name__ == "__main__":      # import 시엔 건드리지 않는다 — 임�
 NO_WIN = 0x08000000
 _AI_T0 = None            # AI 마감 기준 시각(선예약 반환용)
 _AI_TOT_MIN = None
+_AI_RES = {"flow": 0.0, "ag": 0.0}   # 선예약 몫(분) — 워크플로우·Agentic. Agentic 직전·flow 직전에 돌려준다
 # LM28(WP6): 수집 단계는 core\proc.run_step(Job 으로 감싸 트리째 정리 · 60초 진행 줄)으로 돌리고, 마지막 줄 LMSTATUS 를
 # core\collect_status 로 읽어 일자×축 원장(core\coverage — data\coverage_ledger.json)에 반영한다.
 import collect_status  # noqa: E402 - core\ (sys.path 위에서 등록)
@@ -499,20 +500,81 @@ def collect_outlook(c, d0, d1, data, ps, col, led=None):
     return ok
 
 
-def run_ai_stage(script, d0, d1, retry_wait=15):
+# 다시 보내도 같은 벽에 닿는 중단 갈래(자식 마지막 줄 JSON 의 stop_kind) — 재시도하지 않는다.
+# budget(시간 예산) · gate(개인정보 관문) · login/fatal(사람이 손대야 풀림) · throttle(Copilot 사용량 제한)
+NO_RETRY_KINDS = ("budget", "gate", "login", "fatal", "throttle")
+AI2_STAGES = ("agentic.py", "flow.py")    # 판정 뒤 Copilot 단계 — 지난 결과 이어받기(--carry)·긴 재시도 대기
+
+
+def ai_reserves(c, tot):
+    r"""AI 단계 전체 마감(tot 분) 안에서 미리 떼어 두는 몫 → (워크플로우 몫, Agentic 몫) 분.
+    워크플로우 몫은 예전 그대로(flowBudgetMin 과 전체의 40% 중 작은 쪽, 최소 60분). Agentic 몫은 config.agenticReserveMin
+    (없으면 전체의 10%를 15~30분으로) — 예전에는 판정·내러티브·정제가 마감을 다 쓰고 Agentic 이 15분 하한만 받아
+    업무 대부분을 보내지 못했다(묶음 5~10개 · rows_pending)."""
+    try:
+        fb = float(c.get("flowBudgetMin", 120) or 0) or 120.0
+    except (ValueError, TypeError):
+        fb = 120.0
+    flow_res = min(max(60.0, fb), max(60.0, tot * 0.4))
+    try:
+        ag = float(c.get("agenticReserveMin") or 0)
+    except (ValueError, TypeError):
+        ag = 0.0
+    ag_res = ag if ag > 0 else min(30.0, max(15.0, tot * 0.1))
+    return flow_res, ag_res
+
+
+def start_ai_clock(c, tot, now=None):
+    """--ai 시작 — AI 단계 전체 마감 기준(T0)과 선예약 몫을 정하고, 판정·정제가 쓸 마감을 LM_AI_DEADLINE 에 싣는다.
+    = T0 + (전체 − 워크플로우 몫 − Agentic 몫). Agentic 직전(agentic_deadline)·flow 직전(전체)에 몫을 돌려준다.
+    반환: (워크플로우 몫, Agentic 몫, 판정·정제 몫) 분."""
+    global _AI_T0, _AI_TOT_MIN
+    flow_res, ag_res = ai_reserves(c, tot)
+    _AI_T0, _AI_TOT_MIN = (time.time() if now is None else now), tot
+    _AI_RES.update(flow=flow_res, ag=ag_res)
+    pre = max(0.0, tot - flow_res - ag_res)
+    os.environ["LM_AI_DEADLINE"] = str(_AI_T0 + pre * 60.0)
+    return flow_res, ag_res, pre
+
+
+def agentic_deadline(now=None):
+    """Agentic 직전의 전체 마감(epoch 초) — 선예약한 Agentic 몫을 돌려준다.
+    = max(T0 + (전체 − 워크플로우 몫), 지금 + Agentic 몫). 앞 단계가 늦게 끝나도 Agentic 은 제 몫을 받고(그만큼 워크플로우
+    몫에서 빠진다), 일찍 끝났으면 남은 시간을 다 쓴다. --ai 마감이 꺼져 있으면 None."""
+    if _AI_T0 is None or not _AI_TOT_MIN:
+        return None
+    now = time.time() if now is None else now
+    return max(_AI_T0 + (_AI_TOT_MIN - _AI_RES["flow"]) * 60.0, now + _AI_RES["ag"] * 60.0)
+
+
+def run_ai_stage(script, d0, d1, retry_wait=None, extra=()):
     """판정 뒤 단계(Agentic·워크플로우)를 돌린다. Copilot 은 긴 판정 뒤에 일시적으로
     응답을 거부하는 일이 있어(실측: 뒤 단계만 실패), 실패하면 잠시 쉬고 1회 재시도한다.
+    · agentic.py·flow.py 는 늘 --carry — 기간 끝날짜가 바뀌어도 지난 결과를 이어받고 남은 것만 묻는다.
+    · 재시도 대기는 그 둘이 120초(Copilot 이 숨 돌릴 시간), 나머지는 15초. 워크플로우 재시도는 --no-merge(세부 병합 왕복을
+      다시 하지 않는다 — 규칙 병합과 캐시만).
+    · 자식 마지막 줄 JSON 의 stop_kind 가 budget·gate·login·fatal·throttle 이거나 사유가 Copilot 사용량 제한이면
+      재시도하지 않는다 — 다시 보내도 같은 벽이다(사용량 제한은 copilot_send 가 이미 쉬고 다시 보냈다).
     반환: (rc, note)."""
+    base = os.path.basename(script)
+    ai2 = base in AI2_STAGES
+    if retry_wait is None:
+        retry_wait = 120 if ai2 else 15
     cmd = [sys.executable, os.path.join(ROOT, script), "--from", d0, "--to", d1]
+    if ai2 and "--carry" not in extra:
+        cmd.append("--carry")
+    cmd += [str(x) for x in extra]
     env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1", LM_LAUNCHER="run")
     _tag = f"{d0.replace('-', '')}-{d1.replace('-', '')}"
     _stage_id = {"agentic.py": "agentic", "flow.py": "flow", "refine.py": "refine",
-                 "judge.py": "judge"}.get(os.path.basename(script), os.path.basename(script))
-    _WATCH_STATE_PATH["p"] = os.path.join(ROOT, "report", f"stage_state_{_tag}_{_stage_id}.json")
+                 "judge.py": "judge"}.get(base, base)
+    _state_p = os.path.join(ROOT, "report", f"stage_state_{_tag}_{_stage_id}.json")
+    _WATCH_STATE_PATH["p"] = _state_p
     try:
         rc, why = _run_capture(cmd, env)
     finally:
         _WATCH_STATE_PATH["p"] = None
+    lj = dict(LAST_JSON)
     if rc == 0:
         return 0, ""
     if rc == 2:
@@ -524,11 +586,25 @@ def run_ai_stage(script, d0, d1, retry_wait=15):
         # 한 단계가 상한을 두 번 썼다(최악 360분, 감사 실측).
         print(f"   {script} 를 중단했습니다 — 같은 벽에 다시 닿으므로 재시도하지 않습니다")
         return rc, why
+    kind = str(lj.get("stop_kind") or "")
+    if kind in NO_RETRY_KINDS or "사용량 제한" in str(why or "") or "R-THROTTLE" in str(why or ""):
+        _k = {"budget": "시간 예산", "gate": "개인정보 관문", "login": "Copilot 로그인", "fatal": "사람이 손대야 풀리는 상태",
+              "throttle": "Copilot 사용량 제한"}.get(kind, "Copilot 사용량 제한")
+        print(f"   {script} 실패 사유가 {_k}라 다시 보내도 같습니다 — 재시도하지 않습니다")
+        return rc, why
+    if base == "flow.py" and "--no-merge" not in cmd:
+        cmd.append("--no-merge")             # 재시도는 흐름 왕복만 — 세부 병합 왕복은 첫 시도가 이미 했다
     print(f"   첫 시도 실패(코드 {rc}) - {retry_wait}초 뒤 1회 재시도합니다")
     time.sleep(retry_wait)
-    rc, why2 = _run_capture(cmd, env)
+    _WATCH_STATE_PATH["p"] = _state_p
+    try:
+        rc, why2 = _run_capture(cmd, env)
+    finally:
+        _WATCH_STATE_PATH["p"] = None
     if rc == 0:
         return 0, "1회 재시도 후 성공"
+    if rc == 2:
+        return 2, "1회 재시도 후 부분 완료" + (f" — {why2}" if why2 else " — 다시 실행하면 남은 것만 이어서")
     # 사유를 기록에 남긴다 — 예전에는 '코드 1' 만 남아 사용자도 나도 원인을 볼 수 없었다
     return rc, (f"재시도에도 실패: {why2 or why}" if (why2 or why)
                 else f"재시도에도 실패(코드 {rc}) - 탭의 수동 실행으로 다시")
@@ -545,6 +621,7 @@ _watch_mod.kill_tree = proc.kill_tree
 kill_tree = proc.kill_tree  # 기존 호출부 이름 유지
 
 _WATCH_STATE_PATH = {"p": None}      # 다음 watch_child 호출이 볼 상태 파일 — run_ai_stage 가 세팅
+LAST_JSON = {}                       # 마지막 _run_capture 자식의 마지막 줄 JSON — run_ai_stage 가 stop_kind 를 본다
 
 
 def _stage_limits():
@@ -561,7 +638,9 @@ def _run_capture(cmd, env):
     r"""자식 출력을 화면에 그대로 흘리면서, 실패 사유만 따로 건져 낸다.
 
     자식은 마지막 줄에 JSON 한 줄을 낸다({"ok":false,"error":...}). 그 줄을 잡아
-    last_run.json 에 실어야 화면이 '왜 안 됐는지' 를 말할 수 있다."""
+    last_run.json 에 실어야 화면이 '왜 안 됐는지' 를 말할 수 있다. 그 JSON 전체는 LAST_JSON 에도 남긴다
+    (run_ai_stage 가 stop_kind 로 재시도 여부를 고른다 — 반환 꼴은 그대로)."""
+    LAST_JSON.clear()
     try:
         p = subprocess.Popen(cmd, cwd=ROOT, env=env, stdout=subprocess.PIPE,
                              stderr=subprocess.STDOUT, bufsize=1, text=True,
@@ -588,6 +667,7 @@ def _run_capture(cmd, env):
     stopped = watch_child(p, _on, label)
     rc = p.wait()
     proc.release(job, p.pid)
+    LAST_JSON.update(last_json)
     if stopped:
         return (rc or 1), stopped
     if rc == 0:
@@ -1204,17 +1284,12 @@ def _main():
             # 단계가 전체를 소진하면 flow 가 15분 floor 로 굶어 워크플로우가 반쪽이 됐다(실측:
             # 잔여 0분에서 120업무 중 60개 소실). 총 벽시계 상한은 그대로다 — flow 직전에 마감을
             # 전체로 되돌리므로 합계는 여전히 aiTotalBudgetMin 안이다.
-            try:
-                _fb = float(c.get("flowBudgetMin", 120) or 0) or 120.0
-            except (ValueError, TypeError):
-                _fb = 120.0
-            _flow_reserve = min(max(60.0, _fb), max(60.0, _tot * 0.4))
-            global _AI_T0, _AI_TOT_MIN
-            _AI_T0, _AI_TOT_MIN = time.time(), _tot
-            os.environ["LM_AI_DEADLINE"] = str(_AI_T0 + (_tot - _flow_reserve) * 60.0)
-            print(f"   (AI 단계 전체 마감 {_tot:.0f}분 — 워크플로우 몫 {_flow_reserve:.0f}분 선예약,"
-                  f" 판정·정제·Agentic 은 {_tot - _flow_reserve:.0f}분 안에서"
-                  " · config.aiTotalBudgetMin/flowBudgetMin)")
+            # Agentic 몫도 따로 선예약한다 — 판정·내러티브·정제가 마감을 다 쓰면 Agentic 은 15분 하한만 받아 업무 대부분을
+            # 보내지 못했다(MM 급감 제보). Agentic 직전에 그 몫을 돌려준다(agentic_deadline).
+            _flow_reserve, _ag_reserve, _pre = start_ai_clock(c, _tot)
+            print(f"   (AI 단계 전체 마감 {_tot:.0f}분 — 워크플로우 몫 {_flow_reserve:.0f}분·Agentic 몫 {_ag_reserve:.0f}분"
+                  f" 선예약, 판정·정제는 {_pre:.0f}분 안에서"
+                  " · config.aiTotalBudgetMin/flowBudgetMin/agenticReserveMin)")
         print("\n── AI 판정 (계층 엔티티: 과제↔유형↔세부업무 + 월별 내러티브) — 시간이 걸립니다")
         _t2 = time.time()
         # 출력을 흘려보내며 마지막 줄 JSON 을 건진다 — judge 는 판정 0건(왕복 전부 실패)이면
@@ -1301,6 +1376,10 @@ def _main():
                 print("   AI 정제 실패 — report 폴더의 evidence 파일을 Copilot에 붙여넣어도 됩니다")
 
             # Agentic AI 매칭 — 판정 후 12과제 매칭·발굴·오할당 검증을 자동 수행
+            # 선예약한 Agentic 몫 반환 — 앞 단계가 늦게 끝났어도 Agentic 은 제 몫(agenticReserveMin)을 받는다
+            _dl_ag = agentic_deadline()
+            if _dl_ag is not None:
+                os.environ["LM_AI_DEADLINE"] = str(_dl_ag)
             print("\n── Agentic AI 매칭 (12과제 적합·신규 발굴·오할당 검증)")
             _t3 = time.time()
             rc2, note2 = run_ai_stage("agentic.py", d0, d1)

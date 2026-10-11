@@ -14,6 +14,7 @@ LLM 을 거치지 않으므로 지어낸 행이 없고, 데이터는 PC 밖으�
                                   time_precision: minute(시각 해석) | date(날짜만 보여 12:00 으로 둔 행 — 시간 근거로 쓰지 말 것)
       data\\outlook\\calendar.csv  (start,end,all_day,busy_status,subject,categories,location,response,meeting_status)
                                   ※ response/meeting_status 는 COM 수집기(Get-OutlookData.ps1)만 채운다 — 여기선 빈값
+                                  ※ busy_status 0 한가함 · 1 미정 · 2 바쁨 · 3 부재중 · 4 다른 곳에서 작업(3·4 는 LM28-OWA-4)
                                   ※ 여러 날에 걸친 일정(휴가·출장·워크숍)은 start~end 한 행(첫날~마지막날) — extract 가 일자로 전개한다
       LM28: --out-dir·--tag 를 주면 <폴더>\\mail_<tag>.csv·cal_<tag>.csv·mail_source_<tag>.json(출처별 파일 — 병합은 mailmerge).
             없으면 LM24 처럼 data\\outlook\\mail.csv·calendar.csv·mail_source.json(자료가 있으면 --force 때만).
@@ -40,6 +41,8 @@ LM28 '읽음' 규칙(F-03·F-04·F-05 — 검증된 조각만 읽음으로 적�
     근거가 없으면 partial(끊김 없이 읽은 최신 쪽만 ok)·unverified 로 남겨 다음 경로·다음 실행이 다시 읽는다.
   · 날짜만 보이는 줄은 항목의 다른 title·aria-label·<time datetime>(로컬로 바꿈)에서 시각을 찾고, 보낸 편지함은 그래도
     없으면 항목을 열어 읽기 창 머리에서 owaTimeRecoverMax(150)건까지 시각을 얻는다(받은 메일은 열지 않는다 — 읽음 표시).
+    LM28-OWA-4: 지난 실행이 분 단위로 남긴 같은 메일(상자·날·보낸이·제목)의 시각은 열지 않고 먼저 물려받고(recovered_known),
+    병합은 분 단위를 날짜만으로 낮추지 않는다(owa_parse.merge_slices 래칫) — 복원이 실행마다 누적된다.
   · 일정은 가장 최근 주만 URL 로 열고, 그다음은 '이전 주' 단추를 1회씩 눌러 순차로 읽는다. 단추가 없거나 끝내 안 먹으면(머리가
     그대로) 주소(/calendar/view/week/Y/M/D)로 그 주를 연다 — 주소도 무시되면 멈추고 남은 주는 미확인. 매번 화면 머리의 날짜
     범위가 기대한 주와 같을 때만 그 주를 읽음으로 하고(실제로 지나간 주만 weeks_ok), 다르면 그 주의 행을 버린다(클릭 수 ≤
@@ -91,7 +94,9 @@ OUT_DIR = os.path.join(ROOT, "data", "outlook")
 # 판정 규칙의 판 — mail_source 에 '판|collect.cursorEpoch' 로, LMSTATUS counts.collector_ver 로 싣는다.
 # 2: 'fits' 를 끝 근거에서 뺌 · 메일 목록 칸 고르기 · 검색 표기 확인(결과 없음은 걸린 표기에서만 0건) · 일정 주소 이동·0개 주 증명
 # 3: 일정 막대 위치 해석(요일 열·시간 눈금·종일 줄) · 칩/옆 창 제외(숨은 일정 칩이 있는 주는 일부) · 작은 달력 주 이동
-COLLECTOR_VER = "LM28-OWA-3"
+# 4: 지난 실행이 복원한 보낸 메일 시각 재사용(run.known — 실행마다 150건씩 누적) · 병합 정밀도 래칫(분 단위를 날짜만으로 낮추지
+#    않음) · 아바타 머리글자 잎 제외 · 일정 '부재중'→busy 3·'다른 곳에서 작업'→busy 4
+COLLECTOR_VER = "LM28-OWA-4"
 SEARCH_SCREENS = 150                       # 검색 결과 한 조각을 내리는 화면 수 상한(LM24 의 달마다 400회 대신)
 LIST_SCREENS = 800                         # 폴백(검색 없이 최신부터) 한 폴더를 내리는 화면 수 상한
 STALL_MAX = 3                              # 내렸는데 새 항목 없는 화면이 이만큼 이어지면 멈춘다(끝을 모른다)
@@ -432,6 +437,8 @@ def parse_mail_item(item, d0, d1, folder="", today=None, info=None):
         xl = x.lower().strip()
         if not xl or len(x) > 120:
             continue
+        if re.fullmatch(r"[A-Z]{1,3}", x.strip()):
+            continue                     # 아바타 머리글자('JS') — 보낸이·제목이 한 칸씩 밀려 이름이 제목이 되던 것(LM28 E·B)
         if find_times(x) or find_date(x, d0, d1):
             continue
         if xl in STATUS_WORDS or xl in SENT_WORDS or xl in INBOX_WORDS or xl in CC_WORDS or xl.rstrip(":：").strip() in CC_WORDS:
@@ -456,6 +463,11 @@ def parse_mail_item(item, d0, d1, folder="", today=None, info=None):
         # 수신 구분은 화면에 거의 없다 — '참조' 조각이 보일 때만 cc, 아니면 보수적으로 직접 수신
         rcv = "cc" if any(x in CC_WORDS for x in toks) else "to"
     return [box, t, sender, subject, conv, rcv, precision]
+
+
+_SHOW_PRE = r"(?:(?:상태|표시|표시 방법|show as|status)\s*[:：]?\s*)?"
+_SHOW_OOF = re.compile(_SHOW_PRE + r"(?:부재\s?중|자리\s?비움|out of office|away)", re.I)
+_SHOW_ELSE = re.compile(_SHOW_PRE + r"(?:다른 곳에서 작업(?:\s?중)?|working elsewhere)", re.I)
 
 
 def _pos_ok(ev):
@@ -561,7 +573,15 @@ def parse_event(ev, d0, d1, geo=None, info=None):
         if len(c) >= 2:
             subj = c.split(",")[0].strip()[:120]
             break
-    busy = "0" if re.search(r"한가함|free|available", joined, re.I) else ("1" if re.search(r"미정|tentative", joined, re.I) else "2")
+    # 표시 상태 — '부재중'(3)·'다른 곳에서 작업'(4)은 한가함·미정보다 먼저 본다(LM28 E — extract 가 열 없는 웹 행은 내 부재중(3)만
+    # 근태로 본다). 제목 속 낱말과 섞이지 않게 쉼표 조각 전체가 상태어(앞에 '상태:' 정도)일 때만.
+    frs = [x.strip() for x in re.split(r"[,，|·\n]", joined) if x.strip()]
+    if any(_SHOW_OOF.fullmatch(x) for x in frs):
+        busy = "3"
+    elif any(_SHOW_ELSE.fullmatch(x) for x in frs):
+        busy = "4"
+    else:
+        busy = "0" if re.search(r"한가함|free|available", joined, re.I) else ("1" if re.search(r"미정|tentative", joined, re.I) else "2")
     loc = ""
     m = re.search(r"(?:장소|location|위치)\s*[:：]\s*([^,|]+)", joined, re.I)
     if m:
@@ -636,6 +656,7 @@ _JS_LIB = r"""
 #       스크롤 칸 찾은 방법·위치·크기·'불러오는 중')을 낸다. 항목마다 idx(열기용)·cv(data-convid)·dts(시각이 든 다른 title·aria-label·
 #       datetime 속성 — 시각 복원용), 화면마다 empty('결과 없음/비어 있음' 표식)·sel(선택된 폴더 이름)·pivots(선택된 탭 글 — 중요/기타).
 #       SKEL 이면 첫 행의 골격(태그·role·aria-label 길이·잎 글 — 파이썬이 owa_parse.skeleton 으로 가린 뒤에만 남긴다).
+#       잎 글(texts)은 아바타·머리글자 칸(사진 대신 그리는 'JS')·그림 안의 글을 뺀다(LM28 E — 보낸이·제목이 한 칸씩 밀렸다).
 JS_MAIL = r"""/*LM28:owa_list*/
 (() => {
   const PICK = __PICK__, SKEL = __SKEL__;
@@ -669,7 +690,7 @@ __LIB__
     key: (k || o.id || "") + "|" + l.slice(0, 80),
     label: l,
     titles: [...o.querySelectorAll("[title]")].map(x => x.getAttribute("title") || "").filter(Boolean).slice(0, 12),
-    texts: [...o.querySelectorAll("span,div,a")].filter(x => x.childElementCount === 0).map(x => (x.textContent || "").trim()).filter(Boolean).slice(0, 24),
+    texts: [...o.querySelectorAll("span,div,a")].filter(x => x.childElementCount === 0 && !x.closest('[class*="vatar"],[class*="nitials"],[class*="ersona-coin"],[class*="ersonaCoin"],[role="img"],svg')).map(x => (x.textContent || "").trim()).filter(Boolean).slice(0, 24),
     dts: [...o.querySelectorAll("[datetime],[title],[aria-label]")].map(x => x.getAttribute("datetime") || x.getAttribute("title") || x.getAttribute("aria-label") || "").filter(v => v && v.length <= 80 && /\d{1,2}[:.]\d{2}/.test(v)).slice(0, 6)
   }; });
   if (SKEL && rows[0]) {
@@ -1172,7 +1193,12 @@ class Run:
         self.last_head = None
         self.c = {"slices_ok": 0, "list_verified": 0, "filter_ineffective": 0, "slices_unverified": 0,
                   "fallback_scroll": 0, "weeks_ok": 0, "weeks_unverified": 0, "weeks_partial": 0, "weeks_total": 0,
-                  "cal_clicks": 0, "cal_complete": False, "date_only": 0, "recovered": 0, "opened": 0, "rows": 0}
+                  "cal_clicks": 0, "cal_complete": False, "date_only": 0, "recovered": 0, "recovered_known": 0,
+                  "opened": 0, "rows": 0}
+        # 지난 실행이 분 단위로 남긴 메일 시각(LM28 E) — {(상자, 날, 보낸이, 제목|대화 해시): ['HH:MM', …]}. 날짜만 행은 여기서 먼저
+        # 채운다(열지 않음·예산 소모 없음) — 실행마다 owaTimeRecoverMax 건씩 새로 복원돼 누적된다. main 이 메일 파일에서 채운다.
+        self.store_subject = True
+        self.known = {}
         self.sd = {}
         self.cen = {"mail": {}, "cal": {}}     # 화면 구조 진단(dom_census) — 구조만(글자는 owa_parse.mask_shape, aria-label 은 길이)
         # 기간 검색 표기 — proven: 이 실행에서 조각 안 결과를 본 표기 · broken: 결과가 폴더 목록 그대로(검색이 화면에 안 걸림) ·
@@ -1243,11 +1269,39 @@ def _open_head(br, run, it):
     return None
 
 
+def known_key(box, day, sender, subject, conv, store_subject=True):
+    """지난 실행의 분 단위 행과 이번 날짜만 행을 맞출 열쇠(LM28 E) — (상자, 날, 보낸이, 제목). 제목을 남기지 않는 설정이면 저장된
+    대화 해시(_conv_token)로 — 파일에는 제목이 비어 있다."""
+    return (str(box or ""), str(day or "")[:10], str(sender or ""),
+            str(subject or "") if store_subject else _conv_token(conv))
+
+
+def known_times(path, store_subject=True):
+    """메일 파일(mail.csv · mail_<tag>.csv)의 분 단위 행 → {known_key: ['HH:MM', …](오름차순)}. 저장된 행은 이미 제목이 지워지고
+    대화가 해시인 꼴(storeMailSubject=false)이라 그대로 열쇠를 만든다."""
+    out = {}
+    for r in _read_rows(path, 6):
+        if len(r) > 6 and str(r[6]).strip().lower() == "minute" and re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}", r[1][:16]):
+            k = (str(r[0]), r[1][:10], str(r[2]), str(r[3]) if store_subject else str(r[4]))
+            out.setdefault(k, []).append(r[1][11:16])
+    for v in out.values():
+        v.sort()
+    return out
+
+
 def _recover(br, run, it, r, folder):
     """날짜만 행(r)의 시각 복원(LM28 UD-08 보완) — ① 항목의 다른 title·aria-label·<time datetime>(목록 화면에 이미 있음)
-    ② 보낸 편지함은 그래도 없으면 항목을 열어 읽기 창 머리(owaTimeRecoverMax 건까지·예산 안 — 받은 메일은 열지 않는다)."""
+    ② 지난 실행이 같은 메일(상자·날·보낸이·제목)에 남긴 분 단위 시각(run.known — LM28 E · 열지 않음 · 예산 소모 없음 ·
+    recovered_known) ③ 보낸 편지함은 그래도 없으면 항목을 열어 읽기 창 머리(owaTimeRecoverMax 건까지·예산 안 — 받은 메일은 열지
+    않는다). ② 덕분에 실행마다 ③ 의 예산이 새 메일에만 쓰여 복원이 누적된다(예전엔 다음 병합이 다시 날짜만으로 되돌렸다)."""
     day = date.fromisoformat(r[1][:10])
     hm = _when_from(it.get("dts") or [], day, run.today, run.d0, run.d1)
+    if hm is None and run.known:
+        lst = run.known.get(known_key(r[0], r[1], r[2], r[3], r[4], run.store_subject))
+        if lst:
+            s = lst.pop()                        # 목록은 최신부터 읽는다 — 같은 열쇠가 여럿이면 늦은 시각부터
+            hm = (int(s[:2]), int(s[3:5]))
+            run.c["recovered_known"] += 1
     if hm is None and folder == "sent" and br is not None and run.recover_left > 0 and not run.out_of_time():
         run.recover_left -= 1
         hm = _when_from(_open_head(br, run, it) or [], day, run.today, run.d0, run.d1)
@@ -2465,6 +2519,9 @@ def main():
     # 메일·일정을 함께 읽으면 메일은 예산 끝의 일부를 일정에 남긴다 — 큰 사서함의 목록 폴백이 일정을 통째로 굶기지 않게
     reserve = min(300.0, 0.25 * budget) if len(todo) > 1 else 0.0
     run = Run(d0, d1, deadline=t0 + budget, recover_max=cfg.get("owaTimeRecoverMax", 150), reserve=reserve)
+    run.store_subject = store_subject
+    if "mail" in todo:                      # 지난 실행이 분 단위로 남긴 시각(LM28 E) — 날짜만 행을 열지 않고 먼저 채운다
+        run.known = known_times(paths["mail"], store_subject)
     fake = None
     fk = os.environ.get("LM_OWA_FAKE", "")
     if fk:
@@ -2571,7 +2628,8 @@ def _census(run, todo, results):
                 ends.append(f"{ko} 검색 끝 {fin.get('ok', 0) + fin.get('empty_verified', 0)}/{sum(fin.values())}")
         vd = _verdict_ko(results["mail"][3], run.today)
         parts.append(f"{a} · 검색창 {'예' if sb else '아니오'} · {b} · 가장 이른 날짜 {cm.get('earliest') or '없음'} · "
-                     f"끝 근거 {'·'.join(ends) or '없음'} → {vd}")
+                     f"끝 근거 {'·'.join(ends) or '없음'} · 시각 복원 {run.c.get('recovered', 0)}"
+                     f"(지난 판 {run.c.get('recovered_known', 0)}) → {vd}")
         cen["mail"] = dict(cm, srch=dict(sr), verdict=vd)
     if "cal" in todo and "cal" in results and run.cen["cal"].get("url"):
         cc = run.cen["cal"]

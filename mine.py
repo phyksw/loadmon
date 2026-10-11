@@ -16,6 +16,7 @@ from datetime import date
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "core"))
 from progress import progress  # noqa: E402
 import extract  # noqa: E402
+import details  # noqa: E402  - 과제명 관문(사람·공지)·지난 체계(entities) 판별·상위 채움 단일원(LM28 진단 B)
 
 
 def _wrap_stdout():
@@ -35,56 +36,60 @@ def arg(flag, dflt=""):
     return sys.argv[sys.argv.index(flag) + 1] if flag in sys.argv else dflt
 
 
-def known_projects(cfg):
-    """규칙 기준선이 쓸 과제 이름 — config 힌트 + UI 지정 + **이전 판정에서 발견된 과제**.
+def known_projects(cfg, people=()):
+    """규칙 기준선이 쓸 과제 — config 힌트 + UI 지정 + **이전 판정에서 발견된 과제**.
     한 번이라도 판정에 성공했다면 그 이름이 재사용되므로, 이후 판정이 실패해도 화면이
-    파일명 조각이 아니라 과제명으로 묶인다(실측 대응)."""
-    import glob as _glob
+    파일명 조각이 아니라 과제명으로 묶인다(실측 대응).
+    LM28(진단 B): entities 는 최신부터 훑어 규칙 폴백 산출물("fallback": true · 옛 판은 AI 흔적 없는 목록 —
+    details.entities_is_fallback)을 건너뛴다 — 예전 판별(match 유무)은 폴백 항목도 늘 match 를 가져 듣지 않았다.
+    entities 에서 온 이름은 사람 이름(people = details.person_keys 키)·공지류면 버린다 — 한 번 과제로 적힌
+    사람 이름이 다음 mine 에서 그 사람이 나오는 신호를 전부 끌어오던 되먹임을 끊는다. config·지정은 사람이 적은 것이라 그대로.
+    returns [{"name", "match"[], "l1", "pinned"}] — l1 = 상위(지정 level1 > entities l1, 고정 범주로 스냅, 없으면 "")."""
     out, idx = [], {}
 
-    def add(name, match=()):
+    def add(name, match=(), l1="", pinned=False):
         name = str(name or "").strip()
         if not name or name == "공통":
             return
         alts = [str(k).strip() for k in (match or []) if str(k).strip()]
-        key = name.lower()
+        l1 = details.snap1(l1) if l1 else ""
+        key = details.ukey2(name)
         if key in idx:                    # 같은 과제가 여러 출처면 별칭을 합친다
-            cur = out[idx[key]][1]
+            cur = out[idx[key]]
             for a in alts:
-                if a.lower() not in {x.lower() for x in cur}:
-                    cur.append(a)
+                if a.lower() not in {x.lower() for x in cur["match"]}:
+                    cur["match"].append(a)
+            if l1 and (pinned or not cur["l1"]):       # 사람이 못 박은 상위가 이긴다
+                cur["l1"] = l1
+            cur["pinned"] = cur["pinned"] or pinned
             return
         idx[key] = len(out)
-        out.append((name, alts))          # 별칭은 이름이 아니라 '매칭어'로
+        out.append({"name": name, "match": alts, "l1": l1, "pinned": pinned})   # 별칭은 이름이 아니라 '매칭어'로
 
     for p in extract.cfg_list(cfg, "projects"):
-        add(p)
+        if isinstance(p, dict):
+            add(p.get("name"), p.get("match") or [])
+        else:
+            add(p)
     try:
         sys.path.insert(0, os.path.join(ROOT, "core"))
         import projmap
         for p in projmap.load_user_projects(ROOT):
-            add(p.get("name"), p.get("match") or [])
+            add(p.get("name"), p.get("match") or [], p.get("level1") or "", pinned=True)
     except Exception as e:
         print(f"[mine] 지정 과제 로드 건너뜀({type(e).__name__})")
     try:
-        fs = sorted(_glob.glob(os.path.join(ROOT, "report", "entities_*.json")),
-                    key=os.path.getmtime, reverse=True)
         # 최신순으로 훑되, 판정이 실제로 성공한 체계를 만나면 그것을 쓴다.
         # (직전 실행이 실패해 규칙 토큰만 남겼어도, 그 이전의 성공 체계를 재사용한다)
-        for fp in fs:
-            try:
-                ent = json.load(open(fp, encoding="utf-8-sig"))
-            except (OSError, ValueError):
+        ent, _fp = details.newest_entities(os.path.join(ROOT, "report"))
+        for m in ent.get("models") or []:
+            if not isinstance(m, dict):
                 continue
-            models = ent.get("models") or []
-            if not any(isinstance(m, dict) and (m.get("match") or m.get("obs"))
-                       for m in models):
-                continue                      # 규칙 폴백 산출물 — 건너뛴다
-            for m in models:
-                if isinstance(m, dict):
-                    add(m.get("name"), m.get("match") or [])
-            break
-    except (OSError, ValueError, AttributeError):
+            nm = str(m.get("name") or "").strip()
+            if details.ukey2(nm) not in idx and not details.task_name_ok(nm, people):
+                continue                      # 사람 이름·공지류 — 과제가 아니다(지정·config 와 같은 이름이면 합친다)
+            add(nm, m.get("match") or [], m.get("l1") or "")
+    except (OSError, ValueError, AttributeError, TypeError):
         pass
     return out
 
@@ -212,6 +217,14 @@ def main():
           f"수동흔적만 {hinfo.get('floor_blocked_passive_days', 0)}일(하한 미적용) · "
           f"부재 추정 {hinfo.get('inferred_absence_days', 0)}일(가용 차감) · "
           f"미래시각 폐기 {hinfo.get('future_signals_dropped', 0)}건")
+    # LM28(E) — 퇴근 후 미인정·시각 미상 발신·표준일 추정(PC 기록 없는 달)·AI 비업무 발신 시간 유지 — 값이 있을 때만 한 줄
+    if any(hinfo.get(k) for k in ("evening_missed_days", "untimed_sends", "std_nopc_days", "hint_only_days",
+                                   "ai_n_time_kept")):
+        print(f"     퇴근 후 미인정 {hinfo.get('evening_missed_days', 0)}일·PC {hinfo.get('evening_missed_pc_h', 0):.1f}h"
+              f"(퇴근 뒤 PC 는 켜져 있었는데 내 흔적 없음) · 시각 미상 발신 {hinfo.get('untimed_sends', 0)}통"
+              f"({hinfo.get('untimed_credit_h', 0):.1f}h 인정) · 표준일 추정 {hinfo.get('std_nopc_days', 0)}일"
+              f"(+{hinfo.get('std_nopc_h', 0):.1f}h — PC 기록 없는 달) · 브라우저 기록만 있는 평일 "
+              f"{hinfo.get('hint_only_days', 0)}일 · AI 비업무 발신 시간 유지 {hinfo.get('ai_n_time_kept', 0)}건")
     print(f"     상한 없음(하루 24h 물리 한계만) · 이상치 {len(hinfo.get('anomalies') or [])}일 · "
           f"16h 초과 {len(hinfo.get('long_days') or [])}일 · "
           f"부재일 흔적 {hinfo.get('absent_worked_h', 0):.1f}h"
@@ -258,13 +271,19 @@ def main():
               f"재실행으로 상한 해제 {hinfo.get('sim_night_unlocked_days', 0)}일 · "
               f"PC 밖 {hinfo.get('sim_night_remote_h', 0):.1f}h)")
     progress("신호 수집", 2, 3)
-    items, assigns = extract.build_items2(sig, known_projects(cfg))
+    # 과제명 관문(LM28 진단 B) — 사람 키는 신호 who 에서만 뽑는다. 지난 체계의 사람 이름·공지류는 기준선에서 빠지고,
+    # 규칙 토큰 후보에서도 빠진다(extract.build_items2). 상위는 지정 level1 > 지난 체계 l1 > 규칙 순(extract.to_rows).
+    people = details.person_keys(s[4] for s in sig)
+    kp = known_projects(cfg, people)
+    items, assigns = extract.build_items2(sig, kp)
     # 과제 몫 — 기본 'weight'(LM24 가중치 비율). mm.shareBasis="time" 이면 그날 투입 분을 과제에 나눈다(core\timeshare, LM28)
     shares, ts_stat = None, None
     if extract.norm_cfg(cfg)[0]["shareBasis"] == "time":
         shares, ts_stat = extract.time_shares(assigns, day_hours, cfg)
         print(f"     과제 몫 = 시간(shareBasis=time) · 근무 중 미분류 {ts_stat.get('unclassified_min', 0) / 60:.1f}h")
-    rows = extract.to_rows(items, total_mm, owner, func, shares=shares)
+    rows = extract.to_rows(items, total_mm, owner, func, shares=shares,
+                           l1_map={details.ukey2(p["name"]): p["l1"] for p in kp if p.get("l1")},
+                           pin={details.ukey2(p["name"]): p["l1"] for p in kp if p.get("pinned") and p.get("l1")})
     progress("신호 수집", 3, 3)
     # 총계는 [MM] 줄과 같은 total_mm 으로 — 행별 반올림 합(7.585→'7.58')과 총계('7.59')가 어긋나던 표시 결함
     print(f"[mine] 업무 항목 {len(rows)}개 · 총 {total_mm:.2f} MM (주40h 근무일 기준)\n")
@@ -323,8 +342,6 @@ def main():
             # S2: activity·text 는 한 줄로(개행·탭·앞뒤 공백 정규화) — 열 이름·text ≤100자 계약은 그대로
             w.writerow([t.strftime("%Y-%m-%d %H:%M"), src, who, proj, extract._one_line(act), round(wt, 3),
                         _sig_text(src, text), sig_flags.get((t, src, text), "")])
-
-    import json
 
     def _w_meta(f):
         json.dump(meta_doc(d0, d1, months, sig, meta, total_mm, avail_mm, load_pct, mm_months, cfg_warns,

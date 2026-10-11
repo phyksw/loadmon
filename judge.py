@@ -32,7 +32,8 @@ judge.py — raw 판정을 Copilot(GPT-5.6)이 수행한다. (LoadMonitor20: 계
 
 종료 코드: 0 정상 · 1 입력 없음 · 3 판정 0건(왕복 전부 실패 등 — 마지막 줄 JSON {"ok":false,
 "error","hint"}; signals/mm_rows 는 규칙 판정으로 쓰되 entities·ai_narratives 기존 파일은 보존,
-월별 내러티브 왕복은 하지 않는다 — run.py 가 이 코드를 보고 정제·Agentic·워크플로우를 건너뛴다).
+월별 내러티브 왕복은 하지 않고 이전 코멘트를 이 기간 파일로 이월만 한다 — run.py 가 이 코드를 보고
+정제·Agentic·워크플로우를 건너뛴다).
 
 프롬프트의 상대(who) 열은 기본적으로 주소의 도메인만('@corp.co') 싣는다 — 사람 이름·주소를
 Copilot 에 보내지 않는 원칙. config.copilotAuto.sendSenderAddress=true 일 때만 주소 그대로.
@@ -51,10 +52,24 @@ LM28 — G3 Copilot 직전 관문과 인프로세스 왕복:
     청크는 skipped 로 따로 센다 — 연속 실패 계수(SOFT/ABORT_FAIL_CHUNKS)에 넣지 않는다(개인정보가 많은 사람이 AI 판정 전체를
     규칙으로 잃지 않게). ai_judgments 에 gated_rows·skipped_chunks 를 남긴다.
   · config.copilotAuto.inProcess(기본 true)면 드라이버를 임포트해 같은 프로세스에서 왕복한다(send_inproc). taskkill 은 쓰지 않는다.
+
+LM28 진단 A — 수천 행 규모의 판정:
+  · 이어서 판정 캐시(report\\judge_cache.json — 내용 키의 sha1 → 판정, 원문 없음): 기간 tag 가 날마다 바뀌어도 이미 판정한 신호는
+    다시 묻지 않는다. 캐시 이전 판의 ai_judgments_*.json 도 한 번 이어받는다. 묶음마다 저장(중간에 끊겨도 남는다). --redo 는 새로 시작.
+  · 같은 내용 묶음: 같은 계열·같은 앞 95자(RE/FW 머리 제외)는 대표 한 줄만 보내고 판정을 묶음 전체에 쓴다. 짧은 팀즈 대화
+    (인사·맞장구)는 보내지 않는다. 재개·묶음은 체계 왕복보다 먼저 — 보낼 것이 없으면 지난 정상 체계를 쓰고 체계 왕복을 건너뛴다.
+  · Copilot 이 막히면(사용량 제한·일시 오류) 반으로 나눠 즉시 다시 보내지 않고 copilot_send 가 2·5·10분 쉬었다 새로 고쳐 다시
+    보낸다. 그래도 막히면 강한 제한(hard) — 남은 묶음은 보내지 않고 ai_judgments 의 abort_kind 에 throttle·login·fatal·content·
+    budget 을 남긴다.
+  · AI 가 직접 못 본 행은 같은 내용·같은 대화·규칙 토큰·비슷한 신호의 판정을 빌려 'AI(유사)' 로 채운다(판정 기록·캐시에는 넣지 않는다).
+    signals 의 judge: 'AI'(직접·재사용·같은 내용) · 'AI(유사)'(채움) · '규칙'. 버린 행 장부: 'ad'(광고 의심) · 'AI-n'(AI 비업무).
 """
+import bisect
 import csv
+import hashlib
 import io
 import json
+import math
 import os
 import re
 import shutil
@@ -63,12 +78,12 @@ import sys
 import time
 import unicodedata
 from collections import Counter, defaultdict
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(ROOT, "core"))
 from details import explain_failure  # noqa: E402  - 로그인 필요 등 "사람이 손대야 풀리는" 실패 판정
-from details import level1_of  # noqa: E402  - 상위 규칙 분류(코드네임·영역 키워드 표 — LM28)
+import details  # noqa: E402  - 과제명 관문(사람·공지 — task_name_ok 등)·상위 채움(level1_fill) 단일원 — LM28 진단 B
 from details import ax_flag, field_of  # noqa: E402  - mm_rows 끝 열 ax(AX 연계 표식)·field(분야) — LM28
 from details import ukey2  # noqa: E402  - 과제 신원 축(공백·구분자·대소문자 무시, 괄호 꼬리 보존)
 from progress import progress  # noqa: E402
@@ -100,13 +115,28 @@ PART_PROMPT = 8000          # tools/copilot_auto.PART_PROMPT 와 같은 값 — 
 PROMPT_BUDGET = 8400        # 한 번에 보내는 프롬프트 상한 = copilot_auto.PROMPT_BUDGET(9,000 − 서약 지시 − 여유).
                             # 이 안이면 드라이버가 나누지 않는다(나눔은 왕복 2배 + 마지막 조각에만 답).
 MIN_SPLIT = 5               # 적응 분할의 최소 행 — 이보다 작게는 나누지 않는다
-MAX_SPLIT_DEPTH = 3         # 40 → 20 → 10 → 5
+MAX_SPLIT_DEPTH = 2         # 40 → 20 → 10 (LM28 진단 A — 예전 3단은 실패 청크 하나에 왕복 15회를 썼다)
+SHORT_REPLY_CHARS = 400     # JSON 없는 짧은 답(거절·제한 문구일 수 있다)은 한 단계만 나눠 본다
 MIN_RETRY_ROWS = 3          # 부분 성공(잘린 답 복구) 뒤 빠진 행이 이 수 이상이면 그 행만 다시 묻는다
 SOFT_FAIL_CHUNKS = 3        # 연속으로 이만큼 청크가 0건이면 적응 재시도를 끄고 1회씩만 시도
 ABORT_FAIL_CHUNKS = 6       # 연속으로 이만큼 0건이면 남은 청크를 규칙으로 둔다(수 시간 공회전 방지)
                             # — 개인정보 관문(G3)에 막혀 보내지 않은 청크는 실패가 아니라 skipped 다(이 계수에 넣지 않는다)
 SEEN_MAX_NAMES = 30         # 청크에 동봉하는 '앞서 쓴 세부업무 이름' 상한
 SEEN_MAX_CHARS = 600
+# LM28 진단 A — Copilot 이 막히면(사용량 제한·일시 오류) 바로 다시 보내지 않고 쉬었다가 새로 고친 뒤 같은 묶음을 보낸다.
+# 예전에는 실패 묶음을 즉시 반으로 나눠(+드라이버 사다리 3회) 몇 분 안에 수십 번을 더 보내 제한이 풀리지 않았다.
+TRANSIENT_PHASES = {"throttled", "copilot_error", "no_reply", "empty_reply", "timeout", "error"}
+COOLDOWN_SEC = (120, 300, 600)      # 쉬는 사다리 — 세 번 쉬고도 막히면 강한 제한(hard)으로 보고 남은 묶음은 보내지 않는다
+COOLDOWN_CAP_SEC = 25 * 60          # 한 프로세스가 쉬는 시간 합계 상한(감시기 무진전 한도 45분 안)
+COOLDOWN_MIN_SEC = 30               # 이보다 짧게밖에 못 쉬면(전체 마감) 쉬지 않고 실패를 그대로 돌려준다
+HARD_RECENT_SEC = 600               # 다른 프로세스가 남긴 강한 제한 기록이 이 안이면 첫 왕복 전에 남은 시간만 쉰다
+# 이어서 판정 캐시(report\judge_cache.json) — 기간 tag 가 날마다 바뀌어도 이미 판정한 신호는 다시 묻지 않는다
+JUDGE_CACHE = "judge_cache.json"
+CACHE_MAX = 150_000                 # 상한 — 넘으면 오래 쓰지 않은 판정부터 뺀다
+CACHE_KEEP_DAYS = 450               # 분석 시작일보다 이만큼 앞서 마지막으로 쓴 판정은 뺀다
+LEGACY_JUDGMENT_FILES = 10          # 캐시 이전 판의 ai_judgments_*.json 을 최신부터 이만큼 읽는다
+GROUP_MAX = 100                     # 같은 내용 묶음 하나의 행 상한 — 넘으면 시간 순으로 나눠 대표를 따로 세운다
+GROUP_KEY_CHARS = 95                # = row_line 이 보내는 원문 길이 — 이 앞부분이 같으면 Copilot 이 보는 줄도 같다
 
 
 def _copilot_cfg():
@@ -189,6 +219,12 @@ def chat_turns():
                             # (끊긴 생성·오류 문구가 남은 채팅에 이어 보내면 다음 답까지 오염된다, 실측)
 _STUB_NOTED = [False]       # 스텁 응답임을 로그에 한 번만 남긴다
 _LAST_PROMPT = [None]       # (경로, 본문) — 직전 성공 왕복 뒤 지운 프롬프트 파일. note_bad_reply 가 되살린다(V-06)
+_HARD = [False]             # 이 프로세스가 강한 사용량 제한(세 번 쉬고도 막힘)을 봤다 — 다음 일시 오류는 쉬지 않고 바로 hard
+_COOLED = [0.0]             # 이 프로세스가 쉰 초 합계(COOLDOWN_CAP_SEC 상한)
+_COOLDOWNS = [0]            # 이 프로세스의 '쉬고 다시 보내기' 횟수(ai_judgments.cooldowns)
+_MODEL_FALLBACK = [""]      # 두 번 쉬고도 막히면 이 프로세스의 남은 왕복은 이 모델로(config.copilotAuto.fallbackModel)
+_THR_CHECKED = [False]      # 첫 왕복 전에 다른 프로세스의 강한 제한 기록(copilot_auto.throttle_state)을 봤는가
+_WAIT_TICKS = [0]           # 대기 진행 줄의 누적 눈금 — 감시기의 진행 시계가 늘 앞으로 가게
 
 
 def _restore_prompt():
@@ -298,6 +334,110 @@ def is_ad_row(r):
     return bool(_AD_FLAG.search(str((r or {}).get("flag") or "")))
 
 
+def _is_transient(res):
+    """쉬었다가 같은 묶음을 다시 보낼 일시 실패인가 — 실패이고, 관문 차단·사람이 손댈 일(explain_failure fatal)이 아니며,
+    phase 가 TRANSIENT_PHASES(사용량 제한·오류 응답·무응답·빈 답·시간 초과·드라이버 오류)이거나 '시간 초과' 문구거나
+    사유가 네트워크(R-NET)·전용 Edge 사용 중(R-EDGEBUSY)일 때."""
+    if not isinstance(res, dict) or res.get("ok") or res.get("phase") == "blocked":
+        return False
+    if explain_failure(res)[2]:
+        return False
+    return (str(res.get("phase") or "") in TRANSIENT_PHASES or "시간 초과" in str(res.get("error") or "")
+            or str(res.get("reason") or "") in ("R-NET", "R-EDGEBUSY"))
+
+
+def _cool_room(sec):
+    """쉴 수 있는 초 — 바라는 sec 를 전체 마감(LM_AI_DEADLINE − 2분)과 프로세스 합계 상한(COOLDOWN_CAP_SEC) 안으로."""
+    room = COOLDOWN_CAP_SEC - _COOLED[0]
+    try:
+        at = float(os.environ.get("LM_AI_DEADLINE") or 0)
+    except ValueError:
+        at = 0.0
+    if at > 0:
+        room = min(room, at - time.time() - 120.0)
+    return max(0.0, min(float(sec), room))
+
+
+def _cooldown(sec):
+    """sec 초 쉰다 — 30초마다 진행 줄('Copilot 대기')을 찍어 감시기의 무진전 시계가 멈추지 않게(쉬는 동안 끊기지 않게).
+    눈금은 프로세스 누적이라 쉬기를 거듭해도 늘 앞으로 간다."""
+    end = time.monotonic() + max(0.0, float(sec))
+    while True:
+        left = end - time.monotonic()
+        if left <= 0:
+            break
+        _WAIT_TICKS[0] += 1
+        progress("Copilot 대기", _WAIT_TICKS[0], max(_WAIT_TICKS[0], int(COOLDOWN_CAP_SEC // 30)))
+        time.sleep(min(30.0, left))
+
+
+def _fallback_model():
+    """config.copilotAuto.fallbackModel — 키가 없으면 '자동', 빈 값이면 끔('')."""
+    v = _copilot_cfg().get("fallbackModel", "자동")
+    return str(v).strip() if v is not None else ""
+
+
+def _pre_throttle_wait():
+    """이 프로세스의 첫 왕복 전에 한 번 — 다른 프로세스(판정·정제·Agentic …)가 10분 안에 강한 제한을 남겼으면 남은 시간만
+    쉰다(전체 마감 안). 예전에는 판정이 막힌 직후 다음 단계가 15초 만에 같은 벽으로 들어갔다.
+    returns True = 그런 기록이 있었다 — 그 뒤 첫 왕복도 막히면 쉬는 사다리 없이 바로 hard."""
+    if _THR_CHECKED[0]:
+        return False
+    _THR_CHECKED[0] = True
+    try:
+        ts = _ca().throttle_state()
+    except Exception:  # noqa: BLE001 - 기록을 못 읽으면 없는 것으로 본다
+        ts = None
+    if not ts or not ts[1] or float(ts[0]) >= HARD_RECENT_SEC:
+        return False
+    sec = _cool_room(HARD_RECENT_SEC - float(ts[0]))
+    if sec >= 1:
+        print(f"        Copilot 사용량 제한 기록({float(ts[0]) / 60:.0f}분 전) — {sec / 60:.0f}분 쉬고 보냅니다", flush=True)
+        _cooldown(sec)
+        _COOLED[0] += sec
+    return True
+
+
+def _send_once(prompt_text, pf, name, want_fresh, n_parts, reload=False):
+    """_transport 1회 — 새로 고침(reload)·대체 모델(_MODEL_FALLBACK)은 켜졌을 때만 넘긴다(옛 꼴의 _transport 와도 맞게)."""
+    kw = {}
+    if reload:
+        kw["reload"] = True
+    if _MODEL_FALLBACK[0]:
+        kw["model"] = _MODEL_FALLBACK[0]
+    res = _transport(prompt_text, pf, name, want_fresh, roundtrip_timeout(n_parts), **kw)
+    if not isinstance(res, dict):
+        return {"ok": False, "error": "드라이버 출력 형식 오류", "hint": str(res)[-150:]}
+    return res
+
+
+def _go_hard(res, k):
+    """강한 사용량 제한 — 이 프로세스의 다음 일시 오류는 쉬지 않고 바로 hard, 다른 프로세스도 알게 기록(copilot_auto.note_throttle).
+    결과에 hard=True — explain_failure 가 fatal 로 보고 호출자(judge·refine·agentic·flow·narrate)가 남은 묶음을 보내지 않는다."""
+    first = not _HARD[0]
+    _HARD[0] = True
+    try:
+        _ca().note_throttle(hard=True)
+    except Exception:  # noqa: BLE001 - 기록 실패가 판정을 막지 않게
+        pass
+    if first:
+        print("        " + (f"Copilot 이 {k}번 쉬고 다시 보내도 막혔습니다" if k else "Copilot 이 여전히 막혀 있습니다")
+              + "(강한 사용량 제한) — 남은 묶음은 보내지 않고 여기까지의 결과를 지킵니다(1~2시간 뒤 [재분석만])",
+              flush=True)
+    return dict(res, hard=True)
+
+
+def _abort_kind_of(res):
+    """치명 실패 결과 → 중단 갈래: throttle(강한 사용량 제한) · login(로그인 만료·개인 계정) · fatal(그 밖의 사람이 손댈 일)."""
+    res = res if isinstance(res, dict) else {}
+    if res.get("hard"):
+        return "throttle"
+    rs = str(res.get("reason") or "")
+    if res.get("phase") == "login_required" or rs.startswith("R-LOGIN") or rs == "R-PERSONAL":
+        return "login"
+    return "fatal"
+
+
 def copilot_send(prompt_text, tag, name, fresh=None):
     """Copilot 왕복 1회 — 프롬프트를 report\\judge_{name}_{tag}.md 로 쓰고 드라이버를
     부른다(분할·서약은 드라이버 몫 · inProcess 면 같은 프로세스, 아니면 자식 프로세스). 반환 {"ok","reply",...,"error","hint"}.
@@ -313,7 +453,13 @@ def copilot_send(prompt_text, tag, name, fresh=None):
     답은 왔지만 호출자가 해석하지 못한 경우는 note_bad_reply() 가 방금 지운 파일을 되살린다.
     LM28: 먼저 G3 최종 검사(g3_prompt) — 걸리면 파일도 쓰지 않고(직접 붙여넣기 안내 대상이 아니다) {"phase":"blocked"} 를
     돌려준다. 호출자는 그 묶음을 skipped 로 세고 그 행만 규칙으로 둔다(재시도·새 채팅 전환 없음).
-    config.copilotAuto.inProcess(기본 true)면 같은 프로세스에서 왕복(_transport → copilot_auto.send_inproc)."""
+    config.copilotAuto.inProcess(기본 true)면 같은 프로세스에서 왕복(_transport → copilot_auto.send_inproc).
+    LM28 진단 A — 일시 오류·사용량 제한(_is_transient)이면 바로 다시 보내지 않고 COOLDOWN_SEC(2·5·10분)만큼 쉬었다가 페이지를
+    새로 고치고 새 채팅에서 같은 프롬프트를 다시 보낸다(결과의 cooldowns = 쉬고 다시 보낸 횟수 — 호출자는 또 쉬지 않는다).
+    두 번 쉬고도 막히면 이 프로세스의 남은 왕복은 config.copilotAuto.fallbackModel(기본 '자동', 빈 값이면 끔)로 보낸다.
+    세 번 쉬고도 막히면 결과에 hard=True(강한 제한 — explain_failure 가 fatal 로 본다)를 달고, 이 프로세스의 다음 일시 오류는
+    쉬지 않고 바로 hard 다. 쉬는 시간은 전체 마감(LM_AI_DEADLINE − 2분)과 프로세스 합계 25분 안. 다른 프로세스가 10분 안에
+    남긴 강한 제한 기록이 있으면 첫 왕복 전에 남은 시간만 한 번 쉰다. chatTurns 회전(새 채팅)마다 페이지도 새로 고친다."""
     if not g3_prompt(prompt_text):
         return {"ok": False, "status": "blocked", "phase": "blocked", "reason": "R-GATE",
                 "error": "개인정보 관문(G3) — 고위험 잔여·카나리아가 있어 보내지 않음",
@@ -332,14 +478,41 @@ def copilot_send(prompt_text, tag, name, fresh=None):
     limit = chat_turns()
     want_fresh = (fresh is True
                   or (fresh is None and (_FIRST_SEND[0] or _NEED_FRESH[0] or limit <= 0 or _TURNS[0] >= limit)))
+    # chatTurns 회전(같은 탭을 오래 쓴 뒤의 새 채팅)이면 페이지도 새로 고친다 — 몇 시간 쓴 탭(만료된 페이지 토큰·커진 대화)은
+    # 새 채팅 버튼만으로는 실패가 이어졌다(진단 A). 첫 왕복·실패 뒤의 새 채팅은 예전처럼 버튼만.
+    reload = bool(want_fresh and not _FIRST_SEND[0] and 0 < limit <= _TURNS[0])
     if want_fresh:
         # 판정의 첫 왕복은 새 채팅에서 — 수집 단계의 실패 대화가 판정을 오염시키지 않게.
         # 직전 왕복이 실패했을 때도 새 채팅 — 끊긴 생성·오류 문구가 남은 채팅은 다음 답을 오염시킨다.
         # 한 채팅의 왕복이 chatTurns 에 닿아도 새 채팅 — 너무 길어진 대화는 답이 끊기거나 앞 답을 되풀이한다.
         _TURNS[0] = 0
-    res = _transport(prompt_text, pf, name, want_fresh, roundtrip_timeout(n_parts))
-    if not isinstance(res, dict):
-        return {"ok": False, "error": "드라이버 출력 형식 오류", "hint": str(res)[-150:]}
+    pre_hard = _pre_throttle_wait()
+    res = _send_once(prompt_text, pf, name, want_fresh, n_parts, reload)
+    k = 0
+    while _is_transient(res):
+        if _HARD[0] or pre_hard or k >= len(COOLDOWN_SEC):
+            res = _go_hard(res, k)               # 쉬고도 막혔다(또는 이미 강한 제한) — 더 보내지 않는다
+            break
+        if k == 2 and not _MODEL_FALLBACK[0]:
+            fb = _fallback_model()
+            if fb:
+                _MODEL_FALLBACK[0] = fb
+                print(f"        두 번 쉬고도 막혀 이 단계의 남은 왕복은 '{fb}' 모델로 보냅니다")
+        sec = _cool_room(COOLDOWN_SEC[k])
+        if sec < COOLDOWN_MIN_SEC:
+            if _COOLED[0] >= COOLDOWN_CAP_SEC - COOLDOWN_MIN_SEC:
+                res = _go_hard(res, k)           # 프로세스의 쉬는 시간 합계를 다 썼다 — 계속 막히는 Copilot
+            break                                # 전체 마감이 가깝다 — 쉬지 않고 실패를 그대로 돌려준다
+        print(f"        Copilot 응답 제한·일시 오류({str(res.get('phase') or res.get('error') or '')[:30]}) — "
+              f"{sec / 60:.0f}분 쉬고 새로 고친 뒤 같은 묶음을 다시 보냅니다 ({k + 1}/{len(COOLDOWN_SEC)})", flush=True)
+        _cooldown(sec)
+        _COOLED[0] += sec
+        _COOLDOWNS[0] += 1
+        k += 1
+        _TURNS[0] = 0                            # 새로 고친 새 채팅에서 다시 보낸다
+        res = _send_once(prompt_text, pf, name, True, n_parts, True)
+    if k:
+        res = dict(res, cooldowns=k)
     if res.get("phase") == "blocked":
         return res                           # 드라이버의 최종 검사에 걸렸다 — 보내지 않았으니 채팅 상태를 바꾸지 않는다
     if res.get("phase") == "stub" and not _STUB_NOTED[0]:
@@ -347,6 +520,7 @@ def copilot_send(prompt_text, tag, name, fresh=None):
         print("        ※ LM_COPILOT_STUB 스텁 응답 — 테스트 전용, 실제 Copilot 판정이 아닙니다")
     if res.get("ok"):
         _FIRST_SEND[0] = False       # 성공했을 때만 소진 — 실패하면 다음도 새 채팅
+        _HARD[0] = False             # 제한이 풀렸다 — 다음 일시 오류는 다시 쉬는 사다리부터
         _NEED_FRESH[0] = bool(res.get("cut"))   # 끊긴 답이 남은 채팅도 다음엔 새 채팅
         # 드라이버가 재시도 사다리로 새 채팅을 열었으면 그 채팅의 첫 왕복이다
         _TURNS[0] = 1 if ("새 채팅" in str(res.get("retry") or "")) else _TURNS[0] + 1
@@ -364,12 +538,14 @@ def copilot_send(prompt_text, tag, name, fresh=None):
     return res
 
 
-def _transport(prompt_text, pf, name, want_fresh, lim):
+def _transport(prompt_text, pf, name, want_fresh, lim, reload=False, model=None):
     """드라이버 왕복 1회 → 결과 dict(--send 의 JSON 과 같은 꼴).
     · inProcess(기본): copilot_auto.send_inproc — 왕복마다 파이썬을 띄우지 않는다. 상한은 드라이버의 내부 데드라인
       (deadline = 지금 + lim → roundtripMaxSec·잠금 대기·CDP 소켓 timeout).
     · inProcess=false: 예전처럼 자식 프로세스(--send pf). 1분마다 경과를 찍고, 한도를 넘기면 **드라이버 프로세스만**
-      끝낸다(taskkill 트리 종료는 쓰지 않는다 — Edge 는 Job 에서 떨어져 있어 다음 왕복이 이어 쓰고, 닫기는 close_own_edge)."""
+      끝낸다(taskkill 트리 종료는 쓰지 않는다 — Edge 는 Job 에서 떨어져 있어 다음 왕복이 이어 쓰고, 닫기는 close_own_edge).
+    · reload(LM28 진단 A): 보내기 전에 채팅 페이지를 새로 고친다(쉬었다 다시 보내기·chatTurns 회전). model: 이번 왕복만
+      모델을 바꾼다(두 번 쉬고도 막힐 때의 대체 모델). 둘 다 켜졌을 때만 드라이버에 넘긴다."""
     import threading
     if _inproc():
         try:
@@ -386,15 +562,24 @@ def _transport(prompt_text, pf, name, want_fresh, lim):
                 print(f"        … Copilot 응답 대기 {int((time.time() - _t0) / 60)}분 / 최대 {int(lim / 60)}분 ({name})",
                       flush=True)
         threading.Thread(target=_beat_loop, daemon=True).start()
+        kw = {}
+        if reload:
+            kw["reload"] = True
+        if model:
+            kw["cfg"] = dict(ca.load_cfg(), model=str(model))
         try:
             return ca.send_inproc(prompt_text, fresh=bool(want_fresh), deadline=time.time() + float(lim),
-                                  stage=str(name or "")[:40])
+                                  stage=str(name or "")[:40], **kw)
         finally:
             _stop.set()
     try:
         cmd = [sys.executable, os.path.join(ROOT, "tools", "copilot_auto.py"), "--send", pf]
         if want_fresh:
             cmd.append("--fresh")
+        if reload:
+            cmd.append("--reload")
+        if model:
+            cmd += ["--model", str(model)]
         # LM_STAGE — 드라이버가 report\copilot_trace.jsonl 에 '어느 단계의 왕복인지' 를 남기게 한다.
         # 이름만 넘긴다(chunk3·narr_2026-06·wf1 …). 프롬프트 원문은 계측에 들어가지 않는다.
         # 왕복은 최장 roundtrip_timeout(기본 27분 × 조각 수)이다. 예전에는 그 동안 **출력이 한 줄도 없어**
@@ -611,8 +796,12 @@ def _fit_samples(rows, k, fmt, head_len, budget=PROMPT_BUDGET, k_min=20):
     return samples
 
 
-TAXONOMY_EXAMPLE = ('{"models":[{"name":"프로젝트A","match":["proja"],"obs":"근거가 된 raw 조각","product":"제품X"},'
-                    '{"name":"공통","match":[],"product":"공통"}]}')
+# l1(상위) 예시 값은 details.L1_META 에서 꺼낸다 — 상위 이름을 details 밖에 하드코딩하지 않는다(tools/check_l1.py)
+TAXONOMY_EXAMPLE = json.dumps(
+    {"models": [{"name": "프로젝트A", "match": ["proja"], "obs": "근거가 된 raw 조각", "product": "제품X",
+                 "l1": next(iter(details.L1_META))},
+                {"name": "공통", "match": [], "product": "공통", "l1": details.snap1("공통")}]},
+    ensure_ascii=False, separators=(",", ":"))
 CONSOLIDATE_EXAMPLE = '{"models":[{"name":"대표이름","match":["키워드"],"merged":["흡수된이름"]},{"name":"공통","match":[]}]}'
 
 
@@ -640,8 +829,12 @@ def taxonomy_prompt(rows, hints, pinned=()):
         "     코드 모듈·파일명 조각(run·check·mine·txt 같은 소문자 단어)도 과제가 아니다 —",
         "     그것들이 속한 **하나의 도구/제품 이름**으로 통합하라 (예: 여러 .py 모듈 작업",
         "     → 그 도구 이름 하나). 같은 산출물의 부품들을 과제로 쪼개면 로드가 흩어진다.",
+        "   ★ 사람 이름·호칭(○○ 책임/님)·부서명·채팅방 이름, 근태·인사·발령·공지·교육 안내·설문 같은 사내 행정은",
+        "     과제가 아니다 — models 에 넣지 말 것(행정은 '공통').",
         "   product = 그 과제가 속한 **실제 제품·제품군·과제코드** (raw 에서 식별될 때만).",
         "   내부 공통업무·행정이면 product 를 '공통' 으로. 못 정하겠으면 생략.",
+        "   l1 = 그 과제의 업무 성격(상위) — 아래 중 택1:",
+        *details.l1_def_lines("     "),
         "2. worktypes = 업무유형 4종 고정: 개발 / 사무 / 현장 / 협업",
         "",
         "출력은 JSON 하나만(설명·표·코드블록 없이). obs 는 40자 이내:",
@@ -688,9 +881,15 @@ def consolidate_prompt(models, rows):
     return "\n".join(lines + _fit_samples(rows, 40, lambda r: f"- {(r.get('text') or '')[:70]}", head_len))
 
 
-def apply_merges(models):
+def apply_merges(models, draft=()):
     """consolidate 결과의 merged 를 match 키워드로 흡수 — 판정 단계에서 옛 이름이 나와도
-    대표 이름으로 정규화되도록 한다."""
+    대표 이름으로 정규화되도록 한다.
+    draft(통합 전 초안 — taxonomy 결과): 대표에 product·l1 이 없으면 같은 이름 또는 merged 이름의 초안 값을 옮긴다.
+    consolidate 응답 형식에는 product·l1 이 없어, 통합을 거치면 taxonomy 가 판정한 제품·상위가 사라졌다(진단 B)."""
+    by = {}
+    for d in draft or ():
+        if isinstance(d, dict) and d.get("name"):
+            by.setdefault(ukey2(d["name"]), d)
     out = []
     for m in models:
         if not isinstance(m, dict) or not m.get("name"):
@@ -699,17 +898,48 @@ def apply_merges(models):
         mm["match"] = list(dict.fromkeys(
             [str(k).lower() for k in _as_list(m.get("match"))]
             + [str(k).lower() for k in _as_list(m.get("merged"))]))
+        for key in ("product", "l1"):
+            if mm.get(key):
+                continue
+            for nm in [m["name"]] + [str(x) for x in _as_list(m.get("merged"))]:
+                v = (by.get(ukey2(nm)) or {}).get(key)
+                if v:
+                    mm[key] = v
+                    break
         out.append(mm)
     return out
 
 
-def fallback_models(rows, known):
-    """taxonomy 왕복 실패 시 — 등록 프로젝트 + 규칙 귀속에서 자주 나온 프로젝트를 후보로"""
+def fallback_models(rows, known, people=(), prev=()):
+    """taxonomy 왕복 실패 시 — 등록 프로젝트(known) + 지난 정상 체계(prev — 이름 또는 models 항목) + 규칙 귀속에서
+    자주 나온 토큰(최대 8개, 2회 이상)을 후보로. 규칙 토큰은 상투어·잡음·사람 이름·공지류를 거른다(진단 B — 폴백 체계가
+    사람 이름·'근태공지' 를 과제로 세우고 entities 로 되먹이던 경로). 같은 과제(ukey2)는 하나로 묶고 매칭어를 합친다.
+    모든 항목에 obs '규칙 폴백' — entities 에 남아도 AI 체계와 구분된다."""
     freq = Counter(r.get("project") for r in rows
-                   if r.get("project") and r["project"] not in ("미지정", "공통") and _rule_name_ok(r["project"]))
+                   if r.get("project") and r["project"] not in ("미지정", "공통") and _rule_name_ok(r["project"])
+                   and not NOISE_MODEL.match(r["project"]) and details.task_name_ok(r["project"], people))
     auto = [p for p, n in freq.most_common(8) if n >= 2]
-    names = list(dict.fromkeys(list(known or []) + auto))
-    return [{"name": p, "match": [p.lower()]} for p in names] + [{"name": "공통", "match": []}]
+    out, idx = [], {}
+    for p in list(known or []) + list(prev or []) + auto:
+        src = p if isinstance(p, dict) else {}
+        if isinstance(p, (tuple, list)) and p:
+            src = {"name": p[0], "match": list(p[1] or []) if len(p) > 1 else []}
+        nm = str((src.get("name") if src else p) or "").strip()
+        if not nm or nm == "공통":
+            continue
+        keys = [nm.lower()] + [str(k).strip().lower() for k in _as_list(src.get("match")) if str(k).strip()]
+        k = ukey2(nm)
+        if k in idx:                      # 같은 과제의 다른 표기(규칙 토큰 'lidarx' ↔ 지난 체계 'LiDAR-X') — 매칭어만 합친다
+            cur = out[idx[k]]
+            cur["match"] = list(dict.fromkeys(cur["match"] + keys))
+            continue
+        idx[k] = len(out)
+        e = {"name": nm, "match": list(dict.fromkeys(keys)), "obs": "규칙 폴백"}
+        for key in ("product", "l1"):
+            if src.get(key):
+                e[key] = src[key]
+        out.append(e)
+    return out + [{"name": "공통", "match": [], "obs": "규칙 폴백"}]
 
 
 # 파일명 접두어·범용 토큰은 과제가 아니다 — 프롬프트 지시만으로는 새는 것이
@@ -724,13 +954,18 @@ def _clean_product(v):
     return s[:40]
 
 
-def sanitize_models(models):
+def sanitize_models(models, people=()):
     """taxonomy·discovered 결과에서 잡음 이름 제거 + 대소문자 중복 통합, '공통' 보장.
-    pinned(사용자 지정)는 잡음 필터를 우회한다 — 사용자가 명시한 이름은 코드가 지우지 않는다."""
+    pinned(사용자 지정)는 잡음 필터를 우회한다 — 사용자가 명시한 이름은 코드가 지우지 않는다.
+    LM28(진단 B): 상투어·버전(규칙 과제명 잡음)·사람 이름(people = details.person_keys 키)·공지류(근태공지·인사발령 …)도
+    과제가 아니다 — 이 관문이 taxonomy·지난 체계·폴백·발견 모든 경로에 걸린다. l1(상위)은 product 처럼 남기되 고정 범주로 스냅."""
     out, seen = [], set()
     for m in models:
         name = str(m.get("name") or "").strip() if isinstance(m, dict) else str(m).strip()
-        if not name or (NOISE_MODEL.match(name) and not (isinstance(m, dict) and m.get("pinned"))):
+        if not name:
+            continue
+        if not (isinstance(m, dict) and m.get("pinned")) and (
+                NOISE_MODEL.match(name) or not _model_name_ok(name) or not details.task_name_ok(name, people)):
             continue
         # 신원 축은 ukey2 — 예전에는 .lower() 뿐이라 '광학 설계'/'광학설계'/'광학-설계' 가 서로 다른
         # 과제로 남았고, 그 변형이 discovered 로 적립돼 다음 실행의 후보로 되먹여져 분할이 영구화됐다.
@@ -743,13 +978,31 @@ def sanitize_models(models):
             m["name"] = name                  # 공백 등 정규화된 이름으로 기록
             if m.get("product") is not None:
                 m["product"] = _clean_product(m.get("product"))
-
+            if m.get("l1") is not None:       # 상위 — 고정 범주로 스냅, 못 짚으면 지운다(억지로 찍지 않는다)
+                l1 = details.snap1(m.get("l1"))
+                if l1:
+                    m["l1"] = l1
+                else:
+                    m.pop("l1", None)
             out.append(m)
         else:
             out.append({"name": name, "match": [k]})
     if not any(m["name"] == "공통" for m in out):
         out.append({"name": "공통", "match": []})
     return out
+
+
+def _load_prev_entities(rep, people=()):
+    r"""지난 분석의 과제 체계 — report\entities_*.json 을 최신부터 훑어 규칙 폴백 산출물("fallback": true, 옛 판은
+    AI 흔적 없는 목록 — details.entities_is_fallback)은 건너뛰고 첫 정상 체계를 쓴다. 옛 지정 표식(pinned)은 떼고
+    sanitize_models(사람 이름·공지류·잡음 관문)를 거친다 — 지난 실행이 남긴 사람 이름이 힌트로 되살아나지 않게.
+    returns (models, 경로) — 없으면 ([], "")."""
+    ent, path = details.newest_entities(rep)
+    if not path:
+        return [], ""
+    models = [{k: v for k, v in m.items() if k != "pinned"} for m in _as_list(ent.get("models"))
+              if isinstance(m, dict) and str(m.get("name") or "").strip()]
+    return sanitize_models(models, people), path
 
 
 def to_model(name, models):
@@ -767,6 +1020,23 @@ def to_model(name, models):
     return canon.get(ukey2(n), n)
 
 
+def final_model(raw, models, people=(), pinned_keys=()):
+    """AI 가 돌려준 과제명 → 최종 과제명(LM28 진단 B — 과제명 관문). to_model 로 체계의 대표 표기로 접은 뒤
+    · 지정 과제(pinned_keys — ukey2 키, 또는 models 의 pinned)는 그대로
+    · 체계에 있는 이름은 그대로 — 단 공지류·사람 이름이면 '공통'(관문 없이 들어온 옛 체계 대비)
+    · 체계에 없는 새 이름(판정 중 발견)은 잡음·상투어·사람 이름·공지류가 아닐 때만 그대로, 아니면 '공통'.
+    예전에는 to_model 이 모르는 이름을 그대로 돌려줘 사람 이름·'근태공지' 가 과제가 되고 entities 발견으로 되먹였다."""
+    md = to_model(raw, models) or "공통"
+    k = ukey2(md)
+    if k in {ukey2(p) for p in (pinned_keys or ())} | {ukey2(m["name"]) for m in models if m.get("pinned")}:
+        return md
+    if k in {ukey2(m["name"]) for m in models}:
+        return "공통" if (details.is_notice_name(md) or details.is_person_name(md, people)) else md
+    if NOISE_MODEL.match(md) or not _model_name_ok(md) or not details.task_name_ok(md, people):
+        return "공통"
+    return md
+
+
 def _rule_name_ok(s):
     """규칙 과제명·매칭어로 쓸 수 있는가 — 상투어·버전·6~8자리 날짜·Untitled·copy 는 아니다(F-19·W2-13, extract 와 같은 규칙)."""
     try:
@@ -774,6 +1044,15 @@ def _rule_name_ok(s):
         return rule_name_ok(s)
     except ImportError:
         return bool(str(s or "").strip())
+
+
+_CODE_NAME = re.compile(r"^[A-Z]+\d+[A-Z]+$")      # 'V2X' 같은 대문자 제품·과제 코드 — 버전 꼴('v2a')과 구분
+
+
+def _model_name_ok(s):
+    """AI·지난 체계·발견 과제명의 상투어 관문(LM28 진단 B) — 규칙 과제명과 같은 규칙(_rule_name_ok)이되,
+    대문자 코드('V2X')는 버전 꼴('v2x')로 보지 않는다(규칙 토큰은 소문자라 extract 판정 그대로)."""
+    return _rule_name_ok(s) or bool(_CODE_NAME.match(str(s or "").strip()))
 
 
 def rule_model(r, models):
@@ -830,6 +1109,8 @@ def judge_prompt(chunk, start, models, first=True, seen_details=(), idxs=None):
         "  단, 이미 목록에 같은 개체의 다른 표기가 있으면 그 표기를 쓴다. 어느 쪽도 아니면 \"공통\".",
         "   → " + ", ".join(
             m["name"] + (f"({str(m.get('desc'))[:30]})" if m.get("desc") else "") for m in models),
+        "  ★ 사람 이름·호칭·부서·채팅방 이름은 과제가 아니다 — 그 사람과 한 일이 속한 과제, 모르면 \"공통\".",
+        "  ★ 근태·인사·발령·공지·교육 안내는 과제가 아니다 — 단순 공지는 n, 내가 처리한 행정이면 \"공통\".",
         "· 유형 : 개발 / 사무 / 현장 / 협업 중 하나",
         "· 세부업무 : 짧은 명사구 — 같은 일은 같은 이름으로 (예: '광학 설계', 'BOM 발주',",
         "   '입고검사', '고객 대응', '주간보고'). 조사 붙은 조각('보고의' 등) 금지.",
@@ -897,6 +1178,156 @@ def signal_sig(r):
             f"{' '.join((r.get('text') or '').split())[:120]}")
 
 
+# ── 이어서 판정 캐시(LM28 진단 A) — report\judge_cache.json ─────────────────────────────
+# 예전 재개는 같은 기간 tag 의 ai_judgments 에서만 판정을 회수했다. 기본 기간('올해')은 tag 가 날마다 바뀌어 매일 1월부터 다시
+# 물었고(수천 행 × 왕복), 메일 라벨이 메일(수신)↔메일(수신전용)으로 바뀌면 같은 tag 안에서도 어긋났다.
+# 캐시는 기간과 무관하게 내용 키(signal_sig2 의 sha1)로 판정만 남긴다 — 신호 원문은 남기지 않는다.
+def signal_sig2(r):
+    """'이어서 판정' 키 v2 — 시각(분)|출처 계열(괄호 앞)|원문 머리 120자. 라벨(메일(수신)/메일(수신전용))이 바뀌어도 같다."""
+    return (f"{(r.get('time') or '')[:16]}|{str(r.get('source') or '').split('(')[0]}|"
+            f"{' '.join((r.get('text') or '').split())[:120]}")
+
+
+def _ckey(sig2):
+    """캐시 키 — sig2 의 sha1 앞 20자(캐시 파일에 신호 원문이 남지 않는다)."""
+    return hashlib.sha1(str(sig2 or "").encode("utf-8")).hexdigest()[:20]
+
+
+def _sig2_from_legacy(sig):
+    """v1 키(signal_sig — 출처 라벨 12자) → v2 키(출처 계열)."""
+    t, s, x = (str(sig or "").split("|", 2) + ["", ""])[:3]
+    return f"{t}|{s.split('(')[0]}|{x}"
+
+
+def _jt(j):
+    """판정 → 비교용 튜플 (업무, 과제, 유형, 세부업무) — 비업무는 과제·유형·세부업무를 비운다."""
+    w = bool((j or {}).get("work"))
+    if not w:
+        return (False, "", "", "")
+    return (True, str(j.get("model") or ""), str(j.get("worktype") or ""), str(j.get("detail") or ""))
+
+
+def _jd(t):
+    """_jt 튜플 → 판정 dict."""
+    return {"work": bool(t[0]), "model": t[1], "worktype": t[2], "detail": t[3]}
+
+
+def _cache_entry(j, today):
+    """판정 → 캐시 항목 {"w":0|1, "m","t","d", "at": 마지막으로 쓴 날}."""
+    w, m, t, d = _jt(j)
+    e = {"w": 1 if w else 0, "at": today}
+    if w:
+        e.update(m=m[:80], t=t, d=d[:40])
+    return e
+
+
+def _from_cache(e):
+    """캐시 항목({"w",…}) 또는 옛 판정 기록 항목({"work","model",…}) → 판정 dict(못 읽으면 None)."""
+    if not isinstance(e, dict):
+        return None
+    if "w" in e:
+        return _jd((bool(e.get("w")), str(e.get("m") or ""), str(e.get("t") or ""), str(e.get("d") or "")))
+    if "work" in e:
+        return _jd(_jt(e))
+    return None
+
+
+def _write_json_atomic(path, obj):
+    """tmp → os.replace(백신·색인기가 잠깐 잡으면 쉬고 다시). 판정 캐시는 크고 묶음마다 쓰므로 들여쓰기 없이 쓴다
+    (details.save_json_atomic 은 indent=1). returns 저장했으면 True."""
+    tmp = f"{path}.{os.getpid()}.tmp"
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(obj, f, ensure_ascii=False, separators=(",", ":"))
+        for i in range(6):
+            try:
+                os.replace(tmp, path)
+                return True
+            except PermissionError:
+                time.sleep(0.2 * (i + 1))
+    except (OSError, TypeError, ValueError):
+        pass
+    try:
+        os.remove(tmp)
+    except OSError:
+        pass
+    return False
+
+
+def load_judge_cache(rep):
+    r"""report\judge_cache.json → {"v":1, "since": 캐시 시작 시각(epoch), "migrated": 옛 기록을 이미 옮겼나,
+    "items": {키: {"w","m","t","d","at"}}}. 없거나 깨졌으면 빈 캐시(since 0·migrated False — 옛 판정 기록
+    ai_judgments_*.json 을 한 번 이어받는다)."""
+    try:
+        with open(os.path.join(rep, JUDGE_CACHE), encoding="utf-8-sig") as f:
+            o = json.load(f)
+        if isinstance(o, dict) and isinstance(o.get("items"), dict):
+            return {"v": 1, "since": float(o.get("since") or 0), "migrated": bool(o.get("migrated")),
+                    "items": o["items"]}
+    except (OSError, ValueError, TypeError):
+        pass
+    return {"v": 1, "since": 0.0, "migrated": False, "items": {}}
+
+
+def save_judge_cache(rep, cache, d0, prune=True):
+    """판정 캐시 저장(원자 교체). prune: 분석 시작일(d0) − CACHE_KEEP_DAYS 보다 앞서 마지막으로 쓴 판정을 빼고, CACHE_MAX 를
+    넘으면 오래 쓰지 않은 것부터 뺀다(묶음마다 하는 중간 저장은 prune=False). returns 저장했으면 True."""
+    items = cache.setdefault("items", {})
+
+    def _at(v):
+        return str(v.get("at") or "") if isinstance(v, dict) else ""
+    if prune:
+        try:
+            cut = (date.fromisoformat(str(d0)[:10]) - timedelta(days=CACHE_KEEP_DAYS)).isoformat()
+        except ValueError:
+            cut = ""
+        if cut:
+            for k in [k for k, v in items.items() if _at(v) < cut]:
+                del items[k]
+        if len(items) > CACHE_MAX:
+            for k, _v in sorted(items.items(), key=lambda kv: _at(kv[1]))[:len(items) - CACHE_MAX]:
+                del items[k]
+    # migrated — 이 캐시가 저장된 뒤로는 판정마다 캐시에 남으므로 옛 판정 기록(ai_judgments_*.json)을 다시 읽지 않는다
+    return _write_json_atomic(os.path.join(rep, JUDGE_CACHE),
+                              {"v": 1, "since": cache.get("since") or 0, "migrated": True, "items": items})
+
+
+def _legacy_judgments(rep, tag, since=0.0, limit=LEGACY_JUDGMENT_FILES):
+    r"""캐시 이전 판의 판정 기록 → {캐시 키: 판정 항목}. report\ai_judgments_<tag>.json(이 기간)을 먼저, 그다음 다른 기간
+    파일을 최신 수정 순으로 limit 개. 캐시가 '처음부터 판정'(--redo)으로 다시 시작된 시각(since)보다 오래된 파일은 읽지 않는다."""
+    import glob
+
+    def _mt(p):
+        try:
+            return os.path.getmtime(p)
+        except OSError:
+            return 0.0
+    own = os.path.join(rep, f"ai_judgments_{tag}.json")
+    _own_n = os.path.normcase(os.path.abspath(own))
+    others = sorted((p for p in glob.glob(os.path.join(rep, "ai_judgments_*.json"))
+                     if os.path.normcase(os.path.abspath(p)) != _own_n), key=_mt, reverse=True)[:limit]
+    out = {}
+    for p in [own] + others:
+        if not os.path.isfile(p) or _mt(p) < float(since or 0):
+            continue
+        try:
+            with open(p, encoding="utf-8-sig") as f:
+                items = json.load(f).get("items") or {}
+        except (OSError, ValueError, TypeError, AttributeError):
+            continue
+        for v in (items.values() if isinstance(items, dict) else ()):
+            if isinstance(v, dict) and v.get("sig") and "work" in v:
+                out.setdefault(_ckey(_sig2_from_legacy(v["sig"])), v)
+    return out
+
+
+def _cached_name_ok(model, people=(), pinned_keys=()):
+    """다시 쓰는 판정의 과제명 관문(진단 B) — 사람 이름·공지류 과제는 버리고 다시 판정한다(지정 과제·'공통'·빈 값은 통과)."""
+    m = str(model or "").strip()
+    return (not m) or m == "공통" or details.task_name_ok(m, people, pinned_keys)
+
+
 def pack_chunks(rows, chunk_n, head_len, budget=PROMPT_BUDGET):
     """행을 [(start, n)] 로 자른다 — 행 수(chunk_n)와 글자 예산 둘 다로. 머리말(head_len)+행 합이 budget 을
     넘기 전에 끊는다(첫 행은 항상 넣는다). 긴 제목·긴 과제 목록·긴 '앞서 쓴 이름' 목록이면 40행이
@@ -913,6 +1344,94 @@ def pack_chunks(rows, chunk_n, head_len, budget=PROMPT_BUDGET):
         out.append((i, n))
         i += n
     return out
+
+
+# ── 같은 내용 묶음·짧은 대화(LM28 진단 A) ──────────────────────────────────────────────
+# 예전에는 스레드의 메일마다·팀즈 메시지마다 한 줄씩 보냈다(수천 행 → 왕복 수백 회 · 판정 예산 120분의 몇 배).
+# 같은 내용(같은 계열·같은 앞 95자 — Copilot 이 보는 줄이 같다)은 대표 한 줄만 보내고 그 판정을 묶음 전체에 쓴다.
+_GK_PREFIX = re.compile(r"^\s*((re|fw|fwd|답장|전달|회신|답변)\s*[:：]\s*)+", re.I)
+_ACK_RX = re.compile(
+    r"^(네+|넵+|예+|넹|응|ㅇㅇ|ㅇㅋ|오케이|ok(ay)?|감사(합니다|해요|드립니다)?|고맙습니다|확인(했습니다|했어요|완료)?|알겠습니다"
+    r"|수고(하셨습니다|하세요)?|좋(습니다|아요)|ㅎ+|ㅋ+|ㅠ+|thanks?|thx|got it|noted)[\s.!~^]*$", re.I)
+_MASK_TOKEN = re.compile(r"\[[^\]]{0,40}\]")       # 개인정보 가림 토큰([사람]·[전화] …)
+
+
+def _fam(r):
+    """출처 계열 — '메일(수신)' → '메일'."""
+    return str((r or {}).get("source") or "").split("(")[0]
+
+
+def _substantive(text):
+    """업무를 가리킬 낱말이 하나라도 있는가 — extract._tokens 중 상투어·버전·날짜가 아닌 것(rule_name_ok)."""
+    try:
+        from extract import _tokens, rule_name_ok
+    except ImportError:
+        return bool(str(text or "").strip())
+    return any(rule_name_ok(t) for t in _tokens(text))
+
+
+def group_key(r):
+    """같은 내용 묶음 키 → (계열, 정규화한 원문 앞 95자) 또는 None(혼자 보낸다).
+    메일·회의는 RE/FW/회신 머리를 떼고, 파일은 규모 꼬리(' 외 N건' 등)를 뗀 뒤 소문자·앞뒤 구두점 정리. 숫자는 남긴다
+    ('설계 검토 1' 과 '설계 검토 2' 는 다른 일). 커밋·수동기록, 6자 미만, 업무 낱말이 하나도 없는 원문은 묶지 않는다."""
+    fam = _fam(r)
+    if fam in ("커밋", "수동기록"):
+        return None
+    t = " ".join(str(r.get("text") or "").split())
+    if fam in ("메일", "회의"):
+        t = _GK_PREFIX.sub("", t)
+    elif fam == "파일":
+        try:
+            from extract import _SIG_SUFFIX_RE
+            t = _SIG_SUFFIX_RE.sub("", t)
+        except ImportError:
+            pass
+    t = t.lower().strip(" .-_~!?")
+    if len(t) < 6 or not _substantive(t):
+        return None
+    return fam, t[:GROUP_KEY_CHARS]
+
+
+def is_lowinfo(r):
+    """짧은 팀즈 대화(인사·맞장구 — '네'·'감사합니다'·'ㅎㅎ')인가 — Copilot 에 보내지 않고 주변 판정으로 채운다(실패가 아니다).
+    가림 토큰·구두점을 뺀 글이 6자 미만이거나, 맞장구 정형이거나, 업무 낱말이 하나도 없으면."""
+    if _fam(r) != "팀즈":
+        return False
+    t = " ".join(str(r.get("text") or "").split())
+    core = re.sub(r"[\W_]+", "", _MASK_TOKEN.sub(" ", t))
+    return len(core) < 6 or bool(_ACK_RX.match(t)) or not _substantive(t)
+
+
+def _wt(r):
+    try:
+        return float(r.get("weight") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def group_reps(rows, idxs, keys, cap=GROUP_MAX):
+    """같은 내용 묶음 → (대표 행 번호 목록(번호 순), {대표: [구성원 …]}). 키가 None 인 행은 혼자 대표다.
+    한 묶음이 cap 행을 넘으면 시간 순으로 나눠 조각마다 대표를 세운다. 대표 = (가중치, 원문 길이, 시각)이 가장 큰 행."""
+    by, reps, members = defaultdict(list), [], {}
+    for i in idxs:
+        k = keys[i]
+        if k is None:
+            reps.append(i)
+        else:
+            by[k].append(i)
+    cap = max(1, int(cap))
+    for ids in by.values():
+        ids.sort(key=lambda i: (str(rows[i].get("time") or ""), i))
+        for s in range(0, len(ids), cap):
+            part = ids[s:s + cap]
+            rep = max(part, key=lambda i: (_wt(rows[i]), len(str(rows[i].get("text") or "")),
+                                           str(rows[i].get("time") or ""), -i))
+            reps.append(rep)
+            others = [i for i in part if i != rep]
+            if others:
+                members[rep] = others
+    reps.sort()
+    return reps, members
 
 
 def recent_details(judged, prev_idxs=()):
@@ -941,12 +1460,20 @@ def judge_rows(idxs, rows, models, seen, tag, label, depth, st):
     · st: roundtrips·repaired·retries·failed_rows·omitted_rows·notes·last_err·soft(재시도 끔) 누적.
     · G3(LM28): 행은 먼저 관문(g3_rows)을 거친다 — 걸린 행은 보내지 않고 규칙 판정으로 남는다(gated_rows). 보낼 행이 없거나
       최종 프롬프트 검사(copilot_send → phase 'blocked')에 걸리면 왕복하지 않고 빈 결과 — 깊이 0 이면 st['_skipped'] 를 세워
-      호출자가 연속 실패로 세지 않게 한다(재시도·반분도 하지 않는다)."""
+      호출자가 연속 실패로 세지 않게 한다(재시도·반분도 하지 않는다). 관문에 걸린 행 번호는 st['gated_idx'](채우기 제외).
+    · LM28 진단 A: 일시 오류·사용량 제한(_is_transient)은 나누지 않는다 — copilot_send 가 이미 쉬고 다시 보냈다(st['transient']).
+      JSON 없는 짧은 답(SHORT_REPLY_CHARS 미만 — 거절·제한 문구일 수 있다)은 한 단계만 나눈다. 강한 제한(hard)·로그인 만료 등
+      사람이 손댈 실패는 st['fatal'](사유)·st['fatal_kind'](throttle·login·fatal). 빠뜨린 행 번호는 st['omitted_idx']."""
     idxs = list(idxs)
+    if st.get("fatal"):
+        st["failed_rows"] += len(idxs)            # 같은 묶음의 앞 조각이 사람이 손댈 실패였다 — 나머지는 보내지 않는다
+        return {}
     kept, why = g3_rows([dict(rows[i], _gi=i) for i in idxs], ("text",))
     n_gated = len(idxs) - len(kept)
     if n_gated:
         st["gated_rows"] = st.get("gated_rows", 0) + n_gated
+        _sent = {it["_gi"] for it in kept}
+        st.setdefault("gated_idx", set()).update(i for i in idxs if i not in _sent)
         st["notes"].append(f"{label}: 개인정보 관문 {n_gated}행 제외(" + ", ".join(sorted(why)) + ")")
     if not kept:
         if depth == 0:
@@ -961,11 +1488,16 @@ def judge_rows(idxs, rows, models, seen, tag, label, depth, st):
     if res.get("phase") == "blocked":
         # 최종 프롬프트 검사에 걸렸다 — 보내지 않았고 재시도도 하지 않는다. 이 행들은 규칙 판정으로 남는다.
         st["gated_rows"] = st.get("gated_rows", 0) + len(idxs)
+        st.setdefault("gated_idx", set()).update(idxs)
         st["notes"].append(f"{label}: 개인정보 관문 — 묶음을 보내지 않음(규칙 판정)")
         if depth == 0:
             st["_skipped"] = True
         return {}
-    st["roundtrips"] += 1
+    try:
+        _cd = int(res.get("cooldowns") or 0)
+    except (TypeError, ValueError):
+        _cd = 0
+    st["roundtrips"] += 1 + _cd                   # 쉬고 다시 보낸 왕복도 센다
     got, info = {}, {}
     if res.get("ok"):
         got, info = parse_judgments_ex(res.get("reply", ""), idxs)
@@ -987,6 +1519,13 @@ def judge_rows(idxs, rows, models, seen, tag, label, depth, st):
         _why, _how, _fatal = explain_failure(res)
         if _fatal:
             st["fatal"] = f"{_why} — {_how}"
+            st["fatal_kind"] = _abort_kind_of(res)
+            st["failed_rows"] += len(idxs)
+            return got
+        if _is_transient(res):
+            # 일시 오류·사용량 제한 — copilot_send 가 이미 쉬었다가 새로 고쳐 다시 보냈다(또는 마감이라 쉴 수 없었다).
+            # 반으로 나눠 즉시 다시 보내면 막힌 Copilot 에 요청만 퍼붓는다(예전: 묶음 하나에 왕복 최대 15회 × 사다리 3회).
+            st["transient"] = str(res.get("phase") or "timeout")
             st["failed_rows"] += len(idxs)
             return got
     missing = [i for i in idxs if i not in got]
@@ -995,8 +1534,12 @@ def judge_rows(idxs, rows, models, seen, tag, label, depth, st):
     incomplete = (not res.get("ok")) or (not got) or bool(info.get("repaired")) or bool(res.get("cut"))
     if not incomplete:
         st["omitted_rows"] += len(missing)          # 온전한 답인데 모델이 빠뜨림 — 규칙으로
+        st.setdefault("omitted_idx", set()).update(missing)
         return got
-    if st.get("soft") or depth >= MAX_SPLIT_DEPTH:
+    max_depth = MAX_SPLIT_DEPTH
+    if res.get("ok") and not got and len(str(res.get("reply") or "").strip()) < SHORT_REPLY_CHARS:
+        max_depth = min(max_depth, 1)               # JSON 없는 짧은 답 — 거절·제한 문구일 수 있어 한 단계만 나눠 본다
+    if st.get("soft") or depth >= max_depth:
         st["failed_rows"] += len(missing)
         return got
     if got:                                          # 부분 성공 — 빠진 행만
@@ -1014,6 +1557,145 @@ def judge_rows(idxs, rows, models, seen, tag, label, depth, st):
         return got
     st["failed_rows"] += len(idxs)
     return got
+
+
+# ── AI 가 직접 못 본 행 채우기(LM28 진단 A) ──────────────────────────────────────────
+# 예전에는 실패·중단으로 남은 행(실측 6,326행)이 모두 규칙 이름('공통/기타')으로 쌓였다. 가장 비슷한 AI 판정을 빌려 채우고
+# 'AI(유사)' 로 표시한다 — 채운 판정은 판정 기록·캐시에 넣지 않아 다음 실행이 AI 에 다시 묻는다.
+FILL_CONV_MIN = 30          # 대화 채우기 — 앞뒤 이 분 안의 같은 계열(팀즈) 판정 업무 행
+FILL_TOKEN_SHARE = 0.6      # 규칙 토큰 채우기 — 한 과제가 그 토큰 판정 행의 이 비율 이상이고
+FILL_TOKEN_MIN = 3          # … 이 행 수 이상일 때만
+FILL_SIM_PER_TOKEN = 300    # 유사 채우기 — 낱말 하나가 가리키는 판정 행 상한
+_T0 = datetime(2000, 1, 1)
+
+
+def _tmin(r):
+    """행 시각 → 분(거리 비교용) · 못 읽으면 None."""
+    try:
+        return (datetime.strptime(str(r.get("time") or "")[:16], "%Y-%m-%d %H:%M") - _T0).total_seconds() / 60.0
+    except (TypeError, ValueError):
+        return None
+
+
+def _who_key(r):
+    return " ".join(str((r or {}).get("who") or "").split()).lower()
+
+
+def fill_unjudged(rows, judged, targets, keys=None):
+    """AI 가 직접 못 본 행을 비슷한 판정으로 채운다 → {행: (판정, 방법)} — 방법은 same·conv·token·sim.
+    ① same — 같은 내용 묶음 키(group_key)인 판정 행 중 가장 흔한 판정(비업무 n 도 옮기는 유일한 단계)
+    ② conv — 팀즈: 앞뒤 30분 안의 팀즈 판정 업무 행(같은 상대 먼저, 가까운 시각 먼저)
+    ③ token — mine 규칙 토큰(project — 미지정·공통·상투어 제외): 그 토큰 판정 행의 60% 이상(3행 이상)이 한 과제면 그 과제와
+       그 과제의 가장 흔한 (유형, 세부업무)
+    ④ sim — 드문 낱말(df ≤ max(30, 0.5%·N))의 IDF 합(Σ log(N/df))이 가장 큰 판정 행(합 ≥ log(N/30) · 같으면 가까운 시각) —
+       그 행이 업무일 때만(비업무와 가장 닮았으면 채우지 않는다)
+    ②~④는 업무 판정만 옮기고 행을 버리지 않는다. 강한 행정 공지 제목은 ②~④로 채우지 않는다(규칙의 '공통/공지·근태').
+    targets: 채울 후보(판정 없음·광고 아님·관문 아님 — 짧은 대화 포함). keys: group_key 목록(없으면 새로 만든다)."""
+    out = {}
+    targets = [i for i in targets if i not in judged]
+    if not targets or not judged:
+        return out
+    keys = keys if keys is not None else [group_key(r) for r in rows]
+    by_key = defaultdict(Counter)
+    for i, j in judged.items():
+        if keys[i] is not None:
+            by_key[keys[i]][_jt(j)] += 1
+    left = []
+    for i in targets:                                         # ① same
+        c = by_key.get(keys[i]) if keys[i] is not None else None
+        if c:
+            out[i] = (dict(_jd(c.most_common(1)[0][0]), via="same"), "same")
+        else:
+            left.append(i)
+    left = [i for i in left if not details.is_notice_subject(rows[i].get("text"))]
+    work = {i: j for i, j in judged.items() if j.get("work")}
+    if not left or not work:
+        return out
+    tm = {}
+
+    def _t(i):
+        if i not in tm:
+            tm[i] = _tmin(rows[i])
+        return tm[i]
+    tl = sorted((_t(i), i) for i in work if _fam(rows[i]) == "팀즈" and _t(i) is not None)
+    tt = [x[0] for x in tl]
+    rest = []
+    for i in left:                                            # ② conv
+        ti = _t(i)
+        if _fam(rows[i]) != "팀즈" or ti is None or not tl:
+            rest.append(i)
+            continue
+        cands = tl[bisect.bisect_left(tt, ti - FILL_CONV_MIN):bisect.bisect_right(tt, ti + FILL_CONV_MIN)]
+        if not cands:
+            rest.append(i)
+            continue
+        who = _who_key(rows[i])
+        same = [c for c in cands if who and _who_key(rows[c[1]]) == who]
+        j = min(same or cands, key=lambda c: (abs(c[0] - ti), c[1]))[1]
+        out[i] = (dict(work[j], via="conv"), "conv")
+    left = rest
+
+    def _ptok(r):
+        p = str(r.get("project") or "").strip()
+        return p if p and p not in ("미지정", "공통") and _rule_name_ok(p) else ""
+    tot, cnt, wd = Counter(), defaultdict(Counter), defaultdict(Counter)
+    for i, j in judged.items():
+        p = _ptok(rows[i])
+        if not p:
+            continue
+        tot[p] += 1
+        if j.get("work"):
+            cnt[p][str(j.get("model") or "")] += 1
+            wd[(p, str(j.get("model") or ""))][(str(j.get("worktype") or ""), str(j.get("detail") or ""))] += 1
+    rest = []
+    for i in left:                                            # ③ token
+        p = _ptok(rows[i])
+        c = cnt.get(p) if p else None
+        if c:
+            m, n = c.most_common(1)[0]
+            if n >= FILL_TOKEN_MIN and n >= FILL_TOKEN_SHARE * tot[p]:
+                wt, dt = wd[(p, m)].most_common(1)[0][0]
+                out[i] = ({"work": True, "model": m, "worktype": wt, "detail": dt, "via": "token"}, "token")
+                continue
+        rest.append(i)
+    left = rest
+    if not left:
+        return out
+    try:                                                      # ④ sim
+        from extract import _tokens, rule_name_ok
+    except ImportError:
+        return out
+    n_all = len(rows)
+    toks, df = [], Counter()
+    for r in rows:
+        ts = {t for t in _tokens(r.get("text") or "") if rule_name_ok(t)}
+        toks.append(ts)
+        df.update(ts)
+    lim = max(30.0, 0.005 * n_all)
+    index = defaultdict(list)
+    for i in sorted(judged):
+        for t in toks[i]:
+            if df[t] <= lim and len(index[t]) < FILL_SIM_PER_TOKEN:
+                index[t].append(i)
+    thr = math.log(n_all / 30.0)
+    for i in left:
+        sc = defaultdict(float)
+        for t in toks[i]:
+            if t in index:
+                w = math.log(n_all / df[t])
+                for j in index[t]:
+                    sc[j] += w
+        if not sc:
+            continue
+        best = max(sc.values())
+        if best <= 0 or best < thr:
+            continue
+        ti = _t(i)
+        j = min((j for j, s in sc.items() if s >= best - 1e-9),
+                key=lambda j: (abs(_t(j) - ti) if (ti is not None and _t(j) is not None) else float("inf"), j))
+        if judged[j].get("work"):
+            out[i] = (dict(judged[j], via="sim"), "sim")
+    return out
 
 
 # ── 피벗·공통업무·에피소드 ─────────────────────────────────────────────────
@@ -1066,7 +1748,7 @@ def build_episodes(kept, cfg=None):
             return datetime.strptime(r["time"][:16], "%Y-%m-%d %H:%M")
         except ValueError:
             return None
-    DONE = ("메일(발신)", "메일(발신·일자)", "팀즈(발신)", "파일", "파일(코드)", "파일(해석출력)", "커밋", "수동기록")
+    DONE = ("메일(발신)", "메일(발신·일자)", "팀즈(발신)", "팀즈(발신·일자)", "파일", "파일(코드)", "파일(해석출력)", "커밋", "수동기록")
     ORDER = ("팀즈(오더)", "메일(수신)")
     by_model = defaultdict(list)
     for r in kept:
@@ -1172,7 +1854,7 @@ EP_REP_RX = re.compile(
     r"|보고|결과|송부|공유\s*드|공유드|제출|완료|첨부와\s*같이|report|result|attached|done|completed", re.I)
 EP_INTERIM_RX = re.compile(r"중간|경과|진행\s*상황|1차|interim|progress", re.I)
 EP_FINAL_WORDS = ("최종", "final", "v1.0", "확정", "완료", "제출")
-EP_PROGRESS = ("메일(발신)", "메일(발신·일자)", "팀즈(발신)", "파일", "파일(코드)", "파일(해석출력)", "커밋", "수동기록",
+EP_PROGRESS = ("메일(발신)", "메일(발신·일자)", "팀즈(발신)", "팀즈(발신·일자)", "파일", "파일(코드)", "파일(해석출력)", "커밋", "수동기록",
                "작업창", "작업창(IDE)")
 EP_DORMANT_WD = 5           # 이 근무일 동안 진행이 없으면 끝(E3i — 마지막 진행 +30분, 추정)
 EP_STALL_WD = 3             # 같은 문서를 2번 이상 고친 뒤 이 근무일 정체 → 끝(E2l — 마지막 저장, 추정)
@@ -1511,7 +2193,7 @@ def rehours_meta(kept, dropped, tag, cfg, rep, data_dir=None, say=print):
     시간 근거에서도 제외)가 한다. write_outputs 가 갱신된 mm_meta.total_mm 을 읽으므로 그보다 먼저 부른다.
     누적: meta 가 이미 재산정본(rehours)이면 dropped_signals_<tag>.csv 의 이전 버림분을 합쳐 넘긴다 —
     mine 이 다시 돌면 meta 에 rehours 가 없으므로 장부는 새로 시작한다(옛 버림분이 새 신호를 지우지 않게).
-    returns {"dropped_n"(누적),"dropped_h","before_mm","total_mm","avail_mm","load_pct"} — 버린 것이 없거나
+    returns {"dropped_n"(누적),"dropped_h","before_mm","total_mm","avail_mm","load_pct","ai_n_time_kept"} — 버린 것이 없거나
     (구판 core 로) 함수가 없거나 meta 가 없거나 저장이 막히면 None(그때는 mine 값이 그대로 남는다)."""
     if not dropped:
         return None
@@ -1598,6 +2280,11 @@ def rehours_meta(kept, dropped, tag, cfg, rep, data_dir=None, say=print):
     mj["dropped_n"] = len(dropped)
     mj["dropped_h"] = round(max(0.0, dropped_h), 2)
     mj["rehours_at"] = time.strftime("%Y-%m-%d %H:%M")
+    # AI 가 비업무(n)로 뺐지만 시간 근거로는 남긴 신호 수 — extract.rehours_after_judge 의 time_kept_n(구판이면 0)
+    try:
+        mj["ai_n_time_kept"] = int(res.get("time_kept_n") or 0)
+    except (TypeError, ValueError):
+        mj["ai_n_time_kept"] = 0
     tmp = f"{meta_p}.{os.getpid()}.tmp"
     try:
         with open(tmp, "w", encoding="utf-8") as f:
@@ -1612,7 +2299,8 @@ def rehours_meta(kept, dropped, tag, cfg, rep, data_dir=None, say=print):
         return None
     _write_dropped(rep, tag, dropped)          # 누적 장부 — 다음 UI 제외가 이번 버림분을 함께 넘긴다
     return {"dropped_n": len(dropped), "dropped_h": mj["dropped_h"], "before_mm": before_mm,
-            "total_mm": total_mm, "avail_mm": avail_mm, "load_pct": mj["load_pct"]}
+            "total_mm": total_mm, "avail_mm": avail_mm, "load_pct": mj["load_pct"],
+            "ai_n_time_kept": mj["ai_n_time_kept"]}
 
 
 def _time_alloc(kept, mj, cfg):
@@ -1657,14 +2345,28 @@ def write_outputs(kept, tag, cfg, rep):
         print(f"        같은 일로 판정된 세부업무 {merged}건 통합 (행 파편화 방지)")
     # 과제 → 제품 매핑 (taxonomy 판정 결과) — retag 경로에서도 동일하게 쓰도록
     # entities 파일에서 직접 읽는다(시그니처 불변).
-    prod_map = {}
+    # 상위(Level 1) 채움 재료(LM28 진단 B) — taxonomy 가 과제마다 판정한 l1(entities)·사람이 못 박은 상위(projects.json
+    # level1). 정제(refine)가 돌지 않은 실행에서도 '큰 분류 > 과제 > 세부업무' 가 서게 한다(details.level1_fill).
+    prod_map, l1_map, pin = {}, {}, {}
     try:
         ent = json.load(open(os.path.join(rep, f"entities_{tag}.json"), encoding="utf-8-sig"))
         for m in (ent.get("models") or []):
             if isinstance(m, dict) and m.get("name") and m.get("product"):
                 prod_map[str(m["name"])] = str(m["product"]).strip()
-    except (OSError, ValueError):
+            if isinstance(m, dict) and m.get("name") and m.get("l1"):
+                _l1 = details.snap1(m.get("l1"))
+                if _l1:
+                    l1_map[ukey2(m["name"])] = _l1
+    except (OSError, ValueError, TypeError, AttributeError):
         pass
+    try:
+        import projmap
+        for p in projmap.load_user_projects(ROOT):
+            _l1 = details.snap1(p.get("level1"))
+            if _l1:
+                pin[ukey2(p["name"])] = _l1
+    except Exception:  # noqa: BLE001 - 지정 상위를 못 읽어도 규칙 상위로 계속
+        pin = {}
 
     def _product_for(md, dt):
         """제품 축: 실제 제품이면 그 이름, 공통이면 '공통 · <세부업무>' 로 세분화,
@@ -1695,10 +2397,10 @@ def write_outputs(kept, tag, cfg, rep):
     for (md, dt), a in sorted(agg.items(), key=lambda kv: -(tshare.get(kv[0], 0.0) if tshare else kv[1]["w"])):
         share = tshare.get((md, dt), 0.0) if tshare else a["w"] / tot_w
         srcs = len({s.split("(")[0] for s in a["src"]})
-        # 상위 초안 — 규칙(코드네임·ax·공통)으로 채운다. AI 정제가 돌면 그 판정이 이 값을 덮는다.
-        # 예전에는 판정 단계에서 늘 빈칸이라, 정제가 실패한 실행에서는 상위가 화면에서 전멸했다.
+        # 상위 초안 — 지정 상위 > taxonomy l1 > 규칙(코드네임·영역 키워드) > 과제명이 곧 범주('공통')로 채운다.
+        # AI 정제가 돌면 그 판정이 이 값을 덮는다. 예전에는 규칙만 써서 '공통' 과제도 상위가 빈칸이었다(진단 B).
         out_rows.append({"Function": cfg.get("function", ""),
-                         "Level 1": level1_of(f"{md} {dt}", md, ROOT),
+                         "Level 1": details.level1_fill(md, dt, l1_map, pin, ROOT),
                          "제품": _product_for(md, dt),
                          "유형": a["wt"].most_common(1)[0][0], "Level 2": md, "Level 3": dt,
                          "이름": owner, "상세설명": "",
@@ -1751,31 +2453,124 @@ def _nm_key(s):
 
 NARRATIVE_EXAMPLE = ('{"summary":"이 달 요약 2~3문장","projects":[{"name":"프로젝트A",'
                      '"story":"무엇을 어떻게 했는지 1~2문장","worktypes":"개발 위주"}]}')
+_NARR_ECHO = _nm_key("프로젝트A")    # NARRATIVE_EXAMPLE 의 예시 과제 이름 — 답에 나오면 에코라 항상 버린다
+NARR_MIN_AI_ROWS = 10       # 한 달의 AI 판정 행이 이보다 적으면(그 달 행이 더 적으면 그 수) 코멘트를 새로 만들지 않는다
+NARR_MIN_AI_SHARE = 0.3     # … 또는 그 달 행의 30% 미만이면 — 규칙 행 위주 표본으로 만든 코멘트가 좋은 코멘트를 덮지 않게
+NARR_CHANGED = 0.25         # 이전 코멘트를 만들 때보다 AI 판정 행 수가 이 비율을 넘게 달라졌으면 '데이터가 바뀐 달'
+_NARR_LAST = {}             # 마지막 narrate 의 계획 요약 {plan, low_ai, made} — --narrate-only 가 '다시 만들 달 없음'을 가린다
 
 
-def narrate(kept, total_mm, tag):
+def _is_ai_row(r):
+    """AI 가 판정한 행인가 — 'AI'(직접·재사용·같은 내용 묶음) · 'AI(유사)'(비슷한 판정으로 채움). '규칙' 은 아니다."""
+    return str((r or {}).get("judge") or "").startswith("AI")
+
+
+def _narr_name(name, real):
+    """답의 과제 이름 → 그 달의 체계 표기(맞는 것이 없으면 None). real = {_nm_key(표기): 표기}.
+    정확히 같으면 그 표기, 아니면 길이 2 이상 키끼리 포함 관계인 것 중 가장 긴 것('Agentic AI 과제' → 'Agentic AI').
+    예전에는 정확히 같아야만 남겨, 이름이 조금만 달라도 과제 줄이 모두 빠지고 요약 한 줄만 남았다."""
+    k = _nm_key(name)
+    if not k or k == _NARR_ECHO:
+        return None
+    if k in real:
+        return real[k]
+    best = ""
+    if len(k) >= 2:
+        for rk in real:
+            if len(rk) >= 2 and (rk in k or k in rk) and len(rk) > len(best):
+                best = rk
+    return real[best] if best else None
+
+
+def narrate(kept, total_mm, tag, force_all=False, max_consec=2, cap_min=20.0):
+    r"""월별 리뷰 코멘트 → {달: 항목}(이번에 새로 만든 달만). 저장은 달마다 save_narratives(늘 이월 — 끊겨도
+    이전 달이 가려지지 않는다)로 하고, 끝에 한 번 더 한다.
+    ① 계획 — 그 달의 AI 판정 행(judge 가 'AI' 로 시작)이 NARR_MIN_AI_ROWS·NARR_MIN_AI_SHARE 에 못 미치면 보내지
+       않고 이전 코멘트를 유지한다(earlier 표식). 나머지 순위: 0 이전 코멘트 없음 · 1 가장 최근 달 · 2 force_all
+       이거나 n_ai 없음(예전 판 항목)이거나 AI 행 수가 NARR_CHANGED 넘게 바뀜. 그 밖(바뀌지 않은 달)은 보내지 않는다.
+       같은 순위는 최근 달 먼저 — 예전에는 모든 달을 오래된 달부터 다시 만들어, 예산·연속 실패로 끊기면 늘 화면
+       맨 위의 최근 달과 새로 데이터가 생긴 달이 비었다(제보: '월간 리뷰 코멘트가 사라짐').
+       이월 표식(from_tag)만으로는 다시 만들지 않는다 — tag 가 날마다 바뀌어 이전 달은 늘 이월이므로, 그러면 매일
+       모든 달을 다시 만든다. 데이터가 바뀌었는지는 n_ai 로 가린다.
+    ② 예산 — 단계 예산과 cap_min(분 · None 이면 없음 — [리뷰 코멘트 재생성]) 중 이른 쪽. 연속 실패 max_consec 회면
+       멈춘다(판정이 연속 실패로 중단된 실행은 1 — 한 달만 시험).
+    ③ 표본은 AI 판정 행만 — 규칙 행(규칙 토큰·사람 이름 과제 위주)은 보내지 않는다.
+    ④ 관문(G3)에 걸리면 걸린 줄을 빼고 한 번 더(20줄 이상 남을 때). ⑤ 과제 이름은 그 달의 체계 표기로 맞춘다.
+    ⑥ 답의 과제가 전부 걸러졌는데 이전 코멘트에 과제 줄이 있으면 새 답을 버리고 이전 것을 유지한다.
+    ⑦ 새 항목에는 n(그 달 신호 수)·n_ai·made(작성 시각) — 다음 실행의 '바뀐 달' 판단 근거."""
+    import narratives as _nv
     by_month = defaultdict(list)
     for r in kept:
-        by_month[r["time"][:7]].append(r)
+        by_month[str(r.get("time") or "")[:7]].append(r)
     out = {}
     _rep = os.path.join(ROOT, "report")
+    months = _nv.period_months(tag)
+    prev = _nv.load_merged(_rep, tag, months)
+    valid = sorted(mk for mk in by_month
+                   if re.match(r"^\d{4}-\d{2}$", mk) and (months is None or mk in months))
+    latest = valid[-1] if valid else ""
+    earlier, plan, low, same = set(), [], [], 0
+    for mk in valid:
+        rows = by_month[mk]
+        ai_rows = [r for r in rows if _is_ai_row(r)]
+        if len(ai_rows) < min(NARR_MIN_AI_ROWS, len(rows)) or len(ai_rows) < NARR_MIN_AI_SHARE * len(rows):
+            low.append(mk)
+            print(f"        {mk} AI 판정 행이 적어(AI {len(ai_rows)}/전체 {len(rows)}) "
+                  + ("이전 코멘트를 유지합니다" if mk in prev else "코멘트를 만들지 않습니다"))
+            if mk in prev:
+                earlier.add(mk)
+            continue
+        pv = prev.get(mk)
+        if pv is None:
+            pri = 0
+        elif mk == latest:
+            pri = 1
+        else:
+            try:
+                n0 = int(pv.get("n_ai"))
+            except (TypeError, ValueError):
+                n0 = None
+            if not (force_all or n0 is None or abs(len(ai_rows) - n0) > NARR_CHANGED * max(n0, 1)):
+                same += 1
+                continue                         # 바뀌지 않은 달 — 이전 코멘트 그대로(보내지 않는다)
+            pri = 2
+        plan.append((pri, mk, rows, ai_rows))
+    plan.sort(key=lambda x: x[1], reverse=True)          # 같은 순위는 최근 달 먼저(안정 정렬 두 번)
+    plan.sort(key=lambda x: x[0])
+    plan_months = [p[1] for p in plan]
+    _NARR_LAST.clear()
+    _NARR_LAST.update(plan=list(plan_months), low_ai=list(low), made=[])
+    _pc = Counter(p[0] for p in plan)
+    print(f"        월별 코멘트 계획 {len(plan)}개월(빠진 달 {_pc[0]} · 최근 달 {_pc[1]} · 다시 만들 달 {_pc[2]})"
+          + (f" · 바뀌지 않아 그대로 둔 달 {same}" if same else "")
+          + (f" · AI 판정이 적은 달 {len(low)}" if low else "")
+          + (" · 모든 달 다시 만들기" if force_all else ""))
+
+    def _flag():
+        # 이번 실행에서 새로 만들지 못한 달 — 아직 차례가 오지 않은 달도 넣는다(여기서 끊기면 그대로가 맞다)
+        return earlier | {m for m in plan_months if m not in out}
     # 월별 코멘트는 판정 뒤에 오므로 예산의 첫 희생자가 된다 — 판정이 예산을 다 썼어도 최소 몫을 준다
     # (제보: '월간 코멘트가 빠짐' · '진행되다가 안 됨'). 코멘트는 왕복 1회로 한 달이 끝난다.
+    # cap_min — 판정 실행 안에서는 상한(기본 20분)을 둬 정제·Agentic 과 같이 쓰는 전체 마감을 덜 먹는다.
     _dl, _bud = _stage_budget(floor_min=20.0)
+    if cap_min:
+        _cap = time.monotonic() + float(cap_min) * 60.0
+        if _dl is None or _cap < _dl:
+            _dl, _bud = _cap, float(cap_min)
     _consec = 0
-    for _i, mk in enumerate(sorted(by_month)):
+    _n = max(len(plan), 1)
+    for _i, (_pri, mk, rows, ai_rows) in enumerate(plan):
         # 예산·연속 실패 관문 — 예전에는 달마다 새 채팅으로 끝까지 시도했고, 그 사이에 부모의 단계 상한에
         # 걸리면 **성공한 달까지 통째로 사라졌다**(저장이 마지막에 한 번뿐이었다).
         if _dl is not None and time.monotonic() > _dl:
-            print(f"        시간 예산 {_bud:.0f}분을 넘겨 남은 {len(by_month) - _i}개월 코멘트는 만들지 "
+            print(f"        시간 예산 {_bud:.0f}분을 넘겨 남은 {len(plan) - _i}개월 코멘트는 만들지 "
                   "않았습니다 — 여기까지는 저장했고 [리뷰 코멘트 재생성]으로 이어서 만들 수 있습니다")
             break
-        if _consec >= 3:
-            print(f"        {_consec}개월 연속 실패 — 남은 {len(by_month) - _i}개월은 보내지 않습니다 "
+        if _consec >= max_consec:
+            print(f"        {_consec}개월 연속 실패 — 남은 {len(plan) - _i}개월은 보내지 않습니다 "
                   "([AI 연결 진단]으로 Copilot 상태를 확인한 뒤 [리뷰 코멘트 재생성])")
             break
-        progress("월별 리뷰", _i, len(by_month))
-        rows = by_month[mk]
+        progress("월별 리뷰", _i, _n)
         head = [
             f"당신은 업무 리뷰 작성자입니다. {mk} 한 달의 판정된 업무 신호가 아래에 있습니다.",
             "과제별로 사용자가 어떤 업무에 리소스를 기여했는지, 업무유형(개발/사무/현장/협업)",
@@ -1794,12 +2589,13 @@ def narrate(kept, total_mm, tag):
         # 한도를 넘겨 2조각으로 나뉘었다(실측). 달 전체에 고르게 퍼진 표본을 예산 안에서 보낸다.
         # 시각에 **연도를 포함**한다 — 예전에는 'MM-DD HH:MM' 이라 다른 달 문맥이 남았을 때
         # 모델이 어느 달 것인지 구분할 근거가 프롬프트 안에 없었다.
-        # G3 — 표본 후보(고르게 퍼진 180행)만 관문에 통과시킨 사본에서 고른다(원본 rows 는 이름 검증에 그대로 쓴다)
-        lines = _fit_samples(g3_pick(rows, 90), 90, lambda r: (
+        # G3 — 표본 후보(고르게 퍼진 180행)만 관문에 통과시킨 사본에서 고른다. 표본은 **AI 판정 행만** — 판정이
+        # 실패한 실행에서는 규칙 행(규칙 토큰·사람 이름 과제)이 달 표본을 채워 엉뚱한 코멘트가 좋은 코멘트를 덮었다.
+        lines = _fit_samples(g3_pick(ai_rows, 90), 90, lambda r: (
             f"- {r['time'][:16]} [{r['source']}] {r.get('model', '')}/{r.get('worktype', '')} "
             f"{who_label(r.get('who'), 10)} {(r.get('text') or '')[:80]}"), head_len)
         if not lines:
-            print(f"        {mk} 내러티브 — 관문을 통과한 신호가 없어 보내지 않습니다")
+            print(f"        {mk} 내러티브 — 관문을 통과한 신호가 없어 보내지 않습니다(이전 코멘트 유지)")
             continue
         prompt = "\n".join(head + lines)
         # ★ 달마다 **새 채팅**에서 묻는다. 예전에는 fresh 를 주지 않아 '같은 채팅에서 이어서' 가 됐고,
@@ -1809,41 +2605,67 @@ def narrate(kept, total_mm, tag):
         # 프롬프트가 혼자서 완결이라 이어받을 이득이 없고 오염만 남는다.
         res = copilot_send(prompt, tag, f"narr_{mk}", fresh=True)
         if res.get("phase") == "blocked":
-            # 개인정보 관문 — 보내지 않았다. 실패가 아니므로 연속 실패에 넣지 않는다(그 달은 코멘트 없음)
-            print(f"        {mk} 내러티브 — 개인정보 관문에 걸려 보내지 않았습니다")
-            continue
+            # 최종 검사는 프롬프트 전체(과제명·상대 표기 포함)를 본다 — 표본 단계는 text 열만 정제하므로 한 줄
+            # 때문에 그 달 전체가 막히던 경로(LM24 에 없던 것). 걸린 줄만 빼고 한 번 더 보낸다.
+            ok_lines = [ln for ln in lines if g3_prompt(ln)]
+            if 20 <= len(ok_lines) < len(lines):
+                print(f"        {mk} 내러티브 — 관문에 걸린 신호 {len(lines) - len(ok_lines)}줄을 빼고 다시 보냅니다")
+                res = copilot_send("\n".join(head + ok_lines), tag, f"narr_{mk}", fresh=True)
+            if res.get("phase") == "blocked":
+                # 개인정보 관문 — 보내지 않았다. 실패가 아니므로 연속 실패에 넣지 않는다(이전 코멘트 유지)
+                print(f"        {mk} 내러티브 — 개인정보 관문에 걸려 보내지 않았습니다(이전 코멘트 유지)")
+                continue
         if res.get("ok"):
             o = rfind_json(res.get("reply", ""), "summary", skip=(NARRATIVE_EXAMPLE,)) \
                 or repair_json(res.get("reply", ""), "summary", skip=(NARRATIVE_EXAMPLE,))
             if o and str(o.get("summary") or "").strip():
                 # 답이 든 과제 이름이 **그 달에 실제로 있는 이름**인지 확인한다. 예전에는 아무 검증이
                 # 없어, 프롬프트 예시의 '프로젝트A' 같은 것이 그대로 리뷰에 실릴 수 있었다(같은 계열의
-                # 에코 사고가 rfind_json 주석에 실측으로 남아 있다). 없는 이름은 그 항목만 버린다.
-                real = {_nm_key(r.get("model")) for r in rows if r.get("model")} | {_nm_key("공통")}
-                keep, drop = [], []
-                for p in (o.get("projects") or []):
-                    if isinstance(p, dict) and _nm_key(p.get("name")) in real:
-                        keep.append(p)
-                    elif isinstance(p, dict) and str(p.get("name") or "").strip():
+                # 에코 사고가 rfind_json 주석에 실측으로 남아 있다). 없는 이름은 그 항목만 버리고,
+                # 남긴 항목은 체계 표기로 맞춘다(보낸 표본 = AI 판정 행의 과제 + '공통').
+                real = {_nm_key(n): n for n in ({r.get("model") for r in ai_rows if r.get("model")} | {"공통"})}
+                keep, drop, _seen = [], [], set()
+                for p in _as_list(o.get("projects")):
+                    if not isinstance(p, dict):
+                        continue
+                    nm = _narr_name(p.get("name"), real)
+                    if nm and nm not in _seen:
+                        _seen.add(nm)
+                        keep.append(dict(p, name=nm))
+                    elif not nm and str(p.get("name") or "").strip():
                         drop.append(str(p.get("name")).strip())
                 if drop:
                     print(f"        {mk} 리뷰에서 이 달에 없는 과제 {len(drop)}건 제외: "
                           + ", ".join(drop[:3]) + (" …" if len(drop) > 3 else ""))
+                if not keep and drop and (prev.get(mk) or {}).get("projects"):
+                    # 과제 줄이 모두 빠진 새 답(요약 한 줄)으로 과제 줄이 있는 이전 코멘트를 덮지 않는다
+                    print(f"        {mk} 내러티브 — 답의 과제가 이 달 과제와 하나도 맞지 않아 이전 코멘트를 유지합니다")
+                    earlier.add(mk)
+                    _consec = 0
+                    continue
                 o["projects"] = keep
+                o.update(n=len(rows), n_ai=len(ai_rows), made=time.strftime("%Y-%m-%d %H:%M"))
                 out[mk] = o
                 _consec = 0
-                save_narratives(out, _rep, tag, carry=False)   # 달마다 즉시 저장 — 끊겨도 이 달은 남는다
+                save_narratives(out, _rep, tag, earlier=_flag(), quiet=True)   # 달마다 즉시 저장(늘 이월) — 끊겨도 이 달은 남는다
                 print(f"        {mk} 내러티브 ✓" + (" (잘린 응답 일부 복구)" if res.get("cut") else ""))
                 continue
             note_bad_reply()
+            _why, _how, _fatal = "응답에서 코멘트 JSON 을 찾지 못함", "", False
+        else:
+            # explain_failure 는 (사유, 조치, fatal) 세 값을 돌려준다(core/details.py)
+            _why, _how, _fatal = explain_failure(res) if isinstance(res, dict) else ("", "", False)
         _consec += 1
-        # explain_failure 는 (사유, 조치, fatal) 세 값을 돌려준다(core/details.py)
-        _why, _how, _fatal = explain_failure(res) if isinstance(res, dict) else ("", "", False)
         print(f"        {mk} 내러티브 실패 — 건너뜀" + (f" ({_why[:60]})" if _why else ""))
         if _fatal:
             print("        사람이 손대야 풀리는 상태입니다 — 남은 달은 보내지 않습니다: " + _how[:80])
             break
-    progress("월별 리뷰", len(by_month), len(by_month))
+    progress("월별 리뷰", _n, _n)
+    _NARR_LAST["made"] = sorted(out)
+    # 끝 저장 — 새로 만들지 못한 달(AI 판정 부족·실패·관문·덮어쓰기 방지·남은 차례)에 earlier 표식을 남긴다.
+    # 표식할 것도 새 달도 없으면 호출자의 save_narratives(이월만)에 맡긴다. 이월 요약 줄은 호출자의 저장이 한 번 찍는다.
+    if out or (_flag() & set(prev)):
+        save_narratives(out, _rep, tag, earlier=_flag(), quiet=True)
     return out
 
 
@@ -1854,51 +2676,17 @@ def _stage_budget(floor_min=15.0):
     return stage_budget(floor_min=floor_min, root=ROOT, now=time.time, mono=time.monotonic)
 
 
-def save_narratives(nar, rep, tag, carry=True):
-    r"""월별 내러티브 저장 — 세 가지를 지킨다(제보: '월별 코멘트가 빠짐').
-     ① 하나도 못 만들었으면 **아무 것도 쓰지 않는다**. 예전에는 그 tag 파일이 없을 때 빈 {} 를 새로 만들어
-        화면이 '코멘트 없음' 으로 굳었다 — 분석 기간을 바꿔 재실행하면 항상 이 경로였다(실측).
-     ② 같은 tag 의 기존 달은 물려받는다 — 부분 재생성이 나머지 달을 지우지 않게.
-     ③ 이번에 못 만든 달은 **다른 기간(tag) 파일에서 이월**한다. 같은 달의 코멘트는 기간이 달라도 그 달의
-        것이다. 이월한 달에는 from_tag 를 붙여 화면이 출처를 말할 수 있게 한다.
+def save_narratives(nar, rep, tag, carry=True, earlier=(), quiet=False):
+    r"""월별 내러티브 저장 — core/narratives.save 위임(제보: '월별 코멘트가 빠짐' · '월간 리뷰 코멘트가 사라짐').
+    매 저장(달마다 하는 중간 저장 포함)이 늘 ① 같은 tag 의 기존 달 + 다른 기간(tag) 파일에서 빠진 달을 이월하고
+    ② 기간 밖의 달은 거르고 ③ 원자적으로 쓴다(깨진 자기 파일은 .corrupt 로 보존). 하나도 없으면 쓰지 않는다.
+    예전에는 중간 저장이 이월 없이(carry=False) 오늘 파일을 만들어, narrate 가 도는 동안·끊긴 뒤에 이전 달이
+    화면에서 가려졌다. carry 는 호환용 인자(무시 — 이제 항상 이월한다).
+    earlier: 이번 실행에서 새로 만들지 못한 달 — 기존 코멘트가 있으면 earlier=True 표식(화면 '이전 실행 코멘트').
+    quiet: '0개'·이월 요약 줄을 찍지 않는다(narrate 안의 달마다 저장 — 요약은 호출자의 마지막 저장이 한 번 찍는다).
     반환: 저장했으면 True."""
-    p = os.path.join(rep, f"ai_narratives_{tag}.json")
-    merged = {}
-    try:
-        if os.path.exists(p):
-            with open(p, encoding="utf-8") as f:
-                old = json.load(f)
-            if isinstance(old, dict):
-                merged.update({k: v for k, v in old.items() if isinstance(v, dict)})
-    except (OSError, ValueError):
-        pass
-    if carry:
-        import glob as _glob
-        others = [q for q in _glob.glob(os.path.join(rep, "ai_narratives_*.json"))
-                  if os.path.basename(q) != os.path.basename(p)]
-        for q in sorted(others, key=lambda x: os.path.getmtime(x), reverse=True):
-            try:
-                with open(q, encoding="utf-8") as f:
-                    other = json.load(f)
-            except (OSError, ValueError):
-                continue
-            if not isinstance(other, dict):
-                continue
-            _t = os.path.basename(q)[len("ai_narratives_"):-len(".json")]
-            for mk, v in other.items():
-                if isinstance(v, dict) and mk not in merged and mk not in (nar or {}):
-                    merged[mk] = dict(v, from_tag=str(v.get("from_tag") or _t))
-    merged.update({k: v for k, v in (nar or {}).items() if isinstance(v, dict)})
-    if not merged:
-        print("        월별 내러티브 0개 — 파일을 만들지 않습니다(기존 파일도 그대로 둡니다)")
-        return False
-    with open(p, "w", encoding="utf-8") as f:
-        json.dump(merged, f, ensure_ascii=False, indent=1)
-    _carried = sorted(k for k, v in merged.items() if isinstance(v, dict) and v.get("from_tag"))
-    if _carried:
-        print(f"        월별 코멘트 {len(_carried)}개월은 이전 기간에서 이월했습니다: "
-              + ", ".join(_carried[:6]) + (" …" if len(_carried) > 6 else ""))
-    return True
+    import narratives as _nv
+    return _nv.save(rep, tag, nar or {}, months=_nv.period_months(tag), earlier=earlier, quiet=quiet)
 
 
 def main():
@@ -1920,18 +2708,34 @@ def main():
 
     # 9a — 리뷰 코멘트만 다시 생성. 다른 PC로 옮기면 report\ 를 복사하지 않으므로
     # 월별 코멘트가 비어 보인다. 판정된 signals 만 있으면 되살릴 수 있다.
+    # [리뷰 코멘트 재생성] 기본은 빠진 달·최근 달·데이터가 바뀐 달만, --all 이면 모든 달을 다시 만든다.
     if "--narrate-only" in sys.argv:
         kept = [r for r in rows if (r.get("judge") or "").strip()]
         if not kept:
             print("[judge] AI 판정 결과가 없습니다 — 'AI 판정'을 켜고 분석을 먼저 돌리세요")
             return 1
+        # '규칙' 행만으로는 만들지 않는다 — AI 판정이 전부 실패한 실행(rc 3)도 signals 를 judge='규칙' 으로 다시
+        # 쓰므로, 예전에는 그 뒤 이 버튼이 모든 달을 규칙 토큰으로 다시 만들어 좋은 코멘트를 덮었다.
+        ai_n = sum(1 for r in kept if _is_ai_row(r))
+        if not ai_n:
+            print("[judge] AI 판정된 신호가 없습니다 — 규칙 결과로는 코멘트를 만들지 않습니다(기존 코멘트 유지)")
+            save_narratives({}, rep, tag)          # 이월만(다른 기간 파일의 코멘트를 이 기간으로) — 왕복 없음
+            return 1
         meta_p = os.path.join(rep, f"mm_meta_{tag}.json")
         mj = json.load(open(meta_p, encoding="utf-8")) if os.path.exists(meta_p) else {}
         total_mm = float(mj.get("total_mm") or 0)
-        print(f"[judge] 리뷰 코멘트 재생성 — 판정 신호 {len(kept)}건")
-        nar = narrate(kept, total_mm, tag)
+        force_all = "--all" in sys.argv
+        print(f"[judge] 리뷰 코멘트 재생성 — 판정 신호 {len(kept)}건(AI 판정 {ai_n}건) · "
+              + ("모든 달 다시 만들기" if force_all else "빠진 달·최근 달·데이터가 바뀐 달만"))
+        nar = narrate(kept, total_mm, tag, force_all=force_all, cap_min=None)
         saved = save_narratives(nar, rep, tag)
-        print(f"[judge] 월별 코멘트 {len(nar)}개 " + ("저장" if saved else "— 기존 파일 유지"))
+        if not _NARR_LAST.get("plan"):
+            print("[judge] 다시 만들 달이 없습니다 — "
+                  + ("AI 판정 행이 적은 달은 이전 코멘트를 그대로 둡니다" if _NARR_LAST.get("low_ai")
+                     else "모든 달의 코멘트가 최신입니다(모두 다시 만들려면 전체 다시 만들기)"))
+            return 0
+        print(f"[judge] 월별 코멘트 {len(nar)}/{len(_NARR_LAST['plan'])}개월 새로 만듦 · "
+              + ("저장(나머지 달은 이전 코멘트 유지)" if saved else "기존 파일 유지"))
         return 0 if nar else 1
     from stage_state import open_stage
     _ss = open_stage(rep, tag, "judge")        # v3 상태 파일 — 하트비트·진행·중단 사유(구조 감사 4계층)
@@ -1945,114 +2749,171 @@ def main():
                "obs": "사용자 지정", "pinned": True}
               for p in projmap.load_user_projects(ROOT)]
     pinned_l = {p["name"].lower() for p in pinned}
+    # LM28 진단 B — 과제명 관문 재료: 사람 이름 키(signals 의 who 열에서만 뽑는다 — 코드에 이름을 두지 않는다)·지정 과제 키
+    people = details.person_keys(r.get("who") for r in rows)
+    pinned_keys = {ukey2(p["name"]) for p in pinned}
 
-    # 지난 분석에서 발견된 과제도 힌트로 (실행 간 일관성) — 채택 여부는 이번 raw 관찰이 결정
+    # 지난 분석에서 발견된 과제도 힌트로 (실행 간 일관성) — 채택 여부는 이번 raw 관찰이 결정.
+    # 규칙 폴백 체계("fallback": true)는 건너뛰고 첫 정상 체계를 쓴다 — 사람 이름·공지류는 관문(sanitize_models)이 뺀다.
     import glob as _glob
-    prev_models = []
-    prev = sorted(_glob.glob(os.path.join(rep, "entities_*.json")), key=os.path.getmtime)
-    if prev:
-        try:
-            po = json.load(open(prev[-1], encoding="utf-8"))
-            prev_models = [m["name"] for m in sanitize_models(po.get("models", []))
-                           if m["name"] != "공통"]
-        except (OSError, ValueError):
-            pass
+    prev_ms, prev_path = _load_prev_entities(rep, people)
+    prev_models = [m["name"] for m in prev_ms if m["name"] != "공통"]
     hints = [h for h in dict.fromkeys(list(known) + prev_models) if h.lower() not in pinned_l]
 
-    # [0] 엔티티 체계 — 지정은 항상 포함(코드로 강제), 나머지는 AI가 raw에서 자동 발견
-    n_chunks = -(-len(rows) // chunk_n)
-    progress("AI 판정", 0, n_chunks + 1)
-    print(f"[judge] 0/{n_chunks + 1} 엔티티 체계 수립 왕복 (모델 {model_name}"
-          + (f" · 지정 {len(pinned)}개" if pinned else "") + ") — 응답까지 수십 초 걸립니다")
-    res = copilot_send(taxonomy_prompt(rows, hints, pinned), tag, "taxonomy")
-    # 이 왕복이 사실상 프로브다 — 로그인이 안 됐으면 여기서 이미 드러난다. 다만 **한 번으로
-    # 단정하지는 않는다**(아래 주석). 규칙 판정은 어떤 경우에도 돌아 signals·mm_rows·보고서가
-    # 나오므로, 사용자는 결과를 받고 로그인 뒤 [재분석만]으로 이으면 된다.
-    _why0, _how0, _fatal0 = explain_failure(res)
-    tax_ok = bool(res.get("ok"))          # 체계 왕복 성공 여부 — entities 저장 관문이 본다
-    if _fatal0:
-        print(f"[judge] 체계 수립 왕복이 실패했습니다 — {_why0}")
-        print(f"        {_how0}")
-        print("        규칙 판정으로 신호·MM·보고서는 그대로 만듭니다. 로그인 뒤 [재분석만]을 누르면 "
-              "AI 판정만 이어서 합니다.")
-    models = []
-    if res.get("ok"):
-        o = (rfind_json(res.get("reply", ""), "models", skip=(TAXONOMY_EXAMPLE,))
-             or repair_json(res.get("reply", ""), "models", skip=(TAXONOMY_EXAMPLE,)))
-        models = [m for m in _as_list(o.get("models"))
-                  if isinstance(m, dict) and isinstance(m.get("name"), str) and m["name"].strip()]
-        if not models:
-            note_bad_reply()
-    # AI가 지정 과제의 match를 보강했으면 병합해 pinned에 흡수 (표기·설명은 사용자 것이 우선)
-    for m in models:
-        for p in pinned:
-            if str(m.get("name", "")).strip().lower() == p["name"].lower():
-                p["match"] = list(dict.fromkeys(p["match"] + [str(k).lower() for k in _as_list(m.get("match"))]))
-    # 9d — 초안이 2개를 넘으면 한 번 더 물어 같은 실체를 통합한다(--fast 로 생략 가능)
-    if len(models) > 2 and "--fast" not in sys.argv:
-        progress("AI 판정", 0, n_chunks + 2)
-        print("[judge] 0b 과제 체계 통합 왕복 (같은 실체가 갈리는 것 방지)")
-        rc = copilot_send(consolidate_prompt(sanitize_models(models), rows), tag, "consolidate")
-        if rc.get("ok"):
-            o2 = rfind_json(rc.get("reply", ""), "models", skip=(CONSOLIDATE_EXAMPLE,))
-            cand = [m for m in _as_list(o2.get("models")) if isinstance(m, dict) and m.get("name")]
-            if cand and len(cand) <= len(models):
-                merged_names = [m["name"] for m in cand]
-                print("        통합 후: " + ", ".join(merged_names[:10]))
-                models = apply_merges(cand)
+    # [재개·묶음] — 체계 왕복보다 먼저(LM28 진단 A). 지난 판정(다른 날짜 기간 포함)을 내용 키로 회수하고, 같은 내용은 대표
+    # 한 줄만 보낸다. 보낼 것이 없고 지난 정상 체계가 있으면 체계·통합 왕복도 건너뛴다.
+    # (v3 '이어서 판정' 은 같은 tag 파일에서만 회수해, 기간 끝날짜가 날마다 바뀌는 기본 기간에서는 매일 처음부터 다시 물었다.)
+    today = time.strftime("%Y-%m-%d")
+    ckeys = [_ckey(signal_sig2(r)) for r in rows]
+    judged, n_fail, n_partial, last_err = {}, 0, 0, ""
+    redo = "--redo" in sys.argv                   # 처음부터 판정 — 캐시를 새로 시작한다(옛 판정 기록도 잇지 않는다)
+    cache = {"v": 1, "since": time.time(), "migrated": True, "items": {}} if redo else load_judge_cache(rep)
+    citems = cache["items"]
+    n_exact = n_named = 0
+    if not redo:
+        # 캐시 이전 판의 판정 기록은 캐시가 처음 생길 때 한 번만 이어받는다(그 뒤의 판정은 모두 캐시에 있다)
+        legacy = {} if cache.get("migrated") else _legacy_judgments(rep, tag, cache.get("since") or 0.0)
+        for i in range(len(rows)):
+            e = citems.get(ckeys[i])
+            j = _from_cache(e)
+            from_legacy = j is None
+            if from_legacy:
+                j = _from_cache(legacy.get(ckeys[i]))
+                if j is None:
+                    continue
+            if j["work"] and not _cached_name_ok(j["model"], people, pinned_keys):
+                n_named += 1                      # 사람 이름·공지류 과제로 판정된 옛 판정 — 다시 묻는다(진단 B)
+                continue
+            if from_legacy:
+                citems[ckeys[i]] = _cache_entry(j, today)     # 캐시 이전 판의 기록 → 캐시로 옮긴다
             else:
-                print("        통합 결과가 유효하지 않아 초안 유지")
-        else:
-            print("        통합 왕복 실패 — 초안 유지")
-    models = sanitize_models(pinned + models)   # 지정이 앞 → 중복 시 사용자 표기가 대표
-    # AI가 새 과제를 하나도 못 주면(왕복 실패든, 성공했지만 산문 응답으로 파싱 실패든) 규칙 폴백
-    ai_added = any(not m.get("pinned") and m["name"] != "공통" for m in models)
-    if not ai_added and not (res.get("ok") and rfind_json(res.get("reply", ""), "models", skip=(TAXONOMY_EXAMPLE,))):
-        models = sanitize_models(pinned + fallback_models(rows, known))
-        print("        체계 수립 실패(왕복 또는 응답 파싱) — 지정+규칙 발견 후보로 폴백")
-    else:
+                e["at"] = today                   # 마지막으로 쓴 날 — 상한을 넘기면 오래 안 쓴 것부터 뺀다
+            judged[i] = dict(j, via="cache")
+        n_exact = len(judged)
+    # G3 — 광고 의심(signals flag 'ad') 행은 Copilot 에 보내지 않고 비업무로 둔다(LM24 에서 AI 가 'n' 으로 거르던 것)
+    ad_idx = {i for i, r in enumerate(rows) if i not in judged and is_ad_row(r)}
+    if ad_idx:
+        print(f"[judge] 광고 의심 신호 {len(ad_idx)}건은 보내지 않고 비업무로 둡니다(개인정보 관문 G3)")
+    gkeys = [group_key(r) for r in rows]
+    # (a) 같은 내용 재사용 — 지난 판정이 있는 묶음 키의 새 행(옛 스레드의 새 회신 등)은 왕복 없이 그 판정을 쓴다
+    by_key = defaultdict(Counter)
+    for i, j in judged.items():
+        if gkeys[i] is not None:
+            by_key[gkeys[i]][_jt(j)] += 1
+    n_keyed = 0
+    for i in range(len(rows)):
+        if i in judged or i in ad_idx or gkeys[i] is None or gkeys[i] not in by_key:
+            continue
+        judged[i] = dict(_jd(by_key[gkeys[i]].most_common(1)[0][0]), via="group")
+        citems[ckeys[i]] = _cache_entry(judged[i], today)
+        n_keyed += 1
+    # (b) 짧은 팀즈 대화(인사·맞장구)는 보내지 않는다 — 실패가 아니다(아래에서 주변 판정으로 채운다)
+    lowinfo = {i for i in range(len(rows)) if i not in judged and i not in ad_idx and is_lowinfo(rows[i])}
+    # (c) 남은 행은 같은 내용끼리 묶어 대표만 보낸다(대표의 판정을 구성원 전체에)
+    todo = [i for i in range(len(rows)) if i not in judged and i not in ad_idx and i not in lowinfo]
+    reps, members = group_reps(rows, todo, gkeys)
+    n_members = sum(len(v) for v in members.values())
+    n_reused = n_exact + n_keyed
+    if n_reused or n_named:
+        print(f"[judge] 이어서 판정 — 지난 실행(다른 날짜 포함) {n_reused}건 재사용"
+              + (f"(같은 내용 {n_keyed}건 포함)" if n_keyed else "")
+              + (f" · 사람 이름·공지류 과제로 판정된 {n_named}건은 다시 판정" if n_named else "")
+              + f" · 남은 {len(todo)}건")
+    if lowinfo:
+        print(f"        짧은 팀즈 대화(인사·맞장구) {len(lowinfo)}건은 보내지 않고 주변 판정으로 채웁니다")
+    if members:
+        print(f"        같은 내용 묶음 — 대표 {len(members)}줄이 {len(members) + n_members}행을 대신합니다"
+              f"(보낼 줄 {len(reps)})")
+    # 체계·통합 표본은 같은 내용을 한 줄로(광고·짧은 대화 제외) — 팀즈 잡담·스레드 회신이 표본을 덮지 않게(진단 B)
+    _sreps, _sm = group_reps(rows, [i for i in range(len(rows)) if i not in ad_idx and i not in lowinfo], gkeys)
+    sample_rows = [rows[i] for i in _sreps] or rows
+    st = {"roundtrips": 0, "repaired": 0, "retries": 0, "failed_rows": 0, "omitted_rows": 0,
+          "notes": [], "last_err": "", "soft": False, "aborted": False, "gated_rows": 0,
+          "gated_idx": set(), "omitted_idx": set(), "group_rows": 0, "abort_kind": "", "abort_reason": ""}
+
+    # [0] 엔티티 체계 — 지정은 항상 포함(코드로 강제), 나머지는 AI가 raw에서 자동 발견
+    n_chunks = -(-len(reps) // chunk_n)
+    res, _fatal0, used_fallback, reused_tax = {}, False, False, False
+    models = []
+    if not reps and prev_ms:
+        # 보낼 신호가 없다(전부 재사용·짧은 대화·광고) — 체계·통합 왕복을 하지 않고 지난 정상 체계를 쓴다
+        models = sanitize_models(pinned + prev_ms, people)
+        tax_ok, reused_tax = True, True
+        print(f"[judge] 보낼 신호가 없어 체계 수립 왕복을 건너뜁니다 — 지난 체계 재사용({os.path.basename(prev_path)})")
         print("        모델: " + ", ".join(m["name"] for m in models[:10]))
+    else:
+        progress("AI 판정", 0, n_chunks + 1)
+        print(f"[judge] 0/{n_chunks + 1} 엔티티 체계 수립 왕복 (모델 {model_name}"
+              + (f" · 지정 {len(pinned)}개" if pinned else "") + ") — 응답까지 수십 초 걸립니다")
+        res = copilot_send(taxonomy_prompt(sample_rows, hints, pinned), tag, "taxonomy")
+        # 이 왕복이 사실상 프로브다 — 로그인이 안 됐으면 여기서 이미 드러난다. 다만 **한 번으로
+        # 단정하지는 않는다**(아래 주석). 규칙 판정은 어떤 경우에도 돌아 signals·mm_rows·보고서가
+        # 나오므로, 사용자는 결과를 받고 로그인 뒤 [재분석만]으로 이으면 된다.
+        _why0, _how0, _fatal0 = explain_failure(res)
+        tax_ok = bool(res.get("ok"))          # 체계 왕복 성공 여부 — entities 저장 관문이 본다
+        if _fatal0:
+            print(f"[judge] 체계 수립 왕복이 실패했습니다 — {_why0}")
+            print(f"        {_how0}")
+            print("        규칙 판정으로 신호·MM·보고서는 그대로 만듭니다. 로그인 뒤 [재분석만]을 누르면 "
+                  "AI 판정만 이어서 합니다.")
+        if res.get("ok"):
+            o = (rfind_json(res.get("reply", ""), "models", skip=(TAXONOMY_EXAMPLE,))
+                 or repair_json(res.get("reply", ""), "models", skip=(TAXONOMY_EXAMPLE,)))
+            models = [m for m in _as_list(o.get("models"))
+                      if isinstance(m, dict) and isinstance(m.get("name"), str) and m["name"].strip()]
+            if not models:
+                note_bad_reply()
+        # AI가 지정 과제의 match를 보강했으면 병합해 pinned에 흡수 (표기·설명은 사용자 것이 우선)
+        for m in models:
+            for p in pinned:
+                if str(m.get("name", "")).strip().lower() == p["name"].lower():
+                    p["match"] = list(dict.fromkeys(p["match"] + [str(k).lower() for k in _as_list(m.get("match"))]))
+        # 9d — 초안이 2개를 넘으면 한 번 더 물어 같은 실체를 통합한다(--fast 로 생략 가능)
+        if len(models) > 2 and "--fast" not in sys.argv:
+            progress("AI 판정", 0, n_chunks + 2)
+            print("[judge] 0b 과제 체계 통합 왕복 (같은 실체가 갈리는 것 방지)")
+            draft = sanitize_models(models, people)
+            rc = copilot_send(consolidate_prompt(draft, sample_rows), tag, "consolidate")
+            if rc.get("ok"):
+                o2 = rfind_json(rc.get("reply", ""), "models", skip=(CONSOLIDATE_EXAMPLE,))
+                cand = [m for m in _as_list(o2.get("models")) if isinstance(m, dict) and m.get("name")]
+                if cand and len(cand) <= len(models):
+                    merged_names = [m["name"] for m in cand]
+                    print("        통합 후: " + ", ".join(merged_names[:10]))
+                    models = apply_merges(cand, draft)     # 통합 응답에 없는 product·l1 은 초안에서 옮긴다
+                else:
+                    print("        통합 결과가 유효하지 않아 초안 유지")
+            else:
+                print("        통합 왕복 실패 — 초안 유지")
+        models = sanitize_models(pinned + models, people)   # 지정이 앞 → 중복 시 사용자 표기가 대표
+        # AI가 새 과제를 하나도 못 주면(왕복 실패든, 성공했지만 산문 응답으로 파싱 실패든) 규칙 폴백 —
+        # 지정 + 지난 정상 체계 + 걸러진 규칙 토큰. entities 에 "fallback": true 를 남겨 다음 실행·mine 이 되먹지 않게 한다.
+        ai_added = any(not m.get("pinned") and m["name"] != "공통" for m in models)
+        if not ai_added and not (res.get("ok") and rfind_json(res.get("reply", ""), "models",
+                                                             skip=(TAXONOMY_EXAMPLE,))):
+            models = sanitize_models(pinned + fallback_models(rows, known, people, prev_ms), people)
+            used_fallback = True
+            print("        체계 수립 실패(왕복 또는 응답 파싱) — 지정+지난 체계+규칙 발견 후보로 폴백")
+        else:
+            print("        모델: " + ", ".join(m["name"] for m in models[:10]))
     # entities 파일은 판정이 끝난 뒤에 쓴다 — 판정이 0건(왕복 전부 실패)이면 기존 파일을
     # 규칙 폴백 체계로 덮지 않고 보존한다(F3)
     ent_p = os.path.join(rep, f"entities_{tag}.json")
     ent_obj = {"models": models, "worktypes": WORKTYPES, "hints_used": hints}
+    if used_fallback:
+        ent_obj["fallback"] = True                # 규칙 폴백 체계 — 지난 체계로 되먹이지 않는다(details.entities_is_fallback)
+    if reused_tax:
+        ent_obj["reused_from"] = os.path.basename(prev_path)
     ent_prev = os.path.exists(ent_p)
 
-    # [1..N] 신호 판정 — 행 수(chunk_n)와 글자 예산 둘 다로 자른다. 머리말 길이는 과제 목록과
+    # [1..N] 신호 판정 — 대표 행만, 행 수(chunk_n)와 글자 예산 둘 다로 자른다. 머리말 길이는 과제 목록과
     # '앞서 쓴 이름' 목록 상한을 포함해 잰다.
     head_len = len(judge_prompt([], 0, models)) + SEEN_MAX_CHARS + 160
-    # v3 '이어서 판정' — 지난 실행의 판정을 내용 sig 로 회수하고, 남은 행만 왕복한다.
-    # (v2 는 이 약속이 출력에만 있고 메커니즘이 없었다 — 구조 감사 CONFIRMED.)
-    judged, n_fail, n_partial, last_err = {}, 0, 0, ""
-    _resumed = 0
-    if "--redo" not in sys.argv:
-        try:
-            with open(os.path.join(rep, f"ai_judgments_{tag}.json"), encoding="utf-8-sig") as _pf:
-                _prev = json.load(_pf)
-            _by_sig = {v.get("sig"): v for v in (_prev.get("items") or {}).values()
-                       if isinstance(v, dict) and v.get("sig")}
-            for _i, _r in enumerate(rows):
-                _v = _by_sig.get(signal_sig(_r))
-                if _v is not None:
-                    judged[_i] = {k2: v2 for k2, v2 in _v.items() if k2 != "sig"}
-            _resumed = len(judged)
-        except (OSError, ValueError, TypeError, AttributeError):
-            _resumed = 0
-    # G3 — 광고 의심(signals flag 'ad') 행은 Copilot 에 보내지 않고 비업무로 둔다(LM24 에서 AI 가 'n' 으로 거르던 것)
-    ad_idx = {i for i, r in enumerate(rows) if i not in judged and is_ad_row(r)}
-    _todo = [i for i in range(len(rows)) if i not in judged and i not in ad_idx]
-    if ad_idx:
-        print(f"[judge] 광고 의심 신호 {len(ad_idx)}건은 보내지 않고 비업무로 둡니다(개인정보 관문 G3)")
-    if _resumed:
-        print(f"[judge] 이어서 판정 — 지난 실행 {_resumed}건 재사용 · 남은 {len(_todo)}건만 왕복")
-    _sub = [rows[i] for i in _todo]
-    plan = pack_chunks(_sub, chunk_n, head_len)
-    chunks = [_sub[s:s + n] for s, n in plan]
-    if len(chunks) != n_chunks and not _resumed:
+    plan = pack_chunks([rows[i] for i in reps], chunk_n, head_len)
+    chunks = [reps[s:s + n] for s, n in plan]          # 청크마다 대표 행 번호(원본 행 인덱스)
+    if len(chunks) != n_chunks and not n_reused:
         print(f"        글자 예산({PROMPT_BUDGET:,}자)에 맞춰 청크 {n_chunks}→{len(chunks)}개"
               f" (머리말 {head_len:,}자 · 행 최대 {max((n for _s, n in plan), default=0)}개)")
-    st = {"roundtrips": 0, "repaired": 0, "retries": 0, "failed_rows": 0, "omitted_rows": 0,
-          "notes": [], "last_err": "", "soft": False, "aborted": False, "gated_rows": 0}
     n_skip = 0                                 # 개인정보 관문에 막혀 보내지 않은 청크(연속 실패 계수 밖)
     if _fatal0:
         # ★ 체계 수립 왕복 **한 번**으로 '사람이 손대야 풀리는 실패' 라고 단정하지 않는다.
@@ -2066,7 +2927,8 @@ def main():
     consec, prev_idxs = 0, ()
     _dl, _bud = _stage_budget()
     _budget_stop = ""
-    for ci, (start, n) in enumerate(plan):
+    for ci, idxs in enumerate(chunks):
+        n = len(idxs)
         # 예산 관문 — **스스로** 멈추고 아래 저장·내러티브 경로를 그대로 탄다(종료코드 0).
         # 예전에는 부모의 상한에 끊겨 종료코드가 0 이 아니었고, 그러면 run.py 가 정제·Agentic·
         # 워크플로우를 전부 건너뛰고 월별 코멘트도 만들지 못했다(제보).
@@ -2077,27 +2939,51 @@ def main():
                             "않았습니다 — 여기까지의 판정을 저장하고 월별 코멘트까지 만든 뒤 끝냅니다"
                             "(다시 실행하면 남은 신호만 이어서 판정합니다 · config.aiStageBudgetMin)")
             print(f"[judge] {_budget_stop}")
+            if not st["abort_kind"]:
+                st["abort_kind"], st["abort_reason"] = "budget", _budget_stop
+            save_judge_cache(rep, cache, d0, prune=False)
         if _budget_stop:
             st["failed_rows"] += n
             n_fail += 1
             continue
         progress("AI 판정", ci + 1, len(chunks) + 1)
-        idxs = [_todo[k] for k in range(start, start + n)]     # todo 부분집합 → 원본 행 인덱스
         if st["aborted"]:
             st["failed_rows"] += n
             n_fail += 1
             continue
-        print(f"[judge] {ci+1}/{len(chunks)} 신호 판정 왕복 (#{idxs[0]}~#{idxs[-1]})")
+        _cover = sum(len(members.get(i, ())) for i in idxs)
+        print(f"[judge] {ci+1}/{len(chunks)} 신호 판정 왕복 (#{idxs[0]}~#{idxs[-1]}"
+              + (f" · 같은 내용 {_cover}행 포함" if _cover else "") + ")")
         st["notes"] = []
         st["_skipped"] = False
         _g0 = st["gated_rows"]
         got = judge_rows(idxs, rows, models, recent_details(judged, prev_idxs), tag, f"chunk{ci+1}", 0, st)
         judged.update(got)
+        # 같은 내용 묶음 — 대표의 판정을 구성원 전체에. 관문에 걸린 대표의 구성원·빠뜨린 대표의 구성원도 같은 처지로 센다.
+        _n_mem = 0
+        for i in idxs:
+            mem = members.get(i, ())
+            if not mem:
+                continue
+            if i in got:
+                for m in mem:
+                    judged[m] = dict(got[i], via="group")
+                _n_mem += len(mem)
+            elif i in st["gated_idx"]:
+                st["gated_idx"].update(mem)
+            elif i in st["omitted_idx"]:
+                st["omitted_idx"].update(mem)
+        st["group_rows"] += _n_mem
         prev_idxs = idxs
         if got:
             consec = 0
             if len(got) < n - (st["gated_rows"] - _g0):     # 관문에 걸린 행은 '부분 판정' 이 아니다
                 n_partial += 1
+            # 묶음마다 캐시에 저장 — 중간에 끊겨도(감시기 종료·예외) 여기까지의 판정은 다음 실행이 다시 묻지 않는다
+            for i in got:
+                for m in (i, *(members.get(i, ()))):
+                    citems[ckeys[m]] = _cache_entry(judged[m], today)
+            save_judge_cache(rep, cache, d0, prune=False)
         elif st.get("_skipped"):
             # 개인정보 관문(G3)에 막혀 보내지 않았다 — 실패가 아니므로 연속 실패 계수에 넣지 않는다(그 행만 규칙 판정)
             n_skip += 1
@@ -2106,43 +2992,83 @@ def main():
             n_fail += 1
             last_err = st.get("last_err") or last_err
         note = ("" if not st["notes"] else " · " + " / ".join(st["notes"][:4]))
-        print(f"        판정 {len(got)}/{n}건{note}")
+        print(f"        판정 {len(got)}/{n}건" + (f"(+같은 내용 {_n_mem}행)" if _n_mem else "") + note)
         if st.get("fatal"):
-            # 사람이 손대야 풀리는 상태 — 6청크를 기다릴 이유가 없다. 바로 규칙 판정으로 넘긴다.
+            # 사람이 손대야 풀리는 상태(로그인 만료·강한 사용량 제한 등) — 6청크를 기다릴 이유가 없다. 바로 규칙 판정으로 넘긴다.
             st["aborted"] = True
+            st["abort_kind"] = st.get("fatal_kind") or "fatal"
+            st["abort_reason"] = st["fatal"]
             print(f"        {st['fatal']}")
             print("        남은 청크는 규칙 판정으로 둡니다 — 해결한 뒤 [재분석만]을 누르면 AI 판정만 이어서 합니다.")
+            save_judge_cache(rep, cache, d0, prune=False)
         elif consec >= ABORT_FAIL_CHUNKS:
             st["aborted"] = True
+            st["abort_kind"] = "content"
+            st["abort_reason"] = (f"연속 {consec}청크 0건"
+                                  + (f" — {st.get('last_err')}" if st.get("last_err") else ""))[:300]
             print(f"        연속 {consec}청크 0건 — 남은 청크는 규칙 판정으로 둡니다"
                   "(Copilot 상태를 확인한 뒤 재실행하면 이어서 판정됩니다)")
+            save_judge_cache(rep, cache, d0, prune=False)
         elif consec >= SOFT_FAIL_CHUNKS and not st["soft"]:
             st["soft"] = True
             print(f"        연속 {consec}청크 0건 — 적응 재시도(반분·빠진 행)를 끄고 1회씩만 시도합니다")
+    if _fatal0 and not chunks and not st.get("fatal"):
+        # 체계 왕복이 사람이 손댈 실패(로그인 만료·강한 사용량 제한)였고 확인할 묶음이 없다 — 월별 코멘트도 보내지 않는다
+        st["fatal"] = f"{_why0} — {_how0}"
+        st["aborted"] = True
+        st["abort_kind"], st["abort_reason"] = _abort_kind_of(res), st["fatal"]
     if st["aborted"]:
         print(f"        중단으로 건너뛴 청크 포함 0건 청크 {n_fail}/{len(chunks)}")
     if n_skip or st["gated_rows"]:
         print(f"        개인정보 관문(G3): 보내지 않은 청크 {n_skip}개 · 규칙 판정으로 둔 행 {st['gated_rows']}건"
               " (연속 실패로 세지 않음)")
+    save_judge_cache(rep, cache, d0)              # 끝 저장 — 가지치기(오래 안 쓴 판정·상한) 포함
 
-    # 판정 반영 — 과제명은 체계의 대표 표기로 정규화, 미판정 행은 match 키워드로 매핑
+    # AI 가 직접 못 본 행 채우기(진단 A) — 같은 내용·같은 대화·규칙 토큰·비슷한 판정 순. 관문 행·광고는 채우지 않는다.
+    # 채운 판정은 판정 기록(items)·캐시에 넣지 않는다(다음 실행이 AI 에 다시 묻는다).
+    gated = st["gated_idx"]
+    unseen = [i for i in range(len(rows)) if i not in judged and i not in ad_idx and i not in gated]
+    fills = fill_unjudged(rows, judged, unseen, gkeys)
+    filled_n = Counter(how for _j, how in fills.values())
+
+    # 판정 반영 — 한 곳에서(진단 B): AI 유래 과제명은 final_model(사람 이름·공지류·잡음 → '공통'), 사람 이름 세부업무는 활동명.
+    # 미판정 행은 match 키워드로 매핑(강한 행정 공지 제목은 '공통/공지·근태' · 짧은 팀즈 대화는 협업).
     shutil.copy2(sp, os.path.join(rep, f"signals_{tag}_rules.csv"))
     kept, dropped_rows = [], []
     for i, r in enumerate(rows):
         j = judged.get(i)
+        if j is None and i in fills:
+            j = fills[i][0]
         if j is None and i in ad_idx:
+            r["judge"] = "ad"
             dropped_rows.append(r)          # 광고 의심 — 비업무(시간 재산정에서도 뺀다)
             continue
         if j is None:
-            r.update(model=rule_model(r, models), worktype="사무",
-                     detail=r.get("activity") or "기타", judge="규칙")
+            if details.is_notice_subject(r.get("text")):
+                r.update(model="공통", worktype="사무", detail="공지·근태", judge="규칙")
+            else:
+                r.update(model=rule_model(r, models), worktype=("협업" if i in lowinfo else "사무"),
+                         detail=r.get("activity") or "기타", judge="규칙")
             kept.append(r)
         elif not j["work"]:
-            dropped_rows.append(r)          # 비업무 — 시간 재산정(rehours_meta)에서도 뺀다
+            r["judge"] = "AI-n"
+            dropped_rows.append(r)          # 비업무 — 시간 재산정(rehours_meta)에서도 뺀다(본인 발신 시각 근거는 extract 가 남긴다)
         else:
-            r.update(model=to_model(j["model"], models) or "공통", worktype=j["worktype"] or "사무",
-                     detail=j["detail"] or r.get("activity") or "기타", judge="AI")
+            dt = j["detail"] or r.get("activity") or "기타"
+            if details.is_person_name(dt, people):
+                dt = r.get("activity") or "기타"
+            r.update(model=final_model(j["model"], models, people, pinned_keys), worktype=j["worktype"] or "사무",
+                     detail=dt, judge=("AI(유사)" if j.get("via") in ("conv", "token", "sim") else "AI"))
             kept.append(r)
+    rule_rows = sum(1 for r in kept if r.get("judge") == "규칙")
+    # 실패 행 다시 세기 — 판정 없음 − 광고 − 관문 − 짧은 대화 − 모델이 빠뜨린 행(대표가 실패하면 구성원도 실패다)
+    _unj = {i for i in range(len(rows)) if i not in judged and i not in ad_idx}
+    st["omitted_rows"] = len(_unj & st["omitted_idx"])
+    st["failed_rows"] = len(_unj - gated - lowinfo - st["omitted_idx"])
+    st["gated_rows"] = max(int(st["gated_rows"]), len(_unj & gated))
+    if fills:
+        print(f"        AI 가 직접 못 본 행 {len(unseen)}건 중 {len(fills)}건을 비슷한 판정으로 채움(같은 내용 "
+              f"{filled_n['same']} · 대화 {filled_n['conv']} · 규칙 토큰 {filled_n['token']} · 비슷한 신호 {filled_n['sim']})")
     # 사용자 지정 규칙 자동 재적용 — AI가 '공통'·자동발견으로 판정한 신호라도 지정
     # 프로젝트의 이름·키워드가 원문에 직격이면 지정으로 귀속 (재분석해도 지정이 무음 소실되지 않게)
     if pinned:
@@ -2167,16 +3093,18 @@ def main():
     # 다음 실행의 taxonomy 힌트로 자동 순환된다. 비교는 대소문자 무시(중복 계상 방지).
     # 비교는 ukey2 — .lower() 로만 보면 '광학설계' 가 '광학 설계' 의 옆에 새 과제로 적립되고,
     # 그것이 다음 실행의 taxonomy 힌트가 되어 분할이 영구화된다(재분석해도 낫지 않던 이유).
+    # 발견 목록은 **최종 반영값**(kept 의 AI 유래 행)에서 만든다 — final_model 이 '공통' 으로 돌린 사람 이름·공지류는 들어올 수 없다.
     model_names_l = {ukey2(m["name"]) for m in models}
-    discovered = sorted({j["model"].strip() for j in judged.values()
-                         if j["work"] and j["model"].strip()
-                         and ukey2(j["model"].strip()) not in model_names_l
-                         and not NOISE_MODEL.match(j["model"].strip())})
+    discovered = sorted({str(r.get("model") or "").strip() for r in kept
+                         if _is_ai_row(r) and str(r.get("model") or "").strip()
+                         and str(r.get("model")).strip() != "공통"
+                         and ukey2(str(r.get("model")).strip()) not in model_names_l
+                         and not NOISE_MODEL.match(str(r.get("model")).strip())})
     if discovered:
         print("        판정 중 새 과제 발견: " + ", ".join(discovered))
         ent_obj["models"] = sanitize_models(
             ent_obj["models"] + [{"name": d, "match": [d.lower()], "obs": "판정 중 발견"}
-                                 for d in discovered])
+                                 for d in discovered], people)
         ent_obj["discovered"] = discovered
     if (judged and tax_ok) or not ent_prev:
         with open(ent_p, "w", encoding="utf-8") as f:
@@ -2189,7 +3117,7 @@ def main():
                 ent_prev_obj = json.load(open(ent_p, encoding="utf-8-sig"))
                 ent_prev_obj["models"] = sanitize_models(
                     list(ent_prev_obj.get("models") or []) + [{"name": d, "match": [d.lower()], "obs": "판정 중 발견"}
-                                                              for d in discovered])
+                                                              for d in discovered], people)
                 with open(ent_p, "w", encoding="utf-8") as f:
                     json.dump(ent_prev_obj, f, ensure_ascii=False, indent=1)
             except (OSError, ValueError, TypeError):
@@ -2200,8 +3128,14 @@ def main():
 
     dropped = len(dropped_rows)
     # failed_chunks = 0건으로 끝난 청크(왕복 실패·JSON 없음 모두 — 예전엔 JSON 없음이 빠져 0 으로 보였다),
-    # partial_chunks = 일부만 판정된 청크, failed_rows = 실패로 규칙에 남은 행, omitted_rows = 온전한 답인데
-    # 모델이 빠뜨린 행, repaired = 잘린 답을 복구한 왕복, retries = 적응 분할 재왕복, roundtrips = 총 왕복.
+    # partial_chunks = 일부만 판정된 청크, failed_rows = AI 가 직접 못 본 행(판정 없음 − 광고 − 관문 − 짧은 대화 − 빠뜨림,
+    # 비슷한 판정으로 채운 행 포함), omitted_rows = 온전한 답인데 모델이 빠뜨린 행, repaired = 잘린 답을 복구한 왕복,
+    # retries = 적응 분할 재왕복, roundtrips = 총 왕복(쉬고 다시 보낸 것 포함).
+    # LM28 진단 A — cache_reused(지난 실행 재사용, 같은 내용 키 포함)·group_rows(대표 판정을 받은 구성원)·reps(보낸 대표 줄)·
+    # lowinfo_rows(보내지 않은 짧은 대화)·unseen_rows(AI 가 직접 못 본 행 = 채우기 대상: 판정 없음 − 광고 − 관문, 짧은 대화 포함)·
+    # filled_rows(그중 비슷한 판정으로 채움 — 방법별)·rule_rows(규칙 판정으로 남은 행 전체 — 관문 행 포함)·
+    # abort_kind(throttle·login·fatal·content·budget·'')·abort_reason·cooldowns(쉬고 다시 보낸 횟수)·model_fallback.
+    # items 에는 AI 판정(재사용·같은 내용 포함)만 — 채운 판정은 넣지 않는다.
     with open(os.path.join(rep, f"ai_judgments_{tag}.json"), "w", encoding="utf-8") as f:
         json.dump({"model": model_name, "total": len(rows), "judged": len(judged),
                    "dropped_nonwork": dropped, "chunks": len(chunks), "failed_chunks": n_fail,
@@ -2211,6 +3145,11 @@ def main():
                    "aborted": st["aborted"], "chunk_rows": chunk_n, "prompt_budget": PROMPT_BUDGET,
                    # G3 — 관문에 막혀 보내지 않은 청크·규칙으로 둔 행·광고 의심으로 비업무 처리한 행(실패 아님)
                    "skipped_chunks": n_skip, "gated_rows": st["gated_rows"], "ad_rows": len(ad_idx),
+                   "cache_reused": n_reused, "cache_key_reused": n_keyed, "group_rows": st["group_rows"],
+                   "reps": len(reps), "lowinfo_rows": len(lowinfo), "unseen_rows": len(unseen),
+                   "filled_rows": {k: int(filled_n.get(k, 0)) for k in ("same", "conv", "token", "sim")},
+                   "rule_rows": rule_rows, "abort_kind": st["abort_kind"], "abort_reason": st["abort_reason"],
+                   "cooldowns": _COOLDOWNS[0], "model_fallback": _MODEL_FALLBACK[0] or "",
                    "items": {str(k): dict(v, sig=signal_sig(rows[k])) for k, v in judged.items()
                              if 0 <= k < len(rows)}}, f, ensure_ascii=False, indent=1)
 
@@ -2218,8 +3157,10 @@ def main():
     rh = rehours_meta(kept, dropped_rows, tag, cfg, rep, os.path.join(ROOT, "data"))
     if rh:
         _bef = f"{rh['before_mm']:.2f}" if rh.get("before_mm") is not None else "?"
+        _tk = int(rh.get("ai_n_time_kept") or 0)
         print(f"        비업무 제외 {rh['dropped_n']}건 · −{rh['dropped_h']:.1f}h → 투입 {_bef}→"
-              f"{rh['total_mm']:.2f} MM (로드율 {rh['load_pct']:.0f}%) — 시간 재산정 반영")
+              f"{rh['total_mm']:.2f} MM (로드율 {rh['load_pct']:.0f}%) — 시간 재산정 반영"
+              + (f" · AI 비업무 발신 {_tk}건은 배분에서만 빼고 시간 근거로 유지" if _tk > 0 else ""))
     # MM + mm_rows + 피벗 (retag.py와 공용 — write_outputs)
     total_mm, pv = write_outputs(kept, tag, cfg, rep)
     cov = len(judged) / len(rows) * 100
@@ -2230,6 +3171,11 @@ def main():
         print(f"        왕복 {st['roundtrips']}회(청크 {len(chunks)} · 재시도 {st['retries']}) · "
               f"잘린 응답 복구 {st['repaired']}회 · 실패 청크 {n_fail} · 부분 청크 {n_partial} · "
               f"실패로 규칙에 남은 행 {st['failed_rows']} · 모델이 빠뜨린 행 {st['omitted_rows']}")
+    # 사진 한 장으로 판정 구조를 읽는 줄(현장 확인용) — 재사용·묶음·짧은 대화·왕복·대기·채움·규칙·중단 갈래
+    print(f"[judge] 구조: 신호 {len(rows)} · 재사용 {n_reused} · 같은 내용 대표 {len(reps)}(→{len(reps) + n_members}행) · "
+          f"짧은 대화 {len(lowinfo)} · 왕복 {st['roundtrips']} · 대기 {_COOLDOWNS[0]}회 · 채움 {len(fills)} · "
+          f"규칙 {rule_rows} · 중단 {st['abort_kind'] or '없음'}"
+          + (f" · 대체 모델 {_MODEL_FALLBACK[0]}" if _MODEL_FALLBACK[0] else ""))
 
     if not judged:
         # 판정이 한 건도 없다 — 왕복이 전부 실패했거나 응답을 하나도 해석하지 못했다. 예전에는
@@ -2241,32 +3187,52 @@ def main():
         else:
             err = (f"AI 판정 0건(청크 {len(chunks)}개 전부 0건 · 왕복 {st['roundtrips']}회"
                    + (f" · 개인정보 관문으로 보내지 않은 청크 {n_skip}개" if n_skip else "")
-                   + (" · 연속 실패로 중단" if st["aborted"] else "") + ")")
+                   + ((" · " + {"throttle": "Copilot 사용량 제한으로 중단", "login": "Copilot 로그인 만료로 중단",
+                                "fatal": "사람이 손대야 풀리는 상태로 중단"}.get(st.get("abort_kind") or "",
+                                                                       "연속 실패로 중단"))
+                      if st["aborted"] else "") + ")")
         # 성공 왕복의 프롬프트 파일은 지워진다(V-06) — 남아 있는 실패 청크 파일 하나를 안내한다
         left = sorted(_glob.glob(os.path.join(rep, f"judge_chunk*_{tag}.md")))
         hint = last_err or (f"report\\{os.path.basename(left[0])} 를 Copilot 에 직접 붙여 응답 형식을 확인하세요" if left
                             else "Copilot 응답 형식을 [AI 연결 진단]으로 확인하세요")
         print(f"[judge] {err} — {hint}")
-        print("        signals/mm_rows 는 규칙 판정으로 두고, 월별 내러티브·entities 기존 파일은 보존합니다")
+        print("        signals/mm_rows 는 규칙 판정으로 두고 entities 기존 파일은 보존합니다 — 월별 코멘트는 새로 "
+              "만들지 않고 이전 코멘트를 이 기간으로 이월합니다")
+        # 이월만(왕복 없음) — 예전에는 rc 3 이면 이 기간 파일이 아예 없어 리포트·팀 묶음(정확한 tag 파일만 읽음)의
+        # 월별 코멘트 절이 통째로 빠졌다. 마지막 줄 JSON 규약을 지키려고 JSON 줄보다 먼저 저장한다.
+        save_narratives({}, rep, tag)
         print(json.dumps({"ok": False, "error": err, "hint": hint, "judged": 0,
                           "chunks": len(chunks), "failed_chunks": n_fail}, ensure_ascii=False))
         if _ss is not None:
             _ss.finish("failed", stop_kind="fatal", reason=err, error=err, hint=hint)
         return 3
 
-    # [월별] 내러티브
+    # [월별] 내러티브 — 판정이 막힌 실행에서는 같은 Copilot 에 달마다 새 채팅을 열어 봐야 실패만 쌓인다(예전에는
+    # '연속 실패로 중단' 직후에도 검사 없이 돌아 최대 약 60분을 쓰고 새 코멘트 0개 — 정제·Agentic 과 같이 쓰는 전체
+    # 마감에서 빠졌다). fatal(로그인 만료·강한 사용량 제한 등 사람이 손대야 풀리는 상태)이면 보내지 않고 이월만,
+    # 연속 실패로 중단됐으면 한 달만 시험하고 실패하면 바로 멈춘다.
     if "--no-narrate" not in sys.argv:
-        print("[judge] 월별 리뷰 내러티브 생성 중…")
-        progress("월별 리뷰", 0, 1)
-        nar = narrate(kept, total_mm, tag)
-        save_narratives(nar, rep, tag)
+        if st.get("fatal"):
+            print("[judge] 사람이 손대야 풀리는 상태라 이번 실행은 월별 코멘트를 새로 만들지 않습니다 — 이전 코멘트 유지"
+                  "([리뷰 코멘트 재생성]으로 이어서)")
+            nar = {}
+        else:
+            print("[judge] 월별 리뷰 내러티브 생성 중…"
+                  + (" (판정이 연속 실패로 중단돼 한 달만 시험합니다 — 실패하면 바로 멈춤)" if st.get("aborted") else ""))
+            progress("월별 리뷰", 0, 1)
+            nar = narrate(kept, total_mm, tag, max_consec=(1 if st.get("aborted") else 2))
+        save_narratives(nar, rep, tag)              # 멱등 — narrate 가 이미 저장했어도 이월·표식은 그대로
     # v3 rc 규약: 부분(예산 중단·실패 잔여)은 2 — '이어서' 가 데이터가 된다. 완주는 0.
     _partial = bool(_budget_stop) or st["failed_rows"] > 0 or st["omitted_rows"] > 0
     if _ss is not None:
         if _partial:
             _ss.note_resume(pending=max(int(st["failed_rows"] + st["omitted_rows"]), 1))
-            _ss.finish("partial", stop_kind=("budget" if _budget_stop else "fatal"),
-                       reason=_budget_stop or f"실패 행 {st['failed_rows']}·누락 {st['omitted_rows']}")
+            # 중단 갈래 — 강한 사용량 제한(throttle)·로그인 만료(login)는 다시 보내도 같은 벽이다(run.py 가 재시도하지 않는다)
+            _sk = ("budget" if _budget_stop else
+                   {"throttle": "throttle", "login": "login"}.get(st.get("abort_kind") or "", "fatal"))
+            _ss.finish("partial", stop_kind=_sk,
+                       reason=(_budget_stop or st.get("abort_reason")
+                               or f"실패 행 {st['failed_rows']}·누락 {st['omitted_rows']}"))
         else:
             _ss.finish("done")
     return 2 if _partial else 0

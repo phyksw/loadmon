@@ -212,6 +212,8 @@ def _agentic_stale(a, tag, ap, out):
     · reextracted: signals 가 규칙 축으로 다시 써졌거나(재추출), 매칭이 만들어진 행 파일(rows_file)이 지금 화면·리포트가
       읽는 행 파일과 다르다(정제본 무효화) → 화면이 '재추출 이후 결과'/'정제본 무효화 이후 결과' 로 알리고 [재매칭] 을
       권한다(결과는 지우지 않는다).
+    · 근거 키(match[].keys — 원본 mm_rows 의 (과제, 세부업무) 쌍)로 센 결과(mm_recalc.axis 'plain')는 정제본↔원본 행 파일이
+      바뀌어도 로드 MM 이 그대로다 — 그 경우에는 '정제본 무효화' 안내를 띄우지 않는다(재추출은 그대로 알린다 · 진단 D).
     반환: (재계산했으면 다시 읽은) 분석 dict."""
     cur = _rows_basename(tag)
     mr = a.get("mm_recalc") if isinstance(a.get("mm_recalc"), dict) else {}
@@ -227,7 +229,11 @@ def _agentic_stale(a, tag, ap, out):
                 pass
     rf = str(a.get("rows_file") or "")
     reex = _reextracted(tag)
-    if reex or (rf and rf != cur):
+    mr = a.get("mm_recalc") if isinstance(a.get("mm_recalc"), dict) else {}
+    keyed = (str(mr.get("axis") or "") == "plain"
+             and any(isinstance(m, dict) and isinstance(m.get("keys"), list)
+                     for m in (a.get("match") if isinstance(a.get("match"), list) else [])))
+    if reex or (rf and rf != cur and not keyed):
         out["reextracted"] = True
         out["reextracted_title"] = "재추출 이후 결과" if reex else "정제본 무효화 이후 결과"
         out["reextracted_note"] = ((f"이 매칭은 {rf} 행 기준이고 지금 화면은 {cur} 입니다" if rf and rf != cur
@@ -890,7 +896,9 @@ def _stage_kind(stage, tag=None):
     none(기록 없음) · ok(정상 완료로 기록됨 — 결과 파일이 없으면 기간이 다른 것이다).
     제보: "에이전틱이 안 만들어졌습니다 — 정체되어 스킵된 걸까요?" 를 화면이 바로 답하게.
     v3: 상태 파일(stage_state)이 있으면 **데이터로** 답한다 — 한국어 note 부분 문자열 분류는
-    구판 기록용 폴백으로만 남는다(문구를 다듬으면 분류가 깨지던 구조의 종식 · 구조 감사 4계층)."""
+    구판 기록용 폴백으로만 남는다(문구를 다듬으면 분류가 깨지던 구조의 종식 · 구조 감사 4계층).
+    LM28: stop.kind throttle(Copilot 사용량 제한 — 바로 다시 눌러도 같은 벽) → throttle · gate(개인정보 관문에 걸린 것만 남음 —
+    조치 불필요) → gate · fail·gain·fatal·login·lock → failed."""
     _sid = {"AI 판정": "judge", "AI 정제": "refine", "Agentic 매칭": "agentic",
             "워크플로우 분석": "flow"}.get(stage)
     if _sid:
@@ -906,8 +914,9 @@ def _stage_kind(stage, tag=None):
             if _stv == "done":
                 return "ok"
             if _stv in ("partial", "failed"):
-                return {"budget": "budget", "stall": "stalled", "login": "failed",
-                        "lock": "failed"}.get(_kind, "failed")
+                return {"budget": "budget", "stall": "stalled", "login": "failed", "lock": "failed",
+                        "fatal": "failed", "fail": "failed", "gain": "failed",
+                        "throttle": "throttle", "gate": "gate"}.get(_kind, "failed")
     note = _stage_note(stage)
     if not note:
         return "none"
@@ -922,6 +931,31 @@ def _stage_kind(stage, tag=None):
     if "건너뜀" in note or "건너뛰" in note:
         return "skipped"
     return "failed"
+
+
+def _stage_why(tag, stage):
+    r"""상태 파일(report\stage_state_<tag>_<stage>.json)이 남긴 중단 사유 → {stage_reason, stage_error, stage_stop_kind}
+    (값이 있는 키만). 결과 파일이 없거나 흐름이 비었을 때 화면이 '왜' 를 빨간 줄로 먼저 말하게 한다 — 예전에는 사유가 상태
+    파일에만 남아 화면은 '분석이 없습니다' 한 줄과 갈래 문구뿐이었다(진단 D: 담당자 워크플로우 간헐 미생성)."""
+    out = {}
+    if not tag:
+        return out
+    try:
+        from stage_state import read_state
+        st = read_state(REPORT, tag, stage) or {}
+    except Exception:  # noqa: BLE001 - 상태 파일 판독 실패가 탭을 막지 않게
+        st = {}
+    stop = st.get("stop") if isinstance(st.get("stop"), dict) else {}
+    err = st.get("error") if isinstance(st.get("error"), dict) else {}
+    if str(stop.get("reason") or "").strip():
+        out["stage_reason"] = str(stop["reason"]).strip()[:300]
+    if str(stop.get("kind") or "").strip():
+        out["stage_stop_kind"] = str(stop["kind"]).strip()
+    e = str(err.get("error") or "").strip()
+    if e:
+        hn = str(err.get("hint") or "").strip()
+        out["stage_error"] = (e + (" — " + hn if hn else ""))[:500]
+    return out
 
 
 REEXTRACTED = "판정 이후 재추출됨"
@@ -958,6 +992,10 @@ def _judged_info(tag):
     파일이 없거나 깨졌거나 0 건이면 False — 그 화면의 과제·세부업무는 규칙이 뽑은 임시 이름이다.
     네 번째 값(S1-12)은 failed_rows·partial_chunks·repaired·aborted 중 파일에 **있는 키만** 담은 dict —
     화면의 judged_warn 배너가 '실패로 규칙에 남은 행 N · 연속 실패로 중단' 한 줄을 붙인다(키 없으면 표시 안 함).
+    LM28(진단 A) — 있으면 함께 싣는다: abort_kind(throttle·login·fatal·content·budget·'')·abort_reason·model_fallback(문자열),
+    cache_reused·group_rows·reps·lowinfo_rows·unseen_rows·rule_rows·omitted_rows·cooldowns(정수), filled_rows(비슷한 판정으로
+    채운 행 — 방법별 dict 면 합계, 방법별 수는 filled_by{same·conv·token·sim}). 배너는 중단 갈래별 문구와 'AI가 직접 못 본 행
+    (채움·규칙)' 줄을 이 값으로 고른다.
     판정 뒤에 업무 로드가 다시 추출됐으면(run.py 가 기록을 .stale 로 개명했거나, signals 가 규칙 축으로 다시 써짐)
     judged=False 에 사유 reextracted/reason='판정 이후 재추출됨' 을 싣는다(V-01) — 화면은 규칙 결과다."""
     if not tag:
@@ -972,7 +1010,9 @@ def _judged_info(tag):
     except (OSError, ValueError, TypeError, AttributeError):
         return False, None, None, {}
     issues = {}
-    for k in ("failed_rows", "partial_chunks", "repaired"):
+    for k in ("failed_rows", "partial_chunks", "repaired", "omitted_rows",
+              # 지난 실행 재사용·같은 내용 묶음·대표·짧은 대화·AI 가 직접 못 본 행·규칙으로 남은 행·쉬고 다시 보낸 횟수
+              "cache_reused", "group_rows", "reps", "lowinfo_rows", "unseen_rows", "rule_rows", "cooldowns"):
         if k in j:
             try:
                 issues[k] = int(j.get(k) or 0)
@@ -980,6 +1020,24 @@ def _judged_info(tag):
                 pass
     if "aborted" in j:
         issues["aborted"] = bool(j.get("aborted"))
+    for k in ("abort_kind", "abort_reason", "model_fallback"):
+        if isinstance(j.get(k), str):
+            issues[k] = j[k].strip()[:200]
+    fr = j.get("filled_rows")
+    if isinstance(fr, dict):
+        by = {}
+        for kk, vv in fr.items():
+            try:
+                by[str(kk)] = int(vv or 0)
+            except (TypeError, ValueError):
+                pass
+        issues["filled_rows"] = sum(by.values())
+        issues["filled_by"] = by
+    elif fr is not None:
+        try:
+            issues["filled_rows"] = int(fr or 0)
+        except (TypeError, ValueError):
+            pass
     if _reextracted(tag):
         issues.update(reextracted=True, reason=REEXTRACTED)
         return False, n, total, issues
@@ -2400,22 +2458,30 @@ def tool_job(kind, extra=()):
             JOB.update(running=False, step="", pid=0, phase="", done=0, total=0)
 
 
-def narrate_job():
+def narrate_cmd(tag, all_months=False):
+    """[리뷰 코멘트 재생성] 의 judge.py 명령 — 기간(tag 'YYYYMMDD-YYYYMMDD') + --narrate-only (+ all_months 면 --all)."""
+    d0, d1 = tag.split("-")
+    return ([sys.executable, os.path.join(ROOT, "judge.py"),
+             "--from", f"{d0[:4]}-{d0[4:6]}-{d0[6:]}", "--to", f"{d1[:4]}-{d1[4:6]}-{d1[6:]}", "--narrate-only"]
+            + (["--all"] if all_months else []))
+
+
+def narrate_job(all_months=False):
     """9a — 리뷰 코멘트(월별 내러티브)만 다시 생성한다.
     다른 PC로 옮기면 report\\ 를 복사하지 않으므로 코멘트가 비어 보인다. 판정 결과
-    (signals)만 있으면 왕복 몇 번으로 되살릴 수 있다."""
+    (signals)만 있으면 왕복 몇 번으로 되살릴 수 있다.
+    기본은 빠진 달·최근 달·데이터가 바뀐 달만 다시 만든다(바뀌지 않은 달은 보내지 않는다 — judge.narrate).
+    all_months=True 면 모든 달을 새로 만든다(--all). judge rc: 0 = 한 달 이상 만들었거나 다시 만들 달이 없음 ·
+    1 = AI 판정된 신호가 없거나 하나도 만들지 못함(이전 코멘트는 그대로)."""
     try:
         sp = latest_signals()
         if not sp:
             log("[리뷰] 판정 결과가 없습니다 — [분석 실행]에 'AI 판정'을 켜고 먼저 돌리세요")
             return
         tag = os.path.basename(sp)[len("signals_"):-len(".csv")]
-        d0, d1 = tag.split("-")
-        d0 = f"{d0[:4]}-{d0[4:6]}-{d0[6:]}"
-        d1 = f"{d1[:4]}-{d1[4:6]}-{d1[6:]}"
-        cmd = [sys.executable, os.path.join(ROOT, "judge.py"),
-               "--from", d0, "--to", d1, "--narrate-only"]
-        log(f"[리뷰] {tag} 코멘트 재생성 시작")
+        cmd = narrate_cmd(tag, all_months)
+        log(f"[리뷰] {tag} 코멘트 재생성 시작 — "
+            + ("모든 달 다시 만들기" if all_months else "빠진 달·최근 달·데이터가 바뀐 달만"))
         p = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                              env=dict(os.environ, PYTHONIOENCODING="utf-8",
                                       PYTHONUNBUFFERED="1"), creationflags=NO_WIN)
@@ -2444,13 +2510,45 @@ def narrate_job():
             log(stopped)
             log("=== 리뷰 생성 중단(정체 감지) ===")
         else:
-            log("=== 리뷰 코멘트 완료 ===" if p.returncode == 0 else "=== 리뷰 생성 실패 ===")
+            log("=== 리뷰 코멘트 완료 ===" if p.returncode == 0
+                else "=== 리뷰 코멘트를 새로 만들지 못했습니다 — 위 사유를 확인하세요(이전 코멘트는 그대로 둡니다) ===")
     except Exception as e:
         log(f"오류: {e}")
     finally:
         with LOCK:
             JOB.update(running=False, step="", pid=0, phase="", done=0, total=0)
 
+
+def reset_files(what="report", keep_queue=True, report=None, data=None):
+    r"""[데이터 리셋] — report\(what='all' 이면 data\ 도) 아래 파일을 지운다 → (지운 파일 수, 보존한 월별 코멘트 파일 수).
+    · Copilot 로그인 세션(data\lm28_edge)은 늘 보존, 아직 못 보낸 팀 업로드 묶음(upload_pending)은 keep_queue 면 보존.
+    · '분석 결과만 삭제'(what != 'all')는 월별 리뷰 코멘트(report\ai_narratives_*.json)를 남긴다 — Copilot 왕복 수십 번으로
+      만든 것이고 같은 달 코멘트는 다음 분석이 이월해 쓴다(진단 C). 지우려면 수집 데이터+결과 리셋(what='all').
+    · 같은 이유로 AI 판정 기록(report\judge_cache.json — 내용 해시 → 판정, 원문 없음)도 남긴다. 지우면 다음 분석이 수천 건을
+      처음부터 다시 물어 Copilot 사용량 제한에 다시 걸린다. 다시 쓰는 판정의 과제명은 judge 가 매번 다시 거른다."""
+    report = report or REPORT
+    data = data or DATA
+    rep_key = os.path.normcase(os.path.abspath(report))
+    removed = kept_nar = 0
+    for base in [report] + ([data] if what == "all" else []):
+        for root, _dirs, files in os.walk(base):
+            if lmname.EDGE_PROFILE_NAME in root:   # Copilot 로그인 세션(data\lm28_edge)은 보존
+                continue
+            if keep_queue and "upload_pending" in root:
+                continue                      # 보내야 할 것을 리셋으로 잃지 않게(검증 지적)
+            top = os.path.normcase(os.path.abspath(root)) == rep_key
+            for fn in files:
+                if what != "all" and top and fn.startswith("ai_narratives_") and fn.endswith(".json"):
+                    kept_nar += 1
+                    continue
+                if what != "all" and top and fn == "judge_cache.json":
+                    continue
+                try:
+                    os.remove(os.path.join(root, fn))
+                    removed += 1
+                except OSError:
+                    pass
+    return removed, kept_nar
 
 
 TEAM_PAGE = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
@@ -3245,13 +3343,17 @@ async function poll(){
    const pct=s.total?Math.round(s.done/s.total*100):null;
    $("pg_bar").style.width=(pct==null?8:pct)+"%";
    $("pg_bar").style.background=pct==null?"#c9cfd8":"#2a78d6";
-   $("pg_label").textContent=s.phase?`${s.phase} ${s.done}/${s.total}${pct!=null?` (${pct}%)`:""}`:(s.step||"준비 중…");
+   // Copilot 이 잠시 응답을 제한하면 판정이 몇 분 쉬었다 같은 묶음을 다시 보낸다 — 그동안 진행 줄 단계는 'Copilot 대기'
+   const coolPh=s.phase==="Copilot 대기";
+   $("pg_label").textContent=coolPh?"Copilot 대기 중(사용량 제한 — 쉬었다 이어 보냄)"
+    :(s.phase?`${s.phase} ${s.done}/${s.total}${pct!=null?` (${pct}%)`:""}`:(s.step||"준비 중…"));
    $("pg_time").textContent=`경과 ${fmt(s.elapsed)}`+(s.eta!=null?` · 남은 시간 약 ${fmt(s.eta)}`:"");
    // 느린 것과 멈춘 것을 구분할 정보 — 예전에는 "수십 초~수 분" 한 줄뿐이라, 한 왕복이 십 분을 넘기면
    // 사용자가 "멈췄다" 고 판단할 수밖에 없었다(제보: 2시간 정체).
    const aiPhase=s.phase&&/^(AI|워크플로우|Agentic|월별)/.test(s.phase);
    const idle=(s.idle==null?null:s.idle);
-   $("pg_hint").textContent=!aiPhase?""
+   $("pg_hint").textContent=coolPh?"Copilot 이 잠시 응답을 제한해 2·5·10분 쉬었다가 같은 묶음을 다시 보냅니다. 창을 닫지 말고 두세요 — 이미 판정한 신호는 저장돼 있습니다."
+    :!aiPhase?""
     :("Copilot 왕복 한 번에 1~15분 걸립니다(왕복 상한 roundtripMaxSec)."
       +(idle!=null?` 마지막 소식 ${fmt(idle)} 전 —`:"")
       +(idle!=null&&idle>=120?" 아직 끊지 않았습니다(무출력이 계속되면 자동 중단합니다).":" 진행 중입니다.")
@@ -3269,7 +3371,7 @@ async function poll(){
   if(s.running&&s.total){
    $("sb_prog").style.display="inline-flex";
    const pct=Math.round(s.done/s.total*100);
-   $("sb_phase").textContent=`${s.phase||""} ${s.done}/${s.total}`;
+   $("sb_phase").textContent=s.phase==="Copilot 대기"?"Copilot 대기 중(사용량 제한)":`${s.phase||""} ${s.done}/${s.total}`;
    $("sb_bar").style.width=pct+"%";
    $("sb_eta").textContent=(s.eta!=null?`남은 약 ${fmt(s.eta)}`:`경과 ${fmt(s.elapsed)}`);
   }else if(s.running){
@@ -3286,7 +3388,9 @@ async function poll(){
   if(s.running)$("dlog").open=true;
   if(!s.running&&timer){clearInterval(timer);timer=null;}
   // 실행 중 새로고침하면 timer 가 없어 완료를 놓친다 — 상태 전이(running→멈춤)로 판정한다
-  if(wasRunning&&!s.running){loaded={};refresh();cvLoad();}
+  if(wasRunning&&!s.running){loaded={};refresh();cvLoad();
+   // 보고 있던 리뷰 탭은 바로 다시 그린다 — 실행이 끝나면 새 월별 코멘트가 보이게(예전에는 탭을 다시 눌러야 했다)
+   if(["week","month","deep"].includes(curTab)){loaded[curTab]=1;loadReview(curTab).catch(()=>{loaded[curTab]=0;});}}
   wasRunning=s.running;
  }catch(e){$("state").textContent="서버 연결 끊김 — 창을 닫고 다시 실행하세요";}
 }
@@ -3358,14 +3462,34 @@ async function refresh(){
  // 판정이 반영되지 않은 화면이면 '왜'까지 말한다 — 원인별로 조치가 다르다
  const jw=$("judged_warn");
  // S1-12: 판정 기록(ai_judgments)의 실패·부분·중단·복구 — 파일에 있는 키만, 값이 있을 때만 한 줄
+ // LM28(진단 A): 중단 갈래(abort_kind)별 문구 · 'AI가 직접 못 본 행(채움·규칙)' 은 unseen_rows 로(구판 기록은 failed_rows)
  const ji=d.judged_issues||{}, jiBits=[];
- if(ji.failed_rows>0) jiBits.push(`실패로 규칙에 남은 행 ${ji.failed_rows}`);
+ const ABORT_KO={throttle:"Copilot 사용량 제한으로 중단",login:"Copilot 로그인 만료로 중단",
+  fatal:"사람이 손대야 풀리는 상태로 중단",budget:"시간 예산 도달"};
+ const jiAk=String(ji.abort_kind||""), jiFill=Number(ji.filled_rows)||0;
+ if(ji.unseen_rows!=null){
+  if(ji.unseen_rows>0) jiBits.push(`AI가 직접 못 본 행 ${ji.unseen_rows} (비슷한 판정으로 채움 ${jiFill} · 규칙 ${Math.max(0,ji.unseen_rows-jiFill)})`);
+ }else if(ji.failed_rows>0) jiBits.push(`실패로 규칙에 남은 행 ${ji.failed_rows}`);
  if(ji.partial_chunks>0) jiBits.push(`부분 판정 청크 ${ji.partial_chunks}`);
- if(ji.aborted) jiBits.push("연속 실패로 중단");
+ // 시간 예산 도달(budget)은 aborted=false 로 온다 — 따로 본다
+ if(ji.aborted||jiAk==="budget") jiBits.push((ABORT_KO[jiAk]||"연속 실패로 중단")
+  +(ji.abort_reason?` (${esc(String(ji.abort_reason).slice(0,80))})`:""));
  if(ji.repaired>0) jiBits.push(`잘린 응답 복구 ${ji.repaired}회`);
  if(ji.reextracted) jiBits.push(ji.reason||"판정 이후 재추출됨");
- const jiLine=jiBits.length?('· 판정 기록: '+jiBits.join(' · ')):"";
- const jiBad=(ji.failed_rows>0)||(ji.partial_chunks>0)||!!ji.aborted;
+ // 판정 구조(참고) — 지난 실행 재사용·같은 내용 묶음·보내지 않은 짧은 대화·쉬고 다시 보낸 횟수·대체 모델
+ const jiInfo=[];
+ if(ji.cache_reused>0) jiInfo.push(`지난 실행 재사용 ${ji.cache_reused}`);
+ if(ji.group_rows>0) jiInfo.push(`같은 내용 묶음 ${ji.group_rows}행`);
+ if(ji.lowinfo_rows>0) jiInfo.push(`짧은 대화 ${ji.lowinfo_rows}행(보내지 않음)`);
+ if(ji.cooldowns>0) jiInfo.push(`대기 ${ji.cooldowns}회`);
+ if(ji.model_fallback) jiInfo.push(`대체 모델 ${esc(ji.model_fallback)}`);
+ const jiLine=(jiBits.length?('· 판정 기록: '+jiBits.join(' · ')):"")
+  +(jiInfo.length?((jiBits.length?'<br>':'')+'· 판정 구조: '+jiInfo.join(' · ')):"");
+ const jiBad=(ji.failed_rows>0)||(ji.partial_chunks>0)||!!ji.aborted||jiAk==="budget";
+ // 중단 갈래별 조치 — 사용량 제한·로그인 만료는 '바로 다시' 가 같은 벽이다. 이미 판정한 신호는 캐시에 남아 다시 묻지 않는다
+ const jiHow=jiAk==="throttle"?"1~2시간 뒤 [재분석만]+AI 정제 — 이미 판정한 신호는 날짜가 바뀌어도 다시 묻지 않고 남은 것만 이어서 합니다."
+  :(jiAk==="login"?"전용 Edge 창에서 Copilot 에 다시 로그인한 뒤([AI 연결 진단]) [재분석만]+AI 정제 — 이미 판정한 신호는 다시 묻지 않고 남은 것만 이어서 합니다."
+  :"[재분석만]+AI 정제로 재실행하면 남은 행만 이어서 판정합니다(이미 판정한 신호는 날짜가 바뀌어도 다시 묻지 않습니다).");
  if(rs.length&&d.judged===false){
   const lr=d.last_run||{}, st=(lr.stages||[]);
   const j=st.find(x=>x.name==="AI 판정");
@@ -3400,12 +3524,13 @@ async function refresh(){
      :"수집이 오래 걸렸을 수 있습니다. [재분석만]+AI 정제로 다시 돌리면 수집을 건너뛰고 판정만 수행합니다.";
   }else if(j&&j.ok===false){
    why="AI 판정이 실패했습니다"+(j.note?`: ${esc(j.note)}`:"")+".";
-   how="전용 Edge 창에서 Copilot 로그인 상태를 확인한 뒤 [재분석만]+AI 정제로 재실행하세요.";
+   how=(jiAk==="throttle"||jiAk==="login")?jiHow:"전용 Edge 창에서 Copilot 로그인 상태를 확인한 뒤 [재분석만]+AI 정제로 재실행하세요.";
   }else if(j&&d.judged_n===0){
    // 단계는 '성공'인데 판정 0건 — 왕복이 전부 실패한 경우(스텁 응답 없음·로그인 만료). 규칙 결과가 남아 있다.
    why="AI 판정은 실행됐지만 <b>판정된 신호가 0건</b>입니다"+(d.judged_total?` (대상 ${d.judged_total}건)`:"")
        +" — 왕복이 전부 실패했을 때 이렇게 됩니다"+(j.note?` (기록: ${esc(j.note)})`:"")+".";
-   how="[AI 연결 진단]으로 Copilot 왕복이 되는지 확인한 뒤 [재분석만]+AI 정제로 재실행하세요. 스텁(LM_COPILOT_STUB) 환경이면 스텁 응답 파일이 있는지 보세요.";
+   how=(jiAk==="throttle"||jiAk==="login")?jiHow
+     :"[AI 연결 진단]으로 Copilot 왕복이 되는지 확인한 뒤 [재분석만]+AI 정제로 재실행하세요. 스텁(LM_COPILOT_STUB) 환경이면 스텁 응답 파일이 있는지 보세요.";
   }else if(j&&d.judged_n==null){
    why="AI 판정 기록 파일(ai_judgments)이 없거나 읽을 수 없습니다.";
    how="[재분석만]+AI 정제로 다시 실행하면 판정 기록이 새로 만들어집니다.";
@@ -3422,9 +3547,12 @@ async function refresh(){
    +'· 원인: '+why+'<br>· 조치: '+how+slow+(jiLine?'<br>'+jiLine:'');
   jw.style.display="";
  } else if(rs.length&&d.judged===true&&jiBad){
-  // 판정은 반영됐지만 일부 행이 실패(연속 실패 중단·부분 청크)로 규칙에 남았다 — 그 행의 과제·세부업무는 임시 이름
-  jw.innerHTML='⚠ <b>AI 판정이 일부만 반영된 화면</b> — 실패한 행은 규칙이 임시로 뽑은 토큰으로 남아 있습니다.<br>'
-   +jiLine+'<br>· 조치: [재분석만]+AI 정제로 재실행하면 실패한 행을 다시 판정합니다.';
+  // 판정은 반영됐지만 일부 행을 AI 가 직접 보지 못했다(중단·부분 청크) — 비슷한 AI 판정으로 채운 행(AI(유사)) 말고는
+  // 규칙이 기존 과제(또는 공통)에 임시 배정했다. 규칙 경로는 이제 사람 이름·공지 토큰을 과제로 만들지 않는다(진단 B).
+  jw.innerHTML='⚠ <b>AI 판정이 일부만 반영된 화면</b> — '
+   +(jiFill>0?'못 본 행은 비슷한 AI 판정(AI(유사))으로 채웠고, 닮은 것이 없는 행은 규칙으로 기존 과제(또는 공통)에 임시 배정돼 있습니다.'
+     :'실패한 행은 규칙으로 기존 과제(또는 공통)에 임시 배정돼 있습니다.')+'<br>'
+   +jiLine+'<br>· 조치: '+jiHow;
   jw.style.display="";
  } else { jw.style.display="none"; }
  // 표시 정리: 항목이 많으면 상위 10개 + '기타(묶음)' — 수십 개 나열은 읽을 수 없다(실측)
@@ -3568,7 +3696,9 @@ async function refresh(){
   const GC={reliable:["#0f7a3d","신뢰"],caution:["#c98a00","주의"],unreliable:["#c0122f","측정 불충분"]};
   const cvReasons=cv?((Array.isArray(cv.reasons)&&cv.reasons.length)?cv.reasons:(Array.isArray(cv.missing)?cv.missing:[])):[];
   const covBadge=(cv&&GC[cv.grade])?`<span style="display:inline-block;border:1px solid ${GC[cv.grade][0]};color:${GC[cv.grade][0]};border-radius:3px;padding:0 6px;font-size:11px;margin-left:4px" title="${esc(cvReasons.join(" · "))}">${GC[cv.grade][1]}</span>`:"";
-  const measTxt=ms9?`샘플러 ${cnt(ms9.sampler_days)}일 / PC 하한 ${cnt(ms9.pc_floor_days)}일 / 흔적폭 ${cnt(ms9.trace_window_days)}일 / 출장 ${cnt(ms9.offsite_days)}일 / 수동 ${cnt(ms9.manual_days)}일${ms9.method?` (${esc(ms9.method)})`:""}`:"";
+  const measTxt=ms9?`샘플러 ${cnt(ms9.sampler_days)}일 / PC 하한 ${cnt(ms9.pc_floor_days)}일 / 흔적폭 ${cnt(ms9.trace_window_days)}일 / 출장 ${cnt(ms9.offsite_days)}일 / 수동 ${cnt(ms9.manual_days)}일`
+    +(cnt(ms9.std_nopc_days)?` / 표준일 추정 ${cnt(ms9.std_nopc_days)}일`:"")+(cnt(ms9.hint_only_days)?` / 브라우저 기록만 ${cnt(ms9.hint_only_days)}일`:"")
+    +(ms9.method?` (${esc(ms9.method)})`:""):"";
   const measNote=(measTxt||covBadge)?`<div class="note"><b>측정 방식</b> ${measTxt}${covBadge}${cvReasons.length?` — ${esc(cvReasons.slice(0,4).join(" · "))}`:""}${cv&&cv.grade==="unreliable"?" · <b style='color:#c0122f'>팀 비교에서 제외되는 결과입니다</b>":""}</div>`:"";
   const H=k=>pick(k)!=null;
   const extra=[];
@@ -3589,8 +3719,17 @@ async function refresh(){
   const fut=pick("future_days"),tf=pick("today_fraction");
   const futNote=(fut!=null||tf!=null)?`<div class="note">가용 기준 — ${fut!=null?`미래 평일 ${cnt(fut)}일은 가용에서 제외`:""}${(fut!=null&&tf!=null)?" · ":""}${tf!=null?`오늘은 ${Math.round(num(tf)*100)}% 만 가용(분석 시각${d.as_of?" "+esc(d.as_of):""} 기준 — 다시 분석하면 갱신)`:""}</div>`:"";
   const rhNote=m.rehours?`<div class="note"><b>비업무 제외 ${num(m.dropped_n)}건 · −${num(m.dropped_h).toFixed(1)}h</b> — 판정 후 시간을 다시 재어 투입 ${m.total_mm_before_rehours!=null?num(m.total_mm_before_rehours).toFixed(2)+" → ":""}${num(m.total_mm).toFixed(2)} MM 으로 갱신했습니다(버린 신호의 시간이 남은 행에 옮겨 붙지 않습니다)</div>`:"";
+  // LM28(E) 시간 근거 한 줄 — 퇴근 후 미인정·시각 미상 발신·표준일 추정(PC 기록 없는 달)·브라우저 기록만 있는 평일·
+  // AI 비업무 발신 시간 유지. 값이 있는 것만(mine 요약 줄·리포트 '산출 방식' 표 위 합계와 같은 숫자 — mm_basis 키)
+  const tbBits=[];
+  if(num(pick("evening_missed_days"))>0)tbBits.push(`퇴근 후 미인정 ${num(pick("evening_missed_days"))}일·PC ${num(pick("evening_missed_pc_h")).toFixed(1)}h <span class="dim">(퇴근 뒤 PC 는 켜져 있었는데 내 흔적 없음)</span>`);
+  if(num(pick("untimed_sends"))>0)tbBits.push(`시각 미상 발신 ${num(pick("untimed_sends"))}통 <span class="dim">(${num(pick("untimed_credit_h")).toFixed(1)}h 인정)</span>`);
+  if(num(pick("std_nopc_days"))>0)tbBits.push(`표준일 추정 ${num(pick("std_nopc_days"))}일 <span class="dim">(+${num(pick("std_nopc_h")).toFixed(1)}h — PC 기록 없는 달)</span>`);
+  if(num(pick("hint_only_days"))>0)tbBits.push(`브라우저 기록만 있는 평일 ${num(pick("hint_only_days"))}일`);
+  if(num(pick("ai_n_time_kept"))>0)tbBits.push(`AI 비업무 발신 시간 유지 ${num(pick("ai_n_time_kept"))}건 <span class="dim">(과제 배분에서만 빼고 시간 근거로 남김)</span>`);
+  const tbNote=tbBits.length?`<div class="note"><b>시간 근거</b> — ${tbBits.join(" · ")} <span class="dim">— 날짜별 근거는 리포트의 '산출 방식' 표</span></div>`:"";
   const win=v=>Array.isArray(v)?v.join("~"):(v==null?"":String(v));
-  const cfgNote=cu?`<div class="note">산식 설정 — 표준 ${esc(cu.standardDayHours)}h · PC 하한 ${cu.usePcFloor===false?"끔":"켬"}${cu.pcFloorNeeds?`(${esc(cu.pcFloorNeeds)})`:""} · 주간 창 ${esc(win(cu.dayWindow))} · 점심 ${esc(win(cu.lunch))}${cu.dinner?` · 저녁 ${esc(win(cu.dinner))}`:""} · 미정 회의 ${esc(cu.tentativeMeetings||"")} · 공휴일 ${num(cu.holidays_n)}일${cu.offsiteAsWork===false?" · 종일 행사 미인정":""}${cu.samplerGapBridgeMin!=null?` · 샘플러 공백 다리 ${num(cu.samplerGapBridgeMin)}분`:""} — 팀과 다르면 팀 취합에 '산식 설정 상이' 배지가 붙습니다</div>`:"";
+  const cfgNote=cu?`<div class="note">산식 설정 — 표준 ${esc(cu.standardDayHours)}h · PC 하한 ${cu.usePcFloor===false?"끔":"켬"}${cu.pcFloorNeeds?`(${esc(cu.pcFloorNeeds)})`:""} · 주간 창 ${esc(win(cu.dayWindow))} · 점심 ${esc(win(cu.lunch))}${cu.dinner?` · 저녁 ${esc(win(cu.dinner))}`:""} · 미정 회의 ${esc(cu.tentativeMeetings||"")} · 공휴일 ${num(cu.holidays_n)}일${cu.offsiteAsWork===false?" · 종일 행사 미인정":""}${cu.samplerGapBridgeMin!=null?` · 샘플러 공백 다리 ${num(cu.samplerGapBridgeMin)}분`:""}${cu.noPcMonthDay?` · PC 기록 없는 달 ${cu.noPcMonthDay==="trace"?"흔적 창(예전)":"표준일 추정(기본)"}`:""} — 팀과 다르면 팀 취합에 '산식 설정 상이' 배지가 붙습니다</div>`:"";
   mmEl.innerHTML=mo.length?`<div class="note" style="margin:0 0 6px">${esc(nb.basis||"")} — 로드율 100% = 가용 시간을 꽉 채워 일함(회색 눈금). 야근하면 100%를 넘습니다.</div>`+
    "<table><tr><th>월</th><th style='width:58px'>투입 MM</th><th style='width:58px'>가용 MM</th><th style='width:62px'>로드율</th><th style='width:130px'></th><th>투입 시간</th><th>부재</th><th>그 달 평일</th></tr>"+
    mo.map(([k,v0])=>{const v=(v0&&typeof v0==="object")?v0:{};return `<tr><td>${esc(k)}</td><td><b>${num(v.mm).toFixed(2)}</b></td><td>${num(v.avail_mm).toFixed(2)}</td>
@@ -3603,7 +3742,7 @@ async function refresh(){
    수동 흔적(수신·CC)만 있는 날 ${nb.floor_blocked_passive_days||0}일(하한 미적용 — 많으면 config.watchFolders 점검) · 미래 시각 신호 폐기 ${nb.future_signals_dropped||0}건 ·
    부재 추정 ${nb.inferred_absence_days||0}일(PC 도 흔적도 없는 평일 — 가용에서 차감${absd.length?": "+esc(absd.slice(0,12).join(", "))+(absd.length>12?" …":""):""})${simNote}</div>
    <div class="note">흔적 없는 평일 ${nb.no_evidence_days||0}일 — 이 수가 크면 수집이 덜 된 것입니다: Outlook을 켠 상태로 재실행하거나 config.watchFolders 를 확인하세요.</div>`
-   +measNote+toolNote+rhNote+extraNote+pccNote+futNote+cfgNote
+   +measNote+toolNote+rhNote+tbNote+extraNote+pccNote+futNote+cfgNote
    +((Array.isArray(nb.config_warnings)&&nb.config_warnings.length)?`<div class="note" style="color:#b54708"><b>설정 경고 ${nb.config_warnings.length}건</b> — 잘못된 값은 기본값으로 대체했습니다: ${esc(nb.config_warnings.slice(0,6).join(" · "))}${nb.config_warnings.length>6?" …":""}</div>`:"")
    +(nb.utc_suspect?`<div class="note" style="color:#b54708"><b>메일 시각이 UTC 로 기록된 것 같습니다</b> — 낮 발신이 새벽 야근으로 잡힐 수 있으니 config.mm.mailTimeOffsetH(예: 9)를 확인하세요.</div>`:"")
    +(anoms.length?`<div class="note"><b>이상치 ${anoms.length}일</b> — PC 기록이 물리적으로 맞지 않아 보정한 날(투입을 자르지 않고 표시만 합니다)
@@ -3613,8 +3752,10 @@ async function refresh(){
  }
  $("mcount").innerHTML=Object.entries(m.counted||{}).sort((a,b)=>b[1]-a[1])
   .map(([k,v])=>`<span class="src"><b>${esc(k)}</b> ${v}건</span>`).join("")||'<span class="note">분석을 실행하면 채워집니다</span>';
+ // 제외 사유 풀이(마우스를 올리면) — 웹 경로 공지 메일은 '왜 뺐나' 가 이름만으로 안 읽힌다(진단 B)
+ const exTip={"공지·근태 메일(제목 — 웹 경로는 단체발송 구분 불가)":"웹 경로(Outlook 웹 등)는 단체발송을 구분하지 못해, 회신하지 않은 근태·인사·부고·뉴스레터 등 강한 공지 제목은 업무 신호에서 뺐습니다"};
  $("mexcl").innerHTML=Object.entries(m.excluded||{})
-  .map(([k,v])=>`<span class="src" style="border-color:#f0cdd5;color:#c0122f">제외: ${esc(k)} ${v}건</span>`).join("");
+  .map(([k,v])=>`<span class="src" style="border-color:#f0cdd5;color:#c0122f"${exTip[k]?` title="${esc(exTip[k])}"`:""}>제외: ${esc(k)} ${v}건</span>`).join("");
  const C={ok:"#0f7a3d",warn:"#c98a00",bad:"#c0122f",off:"#98a0a8"};
  $("src").innerHTML=d.sources.map(s=>`<span class="src"><span class="dot" style="background:${C[s.status]||C.off}"></span>
   <b>${s.name}</b> ${s.rows.toLocaleString()}건 · ${s.age}${s.hint?` <span style="color:${s.status==="warn"?"#c98a00":(s.status==="ok"?"#4a5159":"#c0122f")}">→ ${esc(s.hint)}</span>`:""}</span>`).join("");
@@ -3905,17 +4046,19 @@ $("cdiag").onclick=async()=>{
 };
 $("narrate").onclick=async()=>{
  if(!confirm("월별 리뷰 코멘트를 다시 생성할까요?\\nCopilot 왕복이 월당 수십 초 걸립니다."))return;
- const r=await fetch("/api/narrate",{method:"POST"});
+ // 기본은 빠진 달·최근 달·데이터가 바뀐 달만 — 바뀌지 않은 달은 보내지 않아 왕복이 크게 준다
+ const all=confirm("모든 달을 새로 만들까요?\\n[확인] 전체 다시 만들기\\n[취소] 빠진 달·최근 달·데이터가 바뀐 달만");
+ const r=await fetch("/api/narrate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({all})});
  if(r.status===409){alert(await busyMsg(r,"다른 작업이 실행 중입니다"));return;}
  timer=setInterval(poll,1000);poll();
 };
 $("reset").onclick=async()=>{
- const all=confirm("데이터를 리셋합니다.\\n\\n[확인] 수집 데이터 + 분석 결과 모두 삭제\\n[취소] 다음 창에서 분석 결과만 삭제 선택\\n\\nCopilot 로그인 세션은 어느 쪽이든 유지됩니다.");
+ const all=confirm("데이터를 리셋합니다.\\n\\n[확인] 수집 데이터 + 분석 결과 모두 삭제\\n[취소] 다음 창에서 분석 결과만 삭제 선택(월별 리뷰 코멘트·AI 판정 기록은 보존)\\n\\nCopilot 로그인 세션은 어느 쪽이든 유지됩니다.");
  let what="all";
- if(!all){ if(!confirm("분석 결과(report 폴더)만 삭제할까요?"))return; what="report"; }
+ if(!all){ if(!confirm("분석 결과(report 폴더)만 삭제할까요?\\n월별 리뷰 코멘트·AI 판정 기록은 보존합니다 — 다음 분석이 같은 달 코멘트를 이어서 쓰고, 이미 판정한 신호는 다시 묻지 않습니다."))return; what="report"; }
  const d=await fetch("/api/reset",{method:"POST",headers:{"Content-Type":"application/json"},
    body:JSON.stringify({what})}).then(r=>r.json()).catch(()=>({ok:false}));
- if(d.ok){$("state").textContent=`리셋 완료 — ${d.removed}개 파일 삭제`;loaded={};refresh();}
+ if(d.ok){$("state").textContent=`리셋 완료 — ${d.removed}개 파일 삭제`+(d.kept_narratives?` · 월별 리뷰 코멘트 ${d.kept_narratives}개 파일 보존`:"");loaded={};refresh();}
  else{alert(d.error==="busy"?(d.hint||"작업 실행 중에는 리셋할 수 없습니다"):"리셋 실패");}
 };
 $("quit").onclick=async()=>{if(confirm("서버를 종료할까요?")){await fetch("/api/quit",{method:"POST"});
@@ -3933,6 +4076,7 @@ document.querySelectorAll("[data-s]").forEach(c=>c.onclick=()=>showData(c.datase
 
 // ── 탭 + 리뷰 (raw 근거·타임라인·연결성) ──
 let loaded={};
+let curTab="dash";          // 지금 보고 있는 탭 — 실행이 끝나면 열린 리뷰 탭을 다시 그린다(poll)
 const AGENT_C={"상":"#1d8a4a","중":"#c98a00","하":"#8b929b"};
 // 수동 재분석(Agentic·워크플로우)은 서버 스레드에서 돈다 — 끝날 때까지 /api/status 를 보며 기다린다.
 // 새로고침해도 서버가 기억하므로(GET 의 running/manual) 탭을 다시 열면 이어서 기다리고 사유를 다시 보여 준다.
@@ -4014,11 +4158,19 @@ async function loadFlow(){
  const partial=d.partial&&d.missing_count?`<span style="color:#c0122f"> · ${d.missing_count}개 업무 미판정${d.failed_chunks?` (${d.failed_chunks}/${d.chunks||"?"} 묶음 실패)`:""} — ${d.resumable?"[이어서 분석]을 누르면 남은 업무만 이어서 판정합니다":"자동 마무리가 더 늘리지 못했습니다 — 다시 눌러도 같을 수 있습니다(신호가 얕거나 응답이 그 이름을 돌려주지 않는 단위)"}</span>`:"";
  const salv=d.salvaged_chunks?` · 잘린 답 복구 ${d.salvaged_chunks}묶음(부분 결과)`:"";
  const lastErr=d.last_error&&d.last_error.error?`<div class="note" style="color:#c0122f">마지막 실패 사유: ${esc(d.last_error.error)}${d.last_error.hint?` — ${esc(d.last_error.hint)}`:""}</div>`:"";
+ // LM28(진단 D) — 다른 날짜 결과 이어받기 · AI 판정 대기(신호 대부분이 규칙 판정이라 묻지 않은 업무) · 개인정보 관문 · 세부 병합 건너뜀
+ const ruleU=Array.isArray(d.rule_units)?d.rule_units:[], gateU=Array.isArray(d.gate_units)?d.gate_units:[];
+ const ruleN=d.rule_units_count!=null?(Number(d.rule_units_count)||0):ruleU.length;
+ const gateN=d.gate_units_count!=null?(Number(d.gate_units_count)||0):gateU.length;
+ const flowExtra=(d.carried_from?`<div class="note" style="color:#8a5a00">⚠ <b>${esc(d.carried_from)}</b> 결과 ${Number(d.carried)||0}개 이어받음 · 오늘 새로 판정 ${Number(d.asked_new)||0}개${d.expired?` · 오래돼 다시 물은 ${Number(d.expired)||0}개`:""}</div>`:"")
+  +(ruleN?`<div class="note">AI 판정 대기 <b>${ruleN}개</b> — [재분석만] 후 생성 <span class="dim">(신호 대부분이 규칙 판정이라 묻지 않은 업무${ruleU.length?": "+ruleU.slice(0,6).map(u=>`${esc(u.project||"")} / ${esc(u.detail||"")}(${Number(u.signals)||0}건·규칙 ${Math.round((Number(u.rule_share)||0)*100)}%)`).join(", ")+(ruleU.length>6?" …":""):""})</span></div>`:"")
+  +(gateN?`<div class="note">개인정보 관문 <b>${gateN}개</b> — 조치 불필요 <span class="dim" title="${esc(gateU.slice(0,30).join(", "))}">(관문에 걸려 보내지 않은 업무 — 미판정으로 세지 않습니다)</span></div>`:"")
+  +(d.merge_skipped?`<div class="note">세부업무 병합 왕복 건너뜀 — ${esc(d.merge_skipped)} 규칙 병합과 캐시만 썼습니다</div>`:"");
  const btn='<div class="card"><div class="row" style="align-items:center;gap:10px">'
   +'<button class="ghost" id="flowre">'+(d.partial&&d.missing_count&&d.resumable?"이어서 분석(남은 "+d.missing_count+"개)":"워크플로우 재분석")+'</button>'
   +'<span class="state" id="flowmsg">'+(d.running?"워크플로우 분석 진행 중… (진행률은 상단 진행 바)":(d.generated?esc(`생성 ${d.generated} · ${d.model_name||""}`)+(d.basis==="규칙"?" · 규칙 축(AI 판정 없음)":""):""))+'</span></div>'
   +'<div class="note">과제별로 <b>역할 → 일의 순서 → 단계별 Agent 가능성</b>을 raw 근거에서 판정합니다. '
-  +'MM 배분 숫자는 AI 가 아니라 판정 실측치입니다.'+(nflows?` 업무 ${nflows}/${d.rows_units||nflows}개 판정`+partial+salv:"")+'</div>'+lastErr
+  +'MM 배분 숫자는 AI 가 아니라 판정 실측치입니다.'+(nflows?` 업무 ${nflows}/${d.rows_units||nflows}개 판정`+partial+salv:"")+'</div>'+lastErr+flowExtra
   +(d.reextracted?'<div class="note" style="color:#8a5a00">⚠ <b>재추출 이후 결과</b> — '+esc(d.reextracted_note||"이 결과는 마지막 업무 로드 재추출 이전의 것입니다")+' · [워크플로우 재분석]으로 갱신하세요</div>':"")
   +mergeLine(d.merge2)+mixedLine(d.level1_mixed)+manualLine(d.manual)+'</div>';
  if(!d.ok||!nflows){
@@ -4031,7 +4183,10 @@ async function loadFlow(){
    el.innerHTML=btn+`<div class="card"><div class="note">${per}워크플로우로 만들 담당 업무가 없습니다 — ${esc(d.empty_reason)}.<br>`
     +'신호가 3건 이상 쌓인 (과제, 담당업무)가 있어야 흐름을 판정합니다. 더 긴 기간을 분석하거나 신호가 쌓인 뒤 다시 돌리세요.</div></div>';
   }else{
-   el.innerHTML=btn+`<div class="card"><div class="note">${per}워크플로우 분석이 없습니다${d.file_error?` <span style="color:#c0122f">· ${esc(d.file_error)}</span>`:""}${d.stage_note?` <span class="state">· 최근 실행 기록: ${esc(d.stage_note)}</span>`:""}${whyEmpty(d.stage_kind,"[워크플로우 재분석]")} — `
+   // 상태 파일이 남긴 중단 사유 — 갈래 문구(whyEmpty)보다 먼저, 빨간 줄로(진단 D: 사유가 화면에 없어 '정체로 스킵?' 으로 읽혔다)
+   const stBits=[d.stage_reason,d.stage_error].filter((x,i,a)=>x&&a.indexOf(x)===i);
+   const stWhy=stBits.length?`<div class="note" style="color:#c0122f">최근 실행이 남긴 사유: ${stBits.map(x=>esc(x)).join(" · ")}</div>`:"";
+   el.innerHTML=btn+`<div class="card">${stWhy}<div class="note">${per}워크플로우 분석이 없습니다${d.file_error?` <span style="color:#c0122f">· ${esc(d.file_error)}</span>`:""}${d.stage_note?` <span class="state">· 최근 실행 기록: ${esc(d.stage_note)}</span>`:""}${whyEmpty(d.stage_kind,"[워크플로우 재분석]")} — `
     +'AI 정제를 포함해 [분석 실행]을 돌리면 자동 생성됩니다. 위 [워크플로우 재분석]으로 지금 만들 수도 있습니다.'+oth+'</div></div>';
   }
  }else{
@@ -4114,7 +4269,7 @@ async function loadFlow(){
    const _kc="wf:"+String(f.model||"")+"|"+String(f.branch||"");
    const _opc=(FOPEN.size?FOPEN.has(_kc):fi===0)?" open":"";
    return head+`<details${_opc}${hasDet?' style="margin-left:6px"':''} data-k="${esc(_kc)}"><summary>${hasDet?"":l1b}${ttl}${br}
-     <span class="state">${(mm.mm!=null)?mm.mm+" MM · ":""}단계 ${(f.steps||[]).length}개 · ${esc((f.role||"판단 유보").split("—")[0].trim())}</span></summary>
+     <span class="state">${(mm.mm!=null)?mm.mm+" MM · ":""}단계 ${(f.steps||[]).length}개 · ${esc((f.role||"판단 유보").split("—")[0].trim())}${(d.carried_from&&f.asked_at)?` · ${esc(f.asked_at)} 판정`:""}</span></summary>
     <div class="body">
     ${(f.upstream||f.downstream)?`<div class="note" style="margin:2px 0 6px">${f.upstream?`← 앞 업무: <b>${esc(String(f.upstream).split(" / ").pop())}</b>`:""}${(f.upstream&&f.downstream)?" &nbsp;·&nbsp; ":""}${f.downstream?`→ 다음 업무: <b>${esc(String(f.downstream).split(" / ").pop())}</b>`:""}</div>`:""}
     <div style="margin:2px 0 6px"><b>역할:</b> ${esc(f.role)||"판단 유보"}</div>
@@ -4144,7 +4299,7 @@ async function loadFlow(){
 document.querySelectorAll("#tabs [data-t]").forEach(c=>c.onclick=()=>{
  document.querySelectorAll("#tabs [data-t]").forEach(x=>x.classList.toggle("on",x===c));
  document.querySelectorAll(".tab").forEach(t=>t.style.display="none");
- const id=c.dataset.t;$("tab-"+id).style.display="";
+ const id=c.dataset.t;curTab=id;$("tab-"+id).style.display="";
  // 실패하면 loaded 플래그를 되돌린다 — 안 그러면 '불러오는 중…'에서 영구 정지하고
  // 탭을 다시 눌러도 재시도되지 않는다.
  const fail=(k,e)=>{loaded[k]=0;const el=$("rv-"+k);
@@ -4185,6 +4340,9 @@ function whyEmpty(kind, redo){
   budget:` — <b>시간 예산</b>에 닿아 남은 묶음을 보내지 않았습니다. ${b} 을 누르면 남은 것만 이어서 합니다(예산은 config.aiStageBudgetMin·flowBudgetMin).`,
   skipped:` — 앞 단계(AI 판정) 실패로 <b>건너뛰었습니다</b>. 판정을 먼저 성공시킨 뒤 ${b} 을 누르세요.`,
   failed:` — 왕복이 실패했습니다(위 사유). [AI 연결 진단] 확인 후 ${b}.`,
+  // LM28 — Copilot 사용량 제한(쉬었다 다시 보내도 막힘)은 바로 다시 눌러도 같은 벽이다 · 관문은 실패가 아니다
+  throttle:` — <b>Copilot 사용량 제한</b>으로 멈췄습니다(쉬었다 다시 보내도 막혀 남은 묶음을 보내지 않음). 1~2시간 뒤 [재분석만]·${b} — 이미 한 것은 이어서 씁니다.`,
+  gate:` — 개인정보 관문에 걸린 업무는 보내지 않았습니다 — <b>조치 불필요</b>(미판정으로 세지 않습니다).`,
   ok:` — 최근 실행은 정상 완료로 기록돼 있습니다. 결과가 안 보이면 <b>화면이 보는 기간과 결과 기간이 다른</b> 경우입니다(기간을 맞춰 다시 실행).`,
   none:""
  }[kind||"none"]||"";
@@ -4204,9 +4362,14 @@ async function loadReview(kind){
  if(kind==="deep"&&extra.entities&&(extra.entities.models||[]).length){
   const en=extra.entities;
   const disc=new Set(en.discovered||[]);
-  const mrows2=(en.models||[]).map(m=>`<tr><td><b>${esc(m.name)}</b>${disc.has(m.name)?' <span class="tag" style="background:#e6f4ea;color:#0f7a3d">판정 중 발견</span>':''}</td><td style="color:#8b929b;font-size:11px">${(m.match||[]).map(esc).join(", ")||"-"}</td><td style="color:#5a626b;font-size:11px">${esc(m.obs||"")||"-"}</td></tr>`).join("");
-  pre+=`<div class="card"><h2>과제 체계 <span class="state">AI가 raw에서 발견한 상위 과제 — config.projects 는 힌트로만 참고${(en.hints_used||[]).length?` (힌트: ${en.hints_used.map(esc).join(", ")})`:" (힌트 없음)"}</span></h2>
-  <table><tr><th>과제</th><th>식별 키워드</th><th>채택 근거(raw)</th></tr>${mrows2}</table>
+  // 상위(업무 성격, l1)는 체계가 과제마다 고른 값 — 있는 체계만 열을 보인다
+  const hasL1=(en.models||[]).some(m=>m&&m.l1);
+  const mrows2=(en.models||[]).map(m=>`<tr><td><b>${esc(m.name)}</b>${disc.has(m.name)?' <span class="tag" style="background:#e6f4ea;color:#0f7a3d">판정 중 발견</span>':''}</td>${hasL1?`<td style="font-size:11px">${esc(m.l1||"")||"-"}</td>`:""}<td style="color:#8b929b;font-size:11px">${(m.match||[]).map(esc).join(", ")||"-"}</td><td style="color:#5a626b;font-size:11px">${esc(m.obs||"")||"-"}</td></tr>`).join("");
+  // 규칙 폴백 체계(체계 왕복 실패 — 임시) · 지난 체계 재사용(새로 물을 신호가 없어 체계 왕복을 건너뜀)
+  const enBadge=(en.fallback?' <span class="tag" style="background:#fdf3e6;color:#8a5a00">규칙 폴백 체계(임시)</span>':"")
+   +(en.reused_from?` <span class="tag" style="background:#eef4fb;color:#1c4e8a" title="${esc(en.reused_from)}">지난 체계 재사용</span>`:"");
+  pre+=`<div class="card"><h2>과제 체계${enBadge} <span class="state">AI가 raw에서 발견한 상위 과제 — config.projects 는 힌트로만 참고${(en.hints_used||[]).length?` (힌트: ${en.hints_used.map(esc).join(", ")})`:" (힌트 없음)"}</span></h2>
+  <table><tr><th>과제</th>${hasL1?"<th>상위</th>":""}<th>식별 키워드</th><th>채택 근거(raw)</th></tr>${mrows2}</table>
   <div class="note">힌트에 넣어도 raw에 흔적이 없으면 채택되지 않고, 판정 중 새 과제가 보이면 자동 추가됩니다.</div></div>`;
  }
  if(kind==="deep"&&extra.pivots&&extra.pivots.by_model){
@@ -4249,15 +4412,19 @@ async function loadReview(kind){
    `<div>${l.t} <span class="s">[${esc(l.src)}]</span> <span class="p" style="color:${col(l.proj)}">${esc(l.proj)}</span> ${l.who&&l.who!=="나"?esc(l.who)+": ":""}${esc(l.text)}</div>`).join("")).join("");
   const nx=(kind==="month")?nar[x.key]:null;
   // 이월된 달은 출처를 적는다 — 같은 달 코멘트는 기간이 달라도 그 달의 것이지만, 어느 기간에서 온
-  // 것인지 모르면 사용자가 숫자와 글이 어긋난 것으로 읽는다.
-  const narFrom=nx&&nx.from_tag?` <span class="state">(${esc(nx.from_tag)} 기간에서 이월)</span>`:"";
+  // 것인지 모르면 사용자가 숫자와 글이 어긋난 것으로 읽는다. 이번 실행에서 새로 만들지 못한 달(earlier — AI 판정이 적음·
+  // 왕복 실패·관문)은 '이전 실행 코멘트' 라고 적는다. made = 그 코멘트를 만든 시각.
+  const narMade=nx&&nx.made?` · ${esc(nx.made)} 작성`:"";
+  const narFrom=!nx?"":(nx.from_tag?` <span class="state">(${esc(nx.from_tag)} 기간에서 이월${narMade})</span>`
+   :(nx.earlier?` <span class="state">(이전 실행 코멘트${narMade} — 이번 실행에서 새로 만들지 못함)</span>`:""));
   const narH=nx?`<div style="background:#f0f6fd;border:1px solid #d6e5f7;border-radius:6px;padding:10px 14px;margin:8px 0;font-size:12.5px;line-height:1.7">
    <b>AI 월간 리뷰</b>${narFrom} — ${esc(nx.summary||"")}${(nx.projects||[]).map(p=>`<div style="margin-top:4px">· <b>${esc(p.name)}</b> ${esc(p.story||"")} <span class="state">${esc(p.worktypes||"")}</span></div>`).join("")}</div>`
    :(kind==="month"?`<div class="note" style="border:1px dashed #c9cfd8;border-radius:6px;padding:8px 12px;margin:8px 0">
    이 달의 AI 리뷰 코멘트가 없습니다. 흔한 순서대로 — ① 이 기간을 <b>AI 판정 없이</b> 분석했다
    ② 그 달의 왕복이 실패했다(진행 로그의 "${esc(x.key)} 내러티브 실패") ③ 판정이 시간 예산·정체 감지로
-   끊겨 남은 달을 만들지 못했다 ④ 다른 PC에서 결과만 복사했다(코멘트는 report 폴더에 있어 제외됨).
-   상단 <b>[리뷰 코멘트 재생성]</b> 이 이미 판정된 신호로 이 달만 다시 만듭니다 — 재수집·재판정은 하지 않습니다.</div>`:"");
+   끊겨 남은 달을 만들지 못했다 ④ 다른 PC에서 결과만 복사했다(코멘트는 report 폴더에 있어 제외됨)
+   ⑤ 그 달은 AI 판정된 신호가 적어(규칙 결과 위주) 코멘트를 만들지 않았다 — 판정이 회복된 뒤 [리뷰 코멘트 재생성].
+   상단 <b>[리뷰 코멘트 재생성]</b> 이 이미 판정된 신호로 빠진 달·최근 달·데이터가 바뀐 달을 다시 만듭니다 — 재수집·재판정은 하지 않습니다.</div>`:"");
   const wtsum=(x.wt||[]).map(([k,v])=>`${k} ${v}%`).join(" · ");
   const head=`${esc(x.label)} <span class="state">신호 ${x.signals}건 · 활동 ${x.days}일${wtsum?" · "+esc(wtsum):""}</span>`;
   const body=`${narH}${bar}${psec}${connSVG(x,col)}
@@ -4270,6 +4437,35 @@ async function loadReview(kind){
  }).join("");
 }
 // ── Agentic AI 탭 ──
+// 커버리지 — 근거로 잡힌 업무(행·MM) + 미계상 갈래(0 이 아닌 것만). 갈래마다 할 일이 다르다(진단 D): 미판정 → [이어서 매칭] ·
+// AI 판정 대기(신호 대부분이 규칙 판정이라 보내지 않음) → [재분석만] 후 [재매칭] · 개인정보 관문 → 조치 불필요 · 과제와 무관 →
+// 실패 아님. 근거는 원본 업무 행의 (과제, 세부업무) 쌍으로 상한 없이 쌓인다 — agenticMaxWork 는 화면에 보이는 이름 수만 정한다.
+function agCover(a){
+ const r=(a&&a.mm_recalc)||{};if(r.matched_rows==null)return "";
+ const n2=v=>Number(v)||0;
+ const tot=n2(r.rows_total||a.rows_total), mr=n2(r.matched_rows);const pct=tot?Math.round(mr/tot*100):0;
+ const BK=[["pending","미판정","[이어서 매칭]"],["rule","AI 판정 대기","[재분석만] 후 [재매칭]"],
+  ["gate","개인정보 관문","조치 불필요"],["unrelated","과제와 무관","실패 아님"]];
+ const hasBk=BK.some(([k])=>r[k+"_rows"]!=null);      // 갈래가 없는 옛 결과는 미계상 합계만
+ const bk=BK.filter(([k])=>n2(r[k+"_rows"])>0).map(([k,lab,how])=>
+  `<span class="tag"${k==="pending"?' style="color:#c0122f"':""}>${lab} ${n2(r[k+"_rows"])}행 · ${n2(r[k+"_mm"]).toFixed(2)} MM → ${how}</span>`).join("");
+ const warn=(!hasBk&&pct<80)?' style="color:#c0122f"':"";
+ return `<div class="note"${warn}>근거로 잡힌 업무 <b>${mr}/${tot}행</b> (${pct}%) · ${n2(r.matched_mm).toFixed(2)}${r.rows_total_mm!=null?` / ${n2(r.rows_total_mm).toFixed(2)}`:""} MM`
+  +(r.axis==="plain"?' <span class="dim">(원본 업무 행 기준)</span>':"")
+  +(hasBk?(bk?`<div style="margin-top:3px">미계상 ${bk}</div>`:"")
+   :` — 미계상 ${n2(r.unmatched_rows)}행 · ${n2(r.unmatched_mm).toFixed(2)} MM`)+`</div>`;
+}
+// 이어받기·멈춘 이유 — 다른 기간 결과를 이어받았으면 그 기간과 매칭 시작일, 남은 행이 있으면 왜 멈췄는지(stop_kind)
+function agCarry(a,pend){
+ if(!a)return "";
+ const STOP_KO={budget:"시간 예산에 닿음 — [이어서 매칭]",throttle:"Copilot 사용량 제한 — 1~2시간 뒤 [이어서 매칭]",
+  login:"Copilot 로그인 만료 — [AI 연결 진단]에서 다시 로그인한 뒤 [이어서 매칭]",fatal:"사람이 손대야 풀리는 상태 — 아래 사유 확인",
+  fail:"왕복 실패 — [AI 연결 진단] 확인 후 [이어서 매칭]",gate:"개인정보 관문 — 조치 불필요"};
+ let h="";
+ if(a.carried_from)h+=`<div class="note" style="color:#8a5a00">⚠ <b>${esc(a.carried_from)}</b> 기간 결과를 이어받음${a.matched_since?` (매칭 시작 ${esc(a.matched_since)})`:""}</div>`;
+ if(pend&&STOP_KO[a.stop_kind])h+=`<div class="note">멈춘 이유: ${STOP_KO[a.stop_kind]}${a.cooldowns?` · Copilot 대기 ${Number(a.cooldowns)||0}회`:""}</div>`;
+ return h;
+}
 async function loadAgentic(){
  const el=$("rv-agentic");
  el.innerHTML='<div class="card"><div class="note">불러오는 중…</div></div>';
@@ -4284,7 +4480,7 @@ async function loadAgentic(){
  if(!a){h+=`<div class="note">아직 매칭 결과가 없습니다${d.tag?` (기간 ${esc(d.tag)})`:""}${d.other_tag?` — <b>${esc(d.other_tag)}</b> 기간 결과는 있습니다`:""}${d.stage_note?` <span class="state">· 최근 실행 기록: ${esc(d.stage_note)}</span>`:""}${whyEmpty(d.stage_kind,"[재매칭]")} — [분석 실행](AI 판정 포함)을 돌리면 자동으로 생성됩니다. 이미 분석을 마쳤다면 위 버튼으로 매칭만 실행하세요.</div></div>`;}
  else{
   const lastErr=a.last_error&&a.last_error.error?`<div class="note" style="color:#c0122f">마지막 실패 사유: ${esc(a.last_error.error)}${a.last_error.hint?` — ${esc(a.last_error.hint)}`:""}</div>`:"";
-  h+=`<div class="note">기간 ${esc(a.tag)} · 업무 ${a.rows_analyzed}행 분석${a.rows_total&&a.rows_total!==a.rows_analyzed?` / 전체 ${a.rows_total}행`:""}${a.chunks?` · 묶음 ${a.chunks}회`:""}${a.failed_chunks?` <span style="color:#c0122f">· ${a.failed_chunks}/${a.chunks||"?"} 묶음 실패</span>`:""}${pend?` <span style="color:#c0122f">· ${pend}행 미판정 — 결과가 실제보다 적을 수 있음. 위 버튼으로 남은 행만 이어서 판정</span>`:""}${a.salvaged_chunks?` · 잘린 답 복구 ${a.salvaged_chunks}묶음(부분 결과)`:""}${a.mm_recalc?` · 로드 MM 은 업무 실측 합(겹침 과제는 안분)`:""}${!(a.match||[]).length&&!pend&&!(a.unknown_task_count||0)?` · <b>등록된 과제에 걸치는 현업이 없습니다(매칭 0건 — 실패 아님)</b>`:""}${a.unknown_task_count?` <span style="color:#c0122f">· 답이 목록에 없는 과제 코드 ${a.unknown_task_count}건(${(a.unknown_tasks||[]).slice(0,4).map(esc).join(", ")}) — 그만큼 매칭이 빠졌습니다</span>`:""}</div>${(function(){const r=a.mm_recalc||{};if(r.matched_rows==null)return "";const tot=r.rows_total||a.rows_total||0, mr=r.matched_rows||0;const pct=tot?Math.round(mr/tot*100):0;const warn=pct<80?' style="color:#c0122f"':"";return `<div class="note"${warn}>근거로 잡힌 업무 <b>${mr}/${tot}행</b> (${pct}%) · ${(r.matched_mm||0).toFixed(2)} MM — 미계상 ${r.unmatched_rows||0}행 · ${(r.unmatched_mm||0).toFixed(2)} MM${r.work_cap?` · 과제별 근거 상한 ${r.work_cap}개(config.copilotAuto.agenticMaxWork)`:""}${pct<80?" — 상한을 올리거나 [재매칭]으로 다시 물으면 늘어납니다":""}</div>`;})()}${lastErr}${d.reextracted?`<div class="note" style="color:#8a5a00">⚠ <b>${esc(d.reextracted_title||"재추출 이후 결과")}</b> — ${esc(d.reextracted_note||"이 매칭은 마지막 업무 로드 재추출 이전의 것입니다")}</div>`:""}</div>`;
+  h+=`<div class="note">기간 ${esc(a.tag)} · 업무 ${a.rows_analyzed}행 분석${a.rows_total&&a.rows_total!==a.rows_analyzed?` / 전체 ${a.rows_total}행`:""}${a.chunks?` · 묶음 ${a.chunks}회`:""}${a.failed_chunks?` <span style="color:#c0122f">· ${a.failed_chunks}/${a.chunks||"?"} 묶음 실패</span>`:""}${pend?` <span style="color:#c0122f">· ${pend}행 미판정 — 결과가 실제보다 적을 수 있음. 위 버튼으로 남은 행만 이어서 판정</span>`:""}${a.salvaged_chunks?` · 잘린 답 복구 ${a.salvaged_chunks}묶음(부분 결과)`:""}${a.mm_recalc?` · 로드 MM 은 업무 실측 합(겹침 과제는 안분)`:""}${!(a.match||[]).length&&!pend&&!(a.unknown_task_count||0)?` · <b>등록된 과제에 걸치는 현업이 없습니다(매칭 0건 — 실패 아님)</b>`:""}${a.unknown_task_count?` <span style="color:#c0122f">· 답이 목록에 없는 과제 코드 ${a.unknown_task_count}건(${(a.unknown_tasks||[]).slice(0,4).map(esc).join(", ")}) — 그만큼 매칭이 빠졌습니다</span>`:""}</div>${agCover(a)}${agCarry(a,pend)}${lastErr}${d.reextracted?`<div class="note" style="color:#8a5a00">⚠ <b>${esc(d.reextracted_title||"재추출 이후 결과")}</b> — ${esc(d.reextracted_note||"이 매칭은 마지막 업무 로드 재추출 이전의 것입니다")}</div>`:""}</div>`;
   const axCol={"축1":"#2a78d6","축2":"#0e8c7a","축3":"#a61b4a"};
   const FITC=["#e1e0d9","#cde2fb","#9ec5f4","#6da7ec","#3987e5","#256abf","#184f95"];
   const fitBar=f=>{const v=Math.max(0,Math.min(100,Number(f)||0));
@@ -4771,6 +4967,12 @@ class H(BaseHTTPRequestHandler):
                         ot = os.path.basename(other[-1])[len("workflow_"):-len(".json")]
                         if ot != tag:
                             out["other_tag"] = ot
+                    out["stage_kind"] = _stage_kind("워크플로우 분석", tag)      # 이 기간의 상태 파일이 있으면 그것으로
+                # 결과가 없거나 흐름이 비었으면 상태 파일의 중단 사유(stop.reason·error/hint·stop.kind)를 싣는다 — 화면이 빨간 줄로
+                # 먼저 말한다(진단 D: 사유가 상태 파일에만 있고 화면은 '분석이 없습니다' 뿐이었다)
+                _flows = out.get("flows")
+                if not (isinstance(_flows, list) and _flows):
+                    out.update(_stage_why(tag, "flow"))
             with LOCK:
                 # 수동 실행의 마지막 결과(ok/error/hint)와 '지금 도는 중' — 새로고침해도 화면이 사유를 다시 말한다
                 out["manual"] = MANUAL.get("flow")
@@ -4826,7 +5028,6 @@ class H(BaseHTTPRequestHandler):
             if tag:
                 out["tag"] = tag
                 for key, name in (("pivots", f"pivots_{tag}.json"),
-                                  ("narratives", f"ai_narratives_{tag}.json"),
                                   ("entities", f"entities_{tag}.json")):
                     p = os.path.join(REPORT, name)
                     if os.path.exists(p):
@@ -4835,24 +5036,25 @@ class H(BaseHTTPRequestHandler):
                                 out[key] = json.load(f)
                         except (OSError, ValueError):
                             pass
-                # 월별 코멘트는 기간(tag)이 바뀌면 새 파일에 없다 — 같은 달의 코멘트는 기간이 달라도
-                # 그 달의 것이므로, 이 tag 파일이 없으면 가장 최근 기간의 것을 대신 보여 준다(제보:
-                # '월별 코멘트가 빠짐'). 판정을 다시 돌리면 judge 가 그 달을 이 tag 로 이월해 쓴다.
-                if not out.get("narratives"):
-                    alt = [q for q in glob.glob(os.path.join(REPORT, "ai_narratives_*.json"))
-                           if os.path.basename(q) != f"ai_narratives_{tag}.json"]
-                    for q in sorted(alt, key=lambda x: _mtime(x), reverse=True):
-                        try:
-                            with open(q, encoding="utf-8") as f:
-                                v = json.load(f)
-                        except (OSError, ValueError):
-                            continue
-                        if isinstance(v, dict) and v:
-                            _t = os.path.basename(q)[len("ai_narratives_"):-len(".json")]
-                            out["narratives"] = {k: dict(x, from_tag=str(x.get("from_tag") or _t))
-                                                 for k, x in v.items() if isinstance(x, dict)}
-                            out["narratives_alt_tag"] = _t
-                            break
+                # 월별 코멘트 — 이 기간 파일의 달 + 빠진 달은 다른 기간 파일에서(core/narratives.load_merged — judge·리포트와
+                # 같은 이월 규칙 · 이월한 달은 from_tag). 예전에는 이 기간 파일이 '없을 때만' 가장 최근 파일 하나로 대신해,
+                # 오늘 파일에 몇 달만 있으면 나머지 달이 화면에서 빠졌다(제보: '월간 리뷰 코멘트가 사라짐'). 기간 밖의 달
+                # (작년 12월 등)은 섞지 않는다.
+                try:
+                    import narratives as _nv
+                    nv = _nv.load_merged(REPORT, tag, months=_nv.period_months(tag))
+                except Exception:  # noqa: BLE001 - 모듈이 없는 판·판독 실패 — 이 기간 파일만(예전 방식) · 리뷰 탭을 막지 않게
+                    nv = {}
+                    try:
+                        with open(os.path.join(REPORT, f"ai_narratives_{tag}.json"), encoding="utf-8-sig") as f:
+                            _v = json.load(f)
+                        nv = {k: x for k, x in _v.items() if isinstance(x, dict)} if isinstance(_v, dict) else {}
+                    except (OSError, ValueError):
+                        pass
+                if nv:
+                    out["narratives"] = nv
+                    if all(v.get("from_tag") for v in nv.values()):
+                        out["narratives_alt_tag"] = next(iter(nv.values()))["from_tag"]
             # ── 일관성: 피벗의 MM 숫자는 대시보드와 '같은 파일'에서 다시 계산한다 ──
             # judge 시점 pivots JSON은 refine(행 병합·비업무 제거·재정규화) 이전 값이라
             # 대시보드(refined 우선)와 어긋난다 — 실측: 상세리뷰 '개발' MM이 대시보드 초과.
@@ -4921,6 +5123,11 @@ class H(BaseHTTPRequestHandler):
                     rows += rs
             total = len(rows)                       # 자르기 '전' 실제 수집량 — 400 고정 오인 방지
             rows = rows[-400:][::-1]
+            if src == "teams":
+                # 팀즈 웹이 날짜만 짚은 행(time_precision=date)의 12:00 은 자리표다 — 시각으로 읽히지 않게 날짜만(LM28 E)
+                for r in rows:
+                    if str(r.get("time_precision") or "").strip() == "date":
+                        r["time"] = str(r.get("time") or "")[:10]
             fn = fns[0] if len(fns) == 1 else (f"{len(fns)}개 파일" if fns else "")
             self._send(200, {"file": fn, "cols": cols[:8], "rows": [
                 {c: str(r.get(c, ""))[:90] for c in cols[:8]} for r in rows],
@@ -5528,28 +5735,19 @@ class H(BaseHTTPRequestHandler):
                     return
                 JOB.update(running=True, step="데이터 리셋")
             what = b.get("what") or "report"          # report | all
-            removed = 0
-            targets = [REPORT]
-            if what == "all":
-                targets.append(DATA)
-            keep_q = not b.get("drop_queue")      # 아직 못 보낸 팀 업로드 묶음은 기본 보존
-            for base in targets:
-                for root, _dirs, files in os.walk(base):
-                    if lmname.EDGE_PROFILE_NAME in root:   # Copilot 로그인 세션(data\lm28_edge)은 보존
-                        continue
-                    if keep_q and "upload_pending" in root:
-                        continue                      # 보내야 할 것을 리셋으로 잃지 않게(검증 지적)
-                    for fn in files:
-                        try:
-                            os.remove(os.path.join(root, fn))
-                            removed += 1
-                        except OSError:
-                            pass
-            log(f"[리셋] {'수집 데이터+결과' if what == 'all' else '분석 결과'} {removed}개 파일 삭제"
-                " (Copilot 로그인 세션은 유지)")
-            with LOCK:
-                JOB.update(running=False, step="")
-            self._send(200, {"ok": True, "removed": removed, "what": what})
+            removed = kept_nar = 0
+            try:
+                # 아직 못 보낸 팀 업로드 묶음은 기본 보존 · '분석 결과만' 이면 월별 리뷰 코멘트도 보존(reset_files)
+                removed, kept_nar = reset_files(what, keep_queue=not b.get("drop_queue"))
+            finally:
+                log(f"[리셋] {'수집 데이터+결과' if what == 'all' else '분석 결과'} {removed}개 파일 삭제"
+                    " (Copilot 로그인 세션은 유지)"
+                    + (f" (월별 리뷰 코멘트 {kept_nar}개 파일은 보존 — 지우려면 수집 데이터+결과 리셋)" if kept_nar else "")
+                    + (" (AI 판정 기록 judge_cache.json 은 보존 — 다음 분석이 이미 판정한 신호를 다시 묻지 않는다)"
+                       if what != "all" and os.path.isfile(os.path.join(REPORT, "judge_cache.json")) else ""))
+                with LOCK:
+                    JOB.update(running=False, step="")
+            self._send(200, {"ok": True, "removed": removed, "what": what, "kept_narratives": kept_nar})
         elif self.path == "/api/report":
             # 보고서 3종(리포트·분석리포트·얼린 보고서) — in-process freeze.make_all. JOB 을 점유하지
             # 않고(얼린 사본에 '실행 중'이 굳는다) FREEZE_LOCK 으로만 직렬화; 분석 중이면 409.
@@ -5700,6 +5898,15 @@ class H(BaseHTTPRequestHandler):
                  + str(res.get("error", ""))))
             self._send(200, res)
         elif self.path == "/api/narrate":
+            # 본문 {"all": true} = 모든 달 다시 만들기(--all) · 없으면 빠진 달·최근 달·데이터가 바뀐 달만.
+            # 본문은 LOCK 밖에서 먼저 읽는다(소켓 읽기 동안 LOCK 을 잡고 있지 않게) — 깨졌으면 {}.
+            try:
+                n = int(self.headers.get("Content-Length", 0) or 0)
+                b = json.loads(self.rfile.read(n) or b"{}") if n else {}
+            except Exception:  # noqa: BLE001
+                b = {}
+            if not isinstance(b, dict):
+                b = {}
             with LOCK:
                 if JOB["running"]:
                     self._send(409, {"ok": False, "error": "busy"})
@@ -5708,8 +5915,8 @@ class H(BaseHTTPRequestHandler):
                     return
                 JOB.update(running=True, log=[], step="리뷰 코멘트 재생성",
                            started=time.time(), phase="", done=0, total=0)
-            threading.Thread(target=narrate_job, daemon=True).start()
-            self._send(200, {"ok": True})
+            threading.Thread(target=narrate_job, args=(bool(b.get("all")),), daemon=True).start()
+            self._send(200, {"ok": True, "all": bool(b.get("all"))})
         elif self.path == "/api/openfolder":
             try:
                 subprocess.Popen(["explorer", REPORT], creationflags=NO_WIN)

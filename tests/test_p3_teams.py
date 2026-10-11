@@ -623,7 +623,8 @@ class TeamsWebMain(unittest.TestCase):
             self.assertTrue(parsed["lines"][-2].startswith("[teams-web] 방: "))   # 수집 진단 note(마지막 2줄)는 지난 판 그대로
 
     def test_old_cursor_version_is_discarded(self):
-        """LM28-TW-2 는 방 열쇠(안정 이름)가 바뀌었다 — 지난 판(LM28-TW-1) 커서는 버리고 처음부터 읽는다."""
+        """판이 바뀌면(TW-2: 방 열쇠가 안정 이름으로 · TW-3: 내 말풍선 판정·날짜만 보존 — LM28 E) 지난 판(LM28-TW-1) 커서는 버리고
+        처음부터 읽는다."""
         today = date.today()
         rooms = [ft.daily("가방", today - timedelta(days=10), today - timedelta(days=1))]
         with tempfile.TemporaryDirectory(prefix="lm28_t_") as tmp:
@@ -632,7 +633,7 @@ class TeamsWebMain(unittest.TestCase):
             rc, st = self._main(ft.FakeTeams(today, rooms, dom="v3"), tmp, today - timedelta(days=20), today)
             self.assertEqual((rc, st["counts"].get("cursor_reset"), st["counts"]["complete"]), (0, 1, 1))
             with open(os.path.join(tmp, tw.STATE_NAME), encoding="utf-8") as f:
-                self.assertEqual(json.load(f)["ver"], "LM28-TW-2|1")
+                self.assertEqual(json.load(f)["ver"], "LM28-TW-3|1")
 
     def test_no_scroller_rc3_websel(self):
         today = date.today()

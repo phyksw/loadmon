@@ -84,6 +84,7 @@ NEED = [
     "tools/check_teamaddr.py",
     "core/programs.py",
     "core/details.py",
+    "core/narratives.py",
     "core/owner.py",
     "core/progress.py",
     "core/projmap.py",

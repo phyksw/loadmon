@@ -132,6 +132,40 @@ def read_signals(tag, rep=None):
         return []
 
 
+def refine_orig(tag, rep=None):
+    r"""report\refine_map_<tag>.json → {"정제L2/정제L3": [(원본L2, 원본L3), …]}. 없거나 깨졌으면 빈 dict.
+    정제 행 하나가 덮은 원본 mm_rows (과제, 세부업무) 쌍 — agentic(근거 키를 신호 축으로)·flow(상위·설명 되짚기)가
+    함께 쓴다(예전에는 flow._refine_orig 한 벌뿐이라 agentic 은 정제 이름으로만 MM 을 찾았다)."""
+    p = os.path.join(rep or REPORT, f"refine_map_{tag}.json")
+    try:
+        with open(p, encoding="utf-8-sig") as f:
+            o = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    mp = o.get("map") if isinstance(o, dict) else None
+    out = {}
+    for k, v in (mp.items() if isinstance(mp, dict) else []):
+        pairs = [(str(it[0] or "").strip(), str(it[1] or "").strip())
+                 for it in (v if isinstance(v, list) else []) if isinstance(it, (list, tuple)) and len(it) >= 2]
+        if pairs:
+            out[str(k).strip()] = pairs
+    return out
+
+
+def rule_share(sigs):
+    """signals → {(과제, 세부업무): (규칙 판정 신호 수, 전체 신호 수)}.
+    judge 열이 '규칙'(AI 가 보지 못해 규칙으로 둔 행)인 것만 규칙으로 센다 — 'AI'·'AI(유사)' 는 판정된 것이다.
+    judge 열이 없는 기간(규칙 축만 있는 신호)은 규칙 0건이 된다(그 경우는 거를 근거가 없으므로 예전처럼 다 보낸다).
+    키는 원본 mm_rows 의 (Level 2, Level 3) 와 같은 축 — 빈 값은 '공통'/'기타'(judge 집계와 같은 기본값)."""
+    out = {}
+    for s in sigs or []:
+        md = (s.get("model") or s.get("project") or "").strip() or "공통"
+        dt = (s.get("detail") or s.get("activity") or "").strip() or "기타"
+        n_rule, n_all = out.get((md, dt), (0, 0))
+        out[(md, dt)] = (n_rule + (1 if (s.get("judge") or "").strip() == "규칙" else 0), n_all + 1)
+    return out
+
+
 def _f(x):
     try:
         return float(x or 0)
@@ -662,6 +696,217 @@ def level1_of(text, l2="", root=None, cfg=None):
              ("양산", _L1_MP_DEFAULT), ("개발", _L1_DEV_DEFAULT))
     names = {n for _k, n in _kw_table_hits(table, hay)}
     return next((n for n in L1_KW_ORDER if n in names), "")
+
+
+# ── 과제명 관문(LM28 진단 B) — 사람 이름·채팅방·공지류는 과제(Level 2)가 아니다 ──────────────────
+# 웹 경로(OWA·Teams 웹)로 신호가 수천 건이 되자 규칙 토큰(가장 잦은 낱말)·AI 가 새로 적은 이름·규칙 폴백 체계·지난
+# entities 가 아무 관문 없이 과제명이 됐고, 사람 이름과 '근태공지' 가 과제 칸을 차지했다(제보). 여기가 그 관문의
+# 단일원이다 — judge(체계·판정·발견)·extract(규칙 후보·공지 메일)·mine(지난 체계)·refine(정제 과제명)이 같은 함수를 쓴다.
+# 사람 키는 signals 의 who 열에서만 뽑는다(코드에 이름을 두지 않는다). 지정(pinned) 과제는 늘 통과한다.
+_TITLES = (r"(?:님|씨|책임|선임|수석|매니저|프로|팀장|파트장|그룹장|실장|센터장|본부장|부장|차장|과장|대리|사원|주임"
+           r"|연구원|위원|박사|교수)")          # core/privacy.TITLES 와 같은 호칭 목록
+_TITLE_TAIL = re.compile(r"\s*" + _TITLES + r"$")
+_TITLED_NAME = re.compile(r"([가-힣]{3,4})\s?" + _TITLES + r"(?:께)?")
+_ORG_TAIL = ("팀", "실", "센터", "그룹", "파트", "본부", "사업부", "연구소")
+_ORG_WORD = r"\S*(?:팀|실|센터|그룹|파트|본부|사업부|연구소)"
+_NAME_ORG = re.compile(r"^([가-힣]{3,4})\s+" + _ORG_WORD + r"$")             # '홍길동 개발팀'
+_ORG_NAME = re.compile(r"^" + _ORG_WORD + r"\s+([가-힣]{3,4})(?:\s+\S+)?$")    # '개발팀 홍길동 (책임)'
+_WHO_SPLIT = re.compile(r"[/(,|;<\[（]")
+_WHO_SKIP = {"나", "-", "(상대)", "[나]", "[상대]", "[사람]"}
+# 성씨 글자로 시작하는 3자 표시 이름 중 사람이 아닌 것 — 키가 되면 '판정 시스템' 같은 과제명까지 막힌다
+_WHO_STOP = frozenset({"시스템", "도우미", "관리자", "운영자", "담당자"})
+_LATIN_NAME = re.compile(r"^[A-Za-z]+(?:[ .'\-][A-Za-z]+){1,3}$")
+_LAST_FIRST = re.compile(r"^([A-Za-z][A-Za-z'\-]*)\s*,\s*([A-Za-z][A-Za-z'\-]*)\s*(?:$|[/(<\[（|;])")
+_PERSON_TAG = re.compile(r"\[(?:사람(?:#[0-9a-f]{6})?|나)\]")               # privacy 가림 토큰 [사람]·[사람#…]·[나]
+_NAME_SPLIT = re.compile(r"[\s·/_\-,;|()\[\]<>]+")                       # 채팅방 이름('홍길동, 김철수')도 낱말로
+_NAME_PARTICLE = re.compile(r"(?:님|씨|의|께|에게|한테|이|가|은|는|과|와|도)$")
+
+
+def _plausible_name(n):
+    """3자 + 흔한 성, 4자 + 복성(core/privacy.plausible_korean_name — 일반어·조직 접미 제외)."""
+    try:
+        from privacy import plausible_korean_name
+    except ImportError:
+        return len(n) in (3, 4)
+    return plausible_korean_name(n)
+
+
+def _person_key(seg):
+    """who 조각 → 사람 키(ukey2) 또는 "" — 3~4자 한글 이름(성씨 표로 그럴듯한 것)·2~4낱말 로마자 이름만."""
+    s = " ".join(str(seg or "").split())
+    for _ in range(3):                                  # '책임연구원' 처럼 호칭이 겹쳐 붙은 꼴
+        t = _TITLE_TAIL.sub("", s).strip()
+        if t == s:
+            break
+        s = t
+    if not s or s.endswith(_ORG_TAIL) or s in _WHO_STOP:
+        return ""
+    if re.fullmatch(r"[가-힣]{3,4}", s):
+        return ukey2(s) if _plausible_name(s) else ""
+    return ukey2(s) if _LATIN_NAME.match(s) else ""
+
+
+def person_keys(whos):
+    """signals who 값들 → 사람 키 집합(ukey2). '나'·'-'·'(상대)'·주소(@)·부서는 뺀다.
+    표시 이름의 첫 조각(구분자 / ( , | ; < [ 앞)에서 호칭을 떼고 3~4자 한글 이름 또는 2~4낱말 로마자 이름만 받는다.
+    'Last, First' 는 두 순서를 다 넣는다. '이름 부서'·'부서 이름' 꼴은 이름 쪽만."""
+    keys, seen = set(), set()
+    for w in whos or ():
+        s = " ".join(str(w or "").split())
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        if s in _WHO_SKIP or "@" in s:
+            continue
+        m = _LAST_FIRST.match(s)
+        if m:
+            a, b = m.group(1), m.group(2)
+            keys.add(ukey2(f"{b} {a}"))
+            keys.add(ukey2(f"{a} {b}"))
+            continue
+        first = _WHO_SPLIT.split(s)[0].strip()
+        k = _person_key(first)
+        if not k:
+            m = _NAME_ORG.match(first) or _ORG_NAME.match(first)
+            k = _person_key(m.group(1)) if m else ""
+        if k:
+            keys.add(k)
+    return keys
+
+
+def is_person_name(name, keys=()):
+    """과제 후보가 사람 이름인가 — ① 가림 토큰([사람]·[나]) ② '홍길동 책임' 꼴(3~4자 + 호칭, 그럴듯한 이름)
+    ③ 사람 키(person_keys)와 같은 이름(호칭 뗀 꼴 포함) ④ 낱말(조사·호칭 뗀 꼴, 로마자는 이어진 2~4낱말) 하나가 사람 키."""
+    s = " ".join(str(name or "").split())
+    if not s:
+        return False
+    if _PERSON_TAG.search(s):
+        return True
+    m = _TITLED_NAME.fullmatch(s)
+    if m and _plausible_name(m.group(1)):
+        return True
+    if not keys:
+        return False
+    keys = keys if isinstance(keys, (set, frozenset, dict)) else set(keys)
+    if ukey2(s) in keys or ukey2(_TITLE_TAIL.sub("", s)) in keys:
+        return True
+    toks = [t for t in _NAME_SPLIT.split(s) if t]
+    for t in toks:
+        t0 = _TITLE_TAIL.sub("", t).strip()
+        for c in (t, t0, _NAME_PARTICLE.sub("", t0)):
+            if c and ukey2(c) in keys:
+                return True
+    for n in (2, 3, 4):                                 # 로마자 이름은 여러 낱말 — 'LiDAR-X John Smith'
+        for i in range(len(toks) - n + 1):
+            if ukey2("".join(toks[i:i + n])) in keys:
+                return True
+    return False
+
+
+# 공지·행정 낱말 — 이름이 이것과 군말(_NOTICE_FILLER)·숫자뿐이면 공지류다('근태공지'·'인사발령'·'근태 관리').
+# 다른 낱말이 남으면 아니다('인사시스템 개선'). 일반어만 둔다(회사·기관 이름 없음).
+NOTICE_NAME_WORDS = ("근태", "공지", "공지사항", "안내", "알림", "인사발령", "발령", "인사", "경조사", "경조", "부고", "부음",
+                     "복리후생", "복지", "뉴스레터", "newsletter", "notice", "설문", "공문", "사내소식", "전사", "사내",
+                     "교육안내", "교육신청", "휴가", "연차", "휴무", "건강검진", "연말정산", "행사")
+_NOTICE_FILLER = ("관리", "사항", "관련", "업무", "확인", "신청", "제출", "일정", "현황", "결과", "및", "건", "공유", "요청",
+                  "처리", "등", "마감")
+_NOTICE_STRIP = tuple(sorted(set(NOTICE_NAME_WORDS + _NOTICE_FILLER), key=len, reverse=True))
+# 강한 행정 공지 제목만(제목으로 메일을 거르는 데 쓴다) — 일반 [안내]·[알림] 은 잡지 않는다.
+_NOTICE_TAG_RX = re.compile(
+    r"^\s*(?:(?:re|fw|fwd|회신|전달|답장)\s*[:：]\s*)*[\[【〔<(]\s*(?:전사|사내)?\s*"
+    r"(?:근태|인사|인사\s*발령|발령|경조사?|부고|부음|복리후생|복지|뉴스레터|newsletter|설문|교육\s*안내|보안\s*공지|총무|공지)"
+    r"[^\]】〕>)]{0,12}[\]】〕>)]", re.I)
+_NOTICE_PHRASE_RX = re.compile(
+    r"근태\s*(?:공지|마감|확인|현황|안내|등록)|인사\s*발령|조직\s*개편\s*안내|부고|부음|(?:결혼|출산)\s*(?:소식|안내)"
+    r"|(?:사내|전사)\s*(?:공지|소식)|뉴스레터|newsletter|교육\s*(?:신청\s*|수강\s*)?안내|복리후생|건강검진\s*안내"
+    r"|연말정산\s*안내", re.I)
+
+
+def is_notice_name(name):
+    """과제 후보가 공지·행정 이름인가 — 공지 낱말이 있고, 공지 낱말·군말을 긴 것부터 지우면 구분자·숫자만 남을 때."""
+    k = ukey2(name)
+    if not k or not any(w in k for w in NOTICE_NAME_WORDS):
+        return False
+    for w in _NOTICE_STRIP:
+        k = k.replace(w, "")
+    k = re.sub(r"\d+(?:월|일|년|주|차|분기)", "", k)        # '10월 근태'·'2026년 연말정산' 의 날짜 조각
+    return not re.sub(r"[\d\W_]+", "", k)
+
+
+def is_notice_subject(text):
+    """메일·신호 제목이 강한 행정 공지인가 — 머리 꼬리표([근태공지]·(인사)·<공지> …, RE/FW 뒤 포함) 또는
+    공지 문구(근태 마감·인사발령·부고·뉴스레터·교육 안내 …)."""
+    s = str(text or "")
+    return bool(s) and bool(_NOTICE_TAG_RX.match(s) or _NOTICE_PHRASE_RX.search(s))
+
+
+def task_name_ok(name, people=(), pinned=()):
+    """과제(Level 2) 이름으로 써도 되는가 — 지정(pinned: 이름 또는 키)은 늘 통과, 아니면 사람 이름·공지류가 아닐 때만."""
+    k = ukey2(name)
+    if not k:
+        return False
+    if pinned and k in {ukey2(p.get("name") if isinstance(p, dict) else p) for p in pinned}:
+        return True
+    return not is_person_name(name, people) and not is_notice_name(name)
+
+
+def level1_fill(l2, l3="", l1_map=None, pin=None, root=None):
+    """상위(Level 1) 채움 — 정제(refine)가 돌지 않아도 '큰 분류 > 과제 > 세부업무' 가 서게(LM24 모양).
+    ① 사람이 못 박은 값(pin — projects.json level1, ukey2 키) ② taxonomy 판정(l1_map — entities 의 l1, '공통' 과제 제외)
+    ③ 규칙(level1_of — 코드네임·영역 키워드) ④ 과제명 자체가 상위 범주 이름·별칭('공통' → 공통 — 앞부분 스냅 없음) ⑤ ""."""
+    k = ukey2(l2)
+    if k:
+        for src in (pin, l1_map if k != ukey2("공통") else None):
+            v = snap1((src or {}).get(k)) if src else ""
+            if v:
+                return v
+    v = level1_of(f"{l2 or ''} {l3 or ''}", l2 or "", root)
+    if v:
+        return v
+    k1 = ukey1(l2)
+    return (_L1_BY_KEY.get(k1) or _L1_BY_ALIAS.get(k1) or "") if k1 else ""
+
+
+def l1_def_lines(indent):
+    """프롬프트용 상위 정의 줄 — L1_META 에서 생성(범주 이름을 코드에 하드코딩하지 않는다, tools/check_l1.py)."""
+    return [f"{indent}· {n} = {m['desc']}" for n, m in L1_META.items()]
+
+
+def entities_is_fallback(ent):
+    """entities_*.json 이 규칙 폴백 산출물인가 — 새 판은 "fallback": true 를 적는다. 옛 판(표식 없음)은 AI 체계의
+    흔적(product·l1·AI 가 적은 obs)이 하나도 없는 목록으로 가린다(지정·'공통'·판정 중 발견 항목은 흔적으로 치지 않는다)."""
+    if not isinstance(ent, dict):
+        return True
+    if ent.get("fallback"):
+        return True
+    ai = [m for m in (ent.get("models") or []) if isinstance(m, dict) and str(m.get("name") or "").strip()
+          and not m.get("pinned") and str(m.get("name")).strip() != "공통"]
+    if not ai:
+        return False
+    return not any(m.get("product") or m.get("l1")
+                   or (m.get("obs") and str(m.get("obs")) not in ("판정 중 발견", "규칙 폴백", "사용자 지정"))
+                   for m in ai)
+
+
+def newest_entities(rep=None):
+    r"""report\entities_*.json 을 최신(수정 시각)부터 훑어 규칙 폴백이 아닌 첫 파일 → (내용, 경로). 없으면 ({}, "").
+    judge(지난 체계 힌트)·mine(규칙 기준선 과제)이 같은 판정을 쓴다 — 폴백 체계(규칙 토큰)가 되먹임되지 않게."""
+    import glob
+
+    def _mt(p):
+        try:
+            return os.path.getmtime(p)
+        except OSError:
+            return 0.0
+    for fp in sorted(glob.glob(os.path.join(rep or REPORT, "entities_*.json")), key=_mt, reverse=True):
+        try:
+            with open(fp, encoding="utf-8-sig") as f:
+                ent = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if not entities_is_fallback(ent):
+            return ent, fp
+    return {}, ""
 
 
 def ukey2(s):
@@ -1408,6 +1653,9 @@ PHASE_TEXT = {
                         "Copilot 화면이 바뀌었을 수 있습니다 — data\\copilot_auto_debug.json 을 확인"),
     "no_reply": ("Copilot 응답 시간 초과", "Copilot 창에서 생성이 멈췄는지 확인하고 잠시 뒤 다시 실행"),
     "copilot_error": ("Copilot 일시 오류 응답", "잠시 뒤 다시 실행 — 반복되면 Copilot 창 상태 확인"),
+    # LM28 진단 A: 사용량 제한 문구 — 호출자(judge.copilot_send)가 쉬었다 다시 보낸다(비치명). 세 번 쉬고도 막히면 결과의
+    # hard=True 가 치명으로 바꾼다(explain_failure).
+    "throttled": ("Copilot 사용량 제한(일시)", "몇 분 쉬었다 자동으로 이어 보냅니다 — 계속되면 1~2시간 뒤 [재분석만]"),
     "stub": ("스텁 응답 없음(LM_COPILOT_STUB)", "스텁 폴더에 응답 파일을 두거나 환경 변수를 지우세요"),
     "timeout": ("왕복 시간 초과", "Copilot 응답 지연 — 잠시 뒤 다시 실행"),
     # LM28(WP5 G3): 최종 프롬프트 검사에 걸려 보내지 않은 묶음 — 그 묶음만 규칙 판정(비치명)
@@ -1432,7 +1680,12 @@ REASON_WHY = {
     "R-DEADPROFILE": "전용 Edge 프로필이 오류 화면만 냄",
     "R-NET": "네트워크 오류 화면",
     "R-GATE": "개인정보 관문 — 보내지 않음",
+    "R-THROTTLE": "Copilot 사용량 제한(일시)",
 }
+# 강한 사용량 제한(judge.copilot_send 가 세 번 쉬고도 막힘 → 결과 hard=True) — 남은 묶음을 보내지 않는다(치명).
+# 사유 문구에 '사용량 제한' 을 넣는다 — run.py·agentic·flow 가 이 낱말로 재시도하지 않는다.
+HARD_THROTTLE = ("Copilot 사용량 제한 — 쉬었다 다시 보내도 막힘",
+                 "남은 묶음은 보내지 않고 여기까지의 결과를 지켰습니다 — 1~2시간 뒤 [재분석만]")
 
 
 def _reason_hint(reason):
@@ -1449,16 +1702,21 @@ def _reason_hint(reason):
 
 def explain_failure(res):
     """실패 dict(드라이버·judge.copilot_send) → (사유 한 줄, 조치, fatal).
-    LM28: res["reason"](사유 코드)이 있으면 그 사유·드라이버 REASON_HINT 조치를 쓴다(fatal 판정은 phase 그대로)."""
+    LM28: res["reason"](사유 코드)이 있으면 그 사유·드라이버 REASON_HINT 조치를 쓴다(fatal 판정은 phase 그대로).
+    LM28 진단 A: res["hard"] 가 True(강한 사용량 제한 — 쉬고도 막힘)면 무엇이든 fatal — judge·refine·agentic·flow·narrate 가
+    남은 묶음을 보내지 않고 지금까지의 결과를 지킨다. reason R-EDGEBUSY(다른 작업이 전용 Edge 사용 중)는 fatal 이 아니다 —
+    접지 않고 쉬었다 다시 보낸다. phase 'throttled'(일시 제한)도 fatal 이 아니다(FATAL_PHASES 밖)."""
     res = res if isinstance(res, dict) else {}
     phase = str(res.get("phase") or "").strip()
     err = str(res.get("error") or "").strip()
     hint = str(res.get("hint") or "").strip()
     reason = str(res.get("reason") or "").strip()
+    if res.get("hard") is True:
+        return HARD_THROTTLE[0], HARD_THROTTLE[1], True
     if reason and (reason in REASON_WHY or phase in PHASE_TEXT):
         why = REASON_WHY.get(reason) or PHASE_TEXT.get(phase, ("왕복 실패", ""))[0]
         how = _reason_hint(reason) or hint or PHASE_TEXT.get(phase, ("", ""))[1]
-        return why, how, phase in FATAL_PHASES
+        return why, how, (phase in FATAL_PHASES and reason != "R-EDGEBUSY")
     if phase in PHASE_TEXT and phase != "error":
         why, how = PHASE_TEXT[phase]
         if phase == "no_reply" and hint:
@@ -1533,13 +1791,15 @@ def save_json_atomic(path, obj, tries=6):
     return path
 
 
-def detail_merge_map(tag, sender=None, rows=None, log=print):
+def detail_merge_map(tag, sender=None, rows=None, log=print, deadline=None):
     r"""(과제, 세부업무) 병합 맵 → (amap, n_rule, n_ai). 캐시에 누적 저장한다.
 
     sender: judge.copilot_send 계약 — sender(prompt_text, tag, name) -> {"ok","reply",...}.
       None 이면 규칙 병합만(Copilot 이 안 되는 날·--no-merge). sender 가 주어졌으면 왕복
       여부는 호출자 책임 — env 게이트를 또 걸면 모의 sender 테스트·수동 호출까지 막힌다(실측).
-    rows: 이미 읽은 mm_rows 행(없으면 tag 로 읽는다)."""
+    rows: 이미 읽은 mm_rows 행(없으면 tag 로 읽는다).
+    deadline: time.monotonic() 기준 마감 — 넘으면 남은 왕복을 묻지 않는다. 종류와 무관하게(해석 실패 포함) 2묶음 연속
+      실패해도 접는다 — 예전에는 해석 실패를 그냥 건너뛰어, Copilot 이 거절하는 날 워크플로우 앞에서 12왕복을 다 기다렸다."""
     if rows is None:
         rows, _fn = read_rows(tag)
     by_pj, mm_w = _detail_pools(rows)
@@ -1594,19 +1854,32 @@ def detail_merge_map(tag, sender=None, rows=None, log=print):
                  "왕복으로 묶어 물어봅니다 (보내는 것: 과제명·업무명뿐)", log)
         rejected = 0
         LAST_FAIL.clear()
+        bad, fresh = 0, None              # 연속 실패 묶음 수(해석 실패 포함) · 다음 왕복을 새 채팅에서 열지
         for bi, batch in enumerate(batches, 1):
+            if deadline is not None and time.monotonic() > deadline:
+                _say(f"    [!] 병합 왕복 시간 상한에 닿아 남은 {len(batches) - bi + 1}묶음은 묻지 않습니다"
+                     " — 규칙 병합과 캐시만 씁니다", log)
+                break
             o, info = ask_json(sender, MERGE_HEAD + "\n\n".join(t for _pj, t in batch),
-                               f"{tag}-d3-{bi}", "detail3", "groups")
+                               f"{tag}-d3-{bi}", "detail3", "groups", fresh=fresh)
+            fresh = None
             if not info.get("ok"):
                 LAST_FAIL.update(info)
+                bad += 1
                 if info.get("kind") == "parse":
                     _say(f"    [!] 병합 왕복 {bi}/{len(batches)} 응답에 groups JSON 이 없습니다"
                          f"({info.get('hint', '')[:60]}) — 건너뜀", log)
+                    # 형식을 틀린 채팅에 이어 붙이면 같은 형식으로 또 답한다 — 다음 묶음은 새 채팅에서
+                    fresh = True
+                    if bad >= 2:
+                        _say("    [!] 병합 왕복이 연속 2묶음 실패해 남은 묶음은 묻지 않습니다(규칙 병합만 반영)", log)
+                        break
                     continue
                 _say(f"    [!] 병합 왕복 {bi}/{len(batches)} 실패({info.get('error', '')[:60]}"
                      + (f" — {info.get('hint', '')[:80]}" if info.get("hint") else "")
                      + ") — 규칙 병합만 반영하고 남은 왕복은 접습니다", log)
                 break                            # Copilot 이 안 되는 날 — 더 기다리게 하지 않는다
+            bad = 0
             if info.get("how") == "salvaged":
                 _say(f"    [!] 병합 왕복 {bi}/{len(batches)} 응답이 잘려 복구한 부분만 씁니다", log)
             for grp in (o.get("groups") or []):

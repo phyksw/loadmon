@@ -9,6 +9,7 @@ r"""collect\owa_parse.py — Outlook 웹(OWA) 화면 판정용 순수 함수(LM2
   · verdict_ranges(판정, D, s, e) → [(from, to, st)] — 원장 상태어(ok · zero_ok · partial · unverified).
   · week_header_range(text) — 주 보기 머리('2026년 9월 14일–20일'·'Sep 28 – Oct 4, 2026') → (시작, 끝) | None(F-05).
   · merge_slices(old, new, verified, kind) — 이번에 검증한 날의 옛 행만 새 행으로 바꾸고 나머지 옛 행은 그대로(W1-04).
+    분 단위 시각은 날짜만으로 낮추지 않는다(정밀도 래칫 — LM28 E).
   · iso_local(s) — <time datetime> ISO(Z·오프셋) → 이 PC 로컬 (date, (시, 분))(C-35).
   · apply_ranges(day_st, rngs, cap) · ranges_of(day_st, axis) — {날짜: st} 에 판정 반영(나은 상태만 · 오늘은 partial) →
     LMSTATUS ranges 조각(이어진 같은 상태끼리).
@@ -412,12 +413,21 @@ def _mail_axis(r):
     return "mail_out" if str(r[0]).strip().lower() == "sent" else "mail_in"
 
 
+def _exact_key(r):
+    """정밀도 래칫(LM28 E)의 같은 메일 열쇠 — (상자·날·보낸이·제목·대화). 제목을 남기지 않는 설정(storeMailSubject=false)은
+    제목이 비고 대화가 해시라 대화로 가른다."""
+    return (str(r[0]), str(r[1])[:10], str(r[2]), str(r[3]), str(r[4]) if len(r) > 4 else "")
+
+
 def merge_slices(old, new, verified, kind="mail"):
     """옛 행(old)과 이번 행(new) 합치기 → 새 목록(시각순). 통째로 덮어쓰지 않는다.
     verified: {축: [(from, to), …]} — 이번 실행이 끝까지 읽은 날(date 또는 'YYYY-MM-DD'). 메일 축 mail_in·mail_out, 일정 cal.
     · 검증된 날의 옛 행은 버리고 이번 행으로 바꾼다(그 날 0건이면 0건이 된다).
     · 검증 밖 날의 옛 행은 그대로 둔다(미검증 달의 지난 자료 보존). 검증 밖 이번 행은 같은 행(키)이 이미 있으면 넣지 않고,
-      메일은 같은 (상자·날·보낸이·제목)의 날짜만 행(time_precision=date)을 분 단위 행으로 바꾼다."""
+      메일은 같은 (상자·날·보낸이·제목)의 날짜만 행(time_precision=date)을 분 단위 행으로 바꾼다.
+    · 정밀도 래칫(LM28 E): 검증된 날의 옛 분 단위 행(지난 실행이 열어서 복원한 시각)은 이번 실행이 같은 메일(상자·날·보낸이·
+      제목·대화)을 날짜만으로 읽었으면 그 시각을 물려준다 — 분 단위를 날짜만으로 낮추지 않는다(실행마다 복원 예산 150건이
+      누적된다). 같은 열쇠가 여럿이면 늦은 시각부터(목록은 최신부터 읽는다)."""
     mail = kind == "mail"
     ver = {ax: [(str(a), str(b)) for a, b in (rs or [])] for ax, rs in (verified or {}).items()}
 
@@ -434,18 +444,31 @@ def merge_slices(old, new, verified, kind="mail"):
 
     out = [list(r) for r in (old or []) if r and not covered(r)]
     keys = {key(r) for r in out}
-    loose = {}
+    loose, exact, kept_min = {}, {}, set()
     if kind == "mail":
         for i, r in enumerate(out):
             if len(r) > 6 and str(r[6]).strip().lower() == "date":
                 loose.setdefault((str(r[0]), day_of(r), str(r[2]), str(r[3])), []).append(i)
+            elif len(r) > 6 and str(r[6]).strip().lower() == "minute":
+                kept_min.add(_exact_key(r))          # 검증 밖 날의 옛 분 단위 행 — 같은 메일의 날짜만 사본은 더하지 않는다
+        for r in old or []:
+            if r and covered(r) and len(r) > 6 and str(r[6]).strip().lower() == "minute":
+                exact.setdefault(_exact_key(r), []).append(str(r[1])[11:16])
+        for v in exact.values():
+            v.sort()
     drop = set()
     for r in new or []:
         r = list(r)
+        is_date = mail and len(r) > 6 and str(r[6]).strip().lower() == "date"
         if covered(r):
+            if is_date:
+                hm = exact.get(_exact_key(r))
+                if hm and re.fullmatch(r"\d{2}:\d{2}", hm[-1] or ""):
+                    r[1] = f"{str(r[1])[:10]} {hm.pop()}"
+                    r[6] = "minute"
             out.append(r)
             continue
-        if key(r) in keys:
+        if key(r) in keys or (is_date and _exact_key(r) in kept_min):
             continue
         if kind == "mail" and len(r) > 6 and str(r[6]).strip().lower() == "minute":
             idx = loose.get((str(r[0]), day_of(r), str(r[2]), str(r[3])))

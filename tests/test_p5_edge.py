@@ -772,6 +772,22 @@ class RefineGate(_Base):
         self.assertEqual((n, calls), (0, ["refine1"]))                # 반분 재시도 없음
         self.assertEqual((rf.st["gated_items"], rf.st["failed_items"], rf.st["roundtrips"]), (12, 0, 0))
 
+    def test_refiner_transient_failure_is_not_split(self):
+        calls = []
+
+        def fake_send(prompt, tag, name, fresh=None):
+            calls.append(name)
+            return {"ok": False, "phase": "throttled", "error": "Copilot 사용량 제한", "cooldowns": 3}
+        rep = os.path.join(self.tmp, "report")
+        os.makedirs(rep)
+        rows = [(i, {"Level 2": "과제A", "Level 3": f"업무{i}", "share": "0.1", "활동일수": "1", "근거": "메일1"})
+                for i in range(12)]
+        rf = refine.Refiner("t", rep, None, "", [], say=lambda *a: None)
+        with mock.patch.object(refine, "copilot_send", fake_send):
+            n = rf.run(rows, set(), "1")
+        self.assertEqual((n, calls), (0, ["refine1"]))                # 쉬고도 막힌 청크는 반분 재시도 없음
+        self.assertEqual((rf.st["failed_items"], rf.st["retries"]), (12, 0))
+
     def test_signal_evidence_skips_ad(self):
         rep = os.path.join(self.tmp, "report")
         os.makedirs(rep)

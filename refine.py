@@ -45,7 +45,6 @@ if ROOT not in sys.path:
     # agentic.py·retag.py·team_refine.py·ui/app.py 는 모두 ROOT 를 넣는다 — 여기만 빠져 있었다.
     sys.path.insert(0, ROOT)
 from details import l1_prompt_lines  # noqa: E402  - 상위 정의 줄 생성(L1_META 단일원)
-from details import level1_of  # noqa: E402  - 상위 규칙 분류(코드네임·ax·공통) — AI 가 비운 자리만
 from details import ukey2  # noqa: E402  - judge·flow 와 같은 과제 신원 축
 from details import ukey3  # noqa: E402  - 담당업무(하위) 신원 축 — 같은 업무를 두 행으로 남기지 않게
 import details as _details  # noqa: E402  - explain_failure(로그인 필요 등 치명 실패 판정)
@@ -570,6 +569,12 @@ class Refiner:
                 # 전부 보냈다. 여기서 접는다: 이 청크의 항목은 실패로 세고, 반분 재시도도 하지 않는다.
                 self.st["failed_items"] += len({i for i, _ in ch} - set(ov))
                 return 0
+            # 일시 실패(사용량 제한·무응답·시간 초과 …)는 copilot_send 가 이미 쉬고 같은 청크를 다시 보냈다(cooldowns) —
+            # 반으로 나눠 또 보내면 막힌 Copilot 에 왕복만 늘어난다(마감 직전이라 쉬지 못했으면 최대 7번). 원본 그대로 둔다.
+            if res.get("cooldowns") or (_judge is not None and hasattr(_judge, "_is_transient")
+                                        and _judge._is_transient(res)):
+                self.st["failed_items"] += len({i for i, _ in ch} - set(ov))
+                return 0
         ch_ok = {i for i, _ in ch}
         covered = set()
         for it in got:
@@ -640,6 +645,26 @@ def merge_groups(items, rows):
     return [g for g in groups if g["idxs"]], owner
 
 
+def _pinned_projects():
+    r"""지정 과제(config\projects.json) → (이름 목록, {ukey2(이름): 상위}) — 과제명 관문 통과·상위 채움용(못 읽으면 빈 값)."""
+    try:
+        import projmap
+        ps = projmap.load_user_projects(ROOT)
+    except Exception:  # noqa: BLE001 - 지정을 못 읽어도 정제는 계속(관문·규칙 상위만)
+        return [], {}
+    return ([p["name"] for p in ps],
+            {ukey2(p["name"]): snap1(p.get("level1")) for p in ps if snap1(p.get("level1"))})
+
+
+def _guard_lv2(lv2, vote, people=(), pinned=()):
+    """정제가 고른 과제명(Level 2) 관문(LM28 진단 B) — 사람 이름·채팅방·공지류(근태공지·인사발령 …)는 과제가 아니다.
+    걸리면 원본 다수결(vote()), 그것도 걸리면 '공통'. 빈칸·'미지정'·지정 과제는 그대로."""
+    if not lv2 or lv2 == "미지정" or _details.task_name_ok(lv2, people, pinned):
+        return lv2
+    v = str(vote() or "").strip() or "공통"
+    return v if _details.task_name_ok(v, people, pinned) else "공통"
+
+
 def _stage_budget(floor_min=15.0):
     r"""core.budget.stage_budget 위임 — v3 에서 3벌 사본을 한 벌로 모았다(구조 감사:
     사본 유사도 0.925~1.000 · 정책 수정이 한 곳씩 빠지던 원인). 시그니처는 관행 유지."""
@@ -678,14 +703,21 @@ def main():
               f"({'판정 축' if sig_judged else '규칙 축'}, {len(sig_by)}묶음)")
     elif ev:
         print(f"[refine] 근거 원천: evidence_{tag}.md (signals 없음 — 정렬 보장 안 됨)")
-    # judge가 확정한 과제 체계가 있으면 Level 2 재작명을 막는 제약으로 전달
+    # 과제명 관문(LM28 진단 B) — 사람 키는 signals 의 who 열에서만 뽑는다. 지정 과제는 늘 통과한다.
+    people = _details.person_keys(r.get("who") for r in _details.read_signals(tag, rep))
+    pinned, pin = _pinned_projects()
+    # judge가 확정한 과제 체계가 있으면 Level 2 재작명을 막는 제약으로 전달. 체계의 l1(상위)은 AI 가 상위를 비운
+    # 행의 채움 재료다(details.level1_fill). 옛 체계에 남은 사람 이름·공지류는 제약 목록에서 뺀다.
     ent_p = os.path.join(rep, f"entities_{tag}.json")
-    model_names = []
+    model_names, l1_map = [], {}
     if os.path.exists(ent_p):
         try:
-            model_names = [m["name"] for m in json.load(open(ent_p, encoding="utf-8")).get("models", [])
-                           if isinstance(m, dict) and m.get("name")]
-        except (OSError, ValueError):
+            _ms = [m for m in json.load(open(ent_p, encoding="utf-8")).get("models", [])
+                   if isinstance(m, dict) and m.get("name")]
+            model_names = [m["name"] for m in _ms
+                           if m.get("pinned") or _details.task_name_ok(m["name"], people, pinned)]
+            l1_map = {ukey2(m["name"]): snap1(m.get("l1")) for m in _ms if snap1(m.get("l1"))}
+        except (OSError, ValueError, AttributeError):
             pass
     # 항목이 많으면 한 번의 왕복으로는 응답이 잘리거나 실패한다 — 청크로 나눠 여러 번 돈다.
     # 실패한 청크는 '병합 없음'으로 두고 계속 진행한다(전부 버리지 않는다).
@@ -776,6 +808,8 @@ def main():
             lv2 = _vote("Level 2") or "공통"
         elif not lv2:
             lv2 = "미지정"
+        # 과제명 관문(LM28 진단 B) — 사람 이름·채팅방·공지류면 원본 다수결, 그것도 걸리면 '공통'
+        lv2 = _guard_lv2(lv2, lambda: _vote("Level 2"), people, pinned)
         # level3 는 실제 업무 항목명(중위개체) — AI 가 비웠거나 9종 범주로 축약해 오면
         # 원본 세부업무명(다수결)을 지킨다. 범주는 activity('활동') 열이 따로 담는다.
         lv3 = str(_g(it, "level3") or "").strip()
@@ -785,10 +819,10 @@ def main():
         detail = re.sub(r"\s+", " ", str(_g(it, "detail") or "")).strip()[:DETAIL_MAX * 2]
         final.append({"유형": _vote("유형"), "제품": _vote("제품"),
                       "활동": act if act in ACT_CATS else "",
-                      # 상위는 AI 판정 우선, 비었을 때만 규칙(코드네임·ax·공통 키워드)으로 채운다 —
+                      # 상위는 AI 판정 우선, 비었을 때만 채움(지정 상위 > 체계 l1 > 규칙 > 과제명이 곧 범주) —
                       # 예전에는 규칙 폴백이 없어 정제가 못 짚은 행의 상위가 통째로 빈칸이었다
                       "Level 1": (snap1(_g(it, "level1"))
-                                  or level1_of(f"{lv2} {lv3} {detail}", lv2, ROOT)), "Level 2": lv2,
+                                  or _details.level1_fill(lv2, f"{lv3} {detail}", l1_map, pin, ROOT)), "Level 2": lv2,
                       "Level 3": lv3, "상세설명": detail,
                       "share": share, "활동일수": days, "근거": srcs,
                       "확신도": "상" if days >= 3 and len(idxs) > 1 else "중",
@@ -802,8 +836,8 @@ def main():
                           # snap1 로 새 4범주에 접어). 예전에는 이 값을 읽지 않고 규칙으로만 재계산해
                           # 코드네임 과제의 상위가 정제 한 번에 빈칸이 됐다(제보 ③ · 검증 CONFIRMED).
                           "Level 1": (snap1(r.get("Level 1", ""))
-                                      or level1_of(f'{r.get("Level 2", "")} {r.get("Level 3", "")}',
-                                                   r.get("Level 2", ""), ROOT)),
+                                      or _details.level1_fill(r.get("Level 2", ""), r.get("Level 3", ""),
+                                                              l1_map, pin, ROOT)),
                           "Level 2": r.get("Level 2", ""), "Level 3": r.get("Level 3", ""),
                           "상세설명": "", "share": _f(r.get("share")), "활동일수": _i(r.get("활동일수")),
                           "근거": r.get("근거", ""), "확신도": r.get("확신도", ""),

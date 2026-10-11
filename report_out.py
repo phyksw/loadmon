@@ -9,7 +9,8 @@ report_out.py — 현재 분석 결과를 하나의 리포트 파일로 출력�
       report\\리포트_<기간>.doc    (더블클릭하면 Word로 열림 — 같은 내용)
 
 담기는 것: 투입/가용 MM·로드율 · 과제별 로드 · 업무분류 배분 · 공통업무(Agentic AI 후보)
-          · 월별 리뷰 코멘트 · 산정 근거와 신뢰도(초과근무 세분·미관측 일수) · 산출 방식(PC 가동 하한의 근거·날짜별 방식)
+          · 월별 리뷰 코멘트(빠진 달은 다른 기간 파일에서 이월 — core/narratives) · 산정 근거와 신뢰도(초과근무 세분·미관측 일수)
+          · 산출 방식(PC 가동 하한의 근거·날짜별 방식 최신순·퇴근 후·시각 · 시간 근거 합계)
           · raw 단서 요약 · 같이 일한 동료 · 연관 업무 · 업무 영역·과제 워크플로 요약(단위업무 등급)
 표기(LM28): 업무 영역(Level 1) / 과제(Level 2) / 세부업무(Level 3) / 업무분류(개발·사무·현장·협업).
 '대체 가능 MM' 은 계산하지도 보이지도 않는다(A-33 RP4 — 실측 투입·빈도만).
@@ -126,6 +127,11 @@ def measure_line(meta, b):
     parts = [f"샘플러 {_n(src.get('sampler_days'))}일", f"PC 하한 {_n(src.get('pc_floor_days'))}일",
              f"흔적폭 {_n(src.get('trace_window_days'))}일", f"출장 {_n(src.get('offsite_days'))}일",
              f"수동 {_n(src.get('manual_days'))}일"]
+    # LM28(E) — PC 기록 없는 달의 표준일 추정·브라우저 기록만 있는 평일(값이 있을 때만)
+    if _n(src.get("std_nopc_days")):
+        parts.append(f"표준일 추정 {_n(src.get('std_nopc_days'))}일")
+    if _n(src.get("hint_only_days")):
+        parts.append(f"브라우저 기록만 {_n(src.get('hint_only_days'))}일")
     meth = str(ms.get("method") or b.get("method") or "")
     return " / ".join(parts) + (f" ({esc(meth)})" if meth else "")
 
@@ -158,12 +164,17 @@ def _fmt_days(v):
 # ══ LM28(WP9) 새 절 — 순수 함수(파일을 읽지 않는다 · 분석리포트 freeze.py 도 같은 함수를 쓴다) ═══════════════════
 # 표기(REQ-27·W2-18): 업무 영역(Level 1) / 과제(Level 2) / 세부업무(Level 3) / 업무분류(유형 — 개발·사무·현장·협업).
 FLOOR_KIND_KO = {"spans": "PC 하한(가동 구간)", "window": "PC 하한(가동 창 − 절전 공백)", "nowin": "PC 하한(창 정보 없음)",
-                 "always_on": "PC 하한(늘 켜 둔 PC — 흔적 ±30분)", "trace": "흔적 창(PC 기록 없음)"}
+                 "always_on": "PC 하한(늘 켜 둔 PC — 흔적 ±30분)", "trace": "흔적 창(PC 기록 없음)",
+                 # LM28(E) — 브라우저 기록만 있는 날의 흔적 창 · PC 기록 없는 달의 표준일 추정(어디서나 '표준일 추정') · 날짜만 아는 발신
+                 "trace_hint": "흔적 창(브라우저 사용)", "std_nopc": "표준일 추정(PC 기록 없는 달)",
+                 "untimed": "시각 미상 발신"}
 CUT_KO = {"lunch_h": "점심", "dinner_h": "저녁 식사", "sleep_gap_h": "절전·꺼짐 공백", "half_day": "반차",
           "day_cap_11h": "하루 상한 11h"}
 TAG_KO = (("regular_h", "정규"), ("extended_h", "연장"), ("night_h", "야간(22~06)"), ("holiday_h", "휴일"),
           ("holiday_night_h", "휴일 중 야간"))
-PEER_DIRECT = ("메일(수신)", "팀즈(수신)", "팀즈(오더)", "회의")      # 직접 관계 — CC·단체·수신전용(bulk)은 빼고 센다
+# 직접 관계 — CC·단체·수신전용(bulk)은 빼고 센다. 팀즈 웹이 날짜만 짚은 남의 글('팀즈(수신·일자)' — LM28 E)은 단체·오더가
+# 한 라벨로 섞여 직접 관계를 가를 수 없어 세지 않는다(단체 채팅 상대가 동료로 부풀지 않게).
+PEER_DIRECT = ("메일(수신)", "팀즈(수신)", "팀즈(오더)", "회의")
 PEER_REL = {"메일(수신)": "메일", "팀즈(수신)": "팀즈", "팀즈(오더)": "의뢰(팀즈)", "회의": "회의"}
 MEETING_MAX = 10                                                  # 이보다 큰 회의로만 엮인 사람은 동료가 아니다(A-37)
 FLOOR_WHY = [
@@ -184,7 +195,8 @@ FLOOR_WHY = [
 
 
 def day_method(db):
-    """day_basis[날짜] → 그날 어느 방식으로 셌나(종일 행사·수동 기록·흔적 창·PC 하한·샘플러/흔적 실측)"""
+    """day_basis[날짜] → 그날 어느 방식으로 셌나(종일 행사·수동 기록·흔적 창·PC 하한·표준일 추정·시각 미상 발신·
+    샘플러/흔적 실측). 0h 날(LM28 E — 0h 평일도 day_basis 에 남는다)은 흔적 없음(PC 기록도 없으면 기록 없음)."""
     db = db if isinstance(db, dict) else {}
     if db.get("offsite"):
         return "종일 행사"
@@ -192,14 +204,72 @@ def day_method(db):
         return "수동 기록"
     fl = db.get("floor") if isinstance(db.get("floor"), dict) else None
     if fl:
-        return FLOOR_KIND_KO.get(str(fl.get("kind") or ""), "PC 하한")
+        m = FLOOR_KIND_KO.get(str(fl.get("kind") or ""), "PC 하한")
+        return m + (" · 표준일 추정" if fl.get("est") and "표준일 추정" not in m else "")
+    if _h(db.get("h")) <= 0:
+        pc = db.get("pc") if isinstance(db.get("pc"), dict) else {}
+        return "기록 없음" if str(pc.get("rec") or "") == "none" else "흔적 없음"
     return "샘플러·흔적 실측"
 
 
-def floor_day_rows(day_basis, limit=None):
-    """day_basis → [(날짜, 인정 h, 방식, 하한을 연 흔적, 하한이 더한 h, 깎은 것, 꼬리표)] 날짜순"""
+def after_text(db, edge="19:00"):
+    """'퇴근 후·시각' 칸(LM28 E) — 퇴근 경계 뒤 PC 가동·내 흔적·받은 흔적·인정한 창·빠진 이유(ev) · 날짜만 아는 발신(untimed) ·
+    AI 비업무 발신 시간 유지(ai_n_kept) · PC 기록 종류(브라우저 기록만·항상 켜짐) · 부재. edge = 퇴근 경계(하한 창 끝)."""
+    db = db if isinstance(db, dict) else {}
+    bits = []
+    ev = db.get("ev") if isinstance(db.get("ev"), dict) else {}
+    why = str(ev.get("why") or "")
+    if why == "no_active_after":
+        bits.append(f"PC {edge} 이후 {_h(ev.get('pc_after_h')):.1f}h · 내 흔적 0 · 받은 {_n(ev.get('pas_after'))} → 미인정")
+    elif why == "credited":
+        bits.append(f"퇴근 후 {_h(ev.get('credit_h')):.1f}h 인정")
+    elif why == "capped":
+        bits.append(f"PC 야간 가동 한도로 일부만 인정 {_h(ev.get('credit_h')):.1f}h")
+    elif why == "no_pc_after":
+        bits.append(f"내 흔적 {_n(ev.get('act_after'))}건 · 퇴근 후 PC 기록 없음(발신 세션만)")
+    un = db.get("untimed") if isinstance(db.get("untimed"), dict) else {}
+    if _n(un.get("n")):
+        cm = _n(un.get("credit_min"))
+        bits.append(f"날짜만 아는 발신 {_n(un.get('n'))}통" + (f"({cm}분 인정)" if cm else "(하한에 포함)"))
+    if _n(db.get("ai_n_kept")):
+        bits.append(f"AI 비업무 발신 {_n(db.get('ai_n_kept'))}건 시간 유지")
+    pc = db.get("pc") if isinstance(db.get("pc"), dict) else {}
+    if str(pc.get("rec") or "") == "hint":
+        bits.append("브라우저 기록만")
+    if pc.get("always_on"):
+        bits.append("PC 항상 켜짐")
+    ab = _h(db.get("absent"))
+    if ab > 0:
+        bits.append("부재 종일" if ab >= 1 else f"부재 {ab:g}일")
+    return " · ".join(bits)
+
+
+def time_basis_line(meta, b):
+    """LM28(E) 시간 근거 합계 한 줄 — 퇴근 후 미인정·시각 미상 발신·표준일 추정(PC 기록 없는 달)·브라우저 기록만 있는 평일·
+    AI 비업무 발신 시간 유지(값이 있는 것만, 없으면 ""). mine 요약 줄·대시보드 MM 카드와 같은 숫자(mm_basis 키 — 재산정 뒤에는
+    judge 가 바꾼 mm_basis · ai_n_time_kept 는 mm_meta 최상위에도 있다)."""
+    bits = []
+    if _n(_pick(meta, b, "evening_missed_days")):
+        bits.append(f"퇴근 후 미인정 {_n(_pick(meta, b, 'evening_missed_days'))}일·PC "
+                    f"{_h(_pick(meta, b, 'evening_missed_pc_h')):.1f}h(퇴근 뒤 PC 는 켜져 있었는데 내 흔적 없음)")
+    if _n(_pick(meta, b, "untimed_sends")):
+        bits.append(f"시각 미상 발신 {_n(_pick(meta, b, 'untimed_sends'))}통"
+                    f"({_h(_pick(meta, b, 'untimed_credit_h')):.1f}h 인정)")
+    if _n(_pick(meta, b, "std_nopc_days")):
+        bits.append(f"표준일 추정 {_n(_pick(meta, b, 'std_nopc_days'))}일"
+                    f"(+{_h(_pick(meta, b, 'std_nopc_h')):.1f}h — PC 기록 없는 달)")
+    if _n(_pick(meta, b, "hint_only_days")):
+        bits.append(f"브라우저 기록만 있는 평일 {_n(_pick(meta, b, 'hint_only_days'))}일")
+    if _n(_pick(meta, b, "ai_n_time_kept")):
+        bits.append(f"AI 비업무 발신 시간 유지 {_n(_pick(meta, b, 'ai_n_time_kept'))}건")
+    return " · ".join(bits)
+
+
+def floor_day_rows(day_basis, limit=None, edge="19:00"):
+    """day_basis → [{date, h, method, open, add_h, cut, tags, extra, after}] **최신순**(LM28 E — 0h 평일·흔적 있는 휴일 포함 ·
+    after = '퇴근 후·시각' 칸). limit 이면 최근 limit 일만."""
     out = []
-    for d in sorted((day_basis or {}) if isinstance(day_basis, dict) else {}):
+    for d in sorted(((day_basis or {}) if isinstance(day_basis, dict) else {}), reverse=True):
         db = day_basis[d] if isinstance(day_basis[d], dict) else {}
         fl = db.get("floor") if isinstance(db.get("floor"), dict) else {}
         cut = fl.get("cut") if isinstance(fl.get("cut"), dict) else {}
@@ -216,36 +286,43 @@ def floor_day_rows(day_basis, limit=None):
             extra.append(f"사적 차감 {_n(db.get('private_min'))}분")
         out.append({"date": d, "h": _h(db.get("h")), "method": day_method(db),
                     "open": ", ".join(str(x) for x in (fl.get("open") or [])),
-                    "add_h": _h(fl.get("add_h")), "cut": cut_s, "tags": tag_s, "extra": " · ".join(extra)})
+                    "add_h": _h(fl.get("add_h")), "cut": cut_s, "tags": tag_s, "extra": " · ".join(extra),
+                    "after": after_text(db, edge)})
     return out[:limit] if limit else out
 
 
 def floor_section(meta, b, max_rows=62):
-    """'산출 방식 — PC 가동 하한의 근거' 절(★ 사용자 지시 2026-10-07 ②) → HTML 조각 목록"""
+    """'산출 방식 — PC 가동 하한의 근거' 절(★ 사용자 지시 2026-10-07 ②) → HTML 조각 목록.
+    LM28(E): 날짜표는 최신순(최근 max_rows 일)이고 0h 평일도 들어간다 · '퇴근 후·시각' 열 · 표 위에 시간 근거 합계 한 줄."""
     cu = b.get("cfg_used") if isinstance(b.get("cfg_used"), dict) else (meta.get("cfg_used") or {})
     cu = cu if isinstance(cu, dict) else {}
     win = cu.get("pcFloorWindow")
     win_s = "~".join(str(x) for x in win) if isinstance(win, (list, tuple)) else "08:00~19:00"
+    edge = str(win[1]) if isinstance(win, (list, tuple)) and len(win) == 2 and win[1] else "19:00"
     h = [f"<h2>산출 방식 — PC 가동 하한의 근거</h2><div class='dim'>이 보고서의 하한 창: <b>{esc(win_s)}</b>"
          + (f" · 근거 문구: {esc(cu.get('floorBasis'))}" if cu.get("floorBasis") else "") + "</div><ul>"]
     h += [f"<li style='margin:3px 0'>{t}</li>" for t in FLOOR_WHY]
     h.append("</ul>")
-    rows = floor_day_rows(b.get("day_basis") or meta.get("day_basis"))
+    tb = time_basis_line(meta, b)
+    if tb:
+        h.append(f"<div class='dim'><b>시간 근거 합계</b> — {esc(tb)}</div>")
+    rows = floor_day_rows(b.get("day_basis") or meta.get("day_basis"), edge=edge)
     if rows:
         cnt = {}
         for r in rows:
             cnt[r["method"]] = cnt.get(r["method"], 0) + 1
         h.append("<div class='dim'>날짜별로 어느 방식으로 셌는지 — " + esc(" · ".join(f"{k} {v}일" for k, v in
                                                                          sorted(cnt.items(), key=lambda x: -x[1])))
-                 + (f" (앞 {max_rows}일만 표시 · 전체는 mm_meta 의 mm_basis.day_basis)" if len(rows) > max_rows else "")
+                 + (f" (최근 {max_rows}일만 표시 · 전체는 mm_meta 의 mm_basis.day_basis)" if len(rows) > max_rows else "")
                  + "</div>")
         h.append("<table><tr><th>날짜</th><th>인정</th><th>방식</th><th>하한을 연 흔적</th><th>하한이 더한 시간</th>"
-                 "<th>깎은 것</th><th>꼬리표</th><th>그 밖</th></tr>")
+                 "<th>깎은 것</th><th>꼬리표</th><th>퇴근 후·시각</th><th>그 밖</th></tr>")
         for r in rows[:max_rows]:
             h.append(f"<tr><td>{esc(r['date'])}</td><td>{r['h']:.2f}h</td><td>{esc(r['method'])}</td>"
                      f"<td class='dim'>{esc(r['open']) or '–'}</td>"
                      f"<td>{(format(r['add_h'], '.2f') + 'h') if r['add_h'] else '–'}</td>"
                      f"<td class='dim'>{esc(r['cut']) or '–'}</td><td class='dim'>{esc(r['tags'])}</td>"
+                     f"<td class='dim'>{esc(r['after']) or '–'}</td>"
                      f"<td class='dim'>{esc(r['extra'])}</td></tr>")
         h.append("</table>")
     return h
@@ -510,7 +587,13 @@ def build(tag, summary=False):
                                os.path.join(REP, f"mm_rows_{tag}_refined.csv")) else [])
             or _rows(os.path.join(REP, f"mm_rows_{tag}.csv")))
     pv = _json(os.path.join(REP, f"pivots_{tag}.json"))
-    nar = _json(os.path.join(REP, f"ai_narratives_{tag}.json"))
+    # 월별 코멘트 — 이 기간 파일의 달 + 빠진 달은 다른 기간 파일에서(core/narratives.load_merged — judge·화면과 같은 이월 규칙,
+    # 기간 밖의 달은 섞지 않는다). 예전에는 정확한 tag 파일만 읽어, 기간이 날마다 바뀌면 5절이 통째로 빠졌다(진단 C).
+    try:
+        import narratives as _nv
+        nar = _nv.load_merged(REP, tag, months=_nv.period_months(tag)) or {}
+    except Exception:  # noqa: BLE001 - 코멘트 판독 실패가 리포트를 막지 않게(예전 방식으로)
+        nar = _json(os.path.join(REP, f"ai_narratives_{tag}.json"))
     ent = _json(os.path.join(REP, f"entities_{tag}.json"))
     sig = _rows(os.path.join(REP, f"signals_{tag}.csv"))
     b = meta.get("mm_basis") or {}
@@ -626,7 +709,11 @@ def build(tag, summary=False):
         h.append("<h2>5. 월별 리뷰 코멘트</h2>")
         for mk in sorted(nar):
             v = nar[mk] or {}
-            h.append(f"<h3 style='font-size:14px;margin:14px 0 4px'>{esc(mk)}</h3>"
+            if not isinstance(v, dict):
+                continue
+            # 다른 기간에서 이월했거나(from_tag) 이번 실행에서 새로 만들지 못한(earlier) 달 — 이전 분석의 코멘트임을 적는다
+            old = " <span class='dim'>(이전 분석 코멘트)</span>" if (v.get("from_tag") or v.get("earlier")) else ""
+            h.append(f"<h3 style='font-size:14px;margin:14px 0 4px'>{esc(mk)}{old}</h3>"
                      f"<div>{esc(v.get('summary'))}</div>")
             for p in (v.get("projects") or []):
                 if not isinstance(p, dict):          # AI가 문자열 배열로 줄 때도 리포트는 나와야 한다
@@ -636,13 +723,21 @@ def build(tag, summary=False):
                          f"{esc(p.get('story'))} <span class='dim'>{esc(p.get('worktypes'))}</span></div>")
 
     if ent.get("models"):
-        h.append("<h2>6. 과제 체계</h2><table><tr><th>과제</th><th>식별 키워드</th>"
-                 "<th>채택 근거</th></tr>")
+        models = [m for m in ent["models"] if isinstance(m, dict)]
+        has_l1 = any(m.get("l1") for m in models)          # 체계가 과제마다 고른 업무 영역(l1) — 있는 체계만 열을 보인다
+        h.append("<h2>6. 과제 체계</h2>"
+                 + ("<div class='dim'><b>규칙 폴백 체계(임시)</b> — 체계 수립 왕복이 실패해 규칙으로 만든 임시 체계입니다. "
+                    "다음 판정이 다시 세웁니다.</div>" if ent.get("fallback") else "")
+                 + ("<div class='dim'><b>지난 체계 재사용</b> — 새로 물을 신호가 없어 지난 정상 체계를 그대로 썼습니다.</div>"
+                    if ent.get("reused_from") else "")
+                 + "<table><tr><th>과제</th>" + ("<th>업무 영역</th>" if has_l1 else "")
+                 + "<th>식별 키워드</th><th>채택 근거</th></tr>")
         pin_badge = "<span class='tag'>지정</span>"
-        for m in ent["models"]:
+        for m in models:
             badge = pin_badge if m.get("pinned") else ""
             h.append(f"<tr><td><b>{esc(m.get('name'))}</b> {badge}</td>"
-                     f"<td class='dim'>{esc(', '.join(m.get('match') or []))}</td>"
+                     + (f"<td>{esc(m.get('l1') or '–')}</td>" if has_l1 else "")
+                     + f"<td class='dim'>{esc(', '.join(m.get('match') or []))}</td>"
                      f"<td class='dim'>{esc(m.get('obs'))}</td></tr>")
         h.append("</table>")
 
@@ -663,6 +758,12 @@ def build(tag, summary=False):
                      f"<td>{esc(', '.join(m.get('work') or []))}</td>"
                      f"<td class='dim'>{esc(m.get('reason'))}</td></tr>")
         h.append("</table>")
+        # AI 판정 대기(신호 대부분이 규칙 판정이라 아직 묻지 않은 업무)의 MM — 매칭 MM 이 줄어든 것으로 읽히지 않게(진단 D)
+        _mr = ag.get("mm_recalc") if isinstance(ag.get("mm_recalc"), dict) else {}
+        if _h(_mr.get("rule_mm")) > 0:
+            h.append(f"<div class='dim'>AI 판정 대기 {_n(_mr.get('rule_rows'))}행 · {_h(_mr.get('rule_mm')):.2f} MM — "
+                     "신호 대부분이 규칙 판정이라 아직 매칭하지 않은 업무입니다(판정이 회복된 뒤 [재매칭]). "
+                     "로드가 줄어든 것이 아닙니다.</div>")
         if ag.get("new"):
             h.append("<h3 style='font-size:14px'>신규 Agentic AI 후보 발굴</h3>")
             for n2 in ag["new"]:
@@ -821,6 +922,9 @@ def build(tag, summary=False):
                  + (f" · 야간 {_win(cu.get('nightWindow'))}" if cu.get("nightWindow") else "")
                  + (f" · 사적 차감 {cu.get('privateRunMin')}분 연속" if cu.get("privateRunMin") is not None else "")
                  + (f" · 과제 몫 {cu.get('shareBasis')}" if cu.get("shareBasis") else "")
+                 # LM28(E) — PC 기록 없는 달의 평일: standard = 표준일 추정(기본) · trace = 흔적 창(예전)
+                 + (f" · PC 기록 없는 달 {'흔적 창(예전)' if cu.get('noPcMonthDay') == 'trace' else '표준일 추정(기본)'}"
+                    if cu.get("noPcMonthDay") else "")
                  + " — 팀과 다르면 팀 취합에 '산식 설정 상이' 배지")
         if k == "anomalies":
             items = [a for a in (v or []) if isinstance(a, dict)]

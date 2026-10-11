@@ -10,8 +10,9 @@ Get-OutlookWeb.py 와 같은 방식이다: Copilot 에 쓰는 전용 Edge 프로
 
   python collect\\Get-TeamsWeb.py --from 2026-06-01 --to 2026-06-30 [--max-chats 200] [--budget 900] [--force]
 
-출력: data\\m365\\teams_web.csv   (time,from,chat,kind,replied_time,summary)
-      — Graph·창 읽기 경로와 같은 스키마라 분석기(core\\extract.py 의 teams_*.csv)가 그대로 인제스트한다.
+출력: data\\m365\\teams_web.csv   (time,from,chat,kind,replied_time,summary,time_precision)
+      — Graph·창 읽기 경로와 같은 스키마(+ 끝 열 time_precision: minute | date — 메일 웹 수집기와 같은 약속, date 면 12:00 은
+        자리표)라 분석기(core\\extract.py 의 teams_*.csv)가 그대로 인제스트한다.
       이미 있는 teams_*.csv 전부와 대조해 같은 메시지는 다시 적지 않는다(경로가 겹쳐도 중복 계상 없음).
       data\\m365\\teams_web_rooms.json — 방 커서 {ver: '<판>|<collect.cursorEpoch>', rooms: {sha1(방)[:12]:
       {status, oldest, newest_read, …}}, dom_census: {…}} (메시지 원문 없음 — newest_read 는 해시, dom_census 는 화면 구조만).
@@ -62,6 +63,11 @@ LM28 '읽음' 규칙(F-06·F-07·F-30·C-21·W1-05 — 검증된 방만 읽음�
     newest_read 는 complete·incremental_ok 일 때만 앞으로 옮긴다.
   · 날짜는 <time datetime> 를 우선하고, 머리 조각(시각·title·aria-label)과 날짜 구분선에서만 찾는다(본문 날짜 금지).
     날짜를 못 짚은 메시지는 버린다. 작성자가 없는 연속 메시지는 직전 작성자를 잇는다(내 말풍선은 '나').
+  · LM28-TW-3(야근이 덜 잡히던 것 — E): 날짜만 짚은 메시지는 버리지 않고 time_precision=date 로 남긴다(정오를 시각으로 지어내지
+    않는다 — 분석은 '그날 일했다' 는 흔적으로만 쓴다). 내 말풍선은 제 클래스·자손 표지 → 조상 표지(대화 칸 안쪽·다른 메시지를 품지
+    않은 조상) → 위치 규칙(오른쪽 붙음·작성자 없음 = 나) 순으로 본다. '나' 이름에 로그온 화면 표시명을 보탠다. 저장은 지난 판의
+    날짜만 행을 분 단위로, 남의 말로 적힌 내 메시지를 내 발신으로 제자리에서 바로잡는다(Store). '구조:' 줄 끝에 '내 메시지 n/m ·
+    판정불가 k · 이어받음 j'(판정불가인데 직전 작성자를 이어받은 행 — 내 말이 남의 말로 적혔을 수 있다).
   · 방마다 저장한다(예산에 끊겨도 앞 방은 남는다). 중복 키는 teams_parse.key_of(날짜 포함 · 정제된 글).
   · 일자 판정(teams 축): teams_parse.day_ranges — 목록 끝(또는 마지막 방이 d 보다 오래됨) + 마지막 활동 ≥d 인 모든 방을
     d 이하까지 읽음이면 ok, 그 밖은 partial. 오늘은 ok 대신 partial.
@@ -100,8 +106,12 @@ import owa_parse  # noqa: E402  — 목록 날짜 조각(오늘·요일·어제�
 import teams_parse  # noqa: E402  — LM28 순수 판정(키·방 판정·일자 판정)
 
 OUT_DIR = os.path.join(ROOT, "data", "m365")
-HDR = "time,from,chat,kind,replied_time,summary"
-COLLECTOR_VER = "LM28-TW-2"            # 방 커서 판 — teams_web_rooms.json 의 ver '판|collect.cursorEpoch'(TW-2: 방 열쇠가 안정 이름으로 바뀜)
+# time_precision(LM28 E — 메일 웹 수집기와 같은 약속): minute(시각을 짚음) · date(날짜만 — time 의 12:00 은 자리표, 분석이 시각
+# 근거로 쓰지 않는다). 예전 6열 파일은 다음 저장 때 7열로 다시 쓴다(빈 값 = 시각 있음).
+HDR = "time,from,chat,kind,replied_time,summary,time_precision"
+# 방 커서 판 — teams_web_rooms.json 의 ver '판|collect.cursorEpoch'(TW-2: 방 열쇠가 안정 이름으로 바뀜 · TW-3: 내 말풍선 판정
+# (조상 표지·위치 규칙)·날짜만 메시지 보존 — 지난 판이 남의 말로 적은 내 메시지를 다시 읽어 바로잡게 처음부터 읽는다)
+COLLECTOR_VER = "LM28-TW-3"
 STATE_NAME = "teams_web_rooms.json"
 TEAMS_URL = "https://teams.microsoft.com/"          # LM28: 문서에 없는 /v2/ 경로 대신 시작 주소(도착 호스트는 cloud.microsoft 일 수 있다)
 HOSTS = ("teams.microsoft.com", "teams.cloud.microsoft", "teams.office.com")
@@ -167,10 +177,30 @@ def _norm(s):
     return teams_parse.norm_name(s)
 
 
+def logon_display_name():
+    r"""로그온 화면 표시명(HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\LogonUI 의 LastLoggedOnDisplayName —
+    회사 AD 표시명 = 팀즈 표시명이 대부분). 마지막 로그온 계정(LastLoggedOnSAMUser, 없으면 LastLoggedOnUser)의 끝 조각이 지금
+    USERNAME 일 때만(Get-TeamsWindow.ps1 과 같은 규칙). 못 읽으면 ''. 프로세스를 띄우지 않는다."""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\LogonUI") as k:
+            def _v(name):
+                try:
+                    return str(winreg.QueryValueEx(k, name)[0] or "").strip()
+                except OSError:
+                    return ""
+            name, user = _v("LastLoggedOnDisplayName"), _v("LastLoggedOnSAMUser") or _v("LastLoggedOnUser")
+    except (ImportError, OSError):
+        return ""
+    me = str(os.environ.get("USERNAME") or "").strip().lower()
+    return name if (name and user and me and user.split("\\")[-1].strip().lower() == me) else ""
+
+
 def self_names(cfg):
-    """'나' 로 볼 표시 이름 — config.owner · teamsSelfNames · Windows 계정 · 팀즈가 쓰는 '나/You'."""
+    """'나' 로 볼 표시 이름 — config.owner · teamsSelfNames · Windows 계정 · 로그온 표시명(LM28 E) · 팀즈가 쓰는 '나/You'."""
     out = {"나", "you", "본인", "me", "자신"}
-    vals = [cfg.get("owner"), os.environ.get("USERNAME")]
+    vals = [cfg.get("owner"), os.environ.get("USERNAME"), logon_display_name()]
     vals += list(cfg.get("teamsSelfNames") or [])
     for v in vals:
         v = _norm(v)
@@ -216,7 +246,9 @@ def hm_words(s):
 
 
 def stamp(head, body, cur_date, d0, d1, today):
-    """(날짜, 시각) 을 뽑는다 → (datetime, 'iso'|'full'|'sep'|'rel') 또는 (None, 사유).
+    """(날짜, 시각) 을 뽑는다 → (datetime, 'iso'|'full'|'sep'|'rel'|'date') 또는 (None, 사유).
+    'date'(LM28 E) = 날짜만 안다 — datetime 의 12:00 은 자리표(time_precision=date 로 저장, 분석이 시각 근거로 쓰지 않는다).
+    예전엔 머리에 날짜만 있으면 정오를 시각으로 지어냈고, 시각이 하나도 없으면 날짜 구분선이 있어도 메시지를 버렸다.
 
     ★ 날짜는 **머리 조각(head)에서만** 찾는다. head = <time datetime> · 타임스탬프 · title 속성 ·
     aria-label 처럼 화면이 '이 메시지의 시각' 이라고 말해 주는 것들이고, body 는 본문이다.
@@ -241,7 +273,12 @@ def stamp(head, body, cur_date, d0, d1, today):
         hm = find_times(s)
         if hm:
             return datetime(d.year, d.month, d.day, hm[0][0], hm[0][1]), "full"
-        return datetime(d.year, d.month, d.day, 12, 0), "full"
+        # 머리에 날짜만 — 시각은 머리의 다른 조각·본문 앞머리('홍길동 오후 3:24')에서 찾아 그 날짜에 쓴다(LM28 E)
+        for s2 in head + body:
+            hm = find_times(s2)
+            if hm:
+                return datetime(d.year, d.month, d.day, hm[0][0], hm[0][1]), "full"
+        return datetime(d.year, d.month, d.day, 12, 0), "date"
     # 시각은 본문 앞머리에서 와도 된다(화면이 '홍길동 오후 3:24' 를 한 덩어리로 그리는 스킨) —
     # 날짜만 본문에서 오면 안 된다.
     hm = None
@@ -250,6 +287,8 @@ def stamp(head, body, cur_date, d0, d1, today):
         if hm:
             break
     if not hm:
+        if cur_date:                      # 시각은 끝내 없지만 날짜 구분선이 그 날을 말해 준다 — 날짜만으로 남긴다(LM28 E)
+            return datetime(cur_date.year, cur_date.month, cur_date.day, 12, 0), "date"
         return None, "시각 없음"
     if cur_date:                          # 날짜 구분선이 알려준 그 날 (팀즈 웹은 날짜마다 구분선을 그린다)
         return datetime(cur_date.year, cur_date.month, cur_date.day, hm[0][0], hm[0][1]), "sep"
@@ -706,8 +745,17 @@ JS_MSGS = r"""/*LM28:tw_msgs*/
     const ts = e.querySelector('[data-tid="message-timestamp"],time,[data-tid="message-status"] time');
     const bd = e.querySelector('[data-tid="messageBodyContent"],[id^="content-"],[data-tid="message-content"],[data-tid="message-body"],[id^="message-body-"]');
     const cls = (typeof e.className === "string") ? e.className : ((e.className && e.className.baseVal) || "");
-    const mine = /ChatMyMessage|message-mine|myMessage/i.test(cls) || !!e.querySelector('[class*="ChatMyMessage"],[class*="myMessage"]');
-    const other = !mine && (/ChatMessage/i.test(cls) || !!e.querySelector('[class*="ChatMessage"]'));
+    // 내 말풍선(LM28 E): 제 클래스·자손 표지 → 조상 표지(대화 칸 안쪽이고 다른 메시지를 품지 않은 조상만 — 목록 전체를 감싼 칸이
+    // 'myMessage…' 류 이름이어도 모두 내 말이 되지 않게) → 둘 다 없으면 일반 읽기와 같은 위치 규칙(오른쪽 붙음·작성자 없음 = 나, 왼쪽 = 남)
+    const myA = e.closest(MYQ);
+    let mine = /ChatMyMessage|message-mine|myMessage/i.test(cls) || !!e.querySelector('[class*="ChatMyMessage"],[class*="myMessage"]')
+      || !!(myA && box !== document && myA !== box && box.contains(myA) && !els.some(o => o !== e && myA.contains(o)));
+    let other = !mine && (/ChatMessage/i.test(cls) || !!e.querySelector('[class*="ChatMessage"]'));
+    if (!mine && !other && box !== document) {
+      const bx = box.getBoundingClientRect(), q = (bd || e).getBoundingClientRect();
+      if (bx.width > 200 && q.width > 0) {
+        if (!au && q.left - bx.left >= bx.width * 0.3 && bx.right - q.right <= bx.width * 0.12) mine = true;
+        else if (q.left - bx.left < bx.width * 0.25) other = true; } }
     out.items.push({t: "msg", mid: midOf(e), fid: fidOf(e),
       label: (e.getAttribute("aria-label") || "").slice(0, 400),
       author: au ? (au.textContent || "").trim() : "",
@@ -1041,6 +1089,10 @@ class Run:
                   "cut_budget": 0, "cut_no_scroller": 0, "roomgone": 0, "rows_new": 0, "teams_present": False,
                   "skipped_old": 0, "not_opened": 0, "unchanged_skip": 0, "pages": 0, "scrolls": 0, "dup_other": 0,
                   "no_time": 0, "no_body": 0, "no_author": 0,
+                  # 내 메시지 진단(LM28 E): 남길 행 · 그중 내 발신 · 화면 판정(내 것·남의 것·판정불가) · 판정불가인데 이어받음 ·
+                  # 날짜만 · 지난 판의 날짜만 행을 분 단위로(prec_up)·남의 말로 적힌 내 메시지를 내 발신으로(mine_fixed) 바로잡음
+                  "rows_read": 0, "rows_sent": 0, "mine_t": 0, "mine_f": 0, "mine_n": 0, "au_inherit": 0, "date_only": 0,
+                  "prec_up": 0, "mine_fixed": 0,
                   # 방 전환 — 실패 사유(그 방은 roomgone)·확인 근거(방마다 하나). last_run.json 의 counts 에 남도록 앞쪽에 둔다.
                   "open_notfound": 0, "pane_stuck": 0, "open_same_pane": 0, "open_by_sel": 0, "open_by_title": 0,
                   "open_by_conv": 0, "open_by_doc": 0, "open_by_content": 0}
@@ -1617,9 +1669,11 @@ def open_room(br, run, room, it, cur):
 
 
 def parse_page(page, run, chat):
-    """대화 화면 한 장 → [{ident, dt?, au?, bd?, me?}] (문서 순서). 날짜를 못 짚은 메시지는 dt 없이(정체 판정용 ident 만).
+    """대화 화면 한 장 → [{ident, mn, inh, dt?, au?, bd?, me?}] (문서 순서). 날짜를 못 짚은 메시지는 dt 없이(정체 판정용 ident 만).
     작성자: 화면이 말한 이름 → 내 말풍선이면 '나' → 직전 작성자를 잇는다(남의 말풍선이 내 말풍선 뒤면 잇지 않는다) →
-    화면 전체에 작성자 표식이 없는 스킨이면 첫 잎 글자(LM24)."""
+    화면 전체에 작성자 표식이 없는 스킨이면 첫 잎 글자(LM24).
+    LM28(E) 진단: mn = 화면의 내 말풍선 판정(True·False·None 판정불가) · inh = 판정불가인데 직전 작성자를 이어받았다(read_room 이
+    저장한 행마다 mine_t·mine_f·mine_n·au_inherit 로 센다 — '구조:' 줄의 '내 메시지')."""
     items = [it for it in (page.get("items") or []) if isinstance(it, dict)]
     has_author = any(it.get("t") != "sep" and explicit_author(it) for it in items)
     out, cur, last_au, last_me = [], None, "", False
@@ -1642,14 +1696,17 @@ def parse_page(page, run, chat):
         dt, how = stamp(head, texts[:3], cur, run.d0, run.d1, run.today)
         mine = it.get("mine")
         au = explicit_author(it)
+        inh = False
         if mine is True:
             au = au or "나"
         elif not au:
             if has_author:
                 if last_au and not (mine is False and last_me):
                     au = last_au
+                    inh = mine is None
             else:
                 au = author_of(it, texts)
+        m.update(mn=mine if mine in (True, False) else None, inh=inh)
         if au:
             last_au, last_me = au, (mine is True or _norm(au) in run.selfs)
         if not dt:
@@ -1780,8 +1837,11 @@ def read_room(br, run, room, st, fids=None):
                 events.add("overlap")
             if run.d0 <= day <= run.d1:
                 k = teams_parse.key_of(day, hm, m["au"], m["chat"], m["bd"], run.ctx)
+                # prec: 날짜만 짚은 메시지(stamp 'date' — 12:00 은 자리표)는 time_precision=date 로 남긴다(LM28 E — 버리지 않는다)
                 rows.setdefault(k, {"time": dt.strftime("%Y-%m-%d %H:%M"), "from": m["au"], "chat": m["chat"],
-                                    "kind": "sent" if m["me"] else "msg", "summary": m["bd"][:SUMMARY_MAX]})
+                                    "kind": "sent" if m["me"] else "msg", "summary": m["bd"][:SUMMARY_MAX],
+                                    "prec": "date" if m.get("how") == "date" else "minute",
+                                    "mn": m.get("mn"), "inh": bool(m.get("inh"))})
         if "overlap" in events:                  # 지난 실행이 읽은 데까지 이어졌다(겹침으로 검증) — 더 되감을 이유가 없다
             break
         if oldest is not None and oldest < run.d0:
@@ -1805,6 +1865,14 @@ def read_room(br, run, room, st, fids=None):
         run.bump("scrolls")
     if pages:
         run.bump("read_gen" if gen else "read_cand")
+    # 내 메시지 진단(LM28 E — '구조:' 줄): 이 방에서 남길 행 중 내 발신 · 화면 판정(내 것·남의 것·판정불가) · 판정불가인데 직전
+    # 작성자를 이어받은 행 · 날짜만 짚은 행
+    for r in rows.values():
+        run.bump("rows_read")
+        run.bump("rows_sent", 1 if r["kind"] == "sent" else 0)
+        run.bump("mine_t" if r.get("mn") is True else ("mine_f" if r.get("mn") is False else "mine_n"))
+        run.bump("au_inherit", 1 if r.get("inh") else 0)
+        run.bump("date_only", 1 if r.get("prec") == "date" else 0)
     nw = (newest[1], newest[0].date().isoformat()) if newest else None
     return list(rows.values()), events, nw, pages
 
@@ -1848,11 +1916,18 @@ def _esc(s):
 class Store:
     """teams_web.csv 누적 저장 — 덮어쓰지 않는다(이 파일은 실행할 때마다 그 시점에 보이는 대화만 담는다). 방마다 add → flush.
     중복은 teams_parse.key_of(날짜·시각·보낸이·정제 방·정제 요지 40자)로 — 다른 teams_*.csv(Graph·창 읽기)와 겹치는 메시지도
-    다시 적지 않는다."""
+    다시 적지 않는다.
+    LM28(E) — 지난 판의 행을 제자리에서 바로잡는다(행은 늘지 않는다 · dirty → flush):
+      · 정밀도 래칫: 같은 날·보낸이·방·글의 날짜만 행(time_precision=date)은 분 단위 행이 오면 그것으로 바꾸고(prec_up), 분 단위
+        행이 이미 있으면 날짜만 사본은 적지 않는다.
+      · 내 발신: 같은 날·시각·방·글을 지난 판이 남의 말(직전 작성자를 이어받음)로 적었으면 이번 내 발신 행으로 바꾼다(mine_fixed —
+        TW-3 이 커서를 버리고 처음부터 다시 읽는 이유). 다른 경로가 이미 잡은 메시지면 우리 파일의 틀린 행만 지운다."""
 
     def __init__(self, path, force=False, ctx=None):
         self.path, self.ctx = path, ctx
         self.rows, self.keys, self._other = [], set(), None
+        self.loose, self.timed, self.recv = {}, set(), {}     # 래칫 색인 — 시각 뺀 열쇠 → 날짜만 행 · 분 단위 열쇠 · 보낸이 뺀 열쇠 → 남의 행
+        self.dirty, self.prec_up, self.mine_fixed = False, 0, 0
         if os.path.exists(path) and not force:
             try:
                 with open(path, encoding="utf-8-sig", errors="replace", newline="") as f:
@@ -1863,10 +1938,46 @@ class Store:
                         if k in self.keys:
                             continue
                         self.keys.add(k)
-                        self.rows.append([r.get("time") or "", r.get("from") or "", r.get("chat") or "",
-                                          r.get("kind") or "", r.get("replied_time") or "", r.get("summary") or ""])
+                        self._put([r.get("time") or "", r.get("from") or "", r.get("chat") or "", r.get("kind") or "",
+                                   r.get("replied_time") or "", r.get("summary") or "",
+                                   (r.get("time_precision") or "").strip().lower()], k, old=True)
             except OSError:
                 pass
+
+    @staticmethod
+    def _parts(k):
+        """row_key (날, 시각, 보낸이, 방, 글) → (시각 뺀 열쇠, 보낸이 뺀 열쇠)"""
+        return (k[0],) + tuple(k[2:]), tuple(k[:2]) + tuple(k[3:])
+
+    def _put(self, row, k, i=None, old=False):
+        """행을 넣거나(i 없음) i 자리를 바꾸고 래칫 색인을 맞춘다 → 자리. 남의 행 색인(recv — 내 발신으로 바로잡을 후보)은 지난 판이
+        남긴 행(old)만 — 이번 실행이 읽은 남의 글(단체방의 같은 분 '넵')을 내 글이 덮지 않게."""
+        if i is None:
+            self.rows.append(row)
+            i = len(self.rows) - 1
+        else:
+            self.rows[i] = row
+        lk, sk = self._parts(k)
+        if row[6] == "date":
+            self.loose[lk] = i
+        else:
+            self.timed.add(lk)
+        if old and row[3] != "sent":
+            self.recv[sk] = i
+        return i
+
+    def _unindex(self, i):
+        old = self.rows[i]
+        if not old:
+            return
+        lk, sk = self._parts(teams_parse.row_key(old[0], old[1], old[2], old[5], self.ctx))
+        if self.loose.get(lk) == i:
+            del self.loose[lk]
+        if self.recv.get(sk) == i:
+            del self.recv[sk]
+
+    def count(self):
+        return sum(1 for r in self.rows if r)
 
     def other_keys(self):
         """이미 모아 둔 다른 teams_*.csv 전부의 열쇠 — Graph·창 읽기와 겹치는 메시지를 다시 적지 않는다."""
@@ -1886,30 +1997,53 @@ class Store:
         return self._other
 
     def add(self, rows):
+        """→ (새로 더한 행 수, 다른 경로와 겹쳐 뺀 수). 지난 판 행을 바로잡은 것(prec_up·mine_fixed)은 새 행이 아니다 — dirty 로 알린다."""
         added = dup = 0
         other = self.other_keys()
         for r in rows:
+            prec = "date" if r.get("prec") == "date" else "minute"
             k = teams_parse.row_key(r["time"], r["from"], r["chat"], r["summary"], self.ctx)
             if k in self.keys:
                 continue
             self.keys.add(k)
+            lk, sk = self._parts(k)
+            if prec == "date" and lk in self.timed:
+                continue                        # 같은 글의 분 단위 행이 이미 있다 — 날짜만 사본은 적지 않는다
+            row = [r["time"], r["from"], r["chat"], r["kind"], "", r["summary"], prec]
+            i = self.loose.pop(lk, None) if prec == "minute" else None
+            if i is not None:
+                self.prec_up += 1
+            elif r["kind"] == "sent":
+                i = self.recv.pop(sk, None)
+                if i is not None:
+                    self.mine_fixed += 1
+            if i is not None:                   # 지난 판의 행을 제자리에서 바로잡는다
+                self._unindex(i)
+                if k in other:
+                    self.rows[i] = None         # 다른 경로가 이미 잡은 메시지 — 우리 파일의 틀린 행만 지운다
+                else:
+                    self._put(row, k, i)
+                self.dirty = True
+                continue
             if k in other:                      # Graph·창 읽기가 이미 잡은 메시지
                 dup += 1
                 continue
-            self.rows.append([r["time"], r["from"], r["chat"], r["kind"], "", r["summary"]])
+            self._put(row, k)
             added += 1
         return added, dup
 
     def flush(self):
+        """시각순으로 다시 쓴다(rows 의 자리는 그대로 — 래칫 색인이 자리를 가리킨다). → 쓴 행 수"""
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
-        self.rows.sort(key=lambda x: x[0])
+        out = sorted((r for r in self.rows if r), key=lambda x: x[0])
         tmp = self.path + ".tmp"
         with open(tmp, "w", encoding="utf-8-sig", newline="") as f:
             f.write(HDR + "\n")
-            for r in self.rows:
+            for r in out:
                 f.write(",".join(_esc(c) for c in r) + "\n")
         os.replace(tmp, self.path)
-        return len(self.rows)
+        self.dirty = False
+        return len(out)
 
 
 def state_ver(cfg):
@@ -2021,6 +2155,10 @@ def census_line(run):
         out.append(f"중단 {_int(c.get('open_aborted'))}")
     if c.get("room_error"):
         out.append(f"오류 {_int(c.get('room_error'))}({str(run.sd.get('room_error_msg') or '')[:40]})")
+    # 내 메시지(LM28 E) — 남긴 행 중 내 발신 · 화면이 내 것/남의 것을 말하지 않은 행 · 그중 직전 작성자를 이어받은 행(내 말이 남의 말로
+    # 적혔을 수 있다) · 날짜만 짚은 행
+    out.append(f"내 메시지 {_int(c.get('rows_sent'))}/{_int(c.get('rows_read'))} · 판정불가 {_int(c.get('mine_n'))} · "
+               f"이어받음 {_int(c.get('au_inherit'))}" + (f" · 날짜만 {_int(c.get('date_only'))}" if c.get("date_only") else ""))
     return "구조: " + " · ".join(out)
 
 
@@ -2104,7 +2242,10 @@ def build_census(run, line, line2=""):
                   "head": _HEAD[run.pref["head"]][1] if 0 <= run.pref.get("head", -1) < len(_HEAD) else ""},
          "read": {"cand": _int(c.get("read_cand")), "gen": _int(c.get("read_gen"))},
          "doc": str(run.diag.get("doc") or (_doc_shape(pc.get("doc")) if pc else ""))[:48],
-         "leaf": str(run.diag.get("leaf") or "")[:80]}
+         "leaf": str(run.diag.get("leaf") or "")[:80],
+         # 내 메시지 진단(LM28 E) — 숫자만
+         "mine": {k: _int(c.get(k)) for k in ("rows_read", "rows_sent", "mine_t", "mine_f", "mine_n", "au_inherit",
+                                               "date_only", "prec_up", "mine_fixed")}}
     if lc:
         d["list"] = {"n": _int(c.get("rooms_listed")), "role": _hook(lc.get("role")), "tag": _hook(lc.get("tag")),
                      "tid": _hook(lc.get("tid")), "keyed": _int(lc.get("keyed")), "selT": _int(lc.get("selT")),
@@ -2213,9 +2354,12 @@ def _visit(br, run, w, room, it):
     run.bump(v)
     added = 0
     if rows and v != "roomgone":
+        p0, f0 = w.store.prec_up, w.store.mine_fixed
         added, dup = w.store.add(rows)
         run.bump("dup_other", dup)
-        if added:
+        run.bump("prec_up", w.store.prec_up - p0)        # 지난 판의 날짜만 행을 분 단위로(LM28 E)
+        run.bump("mine_fixed", w.store.mine_fixed - f0)  # 지난 판이 남의 말로 적은 내 메시지를 내 발신으로(LM28 E)
+        if added or w.store.dirty:
             w.store.flush()                      # 방마다 저장 — 예산에 끊기거나 강제 종료돼도 앞 방은 남는다
         run.bump("rows_new", added)
     w.state[room["rid"]] = next_state(st, v, events, newest, room, run)
@@ -2396,7 +2540,9 @@ def finish(run, fail, res, store, save_census=None):
         shown = os.path.relpath(store.path, ROOT)
     except ValueError:              # 다른 드라이브(시험용으로 출력을 돌린 경우) - 표시일 뿐이니 죽지 않는다
         shown = store.path
-    log(f"{shown} — 신규 {c['rows_new']}건 (다른 경로와 겹쳐 제외 {c['dup_other']}건) / 누적 {len(store.rows)}건")
+    log(f"{shown} — 신규 {c['rows_new']}건 (다른 경로와 겹쳐 제외 {c['dup_other']}건) / 누적 {store.count()}건"
+        + (f" · 지난 판 바로잡음(시각 {_int(c.get('prec_up'))}·내 발신 {_int(c.get('mine_fixed'))})"
+           if c.get("prec_up") or c.get("mine_fixed") else ""))
     if opened and c["cut_no_scroller"] and c["cut_no_scroller"] + c["roomgone"] >= opened:
         reasons.insert(0, "R-WEBSEL")            # 연 방이 모두 스크롤 영역을 못 찾음 — 화면 구조가 바뀌었다
         rc = 3

@@ -29,13 +29,30 @@ LoadMonitor20 과 다른 점:
   · 묶음별 저장 + 이어서 판정(지난 결과의 flows 는 두고 missing 만 보낸다, --redo 면 처음부터)
   · 신호 3건 이상인 단위가 없으면 실패가 아니라 '결과 없음'(ok:true, flows:[], empty_reason) 으로 저장한다.
 
+긴 판정 뒤 Copilot 이 지쳐 있을 때 결과가 통째로 사라지던 것(제보: 워크플로우 간헐 미생성)에 대한 보강:
+  · --carry(run.py 가 늘 붙인다): 기간 끝날짜가 바뀌어 오늘 파일이 없으면 같은 시작일의 가장 최근 결과에서
+    asked_at 이 config.flowCarryDays(기본 7일) 이내인 흐름을 이어받고, 빠졌거나 오래된 단위만 묻는다. 다 끝난
+    결과도 처음부터 다시 묻지 않는다(화면의 [재분석]은 --carry 없이 — 예전처럼 다 끝났으면 처음부터).
+    지난 흐름의 키는 표기 축 스냅(_key_resolver)으로 오늘 키에 맞춘다(예전: 글자까지 같아야 이어받음).
+  · 일시 오류(copilot_error·시간 초과 등)는 반으로 나누지 않고 coolDownSec(기본 90초) 쉰 뒤 새 채팅에서 같은 묶음을
+    한 번만 다시 보낸다. 반분은 답이 왔는데 해석 못 했거나(parse) 응답이 없을 때(no_reply)만. 드라이버가 이미 쉬었으면
+    (결과의 cooldowns) 또 쉬지 않고, Copilot 사용량 제한(hard)이면 그 자리에서 멈춘다(stop_kind throttle).
+  · 세부 병합 왕복은 AI 판정이 중단된 직후·전체 마감 20분 미만이면 건너뛰고(규칙·캐시만), 돌더라도 min(15분, 남은 시간의 1/4).
+  · 신호의 80% 이상이 규칙 판정(judge '규칙')인 단위는 묻지 않는다(rule_units — 'AI 판정 대기'). 키·설명·요청→산출 줄이
+    개인정보 관문에 걸리는 단위는 따로 두고(gate_units) 나머지 묶음은 그대로 보낸다.
+  · 모든 반환 경로가 상태 파일(stage_state_<기간>_flow.json)에 state·stop.kind 를 남기고, 마지막 줄 JSON 에도 stop_kind 를
+    싣는다 — budget · login · fatal · throttle · fail(연속 실패) · gain(마무리 이득 부족) · gate(모든 묶음 관문).
+    결과가 없을 때 '파싱 실패' 는 실제로 답을 받았는데 해석하지 못한 경우에만 쓴다.
+
 출력: report\workflow_<기간>.json  →  UI '담당자 워크플로우' 탭 (f.model/role/summary/steps/mm.mm/signals)
   {ok, tag, generated, model_name, unit:"과제"|"과제/담당업무", basis, flows[{model:"과제"(기본) 또는 "과제 / 담당업무",
    level1:"신제품개발|기술 내재화|양산준비|일반업무"(상위 · 정제 단계가 채운다. 없으면 빈 문자열),
    branch:"흐름 이름"(한 과제 안에서 서로 이어지지 않는 일은 흐름을 나눠 여러 건이 된다. 하나뿐이면 ""),
    upstream/downstream:"같은 과제의 앞·뒤 담당업무 키"(이어짐만 표시 · 흐름은 합치지 않는다. 없으면 ""),
-   project, detail, role, summary, steps[≤8], mm:{mm}, signals}], chunks, failed_chunks, salvaged_chunks,
-   missing, missing_count, partial, note, last_error, dropped, merge:{rule, ai}, rows_units, empty_reason?}
+   project, detail, role, summary, steps[≤8], mm:{mm}, signals, asked_at:"YYYY-MM-DD"}], chunks, failed_chunks,
+   salvaged_chunks, missing, missing_count, partial, note, last_error, dropped, merge:{rule, ai}, rows_units,
+   rule_units[{project,detail,signals,rule_share}], rule_units_count, gate_units[키], gate_units_count,
+   carried_from, carried, expired, asked_new, cooldowns, stop_kind, merge_skipped, empty_reason?}
 """
 import glob
 import io
@@ -46,6 +63,7 @@ import sys
 import time
 import unicodedata
 from collections import Counter
+from datetime import date
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(ROOT, "core"))
@@ -104,6 +122,11 @@ FINISH_MAX_ASK = 3              # 같은 단위를 마무리에서 다시 묻는
 #                                 신호가 얕아 답에 끝내 안 나오는 단위 1개가 12왕복을 태우던 것을 막는다.
 UNIT = ""                      # 실행 시 workflow_unit() 로 채운다(아래) — 설정이 바뀌면 캐시가 무효화되어야 한다
 KEY_JOIN = " / "                # flow.model = "과제 / 담당업무"
+RULE_SHARE = 0.8                # 단위 신호 중 규칙 판정 비중이 이 이상이면 묻지 않는다(config.agentic.ruleRowShare — Agentic 과 같은 값)
+CARRY_DAYS = 7                  # --carry 로 이어받는 흐름의 나이 상한(일) — config.flowCarryDays
+COOL_DOWN_SEC = 90              # 일시 오류 뒤 같은 묶음을 다시 보내기 전 쉬는 시간(초) — config.copilotAuto.coolDownSec
+MERGE_MIN_LEFT = 20.0           # 전체 마감까지 이보다 적게(분) 남았으면 세부 병합 Copilot 왕복을 건너뛴다
+MERGE_CAP_SEC = 900.0           # 세부 병합 왕복 시간 상한(초) — 남은 시간의 1/4 과 비교해 작은 쪽
 
 
 def arg(flag, d=""):
@@ -141,6 +164,7 @@ def _g3_texts(lines):
 
 
 THIN = []                       # gather 가 문턱 미달로 뺀 (과제, 담당업무, 신호수) — main 이 알린다
+RULE_UNITS = []                 # gather 가 'AI 판정 대기'로 뺀 (과제, 담당업무, 신호수, 규칙 비중) — 규칙 판정이 대부분인 단위
 
 
 def unit_key(md, dt):
@@ -178,22 +202,25 @@ def _seed_from_refine(amap, tag, rep, rows_plain):
 
 
 def _refine_orig(tag, rep=None):
-    r"""report\refine_map_<tag>.json → {"정제L2/정제L3": [(원본L2, 원본L3), …]}. 없으면 빈 dict."""
-    import json
-    p = os.path.join(rep or details.REPORT, f"refine_map_{tag}.json")
+    r"""report\refine_map_<tag>.json → {"정제L2/정제L3": [(원본L2, 원본L3), …]} — core\details.refine_orig 위임(호환 이름)."""
+    return details.refine_orig(tag, rep)
+
+
+def rule_cut():
+    """규칙 판정 비중 문턱 — config.agentic.ruleRowShare(기본 RULE_SHARE, Agentic 과 같은 값). 0 초과 1 이하만 받는다."""
     try:
-        with open(p, encoding="utf-8-sig") as f:
-            o = json.load(f)
-    except (OSError, ValueError):
-        return {}
-    mp = o.get("map") if isinstance(o, dict) else None
-    out = {}
-    for k, v in (mp.items() if isinstance(mp, dict) else []):
-        pairs = [(str(it[0] or "").strip(), str(it[1] or "").strip())
-                 for it in (v if isinstance(v, list) else []) if isinstance(it, (list, tuple)) and len(it) >= 2]
-        if pairs:
-            out[str(k).strip()] = pairs
-    return out
+        with open(os.path.join(ROOT, "config", "config.json"), encoding="utf-8-sig") as f:
+            x = float((json.load(f).get("agentic") or {}).get("ruleRowShare"))
+        return x if 0 < x <= 1 else RULE_SHARE
+    except (OSError, ValueError, TypeError, AttributeError):
+        return RULE_SHARE
+
+
+def _rule_frac(sigs):
+    """신호 묶음 중 규칙 판정(judge '규칙') 비중 — details.rule_share 를 합친 값. judge 열이 없으면 0."""
+    rs = details.rule_share(sigs)
+    n_all = sum(b for _a, b in rs.values())
+    return (sum(a for a, _b in rs.values()) / n_all) if n_all else 0.0
 
 
 # ── 재료 (보완2.wf_materials 이식) ────────────────────────────────────────
@@ -298,6 +325,17 @@ def gather(rep, tag, amap=None, pmap=None):
                         g[l1] = g.get(l1, 0.0) + w
     except Exception:  # noqa: BLE001 - 설명·상위가 없어도 워크플로우는 나와야 한다
         pass
+    if not REFINED_USED:
+        # 정제본이 없는 실행(판정 rc 2/3·정제 실패·생략) — 원본 mm_rows 의 상위 초안(판정 단계가 규칙·과제 체계로 채운
+        # Level 1)으로 투표한다. 예전에는 상위를 정제본에서만 읽어 이 경우 카드가 전부 '상위 미분류' 로 떨어져
+        # '상위 > 과제 > 담당업무' 계층이 사라졌다. 행은 이미 과제 병합 맵을 거친 원본 축이다.
+        for r in rows:
+            _wk = _l1k(r.get("Level 2"))
+            l1_seen[_wk] = l1_seen.get(_wk, 0.0) + r["_mm"]
+            l1 = details.snap1(r.get("Level 1"))
+            if l1:
+                g = l1_w.setdefault(_wk, {})
+                g[l1] = g.get(l1, 0.0) + r["_mm"]
 
     # 과제 안의 세부업무 MM 배분 — 과제 단위 카드가 LM20 처럼 '무엇에 얼마' 를 보여 주는 재료.
     for r in rows:
@@ -344,6 +382,15 @@ def gather(rep, tag, amap=None, pmap=None):
     for (md, dt), ss in list(groups.items()):
         if len(ss) < floor:
             THIN.append((md, dt, len(ss)))
+            del groups[(md, dt)]
+    # AI 판정 대기 — 신호 대부분이 규칙 판정(판정이 중단돼 규칙 토큰으로 남은 '공통 / 기타' 같은 묶음)인 단위는 묻지 않는다.
+    # 무관한 신호가 한 덩어리라 흐름을 지어내기 쉽고, 판정이 회복되면(재분석만) 제 과제·업무로 다시 들어온다.
+    RULE_UNITS.clear()
+    _cut = rule_cut()
+    for (md, dt), ss in list(groups.items()):
+        _sh = _rule_frac(ss)
+        if _sh >= _cut:
+            RULE_UNITS.append((md, dt, len(ss), round(_sh, 3)))
             del groups[(md, dt)]
     # 표본 수도 LM20 과 같은 눈금 — 단위가 적으면 과제마다 더 많이 보여 준다
     per_cap = SAMPLE_N if unit == "과제/담당업무" else (30 if len(groups) <= 3 else 20)
@@ -394,6 +441,9 @@ def gather(rep, tag, amap=None, pmap=None):
                     # 과제 전체 페어라 다른 업무 것이 섞일 수 있으므로 '이 과제의 페어' 라고 밝혀 붙인다.
                     "episodes": _g3_texts((eps_by.get(f2) or [])[:(5 if not dt else 3)]), "evidence": ev})
     if not out:
+        if RULE_UNITS:
+            return [], basis, (f"AI 판정이 끝나지 않은 담당 업무 {len(RULE_UNITS)}개만 있어 흐름을 만들지 않았습니다"
+                               f"(신호의 {int(_cut * 100)}% 이상이 규칙 판정) — [재분석만]으로 판정을 마친 뒤 다시 만드세요")
         return [], basis, (f"흐름을 만들 단위가 없습니다 (단위 {len(groups)}개 · 신호 {len(sigs)}건)")
     # 상위(업무 성격)로 먼저 묶고 그 안에서 무거운 순 — LM20 처럼 상위 단위로도 읽히게 한다.
     # 정렬 순번은 details.L1_META 단일원에서 — 옛 이름은 l1_order 가 스냅해 같은 자리를 준다
@@ -572,16 +622,28 @@ def _norm_model(s, drop_note=False):
     각종 대시)도 한 축으로 모은다 — NFKC 만으로는 ㆍ(U+318D)가 엉뚱한 글자로 바뀌므로
     **NFKC 앞뒤로 한 번씩** 접어야 한다(실측).
 
-    drop_note=True 면 꼬리 괄호 주석·꼬리 대시 설명까지 떼어 낸다."""
+    drop_note=True 면 꼬리 괄호 주석·꼬리 대시 설명까지 떼어 낸다.
+    머리말을 옮겨 적은 '(신호 N건)'·'[상위: …]' 는 이름 끝이 아니라 **어디에 있어도** 뗀다 — 답이 '키 (신호 12건) [상위: 개발]'
+    처럼 둘 다 붙이면 끝의 것만 떼던 예전 규칙으로는 이름이 맞지 않아 그 흐름이 버려졌다."""
     t = _fold_sep(str(s or "").strip())
     t = unicodedata.normalize("NFKC", t)
     t = _fold_sep(t)
     t = re.sub(r"^#+\s*", "", t)
     t = re.sub(r"^과제\s*[:：]\s*", "", t)
-    t = re.sub(r"\s*[(]\s*신호[^)]*[)]\s*$", "", t)
+    t = _strip_heads(t)
     if drop_note:
         t = _strip_tails(t)
     return " ".join(t.split()).casefold()
+
+
+_SIG_NOTE = re.compile(r"\s*[(]\s*신호[^)]*[)]")
+_L1_NOTE = re.compile(r"\s*\[\s*상위\s*[:：][^\]]*\]")
+
+
+def _strip_heads(t):
+    """프롬프트 머리말에서 옮겨 온 '(신호 N건)'·'[상위: …]' 를 위치와 무관하게 뗀다."""
+    t = _L1_NOTE.sub(" ", _SIG_NOTE.sub(" ", t))
+    return " ".join(t.split())
 
 
 # 꼬리 대시 '설명'만 뗀다 — 대시 양쪽에 공백이 하나도 없는 'LiDAR-2 개발' 같은 이름 속 하이픈이나,
@@ -606,7 +668,7 @@ def _strip_tails(t, paren=True):
 def _tail_note(s):
     """이름 끝 괄호 꼬리('수광부 해석(양산)' → '양산') — 표기 차이·대시 설명을 걷어낸 뒤. 없으면 ''."""
     t = _fold_sep(unicodedata.normalize("NFKC", _fold_sep(str(s or "").strip())))
-    t = re.sub(r"\s*[(]\s*신호[^)]*[)]\s*$", "", t)
+    t = _strip_heads(t)
     t = _strip_tails(t, paren=False)
     m = re.search(r"[(]([^()]*)[)]\s*$", t)
     return " ".join(m.group(1).split()).casefold() if m else ""
@@ -670,6 +732,27 @@ def _resolve_key(raw, keys, low_map, fold_map, norm_map, note_map, ns_map=None, 
     return ""
 
 
+def _key_maps(keys):
+    """_resolve_key 가 쓰는 비교 축 맵 6개(소문자·fold·_norm_model·꼬리 제거·공백 제거 둘) — 모두 후보가 유일할 때만(F2)."""
+    return (_uniq_map(keys, str.lower), _uniq_map(keys, fold), _uniq_map(keys, _norm_model),
+            _uniq_map(keys, lambda k: _norm_model(k, True)),
+            _uniq_map(keys, lambda k: _norm_model(k).replace(" ", "")),
+            _uniq_map(keys, lambda k: fold(k).replace(" ", "")))
+
+
+def _key_resolver(keys):
+    """재료 키({키: mat}) → '이름 하나를 오늘 키로 푸는 함수'(sanitize_flows 와 같은 축·같은 유일성 규칙, 못 풀면 '').
+    지난 결과의 흐름을 이어받을 때 쓴다 — 예전에는 키가 글자까지 같아야 해서 별칭·과제 병합 맵이 조금만 바뀌어도
+    ('광학설계 / 렌즈 시뮬레이션' ↔ '광학 설계 / 렌즈시뮬레이션') 끝난 흐름을 버리고 처음부터 다시 물었다."""
+    keys = keys or {}
+    maps = _key_maps(keys)
+
+    def resolve(raw):
+        raw = str(raw or "").strip()
+        return _resolve_key(raw, keys, *maps) if raw else ""
+    return resolve
+
+
 def _dedupe_flows(flows, unit, log=None):
     """저장 직전 마지막 그물 — 같은 단위가 두 번 들어온 것을 지운다 → (정리된 목록, 버린 것 요약).
 
@@ -716,23 +799,29 @@ def _dedupe_flows(flows, unit, log=None):
 def sanitize_flows(raw_flows, keys, mats_by=None, dropped=None):
     """응답 형태 방어 — 스칼라·null·모르는 키·이상 agent 값을 정규화한다.
     keys: {"과제 / 담당업무": mat}. 정말 모르는 키의 flow 만 버린다(지어낸 단위 방지);
-    버린 이름은 dropped 에 담아 사유로 쓸 수 있게 한다."""
+    버린 이름은 dropped 에 담아 사유로 쓸 수 있게 한다.
+    형식이 조금 다른 답도 받는다(예전에는 통째로 버려 '파싱 실패' 연속 실패로 세었다): flows 가 목록이 아니라
+    {"과제 / 업무": {...}} 객체이거나 흐름 하나뿐인 객체 · 키를 key 대신 model·unit·name·업무 로 적음 ·
+    steps 를 문자열 목록(또는 {"1": {...}} 객체·한 줄 문자열)으로 적음."""
+    if isinstance(raw_flows, dict):
+        if any(k in raw_flows for k in ("steps", "key", "model", "role", "summary")):
+            raw_flows = [raw_flows]                       # 흐름 하나를 목록 없이 보냈다
+        else:
+            # 단위 이름을 키로 쓴 객체 — 키를 key 로 넣어 목록으로({key: k, **v})
+            raw_flows = [(dict(v, key=(v.get("key") or k)) if isinstance(v, dict) else v)
+                         for k, v in raw_flows.items()]
     flows = raw_flows if isinstance(raw_flows, list) else []
     keys = keys or {}
     if mats_by is None:
         mats_by = keys
     # 모든 비교 축은 후보가 유일할 때만 쓴다(F2 — 모호한 축 값은 빠진다)
-    low_map = _uniq_map(keys, str.lower)
-    fold_map = _uniq_map(keys, fold)
-    norm_map = _uniq_map(keys, _norm_model)
-    note_map = _uniq_map(keys, lambda k: _norm_model(k, True))
-    ns_map = _uniq_map(keys, lambda k: _norm_model(k).replace(" ", ""))
-    fns_map = _uniq_map(keys, lambda k: fold(k).replace(" ", ""))
+    low_map, fold_map, norm_map, note_map, ns_map, fns_map = _key_maps(keys)
     out, seen, n_branch = [], set(), {}
     for f in flows:
         if not isinstance(f, dict):
             continue
-        raw_name = str(f.get("key") or f.get("model") or "").strip()
+        raw_name = str(f.get("key") or f.get("model") or f.get("unit") or f.get("name")
+                       or f.get("업무") or "").strip()
         key = (_resolve_key(raw_name, keys, low_map, fold_map, norm_map, note_map, ns_map, fns_map)
                if raw_name else "")
         if not key:
@@ -751,9 +840,19 @@ def sanitize_flows(raw_flows, keys, mats_by=None, dropped=None):
         if n_branch.get(key, 0) >= MAX_BRANCHES:
             continue
         steps_raw = f.get("steps")
+        if isinstance(steps_raw, dict):
+            steps_raw = list(steps_raw.values())          # {"1": {...}, "2": {...}} — 값만 순서대로
+        elif isinstance(steps_raw, str):
+            steps_raw = [x for x in re.split(r"\s*(?:\n|→|->)\s*", steps_raw) if x.strip()]
         steps_raw = steps_raw if isinstance(steps_raw, list) else []
         steps = []
         for s in steps_raw[:8]:
+            if isinstance(s, str):
+                # 단계를 문장으로만 적은 답 — 이름(앞 40자)·설명(전문)으로 살린다(번호 머리는 뗀다)
+                t = re.sub(r"^\s*(?:\d+\s*[.)]|[-·•])\s*", "", " ".join(s.split()))
+                if not t:
+                    continue
+                s = {"name": t[:40], "desc": t}
             if not isinstance(s, dict):
                 continue
             ag = str(s.get("agent") or "").strip()
@@ -924,23 +1023,155 @@ def _fail_summary(fails):
     return top, hint
 
 
+def _judge_abort(rep, tag):
+    r"""이번 기간의 AI 판정이 Copilot 문제로 중단(aborted)됐나 → 사유 한 줄('' = 아님). report\ai_judgments_<tag>.json 을 본다.
+    시간 예산으로 멈춘 것(abort_kind 'budget')은 Copilot 이 지친 신호가 아니라 빼고 — 남은 시간은 마감 검사가 따로 본다."""
+    try:
+        with open(os.path.join(rep, f"ai_judgments_{tag}.json"), encoding="utf-8-sig") as f:
+            o = json.load(f)
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(o, dict) or not o.get("aborted") or str(o.get("abort_kind") or "") == "budget":
+        return ""
+    return {"throttle": "Copilot 사용량 제한", "login": "Copilot 로그인 만료",
+            "fatal": "사람이 손대야 풀리는 상태"}.get(str(o.get("abort_kind") or ""), "연속 실패")
+
+
+def _ai_left_min():
+    """run.py 가 물려준 AI 단계 전체 마감(LM_AI_DEADLINE, epoch 초)까지 남은 분 — 마감이 없으면(화면 수동 실행) None."""
+    try:
+        at = float(os.environ.get("LM_AI_DEADLINE") or 0)
+    except ValueError:
+        return None
+    return (at - time.time()) / 60.0 if at > 0 else None
+
+
+def _stop_kind_of(info):
+    """치명 실패 info → 중단 갈래 — throttle(Copilot 사용량 제한) · login(로그인) · fatal(그 밖의 사람이 손댈 일)."""
+    info = info or {}
+    ph, err = str(info.get("phase") or ""), str(info.get("error") or "")
+    if info.get("hard") or ph == "throttled" or "사용량 제한" in err:
+        return "throttle"
+    if ph == "login_required" or "로그인" in err:
+        return "login"
+    return "fatal"
+
+
+def _splittable(info):
+    """반으로 나눠 다시 물을 실패인가 — 답이 왔는데 해석 못 했거나(parse·잘려 건질 게 없음) 응답이 없을 때(no_reply)만."""
+    return str(info.get("phase") or "") in ("parse", "no_reply") or info.get("kind") == "parse"
+
+
+def _transient(info):
+    """쉬었다가 같은 묶음을 한 번 더 보낼 일시 오류인가 — Copilot 오류 응답·시간 초과·빈 phase 등(치명·관문·해석 실패 제외)."""
+    return (not info.get("ok") and info.get("phase") != "blocked" and not info.get("fatal")
+            and not info.get("hard") and not _splittable(info))
+
+
+def _cool_wait(deadline, cool):
+    """일시 오류 뒤 쉴 초 — coolDownSec 와 '마감 − 60초' 중 작은 쪽(음수면 0)."""
+    if deadline is None:
+        return float(cool)
+    return max(0.0, min(float(cool), deadline - time.monotonic() - 60.0))
+
+
+def _fresh_enough(at, today, days):
+    """asked_at(YYYY-MM-DD)이 오늘로부터 days 일 이내인가 — 날짜를 모르면 False(다시 묻는다)."""
+    try:
+        return (date.fromisoformat(today) - date.fromisoformat(str(at or "")[:10])).days <= days
+    except ValueError:
+        return False
+
+
+def _carry_prev(rep, tag):
+    """--carry: 오늘 기간 파일이 없을 때 — 같은 시작일의 다른 기간 결과 중 가장 최근 것(같은 단위 축 · 흐름 있음)."""
+    head = tag.split("-")[0]
+    cands = []
+    for p in glob.glob(os.path.join(rep, f"workflow_{head}-*.json")):
+        t = os.path.basename(p)[len("workflow_"):-len(".json")]
+        if t == tag:
+            continue
+        try:
+            cands.append((os.path.getmtime(p), p, t))
+        except OSError:
+            continue
+    for _mt, p, t in sorted(cands, reverse=True):
+        o = _load_json(p)
+        if o and o.get("unit") == UNIT and isinstance(o.get("flows"), list) and o["flows"]:
+            return o, t
+    return None, ""
+
+
+def _unit_gate_ok(judge, m):
+    """단위 하나가 개인정보 관문을 통과하나 — 과제 머리말·키·정제 설명·요청→산출·표본 줄을 최종 검사(judge.g3_prompt)에.
+    걸리는 단위는 그 단위만 따로 둔다 — 예전에는 묶음 전체가 관문에 막혀 함께 보낸 다른 업무까지 빠졌다."""
+    txt = "\n".join([f"### 과제: {m.get('model', '')}", f"## {m.get('key', '')}", str(m.get("desc") or "")]
+                    + [str(e) for e in (m.get("episodes") or [])] + [str(e) for e in (m.get("evidence") or [])])
+    return bool(judge.g3_prompt(txt))
+
+
+def _bad_reply(judge):
+    """답을 받았지만 쓰지 못했다 — 다음 왕복은 새 채팅에서(judge.note_bad_reply). 알림 실패가 판정을 막지 않게."""
+    try:
+        judge.note_bad_reply()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def main():
     import judge
     _sync_unit()               # 출력 JSON 의 unit·캐시 유효성 판정을 지금 설정에 맞춘다
     d0, d1 = arg("--from"), arg("--to")
     tag = (f"{d0.replace('-', '')}-{d1.replace('-', '')}" if d0 and d1 else latest_tag())
-    from stage_state import open_stage
-    _ss = open_stage(os.path.join(ROOT, "report"), tag, "flow")
     rep = os.path.join(ROOT, "report")
     if not tag:
         print("[flow] 분석 결과가 없습니다 — 먼저 [분석 실행]")
-        print(json.dumps({"ok": False, "error": "no result",
+        print(json.dumps({"ok": False, "error": "no result", "stop_kind": "fatal",
                           "hint": "report\\ 에 분석 결과(mm_meta)가 없습니다 — 먼저 [분석 실행]"}, ensure_ascii=False))
         return 1
-    dst = os.path.join(rep, f"workflow_{tag}.json")
+    from stage_state import open_stage
+    _ss = open_stage(rep, tag, "flow")
+    try:
+        return _run(judge, tag, rep, _ss)
+    except Exception as e:  # noqa: BLE001 - 상태 파일에 사유를 남기고 다시 던진다('정체로 중단' 오진 방지)
+        if _ss is not None:
+            _ss.finish("failed", stop_kind="fatal", reason=f"예외로 중단: {type(e).__name__}",
+                       error=f"{type(e).__name__}: {str(e)[:200]}", hint="진행 로그의 마지막 오류 줄을 확인하세요")
+        raise
 
-    # ① 세부업무 표기 병합 맵 — 규칙 + (--no-merge 아니면) Copilot. 실패해도 워크플로우는 돈다.
+
+def _run(judge, tag, rep, _ss):
+    dst = os.path.join(rep, f"workflow_{tag}.json")
+    carry = "--carry" in sys.argv and "--redo" not in sys.argv
+    today = time.strftime("%Y-%m-%d")
+
+    def _end(rc, js, state, kind=None, reason="", error="", hint=""):
+        """마지막 줄 JSON(stop_kind 포함) + 상태 파일 마감 — 모든 반환 경로가 여기를 지난다. 예전에는 rc 1 경로가
+        상태 파일을 'running' 으로 남겨 화면이 90초 뒤 '정체로 중단' 이라는 엉뚱한 사유를 띄웠다."""
+        print(json.dumps(dict(js, stop_kind=kind or ""), ensure_ascii=False))
+        if _ss is not None:
+            _ss.finish(state, stop_kind=kind or None, reason=reason, error=error or None, hint=hint or None)
+        return rc
+
+    # ① 세부업무 표기 병합 맵 — 규칙 + (조건이 맞으면) Copilot. 실패해도 워크플로우는 돈다.
+    # Copilot 이 지친 직후(판정 중단)나 전체 마감이 임박하면 병합 왕복을 건너뛴다 — 예전에는 흐름 시계 밖에서
+    # 최대 12왕복을 기다린 뒤에야 흐름 왕복을 시작해, 그날 결과가 통째로 남지 않았다.
     sender = None if "--no-merge" in sys.argv else judge.copilot_send
+    merge_skip = ""
+    if sender is not None:
+        _ab, _left = _judge_abort(rep, tag), _ai_left_min()
+        if _ab:
+            merge_skip = f"AI 판정이 중단된 직후라({_ab})"
+        elif _left is not None and _left < MERGE_MIN_LEFT:
+            merge_skip = f"AI 단계 전체 마감까지 {max(0.0, _left):.0f}분뿐이라"
+        if merge_skip:
+            sender = None
+            print(f"[flow] {merge_skip} Copilot 세부업무 병합 왕복은 건너뜁니다 — 규칙 병합과 캐시만 씁니다")
+    merge_dl = None
+    if sender is not None:
+        _left = _ai_left_min()
+        merge_dl = time.monotonic() + (min(MERGE_CAP_SEC, max(0.0, _left) * 60.0 / 4)
+                                       if _left is not None else MERGE_CAP_SEC)
     amap, n_rule, n_ai, n_ref = {}, 0, 0, 0
     pmap, n_p_rule, n_p_ev, p_note = {}, 0, 0, {"pairs": [], "rejects": []}
     try:
@@ -962,7 +1193,7 @@ def main():
         if pmap:
             details.apply_project_map(rows_plain, None, pmap)     # 아래 세부 병합이 합쳐진 과제 축을 보게
         amap, n_rule, n_ai = details.detail_merge_map(tag, sender, rows=rows_plain or None,
-                                                      log=lambda m: print(f"[flow]{m}"))
+                                                      log=lambda m: print(f"[flow]{m}"), deadline=merge_dl)
         # refine 이 '같은 일' 로 합친 원본 담당업무들도 별칭으로 흡수한다 — 정제가 이미 내린 동일성 판정을
         # 워크플로우 단위에도 적용해야 조각이 합쳐진다(보완2 시절엔 refine 이 이름을 안 바꿔 저절로 그랬다).
         n_ref = _seed_from_refine(amap, tag, rep, rows_plain or [])
@@ -997,24 +1228,23 @@ def main():
     # ② 재료
     L1_PIN.update(load_l1_pin(ROOT))
     mats, basis, err = gather(rep, tag, amap, pmap)
+    rule_units = [{"project": md, "detail": dt, "signals": n, "rule_share": sh} for md, dt, n, sh in RULE_UNITS]
     if not mats:
         if not basis:
             # 신호 파일 자체가 없다/열이 없다 — 이것은 결과 없음이 아니라 전제가 깨진 것
             print(f"[flow] {err}")
-            print(json.dumps({"ok": False, "error": err,
-                              "hint": f"report\\signals_{tag}.csv 를 만드는 [분석 실행]을 그 기간으로 다시 돌리세요"},
-                             ensure_ascii=False))
-            return 1
+            _h = f"report\\signals_{tag}.csv 를 만드는 [분석 실행]을 그 기간으로 다시 돌리세요"
+            return _end(1, {"ok": False, "error": err, "hint": _h}, "failed", "fatal", err, err, _h)
         # 신호는 있는데 흐름이라 할 단위가 없다 — 실패가 아니라 '결과 없음'. 옛 판은 rc1 로 재시도까지 했다.
         out = {"ok": True, "tag": tag, "generated": time.strftime("%Y-%m-%d %H:%M"), "model_name": "",
                "unit": UNIT, "basis": basis, "flows": [], "chunks": 0, "failed_chunks": 0, "missing": [],
                "dropped": [], "merge": {"rule": n_rule, "ai": n_ai, "aliases": len(amap or {})},
-               "rows_units": 0, "empty_reason": err}
+               "rows_units": 0, "empty_reason": err,
+               "rule_units": rule_units[:200], "rule_units_count": len(rule_units), "merge_skipped": merge_skip}
         _save_json(dst, out)
         print(f"[flow] 워크플로우를 만들 단위가 없습니다 — {err} (실패 아님: 더 긴 기간을 분석하거나 신호가 쌓인 뒤 다시)")
-        print(json.dumps({"ok": True, "flows": 0, "units": 0, "chunks": 0, "failed_chunks": 0,
-                          "basis": basis, "empty_reason": err, "note": err}, ensure_ascii=False))
-        return 0
+        return _end(0, {"ok": True, "flows": 0, "units": 0, "chunks": 0, "failed_chunks": 0,
+                        "basis": basis, "empty_reason": err, "note": err, "rule_units": len(rule_units)}, "done")
     if basis == "규칙":
         print("[flow] 판정(model) 열이 없어 규칙 분류(project/activity) 축으로 만듭니다 — "
               "과제명이 AI 가 정리한 상위개체가 아니라 품질이 낮습니다(basis: 규칙)")
@@ -1025,13 +1255,18 @@ def main():
               + ", ".join(f"{md} / {dt}({n})" for md, dt, n in THIN[:6])
               + (" …" if len(THIN) > 6 else "")
               + " — 별칭 병합이 더 묶이면 다음 실행에 합쳐져 들어옵니다")
+    if RULE_UNITS:
+        print(f"[flow] AI 판정 대기 — 신호 대부분이 규칙 판정인 담당 업무 {len(RULE_UNITS)}개는 묻지 않습니다: "
+              + ", ".join((f"{md} / {dt}({n})" if dt else f"{md}({n})") for md, dt, n, _s in RULE_UNITS[:5])
+              + (" …" if len(RULE_UNITS) > 5 else "")
+              + " — [재분석만]으로 판정을 마치면 다음 실행에 들어옵니다")
 
     # 세부 병합 왕복이 '사람이 손대야 하는' 이유로 죽었으면 흐름 왕복도 같은 이유로 죽는다 — 헛되이 보내지 않는다
     if merge_fail.get("fatal") and sender is not None:
         why, how = str(merge_fail.get("error") or "왕복 실패"), str(merge_fail.get("hint") or "")
         print(f"[flow] Copilot 왕복이 막혀 있습니다({why}) — {how}")
-        print(json.dumps({"ok": False, "error": why, "hint": how or "조치 후 다시 실행"}, ensure_ascii=False))
-        return 1
+        return _end(1, {"ok": False, "error": why, "hint": how or "조치 후 다시 실행"}, "failed",
+                    _stop_kind_of(merge_fail), why, why, how)
 
     # 이어서 판정 — 같은 기간·같은 단위 축의 지난 결과가 있으면 그 단위는 두고 빠진 단위만 보낸다
     # 지난 결과의 상위 표 — --redo 여도 읽는다(흐름은 다시 묻되 상위 '기억' 은 정제본이 없을 때의 폴백이다)
@@ -1041,15 +1276,32 @@ def main():
         for _f0 in _pv0["flows"]:
             if isinstance(_f0, dict) and _f0.get("model") and _f0.get("level1"):
                 PREV_L1.setdefault(_f0["model"], _f0["level1"])
-    prev = None if "--redo" in sys.argv else _load_json(dst)
-    kept = []
-    if prev and prev.get("tag") == tag and prev.get("unit") == UNIT and isinstance(prev.get("flows"), list):
+    prev = None if "--redo" in sys.argv else _pv0
+    carried_from = ""
+    if prev is None and carry:
+        # 기간 끝날짜가 바뀌어(기본 기간 '올해' 는 매일 바뀐다) 오늘 파일이 없다 — 같은 시작일의 가장 최근 결과를 잇는다
+        prev, carried_from = _carry_prev(rep, tag)
+    carry_days = _cfg_int("flowCarryDays", CARRY_DAYS, allow_zero=True)
+    kept, expired = [], 0
+    if (prev and (prev.get("tag") == tag or carried_from) and prev.get("unit") == UNIT
+            and isinstance(prev.get("flows"), list)):
+        resolve = _key_resolver(keys)
+        gen = str(prev.get("generated") or "")[:10]
         for f in prev["flows"]:
             # 단계가 MIN_STEPS 미만인 흐름은 잘린 답에서 온 것일 수 있다 — 이어받지 말고 다시 묻는다.
-            if (not isinstance(f, dict) or f.get("model") not in keys
-                    or len(f.get("steps") or []) < MIN_STEPS):
+            if not isinstance(f, dict) or len(f.get("steps") or []) < MIN_STEPS:
                 continue
-            hit = keys[f["model"]]
+            # 키는 표기 축으로 스냅한다 — 별칭·과제 병합 맵이 조금만 바뀌어도 끝난 흐름을 버리던 것(예전: 글자까지 같아야)
+            k2 = resolve(f.get("model"))
+            if not k2:
+                continue
+            at = str(f.get("asked_at") or gen)[:10]
+            if carry and not _fresh_enough(at, today, carry_days):
+                expired += 1                     # 오래된 흐름 — 다시 묻는다(이어받기의 나이 상한)
+                continue
+            hit = keys[k2]
+            if f.get("level1"):
+                PREV_L1.setdefault(k2, f["level1"])
             # level1 도 함께 갱신한다 — 예전에는 이어받은 흐름이 **옛 상위**를 그대로 들고 와,
             # 같은 과제의 카드가 상위 머리말 여러 개로 찢어졌다(감사 재현). 새로 판정한 흐름은
             # 이번 mats 의 level1 을 쓰므로 두 축이 어긋난 것이다.
@@ -1060,18 +1312,34 @@ def main():
             # 정제본을 읽은 실행이면 이번 값이 진실('' 도 '혼재' 라는 답) — 옛 값으로 덮지 않는다(감사 지적).
             # 정제본이 없는 실행만 지난 상위를 이어받는다.
             _l1 = hit.get("level1", "") if REFINED_USED else (hit.get("level1", "") or f.get("level1", ""))
-            f = dict(f, project=hit["model"], detail=hit["detail"], mm={"mm": hit["mm"]},
-                     signals=hit["signals"], level1=_l1)
+            f = dict(f, model=k2, project=hit["model"], detail=hit["detail"], mm={"mm": hit["mm"]},
+                     signals=hit["signals"], level1=_l1, asked_at=at)
             kept.append(f)
         # 한 과제가 여러 흐름(branch)을 가질 수 있으므로 '흐름 수' 가 아니라 '끝난 과제 수' 로 본다.
         # 그러지 않으면 분기가 하나만 생겨도 len(kept) > len(keys) 가 되어 다 끝난 줄 알고 전부 다시 돌린다.
-        if len({f["model"] for f in kept}) >= len(keys):
-            kept = []                            # 다 끝난 결과 — 처음부터 다시(재분석)
+        # 다 끝난 결과는 화면 [재분석](--carry 없음)이면 처음부터 다시, run.py(--carry)는 그대로 이어받는다.
+        if not carry and len({f["model"] for f in kept}) >= len(keys):
+            kept = []
     done_keys = {f["model"] for f in kept}
     todo = [m for m in mats if m["key"] not in done_keys]
+    # G3 사전 검사 — 단위의 키·설명·요청→산출·표본 줄이 관문에 걸리면 그 단위만 따로 둔다(gate_units)
+    gate_keys = set()
+    if todo:
+        _ok_units = []
+        for m in todo:
+            if _unit_gate_ok(judge, m):
+                _ok_units.append(m)
+            else:
+                gate_keys.add(m["key"])
+        todo = _ok_units
+        if gate_keys:
+            print(f"[flow] 개인정보 관문에 걸리는 업무 {len(gate_keys)}개는 보내지 않습니다(조치 불필요) — "
+                  "그 업무만 빼고 나머지는 그대로 묻습니다")
     if kept:
-        print(f"[flow] 지난 실행이 {len(kept)}/{len(keys)}개 업무를 끝냈습니다 — 남은 {len(todo)}개만 이어서 보냅니다"
-              "(처음부터 하려면 --redo)")
+        print(f"[flow] {('지난 기간 결과(' + carried_from + ')') if carried_from else '지난 실행'}에서 "
+              f"{len(done_keys)}/{len(keys)}개 업무의 흐름을 이어받았습니다 — 남은 {len(todo)}개만 보냅니다"
+              + (f" · {carry_days}일이 지난 흐름 {expired}개는 다시 묻습니다" if expired else "")
+              + "(처음부터 하려면 --redo)")
 
     # ③ 묶음 왕복 — 부분 실패는 계속
     try:
@@ -1106,26 +1374,60 @@ def main():
 
     def elapsed_min():
         return (time.monotonic() - t_start) / 60
+
+    def budget_msg(n_left, what="묶음을 보내지 않았습니다"):
+        _eff = (deadline - t_start) / 60 if deadline else budget_min
+        return (f"시간 예산 {_eff:.0f}분({_dl_src})을 넘겨 남은 {n_left}{what} — "
+                "다시 실행하면 남은 업무만 이어서 판정합니다(config.flowBudgetMin 으로 조절)")
     chunks = _chunks(todo, budget, _cfg_int("flowUnitsPerChunk", MAX_UNITS_PER_CHUNK))
+    deferred = 0
     if len(chunks) > max_chunks:
+        deferred = sum(len(c) for c in chunks[max_chunks:])
         print(f"[flow] 묶음이 {len(chunks)}개로 상한({max_chunks})을 넘었습니다 — 앞 {max_chunks}묶음만 보냅니다. "
-              f"남은 {sum(len(c) for c in chunks[max_chunks:])}개 업무는 다음 실행이 이어서 판정합니다 "
+              f"남은 {deferred}개 업무는 다음 실행이 이어서 판정합니다 "
               "(config.flowMaxChunks 로 상한을 올릴 수 있습니다)")
         chunks = chunks[:max_chunks]
-    print(f"[flow] 담당 업무 {len(todo)}개 워크플로우 왕복 ({len(chunks)}회로 나눠 보냄 — "
-          f"한 흐름이 다른 업무로 넘어가지 않게 업무 단위로 물어봅니다 · 같은 채팅에서 이어서{_chat_note()})")
+    if todo:
+        print(f"[flow] 담당 업무 {len(todo)}개 워크플로우 왕복 ({len(chunks)}회로 나눠 보냄 — "
+              f"한 흐름이 다른 업무로 넘어가지 않게 업무 단위로 물어봅니다 · 같은 채팅에서 이어서{_chat_note()})")
+    elif kept:
+        print("[flow] 이어받은 흐름으로 모든 업무가 끝났습니다 — 이번 실행은 Copilot 왕복이 없습니다")
     dropped, flows, fails = [], list(kept), []
+    kept_ids = {id(f) for f in kept}
     model_name = str((prev or {}).get("model_name") or "") if kept else ""
     failed, salvaged, consec, stopped, n_sent = 0, 0, 0, "", 0
+    # kind=중단 갈래 · blocked=관문에 막힌 묶음 · cool=쉬고 다시 보낸 횟수 · replies=답을 받은 왕복(해석 실패 포함)
+    st = {"kind": "", "blocked": 0, "cool": 0, "replies": 0}
+    cool_sec = _cfg_int("coolDownSec", COOL_DOWN_SEC, allow_zero=True)
+    last_res = {}
+
+    def _send(prompt, tg, name, fresh=None):
+        """judge.copilot_send 를 부르고 드라이버 결과의 hard(Copilot 사용량 제한)·cooldowns(이미 쉬고 다시 보낸 횟수)를
+        기억한다 — details.ask_json 의 info 에는 이 둘이 실리지 않는다."""
+        res = details._call_sender(judge.copilot_send, prompt, tg, name, fresh)
+        last_res.clear()
+        if isinstance(res, dict):
+            try:
+                _cd = int(res.get("cooldowns") or 0)
+            except (TypeError, ValueError):
+                _cd = 0
+            last_res.update(hard=bool(res.get("hard")), cooldowns=_cd)
+        return res
 
     def ask(part, name):
         nonlocal model_name, n_sent
         n_sent += 1
+        last_res.clear()
         # fresh=None — 묶음을 같은 채팅에서 이어 보낸다(첫 왕복·실패 뒤·chatTurns 마다만 새 채팅)
-        o, info = details.ask_json(judge.copilot_send, build_prompt(part), f"{tag}-{name}", "flow",
-                                   "flows", fresh=None)
+        o, info = details.ask_json(_send, build_prompt(part), f"{tag}-{name}", "flow", "flows", fresh=None)
+        info = dict(info, hard=bool(info.get("hard") or last_res.get("hard")),
+                    cooldowns=int(last_res.get("cooldowns") or 0))
         if not info.get("ok"):
+            if info.get("kind") == "parse":
+                st["replies"] += 1               # 답은 왔다 — 해석하지 못했을 뿐(다음 왕복은 새 채팅에서)
+                _bad_reply(judge)
             return [], info
+        st["replies"] += 1
         model_name = model_name or str(info.get("model") or "")
         # 인정 범위 = 이 묶음의 단위 + **같은 과제의 다른 단위**. 예전에는 묶음 키만 인정해,
         # 같은 채팅으로 문맥이 이어져도 앞·뒤 묶음의 업무를 언급한 답을 통째로 버렸다
@@ -1149,17 +1451,42 @@ def main():
                     else "응답에 flows 가 없거나 형식이 다름"))
             # 형식을 틀린 그 채팅에 재질문을 그대로 이어 붙이면 같은 형식으로 또 답한다 —
             # judge 에 알려 다음 왕복을 새 채팅에서 시작하게 한다(judge·refine 은 이미 그렇게 한다).
-            try:
-                judge.note_bad_reply()
-            except Exception:  # noqa: BLE001 - 알림 실패가 판정을 막지 않게
-                pass
+            _bad_reply(judge)
             return [], {"ok": False, "kind": "parse", "error": why[:120], "fatal": False, "phase": "parse",
                         "hint": "묶음을 나눠 다시 묻습니다 — 반복되면 report\\judge_flow_*.md 의 답을 확인"}
+        for g in got:
+            g["asked_at"] = today                # 이어받기 나이 상한(flowCarryDays)의 기준
         return got, info
+
+    def ask_cool(part, name):
+        """일시 오류(Copilot 오류 응답·시간 초과 등)는 반으로 나누지 않고 쉬었다가 같은 묶음을 새 채팅에서 한 번만 다시.
+        드라이버가 이미 쉬고 다시 보냈으면(cooldowns) 또 쉬지 않는다. 예전에는 바로 반으로 나눠 왕복을 두 배로
+        늘렸다 — 긴 판정 직후 지친 Copilot 에 요청을 더 퍼부은 셈이다."""
+        got, info = ask(part, name)
+        if not _transient(info) or info.get("cooldowns"):
+            return got, info
+        wait = _cool_wait(deadline, cool_sec)
+        print(f"[flow] {name} {str(info.get('error') or '')[:60]} — {wait:.0f}초 쉬고 새 채팅에서 같은 묶음을 "
+              "한 번 더 보냅니다")
+        _bad_reply(judge)
+        if wait > 0:
+            time.sleep(wait)
+        if over_budget():
+            return got, info
+        st["cool"] += 1
+        return ask(part, f"{name}-c")
+
+    def _halt(info):
+        """치명·사용량 제한 — 사람이 손대야 풀리거나 Copilot 이 막았다. 남은 것은 보내지 않는다."""
+        st["kind"] = _stop_kind_of(info)
+        return f"{info.get('error', '')} — {info.get('hint', '')}".strip(" —")
 
     _order = {m["key"]: i for i, m in enumerate(mats)}
 
     def write_out():
+        if not flows:
+            # 아직 흐름이 하나도 없다 — 저장하지 않는다(마무리 회차가 전부 실패해도 멀쩡한 옛 결과를 빈 파일로 덮지 않게)
+            return {}
         # 잘린 답 복구·적응 분할·자동 마무리를 거치면 판정 순서가 뒤섞여, 같은 과제가 화면에서 두 덩어리로
         # 갈라져 보였다(제보의 '연계되는 업무가 분할'). 저장 직전에 재료 순서(상위 → 과제 → 무게)로 되돌린다.
         flows[:], _dupes = _dedupe_flows(flows, UNIT, log=print)
@@ -1170,7 +1497,8 @@ def main():
         for _f in flows:
             _f["pjkey"] = fold(str(_f.get("project") or _f.get("model") or "").split(KEY_JOIN)[0])
         done = {f["model"] for f in flows}
-        missing = [k for k in keys if k not in done]
+        # 관문에 걸린 업무는 미판정으로 세지 않는다 — 다시 실행해도 보내지 않으므로 '이어서' 를 권하면 헛수고다
+        missing = [k for k in keys if k not in done and k not in gate_keys]
         why, how = _fail_summary(fails) if (missing or failed) else ("", "")
         out = {"ok": True, "tag": tag, "generated": time.strftime("%Y-%m-%d %H:%M"),
                "model_name": model_name, "unit": UNIT, "basis": basis, "flows": flows,
@@ -1184,6 +1512,10 @@ def main():
                                 for m in mats if m.get("level1_mix")][:100],
                "thin": [{"project": md, "detail": dt, "signals": n} for md, dt, n in THIN[:200]],
                "thin_count": len(THIN),
+               # AI 판정 대기(신호 대부분이 규칙 판정) — 묻지 않은 단위. [재분석만] 뒤 다시 만들면 들어온다
+               "rule_units": rule_units[:200], "rule_units_count": len(rule_units),
+               # 개인정보 관문에 걸려 보내지 않은 단위(조치 불필요 — 미판정으로 세지 않는다)
+               "gate_units": sorted(gate_keys)[:200], "gate_units_count": len(gate_keys),
                "missing": missing[:200], "missing_count": len(missing), "dropped": dropped[:20],
                "partial": bool(missing),
                # 다시 돌리면 남은 것이 채워지는가 — 시간 예산·묶음 상한·치명 중단으로 끊긴 경우만 참이다.
@@ -1194,6 +1526,11 @@ def main():
                         + (stopped or "자동 마무리가 더 늘리지 못했습니다(신호가 얕거나 응답이 그 이름을 "
                                       "돌려주지 않는 단위) — 다시 실행해도 같을 수 있습니다")),
                "last_error": ({"error": why, "hint": how} if why else {}),
+               "stop_kind": st["kind"],
+               # 이어받기 — 다른 기간 결과에서 이어받았으면 그 기간(carried_from)과 흐름 수. 오늘 새로 물은 흐름은 asked_new
+               "carried_from": carried_from, "carried": len([f for f in flows if id(f) in kept_ids]),
+               "expired": expired, "asked_new": len([f for f in flows if id(f) not in kept_ids]),
+               "cooldowns": st["cool"], "merge_skipped": merge_skip,
                "merge": {"rule": n_rule, "ai": n_ai, "aliases": len(amap or {})},
                # 과제(중위) 표기 병합과 흐름 중복 제거의 내역 — 무엇을 왜 합쳤는지 사람이 보고 되돌릴 수 있게.
                # 별도 report 파일을 만들지 않는다(만들면 배포·취합 목록 네 곳을 한 세트로 고쳐야 한다).
@@ -1210,16 +1547,17 @@ def main():
         if over_budget():
             if _ss is not None:
                 _ss.note_resume(pending=len(chunks) - ci + 1)
-            _eff = (deadline - t_start) / 60 if deadline else budget_min
-            stopped = (f"시간 예산 {_eff:.0f}분({_dl_src})을 넘겨 남은 {len(chunks) - ci + 1}묶음을 보내지 않았습니다 — "
-                       "다시 실행하면 남은 업무만 이어서 판정합니다(config.flowBudgetMin 으로 조절)")
+            stopped = budget_msg(len(chunks) - ci + 1)
+            st["kind"] = "budget"
             print(f"[flow] {stopped}")
             break
         progress("워크플로우 분석", ci - 1, len(chunks))
-        got, info = ask(part, f"wf{ci}")
+        got, info = ask_cool(part, f"wf{ci}")
         if info.get("phase") == "blocked":
-            # 개인정보 관문(G3)에 막혀 보내지 않았다 — 실패가 아니므로 연속 실패·적응 분할에 넣지 않는다(그 업무는 미판정)
-            print(f"[flow] {ci}/{len(chunks)} 개인정보 관문에 걸려 보내지 않았습니다 — 다음 묶음으로")
+            # 개인정보 관문(G3)에 막혀 보내지 않았다 — 실패가 아니므로 연속 실패·적응 분할에 넣지 않는다(그 업무는 관문 단위)
+            st["blocked"] += 1
+            gate_keys.update(m["key"] for m in part)
+            print(f"[flow] {ci}/{len(chunks)} 개인정보 관문에 걸려 보내지 않았습니다 — 다음 묶음으로(실패로 세지 않음)")
             continue
         if info.get("ok"):
             flows.extend(got)
@@ -1238,10 +1576,10 @@ def main():
                     if info2.get("ok"):
                         flows.extend(got2)
                         print(f"[flow] {ci}/{len(chunks)} (재질문) — 업무 {len(left)}개 중 {len(got2)}개 판정")
-                    else:
+                    elif info2.get("phase") != "blocked":
                         fails.append(info2)
-                        if info2.get("fatal"):
-                            stopped = f"{info2.get('error', '')} — {info2.get('hint', '')}".strip(" —")
+                        if info2.get("fatal") or info2.get("hard"):
+                            stopped = _halt(info2)
                             failed += len(chunks) - ci
                             write_out()
                             break
@@ -1251,13 +1589,15 @@ def main():
         print(f"[flow] {ci}/{len(chunks)} 실패: {info.get('error', '')[:80]}"
               + (f" — {info.get('hint', '')[:100]}" if info.get("hint") else "")
               + f" (report\\judge_flow_{tag}-wf{ci}.md)")
-        if info.get("fatal"):
-            stopped = f"{info.get('error', '')} — {info.get('hint', '')}".strip(" —")
+        if info.get("fatal") or info.get("hard"):
+            stopped = _halt(info)
             failed += len(chunks) - ci + 1
-            print(f"[flow] 사람이 손대야 풀리는 상태라 남은 {len(chunks) - ci}묶음은 보내지 않습니다")
+            print(f"[flow] {'Copilot 사용량 제한' if st['kind'] == 'throttle' else '사람이 손대야 풀리는 상태'}라 "
+                  f"남은 {len(chunks) - ci}묶음은 보내지 않습니다")
             break
-        # 적응 분할 — 답이 없거나 잘린 묶음은 반으로 나눠 한 번 더
-        if len(part) >= 2 and str(info.get("phase") or "") in ("parse", "no_reply", "copilot_error", "", "timeout"):
+        # 적응 분할 — 답이 왔는데 해석 못 했거나(parse) 응답이 없을 때(no_reply)만 반으로 나눠 한 번 더.
+        # 일시 오류(Copilot 오류·시간 초과)는 위에서 쉬고 한 번 더 보냈다 — 나누면 지친 Copilot 에 왕복만 늘어난다.
+        if len(part) >= 2 and _splittable(info):
             half = (len(part) + 1) // 2
             halves = [h for h in (part[:half], part[half:]) if h]
             ok_half = 0
@@ -1272,11 +1612,15 @@ def main():
                         salvaged += 1
                     flows.extend(got2)
                     print(f"[flow] {ci}/{len(chunks)} (분할 {hi}/{len(halves)}) — 업무 {len(sub)}개 중 {len(got2)}개 판정")
+                elif info2.get("phase") == "blocked":
+                    st["blocked"] += 1
+                    gate_keys.update(m["key"] for m in sub)
+                    print(f"[flow] {ci}/{len(chunks)} 분할 {hi}/{len(halves)} 개인정보 관문 — 보내지 않음(실패로 세지 않음)")
                 else:
                     fails.append(info2)
                     print(f"[flow] {ci}/{len(chunks)} 분할 {hi}/{len(halves)} 실패: {info2.get('error', '')[:80]}")
-                    if info2.get("fatal"):
-                        stopped = f"{info2.get('error', '')} — {info2.get('hint', '')}".strip(" —")
+                    if info2.get("fatal") or info2.get("hard"):
+                        stopped = _halt(info2)
                         break
             if ok_half:
                 consec = 0
@@ -1293,6 +1637,7 @@ def main():
         failed += 1
         consec += 1
         if consec >= MAX_CONSEC_FAIL and ci < len(chunks):
+            st["kind"] = "fail"
             stopped = (f"{consec}묶음 연속 실패({info.get('error', '')[:40]}) — "
                        "Copilot 상태를 확인한 뒤 [재분석]으로 이어서")
             failed += len(chunks) - ci
@@ -1315,19 +1660,21 @@ def main():
         fin_consec = 0
         for rnd in range(1, fin_rounds + 1):
             done_keys = {f["model"] for f in flows}
-            left = [m for m in mats if m["key"] not in done_keys and asked[m["key"]] < fin_max_ask]
-            held = [m for m in mats if m["key"] not in done_keys and asked[m["key"]] >= fin_max_ask]
+            left = [m for m in mats if m["key"] not in done_keys and m["key"] not in gate_keys
+                    and asked[m["key"]] < fin_max_ask]
+            held = [m for m in mats if m["key"] not in done_keys and m["key"] not in gate_keys
+                    and asked[m["key"]] >= fin_max_ask]
             if not left:
                 if held:
+                    st["kind"] = "gain"
                     stopped = (f"미판정 {len(held)}개는 {fin_max_ask}번 물어도 답에 나오지 않아 더 묻지 "
                                "않았습니다 — 다시 실행하면 그 업무만 새 묶음으로 다시 묻습니다"
                                "(config.flowFinishMaxAsk 으로 조절)")
                     print(f"[flow] {stopped}")
                 break
             if over_budget():
-                _eff2 = (deadline - t_start) / 60 if deadline else budget_min
-                stopped = (f"시간 예산 {_eff2:.0f}분({_dl_src})을 넘겨 미판정 {len(left) + len(held)}개를 남겼습니다 — "
-                           "다시 실행하면 남은 업무만 이어서 판정합니다(config.flowBudgetMin 으로 조절)")
+                st["kind"] = "budget"
+                stopped = budget_msg(len(left) + len(held), "개 업무를 미판정으로 남겼습니다")
                 print(f"[flow] {stopped}")
                 break
             # 남은 것은 작게 나눠 묻는다 — 한 번에 몰아 물으면 답이 잘려 또 빠진다
@@ -1343,21 +1690,24 @@ def main():
                 progress("워크플로우 마무리", len(flows), len(mats))
                 for m in sub:
                     asked[m["key"]] += 1
-                got3, info3 = ask(sub, f"wf-fin{rnd}-{si}")
+                got3, info3 = ask_cool(sub, f"wf-fin{rnd}-{si}")
                 if info3.get("ok"):
                     flows.extend(got3)
                     fin_consec = 0
                     print(f"[flow] 마무리 {rnd}-{si} — 업무 {len(sub)}개 중 {len(got3)}개 판정")
                 elif info3.get("phase") == "blocked":
+                    st["blocked"] += 1
+                    gate_keys.update(m["key"] for m in sub)
                     print(f"[flow] 마무리 {rnd}-{si} — 개인정보 관문에 걸려 보내지 않았습니다(실패로 세지 않음)")
                 else:
                     fails.append(info3)
                     fin_consec += 1
                     print(f"[flow] 마무리 {rnd}-{si} 실패: {info3.get('error', '')[:80]}")
-                    if info3.get("fatal"):
-                        stopped = f"{info3.get('error', '')} — {info3.get('hint', '')}".strip(" —")
+                    if info3.get("fatal") or info3.get("hard"):
+                        stopped = _halt(info3)
                         break
                     if fin_consec >= MAX_CONSEC_FAIL:
+                        st["kind"] = "fail"
                         stopped = (f"마무리에서 {fin_consec}묶음 연속 실패({info3.get('error', '')[:40]}) — "
                                    "Copilot 상태를 확인한 뒤 [이어서 분석]으로 이어서")
                         print(f"[flow] {stopped}")
@@ -1367,8 +1717,13 @@ def main():
             gain = len(flows) - before
             if stopped or gain < fin_gain:
                 if not stopped:
-                    _rest = len([m for m in mats if m["key"] not in {f["model"] for f in flows}])
-                    if _rest:
+                    _rest = len([m for m in mats if m["key"] not in {f["model"] for f in flows}
+                                 and m["key"] not in gate_keys])
+                    if _rest and over_budget():
+                        st["kind"] = "budget"
+                        stopped = budget_msg(_rest, "개 업무를 미판정으로 남겼습니다")
+                    elif _rest:
+                        st["kind"] = "gain"
                         stopped = (f"마무리 {rnd}회차에 판정이 {gain}건만 늘어(문턱 {fin_gain}건) 멈췄습니다 — "
                                    "다시 실행하면 남은 업무만 이어서 판정합니다"
                                    "(config.flowFinishMinGain 으로 조절)")
@@ -1376,23 +1731,39 @@ def main():
                           + (f" (남은 {_rest}개는 다시 실행하면 이어서 판정합니다)" if _rest else ""))
                 break
         else:
-            _lo = [m for m in mats if m["key"] not in {f["model"] for f in flows}]
+            _lo = [m for m in mats if m["key"] not in {f["model"] for f in flows} and m["key"] not in gate_keys]
             if _lo:
                 print(f"[flow] 마무리 상한 {fin_rounds}회차를 다 썼는데 {len(_lo)}개가 남았습니다")
     progress("워크플로우 분석", len(chunks), len(chunks))
 
-    # ④ 결과 — 없으면 기존 workflow_<tag>.json 보존
+    # ④ 결과 — 없으면 기존 workflow_<tag>.json 보존. 사유는 실제로 일어난 일로 — '파싱 실패' 는 답을 받았는데
+    # 해석하지 못한 경우에만 쓴다(예전에는 예산 중단·관문 차단·Copilot 오류도 전부 '파싱 실패' 로 보였다).
     if not flows:
-        why, how = _fail_summary(fails)
-        if not why:
+        # 갈래는 다시 보내도 같은 벽(budget·login·fatal·throttle)만 그대로 두고, 나머지(마무리 이득 부족 등)는 실제 사유로
+        kind = st["kind"] if st["kind"] in ("budget", "login", "fatal", "throttle") else ""
+        if kind == "budget":
+            why, how = "시간 예산 초과 — 보내지 못한 업무가 남음", stopped
+        elif not fails and not st["replies"] and (st["blocked"] or gate_keys):
+            why = "모든 묶음 개인정보 관문"
+            how = "개인정보가 섞인 업무라 Copilot 에 보내지 않았습니다 — 조치 필요 없음"
+            kind = kind or "gate"
+        elif fails:
+            why, how = _fail_summary(fails)
+            kind = kind or "fail"
+        elif st["replies"]:
             why = "파싱 실패"
             how = ("응답의 업무명이 분석된 단위와 달라 전부 버렸습니다: " + ", ".join(dropped[:8])
                    if dropped else "응답에 flows 가 없거나 형식이 달랐습니다")
-        print(f"[flow] 만들지 못했습니다 — {why} — {how}")
-        print(json.dumps({"ok": False, "error": why,
-                          "hint": (how + " · " if how else "") + f"{failed}/{len(chunks)}개 묶음 실패 — 기존 결과는 그대로",
-                          "chunks": len(chunks), "failed_chunks": failed}, ensure_ascii=False))
-        return 1
+            kind = kind or "fail"
+        else:
+            why, how = (stopped or "보낼 업무가 없습니다"), ("" if stopped else "[워크플로우 재분석]으로 다시 만드세요")
+            kind = kind or "fail"
+        print(f"[flow] 만들지 못했습니다 — {why}" + (f" — {how}" if how else ""))
+        return _end(1, {"ok": False, "error": why,
+                        "hint": (how + " · " if how else "") + f"{failed}/{len(chunks)}개 묶음 실패 — 기존 결과는 그대로",
+                        "chunks": len(chunks), "failed_chunks": failed, "rule_units": len(rule_units),
+                        "gate_units": len(gate_keys), "cooldowns": st["cool"]},
+                    "failed", kind, stopped or why, why, how)
     if dropped:
         print(f"[flow] 목록에 없는 업무명 {len(dropped)}개는 건너뜀: {', '.join(dropped[:3])}")
 
@@ -1403,18 +1774,18 @@ def main():
     if out["missing_count"]:
         print(f"[flow] [!] 업무 {len(flows)}/{len(mats)}개만 판정했습니다 — {out['note']}")
     print(f"[flow] → {dst}")
-    print(json.dumps({"ok": True, "flows": len(flows), "units": len(mats), "chunks": len(chunks),
-                      "failed_chunks": failed, "salvaged_chunks": salvaged, "basis": basis,
-                      "missing": out["missing_count"], "partial": out["partial"], "note": out["note"],
-                      **({"hint": out["note"]} if out["missing_count"] else {}),
-                      **({"last_error": out["last_error"]} if out["last_error"] else {}),
-                      "merge": {"rule": n_rule, "ai": n_ai}}, ensure_ascii=False))
-    _partial = bool(locals().get("stopped") or locals().get("partial"))
-    if _ss is not None:
-        _ss.finish("partial" if _partial else "done",
-                   stop_kind=("budget" if locals().get("stopped") else ("fatal" if _partial else None)),
-                   reason=str(locals().get("stopped") or ""))
-    return 2 if _partial else 0
+    js = {"ok": True, "flows": len(flows), "units": len(mats), "chunks": len(chunks),
+          "failed_chunks": failed, "salvaged_chunks": salvaged, "basis": basis,
+          "missing": out["missing_count"], "partial": out["partial"], "note": out["note"],
+          **({"hint": out["note"]} if out["missing_count"] else {}),
+          **({"last_error": out["last_error"]} if out["last_error"] else {}),
+          "merge": {"rule": n_rule, "ai": n_ai}, "carried_from": carried_from, "carried": out["carried"],
+          "rule_units": len(rule_units), "gate_units": len(gate_keys), "cooldowns": st["cool"]}
+    if out["missing_count"]:
+        # 부분 — 남은 업무가 있다(다시 실행하면 이어서). 갈래가 없으면 묶음 상한 이월은 budget, 그 밖은 마무리 이득 부족
+        kind = st["kind"] or ("budget" if deferred else "gain")
+        return _end(2, js, "partial", kind, stopped or out["note"])
+    return _end(0, js, "done")
 
 
 if __name__ == "__main__":

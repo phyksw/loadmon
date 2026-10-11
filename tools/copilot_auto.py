@@ -15,7 +15,11 @@ copilot_auto.py — 사람 개입 없는 M365 Copilot 연동 (Edge DevTools Prot
 종료 출력(stdout, JSON 한 건): {"ok":bool,"phase":str,"reply":str,"error":str,"hint":str,"parts":int,
                               "cut":bool}
   phase: ready | login_required | sent | replied | edge_not_found | launch_failed |
-         input_not_found | no_reply | copilot_error | error | stub
+         input_not_found | no_reply | copilot_error | throttled | error | stub
+  throttled(LM28 진단 A): 답이 Copilot 사용량 제한 문구다(is_throttle_reply) — 재시도 사다리를 타지 않고 바로 돌려준다
+       (즉시 다시 보내면 제한이 길어진다). 쉬었다 다시 보내기는 호출자(judge.copilot_send)의 몫이다. <프로필>.throttle.json 에
+       관찰을 남겨 다음 단계 프로세스가 안다(throttle_state). --reload 는 보내기 전에 채팅 페이지를 새로 고치고, --model 은
+       이번 왕복만 모델을 바꾼다.
   cut: 답 꼬리에 '생성 중단' 문구("OK, I've stopped generating the response.")가 있다 — 재시도
        사다리(새 채팅)로도 반복되면 잘린 앞부분을 ok+cut 으로 돌려주고, 호출자(judge/refine)가
        잘린 JSON 을 마지막 완전한 항목까지 복구한 뒤 나머지만 다시 묻는다(적응 분할).
@@ -287,6 +291,7 @@ R_CA = "R-CA"                      # 조건부 액세스 정책 차단
 R_DEAD = "R-DEADPROFILE"           # 전용 프로필이 오류 화면만 냄
 R_NET = "R-NET"                    # 네트워크 오류 화면(프로필 문제가 아님 — 계수하지 않는다)
 R_GATE = "R-GATE"                  # G3 최종 프롬프트 검사에 걸림 — 보내지 않음
+R_THROTTLE = "R-THROTTLE"          # Copilot 사용량 제한 문구 — 사다리 없이 돌려주고 호출자가 쉬었다 다시 보낸다
 REASON_HINT = {
     R_EDGEPOL: "회사 Edge 정책(RemoteDebuggingAllowed=0 또는 UserDataDir 강제)이 전용 Edge 를 막습니다 — AI 단계는 "
                "PC 자료(규칙)로 진행합니다. 프롬프트 파일(report\\judge_*.md)을 Copilot 에 직접 붙여 쓸 수는 있습니다",
@@ -307,6 +312,7 @@ REASON_HINT = {
     R_CA: "회사 조건부 액세스 정책이 이 브라우저의 접속을 막습니다(AADSTS 5300x) — IT 담당자에게 문의하세요",
     R_DEAD: "전용 Edge 가 오류 화면만 냅니다 — 서로 다른 실행에서 2회 연속이면 프로필을 새로 만듭니다(로그인 1회 다시)",
     R_NET: "네트워크(사내망·VPN) 연결을 확인한 뒤 다시 실행하세요",
+    R_THROTTLE: "Copilot 이 잠시 응답을 제한했습니다 — 몇 분 쉬었다 자동으로 이어 보냅니다. 계속되면 1~2시간 뒤 [재분석만]",
 }
 LAST = {"reason": "", "keep": False, "breakaway": True}   # 마지막 ensure_edge 의 사유(웹 수집기는 진리값만 본다)
 _NOTICED = set()
@@ -866,6 +872,63 @@ def _reset_dead(cfg):
         _write_json(_side_path(cfg, ".state.json"), st)
 
 
+# ── 사용량 제한 기록(LM28 진단 A) — <프로필>.throttle.json {t, n, hard, hard_t} ──
+# 판정이 강한 제한(쉬고도 막힘)으로 멈춘 직후 다음 단계(정제·Agentic·워크플로우 — 다른 프로세스)가 15초 만에 같은 벽으로 들어갔다.
+# 기록을 남겨 다음 프로세스의 첫 왕복이 남은 시간만 쉬게 한다(judge.copilot_send). 성공 왕복이 지운다(_after).
+THROTTLE_FILE = ".throttle.json"
+
+
+def note_throttle(cfg=None, hard=False):
+    """사용량 제한 관찰 1회 기록. 1시간 안의 관찰은 n 을 늘린다. hard(강한 제한)는 성공 왕복이 지울 때까지 남긴다
+    (hard_t = 마지막 강한 제한 시각). 기록 실패는 무시한다(왕복을 막지 않는다)."""
+    try:
+        cfg = cfg or load_cfg()
+        p = _side_path(cfg, THROTTLE_FILE)
+        now = time.time()
+        try:
+            with open(p, encoding="utf-8-sig") as f:
+                o = json.load(f)
+            o = o if isinstance(o, dict) else {}
+        except (OSError, ValueError):
+            o = {}
+        try:
+            n = int(o.get("n") or 0) + 1 if now - float(o.get("t") or 0) < 3600 else 1
+            hard_t = now if hard else float(o.get("hard_t") or 0)
+        except (TypeError, ValueError):
+            n, hard_t = 1, (now if hard else 0.0)
+        rec = {"t": now, "n": n, "hard": bool(hard_t)}
+        if hard_t:
+            rec["hard_t"] = hard_t
+        return _write_json(p, rec)
+    except Exception:  # noqa: BLE001 - 기록이 왕복을 막지 않게
+        return False
+
+
+def throttle_state(cfg=None):
+    """마지막 사용량 제한 기록 → (지난 초, 강한 제한인가) · 기록이 없으면 None. 강한 제한이면 지난 초는 마지막 강한 제한부터."""
+    try:
+        cfg = cfg or load_cfg()
+        with open(_side_path(cfg, THROTTLE_FILE), encoding="utf-8-sig") as f:
+            o = json.load(f)
+        hard = bool(o.get("hard"))
+        t = float((o.get("hard_t") if hard else o.get("t")) or 0)
+    except (OSError, ValueError, TypeError, AttributeError, KeyError):
+        return None
+    if t <= 0:
+        return None
+    return max(0.0, time.time() - t), hard
+
+
+def clear_throttle(cfg):
+    """성공 왕복 — 제한 기록을 지운다(있을 때만)."""
+    try:
+        p = _side_path(cfg, THROTTLE_FILE)
+        if os.path.exists(p):
+            os.remove(p)
+    except (OSError, KeyError, TypeError):
+        pass
+
+
 def recreate_profile(cfg):
     """죽은 프로필(서로 다른 왕복에서 오류 화면 2회 연속) — 우리 Edge 를 닫고 프로필 폴더를 <이름>.bad-<시각> 으로 바꾼 뒤
     새로 띄운다(로그인 1회 다시). 사람이 띄운 Edge 가 그 프로필을 쓰고 있으면(표식 없음·포트 살아 있음) 손대지 않는다.
@@ -1411,6 +1474,30 @@ def is_error_reply(reply):
     return any(m.lower() in head for m in ERROR_REPLY_MARKS)
 
 
+# Copilot 사용량 제한(일시) 문구 — 오류 문구와 달리 **즉시 다시 보내면 제한이 길어진다**(새 채팅·자동 모델 사다리를 타지 않는다).
+# 정확한 회사 문구는 아직 실측 전이라 넓게 잡되, 짧은 산문(600자 이하·JSON 없음)의 앞 400자에서만 찾는다(분석문 인용 배제).
+THROTTLE_REPLY_MARKS = ("한도에 도달", "한도를 초과", "사용 한도", "사용량 한도", "메시지 한도", "요청이 너무 많", "너무 많은 요청",
+                        "잠시 후 다시 시도", "나중에 다시 시도", "잠시 기다린 후", "수요가 많", "reached the limit",
+                        "reached your limit", "usage limit", "rate limit", "too many requests", "try again later",
+                        "limit for now", "temporarily unavailable", "high demand", "throttl")
+
+
+def is_throttle_reply(reply):
+    """답이 사용량 제한 문구인가 — 비어 있지 않고 600자 이하·'{' 없음, 앞 400자에 표식 문구."""
+    r = (reply or "").strip()
+    if not r or len(r) > 600 or "{" in r:
+        return False
+    head = r[:400].lower()
+    return any(m.lower() in head for m in THROTTLE_REPLY_MARKS)
+
+
+def _throttled(cfg, reply=""):
+    """사용량 제한 결과 dict — 기록(note_throttle)을 남기고 사다리 없이 돌려준다."""
+    note_throttle(cfg)
+    return {"ok": False, "phase": "throttled", "reason": R_THROTTLE, "error": "Copilot 사용량 제한(일시)",
+            "hint": _hint(R_THROTTLE, cfg), "reply": str(reply or "")[:300]}
+
+
 # 생성이 중간에 끊긴 답 — 생성 중에 전송 버튼을 누르면(그때는 '중지' 버튼이다) Copilot 이 남기는 정형
 # 문구(실측 "OK, I've stopped generating the response."). 오류 응답과 달리 **앞부분에 정상 답(잘린 JSON)이
 # 붙어 있을 수 있어** 꼬리에서 찾고, 호출자가 잘린 JSON 을 복구해 쓸 수 있게 ok 는 유지한 채 cut 표식만 단다.
@@ -1488,6 +1575,28 @@ def new_chat(cdp, cfg):
         return "실패"
 
 
+def reload_page(cdp, cfg, wait=15):
+    """채팅 주소로 다시 들어간다(페이지 새로 고침 — 같은 탭). 몇 시간 이어 쓴 탭(만료된 페이지 토큰·커진 대화 DOM)은 새 채팅
+    버튼만으로는 실패가 이어졌다(LM28 진단 A). 준비될 때까지 최대 wait 초 기다린다 — 로그인이 풀렸으면 다음 page_gate 가
+    login_required 로 드러낸다."""
+    activate(cdp)
+    try:
+        cdp.call("Page.navigate", {"url": cfg["url"]}, timeout=20)
+    except (TimeoutError, RuntimeError, OSError):
+        return "실패"
+    end = time.time() + max(1.0, min(float(wait), _dl_left(wait)))
+    for _ in range(int(wait) + 1):
+        _sleep(1)
+        try:
+            st = cdp.eval(js_state()) or {}
+        except (TimeoutError, RuntimeError, OSError):
+            st = {}
+        if st.get("ready") in ("interactive", "complete") or time.time() > end:
+            break
+    activate(cdp)
+    return "새로 고침"
+
+
 TRACE_MAX = 4_000_000          # 이 크기를 넘으면 갈아 끼운다 — 로그가 조용히 커지지 않게
 
 
@@ -1527,6 +1636,8 @@ def _traced(fn):
                   fresh=bool(fresh), cut=bool(r.get("cut")),
                   parts=r.get("parts", 1), retry=r.get("retry", ""),
                   busy=r.get("busy_seen"),
+                  phase=r.get("phase", ""), reason=r.get("reason", ""),
+                  reload=bool(kw.get("reload")),
                   err=(r.get("error") or "")[:60])
         except Exception:  # noqa: BLE001
             pass
@@ -1536,13 +1647,16 @@ def _traced(fn):
     return wrap
 
 
-def run_roundtrip(cfg, prompt, fresh=False):
+def run_roundtrip(cfg, prompt, fresh=False, reload=False):
     """프롬프트 전송 → 응답 회수. Copilot 일시 오류('응답할 수 없습니다')나 무응답이면
     단계적으로 재시도한다: ① 새 채팅에서 같은 모델로 ② 새 채팅 + 자동 모델로.
     어느 단계에서 성공했는지 retry 노트로 남긴다.
     왕복 1회 총 예산은 cfg.roundtripMaxSec(0 이면 끔)다 — 사다리를 다 태우면 고정 대기까지 합쳐 한 왕복에
     30분이 들고(감사 실측), 그 동안 호출자는 아무것도 받지 못한다. 부모가 강제 종료하기 전에 **자식이
-    스스로** 접어야 '정상 재시도 중' 이 죽지 않고 화면에 이유가 남는다."""
+    스스로** 접어야 '정상 재시도 중' 이 죽지 않고 화면에 이유가 남는다.
+    LM28 진단 A: 답이 사용량 제한 문구면(is_throttle_reply) 사다리 없이 phase 'throttled' 로 돌려준다(즉시 다시 보내면 제한이
+    길어진다 — 쉬었다 다시 보내기는 호출자 몫). 오류 문구 뒤의 사다리 단계는 최대 30초 쉬고 보낸다. reload=True 면 새 채팅
+    버튼 대신 채팅 페이지를 새로 고친 뒤 보낸다(오래 쓴 탭)."""
     _t_rt = time.time()
     _rt_max = max(0, int(cfg.get("roundtripMaxSec") or 0))
     global _RT_DEADLINE           # v3: 고정 대기(준비·입력창·유휴 폴링)도 왕복 예산 안에서 끝나게
@@ -1560,8 +1674,21 @@ def run_roundtrip(cfg, prompt, fresh=False):
                 "hint": "열린 Edge(자동 프로필) 창에서 직접 주소를 열어보세요: " + cfg["url"]}
     cdp = CDP(ws_url)
     activate(cdp)                     # 탭을 앞으로 — 비활성 탭은 답이 자라지 않는다(배경 스로틀링)
+
+    def _err_pause(r):
+        # 오류 문구 뒤에는 바로 다시 보내지 않는다 — 최대 30초 쉬고(왕복 예산 2.5분은 남긴다) 다음 단계로
+        if r.get("ok") and is_error_reply(r.get("reply")):
+            p = min(30.0, _rt_left() - 150)
+            if p > 0:
+                _sleep(p)
     try:
-        if fresh:
+        if reload:
+            # 쉬었다 다시 보내기·chatTurns 회전 — 오래 쓴 탭은 새 채팅 버튼만으로는 실패가 이어졌다(진단 A).
+            try:
+                reload_page(cdp, cfg)
+            except Exception:
+                pass
+        elif fresh:
             # 판정처럼 '깨끗한 문맥'이 필요한 왕복은 새 채팅에서 시작한다 —
             # 앞선 실패 대화(예: 팀즈 조회 거절)가 문맥에 남으면 답이 오염된다.
             try:
@@ -1569,6 +1696,9 @@ def run_roundtrip(cfg, prompt, fresh=False):
             except Exception:
                 pass
         res = _roundtrip_once(cdp, cfg, prompt)
+        # 사용량 제한 문구 — 사다리(새 채팅·자동 모델로 즉시 재전송)를 타지 않는다. 다시 보내면 제한이 길어진다.
+        if res.get("ok") and is_throttle_reply(res.get("reply")):
+            return _throttled(cfg, res.get("reply"))
         # 끊긴 답(cut)도 재시도 사유다 — 다만 앞부분에 잘린 JSON 이 남아 있을 수 있어 전부 실패하면
         # 그 답을 ok+cut 으로 돌려주고 호출자가 복구·부분 재시도한다(judge/refine 의 적응 분할).
         bad = ((res.get("ok") and (is_error_reply(res.get("reply")) or res.get("cut")))
@@ -1587,9 +1717,12 @@ def run_roundtrip(cfg, prompt, fresh=False):
         if _rt_left() < 120:                   # 왕복 예산이 남지 않았다 — 있는 대로 돌려준다(호출자가 나눠 다시 묻는다)
             res["retry"] = f"왕복 예산 {_rt_max // 60}분을 다 써 재시도하지 않았습니다"
             return res
+        _err_pause(res)
         cfg2["replyTimeoutSec"] = int(min(cfg2["replyTimeoutSec"], max(60, _rt_left() - 60)))
         how2 = new_chat(cdp, cfg)
         res2 = _roundtrip_once(cdp, cfg2, prompt)
+        if res2.get("ok") and is_throttle_reply(res2.get("reply")):
+            return _throttled(cfg, res2.get("reply"))
         if res2.get("ok") and not is_error_reply(res2.get("reply")) and not res2.get("cut"):
             res2["retry"] = f"1단계 재시도 성공 (새 채팅 · {how2})"
             return res2
@@ -1597,9 +1730,12 @@ def run_roundtrip(cfg, prompt, fresh=False):
         if _rt_left() < 120:
             res2["retry"] = f"왕복 예산 {_rt_max // 60}분을 다 써 2단계 재시도는 하지 않았습니다"
             return res2 if res2.get("reply") else res
+        _err_pause(res2)
         cfg2["replyTimeoutSec"] = int(min(cfg2["replyTimeoutSec"], max(60, _rt_left() - 60)))
         new_chat(cdp, cfg)
         res3 = _roundtrip_once(cdp, cfg2, prompt, model_override="자동")
+        if res3.get("ok") and is_throttle_reply(res3.get("reply")):
+            return _throttled(cfg, res3.get("reply"))
         if res3.get("ok") and not is_error_reply(res3.get("reply")) and not res3.get("cut"):
             res3["retry"] = "2단계 재시도 성공 (새 채팅 + 자동 모델)"
             return res3
@@ -1899,13 +2035,19 @@ def _wait_rest(cdp, cfg, prompt, secs=300):
     return strip_echo(last or "", prompt, anchor, "anchor").strip() or None
 
 
-def _run_parts(cdp, cfg, parts, fresh, deadline=None):
+def _run_parts(cdp, cfg, parts, fresh, deadline=None, reload=False):
     """같은 CDP·같은 채팅에서 조각을 차례로 보낸다 — 조각별 _roundtrip_once, 사다리 없음.
     조각마다 서약을 확인하고, 없으면 _wait_rest 로 기다린 뒤에만 다음 조각을 보낸다.
     deadline(epoch 초): 넘기면 조각을 더 보내지 않고 시간 초과로 접는다 — 예전에는 이 다부 경로에
-    왕복 예산이 없어 한 왕복이 76~80분까지 무제동으로 돌았다(제보 ④ · 검증 CONFIRMED)."""
+    왕복 예산이 없어 한 왕복이 76~80분까지 무제동으로 돌았다(제보 ④ · 검증 CONFIRMED).
+    LM28 진단 A: 어느 조각의 답이든 사용량 제한 문구면 바로 phase 'throttled'. reload=True 면 새 채팅 대신 페이지 새로 고침."""
     total = len(parts)
-    if fresh:
+    if reload:
+        try:
+            reload_page(cdp, cfg)
+        except Exception:
+            pass
+    elif fresh:
         try:
             new_chat(cdp, cfg)
         except Exception:
@@ -1921,6 +2063,8 @@ def _run_parts(cdp, cfg, parts, fresh, deadline=None):
             res["error"] = f"나눔 {i}/{total}: " + str(res.get("error") or "왕복 실패")
             return res
         reply = res.get("reply") or ""
+        if is_throttle_reply(reply):
+            return dict(_throttled(cfg, reply), parts=total)
         if not res.get("sentinel"):
             more = _wait_rest(cdp, cfg, part)
             if more:
@@ -1937,6 +2081,8 @@ def _run_parts(cdp, cfg, parts, fresh, deadline=None):
                     # (생성 중에 다음을 보내면 전송 버튼이 '중지'가 되어 답을 끊는다)
                     time.sleep(min(30.0, max(1.0, _dl_left(30))))
                 res["note"] = f"나눔 {i}/{total}: 서약 없이 생성 정지 확인 후 진행"
+        if is_throttle_reply(reply):
+            return dict(_throttled(cfg, reply), parts=total)
         if is_error_reply(reply):
             # 중간 조각의 일시 오류도 실패다 — 그 조각을 '받지 못한' 채 이어 가면 마지막
             # 답이 반쪽 자료로 만들어진다. 스테이지 전체를 새 채팅에서 다시 보낸다(호출자).
@@ -1950,13 +2096,15 @@ def _run_parts(cdp, cfg, parts, fresh, deadline=None):
     return res
 
 
-def run_roundtrip_split(cfg, prompt, fresh=False):
+def run_roundtrip_split(cfg, prompt, fresh=False, reload=False):
     """--send 의 기본 경로. 한 조각이면 서약 지시를 덧붙여 기존 run_roundtrip(재시도 사다리
     유지). 여러 조각이면 같은 채팅에 차례로 보내고, 실패하면 새 채팅에서 전체를 1회 재시도.
-    결과 dict 형식은 run_roundtrip 과 같고 parts(조각 수)만 더한다."""
+    결과 dict 형식은 run_roundtrip 과 같고 parts(조각 수)만 더한다. reload: 첫 시도 전에 채팅 페이지 새로 고침.
+    사용량 제한(throttled)이면 새 채팅 전체 재시도도 하지 않는다."""
     parts = make_parts(prompt, reserve=len(PLEDGE_TAIL))
     if len(parts) == 1:
-        res = run_roundtrip(cfg, prompt + PLEDGE_TAIL, fresh=fresh)
+        res = (run_roundtrip(cfg, prompt + PLEDGE_TAIL, fresh=fresh, reload=True) if reload
+               else run_roundtrip(cfg, prompt + PLEDGE_TAIL, fresh=fresh))
         res["parts"] = 1
         return res
     how = ensure_edge(cfg)
@@ -1977,7 +2125,8 @@ def run_roundtrip_split(cfg, prompt, fresh=False):
         cdp = CDP(ws_url)
         activate(cdp)                    # 탭을 앞으로 — 비활성 탭은 답이 자라지 않는다(배경 스로틀링, v24.13)
         try:
-            res = _run_parts(cdp, cfg, parts, fresh=(fresh or attempt == 2), deadline=_deadline)
+            res = _run_parts(cdp, cfg, parts, fresh=(fresh or attempt == 2), deadline=_deadline,
+                             reload=bool(reload and attempt == 1))
         except Exception as e:
             res = {"ok": False, "phase": "error", "error": f"{type(e).__name__}: {e}"}
         finally:
@@ -1987,8 +2136,8 @@ def run_roundtrip_split(cfg, prompt, fresh=False):
                 res["retry"] = "나눔 전송 실패 → 새 채팅에서 전체 재전송 성공"
             res["parts"] = len(parts)
             return res
-        if attempt == 1 and res.get("phase") in ("login_required", "input_not_found", "launch_failed"):
-            break                        # 사람이 개입해야 하는 상태(로그인·개인 계정·죽은 프로필) — 재시도해도 같다
+        if attempt == 1 and res.get("phase") in ("login_required", "input_not_found", "launch_failed", "throttled"):
+            break                        # 사람이 개입해야 하는 상태(로그인·개인 계정·죽은 프로필)·사용량 제한 — 재시도해도 같다
     res["parts"] = len(parts)
     res["retry"] = "나눔 전송 · 새 채팅 전체 재시도 모두 실패"
     return res
@@ -2162,32 +2311,36 @@ def _after(cfg, res):
     elif res.get("ok") and res.get("phase") != "stub":
         _update_owner(cfg, login_pending="")
         _reset_dead(cfg)
+        clear_throttle(cfg)                   # 답이 왔다 — 사용량 제한 기록을 지운다(다음 단계가 쉬지 않게)
     if LAST.get("keep") and "edge_keep" not in res:
         res["edge_keep"] = R_EDGEKEEP
 
 
-def _send(cfg, prompt, fresh=False, no_split=False, lock_wait=EDGE_LOCK_WAIT):
-    """--send 와 send_inproc 의 공용 길 — G3 최종 검사 → (스텁) → 전용 Edge 잠금 안에서 왕복. 결과 dict 는 --send 의 JSON."""
+def _send(cfg, prompt, fresh=False, no_split=False, lock_wait=EDGE_LOCK_WAIT, reload=False):
+    """--send 와 send_inproc 의 공용 길 — G3 최종 검사 → (스텁) → 전용 Edge 잠금 안에서 왕복. 결과 dict 는 --send 의 JSON.
+    reload(LM28): 보내기 전에 채팅 페이지 새로 고침 — 켜졌을 때만 왕복 함수에 넘긴다."""
     prompt = str(prompt or "")
     if not gate_ok(prompt):
         return blocked_result(prompt)
     if stub_dir():
         return run_stub(cfg, prompt, fresh=bool(fresh))       # 테스트 전용 — Edge 미기동
+    kw = {"reload": True} if reload else {}
     try:
         with edge_lock(cfg, timeout=lock_wait):
-            res = (run_roundtrip(cfg, prompt, fresh=bool(fresh)) if no_split
-                   else run_roundtrip_split(cfg, prompt, fresh=bool(fresh)))
+            res = (run_roundtrip(cfg, prompt, fresh=bool(fresh), **kw) if no_split
+                   else run_roundtrip_split(cfg, prompt, fresh=bool(fresh), **kw))
     except EdgeBusy as e:
         return busy_result(e)
     _after(cfg, res)
     return res
 
 
-def send_inproc(prompt, fresh=False, deadline=None, cfg=None, stage=""):
+def send_inproc(prompt, fresh=False, deadline=None, cfg=None, stage="", reload=False):
     """--send 를 같은 프로세스에서 — judge.copilot_send(inProcess) 가 부른다(왕복마다 파이썬을 띄우지 않는다).
     반환 dict 는 --send 가 출력하는 JSON 과 같다(같은 _send). deadline(epoch 초)이 있으면 왕복 예산(roundtripMaxSec)과
     잠금 대기를 그 안으로 줄인다 — 인프로세스 왕복은 밖에서 끊을 수 없으므로 드라이버의 내부 데드라인(_RT_DEADLINE ·
-    CDP 소켓 timeout)이 상한이다. 예외는 --send 처럼 {"ok":False,"phase":"error"} 로 돌려준다."""
+    CDP 소켓 timeout)이 상한이다. 예외는 --send 처럼 {"ok":False,"phase":"error"} 로 돌려준다.
+    reload: 보내기 전에 채팅 페이지 새로 고침(judge 의 쉬었다 다시 보내기·chatTurns 회전). 모델을 바꿀 때는 cfg 의 model."""
     cfg = dict(cfg) if isinstance(cfg, dict) else load_cfg()
     lock_wait = EDGE_LOCK_WAIT
     if deadline:
@@ -2200,6 +2353,8 @@ def send_inproc(prompt, fresh=False, deadline=None, cfg=None, stage=""):
     if stage:
         os.environ["LM_STAGE"] = str(stage)[:40]        # 계측(copilot_trace)의 단계 이름
     try:
+        if reload:
+            return _send(cfg, prompt, fresh=fresh, lock_wait=lock_wait, reload=True)
         return _send(cfg, prompt, fresh=fresh, lock_wait=lock_wait)
     except Exception as e:  # noqa: BLE001 - --send 와 같은 꼴로
         return {"ok": False, "phase": "error", "error": f"{type(e).__name__}: {e}",
@@ -2304,12 +2459,17 @@ def main():
     ap.add_argument("--diagnose-model", action="store_true", help="모델 선택 메뉴를 열어 항목 덤프")
     ap.add_argument("--url", help="대상 URL 덮어쓰기 (테스트용)")
     ap.add_argument("--port", type=int, help="디버그 포트 덮어쓰기")
+    ap.add_argument("--reload", action="store_true",
+                    help="보내기 전에 채팅 페이지를 새로 고침 (오래 쓴 탭 — 판정의 쉬었다 다시 보내기)")
+    ap.add_argument("--model", help="이번 왕복만 모델 바꾸기 (config 의 model 대신 — 예: 자동)")
     a = ap.parse_args()
     cfg = load_cfg()
     if a.url:
         cfg["url"] = a.url
     if a.port:
         cfg["port"] = a.port
+    if a.model:
+        cfg["model"] = a.model
     try:
         if a.close:
             res = dict(close_own_edge(cfg, "cli", force=bool(a.force)), ok=True)
@@ -2326,7 +2486,10 @@ def main():
         elif a.send:
             with open(a.send, encoding="utf-8-sig") as f:
                 prompt = f.read()
-            res = _send(cfg, prompt, fresh=bool(a.fresh), no_split=bool(a.no_split))   # send_inproc 과 같은 길
+            if a.reload:
+                res = _send(cfg, prompt, fresh=bool(a.fresh), no_split=bool(a.no_split), reload=True)
+            else:
+                res = _send(cfg, prompt, fresh=bool(a.fresh), no_split=bool(a.no_split))   # send_inproc 과 같은 길
             if a.out and res.get("reply"):
                 with open(a.out, "w", encoding="utf-8") as f:
                     f.write(res["reply"])
