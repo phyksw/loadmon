@@ -2,16 +2,15 @@
 #
 # 확인 - 명령줄에 Start-ActivitySampler.ps1(창 샘플러)·Start-TeamsSampler.ps1(팀즈 샘플러)이 있는 PowerShell 프로세스와,
 #        그 샘플러를 로그온 때마다 띄우는 예약 작업(LoadMonitor<판>-Sampler · LoadMonitor<판>-TeamsSampler).
-# 끄기 - 예약 작업을 '사용 안 함'으로 바꾸고(지우지 않는다 - LM24 는 작업이 없으면 다음 분석 때 다시 등록한다),
-#        샘플러 프로세스를 종료한다(팀즈 샘플러가 띄운 자식 PowerShell 까지). 관리자 권한 불필요.
-#        다른 PowerShell 창·프로그램과 모아 둔 기록(data\activity 등)은 건드리지 않는다.
+# 끄기 - 묻지 않고 예약 작업을 지우고('사용 안 함'으로 둔 것도), 샘플러 프로세스를 종료한다(팀즈 샘플러가 띄운
+#        자식 PowerShell 까지). 관리자 권한 불필요. 다른 PowerShell 창·프로그램과 모아 둔 기록(data\activity 등)은
+#        건드리지 않는다. LM24 로 다시 분석하면 LM24 가 작업을 다시 등록할 수 있다 - 그때 다시 실행한다.
 #
-# 사용 - LoadMonitor-샘플러끄기.bat            확인한 뒤 끌지 묻는다
-#        LoadMonitor-샘플러끄기.bat -Status    확인만
-#        LoadMonitor-샘플러끄기.bat -Yes       묻지 않고 끈다
+# 사용 - LoadMonitor-샘플러끄기.bat            확인하고 묻지 않고 바로 끈다
+#        LoadMonitor-샘플러끄기.bat -Status    확인만(아무것도 바꾸지 않음)
 param(
     [switch]$Status,
-    [switch]$Yes,
+    [switch]$Yes,               # 예전 판 호환 - 이제는 늘 묻지 않고 끈다
     [string]$Only = ''          # 시험용 - 이 정규식에 맞는 작업 이름·명령줄만 대상으로 한다
 )
 
@@ -154,43 +153,30 @@ $procs = @(Get-SamplerProcesses)
 $tasks = @(Get-SamplerTasks)
 Show-State $procs $tasks
 Write-Host ''
-$on = @($tasks | Where-Object { $_.Enabled -or $_.Running })
-if (-not $procs.Count -and -not $on.Count) {
-    Write-Host '샘플러가 모두 꺼져 있습니다. 바꿀 것이 없습니다.' -ForegroundColor Green
+if (-not $procs.Count -and -not $tasks.Count) {
+    Write-Host '샘플러가 모두 꺼져 있고 자동 시작 작업도 없습니다. 바꿀 것이 없습니다.' -ForegroundColor Green
     exit 0
 }
 if ($Status) { exit 0 }
 
-Write-Host ('끄면: 샘플러 프로세스 {0}개를 종료하고, 로그온 자동 시작 작업 {1}개를 ''사용 안 함''으로 바꿉니다(작업은 지우지 않음).' -f `
-    $procs.Count, @($tasks | Where-Object { $_.Enabled }).Count)
-$ans = ''
-if ($Yes) { $ans = 'Y' }
-else { try { $ans = [string](Read-Host '샘플러를 끌까요? (Y/N)') } catch { $ans = '' } }
-if ($ans -notmatch '^\s*[Yy]') {
-    Write-Host '아무것도 바꾸지 않았습니다.'
-    exit 0
-}
-
-# 묻는 동안 끝난 프로세스의 PID 가 다른 프로그램에 다시 쓰였을 수 있다 - 끄기 직전에 다시 찾는다
-$procs = @(Get-SamplerProcesses)
-$tasks = @(Get-SamplerTasks)
+Write-Host ('샘플러를 끕니다: 프로세스 {0}개 종료 · 로그온 자동 시작 작업 {1}개 삭제' -f $procs.Count, $tasks.Count)
 $fail = 0
-# 1) 자동 시작부터 끈다 - 프로세스를 먼저 끝내면 작업의 '실패 시 다시 시작'(1분)이 곧바로 다시 띄울 수 있다
+# 1) 자동 시작부터 지운다 - 프로세스를 먼저 끝내면 작업의 '실패 시 다시 시작'(1분)이 곧바로 다시 띄울 수 있다
+$root = $null
+try { $svc = New-Object -ComObject 'Schedule.Service'; $svc.Connect(); $root = $svc.GetFolder('\') } catch { }
 foreach ($t in $tasks) {
-    if ($t.Enabled) {
-        $ok = $false
-        try { $t.Task.Enabled = $false; $ok = $true } catch { }
-        if (-not $ok) {
-            cmd.exe /c ('schtasks /Change /TN "{0}" /DISABLE <nul >nul 2>&1' -f $t.Name)
-            $ok = ($LASTEXITCODE -eq 0)
-        }
-        if ($ok) { Write-Host ('  자동 시작 끔: ' + $t.Name) -ForegroundColor Green }
-        else {
-            $fail++
-            Write-Host ('  [!] {0} 을(를) 사용 안 함으로 바꾸지 못했습니다 - 작업 스케줄러(taskschd.msc)에서 직접 바꾸세요.' -f $t.Name) -ForegroundColor Red
-        }
-    }
     if ($t.Running) { try { $t.Task.Stop(0) } catch { } }
+    $ok = $false
+    try { $root.DeleteTask($t.Name, 0); $ok = $true } catch { }
+    if (-not $ok) {
+        cmd.exe /c ('schtasks /Delete /TN "{0}" /F <nul >nul 2>&1' -f $t.Name)
+        $ok = ($LASTEXITCODE -eq 0)
+    }
+    if ($ok) { Write-Host ('  자동 시작 지움: ' + $t.Name) -ForegroundColor Green }
+    else {
+        $fail++
+        Write-Host ('  [!] {0} 을(를) 지우지 못했습니다 - 작업 스케줄러(taskschd.msc)에서 직접 지우세요.' -f $t.Name) -ForegroundColor Red
+    }
 }
 # 2) 프로세스 종료 - 샘플러(부모)를 먼저 끝내 새 자식이 생기지 않게 한 뒤 남은 자식을 끝낸다
 foreach ($p in $procs) {
@@ -213,6 +199,6 @@ if ($procs.Count) {
 } else {
     Write-Host '샘플러를 껐습니다. 남아 있는 PowerShell 창(이미 끝난 창)은 닫으면 됩니다.' -ForegroundColor Green
 }
-Write-Host 'LM24 를 다시 실행하면 샘플러가 다시 켜질 수 있습니다 - 그때는 이 도구를 다시 실행하세요.'
+Write-Host 'LM24 로 다시 분석하면 LM24 가 샘플러를 다시 등록·실행할 수 있습니다 - 그때는 이 도구를 다시 실행하세요.'
 if ($fail) { exit 1 }
 exit 0
