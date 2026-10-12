@@ -1,0 +1,8 @@
+# 줄끝·인코딩을 바이트 그대로 보존한다.
+#   .bat = CP949 + CRLF / .ps1 = UTF-8 BOM + CRLF / .md = UTF-8 LF
+* -text
+
+# 변환만 끄고 diff 는 텍스트로 보이게 한다.
+*.ps1   diff
+*.bat   diff
+*.md    diff
