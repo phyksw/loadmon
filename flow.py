@@ -36,7 +36,8 @@ LoadMonitor20 과 다른 점:
     지난 흐름의 키는 표기 축 스냅(_key_resolver)으로 오늘 키에 맞춘다(예전: 글자까지 같아야 이어받음).
   · 일시 오류(copilot_error·시간 초과 등)는 반으로 나누지 않고 coolDownSec(기본 90초) 쉰 뒤 새 채팅에서 같은 묶음을
     한 번만 다시 보낸다. 반분은 답이 왔는데 해석 못 했거나(parse) 응답이 없을 때(no_reply)만. 드라이버가 이미 쉬었으면
-    (결과의 cooldowns) 또 쉬지 않고, Copilot 사용량 제한(hard)이면 그 자리에서 멈춘다(stop_kind throttle).
+    (결과의 cooldowns) 또 쉬지 않고, Copilot 사용량 제한(hard)이면 그 자리에서 멈춘다(stop_kind throttle). 쉬는 초는 이번
+    실행의 쉬는 시간 합계(copilotAuto.runWaitMaxSec — judge.wait_room) 안이고, 다 썼으면 쉬지 않고 바로 한 번 더 보낸다(LM28).
   · 세부 병합 왕복은 AI 판정이 중단된 직후·전체 마감 20분 미만이면 건너뛰고(규칙·캐시만), 돌더라도 min(15분, 남은 시간의 1/4).
   · 신호의 80% 이상이 규칙 판정(judge '규칙')인 단위는 묻지 않는다(rule_units — 'AI 판정 대기'). 키·설명·요청→산출 줄이
     개인정보 관문에 걸리는 단위는 따로 두고(gate_units) 나머지 묶음은 그대로 보낸다.
@@ -1075,6 +1076,28 @@ def _cool_wait(deadline, cool):
     return max(0.0, min(float(cool), deadline - time.monotonic() - 60.0))
 
 
+def _run_room(judge, wait):
+    """LM28 — 쉴 초를 이번 실행의 쉬는 시간 합계(copilotAuto.runWaitMaxSec)·프로세스 합계·전체 마감 안으로(judge.wait_room).
+    judge 에 없으면(시험 가짜) 바라는 그대로. 1초도 못 쉬면 0(쉬지 않고 바로 한 번 더)."""
+    fn = getattr(judge, "wait_room", None)
+    if wait > 0 and callable(fn):
+        try:
+            wait = min(float(wait), float(fn(wait)))
+        except Exception:  # noqa: BLE001 - 합계를 못 읽으면 바라는 그대로
+            pass
+    return float(wait) if wait >= 1 else 0.0
+
+
+def _note_wait(judge, wait):
+    """방금 wait 초 쉬었다 — 판정 모듈의 프로세스·실행 합계에 더한다(judge.note_waited). 기록 실패는 무시한다."""
+    fn = getattr(judge, "note_waited", None)
+    if wait > 0 and callable(fn):
+        try:
+            fn(wait)
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def _fresh_enough(at, today, days):
     """asked_at(YYYY-MM-DD)이 오늘로부터 days 일 이내인가 — 날짜를 모르면 False(다시 묻는다)."""
     try:
@@ -1466,12 +1489,18 @@ def _run(judge, tag, rep, _ss):
         got, info = ask(part, name)
         if not _transient(info) or info.get("cooldowns"):
             return got, info
-        wait = _cool_wait(deadline, cool_sec)
-        print(f"[flow] {name} {str(info.get('error') or '')[:60]} — {wait:.0f}초 쉬고 새 채팅에서 같은 묶음을 "
-              "한 번 더 보냅니다")
+        want = _cool_wait(deadline, cool_sec)
+        wait = _run_room(judge, want)            # 이번 실행의 쉬는 시간 합계(runWaitMaxSec) 안 — LM28
+        err = str(info.get("error") or "")[:60]
+        if wait > 0:
+            print(f"[flow] {name} {err} — {wait:.0f}초 쉬고 새 채팅에서 같은 묶음을 한 번 더 보냅니다")
+        else:
+            print(f"[flow] {name} {err} — 쉬지 않고 새 채팅에서 같은 묶음을 한 번 더 보냅니다"
+                  + ("(이번 실행에서 쉴 수 있는 시간을 다 썼습니다)" if want >= 1 else ""))
         _bad_reply(judge)
         if wait > 0:
             time.sleep(wait)
+            _note_wait(judge, wait)
         if over_budget():
             return got, info
         st["cool"] += 1

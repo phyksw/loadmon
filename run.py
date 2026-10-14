@@ -542,12 +542,17 @@ AI2_STAGES = ("agentic.py", "flow.py")    # 판정 뒤 Copilot 단계 — 지난
 # Copilot 에 보내지 않고 바로 접는다(copilot_auto.run_stopped — 예전에는 단계마다 10분을 쉬고 한 번씩 더 보내 한 실행이 한 시간 넘게
 # 멈춰 보였다 · 현장 제보). run.py 는 그것을 진행 로그에 한 줄로 알리고(실행에 1회) 단계 기록에 사유를 싣는다 — 멈춘 단계에는
 # THR_LINE 을 앞에(기록 300자 자르기에 잘리지 않게), 멈춘 뒤에 돈 단계에는 일반 실패 대신 THR_SKIP. 보고서·묶음·팀 보고는 그대로 간다.
+# 한 실행에서 Copilot 때문에 쉬는 시간은 모든 단계를 합쳐 copilotAuto.runWaitMaxSec(기본 5분) 안이다 — 단계 안의 쉬기(1·2·2분 사다리·
+# 사용량 제한 2분 한 번)도, run_ai_stage 의 재시도 대기(Agentic·워크플로우 120초)도 같은 합계에서 쓴다(copilot_auto.run_wait_left).
 THR_LINE = ("Copilot 사용량 제한(요청이 너무 많음) — 이번 실행의 AI 단계를 멈췄습니다. 여기까지의 결과는 지켰고, "
             "1~2시간 뒤 [재분석만]을 누르면 남은 것만 이어서 합니다.")
 THR_SKIP = ("건너뜀 — Copilot 사용량 제한(요청이 너무 많음)으로 이번 실행의 AI 단계를 멈춰 Copilot 에 보내지 않았습니다 "
             "(지난 결과·규칙 결과 유지 · 1~2시간 뒤 [재분석만])")
 THR = {"said": False}          # THR_LINE 을 이 실행에서 이미 찍었나
 _RUN_STOPPED = None            # 시험 주입 — None 이면 tools\copilot_auto.run_stopped
+_RUN_WAIT_LEFT = None          # 시험 주입 — None 이면 tools\copilot_auto.run_wait_left
+_ADD_RUN_WAIT = None           # 시험 주입 — None 이면 tools\copilot_auto.add_run_wait
+RETRY_WAIT_MIN = 15            # 재시도 대기의 바닥(초) — 자식 프로세스를 다시 띄우기 전 숨 돌리기(쉬는 시간 합계와 무관한 몫)
 
 
 def start_run_id():
@@ -567,6 +572,28 @@ def run_throttled():
         return bool(fn())
     except Exception:  # noqa: BLE001 - 기록을 못 읽어도 실행은 계속한다
         return False
+
+
+def retry_wait_sec(want):
+    """재시도 전에 쉴 초 — RETRY_WAIT_MIN(15초)을 넘는 대기는 이번 실행의 남은 쉬는 시간(copilot_auto.run_wait_left —
+    copilotAuto.runWaitMaxSec)으로 줄인다(바닥 15초). 실행 표식이 없거나 못 읽으면 바라는 그대로."""
+    if want <= RETRY_WAIT_MIN:
+        return want
+    try:
+        fn = _RUN_WAIT_LEFT if _RUN_WAIT_LEFT is not None else _copilot_mod().run_wait_left
+        left = float(fn())
+    except Exception:  # noqa: BLE001 - 합계를 못 읽어도 실행은 계속한다
+        return want
+    return want if left >= want else max(RETRY_WAIT_MIN, int(left))
+
+
+def note_retry_wait(sec):
+    """방금 sec 초 쉬었다 — 이번 실행의 쉬는 시간 합계에 더한다(copilot_auto.add_run_wait). 기록 실패는 무시한다."""
+    try:
+        fn = _ADD_RUN_WAIT if _ADD_RUN_WAIT is not None else _copilot_mod().add_run_wait
+        fn(sec)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def say_throttle():
@@ -634,8 +661,9 @@ def run_ai_stage(script, d0, d1, retry_wait=None, extra=()):
     """판정 뒤 단계(Agentic·워크플로우)를 돌린다. Copilot 은 긴 판정 뒤에 일시적으로
     응답을 거부하는 일이 있어(실측: 뒤 단계만 실패), 실패하면 잠시 쉬고 1회 재시도한다.
     · agentic.py·flow.py 는 늘 --carry — 기간 끝날짜가 바뀌어도 지난 결과를 이어받고 남은 것만 묻는다.
-    · 재시도 대기는 그 둘이 120초(Copilot 이 숨 돌릴 시간), 나머지는 15초. 워크플로우 재시도는 --no-merge(세부 병합 왕복을
-      다시 하지 않는다 — 규칙 병합과 캐시만).
+    · 재시도 대기는 그 둘이 120초(Copilot 이 숨 돌릴 시간), 나머지는 15초. 15초를 넘는 대기는 이번 실행의 쉬는 시간 합계
+      (copilotAuto.runWaitMaxSec) 안에서만 쉬고(바닥 15초 — retry_wait_sec) 쉰 초를 합계에 적는다. 워크플로우 재시도는
+      --no-merge(세부 병합 왕복을 다시 하지 않는다 — 규칙 병합과 캐시만).
     · 자식 마지막 줄 JSON 의 stop_kind 가 budget·gate·login·fatal·throttle 이거나 사유가 Copilot 사용량 제한이면
       재시도하지 않는다 — 다시 보내도 같은 벽이다(사용량 제한은 copilot_send 가 이미 쉬고 다시 보냈다).
     반환: (rc, note)."""
@@ -681,8 +709,12 @@ def run_ai_stage(script, d0, d1, retry_wait=None, extra=()):
         return rc, why
     if base == "flow.py" and "--no-merge" not in cmd:
         cmd.append("--no-merge")             # 재시도는 흐름 왕복만 — 세부 병합 왕복은 첫 시도가 이미 했다
-    print(f"   첫 시도 실패(코드 {rc}) - {retry_wait}초 뒤 1회 재시도합니다")
-    time.sleep(retry_wait)
+    wait = retry_wait_sec(retry_wait)
+    print(f"   첫 시도 실패(코드 {rc}) - {wait}초 뒤 1회 재시도합니다"
+          + (" (이번 실행의 Copilot 쉬는 시간 합계 안 — copilotAuto.runWaitMaxSec)" if wait < retry_wait else ""))
+    time.sleep(wait)
+    if retry_wait > RETRY_WAIT_MIN:
+        note_retry_wait(wait)                # Copilot 이 숨 돌릴 시간 — 이번 실행의 쉬는 시간 합계에 넣는다
     _WATCH_STATE_PATH["p"] = _state_p
     try:
         rc, why2 = _run_capture(cmd, env)

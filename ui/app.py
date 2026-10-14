@@ -3577,7 +3577,7 @@ async function poll(){
    // 사용자가 "멈췄다" 고 판단할 수밖에 없었다(제보: 2시간 정체).
    const aiPhase=s.phase&&/^(AI|워크플로우|Agentic|월별)/.test(s.phase);
    const idle=(s.idle==null?null:s.idle);
-   $("pg_hint").textContent=coolPh?"Copilot 이 잠시 응답을 제한해 2·5·10분 쉬었다가 같은 묶음을 다시 보냅니다. 창을 닫지 말고 두세요 — 이미 판정한 신호는 저장돼 있습니다."
+   $("pg_hint").textContent=coolPh?"Copilot 이 잠시 응답을 제한해 1~2분 쉬었다가 같은 묶음을 다시 보냅니다(한 번 분석에서 쉬는 시간은 모두 합쳐 5분까지). 창을 닫지 말고 두세요 — 이미 판정한 신호는 저장돼 있습니다."
     :!aiPhase?""
     :("Copilot 왕복 한 번에 1~15분 걸립니다(왕복 상한 roundtripMaxSec)."
       +(idle!=null?` 마지막 소식 ${fmt(idle)} 전 —`:"")

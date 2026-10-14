@@ -346,7 +346,7 @@ class _Send(unittest.TestCase):
     GLOBALS = (("_FIRST_SEND", [True]), ("_NEED_FRESH", [False]), ("_TURNS", [0]), ("_CHAT_TURNS", [None]),
                ("_HARD", [False]), ("_COOLED", [0.0]), ("_COOLDOWNS", [0]), ("_MODEL_FALLBACK", [""]),
                ("_THR_CHECKED", [False]), ("_WAIT_TICKS", [0]), ("_LAST_PROMPT", [None]), ("_STUB_NOTED", [True]),
-               ("_RUN_STOP_SAID", [False]))
+               ("_RUN_STOP_SAID", [False]), ("_BUDGET_SAID", [False]))
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory(prefix="lm28_t22s_")
@@ -391,7 +391,7 @@ class CopilotSendThrottle(_Send):
         os.environ["LM_RUN_ID"] = "run-A"
         self.replies = [dict(THROTTLED)]
         res = self.send()
-        self.assertEqual(self.cool, [120.0])                         # 2·5·10분 사다리가 아니라 2분 한 번
+        self.assertEqual(self.cool, [120.0])                         # 1·2·2분 사다리가 아니라 2분 한 번
         self.assertEqual(len(self.sent), 2)
         self.assertEqual([(s["fresh"], s["reload"]) for s in self.sent[1:]], [(True, True)])
         self.assertTrue(res.get("hard"))
@@ -401,7 +401,7 @@ class CopilotSendThrottle(_Send):
         out = self.out.getvalue()
         self.assertIn("2분(120초) 쉬고 새로 고친 뒤 같은 묶음을 한 번만 다시 보냅니다", out)
         self.assertIn("이번 실행의 AI 단계는 더 보내지 않고", out)
-        # 같은 실행의 뒤 단계(정제·Agentic·워크플로우·월별 코멘트 — 다른 프로세스) — 보내지도, 10분 쉬지도 않는다
+        # 같은 실행의 뒤 단계(정제·Agentic·워크플로우·월별 코멘트 — 다른 프로세스) — 보내지도, 남은 시간을 쉬지도 않는다
         self.new_process()
         n_sent = len(self.sent)
         for nm in ("refine1", "agentic", "narr_2026-03"):
@@ -438,7 +438,7 @@ class CopilotSendThrottle(_Send):
         os.environ["LM_RUN_ID"] = "run-A"
         self.replies = [dict(COPILOT_ERR)]
         res = self.send()
-        self.assertEqual(self.cool, [120.0, 300.0, 600.0])
+        self.assertEqual(self.cool, [60.0, 120.0, 120.0])             # 1·2·2분(LM28 — 예전 2·5·10분)
         self.assertEqual(len(self.sent), 4)
         self.assertEqual([s["model"] for s in self.sent], ["", "", "", "자동"])
         self.assertTrue(res.get("hard"))
@@ -448,7 +448,7 @@ class CopilotSendThrottle(_Send):
     def test_throttle_after_transient_waits_once(self):
         self.replies = [dict(COPILOT_ERR), dict(THROTTLED), dict(THROTTLED)]
         res = self.send()
-        self.assertEqual(self.cool, [120.0, 120.0])                  # 사다리 1단 + 사용량 제한 한 번
+        self.assertEqual(self.cool, [60.0, 120.0])                   # 사다리 1단(1분) + 사용량 제한 한 번(2분)
         self.assertEqual((len(self.sent), res.get("cooldowns")), (3, 2))
         self.assertTrue(res.get("hard"))
 
@@ -460,7 +460,7 @@ class CopilotSendThrottle(_Send):
         self.replies = [dict(THROTTLED)]
         res = self.send()
         self.assertEqual(len(self.cool), 1)
-        self.assertAlmostEqual(self.cool[0], 480.0, delta=3.0)       # 남은 8분만 한 번 쉬고
+        self.assertAlmostEqual(self.cool[0], 180.0, delta=3.0)       # 5분 중 남은 3분만 한 번 쉬고
         self.assertEqual(len(self.sent), 1)                          # 한 번 보내 막히면 바로 hard(사용량 제한 대기 없음)
         self.assertTrue(res.get("hard"))
         self.assertIn("지난 실행이 Copilot 사용량 제한(요청이 너무 많음)으로 멈췄습니다", self.out.getvalue())
@@ -494,6 +494,8 @@ class JudgeMainThrottle(p10._Base):
         self.stack.enter_context(mock.patch.object(ca, "note_throttle", self._note))
         self.stack.enter_context(mock.patch.object(ca, "throttle_state", self._state))
         self.stack.enter_context(mock.patch.object(judge, "_RUN_STOP_SAID", [False]))
+        # 실행 표식이 있으면 쉬는 시간 합계(<프로필>.wait.json)를 적는다 — 운영 프로필이 아니라 임시 폴더에
+        self.stack.enter_context(mock.patch.object(ca, "load_cfg", lambda *a, **k: _cfg(self.tmp)))
         os.environ["LM_RUN_ID"] = "run-A"
 
     def _note(self, cfg=None, hard=False, run=None, kind=None):

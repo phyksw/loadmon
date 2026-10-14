@@ -34,7 +34,7 @@ COLS = ["time", "source", "who", "project", "activity", "weight", "text", "flag"
 TAX = {"models": [{"name": "LiDAR-X", "match": ["lidar"], "obs": "보정 데이터 검토"},
                   {"name": "공통", "match": []}]}
 THROTTLED = {"ok": False, "phase": "throttled", "reason": "R-THROTTLE", "error": "Copilot 사용량 제한(일시)"}
-# 일시 오류(사용량 제한이 아닌 것) — 2·5·10분 쉬는 사다리 시험용. 사용량 제한은 LM28 부터 한 번만 쉰다(tests\test_p22_throttle.py)
+# 일시 오류(사용량 제한이 아닌 것) — 1·2·2분 쉬는 사다리 시험용. 사용량 제한은 LM28 부터 한 번만 쉰다(tests\test_p22_throttle.py)
 COPILOT_ERR = {"ok": False, "phase": "copilot_error", "error": "Copilot 일시 오류 — 3단계 재시도 모두 실패"}
 LOGIN = {"ok": False, "phase": "login_required", "reason": "R-LOGIN", "error": "로그인 필요 (최초 1회)"}
 
@@ -76,7 +76,7 @@ class _Base(unittest.TestCase):
         for name, val in (("ROOT", self.tmp), ("_FIRST_SEND", [True]), ("_NEED_FRESH", [False]), ("_TURNS", [0]),
                           ("_CHAT_TURNS", [None]), ("_HARD", [False]), ("_COOLED", [0.0]), ("_COOLDOWNS", [0]),
                           ("_MODEL_FALLBACK", [""]), ("_THR_CHECKED", [False]), ("_WAIT_TICKS", [0]),
-                          ("_LAST_PROMPT", [None]), ("_STUB_NOTED", [True])):
+                          ("_LAST_PROMPT", [None]), ("_STUB_NOTED", [True]), ("_BUDGET_SAID", [False])):
             st.enter_context(mock.patch.object(judge, name, val))
         st.enter_context(mock.patch.object(judge, "g3_prompt", lambda text: True))
         st.enter_context(mock.patch.object(judge, "g3_rows", lambda rows, *a, **k: ([dict(r) for r in rows], {})))
@@ -271,7 +271,7 @@ class ThrottleRecovery(_Base):
         self.assertEqual(len(c1), 3)
         self.assertEqual([s["reload"] for s in c1], [False, True, True])
         self.assertTrue(all(s["fresh"] for s in c1[1:]))
-        self.assertEqual(self.cool, [120.0, 300.0])
+        self.assertEqual(self.cool, [60.0, 120.0])                   # 사다리 1·2분(LM28 — 예전 2·5분)
         aj = self.aj()
         self.assertEqual((aj["retries"], aj["aborted"], aj["cooldowns"], aj["model_fallback"]), (0, False, 2, ""))
         self.assertEqual((aj["judged"], aj["roundtrips"], aj["abort_kind"]), (10, 3, ""))
@@ -357,7 +357,7 @@ class PreThrottle(_Base):
         self.thr = (120.0, True)                                     # 2분 전 다른 단계가 남긴 강한 제한
         self.reply = lambda name, prompt: dict(THROTTLED)
         res = judge.copilot_send("판정 요청 본문", "t", "chunk1")
-        self.assertEqual(self.cool, [480.0])                         # 남은 8분만 한 번 쉰다
+        self.assertEqual(self.cool, [180.0])                         # 5분 중 남은 3분만 한 번 쉰다
         self.assertEqual(len(self.sent), 1)                          # 그래도 막히면 사다리 없이 hard
         self.assertTrue(res.get("hard"))
         self.assertTrue(details.explain_failure(res)[2])

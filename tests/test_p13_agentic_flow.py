@@ -85,11 +85,14 @@ class _Env(unittest.TestCase):
             mock.patch.object(judge, "copilot_send", self._send),
             mock.patch.object(judge, "note_bad_reply", lambda: self.bad.append(1)),
             mock.patch.object(time, "sleep", lambda s: self.sleeps.append(s)),
+            # agentic·flow 의 쉬기는 판정 모듈의 쉬는 시간 합계(judge.wait_room·note_waited)를 함께 쓴다 — 시험마다 새로
+            mock.patch.object(judge, "_COOLED", [0.0]),
             mock.patch.dict(os.environ, {}),
         ]
         for p in self._patches:
             p.start()
-        os.environ.pop("LM_AI_DEADLINE", None)
+        for k in ("LM_AI_DEADLINE", "LM_RUN_ID"):
+            os.environ.pop(k, None)
 
     def tearDown(self):
         for p in reversed(self._patches):

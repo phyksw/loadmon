@@ -25,6 +25,8 @@ copilot_auto.py — 사람 개입 없는 M365 Copilot 연동 (Edge DevTools Prot
        새 채팅 사다리를 기다리지 않고 바로 throttled 로 돌려준다(그동안의 재전송 하나하나가 제한을 늘린다). 같은 실행(LM_RUN_ID)이
        사용량 제한으로 멈췄으면(run_stopped) 보내지 않고 바로 hard 'throttled'(run_stop_result). 보내기 사이에는
        copilotAuto.minGapSec(기본 15초 · 0 = 끔) 간격을 둔다 — 앞 전송 시각은 <프로필>.pace.json(프로세스를 넘어 · pace_wait).
+       한 실행(LM_RUN_ID)에서 Copilot 때문에 쉬는 시간은 모든 단계를 합쳐 copilotAuto.runWaitMaxSec(기본 300초 · 0 = 쉬지 않음)
+       안이다 — 쉰 초 합계는 <프로필>.wait.json(run_wait_left·add_run_wait — 쉬는 쪽은 judge·agentic·flow·run.py).
   cut: 답 꼬리에 '생성 중단' 문구("OK, I've stopped generating the response.")가 있다 — 재시도
        사다리(새 채팅)로도 반복되면 잘린 앞부분을 ok+cut 으로 돌려주고, 호출자(judge/refine)가
        잘린 JSON 을 마지막 완전한 항목까지 복구한 뒤 나머지만 다시 묻는다(적응 분할).
@@ -150,9 +152,12 @@ DEFAULTS = {
     # 프롬프트를 보내는 사이의 최소 간격(초) — 프로세스를 넘어(<프로필>.pace.json). 판정 묶음·재시도·다음 단계가 잇달아 보내 요청이
     # 몰리면 Copilot 이 「요청이 너무 많다」고 막는다(현장 제보). 0 = 끔. 평소 왕복은 답을 기다리는 동안 이미 지나 있어 느려지지 않는다.
     "minGapSec": 15,
+    # 한 번 분석(run.py 한 실행 — LM_RUN_ID)에서 Copilot 때문에 쉬는 시간의 합계 상한(초) — 판정·정제·월별 코멘트·Agentic·워크플로우를
+    # 모두 합친다(<프로필>.wait.json). 다 쓰면 그 단계의 남은 묶음은 보내지 않고 여기까지의 결과를 지킨다. 0 = 쉬지 않음(막히면 바로 멈춤).
+    "runWaitMaxSec": 300,
 }
 # 빈 값은 기본값을 쓰는 load_cfg 규칙의 예외 — 이 키들은 0 도 '끔'으로 받는다(설정가이드가 0·false 를 같은 뜻으로 안내한다)
-KEEP_FALSY = ("deleteChats", "minGapSec")
+KEEP_FALSY = ("deleteChats", "minGapSec", "runWaitMaxSec")
 
 # ── 긴 프롬프트 분할 (보완툴 AutoSend 이식) ──
 # flow.py 실측 주석: "과제 12~15개면 20,000~40,000자가 되어 입력 주입이 한도를 넘긴다".
@@ -911,7 +916,8 @@ def _reset_dead(cfg):
 # 기록을 남겨 다음 프로세스의 첫 왕복이 남은 시간만 쉬게 한다(judge.copilot_send). 성공 왕복이 지운다(_after).
 # LM28 — 사용량 제한(「요청이 너무 많음」)으로 멈춘 강한 제한은 실행 표식(run = LM_RUN_ID)·갈래(kind 'throttle')도 적는다 {…, run, kind}.
 # 같은 실행의 뒤 단계(다른 프로세스 — 월별 코멘트·정제·Agentic·워크플로우·메일/팀즈 확인)는 이 표식을 보고 보내지 않는다
-# (run_stopped — 10분 쉬기도 없이). 지난 실행의 기록은 예전처럼 남은 시간만 쉬고 한 번 보낸다. 옛 판 기록(run 없음)도 그대로 읽힌다.
+# (run_stopped — 남은 시간 쉬기도 없이). 지난 실행의 기록은 5분 안이면 남은 시간만 쉬고(이번 실행의 쉬는 시간 합계 안) 한 번 보낸다.
+# 옛 판 기록(run 없음)도 그대로 읽힌다.
 THROTTLE_FILE = ".throttle.json"
 
 
@@ -1045,6 +1051,73 @@ def mark_sent(cfg):
         _write_json(_side_path(cfg, PACE_FILE), {"t": time.time()})
     except Exception:  # noqa: BLE001 - 기록이 왕복을 막지 않게
         pass
+
+
+# ── 실행의 쉬는 시간 합계(LM28) — <프로필>.wait.json {run, sec, t} ──
+# 쉬는 사다리·사용량 제한 대기·다음 단계의 남은 시간 쉬기·Agentic/워크플로우의 쉬기·run.py 의 재시도 대기는 단계(프로세스)마다 따로
+# 셌다 — 한 실행이 다 합쳐 반시간 넘게 쉴 수 있었다(사용자 요청 '분석이 길면 업무에도 지장'). 이 실행(LM_RUN_ID)에서 쉰 초를 프로세스를
+# 넘어 모으고, 쉬는 쪽(judge._cool_room·run.py)은 copilotAuto.runWaitMaxSec(기본 300초 · 0 = 쉬지 않음)의 남은 몫 안에서만 쉰다.
+# 실행 표식이 없으면(단계를 따로 돌림) 합계 상한이 없다(예전처럼 프로세스 상한만). 다른 실행의 기록은 0 부터 다시 센다.
+WAIT_FILE = ".wait.json"
+
+
+def run_wait_max(cfg=None):
+    """copilotAuto.runWaitMaxSec → 한 실행에서 쉬는 초 합계 상한(≥ 0 · 0 = 쉬지 않음). 음수·글자·무한은 기본값."""
+    dflt = float(DEFAULTS["runWaitMaxSec"])
+    try:
+        v = (cfg or load_cfg()).get("runWaitMaxSec", dflt)
+        n = dflt if v is None or v == "" else float(v)
+    except Exception:  # noqa: BLE001 - 설정을 못 읽으면 기본값
+        return dflt
+    return n if 0 <= n < float("inf") else dflt
+
+
+def run_waited(cfg=None):
+    """이번 실행(LM_RUN_ID)에서 지금까지 쉰 초 — 실행 표식이 없거나 기록이 없거나 깨졌거나 다른 실행의 것이면 0."""
+    rid = run_id()[:64]
+    if not rid:
+        return 0.0
+    try:
+        with open(_side_path(cfg or load_cfg(), WAIT_FILE), encoding="utf-8-sig") as f:
+            o = json.load(f)
+        if str(o.get("run") or "") != rid:
+            return 0.0
+        n = float(o.get("sec") or 0)
+    except Exception:  # noqa: BLE001 - 기록을 못 읽으면 쉬지 않은 것으로 본다
+        return 0.0
+    return n if n > 0 else 0.0
+
+
+def run_wait_left(cfg=None):
+    """이번 실행에서 더 쉴 수 있는 초 = max(0, runWaitMaxSec − 쉰 초). 실행 표식이 없으면 무한(합계 상한 없음)."""
+    if not run_id():
+        return float("inf")
+    try:
+        cfg = cfg or load_cfg()
+    except Exception:  # noqa: BLE001
+        cfg = dict(DEFAULTS)
+    return max(0.0, run_wait_max(cfg) - run_waited(cfg))
+
+
+def add_run_wait(sec, cfg=None):
+    """방금 sec 초 쉬었다 — 이번 실행의 합계에 더한다(다른 실행의 기록이면 새로 센다). 실행 표식이 없거나 sec ≤ 0 이면 아무것도
+    하지 않는다. 기록 실패는 무시한다(쉬기·왕복을 막지 않는다) → 적었으면 True."""
+    try:
+        sec = float(sec)
+        rid = run_id()[:64]
+        if not rid or not sec > 0:
+            return False
+        p = _side_path(cfg or load_cfg(), WAIT_FILE)
+        try:
+            with open(p, encoding="utf-8-sig") as f:
+                o = json.load(f)
+            prev = float(o.get("sec") or 0) if str(o.get("run") or "") == rid else 0.0
+        except Exception:  # noqa: BLE001 - 없거나 깨진 기록은 0 부터
+            prev = 0.0
+        prev = prev if prev > 0 else 0.0
+        return _write_json(p, {"run": rid, "sec": round(prev + sec, 1), "t": time.time()})
+    except Exception:  # noqa: BLE001 - 기록이 쉬기를 막지 않게
+        return False
 
 
 def recreate_profile(cfg):

@@ -107,6 +107,8 @@ NEED = [
     "tools/Make-MovePack.py",
     "tools/Prepare-Move.ps1",
     "tools/Stop-LM28.ps1",
+    "tools/stop_lm28.py",
+    "tools/ps_launch.py",
     "tools/update_files.py",
     "tools/lm_fixenc.py",
     "tools/diag_bundle.py",

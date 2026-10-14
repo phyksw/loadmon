@@ -77,6 +77,14 @@ class TeamCompat(unittest.TestCase):
         self.assertEqual(team_recalc.version_of(meta, {"lm_ver": "LM28", "tag": "t0"}, tag="t1"), "v3")  # 옛 기간 파일
         self.assertEqual(team_recalc.version_of(meta, {}), "v3")
 
+    def test_recalc_labels_lm29(self):
+        """LM29(타팀 시험판)가 같은 서버로 올린 묶음 — LM24(v3) 로 오표기하지 않는다."""
+        import team_recalc
+        meta = {"measure": {}, "coverage": {}}
+        self.assertEqual(team_recalc.version_of(meta, {"lm_ver": "LM29", "tag": "t1"}, tag="t1"), "lm29")
+        self.assertEqual(team_recalc.VER_LABEL["lm29"], "LM29(v3)")
+        self.assertEqual(team_recalc.version_of(meta, {"lm_ver": "LM29", "tag": "t0"}, tag="t1"), "v3")
+
     def test_gantt_anchor_stable(self):
         import team_report
         a = team_report.wf_anchor("홍길동", "과제A 설계")

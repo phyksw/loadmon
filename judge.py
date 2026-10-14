@@ -62,11 +62,14 @@ LM28 진단 A — 수천 행 규모의 판정:
   · 같은 내용 묶음: 같은 계열·같은 앞 95자(RE/FW 머리 제외)는 대표 한 줄만 보내고 판정을 묶음 전체에 쓴다. 짧은 팀즈 대화
     (인사·맞장구)는 보내지 않는다. 재개·묶음은 체계 왕복보다 먼저 — 보낼 것이 없으면 지난 정상 체계를 쓰고 체계 왕복을 건너뛴다.
   · Copilot 이 막히면(사용량 제한·일시 오류) 반으로 나눠 즉시 다시 보내지 않고 copilot_send 가 쉬었다 새로 고쳐 다시 보낸다 —
-    일시 오류는 2·5·10분, 사용량 제한(「요청이 너무 많음」 — phase 'throttled')은 copilotAuto.throttleWaitSec(기본 2분) 한 번만.
+    일시 오류는 1·2·2분, 사용량 제한(「요청이 너무 많음」 — phase 'throttled')은 copilotAuto.throttleWaitSec(기본 2분) 한 번만.
     그래도 막히면 강한 제한(hard) — 남은 묶음은 보내지 않고 ai_judgments 의 abort_kind 에 throttle·login·fatal·content·
     budget 을 남긴다. 사용량 제한으로 멈추면 실행 표식(LM_RUN_ID — run.py)을 기록해 같은 실행의 뒤 단계(월별 코멘트·정제·
     Agentic·워크플로우)는 보내지 않고 쉬지도 않는다(copilot_auto.run_stopped) — 예전에는 단계마다 10분을 쉬고 한 번씩 더 보내
     한 실행이 한 시간 넘게 멈춰 보였다(현장 제보).
+  · 한 실행(LM_RUN_ID)에서 Copilot 때문에 쉬는 시간은 모든 단계(프로세스)를 합쳐 copilotAuto.runWaitMaxSec(기본 300초 · 0 = 쉬지
+    않음) 안이다(copilot_auto.run_wait_left·add_run_wait). 다 쓰면 다음 일시 오류·사용량 제한은 쉬지 않고 강한 제한 — 그 단계의 남은
+    묶음은 보내지 않고 여기까지의 결과를 지킨다(사용자 요청 '분석이 길면 업무에도 지장 — 3~5분으로').
   · AI 가 직접 못 본 행은 같은 내용·같은 대화·규칙 토큰·비슷한 신호의 판정을 빌려 'AI(유사)' 로 채운다(판정 기록·캐시에는 넣지 않는다).
     signals 의 judge: 'AI'(직접·재사용·같은 내용) · 'AI(유사)'(채움) · '규칙'. 버린 행 장부: 'ad'(광고 의심) · 'AI-n'(AI 비업무).
 """
@@ -132,11 +135,13 @@ SEEN_MAX_CHARS = 600
 # LM28 진단 A — Copilot 이 막히면(사용량 제한·일시 오류) 바로 다시 보내지 않고 쉬었다가 새로 고친 뒤 같은 묶음을 보낸다.
 # 예전에는 실패 묶음을 즉시 반으로 나눠(+드라이버 사다리 3회) 몇 분 안에 수십 번을 더 보내 제한이 풀리지 않았다.
 TRANSIENT_PHASES = {"throttled", "copilot_error", "no_reply", "empty_reply", "timeout", "error"}
-COOLDOWN_SEC = (120, 300, 600)      # 쉬는 사다리 — 세 번 쉬고도 막히면 강한 제한(hard)으로 보고 남은 묶음은 보내지 않는다
-COOLDOWN_CAP_SEC = 25 * 60          # 한 프로세스가 쉬는 시간 합계 상한(감시기 무진전 한도 45분 안)
-COOLDOWN_MIN_SEC = 30               # 이보다 짧게밖에 못 쉬면(전체 마감) 쉬지 않고 실패를 그대로 돌려준다
-HARD_RECENT_SEC = 600               # 다른 프로세스가 남긴 강한 제한 기록이 이 안이면 첫 왕복 전에 남은 시간만 쉰다
-# LM28 — 사용량 제한(「요청이 너무 많음」)은 일시 오류 사다리(2·5·10분 × 세 번 다시 보내기)를 타지 않는다: 그동안의 재전송이 제한을
+# LM28 — 한 번 쉬기는 2분 이하, 한 실행의 쉬는 시간은 모든 단계를 합쳐 copilotAuto.runWaitMaxSec(기본 5분) 안(사용자 요청 '10분은 길다 —
+# 3~5분으로'). 예전 사다리(2·5·10분 · 프로세스 합계 25분)는 단계마다 따로 쉬어 한 실행이 반시간 넘게 멈출 수 있었다.
+COOLDOWN_SEC = (60, 120, 120)       # 쉬는 사다리(1·2·2분) — 세 번 쉬고도 막히면 강한 제한(hard)으로 보고 남은 묶음은 보내지 않는다
+COOLDOWN_CAP_SEC = 5 * 60           # 한 프로세스가 쉬는 시간 합계 상한(실행 합계 상한은 copilot_auto.run_wait_left — runWaitMaxSec)
+COOLDOWN_MIN_SEC = 30               # 이보다 짧게밖에 못 쉬면(전체 마감) 쉬지 않고 실패를 그대로 돌려준다(합계 상한을 다 썼으면 hard)
+HARD_RECENT_SEC = 300               # 다른 프로세스가 남긴 강한 제한 기록이 이 안이면 첫 왕복 전에 남은 시간만 쉰다(실행 합계 안)
+# LM28 — 사용량 제한(「요청이 너무 많음」)은 일시 오류 사다리(1·2·2분 × 세 번 다시 보내기)를 타지 않는다: 그동안의 재전송이 제한을
 # 늘려 한 단계가 반시간 넘게 멈췄다(현장 제보). copilotAuto.throttleWaitSec(기본 120초, 0 = 쉬지 않고 바로 멈춤)만큼 **한 번** 쉬고
 # 다시 보내, 그래도 막히면 강한 제한 — 같은 실행의 뒤 단계는 보내지 않는다(copilot_auto.run_stopped).
 THROTTLE_WAIT_SEC = 120
@@ -235,6 +240,7 @@ _COOLDOWNS = [0]            # 이 프로세스의 '쉬고 다시 보내기' 횟�
 _MODEL_FALLBACK = [""]      # 두 번 쉬고도 막히면 이 프로세스의 남은 왕복은 이 모델로(config.copilotAuto.fallbackModel)
 _THR_CHECKED = [False]      # 첫 왕복 전에 다른 프로세스의 강한 제한 기록(copilot_auto.throttle_state)을 봤는가
 _RUN_STOP_SAID = [False]    # '이번 실행은 사용량 제한으로 멈췄다' 줄을 이 프로세스에서 이미 찍었나(한 번만)
+_BUDGET_SAID = [False]      # '이번 실행의 쉬는 시간(runWaitMaxSec)을 다 썼다' 줄을 이 프로세스에서 이미 찍었나(한 번만)
 _WAIT_TICKS = [0]           # 대기 진행 줄의 누적 눈금 — 감시기의 진행 시계가 늘 앞으로 가게
 
 
@@ -370,9 +376,19 @@ def _is_transient(res):
             or str(res.get("reason") or "") in ("R-NET", "R-EDGEBUSY"))
 
 
+def _run_wait_left():
+    """이번 실행에서 더 쉴 수 있는 초(copilot_auto.run_wait_left — copilotAuto.runWaitMaxSec − 모든 단계가 쉰 초).
+    실행 표식이 없거나(단계를 따로 돌림) 기록을 못 읽으면 무한 — 실행 합계로는 줄이지 않는다."""
+    try:
+        return float(_ca().run_wait_left())
+    except Exception:  # noqa: BLE001 - 기록을 못 읽으면 실행 합계 상한 없음
+        return float("inf")
+
+
 def _cool_room(sec):
-    """쉴 수 있는 초 — 바라는 sec 를 전체 마감(LM_AI_DEADLINE − 2분)과 프로세스 합계 상한(COOLDOWN_CAP_SEC) 안으로."""
-    room = COOLDOWN_CAP_SEC - _COOLED[0]
+    """쉴 수 있는 초 — 바라는 sec 를 전체 마감(LM_AI_DEADLINE − 2분)·프로세스 합계 상한(COOLDOWN_CAP_SEC)·이번 실행의 남은
+    쉬는 시간(_run_wait_left — copilotAuto.runWaitMaxSec) 안으로."""
+    room = min(COOLDOWN_CAP_SEC - _COOLED[0], _run_wait_left())
     try:
         at = float(os.environ.get("LM_AI_DEADLINE") or 0)
     except ValueError:
@@ -380,6 +396,44 @@ def _cool_room(sec):
     if at > 0:
         room = min(room, at - time.time() - 120.0)
     return max(0.0, min(float(sec), room))
+
+
+def _note_cooled(sec):
+    """방금 sec 초 쉬었다 — 프로세스 합계(_COOLED)와 이번 실행의 합계(copilot_auto.add_run_wait)에 더한다. 기록 실패는 무시한다."""
+    _COOLED[0] += sec
+    try:
+        _ca().add_run_wait(sec)
+    except Exception:  # noqa: BLE001 - 기록이 쉬기·왕복을 막지 않게
+        pass
+
+
+def wait_room(sec):
+    """다른 모듈(agentic·flow)이 쉬기 전에 — 바라는 sec 중 쉴 수 있는 초(_cool_room: 전체 마감·프로세스 합계·이번 실행의 남은 몫)."""
+    return _cool_room(sec)
+
+
+def note_waited(sec):
+    """다른 모듈(agentic·flow)이 sec 초 쉰 뒤 — 프로세스·실행 합계에 더한다(_note_cooled)."""
+    _note_cooled(sec)
+
+
+def _fmt_wait(sec):
+    """쉬는 시간 표기 — 분으로 나눠떨어지면 '1분(60초)', 아니면 '90초'(줄인 값을 분으로 반올림해 부풀려 말하지 않게)."""
+    s = int(round(float(sec)))
+    return f"{s // 60}분({s}초)" if s >= 60 and s % 60 == 0 else f"{s}초"
+
+
+def _budget_line():
+    """이번 실행의 쉬는 시간 합계(copilotAuto.runWaitMaxSec)를 다 썼을 때의 한 줄."""
+    try:
+        m = int(round(float(_ca().run_wait_max())))
+    except Exception:  # noqa: BLE001
+        m = 300
+    tail = " — 이 단계의 남은 묶음은 보내지 않고 여기까지의 결과를 지킵니다(1~2시간 뒤 [재분석만])"
+    if m <= 0:
+        return "        이번 실행은 Copilot 을 기다리며 쉬지 않게 설정돼 있습니다(copilotAuto.runWaitMaxSec 0)" + tail
+    total = f"{m // 60}분" if m >= 60 and m % 60 == 0 else f"{m}초"
+    return f"        이번 실행에서 Copilot 을 기다리며 쉬는 시간(모두 {total} — copilotAuto.runWaitMaxSec)을 다 썼습니다" + tail
 
 
 def _cooldown(sec):
@@ -402,8 +456,9 @@ def _fallback_model():
 
 
 def _pre_throttle_wait():
-    """이 프로세스의 첫 왕복 전에 한 번 — 다른 프로세스(판정·정제·Agentic …)가 10분 안에 강한 제한을 남겼으면 남은 시간만
-    쉰다(전체 마감 안). 예전에는 판정이 막힌 직후 다음 단계가 15초 만에 같은 벽으로 들어갔다.
+    """이 프로세스의 첫 왕복 전에 한 번 — 다른 프로세스(판정·정제·Agentic …)가 5분(HARD_RECENT_SEC) 안에 강한 제한을 남겼으면
+    남은 시간만 쉰다(전체 마감·이번 실행의 쉬는 시간 합계 안 — _cool_room). 예전에는 판정이 막힌 직후 다음 단계가 15초 만에 같은
+    벽으로 들어갔다. 합계를 다 써 쉴 수 없으면 쉬지 않고 한 번만 보내 본다(그렇다고 한 줄 알린다).
     returns True = 그런 기록이 있었다 — 그 뒤 첫 왕복도 막히면 쉬는 사다리 없이 바로 hard."""
     if _THR_CHECKED[0]:
         return False
@@ -420,11 +475,14 @@ def _pre_throttle_wait():
     if sec >= 1:
         if rid and rid != _run_id():
             print(f"        지난 실행이 Copilot 사용량 제한(요청이 너무 많음)으로 멈췄습니다({float(ts[0]) / 60:.0f}분 전) — "
-                  f"{sec / 60:.0f}분 쉬고 한 번 보내 봅니다(그래도 막히면 이 단계도 멈추고 여기까지의 결과를 지킵니다)", flush=True)
+                  f"{_fmt_wait(sec)} 쉬고 한 번 보내 봅니다(그래도 막히면 이 단계도 멈추고 여기까지의 결과를 지킵니다)", flush=True)
         else:
-            print(f"        Copilot 사용량 제한 기록({float(ts[0]) / 60:.0f}분 전) — {sec / 60:.0f}분 쉬고 보냅니다", flush=True)
+            print(f"        Copilot 사용량 제한 기록({float(ts[0]) / 60:.0f}분 전) — {_fmt_wait(sec)} 쉬고 보냅니다", flush=True)
         _cooldown(sec)
-        _COOLED[0] += sec
+        _note_cooled(sec)
+    elif _run_wait_left() < 1:
+        print("        이번 실행에서 쉴 수 있는 시간을 다 써 쉬지 않고 한 번만 보내 봅니다(그래도 막히면 이 단계도 멈춥니다)",
+              flush=True)
     return True
 
 
@@ -447,7 +505,7 @@ def _run_stopped():
 
 
 def _run_stop_result():
-    """같은 실행이 사용량 제한으로 멈춘 뒤 — 보내지 않고(10분 쉬기도 없이) 강한 제한 결과를 돌려준다. 호출자는 강한 제한과 똑같이
+    """같은 실행이 사용량 제한으로 멈춘 뒤 — 보내지 않고(남은 시간 쉬기도 없이) 강한 제한 결과를 돌려준다. 호출자는 강한 제한과 똑같이
     남은 묶음을 보내지 않고 여기까지의 결과를 지킨다(규칙 판정·지난 결과 · abort_kind 'throttle')."""
     _HARD[0] = True
     if not _RUN_STOP_SAID[0]:
@@ -461,7 +519,8 @@ def _run_stop_result():
 
 def _throttle_wait_sec():
     """config.copilotAuto.throttleWaitSec — 사용량 제한이면 한 번 쉬는 초(기본 THROTTLE_WAIT_SEC). 0 이면 쉬지 않고 바로 멈춘다.
-    음수·글자는 기본값. 프로세스 합계 상한(COOLDOWN_CAP_SEC)을 넘기지 않는다."""
+    음수·글자는 기본값. 프로세스 합계 상한(COOLDOWN_CAP_SEC)을 넘기지 않는다 — 실제로 쉬는 초는 copilot_send 가 _cool_room 으로
+    한 번 더 줄인다(전체 마감·이번 실행의 쉬는 시간 합계 copilotAuto.runWaitMaxSec)."""
     v = _copilot_cfg().get("throttleWaitSec", THROTTLE_WAIT_SEC)
     try:
         n = float(THROTTLE_WAIT_SEC if v is None or v == "" else v)
@@ -485,11 +544,13 @@ def _send_once(prompt_text, pf, name, want_fresh, n_parts, reload=False):
     return res
 
 
-def _go_hard(res, k, throttle=False):
+def _go_hard(res, k, throttle=False, budget=False):
     """강한 사용량 제한 — 이 프로세스의 다음 일시 오류는 쉬지 않고 바로 hard, 다른 프로세스도 알게 기록(copilot_auto.note_throttle).
     결과에 hard=True — explain_failure 가 fatal 로 보고 호출자(judge·refine·agentic·flow·narrate)가 남은 묶음을 보내지 않는다.
     throttle=True(LM28 — 사용량 제한 「요청이 너무 많음」으로 멈춤)면 실행 표식(LM_RUN_ID)·갈래 'throttle' 도 적는다 — 같은 실행의
-    뒤 단계는 보내지 않는다. 일시 오류 사다리 끝의 hard 는 표식 없이 적는다(다음 단계는 예전처럼 남은 시간만 쉬고 한 번 보낸다)."""
+    뒤 단계는 보내지 않는다. 일시 오류 사다리 끝의 hard 는 표식 없이 적는다(다음 단계는 예전처럼 남은 시간만 쉬고 한 번 보낸다).
+    budget=True(LM28 — 이번 실행의 쉬는 시간 합계 runWaitMaxSec 를 다 써서 멈춤)면 그렇다는 한 줄만 찍는다(프로세스에 한 번 —
+    '계속 막고 있다'·'n번 쉬고도' 처럼 사실과 다른 줄을 함께 찍지 않게)."""
     first = not _HARD[0]
     _HARD[0] = True
     try:
@@ -499,7 +560,11 @@ def _go_hard(res, k, throttle=False):
             _ca().note_throttle(hard=True)
     except Exception:  # noqa: BLE001 - 기록 실패가 판정을 막지 않게
         pass
-    if first and throttle:
+    if budget:
+        if not _BUDGET_SAID[0]:
+            _BUDGET_SAID[0] = True
+            print(_budget_line(), flush=True)
+    elif first and throttle:
         print("        Copilot 이 「요청이 너무 많다」며 계속 막고 있습니다(사용량 제한) — 이번 실행의 AI 단계는 더 보내지 않고 "
               "여기까지의 결과를 지킵니다(1~2시간 뒤 [재분석만])", flush=True)
     elif first:
@@ -536,16 +601,18 @@ def copilot_send(prompt_text, tag, name, fresh=None):
     LM28: 먼저 G3 최종 검사(g3_prompt) — 걸리면 파일도 쓰지 않고(직접 붙여넣기 안내 대상이 아니다) {"phase":"blocked"} 를
     돌려준다. 호출자는 그 묶음을 skipped 로 세고 그 행만 규칙으로 둔다(재시도·새 채팅 전환 없음).
     config.copilotAuto.inProcess(기본 true)면 같은 프로세스에서 왕복(_transport → copilot_auto.send_inproc).
-    LM28 진단 A — 일시 오류·사용량 제한(_is_transient)이면 바로 다시 보내지 않고 COOLDOWN_SEC(2·5·10분)만큼 쉬었다가 페이지를
+    LM28 진단 A — 일시 오류·사용량 제한(_is_transient)이면 바로 다시 보내지 않고 COOLDOWN_SEC(1·2·2분)만큼 쉬었다가 페이지를
     새로 고치고 새 채팅에서 같은 프롬프트를 다시 보낸다(결과의 cooldowns = 쉬고 다시 보낸 횟수 — 호출자는 또 쉬지 않는다).
     두 번 쉬고도 막히면 이 프로세스의 남은 왕복은 config.copilotAuto.fallbackModel(기본 '자동', 빈 값이면 끔)로 보낸다.
     세 번 쉬고도 막히면 결과에 hard=True(강한 제한 — explain_failure 가 fatal 로 본다)를 달고, 이 프로세스의 다음 일시 오류는
-    쉬지 않고 바로 hard 다. 쉬는 시간은 전체 마감(LM_AI_DEADLINE − 2분)과 프로세스 합계 25분 안. 다른 프로세스가 10분 안에
-    남긴 강한 제한 기록이 있으면 첫 왕복 전에 남은 시간만 한 번 쉰다. chatTurns 회전(새 채팅)마다 페이지도 새로 고친다.
+    쉬지 않고 바로 hard 다. 쉬는 시간은 전체 마감(LM_AI_DEADLINE − 2분)·프로세스 합계 5분·이번 실행의 합계(모든 단계 —
+    copilotAuto.runWaitMaxSec, 기본 5분) 안. 실행 합계를 다 쓰면 다음 일시 오류·사용량 제한은 쉬지 않고 바로 hard(_go_hard budget=True ·
+    사용량 제한이면 실행 표식도). 다른 프로세스가 5분 안에 남긴 강한 제한 기록이 있으면 첫 왕복 전에 남은 시간만 한 번 쉰다(실행 합계 안).
+    chatTurns 회전(새 채팅)마다 페이지도 새로 고친다.
     LM28 — 사용량 제한(phase 'throttled' · 「요청이 너무 많음」)은 위 사다리 대신 copilotAuto.throttleWaitSec(기본 2분, 0 = 쉬지 않음)
     만큼 **한 번** 쉬고 새로 고쳐 다시 보낸다. 그래도 막히면 hard + 실행 표식 기록(_go_hard throttle=True) — 같은 실행(LM_RUN_ID)의
-    다음 copilot_send 는 이 프로세스든 뒤 단계 프로세스든 보내지 않고(10분 쉬기도 없이) 바로 hard 'throttled'(_run_stop_result).
-    다른 일시 오류(무응답·빈 답·오류 문구·시간 초과 …)는 예전 사다리 그대로다."""
+    다음 copilot_send 는 이 프로세스든 뒤 단계 프로세스든 보내지 않고(남은 시간 쉬기도 없이) 바로 hard 'throttled'(_run_stop_result).
+    다른 일시 오류(무응답·빈 답·오류 문구·시간 초과 …)는 사다리(1·2·2분)를 탄다."""
     if _run_stopped():
         return _run_stop_result()            # 이번 실행은 사용량 제한으로 멈췄다 — 프롬프트 파일도 쓰지 않는다(보내지 않았다)
     if not g3_prompt(prompt_text):
@@ -587,14 +654,14 @@ def copilot_send(prompt_text, tag, name, fresh=None):
                 break
             sec = _cool_room(wait)
             if sec < min(float(COOLDOWN_MIN_SEC), wait):
-                if _COOLED[0] >= COOLDOWN_CAP_SEC - COOLDOWN_MIN_SEC:
-                    res = _go_hard(res, k, throttle=True)
+                spent = _run_wait_left() < COOLDOWN_MIN_SEC    # 이번 실행의 쉬는 시간 합계(runWaitMaxSec)를 다 썼다
+                if spent or _COOLED[0] >= COOLDOWN_CAP_SEC - COOLDOWN_MIN_SEC:
+                    res = _go_hard(res, k, throttle=True, budget=spent)
                 break                            # 전체 마감이 가깝다 — 쉬지 않고 실패를 그대로 돌려준다
-            _when = f"{sec / 60:.0f}분({sec:.0f}초)" if sec >= 60 and round(sec) % 60 == 0 else f"{sec:.0f}초"
-            print(f"        Copilot 사용량 제한(요청이 너무 많음) — {_when} 쉬고 새로 고친 뒤 같은 묶음을 "
+            print(f"        Copilot 사용량 제한(요청이 너무 많음) — {_fmt_wait(sec)} 쉬고 새로 고친 뒤 같은 묶음을 "
                   "한 번만 다시 보냅니다(그래도 막히면 이번 실행의 AI 단계를 멈추고 여기까지의 결과를 지킵니다)", flush=True)
             _cooldown(sec)
-            _COOLED[0] += sec
+            _note_cooled(sec)
             _COOLDOWNS[0] += 1
             k += 1
             thr_waited = True
@@ -604,20 +671,23 @@ def copilot_send(prompt_text, tag, name, fresh=None):
         if _HARD[0] or pre_hard or lk >= len(COOLDOWN_SEC):
             res = _go_hard(res, k)               # 쉬고도 막혔다(또는 이미 강한 제한) — 더 보내지 않는다
             break
+        sec = _cool_room(COOLDOWN_SEC[lk])
+        short = sec < COOLDOWN_MIN_SEC
+        spent = short and _run_wait_left() < COOLDOWN_MIN_SEC  # 이번 실행의 쉬는 시간 합계(runWaitMaxSec)를 다 썼다
+        if short and (spent or _COOLED[0] >= COOLDOWN_CAP_SEC - COOLDOWN_MIN_SEC):
+            res = _go_hard(res, k, budget=spent)   # 쉬는 시간 합계를 다 썼다 — 더 보내지 않는다(대체 모델 안내도 없이)
+            break
         if lk == 2 and not _MODEL_FALLBACK[0]:
             fb = _fallback_model()
             if fb:
                 _MODEL_FALLBACK[0] = fb
                 print(f"        두 번 쉬고도 막혀 이 단계의 남은 왕복은 '{fb}' 모델로 보냅니다")
-        sec = _cool_room(COOLDOWN_SEC[lk])
-        if sec < COOLDOWN_MIN_SEC:
-            if _COOLED[0] >= COOLDOWN_CAP_SEC - COOLDOWN_MIN_SEC:
-                res = _go_hard(res, k)           # 프로세스의 쉬는 시간 합계를 다 썼다 — 계속 막히는 Copilot
+        if short:
             break                                # 전체 마감이 가깝다 — 쉬지 않고 실패를 그대로 돌려준다
         print(f"        Copilot 일시 오류({str(res.get('phase') or res.get('error') or '')[:30]}) — "
-              f"{sec / 60:.0f}분 쉬고 새로 고친 뒤 같은 묶음을 다시 보냅니다 ({lk + 1}/{len(COOLDOWN_SEC)})", flush=True)
+              f"{_fmt_wait(sec)} 쉬고 새로 고친 뒤 같은 묶음을 다시 보냅니다 ({lk + 1}/{len(COOLDOWN_SEC)})", flush=True)
         _cooldown(sec)
-        _COOLED[0] += sec
+        _note_cooled(sec)
         _COOLDOWNS[0] += 1
         k += 1
         lk += 1

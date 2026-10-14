@@ -12,10 +12,16 @@
 # 두는 것: 팀 서버(teamserver.py - 팀 전체가 쓴다 · -IncludeTeamServer 면 함께 끈다) · PC 이동 준비 창(Prepare-Move - 폴더 이름을
 #   되돌리는 중일 수 있다).
 # -Status 는 목록만 보여 준다. 관리자 권한·임시 파일·예약 작업 없음(Stop-Process -Force 는 내 계정 프로세스만). 하나라도 못 끝내면 exit 1.
+# -KeepPid '<pid>[,<pid>]' - 그 pid 와 부모 줄기도 끝내지 않는다. 강제종료 bat 은 파이썬(tools\stop_lm28.py)을 거쳐 이 스크립트를
+#   띄우고(PowerShell 이 켜지다 실패(0xc0000142)하면 다시 띄우고, 끝내 안 되면 파이썬이 같은 규칙으로 끝낸다 - 2026-10-15), 그 파이썬이
+#   자기 pid 를 넘긴다. 이 폴더의 python 이라 고를 대상처럼 보이지만 끝내면 안 된다(부모 줄기로도 빠지지만 한 번 더 못 박는다).
+#   문자열로 받는다 - 이상한 인자가 와도 형 변환 오류로 멈추지 않게(숫자가 아닌 조각은 버린다).
+# 고르는 규칙을 고치면 tools\stop_lm28.py 의 select_targets(파이썬 사본)도 함께 고친다 - tests\test_p24 가 둘을 대조한다.
 # 시험(tests\ps\Test-StopLM28.ps1)은 이 파일을 dot-source 해 Select-LmTargets 에 가짜 프로세스 목록을 넣는다 - 그때는 아래 본문이 돌지 않는다.
 param(
     [switch]$Status,
-    [switch]$IncludeTeamServer
+    [switch]$IncludeTeamServer,
+    [string]$KeepPid = ''
 )
 
 $script:LmPyNames = @('python.exe', 'pythonw.exe', 'py.exe')
@@ -39,6 +45,18 @@ function Get-LmRootKey([string]$Path) {
     # 'c:\...\loadmonitor28\' - 끝 \ 까지 붙여야 'loadmonitor28-old\' 를 이 폴더로 잘못 보지 않는다
     $full = [System.IO.Path]::GetFullPath($Path).TrimEnd('\')
     return (ConvertTo-LmNorm $full) + '\'
+}
+
+function ConvertTo-LmPids([string]$Text) {
+    # '123' · '123,456' → 정수 배열(0 이하·숫자가 아닌 조각은 버린다)
+    $out = New-Object System.Collections.Generic.List[int]
+    foreach ($t in @(([string]$Text) -split '[,;\s]+')) {
+        if ($t -match '^\d{1,10}$') {
+            $v = [long]$t
+            if ($v -gt 0 -and $v -le [int]::MaxValue) { $out.Add([int]$v) }
+        }
+    }
+    return ,$out.ToArray()
 }
 
 function Test-LmOlder($Parent, $Child) {
@@ -89,7 +107,8 @@ function Select-LmTargets {
         [object[]]$Processes,
         [string]$Root,
         [switch]$IncludeTeamServer,
-        [int]$SelfPid = 0
+        [int]$SelfPid = 0,
+        [int[]]$KeepPid = @()
     )
     $key = Get-LmRootKey $Root
     $dataKey = $key + 'data\'
@@ -104,10 +123,11 @@ function Select-LmTargets {
         if (-not $kids.ContainsKey($pp)) { $kids[$pp] = New-Object System.Collections.ArrayList }
         [void]$kids[$pp].Add($p)
     }
-    # 자기 줄기 - 이 스크립트의 powershell 과 그것을 띄운 강제종료 bat 의 cmd(…) 는 끝내지 않는다
+    # 자기 줄기 - 이 스크립트의 powershell 과 그것을 띄운 강제종료 bat 의 cmd(…) 는 끝내지 않는다.
+    # -KeepPid(그것을 띄운 tools\stop_lm28.py 의 파이썬)와 그 부모 줄기도 같다.
     $self = @{}
-    if ($SelfPid) {
-        $cur = $SelfPid
+    foreach ($start in @(@($SelfPid) + @($KeepPid))) {
+        $cur = [int]$start
         for ($n = 0; $n -lt 64 -and $cur -and -not $self.ContainsKey($cur); $n++) {
             $self[$cur] = $true
             if (-not $byPid.ContainsKey($cur)) { break }
@@ -262,14 +282,14 @@ function Stop-LmTargets($Targets) {
     return $fail
 }
 
-function Invoke-StopLm([string]$Folder, [bool]$OnlyStatus, [bool]$WithTeamServer) {
+function Invoke-StopLm([string]$Folder, [bool]$OnlyStatus, [bool]$WithTeamServer, [int[]]$Keep = @()) {
     Write-Host ''
     Write-Host ' =========================================================='
     Write-Host '  LoadMonitor28 강제 종료 - 이 폴더의 LM28 작업만 끝냅니다'
     Write-Host ' =========================================================='
     Write-Host ('  폴더: {0}' -f $Folder)
     Write-Host ''
-    $before = Select-LmTargets -Processes @(Get-LmProcesses) -Root $Folder -IncludeTeamServer:$WithTeamServer -SelfPid $PID
+    $before = Select-LmTargets -Processes @(Get-LmProcesses) -Root $Folder -IncludeTeamServer:$WithTeamServer -SelfPid $PID -KeepPid $Keep
     Write-Host '  [지금]'
     foreach ($ln in (Format-LmState $before (Get-Date))) { Write-Host $ln }
     Write-Host ''
@@ -285,7 +305,7 @@ function Invoke-StopLm([string]$Folder, [bool]$OnlyStatus, [bool]$WithTeamServer
     Write-Host '  끝내는 중...'
     $fail = Stop-LmTargets @($before.Targets)
     Start-Sleep -Seconds 2
-    $after = Select-LmTargets -Processes @(Get-LmProcesses) -Root $Folder -IncludeTeamServer:$WithTeamServer -SelfPid $PID
+    $after = Select-LmTargets -Processes @(Get-LmProcesses) -Root $Folder -IncludeTeamServer:$WithTeamServer -SelfPid $PID -KeepPid $Keep
     Write-Host ''
     Write-Host '  [끝낸 뒤]'
     foreach ($ln in (Format-LmState $after (Get-Date))) { Write-Host $ln }
@@ -311,7 +331,7 @@ function Invoke-StopLm([string]$Folder, [bool]$OnlyStatus, [bool]$WithTeamServer
 if ($MyInvocation.InvocationName -ne '.') {
     $rc = 1
     try {
-        $rc = Invoke-StopLm (Split-Path -Parent $PSScriptRoot) ([bool]$Status) ([bool]$IncludeTeamServer)
+        $rc = Invoke-StopLm (Split-Path -Parent $PSScriptRoot) ([bool]$Status) ([bool]$IncludeTeamServer) (ConvertTo-LmPids $KeepPid)
     } catch {
         Write-Host ('  [!] 강제 종료 중 오류: {0}' -f $_.Exception.Message)
         $rc = 1

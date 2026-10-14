@@ -1,7 +1,7 @@
 ﻿# Test-StopLM28.ps1 - tools\Stop-LM28.ps1 의 Select-LmTargets 가 이 폴더의 LM28 만 고르는지(시험 p21).
 # 가짜 프로세스 목록(실재하지 않는 경로·PID)만 넣는다 - 아무것도 끝내지 않는다(Stop-LmTargets 는 부르지 않는다).
 # 실제 목록(WMI)은 한 번 읽어, 없는 폴더로 고르면 0개인지만 본다(이 PowerShell 안에서 - 프로세스를 새로 띄우지 않는다).
-# 단언은 tests\test_p21_close_stop.py 가 한다.
+# 단언은 tests\test_p21_close_stop.py 가 한다(파이썬 런처 줄기·-KeepPid 는 tests\test_p24_stop_startfail.py).
 $lmTestRoot = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path))
 . (Join-Path $lmTestRoot 'tools\Stop-LM28.ps1')
 
@@ -64,10 +64,28 @@ $kinds = (@($a.Targets | Sort-Object Pid | ForEach-Object { '{0}:{1}' -f $_.Pid,
 $lines = @(Format-LmState $a (Get-Date '2026-10-14 10:00:00'))
 $none = Format-LmState @{ Targets = @(); Kept = @() } (Get-Date)
 
+# 파이썬 런처를 거친 강제종료(2026-10-15) - 강제종료 bat(190) → 동봉 python tools\stop_lm28.py(191) → powershell Stop-LM28.ps1(192).
+# 191 은 이 폴더의 python 이라 고를 대상처럼 보인다 - 부모 줄기(-SelfPid 192)로도, -KeepPid 191 만으로도 빠져야 한다.
+$fake2 = @($fake | Where-Object { @(119, 120) -notcontains $_.ProcessId }) + @(
+    (New-FakeProc 190 50 'cmd.exe' ('C:\Windows\system32\cmd.exe /c ""' + $R + '\LoadMonitor28-강제종료.bat" "') $cmdExe 10),
+    (New-FakeProc 191 190 'python.exe' ('"' + $py + '" -X utf8 -B "' + $R + '\tools\stop_lm28.py"') $py 10),
+    (New-FakeProc 192 191 'powershell.exe' ('powershell -NoProfile -ExecutionPolicy Bypass -File "' + $R + '\tools\Stop-LM28.ps1" -KeepPid 191') $psExe 10)
+)
+$l1 = Select-LmTargets -Processes $fake2 -Root $R -SelfPid 192 -KeepPid (ConvertTo-LmPids '191')
+$l2 = Select-LmTargets -Processes $fake2 -Root $R -SelfPid 0 -KeepPid @(191)
+$l3 = Select-LmTargets -Processes $fake2 -Root $R -SelfPid 0
+$l4 = Select-LmTargets -Processes $fake2 -Root $R -SelfPid 192
+
 $real = @(Get-LmProcesses)
 $rs = Select-LmTargets -Processes $real -Root 'C:\LM28test\nonexistent folder 9f3c' -SelfPid $PID
 
 return @{
+    launcher   = (Join-Pids $l1.Targets)
+    keep_only  = (Join-Pids $l2.Targets)
+    no_keep    = (Join-Pids $l3.Targets)
+    self_only  = (Join-Pids $l4.Targets)
+    keep_parse = ((ConvertTo-LmPids '191, 7;x -3 0 99999999999') -join ',')
+    keep_empty = [int](ConvertTo-LmPids '').Length
     targets    = (Join-Pids $a.Targets)
     kept       = (Join-Pids $a.Kept)
     targets_ts = (Join-Pids $b.Targets)
