@@ -20,6 +20,11 @@ copilot_auto.py — 사람 개입 없는 M365 Copilot 연동 (Edge DevTools Prot
        (즉시 다시 보내면 제한이 길어진다). 쉬었다 다시 보내기는 호출자(judge.copilot_send)의 몫이다. <프로필>.throttle.json 에
        관찰을 남겨 다음 단계 프로세스가 안다(throttle_state). --reload 는 보내기 전에 채팅 페이지를 새로 고치고, --model 은
        이번 왕복만 모델을 바꾼다.
+       LM28 — 답을 기다리는 동안에도 본다: 보낸 뒤의 답 머리(짧은 산문·JSON 없음)나 보낸 뒤 새로 뜬 알림(role=alert·aria-live·
+       토스트 — js_notices)에 제한 문구가 있고 그 글이 그대로면(생성 중이 아니면 ~5초 · '중지' 버튼이 사라졌으면 한 폴) replyTimeoutSec·
+       새 채팅 사다리를 기다리지 않고 바로 throttled 로 돌려준다(그동안의 재전송 하나하나가 제한을 늘린다). 같은 실행(LM_RUN_ID)이
+       사용량 제한으로 멈췄으면(run_stopped) 보내지 않고 바로 hard 'throttled'(run_stop_result). 보내기 사이에는
+       copilotAuto.minGapSec(기본 15초 · 0 = 끔) 간격을 둔다 — 앞 전송 시각은 <프로필>.pace.json(프로세스를 넘어 · pace_wait).
   cut: 답 꼬리에 '생성 중단' 문구("OK, I've stopped generating the response.")가 있다 — 재시도
        사다리(새 채팅)로도 반복되면 잘린 앞부분을 ok+cut 으로 돌려주고, 호출자(judge/refine)가
        잘린 JSON 을 마지막 완전한 항목까지 복구한 뒤 나머지만 다시 묻는다(적응 분할).
@@ -142,9 +147,12 @@ DEFAULTS = {
     "requireWorkAccount": True,   # 업무(회사) Copilot 화면에서만 보낸다 — 개인 계정이면 R-PERSONAL
     "keepEdgeOpen": False,        # true 면 close_own_edge 가 닫지 않는다(종료 때 쿠키를 지우는 정책 PC)
     "deleteChats": True,          # LM28 이 연 Copilot 대화를 다 쓰면 대화 목록에서 지운다(false·"false"·0·"off" = 끔)
+    # 프롬프트를 보내는 사이의 최소 간격(초) — 프로세스를 넘어(<프로필>.pace.json). 판정 묶음·재시도·다음 단계가 잇달아 보내 요청이
+    # 몰리면 Copilot 이 「요청이 너무 많다」고 막는다(현장 제보). 0 = 끔. 평소 왕복은 답을 기다리는 동안 이미 지나 있어 느려지지 않는다.
+    "minGapSec": 15,
 }
 # 빈 값은 기본값을 쓰는 load_cfg 규칙의 예외 — 이 키들은 0 도 '끔'으로 받는다(설정가이드가 0·false 를 같은 뜻으로 안내한다)
-KEEP_FALSY = ("deleteChats",)
+KEEP_FALSY = ("deleteChats", "minGapSec")
 
 # ── 긴 프롬프트 분할 (보완툴 AutoSend 이식) ──
 # flow.py 실측 주석: "과제 12~15개면 20,000~40,000자가 되어 입력 주입이 한도를 넘긴다".
@@ -901,12 +909,17 @@ def _reset_dead(cfg):
 # ── 사용량 제한 기록(LM28 진단 A) — <프로필>.throttle.json {t, n, hard, hard_t} ──
 # 판정이 강한 제한(쉬고도 막힘)으로 멈춘 직후 다음 단계(정제·Agentic·워크플로우 — 다른 프로세스)가 15초 만에 같은 벽으로 들어갔다.
 # 기록을 남겨 다음 프로세스의 첫 왕복이 남은 시간만 쉬게 한다(judge.copilot_send). 성공 왕복이 지운다(_after).
+# LM28 — 사용량 제한(「요청이 너무 많음」)으로 멈춘 강한 제한은 실행 표식(run = LM_RUN_ID)·갈래(kind 'throttle')도 적는다 {…, run, kind}.
+# 같은 실행의 뒤 단계(다른 프로세스 — 월별 코멘트·정제·Agentic·워크플로우·메일/팀즈 확인)는 이 표식을 보고 보내지 않는다
+# (run_stopped — 10분 쉬기도 없이). 지난 실행의 기록은 예전처럼 남은 시간만 쉬고 한 번 보낸다. 옛 판 기록(run 없음)도 그대로 읽힌다.
 THROTTLE_FILE = ".throttle.json"
 
 
-def note_throttle(cfg=None, hard=False):
+def note_throttle(cfg=None, hard=False, run=None, kind=None):
     """사용량 제한 관찰 1회 기록. 1시간 안의 관찰은 n 을 늘린다. hard(강한 제한)는 성공 왕복이 지울 때까지 남긴다
-    (hard_t = 마지막 강한 제한 시각). 기록 실패는 무시한다(왕복을 막지 않는다)."""
+    (hard_t = 마지막 강한 제한 시각). 기록 실패는 무시한다(왕복을 막지 않는다).
+    run·kind 는 강한 제한일 때만 적는다 — 사용량 제한으로 멈춘 실행의 표식(LM_RUN_ID)과 갈래('throttle'). 강한 제한을 run 없이
+    다시 적으면(일시 오류 사다리 끝의 hard) 표식을 지운다 — 다음 단계는 예전처럼 남은 시간만 쉬고 한 번 보낸다. 약한 관찰은 둔다."""
     try:
         cfg = cfg or load_cfg()
         p = _side_path(cfg, THROTTLE_FILE)
@@ -925,24 +938,56 @@ def note_throttle(cfg=None, hard=False):
         rec = {"t": now, "n": n, "hard": bool(hard_t)}
         if hard_t:
             rec["hard_t"] = hard_t
+            rid, knd = (run, kind) if hard else (o.get("run"), o.get("kind"))
+            if rid:
+                rec["run"] = str(rid)[:64]
+            if knd:
+                rec["kind"] = str(knd)[:20]
         return _write_json(p, rec)
     except Exception:  # noqa: BLE001 - 기록이 왕복을 막지 않게
         return False
 
 
-def throttle_state(cfg=None):
-    """마지막 사용량 제한 기록 → (지난 초, 강한 제한인가) · 기록이 없으면 None. 강한 제한이면 지난 초는 마지막 강한 제한부터."""
+def throttle_state(cfg=None, run=False):
+    """마지막 사용량 제한 기록 → (지난 초, 강한 제한인가) · 기록이 없으면 None. 강한 제한이면 지난 초는 마지막 강한 제한부터.
+    run=True 면 (지난 초, 강한 제한인가, 실행 표식, 갈래) — 표식·갈래는 강한 제한일 때만(없으면 "")."""
     try:
         cfg = cfg or load_cfg()
         with open(_side_path(cfg, THROTTLE_FILE), encoding="utf-8-sig") as f:
             o = json.load(f)
         hard = bool(o.get("hard"))
         t = float((o.get("hard_t") if hard else o.get("t")) or 0)
+        rid = str(o.get("run") or "") if hard else ""
+        knd = str(o.get("kind") or "") if hard else ""
     except (OSError, ValueError, TypeError, AttributeError, KeyError):
         return None
     if t <= 0:
         return None
-    return max(0.0, time.time() - t), hard
+    age = max(0.0, time.time() - t)
+    return (age, hard, rid, knd) if run else (age, hard)
+
+
+def run_id():
+    """이번 실행의 표식 — run.py 가 시작 때 LM_RUN_ID 에 싣고 자식(수집기·판정·정제·Agentic·워크플로우)이 물려받는다. 없으면 ""."""
+    return str(os.environ.get("LM_RUN_ID") or "").strip()
+
+
+def run_stopped(cfg=None):
+    """이번 실행이 Copilot 사용량 제한으로 AI 단계를 멈췄는가 — 강한 제한 기록의 실행 표식이 지금 실행과 같을 때만.
+    표식이 없는 실행(단계를 따로 돌림)·지난 실행의 기록은 아니다(그때는 judge 가 남은 시간만 쉬고 한 번 보내 본다)."""
+    rid = run_id()
+    if not rid:
+        return False
+    ts = throttle_state(cfg, run=True)
+    return bool(ts and ts[1] and len(ts) > 2 and ts[2] == rid)
+
+
+def run_stop_result():
+    """같은 실행이 사용량 제한으로 멈춘 뒤의 왕복 결과 — 보내지 않았다. hard=True 라 explain_failure 가 치명으로 보고 호출자가
+    남은 묶음을 보내지 않은 채 여기까지의 결과를 지킨다(규칙 판정·지난 결과 · abort_kind 'throttle')."""
+    return {"ok": False, "phase": "throttled", "reason": R_THROTTLE, "hard": True, "run_stop": True,
+            "error": "Copilot 사용량 제한 — 이번 실행은 더 보내지 않음",
+            "hint": "Copilot 이 「요청이 너무 많다」고 해 이번 실행의 AI 단계를 멈췄습니다 — 1~2시간 뒤 [재분석만]"}
 
 
 def clear_throttle(cfg):
@@ -952,6 +997,53 @@ def clear_throttle(cfg):
         if os.path.exists(p):
             os.remove(p)
     except (OSError, KeyError, TypeError):
+        pass
+
+
+# ── 보내기 간격(LM28) — <프로필>.pace.json {t} ──
+# 판정 묶음·재시도·월별 코멘트·정제·Agentic·워크플로우·메일/팀즈 확인이 프로세스를 넘어 잇달아 보내면 짧은 시간에 요청이 몰려 Copilot 이
+# 「요청이 너무 많다」고 막는다(현장 제보). 앞 전송 시각을 프로필 옆 파일에 남기고 copilotAuto.minGapSec(기본 15초 · 0 = 끔)이 지나기
+# 전이면 남은 만큼만 기다린다. 파일이 없거나 깨졌으면 기다리지 않는다(첫 전송·옛 판).
+PACE_FILE = ".pace.json"
+PACE_QUIET_SEC = 5            # 이보다 짧게 기다리면 아무 줄도 찍지 않는다(평소 왕복의 짧은 맞춤은 조용히)
+
+
+def _min_gap(cfg):
+    try:
+        return max(0.0, float((cfg or {}).get("minGapSec", DEFAULTS["minGapSec"])))
+    except (TypeError, ValueError):
+        return float(DEFAULTS["minGapSec"])
+
+
+def pace_wait(cfg):
+    """앞 전송(다른 프로세스 포함)에서 minGapSec 이 지나지 않았으면 남은 만큼만 기다린다 → 기다린 초.
+    왕복 마감(_dl_left)에서 1분은 답을 기다릴 몫으로 남긴다. 시계가 뒤로 가 앞 시각이 미래여도 minGapSec 을 넘겨 기다리지 않는다."""
+    gap = _min_gap(cfg)
+    if gap <= 0:
+        return 0.0
+    try:
+        with open(_side_path(cfg, PACE_FILE), encoding="utf-8-sig") as f:
+            last = float(json.load(f).get("t") or 0)
+    except (OSError, ValueError, TypeError, AttributeError, KeyError):
+        return 0.0
+    wait = min(gap, last + gap - time.time(), _dl_left(10 ** 6) - 60.0)
+    if wait <= 0:
+        return 0.0
+    if wait > PACE_QUIET_SEC:
+        try:
+            print(f"[copilot_auto] 요청 간격 — 앞 요청에서 {gap:.0f}초가 지나지 않아 {wait:.0f}초 기다렸다 보냅니다"
+                  "(copilotAuto.minGapSec)", file=sys.stderr, flush=True)
+        except (OSError, ValueError, UnicodeEncodeError):
+            pass
+    _sleep(wait)
+    return round(wait, 1)
+
+
+def mark_sent(cfg):
+    """방금 프롬프트를 보냈다 — 다음 전송(다른 프로세스 포함)의 간격 기준. 기록 실패는 무시한다."""
+    try:
+        _write_json(_side_path(cfg, PACE_FILE), {"t": time.time()})
+    except Exception:  # noqa: BLE001 - 기록이 왕복을 막지 않게
         pass
 
 
@@ -1502,10 +1594,18 @@ def is_error_reply(reply):
 
 # Copilot 사용량 제한(일시) 문구 — 오류 문구와 달리 **즉시 다시 보내면 제한이 길어진다**(새 채팅·자동 모델 사다리를 타지 않는다).
 # 정확한 회사 문구는 아직 실측 전이라 넓게 잡되, 짧은 산문(600자 이하·JSON 없음)의 앞 400자에서만 찾는다(분석문 인용 배제).
+# 현장 실측 문구(LM28): "현재 요청이 너무 많아 일시적으로 응답할 수 없습니다. 나중에 다시 시도하세요." — '응답할 수 없습니다' 는 오류
+# 문구(ERROR_REPLY_MARKS)이기도 하므로 어디서나 제한 판정을 먼저 한다(오류면 새 채팅 사다리로 곧장 다시 보내 제한이 길어진다).
 THROTTLE_REPLY_MARKS = ("한도에 도달", "한도를 초과", "사용 한도", "사용량 한도", "메시지 한도", "요청이 너무 많", "너무 많은 요청",
-                        "잠시 후 다시 시도", "나중에 다시 시도", "잠시 기다린 후", "수요가 많", "reached the limit",
-                        "reached your limit", "usage limit", "rate limit", "too many requests", "try again later",
+                        "일시적으로 응답할 수 없", "잠시 후 다시 시도", "잠시 후에 다시 시도", "잠시 뒤 다시 시도",
+                        "잠시 뒤에 다시 시도", "나중에 다시 시도", "잠시 기다린 후", "수요가 많", "reached the limit",
+                        "reached your limit", "usage limit", "rate limit", "too many requests", "too many messages",
+                        "lot of requests right now", "high volume of requests", "temporarily unable to respond",
+                        "try again later", "try again in a few minutes", "try again in a little while",
                         "limit for now", "temporarily unavailable", "high demand", "throttl")
+THROTTLE_SETTLE_SEC = 5        # 답을 기다리는 동안 제한 후보 글이 이만큼 그대로면 돌려준다(생성 중이 아닐 때)
+THROTTLE_BUSY_SEC = 30         # '중지' 버튼이 아직 보이면 이만큼 그대로일 때만(버튼이 멈춘 화면 — 끝없이 기다리지 않게)
+NOTICE_MAX = 12                # 한 번에 읽는 알림 수 상한
 
 
 def is_throttle_reply(reply):
@@ -1515,6 +1615,57 @@ def is_throttle_reply(reply):
         return False
     head = r[:400].lower()
     return any(m.lower() in head for m in THROTTLE_REPLY_MARKS)
+
+
+def js_notices():
+    """화면에 보이는 알림·상태 영역의 글(600자 이하만, 최대 NOTICE_MAX) — 사용량 제한이 답 말풍선 대신 알림(토스트·배너·
+    role=alert·aria-live)으로 뜨는 화면용(그때는 답 자리가 비어 firstTokenSec·사다리를 다 기다렸다). 숨은 읽기 전용 영역은 뺀다."""
+    return r"""/*LM28:notices*/(function(){
+  const sel="[role='alert'],[role='alertdialog'],[role='status'],[aria-live='assertive'],[aria-live='polite'],"+
+    "[class*='toast' i],[class*='messagebar' i],[class*='notification' i],[class*='banner' i],[data-testid*='toast' i],"+
+    "[data-testid*='error' i]";
+  const vis=el=>{const r=el.getBoundingClientRect(); if(r.width<=4||r.height<=4)return false;
+    const s=getComputedStyle(el); return s.visibility!=="hidden"&&s.display!=="none"&&parseFloat(s.opacity||"1")>0.05;};
+  const out=[], seen=new Set(); let els=[];
+  try{els=[...document.querySelectorAll(sel)];}catch(e){return out;}
+  for(const el of els){ if(out.length>=12)break; if(!vis(el))continue;
+    const t=(el.innerText||"").trim(); if(!t||t.length>600||seen.has(t))continue; seen.add(t); out.push(t);}
+  return out;})()"""
+
+
+def _notices(cdp):
+    """보이는 알림 글 목록 — 못 읽으면 None(평가 실패) · 이상한 값이면 []."""
+    try:
+        r = cdp.eval(js_notices(), timeout=10)
+    except (TimeoutError, OSError, RuntimeError):
+        return None
+    if not isinstance(r, list):
+        return []
+    return [str(x).strip() for x in r if isinstance(x, str) and str(x).strip()][:NOTICE_MAX]
+
+
+def _new_notice(cdp, pre, prompt):
+    """보낸 뒤 새로 뜬 알림 중 사용량 제한 문구(is_throttle_reply — 짧은 산문·JSON 없음·머리에 표식)인 것 → 그 글 · 없으면 "".
+    보내기 전에 이미 떠 있던 알림(pre)과 우리가 보낸 글의 일부(대화 영역이 aria-live 인 화면의 내 말풍선)는 보지 않는다."""
+    old, ptxt = set(pre or ()), str(prompt or "")
+    for t in _notices(cdp) or ():
+        if t in old or t in ptxt:
+            continue
+        if is_throttle_reply(t):
+            return t
+    return ""
+
+
+def _throttle_settled(n, gen, busy_seen, poll):
+    """사용량 제한 후보 글이 n 폴째 그대로다 → 이제 돌려줘도 되는가. 앞부분만 보인 정상 답(산문 머리 뒤에 JSON 이 올 수 있다)을
+    집지 않으려고 바로는 돌려주지 않는다: '중지' 버튼을 본 뒤 사라졌으면(생성 끝) 한 폴 확인, 생성 중이 아니면 THROTTLE_SETTLE_SEC,
+    버튼이 아직 보이면 THROTTLE_BUSY_SEC 그대로일 때만."""
+    held = n * max(0.5, float(poll or 2))
+    if gen is True:
+        return held >= THROTTLE_BUSY_SEC
+    if busy_seen and gen is False:
+        return n >= 1
+    return held >= THROTTLE_SETTLE_SEC
 
 
 def _throttled(cfg, reply=""):
@@ -2384,7 +2535,8 @@ def run_roundtrip(cfg, prompt, fresh=False, reload=False):
     길어진다 — 쉬었다 다시 보내기는 호출자 몫). 오류 문구 뒤의 사다리 단계는 최대 30초 쉬고 보낸다. reload=True 면 새 채팅
     버튼 대신 채팅 페이지를 새로 고친 뒤 보낸다(오래 쓴 탭).
     LM28 채팅 정리: 새 채팅(fresh·reload·사다리 ①②)은 모두 _fresh_chat — 다 쓴 우리 채팅(사다리면 방금 실패한 채팅)을 먼저 대화
-    목록에서 지운 뒤 연다. 새 채팅을 여는 곳은 늘리지 않았다."""
+    목록에서 지운 뒤 연다. 새 채팅을 여는 곳은 늘리지 않았다.
+    LM28: 답을 기다리던 중에 사용량 제한을 알아챈 왕복(_roundtrip_once 의 phase 'throttled')도 사다리를 타지 않고 그대로 돌려준다."""
     _t_rt = time.time()
     _rt_max = max(0, int(cfg.get("roundtripMaxSec") or 0))
     global _RT_DEADLINE           # v3: 고정 대기(준비·입력창·유휴 폴링)도 왕복 예산 안에서 끝나게
@@ -2426,6 +2578,9 @@ def run_roundtrip(cfg, prompt, fresh=False, reload=False):
                 pass
         res = _once(cdp, cfg, prompt)
         # 사용량 제한 문구 — 사다리(새 채팅·자동 모델로 즉시 재전송)를 타지 않는다. 다시 보내면 제한이 길어진다.
+        # (답을 기다리던 중에 알아챈 것은 이미 phase 'throttled' 로 온다)
+        if res.get("phase") == "throttled":
+            return res
         if res.get("ok") and is_throttle_reply(res.get("reply")):
             return _throttled(cfg, res.get("reply"))
         # 끊긴 답(cut)도 재시도 사유다 — 다만 앞부분에 잘린 JSON 이 남아 있을 수 있어 전부 실패하면
@@ -2451,6 +2606,8 @@ def run_roundtrip(cfg, prompt, fresh=False, reload=False):
         # 실패한 채팅(우리 것이면)을 먼저 지우고 새 채팅 — 사다리가 대화 목록에 실패 채팅을 남기지 않게
         how2 = _fresh_chat(cdp, cfg, "ladder1")
         res2 = _once(cdp, cfg2, prompt)
+        if res2.get("phase") == "throttled":
+            return res2
         if res2.get("ok") and is_throttle_reply(res2.get("reply")):
             return _throttled(cfg, res2.get("reply"))
         if res2.get("ok") and not is_error_reply(res2.get("reply")) and not res2.get("cut"):
@@ -2464,6 +2621,8 @@ def run_roundtrip(cfg, prompt, fresh=False, reload=False):
         cfg2["replyTimeoutSec"] = int(min(cfg2["replyTimeoutSec"], max(60, _rt_left() - 60)))
         _fresh_chat(cdp, cfg, "ladder2")
         res3 = _once(cdp, cfg2, prompt, model_override="자동")
+        if res3.get("phase") == "throttled":
+            return res3
         if res3.get("ok") and is_throttle_reply(res3.get("reply")):
             return _throttled(cfg, res3.get("reply"))
         if res3.get("ok") and not is_error_reply(res3.get("reply")) and not res3.get("cut"):
@@ -2580,6 +2739,10 @@ def _roundtrip_once(cdp, cfg, prompt, model_override=None):
             return {"ok": False, "phase": "input_not_found",
                     "error": f"채팅 입력창을 찾지 못함({_ready_s}초 대기)",
                     "hint": "data\\copilot_auto_debug.json 과 화면 스크린샷을 Claude에게 보여주면 선택자를 맞춰줄 수 있습니다"}
+        # LM28 — 앞 전송(다른 단계 프로세스 포함)에서 minGapSec 이 지나야 보낸다(요청 몰림 → 「요청이 너무 많음」 방지).
+        # 보내기 전에 이미 떠 있던 알림을 적어 둔다 — 보낸 뒤 새로 뜬 알림만 사용량 제한 근거로 본다.
+        pace_wait(cfg)
+        pre_notes = _notices(cdp) or []
         # 주입: CDP Input.insertText(IME/붙여넣기 수준 — 리치 에디터가 정상 수신) → 실패 시 예비 경로
         cdp.call("Input.insertText", {"text": prompt})
         time.sleep(0.4)
@@ -2591,6 +2754,7 @@ def _roundtrip_once(cdp, cfg, prompt, model_override=None):
         sent = cdp.eval(js_click_send(cfg))
         if not (sent and sent.get("ok")):
             press_enter(cdp)                   # 전송 버튼이 없으면 Enter
+        mark_sent(cfg)                         # 다음 전송의 간격 기준(minGapSec)
         # 전송 확인 — 클릭이 '중지' 버튼에 먹혔으면(앞 답 생성 중) 프롬프트가 입력창에 그대로 남는다.
         # 그때는 생성이 멎기를 기다렸다 한 번만 다시 보낸다(안 보내면 응답 대기가 통째로 시간 초과).
         resent = False
@@ -2606,6 +2770,7 @@ def _roundtrip_once(cdp, cfg, prompt, model_override=None):
             if not (sent and sent.get("ok")):
                 press_enter(cdp)
             resent = True
+            mark_sent(cfg)
         _chat_after_send(cdp, cfg, prompt, own)      # 우리 채팅이면 앵커 해시·보낸 수(첫 프롬프트면 '만든 채팅')
 
         # 에코 앵커: 프롬프트 마지막 줄을 채팅 텍스트에서 찾아 그 뒤를 응답으로 본다.
@@ -2640,6 +2805,11 @@ def _roundtrip_once(cdp, cfg, prompt, model_override=None):
         #   그래도 끝내 비었으면 ok=False(empty_reply) 로 돌려 재시도 사다리(새 채팅)를 타게 한다.
         first_token_s = max(30, min(int(cfg.get("firstTokenSec") or 180), int(_dl_left(3600))))
         t_gen0 = time.time()          # 계측용 — 전송 뒤 첫 폴부터 완료까지
+        # ★ LM28 — 사용량 제한 빠른 감지. 「요청이 너무 많음」이 답 말풍선으로 오면 예전에도 안정 폴링(stablePolls) 뒤 알아챘지만,
+        #   알림(토스트·배너)으로 뜨거나 답 자리가 비면 firstTokenSec·replyTimeoutSec 을 다 기다리고 새 채팅 사다리로 두 번 더
+        #   보냈다(왕복 하나에 수 분 · 재전송마다 제한이 길어짐). 이제 답 머리(짧은 산문·JSON 없음)나 보낸 뒤 새로 뜬 알림에 제한
+        #   문구가 있고 그 글이 그대로면(_throttle_settled) 바로 throttled 로 돌려준다. 글 원문은 찍지 않는다.
+        thr_last, thr_n = None, 0
         while time.time() < deadline:
             time.sleep(cfg["pollSec"])
             try:
@@ -2676,6 +2846,18 @@ def _roundtrip_once(cdp, cfg, prompt, model_override=None):
             if gen:
                 busy_seen = True
             body = strip_echo(new, prompt, anchor, how).strip()     # 에코 꼬리를 걷어낸 '진짜 답'
+            if is_throttle_reply(body):
+                cand, via = body, "reply"
+            else:
+                cand, via = _new_notice(cdp, pre_notes, prompt), "notice"
+            if cand:
+                thr_n = thr_n + 1 if cand == thr_last else 0
+                thr_last = cand
+                if _throttle_settled(thr_n, gen, busy_seen, cfg["pollSec"]):
+                    return dict(_throttled(cfg, cand), done_by="throttle", via=via, busy_seen=busy_seen,
+                                gen_sec=round(time.time() - t_gen0, 1), waited=waited, resent=resent)
+            else:
+                thr_last, thr_n = None, 0
             if not body and (gen or (time.time() - t_gen0) < first_token_s):
                 # 아직 첫 글자가 없다 — 생각 중이다(버튼이 보이거나 유예 안). 멈춘 답으로 세지 않는다.
                 stable, idle = 0, 0
@@ -3060,8 +3242,12 @@ def _after(cfg, res):
 
 def _send(cfg, prompt, fresh=False, no_split=False, lock_wait=EDGE_LOCK_WAIT, reload=False):
     """--send 와 send_inproc 의 공용 길 — G3 최종 검사 → (스텁) → 전용 Edge 잠금 안에서 왕복. 결과 dict 는 --send 의 JSON.
-    reload(LM28): 보내기 전에 채팅 페이지 새로 고침 — 켜졌을 때만 왕복 함수에 넘긴다."""
+    reload(LM28): 보내기 전에 채팅 페이지 새로 고침 — 켜졌을 때만 왕복 함수에 넘긴다.
+    LM28: 이번 실행(LM_RUN_ID)이 사용량 제한으로 AI 단계를 멈췄으면 Edge 도 잠금도 건드리지 않고 바로 run_stop_result — judge 를
+    거치지 않는 호출자(메일·팀즈 Copilot 확인 등)도 같은 실행 안에서는 더 보내지 않는다."""
     prompt = str(prompt or "")
+    if run_stopped(cfg):
+        return run_stop_result()
     if not gate_ok(prompt):
         return blocked_result(prompt)
     if stub_dir():

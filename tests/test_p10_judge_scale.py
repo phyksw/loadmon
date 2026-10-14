@@ -34,6 +34,8 @@ COLS = ["time", "source", "who", "project", "activity", "weight", "text", "flag"
 TAX = {"models": [{"name": "LiDAR-X", "match": ["lidar"], "obs": "보정 데이터 검토"},
                   {"name": "공통", "match": []}]}
 THROTTLED = {"ok": False, "phase": "throttled", "reason": "R-THROTTLE", "error": "Copilot 사용량 제한(일시)"}
+# 일시 오류(사용량 제한이 아닌 것) — 2·5·10분 쉬는 사다리 시험용. 사용량 제한은 LM28 부터 한 번만 쉰다(tests\test_p22_throttle.py)
+COPILOT_ERR = {"ok": False, "phase": "copilot_error", "error": "Copilot 일시 오류 — 3단계 재시도 모두 실패"}
 LOGIN = {"ok": False, "phase": "login_required", "reason": "R-LOGIN", "error": "로그인 필요 (최초 1회)"}
 
 
@@ -68,7 +70,7 @@ class _Base(unittest.TestCase):
         ca._PRIV.update(cfg={}, ctx=privacy.Ctx(), cans=(CANARY,))
         st = self.stack = contextlib.ExitStack()
         st.enter_context(mock.patch.dict(os.environ))
-        for k in ("LM_AI_DEADLINE", "LM_COPILOT_STUB"):
+        for k in ("LM_AI_DEADLINE", "LM_COPILOT_STUB", "LM_RUN_ID"):
             os.environ.pop(k, None)
         # 프로세스 전역 상태(새 채팅·쉬기·강한 제한)는 시험마다 새로 — 다른 시험에 새지 않게
         for name, val in (("ROOT", self.tmp), ("_FIRST_SEND", [True]), ("_NEED_FRESH", [False]), ("_TURNS", [0]),
@@ -254,11 +256,12 @@ class LowInfo(_Base):
         self.assertEqual(rc, 0)                                      # 짧은 대화는 실패가 아니다
 
 
-# ── 6) 사용량 제한 두 번 → 쉬고 새로 고친 뒤 성공(나누지 않음) ─────────────────────────────────
+# ── 6) 일시 오류 두 번 → 쉬고 새로 고친 뒤 성공(나누지 않음) ─────────────────────────────────
+# (사용량 제한은 LM28 부터 이 사다리를 타지 않고 throttleWaitSec 한 번만 쉰다 — tests\test_p22_throttle.py)
 class ThrottleRecovery(_Base):
     def reply(self, name, prompt):
         if name == "chunk1" and sum(1 for s in self.sent if s["name"] == "chunk1") <= 2:
-            return dict(THROTTLED)
+            return dict(COPILOT_ERR)
         return super().reply(name, prompt)
 
     def test_cools_down_and_resends(self):
@@ -276,11 +279,12 @@ class ThrottleRecovery(_Base):
         self.assertEqual(rc, 0)
 
 
-# ── 7) 계속 막힘 → 쉬는 사다리 3단 뒤 강한 제한, 남은 묶음·월별 코멘트는 보내지 않음 ──────────────────
+# ── 7) 일시 오류로 계속 막힘 → 쉬는 사다리 3단 뒤 강한 제한, 남은 묶음·월별 코멘트는 보내지 않음 ──────────────
+# (사용량 제한으로 계속 막히면 한 번 쉬고 멈춘다 — tests\test_p22_throttle.py JudgeMainThrottle)
 class PersistentThrottle(_Base):
     def reply(self, name, prompt):
         if name.startswith(("chunk", "narr_")):
-            return dict(THROTTLED)
+            return dict(COPILOT_ERR)
         return super().reply(name, prompt)
 
     def test_hard_stop(self):

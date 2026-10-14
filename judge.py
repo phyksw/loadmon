@@ -61,9 +61,12 @@ LM28 진단 A — 수천 행 규모의 판정:
     다시 묻지 않는다. 캐시 이전 판의 ai_judgments_*.json 도 한 번 이어받는다. 묶음마다 저장(중간에 끊겨도 남는다). --redo 는 새로 시작.
   · 같은 내용 묶음: 같은 계열·같은 앞 95자(RE/FW 머리 제외)는 대표 한 줄만 보내고 판정을 묶음 전체에 쓴다. 짧은 팀즈 대화
     (인사·맞장구)는 보내지 않는다. 재개·묶음은 체계 왕복보다 먼저 — 보낼 것이 없으면 지난 정상 체계를 쓰고 체계 왕복을 건너뛴다.
-  · Copilot 이 막히면(사용량 제한·일시 오류) 반으로 나눠 즉시 다시 보내지 않고 copilot_send 가 2·5·10분 쉬었다 새로 고쳐 다시
-    보낸다. 그래도 막히면 강한 제한(hard) — 남은 묶음은 보내지 않고 ai_judgments 의 abort_kind 에 throttle·login·fatal·content·
-    budget 을 남긴다.
+  · Copilot 이 막히면(사용량 제한·일시 오류) 반으로 나눠 즉시 다시 보내지 않고 copilot_send 가 쉬었다 새로 고쳐 다시 보낸다 —
+    일시 오류는 2·5·10분, 사용량 제한(「요청이 너무 많음」 — phase 'throttled')은 copilotAuto.throttleWaitSec(기본 2분) 한 번만.
+    그래도 막히면 강한 제한(hard) — 남은 묶음은 보내지 않고 ai_judgments 의 abort_kind 에 throttle·login·fatal·content·
+    budget 을 남긴다. 사용량 제한으로 멈추면 실행 표식(LM_RUN_ID — run.py)을 기록해 같은 실행의 뒤 단계(월별 코멘트·정제·
+    Agentic·워크플로우)는 보내지 않고 쉬지도 않는다(copilot_auto.run_stopped) — 예전에는 단계마다 10분을 쉬고 한 번씩 더 보내
+    한 실행이 한 시간 넘게 멈춰 보였다(현장 제보).
   · AI 가 직접 못 본 행은 같은 내용·같은 대화·규칙 토큰·비슷한 신호의 판정을 빌려 'AI(유사)' 로 채운다(판정 기록·캐시에는 넣지 않는다).
     signals 의 judge: 'AI'(직접·재사용·같은 내용) · 'AI(유사)'(채움) · '규칙'. 버린 행 장부: 'ad'(광고 의심) · 'AI-n'(AI 비업무).
 """
@@ -133,6 +136,10 @@ COOLDOWN_SEC = (120, 300, 600)      # 쉬는 사다리 — 세 번 쉬고도 막
 COOLDOWN_CAP_SEC = 25 * 60          # 한 프로세스가 쉬는 시간 합계 상한(감시기 무진전 한도 45분 안)
 COOLDOWN_MIN_SEC = 30               # 이보다 짧게밖에 못 쉬면(전체 마감) 쉬지 않고 실패를 그대로 돌려준다
 HARD_RECENT_SEC = 600               # 다른 프로세스가 남긴 강한 제한 기록이 이 안이면 첫 왕복 전에 남은 시간만 쉰다
+# LM28 — 사용량 제한(「요청이 너무 많음」)은 일시 오류 사다리(2·5·10분 × 세 번 다시 보내기)를 타지 않는다: 그동안의 재전송이 제한을
+# 늘려 한 단계가 반시간 넘게 멈췄다(현장 제보). copilotAuto.throttleWaitSec(기본 120초, 0 = 쉬지 않고 바로 멈춤)만큼 **한 번** 쉬고
+# 다시 보내, 그래도 막히면 강한 제한 — 같은 실행의 뒤 단계는 보내지 않는다(copilot_auto.run_stopped).
+THROTTLE_WAIT_SEC = 120
 # 이어서 판정 캐시(report\judge_cache.json) — 기간 tag 가 날마다 바뀌어도 이미 판정한 신호는 다시 묻지 않는다
 JUDGE_CACHE = "judge_cache.json"
 CACHE_MAX = 150_000                 # 상한 — 넘으면 오래 쓰지 않은 판정부터 뺀다
@@ -227,6 +234,7 @@ _COOLED = [0.0]             # 이 프로세스가 쉰 초 합계(COOLDOWN_CAP_SE
 _COOLDOWNS = [0]            # 이 프로세스의 '쉬고 다시 보내기' 횟수(ai_judgments.cooldowns)
 _MODEL_FALLBACK = [""]      # 두 번 쉬고도 막히면 이 프로세스의 남은 왕복은 이 모델로(config.copilotAuto.fallbackModel)
 _THR_CHECKED = [False]      # 첫 왕복 전에 다른 프로세스의 강한 제한 기록(copilot_auto.throttle_state)을 봤는가
+_RUN_STOP_SAID = [False]    # '이번 실행은 사용량 제한으로 멈췄다' 줄을 이 프로세스에서 이미 찍었나(한 번만)
 _WAIT_TICKS = [0]           # 대기 진행 줄의 누적 눈금 — 감시기의 진행 시계가 늘 앞으로 가게
 
 
@@ -401,17 +409,67 @@ def _pre_throttle_wait():
         return False
     _THR_CHECKED[0] = True
     try:
-        ts = _ca().throttle_state()
+        ts = _ca().throttle_state(run=True)
     except Exception:  # noqa: BLE001 - 기록을 못 읽으면 없는 것으로 본다
         ts = None
     if not ts or not ts[1] or float(ts[0]) >= HARD_RECENT_SEC:
         return False
     sec = _cool_room(HARD_RECENT_SEC - float(ts[0]))
+    # LM28 — 지난 실행이 사용량 제한으로 멈춘 기록이면 그렇다고 분명히 말한다(같은 실행의 기록은 copilot_send 가 먼저 걸렀다)
+    rid = str(ts[2] or "") if len(ts) > 2 else ""
     if sec >= 1:
-        print(f"        Copilot 사용량 제한 기록({float(ts[0]) / 60:.0f}분 전) — {sec / 60:.0f}분 쉬고 보냅니다", flush=True)
+        if rid and rid != _run_id():
+            print(f"        지난 실행이 Copilot 사용량 제한(요청이 너무 많음)으로 멈췄습니다({float(ts[0]) / 60:.0f}분 전) — "
+                  f"{sec / 60:.0f}분 쉬고 한 번 보내 봅니다(그래도 막히면 이 단계도 멈추고 여기까지의 결과를 지킵니다)", flush=True)
+        else:
+            print(f"        Copilot 사용량 제한 기록({float(ts[0]) / 60:.0f}분 전) — {sec / 60:.0f}분 쉬고 보냅니다", flush=True)
         _cooldown(sec)
         _COOLED[0] += sec
     return True
+
+
+def _run_id():
+    """이번 실행의 표식(run.py 가 시작 때 싣는 LM_RUN_ID) — 단계를 따로 돌리면 ""."""
+    return str(os.environ.get("LM_RUN_ID") or "").strip()
+
+
+def _run_stopped():
+    """이번 실행이 Copilot 사용량 제한으로 AI 단계를 멈췄는가 — 강한 제한 기록(copilot_auto.throttle_state)의 실행 표식이 지금 실행과
+    같을 때만. 표식이 없는 실행(단계를 따로 돌림)·지난 실행의 기록·옛 판 기록(표식 없음)은 아니다(예전처럼 _pre_throttle_wait)."""
+    rid = _run_id()
+    if not rid:
+        return False
+    try:
+        ts = _ca().throttle_state(run=True)
+    except Exception:  # noqa: BLE001 - 기록을 못 읽으면 없는 것으로 본다
+        return False
+    return bool(ts and ts[1] and len(ts) > 2 and str(ts[2] or "") == rid)
+
+
+def _run_stop_result():
+    """같은 실행이 사용량 제한으로 멈춘 뒤 — 보내지 않고(10분 쉬기도 없이) 강한 제한 결과를 돌려준다. 호출자는 강한 제한과 똑같이
+    남은 묶음을 보내지 않고 여기까지의 결과를 지킨다(규칙 판정·지난 결과 · abort_kind 'throttle')."""
+    _HARD[0] = True
+    if not _RUN_STOP_SAID[0]:
+        _RUN_STOP_SAID[0] = True
+        print("        이번 실행은 Copilot 사용량 제한(요청이 너무 많음)으로 AI 단계를 멈췄습니다 — 이 단계는 Copilot 에 보내지 않고 "
+              "여기까지의 결과를 지킵니다(1~2시간 뒤 [재분석만])", flush=True)
+    return {"ok": False, "phase": "throttled", "reason": "R-THROTTLE", "hard": True, "run_stop": True,
+            "error": "Copilot 사용량 제한 — 이번 실행은 더 보내지 않음",
+            "hint": "Copilot 이 「요청이 너무 많다」고 해 이번 실행의 AI 단계를 멈췄습니다 — 1~2시간 뒤 [재분석만]"}
+
+
+def _throttle_wait_sec():
+    """config.copilotAuto.throttleWaitSec — 사용량 제한이면 한 번 쉬는 초(기본 THROTTLE_WAIT_SEC). 0 이면 쉬지 않고 바로 멈춘다.
+    음수·글자는 기본값. 프로세스 합계 상한(COOLDOWN_CAP_SEC)을 넘기지 않는다."""
+    v = _copilot_cfg().get("throttleWaitSec", THROTTLE_WAIT_SEC)
+    try:
+        n = float(THROTTLE_WAIT_SEC if v is None or v == "" else v)
+    except (TypeError, ValueError):
+        n = float(THROTTLE_WAIT_SEC)
+    if n < 0:
+        n = float(THROTTLE_WAIT_SEC)
+    return min(n, float(COOLDOWN_CAP_SEC))
 
 
 def _send_once(prompt_text, pf, name, want_fresh, n_parts, reload=False):
@@ -427,16 +485,24 @@ def _send_once(prompt_text, pf, name, want_fresh, n_parts, reload=False):
     return res
 
 
-def _go_hard(res, k):
+def _go_hard(res, k, throttle=False):
     """강한 사용량 제한 — 이 프로세스의 다음 일시 오류는 쉬지 않고 바로 hard, 다른 프로세스도 알게 기록(copilot_auto.note_throttle).
-    결과에 hard=True — explain_failure 가 fatal 로 보고 호출자(judge·refine·agentic·flow·narrate)가 남은 묶음을 보내지 않는다."""
+    결과에 hard=True — explain_failure 가 fatal 로 보고 호출자(judge·refine·agentic·flow·narrate)가 남은 묶음을 보내지 않는다.
+    throttle=True(LM28 — 사용량 제한 「요청이 너무 많음」으로 멈춤)면 실행 표식(LM_RUN_ID)·갈래 'throttle' 도 적는다 — 같은 실행의
+    뒤 단계는 보내지 않는다. 일시 오류 사다리 끝의 hard 는 표식 없이 적는다(다음 단계는 예전처럼 남은 시간만 쉬고 한 번 보낸다)."""
     first = not _HARD[0]
     _HARD[0] = True
     try:
-        _ca().note_throttle(hard=True)
+        if throttle:
+            _ca().note_throttle(hard=True, run=_run_id(), kind="throttle")
+        else:
+            _ca().note_throttle(hard=True)
     except Exception:  # noqa: BLE001 - 기록 실패가 판정을 막지 않게
         pass
-    if first:
+    if first and throttle:
+        print("        Copilot 이 「요청이 너무 많다」며 계속 막고 있습니다(사용량 제한) — 이번 실행의 AI 단계는 더 보내지 않고 "
+              "여기까지의 결과를 지킵니다(1~2시간 뒤 [재분석만])", flush=True)
+    elif first:
         print("        " + (f"Copilot 이 {k}번 쉬고 다시 보내도 막혔습니다" if k else "Copilot 이 여전히 막혀 있습니다")
               + "(강한 사용량 제한) — 남은 묶음은 보내지 않고 여기까지의 결과를 지킵니다(1~2시간 뒤 [재분석만])",
               flush=True)
@@ -475,7 +541,13 @@ def copilot_send(prompt_text, tag, name, fresh=None):
     두 번 쉬고도 막히면 이 프로세스의 남은 왕복은 config.copilotAuto.fallbackModel(기본 '자동', 빈 값이면 끔)로 보낸다.
     세 번 쉬고도 막히면 결과에 hard=True(강한 제한 — explain_failure 가 fatal 로 본다)를 달고, 이 프로세스의 다음 일시 오류는
     쉬지 않고 바로 hard 다. 쉬는 시간은 전체 마감(LM_AI_DEADLINE − 2분)과 프로세스 합계 25분 안. 다른 프로세스가 10분 안에
-    남긴 강한 제한 기록이 있으면 첫 왕복 전에 남은 시간만 한 번 쉰다. chatTurns 회전(새 채팅)마다 페이지도 새로 고친다."""
+    남긴 강한 제한 기록이 있으면 첫 왕복 전에 남은 시간만 한 번 쉰다. chatTurns 회전(새 채팅)마다 페이지도 새로 고친다.
+    LM28 — 사용량 제한(phase 'throttled' · 「요청이 너무 많음」)은 위 사다리 대신 copilotAuto.throttleWaitSec(기본 2분, 0 = 쉬지 않음)
+    만큼 **한 번** 쉬고 새로 고쳐 다시 보낸다. 그래도 막히면 hard + 실행 표식 기록(_go_hard throttle=True) — 같은 실행(LM_RUN_ID)의
+    다음 copilot_send 는 이 프로세스든 뒤 단계 프로세스든 보내지 않고(10분 쉬기도 없이) 바로 hard 'throttled'(_run_stop_result).
+    다른 일시 오류(무응답·빈 답·오류 문구·시간 초과 …)는 예전 사다리 그대로다."""
+    if _run_stopped():
+        return _run_stop_result()            # 이번 실행은 사용량 제한으로 멈췄다 — 프롬프트 파일도 쓰지 않는다(보내지 않았다)
     if not g3_prompt(prompt_text):
         return {"ok": False, "status": "blocked", "phase": "blocked", "reason": "R-GATE",
                 "error": "개인정보 관문(G3) — 고위험 잔여·카나리아가 있어 보내지 않음",
@@ -504,27 +576,51 @@ def copilot_send(prompt_text, tag, name, fresh=None):
         _TURNS[0] = 0
     pre_hard = _pre_throttle_wait()
     res = _send_once(prompt_text, pf, name, want_fresh, n_parts, reload)
-    k = 0
+    k = lk = 0                                   # k = 쉬고 다시 보낸 횟수(결과 cooldowns) · lk = 일시 오류 사다리의 단
+    thr_waited = False                           # 사용량 제한으로 이미 한 번 쉬었다(LM28 — 두 번째는 쉬지 않고 hard)
     while _is_transient(res):
-        if _HARD[0] or pre_hard or k >= len(COOLDOWN_SEC):
+        if str(res.get("phase") or "") == "throttled":
+            # 사용량 제한 — 일시 오류 사다리를 타지 않는다(그동안의 재전송이 제한을 늘린다). throttleWaitSec 한 번만 쉬고 다시.
+            wait = _throttle_wait_sec()
+            if _HARD[0] or pre_hard or thr_waited or wait <= 0:
+                res = _go_hard(res, k, throttle=True)    # 이번 실행의 AI 단계를 멈춘다(실행 표식 기록)
+                break
+            sec = _cool_room(wait)
+            if sec < min(float(COOLDOWN_MIN_SEC), wait):
+                if _COOLED[0] >= COOLDOWN_CAP_SEC - COOLDOWN_MIN_SEC:
+                    res = _go_hard(res, k, throttle=True)
+                break                            # 전체 마감이 가깝다 — 쉬지 않고 실패를 그대로 돌려준다
+            _when = f"{sec / 60:.0f}분({sec:.0f}초)" if sec >= 60 and round(sec) % 60 == 0 else f"{sec:.0f}초"
+            print(f"        Copilot 사용량 제한(요청이 너무 많음) — {_when} 쉬고 새로 고친 뒤 같은 묶음을 "
+                  "한 번만 다시 보냅니다(그래도 막히면 이번 실행의 AI 단계를 멈추고 여기까지의 결과를 지킵니다)", flush=True)
+            _cooldown(sec)
+            _COOLED[0] += sec
+            _COOLDOWNS[0] += 1
+            k += 1
+            thr_waited = True
+            _TURNS[0] = 0
+            res = _send_once(prompt_text, pf, name, True, n_parts, True)
+            continue
+        if _HARD[0] or pre_hard or lk >= len(COOLDOWN_SEC):
             res = _go_hard(res, k)               # 쉬고도 막혔다(또는 이미 강한 제한) — 더 보내지 않는다
             break
-        if k == 2 and not _MODEL_FALLBACK[0]:
+        if lk == 2 and not _MODEL_FALLBACK[0]:
             fb = _fallback_model()
             if fb:
                 _MODEL_FALLBACK[0] = fb
                 print(f"        두 번 쉬고도 막혀 이 단계의 남은 왕복은 '{fb}' 모델로 보냅니다")
-        sec = _cool_room(COOLDOWN_SEC[k])
+        sec = _cool_room(COOLDOWN_SEC[lk])
         if sec < COOLDOWN_MIN_SEC:
             if _COOLED[0] >= COOLDOWN_CAP_SEC - COOLDOWN_MIN_SEC:
                 res = _go_hard(res, k)           # 프로세스의 쉬는 시간 합계를 다 썼다 — 계속 막히는 Copilot
             break                                # 전체 마감이 가깝다 — 쉬지 않고 실패를 그대로 돌려준다
-        print(f"        Copilot 응답 제한·일시 오류({str(res.get('phase') or res.get('error') or '')[:30]}) — "
-              f"{sec / 60:.0f}분 쉬고 새로 고친 뒤 같은 묶음을 다시 보냅니다 ({k + 1}/{len(COOLDOWN_SEC)})", flush=True)
+        print(f"        Copilot 일시 오류({str(res.get('phase') or res.get('error') or '')[:30]}) — "
+              f"{sec / 60:.0f}분 쉬고 새로 고친 뒤 같은 묶음을 다시 보냅니다 ({lk + 1}/{len(COOLDOWN_SEC)})", flush=True)
         _cooldown(sec)
         _COOLED[0] += sec
         _COOLDOWNS[0] += 1
         k += 1
+        lk += 1
         _TURNS[0] = 0                            # 새로 고친 새 채팅에서 다시 보낸다
         res = _send_once(prompt_text, pf, name, True, n_parts, True)
     if k:

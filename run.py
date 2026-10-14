@@ -537,6 +537,57 @@ def collect_outlook(c, d0, d1, data, ps, col, led=None):
 NO_RETRY_KINDS = ("budget", "gate", "login", "fatal", "throttle")
 AI2_STAGES = ("agentic.py", "flow.py")    # 판정 뒤 Copilot 단계 — 지난 결과 이어받기(--carry)·긴 재시도 대기
 
+# LM28 — Copilot 사용량 제한(「요청이 너무 많음」)으로 이번 실행의 AI 단계를 멈춘 경우. 어느 단계(judge.copilot_send)든 사용량 제한으로
+# 강한 제한에 닿으면 이 실행의 표식(LM_RUN_ID — start_run_id)과 함께 기록하고(copilot_auto.note_throttle), 같은 실행의 뒤 단계는
+# Copilot 에 보내지 않고 바로 접는다(copilot_auto.run_stopped — 예전에는 단계마다 10분을 쉬고 한 번씩 더 보내 한 실행이 한 시간 넘게
+# 멈춰 보였다 · 현장 제보). run.py 는 그것을 진행 로그에 한 줄로 알리고(실행에 1회) 단계 기록에 사유를 싣는다 — 멈춘 단계에는
+# THR_LINE 을 앞에(기록 300자 자르기에 잘리지 않게), 멈춘 뒤에 돈 단계에는 일반 실패 대신 THR_SKIP. 보고서·묶음·팀 보고는 그대로 간다.
+THR_LINE = ("Copilot 사용량 제한(요청이 너무 많음) — 이번 실행의 AI 단계를 멈췄습니다. 여기까지의 결과는 지켰고, "
+            "1~2시간 뒤 [재분석만]을 누르면 남은 것만 이어서 합니다.")
+THR_SKIP = ("건너뜀 — Copilot 사용량 제한(요청이 너무 많음)으로 이번 실행의 AI 단계를 멈춰 Copilot 에 보내지 않았습니다 "
+            "(지난 결과·규칙 결과 유지 · 1~2시간 뒤 [재분석만])")
+THR = {"said": False}          # THR_LINE 을 이 실행에서 이미 찍었나
+_RUN_STOPPED = None            # 시험 주입 — None 이면 tools\copilot_auto.run_stopped
+
+
+def start_run_id():
+    """이번 실행의 표식을 정해 LM_RUN_ID 에 싣는다(자식 — 수집기·판정·정제·Agentic·워크플로우가 물려받는다). 시작 시각 + PID 라
+    실행마다 다르다. 사용량 제한으로 멈춘 기록이 '이번 실행' 것인지 가르는 데만 쓴다."""
+    rid = f"{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}"
+    os.environ["LM_RUN_ID"] = rid
+    RUN["run_id"] = rid
+    THR["said"] = False
+    return rid
+
+
+def run_throttled():
+    """이번 실행이 Copilot 사용량 제한으로 AI 단계를 멈췄는가(copilot_auto.run_stopped) — 못 읽으면 False(멈추지 않은 것으로)."""
+    try:
+        fn = _RUN_STOPPED if _RUN_STOPPED is not None else _copilot_mod().run_stopped
+        return bool(fn())
+    except Exception:  # noqa: BLE001 - 기록을 못 읽어도 실행은 계속한다
+        return False
+
+
+def say_throttle():
+    """THR_LINE 을 진행 로그에 한 번 — 이미 찍었으면 False."""
+    if THR["said"]:
+        return False
+    THR["said"] = True
+    print(f"\n   [!] {THR_LINE}", flush=True)
+    return True
+
+
+def ai_note(before, note=""):
+    """AI 단계(정제·Agentic·워크플로우) 하나가 끝난 뒤의 기록 문구. before = 단계를 시작할 때 이미 사용량 제한으로 멈춰 있었나 —
+    그 단계는 Copilot 에 보내지 않았으니 일반 실패 문구 대신 THR_SKIP. 이 단계에서 멈췄으면 THR_LINE 을 한 번 찍고 앞에 붙인다."""
+    if before:
+        return THR_SKIP
+    if run_throttled():
+        say_throttle()
+        return THR_LINE + (f" · {note}" if note else "")
+    return note
+
 
 def ai_reserves(c, tot):
     r"""AI 단계 전체 마감(tot 분) 안에서 미리 떼어 두는 몫 → (워크플로우 몫, Agentic 몫) 분.
@@ -617,6 +668,10 @@ def run_ai_stage(script, d0, d1, retry_wait=None, extra=()):
         # 정체 감지·시간 상한으로 끊은 것은 다시 보내도 같은 벽에 닿는다 — 예전에는 이 경우도 재시도해
         # 한 단계가 상한을 두 번 썼다(최악 360분, 감사 실측).
         print(f"   {script} 를 중단했습니다 — 같은 벽에 다시 닿으므로 재시도하지 않습니다")
+        return rc, why
+    if run_throttled():
+        # 이번 실행은 사용량 제한으로 AI 단계를 멈췄다 — 다시 띄워도 보내지 않으니 120초 쉬고 다시 띄우지 않는다(프로세스도 아낀다)
+        print(f"   {script}: 이번 실행은 Copilot 사용량 제한으로 AI 단계를 멈춰 재시도하지 않습니다")
         return rc, why
     kind = str(lj.get("stop_kind") or "")
     if kind in NO_RETRY_KINDS or "사용량 제한" in str(why or "") or "R-THROTTLE" in str(why or ""):
@@ -1419,6 +1474,7 @@ def main():
     (Ctrl+C 는 예전처럼 KeyboardInterrupt → finally)."""
     proc.on_console_close(console_close)
     proc.quiet_errors()          # 수집기가 못 켜질 때 Windows 오류 창(0xc0000142)이 떠 [확인]까지 멈추지 않게 — 자식이 물려받는다
+    start_run_id()               # LM28 — 이번 실행의 표식(LM_RUN_ID): 사용량 제한으로 멈춘 기록이 이번 실행 것인지 가른다
     try:
         return _main()
     finally:
@@ -1631,6 +1687,11 @@ def _main():
             _note_j = f"judge.py 종료코드 {rc}" + (f" — {why_j}" if why_j else "")
         if _stub and rc != 0:
             _note_j += " · " + _stub
+        # LM28 — 판정(월별 코멘트 포함)이 Copilot 사용량 제한으로 이번 실행의 AI 단계를 멈췄으면 한 줄로 알리고 기록 맨 앞에 싣는다
+        _thr = run_throttled()
+        if _thr:
+            say_throttle()
+            _note_j = THR_LINE + (f" · {_note_j}" if _note_j else "")
         record("AI 판정", rc in (0, 2), time.time() - _t2,
                ("부분 판정 — 다시 실행하면 남은 신호만 이어서 · " if rc == 2 else "") + str(_note_j or ""))
         if _stub:
@@ -1658,7 +1719,7 @@ def _main():
                 _partial_ok = False
         if rc not in (0, 2) and not _partial_ok:
             _ai_hold = "AI 판정 실패"
-            _skip = ("AI 판정 왕복 전부 실패로 건너뜀" if rc == 3 else "판정 실패로 건너뜀")
+            _skip = (THR_SKIP if _thr else "AI 판정 왕복 전부 실패로 건너뜀" if rc == 3 else "판정 실패로 건너뜀")
             print("   [!] AI 판정 실패 — 화면의 과제는 AI가 정리한 것이 아니라 규칙이 뽑은")
             print("       임시 결과입니다. 위 judge 로그의 마지막 오류를 보세요.")
             if rc == 3:
@@ -1672,8 +1733,9 @@ def _main():
                 print("       → 위 사유를 해결한 뒤 [재분석만]을 누르면 상위 분류까지 다시 채워집니다.")
                 _note_j += " · 상위(업무 성격) 분류 비어 있음 — 해결 후 [재분석만]"
                 record("AI 판정", False, time.time() - _t2, _note_j)
-            print("       흔한 원인: ① Copilot 로그인 만료(UI [AI 연결 진단]으로 확인)")
-            print("                  ② 모델 선택 실패 ③ 회사망 차단")
+            if not _thr:                     # 사용량 제한이면 원인은 이미 위 한 줄(THR_LINE)이 말했다
+                print("       흔한 원인: ① Copilot 로그인 만료(UI [AI 연결 진단]으로 확인)")
+                print("                  ② 모델 선택 실패 ③ 회사망 차단")
             print("   → AI 정제·Agentic 매칭·워크플로우 건너뜀 (판정 없는 결과를 정제하면 낡은 정제본만 남습니다)")
             record("AI 정제", False, 0.0, _skip)
             record("Agentic 매칭", False, 0.0, _skip)
@@ -1685,13 +1747,14 @@ def _main():
             # subprocess.run 이어서 정제가 멈추면 분석 전체가 여기서 영원히 서 있었다(실측 감사).
             _WATCH_STATE_PATH["p"] = os.path.join(ROOT, "report",
                                                   f"stage_state_{d0.replace('-', '')}-{d1.replace('-', '')}_refine.json")
+            # 판정이 사용량 제한으로 멈췄어도 정제는 띄운다 — 보내지 않고 곧바로 접히며(copilot_auto.run_stopped) 기록만 '건너뜀'
             rc2, why_r = _run_capture([sys.executable, os.path.join(ROOT, "refine.py"),
                                        "--from", d0, "--to", d1],
                                       dict(os.environ, PYTHONIOENCODING="utf-8",
                                            PYTHONUNBUFFERED="1"))
             record("AI 정제", rc2 in (0, 2), time.time() - _t3,
-                   ("부분 완료 — 다시 실행하면 남은 것만 이어서 · " if rc2 == 2 else "") + str(why_r or ""))
-            if rc2 not in (0, 2):
+                   ai_note(_thr, ("부분 완료 — 다시 실행하면 남은 것만 이어서 · " if rc2 == 2 else "") + str(why_r or "")))
+            if rc2 not in (0, 2) and not run_throttled():
                 print("   AI 정제 실패 — report 폴더의 evidence 파일을 Copilot에 붙여넣어도 됩니다")
 
             # Agentic AI 매칭 — 판정 후 12과제 매칭·발굴·오할당 검증을 자동 수행
@@ -1701,9 +1764,10 @@ def _main():
                 os.environ["LM_AI_DEADLINE"] = str(_dl_ag)
             print("\n── Agentic AI 매칭 (12과제 적합·신규 발굴·오할당 검증)")
             _t3 = time.time()
+            _pre = run_throttled()
             rc2, note2 = run_ai_stage("agentic.py", d0, d1)
-            record("Agentic 매칭", rc2 in (0, 2), time.time() - _t3, note2)
-            if rc2 not in (0, 2):
+            record("Agentic 매칭", rc2 in (0, 2), time.time() - _t3, ai_note(_pre, note2))
+            if rc2 not in (0, 2) and not run_throttled():
                 print("   Agentic 매칭 실패 — UI Agentic AI 탭의 [재매칭]으로 다시 시도하세요")
 
             # 담당자 워크플로우 — 과제별 역할·일의 순서·Agent 가능성 (실패해도 분석은 유효)
@@ -1712,9 +1776,10 @@ def _main():
                 os.environ["LM_AI_DEADLINE"] = str(_AI_T0 + _AI_TOT_MIN * 60.0)
             print("\n── 담당자 워크플로우 (역할·순서·Agent 가능성)")
             _t3 = time.time()
+            _pre = run_throttled()
             rc2, note2 = run_ai_stage("flow.py", d0, d1)
-            record("워크플로우 분석", rc2 in (0, 2), time.time() - _t3, note2)
-            if rc2 not in (0, 2):
+            record("워크플로우 분석", rc2 in (0, 2), time.time() - _t3, ai_note(_pre, note2))
+            if rc2 not in (0, 2) and not run_throttled():
                 print("   워크플로우 분석 실패 — UI 담당자 워크플로우 탭의 [재분석]으로 다시 시도하세요")
             # 워크플로우 단계가 만든 세부업무 병합 맵(config\detail_aliases.json)을 Agentic 실측에 반영 —
             # agentic 이 flow 보다 먼저 돌아 첫 --ai 실행(캐시 없음·리셋 뒤)의 load_mm 이 맵 없이
