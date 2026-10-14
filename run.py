@@ -170,7 +170,8 @@ def _run_rc(cmd, timeout):
 
 
 def collect_headless(c):
-    r"""[수집만] 모드에서 생략하는 것은 **Copilot 경로(메일·팀즈)만**이다(Copilot 은 판정 전용).
+    r"""[로컬PC 자료수집](--collect-only · 구 '추가 PC 수집'·'수집만' — 이름이 헷갈린다는 제보로 LM28 에서 바꿈) 모드에서
+    생략하는 것은 **Copilot 경로(메일·팀즈)만**이다(Copilot 은 판정 전용). 그 밖의 수집기는 [분석 실행]과 같은 코드를 그대로 돈다.
     LM28: 예전(LM24)에는 Outlook 웹·팀즈 웹도 '본 PC 가 같은 사서함을 수집' 한다고 보고 건너뛰었다. 그런데 새 Outlook 인 PC
     (COM·색인 없음)에서는 그러면 메일·일정·팀즈를 가져올 길이 하나도 남지 않았다(실측 2026-10-07 — 279일 전부 관측 없음).
     그래서 웹 경로는 수집만 모드에서도 원장의 미검증 날에 대해 돈다 — 겹치는 행은 분석이 중복 제거한다."""
@@ -253,23 +254,44 @@ def _import_files(data):
 def g1_mail(c, data):
     r"""G1(수집 직후 정제) — data\outlook\src\*.csv 의 제목·대화·장소를 core\privacy.scrub_csv 로 제자리 정제한다(머리글·열 불변).
     웹·Copilot 출처는 정제 뒤 같은 키(편지함·시각·보낸이·제목 / 시작·끝·제목)를 접는다 — 그 수집기가 다음 실행에 원문 행을
-    다시 붙여도(키가 원문이라 못 알아봄) 1행이 된다. COM·색인·반입은 접지 않는다(같은 분 같은 제목 알림은 실제 2통)."""
+    다시 붙여도(키가 원문이라 못 알아봄) 1행이 된다. COM·색인·반입은 접지 않는다(같은 분 같은 제목 알림은 실제 2통).
+    LM28: 일정 파일의 body(회의 안건) 열은 먼저 core\meetnote.prep_body_csv 가 온라인 회의 안내문·링크·연락처를 걷고(600자)
+    자격증명이 남은 본문만 비운 뒤 제목·장소와 같이 정제한다 — 본문의 회의 암호 때문에 회의 행이 통째로 버려지지 않게.
+    body 열이 없는 옛 파일은 그대로다."""
     import glob
     import privacy
+    try:
+        import meetnote
+    except ImportError:          # 설치본에 core\meetnote.py 가 빠졌다 — 본문만 이번 정제에서 뺀다(회의 행·제목 정제는 그대로)
+        meetnote = None
     ctx = privacy.make_ctx(c, data)
     tot = {"files": 0, "dropped": 0, "folded": 0, "fail": []}
+    nb = {"cleaned": 0, "blanked": 0}
     for p in sorted(glob.glob(os.path.join(data, "outlook", "src", "*.csv"))):
         n = os.path.basename(p).lower()
         tag = n.split("_", 1)[1][:-4] if "_" in n else ""
         if n.startswith("mail_"):
             cols, keys = ["subject", "conversation"], (["box", "time", "sender", "subject"] if tag in ("owa", "copilot") else None)
         elif n.startswith("cal_"):
-            cols, keys = ["subject", "location"], (["start", "end", "subject"] if tag in ("owa", "copilot") else None)
+            cols, keys = ["subject", "location", "body"], (["start", "end", "subject"] if tag in ("owa", "copilot") else None)
+            try:
+                pb = meetnote.prep_body_csv(p, ctx, key_cols=keys) if meetnote else {"ok": False}
+            except Exception:  # noqa: BLE001 - 본문 정리 실패가 G1 을 멈추지 않게(이번에는 본문만 뺀다)
+                pb = {"ok": False}
+            if pb.get("ok"):
+                nb["cleaned"] += int(pb.get("cleaned") or 0)
+                nb["blanked"] += int(pb.get("blanked") or 0)
+            else:
+                cols = cols[:2]      # 본문을 못 걸렀다 — 거르지 않은 본문의 회의 암호로 회의 행이 버려지지 않게(다음 실행에서 다시)
         else:
             continue
         info = privacy.scrub_csv(p, cols, key_cols=keys, ctx=ctx, data_dir=data)
         _g1_tally(tot, n, info)
-    return _g1_record("개인정보 정제(G1) — 메일·일정 출처 파일", tot)
+    ok = _g1_record("개인정보 정제(G1) — 메일·일정 출처 파일", tot)
+    if nb["cleaned"] or nb["blanked"]:
+        print(f"   일정 본문(회의 안건) {nb['cleaned']}건 정리"
+              + (f" · 자격증명이 남아 비운 본문 {nb['blanked']}건" if nb["blanked"] else ""))
+    return ok
 
 
 def g1_teams(c, data):
@@ -400,7 +422,8 @@ def mail_fallbacks(c, d0, d1, data, ps, col, t_run=None, led=None, state=None):
     # ③ Copilot — 남은 날만(증인). 이미 증언·답한 날은 다시 묻지 않는다.
     name3 = "Outlook 대체③ Copilot 메일·일정 (남은 날만 — 증인)"
     if headless:
-        record(name3, True, 0.0, "수집만 모드 — Copilot 은 판정 전용, 추가 PC 수집엔 쓰지 않습니다(config.collectOnlyHeadless)")
+        record(name3, True, 0.0, "로컬PC 자료수집 모드 — Copilot 은 판정 전용이라 자료수집엔 쓰지 않습니다"
+               "(config.collectOnlyHeadless · [분석 실행]은 남은 날만 묻습니다)")
     elif not c.get("mailViaCopilot", True) or "--no-mail-copilot" in sys.argv:
         record(name3, True, 0.0, "건너뜀(config.mailViaCopilot=false)")
     elif state.get("login_pending"):
@@ -876,7 +899,8 @@ def archive_other_pc(data):
                 keep = keep + "-" + time.strftime("%Y%m%d-%H%M%S")
             os.makedirs(keep, exist_ok=True)
             moved, failed = [], []
-            for sub in ("outlook", "files", "pc", "m365", "activity"):
+            # programs = 실행 기록 스냅샷(LM28 — 장마다 PC 열쇠가 있어 섞여도 분석은 PC 별로 가른다 · 보관해 두면 본 폴더가 이 PC 것만 갖는다)
+            for sub in ("outlook", "files", "pc", "m365", "activity", "programs"):
                 src_d = os.path.join(data, sub)
                 if not os.path.isdir(src_d):
                     continue
@@ -1108,6 +1132,191 @@ def web_only(c, kind, d0, d1, data, col):
     return 0 if sts and all(s["ok"] for s in sts) else 1
 
 
+# ── 팀 서버 자동 보고(LM28 — [분석 실행]의 마무리) ────────────────────────────────────────────────────────────────
+# 사유는 화면 알림·배너·last_run.json 이 그대로 쓴다. teamup.py --upload --json 의 기계용 표식(unreachable·no_url·
+# results[].kind)에서 고른다 — 한국어 문구의 부분 문자열로 가르지 않는다(문구를 다듬어도 분류가 깨지지 않게).
+TR_PENDING_HINT = "결과 묶음은 대기로 남았습니다. 사내망에서 [팀 서버 업로드]를 누르면 밀린 것까지 보내집니다."
+TR_KIND = {"unreachable": "서버에 닿지 않음", "rejected": "서버 거부", "blocked": "보낼 수 없는 묶음"}
+TR_HINT = {
+    "서버에 닿지 않음": TR_PENDING_HINT,
+    "서버 거부": TR_PENDING_HINT + " 같은 거부가 되풀이되면 팀 서버 담당자에게 서버 로그 확인을 부탁하세요.",
+    "보낼 수 없는 묶음": ("결과 묶음은 대기로 남았지만 이대로는 보낼 수 없습니다 — 팀 취합 업로드 카드의 '보낼 수 없음' 사유를"
+                     " 고친 뒤 [분석 실행]을 다시 하세요."),
+    "대기 묶음 없음": "보낼 결과 묶음이 만들어지지 않았습니다 — 진행 로그의 '팀 업로드 묶음 준비' 사유를 확인한 뒤 [분석 실행]을 다시 하세요.",
+    "이번 결과 묶음 없음": ("이번 결과 묶음이 만들어지지 않았습니다 — 진행 로그의 '팀 업로드 묶음 준비' 사유를 확인한 뒤"
+                       " [분석 실행]을 다시 하세요."),
+    "주소 없음": "결과 묶음은 대기로 남았습니다. LoadMonitor28-팀서버주소.bat 에서 서버 IP·포트를 저장한 뒤 [팀 서버 업로드]를 누르세요.",
+    "보고 결과를 읽지 못함": TR_PENDING_HINT + " (원인은 진행 로그의 [teamup] 줄에 있습니다)",
+}
+# 보내지 않고 멈추는 경우(team_report(hold=)) — (사유, 안내, 알림 여부). 규칙이 임시로 뽑은 결과가 서버에 있던 같은 기간의
+# AI 결과를 덮지 않게 한다. 판정 실패는 알림(ok False — 화면 알림·배너), AI 를 끄고 돌린 실행은 조용히 건너뜀(ok None).
+TR_HOLD = {
+    "AI 판정 실패": ("AI 판정 실패로 보내지 않음",
+                 "AI 판정이 실패해 이번 결과는 규칙이 임시로 뽑은 것입니다. 팀 서버에 있던 같은 기간 결과를 덮지 않도록 자동 보고를"
+                 " 멈췄습니다 — [AI 연결 진단]으로 Copilot 상태를 확인한 뒤 [분석 실행]을 다시 하세요"
+                 " (이 결과를 그대로 보내려면 [팀 서버 업로드]).", True),
+    "AI 없이 실행": ("AI 정제 없이 실행해 보내지 않음",
+                 "보내려면 [팀 서버 업로드]를 누르세요.", False),
+}
+
+
+def _pending_count():
+    r"""report\upload_pending\ 의 대기 묶음 수(못 세면 0)"""
+    pend = os.path.join(REPORT_DIR["p"], "upload_pending")
+    try:
+        return len([x for x in os.listdir(pend) if x.endswith(".json")]) if os.path.isdir(pend) else 0
+    except OSError:
+        return 0
+
+
+def _teamup_mod():
+    r"""설치 폴더 뿌리의 teamup 모듈 — 동봉 파이썬(python\python311._pth)은 스크립트 폴더를 sys.path 에 넣지 않는다
+    (export.py 머리 주석). core 가 앞서게 뒤에 붙인다(같은 이름 모듈이 생겨도 core 가 이긴다)."""
+    if ROOT not in sys.path:
+        sys.path.append(ROOT)
+    import teamup
+    return teamup
+
+
+def team_report_wanted(c):
+    """이번 [분석 실행] 끝에 팀 서버로 자동 보고할까 — teamup.auto_report_on(config.teamUpload.autoReport · 기본 켬) 한 곳.
+    못 읽으면 켬(기본값) — 이 판단 하나 때문에 분석 마무리가 죽지 않게."""
+    try:
+        return bool(_teamup_mod().auto_report_on(c))
+    except Exception:  # noqa: BLE001 - teamup 임포트 실패(손상 설치)는 보고 단계가 따로 알린다
+        return True
+
+
+def _n(v):
+    try:
+        return max(0, int(v or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def team_report_outcome(res, tag="", built=True):
+    r"""teamup.py --upload --json 의 마지막 줄 → 자동 보고 결과 {ok, sent, failed, pending, reason, hint, detail}.
+    · 성공 = **이번 실행의 묶음(tag)** 이 서버에 갔다. 밀려 있던 다른 묶음이 실패해도 이번 보고는 성공으로 둔다 — 지난
+      실패 하나가 실행할 때마다 알림을 띄우지 않게(그 묶음은 업로드 카드에 '보낼 수 없음' 으로 남고 detail 이 건수를 적는다).
+    · 이번 묶음을 만들지 못했으면(built=False) 같은 기간의 지난 묶음이 대신 갔어도 실패다 — 이번 결과가 아니다.
+    · 사유: 서버에 닿지 않음 · 서버 거부 · 보낼 수 없는 묶음 · 대기 묶음 없음 · 이번 결과 묶음 없음 · 주소 없음 ·
+      보고 결과를 읽지 못함(JSON 없음 — 시간 초과·실행 실패) · 보고 실패(그 밖). detail 은 화면 알림·상태 파일에만 쓴다."""
+    res = res if isinstance(res, dict) else {}
+    rs = [x for x in (res.get("results") or []) if isinstance(x, dict)]
+    pend = res.get("pending")
+    out = {"ok": False, "sent": _n(res.get("sent")), "failed": _n(res.get("failed")),
+           "pending": pend if isinstance(pend, int) and not isinstance(pend, bool) and pend >= 0 else None,
+           "reason": "", "hint": "", "detail": ""}
+    mine = next((x for x in rs if tag and str(x.get("tag") or "") == tag), None)
+    bad = [x for x in rs if not x.get("ok")]
+    why, pick = "", None
+    if not res:
+        why = "보고 결과를 읽지 못함"
+    elif res.get("no_url"):
+        why, out["detail"] = "주소 없음", str(res.get("error") or "")
+    elif res.get("unreachable"):
+        why, out["detail"] = "서버에 닿지 않음", str(res.get("error") or "")
+    elif not built:
+        why = "이번 결과 묶음 없음" if rs else "대기 묶음 없음"
+    elif mine is not None:
+        out["ok"] = bool(mine.get("ok"))
+        pick = None if out["ok"] else mine
+    elif not rs:
+        why, out["detail"] = (("보고 실패", str(res.get("error") or "")) if res.get("ok") is False
+                              else ("대기 묶음 없음", ""))
+    elif bad:
+        pick = bad[0]
+    else:
+        out["ok"] = True                 # 이번 묶음 표식(tag)을 못 맞춘 결과 — 실패 없이 보냈으면 성공
+    if pick is not None:
+        why, out["detail"] = TR_KIND.get(str(pick.get("kind") or ""), "보고 실패"), str(pick.get("msg") or "")
+    if out["ok"]:
+        others = [x for x in bad if x is not mine]
+        if others:
+            out["detail"] = f"밀려 있던 다른 묶음 {len(others)}건은 보내지 못했습니다 — 팀 취합 업로드 카드에서 사유를 확인하세요"
+    else:
+        out["reason"] = why
+        out["hint"] = TR_HINT.get(why, TR_PENDING_HINT)
+        if why == "이번 결과 묶음 없음" and out["sent"]:
+            out["hint"] += f" (밀려 있던 묶음 {out['sent']}건은 보냈습니다)"
+    out["detail"] = out["detail"][:200]
+    return out
+
+
+def team_report(c, d0, d1, built=True, on=None, hold=""):
+    r"""[분석 실행] 끝 팀 서버 자동 보고 → 결과 dict(team_report_outcome + tag·via) | None(꺼짐·스텁·AI 없이 실행 — 보내지 않음).
+    · hold(TR_HOLD 의 열쇠)가 있으면 보내지 않고 멈춘다 — 'AI 판정 실패' 는 실패(ok False — 화면 알림·배너), 'AI 없이 실행' 은
+      건너뜀(ok None). 묶음은 대기로 남아 [팀 서버 업로드]로 직접 보낼 수 있다.
+    · teamup.py --upload --json 을 수집기와 같은 실행기(_RUN_STEP = core\proc.run_step — Job·시간 상한·60초 진행 줄)로 돌린다.
+      teamup 이 먼저 ping(4초)해 닿지 않으면 곧바로 끝나고, 보내지 못한 묶음은 그대로 대기로 남는다(주소는 teamaddr 한 곳).
+    · 사람용 줄만 콘솔·화면 로그에 옮기고 기계용 마지막 JSON 줄은 찍지 않는다(bat 화면이 읽기 쉽게).
+    · 남기는 곳: last_run.json 단계 '팀 서버 자동 보고'(사유·건수만 — 서버 응답·경로 원문은 싣지 않는다: 얼린 보고서의
+      /api/dash 에 굳는다)와 report\team_report_status.json(화면 알림·배너 재료 · /api/teamreport — 얼린 사본에는 없다).
+    · 스텁 판정(LM_COPILOT_STUB — 시험 전용)은 보내지 않는다 — 화면 배너가 '팀에 올리지 마세요' 라고 말하는 결과다."""
+    name = "팀 서버 자동 보고"
+    tag = f"{d0.replace('-', '')}-{d1.replace('-', '')}"
+    t0 = time.time()
+    try:
+        tu = _teamup_mod()
+    except Exception as e:  # noqa: BLE001 - 손상 설치(teamup.py 없음)여도 이미 저장된 분석 결과·마무리는 끝까지 간다
+        tu, st = None, team_report_outcome({})
+        st["detail"] = f"teamup 을 읽지 못했습니다({type(e).__name__})"
+    else:
+        on = tu.auto_report_on(c) if on is None else on
+        if not on or os.environ.get("LM_COPILOT_STUB"):
+            why = ("꺼짐(config.teamUpload.autoReport=false)" if not on
+                   else "스텁 판정(LM_COPILOT_STUB — 시험 전용) 결과라 보내지 않음")
+            note = f"{why} — 결과 묶음은 대기로 남습니다. 사내망에서 [팀 서버 업로드]로 보내세요"
+            print(f"\n── {name} — 건너뜀\n   {note}")
+            record(name, True, 0.0, note)
+            tu.write_report_status(REPORT_DIR["p"], {"ok": None, "off": True, "sent": 0, "failed": 0,
+                                                     "pending": _pending_count(), "reason": why, "hint": "",
+                                                     "tag": tag, "via": "auto"})
+            return None
+        if hold:
+            why, hint, alarm = TR_HOLD.get(hold, (hold, TR_PENDING_HINT, True))
+            st = {"ok": False if alarm else None, "sent": 0, "failed": 0, "pending": _pending_count(),
+                  "reason": why, "hint": hint, "detail": "", "tag": tag, "via": "auto"}
+            print(f"\n── {name} — 보내지 않음\n   {why} · 대기 {st['pending']}건 — {hint}")
+            record(name, not alarm, 0.0, f"{why} — {hint}")
+            tu.write_report_status(REPORT_DIR["p"], dict(st, at=time.strftime("%Y-%m-%d %H:%M:%S")))
+            return st if alarm else None
+        print(f"\n── {name} (서버에 닿는지 먼저 확인합니다 — 닿지 않으면 결과 묶음은 대기로 남습니다)")
+        rc, tail, how = _RUN_STEP([sys.executable, os.path.join(ROOT, "teamup.py"), "--upload", "--json"], 1200, name)
+        res = {}
+        for ln in tail:
+            s = str(ln or "").strip()
+            if s.startswith("{") and s.endswith("}"):
+                try:
+                    o = json.loads(s)
+                except ValueError:
+                    o = None
+                if isinstance(o, dict):
+                    res = o
+                    continue
+            if s:
+                print("   " + s)
+        st = team_report_outcome(res, tag=tag, built=built)
+        if not res:
+            st["detail"] = ("20분 안에 끝나지 않아 끊었습니다" if how == "timeout"
+                            else next((str(x) for x in reversed(tail) if str(x).strip()), f"teamup.py 종료 코드 {rc}"))[:200]
+    if st.get("pending") is None:
+        st["pending"] = _pending_count()
+    st.update(tag=tag, via="auto")
+    if st["ok"]:
+        note = (f"보냄 {st['sent']}건" + (f" · 대기 {st['pending']}건" if st["pending"] else "")
+                + (f" · {st['detail']}" if st.get("detail") else ""))
+        print(f"   → 팀 서버 보고 완료 — {st['sent']}건" + (f" ({st['detail']})" if st.get("detail") else ""))
+    else:
+        note = f"실패: {st['reason']} — 보냄 {st['sent']}건 · 대기 {st['pending']}건 — {st['hint']}"
+        print(f"   [!] 팀 서버 자동 보고 실패 — {st['reason']}" + (f" ({st['detail'][:120]})" if st.get("detail") else ""))
+        print(f"       {st['hint']}")
+    record(name, bool(st["ok"]), time.time() - t0, note)
+    if tu is not None:
+        tu.write_report_status(REPORT_DIR["p"], dict(st, at=time.strftime("%Y-%m-%d %H:%M:%S")))
+    return st
+
+
 def main():
     """실행 전체 — 마지막 finally 에서 이 실행이 띄운 전용 Edge 를 1회 닫는다(로그인 대기면 둔다 · P6)."""
     try:
@@ -1185,6 +1394,9 @@ def _main():
              src="recent", led=led)
         step("git 커밋 (SW개발)", [sys.executable, os.path.join(col, "Get-GitActivity.py"),
                                 "--from", d0, "--to", d1], 240, src="git", led=led)
+        # 프로그램 사용 이력(참고 지표 — MM 과 무관): 이 계정의 실행 흔적(UserAssist·작업 표시줄·BAM) 스냅샷 1장 — 상주 수집 없이,
+        # 관리자 권한 없이 1초 안팎. [분석 실행]·[로컬PC 자료수집] 모두 찍는다(기간 무관 — 누적값이라 장 사이 차이가 사용량)
+        step("프로그램 실행 기록 (참고)", [sys.executable, os.path.join(col, "Get-ProgramUsage.py")], 60, src="programs")
         # 팀즈: Graph(설정 시) → 앱 창(늘 · 보조) → 웹(전용 Edge) → Copilot(원장 공백만) → G1
         collect_teams(c, d0, d1, data, ps, col, led, STATE)
         led.save()
@@ -1215,11 +1427,13 @@ def _main():
             _pg("근무시간 실측", 1, 1)
         except Exception as _e:  # noqa: BLE001
             print(f"   근무 실측 저장 보류({type(_e).__name__}) — 본 PC 분석 때 다시 계산됩니다")
-        print("\n[수집만] 이 PC 의 데이터 수집을 마쳤습니다 — 분석은 하지 않았습니다.")
-        print("        폴더째 본 PC 로 가져가 [분석 실행]을 누르면 두 PC 데이터가 합산됩니다")
-        print("        (같은 메일·일정 등 중복 자료는 분석 때 자동 제외).")
+        # 화면 버튼 이름은 [로컬PC 자료수집](구 '추가 PC 수집'·'수집만' — 헷갈린다는 제보로 LM28 에서 바꿈). 팀 서버 보고는
+        # 하지 않는다 — 분석하지 않은 자료라 보낼 결과가 없고, 보고는 그 폴더를 받은 PC 의 [분석 실행] 끝에서 한 번 한다.
+        print("\n[로컬PC 자료수집] 이 PC 의 자료 수집을 마쳤습니다 — AI 분석·팀 서버 보고는 하지 않았습니다.")
+        print("        폴더째 분석할 PC 로 옮겨 [분석 실행]을 누르면 두 PC 자료가 합쳐집니다")
+        print("        (같은 메일·일정 등 겹치는 자료는 분석 때 자동 제외).")
         RUN["finished"] = time.strftime("%Y-%m-%d %H:%M")
-        record("완료(수집만)", True, 0.0, "추가 PC 수집 모드 — 분석은 본 PC 에서")
+        record("완료(로컬PC 자료수집)", True, 0.0, "로컬PC 자료수집 — 분석·팀 서버 보고는 폴더를 옮긴 PC 의 [분석 실행]에서")
         return 0
 
     print("\n── 업무 로드 추출 (주40h 근무일 기준)")
@@ -1272,6 +1486,9 @@ def _main():
         record("종료", False, 0.0, f"업무 로드 추출 오류: {err[:200]}")
         return 1
 
+    # 팀 서버 자동 보고를 멈출 사유 — 규칙이 임시로 뽑은 결과(AI 판정 전부 실패·AI 없이 실행)가 서버에 있던 같은 기간의
+    # AI 결과를 덮지 않게 한다. 실패는 알림(ok False), AI 를 끄고 돌린 실행은 조용히 건너뜀(ok None) — team_report(hold=).
+    _ai_hold = ""
     if "--ai" in sys.argv:
         # 한 번의 [분석 실행] 전체(판정+정제+Agentic+워크플로우) 마감을 자식들에게 물려준다.
         # 예전에는 단계마다 독립 상한이라 합계가 몇 시간이 될 수 있었다(감사 실측). 0 이면 끔.
@@ -1339,6 +1556,7 @@ def _main():
             except (OSError, ValueError, TypeError):
                 _partial_ok = False
         if rc not in (0, 2) and not _partial_ok:
+            _ai_hold = "AI 판정 실패"
             _skip = ("AI 판정 왕복 전부 실패로 건너뜀" if rc == 3 else "판정 실패로 건너뜀")
             print("   [!] AI 판정 실패 — 화면의 과제는 AI가 정리한 것이 아니라 규칙이 뽑은")
             print("       임시 결과입니다. 위 judge 로그의 마지막 오류를 보세요.")
@@ -1403,6 +1621,7 @@ def _main():
             agentic_recalc_inproc(d0, d1)
     else:
         record("AI 판정", False, 0.0, "AI 판정을 켜지 않고 실행했습니다(--ai 없음)")
+        _ai_hold = "AI 없이 실행"
         # 지난 AI 실행의 Agentic 결과가 남아 있으면 MM 실측만 재추출된 행으로 다시 센다(왕복 없음) — 매칭 자체는
         # 옛 행 기준이라 화면이 '재추출 이후 결과' 로 표시한다(V-01). 보고서 생성 전에 해야 리포트 섬과 KPI 가 맞는다.
         if os.path.exists(os.path.join(ROOT, "report", f"agentic_{d0.replace('-', '')}-{d1.replace('-', '')}.json")):
@@ -1424,10 +1643,10 @@ def _main():
     if rc_f not in (0, 2):
         print("   [!] 보고서 생성 실패 — 대시보드의 [보고서 만들기] 버튼으로 다시 시도할 수 있습니다")
 
-    # 팀 업로드는 '준비'까지만 한다 — 팀 서버는 특정 망에서만 닿는데 분석은 아무 망에서나
-    # 하기 때문이다(실측: 자동 전송이 대부분 실패하고 결과가 조용히 사라짐). 묶음을
-    # report\upload_pending\ 에 만들어 두고, 서버에 닿는 망에서 대시보드 [팀 서버 업로드]
-    # 버튼(또는 LoadMonitor28-팀업로드.bat)으로 밀린 것까지 한 번에 보낸다.
+    # 팀 업로드 묶음은 보내기 **전에** report\upload_pending\ 에 먼저 만든다 — 팀 서버는 특정 망(사내망)에서만 닿는데 분석은
+    # 아무 망에서나 하므로(실측: LM19 이전 분석 끝 자동 전송은 대부분 실패했고 결과가 조용히 사라졌다), 보고가 실패해도 묶음은
+    # 대기로 남아 서버에 닿는 망에서 대시보드 [팀 서버 업로드](또는 LoadMonitor28-팀업로드.bat)로 밀린 것까지 한 번에 간다.
+    print("\n── 팀 업로드 묶음 준비")
     _t4 = time.time()
     _p4 = subprocess.run([sys.executable, os.path.join(ROOT, "teamup.py"),
                           "--build", "--from", d0, "--to", d1], cwd=ROOT, capture_output=True,
@@ -1439,34 +1658,29 @@ def _main():
     for _ln in _o4.splitlines():
         print("   " + _ln)
     _why = " / ".join(_o4.splitlines()[-2:]) if _o4 else ""
-    n_pend = 0
-    try:
-        pend = os.path.join(ROOT, "report", "upload_pending")
-        n_pend = len([x for x in os.listdir(pend) if x.endswith(".json")]) if os.path.isdir(pend) else 0
-    except OSError:
-        pass
+    n_pend = _pending_count()
+    _auto = team_report_wanted(c)
     # 실패 사유는 teamup 이 말한 것을 그대로 옮긴다 — '산출물 없음'으로 단정하면 잠금·권한 오류가 가려진다
     record("팀 업로드 묶음 준비", rcb == 0, time.time() - _t4,
-           (f"대기 {n_pend}건 — 서버망에서 [팀 서버 업로드] 버튼을 누르면 전송됩니다"
+           (f"대기 {n_pend}건 — " + ("이어서 팀 서버로 자동 보고합니다" if _auto
+                                    else "서버망에서 [팀 서버 업로드] 버튼을 누르면 전송됩니다")
             + (" · " + _why if "보낼 수 없습니다" in _why else "")
             if rcb == 0 else (_why or "묶음 준비 실패")))
-    if (c.get("teamUpload") or {}).get("auto"):
-        # 원하는 사람만 켜는 자동 전송(기본 꺼짐). 실패해도 묶음은 대기로 남는다.
-        # v5: 주소는 팀 서버 주소 설정(core\teamaddr.py)이 늘 준다 — config.teamServerUrl 을 따로 보지 않는다.
-        import teamaddr
-        print(f"\n── 팀 서버 자동 업로드 (config.teamUpload.auto → {teamaddr.load(ROOT).url})")
-        _t5 = time.time()
-        rc3 = subprocess.run([sys.executable, os.path.join(ROOT, "teamup.py"), "--upload"],
-                             cwd=ROOT, env=dict(os.environ, PYTHONIOENCODING="utf-8",
-                                                PYTHONUNBUFFERED="1")).returncode
-        record("팀 서버 자동 업로드", rc3 == 0, time.time() - _t5,
-               "" if rc3 == 0 else "이 망에서 서버에 닿지 않아 대기로 남겼습니다 — 서버망에서 버튼으로 보내세요")
+    # LM28: [분석 실행]의 마무리 = 팀 서버 자동 보고(사용자 요청 — "분석실행 마무리는 팀서버로 자동으로 레포팅까지 …
+    # 안되면 안되었다고 알람이 뜨는 정도만"). 실패해도 묶음은 대기로 남고, 결과는 report\team_report_status.json 에 남아
+    # 화면이 끝난 실행 1번당 알림 1번 + 다음 성공까지 배너로 말한다. 끄기: config.teamUpload.autoReport=false.
+    # [로컬PC 자료수집](--collect-only)·웹 읽기(--web-only)는 위에서 먼저 끝나 여기에 오지 않는다 — 보고하지 않는다.
+    _rep = team_report(c, d0, d1, built=(rcb == 0), on=_auto, hold=_ai_hold)
 
     if (c.get("teamShareDir") or "").strip():
         print("\n── 팀 공유폴더 내보내기")
         subprocess.run([sys.executable, os.path.join(ROOT, "export.py"),
                         "--from", d0, "--to", d1], cwd=ROOT,
                        env=dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1"))
+    if isinstance(_rep, dict) and _rep.get("ok") is False:
+        # bat 으로 돌린 사람에게는 이 두 줄이 알람이다 — 콘솔 맨 끝(완료 안내 바로 위)에 한 번 더 적는다
+        print(f"\n[!] 팀 서버 자동 보고 실패 — {_rep.get('reason') or '사유 미상'}")
+        print(f"    {_rep.get('hint') or TR_PENDING_HINT}")
     RUN["finished"] = time.strftime("%Y-%m-%d %H:%M")
     record("완료", True, 0.0)
     return 0

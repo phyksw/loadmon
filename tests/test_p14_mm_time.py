@@ -370,7 +370,7 @@ class OwaRatchet(unittest.TestCase):
         self.assertEqual(br.calls["open"], 0)                         # 열지 않았다(예산 소모 없음)
         self.assertEqual((run.c["recovered_known"], run.c["recovered"], diag["date_only"]), (1, 1, 0))
         self.assertIn("2026-03-20 17:03", {r[1] for r in rows})
-        self.assertEqual(owa.COLLECTOR_VER, "LM28-OWA-4")
+        self.assertGreaterEqual(int(owa.COLLECTOR_VER.rsplit("-", 1)[1]), 4)   # 지난 판 시각 재사용은 OWA-4 부터(이후 판도 유지)
 
     def test_avatar_initials_skipped(self):
         it = {"label": "", "texts": ["JS", "John Smith", "Weekly report", "화 오후 3:12"]}

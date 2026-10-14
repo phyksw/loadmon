@@ -52,6 +52,9 @@ LM28 — G3 Copilot 직전 관문과 인프로세스 왕복:
     청크는 skipped 로 따로 센다 — 연속 실패 계수(SOFT/ABORT_FAIL_CHUNKS)에 넣지 않는다(개인정보가 많은 사람이 AI 판정 전체를
     규칙으로 잃지 않게). ai_judgments 에 gated_rows·skipped_chunks 를 남긴다.
   · config.copilotAuto.inProcess(기본 true)면 드라이버를 임포트해 같은 프로세스에서 왕복한다(send_inproc). taskkill 은 쓰지 않는다.
+  · 회의 안건(사용자 요청 '일정 회의 내용도 참고 — 걸러서'): 회의 줄 끝에 ' — 안건: …'(일정 본문을 core\\meetnote 가 정제한 것,
+    config.calendar.bodyToAI·noteMaxChars)을 붙인다. 안건만 관문에 먼저 넣어 통과한 것만 쓰고, 행과 함께 note 필드로 다시 관문을
+    지난다. 안건이 생기거나 바뀐 회의만 캐시 내용 키가 바뀌어 한 번 다시 판정한다. signals·팀 반출에는 안건이 없다.
 
 LM28 진단 A — 수천 행 규모의 판정:
   · 이어서 판정 캐시(report\\judge_cache.json — 내용 키의 sha1 → 판정, 원문 없음): 기간 tag 가 날마다 바뀌어도 이미 판정한 신호는
@@ -1087,9 +1090,17 @@ JUDGE_EXAMPLE_OLD = '{"j":[[0,"y","프로젝트A","개발","광학 설계"],[1,"
 JUDGE_EXAMPLES = (JUDGE_EXAMPLE, JUDGE_EXAMPLE_OLD)
 
 
+# 회의 안건(LM28 — 일정 본문을 core\meetnote 가 정제한 것). 회의 줄 끝에만 붙고, 머리말 안내 한 줄은 안건이 든 묶음에만 넣는다.
+NOTE_SEP = " — 안건: "
+NOTE_HINT = "· 회의 줄 끝의 '— 안건:' 은 그 일정 본문을 정제·요약한 것입니다 — 과제·세부업무를 고르는 참고로만 쓰세요."
+NOTE_KEY_SEP = "|안건:"     # 판정 캐시 내용 키에 안건을 넣는 구분자 — 안건이 생기거나 바뀐 회의만 한 번 다시 판정한다
+
+
 def row_line(r, idx):
-    return (f"#{idx} | {r['time'][:16]} | {r['source']} | "
+    line = (f"#{idx} | {r['time'][:16]} | {r['source']} | "
             f"{who_label(r.get('who'), 16) or '-'} | {(r.get('text') or '')[:95]}")
+    nt = " ".join(str(r.get("note") or "").split())
+    return line + NOTE_SEP + nt if nt and _fam(r) == "회의" else line
 
 
 def judge_prompt(chunk, start, models, first=True, seen_details=(), idxs=None):
@@ -1115,6 +1126,8 @@ def judge_prompt(chunk, start, models, first=True, seen_details=(), idxs=None):
         "· 세부업무 : 짧은 명사구 — 같은 일은 같은 이름으로 (예: '광학 설계', 'BOM 발주',",
         "   '입고검사', '고객 대응', '주간보고'). 조사 붙은 조각('보고의' 등) 금지.",
     ]
+    if any(str(r.get("note") or "").strip() and _fam(r) == "회의" for r in chunk):
+        head.append(NOTE_HINT)
     if seen_details:
         head += ["★ 앞선 청크에서 이미 쓴 세부업무 이름 — 같은 일이면 새 이름을 만들지 말고 이 표기를",
                  "  그대로 재사용할 것(이름이 갈리면 로드율이 쪼개집니다):",
@@ -1452,6 +1465,44 @@ def recent_details(judged, prev_idxs=()):
     return out
 
 
+def meeting_notes(rows, cfg, d0, d1, data_dir=None):
+    r"""회의 신호 행 번호 → 안건(LM28 — 사용자 요청 '일정 회의 내용도 참고하되 걸러서').
+    core\meetnote.load_notes 가 data\outlook\calendar.csv(+추가PC)의 일정 본문을 정제·필터하고, 회의 행(출처 '회의')과는
+    (날짜, 시작 HH:MM, 정제 제목) 으로만 맞댄다 — 회의가 아닌 행에는 붙지 않는다. 붙이기 전에 안건만 G3 관문(g3_rows)에 먼저
+    넣어 통과한 것만 쓴다: 안건 때문에 행 관문이 회의 행을 통째로 규칙 판정으로 돌리지 않게(안건만 빠지고 회의는 그대로 간다).
+    config.calendar.bodyToAI=false·본문 없음·읽기 실패면 {}. 출력은 건수만(안건·제목 원문 없음)."""
+    try:
+        import meetnote
+    except ImportError:
+        return {}
+    if not meetnote.enabled(cfg):
+        return {}
+    idx = [i for i, r in enumerate(rows) if _fam(r) == "회의"]
+    if not idx:
+        return {}
+    try:
+        book = meetnote.load_notes(data_dir or os.path.join(ROOT, "data"), d0, d1, cfg)
+    except Exception as e:  # noqa: BLE001 - 안건은 참고일 뿐 — 읽기 실패가 판정을 멈추지 않게(제목만으로 판정)
+        print(f"[judge] 회의 안건(일정 본문)을 읽지 못해 제목만으로 판정합니다({type(e).__name__})")
+        return {}
+    if not book:
+        return {}
+    cand = {}
+    for i in idx:
+        nt = book.get(meetnote.note_key(rows[i].get("time"), rows[i].get("text")))
+        if nt:
+            cand[i] = nt
+    if not cand:
+        print(f"[judge] 회의 안건 {len(book)}건이 있지만 같은 시각·제목의 회의 신호가 없어 붙이지 않습니다")
+        return {}
+    kept, _why = g3_rows([{"text": nt, "_gi": i} for i, nt in cand.items()], ("text",))
+    out = {it["_gi"]: it["text"] for it in kept if str(it.get("text") or "").strip()}
+    print(f"[judge] 회의 안건(일정 본문 정제) {len(out)}건을 회의 판정의 참고로 붙입니다"
+          + (f" · 개인정보 관문에서 뺀 안건 {len(cand) - len(out)}건" if len(cand) > len(out) else "")
+          + f" · 거른 뒤 남은 일정 안건 {len(book)}건")
+    return out
+
+
 def judge_rows(idxs, rows, models, seen, tag, label, depth, st):
     """행 묶음 하나를 판정한다(적응 분할). returns {번호: 판정}.
     · 완전한 JSON → 그대로(모델이 빠뜨린 행은 omitted_rows — 재왕복 없이 규칙).
@@ -1468,7 +1519,17 @@ def judge_rows(idxs, rows, models, seen, tag, label, depth, st):
     if st.get("fatal"):
         st["failed_rows"] += len(idxs)            # 같은 묶음의 앞 조각이 사람이 손댈 실패였다 — 나머지는 보내지 않는다
         return {}
-    kept, why = g3_rows([dict(rows[i], _gi=i) for i in idxs], ("text",))
+    # 회의 안건(LM28 — st['meet_notes'] = {회의 행 번호: 안건}, main 의 meeting_notes 가 관문을 미리 통과시킨 것)은 'note'
+    # 필드로 행과 같은 관문을 다시 지난다. 회의가 아닌 행·안건 없는 행에는 note 가 없다(signals 에 같은 이름 열이 생겨도 싣지 않음)
+    notes = st.get("meet_notes") or {}
+    items = []
+    for i in idxs:
+        it = dict(rows[i], _gi=i)
+        it.pop("note", None)
+        if i in notes and _fam(rows[i]) == "회의":
+            it["note"] = notes[i]
+        items.append(it)
+    kept, why = g3_rows(items, ("text", "note") if notes else ("text",))
     n_gated = len(idxs) - len(kept)
     if n_gated:
         st["gated_rows"] = st.get("gated_rows", 0) + n_gated
@@ -2764,7 +2825,10 @@ def main():
     # 한 줄만 보낸다. 보낼 것이 없고 지난 정상 체계가 있으면 체계·통합 왕복도 건너뛴다.
     # (v3 '이어서 판정' 은 같은 tag 파일에서만 회수해, 기간 끝날짜가 날마다 바뀌는 기본 기간에서는 매일 처음부터 다시 물었다.)
     today = time.strftime("%Y-%m-%d")
-    ckeys = [_ckey(signal_sig2(r)) for r in rows]
+    # 회의 안건(LM28 — config.calendar.bodyToAI): 안건이 붙은 회의 행은 내용 키에 안건을 넣는다 — 안건이 생기거나 바뀐 회의만
+    # 한 번 다시 판정하고, 안건이 없는 행의 키(그리고 그 캐시)는 그대로다. 캐시 파일에는 키의 sha1 만 남는다(안건 원문 없음)
+    notes = meeting_notes(rows, cfg, d0, d1)
+    ckeys = [_ckey(signal_sig2(r) + (NOTE_KEY_SEP + notes[i] if i in notes else "")) for i, r in enumerate(rows)]
     judged, n_fail, n_partial, last_err = {}, 0, 0, ""
     redo = "--redo" in sys.argv                   # 처음부터 판정 — 캐시를 새로 시작한다(옛 판정 기록도 잇지 않는다)
     cache = {"v": 1, "since": time.time(), "migrated": True, "items": {}} if redo else load_judge_cache(rep)
@@ -2795,6 +2859,9 @@ def main():
     if ad_idx:
         print(f"[judge] 광고 의심 신호 {len(ad_idx)}건은 보내지 않고 비업무로 둡니다(개인정보 관문 G3)")
     gkeys = [group_key(r) for r in rows]
+    for i, nt in notes.items():                   # 안건이 붙은 회의는 안건까지 같아야 한 묶음이다(Copilot 이 보는 줄이 같게)
+        if gkeys[i] is not None:
+            gkeys[i] = (gkeys[i][0], gkeys[i][1] + NOTE_SEP + nt)
     # (a) 같은 내용 재사용 — 지난 판정이 있는 묶음 키의 새 행(옛 스레드의 새 회신 등)은 왕복 없이 그 판정을 쓴다
     by_key = defaultdict(Counter)
     for i, j in judged.items():
@@ -2829,7 +2896,8 @@ def main():
     sample_rows = [rows[i] for i in _sreps] or rows
     st = {"roundtrips": 0, "repaired": 0, "retries": 0, "failed_rows": 0, "omitted_rows": 0,
           "notes": [], "last_err": "", "soft": False, "aborted": False, "gated_rows": 0,
-          "gated_idx": set(), "omitted_idx": set(), "group_rows": 0, "abort_kind": "", "abort_reason": ""}
+          "gated_idx": set(), "omitted_idx": set(), "group_rows": 0, "abort_kind": "", "abort_reason": "",
+          "meet_notes": notes}                    # 회의 안건 {행 번호: 안건} — judge_rows 가 그 회의 줄에만 붙인다
 
     # [0] 엔티티 체계 — 지정은 항상 포함(코드로 강제), 나머지는 AI가 raw에서 자동 발견
     n_chunks = -(-len(reps) // chunk_n)
@@ -2908,8 +2976,9 @@ def main():
 
     # [1..N] 신호 판정 — 대표 행만, 행 수(chunk_n)와 글자 예산 둘 다로 자른다. 머리말 길이는 과제 목록과
     # '앞서 쓴 이름' 목록 상한을 포함해 잰다.
-    head_len = len(judge_prompt([], 0, models)) + SEEN_MAX_CHARS + 160
-    plan = pack_chunks([rows[i] for i in reps], chunk_n, head_len)
+    # 회의 안건이 있으면 그 줄 길이(안건 포함)와 머리말 안내 한 줄까지 예산에 넣는다(넘치면 드라이버가 나눠 왕복이 늘어난다)
+    head_len = len(judge_prompt([], 0, models)) + SEEN_MAX_CHARS + 160 + (len(NOTE_HINT) + 1 if notes else 0)
+    plan = pack_chunks([dict(rows[i], note=notes[i]) if i in notes else rows[i] for i in reps], chunk_n, head_len)
     chunks = [reps[s:s + n] for s, n in plan]          # 청크마다 대표 행 번호(원본 행 인덱스)
     if len(chunks) != n_chunks and not n_reused:
         print(f"        글자 예산({PROMPT_BUDGET:,}자)에 맞춰 청크 {n_chunks}→{len(chunks)}개"
@@ -3145,6 +3214,7 @@ def main():
                    "aborted": st["aborted"], "chunk_rows": chunk_n, "prompt_budget": PROMPT_BUDGET,
                    # G3 — 관문에 막혀 보내지 않은 청크·규칙으로 둔 행·광고 의심으로 비업무 처리한 행(실패 아님)
                    "skipped_chunks": n_skip, "gated_rows": st["gated_rows"], "ad_rows": len(ad_idx),
+                   "meeting_notes": len(notes),          # 안건(일정 본문 정제)을 붙인 회의 행 수 — 건수만(LM28)
                    "cache_reused": n_reused, "cache_key_reused": n_keyed, "group_rows": st["group_rows"],
                    "reps": len(reps), "lowinfo_rows": len(lowinfo), "unseen_rows": len(unseen),
                    "filled_rows": {k: int(filled_n.get(k, 0)) for k in ("same", "conv", "token", "sim")},

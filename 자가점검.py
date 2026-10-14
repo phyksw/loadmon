@@ -61,6 +61,9 @@ NEED = [
     "collect/owa_parse.py",
     "collect/teams_parse.py",
     "collect/Import-MailCal.py",
+    # LM28 2026-10-14 — 빠지면 그 기능만 빠진다(프로그램 실행 기록 단계 실패 · 회의 안건 없이 판정)
+    "collect/Get-ProgramUsage.py",
+    "core/meetnote.py",
     "config/config.json",
     "config/config.default.json",
     "config/agentic_tasks.json",

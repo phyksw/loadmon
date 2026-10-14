@@ -124,9 +124,21 @@ def norm_tool_usage(v):
     """member.tool_usage → 프로그램 사용 이력(참고 지표) 정규화.
 
     ★ 로드율·MM 과 무관하다. 팀 화면에서 이 값이 '일한 양' 으로 읽히지 않게 별도 절에만 쓴다.
-    수치는 전부 숫자로 강제하고, 이름·분류는 길이를 자른다(팀 서버로 올라온 남의 자료다)."""
+    수치는 전부 숫자로 강제하고, 이름·분류는 길이를 자른다(팀 서버로 올라온 남의 자료다).
+    LM28 새 칸(core/extract.tool_usage — 실행 기록·파일 흔적): 프로그램마다 src(출처)·runs·runs_cum·focus_h·focus_h_cum·
+    taskbar·last_run·file_days·files, 최상위 by_kind_n·by_cat_n(프로그램 수)·inhouse(자체·프로토타입(추정) — 이름은 core 가
+    G3 관문을 거친 것)·inhouse_n·inhouse_hidden·sources(원천 요약 — 스칼라만)·note. 증가분을 모르는 칸(None)은 None 그대로 —
+    0 으로 바꾸면 '안 썼다' 로 읽힌다. 옛 꼴(창기록만)은 예전 그대로 나온다."""
     if not isinstance(v, dict):
         return None
+
+    def oint(x):
+        n = fnum(x)
+        return None if n is None else int(round(n))
+
+    def oflt(x):
+        n = fnum(x)
+        return None if n is None else round(n, 2)
     out = {}
     for k in ("samples", "days"):
         n = fnum(v.get(k))
@@ -147,6 +159,15 @@ def norm_tool_usage(v):
         for k in ("hours", "bg_hours"):
             row[k] = round(fnum(pr.get(k)) or 0.0, 2)
         row["days"] = int(fnum(pr.get("days")) or 0)
+        if isinstance(pr.get("src"), list):             # 새 꼴만 — 옛 꼴 행은 예전 칸 그대로
+            row["src"] = [str(s)[:6] for s in pr["src"] if str(s).strip()][:3]
+            for k in ("runs", "runs_cum", "taskbar"):
+                row[k] = oint(pr.get(k))
+            for k in ("focus_h", "focus_h_cum"):
+                row[k] = oflt(pr.get(k))
+            row["last_run"] = str(pr.get("last_run") or "")[:16]
+            row["file_days"] = int(fnum(pr.get("file_days")) or 0)
+            row["files"] = int(fnum(pr.get("files")) or 0)
         progs.append(row)
     out["programs"] = progs
     for k in ("by_cat", "by_kind"):
@@ -155,7 +176,46 @@ def norm_tool_usage(v):
             continue
         out[k] = [[str(x[0])[:12], round(fnum(x[1]) or 0.0, 2)] for x in v2
                   if isinstance(x, (list, tuple)) and len(x) >= 2][:8]
-    return out if (out.get("programs") or out.get("total_h")) else None
+    for k in ("by_kind_n", "by_cat_n"):                 # 프로그램 수 — '자체·프로토타입(추정)' 이 잘리지 않게 14자
+        v2 = v.get(k)
+        if isinstance(v2, list):
+            out[k] = [[str(x[0])[:14], int(fnum(x[1]) or 0)] for x in v2
+                      if isinstance(x, (list, tuple)) and len(x) >= 2][:8]
+    inh = []
+    for x in (v.get("inhouse") if isinstance(v.get("inhouse"), list) else [])[:12]:
+        if not isinstance(x, dict) or not str(x.get("name") or "").strip():
+            continue
+        inh.append({"name": str(x.get("name")).strip()[:40], "cls": str(x.get("cls") or "")[:12],
+                    "runs": oint(x.get("runs")), "runs_cum": oint(x.get("runs_cum")),
+                    "focus_h": oflt(x.get("focus_h")), "last_run": str(x.get("last_run") or "")[:16]})
+    if inh or "inhouse" in v:
+        out["inhouse"] = inh
+    for k in ("inhouse_n", "inhouse_hidden"):
+        n = fnum(v.get(k))
+        if n is not None:
+            out[k] = int(n)
+    srcs = v.get("sources")
+    if isinstance(srcs, dict):
+        so = {}
+        for sk, sv in list(srcs.items())[:4]:
+            if not isinstance(sv, dict):
+                continue
+            d = {}
+            for kk, vv in list(sv.items())[:16]:
+                if isinstance(vv, bool) or vv is None:
+                    d[str(kk)[:16]] = vv
+                elif isinstance(vv, (int, float)):
+                    if fnum(vv) is not None:
+                        d[str(kk)[:16]] = vv
+                elif isinstance(vv, str):
+                    d[str(kk)[:16]] = vv[:200]
+                elif isinstance(vv, list) and len(vv) == 2 and all(isinstance(y, str) for y in vv):
+                    d[str(kk)[:16]] = [y[:10] for y in vv]       # window [시작, 끝]
+            so[str(sk)[:8]] = d
+        out["sources"] = so
+    if isinstance(v.get("note"), str):
+        out["note"] = v["note"][:200]
+    return out if (out.get("programs") or out.get("total_h") or out.get("inhouse") or out.get("inhouse_n")) else None
 
 
 def norm_cfg_used(v):

@@ -2976,11 +2976,74 @@ def _activity_spans(data_dir, d0, d1, interval_sec=60, idle_active=IDLE_ACTIVE_S
     return out, cov, stuck
 
 
-_TOOL_USAGE_CACHE = {}          # (data_dir, 기간, 설정, activity 파일 상태) → 집계 결과
+_TOOL_USAGE_CACHE = {}          # (data_dir, 기간, 설정, 재료 파일 상태 — 창 기록·실행 기록 스냅샷·파일 흔적) → 집계 결과
+SAMPLER_SRC, REG_SRC, FILE_SRC = "창기록", "실행기록", "파일"     # tool_usage 프로그램 행의 src(출처) 이름 — 이 순서로 적는다
+REG_SPILL = _td(hours=36)       # 증가분 구간이 기간 앞뒤로 이만큼까지 넘쳐도 '기간 안' 으로 본다(하루 1장 — 전날 저녁 장이 기준)
 
 
 def tool_usage(data_dir, d0, d1, cfg=None):
-    """창 샘플러의 process 열 → 프로그램별 사용 시간(참고 지표).
+    """프로그램 사용 이력(참고 지표) — 창기록·실행기록·파일 세 원천을 한 표로 합친다(사용자 요청: 상용·비상용 사용 이력).
+
+    ★ MM 과 무관하다. 여기 값은 load_signals 로 들어가지 않고 mm_basis["tool_usage"] 에만 실린다.
+      신호로 만들면 to_rows 의 가중치 비율이 바뀌어 지금까지의 MM 이 통째로 달라진다(core/programs.py 머리말).
+
+    원천(프로그램 행마다 src 에 이름이 남는다)
+      · 창기록   — 옛 창 샘플러(_tool_usage_sampler — 예전 집계 그대로: 맨 앞 창 시간 hours · 배경 솔버 bg_hours).
+                   LM28 에는 샘플러가 없다 — 옛 기록·추가PC 기록이 있을 때만 채워진다.
+      · 실행기록 — collect\\Get-ProgramUsage.py 스냅샷(data\\programs + 추가PC — Windows 가 계정에 남긴 실행 흔적).
+                   누적 카운터라 기간은 이렇게 본다(_registry_usage): 스냅샷이 둘 이상이면 '기간 시작 전 마지막 장(없으면
+                   기간 안 첫 장) ~ 기간 끝 전 마지막 장' 사이 증가분(한 장씩 이어 더한다 — 줄어든 칸은 카운터 초기화로 보고
+                   뒤 값을 그대로 더한다). 한 장뿐이면 마지막 실행 시각이 기간 안인 것만 '썼다' 로 보고 횟수·시간은 누적
+                   (runs_cum·focus_h_cum)으로만 — 증가분을 지어내지 않는다. PC(스냅샷 pc 열쇠)·뿌리별로 따로 빼고 더한다.
+      · 파일     — 파일·Recent 수집 행(FILE_SOURCES, 추가PC 포함)의 확장자 → 도구(programs.file_program, _file_tool_usage).
+                   모호한 확장자(.prt .sim …)는 실행·창 기록에 후보가 하나만 보일 때만 그 도구로, 아니면 ambiguous_files 로만.
+    자체·프로토타입(추정) — 카탈로그 밖 실행 파일이 사용자 폴더·다른 드라이브·네트워크에서 돈 것(inhouse — programs 와 따로).
+    이름(자체·미상·procs)은 G3 관문(privacy.gate_items — 정제·카나리아·고위험 잔여)을 거친 것만 싣는다: mm_meta 는 팀
+    서버·공유폴더로 그대로 올라간다(teamup.FILE_NAMES). 못 거친 자체 도구는 inhouse_hidden 건수로만.
+
+    반환(전부 JSON 안전 · 예전 키 그대로 + 새 키)
+      {"samples","days"(창기록), "programs":[{"name","vendor","kind","cat","hours","bg_hours","days","first","last","procs",
+         "src","runs","runs_cum","focus_h","focus_h_cum","taskbar","last_run","file_days","files"}],
+       "by_cat","by_kind"(창기록 시간 — 예전 뜻), "by_kind_n","by_cat_n"(프로그램 수 — 자체 도구 포함),
+       "inhouse":[{"name","cls","runs","runs_cum","focus_h","focus_h_cum","taskbar","last_run"}], "inhouse_n","inhouse_hidden",
+       "unknown_n"(카탈로그 밖 설치 프로그램 수 — 이름은 싣지 않는다: 사적 앱이 섞인다), "ambiguous_files":[[확장자, 파일 수, [후보]]],
+       "sources":{"창기록":{…},"실행기록":{snapshots,pcs,basis(delta|cum),window,full,first,latest,programs,inhouse,bam…},
+                  "파일":{files,programs,ambiguous}} — 빈 원천은 why, "note",
+       창기록이 있으면 예전 키(step_sec·idle_active_sec·total_h·known_h·unknown_h·sim_h·cad_h·solver_bg_h·solver_bg_top·unknown_top),
+       세 원천이 다 비면 "why"}  — runs·focus_h·taskbar 는 증가분을 알 때만 숫자(아니면 None — 화면은 누적으로 적는다)."""
+    try:                          # 이 저장소는 core\ 를 sys.path 에 넣고 평평하게 부른다(mine.py: import extract).
+        import programs as _P     # core 패키지로 부르는 곳(uipp.py 일부 경로)도 있어 둘 다 받는다.
+    except ImportError:
+        from core import programs as _P
+    cfg = cfg if isinstance(cfg, dict) else {}
+    mc = norm_cfg(cfg)[0]
+    idle_act = mc["idleActiveSec"]
+    extra = cfg.get("programsExtra")
+    extra = extra if isinstance(extra, list) else []
+    # 한 번 실행에 세 번 불린다(mine 1회 · rehours_after_judge 2회) — 같은 재료면 다시 읽지 않는다.
+    # 재료 = 창 기록 + 실행 기록 스냅샷 + 파일 흔적(뿌리가 여럿이라 전체 경로로). 이름 관문·제외어가 설정을 본다.
+    _mat = (sorted(_glob_multi(data_dir, "activity", "activity_*.csv")) + _glob_multi(data_dir, "programs", "snap_*.json")
+            + [p for p in (os.path.join(rt, "files", n) for rt in _data_roots(data_dir) for n in FILE_SOURCES)
+               if os.path.exists(p)])
+    try:
+        _sig = tuple((x, os.path.getmtime(x), os.path.getsize(x)) for x in _mat)
+    except OSError:
+        _sig = tuple(_mat)
+    _csig = json.dumps([cfg.get(k) for k in ("programsExtra", "excludePathKeywords", "owner", "teamsSelfNames",
+                                             "privacy", "level1Codenames")], ensure_ascii=False, sort_keys=True, default=str)
+    ck = (str(data_dir), d0, d1, idle_act, _csig, _sig)
+    if ck in _TOOL_USAGE_CACHE:
+        return _TOOL_USAGE_CACHE[ck]
+    base = _tool_usage_sampler(data_dir, d0, d1, mc, idle_act, extra, _P)
+    reg = _registry_usage(data_dir, d0, d1, extra, _P)
+    fil = _file_tool_usage(data_dir, d0, d1, cfg, extra, _P)
+    out = _tool_usage_merge(base, reg, fil, d0, d1, data_dir, cfg, _P)
+    _TOOL_USAGE_CACHE[ck] = out
+    return out
+
+
+def _tool_usage_sampler(data_dir, d0, d1, mc, idle_act, extra, _P):
+    """창기록 — 옛 창 샘플러의 process 열 → 프로그램별 사용 시간(참고 지표 · LM28 이전 집계 그대로, tool_usage 가 합친다).
 
     ★ MM 과 무관하다. 여기 값은 load_signals 로 들어가지 않고 mm_basis["tool_usage"] 에만 실린다.
       신호로 만들면 to_rows 의 가중치 비율이 바뀌어 지금까지의 MM 이 통째로 달라진다(core/programs.py 머리말).
@@ -2999,26 +3062,8 @@ def tool_usage(data_dir, d0, d1, cfg=None):
        "programs":[{"name","vendor","kind","cat","hours","bg_hours","days","first","last","procs"}],
        "by_cat":[[분류,h]], "by_kind":[[상용/비상용,h]], "sim_h", "cad_h",
        "unknown_top":[[process,h]], "solver_bg_h", "why"}
-      샘플이 없으면 {"samples":0, "why":"…"} — 호출부는 programs 유무로 갈라도 된다."""
+      샘플이 없으면 {"samples":0, "days":0, "programs":[], "why":"…"} — tool_usage 가 sources["창기록"] 으로 옮긴다."""
     import statistics
-    try:                          # 이 저장소는 core\ 를 sys.path 에 넣고 평평하게 부른다(mine.py: import extract).
-        import programs as _P     # core 패키지로 부르는 곳(uipp.py 일부 경로)도 있어 둘 다 받는다.
-    except ImportError:
-        from core import programs as _P
-    cfg = cfg if isinstance(cfg, dict) else {}
-    mc = norm_cfg(cfg)[0]
-    idle_act = mc["idleActiveSec"]
-    extra = cfg.get("programsExtra")
-    extra = extra if isinstance(extra, list) else []
-    # 한 번 실행에 세 번 불린다(mine 1회 · rehours_after_judge 2회) — 같은 재료면 다시 읽지 않는다.
-    _files = sorted(_glob_multi(data_dir, "activity", "activity_*.csv"))
-    try:
-        _sig = tuple((os.path.basename(x), os.path.getmtime(x), os.path.getsize(x)) for x in _files)
-    except OSError:
-        _sig = tuple(os.path.basename(x) for x in _files)
-    ck = (str(data_dir), d0, d1, idle_act, repr(extra), _sig)
-    if ck in _TOOL_USAGE_CACHE:
-        return _TOOL_USAGE_CACHE[ck]
     _, _, stuck = _activity_spans(data_dir, d0, d1, mc["samplerIntervalSec"], idle_act)
 
     fg = defaultdict(float)          # 표시 이름 → 분(맨 앞 창)
@@ -3078,11 +3123,9 @@ def tool_usage(data_dir, d0, d1, cfg=None):
             days_of[nm].add(t.date())
 
     if not n_samples:
-        out = {"samples": 0, "days": 0, "programs": [],
+        return {"samples": 0, "days": 0, "programs": [],
                 "why": "창 기록(data\\activity\\activity_*.csv)이 이 기간에 없습니다 — "
-                       "LM28 에는 창 샘플러가 없어 이 표는 옛 기록이 있을 때만 채워집니다"}
-        _TOOL_USAGE_CACHE[ck] = out
-        return out
+                       "LM28 에는 창 샘플러가 없어 옛 기록이 있을 때만 채워집니다"}
 
     first_last = {}
     for nm, ds in days_of.items():
@@ -3119,7 +3162,341 @@ def tool_usage(data_dir, d0, d1, cfg=None):
                                    key=lambda x: -x[1])[:10],
            "unknown_top": sorted(((k, round(v / 60.0, 2)) for k, v in unk.items()),
                                  key=lambda x: -x[1])[:12]}
-    _TOOL_USAGE_CACHE[ck] = out
+    return out
+
+
+def _ni(v):
+    """스냅샷 숫자 칸 → 0 이상의 정수(깨진 값·bool 은 0)."""
+    if isinstance(v, bool):
+        return 0
+    try:
+        return max(0, int(v))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _prog_snaps(data_dir):
+    r"""data\programs\snap_*.json(본 PC + 추가PC) → ({뿌리|PC 열쇠: [(찍은 시각, 스냅샷)…시각순]}, 깨진 파일 수).
+    PC 열쇠로 가르는 이유: 폴더째 다른 PC 로 옮기면(run.archive_other_pc 는 programs 를 옮기지 않는다) 두 PC 의 장이 한 폴더에
+    섞인다 — 서로 다른 레지스트리의 누적값을 빼면 증가분이 엉터리가 된다."""
+    groups, bad = defaultdict(list), 0
+    for p in _glob_multi(data_dir, "programs", "snap_*.json"):
+        try:
+            with open(p, encoding="utf-8-sig") as f:
+                s = json.load(f)
+        except (OSError, ValueError):
+            bad += 1
+            continue
+        t = _dt(str(s.get("taken") or "")) if isinstance(s, dict) else None
+        if t is None or not isinstance(s.get("items"), list):
+            bad += 1
+            continue
+        root = os.path.dirname(os.path.dirname(os.path.abspath(p))).lower()
+        groups[root + "|" + str(s.get("pc") or "")].append((t, s))
+    for seq in groups.values():
+        seq.sort(key=lambda x: x[0])
+    return groups, bad
+
+
+def _snap_measure(s, extra, _P, memo=None):
+    """스냅샷 한 장 → {(판정, 이름): {"run","ms","tb","last","procs","ident","cls"}} (판정 = prog·inhouse·unknown).
+    실행 횟수·포커스 시간은 실행 파일 기록과 바로 가기 기록 중 큰 쪽 — 시작 메뉴로 띄우면 두 곳에 함께 적힐 수 있어 더하면
+    두 번 센다. tb = 작업 표시줄 전환 + 실행(FeatureUsage). last = UserAssist·BAM 마지막 실행 중 늦은 쪽.
+    memo: 판정 캐시 {(exe, cls, vf, k): 판정} — 1년 기간이면 하루 1장 × 수백 항목을 매번 카탈로그로 맞히지 않게."""
+    acc = {}
+    memo = {} if memo is None else memo
+    for it in s.get("items") or ():
+        if not isinstance(it, dict):
+            continue
+        mk = tuple(str(it.get(f) or "") for f in ("exe", "cls", "vf", "k"))   # 손상된 장의 목록·객체 값도 열쇠가 되게
+        r = memo[mk] if mk in memo else memo.setdefault(mk, _P.registry_item(it, extra))
+        if r is None:
+            continue
+        kind, v = r
+        key = (kind, v["name"] if kind == "prog" else v)
+        m = acc.get(key)
+        if m is None:
+            m = acc[key] = {"xr": 0, "xm": 0, "lr": 0, "lm": 0, "tb": 0, "last": None, "procs": set(),
+                            "ident": v if kind == "prog" else None, "cls": str(it.get("cls") or "")}
+        lnk = it.get("k") == "lnk"
+        m["lr" if lnk else "xr"] += _ni(it.get("ua_run"))
+        m["lm" if lnk else "xm"] += _ni(it.get("ua_ms"))
+        m["tb"] += _ni(it.get("fu_sw")) + _ni(it.get("fu_la"))
+        for f in ("ua_last", "bam_last"):
+            t = _dt(str(it.get(f) or ""))
+            if t and (m["last"] is None or t > m["last"]):
+                m["last"] = t
+        if kind == "prog" and not lnk:
+            m["procs"].add(str(it.get("exe") or "")[:40])
+    for m in acc.values():
+        m["run"], m["ms"] = max(m["xr"], m["lr"]), max(m["xm"], m["lm"])
+    return acc
+
+
+def _chain_sum(vals):
+    """누적 카운터 열 → 증가분 합. 줄어든 칸은 카운터 초기화(계정 정리·기록 삭제·다시 설치)로 보고 뒤 값을 그대로 더한다."""
+    tot = 0
+    for a, b in zip(vals, vals[1:], strict=False):
+        tot += (b - a) if b >= a else b
+    return tot
+
+
+def _registry_usage(data_dir, d0, d1, extra, _P):
+    """실행 기록 스냅샷 → 기간 사용(tool_usage 머리말의 기간 규칙).
+    PC 열쇠마다: 사슬 = [기간 시작 전 마지막 장] + 기간 안 장들(기간 안 장이 없으면 + 기간 뒤 첫 장).
+      · 사슬이 둘 이상 → 증가분(원천을 못 읽은 장은 그 원천 계산에서 뺀다). '썼다' = 마지막 실행이 기간 안이거나,
+        증가분 구간이 기간 앞뒤로 REG_SPILL 안에 들고 증가분이 있다(띄워 둔 채 며칠 쓴 도구 — 실행 시각은 기간 전).
+      · 한 장 → 마지막 실행이 기간 안인 것만. 횟수·시간은 그 장의 누적(runs_cum)뿐 — 증가분은 None.
+    → {"items": {(판정, 이름): 지표}, "known": 어느 장(사슬 + 최신 장)에든 보인 프로그램 이름, 원천 요약 칸…}"""
+    groups, bad = _prog_snaps(data_dir)
+    t0 = datetime(d0.year, d0.month, d0.day)
+    t1 = datetime(d1.year, d1.month, d1.day) + _td(days=1)
+    res, known, modes, wins, firsts = {}, set(), set(), [], []
+    latest, memo = None, {}
+
+    def _ok(s, src):
+        return (s.get("sources") or {}).get(src, True) is not False
+
+    for seq in groups.values():
+        firsts.append(seq[0][0])
+        if latest is None or seq[-1][0] > latest[0]:
+            latest = seq[-1]
+        known.update(k[1] for k in _snap_measure(seq[-1][1], extra, _P, memo) if k[0] == "prog")
+        pre = [x for x in seq if x[0] < t0]
+        ins = [x for x in seq if t0 <= x[0] < t1]
+        chain = pre[-1:] + ins
+        if not ins:
+            chain += [x for x in seq if x[0] >= t1][:1]       # 기간을 사이에 둔 두 장 — 또는 기간 뒤 첫 장 하나
+        if not chain:
+            continue
+        meas = [(t, s, _snap_measure(s, extra, _P, memo)) for t, s in chain]
+        for _t, _s, mm in meas:
+            known.update(k[1] for k in mm if k[0] == "prog")
+        delta = len(chain) >= 2
+        inside = (t0 - chain[0][0]) <= REG_SPILL and (chain[-1][0] - t1) <= REG_SPILL
+        modes.add("delta" if delta else "cum")
+        if delta:
+            wins.append((chain[0][0], chain[-1][0]))
+        ua = [mm for _t, s, mm in meas if _ok(s, "ua")]
+        fu = [mm for _t, s, mm in meas if _ok(s, "fu")]
+        end = meas[-1][2]
+        for key in set().union(*(mm.keys() for _t, _s, mm in meas)):
+            last = max((mm[key]["last"] for _t, _s, mm in meas if key in mm and mm[key]["last"]), default=None)
+            d_run = _chain_sum([mm[key]["run"] if key in mm else 0 for mm in ua]) if delta else None
+            d_ms = _chain_sum([mm[key]["ms"] if key in mm else 0 for mm in ua]) if delta else None
+            d_tb = _chain_sum([mm[key]["tb"] if key in mm else 0 for mm in fu]) if delta else None
+            used = bool(last and t0 <= last < t1) or (delta and inside and bool(d_run or d_ms or d_tb))
+            if not used:
+                continue
+            e = end.get(key) or {}
+            src_m = next(mm[key] for _t, _s, mm in reversed(meas) if key in mm)
+            r = res.get(key)
+            if r is None:
+                r = res[key] = {"run": None, "ms": None, "tb": None, "run_cum": 0, "ms_cum": 0, "last": None,
+                                "procs": set(), "ident": src_m["ident"], "cls": src_m["cls"]}
+            if delta:
+                r["run"] = (r["run"] or 0) + d_run
+                r["ms"] = (r["ms"] or 0) + d_ms
+                r["tb"] = (r["tb"] or 0) + d_tb
+            r["run_cum"] += e.get("run", 0)
+            r["ms_cum"] += e.get("ms", 0)
+            if last and (r["last"] is None or last > r["last"]):
+                r["last"] = last
+            for _t, _s, mm in meas:
+                if key in mm:
+                    r["procs"] |= mm[key]["procs"]
+    srcs = (latest[1].get("sources") or {}) if latest else {}
+    return {"items": res, "known": known, "snapshots": sum(len(v) for v in groups.values()), "bad": bad,
+            "pcs": len(groups), "basis": "delta" if "delta" in modes else ("cum" if modes else ""),
+            "window": ([min(a for a, _b in wins).date().isoformat(), max(b for _a, b in wins).date().isoformat()]
+                       if wins else None),
+            "full": bool(wins) and min(a for a, _b in wins) < t0,
+            "first": min(firsts).date().isoformat() if firsts else "",
+            "latest": latest[0].date().isoformat() if latest else "",
+            "bam": ("ok" if srcs.get("bam") else str(srcs.get("bam_why") or "")) if latest else "",
+            "track_off": srcs.get("ua_track") is False}      # '앱 실행 추적' 꺼짐 — 횟수가 늘지 않는다(안 쓴 것과 다르다)
+
+
+def _file_tool_usage(data_dir, d0, d1, cfg, extra, _P):
+    """파일 흔적(FILE_SOURCES · 추가PC) → ({표시 이름: {"ident","days","files"}}, {확장자: {"cands","days","files"}}, 센 행 수).
+    _file_times 와 같은 거르기 — 같은 파일 1건((분, 이름, 확장자, 폴더명)) · 동료가 저장한 파일(author ≠ 나) · 개인 폴더
+    제외어. 파일 하나 = (폴더명, Creo 판번호를 뗀 이름) — bracket.prt.3 과 .prt.4 는 같은 모델이다. 폴더명은 세는 데만 쓴다."""
+    rows = _file_rows(data_dir)
+    if not rows:
+        return {}, {}, 0
+    hit = _text_filter(_pv().excluded_keywords(cfg))
+    self_names = _self_names(data_dir, cfg, rows)
+    seen, prog, amb, n = set(), {}, {}, 0
+    for r in rows:
+        t = _dt(r.get("mtime"))
+        if not t or not (d0 <= t.date() <= d1):
+            continue
+        name = r.get("name") or ""
+        ext = (r.get("ext") or "").lower()
+        fol = folder_label(r.get("folder"))
+        dk = (t.replace(second=0, microsecond=0), name.lower(), ext, fol.lower())
+        if dk in seen:                          # 스냅샷·이력·추가PC 에 같은 파일이 겹친다
+            continue
+        seen.add(dk)
+        if not _is_me(r.get("author"), self_names):
+            continue
+        if hit((name + (" | 폴더:" + fol if fol else "")).lower()):
+            continue
+        fp = _P.file_program(name, ext, extra)
+        if fp is None:
+            continue
+        if fp[0] == "prog":
+            g = prog.setdefault(fp[1]["name"], {"ident": fp[1], "days": set(), "files": set()})
+        else:
+            g = amb.setdefault(fp[1], {"cands": tuple(fp[2]), "days": set(), "files": set()})
+        g["days"].add(t.date())
+        g["files"].add((fol.lower(), _VER_TAIL_RE.sub("", name.lower())))
+        n += 1
+    return prog, amb, n
+
+
+def _tool_gate(names, cfg, data_dir):
+    """자체·미상 프로그램 이름 → 실어도 되는 이름(G3 관문 privacy.gate_items — 정제·카나리아·고위험 잔여) 또는 None.
+    mm_meta 는 팀 서버·공유폴더로 그대로 올라간다 — 실행 파일 이름에 사람 이름·이 PC 계정·고객사가 들 수 있다."""
+    names = [x for x in dict.fromkeys(names) if x]
+    if not names:
+        return {}
+    pv = _pv()
+    ctx = pv.make_ctx(cfg, data_dir)
+    cans = pv.canaries(cfg, data_dir)
+    out = {}
+    for x in names:
+        kept, _drop = pv.gate_items([{"name": x}], ["name"], cfg, canaries=cans, ctx=ctx, max_chars=60)
+        out[x] = kept[0]["name"] if kept else None
+    return out
+
+
+def _tool_usage_merge(base, reg, fil, d0, d1, data_dir, cfg, _P):
+    """창기록(base — 예전 키 그대로) + 실행기록 + 파일 → tool_usage 한 표(머리말의 반환 꼴)."""
+    out = dict(base)
+    rows = {}
+
+    def row(ident):
+        nm = ident["name"]
+        r = rows.get(nm)
+        if r is None:
+            r = rows[nm] = {"name": nm, "vendor": ident.get("vendor", ""), "kind": ident.get("kind", ""),
+                            "cat": ident.get("cat", ""), "hours": 0.0, "bg_hours": 0.0, "days": 0, "first": "",
+                            "last": "", "procs": [], "src": [], "runs": None, "runs_cum": None, "focus_h": None,
+                            "focus_h_cum": None, "taskbar": None, "last_run": "", "file_days": 0, "files": 0,
+                            "_d": set(), "_f": set()}
+        return r
+
+    for p in base.get("programs") or ():
+        if isinstance(p, dict) and p.get("name"):
+            r = row(p)
+            r.update(p)                         # 예전 칸(hours·bg_hours·days·first·last·procs) 그대로
+            r["src"].append(SAMPLER_SRC)
+    reg_procs = {}
+    for (kind, _nm), m in reg["items"].items():
+        if kind != "prog":
+            continue
+        r = row(m["ident"])
+        if REG_SRC not in r["src"]:
+            r["src"].append(REG_SRC)
+        if m["run"] is not None:
+            r["runs"] = (r["runs"] or 0) + int(m["run"])
+            r["taskbar"] = (r["taskbar"] or 0) + int(m["tb"] or 0)
+            r["focus_h"] = round((r["focus_h"] or 0.0) + m["ms"] / 3.6e6, 2)
+        r["runs_cum"] = (r["runs_cum"] or 0) + int(m["run_cum"])
+        r["focus_h_cum"] = round((r["focus_h_cum"] or 0.0) + m["ms_cum"] / 3.6e6, 2)
+        if m["last"]:
+            r["last_run"] = max(r["last_run"], m["last"].strftime("%Y-%m-%d %H:%M"))
+        reg_procs.setdefault(r["name"], set()).update(m["procs"])
+    for g in fil[0].values():
+        r = row(g["ident"])
+        r["_d"] |= g["days"]
+        r["_f"] |= g["files"]
+    # 모호한 확장자 — 실행·창 기록(어느 장이든)에 후보가 하나만 보이면 그 도구로, 아니면 '도구 불명' 으로만 남긴다
+    known = set(reg["known"]) | {p.get("name") for p in base.get("programs") or () if isinstance(p, dict)}
+    amb_out = []
+    for ext, g in sorted(fil[1].items()):
+        hits = [c for c in g["cands"] if c in known]
+        ident = _P.program_info(hits[0]) if len(hits) == 1 else None
+        if ident:
+            r = row(ident)
+            r["_d"] |= g["days"]
+            r["_f"] |= g["files"]
+        else:
+            amb_out.append([ext, len(g["files"]), list(g["cands"])])
+    inh = sorted(((nm, m) for (kind, nm), m in reg["items"].items() if kind == "inhouse"),
+                 key=lambda x: (-(x[1]["run"] if x[1]["run"] is not None else x[1]["run_cum"]), x[0]))
+    # 카탈로그 밖 '설치된' 프로그램(Program Files·AppData·제거 프로그램이 있는 설치본)은 개수만 — 이름을 싣지 않는다.
+    # mm_meta 는 팀으로 그대로 올라가는데, 이 목록에는 게임·영상 편집기 같은 사적 앱이 섞인다(개발 PC 실측). 이름은
+    # 이 PC 의 data\programs 스냅샷에만 있다(카탈로그·programsExtra 에 보탤 때 본다).
+    n_unk = sum(1 for (kind, _nm) in reg["items"] if kind == "unknown")
+    gate = _tool_gate([nm for nm, _m in inh] + [x for ps in reg_procs.values() for x in sorted(ps)], cfg, data_dir)
+    lo, hi = d0.isoformat(), d1.isoformat()
+    order = (SAMPLER_SRC, REG_SRC, FILE_SRC)
+    for r in rows.values():
+        d, f = r.pop("_d"), r.pop("_f")
+        if d:
+            r["src"].append(FILE_SRC)
+            r["file_days"], r["files"] = len(d), len(f)
+            r["first"] = min(x for x in (r["first"], min(d).isoformat()) if x)
+            r["last"] = max(r["last"], max(d).isoformat())
+        lr = r["last_run"][:10]
+        if lr and lo <= lr <= hi:
+            r["last"] = max(r["last"], lr)
+            r["first"] = r["first"] or lr
+        if r["name"] in reg_procs:
+            r["procs"] = sorted(set(r["procs"]) | {gate.get(x) for x in reg_procs[r["name"]] if gate.get(x)})[:6]
+        r["src"] = [s for s in order if s in r["src"]]
+
+    def _rank(r):
+        runs = r["runs"] if r["runs"] is not None else (r["runs_cum"] or 0)
+        return (r["cat"] in _P.GENERAL_CATS, -(float(r.get("hours") or 0) + float(r.get("bg_hours") or 0)),
+                -r["file_days"], -runs, r["name"])
+    progs = sorted(rows.values(), key=_rank)
+    inhouse, hidden = [], 0
+    for nm, m in inh:
+        g = gate.get(nm)
+        if not g:
+            hidden += 1                         # 이름에 사람·계정·고객사가 남는 도구 — 건수로만
+            continue
+        inhouse.append({"name": g, "cls": m["cls"], "runs": m["run"], "runs_cum": m["run_cum"],
+                        "focus_h": round(m["ms"] / 3.6e6, 2) if m["ms"] is not None else None,
+                        "focus_h_cum": round(m["ms_cum"] / 3.6e6, 2), "taskbar": m["tb"],
+                        "last_run": m["last"].strftime("%Y-%m-%d %H:%M") if m["last"] else ""})
+    kind_n = Counter(r["kind"] or "미상" for r in progs)
+    if inh:
+        kind_n[_P.INHOUSE_KIND] += len(inh)
+    cat_n = Counter(r["cat"] or "기타" for r in progs)
+    srcs = {}
+    if base.get("samples"):
+        srcs[SAMPLER_SRC] = {"samples": base.get("samples"), "days": base.get("days"),
+                             "programs": sum(1 for r in progs if SAMPLER_SRC in r["src"])}
+    else:
+        srcs[SAMPLER_SRC] = {"samples": 0, "why": base.get("why") or "창 기록이 없습니다"}
+    rs = {k: reg[k] for k in ("snapshots", "pcs", "basis", "window", "full", "first", "latest", "bam", "track_off")}
+    rs.update(programs=sum(1 for r in progs if REG_SRC in r["src"]), inhouse=len(inh), unknown=n_unk)
+    if reg["bad"]:
+        rs["bad"] = reg["bad"]
+    if not reg["snapshots"]:
+        rs["why"] = ("실행 기록 스냅샷(data\\programs)이 없습니다 — [분석 실행]·[로컬PC 자료수집]이 수집할 때마다 한 장씩 남깁니다")
+    elif not reg["basis"]:
+        rs["why"] = f"이 기간 뒤의 실행 기록 스냅샷이 없습니다(가장 최근 {reg['latest']}) — 기간이 끝난 뒤 수집하면 채워집니다"
+    elif not reg["items"]:
+        rs["why"] = f"실행 기록에 이 기간에 쓴 프로그램이 없습니다(스냅샷 {reg['first']}~{reg['latest']})"
+    srcs[REG_SRC] = rs
+    fs = {"files": fil[2], "programs": sum(1 for r in progs if FILE_SRC in r["src"]),
+          "ambiguous": sum(x[1] for x in amb_out)}
+    if not fil[2]:
+        fs["why"] = "도구를 알 수 있는 확장자의 파일 흔적이 이 기간에 없습니다(config.watchFolders·watchExtensions)"
+    srcs[FILE_SRC] = fs
+    out.update(programs=progs[:40], by_kind_n=[[k, n] for k, n in sorted(kind_n.items(), key=lambda x: -x[1])],
+               by_cat_n=[[k, n] for k, n in sorted(cat_n.items(), key=lambda x: -x[1])], inhouse=inhouse[:20],
+               inhouse_n=len(inh), inhouse_hidden=hidden, unknown_n=n_unk,
+               ambiguous_files=amb_out[:12], sources=srcs, note=_P.TOOL_NOTE)
+    if progs or inh:
+        out.pop("why", None)
+    else:
+        out["why"] = " · ".join(v["why"] for v in srcs.values() if v.get("why"))[:400]
     return out
 
 

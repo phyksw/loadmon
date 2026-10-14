@@ -69,6 +69,35 @@ def _fint(v, default=None):
     return _agg().fint(v, default)
 
 
+# 프로그램 사용(참고) — LM28 은 창 샘플러가 없어 '맨 앞 창 시간' 대신 Windows 실행 기록(실행 횟수·포커스 시간 — 관리자 권한
+# 불필요)과 파일 흔적(도구별 파일을 만진 날)을 함께 싣는다(core/extract.tool_usage). 옛 판(창 기록만)은 시간 칸 그대로 읽는다.
+TOOL_BASIS_NOTE = ("창 기록 시간·Windows 실행 기록(실행 횟수·포커스 시간)·파일 흔적(그 도구 파일을 만진 날)을 합친 참고 지표입니다. "
+                   "투입 MM·로드율에는 들어가지 않습니다.")
+
+
+def _tool_amount(x):
+    """프로그램 한 줄의 '얼마나' — 있는 값 중 가장 직접적인 것 하나(창 시간 > 배경 솔버 > 포커스 > 실행 횟수 > 파일 일수 >
+    마지막 실행). 증가분을 모르는 칸(None)은 0 으로 읽지 않고 다음 값으로 넘어간다 — '안 썼다' 로 보이지 않게."""
+    h, bg = _fnum(x.get("hours"), 0.0), _fnum(x.get("bg_hours"), 0.0)
+    if h >= 0.05:
+        return f"{h:.1f}h"
+    if bg >= 0.5:
+        return f"배경 {bg:.0f}h"
+    fh, runs = _fnum(x.get("focus_h")), _fint(x.get("runs"))
+    if fh is not None and fh >= 0.05:
+        return f"포커스 {fh:.1f}h"
+    if runs:
+        return f"실행 {runs}회"
+    fd = _fint(x.get("file_days"), 0) or 0
+    if fd:
+        return f"파일 {fd}일"
+    rc = _fint(x.get("runs_cum"))
+    if rc:
+        return f"실행 누적 {rc}회"
+    lr = str(x.get("last_run") or "")[:10]
+    return f"마지막 실행 {esc(lr)}" if lr else "사용 흔적"
+
+
 _BAD_FN = re.compile(r'[\\/:*?"<>|.]')
 
 
@@ -1215,16 +1244,14 @@ def member_report(mdir, member, out_dir):
     # 프로그램 사용(참고) — 로드율과 무관하다는 것을 문구로 못 박는다(맨 앞 창 시간이라 투입 시간과 다르다)
     _tu9 = ag9.norm_tool_usage(m9.get("tool_usage")) or {}
     _tp9 = [x for x in (_tu9.get("programs") or []) if isinstance(x, dict) and x.get("name")]
+    _ih9 = [x for x in (_tu9.get("inhouse") or []) if isinstance(x, dict) and x.get("name")]
     tool_note = ("<div class='note'><b>프로그램 사용(참고)</b> "
-                 + " · ".join(f"{esc(x['name'])} "
-                                + (f"배경 {_fnum(x.get('bg_hours'), 0.0):.0f}h"
-                                   if _fnum(x.get("hours"), 0.0) < 0.05
-                                   else f"{_fnum(x.get('hours'), 0.0):.1f}h")
-                                for x in _tp9[:8])
+                 + " · ".join(f"{esc(x['name'])} {_tool_amount(x)}" for x in _tp9[:8])
                  + (f" · 배경 솔버 {_fnum(_tu9.get('solver_bg_h'), 0.0):.0f}h"
                     if _fnum(_tu9.get("solver_bg_h"), 0.0) >= 1 else "")
-                 + " <span class='dim'>— 창 샘플러가 본 맨 앞 창 시간입니다. 투입 MM·로드율에는 들어가지 않습니다.</span>"
-                 + "</div>") if _tp9 else ""
+                 + (" · 자체·프로토타입(추정) " + esc(", ".join(x["name"] for x in _ih9[:6])) if _ih9 else "")
+                 + " <span class='dim'>— " + TOOL_BASIS_NOTE + "</span>"
+                 + "</div>") if (_tp9 or _ih9) else ""
     meas_txt = ag9.measure_text(m9)
     meas_txt = f" · 측정 {meas_txt}" if meas_txt else ""
     cov_badge = ag9.coverage_badge(m9)
@@ -2605,6 +2632,81 @@ def wf_owner_blocks(groups, items, pairs, pmap=None):
     return out, "".join(orphan)
 
 
+def prog_section_html(members):
+    """11. 프로그램 사용 — 상용/비상용·자체(프로토타입) 도구를 누가 얼마나 썼나(참고 지표).
+
+    ★ 로드율·MM 과 무관하다. 재료는 셋이다 — 창 기록(옛 판 샘플러의 맨 앞 창 시간), Windows 실행 기록(실행 횟수·포커스
+      시간 — LM28, 관리자 권한 불필요), 파일 흔적(그 도구의 파일을 만진 날). 기록이 없는 사람은 빈칸으로 나온다 — 그 사람이
+      도구를 안 썼다는 뜻이 아니다. 그래서 '기록 없음' 인원을 따로 적어 빈칸을 사람 차이로 읽지 않게 한다.
+      증가분을 모르는 칸(None — 스냅샷 1장뿐)은 더하지 않는다(0 이 아니라 '모름')."""
+    ag = _agg()
+    have, none = [], []
+    for m in members:
+        tu = ag.norm_tool_usage(m.get("tool_usage"))
+        if isinstance(tu, dict) and (tu.get("programs") or tu.get("total_h") or tu.get("inhouse")):
+            have.append((m, tu))
+        else:
+            none.append(m["owner"])
+    if not have:
+        return ""
+    tot, kind_n, inh = {}, {}, {}
+    for _m, tu in have:
+        for pr in (tu.get("programs") or []):
+            if not isinstance(pr, dict) or not pr.get("name"):
+                continue
+            t = tot.setdefault(pr["name"], {"h": 0.0, "bg": 0.0, "focus": 0.0, "runs": 0, "fdays": 0, "who": set(),
+                                            "kind": pr.get("kind", ""), "cat": pr.get("cat", "")})
+            t["h"] += _fnum(pr.get("hours"), 0.0)
+            t["bg"] += _fnum(pr.get("bg_hours"), 0.0)
+            t["focus"] += _fnum(pr.get("focus_h"), 0.0)
+            t["runs"] += _fint(pr.get("runs"), 0) or 0
+            t["fdays"] += _fint(pr.get("file_days"), 0) or 0
+            t["who"].add(_m["owner"])
+            if pr.get("kind"):
+                kind_n.setdefault(pr["kind"], set()).add(_m["owner"])
+        for x in (tu.get("inhouse") or []):
+            if isinstance(x, dict) and x.get("name"):
+                inh.setdefault(x["name"], set()).add(_m["owner"])
+
+    def _num(v, fmt, unit):
+        return f"{format(v, fmt)}{unit}" if v else "–"
+    rows = "".join(
+        f"<tr><td><b>{esc(nm)}</b></td><td class='dim'>{esc(v['cat'])}</td>"
+        f"<td class='dim'>{esc(v['kind'])}</td>"
+        f"<td class='num'>{_num(v['h'], '.1f', 'h')}</td>"
+        f"<td class='num dim'>{_num(v['bg'], '.0f', 'h')}</td>"
+        f"<td class='num'>{_num(v['focus'], '.1f', 'h')}</td>"
+        f"<td class='num'>{_num(v['runs'], 'd', '회')}</td>"
+        f"<td class='num'>{_num(v['fdays'], 'd', '일')}</td>"
+        f"<td class='dim'>{len(v['who'])}명 — {esc(', '.join(sorted(v['who'])[:6]))}</td></tr>"
+        for nm, v in sorted(tot.items(), key=lambda x: (-len(x[1]["who"]), -(x[1]["h"] + x[1]["bg"] + x[1]["focus"]),
+                                                        -x[1]["fdays"], -x[1]["runs"], x[0]))[:30])
+    kindline = " · ".join(f"{esc(k)} {len(v)}명" for k, v in
+                          sorted(kind_n.items(), key=lambda x: -len(x[1]))) or "–"
+    per = "".join(
+        f"<tr><td><b>{esc(m['owner'])}</b></td>"
+        f"<td class='num'>{len(tu.get('programs') or [])}</td>"
+        f"<td class='dim'>{esc(' · '.join((pr.get('name') or '') + ' ' + _tool_amount(pr) for pr in (tu.get('programs') or [])[:4]))}</td>"
+        f"<td class='dim'>{esc(', '.join(x.get('name') or '' for x in (tu.get('inhouse') or [])[:4])) or '–'}</td></tr>"
+        for m, tu in sorted(have, key=lambda x: (-len(x[1].get("programs") or []), str(x[0]["owner"]))))
+    inh_line = ("<div class='note'><b>자체·프로토타입(추정)</b> — 카탈로그에 없는 실행 파일이 사용자 폴더·다른 드라이브·"
+                "네트워크에서 돈 것입니다: " + esc(", ".join(f"{k}({len(v)}명)" for k, v in
+                                                   sorted(inh.items(), key=lambda x: (-len(x[1]), x[0]))[:15]))
+                + "</div>") if inh else ""
+    miss = (f"<div class='note'>프로그램 기록이 없는 인원 {len(none)}명 — "
+            f"{esc(', '.join(sorted(none)[:12]))}. 도구를 안 썼다는 뜻이 아닙니다.</div>") if none else ""
+    return (f"""<div class="card"><h2>11. 프로그램 사용 <span class="state">상용/비상용·자체 도구를 누가 얼마나 썼나 · 참고 지표</span></h2>
+<div class="note">{TOOL_BASIS_NOTE} 같은 사람의 투입 시간과 숫자가 다른 것이 정상입니다.
+'창 사용'은 옛 창 기록의 맨 앞 창 시간, '배경'은 창을 안 보고 있어도 돌아가던 솔버 시간, '포커스'·'실행'은 Windows 실행 기록의
+기간 증가분, '파일'은 그 도구의 파일을 만진 날 수입니다(–는 기록 없음). 구분별 사람 수: {kindline}</div>
+<div style='overflow-x:auto'><table><tr><th>프로그램</th><th>분류</th><th>구분</th><th class="num">창 사용</th>
+<th class="num">배경</th><th class="num">포커스</th><th class="num">실행</th><th class="num">파일</th><th>쓴 사람</th></tr>{rows}</table></div>
+<div style='overflow-x:auto;margin-top:10px'><table><tr><th>이름</th><th class="num">도구 수</th>
+<th>주로 쓴 도구</th><th>자체·프로토타입(추정)</th></tr>{per}</table></div>{inh_line}{miss}</div>
+
+""")
+
+
 def render_full(share, html_dir, sender=None, log=say):
     r"""팀 통합 보고서 본문 렌더 — (doc_v2, doc_v3, info). **파일을 쓰지 않는다**.
 
@@ -2656,61 +2758,6 @@ def render_full(share, html_dir, sender=None, log=say):
     # 값은 업로드로 들어온 남의 입력 — 숫자는 숫자로만(fnum/pct_text), 문자열은 esc 를 거친다
     vmax = max([_fnum(m.get("total_mm"), 0.0) for m in members_cmp] or [1]) or 1
 
-    def _prog_section():
-        """11. 프로그램 사용 — 상용/비상용 도구를 누가 얼마나 붙잡고 있었나(참고 지표).
-
-        ★ 로드율·MM 과 무관하다. 창 샘플러가 본 '맨 앞 창' 시간이라 투입 시간과 다른 값이고,
-          샘플러를 안 돌리는 사람은 0 으로 나온다 — 그 사람이 도구를 안 썼다는 뜻이 아니다.
-          그래서 '샘플러 없음' 인원을 따로 적어 빈칸을 사람 차이로 읽지 않게 한다."""
-        have, none = [], []
-        for m in members:
-            tu = m.get("tool_usage")
-            if isinstance(tu, dict) and (tu.get("programs") or tu.get("total_h")):
-                have.append((m, tu))
-            else:
-                none.append(m["owner"])
-        if not have:
-            return ""
-        tot, kind_tot = {}, {}
-        for _m, tu in have:
-            for pr in (tu.get("programs") or []):
-                if not isinstance(pr, dict) or not pr.get("name"):
-                    continue
-                t = tot.setdefault(pr["name"], {"h": 0.0, "bg": 0.0, "who": set(),
-                                                "kind": pr.get("kind", ""), "cat": pr.get("cat", "")})
-                t["h"] += _fnum(pr.get("hours"), 0.0)
-                t["bg"] += _fnum(pr.get("bg_hours"), 0.0)
-                t["who"].add(_m["owner"])
-            for kk, vv in (tu.get("by_kind") or []):
-                kind_tot[kk] = kind_tot.get(kk, 0.0) + _fnum(vv, 0.0)
-        rows = "".join(
-            f"<tr><td><b>{esc(nm)}</b></td><td class='dim'>{esc(v['cat'])}</td>"
-            f"<td class='dim'>{esc(v['kind'])}</td>"
-            f"<td class='num'>{v['h']:.1f}h</td>"
-            f"<td class='num dim'>{v['bg']:.0f}h</td>"
-            f"<td class='dim'>{len(v['who'])}명 — {esc(', '.join(sorted(v['who'])[:6]))}</td></tr>"
-            for nm, v in sorted(tot.items(), key=lambda x: -(x[1]["h"] + x[1]["bg"]))[:25])
-        kindline = " · ".join(f"{esc(k)} {v:.0f}h" for k, v in
-                              sorted(kind_tot.items(), key=lambda x: -x[1])) or "–"
-        per = "".join(
-            f"<tr><td><b>{esc(m['owner'])}</b></td>"
-            f"<td class='num'>{_fnum(tu.get('known_h'), 0.0):.0f}h</td>"
-            f"<td class='num dim'>{_fnum(tu.get('solver_bg_h'), 0.0):.0f}h</td>"
-            f"<td class='dim'>{esc(' · '.join((pr.get('name') or '') for pr in (tu.get('programs') or [])[:4]))}</td></tr>"
-            for m, tu in sorted(have, key=lambda x: -_fnum(x[1].get("known_h"), 0.0)))
-        miss = (f"<div class='note'>창 샘플러 기록이 없어 집계되지 않은 인원 {len(none)}명 — "
-                f"{esc(', '.join(sorted(none)[:12]))}. 도구를 안 썼다는 뜻이 아닙니다.</div>") if none else ""
-        return (f"""<div class="card"><h2>11. 프로그램 사용 <span class="state">상용/비상용 도구를 얼마나 붙잡고 있었나 · 참고 지표</span></h2>
-<div class="note">창 샘플러가 본 <b>맨 앞 창</b>의 시간입니다. 투입 MM·로드율 계산에는 들어가지 않습니다 —
-같은 사람의 투입 시간과 숫자가 다른 것이 정상입니다. '배경'은 창을 안 보고 있어도 돌아가던 솔버 시간입니다.
-구분 합계: {kindline}</div>
-<div style='overflow-x:auto'><table><tr><th>프로그램</th><th>분류</th><th>구분</th><th class="num">사용</th>
-<th class="num">배경</th><th>쓴 사람</th></tr>{rows}</table></div>
-<div style='overflow-x:auto;margin-top:10px'><table><tr><th>이름</th><th class="num">도구 사용</th>
-<th class="num">배경 솔버</th><th>주로 쓴 도구</th></tr>{per}</table></div>{miss}</div>
-
-""")
-
     def _row1(m, grey=False):
         return (
             f"<tr{' style=color:#8b929b' if grey else ''}><td><b>{esc(m['owner'])}</b></td>"
@@ -2731,7 +2778,7 @@ def render_full(share, html_dir, sender=None, log=say):
             + ag.cfg_badge(m)                # 산식 설정 상이 (팀 다수와 다른 분모)
             + "</td></tr>")
 
-    prog_html = _prog_section()
+    prog_html = prog_section_html(members)
     rows1 = "".join(_row1(m) for m in members_cmp)
     rows1x = ""
     if members_x:

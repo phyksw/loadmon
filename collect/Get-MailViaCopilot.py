@@ -32,6 +32,10 @@ LM28(C-16·C-34·W1-04·W1-13):
     로그인 필요 같은 '사람이 풀 실패'는 불가로 기록하지 않는다.
   · 마지막 줄: LMSTATUS {v,src,rc,reason,counts,ranges} — rc 0 표를 받음(또는 '없음' 답) · 2 로그인 · 3 불가(R-UNABLE·
     R-NOREPLY·R-GATE·Edge 사유). ranges 의 st 는 표를 받은 조각 partial(증인 — '읽음'이 아니다) · 그 밖 unverified.
+  · 메일은 받은·보낸 편지함만이 아니라 내 사서함의 모든 메일 폴더(사람이 만든·이름을 바꾼·보관 폴더 — 지운 편지함·정크·임시 보관함
+    제외)를 묻는다(MAIL_SCOPE). box 는 받은/보낸만 — '받은 메일'·'received' 같은 꼴도 받고, 폴더 이름 같은 다른 값의 행은 버린다.
+    지난 판(받은·보낸만)으로 이미 증언·답한 날은 다시 묻지 않는다 — 다시 물으려면 그 날의 원장 칸이 비어야 한다(웹이 다시 읽은 날은
+    애초에 묻지 않는다).
 """
 import csv
 import hashlib
@@ -72,16 +76,23 @@ def arg(flag, d=""):
     return sys.argv[sys.argv.index(flag) + 1] if flag in sys.argv else d
 
 
+# LM28(모든 폴더 — 사용자 제보 '폴더를 옮기거나 이름을 바꾼 메일이 빠질 수 있다'): 받은·보낸 편지함만 묻던 질문을 내 사서함의 모든
+#   메일 폴더로 넓힌다(사람이 만든·이름을 바꾼·보관 폴더 포함). 지운 편지함·정크·임시 보관함은 일의 흔적이 아니라 뺀다. box 는 폴더가
+#   아니라 받은/보낸으로만 묻는다(파서는 그 밖의 값을 버린다).
+MAIL_SCOPE = ("내 사서함의 모든 메일 폴더(받은 편지함·보낸 편지함과 그 하위 폴더, 내가 만들거나 이름을 바꾼 폴더, 보관 폴더 포함 — "
+              "지운 편지함·정크 메일·임시 보관함은 제외)")
+
+
 def build_prompt(kind, d0, d1, alt=False):
     """kind: mail | cal.  alt=검색형 화법(일괄 내보내기를 '조회 불가'로 거절하는 Copilot 대응)"""
     if kind == "mail":
-        head = (f"내 Outlook 메일(받은 편지함과 보낸 편지함)에서 {d0}~{d1} 기간의 메일을 검색해줘. "
+        head = (f"내 Outlook {MAIL_SCOPE}에서 {d0}~{d1} 기간의 메일을 검색해줘. "
                 "찾은 메일을 아래 CSV 형식 표로만 정리해줘(찾은 만큼만). 헤더 포함, 다른 설명 없이, "
                 "코드 블록(```)으로:\n") if alt else (
-                f"{d0}부터 {d1}까지 내 Outlook 받은 편지함과 보낸 편지함의 메일을 조회해서 아래 CSV "
+                f"{d0}부터 {d1}까지 내 Outlook {MAIL_SCOPE}의 메일을 조회해서 아래 CSV "
                 "형식으로만 출력해줘. 헤더 포함, 다른 설명 없이, 코드 블록(```)으로:\n")
         return (head + MAIL_HDR_ASK + "\n"
-                "- box : 받은 메일이면 inbox, 내가 보낸 메일이면 sent\n"
+                "- box : 받은 메일이면 inbox, 내가 보낸 메일이면 sent (어느 폴더에 있든 — 폴더 이름은 쓰지 마)\n"
                 "- time : YYYY-MM-DD HH:MM (받은 시각 또는 보낸 시각)\n"
                 "- sender : 보낸 사람 이름\n"
                 "- subject : 제목\n"
@@ -90,6 +101,7 @@ def build_prompt(kind, d0, d1, alt=False):
                 "보낸 메일은 빈칸\n"
                 '- 칸 안에 쉼표가 들어가면 그 칸을 따옴표("...")로 감싸\n'
                 "- 자동 알림·광고·시스템 메일은 제외\n"
+                "- 같은 메일이 여러 폴더에 보이면 한 번만\n"
                 "- 기간 안의 메일을 빠짐없이 뒤져서 최대 150행까지 출력\n"
                 "- 조회 결과가 정말 없으면 '없음' 한 단어만 출력\n"
                 "★ 실제로 검색된 메일만 출력하라 — 예시·가상·추정으로 행을 만들지 마라. "
@@ -121,6 +133,9 @@ UNABLE_MARKS = ("조회 불가", "조회가 불가", "조회할 수 없", "검�
 EMPTY_MARKS = ("없음", "찾을 수 없", "검색 결과가 없", "메일이 없", "일정이 없", "no emails",
                "no events", "couldn't find", "could not find")
 RCV_OK = ("to", "cc", "bulk", "")
+# box 칸 어휘(소문자) — 모든 폴더를 묻게 되면서 '받은 메일'·'received'·'보낸 항목'처럼 답하는 꼴도 받는다
+BOX_IN = ("inbox", "받은", "받은 편지함", "받은 메일", "받은메일", "수신", "received", "incoming")
+BOX_OUT = ("sent", "보낸", "보낸 편지함", "보낸 메일", "보낸메일", "보낸 항목", "발신", "sent items", "outgoing")
 BUSY_WORDS = {"바쁨": "2", "busy": "2", "미정": "1", "tentative": "1", "한가함": "0", "free": "0",
               "부재중": "3", "부재": "3", "oof": "3", "out of office": "3"}
 
@@ -215,13 +230,13 @@ def parse_mail_rows(reply, diag=None):
                 parts = [parts[0], parts[1], parts[2], ",".join(parts[3:-1]), parts[-1], ""]
         if len(parts) < 6:
             parts = parts + [""] * (6 - len(parts))
-        box = parts[0].lower()
-        if box in ("받은", "받은 편지함", "inbox", "수신"):
+        box = re.sub(r"\s+", " ", parts[0]).strip().lower()
+        if box in BOX_IN:
             box = "inbox"
-        elif box in ("보낸", "보낸 편지함", "sent", "발신"):
+        elif box in BOX_OUT:
             box = "sent"
         if box not in ("inbox", "sent"):
-            continue
+            continue                    # 폴더 이름 등 받은/보낸을 알 수 없는 값 — 지어 정하지 않는다
         t, prec, utc = _parse_time(parts[1])
         if not t:
             diag["bad_time"] = diag.get("bad_time", 0) + 1

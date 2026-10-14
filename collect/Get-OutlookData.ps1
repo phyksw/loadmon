@@ -29,6 +29,9 @@
 #     다시 걸러 밖의 행은 filter_mismatch 로 센다. 0행 달은 카나리아 성공·지평선·OST 신선도를 모두 만족할 때만 zero_ok 로 완료.
 #   · 기본 저장소의 메일 폴더를 재귀로 읽는다(outlook.subfolders, 상한 3000). 보호 멤버는 위험의 긍정 증거가 있으면 읽지 않는다
 #     (rcv=unknown). 끝에 LMSTATUS 한 줄(rc 0 정상 · 1 대상 없음 · 3 불가·불완전). 우리가 띄운 Outlook 만 닫는다.
+#   · 일정 본문(LM28 - 끝 열 body): config.calendar.bodyToAI 이고 제목을 저장할 때만 AppointmentItem.Body 앞 600자(줄바꿈·탭 → 공백).
+#     Body 는 보호 멤버라 위와 같은 판정을 따르고(위험의 긍정 증거가 있으면 빈칸·건수만), 비공개·기밀 일정은 읽지 않는다(Get-CalBody).
+#     정제(회의 안내문·링크·연락처·개인정보)는 run.py G1. 완료 표의 본문 설정(cal_body)이 이번과 다르면 일정 달만 다시 읽는다.
 # 중간 저장: 달마다 CSV 를 다시 쓰므로 강제 종료돼도 그때까지 읽은 달이 남는다(mail.csv.part 는 더 쓰지 않는다).
 #   CSV 는 임시 파일 뒤 교체하되, 화면이 파일을 읽고 있어 교체가 막히면 잠시 기다렸다가 제자리에 쓴다(실행을 끊지 않는다).
 # 일정은 예산의 절반까지만 쓴다(메일이 굶지 않게) - 남은 달은 역시 다음 실행이 잇는다.
@@ -69,6 +72,12 @@ $covVer = '{0}|{1}' -f $COLLECTOR_VER, [int](Get-OcCfg $cfg 'collect' 'cursorEpo
 $attachWait = [math]::Max(20, [math]::Min(600, [int](Get-OcCfg $cfg 'outlook' 'attachWaitSec' 120)))
 $staleH = [double](Get-OcCfg $cfg 'outlook' 'ostStaleH' 72)
 $subOn = [bool](Get-OcCfg $cfg 'outlook' 'subfolders' $true)
+# 일정 본문(회의 안건 - LM28 사용자 요청): config.calendar.bodyToAI(기본 true)이고 제목을 저장할 때만 body 열을 채운다(storeMailSubject=false
+# 면 본문도 비운다). Body 는 보호 멤버라 $protOk(위험의 긍정 증거가 있으면 읽지 않음)를 따른다 - Get-CalBody. 원문은 CSV 칸에만, 로그는 건수만.
+$cbv = Get-OcCfg $cfg 'calendar' 'bodyToAI' $true
+$calBodyOn = [bool]($storeSubject -and -not ($cbv -eq $false -or ([string]$cbv) -match '^\s*(false|0|no|n|off)?\s*$'))
+$script:calBody = [ordered]@{ ok = 0; empty = 0; private = 0; prot = 0; err = 0 }
+$script:calBodyOff = $false    # 본문 읽기에서 예외가 한 번 나면 이 실행의 나머지 일정은 읽지 않는다(거부된 경고창이 되풀이되지 않게)
 $outArg = $OutDir                            # PowerShell 변수는 대소문자를 가리지 않는다 - 아래 $outDir 가 덮기 전에 받아 둔다
 $skipDir = Join-Path $root 'data\outlook'    # outlook_skip.json 은 늘 여기(화면이 읽는다)
 $outDir = $skipDir
@@ -88,7 +97,8 @@ $srcName = $(if ($Tag) { $Tag } else { 'com' })
 # time_precision - COM 의 ReceivedTime/SentOn 은 항상 분 단위라 'minute'. 열을 안 쓰면 웹·Copilot 이 만든
 # 7열 파일과 섞일 때 그 파일의 '날짜만' 행이 정오 발신으로 승격돼(세션 20분) 없는 근무가 생긴다(감사 실측).
 $MAIL_HEADER = 'box,time,sender,subject,conversation,rcv,time_precision'
-$CAL_HEADER  = 'start,end,all_day,busy_status,subject,categories,location,response,meeting_status'
+# body = 일정 본문 앞 600자(LM28 끝 열 - 옛 9열 행은 그대로 두고 읽는 쪽이 빈 본문으로 받는다)
+$CAL_HEADER  = 'start,end,all_day,busy_status,subject,categories,location,response,meeting_status,body'
 $REFRESH_MONTHS = 2          # 최신 N개월은 이미 읽었어도 매번 다시 읽는다(-NoRefresh 면 안 한다)
 $TS = 'yyyy-MM-dd HH:mm:ss'  # 표에 적는 시각 형식
 
@@ -169,7 +179,15 @@ function Load-Coverage {
             Write-Host ("[outlook] 완료 표가 이번 실행과 맞지 않아({0}) 처음부터 읽습니다" -f $u.why)
             return $c
         }
-        foreach ($kind in @('mail', 'calendar')) {
+        # 일정 본문 열(LM28): 표를 쓴 실행과 본문 읽기 설정이 다르면(본문 열이 없던 판 포함) 일정 달만 처음부터 다시 읽는다 -
+        # 옛 달의 회의에도 본문이 채워지게(메일 달은 그대로 - 다시 읽을 까닭이 없다). 일정은 달마다 수십~수백 건이라 짧다
+        $kinds = @('mail', 'calendar')
+        $cbOld = $false; try { $cbOld = [bool]$j.cal_body } catch {}
+        if ($cbOld -ne $calBodyOn) {
+            $kinds = @('mail')
+            Write-Host ("[outlook] 일정 본문 읽기 설정이 지난 수집과 달라 일정은 처음부터 다시 읽습니다(메일 달은 그대로)")
+        }
+        foreach ($kind in $kinds) {
             $sec = $j.PSObject.Properties[$kind]
             if (-not $sec -or -not $sec.Value) { continue }
             foreach ($p in $sec.Value.PSObject.Properties) {
@@ -188,7 +206,7 @@ function Load-Coverage {
         }
         $ps = $j.PSObject.Properties['partial']
         if ($ps -and $ps.Value) {
-            foreach ($kind in @('mail', 'calendar')) {
+            foreach ($kind in $kinds) {
                 $sec = $ps.Value.PSObject.Properties[$kind]
                 if (-not $sec -or -not $sec.Value) { continue }
                 foreach ($p in $sec.Value.PSObject.Properties) {
@@ -214,7 +232,7 @@ function Load-Coverage {
 }
 function Save-Coverage($c) {
     try {
-        $o = [ordered]@{ version = 3; ver = $covVer; writer = $writer; store_subject = $storeSubject; keep_days = $KeepDays;
+        $o = [ordered]@{ version = 3; ver = $covVer; writer = $writer; store_subject = $storeSubject; cal_body = [bool]$calBodyOn; keep_days = $KeepDays;
                          when = (Get-Date).ToString('yyyy-MM-dd HH:mm'); filter_fmt = $fmt; mail = [ordered]@{}; calendar = [ordered]@{};
                          partial = [ordered]@{ mail = [ordered]@{}; calendar = [ordered]@{} } }
         foreach ($kind in @('mail', 'calendar')) {
@@ -443,7 +461,8 @@ function Read-CalendarMonth($ns, $mo, [string]$resumeFrom) {
             if ($st -lt $lo) { continue }
             if ($SelfTestDelayMs -gt 0) { Start-Sleep -Milliseconds $SelfTestDelayMs }
             if ($sw.Elapsed.TotalSeconds -gt $halfBudget) { $script:stopReason = ('일정 시간 예산({0}초) 도달' -f [math]::Round($halfBudget, 1)); break }
-            $rows.Add(('{0},{1},False,2,{2},,,3,1' -f $st.ToString('yyyy-MM-dd HH:mm'), $st.AddHours(1).ToString('yyyy-MM-dd HH:mm'), ('selftest meeting ' + $i)))
+            $rows.Add(('{0},{1},False,2,{2},,,3,1,{3}' -f $st.ToString('yyyy-MM-dd HH:mm'), $st.AddHours(1).ToString('yyyy-MM-dd HH:mm'), ('selftest meeting ' + $i),
+                       $(if ($calBodyOn) { 'selftest agenda ' + $i } else { '' })))
             $script:calLast = $st.ToString($TS)
         }
         return $rows
@@ -475,10 +494,18 @@ function Read-CalendarMonth($ns, $mo, [string]$resumeFrom) {
             $resp = ''; $mst = ''
             try { $resp = [string][int]$it.ResponseStatus } catch {}
             try { $mst = [string][int]$it.MeetingStatus } catch {}
-            $rows.Add(('{0},{1},{2},{3},{4},{5},{6},{7},{8}' -f `
+            # 본문(LM28): 비공개·기밀은 건드리지 않고, 보호 멤버 위험이 있거나 이 실행에서 예외가 났으면 읽지 않는다(빈칸 · 사유별 건수만)
+            $body = ''
+            if ($calBodyOn) {
+                $cb = Get-CalBody -Item $it -ProtOk ($protOk -and -not $script:calBodyOff)
+                $script:calBody[$cb.why] = [int]$script:calBody[$cb.why] + 1
+                if ($cb.why -eq 'err') { $script:calBodyOff = $true }
+                $body = [string]$cb.body
+            }
+            $rows.Add(('{0},{1},{2},{3},{4},{5},{6},{7},{8},{9}' -f `
                 $it.Start.ToString('yyyy-MM-dd HH:mm'), $it.End.ToString('yyyy-MM-dd HH:mm'), `
                 $it.AllDayEvent, $it.BusyStatus, (Csv-Escape $subj), `
-                (Csv-Escape ([string]$it.Categories)), (Csv-Escape ([string]$it.Location)), $resp, $mst))
+                (Csv-Escape ([string]$it.Categories)), (Csv-Escape ([string]$it.Location)), $resp, $mst, (Csv-Escape $body)))
             try { $script:calLast = $it.Start.ToString($TS) } catch {}
         } catch {}
     }
@@ -948,6 +975,11 @@ try {
         Write-Host ("[outlook] 일정 {0}: {1}건 [{2}] (경과 {3}초)" -f $mo.key, $cnt, $v.st, [int]$sw.Elapsed.TotalSeconds)
     }
     if (-not (Test-Path $calP)) { $null = Write-CsvByMonth $calP $CAL_HEADER $calBy $true }
+    if ($calBodyOn -and -not $SelfTest -and ($script:calBody.Values | Measure-Object -Sum).Sum -gt 0) {
+        # 건수만(본문 원문 없음) - 보호 멤버라 안 읽음이 많으면 백신·Outlook 보안 정책 때문이다(받는 사람 이름과 같은 판정)
+        Write-Host ("[outlook] 일정 본문(회의 안건): 읽음 {0} · 빈 본문 {1} · 비공개 {2} · 보호 멤버라 안 읽음 {3} · 오류 {4}" -f `
+            $script:calBody.ok, $script:calBody.empty, $script:calBody.private, $script:calBody.prot, $script:calBody.err)
+    }
 
     # ---------- mail (기본 저장소 메일 폴더 - 받은 쪽 + 보낸 쪽): 최신 달부터, 예산까지 ----------
     foreach ($mo in $mailTodo) {
@@ -1041,6 +1073,7 @@ try {
                            horizon_oldest = $(if ($hz.oldest) { ([datetime]$hz.oldest).ToString('yyyy-MM-dd') } else { '' });
                            horizon_newest = $(if ($hz.newest) { ([datetime]$hz.newest).ToString('yyyy-MM-dd') } else { '' });
                            cached = [bool]$cached; prot = [string]$counts.prot; rcv_unknown = [int]$script:rcvUnknown;
+                           cal_body = [int]$script:calBody.ok;
                            me_known = [bool](@($me | Where-Object { $_ -match $script:OC_ADDR_RX }).Count) }
         ($src | ConvertTo-Json -Compress -Depth 4) | Set-Content -Path $srcP -Encoding UTF8
     } catch {}
@@ -1120,5 +1153,6 @@ $counts.horizon_oldest = $(if ($hz.oldest) { ([datetime]$hz.oldest).ToString('yy
 $counts.horizon_newest = $(if ($hz.newest) { ([datetime]$hz.newest).ToString('yyyy-MM-dd') } else { '' })
 $counts.cached = [bool]$cached; $counts.ver = $covVer; $counts.selftest = [bool]$SelfTest
 $counts.months_read = [ordered]@{ mail = [int]$readMail; calendar = [int]$readCal }
+$counts.cal_body = $script:calBody; $counts.cal_body_on = [bool]$calBodyOn    # 일정 본문 사유별 건수(LM28 - 원문 없음)
 Write-LmStatus -Src $srcName -Rc $stRc -Reasons @($reasons) -Counts $counts -Ranges @($ranges)
 exit $stRc

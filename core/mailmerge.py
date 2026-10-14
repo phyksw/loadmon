@@ -9,8 +9,11 @@ r"""core\mailmerge.py — 출처별 메일·일정 파일 → data\outlook\mail.
     · 높은 출처의 '날짜만' 행(time_precision=date)은 낮은 출처의 분 단위 같은 메일로 시각을 채운다.
     · 우선순위: com > owa > index > import > legacy. 제목이 비면(storeMailSubject=false) 대화 해시, 그것도 없으면 보낸이.
   일정 키: (시작 분, 정제 제목 40자) — 우선순위 com > owa > import > index > legacy.
+    · 일정 본문(body — 회의 안건, G1 이 core\meetnote.clean_body·privacy 로 정제한 것)은 열이 있는 출처만 준다. 같은 일정이
+      여러 출처에서 접히면 남는 행(높은 출처)의 본문이 비었을 때 낮은 출처의 본문을 받는다(키는 그대로). 열이 없는 옛 파일은 빈 본문.
   Copilot 행(증인)은 그날 그 축에 다른 출처 행이 0이고, 원장이 그날을 ok·zero_ok 로 확인하지 않았을 때만 넣는다.
-  출력 끝 열 'src' = 그 행을 준 출처(분석은 열 이름으로 읽는다 — 끝 열 추가는 extract._read 와 맞다).
+  출력 끝 열 'src' = 그 행을 준 출처(분석은 열 이름으로 읽는다 — 끝 열 추가는 extract._read 와 맞다). calendar.csv 는 그 뒤에
+  'body' 를 하나 더 둔다(LM28 — 화면 [데이터] 표는 앞 8열만 보이므로 본문이 표에 뜨지 않는다).
   mail_source.json 은 LM24 키를 유지한다: source(주 출처)·mail_rows·date_only·selftest·uncovered_months·me[](합집합)
   + LM28 키 sources{출처: 행 수}·calendar_complete·coverage_complete·period·ver.
 """
@@ -24,6 +27,7 @@ from datetime import date, datetime, timedelta
 MAIL_COLS = ["box", "time", "sender", "subject", "conversation", "rcv", "time_precision"]
 CAL_COLS = ["start", "end", "all_day", "busy_status", "subject", "categories", "location", "response", "meeting_status"]
 SRC_COL = "src"
+CAL_BODY = "body"                # 일정 본문(정제된 회의 안건) — calendar.csv 의 src 뒤 끝 열
 MAIL_PRI = ("com", "owa", "index", "import", "legacy")
 CAL_PRI = ("com", "owa", "import", "index", "legacy")
 WITNESS = ("copilot",)
@@ -162,10 +166,11 @@ def _merge_mail(src_dir, norm, cache, verified):
 
 
 def _merge_cal(src_dir, norm, cache, verified):
-    acc, seen, per_day, by_src, dup = [], set(), {}, {}, 0
+    acc, seen, per_day, by_src, dup = [], {}, {}, {}, 0
+    cols = CAL_COLS + [CAL_BODY]
     for tag in _tags(src_dir, "cal", CAL_PRI):
         new_keys = []
-        for r in _read(os.path.join(src_dir, f"cal_{tag}.csv"), CAL_COLS):
+        for r in _read(os.path.join(src_dir, f"cal_{tag}.csv"), cols):
             day = _day(r["start"])
             if not day:
                 continue
@@ -173,15 +178,21 @@ def _merge_cal(src_dir, norm, cache, verified):
             k = (m if m is not None else day, _keytext(norm, cache, r["subject"]))
             if k in seen:
                 dup += 1
+                body = r[CAL_BODY].strip()
+                if body:                          # 접히는 행의 본문 — 남는 행의 본문이 비었으면 받는다(키·행은 그대로)
+                    for i in seen[k]:
+                        if not acc[i][CAL_BODY].strip():
+                            acc[i][CAL_BODY] = body
                 continue
             acc.append(dict(r, **{SRC_COL: tag}))
-            new_keys.append(k)
+            new_keys.append((k, len(acc) - 1))
             per_day[day] = per_day.get(day, 0) + 1
             by_src[tag] = by_src.get(tag, 0) + 1
-        seen.update(new_keys)
+        for k, i in new_keys:                     # 같은 출처 안의 행끼리는 접지 않는다(이 출처를 다 본 뒤에 색인에 넣는다)
+            seen.setdefault(k, []).append(i)
     n_cp = 0
     for tag in WITNESS:
-        for r in _read(os.path.join(src_dir, f"cal_{tag}.csv"), CAL_COLS):
+        for r in _read(os.path.join(src_dir, f"cal_{tag}.csv"), cols):
             day = _day(r["start"])
             if not day or per_day.get(day) or (verified and verified(day, "cal")):
                 continue
@@ -192,14 +203,16 @@ def _merge_cal(src_dir, norm, cache, verified):
     return acc, by_src, dup, n_cp
 
 
-def _write_csv(path, cols, rows):
+def _write_csv(path, cols, rows, tail=()):
+    """cols + src + tail(끝 열 — 일정 본문) 순으로 쓴다."""
+    tail = list(tail)
     tmp = f"{path}.{os.getpid()}.tmp"
     try:
         with open(tmp, "w", encoding="utf-8-sig", newline="") as f:
             w = csv.writer(f)
-            w.writerow(cols + [SRC_COL])
+            w.writerow(cols + [SRC_COL] + tail)
             for r in rows:
-                w.writerow([r.get(c, "") for c in cols] + [r.get(SRC_COL, "")])
+                w.writerow([r.get(c, "") for c in cols] + [r.get(SRC_COL, "")] + [r.get(c, "") for c in tail])
         os.replace(tmp, path)
     except OSError:
         try:
@@ -248,11 +261,12 @@ def merge(src_dir, out_dir, *, verified=None, period=None, norm=None, today=None
     mail, msrc, mdup, mcp = _merge_mail(src_dir, norm, cache, verified)
     cal, csrc, cdup, ccp = _merge_cal(src_dir, norm, cache, verified)
     info = {"ok": True, "mail": len(mail), "calendar": len(cal), "sources": msrc, "cal_sources": csrc,
-            "dup": mdup + cdup, "copilot": mcp + ccp, "error": ""}
+            "dup": mdup + cdup, "copilot": mcp + ccp, "error": "",
+            "cal_body": sum(1 for r in cal if str(r.get(CAL_BODY) or "").strip())}    # 본문이 있는 일정 수(건수만)
     try:
         os.makedirs(out_dir, exist_ok=True)
         _write_csv(os.path.join(out_dir, "mail.csv"), MAIL_COLS, mail)
-        _write_csv(os.path.join(out_dir, "calendar.csv"), CAL_COLS, cal)
+        _write_csv(os.path.join(out_dir, "calendar.csv"), CAL_COLS, cal, tail=(CAL_BODY,))
     except OSError as e:
         info.update(ok=False, error=f"쓰기 실패({type(e).__name__}) — Excel 등에서 연 파일을 닫으세요")
         return info

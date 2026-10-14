@@ -302,6 +302,28 @@ function Test-ProtectedSafe {
     param($Reg = $null, $Av = 'auto')
     return [bool](Get-ProtectedState -Reg $Reg -Av $Av).safe
 }
+function Get-CalBody {
+    # 일정 본문(회의 안건) 한 칸(LM28 - 사용자 요청 '일정 회의 내용도 참고, 걸러서'). AppointmentItem.Body 는 보호 멤버(Object Model
+    # Guard)라 받는 사람·보낸 사람 이름과 같은 판정(-ProtOk = Get-ProtectedState.safe - 위험의 긍정 증거가 있으면 $false)을 따른다:
+    # $false 면 Body 를 건드리지 않는다(경고창이 뜰 일이 없다). 비공개(Sensitivity 2)·기밀(3) 일정도 Body 를 읽지 않는다.
+    # 앞 -Max 자만(줄바꿈·탭·제어 문자 → 공백, 연속 공백 접기 - 끝의 반쪽 서로게이트는 버린다). 정제(온라인 회의 안내문·링크·연락처
+    # 걷기·개인정보 가림)는 run.py G1(core\meetnote.prep_body_csv → privacy.scrub_csv)이 한다. 원문은 이 칸 말고 남기지 않는다.
+    # 반환 @{ body; why } - why: ok · empty · private · prot · err (호출측은 why 별 건수만 센다).
+    param($Item, [bool]$ProtOk, [int]$Max = 600)
+    $sens = 0
+    try { $sens = [int]$Item.Sensitivity } catch {}
+    if ($sens -eq 2 -or $sens -eq 3) { return @{ body = ''; why = 'private' } }
+    if (-not $ProtOk) { return @{ body = ''; why = 'prot' } }
+    $b = ''
+    try { $b = [string]$Item.Body } catch { return @{ body = ''; why = 'err' } }
+    $b = (($b -replace '[\x00-\x1F\x7F]+', ' ') -replace ' {2,}', ' ').Trim()
+    if ($Max -gt 0 -and $b.Length -gt $Max) {
+        $b = $b.Substring(0, $Max)
+        if ([char]::IsHighSurrogate($b[$b.Length - 1])) { $b = $b.Substring(0, $b.Length - 1) }
+    }
+    if (-not $b) { return @{ body = ''; why = 'empty' } }
+    return @{ body = $b; why = 'ok' }
+}
 
 # ── 날짜 필터 카나리아 · 완료 판정 ─────────────────────────────────────────────────────────
 function Format-OlDate([datetime]$d, [string]$Fmt) {

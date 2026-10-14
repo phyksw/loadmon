@@ -545,6 +545,93 @@ def _num(v, d=0.0):
         return d
 
 
+_TOOL_NOTE = "참고 지표 — 투입 MM·로드율과 무관 · 실행 기록은 Windows 가 사용자 계정에 남긴 실행 흔적(관리자 권한 불필요)"
+
+
+def _tool_usage_html(tu):
+    """프로그램 사용(참고) 조각 — 새 meta(출처·실행 횟수·포커스 시간·마지막 실행·파일 일수 + 자체·프로토타입(추정))와
+    옛 meta(창기록만 — src·runs 칸 없음) 둘 다 그린다. 비면 ''(이유가 있으면 이유 한 줄).
+    ★ 참고 지표라는 문구를 늘 붙인다 — 안 그러면 '투입 시간' 으로 읽힌다(core/programs.py 머리말). 값은 전부 _esc 를 거친다."""
+    tu = tu if isinstance(tu, dict) else {}
+    progs = [x for x in (tu.get("programs") or []) if isinstance(x, dict) and x.get("name")]
+    inh = [x for x in (tu.get("inhouse") or []) if isinstance(x, dict) and x.get("name")]
+    hidden = int(_num(tu.get("inhouse_hidden")))
+    if not progs and not inh and not hidden:
+        why = str(tu.get("why") or "").strip()
+        return f"<div class='note'><b>프로그램 사용(참고)</b> <span class='dim'>{_esc(why)}</span></div>" if why else ""
+
+    def cnt(v, c):          # 증가분을 모르면(스냅샷 1장) 누적으로 — 지어내지 않는다
+        if v is None:
+            return "–" if c is None else f"<span class='dim'>누적 {int(_num(c)):,}</span>"
+        return f"{int(_num(v)):,}회"
+
+    def hrs(v, c):
+        if v is None:
+            return f"<span class='dim'>누적 {_num(c):.1f}h</span>" if _num(c) else "–"
+        return f"{_num(v):.1f}h"
+
+    def side(x):            # 창기록(옛 샘플러) 시간 — 전면 0h · 배경만 있는 솔버는 '배경 Nh'(0.0h 로 적으면 안 쓴 것처럼 읽힌다)
+        h, bg = _num(x.get("hours")), _num(x.get("bg_hours"))
+        if h >= 0.05:
+            return f"{h:.1f}h" + (f"<span class='dim'>(배경 {bg:.0f}h)</span>" if bg >= 1 else "")
+        return f"<span class='dim'>배경 {bg:.0f}h</span>" if bg >= 1 else "–"
+
+    rows = []
+    for x in progs[:25]:
+        src = x.get("src") if isinstance(x.get("src"), list) else ["창기록"]
+        kc = _esc(x.get("kind")) + (f" · {_esc(x.get('cat'))}" if x.get("cat") else "")
+        fd = int(_num(x.get("file_days")))
+        rows.append(f"<tr><td><b>{_esc(x['name'])}</b></td><td class='dim'>{kc}</td>"
+                    f"<td class='dim'>{_esc('·'.join(str(s) for s in src))}</td>"
+                    f"<td>{cnt(x.get('runs'), x.get('runs_cum'))}</td><td>{hrs(x.get('focus_h'), x.get('focus_h_cum'))}</td>"
+                    f"<td class='dim'>{_esc(str(x.get('last_run') or '')[:16]) or '–'}</td>"
+                    f"<td>{f'{fd}일' if fd else '–'}</td><td>{side(x)}</td></tr>")
+    kinds = [x for x in (tu.get("by_kind_n") or []) if isinstance(x, (list, tuple)) and len(x) >= 2]
+    srcs = tu.get("sources") if isinstance(tu.get("sources"), dict) else {}
+    reg = srcs.get("실행기록") if isinstance(srcs.get("실행기록"), dict) else {}
+    win = reg.get("window") if isinstance(reg.get("window"), list) and len(reg.get("window")) == 2 else None
+    basis = (f"실행 횟수·포커스 시간 = 실행 기록 스냅샷 {_esc(win[0])}~{_esc(win[1])} 사이 증가분"
+             if reg.get("basis") == "delta" and win else
+             ("실행 기록 스냅샷이 1장뿐이라 횟수·시간은 이 계정의 누적값입니다(다음 수집부터 기간 안 증가분이 보입니다)"
+              if reg.get("basis") == "cum" else ""))
+    h = ["<div class='note'><b>프로그램 사용(참고)</b> — " + _esc(tu.get("note") or _TOOL_NOTE)]
+    if kinds:
+        h.append(" · 구분 " + " · ".join(f"{_esc(k)} {int(_num(v))}개" for k, v in kinds))
+    if _num(tu.get("solver_bg_h")) >= 1:
+        h.append(f" · 배경 솔버 가동 {_num(tu.get('solver_bg_h')):.0f}h")
+    if basis:
+        h.append(f"<br><span class='dim'>{basis}</span>")
+    if rows:
+        h.append("<table style='margin-top:4px'><tr><th>프로그램</th><th>구분·분류</th><th>출처</th><th>실행 횟수</th>"
+                 "<th>포커스 시간</th><th>마지막 실행</th><th>파일 일수</th><th>창기록</th></tr>" + "".join(rows) + "</table>")
+        if len(progs) > 25:
+            h.append(f"<div class='dim'>… 외 {len(progs) - 25}개</div>")
+    h.append("</div>")
+    if inh or hidden:
+        items = " · ".join(
+            f"{_esc(x['name'])} <span class='dim'>("
+            + (f"{int(_num(x.get('runs')))}회" if x.get("runs") is not None else f"누적 {int(_num(x.get('runs_cum')))}회")
+            + (f" · {_esc(str(x.get('last_run'))[:10])}" if x.get("last_run") else "") + ")</span>"
+            for x in inh[:12])
+        h.append("<div class='note'><b>자체·프로토타입(추정)</b> " + items
+                 + (f" · 이름을 가린 도구 {hidden}개" if hidden else "")
+                 + " <span class='dim'>— 카탈로그에 없는 실행 파일이 사용자 폴더·다른 드라이브·네트워크에서 돈 것입니다"
+                   "(무료 휴대용 도구일 수도 있습니다)</span></div>")
+    unk = int(_num(tu.get("unknown_n")))        # 카탈로그 밖 설치 프로그램 — 개수만(이름은 사적 앱이 섞여 싣지 않는다)
+    amb = [x for x in (tu.get("ambiguous_files") or []) if isinstance(x, (list, tuple)) and len(x) >= 2]
+    more = []
+    if unk:
+        more.append(f"카탈로그 밖 설치 프로그램 {unk}개(이름은 싣지 않습니다)")
+    if amb:
+        more.append("도구 불명 파일: " + " · ".join(f"{_esc(x[0])} {int(_num(x[1]))}개" for x in amb[:6]))
+    if reg.get("track_off"):
+        more.append("<b>앱 실행 추적이 꺼져 있습니다</b>(설정 &gt; 개인 정보 &gt; 일반 또는 회사 정책) — 실행 횟수가 늘지 않아 "
+                    "안 쓴 것처럼 보일 수 있습니다")
+    if more:
+        h.append("<div class='note dim'>" + " / ".join(more) + "</div>")
+    return "".join(h)
+
+
 def report_island(tag, full=True, log=_say):
     r"""분석 리포트 HTML 한 장 → 만든 파일 경로 목록. report\ 의 결과 파일만 읽는다(서버·프로그램 불필요)."""
     if not tag:
@@ -552,32 +639,11 @@ def report_island(tag, full=True, log=_say):
         return []
     d0, d1 = tag_to_dates(tag)
     meta = _read_json(os.path.join(REPORT, f"mm_meta_{tag}.json")) or {}
-    # 프로그램 사용(참고) — 맨 앞 창을 띄우고 있던 시간이라 투입 MM 과 다른 값이다. 그 점을 문구로 못 박는다.
+    # 프로그램 사용(참고) — 투입 MM 과 다른 값이다(실행 흔적·파일·옛 창 기록). 그 점을 문구로 못 박는다(_tool_usage_html).
     _tu = meta.get("tool_usage")
     if not isinstance(_tu, dict):
         _tu = (meta.get("mm_basis") or {}).get("tool_usage")
-    _tu = _tu if isinstance(_tu, dict) else {}
-    _tp = [x for x in (_tu.get("programs") or []) if isinstance(x, dict) and x.get("name")]
-    tool_note = ""
-    if _tp:
-        def _fh(x):
-            try:
-                return float(x or 0)
-            except (TypeError, ValueError):
-                return 0.0
-        tool_note = ("<div class='note'><b>프로그램 사용(참고)</b> "
-                     # 전면 0h · 배경만 있는 것(밤새 돌린 솔버)은 '0.0h' 로 적으면 안 쓴 것처럼 읽힌다
-                     + " · ".join(
-                         f"{_esc(x['name'])} " + (f"배경 {_fh(x.get('bg_hours')):.0f}h"
-                                                  if _fh(x.get("hours")) < 0.05
-                                                  else f"{_fh(x.get('hours')):.1f}h"
-                                                       + (f"(배경 {_fh(x.get('bg_hours')):.0f}h)"
-                                                          if _fh(x.get("bg_hours")) >= 1 else ""))
-                         for x in _tp[:8])
-                     + (f" · 배경 솔버 가동 {_fh(_tu.get('solver_bg_h')):.0f}h"
-                        if _fh(_tu.get("solver_bg_h")) >= 1 else "")
-                     + " <span class='dim'>— 창 샘플러가 본 맨 앞 창 시간입니다. "
-                       "투입 MM·로드율 계산에는 들어가지 않습니다.</span></div>")
+    tool_note = _tool_usage_html(_tu)       # 창기록·실행기록·파일 + 자체·프로토타입(추정) — 옛 meta(창기록만)도 그린다
     rows, rows_file = _read_rows(tag)
     if not rows and not meta:
         log(f"    [!] {tag} 결과(mm_rows·mm_meta)가 없어 분석리포트를 만들지 못했습니다.")

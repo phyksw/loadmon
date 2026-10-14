@@ -20,9 +20,16 @@ r"""collect\owa_parse.py — Outlook 웹(OWA) 화면 판정용 순수 함수(LM2
   · 일정 위치 해석(LM28 현장 2026-10-11 — 라벨에 날짜·시각이 없는 막대): header_date · day_columns · col_date · col_span(요일 열)
     · hour_label · time_scale · y_to_min(시간 눈금) · cal_nonevent(칩·머리 칸) · picker_date(작은 달력 칸) · mask_cal(못 읽은
     막대 꼴 — 글자 x, 숫자·구두점·오전/오후·요일·종일만).
+  · 다른 메일 폴더(LM28-OWA-5 — 받은·보낸 편지함 밖으로 옮긴·이름을 바꾼·보관한 메일): folder_name · folder_kind(시스템 폴더
+    여러 언어·data-folder-name) · tree_nodes(폴더 창 treeitem → 부모·하위) · pick_mailbox(즐겨찾기·그룹·공유·온라인 보관을 빼고
+    기본 사서함) · plan_folders(읽을 폴더·box·펼칠 폴더·제외 수) · node_key·find_node(화면이 다시 그려져도 같은 폴더) ·
+    cap_extra(다른 폴더 판정은 그날 상태를 **낮추기만**) · url_kind(주소의 잘 알려진 폴더 마디) · same_folder.
+  · body_key(시작, 끝, 제목) — 일정 본문 발췌 캐시 열쇠(제목은 해시만).
 """
+import hashlib
 import re
 from datetime import date, datetime, timedelta, timezone
+from urllib.parse import urlparse
 
 DAY = timedelta(days=1)
 
@@ -928,3 +935,306 @@ def mask_cal(s, n=60):
     t = re.sub(r"\d{4,}", lambda m: m.group(0) if (len(m.group(0)) == 4 and m.group(0)[:2] in ("19", "20"))
                else "#" * len(m.group(0)), t)
     return t[:n] + ("…" if len(t) > n else "")
+
+
+# ── 다른 메일 폴더(LM28-OWA-5) ─────────────────────────────────────────────────────────────────
+# 사용자 제보: '메일함 보낸/받은만 보는데 메일 폴더를 바꿀 수 있음(이름 등) — 제외되는 게 있을 수 있다'. 규칙·사람이 옮긴 메일,
+# 보관한 메일, 이름을 바꾼 폴더의 메일은 받은·보낸 편지함 주소(/mail/inbox·/mail/sentitems)로는 보이지 않는다. 왼쪽 폴더 창
+# (role=tree·treeitem — 접근성 속성만)에서 기본 사서함의 폴더를 가린다. 시스템 폴더는 data-folder-name(잘 알려진 폴더 이름 —
+# 언어 무관)을 먼저, 없으면 화면 이름(여러 언어)을 **사서함 맨 위 칸에서만** 본다 — 시스템 폴더는 늘 맨 위에 있고 같은 이름의
+# 형제 폴더는 만들 수 없으니, 그 아래의 '메모'·'보관' 같은 이름은 사람이 만든 폴더다. 제외 폴더(지운 편지함 등)의 하위는 함께 뺀다.
+# 보관(Archive)은 받은 메일로 읽는다(COM 수집기와 같다 — 보낸 편지함 아래만 보낸 메일).
+WK_KIND = {"inbox": "inbox", "sentitems": "sent", "deleteditems": "deleted", "junkemail": "junk", "drafts": "drafts",
+           "outbox": "outbox", "archive": "archive", "notes": "notes", "conversationhistory": "conv", "rssfeeds": "rss",
+           "rsssubscriptions": "rss", "syncissues": "sync", "conflicts": "sync", "localfailures": "sync",
+           "serverfailures": "sync", "searchfolders": "search", "finder": "search", "scheduled": "scheduled",
+           "clutter": ""}                       # 낮은 우선 순위 메일(Clutter)은 받은 메일 — 사람이 만든 폴더처럼 읽는다
+FOLDER_WORDS = (                               # 소문자 · 이름 전체가 같을 때만(맨 위 칸)
+    ("inbox", ("받은 편지함", "받은편지함", "받은 메일함", "inbox", "posteingang", "boîte de réception", "bandeja de entrada",
+               "posta in arrivo", "caixa de entrada", "受信トレイ", "收件箱", "收件匣")),
+    ("sent", ("보낸 편지함", "보낸편지함", "보낸 항목", "보낸 메일함", "sent items", "sent mail", "sent messages",
+              "gesendete elemente", "éléments envoyés", "elementos enviados", "posta inviata", "itens enviados", "送信済みアイテム",
+              "已发送邮件", "寄件備份")),
+    ("deleted", ("지운 편지함", "지운편지함", "삭제된 항목", "삭제된 편지함", "deleted items", "trash", "gelöschte elemente",
+                 "éléments supprimés", "elementos eliminados", "posta eliminata", "itens excluídos", "削除済みアイテム", "已删除邮件",
+                 "刪除的郵件")),
+    ("junk", ("정크 메일", "정크", "정크 메일함", "스팸", "스팸 메일", "junk email", "junk e-mail", "junk", "spam", "junk-e-mail",
+              "courrier indésirable", "correo no deseado", "posta indesiderata", "lixo eletrônico", "迷惑メール", "垃圾邮件",
+              "垃圾郵件")),
+    ("drafts", ("임시 보관함", "임시보관함", "drafts", "entwürfe", "brouillons", "borradores", "bozze", "rascunhos", "下書き",
+                "草稿")),
+    ("outbox", ("보낼 편지함", "보낼편지함", "outbox", "postausgang", "boîte d'envoi", "bandeja de salida", "posta in uscita",
+                "caixa de saída", "送信トレイ", "发件箱", "寄件匣")),
+    ("conv", ("대화 기록", "conversation history", "unterhaltungsverlauf", "historique des conversations",
+              "historial de conversaciones", "会話の履歴", "对话历史记录", "交談記錄")),
+    ("rss", ("rss 구독", "rss 피드", "rss feeds", "rss subscriptions", "rss-feeds", "rss-abonnements", "flux rss", "fuentes rss",
+             "rss フィード", "rss 源", "rss 订阅")),
+    ("sync", ("동기화 문제", "충돌", "로컬 오류", "서버 오류", "sync issues", "conflicts", "local failures", "server failures",
+              "synchronisierungsprobleme", "konflikte", "lokale fehler", "serverfehler", "problèmes de synchronisation", "同期の失敗",
+              "同步问题")),
+    ("notes", ("메모", "notes", "notizen", "notas", "メモ", "便笺")),
+    ("search", ("검색 폴더", "search folders", "suchordner", "dossiers de recherche", "carpetas de búsqueda", "検索フォルダー",
+                "搜索文件夹")),
+    ("scheduled", ("예약됨", "예약된 항목", "scheduled", "geplant", "planifié", "programado", "スケジュール済み", "已计划")),
+    ("archive", ("보관", "보관함", "보관 편지함", "보관 처리", "archive", "archiv", "archives", "archivo", "archivio", "arquivo",
+                 "アーカイブ", "存档", "封存")),
+)
+SKIP_KINDS = frozenset({"deleted", "junk", "drafts", "outbox", "conv", "rss", "sync", "notes", "search", "scheduled"})
+SYS_KINDS = SKIP_KINDS | {"inbox", "sent", "archive"}
+# 사서함이 아닌 머리 — 즐겨찾기(기본 사서함 폴더의 사본)·그룹·나와 공유·온라인 보관 사서함(머리 이름 또는 나무 aria-label)
+FAV_RX = re.compile(r"(?i)^(?:즐겨찾기|즐겨\s*찾는\s*폴더|favorites?|favourites?|favoriten|favoris|favoritos|preferiti|お気に入り|"
+                    r"收藏夹|我的最愛)$")
+GROUP_RX = re.compile(r"(?i)^(?:그룹|groups?|gruppen|groupes|grupos|gruppi|グループ|组|群組)$")
+SHARED_RX = re.compile(r"(?i)^(?:나와\s*공유(?:됨|된\s*(?:항목|폴더))?|공유\s*(?:폴더|사서함|항목)|shared(?:\s+(?:with\s+me|folders?|"
+                       r"mailboxes?))?|für\s+mich\s+freigegeben|partagés?\s+avec\s+moi|compartidos?\s+conmigo|自分と共有|与我共享)$")
+ARCH_MB_RX = re.compile(r"(?i)온라인\s*보관|online\s*archive|in-place\s*archive|보관\s*사서함|archive\s*mailbox|onlinearchiv|"
+                        r"archive\s+en\s+ligne|archivo\s+en\s+línea|オンライン\s*アーカイブ|在线存档")
+_UNREAD_W = r"(?:읽지\s*않(?:음|은(?:\s*(?:항목|메시지|메일))?)|unread(?:\s+(?:items?|messages?))?)"
+_FOLDER_TAIL = re.compile(                     # '…, 3 unread' · '…, 읽지 않음 3' · '… 읽지 않은 항목 3개' · '…, 선택됨'
+    r"(?i)\s*[,，]?\s*(?:\(?\d+\)?\s*(?:개|건)?\s*" + _UNREAD_W + r"|" + _UNREAD_W + r"\s*\(?\d+\)?\s*(?:개|건)?"
+    r"|선택됨|selected|펼쳐짐|확장됨|축소됨|접힘|expanded|collapsed)\s*$")
+URL_KIND = {"inbox": "inbox", "sentitems": "sent", "deleteditems": "deleted", "junkemail": "junk", "drafts": "drafts",
+            "outbox": "outbox", "archive": "archive", "notes": "notes", "conversationhistory": "conv", "rssfeeds": "rss",
+            "syncissues": "sync", "searchfolders": "search", "scheduled": "scheduled"}
+
+
+def folder_name(s):
+    """폴더 창 항목 이름(title·잎 글·aria-label) → 비교용 이름 — 공백 접기, 끝의 '읽지 않음 3'·'3 unread'·'선택됨' 같은 상태 꼬리를
+    뗀다. 끝 숫자만은 떼지 않는다('2025'·'과제 3' 은 폴더 이름이다 — 읽지 않은 수는 JS 가 따로 뺀다)."""
+    t = re.sub(r"\s+", " ", str(s or "")).strip()
+    for _ in range(3):
+        u = _FOLDER_TAIL.sub("", t).strip(" ,，")
+        if not u or u == t:
+            break
+        t = u
+    return t[:120]
+
+
+def folder_kind(name, wk="", top=True):
+    """폴더 → 종류: inbox · sent · archive · 제외(SKIP_KINDS — deleted·junk·drafts·outbox·conv·rss·sync·notes·search·scheduled)
+    · ''(사람이 만든 폴더). wk(data-folder-name — 잘 알려진 폴더 이름)가 있으면 그것, 없으면 이름(여러 언어 — top 일 때만)."""
+    w = re.sub(r"[^a-z]", "", str(wk or "").lower())
+    if w in WK_KIND:
+        return WK_KIND[w]
+    if not top:
+        return ""
+    n = folder_name(name).lower()
+    for kind, words in FOLDER_WORDS:
+        if n in words:
+            return kind
+    return ""
+
+
+def label_kind(s):
+    """사서함 머리·나무 이름 → 'fav' · 'group' · 'shared' · 'arch'(온라인 보관 사서함) · ''(사서함일 수 있음)."""
+    t = folder_name(s)
+    if FAV_RX.match(t):
+        return "fav"
+    if GROUP_RX.match(t):
+        return "group"
+    if SHARED_RX.match(t):
+        return "shared"
+    if ARCH_MB_RX.search(t):
+        return "arch"
+    return ""
+
+
+def tree_nodes(items):
+    """JS owa_tree(read) 의 항목 사실 [{i, t 나무 순번, lvl aria-level, par DOM 조상 항목 순번, n 이름, al aria-label, wk
+    data-folder-name, ex 펼침 1·0·-1(속성 없음), sel, v}] → 노드 [{i, t, lvl, name, raw, wk, ex, sel, v, par, kids}](화면 순서).
+    부모는 DOM 조상 항목(par) → 없으면 같은 나무의 앞선 항목 중 aria-level 이 작은 가장 가까운 것(OWA 폴더 창은 하위 묶음이
+    머리 항목의 형제로 그려져 DOM 만으로는 부모를 모를 수 있다). raw = JS 가 낸 이름 그대로(누르기 직전 같은 항목인지 맞춘다)."""
+    nodes, src = [], {}
+    for it in items or ():
+        if not isinstance(it, dict):
+            continue
+        k = len(nodes)
+        src[_int(it.get("i"), k)] = k
+        raw = str(it.get("n") or "")[:120]
+        nodes.append({"i": k, "t": _int(it.get("t"), -1), "lvl": max(0, _int(it.get("lvl"))), "dp": _int(it.get("par"), -1),
+                      "raw": raw, "name": folder_name(raw or it.get("al")), "wk": str(it.get("wk") or "")[:40].lower(),
+                      "ex": _int(it.get("ex"), -1), "sel": 1 if _int(it.get("sel")) else 0, "v": 1 if _int(it.get("v"), 1) else 0,
+                      "par": -1, "kids": []})
+    for n in nodes:
+        p = src.get(n["dp"], -1) if n["dp"] >= 0 else -1
+        if p < 0 and n["lvl"] > 1:
+            for m in reversed(nodes[:n["i"]]):
+                if m["t"] == n["t"] and 0 < m["lvl"] < n["lvl"]:
+                    p = m["i"]
+                    break
+        n["par"] = p if 0 <= p < n["i"] else -1        # 앞선 항목만 — 고리가 생기지 않게
+    for n in nodes:
+        if n["par"] >= 0:
+            nodes[n["par"]]["kids"].append(n["i"])
+    return nodes
+
+
+def _tree_labels(trees):
+    return {k: label_kind(t.get("al")) for k, t in enumerate(trees or ()) if isinstance(t, dict)}
+
+
+def pick_mailbox(nodes, trees=()):
+    """폴더 창 노드 → (기본 사서함 범위 {kind 'root'|'tree', root, tree, top[맨 위 폴더 순번], score} | None, 사유 ''·'none'·'nomb').
+    후보는 즐겨찾기·그룹·나와 공유·온라인 보관(머리 이름·나무 aria-label)이 아닌 ① 머리 항목 — 하위에 받은 편지함이 있음 ② 나무 —
+    머리 없이 맨 위 폴더에 받은 편지함이 있음. 고르기: 맨 위 시스템 폴더 종류 수(사서함은 받은·보낸·지운·정크·임시… — 이름 표시가
+    없는 즐겨찾기는 두세 개) → 받은 편지함이 선택된 쪽 → 화면 순서(기본 사서함이 공유·보관 사서함보다 위에 그려진다)."""
+    if not nodes:
+        return None, "none"
+    tlab = _tree_labels(trees)
+    roots = [n for n in nodes if n["par"] < 0]
+    cands = []
+
+    def add(kind, root, tree, top):
+        kinds = [folder_kind(nodes[k]["name"], nodes[k]["wk"]) for k in top]
+        if "inbox" not in kinds:
+            return
+        sel = any(nodes[k]["sel"] and kd == "inbox" for k, kd in zip(top, kinds, strict=True))
+        score = len(set(kinds) & SYS_KINDS)
+        cands.append(((score, 1 if sel else 0, -min(top)),
+                      {"kind": kind, "root": root, "tree": tree, "top": list(top), "score": score}))
+    for r in roots:
+        if tlab.get(r["t"]) or label_kind(r["name"]) or not r["kids"]:
+            continue
+        add("root", r["i"], r["t"], r["kids"])
+    by_t = {}
+    for r in roots:
+        by_t.setdefault(r["t"], []).append(r["i"])
+    for t, top in by_t.items():
+        if tlab.get(t):
+            continue
+        top = [i for i in top if not label_kind(nodes[i]["name"])]
+        if top:
+            add("tree", -1, t, top)
+    if not cands:
+        return None, "nomb"
+    return max(cands, key=lambda c: c[0])[1], ""
+
+
+def open_roots(nodes, trees=()):
+    """접힌 머리 항목(즐겨찾기·그룹·나와 공유·온라인 보관이 아닌 것)의 순번 — 펼쳐야 기본 사서함의 폴더가 그려진다(화면 순서)."""
+    tlab = _tree_labels(trees)
+    return [n["i"] for n in nodes if n["par"] < 0 and n["ex"] == 0 and not tlab.get(n["t"]) and not label_kind(n["name"])]
+
+
+def plan_folders(nodes, scope, skip=()):
+    """기본 사서함 범위 → {"extra": [{i, box, kind, depth}](화면 순서 — 읽을 폴더), "expand": [i …](접힌 폴더 — 제외 폴더는 빼고
+    받은·보낸 편지함은 넣는다), "sys": 제외한 시스템 폴더 수(그 하위 포함), "user": 설정(owaExtraFolderSkip — 이름 일부, 대소문자
+    무시)으로 뺀 수(그 하위 포함)}. 받은·보낸 편지함 자신은 주소로 이미 읽으므로 넣지 않는다.
+    box: 보낸 편지함의 하위는 sent, 그 밖(받은 편지함 하위·보관·사람이 만든 폴더)은 inbox — COM 수집기(OutlookCommon
+    Get-MailFolderList)와 같다."""
+    us = [str(x).strip().lower() for x in skip or () if str(x or "").strip()]
+    out = {"extra": [], "expand": [], "sys": 0, "user": 0}
+
+    def size(i, d=0):
+        return 1 + (sum(size(k, d + 1) for k in nodes[i]["kids"]) if d < 40 else 0)
+
+    def walk(i, box, top, depth):
+        n = nodes[i]
+        kind = folder_kind(n["name"], n["wk"], top)
+        if kind in SKIP_KINDS:
+            out["sys"] += size(i)
+            return
+        if us and any(u in n["name"].lower() for u in us):
+            out["user"] += size(i)
+            return
+        if kind == "sent":
+            box = "sent"
+        if kind not in ("inbox", "sent"):
+            out["extra"].append({"i": i, "box": box, "kind": kind or "user", "depth": depth})
+        if n["ex"] == 0:
+            out["expand"].append(i)
+        if depth < 40:
+            for k in n["kids"]:
+                walk(k, box, False, depth + 1)
+    for i in (scope or {}).get("top") or ():
+        walk(i, "inbox", True, 0)
+    return out
+
+
+def node_key(nodes, i, trees=()):
+    """화면이 다시 그려져도 같은 폴더를 찾는 열쇠 — (나무 aria-label, 머리부터 그 폴더까지의 이름…). 같은 부모 아래 같은 이름의
+    폴더는 Outlook 이 만들지 않는다. 나무 이름은 머리 없는 나무 둘(즐겨찾기 나무·사서함 나무)의 같은 폴더 이름을 가른다."""
+    names, k, guard = [], i, 0
+    while 0 <= k < len(nodes) and guard < 64:
+        names.append(nodes[k]["name"])
+        k = nodes[k]["par"]
+        guard += 1
+    t = nodes[i]["t"]
+    tl = str(trees[t].get("al") or "") if 0 <= t < len(trees or ()) and isinstance(trees[t], dict) else ""
+    return (tl,) + tuple(reversed(names))
+
+
+def find_node(nodes, key, trees=()):
+    """node_key 로 노드 순번 | None."""
+    for n in nodes:
+        if n["name"] == key[-1] and node_key(nodes, n["i"], trees) == key:
+            return n["i"]
+    return None
+
+
+def tree_shape(nodes, trees=(), scope=None):
+    """폴더 창 구조 진단(글자 없음 — 수와 종류 기호만): 나무 수·항목 수·aria-level 있는 수·DOM 부모 있는 수·data-folder-name 있는
+    수·선택 수·머리 종류(f 즐겨찾기 · g 그룹 · s 공유 · a 온라인 보관 · m 고른 사서함 · o 그 밖, 8개까지)·고른 범위 꼴(r·t)."""
+    tlab = _tree_labels(trees)
+    roots = [n for n in nodes if n["par"] < 0]
+    code = {"fav": "f", "group": "g", "shared": "s", "arch": "a"}
+    rk = ""
+    for r in roots[:8]:
+        lk = tlab.get(r["t"]) or label_kind(r["name"])
+        if scope and ((scope["kind"] == "root" and scope["root"] == r["i"]) or (scope["kind"] == "tree" and scope["tree"] == r["t"])):
+            rk += "m"
+        else:
+            rk += code.get(lk, "o")
+    return {"trees": len(trees or ()), "items": len(nodes), "lvl": sum(1 for n in nodes if n["lvl"]),
+            "dom": sum(1 for n in nodes if n["dp"] >= 0), "wk": sum(1 for n in nodes if n["wk"]),
+            "sel": sum(1 for n in nodes if n["sel"]), "roots": len(roots), "rk": rk,
+            "pick": (scope or {}).get("kind", "")[:1], "score": int((scope or {}).get("score") or 0)}
+
+
+def cap_extra(day_st, rngs):
+    """다른 폴더 하나의 판정 범위 [(from, to, st)] → 그 축의 {날짜: st} 를 **낮추기만** 한다. 그 폴더를 끝까지 읽지 못한 날
+    (ok·zero_ok 가 아닌 날)의 ok·zero_ok 는 partial — 받은·보낸 편지함이 확인했어도 그 폴더의 메일이 빠졌을 수 있다(P4).
+    올리지는 않는다(폴더 하나를 끝까지 읽었다고 받은 편지함이 못 읽은 날이 '읽음'이 되지 않는다). → 낮춘 날 수"""
+    n = 0
+    for a, b, st in rngs or ():
+        if st in ("ok", "zero_ok"):
+            continue
+        d = a
+        while d <= b:
+            if day_st.get(d) in ("ok", "zero_ok"):
+                day_st[d] = "partial"
+                n += 1
+            d += DAY
+    return n
+
+
+def url_kind(href):
+    """폴더를 연 주소 → 잘 알려진 폴더 종류(/mail/deleteditems → 'deleted' · /mail/junkemail → 'junk' …) | ''. 받은·보낸 편지함은
+    주소가 그 폴더 자신일 때만(/mail/inbox) — 하위 폴더는 폴더 ID 주소다. 계정 번호 마디(/mail/0/…)는 건너뛴다."""
+    try:
+        segs = [s.lower() for s in urlparse(str(href or "")).path.split("/") if s]
+    except ValueError:
+        return ""
+    for k, s in enumerate(segs):
+        if s == "mail":
+            rest = [x for x in segs[k + 1:] if not x.isdigit()]
+            kind = URL_KIND.get(rest[0], "") if rest else ""
+            return "" if (kind in ("inbox", "sent") and len(rest) != 1) else kind
+    return ""
+
+
+def same_folder(sel, name):
+    """목록 화면이 짚은 선택 폴더 이름(JS owa_list 의 sel — title 또는 글 40자)이 이 폴더인가 → True · False · None(모름).
+    끝의 숫자·공백(읽지 않은 수가 이름 글에 붙어 온다)은 떼고 앞부분으로 맞춘다."""
+    def norm(s):
+        return re.sub(r"[\s\d,()]+$", "", re.sub(r"\s+", " ", str(s or "")).strip()).lower()[:40]
+    a, b = norm(sel), norm(folder_name(name))
+    if not a or not b:
+        return None
+    return a.startswith(b) or b.startswith(a)
+
+
+def body_key(start, end, subject):
+    """일정 본문 발췌 캐시 열쇠 'start|end|sha1(제목)[:12]' — 캐시 파일에 제목 원문을 남기지 않는다(LM28-OWA-5)."""
+    s = re.sub(r"\s+", " ", str(subject or "")).strip()
+    return f"{str(start or '')[:16]}|{str(end or '')[:16]}|{hashlib.sha1(s.encode('utf-8')).hexdigest()[:12]}"

@@ -653,8 +653,8 @@ def main():
     write_token()
     print(f"[team] 팀 서버 가동 — 포트 {port} · 모든 네트워크에서 받음  (저장: {TEAMDATA})")
     print(f"[team] 이 서버의 설치 폴더: {ROOT}")
-    print(f"[team] 서버 IP·포트를 바꾸려면 {ta.EDIT_BAT} (팀원 업로드 주소도 같은 파일에서 나옵니다 — 자동 전송 없음, "
-          "팀원은 분석 후 [팀 서버 업로드] 버튼이나 LoadMonitor28-팀업로드.bat 으로 올립니다)")
+    print(f"[team] 서버 IP·포트를 바꾸려면 {ta.EDIT_BAT} (팀원 업로드 주소도 같은 파일에서 나옵니다 — 팀원의 "
+          "[분석 실행]이 끝나면 자동으로 보고되고, 실패한 묶음은 [팀 서버 업로드] 버튼이나 LoadMonitor28-팀업로드.bat 으로 올립니다)")
     print("[team] 종료: Ctrl+C (또는 대시보드의 [팀 서버 중지])")
     try:
         srv.serve_forever()

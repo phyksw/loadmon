@@ -1508,7 +1508,7 @@ def sources(period=None):
         ("팀즈 채팅", ["m365/teams_*.csv"], r"[팀즈 웹 읽기] 버튼 — 앱이 꺼져 있어도 됩니다 (전용 Edge 창에서 회사 계정 1회 로그인)"),
         ("추가 PC", ["추가PC/*/outlook/mail.csv", "추가PC/*/files/files.csv",
                      "추가PC/*/pc/pc_on.csv", "추가PC/*/m365/teams_*.csv"],
-         "폴더째 옮겨 [추가 PC 수집] → 본 PC 에서 [분석 실행] — 자동 합산 · 중복 자동 제외 (선택)"),
+         "다른 PC 에서 [로컬PC 자료수집] → 폴더째 분석할 PC 로 옮겨 [분석 실행] — 자동 합산 · 중복 자동 제외 (선택)"),
     ):
         # '추가 PC'(추가PC 자체) 행은 본 폴더만, 나머지는 본 PC + 추가PC\* 를 합쳐 센다.
         # 폴더째 옮긴 직후에는 지난 PC 수집물이 전부 추가PC\ 에 있어, 본 폴더만 세면 '메일·일정 0건 · 없음' 같은 거짓
@@ -1850,7 +1850,7 @@ def trend(d0="", d1="", tag="", info=None):
             if _i is not None:
                 out[_i]["wk_h"] += float(_h or 0)
         if info is not None and not _wh:
-            info["wk_note"] = ("근무시간 실측이 아직 없습니다 — [분석 실행]/[수집만]이 계산해 "
+            info["wk_note"] = ("근무시간 실측이 아직 없습니다 — [분석 실행]/[로컬PC 자료수집]이 계산해 "
                                "저장합니다(그때까지 선은 PC 가동 기준)")
     except Exception as _exw:  # noqa: BLE001 — 실측 판독 실패는 선을 비울 뿐, 추이를 막지 않는다
         if info is not None:
@@ -2138,13 +2138,14 @@ def run_job(d0, d1, ai, skip, collect_only=False):
             d1 = today
         cmd = [sys.executable, os.path.join(ROOT, "run.py"), "--from", d0, "--to", d1]
         if collect_only:
-            cmd.append("--collect-only")          # 추가 PC 에서: 수집만 하고 분석은 본 PC 에서
+            # [로컬PC 자료수집](구 '추가 PC 수집'): 이 PC 자료만 모으고 분석·팀 서버 보고는 폴더를 옮긴 PC 의 [분석 실행]에서
+            cmd.append("--collect-only")
         else:
             if ai:
                 cmd.append("--ai")
             if skip:
                 cmd.append("--skip-collect")
-        log(f"실행: {d0} ~ {d1}" + (" · 수집만(추가 PC)" if collect_only else
+        log(f"실행: {d0} ~ {d1}" + (" · 로컬PC 자료수집(분석·팀 서버 보고 없음)" if collect_only else
             (" · AI 정제" if ai else "") + (" · 재분석만" if skip else "")))
         p = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                              env=dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1"), creationflags=NO_WIN)
@@ -2590,7 +2591,7 @@ body.snap .snaponly{display:block}
 <div class="steps nosnap">
  <a href="/" target="_blank">① 내 PC 분석</a>
  <a href="/" target="_blank">② 결과 확인</a>
- <a href="/" target="_blank">③ 팀 업로드 / 공유폴더 저장</a>
+ <a href="/" target="_blank">③ 팀 서버 보고(자동) / 공유폴더 저장</a>
  <span class="on">④ 팀 취합 (지금 화면)</span>
  <a href="/team/report" target="_blank">리포트</a>
  <a href="/team/agentic" target="_blank">Agentic</a>
@@ -3010,6 +3011,7 @@ input[type=date]{padding:5px 8px;border:1px solid #c9cfd8;border-radius:5px;font
 .chip:hover,.chip.on{border-color:#2a78d6;color:#2a78d6;background:#f0f6fd}
 button.run{background:#2a78d6;color:#fff;border:0;border-radius:5px;padding:9px 24px;font-size:13.5px;font-weight:700;cursor:pointer;font-family:inherit}
 button.run:disabled{background:#c9cfd8;cursor:default}
+button.run.local{background:#0e8c7a}button.run.local:disabled{background:#c9cfd8}
 button.ghost{background:#fff;color:#4a5159;border:1px solid #c9cfd8;border-radius:5px;padding:6px 12px;font-size:12px;cursor:pointer;font-family:inherit}
 #log{background:#12151a;color:#d6dbe1;border-radius:5px;padding:10px 12px;height:170px;overflow-y:auto;
  font-family:Consolas,monospace;font-size:11px;line-height:1.55;white-space:pre-wrap}
@@ -3045,7 +3047,7 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
 <div class="steps">
  <span class="on">① 내 PC 분석 (지금 화면)</span>
  <span class="on">② 결과 확인</span>
- <span class="on">③ 팀 업로드 / 공유폴더 저장</span>
+ <span class="on">③ 팀 서버 보고(자동) / 공유폴더 저장</span>
  <a href="/team" target="_blank">④ 팀 취합 화면 →</a>
  <a href="/guide" target="_blank">사용 안내</a>
 </div>
@@ -3061,13 +3063,13 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
  <label>시작 <input type="date" id="from"></label><label>끝 <input type="date" id="to"></label>
  <label><input type="checkbox" id="ai" checked> AI 정제</label>
  <label><input type="checkbox" id="skip"> 재분석만</label>
- <button class="run" id="go">분석 실행</button>
+ <button class="run" id="go" title="로컬PC 자료수집 + AI 분석 + 팀 서버 보고까지 한 번에 합니다">분석 실행</button>
+ <button class="run local" id="collect2" title="이 PC 의 자료만 모읍니다(분석·보고 없음). 폴더째 분석할 PC 로 옮겨 [분석 실행]을 누르면 합쳐집니다">로컬PC 자료수집</button>
  <button class="run" id="stop" style="background:#c0122f;display:none">중지</button>
  <span class="state" id="state">대기 중</span>
  <span style="flex:1"></span>
  <button class="ghost" id="report">보고서 만들기(리포트·분석리포트·얼린 보고서)</button>
  <button class="ghost" id="teamagg">팀 취합</button>
- <button class="ghost" id="collect2">추가 PC 수집</button>
  <button class="ghost" id="teamup">팀 서버 업로드</button>
  <button class="ghost" id="diag">AI 연결 진단</button>
  <button class="ghost" id="cdiag">수집 진단</button>
@@ -3085,6 +3087,7 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
   <i id="pg_bar" style="display:block;height:100%;width:0%;background:#2a78d6;transition:width .4s"></i></div>
  <div class="note" style="margin-top:5px" id="pg_hint"></div>
 </div></div>
+<div id="tr_banner" style="display:none;background:#fdecee;border:1px solid #f0b8c2;color:#8a1020;border-radius:6px;padding:9px 14px;margin:0 0 12px;font-size:12.5px;line-height:1.6"></div>
 
 <div class="row" id="tabs" style="margin-bottom:12px">
  <span class="chip on" data-t="dash">대시보드</span>
@@ -3157,7 +3160,7 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
   <button class="ghost" id="wl_save">기록</button><span class="state" id="wl_msg"></span></div>
  <div class="note">시작·끝을 적으면 그 구간 길이가 시간이 됩니다(자정을 넘겨도 됩니다). 기록은 그날의 하한이 되어 다음 [분석 실행]부터 반영됩니다.</div></div>
 
-<div class="card"><h2>팀 취합 업로드 <span class="state">자동 전송하지 않습니다 — 서버에 닿는 망에서 버튼으로 보냅니다</span></h2>
+<div class="card"><h2>팀 취합 업로드 <span class="state" id="tuhead">[분석 실행]이 끝나면 팀 서버로 자동 보고합니다 — 닿지 않으면 대기로 남고, 사내망에서 버튼으로 보냅니다</span></h2>
  <div class="row" style="align-items:center;gap:6px;margin-bottom:8px">
   <span class="state" style="flex:none">올릴 주소</span>
   <b id="tuurl" style="flex:1;min-width:200px;font-size:12.5px">확인 중…</b>
@@ -3173,10 +3176,12 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
   <button class="ghost" id="tuopen">묶음 폴더 열기</button>
   <span class="state" id="tumsg"></span></div>
  <div class="note" id="tusent"></div>
+ <div class="note" id="tureport"></div>
  <div class="note">팀 서버를 켜고 끄는 것과 취합 결과 보기는 <b><a href="/team" target="_blank">팀 취합 화면</a></b>에 있습니다
  (LoadMonitor28-팀취합.bat 과 같은 화면).</div>
- <div class="note">분석이 끝나면 보낼 묶음이 <b>대기</b>로 쌓입니다. 팀 서버에 닿는 망(사내망)에서 [팀 서버 업로드]를
- 한 번 누르면 <b>밀린 기간까지 함께</b> 올라가고, 보낸 묶음은 <code>report\\upload_sent\\</code> 로 옮겨집니다.
+ <div class="note">[분석 실행]이 끝나면 묶음을 먼저 <b>대기</b>로 만든 뒤 팀 서버로 <b>자동 보고</b>합니다(설정 teamUpload.autoReport).
+ 닿지 않는 망이면 묶음은 그대로 대기로 남고 화면에 실패 알림이 뜹니다 — 사내망에서 [팀 서버 업로드]를 한 번 누르면
+ <b>밀린 기간까지 함께</b> 올라가고, 보낸 묶음은 <code>report\\upload_sent\\</code> 로 옮겨집니다.
  닿지 않는 망에서 눌러도 아무것도 잃지 않고 그대로 대기합니다. 서버 대신 공유폴더로 낼 수도 있습니다.</div>
  <div class="note">보내는 것: 그 기간의 판정 결과(과제·업무·MM)와 근거 신호 목록입니다 —
  메일 제목·회의 제목·동료 이름이 포함될 수 있습니다(개인 폴더 신호는 이미 제외됨). 사내망 전용으로만 쓰세요.</div></div>
@@ -3362,9 +3367,10 @@ async function poll(){
   }else{
    $("prog").style.display="none";
    // 실행이 막 끝났으면 업로드 카드도 새로 읽는다 — 분석이 만든 묶음이 바로 보이게(v4)
-   if(window.__wasRunning){window.__wasRunning=false;tuLoad();}
+   // LM28: 팀 서버 자동 보고 결과도 — 실패면 이 실행 몫의 알림 1번 + 배너, 성공이면 상태 글자만(trLoad)
+   if(window.__wasRunning){window.__wasRunning=false;tuLoad();trLoad(true);}
   }
-  if(s.running)window.__wasRunning=true;
+  if(s.running){window.__wasRunning=true;window.__trIdle="";}
   // ── 하단 상태바 ──
   $("sb_dot").style.background=s.running?"#e08a00":"#4fc47f";
   $("sb_state").textContent=s.running?(s.step||"실행 중"):"대기";
@@ -3381,10 +3387,12 @@ async function poll(){
   }else{$("sb_prog").style.display="none";}
   $("sb_last").textContent=s.last_run?`마지막 분석 ${s.last_run} (${s.last_tag})`:"분석 결과 없음";
   $("go").disabled=s.running;
+  $("collect2").disabled=s.running;           // [로컬PC 자료수집]도 [분석 실행]과 똑같이 — 같은 run.py·원장·전용 Edge
   // 분석·웹 읽기 중에는 웹 읽기·커서 초기화를 끈다 — 같은 전용 Edge·원장을 두 작업이 함께 쓰지 않게(F-16)
   ["owa","teamsweb","cvreset"].forEach(id=>{const b=$(id);if(b)b.disabled=!!s.running;});
   $("stop").style.display=s.running?"":"none";
-  $("state").textContent=s.running?"실행 중…":"대기 중";
+  // 대기 글자 뒤에 이번 세션에서 끝난 실행의 팀 서버 보고 성공을 조용히 붙인다(3초 폴링이 지우지 않게 — trRender 가 채움)
+  $("state").textContent=s.running?"실행 중…":("대기 중"+(window.__trIdle?" · "+window.__trIdle:""));
   if(s.running)$("dlog").open=true;
   if(!s.running&&timer){clearInterval(timer);timer=null;}
   // 실행 중 새로고침하면 timer 가 없어 완료를 놓친다 — 상태 전이(running→멈춤)로 판정한다
@@ -3448,9 +3456,9 @@ async function refresh(){
    // 수집만 하고 분석을 안 한 상태 — 이때는 묶음도 워크플로우도 생기지 않는다.
    // 눌러 봐야 아는 대신(업로드 '보낼 결과가 없습니다', 워크플로우 탭 빈 화면) 먼저 말한다.
    noticeBar.style.display="";
-   noticeBar.innerHTML='\u2139\ufe0f <b>수집만 되어 있습니다 — 아직 분석하지 않았습니다.</b> '
-     +'이 상태에서는 팀 업로드 묶음도, 담당자 워크플로우도 만들어지지 않습니다.<br>'
-     +'<b>이 PC 가 마지막(클라우드) PC 라면 위 [분석 실행]</b>을 누르세요. '
+   noticeBar.innerHTML='\u2139\ufe0f <b>자료수집만 되어 있습니다([로컬PC 자료수집]) — 아직 분석하지 않았습니다.</b> '
+     +'이 상태에서는 팀 서버 보고 묶음도, 담당자 워크플로우도 만들어지지 않습니다.<br>'
+     +'<b>이 PC 가 분석할(마지막) PC 라면 위 [분석 실행]</b>을 누르세요 — 수집·AI 분석·팀 서버 보고까지 합니다. '
      +'다른 PC 라면 [PC 이동 준비] 후 폴더를 옮기면 됩니다.';
   }else if(d.foreign){
    noticeBar.style.display="";
@@ -3682,16 +3690,44 @@ async function refresh(){
   const obj=k=>{const v=pick(k);return (v&&typeof v==="object"&&!Array.isArray(v))?v:null;};
   const cnt=v=>Array.isArray(v)?v.length:((v&&typeof v==="object")?Object.keys(v).length:num(v));
   const cv=obj("coverage"),ms9=obj("measure"),cu=obj("cfg_used"),tu=obj("tool_usage");
-  // 프로그램 사용 이력 — 참고 지표다. 창 샘플러가 본 '맨 앞 창' 시간이라 투입 MM 과 다른 값이고,
-  // 로드율 계산에는 들어가지 않는다. 같은 카드에 두되 문구로 못 박는다(안 그러면 '투입 시간'으로 읽힌다).
-  const tuP=(tu&&Array.isArray(tu.programs))?tu.programs.filter(x=>x&&x.name):[];
-  const tuKind=(tu&&Array.isArray(tu.by_kind))?tu.by_kind.filter(x=>Array.isArray(x)&&x.length>=2):[];
-  const toolNote=tuP.length
-    ?`<div class="note"><b>프로그램 사용(참고)</b> ${tuP.slice(0,8).map(x=>esc(x.name)+" "+(num(x.hours)<0.05?`<span class="dim">배경 ${num(x.bg_hours).toFixed(0)}h</span>`:num(x.hours).toFixed(1)+"h"+(num(x.bg_hours)>=1?`<span class="dim">(배경 ${num(x.bg_hours).toFixed(0)}h)</span>`:""))).join(" · ")}`
-      +(tuKind.length?` — 구분 ${tuKind.map(x=>esc(x[0])+" "+num(x[1]).toFixed(1)+"h").join(" · ")}`:"")
+  // 프로그램 사용 이력 — 참고 지표다(투입 MM·로드율 계산에 들어가지 않는다 — 문구로 못 박는다, 안 그러면 '투입 시간'으로 읽힌다).
+  // 원천(출처 칸): 창기록(옛 샘플러 — 맨 앞 창 시간) · 실행기록(Windows 가 계정에 남긴 실행 흔적 스냅샷) · 파일(산출물 확장자).
+  // 옛 meta(창기록만 — src·runs 칸 없음)도 그대로 그린다: 없는 칸은 '–'. 증가분을 모르면(스냅샷 1장) '누적 N' 으로 적는다.
+  const tuP=(tu&&Array.isArray(tu.programs))?tu.programs.filter(x=>x&&typeof x==="object"&&x.name):[];
+  const tuKind=(tu&&Array.isArray(tu.by_kind))?tu.by_kind.filter(x=>Array.isArray(x)&&x.length>=2&&num(x[1])>0):[];
+  const tuKindN=(tu&&Array.isArray(tu.by_kind_n))?tu.by_kind_n.filter(x=>Array.isArray(x)&&x.length>=2):[];
+  const tuIn=(tu&&Array.isArray(tu.inhouse))?tu.inhouse.filter(x=>x&&typeof x==="object"&&x.name):[];
+  const tuSrc=(tu&&tu.sources&&typeof tu.sources==="object")?tu.sources:{};
+  const tuReg=(tuSrc["실행기록"]&&typeof tuSrc["실행기록"]==="object")?tuSrc["실행기록"]:{};
+  const tuCnt=(v,c)=>v==null?(c==null?"–":`<span class="dim">누적 ${num(c).toLocaleString()}</span>`):`${num(v).toLocaleString()}회`;
+  const tuH=(v,c)=>v==null?(num(c)?`<span class="dim">누적 ${num(c).toFixed(1)}h</span>`:"–"):`${num(v).toFixed(1)}h`;
+  const tuRow=x=>`<tr><td><b>${esc(x.name)}</b></td><td class="dim">${esc(x.kind||"")}${x.cat?" · "+esc(x.cat):""}</td>`
+    +`<td class="dim">${esc((Array.isArray(x.src)?x.src:["창기록"]).join("·"))}</td>`
+    +`<td>${tuCnt(x.runs,x.runs_cum)}</td><td>${tuH(x.focus_h,x.focus_h_cum)}</td>`
+    +`<td class="dim">${esc(String(x.last_run||"").slice(0,16))||"–"}</td>`
+    +`<td>${num(x.file_days)?num(x.file_days)+"일":"–"}</td>`
+    +`<td>${num(x.hours)>=0.05?num(x.hours).toFixed(1)+"h":(num(x.bg_hours)>=1?`<span class="dim">배경 ${num(x.bg_hours).toFixed(0)}h</span>`:"–")}</td></tr>`;
+  const tuWin=(Array.isArray(tuReg.window)&&tuReg.window.length===2)?tuReg.window:null;
+  const tuBasis=(tuReg.basis==="delta"&&tuWin)?`실행 횟수·포커스 시간 = 실행 기록 스냅샷 ${esc(tuWin[0])}~${esc(tuWin[1])} 사이 증가분`
+    :(tuReg.basis==="cum"?"실행 기록 스냅샷이 1장뿐이라 횟수·시간은 이 계정의 누적값입니다(다음 수집부터 기간 안 증가분이 보입니다)":"");
+  const tuWhy=["실행기록","파일"].map(k=>(tuSrc[k]&&tuSrc[k].why)?`${k}: ${esc(tuSrc[k].why)}`:"").filter(Boolean)
+    .concat(tuReg.track_off?["<b>앱 실행 추적이 꺼져 있습니다</b>(설정 > 개인 정보 > 일반 또는 회사 정책) — 실행 횟수가 늘지 않아 안 쓴 것처럼 보일 수 있습니다"]:[]);
+  const tuInNote=(tuIn.length||num(tu&&tu.inhouse_hidden))?`<div class="note"><b>자체·프로토타입(추정)</b> ${tuIn.slice(0,10).map(x=>esc(x.name)+` <span class="dim">(${x.runs!=null?num(x.runs)+"회":"누적 "+num(x.runs_cum)+"회"}${x.last_run?" · "+esc(String(x.last_run).slice(0,10)):""})</span>`).join(" · ")}`
+    +(num(tu.inhouse_hidden)?` · 이름을 가린 도구 ${num(tu.inhouse_hidden)}개`:"")
+    +` <span class="dim">— 카탈로그에 없는 실행 파일이 사용자 폴더·다른 드라이브·네트워크에서 돈 것입니다(무료 휴대용 도구일 수도 있습니다 · config.programsExtra 로 이름표를 붙입니다)</span></div>`:"";
+  const tuUnk=num(tu&&tu.unknown_n);       // 카탈로그 밖 '설치된' 프로그램 — 개수만(이름은 이 PC 의 data\\programs 스냅샷에만)
+  const tuAmb=(tu&&Array.isArray(tu.ambiguous_files))?tu.ambiguous_files.filter(x=>Array.isArray(x)&&x.length>=2):[];
+  const tuMore=(tuUnk||tuAmb.length||tuWhy.length)?`<div class="note dim">${[tuUnk?`카탈로그 밖 설치 프로그램 ${tuUnk}개(이름은 싣지 않습니다)`:"",
+    tuAmb.length?`도구 불명 파일: ${tuAmb.slice(0,6).map(x=>esc(x[0])+" "+num(x[1])+"개").join(" · ")}`:""].concat(tuWhy).filter(Boolean).join(" / ")}</div>`:"";
+  const toolNote=(tuP.length||tuIn.length)
+    ?`<div class="note"><b>프로그램 사용(참고)</b> — ${esc((tu&&tu.note)||"참고 지표 — 투입 MM·로드율과 무관 · 실행 기록은 Windows 가 사용자 계정에 남긴 실행 흔적(관리자 권한 불필요)")}`
+      +(tuKindN.length?` · 구분 ${tuKindN.map(x=>esc(x[0])+" "+num(x[1])+"개").join(" · ")}`:(tuKind.length?` · 구분 ${tuKind.map(x=>esc(x[0])+" "+num(x[1]).toFixed(1)+"h").join(" · ")}`:""))
       +(num(tu.solver_bg_h)>=1?` · 배경 솔버 가동 ${num(tu.solver_bg_h).toFixed(0)}h`:"")
-      +(num(tu.unknown_h)>=1?` · 미상 ${num(tu.unknown_h).toFixed(0)}h`:"")
-      +` <span class="dim">— 맨 앞 창을 띄우고 있던 시간입니다. 투입 MM·로드율에는 들어가지 않습니다.</span></div>`
+      +(num(tu.unknown_h)>=1?` · 창기록 미상 ${num(tu.unknown_h).toFixed(0)}h`:"")
+      +(tuBasis?`<br><span class="dim">${tuBasis}</span>`:"")
+      +(tuP.length?`<table style="margin-top:4px"><tr><th>프로그램</th><th>구분·분류</th><th>출처</th><th>실행 횟수</th><th>포커스 시간</th><th>마지막 실행</th><th>파일 일수</th><th>창기록</th></tr>${tuP.slice(0,15).map(tuRow).join("")}</table>`:"")
+      +(tuP.length>15?`<div class="dim">… 외 ${tuP.length-15}개</div>`:"")
+      +`</div>`+tuInNote+tuMore
     :((tu&&tu.why)?`<div class="note"><b>프로그램 사용(참고)</b> <span class="dim">${esc(tu.why)}</span></div>`:"");
   const GC={reliable:["#0f7a3d","신뢰"],caution:["#c98a00","주의"],unreliable:["#c0122f","측정 불충분"]};
   const cvReasons=cv?((Array.isArray(cv.reasons)&&cv.reasons.length)?cv.reasons:(Array.isArray(cv.missing)?cv.missing:[])):[];
@@ -3797,7 +3833,7 @@ $("go").onclick=async()=>{
  if(!b.from||!b.to){alert("기간을 선택하세요");return;}
  const r=await fetch("/api/run",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});
  if(r.status===409){alert(await busyMsg(r,"이미 실행 중입니다"));return;}
- $("go").disabled=true;timer=setInterval(poll,1000);poll();
+ $("go").disabled=true;$("collect2").disabled=true;timer=setInterval(poll,1000);poll();
 };
 $("stop").onclick=async()=>{
  if(!confirm("실행 중인 분석을 중단할까요? 지금까지 수집·판정된 결과는 보존됩니다."))return;
@@ -3807,10 +3843,10 @@ $("stop").onclick=async()=>{
  if(timer){clearInterval(timer);timer=null;}
  loaded={};refresh();poll();tuLoad();
 };
-// ── 팀 취합 업로드 카드 (자동 전송 없음 — 가능한 망에서 버튼으로) ──
+// ── 팀 취합 업로드 카드 — LM28: [분석 실행] 끝에 자동 보고(run.py) · 못 보낸 것은 대기 → 닿는 망에서 버튼으로 ──
 let TU={pending:[],sent:[],url:"",share:""};
 function tuBusy(on,msg){
- ["tusend","tufolder","tuping","teamup"].forEach(id=>{const b=$(id);if(b)b.disabled=on;});
+ ["tusend","tufolder","tuping","teamup","tr_send"].forEach(id=>{const b=$(id);if(b)b.disabled=on;});
  $("tumsg").textContent=msg||"";
 }
 async function tuLoad(){
@@ -3842,12 +3878,16 @@ async function tuLoad(){
    <td>${Math.round((x.bytes||0)/1024).toLocaleString()}KB</td>
    <td>${x.total_mm==null?"–":esc(x.total_mm)}</td>
    <td><button class="ghost" data-drop="${esc(x.tag||x.file)}" style="padding:1px 6px;font-size:11px">버리기</button></td></tr>`).join("")+"</table>"
-  :'<div class="note">대기 중인 묶음이 없습니다 — [분석 실행]을 하면 여기에 쌓입니다.</div>';
+  :'<div class="note">대기 중인 묶음이 없습니다 — '+(d.auto===false?"[분석 실행]을 하면 여기에 쌓입니다."
+    :"[분석 실행]이 끝나면 팀 서버로 자동 보고되고, 보내지 못한 것만 여기에 남습니다.")+'</div>';
  const sb=$("tusend");
  if(sb)sb.textContent="팀 서버 업로드"+(p.length?` (${p.length}건)`:"");
  const st=d.sent||[];
  $("tusent").textContent=st.length?`최근 보냄: ${st.slice(0,3).map(x=>x.when).join(" · ")}`:"";
- if(d.auto)$("tustat").textContent="(설정: 분석 후 자동 전송도 시도)";
+ // 머리말 = 지금 설정(config.teamUpload.autoReport — teamup.auto_report_on 한 곳에서 읽은 값). 없으면(옛 서버) 기본 켬
+ const th=$("tuhead");
+ if(th)th.textContent=d.auto===false?"자동 보고 꺼짐(config.teamUpload.autoReport=false) — 서버에 닿는 망에서 버튼으로 보냅니다"
+  :"[분석 실행]이 끝나면 팀 서버로 자동 보고합니다 — 닿지 않으면 대기로 남고, 사내망에서 버튼으로 보냅니다";
  $("tupend").querySelectorAll("[data-drop]").forEach(btn=>btn.onclick=async()=>{
   if(!confirm(`${btn.dataset.drop} 묶음을 대기 목록에서 버릴까요?\\n(사본은 report\\\\upload_sent 에 남습니다)`))return;
   const r=await fetch("/api/teamdrop",{method:"POST",headers:{"Content-Type":"application/json"},
@@ -3910,6 +3950,7 @@ async function tuSendConfirmed(p){
    body:"{}"}).then(x=>x.json()).catch(()=>({ok:false,error:"통신 실패"}));
  tuBusy(false,"");
  await tuLoad();
+ trLoad(false);                  // 다 보냈으면 teamup 이 '성공' 을 남긴다 — 자동 보고 실패 배너가 여기서 내려간다
  if(r.error==="busy"){alert("다른 작업이 실행 중입니다 — 끝난 뒤 다시 누르세요.");return;}
  if(r.unreachable){
   alert("이 망에서는 팀 서버에 닿지 않습니다.\\n\\n"+(r.error||"")+"\\n\\n묶음은 그대로 대기합니다 — 사내망에서 이 버튼을 다시 누르면 밀린 것까지 한 번에 올라갑니다.");
@@ -3929,6 +3970,7 @@ $("tufolder").onclick=async()=>{
    body:JSON.stringify({share:path})}).then(x=>x.json()).catch(()=>({ok:false,error:"통신 실패"}));
  tuBusy(false,"");
  await tuLoad();
+ trLoad(false);
  const lines=(r.results||[]).map(x=>`· ${x.tag||x.file}: ${x.ok?"저장":"실패"} ${x.msg||""}`).join("\\n");
  alert((r.ok?`공유폴더 저장 완료 — ${r.sent||0}건`:`실패 — ${r.error||""}`)+(lines?"\\n\\n"+lines:""));
 };
@@ -3943,17 +3985,63 @@ async function tuBuild(latest){
 }
 $("tubuild").onclick=()=>tuBuild(false);
 $("tuopen").onclick=()=>fetch("/api/teamopen",{method:"POST"});
+// [로컬PC 자료수집](id collect2 · 구 '추가 PC 수집' — 이름이 헷갈린다는 제보로 LM28 에서 바꿈) = run.py --collect-only.
+// [분석 실행]과 같은 수집기를 돌리고 Copilot 경로만 뺀다(run.collect_headless). 분석·팀 서버 보고는 하지 않는다.
 $("collect2").onclick=async()=>{
  const b={from:$("from").value,to:$("to").value,collect_only:true};
  if(!b.from||!b.to){alert("기간을 선택하세요");return;}
- if(!confirm("이 PC 의 데이터를 수집만 합니다 (분석 없음).\\n\\n"
-   +"· 다른 PC 에서 가져온 폴더라면, 지난 PC 데이터는 data\\\\추가PC\\\\ 로 자동 보관됩니다\\n"
-   +"· 수집 후 폴더째 본 PC 로 가져가 [분석 실행]을 누르면 두 PC 가 합산됩니다\\n"
-   +"· 같은 메일·일정 등 중복 자료는 분석 때 자동 제외됩니다\\n\\n진행할까요?"))return;
+ if(!confirm("[로컬PC 자료수집] 이 PC 의 자료만 모읍니다 — AI 분석·팀 서버 보고는 하지 않습니다.\\n\\n"
+   +"· 메일·일정·팀즈(Outlook 웹·팀즈 웹 포함)·파일·PC 가동 기록을 [분석 실행]과 같은 방법으로 모읍니다(Copilot 은 쓰지 않습니다)\\n"
+   +"· 다른 PC 에서 가져온 폴더라면, 지난 PC 자료는 data\\\\추가PC\\\\ 로 자동 보관됩니다\\n"
+   +"· 모은 뒤 폴더째 분석할 PC 로 옮겨 [분석 실행]을 누르면 두 PC 자료가 합쳐집니다\\n"
+   +"· 같은 메일·일정 등 겹치는 자료는 분석 때 자동 제외됩니다\\n\\n진행할까요?"))return;
  const r=await fetch("/api/run",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});
  if(r.status===409){alert(await busyMsg(r,"이미 실행 중입니다"));return;}
- timer=setInterval(poll,1000);poll();
+ $("go").disabled=true;$("collect2").disabled=true;timer=setInterval(poll,1000);poll();
 };
+// ── 팀 서버 자동 보고 결과(LM28 — report\\team_report_status.json 을 /api/teamreport 로) ──
+// 실패: 끝난 실행 1번당 알림 1번(열쇠 = 상태의 at — 이 화면을 연 뒤 바뀐 것만 · localStorage 로 새로고침·두 창을 넘어 1번)
+// + 다음 성공(자동 보고·버튼·공유폴더 저장)까지 남는 배너([닫기] = 그 실패만 숨김). 성공: 대기 글자 뒤에 조용히 붙인다.
+// 얼린 보고서 사본에는 /api/teamreport 를 굽지 않는다(freeze.FREEZE_EPS 밖) — 사본에 배너·알림이 뜨지 않는다.
+async function trLoad(fromRun){
+ const d=await fetch("/api/teamreport").then(r=>r.json()).catch(()=>null);
+ trRender((d&&d.ok===true&&d.report)?d.report:{},fromRun);
+}
+function trRender(r,fromRun){
+ const T=window.__tr||(window.__tr={seen:null,alerted:""}), NL=String.fromCharCode(10);
+ const k=String(r.at||""), failed=r.ok===false, el=$("tr_banner");
+ let dis="";try{dis=localStorage.getItem("lm28_tr_dismiss")||"";}catch(e){}
+ if(el){
+  if(failed&&k&&k!==dis){
+   el.style.display="";
+   el.innerHTML='⚠️ <b>팀 서버 자동 보고 실패 — '+esc(r.reason||"사유 미상")+'</b> <span style="color:#a0606a">('+esc(k)+')</span>'
+    +(r.detail?'<div style="font-size:11.5px">'+esc(String(r.detail).slice(0,200))+'</div>':"")
+    +'<div>'+esc(r.hint||"")+'</div>'
+    +'<div style="margin-top:6px"><button class="ghost" id="tr_send">팀 서버 업로드</button> <button class="ghost" id="tr_close">닫기</button></div>';
+   $("tr_send").onclick=tuSend;
+   $("tr_close").onclick=()=>{try{localStorage.setItem("lm28_tr_dismiss",k);}catch(e){}el.style.display="none";};
+  }else el.style.display="none";
+ }
+ const tl=$("tureport");
+ if(tl)tl.innerHTML=!k?"":(r.ok===true
+   ?`<span style="color:#0f7a3d">● 마지막 팀 서버 보고 ${esc(k)} — ${r.sent||0}건 보냄(${r.via==="auto"?"분석 끝 자동":(r.via==="folder"?"공유폴더":"버튼·bat")})</span>`
+   :(failed?`<span style="color:#c0122f">● 마지막 자동 보고 ${esc(k)} — 실패: ${esc(r.reason||"")} · 대기 ${r.pending||0}건</span>`
+     :`<span class="state">● 자동 보고 건너뜀 ${esc(k)} — ${esc(r.reason||"")}</span>`));
+ if(fromRun&&k&&k!==T.seen){
+  window.__trIdle=r.ok===true?`팀 서버 보고 완료 (${r.sent||0}건)`:"";
+  if(failed&&k!==T.alerted){
+   let al="";try{al=localStorage.getItem("lm28_tr_alerted")||"";}catch(e){}
+   T.alerted=k;
+   if(k!==al){
+    try{localStorage.setItem("lm28_tr_alerted",k);}catch(e){}
+    alert("팀 서버 자동 보고 실패 — "+(r.reason||"사유 미상")+(r.detail?NL+"("+String(r.detail).slice(0,160)+")":"")
+     +NL+NL+(r.hint||"결과 묶음은 대기로 남았습니다. 사내망에서 [팀 서버 업로드]를 누르면 밀린 것까지 보내집니다."));
+   }
+  }
+ }
+ if(fromRun||T.seen===null)T.seen=k;
+}
+trLoad(false);
 $("report").onclick=async()=>{
  const NL=String.fromCharCode(10);
  $("report").disabled=true;$("state").textContent="보고서 만드는 중… (리포트·분석리포트·얼린 보고서)";
@@ -4892,7 +4980,8 @@ class H(BaseHTTPRequestHandler):
                 import teamup as _tu
                 st = {**_addr_payload(),
                       "share": (cfg().get("teamShareDir") or "").strip(),
-                      "auto": False,
+                      # [분석 실행] 끝 자동 보고 켬 — run.py 와 같은 한 함수(config.teamUpload.autoReport · 기본 켬)
+                      "auto": _tu.auto_report_on(cfg()),
                       "pending": _tu.list_pending(), "sent": _tu.list_sent(),
                       "available": _tu.buildable()}
             except Exception as e:                # 임포트가 안 되면 예전 방식으로
@@ -4926,6 +5015,18 @@ class H(BaseHTTPRequestHandler):
             else:
                 st["ok"] = True
                 self._send(200, st)
+        elif self.path == "/api/teamreport":
+            # LM28 — 마지막 팀 서버 보고 결과(report\team_report_status.json: run.py 자동 보고 · teamup 버튼/공유폴더 '다 보냄').
+            # 화면이 실패 알림(끝난 실행 1번당 1번)·배너(다음 성공까지)를 여기서 정한다. 얼린 보고서는 이 길을 굽지 않는다
+            # (freeze.FREEZE_EPS 밖 — 사유 원문이 공유되는 사본에 굳지 않게).
+            try:
+                if ROOT not in sys.path:
+                    sys.path.insert(0, ROOT)
+                import teamup as _tu
+                self._send(200, {"ok": True, "report": _tu.read_report_status(REPORT),
+                                 "auto": _tu.auto_report_on(cfg())})
+            except Exception as e:  # noqa: BLE001 - 모르면 '모름' — 화면은 배너를 띄우지 않는다
+                self._send(200, {"ok": False, "error": f"{type(e).__name__}: {str(e)[:80]}"})
         elif self.path == "/api/projects":
             import projmap
             self._send(200, {"projects": projmap.load_user_projects(ROOT)})
@@ -5166,9 +5267,9 @@ class H(BaseHTTPRequestHandler):
             saved = projmap.save_user_projects(ROOT, b.get("projects") or [])
             self._send(200, {"ok": True, "projects": saved})
         elif self.path in ("/api/teamup", "/api/teamfolder", "/api/teamping"):
-            # 팀 취합은 자동 전송하지 않는다 — 팀 서버는 특정 망에서만 닿기 때문(실측).
-            # 여기서는 사용자가 '지금 이 망에서' 누른 것만 처리한다. teamup.py 가 --json 으로
-            # 마지막 줄에 결과를 주므로 건별 성공/실패를 그대로 화면에 돌려준다.
+            # 사람이 '지금 이 망에서' 누른 것 — 자동 보고는 [분석 실행] 끝에서 run.py 가 같은 teamup.py --upload 로 한다
+            # (LM28). 팀 서버는 특정 망에서만 닿으므로 거기서 못 보낸 묶음을 여기서 보낸다. teamup.py 가 --json 으로
+            # 마지막 줄에 결과를 주므로 건별 성공/실패를 그대로 화면에 돌려준다(다 보내면 teamup 이 보고 상태에 '성공' 을 남긴다).
             n = int(self.headers.get("Content-Length", 0))
             try:
                 b = json.loads(self.rfile.read(n) or b"{}")

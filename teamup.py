@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
 r"""
-teamup.py — 분석 결과를 팀 저장소로 올린다 (LoadMonitor28: 자동 전송이 아니라 '대기 → 버튼')
+teamup.py — 분석 결과를 팀 저장소로 올린다 (LoadMonitor28: 묶음 '대기' → [분석 실행] 끝 자동 보고 → 실패면 버튼)
 
-팀 서버는 특정 망에서만 닿는다. 분석은 아무 망에서나 하니
-분석 때마다 자동 전송을 시도하면 대부분 실패하고, 그 결과가 조용히 사라진다(실측).
-그래서 LM19 는 이렇게 나눈다:
+팀 서버는 특정 망에서만 닿는다. 분석은 아무 망에서나 하니 분석 끝에 보내면 실패가 잦고,
+LM19 이전에는 그 실패가 조용히 묻혀 결과가 사라졌다(실측). 그래서 이렇게 나눈다:
 
-  1) 분석이 끝나면  → 보낼 묶음을 report\upload_pending\ 에 만들어 둔다 (전송 안 함)
-  2) 서버에 닿는 망에서 → 대시보드 [팀 서버 업로드] 버튼(또는 이 스크립트)으로 한 번에 보낸다
+  1) 분석이 끝나면  → 보낼 묶음을 report\upload_pending\ 에 **먼저** 만들어 둔다(어떤 실패에도 대기로 남는다)
+  2) 이어서 run.py 가 --upload --json 으로 자동 보고한다(LM28 사용자 요청 · config.teamUpload.autoReport 기본 켬).
+     결과는 report\team_report_status.json 에 남고, 실패하면 화면이 알림 1번 + 배너로 말한다(조용히 묻지 않는다)
+  3) 서버에 닿는 망에서 → 대시보드 [팀 서버 업로드] 버튼(또는 이 스크립트)으로 밀린 것까지 한 번에 보낸다
      밀린 기간이 여러 개면 전부 함께 올라가고, 보낸 묶음은 report\upload_sent\ 로 옮긴다
 
   python teamup.py --build --from 2026-05-19 --to 2026-08-17   묶음 준비(전송 안 함)
@@ -20,7 +21,8 @@ teamup.py — 분석 결과를 팀 저장소로 올린다 (LoadMonitor28: 자동
   python teamup.py --to-folder "\\서버\공유\LoadMonitor"          공유폴더로 대신 저장
       (개인 HTML 보고서 분석리포트_<기간>.html·보고서_<기간>.html 이 있으면
        <폴더>\개인리포트\<이름>_<파일명> 으로 함께 복사 — 팀 서버 묶음에는 넣지 않는다)
-  (--json 을 붙이면 마지막 줄에 결과 JSON 한 줄 — 대시보드가 이걸 읽는다)
+  (--json 을 붙이면 마지막 줄에 결과 JSON 한 줄 — 대시보드·run.py 자동 보고가 이걸 읽는다.
+   --upload 는 묶음마다 results[].kind = sent·blocked·rejected·unreachable, 주소가 없으면 no_url, 남은 대기 수 pending)
 
 묶음 내용은 팀 공유폴더 내보내기(export.py)와 동일하다 — 이미 excludePathKeywords 로 걸러진
 판정 결과다. 사내망 전용.
@@ -44,6 +46,9 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 REPORT = os.path.join(ROOT, "report")
 PENDING = os.path.join(REPORT, "upload_pending")
 SENT = os.path.join(REPORT, "upload_sent")
+# 마지막 팀 서버 보고 결과(LM28) — run.py 자동 보고가 성공·실패를, 여기 --upload·--to-folder 가 '다 보냄' 을 쓴다.
+# 대시보드는 이 파일로 실패 배너(다음 성공까지)와 실행 1회당 알림 1번을 정한다(at 이 그 열쇠)
+REPORT_STATUS = "team_report_status.json"
 MAX_BYTES = 30 * 1024 * 1024        # 서버 상한과 같다 — 넘으면 보내기 전에 알려 준다
 LM_VER = "LM28"                     # member.lm_ver — 묶음을 만든 판(추가 키만, 기존 키·파일명 불변)
 if __name__ == "__main__":
@@ -252,15 +257,48 @@ def tool_usage_of(mj, b):
         if tu.get(k) is not None:
             out[k] = _hours(tu.get(k))
     progs = tu.get("programs") if isinstance(tu.get("programs"), list) else []
-    out["programs"] = [{"name": str(p.get("name") or "")[:40], "kind": str(p.get("kind") or "")[:6],
-                        "cat": str(p.get("cat") or "")[:10], "hours": _hours(p.get("hours")),
-                        "bg_hours": _hours(p.get("bg_hours")), "days": _count(p.get("days"))}
-                       for p in progs if isinstance(p, dict)][:12]
+
+    def _opt(x, f):           # 증가분을 모르는 칸(None — 실행 기록 스냅샷 1장)은 None 그대로: 0 이면 '안 썼다' 로 읽힌다
+        return None if x is None else f(x)
+    out["programs"] = []
+    for p in [p for p in progs if isinstance(p, dict)][:12]:
+        row = {"name": str(p.get("name") or "")[:40], "kind": str(p.get("kind") or "")[:6],
+               "cat": str(p.get("cat") or "")[:10], "hours": _hours(p.get("hours")),
+               "bg_hours": _hours(p.get("bg_hours")), "days": _count(p.get("days"))}
+        if isinstance(p.get("src"), list):
+            # LM28 — 출처(창기록·실행기록·파일)·실행 횟수·포커스 시간·마지막 실행·파일 일수(숫자·날짜만 — 경로·파일 이름 없음)
+            row.update(src=[str(s)[:6] for s in p["src"]][:3], runs=_opt(p.get("runs"), _count),
+                       runs_cum=_opt(p.get("runs_cum"), _count), taskbar=_opt(p.get("taskbar"), _count),
+                       focus_h=_opt(p.get("focus_h"), _hours), focus_h_cum=_opt(p.get("focus_h_cum"), _hours),
+                       last_run=str(p.get("last_run") or "")[:16], file_days=_count(p.get("file_days")),
+                       files=_count(p.get("files")))
+        out["programs"].append(row)
     for k in ("by_cat", "by_kind"):
         v = tu.get(k)
         if isinstance(v, list):
             out[k] = [[str(x[0])[:12], _hours(x[1])] for x in v
                       if isinstance(x, (list, tuple)) and len(x) >= 2][:8]
+    for k in ("by_kind_n", "by_cat_n"):          # 프로그램 수 — '자체·프로토타입(추정)' 이 잘리지 않게 14자
+        v = tu.get(k)
+        if isinstance(v, list):
+            out[k] = [[str(x[0])[:14], _count(x[1])] for x in v if isinstance(x, (list, tuple)) and len(x) >= 2][:8]
+    # 자체·프로토타입(추정) — 이름은 core 가 G3 관문(privacy.gate_items)을 거친 것만 mm_meta 에 실었다. 상위 12개·숫자만 더한다
+    if isinstance(tu.get("inhouse"), list):
+        out["inhouse"] = [{"name": str(x.get("name") or "")[:40], "cls": str(x.get("cls") or "")[:12],
+                           "runs": _opt(x.get("runs"), _count), "runs_cum": _opt(x.get("runs_cum"), _count),
+                           "focus_h": _opt(x.get("focus_h"), _hours), "last_run": str(x.get("last_run") or "")[:16]}
+                          for x in tu["inhouse"] if isinstance(x, dict) and x.get("name")][:12]
+        out["inhouse_n"] = _count(tu.get("inhouse_n"))
+        out["inhouse_hidden"] = _count(tu.get("inhouse_hidden"))
+    src = tu.get("sources")
+    if isinstance(src, dict):                    # 원천 요약 — 스칼라만(이유 글·스냅샷 날짜·건수)
+        out["sources"] = {str(sk)[:8]: {str(kk)[:16]: (vv[:200] if isinstance(vv, str) else
+                                                       [str(y)[:10] for y in vv][:2] if isinstance(vv, list) else vv)
+                                        for kk, vv in list(sv.items())[:16]
+                                        if vv is None or isinstance(vv, (bool, int, float, str, list))}
+                          for sk, sv in list(src.items())[:4] if isinstance(sv, dict)}
+    if isinstance(tu.get("note"), str):
+        out["note"] = tu["note"][:200]
     return out
 
 
@@ -474,14 +512,17 @@ def ping(url, timeout=4.0):
 
 
 def upload_one(url, path, timeout=360.0):
-    """대기 묶음 한 개 전송 → (ok, 메시지)"""
+    """대기 묶음 한 개 전송 → (ok, 메시지, 갈래).
+    갈래(LM28) — 자동 보고(run.py)가 실패 사유를 한국어 문구의 부분 문자열이 아니라 이 값으로 가른다(문구를 다듬어도
+    분류가 깨지지 않게): sent 보냄 · blocked 이 묶음은 이대로 보낼 수 없음(읽기 실패·크기·이름·파일명·개인정보 관문·형식) ·
+    rejected 서버가 받지 않음(HTTP 오류·ok:false·응답 해석 불가) · unreachable 보내는 중 연결이 끊김(망·시간 초과)."""
     try:
         raw = open(path, "rb").read()
     except OSError as e:
-        return False, f"묶음을 읽지 못했습니다: {e}"
+        return False, f"묶음을 읽지 못했습니다: {e}", "blocked"
     if len(raw) > MAX_BYTES:
         return False, (f"묶음이 너무 큽니다 ({len(raw) / 1048576:.1f}MB > 30MB) — "
-                       "기간을 나눠 분석한 뒤 다시 시도하세요")
+                       "기간을 나눠 분석한 뒤 다시 시도하세요"), "blocked"
     # 저장한 본문에는 built 가 더 들어 있다. 서버는 member/files 만 보므로 그대로 보내도 되지만,
     # 계약을 명확히 하려고 두 키만 추려 보낸다.
     try:
@@ -510,14 +551,14 @@ def upload_one(url, path, timeout=360.0):
             else:
                 files[_n] = _txt
         if not files:
-            return False, "보낼 수 있는 파일이 없습니다 — 신호 파일이 개인정보 관문에 막혔습니다(다시 분석하세요)"
+            return False, "보낼 수 있는 파일이 없습니다 — 신호 파일이 개인정보 관문에 막혔습니다(다시 분석하세요)", "blocked"
         stop = blockers(member, files)
         if stop:
-            return False, stop[0]
+            return False, stop[0], "blocked"
         body = json.dumps({"member": member, "files": files},
                           ensure_ascii=False).encode("utf-8")
     except (ValueError, UnicodeDecodeError):
-        return False, "묶음 형식이 깨졌습니다 — 해당 기간을 다시 분석하세요"
+        return False, "묶음 형식이 깨졌습니다 — 해당 기간을 다시 분석하세요", "blocked"
     req = urllib.request.Request(url + "/api/upload", data=body,
                                  headers={"Content-Type": "application/json; charset=utf-8"})
     try:
@@ -529,13 +570,13 @@ def upload_one(url, path, timeout=360.0):
             detail = e.read().decode("utf-8", "replace")[:200]
         except OSError:
             pass
-        return False, f"서버가 거부했습니다 (HTTP {e.code}) {detail}"
+        return False, f"서버가 거부했습니다 (HTTP {e.code}) {detail}", "rejected"
     except (urllib.error.URLError, OSError) as e:
-        return False, f"연결 실패: {getattr(e, 'reason', e)}"
+        return False, f"연결 실패: {getattr(e, 'reason', e)}", "unreachable"
     except ValueError:
-        return False, "서버 응답을 해석하지 못했습니다"
-    if not res.get("ok"):
-        return False, f"서버 거부: {res.get('error', '')}"
+        return False, "서버 응답을 해석하지 못했습니다", "rejected"
+    if not isinstance(res, dict) or not res.get("ok"):
+        return False, f"서버 거부: {res.get('error', '') if isinstance(res, dict) else ''}", "rejected"
     where = str(res.get("store") or "")
     host = str(res.get("host") or "")
     me = os.environ.get("COMPUTERNAME", "")
@@ -549,11 +590,11 @@ def upload_one(url, path, timeout=360.0):
         # 같은 PC 인데 다른 설치 폴더가 받았다 — 사용자가 겪은 바로 그 상황
         note += "  [!] 이 PC 의 다른 폴더가 받았습니다 — 그 폴더의 팀 취합에 들어갑니다"
     return True, (f"{res.get('saved')}개 파일 저장, 팀 취합 "
-                  f"{'갱신됨' if res.get('aggregated') else '갱신 실패(서버 로그 확인)'}" + note)
+                  f"{'갱신됨' if res.get('aggregated') else '갱신 실패(서버 로그 확인)'}" + note), "sent"
 
 
 def upload_all(url, timeout=360.0):
-    """대기 묶음을 전부 전송. 성공분만 upload_sent 로 옮긴다(실패분은 그대로 대기)."""
+    """대기 묶음을 전부 전송. 성공분만 upload_sent 로 옮긴다(실패분은 그대로 대기). 묶음마다 kind(upload_one 의 갈래)."""
     items = list_pending()
     results = []
     if not items:
@@ -563,7 +604,7 @@ def upload_all(url, timeout=360.0):
     sent = failed = 0
     for it in items:
         p = os.path.join(PENDING, it["file"])
-        ok, msg = upload_one(url, p, timeout)
+        ok, msg, kind = upload_one(url, p, timeout)
         if ok:
             sent += 1
             try:                            # 보낸 것은 옮겨 두 번 보내지 않는다(기록은 남긴다)
@@ -573,7 +614,7 @@ def upload_all(url, timeout=360.0):
             prune_sent()
         else:
             failed += 1
-        results.append({"file": it["file"], "tag": it.get("tag", ""), "ok": ok, "msg": msg})
+        results.append({"file": it["file"], "tag": it.get("tag", ""), "ok": ok, "msg": msg, "kind": kind})
     return {"ok": failed == 0, "sent": sent, "failed": failed, "results": results}
 
 
@@ -706,10 +747,64 @@ def drop(which):
     return {"ok": True, "dropped": [it["file"] for it in hits], "pending": len(list_pending())}
 
 
+def auto_report_on(cfg):
+    r"""[분석 실행] 끝에 팀 서버로 자동 보고할까 → bool (LM28 사용자 요청 — "분석실행 마무리는 팀서버로 자동으로 레포팅까지").
+    config.teamUpload.autoReport — 없거나 null·빈 값이면 켬(기본), false·"false"·0·"off"·"no" 면 끔. 이 키가 있으면 이것이 이긴다.
+    옛 키 teamUpload.auto 는 보지 않는다: true 는 '켜기' 라 기본과 같고, false 는 LM19~LM24 배포 설정의 **기본값**이었을 뿐
+    사용자가 고른 뜻이 아니다(끄기로 읽으면 옛 설정을 이어받은 PC 전부가 자동 보고를 못 받는다).
+    run.py(보고 여부)·화면(카드 머리말)·status()(--list)가 모두 이 한 함수로 읽는다 — 해석이 갈리지 않게."""
+    tu = cfg.get("teamUpload") if isinstance(cfg, dict) else None
+    v = tu.get("autoReport") if isinstance(tu, dict) else None
+    if v is None or (isinstance(v, str) and not v.strip()):
+        return True
+    if isinstance(v, bool):
+        return v
+    return str(v).strip().lower() not in ("0", "false", "no", "off")
+
+
+def write_report_status(rep_dir, st):
+    r"""report\team_report_status.json 쓰기(임시 파일 → 교체 — 화면이 반쪽 파일을 읽지 않게) → 경로 | None.
+    at 이 없으면 지금 시각(초까지 — 화면이 이 값을 열쇠로 '끝난 실행 1번당 알림 1번' 을 가른다).
+    싣는 것은 건수·사유·시각뿐이다(묶음 본문·메일 제목 없음). 쓰기 실패는 삼킨다 — 기록이 분석·업로드를 실패로 만들지 않게."""
+    try:
+        d = dict(st or {})
+        d.setdefault("at", time.strftime("%Y-%m-%d %H:%M:%S"))
+        os.makedirs(rep_dir, exist_ok=True)
+        p = os.path.join(rep_dir, REPORT_STATUS)
+        with open(p + ".tmp", "w", encoding="utf-8") as f:
+            json.dump(d, f, ensure_ascii=False, indent=1)
+        os.replace(p + ".tmp", p)
+        return p
+    except (OSError, TypeError, ValueError):
+        return None
+
+
+def read_report_status(rep_dir):
+    """마지막 팀 서버 보고 결과(dict) — 없거나 깨졌으면 {}"""
+    try:
+        with open(os.path.join(rep_dir, REPORT_STATUS), encoding="utf-8-sig") as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
+def _sent_status(r, via):
+    """버튼·bat(--upload)·공유폴더(--to-folder)가 대기분을 **다** 보냈을 때만 '성공' 을 남긴다 — 자동 보고 실패 배너는
+    다음 성공까지 뜨므로, 사람이 사내망에서 밀린 것을 보내면 그 배너가 내려가야 한다. 일부라도 실패면 지난 기록 그대로."""
+    try:
+        done = isinstance(r, dict) and r.get("ok") and int(r.get("sent") or 0) > 0 and not int(r.get("failed") or 0)
+    except (TypeError, ValueError):
+        done = False
+    if done:
+        write_report_status(REPORT, {"ok": True, "sent": int(r["sent"]), "failed": 0, "pending": len(list_pending()),
+                                     "reason": "", "hint": "", "via": via})
+
+
 def status(cfg, url=""):
-    """대시보드용 현황 — 도달성 확인은 하지 않는다(누를 때만 한다)"""
+    """대시보드용 현황 — 도달성 확인은 하지 않는다(누를 때만 한다). auto = [분석 실행] 끝 자동 보고 켬(auto_report_on)."""
     return {"url": url or target_url(cfg), "share": (cfg.get("teamShareDir") or "").strip(),
-            "auto": bool((cfg.get("teamUpload") or {}).get("auto")),
+            "auto": auto_report_on(cfg),
             "pending": list_pending(), "sent": list_sent(),
             # 묶음이 없어도 결과가 있으면 '지금 묶기'를 권할 수 있게(실측 제보)
             "available": buildable()}
@@ -792,13 +887,15 @@ def main():
     if "--to-folder" in sys.argv:
         share = arg("--to-folder") or (cfg.get("teamShareDir") or "")
         r = to_folder(share)
+        _sent_status(r, "folder")
         _out(js, r, f"[teamup] 공유폴더 저장: 성공 {r.get('sent', 0)} / 실패 {r.get('failed', 0)}"
                     + (f" — {r.get('error', '')}" if r.get("error") else ""))
         return 0 if r.get("ok") else 1
     if "--upload" in sys.argv:
         url = target_url(cfg)
         if not url:
-            _out(js, {"ok": False, "error": "팀 서버 주소가 비었거나 형식이 틀렸습니다"},
+            _out(js, {"ok": False, "error": "팀 서버 주소가 비었거나 형식이 틀렸습니다", "no_url": True,
+                      "pending": len(list_pending())},
                  "[teamup] 팀 서버 주소가 비었거나 형식이 틀렸습니다 — LoadMonitor28-팀서버주소.bat 에서 "
                  "서버 IP·포트를 저장하세요")
             return 1
@@ -811,6 +908,8 @@ def main():
                  "서버망에서 다시 실행하면 한 번에 올라갑니다.")
             return 1
         r = upload_all(url)
+        r["pending"] = len(list_pending())      # 보낸 뒤 남은 대기 수(LM28 — 자동 보고·화면 배너가 읽는다)
+        _sent_status(r, "upload")
         lines = [f"[teamup] 전송 완료: 성공 {r['sent']} / 실패 {r['failed']}"]
         for x in r.get("results", []):
             lines.append(f"         - {x.get('tag', x['file'])}: {'OK' if x['ok'] else '실패'} {x['msg']}")
@@ -834,6 +933,7 @@ def main():
             print(f"[teamup] 이 망에서 서버에 닿지 않습니다 — 묶음은 대기합니다 ({pg.get('error', '')})")
             return 1
         r = upload_all(url)
+        _sent_status(r, "upload")
         print(f"[teamup] 전송: 성공 {r['sent']} / 실패 {r['failed']}")
         for x in r.get("results", []):      # 무엇이 어떻게 됐는지 화면에 남긴다(서버 갱신 여부 포함)
             print(f"         - {x.get('tag', x['file'])}: {'OK' if x['ok'] else '실패'} {x['msg']}")

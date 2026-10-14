@@ -148,6 +148,110 @@ def coverage_badge(meta, b):
             f"background:#fff;vertical-align:middle'>{GRADE_LABEL[g]}</span>")
 
 
+TOOL_NOTE = "참고 지표 — 투입 MM·로드율과 무관 · 실행 기록은 Windows 가 사용자 계정에 남긴 실행 흔적(관리자 권한 불필요)"
+
+
+def _tool_ev(p):
+    """프로그램 한 줄의 가장 센 근거 한 마디 — 창기록 시간 > 실행 증가분 > 누적 실행 > 파일 일수 > 배경 솔버."""
+    if _h(p.get("hours")) >= 0.05:
+        return f"{_h(p.get('hours')):.1f}h" + (f"(배경 {_h(p.get('bg_hours')):.0f}h)" if _h(p.get("bg_hours")) >= 1 else "")
+    if p.get("runs") is not None and _n(p.get("runs")):
+        return f"실행 {_n(p.get('runs'))}회"
+    if p.get("focus_h") is not None and _h(p.get("focus_h")) >= 0.05:      # 띄워 둔 채 쓴 도구 — 새 실행 없이 포커스만
+        return f"포커스 {_h(p.get('focus_h')):.1f}h"
+    if p.get("runs_cum") is not None and _n(p.get("runs_cum")):
+        return f"누적 실행 {_n(p.get('runs_cum'))}회"
+    if _n(p.get("file_days")):
+        return f"파일 {_n(p.get('file_days'))}일"
+    if _h(p.get("bg_hours")) >= 1:
+        return f"배경 {_h(p.get('bg_hours')):.0f}h"
+    return str(p.get("last_run") or "")[:10]
+
+
+def tool_usage_text(tu):
+    """8절 '프로그램 사용(참고)' 칸의 글(태그 없이 — 셀은 부르는 쪽이 통째로 esc 한다). 옛 꼴(창기록만)·새 꼴 둘 다. 비면 ''."""
+    tu = tu if isinstance(tu, dict) else {}
+    progs = [p for p in (tu.get("programs") or []) if isinstance(p, dict) and p.get("name")]
+    inh = [x for x in (tu.get("inhouse") or []) if isinstance(x, dict) and x.get("name")]
+    if not progs and not inh and not _n(tu.get("inhouse_hidden")):
+        return str(tu.get("why") or "").strip()
+    v = " · ".join(f"{p.get('name')}({_tool_ev(p)})" if _tool_ev(p) else str(p.get("name")) for p in progs[:6])
+    kinds = [x for x in (tu.get("by_kind_n") or []) if isinstance(x, (list, tuple)) and len(x) >= 2]
+    if kinds:
+        v += " / 구분: " + " · ".join(f"{x[0]} {_n(x[1])}개" for x in kinds)
+    else:
+        hk = [x for x in (tu.get("by_kind") or []) if isinstance(x, (list, tuple)) and len(x) >= 2 and _h(x[1]) > 0]
+        if hk:
+            v += " / 구분: " + " · ".join(f"{x[0]} {_h(x[1]):.1f}h" for x in hk)
+    if inh or _n(tu.get("inhouse_hidden")):
+        v += f" / 자체·프로토타입(추정) {len(inh) + _n(tu.get('inhouse_hidden'))}개"
+    if _h(tu.get("solver_bg_h")) >= 1:
+        v += f" / 배경 솔버 가동 {_h(tu.get('solver_bg_h')):.0f}h"
+    if _h(tu.get("unknown_h")) >= 1:
+        v += f" / 창기록 미상 {_h(tu.get('unknown_h')):.0f}h(카탈로그에 없는 실행 파일)"
+    return v + " / ※ " + str(tu.get("note") or TOOL_NOTE) + (" — 상세는 아래 표" if tu.get("sources") else "")
+
+
+def tool_usage_table(tu):
+    """8절 뒤에 붙는 프로그램 사용 상세 표(HTML — 값은 전부 esc). 출처·실행 횟수·포커스 시간·마지막 실행·파일 일수와
+    자체·프로토타입(추정) 목록. 새 꼴(sources 가 있는 것)만 — 옛 꼴은 8절 한 칸으로 충분하다. 비면 ''."""
+    tu = tu if isinstance(tu, dict) else {}
+    if not isinstance(tu.get("sources"), dict):
+        return ""
+    progs = [p for p in (tu.get("programs") or []) if isinstance(p, dict) and p.get("name")]
+    inh = [x for x in (tu.get("inhouse") or []) if isinstance(x, dict) and x.get("name")]
+    if not progs and not inh:
+        return ""
+
+    def cnt(v, c):
+        if v is None:
+            return "–" if c is None else f"누적 {_n(c):,}"
+        return f"{_n(v):,}회"
+
+    def hrs(v, c):
+        if v is None:
+            return f"누적 {_h(c):.1f}h" if _h(c) else "–"
+        return f"{_h(v):.1f}h"
+    reg = tu["sources"].get("실행기록") if isinstance(tu["sources"].get("실행기록"), dict) else {}
+    win = reg.get("window") if isinstance(reg.get("window"), list) and len(reg.get("window")) == 2 else None
+    basis = (f"실행 횟수·포커스 시간 = 실행 기록 스냅샷 {win[0]}~{win[1]} 사이 증가분" if reg.get("basis") == "delta" and win
+             else ("실행 기록 스냅샷이 1장뿐이라 횟수·시간은 이 계정의 누적값" if reg.get("basis") == "cum" else ""))
+    h = ["<h3 style='font-size:14px'>프로그램 사용(참고) — 상용·비상용·자체 도구</h3>",
+         f"<div class='dim'>{esc(str(tu.get('note') or TOOL_NOTE))}" + (f" · {esc(basis)}" if basis else "") + "</div>"]
+    if progs:
+        h.append("<table><tr><th>프로그램</th><th>구분·분류</th><th>출처</th><th>실행 횟수</th><th>포커스 시간</th>"
+                 "<th>마지막 실행</th><th>파일 일수</th><th>창기록</th></tr>")
+        for p in progs[:25]:
+            src = p.get("src") if isinstance(p.get("src"), list) else ["창기록"]
+            side = (f"{_h(p.get('hours')):.1f}h" if _h(p.get("hours")) >= 0.05 else
+                    (f"배경 {_h(p.get('bg_hours')):.0f}h" if _h(p.get("bg_hours")) >= 1 else "–"))
+            h.append(f"<tr><td><b>{esc(p.get('name'))}</b></td>"
+                     f"<td>{esc(p.get('kind'))}{(' · ' + esc(p.get('cat'))) if p.get('cat') else ''}</td>"
+                     f"<td>{esc('·'.join(str(s) for s in src))}</td><td>{esc(cnt(p.get('runs'), p.get('runs_cum')))}</td>"
+                     f"<td>{esc(hrs(p.get('focus_h'), p.get('focus_h_cum')))}</td>"
+                     f"<td>{esc(str(p.get('last_run') or '')[:16]) or '–'}</td>"
+                     f"<td>{(str(_n(p.get('file_days'))) + '일') if _n(p.get('file_days')) else '–'}</td>"
+                     f"<td>{esc(side)}</td></tr>")
+        h.append("</table>")
+    if inh or _n(tu.get("inhouse_hidden")):
+        h.append("<div style='margin:6px 0'><b>자체·프로토타입(추정)</b> " + " · ".join(
+            f"{esc(x.get('name'))}(" + (f"실행 {_n(x.get('runs'))}회" if x.get("runs") is not None
+                                       else f"누적 실행 {_n(x.get('runs_cum'))}회")
+            + (f" · {esc(str(x.get('last_run'))[:10])}" if x.get("last_run") else "") + ")" for x in inh[:15])
+            + (f" · 이름을 가린 도구 {_n(tu.get('inhouse_hidden'))}개" if _n(tu.get("inhouse_hidden")) else "")
+            + "<div class='dim'>카탈로그에 없는 실행 파일이 사용자 폴더·다른 드라이브·네트워크에서 돈 것 — "
+              "무료 휴대용 도구일 수도 있다(config.programsExtra 로 이름표를 붙인다)</div></div>")
+    amb = [x for x in (tu.get("ambiguous_files") or []) if isinstance(x, (list, tuple)) and len(x) >= 2]
+    more = ([f"카탈로그 밖 설치 프로그램 {_n(tu.get('unknown_n'))}개(이름은 싣지 않는다)"] if _n(tu.get("unknown_n")) else [])
+    if amb:
+        more.append("도구 불명 파일(확장자를 여러 도구가 쓴다): " + " · ".join(f"{esc(x[0])} {_n(x[1])}개" for x in amb[:8]))
+    if reg.get("track_off"):
+        more.append("앱 실행 추적이 꺼져 있다(설정 &gt; 개인 정보 &gt; 일반 또는 회사 정책) — 실행 횟수가 늘지 않아 안 쓴 것처럼 보일 수 있다")
+    if more:
+        h.append("<div class='dim'>" + " / ".join(more) + "</div>")
+    return "".join(h)
+
+
 def _fmt_days(v):
     """일수 값 — {date: subject}·[date…]·숫자 모두 표시(날짜 앞 12개)"""
     if isinstance(v, dict):
@@ -840,6 +944,7 @@ def build(tag, summary=False):
                          + (f" (투입 {_h(meta.get('total_mm_before_rehours')):.2f} → {inmm:.2f} MM)"
                             if meta.get("total_mm_before_rehours") is not None else ""))
     BASIS_ROWS = BASIS_ROWS + (("rehours", "비업무 제외 재산정"),)
+    tool_tbl = ""                       # 프로그램 사용(참고) 상세 표 — 이 표(셀이 통째로 esc 된다) 뒤에 따로 붙인다
     for k, label in BASIS_ROWS:
         if k not in bb:
             continue
@@ -880,28 +985,13 @@ def build(tag, summary=False):
         elif k == "tool_usage":
             # 참고 지표 — 투입 시간이 아니다(맨 앞 창을 띄우고 있던 시간). 로드율과 섞어 읽지 않도록 문구로 못 박는다.
             # 이 표의 셀은 마지막에 통째로 esc() 되므로 여기서는 태그도 esc 도 쓰지 않는다(쓰면 글자로 박힌다).
+            # 새 꼴(출처·실행 횟수·포커스·마지막 실행·파일 일수 + 자체·프로토타입(추정))은 이 표 뒤의 상세 표(tool_tbl)로 —
+            # 옛 꼴(창기록만)도 같은 함수가 그린다.
             tu = v if isinstance(v, dict) else {}
-            progs = [p for p in (tu.get("programs") or []) if isinstance(p, dict)]
-            if not progs:
-                why = str(tu.get("why") or "").strip()
-                if not why:
-                    continue
-                v = why
-            else:
-                v = " · ".join(
-                    f"{p.get('name')} " + (f"배경 {_h(p.get('bg_hours')):.0f}h" if _h(p.get("hours")) < 0.05
-                                           else f"{_h(p.get('hours')):.1f}h"
-                                                + (f"(배경 {_h(p.get('bg_hours')):.0f}h)"
-                                                   if _h(p.get("bg_hours")) >= 1 else ""))
-                    for p in progs[:6])
-                kinds = [x for x in (tu.get("by_kind") or []) if isinstance(x, (list, tuple)) and len(x) >= 2]
-                if kinds:
-                    v += " / 구분: " + " · ".join(f"{x[0]} {_h(x[1]):.1f}h" for x in kinds)
-                if _h(tu.get("solver_bg_h")) >= 1:
-                    v += f" / 배경 솔버 가동 {_h(tu.get('solver_bg_h')):.0f}h"
-                if _h(tu.get("unknown_h")) >= 1:
-                    v += f" / 미상 {_h(tu.get('unknown_h')):.0f}h(카탈로그에 없는 실행 파일)"
-                v += " / ※ 참고 지표 — 창 샘플러가 본 '맨 앞 창' 시간이라 투입 MM·로드율에는 들어가지 않는다"
+            v = tool_usage_text(tu)
+            if not v:
+                continue
+            tool_tbl = tool_usage_table(tu)
         elif k == "cfg_used":
             cu = v if isinstance(v, dict) else {}
             if not cu:
@@ -950,6 +1040,8 @@ def build(tag, summary=False):
     for label, v in overtime_rows(meta, b):
         h.append(f"<tr><th style='width:180px'>{esc(label)}</th><td>{esc(v)}</td></tr>")
     h.append("</table>")
+    if tool_tbl:
+        h.append(tool_tbl)
     h.append("<div class='dim'>해석 참고: 애자일 관행(SAFe 등)은 명목 가용의 70~80%를 실질 "
              "capacity로 본다 — 회의·전환비용을 감안하면 로드율 75~85%가 '꽉 찬 상태'에 가깝고, "
              "지속적 100% 초과는 과부하 신호다.</div>")

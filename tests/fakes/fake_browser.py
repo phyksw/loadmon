@@ -48,7 +48,26 @@ JS 는 머리 표식(/*LM28:이름*/ — owa_list·owa_scroll·owa_more·owa_cal
                    picker_label 'ko'('2026년 10월 5일' 기본)|'fluent'('5, 10월, 2026')|'en'('October 5, 2026')|'num'('5') ·
                    picker_dead — 날을 눌러도 주가 안 바뀐다 · picker_nonav — 달 넘기기 단추 없음
   pivot          — 받은 편지함에 '중요' 탭이 선택돼 있다 · login — 어느 주소든 로그인 화면
+
+다른 메일 폴더(LM28-OWA-5 — owa_tree · CDP 신뢰 입력 Input.dispatchMouseEvent·dispatchKeyEvent):
+  folders=       — {'상위/하위': [msg…]} 다른 폴더의 메일. 첫 마디가 시스템 폴더 이름('받은 편지함'·'보낸 편지함'·'지운 편지함'·
+                   '보관' …)이면 그 아래, 아니면 사서함 맨 위의 사람이 만든 폴더
+  tree           — 폴더 창 꼴 'aria'(한 나무 · 머리 항목 + aria-level · DOM 은 평평) · 'dom'(한 나무 · DOM 으로 품음 · aria-level 없음)
+                   · 'split'(구역마다 나무 — aria-label 이 구역 이름 · 머리 항목 없음). 없으면 폴더 창이 없다(treeitem 0)
+  구역           — 즐겨찾기(fav_label — 기본 '즐겨찾기', ''면 이름 없음) · 기본 사서함 '홍길동' · 그룹 · 공유 사서함 '팀 공용' ·
+                   온라인 보관 사서함 — 어느 폴더를 열었는지는 navs(경로 목록)에 남는다
+  xf_collapsed   — 처음에 접힌 폴더 경로 집합('받은 편지함' · 기본 사서함 머리는 '@mb' — FakeTeams 의 collapsed 와 다르다)
+  expand         — 펼치기가 먹는 방법 'both'(키 →·펼침 단추 기본) · 'key' · 'chev' · 'synth' · 'dead'
+  nav_dead       — 폴더를 눌러도 열리지 않는다 · synth_ok — 합성 사건으로도 열린다 · wk — data-folder-name 을 단다(기본 True)
+  xf_reach       — {경로: n} 그 폴더 목록은 n 통까지만 불러온다(바닥에 '불러오는 중'이 남는다 — 끝 근거 없음)
+  stale_screens  — 폴더를 연 뒤 이만큼의 목록 화면은 앞 폴더 목록이 그대로 보인다 · on_nav — 폴더를 열 때 부르는 함수(경로)
+일정 상세(LM28-OWA-5 — owa_cal_bar·owa_cal_detail):
+  peek           — 막대를 누르면 상세가 뜬다(ev.body 가 본문 칸 · ev.join 이면 막대에 참가 단추) · peek_none — 눌러도 안 뜬다 ·
+  peek_sticky    — Esc 로 안 닫힌다('닫기' 단추로만) · view_breaks — 누르면 주 보기가 다른 화면으로 바뀐다 · peek_title — 상세 머리
+                   제목을 이 글로(다른 회의)
 """
+import hashlib
+import json
 import re
 from collections import Counter
 from datetime import date, datetime, timedelta
@@ -58,6 +77,15 @@ KWD = "월화수목금토일"
 EN_MON = ("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November",
           "December")
 FOLDER_NAME = {"inbox": "받은 편지함", "sent": "보낸 편지함"}
+MAIL_URL = "https://outlook.office.com/mail/"
+MAILBOX = "홍길동"                              # 기본 사서함 머리(자리표시 이름)
+SYS_FOLDERS = (("받은 편지함", "inbox"), ("임시 보관함", "drafts"), ("보낸 편지함", "sentitems"), ("지운 편지함", "deleteditems"),
+               ("정크 메일", "junkemail"), ("보관", "archive"), ("메모", "notes"), ("대화 기록", "conversationhistory"),
+               ("RSS 구독", "rssfeeds"))
+SYS_TAIL = (("검색 폴더", "searchfolders"),)
+OTHER_SECTIONS = (("그룹", ("팀 그룹",)), ("팀 공용", ("받은 편지함", "공용 프로젝트")), ("온라인 보관 - " + MAILBOX, ("보관 2025",)))
+ROW0, ROWS = 100, 24                           # 폴더 창 첫 줄 y · 줄 높이(px)
+LABEL_X, CHEV_X, BAR_X = 150, 40, 7000         # 이름 글 x · 펼침 단추 x · 일정 막대 누를 점 x(7000 + 순번)
 ROWH = 60                                      # 행 높이(px) — 스크롤 수치 흉내
 GX0, GCW, GHY = 310, 120, 120                  # 주 보기: 첫 열 왼쪽 x · 열 너비 · 열 머리 가운데 y
 GAD = (150, 172)                               # 종일 줄 위·아래 y
@@ -133,8 +161,13 @@ class _Cdp:
 
     def call(self, method, params=None, timeout=25):
         self.br.calls["cdp:" + method] += 1
-        if method == "Input.dispatchMouseEvent" and (params or {}).get("type") == "mouseWheel":
-            self.br._wheel(params or {})
+        p = params or {}
+        if method == "Input.dispatchMouseEvent" and p.get("type") == "mouseWheel":
+            self.br._wheel(p)
+        elif method == "Input.dispatchMouseEvent" and p.get("type") == "mouseReleased":
+            self.br._click(p)
+        elif method == "Input.dispatchKeyEvent" and p.get("type") == "rawKeyDown":
+            self.br._keydown(str(p.get("key") or ""))
         return {}
 
     def reconnect(self):
@@ -145,7 +178,7 @@ class _Cdp:
 
 
 class FakeBrowser:
-    def __init__(self, today, mail=None, events=None, **flags):
+    def __init__(self, today, mail=None, events=None, folders=None, **flags):
         self.today = today
         self.mail = {k: sorted(v, key=lambda m: m["when"], reverse=True) for k, v in (mail or {}).items()}
         self.events = list(events or [])
@@ -159,6 +192,12 @@ class FakeBrowser:
         self.queries = []
         self.reason, self.closed = "", None
         self.pk_month, self.pk_open = None, False          # 작은 달력이 보이는 달 · 날짜 고르기 창(popup)이 열렸나
+        # 다른 메일 폴더(LM28-OWA-5) — 폴더별 메일 · 폴더 창(구역 머리 → 폴더) · 연 폴더 경로 · 포커스 · 앞 폴더 목록 화면
+        self.xf_mail = {k: sorted(v, key=lambda m: m["when"], reverse=True) for k, v in (folders or {}).items()}
+        self.collapsed = set(self.f.get("xf_collapsed") or ())
+        self.roots = self._tree_build() if self.f.get("tree") else []
+        self.navs, self.focus, self.ids, self.stale_left, self.stale_win = [], None, {}, 0, []
+        self.cal_src, self.peek = [], None                 # 마지막 owa_cal 의 막대 원본(순번 그대로) · 열린 상세의 일정
 
     # ── Browser 흉내 ──
     def start(self):
@@ -190,6 +229,12 @@ class FakeBrowser:
             self.week = self._wstart(d)
             return "ok"
         self.view = "mail"
+        m = re.search(r"/mail/id/(\w+)", p)
+        if m and m.group(1) in self.ids:              # 다른 폴더 주소(LM28-OWA-5 — 연 뒤 기억한 주소)
+            self.folder = self.ids[m.group(1)]
+            self.lst, self.searched = list(self.xf_mail.get(self.folder, [])), False
+            self._reset_list()
+            return "ok"
         self.folder = "sent" if "sentitems" in p else "inbox"
         self.lst, self.searched = list(self.mail.get(self.folder, [])), False
         self._reset_list()
@@ -235,6 +280,9 @@ class FakeBrowser:
         lst = self.lst
         if not self.searched and self.f.get("reach"):
             lst = lst[:int(self.f["reach"])]
+        xr = (self.f.get("xf_reach") or {}).get(self.folder)
+        if not self.searched and xr:
+            lst = lst[:int(xr)]
         if self.searched and self.f.get("more_page"):
             lst = lst[:self.mail_shown]
         return lst
@@ -255,6 +303,9 @@ class FakeBrowser:
 
     def _stuck_loading(self):
         """더 못 불러오는데 '불러오는 중' 표시가 남는 화면(reach — reach_quiet 면 표시 없이 조용히 멈춘다)."""
+        xr = (self.f.get("xf_reach") or {}).get(self.folder)
+        if xr and not self.searched and len(self.lst) > int(xr):
+            return True
         return bool(self.f.get("reach") and not self.searched and not self.f.get("reach_quiet")
                     and len(self.lst) > int(self.f["reach"]))
 
@@ -296,7 +347,8 @@ class FakeBrowser:
         has_mail = not self.f.get("no_mail_list")
         piv = ["중요"] if (self.f.get("pivot") and self.folder == "inbox") else []
         out = {"href": self.url, "n": 0, "items": [], "cands": [], "lst": None, "lb": n_dec + (1 if has_mail else 0),
-               "search": not self.f.get("no_search_box"), "empty": False, "sel": FOLDER_NAME[self.folder], "pivots": piv,
+               "search": not self.f.get("no_search_box"), "empty": False,
+               "sel": FOLDER_NAME.get(self.folder) or self.folder.split("/")[-1], "pivots": piv,
                "sec": ["MessageList"] if has_mail else []}
         if pick < 0:
             cands = [{k: v for k, v in self._decoy_facts(i).items() if k in ("i", "role", "opts", "mailish", "conv", "main",
@@ -316,6 +368,11 @@ class FakeBrowser:
             return out
         if pick != n_dec or not has_mail:
             return out                        # 그런 칸 없음 — lst None
+        if self.stale_left > 0 and self.stale_win:  # 폴더를 연 직후 — 앞 폴더 목록이 아직 그대로(LM28-OWA-5)
+            self.stale_left -= 1
+            items = [self._render(m, i) for i, m in enumerate(self.stale_win)]
+            out.update(n=len(items), items=items, lst=self._mail_facts(self.stale_win, len(self.stale_win)))
+            return out
         self.window = vis[self.pos:self.pos + page]
         items = [self._render(m, i) for i, m in enumerate(self.window)]
         out.update(n=len(items), items=items, lst=self._mail_facts(self.window, len(vis)),
@@ -449,18 +506,24 @@ class FakeBrowser:
         return pts
 
     def _cal(self):
+        if self.view == "event":                      # 상세를 누른 뒤 주 보기가 다른 화면으로 바뀌었다(view_breaks)
+            self.cal_src = []
+            return {"href": self.url, "grid": False, "n": 0, "events": [], "heads": [], "cols": [], "nc": 0, "nb": 0, "nt": 0}
         ws = self.week
         we = ws + timedelta(days=6)
         geo = bool(self.f.get("geo"))
-        evs = []
+        evs, src = [], []
         for ev in self.events:
             if ev["start"].date() <= we and ev["end"].date() >= ws:
                 style = self._style(ev)
                 cal = 1 if (self.f.get("calid") or geo or style != "dated") else 0
                 o = {"label": self._label(ev, style), "cal": cal, "texts": [ev["subject"]]}
+                if ev.get("private"):
+                    o["alt"] = ["비공개"]
                 if geo:
                     o.update(self._geo_ev(ws, ev, style))
                 evs.append(o)
+                src.append(ev)
         if self.f.get("chips"):                       # 숨은 일정 칩 — 첫 열 종일 줄
             n = int(self.f["chips"])
             o = {"label": f"+{n} 더 보기", "cal": 1, "texts": [f"+{n}"]}
@@ -476,6 +539,7 @@ class FakeBrowser:
                         o.update({"x": 1250, "l": 1200, "r": 1300, "t": 300, "b": 340, "z": 0, "vz": 1, "ad": 0, "in": 0, "m": 0})
                     evs.append(o)
         nc = sum(1 for o in evs if o["cal"])
+        self.cal_src = src + [None] * (len(evs) - len(src))   # 칩·옆 창 막대는 원본 없음(누를 일정이 아니다)
         out = {"href": self.url, "grid": True, "n": len(evs), "events": evs, "heads": [self._header(ws), "오늘"],
                "cols": [], "nc": nc, "nb": len(evs) + 6, "nt": len(evs) - nc}
         if geo:
@@ -538,6 +602,197 @@ class FakeBrowser:
             return "ok"
         return "none"
 
+    # ── 폴더 창(LM28-OWA-5) ──
+    def _tn(self, name, wk, path, target=None, sec=""):
+        return {"name": name, "wk": wk if self.f.get("wk", True) else "", "path": path, "target": target or path,
+                "kids": [], "ex": path not in self.collapsed, "sec": sec}
+
+    def _tree_build(self):
+        """구역 머리(즐겨찾기 · 기본 사서함 · 그룹 · 공유 사서함 · 온라인 보관 사서함) → 폴더. 다른 폴더(folders=)는 경로대로 붙는다."""
+        roots = []
+        if self.f.get("favorites", True):
+            fav = self._tn(self.f.get("fav_label", "즐겨찾기"), "", "@fav", sec="fav")
+            for nm, wk, tg in (("받은 편지함", "inbox", "inbox"), ("보낸 편지함", "sentitems", "sent"), ("임시 보관함", "drafts", "임시 보관함")):
+                fav["kids"].append(self._tn(nm, wk, "@fav/" + nm, tg, "fav"))
+            roots.append(fav)
+        mb = self._tn(MAILBOX, "", "@mb", sec="mb")
+        byp = {}
+        for nm, wk in SYS_FOLDERS:
+            n = self._tn(nm, wk, nm, {"inbox": "inbox", "sentitems": "sent"}.get(wk, nm), "mb")
+            mb["kids"].append(n)
+            byp[nm] = n
+        for path in self.xf_mail:
+            segs = path.split("/")
+            parent = mb
+            for k in range(len(segs)):
+                p = "/".join(segs[:k + 1])
+                if p not in byp:
+                    byp[p] = self._tn(segs[k], "", p, p, "mb")
+                    parent["kids"].append(byp[p])
+                parent = byp[p]
+        for nm, wk in SYS_TAIL:
+            mb["kids"].append(self._tn(nm, wk, nm, nm, "mb"))
+        roots.append(mb)
+        for sec, kids in OTHER_SECTIONS:
+            r = self._tn(sec, "", "@" + sec, sec=sec)
+            for nm in kids:
+                r["kids"].append(self._tn(nm, "inbox" if nm == "받은 편지함" else "", "@" + sec + "/" + nm, sec=sec))
+            roots.append(r)
+        return roots
+
+    def _flat(self):
+        """보이는 항목(화면 순서) [(노드, 깊이, DOM 부모 순번, 나무 순번)] · 나무 사실."""
+        out, trees = [], []
+
+        def walk(n, depth, par, t):
+            out.append((n, depth, par, t))
+            k = len(out) - 1
+            if n["ex"]:
+                for c in n["kids"]:
+                    walk(c, depth + 1, k, t)
+        if self.f.get("tree") == "split":
+            for t, r in enumerate(self.roots):
+                trees.append({"al": r["name"], "n": 0, "v": 1})
+                if r["ex"]:
+                    for c in r["kids"]:
+                        walk(c, 1, -1, t)
+        else:
+            trees.append({"al": "", "n": 0, "v": 1})
+            for r in self.roots:
+                walk(r, 1, -1, 0)
+        return out, trees
+
+    def _xf_sel(self, n):
+        return 1 if n["target"] == self.folder and self.view == "mail" else 0
+
+    def _tree(self, js):
+        self.calls["tree"] += 1
+        act, k = self._arg(js, "ACT", "read"), self._arg(js, "K", -1)
+        m = re.search(r'NAME = ("(?:[^"\\]|\\.)*")', str(js or ""))
+        name = json.loads(m.group(1)) if m else ""
+        flat, trees = self._flat()
+        style = self.f.get("tree")
+        if act == "read":
+            if not self.roots:
+                return {"href": self.url, "items": [], "trees": []}
+            items = []
+            for i, (n, depth, par, t) in enumerate(flat):
+                has = bool(n["kids"])
+                items.append({"i": i, "t": t, "lvl": 0 if style == "dom" else depth, "par": par if style == "dom" else -1,
+                              "n": n["name"], "al": n["name"] + (", 읽지 않음 2" if n["wk"] == "inbox" else ""), "wk": n["wk"],
+                              "ex": (1 if n["ex"] else 0) if has else -1, "sel": self._xf_sel(n), "v": 1})
+            return {"href": self.url, "items": items, "trees": trees}
+        if not isinstance(k, int) or not 0 <= k < len(flat) or flat[k][0]["name"] != name:
+            return {"r": "gone"}
+        n, y = flat[k][0], ROW0 + ROWS * k
+        if act == "aim":
+            return {"r": "ok", "x": LABEL_X, "y": y}
+        if act == "synth":
+            self.calls["tree_synth"] += 1
+            if self.f.get("synth_ok"):
+                self._nav(n)
+            return {"r": "fired"}
+        if act == "focus":
+            self.focus = n
+            return {"r": "ok"}
+        if act in ("chev", "synthchev"):
+            if not n["kids"]:
+                return {"r": "none"}
+            if act == "synthchev":
+                if self.f.get("expand") == "synth":
+                    n["ex"] = True
+                return {"r": "ok"}
+            return {"r": "ok", "x": CHEV_X, "y": y}
+        return {"r": "gone"}
+
+    def _click(self, p):
+        """CDP 신뢰 마우스(뗌) — 일정 막대 점(x ≥ BAR_X)이면 상세, 폴더 창 줄이면 펼침 단추(왼쪽) 또는 폴더 열기."""
+        x, y = float(p.get("x") or 0), float(p.get("y") or 0)
+        if x >= BAR_X:
+            return self._bar_click(int(x) - BAR_X)
+        flat, _t = self._flat()
+        k = int(round((y - ROW0) / ROWS))
+        if not 0 <= k < len(flat):
+            return
+        n = flat[k][0]
+        if x < 80:
+            if n["kids"] and self.f.get("expand", "both") in ("chev", "both"):
+                n["ex"] = not n["ex"]
+            return
+        self._nav(n)
+
+    def _keydown(self, key):
+        if key == "Escape":
+            if self.peek is not None and not self.f.get("peek_sticky"):
+                self.peek = None
+            return
+        n = self.focus
+        if n is None:
+            return
+        if key == "ArrowRight" and n["kids"] and not n["ex"] and self.f.get("expand", "both") in ("key", "both"):
+            n["ex"] = True
+        elif key == "Enter":
+            self._nav(n)
+
+    def _nav(self, n):
+        """폴더 열기 — 구역 머리는 열리지 않는다. 받은·보낸 편지함은 잘 알려진 주소, 그 밖은 폴더 ID 주소(/mail/id/F…)."""
+        if self.f.get("nav_dead") or n["path"].startswith("@") and "/" not in n["path"]:
+            return
+        self.calls["nav"] += 1
+        self.navs.append(n["path"])
+        prev = list(self.window)
+        tg = n["target"]
+        if tg in ("inbox", "sent"):
+            self.url = MAIL_URL + ("inbox" if tg == "inbox" else "sentitems")
+            self.lst = list(self.mail.get(tg, []))
+        else:
+            fid = "F" + hashlib.sha1(tg.encode("utf-8")).hexdigest()[:8]
+            self.ids[fid] = tg
+            self.url = MAIL_URL + (n["wk"] if n["wk"] and n["wk"] not in ("inbox",) else "id/" + fid)
+            self.lst = list(self.xf_mail.get(tg, []))
+        self.view, self.folder, self.searched = "mail", tg, False
+        self._reset_list()
+        self.stale_left, self.stale_win = int(self.f.get("stale_screens") or 0), prev
+        if callable(self.f.get("on_nav")):
+            self.f["on_nav"](n["path"])
+
+    # ── 일정 상세(LM28-OWA-5) ──
+    def _bar(self, js):
+        self.calls["bar"] += 1
+        k = self._arg(js, "K", -1)
+        if not self.f.get("peek"):
+            return {"r": "small"}
+        if not isinstance(k, int) or not 0 <= k < len(self.cal_src) or self.cal_src[k] is None:
+            return {"r": "gone"}
+        if self.cal_src[k].get("join"):
+            return {"r": "join"}
+        return {"r": "ok", "x": BAR_X + k, "y": 400}
+
+    def _bar_click(self, k):
+        self.calls["bar_click"] += 1
+        if not 0 <= k < len(self.cal_src) or self.cal_src[k] is None or self.f.get("peek_none"):
+            return
+        if self.f.get("view_breaks"):
+            self.view = "event"
+            return
+        self.peek = self.cal_src[k]
+
+    def _detail(self, js):
+        act = self._arg(js, "ACT", "read")
+        if act == "state":
+            return "open" if self.peek is not None else "gone"
+        if act == "xbtn":
+            if self.peek is None:
+                return "gone"
+            self.peek = None
+            self.calls["xbtn"] += 1
+            return "ok"
+        if self.peek is None:
+            return {"found": 0, "how": "", "text": "", "hd": "", "n": 0}
+        ev = self.peek
+        return {"found": 1, "how": "aria" if "body" in ev else "", "text": str(ev.get("body") or ""),
+                "hd": self.f.get("peek_title") or ev["subject"], "n": 1}
+
     def _prev(self):
         self.calls["prev"] += 1
         if self.f.get("no_prev"):
@@ -571,6 +826,12 @@ class FakeBrowser:
             return "ok"
         if name == "owa_head":
             return {"found": bool(self.pane), "head": list(self.pane or [])}
+        if name == "owa_tree":
+            return self._tree(js)
+        if name == "owa_cal_bar":
+            return self._bar(js)
+        if name == "owa_cal_detail":
+            return self._detail(js)
         if "location.href" in str(js):
             return self.url
         if "readyState" in str(js):
