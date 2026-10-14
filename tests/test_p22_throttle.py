@@ -29,7 +29,7 @@ import test_p10_judge_scale as p10  # noqa: E402
 FIELD = "현재 요청이 너무 많아 일시적으로 응답할 수 없습니다. 나중에 다시 시도하세요."     # 현장 문구(사진)
 THROTTLED = {"ok": False, "phase": "throttled", "reason": "R-THROTTLE", "error": "Copilot 사용량 제한(일시)"}
 COPILOT_ERR = {"ok": False, "phase": "copilot_error", "error": "Copilot 일시 오류 — 3단계 재시도 모두 실패"}
-OK_REPLY = {"ok": True, "phase": "replied", "reply": '{"j": [[0, "y", "LiDAR-X", "개발", "보정 검토"]]}'}
+OK_REPLY = {"ok": True, "phase": "replied", "reply": '{"j": [[0, "y", "Alpha-X", "개발", "보정 검토"]]}'}
 
 
 def _cfg(tmp, **kw):
@@ -52,7 +52,7 @@ class Marks(unittest.TestCase):
             self.assertTrue(ca.is_throttle_reply(s), s)
 
     def test_not_matched(self):
-        self.assertFalse(ca.is_throttle_reply('{"j":[[0,"y","LiDAR-X","개발","' + FIELD + '"]]}'))   # JSON 안의 인용
+        self.assertFalse(ca.is_throttle_reply('{"j":[[0,"y","Alpha-X","개발","' + FIELD + '"]]}'))   # JSON 안의 인용
         self.assertFalse(ca.is_throttle_reply("분석 결과 " * 130 + FIELD))                          # 긴 글
         self.assertFalse(ca.is_throttle_reply("판정 결과입니다. " * 60 + "rate limit"))             # 머리(400자) 밖
         self.assertFalse(ca.is_throttle_reply("죄송합니다. 지금은 응답할 수 없습니다."))           # 일반 오류 — 사다리 대상
@@ -93,7 +93,7 @@ class NoticePath(unittest.TestCase):
 
 # ── 2) 답을 기다리는 동안 바로 알아채기 — 가짜 CDP 로 진짜 _roundtrip_once 를 돌린다 ─────────────────
 BASE = "Copilot\n무엇을 도와드릴까요?"
-PROMPT = ("다음 신호를 판정하세요.\n#1 | 2026-03-02 09:00 | 메일(수신) | LiDAR-X 보정 데이터 검토 요청 | 업무\n"
+PROMPT = ("다음 신호를 판정하세요.\n#1 | 2026-03-02 09:00 | 메일(수신) | Alpha-X 보정 데이터 검토 요청 | 업무\n"
           "형식: {\"j\": [[번호, y/n, 과제, 유형, 세부]]}")
 
 
@@ -221,7 +221,7 @@ class WaitLoop(unittest.TestCase):
 
     def test_prose_head_of_real_answer_not_taken(self):
         head = "rate limit 관련 메일은 업무로 봤습니다."
-        body = head + '\n{"j": [[1, "y", "LiDAR-X", "개발", "보정 검토"]]}'
+        body = head + '\n{"j": [[1, "y", "Alpha-X", "개발", "보정 검토"]]}'
         page = _Page(self.cfg, replies=(head, body, body + "\n" + ca.SENTINEL))
         res = self.once(page)
         self.assertTrue(res["ok"])
@@ -516,7 +516,7 @@ class JudgeMainThrottle(p10._Base):
         return super().reply(name, prompt)
 
     def test_stops_after_one_wait(self):
-        self.write_signals([p10._row(p10._t(13, i * 3), f"LiDAR-X 측정 로그 {i}번 분석") for i in range(20)])
+        self.write_signals([p10._row(p10._t(13, i * 3), f"Alpha-X 측정 로그 {i}번 분석") for i in range(20)])
         rc = self.run_main(5, narrate=True)
         names = [s["name"] for s in self.sent]
         self.assertEqual(names.count("chunk1"), 2)                   # 처음 + 2분 쉬고 한 번
@@ -529,8 +529,8 @@ class JudgeMainThrottle(p10._Base):
 
     def test_narrate_skips_when_run_stopped(self):
         self.rec = {"t": time.time() - 3000, "run": "run-A", "kind": "throttle"}   # 50분 전 — 같은 실행이면 나이와 무관
-        kept = [{"time": f"2026-{mon:02d}-{1 + i:02d} 10:00", "source": "메일(수신)", "who": "", "model": "LiDAR-X",
-                 "worktype": "개발", "detail": "보정 검토", "judge": "AI", "text": f"LiDAR-X 보정 {mon}월 {i}번"}
+        kept = [{"time": f"2026-{mon:02d}-{1 + i:02d} 10:00", "source": "메일(수신)", "who": "", "model": "Alpha-X",
+                 "worktype": "개발", "detail": "보정 검토", "judge": "AI", "text": f"Alpha-X 보정 {mon}월 {i}번"}
                 for mon in (7, 8, 9) for i in range(12)]
         self.assertEqual(judge.narrate(kept, 1.0, p10.TAG), {})
         self.assertEqual([s for s in self.sent if s["name"].startswith("narr_")], [])   # 예전에는 한 번은 보냈다

@@ -813,20 +813,42 @@ def _squash(s):
     return re.sub(r"\s+", "", str(s or ""))
 
 
+_SHA1_SKIP = "sha1:"
+
+
+def _skip_keys(skip):
+    """skip(출력 형식 예시들) → 대조 집합. 항목은 예시 원문(공백을 빼고 비교) 또는 'sha1:<hex>' — 공백을 뺀 예시의
+    sha1. 지난 판 프롬프트의 예시는 원문 대신 sha1 로만 두고 막는다(JUDGE_EXAMPLES_OLD)."""
+    out = set()
+    for s in skip or ():
+        if s:
+            s = str(s)
+            out.add(s if s.startswith(_SHA1_SKIP) else _squash(s))
+    return out
+
+
+def _is_skipped(raw, keys):
+    """raw(답 속 JSON 원문)가 skip 예시인가 — 공백을 뺀 원문 또는 그 sha1 로 _skip_keys 집합과 대조."""
+    if not keys:
+        return False
+    q = _squash(raw)
+    return q in keys or (_SHA1_SKIP + hashlib.sha1(q.encode("utf-8")).hexdigest()) in keys
+
+
 def rfind_json(reply, want_key, skip=()):
     """답 뒤쪽부터 '{' 를 거슬러 올라가며 want_key 를 가진 첫 완전한 JSON 객체를 찾는다.
     skip: 프롬프트에 실은 **출력 형식 예시** 문자열들 — 앵커 실패(fulltext)로 답에 프롬프트 에코가
-    섞이면 예시가 '답'으로 해석돼 예시의 번호·이름이 판정에 들어갔다(실측: 판정 0·1행이 '프로젝트A/
-    광학 설계', 정제는 Level 3 '...'). 공백을 뺀 원문이 예시와 같으면 건너뛴다."""
+    섞이면 예시가 '답'으로 해석돼 예시의 번호·이름이 판정에 들어갔다(실측: 판정 0·1행이 예시의 과제·
+    세부업무로, 정제는 Level 3 '...'). 공백을 뺀 원문이 예시와 같으면(또는 'sha1:' 항목과 해시가 같으면) 건너뛴다."""
     reply = str(reply or "")
-    skip_n = {_squash(s) for s in (skip or ()) if s}
+    skip_n = _skip_keys(skip)
     i = reply.rfind("{")
     n = 0
     while i != -1 and n < 600:
         try:
             o, end = _DEC.raw_decode(reply, i)
             if isinstance(o, dict) and want_key in o:
-                if not skip_n or _squash(reply[i:end]) not in skip_n:
+                if not _is_skipped(reply[i:end], skip_n):
                     return o
         except ValueError:
             pass
@@ -884,7 +906,7 @@ def repair_json(reply, want_key, skip=()):
     원소까지 닫아 해석하고, 호출자는 빠진 원소만 다시 묻는다. skip: rfind_json 과 같은 예시 방어.
     returns dict(빈 dict = 복구 불가)."""
     reply = str(reply or "")
-    skip_n = {_squash(s) for s in (skip or ()) if s}
+    skip_n = _skip_keys(skip)
     key = f'"{want_key}"'
     k = reply.rfind(key)
     tries = 0
@@ -892,7 +914,7 @@ def repair_json(reply, want_key, skip=()):
         i = reply.rfind("{", 0, k)
         if i != -1 and not reply[i + 1:k].strip():       # '{' 바로 뒤가 키 = 최상위 객체 시작
             o, raw = _close_truncated(reply, i)
-            if isinstance(o, dict) and want_key in o and (not skip_n or _squash(raw) not in skip_n):
+            if isinstance(o, dict) and want_key in o and not _is_skipped(raw, skip_n):
                 return o
         k = reply.rfind(key, 0, k)
         tries += 1
@@ -908,7 +930,7 @@ _ROW_RE = re.compile(
 
 def _unesc(g):
     """정규식이 잡은 JSON 문자열 조각의 이스케이프(\\" \\\\ \\n \\uXXXX)를 푼다 — 못 풀면 원문.
-    예전에는 그대로 저장돼 '역슬래시\\\\경로'·'\\\\uc218\\\\uad11' 같은 값이 model/detail 에 들어갔다(V-04)."""
+    예전에는 그대로 저장돼 '역슬래시\\\\경로'·'\\\\uc124\\\\uacc4' 같은 값이 model/detail 에 들어갔다(V-04)."""
     if g is None or "\\" not in g:
         return g
     try:
@@ -928,17 +950,29 @@ def scan_rows(reply, spans=False):
     return (out, sp) if spans else out
 
 
+def _example_row0(row):
+    """판정 행이 프롬프트 예시의 첫 행인가 — 지금 판은 JUDGE_EXAMPLE_ROWS[0] 과 같음, 지난 판은 행 JSON 의 sha1 로 대조."""
+    if row == JUDGE_EXAMPLE_ROWS[0]:
+        return True
+    try:
+        s = json.dumps(row, ensure_ascii=False, separators=(",", ":"))
+    except (TypeError, ValueError):
+        return False
+    return hashlib.sha1(s.encode("utf-8")).hexdigest() in JUDGE_EXAMPLE_ROW0_OLD
+
+
 def strip_example_rows(reply, rows, spans):
-    """정규식 경로의 예시 방어(V-04) — 답 전체(공백 제거)가 프롬프트 예시와 같으면 전부 버리고, 그 밖에는 예시의
-    두 행([0,"y","프로젝트A","개발","광학 설계"] 뒤 [1,"n"])이 **그 순서로 붙어 예시처럼 `]}` 로 닫힌 경우**(프롬프트
-    에코)만 그 둘을 버린다. 예전에는 예시와 같은 행을 낱개로 버려 진짜 [1,"n"]·[0,"y","프로젝트A",…] 가 사라졌다."""
-    if _squash(reply) in {_squash(s) for s in JUDGE_EXAMPLES}:
+    """정규식 경로의 예시 방어(V-04) — 답 전체(공백 제거)가 프롬프트 예시(지난 판 포함)와 같으면 전부 버리고, 그 밖에는
+    예시의 두 행(첫 행 [0,"y","프로젝트A",…] 뒤 [1,"n"] — 첫 행 대조는 _example_row0)이 **그 순서로 붙어 예시처럼 `]}` 로
+    닫힌 경우**(프롬프트 에코)만 그 둘을 버린다. 예전에는 예시와 같은 행을 낱개로 버려 진짜 [1,"n"]·[0,"y","프로젝트A",…] 가
+    사라졌다."""
+    if _is_skipped(reply, _skip_keys(JUDGE_EXAMPLES)):
         return []
-    e0, e1 = JUDGE_EXAMPLE_ROWS
+    e1 = JUDGE_EXAMPLE_ROWS[1]
     keep, i = [], 0
     while i < len(rows):
         nxt = rows[i + 1] if i + 1 < len(rows) else None
-        if (rows[i] == e0 and nxt is not None and nxt[:2] == e1 and not any(nxt[2:])):
+        if (nxt is not None and nxt[:2] == e1 and not any(nxt[2:]) and _example_row0(rows[i])):
             gap = reply[spans[i][1]:spans[i + 1][0]]
             tail = reply[spans[i + 1][1]:spans[i + 1][1] + 12]
             if re.fullmatch(r"\s*,\s*", gap) and re.match(r"\s*\]\s*\}", tail):
@@ -1111,7 +1145,7 @@ def fallback_models(rows, known, people=(), prev=()):
             continue
         keys = [nm.lower()] + [str(k).strip().lower() for k in _as_list(src.get("match")) if str(k).strip()]
         k = ukey2(nm)
-        if k in idx:                      # 같은 과제의 다른 표기(규칙 토큰 'lidarx' ↔ 지난 체계 'LiDAR-X') — 매칭어만 합친다
+        if k in idx:                      # 같은 과제의 다른 표기(규칙 토큰 'alphax' ↔ 지난 체계 'Alpha-X') — 매칭어만 합친다
             cur = out[idx[k]]
             cur["match"] = list(dict.fromkeys(cur["match"] + keys))
             continue
@@ -1149,7 +1183,7 @@ def sanitize_models(models, people=()):
         if not (isinstance(m, dict) and m.get("pinned")) and (
                 NOISE_MODEL.match(name) or not _model_name_ok(name) or not details.task_name_ok(name, people)):
             continue
-        # 신원 축은 ukey2 — 예전에는 .lower() 뿐이라 '광학 설계'/'광학설계'/'광학-설계' 가 서로 다른
+        # 신원 축은 ukey2 — 예전에는 .lower() 뿐이라 '설계 검토'/'설계검토'/'설계-검토' 가 서로 다른
         # 과제로 남았고, 그 변형이 discovered 로 적립돼 다음 실행의 후보로 되먹여져 분할이 영구화됐다.
         k = ukey2(name)
         if k in seen:
@@ -1263,10 +1297,17 @@ def rule_model(r, models):
 
 
 # ── [1..N] 신호 판정 ───────────────────────────────────────────────────────
-JUDGE_EXAMPLE_ROWS = [[0, "y", "프로젝트A", "개발", "광학 설계"], [1, "n"]]
+JUDGE_EXAMPLE_ROWS = [[0, "y", "프로젝트A", "개발", "설계 검토"], [1, "n"]]
 JUDGE_EXAMPLE = json.dumps({"j": JUDGE_EXAMPLE_ROWS}, ensure_ascii=False, separators=(",", ":"))
-JUDGE_EXAMPLE_OLD = '{"j":[[0,"y","프로젝트A","개발","광학 설계"],[1,"n","","",""]]}'   # 구판 프롬프트 에코 방어
-JUDGE_EXAMPLES = (JUDGE_EXAMPLE, JUDGE_EXAMPLE_OLD)
+# 지난 판 프롬프트의 예시 — 채팅에 남은 옛 예시가 에코돼 와도 답으로 받지 않는다. 예시에 쓰던 업무 이름을 소스에 남기지
+# 않으려고 원문 대신 sha1 만 둔다('sha1:' + 공백을 뺀 예시 JSON 의 sha1 — _skip_keys 형식).
+JUDGE_EXAMPLES_OLD = (
+    "sha1:3392ab652a19059a495aab495fb936501bcdad16",    # 초기판 — 둘째 행이 [1,"n","","",""]
+    "sha1:e90ead0fcfe1052e5cd8196facb631eb0a196f4d",    # 직전 판 — 모양은 지금과 같고 세부업무 예시만 달랐다
+)
+# 지난 판 예시 첫 행의 sha1(json.dumps(행, ensure_ascii=False, separators=(",", ":"))) — strip_example_rows 의 행 짝 대조용
+JUDGE_EXAMPLE_ROW0_OLD = frozenset({"14e2110ba73cb044bc1b9ae3c5301dcfde821465"})
+JUDGE_EXAMPLES = (JUDGE_EXAMPLE,) + JUDGE_EXAMPLES_OLD
 
 
 # 회의 안건(LM28 — 일정 본문을 core\meetnote 가 정제한 것). 회의 줄 끝에만 붙고, 머리말 안내 한 줄은 안건이 든 묶음에만 넣는다.
@@ -1302,8 +1343,8 @@ def judge_prompt(chunk, start, models, first=True, seen_details=(), idxs=None):
         "  ★ 사람 이름·호칭·부서·채팅방 이름은 과제가 아니다 — 그 사람과 한 일이 속한 과제, 모르면 \"공통\".",
         "  ★ 근태·인사·발령·공지·교육 안내는 과제가 아니다 — 단순 공지는 n, 내가 처리한 행정이면 \"공통\".",
         "· 유형 : 개발 / 사무 / 현장 / 협업 중 하나",
-        "· 세부업무 : 짧은 명사구 — 같은 일은 같은 이름으로 (예: '광학 설계', 'BOM 발주',",
-        "   '입고검사', '고객 대응', '주간보고'). 조사 붙은 조각('보고의' 등) 금지.",
+        "· 세부업무 : 짧은 명사구 — 같은 일은 같은 이름으로 (예: '설계 검토', '부품 발주',",
+        "   '결과 정리', '고객 대응', '주간보고'). 조사 붙은 조각('보고의' 등) 금지.",
     ]
     if any(str(r.get("note") or "").strip() and _fam(r) == "회의" for r in chunk):
         head.append(NOTE_HINT)
@@ -2275,7 +2316,7 @@ def _detail_tokens(name):
 
 
 def _detail_note(name):
-    """세부업무 이름 끝의 괄호 꼬리 — '수광부 해석(양산)' → '양산'. 실제 구분 표기라
+    """세부업무 이름 끝의 괄호 꼬리 — '구동부 해석(양산)' → '양산'. 실제 구분 표기라
     꼬리가 다르면(없음 vs 있음 포함) 같은 일로 병합하지 않는다(core/details._note3 와 동일)."""
     m = re.search(r"[(（]([^)）]*)[)）]\s*$", str(name or ""))
     return m.group(1).strip().casefold() if m else ""
@@ -3340,7 +3381,7 @@ def main():
             w.writerow({c: r.get(c, "") for c in cols})
     # 판정 중 새로 발견된 과제(체계에 없던 이름) → entities에 discovered로 기록,
     # 다음 실행의 taxonomy 힌트로 자동 순환된다. 비교는 대소문자 무시(중복 계상 방지).
-    # 비교는 ukey2 — .lower() 로만 보면 '광학설계' 가 '광학 설계' 의 옆에 새 과제로 적립되고,
+    # 비교는 ukey2 — .lower() 로만 보면 '설계검토' 가 '설계 검토' 의 옆에 새 과제로 적립되고,
     # 그것이 다음 실행의 taxonomy 힌트가 되어 분할이 영구화된다(재분석해도 낫지 않던 이유).
     # 발견 목록은 **최종 반영값**(kept 의 AI 유래 행)에서 만든다 — final_model 이 '공통' 으로 돌린 사람 이름·공지류는 들어올 수 없다.
     model_names_l = {ukey2(m["name"]) for m in models}

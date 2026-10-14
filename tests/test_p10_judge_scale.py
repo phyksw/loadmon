@@ -31,7 +31,7 @@ CANARY = "zzcanaryzz"                 # 시험용 카나리아(실재하지 않�
 TAG = "20260101-20261012"             # 오늘 기간
 YDAY = "20260101-20261011"            # 어제 기간(기본 기간 '올해'는 날마다 tag 가 바뀐다)
 COLS = ["time", "source", "who", "project", "activity", "weight", "text", "flag"]
-TAX = {"models": [{"name": "LiDAR-X", "match": ["lidar"], "obs": "보정 데이터 검토"},
+TAX = {"models": [{"name": "Alpha-X", "match": ["alpha"], "obs": "보정 데이터 검토"},
                   {"name": "공통", "match": []}]}
 THROTTLED = {"ok": False, "phase": "throttled", "reason": "R-THROTTLE", "error": "Copilot 사용량 제한(일시)"}
 # 일시 오류(사용량 제한이 아닌 것) — 1·2·2분 쉬는 사다리 시험용. 사용량 제한은 LM28 부터 한 번만 쉰다(tests\test_p22_throttle.py)
@@ -106,7 +106,7 @@ class _Base(unittest.TestCase):
     def reply(self, name, prompt):
         if name == "taxonomy":
             return _ok(TAX)
-        return _ok({"j": [[i, "y", "LiDAR-X", "개발", "보정 검토"] for i in _idxs(prompt)]})
+        return _ok({"j": [[i, "y", "Alpha-X", "개발", "보정 검토"] for i in _idxs(prompt)]})
 
     # ── 입출력 ──
     def write_signals(self, rows):
@@ -145,8 +145,8 @@ class _Base(unittest.TestCase):
 # ── 1) 다른 날짜 기간의 판정을 이어받는다 + 캐시에는 원문이 없다 ─────────────────────────────────
 class CrossDayResume(_Base):
     def test_yesterday_tag_reused(self):
-        old = [_row(_t(2, i), f"LiDAR-X 보정 데이터 검토 {i}번") for i in range(40)]
-        items = {str(i): {"work": True, "model": "LiDAR-X", "worktype": "개발", "detail": "보정 검토",
+        old = [_row(_t(2, i), f"Alpha-X 보정 데이터 검토 {i}번") for i in range(40)]
+        items = {str(i): {"work": True, "model": "Alpha-X", "worktype": "개발", "detail": "보정 검토",
                           "sig": judge.signal_sig(r)} for i, r in enumerate(old)}
         with open(os.path.join(self.rep, f"ai_judgments_{YDAY}.json"), "w", encoding="utf-8") as f:
             json.dump({"judged": 40, "items": items}, f, ensure_ascii=False)
@@ -175,19 +175,19 @@ class CrossDayResume(_Base):
 # ── 2) 라벨이 바뀐 행 — 캐시 키(sig2)가 같아 다시 묻지 않는다 ─────────────────────────────────
 class LabelFlip(_Base):
     def test_cache_hit_after_label_change(self):
-        a = _row(_t(4, 0), "LiDAR-X 보정 결과 회신 드립니다", source="메일(수신)")
+        a = _row(_t(4, 0), "Alpha-X 보정 결과 회신 드립니다", source="메일(수신)")
         b = dict(a, source="메일(수신전용)")
         self.assertEqual(judge.signal_sig2(a), judge.signal_sig2(b))
         self.assertNotEqual(judge.signal_sig(a), judge.signal_sig(b))
         self.assertEqual(judge._sig2_from_legacy(judge.signal_sig(a)), judge.signal_sig2(b))
         cache = {"v": 1, "since": 0, "items": {judge._ckey(judge.signal_sig2(a)): {
-            "w": 1, "m": "LiDAR-X", "t": "개발", "d": "보정 회신", "at": "2026-10-01"}}}
+            "w": 1, "m": "Alpha-X", "t": "개발", "d": "보정 회신", "at": "2026-10-01"}}}
         self.assertTrue(judge.save_judge_cache(self.rep, cache, "2026-01-01"))
         self.write_signals([b])
         self.run_main()
         self.assertEqual(self.chunk_sends(), [])
         got = self.signals()[0]
-        self.assertEqual((got["judge"], got["model"], got["detail"]), ("AI", "LiDAR-X", "보정 회신"))
+        self.assertEqual((got["judge"], got["model"], got["detail"]), ("AI", "Alpha-X", "보정 회신"))
 
 
 # ── 3·4) 같은 내용 묶음 — 대표만 보내고, 다음 실행은 왕복 없음 · 옛 스레드의 새 회신은 키로 재사용 ─────────
@@ -199,7 +199,7 @@ class Grouping(_Base):
                             source=("메일(수신)" if i % 2 else "메일(발신)"),
                             who=("홍길동/책임/개발팀" if i % 3 else "John Smith")))
         for k in range(10):
-            out.append(_row(_t(9, k * 11), f"광학 모듈 설계 검토 {k}번째 회의 안건"))
+            out.append(_row(_t(9, k * 11), f"제어 모듈 설계 검토 {k}번째 회의 안건"))
         return out
 
     def test_group_once_then_nothing(self):
@@ -211,7 +211,7 @@ class Grouping(_Base):
         self.assertEqual((aj["group_rows"], aj["reps"]), (29, 11))
         sig = self.signals()
         self.assertEqual(len(sig), 40)
-        self.assertTrue(all(r["judge"] == "AI" and r["model"] == "LiDAR-X" for r in sig))
+        self.assertTrue(all(r["judge"] == "AI" and r["model"] == "Alpha-X" for r in sig))
         self.assertIn("[judge] 구조: 신호 40", self.out.getvalue())
         # 다시 — 새 행이 없으면 묶음 왕복도 체계 왕복도 없다(지난 정상 체계 재사용)
         self.sent.clear()
@@ -230,13 +230,13 @@ class Grouping(_Base):
         aj = self.aj()
         self.assertEqual((aj["cache_key_reused"], aj["cache_reused"]), (1, 41))
         new = [r for r in self.signals() if r["time"] == _t(8, 1)]
-        self.assertEqual((new[0]["judge"], new[0]["model"]), ("AI", "LiDAR-X"))
+        self.assertEqual((new[0]["judge"], new[0]["model"]), ("AI", "Alpha-X"))
 
 
 # ── 5) 짧은 팀즈 대화 — 보내지 않고 같은 대화의 판정으로 채운다(버리지 않는다) ───────────────────────
 class LowInfo(_Base):
     def test_short_chat_filled_from_neighbour(self):
-        rows = [_row(_t(10, 0), "LiDAR-X 보정 데이터 공유드립니다 확인 부탁드려요", source="팀즈(수신)", who="김철수"),
+        rows = [_row(_t(10, 0), "Alpha-X 보정 데이터 공유드립니다 확인 부탁드려요", source="팀즈(수신)", who="김철수"),
                 _row(_t(10, 3), "네", source="팀즈(수신)", who="김철수"),
                 _row(_t(10, 5), "감사합니다", source="팀즈(발신)", who="나"),
                 _row(_t(10, 8), "ㅎㅎ", source="팀즈(수신)", who="김철수"),
@@ -248,7 +248,7 @@ class LowInfo(_Base):
         sig = {r["time"]: r for r in self.signals()}
         self.assertEqual(len(sig), 6)                                # 비업무로 버린 행 없음
         for t in (_t(10, 3), _t(10, 5), _t(10, 8)):
-            self.assertEqual((sig[t]["judge"], sig[t]["model"]), ("AI(유사)", "LiDAR-X"))
+            self.assertEqual((sig[t]["judge"], sig[t]["model"]), ("AI(유사)", "Alpha-X"))
         far = sig[_t(20, 0)]                                         # 이웃 판정이 없는 짧은 대화 — 규칙, 협업
         self.assertEqual((far["judge"], far["worktype"]), ("규칙", "협업"))
         aj = self.aj()
@@ -265,7 +265,7 @@ class ThrottleRecovery(_Base):
         return super().reply(name, prompt)
 
     def test_cools_down_and_resends(self):
-        self.write_signals([_row(_t(12, i), f"LiDAR-X 보정 항목 {i}번 정리") for i in range(10)])
+        self.write_signals([_row(_t(12, i), f"Alpha-X 보정 항목 {i}번 정리") for i in range(10)])
         rc = self.run_main()
         c1 = [s for s in self.sent if s["name"] == "chunk1"]
         self.assertEqual(len(c1), 3)
@@ -288,7 +288,7 @@ class PersistentThrottle(_Base):
         return super().reply(name, prompt)
 
     def test_hard_stop(self):
-        self.write_signals([_row(_t(13, i * 3), f"LiDAR-X 측정 로그 {i}번 분석") for i in range(20)])
+        self.write_signals([_row(_t(13, i * 3), f"Alpha-X 측정 로그 {i}번 분석") for i in range(20)])
         rc = self.run_main(5, narrate=True)
         names = [s["name"] for s in self.sent]
         self.assertEqual(names.count("chunk1"), 4)                   # 1 + 쉬고 다시 3
@@ -310,8 +310,8 @@ class PersistentThrottle(_Base):
 
     def test_narrate_stops_once_hard(self):
         judge._HARD[0] = True                                        # 이 프로세스가 이미 강한 제한을 봤다
-        kept = [{"time": f"2026-{mon:02d}-{1 + i:02d} 10:00", "source": "메일(수신)", "who": "", "model": "LiDAR-X",
-                 "worktype": "개발", "detail": "보정 검토", "judge": "AI", "text": f"LiDAR-X 보정 {mon}월 {i}번"}
+        kept = [{"time": f"2026-{mon:02d}-{1 + i:02d} 10:00", "source": "메일(수신)", "who": "", "model": "Alpha-X",
+                 "worktype": "개발", "detail": "보정 검토", "judge": "AI", "text": f"Alpha-X 보정 {mon}월 {i}번"}
                 for mon in (7, 8, 9) for i in range(12)]
         self.assertEqual(judge.narrate(kept, 1.0, TAG), {})
         self.assertEqual(len([s for s in self.sent if s["name"].startswith("narr_")]), 1)
@@ -324,7 +324,7 @@ class LoginStop(_Base):
         return dict(LOGIN)
 
     def test_login_aborts_without_cooldown(self):
-        self.write_signals([_row(_t(14, i), f"LiDAR-X 설계 변경 {i}번 공유") for i in range(12)])
+        self.write_signals([_row(_t(14, i), f"Alpha-X 설계 변경 {i}번 공유") for i in range(12)])
         rc = self.run_main(5)
         self.assertEqual([s["name"] for s in self.sent], ["taxonomy", "chunk1"])
         self.assertEqual(self.cool, [])
@@ -418,7 +418,7 @@ class DriverThrottle(unittest.TestCase):
     def test_marks(self):
         self.assertTrue(ca.is_throttle_reply("죄송합니다. 잠시 후 다시 시도해 주세요."))
         self.assertTrue(ca.is_throttle_reply("You've reached the limit for now. Please try again later."))
-        self.assertFalse(ca.is_throttle_reply('{"j":[[0,"y","LiDAR-X","개발","rate limit 검토"]]}'))
+        self.assertFalse(ca.is_throttle_reply('{"j":[[0,"y","Alpha-X","개발","rate limit 검토"]]}'))
         self.assertFalse(ca.is_throttle_reply("분석 결과 " * 250 + "try again later"))
         self.assertFalse(ca.is_throttle_reply(""))
         self.assertFalse(ca.is_throttle_reply("죄송합니다. 지금은 응답할 수 없습니다."))   # 일반 오류 문구 — 사다리 대상
@@ -439,7 +439,7 @@ class DriverThrottle(unittest.TestCase):
         self.assertEqual(res["phase"], "copilot_error")
 
     def test_reload_instead_of_new_chat(self):
-        self.reply = '{"j":[[0,"y","LiDAR-X","개발","보정 검토"]]}'
+        self.reply = '{"j":[[0,"y","Alpha-X","개발","보정 검토"]]}'
         res = ca.run_roundtrip(self.cfg, "판정 요청", fresh=True, reload=True)
         self.assertTrue(res["ok"])
         self.assertIn("Page.navigate", self.cdp.calls)
@@ -463,12 +463,12 @@ class FillUnjudged(_Base):
             return _ok(TAX)
         if name != "chunk1":
             return dict(LOGIN)                                       # 첫 묶음 뒤 로그인 만료로 중단
-        return _ok({"j": [[i, "y", "LiDAR-X", "개발", "보정 분석"] if i < 5 else [i, "n"] for i in _idxs(prompt)]})
+        return _ok({"j": [[i, "y", "Alpha-X", "개발", "보정 분석"] if i < 5 else [i, "n"] for i in _idxs(prompt)]})
 
     def test_fill_after_abort(self):
-        rows = [_row(_t(15, i), f"lidar 보정 데이터 {i}번 분석", project="lidar") for i in range(5)]
+        rows = [_row(_t(15, i), f"alpha 보정 데이터 {i}번 분석", project="alpha") for i in range(5)]
         rows += [_row(_t(15, 10 + i), f"점심 메뉴 투표 qv{i}") for i in range(5)]
-        rows += [_row(_t(16, i), f"현장 측정 결과 정리 tq{i}", project="lidar") for i in range(10)]
+        rows += [_row(_t(16, i), f"현장 측정 결과 정리 tq{i}", project="alpha") for i in range(10)]
         rows += [_row(_t(17, i), f"점심 메뉴 투표 다시 qw{i}") for i in range(5)]
         rows += [_row(_t(18, i), f"고유 항목 zz{i}") for i in range(15)]
         rows += [_row(_t(19, i), f"할인 행사 안내 {i}", flag="ad") for i in range(2)]
@@ -480,7 +480,7 @@ class FillUnjudged(_Base):
         sig = {r["text"]: r for r in self.signals()}
         for i in range(10):
             r = sig[f"현장 측정 결과 정리 tq{i}"]
-            self.assertEqual((r["judge"], r["model"], r["worktype"], r["detail"]), ("AI(유사)", "LiDAR-X", "개발", "보정 분석"))
+            self.assertEqual((r["judge"], r["model"], r["worktype"], r["detail"]), ("AI(유사)", "Alpha-X", "개발", "보정 분석"))
         for i in range(5):
             self.assertEqual(sig[f"점심 메뉴 투표 다시 qw{i}"]["judge"], "규칙")    # 비업무와 닮아도 버리지 않는다
             self.assertNotIn(f"점심 메뉴 투표 qv{i}", sig)                       # AI 가 비업무로 본 행
@@ -494,14 +494,14 @@ class FillUnjudged(_Base):
         self.assertEqual(len(self.cache_items()), 10)                # 채운 판정은 캐시에 넣지 않는다
 
     def test_sim_fill_unit(self):
-        rows = [_row(_t(25, 0), "광학 모듈 정렬 지그 제작 kx1"), _row(_t(25, 5), "사내 동호회 모집 kq2"),
+        rows = [_row(_t(25, 0), "제어 모듈 정렬 지그 제작 kx1"), _row(_t(25, 5), "사내 동호회 모집 kq2"),
                 _row(_t(26, 0), "정렬 지그 도면 회신 kx1 rev"), _row(_t(26, 3), "동호회 회비 안내 kq2 추가"),
                 _row(_t(26, 9), "전혀 다른 내용 pp9")]
-        judged = {0: {"work": True, "model": "LiDAR-X", "worktype": "개발", "detail": "지그 제작"},
+        judged = {0: {"work": True, "model": "Alpha-X", "worktype": "개발", "detail": "지그 제작"},
                   1: {"work": False, "model": "", "worktype": "", "detail": ""}}
         fills = judge.fill_unjudged(rows, judged, [2, 3, 4])
         self.assertEqual(fills[2][1], "sim")
-        self.assertEqual((fills[2][0]["model"], fills[2][0]["detail"]), ("LiDAR-X", "지그 제작"))
+        self.assertEqual((fills[2][0]["model"], fills[2][0]["detail"]), ("Alpha-X", "지그 제작"))
         self.assertNotIn(3, fills)                                   # 가장 닮은 행이 비업무 — n 을 옮기지 않는다
         self.assertNotIn(4, fills)
 
@@ -516,7 +516,7 @@ class Checkpoint(_Base):
         return super().reply(name, prompt)
 
     def test_cache_saved_per_chunk(self):
-        self.write_signals([_row(_t(21, i * 2), f"LiDAR-X 펌웨어 빌드 {i}번 점검") for i in range(20)])
+        self.write_signals([_row(_t(21, i * 2), f"Alpha-X 펌웨어 빌드 {i}번 점검") for i in range(20)])
         with self.assertRaises(SystemExit):
             self.run_main(5)
         cur = stage_state.current()
@@ -534,7 +534,7 @@ class Checkpoint(_Base):
 class RotationReload(_Base):
     def test_rotation_reloads_page(self):
         judge._CHAT_TURNS[0] = 2
-        self.write_signals([_row(_t(22, i * 4), f"LiDAR-X 보정 표 {i}번 갱신") for i in range(15)])
+        self.write_signals([_row(_t(22, i * 4), f"Alpha-X 보정 표 {i}번 갱신") for i in range(15)])
         self.run_main(5)
         by = {s["name"]: s for s in self.sent}
         self.assertFalse(by["taxonomy"]["reload"])
@@ -545,22 +545,22 @@ class RotationReload(_Base):
 
 # ── 진단 B — 판정 반영: 사람 이름·공지류 과제 없음 · 사람 이름 세부업무는 활동명 · 공지 제목 규칙 행 ───────────
 class NamesInMain(_Base):
-    PLAN = {0: "홍길동", 1: "근태공지", 2: "김철수 책임", 3: "LiDAR-X", 4: "레이더 신호처리"}
+    PLAN = {0: "홍길동", 1: "근태공지", 2: "김철수 책임", 3: "Alpha-X", 4: "레이더 신호처리"}
 
     def reply(self, name, prompt):
         if name == "taxonomy":
-            return _ok({"models": [{"name": "LiDAR-X", "match": ["lidar"], "obs": "보정"},
+            return _ok({"models": [{"name": "Alpha-X", "match": ["alpha"], "obs": "보정"},
                                    {"name": "홍길동", "match": ["홍길동"], "obs": "회의"},
                                    {"name": "근태공지", "match": ["근태"], "obs": "공지"},
                                    {"name": "공통", "match": []}]})
-        return _ok({"j": [[i, "y", self.PLAN.get(i, "LiDAR-X"), "사무", "홍길동" if i == 3 else "협의"]
+        return _ok({"j": [[i, "y", self.PLAN.get(i, "Alpha-X"), "사무", "홍길동" if i == 3 else "협의"]
                           for i in _idxs(prompt) if i != 5]})        # 5번(공지 제목)은 모델이 빠뜨렸다 — 규칙으로
 
     def test_no_person_or_notice_models(self):
         rows = [_row(_t(23, 0), "주간 회의 자료 공유 부탁드립니다", who="홍길동/책임/개발팀"),
                 _row(_t(23, 5), "10월 근태 입력 확인 바랍니다 x1", who="John Smith"),
                 _row(_t(23, 9), "회의실 예약 변경 안내 y2", who="김철수 책임"),
-                _row(_t(23, 14), "LiDAR-X 보정 일정 재조정 z3", who="홍길동/책임/개발팀"),
+                _row(_t(23, 14), "Alpha-X 보정 일정 재조정 z3", who="홍길동/책임/개발팀"),
                 _row(_t(23, 20), "레이더 신호처리 알고리즘 검토 w4"),
                 _row(_t(23, 30), "[근태공지] 10월 근태 마감 안내", activity="공지")]
         self.write_signals(rows)
@@ -570,14 +570,14 @@ class NamesInMain(_Base):
         for bad in ("홍길동", "근태공지", "김철수 책임"):
             self.assertNotIn(bad, models)
         self.assertEqual([sig[_t(23, m)]["model"] for m in (0, 5, 9)], ["공통", "공통", "공통"])
-        self.assertEqual((sig[_t(23, 14)]["model"], sig[_t(23, 14)]["detail"]), ("LiDAR-X", "검토"))
+        self.assertEqual((sig[_t(23, 14)]["model"], sig[_t(23, 14)]["detail"]), ("Alpha-X", "검토"))
         self.assertEqual(sig[_t(23, 20)]["model"], "레이더 신호처리")
         notice = sig[_t(23, 30)]
         self.assertEqual((notice["model"], notice["detail"], notice["judge"]), ("공통", "공지·근태", "규칙"))
         with open(os.path.join(self.rep, f"entities_{TAG}.json"), encoding="utf-8") as f:
             ent = json.load(f)
         names = [m["name"] for m in ent["models"]]
-        self.assertIn("LiDAR-X", names)
+        self.assertIn("Alpha-X", names)
         for bad in ("홍길동", "근태공지", "김철수 책임"):
             self.assertNotIn(bad, names)
         self.assertEqual(ent.get("discovered"), ["레이더 신호처리"])
@@ -591,7 +591,7 @@ class FallbackFlag(_Base):
         return super().reply(name, prompt)
 
     def test_fallback_entities_flagged(self):
-        rows = [_row(_t(24, i), f"lidar 보정 로그 {i}번", project="lidar") for i in range(6)]
+        rows = [_row(_t(24, i), f"alpha 보정 로그 {i}번", project="alpha") for i in range(6)]
         rows += [_row(_t(24, 30 + i), f"홍길동 회의 메모 {i}", project="홍길동", who="홍길동/책임/개발팀")
                  for i in range(3)]
         self.write_signals(rows)
@@ -600,7 +600,7 @@ class FallbackFlag(_Base):
             ent = json.load(f)
         self.assertIs(ent.get("fallback"), True)
         names = [m["name"] for m in ent["models"]]
-        self.assertIn("lidar", names)
+        self.assertIn("alpha", names)
         self.assertNotIn("홍길동", names)                           # 사람 이름 규칙 토큰은 폴백 체계에도 없다
         self.assertTrue(all(m.get("obs") in ("규칙 폴백", "판정 중 발견") for m in ent["models"]))
         self.assertTrue(details.entities_is_fallback(ent))
@@ -615,16 +615,16 @@ class Helpers(unittest.TestCase):
         self.assertIsNotNone(a)
         self.assertEqual(a, gk({"source": "메일(발신)", "text": "FW:  [PX]  일정 조율 "}))
         self.assertNotEqual(gk({"source": "메일(수신)", "text": "설계 검토 1"}), gk({"source": "메일(수신)", "text": "설계 검토 2"}))
-        self.assertIsNone(gk({"source": "커밋", "text": "LiDAR-X 보정 수정 반영"}))
+        self.assertIsNone(gk({"source": "커밋", "text": "Alpha-X 보정 수정 반영"}))
         self.assertIsNone(gk({"source": "팀즈(수신)", "text": "네 넵"}))
-        self.assertNotEqual(gk({"source": "메일(수신)", "text": "LiDAR-X 회의 안건"}),
-                            gk({"source": "팀즈(수신)", "text": "LiDAR-X 회의 안건"}))
+        self.assertNotEqual(gk({"source": "메일(수신)", "text": "Alpha-X 회의 안건"}),
+                            gk({"source": "팀즈(수신)", "text": "Alpha-X 회의 안건"}))
         il = judge.is_lowinfo
         self.assertTrue(il({"source": "팀즈(수신)", "text": "네"}))
         self.assertTrue(il({"source": "팀즈(발신)", "text": "확인했습니다!"}))
         self.assertTrue(il({"source": "팀즈(수신)", "text": "[사람] 님 ㅎㅎ"}))
         self.assertFalse(il({"source": "메일(수신)", "text": "네"}))
-        self.assertFalse(il({"source": "팀즈(수신)", "text": "LiDAR-X 보정 데이터 공유드립니다"}))
+        self.assertFalse(il({"source": "팀즈(수신)", "text": "Alpha-X 보정 데이터 공유드립니다"}))
 
     def test_group_reps_cap(self):
         rows = [{"time": f"2026-03-01 10:{i:02d}", "text": "같은 내용", "weight": "1"} for i in range(5)]
@@ -636,7 +636,7 @@ class Helpers(unittest.TestCase):
     def test_cache_roundtrip_and_prune(self):
         with tempfile.TemporaryDirectory(prefix="lm28_t10c_") as tmp:
             cache = {"v": 1, "since": 0, "items": {
-                "a" * 20: {"w": 1, "m": "LiDAR-X", "t": "개발", "d": "보정", "at": "2024-01-01"},    # 너무 오래 — 뺀다
+                "a" * 20: {"w": 1, "m": "Alpha-X", "t": "개발", "d": "보정", "at": "2024-01-01"},    # 너무 오래 — 뺀다
                 "b" * 20: {"w": 0, "at": "2026-09-01"},
                 "c" * 20: {"w": 1, "m": "공통", "t": "사무", "d": "회의", "at": "2026-10-01"},
                 "d" * 20: {"w": 1, "m": "공통", "t": "사무", "d": "보고", "at": "2026-10-02"}}}
@@ -649,8 +649,8 @@ class Helpers(unittest.TestCase):
             self.assertEqual(judge.load_judge_cache(os.path.join(tmp, "없음"))["items"], {})
 
     def test_sig2(self):
-        r = {"time": "2026-03-01 09:00", "source": "메일(수신)", "text": "LiDAR-X  보정\n결과"}
-        self.assertEqual(judge.signal_sig2(r), "2026-03-01 09:00|메일|LiDAR-X 보정 결과")
+        r = {"time": "2026-03-01 09:00", "source": "메일(수신)", "text": "Alpha-X  보정\n결과"}
+        self.assertEqual(judge.signal_sig2(r), "2026-03-01 09:00|메일|Alpha-X 보정 결과")
         self.assertRegex(judge._ckey(judge.signal_sig2(r)), r"^[0-9a-f]{20}$")
 
 

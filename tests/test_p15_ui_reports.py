@@ -9,7 +9,7 @@ r"""tests\test_p15_ui_reports.py — 화면(ui\app.py)·리포트(report_out.py)
   E  리포트 날짜표 최신순·0h 날·'퇴근 후·시각' 열·합계 줄 · 팀즈 날짜만 행의 12:00 자리표
 
 화면 서버는 이 프로세스 안의 임시 포트로만 띄운다(ThreadingHTTPServer — 새 프로세스 없음). report\·data\ 는 임시 폴더로
-바꿔 끼운다(app.REPORT·app.DATA·report_out.REP) — 실제 폴더를 읽거나 지우지 않는다. 이름은 합성(홍길동·김철수·LiDAR-X)."""
+바꿔 끼운다(app.REPORT·app.DATA·report_out.REP) — 실제 폴더를 읽거나 지우지 않는다. 이름은 합성(홍길동·김철수·Alpha-X)."""
 import http.client
 import json
 import os
@@ -41,7 +41,7 @@ def _w(path, obj):
 
 
 def _nar(summary, **kw):
-    return dict({"summary": summary, "projects": [{"name": "LiDAR-X", "story": "시험 진행", "worktypes": "개발"}]}, **kw)
+    return dict({"summary": summary, "projects": [{"name": "Alpha-X", "story": "시험 진행", "worktypes": "개발"}]}, **kw)
 
 
 class _Srv:
@@ -213,7 +213,7 @@ class ReportNarratives(_Base):
         _w(narratives.path_of(self.rep, TAG_25), {"2025-12": _nar("작년 12월 코멘트")})
         _w(os.path.join(self.rep, f"agentic_{TAG}.json"), {"match": [], "mm_recalc": {"rule_rows": 3, "rule_mm": 0.42}})
         _w(os.path.join(self.rep, f"entities_{TAG}.json"),
-           {"fallback": True, "models": [{"name": "LiDAR-X", "l1": "개발", "match": ["lidar"]}, {"name": "공통"}]})
+           {"fallback": True, "models": [{"name": "Alpha-X", "l1": "개발", "match": ["alpha"]}, {"name": "공통"}]})
         with mock.patch.object(report_out, "_privacy_ctx", lambda: None):
             doc = report_out.build(TAG)
         self.assertIn("5. 월별 리뷰 코멘트", doc)
@@ -268,9 +268,9 @@ class AgenticStale(_Base):
     """근거 키(match[].keys)로 센 결과(axis plain)는 정제본↔원본 전환에 '정제본 무효화' 안내를 띄우지 않는다."""
 
     def _a(self, keyed):
-        m = {"task": "AL1", "fit": 70, "work": ["LiDAR-X / 시험"]}
+        m = {"task": "AL1", "fit": 70, "work": ["Alpha-X / 시험"]}
         if keyed:
-            m["keys"] = ["LiDAR-X␟시험"]
+            m["keys"] = ["Alpha-X␟시험"]
         return {"rows_file": f"mm_rows_{TAG}_refined.csv", "match": [m],
                 "mm_recalc": {"axis": "plain" if keyed else "rows", "rows_file": f"mm_rows_{TAG}.csv"}}
 
@@ -315,7 +315,7 @@ class WorkflowStage(_Base):
         self.signals()
         self._state("flow", "fail", "왕복 실패")
         _w(os.path.join(self.rep, f"workflow_{TAG}.json"),
-           {"ok": True, "flows": [{"model": "LiDAR-X / 시험", "steps": []}], "carried_from": TAG_Y, "carried": 1})
+           {"ok": True, "flows": [{"model": "Alpha-X / 시험", "steps": []}], "carried_from": TAG_Y, "carried": 1})
         _st, out = self.serve().req("GET", "/api/workflow")
         self.assertNotIn("stage_reason", out)
         self.assertEqual(out.get("carried_from"), TAG_Y)

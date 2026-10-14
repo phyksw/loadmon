@@ -412,7 +412,7 @@ class JudgeNotes(_Judge):
         self.assertEqual(self.chunk_prompts(), [])                       # 끄면 예전 키 — 첫 판정 캐시
 
     def test_group_needs_same_note(self):
-        subj = "프로젝트A 광학 모듈 설계 검토"
+        subj = "프로젝트A 제어 모듈 설계 검토"
         self.write_signals([_sig(f"2026-03-0{d} 10:00", subj) for d in (2, 3, 4)])
         self.write_cal([_cal("2026-03-02 10:00", subj, "안건: 시험 결과 공유"),
                         _cal("2026-03-03 10:00", subj, "안건: 시험 결과 공유"),

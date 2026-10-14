@@ -105,7 +105,7 @@ CODE_EXTS = {".py", ".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".hh", ".cs", ".j
              ".sql", ".r", ".go", ".rs"}
 # 확장자 → 업무유형(Level 3) 단서(S3-P2). ACT_RULES 는 텍스트 부분 문자열이라 '.len'⊂'.length'·'.dat'⊂'.data' 오탐이 있고
 # '.asm'(어셈블리 소스)은 설계 규칙에 먼저 잡힌다 — 확장자는 이름 **끝**으로 따로 판정한다. 범용 확장자(.dat .db .txt .csv)는
-# 넣지 않는다(폴더명·힌트로 판정). .zpl/.lsf(광학 스크립트)는 해석 쪽.
+# 넣지 않는다(폴더명·힌트로 판정). .zpl/.lsf(Zemax·Lumerical 스크립트)는 해석 쪽.
 EXT_ACT = {}
 for _n, _exts in (
     # CAD·도면 — .asm 은 Creo/Solid Edge 어셈블리로 둔다. 예전엔 SW개발이라 판번호 없이 저장한 어셈블리
@@ -124,7 +124,7 @@ for _n, _exts in (
                    ".fld .cfld .cpt .fbd .cwr .cst .h3d .hm .t16 .sts .sdy .mfr .k "
                    ".stt .rpt .comm .cvg .su2 .sif .unv .vtu .vtk .pvsm .plt .asc .s2p .slx .mdl"),
     ("SW개발", ".hex .elf .map .bin .ioc .uvprojx .ewp .eww .xpr .qpf .qsf .bit .sof .sln .vcxproj .csproj .lvproj .lvlib .vi .ctl"),
-    # .asc 는 LTspice 회로 도면과 LiDAR ASCII 점군이 겹친다 — 예전대로 해석 쪽에 둔다(LTspice = 회로 시뮬레이션).
+    # .asc 는 LTspice 회로 도면과 ASCII 점군(포인트 클라우드)이 겹친다 — 예전대로 해석 쪽에 둔다(LTspice = 회로 시뮬레이션).
     ("검증·평가", ".tdms .lvm .pcd .las .laz .ply .bag .mcap .db3 .pcap .pcapng .h5 .hdf5 .npy .npz .parquet .mat"),
 ):
     for _e in _exts.split():
@@ -205,7 +205,7 @@ def _pv():
 NOTICE_DEFAULT = ["no-reply", "noreply", "do-not-reply", "알림", "notification", "notice", "뉴스레터", "newsletter",
                   "웹진", "webzine", "공지", "설문", "survey", "시스템", "sharepoint", "yammer", "viva", "helpdesk",
                   "보안", "보안공지", "(광고)", "광고", "promotion", "프로모션", "마케팅", "수신거부", "unsubscribe"]
-# 일반 명사 키워드 — 표시 이름의 부서명·성씨('LiDAR시스템팀'·'공지영'·'Vivaldi')에 부분 일치하지 않도록
+# 일반 명사 키워드 — 표시 이름의 부서명·성씨('제어시스템팀'·'공지영'·'Vivaldi')에 부분 일치하지 않도록
 # 조각(이름/직급/부서 구분자로 나눈 단위) **전체 일치**만 인정한다. 나머지 키워드는 조각 시작 일치.
 NOTICE_GENERIC = {"시스템", "system", "공지", "알림", "설문", "보안", "광고", "마케팅", "viva", "notice",
                   "survey", "promotion", "프로모션", "notification"}
@@ -716,11 +716,11 @@ def _text_filter(exclude):
 
 
 def _norm_person(s):
-    """사람 표기 정규화 — 'CORP\\cs.kim'·'cs.kim@corp.com'·'Kim Chulsoo'·'김철수 (광학팀)' 을 비교 가능한 조각으로.
+    """사람 표기 정규화 — 'CORP\\cs.kim'·'cs.kim@corp.com'·'Kim Chulsoo'·'김철수 (개발팀)' 을 비교 가능한 조각으로.
     도메인 접두·메일 도메인·괄호 뒤·공백·점·하이픈을 걷어낸 소문자."""
     s = str(s or "").strip().lower()
     s = s.split("\\")[-1].split("@")[0]
-    s = re.sub(r"[\(\[/|].*$", "", s)              # '김철수 (광학팀)'·'홍길동/책임/…' → 이름만
+    s = re.sub(r"[\(\[/|].*$", "", s)              # '김철수 (개발팀)'·'홍길동/책임/…' → 이름만
     return re.sub(r"[\s._\-]+", "", s)
 
 
@@ -1230,7 +1230,7 @@ def load_signals(data_dir, d0, d1, exclude=(), cfg=None):
 
     def is_notice(snd, exempt=True):
         """공지·시스템 발신자 판정(A23) — 표시 이름을 조각(이름/직급/부서 구분자)으로 나눠 본다.
-        일반 명사(시스템·공지·알림·viva…)는 조각 **전체 일치**만('LiDAR시스템팀'·'공지영'·'Vivaldi' 는 아님),
+        일반 명사(시스템·공지·알림·viva…)는 조각 **전체 일치**만('제어시스템팀'·'공지영'·'Vivaldi' 는 아님),
         구분자가 든 키워드('no-reply'·'인사팀 공지')는 부분 문자열, 나머지는 조각 시작 일치.
         회신 이력이 있는 발신자(replied)는 무조건 공지가 아니다."""
         s = (snd or "").strip().lower()

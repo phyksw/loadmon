@@ -365,7 +365,7 @@ for _disp, _exts in (
     ("Ansys SpaceClaim", ".scdoc .scdocx"),
     ("Ansys Lumerical", ".fsp .lms .ldev .icp .lsf"),
     ("Zemax OpticStudio", ".zmx .zos .zar .zpl .zrd .zbf .zda .zdf .zsc"),
-    ("CODE V", ".seq .len"),       # .seq 는 NI TestStand 순서 파일과도 겹친다 — 광학 조직의 수집 목록(watchExtensions)을 따른다
+    ("CODE V", ".seq .len"),       # .seq 는 NI TestStand 순서 파일과도 겹친다 — 조직의 수집 목록(watchExtensions)을 따른다
     ("LightTools", ".lts"),
     ("TracePro", ".oml"),
     ("ASAP", ".inr"),

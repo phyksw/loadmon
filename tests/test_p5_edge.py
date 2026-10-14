@@ -714,7 +714,7 @@ class AgenticPrompt(_Base):
             p = agentic.ag_prompt(self.TASKS, self.ROWS)
         self.assertIn(agentic.DOMAIN_HINT_DEFAULT, p.splitlines()[0])
         src = _boot.read_text(os.path.join(ROOT, "agentic.py"))
-        self.assertNotIn("LiDAR", src)
+        self.assertNotIn(bytes.fromhex("6c69646172").decode(), src.lower())   # 팀 도메인 낱말(로마자)을 소스에 박지 않는다 — 낱말 자체도 시험 소스에 쓰지 않으려고 hex
         self.assertNotIn("MM", re.sub(r"\(MM 순\)", "", p))           # 행에 MM 값이 없다
 
     def test_no_replaceable_mm(self):
