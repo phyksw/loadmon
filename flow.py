@@ -618,7 +618,7 @@ def _fold_sep(t):
 def _norm_model(s, drop_note=False):
     r"""이름 비교 축 — 표기 차이를 걷어 내고 남는 알맹이.
 
-    응답이 '## 광학 설계 / 렌즈 시뮬레이션  (신호 12건)' 처럼 머리말을 옮겨 적거나 공백이 하나
+    응답이 '## 설계 검토 / 구조 시뮬레이션  (신호 12건)' 처럼 머리말을 옮겨 적거나 공백이 하나
     늘어난 것만으로 통째로 버려져 '파싱 실패' 가 되던 것을 막는다. 구분자(·/・/ㆍ, 전각 괄호,
     각종 대시)도 한 축으로 모은다 — NFKC 만으로는 ㆍ(U+318D)가 엉뚱한 글자로 바뀌므로
     **NFKC 앞뒤로 한 번씩** 접어야 한다(실측).
@@ -647,9 +647,9 @@ def _strip_heads(t):
     return " ".join(t.split())
 
 
-# 꼬리 대시 '설명'만 뗀다 — 대시 양쪽에 공백이 하나도 없는 'LiDAR-2 개발' 같은 이름 속 하이픈이나,
+# 꼬리 대시 '설명'만 뗀다 — 대시 양쪽에 공백이 하나도 없는 'Alpha-2 개발' 같은 이름 속 하이픈이나,
 # ' / ' 를 품은 꼬리(담당업무 부분 전체)는 이름이다. 예전 정규식 `[-–—]\s*[^-–—]{1,20}$` 은
-# 'LiDAR-2 개발 / 빌드 논의' 를 'lidar' 로 만들어 엉뚱한 단위에 스냅시켰다(F2).
+# 'Alpha-2 개발 / 빌드 논의' 를 'alpha' 로 만들어 엉뚱한 단위에 스냅시켰다(F2).
 _DASH_TAIL = re.compile(r"(?:\s+[-–—]\s*|\s*[-–—]\s+)[^-–—/]{1,20}$")
 _PAREN_TAIL = re.compile(r"\s*[(][^)]*[)]\s*$")
 
@@ -667,7 +667,7 @@ def _strip_tails(t, paren=True):
 
 
 def _tail_note(s):
-    """이름 끝 괄호 꼬리('수광부 해석(양산)' → '양산') — 표기 차이·대시 설명을 걷어낸 뒤. 없으면 ''."""
+    """이름 끝 괄호 꼬리('구조 해석(양산)' → '양산') — 표기 차이·대시 설명을 걷어낸 뒤. 없으면 ''."""
     t = _fold_sep(unicodedata.normalize("NFKC", _fold_sep(str(s or "").strip())))
     t = _strip_heads(t)
     t = _strip_tails(t, paren=False)
@@ -677,7 +677,7 @@ def _tail_note(s):
 
 def _uniq_map(keys, fn):
     """{fn(k): k} — 같은 비교 축 값에 재료 키가 2개 이상 걸리면(모호) 그 값은 뺀다.
-    '수광부 해석(양산)'/'(선행)' 의 괄호를 뗀 축에서 dict 마지막 항목이 조용히 이겨 응답이
+    '구조 해석(양산)'/'(선행)' 의 괄호를 뗀 축에서 dict 마지막 항목이 조용히 이겨 응답이
     엉뚱한 단위에 스냅되던 결함(F2) — 모호하면 다음 축으로 넘기고, 끝까지 없으면 버린다."""
     out, dup = {}, set()
     for k in keys:
@@ -704,7 +704,7 @@ def _resolve_key(raw, keys, low_map, fold_map, norm_map, note_map, ns_map=None, 
         return hit
     nr = _norm_model(raw)
     # 대시 설명만 뗀 축('X(양산) — 해석 반복' → 'x(양산)', 괄호 꼬리는 남긴다)과 공백 제거 비교
-    # ('광학설계/수광부해석(양산)' 처럼 붙여 쓴 응답)
+    # ('설계검토/구조해석(양산)' 처럼 붙여 쓴 응답)
     nd = " ".join(_strip_tails(nr, paren=False).split())
     hit = (norm_map.get(nd) or (ns_map or {}).get(nd.replace(" ", ""))
            or (fns_map or {}).get(fold(raw).replace(" ", "")))
@@ -717,7 +717,7 @@ def _resolve_key(raw, keys, low_map, fold_map, norm_map, note_map, ns_map=None, 
         return hit
     nk = nr.rstrip(". …")
     if len(nk) >= 8:
-        # 앞부분 일치는 이름 경계에서만 — 'lidar-2 개발' 이 'lidar-2 개발자 …' 에 걸리지 않게
+        # 앞부분 일치는 이름 경계에서만 — 'alpha-2 개발' 이 'alpha-2 개발자 …' 에 걸리지 않게
         cands = [v for k, v in norm_map.items()
                  if k.startswith(nk) and (len(k) == len(nk) or not k[len(nk)].isalnum())]
         if len(cands) == 1:
@@ -744,7 +744,7 @@ def _key_maps(keys):
 def _key_resolver(keys):
     """재료 키({키: mat}) → '이름 하나를 오늘 키로 푸는 함수'(sanitize_flows 와 같은 축·같은 유일성 규칙, 못 풀면 '').
     지난 결과의 흐름을 이어받을 때 쓴다 — 예전에는 키가 글자까지 같아야 해서 별칭·과제 병합 맵이 조금만 바뀌어도
-    ('광학설계 / 렌즈 시뮬레이션' ↔ '광학 설계 / 렌즈시뮬레이션') 끝난 흐름을 버리고 처음부터 다시 물었다."""
+    ('설계검토 / 구조 시뮬레이션' ↔ '설계 검토 / 구조시뮬레이션') 끝난 흐름을 버리고 처음부터 다시 물었다."""
     keys = keys or {}
     maps = _key_maps(keys)
 
@@ -904,7 +904,7 @@ def sanitize_flows(raw_flows, keys, mats_by=None, dropped=None):
 
 def _chunks(mats, budget=PROMPT_BUDGET, max_units=None):
     r"""단위를 **과제 덩어리**로 묶는다 — 같은 과제의 담당업무가 묶음 경계로 갈리면 연계를 볼 수 없다
-    (실측: 광학 설계 8개가 묶음1·2 로 갈렸다). 과제 하나가 예산이나 예상 답 길이를 넘을 때만 그 안에서 쪼갠다.
+    (실측: 한 과제의 담당업무 8개가 묶음1·2 로 갈렸다). 과제 하나가 예산이나 예상 답 길이를 넘을 때만 그 안에서 쪼갠다.
 
     두 가지를 함께 막는다:
       · 입력 — 프롬프트 글자 수 ≤ budget. base 는 **그 모드의 머리말**로 잰다. 예전에는 build_prompt([]) 를
@@ -1204,7 +1204,7 @@ def _run(judge, tag, rep, _ss):
         #   (규칙 병합 0건 실측). LM20 refine 은 Level 3 를 유지했지만 LM22 refine 은 합치고 바꾼다.
         rows_plain, _pf = details.read_rows(tag, rep, plain=True)
         # ★ 과제(중위) 병합을 **세부업무 병합보다 먼저** 돌린다. details._detail_pools 가 raw Level 2 를
-        #   파티션 키로 쓰므로, 과제가 '광학 설계'/'광학설계' 로 갈린 채 두면 같은 세부업무 집합이 여러
+        #   파티션 키로 쓰므로, 과제가 '설계 검토'/'설계검토' 로 갈린 채 두면 같은 세부업무 집합이 여러
         #   풀로 쪼개져 세부 병합이 반쪽이 된다(감사 합성 실측: 변형 4개 → 풀 4개).
         try:
             import projmap as _pm

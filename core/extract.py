@@ -105,7 +105,7 @@ CODE_EXTS = {".py", ".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".hh", ".cs", ".j
              ".sql", ".r", ".go", ".rs"}
 # 확장자 → 업무유형(Level 3) 단서(S3-P2). ACT_RULES 는 텍스트 부분 문자열이라 '.len'⊂'.length'·'.dat'⊂'.data' 오탐이 있고
 # '.asm'(어셈블리 소스)은 설계 규칙에 먼저 잡힌다 — 확장자는 이름 **끝**으로 따로 판정한다. 범용 확장자(.dat .db .txt .csv)는
-# 넣지 않는다(폴더명·힌트로 판정). .zpl/.lsf(광학 스크립트)는 해석 쪽.
+# 넣지 않는다(폴더명·힌트로 판정). .zpl/.lsf(Zemax·Lumerical 스크립트)는 해석 쪽.
 EXT_ACT = {}
 for _n, _exts in (
     # CAD·도면 — .asm 은 Creo/Solid Edge 어셈블리로 둔다. 예전엔 SW개발이라 판번호 없이 저장한 어셈블리
@@ -124,7 +124,7 @@ for _n, _exts in (
                    ".fld .cfld .cpt .fbd .cwr .cst .h3d .hm .t16 .sts .sdy .mfr .k "
                    ".stt .rpt .comm .cvg .su2 .sif .unv .vtu .vtk .pvsm .plt .asc .s2p .slx .mdl"),
     ("SW개발", ".hex .elf .map .bin .ioc .uvprojx .ewp .eww .xpr .qpf .qsf .bit .sof .sln .vcxproj .csproj .lvproj .lvlib .vi .ctl"),
-    # .asc 는 LTspice 회로 도면과 LiDAR ASCII 점군이 겹친다 — 예전대로 해석 쪽에 둔다(LTspice = 회로 시뮬레이션).
+    # .asc 는 LTspice 회로 도면과 점군(ASCII)이 겹친다 — 예전대로 해석 쪽에 둔다(LTspice = 회로 시뮬레이션).
     ("검증·평가", ".tdms .lvm .pcd .las .laz .ply .bag .mcap .db3 .pcap .pcapng .h5 .hdf5 .npy .npz .parquet .mat"),
 ):
     for _e in _exts.split():
@@ -716,11 +716,11 @@ def _text_filter(exclude):
 
 
 def _norm_person(s):
-    """사람 표기 정규화 — 'CORP\\cs.kim'·'cs.kim@corp.com'·'Kim Chulsoo'·'김철수 (광학팀)' 을 비교 가능한 조각으로.
+    """사람 표기 정규화 — 'CORP\\cs.kim'·'cs.kim@corp.com'·'Kim Chulsoo'·'김철수 (개발팀)' 을 비교 가능한 조각으로.
     도메인 접두·메일 도메인·괄호 뒤·공백·점·하이픈을 걷어낸 소문자."""
     s = str(s or "").strip().lower()
     s = s.split("\\")[-1].split("@")[0]
-    s = re.sub(r"[\(\[/|].*$", "", s)              # '김철수 (광학팀)'·'홍길동/책임/…' → 이름만
+    s = re.sub(r"[\(\[/|].*$", "", s)              # '김철수 (개발팀)'·'홍길동/책임/…' → 이름만
     return re.sub(r"[\s._\-]+", "", s)
 
 

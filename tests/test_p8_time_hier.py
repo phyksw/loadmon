@@ -221,8 +221,8 @@ class TimeShare(unittest.TestCase):
         self.assertEqual(out, {"A": 50, "B": 50})
 
     def test_weight_default_is_lm24(self):
-        sig = [(_dt(TUE, 9), "파일", "lidarx 설계.dwg", 3.0, "나"), (_dt(TUE, 10), "파일", "lidarx 설계.dwg", 3.0, "나"),
-               (_dt(TUE, 11), "메일(수신)", "optix 회의 안내", 1.0, "x"), (_dt(TUE, 12), "메일(수신)", "optix 회의", 1.0, "x")]
+        sig = [(_dt(TUE, 9), "파일", "orionx 설계.dwg", 3.0, "나"), (_dt(TUE, 10), "파일", "orionx 설계.dwg", 3.0, "나"),
+               (_dt(TUE, 11), "메일(수신)", "vegax 회의 안내", 1.0, "x"), (_dt(TUE, 12), "메일(수신)", "vegax 회의", 1.0, "x")]
         items = extract.build_items(sig, None, min_w=0.0)
         rows = extract.to_rows(items, 2.0)
         tot = sum(v["w"] for v in items.values())
@@ -233,8 +233,8 @@ class TimeShare(unittest.TestCase):
         self.assertIn("field", rows[0])
 
     def test_time_shares_sum(self):
-        sig = [(_dt(TUE, 9), "파일", "lidarx 설계.dwg", 3.0, "나"), (_dt(TUE, 10), "파일", "lidarx 설계.dwg", 3.0, "나"),
-               (_dt(TUE, 14), "파일", "optix 계산.xlsx", 3.0, "나"), (_dt(TUE, 15), "파일", "optix 계산.xlsx", 3.0, "나")]
+        sig = [(_dt(TUE, 9), "파일", "orionx 설계.dwg", 3.0, "나"), (_dt(TUE, 10), "파일", "orionx 설계.dwg", 3.0, "나"),
+               (_dt(TUE, 14), "파일", "vegax 계산.xlsx", 3.0, "나"), (_dt(TUE, 15), "파일", "vegax 계산.xlsx", 3.0, "나")]
         items, assigns = extract.build_items2(sig, None, min_w=0.0)
         sh, st = extract.time_shares(assigns, {TUE: 8.0}, {})
         self.assertAlmostEqual(sum(sh.values()), 1.0, places=9)
@@ -342,12 +342,12 @@ class MetaKeys(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="lm28_p8_root_") as root, _Data() as D:
             os.makedirs(os.path.join(root, "report"))
             os.makedirs(os.path.join(D.dir, "files"))
-            fol = os.path.join(D.dir, "work", "lidarx")
+            fol = os.path.join(D.dir, "work", "orionx")
             with open(os.path.join(D.dir, "files", "files.csv"), "w", encoding="utf-8", newline="") as f:
                 w = csv.writer(f)
                 w.writerow(["mtime", "ext", "size_kb", "folder", "name", "author"])
                 for hh in (9, 10, 14, 15):
-                    w.writerow([f"2026-09-01 {hh:02d}:00:00", ".dwg", "10", fol, f"lidarx_{hh}.dwg", ""])
+                    w.writerow([f"2026-09-01 {hh:02d}:00:00", ".dwg", "10", fol, f"orionx_{hh}.dwg", ""])
             D.pc_spans([(_dt(TUE, 8), _dt(TUE, 19))])
             cfg = {"mm": {"shareBasis": "time"}}
             saved = (mine.ROOT, extract.load_cfg, sys.argv, sys.stdout)
@@ -438,17 +438,17 @@ class RuleNames(unittest.TestCase):
     def test_noise_filtered(self):
         sig = []
         for i in range(3):
-            sig.append((_dt(TUE, 9 + i), "파일", "untitled_1 copy rev3 20260105 lidarx.docx", 3.0, "나"))
+            sig.append((_dt(TUE, 9 + i), "파일", "untitled_1 copy rev3 20260105 orionx.docx", 3.0, "나"))
         for i in range(6):
             sig.append((_dt(TUE, 13, i), "파일", f"memo{i}x.txt", 3.0, "나"))
         items = extract.build_items(sig, None, min_w=0.0)
         projs = {p for p, _a in items}
-        self.assertIn("lidarx", projs)
+        self.assertIn("orionx", projs)
         for bad in ("untitled", "copy", "rev3", "20260105"):
             self.assertNotIn(bad, projs)
         self.assertFalse(extract.rule_name_ok("v2"))
         self.assertFalse(extract.rule_name_ok("260105"))
-        self.assertTrue(extract.rule_name_ok("lidarx"))
+        self.assertTrue(extract.rule_name_ok("orionx"))
 
     def test_rule_model_skips_noise_keys(self):
         import judge

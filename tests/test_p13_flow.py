@@ -134,8 +134,8 @@ def _ok(obj):
 
 class FlowRuns(_Env):
     def _data(self, rule=True):
-        rows = [_mm_row("광학 설계", "렌즈시뮬레이션", 2.0), _mm_row("광학 설계", "광원 시험", 1.0)]
-        sigs = _sigs("광학 설계", "렌즈시뮬레이션", n=4) + _sigs("광학 설계", "광원 시험", n=4, day0=12)
+        rows = [_mm_row("모듈 설계", "구조시뮬레이션", 2.0), _mm_row("모듈 설계", "부품 시험", 1.0)]
+        sigs = _sigs("모듈 설계", "구조시뮬레이션", n=4) + _sigs("모듈 설계", "부품 시험", n=4, day0=12)
         if rule:
             rows.append(_mm_row("공통", "기타", 3.0, l1="공통", kind="사무"))
             sigs += _sigs("공통", "기타", n=5, judge_v="규칙", day0=20)
@@ -155,7 +155,7 @@ class FlowRuns(_Env):
         self.assertEqual([n for n, _p in self.calls], [f"{self.TAG}-wf1", f"{self.TAG}-wf1-c"])
         self.assertEqual(self.sleeps, [90.0])
         w = self.rjson(f"workflow_{self.TAG}.json")
-        self.assertEqual(sorted(f["model"] for f in w["flows"]), ["광학 설계 / 광원 시험", "광학 설계 / 렌즈시뮬레이션"])
+        self.assertEqual(sorted(f["model"] for f in w["flows"]), ["모듈 설계 / 구조시뮬레이션", "모듈 설계 / 부품 시험"])
         self.assertTrue(all(f["asked_at"] == time.strftime("%Y-%m-%d") for f in w["flows"]))
         self.assertTrue(all(f["level1"] == "개발" for f in w["flows"]))       # 정제본 없이도 원본 Level 1 로 상위
         self.assertEqual(w["rule_units_count"], 1)                             # '공통 / 기타'(규칙 판정)는 묻지 않았다
@@ -201,45 +201,45 @@ class FlowRuns(_Env):
         today = time.strftime("%Y-%m-%d")
         self.wjson(os.path.join(self.rep, f"workflow_{self.TAG}.json"),
                    {"ok": True, "tag": self.TAG, "unit": "과제/담당업무", "generated": f"{today} 09:00",
-                    "flows": [{"model": "광학설계 / 렌즈 시뮬레이션", "role": "주도", "summary": "s", "steps": STEP3}]})
+                    "flows": [{"model": "모듈설계 / 구조 시뮬레이션", "role": "주도", "summary": "s", "steps": STEP3}]})
         # 답이 flows 를 객체로, 단계를 문장 목록으로 보낸다
-        self.reply = lambda p, n: _ok({"flows": {"광학 설계 / 광원 시험": {"role": "실무", "steps": [
-            "1. 시험 계획 정리", "2. 광원 측정", "3. 결과 보고"]}}})
+        self.reply = lambda p, n: _ok({"flows": {"모듈 설계 / 부품 시험": {"role": "실무", "steps": [
+            "1. 시험 계획 정리", "2. 부품 측정", "3. 결과 보고"]}}})
         rc, js, _out = self.run_main(flow, "--no-merge")
         self.assertEqual(rc, 0, js)
         self.assertEqual(len(self.calls), 1)
-        self.assertNotIn("## 광학 설계 / 렌즈시뮬레이션", self.calls[0][1])    # 이어받은 단위는 묻지 않는다
+        self.assertNotIn("## 모듈 설계 / 구조시뮬레이션", self.calls[0][1])    # 이어받은 단위는 묻지 않는다
         w = self.rjson(f"workflow_{self.TAG}.json")
         by = {f["model"]: f for f in w["flows"]}
-        self.assertEqual(by["광학 설계 / 렌즈시뮬레이션"]["role"], "주도")        # 지난 키를 오늘 키로 스냅
-        self.assertEqual([s["name"] for s in by["광학 설계 / 광원 시험"]["steps"]], ["시험 계획 정리", "광원 측정", "결과 보고"])
+        self.assertEqual(by["모듈 설계 / 구조시뮬레이션"]["role"], "주도")        # 지난 키를 오늘 키로 스냅
+        self.assertEqual([s["name"] for s in by["모듈 설계 / 부품 시험"]["steps"]], ["시험 계획 정리", "부품 측정", "결과 보고"])
 
     def test_carry_other_tag(self):
         self._data(rule=False)
         tag_a = "20260101-20260130"
         self.wjson(os.path.join(self.rep, f"workflow_{tag_a}.json"),
                    {"ok": True, "tag": tag_a, "unit": "과제/담당업무", "generated": "2026-01-30 09:00",
-                    "flows": [{"model": "광학 설계 / 렌즈시뮬레이션", "role": "주도", "summary": "s", "steps": STEP3,
+                    "flows": [{"model": "모듈 설계 / 구조시뮬레이션", "role": "주도", "summary": "s", "steps": STEP3,
                                "asked_at": time.strftime("%Y-%m-%d")},
-                              {"model": "광학 설계 / 광원 시험", "role": "검토", "summary": "s", "steps": STEP3,
+                              {"model": "모듈 설계 / 부품 시험", "role": "검토", "summary": "s", "steps": STEP3,
                                "asked_at": "2020-01-01"}]})
         self.reply = lambda p, n: self._flows(p)
         rc, js, _out = self.run_main(flow, "--no-merge", "--carry")
         self.assertEqual(rc, 0, js)
         self.assertEqual(len(self.calls), 1)
-        self.assertIn("## 광학 설계 / 광원 시험", self.calls[0][1])             # 오래된 흐름만 다시 묻는다
-        self.assertNotIn("## 광학 설계 / 렌즈시뮬레이션", self.calls[0][1])
+        self.assertIn("## 모듈 설계 / 부품 시험", self.calls[0][1])             # 오래된 흐름만 다시 묻는다
+        self.assertNotIn("## 모듈 설계 / 구조시뮬레이션", self.calls[0][1])
         w = self.rjson(f"workflow_{self.TAG}.json")
         self.assertEqual((w["carried_from"], w["carried"], w["expired"]), (tag_a, 1, 1))
 
     def test_merge_map_deadline_and_two_failures(self):
-        rows = [_mm_row("광학 설계", "렌즈시뮬레이션", 2.0), _mm_row("광학 설계", "광원 시험", 1.0)]
+        rows = [_mm_row("모듈 설계", "구조시뮬레이션", 2.0), _mm_row("모듈 설계", "부품 시험", 1.0)]
         sent = []
 
         def sender(prompt, tag, name, fresh=None):
             sent.append(fresh)
             return {"ok": True, "reply": "설명만 있는 답"}             # JSON 없음 — 해석 실패
-        with mock.patch.object(details, "merge_batches", lambda secs, budget=None: [[("광학 설계", "## 광학 설계")]] * 4):
+        with mock.patch.object(details, "merge_batches", lambda secs, budget=None: [[("모듈 설계", "## 모듈 설계")]] * 4):
             details.detail_merge_map(self.TAG, sender, rows=rows, log=lambda m: None, deadline=time.monotonic() - 1)
             self.assertEqual(sent, [])                                         # 마감이 지났으면 묻지 않는다
             details.detail_merge_map(self.TAG, sender, rows=rows, log=lambda m: None)
@@ -256,7 +256,7 @@ class FlowRuns(_Env):
         self.assertIn("Copilot 사용량 제한", w["merge_skipped"])
 
     def test_shapes_and_heads(self):
-        self.assertEqual(flow._norm_model("광학 설계 / 렌즈 (신호 12건) [상위: 개발]"), flow._norm_model("광학 설계 / 렌즈"))
+        self.assertEqual(flow._norm_model("모듈 설계 / 구조 (신호 12건) [상위: 개발]"), flow._norm_model("모듈 설계 / 구조"))
         keys = {"과제A / 설계": {"model": "과제A", "detail": "설계", "mm": 1.0, "signals": 3}}
         got = flow.sanitize_flows({"key": "과제A / 설계 (신호 3건)", "steps": {"1": {"name": "a"}, "2": "b 단계"}}, keys)
         self.assertEqual([s["name"] for s in got[0]["steps"]], ["a", "b 단계"])

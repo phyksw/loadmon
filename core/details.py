@@ -2,7 +2,7 @@
 r"""
 details.py — 세부업무(Level 3) 표기 병합 맵 (LoadMonitor24, 보완2 이식)
 
-AI 가 청크마다 '렌즈 시뮬레이션'/'렌즈시뮬레이션', '레이아웃 검토'/'레이아웃 수정'/'레이아웃
+AI 가 청크마다 '구조 시뮬레이션'/'구조시뮬레이션', '레이아웃 검토'/'레이아웃 수정'/'레이아웃
 리뷰 회의' 처럼 같은 일에 다른 이름을 붙이면 (과제 × 세부업무) 격자가 조각나 워크플로우가
 쪼개진다. 여기서 (과제, 세부업무) → 대표 이름 맵을 만들어
 flow·freeze(분석리포트)·judge 가 같은 축을 쓰게 한다.
@@ -795,7 +795,7 @@ def is_person_name(name, keys=()):
         for c in (t, t0, _NAME_PARTICLE.sub("", t0)):
             if c and ukey2(c) in keys:
                 return True
-    for n in (2, 3, 4):                                 # 로마자 이름은 여러 낱말 — 'LiDAR-X John Smith'
+    for n in (2, 3, 4):                                 # 로마자 이름은 여러 낱말 — 'Orion-X John Smith'
         for i in range(len(toks) - n + 1):
             if ukey2("".join(toks[i:i + n])) in keys:
                 return True
@@ -1311,7 +1311,7 @@ def project_merge_map(rows, sigs=None, refmap=None, pinned=(), log=print):
         없으면 MM 큰 이름 → **띄어쓰기가 살아 있는 이름** → 원문 짧은 이름 → 사전순.
 
         Level 3 의 _rule_canon 은 '공백 정규화가 짧은 이름' 을 고르는데, 그것을 과제에 그대로 쓰면
-        '광학 설계'/'광학설계' 에서 붙여 쓴 쪽이 대표가 되어 카드 머리말이 읽기 나빠진다(실측).
+        '설계 검토'/'설계검토' 에서 붙여 쓴 쪽이 대표가 되어 카드 머리말이 읽기 나빠진다(실측).
         과제 이름은 화면에 그대로 보이므로 team_report.local_groups 와 같이 '정보가 많은 표기' 를
         고른다. 그러면서도 '빌드  논의'(공백 둘) 같은 오타는 원문 길이 비교에서 걸러진다 —
         정규화하면 길이가 같고, 원문이 긴 쪽이 지기 때문이다."""

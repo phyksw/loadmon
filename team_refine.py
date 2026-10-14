@@ -3,7 +3,7 @@
 team_refine.py — 팀 취합의 유사 항목을 Copilot 으로 정리한다 (팀장용, UI [유사 항목 정리] 의 실체).
 
 인별 분석은 각자 PC에서 따로 돌기 때문에 같은 일이 다른 표기로 갈라진다
-(예: '광학 설계' / '광학계 설계' / 'Optical 설계' → 취합 표에 세 줄).
+(예: '설계 검토' / '설계안 검토' / 'Design 검토' → 취합 표에 세 줄).
 이 도구는 team_report.refine_once 로 ① 규칙(확실한 표기 변형) ② Copilot 반복(≤3회) 정리를 하여
 매핑을 <공유폴더>\\team_aliases.json 에 저장하고, 이어서 team_report.build(sender) 로
 계열·세부업무·후보·과제분류 캐시를 Copilot 으로 채운 뒤 aggregate.py 를 돌려 정적 리포트

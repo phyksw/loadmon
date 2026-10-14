@@ -2776,7 +2776,7 @@ body.snap .snaponly{display:block}
 <div class="note">팀 통합 보고서(team_full_report.html): 로드율·과제×인원·업무유형·워크플로우를 한 장에 담은
 정적 파일 — 팀원 업로드마다 자동 갱신되고 [다시 만들기]로 즉시 새로 만듭니다(Copilot 없이 저장된 통합만 적용).
 v3 는 인별 로드율을 뺀 공유용, [스냅샷 저장]은 팀통합보고서_&lt;시각&gt;.html 사본을 취합 폴더에 남깁니다.</div>
-<div class="note">유사 항목 정리: 인별 분석에서 갈라진 표기('광학 설계'/'광학계 설계' 등)를 Copilot이
+<div class="note">유사 항목 정리: 인별 분석에서 갈라진 표기('설계 검토'/'설계안 검토' 등)를 Copilot이
 같은 실체끼리 묶어 대표 이름으로 통합합니다. 매핑만 얹으므로(team_aliases.json) 원본은 그대로이며
 [정리 되돌리기]로 즉시 원상복구됩니다.</div></div>
 

@@ -317,9 +317,9 @@ class LoadSignalsG2(unittest.TestCase):
                    "웹진", "webzine", "공지", "설문", "survey", "시스템", "sharepoint", "yammer", "viva", "helpdesk",
                    "보안", "보안공지", "(광고)", "광고", "promotion", "프로모션", "마케팅", "수신거부", "unsubscribe"}
         self.assertEqual([x for x in extract.NOTICE_DEFAULT if x not in generic], [])
-        toks = extract._tokens("[금액] 견적 [사람] 회신 [이메일@사내] 광학모듈 [과제]")
+        toks = extract._tokens("[금액] 견적 [사람] 회신 [이메일@사내] 제어모듈 [과제]")
         self.assertFalse({"금액", "사람", "이메일@사내", "과제"} & toks)
-        self.assertIn("광학모듈", toks)
+        self.assertIn("제어모듈", toks)
 
 
 class TeamExportG4(unittest.TestCase):

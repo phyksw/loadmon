@@ -34,7 +34,7 @@ def _ok(reply):
     return {"ok": True, "phase": "replied", "reply": reply}
 
 
-def _reply(summary="이 달은 회로 설계와 시험 위주", projects=(("LiDAR-X", "회로 설계 검토와 시험"),)):
+def _reply(summary="이 달은 회로 설계와 시험 위주", projects=(("Orion-X", "회로 설계 검토와 시험"),)):
     return json.dumps({"summary": summary,
                        "projects": [{"name": n, "story": s, "worktypes": "개발 위주"} for n, s in projects]},
                       ensure_ascii=False)
@@ -43,7 +43,7 @@ def _reply(summary="이 달은 회로 설계와 시험 위주", projects=(("LiDA
 def _entry(summary, n_ai=None, projects=None, **kw):
     e = {"summary": summary,
          "projects": projects if projects is not None else
-         [{"name": "LiDAR-X", "story": "회로 설계 검토", "worktypes": "개발 위주"}]}
+         [{"name": "Orion-X", "story": "회로 설계 검토", "worktypes": "개발 위주"}]}
     if n_ai is not None:
         e["n_ai"] = n_ai
     e.update(kw)
@@ -64,7 +64,7 @@ def _load(rep, tag):
         return json.load(f)
 
 
-def _rows(month, n_ai, n_rule=0, model="LiDAR-X"):
+def _rows(month, n_ai, n_rule=0, model="Orion-X"):
     """그 달의 판정된 행 — AI 판정 n_ai 행 + 규칙 n_rule 행(규칙 행 원문에는 '규칙행' 표식)."""
     out = []
     for i in range(n_ai + n_rule):
@@ -293,12 +293,12 @@ class NarrateNameGuard(_Base):
         self.assertTrue(got["2026-06"]["earlier"])
 
     def test_name_match(self):
-        real = {judge._nm_key(n): n for n in ("Agentic AI", "LiDAR-X", "공통")}
+        real = {judge._nm_key(n): n for n in ("Agentic AI", "Orion-X", "공통")}
         self.assertEqual(judge._narr_name("Agentic AI 과제", real), "Agentic AI")
-        self.assertEqual(judge._narr_name("lidar x", real), "LiDAR-X")
+        self.assertEqual(judge._narr_name("orion x", real), "Orion-X")
         self.assertEqual(judge._narr_name("공통 업무", real), "공통")
         self.assertIsNone(judge._narr_name("프로젝트A", dict(real, **{judge._nm_key("프로젝트A"): "프로젝트A"})))
-        self.assertIsNone(judge._narr_name("광학 설계", real))
+        self.assertIsNone(judge._narr_name("모듈 설계", real))
 
 
 # ── 8) 관문(G3)에 걸린 줄만 빼고 한 번 더 보낸다 ───────────────────────────────────────
@@ -320,11 +320,11 @@ class JudgeMain(_Base):
 
     def reply_for(self, name, prompt):
         if name == "taxonomy":
-            return _ok(json.dumps({"models": [{"name": "광학모듈", "match": ["광학"]}, {"name": "공통", "match": []}]},
+            return _ok(json.dumps({"models": [{"name": "제어모듈", "match": ["제어"]}, {"name": "공통", "match": []}]},
                                   ensure_ascii=False))
         if name == "chunk1" and self.mode == "abort":
             idxs = [int(x) for x in re.findall(r"^#(\d+) \|", prompt, re.M)] or list(range(100))
-            return _ok(json.dumps({"j": [[i, "y", "광학모듈", "개발", "시험 보고서"] for i in idxs]}, ensure_ascii=False))
+            return _ok(json.dumps({"j": [[i, "y", "제어모듈", "개발", "시험 보고서"] for i in idxs]}, ensure_ascii=False))
         return _ok(BAD_REPLY)                       # 그 밖의 청크·월별 리뷰 — 답을 해석하지 못함(실패)
 
     def _signals(self, n=40):
@@ -334,7 +334,7 @@ class JudgeMain(_Base):
             for i in range(n):
                 mon = 9 if i < n // 2 else 10
                 w.writerow([f"2026-{mon:02d}-{1 + i % 28:02d} 09:{i % 60:02d}", "메일", "", "", "", "1",
-                            f"광학 모듈 시험 보고서 {i}번 항목 검토 요청", ""])
+                            f"제어 모듈 시험 보고서 {i}번 항목 검토 요청", ""])
 
     def _main(self):
         with mock.patch.object(sys, "argv", list(self.ARGV)):

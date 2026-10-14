@@ -106,7 +106,7 @@ def _kw_hit(k, toks, mode="name"):
         앞에 HEAD_PREFIX_MAX(3)자 이하가 붙은 꼴도 인정('열해석' ⊃ '해석'). 한글은 오탈자 흡수를 하지 않는다.
       · 영문·숫자 조각: 4자 이상이면 접두/접미 합성, 5자 이상이면 오탈자 흡수(difflib ≥ 0.9). 'ai' 는 단어 경계로만
         ('ai기반' ○, 'email'·'detail' ×).
-    'lidar-x' 같은 구분자 포함 키워드는 같은 규칙으로 조각내 모든 조각 일치를 요구한다."""
+    'orion-x' 같은 구분자 포함 키워드는 같은 규칙으로 조각내 모든 조각 일치를 요구한다."""
     if mode not in ("name", "head"):
         raise ValueError("_kw_hit: mode 는 'name' 또는 'head'")
 
