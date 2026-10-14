@@ -300,6 +300,19 @@ def _ca():
     return m
 
 
+def chat_note():
+    """단계 끝 한 줄 '[copilot] 채팅 정리: 만든 n · 지운 m · 남긴 k (사유: …)' — 이 프로세스가 연·지운·남긴 Copilot 채팅 수(숫자와
+    사유만 — 제목·글 없음). 드라이버를 이 프로세스에서 쓰지 않았거나(inProcess=false — 자식 프로세스) 한 일이 없으면 찍지 않는다.
+    마지막 줄 JSON 규약 때문에 JSON 줄보다 먼저 부른다(judge·refine·agentic·flow)."""
+    m = sys.modules.get("copilot_auto")
+    try:
+        s = m.chat_line() if m is not None and hasattr(m, "chat_line") else ""
+    except Exception:  # noqa: BLE001 - 기록 한 줄이 단계를 막지 않는다
+        s = ""
+    if s:
+        print(s, flush=True)
+
+
 def _inproc():
     """config.copilotAuto.inProcess — 기본 true(config.default.json). false 면 예전처럼 드라이버를 자식 프로세스로."""
     v = _copilot_cfg().get("inProcess", True)
@@ -2797,6 +2810,7 @@ def main():
             return 0
         print(f"[judge] 월별 코멘트 {len(nar)}/{len(_NARR_LAST['plan'])}개월 새로 만듦 · "
               + ("저장(나머지 달은 이전 코멘트 유지)" if saved else "기존 파일 유지"))
+        chat_note()
         return 0 if nar else 1
     from stage_state import open_stage
     _ss = open_stage(rep, tag, "judge")        # v3 상태 파일 — 하트비트·진행·중단 사유(구조 감사 4계층)
@@ -3271,6 +3285,7 @@ def main():
         # 이월만(왕복 없음) — 예전에는 rc 3 이면 이 기간 파일이 아예 없어 리포트·팀 묶음(정확한 tag 파일만 읽음)의
         # 월별 코멘트 절이 통째로 빠졌다. 마지막 줄 JSON 규약을 지키려고 JSON 줄보다 먼저 저장한다.
         save_narratives({}, rep, tag)
+        chat_note()
         print(json.dumps({"ok": False, "error": err, "hint": hint, "judged": 0,
                           "chunks": len(chunks), "failed_chunks": n_fail}, ensure_ascii=False))
         if _ss is not None:
@@ -3292,6 +3307,7 @@ def main():
             progress("월별 리뷰", 0, 1)
             nar = narrate(kept, total_mm, tag, max_consec=(1 if st.get("aborted") else 2))
         save_narratives(nar, rep, tag)              # 멱등 — narrate 가 이미 저장했어도 이월·표식은 그대로
+    chat_note()
     # v3 rc 규약: 부분(예산 중단·실패 잔여)은 2 — '이어서' 가 데이터가 된다. 완주는 0.
     _partial = bool(_budget_stop) or st["failed_rows"] > 0 or st["omitted_rows"] > 0
     if _ss is not None:

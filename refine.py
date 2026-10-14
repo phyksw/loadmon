@@ -79,6 +79,13 @@ except ImportError:                      # judge 를 못 읽어도 정제 자체
         except ValueError:
             return int(default)
 
+def _chat_note():
+    """마지막 줄 JSON 앞의 Copilot 채팅 정리 한 줄(judge.chat_note — 이 프로세스가 연·지운·남긴 채팅 수, 숫자만)."""
+    fn = getattr(_judge, "chat_note", None) if _judge is not None else None
+    if callable(fn):
+        fn()
+
+
 OV_N = 3                 # 오버레이 항목 수(앞 청크 끝)
 OV_CHARS = 600           # 오버레이 항목 줄 합 상한
 OV_EV_LINES = 2          # 오버레이 항목에 붙이는 근거 줄 수(참고용이라 짧게)
@@ -775,6 +782,7 @@ def main():
     if not rf.items:
         print("[refine] 정제된 항목이 없습니다 — 규칙 결과를 그대로 둡니다")
         print("        report\\refine_prompt_*.md 를 Copilot에 직접 붙여넣어도 됩니다")
+        _chat_note()
         print(json.dumps(dict(tail, ok=False, error="정제 0건"), ensure_ascii=False))
         return 1
     if failed or st["repaired"] or st["retries"]:
@@ -874,6 +882,7 @@ def main():
         # 왜곡된 배분으로 좋은 결과를 덮지 않고 규칙 결과를 그대로 둔다.
         print(f"[refine] 이상: {len(rows)}항목이 {len(final)}항목으로 늘었습니다 "
               "(응답의 항목번호 중복) — 정제본을 쓰지 않고 규칙 결과를 유지합니다")
+        _chat_note()
         print(json.dumps(dict(tail, ok=False, error="항목 수 증가"), ensure_ascii=False))
         return 1
     tot = sum(f["share"] for f in final) or 1.0
@@ -922,6 +931,7 @@ def main():
         print(f"   {str(f.get('Level 2') or '')[:22]:23s} {str(f.get('Level 3') or '')[:12]:13s} "
               f"{f['mm']:5.2f} MM  {str(f.get('상세설명') or '')[:44]}")
     print(f"[refine] → {dst}")
+    _chat_note()
     print(json.dumps(dict(tail, ok=True, rows=len(rows), refined=len(final)), ensure_ascii=False))
     if _ss is not None:
         if _stopped:

@@ -1222,7 +1222,8 @@ def _run(judge, tag, rep, _ss):
     today = time.strftime("%Y-%m-%d")
 
     def _end(rc, js, state, kind=None, reason="", error="", hint=""):
-        """마지막 줄 JSON(stop_kind 포함) + 상태 파일 마감 — 모든 반환 경로가 여기를 지난다."""
+        """마지막 줄 JSON(stop_kind 포함) + 상태 파일 마감 — 모든 반환 경로가 여기를 지난다. 그 앞에 Copilot 채팅 정리 한 줄."""
+        judge.chat_note()
         print(json.dumps(dict(js, stop_kind=kind or ""), ensure_ascii=False))
         if _ss is not None:
             _ss.finish(state, stop_kind=kind or None, reason=reason, error=error or None, hint=hint or None)

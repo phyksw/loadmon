@@ -1147,7 +1147,8 @@ def _run(judge, tag, rep, _ss):
 
     def _end(rc, js, state, kind=None, reason="", error="", hint=""):
         """마지막 줄 JSON(stop_kind 포함) + 상태 파일 마감 — 모든 반환 경로가 여기를 지난다. 예전에는 rc 1 경로가
-        상태 파일을 'running' 으로 남겨 화면이 90초 뒤 '정체로 중단' 이라는 엉뚱한 사유를 띄웠다."""
+        상태 파일을 'running' 으로 남겨 화면이 90초 뒤 '정체로 중단' 이라는 엉뚱한 사유를 띄웠다. 그 앞에 Copilot 채팅 정리 한 줄."""
+        judge.chat_note()
         print(json.dumps(dict(js, stop_kind=kind or ""), ensure_ascii=False))
         if _ss is not None:
             _ss.finish(state, stop_kind=kind or None, reason=reason, error=error or None, hint=hint or None)

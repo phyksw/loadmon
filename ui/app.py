@@ -4085,6 +4085,7 @@ $("diag").onclick=async()=>{
  if(d.hint)L.push("조치: "+d.hint);
  if(d.model)L.push("모델: "+d.model);
  if(d.reply)L.push("응답 일부: "+String(d.reply).slice(0,80));
+ if(d.chats)L.push("Copilot 채팅 정리: "+d.chats);
  if(!d.ok)L.push("\\n대개는 전용 Edge 창에서 회사 계정 재로그인으로 해결됩니다.");
  alert(L.join("\\n"));
 };
@@ -5979,8 +5980,10 @@ class H(BaseHTTPRequestHandler):
                 with open(pf, "w", encoding="utf-8") as f:
                     f.write("연결 확인용 질문입니다. 아래 JSON 한 줄만 그대로 출력하세요.\n"
                             '{"ok":"연결됨"}\n')
+                # --retire(LM28): 진단 채팅은 한 번 묻고 끝나므로 왕복 뒤 바로 Copilot 대화 목록에서 지운다(우리가 연 채팅만) —
+                # 결과 한 줄(chats — 숫자·사유)이 알림 창에 나온다(현장 사진 한 장으로 삭제 흐름을 확인)
                 r2 = subprocess.run([sys.executable, os.path.join(ROOT, "tools", "copilot_auto.py"),
-                                     "--send", pf, "--fresh"], capture_output=True, timeout=300,
+                                     "--send", pf, "--fresh", "--retire"], capture_output=True, timeout=300,
                                     cwd=ROOT, env=dict(os.environ, PYTHONIOENCODING="utf-8"),
                                     creationflags=NO_WIN)
                 txt = (r2.stdout or b"").decode("utf-8", "replace").strip()
@@ -5997,6 +6000,8 @@ class H(BaseHTTPRequestHandler):
                        "hint": str(e)[:150]}
             log("[진단] Copilot 왕복 " + ("성공" if res.get("ok") else "실패 — "
                  + str(res.get("error", ""))))
+            if res.get("chats"):
+                log("[진단] Copilot 채팅 정리: " + str(res["chats"])[:300])
             self._send(200, res)
         elif self.path == "/api/narrate":
             # 본문 {"all": true} = 모든 달 다시 만들기(--all) · 없으면 빠진 달·최근 달·데이터가 바뀐 달만.

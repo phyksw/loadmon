@@ -10,6 +10,8 @@ r"""Copilot 왕복 계측 요약 — report\copilot_trace.jsonl 을 읽어 '왜 
   · done_by  pledge=서약을 보고 즉시 / idle=중지 버튼 사라짐 / stable=같은 텍스트 반복(가장 느림)
   · busy     그 왕복에서 '중지' 버튼을 한 번이라도 봤는가 — False 만 계속 나오면 버튼 선택자가 이 UI 와 안 맞는 것
   · cut/retry/repaired  잘린 답·재시도 — 이것이 많으면 '왕복 수' 가 늘어 분석이 느려진다
+  · 채팅 정리(LM28) stage 'chat' 줄 — 만든 채팅 · 지움 · 남김(사유 코드). 왕복 수·시간에는 넣지 않는다
+    (Edge 닫기 등 왕복이 아닌 줄도 — 왕복 줄에는 prompt 길이가 있다)
 """
 import io
 import json
@@ -73,10 +75,29 @@ def fmt_sec(s):
     return f"{s / 60:.0f}분 {s % 60:.0f}초" if s >= 60 else f"{s:.0f}초"
 
 
+def chat_summary(rows):
+    """stage 'chat' 줄(LM28 채팅 정리) → 한 줄 — 만든 채팅 · 지움 · 남김(사유 코드별). 없으면 ""."""
+    ch = [r for r in rows if r.get("stage") == "chat"]
+    made = sum(1 for r in ch if r.get("act") == "made")
+    ret = Counter(str(r.get("code") or "?") for r in ch if r.get("act") == "retire")
+    lost = sum(1 for r in ch if r.get("act") == "lost")
+    if not (made or ret or lost):
+        return ""
+    kept = {k: v for k, v in ret.items() if k != "deleted"}
+    if lost:
+        kept["lost"] = kept.get("lost", 0) + lost
+    return (f"   채팅 정리: 만든 {made} · 지움 {ret.get('deleted', 0)} · 남김 {sum(kept.values())}"
+            + (" (" + " · ".join(f"{k} {v}" for k, v in sorted(kept.items(), key=lambda x: -x[1])) + ")" if kept else ""))
+
+
 def summarize(rows, label):
+    chat = chat_summary(rows)
+    rows = [r for r in rows if "prompt" in r]          # 왕복 줄만(채팅 정리·Edge 닫기 줄은 왕복이 아니다)
     n = len(rows)
     if not n:
         print(f"{label}: 기록 없음")
+        if chat:
+            print(chat)
         return
     tot = sum(float(r.get("sec") or 0) for r in rows)
     by = Counter(str(r.get("done_by") or ("실패" if not r.get("ok") else "?")) for r in rows)
@@ -99,6 +120,8 @@ def summarize(rows, label):
               + ("  ← 한 번도 못 봤다 = 버튼 선택자가 이 UI 와 안 맞음(지름길 불가, 예전 규칙으로 판정)" if not busy_seen else ""))
     else:
         print("   중지 버튼 계측(busy) 없음 — 이 기록은 그 계측이 들어가기 전 판본의 것")
+    if chat:
+        print(chat)
     # 단계별
     st = defaultdict(list)
     for r in rows:
@@ -143,7 +166,7 @@ def main():
         print("  (AI 정제를 한 번이라도 돌린 뒤 생깁니다 — LoadMonitor24_v2 부터 기록)")
         return 1
     runs = split_runs(rows)
-    print(f"[trace] {path} — 왕복 {len(rows)}회 · 실행 {len(runs)}회분")
+    print(f"[trace] {path} — 왕복 {sum(1 for r in rows if 'prompt' in r)}회 · 실행 {len(runs)}회분")
     pick = runs[-last:] if last else runs
     for k, run in enumerate(pick, 1):
         t0 = str(run[0].get("t", ""))[:16]

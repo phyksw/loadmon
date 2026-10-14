@@ -42,6 +42,10 @@ import coverage  # noqa: E402
 import proc  # noqa: E402
 _RUN_STEP = proc.run_step      # 시험이 바꿔 끼운다(사슬 시험 — 실제 수집기를 띄우지 않는다)
 _CLOSE_EDGE = None             # 시험 주입 — None 이면 tools\copilot_auto.close_own_edge
+_CHAT_TOTALS = None            # 시험 주입 — None 이면 tools\copilot_auto.chat_totals(Copilot 채팅 정리 누계)
+CHATS = {"t0": None}           # 이 실행 시작 때의 Copilot 채팅 정리 누계 — 실행 끝 단계 'Copilot 채팅 정리' 가 차이를 적는다
+CHAT_STAGE = "Copilot 채팅 정리"
+CHAT_LINE_HEAD = "[copilot] 채팅 정리"   # 단계 로그의 정리 한 줄(copilot_auto.CHAT_LINE_HEAD) — 실패 사유 줄로 집지 않는다
 REPORT_DIR = {"p": os.path.join(ROOT, "report")}     # last_run.json 위치(시험은 임시 폴더로 바꾼다)
 MAIL_AXES = coverage.MAIL_AXES
 EDGE = {"closed": False}       # 이 실행에서 Edge 정리를 이미 했나(수집만·웹만은 수집 끝, 전체 실행은 마지막 finally 1회)
@@ -92,6 +96,11 @@ def record(name, ok, sec=0.0, note="", rc=None, reason="", counts=None, census="
     if rc is not None:
         ent.update(rc=int(rc), reason=str(reason or "")[:120], counts=collect_status.compact(counts))
     RUN["stages"].append(ent)
+    _save_run()
+
+
+def _save_run():
+    r"""RUN 을 report\last_run.json 에 쓴다(실패는 조용히 — 기록이 실행을 막지 않는다)."""
     try:
         rep_dir = REPORT_DIR["p"]
         os.makedirs(rep_dir, exist_ok=True)
@@ -699,7 +708,8 @@ def _run_capture(cmd, env):
     if last_json.get("hint"):
         why = (why + " — " + str(last_json["hint"]))[:200] if why else str(last_json["hint"])[:200]
     if not why:
-        why = next((x for x in reversed(tail) if not x.startswith("{")), "")[:200]
+        # 단계 끝의 '[copilot] 채팅 정리:' 줄(숫자만)은 실패 사유가 아니다 — 그 앞의 줄을 집는다
+        why = next((x for x in reversed(tail) if not x.startswith("{") and not x.startswith(CHAT_LINE_HEAD)), "")[:200]
     return rc, why
 
 
@@ -991,21 +1001,26 @@ def reset_cursors(c, data):
 def close_edge_once(state, why):
     r"""우리가 띄운 전용 Edge 를 닫는다(tools\copilot_auto.close_own_edge — owner.json 이 있을 때만, CDP Browser.close).
     한 실행에 1회. 이 실행의 웹 경로가 로그인을 기다리는 중(rc 2)이면 닫지 않고 안내만 한다 — 사람이 그 창에서
-    로그인하는 중일 수 있고, 다음 실행이 owner.json 의 Edge 를 다시 쓴다(F-17)."""
+    로그인하는 중일 수 있고, 다음 실행이 owner.json 의 Edge 를 다시 쓴다(F-17).
+    LM28: close_own_edge 가 닫기 전에 마지막 우리 Copilot 채팅을 지운다 — 그 뒤 단계 'Copilot 채팅 정리'(chat_stage)를 남긴다."""
     if EDGE["closed"]:
         return None
     EDGE["closed"] = True
+    try:
+        return _close_edge(state, why)
+    finally:
+        chat_stage()
+
+
+def _close_edge(state, why):
+    """close_edge_once 의 본문 — 로그인 대기면 두고, 아니면 close_own_edge(시험은 _CLOSE_EDGE)."""
     if isinstance(state, dict) and state.get("login_pending"):
         print("\n   전용 Edge 창은 닫지 않았습니다 — 그 창에서 회사 계정으로 로그인한 뒤 다시 실행하면 이어서 읽습니다.")
         return {"closed": False, "why": "login_pending"}
     fn = _CLOSE_EDGE
     if fn is None:
         try:
-            tools = os.path.join(ROOT, "tools")
-            if tools not in sys.path:
-                sys.path.insert(0, tools)
-            import copilot_auto
-            fn = copilot_auto.close_own_edge
+            fn = _copilot_mod().close_own_edge
         except Exception as e:  # noqa: BLE001 - 정리 실패가 실행 결과를 바꾸지 않는다
             print(f"   (전용 Edge 정리 건너뜀: {type(e).__name__})")
             return None
@@ -1017,6 +1032,60 @@ def close_edge_once(state, why):
     if isinstance(r, dict) and r.get("closed"):
         print("   (이 실행이 띄운 전용 Edge 를 닫았습니다)")
     return r
+
+
+def _copilot_mod():
+    r"""tools\copilot_auto(같은 프로세스에 이미 올라와 있으면 그것) — Edge 닫기·채팅 정리 누계."""
+    tools = os.path.join(ROOT, "tools")
+    if tools not in sys.path:
+        sys.path.insert(0, tools)
+    import copilot_auto
+    return copilot_auto
+
+
+def chat_totals():
+    r"""Copilot 채팅 정리 누계(copilot_auto.chat_totals — 숫자·사유 코드만) · 못 읽으면 None."""
+    try:
+        fn = _CHAT_TOTALS if _CHAT_TOTALS is not None else _copilot_mod().chat_totals
+        t = fn(None)
+        return t if isinstance(t, dict) else None
+    except Exception:  # noqa: BLE001 - 정리 기록이 실행을 막지 않는다
+        return None
+
+
+END_STAGES = ("완료", "종료")
+
+
+def chat_stage():
+    r"""실행 끝 단계 'Copilot 채팅 정리' — 시작 때 누계(CHATS['t0'])와의 차이(만든·지운·남긴 수 + 남긴 사유 · 숫자와 사유만,
+    제목·글 없음)를 last_run.json 과 콘솔(진행 로그)에 남긴다. 한 실행에 1회(close_edge_once 끝). 이 실행이 Copilot 채팅을 만들지도
+    지우지도 남기지도 않았으면 적지 않는다. 화면이 '마지막 단계' 로 실패 지점을 말하므로 끝 단계(완료·종료) 앞에 둔다.
+    지우지 못한 사유(화면 조작 실패)나 삭제 멈춤이 있으면 ok=False — 현장 사진으로 고칠 곳을 안다."""
+    t0 = CHATS.get("t0")
+    CHATS["t0"] = None
+    if t0 is None:
+        return None
+    t1 = chat_totals()
+    if t1 is None:
+        return None
+    try:
+        ca = _copilot_mod()
+        d = ca.chat_delta(t0, t1)
+        note = ca.chat_note(d)
+    except Exception:  # noqa: BLE001
+        return None
+    if not ca.chat_busy(d):
+        return None
+    print(f"\n── {CHAT_STAGE}\n   {note}")
+    record(CHAT_STAGE, not (d.get("failed") or d.get("hold")), 0.0, note)
+    st = RUN["stages"]
+    ent = st.pop()                                  # 방금 붙인 이 단계 — 끝 단계(완료·종료) 앞으로 옮긴다
+    k = len(st)
+    while k > 0 and str(st[k - 1].get("name") or "").startswith(END_STAGES):
+        k -= 1
+    st.insert(k, ent)
+    _save_run()
+    return d
 
 
 def _teams_rows(data, d0, d1):
@@ -1345,6 +1414,7 @@ def _main():
                ai_requested=("--ai" in sys.argv), skip_collect=("--skip-collect" in sys.argv),
                finished=None)
     record("시작", True, 0.0)
+    CHATS["t0"] = chat_totals()            # Copilot 채팅 정리 누계 — 실행 끝 단계 'Copilot 채팅 정리' 가 이 차이를 적는다
     print(f"[LoadMonitor28] {d0} ~ {d1}"
           + ("  · AI 판정 포함" if "--ai" in sys.argv else "  · AI 판정 없음(규칙 결과만)"))
     if "--reset-cursors" in sys.argv:
