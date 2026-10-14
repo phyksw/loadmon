@@ -14,6 +14,9 @@ SOFT_REASONS = ("R-RECURINC",)        # rc 3 이지만 저장은 했다(색인 �
 WEB_SRCS = ("owa", "web", "teams_web")
 RC_TEXT = {0: "정상", 1: "대상 없음", 2: "로그인 필요", 3: "불가·불완전 의심(실측 전)", 4: "새 행 0"}
 _LEGACY = {0: (0, ""), 2: (2, "R-LOGIN"), 3: (3, "R-LEGACY"), 4: (4, "")}
+# STATUS_DLL_INIT_FAILED — 프로그램(PowerShell)이 켜지는 순간 Windows 가 초기화에 실패했다(보안 프로그램의 끼어들기·Windows
+# 자원 부족 의심). 부호 있는/없는 두 꼴로 온다. core\proc.run_step 이 두 번 다시 띄워 보고도 같으면 이 사유로 남긴다.
+START_FAIL_RC = (0xC0000142, 0xC0000142 - (1 << 32))
 
 
 def _ranges(v):
@@ -40,6 +43,8 @@ def _legacy(rc, src, lines):
         return _LEGACY[rc]
     if rc == -2:
         return 3, "R-SPAWN"
+    if rc in START_FAIL_RC:
+        return 3, "R-STARTFAIL"     # Windows 가 프로그램을 시작하지 못함(0xc0000142) — 수집기 탓이 아니다
     return 3, "R-EXIT"
 
 

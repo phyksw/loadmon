@@ -1386,8 +1386,39 @@ def team_report(c, d0, d1, built=True, on=None, hold=""):
     return st
 
 
+STOP_STAGE = "중단(창 닫힘)"      # last_run.json 단계 이름(ui\app.py 와 같다) — 다음 화면이 '마지막 단계: 중단(창 닫힘)' 으로 말한다
+EDGE_FAST_SEC = 2.5              # 콘솔 창 닫기 때 전용 Edge 닫기를 기다리는 상한(윈도는 처리기에 약 5초를 준다)
+
+
+def console_close(ev=None, budget=EDGE_FAST_SEC):
+    r"""콘솔 창(LoadMonitor28.bat)을 닫을 때(core\proc.on_console_close) — 윈도가 주는 몇 초 안에 끝나는 것만 한다.
+    Job 에 든 자식(수집기·mine·judge·copilot_auto)은 이 프로세스와 함께 끝나지만, Job 에서 이탈한 전용 Edge 는 남는다 —
+    Job 을 먼저 끝내고(proc.kill_all) 그 Edge 를 채팅 정리 없이(tidy=False — 정리는 최대 25초) budget 초까지만 기다려 닫는다.
+    로그인 대기 중(rc 2)이면 Edge 는 두고(사람이 그 창에서 로그인하는 중), last_run.json 에 '중단(창 닫힘)' 을 남긴다.
+    예외를 내지 않는다."""
+    try:
+        proc.kill_all()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        if RUN.get("started") and not RUN.get("finished"):
+            record(STOP_STAGE, False, 0.0, "콘솔 창이 닫혀 실행 중이던 작업을 멈췄습니다 — 지금까지의 결과는 report\\에 남아 있습니다")
+    except Exception:  # noqa: BLE001
+        pass
+    if isinstance(STATE, dict) and STATE.get("login_pending"):
+        return
+    try:
+        proc.run_within(lambda: _copilot_mod().close_own_edge(None, "console_close", tidy=False), budget)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def main():
-    """실행 전체 — 마지막 finally 에서 이 실행이 띄운 전용 Edge 를 1회 닫는다(로그인 대기면 둔다 · P6)."""
+    """실행 전체 — 마지막 finally 에서 이 실행이 띄운 전용 Edge 를 1회 닫는다(로그인 대기면 둔다 · P6).
+    콘솔 창을 X 로 닫으면 finally 가 돌지 않는다 — console_close 가 그 몇 초 안에 작업 트리와 전용 Edge 를 정리한다
+    (Ctrl+C 는 예전처럼 KeyboardInterrupt → finally)."""
+    proc.on_console_close(console_close)
+    proc.quiet_errors()          # 수집기가 못 켜질 때 Windows 오류 창(0xc0000142)이 떠 [확인]까지 멈추지 않게 — 자식이 물려받는다
     try:
         return _main()
     finally:

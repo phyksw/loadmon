@@ -55,15 +55,18 @@ def kill_job():
             JOB["pid"] = 0
 
 
-def close_edge(reason="ui"):
+def close_edge(reason="ui", tidy=True):
     r"""우리가 띄운 전용 Edge 만 CDP Browser.close 로 닫는다(tools\copilot_auto.close_own_edge — owner.json 표식).
     프로세스를 띄우지 않는다(예전 시작·종료 정리는 매번 powershell 을 띄웠다 — W3-15). 로그인 대기 중이거나
-    keepEdgeOpen 이면 닫지 않고, 사람이 띄운 Edge·LM24 의 Edge 는 표식이 없어 건드리지 않는다(P6)."""
+    keepEdgeOpen 이면 닫지 않고, 사람이 띄운 Edge·LM24 의 Edge 는 표식이 없어 건드리지 않는다(P6).
+    tidy=False — 닫기 전 Copilot 채팅 정리(최대 25초)를 건너뛴다(콘솔 창 닫기 — 윈도가 몇 초만 준다)."""
     try:
         tools = os.path.join(ROOT, "tools")
         if tools not in sys.path:
             sys.path.insert(0, tools)
         import copilot_auto
+        if not tidy:
+            return copilot_auto.close_own_edge(None, reason, tidy=False)
         return copilot_auto.close_own_edge(None, reason)
     except Exception as e:  # noqa: BLE001 - 정리 실패가 화면·종료를 막지 않는다
         return {"closed": False, "why": f"error:{type(e).__name__}"}
@@ -159,6 +162,208 @@ def cleanup_children():
 # atexit.register(cleanup_children) 는 main() 안에서만 — 모듈을 임포트하는 쪽(freeze.py 의
 # 얼린 보고서 굽기)이 끝날 때 Copilot 전용 Edge 를 죽이지 않게(임포트 부작용 제거).
 PORT = [0]
+
+
+# ── 창을 닫으면 작업도 멈춘다(LM28) ─────────────────────────────────────────────────────────
+# 제보: "창을 꺼 버리면 끝났다고 생각하는데 뒤에서 계속 돌 수 있다". 대시보드(PAGE·TEAM_PAGE)는 10초마다 /api/alive 로
+# '이 탭이 살아 있다'(탭 id·visibilityState)를 알리고, 닫히거나 다른 곳으로 떠날 때(pagehide) /api/bye 를 sendBeacon 으로 보낸다.
+# 감시 스레드(main 에서만 — freeze.py 가 이 모듈을 임포트한다)가 ui_close_decision 으로 판정해 'exit' 면 [중지]+종료 정리와
+# 같은 길(kill_job · 전용 Edge 닫기 — 채팅 정리 포함)로 작업을 멈추고 서버를 끝낸다. 팀 서버(teamserver.py)는 Job 밖이라 산다.
+#   · 첫 /api/alive 전에는 판정하지 않는다(armed) — --no-browser·LM_NO_BROWSER·시험은 저절로 끝나지 않는다.
+#   · 작별 뒤 CLOSE_GRACE 초는 기다린다 — 새로고침(F5)·이동은 작별 직후 새 탭이 다시 알린다.
+#   · 모든 탭이 CLOSE_SILENCE 초 넘게 조용하면 닫힌 것으로 본다(브라우저째 강제 종료 — 작별이 못 온다). 숨긴·최소화한 탭은
+#     Edge·Chrome 이 타이머를 1분에 1번까지 늦추므로 3분 — 더 짧으면 최소화한 대시보드를 죽인다.
+#   · 잠든 탭(Edge '절전 탭'·Chrome 탭 동결 — 타이머가 아예 멈춘다)은 잠들 때 freeze 이벤트로 'frozen' 을 알린다 — CLOSE_ASLEEP 초까지
+#     살아 있다고 본다(몇 시간짜리 분석을 탭이 잠들었다는 이유로 죽이지 않는다). 숨긴 탭은 1분에 1번은 알리므로 따로 봐 주지 않는다 —
+#     브라우저째 꺼졌는데 '숨김' 이었다는 이유로 작업이 계속 돌면 이 기능의 뜻(닫으면 멈춘다)에 어긋난다.
+#   · 작별한 탭 id 는 기억해 둔다(gone) — 탭을 닫을 때 visibilitychange 의 '숨김' 신호가 작별보다 늦게 도착해 닫힌 탭을 되살리지 않게.
+#     bfcache 로 돌아온 탭(pageshow persisted)은 새 id 로 다시 알린다.
+#   · PC 가 잠들었다 깨면(감시 루프가 CLOSE_RESUME_GAP 넘게 늦게 깸) 그동안 탭도 멈춰 있었다 — 시각을 그만큼 민다.
+# 끄기: config.json 의 uiAutoExit=false(예전처럼 창을 닫아도 서버·작업이 계속 돈다).
+CLOSE_GRACE = 20.0
+CLOSE_SILENCE = 180.0
+CLOSE_ASLEEP = 4 * 3600.0
+CLOSE_EVERY = 5.0
+CLOSE_RESUME_GAP = 30.0
+CLOSE_LOCK = threading.Lock()
+UI_CLOSE = {"tabs": {}, "vis": {}, "gone": {}, "bye": 0.0, "armed": False}
+CLOSE_LINE_BUSY = "[ui] 대시보드 창이 닫혀 실행 중인 작업을 멈추고 서버를 끝냅니다"
+CLOSE_LINE_IDLE = "[ui] 대시보드 창이 닫혀 서버를 끝냅니다"
+CLOSE_WHY_KO = {"bye": "창 닫힘", "silence": f"{int(CLOSE_SILENCE // 60)}분 넘게 화면 신호 없음"}
+STOP_STAGE = "중단(창 닫힘)"         # last_run.json 단계 이름 — 다음 화면이 '마지막 단계: 중단(창 닫힘)' 으로 말한다(run.py 와 같다)
+EDGE_FAST_SEC = 2.5                 # 콘솔 창 닫기 때 전용 Edge 닫기를 기다리는 상한(윈도는 처리기에 약 5초를 준다)
+
+
+def _close_cfg(c=None):
+    """판정 설정 — {on, grace, silence, asleep}. on 은 config.json 의 uiAutoExit(기본 true)."""
+    c = cfg() if c is None else c
+    return {"on": _cfg_bool((c or {}).get("uiAutoExit"), True), "grace": CLOSE_GRACE,
+            "silence": CLOSE_SILENCE, "asleep": CLOSE_ASLEEP}
+
+
+def ui_close_decision(now, tabs, last_bye, armed, cfg=None):
+    """창 닫힘 판정(순수 함수) → ("keep"|"exit", 사유).
+    tabs = {탭 id: 마지막 신호 시각} 또는 {탭 id: (시각, 상태)} — 상태 visible·hidden·frozen(작별한 탭은 이미 빠져 있다).
+    last_bye = 마지막 작별 시각(없으면 0) · armed = 첫 신호를 받았나 · cfg = {on, grace, silence, asleep}(_close_cfg).
+    사유: off · not_armed · alive · asleep · grace(작별 뒤 새 탭 대기) · bye(작별 뒤 새 탭 없음) · silence(모든 탭 조용)."""
+    c = {"on": True, "grace": CLOSE_GRACE, "silence": CLOSE_SILENCE, "asleep": CLOSE_ASLEEP}
+    c.update(cfg or {})
+    if not c["on"]:
+        return "keep", "off"
+    if not armed:
+        return "keep", "not_armed"
+    last = 0.0
+    for v in (tabs or {}).values():
+        t, vis = (v[0], v[1]) if isinstance(v, (tuple, list)) else (v, "visible")
+        t = float(t or 0.0)
+        last = max(last, t)
+        age = now - t
+        if age < c["silence"]:
+            return "keep", "alive"
+        if vis == "frozen" and age < c["asleep"]:
+            return "keep", "asleep"
+    if last_bye and now - last_bye < c["grace"]:
+        return "keep", "grace"
+    return "exit", ("bye" if last_bye and last_bye >= last else "silence")
+
+
+def ui_tab_alive(tab, vis="visible", now=None):
+    """/api/alive — 탭이 살아 있다. 첫 신호에 판정을 켠다(armed). 작별한 탭 id 의 늦은 신호는 버린다. → 받았나"""
+    tab = str(tab or "").strip()[:64]
+    if not tab:
+        return False
+    vis = vis if vis in ("visible", "hidden", "frozen") else "visible"
+    with CLOSE_LOCK:
+        if tab in UI_CLOSE["gone"]:
+            return False
+        tabs = UI_CLOSE["tabs"]
+        tabs[tab] = time.time() if now is None else now
+        UI_CLOSE["vis"][tab] = vis
+        UI_CLOSE["armed"] = True
+        while len(tabs) > 64:                   # 표가 끝없이 자라지 않게 — 가장 오래 조용한 탭부터 버린다
+            old = min(tabs, key=tabs.get)
+            tabs.pop(old, None)
+            UI_CLOSE["vis"].pop(old, None)
+    return True
+
+
+def ui_tab_bye(tab, now=None):
+    """/api/bye — 탭이 닫히거나 떠났다(pagehide). 그 탭을 빼고(id 는 gone 에 기억) 작별 시각을 남긴다."""
+    tab = str(tab or "").strip()[:64]
+    t = time.time() if now is None else now
+    with CLOSE_LOCK:
+        if tab:
+            UI_CLOSE["tabs"].pop(tab, None)
+            UI_CLOSE["vis"].pop(tab, None)
+            gone = UI_CLOSE["gone"]
+            gone[tab] = t
+            while len(gone) > 256:
+                gone.pop(min(gone, key=gone.get), None)
+        UI_CLOSE["bye"] = t
+    return True
+
+
+def _close_snapshot():
+    with CLOSE_LOCK:
+        tabs = {k: (t, UI_CLOSE["vis"].get(k, "visible")) for k, t in UI_CLOSE["tabs"].items()}
+        return tabs, UI_CLOSE["bye"], UI_CLOSE["armed"]
+
+
+def _close_shift(gap):
+    """PC 가 잠들었다 깼다 — 그동안 탭도 멈춰 있었으므로 모든 시각을 gap 만큼 민다(깨자마자 '조용함' 으로 끝내지 않게)."""
+    with CLOSE_LOCK:
+        for k in list(UI_CLOSE["tabs"]):
+            UI_CLOSE["tabs"][k] += gap
+        if UI_CLOSE["bye"]:
+            UI_CLOSE["bye"] += gap
+
+
+def _mark_last_run_stopped(job_started, note, report_dir=None):
+    r"""작업을 멈췄으면 report\last_run.json 에 '중단(창 닫힘)' 단계를 붙인다 → 붙였나.
+    이 작업(run.py)이 쓴 기록일 때만 — 작업 시작 뒤에 고쳐졌고 아직 끝나지 않은(finished 없음) 것. Agentic·리뷰 코멘트 같은
+    다른 작업이 돌던 중이면 지난 실행 기록은 건드리지 않는다. 깨진 파일이면 두고, 바꿔 쓰기는 임시 파일 → os.replace."""
+    p = os.path.join(report_dir or REPORT, "last_run.json")
+    try:
+        if not job_started or os.path.getmtime(p) < job_started - 2:
+            return False
+        with open(p, encoding="utf-8-sig") as f:
+            lr = json.load(f)
+        if not isinstance(lr, dict) or lr.get("finished") or not lr.get("started"):
+            return False
+        st = [x for x in (lr.get("stages") or []) if isinstance(x, dict) and x.get("name") != STOP_STAGE]
+        st.append({"name": STOP_STAGE, "ok": False, "sec": 0.0, "note": str(note or "")[:300]})
+        lr["stages"] = st
+        tmp = p + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(lr, f, ensure_ascii=False, indent=1)
+        os.replace(tmp, p)
+        return True
+    except (OSError, ValueError, TypeError, AttributeError):
+        return False
+
+
+def ui_close_exit(server, why, out=None):
+    """판정이 'exit' — 콘솔에 한 줄을 남기고, 도는 작업을 [중지]와 같은 길로 멈추고(Job 째), 전용 Edge 를 닫고, 서버를 끝낸다.
+    팀 서버(teamserver.py)는 Job 밖이라 그대로 산다(팀 전체가 쓴다)."""
+    say = out or (lambda s: print(s, flush=True))
+    with LOCK:
+        busy = bool(JOB["running"])
+        had_pid = bool(JOB.get("pid"))
+        started = float(JOB.get("started") or 0.0)
+    line = (CLOSE_LINE_BUSY if busy else CLOSE_LINE_IDLE) + f" ({CLOSE_WHY_KO.get(why, why)})"
+    try:
+        say(line)
+    except Exception:  # noqa: BLE001 - 콘솔이 이미 없어도 정리는 한다
+        pass
+    log(line[len("[ui] "):])
+    for fn in (kill_job, proc.kill_all, lambda: close_edge("ui_close")):
+        try:
+            fn()
+        except Exception:  # noqa: BLE001 - 정리 하나가 실패해도 종료는 한다
+            pass
+    if busy and had_pid:
+        _mark_last_run_stopped(started, "대시보드 창이 닫혀 실행 중이던 작업을 멈췄습니다 — 지금까지의 결과는 report\\에 남아 있습니다")
+    if server is not None:
+        threading.Thread(target=server.shutdown, daemon=True).start()
+
+
+def close_watch(server, c=None, every=CLOSE_EVERY, stop=None):
+    """감시 루프(main 이 데몬 스레드로 띄운다) — every 초마다 판정, 'exit' 면 ui_close_exit 후 끝난다. stop: 시험용 Event."""
+    c = _close_cfg() if c is None else c
+    prev = time.time()
+    while not (stop is not None and stop.is_set()):
+        time.sleep(every)
+        now = time.time()
+        if now - prev > every + CLOSE_RESUME_GAP:
+            _close_shift(now - prev - every)
+        prev = now
+        tabs, bye, armed = _close_snapshot()
+        verdict, why = ui_close_decision(now, tabs, bye, armed, c)
+        if verdict == "exit":
+            ui_close_exit(server, why)
+            return why
+    return None
+
+
+def console_close_cleanup(ev=None, budget=EDGE_FAST_SEC):
+    """콘솔 창(LoadMonitor28-UI.bat)을 닫을 때(core\\proc.on_console_close) — 윈도가 주는 몇 초 안에 끝나는 것만 한다.
+    Job 을 끝내고(작업 트리 — Job 안의 자식은 어차피 이 프로세스와 함께 끝난다), Job 밖에 남는 전용 Edge 를 채팅 정리 없이
+    (tidy=False) 닫는다 — budget 초까지만 기다린다. 팀 서버는 건드리지 않는다. 예외를 내지 않는다."""
+    try:
+        with LOCK:
+            busy = bool(JOB["running"])
+            had_pid = bool(JOB.get("pid"))
+            started = float(JOB.get("started") or 0.0)
+        for fn in (kill_job, proc.kill_all):
+            try:
+                fn()
+            except Exception:  # noqa: BLE001
+                pass
+        if busy and had_pid:
+            _mark_last_run_stopped(started, "콘솔 창이 닫혀 실행 중이던 작업을 멈췄습니다 — 지금까지의 결과는 report\\에 남아 있습니다")
+        proc.run_within(lambda: close_edge("console_close", tidy=False), budget)
+    except BaseException:  # noqa: BLE001 - 처리기는 예외를 내지 않는다(윈도 스레드 위에서 돈다)
+        pass
 
 
 TS_PID = os.path.join(REPORT, "teamserver.pid")
@@ -2985,6 +3190,21 @@ $("fullv3").onclick=()=>window.open("/team/full_v3","_blank");
 $("fullmake").onclick=()=>makeFull(false);
 $("fullsnap").onclick=()=>makeFull(true);
 $("savehtml").onclick=()=>makeFull(false);
+// 창을 닫으면 서버도 끝난다(LM28 — 대시보드와 같은 신호: 10초마다 /api/alive, 닫힐 때 /api/bye). 팀 서버는 따로 돌아 계속 산다.
+function lmLive(){return location.protocol.indexOf("http")===0&&!document.getElementById("lm-frozen-data");}
+let LM_TAB=Math.random().toString(36).slice(2,10)+Date.now().toString(36);
+function lmAlive(vis){if(!lmLive())return;
+ fetch("/api/alive",{method:"POST",headers:{"Content-Type":"application/json"},keepalive:true,
+  body:JSON.stringify({id:LM_TAB,vis:vis||document.visibilityState})}).catch(()=>{});}
+function lmBeacon(path,vis){try{navigator.sendBeacon(path,JSON.stringify({id:LM_TAB,vis:vis||""}));}catch(e){}}
+if(lmLive()){
+ lmAlive();setInterval(()=>lmAlive(),10000);
+ document.addEventListener("visibilitychange",()=>lmAlive());
+ document.addEventListener("freeze",()=>lmBeacon("/api/alive","frozen"));
+ document.addEventListener("resume",()=>lmAlive());
+ window.addEventListener("pageshow",e=>{if(e.persisted){LM_TAB=Math.random().toString(36).slice(2,10)+Date.now().toString(36);lmAlive();}});
+ window.addEventListener("pagehide",()=>lmBeacon("/api/bye"));
+}
 load();tsLoad();
 </script></body></html>"""
 
@@ -3391,6 +3611,7 @@ async function poll(){
   // 분석·웹 읽기 중에는 웹 읽기·커서 초기화를 끈다 — 같은 전용 Edge·원장을 두 작업이 함께 쓰지 않게(F-16)
   ["owa","teamsweb","cvreset"].forEach(id=>{const b=$(id);if(b)b.disabled=!!s.running;});
   $("stop").style.display=s.running?"":"none";
+  leaveGuard(!!s.running);                    // 작업 중에는 창을 닫기 전에 브라우저가 한 번 묻는다(닫으면 작업도 멈춘다)
   // 대기 글자 뒤에 이번 세션에서 끝난 실행의 팀 서버 보고 성공을 조용히 붙인다(3초 폴링이 지우지 않게 — trRender 가 채움)
   $("state").textContent=s.running?"실행 중…":("대기 중"+(window.__trIdle?" · "+window.__trIdle:""));
   if(s.running)$("dlog").open=true;
@@ -4678,6 +4899,26 @@ $("wl_save").onclick=async()=>{
   .then(x=>x.json()).catch(e=>({ok:false,error:String(e)}));
  $("wl_msg").textContent=r.ok?`기록됨 — ${r.row.date} ${r.row.category} ${r.row.hours}h${r.row.start?" ("+r.row.start+"~"+r.row.end+")":""}`:("실패: "+(r.error||""));
 };
+// 창을 닫으면 작업도 멈춘다(LM28): 10초마다 이 탭이 살아 있다고 알리고(/api/alive), 닫히거나 떠날 때(pagehide) 작별을 보낸다(/api/bye).
+// 서버는 작별 뒤 20초 안에 새 탭(새로고침)이 오지 않거나 모든 탭이 3분 넘게 조용하면 작업을 멈추고 끝난다(ui_close_decision).
+// 잠든 탭(freeze)은 그렇다고 알린다 — 몇 시간짜리 분석을 탭이 잠들었다는 이유로 죽이지 않게. 얼린 사본·파일로 연 화면은 하지 않는다.
+function lmLive(){return location.protocol.indexOf("http")===0&&!document.getElementById("lm-frozen-data");}
+let LM_TAB=Math.random().toString(36).slice(2,10)+Date.now().toString(36);
+function lmAlive(vis){if(!lmLive())return;
+ fetch("/api/alive",{method:"POST",headers:{"Content-Type":"application/json"},keepalive:true,
+  body:JSON.stringify({id:LM_TAB,vis:vis||document.visibilityState})}).catch(()=>{});}
+function lmBeacon(path,vis){try{navigator.sendBeacon(path,JSON.stringify({id:LM_TAB,vis:vis||""}));}catch(e){}}
+function leaveWarn(e){e.preventDefault();e.returnValue="";return "";}
+function leaveGuard(on){if(!lmLive()||on===!!window.__lmGuard)return;window.__lmGuard=on;
+ if(on)window.addEventListener("beforeunload",leaveWarn);else window.removeEventListener("beforeunload",leaveWarn);}
+if(lmLive()){
+ lmAlive();setInterval(()=>lmAlive(),10000);
+ document.addEventListener("visibilitychange",()=>lmAlive());
+ document.addEventListener("freeze",()=>lmBeacon("/api/alive","frozen"));
+ document.addEventListener("resume",()=>lmAlive());
+ window.addEventListener("pageshow",e=>{if(e.persisted){LM_TAB=Math.random().toString(36).slice(2,10)+Date.now().toString(36);lmAlive();}});
+ window.addEventListener("pagehide",()=>lmBeacon("/api/bye"));
+}
 setInterval(()=>{if(!timer)poll();},3000);
 refresh();poll();tuLoad();cvLoad();
 </script>
@@ -6033,6 +6274,19 @@ class H(BaseHTTPRequestHandler):
             self._send(200, {"ok": True})
             cleanup_children()
             threading.Thread(target=self.server.shutdown, daemon=True).start()
+        elif self.path in ("/api/alive", "/api/bye"):
+            # 창 닫기 = 작업 종료(LM28 — ui_close_decision). sendBeacon 은 text/plain 으로 오므로 형식을 보지 않고 JSON 으로 읽는다.
+            try:
+                n = int(self.headers.get("Content-Length", 0) or 0)
+                b = json.loads(self.rfile.read(n) or b"{}") if 0 < n <= 4096 else {}
+            except (ValueError, OSError):
+                b = {}
+            b = b if isinstance(b, dict) else {}
+            if self.path == "/api/alive":
+                ok = ui_tab_alive(b.get("id"), str(b.get("vis") or "visible"))
+            else:
+                ok = ui_tab_bye(b.get("id"))
+            self._send(200, {"ok": ok})
         else:
             self._send(404, {"error": "not found"})
 
@@ -6056,6 +6310,10 @@ def main():
     # 서버로 뜰 때만 종료 정리를 건다 — 임포트 부작용이 없어야 freeze.py 가 이 모듈을 안전하게 쓴다
     import atexit
     atexit.register(cleanup_children)
+    # 콘솔 창(bat)을 X 로 닫으면 — 작업 트리를 끝내고 Job 밖의 전용 Edge 를 몇 초 안에 닫는다(채팅 정리는 건너뛴다).
+    # Ctrl+C 는 예전처럼 KeyboardInterrupt → atexit(cleanup_children) 이 맡는다.
+    proc.on_console_close(console_close_cleanup)
+    proc.quiet_errors()      # 자식(run.py·수집기)이 못 켜질 때 Windows 오류 창이 쌓이지 않게 — 오류 모드는 물려받는다
     # 이전 세션이 갑자기 꺼졌어도 남아 있는 Copilot 전용 Edge를 시작 시 자가 정리
     # (다음 AI 왕복 때 자동으로 다시 뜨므로 부작용 없음)
     # 이어서 '다른 PC 에서 온 프로필 버리기' 를 같은 스레드에서 한다 — Edge 가 확실히 죽은 뒤라야
@@ -6068,13 +6326,20 @@ def main():
     threading.Thread(target=_startup_cleanup, daemon=True).start()
     url = f"http://127.0.0.1:{port}/"
     print(f"[ui] LoadMonitor28 {VERSION} — {url}  (Ctrl+C 종료)")
+    ccfg = _close_cfg()
+    if ccfg["on"]:
+        print("[ui] 대시보드 창을 모두 닫으면 실행 중인 작업도 멈추고 이 창이 닫힙니다(약 20초 뒤 · 팀 서버는 계속)")
     # LM_NO_BROWSER(수집기·드라이버와 같은 환경변수)도 존중한다 — bat 은 인자 없이 띄우므로 회귀 실행이
     # 실제 브라우저를 열던 결함(PK-03)
     if "--no-browser" not in sys.argv and not os.environ.get("LM_NO_BROWSER"):
         target = url + "team" if "--team" in sys.argv else url
         threading.Timer(0.6, lambda: webbrowser.open(target)).start()
+    srv = ThreadingHTTPServer(("127.0.0.1", port), H)
+    # 대시보드 창을 닫으면 작업도 멈추고 서버가 끝난다(uiAutoExit · 첫 /api/alive 뒤에만 판정 — ui_close_decision)
+    if ccfg["on"]:
+        threading.Thread(target=close_watch, args=(srv, ccfg), daemon=True, name="lm-close-watch").start()
     try:
-        ThreadingHTTPServer(("127.0.0.1", port), H).serve_forever()
+        srv.serve_forever()
     except KeyboardInterrupt:
         pass
     print("[ui] 종료")

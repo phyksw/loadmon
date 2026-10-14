@@ -45,16 +45,20 @@ if not exist "core\progress.py" goto MISSING
 
 echo.
 echo   LoadMonitor28 UI 를 시작합니다. 브라우저가 자동으로 열립니다.
-echo   창을 닫거나 Ctrl+C 를 누르면 종료됩니다.
+echo   대시보드 창이나 이 창을 닫으면 실행 중인 작업도 함께 멈추고 끝납니다 ^(Ctrl+C 도 종료^).
+echo   팀 서버는 따로 돌아 계속 켜져 있습니다. 그래도 남은 것 같으면 LoadMonitor28-강제종료.bat
 echo.
 "%PY_EXE%" %PY_ARGS% ui\app.py
+rem 정상 종료(대시보드 창을 닫아 자동으로 끝남 · [서버 종료] · Ctrl+C)면 이 창도 바로 닫는다 - 멈춰 있는 창이 남으면
+rem "아직 도는 중" 으로 읽힌다. 오류로 끝났을 때만 원인을 보여 주고 기다린다.
 if errorlevel 1 (
   echo.
   echo  [!] 서버가 오류로 종료됐습니다.
   if exist "ui_error.log" echo      원인이 ui_error.log 에 저장돼 있습니다 - 이 파일을 공유해 주세요.
   echo.
+  pause
+  exit /b 1
 )
-pause
 exit /b 0
 
 :MISSING

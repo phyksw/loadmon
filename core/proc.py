@@ -13,6 +13,8 @@ r"""core\proc.py — 수집 단계 실행기(LM28 P6·F-23·W1-06·W1-07): 자�
     · status: ok(스스로 끝남) · timeout(시간 초과로 끝냄) · stopped(stop 이벤트로 끝냄) · error(띄우지 못함).
       rc: 자식 종료 코드 · 시간 초과/중지 -1 · 실행 실패 -2.
   attach(p) / release(job) / kill_tree(pid) — 감시기(core\watch.watch_child)가 쓰는 종료 수단을 Job 으로 바꿀 때 쓴다.
+  kill_all() / run_within(fn, sec) / on_console_close(fn) — 콘솔 창(bat)을 닫을 때의 빠른 정리(ui\app.py·run.py main 이 건다):
+    Job 을 모두 끝내고, 남는 전용 Edge 를 몇 초 안에 닫는다(윈도가 처리기에 주는 시간이 짧다).
 윈도가 아니거나 Job 을 만들지 못하면(정책) 직계 자식만 끝낸다(LM24 와 같다).
 """
 import collections
@@ -150,15 +152,147 @@ def kill_tree(pid):
         pass
 
 
+def kill_all():
+    """추적 중인 Job 을 모두 끝낸다 → 끝낸 Job 수. 콘솔 창 닫기 처리기가 쓴다(윈도가 몇 초만 준다 — Job 끝내기는 즉시다).
+    Job 에 넣지 않은 자식(팀 서버 teamserver.py — 팀 전체가 쓴다)은 여기 없으므로 건드리지 않는다."""
+    jobs = list(dict.fromkeys(list(_JOBS.values())))
+    for job in jobs:
+        release(job, None, kill=True)
+    return len(jobs)
+
+
+def run_within(fn, sec):
+    """fn 을 데몬 스레드로 돌리고 sec 초까지만 기다린다 → True(그 안에 끝남)|False. 예외는 삼킨다.
+    창 닫기 처리기는 몇 초 안에 돌아가야 한다 — 늦은 정리(CDP 응답 대기 등)가 그 시간을 넘겨 처리기째 잘리지 않게."""
+    done = threading.Event()
+
+    def _go():
+        try:
+            fn()
+        except Exception:  # noqa: BLE001 - 정리 실패가 처리기를 막지 않는다
+            pass
+        finally:
+            done.set()
+
+    threading.Thread(target=_go, daemon=True, name="lm-fast-cleanup").start()
+    return done.wait(sec)
+
+
+# 콘솔 창 닫기(LM28) — bat 창을 X 로 닫으면 윈도가 CTRL_CLOSE_EVENT 를 보내고 처리기가 돌아온 뒤(최대 약 5초) 프로세스를 끝낸다.
+# Job 안의 자식은 함께 끝나지만 Job 에서 이탈한 전용 Edge 는 남는다 — 그 몇 초 안에 Edge 를 닫을 기회다.
+# Ctrl+C·Ctrl+Break 는 다음 처리기(파이썬의 KeyboardInterrupt)로 넘긴다. ctypes 콜백은 모듈에 붙잡아 둔다(GC 되면 처리기가 죽는다).
+CTRL_CLOSE_EVENTS = (2, 5, 6)      # CTRL_CLOSE_EVENT · CTRL_LOGOFF_EVENT · CTRL_SHUTDOWN_EVENT
+_CTRL = {"fn": None, "cb": None}
+
+
+def console_event(ev):
+    """처리기 본문(시험이 직접 부른다) → 1(처리함 — 곧 끝난다) | 0(다음 처리기로). 정리 함수의 예외는 삼킨다."""
+    if ev not in CTRL_CLOSE_EVENTS:
+        return 0
+    fn = _CTRL["fn"]
+    try:
+        if fn is not None:
+            fn(ev)
+    except BaseException:  # noqa: BLE001 - 처리기는 절대 예외를 내지 않는다(윈도 스레드 위에서 돈다)
+        pass
+    return 1
+
+
+def on_console_close(fn):
+    """콘솔 창 닫기·로그오프·윈도 종료 때 fn(event) 를 부르게 건다 → True(걸었다)|False(윈도 아님·콘솔 없음·실패).
+    두 번 불러도 처리기는 하나다(fn 만 바뀐다). 예외를 내지 않는다."""
+    if os.name != "nt":
+        return False
+    if _CTRL["cb"] is not None:
+        _CTRL["fn"] = fn
+        return True
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k = _k32()
+        k.GetConsoleWindow.argtypes = []
+        k.GetConsoleWindow.restype = wintypes.HWND
+        if not k.GetConsoleWindow():
+            return False                 # 창 없는 자식(화면이 NO_WIN 으로 띄운 run.py 등) — 닫힐 창이 없다
+        proto = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)
+        cb = proto(console_event)
+        k.SetConsoleCtrlHandler.argtypes = [proto, wintypes.BOOL]
+        k.SetConsoleCtrlHandler.restype = wintypes.BOOL
+        if not k.SetConsoleCtrlHandler(cb, True):
+            return False
+    except Exception:  # noqa: BLE001 - 처리기를 못 걸어도 실행은 계속한다(예전 동작)
+        return False
+    _CTRL.update(fn=fn, cb=cb)
+    return True
+
+
 def _beat_line(name, sec):
     return f"   … {name or '단계'} 진행 중 (경과 {int(sec // 60)}분 {int(sec % 60)}초)"
+
+
+# 프로그램(PowerShell 등)이 켜지는 순간 Windows 가 초기화에 실패한 종료 코드(STATUS_DLL_INIT_FAILED) — 부호 있는/없는 꼴.
+# 현장(2026-10-14 개발 PC): 수집기 PowerShell 이 0xc0000142 로 못 켜지며 '응용 프로그램을 제대로 시작하지 못했습니다' 창을
+# 띄우고 [확인]을 누를 때까지 멈춰, 단계마다 시간 초과(300·240초)까지 기다렸다. quiet_errors() 로 그 창을 막으면(자식이
+# 오류 모드를 물려받는다) 자식은 곧바로 이 코드로 끝나고, run_step 이 잠깐 쉬었다 START_RETRY 번 다시 띄운다.
+START_FAIL_RC = (0xC0000142, 0xC0000142 - (1 << 32))
+START_FAIL_SEC = 30            # 이 안에 이 코드로 끝났을 때만 '켜지다 실패' 로 본다(일하다 끝난 것과 가른다)
+START_RETRY = 2                # 다시 띄우는 횟수
+START_WAIT = (3.0, 8.0)        # 다시 띄우기 전 쉬는 초(차례대로)
+_sleep = time.sleep            # 시험이 대기를 0 으로 바꿀 수 있게
+_ERRMODE = {"set": False}
+_SEM = 0x0001 | 0x0002 | 0x8000   # SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX
+
+
+def quiet_errors():
+    """이 프로세스(와 앞으로 띄울 자식 — 오류 모드는 물려받는다)에서 Windows 의 '응용 프로그램 오류' 창을 띄우지 않는다.
+    창이 뜨면 숨은 수집기가 사람이 [확인]을 누를 때까지 멈추고 화면에 오류 창이 쌓인다. 한 번만 걸고, 실패는 삼킨다
+    → 걸었나(윈도가 아니면 False)."""
+    if _ERRMODE["set"]:
+        return True
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+        k = ctypes.WinDLL("kernel32")
+        prev = k.SetErrorMode(_SEM)
+        k.SetErrorMode(prev | _SEM)        # 이미 걸려 있던 다른 깃발은 지킨다
+        _ERRMODE["set"] = True
+    except Exception:  # noqa: BLE001 - 오류 창 막기는 덤이다 — 실패해도 실행은 계속
+        return False
+    return True
 
 
 def run_step(cmd, timeout, name="", clock=None, *, beat=BEAT_SEC, on_line=None, cwd=None, env=None,
              stop=None, poll=1.0):
     """수집기 한 단계 → (rc, tail, status). 위 머리말 참고.
     clock: 시계 주입(시험 — 기본 time.monotonic). 시간 초과와 진행 줄 모두 이 시계로 잰다.
-    on_line: 진행 줄을 받을 함수(기본 print). stop: threading.Event — 서면 Job 째 끝낸다."""
+    on_line: 진행 줄을 받을 함수(기본 print). stop: threading.Event — 서면 Job 째 끝낸다.
+    자식이 켜지는 순간 실패하면(START_FAIL_RC · START_FAIL_SEC 안) 오류 창 없이 START_RETRY 번 다시 띄운다. 그래도 같으면 그
+    종료 코드와 사람용 한 줄을 돌려준다(collect_status 가 R-STARTFAIL 로 적는다)."""
+    quiet_errors()
+    clock = clock or time.monotonic
+    say = on_line or (lambda s: print(s, flush=True))
+    tries = 0
+    while True:
+        t0 = clock()
+        rc, tail, status = _run_step_once(cmd, timeout, name, clock, beat=beat, on_line=on_line, cwd=cwd, env=env,
+                                          stop=stop, poll=poll)
+        if not (status == "ok" and rc in START_FAIL_RC and clock() - t0 < START_FAIL_SEC):
+            return rc, tail, status
+        if tries >= START_RETRY or (stop is not None and stop.is_set()):
+            tail.append("Windows 가 이 단계의 프로그램(PowerShell 등)을 시작하지 못했습니다(0xc0000142) — "
+                        f"{tries + 1}번 모두 실패. 보안 프로그램·Windows 자원 문제가 의심됩니다 — PC 를 다시 시작한 뒤 실행하세요")
+            return rc, tail, status
+        wait = START_WAIT[min(tries, len(START_WAIT) - 1)]
+        tries += 1
+        say(f"   [!] {name or '단계'}: Windows 가 프로그램을 시작하지 못했습니다(0xc0000142) — "
+            f"{wait:.0f}초 뒤 다시 띄웁니다({tries}/{START_RETRY})")
+        _sleep(wait)
+
+
+def _run_step_once(cmd, timeout, name="", clock=None, *, beat=BEAT_SEC, on_line=None, cwd=None, env=None,
+                   stop=None, poll=1.0):
+    """run_step 의 한 번 실행(다시 띄우기 없음) → (rc, tail, status)."""
     clock = clock or time.monotonic
     say = on_line or (lambda s: print(s, flush=True))
     env = env if env is not None else dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1")

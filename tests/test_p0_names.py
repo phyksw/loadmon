@@ -52,7 +52,8 @@ GENERIC_NOTICE = {
 
 BAT_NAMES = ["LoadMonitor28-UI.bat", "LoadMonitor28.bat", "LoadMonitor28-팀취합.bat", "LoadMonitor28-팀서버.bat",
              "LoadMonitor28-팀업로드.bat", "LoadMonitor28-팀서버주소.bat", "LoadMonitor28-수집진단.bat",
-             "LoadMonitor28-가동시간비교.bat", "LoadMonitor28-이동준비.bat", "LoadMonitor28-팀로드율재계산.bat"]
+             "LoadMonitor28-가동시간비교.bat", "LoadMonitor28-이동준비.bat", "LoadMonitor28-팀로드율재계산.bat",
+             "LoadMonitor28-강제종료.bat"]
 
 
 def _ops_files(exts=(".py", ".ps1", ".bat")):
