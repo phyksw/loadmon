@@ -1,17 +1,17 @@
 # -*- coding: utf-8 -*-
 r"""
-teamserver.py — 팀 취합 서버 (LoadMonitor28 — LM24 서버와 업로드 호환)
+teamserver.py — 팀 취합 서버 (LoadMonitor29 — LM24 서버와 업로드 호환)
 
 팀 공용 PC 에서 이 파일 하나를 돌려 두면:
   · 팀원들의 LoadMonitor 가 분석을 마칠 때마다 결과를 자동 업로드한다 (POST /api/upload)
   · 업로드가 올 때마다 기존 팀 취합(aggregate.py)을 다시 돌려 HTML 을 갱신한다
     (aggregate 가 팀 통합 보고서 team_full_report.html / _v3 까지 만든다 — Copilot 없이 캐시만)
-  · 브라우저로 접속하면(GET /) 취합 대시보드가 바로 보인다 — 인별 현황·팀 리포트·Agentic 열지도·통합 보고서
-    정적 보고서(/report /agentic /full /full_v3)는 CSP sandbox 로 origin 을 떼어 서빙한다.
+  · 브라우저로 접속하면(GET /) 취합 대시보드가 바로 보인다 — 인별 현황·팀 리포트·통합 보고서
+    정적 보고서(/report /full /full_v3)는 CSP sandbox 로 origin 을 떼어 서빙한다.
 
   python teamserver.py                        # 팀 서버 주소 설정(config\team_server.json)의 포트로 켠다
   python teamserver.py --port 9400            # 이번 한 번만 다른 포트(설정은 그대로)
-  (또는 LoadMonitor28-팀서버.bat — 서버 IP·포트 바꾸기는 LoadMonitor28-팀서버주소.bat)
+  (또는 LoadMonitor29-팀서버.bat — 서버 IP·포트 바꾸기는 LoadMonitor29-팀서버주소.bat)
 
 v5: 서버 IP·포트는 core\teamaddr.py(단일원)가 설치 폴더의 config\team_server.json 에서 읽는다 — 예전처럼
 config.teamServerUrl 한 줄을 쪼개 쓰지 않는다(옛 값은 teamaddr 가 이어받는다). 서버는 v4 처럼 모든
@@ -89,7 +89,9 @@ TOKFILE = os.path.join(ROOT, "report", "teamserver.token")
 TOKEN = [""]
 STATE = {"last_agg": 0.0, "agg_note": "", "uploads": 0}
 
-# 받는 파일 이름 — export.py 가 내보내는 것과 동일한 화이트리스트
+# 받는 파일 이름 — export.py 가 내보내는 것과 동일한 화이트리스트.
+# LM29: agentic_<기간>.json 은 더 만들지 않지만 받기는 그대로 받는다 — LM28 이 함께 올리는 묶음을 400 으로 통째로 거절하지 않게
+# (취합은 그 파일을 읽지 않는다).
 NAME_OK = re.compile(
     r"^(mm_rows_\d{8}-\d{8}(_refined)?\.csv|signals_\d{8}-\d{8}\.csv|"
     r"mm_meta_\d{8}-\d{8}\.json|pivots_\d{8}-\d{8}\.json|ai_narratives_\d{8}-\d{8}\.json|"
@@ -327,7 +329,7 @@ def members():
 # 정적 보고서 라우트 표 — 경로 → 취합 폴더의 파일. 전부 자기완결 문서(데이터 섬·__TEAM_DATA__)라
 # same-origin 요청이 필요 없다. 이스케이프가 한 곳 새더라도 /api/* 를 부를 수 없게 sandbox CSP
 # 로 origin 을 떼어 서빙한다(새 탭 링크는 popups 로 허용).
-REPORT_FILES = {"/report": "team_report.html", "/agentic": "team_agentic.html",
+REPORT_FILES = {"/report": "team_report.html",
                 "/full": "team_full_report.html", "/full_v3": "team_full_report_v3.html"}
 REPORT_CSP = "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox"
 
@@ -403,7 +405,6 @@ class H(BaseHTTPRequestHandler):
                     f"<td class='{cls}'>{esc(m.get('uploaded_at', ''))}</td></tr>")
             agg_html = os.path.join(TEAMDATA, "team_report.html")
             has_rep = os.path.exists(agg_html)
-            ag_html = os.path.join(TEAMDATA, "team_agentic.html")
             full_html = os.path.join(TEAMDATA, REPORT_FILES["/full"])
             full_v3 = os.path.join(TEAMDATA, REPORT_FILES["/full_v3"])
             body = [PAGE_HEAD,
@@ -414,8 +415,6 @@ class H(BaseHTTPRequestHandler):
                     "<p>",
                     ("<a class='btn' href='/report'>팀 리포트 열기</a>" if has_rep else
                      "<span class='note'>팀 리포트는 첫 업로드 후 생성됩니다</span>"),
-                    ("<a class='btn' href='/agentic'>Agentic 열지도</a>"
-                     if os.path.exists(ag_html) else ""),
                     ("<a class='btn' href='/full'>팀 통합 보고서</a>"
                      if os.path.exists(full_html) else ""),
                     ("<a class='btn' href='/full_v3'>v3 (로드율 제외)</a>"
@@ -654,7 +653,7 @@ def main():
     print(f"[team] 팀 서버 가동 — 포트 {port} · 모든 네트워크에서 받음  (저장: {TEAMDATA})")
     print(f"[team] 이 서버의 설치 폴더: {ROOT}")
     print(f"[team] 서버 IP·포트를 바꾸려면 {ta.EDIT_BAT} (팀원 업로드 주소도 같은 파일에서 나옵니다 — 팀원의 "
-          "[분석 실행]이 끝나면 자동으로 보고되고, 실패한 묶음은 [팀 서버 업로드] 버튼이나 LoadMonitor28-팀업로드.bat 으로 올립니다)")
+          "[분석 실행]이 끝나면 자동으로 보고되고, 실패한 묶음은 [팀 서버 업로드] 버튼이나 LoadMonitor29-팀업로드.bat 으로 올립니다)")
     print("[team] 종료: Ctrl+C (또는 대시보드의 [팀 서버 중지])")
     try:
         srv.serve_forever()

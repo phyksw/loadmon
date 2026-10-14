@@ -8,7 +8,7 @@ report_out.py — 현재 분석 결과를 하나의 리포트 파일로 출력�
 출력: report\\리포트_<기간>.html   (브라우저에서 열람, Word에서 [파일 > 열기]로 편집 가능)
       report\\리포트_<기간>.doc    (더블클릭하면 Word로 열림 — 같은 내용)
 
-담기는 것: 투입/가용 MM·로드율 · 과제별 로드 · 업무분류 배분 · 공통업무(Agentic AI 후보)
+담기는 것: 투입/가용 MM·로드율 · 과제별 로드 · 업무분류 배분 · 공통업무(표준화·자동화 후보)
           · 월별 리뷰 코멘트(빠진 달은 다른 기간 파일에서 이월 — core/narratives) · 산정 근거와 신뢰도(초과근무 세분·미관측 일수)
           · 산출 방식(PC 가동 하한의 근거·날짜별 방식 최신순·퇴근 후·시각 · 시간 근거 합계)
           · raw 단서 요약 · 같이 일한 동료 · 연관 업무 · 업무 영역·과제 워크플로 요약(단위업무 등급)
@@ -169,7 +169,7 @@ def _tool_ev(p):
 
 
 def tool_usage_text(tu):
-    """8절 '프로그램 사용(참고)' 칸의 글(태그 없이 — 셀은 부르는 쪽이 통째로 esc 한다). 옛 꼴(창기록만)·새 꼴 둘 다. 비면 ''."""
+    """7절 '프로그램 사용(참고)' 칸의 글(태그 없이 — 셀은 부르는 쪽이 통째로 esc 한다). 옛 꼴(창기록만)·새 꼴 둘 다. 비면 ''."""
     tu = tu if isinstance(tu, dict) else {}
     progs = [p for p in (tu.get("programs") or []) if isinstance(p, dict) and p.get("name")]
     inh = [x for x in (tu.get("inhouse") or []) if isinstance(x, dict) and x.get("name")]
@@ -193,8 +193,8 @@ def tool_usage_text(tu):
 
 
 def tool_usage_table(tu):
-    """8절 뒤에 붙는 프로그램 사용 상세 표(HTML — 값은 전부 esc). 출처·실행 횟수·포커스 시간·마지막 실행·파일 일수와
-    자체·프로토타입(추정) 목록. 새 꼴(sources 가 있는 것)만 — 옛 꼴은 8절 한 칸으로 충분하다. 비면 ''."""
+    """7절 뒤에 붙는 프로그램 사용 상세 표(HTML — 값은 전부 esc). 출처·실행 횟수·포커스 시간·마지막 실행·파일 일수와
+    자체·프로토타입(추정) 목록. 새 꼴(sources 가 있는 것)만 — 옛 꼴은 7절 한 칸으로 충분하다. 비면 ''."""
     tu = tu if isinstance(tu, dict) else {}
     if not isinstance(tu.get("sources"), dict):
         return ""
@@ -433,7 +433,7 @@ def floor_section(meta, b, max_rows=62):
 
 
 def overtime_rows(meta, b):
-    """8절 초과근무 세분(A-22) — [(라벨, 값 문자열)]. 값이 없는 키는 뺀다."""
+    """7절 초과근무 세분(A-22) — [(라벨, 값 문자열)]. 값이 없는 키는 뺀다."""
     out = []
     for k, lab in TAG_KO:
         v = _pick(meta, b, k)
@@ -659,16 +659,6 @@ def new_sections(sig, wf, rows, pv, summary=False, ctx=None, n0=10):
     return h
 
 
-def _task_count():
-    """등록된 Agentic 과제 수(config\\agentic_tasks.json) — 예전 '12과제' 고정 문구 대신(REQ-39)"""
-    try:
-        with open(os.path.join(ROOT, "config", "agentic_tasks.json"), encoding="utf-8-sig") as f:
-            t = json.load(f).get("tasks")
-        return len(t) if isinstance(t, list) else 0
-    except (OSError, ValueError, AttributeError):
-        return 0
-
-
 def _privacy_ctx():
     """동료 절의 외부 계급 판정 문맥(core\\privacy.make_ctx) — 실패하면 None(기본 규칙)"""
     try:
@@ -685,7 +675,7 @@ def build(tag, summary=False):
     meta = _json(os.path.join(REP, f"mm_meta_{tag}.json"))
     if not meta:
         return None
-    # 오래된 정제본은 쓰지 않는다 (aggregate·flow·agentic 과 같은 규칙)
+    # 오래된 정제본은 쓰지 않는다 (aggregate·flow 와 같은 규칙)
     rows = ((_rows(os.path.join(REP, f"mm_rows_{tag}_refined.csv"))
              if _fresh_refined(os.path.join(REP, f"mm_rows_{tag}.csv"),
                                os.path.join(REP, f"mm_rows_{tag}_refined.csv")) else [])
@@ -728,7 +718,7 @@ def build(tag, summary=False):
          f"<div><span class='dim'>인정 시간</span><b>{esc(meta.get('worked_h'))}h</b></div></div>",
          "<div class='dim'>로드율 = 투입 ÷ 가용 · 1 MM = 8h × 그 달 평일수 · "
          "가용은 연차·휴가(+부재 추정)를 일자에서 뺀 값 · 투입은 상한 없이 실측 그대로"
-         "(하루 24h 물리 한계만 · 이상치는 8절 표에 표시)</div>"]
+         "(하루 24h 물리 한계만 · 이상치는 7절 표에 표시)</div>"]
     ml = measure_line(meta, b)
     if ml:
         cv = _obj(_pick(meta, b, "coverage")) or {}
@@ -800,7 +790,7 @@ def build(tag, summary=False):
 
     common = pv.get("common") or []
     if common:
-        h.append("<h2>4. 공통업무 — Agentic AI 자동화 후보</h2>"
+        h.append("<h2>4. 공통업무 — 표준화·자동화 후보</h2>"
                  "<div class='dim'>여러 과제에 반복되는 업무일수록 표준화·AI 대체 우선순위가 높다</div>"
                  "<table><tr><th>세부업무</th><th>관련 과제</th><th>합산 MM</th></tr>")
         for c in common:
@@ -845,48 +835,7 @@ def build(tag, summary=False):
                      f"<td class='dim'>{esc(m.get('obs'))}</td></tr>")
         h.append("</table>")
 
-    ag = _json(os.path.join(REP, f"agentic_{tag}.json"))
-    if ag.get("match") is not None:
-        _nt = _task_count()
-        h.append("<h2>7. Agentic AI 과제 매칭</h2>"
-                 f"<div class='dim'>등록된 Agentic AI 과제{f' {_nt}개' if _nt else ''}와 현재 업무 로드의 매칭 — "
-                 "적합률 = 그 과제가 내 업무를 자동화·대체할 수 있는 정도(Copilot 판정) · 현재 로드 = 근거 업무의 실측 투입</div>"
-                 "<table><tr><th>축</th><th>과제</th><th>적합률</th><th>현재 로드(MM)</th>"
-                 "<th>매칭 현업</th><th>사유</th></tr>")
-        for m in ag.get("match") or []:
-            if not m.get("fit"):
-                continue
-            h.append(f"<tr><td>{esc(m.get('axis'))}</td>"
-                     f"<td><b>{esc(m.get('task'))}</b> {esc(m.get('name'))}</td>"
-                     f"<td><b>{esc(m.get('fit'))}%</b></td><td>{m.get('load_mm', 0):.2f}</td>"
-                     f"<td>{esc(', '.join(m.get('work') or []))}</td>"
-                     f"<td class='dim'>{esc(m.get('reason'))}</td></tr>")
-        h.append("</table>")
-        # AI 판정 대기(신호 대부분이 규칙 판정이라 아직 묻지 않은 업무)의 MM — 매칭 MM 이 줄어든 것으로 읽히지 않게(진단 D)
-        _mr = ag.get("mm_recalc") if isinstance(ag.get("mm_recalc"), dict) else {}
-        if _h(_mr.get("rule_mm")) > 0:
-            h.append(f"<div class='dim'>AI 판정 대기 {_n(_mr.get('rule_rows'))}행 · {_h(_mr.get('rule_mm')):.2f} MM — "
-                     "신호 대부분이 규칙 판정이라 아직 매칭하지 않은 업무입니다(판정이 회복된 뒤 [재매칭]). "
-                     "로드가 줄어든 것이 아닙니다.</div>")
-        if ag.get("new"):
-            h.append("<h3 style='font-size:14px'>신규 Agentic AI 후보 발굴</h3>")
-            for n2 in ag["new"]:
-                if not isinstance(n2, dict):
-                    continue
-                # '대체 가능 MM' 은 보이지 않는다(A-33 RP4) — 근거 업무 행 수만
-                h.append(f"<div style='margin:6px 0'>· <b>{esc(n2.get('name'))}</b>"
-                         + (f" <span class='dim'>(근거 업무 {_n(n2.get('evidence_rows'))}행)</span>"
-                            if n2.get("evidence_rows") is not None else "")
-                         + f"<br><span class='dim'>로직: {esc(n2.get('logic'))}<br>"
-                         f"사유: {esc(n2.get('reason'))}</span></div>")
-        if ag.get("misassigned"):
-            h.append("<h3 style='font-size:14px'>분류기 검증 — 오할당 의심</h3>"
-                     "<div class='dim'>본인 업무가 아닌데 분류된 것으로 의심되는 항목 — "
-                     "UI Agentic AI 탭에서 확정·제외 가능</div>")
-            for m2 in ag["misassigned"]:
-                h.append(f"<div class='dim'>· <b>{esc(m2.get('row'))}</b> — {esc(m2.get('reason'))}</div>")
-
-    h.append("<h2>8. 산정 근거와 신뢰도</h2><table>")
+    h.append("<h2>7. 산정 근거와 신뢰도</h2><table>")
     # LM22: 상한 없음 — 잘라낸 것이 아니라 '표시'한다(이상치·16h 초과·부재일 흔적). 값이 없는 키는 표에 없다.
     BASIS_ROWS = (("basis", "산정 방식"), ("method", "투입 산정"), ("absence_days", "부재(가용 차감)"),
                   ("inferred_absence_days", "부재 추정(가용 차감, 일)"),
@@ -1047,7 +996,7 @@ def build(tag, summary=False):
              "지속적 100% 초과는 과부하 신호다.</div>")
     if not b.get("sampler_days"):
         h.append("<div class='dim'>※ 투입 시간은 PC 켜기·끄기 기록과 활동 흔적(회의·산출물·메일·커밋)으로 계산했습니다 "
-                 "(LM28 에는 창 샘플러가 없습니다).</div>")
+                 "(LM29 에는 창 샘플러가 없습니다).</div>")
     # ★ 사용자 지시(2026-10-07 ②): 산출 방식 — PC 가동 하한의 근거 + 날짜별 방식·하한을 연 흔적·깎은 시간
     h += floor_section(meta, b)
 
@@ -1055,7 +1004,7 @@ def build(tag, summary=False):
         by = defaultdict(list)
         for r in sig:
             by[r.get("project") or r.get("model") or "공통"].append(r)
-        h.append("<h2>9. raw 단서 (해석 검증용)</h2>"
+        h.append("<h2>8. raw 단서 (해석 검증용)</h2>"
                  "<div class='dim'>수치가 이상하면 아래 원문으로 확인하세요. 전체는 "
                  f"report\\signals_{esc(tag)}.csv 에 있습니다.</div>")
         for pj, rs in sorted(by.items(), key=lambda kv: -len(kv[1]))[:8]:
@@ -1067,7 +1016,7 @@ def build(tag, summary=False):
             h.append("</div>")
     # LM28(REQ-37·REQ-38·A-37·A-38·W2-10): 동료 · 연관 업무 · 업무 영역·과제 워크플로 요약(단위업무 등급)
     wf = _json(os.path.join(REP, f"workflow_{tag}.json"))
-    h += new_sections(sig, wf, rows, pv, summary=summary, ctx=_privacy_ctx(), n0=10)
+    h += new_sections(sig, wf, rows, pv, summary=summary, ctx=_privacy_ctx(), n0=9)      # LM29 — 옛 7절(과제 매칭)을 빼 한 칸 당김
     return "\n".join(h)
 
 

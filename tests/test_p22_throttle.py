@@ -33,7 +33,7 @@ OK_REPLY = {"ok": True, "phase": "replied", "reply": '{"j": [[0, "y", "LiDAR-X",
 
 
 def _cfg(tmp, **kw):
-    c = dict(ca.DEFAULTS, profileDir=os.path.join(tmp, "data", "lm28_edge"), port=9533)
+    c = dict(ca.DEFAULTS, profileDir=os.path.join(tmp, "data", "lm29_edge"), port=9543)
     c.update(kw)
     os.makedirs(os.path.dirname(c["profileDir"]), exist_ok=True)
     return c
@@ -171,7 +171,7 @@ class WaitLoop(unittest.TestCase):
         st.enter_context(mock.patch.object(ca, "_fresh_chat", lambda cdp, cfg, why="", reload=False:
                                            self.fresh.append(why) or "새 채팅"))
         st.enter_context(mock.patch.object(ca, "ensure_edge", lambda cfg: "reuse"))
-        st.enter_context(mock.patch.object(ca, "find_tab", lambda cfg: "ws://127.0.0.1:9533/devtools/page/x"))
+        st.enter_context(mock.patch.object(ca, "find_tab", lambda cfg: "ws://127.0.0.1:9543/devtools/page/x"))
         st.enter_context(contextlib.redirect_stderr(io.StringIO()))
 
     def tearDown(self):
@@ -401,10 +401,10 @@ class CopilotSendThrottle(_Send):
         out = self.out.getvalue()
         self.assertIn("2분(120초) 쉬고 새로 고친 뒤 같은 묶음을 한 번만 다시 보냅니다", out)
         self.assertIn("이번 실행의 AI 단계는 더 보내지 않고", out)
-        # 같은 실행의 뒤 단계(정제·Agentic·워크플로우·월별 코멘트 — 다른 프로세스) — 보내지도, 남은 시간을 쉬지도 않는다
+        # 같은 실행의 뒤 단계(정제·워크플로우·월별 코멘트 — 다른 프로세스) — 보내지도, 남은 시간을 쉬지도 않는다
         self.new_process()
         n_sent = len(self.sent)
-        for nm in ("refine1", "agentic", "narr_2026-03"):
+        for nm in ("refine1", "wf1", "narr_2026-03"):
             r = self.send(nm)
             self.assertEqual((r["ok"], r["phase"], r["hard"], r.get("run_stop")), (False, "throttled", True, True))
             self.assertTrue(details.explain_failure(r)[2])
@@ -595,7 +595,7 @@ class RunPy(unittest.TestCase):
             raise AssertionError("재시도 대기를 하면 안 된다")
         with mock.patch.object(R, "_run_capture", lambda cmd, env: self.calls.append(cmd) or (1, "실패")), \
                 mock.patch.object(R.time, "sleep", no_sleep):
-            rc, why = R.run_ai_stage("agentic.py", "2026-01-01", "2026-01-31")
+            rc, why = R.run_ai_stage("flow.py", "2026-01-01", "2026-01-31")
         self.assertEqual((rc, len(self.calls)), (1, 1))
 
     def run_main(self, judge_rc, stop_in):
@@ -633,7 +633,6 @@ class RunPy(unittest.TestCase):
             st.enter_context(mock.patch.object(R, "invalidate_ai_outputs", lambda d0, d1: ([], [])))
             st.enter_context(mock.patch.object(R, "_run_capture", capture))
             st.enter_context(mock.patch.object(R, "run_ai_stage", ai_stage))
-            st.enter_context(mock.patch.object(R, "agentic_recalc_inproc", lambda d0, d1: False))
             st.enter_context(mock.patch.object(R, "_pending_count", lambda: 0))
             st.enter_context(mock.patch.object(R, "team_report_wanted", lambda c: False))
             st.enter_context(mock.patch.object(R, "team_report", team_report))
@@ -645,12 +644,14 @@ class RunPy(unittest.TestCase):
         sg = self.stages()
         self.assertTrue(sg["AI 판정"]["ok"])
         self.assertIn(R.THR_LINE, sg["AI 판정"]["note"])
-        for name in ("AI 정제", "Agentic 매칭", "워크플로우 분석"):
+        for name in ("AI 정제", "워크플로우 분석"):
             self.assertEqual(sg[name]["note"], R.THR_SKIP, name)       # 일반 실패('정제 0건'·'재시도에도 실패')가 아니다
+        self.assertNotIn("Agentic 매칭", sg)                          # LM29 — Agentic 단계 기록이 없다(가짜 성공도 없다)
         self.assertEqual(self.out.getvalue().count(R.THR_LINE), 1)
         self.assertEqual(self.held["hold"], "")                       # 부분 판정 결과는 그대로 자동 보고한다
         self.assertIn("보고서 생성", sg)
-        self.assertNotIn("Agentic 매칭 실패", self.out.getvalue())
+        self.assertNotIn("Agentic", self.out.getvalue())
+        self.assertNotIn("agentic.py", self.calls)
 
     def test_judge_empty_holds_report(self):
         rc = self.run_main(3, "judge.py")
@@ -658,8 +659,9 @@ class RunPy(unittest.TestCase):
         sg = self.stages()
         self.assertFalse(sg["AI 판정"]["ok"])
         self.assertTrue(sg["AI 판정"]["note"].startswith(R.THR_LINE))
-        for name in ("AI 정제", "Agentic 매칭", "워크플로우 분석"):
+        for name in ("AI 정제", "워크플로우 분석"):
             self.assertEqual(sg[name]["note"], R.THR_SKIP, name)
+        self.assertNotIn("Agentic 매칭", sg)
         self.assertEqual(self.calls.count("refine.py"), 0)            # 판정이 빈손이면 예전처럼 뒤 단계는 띄우지 않는다
         self.assertEqual(self.held["hold"], "AI 판정 실패")
         self.assertNotIn("흔한 원인", self.out.getvalue())
@@ -669,7 +671,8 @@ class RunPy(unittest.TestCase):
         sg = self.stages()
         self.assertNotIn(R.THR_LINE, sg["AI 판정"]["note"])
         self.assertTrue(sg["AI 정제"]["note"].startswith(R.THR_LINE))
-        self.assertEqual((sg["Agentic 매칭"]["note"], sg["워크플로우 분석"]["note"]), (R.THR_SKIP, R.THR_SKIP))
+        self.assertEqual(sg["워크플로우 분석"]["note"], R.THR_SKIP)
+        self.assertEqual((self.calls.count("flow.py"), "agentic.py" in self.calls), (1, False))   # 판정 뒤 AI 단계는 워크플로우 하나
         self.assertEqual(self.out.getvalue().count(R.THR_LINE), 1)
 
     def test_no_throttle_unchanged(self):

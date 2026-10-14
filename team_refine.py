@@ -7,7 +7,7 @@ team_refine.py — 팀 취합의 유사 항목을 Copilot 으로 정리한다 (�
 이 도구는 team_report.refine_once 로 ① 규칙(확실한 표기 변형) ② Copilot 반복(≤3회) 정리를 하여
 매핑을 <공유폴더>\\team_aliases.json 에 저장하고, 이어서 team_report.build(sender) 로
 계열·세부업무·후보·과제분류 캐시를 Copilot 으로 채운 뒤 aggregate.py 를 돌려 정적 리포트
-(team_report.html·team_agentic.html·팀 통합 보고서)까지 새 매핑으로 맞춘다.
+(team_report.html·팀 통합 보고서)까지 새 매핑으로 맞춘다.
 원본(인별 파일)은 수정하지 않는다 — 매핑만 얹으므로 언제든 삭제해 되돌릴 수 있다.
 
   python team_refine.py [공유폴더]        # 생략 시 config.teamShareDir → 이 PC 의 teamdata
@@ -62,7 +62,7 @@ def main():
         print(json.dumps({"ok": False, "error": "no share",
                           "hint": "팀 공유폴더를 지정하세요 — 팀 취합 화면 위쪽 [팀 공유폴더] 칸에 "
                                   "취합 폴더 경로를 넣고 저장하면 됩니다. 이 PC 에서 팀 서버를 "
-                                  "돌렸다면 LoadMonitor28" + os.sep + "teamdata 를 넣으세요."},
+                                  "돌렸다면 LoadMonitor29" + os.sep + "teamdata 를 넣으세요."},
                          ensure_ascii=False))
         return 1
     members = load_members(share)
@@ -96,7 +96,7 @@ def main():
         full = team_report.build(share, sender=sender) or {}
     except Exception as e:  # noqa: BLE001 - 보고서 실패가 정리 결과를 잃게 하지 않는다
         print(f"[정리] 통합 보고서 생성 실패({type(e).__name__}: {e}) — 정리 결과는 저장됐습니다")
-    # 정적 리포트(team_report.html·team_agentic.html)도 새 매핑으로 — 서버 자동 취합과 같은 경로
+    # 정적 리포트(team_report.html)도 새 매핑으로 — 서버 자동 취합과 같은 경로
     try:
         subprocess.run([sys.executable, os.path.join(ROOT, "aggregate.py"), share],
                        capture_output=True, timeout=180, cwd=ROOT,

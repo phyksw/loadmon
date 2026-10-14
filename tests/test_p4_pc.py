@@ -71,7 +71,7 @@ class PcHintsSynced(unittest.TestCase):
 
     def _visits(self, hints, db, d, **kw):
         old = tempfile.tempdir
-        tempfile.tempdir = d                     # 사본(lm28_hist_copy)도 이 임시 폴더 안에 — %TEMP% 에 남기지 않는다
+        tempfile.tempdir = d                     # 사본(lm29_hist_copy)도 이 임시 폴더 안에 — %TEMP% 에 남기지 않는다
         try:
             return hints.visit_times(db, datetime(2026, 3, 2), datetime(2026, 3, 3), **kw)
         finally:
@@ -85,7 +85,7 @@ class PcHintsSynced(unittest.TestCase):
             self.assertEqual(len(got), 2)                 # 집계 2 — 동기화 1건 제외
             self.assertEqual(st.get("synced"), 1)
             self.assertEqual(len(self._visits(hints, db, d, include_synced=True)), 3)
-            self.assertFalse(os.path.exists(os.path.join(d, "lm28_hist_copy")), "History 사본이 남았다")
+            self.assertFalse(os.path.exists(os.path.join(d, "lm29_hist_copy")), "History 사본이 남았다")
             spans = hints.to_spans(got)
             self.assertEqual(len(spans), 1)
 
@@ -99,7 +99,7 @@ class PcHintsSynced(unittest.TestCase):
         self.assertIs(c["pcHints"]["includeSynced"], False)
         src = _src(os.path.join("collect", "Get-PcOnHints.py"))
         self.assertIn('get("includeSynced", False)', src)
-        self.assertIn("lm28_hist_copy", src)
+        self.assertIn("lm29_hist_copy", src)
 
 
 class GitCalls(unittest.TestCase):

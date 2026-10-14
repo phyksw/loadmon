@@ -1,7 +1,7 @@
 @echo off
 >nul chcp 949
 cd /d "%~dp0"
-title LoadMonitor28 UI
+title LoadMonitor29 UI
 
 rem 실행할 파이썬 찾기: python 이 실제로 실행되면 그것, 아니면 py 런처(-3) 폴백
 rem (Microsoft Store 별칭은 where 를 통과해도 실행하면 Store 만 열리고 아무 일도 안 생긴다)
@@ -44,9 +44,9 @@ if not exist "core\extract.py" goto MISSING
 if not exist "core\progress.py" goto MISSING
 
 echo.
-echo   LoadMonitor28 UI 를 시작합니다. 브라우저가 자동으로 열립니다.
+echo   LoadMonitor29 UI 를 시작합니다. 브라우저가 자동으로 열립니다.
 echo   대시보드 창이나 이 창을 닫으면 실행 중인 작업도 함께 멈추고 끝납니다 ^(Ctrl+C 도 종료^).
-echo   팀 서버는 따로 돌아 계속 켜져 있습니다. 그래도 남은 것 같으면 LoadMonitor28-강제종료.bat
+echo   팀 서버는 따로 돌아 계속 켜져 있습니다. 그래도 남은 것 같으면 LoadMonitor29-강제종료.bat
 echo.
 "%PY_EXE%" %PY_ARGS% ui\app.py
 rem 정상 종료(대시보드 창을 닫아 자동으로 끝남 · [서버 종료] · Ctrl+C)면 이 창도 바로 닫는다 - 멈춰 있는 창이 남으면
@@ -69,7 +69,7 @@ echo  ==========================================================
 echo.
 echo   현재 폴더: %CD%
 echo.
-echo   원본 PC의 LoadMonitor28 폴더를 통째로 다시 복사하세요.
+echo   원본 PC의 LoadMonitor29 폴더를 통째로 다시 복사하세요.
 echo   ^(data, report 폴더는 빼고 복사 - 개인정보가 딸려갑니다^)
 echo.
 echo   전체 목록은 FILES.txt, 누락 확인은  python 자가점검.py

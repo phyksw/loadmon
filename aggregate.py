@@ -7,9 +7,9 @@ aggregate.py — 팀 공유폴더의 인별 결과를 모아 팀 총괄 리포�
   python aggregate.py [share] [--open] [--snapshot]       # --snapshot: 통합 보고서 타임스탬프 사본도
 
 출력: <공유폴더>\team_report.html  (인별 MM · 과제×인원 매트릭스 · 유형 분포 ·
-      공통업무(Agentic AI 후보) · raw 단서 링크)  +  team_mm.csv  +  team_agentic.html
+      공통업무(표준화·자동화 후보) · raw 단서 링크)  +  team_mm.csv
       + team_full_report.html / team_full_report_v3.html (team_report.build — 통합 보고서 한 장)
-마지막 줄 JSON: {"ok","members","agentic","report","agentic_html","full_report","full_v3","snapshots"}
+마지막 줄 JSON: {"ok","members","report","full_report","full_v3","snapshots"}
 """
 import ast
 import csv
@@ -505,59 +505,15 @@ def load_aliases(share):
         return {"projects": _AliasMap({}), "details": _AliasMap({})}
 
 
-def load_agentic(m):
-    """인별 agentic_<tag>.json — 객체가 아니거나 항목이 dict 가 아니면 걸러서 돌려준다(None = 없음).
-    match 의 fit·load_mm 은 숫자로 강제한다 — 'high'/'abc' 한 칸이 취합·리포트를 죽이지 않게."""
-    ap = os.path.join(m["dir"], f"agentic_{m.get('tag')}.json")
-    if not os.path.exists(ap):
-        return None
-    try:
-        a2 = json.load(open(ap, encoding="utf-8-sig"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(a2, dict):
-        print(f"[aggregate] {m.get('owner')}: agentic 파일이 객체가 아니라 무시합니다")
-        return None
-    return norm_agentic(a2)
-
-
-def norm_agentic(a2):
-    """agentic 결과의 match/new/misassigned 를 'dict 항목 + 숫자 칸' 으로 정리한 사본"""
-    out = dict(a2)
-    for k in ("match", "new", "misassigned"):
-        v = a2.get(k)
-        out[k] = [x for x in v if isinstance(x, dict)] if isinstance(v, list) else []
-    for x in out["match"]:
-        x["fit"] = fint(x.get("fit"), 0)
-        x["load_mm"] = fnum(x.get("load_mm"), 0.0)
-        if "load_mm_split" in x:
-            sp = fnum(x.get("load_mm_split"))
-            if sp is None:
-                x.pop("load_mm_split", None)
-            else:
-                x["load_mm_split"] = sp
-        if not isinstance(x.get("work"), list):
-            x["work"] = [] if x.get("work") in (None, "") else [str(x.get("work"))]
-    for x in out["new"]:
-        x["load_mm"] = fnum(x.get("load_mm"), 0.0)
-    return out
-
-
 def collect_team_data(share):
     """팀 뷰어 UI 용 실시간 취합 — 공유폴더를 읽어 시각화 가능한 JSON 을 만든다.
     team_aliases.json(Copilot 정리 결과)이 있으면 과제·세부업무 표기를 대표 이름으로 통합."""
     members = load_members(share)
     al = load_aliases(share)
     pj_map, dt_map = al["projects"], al["details"]
-    tasks = []
-    tp = os.path.join(ROOT, "config", "agentic_tasks.json")
-    try:
-        tasks = json.load(open(tp, encoding="utf-8-sig")).get("tasks") or []
-    except (OSError, ValueError):
-        pass
     out = {"share": share, "aliases": bool(pj_map or dt_map),
-           "alias_n": len(pj_map) + len(dt_map), "members": [], "tasks": tasks,
-           "matrix": {}, "details": {}, "wt": {}, "agentic": [], "common": [],
+           "alias_n": len(pj_map) + len(dt_map), "members": [],
+           "matrix": {}, "details": {}, "wt": {}, "common": [],
            # D5(b) — 측정 불충분(unreliable) 인원: 표에는 남되 팀 평균·순위·과제 매트릭스·유형 분포에서 뺀다
            "excluded": [m["owner"] for m in members if m.get("unreliable")]}
     matrix = defaultdict(lambda: defaultdict(float))
@@ -611,11 +567,6 @@ def collect_team_data(share):
                 common_all[k]["who"].add(who)
         except Exception as e:  # noqa: BLE001 - 인원 하나 때문에 팀 화면을 잃지 않는다
             print(f"[aggregate] {who}: 행 집계 실패({type(e).__name__}: {e}) — 이 인원의 행은 건너뜀")
-        a2 = load_agentic(m)
-        if a2 is not None:
-            out["agentic"].append({"owner": who, "match": a2.get("match") or [],
-                                   "new": a2.get("new") or [],
-                                   "misassigned": a2.get("misassigned") or []})
     out["matrix"] = {k: dict(v) for k, v in
                      sorted(matrix.items(), key=lambda kv: -sum(kv[1].values()))}
     out["details"] = {k: dict(v) for k, v in
@@ -626,93 +577,6 @@ def collect_team_data(share):
           "mm": round(v["mm"], 3)} for k, v in common_all.items()],
         key=lambda x: -(len(x["who"]) * 10 + x["mm"]))[:15]
     return out
-
-
-def build_team_agentic(share, members):
-    """팀 Agentic AI 취합 — team_report.html 과 별도 HTML.
-    ① 실제 팀 로드율 ② 12과제 × 인원 적합률·로드 매트릭스 ③ 팀 발굴 후보 통합"""
-    tasks = []
-    tp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config", "agentic_tasks.json")
-    try:
-        tasks = json.load(open(tp, encoding="utf-8-sig")).get("tasks") or []
-    except (OSError, ValueError):
-        pass
-    ags = []
-    for m in members:
-        a2 = load_agentic(m)
-        if a2 is not None:
-            ags.append((m, a2))
-    h = ["<!doctype html><meta charset='utf-8'><title>팀 Agentic AI 취합</title>",
-         "<style>body{font:14px 'Malgun Gothic',sans-serif;max-width:1150px;margin:24px auto;color:#222}",
-         "table{border-collapse:collapse;width:100%;margin:8px 0 24px}th,td{border:1px solid #ddd;",
-         "padding:5px 8px;text-align:left;font-size:12.5px}th{background:#f5f7fa}",
-         "h2{margin:26px 0 4px;font-size:17px}.dim{color:#888;font-size:12px}",
-         ".tag{display:inline-block;background:#f0f3f7;border-radius:3px;padding:1px 6px;",
-         "margin:1px 2px;font-size:11px}</style>",
-         f"<h1>팀 Agentic AI 취합</h1><p class='dim'>인원 {len(members)}명 중 Agentic 분석 "
-         f"{len(ags)}명 · 적합률 = 그 과제가 그 사람의 현재 업무를 자동화·대체할 수 있는 정도</p>"]
-
-    # ① 실제 팀 로드율
-    h.append("<h2>1. 실제 팀 로드율</h2><table><tr><th>이름</th><th>투입 MM</th><th>가용 MM</th>"
-             "<th>로드율</th><th>Agentic 분석</th></tr>")
-    for m in members:
-        # 값은 업로드로 들어온 남의 입력이다 — 숫자는 숫자로만, 문자열은 esc 를 거친다(저장형 XSS 방지)
-        h.append(f"<tr><td>{esc(m['owner'])}{coverage_badge(m)}{cfg_badge(m)}</td>"
-                 f"<td>{fnum(m.get('total_mm'), 0.0):.2f}</td>"
-                 f"<td>{fnum(m.get('avail_mm'), 0.0):.2f}</td>"
-                 f"<td><b>{pct_text(m.get('load_pct'))}</b>"
-                 f"{' <span class=dim>(측정 불충분 — 비교 제외)</span>' if m.get('unreliable') else ''}</td>"
-                 f"<td>{'완료' if any(x[0] is m for x in ags) else '<span class=dim>미실행</span>'}</td></tr>")
-    h.append("</table>")
-
-    # ② 12과제 × 인원 적합률(로드) 매트릭스 + 과제별 팀 합계
-    h.append("<h2>2. Agentic AI 12과제 적합률 — 과제 × 인원</h2>"
-             "<div class='dim'>셀 = 적합률% (그 사람의 대체 가능 로드 MM) · "
-             "합계 로드가 큰 과제일수록 팀 차원의 자동화 효과가 크다 · "
-             "적합률·로드 MM은 <b>Copilot 판정치(≈)</b>다 — 1절의 실측 MM과 다르다</div>"
-             "<table><tr><th>축</th><th>과제</th>"
-             + "".join(f"<th>{esc(m['owner'])}</th>" for m, _a in ags)
-             + "<th>팀 합계 로드 ≈</th></tr>")
-    rank = []
-    tasks = [t for t in tasks if isinstance(t, dict)]
-    for t in tasks:
-        cells, tot = "", 0.0
-        for _m, a in ags:
-            hit = next((x for x in (a.get("match") or []) if x.get("task") == t.get("id")), None)
-            if hit and fint(hit.get("fit"), 0) > 0:
-                # fit·load_mm 은 업로드된 JSON 값 — 숫자로 강제한 뒤에만 쓴다(저장형 XSS, 검증 확정)
-                lm = fnum(hit.get("load_mm"), 0.0)
-                cells += (f"<td><b>{fint(hit.get('fit'), 0)}%</b> ({lm:.2f})</td>")
-                tot += lm
-            else:
-                cells += "<td class='dim'>-</td>"
-        rank.append((t, tot))
-        h.append(f"<tr><td>{esc(t.get('axis'))}</td><td title='{esc(t.get('desc'))}'><b>{esc(t.get('id'))}</b> "
-                 f"{esc(t.get('name'))}</td>{cells}<td><b>{tot:.2f} MM</b></td></tr>")
-    h.append("</table>")
-    rank.sort(key=lambda x: -x[1])
-    top = [f"{t.get('id')}({v:.2f}MM)" for t, v in rank[:3] if v > 0]
-    if top:
-        h.append(f"<div class='dim'>팀 우선순위 제안(Copilot 판정 로드 기준): {esc(' → '.join(top))}</div>")
-
-    # ③ 팀 발굴 후보 통합 + 오할당 요약
-    h.append("<h2>3. 팀에서 발굴된 신규 Agentic AI 후보</h2>")
-    any_new = False
-    for m, a in ags:
-        for n2 in (a.get("new") or []):
-            any_new = True
-            h.append(f"<div style='margin:8px 0'>· <b>{esc(n2.get('name'))}</b> "
-                     f"<span class='dim'>제안 {esc(m['owner'])} · 대체 가능 ≈ {fnum(n2.get('load_mm'), 0.0):.2f} MM</span><br>"
-                     f"<span class='dim'>로직: {esc(n2.get('logic'))} / 사유: {esc(n2.get('reason'))}</span></div>")
-    if not any_new:
-        h.append("<div class='dim'>발굴된 후보가 없습니다.</div>")
-    mis_n = sum(len(a.get("misassigned") or []) for _m, a in ags)
-    h.append(f"<h2>4. 분류기 검증 현황</h2><div class='dim'>오할당 의심 총 {mis_n}건 — "
-             "각자 UI Agentic AI 탭에서 확정·제외 후 재내보내기하면 취합 수치가 정확해집니다.</div>")
-    out = os.path.join(share, "team_agentic.html")
-    with open(out, "w", encoding="utf-8") as f:
-        f.write("\n".join(h))
-    return out, len(ags)
 
 
 def visual_report(share, data):
@@ -902,7 +766,7 @@ def main():
                  + "".join(f"<td>{wt_dist[m['owner']].get(w, 0):.2f}</td>" for w in WT) + "</tr>")
     h.append("</table>")
 
-    h.append("<h2>4. 공통업무 — Agentic AI 자동화 후보</h2>"
+    h.append("<h2>4. 공통업무 — 표준화·자동화 후보</h2>"
              "<p class='dim'>여러 과제·여러 사람에게 반복되는 세부업무일수록 표준화·AI 대체 우선순위가 높다</p>"
              "<table><tr><th>세부업무</th><th>관련 과제</th><th>수행 인원</th><th>합산 MM</th></tr>")
     for k, v in sorted(common_all.items(), key=lambda kv: -(len(kv[1]["who"]) * 10 + kv[1]["mm"]))[:15]:
@@ -940,7 +804,6 @@ def main():
         for md in models_sorted:
             w.writerow([md] + [round(matrix[md][m["owner"]], 3) for m in members_cmp]
                        + [round(sum(matrix[md].values()), 3)])
-    ag_out, ag_n = build_team_agentic(share, members)
     # 팀 통합 보고서(team_full_report.html / _v3) — 캐시만 적용(Copilot 없음). 팀 서버가
     # 업로드마다 이 파일을 돌리므로 여기서 함께 갱신된다. 실패해도 취합 rc 는 잃지 않는다.
     full = {}
@@ -952,15 +815,13 @@ def main():
     except Exception as e:  # noqa: BLE001 - 통합보고서 하나 때문에 취합 rc 를 잃지 않는다
         print(f"[aggregate] 팀 통합 보고서 생성 실패({type(e).__name__}: {e}) — 취합 자료는 정상입니다")
     print(f"[aggregate] {len(members)}명 · 과제 {len(models_sorted)}개 → {out_html}")
-    print(f"[aggregate] Agentic 취합 {ag_n}명 → {ag_out}")
-    print(json.dumps({"ok": True, "members": len(members), "agentic": ag_n,
-                      "report": out_html, "agentic_html": ag_out,
+    print(json.dumps({"ok": True, "members": len(members),
+                      "report": out_html,
                       "full_report": full.get("full", ""), "full_v3": full.get("v3", ""),
                       "snapshots": full.get("snapshots") or []}, ensure_ascii=False))
     if "--open" in sys.argv:                     # 팀취합 bat 경로 — 결과를 바로 브라우저로
         import webbrowser
         webbrowser.open(out_html)
-        webbrowser.open(ag_out)
         if full.get("full"):
             webbrowser.open(full["full"])
     return 0

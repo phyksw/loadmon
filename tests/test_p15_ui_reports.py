@@ -5,7 +5,7 @@ r"""tests\test_p15_ui_reports.py — 화면(ui\app.py)·리포트(report_out.py)
   B  부분 판정 배너 — '규칙이 임시로 뽑은 토큰' 문구 폐기(규칙은 기존 과제·공통에 임시 배정)
   C  월별 코멘트 — /api/extra·리포트 5절 = core/narratives.load_merged(기간 필터) · [리셋](분석 결과만)은 코멘트 보존 ·
      [리뷰 코멘트 재생성]의 '모든 달' 선택(--all)
-  D  Agentic 정제본↔원본 전환 안내(근거 키면 생략) · 워크플로우 상태 파일 사유 · 중단 갈래(throttle·gate)
+  D  워크플로우 상태 파일 사유 · 중단 갈래(throttle·gate)
   E  리포트 날짜표 최신순·0h 날·'퇴근 후·시각' 열·합계 줄 · 팀즈 날짜만 행의 12:00 자리표
 
 화면 서버는 이 프로세스 안의 임시 포트로만 띄운다(ThreadingHTTPServer — 새 프로세스 없음). report\·data\ 는 임시 폴더로
@@ -203,7 +203,7 @@ class NarrateButton(_Base):
 
 
 class ReportNarratives(_Base):
-    """리포트 5절은 이월한 달까지(이전 분석 코멘트 표시) · 기간 밖 달 없음 — D: Agentic 판정 대기 MM · 체계 폴백 표시."""
+    """리포트 5절은 이월한 달까지(이전 분석 코멘트 표시) · 기간 밖 달 없음 — 체계 폴백 표시 · Agentic 절 없음(LM29)."""
 
     def test_build(self):
         _w(os.path.join(self.rep, f"mm_meta_{TAG}.json"),
@@ -211,7 +211,7 @@ class ReportNarratives(_Base):
         _w(narratives.path_of(self.rep, TAG), {"2026-10": _nar("10월 코멘트")})
         _w(narratives.path_of(self.rep, TAG_Y), {"2026-03": _nar("3월 코멘트"), "2026-04": _nar("4월 코멘트", earlier=True)})
         _w(narratives.path_of(self.rep, TAG_25), {"2025-12": _nar("작년 12월 코멘트")})
-        _w(os.path.join(self.rep, f"agentic_{TAG}.json"), {"match": [], "mm_recalc": {"rule_rows": 3, "rule_mm": 0.42}})
+        _w(os.path.join(self.rep, f"agentic_{TAG}.json"), {"match": [], "mm_recalc": {"rule_rows": 3, "rule_mm": 0.42}})  # LM28 이 남긴 파일
         _w(os.path.join(self.rep, f"entities_{TAG}.json"),
            {"fallback": True, "models": [{"name": "LiDAR-X", "l1": "개발", "match": ["lidar"]}, {"name": "공통"}]})
         with mock.patch.object(report_out, "_privacy_ctx", lambda: None):
@@ -223,7 +223,9 @@ class ReportNarratives(_Base):
         i3, i10 = doc.index(">2026-03"), doc.index(">2026-10")
         self.assertIn("(이전 분석 코멘트)", doc[i3:i3 + 60])
         self.assertNotIn("(이전 분석 코멘트)", doc[i10:i10 + 40])
-        self.assertIn("AI 판정 대기 3행 · 0.42 MM", doc)
+        self.assertNotIn("Agentic", doc)                     # LM29 — 옛 agentic 파일이 있어도 리포트에 절을 만들지 않는다
+        self.assertNotIn("AI 판정 대기 3행", doc)
+        self.assertIn("7. 산정 근거와 신뢰도", doc)
         self.assertIn("규칙 폴백 체계(임시)", doc)
         self.assertIn("<th>과제</th><th>업무 영역</th>", doc)
 
@@ -263,37 +265,7 @@ class JudgedIssues(_Base):
         self.assertNotIn("실패한 행은 규칙이 임시로 뽑은 토큰으로 남아 있습니다", page)
 
 
-# ── D: Agentic·워크플로우 ─────────────────────────────────────────────────────────────────────
-class AgenticStale(_Base):
-    """근거 키(match[].keys)로 센 결과(axis plain)는 정제본↔원본 전환에 '정제본 무효화' 안내를 띄우지 않는다."""
-
-    def _a(self, keyed):
-        m = {"task": "AL1", "fit": 70, "work": ["LiDAR-X / 시험"]}
-        if keyed:
-            m["keys"] = ["LiDAR-X␟시험"]
-        return {"rows_file": f"mm_rows_{TAG}_refined.csv", "match": [m],
-                "mm_recalc": {"axis": "plain" if keyed else "rows", "rows_file": f"mm_rows_{TAG}.csv"}}
-
-    def test_keyed_plain_no_note(self):
-        self.signals()
-        ap = os.path.join(self.rep, f"agentic_{TAG}.json")
-        with mock.patch.object(app, "agentic_recalc", lambda tag="": False):
-            out = {}
-            app._agentic_stale(self._a(True), TAG, ap, out)
-            self.assertNotIn("reextracted", out)
-            out2 = {}
-            app._agentic_stale(self._a(False), TAG, ap, out2)
-        self.assertTrue(out2.get("reextracted"))
-        self.assertEqual(out2.get("reextracted_title"), "정제본 무효화 이후 결과")
-
-    def test_reextracted_still_noted(self):
-        self.signals(judged=False)                       # signals 가 규칙 축 — 판정 뒤 재추출
-        out = {}
-        with mock.patch.object(app, "agentic_recalc", lambda tag="": False):
-            app._agentic_stale(self._a(True), TAG, os.path.join(self.rep, f"agentic_{TAG}.json"), out)
-        self.assertEqual(out.get("reextracted_title"), "재추출 이후 결과")
-
-
+# ── D: 워크플로우 ─────────────────────────────────────────────────────────────────────
 class WorkflowStage(_Base):
     """결과가 없으면 상태 파일의 중단 사유(빨간 줄 재료)와 갈래를 싣는다 · 새 stop.kind 의 갈래."""
 
@@ -323,8 +295,8 @@ class WorkflowStage(_Base):
     def test_stage_kind_map(self):
         for kind, want in (("throttle", "throttle"), ("gate", "gate"), ("fail", "failed"), ("gain", "failed"),
                            ("budget", "budget"), ("login", "failed"), ("stall", "stalled")):
-            self._state("agentic", kind, state="partial")
-            self.assertEqual(app._stage_kind("Agentic 매칭", TAG), want, kind)
+            self._state("flow", kind, state="partial")
+            self.assertEqual(app._stage_kind("워크플로우 분석", TAG), want, kind)
 
 
 # ── E: 날짜표·합계·팀즈 날짜만 ────────────────────────────────────────────────────────────────
@@ -404,13 +376,15 @@ class PageWiring(unittest.TestCase):
     def test_page(self):
         p = app.PAGE
         for s in ("loadReview(curTab)", "curTab=id", "이전 실행 코멘트", "빠진 달·최근 달·데이터가 바뀐 달을 다시 만듭니다",
-                  "⑤ 그 달은 AI 판정된 신호가 적어", "월별 리뷰 코멘트·AI 판정 기록은 보존", "AI 판정 대기", "개인정보 관문", "과제와 무관",
-                  "기간 결과를 이어받음", "최근 실행이 남긴 사유", "퇴근 후 미인정", "시각 미상 발신", "표준일 추정(기본)",
+                  "⑤ 그 달은 AI 판정된 신호가 적어", "월별 리뷰 코멘트·AI 판정 기록은 보존", "AI 판정 대기", "개인정보 관문",
+                  "최근 실행이 남긴 사유", "퇴근 후 미인정", "시각 미상 발신", "표준일 추정(기본)",
                   "AI 비업무 발신 시간 유지", "Copilot 대기 중", "규칙 폴백 체계(임시)", "지난 체계 재사용",
                   "Copilot 사용량 제한</b>으로 멈췄습니다"):
             self.assertIn(s, p, s)
         self.assertNotIn("상한을 올리거나 [재매칭]으로 다시 물으면 늘어납니다", p)
         self.assertNotIn("이 달만 다시 만듭니다", p)
+        for s in ("과제와 무관", "기간 결과를 이어받음"):     # LM29 — Agentic 커버리지 칩·이어받기 줄(agCover·agCarry)이 없다
+            self.assertNotIn(s, p, s)
 
 
 if __name__ == "__main__":

@@ -24,7 +24,7 @@ judge.py — raw 판정을 Copilot(GPT-5.6)이 수행한다. (LoadMonitor20: 계
 산출:
   signals_*.csv          판정 반영 (model/worktype/detail, 비업무 제거)
   mm_rows_*.csv          Level2=과제, Level3=세부업무, 유형=개발/사무/현장 (MM=투입/가용 기준)
-  pivots_*.json          과제→유형/세부 · 유형→과제 양방향 + 공통업무(Agentic AI 후보) + 에피소드
+  pivots_*.json          과제→유형/세부 · 유형→과제 양방향 + 공통업무(표준화·자동화 후보) + 에피소드
   ai_narratives_*.json   월별 리뷰 서술
 
   python judge.py --from ... --to ... [--chunk 40] [--no-narrate]
@@ -1969,7 +1969,7 @@ def build_pivots(kept, total_mm, tot=None):
                             "models": {k: mm(x) for k, x in sorted(v["md"].items(), key=lambda a: -a[1])},
                             "details": {k: mm(x) for k, x in sorted(v["dt"].items(), key=lambda a: -a[1])[:10]}}
                         for t, v in sorted(by_wt.items(), key=lambda a: -a[1]["w"])},
-        # 공통업무: 2개 이상 과제에 걸친 세부업무 = 표준화·Agentic AI 자동화 후보
+        # 공통업무: 2개 이상 과제에 걸친 세부업무 = 표준화·자동화 후보
         "common": sorted([{"detail": dt, "models": sorted(ms, key=lambda m: -ms[m]),
                            "mm": mm(sum(ms.values()))}
                           for dt, ms in detail_models.items()

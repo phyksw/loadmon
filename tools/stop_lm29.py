@@ -1,16 +1,16 @@
 # -*- coding: utf-8 -*-
-r"""tools\stop_lm28.py — LoadMonitor28-강제종료.bat 의 입구: PowerShell 이 못 켜져도 끝까지 끝낸다 (LM28 2026-10-15).
+r"""tools\stop_lm29.py — LoadMonitor29-강제종료.bat 의 입구: PowerShell 이 못 켜져도 끝까지 끝낸다 (LM28 2026-10-15).
 
-  python tools\stop_lm28.py [-Status] [-IncludeTeamServer]
+  python tools\stop_lm29.py [-Status] [-IncludeTeamServer]
 
 왜: 개발 PC(2026-10-15)에서 강제종료 bat 이 바로 띄운 powershell 이 켜지는 순간 실패해(0xc0000142) 오류 창만 남기고
     Stop-LM28.ps1 이 한 줄도 돌지 않았다 — 비상 단추가 정작 필요할 때 듣지 않았다.
-  1) tools\Stop-LM28.ps1 을 tools\ps_launch 로 띄운다 — 오류 창 없이, 켜지다 실패하면 3초·8초 뒤 두 번 다시 띄운다.
+  1) tools\Stop-LM29.ps1 을 tools\ps_launch 로 띄운다 — 오류 창 없이, 켜지다 실패하면 3초·8초 뒤 두 번 다시 띄운다.
      인자는 그대로 넘기고 이 파이썬의 pid 를 -KeepPid 로 붙인다(이 파이썬과 그 부모 줄기 — 강제종료 bat 창 — 는 끝내지 않게).
-  2) 그래도 PowerShell 이 켜지지 못하면 같은 규칙으로 파이썬이 직접 끝낸다: select_targets 는 Stop-LM28.ps1 의
+  2) 그래도 PowerShell 이 켜지지 못하면 같은 규칙으로 파이썬이 직접 끝낸다: select_targets 는 Stop-LM29.ps1 의
      Select-LmTargets 를 그대로 옮긴 순수 함수이고, 프로세스 목록 읽기·끝내기는 ctypes(표준 라이브러리)만 쓴다 —
-     새 프로세스·WMI·관리자 권한·임시 파일 없음. 화면 문구도 Stop-LM28.ps1 과 같다.
-규칙(무엇을 끝내고 무엇을 두나)의 원본은 Stop-LM28.ps1 머리말이다 — 고칠 때는 둘을 함께 고친다
+     새 프로세스·WMI·관리자 권한·임시 파일 없음. 화면 문구도 Stop-LM29.ps1 과 같다.
+규칙(무엇을 끝내고 무엇을 두나)의 원본은 Stop-LM29.ps1 머리말이다 — 고칠 때는 둘을 함께 고친다
 (tests\test_p24_stop_startfail.py 가 같은 가짜 프로세스 목록으로 둘의 결과를 대조한다).
 """
 import collections
@@ -24,7 +24,7 @@ if os.path.join(ROOT, "tools") not in sys.path:          # 내장 파이썬(._pt
     sys.path.insert(0, os.path.join(ROOT, "tools"))
 import ps_launch  # noqa: E402  — tools\ps_launch.py(오류 창 막기·다시 띄우기)
 
-STOP_PS1 = os.path.join(ROOT, "tools", "Stop-LM28.ps1")
+STOP_PS1 = os.path.join(ROOT, "tools", "Stop-LM29.ps1")
 FALLBACK_LINE = "  PowerShell 을 끝내 띄우지 못해 파이썬으로 같은 규칙대로 끝냅니다"
 
 PY_NAMES = ("python.exe", "pythonw.exe", "py.exe")
@@ -46,11 +46,11 @@ def _say(s):
 
 # 프로세스 한 줄(Win32_Process 꼴) — created 는 epoch 초(모르면 None)
 Proc = collections.namedtuple("Proc", "pid ppid name cmd exe created")
-# 고른 항목(Stop-LM28.ps1 의 Pid·Name·Kind·Why·Keep·Created·Ppid)
+# 고른 항목(Stop-LM29.ps1 의 Pid·Name·Kind·Why·Keep·Created·Ppid)
 Item = collections.namedtuple("Item", "pid name kind why keep created ppid")
 
 
-# ── 고르기(순수 함수 — Stop-LM28.ps1 의 같은 이름 함수를 그대로 옮겼다) ─────────────────────────────
+# ── 고르기(순수 함수 — Stop-LM29.ps1 의 같은 이름 함수를 그대로 옮겼다) ─────────────────────────────
 def norm(s):
     """ConvertTo-LmNorm — / → \\ · 소문자."""
     return (s or "").replace("/", "\\").lower()
@@ -123,7 +123,7 @@ def self_chain(by_pid, pids):
 
 
 def select_targets(procs, root, include_team=False, self_pid=0, keep_pids=()):
-    """Select-LmTargets — 프로세스 목록에서 이 폴더의 LM28 것을 고른다 → {'targets': [Item], 'kept': [Item]}(pid 순).
+    """Select-LmTargets — 프로세스 목록에서 이 폴더의 LM29 것을 고른다 → {'targets': [Item], 'kept': [Item]}(pid 순).
     self_pid·keep_pids 와 그 부모 줄기(강제종료 bat 창·이 파이썬)는 끝내지 않는다."""
     key = root_key(root)
     data_key = key + "data\\"
@@ -220,7 +220,7 @@ def format_state(sel, now):
     lines = []
     t = list(sel["targets"])
     if not t:
-        lines.append("  끝낼 LM28 작업이 없습니다.")
+        lines.append("  끝낼 LM29 작업이 없습니다.")
     else:
         lines.append(f"  끝낼 것 {len(t)}개")
         for k, ko in KIND_KO.items():
@@ -232,7 +232,7 @@ def format_state(sel, now):
     for x in sel["kept"]:
         if x.keep == "teamserver":
             lines.append(f"  [둠] 팀 서버 pid {x.pid}({format_age(x.created, now)}) - 팀 전체가 쓰는 서버라 두었습니다"
-                         "(함께 끄려면 LoadMonitor28-강제종료.bat -IncludeTeamServer)")
+                         "(함께 끄려면 LoadMonitor29-강제종료.bat -IncludeTeamServer)")
         else:
             lines.append(f"  [둠] PC 이동 준비 창 pid {x.pid} - 폴더 정리 중일 수 있어 두었습니다(그 창의 안내대로 끝내세요)")
     return lines
@@ -393,14 +393,14 @@ def run_fallback(root, status=False, include_team=False, *, osapi=None, say=None
         osapi = osapi or WinProcs()
         me = os.getpid() if self_pid is None else self_pid
         return _invoke(root, status, include_team, osapi, say, sleep, now, me, keep_pids)
-    except Exception as e:  # noqa: BLE001 - Stop-LM28.ps1 의 catch 와 같다 — 사유를 보여 주고 exit 1
+    except Exception as e:  # noqa: BLE001 - Stop-LM29.ps1 의 catch 와 같다 — 사유를 보여 주고 exit 1
         say(f"  [!] 강제 종료 중 오류: {e}")
         return 1
 
 
 def _invoke(root, status, include_team, osapi, say, sleep, now, me, keep_pids):
     for ln in ("", " ==========================================================",
-               "  LoadMonitor28 강제 종료 - 이 폴더의 LM28 작업만 끝냅니다",
+               "  LoadMonitor29 강제 종료 - 이 폴더의 LM29 작업만 끝냅니다",
                " ==========================================================", f"  폴더: {root}", ""):
         say(ln)
     before = select_targets(osapi.list(), root, include_team, me, keep_pids)
@@ -413,7 +413,7 @@ def _invoke(root, status, include_team, osapi, say, sleep, now, me, keep_pids):
         return 0
     n0 = len(before["targets"])
     if n0 == 0:
-        say("  [결과] 이미 모두 끝나 있습니다 - 끝낼 LM28 작업이 없습니다.")
+        say("  [결과] 이미 모두 끝나 있습니다 - 끝낼 LM29 작업이 없습니다.")
         return 0
     say("  끝내는 중...")
     fail = stop_targets(before["targets"], osapi)
@@ -426,7 +426,7 @@ def _invoke(root, status, include_team, osapi, say, sleep, now, me, keep_pids):
     say("")
     left = after["targets"]
     if not left:
-        say(f"  [결과] LM28 작업을 모두 끝냈습니다({n0}개).")
+        say(f"  [결과] LM29 작업을 모두 끝냈습니다({n0}개).")
         if any(x.keep == "teamserver" for x in after["kept"]):
             say("         팀 서버는 팀 전체가 쓰므로 그대로 두었습니다.")
         return 0
@@ -456,7 +456,7 @@ def parse_opts(argv):
 
 
 def main(argv, *, runner=None, sleep=None, clock=None, say=None, fallback=None):
-    """Stop-LM28.ps1 을 띄우고(→ 그 종료 코드), 끝내 못 켜지면 파이썬으로 같은 규칙대로 끝낸다."""
+    """Stop-LM29.ps1 을 띄우고(→ 그 종료 코드), 끝내 못 켜지면 파이썬으로 같은 규칙대로 끝낸다."""
     say = say or _say
     args = list(argv) + ["-KeepPid", str(os.getpid())]
     rc, failed = ps_launch.launch(STOP_PS1, args, runner=runner, sleep=sleep, clock=clock, say=say)

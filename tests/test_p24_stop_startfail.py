@@ -3,8 +3,8 @@ r"""tests\test_p24_stop_startfail.py — 강제종료가 'PowerShell 시작 실�
 
   (1) tools\ps_launch — 켜지다 실패(부호 있는/없는 0xC0000142)면 3초·8초 쉬고 두 번 다시 띄운다 · 다른 종료 코드는 그대로 ·
       켜질 시간(proc.START_FAIL_SEC)이 지난 뒤의 실패는 다시 띄우지 않는다 · 띄우기 OSError 는 바로 '켜지지 못함' · CLI · 종료 코드
-  (2) tools\stop_lm28.main — Stop-LM28.ps1 에 인자 + -KeepPid <자기 pid> · 파이썬 대안은 다시 띄우기를 모두 쓴 뒤에만 · 스위치 읽기
-  (3) select_targets — Stop-LM28.ps1 시험(tests\ps\Test-StopLM28.ps1)과 같은 가짜 프로세스 목록 · 같은 답(이 폴더 python·powershell·
+  (2) tools\stop_lm29.main — Stop-LM29.ps1 에 인자 + -KeepPid <자기 pid> · 파이썬 대안은 다시 띄우기를 모두 쓴 뒤에만 · 스위치 읽기
+  (3) select_targets — Stop-LM29.ps1 시험(tests\ps\Test-StopLM29.ps1)과 같은 가짜 프로세스 목록 · 같은 답(이 폴더 python·powershell·
       bat 창·전용 Edge·자손 / 다른 폴더·사람 Edge·LM24·팀 서버(플래그 없으면)·이동 준비 창·자기와 부모 줄기는 빼기 · PID 재사용)
   (4) 파이썬 대안 실행(run_fallback) — -Status 는 목록만 · 끝내는 순서 · 남은 것과 사유 · 오류 · 화면 문구
   (5) 실제 프로세스 목록 읽기(ctypes — 읽기만, 아무것도 끝내지 않는다) · bat(CP949·CRLF) · 자가점검 NEED · 문서 한 줄
@@ -23,7 +23,7 @@ import _boot
 
 import proc  # noqa: E402
 import ps_launch  # noqa: E402
-import stop_lm28 as S  # noqa: E402
+import stop_lm29 as S  # noqa: E402
 
 ROOT = _boot.ROOT
 SF = 0xC0000142
@@ -150,7 +150,7 @@ class StopMain(unittest.TestCase):
         cmd = f.calls[0][0]
         self.assertEqual(cmd[:6], ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", S.STOP_PS1])
         self.assertEqual(cmd[6:], ["-Status", "-KeepPid", str(os.getpid())])
-        self.assertEqual(os.path.normcase(S.STOP_PS1), os.path.normcase(os.path.join(ROOT, "tools", "Stop-LM28.ps1")))
+        self.assertEqual(os.path.normcase(S.STOP_PS1), os.path.normcase(os.path.join(ROOT, "tools", "Stop-LM29.ps1")))
 
     def test_no_fallback_when_powershell_runs(self):
         rc, f, fb = self._main([], [SF, SF_SIGNED, 1])             # 세 번째에 켜져 '남은 것 있음'(1)으로 끝남
@@ -177,7 +177,7 @@ class StopMain(unittest.TestCase):
         self.assertEqual(P(["Status", "-", "-x", "-KeepPid", "12"]), (False, False))
 
 
-# ── (3) 고르기 — Test-StopLM28.ps1 과 같은 가짜 목록 ──────────────────────────────────────────────
+# ── (3) 고르기 — Test-StopLM29.ps1 과 같은 가짜 목록 ──────────────────────────────────────────────
 T0 = datetime(2026, 10, 14, 9, 0, 0).timestamp()
 R = r"C:\LM28test\Load Monitor28"
 OLD = r"C:\LM28test\Load Monitor28-old"
@@ -199,7 +199,7 @@ def _bat(name):
 FAKE = [
     P(50, 4, "explorer.exe", r"C:\Windows\Explorer.EXE", r"C:\Windows\explorer.exe", 0),
     # 대시보드(UI bat → 동봉 python ui\app.py) → run.py → 수집기·copilot_auto → 전용 Edge(+렌더러)
-    P(100, 50, "cmd.exe", _bat("LoadMonitor28-UI.bat"), CMDX, 1),
+    P(100, 50, "cmd.exe", _bat("LoadMonitor29-UI.bat"), CMDX, 1),
     P(101, 100, "python.exe", '"' + PY + '"  ui\\app.py', PY, 2),
     P(107, 101, "conhost.exe", r"\??\C:\Windows\system32\conhost.exe 0xffffffff -ForceV1", r"C:\Windows\System32\conhost.exe", 2),
     P(102, 101, "python.exe", '"' + PY + '" "' + R + '\\run.py" --from 2026-01-01 --to 2026-10-14 --ai', PY, 3),
@@ -207,13 +207,13 @@ FAKE = [
       'powershell -NoProfile -ExecutionPolicy Bypass -File "' + R + '\\collect\\Get-OutlookData.ps1" -From 2026-01-01', PSX, 4),
     P(104, 102, "python.exe", '"' + PY + '" "' + R + '\\tools\\copilot_auto.py" --send x.txt', PY, 4),
     P(105, 104, "msedge.exe",
-      '"' + EDGE + '" --remote-debugging-port=9533 --user-data-dir="' + R + '\\data\\lm28_edge" --no-first-run', EDGE, 5),
+      '"' + EDGE + '" --remote-debugging-port=9543 --user-data-dir="' + R + '\\data\\lm29_edge" --no-first-run', EDGE, 5),
     P(106, 105, "msedge.exe", '"' + EDGE + '" --type=renderer --lang=ko', EDGE, 5),
     # 팀 서버(대시보드가 띄움) · 사람의 Edge(webbrowser.open) · 이동 준비 창 · 탐색기
     P(108, 101, "python.exe", '"' + PY + '" "' + R + '\\teamserver.py" --port 9310', PY, 6),
-    P(109, 101, "msedge.exe", '"' + EDGE + '" --single-argument http://127.0.0.1:9248/', EDGE, 2),
+    P(109, 101, "msedge.exe", '"' + EDGE + '" --single-argument http://127.0.0.1:9268/', EDGE, 2),
     P(150, 101, "powershell.exe", 'powershell -NoProfile -ExecutionPolicy Bypass -File '
-      '"C:\\Users\\홍길동\\AppData\\Local\\Temp\\LM28-Prepare-Move.ps1" -Root "' + R + '"', PSX, 7),
+      '"C:\\Users\\홍길동\\AppData\\Local\\Temp\\LM29-Prepare-Move.ps1" -Root "' + R + '"', PSX, 7),
     P(160, 101, "explorer.exe", 'explorer "' + R + '\\report"', r"C:\Windows\explorer.exe", 7),
     # PID 재사용 — 부모(102)보다 먼저 생긴 '자식' 은 102 가 띄운 것이 아니다
     P(140, 102, "python.exe", r"python C:\other\x.py", SYSPY, -30),
@@ -224,25 +224,29 @@ FAKE = [
     P(112, 50, "python.exe", r'"C:\LM24\LoadMonitor24\python\python.exe" ui\app.py', r"C:\LM24\LoadMonitor24\python\python.exe", 1),
     P(113, 50, "python.exe", r"python C:\work\run.py --from 2026-01-01", SYSPY, 1),
     P(114, 50, "msedge.exe", r"msedge.exe --user-data-dir=C:\LM24\LoadMonitor24\data\lm24_edge", EDGE, 1),
+    # 같은 PC 에 함께 깔린 LM28(다른 폴더) — 그 대시보드·전용 Edge(data\lm28_edge · 포트 9533)도 건드리지 않는다
+    P(115, 50, "python.exe", r'"C:\LM28\LoadMonitor28\python\python.exe" ui\app.py', r"C:\LM28\LoadMonitor28\python\python.exe", 1),
+    P(116, 50, "msedge.exe", r"msedge.exe --remote-debugging-port=9533 --user-data-dir=C:\LM28\LoadMonitor28\data\lm28_edge",
+      EDGE, 1),
     P(170, 50, "powershell.exe", 'powershell -NoProfile -File "' + OLD + '\\collect\\Get-OutlookData.ps1"', PSX, 1),
     # 이 스크립트 자신(강제종료 bat → powershell)
-    P(119, 50, "cmd.exe", _bat("LoadMonitor28-강제종료.bat"), CMDX, 10),
-    P(120, 119, "powershell.exe", 'powershell -NoProfile -ExecutionPolicy Bypass -File "' + R + '\\tools\\Stop-LM28.ps1"', PSX, 10),
-    # PC 에 깔린 python 으로 LoadMonitor28.bat 을 돌린 경우(명령줄에 폴더가 없다 — 부모 bat 으로 안다)
-    P(129, 50, "cmd.exe", _bat("LoadMonitor28.bat"), CMDX, 1),
+    P(119, 50, "cmd.exe", _bat("LoadMonitor29-강제종료.bat"), CMDX, 10),
+    P(120, 119, "powershell.exe", 'powershell -NoProfile -ExecutionPolicy Bypass -File "' + R + '\\tools\\Stop-LM29.ps1"', PSX, 10),
+    # PC 에 깔린 python 으로 LoadMonitor29.bat 을 돌린 경우(명령줄에 폴더가 없다 — 부모 bat 으로 안다)
+    P(129, 50, "cmd.exe", _bat("LoadMonitor29.bat"), CMDX, 1),
     P(130, 129, "python.exe", "python  run.py --from 2026-01-01 --to 2026-10-14", SYSPY, 2),
     P(131, 130, "powershell.exe", 'powershell -NoProfile -File "' + R + '\\collect\\Get-PcOnHistory.ps1"', PSX, 3),
     P(171, 50, "pwsh.exe", 'pwsh -File "' + R.upper() + '/collect/Get-RecentFiles.ps1"', r"C:\Program Files\PowerShell\7\pwsh.exe", 1),
     # 팀서버 bat 으로 띄운 팀 서버
-    P(180, 50, "cmd.exe", _bat("LoadMonitor28-팀서버.bat"), CMDX, 1),
+    P(180, 50, "cmd.exe", _bat("LoadMonitor29-팀서버.bat"), CMDX, 1),
     P(181, 180, "python.exe", '"' + PY + '" teamserver.py --port 9310', PY, 2),
 ]
-# 파이썬 런처를 거친 강제종료(2026-10-15): 강제종료 bat(190) → 동봉 python tools\stop_lm28.py(191) → powershell(192)
+# 파이썬 런처를 거친 강제종료(2026-10-15): 강제종료 bat(190) → 동봉 python tools\stop_lm29.py(191) → powershell(192)
 LAUNCH = [p for p in FAKE if p.pid not in (119, 120)] + [
-    P(190, 50, "cmd.exe", _bat("LoadMonitor28-강제종료.bat"), CMDX, 10),
-    P(191, 190, "python.exe", '"' + PY + '" -X utf8 -B "' + R + '\\tools\\stop_lm28.py"', PY, 10),
+    P(190, 50, "cmd.exe", _bat("LoadMonitor29-강제종료.bat"), CMDX, 10),
+    P(191, 190, "python.exe", '"' + PY + '" -X utf8 -B "' + R + '\\tools\\stop_lm29.py"', PY, 10),
     P(192, 191, "powershell.exe",
-      'powershell -NoProfile -ExecutionPolicy Bypass -File "' + R + '\\tools\\Stop-LM28.ps1" -KeepPid 191', PSX, 10),
+      'powershell -NoProfile -ExecutionPolicy Bypass -File "' + R + '\\tools\\Stop-LM29.ps1" -KeepPid 191', PSX, 10),
 ]
 # PowerShell 이 끝내 못 켜져 파이썬(191)이 직접 끝내는 때 — 192 가 없다
 FALLBACK = [p for p in LAUNCH if p.pid != 192]
@@ -267,7 +271,7 @@ def _pids(items):
 
 
 def py_answers():
-    """Test-StopLM28.ps1 이 돌려주는 것과 같은 열쇠의 파이썬 답."""
+    """Test-StopLM29.ps1 이 돌려주는 것과 같은 열쇠의 파이썬 답."""
     a = S.select_targets(FAKE, R, self_pid=120)
     b = S.select_targets(FAKE, R + "\\", include_team=True, self_pid=120)
     return {
@@ -304,7 +308,7 @@ class Select(unittest.TestCase):
 
     def test_pid_reuse_breaks_self_chain(self):
         # 부모 pid 가 재사용됐으면(부모가 자식보다 늦게 생김) 그 위로 올라가지 않는다 — 남의 cmd 를 '자기' 로 보지 않는다
-        procs = [P(50, 4, "explorer.exe", "", "", 0), P(300, 50, "cmd.exe", _bat("LoadMonitor28-UI.bat"), CMDX, 20),
+        procs = [P(50, 4, "explorer.exe", "", "", 0), P(300, 50, "cmd.exe", _bat("LoadMonitor29-UI.bat"), CMDX, 20),
                  P(301, 300, "python.exe", '"' + PY + '" ui\\app.py', PY, 5)]
         a = S.select_targets(procs, R, self_pid=301)
         self.assertEqual(a["targets"], [])
@@ -317,11 +321,11 @@ class Select(unittest.TestCase):
         self.assertEqual(S.root_key(R + "\\"), r"c:\lm28test\load monitor28" + "\\")
         self.assertEqual(S.root_key("C:/LM28test/Load Monitor28"), S.root_key(R))
         key = S.root_key(R)
-        self.assertTrue(S.root_bat(S.norm(_bat("LoadMonitor28-UI.bat")), key))
-        self.assertFalse(S.root_bat(S.norm('cmd /c ""' + OLD + '\\LoadMonitor28-UI.bat"'), key))
-        self.assertTrue(S.dedicated_edge(S.norm("--user-data-dir=" + R + "\\data\\lm28_edge"), key + "data\\"))
+        self.assertTrue(S.root_bat(S.norm(_bat("LoadMonitor29-UI.bat")), key))
+        self.assertFalse(S.root_bat(S.norm('cmd /c ""' + OLD + '\\LoadMonitor29-UI.bat"'), key))
+        self.assertTrue(S.dedicated_edge(S.norm("--user-data-dir=" + R + "\\data\\lm29_edge"), key + "data\\"))
         self.assertEqual(S.get_keep(P(1, 0, "Python.EXE", "x\\TeamServer.py", "", 0)), "teamserver")
-        self.assertEqual(S.get_keep(P(1, 0, "pwsh.exe", "C:\\t\\LM28-Prepare-Move.ps1", "", 0)), "move")
+        self.assertEqual(S.get_keep(P(1, 0, "pwsh.exe", "C:\\t\\LM29-Prepare-Move.ps1", "", 0)), "move")
         self.assertEqual(S.get_keep(P(1, 0, "cmd.exe", "teamserver.py", "", 0)), "")
         # .ps1 은 이 폴더 안에서 돌아야 한다 — 인자로만 나오는 폴더(-Root) 는 아니다
         self.assertEqual(S.get_kind(P(1, 0, "powershell.exe", 'powershell -File "C:\\t\\x.ps1" -Root "' + R + '"', "", 0),
@@ -336,7 +340,7 @@ class Select(unittest.TestCase):
         for frag in ("끝낼 것 11개", "콘솔 창(bat) 2개", "전용 Edge(Copilot·웹 읽기) 2개", "[둠] 팀 서버 pid 108(54분)",
                      "PC 이동 준비 창 pid 150", "-IncludeTeamServer", "   · 콘솔 창(bat) 2개 - pid 100(59분) 129(59분)"):
             self.assertIn(frag, lines)
-        self.assertEqual(S.format_state({"targets": [], "kept": []}, now), ["  끝낼 LM28 작업이 없습니다."])
+        self.assertEqual(S.format_state({"targets": [], "kept": []}, now), ["  끝낼 LM29 작업이 없습니다."])
         at = datetime(2026, 10, 14, 10, 5, 0).timestamp()
         self.assertEqual(S.format_age(datetime(2026, 10, 14, 8, 0, 0).timestamp(), at), "2시간 5분")
         self.assertEqual((S.format_age(None, at), S.format_age(at - 59, at), S.format_age(at - 61, at),
@@ -375,7 +379,7 @@ class Fallback(unittest.TestCase):
         self.assertEqual((rc, os_.stopped, waits), (0, [], []))
         self.assertIn("  (-Status - 목록만 보여 주고 아무것도 끝내지 않았습니다)", said)
         self.assertIn("  끝낼 것 11개", said)
-        self.assertIn("  LoadMonitor28 강제 종료 - 이 폴더의 LM28 작업만 끝냅니다", said)
+        self.assertIn("  LoadMonitor29 강제 종료 - 이 폴더의 LM29 작업만 끝냅니다", said)
         self.assertIn(f"  폴더: {R}", said)
         self.assertNotIn("  끝내는 중...", said)
 
@@ -387,7 +391,7 @@ class Fallback(unittest.TestCase):
         self.assertEqual(waits, [2])
         self.assertNotIn(191, os_.stopped)
         self.assertNotIn(190, os_.stopped)
-        self.assertIn("  [결과] LM28 작업을 모두 끝냈습니다(11개).", said)
+        self.assertIn("  [결과] LM29 작업을 모두 끝냈습니다(11개).", said)
         self.assertIn("         팀 서버는 팀 전체가 쓰므로 그대로 두었습니다.", said)
         self.assertLess(said.index("  [지금]"), said.index("  끝내는 중..."))
         self.assertLess(said.index("  끝내는 중..."), said.index("  [끝낸 뒤]"))
@@ -412,7 +416,7 @@ class Fallback(unittest.TestCase):
     def test_nothing_and_error(self):
         rc, said, waits = self._run(FakeOS([p for p in FALLBACK if p.pid in (50, 190, 191, 110)]))
         self.assertEqual((rc, waits), (0, []))
-        self.assertIn("  [결과] 이미 모두 끝나 있습니다 - 끝낼 LM28 작업이 없습니다.", said)
+        self.assertIn("  [결과] 이미 모두 끝나 있습니다 - 끝낼 LM29 작업이 없습니다.", said)
         rc, said, _w = self._run(FakeOS([], boom=True))
         self.assertEqual(rc, 1)
         self.assertTrue(said[-1].startswith("  [!] 강제 종료 중 오류:"), said[-1])
@@ -449,11 +453,11 @@ class Files(unittest.TestCase):
         return b.decode("cp949")
 
     def test_force_stop_bat(self):
-        s = self._bat("LoadMonitor28-강제종료.bat")
-        via = '"%PY_EXE%" %PY_ARGS% -X utf8 -B "%~dp0tools\\stop_lm28.py" %*'
-        old = 'powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\\Stop-LM28.ps1" %*'
+        s = self._bat("LoadMonitor29-강제종료.bat")
+        via = '"%PY_EXE%" %PY_ARGS% -X utf8 -B "%~dp0tools\\stop_lm29.py" %*'
+        old = 'powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\\Stop-LM29.ps1" %*'
         for frag in (via, old, 'if exist "%~dp0python\\python.exe" set "PY_EXE=%~dp0python\\python.exe"', "python --version",
-                     "rem 창을 닫았는데 뒤에서 계속 도는 것 같을 때 쓰는 비상 단추다.", 'if not exist "tools\\Stop-LM28.ps1" (',
+                     "rem 창을 닫았는데 뒤에서 계속 도는 것 같을 때 쓰는 비상 단추다.", 'if not exist "tools\\Stop-LM29.ps1" (',
                      "exit /b %RC%"):
             self.assertIn(frag, s)
         # 파이썬이 있으면 파이썬 길, 없으면 예전 줄 — 둘 다 결과를 보이게 멈춘다(pause 하나)
@@ -465,31 +469,31 @@ class Files(unittest.TestCase):
         self.assertNotIn("set /p", s.lower())
 
     def test_diag_bat(self):
-        s = self._bat("LoadMonitor28-수집진단.bat")
+        s = self._bat("LoadMonitor29-수집진단.bat")
         via = '"%PY_EXE%" -X utf8 -B tools\\ps_launch.py "collect\\Diagnose-Collectors.ps1"'
         old = 'powershell -NoProfile -ExecutionPolicy Bypass -File "collect\\Diagnose-Collectors.ps1"'
         for frag in (via, old, '"%PY_EXE%" -X utf8 -B tools\\diag_bundle.py', "rem (실측: SetConsoleOutputCP(65001) 까지 수행)."):
             self.assertIn(frag, s)
         self.assertLess(s.index(via), s.index(">nul chcp 949\r\necho.\r\necho  [진단 묶음]"))
         self.assertLess(s.index('if not defined PY_EXE set "PY_EXE=python"'), s.index("tools\\diag_bundle.py"))
-        mv = self._bat("LoadMonitor28-이동준비.bat")              # 이동 준비는 %TEMP% 에서 돌아 그대로 둔다
+        mv = self._bat("LoadMonitor29-이동준비.bat")              # 이동 준비는 %TEMP% 에서 돌아 그대로 둔다
         self.assertNotIn("ps_launch", mv)
 
     def test_need_and_ps1(self):
         src = _boot.read_text(os.path.join(ROOT, "자가점검.py"))
         need = next(ast.literal_eval(n.value) for n in ast.parse(src).body
                     if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "NEED")
-        for rel in ("tools/ps_launch.py", "tools/stop_lm28.py"):
+        for rel in ("tools/ps_launch.py", "tools/stop_lm29.py"):
             self.assertIn(rel, need)
             self.assertTrue(os.path.isfile(os.path.join(ROOT, rel)), rel)
-        b = _bytes(os.path.join("tools", "Stop-LM28.ps1"))
+        b = _bytes(os.path.join("tools", "Stop-LM29.ps1"))
         self.assertTrue(b.startswith(b"\xef\xbb\xbf"))
         self.assertEqual(b.count(b"\n"), b.count(b"\r\n"))
         ps = b.decode("utf-8-sig")
         for frag in ("[string]$KeepPid = ''", "[int[]]$KeepPid = @()", "@(@($SelfPid) + @($KeepPid))",
                      "-SelfPid $PID -KeepPid $Keep", "(ConvertTo-LmPids $KeepPid)"):
             self.assertIn(frag, ps)
-        for rel in (os.path.join("tools", "ps_launch.py"), os.path.join("tools", "stop_lm28.py")):
+        for rel in (os.path.join("tools", "ps_launch.py"), os.path.join("tools", "stop_lm29.py")):
             b = _bytes(rel)
             self.assertFalse(b.startswith(b"\xef\xbb\xbf"), rel)
             self.assertNotIn(b"\r\n", b, rel)
@@ -499,8 +503,8 @@ class Files(unittest.TestCase):
         self.assertIn("**2026-10-15 — 강제종료", readme)
         guide = _boot.read_text(os.path.join(ROOT, "docs", "설정가이드.md"))
         sec = guide[guide.index("## 8-4."):guide.index("## 무엇부터 하면 되나")]
-        self.assertIn("LoadMonitor28-강제종료.bat", sec[sec.index("0xc0000142"):])
-        field = _boot.read_text(os.path.join(ROOT, "docs", "현장점검_LM28.md"))
+        self.assertIn("LoadMonitor29-강제종료.bat", sec[sec.index("0xc0000142"):])
+        field = _boot.read_text(os.path.join(ROOT, "docs", "현장점검_LM29.md"))
         sec = field[field.index("## 4-8."):field.index("## 4-9.")]
         self.assertIn("PowerShell 을 끝내 띄우지 못해 파이썬으로 같은 규칙대로 끝냅니다", sec)
 
@@ -509,9 +513,9 @@ class Files(unittest.TestCase):
 class PsParity(unittest.TestCase):
 
     def test_launcher_chain_and_parity(self):
-        r = _boot.ps_result("StopLM28")
+        r = _boot.ps_result("StopLM29")
         if r is None:
-            self.skipTest("PowerShell 결과 없음 — tests\\run_tests.py p24 --ps-only=StopLM28 로 실행")
+            self.skipTest("PowerShell 결과 없음 — tests\\run_tests.py p24 --ps-only=StopLM29 로 실행")
         self.assertNotIn("error", r, r)
         for k, v in WANT.items():
             self.assertEqual(r[k], v, k)

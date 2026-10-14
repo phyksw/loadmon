@@ -6,7 +6,7 @@ r"""tests\test_p23_wait_budget.py — 한 실행의 Copilot 쉬는 시간 합계
   깨진 파일 → 0.
 · judge.copilot_send: 사다리 1·2·2분(합계 300초) 뒤 hard · 뒤 단계 프로세스는 남은 몫만 · 다 쓰면 쉬지 않고 hard(한 줄) ·
   사용량 제한은 남은 60초면 60초, 10초면 쉬지 않고 hard(실행 멈춤) · 지난 실행 기록은 5분 중 남은 시간(합계 안)만 · 0 이면 바로 hard.
-· agentic·flow 의 쉬기(judge.wait_room·note_waited) · run.py 재시도 대기(합계 안 · 바닥 15초) · 두 설정 파일의 키.
+· flow 의 쉬기(judge.wait_room·note_waited) · run.py 재시도 대기(합계 안 · 바닥 15초) · 두 설정 파일의 키.
 실제 Copilot·Edge·대기는 쓰지 않는다 — _transport·_cooldown·time.sleep 은 가짜. 임시 폴더만 쓴다.
 """
 import contextlib
@@ -20,13 +20,12 @@ import unittest
 from unittest import mock
 
 import _boot  # noqa: F401  — 경로 등록
-import agentic  # noqa: E402
 import copilot_auto as ca  # noqa: E402
 import details  # noqa: E402
 import flow  # noqa: E402
 import judge  # noqa: E402
 import run as R  # noqa: E402
-import test_p13_agentic_flow as p13  # noqa: E402
+import test_p13_flow as p13  # noqa: E402
 import test_p22_throttle as p22  # noqa: E402
 
 THROTTLED, COPILOT_ERR, OK_REPLY = p22.THROTTLED, p22.COPILOT_ERR, p22.OK_REPLY
@@ -249,23 +248,16 @@ class JudgeBudget(p22._Send):
         self.assertEqual(judge.wait_room(90), 50.0)
         judge.note_waited(50.0)
         self.assertEqual((judge._COOLED[0], ca.run_waited(), judge.wait_room(90)), (50.0, 300.0, 0.0))
-        for mod in (agentic, flow):
+        for mod in (flow,):
             self.assertEqual(mod._run_room(judge, 90.0), 0.0, mod.__name__)    # 다 썼다 — 쉬지 않고 바로 한 번 더
             stub = types.SimpleNamespace()                                      # 시험 가짜·옛 판 judge — 바라는 그대로
             self.assertEqual(mod._run_room(stub, 90.0), 90.0, mod.__name__)
             mod._note_wait(stub, 90.0)                                          # 없으면 아무것도 하지 않는다
         os.environ["LM_RUN_ID"] = "run-B"
-        self.assertEqual((agentic._run_room(judge, 90.0), flow._run_room(judge, 0.4)), (90.0, 0.0))
+        self.assertEqual((flow._run_room(judge, 90.0), flow._run_room(judge, 0.4)), (90.0, 0.0))
 
 
-# ── 3) agentic·flow — 일시 오류 뒤 쉬기도 실행 합계 안 ───────────────────────────────────────
-def _ag_sigs():
-    out = []
-    for i, r in enumerate(p13.AgenticMatch.ROWS):
-        out += p13._sigs(r["Level 2"], r["Level 3"], day0=3 + i * 4)
-    return out
-
-
+# ── 3) flow — 일시 오류 뒤 쉬기도 실행 합계 안 ───────────────────────────────────────
 class StageRest(p13._Env):
     def setUp(self):
         super().setUp()
@@ -274,18 +266,6 @@ class StageRest(p13._Env):
         pt.start()
         self._patches.append(pt)
         os.environ["LM_RUN_ID"] = "run-A"
-
-    def test_agentic_rest_bounded(self):
-        self.data(p13.AgenticMatch.ROWS, _ag_sigs())
-        ca.add_run_wait(250)
-        seq = [{"ok": False, "phase": "copilot_error", "error": "Copilot 일시 오류"}]
-        self.reply = lambda p, n: seq.pop(0) if seq else p13._ok({"match": [{"task": "AL2", "fit": 40, "work": ["#3"]}]})
-        rc, js, out = self.run_main(agentic)
-        self.assertEqual(rc, 0, js)
-        self.assertEqual([n for n, _p in self.calls], [f"{self.TAG}-ag1", f"{self.TAG}-ag1-c"])
-        self.assertEqual(self.sleeps, [50.0])                                   # 90초 대신 남은 50초
-        self.assertEqual(ca.run_waited(), 300.0)
-        self.assertIn("50초 쉬고 새 채팅에서 같은 묶음을 한 번 더 보냅니다", out)
 
     def test_flow_spent_budget_resends_without_rest(self):
         p13.FlowRuns._data(self)
@@ -318,12 +298,12 @@ class RetryWait(unittest.TestCase):
         return sleeps, added, out.getvalue()
 
     def test_bounded_with_floor(self):
-        sleeps, added, out = self.stage("agentic.py", 50.0)
+        sleeps, added, out = self.stage("flow.py", 50.0)
         self.assertEqual((sleeps, added), ([50], [50]))
         self.assertIn("50초 뒤 1회 재시도합니다 (이번 실행의 Copilot 쉬는 시간 합계 안", out)
         sleeps, added, _out = self.stage("flow.py", 0.0)
         self.assertEqual((sleeps, added), ([15], [15]))                         # 바닥 15초
-        sleeps, added, out = self.stage("agentic.py", INF)                      # 실행 표식 없음 — 예전 그대로
+        sleeps, added, out = self.stage("flow.py", INF)                         # 실행 표식 없음 — 예전 그대로
         self.assertEqual((sleeps, added), ([120], [120]))
         self.assertNotIn("합계 안", out)
         sleeps, added, _out = self.stage("refine.py", 0.0)

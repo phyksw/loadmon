@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 r"""
-freeze.py — 분석 결과를 '파일 하나' 보고서 3종으로 만든다 (LoadMonitor28).
+freeze.py — 분석 결과를 '파일 하나' 보고서 3종으로 만든다 (LoadMonitor29).
 
   python freeze.py --from 2026-01-01 --to 2026-08-25            # 3종 전부 (= --all)
   python freeze.py --from ... --to ... --freeze [--summary]     # 얼린 보고서만 (--summary: 원문 제외)
@@ -211,7 +211,7 @@ def latest_tag():
 # 데이터를 전부 받아 파일 하나에 굽는다. 그래서 화면 모양·계산 로직이 설치된 그 버전과 언제나 같다.
 
 FREEZE_EPS = ["/api/status", "/api/dash", "/api/projects", "/api/workflow",
-              "/api/agentic", "/api/extra", "/api/teamserver", "/api/teamupload",
+              "/api/extra", "/api/teamserver", "/api/teamupload",
               "/api/sharedir",
               "/api/review?g=week", "/api/review?g=month", "/api/review?g=all",
               "/api/data?src=files", "/api/data?src=recent", "/api/data?src=mail",
@@ -415,9 +415,8 @@ def _freeze(tag, full, base_url, log, info):
                 # 에피소드의 오더→산출 페어(req/done)에는 메일·팀즈 원문 조각이 들어 있다
                 ex["pivots"].pop("episodes", None)
             baked["/api/extra"] = _strip_evidence(ex)
-        for k in ("/api/workflow", "/api/agentic"):
-            if k in baked:
-                baked[k] = _strip_evidence(baked[k])
+        if "/api/workflow" in baked:
+            baked["/api/workflow"] = _strip_evidence(baked["/api/workflow"])
 
     owner, host = _owner(), _host()
     stub = _is_stub()
@@ -425,7 +424,7 @@ def _freeze(tag, full, base_url, log, info):
     # stub: 판정이 스텁(LM_COPILOT_STUB, 테스트 전용)이었던 결과 — 취합이 실자료와 구분한다.
     baked["_lm"] = {"kind": "frozen", "owner": owner, "host": host,
                     "period": [d0, d1], "tag": tag, "full": bool(full), "stub": stub,
-                    "generated": time.strftime("%Y-%m-%d %H:%M"), "generator": "LoadMonitor28 freeze.py"}
+                    "generated": time.strftime("%Y-%m-%d %H:%M"), "generator": "LoadMonitor29 freeze.py"}
     who = f"{os.environ.get('USERNAME', '?')}@{host or '?'}"
     ts = time.strftime("%Y-%m-%d %H:%M")
     mode_txt = ("메일·회의 제목 등 원문 근거가 들어 있습니다 — <b>팀 밖 공유 금지</b>"
@@ -520,22 +519,6 @@ def _apply_details(rows, log=_say):
 _AGENT_C = {"상": "#1d8a4a", "중": "#c98a00", "하": "#8b929b"}
 _PAL = ["#2a78d6", "#0e8c7a", "#a61b4a", "#e08a00", "#6c4fb8", "#3d8f3d",
         "#c05a78", "#4a7f9e", "#8a6d3b", "#556270"]
-
-
-def _fitbar(v):
-    """화면(fitBar)과 같은 단색 농담 적합률 막대 + 막대 안 숫자"""
-    try:
-        v = max(0, min(100, int(v or 0)))
-    except (TypeError, ValueError):
-        v = 0
-    c = ["#e1e0d9", "#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf",
-         "#184f95"][0 if v <= 0 else min(6, v // 17 + 1)]
-    w = max(3, round(v * 0.9)) if v > 0 else 0
-    return (f'<svg width="90" height="12" style="vertical-align:middle">'
-            f'<rect width="90" height="12" rx="2" fill="#eef0f3"/>'
-            f'<rect width="{w}" height="12" rx="2" fill="{c}"/>'
-            f'<text x="{4 if v >= 45 else w + 4}" y="9.3" style="font-size:9px;'
-            f'font-weight:700;fill:{"#fff" if v >= 45 else "#52514e"}">{v}%</text></svg>')
 
 
 def _num(v, d=0.0):
@@ -649,9 +632,8 @@ def report_island(tag, full=True, log=_say):
         log(f"    [!] {tag} 결과(mm_rows·mm_meta)가 없어 분석리포트를 만들지 못했습니다.")
         return []
     wf = _read_json(os.path.join(REPORT, f"workflow_{tag}.json")) or {}
-    ag = _read_json(os.path.join(REPORT, f"agentic_{tag}.json")) or {}
     if not full:
-        wf, ag = _strip_evidence(wf), _strip_evidence(ag)
+        wf = _strip_evidence(wf)
     owner, host = _owner(), _host()
 
     rows, n_merged = _apply_details(rows, log)
@@ -794,58 +776,22 @@ def report_island(tag, full=True, log=_say):
         '<div class="card"><div class="note">워크플로우 분석이 없습니다 — '
         '대시보드 [담당자 워크플로우] 탭의 [재분석]으로 만들 수 있습니다.</div></div>')
 
-    # Agentic — 화면과 같은 적합률 바(막대 안 숫자)
-    match = [m for m in (ag.get("match") or []) if isinstance(m, dict) and m.get("fit")]
-    match.sort(key=lambda m: -_num(m.get("fit")))
-    m_html = "".join(
-        f"<tr><td><b>{_esc(m.get('task'))}</b> {_esc(m.get('name'))}</td>"
-        f"<td class='num'>{_esc(m.get('fit'))}%</td><td style='width:100px'>{_fitbar(m.get('fit'))}</td>"
-        f"<td class='num'><b>{_num(m.get('load_mm')):.2f}</b>"
-        + (f"<div class='sub'>안분 {_num(m.get('load_mm_split')):.2f}</div>"
-           if isinstance(m.get("load_mm_split"), (int, float))
-           and m.get("load_mm_split") != m.get("load_mm") else "")
-        + "</td><td>"
-        + "".join(f'<span class="tag">{_esc(w)}</span>' for w in (m.get("work") or []))
-        + ("<div style='color:#c0392b;font-size:11px;margin-top:2px'>근거 없음 — "
-           "이 업무명을 내 자료에서 찾지 못했습니다</div>"
-           if m.get("evidence_rows") == 0 else "")
-        + (f"<div class='sub'>겹침: {_esc(', '.join(str(x) for x in (m.get('shared_tasks') or [])))}</div>"
-           if m.get("shared_tasks") else "")
-        + (f"<div class='sub'>{_esc(m.get('reason'))}</div>" if m.get("reason") else "")
-        + "</td></tr>"
-        for m in match[:12]) or "<tr><td colspan=5 class='dim'>매칭 결과 없음</td></tr>"
-    # '대체 가능 MM' 은 보이지 않는다(A-33 RP4) — 신규 후보는 근거 업무 행 수만
-    new_html = "".join(
-        f'<div style="border-left:3px solid #6c4fb8;padding:4px 0 4px 12px;margin:10px 0">'
-        f'<b>{_esc(n.get("name"))}</b>'
-        + (f' <span class="state">근거 업무 {int(_num(n.get("evidence_rows")))}행</span>'
-           if n.get("evidence_rows") is not None else "")
-        + (f'<div style="font-size:12px;margin-top:3px"><b>동작 로직:</b> '
-           f'{_esc(n.get("logic"))}</div>' if n.get("logic") else "")
-        + "</div>"
-        for n in (ag.get("new") or []) if isinstance(n, dict))
-    ag_note = ""
-    if ag.get("failed_chunks"):
-        ag_note = (f'<div class="note" style="color:#c0392b">묶음 {ag.get("failed_chunks")}/'
-                   f'{ag.get("chunks") or "?"}개 실패 — 결과가 실제보다 적을 수 있습니다</div>')
-
     # LM28(WP9): 초과근무 세분·미관측 · 산출 방식(PC 가동 하한의 근거·날짜별 방식) · 동료 · 연관 업무 · 업무 영역·과제
     # 워크플로 요약(단위업무 등급) — 리포트(report_out)와 같은 함수. 요약판(--summary)은 동료 이름을 [사람] 으로.
-    extra_html, n_tasks = "", 0
+    extra_html = ""
     try:
         import report_out as _ro
-        n_tasks = _ro._task_count()
         _b = meta.get("mm_basis") if isinstance(meta.get("mm_basis"), dict) else {}
         _ot = _ro.overtime_rows(meta, _b)
         if _ot:
-            extra_html += ('<div class="card"><h2>5. 근무 꼬리표 · 초과근무 세분 · 미관측</h2><table>'
+            extra_html += ('<div class="card"><h2>4. 근무 꼬리표 · 초과근무 세분 · 미관측</h2><table>'
                            + "".join(f"<tr><th style='width:260px'>{_esc(k)}</th><td>{_esc(v)}</td></tr>" for k, v in _ot)
                            + "</table></div>")
         extra_html += '<div class="card">' + "\n".join(_ro.floor_section(meta, _b)) + "</div>"
         _sig = _ro._rows(os.path.join(REPORT, f"signals_{tag}.csv"))
         _pv = _read_json(os.path.join(REPORT, f"pivots_{tag}.json")) or {}
         extra_html += ('<div class="card">'
-                       + "\n".join(_ro.new_sections(_sig, wf, rows, _pv, summary=not full, ctx=_ro._privacy_ctx(), n0=6))
+                       + "\n".join(_ro.new_sections(_sig, wf, rows, _pv, summary=not full, ctx=_ro._privacy_ctx(), n0=5))
                        + "</div>")
     except Exception as e:  # noqa: BLE001 - 새 절의 실패가 분석리포트를 막지 않는다
         log(f"    [!] 분석리포트 보조 절 건너뜀({type(e).__name__}: {str(e)[:80]})")
@@ -853,13 +799,14 @@ def report_island(tag, full=True, log=_say):
     generated = time.strftime("%Y-%m-%d %H:%M")
     stub = _is_stub()
     # 데이터 섬 — 팀 취합(팀보완툴·LM22 팀 취합)이 읽는 계약: kind/owner/host/period/tag/rows/workflow/agentic
+    # LM29: Agentic 매칭은 없다 — 계약 키 "agentic" 은 빈 객체로 남긴다(옛 취합 도구가 키를 찾는다).
     # stub: 판정이 스텁(LM_COPILOT_STUB, 테스트 전용)이었던 결과 — 취합이 실자료와 구분한다.
     island = json.dumps({
         "kind": "lm-personal-report", "owner": owner, "host": host,
         "period": [d0, d1], "tag": tag, "total_mm": total,
         "avail_mm": avail, "load_pct": pct, "rows_file": rows_file,
-        "rows": rows, "workflow": wf, "agentic": ag,
-        "generated": generated, "generator": "LoadMonitor28 freeze.py",
+        "rows": rows, "workflow": wf, "agentic": {},
+        "generated": generated, "generator": "LoadMonitor29 freeze.py",
         "merged_rows": n_merged, "full": bool(full), "stub": stub},
         ensure_ascii=False).replace("<", "\\u003c")
     stub_txt = " · <b>스텁 판정(테스트 전용 — 실제 Copilot 판정 아님)</b>" if stub else ""
@@ -942,12 +889,6 @@ margin:1px 3px 1px 0;font-size:10.5px;color:#3d444c}}
 <span class="state">역할 → 일의 순서 → 단계별 Agent 가능성</span></h1>
 {flows_html}
 
-<div class="card"><h2>4. Agentic AI 과제 매칭
-<span class="state">등록된 과제{f' {n_tasks}개' if n_tasks else ''} · 적합률 = 그 과제가 내 업무를 자동화·대체할 수 있는 정도</span></h2>
-<table><tr><th>과제</th><th class="num" style="width:52px">적합률</th><th></th>
-<th class="num" style="width:78px">근거 업무 실측 MM</th><th>관련 업무 · 사유</th></tr>{m_html}</table>
-{ag_note}
-{('<h2 style="margin:16px 0 6px">신규 자동화 후보</h2>' + new_html) if new_html else ''}</div>
 {extra_html}
 
 <div class="note">이 파일 하나로 공유됩니다. 팀 취합 분석은 아래 데이터 섬을 읽어 수행합니다.</div>

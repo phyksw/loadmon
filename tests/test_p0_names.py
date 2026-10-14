@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-r"""test_p0_names.py — WP0: LM24 와 이름 분리 · 팀 호환 불변 · bat 일괄 개명 · 인코딩 · 새 설정 키.
+r"""test_p0_names.py — WP0: LM24·LM28 과 이름 분리(LM29) · 팀 호환 불변 · bat 일괄 개명 · 인코딩 · 새 설정 키.
 
 LM27 hook_check L-28(OLD_PORTS)의 '옛 이름 0건 검사' 발상만 가져왔다(코드 이식 없음).
 실 Outlook·Edge·작업 스케줄러는 건드리지 않는다 — 파일·문자열·순수 함수만 본다.
@@ -35,11 +35,19 @@ BANNED = [
     ("9148", re.compile(r"(?<!\d)9148(?!\d)")),
     ("LM22-Prepare", re.compile(re.escape("LM22-Prepare"))),
     ("lm_from.txt", re.compile(re.escape("lm_from.txt"))),
+    # LM28(같은 PC 에 함께 깔릴 수 있는 바로 앞 판)의 Edge 포트·프로필·임시 파일·환경변수 — LM29 는 쓰지 않는다
+    ("9533", re.compile(r"(?<!\d)9533(?!\d)")),
+    ("lm28_edge", re.compile(re.escape("lm28_edge"))),
+    ("LM28_TA_", re.compile(re.escape("LM28_TA_"))),
+    ("LM28-Prepare", re.compile(re.escape("LM28-Prepare"))),
+    ("lm28_from.txt", re.compile(re.escape("lm28_from.txt"))),
+    ("lm28_hist_copy", re.compile(re.escape("lm28_hist_copy"))),
 ]
 SCAN_SKIP_DIRS = {".git", "python", "data", "report", "teamdata", "__pycache__", ".ruff_cache",
                   ".wf", ".claude", "tests", "samples", "lm20_ref"}
 # 허용: lmname 의 옛 값 판별 상수(OLD_*) 정의 줄 · 역사 주석(필요할 때만 (상대경로, 줄 조각)으로 추가)
 OLD_CONST_FILE = os.path.join("core", "lmname.py")
+OLD_CONST_LINES = ("OLD_CDP_PORT =", "OLD_PROFILE =", "OLD_LM28_CDP_PORT =", "OLD_LM28_PROFILE =")
 HISTORY_ALLOW = []
 
 # (8) 배포 템플릿 noticeSenders 에 허용되는 일반어(조직 고유 계정명은 받은 사람이 자기 config.json 에)
@@ -50,10 +58,10 @@ GENERIC_NOTICE = {
     "unsubscribe", "mailer-daemon", "postmaster",
 }
 
-BAT_NAMES = ["LoadMonitor28-UI.bat", "LoadMonitor28.bat", "LoadMonitor28-팀취합.bat", "LoadMonitor28-팀서버.bat",
-             "LoadMonitor28-팀업로드.bat", "LoadMonitor28-팀서버주소.bat", "LoadMonitor28-수집진단.bat",
-             "LoadMonitor28-가동시간비교.bat", "LoadMonitor28-이동준비.bat", "LoadMonitor28-팀로드율재계산.bat",
-             "LoadMonitor28-강제종료.bat"]
+BAT_NAMES = ["LoadMonitor29-UI.bat", "LoadMonitor29.bat", "LoadMonitor29-팀취합.bat", "LoadMonitor29-팀서버.bat",
+             "LoadMonitor29-팀업로드.bat", "LoadMonitor29-팀서버주소.bat", "LoadMonitor29-수집진단.bat",
+             "LoadMonitor29-가동시간비교.bat", "LoadMonitor29-이동준비.bat", "LoadMonitor29-팀로드율재계산.bat",
+             "LoadMonitor29-강제종료.bat"]
 
 
 def _ops_files(exts=(".py", ".ps1", ".bat")):
@@ -90,7 +98,7 @@ class OldNamesGone(unittest.TestCase):
                 for label, rx in BANNED:
                     if not rx.search(ln):
                         continue
-                    if rel == OLD_CONST_FILE and ln.lstrip().startswith(("OLD_CDP_PORT =", "OLD_PROFILE =")):
+                    if rel == OLD_CONST_FILE and ln.lstrip().startswith(OLD_CONST_LINES):
                         continue
                     if any(rel == r and frag in ln for r, frag in HISTORY_ALLOW):
                         continue
@@ -112,14 +120,14 @@ class OldNamesGone(unittest.TestCase):
         left = [f for f in os.listdir(ROOT) if f.lower().endswith(".bat") and f.startswith("LoadMonitor24")]
         self.assertEqual(left, [])
 
-    def test_temp_names_have_lm28_prefix(self):
+    def test_temp_names_have_lm29_prefix(self):
         want = {
-            "LoadMonitor28.bat": ["lm28_from.txt", "lm28_to.txt"],
-            "LoadMonitor28-이동준비.bat": ["LM28-Prepare-Move.ps1"],
-            os.path.join("collect", "Get-PcOnHints.py"): ["lm28_hist_copy"],
-            os.path.join("tools", "Make-Package.ps1"): ["LM28pkg_", "'LoadMonitor28'", "LoadMonitor28_v1_"],
-            os.path.join("ui", "app.py"): ["LM28-Prepare-Move.ps1"],
-            "ruff.toml": ["LoadMonitor28-ruff_cache"],
+            "LoadMonitor29.bat": ["lm29_from.txt", "lm29_to.txt"],
+            "LoadMonitor29-이동준비.bat": ["LM29-Prepare-Move.ps1"],
+            os.path.join("collect", "Get-PcOnHints.py"): ["lm29_hist_copy"],
+            os.path.join("tools", "Make-Package.ps1"): ["LM29pkg_", "'LoadMonitor29'", "LoadMonitor29_v1_"],
+            os.path.join("ui", "app.py"): ["LM29-Prepare-Move.ps1"],
+            "ruff.toml": ["LoadMonitor29-ruff_cache"],
         }
         for rel, frags in want.items():
             txt = _boot.read_text(os.path.join(ROOT, rel))
@@ -128,7 +136,7 @@ class OldNamesGone(unittest.TestCase):
 
 
 class FolderHashAndPorts(unittest.TestCase):
-    """(2) 설치 폴더 해시 h6 · 포트 — LM28 에는 예약 작업·뮤텍스(샘플러)가 없다"""
+    """(2) 설치 폴더 해시 h6 · 포트 — LM29 에는 예약 작업·뮤텍스(샘플러)가 없다"""
 
     def test_fixed_path_h6(self):
         self.assertEqual(lmname.h6(FIXED_PATH), FIXED_H6)
@@ -144,16 +152,32 @@ class FolderHashAndPorts(unittest.TestCase):
         for k in ("TaskSampler", "TaskTeams", "MutexActivity", "MutexTeams", "TaskRegex"):
             self.assertNotIn(k, ps_names, k)
 
+    def test_ps_names_mirror_python(self):
+        """collect\\LmName.ps1 의 Short·Product·TmpPrefix 가 core\\lmname.py 와 같다(PowerShell 없이 글자로)"""
+        ps_names = _boot.read_text(os.path.join(ROOT, "collect", "LmName.ps1"))
+        for key, want in (("Short", lmname.SHORT), ("Product", lmname.PRODUCT), ("TmpPrefix", lmname.TMP_PREFIX)):
+            m = re.search(r"(?m)^\s*" + key + r"\s*=\s*'([^']*)'", ps_names)
+            self.assertIsNotNone(m, key)
+            self.assertEqual(m.group(1), want, key)
+
     def test_ui_ports_and_cdp(self):
-        self.assertEqual(lmname.UI_PORTS, range(9248, 9268))
-        self.assertEqual(lmname.CDP_PORT, 9533)
-        self.assertNotEqual(lmname.CDP_PORT, lmname.OLD_CDP_PORT)
-        self.assertNotIn(lmname.OLD_PROFILE, lmname.EDGE_PROFILE_NAME)
-        self.assertEqual(lmname.EDGE_PROFILE, os.path.join(ROOT, "data", "lm28_edge"))
+        self.assertEqual(lmname.UI_PORTS, range(9268, 9288))
+        self.assertEqual(lmname.CDP_PORT, 9543)
+        self.assertNotIn(lmname.CDP_PORT, lmname.OLD_CDP_PORTS)
+        self.assertEqual(lmname.OLD_CDP_PORTS, (lmname.OLD_CDP_PORT, lmname.OLD_LM28_CDP_PORT))
+        for old in lmname.OLD_PROFILES:
+            self.assertNotIn(old, lmname.EDGE_PROFILE_NAME)
+        self.assertEqual(lmname.EDGE_PROFILE, os.path.join(ROOT, "data", "lm29_edge"))
+        # LM28 과 한 PC 에 — 대시보드 대역(LM28 9248~9267)·%TEMP% 접두·환경변수·이름이 겹치지 않는다
+        self.assertFalse(set(lmname.UI_PORTS) & set(range(9248, 9268)))
+        self.assertNotIn(lmname.CDP_PORT, lmname.UI_PORTS)
+        self.assertEqual((lmname.PRODUCT, lmname.SHORT, lmname.BAT_PREFIX), ("LoadMonitor29", "LM29", "LoadMonitor29"))
+        self.assertEqual(lmname.TMP_PREFIX, "lm29_")
+        self.assertEqual(lmname.TEAM_ADDR_ENV, ("LM29_TA_HOST", "LM29_TA_PORT"))
         app = _boot.read_text(os.path.join(ROOT, "ui", "app.py"))
         self.assertIn("for p in lmname.UI_PORTS", app)
-        self.assertIn("<title>LoadMonitor28</title>", app)
-        self.assertIn("<h1>LoadMonitor28<small", app)
+        self.assertIn("<title>LoadMonitor29</title>", app)
+        self.assertIn("<h1>LoadMonitor29<small", app)
 
     def test_edge_kill_scoped_to_this_root(self):
         app = _boot.read_text(os.path.join(ROOT, "ui", "app.py"))
@@ -162,11 +186,11 @@ class FolderHashAndPorts(unittest.TestCase):
         self.assertIn("lmname.edge_profile(ROOT)", body)
         self.assertIn(".Contains(", body)
         pm = _boot.read_text(os.path.join(ROOT, "tools", "Prepare-Move.ps1"))
-        self.assertIn("Join-Path $Root 'data\\lm28_edge'", pm)
+        self.assertIn("Join-Path $Root 'data\\lm29_edge'", pm)
         mp = _boot.read_text(os.path.join(ROOT, "tools", "Make-MovePack.py"))
         self.assertIn("lmname.edge_profile(ROOT)", mp)
         sc = _boot.read_text(os.path.join(ROOT, "자가점검.py"))
-        self.assertIn('os.path.join(ROOT, d, "lm28_edge")', sc)
+        self.assertIn('os.path.join(ROOT, d, "lm29_edge")', sc)
 
 
 class TeamCompatUnchanged(unittest.TestCase):
@@ -179,32 +203,35 @@ class TeamCompatUnchanged(unittest.TestCase):
         self.assertEqual(teamaddr.FILE_NAME, "team_server.json")
         self.assertEqual(teamaddr.LEGACY_KEY, "teamServerUrl")
 
-    def test_env_names_lm28(self):
+    def test_env_names_lm29(self):
         ta = _boot.read_text(os.path.join(ROOT, "core", "teamaddr.py"))
-        bat = _boot.read_text(os.path.join(ROOT, "LoadMonitor28-팀서버주소.bat"))
+        bat = _boot.read_text(os.path.join(ROOT, "LoadMonitor29-팀서버주소.bat"))
         for v in lmname.TEAM_ADDR_ENV:
             self.assertIn(v, ta)
             self.assertIn(f'set /p "{v}=', bat)
-        self.assertNotIn("LM24_TA_", bat)
-        self.assertNotIn('"LM24_TA_HOST"', ta)
+        for old in ("LM24_TA_", "LM28_TA_"):
+            self.assertNotIn(old, bat)
+            self.assertNotIn(f'"{old}HOST"', ta)
         self.assertIn("core\\teamaddr.py --set-env", bat)
 
-    def test_set_env_reads_lm28_names_only(self):
-        """bat → teamaddr --set-env 경로를 프로세스 없이(main 직접 호출) — LM28_TA_* 만 읽는다"""
+    def test_set_env_reads_lm29_names_only(self):
+        """bat → teamaddr --set-env 경로를 프로세스 없이(main 직접 호출) — LM29_TA_* 만 읽는다(LM24·LM28 잔여값은 무시)"""
         import teamaddr
-        keys = ("LM24_TA_HOST", "LM24_TA_PORT") + tuple(lmname.TEAM_ADDR_ENV)
+        keys = ("LM24_TA_HOST", "LM24_TA_PORT", "LM28_TA_HOST", "LM28_TA_PORT") + tuple(lmname.TEAM_ADDR_ENV)
         saved = {k: os.environ.get(k) for k in keys}
         try:
-            with tempfile.TemporaryDirectory(prefix="lm28_t0_") as d:
+            with tempfile.TemporaryDirectory(prefix="lm29_t0_") as d:
                 os.makedirs(os.path.join(d, "config"))
                 for k in keys:
                     os.environ.pop(k, None)
                 os.environ["LM24_TA_HOST"] = "10.7.7.7"            # 옛 판 bat 의 잔여값 — 읽으면 안 된다
+                os.environ["LM28_TA_HOST"] = "10.8.8.8"            # 같은 창에서 돌린 LM28 bat 의 잔여값도
+                os.environ["LM28_TA_PORT"] = "9412"
                 out = io.StringIO()
                 with contextlib.redirect_stdout(out):
                     rc = teamaddr.main(["--root", d, "--set-env", "--json"])
                 self.assertEqual(rc, 0)
-                self.assertFalse(os.path.exists(os.path.join(d, "config", teamaddr.FILE_NAME)), "LM24_TA_* 를 읽었다")
+                self.assertFalse(os.path.exists(os.path.join(d, "config", teamaddr.FILE_NAME)), "LM24·LM28 _TA_* 를 읽었다")
                 os.environ[lmname.TEAM_ADDR_ENV[0]] = "http://10.9.9.9:9411"
                 with contextlib.redirect_stdout(out):
                     rc = teamaddr.main(["--root", d, "--set-env", "--json"])
@@ -239,18 +266,18 @@ class BatRenameTogether(unittest.TestCase):
         m = re.search(r"-match '\^\((LoadMonitor\d+ 필수)\|", mp)
         self.assertIsNotNone(m, "Make-Package 머리말 정규식을 못 찾음")
         self.assertTrue(lines[0].startswith(m.group(1)), (lines[0], m.group(1)))
-        self.assertTrue(lines[0].startswith("LoadMonitor28 필수"))
+        self.assertTrue(lines[0].startswith("LoadMonitor29 필수"))
         body = "\n".join(lines)
         for b in BAT_NAMES:
             self.assertIn(b, body, f"FILES.txt 에 {b} 없음")
 
     def test_edit_bat_exists(self):
         import teamaddr
-        self.assertEqual(teamaddr.EDIT_BAT, "LoadMonitor28-팀서버주소.bat")
+        self.assertEqual(teamaddr.EDIT_BAT, "LoadMonitor29-팀서버주소.bat")
         self.assertTrue(os.path.isfile(os.path.join(ROOT, teamaddr.EDIT_BAT)))
         ct = _boot.read_text(os.path.join(ROOT, "tools", "check_teamaddr.py"))
         self.assertIn("TA.EDIT_BAT", ct)
-        self.assertIn('"%LM28_TA_HOST%"', ct)
+        self.assertIn('"%LM29_TA_HOST%"', ct)
 
     def test_bat_titles(self):
         for b in BAT_NAMES:
@@ -258,7 +285,7 @@ class BatRenameTogether(unittest.TestCase):
             self.assertNotIn("LoadMonitor24", txt, b)
             m = re.search(r"(?im)^title (.+)$", txt)
             self.assertIsNotNone(m, b)
-            self.assertTrue(m.group(1).startswith("LoadMonitor28"), (b, m.group(1)))
+            self.assertTrue(m.group(1).startswith("LoadMonitor29"), (b, m.group(1)))
 
 
 class SelfExclusion(unittest.TestCase):
@@ -279,7 +306,7 @@ class SelfExclusion(unittest.TestCase):
         self.assertEqual(len(set(pats.values())), 1, pats)
         rx = re.compile(next(iter(pats.values())), re.IGNORECASE)
         for p in (r"D:\x\loadmon28\report\a.html", r"C:\LoadMonitor24\data\b.csv",
-                  r"E:\tools\LoadMonitor28_v1\python\x.py", r"D:\dev\loadmon27\teamdata\a.json"):
+                  r"E:\tools\LoadMonitor29_v1\python\x.py", r"D:\dev\loadmon27\teamdata\a.json"):
             self.assertIsNotNone(rx.search(p.lower()), p)
         for p in (r"D:\work\loadcase\a.xlsx", r"D:\x\loadmon28\core\extract.py", r"D:\loadmon\data\a.csv"):
             self.assertIsNone(rx.search(p.lower()), p)
@@ -320,25 +347,35 @@ class Encoding(unittest.TestCase):
 
 
 class EdgeConfigOverride(unittest.TestCase):
-    """(7) copilot_auto 실효 설정 — 옛 포트·옛 프로필을 LM28 값으로 덮는다 · 배포 설정의 포트·팀즈 웹 상한"""
+    """(7) copilot_auto 실효 설정 — 옛 판(LM24·LM28) 포트·프로필을 LM29 값으로 덮는다 · 배포 설정의 포트·팀즈 웹 상한"""
 
     def test_old_values_overridden(self):
         import copilot_auto
         self.assertEqual(copilot_auto.DEFAULTS["port"], lmname.CDP_PORT)
         self.assertEqual(copilot_auto.DEFAULTS["profileDir"], lmname.edge_profile(copilot_auto.ROOT))
-        with tempfile.TemporaryDirectory(prefix="lm28_t0_") as d:
+        with tempfile.TemporaryDirectory(prefix="lm29_t0_") as d:
             cp = os.path.join(d, "config.json")
+            # LM24 의 config.json 을 옮겨 온 경우, LM28 의 config.json(포트 9533 · data\lm28_edge)을 옮겨 온 경우
+            for old_port, old_prof in ((lmname.OLD_CDP_PORT, "D:\\old\\data\\" + lmname.OLD_PROFILE),
+                                       (lmname.OLD_LM28_CDP_PORT, "D:\\LoadMonitor28\\data\\" + lmname.OLD_LM28_PROFILE)):
+                with open(cp, "w", encoding="utf-8") as f:
+                    json.dump({"copilotAuto": {"port": old_port, "profileDir": old_prof, "model": "X"}}, f)
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    cfg = copilot_auto.load_cfg(cp)
+                self.assertEqual(cfg["port"], 9543, old_port)
+                self.assertTrue(cfg["profileDir"].lower().endswith("\\data\\lm29_edge"), cfg["profileDir"])
+                self.assertEqual(cfg["model"], "X")
+                self.assertIn("경고", err.getvalue())
+                self.assertIn(f"port {old_port}→9543", err.getvalue())
+                self.assertIn("LM29 값으로", err.getvalue())
+            # 프로필 칸이 비어 있는(기본값을 쓰는) LM28 config.json — 포트만 덮는다
             with open(cp, "w", encoding="utf-8") as f:
-                json.dump({"copilotAuto": {"port": lmname.OLD_CDP_PORT,
-                                           "profileDir": "D:\\old\\data\\" + lmname.OLD_PROFILE,
-                                           "model": "X"}}, f)
+                json.dump({"copilotAuto": {"port": lmname.OLD_LM28_CDP_PORT}}, f)
             err = io.StringIO()
             with contextlib.redirect_stderr(err):
                 cfg = copilot_auto.load_cfg(cp)
-            self.assertEqual(cfg["port"], 9533)
-            self.assertTrue(cfg["profileDir"].lower().endswith("\\data\\lm28_edge"), cfg["profileDir"])
-            self.assertEqual(cfg["model"], "X")
-            self.assertIn("경고", err.getvalue())
+            self.assertEqual((cfg["port"], cfg["profileDir"]), (9543, lmname.edge_profile(copilot_auto.ROOT)))
             with open(cp, "w", encoding="utf-8") as f:
                 json.dump({"copilotAuto": {"port": 9555, "profileDir": "D:\\mine\\edge"}}, f)
             err = io.StringIO()
@@ -347,15 +384,17 @@ class EdgeConfigOverride(unittest.TestCase):
             self.assertEqual((cfg["port"], cfg["profileDir"]), (9555, "D:\\mine\\edge"))   # 사용자 값은 그대로
             self.assertEqual(err.getvalue(), "")
         self.assertTrue(lmname.is_old_edge(port=lmname.OLD_CDP_PORT))
+        self.assertTrue(lmname.is_old_edge(port=lmname.OLD_LM28_CDP_PORT))
         self.assertTrue(lmname.is_old_edge(profile_dir="X:\\" + lmname.OLD_PROFILE.upper()))
-        self.assertFalse(lmname.is_old_edge(port=9533, profile_dir=lmname.EDGE_PROFILE))
+        self.assertTrue(lmname.is_old_edge(profile_dir="X:\\LoadMonitor28\\data\\" + lmname.OLD_LM28_PROFILE.upper()))
+        self.assertFalse(lmname.is_old_edge(port=lmname.CDP_PORT, profile_dir=lmname.EDGE_PROFILE))
 
     def test_config_port_and_teams_web(self):
         for name in ("config.default.json", "config.json"):
             if not os.path.isfile(os.path.join(ROOT, "config", name)):
                 continue
             c = _cfg(name)
-            self.assertEqual(c["copilotAuto"]["port"], 9533, name)
+            self.assertEqual(c["copilotAuto"]["port"], lmname.CDP_PORT, name)
             self.assertEqual(c.get("teamsWebMaxChats"), 200, name)
 
 
@@ -386,7 +425,8 @@ class ConfigTemplate(unittest.TestCase):
         self.assertEqual(c["episodeTop"], 50)
         ca = c["copilotAuto"]
         self.assertEqual((ca["inProcess"], ca["requireWorkAccount"], ca["keepEdgeOpen"]), (True, True, False))
-        self.assertEqual(c["agentic"], {"domainHint": ""})
+        self.assertNotIn("agentic", c)                                  # LM29 — Agentic 매칭을 뺐다(flow 는 기본값 0.8)
+        self.assertNotIn("agenticMaxWork", ca)
 
     def test_dev_copy_only_four_keys(self):
         p = os.path.join(ROOT, "config", "config.json")
@@ -410,6 +450,7 @@ class PsLmName(unittest.TestCase):
         self.assertEqual(r["norm"], lmname.norm_root(FIXED_PATH))
         self.assertEqual(r["names_h6"], lmname.names(FIXED_PATH)["H6"])
         self.assertEqual(r["root_h6"], lmname.H6, "설치 폴더(한글 경로) 해시가 Python 과 다르다")
+        self.assertEqual((r["short"], r["product"], r["tmp_prefix"]), (lmname.SHORT, lmname.PRODUCT, lmname.TMP_PREFIX))
 
 
 if __name__ == "__main__":

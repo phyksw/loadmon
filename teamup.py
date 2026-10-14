@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 r"""
-teamup.py — 분석 결과를 팀 저장소로 올린다 (LoadMonitor28: 묶음 '대기' → [분석 실행] 끝 자동 보고 → 실패면 버튼)
+teamup.py — 분석 결과를 팀 저장소로 올린다 (LoadMonitor29: 묶음 '대기' → [분석 실행] 끝 자동 보고 → 실패면 버튼)
 
 팀 서버는 특정 망에서만 닿는다. 분석은 아무 망에서나 하니 분석 끝에 보내면 실패가 잦고,
 LM19 이전에는 그 실패가 조용히 묻혀 결과가 사라졌다(실측). 그래서 이렇게 나눈다:
@@ -17,7 +17,7 @@ LM19 이전에는 그 실패가 조용히 묻혀 결과가 사라졌다(실측).
   python teamup.py --upload [--host <IP>] [--port <번호>]       대기분 전부 전송
       (주소는 팀 서버 주소 설정 config\team_server.json — core\teamaddr.py 가 읽는다.
        --host·--port·--url 은 이번 한 번만 쓰는 값이고 설정은 바꾸지 않는다 —
-       설정을 바꾸는 곳은 LoadMonitor28-팀서버주소.bat 하나)
+       설정을 바꾸는 곳은 LoadMonitor29-팀서버주소.bat 하나)
   python teamup.py --to-folder "\\서버\공유\LoadMonitor"          공유폴더로 대신 저장
       (개인 HTML 보고서 분석리포트_<기간>.html·보고서_<기간>.html 이 있으면
        <폴더>\개인리포트\<이름>_<파일명> 으로 함께 복사 — 팀 서버 묶음에는 넣지 않는다)
@@ -29,7 +29,7 @@ LM19 이전에는 그 실패가 조용히 묻혀 결과가 사라졌다(실측).
 LM28: signals 는 G4 팀 반출 변환(core\privacy.team_export_rows — export.py 와 같은 함수)을 거친다 — who 는
 사내|고객사|협력사|외부 로 접고, text 는 다시 정제하고, 고위험 잔여 행과 flag 열은 빼고, 이 PC·본인 식별자(카나리아)가
 남은 파일은 보내지 않는다. 묶음을 만들 때(build)와 보내기 직전(upload_one) 두 번 건다(다시 걸어도 같은 결과).
-member 에는 판 표식 lm_ver='LM28' 을 추가 키로 싣는다(기존 키·파일명·measure·coverage·cfg_used 는 그대로).
+member 에는 판 표식 lm_ver(LM_VER — 'LM29')를 추가 키로 싣는다(기존 키·파일명·measure·coverage·cfg_used 는 그대로).
 """
 import io
 import json
@@ -50,7 +50,7 @@ SENT = os.path.join(REPORT, "upload_sent")
 # 대시보드는 이 파일로 실패 배너(다음 성공까지)와 실행 1회당 알림 1번을 정한다(at 이 그 열쇠)
 REPORT_STATUS = "team_report_status.json"
 MAX_BYTES = 30 * 1024 * 1024        # 서버 상한과 같다 — 넘으면 보내기 전에 알려 준다
-LM_VER = "LM28"                     # member.lm_ver — 묶음을 만든 판(추가 키만, 기존 키·파일명 불변)
+LM_VER = "LM29"                     # member.lm_ver — 묶음을 만든 판(추가 키만, 기존 키·파일명 불변)
 if __name__ == "__main__":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, errors="replace", encoding=(
         (sys.stdout.encoding or "utf-8") if sys.stdout.isatty() else "utf-8"))  # 콘솔(bat)=콘솔 코드페이지 · 파이프(UI)=utf-8
@@ -145,7 +145,8 @@ def longp(p):
 # ── 묶음 만들기 ──────────────────────────────────────────────────────────────
 FILE_NAMES = ("mm_rows_{t}.csv", "mm_rows_{t}_refined.csv", "signals_{t}.csv",
               "mm_meta_{t}.json", "pivots_{t}.json", "ai_narratives_{t}.json",
-              "entities_{t}.json", "agentic_{t}.json", "workflow_{t}.json")
+              "entities_{t}.json", "workflow_{t}.json")
+# LM29: agentic_{t}.json 은 더 만들지 않아 묶지 않는다(옮겨 온 옛 파일이 다시 올라가지 않게) — 받는 쪽 NAME_OK 는 그대로.
 # freeze.py 가 만드는 개인 HTML 보고서 — 묶음(files)·팀 서버에는 넣지 않는다(서버 NAME_OK 불변:
 # 업로드 HTML = 서버 origin 의 임의 스크립트, 얼린 보고서는 메일·회의 제목 원문 포함).
 # 공유폴더 저장(--to-folder) 때만 <공유폴더>\개인리포트\<이름>_<파일명> 으로 복사한다 —
@@ -401,7 +402,7 @@ def build(cfg, d0, d1):
               "host": os.environ.get("COMPUTERNAME", ""),
               # 누가·언제·어디서 — 팀장이 "이 숫자는 누구 것이고 언제 것인가"를 묻는다(사용자 요청)
               "analyzed_at": time.strftime("%Y-%m-%d %H:%M"),
-              # LM28 판 표식 — 추가 키라 LM24 서버·취합은 그대로 받는다(team_recalc 가 'LM28(v3)' 로 표시).
+              # 판 표식(LM28 부터) — 추가 키라 LM24 서버·취합은 그대로 받는다(team_recalc 가 'LM29(v3)' 로 표시).
               # measure·coverage·cfg_used 키는 바꾸지 않는다(팀 호환 불변 — 없으면 'LM20(추정)' 으로 오분류된다)
               "lm_ver": LM_VER}
     os.makedirs(PENDING, exist_ok=True)
@@ -493,7 +494,7 @@ def ping(url, timeout=4.0):
     """이 망에서 서버에 닿는가 — 빠르게 확인한다(응답이 오면 도달로 본다)"""
     if not url:
         return {"ok": False, "error": "팀 서버 주소가 비었거나 형식이 틀렸습니다 — "
-                                      "LoadMonitor28-팀서버주소.bat 에서 서버 IP·포트를 저장하세요"}
+                                      "LoadMonitor29-팀서버주소.bat 에서 서버 IP·포트를 저장하세요"}
     t0 = time.time()
     try:
         req = urllib.request.Request(url + "/api/team", method="GET")
@@ -896,7 +897,7 @@ def main():
         if not url:
             _out(js, {"ok": False, "error": "팀 서버 주소가 비었거나 형식이 틀렸습니다", "no_url": True,
                       "pending": len(list_pending())},
-                 "[teamup] 팀 서버 주소가 비었거나 형식이 틀렸습니다 — LoadMonitor28-팀서버주소.bat 에서 "
+                 "[teamup] 팀 서버 주소가 비었거나 형식이 틀렸습니다 — LoadMonitor29-팀서버주소.bat 에서 "
                  "서버 IP·포트를 저장하세요")
             return 1
         pg = ping(url)

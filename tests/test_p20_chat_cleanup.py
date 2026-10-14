@@ -245,7 +245,7 @@ class _Base(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory(prefix="lm28_p20_")
         self.tmp = self._tmp.name
-        self.cfg = dict(ca.DEFAULTS, profileDir=os.path.join(self.tmp, "data", "lm28_edge"), port=9533)
+        self.cfg = dict(ca.DEFAULTS, profileDir=os.path.join(self.tmp, "data", "lm29_edge"), port=9543)
         os.makedirs(os.path.dirname(self.cfg["profileDir"]), exist_ok=True)
         self.traces = []
         self.real_load_cfg = ca.load_cfg                                   # 설정 읽기 시험만 진짜를 쓴다
@@ -578,7 +578,7 @@ class Ladder(_Base):
             ca._chat_after_send(cdp, cfg, prompt, own)
             return dict(replies.pop(0))
         for p in (mock.patch.object(ca, "ensure_edge", lambda cfg: "reused"),
-                  mock.patch.object(ca, "find_tab", lambda cfg: "ws://127.0.0.1:9533/devtools/page/c"),
+                  mock.patch.object(ca, "find_tab", lambda cfg: "ws://127.0.0.1:9543/devtools/page/c"),
                   mock.patch.object(ca, "CDP", lambda ws: page),
                   mock.patch.object(ca, "new_chat", lambda cdp, cfg: (cdp.fresh(), "새 채팅 버튼")[1]),
                   mock.patch.object(ca, "_roundtrip_once", once)):
@@ -623,7 +623,7 @@ class CloseEdge(_Base):
         self.page = page = Page()
         self.a = self.own(page)
         page.events.clear()
-        self.assertTrue(ca._write_json(ca.owner_path(self.cfg), {"pid": 1, "port": 9533, "browser": "/devtools/browser/aaa"}))
+        self.assertTrue(ca._write_json(ca.owner_path(self.cfg), {"pid": 1, "port": 9543, "browser": "/devtools/browser/aaa"}))
         self.alive = alive = {"v": True}
         self.closes = closes = []
 
@@ -648,9 +648,9 @@ class CloseEdge(_Base):
                 return {"webSocketDebuggerUrl": f"ws://127.0.0.1:{port}/devtools/browser/aaa"}
             if path == "/json":
                 return [{"type": "page", "id": "o", "url": "https://outlook.office.com/mail/",
-                         "webSocketDebuggerUrl": "ws://127.0.0.1:9533/devtools/page/o"},
+                         "webSocketDebuggerUrl": "ws://127.0.0.1:9543/devtools/page/o"},
                         {"type": "page", "id": "c", "url": page.url(),
-                         "webSocketDebuggerUrl": "ws://127.0.0.1:9533/devtools/page/c"}]
+                         "webSocketDebuggerUrl": "ws://127.0.0.1:9543/devtools/page/c"}]
             return {}
 
         def cdp(ws):

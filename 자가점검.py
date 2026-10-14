@@ -8,18 +8,17 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, errors="replace", encoding=(
         (sys.stdout.encoding or "utf-8") if sys.stdout.isatty() else "utf-8"))  # 콘솔(bat)=콘솔 코드페이지 · 파이프(UI)=utf-8
 ROOT = os.path.dirname(os.path.abspath(__file__))
 NEED = [
-    "LoadMonitor28-UI.bat",
-    "LoadMonitor28.bat",
-    "LoadMonitor28-팀취합.bat",
-    "LoadMonitor28-팀서버.bat",
-    "LoadMonitor28-팀업로드.bat",
-    "LoadMonitor28-팀서버주소.bat",
-    "LoadMonitor28-수집진단.bat",
-    "LoadMonitor28-가동시간비교.bat",
-    "LoadMonitor28-이동준비.bat",
-    "LoadMonitor28-팀로드율재계산.bat",
-    "LoadMonitor28-강제종료.bat",
-    "agentic.py",
+    "LoadMonitor29-UI.bat",
+    "LoadMonitor29.bat",
+    "LoadMonitor29-팀취합.bat",
+    "LoadMonitor29-팀서버.bat",
+    "LoadMonitor29-팀업로드.bat",
+    "LoadMonitor29-팀서버주소.bat",
+    "LoadMonitor29-수집진단.bat",
+    "LoadMonitor29-가동시간비교.bat",
+    "LoadMonitor29-이동준비.bat",
+    "LoadMonitor29-팀로드율재계산.bat",
+    "LoadMonitor29-강제종료.bat",
     "freeze.py",
     "team_report.py",
     "flow.py",
@@ -67,7 +66,6 @@ NEED = [
     "core/meetnote.py",
     "config/config.json",
     "config/config.default.json",
-    "config/agentic_tasks.json",
     "core/board.py",
     "core/extract.py",
     "core/pc_ledger.py",
@@ -94,7 +92,7 @@ NEED = [
     "core/projmap.py",
     "docs/설정가이드.md",
     "docs/사용안내.html",
-    "docs/현장점검_LM28.md",
+    "docs/현장점검_LM29.md",
     "tools/copilot_auto.py",
     "tools/pc_hours_compare.py",
     "tools/lm20_ref/Get-PcOnHistory.ps1.txt",
@@ -106,8 +104,8 @@ NEED = [
     "tools/Make-Package.ps1",
     "tools/Make-MovePack.py",
     "tools/Prepare-Move.ps1",
-    "tools/Stop-LM28.ps1",
-    "tools/stop_lm28.py",
+    "tools/Stop-LM29.ps1",
+    "tools/stop_lm29.py",
     "tools/ps_launch.py",
     "tools/update_files.py",
     "tools/lm_fixenc.py",
@@ -121,7 +119,7 @@ if miss:
     for m in miss:
         print("    " + m)
     sys.exit(1)
-print("[OK] 전부 있습니다. LoadMonitor28-UI.bat 을 실행하세요.")
+print("[OK] 전부 있습니다. LoadMonitor29-UI.bat 을 실행하세요.")
 
 
 # ── git 실행 파일 ────────────────────────────────────────────────────────
@@ -204,7 +202,7 @@ if leak:
         extra = ""
         if d == "teamdata":
             extra = "  <- 팀원들의 분석 결과 포함, 팀 밖 공유 금지"
-        if d == "data" and os.path.isdir(os.path.join(ROOT, d, "lm28_edge")):     # 이 설치본의 전용 Edge 프로필
+        if d == "data" and os.path.isdir(os.path.join(ROOT, d, "lm29_edge")):     # 이 설치본의 전용 Edge 프로필
             extra = "  <- Edge 로그인 정보 포함, 절대 공유 금지"
         print(f"    {d}\\  파일 {n:,}개{extra}")
     print("    (본인 PC 에서 쓰는 건 정상입니다. 배포본에만 없으면 됩니다.)")
@@ -230,7 +228,7 @@ if caches:
 
 # ── 팀 서버 주소 (v5) ──────────────────────────────────────────────────────
 # 폴더를 옮기거나 나눠 받은 뒤 '분석 결과가 어디로 올라가는지'를 바로 확인한다 — 서버 IP·포트는 설치 폴더의
-# config\team_server.json 에 있어 폴더와 함께 다닌다(바꾸는 곳은 LoadMonitor28-팀서버주소.bat 하나).
+# config\team_server.json 에 있어 폴더와 함께 다닌다(바꾸는 곳은 LoadMonitor29-팀서버주소.bat 하나).
 try:
     import importlib.util
     _spec = importlib.util.spec_from_file_location("lm_teamaddr", os.path.join(ROOT, "core", "teamaddr.py"))

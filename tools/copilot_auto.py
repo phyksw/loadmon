@@ -49,7 +49,7 @@ copilot_auto.py — 사람 개입 없는 M365 Copilot 연동 (Edge DevTools Prot
     산출물에는 phase 로 '스텁 판정'임이 드러난다. 배포 환경에서는 이 변수를 두지 말 것.
 
 LM28 — 우리 Edge 만 다루고, 개인 계정·정책·잠금을 먼저 본다:
-  · ensure_edge 가 띄우면 data\\lm28_edge\\owner.json{pid,port,t,root,browser} 를 쓴다. close_own_edge 는 그 표식이 있고
+  · ensure_edge 가 띄우면 data\\lm29_edge\\owner.json{pid,port,t,root,browser} 를 쓴다. close_own_edge 는 그 표식이 있고
     브라우저 ID 가 같을 때만 CDP Browser.close 를 보낸다(taskkill 없음 · keepEdgeOpen·로그인 대기 중이면 두기).
   · Edge 는 CREATE_BREAKAWAY_FROM_JOB 로 띄운다 — 단계의 Job 정리에 휩쓸리지 않아 한 실행에 한 번만 뜬다.
     상위 Job 이 이탈을 막으면(ERROR_ACCESS_DENIED) 플래그 없이 1회.
@@ -96,10 +96,10 @@ ERROR_ACCESS_DENIED = 5                  # 상위 Job 이 이탈(BREAKAWAY_OK)�
 _sleep = time.sleep                      # 시험이 대기를 0 으로 바꿀 수 있게(Edge 수명주기 함수만)
 if os.path.join(ROOT, "core") not in sys.path:
     sys.path.insert(0, os.path.join(ROOT, "core"))
-import lmname  # noqa: E402  — LM28 이름 단일원(CDP 포트·전용 Edge 프로필)
+import lmname  # noqa: E402  — LM29 이름 단일원(CDP 포트·전용 Edge 프로필)
 
 # ── 설정 (config.json 의 copilotAuto 로 덮어쓰기 가능) ──
-# 포트·프로필은 LM24 와 다르게 둔다(9533 · data\lm28_edge) — 같은 PC 의 LM24 Edge 를 재사용·조종하지 않게.
+# 포트·프로필은 LM24·LM28 과 다르게 둔다(lmname.CDP_PORT · data\lm29_edge) — 같은 PC 의 LM24·LM28 Edge 를 재사용·조종하지 않게.
 DEFAULTS = {
     "url": "https://m365.cloud.microsoft/chat",
     "port": lmname.CDP_PORT,
@@ -285,12 +285,12 @@ def load_cfg(cfg_path=None):
                     if v or v is False or (k in KEEP_FALSY and v is not None and v != "")})
     except Exception:
         pass
-    # LM24 의 config.json 을 그대로 옮겨 온 경우(옛 포트·옛 프로필) — lmname 값이 우선한다.
+    # LM24·LM28 의 config.json 을 그대로 옮겨 온 경우(옛 포트·옛 프로필) — lmname 값이 우선한다.
     # 경고는 stderr 로 1줄(stdout 은 결과 JSON 한 건 계약) — 인프로세스 왕복은 이 함수를 자주 부르므로 프로세스당 1회.
     fixed = lmname.fix_edge_cfg(cfg, ROOT)
     if fixed:
         _notice(f"CFG-OLD|{cfg_path or ''}|{','.join(fixed)}",
-                "경고: config 의 옛 판 값을 LM28 값으로 바꿔 씁니다 — " + ", ".join(fixed), label="")
+                f"경고: config 의 옛 판 값을 {lmname.SHORT} 값으로 바꿔 씁니다 — " + ", ".join(fixed), label="")
     return cfg
 
 
@@ -325,7 +325,7 @@ REASON_HINT = {
     R_EDGEBUSY: "다른 작업(웹 메일·팀즈 읽기·AI 연결 진단 등)이 전용 Edge 를 쓰고 있습니다 — 그 작업이 끝난 뒤 다시 실행하세요",
     R_EDGEFOREIGN: "디버그 포트 {port} 를 다른 프로그램의 Edge 가 쓰고 있습니다 — 그 Edge 를 닫거나 "
                    "config\\config.json 의 copilotAuto.port 를 바꾸세요(우리 것이 아닌 브라우저는 조종하지 않습니다)",
-    R_EDGELAUNCH: "Edge 를 디버그 포트로 띄우지 못했습니다 — 열린 전용 Edge 창(data\\lm28_edge)을 닫고 다시 실행하세요",
+    R_EDGELAUNCH: "Edge 를 디버그 포트로 띄우지 못했습니다 — 열린 전용 Edge 창(data\\lm29_edge)을 닫고 다시 실행하세요",
     R_PERSONAL: "전용 Edge 가 개인 Microsoft 계정 화면(copilot.microsoft.com·login.live.com 등)입니다 — 업무 자료는 "
                 "보내지 않았습니다. 전용 Edge 창에서 회사(조직) 계정으로 로그인하세요",
     R_ACCOUNT: "전용 Edge 가 업무용 Copilot(m365.cloud.microsoft) 화면에 머물지 않아 계정 종류를 확인할 수 없습니다 — "

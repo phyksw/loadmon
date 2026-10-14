@@ -59,7 +59,7 @@ class PeriodChips(unittest.TestCase):
         self.assertIsNone(qr("2026-10-07", "zz"))
 
     def test_bat_menu_has_quarters(self):
-        bat = _read("LoadMonitor28.bat", "cp949")
+        bat = _read("LoadMonitor29.bat", "cp949")
         for k in ("q1", "q2", "q3", "q4", "h1", "h2"):
             self.assertIn(f"DAYS={k}", bat)
 
@@ -67,7 +67,7 @@ class PeriodChips(unittest.TestCase):
 class TeamCompat(unittest.TestCase):
     def test_member_carries_lm_ver(self):
         import teamup
-        self.assertEqual(teamup.LM_VER, "LM28")
+        self.assertEqual(teamup.LM_VER, "LM29")
         self.assertIn('"lm_ver": LM_VER', _read("teamup.py"))
 
     def test_recalc_labels_lm28(self):
@@ -94,12 +94,12 @@ class TeamCompat(unittest.TestCase):
 
     def test_team_server_address_names(self):
         import teamaddr
-        self.assertEqual(teamaddr.EDIT_BAT, "LoadMonitor28-팀서버주소.bat")
+        self.assertEqual(teamaddr.EDIT_BAT, "LoadMonitor29-팀서버주소.bat")
         self.assertEqual((teamaddr.DEFAULT_PORT,), (9310,))                       # 팀 호환 — 기본 포트 불변
-        bat = _read("LoadMonitor28-팀서버주소.bat", "cp949")
-        self.assertIn("LM28_TA_HOST", bat)
-        self.assertIn("LM28_TA_PORT", bat)
-        self.assertNotIn("%LM28_TA_HOST%", bat)                                   # 입력값을 % 확장으로 끼우지 않는다
+        bat = _read("LoadMonitor29-팀서버주소.bat", "cp949")
+        self.assertIn("LM29_TA_HOST", bat)
+        self.assertIn("LM29_TA_PORT", bat)
+        self.assertNotIn("%LM29_TA_HOST%", bat)                                   # 입력값을 % 확장으로 끼우지 않는다
 
 
 class Wording(unittest.TestCase):

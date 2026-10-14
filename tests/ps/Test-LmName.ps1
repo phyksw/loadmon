@@ -13,4 +13,7 @@ return @{
     norm        = (Get-LmNormRoot $p)
     names_h6    = $nm.H6
     root_h6     = $rn.H6
+    short       = $nm.Short
+    product     = $nm.Product
+    tmp_prefix  = $nm.TmpPrefix
 }

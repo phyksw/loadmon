@@ -7,7 +7,7 @@ r"""tests\test_p21_close_stop.py — 창을 닫으면 작업도 멈춘다 · 강
       감시 루프가 'exit' 에서 정리 함수를 부른다 · 정리(ui_close_exit)가 [중지]와 같은 길 + last_run.json '중단(창 닫힘)'
   (3) 콘솔 창 닫기 — proc.console_event·kill_all·run_within, app.console_close_cleanup·run.console_close(빠른 Edge 닫기 tidy=False ·
       예외 삼킴 · 로그인 대기면 Edge 를 둔다)
-  (4) 파일 — 새 bat(CP949·CRLF·BOM 없음) · UI·팀취합 bat 은 오류일 때만 멈춘다 · Stop-LM28.ps1(UTF-8 BOM·CRLF·묻지 않음) ·
+  (4) 파일 — 새 bat(CP949·CRLF·BOM 없음) · UI·팀취합 bat 은 오류일 때만 멈춘다 · Stop-LM29.ps1(UTF-8 BOM·CRLF·묻지 않음) ·
       화면 스크립트 배선 · 설정 uiAutoExit · 자가점검 NEED
   (5) --ps: Select-LmTargets(가짜 프로세스 목록) — 이 폴더 / 이웃 폴더 / LM24 / 같은 파일 이름 · 팀 서버 둠·포함 · 전용/사람 Edge ·
       자손 · PID 재사용 · 자기 줄기
@@ -336,14 +336,14 @@ class Files(unittest.TestCase):
         return b.decode("cp949")
 
     def test_force_stop_bat(self):
-        s = self._bat("LoadMonitor28-강제종료.bat")
+        s = self._bat("LoadMonitor29-강제종료.bat")
         for frag in (">nul chcp 949", 'cd /d "%~dp0"', "powershell -NoProfile -ExecutionPolicy Bypass -File",
-                     "tools\\Stop-LM28.ps1", "%*", "pause"):
+                     "tools\\Stop-LM29.ps1", "%*", "pause"):
             self.assertIn(frag, s)
         self.assertNotIn("set /p", s.lower())                # 묻지 않는다
 
     def test_ui_bats_pause_only_on_error(self):
-        for name, run_line in (("LoadMonitor28-UI.bat", "ui\\app.py\r\n"), ("LoadMonitor28-팀취합.bat", "ui\\app.py --team")):
+        for name, run_line in (("LoadMonitor29-UI.bat", "ui\\app.py\r\n"), ("LoadMonitor29-팀취합.bat", "ui\\app.py --team")):
             s = self._bat(name)
             seg = s[s.index(run_line):s.index(":MISSING")]
             m = re.search(r"if errorlevel 1 \((.*?)\r\n\)", seg, re.S)
@@ -354,13 +354,13 @@ class Files(unittest.TestCase):
             self.assertTrue(seg.rstrip().endswith("exit /b 0"), name)
 
     def test_stop_ps1(self):
-        b = _bytes(os.path.join("tools", "Stop-LM28.ps1"))
+        b = _bytes(os.path.join("tools", "Stop-LM29.ps1"))
         self.assertTrue(b.startswith(b"\xef\xbb\xbf"))
         self.assertEqual(b.count(b"\n"), b.count(b"\r\n"))
         s = b.decode("utf-8-sig")
         for frag in ("function Select-LmTargets", "[switch]$IncludeTeamServer", "[switch]$Status", "Get-CimInstance",
                      "Get-WmiObject", "$MyInvocation.InvocationName -ne '.'", "Stop-Process -Id", "CreationDate",
-                     "LM28 작업을 모두 끝냈습니다", "exit "):
+                     "LM29 작업을 모두 끝냈습니다", "exit "):
             self.assertIn(frag, s)
         for bad in ("Read-Host", "Out-File", "Set-Content", "$env:TEMP", "Register-ScheduledTask", "RunAs"):
             self.assertNotIn(bad, s)
@@ -390,7 +390,7 @@ class Files(unittest.TestCase):
         src = _boot.read_text(os.path.join(ROOT, "자가점검.py"))
         need = next(ast.literal_eval(n.value) for n in ast.parse(src).body
                     if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "NEED")
-        for rel in ("LoadMonitor28-강제종료.bat", "tools/Stop-LM28.ps1"):
+        for rel in ("LoadMonitor29-강제종료.bat", "tools/Stop-LM29.ps1"):
             self.assertIn(rel, need)
             self.assertTrue(os.path.isfile(os.path.join(ROOT, rel)), rel)
 
@@ -399,9 +399,9 @@ class PsSelect(unittest.TestCase):
     """(5) --ps: Select-LmTargets"""
 
     def test_select_targets(self):
-        r = _boot.ps_result("StopLM28")
+        r = _boot.ps_result("StopLM29")
         if r is None:
-            self.skipTest("PowerShell 결과 없음 — tests\\run_tests.py --ps-only=StopLM28 로 실행")
+            self.skipTest("PowerShell 결과 없음 — tests\\run_tests.py --ps-only=StopLM29 로 실행")
         self.assertNotIn("error", r, r)
         self.assertEqual(r["targets"], "100,101,102,103,104,105,106,129,130,131,171")
         self.assertEqual(r["kept"], "108,150,181")
@@ -412,7 +412,7 @@ class PsSelect(unittest.TestCase):
         for frag in ("끝낼 것 11개", "콘솔 창(bat) 2개", "전용 Edge(Copilot·웹 읽기) 2개", "[둠] 팀 서버 pid 108",
                      "PC 이동 준비 창 pid 150", "-IncludeTeamServer"):
             self.assertIn(frag, r["lines"])
-        self.assertIn("끝낼 LM28 작업이 없습니다", r["none"])
+        self.assertIn("끝낼 LM29 작업이 없습니다", r["none"])
         self.assertEqual(r["age"], "2시간 5분")
         self.assertGreater(r["real_n"], 5)
         self.assertEqual(r["real_self"], 1)

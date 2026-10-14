@@ -2,7 +2,7 @@
 r"""tests\test_p5_edge.py — WP5: 전용 Edge·Copilot 드라이버(우리 Edge 만 닫기·잠금·정책·계정) + G3 Copilot 직전 관문.
 
 실제 Edge·Copilot·네트워크를 쓰지 않는다 — copilot_auto 의 http_json·CDP·debugger_alive·subprocess.Popen·소켓·정책 읽기를
-가짜로 바꾼다. 운영 폴더(report·data)에 쓰지 않는다 — 프로필·report 는 임시 폴더, judge.ROOT·agentic.ROOT 도 임시 폴더로 돌린다.
+가짜로 바꾼다. 운영 폴더(report·data)에 쓰지 않는다 — 프로필·report 는 임시 폴더, judge.ROOT 도 임시 폴더로 돌린다.
 G3 문맥은 시험용(빈 사전 Ctx + 가짜 카나리아 하나)으로 고정한다 — 이 PC 의 설정·메일 주소에 기대지 않는다.
 """
 import contextlib
@@ -22,7 +22,6 @@ import copilot_auto as ca  # noqa: E402
 import privacy  # noqa: E402
 import judge  # noqa: E402
 import flow  # noqa: E402
-import agentic  # noqa: E402
 import refine  # noqa: E402
 
 ROOT = _boot.ROOT
@@ -31,7 +30,7 @@ CANARY = "zzcanaryzz"                 # 시험용 카나리아(실재하지 않�
 
 def _cfg(tmp, **kw):
     c = dict(ca.DEFAULTS)
-    c.update(profileDir=os.path.join(tmp, "data", "lm28_edge"), port=9533)
+    c.update(profileDir=os.path.join(tmp, "data", "lm29_edge"), port=9543)
     c.update(kw)
     return c
 
@@ -50,7 +49,7 @@ class FakeBrowser:
         if path == "/json":
             return list(self.tabs)
         if path.startswith("/json/new"):
-            return {"webSocketDebuggerUrl": "ws://127.0.0.1:9533/devtools/page/new"}
+            return {"webSocketDebuggerUrl": "ws://127.0.0.1:9543/devtools/page/new"}
         return {}
 
     def debugger_alive(self, port):
@@ -184,7 +183,7 @@ class AadstsTable(unittest.TestCase):
 # ── 3) 우리 Edge 만 닫는다(owner.json + Browser.close) ───────────────────────────
 class CloseOwnEdge(_Base):
     def _owner(self, **kw):
-        o = {"pid": 1, "port": 9533, "browser": "/devtools/browser/aaa"}
+        o = {"pid": 1, "port": 9543, "browser": "/devtools/browser/aaa"}
         o.update(kw)
         self.assertTrue(ca._write_json(ca.owner_path(self.cfg), o))
 
@@ -274,10 +273,10 @@ class EnsureEdge(_Base):
         self.assertEqual(len(calls), 1)
         args, flags = calls[0]
         self.assertTrue(flags & 0x01000000, "CREATE_BREAKAWAY_FROM_JOB 없음")
-        self.assertIn("--remote-allow-origins=http://127.0.0.1:9533", args)
+        self.assertIn("--remote-allow-origins=http://127.0.0.1:9543", args)
         self.assertFalse(any(a == "--remote-allow-origins=*" for a in args))
         own = ca.read_owner(self.cfg)
-        self.assertEqual((own["pid"], own["port"], own["browser"]), (4321, 9533, "/devtools/browser/aaa"))
+        self.assertEqual((own["pid"], own["port"], own["browser"]), (4321, 9543, "/devtools/browser/aaa"))
         self.assertEqual(os.path.normcase(own["root"]), os.path.normcase(ca.ROOT))
         res = {"ok": True, "phase": "replied"}
         ca._after(self.cfg, res)
@@ -298,7 +297,7 @@ class EnsureEdge(_Base):
     def test_foreign_debugger_not_reused(self):
         os.makedirs(self.cfg["profileDir"])
         with open(os.path.join(self.cfg["profileDir"], "DevToolsActivePort"), "w", encoding="utf-8") as f:
-            f.write("9533\n/devtools/browser/mine\n")
+            f.write("9543\n/devtools/browser/mine\n")
         fb = FakeBrowser(alive=True, bid="/devtools/browser/someone_else")
         with contextlib.ExitStack() as st:
             _enter(st, self.browser(fb))
@@ -611,7 +610,7 @@ class PageGate(_Base):
             r2 = self._once(c)
         self.assertTrue(r2.get("recreated"))
         self.assertFalse(os.path.isdir(self.cfg["profileDir"]))
-        bad = [n for n in os.listdir(os.path.dirname(self.cfg["profileDir"])) if n.startswith("lm28_edge.bad-")]
+        bad = [n for n in os.listdir(os.path.dirname(self.cfg["profileDir"])) if n.startswith("lm29_edge.bad-")]
         self.assertEqual(len(bad), 1)
         self.assertEqual(int(ca._state(self.cfg).get("dead") or 0), 0)
 
@@ -619,7 +618,7 @@ class PageGate(_Base):
 # ── 11) 탭 — Outlook·Teams 탭은 닫지도 옮기지도 않는다 · WS 403 → 자기 포트 Origin ────────
 class TabsAndOrigin(_Base):
     def _tab(self, tid, url):
-        return {"type": "page", "id": tid, "url": url, "webSocketDebuggerUrl": f"ws://127.0.0.1:9533/devtools/page/{tid}"}
+        return {"type": "page", "id": tid, "url": url, "webSocketDebuggerUrl": f"ws://127.0.0.1:9543/devtools/page/{tid}"}
 
     def test_find_tab_keeps_app_tabs(self):
         fb = FakeBrowser(tabs=[self._tab("o", "https://outlook.office.com/mail/"),
@@ -662,11 +661,11 @@ class TabsAndOrigin(_Base):
         socks = [FakeSock(b"HTTP/1.1 403 Forbidden\r\n\r\n"), FakeSock(b"HTTP/1.1 101 Switching Protocols\r\n\r\n")]
         q = list(socks)
         with mock.patch.object(ca.socket, "create_connection", lambda addr, timeout=None: q.pop(0)):
-            ws = ca.ws_open("ws://127.0.0.1:9533/devtools/page/AB")
-        self.assertEqual(ws.origin, "http://127.0.0.1:9533")
+            ws = ca.ws_open("ws://127.0.0.1:9543/devtools/page/AB")
+        self.assertEqual(ws.origin, "http://127.0.0.1:9543")
         self.assertNotIn(b"Origin:", socks[0].sent)
         self.assertTrue(socks[0].closed)
-        self.assertIn(b"Origin: http://127.0.0.1:9533\r\n", socks[1].sent)
+        self.assertIn(b"Origin: http://127.0.0.1:9543\r\n", socks[1].sent)
 
 
 # ── 12) flow — MM 미전송 · 표본 관문 ────────────────────────────────────────────
@@ -692,48 +691,6 @@ class FlowPrompt(_Base):
         self.assertEqual([r["text"] for r in flow._g3_rows(rows)], ["설계 검토"])
         self.assertEqual(flow._g3_texts(["요청 '설계' → 산출 '보고'", f"요청 '{CANARY}' → 산출 'x'"]),
                          ["요청 '설계' → 산출 '보고'"])
-
-
-# ── 13) agentic — 첫 줄은 config 값 · 대체 MM 산출 없음 ───────────────────────────
-class AgenticPrompt(_Base):
-    TASKS = [{"id": "T1", "axis": "a", "name": "과제 하나", "desc": "설명"}]
-    ROWS = [{"Level 2": "과제A", "Level 3": "설계", "유형": "개발", "근거": "메일3", "상세설명": "검토", "mm": "1.0"}]
-
-    def _with_cfg(self, obj):
-        os.makedirs(os.path.join(self.tmp, "config"), exist_ok=True)
-        with open(os.path.join(self.tmp, "config", "config.json"), "w", encoding="utf-8") as f:
-            json.dump(obj, f, ensure_ascii=False)
-
-    def test_first_line_from_config(self):
-        self._with_cfg({"agentic": {"domainHint": "시험용 업무 영역"}})
-        with mock.patch.object(agentic, "ROOT", self.tmp):
-            p = agentic.ag_prompt(self.TASKS, self.ROWS)
-        self.assertIn("시험용 업무 영역", p.splitlines()[0])
-        self._with_cfg({"agentic": {"domainHint": ""}})
-        with mock.patch.object(agentic, "ROOT", self.tmp):
-            p = agentic.ag_prompt(self.TASKS, self.ROWS)
-        self.assertIn(agentic.DOMAIN_HINT_DEFAULT, p.splitlines()[0])
-        src = _boot.read_text(os.path.join(ROOT, "agentic.py"))
-        self.assertNotIn("LiDAR", src)
-        self.assertNotIn("MM", re.sub(r"\(MM 순\)", "", p))           # 행에 MM 값이 없다
-
-    def test_no_replaceable_mm(self):
-        out = {"match": [{"task": "T1", "fit": 50, "work": ["설계"], "reason": "r", "load_mm": 9, "load_mm_ai": 3}],
-               "new": [{"name": "후보", "logic": "l", "reason": "r", "work": ["설계"], "load_mm": 2.0,
-                        "load_mm_ai": 1.0}]}
-        agentic.recalc_mm(out, [dict(r) for r in self.ROWS])
-        blob = json.dumps(out, ensure_ascii=False)
-        self.assertNotIn("load_mm_ai", blob)
-        self.assertNotIn("load_mm", out["new"][0])
-        self.assertNotIn("sum_new_load_mm", out["mm_recalc"])
-        self.assertEqual(out["new"][0]["evidence_rows"], 1)
-        self.assertAlmostEqual(out["match"][0]["load_mm"], 1.0)         # 매칭 근거 행의 실측 투입은 남는다
-        n = agentic.merge_new([], {"new": [{"name": "x", "work": ["설계"], "load_mm": 5}]})
-        self.assertEqual(n, 1)
-
-    def test_agentic_gate(self):
-        rows = [dict(self.ROWS[0]), dict(self.ROWS[0], **{"상세설명": "연락처 010-1234-5678"})]
-        self.assertEqual(len(agentic.g3_part(rows)), 1)
 
 
 # ── 14) refine — 제외어 단일원 · 근거 줄 관문 ────────────────────────────────────

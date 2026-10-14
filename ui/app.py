@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-app.py — LoadMonitor28 로컬 HTML UI (표준 라이브러리만).
+app.py — LoadMonitor29 로컬 HTML UI (표준 라이브러리만).
 
-  python ui\\app.py          또는  LoadMonitor28-UI.bat 더블클릭
+  python ui\\app.py          또는  LoadMonitor29-UI.bat 더블클릭
 
 탭: 대시보드(요약 시각화) · 주간/월간 리뷰(raw 근거가 들어간 기간 리뷰) · 상세 리뷰(업무별 딥다이브+연결성)
 로컬 전용(127.0.0.1). 외부 전송 없음. Copilot 왕복만 사용자의 기존 세션으로 나간다.
@@ -27,12 +27,12 @@ sys.path.insert(0, os.path.join(ROOT, "core"))
 if ROOT not in sys.path:          # judge·aggregate 등 루트 모듈 임포트용
     sys.path.insert(0, ROOT)      # (ui\app.py 로 실행하면 sys.path[0]이 ui\ 라 루트가 안 잡힌다)
 from progress import parse as parse_progress  # noqa: E402  (core 경로 등록 뒤에 임포트)
-import lmname  # noqa: E402  — LM28 이름 단일원(작업·포트·Edge 프로필·%TEMP% 접두)
+import lmname  # noqa: E402  — LM29 이름 단일원(작업·포트·Edge 프로필·%TEMP% 접두)
 
 REPORT = os.path.join(ROOT, "report")
 DATA = os.path.join(ROOT, "data")
 NO_WIN = 0x08000000
-VERSION = "v5.0"          # lm24-v5 — 팀 서버 IP·포트를 별도 설정(config\team_server.json)으로 분리 · 바꾸기는 LoadMonitor28-팀서버주소.bat 하나
+VERSION = "v5.0"          # lm24-v5 — 팀 서버 IP·포트를 별도 설정(config\team_server.json)으로 분리 · 바꾸기는 LoadMonitor29-팀서버주소.bat 하나
 LOCK = threading.Lock()
 FREEZE_LOCK = threading.Lock()       # [보고서 만들기] 직렬화 — JOB 과 별개(사본에 '실행 중'이 굳지 않게)
 JOB = {"running": False, "log": [], "step": "", "started": 0.0, "pid": 0,
@@ -75,7 +75,7 @@ def close_edge(reason="ui", tidy=True):
 def kill_copilot_edge():
     r"""(수동 진단용 — LM28 은 자동으로 부르지 않는다. 시작·종료·[중지] 는 close_edge 가 CDP 로 닫는다.)
     Copilot 왕복용 전용 Edge 를 명령줄 패턴으로 종료 —
-    일반 Edge·LM24 의 전용 Edge 는 건드리지 않고 **이 설치본의** 프로필(<ROOT>\data\lm28_edge)로 뜬 것만.
+    일반 Edge·LM24·LM28 의 전용 Edge 는 건드리지 않고 **이 설치본의** 프로필(<ROOT>\data\lm29_edge)로 뜬 것만.
     예전 패턴(프로필 폴더 이름만 비교)은 같은 PC 의 다른 판·다른 폴더 Edge 까지 죽였다(W3-03)."""
     prof = lmname.edge_profile(ROOT).lower().replace("'", "''")     # PS 작은따옴표 문자열 이스케이프
     subprocess.run(["powershell", "-NoProfile", "-Command",
@@ -100,7 +100,7 @@ def drop_foreign_profile():
     덤으로 도착 즉시 수백 MB 가 사라진다(실측 프로필 100~529MB).
     """
     try:
-        prof = lmname.edge_profile(ROOT)       # <ROOT>\data\lm28_edge — 이 설치본의 전용 프로필만
+        prof = lmname.edge_profile(ROOT)       # <ROOT>\data\lm29_edge — 이 설치본의 전용 프로필만
         if not os.path.isdir(prof):
             return
         # 판정 기준은 run.py.archive_other_pc 와 **같아야 한다** — 한쪽만 '다른 PC' 라고 보면
@@ -280,7 +280,7 @@ def _close_shift(gap):
 
 def _mark_last_run_stopped(job_started, note, report_dir=None):
     r"""작업을 멈췄으면 report\last_run.json 에 '중단(창 닫힘)' 단계를 붙인다 → 붙였나.
-    이 작업(run.py)이 쓴 기록일 때만 — 작업 시작 뒤에 고쳐졌고 아직 끝나지 않은(finished 없음) 것. Agentic·리뷰 코멘트 같은
+    이 작업(run.py)이 쓴 기록일 때만 — 작업 시작 뒤에 고쳐졌고 아직 끝나지 않은(finished 없음) 것. 워크플로우·리뷰 코멘트 같은
     다른 작업이 돌던 중이면 지난 실행 기록은 건드리지 않는다. 깨진 파일이면 두고, 바꿔 쓰기는 임시 파일 → os.replace."""
     p = os.path.join(report_dir or REPORT, "last_run.json")
     try:
@@ -346,7 +346,7 @@ def close_watch(server, c=None, every=CLOSE_EVERY, stop=None):
 
 
 def console_close_cleanup(ev=None, budget=EDGE_FAST_SEC):
-    """콘솔 창(LoadMonitor28-UI.bat)을 닫을 때(core\\proc.on_console_close) — 윈도가 주는 몇 초 안에 끝나는 것만 한다.
+    """콘솔 창(LoadMonitor29-UI.bat)을 닫을 때(core\\proc.on_console_close) — 윈도가 주는 몇 초 안에 끝나는 것만 한다.
     Job 을 끝내고(작업 트리 — Job 안의 자식은 어차피 이 프로세스와 함께 끝난다), Job 밖에 남는 전용 Edge 를 채팅 정리 없이
     (tidy=False) 닫는다 — budget 초까지만 기다린다. 팀 서버는 건드리지 않는다. 예외를 내지 않는다."""
     try:
@@ -371,7 +371,7 @@ TS_LOG = os.path.join(REPORT, "teamserver.log")
 # 팀 정적 보고서 — 경로 → 취합 폴더의 파일. 자기완결 문서라 same-origin 요청이 필요 없다;
 # 업로드로 들어온 값의 이스케이프가 한 곳 새더라도 대시보드의 /api/* 를 부를 수 없게
 # sandbox CSP 로 origin 을 떼어 서빙한다(teamserver.py 와 같은 문자열).
-TEAM_FILES = {"/team/report": "team_report.html", "/team/agentic": "team_agentic.html",
+TEAM_FILES = {"/team/report": "team_report.html",
               "/team/full": "team_full_report.html", "/team/full_v3": "team_full_report_v3.html"}
 REPORT_HEADERS = {"Content-Security-Policy":
                   "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox",
@@ -385,66 +385,7 @@ def team_cache_files():
         return tuple(team_report.CACHE_FILES)
     except Exception:
         return ("team_aliases.json", "team_series.json", "team_pjclass.json",
-                "team_detail_groups.json", "team_cand_groups.json", "team_agentic_adjust.json")
-
-
-def agentic_recalc(tag=""):
-    """오할당 제외·재분류 뒤 agentic_<tag>.json 의 load_mm 을 실측으로 다시 센다(Copilot 왕복 없음).
-    agentic.recalc_file 이 없는 판이면 조용히 건너뛴다."""
-    try:
-        if not tag:
-            sp = latest_signals()
-            if not sp:
-                return False
-            tag = os.path.basename(sp)[len("signals_"):-len(".csv")]
-        import agentic
-        fn = getattr(agentic, "recalc_file", None)
-        if fn is None:
-            return False
-        fn(tag)
-        log(f"[agentic] {tag} MM 실측 재계산")
-        return True
-    except ImportError:
-        return False
-    except Exception as e:
-        log(f"[agentic] MM 실측 재계산 건너뜀({type(e).__name__}: {str(e)[:120]})")
-        return False
-
-
-def _agentic_stale(a, tag, ap, out):
-    """agentic_<tag>.json 이 재추출 이전 것인지 표시하고(V-01), MM 실측(mm_recalc)이 지금 행 파일과 다른 파일 기준이면
-    같은 조건으로 왕복 없이 다시 센다(agentic_recalc) — 오할당 제외·재분류가 부르는 것과 같은 함수.
-    · reextracted: signals 가 규칙 축으로 다시 써졌거나(재추출), 매칭이 만들어진 행 파일(rows_file)이 지금 화면·리포트가
-      읽는 행 파일과 다르다(정제본 무효화) → 화면이 '재추출 이후 결과'/'정제본 무효화 이후 결과' 로 알리고 [재매칭] 을
-      권한다(결과는 지우지 않는다).
-    · 근거 키(match[].keys — 원본 mm_rows 의 (과제, 세부업무) 쌍)로 센 결과(mm_recalc.axis 'plain')는 정제본↔원본 행 파일이
-      바뀌어도 로드 MM 이 그대로다 — 그 경우에는 '정제본 무효화' 안내를 띄우지 않는다(재추출은 그대로 알린다 · 진단 D).
-    반환: (재계산했으면 다시 읽은) 분석 dict."""
-    cur = _rows_basename(tag)
-    mr = a.get("mm_recalc") if isinstance(a.get("mm_recalc"), dict) else {}
-    with LOCK:
-        idle = not JOB["running"]
-    if mr and str(mr.get("rows_file") or "") != cur and idle and not FREEZE_LOCK.locked():
-        if agentic_recalc(tag):
-            try:
-                a2 = json.load(open(ap, encoding="utf-8-sig"))
-                if isinstance(a2, dict):
-                    a = a2
-            except (OSError, ValueError):
-                pass
-    rf = str(a.get("rows_file") or "")
-    reex = _reextracted(tag)
-    mr = a.get("mm_recalc") if isinstance(a.get("mm_recalc"), dict) else {}
-    keyed = (str(mr.get("axis") or "") == "plain"
-             and any(isinstance(m, dict) and isinstance(m.get("keys"), list)
-                     for m in (a.get("match") if isinstance(a.get("match"), list) else [])))
-    if reex or (rf and rf != cur and not keyed):
-        out["reextracted"] = True
-        out["reextracted_title"] = "재추출 이후 결과" if reex else "정제본 무효화 이후 결과"
-        out["reextracted_note"] = ((f"이 매칭은 {rf} 행 기준이고 지금 화면은 {cur} 입니다" if rf and rf != cur
-                                    else "이 매칭은 마지막 업무 로드 재추출 이전의 행으로 판정한 것입니다")
-                                   + " — 과제별 현업 이름이 어긋나 로드 MM 이 실제보다 작게 보일 수 있으니 [재매칭]으로 갱신하세요")
-    return a
+                "team_detail_groups.json")
 
 
 def make_reports():
@@ -530,7 +471,7 @@ def team_share_ex():
 
 def _ta():
     r"""팀 서버 주소 단일원(core\teamaddr.py — 설치 폴더의 config\team_server.json). 부를 때마다 파일을 다시
-    읽어 LoadMonitor28-팀서버주소.bat 에서 바꾼 값이 곧바로 반영된다. 화면은 주소를 보여 주기만 하고 바꾸지
+    읽어 LoadMonitor29-팀서버주소.bat 에서 바꾼 값이 곧바로 반영된다. 화면은 주소를 보여 주기만 하고 바꾸지
     않는다(사용자 지시: 바꾸는 곳은 별도 bat 하나). v5 이전처럼 config.teamServerUrl 을 직접 쪼개지 않는다."""
     import teamaddr
     return teamaddr
@@ -864,7 +805,7 @@ def _suggest_port(cur):
     lo, hi = _dyn_range()
     base = max(hi + 1, _alt_port_base()) if (lo and lo <= cur <= hi) else cur
     for p in range(int(base), int(base) + 40):
-        if p == PORT[0] or p in lmname.UI_PORTS:   # 대시보드 자신의 대역(9248~9267)은 피한다
+        if p == PORT[0] or p in lmname.UI_PORTS:   # 대시보드 자신의 대역(lmname.UI_PORTS)은 피한다
             continue
         if _port_reserved(p):
             continue
@@ -887,7 +828,7 @@ def _take_policy(ident, occ, root=None):
     한 번에 종료)은 같은 PC 의 **LM24 팀 서버**까지 내렸다. 이제 신원 응답(/api/whoami)의 root 가 이 설치 폴더일 때만
     (= 이 폴더의 옛 서버가 토큰·pid 증명 없이 남은 경우) 끈다. 그때도 종료 판단은 OS 사실로만 한다 — 리스너가 모두
     teamserver.py 이고 보호 대상이 아닐 것. 다른 폴더(LM24 포함)·구버전·남의 프로그램은 끄지 않고, 화면이
-    LoadMonitor28-팀서버주소.bat 의 대체 포트를 제안만 한다(LM27 portdiag '제안만, 남의 프로세스는 안 죽임')."""
+    LoadMonitor29-팀서버주소.bat 의 대체 포트를 제안만 한다(LM27 portdiag '제안만, 남의 프로세스는 안 죽임')."""
     if not occ or not _same_root((ident or {}).get("root"), root):
         return "no"
     if any(x.get("protected") for x in occ) or not all(x.get("teamserver") for x in occ):
@@ -947,7 +888,7 @@ def teamserver_status():
     return {"ok": True, "running": running, "port": port, "pid": pid if running else 0,
             "urls": [f"http://{ip}:{port}" for ip in ips], "log": tail,
             # 설정된 서버 주소(설치 폴더의 config\team_server.json) — 팀원은 분석 후 이 주소로 올린다.
-            # 화면은 보여 주기만 한다(바꾸는 곳은 LoadMonitor28-팀서버주소.bat).
+            # 화면은 보여 주기만 한다(바꾸는 곳은 LoadMonitor29-팀서버주소.bat).
             "host": a.host, "upload_url": a.url, "addr_kind": akind, "addr_note": anote,
             "addr_warnings": a.warnings, "edit_bat": ta.EDIT_BAT,
             # 포트는 열렸는데 내 서버가 아닐 때 — 화면이 사실대로 말할 수 있게
@@ -979,7 +920,7 @@ def _save_cfg(key, val):
 
 
 def _addr_payload():
-    r"""화면에 줄 팀 서버 주소(보여 주기만) — 값·출처·경고·이 PC 와의 관계. 바꾸는 곳은 LoadMonitor28-팀서버주소.bat."""
+    r"""화면에 줄 팀 서버 주소(보여 주기만) — 값·출처·경고·이 PC 와의 관계. 바꾸는 곳은 LoadMonitor29-팀서버주소.bat."""
     ta = _ta()
     a = ta.load(ROOT)
     akind, anote = ta.relation(a, local_ips())
@@ -1104,7 +1045,7 @@ def _stage_kind(stage, tag=None):
     구판 기록용 폴백으로만 남는다(문구를 다듬으면 분류가 깨지던 구조의 종식 · 구조 감사 4계층).
     LM28: stop.kind throttle(Copilot 사용량 제한 — 바로 다시 눌러도 같은 벽) → throttle · gate(개인정보 관문에 걸린 것만 남음 —
     조치 불필요) → gate · fail·gain·fatal·login·lock → failed."""
-    _sid = {"AI 판정": "judge", "AI 정제": "refine", "Agentic 매칭": "agentic",
+    _sid = {"AI 판정": "judge", "AI 정제": "refine",
             "워크플로우 분석": "flow"}.get(stage)
     if _sid:
         try:
@@ -1184,7 +1125,7 @@ def _signals_judged(tag):
 
 def _reextracted(tag):
     """판정 뒤 업무 로드가 다시 추출됐는가(V-01) — signals 가 규칙 축(judge 열 없음)이면 True. 이때 화면의 표·KPI·리포트는
-    모두 새 규칙 결과이고, 남아 있는 판정 산출물(agentic/workflow)은 옛 행 기준이다."""
+    모두 새 규칙 결과이고, 남아 있는 판정 산출물(workflow)은 옛 행 기준이다."""
     return _signals_judged(tag) is False
 
 
@@ -1618,7 +1559,7 @@ def add_worklog(rec, data_dir=None):
 
 # ── 기간 빠른 선택(UD-18·W3-06) — 올해(기본)·1~4분기·상반기·하반기 ─────────────────────────────
 # LM27 lm27\ui\period.py 의 규칙만 가져왔다: 모두 오늘이 속한 해, 진행 중인 기간은 끝을 오늘로 자르고, 아직 시작하지
-# 않은 기간은 고를 수 없다(None). 같은 규칙의 JS 판 = PAGE 의 periodRange(), bat 판 = LoadMonitor28.bat 의 날짜 계산 1줄.
+# 않은 기간은 고를 수 없다(None). 같은 규칙의 JS 판 = PAGE 의 periodRange(), bat 판 = LoadMonitor29.bat 의 날짜 계산 1줄.
 PERIOD_SPANS = {"ytd": ("01-01", "12-31"), "q1": ("01-01", "03-31"), "q2": ("04-01", "06-30"),
                 "q3": ("07-01", "09-30"), "q4": ("10-01", "12-31"), "h1": ("01-01", "06-30"),
                 "h2": ("07-01", "12-31")}
@@ -2285,20 +2226,13 @@ def _fresh_refined(plain, ref):
         return True
 
 
-def _rows_basename(tag):
-    """지금 화면·리포트·Agentic 실측이 읽는 행 파일 이름 — details.rows_path(tag) 와 같은 규칙."""
-    plain = os.path.join(REPORT, f"mm_rows_{tag}.csv")
-    ref = os.path.join(REPORT, f"mm_rows_{tag}_refined.csv")
-    return os.path.basename(ref if _fresh_refined(plain, ref) else plain)
-
-
 def result_rows():
     # '가장 최근 분석'을 기준으로 고른다. 예전의 기간(tag) 무관 '정제본 우선'은,
     # 분석 기간 기본값이 날마다 바뀌어 tag 가 매일 달라지는 상황에서 과거 실패한 날의
     # 정제본이 이후 모든 성공 결과를 영원히 가리는 함정이었다(실측: 재실행해도 같은
     # 토큰 화면 반복). 정제본은 '같은 기간'의 것이 있을 때만 우선한다.
     #
-    # 정제본 선택은 core/details.rows_path(agentic·flow·freeze 공용)와 **같은 mtime 규칙**이다(V-01):
+    # 정제본 선택은 core/details.rows_path(flow·freeze 공용)와 **같은 mtime 규칙**이다(V-01):
     # 정제본 mtime ≥ 원본 mtime 일 때만 정제본, 원본이 더 새로 써졌으면 '낡았다'고 보고 원본으로 내려간다.
     # 예전에는 '같은 tag 정제본이 있으면 무조건' 이라 무AI 재실행·판정 실패 뒤 옛 정제본이 표에 남아 KPI(새 meta)·
     # 분석리포트(새 원본)와 셋이 다른 값을 보였다. 1차 무효화는 run.py 가 추출 직후 정제본을 .stale 로 개명하는
@@ -2313,7 +2247,7 @@ def result_rows():
         p = ref if _fresh_refined(base, ref) else base
     else:
         # 정제본만 남은 폴더(옮겨 온 report\ 등) — 원본이 없다고 화면을 백지로 두지 않는다
-        # (리포트·agentic·flow 는 정제본만으로도 돌아간다 — 대시보드도 같은 규칙)
+        # (리포트·flow 는 정제본만으로도 돌아간다 — 대시보드도 같은 규칙)
         refs = glob.glob(os.path.join(REPORT, "mm_rows_*_refined.csv"))
         p = max(refs, key=_mtime) if refs else ""
     rows = _rows(p) if p else []
@@ -2517,8 +2451,6 @@ def exclude_work(row_key):
         rf = os.path.join(REPORT, n)
         if os.path.exists(rf):
             os.remove(rf)
-    # Agentic 매칭의 load_mm 도 실측으로 다시 — 제외한 업무가 대체 로드에 남지 않게(왕복 없음)
-    agentic_recalc(tag)
     # 이력 기록
     ep = os.path.join(ROOT, "config", "excluded_work.json")
     try:
@@ -2540,12 +2472,12 @@ def exclude_work(row_key):
             "total_mm": (rh or {}).get("total_mm"), "load_pct": (rh or {}).get("load_pct")}
 
 
-# ── 수동 Agentic 매칭·워크플로우 재분석 (S2) ─────────────────────────────────
+# ── 수동 워크플로우 재분석 (S2) ─────────────────────────────────
 # 옛 판은 POST 핸들러가 subprocess.run(timeout=420/960) 으로 끝까지 기다렸다 — 업무가 많은 사람은
 # 묶음 13~49회(회당 수십 초~수 분)라 반드시 시간 초과로 죽고(자식은 kill), 진행률도 안 보이고, 새로고침하면
 # 결과·사유가 사라졌다. 이제 [분석 실행]과 같은 방식으로 스레드에서 돌리며 [progress] 를 진행 바에 흘리고,
-# 마지막 줄 JSON(ok/error/hint)을 MANUAL 에 남겨 GET /api/agentic·/api/workflow 가 화면에 전한다.
-TOOL_JOBS = {"agentic": ("agentic.py", "Agentic AI 분석"), "flow": ("flow.py", "워크플로우 분석")}
+# 마지막 줄 JSON(ok/error/hint)을 MANUAL 에 남겨 GET /api/workflow 가 화면에 전한다.
+TOOL_JOBS = {"flow": ("flow.py", "워크플로우 분석")}
 MANUAL = {}                       # kind → 마지막 수동 실행 결과 {ok,error,hint,at,sec,tag,...}
 
 
@@ -2592,8 +2524,8 @@ def watch_child(p, on_line, label, beat_sec=120):
 
 
 def tool_job(kind, extra=()):
-    """agentic.py / flow.py 를 스레드에서 끝까지 돌리고 결과를 MANUAL[kind] 에 남긴다(run_job 과 같은 프로토콜).
-    인자가 없으면 두 스크립트는 mm_meta 최신 기간을 잡아 화면과 어긋난 파일에 쓸 수 있으므로 기간을 명시한다."""
+    """flow.py 를 스레드에서 끝까지 돌리고 결과를 MANUAL[kind] 에 남긴다(run_job 과 같은 프로토콜).
+    인자가 없으면 스크립트는 mm_meta 최신 기간을 잡아 화면과 어긋난 파일에 쓸 수 있으므로 기간을 명시한다."""
     script, step = TOOL_JOBS[kind]
     t0 = time.time()
     tag, targs = _tag_args()
@@ -2727,7 +2659,7 @@ def narrate_job(all_months=False):
 
 def reset_files(what="report", keep_queue=True, report=None, data=None):
     r"""[데이터 리셋] — report\(what='all' 이면 data\ 도) 아래 파일을 지운다 → (지운 파일 수, 보존한 월별 코멘트 파일 수).
-    · Copilot 로그인 세션(data\lm28_edge)은 늘 보존, 아직 못 보낸 팀 업로드 묶음(upload_pending)은 keep_queue 면 보존.
+    · Copilot 로그인 세션(data\lm29_edge)은 늘 보존, 아직 못 보낸 팀 업로드 묶음(upload_pending)은 keep_queue 면 보존.
     · '분석 결과만 삭제'(what != 'all')는 월별 리뷰 코멘트(report\ai_narratives_*.json)를 남긴다 — Copilot 왕복 수십 번으로
       만든 것이고 같은 달 코멘트는 다음 분석이 이월해 쓴다(진단 C). 지우려면 수집 데이터+결과 리셋(what='all').
     · 같은 이유로 AI 판정 기록(report\judge_cache.json — 내용 해시 → 판정, 원문 없음)도 남긴다. 지우면 다음 분석이 수천 건을
@@ -2738,7 +2670,7 @@ def reset_files(what="report", keep_queue=True, report=None, data=None):
     removed = kept_nar = 0
     for base in [report] + ([data] if what == "all" else []):
         for root, _dirs, files in os.walk(base):
-            if lmname.EDGE_PROFILE_NAME in root:   # Copilot 로그인 세션(data\lm28_edge)은 보존
+            if lmname.EDGE_PROFILE_NAME in root:   # Copilot 로그인 세션(data\lm29_edge)은 보존
                 continue
             if keep_queue and "upload_pending" in root:
                 continue                      # 보내야 할 것을 리셋으로 잃지 않게(검증 지적)
@@ -2758,7 +2690,7 @@ def reset_files(what="report", keep_queue=True, report=None, data=None):
 
 
 TEAM_PAGE = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
-<title>LoadMonitor28 — 팀 취합</title><style>
+<title>LoadMonitor29 — 팀 취합</title><style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Malgun Gothic',system-ui,sans-serif;background:#f2f4f7;color:#12151a;padding:22px}
 .wrap{max-width:1180px;margin:0 auto}
@@ -2766,7 +2698,7 @@ h1{font-size:20px}h1 small{font-size:11px;color:#8b929b;font-weight:400;margin-l
 .sub{font-size:11.5px;color:#5a626b;margin:3px 0 14px}
 .card{background:#fff;border:1px solid #e4e7eb;border-radius:8px;padding:16px;margin-bottom:12px}
 .card h2{font-size:13px;margin-bottom:10px;color:#2c333b}
-.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px}
+.kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:12px}
 .kpi{background:#fff;border:1px solid #e4e7eb;border-radius:8px;padding:12px 14px}
 .kpi .lb{font-size:10.5px;color:#8b929b}.kpi .vl{font-size:21px;font-weight:800;margin:2px 0}
 .kpi .nt{font-size:10.5px;color:#5a626b}
@@ -2782,7 +2714,6 @@ button.ghost{background:#fff;color:#4a5159;border:1px solid #c9cfd8;border-radiu
 .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 @media(max-width:900px){.grid2{grid-template-columns:1fr}.kpis{grid-template-columns:repeat(2,1fr)}}
-.heat td{text-align:center;font-size:11px}
 .state{font-size:11px;color:#8b929b;font-weight:400}
 body.snap .nosnap{display:none}
 body.snap .snaponly{display:block}
@@ -2791,7 +2722,7 @@ body.snap .snaponly{display:block}
 .steps a,.steps span{display:inline-block;padding:5px 10px;border-radius:14px;border:1px solid #d7dbe0;background:#fff;color:#4a5159;text-decoration:none}
 .steps .on{background:#2a78d6;border-color:#2a78d6;color:#fff;font-weight:700}
 </style></head><body><div class="wrap">
-<h1>팀 취합<small id="ver">LoadMonitor28</small></h1>
+<h1>팀 취합<small id="ver">LoadMonitor29</small></h1>
 <div class="sub">공유폴더의 인별 결과를 실시간으로 읽어 시각화합니다. 원본 파일은 수정하지 않습니다.</div>
 <div class="steps nosnap">
  <a href="/" target="_blank">① 내 PC 분석</a>
@@ -2799,7 +2730,6 @@ body.snap .snaponly{display:block}
  <a href="/" target="_blank">③ 팀 서버 보고(자동) / 공유폴더 저장</a>
  <span class="on">④ 팀 취합 (지금 화면)</span>
  <a href="/team/report" target="_blank">리포트</a>
- <a href="/team/agentic" target="_blank">Agentic</a>
  <a href="/team/full" target="_blank">통합 보고서</a>
  <a href="/guide" target="_blank">사용 안내</a>
 </div>
@@ -2814,7 +2744,7 @@ body.snap .snaponly{display:block}
   </div>
  <div class="note" id="tsaddr"></div>
  <div class="note" id="tsurl"></div>
- <div class="note">여기서 켜면 이 PC 가 팀 취합 서버가 됩니다. 서버 IP·포트는 설치 폴더의 <b>LoadMonitor28-팀서버주소.bat</b>
+ <div class="note">여기서 켜면 이 PC 가 팀 취합 서버가 됩니다. 서버 IP·포트는 설치 폴더의 <b>LoadMonitor29-팀서버주소.bat</b>
  에서만 바꿉니다 — config\\team_server.json 에 저장되어, 이 폴더를 통째로 옮기거나 팀원에게 나눠 주면 같은 주소가
  그대로 따라갑니다. 팀원은 분석 후 그 주소로 [팀 서버 업로드]를 누르면 됩니다. 포트를 바꾼 뒤에는 켜져 있던 서버를
  [중지] 후 [팀 서버 시작]해야 새 포트로 열립니다. 대시보드를 닫아도 서버는 계속 돕니다(중지는 이 버튼으로).
@@ -2833,7 +2763,7 @@ body.snap .snaponly{display:block}
  <button class="ghost" id="reload">새로고침</button>
  <button class="run" id="refine">Copilot으로 유사 항목 정리</button>
  <button class="ghost" id="undoalias" style="display:none">정리 되돌리기</button>
- <button class="ghost" id="savehtml">정적 리포트 다시 만들기 (team_report·team_agentic·통합 보고서)</button>
+ <button class="ghost" id="savehtml">정적 리포트 다시 만들기 (team_report·통합 보고서)</button>
  <span class="state" id="msg" style="font-size:11.5px;color:#5a626b"></span>
 </div>
 <div class="row" style="margin-top:8px">
@@ -2843,7 +2773,7 @@ body.snap .snaponly{display:block}
  <button class="ghost" id="fullsnap">스냅샷 저장</button>
  <span class="state" id="fullat" style="font-size:11.5px;color:#5a626b"></span>
 </div>
-<div class="note">팀 통합 보고서(team_full_report.html): 로드율·과제×인원·업무유형·Agentic·워크플로우를 한 장에 담은
+<div class="note">팀 통합 보고서(team_full_report.html): 로드율·과제×인원·업무유형·워크플로우를 한 장에 담은
 정적 파일 — 팀원 업로드마다 자동 갱신되고 [다시 만들기]로 즉시 새로 만듭니다(Copilot 없이 저장된 통합만 적용).
 v3 는 인별 로드율을 뺀 공유용, [스냅샷 저장]은 팀통합보고서_&lt;시각&gt;.html 사본을 취합 폴더에 남깁니다.</div>
 <div class="note">유사 항목 정리: 인별 분석에서 갈라진 표기('광학 설계'/'광학계 설계' 등)를 Copilot이
@@ -2854,7 +2784,6 @@ v3 는 인별 로드율을 뺀 공유용, [스냅샷 저장]은 팀통합보고�
  <div class="kpi"><div class="lb">인원</div><div class="vl" id="k_n">–</div><div class="nt" id="k_nn"></div></div>
  <div class="kpi"><div class="lb">팀 로드율 (투입÷가용)</div><div class="vl" id="k_load">–</div><div class="nt" id="k_mm"></div></div>
  <div class="kpi"><div class="lb">과제 수</div><div class="vl" id="k_pj">–</div><div class="nt" id="k_alias"></div></div>
- <div class="kpi"><div class="lb">Agentic 분석</div><div class="vl" id="k_ag">–</div><div class="nt">완료 인원</div></div>
 </div>
 
 <div class="card"><h2>취합 현황 <span class="state">누가·언제·어디서 올렸는지 — 빠진 사람이 있는지 여기서 확인합니다</span></h2>
@@ -2870,14 +2799,7 @@ v3 는 인별 로드율을 뺀 공유용, [스냅샷 저장]은 팀통합보고�
  <div class="card"><h2>업무유형 분포 (인별)</h2><div id="wtstack"></div></div>
 </div>
 
-<div class="card"><h2>Agentic AI 과제 적합률 — 과제 × 인원 <span class="state" style="font-weight:400;font-size:11px;color:#8b929b">등록된 과제 기준 · 셀 색이 진할수록 적합 · 숫자 = 적합%(근거 업무 실측 MM)</span></h2>
- <div style="overflow-x:auto"><table class="heat" id="heat"></table></div>
- <div class="note" id="heatrank"></div></div>
-
-<div class="grid2">
- <div class="card"><h2>팀 발굴 신규 Agentic AI 후보</h2><div id="newlist"></div></div>
- <div class="card"><h2>공통업무 (여러 사람·여러 과제 반복)</h2><table id="commtbl"></table></div>
-</div>
+<div class="card"><h2>공통업무 (여러 사람·여러 과제 반복)</h2><table id="commtbl"></table></div>
 
 <div class="card"><h2>세부업무 상위 (팀 합산) <span class="state" style="font-weight:400;font-size:11px;color:#8b929b">유사 항목 정리 후 같은 일이 한 줄로 합쳐졌는지 확인</span></h2>
  <table id="dtltbl"></table></div>
@@ -2966,7 +2888,6 @@ function render(){
  $("k_mm").textContent=`투입 ${tin.toFixed(2)} / 가용 ${tav.toFixed(2)} MM`+(exm.length?` · 측정 불충분 ${exm.length}명 제외`:"");
  $("k_pj").textContent=Object.keys(D.matrix||{}).length;
  $("k_alias").textContent=D.aliases?`정리 매핑 ${D.alias_n}건 적용`:"정리 전";
- $("k_ag").textContent=`${(D.agentic||[]).length}/${ms.length}`;
  // 팀 통합 보고서 상태 — 정적 스냅샷(team_report.html)에서는 D.full 이 없어 '없음' 으로 남는다(nosnap 카드)
  const fu=D.full||{};
  $("fullat").textContent=fu.exists?`통합 보고서 ${fu.at||""} 생성${fu.v3?" · v3 있음":""}`:"통합 보고서 아직 없음 — [다시 만들기]";
@@ -3022,34 +2943,6 @@ function render(){
   return `<div style="display:flex;align-items:center;gap:8px;margin:4px 0">
    <span style="width:80px;font-size:11.5px;text-align:right">${esc(m.owner)}</span><span>${segs}</span></div>`;
  }).join("")+`<div class="row" style="margin-top:6px">${Object.entries(WTC).map(([k,c])=>`<span style="font-size:11px"><span class="dot" style="background:${c}"></span>${k}</span>`).join("")}</div>`;
- // 등록된 과제 히트맵
- const ags=D.agentic||[];const tks=D.tasks||[];
- if(tks.length){
-  let h=`<tr><th style="text-align:left">과제</th>${ags.map(a=>`<th>${esc(a.owner)}</th>`).join("")}<th>팀 합계</th></tr>`;
-  const rank=[];
-  tks.forEach(t=>{
-   let tot=0;
-   const cells=ags.map(a=>{
-    const m=(a.match||[]).find(x=>x.task===t.id);
-    if(!m||!m.fit)return`<td style="color:#c9cfd8">-</td>`;
-    tot+=m.load_mm||0;
-    const al=Math.min(0.85,m.fit/100*0.85+0.08);
-    return`<td style="background:rgba(42,120,214,${al});color:${m.fit>=45?"#fff":"#12151a"}"><b>${m.fit}%</b><br><span style="font-size:9.5px">${(m.load_mm||0).toFixed(2)}</span></td>`;
-   }).join("");
-   rank.push([t,tot]);
-   h+=`<tr><td style="text-align:left" title="${esc(t.desc)}"><b>${esc(t.id)}</b> ${esc(t.name)}</td>${cells}<td><b>${tot.toFixed(2)} MM</b></td></tr>`;
-  });
-  $("heat").innerHTML=h;
-  rank.sort((a,b)=>b[1]-a[1]);
-  const top=rank.filter(([_,v])=>v>0).slice(0,3).map(([t,v])=>`${t.id}(${v.toFixed(2)}MM)`);
-  $("heatrank").textContent=top.length?`팀 우선순위 제안(현재 로드 기준): ${top.join(" → ")}`:"Agentic 분석을 실행한 인원이 없거나 매칭이 없습니다 — 각자 UI의 Agentic AI 탭에서 분석 후 재내보내기";
- }
- // 발굴 후보
- let nl="";
- ags.forEach(a=>(a.new||[]).forEach(n=>{nl+=`<div style="border-left:3px solid #6c4fb8;padding:3px 0 3px 10px;margin:8px 0">
-  <b>${esc(n.name)}</b> <span style="font-size:10.5px;color:#8b929b">제안 ${esc(a.owner)}${n.evidence_rows!=null?" · 근거 업무 "+n.evidence_rows+"행":""}</span>
-  <div style="font-size:11px;color:#5a626b">로직: ${esc(n.logic)}<br>사유: ${esc(n.reason)}</div></div>`;}));
- $("newlist").innerHTML=nl||'<div class="note">발굴된 후보가 없습니다.</div>';
  // 공통업무
  $("commtbl").innerHTML="<tr><th>세부업무</th><th>관련 과제</th><th>수행 인원</th><th style='width:56px'>MM</th></tr>"+
   ((D.common||[]).map(c=>`<tr><td><b>${esc(c.detail)}</b></td><td>${(c.models||[]).map(esc).join(", ")}</td>
@@ -3076,9 +2969,9 @@ function tsRender(d){
   unreadable:"확인하지 못한 프로그램",hidden:"잠깐 쓰이는 중(붙잡은 서버 없음)"};
  // 포트를 쥔 것이 '무엇인지' 이름으로 말한다 — '다른 프로그램' 으로는 손쓸 수 없다
  $("tstake").style.display=(busy&&TS.take&&TS.take!=="no")?"":"none";
- // 설정된 서버 주소(설치 폴더의 팀 서버 주소 파일) — 보여 주기만 한다. 바꾸는 곳은 LoadMonitor28-팀서버주소.bat.
+ // 설정된 서버 주소(설치 폴더의 팀 서버 주소 파일) — 보여 주기만 한다. 바꾸는 곳은 LoadMonitor29-팀서버주소.bat.
  const AK={server:"#0f7a3d",member:"#b26a00",loopback:"#c0122f",unknown:"#98a0a8"};
- const bat=esc(TS.edit_bat||"LoadMonitor28-팀서버주소.bat");
+ const bat=esc(TS.edit_bat||"LoadMonitor29-팀서버주소.bat");
  $("tsaddr").innerHTML=(TS.upload_url?`팀원 업로드 주소(설정): <b>${esc(TS.upload_url)}</b> — `
    +`<span style="color:${AK[TS.addr_kind]||"#98a0a8"}">${esc(TS.addr_note||"")}</span>`:"")
   +(busy&&TS.suggest_port?`<br><span style="color:#c0122f">포트 ${TS.port} 을 다른 프로그램이 쓰고 있습니다 — `
@@ -3099,7 +2992,7 @@ function tsRender(d){
       +((occ[0].exe&&!(occ[0].cmd||"").startsWith(occ[0].exe))?`<br><span class="state">${esc(occ[0].exe)}</span>`:"")
       +(occ[0].cmd?`<br><span class="state">${esc(occ[0].cmd)}</span>`:"")
       +(TS.foreign_root?`<br><span class="state">설치 폴더: ${esc(TS.foreign_root)}</span>`:"")
-     :"붙잡고 있는 서버를 찾지 못했습니다 — LoadMonitor28-팀서버주소.bat 에서 포트를 바꾸는 편이 확실합니다")
+     :"붙잡고 있는 서버를 찾지 못했습니다 — LoadMonitor29-팀서버주소.bat 에서 포트를 바꾸는 편이 확실합니다")
     :(TS.log?`<span class="state">${esc(TS.log)}</span>`:""));
 }
 async function tsLoad(){
@@ -3124,7 +3017,7 @@ $("tsopen").onclick=()=>{if(TS.urls&&TS.urls.length)window.open(TS.urls[0],"_bla
 $("tstake").onclick=()=>{
  const occ=TS.occupant||[], NL=String.fromCharCode(10);
  if(!occ.length){alert("포트를 쥔 프로그램을 확인하지 못해 가져올 수 없습니다."+NL
-  +"LoadMonitor28-팀서버주소.bat 에서 포트를 다른 번호로 바꾸세요.");return;}
+  +"LoadMonitor29-팀서버주소.bat 에서 포트를 다른 번호로 바꾸세요.");return;}
  // 무엇을 죽이는지 그대로 보여 준다 — 이름만 보고 누르면 사고가 난다
  const list=occ.map(x=>" · "+x.name+" (pid "+x.pid+")"+(x.owner?"  ["+x.owner+"]":"")
   +(x.exe?NL+"   "+x.exe:"")+(x.cmd?NL+"   "+x.cmd.slice(0,140):"")).join(NL);
@@ -3167,10 +3060,10 @@ $("refine").onclick=async()=>{
 $("undoalias").onclick=async()=>{
  const NL=String.fromCharCode(10);
  if(!confirm("유사 항목 정리를 되돌릴까요? (team_aliases.json 삭제 — 원본은 원래 그대로입니다)"))return;
- const all=confirm("Copilot 이 채운 다른 캐시(team_series·team_pjclass·team_detail_groups·team_cand_groups.json)도 함께 지울까요?"
+ const all=confirm("Copilot 이 채운 다른 캐시(team_series·team_pjclass·team_detail_groups.json)도 함께 지울까요?"
   +NL+"[취소] = team_aliases.json 만 삭제");
  await fetch("/api/team_refine",{method:"DELETE",headers:{"Content-Type":"application/json"},
-   body:JSON.stringify(all?{files:["team_series.json","team_pjclass.json","team_detail_groups.json","team_cand_groups.json"]}:{})});
+   body:JSON.stringify(all?{files:["team_series.json","team_pjclass.json","team_detail_groups.json"]}:{})});
  load();
 };
 async function makeFull(snap){
@@ -3209,7 +3102,7 @@ load();tsLoad();
 </script></body></html>"""
 
 PAGE = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
-<title>LoadMonitor28</title><style>
+<title>LoadMonitor29</title><style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Malgun Gothic',system-ui,sans-serif;background:#f2f4f7;color:#12151a;padding:22px}
 .wrap{max-width:1080px;margin:0 auto}
@@ -3262,7 +3155,7 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
 .tl .s{color:#8b929b}.tl .p{font-weight:700}
 .tag{display:inline-block;background:#f0f3f7;border-radius:3px;padding:1px 7px;margin:1px 3px 1px 0;font-size:10.5px;color:#3d444c}
 </style></head><body><div class="wrap">
-<h1>LoadMonitor28<small id="ver">로컬 전용 · 외부 전송 없음</small></h1>
+<h1>LoadMonitor29<small id="ver">로컬 전용 · 외부 전송 없음</small></h1>
 <div id="stub_banner" style="display:none;background:#fff1c2;border:2px solid #e08a00;color:#6b3a00;border-radius:6px;padding:10px 14px;margin:8px 0 12px;font-size:13px;line-height:1.6"></div>
 <div class="steps">
  <span class="on">① 내 PC 분석 (지금 화면)</span>
@@ -3314,7 +3207,6 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
  <span class="chip" data-t="week">주간 리뷰</span>
  <span class="chip" data-t="month">월간 리뷰</span>
  <span class="chip" data-t="deep">상세 리뷰</span>
- <span class="chip" data-t="agentic">Agentic AI</span>
  <span class="chip" data-t="flow">담당자 워크플로우</span>
 </div>
 
@@ -3398,7 +3290,7 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
  <div class="note" id="tusent"></div>
  <div class="note" id="tureport"></div>
  <div class="note">팀 서버를 켜고 끄는 것과 취합 결과 보기는 <b><a href="/team" target="_blank">팀 취합 화면</a></b>에 있습니다
- (LoadMonitor28-팀취합.bat 과 같은 화면).</div>
+ (LoadMonitor29-팀취합.bat 과 같은 화면).</div>
  <div class="note">[분석 실행]이 끝나면 묶음을 먼저 <b>대기</b>로 만든 뒤 팀 서버로 <b>자동 보고</b>합니다(설정 teamUpload.autoReport).
  닿지 않는 망이면 묶음은 그대로 대기로 남고 화면에 실패 알림이 뜹니다 — 사내망에서 [팀 서버 업로드]를 한 번 누르면
  <b>밀린 기간까지 함께</b> 올라가고, 보낸 묶음은 <code>report\\upload_sent\\</code> 로 옮겨집니다.
@@ -3461,7 +3353,6 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
 <div class="tab" id="tab-week" style="display:none"><div id="rv-week"></div></div>
 <div class="tab" id="tab-month" style="display:none"><div id="rv-month"></div></div>
 <div class="tab" id="tab-deep" style="display:none"><div id="rv-deep"></div></div>
-<div class="tab" id="tab-agentic" style="display:none"><div id="rv-agentic"></div></div>
 <div class="tab" id="tab-flow" style="display:none"><div id="rv-flow"></div></div>
 <div style="height:44px"></div><!-- 하단 고정 상태바에 내용이 가리지 않도록 여백 -->
 
@@ -3471,7 +3362,7 @@ const WTCOL={"개발":"#2a78d6","사무":"#e08a00","현장":"#0e8c7a","협업":"
 const PAL=["#2a78d6","#0e8c7a","#a61b4a","#e08a00","#6c4fb8","#3d8f3d","#c05a78","#4a7f9e","#8a6d3b","#556270"];
 const esc=s=>String(s??"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/"/g,"&quot;");
 const iso=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
-// 기간 빠른 선택 — 서버 quarter_range(ui\\app.py)·LoadMonitor28.bat 과 같은 규칙: 오늘이 속한 해, 끝이 미래면 오늘로,
+// 기간 빠른 선택 — 서버 quarter_range(ui\\app.py)·LoadMonitor29.bat 과 같은 규칙: 오늘이 속한 해, 끝이 미래면 오늘로,
 // 아직 시작하지 않은 분기·반기는 고를 수 없다(칩이 흐려진다). 'ytd' = 올해 1월 1일부터(팀 전체가 같은 기간이어야 취합이 맞다).
 const PSPAN={ytd:["01-01","12-31"],q1:["01-01","03-31"],q2:["04-01","06-30"],q3:["07-01","09-30"],q4:["10-01","12-31"],h1:["01-01","06-30"],h2:["07-01","12-31"]};
 function periodRange(k,today){const t=today||iso(new Date());const s=PSPAN[k];if(!s)return null;
@@ -3575,7 +3466,7 @@ async function poll(){
    $("pg_time").textContent=`경과 ${fmt(s.elapsed)}`+(s.eta!=null?` · 남은 시간 약 ${fmt(s.eta)}`:"");
    // 느린 것과 멈춘 것을 구분할 정보 — 예전에는 "수십 초~수 분" 한 줄뿐이라, 한 왕복이 십 분을 넘기면
    // 사용자가 "멈췄다" 고 판단할 수밖에 없었다(제보: 2시간 정체).
-   const aiPhase=s.phase&&/^(AI|워크플로우|Agentic|월별)/.test(s.phase);
+   const aiPhase=s.phase&&/^(AI|워크플로우|월별)/.test(s.phase);
    const idle=(s.idle==null?null:s.idle);
    $("pg_hint").textContent=coolPh?"Copilot 이 잠시 응답을 제한해 1~2분 쉬었다가 같은 묶음을 다시 보냅니다(한 번 분석에서 쉬는 시간은 모두 합쳐 5분까지). 창을 닫지 말고 두세요 — 이미 판정한 신호는 저장돼 있습니다."
     :!aiPhase?""
@@ -3738,7 +3629,7 @@ async function refresh(){
    // 이 표·KPI·리포트는 모두 새 규칙 결과다(V-01: 셋이 서로 다른 값을 보이던 결함)
    why="AI 판정 뒤에 업무 로드가 <b>다시 추출</b>됐습니다(판정 이후 재추출됨)"+(lr.ai_requested===false?" — 최근 실행은 AI 판정 없이 돌았습니다":"")
        +". 지난 판정 산출물(정제본·판정 기록)은 .stale 로 무효화돼 표·KPI·리포트가 모두 규칙 결과입니다.";
-   how="[분석 실행] 옆의 <b>AI 정제</b> 체크를 켜고 다시 실행하세요 (재수집 없이 하려면 '재분석만'도 함께). Agentic·워크플로우 탭의 지난 결과는 '재추출 이후 결과'로 표시됩니다.";
+   how="[분석 실행] 옆의 <b>AI 정제</b> 체크를 켜고 다시 실행하세요 (재수집 없이 하려면 '재분석만'도 함께). 워크플로우 탭의 지난 결과는 '재추출 이후 결과'로 표시됩니다.";
   }else if(!j&&lr.ai_requested===false){
    why="AI 판정을 켜지 않고 실행했습니다.";
    how="[분석 실행] 옆의 <b>AI 정제</b> 체크를 켜고 다시 실행하세요 (재수집 없이 하려면 '재분석만'도 함께).";
@@ -4117,7 +4008,7 @@ async function tuLoad(){
   tuLoad();
  });
 }
-// v5: 올릴 주소는 보여 주기만 한다 — 바꾸는 곳은 LoadMonitor28-팀서버주소.bat 하나.
+// v5: 올릴 주소는 보여 주기만 한다 — 바꾸는 곳은 LoadMonitor29-팀서버주소.bat 하나.
 // 설치 폴더의 config\\team_server.json 에 저장되어 폴더를 옮기거나 나눠 줘도 그대로 따라간다.
 function tuFill(d){
  if($("tuurl"))$("tuurl").textContent=d.url||"(주소 없음)";
@@ -4125,7 +4016,7 @@ function tuFill(d){
  const src=(d.source||{}).host, el=$("tuaddr");
  if(!el)return;
  el.innerHTML=(src&&SRC[src]?esc(SRC[src])+" · ":"")
-  +"바꾸려면 설치 폴더의 <b>"+esc(d.edit_bat||"LoadMonitor28-팀서버주소.bat")+"</b> 을 실행하세요(이 화면에서는 바꾸지 않습니다)."
+  +"바꾸려면 설치 폴더의 <b>"+esc(d.edit_bat||"LoadMonitor29-팀서버주소.bat")+"</b> 을 실행하세요(이 화면에서는 바꾸지 않습니다)."
   +(d.addr_kind==="loopback"?`<div style="color:#c0122f">${esc(d.addr_note||"")}</div>`:"")
   +((d.warnings||[]).length?`<div style="color:#c0122f">${(d.warnings||[]).map(esc).join("<br>")}</div>`:"");
 }
@@ -4291,8 +4182,7 @@ $("teamagg").onclick=async()=>{
   alert(d.error==="no members"?"공유폴더에 취합할 인원이 없습니다.\\n각 팀원이 [분석 실행] 후 자동 내보내기가 되어야 합니다.":"팀 취합 실패 — 진행 로그 확인");
   return;
  }
- $("state").textContent=`팀 취합 완료 — ${d.members}명 (Agentic ${d.agentic}명)`;
- window.open("/team/agentic","_blank");
+ $("state").textContent=`팀 취합 완료 — ${d.members}명`;
  window.open("/team/report","_blank");
 };
 $("diag").onclick=async()=>{
@@ -4338,12 +4228,12 @@ $("prepmove").onclick=async()=>{
  $("prepmove").disabled=true;$("state").textContent="이동 준비 중…";
  const r=await fetch("/api/prepmove",{method:"POST"}).then(x=>x.json()).catch(()=>({ok:false}));
  if(!r.ok){$("prepmove").disabled=false;$("state").textContent="대기 중";
-  alert("정리 창을 띄우지 못했습니다 — LoadMonitor28-이동준비.bat 을 직접 실행하세요."+(r.error?"\\n"+r.error:""));return;}
+  alert("정리 창을 띄우지 못했습니다 — LoadMonitor29-이동준비.bat 을 직접 실행하세요."+(r.error?"\\n"+r.error:""));return;}
  alert("정리 창이 열렸습니다.\\n그 창의 안내를 따라 주세요 — 잠시 뒤 이 대시보드는 닫힙니다.");
  fetch("/api/quit",{method:"POST"}).catch(()=>{});
  document.body.innerHTML='<div class="wrap"><h1>PC 이동 준비</h1>'
   +'<div class="card"><div class="note">대시보드를 종료했습니다. 열린 정리 창의 결과를 확인한 뒤 폴더를 옮기세요.<br>'
-  +'옮긴 PC 에서는 LoadMonitor28-UI.bat 을 실행하면 됩니다 — 지난 PC 데이터는 자동으로 합산됩니다.</div></div></div>';
+  +'옮긴 PC 에서는 LoadMonitor29-UI.bat 을 실행하면 됩니다 — 지난 PC 데이터는 자동으로 합산됩니다.</div></div></div>';
 };
 $("cdiag").onclick=async()=>{
  // PC 마다 Outlook·Teams 버전이 달라 메일·팀즈가 비는 실측 — 무엇이 막혔는지 이 PC 에서 바로 본다
@@ -4388,7 +4278,7 @@ document.querySelectorAll("[data-s]").forEach(c=>c.onclick=()=>showData(c.datase
 let loaded={};
 let curTab="dash";          // 지금 보고 있는 탭 — 실행이 끝나면 열린 리뷰 탭을 다시 그린다(poll)
 const AGENT_C={"상":"#1d8a4a","중":"#c98a00","하":"#8b929b"};
-// 수동 재분석(Agentic·워크플로우)은 서버 스레드에서 돈다 — 끝날 때까지 /api/status 를 보며 기다린다.
+// 수동 재분석(워크플로우)은 서버 스레드에서 돈다 — 끝날 때까지 /api/status 를 보며 기다린다.
 // 새로고침해도 서버가 기억하므로(GET 의 running/manual) 탭을 다시 열면 이어서 기다리고 사유를 다시 보여 준다.
 async function waitIdle(){
  for(;;){await new Promise(r=>setTimeout(r,2000));
@@ -4614,8 +4504,7 @@ document.querySelectorAll("#tabs [data-t]").forEach(c=>c.onclick=()=>{
  // 탭을 다시 눌러도 재시도되지 않는다.
  const fail=(k,e)=>{loaded[k]=0;const el=$("rv-"+k);
   if(el)el.innerHTML='<div class="card"><div class="note">표시 실패('+esc(String(e&&e.message||e))+') — 탭을 다시 누르면 재시도합니다.</div></div>';};
- if(id==="agentic"){if(!loaded[id]){loaded[id]=1;loadAgentic().catch(e=>fail(id,e));}}
- else if(id==="flow"){if(!loaded[id]){loaded[id]=1;loadFlow().catch(e=>fail(id,e));}}
+ if(id==="flow"){if(!loaded[id]){loaded[id]=1;loadFlow().catch(e=>fail(id,e));}}
  else if(id!=="dash"&&!loaded[id]){loaded[id]=1;loadReview(id).catch(e=>fail(id,e));}
 });
 function connSVG(g,col){
@@ -4693,7 +4582,7 @@ async function loadReview(kind){
   const srows=(ep.spans||[]).slice(0,10).map(o=>`<span class="tag">${esc(o.model)} ${esc(o.start.slice(5))}~${esc(o.end.slice(5))} (${o.signals}건)</span>`).join("");
   pre+=`<div class="card"><h2>과제 → 업무유형 · 세부업무 (MM)${pv.consistent_with?` <span class="state">기준: ${esc(pv.consistent_with)} — 대시보드와 동일</span>`:""}</h2><table><tr><th>과제</th><th style="width:52px">MM</th><th>유형 배분</th><th>세부업무 상위</th></tr>${mrows}</table></div>
   <div class="grid2"><div class="card"><h2>업무유형 → 과제 (MM)</h2><table><tr><th>유형</th><th style="width:52px">MM</th><th>과제 배분</th></tr>${wrows}</table></div>
-  <div class="card"><h2>공통업무 — Agentic AI 자동화 후보</h2>${crows?`<table><tr><th>세부업무</th><th>관련 과제</th><th style="width:52px">MM</th></tr>${crows}</table>`:'<div class="note">2개 이상 과제에 걸친 세부업무가 아직 없습니다 (AI 판정 후 생성)</div>'}<div class="note">여러 과제에 반복되는 업무일수록 표준화·AI 대체 우선순위가 높습니다.</div></div></div>
+  <div class="card"><h2>공통업무 — 표준화·자동화 후보</h2>${crows?`<table><tr><th>세부업무</th><th>관련 과제</th><th style="width:52px">MM</th></tr>${crows}</table>`:'<div class="note">2개 이상 과제에 걸친 세부업무가 아직 없습니다 (AI 판정 후 생성)</div>'}<div class="note">여러 과제에 반복되는 업무일수록 표준화·AI 대체 우선순위가 높습니다.</div></div></div>
   <div class="card"><h2>업무 에피소드 <span class="state">외부요청 → 산출 리드타임${ep.avg_lead_h?` · 평균 ${ep.avg_lead_h}h`:""}</span></h2>
   ${orows?`<table><tr><th>요청 시각</th><th>과제</th><th>요청(시작)</th><th>산출(끝)</th><th style="width:56px">리드</th></tr>${orows}</table>`:'<div class="note">오더→산출 페어가 없습니다</div>'}
   ${srows?`<div style="margin-top:8px"><span class="state">자체진행 구간(연속 신호, 3일 공백 시 분리):</span><div style="margin-top:4px">${srows}</div></div>`:""}
@@ -4745,110 +4634,6 @@ async function loadReview(kind){
   if(kind==="deep")return `<div class="card"><h2>${head}</h2>${body}</div>`;
   return `<details${gi===0?" open":""}><summary>${head}</summary><div class="body">${body}</div></details>`;
  }).join("");
-}
-// ── Agentic AI 탭 ──
-// 커버리지 — 근거로 잡힌 업무(행·MM) + 미계상 갈래(0 이 아닌 것만). 갈래마다 할 일이 다르다(진단 D): 미판정 → [이어서 매칭] ·
-// AI 판정 대기(신호 대부분이 규칙 판정이라 보내지 않음) → [재분석만] 후 [재매칭] · 개인정보 관문 → 조치 불필요 · 과제와 무관 →
-// 실패 아님. 근거는 원본 업무 행의 (과제, 세부업무) 쌍으로 상한 없이 쌓인다 — agenticMaxWork 는 화면에 보이는 이름 수만 정한다.
-function agCover(a){
- const r=(a&&a.mm_recalc)||{};if(r.matched_rows==null)return "";
- const n2=v=>Number(v)||0;
- const tot=n2(r.rows_total||a.rows_total), mr=n2(r.matched_rows);const pct=tot?Math.round(mr/tot*100):0;
- const BK=[["pending","미판정","[이어서 매칭]"],["rule","AI 판정 대기","[재분석만] 후 [재매칭]"],
-  ["gate","개인정보 관문","조치 불필요"],["unrelated","과제와 무관","실패 아님"]];
- const hasBk=BK.some(([k])=>r[k+"_rows"]!=null);      // 갈래가 없는 옛 결과는 미계상 합계만
- const bk=BK.filter(([k])=>n2(r[k+"_rows"])>0).map(([k,lab,how])=>
-  `<span class="tag"${k==="pending"?' style="color:#c0122f"':""}>${lab} ${n2(r[k+"_rows"])}행 · ${n2(r[k+"_mm"]).toFixed(2)} MM → ${how}</span>`).join("");
- const warn=(!hasBk&&pct<80)?' style="color:#c0122f"':"";
- return `<div class="note"${warn}>근거로 잡힌 업무 <b>${mr}/${tot}행</b> (${pct}%) · ${n2(r.matched_mm).toFixed(2)}${r.rows_total_mm!=null?` / ${n2(r.rows_total_mm).toFixed(2)}`:""} MM`
-  +(r.axis==="plain"?' <span class="dim">(원본 업무 행 기준)</span>':"")
-  +(hasBk?(bk?`<div style="margin-top:3px">미계상 ${bk}</div>`:"")
-   :` — 미계상 ${n2(r.unmatched_rows)}행 · ${n2(r.unmatched_mm).toFixed(2)} MM`)+`</div>`;
-}
-// 이어받기·멈춘 이유 — 다른 기간 결과를 이어받았으면 그 기간과 매칭 시작일, 남은 행이 있으면 왜 멈췄는지(stop_kind)
-function agCarry(a,pend){
- if(!a)return "";
- const STOP_KO={budget:"시간 예산에 닿음 — [이어서 매칭]",throttle:"Copilot 사용량 제한 — 1~2시간 뒤 [이어서 매칭]",
-  login:"Copilot 로그인 만료 — [AI 연결 진단]에서 다시 로그인한 뒤 [이어서 매칭]",fatal:"사람이 손대야 풀리는 상태 — 아래 사유 확인",
-  fail:"왕복 실패 — [AI 연결 진단] 확인 후 [이어서 매칭]",gate:"개인정보 관문 — 조치 불필요"};
- let h="";
- if(a.carried_from)h+=`<div class="note" style="color:#8a5a00">⚠ <b>${esc(a.carried_from)}</b> 기간 결과를 이어받음${a.matched_since?` (매칭 시작 ${esc(a.matched_since)})`:""}</div>`;
- if(pend&&STOP_KO[a.stop_kind])h+=`<div class="note">멈춘 이유: ${STOP_KO[a.stop_kind]}${a.cooldowns?` · Copilot 대기 ${Number(a.cooldowns)||0}회`:""}</div>`;
- return h;
-}
-async function loadAgentic(){
- const el=$("rv-agentic");
- el.innerHTML='<div class="card"><div class="note">불러오는 중…</div></div>';
- const d=await fetch("/api/agentic").then(r=>r.json()).catch(()=>({}));
- const t=d.tasks||[];const a=d.analysis||null;
- const pend=a&&a.rows_pending?a.rows_pending:0;
- let h=`<div class="card"><h2>Agentic AI 과제 매칭 <span class="state">등록된 과제 ${t.length}개 ↔ 현재 업무 로드 — [분석 실행](AI 판정) 후 자동으로 매칭됩니다</span></h2>
-  <div class="row" style="margin-bottom:8px">
-   <button class="${a?"ghost":"run"}" id="agrun" style="padding:7px 18px;font-size:12.5px">${a?(pend?`이어서 매칭(남은 ${pend}행)`:"재매칭"):"Agentic AI 매칭 실행"}</button>
-   <span class="state" id="agmsg">${d.running?"Agentic 매칭 진행 중… (진행률은 상단 진행 바)":(a?"과제 지정·제외를 바꿨거나 agentic_tasks.json 을 수정했을 때 다시 돌리세요 (묶음마다 왕복 1회, 수십 초~수 분)":"분석이 아직 없거나 자동 매칭이 실패한 경우 수동 실행 (묶음마다 왕복 1회, 수십 초~수 분)")}</span>
-  </div>${d.tasks_error?`<div class="note" style="color:#c0122f">과제 목록을 읽지 못했습니다 — ${esc(d.tasks_error)}</div>`:""}${d.file_error?`<div class="note" style="color:#c0122f">${esc(d.file_error)}</div>`:""}${manualLine(d.manual)}`;
- if(!a){h+=`<div class="note">아직 매칭 결과가 없습니다${d.tag?` (기간 ${esc(d.tag)})`:""}${d.other_tag?` — <b>${esc(d.other_tag)}</b> 기간 결과는 있습니다`:""}${d.stage_note?` <span class="state">· 최근 실행 기록: ${esc(d.stage_note)}</span>`:""}${whyEmpty(d.stage_kind,"[재매칭]")} — [분석 실행](AI 판정 포함)을 돌리면 자동으로 생성됩니다. 이미 분석을 마쳤다면 위 버튼으로 매칭만 실행하세요.</div></div>`;}
- else{
-  const lastErr=a.last_error&&a.last_error.error?`<div class="note" style="color:#c0122f">마지막 실패 사유: ${esc(a.last_error.error)}${a.last_error.hint?` — ${esc(a.last_error.hint)}`:""}</div>`:"";
-  h+=`<div class="note">기간 ${esc(a.tag)} · 업무 ${a.rows_analyzed}행 분석${a.rows_total&&a.rows_total!==a.rows_analyzed?` / 전체 ${a.rows_total}행`:""}${a.chunks?` · 묶음 ${a.chunks}회`:""}${a.failed_chunks?` <span style="color:#c0122f">· ${a.failed_chunks}/${a.chunks||"?"} 묶음 실패</span>`:""}${pend?` <span style="color:#c0122f">· ${pend}행 미판정 — 결과가 실제보다 적을 수 있음. 위 버튼으로 남은 행만 이어서 판정</span>`:""}${a.salvaged_chunks?` · 잘린 답 복구 ${a.salvaged_chunks}묶음(부분 결과)`:""}${a.mm_recalc?` · 로드 MM 은 업무 실측 합(겹침 과제는 안분)`:""}${!(a.match||[]).length&&!pend&&!(a.unknown_task_count||0)?` · <b>등록된 과제에 걸치는 현업이 없습니다(매칭 0건 — 실패 아님)</b>`:""}${a.unknown_task_count?` <span style="color:#c0122f">· 답이 목록에 없는 과제 코드 ${a.unknown_task_count}건(${(a.unknown_tasks||[]).slice(0,4).map(esc).join(", ")}) — 그만큼 매칭이 빠졌습니다</span>`:""}</div>${agCover(a)}${agCarry(a,pend)}${lastErr}${d.reextracted?`<div class="note" style="color:#8a5a00">⚠ <b>${esc(d.reextracted_title||"재추출 이후 결과")}</b> — ${esc(d.reextracted_note||"이 매칭은 마지막 업무 로드 재추출 이전의 것입니다")}</div>`:""}</div>`;
-  const axCol={"축1":"#2a78d6","축2":"#0e8c7a","축3":"#a61b4a"};
-  const FITC=["#e1e0d9","#cde2fb","#9ec5f4","#6da7ec","#3987e5","#256abf","#184f95"];
-  const fitBar=f=>{const v=Math.max(0,Math.min(100,Number(f)||0));
-   const w=v>0?Math.max(3,Math.round(v*0.9)):0;
-   const c=FITC[v<=0?0:Math.min(6,Math.floor(v/17)+1)];
-   return `<svg width="90" height="12" style="vertical-align:middle"><rect width="90" height="12" rx="2" fill="#eef0f3"/><rect width="${w}" height="12" rx="2" fill="${c}"/><text x="${v>=45?4:(w+4)}" y="9.3" style="font-size:9px;font-weight:700;fill:${v>=45?"#fff":"#52514e"}">${v}%</text></svg>`;};
-  h+=`<div class="card"><h2>① 등록된 과제 ${t.length}개 × 현업 매칭</h2>
-   <table><tr><th style="width:46px">축</th><th style="width:60px">과제</th><th style="width:190px">과제명</th>
-   <th style="width:60px">적합률</th><th style="width:95px"></th><th style="width:66px">현재 로드</th><th>매칭 현업 · 사유</th></tr>`;
-  const byId={};(a.match||[]).forEach(m=>byId[m.task]=m);
-  t.forEach(tk=>{const m=byId[tk.id]||{fit:0,load_mm:0,work:[],reason:"관련 현업 없음"};
-   h+=`<tr${m.fit>=60?' style="background:#f4faf5"':""}><td><b style="color:${axCol[tk.axis]||"#333"}">${esc(tk.axis)}</b></td>
-    <td><b>${esc(tk.id)}</b></td><td title="${esc(tk.desc||"")}">${esc(tk.name)}<div class="note" style="margin:2px 0 0">${esc(String(tk.desc||"").slice(0,64))}…</div></td>
-    <td><b>${m.fit}%</b></td><td>${fitBar(m.fit)}</td><td>${(m.load_mm||0).toFixed(2)} MM</td>
-    <td>${(m.work||[]).map(w=>`<span class="tag">${esc(w)}</span>`).join("")}
-     <div style="font-size:11px;color:#5a626b;margin-top:2px">${esc(m.reason||"")}</div></td></tr>`;});
-  h+=`</table><div class="note">적합률 = 그 과제가 내 현재 업무를 자동화·대체할 수 있는 정도(Copilot 판정). 과제 설명은 과제명에 마우스를 올리면 전문이 보입니다.</div></div>`;
-  h+=`<div class="card"><h2>② 신규 Agentic AI 후보 발굴</h2>`;
-  if((a.new||[]).length){(a.new||[]).forEach(n=>{
-   h+=`<div style="border-left:3px solid #6c4fb8;padding:4px 0 4px 12px;margin:10px 0">
-    <b>${esc(n.name)}</b>${n.evidence_rows!=null?` <span class="state">근거 업무 ${n.evidence_rows}행</span>`:""}
-    <div style="font-size:12px;margin-top:3px"><b>동작 로직:</b> ${esc(n.logic)}</div>
-    <div style="font-size:11.5px;color:#5a626b;margin-top:2px"><b>발굴 사유:</b> ${esc(n.reason)}</div></div>`;});}
-  else h+=`<div class="note">근거가 충분한 신규 후보가 없습니다 — 신호가 쌓일수록 발굴 정확도가 올라갑니다.</div>`;
-  h+=`</div>`;
-  h+=`<div class="card"><h2>③ 분류기 검증 — 오할당 의심 <span class="state">내 업무가 아닌데 내 업무로 분류된 것</span></h2>`;
-  if((a.misassigned||[]).length){
-   h+=`<table><tr><th style="width:230px">업무 행</th><th>의심 사유</th><th style="width:120px"></th></tr>`;
-   (a.misassigned||[]).forEach((m,i)=>{
-    h+=`<tr><td><b>${esc(m.row)}</b></td><td style="font-size:11.5px;color:#5a626b">${esc(m.reason)}</td>
-     <td><button class="ghost" data-ex="${esc(m.row)}" style="color:#c0122f;border-color:#f0cdd5;padding:3px 10px">내 업무 아님 — 제외</button></td></tr>`;});
-   h+=`</table><div class="note">[제외]를 누르면 해당 업무의 신호가 결과에서 빠지고 MM이 재집계됩니다 (제외 이력은 config\\\\excluded_work.json 에 남습니다).</div>`;}
-  else h+=`<div class="note">오할당 의심 항목이 없습니다.</div>`;
-  h+=`</div>`;
- }
- el.innerHTML=h;
- const btn=$("agrun");
- if(btn)btn.onclick=async()=>{
-  btn.disabled=true;btn.textContent="시작 중…";
-  const r=await startTool("/api/agentic");
-  if(!r.ok||!r.started){
-   // 사유(error — hint)를 그대로 — '분석 실패' 한 마디로는 로그인 만료인지 자료 없음인지 알 수 없다
-   btn.disabled=false;btn.textContent="Agentic AI 매칭 실행";
-   const m=$("agmsg");if(m)m.innerHTML='<span style="color:#c0122f">실패: '+esc(String(r.error||""))+(r.hint?" — "+esc(String(r.hint)):"")+'</span>';
-   return;}
-  btn.textContent="분석 중…";
-  const m=$("agmsg");if(m)m.textContent="Agentic 매칭 중… (묶음마다 수십 초~수 분 · 진행률은 상단 진행 바 · 창을 닫아도 계속 돕니다)";
-  if(!timer){timer=setInterval(poll,1000);}poll();
-  await waitIdle();loaded={};loadAgentic();
- };
- if(d.running&&btn){btn.disabled=true;btn.textContent="분석 중…";waitIdle().then(()=>{loaded={};loadAgentic();});}
- el.querySelectorAll("[data-ex]").forEach(b=>b.onclick=async()=>{
-  if(!confirm(`"${b.dataset.ex}" 을 내 업무가 아닌 것으로 확정하고 결과에서 제외할까요?`))return;
-  const r=await fetch("/api/exclude",{method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({row:b.dataset.ex})}).then(x=>x.json()).catch(()=>({ok:false}));
-  if(r.ok){alert(`제외 완료 — 비업무 제외 ${r.removed}건`+(r.rehours&&r.dropped_h!=null?` · −${Number(r.dropped_h).toFixed(1)}h (투입 ${Number(r.total_mm||0).toFixed(2)} MM · 로드율 ${Math.round(r.load_pct||0)}%)`:" · 시간 재산정 없음(투입 MM 유지)")+", MM 재집계됨");loaded={};refresh();loadAgentic();}
-  else alert("제외 실패: "+(r.error||""));
- });
 }
 // ── 수집 현황 카드(원장 한 원천 — F-33) · 커서 초기화 · 수동 기록(W1-19) ──
 async function cvLoad(){
@@ -5205,7 +4990,7 @@ class H(BaseHTTPRequestHandler):
                 else:
                     msg = ("<meta charset='utf-8'><body style=\"font-family:'Malgun Gothic'\">"
                            "<h3>팀 취합 결과가 아직 없습니다</h3>"
-                           "<p>대시보드의 [팀 취합] 버튼을 누르거나 LoadMonitor28-팀취합.bat 을 실행하세요.<br>"
+                           "<p>대시보드의 [팀 취합] 버튼을 누르거나 LoadMonitor29-팀취합.bat 을 실행하세요.<br>"
                            "config.teamShareDir 설정과 팀원들의 내보내기가 선행돼야 합니다.</p></body>")
                 self._send(200, msg.encode("utf-8"), "text/html; charset=utf-8")
         elif self.path == "/api/teamserver":
@@ -5320,46 +5105,6 @@ class H(BaseHTTPRequestHandler):
                 # 수동 실행의 마지막 결과(ok/error/hint)와 '지금 도는 중' — 새로고침해도 화면이 사유를 다시 말한다
                 out["manual"] = MANUAL.get("flow")
                 out["running"] = bool(JOB["running"] and JOB["step"] == TOOL_JOBS["flow"][1])
-                out["busy"] = JOB["step"] if JOB["running"] else ""
-            self._send(200, out)
-        elif self.path == "/api/agentic":
-            out = {"tasks": [], "analysis": None, "stage_note": _stage_note("Agentic 매칭"),
-                   "stage_kind": _stage_kind("Agentic 매칭")}
-            tp = os.path.join(ROOT, "config", "agentic_tasks.json")
-            try:
-                tj = json.load(open(tp, encoding="utf-8-sig"))
-                out["tasks"] = [t for t in ((tj.get("tasks") if isinstance(tj, dict) else None) or [])
-                                if isinstance(t, dict) and t.get("id")]
-                if not out["tasks"]:
-                    out["tasks_error"] = "config\\agentic_tasks.json 에 과제(tasks, id 필수)가 없습니다"
-            except OSError:
-                out["tasks_error"] = "config\\agentic_tasks.json 이 없습니다 — 과제 목록 파일을 config\\ 에 두세요"
-            except ValueError as e:
-                out["tasks_error"] = f"config\\agentic_tasks.json 의 JSON 형식이 깨졌습니다({str(e)[:60]})"
-            sp = latest_signals()
-            if sp:
-                tag = os.path.basename(sp)[len("signals_"):-len(".csv")]
-                out["tag"] = tag
-                ap = os.path.join(REPORT, f"agentic_{tag}.json")
-                if os.path.exists(ap):
-                    try:
-                        a = json.load(open(ap, encoding="utf-8-sig"))
-                        if isinstance(a, dict):
-                            a = _agentic_stale(a, tag, ap, out)
-                            out["analysis"] = a
-                        else:
-                            out["file_error"] = f"agentic_{tag}.json 의 최상위가 객체가 아닙니다 — [재매칭]으로 다시 만드세요"
-                    except (OSError, ValueError) as e:
-                        out["file_error"] = f"agentic_{tag}.json 을 읽지 못함({type(e).__name__}) — [재매칭]으로 다시 만드세요"
-                else:
-                    other = sorted(glob.glob(os.path.join(REPORT, "agentic_*.json")))
-                    if other:
-                        ot = os.path.basename(other[-1])[len("agentic_"):-len(".json")]
-                        if ot != tag:
-                            out["other_tag"] = ot
-            with LOCK:
-                out["manual"] = MANUAL.get("agentic")
-                out["running"] = bool(JOB["running"] and JOB["step"] == TOOL_JOBS["agentic"][1])
                 out["busy"] = JOB["step"] if JOB["running"] else ""
             self._send(200, out)
         elif self.path == "/api/extra":
@@ -5518,7 +5263,7 @@ class H(BaseHTTPRequestHandler):
             except Exception:
                 self._send(400, {"ok": False, "error": "bad json"})
                 return
-            # v5: 보낼 주소는 설치 폴더의 config\team_server.json(LoadMonitor28-팀서버주소.bat 에서만 바꾼다).
+            # v5: 보낼 주소는 설치 폴더의 config\team_server.json(LoadMonitor29-팀서버주소.bat 에서만 바꾼다).
             # 화면이 보낸 주소는 받지도 저장하지도 않는다 — teamup.py 가 같은 설정을 읽는다.
             cmd = [sys.executable, os.path.join(ROOT, "teamup.py"), "--json"]
             if self.path == "/api/teamping":
@@ -5607,17 +5352,17 @@ class H(BaseHTTPRequestHandler):
                         msg = (f"포트 {port} 이 막혀 있는데 붙잡고 있는 서버가 없습니다.")
                         if rsv:
                             msg += (f"\n윈도우 예약 포트 범위({rsv})에 들어 있어 이 번호는 쓸 수 "
-                                    "없습니다 — LoadMonitor28-팀서버주소.bat 에서 포트를 다른 번호로 바꾸세요.")
+                                    "없습니다 — LoadMonitor29-팀서버주소.bat 에서 포트를 다른 번호로 바꾸세요.")
                         elif lo and lo <= port <= hi:
                             msg += (f"\n이 PC 의 임시 포트 범위가 {lo}~{hi} 이고 {port} 이 그 안에 "
                                     "듭니다 — 다른 프로그램이 '바깥으로 연결' 하며 잠깐 쓴 것입니다. "
-                                    "잠시 뒤 다시 누르거나, LoadMonitor28-팀서버주소.bat 에서 번호를 " + str(max(hi + 1, _alt_port_base()))
+                                    "잠시 뒤 다시 누르거나, LoadMonitor29-팀서버주소.bat 에서 번호를 " + str(max(hi + 1, _alt_port_base()))
                                     + " 처럼 그 범위 밖으로 바꾸면 다시 생기지 않습니다.")
                         else:
-                            msg += "\n잠시 뒤 다시 시도하거나 LoadMonitor28-팀서버주소.bat 에서 포트를 바꾸세요."
+                            msg += "\n잠시 뒤 다시 시도하거나 LoadMonitor29-팀서버주소.bat 에서 포트를 바꾸세요."
                     elif kind == "unreadable":
                         msg = (f"포트 {port} 이 쓰이고 있는데 무엇이 쥐고 있는지 확인하지 못했습니다"
-                               " (권한 또는 보안 프로그램). LoadMonitor28-팀서버주소.bat 에서 포트를 바꾸세요.")
+                               " (권한 또는 보안 프로그램). LoadMonitor29-팀서버주소.bat 에서 포트를 바꾸세요.")
                     else:
                         msg = (f"포트 {port} 을 LoadMonitor 가 아닌 프로그램이 쓰고 있습니다 — {who}")
                         if occ and occ[0].get("exe"):
@@ -5625,24 +5370,24 @@ class H(BaseHTTPRequestHandler):
                         if occ and occ[0].get("cmd"):
                             msg += f"\n명령줄: {occ[0]['cmd'][:160]}"
                         msg += ("\n무엇인지 모르겠으면 죽이지 마세요 — 사내 보안·백업 프로그램일 수 "
-                                "있습니다. LoadMonitor28-팀서버주소.bat 에서 포트를 바꾸는 편이 안전합니다.")
+                                "있습니다. LoadMonitor29-팀서버주소.bat 에서 포트를 바꾸는 편이 안전합니다.")
                     if not force:
                         if take == "no" and kind in ("legacy_lm", "other_lm", "unknown"):
                             # LM28: 다른 폴더(LM24 포함)·구버전·남의 프로그램은 끄지 않는다 — 대체 포트를 제안만(W3-08)
                             alt = int(st0.get("suggest_port") or 0)
                             msg += ("\n\n이 화면은 그 프로그램을 끄지 않습니다(같은 PC 의 LM24 팀 서버일 수 있습니다)."
-                                    + (f" 따로 켜려면 LoadMonitor28-팀서버주소.bat 에서 포트를 {alt} 처럼 비어 있는 번호로"
+                                    + (f" 따로 켜려면 LoadMonitor29-팀서버주소.bat 에서 포트를 {alt} 처럼 비어 있는 번호로"
                                        " 바꾸세요 — 팀원도 같은 주소로 맞춰야 합니다." if alt else
-                                       " 따로 켜려면 LoadMonitor28-팀서버주소.bat 에서 포트를 바꾸세요."))
+                                       " 따로 켜려면 LoadMonitor29-팀서버주소.bat 에서 포트를 바꾸세요."))
                             bad = [x for x in occ if x["protected"]]
                             if bad and any(x["self"] for x in bad):
                                 msg += ("\n\n[!] 그 프로세스는 이 대시보드 자신입니다 — "
                                         "팀 서버 포트와 대시보드 포트가 같습니다. "
-                                        "LoadMonitor28-팀서버주소.bat 에서 포트를 다른 번호로 바꾸세요.")
+                                        "LoadMonitor29-팀서버주소.bat 에서 포트를 다른 번호로 바꾸세요.")
                             elif bad:
                                 msg += ("\n\n이 프로그램은 강제로 끝낼 수 없습니다 "
                                         "(시스템 프로세스이거나 다른 계정 소유) — "
-                                        "그 계정에서 닫거나 LoadMonitor28-팀서버주소.bat 에서 포트를 바꾸세요.")
+                                        "그 계정에서 닫거나 LoadMonitor29-팀서버주소.bat 에서 포트를 바꾸세요.")
                         log("[팀 서버] 시작 거절 — " + msg.splitlines()[0])
                         self._send(200, {"ok": False, "error": msg, "occupied": True,
                                          "port": port, "running": False, "kind": kind,
@@ -5653,7 +5398,7 @@ class H(BaseHTTPRequestHandler):
                         self._send(200, {"ok": False, "occupied": True, "running": False,
                                          "kind": kind, "occupant": occ, "take": take,
                                          "error": f"강제로 끝낼 수 없는 프로세스입니다 — {who}. "
-                                                  "LoadMonitor28-팀서버주소.bat 에서 포트를 바꾸세요."})
+                                                  "LoadMonitor29-팀서버주소.bat 에서 포트를 바꾸세요."})
                         return
                     if take == "confirm_pid" and confirm_pid not in [x["pid"] for x in occ]:
                         # LoadMonitor 가 아닌 것을 죽이려면 pid 를 직접 입력해야 한다
@@ -5728,7 +5473,7 @@ class H(BaseHTTPRequestHandler):
                                      "port": port,
                                      "error": "포트를 넘겨받지 못했습니다 — 먼저 잡고 있던 서버가 "
                                               "계속 응답합니다. 방금 띄운 것은 정리했습니다.\n"
-                                              "그 서버 창을 직접 닫거나 LoadMonitor28-팀서버주소.bat 에서 포트를 바꾸세요."})
+                                              "그 서버 창을 직접 닫거나 LoadMonitor29-팀서버주소.bat 에서 포트를 바꾸세요."})
                     return
                 st = teamserver_status()
                 log("[팀 서버] " + ("시작됨 · " + (st["urls"][0] if st["urls"] else f"포트 {port}")
@@ -5831,12 +5576,12 @@ class H(BaseHTTPRequestHandler):
             except OSError:
                 pass
             self._send(200, {"ok": True})
-        elif self.path in ("/api/workflow", "/api/agentic"):
+        elif self.path == "/api/workflow":
             # 수동 재분석 — [분석 실행]과 같은 백그라운드 방식(tool_job). 시간 제한 없이 자식의 왕복 타임아웃에
             # 맡기고, 화면은 /api/status 의 진행률을 보다가 끝나면 GET 으로 결과·사유(manual)를 읽는다.
             # body {"wait": true} 면 옛 방식처럼 끝까지 기다려 마지막 JSON 을 돌려준다(시험 하네스·스크립트용),
             # {"redo": true} 면 이어서 하지 않고 처음부터.
-            kind = "flow" if self.path == "/api/workflow" else "agentic"
+            kind = "flow"
             n = int(self.headers.get("Content-Length", 0) or 0)
             try:
                 b = json.loads(self.rfile.read(n) or b"{}") if n else {}
@@ -5849,7 +5594,7 @@ class H(BaseHTTPRequestHandler):
                     self._send(409, {"ok": False, "error": "busy",
                                      "hint": f"'{JOB['step'] or '분석'}' 이(가) 실행 중입니다 — 끝난 뒤(상단 상태바 '대기') 다시 누르세요"})
                     return
-                if self._freezing():        # agentic_/workflow_ JSON 을 다시 쓴다 — 굽는 중에는 막는다
+                if self._freezing():        # workflow_ JSON 을 다시 쓴다 — 굽는 중에는 막는다
                     return
                 JOB.update(running=True, step=TOOL_JOBS[kind][1], started=time.time(),
                            phase="", done=0, total=0)
@@ -6021,19 +5766,6 @@ class H(BaseHTTPRequestHandler):
                     self._send(200, {"ok": False, "error": "retag 출력 해석 실패",
                                      "hint": (_tail[-1][:200] if _tail else f"종료 코드 {p.returncode}")})
                     return
-                try:
-                    n_re = int(res.get("retagged") or 0)
-                except (TypeError, ValueError):
-                    n_re = 0
-                if p.returncode == 0 and res.get("ok") and n_re > 0:
-                    # 재분류로 과제(Level 2)가 바뀌었으니 Agentic 의 실측 load_mm 도 다시(왕복 없음).
-                    # **0건이면 부르지 않는다** — 0건이면 retag.py 가 결과 파일을 다시 쓰지 않으므로(정제본 유지)
-                    # 재계산할 것이 없고, 원본 행(규칙 이름)에는 Agentic work 이름이 거의 없어 원본으로 재계산하면
-                    # load_mm 이 30배 줄었다(실측 5.80→0.18). n>0 이면 retag.py 가 정제본을 지워 대시보드
-                    # (result_rows)와 recalc_file(details.rows_path)이 같은 mtime 규칙으로 원본을 읽으므로 그때만 맞다.
-                    agentic_recalc(str(res.get("tag") or ""))
-                elif p.returncode == 0 and res.get("ok"):
-                    log("[agentic] 재분류 0건 — 정제본 유지, MM 실측 재계산 건너뜀")
                 self._send(200, res)
             except subprocess.TimeoutExpired:
                 # 응답 없이 끊으면 화면은 원인을 영영 모른다
@@ -6165,7 +5897,7 @@ class H(BaseHTTPRequestHandler):
             try:
                 import shutil as _sh
                 import tempfile as _tf
-                tmp = os.path.join(_tf.gettempdir(), "LM28-Prepare-Move.ps1")   # LM24 의 사본과 겹치지 않게
+                tmp = os.path.join(_tf.gettempdir(), "LM29-Prepare-Move.ps1")   # LM24·LM28 의 사본과 겹치지 않게
                 _sh.copy2(ps1, tmp)
                 # 새 콘솔 창으로 띄운다 — 사용자가 결과를 봐야 하고, 우리가 죽어도 살아남아야 한다
                 flags = 0x00000010                       # CREATE_NEW_CONSOLE (DETACHED 는 쓰지 않는다 —
@@ -6293,7 +6025,7 @@ class H(BaseHTTPRequestHandler):
 
 def main():
     port = None
-    for p in lmname.UI_PORTS:          # 9248~9267 — LM24 대시보드 대역과 나눠 북마크·탭이 섞이지 않게
+    for p in lmname.UI_PORTS:          # 9268~9287 — LM24·LM28 대시보드 대역과 나눠 북마크·탭이 섞이지 않게
         try:
             s = socket.socket()
             s.bind(("127.0.0.1", p))
@@ -6325,7 +6057,7 @@ def main():
         drop_foreign_profile()
     threading.Thread(target=_startup_cleanup, daemon=True).start()
     url = f"http://127.0.0.1:{port}/"
-    print(f"[ui] LoadMonitor28 {VERSION} — {url}  (Ctrl+C 종료)")
+    print(f"[ui] LoadMonitor29 {VERSION} — {url}  (Ctrl+C 종료)")
     ccfg = _close_cfg()
     if ccfg["on"]:
         print("[ui] 대시보드 창을 모두 닫으면 실행 중인 작업도 멈추고 이 창이 닫힙니다(약 20초 뒤 · 팀 서버는 계속)")

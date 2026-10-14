@@ -128,7 +128,7 @@ class Outcome(unittest.TestCase):
     def test_no_url_and_no_json(self):
         st = R.team_report_outcome({"ok": False, "error": "주소 형식", "no_url": True, "pending": 1}, TAG)
         self.assertEqual((st["reason"], st["pending"]), ("주소 없음", 1))
-        self.assertIn("LoadMonitor28-팀서버주소.bat", st["hint"])
+        self.assertIn("LoadMonitor29-팀서버주소.bat", st["hint"])
         for res in ({}, None, "x"):
             self.assertEqual(R.team_report_outcome(res, TAG)["reason"], "보고 결과를 읽지 못함")
         self.assertEqual(R.team_report_outcome({"ok": False, "error": "그 밖"}, TAG)["reason"], "보고 실패")

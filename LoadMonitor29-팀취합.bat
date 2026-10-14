@@ -1,7 +1,7 @@
 @echo off
 >nul chcp 949
 cd /d "%~dp0"
-title LoadMonitor28 - 팀 취합 뷰어
+title LoadMonitor29 - 팀 취합 뷰어
 
 set "PY_EXE="
 set "PY_ARGS="
@@ -37,7 +37,7 @@ echo   팀 취합 뷰어를 시작합니다. 브라우저가 자동으로 열립니다.
 echo   - 공유폴더(config.teamShareDir)의 인별 결과를 실시간으로 시각화
 echo   - [Copilot으로 유사 항목 정리] : 갈라진 표기를 통합 (되돌리기 가능)
 echo   - [팀 통합 보고서 열기] [v3] [스냅샷 저장] : team_full_report.html (v2) / _v3.html - 업로드마다 자동 갱신
-echo   - [정적 리포트 다시 만들기] : team_report.html / team_agentic.html / 통합 보고서 다시 생성
+echo   - [정적 리포트 다시 만들기] : team_report.html / 통합 보고서 다시 생성
 echo   팀 취합 화면이나 이 창을 닫으면 끝납니다 ^(Ctrl+C 도 종료^). 팀 서버는 따로 돌아 계속 켜져 있습니다.
 echo.
 "%PY_EXE%" %PY_ARGS% ui\app.py --team
@@ -55,7 +55,7 @@ exit /b 0
 
 :MISSING
 echo.
-echo  [!] 파일이 빠졌습니다 - LoadMonitor28 폴더를 통째로 다시 복사하세요.
+echo  [!] 파일이 빠졌습니다 - LoadMonitor29 폴더를 통째로 다시 복사하세요.
 echo      ^(data, report 폴더는 빼고 - 개인정보^)
 pause
 exit /b 1

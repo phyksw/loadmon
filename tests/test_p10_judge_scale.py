@@ -392,7 +392,7 @@ class _FakeCdp:
 class DriverThrottle(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory(prefix="lm28_t10d_")
-        self.cfg = dict(ca.DEFAULTS, profileDir=os.path.join(self._tmp.name, "data", "lm28_edge"), port=9533)
+        self.cfg = dict(ca.DEFAULTS, profileDir=os.path.join(self._tmp.name, "data", "lm29_edge"), port=9543)
         os.makedirs(os.path.dirname(self.cfg["profileDir"]), exist_ok=True)
         self.traces, self.once, self.newchat = [], [], []
         self.cdp = _FakeCdp()
@@ -401,7 +401,7 @@ class DriverThrottle(unittest.TestCase):
         st.enter_context(mock.patch.object(ca, "trace", lambda stage, **kw: self.traces.append(kw)))
         st.enter_context(mock.patch.object(ca, "_sleep", lambda s: None))
         st.enter_context(mock.patch.object(ca, "ensure_edge", lambda cfg: "reuse"))
-        st.enter_context(mock.patch.object(ca, "find_tab", lambda cfg: "ws://127.0.0.1:9533/devtools/page/x"))
+        st.enter_context(mock.patch.object(ca, "find_tab", lambda cfg: "ws://127.0.0.1:9543/devtools/page/x"))
         st.enter_context(mock.patch.object(ca, "CDP", lambda ws: self.cdp))
         st.enter_context(mock.patch.object(ca, "new_chat", lambda cdp, cfg: self.newchat.append(1) or "새 채팅 버튼"))
         st.enter_context(mock.patch.object(ca, "_roundtrip_once", self._once))

@@ -167,7 +167,7 @@ if ($LASTEXITCODE -ne 0) { $fail = 1 }
 & $py8 (Join-Path $root 'tools\check_recalc.py') 2>&1 | ForEach-Object { Write-Output $_ }
 if ($LASTEXITCODE -ne 0) { $fail = 1 }
 
-# --- gate 11: 팀 서버 주소 단일원 - 서버 IP·포트는 config\team_server.json(teamaddr)만 · 바꾸기는 LoadMonitor28-팀서버주소.bat 하나 · 폴더 이동 유지 · 서버<->업로드 끝단 ---
+# --- gate 11: 팀 서버 주소 단일원 - 서버 IP·포트는 config\team_server.json(teamaddr)만 · 바꾸기는 LoadMonitor29-팀서버주소.bat 하나 · 폴더 이동 유지 · 서버<->업로드 끝단 ---
 # 하위 프로세스(teamaddr CLI·teamup --ping) 여러 개와 팀 서버를 띄우므로 -Full(배포 직전)일 때만 돈다.
 if ($Full) {
     & $py8 (Join-Path $root 'tools\check_teamaddr.py') 2>&1 | ForEach-Object { Write-Output $_ }

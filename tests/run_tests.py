@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-r"""tests\run_tests.py — LM28 시험 실행기(한 프로세스).
+r"""tests\run_tests.py — LM29 시험 실행기(한 프로세스).
 
   python\python.exe -X utf8 -B tests\run_tests.py                 # tests\test_*.py 전부
   python\python.exe -X utf8 -B tests\run_tests.py p0 p3           # test_p0*.py · test_p3*.py 만

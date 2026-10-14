@@ -205,7 +205,7 @@ def _pv():
 NOTICE_DEFAULT = ["no-reply", "noreply", "do-not-reply", "알림", "notification", "notice", "뉴스레터", "newsletter",
                   "웹진", "webzine", "공지", "설문", "survey", "시스템", "sharepoint", "yammer", "viva", "helpdesk",
                   "보안", "보안공지", "(광고)", "광고", "promotion", "프로모션", "마케팅", "수신거부", "unsubscribe"]
-# 일반 명사 키워드 — 표시 이름의 부서명·성씨('LiDAR시스템팀'·'공지영'·'Vivaldi')에 부분 일치하지 않도록
+# 일반 명사 키워드 — 표시 이름의 부서명·성씨('개발시스템팀'·'공지영'·'Vivaldi')에 부분 일치하지 않도록
 # 조각(이름/직급/부서 구분자로 나눈 단위) **전체 일치**만 인정한다. 나머지 키워드는 조각 시작 일치.
 NOTICE_GENERIC = {"시스템", "system", "공지", "알림", "설문", "보안", "광고", "마케팅", "viva", "notice",
                   "survey", "promotion", "프로모션", "notification"}
@@ -1230,7 +1230,7 @@ def load_signals(data_dir, d0, d1, exclude=(), cfg=None):
 
     def is_notice(snd, exempt=True):
         """공지·시스템 발신자 판정(A23) — 표시 이름을 조각(이름/직급/부서 구분자)으로 나눠 본다.
-        일반 명사(시스템·공지·알림·viva…)는 조각 **전체 일치**만('LiDAR시스템팀'·'공지영'·'Vivaldi' 는 아님),
+        일반 명사(시스템·공지·알림·viva…)는 조각 **전체 일치**만('개발시스템팀'·'공지영'·'Vivaldi' 는 아님),
         구분자가 든 키워드('no-reply'·'인사팀 공지')는 부분 문자열, 나머지는 조각 시작 일치.
         회신 이력이 있는 발신자(replied)는 무조건 공지가 아니다."""
         s = (snd or "").strip().lower()
@@ -3125,7 +3125,7 @@ def _tool_usage_sampler(data_dir, d0, d1, mc, idle_act, extra, _P):
     if not n_samples:
         return {"samples": 0, "days": 0, "programs": [],
                 "why": "창 기록(data\\activity\\activity_*.csv)이 이 기간에 없습니다 — "
-                       "LM28 에는 창 샘플러가 없어 옛 기록이 있을 때만 채워집니다"}
+                       "LM29 에는 창 샘플러가 없어 옛 기록이 있을 때만 채워집니다"}
 
     first_last = {}
     for nm, ds in days_of.items():

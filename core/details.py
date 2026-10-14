@@ -4,8 +4,8 @@ details.py — 세부업무(Level 3) 표기 병합 맵 (LoadMonitor24, 보완2 �
 
 AI 가 청크마다 '렌즈 시뮬레이션'/'렌즈시뮬레이션', '레이아웃 검토'/'레이아웃 수정'/'레이아웃
 리뷰 회의' 처럼 같은 일에 다른 이름을 붙이면 (과제 × 세부업무) 격자가 조각나 워크플로우가
-쪼개지고 Agentic 근거 대조가 어긋난다. 여기서 (과제, 세부업무) → 대표 이름 맵을 만들어
-agentic·flow·freeze(분석리포트)·judge 가 같은 축을 쓰게 한다.
+쪼개진다. 여기서 (과제, 세부업무) → 대표 이름 맵을 만들어
+flow·freeze(분석리포트)·judge 가 같은 축을 쓰게 한다.
 
   ① 규칙 — ukey3 동일(띄어쓰기·구분자 변형)만. 대표 = MM 큰 이름, 같으면 공백 정규화가
      짧은 이름('빌드  논의' 오타가 대표가 되지 않게).
@@ -74,13 +74,13 @@ def _note3(s):
 
 
 def fold(s):
-    """agentic·flow 가 함께 쓰는 느슨한 축 — 괄호까지 공백으로 바꿔 토큰만 남긴다."""
+    """flow 등이 함께 쓰는 느슨한 축 — 괄호까지 공백으로 바꿔 토큰만 남긴다."""
     t = unicodedata.normalize("NFKC", str(s or ""))
     t = re.sub(r"[·・ㆍ‧/_\-()\[\]（）]", " ", t)
     return " ".join(t.split()).casefold()
 
 
-# ── 자료 읽기 (agentic·flow·freeze 공용) ──────────────────────────────────
+# ── 자료 읽기 (flow·freeze 공용) ──────────────────────────────────
 def _fresh_refined(plain, refined):
     """정제본을 써도 되는가 — 원본보다 오래된 정제본은 쓰지 않는다(배포본 규칙)."""
     if not os.path.exists(refined):
@@ -134,8 +134,7 @@ def read_signals(tag, rep=None):
 
 def refine_orig(tag, rep=None):
     r"""report\refine_map_<tag>.json → {"정제L2/정제L3": [(원본L2, 원본L3), …]}. 없거나 깨졌으면 빈 dict.
-    정제 행 하나가 덮은 원본 mm_rows (과제, 세부업무) 쌍 — agentic(근거 키를 신호 축으로)·flow(상위·설명 되짚기)가
-    함께 쓴다(예전에는 flow._refine_orig 한 벌뿐이라 agentic 은 정제 이름으로만 MM 을 찾았다)."""
+    정제 행 하나가 덮은 원본 mm_rows (과제, 세부업무) 쌍 — flow(상위·설명 되짚기)가 쓴다."""
     p = os.path.join(rep or REPORT, f"refine_map_{tag}.json")
     try:
         with open(p, encoding="utf-8-sig") as f:
@@ -1647,7 +1646,7 @@ PHASE_TEXT = {
                        "전용 Edge 창(자동 프로필)에서 회사 계정으로 로그인한 뒤 다시 실행 — [AI 연결 진단]으로 확인"),
     "edge_not_found": ("Microsoft Edge 실행 파일을 찾지 못함", "Edge 설치 확인 후 다시 실행"),
     "launch_failed": ("Edge(자동 프로필)를 디버그 포트로 띄우거나 Copilot 탭을 만들지 못함",
-                      "이미 열려 있는 자동 프로필 Edge 창(data\\lm28_edge)을 모두 닫고 다시 실행 · "
+                      "이미 열려 있는 자동 프로필 Edge 창(data\\lm29_edge)을 모두 닫고 다시 실행 · "
                       "회사 보안 정책이 디버그 포트를 막으면 [AI 연결 진단]으로 확인"),
     "input_not_found": ("Copilot 채팅 입력창을 찾지 못함",
                         "Copilot 화면이 바뀌었을 수 있습니다 — data\\copilot_auto_debug.json 을 확인"),

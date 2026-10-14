@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 r"""
-team_report.py — 팀 통합 보고서(HTML 한 장) + 유사 항목 정리 엔진 (LoadMonitor28, 팀장용).
+team_report.py — 팀 통합 보고서(HTML 한 장) + 유사 항목 정리 엔진 (LoadMonitor29, 팀장용).
 LM28: 9-1 담당자 → 업무 영역 → 과제 간트(막대 = 10절 (담당자, 과제) 블록 wf-<담당자>-<과제 sha1 8> 링크 · signals 없는
 인원은 '자료 없음' 행) · '대체 가능 MM' 표시 없음(신규 후보는 근거 업무 행 수) · Agentic 과제 수는 등록된 목록 기준.
+LM29: Agentic 과제 매칭(옛 4절)·신규 Agentic 후보(옛 5절)를 뺐다 — 뒤 절이 둘씩 당겨졌다(4 공통업무 … 7-1·7-2 간트 ·
+8 과제별 워크플로우 · 9 프로그램 사용). 옛 판이 올린 agentic_*.json 은 읽지 않는다.
 
 옛 '팀보완툴.py' 를 본체 모듈로 옮긴 것이다. 하는 일:
   · refine_once(share, sender)   — 과제·세부업무 표기 통합(규칙 + Copilot ≤3회) → team_aliases.json
@@ -12,7 +14,7 @@ LM28: 9-1 담당자 → 업무 영역 → 과제 간트(막대 = 10절 (담당�
     (서버 경로는 Copilot 없이 캐시만 적용). Copilot 정리는 UI [유사 항목 정리] → team_refine.py 만.
 
 sender 계약: sender(prompt_text, tag, name) -> {"ok": bool, "reply": str, "error"?: str}
-  (= judge.copilot_send). None 이면 Copilot 을 쓰지 않는다. 프롬프트에는 과제·업무·후보 '이름 목록'만
+  (= judge.copilot_send). None 이면 Copilot 을 쓰지 않는다. 프롬프트에는 과제·업무 '이름 목록'만
   들어간다 — 사람 이름·MM 은 보내지 않는다.
 
 캐시(취합 폴더 루트, 모두 tmp+replace 로 쓴다): CACHE_FILES 참고. 한 줄 지우면 그 통합만 원복.
@@ -36,13 +38,11 @@ if ROOT not in sys.path:
 
 FULL_HTML, FULL_V3_HTML = "team_full_report.html", "team_full_report_v3.html"
 MEMBER_HTML_DIR = "개인리포트"
-ADJUST_FILE = "team_agentic_adjust.json"
 SERIES_FILE = "team_series.json"
 PJCLASS_FILE = "team_pjclass.json"
 DETGRP_FILE = "team_detail_groups.json"
-CAND_FILE = "team_cand_groups.json"
 ALIAS_FILE = "team_aliases.json"
-CACHE_FILES = (ALIAS_FILE, SERIES_FILE, PJCLASS_FILE, DETGRP_FILE, CAND_FILE, ADJUST_FILE)
+CACHE_FILES = (ALIAS_FILE, SERIES_FILE, PJCLASS_FILE, DETGRP_FILE)
 
 
 def say(msg=""):
@@ -243,7 +243,7 @@ def _apply_groups(target, groups, pool, kind="", detail=None, dropped=None):
     """canon/alts 를 검증해 매핑에 넣는다 — 목록에 없는 이름은 정규화로 한 번 더 찾고, 그래도
     없으면 버린다(지어낸 이름 방지). '공통' 은 예약어. detail/dropped 리스트가 오면 내역을 남긴다.
 
-    · 이름 끝 괄호 꼬리('(양산)'/'(선행)')가 다른 것끼리는 **절대 묶지 않는다** — detgrp/cand/merge_similar
+    · 이름 끝 괄호 꼬리('(양산)'/'(선행)')가 다른 것끼리는 **절대 묶지 않는다** — detgrp/merge_similar
       와 같은 규칙(검증 확정: Copilot 이 둘을 묶어 team_aliases.json 에 저장돼 전 화면에 번졌다).
     · 앞 회차에서 이미 매핑된 이름(target 의 키)은 다음 회차 풀에 없어도 '목록에 없는 이름'으로 세지 않는다.
     · canon/alts 의 형식이 다르면(숫자·목록·None) 그 그룹만 무시한다 — 정리 전체가 죽지 않게."""
@@ -433,125 +433,6 @@ def refine_once(share, sender=None, log=say):
 
 
 # ══ ② 팀 보고서 재료 ═══════════════════════════════════════════════════════
-def load_adjust(share, log=say):
-    """손으로 편집하는 파일이다 — 어떤 오형식이 와도 보고서 생성이 죽으면 안 된다(검증 확정)"""
-    empty = {"excluded_people": [], "excluded_cells": []}
-    p = os.path.join(share, ADJUST_FILE)
-    if not os.path.exists(p):
-        return empty
-    try:
-        o = json.load(open(p, encoding="utf-8-sig"))
-        if not isinstance(o, dict):
-            raise ValueError("객체가 아님")
-        ppl = [str(x) for x in (o.get("excluded_people") or [])
-               if isinstance(x, str) and x.strip()]
-        cells = [[str(x[0]), str(x[1])] for x in (o.get("excluded_cells") or [])
-                 if isinstance(x, (list, tuple)) and len(x) >= 2]
-        return {"excluded_people": ppl, "excluded_cells": cells}
-    except Exception as e:  # noqa: BLE001 - 조정 파일 하나로 전체가 죽지 않게
-        log(f"    [!] {ADJUST_FILE} 형식이 이상해 무시합니다 ({type(e).__name__}) — "
-            "보고서의 [조정 내용 내보내기]가 만든 JSON 그대로 저장하세요.")
-        return empty
-
-
-# 후보명 비교축 — 조사·'~화' 꼬리·수식어(봇/에이전트/자동…)를 걷어낸 내용어 집합.
-_CAND_STOP = {"봇", "bot", "에이전트", "agent", "ai", "시스템", "툴", "tool", "도구",
-              "프로그램", "매크로", "자동", "자동화", "반자동", "기반"}
-_JOSA = ("으로", "에서", "부터", "까지", "을", "를", "이", "가", "은", "는",
-         "와", "과", "의", "로", "에", "도", "만")
-
-
-def cand_tokens(name):
-    toks = set()
-    for t in fold(name).split():
-        for j in _JOSA:
-            if t.endswith(j) and len(t) - len(j) >= 2:
-                t = t[:-len(j)]
-                break
-        if t.endswith("화") and len(t) > 2:
-            t = t[:-1]                       # 자동화→자동
-        if t and t not in _CAND_STOP:
-            toks.add(t)
-    for t in re.findall(r"[0-9a-z가-힣]+", _note(name)):  # '(시험)' 어순 꼬리는 본문 취급
-        if t not in _CAND_STOP:
-            toks.add(t)
-    return toks
-
-
-_NUM_TOK = re.compile(r"^[a-z]?\d+[가-힣a-z]*$|^[a-z](?:라인|동|호기|공장)$")
-
-
-def _cand_marks(name):
-    """번호·차수·라인 표기 — '1공장/2공장'·'1차/2차'·'A라인/B라인'은 다른 대상이다"""
-    return {t for t in fold(name).split() if _NUM_TOK.match(t)}
-
-
-def cand_same(a, b):
-    na, nb = _note(a), _note(b)
-    if na and nb and na != nb:               # (양산) vs (선행) — 실제 구분, 안 묶는다
-        return False
-    if _cand_marks(a) != _cand_marks(b):     # 번호 하나만 달라도 딴 후보
-        return False
-    if ukey(a) == ukey(b):
-        return True
-    x, y = cand_tokens(a), cand_tokens(b)
-    if not x or not y:
-        return False
-    j = len(x & y) / len(x | y)
-    return j > 0.75 or (bigram_dice(a, b) >= 0.9 and j >= 0.5)
-
-
-def merge_candidates(agentic):
-    """인별 '신규 Agentic 후보'를 유사한 것끼리 통합 — 표기·어순·조사 변형까지"""
-    items = []
-    for a in agentic:
-        if not isinstance(a, dict):
-            continue
-        new = a.get("new")
-        for n in (new if isinstance(new, list) else []):
-            if not isinstance(n, dict):          # 한 인원의 ['x'] 한 줄이 §5 전체를 죽이지 않게
-                continue
-            nm = str(n.get("name") or "").strip()
-            if not nm:
-                continue
-            # LM28(A-33 RP4): '대체 가능 MM≈' 은 만들지도 보이지도 않는다 — 후보의 무게는 근거 업무 행 수(evidence_rows)로만.
-            # 옛 결과 파일의 new[].load_mm 은 읽지 않는다(mm 은 정렬 호환용 0 — 표시하지 않는다).
-            items.append({"name": nm, "logic": str(n.get("logic") or ""),
-                          "reason": str(n.get("reason") or ""),
-                          "mm": 0.0, "ev": int(_fnum(n.get("evidence_rows"), 0.0) or 0),
-                          "who": str(a.get("owner") or "")})
-    groups = []
-    for it in items:
-        hit = None
-        itn = _note(it["name"])
-        for g in groups:
-            g_notes = {_note(n) for n in g["names"]} - {""}
-            if itn and g_notes and itn not in g_notes:
-                continue
-            if any(cand_same(n, it["name"]) for n in g["names"]):
-                hit = g
-                break
-        if hit is None:
-            groups.append({"name": it["name"], "names": {it["name"]}, "logic": it["logic"],
-                           "reason": it["reason"], "mm": it["mm"], "ev": it["ev"], "who": {it["who"]}})
-        else:
-            hit["names"].add(it["name"])
-            hit["who"].add(it["who"])
-            hit["mm"] += it["mm"]
-            hit["ev"] += it["ev"]
-            if len(it["name"]) > len(hit["name"]):
-                hit["name"] = it["name"]
-            if len(it["logic"]) > len(hit["logic"]):
-                hit["logic"] = it["logic"]
-            if len(it["reason"]) > len(hit["reason"]):
-                hit["reason"] = it["reason"]
-    for g in groups:
-        g["who"] = sorted(g["who"])
-        g["names"] = sorted(g["names"])
-    groups.sort(key=lambda g: (-len(g["who"]), -g["ev"]))
-    return groups
-
-
 def heat(v, vmax):
     """순차(한 색 파랑) 배경 — 값이 클수록 진하게, 50% 넘으면 흰 글자"""
     if v <= 0 or vmax <= 0:
@@ -559,43 +440,6 @@ def heat(v, vmax):
     steps = ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f95"]
     i = min(len(steps) - 1, int(v / vmax * len(steps)))
     return steps[i], ("#ffffff" if i >= 3 else "#0b0b0b")
-
-
-def find_member_file(mdir, prefix, tag):
-    r"""인별 폴더에서 산출물 하나 — **기간(tag)이 달라도 찾는다**(같은 이름이면 최신)."""
-    p = os.path.join(mdir, f"{prefix}_{tag}.json")
-    if tag and os.path.exists(p):
-        return p
-    fs = glob.glob(os.path.join(mdir, f"{prefix}_*.json"))
-    if not fs:
-        return ""
-    try:
-        return max(fs, key=os.path.getmtime)
-    except OSError:
-        return fs[-1]
-
-
-def collect_agentic_all(members):
-    """인별 Agentic 결과 — 기간이 달라도 모은다. 어떤 파일을 썼는지도 남긴다."""
-    out = []
-    for m in members:
-        p = find_member_file(m["dir"], "agentic", m.get("tag", ""))
-        if not p:
-            continue
-        try:
-            with open(p, encoding="utf-8-sig") as f:
-                a = json.load(f)
-        except (OSError, ValueError):
-            continue
-        if not isinstance(a, dict):
-            continue
-        a = _agg().norm_agentic(a)            # dict 항목만 · fit/load_mm 숫자 강제(화면 JS 도 이것을 믿는다)
-        atag = str(a.get("tag") or "")
-        out.append({"owner": m["owner"], "match": a.get("match") or [],
-                    "new": a.get("new") or [], "misassigned": a.get("misassigned") or [],
-                    "tag": atag, "file": os.path.basename(p),
-                    "other_period": bool(m.get("tag") and atag and atag != str(m["tag"]))})
-    return out
 
 
 def merge_similar(pairs):
@@ -1186,7 +1030,7 @@ def member_report(mdir, member, out_dir):
     r"""팀 서버에 올라온 **JSON·CSV 만으로** 그 사람의 분석 리포트를 복원한다.
 
     팀 서버는 파일 이름을 제한해 HTML 을 받지 않는다. 그런데 리포트를 만들 재료(mm_rows·mm_meta·
-    workflow·agentic·member.json)는 전부 올라와 있으니 팀장 PC 에서 다시 만든다."""
+    workflow·member.json)는 전부 올라와 있으니 팀장 PC 에서 다시 만든다."""
     owner = str(member.get("owner") or "").strip() or os.path.basename(mdir)
     tag = str(member.get("tag") or "")
     rows, rows_file = _member_rows(mdir, tag, member.get("total_mm"))
@@ -1205,10 +1049,7 @@ def member_report(mdir, member, out_dir):
 
     meta = _load_obj("mm_meta")
     wf = _load_obj("workflow")
-    ag = _load_obj("agentic")
-    if ag:
-        ag = _agg().norm_agentic(ag)          # dict 항목만 · fit/load_mm 숫자 강제
-    if not rows and not wf and not ag:
+    if not rows and not wf:
         return None
 
     period = member.get("period") or meta.get("period") or ["", ""]
@@ -1324,39 +1165,12 @@ def member_report(mdir, member, out_dir):
         '<div class="card"><div class="note">담당자 워크플로우가 없습니다 — '
         '그 PC 에서 [분석 실행](AI 판정)을 돌리면 만들어집니다.</div></div>')
 
-    def _fitbar(v):
-        v = max(0, min(100, _fint(v, 0)))     # 'high' 같은 값은 0 — ValueError 로 리포트를 잃지 않게
-        c = ["#e1e0d9", "#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf",
-             "#184f95"][0 if v <= 0 else min(6, v // 17 + 1)]
-        w = max(3, round(v * 0.9)) if v > 0 else 0
-        return (f'<svg width="90" height="12" style="vertical-align:middle">'
-                f'<rect width="90" height="12" rx="2" fill="#eef0f3"/>'
-                f'<rect width="{w}" height="12" rx="2" fill="{c}"/>'
-                f'<text x="{4 if v >= 45 else w + 4}" y="9.3" style="font-size:9px;'
-                f'font-weight:700;fill:{"#fff" if v >= 45 else "#52514e"}">{v}%</text></svg>')
-
-    match = [m for m in (ag.get("match") or []) if isinstance(m, dict) and _fint(m.get("fit"), 0) > 0]
-    m_html = "".join(
-        f"<tr><td><b>{esc(m.get('task'))}</b> {esc(m.get('name'))}</td>"
-        f"<td class='num'>{_fint(m.get('fit'), 0)}%</td><td style='width:100px'>{_fitbar(m.get('fit'))}</td>"
-        f"<td class='num'><b>{_fnum(m.get('load_mm'), 0.0):.2f}</b>"
-        + (f"<div class='sub'>안분 {m.get('load_mm_split'):.2f}</div>"
-           if isinstance(m.get("load_mm_split"), (int, float))
-           and m.get("load_mm_split") != m.get("load_mm") else "")
-        + "</td><td>"
-        + "".join(f'<span class="tag">{esc(w)}</span>' for w in (m.get("work") or []))
-        + ("<div style='color:#c0392b;font-size:11px'>근거 없음 — 이 업무명을 자료에서 "
-           "찾지 못했습니다</div>" if m.get("evidence_rows") == 0 else "")
-        + (f"<div class='sub'>{esc(m.get('reason'))}</div>" if m.get("reason") else "")
-        + "</td></tr>"
-        for m in match[:12]) or "<tr><td colspan=5 class='dim'>Agentic 매칭 결과가 없습니다</td></tr>"
-
     island = json.dumps({
         "kind": "lm-personal-report", "owner": owner, "host": member.get("host", ""),
         "period": [d0, d1], "tag": tag, "total_mm": total, "avail_mm": avail,
         "load_pct": pct, "rows_file": rows_file, "rows": rows,
         "measure": m9.get("measure"), "coverage": m9.get("coverage"),
-        "workflow": wf, "agentic": ag, "rebuilt_from": "팀서버 업로드 자료",
+        "workflow": wf, "agentic": {}, "rebuilt_from": "팀서버 업로드 자료",
         "generated": time.strftime("%Y-%m-%d %H:%M")}, ensure_ascii=False).replace("<", "\\u003c")
 
     pct_txt = _agg().pct_text(pct)
@@ -1436,12 +1250,7 @@ margin:1px 3px 1px 0;font-size:10.5px;color:#3d444c}}
 <span class="state">역할 → 일의 순서 → 단계별 Agent 가능성</span></h1>
 {flows_html}
 
-<div class="card"><h2>4. Agentic AI 과제 매칭</h2>
-<div style="overflow-x:auto"><table><tr><th>과제</th><th class="num" style="width:52px">적합률</th>
-<th></th><th class="num" style="width:78px">대체 로드 MM</th>
-<th>관련 업무 · 사유</th></tr>{m_html}</table></div></div>
-
-<div class="note">이 리포트는 팀 서버에 올라온 분석 자료(mm_rows·mm_meta·workflow·agentic)로
+<div class="note">이 리포트는 팀 서버에 올라온 분석 자료(mm_rows·mm_meta·workflow)로
 다시 만든 것입니다 — 본인 PC 에서 만든 얼린 보고서와 화면 구성은 같고, 대시보드 조작
 버튼만 없습니다.</div>
 </div>
@@ -1934,83 +1743,6 @@ def stack_rows_x(groups, owners, det2, dgmap=None, width=300, label_w=150):
     return "<div style='overflow-x:auto'>" + "".join(out) + "</div>"
 
 
-def cand_refine(share, cands, sender=None, log=say):
-    r"""규칙으로 안 묶인 신규 후보(동사 동의어·오타)를 sender(Copilot) 1회로 통합.
-    보내는 것은 후보 **이름 목록뿐**. 결과는 team_cand_groups.json 에 누적."""
-    p = os.path.join(share, CAND_FILE)
-    cache = _load_groups_cache(share, CAND_FILE)
-    names = [g["name"] for g in cands]
-    covered = set(cache) | set(cache.values())
-    todo = [n for n in names if n not in covered]
-    if sender is not None and todo and len(names) >= 3:
-        import judge
-        prompt = (
-            "다음은 한 팀에서 제안된 업무 자동화 에이전트 후보의 이름 목록이다.\n"
-            "같은 일을 자동화하는 에이전트면 묶어라 — 어순·조사 차이, 동의어(검증/체크,\n"
-            "생성/작성 등), 봇/에이전트 같은 수식어 차이는 같은 것이다.\n"
-            "대상 업무가 다르면 절대 묶지 마라 (주간/월간, 양산/선행처럼 주기·단계가\n"
-            "다르면 다른 것이다).\n"
-            'JSON 만 출력: {"groups": [["대표이름", "이름2", ...], ...]}\n'
-            '묶을 것이 없으면 {"groups": []}\n\n'
-            + "\n".join(f"- {n}" for n in sorted(names)))
-        res = sender(prompt, "cands", "teamcands")
-        o = judge.rfind_json(res.get("reply", ""), "groups") if res.get("ok") else None
-        if res.get("ok") and o and isinstance(o.get("groups"), list):
-            pool = set(names)
-            for grp in o["groups"]:
-                if not isinstance(grp, list):
-                    continue
-                grp = [str(x) for x in grp if str(x) in pool]   # 지어낸 이름 방지
-                if len(grp) < 2:
-                    continue
-                rep0, seen0 = grp[0], set()
-                while rep0 in cache and rep0 not in seen0:
-                    seen0.add(rep0)
-                    rep0 = cache[rep0]
-                for n in grp:
-                    if n != rep0:
-                        cache[n] = rep0
-            try:
-                _atomic_json(p, {"groups": cache})
-            except OSError:
-                pass
-        elif not res.get("ok"):
-            log(f"    [!] 후보 통합 왕복 실패: {res.get('error', '')} — 저장된 통합만 적용")
-    if not cache:
-        return cands, 0
-    flat = flatten_chain(dict(cache))
-    flat = {k: v for k, v in flat.items() if k != v and flat.get(v, v) == v}  # 순환 방어
-    merged, by_rep, n = [], {}, 0
-    for g in cands:
-        rep_n = ""
-        for nm in [g["name"]] + [x for x in g["names"] if x != g["name"]]:
-            if nm in flat:
-                rep_n = flat[nm]
-                break
-        rep_n = rep_n or g["name"]
-        hit = by_rep.get(ukey(rep_n))
-        if hit is None:
-            g = dict(g)
-            g["name"] = rep_n
-            by_rep[ukey(rep_n)] = g
-            merged.append(g)
-        else:
-            n += 1
-            hit["names"] = sorted(set(hit["names"]) | set(g["names"]) | {g["name"]})
-            hit["who"] = sorted(set(hit["who"]) | set(g["who"]))
-            hit["mm"] += g["mm"]
-            hit["ev"] = int(hit.get("ev") or 0) + int(g.get("ev") or 0)
-            if len(g["logic"]) > len(hit["logic"]):
-                hit["logic"] = g["logic"]
-            if len(g["reason"]) > len(hit["reason"]):
-                hit["reason"] = g["reason"]
-    for g in merged:
-        if g["names"] and g["name"] not in set(g["names"]):
-            g["name"] = max(g["names"], key=lambda x: (len(x), x))
-    merged.sort(key=lambda g: (-len(g["who"]), -int(g.get("ev") or 0)))
-    return merged, n
-
-
 def team_rows_matrix(members, share):
     r"""과제×인원 · 업무유형을 **기간(tag)이 달라도** 다시 센다.
 
@@ -2195,7 +1927,7 @@ def build_gantt(share, members, clusters, groups, owners=()):
             counts[(ci, mon)] = counts.get((ci, mon), 0) + 1
             pcounts[(ci, who9, mon)] = pcounts.get((ci, who9, mon), 0) + 1
     if not counts:
-        return ('<div class="card"><h2>9-2. 담당 업무 활동 간트</h2>'
+        return ('<div class="card"><h2>7-2. 담당 업무 활동 간트</h2>'
                 '<div class="note">판정 신호(signals) 파일이 취합 폴더에 없어 활동 간트를 '
                 "만들 수 없습니다 — 팀원이 [팀 서버 업로드]를 하면 함께 올라옵니다.</div></div>")
     active = sorted({m9 for (_c9, m9) in counts})
@@ -2381,7 +2113,7 @@ def build_gantt(share, members, clusters, groups, owners=()):
           'var k=/\\bm(\\d+)\\b/.exec(t.className);'
           't.title=(k?M[+k[1]]:"")+" \\u00b7 \\uc2e0\\ud638 "+(t.getAttribute("data-n")||"?")+"\\uac74";});})();</script>')
     return ('<div class="card gnt"><style>' + "\n".join(css) + "</style>"
-            '<h2>9-2. 담당 업무 활동 간트(과제 → 담당 업무) '
+            '<h2>7-2. 담당 업무 활동 간트(과제 → 담당 업무) '
             '<span class="state">과제를 접고 펼 수 있습니다 · 담당 업무를 누르면 사람별 '
             '타임라인(§2와 같은 사람 색)과 워크플로우 단계가 열립니다 · 진할수록 그 달 '
             '활동 많음' + old_note + '</span></h2>'
@@ -2396,8 +2128,8 @@ def build_gantt(share, members, clusters, groups, owners=()):
 
 
 def wf_anchor(owner, project):
-    r"""10절 (담당자, 과제) 하위 블록의 id — 'wf-<담당자 안전 문자>-<과제 sha1 앞 8자>'(REQ-44·A-41).
-    9-1 간트 막대의 href 가 이것을 가리킨다. 과제는 ukey(띄어쓰기·대소문자 무시)로 해시해 표기 변형이 같은 id 가 된다."""
+    r"""8절 (담당자, 과제) 하위 블록의 id — 'wf-<담당자 안전 문자>-<과제 sha1 앞 8자>'(REQ-44·A-41).
+    7-1 간트 막대의 href 가 이것을 가리킨다. 과제는 ukey(띄어쓰기·대소문자 무시)로 해시해 표기 변형이 같은 id 가 된다."""
     import hashlib
     safe = re.sub(r"[^0-9A-Za-z가-힣_-]+", "_", str(owner or "").strip()).strip("_") or "_"
     return f"wf-{safe}-{hashlib.sha1(ukey(project).encode('utf-8')).hexdigest()[:8]}"
@@ -2445,10 +2177,10 @@ def _project_area(members):
 
 
 def build_owner_gantt(share, members, owners=(), signal_rows=None):
-    r"""9-1 간트 — 담당자 → 업무 영역 → 과제 묶음 행(보기 바꾸기: 과제 → 담당자) · 막대 = 그 달 신호 수(진할수록 많음).
-    막대는 10절의 (담당자, 과제) 블록(wf_anchor)으로 가는 링크다 — 누르면 그 사람의 그 과제 워크플로우로 이동한다(REQ-44).
+    r"""7-1 간트 — 담당자 → 업무 영역 → 과제 묶음 행(보기 바꾸기: 과제 → 담당자) · 막대 = 그 달 신호 수(진할수록 많음).
+    막대는 8절의 (담당자, 과제) 블록(wf_anchor)으로 가는 링크다 — 누르면 그 사람의 그 과제 워크플로우로 이동한다(REQ-44).
     signals 가 없는 인원은 빠지지 않고 '자료 없음' 행으로 남는다(W3-13). signal_rows 는 시험 주입({owner: rows}).
-    반환 (html, pairs{(owner, 과제): 신호 수}) — 10절은 pairs 의 모든 쌍에 대상 블록을 만든다(href 가 늘 실존)."""
+    반환 (html, pairs{(owner, 과제): 신호 수}) — 8절은 pairs 의 모든 쌍에 대상 블록을 만든다(href 가 늘 실존)."""
     try:
         al2 = _agg().load_aliases(share)
         pmap2 = al2["projects"]
@@ -2556,13 +2288,13 @@ def build_owner_gantt(share, members, owners=(), signal_rows=None):
           "var a=document.getElementById('ogn-v1'),c=document.getElementById('ogn-v2');"
           "var s=a.style.display!=='none';a.style.display=s?'none':'';c.style.display=s?'':'none';"
           "b.textContent=s?'보기: 과제 → 담당자 (바꾸기)':'보기: 담당자 → 영역 → 과제 (바꾸기)';};"
-          # 막대를 누르면 10절의 그 블록이 접힌 <details> 안에 있어도 펼쳐서 보여 준다
+          # 막대를 누르면 8절의 그 블록이 접힌 <details> 안에 있어도 펼쳐서 보여 준다
           "function op(){var h=decodeURIComponent((location.hash||'').slice(1));if(!h)return;"
           "var t=document.getElementById(h);if(!t)return;var p=t.parentElement;"
           "while(p){if(p.tagName==='DETAILS')p.open=true;p=p.parentElement;}t.scrollIntoView();}"
           "window.addEventListener('hashchange',op);op();})();</script>")
-    return ('<div class="card ogn"><h2>9-1. 담당자 → 업무 영역 → 과제 간트 '
-            '<span class="state">막대 = 그 달 판정 신호 수(진할수록 많음) · 막대를 누르면 10절의 그 사람·그 과제 '
+    return ('<div class="card ogn"><h2>7-1. 담당자 → 업무 영역 → 과제 간트 '
+            '<span class="state">막대 = 그 달 판정 신호 수(진할수록 많음) · 막대를 누르면 8절의 그 사람·그 과제 '
             '워크플로우로 갑니다' + old_note + '</span> <button id="ogn-tg" type="button">'
             "보기: 담당자 → 영역 → 과제 (바꾸기)</button></h2>" + css
             + '<div style="overflow-x:auto"><div id="ogn-v1">' + "".join(v1) + "</div>"
@@ -2572,7 +2304,7 @@ def build_owner_gantt(share, members, owners=(), signal_rows=None):
 
 
 def wf_owner_blocks(groups, items, pairs, pmap=None):
-    r"""10절 (담당자, 과제) 하위 블록 — 간트 막대의 이동 대상(id = wf_anchor). → ({ukey(과제): html}, 고아 html).
+    r"""8절 (담당자, 과제) 하위 블록 — 간트 막대의 이동 대상(id = wf_anchor). → ({ukey(과제): html}, 고아 html).
     · 과제(groups)마다 그 과제의 흐름이 있는 사람 + 간트 신호가 있는 사람에게 한 블록씩. 흐름이 있으면 담당 업무별 단계
       사슬, 없으면 '이 사람의 이 과제 워크플로우 자료 없음(신호 N건)'.
     · 워크플로우가 하나도 없는 과제(간트에만 있는 쌍)는 고아 html 의 접이식에 모은다 — 막대의 href 대상이 늘 실존한다."""
@@ -2633,7 +2365,7 @@ def wf_owner_blocks(groups, items, pairs, pmap=None):
 
 
 def prog_section_html(members):
-    """11. 프로그램 사용 — 상용/비상용·자체(프로토타입) 도구를 누가 얼마나 썼나(참고 지표).
+    """9. 프로그램 사용 — 상용/비상용·자체(프로토타입) 도구를 누가 얼마나 썼나(참고 지표).
 
     ★ 로드율·MM 과 무관하다. 재료는 셋이다 — 창 기록(옛 판 샘플러의 맨 앞 창 시간), Windows 실행 기록(실행 횟수·포커스
       시간 — LM28, 관리자 권한 불필요), 파일 흔적(그 도구의 파일을 만진 날). 기록이 없는 사람은 빈칸으로 나온다 — 그 사람이
@@ -2695,7 +2427,7 @@ def prog_section_html(members):
                 + "</div>") if inh else ""
     miss = (f"<div class='note'>프로그램 기록이 없는 인원 {len(none)}명 — "
             f"{esc(', '.join(sorted(none)[:12]))}. 도구를 안 썼다는 뜻이 아닙니다.</div>") if none else ""
-    return (f"""<div class="card"><h2>11. 프로그램 사용 <span class="state">상용/비상용·자체 도구를 누가 얼마나 썼나 · 참고 지표</span></h2>
+    return (f"""<div class="card"><h2>9. 프로그램 사용 <span class="state">상용/비상용·자체 도구를 누가 얼마나 썼나 · 참고 지표</span></h2>
 <div class="note">{TOOL_BASIS_NOTE} 같은 사람의 투입 시간과 숫자가 다른 것이 정상입니다.
 '창 사용'은 옛 창 기록의 맨 앞 창 시간, '배경'은 창을 안 보고 있어도 돌아가던 솔버 시간, '포커스'·'실행'은 Windows 실행 기록의
 기간 증가분, '파일'은 그 도구의 파일을 만진 날 수입니다(–는 기록 없음). 구분별 사람 수: {kindline}</div>
@@ -2710,9 +2442,9 @@ def prog_section_html(members):
 def render_full(share, html_dir, sender=None, log=say):
     r"""팀 통합 보고서 본문 렌더 — (doc_v2, doc_v3, info). **파일을 쓰지 않는다**.
 
-    로드율·과제 배분·Agentic·워크플로우를 한 장으로. 표는 원본 팀 화면(TEAM_PAGE)의 도식을
-    따른다: 과제·업무는 누적바, Agentic 과제(등록된 목록)는 히트맵 색. sender 가 있으면 계열/세부/후보/
-    과제분류 캐시를 Copilot 으로 채우고(캐시 누적), 없으면 저장된 캐시만 적용한다."""
+    로드율·과제 배분·워크플로우를 한 장으로. 표는 원본 팀 화면(TEAM_PAGE)의 도식을
+    따른다: 과제·업무는 누적바. sender 가 있으면 계열/세부/과제분류 캐시를 Copilot 으로
+    채우고(캐시 누적), 없으면 저장된 캐시만 적용한다."""
     ag = _agg()
     data = ag.collect_team_data(share)
     members = data["members"]
@@ -2726,17 +2458,9 @@ def render_full(share, html_dir, sender=None, log=say):
         for m in members:
             m["dir"] = mdirs.get(m["owner"], "")
     stamp = time.strftime("%Y-%m-%d %H:%M")
-    adjust = load_adjust(share, log)
-
-    # 기간이 달라도 모은다 — 예전 버전으로 올린 사람의 Agentic 이 빠지던 결함
-    agentic = collect_agentic_all([m for m in members if m["dir"]]) or (data.get("agentic") or [])
-    cands = merge_candidates(agentic)
-    cands, n_cand = cand_refine(share, cands, sender, log)
-    if n_cand:
-        log(f"    신규 후보 통합: {n_cand}줄 합침 ({CAND_FILE} 누적)")
     owners_all = list(dict.fromkeys(m["owner"] for m in members))
     # D5(b) — 측정 불충분(coverage.grade=unreliable) 인원은 §1 별도 표 · 팀 투입·순위·과제×인원·유형 분포에서 제외.
-    # Agentic·워크플로우·간트(그 사람 자신의 자료)는 그대로 둔다. 구판 자료(coverage 없음)는 비교에 들어간다.
+    # 워크플로우·간트(그 사람 자신의 자료)는 그대로 둔다. 구판 자료(coverage 없음)는 비교에 들어간다.
     members_cmp = [m for m in members if not m.get("unreliable")]
     members_x = [m for m in members if m.get("unreliable")]
     owners = list(dict.fromkeys(m["owner"] for m in members_cmp))
@@ -2752,7 +2476,6 @@ def render_full(share, html_dir, sender=None, log=say):
     ax_total = round(sum(c["ax_mm"] for c in clusters), 2)
 
     team_mm = round(sum(float(m.get("total_mm") or 0) for m in members_cmp), 2)
-    n_ag = len(agentic)
 
     # ── 1. 인별 로드율 ──
     # 값은 업로드로 들어온 남의 입력 — 숫자는 숫자로만(fnum/pct_text), 문자열은 esc 를 거친다
@@ -2936,23 +2659,7 @@ def render_full(share, html_dir, sender=None, log=say):
                      f'<span class="dot" style="background:{WTC[k]}"></span>{esc(k)}</span>'
                      for k in wt_keys)
 
-    # ── 4. Agentic 과제(등록된 목록) × 인원 (히트맵 색 — 원본 팀 화면 방식) ──
-    other_period = [a["owner"] for a in agentic if a.get("other_period")]
-    task_legend = "".join(
-        f'<span class="tag" title="{esc(t.get("desc"))}"><b>{esc(t.get("id"))}</b> '
-        f'{esc(t.get("name"))}</span>' for t in (data.get("tasks") or []))
-
-    # ── 5. 신규 후보(유사 병합) ──
-    rows_new = "".join(
-        f"<tr><td><b>{esc(g['name'])}</b>"
-        + (f"<div class='sub'>표기 {len(g['names'])}종 통합: "
-           f"{esc(' / '.join(g['names'][:4]))}</div>" if len(g["names"]) > 1 else "")
-        + f"</td><td>{''.join('<span class=tag>' + esc(w) + '</span>' for w in g['who'])}</td>"
-        f"<td class='num'>{int(g.get('ev') or 0) or '–'}</td>"
-        f"<td class='dim'>{esc(g['logic'][:130])}</td></tr>"
-        for g in cands) or "<tr><td colspan=4 class='dim'>발굴된 후보가 없습니다</td></tr>"
-
-    # ── 6. 공통업무 ──
+    # ── 4. 공통업무 ──
     rows_common = "".join(
         f"<tr><td><b>{esc(c['detail'])}</b></td><td class='dim'>{esc(', '.join(c['models']))}</td>"
         f"<td>{''.join('<span class=tag>' + esc(w) + '</span>' for w in c['who'])}</td>"
@@ -2960,7 +2667,7 @@ def render_full(share, html_dir, sender=None, log=say):
         for c in (data.get("common") or [])[:12]) or (
         "<tr><td colspan=4 class='dim'>없음</td></tr>")
 
-    # ── 7. 워크플로우 유형별 비중 ──
+    # ── 5. 워크플로우 유형별 비중 ──
     cmax = max([c["mm"] for c in clusters] or [0.001]) or 0.001
     wf_bars = "".join(
         f"<tr><td style='max-width:240px'><b>{esc(c['detail'])}</b>"
@@ -2979,7 +2686,7 @@ def render_full(share, html_dir, sender=None, log=say):
                     f"<td class='num dim'>{sum(c['flows'] for c in _r)}건</td>"
                     f"<td class='num dim'>{sum(c['ax_mm'] for c in _r):.2f}</td></tr>")
 
-    # ── 8. 자동화 우선순위 ──
+    # ── 6. 자동화 우선순위 ──
     auto = sorted([c for c in clusters if c["agent_hi"]],
                   key=lambda c: (-len(c["who"]), -c["mm"]))
     auto_rows = "".join(
@@ -2991,12 +2698,12 @@ def render_full(share, html_dir, sender=None, log=say):
         for c in auto[:12]) or (
         "<tr><td colspan=6 class='dim'>'상'(자동화 가능) 판정 단계가 없습니다</td></tr>")
 
-    # ── 9. 담당 업무 × 인원 (누적바) ──
+    # ── 7. 담당 업무 × 인원 (누적바) ──
     wf_stack = stack_rows(
         [{"name": f"{c['detail']}", "names": {c["detail"]}, "row": c["mm_by"],
           "total": c["mm"]} for c in clusters[:14]], wf_owners, 280, 160)
 
-    # ── 9-1. 담당자 → 영역 → 과제 간트 · 9-2. 담당 업무 활동 간트 (월별 · 신호 기준) ──
+    # ── 7-1. 담당자 → 영역 → 과제 간트 · 7-2. 담당 업무 활동 간트 (월별 · 신호 기준) ──
     gantt_html = build_gantt(share, members, clusters, groups, owners_all)   # 간트는 본인 자료 — 전원
     # LM28(REQ-44·A-41·W3-13): 담당자 → 영역 → 과제 간트(막대 → 10절 (담당자, 과제) 블록) · signals 없는 인원은 '자료 없음'
     owner_gantt, gpairs = build_owner_gantt(share, lm or members, owners_all)
@@ -3006,7 +2713,7 @@ def render_full(share, html_dir, sender=None, log=say):
         _pmap10 = {}
     wf_by_owner, wf_orphan = wf_owner_blocks(groups, items, gpairs, _pmap10)
 
-    # ── 10. 과제별 워크플로우 (접이식) ──
+    # ── 8. 과제별 워크플로우 (접이식) ──
     def _steps_tbl(steps, total=None):
         hidden = max(0, (total or len(steps)) - len(steps))
         tail = (f'<tr><td></td><td colspan="4" class="dim">… 나머지 {hidden}단계 — '
@@ -3075,7 +2782,7 @@ def render_full(share, html_dir, sender=None, log=say):
             f'<span class="state">{len(coarse)}건 · 유형 분석에서 제외</span></h2>'
             '<div class="note" style="margin:0 0 8px">프로젝트 하나에는 성격이 다른 업무가 여럿 '
             '섞여 있어 하나의 일의 순서로 정의할 수 없습니다. 아래 인원은 담당 업무 단위 '
-            '워크플로우가 아직 없어 유형 분석에 넣지 않았습니다 — 그 PC 에서 LoadMonitor28(또는 LoadMonitor24) 로 '
+            '워크플로우가 아직 없어 유형 분석에 넣지 않았습니다 — 그 PC 에서 LoadMonitor29(또는 LoadMonitor28·LoadMonitor24) 로 '
             '[분석 실행](AI 판정)을 다시 돌리면 담당 업무 단위로 만들어집니다.</div>'
             '<table><tr><th style="width:120px">이름</th><th>과제</th></tr>'
             + "".join(f"<tr><td><b>{esc(w)}</b></td><td>"
@@ -3083,8 +2790,7 @@ def render_full(share, html_dir, sender=None, log=say):
                       + "</td></tr>" for w, ps in sorted(by_who.items())) + "</table></div>")
 
     island = json.dumps({"kind": "lm-team-report", "generated": stamp, "share": share,
-                         "tasks": data.get("tasks") or [], "agentic": agentic,
-                         "members": members, "adjust": adjust},
+                         "members": members},
                         ensure_ascii=False).replace("<", "\\u003c")
     ext = src_n.get("external") or {}
     ext_note = ""
@@ -3095,7 +2801,7 @@ def render_full(share, html_dir, sender=None, log=say):
 
     doc = f"""<!doctype html><html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>팀 통합 보고서 — 로드율 · Agentic · 워크플로우</title><style>
+<title>팀 통합 보고서 — 로드율 · 워크플로우</title><style>
 body{{font:13px/1.55 'Malgun Gothic','Segoe UI',sans-serif;color:#2c333b;background:#f4f6f8;margin:0}}
 .wrap{{max-width:1120px;margin:0 auto;padding:16px 20px 60px}}
 h1{{font-size:18px;margin:10px 0 2px;color:#1c232b}}
@@ -3137,11 +2843,6 @@ td.stn{{width:170px}} td.agc{{width:130px}}
 margin:1px 3px 1px 0;font-size:10.5px;color:#3d444c}}
 .mmbar{{display:inline-block;height:9px;border-radius:4px;background:#2a78d6;vertical-align:middle}}
 .top{{background:#1c2b3a;color:#fff;padding:9px 14px;font-size:12px}}
-#agx td.x{{text-decoration:line-through;color:#b6bcc3;background:#f2f4f6}}
-#agx th,#agx td{{padding:3px 5px;font-size:10.5px}}
-#agx .stick{{position:sticky;left:0;background:#fff;z-index:1}}
-#agx tr.sumrow td{{background:#f6f8fa;border-bottom:2px solid #d7dbe0}}
-#agx th.stick{{background:#f6f8fa}}
 details.gx>summary::before,details.gxr>summary::before,
 details.gx[open]>summary::before,details.gxr[open]>summary::before{{content:""}}
 details.gx>summary,details.gxr>summary{{cursor:pointer;list-style:none}}
@@ -3150,21 +2851,18 @@ details.gx,details.gxr{{margin-bottom:0}}
 .g-row:hover{{background:#f4f8fd}}
 .garr{{display:inline-block;color:#9aa1a9;font-size:10px;transition:transform .15s}}
 details[open]>summary .garr{{transform:rotate(90deg)}}
-#agx td.cell{{cursor:pointer}} #agx td.cell:hover{{outline:2px solid #2a78d6;outline-offset:-2px}}
-.pchk{{font-size:11.5px;color:#52514e;margin-right:10px;white-space:nowrap}}
 button{{font:12px 'Malgun Gothic';padding:4px 10px;border:1px solid #c3c2b7;border-radius:6px;
 background:#fff;cursor:pointer}} button:hover{{background:#f0f3f7}}
-textarea{{width:100%;height:64px;font:11px Consolas,monospace;margin-top:6px}}
 </style></head><body>
 <div class="top">팀 통합 보고서 · 인원 {len(members)}명 · {stamp} 생성 · 사내 전용 —
-로드율·과제 배분·Agentic·워크플로우를 한 장에 담았습니다
+로드율·과제 배분·워크플로우를 한 장에 담았습니다
 {'· 유사 항목 정리 적용' if data.get('aliases') else ''}</div>
 <div class="wrap">
-<h1>팀 업무 로드율 · Agentic AI · 워크플로우</h1>
+<h1>팀 업무 로드율 · 워크플로우</h1>
 
 <div class="kpis">
 <div class="kpi"><div class="lb">인원</div><div class="vl">{len(members)}</div>
-<div class="nt">Agentic {n_ag}명 · 워크플로우 {len(wf_owners)}명{f' · 측정 불충분 {len(members_x)}명' if members_x else ''}</div></div>
+<div class="nt">워크플로우 {len(wf_owners)}명{f' · 측정 불충분 {len(members_x)}명' if members_x else ''}</div></div>
 <div class="kpi"><div class="lb">팀 투입 MM</div><div class="vl">{team_mm:.2f}</div>
 <div class="nt">과제 {len(pj_groups)}개{' · 측정 불충분 인원 제외' if members_x else ''}</div></div>
 <div class="kpi"><div class="lb">담당 업무 유형</div><div class="vl">{len(clusters)}</div>
@@ -3189,25 +2887,7 @@ textarea{{width:100%;height:64px;font:11px Consolas,monospace;margin-top:6px}}
 그대로(HTML 이 없는 사람만 개인 자료 구성비 × ①의 투입 MM)</span></h2>
 {wt_stack}<div class="row" style="margin-top:6px">{wt_leg}</div></div>
 
-<div class="card"><h2>4. Agentic AI 과제 적합률 × 인원
-<span class="state">등록된 과제 {len(data.get('tasks') or [])}개 · 세로 = 인원 · 가로 = 등록된 과제(인원이 많아도 표 폭이 늘지 않습니다) ·
-색이 진할수록 적합률 높음 · 셀 클릭 = 제외/복원 · 이름 체크 해제 = 그 사람 제외</span></h2>
-{('<div class="note" style="margin:0 0 6px">다른 기간 결과를 쓴 인원: '
-  + esc(', '.join(other_period)) + ' — 기간이 달라도 결과를 가져왔습니다.</div>')
- if other_period else ''}
-<div id="pchks" style="margin:6px 0"></div>
-<div style="overflow-x:auto"><table id="agx"></table></div>
-<div style="margin-top:6px">{task_legend}</div>
-<div style="margin-top:8px"><button id="copyadj">조정 내용 내보내기</button>
-<span class="dim"> 내보낸 JSON 을 취합 폴더의 {ADJUST_FILE} 로 저장하면 다음 생성부터 반영됩니다.</span>
-<textarea id="adjout" style="display:none" readonly></textarea></div></div>
-
-<div class="card"><h2>5. 팀에서 발굴된 신규 Agentic AI 후보
-<span class="state">담당자별로 나온 후보 중 비슷한 것은 합쳤습니다</span></h2>
-<div style='overflow-x:auto'><table><tr><th>후보</th><th>제안 인원</th><th class="num">근거 업무(행)</th><th>로직</th></tr>
-{rows_new}</table></div></div>
-
-<div class="card"><h2>6. 공통업무 — 자동화 우선 후보</h2>
+<div class="card"><h2>4. 공통업무 — 자동화 우선 후보</h2>
 <div style='overflow-x:auto'><table><tr><th>세부업무</th><th>관련 과제</th><th>수행 인원</th><th class="num">합산 MM</th></tr>
 {rows_common}</table></div></div>
 
@@ -3219,23 +2899,23 @@ Agent 가능성 <span class="pill" style="background:#1d8a4a">상</span> 자동�
 <span class="pill" style="background:#8b929b">하</span> 사람 몫 ·
 단계의 '수행 N명' = 그 업무를 하는 사람 중 같은 단계를 밟는 사람 수</div>
 
-<div class="card"><h2>7. 유형별 비중 <span class="state">막대 = 합산 MM</span></h2>
+<div class="card"><h2>5. 유형별 비중 <span class="state">막대 = 합산 MM</span></h2>
 <div style='overflow-x:auto'><table><tr><th>담당 업무</th><th></th><th class="num">MM</th><th class="num">인원·흐름</th>
 <th class="num">AX 가능 MM</th></tr>{wf_bars}</table></div></div>
 
-<div class="card"><h2>8. 자동화 우선순위
+<div class="card"><h2>6. 자동화 우선순위
 <span class="state">'상'(자동화 가능) 단계가 있는 담당 업무 — 여러 명이 하고 MM 이 클수록
 팀 차원 효과가 큽니다</span></h2>
 <div style='overflow-x:auto'><table><tr><th>담당 업무</th><th>자동화 가능 단계</th><th class="num">인원</th>
 <th class="num">MM</th><th class="num">AX 가능 MM</th><th>주기</th></tr>{auto_rows}</table></div></div>
 
-<div class="card"><h2>9. 담당 업무 × 인원 <span class="state">누적바 = 사람별 MM</span></h2>
+<div class="card"><h2>7. 담당 업무 × 인원 <span class="state">누적바 = 사람별 MM</span></h2>
 {wf_stack}<div class="row" style="margin-top:8px">{stack_legend(wf_owners)}</div></div>
 
 {owner_gantt}
 {gantt_html}
 
-<h1 style="font-size:15px;margin:18px 0 8px">10. 과제별 워크플로우
+<h1 style="font-size:15px;margin:18px 0 8px">8. 과제별 워크플로우
 <span class="state">과제를 펼치면 그 안의 담당 업무 워크플로우와 담당자별 자리(간트 막대가 가리키는 곳)가 나옵니다</span></h1>
 {''.join(wf_cards) or '<div class="card"><div class="note">담당 업무 단위 워크플로우가 없습니다.</div></div>'}
 {coarse_html}
@@ -3245,101 +2925,7 @@ Agent 가능성 <span class="pill" style="background:#1d8a4a">상</span> 자동�
 같은 (사람·업무)는 하나만 계상했습니다.{ext_note}</div>
 </div>
 <script type="application/json" id="lm-team-data">{island}</script>
-<script>
-(function(){{
- "use strict";
- function E(s){{return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;")
-  .replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");}}
- var D=JSON.parse(document.getElementById("lm-team-data").textContent);
- var tasks=D.tasks||[], ags=D.agentic||[];
- var owners=ags.map(function(a){{return a.owner;}});
- var exP=new Set();
- ((D.adjust&&D.adjust.excluded_people)||[]).forEach(function(w){{
-  var i=owners.indexOf(String(w)); if(i>=0)exP.add(i);}});
- var exC=new Set();
- ((D.adjust&&D.adjust.excluded_cells)||[]).forEach(function(x){{
-  if(!x||x.length<2)return;
-  var ti=tasks.findIndex(function(t){{return t.id===String(x[0]);}});
-  var oi=owners.indexOf(String(x[1]));
-  if(ti>=0&&oi>=0)exC.add(ti+","+oi);}});
- function mmOf(hit){{return hit.load_mm_split!=null?hit.load_mm_split:(hit.load_mm||0);}}
- function heatSt(fit){{
-  var al=Math.min(0.85,fit/100*0.85+0.08);
-  return "background:rgba(42,120,214,"+al.toFixed(2)+");color:"+(fit>=45?"#fff":"#12151a");}}
- function render(){{
-  var t=document.getElementById("agx");
-  if(!tasks.length||!ags.length){{
-   t.innerHTML="<tr><td class='dim'>Agentic 분석 결과가 있는 인원이 없습니다</td></tr>";return;}}
-  var h="<tr><th class=stick>이름</th>";
-  tasks.forEach(function(tk){{
-   h+="<th title=\\""+E(tk.name)+" — "+E(tk.desc)+"\\">"+E(tk.id)+"</th>";}});
-  h+="<th class=num>근거 업무 MM</th></tr>";
-  var sums=tasks.map(function(){{return 0;}}), fits=tasks.map(function(){{return [];}});
-  ags.forEach(function(a,oi){{
-   if(exP.has(oi))return;
-   tasks.forEach(function(tk,ti){{
-    if(exC.has(ti+","+oi))return;
-    var hit=(a.match||[]).find(function(x){{return x.task===tk.id&&x.fit;}});
-    if(!hit)return;
-    sums[ti]+=mmOf(hit); fits[ti].push(hit.fit);
-   }});
-  }});
-  var gtot=0, sr="<tr class=sumrow><td class=stick><b>팀 합계</b></td>";
-  tasks.forEach(function(tk,ti){{
-   gtot+=sums[ti];
-   var nn=fits[ti].length;
-   var av=nn?Math.round(fits[ti].reduce(function(x,y){{return x+y;}},0)/nn):0;
-   sr+="<td class=num style=\\""+(nn?heatSt(av):"")+"\\"><b>"+sums[ti].toFixed(2)
-     +"</b><br><span style='font-size:9.5px'>"+(nn?nn+"명 · "+av+"%":"·")+"</span></td>";
-  }});
-  sr+="<td class=num><b>"+gtot.toFixed(2)+"</b></td></tr>";
-  h+=sr;
-  ags.forEach(function(a,oi){{
-   var ptot=0;
-   var row="<tr><td class=\\"stick"+(exP.has(oi)?" x":"")+"\\"><b>"+E(a.owner)+"</b>"
-     +(a.other_period?"<br><span style='font-size:9px;color:#8b929b'>다른 기간</span>":"")+"</td>";
-   tasks.forEach(function(tk,ti){{
-    var hit=(a.match||[]).find(function(x){{return x.task===tk.id&&x.fit;}});
-    var off=exP.has(oi)||exC.has(ti+","+oi);
-    if(hit){{
-     var mmv=mmOf(hit);
-     if(!off)ptot+=mmv;
-     row+="<td class='cell num"+(off?" x":"")+"' style=\\""+(off?"":heatSt(hit.fit))
-       +"\\" data-ti="+ti+" data-oi="+oi+" title=\\"근거 업무 실측 "+mmv.toFixed(2)
-       +" MM\\"><b>"+E(hit.fit)+"%</b><br><span style='font-size:8.5px'>"
-       +mmv.toFixed(2)+"</span></td>";
-    }}else row+="<td class='dim num'>·</td>";
-   }});
-   row+="<td class=num><b>"+ptot.toFixed(2)+"</b></td></tr>";
-   h+=row;
-  }});
-  t.innerHTML=h;
-  Array.prototype.forEach.call(t.querySelectorAll("td.cell"),function(td){{
-   td.onclick=function(){{
-    var k=td.getAttribute("data-ti")+","+td.getAttribute("data-oi");
-    if(exC.has(k))exC.delete(k);else exC.add(k);
-    render();}};}});
- }}
- var pc=document.getElementById("pchks");
- pc.innerHTML=owners.map(function(w,oi){{
-  return "<label class=pchk><input type=checkbox data-oi="+oi+" "
-   +(exP.has(oi)?"":"checked")+"> "+E(w)+"</label>";}}).join("");
- Array.prototype.forEach.call(pc.querySelectorAll("input"),function(cb){{
-  cb.onchange=function(){{
-   var oi=parseInt(cb.getAttribute("data-oi"),10);
-   if(cb.checked)exP.delete(oi);else exP.add(oi);
-   render();}};}});
- document.getElementById("copyadj").onclick=function(){{
-  var out=JSON.stringify({{
-   excluded_people:Array.from(exP).map(function(oi){{return owners[oi];}}),
-   excluded_cells:Array.from(exC).map(function(k){{
-    var p=k.split(","); return [tasks[+p[0]].id, owners[+p[1]]];}})}},null,1);
-  var ta=document.getElementById("adjout");
-  ta.style.display="block"; ta.value=out; ta.select();
-  try{{document.execCommand("copy");}}catch(e){{}}}};
- render();
-}})();
-</script></body></html>"""
+</body></html>"""
 
     # v3 — 인별 로드율 절을 뺀 공유용. 데이터 섬에서도 개인 로드 수치·경로·PC 이름을 지운다.
     m3 = [{k9: v9 for k9, v9 in m9.items()
@@ -3347,8 +2933,7 @@ Agent 가능성 <span class="pill" style="background:#1d8a4a">상</span> 자동�
                          "dir", "host", "uploaded_from")}
           for m9 in members]
     island3 = json.dumps({"kind": "lm-team-report", "generated": stamp, "share": share,
-                          "tasks": data.get("tasks") or [], "agentic": agentic,
-                          "members": m3, "adjust": adjust},
+                          "members": m3},
                          ensure_ascii=False).replace("<", "\\u003c")
     doc3 = re.sub(r"<!--SEC1-->.*?<!--/SEC1-->", "", doc, flags=re.S)
     doc3 = re.sub(r'<span title="업무유형 합[^"]*"[^>]*>로드율 근거와 다름\([^)]*\)</span>',
@@ -3360,13 +2945,11 @@ Agent 가능성 <span class="pill" style="background:#1d8a4a">상</span> 자동�
                         "<title>팀 통합 보고서 v3(로드율 제외)", 1)
     doc3 = doc3.replace('<div class="top">팀 통합 보고서 ·',
                         '<div class="top">팀 통합 보고서 <b>v3 — 인별 로드율 제외</b> ·', 1)
-    info = {"members": len(members), "agentic": n_ag, "clusters": len(clusters),
-            "coarse": len(coarse), "other_period": other_period, "wf_owners": len(wf_owners),
+    info = {"members": len(members), "clusters": len(clusters),
+            "coarse": len(coarse), "wf_owners": len(wf_owners),
             "flows": len(items), "flows_html": src_n["html"], "generated": stamp}
-    log(f"       인원 {len(members)}명 · Agentic {n_ag}명 · 담당 업무 유형 {len(clusters)}종"
+    log(f"       인원 {len(members)}명 · 담당 업무 유형 {len(clusters)}종"
         + (f" · 과제 단위만 {len(coarse)}건" if coarse else ""))
-    if other_period:
-        log(f"       (다른 기간 결과를 가져온 인원: {', '.join(other_period)})")
     return doc, doc3, info
 
 

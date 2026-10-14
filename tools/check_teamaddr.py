@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 r"""lint 관문 11 — 팀 서버 주소(서버 IP·포트) 단일원 계약 (LM24 v5).
 
-사용자 지시(2026-10-05): 서버 IP·포트를 따로 빼고, 바꾸는 곳은 별도 bat(LoadMonitor28-팀서버주소.bat) 하나,
+사용자 지시(2026-10-05): 서버 IP·포트를 따로 빼고, 바꾸는 곳은 별도 bat(LoadMonitor29-팀서버주소.bat) 하나,
 폴더를 그대로 옮기면 바뀐 주소가 유지되어 팀원은 분석 후 그 IP 로 올리고 팀 서버는 그 IP 로 취합한다.
 계약(어느 하나가 깨지면 패키징 전에 실패한다):
   ① 단일원(정적): 기본 IP 리터럴은 core\teamaddr.py 밖 코드·설정 어디에도 없다 · 파이썬 코드에 기본 포트 숫자
@@ -162,7 +162,7 @@ def check_static():
         bt = open(bp, "rb").read().decode("cp949")
         if "core\\teamaddr.py --set-env" not in bt:
             bad(f"{BAT}: core\\teamaddr.py --set-env 로 저장하지 않는다")
-        for v in ("%LM28_TA_HOST%", "%LM28_TA_PORT%"):
+        for v in ("%LM29_TA_HOST%", "%LM29_TA_PORT%"):
             if v in bt:
                 bad(f"{BAT}: 입력값 {v} 를 % 확장으로 명령줄에 끼운다 — 환경변수로만 넘긴다")
     return n
@@ -170,7 +170,7 @@ def check_static():
 
 # ── ② 읽기·쓰기 ───────────────────────────────────────────────────────────────
 def _tmp_root():
-    d = tempfile.mkdtemp(prefix="lm28_ta_")
+    d = tempfile.mkdtemp(prefix="lm29_ta_")
     os.makedirs(os.path.join(d, "config"))
     return d
 
@@ -241,8 +241,8 @@ def check_rw():
         _eq("초기화 → 옛 키", (ok, os.path.exists(fp), a.host, a.port), (True, False, "10.1.2.3", 19310))
         # CLI — bat 이 부르는 그대로
         env = dict(os.environ, PYTHONIOENCODING="utf-8")
-        env.pop("LM28_TA_HOST", None)
-        env.pop("LM28_TA_PORT", None)
+        env.pop("LM29_TA_HOST", None)
+        env.pop("LM29_TA_PORT", None)
 
         def cli(*args, extra_env=None):
             r = subprocess.run([sys.executable, "-X", "utf8", "-B", os.path.join(ROOT, "core", "teamaddr.py"),
@@ -257,12 +257,12 @@ def check_rw():
         _eq("CLI --show --json", (rc, js.get("host"), js.get("port")), (0, "10.1.2.3", 19310))
         _eq("CLI --set --port abc → rc 1", cli("--set", "--port", "abc")[0], 1)
         _eq("CLI --set(값 없음) → rc 2", cli("--set")[0], 2)
-        rc, out = cli("--set-env", "--json", extra_env={"LM28_TA_HOST": "http://10.9.9.9:9411"})
+        rc, out = cli("--set-env", "--json", extra_env={"LM29_TA_HOST": "http://10.9.9.9:9411"})
         a = TA.load(d)
         _eq("CLI --set-env(bat 경로)", (rc, a.host, a.port), (0, "10.9.9.9", 9411))
         rc, out = cli("--set-env", "--json")
         _eq("CLI --set-env(빈 입력 → 그대로)", (rc, TA.load(d).url), (0, "http://10.9.9.9:9411"))
-        rc, out = cli("--set-env", extra_env={"LM28_TA_HOST": "a&echo X"})
+        rc, out = cli("--set-env", extra_env={"LM29_TA_HOST": "a&echo X"})
         _eq("CLI --set-env(특수문자 거부)", (rc, TA.load(d).url), (1, "http://10.9.9.9:9411"))
         # ③ 폴더 이동 — 설치 폴더를 통째로 복사하면 같은 주소가 그대로 읽힌다
         moved = d + "_moved"
@@ -292,7 +292,7 @@ def _copy_program(dst):
 
 
 def check_end_to_end():
-    srv_root, mem_root = tempfile.mkdtemp(prefix="lm28_srv_"), tempfile.mkdtemp(prefix="lm28_mem_")
+    srv_root, mem_root = tempfile.mkdtemp(prefix="lm29_srv_"), tempfile.mkdtemp(prefix="lm29_mem_")
     th, mod, port = None, None, _free_port()
     try:
         _copy_program(srv_root)
@@ -300,7 +300,7 @@ def check_end_to_end():
         ta_s, ta_m = _load_teamaddr(srv_root), _load_teamaddr(mem_root)
         ta_s.save(srv_root, host="127.0.0.1", port=port)          # 서버 PC: 이 PC(루프백)의 port
         ta_m.save(mem_root, host="127.0.0.1", port=port)          # 팀원 PC: 같은 주소 파일을 받은 상태
-        spec = importlib.util.spec_from_file_location("lm28_teamserver_probe", os.path.join(srv_root, "teamserver.py"))
+        spec = importlib.util.spec_from_file_location("lm29_teamserver_probe", os.path.join(srv_root, "teamserver.py"))
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         asked = []
