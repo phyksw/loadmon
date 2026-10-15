@@ -4082,7 +4082,7 @@ async function tuSend(){
 }
 async function tuSendConfirmed(p){
  if(!confirm(`대기 ${p}건을 팀 서버로 보냅니다.\\n\\n${(TU&&TU.url)||"(주소 없음)"}\\n\\n판정 결과와 근거 신호(메일·회의 제목 포함)가 전송됩니다. 계속할까요?`))return;
- tuBusy(true,"업로드 중… (서버가 팀 취합을 다시 계산합니다)");
+ tuBusy(true,"업로드 중… (서버가 늦으면 1분 남짓에서 멈추고 묶음은 대기로 남깁니다)");
  const r=await fetch("/api/teamup",{method:"POST",headers:{"Content-Type":"application/json"},
    body:"{}"}).then(x=>x.json()).catch(()=>({ok:false,error:"통신 실패"}));
  tuBusy(false,"");
@@ -4093,7 +4093,8 @@ async function tuSendConfirmed(p){
   alert("이 망에서는 팀 서버에 닿지 않습니다.\\n\\n"+(r.error||"")+"\\n\\n묶음은 그대로 대기합니다 — 사내망에서 이 버튼을 다시 누르면 밀린 것까지 한 번에 올라갑니다.");
   $("tustat").innerHTML='<span style="color:#c0122f">● 이 망에서는 닿지 않음</span>';return;}
  const lines=(r.results||[]).map(x=>`· ${x.tag||x.file}: ${x.ok?"보냄":"실패"} ${x.msg||""}`).join("\\n");
- alert((r.ok?`업로드 완료 — ${r.sent}건`:`일부 실패 — 성공 ${r.sent||0} / 실패 ${r.failed||0}`)+(lines?"\\n\\n"+lines:""));
+ alert((r.ok?`업로드 완료 — ${r.sent}건`:`${(r.failed||!r.left)?"일부 실패":"일부만 보냄"} — 성공 ${r.sent||0} / 실패 ${r.failed||0}`+(r.left?` / 남김 ${r.left}`:""))
+  +(lines?"\\n\\n"+lines:"")+(r.stopped?"\\n\\n"+r.stopped:""));
  if(r.sent&&TU.url&&confirm("팀 취합 대시보드를 열까요?"))window.open(TU.url,"_blank");
 }
 $("tusend").onclick=tuSend;
@@ -5395,15 +5396,18 @@ class H(BaseHTTPRequestHandler):
             # v5: 보낼 주소는 설치 폴더의 config\team_server.json(LoadMonitor29-팀서버주소.bat 에서만 바꾼다).
             # 화면이 보낸 주소는 받지도 저장하지도 않는다 — teamup.py 가 같은 설정을 읽는다.
             cmd = [sys.executable, os.path.join(ROOT, "teamup.py"), "--json"]
+            # LM28 — 팀 서버 쪽 상한은 teamup 이 스스로 지킨다(연결 확인 3초×2 · 답 45초 · 늦거나 끊기면 남은 묶음 멈춤 ·
+            # 새 묶음은 75초까지만 시작). 여기 상한은 설정을 가장 길게 잡았을 때(연결 확인 34초 · 업로드 2분 남짓)의 안전판이다
+            # (예전 업로드 1800초 — 느린 서버 앞에서 버튼이 30분 동안 '업로드 중' 이었다)
             if self.path == "/api/teamping":
                 cmd += ["--ping"]
-                timeout, step = 30, ""
+                timeout, step = 45, ""
             elif self.path == "/api/teamfolder":
                 cmd += ["--to-folder", str(b.get("share") or "")]
                 timeout, step = 600, "공유폴더 저장"
             else:
                 cmd += ["--upload"]
-                timeout, step = 1800, "팀 서버 업로드"
+                timeout, step = 180, "팀 서버 업로드"
             if step:
                 with LOCK:
                     if JOB["running"]:
@@ -5429,7 +5433,8 @@ class H(BaseHTTPRequestHandler):
                 res.setdefault("ok", p.returncode == 0)
                 self._send(200, res)
             except subprocess.TimeoutExpired:
-                self._send(200, {"ok": False, "error": f"{timeout // 60}분 내에 끝나지 않았습니다 — 묶음은 그대로 대기합니다"})
+                _lim = f"{timeout // 60}분" if timeout % 60 == 0 else f"{timeout}초"     # 연결 확인 45초가 '0분' 으로 찍히지 않게
+                self._send(200, {"ok": False, "error": f"{_lim} 안에 끝나지 않았습니다 — 묶음은 그대로 대기합니다"})
             except OSError as e:
                 self._send(200, {"ok": False, "error": f"실행 실패({type(e).__name__})"})
             finally:

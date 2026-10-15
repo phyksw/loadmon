@@ -1757,12 +1757,15 @@ def ask_json(sender, prompt, tag, name, want_key, fresh=None):
     o, how = find_json(body, want_key)
     if not o and body != reply:
         o, how = find_json(reply, want_key)
+    # LM28 — 드라이버의 끊긴 답 표식(cut — 생성 중단 · slow — 왕복 예산 끝에 '중지'로 끊고 받은 데까지)은 info 에 싣는다(참일 때만).
+    # 끊긴 답은 같은 크기로 다시 묻지 않는다 — 호출자(flow)는 복구한 항목을 쓰고 빠진 단위만 더 작은 묶음으로 묻는다.
+    flags = {k: True for k in ("cut", "slow") if res.get(k)}
     if not o:
-        return {}, {"ok": False, "kind": "parse", "error": "응답에서 JSON 을 찾지 못함",
-                    "hint": reply_diagnosis(reply, prompt), "fatal": False, "phase": "parse",
-                    "reply_len": len(reply)}
-    return o, {"ok": True, "how": how, "model": str(res.get("model") or ""),
-               "retry": res.get("retry"), "reply_len": len(reply)}
+        return {}, dict({"ok": False, "kind": "parse", "error": "응답에서 JSON 을 찾지 못함",
+                         "hint": reply_diagnosis(reply, prompt), "fatal": False, "phase": "parse",
+                         "reply_len": len(reply)}, **flags)
+    return o, dict({"ok": True, "how": how, "model": str(res.get("model") or ""),
+                    "retry": res.get("retry"), "reply_len": len(reply)}, **flags)
 
 
 LAST_FAIL = {}           # detail_merge_map 의 마지막 왕복 실패 info — flow 가 읽어 fatal 이면 왕복을 접는다

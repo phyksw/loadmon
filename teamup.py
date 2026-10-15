@@ -22,7 +22,13 @@ LM19 이전에는 그 실패가 조용히 묻혀 결과가 사라졌다(실측).
       (개인 HTML 보고서 분석리포트_<기간>.html·보고서_<기간>.html 이 있으면
        <폴더>\개인리포트\<이름>_<파일명> 으로 함께 복사 — 팀 서버 묶음에는 넣지 않는다)
   (--json 을 붙이면 마지막 줄에 결과 JSON 한 줄 — 대시보드·run.py 자동 보고가 이걸 읽는다.
-   --upload 는 묶음마다 results[].kind = sent·blocked·rejected·unreachable, 주소가 없으면 no_url, 남은 대기 수 pending)
+   --upload 는 묶음마다 results[].kind = sent·blocked·rejected·unreachable·slow, 주소가 없으면 no_url, 남은 대기 수 pending,
+   보내지 않고 남긴 묶음 수 left 와 그 사유 stopped)
+
+기다림 상한(LM28 — "시도 1-2번 해서 안 되면 아닌 값… 업로드에서 기다리는 건 너무 로스"):
+  연결 확인 3초 × 최대 2번(사이 2초) · 업로드 연결 3초(끊기면 1번만 다시) · 본문을 다 보낸 뒤 답 45초.
+  답이 늦으면 다시 보내지 않고(서버가 이미 저장했을 수 있다) 남은 묶음도 멈춘다 — 자동 보고 전체가 1분 남짓이면 끝난다.
+  config.teamUpload 의 pingTries·pingTimeoutSec·timeoutSec 로 바꾼다(wait_limits 가 범위 안으로 접는다).
 
 묶음 내용은 팀 공유폴더 내보내기(export.py)와 동일하다 — 이미 excludePathKeywords 로 걸러진
 판정 결과다. 사내망 전용.
@@ -31,6 +37,7 @@ LM28: signals 는 G4 팀 반출 변환(core\privacy.team_export_rows — export.
 남은 파일은 보내지 않는다. 묶음을 만들 때(build)와 보내기 직전(upload_one) 두 번 건다(다시 걸어도 같은 결과).
 member 에는 판 표식 lm_ver(LM_VER — 'LM29')를 추가 키로 싣는다(기존 키·파일명·measure·coverage·cfg_used 는 그대로).
 """
+import http.client
 import io
 import json
 import math
@@ -51,6 +58,18 @@ SENT = os.path.join(REPORT, "upload_sent")
 REPORT_STATUS = "team_report_status.json"
 MAX_BYTES = 30 * 1024 * 1024        # 서버 상한과 같다 — 넘으면 보내기 전에 알려 준다
 LM_VER = "LM29"                     # member.lm_ver — 묶음을 만든 판(추가 키만, 기존 키·파일명 불변)
+# 팀 서버 기다림 기본값(LM28) — 예전에는 연결 확인 4초 1번, 묶음마다 응답 360초, 실패해도 남은 묶음을 전부 시도해
+# 서버가 느린 날 자동 보고가 몇 분씩 붙잡혔다(사용자 지적). config.teamUpload 로 바꾸되 범위(_WAIT_RANGE)를 넘지 못한다 —
+# 가장 길게 잡아도 run.py 의 teamup 상한(TR_CAP_SEC 150초) 안에 끝나야 결과 JSON 이 남는다.
+PING_TRIES = 2                      # 연결 확인 시도 수 — 순간 끊김 한 번으로 '닿지 않음' 이라 단정하지 않을 만큼만
+PING_TIMEOUT = 3.0                  # 연결 확인 1번(초) — 업로드의 '연결' 단계도 이 값으로 끊는다
+UP_TIMEOUT = 45.0                   # 본문을 다 보낸 뒤 서버 답을 기다리는 상한(초)
+RETRY_PAUSE = 2.0                   # 다시 시도하기 전 쉼(초)
+BUDGET_SEC = 75.0                   # 이 실행에서 다음 묶음을 시작해도 되는 시간 상한(초) — 넘기면 남은 묶음은 대기로 둔다
+STOP_KINDS = ("unreachable", "slow")  # 이 갈래로 실패하면 남은 묶음은 보내지 않는다(같은 서버라 같은 결과를 또 기다린다)
+_WAIT_RANGE = {"pingTries": (1, 3), "pingTimeoutSec": (1.0, 10.0), "timeoutSec": (5.0, 90.0)}
+SLOW_MSG = ("서버 응답 지연 — 서버에 저장됐을 수 있습니다. 묶음은 대기로 남겨 다음 실행 때 다시 보냅니다"
+            "(덮어쓰기라 결과는 같습니다)")
 if __name__ == "__main__":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, errors="replace", encoding=(
         (sys.stdout.encoding or "utf-8") if sys.stdout.isatty() else "utf-8"))  # 콘솔(bat)=콘솔 코드페이지 · 파이프(UI)=utf-8
@@ -106,6 +125,25 @@ def load_cfg():
         return json.load(open(os.path.join(ROOT, "config", "config.json"), encoding="utf-8-sig"))
     except (OSError, ValueError):
         return {}
+
+
+def wait_limits(cfg=None):
+    r"""팀 서버 기다림 값 → {ping_tries, ping_timeout, timeout} — config.teamUpload 의 pingTries·pingTimeoutSec·timeoutSec.
+    없거나 형식이 틀리면 기본값, 범위(_WAIT_RANGE) 밖이면 가장자리로 접는다. 큰 값을 적어도 자동 보고가 몇 분씩 붙잡히지
+    않게 — 가장 길게 잡아도 연결 확인 34초 + 묶음 하나(연결 22초 또는 답 90초)라 run.py 상한 150초 안에 끝난다."""
+    tu = (cfg if isinstance(cfg, dict) else {}).get("teamUpload")
+    tu = tu if isinstance(tu, dict) else {}
+
+    def pick(key, dflt):
+        lo, hi = _WAIT_RANGE[key]
+        v = tu.get(key)
+        try:
+            v = dflt if v is None or isinstance(v, bool) or v == "" else float(v)
+        except (TypeError, ValueError):
+            v = dflt
+        return min(hi, max(lo, v if math.isfinite(v) else dflt))
+    return {"ping_tries": int(pick("pingTries", PING_TRIES)), "ping_timeout": pick("pingTimeoutSec", PING_TIMEOUT),
+            "timeout": pick("timeoutSec", UP_TIMEOUT)}
 
 
 def target_url(cfg, override=""):
@@ -490,33 +528,105 @@ def list_sent(limit=10):
 
 
 # ── 서버 ────────────────────────────────────────────────────────────────────
-def ping(url, timeout=4.0):
-    """이 망에서 서버에 닿는가 — 빠르게 확인한다(응답이 오면 도달로 본다)"""
+def ping(url, timeout=None, tries=None):
+    """이 망에서 서버에 닿는가 — 짧게 확인한다(응답이 오면 도달로 본다).
+    LM28: 3초 × 최대 2번(사이 2초 — config.teamUpload.pingTimeoutSec·pingTries). 순간 끊김 한 번으로 '닿지 않음' 이라
+    단정하지 않되, 닿지 않는 망에서는 8초 안에 끝낸다(예전 4초 1번). tries 는 결과에 몇 번 만에 닿았는지 남긴다."""
     if not url:
         return {"ok": False, "error": "팀 서버 주소가 비었거나 형식이 틀렸습니다 — "
                                       "LoadMonitor29-팀서버주소.bat 에서 서버 IP·포트를 저장하세요"}
+    if timeout is None or tries is None:
+        lim = wait_limits(load_cfg())
+        timeout = lim["ping_timeout"] if timeout is None else timeout
+        tries = lim["ping_tries"] if tries is None else tries
+    tries = max(1, int(tries))
     t0 = time.time()
-    try:
-        req = urllib.request.Request(url + "/api/team", method="GET")
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            r.read(2048)
-            code = r.status
-    except urllib.error.HTTPError as e:      # 404 라도 서버는 살아 있다 = 이 망에서 닿는다
-        code = e.code
-    except (urllib.error.URLError, OSError, ValueError) as e:
-        reason = getattr(e, "reason", e)
-        return {"ok": False, "url": url, "ms": int((time.time() - t0) * 1000),
-                "error": f"{reason}",
-                "hint": "이 망에서는 팀 서버에 닿지 않습니다 — 서버망(사내망)에서 다시 눌러 주세요. "
-                        "묶음은 그대로 대기합니다."}
-    return {"ok": True, "url": url, "code": code, "ms": int((time.time() - t0) * 1000)}
+    err, n = None, 0
+    while n < tries:
+        if n:
+            time.sleep(RETRY_PAUSE)
+        n += 1
+        try:
+            req = urllib.request.Request(url + "/api/team", method="GET")
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                r.read(2048)
+                code = r.status
+        except urllib.error.HTTPError as e:      # 404 라도 서버는 살아 있다 = 이 망에서 닿는다
+            code = e.code
+        except ValueError as e:                  # 주소 형식 — 다시 해도 같다
+            err = e
+            break
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
+            err = e
+            continue
+        return {"ok": True, "url": url, "code": code, "ms": int((time.time() - t0) * 1000), "tries": n}
+    reason = getattr(err, "reason", err)
+    return {"ok": False, "url": url, "ms": int((time.time() - t0) * 1000), "tries": n,
+            "error": f"{reason}",
+            "hint": "이 망에서는 팀 서버에 닿지 않습니다 — 서버망(사내망)에서 다시 눌러 주세요. "
+                    "묶음은 그대로 대기합니다."}
 
 
-def upload_one(url, path, timeout=360.0):
-    """대기 묶음 한 개 전송 → (ok, 메시지, 갈래).
+class _PhaseConn(http.client.HTTPConnection):
+    r"""업로드 연결 — 연결은 짧게(connect_timeout), 답은 길게(read_timeout) 기다리고, 끊긴 단계를 phase[0] 에 남긴다.
+    connect(연결 중) → send(본문 보내는 중) → wait(본문을 다 보내고 답을 기다리는 중).
+    한 상한으로 묶으면 닿지 않는 서버를 45초씩 기다리고, 끊긴 단계를 모르면 서버가 이미 받았을 수 있는 묶음을 또 보낸다."""
+
+    def __init__(self, host, timeout=None, *, connect_timeout, read_timeout, phase, **kw):
+        super().__init__(host, timeout=connect_timeout, **kw)
+        self._read_timeout = read_timeout
+        self._phase = phase
+
+    def connect(self):
+        self._phase[0] = "connect"
+        super().connect()
+        self.sock.settimeout(self._read_timeout)
+        self._phase[0] = "send"
+
+    def getresponse(self):
+        self._phase[0] = "wait"
+        return super().getresponse()
+
+
+class _PhaseHandler(urllib.request.HTTPHandler):
+    """urllib 이 업로드 연결을 _PhaseConn 으로 만들게 한다(프록시·오류 처리는 urllib 그대로)"""
+
+    def __init__(self, connect_timeout, read_timeout, phase):
+        super().__init__()
+        self._kw = {"connect_timeout": connect_timeout, "read_timeout": read_timeout, "phase": phase}
+
+    def http_open(self, req):
+        return self.do_open(lambda host, **kw: _PhaseConn(host, **kw, **self._kw), req)
+
+
+def _proxy_handler():
+    r"""프록시는 예전 urlopen 과 같은 길을 따른다 — 설치된 오프너(urllib.request.install_opener)가 있으면 그 설정,
+    없으면 시스템 설정(환경 변수·인터넷 옵션). 업로드만 연결·답 시간을 따로 재려고 오프너를 새로 짓기 때문이다."""
+    for h in getattr(getattr(urllib.request, "_opener", None), "handlers", None) or ():
+        if isinstance(h, urllib.request.ProxyHandler):
+            return urllib.request.ProxyHandler(dict(h.proxies))
+    return urllib.request.ProxyHandler()
+
+
+def _is_timeout(e):
+    return isinstance(e, TimeoutError) or isinstance(getattr(e, "reason", None), TimeoutError)
+
+
+def _post_json(url, body, connect_timeout, read_timeout, phase):
+    """본문 POST → 서버 답(JSON). 실패는 예외 그대로 — 어느 단계였는지는 phase[0] 이 말한다."""
+    op = urllib.request.build_opener(_proxy_handler(), _PhaseHandler(connect_timeout, read_timeout, phase))
+    req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json; charset=utf-8"})
+    with op.open(req, timeout=read_timeout) as r:
+        return json.loads(r.read().decode("utf-8", "replace"))
+
+
+def upload_one(url, path, timeout=None, connect_timeout=None):
+    """대기 묶음 한 개 전송 → (ok, 메시지, 갈래). timeout = 본문을 다 보낸 뒤 답 상한, connect_timeout = 연결 상한
+    (없으면 wait_limits — config.teamUpload.timeoutSec 45초 · pingTimeoutSec 3초).
     갈래(LM28) — 자동 보고(run.py)가 실패 사유를 한국어 문구의 부분 문자열이 아니라 이 값으로 가른다(문구를 다듬어도
     분류가 깨지지 않게): sent 보냄 · blocked 이 묶음은 이대로 보낼 수 없음(읽기 실패·크기·이름·파일명·개인정보 관문·형식) ·
-    rejected 서버가 받지 않음(HTTP 오류·ok:false·응답 해석 불가) · unreachable 보내는 중 연결이 끊김(망·시간 초과)."""
+    rejected 서버가 받지 않음(HTTP 오류·ok:false·응답 해석 불가) · unreachable 연결 실패(2번)·보내는 중이나 답 전에 끊김 ·
+    slow 본문은 갔는데 답이 상한 안에 오지 않음(서버에 저장됐을 수 있다 — 다시 보내지 않는다)."""
     try:
         raw = open(path, "rb").read()
     except OSError as e:
@@ -560,22 +670,39 @@ def upload_one(url, path, timeout=360.0):
                           ensure_ascii=False).encode("utf-8")
     except (ValueError, UnicodeDecodeError):
         return False, "묶음 형식이 깨졌습니다 — 해당 기간을 다시 분석하세요", "blocked"
-    req = urllib.request.Request(url + "/api/upload", data=body,
-                                 headers={"Content-Type": "application/json; charset=utf-8"})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            res = json.loads(r.read().decode("utf-8", "replace"))
-    except urllib.error.HTTPError as e:
-        detail = ""
+    if timeout is None or connect_timeout is None:
+        lim = wait_limits(load_cfg())
+        timeout = lim["timeout"] if timeout is None else timeout
+        connect_timeout = lim["ping_timeout"] if connect_timeout is None else connect_timeout
+    # 연결 단계 실패(거부·경로 없음·이름 풀이·연결 시간 초과)만 1번 다시 한다 — 서버는 본문을 받지 못했으니 다시 보내도 안전하다.
+    # 본문을 다 보낸 뒤(wait) 답이 늦으면 다시 보내지 않는다: 서버가 이미 저장했을 수 있고, 느린 서버에 다시 보내면 기다림만 두 배다.
+    for attempt in range(2):
+        phase = ["connect"]
         try:
-            detail = e.read().decode("utf-8", "replace")[:200]
-        except OSError:
-            pass
-        return False, f"서버가 거부했습니다 (HTTP {e.code}) {detail}", "rejected"
-    except (urllib.error.URLError, OSError) as e:
-        return False, f"연결 실패: {getattr(e, 'reason', e)}", "unreachable"
-    except ValueError:
-        return False, "서버 응답을 해석하지 못했습니다", "rejected"
+            res = _post_json(url + "/api/upload", body, connect_timeout, timeout, phase)
+            break
+        except urllib.error.HTTPError as e:
+            detail = ""
+            try:
+                detail = e.read().decode("utf-8", "replace")[:200]
+            except (OSError, http.client.HTTPException):
+                pass
+            return False, f"서버가 거부했습니다 (HTTP {e.code}) {detail}", "rejected"
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
+            reason = getattr(e, "reason", e)
+            if phase[0] == "connect":
+                if attempt == 0:
+                    time.sleep(RETRY_PAUSE)
+                    continue
+                return False, f"연결 실패(2번 시도): {reason}", "unreachable"
+            if phase[0] == "send":
+                return False, f"보내는 중 연결이 끊겼습니다: {reason}", "unreachable"
+            if _is_timeout(e):
+                return False, f"{SLOW_MSG} ({timeout:.0f}초 안에 답이 없었습니다)", "slow"
+            return False, (f"답을 받기 전에 연결이 끊겼습니다({reason}) — 서버에 저장됐을 수 있습니다. "
+                           "묶음은 대기로 남겨 다음 실행 때 다시 보냅니다(덮어쓰기라 결과는 같습니다)"), "unreachable"
+        except ValueError:
+            return False, "서버 응답을 해석하지 못했습니다", "rejected"
     if not isinstance(res, dict) or not res.get("ok"):
         return False, f"서버 거부: {res.get('error', '') if isinstance(res, dict) else ''}", "rejected"
     where = str(res.get("store") or "")
@@ -590,22 +717,40 @@ def upload_one(url, path, timeout=360.0):
     if other_folder:
         # 같은 PC 인데 다른 설치 폴더가 받았다 — 사용자가 겪은 바로 그 상황
         note += "  [!] 이 PC 의 다른 폴더가 받았습니다 — 그 폴더의 팀 취합에 들어갑니다"
+    if res.get("queued"):
+        # LM28 서버 — 저장하자마자 답하고 취합은 뒤에서 돈다(queued — aggregated 는 "queued"). 예전 서버는 취합을 마친 뒤 aggregated 로 답한다
+        return True, f"{res.get('saved')}개 파일 저장됨 — 팀 취합은 서버가 이어서 갱신합니다" + note, "sent"
     return True, (f"{res.get('saved')}개 파일 저장, 팀 취합 "
                   f"{'갱신됨' if res.get('aggregated') else '갱신 실패(서버 로그 확인)'}" + note), "sent"
 
 
-def upload_all(url, timeout=360.0):
-    """대기 묶음을 전부 전송. 성공분만 upload_sent 로 옮긴다(실패분은 그대로 대기). 묶음마다 kind(upload_one 의 갈래)."""
+def upload_all(url, timeout=None, connect_timeout=None, budget=None, t0=None):
+    """대기 묶음을 차례로 전송. 성공분만 upload_sent 로 옮긴다(실패분은 그대로 대기). 묶음마다 kind(upload_one 의 갈래).
+    LM28 — 닿지 않거나(unreachable) 답이 늦으면(slow) 거기서 멈춘다: 같은 서버라 남은 묶음도 같은 기다림을 되풀이한다.
+    t0(time.monotonic — 연결 확인 전 시각)부터 budget 초가 지나 다음 묶음의 답 상한까지 기다릴 여유가 없으면 새로 시작하지
+    않는다(첫 묶음은 언제나 보낸다). 남긴 묶음은 대기 그대로 — 건수는 left, 사유는 stopped."""
     items = list_pending()
     results = []
     if not items:
         return {"ok": True, "sent": 0, "failed": 0, "results": [],
                 "note": "보낼 대기 묶음이 없습니다 — 먼저 [분석 실행]을 하세요"}
+    if timeout is None or connect_timeout is None:
+        lim = wait_limits(load_cfg())
+        timeout = lim["timeout"] if timeout is None else timeout
+        connect_timeout = lim["ping_timeout"] if connect_timeout is None else connect_timeout
+    budget = BUDGET_SEC if budget is None else budget
+    t0 = time.monotonic() if t0 is None else t0
     os.makedirs(SENT, exist_ok=True)
-    sent = failed = 0
-    for it in items:
+    sent = failed = left = 0
+    stopped = ""
+    for i, it in enumerate(items):
+        if i and time.monotonic() - t0 + timeout > budget:
+            left = len(items) - i
+            stopped = (f"시간 상한({budget:.0f}초)에 닿아 나머지 {left}건은 보내지 않고 대기로 남겼습니다 — "
+                       "[팀 서버 업로드]를 다시 누르거나 다음 실행 때 이어서 보냅니다")
+            break
         p = os.path.join(PENDING, it["file"])
-        ok, msg, kind = upload_one(url, p, timeout)
+        ok, msg, kind = upload_one(url, p, timeout, connect_timeout)
         if ok:
             sent += 1
             try:                            # 보낸 것은 옮겨 두 번 보내지 않는다(기록은 남긴다)
@@ -616,7 +761,16 @@ def upload_all(url, timeout=360.0):
         else:
             failed += 1
         results.append({"file": it["file"], "tag": it.get("tag", ""), "ok": ok, "msg": msg, "kind": kind})
-    return {"ok": failed == 0, "sent": sent, "failed": failed, "results": results}
+        if not ok and kind in STOP_KINDS:
+            left = len(items) - i - 1
+            if left:
+                stopped = (f"{'서버 응답 지연으로' if kind == 'slow' else '서버 연결 실패로'} 나머지 {left}건은 보내지 않고 "
+                           "대기로 남겼습니다 — 다음 실행 때 다시 보냅니다")
+            break
+    r = {"ok": failed == 0 and not left, "sent": sent, "failed": failed, "left": left, "results": results}
+    if stopped:
+        r["stopped"] = stopped
+    return r
 
 
 def to_folder(share):
@@ -900,22 +1054,24 @@ def main():
                  "[teamup] 팀 서버 주소가 비었거나 형식이 틀렸습니다 — LoadMonitor29-팀서버주소.bat 에서 "
                  "서버 IP·포트를 저장하세요")
             return 1
+        t0 = time.monotonic()                   # 시간 상한(BUDGET_SEC)은 연결 확인부터 잰다
         pg = ping(url)
         if not pg.get("ok"):
             _out(js, {"ok": False, "error": pg.get("error", ""), "hint": pg.get("hint", ""),
                       "unreachable": True, "pending": len(list_pending())},
-                 f"[teamup] 이 망에서 서버에 닿지 않습니다 ({url}) — {pg.get('error', '')}\n"
+                 f"[teamup] 이 망에서 서버에 닿지 않습니다 ({url} · {pg.get('tries', 1)}번 시도) — {pg.get('error', '')}\n"
                  f"         묶음 {len(list_pending())}건은 그대로 대기합니다. "
                  "서버망에서 다시 실행하면 한 번에 올라갑니다.")
             return 1
-        r = upload_all(url)
+        r = upload_all(url, t0=t0)
         r["pending"] = len(list_pending())      # 보낸 뒤 남은 대기 수(LM28 — 자동 보고·화면 배너가 읽는다)
         _sent_status(r, "upload")
         lines = [f"[teamup] 전송 완료: 성공 {r['sent']} / 실패 {r['failed']}"]
         for x in r.get("results", []):
             lines.append(f"         - {x.get('tag', x['file'])}: {'OK' if x['ok'] else '실패'} {x['msg']}")
-        if r.get("note"):
-            lines.append("         " + r["note"])
+        for k in ("stopped", "note"):
+            if r.get(k):
+                lines.append("         " + r[k])
         _out(js, r, "\n".join(lines))
         return 0 if r.get("ok") else 1
     # 하위 호환: 예전처럼 --from/--to 만 주면 '준비 후 곧바로 전송 시도'
@@ -929,15 +1085,18 @@ def main():
         if not url:
             print("[teamup] 주소 미설정 — 묶음만 준비했습니다 (대시보드에서 업로드)")
             return 0
+        t0 = time.monotonic()
         pg = ping(url)
         if not pg.get("ok"):
             print(f"[teamup] 이 망에서 서버에 닿지 않습니다 — 묶음은 대기합니다 ({pg.get('error', '')})")
             return 1
-        r = upload_all(url)
+        r = upload_all(url, t0=t0)
         _sent_status(r, "upload")
         print(f"[teamup] 전송: 성공 {r['sent']} / 실패 {r['failed']}")
         for x in r.get("results", []):      # 무엇이 어떻게 됐는지 화면에 남긴다(서버 갱신 여부 포함)
             print(f"         - {x.get('tag', x['file'])}: {'OK' if x['ok'] else '실패'} {x['msg']}")
+        if r.get("stopped"):
+            print("         " + r["stopped"])
         return 0 if r.get("ok") else 1
     print(__doc__.strip().splitlines()[1])
     print("[teamup] --build / --list / --ping / --upload / --to-folder 중 하나를 주세요")

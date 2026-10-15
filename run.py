@@ -1292,9 +1292,17 @@ def web_only(c, kind, d0, d1, data, col):
 # 사유는 화면 알림·배너·last_run.json 이 그대로 쓴다. teamup.py --upload --json 의 기계용 표식(unreachable·no_url·
 # results[].kind)에서 고른다 — 한국어 문구의 부분 문자열로 가르지 않는다(문구를 다듬어도 분류가 깨지지 않게).
 TR_PENDING_HINT = "결과 묶음은 대기로 남았습니다. 사내망에서 [팀 서버 업로드]를 누르면 밀린 것까지 보내집니다."
-TR_KIND = {"unreachable": "서버에 닿지 않음", "rejected": "서버 거부", "blocked": "보낼 수 없는 묶음"}
+# teamup 실행 상한(초) — teamup 이 스스로 1분 남짓에서 멈추므로(연결 확인 3초×2 · 답 45초 · 닿지 않거나 늦으면 남은 묶음 멈춤 ·
+# 새 묶음은 75초까지만 시작) 이 상한은 그마저 걸린 경우의 안전판이다(예전 1200초 — 느린 서버에 자동 보고가 몇 분씩 붙잡혔다)
+TR_CAP_SEC = 150
+TR_KIND = {"unreachable": "서버에 닿지 않음", "rejected": "서버 거부", "blocked": "보낼 수 없는 묶음",
+           "slow": "서버 응답 지연"}
 TR_HINT = {
     "서버에 닿지 않음": TR_PENDING_HINT,
+    "서버 응답 지연": ("서버가 제때 답하지 않았습니다 — 서버에 이미 저장됐을 수 있습니다. 결과 묶음은 대기로 남겨 다음 실행 때 다시"
+                 " 보냅니다(덮어쓰기라 결과는 같습니다). 바로 보내려면 [팀 서버 업로드]를 누르세요."),
+    "시간 상한으로 남김": ("밀린 묶음이 많아 시간 상한(약 1분) 안에 이번 결과까지 보내지 못했습니다. 결과 묶음은 대기로 남았습니다 —"
+                   " [팀 서버 업로드]를 누르면 이어서 보냅니다."),
     "서버 거부": TR_PENDING_HINT + " 같은 거부가 되풀이되면 팀 서버 담당자에게 서버 로그 확인을 부탁하세요.",
     "보낼 수 없는 묶음": ("결과 묶음은 대기로 남았지만 이대로는 보낼 수 없습니다 — 팀 취합 업로드 카드의 '보낼 수 없음' 사유를"
                      " 고친 뒤 [분석 실행]을 다시 하세요."),
@@ -1355,8 +1363,10 @@ def team_report_outcome(res, tag="", built=True):
     · 성공 = **이번 실행의 묶음(tag)** 이 서버에 갔다. 밀려 있던 다른 묶음이 실패해도 이번 보고는 성공으로 둔다 — 지난
       실패 하나가 실행할 때마다 알림을 띄우지 않게(그 묶음은 업로드 카드에 '보낼 수 없음' 으로 남고 detail 이 건수를 적는다).
     · 이번 묶음을 만들지 못했으면(built=False) 같은 기간의 지난 묶음이 대신 갔어도 실패다 — 이번 결과가 아니다.
-    · 사유: 서버에 닿지 않음 · 서버 거부 · 보낼 수 없는 묶음 · 대기 묶음 없음 · 이번 결과 묶음 없음 · 주소 없음 ·
-      보고 결과를 읽지 못함(JSON 없음 — 시간 초과·실행 실패) · 보고 실패(그 밖). detail 은 화면 알림·상태 파일에만 쓴다."""
+    · 사유: 서버에 닿지 않음 · 서버 응답 지연 · 서버 거부 · 보낼 수 없는 묶음 · 대기 묶음 없음 · 이번 결과 묶음 없음 · 주소 없음 ·
+      시간 상한으로 남김 · 보고 결과를 읽지 못함(JSON 없음 — 시간 초과·실행 실패) · 보고 실패(그 밖). detail 은 화면 알림·상태 파일에만 쓴다.
+    · LM28 — teamup 은 닿지 않거나(unreachable) 답이 늦으면(slow) 남은 묶음을 보내지 않고(left) 멈춘다. 이번 묶음이 그 남은
+      쪽이면 멈춘 사유가 이번 실패의 사유다(밀려 있던 다른 묶음의 '보낼 수 없음' 보다 먼저)."""
     res = res if isinstance(res, dict) else {}
     rs = [x for x in (res.get("results") or []) if isinstance(x, dict)]
     pend = res.get("pending")
@@ -1365,6 +1375,8 @@ def team_report_outcome(res, tag="", built=True):
            "reason": "", "hint": "", "detail": ""}
     mine = next((x for x in rs if tag and str(x.get("tag") or "") == tag), None)
     bad = [x for x in rs if not x.get("ok")]
+    left = _n(res.get("left"))
+    halt = next((x for x in bad if str(x.get("kind") or "") in ("unreachable", "slow")), None)
     why, pick = "", None
     if not res:
         why = "보고 결과를 읽지 못함"
@@ -1380,6 +1392,10 @@ def team_report_outcome(res, tag="", built=True):
     elif not rs:
         why, out["detail"] = (("보고 실패", str(res.get("error") or "")) if res.get("ok") is False
                               else ("대기 묶음 없음", ""))
+    elif halt is not None:
+        pick = halt
+    elif left:
+        why, out["detail"] = "시간 상한으로 남김", str(res.get("stopped") or "")
     elif bad:
         pick = bad[0]
     else:
@@ -1388,8 +1404,13 @@ def team_report_outcome(res, tag="", built=True):
         why, out["detail"] = TR_KIND.get(str(pick.get("kind") or ""), "보고 실패"), str(pick.get("msg") or "")
     if out["ok"]:
         others = [x for x in bad if x is not mine]
+        notes = []
         if others:
-            out["detail"] = f"밀려 있던 다른 묶음 {len(others)}건은 보내지 못했습니다 — 팀 취합 업로드 카드에서 사유를 확인하세요"
+            notes.append(f"밀려 있던 다른 묶음 {len(others)}건은 보내지 못했습니다 — 팀 취합 업로드 카드에서 사유를 확인하세요")
+        if left:
+            notes.append(f"밀려 있던 묶음 {left}건은 이번에 보내지 않고 대기로 남겼습니다")
+        if notes:
+            out["detail"] = " · ".join(notes)
     else:
         out["reason"] = why
         out["hint"] = TR_HINT.get(why, TR_PENDING_HINT)
@@ -1404,7 +1425,8 @@ def team_report(c, d0, d1, built=True, on=None, hold=""):
     · hold(TR_HOLD 의 열쇠)가 있으면 보내지 않고 멈춘다 — 'AI 판정 실패' 는 실패(ok False — 화면 알림·배너), 'AI 없이 실행' 은
       건너뜀(ok None). 묶음은 대기로 남아 [팀 서버 업로드]로 직접 보낼 수 있다.
     · teamup.py --upload --json 을 수집기와 같은 실행기(_RUN_STEP = core\proc.run_step — Job·시간 상한·60초 진행 줄)로 돌린다.
-      teamup 이 먼저 ping(4초)해 닿지 않으면 곧바로 끝나고, 보내지 못한 묶음은 그대로 대기로 남는다(주소는 teamaddr 한 곳).
+      teamup 이 먼저 ping(3초 × 최대 2번)해 닿지 않으면 곧바로 끝나고, 보내지 못한 묶음은 그대로 대기로 남는다(주소는 teamaddr 한 곳).
+      답이 늦거나 끊기면 teamup 이 거기서 멈추므로 1분 남짓이면 끝난다 — 상한 TR_CAP_SEC(150초)는 안전판이다.
     · 사람용 줄만 콘솔·화면 로그에 옮기고 기계용 마지막 JSON 줄은 찍지 않는다(bat 화면이 읽기 쉽게).
     · 남기는 곳: last_run.json 단계 '팀 서버 자동 보고'(사유·건수만 — 서버 응답·경로 원문은 싣지 않는다: 얼린 보고서의
       /api/dash 에 굳는다)와 report\team_report_status.json(화면 알림·배너 재료 · /api/teamreport — 얼린 사본에는 없다).
@@ -1438,7 +1460,8 @@ def team_report(c, d0, d1, built=True, on=None, hold=""):
             tu.write_report_status(REPORT_DIR["p"], dict(st, at=time.strftime("%Y-%m-%d %H:%M:%S")))
             return st if alarm else None
         print(f"\n── {name} (서버에 닿는지 먼저 확인합니다 — 닿지 않으면 결과 묶음은 대기로 남습니다)")
-        rc, tail, how = _RUN_STEP([sys.executable, os.path.join(ROOT, "teamup.py"), "--upload", "--json"], 1200, name)
+        rc, tail, how = _RUN_STEP([sys.executable, os.path.join(ROOT, "teamup.py"), "--upload", "--json"],
+                                  TR_CAP_SEC, name)
         res = {}
         for ln in tail:
             s = str(ln or "").strip()
@@ -1454,7 +1477,7 @@ def team_report(c, d0, d1, built=True, on=None, hold=""):
                 print("   " + s)
         st = team_report_outcome(res, tag=tag, built=built)
         if not res:
-            st["detail"] = ("20분 안에 끝나지 않아 끊었습니다" if how == "timeout"
+            st["detail"] = (f"{TR_CAP_SEC}초 안에 끝나지 않아 끊었습니다" if how == "timeout"
                             else next((str(x) for x in reversed(tail) if str(x).strip()), f"teamup.py 종료 코드 {rc}"))[:200]
     if st.get("pending") is None:
         st["pending"] = _pending_count()

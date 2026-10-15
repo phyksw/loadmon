@@ -17,9 +17,9 @@ LoadMonitor29-강제종료.bat                                 1,641 B  ad2e2faf
 agentic.py                                            64,457 B  6fe4b525
 freeze.py                                             58,940 B  747fb766
 team_report.py                                       162,734 B  5fbc3296
-flow.py                                              116,451 B  686fecc2
-teamserver.py                                         34,550 B  293889f0
-teamup.py                                             51,780 B  20fa3c29
+flow.py                                              117,519 B  35e297a3
+teamserver.py                                         39,136 B  a6bd70fd
+teamup.py                                             62,533 B  237d84b9
 aggregate.py                                          53,066 B  1e42fcf1
 export.py                                             10,247 B  5d5c9bfe
 retag.py                                               6,128 B  8d6f81d3
@@ -28,12 +28,12 @@ team_recalc.py                                        58,982 B  b47ce5bf
 report_out.py                                         67,756 B  2971e148
 README.md                                            131,773 B  8fe9a085
 check.py                                               2,629 B  7badfe69
-judge.py                                             216,239 B  6bee2177
+judge.py                                             219,113 B  062516d8
 mine.py                                               23,139 B  2aabf65f
 refine.py                                             56,935 B  8c9f4266
 ruff.toml                                              1,004 B  ac1c20ea
 FILES.txt                                                (이 파일)
-run.py                                               119,529 B  a0b7216b
+run.py                                               121,570 B  f7c855da
 자가점검.py                                               11,163 B  55b06af6
 collect/Add-WorkLog.ps1                                3,873 B  7a375f51
 collect/Get-FileActivity.ps1                          50,401 B  a0dca613
@@ -59,7 +59,7 @@ collect/Import-MailCal.py                             12,353 B  bec541e0
 collect/Get-ProgramUsage.py                           33,863 B  d262eb08
 core/meetnote.py                                      28,595 B  0ae77aa1
 config/config.json                                    52,129 B  d8aeeeca
-config/config.default.json                            58,965 B  56d1fdb7
+config/config.default.json                            59,707 B  c1b953bf
 core/board.py                                         13,181 B  86eaf661
 core/extract.py                                      313,682 B  cdb7b78f
 core/pc_ledger.py                                     21,509 B  c1f9d9e5
@@ -79,15 +79,15 @@ tools/check_trend.py                                   7,627 B  d4724e09
 tools/check_recalc.py                                 18,812 B  a49d57bc
 tools/check_teamaddr.py                               20,527 B  95dc65cc
 core/programs.py                                      45,184 B  d6b34a8d
-core/details.py                                      103,538 B  62429e41
+core/details.py                                      103,986 B  4f13986a
 core/narratives.py                                     9,240 B  b1a7b589
 core/owner.py                                          1,488 B  1f1dc049
 core/progress.py                                       1,648 B  15bfd33b
 core/projmap.py                                        8,988 B  4e45fe1f
-docs/설정가이드.md                                        124,706 B  a372b4fc
+docs/설정가이드.md                                        126,469 B  cc58df70
 docs/사용안내.html                                       277,042 B  c3189e59
 docs/현장점검_LM29.md                                     24,229 B  0002991b
-tools/copilot_auto.py                                195,126 B  42fe53af
+tools/copilot_auto.py                                221,719 B  e5562bc6
 tools/pc_hours_compare.py                             21,674 B  c43ff972
 tools/lm20_ref/Get-PcOnHistory.ps1.txt                 9,319 B  5ce7ef54
 tools/lm20_ref/Get-PcOnHints.py.txt                    9,545 B  7d4dae30
@@ -104,4 +104,4 @@ tools/ps_launch.py                                     4,932 B  c3abe2b1
 tools/update_files.py                                  4,530 B  224f60d2
 tools/lm_fixenc.py                                     6,690 B  0b6df0b4
 tools/diag_bundle.py                                  10,236 B  1b3b7788
-ui/app.py                                            427,331 B  59fa29d7
+ui/app.py                                            428,065 B  09e5b8d5

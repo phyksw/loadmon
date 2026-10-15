@@ -30,6 +30,10 @@ copilot_auto.py — 사람 개입 없는 M365 Copilot 연동 (Edge DevTools Prot
   cut: 답 꼬리에 '생성 중단' 문구("OK, I've stopped generating the response.")가 있다 — 재시도
        사다리(새 채팅)로도 반복되면 잘린 앞부분을 ok+cut 으로 돌려주고, 호출자(judge/refine)가
        잘린 JSON 을 마지막 완전한 항목까지 복구한 뒤 나머지만 다시 묻는다(적응 분할).
+  slow(LM28 — 느린 긴 답): replyTimeoutSec 는 기본 마감이다. 그때 답이 아직 자라고 있으면 왕복 예산(roundtripMaxSec) 끝까지 더
+       기다리고(약 1분마다 stderr 진행 줄), 예산 끝에도 쓰는 중이면 입력창의 '중지' 단추(정확한 이름 하나)만 눌러 끊은 뒤 받은 데까지를
+       ok+cut+slow(+stopped) 로 돌려준다. 사다리·judge 의 쉬기 사다리·나눔 전체 재전송은 slow 를 다시 보내지 않는다 — 같은 프롬프트를
+       새 채팅에 또 보내면 Copilot 이 앞 채팅들의 답을 뒤에서 마저 써 대화 목록에 같은 답이 쌓였다(현장 제보).
   전송 전에는 앞 답의 생성이 끝났는지(중지 버튼) 확인하고, 전송 클릭이 '중지'에 먹혀 프롬프트가
   입력창에 남으면 한 번 더 보낸다 — 생성 중 전송이 앞 답을 끊고 다음 왕복까지 시간 초과로 끌던
   큰 사람(청크 20개 이상)의 연속 실패 경로.
@@ -72,6 +76,10 @@ LM28 — Copilot 채팅 정리(copilotAuto.deleteChats, 기본 켬): LM28 이 �
     ([AI 연결 진단]). 소유는 <프로필>.chats.json(프롬프트 원문 없음 — 앵커 sha1·길이·대화 id·누계)이 프로세스를 넘어 기억한다.
   · 기록은 숫자·사유 코드만 — copilot_trace 의 stage 'chat' 줄 · chat_line()('[copilot] 채팅 정리: …' — 단계 로그) ·
     chat_totals()(run.py 의 last_run 단계 'Copilot 채팅 정리').
+  · LM28: 아직 답을 쓰는 중인 채팅은 지우지 않는다(남김 'gen'). 화면 사유(목록에서 못 찾음·메뉴 없음 …)로 남기면 대화 목록 구조를
+    숫자로만 세어(js_chat_census) 둘째 줄 '[copilot] 채팅 정리 구조: …'로 남긴다. 삭제 판정(소유 확인)은 그대로다.
+  · LM28: 다음 단계(정제·Agentic·워크플로우)의 첫 왕복은 fresh=RESUME — 앞 단계의 우리 채팅이 온전하게 끝났고(last_ok) 20분 안이며
+    화면이 그 채팅이면 새 채팅 없이 이어 쓴다(아니면 예전처럼 새 채팅).
 """
 import argparse
 import base64
@@ -1788,6 +1796,73 @@ def wait_idle(cdp, secs=45):
     return round(time.time() - t0, 1)
 
 
+# ── LM28 — 느린 긴 답(현장 제보: 워크플로우 단계의 긴 JSON) ─────────────────────────────────────────────────────────────
+# 예전에는 replyTimeoutSec 가 고정 마감이었다 — 답이 아직 자라는 중이어도 no_reply 로 돌려, 같은 프롬프트를 새 채팅에 두 번(사다리 ①②)
+# 더 보내고 judge 의 쉬기 사다리가 또 보냈다. Copilot 은 그 답들을 뒤에서 끝까지 써, 사람의 대화 목록에는 다 쓴 답이 든 채팅이
+# 여럿 남고 우리 실행은 '시간 초과' 였다. 이제 replyTimeoutSec 는 기본 마감이고, 그때 답이 살아 있으면(아래) 왕복 예산(roundtripMaxSec)
+# 끝까지 더 기다린다. 예산 끝에도 쓰는 중이면 입력창의 '중지' 단추(정확한 이름 하나)만 눌러 끊고 받은 데까지를 ok+cut+slow 로
+# 돌려준다 — 호출자는 완전한 항목만 쓰고 빠진 것만 더 작게 다시 묻는다(같은 프롬프트를 다시 보내지 않는다).
+SLOW_ALIVE_SEC = 90            # 답 몸통이 이 안에 SLOW_GROW_CHARS 자 이상 자랐으면 '살아 있음'
+SLOW_ALIVE_BUSY_SEC = 180      # '중지' 버튼이 보이면 이만큼 안에 자랐어도 살아 있음(긴 생각 사이의 멈춤)
+SLOW_GROW_CHARS = 20           # 이보다 적게 는 것은 자란 것으로 치지 않는다(상대 시각·'편집됨' 같은 화면 잡음)
+SLOW_NOTE_SEC = 60             # 연장 중 진행 줄 간격(초) — 단계 감시기가 산 것으로 본다
+SLOW_MARGIN_SEC = 10           # 왕복 마감 직전 여유 — '중지'를 누르고 마지막 글을 읽을 몫
+SLOW_CAP_SEC = 900             # 왕복 예산이 꺼진(roundtripMaxSec 0) 경우 기본 마감 뒤 연장 상한
+# 누를 수 있는 '중지' 단추 이름 — js_is_generating 의 후보 문구 그대로(정확히 같을 때만 · 대소문자·공백 무시). 다른 단추는 보지 않는다.
+STOP_LABELS = ("중지", "생성 중지", "응답 중지", "응답 생성 중지", "stop", "stop generating", "stop responding")
+
+
+def js_stop_button():
+    """입력창의 생성 '중지' 단추 하나 → {r: ok · none · many · covered, x, y}(글은 돌려주지 않는다). aria-label → title → 보이는 글 순으로
+    한 이름만 보고 STOP_LABELS 와 **정확히** 같을 때만 후보다. 메뉴·대화상자·대화 목록(nav·aside·listbox) 안의 단추는 보지 않는다.
+    후보가 둘 이상이거나 그 점에 다른 요소가 있으면 누르지 않는다."""
+    return ("/*LM28:stop_btn*/(function(){\nconst WANT=" + json.dumps(list(STOP_LABELS), ensure_ascii=False) + ";" + r"""
+const vis=e=>{const r=e.getBoundingClientRect();return r.width>4&&r.height>4;};
+const PUA=new RegExp("["+String.fromCharCode(57344)+"-"+String.fromCharCode(63743)+"]","g");   // 아이콘 글꼴 문자
+const nrm=s=>(s||"").replace(PUA,"").replace(/\s+/g," ").trim().toLowerCase();
+const OUT="[role='menu'],[role='menubar'],[role='dialog'],[role='alertdialog'],[role='tooltip'],[role='listbox'],nav,aside,[role='navigation']";
+let hs=[];
+for(const b of document.querySelectorAll("button,[role='button']")){
+  if(!vis(b)||b.closest(OUT))continue;
+  const n=nrm(b.getAttribute("aria-label"))||nrm(b.getAttribute("title"))||nrm(b.textContent);
+  if(WANT.includes(n))hs.push(b);}
+hs=hs.filter((x,i)=>hs.indexOf(x)===i&&!hs.some(y=>y!==x&&x.contains(y)));
+if(!hs.length)return {r:"none"};
+if(hs.length>1)return {r:"many",n:hs.length};
+const q=hs[0].getBoundingClientRect(),x=Math.round(q.left+q.width/2),y=Math.round(q.top+q.height/2);
+const h=document.elementFromPoint(x,y);
+if(!(h&&(h===hs[0]||hs[0].contains(h))))return {r:"covered"};
+return {r:"ok",x:x,y:y};
+})()""")
+
+
+def _stop_generation(cdp):
+    """왕복을 접는 순간 아직 생성 중이면(js_is_generating) 입력창의 '중지' 단추 하나(js_stop_button — 정확한 이름)만 신뢰 마우스로 누른다
+    → 눌렀으면 True. 생성 중이 아니거나 단추를 하나로 못 정하면 아무것도 누르지 않는다(False — 그때는 Copilot 이 뒤에서 마저 쓴다).
+    끊어 두는 까닭: 뒤에서 다 쓴 답이 사람의 대화 목록에 남고, 생성 중인 채팅은 정리(삭제)도 하지 않는다('gen')."""
+    try:
+        if cdp.eval(js_is_generating(), timeout=10) is not True:
+            return False
+        r = cdp.eval(js_stop_button(), timeout=10)
+        if not (isinstance(r, dict) and r.get("r") == "ok"):
+            return False
+        _chat_mouse(cdp, r.get("x"), r.get("y"))
+    except Exception:  # noqa: BLE001 - 못 누르면 그대로 둔다(왕복 결과는 받은 데까지)
+        return False
+    _sleep(1.5)                                # 끊긴 뒤 화면 글('응답을 중지했습니다')이 붙을 시간
+    return True
+
+
+def _slow_note(waited, left, chars):
+    """연장 대기 중 진행 한 줄(stderr — stdout 은 결과 JSON 한 건 계약 · 단계 프로세스는 stderr 도 감시기에 간다). 글은 싣지 않는다."""
+    try:
+        print(f"[copilot_auto] 답이 길어 Copilot 이 아직 쓰는 중입니다 — 기다린 지 {waited / 60:.0f}분 · 지금 {int(chars):,}자 · "
+              f"왕복 예산 안에서 최대 {max(0.0, left) / 60:.0f}분 더 기다립니다(같은 질문을 다시 보내지 않습니다)",
+              file=sys.stderr, flush=True)
+    except (OSError, ValueError, UnicodeEncodeError):
+        pass
+
+
 def js_new_chat():
     return r"""(function(){
   const vis=el=>{const r=el.getBoundingClientRect();return r.width>4&&r.height>4;};
@@ -1883,7 +1958,26 @@ CHAT_WHY = {
     "nomenu": "메뉴가 열리지 않음", "nodelete": "메뉴에 '삭제' 없음", "noconfirm": "확인 창에 '삭제' 단추 없음",
     "mismatch": "지운 뒤에도 채팅이 화면에 남음", "error": "화면 조작 오류", "timeout": "시간 초과",
     "busy": "다른 작업이 전용 Edge 를 쓰는 중", "notab": "Copilot 탭 없음", "noedge": "전용 Edge 꺼짐",
+    "gen": "답을 쓰는 중이라 남김",
 }
+# LM28 — 화면 사유로 남겼을 때(아래 코드) 대화 목록의 '구조'를 숫자·0/1 로만 센다(js_chat_census — 제목·글·주소·id 없음). 단계 로그에
+# 'CHAT_CENSUS_HEAD …' 한 줄(chat_line 의 둘째 줄)·copilot_trace·상태 파일 totals.census 에 남는다 — 현장 사진 한 장으로 왜 못 지웠는지
+# (목록이 접혔나·링크에 대화 id 가 있나·'현재' 표시가 있나) 알 수 있게. 삭제 판정은 바꾸지 않는다(조사는 읽기만).
+CHAT_CENSUS_CODES = frozenset({"noitem", "ambiguous", "covered", "nomore", "nomenu", "nodelete", "noconfirm", "timeout"})
+CHAT_CENSUS_HEAD = "[copilot] 채팅 정리 구조: "   # run.py CHAT_LINE_HEAD('[copilot] 채팅 정리')로 시작 — 실패 사유 줄로 집지 않는다
+CENSUS_TEXT = (("nnav", "탐색 창"), ("navw", "탐색 창 너비"), ("fold", "탐색 창 접힘 추정"), ("nreg", "목록 영역"),
+               ("nrow", "목록 항목"), ("nlink", "목록 링크"), ("nid", "대화 id 꼴 링크"), ("nhc", "이 대화 id 링크"),
+               ("nhcv", "그중 목록에 보임"), ("ncur", "현재 표시"), ("ncurv", "그중 목록 안"), ("nsel", "선택 표시"),
+               ("nselv", "그중 목록 안"), ("ntgc", "접힌 목록 단추"), ("ntgo", "펼친 목록 단추"), ("nmore", "목록의 메뉴 단추"),
+               ("nmenu", "열린 메뉴"), ("ndlg", "열린 대화상자"), ("gen", "답 쓰는 중"), ("cid", "주소에 대화 id"))
+CENSUS_JS_KEYS = ("nnav", "navw", "nreg", "nrow", "nlink", "nid", "nhc", "nhcv", "ncur", "ncurv", "nsel", "nselv",
+                  "ntgc", "ntgo", "nmore", "nmenu", "ndlg")
+# LM28 — 다음 단계(정제·Agentic·워크플로우)의 첫 왕복은 앞 단계의 우리 채팅을 이어 쓸 수 있다(새 채팅을 덜 연다). 상태 파일이 우리 것 ·
+# 마지막 왕복 온전(last_ok) · 이만큼 안(t_ok) · 보낸 수 < chatTurns 이고, 보내기 직전 화면이 그 채팅(앵커·대화 id)이며 생성 중이 아닐 때만.
+# 소유 기록은 그대로다 — 이어 보낸 프롬프트는 _chat_before_send/_chat_after_send 가 같은 규칙으로 센다(만든 채팅 수는 늘지 않는다).
+CHAT_RESUME_SEC = 1200
+RESUME = "resume"              # fresh 자리의 값(judge.copilot_send → send_inproc) — 화면이 우리 채팅일 때만 이어 쓰고, 아니면 새 채팅
+_RESUMED = [None]              # 이번 _send 에서 RESUME 이 실제로 이어 썼나(None = RESUME 아님) — 결과의 resumed
 _CHAT_KILL = [False]           # 이 프로세스의 삭제 멈춤(mismatch 뒤 — 더 지우지 않는다)
 # 이 프로세스 몫(단계 로그 한 줄 — chat_line). notfresh = 새 채팅을 열었는데 주소의 대화 id 가 그대로라 맡지 않은 수(우리 것 아님 —
 # 남김에 넣지 않는다. 현장 주소 꼴이 예상과 다르면 여기가 커진다 — 사진으로 안다)
@@ -2256,38 +2350,175 @@ def _chat_after_send(cdp, cfg, prompt, own):
         pass
 
 
-def _chat_seen(cdp, cfg):
+def _chat_seen(cdp, cfg, ok=None):
     """왕복이 끝난 뒤 — 이 프로세스가 보낸 우리 채팅의 주소(대화 id·경로)를 적는다. 첫 답 뒤에야 주소에 id 가 생기는 화면이 있어
-    보낼 때가 아니라 답 뒤에 본다. 다음 확인(보내기 전·지우기 전)이 지금 주소의 id 와 맞춰 본다."""
+    보낼 때가 아니라 답 뒤에 본다. 다음 확인(보내기 전·지우기 전)이 지금 주소의 id 와 맞춰 본다.
+    ok(LM28): 이번 왕복이 온전했나(_rt_good) — last_ok·t_ok 로 적는다(다음 단계가 이 채팅을 이어 쓸 수 있는지의 근거)."""
     try:
         st = chat_state(cfg)
         if not (st.get("ours") and int(st.get("sent") or 0) > 0 and st.get("pid") == os.getpid()):
             return
         url = _chat_url(cdp)
         cid = conv_id(url, cfg)
+        dirty = False
         if cid and (cid != st.get("conv") or not st.get("href")):
             st.update(conv=cid, href=_plain_href(url))
+            dirty = True
+        if ok is not None:
+            st["last_ok"] = bool(ok)
+            if ok:
+                st["t_ok"] = _now()
+            dirty = True
+        if dirty:
             _chats_save(cfg, st)
     except Exception:  # noqa: BLE001
         pass
 
 
-def _chat_done(cfg, code, why="", t0=None):
+def chat_resumable(cfg=None, turns=0):
+    """다음 단계 프로세스의 첫 왕복이 지금 우리 채팅을 이어 쓸 수 있나(상태 파일만 — 화면 확인은 _resume_ok) → (참/거짓, 보낸 수).
+    우리 것 · 보낸 적 있음 · 마지막 왕복 온전(last_ok) · CHAT_RESUME_SEC 안 · 보낸 수 < turns(chatTurns — 0 이면 늘 거짓)."""
+    try:
+        cfg = cfg if isinstance(cfg, dict) else load_cfg()
+        st = chat_state(cfg)
+        sent = int(st.get("sent") or 0)
+        ok = bool(st.get("ours") and 0 < sent < int(turns or 0) and st.get("last_ok") is True
+                  and _age_sec(st.get("t_ok")) < CHAT_RESUME_SEC)
+        return ok, (sent if ok else 0)
+    except Exception:  # noqa: BLE001 - 모르면 이어 쓰지 않는다(새 채팅)
+        return False, 0
+
+
+def _resume_ok(cdp, cfg):
+    """RESUME — 지금 화면이 상태 파일의 우리 채팅인가: chat_resumable 의 상태 조건(보낸 수 상한은 호출자가 봤다) + 화면 글에 우리 앵커 +
+    주소의 대화 id 가 적어 둔 id 와 같음(적어 둔 id 가 있으면 지금 주소에도 같은 id 가 있어야) + 생성 중 아님. 하나라도 아니면 False."""
+    try:
+        st = chat_state(cfg)
+        if not (st.get("ours") and int(st.get("sent") or 0) > 0 and st.get("last_ok") is True
+                and _age_sec(st.get("t_ok")) < CHAT_RESUME_SEC):
+            return False
+        if not page_has_anchor(cdp.eval(js_chat_text(cfg), timeout=30), st.get("anchor_sha"), st.get("alen")):
+            return False
+        cid0 = str(st.get("conv") or "")
+        if cid0 and conv_id(_chat_url(cdp), cfg) != cid0:
+            return False
+        return cdp.eval(js_is_generating(), timeout=10) is not True
+    except Exception:  # noqa: BLE001 - 확인하지 못하면 새 채팅
+        return False
+
+
+def chat_mark_bad(cfg=None):
+    """호출자가 답을 쓰지 못했다(해석 실패 — judge.note_bad_reply) — 이 채팅은 다음 단계가 이어 쓰지 않는다(last_ok False)."""
+    try:
+        cfg = cfg if isinstance(cfg, dict) else load_cfg()
+        st = chat_state(cfg)
+        if st.get("ours") and st.get("last_ok"):
+            st["last_ok"] = False
+            _chats_save(cfg, st)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _chat_done(cfg, code, why="", t0=None, census=None):
     """정리 한 번의 끝 — 세기·소유 비우기·기록. 지우지 못했어도 소유는 비운다(곧 새 채팅으로 넘어가거나 Edge 를 닫는다).
-    mismatch 면 이 프로세스는 더 지우지 않고(_CHAT_KILL), 상태 파일에 멈춤(hold — CHAT_REV)을 남긴다."""
+    mismatch 면 이 프로세스는 더 지우지 않고(_CHAT_KILL), 상태 파일에 멈춤(hold — CHAT_REV)을 남긴다.
+    census(LM28 — 화면 사유로 남김일 때의 구조 조사 · 숫자만): 상태 파일 totals.census · 이 프로세스 몫(_CHAT_PROC['census'] —
+    chat_line 의 둘째 줄) · copilot_trace 에 남긴다."""
     st = chat_state(cfg)
     sent = int(st.get("sent") or 0)
     _chat_tally(st, code)
     if code == "mismatch":
         _CHAT_KILL[0] = True
         st["totals"]["hold"] = {"rev": CHAT_REV, "t": _now()}
+    cz = dict(census, code=code) if isinstance(census, dict) and census else None
+    if cz:
+        st["totals"]["census"] = dict(cz, t=_now())
+        _CHAT_PROC["census"] = cz
     _chats_save(cfg, _chat_reset(st))
     trace("chat", act="retire", code=code, why=str(why or "")[:24], sent=sent,
-          sec=round(time.time() - (t0 or time.time()), 1))
+          sec=round(time.time() - (t0 or time.time()), 1), **({"census": cz} if cz else {}))
 
 
-def _retire_steps(cdp, cfg, st, t_end, touched):
-    """retire_chat 의 화면 단계 → 결과 코드. 누르기 전 확인을 모두 지나야 누른다(머리말). touched[0] = 무엇이든 눌렀다(끝에 Esc)."""
+def js_chat_census(conv=""):
+    """대화 목록 구조 조사(읽기만 — 누르지 않는다) → 숫자만 {nnav 보이는 탐색 창 수 · navw 가장 넓은 탐색 창 너비(px) · nreg 보이는 목록
+    영역 · nrow 목록 항목 · nlink 목록 링크 · nid 경로에 대화 id 꼴이 든 링크 · nhc 이 대화 id(conv)가 든 링크 · nhcv 그중 목록에 보임 ·
+    ncur/ncurv aria-current(전체/목록 안) · nsel/nselv aria-selected · ntgc/ntgo 대화 기록 펼침 단추(접힘/펼침) · nmore 목록의 메뉴 단추 ·
+    nmenu 열린 메뉴 · ndlg 열린 대화상자}. 제목·글·주소·id 는 돌려주지 않는다(conv 는 비교에만 쓴다). 영역·항목 기준은 js_chat_row 와 같다."""
+    return ("/*LM28:chat_census*/(function(){\nconst CONV=" + json.dumps(str(conv or "")) + ";" + r"""
+const vis=e=>{const r=e.getBoundingClientRect();return r.width>4&&r.height>4;};
+const POP="[role='menu'],[role='menubar'],[role='dialog'],[role='alertdialog'],[role='tooltip'],[role='combobox']";
+const REG="nav,aside,[role='navigation'],[role='tree'],[role='list'],[role='listbox'],[role='grid'],ul,ol";
+const ROW="li,[role='listitem'],[role='treeitem'],[role='option'],[role='row']";
+const IDRX=/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|(?=[A-Za-z0-9_-]*\d)(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{16,}/i;
+const HIST=/(대화|채팅 기록|conversation|chats|history)/i;
+const q=s=>{try{return [...document.querySelectorAll(s)];}catch(_){return [];}};
+const inReg=e=>!e.closest(POP)&&!!e.closest(REG);
+const lab=e=>((e.getAttribute("aria-label")||"")+" "+(e.getAttribute("title")||"")+" "+(e.textContent||"")).replace(/\s+/g," ");
+const o={nnav:0,navw:0,nreg:0,nrow:0,nlink:0,nid:0,nhc:0,nhcv:0,ncur:0,ncurv:0,nsel:0,nselv:0,ntgc:0,ntgo:0,nmore:0,nmenu:0,ndlg:0};
+for(const n of q("nav,aside,[role='navigation']")){if(vis(n)){o.nnav++;o.navw=Math.max(o.navw,Math.round(n.getBoundingClientRect().width));}}
+o.nreg=q(REG).filter(vis).length;
+o.nrow=q(ROW).filter(e=>vis(e)&&inReg(e)).length;
+for(const a of q("a[href]")){
+  const h=(a.getAttribute("href")||"")+" "+(a.href||""),v=vis(a)&&inReg(a);
+  let p="";try{p=new URL(a.getAttribute("href")||"",document.baseURI).pathname;}catch(_){p="";}
+  if(v)o.nlink++;
+  if(IDRX.test(p))o.nid++;
+  if(CONV&&h.indexOf(CONV)>=0){o.nhc++;if(v)o.nhcv++;}}
+for(const e of q("[aria-current='page'],[aria-current='true']")){o.ncur++;if(vis(e)&&inReg(e))o.ncurv++;}
+for(const e of q("[aria-selected='true']")){o.nsel++;if(vis(e)&&inReg(e))o.nselv++;}
+for(const b of q("button,[role='button']")){
+  if(!vis(b)||b.closest(POP))continue;
+  const x=b.getAttribute("aria-expanded");
+  if((x==="false"||x==="true")&&HIST.test(lab(b))){if(x==="false")o.ntgc++;else o.ntgo++;}
+  if(b.getAttribute("aria-haspopup")&&inReg(b))o.nmore++;}
+o.nmenu=q("[role='menu'],[role='listbox']").filter(vis).length;
+o.ndlg=q("[role='dialog'],[role='alertdialog'],dialog[open]").filter(vis).length;
+return o;
+})()""")
+
+
+def _chat_census(cdp, cfg, conv=""):
+    """화면 사유로 남길 때의 구조 조사 → 숫자만 dict(CENSUS_TEXT 의 키 · 화이트리스트 밖·숫자 아닌 값은 버린다). ok 0 = 구조를 읽지 못함.
+    gen(생성 중 0/1)·cid(주소에 대화 id 0/1)·fold(탐색 창이 좁다 — 접힘 추정 0/1)는 여기서 더한다. 예외를 내지 않는다."""
+    out = {}
+    try:
+        r = _jsd(cdp, js_chat_census(conv), timeout=5)
+    except Exception:  # noqa: BLE001 - 조사는 덤이다
+        r = {}
+    for k in CENSUS_JS_KEYS:
+        v = r.get(k)
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            out[k] = max(0, min(99999, int(v)))
+    if "nnav" in out:
+        out["fold"] = 1 if (out["nnav"] and out.get("navw", 0) < 120) else 0
+    try:
+        out["gen"] = 1 if cdp.eval(js_is_generating(), timeout=5) is True else 0
+    except Exception:  # noqa: BLE001
+        pass
+    out["cid"] = 1 if conv else 0
+    out["ok"] = 1 if any(k in out for k in CENSUS_JS_KEYS) else 0
+    return out
+
+
+def census_note(code, c):
+    """구조 조사(숫자) → '사유 — 탐색 창 1 · 목록 항목 0 · …' 한 줄(글·id 없음). 조사가 없으면 ""."""
+    if not isinstance(c, dict) or not c:
+        return ""
+    head = CHAT_WHY.get(str(code or ""), str(code or ""))
+    if not c.get("ok"):
+        return f"{head} — 화면 구조를 읽지 못했습니다"
+    parts = []
+    for k, lab in CENSUS_TEXT:
+        v = c.get(k)
+        if isinstance(v, int) and not isinstance(v, bool):
+            parts.append(f"{lab} {v}")
+    return f"{head} — " + " · ".join(parts)
+
+
+def _retire_steps(cdp, cfg, st, t_end, touched, ctx=None):
+    """retire_chat 의 화면 단계 → 결과 코드. 누르기 전 확인을 모두 지나야 누른다(머리말). touched[0] = 무엇이든 눌렀다(끝에 Esc).
+    ctx(LM28): 지금 주소의 대화 id 를 cid 로 돌려준다(화면 사유로 남길 때의 구조 조사용). 아직 답을 쓰는 중인 채팅은 아무것도 누르지 않고
+    'gen'(남김 — 실패 아님) — 생성 중인 대화를 지우면 Copilot 이 다른 대화로 옮겨 가거나 지운 뒤에도 답이 남는다."""
     def left():
         return t_end - time.time()
 
@@ -2302,6 +2533,14 @@ def _retire_steps(cdp, cfg, st, t_end, touched):
     cid, cid0 = conv_id(_chat_url(cdp), cfg), str(st.get("conv") or "")
     if cid and cid0 and cid != cid0:
         return "lost"
+    if isinstance(ctx, dict):
+        ctx["cid"] = cid
+    # ⓪ 아직 답을 쓰는 중이면 지우지 않는다(LM28 — 남김 'gen'). 물어보지 못했으면 예전처럼 다음 단계로(아래 확인들이 그대로 지킨다)
+    try:
+        if cdp.eval(js_is_generating(), timeout=8) is True:
+            return "gen"
+    except (TimeoutError, RuntimeError, OSError):
+        pass
     # ① 대화 목록의 지금 대화 항목 — 목록이 접혀 있으면 펼침 단추를 한 번만 누르고 다시 본다
     r = _jsd(cdp, js_chat_row(cid, "find"))
     tg = r.get("tg")
@@ -2366,8 +2605,10 @@ def retire_chat(cdp, cfg, why="", budget=CHAT_RETIRE_SEC):
     """다 쓴 우리 채팅(상태 파일 · 보낸 적 있음)을 Copilot 대화 목록에서 지운다 → 결과 코드(CHAT_WHY). 예외를 내지 않는다.
     새 채팅을 열기 직전(_fresh_chat — run_roundtrip·_run_parts·재시도 사다리)과 실행 끝 Edge 를 닫기 전(close_own_edge →
     retire_current)에만 부른다 — 왕복마다 부르지 않는다. 화면을 누르는 단계는 _retire_steps(머리말 참고).
-    'none'(우리 것 아님)·'unsent'(열고 보내지 않음 — 목록에 없다)·'nocdp' 는 세지 않고, 그 밖은 지움(deleted) 또는 남김(+ 사유)."""
+    'none'(우리 것 아님)·'unsent'(열고 보내지 않음 — 목록에 없다)·'nocdp' 는 세지 않고, 그 밖은 지움(deleted) 또는 남김(+ 사유).
+    LM28: 생성 중이면 'gen'(남김 — 실패 아님) · 화면 사유(CHAT_CENSUS_CODES)로 남기면 구조 조사(_chat_census — 숫자만)를 함께 남긴다."""
     t0 = time.time()
+    census = None
     try:
         st = chat_state(cfg)
         if not st.get("ours"):
@@ -2382,14 +2623,17 @@ def retire_chat(cdp, cfg, why="", budget=CHAT_RETIRE_SEC):
         elif cdp is None:
             return "nocdp"
         else:
-            touched = [False]
+            touched, ctx = [False], {}
             try:
-                code = _retire_steps(cdp, cfg, st, t0 + max(5.0, float(budget or CHAT_RETIRE_SEC)), touched)
+                code = _retire_steps(cdp, cfg, st, t0 + max(5.0, float(budget or CHAT_RETIRE_SEC)), touched, ctx)
             except Exception:  # noqa: BLE001 - 화면 조작 오류는 '남김'으로(왕복·닫기를 막지 않는다)
                 code = "error"
+            if code in CHAT_CENSUS_CODES:
+                # 화면 사유로 남긴다 — 메뉴·확인 창을 닫기 전에 구조를 센다(읽기만 · 숫자만). 판정은 바꾸지 않는다.
+                census = _chat_census(cdp, cfg, ctx.get("cid") or str(st.get("conv") or ""))
             if touched[0] and code != "deleted":
                 _chat_esc(cdp)
-        _chat_done(cfg, code, why, t0)
+        _chat_done(cfg, code, why, t0, census=census)
         return code
     except Exception:  # noqa: BLE001 - 정리가 왕복·닫기를 막지 않는다
         return "error"
@@ -2511,7 +2755,8 @@ def chat_note(d):
 
 
 def chat_line():
-    """단계 로그 한 줄(이 프로세스 몫) — '[copilot] 채팅 정리: 만든 n · 지운 m · 남긴 k (사유: …)'. 한 일이 없으면 ""."""
+    """단계 로그 한 줄(이 프로세스 몫) — '[copilot] 채팅 정리: 만든 n · 지운 m · 남긴 k (사유: …)'. 한 일이 없으면 "".
+    LM28: 이 프로세스가 화면 사유로 남긴 적이 있으면 마지막 구조 조사를 둘째 줄 'CHAT_CENSUS_HEAD 사유 — 숫자들'로 붙인다."""
     p = _CHAT_PROC
     if not chat_busy(p):
         return ""
@@ -2521,7 +2766,11 @@ def chat_line():
         left = bool(st.get("ours") and int(st.get("sent") or 0) > 0 and st.get("pid") == os.getpid())
     except Exception:  # noqa: BLE001
         left = False
-    return CHAT_LINE_HEAD + chat_note(dict(p, left=left, hold=_CHAT_KILL[0]))
+    s = CHAT_LINE_HEAD + chat_note(dict(p, left=left, hold=_CHAT_KILL[0]))
+    cz = p.get("census")
+    if isinstance(cz, dict) and cz:
+        s += "\n" + CHAT_CENSUS_HEAD + census_note(cz.get("code"), cz)
+    return s
 
 
 def chat_status(cfg=None):
@@ -2538,6 +2787,9 @@ def chat_status(cfg=None):
             s = f"마지막 {str(last.get('t') or '')[5:16]} {CHAT_WHY.get(last['code'], last['code'])} · " + s
         if t["last_fail"]:
             s += f" (마지막으로 남긴 까닭: {CHAT_WHY.get(t['last_fail'], t['last_fail'])})"
+            cz = (st.get("totals") or {}).get("census") if isinstance(st.get("totals"), dict) else None
+            if isinstance(cz, dict) and cz.get("code") == t["last_fail"]:
+                s += " · 구조: " + census_note(cz.get("code"), cz).split(" — ", 1)[-1]
         if t["notfresh"]:
             s += f" · 새 채팅으로 확인되지 않아 맡지 않은 채팅 {t['notfresh']}"
     if not _chat_on(cfg):
@@ -2586,6 +2838,8 @@ def _traced(fn):
                   fresh=bool(fresh), cut=bool(r.get("cut")),
                   parts=r.get("parts", 1), retry=r.get("retry", ""),
                   busy=r.get("busy_seen"),
+                  slow=bool(r.get("slow")), stop=bool(r.get("stopped")), ext=r.get("ext_sec", 0),
+                  resume=(fresh == RESUME),
                   phase=r.get("phase", ""), reason=r.get("reason", ""),
                   reload=bool(kw.get("reload")),
                   err=(r.get("error") or "")[:60])
@@ -2609,7 +2863,9 @@ def run_roundtrip(cfg, prompt, fresh=False, reload=False):
     버튼 대신 채팅 페이지를 새로 고친 뒤 보낸다(오래 쓴 탭).
     LM28 채팅 정리: 새 채팅(fresh·reload·사다리 ①②)은 모두 _fresh_chat — 다 쓴 우리 채팅(사다리면 방금 실패한 채팅)을 먼저 대화
     목록에서 지운 뒤 연다. 새 채팅을 여는 곳은 늘리지 않았다.
-    LM28: 답을 기다리던 중에 사용량 제한을 알아챈 왕복(_roundtrip_once 의 phase 'throttled')도 사다리를 타지 않고 그대로 돌려준다."""
+    LM28: 답을 기다리던 중에 사용량 제한을 알아챈 왕복(_roundtrip_once 의 phase 'throttled')도 사다리를 타지 않고 그대로 돌려준다.
+    LM28 느린 긴 답: slow(왕복 예산 안에 다 못 받은 답 — ok+cut)도 사다리를 타지 않고 그대로 돌려준다. fresh=RESUME(다음 단계의 첫
+    왕복)이면 화면이 상태 파일의 우리 채팅일 때만(_resume_ok) 새 채팅 없이 이어 보내고, 아니면 fresh 와 같다."""
     _t_rt = time.time()
     _rt_max = max(0, int(cfg.get("roundtripMaxSec") or 0))
     global _RT_DEADLINE           # v3: 고정 대기(준비·입력창·유휴 폴링)도 왕복 예산 안에서 끝나게
@@ -2635,6 +2891,11 @@ def run_roundtrip(cfg, prompt, fresh=False, reload=False):
             if p > 0:
                 _sleep(p)
     try:
+        if fresh == RESUME:
+            # 다음 단계의 첫 왕복(LM28) — 화면이 상태 파일의 우리 채팅이면 새 채팅 없이 이어 보낸다. 아니면 예전처럼 새 채팅.
+            ok_r = (not reload) and _resume_ok(cdp, cfg)
+            _RESUMED[0] = ok_r
+            fresh = not ok_r
         # 새 채팅은 늘 _fresh_chat 으로 연다 — 다 쓴 우리 채팅을 먼저 목록에서 지우고, 새 채팅을 '우리 것'으로 적는다(LM28 채팅 정리)
         if reload:
             # 쉬었다 다시 보내기·chatTurns 회전 — 오래 쓴 탭은 새 채팅 버튼만으로는 실패가 이어졌다(진단 A).
@@ -2656,6 +2917,10 @@ def run_roundtrip(cfg, prompt, fresh=False, reload=False):
             return res
         if res.get("ok") and is_throttle_reply(res.get("reply")):
             return _throttled(cfg, res.get("reply"))
+        # LM28 — 느린 긴 답(slow: 왕복 예산 안에 다 못 받아 받은 데까지)은 사다리를 타지 않는다. 같은 프롬프트를 새 채팅에 다시 보내면
+        # 같은 길이의 답을 또 기다리고, Copilot 은 앞 채팅들의 답을 뒤에서 마저 써 대화 목록에 같은 답이 쌓인다(현장 제보).
+        if res.get("slow"):
+            return res
         # 끊긴 답(cut)도 재시도 사유다 — 다만 앞부분에 잘린 JSON 이 남아 있을 수 있어 전부 실패하면
         # 그 답을 ok+cut 으로 돌려주고 호출자가 복구·부분 재시도한다(judge/refine 의 적응 분할).
         bad = ((res.get("ok") and (is_error_reply(res.get("reply")) or res.get("cut")))
@@ -2683,6 +2948,9 @@ def run_roundtrip(cfg, prompt, fresh=False, reload=False):
             return res2
         if res2.get("ok") and is_throttle_reply(res2.get("reply")):
             return _throttled(cfg, res2.get("reply"))
+        if res2.get("slow"):
+            res2["retry"] = f"1단계 재시도(새 채팅 · {how2}) — 답이 길어 받은 데까지"
+            return res2
         if res2.get("ok") and not is_error_reply(res2.get("reply")) and not res2.get("cut"):
             res2["retry"] = f"1단계 재시도 성공 (새 채팅 · {how2})"
             return res2
@@ -2698,6 +2966,9 @@ def run_roundtrip(cfg, prompt, fresh=False, reload=False):
             return res3
         if res3.get("ok") and is_throttle_reply(res3.get("reply")):
             return _throttled(cfg, res3.get("reply"))
+        if res3.get("slow"):
+            res3["retry"] = "2단계 재시도(새 채팅 + 자동 모델) — 답이 길어 받은 데까지"
+            return res3
         if res3.get("ok") and not is_error_reply(res3.get("reply")) and not res3.get("cut"):
             res3["retry"] = "2단계 재시도 성공 (새 채팅 + 자동 모델)"
             return res3
@@ -2719,10 +2990,19 @@ def run_roundtrip(cfg, prompt, fresh=False, reload=False):
 
 
 def _once(cdp, cfg, prompt, model_override=None):
-    """왕복 한 번(_roundtrip_once) + 끝난 뒤 우리 채팅의 주소(대화 id) 적기(_chat_seen — LM28 채팅 정리)."""
+    """왕복 한 번(_roundtrip_once) + 끝난 뒤 우리 채팅의 주소(대화 id)·이번 왕복이 온전했는지 적기(_chat_seen — LM28 채팅 정리 ·
+    다음 단계가 이어 쓸 수 있는지의 근거)."""
     res = _roundtrip_once(cdp, cfg, prompt, model_override=model_override)
-    _chat_seen(cdp, cfg)
+    _chat_seen(cdp, cfg, ok=_rt_good(res))
     return res
+
+
+def _rt_good(res):
+    """온전한 왕복인가 — 답이 왔고 끊기지(cut·slow) 않았고 오류·사용량 제한 문구가 아니다."""
+    r = res if isinstance(res, dict) else {}
+    rep = r.get("reply")
+    return bool(r.get("ok") and not r.get("cut") and not r.get("slow")
+                and not is_error_reply(rep) and not is_throttle_reply(rep))
 
 
 def build_anchor(prompt):
@@ -2861,9 +3141,15 @@ def _roundtrip_once(cdp, cfg, prompt, model_override=None):
             base = 0                # 못 재면 자르지 않는다 — 전문 폴백이 안전하다
 
         # 응답 대기: 프롬프트 전송 이후 '새로 늘어난' 텍스트가 N회 연속 동일하면 완료
-        deadline = time.time() + min(float(cfg["replyTimeoutSec"]), _dl_left(10 ** 6))
+        t_wait0 = time.time()
+        deadline = t_wait0 + min(float(cfg["replyTimeoutSec"]), _dl_left(10 ** 6))
+        # ★ LM28 — deadline 은 기본 마감이다. 그때 답이 살아 있으면(SLOW_ALIVE_SEC 안에 SLOW_GROW_CHARS 자 이상 자람 · '중지' 버튼이
+        #   보이면 SLOW_ALIVE_BUSY_SEC 안) 왕복 예산 끝(cap)까지 더 기다린다 — 절대 그 너머로는 아니다(머리말 '느린 긴 답').
+        cap = (max(deadline, _RT_DEADLINE - SLOW_MARGIN_SEC) if _RT_DEADLINE is not None
+               else deadline + SLOW_CAP_SEC)
+        grow_len, grow_t, note_t, ext, gen = 0, t_wait0, 0.0, 0.0, None
         how = "anchor"
-        last, stable, idle = None, 0, 0
+        last, last_key, stable, idle = None, None, 0, 0
         # ★ '중지' 버튼을 이 왕복에서 **한 번이라도 봤는가**. js_is_generating 은 못 찾으면 False(생성 중 아님)
         #   로 답하는, wait_idle 용의 '막지 않는 쪽이 안전한' 함수다. 그것을 조기 완료 판정에 그대로 쓰면 방향이
         #   반대다 — UI 의 버튼 표기가 후보 문구와 안 맞으면 '깊이 생각하기' 가 12초만 멈춰도 답을 쓰는 도중에
@@ -2883,7 +3169,16 @@ def _roundtrip_once(cdp, cfg, prompt, model_override=None):
         #   보냈다(왕복 하나에 수 분 · 재전송마다 제한이 길어짐). 이제 답 머리(짧은 산문·JSON 없음)나 보낸 뒤 새로 뜬 알림에 제한
         #   문구가 있고 그 글이 그대로면(_throttle_settled) 바로 throttled 로 돌려준다. 글 원문은 찍지 않는다.
         thr_last, thr_n = None, 0
-        while time.time() < deadline:
+        while True:
+            now = time.time()
+            if now >= deadline:
+                alive = (now - grow_t < SLOW_ALIVE_SEC) or (gen is True and now - grow_t < SLOW_ALIVE_BUSY_SEC)
+                if now >= cap or not alive:
+                    break
+                if now - note_t >= SLOW_NOTE_SEC:
+                    note_t = now
+                    _slow_note(now - t_wait0, cap - now, grow_len)
+                ext = now - deadline
             time.sleep(cfg["pollSec"])
             try:
                 txt = cdp.eval(js_chat_text(cfg), timeout=30) or ""
@@ -2909,7 +3204,7 @@ def _roundtrip_once(cdp, cfg, prompt, model_override=None):
                     pass
                 return _reply_result(strip_echo(new, prompt, anchor, how), note_model, how, True,
                                      waited, resent, gen_sec=time.time() - t_gen0, done_by="pledge",
-                                     busy_seen=busy_seen)
+                                     busy_seen=busy_seen, ext_sec=ext)
             # 버튼 상태는 매 폴 본다(버튼 목록 훑기 — innerText 보다 훨씬 가볍다). 텍스트가 늘고 있는 동안
             # 버튼이 보이면 '이 UI 에서 선택자가 맞는다' 는 증거가 된다.
             try:
@@ -2931,10 +3226,16 @@ def _roundtrip_once(cdp, cfg, prompt, model_override=None):
                                 gen_sec=round(time.time() - t_gen0, 1), waited=waited, resent=resent)
             else:
                 thr_last, thr_n = None, 0
+            if len(body) >= grow_len + SLOW_GROW_CHARS:
+                grow_len, grow_t = len(body), time.time()          # 답이 자랐다 — 기본 마감 뒤 연장의 근거
+            # ★ LM28 — '같은 글' 판정은 JSON 꼴 답이면 마지막 닫는 괄호까지만 본다(_stable_view). 답 뒤의 화면 잡음(상대 시각·추천
+            #   질문 칩·꼬리말)이 바뀌어도 완료를 알아챈다 — 예전에는 잡음 때문에 끝난 답을 시간 초과로 버리고 새 채팅에 다시 보냈다.
+            #   '중지' 버튼이 보이는 동안(생성 중)은 예전처럼 전체 글로 본다 — 닫힌 JSON 뒤에 아직 쓰는 글을 멈춤으로 보지 않게.
+            key = _stable_view(body) if (body and gen is not True) else new
             if not body and (gen or (time.time() - t_gen0) < first_token_s):
                 # 아직 첫 글자가 없다 — 생각 중이다(버튼이 보이거나 유예 안). 멈춘 답으로 세지 않는다.
                 stable, idle = 0, 0
-            elif new.strip() and new == last:
+            elif new.strip() and key == last_key:
                 stable += 1
                 # 텍스트가 멈췄고, 버튼을 본 적이 있는데 지금은 없다 → 생성이 끝난 것. stablePolls 를 끝까지
                 # 기다릴 이유가 없다(예전엔 서약을 못 잡은 왕복마다 8회 × 3초 = 24초를 흘려보냈다).
@@ -2956,13 +3257,41 @@ def _roundtrip_once(cdp, cfg, prompt, model_override=None):
                     return _reply_result(strip_echo(new, prompt, anchor, how), note_model, how, False,
                                          waited, resent, gen_sec=time.time() - t_gen0,
                                          done_by=("idle" if stable < cfg["stablePolls"] else "stable"),
-                                         busy_seen=busy_seen)
+                                         busy_seen=busy_seen, ext_sec=ext)
             else:
                 stable, idle = 0, 0
-            last = new
+            last, last_key = new, key
+        # 마감(기본 마감에 답이 멈춰 있었거나 왕복 예산 끝) — 아직 쓰는 중이면 '중지' 단추 하나만 눌러 끊고(뒤에서 마저 쓴 답이 목록에
+        # 남지 않게) 받은 데까지를 ok+cut+slow 로 돌려준다. run_roundtrip·judge 는 slow 를 다시 보내지 않는다(호출자가 빠진 것만 작게).
+        stopped = _stop_generation(cdp)
+        if stopped:
+            try:
+                new2, how2 = pick_reply(cdp.eval(js_chat_text(cfg), timeout=30) or "", base, anchor)
+                if len(strip_echo(new2, prompt, anchor, how2).strip()) >= len(strip_echo(last or "", prompt, anchor, how).strip()):
+                    last, how = new2, how2
+            except (TimeoutError, OSError, RuntimeError):
+                pass
+        body = strip_echo(last or "", prompt, anchor, how).strip()
+        if body:
+            return _reply_result(body, note_model, how, False, waited, resent, gen_sec=time.time() - t_gen0,
+                                 done_by="slow", busy_seen=busy_seen, cut=True, slow=True, stopped=stopped,
+                                 ext_sec=ext)
         return {"ok": False, "phase": "no_reply", "error": "응답 시간 초과",
-                "reply": (last or "").strip(), "sentinel": False,
+                "reply": (last or "").strip(), "sentinel": False, "stopped": stopped,
                 "hint": "Copilot 창이 응답을 생성 중인지 확인 — 반복되면 화면 스크린샷을 Claude에게"}
+
+
+def _stable_view(body):
+    """'같은 글' 판정에 쓰는 답 — JSON 꼴이면 마지막 닫는 괄호('}'·']')까지, 그 앞이 괄호 수로 닫혀 있을 때만(_looks_closed). 아직
+    쓰는 중인 JSON(바깥 괄호가 열림)·산문은 그대로 — 긴 문자열 하나를 쓰는 동안 반쪽 JSON 을 '멈춤' 으로 보지 않게."""
+    s = str(body or "")
+    if "{" not in s and "[" not in s:
+        return s
+    k = max(s.rfind("}"), s.rfind("]"))
+    if k < 0:
+        return s
+    head = s[:k + 1]
+    return head if _looks_closed(head) else s
 
 
 def _looks_closed(reply):
@@ -2975,14 +3304,21 @@ def _looks_closed(reply):
 
 
 def _reply_result(reply, note_model, how, sentinel, waited=0, resent=False,
-                  gen_sec=0.0, done_by="", busy_seen=None):
+                  gen_sec=0.0, done_by="", busy_seen=None, cut=None, slow=False, stopped=None, ext_sec=0.0):
     """회수 결과 dict — cut(생성 중단 문구가 꼬리에 있음)·waited(앞 답 생성 대기 초)·resent(전송 재클릭)
     를 함께 남겨 호출자가 잘린 답을 복구·부분 재시도할 수 있게 한다.
     gen_sec·done_by 는 계측용 — 답을 기다린 초와 무엇으로 완료를 알았는지
-    (pledge=서약 / idle=중지 버튼 사라짐 / stable=같은 텍스트 반복)."""
+    (pledge=서약 / idle=중지 버튼 사라짐 / stable=같은 텍스트 반복 / slow=왕복 예산 끝에 받은 데까지).
+    LM28: slow=True(느린 긴 답 — 예산 안에 다 못 받음)면 cut 도 참이다 · stopped = '중지' 단추를 눌렀나 · ext_sec = 기본 마감 뒤 더 기다린 초."""
     reply = (reply or "").strip()
     out = {"ok": True, "phase": "replied", "reply": reply, "model": note_model, "pick": how,
-           "sentinel": bool(sentinel), "cut": is_cut_reply(reply)}
+           "sentinel": bool(sentinel), "cut": is_cut_reply(reply) if cut is None else bool(cut)}
+    if slow:
+        out["slow"] = True
+    if stopped is not None:
+        out["stopped"] = bool(stopped)
+    if ext_sec:
+        out["ext_sec"] = round(float(ext_sec), 1)
     if waited:
         out["waited"] = waited
     if resent:
@@ -3037,8 +3373,14 @@ def _run_parts(cdp, cfg, parts, fresh, deadline=None, reload=False):
     deadline(epoch 초): 넘기면 조각을 더 보내지 않고 시간 초과로 접는다 — 예전에는 이 다부 경로에
     왕복 예산이 없어 한 왕복이 76~80분까지 무제동으로 돌았다(제보 ④ · 검증 CONFIRMED).
     LM28 진단 A: 어느 조각의 답이든 사용량 제한 문구면 바로 phase 'throttled'. reload=True 면 새 채팅 대신 페이지 새로 고침.
-    LM28 채팅 정리: 새 채팅은 _fresh_chat(다 쓴 우리 채팅 — 전체 재시도면 방금 실패한 나눔 채팅 — 을 먼저 지운다)."""
+    LM28 채팅 정리: 새 채팅은 _fresh_chat(다 쓴 우리 채팅 — 전체 재시도면 방금 실패한 나눔 채팅 — 을 먼저 지운다).
+    LM28 느린 긴 답: 어느 조각이든 slow(왕복 예산 끝에 받은 데까지)면 _wait_rest 로 더 기다리거나 남은 조각을 보내지 않고 그대로 돌려준다
+    (ok — 호출자 run_roundtrip_split 이 새 채팅 전체 재전송을 하지 않는다). fresh=RESUME 은 run_roundtrip 과 같다."""
     total = len(parts)
+    if fresh == RESUME:
+        ok_r = (not reload) and _resume_ok(cdp, cfg)
+        _RESUMED[0] = ok_r
+        fresh = not ok_r
     if reload:
         try:
             _fresh_chat(cdp, cfg, "reload", reload=True)
@@ -3062,6 +3404,10 @@ def _run_parts(cdp, cfg, parts, fresh, deadline=None, reload=False):
         reply = res.get("reply") or ""
         if is_throttle_reply(reply):
             return dict(_throttled(cfg, reply), parts=total)
+        if res.get("slow"):
+            res["parts"] = total
+            res["note"] = f"나눔 {i}/{total}: 답이 길어 왕복 예산 안에 받은 데까지만 돌려줍니다(다시 보내지 않음)"
+            return res
         if not res.get("sentinel"):
             more = _wait_rest(cdp, cfg, part)
             if more:
@@ -3122,7 +3468,7 @@ def run_roundtrip_split(cfg, prompt, fresh=False, reload=False):
         cdp = CDP(ws_url)
         activate(cdp)                    # 탭을 앞으로 — 비활성 탭은 답이 자라지 않는다(배경 스로틀링, v24.13)
         try:
-            res = _run_parts(cdp, cfg, parts, fresh=(fresh or attempt == 2), deadline=_deadline,
+            res = _run_parts(cdp, cfg, parts, fresh=(True if attempt == 2 else fresh), deadline=_deadline,
                              reload=bool(reload and attempt == 1))
         except Exception as e:
             res = {"ok": False, "phase": "error", "error": f"{type(e).__name__}: {e}"}
@@ -3326,12 +3672,16 @@ def _send(cfg, prompt, fresh=False, no_split=False, lock_wait=EDGE_LOCK_WAIT, re
     if stub_dir():
         return run_stub(cfg, prompt, fresh=bool(fresh))       # 테스트 전용 — Edge 미기동
     kw = {"reload": True} if reload else {}
+    fr = RESUME if fresh == RESUME else bool(fresh)          # RESUME(다음 단계의 첫 왕복)은 그대로 넘긴다 — 화면 확인은 왕복 함수
+    _RESUMED[0] = None
     try:
         with edge_lock(cfg, timeout=lock_wait):
-            res = (run_roundtrip(cfg, prompt, fresh=bool(fresh), **kw) if no_split
-                   else run_roundtrip_split(cfg, prompt, fresh=bool(fresh), **kw))
+            res = (run_roundtrip(cfg, prompt, fresh=fr, **kw) if no_split
+                   else run_roundtrip_split(cfg, prompt, fresh=fr, **kw))
     except EdgeBusy as e:
         return busy_result(e)
+    if fr == RESUME and isinstance(res, dict) and _RESUMED[0] is not None:
+        res["resumed"] = bool(_RESUMED[0])                   # 이어 보냈나(False = 화면이 우리 채팅이 아니라 새 채팅을 열었다)
     _after(cfg, res)
     return res
 
@@ -3341,7 +3691,9 @@ def send_inproc(prompt, fresh=False, deadline=None, cfg=None, stage="", reload=F
     반환 dict 는 --send 가 출력하는 JSON 과 같다(같은 _send). deadline(epoch 초)이 있으면 왕복 예산(roundtripMaxSec)과
     잠금 대기를 그 안으로 줄인다 — 인프로세스 왕복은 밖에서 끊을 수 없으므로 드라이버의 내부 데드라인(_RT_DEADLINE ·
     CDP 소켓 timeout)이 상한이다. 예외는 --send 처럼 {"ok":False,"phase":"error"} 로 돌려준다.
-    reload: 보내기 전에 채팅 페이지 새로 고침(judge 의 쉬었다 다시 보내기·chatTurns 회전). 모델을 바꿀 때는 cfg 의 model."""
+    reload: 보내기 전에 채팅 페이지 새로 고침(judge 의 쉬었다 다시 보내기·chatTurns 회전). 모델을 바꿀 때는 cfg 의 model.
+    fresh=RESUME(LM28): 화면이 앞 단계의 우리 채팅이면 이어 쓰고 아니면 새 채팅 — 결과의 resumed 가 실제로 이어 썼는지다.
+    느린 긴 답의 연장 대기 중에는 드라이버가 약 1분마다 stderr 진행 줄을 찍는다(judge._transport 는 따로 1분마다 stdout 경과 줄)."""
     cfg = dict(cfg) if isinstance(cfg, dict) else load_cfg()
     lock_wait = EDGE_LOCK_WAIT
     if deadline:
@@ -3497,7 +3849,8 @@ def main():
             if a.retire:
                 # [AI 연결 진단] — 한 번 묻고 끝나는 채팅이라 바로 지운다(우리가 연 채팅만). 결과 한 줄(숫자·사유)을 함께 돌려준다
                 code = retire_current(cfg, "diag") if not stub_dir() else "none"
-                res["chats"] = chat_line()[len(CHAT_LINE_HEAD):] or (
+                ln1, _, ln2 = chat_line().partition("\n")         # 둘째 줄(구조 조사)은 한 줄로 붙인다 — 화면 로그 한 줄
+                res["chats"] = (ln1[len(CHAT_LINE_HEAD):] + (" · 구조: " + ln2[len(CHAT_CENSUS_HEAD):] if ln2 else "")) or (
                     (CHAT_WHY.get(code, code) + " · " if code not in ("none", "unsent", "deleted") else "") + chat_status(cfg))
             if a.out and res.get("reply"):
                 with open(a.out, "w", encoding="utf-8") as f:
