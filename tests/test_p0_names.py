@@ -425,8 +425,9 @@ class ConfigTemplate(unittest.TestCase):
         self.assertEqual(c["episodeTop"], 50)
         ca = c["copilotAuto"]
         self.assertEqual((ca["inProcess"], ca["requireWorkAccount"], ca["keepEdgeOpen"]), (True, True, False))
-        self.assertNotIn("agentic", c)                                  # LM29 — Agentic 매칭을 뺐다(flow 는 기본값 0.8)
-        self.assertNotIn("agenticMaxWork", ca)
+        # LM29 — Agentic AI 는 니즈 후보 발굴만: 과제 목록 없이 domainHint·ruleRowShare(flow 도 같은 값)만
+        self.assertEqual(c["agentic"], {"domainHint": "", "ruleRowShare": 0.8})
+        self.assertEqual(ca["agenticMaxWork"], 60)
 
     def test_dev_copy_only_four_keys(self):
         p = os.path.join(ROOT, "config", "config.json")

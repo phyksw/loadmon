@@ -70,10 +70,11 @@ def main():
         print(f"[export] 공유폴더 접근 실패: {e}")
         return 1
     # teamup.FILE_NAMES(서버 업로드)와 같은 목록이어야 한다 — workflow 가 빠져 있어 공유폴더로 낸 사람만
-    # 팀 통합 보고서의 워크플로우 절(§5~§8 · AX 가능 MM)에서 통째로 빠졌다(샘플 생성에서 실측).
+    # 팀 통합 보고서의 워크플로우 절(§6~§9 · AX 가능 MM)에서 통째로 빠졌다(샘플 생성에서 실측).
+    # agentic(LM29 — 니즈 후보만)은 팀 통합 보고서 §5 '팀 Agentic AI 니즈 후보' 의 재료다.
     names = [f"mm_rows_{tag}.csv", f"mm_rows_{tag}_refined.csv", f"signals_{tag}.csv",
              f"mm_meta_{tag}.json", f"pivots_{tag}.json", f"ai_narratives_{tag}.json",
-             f"entities_{tag}.json", f"workflow_{tag}.json"]
+             f"entities_{tag}.json", f"agentic_{tag}.json", f"workflow_{tag}.json"]
     # 한 파일만 실패해도 member.json 을 새로 쓰면, 공유폴더가 '옛 행 + 새 요약'으로 섞여
     # 팀 리포트가 같은 사람의 MM 을 두 값으로 보여 준다(검증 확정: 0.10 vs 0.50).
     # 그래서 스테이징에 전부 복사하고, 전부 성공했을 때만 제자리로 옮긴다.

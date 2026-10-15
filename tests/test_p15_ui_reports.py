@@ -203,7 +203,8 @@ class NarrateButton(_Base):
 
 
 class ReportNarratives(_Base):
-    """리포트 5절은 이월한 달까지(이전 분석 코멘트 표시) · 기간 밖 달 없음 — 체계 폴백 표시 · Agentic 절 없음(LM29)."""
+    """리포트 5절은 이월한 달까지(이전 분석 코멘트 표시) · 기간 밖 달 없음 — 체계 폴백 표시 · 7절 Agentic AI 니즈 후보(LM29 —
+    LM28 이 남긴 파일이어도 후보만, 과제 매칭·오할당은 싣지 않는다)."""
 
     def test_build(self):
         _w(os.path.join(self.rep, f"mm_meta_{TAG}.json"),
@@ -211,7 +212,12 @@ class ReportNarratives(_Base):
         _w(narratives.path_of(self.rep, TAG), {"2026-10": _nar("10월 코멘트")})
         _w(narratives.path_of(self.rep, TAG_Y), {"2026-03": _nar("3월 코멘트"), "2026-04": _nar("4월 코멘트", earlier=True)})
         _w(narratives.path_of(self.rep, TAG_25), {"2025-12": _nar("작년 12월 코멘트")})
-        _w(os.path.join(self.rep, f"agentic_{TAG}.json"), {"match": [], "mm_recalc": {"rule_rows": 3, "rule_mm": 0.42}})  # LM28 이 남긴 파일
+        _w(os.path.join(self.rep, f"agentic_{TAG}.json"),                       # LM28 이 남긴 꼴의 파일
+           {"match": [{"task": "AL1", "name": "계획 과제 하나", "fit": 70, "load_mm": 1.2, "work": ["설계 검토"]}],
+            "new": [{"name": "시험 보고서 초안 자동 작성", "logic": "시험 결과 표 → 보고서 초안", "reason": "매주 반복",
+                     "work": ["시험 보고"], "evidence_rows": 2}],
+            "misassigned": [{"row": "Orion-X/공지 확인", "reason": "참조 위주"}],
+            "mm_recalc": {"rule_rows": 3, "rule_mm": 0.42}, "rule_rows": 3})
         _w(os.path.join(self.rep, f"entities_{TAG}.json"),
            {"fallback": True, "models": [{"name": "Orion-X", "l1": "개발", "match": ["orion"]}, {"name": "공통"}]})
         with mock.patch.object(report_out, "_privacy_ctx", lambda: None):
@@ -223,9 +229,13 @@ class ReportNarratives(_Base):
         i3, i10 = doc.index(">2026-03"), doc.index(">2026-10")
         self.assertIn("(이전 분석 코멘트)", doc[i3:i3 + 60])
         self.assertNotIn("(이전 분석 코멘트)", doc[i10:i10 + 40])
-        self.assertNotIn("Agentic", doc)                     # LM29 — 옛 agentic 파일이 있어도 리포트에 절을 만들지 않는다
-        self.assertNotIn("AI 판정 대기 3행", doc)
-        self.assertIn("7. 산정 근거와 신뢰도", doc)
+        self.assertIn("7. Agentic AI 니즈 후보", doc)        # LM29 — 니즈 후보만
+        self.assertIn("시험 보고서 초안 자동 작성", doc)
+        self.assertIn("근거 업무 2행", doc)
+        for s in ("계획 과제 하나", "AL1", "적합률", "오할당", "공지 확인"):
+            self.assertNotIn(s, doc, s)                       # 과제 매칭·오할당은 싣지 않는다
+        self.assertIn("AI 판정 대기 3행", doc)
+        self.assertIn("8. 산정 근거와 신뢰도", doc)
         self.assertIn("규칙 폴백 체계(임시)", doc)
         self.assertIn("<th>과제</th><th>업무 영역</th>", doc)
 
@@ -383,8 +393,8 @@ class PageWiring(unittest.TestCase):
             self.assertIn(s, p, s)
         self.assertNotIn("상한을 올리거나 [재매칭]으로 다시 물으면 늘어납니다", p)
         self.assertNotIn("이 달만 다시 만듭니다", p)
-        for s in ("과제와 무관", "기간 결과를 이어받음"):     # LM29 — Agentic 커버리지 칩·이어받기 줄(agCover·agCarry)이 없다
-            self.assertNotIn(s, p, s)
+        self.assertIn("기간 결과를 이어받음", p)              # Agentic 니즈 후보의 이어받기 줄(agCarry)
+        self.assertNotIn("과제와 무관", p)                     # LM29 — 과제 매칭 커버리지 칩(agCover)은 없다
 
 
 if __name__ == "__main__":

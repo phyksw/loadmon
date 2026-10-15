@@ -85,7 +85,7 @@ for rel in ("run.py", "ui/app.py"):
             body = src[i:src.find(chr(10) + "def ", i + 1)]
             if marker not in body:
                 bad(f"{rel}: {fn} 이 core/watch 위임이 아니라 본문 재정의입니다")
-for rel in ("judge.py", "refine.py"):
+for rel in ("judge.py", "refine.py", "agentic.py"):
     src = open(os.path.join(ROOT, rel), encoding="utf-8").read()
     i = src.find("def _stage_budget(")
     if i >= 0 and "from budget import stage_budget" not in src[i:i + 600]:

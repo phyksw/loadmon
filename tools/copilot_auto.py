@@ -3152,7 +3152,7 @@ def run_roundtrip_split(cfg, prompt, fresh=False, reload=False):
 # 있으면 그것을 먼저 본다. 아무것도 안 맞으면 default.json.
 STUB_KEYS = (
     ('"flows"', ("flow.json", "flows.json")),                      # flow.py
-    ('"match"', ("agentic.json", "match.json")),                   # agentic.py
+    ('"new"', ("agentic.json", "new.json")),                       # agentic.py(LM29 — 니즈 후보 {"new":[…]})
     ('"groups"', ("groups.json", "detail3.json")),                 # core/details 세부업무 병합
     ('"items"', ("refine.json", "items.json")),                    # refine.py
     ('"summary"', ("narrative.json", "summary.json")),             # judge 월별 내러티브

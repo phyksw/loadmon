@@ -19,6 +19,7 @@ NEED = [
     "LoadMonitor29-이동준비.bat",
     "LoadMonitor29-팀로드율재계산.bat",
     "LoadMonitor29-강제종료.bat",
+    "agentic.py",
     "freeze.py",
     "team_report.py",
     "flow.py",

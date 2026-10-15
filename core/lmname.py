@@ -5,7 +5,7 @@ lmname.py — LM29 이름 단일원 (포트·Edge 프로필·%TEMP% 접두·bat 
 왜: 같은 PC 에 LM24(OLD_CDP_PORT·data\<OLD_PROFILE>·대시보드 91xx 대역·%TEMP%\lm_*)나
     LM28(OLD_LM28_CDP_PORT·data\<OLD_LM28_PROFILE>·대시보드 9248~9267·%TEMP%\lm28_*)이 함께 있어도
     Edge 를 조종하거나 임시 파일을 덮어쓰지 않게 한다. 다른 판의 코드는 고칠 수 없으므로 LM29 쪽 이름을 그 규칙 밖에 둔다.
-    · LM29 는 LM28 에서 'Agentic AI 후보' 를 뺀 타팀 시험판이라 같은 PC 에 LM28 과 함께 깔릴 수 있다.
+    · LM29 는 LM28 에서 Agentic AI 를 '니즈 후보 발굴' 만 남긴 타팀 시험판이라 같은 PC 에 LM28 과 함께 깔릴 수 있다.
     · LM29 에는 창·팀즈 샘플러가 없다 — 예약 작업·뮤텍스 이름을 두지 않는다.
     · <h6> 는 설치 폴더 해시 — 같은 PC 의 LM29 두 벌(개발 사본·배포본)을 가른다.
     · 이 값이 config.json 의 옛 판 값(OLD_*)보다 우선한다 — LM24·LM28 의 config.json 을 옮겨 와도

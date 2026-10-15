@@ -7,19 +7,26 @@ aggregate.py — 팀 공유폴더의 인별 결과를 모아 팀 총괄 리포�
   python aggregate.py [share] [--open] [--snapshot]       # --snapshot: 통합 보고서 타임스탬프 사본도
 
 출력: <공유폴더>\team_report.html  (인별 MM · 과제×인원 매트릭스 · 유형 분포 ·
-      공통업무(표준화·자동화 후보) · raw 단서 링크)  +  team_mm.csv
+      공통업무(표준화·자동화 후보) · 팀 Agentic AI 니즈 후보 · raw 단서 링크)  +  team_mm.csv
       + team_full_report.html / team_full_report_v3.html (team_report.build — 통합 보고서 한 장)
-마지막 줄 JSON: {"ok","members","report","full_report","full_v3","snapshots"}
+마지막 줄 JSON: {"ok","members","agentic","needs","report","full_report","full_v3","snapshots"}
+  agentic = 니즈 후보 파일(agentic_<기간>.json)이 있는 인원 수 · needs = 합친 팀 니즈 후보 수
+
+팀 Agentic AI 니즈 후보(LM29): 인원별 agentic_<기간>.json 의 후보(new)만 읽어 이름(needs_key — core/details.fold 와 같은 축)으로
+합친다(merge_needs). LM28 이 올린 파일의 과제 매칭(match)·오할당(misassigned)은 읽지 않는다.
 """
 import ast
 import csv
+import glob
 import html
 import io
 import json
 import math
 import os
+import re
 import sys
 import time
+import unicodedata
 from collections import defaultdict
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -505,6 +512,111 @@ def load_aliases(share):
         return {"projects": _AliasMap({}), "details": _AliasMap({})}
 
 
+# ── 팀 Agentic AI 니즈 후보(LM29 — 팀 과제 매칭 없이 인원별 니즈 후보만 모은다) ─────────────────────
+def needs_key(name):
+    """니즈 후보 이름 비교 축 — core/details.fold 와 같은 규칙(구분자·괄호를 공백으로 · 공백 접기 · 대소문자 무시)."""
+    t = unicodedata.normalize("NFKC", str(name or ""))
+    t = re.sub(r"[·・ㆍ‧/_\-()\[\]（）]", " ", t)
+    return " ".join(t.split()).casefold()
+
+
+def norm_needs(a2):
+    """agentic 결과(dict) → {"tag", "kind": "needs", "new": [정리한 후보]}. 후보는 이름 있는 dict 만, 글자는 길이를 자르고
+    근거 업무 행 수(evidence_rows)는 정수로 강제한다 — 업로드된 남의 값('abc'·목록) 한 칸이 취합을 죽이지 않게.
+    LM28 파일의 match·misassigned 는 버린다(MM·적합률을 팀 화면에 싣지 않는다)."""
+    new = []
+    for x in (a2.get("new") if isinstance(a2.get("new"), list) else []):
+        if not isinstance(x, dict):
+            continue
+        nm = " ".join(str(x.get("name") or "").split())[:80]
+        if not nm:
+            continue
+        ev = x.get("evidence_rows")
+        new.append({"name": nm, "logic": str(x.get("logic") or "")[:300], "reason": str(x.get("reason") or "")[:300],
+                    "evidence_rows": max(0, fint(ev, 0) or 0) if not isinstance(ev, (list, tuple, set)) else 0})
+    return {"tag": str(a2.get("tag") or ""), "kind": "needs", "new": new}
+
+
+def load_agentic(m):
+    r"""인원 폴더의 agentic_<기간>.json → norm_needs 사본(없거나 깨졌으면 None). 그 기간 파일이 없으면 같은 폴더의 가장 최근
+    agentic_*.json 을 쓰고 other_period=True 를 단다(예전 판으로 올린 사람의 후보가 빠지지 않게 — LM28 팀 보고서와 같은 규칙)."""
+    d, tag = m.get("dir") or "", str(m.get("tag") or "")
+    ap = os.path.join(d, f"agentic_{tag}.json")
+    other = False
+    if not (tag and os.path.exists(ap)):
+        fs = glob.glob(os.path.join(d, "agentic_*.json")) if d else []
+        if not fs:
+            return None
+        try:
+            ap = max(fs, key=os.path.getmtime)
+        except OSError:
+            ap = sorted(fs)[-1]
+        other = True
+    try:
+        with open(ap, encoding="utf-8-sig") as f:
+            a2 = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(a2, dict):
+        print(f"[aggregate] {m.get('owner')}: agentic 파일이 객체가 아니라 무시합니다")
+        return None
+    out = norm_needs(a2)
+    out["other_period"] = bool(other and out["tag"] != tag)
+    return out
+
+
+def merge_needs(entries):
+    """인원별 니즈 후보 → 팀 Agentic AI 니즈 후보 목록. 이름을 needs_key 로 같게 보고 합친다:
+    who(제안 인원 — 이름순) · n(제안 인원 수) · ev(근거 업무 행 합) · names(표기 변형) · logic·reason(더 긴 것).
+    대표 이름은 처음 나온 표기. 정렬 = 제안 인원 많은 순 → 근거 행 많은 순 → 이름.
+    entries: [{"owner": 이름, "new": [{name, logic, reason, evidence_rows}]}] (load_agentic 이 정리한 꼴)."""
+    groups = {}
+    for e in entries or []:
+        if not isinstance(e, dict):
+            continue
+        who = str(e.get("owner") or "").strip()
+        for n in (e.get("new") if isinstance(e.get("new"), list) else []):
+            if not isinstance(n, dict):
+                continue
+            nm = " ".join(str(n.get("name") or "").split())
+            k = needs_key(nm)
+            if not k:
+                continue
+            g = groups.get(k)
+            if g is None:
+                g = groups[k] = {"name": nm, "names": set(), "who": set(), "logic": "", "reason": "", "ev": 0}
+            g["names"].add(nm)
+            if who:
+                g["who"].add(who)
+            g["ev"] += max(0, fint(n.get("evidence_rows"), 0) or 0)
+            for fld in ("logic", "reason"):
+                v = str(n.get(fld) or "")
+                if len(v) > len(g[fld]):
+                    g[fld] = v
+    out = [{"name": g["name"], "names": sorted(g["names"]), "who": sorted(g["who"]), "n": len(g["who"]),
+            "logic": g["logic"], "reason": g["reason"], "ev": g["ev"]} for g in groups.values()]
+    out.sort(key=lambda g: (-g["n"], -g["ev"], g["name"]))
+    return out
+
+
+def collect_needs(members):
+    """인원 목록 → (팀 니즈 후보 merge_needs, 후보 파일이 있는 인원 수, 다른 기간 결과를 쓴 인원). 측정 불충분 인원도
+    넣는다 — 니즈 후보는 그 사람의 업무 내용이지 투입 시간 비교가 아니다."""
+    entries, other = [], []
+    for m in members:
+        try:
+            a2 = load_agentic(m)
+        except Exception as e:  # noqa: BLE001 - 인원 하나 때문에 팀 화면을 잃지 않는다
+            print(f"[aggregate] {m.get('owner')}: 니즈 후보 읽기 실패({type(e).__name__}) — 이 인원은 건너뜀")
+            a2 = None
+        if a2 is None:
+            continue
+        entries.append({"owner": m["owner"], "new": a2["new"]})
+        if a2.get("other_period"):
+            other.append(m["owner"])
+    return merge_needs(entries), len(entries), other
+
+
 def collect_team_data(share):
     """팀 뷰어 UI 용 실시간 취합 — 공유폴더를 읽어 시각화 가능한 JSON 을 만든다.
     team_aliases.json(Copilot 정리 결과)이 있으면 과제·세부업무 표기를 대표 이름으로 통합."""
@@ -576,6 +688,8 @@ def collect_team_data(share):
         [{"detail": k, "models": sorted(v["models"]), "who": sorted(v["who"]),
           "mm": round(v["mm"], 3)} for k, v in common_all.items()],
         key=lambda x: -(len(x["who"]) * 10 + x["mm"]))[:15]
+    # 팀 Agentic AI 니즈 후보 — 인원별 후보를 이름으로 합친 것(LM29 · 팀 과제 매칭 없음)
+    out["needs"], out["agentic_n"], out["needs_other"] = collect_needs(members)
     return out
 
 
@@ -774,7 +888,21 @@ def main():
                  f"<td>{esc(', '.join(sorted(v['who'])))}</td><td>{v['mm']:.2f}</td></tr>")
     h.append("</table>")
 
-    h.append("<h2>5. raw 단서</h2><p class='dim'>수치가 이상하면 본인 폴더의 signals_*.csv(신호 원문·판정)로 확인 — "
+    # 팀 Agentic AI 니즈 후보 — 인원별 후보를 이름으로 합친 것(팀 과제 매칭 없음 · MM 없이 근거 업무 행 수만)
+    needs, ag_n, needs_other = collect_needs(members)
+    h.append("<h2>5. 팀 Agentic AI 니즈 후보</h2>"
+             f"<p class='dim'>니즈 후보 결과가 있는 인원 {ag_n}명 · 같은 이름(띄어쓰기·구분자 무시)은 합쳤습니다 · "
+             "근거 업무 = 제안한 사람들의 근거 업무 행 수 합(MM 아님)"
+             + (f" · 다른 기간 결과를 쓴 인원: {esc(', '.join(needs_other))}" if needs_other else "") + "</p>"
+             "<table><tr><th>후보</th><th>제안 인원</th><th>근거 업무(행)</th><th>동작 로직 · 발굴 사유</th></tr>")
+    for g in needs[:30]:
+        h.append(f"<tr><td><b>{esc(g['name'])}</b></td><td>{g['n']}명 — {esc(', '.join(g['who']))}</td>"
+                 f"<td>{int(g['ev'])}</td><td>{esc(g['logic'])}<br><span class='dim'>{esc(g['reason'])}</span></td></tr>")
+    if not needs:
+        h.append("<tr><td colspan=4 class='dim'>발굴된 니즈 후보가 없습니다</td></tr>")
+    h.append("</table>")
+
+    h.append("<h2>6. raw 단서</h2><p class='dim'>수치가 이상하면 본인 폴더의 signals_*.csv(신호 원문·판정)로 확인 — "
              "각 행에 출처·원문·AI 판정이 남아 있어 오해석을 막는다</p><ul>")
     for m in members:
         h.append(f"<li>{esc(m['owner'])}: {esc(m['dir'])}\\signals_{esc(m.get('tag'))}.csv "
@@ -815,7 +943,8 @@ def main():
     except Exception as e:  # noqa: BLE001 - 통합보고서 하나 때문에 취합 rc 를 잃지 않는다
         print(f"[aggregate] 팀 통합 보고서 생성 실패({type(e).__name__}: {e}) — 취합 자료는 정상입니다")
     print(f"[aggregate] {len(members)}명 · 과제 {len(models_sorted)}개 → {out_html}")
-    print(json.dumps({"ok": True, "members": len(members),
+    print(f"[aggregate] 팀 Agentic AI 니즈 후보 {len(needs)}건 (후보 결과 {ag_n}명)")
+    print(json.dumps({"ok": True, "members": len(members), "agentic": ag_n, "needs": len(needs),
                       "report": out_html,
                       "full_report": full.get("full", ""), "full_v3": full.get("v3", ""),
                       "snapshots": full.get("snapshots") or []}, ensure_ascii=False))

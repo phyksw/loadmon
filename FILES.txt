@@ -1,7 +1,7 @@
 LoadMonitor29 필수 파일 목록 - 복사 시 전부 있어야 합니다.
 (data/ report/ teamdata/ 는 복사 금지 - 개인정보)
 
-총 101개
+총 102개
 
 LoadMonitor29-UI.bat                                   2,803 B  767b25b7
 LoadMonitor29.bat                                      4,563 B  d34c7799
@@ -14,26 +14,27 @@ LoadMonitor29-가동시간비교.bat                               1,048 B  cecc
 LoadMonitor29-이동준비.bat                                 1,411 B  db28ea55
 LoadMonitor29-팀로드율재계산.bat                              2,083 B  237e2b69
 LoadMonitor29-강제종료.bat                                 1,641 B  ad2e2faf
-freeze.py                                             56,475 B  0ffe5d2c
-team_report.py                                       158,623 B  11f3439b
+agentic.py                                            64,457 B  6fe4b525
+freeze.py                                             58,940 B  747fb766
+team_report.py                                       162,734 B  5fbc3296
 flow.py                                              116,451 B  686fecc2
-teamserver.py                                         34,521 B  13d28cf8
-teamup.py                                             51,753 B  f3d07afb
-aggregate.py                                          45,833 B  96b09ff1
-export.py                                             10,109 B  9007470c
+teamserver.py                                         34,550 B  293889f0
+teamup.py                                             51,780 B  20fa3c29
+aggregate.py                                          53,066 B  1e42fcf1
+export.py                                             10,247 B  5d5c9bfe
 retag.py                                               6,128 B  8d6f81d3
 team_refine.py                                         6,526 B  7ef1eb9c
-team_recalc.py                                        58,961 B  c6eb4569
-report_out.py                                         65,555 B  2b031a5f
-README.md                                            130,767 B  79c90775
+team_recalc.py                                        58,982 B  b47ce5bf
+report_out.py                                         67,756 B  2971e148
+README.md                                            131,773 B  8fe9a085
 check.py                                               2,629 B  7badfe69
 judge.py                                             216,239 B  6bee2177
 mine.py                                               23,139 B  2aabf65f
 refine.py                                             56,935 B  8c9f4266
 ruff.toml                                              1,004 B  ac1c20ea
 FILES.txt                                                (이 파일)
-run.py                                               114,628 B  e71eff37
-자가점검.py                                               11,145 B  5fa38893
+run.py                                               119,529 B  a0b7216b
+자가점검.py                                               11,163 B  55b06af6
 collect/Add-WorkLog.ps1                                3,873 B  7a375f51
 collect/Get-FileActivity.ps1                          50,401 B  a0dca613
 collect/Get-GitActivity.py                            33,451 B  ac747427
@@ -57,8 +58,8 @@ collect/teams_parse.py                                14,389 B  d196eec3
 collect/Import-MailCal.py                             12,353 B  bec541e0
 collect/Get-ProgramUsage.py                           33,863 B  d262eb08
 core/meetnote.py                                      28,595 B  0ae77aa1
-config/config.json                                    51,911 B  9d13beab
-config/config.default.json                            57,778 B  547bd52a
+config/config.json                                    52,129 B  d8aeeeca
+config/config.default.json                            58,965 B  56d1fdb7
 core/board.py                                         13,181 B  86eaf661
 core/extract.py                                      313,682 B  cdb7b78f
 core/pc_ledger.py                                     21,509 B  c1f9d9e5
@@ -66,14 +67,14 @@ core/budget.py                                         2,968 B  3297d2b6
 core/stage_state.py                                    7,301 B  d30a0590
 core/watch.py                                          6,594 B  33e30d52
 core/teamaddr.py                                      20,163 B  d5013692
-core/lmname.py                                         5,900 B  fae0d256
+core/lmname.py                                         5,921 B  84b21510
 core/privacy.py                                       68,484 B  15be852d
 core/coverage.py                                      17,502 B  b83c40f0
 core/proc.py                                          17,810 B  0c791ec1
 core/collect_status.py                                 7,214 B  82b62ebb
 core/mailmerge.py                                     14,646 B  f08633c5
 core/timeshare.py                                      7,160 B  c7302bf2
-tools/check_l1.py                                      4,756 B  8098f4b5
+tools/check_l1.py                                      4,770 B  cfe71d55
 tools/check_trend.py                                   7,627 B  d4724e09
 tools/check_recalc.py                                 18,812 B  a49d57bc
 tools/check_teamaddr.py                               20,527 B  95dc65cc
@@ -83,10 +84,10 @@ core/narratives.py                                     9,240 B  b1a7b589
 core/owner.py                                          1,488 B  1f1dc049
 core/progress.py                                       1,648 B  15bfd33b
 core/projmap.py                                        8,988 B  4e45fe1f
-docs/설정가이드.md                                        123,930 B  912ce0fb
-docs/사용안내.html                                       276,616 B  eb943846
-docs/현장점검_LM29.md                                     23,751 B  1ab56e9c
-tools/copilot_auto.py                                195,088 B  82a6037e
+docs/설정가이드.md                                        124,706 B  a372b4fc
+docs/사용안내.html                                       277,042 B  c3189e59
+docs/현장점검_LM29.md                                     24,229 B  0002991b
+tools/copilot_auto.py                                195,126 B  42fe53af
 tools/pc_hours_compare.py                             21,674 B  c43ff972
 tools/lm20_ref/Get-PcOnHistory.ps1.txt                 9,319 B  5ce7ef54
 tools/lm20_ref/Get-PcOnHints.py.txt                    9,545 B  7d4dae30
@@ -103,4 +104,4 @@ tools/ps_launch.py                                     4,932 B  c3abe2b1
 tools/update_files.py                                  4,530 B  224f60d2
 tools/lm_fixenc.py                                     6,690 B  0b6df0b4
 tools/diag_bundle.py                                  10,236 B  1b3b7788
-ui/app.py                                            415,131 B  49c8d84d
+ui/app.py                                            427,331 B  59fa29d7

@@ -633,6 +633,7 @@ class RunPy(unittest.TestCase):
             st.enter_context(mock.patch.object(R, "invalidate_ai_outputs", lambda d0, d1: ([], [])))
             st.enter_context(mock.patch.object(R, "_run_capture", capture))
             st.enter_context(mock.patch.object(R, "run_ai_stage", ai_stage))
+            st.enter_context(mock.patch.object(R, "agentic_recalc_inproc", lambda d0, d1: False))
             st.enter_context(mock.patch.object(R, "_pending_count", lambda: 0))
             st.enter_context(mock.patch.object(R, "team_report_wanted", lambda c: False))
             st.enter_context(mock.patch.object(R, "team_report", team_report))
@@ -644,14 +645,14 @@ class RunPy(unittest.TestCase):
         sg = self.stages()
         self.assertTrue(sg["AI 판정"]["ok"])
         self.assertIn(R.THR_LINE, sg["AI 판정"]["note"])
-        for name in ("AI 정제", "워크플로우 분석"):
+        for name in ("AI 정제", "Agentic 니즈 발굴", "워크플로우 분석"):
             self.assertEqual(sg[name]["note"], R.THR_SKIP, name)       # 일반 실패('정제 0건'·'재시도에도 실패')가 아니다
-        self.assertNotIn("Agentic 매칭", sg)                          # LM29 — Agentic 단계 기록이 없다(가짜 성공도 없다)
+        self.assertNotIn("Agentic 매칭", sg)                          # LM29 — 단계 이름은 'Agentic 니즈 발굴'
         self.assertEqual(self.out.getvalue().count(R.THR_LINE), 1)
         self.assertEqual(self.held["hold"], "")                       # 부분 판정 결과는 그대로 자동 보고한다
         self.assertIn("보고서 생성", sg)
-        self.assertNotIn("Agentic", self.out.getvalue())
-        self.assertNotIn("agentic.py", self.calls)
+        self.assertNotIn("Agentic 니즈 발굴 실패", self.out.getvalue())
+        self.assertLess(self.calls.index("agentic.py"), self.calls.index("flow.py"))   # 정제 → 니즈 발굴 → 워크플로우
 
     def test_judge_empty_holds_report(self):
         rc = self.run_main(3, "judge.py")
@@ -659,10 +660,10 @@ class RunPy(unittest.TestCase):
         sg = self.stages()
         self.assertFalse(sg["AI 판정"]["ok"])
         self.assertTrue(sg["AI 판정"]["note"].startswith(R.THR_LINE))
-        for name in ("AI 정제", "워크플로우 분석"):
+        for name in ("AI 정제", "Agentic 니즈 발굴", "워크플로우 분석"):
             self.assertEqual(sg[name]["note"], R.THR_SKIP, name)
-        self.assertNotIn("Agentic 매칭", sg)
         self.assertEqual(self.calls.count("refine.py"), 0)            # 판정이 빈손이면 예전처럼 뒤 단계는 띄우지 않는다
+        self.assertNotIn("agentic.py", self.calls)
         self.assertEqual(self.held["hold"], "AI 판정 실패")
         self.assertNotIn("흔한 원인", self.out.getvalue())
 
@@ -671,8 +672,8 @@ class RunPy(unittest.TestCase):
         sg = self.stages()
         self.assertNotIn(R.THR_LINE, sg["AI 판정"]["note"])
         self.assertTrue(sg["AI 정제"]["note"].startswith(R.THR_LINE))
-        self.assertEqual(sg["워크플로우 분석"]["note"], R.THR_SKIP)
-        self.assertEqual((self.calls.count("flow.py"), "agentic.py" in self.calls), (1, False))   # 판정 뒤 AI 단계는 워크플로우 하나
+        self.assertEqual((sg["Agentic 니즈 발굴"]["note"], sg["워크플로우 분석"]["note"]), (R.THR_SKIP, R.THR_SKIP))
+        self.assertEqual((self.calls.count("agentic.py"), self.calls.count("flow.py")), (1, 1))
         self.assertEqual(self.out.getvalue().count(R.THR_LINE), 1)
 
     def test_no_throttle_unchanged(self):

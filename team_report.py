@@ -3,8 +3,10 @@ r"""
 team_report.py — 팀 통합 보고서(HTML 한 장) + 유사 항목 정리 엔진 (LoadMonitor29, 팀장용).
 LM28: 9-1 담당자 → 업무 영역 → 과제 간트(막대 = 10절 (담당자, 과제) 블록 wf-<담당자>-<과제 sha1 8> 링크 · signals 없는
 인원은 '자료 없음' 행) · '대체 가능 MM' 표시 없음(신규 후보는 근거 업무 행 수) · Agentic 과제 수는 등록된 목록 기준.
-LM29: Agentic 과제 매칭(옛 4절)·신규 Agentic 후보(옛 5절)를 뺐다 — 뒤 절이 둘씩 당겨졌다(4 공통업무 … 7-1·7-2 간트 ·
-8 과제별 워크플로우 · 9 프로그램 사용). 옛 판이 올린 agentic_*.json 은 읽지 않는다.
+LM29: Agentic 과제 매칭(옛 4절)을 뺐다. 신규 후보 절은 '5. 팀 Agentic AI 니즈 후보'로 남겼다 — 인원별 니즈 후보를 이름으로
+합친 것(aggregate.merge_needs — 팀 과제 매칭 없음 · Copilot 통합 없음). 절 순서: 4 공통업무 · 5 팀 니즈 후보 · 6~8 워크플로우
+유형·자동화 우선순위·담당 업무 × 인원 · 8-1·8-2 간트 · 9 과제별 워크플로우 · 10 프로그램 사용. 옛 판(LM28)이 올린
+agentic_*.json 도 후보(new)만 읽고 과제 매칭·오할당은 읽지 않는다.
 
 옛 '팀보완툴.py' 를 본체 모듈로 옮긴 것이다. 하는 일:
   · refine_once(share, sender)   — 과제·세부업무 표기 통합(규칙 + Copilot ≤3회) → team_aliases.json
@@ -1030,7 +1032,7 @@ def member_report(mdir, member, out_dir):
     r"""팀 서버에 올라온 **JSON·CSV 만으로** 그 사람의 분석 리포트를 복원한다.
 
     팀 서버는 파일 이름을 제한해 HTML 을 받지 않는다. 그런데 리포트를 만들 재료(mm_rows·mm_meta·
-    workflow·member.json)는 전부 올라와 있으니 팀장 PC 에서 다시 만든다."""
+    workflow·agentic·member.json)는 전부 올라와 있으니 팀장 PC 에서 다시 만든다."""
     owner = str(member.get("owner") or "").strip() or os.path.basename(mdir)
     tag = str(member.get("tag") or "")
     rows, rows_file = _member_rows(mdir, tag, member.get("total_mm"))
@@ -1049,6 +1051,9 @@ def member_report(mdir, member, out_dir):
 
     meta = _load_obj("mm_meta")
     wf = _load_obj("workflow")
+    # LM29 — Agentic AI 니즈 후보만(aggregate.norm_needs — LM28 이 올린 파일의 과제 매칭·오할당은 읽지 않는다)
+    ag = _load_obj("agentic")
+    ag_new = _agg().norm_needs(ag)["new"] if ag else []
     if not rows and not wf:
         return None
 
@@ -1165,12 +1170,22 @@ def member_report(mdir, member, out_dir):
         '<div class="card"><div class="note">담당자 워크플로우가 없습니다 — '
         '그 PC 에서 [분석 실행](AI 판정)을 돌리면 만들어집니다.</div></div>')
 
+    # 4. Agentic AI 니즈 후보 — 본인 PC 분석리포트(freeze.report_island)와 같은 절 · 근거 업무 행 수만(MM 없음)
+    needs_html = "".join(
+        f'<div style="border-left:3px solid #6c4fb8;padding:4px 0 4px 12px;margin:10px 0"><b>{esc(n.get("name"))}</b>'
+        f' <span class="state">근거 업무 {_fint(n.get("evidence_rows"), 0) or 0}행</span>'
+        + (f'<div style="font-size:12px;margin-top:3px"><b>동작 로직:</b> {esc(n.get("logic"))}</div>' if n.get("logic") else "")
+        + (f'<div class="sub" style="margin-top:2px"><b>발굴 사유:</b> {esc(n.get("reason"))}</div>' if n.get("reason") else "")
+        + "</div>"
+        for n in ag_new) or ('<div class="note">근거가 충분한 니즈 후보가 없습니다.</div>' if ag else
+                            '<div class="note">니즈 후보 결과가 올라오지 않았습니다 — 그 PC 에서 [분석 실행](AI 판정)을 돌리면 만들어집니다.</div>')
+
     island = json.dumps({
         "kind": "lm-personal-report", "owner": owner, "host": member.get("host", ""),
         "period": [d0, d1], "tag": tag, "total_mm": total, "avail_mm": avail,
         "load_pct": pct, "rows_file": rows_file, "rows": rows,
         "measure": m9.get("measure"), "coverage": m9.get("coverage"),
-        "workflow": wf, "agentic": {}, "rebuilt_from": "팀서버 업로드 자료",
+        "workflow": wf, "agentic": {"kind": "needs", "new": ag_new}, "rebuilt_from": "팀서버 업로드 자료",
         "generated": time.strftime("%Y-%m-%d %H:%M")}, ensure_ascii=False).replace("<", "\\u003c")
 
     pct_txt = _agg().pct_text(pct)
@@ -1250,7 +1265,11 @@ margin:1px 3px 1px 0;font-size:10.5px;color:#3d444c}}
 <span class="state">역할 → 일의 순서 → 단계별 Agent 가능성</span></h1>
 {flows_html}
 
-<div class="note">이 리포트는 팀 서버에 올라온 분석 자료(mm_rows·mm_meta·workflow)로
+<div class="card"><h2>4. Agentic AI 니즈 후보 <span class="state">팀 과제와 매칭하지 않고, 반복 업무에서 Agentic AI 로
+자동화할 만한 니즈만 · 근거 업무 N행 = 근거가 된 업무 행 수(MM 아님)</span></h2>
+{needs_html}</div>
+
+<div class="note">이 리포트는 팀 서버에 올라온 분석 자료(mm_rows·mm_meta·workflow·agentic)로
 다시 만든 것입니다 — 본인 PC 에서 만든 얼린 보고서와 화면 구성은 같고, 대시보드 조작
 버튼만 없습니다.</div>
 </div>
@@ -1927,7 +1946,7 @@ def build_gantt(share, members, clusters, groups, owners=()):
             counts[(ci, mon)] = counts.get((ci, mon), 0) + 1
             pcounts[(ci, who9, mon)] = pcounts.get((ci, who9, mon), 0) + 1
     if not counts:
-        return ('<div class="card"><h2>7-2. 담당 업무 활동 간트</h2>'
+        return ('<div class="card"><h2>8-2. 담당 업무 활동 간트</h2>'
                 '<div class="note">판정 신호(signals) 파일이 취합 폴더에 없어 활동 간트를 '
                 "만들 수 없습니다 — 팀원이 [팀 서버 업로드]를 하면 함께 올라옵니다.</div></div>")
     active = sorted({m9 for (_c9, m9) in counts})
@@ -2113,7 +2132,7 @@ def build_gantt(share, members, clusters, groups, owners=()):
           'var k=/\\bm(\\d+)\\b/.exec(t.className);'
           't.title=(k?M[+k[1]]:"")+" \\u00b7 \\uc2e0\\ud638 "+(t.getAttribute("data-n")||"?")+"\\uac74";});})();</script>')
     return ('<div class="card gnt"><style>' + "\n".join(css) + "</style>"
-            '<h2>7-2. 담당 업무 활동 간트(과제 → 담당 업무) '
+            '<h2>8-2. 담당 업무 활동 간트(과제 → 담당 업무) '
             '<span class="state">과제를 접고 펼 수 있습니다 · 담당 업무를 누르면 사람별 '
             '타임라인(§2와 같은 사람 색)과 워크플로우 단계가 열립니다 · 진할수록 그 달 '
             '활동 많음' + old_note + '</span></h2>'
@@ -2128,8 +2147,8 @@ def build_gantt(share, members, clusters, groups, owners=()):
 
 
 def wf_anchor(owner, project):
-    r"""8절 (담당자, 과제) 하위 블록의 id — 'wf-<담당자 안전 문자>-<과제 sha1 앞 8자>'(REQ-44·A-41).
-    7-1 간트 막대의 href 가 이것을 가리킨다. 과제는 ukey(띄어쓰기·대소문자 무시)로 해시해 표기 변형이 같은 id 가 된다."""
+    r"""9절 (담당자, 과제) 하위 블록의 id — 'wf-<담당자 안전 문자>-<과제 sha1 앞 8자>'(REQ-44·A-41).
+    8-1 간트 막대의 href 가 이것을 가리킨다. 과제는 ukey(띄어쓰기·대소문자 무시)로 해시해 표기 변형이 같은 id 가 된다."""
     import hashlib
     safe = re.sub(r"[^0-9A-Za-z가-힣_-]+", "_", str(owner or "").strip()).strip("_") or "_"
     return f"wf-{safe}-{hashlib.sha1(ukey(project).encode('utf-8')).hexdigest()[:8]}"
@@ -2177,10 +2196,10 @@ def _project_area(members):
 
 
 def build_owner_gantt(share, members, owners=(), signal_rows=None):
-    r"""7-1 간트 — 담당자 → 업무 영역 → 과제 묶음 행(보기 바꾸기: 과제 → 담당자) · 막대 = 그 달 신호 수(진할수록 많음).
-    막대는 8절의 (담당자, 과제) 블록(wf_anchor)으로 가는 링크다 — 누르면 그 사람의 그 과제 워크플로우로 이동한다(REQ-44).
+    r"""8-1 간트 — 담당자 → 업무 영역 → 과제 묶음 행(보기 바꾸기: 과제 → 담당자) · 막대 = 그 달 신호 수(진할수록 많음).
+    막대는 9절의 (담당자, 과제) 블록(wf_anchor)으로 가는 링크다 — 누르면 그 사람의 그 과제 워크플로우로 이동한다(REQ-44).
     signals 가 없는 인원은 빠지지 않고 '자료 없음' 행으로 남는다(W3-13). signal_rows 는 시험 주입({owner: rows}).
-    반환 (html, pairs{(owner, 과제): 신호 수}) — 8절은 pairs 의 모든 쌍에 대상 블록을 만든다(href 가 늘 실존)."""
+    반환 (html, pairs{(owner, 과제): 신호 수}) — 9절은 pairs 의 모든 쌍에 대상 블록을 만든다(href 가 늘 실존)."""
     try:
         al2 = _agg().load_aliases(share)
         pmap2 = al2["projects"]
@@ -2288,13 +2307,13 @@ def build_owner_gantt(share, members, owners=(), signal_rows=None):
           "var a=document.getElementById('ogn-v1'),c=document.getElementById('ogn-v2');"
           "var s=a.style.display!=='none';a.style.display=s?'none':'';c.style.display=s?'':'none';"
           "b.textContent=s?'보기: 과제 → 담당자 (바꾸기)':'보기: 담당자 → 영역 → 과제 (바꾸기)';};"
-          # 막대를 누르면 8절의 그 블록이 접힌 <details> 안에 있어도 펼쳐서 보여 준다
+          # 막대를 누르면 9절의 그 블록이 접힌 <details> 안에 있어도 펼쳐서 보여 준다
           "function op(){var h=decodeURIComponent((location.hash||'').slice(1));if(!h)return;"
           "var t=document.getElementById(h);if(!t)return;var p=t.parentElement;"
           "while(p){if(p.tagName==='DETAILS')p.open=true;p=p.parentElement;}t.scrollIntoView();}"
           "window.addEventListener('hashchange',op);op();})();</script>")
-    return ('<div class="card ogn"><h2>7-1. 담당자 → 업무 영역 → 과제 간트 '
-            '<span class="state">막대 = 그 달 판정 신호 수(진할수록 많음) · 막대를 누르면 8절의 그 사람·그 과제 '
+    return ('<div class="card ogn"><h2>8-1. 담당자 → 업무 영역 → 과제 간트 '
+            '<span class="state">막대 = 그 달 판정 신호 수(진할수록 많음) · 막대를 누르면 9절의 그 사람·그 과제 '
             '워크플로우로 갑니다' + old_note + '</span> <button id="ogn-tg" type="button">'
             "보기: 담당자 → 영역 → 과제 (바꾸기)</button></h2>" + css
             + '<div style="overflow-x:auto"><div id="ogn-v1">' + "".join(v1) + "</div>"
@@ -2304,7 +2323,7 @@ def build_owner_gantt(share, members, owners=(), signal_rows=None):
 
 
 def wf_owner_blocks(groups, items, pairs, pmap=None):
-    r"""8절 (담당자, 과제) 하위 블록 — 간트 막대의 이동 대상(id = wf_anchor). → ({ukey(과제): html}, 고아 html).
+    r"""9절 (담당자, 과제) 하위 블록 — 간트 막대의 이동 대상(id = wf_anchor). → ({ukey(과제): html}, 고아 html).
     · 과제(groups)마다 그 과제의 흐름이 있는 사람 + 간트 신호가 있는 사람에게 한 블록씩. 흐름이 있으면 담당 업무별 단계
       사슬, 없으면 '이 사람의 이 과제 워크플로우 자료 없음(신호 N건)'.
     · 워크플로우가 하나도 없는 과제(간트에만 있는 쌍)는 고아 html 의 접이식에 모은다 — 막대의 href 대상이 늘 실존한다."""
@@ -2365,7 +2384,7 @@ def wf_owner_blocks(groups, items, pairs, pmap=None):
 
 
 def prog_section_html(members):
-    """9. 프로그램 사용 — 상용/비상용·자체(프로토타입) 도구를 누가 얼마나 썼나(참고 지표).
+    """10. 프로그램 사용 — 상용/비상용·자체(프로토타입) 도구를 누가 얼마나 썼나(참고 지표).
 
     ★ 로드율·MM 과 무관하다. 재료는 셋이다 — 창 기록(옛 판 샘플러의 맨 앞 창 시간), Windows 실행 기록(실행 횟수·포커스
       시간 — LM28, 관리자 권한 불필요), 파일 흔적(그 도구의 파일을 만진 날). 기록이 없는 사람은 빈칸으로 나온다 — 그 사람이
@@ -2427,7 +2446,7 @@ def prog_section_html(members):
                 + "</div>") if inh else ""
     miss = (f"<div class='note'>프로그램 기록이 없는 인원 {len(none)}명 — "
             f"{esc(', '.join(sorted(none)[:12]))}. 도구를 안 썼다는 뜻이 아닙니다.</div>") if none else ""
-    return (f"""<div class="card"><h2>9. 프로그램 사용 <span class="state">상용/비상용·자체 도구를 누가 얼마나 썼나 · 참고 지표</span></h2>
+    return (f"""<div class="card"><h2>10. 프로그램 사용 <span class="state">상용/비상용·자체 도구를 누가 얼마나 썼나 · 참고 지표</span></h2>
 <div class="note">{TOOL_BASIS_NOTE} 같은 사람의 투입 시간과 숫자가 다른 것이 정상입니다.
 '창 사용'은 옛 창 기록의 맨 앞 창 시간, '배경'은 창을 안 보고 있어도 돌아가던 솔버 시간, '포커스'·'실행'은 Windows 실행 기록의
 기간 증가분, '파일'은 그 도구의 파일을 만진 날 수입니다(–는 기록 없음). 구분별 사람 수: {kindline}</div>
@@ -2442,9 +2461,9 @@ def prog_section_html(members):
 def render_full(share, html_dir, sender=None, log=say):
     r"""팀 통합 보고서 본문 렌더 — (doc_v2, doc_v3, info). **파일을 쓰지 않는다**.
 
-    로드율·과제 배분·워크플로우를 한 장으로. 표는 원본 팀 화면(TEAM_PAGE)의 도식을
+    로드율·과제 배분·팀 Agentic AI 니즈 후보·워크플로우를 한 장으로. 표는 원본 팀 화면(TEAM_PAGE)의 도식을
     따른다: 과제·업무는 누적바. sender 가 있으면 계열/세부/과제분류 캐시를 Copilot 으로
-    채우고(캐시 누적), 없으면 저장된 캐시만 적용한다."""
+    채우고(캐시 누적), 없으면 저장된 캐시만 적용한다. 니즈 후보는 이름 규칙으로만 합친다(Copilot 통합 없음)."""
     ag = _agg()
     data = ag.collect_team_data(share)
     members = data["members"]
@@ -2667,7 +2686,24 @@ def render_full(share, html_dir, sender=None, log=say):
         for c in (data.get("common") or [])[:12]) or (
         "<tr><td colspan=4 class='dim'>없음</td></tr>")
 
-    # ── 5. 워크플로우 유형별 비중 ──
+    # ── 5. 팀 Agentic AI 니즈 후보 — 인원별 니즈 후보를 이름으로 합친 것(aggregate.merge_needs · 팀 과제 매칭 없음) ──
+    # 값은 업로드로 들어온 남의 입력 — 이름·로직·사유는 esc, 인원 수·근거 행 수는 정수로만
+    needs = [g for g in (data.get("needs") or []) if isinstance(g, dict)]
+    n_ag = _fint(data.get("agentic_n"), 0) or 0
+    needs_other = [str(x) for x in (data.get("needs_other") or [])]
+    rows_needs = "".join(
+        f"<tr><td><b>{esc(g.get('name'))}</b>"
+        + (f"<div class='sub'>표기 {len(g.get('names') or [])}종 통합: {esc(' / '.join((g.get('names') or [])[:4]))}</div>"
+           if len(g.get("names") or []) > 1 else "")
+        + f"</td><td>{_fint(g.get('n'), 0) or 0}명 "
+        f"{''.join('<span class=tag>' + esc(w) + '</span>' for w in (g.get('who') or []))}</td>"
+        f"<td class='num'>{_fint(g.get('ev'), 0) or '–'}</td>"
+        f"<td class='dim'>{esc(str(g.get('logic') or '')[:160])}"
+        + (f"<div class='sub'>사유: {esc(str(g.get('reason') or '')[:160])}</div>" if g.get("reason") else "")
+        + "</td></tr>"
+        for g in needs[:30]) or "<tr><td colspan=4 class='dim'>발굴된 니즈 후보가 없습니다</td></tr>"
+
+    # ── 6. 워크플로우 유형별 비중 ──
     cmax = max([c["mm"] for c in clusters] or [0.001]) or 0.001
     wf_bars = "".join(
         f"<tr><td style='max-width:240px'><b>{esc(c['detail'])}</b>"
@@ -2686,7 +2722,7 @@ def render_full(share, html_dir, sender=None, log=say):
                     f"<td class='num dim'>{sum(c['flows'] for c in _r)}건</td>"
                     f"<td class='num dim'>{sum(c['ax_mm'] for c in _r):.2f}</td></tr>")
 
-    # ── 6. 자동화 우선순위 ──
+    # ── 7. 자동화 우선순위 ──
     auto = sorted([c for c in clusters if c["agent_hi"]],
                   key=lambda c: (-len(c["who"]), -c["mm"]))
     auto_rows = "".join(
@@ -2698,14 +2734,14 @@ def render_full(share, html_dir, sender=None, log=say):
         for c in auto[:12]) or (
         "<tr><td colspan=6 class='dim'>'상'(자동화 가능) 판정 단계가 없습니다</td></tr>")
 
-    # ── 7. 담당 업무 × 인원 (누적바) ──
+    # ── 8. 담당 업무 × 인원 (누적바) ──
     wf_stack = stack_rows(
         [{"name": f"{c['detail']}", "names": {c["detail"]}, "row": c["mm_by"],
           "total": c["mm"]} for c in clusters[:14]], wf_owners, 280, 160)
 
-    # ── 7-1. 담당자 → 영역 → 과제 간트 · 7-2. 담당 업무 활동 간트 (월별 · 신호 기준) ──
+    # ── 8-1. 담당자 → 영역 → 과제 간트 · 8-2. 담당 업무 활동 간트 (월별 · 신호 기준) ──
     gantt_html = build_gantt(share, members, clusters, groups, owners_all)   # 간트는 본인 자료 — 전원
-    # LM28(REQ-44·A-41·W3-13): 담당자 → 영역 → 과제 간트(막대 → 10절 (담당자, 과제) 블록) · signals 없는 인원은 '자료 없음'
+    # LM28(REQ-44·A-41·W3-13): 담당자 → 영역 → 과제 간트(막대 → 9절 (담당자, 과제) 블록) · signals 없는 인원은 '자료 없음'
     owner_gantt, gpairs = build_owner_gantt(share, lm or members, owners_all)
     try:
         _pmap10 = _agg().load_aliases(share)["projects"]
@@ -2713,7 +2749,7 @@ def render_full(share, html_dir, sender=None, log=say):
         _pmap10 = {}
     wf_by_owner, wf_orphan = wf_owner_blocks(groups, items, gpairs, _pmap10)
 
-    # ── 8. 과제별 워크플로우 (접이식) ──
+    # ── 9. 과제별 워크플로우 (접이식) ──
     def _steps_tbl(steps, total=None):
         hidden = max(0, (total or len(steps)) - len(steps))
         tail = (f'<tr><td></td><td colspan="4" class="dim">… 나머지 {hidden}단계 — '
@@ -2855,14 +2891,14 @@ button{{font:12px 'Malgun Gothic';padding:4px 10px;border:1px solid #c3c2b7;bord
 background:#fff;cursor:pointer}} button:hover{{background:#f0f3f7}}
 </style></head><body>
 <div class="top">팀 통합 보고서 · 인원 {len(members)}명 · {stamp} 생성 · 사내 전용 —
-로드율·과제 배분·워크플로우를 한 장에 담았습니다
+로드율·과제 배분·Agentic AI 니즈 후보·워크플로우를 한 장에 담았습니다
 {'· 유사 항목 정리 적용' if data.get('aliases') else ''}</div>
 <div class="wrap">
-<h1>팀 업무 로드율 · 워크플로우</h1>
+<h1>팀 업무 로드율 · Agentic AI 니즈 · 워크플로우</h1>
 
 <div class="kpis">
 <div class="kpi"><div class="lb">인원</div><div class="vl">{len(members)}</div>
-<div class="nt">워크플로우 {len(wf_owners)}명{f' · 측정 불충분 {len(members_x)}명' if members_x else ''}</div></div>
+<div class="nt">니즈 후보 {n_ag}명 · 워크플로우 {len(wf_owners)}명{f' · 측정 불충분 {len(members_x)}명' if members_x else ''}</div></div>
 <div class="kpi"><div class="lb">팀 투입 MM</div><div class="vl">{team_mm:.2f}</div>
 <div class="nt">과제 {len(pj_groups)}개{' · 측정 불충분 인원 제외' if members_x else ''}</div></div>
 <div class="kpi"><div class="lb">담당 업무 유형</div><div class="vl">{len(clusters)}</div>
@@ -2891,6 +2927,14 @@ background:#fff;cursor:pointer}} button:hover{{background:#f0f3f7}}
 <div style='overflow-x:auto'><table><tr><th>세부업무</th><th>관련 과제</th><th>수행 인원</th><th class="num">합산 MM</th></tr>
 {rows_common}</table></div></div>
 
+<div class="card"><h2>5. 팀 Agentic AI 니즈 후보
+<span class="state">팀원 각자의 반복 업무에서 찾은 자동화 니즈 후보를 이름(띄어쓰기·구분자 무시)으로 합쳤습니다 ·
+팀 과제와 매칭하지 않습니다 · 니즈 후보 결과 {n_ag}명 · 근거 업무 = 제안한 사람들의 근거 업무 행 수 합(MM 아님)</span></h2>
+{('<div class="note" style="margin:0 0 6px">다른 기간 결과를 쓴 인원: ' + esc(', '.join(needs_other))
+  + ' — 기간이 달라도 결과를 가져왔습니다.</div>') if needs_other else ''}
+<div style='overflow-x:auto'><table><tr><th>후보</th><th>제안 인원</th><th class="num">근거 업무(행)</th><th>동작 로직 · 발굴 사유</th></tr>
+{rows_needs}</table></div></div>
+
 <h1 style="font-size:15px;margin:20px 0 8px">워크플로우 — 담당 업무 단위</h1>
 <div class="note" style="margin:0 0 10px">워크플로우는 <b>담당 업무(중위/하위 개체)</b> 단위로만
 셉니다 — 프로젝트 하나에는 성격이 다른 업무가 섞여 있어 하나의 일의 순서로 정의할 수 없습니다.
@@ -2899,23 +2943,23 @@ Agent 가능성 <span class="pill" style="background:#1d8a4a">상</span> 자동�
 <span class="pill" style="background:#8b929b">하</span> 사람 몫 ·
 단계의 '수행 N명' = 그 업무를 하는 사람 중 같은 단계를 밟는 사람 수</div>
 
-<div class="card"><h2>5. 유형별 비중 <span class="state">막대 = 합산 MM</span></h2>
+<div class="card"><h2>6. 유형별 비중 <span class="state">막대 = 합산 MM</span></h2>
 <div style='overflow-x:auto'><table><tr><th>담당 업무</th><th></th><th class="num">MM</th><th class="num">인원·흐름</th>
 <th class="num">AX 가능 MM</th></tr>{wf_bars}</table></div></div>
 
-<div class="card"><h2>6. 자동화 우선순위
+<div class="card"><h2>7. 자동화 우선순위
 <span class="state">'상'(자동화 가능) 단계가 있는 담당 업무 — 여러 명이 하고 MM 이 클수록
 팀 차원 효과가 큽니다</span></h2>
 <div style='overflow-x:auto'><table><tr><th>담당 업무</th><th>자동화 가능 단계</th><th class="num">인원</th>
 <th class="num">MM</th><th class="num">AX 가능 MM</th><th>주기</th></tr>{auto_rows}</table></div></div>
 
-<div class="card"><h2>7. 담당 업무 × 인원 <span class="state">누적바 = 사람별 MM</span></h2>
+<div class="card"><h2>8. 담당 업무 × 인원 <span class="state">누적바 = 사람별 MM</span></h2>
 {wf_stack}<div class="row" style="margin-top:8px">{stack_legend(wf_owners)}</div></div>
 
 {owner_gantt}
 {gantt_html}
 
-<h1 style="font-size:15px;margin:18px 0 8px">8. 과제별 워크플로우
+<h1 style="font-size:15px;margin:18px 0 8px">9. 과제별 워크플로우
 <span class="state">과제를 펼치면 그 안의 담당 업무 워크플로우와 담당자별 자리(간트 막대가 가리키는 곳)가 나옵니다</span></h1>
 {''.join(wf_cards) or '<div class="card"><div class="note">담당 업무 단위 워크플로우가 없습니다.</div></div>'}
 {coarse_html}
@@ -2945,10 +2989,10 @@ Agent 가능성 <span class="pill" style="background:#1d8a4a">상</span> 자동�
                         "<title>팀 통합 보고서 v3(로드율 제외)", 1)
     doc3 = doc3.replace('<div class="top">팀 통합 보고서 ·',
                         '<div class="top">팀 통합 보고서 <b>v3 — 인별 로드율 제외</b> ·', 1)
-    info = {"members": len(members), "clusters": len(clusters),
+    info = {"members": len(members), "agentic": n_ag, "needs": len(needs), "clusters": len(clusters),
             "coarse": len(coarse), "wf_owners": len(wf_owners),
             "flows": len(items), "flows_html": src_n["html"], "generated": stamp}
-    log(f"       인원 {len(members)}명 · 담당 업무 유형 {len(clusters)}종"
+    log(f"       인원 {len(members)}명 · 니즈 후보 {len(needs)}건({n_ag}명) · 담당 업무 유형 {len(clusters)}종"
         + (f" · 과제 단위만 {len(coarse)}건" if coarse else ""))
     return doc, doc3, info
 

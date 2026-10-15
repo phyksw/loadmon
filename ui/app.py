@@ -388,6 +388,16 @@ def team_cache_files():
                 "team_detail_groups.json")
 
 
+def agentic_view(a):
+    """agentic_<tag>.json → 화면(Agentic AI 탭)에 보낼 꼴 — LM29 는 니즈 후보만. agentic.needs_only 가 LM28 이 남긴 파일의
+    과제 매칭(match)·오할당(misassigned)·MM 실측(mm_recalc) 키를 버린다. agentic 을 못 읽으면 그 키만 직접 지운다."""
+    try:
+        import agentic
+        return agentic.needs_only(a)
+    except Exception:  # noqa: BLE001 - 모듈 하나 때문에 탭이 죽지 않게
+        return {k: v for k, v in (a or {}).items() if k not in ("match", "misassigned", "mm_recalc", "axes")}
+
+
 def make_reports():
     """[보고서 만들기] — freeze.make_all 을 이 프로세스 안에서(자기 포트로 GET 해 화면을 굽는다).
     JOB 을 running 으로 만들지 않는다 — 사본의 /api/status running·/api/dash stale 가 참으로
@@ -1045,7 +1055,7 @@ def _stage_kind(stage, tag=None):
     구판 기록용 폴백으로만 남는다(문구를 다듬으면 분류가 깨지던 구조의 종식 · 구조 감사 4계층).
     LM28: stop.kind throttle(Copilot 사용량 제한 — 바로 다시 눌러도 같은 벽) → throttle · gate(개인정보 관문에 걸린 것만 남음 —
     조치 불필요) → gate · fail·gain·fatal·login·lock → failed."""
-    _sid = {"AI 판정": "judge", "AI 정제": "refine",
+    _sid = {"AI 판정": "judge", "AI 정제": "refine", "Agentic 니즈 발굴": "agentic",
             "워크플로우 분석": "flow"}.get(stage)
     if _sid:
         try:
@@ -1125,7 +1135,7 @@ def _signals_judged(tag):
 
 def _reextracted(tag):
     """판정 뒤 업무 로드가 다시 추출됐는가(V-01) — signals 가 규칙 축(judge 열 없음)이면 True. 이때 화면의 표·KPI·리포트는
-    모두 새 규칙 결과이고, 남아 있는 판정 산출물(workflow)은 옛 행 기준이다."""
+    모두 새 규칙 결과이고, 남아 있는 판정 산출물(agentic/workflow)은 옛 행 기준이다."""
     return _signals_judged(tag) is False
 
 
@@ -2472,12 +2482,12 @@ def exclude_work(row_key):
             "total_mm": (rh or {}).get("total_mm"), "load_pct": (rh or {}).get("load_pct")}
 
 
-# ── 수동 워크플로우 재분석 (S2) ─────────────────────────────────
+# ── 수동 Agentic 니즈 발굴·워크플로우 재분석 (S2) ─────────────────────────────────
 # 옛 판은 POST 핸들러가 subprocess.run(timeout=420/960) 으로 끝까지 기다렸다 — 업무가 많은 사람은
 # 묶음 13~49회(회당 수십 초~수 분)라 반드시 시간 초과로 죽고(자식은 kill), 진행률도 안 보이고, 새로고침하면
 # 결과·사유가 사라졌다. 이제 [분석 실행]과 같은 방식으로 스레드에서 돌리며 [progress] 를 진행 바에 흘리고,
-# 마지막 줄 JSON(ok/error/hint)을 MANUAL 에 남겨 GET /api/workflow 가 화면에 전한다.
-TOOL_JOBS = {"flow": ("flow.py", "워크플로우 분석")}
+# 마지막 줄 JSON(ok/error/hint)을 MANUAL 에 남겨 GET /api/agentic·/api/workflow 가 화면에 전한다.
+TOOL_JOBS = {"agentic": ("agentic.py", "Agentic AI 니즈 발굴"), "flow": ("flow.py", "워크플로우 분석")}
 MANUAL = {}                       # kind → 마지막 수동 실행 결과 {ok,error,hint,at,sec,tag,...}
 
 
@@ -2524,8 +2534,8 @@ def watch_child(p, on_line, label, beat_sec=120):
 
 
 def tool_job(kind, extra=()):
-    """flow.py 를 스레드에서 끝까지 돌리고 결과를 MANUAL[kind] 에 남긴다(run_job 과 같은 프로토콜).
-    인자가 없으면 스크립트는 mm_meta 최신 기간을 잡아 화면과 어긋난 파일에 쓸 수 있으므로 기간을 명시한다."""
+    """agentic.py / flow.py 를 스레드에서 끝까지 돌리고 결과를 MANUAL[kind] 에 남긴다(run_job 과 같은 프로토콜).
+    인자가 없으면 두 스크립트는 mm_meta 최신 기간을 잡아 화면과 어긋난 파일에 쓸 수 있으므로 기간을 명시한다."""
     script, step = TOOL_JOBS[kind]
     t0 = time.time()
     tag, targs = _tag_args()
@@ -2799,7 +2809,12 @@ v3 는 인별 로드율을 뺀 공유용, [스냅샷 저장]은 팀통합보고�
  <div class="card"><h2>업무유형 분포 (인별)</h2><div id="wtstack"></div></div>
 </div>
 
-<div class="card"><h2>공통업무 (여러 사람·여러 과제 반복)</h2><table id="commtbl"></table></div>
+<div class="grid2">
+ <div class="card"><h2>팀 Agentic AI 니즈 후보 <span class="state" id="needst"></span></h2>
+  <div class="note" style="margin:0 0 4px">팀원 각자의 반복 업무에서 찾은 자동화 니즈 후보를 이름으로 합쳤습니다 — 팀 과제와 매칭하지 않습니다 · 근거 업무 N행 = 제안한 사람들의 근거 업무 행 수 합(MM 아님)</div>
+  <div id="needlist"></div></div>
+ <div class="card"><h2>공통업무 (여러 사람·여러 과제 반복)</h2><table id="commtbl"></table></div>
+</div>
 
 <div class="card"><h2>세부업무 상위 (팀 합산) <span class="state" style="font-weight:400;font-size:11px;color:#8b929b">유사 항목 정리 후 같은 일이 한 줄로 합쳐졌는지 확인</span></h2>
  <table id="dtltbl"></table></div>
@@ -2943,6 +2958,14 @@ function render(){
   return `<div style="display:flex;align-items:center;gap:8px;margin:4px 0">
    <span style="width:80px;font-size:11.5px;text-align:right">${esc(m.owner)}</span><span>${segs}</span></div>`;
  }).join("")+`<div class="row" style="margin-top:6px">${Object.entries(WTC).map(([k,c])=>`<span style="font-size:11px"><span class="dot" style="background:${c}"></span>${k}</span>`).join("")}</div>`;
+ // 팀 Agentic AI 니즈 후보 — 서버(aggregate.merge_needs)가 인원별 후보를 이름으로 합쳤다(팀 과제 매칭 없음)
+ const nd=Array.isArray(D.needs)?D.needs:[];
+ $("needst").textContent=`니즈 후보 결과 ${Number(D.agentic_n)||0}/${ms.length}명`
+  +((D.needs_other||[]).length?` · 다른 기간 결과: ${(D.needs_other||[]).join(", ")}`:"");
+ $("needlist").innerHTML=nd.slice(0,30).map(g=>`<div style="border-left:3px solid #6c4fb8;padding:3px 0 3px 10px;margin:8px 0">
+  <b>${esc(g.name)}</b> <span style="font-size:10.5px;color:#8b929b">제안 ${Number(g.n)||0}명(${(g.who||[]).map(esc).join(", ")}) · 근거 업무 ${Number(g.ev)||0}행</span>
+  ${g.logic?`<div style="font-size:11px;color:#5a626b">로직: ${esc(g.logic)}</div>`:""}${g.reason?`<div style="font-size:11px;color:#5a626b">사유: ${esc(g.reason)}</div>`:""}</div>`).join("")
+  ||'<div class="note">발굴된 니즈 후보가 없습니다 — 팀원이 [분석 실행](AI 판정)을 마치고 결과를 올리면 여기에 모입니다.</div>';
  // 공통업무
  $("commtbl").innerHTML="<tr><th>세부업무</th><th>관련 과제</th><th>수행 인원</th><th style='width:56px'>MM</th></tr>"+
   ((D.common||[]).map(c=>`<tr><td><b>${esc(c.detail)}</b></td><td>${(c.models||[]).map(esc).join(", ")}</td>
@@ -3207,6 +3230,7 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
  <span class="chip" data-t="week">주간 리뷰</span>
  <span class="chip" data-t="month">월간 리뷰</span>
  <span class="chip" data-t="deep">상세 리뷰</span>
+ <span class="chip" data-t="agentic">Agentic AI</span>
  <span class="chip" data-t="flow">담당자 워크플로우</span>
 </div>
 
@@ -3353,6 +3377,7 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
 <div class="tab" id="tab-week" style="display:none"><div id="rv-week"></div></div>
 <div class="tab" id="tab-month" style="display:none"><div id="rv-month"></div></div>
 <div class="tab" id="tab-deep" style="display:none"><div id="rv-deep"></div></div>
+<div class="tab" id="tab-agentic" style="display:none"><div id="rv-agentic"></div></div>
 <div class="tab" id="tab-flow" style="display:none"><div id="rv-flow"></div></div>
 <div style="height:44px"></div><!-- 하단 고정 상태바에 내용이 가리지 않도록 여백 -->
 
@@ -3466,7 +3491,7 @@ async function poll(){
    $("pg_time").textContent=`경과 ${fmt(s.elapsed)}`+(s.eta!=null?` · 남은 시간 약 ${fmt(s.eta)}`:"");
    // 느린 것과 멈춘 것을 구분할 정보 — 예전에는 "수십 초~수 분" 한 줄뿐이라, 한 왕복이 십 분을 넘기면
    // 사용자가 "멈췄다" 고 판단할 수밖에 없었다(제보: 2시간 정체).
-   const aiPhase=s.phase&&/^(AI|워크플로우|월별)/.test(s.phase);
+   const aiPhase=s.phase&&/^(AI|워크플로우|Agentic|월별)/.test(s.phase);
    const idle=(s.idle==null?null:s.idle);
    $("pg_hint").textContent=coolPh?"Copilot 이 잠시 응답을 제한해 1~2분 쉬었다가 같은 묶음을 다시 보냅니다(한 번 분석에서 쉬는 시간은 모두 합쳐 5분까지). 창을 닫지 말고 두세요 — 이미 판정한 신호는 저장돼 있습니다."
     :!aiPhase?""
@@ -3629,7 +3654,7 @@ async function refresh(){
    // 이 표·KPI·리포트는 모두 새 규칙 결과다(V-01: 셋이 서로 다른 값을 보이던 결함)
    why="AI 판정 뒤에 업무 로드가 <b>다시 추출</b>됐습니다(판정 이후 재추출됨)"+(lr.ai_requested===false?" — 최근 실행은 AI 판정 없이 돌았습니다":"")
        +". 지난 판정 산출물(정제본·판정 기록)은 .stale 로 무효화돼 표·KPI·리포트가 모두 규칙 결과입니다.";
-   how="[분석 실행] 옆의 <b>AI 정제</b> 체크를 켜고 다시 실행하세요 (재수집 없이 하려면 '재분석만'도 함께). 워크플로우 탭의 지난 결과는 '재추출 이후 결과'로 표시됩니다.";
+   how="[분석 실행] 옆의 <b>AI 정제</b> 체크를 켜고 다시 실행하세요 (재수집 없이 하려면 '재분석만'도 함께). Agentic AI·워크플로우 탭의 지난 결과는 '재추출 이후 결과'로 표시됩니다.";
   }else if(!j&&lr.ai_requested===false){
    why="AI 판정을 켜지 않고 실행했습니다.";
    how="[분석 실행] 옆의 <b>AI 정제</b> 체크를 켜고 다시 실행하세요 (재수집 없이 하려면 '재분석만'도 함께).";
@@ -4182,7 +4207,7 @@ $("teamagg").onclick=async()=>{
   alert(d.error==="no members"?"공유폴더에 취합할 인원이 없습니다.\\n각 팀원이 [분석 실행] 후 자동 내보내기가 되어야 합니다.":"팀 취합 실패 — 진행 로그 확인");
   return;
  }
- $("state").textContent=`팀 취합 완료 — ${d.members}명`;
+ $("state").textContent=`팀 취합 완료 — ${d.members}명`+(d.agentic!=null?` (니즈 후보 결과 ${d.agentic}명 · 팀 니즈 후보 ${d.needs||0}건)`:"");
  window.open("/team/report","_blank");
 };
 $("diag").onclick=async()=>{
@@ -4278,7 +4303,7 @@ document.querySelectorAll("[data-s]").forEach(c=>c.onclick=()=>showData(c.datase
 let loaded={};
 let curTab="dash";          // 지금 보고 있는 탭 — 실행이 끝나면 열린 리뷰 탭을 다시 그린다(poll)
 const AGENT_C={"상":"#1d8a4a","중":"#c98a00","하":"#8b929b"};
-// 수동 재분석(워크플로우)은 서버 스레드에서 돈다 — 끝날 때까지 /api/status 를 보며 기다린다.
+// 수동 재분석(Agentic 니즈 발굴·워크플로우)은 서버 스레드에서 돈다 — 끝날 때까지 /api/status 를 보며 기다린다.
 // 새로고침해도 서버가 기억하므로(GET 의 running/manual) 탭을 다시 열면 이어서 기다리고 사유를 다시 보여 준다.
 async function waitIdle(){
  for(;;){await new Promise(r=>setTimeout(r,2000));
@@ -4504,7 +4529,8 @@ document.querySelectorAll("#tabs [data-t]").forEach(c=>c.onclick=()=>{
  // 탭을 다시 눌러도 재시도되지 않는다.
  const fail=(k,e)=>{loaded[k]=0;const el=$("rv-"+k);
   if(el)el.innerHTML='<div class="card"><div class="note">표시 실패('+esc(String(e&&e.message||e))+') — 탭을 다시 누르면 재시도합니다.</div></div>';};
- if(id==="flow"){if(!loaded[id]){loaded[id]=1;loadFlow().catch(e=>fail(id,e));}}
+ if(id==="agentic"){if(!loaded[id]){loaded[id]=1;loadAgentic().catch(e=>fail(id,e));}}
+ else if(id==="flow"){if(!loaded[id]){loaded[id]=1;loadFlow().catch(e=>fail(id,e));}}
  else if(id!=="dash"&&!loaded[id]){loaded[id]=1;loadReview(id).catch(e=>fail(id,e));}
 });
 function connSVG(g,col){
@@ -4634,6 +4660,69 @@ async function loadReview(kind){
   if(kind==="deep")return `<div class="card"><h2>${head}</h2>${body}</div>`;
   return `<details${gi===0?" open":""}><summary>${head}</summary><div class="body">${body}</div></details>`;
  }).join("");
+}
+// ── Agentic AI 탭 — 니즈 후보 발굴만(LM29: 팀 과제 매칭·오할당 검증 없음) ──
+// 이어받기·멈춘 이유 — 다른 기간 결과를 이어받았으면 그 기간과 발굴 시작일, 남은 행이 있으면 왜 멈췄는지(stop_kind)
+function agCarry(a,pend){
+ if(!a)return "";
+ const STOP_KO={budget:"시간 예산에 닿음 — [이어서 발굴]",throttle:"Copilot 사용량 제한 — 1~2시간 뒤 [이어서 발굴]",
+  login:"Copilot 로그인 만료 — [AI 연결 진단]에서 다시 로그인한 뒤 [이어서 발굴]",fatal:"사람이 손대야 풀리는 상태 — 아래 사유 확인",
+  fail:"왕복 실패 — [AI 연결 진단] 확인 후 [이어서 발굴]",gate:"개인정보 관문 — 조치 불필요"};
+ let h="";
+ if(a.carried_from)h+=`<div class="note" style="color:#8a5a00">⚠ <b>${esc(a.carried_from)}</b> 기간 결과를 이어받음${a.matched_since?` (발굴 시작 ${esc(a.matched_since)})`:""}</div>`;
+ if(pend&&STOP_KO[a.stop_kind])h+=`<div class="note">멈춘 이유: ${STOP_KO[a.stop_kind]}${a.cooldowns?` · Copilot 대기 ${Number(a.cooldowns)||0}회`:""}</div>`;
+ return h;
+}
+async function loadAgentic(){
+ const el=$("rv-agentic");
+ el.innerHTML='<div class="card"><div class="note">불러오는 중…</div></div>';
+ const d=await fetch("/api/agentic").then(r=>r.json()).catch(()=>({}));
+ const a=d.analysis||null;
+ const pend=a&&a.rows_pending?a.rows_pending:0;
+ const news=(a&&a.new)||[];
+ let h=`<div class="card"><h2>Agentic AI 니즈 후보 발굴 <span class="state">[분석 실행](AI 판정) 뒤 자동으로 찾습니다</span></h2>
+  <div class="note" style="margin:0 0 8px">팀 과제와 매칭하지 않고, 내 반복 업무에서 Agentic AI 로 자동화할 만한 니즈 후보만 찾습니다. 팀 전체의 니즈 후보는 팀 취합 화면에서 모아 봅니다.</div>
+  <div class="row" style="margin-bottom:8px">
+   <button class="${a?"ghost":"run"}" id="agrun" style="padding:7px 18px;font-size:12.5px">${pend?`이어서 발굴(남은 ${pend}행)`:"니즈 후보 발굴 실행"}</button>
+   <span class="state" id="agmsg">${d.running?"니즈 후보 발굴 진행 중… (진행률은 상단 진행 바)":"묶음마다 Copilot 왕복 1회 — 수십 초~수 분"}</span>
+  </div>${d.file_error?`<div class="note" style="color:#c0122f">${esc(d.file_error)}</div>`:""}${manualLine(d.manual)}`;
+ if(!a){const stBits=[d.stage_reason,d.stage_error].filter((x,i,arr)=>x&&arr.indexOf(x)===i);
+  if(stBits.length)h+=`<div class="note" style="color:#c0122f">최근 실행이 남긴 사유: ${stBits.map(x=>esc(x)).join(" · ")}</div>`;
+  h+=`<div class="note">아직 니즈 후보 결과가 없습니다${d.tag?` (기간 ${esc(d.tag)})`:""}${d.other_tag?` — <b>${esc(d.other_tag)}</b> 기간 결과는 있습니다`:""}${d.stage_note?` <span class="state">· 최근 실행 기록: ${esc(d.stage_note)}</span>`:""}${whyEmpty(d.stage_kind,"[니즈 후보 발굴 실행]")} — [분석 실행](AI 판정 포함)을 돌리면 자동으로 만들어집니다. 이미 분석을 마쳤다면 위 버튼으로 발굴만 실행하세요.</div></div>`;}
+ else{
+  const lastErr=a.last_error&&a.last_error.error?`<div class="note" style="color:#c0122f">마지막 실패 사유: ${esc(a.last_error.error)}${a.last_error.hint?` — ${esc(a.last_error.hint)}`:""}</div>`:"";
+  h+=`<div class="note">기간 ${esc(a.tag)} · 업무 ${a.rows_analyzed}행 분석${a.rows_total&&a.rows_total!==a.rows_analyzed?` / 전체 ${a.rows_total}행`:""}${a.chunks?` · 묶음 ${a.chunks}회`:""}${a.failed_chunks?` <span style="color:#c0122f">· ${a.failed_chunks}/${a.chunks||"?"} 묶음 실패</span>`:""}${pend?` <span style="color:#c0122f">· ${pend}행 미판정 — 후보가 실제보다 적을 수 있음. 위 버튼으로 남은 행만 이어서 발굴</span>`:""}${a.salvaged_chunks?` · 잘린 답 복구 ${a.salvaged_chunks}묶음(부분 결과)`:""}${!news.length&&!pend?` · <b>근거가 충분한 니즈 후보가 없습니다(실패 아님)</b>`:""}</div>`
+   +(a.rule_rows?`<div class="note">AI 판정 대기 ${Number(a.rule_rows)||0}행 — 신호 대부분이 규칙 판정이라 아직 보내지 않았습니다([재분석만] 후 [니즈 후보 발굴 실행])</div>`:"")
+   +(a.gate_skipped_rows?`<div class="note">개인정보 관문 ${Number(a.gate_skipped_rows)||0}행 — 보내지 않았습니다(조치 불필요)</div>`:"")
+   +agCarry(a,pend)+lastErr
+   +(d.reextracted?`<div class="note" style="color:#8a5a00">⚠ <b>${esc(d.reextracted_title||"재추출 이후 결과")}</b> — ${esc(d.reextracted_note||"")}</div>`:"")+`</div>`;
+  h+=`<div class="card"><h2>니즈 후보 ${news.length}건 <span class="state">근거 업무가 많은 후보부터 · 근거 업무 N행 = 이 후보의 근거가 된 내 업무 행 수(MM 아님)</span></h2>`;
+  if(news.length){news.forEach(n=>{
+   const ws=n.work||[];
+   h+=`<div style="border-left:3px solid #6c4fb8;padding:4px 0 4px 12px;margin:10px 0">
+    <b>${esc(n.name)}</b>${n.evidence_rows!=null?` <span class="state">근거 업무 ${Number(n.evidence_rows)||0}행</span>`:""}
+    ${n.logic?`<div style="font-size:12px;margin-top:3px"><b>동작 로직:</b> ${esc(n.logic)}</div>`:""}
+    ${n.reason?`<div style="font-size:11.5px;color:#5a626b;margin-top:2px"><b>발굴 사유:</b> ${esc(n.reason)}</div>`:""}
+    ${ws.length?`<div style="margin-top:4px">${ws.slice(0,12).map(w=>`<span class="tag">${esc(w)}</span>`).join("")}${ws.length>12?` <span class="state">외 ${ws.length-12}건</span>`:""}</div>`:""}</div>`;});}
+  else h+=`<div class="note">근거가 충분한 니즈 후보가 없습니다 — 신호가 쌓일수록 발굴 정확도가 올라갑니다.</div>`;
+  h+=`</div>`;
+ }
+ el.innerHTML=h;
+ const btn=$("agrun");
+ if(btn)btn.onclick=async()=>{
+  btn.disabled=true;btn.textContent="시작 중…";
+  const r=await startTool("/api/agentic");
+  if(!r.ok||!r.started){
+   // 사유(error — hint)를 그대로 — '실패' 한 마디로는 로그인 만료인지 자료 없음인지 알 수 없다
+   btn.disabled=false;btn.textContent="니즈 후보 발굴 실행";
+   const m=$("agmsg");if(m)m.innerHTML='<span style="color:#c0122f">실패: '+esc(String(r.error||""))+(r.hint?" — "+esc(String(r.hint)):"")+'</span>';
+   return;}
+  btn.textContent="발굴 중…";
+  const m=$("agmsg");if(m)m.textContent="니즈 후보 발굴 중… (묶음마다 수십 초~수 분 · 진행률은 상단 진행 바 · 창을 닫아도 계속 돕니다)";
+  if(!timer){timer=setInterval(poll,1000);}poll();
+  await waitIdle();loaded={};loadAgentic();
+ };
+ if(d.running&&btn){btn.disabled=true;btn.textContent="발굴 중…";waitIdle().then(()=>{loaded={};loadAgentic();});}
 }
 // ── 수집 현황 카드(원장 한 원천 — F-33) · 커서 초기화 · 수동 기록(W1-19) ──
 async function cvLoad(){
@@ -5107,6 +5196,46 @@ class H(BaseHTTPRequestHandler):
                 out["running"] = bool(JOB["running"] and JOB["step"] == TOOL_JOBS["flow"][1])
                 out["busy"] = JOB["step"] if JOB["running"] else ""
             self._send(200, out)
+        elif self.path == "/api/agentic":
+            # LM29 — Agentic AI 니즈 후보만. LM28 이 남긴 파일의 과제 매칭(match)·오할당(misassigned)은 화면에 보내지 않는다.
+            out = {"analysis": None, "stage_note": _stage_note("Agentic 니즈 발굴"),
+                   "stage_kind": _stage_kind("Agentic 니즈 발굴")}
+            sp = latest_signals()
+            if sp:
+                tag = os.path.basename(sp)[len("signals_"):-len(".csv")]
+                out["tag"] = tag
+                ap = os.path.join(REPORT, f"agentic_{tag}.json")
+                if os.path.exists(ap):
+                    try:
+                        a = json.load(open(ap, encoding="utf-8-sig"))
+                        if isinstance(a, dict):
+                            out["analysis"] = agentic_view(a)
+                            out["stage_kind"] = _stage_kind("Agentic 니즈 발굴", tag)
+                            # 판정 뒤 업무 로드가 다시 추출됐으면(무AI 재실행 등) 이 후보는 옛 행 기준이다(V-01) — 지우지 않고 표시
+                            if _reextracted(tag):
+                                out["reextracted"] = True
+                                out["reextracted_title"] = "재추출 이후 결과"
+                                out["reextracted_note"] = ("이 니즈 후보는 마지막 업무 로드 재추출 이전의 행으로 찾은 것입니다 — "
+                                                           "[니즈 후보 발굴 실행]으로 갱신하세요")
+                        else:
+                            out["file_error"] = (f"agentic_{tag}.json 의 최상위가 객체가 아닙니다 — "
+                                                 "[니즈 후보 발굴 실행]으로 다시 만드세요")
+                    except (OSError, ValueError) as e:
+                        out["file_error"] = (f"agentic_{tag}.json 을 읽지 못함({type(e).__name__}) — "
+                                             "[니즈 후보 발굴 실행]으로 다시 만드세요")
+                else:
+                    other = sorted(glob.glob(os.path.join(REPORT, "agentic_*.json")))
+                    if other:
+                        ot = os.path.basename(other[-1])[len("agentic_"):-len(".json")]
+                        if ot != tag:
+                            out["other_tag"] = ot
+                    out["stage_kind"] = _stage_kind("Agentic 니즈 발굴", tag)
+                    out.update(_stage_why(tag, "agentic"))
+            with LOCK:
+                out["manual"] = MANUAL.get("agentic")
+                out["running"] = bool(JOB["running"] and JOB["step"] == TOOL_JOBS["agentic"][1])
+                out["busy"] = JOB["step"] if JOB["running"] else ""
+            self._send(200, out)
         elif self.path == "/api/extra":
             # 리뷰 본문과 같은 signals 파일의 tag를 앵커로 — 서로 다른 분석 기간의
             # pivots/내러티브/체계가 한 화면에 섞이지 않게 한다
@@ -5576,12 +5705,12 @@ class H(BaseHTTPRequestHandler):
             except OSError:
                 pass
             self._send(200, {"ok": True})
-        elif self.path == "/api/workflow":
+        elif self.path in ("/api/workflow", "/api/agentic"):
             # 수동 재분석 — [분석 실행]과 같은 백그라운드 방식(tool_job). 시간 제한 없이 자식의 왕복 타임아웃에
             # 맡기고, 화면은 /api/status 의 진행률을 보다가 끝나면 GET 으로 결과·사유(manual)를 읽는다.
             # body {"wait": true} 면 옛 방식처럼 끝까지 기다려 마지막 JSON 을 돌려준다(시험 하네스·스크립트용),
             # {"redo": true} 면 이어서 하지 않고 처음부터.
-            kind = "flow"
+            kind = "flow" if self.path == "/api/workflow" else "agentic"
             n = int(self.headers.get("Content-Length", 0) or 0)
             try:
                 b = json.loads(self.rfile.read(n) or b"{}") if n else {}
@@ -5594,7 +5723,7 @@ class H(BaseHTTPRequestHandler):
                     self._send(409, {"ok": False, "error": "busy",
                                      "hint": f"'{JOB['step'] or '분석'}' 이(가) 실행 중입니다 — 끝난 뒤(상단 상태바 '대기') 다시 누르세요"})
                     return
-                if self._freezing():        # workflow_ JSON 을 다시 쓴다 — 굽는 중에는 막는다
+                if self._freezing():        # agentic_/workflow_ JSON 을 다시 쓴다 — 굽는 중에는 막는다
                     return
                 JOB.update(running=True, step=TOOL_JOBS[kind][1], started=time.time(),
                            phase="", done=0, total=0)

@@ -287,7 +287,7 @@ def version_of(meta, member=None, tag=None):
     """판별 — LM28 은 member.json 의 lm_ver(teamup 이 'LM28' 을 싣는다)로 먼저 본다. member.json 은 그 사람의
     마지막 업로드 한 기간(tag)의 것이라, tag 를 주면 그 기간일 때만 믿는다(옛 기간 파일을 LM28 로 오표기하지 않게).
     lm_ver 가 없으면 예전처럼 키 유무로 본다(LM24·LM20 은 명시 버전 필드가 없다 — 기간 tag 파일 단위).
-    'lm28' 은 산식이 v3 와 같다 — 표시(LM28(v3))만 다르다. LM29(LM28 에서 Agentic AI 후보만 뺀 판 · 타팀 시험용)도 같은
+    'lm28' 은 산식이 v3 와 같다 — 표시(LM28(v3))만 다르다. LM29(LM28 에서 Agentic AI 를 니즈 후보 발굴만 남긴 판 · 타팀 시험용)도 같은
     서버로 올라오므로 'lm29' 로 따로 적는다(산식 같음 — 예전에는 LM24(v3) 로 오표기됐다)."""
     if not meta:
         return "unknown"

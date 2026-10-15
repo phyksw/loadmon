@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
-r"""tests\test_p13_flow.py — 담당자 워크플로우 미생성(이슈 D) 보강. LM29 — Agentic 매칭(agentic.py)을 빼며 그 시험도 뺐다.
+r"""tests\test_p13_flow.py — 담당자 워크플로우 미생성(이슈 D) 보강. LM29 — Agentic AI 니즈 후보 발굴(agentic.py)의 시험은
+tests\test_p25_lm29_needs_only.py 에 있다(이 파일의 _Env 를 함께 쓴다).
 
   · flow    : 일시 오류 1회 → 쉬고 한 번 더 / 전부 실패 → rc 1 · 상태 파일 failed·stop.kind fail · 사유 ≠ '파싱 실패' /
               마감이 이미 지남 → stop_kind budget(run_ai_stage 재시도 없음) / 지난 흐름 키를 오늘 키로 스냅해 이어받기 ·
               flows 객체·문자열 단계 수용 / 정제본 없이도 원본 mm_rows 의 Level 1 로 상위 · 규칙 판정 단위는 묻지 않음 /
               세부 병합 왕복은 마감·연속 2실패에서 접고 판정이 Copilot 문제로 중단된 직후엔 건너뜀
-  · run.py  : 선예약(워크플로우) 마감 · run_ai_stage --carry · flow 재시도 --no-merge · 120초 대기 · stop_kind 재시도 생략
+  · run.py  : 선예약(워크플로우·Agentic 니즈 발굴) 마감 · run_ai_stage --carry · flow 재시도 --no-merge · 120초 대기 ·
+              stop_kind 재시도 생략
 실제 Copilot·Edge 는 쓰지 않는다 — judge.copilot_send 를 가짜로 바꾸고, 운영 폴더 대신 임시 폴더(flow.ROOT·
 details 캐시 경로)를 쓴다. G3 문맥은 시험용(빈 Ctx + 가짜 카나리아 하나)으로 고정한다.
 """
@@ -265,17 +267,22 @@ class FlowRuns(_Env):
 
 class RunStage(unittest.TestCase):
     def test_reserves_and_deadlines(self):
-        self.assertEqual(R.flow_reserve({}, 300), 120.0)
-        self.assertEqual(R.flow_reserve({}, 100), 60.0)                    # 바닥 60분
-        self.assertEqual(R.flow_reserve({"flowBudgetMin": 90}, 300), 90.0)
-        self.assertFalse(hasattr(R, "agentic_deadline"))                   # LM29 — Agentic 몫 선예약 없음
+        # 워크플로우 몫 + Agentic 니즈 발굴 몫(LM28 과 같은 선예약 — agenticReserveMin, 없으면 전체의 10%를 15~30분)
+        self.assertEqual(R.ai_reserves({}, 300), (120.0, 30.0))
+        self.assertEqual(R.ai_reserves({"agenticReserveMin": 20}, 300)[1], 20.0)
+        self.assertEqual(R.ai_reserves({}, 100), (60.0, 15.0))                 # 워크플로우 바닥 60분 · Agentic 바닥 15분
+        self.assertEqual(R.ai_reserves({"flowBudgetMin": 90}, 300)[0], 90.0)
         old = (R._AI_T0, R._AI_TOT_MIN, dict(R._AI_RES))
         with mock.patch.dict(os.environ, {}):
             try:
-                fr, pre = R.start_ai_clock({"agenticReserveMin": 20}, 300, now=1000.0)   # 옛 키는 무시
-                self.assertEqual((fr, pre), (120.0, 180.0))
-                self.assertAlmostEqual(float(os.environ["LM_AI_DEADLINE"]), 1000.0 + 180 * 60)
-                self.assertEqual(R._AI_RES, {"flow": 120.0})
+                fr, ag, pre = R.start_ai_clock({}, 300, now=1000.0)
+                self.assertEqual((fr, ag, pre), (120.0, 30.0, 150.0))
+                self.assertAlmostEqual(float(os.environ["LM_AI_DEADLINE"]), 1000.0 + 150 * 60)
+                late = 1000.0 + 175 * 60                                   # 판정·정제가 늦게 끝났다
+                self.assertGreaterEqual(R.agentic_deadline(now=late), late + 30 * 60)
+                early = 1000.0 + 60 * 60                                   # 일찍 끝났으면 남은 시간을 다 쓴다
+                self.assertAlmostEqual(R.agentic_deadline(now=early), 1000.0 + 180 * 60)
+                self.assertEqual(R._AI_RES, {"flow": 120.0, "ag": 30.0})
             finally:
                 R._AI_T0, R._AI_TOT_MIN = old[0], old[1]
                 R._AI_RES.clear()
@@ -305,15 +312,21 @@ class RunStage(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("--carry", cmds[1])
         self.assertIn("--no-merge", cmds[1])
-        self.assertEqual(R.AI2_STAGES, ("flow.py",))                        # LM29 — agentic.py 단계 없음
+        # Agentic 니즈 발굴도 판정 뒤 단계 — 늘 --carry · 120초 쉬고 1회 재시도 · 세부 병합 플래그는 워크플로우 것
+        self.assertEqual(R.AI2_STAGES, ("agentic.py", "flow.py"))
+        rc, _n, cmds, sleeps = self._stage("agentic.py", [(1, "x"), (1, "y")])
+        self.assertEqual((rc, sleeps), (1, [120]))
+        self.assertIn("--carry", cmds[1])
+        self.assertNotIn("--no-merge", cmds[1])
         rc, _n, cmds, _s = self._stage("refine.py", [(1, "x"), (0, "")])
         self.assertNotIn("--carry", cmds[0])
 
     def test_no_retry_kinds(self):
         for last, why in (({"stop_kind": "gate"}, "관문"), ({"stop_kind": "login"}, "로그인"),
                           ({}, "Copilot 사용량 제한(일시)"), ({}, "R-THROTTLE 사유")):
-            rc, _n, cmds, sleeps = self._stage("flow.py", [(1, why)], last)
-            self.assertEqual((rc, len(cmds), sleeps), (1, 1, []), why)
+            for script in ("flow.py", "agentic.py"):
+                rc, _n, cmds, sleeps = self._stage(script, [(1, why)], last)
+                self.assertEqual((rc, len(cmds), sleeps), (1, 1, []), (script, why))
 
 
 if __name__ == "__main__":

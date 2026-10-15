@@ -211,7 +211,7 @@ def latest_tag():
 # 데이터를 전부 받아 파일 하나에 굽는다. 그래서 화면 모양·계산 로직이 설치된 그 버전과 언제나 같다.
 
 FREEZE_EPS = ["/api/status", "/api/dash", "/api/projects", "/api/workflow",
-              "/api/extra", "/api/teamserver", "/api/teamupload",
+              "/api/agentic", "/api/extra", "/api/teamserver", "/api/teamupload",
               "/api/sharedir",
               "/api/review?g=week", "/api/review?g=month", "/api/review?g=all",
               "/api/data?src=files", "/api/data?src=recent", "/api/data?src=mail",
@@ -415,8 +415,9 @@ def _freeze(tag, full, base_url, log, info):
                 # 에피소드의 오더→산출 페어(req/done)에는 메일·팀즈 원문 조각이 들어 있다
                 ex["pivots"].pop("episodes", None)
             baked["/api/extra"] = _strip_evidence(ex)
-        if "/api/workflow" in baked:
-            baked["/api/workflow"] = _strip_evidence(baked["/api/workflow"])
+        for k in ("/api/workflow", "/api/agentic"):
+            if k in baked:
+                baked[k] = _strip_evidence(baked[k])
 
     owner, host = _owner(), _host()
     stub = _is_stub()
@@ -632,8 +633,13 @@ def report_island(tag, full=True, log=_say):
         log(f"    [!] {tag} 결과(mm_rows·mm_meta)가 없어 분석리포트를 만들지 못했습니다.")
         return []
     wf = _read_json(os.path.join(REPORT, f"workflow_{tag}.json")) or {}
+    # LM29 — Agentic AI 니즈 후보만(팀 과제 매칭·오할당 없음). LM28 이 남긴 파일의 match·misassigned 는 섬에도 싣지 않는다.
+    _ag = _read_json(os.path.join(REPORT, f"agentic_{tag}.json"))
+    _ag = _ag if isinstance(_ag, dict) else {}
+    ag_new =[n for n in (_ag.get("new") if isinstance(_ag.get("new"), list) else []) if isinstance(n, dict)]
     if not full:
         wf = _strip_evidence(wf)
+        ag_new = _strip_evidence(ag_new)
     owner, host = _owner(), _host()
 
     rows, n_merged = _apply_details(rows, log)
@@ -776,6 +782,31 @@ def report_island(tag, full=True, log=_say):
         '<div class="card"><div class="note">워크플로우 분석이 없습니다 — '
         '대시보드 [담당자 워크플로우] 탭의 [재분석]으로 만들 수 있습니다.</div></div>')
 
+    # 4. Agentic AI 니즈 후보 — 내 반복 업무에서 찾은 자동화 니즈(MM 없이 근거 업무 행 수만 — RP4)
+    new_html = "".join(
+        f'<div style="border-left:3px solid #6c4fb8;padding:4px 0 4px 12px;margin:10px 0">'
+        f'<b>{_esc(n.get("name"))}</b>'
+        + (f' <span class="state">근거 업무 {int(_num(n.get("evidence_rows")))}행</span>'
+           if n.get("evidence_rows") is not None else "")
+        + (f'<div style="font-size:12px;margin-top:3px"><b>동작 로직:</b> {_esc(n.get("logic"))}</div>'
+           if n.get("logic") else "")
+        + (f'<div class="sub" style="margin-top:2px"><b>발굴 사유:</b> {_esc(n.get("reason"))}</div>'
+           if n.get("reason") else "")
+        + ("<div style='margin-top:3px'>" + "".join(f'<span class="tag">{_esc(w)}</span>'
+                                                   for w in (n.get("work") or [])[:12]) + "</div>"
+           if isinstance(n.get("work"), list) and n.get("work") else "")
+        + "</div>"
+        for n in ag_new)
+    if _ag.get("failed_chunks"):
+        new_html += (f'<div class="note" style="color:#c0122f">묶음 {_esc(_ag.get("failed_chunks"))}/'
+                     f'{_esc(_ag.get("chunks") or "?")}개 실패 — 후보가 실제보다 적을 수 있습니다</div>')
+    ag_html = ('<div class="card"><h2>4. Agentic AI 니즈 후보 <span class="state">팀 과제와 매칭하지 않고, 반복 업무에서 '
+               'Agentic AI 로 자동화할 만한 니즈만 · 근거 업무 N행 = 근거가 된 업무 행 수(MM 아님)</span></h2>'
+               + (new_html or ('<div class="note">근거가 충분한 니즈 후보가 없습니다.</div>' if _ag else
+                               '<div class="note">니즈 후보 발굴 결과가 없습니다 — 대시보드 [Agentic AI] 탭의 '
+                               '[니즈 후보 발굴 실행]으로 만들 수 있습니다.</div>'))
+               + "</div>")
+
     # LM28(WP9): 초과근무 세분·미관측 · 산출 방식(PC 가동 하한의 근거·날짜별 방식) · 동료 · 연관 업무 · 업무 영역·과제
     # 워크플로 요약(단위업무 등급) — 리포트(report_out)와 같은 함수. 요약판(--summary)은 동료 이름을 [사람] 으로.
     extra_html = ""
@@ -784,14 +815,14 @@ def report_island(tag, full=True, log=_say):
         _b = meta.get("mm_basis") if isinstance(meta.get("mm_basis"), dict) else {}
         _ot = _ro.overtime_rows(meta, _b)
         if _ot:
-            extra_html += ('<div class="card"><h2>4. 근무 꼬리표 · 초과근무 세분 · 미관측</h2><table>'
+            extra_html += ('<div class="card"><h2>5. 근무 꼬리표 · 초과근무 세분 · 미관측</h2><table>'
                            + "".join(f"<tr><th style='width:260px'>{_esc(k)}</th><td>{_esc(v)}</td></tr>" for k, v in _ot)
                            + "</table></div>")
         extra_html += '<div class="card">' + "\n".join(_ro.floor_section(meta, _b)) + "</div>"
         _sig = _ro._rows(os.path.join(REPORT, f"signals_{tag}.csv"))
         _pv = _read_json(os.path.join(REPORT, f"pivots_{tag}.json")) or {}
         extra_html += ('<div class="card">'
-                       + "\n".join(_ro.new_sections(_sig, wf, rows, _pv, summary=not full, ctx=_ro._privacy_ctx(), n0=5))
+                       + "\n".join(_ro.new_sections(_sig, wf, rows, _pv, summary=not full, ctx=_ro._privacy_ctx(), n0=6))
                        + "</div>")
     except Exception as e:  # noqa: BLE001 - 새 절의 실패가 분석리포트를 막지 않는다
         log(f"    [!] 분석리포트 보조 절 건너뜀({type(e).__name__}: {str(e)[:80]})")
@@ -799,13 +830,13 @@ def report_island(tag, full=True, log=_say):
     generated = time.strftime("%Y-%m-%d %H:%M")
     stub = _is_stub()
     # 데이터 섬 — 팀 취합(팀보완툴·LM22 팀 취합)이 읽는 계약: kind/owner/host/period/tag/rows/workflow/agentic
-    # LM29: Agentic 매칭은 없다 — 계약 키 "agentic" 은 빈 객체로 남긴다(옛 취합 도구가 키를 찾는다).
+    # LM29: 계약 키 "agentic" 에는 니즈 후보만 싣는다 — {"kind": "needs", "new": [...]}(과제 매칭·오할당 없음).
     # stub: 판정이 스텁(LM_COPILOT_STUB, 테스트 전용)이었던 결과 — 취합이 실자료와 구분한다.
     island = json.dumps({
         "kind": "lm-personal-report", "owner": owner, "host": host,
         "period": [d0, d1], "tag": tag, "total_mm": total,
         "avail_mm": avail, "load_pct": pct, "rows_file": rows_file,
-        "rows": rows, "workflow": wf, "agentic": {},
+        "rows": rows, "workflow": wf, "agentic": {"kind": "needs", "new": ag_new},
         "generated": generated, "generator": "LoadMonitor29 freeze.py",
         "merged_rows": n_merged, "full": bool(full), "stub": stub},
         ensure_ascii=False).replace("<", "\\u003c")
@@ -889,6 +920,7 @@ margin:1px 3px 1px 0;font-size:10.5px;color:#3d444c}}
 <span class="state">역할 → 일의 순서 → 단계별 Agent 가능성</span></h1>
 {flows_html}
 
+{ag_html}
 {extra_html}
 
 <div class="note">이 파일 하나로 공유됩니다. 팀 취합 분석은 아래 데이터 섬을 읽어 수행합니다.</div>

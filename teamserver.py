@@ -90,8 +90,8 @@ TOKEN = [""]
 STATE = {"last_agg": 0.0, "agg_note": "", "uploads": 0}
 
 # 받는 파일 이름 — export.py 가 내보내는 것과 동일한 화이트리스트.
-# LM29: agentic_<기간>.json 은 더 만들지 않지만 받기는 그대로 받는다 — LM28 이 함께 올리는 묶음을 400 으로 통째로 거절하지 않게
-# (취합은 그 파일을 읽지 않는다).
+# agentic_<기간>.json — LM29 는 Agentic AI 니즈 후보(kind "needs")를, LM28 은 과제 매칭 결과를 싣는다. 취합(aggregate.merge_needs)은
+# 어느 쪽이든 후보(new)만 읽어 '팀 Agentic AI 니즈 후보' 로 모은다.
 NAME_OK = re.compile(
     r"^(mm_rows_\d{8}-\d{8}(_refined)?\.csv|signals_\d{8}-\d{8}\.csv|"
     r"mm_meta_\d{8}-\d{8}\.json|pivots_\d{8}-\d{8}\.json|ai_narratives_\d{8}-\d{8}\.json|"

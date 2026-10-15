@@ -145,8 +145,8 @@ def longp(p):
 # ── 묶음 만들기 ──────────────────────────────────────────────────────────────
 FILE_NAMES = ("mm_rows_{t}.csv", "mm_rows_{t}_refined.csv", "signals_{t}.csv",
               "mm_meta_{t}.json", "pivots_{t}.json", "ai_narratives_{t}.json",
-              "entities_{t}.json", "workflow_{t}.json")
-# LM29: agentic_{t}.json 은 더 만들지 않아 묶지 않는다(옮겨 온 옛 파일이 다시 올라가지 않게) — 받는 쪽 NAME_OK 는 그대로.
+              "entities_{t}.json", "agentic_{t}.json", "workflow_{t}.json")
+# agentic_{t}.json — LM29 는 Agentic AI 니즈 후보만 싣는다(kind "needs" · 과제 매칭·오할당 없음). 팀 취합이 인원별 후보를 모은다.
 # freeze.py 가 만드는 개인 HTML 보고서 — 묶음(files)·팀 서버에는 넣지 않는다(서버 NAME_OK 불변:
 # 업로드 HTML = 서버 origin 의 임의 스크립트, 얼린 보고서는 메일·회의 제목 원문 포함).
 # 공유폴더 저장(--to-folder) 때만 <공유폴더>\개인리포트\<이름>_<파일명> 으로 복사한다 —

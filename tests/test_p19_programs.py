@@ -624,7 +624,7 @@ class Reports(unittest.TestCase):
         for s in ("실행 횟수", "포커스 시간", "마지막 실행", "파일 일수", "calib_tool", "&lt;b&gt;x"):
             self.assertIn(s, tbl, s)
         self.assertIn("Creo Parametric(3.2h)", report_out.tool_usage_text(OLD))
-        self.assertEqual(report_out.tool_usage_table(OLD), "")      # 옛 꼴은 7절 한 칸으로 충분
+        self.assertEqual(report_out.tool_usage_table(OLD), "")      # 옛 꼴은 8절 한 칸으로 충분
 
     def test_dashboard_card_has_columns(self):
         src = _boot.read_text(os.path.join(_boot.ROOT, "ui", "app.py"))
@@ -634,7 +634,7 @@ class Reports(unittest.TestCase):
 
 
 class TeamSection(unittest.TestCase):
-    """팀 통합보고서 9절 — 실행 기록·파일 흔적만 있는 프로그램도 '0.0h' 가 아니라 실행·포커스·파일 일수로 보인다."""
+    """팀 통합보고서 10절 — 실행 기록·파일 흔적만 있는 프로그램도 '0.0h' 가 아니라 실행·포커스·파일 일수로 보인다."""
 
     def _members(self):
         new = {"programs": [
@@ -665,7 +665,7 @@ class TeamSection(unittest.TestCase):
     def test_section_shows_registry_and_file_columns(self):
         import team_report as T
         h = T.prog_section_html(self._members())
-        self.assertIn("9. 프로그램 사용", h)
+        self.assertIn("10. 프로그램 사용", h)
         self.assertIn("Ansys Workbench", h)
         self.assertIn("2.5h", h)                      # 포커스(실행 기록 증가분)
         self.assertIn("5회", h)
