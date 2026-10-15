@@ -213,10 +213,10 @@ class TeamReportStage(unittest.TestCase):
         self.assertIn("스텁", self.stage()["note"])
 
     def test_timeout_without_json(self):
-        self.fake(["시간 초과(1200s) — 트리째 정리하고 건너뜀"], rc=-1, how="timeout")
+        self.fake(["시간 초과(150s) — 트리째 정리하고 건너뜀"], rc=-1, how="timeout")
         st, _p = self.go()
         s = _status(self.rep)
-        self.assertEqual((s["ok"], s["reason"], s["detail"]), (False, "보고 결과를 읽지 못함", "20분 안에 끝나지 않아 끊었습니다"))
+        self.assertEqual((s["ok"], s["reason"], s["detail"]), (False, "보고 결과를 읽지 못함", "150초 안에 끝나지 않아 끊었습니다"))
         self.assertTrue(s["hint"].startswith(PEND_HINT))
 
     def test_build_failed(self):

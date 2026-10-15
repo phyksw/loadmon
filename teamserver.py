@@ -6,6 +6,9 @@ teamserver.py — 팀 취합 서버 (LoadMonitor28 — LM24 서버와 업로드 
   · 팀원들의 LoadMonitor 가 분석을 마칠 때마다 결과를 자동 업로드한다 (POST /api/upload)
   · 업로드가 올 때마다 기존 팀 취합(aggregate.py)을 다시 돌려 HTML 을 갱신한다
     (aggregate 가 팀 통합 보고서 team_full_report.html / _v3 까지 만든다 — Copilot 없이 캐시만)
+    LM28: 업로드는 저장하자마자 답하고(queued:true · aggregated:"queued") 취합은 뒤의 일꾼 스레드 하나가 돌린다.
+    취합 중에 들어온 업로드는 모아서 끝난 뒤 딱 한 번 더 돌린다 — 예전에는 답하기 전에 취합(최대 300초)을 마쳐야 해서
+    여럿이 몰리면 서로의 취합 뒤에 줄을 서 팀원 PC 가 몇 분씩 기다렸다(사용자 지적).
   · 브라우저로 접속하면(GET /) 취합 대시보드가 바로 보인다 — 인별 현황·팀 리포트·Agentic 열지도·통합 보고서
     정적 보고서(/report /agentic /full /full_v3)는 CSP sandbox 로 origin 을 떼어 서빙한다.
 
@@ -263,9 +266,69 @@ def run_aggregate():
 
     여러 사람이 같은 순간에 올리면 이 함수가 동시에 불린다. 그대로 두면 aggregate.py 가
     여러 벌 동시에 돌며 같은 리포트 파일을 서로 밟는다(실측: 3명 동시 업로드에서 화면형
-    리포트가 표 형식으로 강등되거나 산출물이 아예 안 생겼다). 한 번에 하나만 돌린다."""
+    리포트가 표 형식으로 강등되거나 산출물이 아예 안 생겼다). 한 번에 하나만 돌린다.
+    업로드는 이 함수를 직접 부르지 않고 request_aggregate 로 예약만 한다([지금 다시 취합]은 직접 — 끝난 뒤 화면을 보여 준다)."""
     with AGG_LOCK:
         return _run_aggregate_once()
+
+
+# 업로드 뒤 취합 예약(LM28) — 일꾼 스레드 하나가 dirty 를 보고 돈다. 취합 중에 업로드가 몇 건 오든 dirty 는 하나라
+# 끝난 뒤 딱 한 번 더 돈다(마지막 업로드까지 반영 · 업로드 수만큼 줄 서지 않음). AGG_LOCK 은 그대로라 aggregate.py 는 늘 하나다.
+AGG_CV = threading.Condition()
+AGG_Q = {"dirty": False, "busy": False, "thread": None}
+
+
+def request_aggregate():
+    r"""취합을 예약하고 곧바로 돌아온다 — 일꾼이 없거나 죽었으면 새로 띄운다(데몬 — 서버가 끝나면 같이 끝난다)."""
+    with AGG_CV:
+        AGG_Q["dirty"] = True
+        th = AGG_Q["thread"]
+        if th is None or not th.is_alive():
+            th = threading.Thread(target=_agg_worker, name="team-aggregate", daemon=True)
+            AGG_Q["thread"] = th
+            th.start()
+        AGG_CV.notify_all()
+
+
+def _agg_worker():
+    """예약이 생길 때까지 잠들어 있다가(바쁜 대기 없음) 한 번 돌리고, 그사이 쌓인 예약이 있으면 한 번 더 돈다"""
+    while True:
+        with AGG_CV:
+            while not AGG_Q["dirty"]:
+                AGG_CV.wait()
+            AGG_Q["dirty"] = False          # 지금부터 들어오는 업로드는 다음 한 번이 맡는다
+            AGG_Q["busy"] = True
+        try:
+            run_aggregate()
+        except Exception as e:  # noqa: BLE001 - 일꾼이 죽으면 다음 업로드까지 취합이 멈춘다 — 메모만 남기고 산다
+            with LOCK:
+                STATE["agg_note"] = f"실패: {type(e).__name__}"
+        finally:
+            with AGG_CV:
+                AGG_Q["busy"] = False
+                AGG_CV.notify_all()
+
+
+def agg_status():
+    r"""지금 취합 상태 글자 — '취합 중'(일꾼 또는 [지금 다시 취합]이 도는 중) · '취합 대기'(예약만 됨) · ''(쉬는 중)"""
+    with AGG_CV:
+        busy, dirty = AGG_Q["busy"], AGG_Q["dirty"]
+    if busy or AGG_LOCK.locked():
+        return "취합 중" + (" — 끝나면 한 번 더 돕니다" if dirty else "")
+    return "취합 대기" if dirty else ""
+
+
+def agg_stale():
+    r"""받아 둔 인원 자료가 팀 리포트보다 새로운가 — 취합 예약이 남은 채 서버가 꺼졌으면 다음 시작 때 이어서 돌린다."""
+    try:
+        newest = max((os.path.getmtime(os.path.join(TEAMDATA, d, "member.json")) for d in os.listdir(TEAMDATA)
+                      if os.path.isfile(os.path.join(TEAMDATA, d, "member.json"))), default=0.0)
+        if not newest:
+            return False
+        rep = os.path.join(TEAMDATA, "team_report.html")
+        return not os.path.exists(rep) or os.path.getmtime(rep) < newest
+    except OSError:
+        return False
 
 
 def _run_aggregate_once():
@@ -406,11 +469,13 @@ class H(BaseHTTPRequestHandler):
             ag_html = os.path.join(TEAMDATA, "team_agentic.html")
             full_html = os.path.join(TEAMDATA, REPORT_FILES["/full"])
             full_v3 = os.path.join(TEAMDATA, REPORT_FILES["/full_v3"])
+            ast = agg_status()              # 업로드는 먼저 답하고 취합은 뒤에서 돈다 — 지금 도는지 보여 준다
             body = [PAGE_HEAD,
                     "<h1>LoadMonitor 팀 서버 <span class='note'>업로드 "
                     + str(STATE["uploads"]) + "건 · 취합 "
                     + (time.strftime("%m-%d %H:%M", time.localtime(STATE["last_agg"]))
-                       if STATE["last_agg"] else "-") + "</span></h1>",
+                       if STATE["last_agg"] else "-")
+                    + (f" · <b class='old'>{esc(ast)}</b>" if ast else "") + "</span></h1>",
                     "<p>",
                     ("<a class='btn' href='/report'>팀 리포트 열기</a>" if has_rep else
                      "<span class='note'>팀 리포트는 첫 업로드 후 생성됩니다</span>"),
@@ -428,6 +493,7 @@ class H(BaseHTTPRequestHandler):
                     "각자 UI 의 [팀 서버 업로드] 또는 분석 실행 시 자동 업로드</td></tr>",
                     "</table>",
                     "<p class='note'>이 페이지는 2분마다 자동 새로고침 · "
+                    + (esc(ast) + " · 지난 취합: " if ast else "")
                     + esc(STATE["agg_note"]) + "</p>"]
             self._send(200, "\n".join(body), "text/html; charset=utf-8")
         elif self.path in REPORT_FILES:
@@ -445,8 +511,12 @@ class H(BaseHTTPRequestHandler):
                            if os.path.exists(fp) else "")
             except OSError:
                 full_at = ""
+            # agg_status: 취합 중·취합 대기·'' — agg_note 를 그대로 보여 주는 화면도 알 수 있게 앞에 붙인다
+            ast = agg_status()
             self._send(200, {"ok": True, "members": members(),
-                             "uploads": STATE["uploads"], "agg_note": STATE["agg_note"],
+                             "uploads": STATE["uploads"],
+                             "agg_note": (f"{ast} · 지난 취합: " if ast else "") + STATE["agg_note"],
+                             "agg_status": ast,
                              "root": ROOT, "store": TEAMDATA,
                              "pid": os.getpid(), "port": PORT[0], "token": TOKEN[0],
                              "full_report_at": full_at})
@@ -598,9 +668,11 @@ class H(BaseHTTPRequestHandler):
         saved = max(0, len(staged) - 1)          # member.json 은 파일 수에서 뺀다
         with LOCK:
             STATE["uploads"] += 1
-        ok = run_aggregate()
-        print(f"[team] 업로드: {owner} ({saved}개 파일) · 취합 {'OK' if ok else '실패'}")
-        self._send(200, {"ok": True, "saved": saved, "aggregated": ok,
+        # 저장이 끝났으면 바로 답한다 — 취합은 일꾼에게 예약만(LM28). queued 로 알린다. aggregated 는 참 값 "queued" 로 둔다 —
+        # 예전 판 팀원(aggregated 만 읽는다)이 null 을 받으면 성공한 업로드를 '갱신 실패(서버 로그 확인)' 로 보여 줬다.
+        request_aggregate()
+        print(f"[team] 업로드: {owner} ({saved}개 파일) · 취합 예약")
+        self._send(200, {"ok": True, "saved": saved, "aggregated": "queued", "queued": True,
                          # 어디에 담겼는지 보내는 쪽이 알 수 있게 — '엉뚱한 폴더' 제보 대응
                          "store": TEAMDATA, "root": ROOT,
                          "host": os.environ.get("COMPUTERNAME", "")})
@@ -651,6 +723,10 @@ def main():
     SRV[0] = srv
     write_pid()
     write_token()
+    if agg_stale():
+        # 업로드는 저장 직후 답하고 취합은 뒤에서 돈다 — 그 사이에 서버가 꺼졌으면 팀 리포트가 옛것으로 남는다
+        print("[team] 팀 리포트보다 새 업로드가 있어 취합을 이어서 돌립니다(뒤에서 — 서버는 바로 받습니다)")
+        request_aggregate()
     print(f"[team] 팀 서버 가동 — 포트 {port} · 모든 네트워크에서 받음  (저장: {TEAMDATA})")
     print(f"[team] 이 서버의 설치 폴더: {ROOT}")
     print(f"[team] 서버 IP·포트를 바꾸려면 {ta.EDIT_BAT} (팀원 업로드 주소도 같은 파일에서 나옵니다 — 팀원의 "

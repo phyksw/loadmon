@@ -1602,17 +1602,29 @@ def _run(judge, tag, rep, _ss):
                     print(f"[flow] {ci}/{len(chunks)} 예산({budget_min:.0f}분)이 남지 않아 빠진 "
                           f"{len(left)}개는 미판정으로 둡니다 — 다시 실행하면 이어서 판정합니다")
                 elif left:
-                    got2, info2 = ask(left, f"wf{ci}-r")
-                    if info2.get("ok"):
-                        flows.extend(got2)
-                        print(f"[flow] {ci}/{len(chunks)} (재질문) — 업무 {len(left)}개 중 {len(got2)}개 판정")
-                    elif info2.get("phase") != "blocked":
-                        fails.append(info2)
-                        if info2.get("fatal") or info2.get("hard"):
-                            stopped = _halt(info2)
-                            failed += len(chunks) - ci
-                            write_out()
+                    # 빠진 단위만 작은 묶음(마무리 회차와 같은 ≤3개)으로 나눠 묻는다 — 한 번에 몰아 다시 물으면 같은 길이의 답이 또 잘린다.
+                    # LM28: 느린 긴 답(slow — 드라이버가 왕복 예산 끝에 '중지'로 끊고 받은 데까지)도 이 길이다. 같은 묶음 전체는 다시
+                    # 보내지 않는다(드라이버·judge 도 slow 를 다시 보내지 않는다 — 대화 목록에 같은 답이 든 채팅이 쌓이던 원인).
+                    subs = _chunks(left, budget, max(1, min(3, _cfg_int("flowUnitsPerChunk", MAX_UNITS_PER_CHUNK))))
+                    halt = None
+                    for ri, sub in enumerate(subs, 1):
+                        if over_budget():
                             break
+                        tail = f" {ri}/{len(subs)}" if len(subs) > 1 else ""
+                        got2, info2 = ask(sub, f"wf{ci}-r" + (str(ri) if len(subs) > 1 else ""))
+                        if info2.get("ok"):
+                            flows.extend(got2)
+                            print(f"[flow] {ci}/{len(chunks)} (재질문{tail}) — 업무 {len(sub)}개 중 {len(got2)}개 판정")
+                        elif info2.get("phase") != "blocked":
+                            fails.append(info2)
+                            if info2.get("fatal") or info2.get("hard"):
+                                halt = info2
+                                break
+                    if halt is not None:
+                        stopped = _halt(halt)
+                        failed += len(chunks) - ci
+                        write_out()
+                        break
             write_out()
             continue
         fails.append(info)

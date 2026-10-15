@@ -213,6 +213,9 @@ _NEED_FRESH = [False]       # 직전 왕복이 실패했거나 답을 해석 못
 _TURNS = [0]                # 지금 채팅에서 성공한 왕복 수 — config.copilotAuto.chatTurns 에 닿으면 다음 왕복은 새 채팅
 _CHAT_TURNS = [None]        # chatTurns 캐시 (None = 아직 안 읽음)
 CHAT_TURNS_DEFAULT = 12     # 한 채팅에 이어 보내는 왕복 상한. 0 = 묶음마다 새 채팅(LM22 1차 방식)
+_RESUME = "resume"          # = copilot_auto.RESUME — 다음 단계의 첫 왕복을 앞 단계의 우리 채팅에 이어 보낸다(화면 확인은 드라이버)
+# 이어 쓸 수 있는 왕복 이름(정제·Agentic·워크플로우·세부업무 병합의 첫 왕복) — 판정 묶음·체계 수립·월별 코멘트는 늘 예전 규칙(새 채팅)
+RESUME_NAMES = ("refine", "agentic", "flow", "detail3")
 
 
 def chat_turns():
@@ -260,9 +263,16 @@ def _restore_prompt():
 
 def note_bad_reply():
     """호출자가 '응답을 받았지만 해석하지 못했다'고 알린다 — 다음 copilot_send 는 새 채팅에서,
-    그리고 방금 지운 프롬프트 파일(report\\judge_<name>_<tag>.md)은 되살린다(V-06)."""
+    그리고 방금 지운 프롬프트 파일(report\\judge_<name>_<tag>.md)은 되살린다(V-06).
+    LM28: 드라이버가 이 프로세스에 올라와 있으면 그 채팅을 '온전하지 않음'으로 적는다 — 다음 단계가 이어 쓰지 않는다(chat_mark_bad)."""
     _NEED_FRESH[0] = True
     _restore_prompt()
+    m = sys.modules.get("copilot_auto")
+    if m is not None and hasattr(m, "chat_mark_bad"):
+        try:
+            m.chat_mark_bad()
+        except Exception:  # noqa: BLE001 - 기록이 판정을 막지 않게
+            pass
 _SEND_WHO = [None]          # config.copilotAuto.sendSenderAddress 캐시 (None = 아직 안 읽음)
 _ADDR_RE = re.compile(r"[A-Za-z0-9._%+\-]+@([A-Za-z0-9.\-]+)")
 # 사람이 아닌 역할 계정(알림·시스템)의 로컬 파트는 남긴다 — 공지 판별에 쓰이고 개인정보가 아니다
@@ -367,8 +377,10 @@ def is_ad_row(r):
 def _is_transient(res):
     """쉬었다가 같은 묶음을 다시 보낼 일시 실패인가 — 실패이고, 관문 차단·사람이 손댈 일(explain_failure fatal)이 아니며,
     phase 가 TRANSIENT_PHASES(사용량 제한·오류 응답·무응답·빈 답·시간 초과·드라이버 오류)이거나 '시간 초과' 문구거나
-    사유가 네트워크(R-NET)·전용 Edge 사용 중(R-EDGEBUSY)일 때."""
-    if not isinstance(res, dict) or res.get("ok") or res.get("phase") == "blocked":
+    사유가 네트워크(R-NET)·전용 Edge 사용 중(R-EDGEBUSY)일 때.
+    LM28: 느린 긴 답(slow — 드라이버가 왕복 예산 끝에 받은 데까지 돌려준 답)은 일시 실패가 아니다 — 같은 묶음을 다시 보내면 같은 길이의
+    답을 또 기다리고 Copilot 이 앞 채팅의 답을 뒤에서 마저 써 대화 목록에 같은 답이 쌓인다. 호출자가 받은 데까지 쓰고 빠진 것만 작게 묻는다."""
+    if not isinstance(res, dict) or res.get("ok") or res.get("phase") == "blocked" or res.get("slow"):
         return False
     if explain_failure(res)[2]:
         return False
@@ -612,7 +624,9 @@ def copilot_send(prompt_text, tag, name, fresh=None):
     LM28 — 사용량 제한(phase 'throttled' · 「요청이 너무 많음」)은 위 사다리 대신 copilotAuto.throttleWaitSec(기본 2분, 0 = 쉬지 않음)
     만큼 **한 번** 쉬고 새로 고쳐 다시 보낸다. 그래도 막히면 hard + 실행 표식 기록(_go_hard throttle=True) — 같은 실행(LM_RUN_ID)의
     다음 copilot_send 는 이 프로세스든 뒤 단계 프로세스든 보내지 않고(남은 시간 쉬기도 없이) 바로 hard 'throttled'(_run_stop_result).
-    다른 일시 오류(무응답·빈 답·오류 문구·시간 초과 …)는 사다리(1·2·2분)를 탄다."""
+    다른 일시 오류(무응답·빈 답·오류 문구·시간 초과 …)는 사다리(1·2·2분)를 탄다.
+    LM28 — 느린 긴 답(결과 slow — 드라이버가 왕복 예산 끝에 받은 데까지 돌려준 ok+cut)은 쉬기·다시 보내기 사다리를 타지 않는다
+    (_is_transient). 정제·Agentic·워크플로우의 첫 왕복(RESUME_NAMES)은 앞 단계의 우리 채팅을 이어 쓸 수 있다(드라이버 RESUME)."""
     if _run_stopped():
         return _run_stop_result()            # 이번 실행은 사용량 제한으로 멈췄다 — 프롬프트 파일도 쓰지 않는다(보내지 않았다)
     if not g3_prompt(prompt_text):
@@ -641,8 +655,21 @@ def copilot_send(prompt_text, tag, name, fresh=None):
         # 직전 왕복이 실패했을 때도 새 채팅 — 끊긴 생성·오류 문구가 남은 채팅은 다음 답을 오염시킨다.
         # 한 채팅의 왕복이 chatTurns 에 닿아도 새 채팅 — 너무 길어진 대화는 답이 끊기거나 앞 답을 되풀이한다.
         _TURNS[0] = 0
+    resume = False
+    if (want_fresh and fresh is None and _FIRST_SEND[0] and not _NEED_FRESH[0] and limit > 0
+            and str(name or "").startswith(RESUME_NAMES) and _inproc()):
+        # LM28 — 다음 단계(정제·Agentic·워크플로우)의 첫 왕복: 앞 단계의 우리 채팅이 온전하게 끝났고(last_ok) 20분 안이며 chatTurns 가
+        # 남았으면 새 채팅 대신 이어 쓴다 — 단계마다 새 채팅이 하나씩 대화 목록에 쌓이던 것을 줄인다. 화면이 그 채팅인지는 드라이버가
+        # 보내기 직전에 다시 보고(앵커·대화 id·생성 중 아님) 아니면 예전처럼 새 채팅을 연다(결과 resumed). 소유 기록은 그대로다.
+        try:
+            can, sent = _ca().chat_resumable(turns=limit)
+        except Exception:  # noqa: BLE001 - 모르면 예전처럼 새 채팅
+            can, sent = False, 0
+        if can:
+            resume = True
+            _TURNS[0] = int(sent)
     pre_hard = _pre_throttle_wait()
-    res = _send_once(prompt_text, pf, name, want_fresh, n_parts, reload)
+    res = _send_once(prompt_text, pf, name, _RESUME if resume else want_fresh, n_parts, reload)
     k = lk = 0                                   # k = 쉬고 다시 보낸 횟수(결과 cooldowns) · lk = 일시 오류 사다리의 단
     thr_waited = False                           # 사용량 제한으로 이미 한 번 쉬었다(LM28 — 두 번째는 쉬지 않고 hard)
     while _is_transient(res):
@@ -704,6 +731,8 @@ def copilot_send(prompt_text, tag, name, fresh=None):
         _FIRST_SEND[0] = False       # 성공했을 때만 소진 — 실패하면 다음도 새 채팅
         _HARD[0] = False             # 제한이 풀렸다 — 다음 일시 오류는 다시 쉬는 사다리부터
         _NEED_FRESH[0] = bool(res.get("cut"))   # 끊긴 답이 남은 채팅도 다음엔 새 채팅
+        if resume and not res.get("resumed"):
+            _TURNS[0] = 0                        # 이어 쓰려 했지만 화면이 그 채팅이 아니어서 새 채팅을 열었다
         # 드라이버가 재시도 사다리로 새 채팅을 열었으면 그 채팅의 첫 왕복이다
         _TURNS[0] = 1 if ("새 채팅" in str(res.get("retry") or "")) else _TURNS[0] + 1
         reply = str(res.get("reply") or "")
@@ -750,7 +779,8 @@ def _transport(prompt_text, pf, name, want_fresh, lim, reload=False, model=None)
         if model:
             kw["cfg"] = dict(ca.load_cfg(), model=str(model))
         try:
-            return ca.send_inproc(prompt_text, fresh=bool(want_fresh), deadline=time.time() + float(lim),
+            fr = _RESUME if want_fresh == _RESUME else bool(want_fresh)     # RESUME 은 그대로 — 드라이버가 화면을 보고 정한다
+            return ca.send_inproc(prompt_text, fresh=fr, deadline=time.time() + float(lim),
                                   stage=str(name or "")[:40], **kw)
         finally:
             _stop.set()
