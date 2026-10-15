@@ -1656,6 +1656,13 @@ _DASH_EXTENT = {}      # dash_period ③ 의 캐시 — {"sig": (mtime, …), "p
 def sources(period=None):
     """수집 데이터 현황 — 무엇이 비어서 결과가 약한지 한눈에. period 는 화면이 보는 기간(메일 수집 범위 대조용)"""
     out = []
+    # [로컬PC 자료수집]이 메일·일정·팀즈를 건너뛴 직후(run.skip_account_data) — 이 PC 의 0건은 수집 실패가 아니다
+    try:
+        with open(os.path.join(REPORT, "last_run.json"), encoding="utf-8-sig") as f:
+            _lr0 = json.load(f)
+        acct_skip = isinstance(_lr0, dict) and _lr0.get("account_data") == "skipped"
+    except (OSError, ValueError):
+        acct_skip = False
     for name, pats, hint in (
         ("PC 가동", ["pc/pc_on.csv"], "run 실행 시 자동"),
         ("메일·일정", ["outlook/mail.csv", "outlook/calendar.csv"], "클래식 Outlook을 켠 상태로 실행"),
@@ -1773,6 +1780,8 @@ def sources(period=None):
                         "(앱이 꺼져 있어도 됩니다)")
             elif 0 < n < 5:
                 st, hint = "warn", "회수 부족 — [팀즈 웹 읽기] 로 보강 (창 읽기는 화면에 보인 부분만 긁습니다)"
+        if acct_skip and not n and name in ("메일·일정", "팀즈 채팅"):
+            st, hint = "off", "로컬PC 자료수집은 읽지 않습니다 — 같은 계정이면 폴더를 받은 PC 의 [분석 실행]이 읽습니다"
         # 본 PC 와 추가 PC 의 몫을 갈라 적는다 — 합만 보이면 이 PC 의 수집 실패(0건)가 가려진다
         split = ""
         if n and n_here < n and not here_only:
@@ -3595,6 +3604,8 @@ async function refresh(){
    noticeBar.style.display="";
    noticeBar.innerHTML='\u2139\ufe0f <b>자료수집만 되어 있습니다([로컬PC 자료수집]) — 아직 분석하지 않았습니다.</b> '
      +'이 상태에서는 팀 서버 보고 묶음도, 담당자 워크플로우도 만들어지지 않습니다.<br>'
+     +(noticeRun.account_data==="skipped"
+       ?'메일·일정·팀즈는 회사 계정 자료라 이 버튼에서 읽지 않았습니다 — 같은 계정이면 폴더를 받은 PC 의 [분석 실행]이 읽습니다.<br>':'')
      +'<b>이 PC 가 분석할(마지막) PC 라면 위 [분석 실행]</b>을 누르세요 — 수집·AI 분석·팀 서버 보고까지 합니다. '
      +'다른 PC 라면 [PC 이동 준비] 후 폴더를 옮기면 됩니다.';
   }else if(d.foreign){
@@ -4124,15 +4135,17 @@ async function tuBuild(latest){
 $("tubuild").onclick=()=>tuBuild(false);
 $("tuopen").onclick=()=>fetch("/api/teamopen",{method:"POST"});
 // [로컬PC 자료수집](id collect2 · 구 '추가 PC 수집' — 이름이 헷갈린다는 제보로 LM28 에서 바꿈) = run.py --collect-only.
-// [분석 실행]과 같은 수집기를 돌리고 Copilot 경로만 뺀다(run.collect_headless). 분석·팀 서버 보고는 하지 않는다.
+// 이 PC 에만 있는 자료만 모은다 — 메일·일정·팀즈(계정 자료)는 폴더를 받은 PC 의 [분석 실행]이 읽는다(run.collect_account_data).
+// 분석·팀 서버 보고는 하지 않는다.
 $("collect2").onclick=async()=>{
  const b={from:$("from").value,to:$("to").value,collect_only:true};
  if(!b.from||!b.to){alert("기간을 선택하세요");return;}
  if(!confirm("[로컬PC 자료수집] 이 PC 의 자료만 모읍니다 — AI 분석·팀 서버 보고는 하지 않습니다.\\n\\n"
-   +"· 메일·일정·팀즈(Outlook 웹·팀즈 웹 포함)·파일·PC 가동 기록을 [분석 실행]과 같은 방법으로 모읍니다(Copilot 은 쓰지 않습니다)\\n"
+   +"· 이 PC 에만 있는 자료(PC 가동 기록·파일·최근 문서·git·프로그램 기록)만 모아 빨리 끝납니다\\n"
+   +"· 메일·일정·팀즈는 회사 계정 자료라 읽지 않습니다 — 같은 계정이면 폴더를 받은 PC 의 [분석 실행]이 읽습니다\\n"
    +"· 다른 PC 에서 가져온 폴더라면, 지난 PC 자료는 data\\\\추가PC\\\\ 로 자동 보관됩니다\\n"
    +"· 모은 뒤 폴더째 분석할 PC 로 옮겨 [분석 실행]을 누르면 두 PC 자료가 합쳐집니다\\n"
-   +"· 같은 메일·일정 등 겹치는 자료는 분석 때 자동 제외됩니다\\n\\n진행할까요?"))return;
+   +"· 겹치는 자료는 분석 때 자동 제외됩니다\\n\\n진행할까요?"))return;
  const r=await fetch("/api/run",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});
  if(r.status===409){alert(await busyMsg(r,"이미 실행 중입니다"));return;}
  $("go").disabled=true;$("collect2").disabled=true;timer=setInterval(poll,1000);poll();

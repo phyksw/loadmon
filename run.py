@@ -183,8 +183,36 @@ def collect_headless(c):
     생략하는 것은 **Copilot 경로(메일·팀즈)만**이다(Copilot 은 판정 전용). 그 밖의 수집기는 [분석 실행]과 같은 코드를 그대로 돈다.
     LM28: 예전(LM24)에는 Outlook 웹·팀즈 웹도 '본 PC 가 같은 사서함을 수집' 한다고 보고 건너뛰었다. 그런데 새 Outlook 인 PC
     (COM·색인 없음)에서는 그러면 메일·일정·팀즈를 가져올 길이 하나도 남지 않았다(실측 2026-10-07 — 279일 전부 관측 없음).
-    그래서 웹 경로는 수집만 모드에서도 원장의 미검증 날에 대해 돈다 — 겹치는 행은 분석이 중복 제거한다."""
+    그래서 웹 경로는 수집만 모드에서도 원장의 미검증 날에 대해 돈다 — 겹치는 행은 분석이 중복 제거한다.
+    2026-10-16: 로컬PC 자료수집은 이제 메일·일정·팀즈를 통째로 읽지 않는다(collect_account_data) — 이 함수는
+    collectOnlyMailTeams = true 로 다시 켠 예외 환경에서만 뜻이 있다."""
     return "--collect-only" in sys.argv and bool(c.get("collectOnlyHeadless", True))
+
+
+ACCOUNT_SKIP = "메일·일정·팀즈 — 분석할 PC 가 읽음(로컬PC 자료수집)"
+
+
+def collect_account_data(c):
+    r"""메일·일정·팀즈(계정 자료)를 이 실행에서 읽는가. [분석 실행]은 늘 읽는다.
+    [로컬PC 자료수집](--collect-only)은 기본으로 읽지 않는다 — 메일·일정·팀즈는 PC 가 아니라 회사 계정(클라우드)에 있어,
+    같은 계정이면 폴더를 받은 마지막 PC(클라우드 PC)의 [분석 실행]이 기간 전체를 한 번에 읽는다. 로컬PC 자료수집은
+    이 PC 에만 있는 자료(PC 가동·파일·최근 문서·git·프로그램 기록)만 모아 빨리 끝난다(사용자 2026-10-16: "로컬수집은 좀
+    빠르게 하기위해 웹이나 앱 수집은 뺄까요? 계정이 같다면 클라우드에서 분석실행을 하면 금방 끝날것 같네요").
+    원장은 PC 마다 따로라(open_ledger — 다른 PC 의 원장은 비운 채로 연다) 받은 PC 는 메일·팀즈를 처음부터 읽는다.
+    계정이 다르거나 분석할 PC 에서 메일·팀즈를 못 읽는 예외만 config.collectOnlyMailTeams = true — 그때는 [분석 실행]과
+    같은 경로로 읽고 Copilot 경로는 collectOnlyHeadless 를 따른다."""
+    return "--collect-only" not in sys.argv or _truthy(c.get("collectOnlyMailTeams", False))
+
+
+def skip_account_data():
+    r"""로컬PC 자료수집에서 메일·일정·팀즈를 건너뛴 것을 진행 로그·last_run.json 에 남긴다 — 화면이 이 PC 의 메일·팀즈 0건을
+    '없음(빨강)' 이 아니라 '분석할 PC 가 읽음' 으로 보여 준다(RUN.account_data)."""
+    print("\n── 메일·일정·팀즈 — 이 버튼에서는 읽지 않습니다")
+    print("   회사 계정에 있는 자료라, 같은 계정이면 폴더를 받은 PC 의 [분석 실행]이 한 번에 읽습니다.")
+    print("   (이 PC 와 분석할 PC 의 계정이 다르면 config.json 의 collectOnlyMailTeams 를 true 로)")
+    RUN["account_data"] = "skipped"
+    record(ACCOUNT_SKIP, True, 0.0, "계정 자료 — 같은 계정이면 폴더를 받은 PC 의 [분석 실행]이 읽습니다"
+           " · 계정이 다르면 config.collectOnlyMailTeams = true")
 
 
 def _months(a, b):
@@ -1599,8 +1627,13 @@ def _main():
              [sys.executable, os.path.join(col, "Get-PcOnHints.py"), "--from", d0, "--to", d1], 240,
              src="pc_hints", led=led)
         # 메일: COM(달 단위 이어서 · 최대 3회) → 색인(늘) → 원장 공백만 웹 → 남은 날만 Copilot → 반입 → G1 → 병합
-        collect_outlook(c, d0, d1, data, ps, col, led)
-        mail_fallbacks(c, d0, d1, data, ps, col, None, led, STATE)
+        # [로컬PC 자료수집]은 메일·일정·팀즈를 읽지 않는다 — 계정 자료라 폴더를 받은 PC 의 [분석 실행]이 읽는다
+        account = collect_account_data(c)
+        if account:
+            collect_outlook(c, d0, d1, data, ps, col, led)
+            mail_fallbacks(c, d0, d1, data, ps, col, None, led, STATE)
+        else:
+            skip_account_data()
         step("파일 수정 이력", ps + [os.path.join(col, "Get-FileActivity.ps1"), "-From", d0, "-To", d1], 300, src="files")
         step("최근 문서 (Recent·MRU)", ps + [os.path.join(col, "Get-RecentFiles.ps1"), "-From", d0, "-To", d1], 180,
              src="recent", led=led)
@@ -1610,7 +1643,8 @@ def _main():
         # 관리자 권한 없이 1초 안팎. [분석 실행]·[로컬PC 자료수집] 모두 찍는다(기간 무관 — 누적값이라 장 사이 차이가 사용량)
         step("프로그램 실행 기록 (참고)", [sys.executable, os.path.join(col, "Get-ProgramUsage.py")], 60, src="programs")
         # 팀즈: Graph(설정 시) → 앱 창(늘 · 보조) → 웹(전용 Edge) → Copilot(원장 공백만) → G1
-        collect_teams(c, d0, d1, data, ps, col, led, STATE)
+        if account:
+            collect_teams(c, d0, d1, data, ps, col, led, STATE)
         led.save()
         if "--collect-only" in sys.argv:
             close_edge_once(STATE, "collect_end")    # 수집만 — 수집 끝에 닫는다(로그인 대기면 둔다)
