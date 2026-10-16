@@ -15,6 +15,11 @@ M365 Copilot은 테넌트(내 팀즈 채팅) 데이터에 접근할 수 있고, 
 LM28(W1-13·W1-17·W2-12):
   · --ranges 'A:B,C~D,E'(또는 '@파일') — 다른 출처가 못 본 날만 묻는다(Get-MailViaCopilot.parse_ranges 와 같은 규칙). 없으면 --from~--to.
   · 왕복은 copilot_auto.send_inproc(같은 프로세스 — 조각마다 파이썬을 띄우지 않는다). G3 관문에 막힌 조각은 보내지 않은 것으로 둔다.
+  · LM28(2026-10-17): 조각마다 새 채팅을 열지 않는다(대화 목록에 조각 수만큼 채팅이 쌓였다 — 현장 사진). 새 채팅이냐 이어 쓰기냐는
+    copilot_auto.ChatKeep 이 정한다 — 첫 조각(앞 단계의 우리 채팅이면 이어서)·나쁜 조각 뒤·chatTurns 마다만 새 채팅(10일 재질의도 같은
+    채팅). 표·'없음'을 끊김 없이 받으면 좋음, 오류·끊김·느린 답·'조회 불가'·표 아닌 답은 나쁨(다음 조각은 새 채팅 · 그 채팅은 다음
+    단계도 이어 쓰지 않게 chat_mark_bad) — '조회 불가' 뒤 검색형 재질의는 예전처럼 새 채팅이다. 프롬프트 끝 줄(★)에 이번 기간을 적어
+    조각마다 응답 앵커가 다르다(같은 채팅에서 앞 조각의 답을 이번 답으로 집지 않게).
   · 저장은 teams_parse.merge_keep_outside — 표를 받은 조각 기간의 옛 행만 이번 행으로 바꾸고 그 밖의 옛 행은 둔다
     (LM24 는 이번 기간 행만 'w' 로 써서 짧은 기간으로 다시 돌리면 다른 기간 자료가 사라졌다).
   · '조회 불가'는 서로 다른 날 2회일 때만 14일 동안 생략한다(TTL — 메일 Copilot 과 같은 규칙. LM24 의 'if True' 는 한 번의
@@ -66,6 +71,8 @@ def arg(flag, d=""):
 def build_prompt(d0, d1, alt=False):
     # alt=검색형 화법: '조회해서 전부 출력'(일괄 내보내기)을 회사 Copilot이 "조회 불가" 한마디로
     # 거절하는 경우가 실측됨 — 같은 내용을 '검색해서 찾은 것만 정리' 화법으로 다시 묻는다.
+    # LM28(2026-10-17): 끝 줄(★)의 '이번 질문의 기간'은 지우지 말 것 — 조각을 한 채팅에 이어 보내므로 그 줄(끝 줄들 중 가장 긴 줄 =
+    # copilot_auto.build_anchor 의 응답 앵커)이 조각마다 달라야 드라이버가 앞 조각의 답을 이번 답으로 집지 않는다.
     head = (f"내 Microsoft Teams 채팅에서 {d0}~{d1} 기간에 주고받은 메시지를 검색해줘. "
             "찾은 메시지를 아래 CSV 형식 표로만 정리해줘(찾은 만큼만). 헤더 포함, 다른 설명 없이, "
             "코드 블록(```)으로:\n") if alt else (
@@ -83,7 +90,8 @@ def build_prompt(d0, d1, alt=False):
             "- 기간 안의 모든 대화 상대·대화방을 빠짐없이 뒤져서 최대 150행까지 출력\n"
             "- 조회 결과가 정말 없으면 '없음' 한 단어만 출력\n"
             "★ 실제로 검색된 메시지만 출력하라 — 예시·가상·추정으로 행을 만들지 마라. "
-            "검색이 안 되거나 확실하지 않은 행은 빼라. 행 수를 채우는 것보다 진짜만 적는 것이 중요하다.\n")
+            "검색이 안 되거나 확실하지 않은 행은 빼라. 행 수를 채우는 것보다 진짜만 적는 것이 중요하다. "
+            f"(이번 질문의 기간: {d0}~{d1})\n")
 
 
 # 표가 없을 때 응답의 의미 구분 (실측 스크린샷: 회사 Copilot이 "조회 불가" 한마디로 거절)
@@ -235,6 +243,7 @@ def _timeout():
 
 
 _CA = {}
+_KEEP = {}                      # LM28(2026-10-17) — 조각 사이 채팅 이어 쓰기(copilot_auto.ChatKeep · 진짜 _send 가 처음 보낼 때 만든다)
 
 
 def _ca():
@@ -248,35 +257,73 @@ def _ca():
     return _CA["m"]
 
 
+def _keep():
+    """조각 사이 채팅 이어 쓰기 결정(copilot_auto.ChatKeep — 프로세스에 하나)."""
+    if "k" not in _KEEP:
+        _KEEP["k"] = _ca().ChatKeep()
+    return _KEEP["k"]
+
+
+def _keep_done(good, res=None):
+    """조각 결과를 ChatKeep 에 알린다 — 나쁜 조각이면 그 채팅을 다음 단계도 이어 쓰지 않게 표시한다(chat_mark_bad).
+    진짜 _send 를 쓴 적이 없으면(시험이 _send 를 바꿈) 아무것도 하지 않는다."""
+    k = _KEEP.get("k")
+    if k is None:
+        return
+    try:
+        k.done(good, res)
+        if not good:
+            _ca().chat_mark_bad()
+    except Exception:  # noqa: BLE001 — 셈 오류가 수집을 막지 않는다
+        pass
+
+
 def _send(prompt):
     """한 조각 왕복 — copilot_auto.send_inproc(LM28 W2-12: 조각마다 copilot_auto.py 를 자식 프로세스로 띄우지 않는다).
-    결과 dict 는 --send 의 JSON 과 같다."""
-    return _ca().send_inproc(prompt, fresh=True, deadline=time.time() + _timeout(), stage="teams_copilot")
+    결과 dict 는 --send 의 JSON 과 같다.
+    LM28(2026-10-17): 조각마다 새 채팅을 열지 않는다 — fresh 는 ChatKeep 이 정하고(첫 조각·나쁜 조각 뒤·chatTurns 마다만 새 채팅),
+    조각 결과는 _one_slice 가 _keep_done 으로 알린다. 결정을 못 하면 예전처럼 새 채팅."""
+    try:
+        fr = _keep().next()
+    except Exception:  # noqa: BLE001
+        fr = True
+    return _ca().send_inproc(prompt, fresh=fr, deadline=time.time() + _timeout(), stage="teams_copilot")
 
 
 def _one_slice(s0, s1, alt=False):
     """한 조각(<=30일) 왕복 → (행 목록, 상태) — 상태: table|unable|empty|other|blocked(G3 — 보내지 않음)|
-    error(드라이버가 답을 못 받음)|fatal(로그인 등 사람이 풀 실패 — LAST_FATAL 에 phase·reason)"""
+    error(드라이버가 답을 못 받음)|fatal(로그인 등 사람이 풀 실패 — LAST_FATAL 에 phase·reason).
+    LM28(2026-10-17): 결과를 채팅 이어 쓰기(_keep_done)에 알린다 — table·empty 를 끊김·느린 답 없이 받았으면 좋음(다음 조각은 같은
+    채팅), 그 밖(error·fatal·unable·other·끊김·느린 답)은 나쁨(다음 조각은 새 채팅). blocked 는 보내지 않았으니 알리지 않는다."""
+    rows, st, res = _ask(s0, s1, alt)
+    if st != "blocked":
+        r = res if isinstance(res, dict) else {}
+        _keep_done(st in ("table", "empty") and not r.get("cut") and not r.get("slow"), r)
+    return rows, st
+
+
+def _ask(s0, s1, alt=False):
+    """_one_slice 의 왕복·해석 → (행 목록, 상태, 드라이버 결과 dict — 예외·해석 실패면 None)."""
     prompt = build_prompt(s0, s1, alt)
     # 예외가 터지면 조각 루프 전체가 죽어 앞서 모은 행이 전량 소실된다 — 반드시 이 조각만 실패로 처리한다.
     try:
         res = _send(prompt)
     except Exception as e:  # noqa: BLE001 — 드라이버 예외는 이 조각만 건너뛴다
         print(f"[teams-copilot]   {s0}~{s1}: 드라이버 오류({type(e).__name__})")
-        return [], "error"
+        return [], "error", None
     if not isinstance(res, dict):
         print(f"[teams-copilot]   {s0}~{s1}: 드라이버 응답 해석 실패")
-        return [], "error"
+        return [], "error", None
     if res.get("status") == "blocked" or res.get("phase") == "blocked":
         print(f"[teams-copilot]   {s0}~{s1}: 개인정보 관문(G3) — 보내지 않음")
-        return [], "blocked"
+        return [], "blocked", res
     if not res.get("ok"):
         print(f"[teams-copilot]   {s0}~{s1}: 실패 — {res.get('error', '')}")
         if str(res.get("phase") or "") in FATAL_PHASES:     # 조각을 나눠 다시 물어도 똑같다 — 한 번에 접는다
             print(f"[teams-copilot]   {res.get('hint', '')}")
             LAST_FATAL.update(phase=str(res.get("phase") or ""), reason=str(res.get("reason") or ""))
-            return [], "fatal"
-        return [], "error"
+            return [], "fatal", res
+        return [], "error", res
     if res.get("retry"):
         print(f"[teams-copilot]   {s0}~{s1}: {res['retry']}")
     reply = res.get("reply", "")
@@ -296,7 +343,7 @@ def _one_slice(s0, s1, alt=False):
     good = [r for r in rows if s0 <= r[0][:10] <= s1]
     if len(good) < len(rows):
         print(f"[teams-copilot]   {s0}~{s1}: 기간 밖 날짜 {len(rows) - len(good)}행 제외 (환각/오검색 의심)")
-    return good, ("table" if good else _reply_status(reply))
+    return good, ("table" if good else _reply_status(reply)), res
 
 
 def _esc(s):

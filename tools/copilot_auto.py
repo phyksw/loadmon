@@ -80,6 +80,9 @@ LM28 — Copilot 채팅 정리(copilotAuto.deleteChats, 기본 켬): LM28 이 �
     숫자로만 세어(js_chat_census) 둘째 줄 '[copilot] 채팅 정리 구조: …'로 남긴다. 삭제 판정(소유 확인)은 그대로다.
   · LM28: 다음 단계(정제·Agentic·워크플로우)의 첫 왕복은 fresh=RESUME — 앞 단계의 우리 채팅이 온전하게 끝났고(last_ok) 20분 안이며
     화면이 그 채팅이면 새 채팅 없이 이어 쓴다(아니면 예전처럼 새 채팅).
+  · LM28(2026-10-17): 조각을 많이 보내는 호출자(Copilot 메일·일정·팀즈 수집기)는 ChatKeep 으로 한 채팅을 이어 쓴다 — 첫 조각(앞 단계의
+    우리 채팅이면 RESUME)·나쁜 조각 뒤·chatTurns 마다만 새 채팅. 이어 보내기(fresh 거짓) 직전 탭 주소의 대화 id 가 이 프로세스의 우리
+    채팅과 다르면(사람이 전용 Edge 에서 다른 대화를 누름) 그 대화에 보내지 않고 새 채팅을 연다(_moved_away — 주소에 id 가 없으면 예전 그대로).
 """
 import argparse
 import base64
@@ -164,8 +167,9 @@ DEFAULTS = {
     # 모두 합친다(<프로필>.wait.json). 다 쓰면 그 단계의 남은 묶음은 보내지 않고 여기까지의 결과를 지킨다. 0 = 쉬지 않음(막히면 바로 멈춤).
     "runWaitMaxSec": 300,
 }
-# 빈 값은 기본값을 쓰는 load_cfg 규칙의 예외 — 이 키들은 0 도 '끔'으로 받는다(설정가이드가 0·false 를 같은 뜻으로 안내한다)
-KEEP_FALSY = ("deleteChats", "minGapSec", "runWaitMaxSec")
+# 빈 값은 기본값을 쓰는 load_cfg 규칙의 예외 — 이 키들은 0 도 '끔'으로 받는다(설정가이드가 0·false 를 같은 뜻으로 안내한다).
+# chatTurns 0 = 묶음(조각)마다 새 채팅(chat_turns — LM28 2026-10-17)
+KEEP_FALSY = ("deleteChats", "minGapSec", "runWaitMaxSec", "chatTurns")
 
 # ── 긴 프롬프트 분할 (보완툴 AutoSend 이식) ──
 # flow.py 실측 주석: "과제 12~15개면 20,000~40,000자가 되어 입력 주입이 한도를 넘긴다".
@@ -1924,9 +1928,10 @@ def reload_page(cdp, cfg, wait=15):
 
 # ── LM28 — Copilot 채팅 정리: LM28 이 연 대화만, 다 쓴 때에 지운다 ─────────────────────────────────────────────────────
 # 제보: 프로세스마다 첫 왕복·chatTurns 회전·실패 사다리(새 채팅 2번)·월별 코멘트(달마다 새 채팅)·Copilot 메일/팀즈 조각·
-# [AI 연결 진단]이 저마다 새 대화를 열어 사람의 Copilot 대화 목록이 LM28 채팅으로 도배됐다. 새 대화를 덜 열 수는 없다(문맥 오염 —
-# 월별 코멘트는 달마다 새 채팅이어야 다른 달이 섞이지 않는다). 대신 LM28 이 연 대화를 다 쓴 때(다음 새 채팅 직전 · 실행 끝 Edge 를
-# 닫기 전)에 대화 목록에서 지운다. 판정·정제·Agentic·워크플로우·수집기가 같은 탭을 차례로 쓰는 다른 프로세스라 소유는
+# [AI 연결 진단]이 저마다 새 대화를 열어 사람의 Copilot 대화 목록이 LM28 채팅으로 도배됐다. 월별 코멘트는 여전히 달마다 새 채팅이다
+# (문맥 분리 — 한 채팅에 이어 묻던 때 다른 달의 내용이 섞여 든 현장 제보). LM28(2026-10-17): Copilot 메일·일정·팀즈 수집기는 이제 조각마다
+# 새 채팅을 열지 않고 한 채팅을 이어 쓴다(ChatKeep — 첫 조각·나쁜 조각 뒤·chatTurns 마다만 새 채팅). 그래도 여는 대화는 LM28 이 다 쓴
+# 때(다음 새 채팅 직전 · 실행 끝 Edge 를 닫기 전)에 대화 목록에서 지운다. 판정·정제·Agentic·워크플로우·수집기가 같은 탭을 차례로 쓰는 다른 프로세스라 소유는
 # <프로필>.chats.json 이 기억한다(edge_lock 안에서만 고친다 · 원자적 교체):
 #   {ours, sent, anchor_sha, alen, conv, href, pid, created_at, stage, t_last,
 #    totals: {made, deleted, kept, failed, why{사유: 수}, last{code, t}, last_fail, last_fail_t, hold{rev, t}}}
@@ -2407,6 +2412,23 @@ def _resume_ok(cdp, cfg):
         return False
 
 
+def _moved_away(cdp, cfg):
+    """LM28(2026-10-17) — 이어 보내기(fresh 거짓) 직전: 화면이 이 프로세스가 보내던 우리 채팅에서 다른 대화로 옮겨 갔나. 상태 파일이
+    우리 것 · 보낸 적 있음 · 이 프로세스(pid) · 적어 둔 대화 id(conv) 있음이고, 지금 탭 주소에도 대화 id 가 있는데 둘이 다를 때만 True
+    (사람이 전용 Edge 에서 다른 대화를 눌렀다 — 다음 조각을 그 대화에 넣지 않는다). 주소에 대화 id 가 없는 화면·읽기 오류는 False(예전 그대로)."""
+    try:
+        st = chat_state(cfg)
+        if not (st.get("ours") and int(st.get("sent") or 0) > 0 and st.get("pid") == os.getpid()):
+            return False
+        cid0 = str(st.get("conv") or "")
+        if not cid0:
+            return False
+        cid = conv_id(_chat_url(cdp), cfg)
+        return bool(cid) and cid != cid0
+    except Exception:  # noqa: BLE001 - 모르면 예전 그대로(이어 보낸다)
+        return False
+
+
 def chat_mark_bad(cfg=None):
     """호출자가 답을 쓰지 못했다(해석 실패 — judge.note_bad_reply) — 이 채팅은 다음 단계가 이어 쓰지 않는다(last_ok False)."""
     try:
@@ -2417,6 +2439,81 @@ def chat_mark_bad(cfg=None):
             _chats_save(cfg, st)
     except Exception:  # noqa: BLE001
         pass
+
+
+CHAT_TURNS_DEFAULT = 12        # = judge.CHAT_TURNS_DEFAULT — 한 채팅에 이어 보내는 왕복 상한(0 = 늘 새 채팅)
+
+
+def chat_turns(cfg=None):
+    """copilotAuto.chatTurns — 한 채팅에 이어 보내는 왕복(조각) 수(judge.chat_turns 와 같은 규칙). 없거나 숫자가 아니거나 음수면
+    CHAT_TURNS_DEFAULT, 0 이면 늘 새 채팅. cfg 가 없으면 load_cfg()(0 도 받는다 — KEEP_FALSY). 예외를 내지 않는다."""
+    try:
+        cfg = cfg if isinstance(cfg, dict) else load_cfg()
+        v = int(cfg.get("chatTurns", CHAT_TURNS_DEFAULT))
+        return v if v >= 0 else CHAT_TURNS_DEFAULT
+    except Exception:  # noqa: BLE001 - 모르면 기본값
+        return CHAT_TURNS_DEFAULT
+
+
+class ChatKeep:
+    """LM28(2026-10-17) — 혼자서 완결인 조각을 많이 보내는 호출자(Copilot 메일·일정·팀즈 수집기)의 '새 채팅이냐 이어 쓰기냐'(프로세스에 하나).
+    왜: 조각마다 새 채팅(fresh=True)을 열어 사람의 Copilot 대화 목록에 조각 수만큼 LM28 채팅이 쌓였다(현장 사진 — '…부터 …까지' 제목이
+    줄줄이). 다 쓴 채팅 지우기가 되지 않는 PC 가 있어(원인 조사 중) 여는 수 자체를 줄인다. 조각 프롬프트는 기간을 못 박고 파서는 요청
+    구간 밖 날짜의 행을 버리므로, 앞 조각의 답이 문맥에 남아도 섞이지 않는다.
+    쓰는 법: fr = k.next() → send_inproc(…, fresh=fr) → k.done(좋았나, 결과).
+      · 첫 조각 — 앞 단계의 우리 채팅을 이어 쓸 수 있으면(chat_resumable — 우리 것·마지막 왕복 온전·CHAT_RESUME_SEC 안·보낸 수 < turns)
+        RESUME(드라이버가 보내기 직전에 화면을 다시 보고 우리 채팅이 아니면 새 채팅), 아니면 True(새 채팅).
+      · 그다음 — 앞 조각이 좋았고 이 채팅에 보낸 수 < turns 면 False(같은 채팅에 이어서), 아니면 True(chatTurns 회전).
+      · 나쁜 조각(답 없음·오류·끊김·느린 답·'조회 불가'·표 아닌 답) 뒤는 True — 그 답이 남은 채팅에 이어 보내면 다음 답이 오염된다.
+      · turns <= 0(chatTurns=0)이면 늘 True(예전 동작).
+    셈(judge.copilot_send 의 _TURNS 와 같다): 새 채팅이면 1 · RESUME 이 실제로 이어 썼으면(결과 resumed) 그 채팅의 보낸 수 + 1 · 드라이버가
+    새 채팅을 열었으면(resumed 거짓 · 재시도 사다리의 '새 채팅') 1. 보내지 않은 조각(G3 관문)은 done 을 부르지 않는다 — 다음 next() 가 같은
+    결정을 다시 낸다. 시험은 turns 와 resumable(cfg, turns) → (참/거짓, 보낸 수)를 넣는다."""
+
+    def __init__(self, cfg=None, turns=None, resumable=None):
+        self.cfg = cfg
+        self.turns = chat_turns(cfg) if turns is None else chat_turns({"chatTurns": turns})
+        self._resumable = resumable
+        self.n = 0              # 지금 채팅에 보낸 좋은 조각 수(0 = 이어 쓸 채팅 없음 → 새 채팅)
+        self.first = True       # 아직 결과를 받은 조각이 없다 — 첫 조각만 RESUME 을 본다
+        self.base = 0           # RESUME 일 때 그 채팅에 이미 보낸 수
+        self.last = None        # 마지막 next() 의 값(done 이 센다)
+
+    def next(self):
+        """다음 조각의 fresh — True(새 채팅) · False(같은 채팅에 이어서) · RESUME(앞 단계의 우리 채팅에 이어서 — 화면 확인은 드라이버)."""
+        if self.turns <= 0:
+            fr = True
+        elif self.n > 0:
+            fr = self.n >= self.turns
+        elif self.first:
+            try:
+                ok, sent = (self._resumable or chat_resumable)(self.cfg, self.turns)
+                self.base = int(sent or 0) if ok else 0
+            except Exception:  # noqa: BLE001 - 모르면 새 채팅
+                ok, self.base = False, 0
+            fr = RESUME if ok else True
+        else:
+            fr = True
+        self.last = fr
+        return fr
+
+    def done(self, good, res=None):
+        """조각 결과 — good: 표·'없음'을 끊김 없이 받았다. res: send_inproc 결과(resumed·retry 를 본다). next() 없이 부르면 무시."""
+        fr, self.last = self.last, None
+        if fr is None:
+            return
+        self.first = False
+        r = res if isinstance(res, dict) else {}
+        if not good:
+            self.n = 0
+        elif fr == RESUME:
+            self.n = self.base + 1 if r.get("resumed") is True else 1
+        elif fr:
+            self.n = 1
+        else:
+            self.n += 1
+        if self.n and "새 채팅" in str(r.get("retry") or ""):
+            self.n = 1          # 드라이버의 재시도 사다리가 새 채팅을 열었다 — 그 채팅의 첫 조각
 
 
 def _chat_done(cfg, code, why="", t0=None, census=None):
@@ -2865,7 +2962,8 @@ def run_roundtrip(cfg, prompt, fresh=False, reload=False):
     목록에서 지운 뒤 연다. 새 채팅을 여는 곳은 늘리지 않았다.
     LM28: 답을 기다리던 중에 사용량 제한을 알아챈 왕복(_roundtrip_once 의 phase 'throttled')도 사다리를 타지 않고 그대로 돌려준다.
     LM28 느린 긴 답: slow(왕복 예산 안에 다 못 받은 답 — ok+cut)도 사다리를 타지 않고 그대로 돌려준다. fresh=RESUME(다음 단계의 첫
-    왕복)이면 화면이 상태 파일의 우리 채팅일 때만(_resume_ok) 새 채팅 없이 이어 보내고, 아니면 fresh 와 같다."""
+    왕복)이면 화면이 상태 파일의 우리 채팅일 때만(_resume_ok) 새 채팅 없이 이어 보내고, 아니면 fresh 와 같다.
+    LM28(2026-10-17): 이어 보내기(fresh 거짓)도 화면이 이 프로세스의 우리 채팅에서 다른 대화로 옮겨 갔으면(_moved_away) 새 채팅에 보낸다."""
     _t_rt = time.time()
     _rt_max = max(0, int(cfg.get("roundtripMaxSec") or 0))
     global _RT_DEADLINE           # v3: 고정 대기(준비·입력창·유휴 폴링)도 왕복 예산 안에서 끝나게
@@ -2896,6 +2994,11 @@ def run_roundtrip(cfg, prompt, fresh=False, reload=False):
             ok_r = (not reload) and _resume_ok(cdp, cfg)
             _RESUMED[0] = ok_r
             fresh = not ok_r
+        # LM28(2026-10-17) — 이어 보내기 직전 화면이 이 프로세스의 우리 채팅이 아니면(사람이 전용 Edge 에서 다른 대화를 누름 — 주소의
+        # 대화 id 가 다름) 그 대화에 보내지 않고 새 채팅을 연다. 주소에 대화 id 가 없는 화면에서는 _moved_away 가 거짓 — 예전 그대로.
+        if not reload and not fresh and _moved_away(cdp, cfg):
+            fresh = True
+            trace("chat", act="moved")
         # 새 채팅은 늘 _fresh_chat 으로 연다 — 다 쓴 우리 채팅을 먼저 목록에서 지우고, 새 채팅을 '우리 것'으로 적는다(LM28 채팅 정리)
         if reload:
             # 쉬었다 다시 보내기·chatTurns 회전 — 오래 쓴 탭은 새 채팅 버튼만으로는 실패가 이어졌다(진단 A).
@@ -3375,12 +3478,16 @@ def _run_parts(cdp, cfg, parts, fresh, deadline=None, reload=False):
     LM28 진단 A: 어느 조각의 답이든 사용량 제한 문구면 바로 phase 'throttled'. reload=True 면 새 채팅 대신 페이지 새로 고침.
     LM28 채팅 정리: 새 채팅은 _fresh_chat(다 쓴 우리 채팅 — 전체 재시도면 방금 실패한 나눔 채팅 — 을 먼저 지운다).
     LM28 느린 긴 답: 어느 조각이든 slow(왕복 예산 끝에 받은 데까지)면 _wait_rest 로 더 기다리거나 남은 조각을 보내지 않고 그대로 돌려준다
-    (ok — 호출자 run_roundtrip_split 이 새 채팅 전체 재전송을 하지 않는다). fresh=RESUME 은 run_roundtrip 과 같다."""
+    (ok — 호출자 run_roundtrip_split 이 새 채팅 전체 재전송을 하지 않는다). fresh=RESUME·화면이 옮겨 간 이어 보내기(_moved_away)는
+    run_roundtrip 과 같다."""
     total = len(parts)
     if fresh == RESUME:
         ok_r = (not reload) and _resume_ok(cdp, cfg)
         _RESUMED[0] = ok_r
         fresh = not ok_r
+    if not reload and not fresh and _moved_away(cdp, cfg):
+        fresh = True                     # LM28(2026-10-17) — 화면이 다른 대화로 옮겨 갔다(run_roundtrip 과 같다)
+        trace("chat", act="moved")
     if reload:
         try:
             _fresh_chat(cdp, cfg, "reload", reload=True)

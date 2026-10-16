@@ -24,6 +24,11 @@ LM28(C-16·C-34·W1-04·W1-13):
     구간은 7일 조각으로 묻는다(LM24 30일 → 회수 부족·잘림 재질의가 잦았다).
   · 왕복은 copilot_auto.send_inproc(같은 프로세스 — 조각마다 파이썬을 띄우지 않는다, 결과 dict 는 --send 와 같다).
     G3 관문에 막힌 조각(phase 'blocked')은 보내지 않은 것으로 둔다(실패로 세지 않음).
+  · LM28(2026-10-17): 조각마다 새 채팅을 열지 않는다(대화 목록에 조각 수만큼 채팅이 쌓였다 — 현장 사진). 새 채팅이냐 이어 쓰기냐는
+    copilot_auto.ChatKeep 이 정한다 — 첫 조각(앞 단계의 우리 채팅이면 이어서)·나쁜 조각 뒤·chatTurns 마다만 새 채팅. 조각 결과는
+    _one_slice 가 알린다: 표·'없음'을 끊김 없이 받으면 좋음, 오류·끊김·느린 답·'조회 불가'·표 아닌 답은 나쁨(다음 조각은 새 채팅 · 그
+    채팅은 다음 단계도 이어 쓰지 않게 chat_mark_bad). 그래서 '조회 불가' 뒤 검색형 재질의는 예전처럼 새 채팅이다. 프롬프트 끝 줄(★)에
+    이번 기간을 적어 조각마다 응답 앵커가 다르다(같은 채팅에서 앞 조각의 답을 이번 답으로 집지 않게).
   · 'empty'(없음)·'other'(표 아닌 답)는 실패로 세지 않는다 — 진짜 빈 주도 있다. 드라이버가 답을 못 받은 조각만 연속 ERR_MAX 번이면 멈춘다.
   · 저장은 병합(owa_parse.merge_slices) — 표를 받은 조각의 옛 행만 바꾸고 나머지 옛 행은 둔다(통째 덮어쓰기 금지).
     --out-dir·--tag 면 <폴더>\\mail_<tag>.csv·cal_<tag>.csv·mail_source_<tag>.json(병합 규칙은 mailmerge — WP6).
@@ -84,7 +89,9 @@ MAIL_SCOPE = ("내 사서함의 모든 메일 폴더(받은 편지함·보낸 �
 
 
 def build_prompt(kind, d0, d1, alt=False):
-    """kind: mail | cal.  alt=검색형 화법(일괄 내보내기를 '조회 불가'로 거절하는 Copilot 대응)"""
+    """kind: mail | cal.  alt=검색형 화법(일괄 내보내기를 '조회 불가'로 거절하는 Copilot 대응).
+    LM28(2026-10-17): 끝 줄(★)의 '이번 질문의 기간'은 지우지 말 것 — 조각을 한 채팅에 이어 보내므로, 그 줄(끝 줄들 중 가장 긴 줄 =
+    copilot_auto.build_anchor 의 응답 앵커)이 조각마다 달라야 드라이버가 앞 조각의 답을 이번 답으로 집지 않는다."""
     if kind == "mail":
         head = (f"내 Outlook {MAIL_SCOPE}에서 {d0}~{d1} 기간의 메일을 검색해줘. "
                 "찾은 메일을 아래 CSV 형식 표로만 정리해줘(찾은 만큼만). 헤더 포함, 다른 설명 없이, "
@@ -105,7 +112,8 @@ def build_prompt(kind, d0, d1, alt=False):
                 "- 기간 안의 메일을 빠짐없이 뒤져서 최대 150행까지 출력\n"
                 "- 조회 결과가 정말 없으면 '없음' 한 단어만 출력\n"
                 "★ 실제로 검색된 메일만 출력하라 — 예시·가상·추정으로 행을 만들지 마라. "
-                "검색이 안 되거나 확실하지 않은 행은 빼라. 행 수를 채우는 것보다 진짜만 적는 것이 중요하다.\n")
+                "검색이 안 되거나 확실하지 않은 행은 빼라. 행 수를 채우는 것보다 진짜만 적는 것이 중요하다. "
+                f"(이번 질문의 기간: {d0}~{d1})\n")
     head = (f"내 Outlook 일정(캘린더)에서 {d0}~{d1} 기간의 일정·회의를 검색해줘. "
             "찾은 일정을 아래 CSV 형식 표로만 정리해줘(찾은 만큼만). 헤더 포함, 다른 설명 없이, "
             "코드 블록(```)으로:\n") if alt else (
@@ -122,7 +130,7 @@ def build_prompt(kind, d0, d1, alt=False):
             "- 반복 일정은 기간 안의 회차마다 한 행\n"
             "- 기간 안의 일정을 빠짐없이 뒤져서 최대 150행까지 출력\n"
             "- 조회 결과가 정말 없으면 '없음' 한 단어만 출력\n"
-            "★ 실제로 검색된 일정만 출력하라 — 예시·가상·추정으로 행을 만들지 마라.\n")
+            f"★ 실제로 검색된 일정만 출력하라 — 예시·가상·추정으로 행을 만들지 마라. (이번 질문의 기간: {d0}~{d1})\n")
 
 
 UNABLE_MARKS = ("조회 불가", "조회가 불가", "조회할 수 없", "검색할 수 없", "검색이 불가",
@@ -296,6 +304,7 @@ def _timeout():
 
 
 _CA = {}
+_KEEP = {}                      # LM28(2026-10-17) — 조각 사이 채팅 이어 쓰기(copilot_auto.ChatKeep · 진짜 _send 가 처음 보낼 때 만든다)
 
 
 def _ca():
@@ -309,27 +318,65 @@ def _ca():
     return _CA["m"]
 
 
+def _keep():
+    """조각 사이 채팅 이어 쓰기 결정(copilot_auto.ChatKeep — 프로세스에 하나)."""
+    if "k" not in _KEEP:
+        _KEEP["k"] = _ca().ChatKeep()
+    return _KEEP["k"]
+
+
+def _keep_done(good, res=None):
+    """조각 결과를 ChatKeep 에 알린다 — 나쁜 조각이면 그 채팅을 다음 단계도 이어 쓰지 않게 표시한다(chat_mark_bad).
+    진짜 _send 를 쓴 적이 없으면(시험이 _send 를 바꿈) 아무것도 하지 않는다."""
+    k = _KEEP.get("k")
+    if k is None:
+        return
+    try:
+        k.done(good, res)
+        if not good:
+            _ca().chat_mark_bad()
+    except Exception:  # noqa: BLE001 — 셈 오류가 수집을 막지 않는다
+        pass
+
+
 def _send(prompt):
     """한 조각 왕복 — copilot_auto.send_inproc(LM28 W2-12: 조각마다 copilot_auto.py 를 자식 프로세스로 띄우지 않는다).
-    결과 dict 는 --send 의 JSON 과 같다. 마감은 조각마다 _timeout() 초."""
-    return _ca().send_inproc(prompt, fresh=True, deadline=time.time() + _timeout(), stage="mail_copilot")
+    결과 dict 는 --send 의 JSON 과 같다. 마감은 조각마다 _timeout() 초.
+    LM28(2026-10-17): 조각마다 새 채팅을 열지 않는다 — fresh 는 ChatKeep 이 정하고(첫 조각·나쁜 조각 뒤·chatTurns 마다만 새 채팅),
+    조각 결과는 _one_slice 가 _keep_done 으로 알린다. 결정을 못 하면 예전처럼 새 채팅."""
+    try:
+        fr = _keep().next()
+    except Exception:  # noqa: BLE001
+        fr = True
+    return _ca().send_inproc(prompt, fresh=fr, deadline=time.time() + _timeout(), stage="mail_copilot")
 
 
 def _one_slice(kind, s0, s1, alt=False):
     """한 조각(<=7일) 왕복 → (행 목록, 상태) — 상태: table|unable|empty|other|blocked(G3 — 보내지 않음)|
-    error(드라이버가 답을 못 받음)|fatal(로그인 등 사람이 풀 실패 — LAST_FATAL 에 phase·reason)"""
+    error(드라이버가 답을 못 받음)|fatal(로그인 등 사람이 풀 실패 — LAST_FATAL 에 phase·reason).
+    LM28(2026-10-17): 결과를 채팅 이어 쓰기(_keep_done)에 알린다 — table·empty 를 끊김·느린 답 없이 받았으면 좋음(다음 조각은 같은
+    채팅), 그 밖(error·fatal·unable·other·끊김·느린 답)은 나쁨(다음 조각은 새 채팅). blocked 는 보내지 않았으니 알리지 않는다."""
+    rows, st, res = _ask(kind, s0, s1, alt)
+    if st != "blocked":
+        r = res if isinstance(res, dict) else {}
+        _keep_done(st in ("table", "empty") and not r.get("cut") and not r.get("slow"), r)
+    return rows, st
+
+
+def _ask(kind, s0, s1, alt=False):
+    """_one_slice 의 왕복·해석 → (행 목록, 상태, 드라이버 결과 dict — 예외·해석 실패면 None)."""
     prompt = build_prompt(kind, s0, s1, alt)
     try:
         res = _send(prompt)
     except Exception as e:  # noqa: BLE001 — 드라이버 예외는 이 조각만 건너뛴다
         print(f"[mail-copilot]   {kind} {s0}~{s1}: 드라이버 오류({type(e).__name__})")
-        return [], "error"
+        return [], "error", None
     if not isinstance(res, dict):
         print(f"[mail-copilot]   {kind} {s0}~{s1}: 드라이버 응답 해석 실패")
-        return [], "error"
+        return [], "error", None
     if res.get("status") == "blocked" or res.get("phase") == "blocked":
         print(f"[mail-copilot]   {kind} {s0}~{s1}: 개인정보 관문(G3) — 보내지 않음")
-        return [], "blocked"
+        return [], "blocked", res
     if not res.get("ok"):
         print(f"[mail-copilot]   {kind} {s0}~{s1}: 실패 — {res.get('error', '')}")
         # 로그인 필요·Edge 없음 같은 '사람이 손대야 풀리는' 실패는 조각을 나눠 다시 물어도 똑같다.
@@ -337,8 +384,8 @@ def _one_slice(kind, s0, s1, alt=False):
         if str(res.get("phase") or "") in FATAL_PHASES:
             print(f"[mail-copilot]   {res.get('hint', '')}")
             LAST_FATAL.update(phase=str(res.get("phase") or ""), reason=str(res.get("reason") or ""))
-            return [], "fatal"
-        return [], "error"
+            return [], "fatal", res
+        return [], "error", res
     reply = res.get("reply", "")
     if SAVE_REPLIES:
         try:                                # 원문 응답 보존 — 진위·누락 진단용(storeMailSubject=false 면 남기지 않는다)
@@ -363,7 +410,7 @@ def _one_slice(kind, s0, s1, alt=False):
         notes.append(f"시각 해석 불가 행 {diag['bad_time']} 제외")
     if notes:
         print(f"[mail-copilot]   {kind} {s0}~{s1}: " + " · ".join(notes))
-    return good, ("table" if good else _reply_status(reply))
+    return good, ("table" if good else _reply_status(reply)), res
 
 
 def _esc(s):
