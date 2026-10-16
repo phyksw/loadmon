@@ -12,3 +12,7 @@
 *.txt   diff
 *.html  diff
 *.toml  diff
+
+# GitHub '내려받기(zip)'에는 git 설정 파일을 넣지 않는다 — 저장소는 배포용이고 받는 사람에게는 쓸모가 없다
+.gitattributes  export-ignore
+.gitignore      export-ignore

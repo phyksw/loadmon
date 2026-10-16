@@ -7,6 +7,8 @@ import sys
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, errors="replace", encoding=(
         (sys.stdout.encoding or "utf-8") if sys.stdout.isatty() else "utf-8"))  # 콘솔(bat)=콘솔 코드페이지 · 파이프(UI)=utf-8
 ROOT = os.path.dirname(os.path.abspath(__file__))
+# 개발 전용 파일(시험 tests\·lint 관문·FILES.txt 생성·인코딩 정리 도구·현장점검 문서)은 배포(GitHub 내려받기)에 넣지 않으므로
+# 여기에도 적지 않는다 — 적으면 받은 PC 의 자가점검이 '누락'으로 멈춘다(.gitignore 의 '개발 전용' 묶음 · 2026-10-17).
 NEED = [
     "LoadMonitor29-UI.bat",
     "LoadMonitor29.bat",
@@ -36,7 +38,6 @@ NEED = [
     "judge.py",
     "mine.py",
     "refine.py",
-    "ruff.toml",
     "FILES.txt",
     "run.py",
     "자가점검.py",
@@ -81,10 +82,6 @@ NEED = [
     "core/collect_status.py",
     "core/mailmerge.py",
     "core/timeshare.py",
-    "tools/check_l1.py",
-    "tools/check_trend.py",
-    "tools/check_recalc.py",
-    "tools/check_teamaddr.py",
     "core/programs.py",
     "core/details.py",
     "core/narratives.py",
@@ -93,23 +90,18 @@ NEED = [
     "core/projmap.py",
     "docs/설정가이드.md",
     "docs/사용안내.html",
-    "docs/현장점검_LM29.md",
     "tools/copilot_auto.py",
     "tools/pc_hours_compare.py",
     "tools/lm20_ref/Get-PcOnHistory.ps1.txt",
     "tools/lm20_ref/Get-PcOnHints.py.txt",
     "tools/trace_summary.py",
     "tools/Get-EmbeddedPython.ps1",
-    "tools/check_page_js.py",
-    "tools/lint.ps1",
     "tools/Make-Package.ps1",
     "tools/Make-MovePack.py",
     "tools/Prepare-Move.ps1",
     "tools/Stop-LM29.ps1",
     "tools/stop_lm29.py",
     "tools/ps_launch.py",
-    "tools/update_files.py",
-    "tools/lm_fixenc.py",
     "tools/diag_bundle.py",
     "ui/app.py",
 ]

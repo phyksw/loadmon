@@ -7,7 +7,8 @@
 #
 #   powershell -ExecutionPolicy Bypass -File tools\Make-Package.ps1
 #   powershell -ExecutionPolicy Bypass -File tools\Make-Package.ps1 -OutDir D:\작업\배포본
-#   (파일을 고쳤으면 먼저  python tools\update_files.py  — FILES.txt 의 크기·crc 가 다르면 여기서 멈춘다)
+#   (FILES.txt 의 크기·crc 가 실제 파일과 다르면 여기서 멈춘다 — 받은 뒤 고친 파일이 있다는 뜻. FILES.txt 를 만드는 도구는
+#    개발 PC 에만 있다(배포에 넣지 않는다 · 2026-10-17) — 원본을 다시 받거나 개발 PC 에서 다시 만든다)
 
 param(
     [string]$OutDir = "$env:USERPROFILE\Desktop",
@@ -48,7 +49,7 @@ if ($need.Count -lt 10) { throw "FILES.txt 파싱 실패 (경로 $($need.Count)�
 
 # FILES.txt 가 지금 트리와 맞는지 — 크기·crc32 를 실제 파일과 대조한다.
 # 실측: README·ui\app.py 를 고친 뒤 FILES.txt 를 다시 만들지 않아 낡은 목록이 zip 에 실렸다.
-# 다르면 담지 않고 멈춘다 — python tools\update_files.py 로 다시 만든 뒤 재시도.
+# 다르면 담지 않고 멈춘다 — 원본을 다시 받거나(개발 PC 는 FILES.txt 를 다시 만든 뒤) 재시도.
 $crcSrc = @'
 public static class LmCrc32 {
     static readonly uint[] T = MakeTable();
@@ -97,7 +98,7 @@ foreach ($rel in $need) {
     if ($b.Length -ne $expect[$rel].size -or (Get-Crc32 $b) -ne $expect[$rel].crc) { $stale += $rel }
 }
 if ($stale.Count) {
-    throw "FILES.txt 가 현재 파일과 다릅니다 ($($stale.Count)개: $($stale -join ', ')) — python tools\update_files.py 를 먼저 실행해 FILES.txt 를 다시 만든 뒤 다시 시도하세요"
+    throw "FILES.txt 가 현재 파일과 다릅니다 ($($stale.Count)개: $($stale -join ', ')) — 받은 뒤 고친 파일이 있습니다. 원본을 다시 받아 덮어쓴 뒤(개발 PC 는 FILES.txt 를 다시 만든 뒤) 다시 시도하세요"
 }
 
 $stage = Join-Path ([System.IO.Path]::GetTempPath()) ("LM29pkg_" + [Guid]::NewGuid().ToString('N').Substring(0,8))
