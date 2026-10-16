@@ -23,3 +23,14 @@ config/team_server.json
 
 # 작업 메모(로컬 전용)
 .wf/
+
+# 개발 전용 — 저장소는 배포용이다(GitHub 에서 내려받는 묶음에 넣지 않는다 · 사용자 2026-10-17). 개발 PC 에만 남긴다.
+# 시험·lint 관문·FILES.txt 생성·인코딩 정리 도구·Claude 설정·현장점검 문서. 자가점검 NEED·FILES.txt 에도 없다.
+.claude/
+tests/
+ruff.toml
+tools/lint.ps1
+tools/check_*.py
+tools/lm_fixenc.py
+tools/update_files.py
+docs/현장점검_*.md

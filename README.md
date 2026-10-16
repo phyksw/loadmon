@@ -7,6 +7,8 @@
 PC 에 파이썬이 있으면 그것을 써도 되고, `python\` 폴더를 지우면 `tools\Get-EmbeddedPython.ps1` 로 다시 받을 수 있다.
 
 수집·분석 산출물(`data\` `report\` `teamdata\`)은 개인 자료라 저장소에 넣지 않는다.
+이 저장소는 **배포용**이다 — 개발 전용 파일(시험 `tests\`, lint·FILES.txt 생성·인코딩 정리 도구, 현장점검 문서, `.claude` 설정)은
+넣지 않고 개발 PC 에만 둔다(2026-10-17). 내려받은 폴더의 `자가점검.py`·`FILES.txt` 도 그 파일들을 찾지 않는다.
 `config\config.json` 은 배포 기본값이다 — 내려받은 뒤 `owner`·`watchFolders` 를 자기 환경에 맞게 고친다.
 팀 서버 IP·포트는 `LoadMonitor28-팀서버주소.bat` 으로 바꾼다(v5 — 설치 폴더의 `config\team_server.json`, 폴더째 옮기면 그대로).
 
@@ -16,7 +18,6 @@ PC 에 파이썬이 있으면 그것을 써도 되고, `python\` 폴더를 지�
 ## LM28 변경점 — LM24 v5 를 뼈대로, 메일·팀즈·시간·보고서를 고친 판
 
 화면 틀(제목·단계 표시·기간 카드·탭·카드·어두운 상태 줄)·bat·폴더 이동(`data\추가PC`)은 LM24 v5 그대로다. 고친 것만 적는다.
-회사 PC 에서 확인할 항목은 [`docs\현장점검_LM28.md`](docs/현장점검_LM28.md) 에 있다.
 
 **2026-10-17 — Copilot 채팅을 덜 엽니다.** Copilot 에 메일·일정·팀즈를 묻는 단계(다른 경로가 못 읽은 날만)가 기간 조각마다 새
 채팅을 열어, Copilot 대화 목록에 '2026-06-13부터 2026-06-14까지 …' 같은 채팅이 조각 수만큼 쌓였습니다. 이제 한 채팅에서 이어 묻고,
@@ -83,7 +84,7 @@ PC(클라우드 PC)의 [분석 실행]이 기간 전체를 한 번에 읽습니�
   보였습니다). 제한 문구가 답 자리나 화면 알림에 뜨면 몇 초 안에 알아채고, Copilot 에 보내는 사이에는 15초 간격을 둡니다
   (`copilotAuto.minGapSec`). 진행 로그에 '이번 실행의 AI 단계를 멈췄습니다' 줄이 보이면 1~2시간 뒤 [재분석만]을 누르면 됩니다.
 
-새 설정은 docs\설정가이드의 'LM28 에서 새로 생긴 설정' 표에, 회사 PC에서 확인할 것은 `docs\현장점검_LM28.md` 4-3~4-9에 있습니다.
+새 설정은 docs\설정가이드의 'LM28 에서 새로 생긴 설정' 표에 있습니다.
 
 **이름·공존 — 같은 PC 에 LM24 가 있어도 서로 건드리지 않는다.**
 bat 은 `LoadMonitor28-*.bat`, 전용 Edge 프로필 `data\lm28_edge`(CDP 포트 9533), 대시보드 포트 9248~9267, `%TEMP%` 임시
@@ -310,8 +311,8 @@ LM20 의 규칙을 하나씩 재측정했다. 고친 것:
 넣는 신호·행 수, `sendSenderAddress`(false — 프롬프트에 메일 상대의 주소 대신 도메인만). 설명은
 `_copilotAuto_옵션_설명` 과 docs\설정가이드 §8-1(Copilot 이 채우는 캐시 파일은 §8-2).
 
-파일을 고쳤으면 **`python tools\update_files.py`** 로 `FILES.txt` 를 다시 만든다 — `tools\Make-Package.ps1`
-이 FILES.txt 의 크기·crc32 를 실제 파일과 대조해 낡은 목록이면 담지 않고 멈춘다(`--check` 는 대조만).
+`FILES.txt` 는 배포 전에 개발 PC 에서 다시 만든다(만드는 도구는 배포에 넣지 않는다) — `tools\Make-Package.ps1`
+이 FILES.txt 의 크기·crc32 를 실제 파일과 대조해 낡은 목록이면 담지 않고 멈춘다.
 
 ### 2-1. 2차 감사 반영 (2026-09-05) — 수집기 결함 · 산식 변경 · 새 설정 키 · 팀 비교 주의
 
@@ -1303,14 +1304,14 @@ export.py     팀 공유폴더 내보내기  /  aggregate.py  팀 총괄 리포�
 core/         extract.py(추출·MM 엔진) · board.py(배분표 엔진)
 collect/      수집기 — PC가동(pc_on+pc_spans)·Outlook(COM→색인→웹→Copilot)·파일·Recent·git·팀즈(Graph→Copilot→창 3단 폴백)
               Get-TeamsWindow.ps1(수집 때 팀즈 앱 창 1회 읽기 — 상주 샘플러 없음) · Add-WorkLog.ps1(PC 밖 업무 수동 기록)
-tools/        copilot_auto.py(무개입 Copilot 왕복, GPT-5.6 자동 선택) · lint.ps1
+tools/        copilot_auto.py(무개입 Copilot 왕복, GPT-5.6 자동 선택) · 강제종료·PC 이동·진단 도구
 ui/           대시보드 + 주간/월간/상세 리뷰 (포트 9248~9267 — LM24 대시보드 대역과 다름)
 ```
 
 ## 다른 PC로 복사
 
 폴더 통째로 복사하되 **data\ 와 report\ 는 제외**(개인정보). 복사 후 `python 자가점검.py`
-로 누락 확인. 필수 목록·체크섬은 FILES.txt(고친 뒤에는 `python tools\update_files.py` 로 재생성).
+로 누락 확인. 필수 목록·체크섬은 FILES.txt.
 
 ## Copilot 무개입 연동
 

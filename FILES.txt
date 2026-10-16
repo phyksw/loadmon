@@ -1,7 +1,7 @@
 LoadMonitor28 필수 파일 목록 - 복사 시 전부 있어야 합니다.
 (data/ report/ teamdata/ 는 복사 금지 - 개인정보)
 
-총 103개
+총 93개
 
 LoadMonitor28-UI.bat                                   2,803 B  1c1cd98c
 LoadMonitor28.bat                                      4,557 B  b58b23f7
@@ -26,15 +26,14 @@ retag.py                                               6,128 B  8d6f81d3
 team_refine.py                                         6,561 B  d1dcc861
 team_recalc.py                                        58,961 B  c6eb4569
 report_out.py                                         68,903 B  21b097a2
-README.md                                            127,088 B  0b83fb1a
+README.md                                            127,182 B  a855c4d5
 check.py                                               2,629 B  7badfe69
 judge.py                                             219,468 B  b00dd1eb
 mine.py                                               23,139 B  2aabf65f
 refine.py                                             56,939 B  9e8c4fe3
-ruff.toml                                              1,004 B  413927e1
 FILES.txt                                                (이 파일)
 run.py                                               126,166 B  8c8f868f
-자가점검.py                                               11,196 B  13e12dcb
+자가점검.py                                               11,250 B  6463ad08
 collect/Add-WorkLog.ps1                                3,873 B  7a375f51
 collect/Get-FileActivity.ps1                          50,401 B  a0dca613
 collect/Get-GitActivity.py                            33,451 B  ac747427
@@ -75,34 +74,25 @@ core/proc.py                                          17,810 B  0c791ec1
 core/collect_status.py                                 7,214 B  82b62ebb
 core/mailmerge.py                                     14,646 B  f08633c5
 core/timeshare.py                                      7,160 B  c7302bf2
-tools/check_l1.py                                      4,770 B  cfe71d55
-tools/check_trend.py                                   7,627 B  d4724e09
-tools/check_recalc.py                                 18,812 B  a49d57bc
-tools/check_teamaddr.py                               20,527 B  957c3acc
 core/programs.py                                      45,162 B  94561663
 core/details.py                                      104,201 B  6c0b1308
 core/narratives.py                                     9,240 B  b1a7b589
 core/owner.py                                          1,488 B  1f1dc049
 core/progress.py                                       1,648 B  15bfd33b
 core/projmap.py                                        8,988 B  1a49f512
-docs/설정가이드.md                                        123,896 B  5bb4a861
+docs/설정가이드.md                                        123,898 B  44e9d63a
 docs/사용안내.html                                       276,640 B  0aa9de89
-docs/현장점검_LM28.md                                     24,066 B  900edc7c
 tools/copilot_auto.py                                229,294 B  a7a70fd6
 tools/pc_hours_compare.py                             21,674 B  c43ff972
 tools/lm20_ref/Get-PcOnHistory.ps1.txt                 9,319 B  5ce7ef54
 tools/lm20_ref/Get-PcOnHints.py.txt                    9,545 B  7d4dae30
 tools/trace_summary.py                                 8,222 B  eaf75c3a
 tools/Get-EmbeddedPython.ps1                           2,472 B  007a9125
-tools/check_page_js.py                                 8,818 B  f6d3b95b
-tools/lint.ps1                                        10,868 B  c9759196
-tools/Make-Package.ps1                                12,752 B  665eff56
+tools/Make-Package.ps1                                12,990 B  0c02b722
 tools/Make-MovePack.py                                12,658 B  758124ee
 tools/Prepare-Move.ps1                                26,528 B  3d6569ab
 tools/Stop-LM28.ps1                                   18,723 B  763d0262
 tools/stop_lm28.py                                    22,121 B  b0895a3d
 tools/ps_launch.py                                     4,932 B  497bbb67
-tools/update_files.py                                  4,530 B  d98dd7d5
-tools/lm_fixenc.py                                     6,690 B  0b6df0b4
 tools/diag_bundle.py                                  10,236 B  9cca2c30
 ui/app.py                                            439,303 B  f70a4181
