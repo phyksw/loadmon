@@ -26,14 +26,14 @@ retag.py                                               6,128 B  8d6f81d3
 team_refine.py                                         6,561 B  d1dcc861
 team_recalc.py                                        58,961 B  c6eb4569
 report_out.py                                         68,903 B  21b097a2
-README.md                                            125,982 B  7b7eb831
+README.md                                            127,088 B  0b83fb1a
 check.py                                               2,629 B  7badfe69
 judge.py                                             219,468 B  b00dd1eb
 mine.py                                               23,139 B  2aabf65f
 refine.py                                             56,939 B  9e8c4fe3
 ruff.toml                                              1,004 B  413927e1
 FILES.txt                                                (이 파일)
-run.py                                               124,135 B  827acda1
+run.py                                               126,166 B  8c8f868f
 자가점검.py                                               11,196 B  13e12dcb
 collect/Add-WorkLog.ps1                                3,873 B  7a375f51
 collect/Get-FileActivity.ps1                          50,401 B  a0dca613
@@ -41,13 +41,13 @@ collect/Get-GitActivity.py                            33,451 B  ac747427
 collect/Get-LicenseUsage.ps1                           4,093 B  c2df1eda
 collect/Get-OutlookData.ps1                           87,258 B  99ab4a6a
 collect/Get-OutlookIndex.ps1                          33,982 B  1283c896
-collect/Get-MailViaCopilot.py                         42,254 B  7d25205d
+collect/Get-MailViaCopilot.py                         45,549 B  e314f4b6
 collect/Get-OutlookWeb.py                            223,182 B  bdc0e5ad
 collect/Get-PcOnHistory.ps1                           27,148 B  438f101c
 collect/Get-PcOnHints.py                              15,662 B  b2d98d52
 collect/Get-RecentFiles.ps1                           27,534 B  f0586ee2
 collect/Get-TeamsChats.py                             22,341 B  16cb91e1
-collect/Get-TeamsViaCopilot.py                        28,879 B  bd599e6d
+collect/Get-TeamsViaCopilot.py                        32,106 B  13cdf1a5
 collect/Get-TeamsWeb.py                              155,873 B  5a5abde4
 collect/Get-TeamsWindow.ps1                           54,594 B  87655e60
 collect/Diagnose-Collectors.ps1                       33,157 B  a1226c54
@@ -58,8 +58,8 @@ collect/teams_parse.py                                14,389 B  d196eec3
 collect/Import-MailCal.py                             12,353 B  bec541e0
 collect/Get-ProgramUsage.py                           33,863 B  d262eb08
 core/meetnote.py                                      28,595 B  0ae77aa1
-config/config.json                                    52,630 B  f0adf81a
-config/config.default.json                            59,496 B  1289c3f9
+config/config.json                                    52,876 B  07dbaef3
+config/config.default.json                            59,742 B  18910c63
 config/agentic_tasks.json                              4,426 B  2c9e5bb1
 core/board.py                                         13,181 B  86eaf661
 core/extract.py                                      313,705 B  af2dec04
@@ -85,10 +85,10 @@ core/narratives.py                                     9,240 B  b1a7b589
 core/owner.py                                          1,488 B  1f1dc049
 core/progress.py                                       1,648 B  15bfd33b
 core/projmap.py                                        8,988 B  1a49f512
-docs/설정가이드.md                                        123,289 B  9031a363
+docs/설정가이드.md                                        123,896 B  5bb4a861
 docs/사용안내.html                                       276,640 B  0aa9de89
 docs/현장점검_LM28.md                                     24,066 B  900edc7c
-tools/copilot_auto.py                                221,641 B  64c6c361
+tools/copilot_auto.py                                229,294 B  a7a70fd6
 tools/pc_hours_compare.py                             21,674 B  c43ff972
 tools/lm20_ref/Get-PcOnHistory.ps1.txt                 9,319 B  5ce7ef54
 tools/lm20_ref/Get-PcOnHints.py.txt                    9,545 B  7d4dae30

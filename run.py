@@ -1169,6 +1169,36 @@ def chat_totals():
 
 
 END_STAGES = ("완료", "종료")
+SLOW_MIN_SEC = 180             # 이보다 오래 걸린 단계만 '오래 걸린 단계' 줄에 적는다
+
+
+def slow_stages(stages=None, top=4, min_sec=SLOW_MIN_SEC, started=None, now=None):
+    r"""실행 끝 한 줄 — '총 1시간 45분 · 오래 걸린 단계: Outlook 대체③ Copilot 메일·일정 38분 · AI 판정 25분 …'(min_sec 넘은 단계를
+    긴 순으로 top 개 · 이름은 괄호 앞까지). 오래 걸린 단계가 없으면 "". LM28(2026-10-17): 1시간 45분 걸린 실행을 찍은 사진만으로는 어느
+    단계에서 시간이 갔는지 알 수 없었다 — 진행 로그 끝과 '완료' 단계 note 에 남겨 사진 한 장으로 안다. started = RUN['started']('%Y-%m-%d %H:%M')."""
+    st = [x for x in (RUN["stages"] if stages is None else stages) if isinstance(x, dict)]
+
+    def _sec(x):
+        try:
+            return float(x.get("sec") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    slow = sorted((x for x in st if _sec(x) >= min_sec), key=lambda x: -_sec(x))[:max(1, int(top))]
+    if not slow:
+        return ""
+
+    def _min(sec):
+        m = int(round(sec / 60.0))
+        return f"{m // 60}시간 {m % 60}분" if m >= 60 else f"{max(1, m)}분"
+    parts = [f"{str(x.get('name') or '').split(' (')[0].strip()} {_min(_sec(x))}" for x in slow]
+    head = ""
+    try:
+        t0 = time.mktime(time.strptime(str(started if started is not None else RUN.get("started") or ""), "%Y-%m-%d %H:%M"))
+        head = f"총 {_min(max(0.0, (now if now is not None else time.time()) - t0))} · "
+    except (ValueError, OverflowError):
+        head = ""
+    return head + "오래 걸린 단계: " + " · ".join(parts)
 
 
 def chat_stage():
@@ -1932,12 +1962,17 @@ def _main():
         subprocess.run([sys.executable, os.path.join(ROOT, "export.py"),
                         "--from", d0, "--to", d1], cwd=ROOT,
                        env=dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1"))
+    # 어디서 시간이 갔나 — 진행 로그 한 줄 + '완료' 단계 note(사진 한 장으로 오래 걸린 단계를 안다 · LM28 2026-10-17).
+    # 팀 서버 자동 보고 실패 두 줄(아래)이 콘솔 맨 끝에 남도록 그 앞에 찍는다.
+    _slow = slow_stages()
+    if _slow:
+        print(f"\n── {_slow}")
     if isinstance(_rep, dict) and _rep.get("ok") is False:
         # bat 으로 돌린 사람에게는 이 두 줄이 알람이다 — 콘솔 맨 끝(완료 안내 바로 위)에 한 번 더 적는다
         print(f"\n[!] 팀 서버 자동 보고 실패 — {_rep.get('reason') or '사유 미상'}")
         print(f"    {_rep.get('hint') or TR_PENDING_HINT}")
     RUN["finished"] = time.strftime("%Y-%m-%d %H:%M")
-    record("완료", True, 0.0)
+    record("완료", True, 0.0, _slow)
     return 0
 
 
