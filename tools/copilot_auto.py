@@ -78,6 +78,12 @@ LM28 — Copilot 채팅 정리(copilotAuto.deleteChats, 기본 켬): LM28 이 �
     chat_totals()(run.py 의 last_run 단계 'Copilot 채팅 정리').
   · LM28: 아직 답을 쓰는 중인 채팅은 지우지 않는다(남김 'gen'). 화면 사유(목록에서 못 찾음·메뉴 없음 …)로 남기면 대화 목록 구조를
     숫자로만 세어(js_chat_census) 둘째 줄 '[copilot] 채팅 정리 구조: …'로 남긴다. 삭제 판정(소유 확인)은 그대로다.
+  · LM28(2026-10-17): 지우기 전에 대화 목록 항목의 제목이 우리 첫 질문의 앞부분과 같은지 해시로 맞춰 본다(다르면 'notitle' — 그 항목은
+    누르지 않는다). 목록이 접혀 있으면(좁은 창) 탐색 창 단추·넓은 화면 흉내(CDP Emulation — 정리가 끝나면 늘 되돌림)로 길만 연다. 긴
+    질문을 접어 첫 줄만 보이는 화면은 머리 앵커(첫 줄 앞 60자)로 소유를 확인한다. 화면 규칙이 바뀌어 CHAT_REV 2(판 1 의 멈춤은 풀린다).
+  · LM28(2026-10-17) 사람이 쓰던 채팅은 건드리지 않는다(사용자 요구 — 지우지도, 질문을 넣지도 않는다): 이어 보내기 직전 화면이 이
+    프로세스의 우리 채팅임을 확인하지 못하면(_continue_why — 앵커·대화 id·소유) 새 채팅을 열고, 새 채팅으로 옮긴 것을 확인하지 못하면
+    (_open_fresh — 한 번 더 새로 고쳐 열어 봄) 보내지 않는다(phase 'no_new_chat'). 나눠 보내는 둘째 조각부터도 같은 확인(phase 'moved').
   · LM28: 다음 단계(정제·Agentic·워크플로우)의 첫 왕복은 fresh=RESUME — 앞 단계의 우리 채팅이 온전하게 끝났고(last_ok) 20분 안이며
     화면이 그 채팅이면 새 채팅 없이 이어 쓴다(아니면 예전처럼 새 채팅).
   · LM28(2026-10-17): 조각을 많이 보내는 호출자(Copilot 메일·일정·팀즈 수집기)는 ChatKeep 으로 한 채팅을 이어 쓴다 — 첫 조각(앞 단계의
@@ -1933,29 +1939,39 @@ def reload_page(cdp, cfg, wait=15):
 # 새 채팅을 열지 않고 한 채팅을 이어 쓴다(ChatKeep — 첫 조각·나쁜 조각 뒤·chatTurns 마다만 새 채팅). 그래도 여는 대화는 LM28 이 다 쓴
 # 때(다음 새 채팅 직전 · 실행 끝 Edge 를 닫기 전)에 대화 목록에서 지운다. 판정·정제·Agentic·워크플로우·수집기가 같은 탭을 차례로 쓰는 다른 프로세스라 소유는
 # <프로필>.chats.json 이 기억한다(edge_lock 안에서만 고친다 · 원자적 교체):
-#   {ours, sent, anchor_sha, alen, conv, href, pid, created_at, stage, t_last,
-#    totals: {made, deleted, kept, failed, why{사유: 수}, last{code, t}, last_fail, last_fail_t, hold{rev, t}}}
+#   {ours, sent, anchor_sha, alen, hsha, hlen, tpre, conv, href, pid, created_at, stage, t_last,
+#    totals: {made, deleted, kept, failed, why{사유: 수}, last{code, t}, last_fail, last_fail_t, hold{rev, t}, census}}
 #   · 우리 것 = LM28 이 새 채팅을 열고(_fresh_chat — 주소의 대화 id 가 열기 전과 같으면 새 채팅이 아니다) 거기에 보낸 대화. 남이 연
-#     대화에 이어 보낸 것은 끝까지 우리 것이 아니다. 프롬프트 원문은 남기지 않는다 — 마지막 프롬프트 앵커(build_anchor, 공백 정리)의
-#     sha1·길이와 답 뒤 주소의 대화 id 만(href 는 경로까지 — 질의·# 없음).
+#     대화에 이어 보낸 것은 끝까지 우리 것이 아니다. 프롬프트 원문은 남기지 않는다 — 마지막 프롬프트의 끝 앵커(build_anchor, 공백 정리)와
+#     머리 앵커(첫 줄 앞 60자 — head_key)의 sha1·길이, 첫 프롬프트 앞부분 8~64자의 길이별 해시(tpre — title_prefixes · 목록 제목 확인용 ·
+#     새 채팅에서만 생기고 이어 보내도 그대로), 답 뒤 주소의 대화 id 만(href 는 경로까지 — 질의·# 없음).
 #   · 지우기(retire_chat → _retire_steps) — 하나라도 아니면 아무것도 누르지 않고(누른 뒤면 Esc) '남김'으로 센다:
-#     설정 켬 · 멈춤 아님 · 보낸 적 있음 → 화면 글에 우리 앵커 → 주소의 대화 id 가 우리가 본 id 와 같음 → 대화 목록에서 지금 대화의
-#     항목이 하나(링크 주소에 id · '현재' 표시 — 둘 다 찾으면 같은 항목) → 그 항목 위에 신뢰 마우스 → 그 항목 안 '추가 작업(…)' →
-#     메뉴에서 글자가 정확히 '삭제'인 항목 → 확인 창에서 글자가 정확히 '삭제'인 단추(창이 안 뜨면 메뉴가 끝) → 앵커가 화면에서 사라짐
-#     (또는 대화 id 가 바뀜)을 확인. 눌렀는데도 앵커가 남으면(mismatch) 다른 대화를 지웠을 수 있다 — 이 프로세스는 더 지우지 않고
+#     설정 켬 · 멈춤 아님 · 보낸 적 있음 → 화면 글에 우리 앵커(끝 앵커 또는 머리 앵커 — 긴 질문을 접어 첫 줄만 보이는 화면) → 주소의
+#     대화 id 가 우리가 본 id 와 같음 → tpre 있음(없으면 예전 판이 연 채팅 — 'notitle') → 대화 목록에서 지금 대화의 항목이 하나(링크
+#     주소에 id · '현재' 표시 — 둘 다 찾으면 같은 항목) → 그 항목의 제목(첫 줄 · 끝 '…' 뗌)이 첫 프롬프트의 앞부분과 같음(해시 — 다르면
+#     'notitle') → 그 항목 위에 신뢰 마우스 → 그 항목 안 '추가 작업(…)'(제목을 한 번 더 확인) → 메뉴에서 글자가 정확히 '삭제'인 항목 →
+#     확인 창에서 글자가 정확히 '삭제'인 단추(창이 안 뜨면 메뉴가 끝) → 확인: 두 앵커가 모두 화면에서 사라짐 · 또는 대화 id 가 바뀜 ·
+#     또는 화면은 그대로인데 목록 항목 수와 제목이 맞는 항목 수가 둘 다 딱 1 줄어듦(메뉴를 열기 전에 센 수 — js_chat_count) · 또는 링크로
+#     찾은 항목이 목록에서 사라짐. 눌렀는데도 확인되지 않으면(mismatch) 다른 대화를 지웠을 수 있다 — 이 프로세스는 더 지우지 않고
 #     (_CHAT_KILL) 상태 파일에 멈춤(hold)을 남겨 다른 프로세스도 CHAT_REV 판이 바뀔 때(새 배포)까지 지우지 않는다.
+#   · 목록이 접혀 있으면(현장 사진: 125~150% 배율의 1150px 전용 Edge — 좁은 배치라 대화 기록이 서랍으로만 열려 하나도 지우지 못했다)
+#     항목을 찾기 전에 길만 연다(무엇을 지울지는 정하지 않는다 — _chat_find): 대화 기록 펼침 단추 1번 → 탐색 창 단추(이름이 탐색·사이드·
+#     패널·확장 … 이고 하나뿐일 때) 1번 → 넓은 화면 흉내(CDP Emulation 폭 1600 — _chat_wide) 뒤 다시 보고, 그래도 없으면 그 화면에서
+#     두 단추를 한 번씩 더. 넓은 화면은 정리가 어떻게 끝나든(예외·이른 반환 포함) retire_chat 의 finally 가 되돌린다(_chat_unwide).
 #   · 왕복마다 지우지 않는다 — chatTurns 안의 이어 보내기는 그 대화의 문맥에 기댄다.
 #   · 기록은 숫자·사유 코드만(copilot_trace 의 stage 'chat' · last_run 'Copilot 채팅 정리' · 단계 로그 '[copilot] 채팅 정리:').
 CHATS_FILE = ".chats.json"
 CHAT_RETIRE_SEC = 25           # 정리 한 번의 상한(초) — 넘기면 'timeout' 으로 남기고 하던 일을 계속한다
 CHAT_LOCK_WAIT = 15            # 실행 끝 정리가 잠금을 기다리는 상한(초) — 다른 작업이 Edge 를 쓰면 정리를 미룬다(busy)
 CHAT_PENDING_SEC = 7200        # 열고 아직 보내지 않은 '우리 채팅' 표시가 유효한 시간(초 — 연 프로세스 안에서만 믿는다)
-CHAT_REV = 1                   # 화면 조작 규칙의 판 — mismatch 로 멈춘 삭제는 이 판이 바뀔 때까지 멈춘다
+CHAT_REV = 2                   # 화면 조작 규칙의 판 — mismatch 로 멈춘 삭제는 이 판이 바뀔 때까지 멈춘다.
+#                                2(LM28 2026-10-17): 화면 규칙이 바뀌었다(목록 제목 확인 · 접힌 목록 열기 · 머리 앵커 · 목록 셈으로 확인) —
+#                                판 1 에서 남은 멈춤(hold rev 1)은 풀린다(새 규칙으로 다시 해 본다)
 CHAT_LINE_HEAD = "[copilot] 채팅 정리: "     # 단계 로그 한 줄의 머리 — run.py 가 실패 사유 줄로 오인하지 않게 이 머리로 거른다
 CHAT_DELETE_LABELS = ("삭제", "대화 삭제", "채팅 삭제", "delete", "delete chat", "delete conversation")   # 메뉴 항목(정확히)
 CHAT_CONFIRM_LABELS = ("삭제", "delete")      # 확인 창 단추(정확히) — '취소'·'닫기' 는 보지도 않는다
 CHAT_FAIL = frozenset({"noitem", "ambiguous", "covered", "nomore", "nomenu", "nodelete", "noconfirm", "mismatch",
-                       "error", "timeout"})  # 화면 조작이 막힌 사유(실패) — 그 밖의 '남김'은 설정·소유 사유
+                       "error", "timeout", "notitle"})  # 화면 조작이 막힌 사유(실패) — 그 밖의 '남김'은 설정·소유 사유
 CHAT_WHY = {
     "deleted": "지움", "off": "설정으로 끔", "hold": "삭제 멈춤(지난번 확인 실패)", "lost": "화면이 다른 대화로 바뀜",
     "noanchor": "확인용 줄이 없는 프롬프트", "replaced": "정리 전에 새 채팅이 열림", "noitem": "대화 목록에서 못 찾음",
@@ -1963,20 +1979,26 @@ CHAT_WHY = {
     "nomenu": "메뉴가 열리지 않음", "nodelete": "메뉴에 '삭제' 없음", "noconfirm": "확인 창에 '삭제' 단추 없음",
     "mismatch": "지운 뒤에도 채팅이 화면에 남음", "error": "화면 조작 오류", "timeout": "시간 초과",
     "busy": "다른 작업이 전용 Edge 를 쓰는 중", "notab": "Copilot 탭 없음", "noedge": "전용 Edge 꺼짐",
-    "gen": "답을 쓰는 중이라 남김",
+    "gen": "답을 쓰는 중이라 남김", "notitle": "목록 항목의 제목이 LM28 이 보낸 질문과 달라 남김",
 }
 # LM28 — 화면 사유로 남겼을 때(아래 코드) 대화 목록의 '구조'를 숫자·0/1 로만 센다(js_chat_census — 제목·글·주소·id 없음). 단계 로그에
 # 'CHAT_CENSUS_HEAD …' 한 줄(chat_line 의 둘째 줄)·copilot_trace·상태 파일 totals.census 에 남는다 — 현장 사진 한 장으로 왜 못 지웠는지
 # (목록이 접혔나·링크에 대화 id 가 있나·'현재' 표시가 있나) 알 수 있게. 삭제 판정은 바꾸지 않는다(조사는 읽기만).
-CHAT_CENSUS_CODES = frozenset({"noitem", "ambiguous", "covered", "nomore", "nomenu", "nodelete", "noconfirm", "timeout"})
+# LM28(2026-10-17): 'notitle'(제목이 다름)도 조사한다 · _retire_steps 가 적은 표시(CENSUS_CTX_KEYS — 넓은 화면 흉내·탐색 창 단추·제목 일치,
+# 숫자만)를 함께 싣는다.
+CHAT_CENSUS_CODES = frozenset({"noitem", "ambiguous", "covered", "nomore", "nomenu", "nodelete", "noconfirm", "timeout",
+                               "notitle"})
 CHAT_CENSUS_HEAD = "[copilot] 채팅 정리 구조: "   # run.py CHAT_LINE_HEAD('[copilot] 채팅 정리')로 시작 — 실패 사유 줄로 집지 않는다
 CENSUS_TEXT = (("nnav", "탐색 창"), ("navw", "탐색 창 너비"), ("fold", "탐색 창 접힘 추정"), ("nreg", "목록 영역"),
                ("nrow", "목록 항목"), ("nlink", "목록 링크"), ("nid", "대화 id 꼴 링크"), ("nhc", "이 대화 id 링크"),
                ("nhcv", "그중 목록에 보임"), ("ncur", "현재 표시"), ("ncurv", "그중 목록 안"), ("nsel", "선택 표시"),
                ("nselv", "그중 목록 안"), ("ntgc", "접힌 목록 단추"), ("ntgo", "펼친 목록 단추"), ("nmore", "목록의 메뉴 단추"),
-               ("nmenu", "열린 메뉴"), ("ndlg", "열린 대화상자"), ("gen", "답 쓰는 중"), ("cid", "주소에 대화 id"))
+               ("nmenu", "열린 메뉴"), ("ndlg", "열린 대화상자"), ("gen", "답 쓰는 중"), ("cid", "주소에 대화 id"),
+               ("wide", "넓은 화면으로 바꿔 봄"), ("navtg", "탐색 창 단추 누름"), ("tm", "제목 일치"))
 CENSUS_JS_KEYS = ("nnav", "navw", "nreg", "nrow", "nlink", "nid", "nhc", "nhcv", "ncur", "ncurv", "nsel", "nselv",
                   "ntgc", "ntgo", "nmore", "nmenu", "ndlg")
+CENSUS_CTX_KEYS = ("wide", "navtg", "tm")     # 화면 JS 가 아니라 _retire_steps 가 ctx 에 적는 표시(숫자) — 구조 조사·copilot_trace 에 싣는다
+CHAT_WIDE_W = 1600             # 넓은 화면 흉내의 폭(CSS px) — 이만큼 넓으면 Copilot 이 대화 목록을 펼친 배치로 그린다(_chat_wide)
 # LM28 — 다음 단계(정제·Agentic·워크플로우)의 첫 왕복은 앞 단계의 우리 채팅을 이어 쓸 수 있다(새 채팅을 덜 연다). 상태 파일이 우리 것 ·
 # 마지막 왕복 온전(last_ok) · 이만큼 안(t_ok) · 보낸 수 < chatTurns 이고, 보내기 직전 화면이 그 채팅(앵커·대화 id)이며 생성 중이 아닐 때만.
 # 소유 기록은 그대로다 — 이어 보낸 프롬프트는 _chat_before_send/_chat_after_send 가 같은 규칙으로 센다(만든 채팅 수는 늘지 않는다).
@@ -2124,6 +2146,118 @@ def page_has_anchor(text, sha, alen):
     return False
 
 
+HEAD_MAX = 60                  # 머리 앵커 — 프롬프트 첫 줄의 앞 이만큼(20자 미만이면 없음)
+
+
+def head_key(prompt):
+    """머리 앵커 → (sha1, 길이) — 프롬프트의 첫 줄(빈 줄은 건너뜀 · 공백을 한 칸으로)의 앞 HEAD_MAX 자. LM28(2026-10-17): Copilot 이 긴
+    질문을 접어 첫 몇 줄만 보여 주면 끝 앵커(anchor_key — 끝 줄들 중 가장 긴 줄)가 화면에 없다 — 그때 이 앵커로 소유를 확인한다.
+    20자 미만이면 ("", 0)(짧은 줄은 남의 대화에도 있을 수 있다). 원문은 돌려주지 않는다."""
+    for ln in str(prompt or "").splitlines():
+        s = re.sub(r"\s+", " ", ln).strip()
+        if s:
+            s = s[:HEAD_MAX]
+            return (hashlib.sha1(s.encode("utf-8")).hexdigest(), len(s)) if len(s) >= 20 else ("", 0)
+    return "", 0
+
+
+def _page_is_ours(text, st):
+    """화면 글이 우리 채팅을 보여 주나 — 마지막 프롬프트의 끝 앵커(anchor_sha·alen) 또는 머리 앵커(hsha·hlen)가 있으면 참(해시로만).
+    보내기 전(_chat_before_send)·이어 쓰기(_resume_ok)·지우기 전 확인과 지운 뒤 확인(둘 다 없어야 '사라짐')이 같이 쓴다."""
+    st = st if isinstance(st, dict) else {}
+    return (page_has_anchor(text, st.get("anchor_sha"), st.get("alen"))
+            or page_has_anchor(text, st.get("hsha"), st.get("hlen")))
+
+
+# ── LM28(2026-10-17) — 대화 목록 항목의 제목 확인 ─────────────────────────────────────────────────────────────────────────
+# 현장의 대화 목록 제목은 그 채팅에 보낸 첫 프롬프트의 앞부분이다(개행은 공백 · 길면 '…'). 첫 보내기 때 그 앞부분의 TITLE_MIN~TITLE_MAX
+# 길이마다 해시(FNV-1a 32 — UTF-16 단위마다라 JS 의 charCodeAt 과 같은 값)를 상태 파일 tpre 에 둔다(원문 없음). 지우기 전에 JS(_JS_TITLE)가
+# 찾은 항목의 제목을 같은 규칙으로 정리해 그 길이의 해시만 맞춰 보고 0/1(tm)만 돌려준다 — 제목 글은 파이썬으로 오지 않는다. 다르면 그 항목은
+# 누르지 않는다('notitle' — 사람의 대화가 '현재' 항목인 화면에서도 지우지 않는다). 한 번 더 거르는 조건일 뿐 다른 확인을 대신하지 않는다.
+TITLE_MIN, TITLE_MAX = 8, 64
+FNV_OFFSET, FNV_PRIME = 0x811C9DC5, 0x01000193
+# 공백 묶음 글자(문자 클래스 안 — '-' 는 범위) — 파이썬 \s 와 JS \s 의 합집합(두 쪽이 같은 글자를 한 칸으로 줄인다). JS 에는 json.dumps 로
+# 그대로 넘긴다. 소스에는 ASCII 만 둔다(chr — U+1680 · U+2000~200A · U+2028 · U+2029 · U+202F · U+205F · U+3000 · U+FEFF)
+_TITLE_WS = ("\t\n\x0b\x0c\r \x1c-\x1f\x85\xa0" + chr(0x1680) + chr(0x2000) + "-" + chr(0x200A)
+             + "".join(chr(c) for c in (0x2028, 0x2029, 0x202F, 0x205F, 0x3000, 0xFEFF)))
+_TITLE_WS_RX = re.compile("[" + _TITLE_WS + "]+")
+_TITLE_PUA_RX = re.compile("[" + chr(0xE000) + "-" + chr(0xF8FF) + "]")   # 아이콘 글꼴 문자(U+E000~F8FF) — 소스에 그 글자를 두지 않는다
+_TITLE_TAIL_RX = re.compile(r"(?: |…|\.\.\.)+$")                          # 제목 끝 말줄임('…'·'...')과 칸
+
+
+def _u16(s):
+    """글 → UTF-16 단위(정수) 목록 — JS 의 length·charCodeAt·slice 와 같은 단위(보조 평면 글자는 둘)."""
+    b = str(s or "").encode("utf-16-le", "surrogatepass")
+    return [b[i] | (b[i + 1] << 8) for i in range(0, len(b), 2)]
+
+
+def _fnv_units(units):
+    h = FNV_OFFSET
+    for c in units:
+        h = ((h ^ c) * FNV_PRIME) & 0xFFFFFFFF
+    return f"{h:08x}"
+
+
+def fnv1a32_hex(s):
+    """FNV-1a 32비트(UTF-16 단위마다 xor 뒤 곱) → 8자리 16진수 — _JS_TITLE 의 fnv 와 같은 값(ASCII 는 바이트 FNV-1a 와도 같다)."""
+    return _fnv_units(_u16(s))
+
+
+def _title_norm(s):
+    """제목 비교용 정리 — 아이콘 글꼴 문자를 빼고 공백 묶음(_TITLE_WS)을 한 칸으로 줄인 뒤 앞뒤 칸을 뗀다(JS tnorm 과 같다)."""
+    return _TITLE_WS_RX.sub(" ", _TITLE_PUA_RX.sub("", str(s or ""))).strip(" ")
+
+
+def title_prefixes(prompt):
+    """첫 프롬프트 → {"L": 앞 L UTF-16 단위의 FNV-1a 해시} (L = TITLE_MIN~TITLE_MAX · 정리한 글이 그보다 짧으면 그 길이까지) — 상태 파일
+    tpre. 해시 사다리만 남는다(원문 없음)."""
+    u = _u16(_title_norm(prompt))[:TITLE_MAX]
+    return {str(n): _fnv_units(u[:n]) for n in range(TITLE_MIN, len(u) + 1)}
+
+
+def title_tm(text, tpre):
+    """_JS_TITLE 의 tmOf 와 같은 규칙(파이썬 거울 — 시험의 가짜 화면이 쓴다): 항목 글의 첫 줄(정리 뒤 빈 줄은 건너뜀) · 끝 '…'·'...'·칸
+    뗌 · L = min(길이, TITLE_MAX) · L >= TITLE_MIN 이고 앞 L 단위의 해시가 tpre[L] 이면 1, 아니면 0."""
+    t = ""
+    for ln in re.split(r"\r\n?|\n", str(text or "")):
+        t = _title_norm(ln)
+        if t:
+            break
+    u = _u16(_TITLE_TAIL_RX.sub("", t))
+    n = min(len(u), TITLE_MAX)
+    if n < TITLE_MIN or not isinstance(tpre, dict):
+        return 0
+    return 1 if tpre.get(str(n)) == _fnv_units(u[:n]) else 0
+
+
+def _tpre_js(tpre):
+    """상태 파일의 tpre → JS 객체 글 — 키는 TITLE_MIN~TITLE_MAX 숫자, 값은 8자리 16진수만(그 밖은 버린다 — 상태 파일이 깨져도 JS 에
+    다른 글이 들어가지 않는다)."""
+    out = {}
+    for k, v in (tpre.items() if isinstance(tpre, dict) else ()):
+        if re.fullmatch(r"\d{1,2}", str(k)) and TITLE_MIN <= int(k) <= TITLE_MAX and re.fullmatch(r"[0-9a-f]{8}", str(v)):
+            out[str(int(k))] = str(v)
+    return json.dumps(out, sort_keys=True)
+
+
+# js_chat_row·js_chat_count 가 함께 쓰는 제목 규칙(JS). @…@ 자리는 _js_title 이 채운다. 제목 글은 함수 밖으로 내보내지 않는다(tmOf 의 0/1 만).
+_JS_TITLE = r"""const TPRE=@TPRE@;
+const PUA=new RegExp("["+String.fromCharCode(57344)+"-"+String.fromCharCode(63743)+"]","g");   // 아이콘 글꼴 문자(U+E000~F8FF)
+const WS=new RegExp(@WS@,"g");                                                                   // 공백 묶음 — 파이썬 _TITLE_WS 와 같은 글자
+const tnorm=s=>String(s||"").replace(PUA,"").replace(WS," ").replace(/^ +| +$/g,"");
+const ttl=e=>{for(const ln of String((e&&e.innerText)||"").split(/\r\n?|\n/)){const t=tnorm(ln);if(t)return t.replace(/(?: |…|\.\.\.)+$/,"");}return "";};
+const fnv=s=>{let h=@OFF@;for(let i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,@PRIME@);}return (h>>>0).toString(16).padStart(8,"0");};
+const tmOf=e=>{const t=ttl(e),L=Math.min(t.length,@MAX@);return (L>=@MIN@&&TPRE[String(L)]===fnv(t.slice(0,L)))?1:0;};
+"""
+
+
+def _js_title(tpre):
+    """_JS_TITLE 에 tpre(_tpre_js)·공백 글자(_TITLE_WS)·FNV 상수·길이 규칙을 채운 JS 글(줄 끝 개행 포함)."""
+    return (_JS_TITLE.replace("@TPRE@", _tpre_js(tpre)).replace("@WS@", json.dumps("[" + _TITLE_WS + "]+"))
+            .replace("@OFF@", f"0x{FNV_OFFSET:08x}").replace("@PRIME@", f"0x{FNV_PRIME:08x}")
+            .replace("@MAX@", str(TITLE_MAX)).replace("@MIN@", str(TITLE_MIN)))
+
+
 def _chat_url(cdp):
     """탭의 지금 주소 — 못 읽으면 ""."""
     try:
@@ -2139,8 +2273,8 @@ def _jsd(cdp, js, timeout=10):
     return r if isinstance(r, dict) else {}
 
 
-def js_chat_row(conv="", act="find"):
-    """대화 목록에서 '지금 대화' 항목 → {r, how, x, y, nh, nc, tg} — 숫자·코드만(제목·글은 돌려주지 않는다).
+def js_chat_row(conv="", act="find", tpre=None):
+    """대화 목록에서 '지금 대화' 항목 → {r, how, x, y, nh, nc, tg, tm} — 숫자·코드만(제목·글은 돌려주지 않는다).
     r: ok · none(못 찾음 — 대화 목록 펼침 단추가 하나면 그 점 tg) · many(후보 여럿) · split(주소 일치 항목과 '현재' 표시 항목이 다름)
        · covered(그 점에 다른 요소) · nomore(act=more 인데 그 항목 안에 '추가 작업' 단추 없음).
     찾기: ① 링크 주소에 대화 id(conv)가 든 a[href] ② aria-current(page·true)·aria-selected(true) — 둘 다 목록·탐색 영역(nav·aside·
@@ -2148,11 +2282,13 @@ def js_chat_row(conv="", act="find"):
     항목만 가리키면 split. 항목 = 가장 가까운 li·listitem·treeitem·option·row(없으면 그 요소).
     act=find: 항목을 화면 안으로 굴리고(scrollIntoView) 가운데 점. act=more: 그 항목(없으면 항목 하나만 품은 부모) 안의 aria-haspopup
     또는 '…'·'More'·'기타'·'더 보기'·'옵션'·'추가 작업' 단추의 가운데 점 — 돌려주기 전에 지금 보이는 메뉴(menu·listbox — 대화 목록이
-    listbox 일 수도 있다)에 data-lm28-pre 표식을 단다(js_chat_menu 는 그 뒤에 열린 메뉴만 본다). 점마다 elementFromPoint 로 가림을 본다."""
+    listbox 일 수도 있다)에 data-lm28-pre 표식을 단다(js_chat_menu 는 그 뒤에 열린 메뉴만 본다). 점마다 elementFromPoint 로 가림을 본다.
+    tm(LM28 2026-10-17 · ok 일 때): 그 항목의 제목(_JS_TITLE — 첫 줄 · 아이콘 글꼴 문자 뺌 · 공백 정리 · 끝 '…'·'...' 뗌)의 앞
+    L(= min(길이, TITLE_MAX)) UTF-16 단위의 해시가 tpre[L](첫 프롬프트 앞부분 — title_prefixes)과 같으면 1, 아니면 0(L < TITLE_MIN 이면 0).
+    항목을 고르는 규칙은 그대로다 — tm 은 호출자가 한 번 더 거르는 데만 쓴다."""
     return ("/*LM28:chat_row*/(function(){\n"
-            "const CONV=" + json.dumps(str(conv or "")) + ",ACT=" + json.dumps(str(act or "find")) + ";" + r"""
-const vis=e=>{const r=e.getBoundingClientRect();return r.width>4&&r.height>4;};
-const PUA=new RegExp("["+String.fromCharCode(57344)+"-"+String.fromCharCode(63743)+"]","g");   // 아이콘 글꼴 문자(U+E000~F8FF)
+            "const CONV=" + json.dumps(str(conv or "")) + ",ACT=" + json.dumps(str(act or "find")) + ";\n"
+            + _js_title(tpre) + r"""const vis=e=>{const r=e.getBoundingClientRect();return r.width>4&&r.height>4;};
 const lab=e=>((e.getAttribute("aria-label")||"")+" "+(e.getAttribute("title")||"")+" "+(e.innerText||""))
   .replace(PUA,"").replace(/\s+/g," ").trim();
 const POP="[role='menu'],[role='menubar'],[role='dialog'],[role='alertdialog'],[role='tooltip'],[role='combobox']";
@@ -2190,7 +2326,7 @@ const pt=e=>{const q=e.getBoundingClientRect(),x=Math.round(q.left+q.width/2),y=
 if(ACT==="find"){
   try{row.scrollIntoView({block:"nearest"});}catch(_){}
   const p=pt(row);if(!p.ok)return {r:"covered",how:how};
-  return {r:"ok",how:how,x:p.x,y:p.y,nh:hr.length,nc:cr.length};}
+  return {r:"ok",how:how,x:p.x,y:p.y,nh:hr.length,nc:cr.length,tm:tmOf(row)};}
 const MORE=/(…|\.\.\.|\bmore\b|기타|더 보기|옵션|추가 작업|options)/i;
 const pick=box=>[...box.querySelectorAll("button,[role='button']")].filter(b=>vis(b)&&(b.getAttribute("aria-haspopup")||MORE.test(lab(b))));
 let bs=pick(row);
@@ -2201,8 +2337,67 @@ const b=bs.find(x=>x.getAttribute("aria-haspopup"))||bs[0];
 const p=pt(b);if(!p.ok)return {r:"covered",how:how};
 document.querySelectorAll("[data-lm28-pre]").forEach(x=>x.removeAttribute("data-lm28-pre"));
 document.querySelectorAll("[role='menu'],[role='listbox']").forEach(x=>{if(vis(x))x.setAttribute("data-lm28-pre","1");});
-return {r:"ok",how:how,x:p.x,y:p.y,nb:bs.length};
+return {r:"ok",how:how,x:p.x,y:p.y,nb:bs.length,tm:tmOf(row)};
 })()""")
+
+
+def js_chat_count(tpre=None):
+    """LM28(2026-10-17) — 보이는 대화 목록 항목 수(n)와 그중 제목이 첫 프롬프트 앞부분과 맞는 항목 수(nt) → {n, nt}(숫자만 — 제목·글
+    없음). 항목 = js_chat_row 와 같은 영역(nav·aside·list·tree·ul·ol … · 메뉴·대화상자 밖)의 li·listitem·treeitem·option·row·링크·'현재'·
+    '선택' 표시를 가장 가까운 항목으로 모은 것. 지운 뒤에도 화면이 그 대화를 그대로 보여 줄 때 '목록에서 딱 하나 · 제목이 맞는 것도 딱
+    하나 빠졌나'를 메뉴를 열기 전에 센 수와 맞춰 보는 데만 쓴다(_retire_steps ⑤ — 무엇을 지울지는 정하지 않는다)."""
+    return ("/*LM28:chat_count*/(function(){\n" + _js_title(tpre)
+            + r"""const vis=e=>{const q=e.getBoundingClientRect();return q.width>4&&q.height>4;};
+const POP="[role='menu'],[role='menubar'],[role='dialog'],[role='alertdialog'],[role='tooltip'],[role='combobox']";
+const REG="nav,aside,[role='navigation'],[role='tree'],[role='list'],[role='listbox'],[role='grid'],ul,ol";
+const ROW="li,[role='listitem'],[role='treeitem'],[role='option'],[role='row']";
+const rowOf=e=>e.closest(ROW)||e;
+const inReg=e=>vis(e)&&!e.closest(POP)&&!!e.closest(REG);
+let es=[];
+try{es=[...document.querySelectorAll(ROW+",a[href],[aria-current='page'],[aria-current='true'],[aria-selected='true']")];}catch(_){es=[];}
+const rs=[...new Set(es.filter(inReg).map(rowOf))];
+let nt=0;
+for(const x of rs)nt+=tmOf(x);
+return {n:rs.length,nt:nt};
+})()""")
+
+
+def js_chat_navtg(skip=()):
+    """LM28(2026-10-17) — 접힌 대화 목록을 여는 탐색 창 단추 하나 → {r: ok · none · many · covered, x, y, n}(숫자·코드만). 보이는
+    button·role=button 중 aria-expanded='false' 이고 메뉴·대화상자·툴팁 밖이며, 이름이 탐색·navigation·사이드·패널·확장·펼치·메뉴 열기·
+    대화/채팅 기록·history·chats … 이고 모델·계정·프로필·설정·공유·첨부·플러그인·'새 채팅'이 아닌 것(바깥·안이 함께 걸리면 안쪽만).
+    skip = 이번 화면에서 이미 누른 점 [[x, y]…] — 그 점을 품은 단추는 다시 누르지 않는다. 하나일 때만 ok(가운데 점 · elementFromPoint 로
+    가림 확인) — 여럿이면 누르지 않는다(many). 길만 연다 — 무엇을 지울지는 정하지 않는다."""
+    pts = [[int(p[0]), int(p[1])] for p in (skip or ()) if isinstance(p, (list, tuple)) and len(p) == 2
+           and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in p)]
+    return ("/*LM28:chat_navtg*/(function(){\nconst SKIP=" + json.dumps(pts) + ";" + r"""
+const vis=e=>{const r=e.getBoundingClientRect();return r.width>4&&r.height>4;};
+const PUA=new RegExp("["+String.fromCharCode(57344)+"-"+String.fromCharCode(63743)+"]","g");   // 아이콘 글꼴 문자(U+E000~F8FF)
+const lab=e=>((e.getAttribute("aria-label")||"")+" "+(e.getAttribute("title")||"")+" "+(e.innerText||""))
+  .replace(PUA,"").replace(/\s+/g," ").trim();
+const POP="[role='menu'],[role='menubar'],[role='dialog'],[role='alertdialog'],[role='tooltip'],[role='combobox']";
+const NAV=/(탐색|navigation|nav|사이드|sidebar|side bar|패널|panel|확장|expand|펼치|메뉴 열기|open menu|대화 기록|채팅 기록|history|chats|conversations)/i;
+const NOT=/(모델|model|계정|account|프로필|profile|설정|setting|공유|share|첨부|attach|플러그|plugin)/i;
+const NEWC=/^(새 채팅|새 대화|new chat|new conversation)/i;
+const inq=(q,p)=>p[0]>=q.left&&p[0]<=q.right&&p[1]>=q.top&&p[1]<=q.bottom;
+let cs=[...document.querySelectorAll("button,[role='button']")].filter(b=>{
+  if(!vis(b)||b.getAttribute("aria-expanded")!=="false"||b.closest(POP))return false;
+  const t=lab(b);
+  if(!NAV.test(t)||NOT.test(t)||NEWC.test(t))return false;
+  const q=b.getBoundingClientRect();
+  return !SKIP.some(p=>inq(q,p));});
+cs=cs.filter(x=>!cs.some(y=>y!==x&&x.contains(y)));
+if(cs.length!==1)return {r:cs.length?"many":"none",n:cs.length};
+const q=cs[0].getBoundingClientRect(),x=Math.round(q.left+q.width/2),y=Math.round(q.top+q.height/2);
+const h=document.elementFromPoint(x,y);
+if(!(h&&(h===cs[0]||cs[0].contains(h))))return {r:"covered",n:1};
+return {r:"ok",x:x,y:y,n:1};
+})()""")
+
+
+def js_chat_view():
+    """지금 뷰포트 크기(CSS px) → {w, h} — 넓은 화면 흉내(_chat_wide)의 기준."""
+    return "/*LM28:chat_view*/({w:Math.round(window.innerWidth||0),h:Math.round(window.innerHeight||0)})"
 
 
 def js_chat_menu():
@@ -2286,30 +2481,34 @@ def _chat_esc(cdp):
 
 def _chat_opened(cdp, cfg, how, pre=""):
     """LM28 이 방금 새 채팅을 열었다(_fresh_chat) → '우리 것(보내기 전)'으로 적는다. 열지 못했거나(how '실패') 주소의 대화 id 가
-    열기 전(pre)과 같으면 새 채팅이 아니다(그 대화는 남의 것일 수 있다) — 적지 않는다. 정리 못 한 우리 채팅이 남아 있었으면 '남김'."""
+    열기 전(pre)과 같으면 새 채팅이 아니다(그 대화는 남의 것일 수 있다) — 적지 않는다. 정리 못 한 우리 채팅이 남아 있었으면 '남김'.
+    LM28(2026-10-17) → 새 채팅으로 옮긴 것을 확인했나(참/거짓 — 소유 기록을 쓰다 실패해도 판정은 돌려준다). 거짓이면 _open_fresh 가
+    한 번 더 열어 보고, 그래도 아니면 왕복은 보내지 않는다(사람이 쓰던 대화에 LM28 질문이 들어가지 않게)."""
+    cid = conv_id(_chat_url(cdp), cfg)
+    ok = str(how or "") not in ("", "실패") and not (cid and cid == conv_id(pre, cfg))
     try:
         st = chat_state(cfg)
         if st.get("ours") and int(st.get("sent") or 0) > 0:
             _chat_tally(st, "replaced")
         _chat_reset(st)
-        cid = conv_id(_chat_url(cdp), cfg)
         if str(how or "") in ("", "실패"):
             pass                                        # 새 채팅이 열리지 않았다 — 지금 화면은 맡지 않는다
-        elif cid and cid == conv_id(pre, cfg):
+        elif not ok:
             _chat_tally(st, "notfresh")                 # 주소가 그 대화 그대로 — 새 채팅으로 확인되지 않았다(맡지 않음)
             trace("chat", act="open", code="notfresh")
         else:
-            st.update(ours=True, sent=0, anchor_sha="", alen=0, conv="", href="", pid=os.getpid(), created_at=_now(),
-                      stage=str(os.environ.get("LM_STAGE") or "")[:40])
+            st.update(ours=True, sent=0, anchor_sha="", alen=0, hsha="", hlen=0, conv="", href="", pid=os.getpid(),
+                      created_at=_now(), stage=str(os.environ.get("LM_STAGE") or "")[:40])
         _chats_save(cfg, st)
     except Exception:  # noqa: BLE001 - 소유 기록이 왕복을 막지 않는다
         pass
+    return ok
 
 
 def _chat_before_send(cdp, cfg, text):
     """보내기 직전 — 이 화면이 우리 채팅인가 → True/False. 열고 아직 보내지 않은 우리 채팅은 연 프로세스에서만(다른 프로세스는 그
-    화면이 그 채팅인지 모른다) · 보낸 적 있는 우리 채팅은 화면 글에 우리 앵커가 있고 주소의 대화 id 가 같을 때만. 아니면 소유를
-    놓는다(보낸 적 있으면 '남김 — lost'). 남의 대화에 이어 보내는 것은 우리 것이 되지 않는다."""
+    화면이 그 채팅인지 모른다) · 보낸 적 있는 우리 채팅은 화면 글에 우리 앵커(끝 앵커 또는 머리 앵커 — _page_is_ours)가 있고 주소의
+    대화 id 가 같을 때만. 아니면 소유를 놓는다(보낸 적 있으면 '남김 — lost'). 남의 대화에 이어 보내는 것은 우리 것이 되지 않는다."""
     try:
         st = chat_state(cfg)
         if not st.get("ours"):
@@ -2320,7 +2519,7 @@ def _chat_before_send(cdp, cfg, text):
             _chats_save(cfg, _chat_reset(st))
             return False
         cid, cid0 = conv_id(_chat_url(cdp), cfg), str(st.get("conv") or "")
-        if page_has_anchor(text, st.get("anchor_sha"), st.get("alen")) and not (cid and cid0 and cid != cid0):
+        if _page_is_ours(text, st) and not (cid and cid0 and cid != cid0):
             return True
         sent = int(st.get("sent") or 0)
         _chat_tally(st, "lost")
@@ -2333,7 +2532,10 @@ def _chat_before_send(cdp, cfg, text):
 
 def _chat_after_send(cdp, cfg, prompt, own):
     """보낸 직후 — 우리 채팅이면(own) 앵커 해시·보낸 수를 고친다. 첫 프롬프트면 '만든 채팅' 1. 앵커를 만들 수 없는 프롬프트(20자 이상
-    줄 없음)는 나중에 확인할 수 없어 지우지 않는다(남김 — noanchor)."""
+    줄 없음)는 나중에 확인할 수 없어 지우지 않는다(남김 — noanchor).
+    LM28(2026-10-17): 끝 앵커 옆에 머리 앵커(head_key — 마지막 프롬프트 첫 줄 앞 60자 · 20자 미만이면 빈 값)를 늘 새로 적고, 새 채팅의 첫
+    프롬프트면 목록 제목 확인용 앞부분 해시(tpre — title_prefixes)를 적는다. tpre 는 이어 보내도 그대로이고 _chat_reset(새 채팅)으로만
+    사라진다. 원문은 남기지 않는다."""
     if not own:
         return
     try:
@@ -2344,12 +2546,14 @@ def _chat_after_send(cdp, cfg, prompt, own):
         if sent <= 0:
             _chat_tally(st, "made")
             trace("chat", act="made", step=str(os.environ.get("LM_STAGE") or "")[:40])
+            st["tpre"] = title_prefixes(prompt)
         sha, n = anchor_key(prompt)
         if not sha:
             _chat_tally(st, "noanchor")
             _chats_save(cfg, _chat_reset(st))
             return
-        st.update(anchor_sha=sha, alen=n, sent=sent + 1, pid=os.getpid(), t_last=_now())
+        hs, hn = head_key(prompt)
+        st.update(anchor_sha=sha, alen=n, hsha=hs, hlen=hn, sent=sent + 1, pid=os.getpid(), t_last=_now())
         _chats_save(cfg, st)
     except Exception:  # noqa: BLE001
         pass
@@ -2395,14 +2599,15 @@ def chat_resumable(cfg=None, turns=0):
 
 
 def _resume_ok(cdp, cfg):
-    """RESUME — 지금 화면이 상태 파일의 우리 채팅인가: chat_resumable 의 상태 조건(보낸 수 상한은 호출자가 봤다) + 화면 글에 우리 앵커 +
-    주소의 대화 id 가 적어 둔 id 와 같음(적어 둔 id 가 있으면 지금 주소에도 같은 id 가 있어야) + 생성 중 아님. 하나라도 아니면 False."""
+    """RESUME — 지금 화면이 상태 파일의 우리 채팅인가: chat_resumable 의 상태 조건(보낸 수 상한은 호출자가 봤다) + 화면 글에 우리 앵커
+    (끝 앵커 또는 머리 앵커 — _page_is_ours) + 주소의 대화 id 가 적어 둔 id 와 같음(적어 둔 id 가 있으면 지금 주소에도 같은 id 가 있어야)
+    + 생성 중 아님. 하나라도 아니면 False."""
     try:
         st = chat_state(cfg)
         if not (st.get("ours") and int(st.get("sent") or 0) > 0 and st.get("last_ok") is True
                 and _age_sec(st.get("t_ok")) < CHAT_RESUME_SEC):
             return False
-        if not page_has_anchor(cdp.eval(js_chat_text(cfg), timeout=30), st.get("anchor_sha"), st.get("alen")):
+        if not _page_is_ours(cdp.eval(js_chat_text(cfg), timeout=30), st):
             return False
         cid0 = str(st.get("conv") or "")
         if cid0 and conv_id(_chat_url(cdp), cfg) != cid0:
@@ -2410,6 +2615,23 @@ def _resume_ok(cdp, cfg):
         return cdp.eval(js_is_generating(), timeout=10) is not True
     except Exception:  # noqa: BLE001 - 확인하지 못하면 새 채팅
         return False
+
+
+def _continue_why(cdp, cfg):
+    """LM28(2026-10-17) — 이어 보내기(fresh 거짓) 직전: 지금 화면에 이어 보내도 되나 → "" (된다) · "moved"(우리 채팅에서 다른 대화로 옮겨
+    감 — 주소의 대화 id 가 다름) · "unverified"(우리 채팅임을 확인하지 못함). 사용자 요구: "이전에 사용자가 쓰고 있었던 채팅은 건드리면
+    안 된다" — 사람이 전용 Edge 에서 자기 대화를 눌렀거나 소유를 놓친 화면에 LM28 질문을 이어 보내지 않는다(호출자가 새 채팅을 연다).
+    된다 = 상태 파일이 우리 것 · 보낸 적 있음 · 이 프로세스(pid) · 화면 글에 우리 앵커(끝 또는 머리 — _page_is_ours) · _moved_away 아님.
+    상태 파일·화면을 읽지 못하면 "unverified"(새 채팅 — 모르면 이어 보내지 않는다)."""
+    try:
+        if _moved_away(cdp, cfg):
+            return "moved"
+        st = chat_state(cfg)
+        if not (st.get("ours") and int(st.get("sent") or 0) > 0 and st.get("pid") == os.getpid()):
+            return "unverified"
+        return "" if _page_is_ours(cdp.eval(js_chat_text(cfg), timeout=30), st) else "unverified"
+    except Exception:  # noqa: BLE001 - 확인하지 못하면 이어 보내지 않는다
+        return "unverified"
 
 
 def _moved_away(cdp, cfg):
@@ -2516,11 +2738,12 @@ class ChatKeep:
             self.n = 1          # 드라이버의 재시도 사다리가 새 채팅을 열었다 — 그 채팅의 첫 조각
 
 
-def _chat_done(cfg, code, why="", t0=None, census=None):
+def _chat_done(cfg, code, why="", t0=None, census=None, flags=None):
     """정리 한 번의 끝 — 세기·소유 비우기·기록. 지우지 못했어도 소유는 비운다(곧 새 채팅으로 넘어가거나 Edge 를 닫는다).
     mismatch 면 이 프로세스는 더 지우지 않고(_CHAT_KILL), 상태 파일에 멈춤(hold — CHAT_REV)을 남긴다.
     census(LM28 — 화면 사유로 남김일 때의 구조 조사 · 숫자만): 상태 파일 totals.census · 이 프로세스 몫(_CHAT_PROC['census'] —
-    chat_line 의 둘째 줄) · copilot_trace 에 남긴다."""
+    chat_line 의 둘째 줄) · copilot_trace 에 남긴다. flags(LM28 2026-10-17 — _retire_steps 의 표시 wide·navtg·tm, 숫자만)는
+    copilot_trace 에만 싣는다(지운 때도 — 넓은 화면·탐색 창 단추로 지웠는지 사진 없이 안다)."""
     st = chat_state(cfg)
     sent = int(st.get("sent") or 0)
     _chat_tally(st, code)
@@ -2532,8 +2755,12 @@ def _chat_done(cfg, code, why="", t0=None, census=None):
         st["totals"]["census"] = dict(cz, t=_now())
         _CHAT_PROC["census"] = cz
     _chats_save(cfg, _chat_reset(st))
+    extra = {k: v for k, v in (flags or {}).items()
+             if k in CENSUS_CTX_KEYS and isinstance(v, int) and not isinstance(v, bool)}
+    if cz:
+        extra["census"] = cz
     trace("chat", act="retire", code=code, why=str(why or "")[:24], sent=sent,
-          sec=round(time.time() - (t0 or time.time()), 1), **({"census": cz} if cz else {}))
+          sec=round(time.time() - (t0 or time.time()), 1), **extra)
 
 
 def js_chat_census(conv=""):
@@ -2574,9 +2801,11 @@ return o;
 })()""")
 
 
-def _chat_census(cdp, cfg, conv=""):
+def _chat_census(cdp, cfg, conv="", ctx=None):
     """화면 사유로 남길 때의 구조 조사 → 숫자만 dict(CENSUS_TEXT 의 키 · 화이트리스트 밖·숫자 아닌 값은 버린다). ok 0 = 구조를 읽지 못함.
-    gen(생성 중 0/1)·cid(주소에 대화 id 0/1)·fold(탐색 창이 좁다 — 접힘 추정 0/1)는 여기서 더한다. 예외를 내지 않는다."""
+    gen(생성 중 0/1)·cid(주소에 대화 id 0/1)·fold(탐색 창이 좁다 — 접힘 추정 0/1)는 여기서 더한다. 예외를 내지 않는다.
+    ctx(LM28 2026-10-17): _retire_steps 가 적은 표시 중 CENSUS_CTX_KEYS(wide 넓은 화면 흉내 · navtg 탐색 창 단추 누른 수 · tm 제목 일치
+    0/1)의 숫자만 더한다 — 넓은 화면을 켠 채로(되돌리기 전에) 센다."""
     out = {}
     try:
         r = _jsd(cdp, js_chat_census(conv), timeout=5)
@@ -2593,6 +2822,10 @@ def _chat_census(cdp, cfg, conv=""):
     except Exception:  # noqa: BLE001
         pass
     out["cid"] = 1 if conv else 0
+    for k in CENSUS_CTX_KEYS:
+        v = (ctx if isinstance(ctx, dict) else {}).get(k)
+        if isinstance(v, int) and not isinstance(v, bool):
+            out[k] = max(0, min(99, v))
     out["ok"] = 1 if any(k in out for k in CENSUS_JS_KEYS) else 0
     return out
 
@@ -2612,10 +2845,106 @@ def census_note(code, c):
     return f"{head} — " + " · ".join(parts)
 
 
+def _chat_wide(cdp, ctx):
+    """LM28(2026-10-17) — 넓은 화면 흉내(CDP Emulation.setDeviceMetricsOverride: 폭 max(CHAT_WIDE_W, 지금 폭) · 높이 지금 그대로 ·
+    배율 0(그대로) · 모바일 아님) → 바꿨나. 좁은 창(125~150% 배율의 1150px 전용 Edge)의 Copilot 은 대화 목록을 접어 서랍으로만 보여
+    준다 — 넓은 배치에서는 목록이 펼쳐진다. 이미 그만큼 넓으면 바꾸지 않는다. ctx['wide']=1 을 보내기 **전에** 적는다 — 보내다 시간
+    초과가 나도 retire_chat 의 finally 가 _chat_unwide 로 되돌린다. 길만 연다(무엇을 지울지는 정하지 않는다)."""
+    try:
+        v = _jsd(cdp, js_chat_view(), timeout=5)
+    except Exception:  # noqa: BLE001 - 크기를 모르면 폭만 바꾼다(높이 0 = 그대로)
+        v = {}
+    w, h = (int(x) if isinstance(x, (int, float)) and not isinstance(x, bool) and x > 0 else 0
+            for x in (v.get("w"), v.get("h")))
+    if w >= CHAT_WIDE_W:
+        return False
+    ctx["wide"] = 1
+    try:
+        cdp.call("Emulation.setDeviceMetricsOverride", {"width": max(CHAT_WIDE_W, w), "height": h,
+                                                         "deviceScaleFactor": 0, "mobile": False}, timeout=8)
+    except Exception:  # noqa: BLE001 - 못 바꿨으면 그대로 둔다(되돌리기는 finally)
+        return False
+    return True
+
+
+def _chat_unwide(cdp):
+    """넓은 화면 흉내 되돌리기(CDP Emulation.clearDeviceMetricsOverride) — 실패해도 그만(예외를 내지 않는다)."""
+    try:
+        cdp.call("Emulation.clearDeviceMetricsOverride", {}, timeout=8)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _chat_count(cdp, tpre):
+    """js_chat_count → (보이는 목록 항목 수, 그중 제목이 맞는 수) · 못 읽으면 None(셈으로 확인하지 않는다). 예외를 내지 않는다."""
+    try:
+        c = _jsd(cdp, js_chat_count(tpre), timeout=8)
+    except Exception:  # noqa: BLE001 - 셈은 확인을 거드는 덤이다
+        return None
+    n, nt = c.get("n"), c.get("nt")
+    if all(isinstance(v, int) and not isinstance(v, bool) and v >= 0 for v in (n, nt)):
+        return n, nt
+    return None
+
+
+def _chat_find(cdp, cid, tpre, ctx, press, left):
+    """_retire_steps ① — 대화 목록의 지금 대화 항목(js_chat_row find) → 마지막 js_chat_row 결과. 못 찾으면(none) 길만 연다 — 무엇을
+    지울지는 정하지 않는다(항목은 늘 js_chat_row 의 같은 규칙 · 제목 확인은 호출자):
+      ⓐ 대화 기록 펼침 단추(tg — 예전 그대로 한 번) ⓑ 탐색 창 단추(js_chat_navtg — 하나뿐일 때 한 번 · ⓐ 의 점은 다시 누르지 않음)
+      ⓒ 넓은 화면 흉내(_chat_wide — 그 뒤 단계도 그 화면에서) 뒤 다시 보기 ⓓ 그래도 없으면 넓은 화면에서 ⓐ·ⓑ 를 한 번씩 더.
+    누른 뒤 ~1.2초(넓은 화면은 ~1.5초) 기다려 다시 본다. 탐색 창 단추를 누른 수는 ctx['navtg']."""
+    def look():
+        return _jsd(cdp, js_chat_row(cid, "find", tpre))
+
+    def opened(r):
+        done = []
+        tg = r.get("tg")
+        if isinstance(tg, list) and len(tg) == 2:
+            press({"x": tg[0], "y": tg[1]})
+            done.append(tg)
+            _sleep(1.2)
+            r = look()
+            if r.get("r") != "none":
+                return r
+        if left() <= 2:
+            return r
+        try:
+            nv = _jsd(cdp, js_chat_navtg(done))
+        except Exception:  # noqa: BLE001 - 길 찾기 실패는 '단추 없음'
+            nv = {}
+        if nv.get("r") == "ok":
+            press(nv)
+            ctx["navtg"] = int(ctx.get("navtg") or 0) + 1
+            _sleep(1.2)
+            r = look()
+        return r
+
+    r = look()
+    if r.get("r") == "none":
+        r = opened(r)
+    if r.get("r") != "none" or left() <= 4 or not _chat_wide(cdp, ctx):
+        return r
+    _sleep(1.5)
+    r = look()
+    if r.get("r") == "none" and left() > 2:
+        r = opened(r)
+    return r
+
+
 def _retire_steps(cdp, cfg, st, t_end, touched, ctx=None):
     """retire_chat 의 화면 단계 → 결과 코드. 누르기 전 확인을 모두 지나야 누른다(머리말). touched[0] = 무엇이든 눌렀다(끝에 Esc).
     ctx(LM28): 지금 주소의 대화 id 를 cid 로 돌려준다(화면 사유로 남길 때의 구조 조사용). 아직 답을 쓰는 중인 채팅은 아무것도 누르지 않고
-    'gen'(남김 — 실패 아님) — 생성 중인 대화를 지우면 Copilot 이 다른 대화로 옮겨 가거나 지운 뒤에도 답이 남는다."""
+    'gen'(남김 — 실패 아님) — 생성 중인 대화를 지우면 Copilot 이 다른 대화로 옮겨 가거나 지운 뒤에도 답이 남는다.
+    LM28(2026-10-17) — 더 엄격하게, 그리고 접힌 목록에서도:
+      · 화면 글은 끝 앵커 또는 머리 앵커로 본다(_page_is_ours — 긴 질문을 접어 첫 줄만 보이는 화면).
+      · tpre(첫 프롬프트 앞부분 해시)가 없으면(예전 판이 연 채팅) 목록을 열지도 않고 'notitle'. 찾은 항목의 제목이 다르면(tm 0 — find 와
+        more 두 번 본다) 그 항목은 누르지 않고 'notitle'.
+      · 목록이 접혀 있으면 길만 연다(_chat_find — 펼침 단추·탐색 창 단추·넓은 화면 흉내). ctx 에 tm·navtg·wide 를 적는다(wide 는
+        retire_chat 의 finally 가 되돌린다 — 뒤 단계는 그 화면에서 한다).
+      · ⑤ 확인: 두 앵커가 모두 사라짐 · 대화 id 가 바뀜 · 화면은 그대로인데 메뉴를 열기 전에 센 목록 항목 수와 제목이 맞는 항목 수가 둘 다
+        딱 1 줄어듦(js_chat_count) · 링크로 찾은 항목이 목록에서 사라짐 — 아니면 mismatch(멈춤)."""
+    ctx = ctx if isinstance(ctx, dict) else {}
+
     def left():
         return t_end - time.time()
 
@@ -2623,39 +2952,44 @@ def _retire_steps(cdp, cfg, st, t_end, touched, ctx=None):
         touched[0] = True
         _chat_mouse(cdp, p.get("x"), p.get("y"), click=click)
 
-    sha, n = st.get("anchor_sha"), st.get("alen")
     txt = cdp.eval(js_chat_text(cfg), timeout=max(5.0, min(20.0, left())))
-    if not page_has_anchor(txt, sha, n):
+    if not _page_is_ours(txt, st):
         return "lost"
     cid, cid0 = conv_id(_chat_url(cdp), cfg), str(st.get("conv") or "")
     if cid and cid0 and cid != cid0:
         return "lost"
-    if isinstance(ctx, dict):
-        ctx["cid"] = cid
+    ctx["cid"] = cid
     # ⓪ 아직 답을 쓰는 중이면 지우지 않는다(LM28 — 남김 'gen'). 물어보지 못했으면 예전처럼 다음 단계로(아래 확인들이 그대로 지킨다)
     try:
         if cdp.eval(js_is_generating(), timeout=8) is True:
             return "gen"
     except (TimeoutError, RuntimeError, OSError):
         pass
-    # ① 대화 목록의 지금 대화 항목 — 목록이 접혀 있으면 펼침 단추를 한 번만 누르고 다시 본다
-    r = _jsd(cdp, js_chat_row(cid, "find"))
-    tg = r.get("tg")
-    if r.get("r") == "none" and isinstance(tg, list) and len(tg) == 2:
-        press({"x": tg[0], "y": tg[1]})
-        _sleep(1.2)
-        r = _jsd(cdp, js_chat_row(cid, "find"))
+    # 목록 제목을 맞춰 볼 재료가 없다(예전 판이 연 채팅) — 아무것도 누르지 않고 남긴다
+    tpre = st.get("tpre")
+    if not (isinstance(tpre, dict) and tpre):
+        return "notitle"
+    # ① 대화 목록의 지금 대화 항목 — 목록이 접혀 있으면 길만 연다(펼침 단추 · 탐색 창 단추 · 넓은 화면 흉내)
+    r = _chat_find(cdp, cid, tpre, ctx, press, left)
     if r.get("r") != "ok":
         return {"many": "ambiguous", "split": "ambiguous", "covered": "covered"}.get(str(r.get("r") or ""), "noitem")
+    # 그 항목의 제목이 우리 첫 프롬프트의 앞부분이 아니면(사람의 대화가 '현재' 항목인 화면 등) 그 항목은 누르지 않는다
+    ctx["tm"] = 1 if r.get("tm") == 1 else 0
+    if not ctx["tm"]:
+        return "notitle"
     if left() <= 0:
         return "timeout"
-    # ② 그 항목 위에 신뢰 마우스(가려진 '추가 작업' 단추가 나타난다) → 그 항목 안의 단추
+    c0 = _chat_count(cdp, tpre)         # ⑤ 의 셈 기준 — 메뉴를 열기 전(숫자만)
+    # ② 그 항목 위에 신뢰 마우스(가려진 '추가 작업' 단추가 나타난다) → 그 항목 안의 단추(제목을 한 번 더 본다)
     press(r, click=False)
     _sleep(0.6)
-    m = _jsd(cdp, js_chat_row(cid, "more"))
+    m = _jsd(cdp, js_chat_row(cid, "more", tpre))
     if m.get("r") != "ok":
         return {"many": "ambiguous", "split": "ambiguous", "covered": "covered", "nomore": "nomore"}.get(
             str(m.get("r") or ""), "noitem")
+    if m.get("tm") != 1:
+        ctx["tm"] = 0
+        return "notitle"
     press(m)
     # ③ 메뉴 — 글자가 정확히 '삭제'인 항목 하나만
     mn = {}
@@ -2681,19 +3015,23 @@ def _retire_steps(cdp, cfg, st, t_end, touched, ctx=None):
         seen = seen or c.get("r") in ("nobtn", "many", "covered")
     if seen:
         return "noconfirm"
-    # ⑤ 확인 — 앵커가 화면에서 사라졌나(지운 대화는 새 채팅 화면으로 바뀐다) · 주소의 대화 id 가 바뀌었나
+    # ⑤ 확인 — 두 앵커가 화면에서 모두 사라졌나(지운 대화는 새 채팅 화면으로 바뀐다) · 주소의 대화 id 가 바뀌었나 · 화면은 그대로인데
+    #   목록 항목 수와 제목이 맞는 항목 수가 둘 다 딱 1 줄었나(메뉴를 열기 전에 센 c0 — 다른 항목이 사라졌으면 제목 셈이 그대로라 아니다)
     for _ in range(16):
         _sleep(0.5)
         try:
             t2 = cdp.eval(js_chat_text(cfg), timeout=10)
         except (TimeoutError, RuntimeError, OSError):
             continue
-        if not page_has_anchor(t2, sha, n):
+        if not _page_is_ours(t2, st):
             return "deleted"
         if cid and conv_id(_chat_url(cdp), cfg) != cid:
             return "deleted"
+        c1 = _chat_count(cdp, tpre) if c0 else None
+        if c0 and c1 and c1[0] == c0[0] - 1 and c1[1] == c0[1] - 1:
+            return "deleted"
     # 화면은 그대로인데 링크 주소로 찾았던 항목(강한 일치)이 목록에서 사라졌다 — 지워졌고 화면만 늦다
-    if r.get("how") in ("href", "both") and _jsd(cdp, js_chat_row(cid, "find")).get("r") == "none":
+    if r.get("how") in ("href", "both") and _jsd(cdp, js_chat_row(cid, "find", tpre)).get("r") == "none":
         return "deleted"
     return "mismatch"
 
@@ -2703,9 +3041,12 @@ def retire_chat(cdp, cfg, why="", budget=CHAT_RETIRE_SEC):
     새 채팅을 열기 직전(_fresh_chat — run_roundtrip·_run_parts·재시도 사다리)과 실행 끝 Edge 를 닫기 전(close_own_edge →
     retire_current)에만 부른다 — 왕복마다 부르지 않는다. 화면을 누르는 단계는 _retire_steps(머리말 참고).
     'none'(우리 것 아님)·'unsent'(열고 보내지 않음 — 목록에 없다)·'nocdp' 는 세지 않고, 그 밖은 지움(deleted) 또는 남김(+ 사유).
-    LM28: 생성 중이면 'gen'(남김 — 실패 아님) · 화면 사유(CHAT_CENSUS_CODES)로 남기면 구조 조사(_chat_census — 숫자만)를 함께 남긴다."""
+    LM28: 생성 중이면 'gen'(남김 — 실패 아님) · 화면 사유(CHAT_CENSUS_CODES)로 남기면 구조 조사(_chat_census — 숫자만)를 함께 남긴다.
+    LM28(2026-10-17): 목록 제목이 우리 첫 질문과 다르거나 확인 재료가 없으면 'notitle'(누르지 않음 · 구조 조사함). 넓은 화면 흉내
+    (_chat_wide)를 켰으면 어떻게 끝나든(예외·이른 반환 포함) finally 에서 되돌린다(_chat_unwide — 구조 조사·Esc 뒤). _retire_steps 의
+    표시(wide·navtg·tm — 숫자)는 구조 조사와 copilot_trace 에 싣는다."""
     t0 = time.time()
-    census = None
+    census, flags = None, None
     try:
         st = chat_state(cfg)
         if not st.get("ours"):
@@ -2722,15 +3063,20 @@ def retire_chat(cdp, cfg, why="", budget=CHAT_RETIRE_SEC):
         else:
             touched, ctx = [False], {}
             try:
-                code = _retire_steps(cdp, cfg, st, t0 + max(5.0, float(budget or CHAT_RETIRE_SEC)), touched, ctx)
-            except Exception:  # noqa: BLE001 - 화면 조작 오류는 '남김'으로(왕복·닫기를 막지 않는다)
-                code = "error"
-            if code in CHAT_CENSUS_CODES:
-                # 화면 사유로 남긴다 — 메뉴·확인 창을 닫기 전에 구조를 센다(읽기만 · 숫자만). 판정은 바꾸지 않는다.
-                census = _chat_census(cdp, cfg, ctx.get("cid") or str(st.get("conv") or ""))
-            if touched[0] and code != "deleted":
-                _chat_esc(cdp)
-        _chat_done(cfg, code, why, t0, census=census)
+                try:
+                    code = _retire_steps(cdp, cfg, st, t0 + max(5.0, float(budget or CHAT_RETIRE_SEC)), touched, ctx)
+                except Exception:  # noqa: BLE001 - 화면 조작 오류는 '남김'으로(왕복·닫기를 막지 않는다)
+                    code = "error"
+                if code in CHAT_CENSUS_CODES:
+                    # 화면 사유로 남긴다 — 메뉴·확인 창을 닫기 전에 구조를 센다(읽기만 · 숫자만). 판정은 바꾸지 않는다.
+                    census = _chat_census(cdp, cfg, ctx.get("cid") or str(st.get("conv") or ""), ctx)
+                if touched[0] and code != "deleted":
+                    _chat_esc(cdp)
+            finally:
+                if ctx.get("wide"):
+                    _chat_unwide(cdp)                   # 넓은 화면 흉내는 어떻게 끝나든 되돌린다
+            flags = {k: ctx[k] for k in CENSUS_CTX_KEYS if isinstance(ctx.get(k), int)}
+        _chat_done(cfg, code, why, t0, census=census, flags=flags)
         return code
     except Exception:  # noqa: BLE001 - 정리가 왕복·닫기를 막지 않는다
         return "error"
@@ -2740,15 +3086,74 @@ def _fresh_chat(cdp, cfg, why="fresh", reload=False):
     """LM28 이 새 채팅을 여는 길(run_roundtrip·_run_parts — 새로 여는 곳을 늘리지 않는다): ① 다 쓴 우리 채팅을 지우고(retire_chat)
     ② 새 채팅(new_chat · reload 면 reload_page) ③ 그 채팅을 '우리 것(보내기 전)'으로 적는다(_chat_opened). → new_chat/reload_page 의 반환.
     새 채팅 단추를 눌렀는데 주소의 대화 id 가 그대로면(단추가 먹지 않음 · 지운 뒤 화면이 다른 대화로 옮겨 간 탭) 채팅 시작 주소로 다시
-    들어간다(new_chat 의 '단추 없음' 길과 같은 새 채팅 하나) — 그대로 보내면 열려 있던 대화(남의 것일 수 있다)에 프롬프트가 들어간다."""
+    들어간다(new_chat 의 '단추 없음' 길과 같은 새 채팅 하나) — 그대로 보내면 열려 있던 대화(남의 것일 수 있다)에 프롬프트가 들어간다.
+    LM28(2026-10-17): 새 채팅으로 옮긴 것을 확인했는지(_chat_opened)를 _FRESH_OK[0] 에 적는다 — 보낼지는 _open_fresh 가 정한다."""
     retire_chat(cdp, cfg, why)
     pre = _chat_url(cdp)
     how = reload_page(cdp, cfg) if reload else new_chat(cdp, cfg)
     cid = conv_id(_chat_url(cdp), cfg)
     if not reload and cid and cid == conv_id(pre, cfg):
         how = reload_page(cdp, cfg)
-    _chat_opened(cdp, cfg, how, pre)
+    _FRESH_OK[0] = bool(_chat_opened(cdp, cfg, how, pre))
     return how
+
+
+_FRESH_OK = [True]             # 마지막 _fresh_chat 이 새 채팅으로 옮긴 것을 확인했나(LM28 2026-10-17 — _open_fresh 가 본다)
+NO_NEW_CHAT = ("새 채팅이 열린 것을 확인하지 못해 보내지 않았습니다 — 사람이 쓰던 대화에 LM28 질문이 들어가지 않게 "
+               "(전용 Edge 의 Copilot 창에 '새 채팅' 단추가 보이는지 확인한 뒤 다시 실행하세요)")
+
+
+def _screen_text(cdp, cfg):
+    """지금 화면 글(js_chat_text) — 못 읽거나 글이 아니면 None."""
+    try:
+        t = cdp.eval(js_chat_text(cfg), timeout=30)
+    except Exception:  # noqa: BLE001
+        return None
+    return t if isinstance(t, str) else None
+
+
+def _same_screen(a, b):
+    """두 화면 글이 같은 대화 그대로인가 — 공백을 한 칸으로 줄여 똑같고 40자 이상(짧은 글은 판단하지 않는다)."""
+    if not (isinstance(a, str) and isinstance(b, str)):
+        return False
+    na, nb = re.sub(r"\s+", " ", a).strip(), re.sub(r"\s+", " ", b).strip()
+    return len(na) >= 40 and na == nb
+
+
+def _open_fresh(cdp, cfg, why="fresh", reload=False, guard_text=False):
+    """LM28(2026-10-17) — 새 채팅을 열고(_fresh_chat) 옮긴 것을 확인 → new_chat/reload_page 의 반환(확인 못 하면 ""). 확인되지 않으면 채팅
+    시작 주소로 한 번 더(새로 고침) 열어 본다. 사용자 요구: "이전에 사용자가 쓰고 있었던 채팅은 건드리면 안 된다" — 새 채팅으로 옮긴 것을
+    확인하지 못한 화면(사람의 대화가 떠 있을 수 있다)에는 보내지 않는다(호출자가 왕복을 접는다 — NO_NEW_CHAT). 예외는 확인 못 함.
+    guard_text: 지금 화면이 우리 채팅이 아닌 것을 안다(이어 보내기 확인 실패 — 사람의 대화일 수 있다) — 연 뒤 화면 글이 연 앞과 똑같으면
+    (주소에 대화 id 가 없는 화면에서 새 채팅이 조용히 안 열림) 확인 못 한 것으로 본다."""
+    for i, rl in enumerate((bool(reload), True)):
+        if i and reload:
+            break                                       # 이미 새로 고침으로 열어 봤다
+        pre_t = _screen_text(cdp, cfg) if guard_text else None
+        _FRESH_OK[0] = True
+        try:
+            how = _fresh_chat(cdp, cfg, why if not i else why + "-again", reload=rl)
+        except Exception:  # noqa: BLE001 - 열다 오류 — 확인하지 못했다
+            how, _FRESH_OK[0] = "", False
+        if _FRESH_OK[0] and pre_t is not None and _same_screen(pre_t, _screen_text(cdp, cfg)):
+            _FRESH_OK[0] = False                        # 화면이 그대로다 — 새 채팅으로 옮기지 못했다
+            try:
+                _chats_save(cfg, _chat_reset(chat_state(cfg)))   # 방금 '우리 것(보내기 전)'으로 적은 그 화면을 놓는다
+            except Exception:  # noqa: BLE001
+                pass
+        if _FRESH_OK[0]:
+            return str(how or "새 채팅")
+        trace("chat", act="open", code="unconfirmed", again=i)
+    return ""
+
+
+def _no_new_chat(res=None):
+    """새 채팅을 확인하지 못해 보내지 않은 왕복의 결과 — 앞 결과(res)가 있으면 그 답을 지키고 재시도 메모만 단다."""
+    if isinstance(res, dict) and res:
+        res["retry"] = "새 채팅이 열린 것을 확인하지 못해 재시도하지 않았습니다"
+        return res
+    return {"ok": False, "phase": "no_new_chat", "error": NO_NEW_CHAT,
+            "hint": "전용 Edge 의 Copilot 창을 확인한 뒤 [AI 연결 진단]을 눌러 보세요"}
 
 
 def _chat_tab_ws(cfg):
@@ -2994,25 +3399,29 @@ def run_roundtrip(cfg, prompt, fresh=False, reload=False):
             ok_r = (not reload) and _resume_ok(cdp, cfg)
             _RESUMED[0] = ok_r
             fresh = not ok_r
-        # LM28(2026-10-17) — 이어 보내기 직전 화면이 이 프로세스의 우리 채팅이 아니면(사람이 전용 Edge 에서 다른 대화를 누름 — 주소의
-        # 대화 id 가 다름) 그 대화에 보내지 않고 새 채팅을 연다. 주소에 대화 id 가 없는 화면에서는 _moved_away 가 거짓 — 예전 그대로.
-        if not reload and not fresh and _moved_away(cdp, cfg):
-            fresh = True
-            trace("chat", act="moved")
-        # 새 채팅은 늘 _fresh_chat 으로 연다 — 다 쓴 우리 채팅을 먼저 목록에서 지우고, 새 채팅을 '우리 것'으로 적는다(LM28 채팅 정리)
-        if reload:
+        # LM28(2026-10-17) — 이어 보내기 직전 화면이 이 프로세스의 우리 채팅임을 확인하지 못하면(사람이 전용 Edge 에서 자기 대화를 누름 ·
+        # 주소의 대화 id 가 다름 · 소유를 놓침) 그 대화에 보내지 않고 새 채팅을 연다 — 사람이 쓰던 채팅은 건드리지 않는다(사용자 요구).
+        why_c = ""
+        if not reload and not fresh:
+            why_c = _continue_why(cdp, cfg)
+            if why_c:
+                fresh = True
+                trace("chat", act=why_c)
+        # 새 채팅은 늘 _open_fresh(→ _fresh_chat)로 연다 — 다 쓴 우리 채팅을 먼저 목록에서 지우고, 새 채팅을 '우리 것'으로 적는다(LM28 채팅
+        # 정리). 새 채팅으로 옮긴 것을 확인하지 못하면 보내지 않는다(NO_NEW_CHAT — 열려 있던 대화는 사람의 것일 수 있다). 지금 화면이 우리
+        # 채팅이 아닌 것을 알면(why_c) 단추 대신 채팅 시작 주소로 새로 들어가고, 화면 글이 그대로면 보내지 않는다(guard_text).
+        if why_c:
+            if not _open_fresh(cdp, cfg, "fresh", reload=True, guard_text=True):
+                return _no_new_chat()
+        elif reload:
             # 쉬었다 다시 보내기·chatTurns 회전 — 오래 쓴 탭은 새 채팅 버튼만으로는 실패가 이어졌다(진단 A).
-            try:
-                _fresh_chat(cdp, cfg, "reload", reload=True)
-            except Exception:
-                pass
+            if not _open_fresh(cdp, cfg, "reload", reload=True):
+                return _no_new_chat()
         elif fresh:
             # 판정처럼 '깨끗한 문맥'이 필요한 왕복은 새 채팅에서 시작한다 —
             # 앞선 실패 대화(예: 팀즈 조회 거절)가 문맥에 남으면 답이 오염된다.
-            try:
-                _fresh_chat(cdp, cfg, "fresh")
-            except Exception:
-                pass
+            if not _open_fresh(cdp, cfg, "fresh"):
+                return _no_new_chat()
         res = _once(cdp, cfg, prompt)
         # 사용량 제한 문구 — 사다리(새 채팅·자동 모델로 즉시 재전송)를 타지 않는다. 다시 보내면 제한이 길어진다.
         # (답을 기다리던 중에 알아챈 것은 이미 phase 'throttled' 로 온다)
@@ -3044,8 +3453,11 @@ def run_roundtrip(cfg, prompt, fresh=False, reload=False):
             return res
         _err_pause(res)
         cfg2["replyTimeoutSec"] = int(min(cfg2["replyTimeoutSec"], max(60, _rt_left() - 60)))
-        # 실패한 채팅(우리 것이면)을 먼저 지우고 새 채팅 — 사다리가 대화 목록에 실패 채팅을 남기지 않게
-        how2 = _fresh_chat(cdp, cfg, "ladder1")
+        # 실패한 채팅(우리 것이면)을 먼저 지우고 새 채팅 — 사다리가 대화 목록에 실패 채팅을 남기지 않게. 새 채팅을 확인하지 못하면 재시도하지
+        # 않는다(LM28 2026-10-17 — 사람이 쓰던 대화에 보내지 않게)
+        how2 = _open_fresh(cdp, cfg, "ladder1")
+        if not how2:
+            return _no_new_chat(res)
         res2 = _once(cdp, cfg2, prompt)
         if res2.get("phase") == "throttled":
             return res2
@@ -3063,7 +3475,8 @@ def run_roundtrip(cfg, prompt, fresh=False, reload=False):
             return res2 if res2.get("reply") else res
         _err_pause(res2)
         cfg2["replyTimeoutSec"] = int(min(cfg2["replyTimeoutSec"], max(60, _rt_left() - 60)))
-        _fresh_chat(cdp, cfg, "ladder2")
+        if not _open_fresh(cdp, cfg, "ladder2"):
+            return _no_new_chat(res2 if res2.get("reply") else res)
         res3 = _once(cdp, cfg2, prompt, model_override="자동")
         if res3.get("phase") == "throttled":
             return res3
@@ -3478,32 +3891,42 @@ def _run_parts(cdp, cfg, parts, fresh, deadline=None, reload=False):
     LM28 진단 A: 어느 조각의 답이든 사용량 제한 문구면 바로 phase 'throttled'. reload=True 면 새 채팅 대신 페이지 새로 고침.
     LM28 채팅 정리: 새 채팅은 _fresh_chat(다 쓴 우리 채팅 — 전체 재시도면 방금 실패한 나눔 채팅 — 을 먼저 지운다).
     LM28 느린 긴 답: 어느 조각이든 slow(왕복 예산 끝에 받은 데까지)면 _wait_rest 로 더 기다리거나 남은 조각을 보내지 않고 그대로 돌려준다
-    (ok — 호출자 run_roundtrip_split 이 새 채팅 전체 재전송을 하지 않는다). fresh=RESUME·화면이 옮겨 간 이어 보내기(_moved_away)는
-    run_roundtrip 과 같다."""
+    (ok — 호출자 run_roundtrip_split 이 새 채팅 전체 재전송을 하지 않는다). fresh=RESUME·이어 보내기 확인(_continue_why)·새 채팅 확인
+    (_open_fresh — 확인 못 하면 보내지 않음)은 run_roundtrip 과 같다. 둘째 조각부터도 보내기 직전에 화면이 우리 채팅인지 보고, 아니면 남은
+    조각을 보내지 않는다(LM28 2026-10-17 — 조각 사이에 사람이 다른 대화를 눌렀어도 그 대화에 넣지 않는다)."""
     total = len(parts)
     if fresh == RESUME:
         ok_r = (not reload) and _resume_ok(cdp, cfg)
         _RESUMED[0] = ok_r
         fresh = not ok_r
-    if not reload and not fresh and _moved_away(cdp, cfg):
-        fresh = True                     # LM28(2026-10-17) — 화면이 다른 대화로 옮겨 갔다(run_roundtrip 과 같다)
-        trace("chat", act="moved")
-    if reload:
-        try:
-            _fresh_chat(cdp, cfg, "reload", reload=True)
-        except Exception:
-            pass
+    why_c = ""
+    if not reload and not fresh:
+        why_c = _continue_why(cdp, cfg)  # LM28(2026-10-17) — 우리 채팅임을 확인하지 못하면 새 채팅(run_roundtrip 과 같다)
+        if why_c:
+            fresh = True
+            trace("chat", act=why_c)
+    if why_c:
+        if not _open_fresh(cdp, cfg, "fresh", reload=True, guard_text=True):
+            return dict(_no_new_chat(), parts=total)
+    elif reload:
+        if not _open_fresh(cdp, cfg, "reload", reload=True):
+            return dict(_no_new_chat(), parts=total)
     elif fresh:
-        try:
-            _fresh_chat(cdp, cfg, "fresh")
-        except Exception:
-            pass
+        if not _open_fresh(cdp, cfg, "fresh"):
+            return dict(_no_new_chat(), parts=total)
     res = {"ok": False, "phase": "error", "error": "왕복 시작 실패"}
     for i, part in enumerate(parts, 1):
         if deadline is not None and time.time() > deadline:
             return {"ok": False, "phase": "timeout", "parts": total,
                     "error": f"나눔 {i}/{total}: 왕복 예산을 넘겨 중단(이 청크는 규칙 판정으로)",
                     "hint": "Copilot 응답 지연 — config.copilotAuto.roundtripMaxSec"}
+        if i > 1:
+            why_c = _continue_why(cdp, cfg)
+            if why_c:
+                trace("chat", act=why_c, part=i)
+                return {"ok": False, "phase": "moved", "parts": total,
+                        "error": f"나눔 {i}/{total}: 화면이 LM28 채팅이 아니어서 남은 조각을 보내지 않았습니다(사람이 쓰던 대화에 넣지 않게)",
+                        "hint": "전용 Edge 의 Copilot 창에서 다른 대화를 누르지 마세요 — 다음 왕복은 새 채팅에서 다시 보냅니다"}
         res = _once(cdp, cfg, part)
         if not res.get("ok"):
             res["error"] = f"나눔 {i}/{total}: " + str(res.get("error") or "왕복 실패")
