@@ -26,7 +26,7 @@ retag.py                                               6,128 B  8d6f81d3
 team_refine.py                                         6,526 B  7ef1eb9c
 team_recalc.py                                        58,982 B  b47ce5bf
 report_out.py                                         67,756 B  2971e148
-README.md                                            133,696 B  8bac9e98
+README.md                                            135,151 B  7f2c179f
 check.py                                               2,629 B  7badfe69
 judge.py                                             219,113 B  062516d8
 mine.py                                               23,139 B  2aabf65f
@@ -57,8 +57,8 @@ collect/teams_parse.py                                14,389 B  d196eec3
 collect/Import-MailCal.py                             12,353 B  bec541e0
 collect/Get-ProgramUsage.py                           33,863 B  d262eb08
 core/meetnote.py                                      28,595 B  0ae77aa1
-config/config.json                                    53,016 B  c4f0a843
-config/config.default.json                            60,594 B  039e022a
+config/config.json                                    53,295 B  e72eef82
+config/config.default.json                            60,873 B  32fce0c9
 core/board.py                                         13,181 B  86eaf661
 core/extract.py                                      313,682 B  cdb7b78f
 core/pc_ledger.py                                     21,509 B  c1f9d9e5
@@ -74,14 +74,14 @@ core/collect_status.py                                 7,214 B  82b62ebb
 core/mailmerge.py                                     14,646 B  f08633c5
 core/timeshare.py                                      7,160 B  c7302bf2
 core/programs.py                                      45,184 B  d6b34a8d
-core/details.py                                      103,986 B  4f13986a
+core/details.py                                      104,623 B  67cf4c72
 core/narratives.py                                     9,240 B  b1a7b589
 core/owner.py                                          1,488 B  1f1dc049
 core/progress.py                                       1,648 B  15bfd33b
 core/projmap.py                                        8,988 B  4e45fe1f
-docs/설정가이드.md                                        127,299 B  defa5911
+docs/설정가이드.md                                        128,203 B  898e79dd
 docs/사용안내.html                                       277,403 B  541eb54d
-tools/copilot_auto.py                                229,372 B  1411bfd7
+tools/copilot_auto.py                                260,702 B  7ae3dfd3
 tools/pc_hours_compare.py                             21,674 B  c43ff972
 tools/lm20_ref/Get-PcOnHistory.ps1.txt                 9,319 B  5ce7ef54
 tools/lm20_ref/Get-PcOnHints.py.txt                    9,545 B  7d4dae30
