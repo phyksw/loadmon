@@ -183,9 +183,16 @@ PORT = [0]
 #     조용함은 세지 않는다(탭 시각을 민다 — 작별 시각은 그대로라 창을 닫았으면 그대로 끝난다). 제보: "화면보호기로 꺼지는 경우가 있다" —
 #     잠긴 화면에서 브라우저가 대시보드 탭을 얼리거나 버리면(신호 없음) 3분 뒤 작업째 끝냈다. 끝낼 때는 까닭을 last_run 과
 #     report\ui_exit.json 에 남긴다(콘솔은 곧 닫혀 줄이 사라진다).
+#   · LM28(2026-10-19) 알림·확인·입력 창(alert·confirm·prompt)이 열려 있는 동안 브라우저는 화면의 타이머를 멈춘다 — 10초 신호가 끊겨
+#     3분 뒤 대시보드가 통째로 꺼졌고, 그 뒤 [데이터 리셋]은 닿을 곳이 없어 '리셋 실패'가 됐다(제보: 팀 서버 업로드 실패 알림을 띄워 둔 채
+#     다른 프로그램에서 일하다 리셋). 화면이 창을 열기 직전에 'dialog'(알림 창이 열려 있음)를 알리므로 잠든 탭처럼 CLOSE_ASLEEP 까지 둔다.
+#     작별(창 닫기)은 예전처럼 CLOSE_GRACE 뒤 끝난다.
+#   · LM28(2026-10-19) 안전판 — 도는 작업도 굽는 보고서도 없으면 조용함만으로는 CLOSE_SILENCE_IDLE(30분) 뒤에야 끝낸다(멈출 작업이 없으니
+#     서둘러 끝낼 까닭이 없다 · 작업이 돌면 예전처럼 3분 — 창을 닫았는데 뒤에서 도는 일을 막는 이 기능의 뜻은 그대로).
 # 끄기: config.json 의 uiAutoExit=false(예전처럼 창을 닫아도 서버·작업이 계속 돈다).
 CLOSE_GRACE = 20.0
 CLOSE_SILENCE = 180.0
+CLOSE_SILENCE_IDLE = 1800.0         # LM28(2026-10-19) 도는 작업·보고서 굽기가 없을 때의 조용함 상한(초) — ui_close_decision(busy=False)
 CLOSE_ASLEEP = 4 * 3600.0
 CLOSE_EVERY = 5.0
 CLOSE_RESUME_GAP = 30.0
@@ -193,17 +200,27 @@ CLOSE_LOCK = threading.Lock()
 UI_CLOSE = {"tabs": {}, "vis": {}, "gone": {}, "bye": 0.0, "armed": False}
 CLOSE_LINE_BUSY = "[ui] 대시보드 창이 닫혀 실행 중인 작업을 멈추고 서버를 끝냅니다"
 CLOSE_LINE_IDLE = "[ui] 대시보드 창이 닫혀 서버를 끝냅니다"
-CLOSE_WHY_KO = {"bye": "창 닫힘", "silence": f"{int(CLOSE_SILENCE // 60)}분 넘게 화면 신호 없음"}
+CLOSE_VIS = ("visible", "hidden", "frozen", "dialog")    # /api/alive 가 받는 탭 상태(그 밖은 visible) — dialog = 알림 창이 열려 있음
+CLOSE_WHY_KO = {"bye": "창 닫힘", "silence": f"{int(CLOSE_SILENCE // 60)}분 넘게 화면 신호 없음",
+                "silence_idle": f"{int(CLOSE_SILENCE_IDLE // 60)}분 넘게 화면 신호 없음(도는 작업 없음)",
+                "dialog": "알림 창이 열려 있음", "asleep": "탭이 잠듦"}
 AWAY_IDLE_SEC = 180.0               # 키보드·마우스 입력이 이만큼(초) 없으면 사람이 화면을 보지 않는 것으로 본다(_screen_away)
 STOP_STAGE = "중단(창 닫힘)"         # last_run.json 단계 이름 — 다음 화면이 '마지막 단계: 중단(창 닫힘)' 으로 말한다(run.py 와 같다)
 EDGE_FAST_SEC = 2.5                 # 콘솔 창 닫기 때 전용 Edge 닫기를 기다리는 상한(윈도는 처리기에 약 5초를 준다)
 
 
 def _close_cfg(c=None):
-    """판정 설정 — {on, grace, silence, asleep}. on 은 config.json 의 uiAutoExit(기본 true)."""
+    """판정 설정 — {on, grace, silence, silence_idle, asleep, away}. on 은 config.json 의 uiAutoExit(기본 true)."""
     c = cfg() if c is None else c
     return {"on": _cfg_bool((c or {}).get("uiAutoExit"), True), "grace": CLOSE_GRACE,
-            "silence": CLOSE_SILENCE, "asleep": CLOSE_ASLEEP, "away": True}
+            "silence": CLOSE_SILENCE, "silence_idle": CLOSE_SILENCE_IDLE, "asleep": CLOSE_ASLEEP, "away": True}
+
+
+def _ui_busy():
+    """LM28(2026-10-19) — 지금 멈출 것이 있나(화면에서 띄운 작업이 돌거나 [보고서 만들기]가 굽는 중) → 창 닫힘 판정의 busy."""
+    with LOCK:
+        busy = bool(JOB["running"])
+    return busy or FREEZE_LOCK.locked()
 
 
 def _screen_away():
@@ -240,30 +257,46 @@ def _screen_away():
         return False
 
 
-def ui_close_decision(now, tabs, last_bye, armed, cfg=None):
+def ui_close_decision(now, tabs, last_bye, armed, cfg=None, busy=True):
     """창 닫힘 판정(순수 함수) → ("keep"|"exit", 사유).
-    tabs = {탭 id: 마지막 신호 시각} 또는 {탭 id: (시각, 상태)} — 상태 visible·hidden·frozen(작별한 탭은 이미 빠져 있다).
-    last_bye = 마지막 작별 시각(없으면 0) · armed = 첫 신호를 받았나 · cfg = {on, grace, silence, asleep}(_close_cfg).
-    사유: off · not_armed · alive · asleep · grace(작별 뒤 새 탭 대기) · bye(작별 뒤 새 탭 없음) · silence(모든 탭 조용)."""
-    c = {"on": True, "grace": CLOSE_GRACE, "silence": CLOSE_SILENCE, "asleep": CLOSE_ASLEEP}
+    tabs = {탭 id: 마지막 신호 시각} 또는 {탭 id: (시각, 상태)} — 상태 visible·hidden·frozen·dialog(작별한 탭은 이미 빠져 있다).
+    last_bye = 마지막 작별 시각(없으면 0) · armed = 첫 신호를 받았나 · cfg = {on, grace, silence, silence_idle, asleep}(_close_cfg).
+    busy = 멈출 작업이 있나(_ui_busy — 기본 참 = 예전 판정). LM28(2026-10-19): 거짓이면 조용함 상한이 silence_idle(30분)이고,
+    알림 창이 열린 탭(dialog)은 잠든 탭(frozen)처럼 asleep 까지 둔다.
+    사유: off · not_armed · alive · asleep · dialog(알림 창이 열려 있음) · grace(작별 뒤 새 탭 대기) · bye(작별 뒤 새 탭 없음) ·
+    silence(모든 탭 조용 — 작업 중) · silence_idle(모든 탭 조용 — 도는 작업 없음)."""
+    c = {"on": True, "grace": CLOSE_GRACE, "silence": CLOSE_SILENCE, "silence_idle": CLOSE_SILENCE_IDLE,
+         "asleep": CLOSE_ASLEEP}
     c.update(cfg or {})
     if not c["on"]:
         return "keep", "off"
     if not armed:
         return "keep", "not_armed"
+    quiet = c["silence"] if busy else max(c["silence"], c["silence_idle"])
     last = 0.0
     for v in (tabs or {}).values():
         t, vis = (v[0], v[1]) if isinstance(v, (tuple, list)) else (v, "visible")
         t = float(t or 0.0)
         last = max(last, t)
         age = now - t
-        if age < c["silence"]:
+        if age < quiet:
             return "keep", "alive"
-        if vis == "frozen" and age < c["asleep"]:
-            return "keep", "asleep"
+        if vis in ("frozen", "dialog") and age < c["asleep"]:
+            return "keep", ("dialog" if vis == "dialog" else "asleep")
     if last_bye and now - last_bye < c["grace"]:
         return "keep", "grace"
-    return "exit", ("bye" if last_bye and last_bye >= last else "silence")
+    if last_bye and last_bye >= last:
+        return "exit", "bye"
+    return "exit", ("silence" if busy else "silence_idle")
+
+
+def _close_why_ko(why, tabs=None):
+    """끝낸 까닭(한국어) — CLOSE_WHY_KO. 조용함으로 끝냈는데 알림 창이 열린 탭(dialog)이 있었으면 그것도 붙인다(LM28 2026-10-19)."""
+    s = CLOSE_WHY_KO.get(why, str(why))
+    if why != "bye" and any(isinstance(v, (tuple, list)) and len(v) > 1 and v[1] == "dialog"
+                            for v in (tabs or {}).values()):
+        s += f" · {CLOSE_WHY_KO['dialog']}({int(CLOSE_ASLEEP // 3600)}시간 넘게)"
+    return s
 
 
 def ui_tab_alive(tab, vis="visible", now=None):
@@ -271,7 +304,7 @@ def ui_tab_alive(tab, vis="visible", now=None):
     tab = str(tab or "").strip()[:64]
     if not tab:
         return False
-    vis = vis if vis in ("visible", "hidden", "frozen") else "visible"
+    vis = vis if vis in CLOSE_VIS else "visible"           # LM28(2026-10-19) dialog = 알림 창이 열려 있음(화면이 열기 직전에 알린다)
     with CLOSE_LOCK:
         if tab in UI_CLOSE["gone"]:
             return False
@@ -353,7 +386,7 @@ def _write_ui_exit(why, busy, tabs=None, now=None, report_dir=None):
             rows.append({"age_s": int(max(0.0, now - float(t or 0.0))), "vis": str(vis)[:8]})
         except (TypeError, ValueError):
             continue
-    rec = {"t": time.strftime("%Y-%m-%d %H:%M:%S"), "why": str(why), "why_ko": CLOSE_WHY_KO.get(why, str(why)),
+    rec = {"t": time.strftime("%Y-%m-%d %H:%M:%S"), "why": str(why), "why_ko": _close_why_ko(why, tabs),
            "busy": bool(busy), "away": bool(_screen_away()), "tabs": rows[:16]}
     try:
         p = os.path.join(report_dir or REPORT, "ui_exit.json")
@@ -367,6 +400,34 @@ def _write_ui_exit(why, busy, tabs=None, now=None, report_dir=None):
     return rec
 
 
+def prev_ui_exit(report_dir=None, mark=True):
+    r"""LM28(2026-10-19) — 지난번 대시보드가 스스로 끝났으면(report\ui_exit.json — _write_ui_exit) 그 까닭·시각 한 줄 → 문자열(없으면 "").
+    대시보드를 다시 켤 때 진행 로그·콘솔에 한 번 남긴다(제보 사진 한 장으로 '왜 꺼졌나'를 본다). 한 번 알린 기록에는 seen 을 붙여
+    다음 시작부터는 말하지 않는다(파일은 그대로 — 진단용). 깨졌거나 못 읽으면 ""(시작을 막지 않는다)."""
+    p = os.path.join(report_dir or REPORT, "ui_exit.json")
+    try:
+        with open(p, encoding="utf-8-sig") as f:
+            rec = json.load(f)
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(rec, dict) or rec.get("seen"):
+        return ""
+    why = str(rec.get("why_ko") or rec.get("why") or "까닭 모름")[:120]
+    t = str(rec.get("t") or "")[:19]
+    line = ("[ui] 지난번에는 대시보드가 스스로 끝났습니다 — 까닭: " + why + (f" ({t})" if t else "")
+            + (" · 그때 돌던 작업도 멈췄습니다" if rec.get("busy") else ""))
+    if mark:
+        try:
+            rec["seen"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            tmp = p + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(rec, f, ensure_ascii=False, indent=1)
+            os.replace(tmp, p)
+        except OSError:
+            pass
+    return line
+
+
 def ui_close_exit(server, why, out=None, tabs=None, now=None):
     """판정이 'exit' — 콘솔에 한 줄을 남기고, 도는 작업을 [중지]와 같은 길로 멈추고(Job 째), 전용 Edge 를 닫고, 서버를 끝낸다.
     팀 서버(teamserver.py)는 Job 밖이라 그대로 산다(팀 전체가 쓴다). LM28(2026-10-18): 까닭(창 닫힘 · N분 넘게 화면 신호 없음)을 멈춘 작업의
@@ -376,7 +437,7 @@ def ui_close_exit(server, why, out=None, tabs=None, now=None):
         busy = bool(JOB["running"])
         had_pid = bool(JOB.get("pid"))
         started = float(JOB.get("started") or 0.0)
-    why_ko = CLOSE_WHY_KO.get(why, why)
+    why_ko = _close_why_ko(why, tabs)
     line = (CLOSE_LINE_BUSY if busy else CLOSE_LINE_IDLE) + f" ({why_ko})"
     try:
         say(line)
@@ -410,7 +471,8 @@ def close_watch(server, c=None, every=CLOSE_EVERY, stop=None):
             _close_shift(gap, bye=False)        # 화면을 볼 수 없는 동안의 조용함은 세지 않는다(LM28 2026-10-18)
         prev = now
         tabs, bye, armed = _close_snapshot()
-        verdict, why = ui_close_decision(now, tabs, bye, armed, c)
+        # LM28(2026-10-19): 도는 작업·굽는 보고서가 없으면 조용함 상한이 CLOSE_SILENCE_IDLE(30분) — 알림 창(dialog)은 잠든 탭처럼 둔다
+        verdict, why = ui_close_decision(now, tabs, bye, armed, c, busy=_ui_busy())
         if verdict == "exit":
             ui_close_exit(server, why, tabs=tabs, now=now)
             return why
@@ -658,6 +720,9 @@ def local_ips():
 
 
 TS_TOKEN = os.path.join(REPORT, "teamserver.token")
+# 팀 서버(teamserver.py)가 report\ 에 두는 제 파일 — 기록·pid·증명 토큰. [데이터 리셋]은 지우지 않는다(LM28 2026-10-19 — 켜진 서버의
+# pid·토큰을 지우면 화면이 '내 서버' 임을 증명하지 못하고, 기록은 서버가 열고 있어 늘 '못 지운 파일' 로 남았다).
+TS_FILES = tuple(os.path.basename(p) for p in (TS_LOG, TS_PID, TS_TOKEN))
 
 
 def _my_token():
@@ -2828,61 +2893,274 @@ def narrate_job(all_months=False):
             JOB.update(running=False, step="", pid=0, phase="", done=0, total=0)
 
 
+RESET_RETRY_SEC = 1.5     # LM28(2026-10-19) 첫 번에 못 지운 파일을 한 번 더 지우기 전 쉼(초) — 백신 검사·미리보기·동기화처럼 잠깐 잡은 것
+HOLDER_MAX = 20           # 잡고 있는 프로그램 이름을 물어볼 파일 수 상한(Restart Manager 세션을 파일마다 1개 — 짧다)
+_REPARSE_POINT = 0x400    # FILE_ATTRIBUTE_REPARSE_POINT
+_NAME_SURROGATE = 0x20000000    # 다른 경로를 가리키는 재분석 태그(정션·심볼릭 링크 — IsReparseTagNameSurrogate)
+
+
+def _xlong(p):
+    r"""확장 경로(\\?\ — 260자 넘는 경로도 읽고 지운다). 리셋이 걷는 뿌리(report\·data\)에는 늘 붙인다 — 뿌리가 짧아도 그 아래가 길 수
+    있고, 뿌리에 붙여 두면 os.walk 가 내놓는 모든 경로가 확장 경로가 된다(teamup.longp 는 240자 넘을 때만 붙인다 — 파일 하나는 _longp).
+    윈도가 아니거나 이미 붙었으면 그대로."""
+    p = str(p)
+    if os.name != "nt" or p.startswith("\\\\?\\"):
+        return p
+    p = os.path.abspath(p)
+    return ("\\\\?\\UNC" + p[1:]) if p.startswith("\\\\") else ("\\\\?\\" + p)
+
+
+def _plain(p):
+    r"""확장 경로 → 보통 경로(화면·기록·상대 경로 계산용)."""
+    p = str(p)
+    if p.startswith("\\\\?\\UNC\\"):
+        return "\\" + p[7:]
+    return p[4:] if p.startswith("\\\\?\\") else p
+
+
+def _longp(p):
+    r"""파일 하나의 경로 — 260자 넘으면 확장 경로로(teamup.longp — 짧으면 그대로). 이미 붙었으면 그대로. teamup 을 못 읽는 판이면 같은
+    규칙(240자 넘으면)을 여기서."""
+    p = str(p)
+    if p.startswith("\\\\?\\"):
+        return p
+    try:
+        from teamup import longp
+        return longp(p)
+    except Exception:  # noqa: BLE001 - 경로 늘이기는 덤 — 실패해도 지우기는 한다
+        q = os.path.abspath(p)
+        return _xlong(q) if len(q) >= 240 else q
+
+
+def _rel(p, base_dir):
+    r"""설치 폴더 기준 상대 경로(화면·기록용) — 확장 경로는 풀고, 드라이브가 다르면(relpath 가 ValueError) 절대 경로 그대로."""
+    q = _plain(p)
+    try:
+        return os.path.relpath(q, base_dir)
+    except ValueError:
+        return q
+
+
+def _link_dir(p):
+    r"""정션·심볼릭 링크처럼 **다른 곳을 가리키는** 폴더인가 — lstat 의 FILE_ATTRIBUTE_REPARSE_POINT 와 이름 대리 태그(shutil.rmtree 의
+    정션 판정과 같은 갈래). OneDrive 자리표시자 같은 다른 재분석 지점은 그 자리의 진짜 폴더라 들어간다(lstat 이 태그 없이 돌려준다).
+    lstat 을 못 하면 참(들어가지 않는다 — 모르면 지우지 않는 쪽)."""
+    import stat
+    try:
+        st = os.lstat(p)
+    except OSError:
+        return True
+    if stat.S_ISLNK(st.st_mode):
+        return True
+    attrs = getattr(st, "st_file_attributes", 0) or 0
+    tag = getattr(st, "st_reparse_tag", 0) or 0
+    return bool(attrs & _REPARSE_POINT and tag & _NAME_SURROGATE)
+
+
 def _rm_file(path, tries=3, pause=0.3):
     r"""파일 하나 지우기 → 지웠나(이미 없으면 참). LM28(2026-10-18 — 제보 "데이터 리셋이 실패하는 경우가 있음"): 읽기 전용 파일(다른 PC·
     USB·공유 폴더에서 옮겨 온 자료)은 읽기 전용을 풀고, 잠깐 잠긴 파일(화면이 그 파일을 읽는 중 · 백신 검사 · OneDrive 동기화)은 잠깐
-    쉬었다 다시 지운다. 예전에는 한 번 실패하면 말없이 건너뛰어 '리셋 완료'인데 결과가 그대로 남았다."""
+    쉬었다 다시 지운다. 예전에는 한 번 실패하면 말없이 건너뛰어 '리셋 완료'인데 결과가 그대로 남았다.
+    LM28(2026-10-19): 260자 넘는 경로는 확장 경로(\\?\ — _longp)로 풀고 지우고, '지웠다' 는 지운 뒤 파일이 정말 없을 때만 센다 — 예전에는
+    FileNotFoundError 를 지운 것으로 셌는데, 너무 긴 경로는 WinError 3(경로 없음)으로 나와 파일이 남았는데도 '지움' 이었다."""
     import stat
+    lp = _longp(path)
     for i in range(max(1, int(tries))):
         try:
-            os.remove(path)
-            return True
+            os.remove(lp)
         except FileNotFoundError:
-            return True
+            pass                                    # '없다' 는 말만 믿지 않는다 — 아래에서 정말 없는지 본다
         except PermissionError:
             try:
-                os.chmod(path, stat.S_IWRITE)       # 읽기 전용이면 푼다(아니면 그대로)
+                os.chmod(lp, stat.S_IWRITE)         # 읽기 전용이면 풀고 곧바로 한 번 더(아니면 그대로)
+                os.remove(lp)
             except OSError:
                 pass
         except OSError:
             pass
+        if not os.path.lexists(lp):
+            return True
         if i + 1 < tries:
             time.sleep(pause)
     return False
 
 
-def reset_files(what="report", keep_queue=True, report=None, data=None, failed=None):
+def _rm_holders(path):
+    r"""LM28(2026-10-19) — 그 파일을 열고 있는 프로세스 → [(pid, 앱 이름, 서비스 이름)]. Windows Restart Manager(rstrtmgr.dll —
+    RmStartSession · RmRegisterResources · RmGetList · RmEndSession)를 ctypes 로 한 세션 부른다(관리자 권한 없음 · 새 프로세스 없음).
+    윈도가 아니거나 어떤 오류든 [](이름은 덤 — 모르면 화면이 예전 일반 문구를 쓴다)."""
+    if os.name != "nt":
+        return []
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _UniqueProcess(ctypes.Structure):
+            _fields_ = [("dwProcessId", wintypes.DWORD), ("ProcessStartTime", wintypes.FILETIME)]
+
+        class _ProcessInfo(ctypes.Structure):
+            _fields_ = [("Process", _UniqueProcess), ("strAppName", wintypes.WCHAR * 256),      # CCH_RM_MAX_APP_NAME + 1
+                        ("strServiceShortName", wintypes.WCHAR * 64),                          # CCH_RM_MAX_SVC_NAME + 1
+                        ("ApplicationType", ctypes.c_int), ("AppStatus", wintypes.ULONG),
+                        ("TSSessionId", wintypes.DWORD), ("bRestartable", wintypes.BOOL)]
+
+        rm = ctypes.WinDLL("rstrtmgr")
+        rm.RmStartSession.argtypes = (ctypes.POINTER(wintypes.DWORD), wintypes.DWORD, wintypes.LPWSTR)
+        rm.RmRegisterResources.argtypes = (wintypes.DWORD, wintypes.UINT, ctypes.POINTER(wintypes.LPCWSTR),
+                                           wintypes.UINT, ctypes.c_void_p, wintypes.UINT, ctypes.c_void_p)
+        rm.RmGetList.argtypes = (wintypes.DWORD, ctypes.POINTER(wintypes.UINT), ctypes.POINTER(wintypes.UINT),
+                                 ctypes.POINTER(_ProcessInfo), ctypes.POINTER(wintypes.DWORD))
+        rm.RmEndSession.argtypes = (wintypes.DWORD,)
+        for fn in (rm.RmStartSession, rm.RmRegisterResources, rm.RmGetList, rm.RmEndSession):
+            fn.restype = wintypes.DWORD
+        sess = wintypes.DWORD(0)
+        key = ctypes.create_unicode_buffer(33)                         # CCH_RM_SESSION_KEY + 1
+        if rm.RmStartSession(ctypes.byref(sess), 0, key) != 0:
+            return []
+        try:
+            q = _plain(path)
+            q = q if len(q) < 260 else str(path)
+            if rm.RmRegisterResources(sess, 1, (wintypes.LPCWSTR * 1)(q), 0, None, 0, None) != 0:
+                return []
+            reasons, n = wintypes.DWORD(0), 0
+            for _ in range(3):                                         # 사이에 늘었으면(ERROR_MORE_DATA) 다시
+                need, have = wintypes.UINT(0), wintypes.UINT(n)
+                buf = (_ProcessInfo * n)() if n else None
+                rc = rm.RmGetList(sess, ctypes.byref(need), ctypes.byref(have), buf, ctypes.byref(reasons))
+                if rc == 0:
+                    return ([(int(buf[i].Process.dwProcessId), str(buf[i].strAppName or "").strip(),
+                              str(buf[i].strServiceShortName or "").strip()) for i in range(min(have.value, n))]
+                            if buf is not None else [])
+                if rc != 234:                                          # ERROR_MORE_DATA 가 아니면 모른다
+                    return []
+                n = int(need.value) + 2
+            return []
+        finally:
+            rm.RmEndSession(sess)
+    except Exception:  # noqa: BLE001 - 이름은 덤이다
+        return []
+
+
+def file_holders(paths, report=None):
+    r"""LM28(2026-10-19) — 못 지운 파일을 누가 열고 있나 → {경로(받은 그대로): '이름 · 이름'}. 파일마다 _rm_holders(Restart Manager)를
+    부른다(HOLDER_MAX 개까지). 이 프로세스 → '이 대시보드', report\teamserver.pid 의 pid → '팀 서버', 그 밖은 윈도가 아는 이름
+    (Microsoft Excel · Microsoft OneDrive · Windows 탐색기 등). 모르는 파일은 빠진다 — 화면이 예전 일반 문구를 쓴다."""
+    out = {}
+    if os.name != "nt" or not paths:
+        return out
+    try:
+        with open(os.path.join(report or REPORT, os.path.basename(TS_PID)), encoding="utf-8") as f:
+            ts_pid = int((f.read() or "0").strip() or 0)
+    except (OSError, ValueError):
+        ts_pid = 0
+    me = os.getpid()
+    for p in list(paths)[:HOLDER_MAX]:
+        names = []
+        for pid, app_name, svc in _rm_holders(p):
+            nm = ("이 대시보드" if pid == me else "팀 서버" if ts_pid and pid == ts_pid
+                  else (app_name or svc or f"프로그램(pid {pid})"))
+            if nm not in names:
+                names.append(nm)
+        if names:
+            out[p] = " · ".join(names[:4])
+    return out
+
+
+def reset_busy_hint(step):
+    r"""LM28(2026-10-19) — [데이터 리셋]을 지금 할 수 없는 까닭(409 hint). 무엇이 돌고 있는지 이름을 넣는다 — 예전에는 '작업 실행 중'
+    한 마디라 무엇을 기다려야 하는지 몰랐다(분석 끝의 팀 서버 보고·공유폴더 내보내기·Edge 닫기가 몇십 초 더 돈다)."""
+    s = re.sub(r"\s+", " ", str(step or "")).strip()
+    s = re.split(r" \(| — | - ", s)[0].strip()[:40] or "분석 실행"
+    return f"지금 '{s}' 작업이 돌고 있어 리셋할 수 없습니다 — 위 상태가 '대기'로 바뀐 뒤 다시 누르세요"
+
+
+def reset_files(what="report", keep_queue=True, report=None, data=None, failed=None, detail=None):
     r"""[데이터 리셋] — report\(what='all' 이면 data\ 도) 아래 파일을 지운다 → (지운 파일 수, 보존한 월별 코멘트 파일 수).
-    · Copilot 로그인 세션(data\lm28_edge)은 늘 보존, 아직 못 보낸 팀 업로드 묶음(upload_pending)은 keep_queue 면 보존.
+    · Copilot 로그인 세션(data\<lmname.EDGE_PROFILE_NAME>)은 늘 보존, 아직 못 보낸 팀 업로드 묶음(upload_pending)은 keep_queue 면 보존.
     · '분석 결과만 삭제'(what != 'all')는 월별 리뷰 코멘트(report\ai_narratives_*.json)를 남긴다 — Copilot 왕복 수십 번으로
       만든 것이고 같은 달 코멘트는 다음 분석이 이월해 쓴다(진단 C). 지우려면 수집 데이터+결과 리셋(what='all').
     · 같은 이유로 AI 판정 기록(report\judge_cache.json — 내용 해시 → 판정, 원문 없음)도 남긴다. 지우면 다음 분석이 수천 건을
       처음부터 다시 물어 Copilot 사용량 제한에 다시 걸린다. 다시 쓰는 판정의 과제명은 judge 가 매번 다시 거른다.
     · LM28(2026-10-18): 지우기는 _rm_file(읽기 전용 풀기 · 잠깐 잠긴 파일은 다시)로 하고, 끝내 못 지운 파일은 failed(목록을 주면)에
-      설치 폴더 기준 상대 경로로 담는다 — 화면이 '몇 개는 다른 프로그램이 쓰고 있어 못 지웠다'고 말한다."""
+      설치 폴더 기준 상대 경로로 담는다 — 화면이 '몇 개는 다른 프로그램이 쓰고 있어 못 지웠다'고 말한다.
+    · LM28(2026-10-19):
+      - 팀 서버의 제 파일(report\teamserver.log·.pid·.token — TS_FILES)은 지우지 않는다(켜진 서버가 쓰고 있다).
+      - Copilot 기록(data\<프로필>.chats.json·.pace.json·.wait.json·.busy.lock 등 — 프로필 이름 + '.' 로 시작하는 data\ 바로 아래 파일)은
+        Copilot 세션과 함께 남긴다. chats.json 은 어느 Copilot 채팅이 LM 것인지의 기록이라 잃으면 LM 이 제 채팅을 지우지 못한다.
+      - 프로필 폴더는 걷기에서 아예 빼고, 정션·심볼릭 링크 폴더(_link_dir)는 들어가지 않는다 — 그 너머(설치 폴더 밖일 수 있다)를 지우지 않는다.
+      - 뿌리를 확장 경로(_xlong)로 걸어 260자 넘는 경로도 지우고 '정말 없을 때만' 지운 것으로 센다(_rm_file).
+      - 못 읽은 폴더(os.walk onerror)는 까닭과 함께 failed 에 넣는다. 못 지운 파일은 RESET_RETRY_SEC 뒤 한 번 더 지우고, 그래도 남으면
+        잡고 있는 프로그램 이름(file_holders)을 detail 에 담는다.
+      detail(dict 를 주면): holders{상대 경로: 이름} · reasons{상대 경로: 까닭} · kept[보존한 파일 이름] · links[들어가지 않은 연결]."""
     report = report or REPORT
     data = data or DATA
-    rep_key = os.path.normcase(os.path.abspath(report))
     base_dir = os.path.dirname(os.path.abspath(report))
+    prof = lmname.EDGE_PROFILE_NAME.lower()
+    ts_keep = {x.lower() for x in TS_FILES}
     removed = kept_nar = 0
-    for base in [report] + ([data] if what == "all" else []):
-        for root, _dirs, files in os.walk(base):
-            if lmname.EDGE_PROFILE_NAME in root:   # Copilot 로그인 세션(data\lm28_edge)은 보존
-                continue
-            if keep_queue and "upload_pending" in root:
-                continue                      # 보내야 할 것을 리셋으로 잃지 않게(검증 지적)
-            top = os.path.normcase(os.path.abspath(root)) == rep_key
+    left, kept, links, stuck = [], [], [], []      # 다시 지울 것 · 보존한 이름 · 들어가지 않은 연결 · 못 읽은 폴더(경로, 까닭)
+
+    def _onerr(e):
+        if isinstance(e, (FileNotFoundError, NotADirectoryError)):
+            return                                   # 없는 폴더(data\ 가 아직 없음 · 걷는 사이 사라짐) — 지울 것이 없다
+        stuck.append((getattr(e, "filename", "") or "",
+                       "폴더를 읽지 못함(" + ("권한 없음" if isinstance(e, PermissionError) else type(e).__name__) + ")"))
+
+    for base, kind in [(report, "report")] + ([(data, "data")] if what == "all" else []):
+        xbase = _xlong(base)
+        top_key = os.path.normcase(xbase)
+        for root, dirs, files in os.walk(xbase, onerror=_onerr):
+            top = os.path.normcase(root) == top_key
+            walk = []
+            for dn in dirs:
+                dl = dn.lower()
+                if dl == prof:                       # Copilot 로그인 세션 — 통째로 보존(들어가지 않는다)
+                    continue
+                if keep_queue and dl == "upload_pending":
+                    continue                         # 보내야 할 것을 리셋으로 잃지 않게(검증 지적)
+                if _link_dir(os.path.join(root, dn)):
+                    links.append(os.path.join(root, dn))
+                    continue                         # 정션·링크 너머는 설치 폴더 밖일 수 있다 — 들어가지도 지우지도 않는다
+                walk.append(dn)
+            dirs[:] = walk
             for fn in files:
-                if what != "all" and top and fn.startswith("ai_narratives_") and fn.endswith(".json"):
+                fl = fn.lower()
+                if top and kind == "report" and fl in ts_keep:
+                    kept.append(fn)                  # 팀 서버의 제 파일
+                    continue
+                if top and kind == "data" and fl.startswith(prof + "."):
+                    kept.append(fn)                  # Copilot 기록(채팅 소유·보내기 간격·쉬는 시간·잠금)
+                    continue
+                if what != "all" and top and kind == "report" and fn.startswith("ai_narratives_") and fn.endswith(".json"):
                     kept_nar += 1
                     continue
-                if what != "all" and top and fn == "judge_cache.json":
+                if what != "all" and top and kind == "report" and fn == "judge_cache.json":
                     continue
                 p = os.path.join(root, fn)
                 if _rm_file(p):
                     removed += 1
-                elif isinstance(failed, list):
-                    failed.append(os.path.relpath(p, base_dir))
+                else:
+                    left.append(p)
+    if left:
+        time.sleep(RESET_RETRY_SEC)                  # 잠깐 잡았던 프로그램(백신 검사·미리보기·동기화)이 놓을 틈 — 한 번만 더
+        again = [p for p in left if not _rm_file(p, tries=1)]
+        removed += len(left) - len(again)
+        left = again
+    names = file_holders(left, report=report) if left else {}
+    holders, reasons = {}, {}
+    for p in left:
+        rp = _rel(p, base_dir)
+        if isinstance(failed, list):
+            failed.append(rp)
+        if p in names:
+            holders[rp] = names[p]
+    for fp, why in stuck:
+        rp = _rel(fp, base_dir)
+        if isinstance(failed, list):
+            failed.append(rp)
+        reasons[rp] = why
+    if isinstance(detail, dict):
+        detail.update(holders=holders, reasons=reasons, kept=sorted(set(kept)), links=[_rel(x, base_dir) for x in links])
     return removed, kept_nar
 
 
@@ -3326,6 +3604,11 @@ function lmAlive(vis){if(!lmLive())return;
  fetch("/api/alive",{method:"POST",headers:{"Content-Type":"application/json"},keepalive:true,
   body:JSON.stringify({id:LM_TAB,vis:vis||document.visibilityState})}).catch(()=>{});}
 function lmBeacon(path,vis){try{navigator.sendBeacon(path,JSON.stringify({id:LM_TAB,vis:vis||""}));}catch(e){}}
+// LM28(2026-10-19): 알림·확인·입력 창이 열려 있으면 브라우저가 타이머를 멈춘다 — 열기 직전 'dialog' 를 알리고 닫히면 곧바로 다시 알린다(대시보드와 같다)
+(function(){if(window.__lmDlg)return;window.__lmDlg=1;
+ ["alert","confirm","prompt"].forEach(function(k){const f0=window[k];if(typeof f0!=="function")return;
+  window[k]=function(){try{if(lmLive())lmBeacon("/api/alive","dialog");}catch(e){}
+   try{return f0.apply(window,arguments);}finally{try{if(lmLive())lmAlive();}catch(e){}}};});})();
 if(lmLive()){
  lmAlive();setInterval(()=>lmAlive(),10000);
  document.addEventListener("visibilitychange",()=>lmAlive());
@@ -3362,6 +3645,7 @@ button.run{background:#2a78d6;color:#fff;border:0;border-radius:5px;padding:9px 
 button.run:disabled{background:#c9cfd8;cursor:default}
 button.run.local{background:#0e8c7a}button.run.local:disabled{background:#c9cfd8}
 button.ghost{background:#fff;color:#4a5159;border:1px solid #c9cfd8;border-radius:5px;padding:6px 12px;font-size:12px;cursor:pointer;font-family:inherit}
+#reset:disabled{opacity:.45;cursor:default}
 #log{background:#12151a;color:#d6dbe1;border-radius:5px;padding:10px 12px;height:170px;overflow-y:auto;
  font-family:Consolas,monospace;font-size:11px;line-height:1.55;white-space:pre-wrap}
 table{width:100%;border-collapse:collapse;font-size:12px}
@@ -3739,6 +4023,8 @@ async function poll(){
   $("collect2").disabled=s.running;           // [로컬PC 자료수집]도 [분석 실행]과 똑같이 — 같은 run.py·원장·전용 Edge
   // 분석·웹 읽기 중에는 웹 읽기·커서 초기화를 끈다 — 같은 전용 Edge·원장을 두 작업이 함께 쓰지 않게(F-16)
   ["owa","teamsweb","cvreset"].forEach(id=>{const b=$(id);if(b)b.disabled=!!s.running;});
+  // LM28(2026-10-19): 작업이 도는 동안에는 [데이터 리셋]도 끈다(누르면 '실행 중'만 들었다) — 무엇이 도는지는 버튼에 마우스를 올리면 보인다
+  const rsb=$("reset");if(rsb){rsb.disabled=!!s.running;rsb.title=s.running?`지금 도는 작업: ${s.step||"분석 실행"} — 끝나면 누를 수 있습니다`:"";}
   $("stop").style.display=s.running?"":"none";
   leaveGuard(!!s.running);                    // 작업 중에는 창을 닫기 전에 브라우저가 한 번 묻는다(닫으면 작업도 멈춘다)
   // 대기 글자 뒤에 이번 세션에서 끝난 실행의 팀 서버 보고 성공을 조용히 붙인다(3초 폴링이 지우지 않게 — trRender 가 채움)
@@ -4497,16 +4783,23 @@ $("narrate").onclick=async()=>{
  timer=setInterval(poll,1000);poll();
 };
 $("reset").onclick=async()=>{
- const all=confirm("데이터를 리셋합니다.\\n\\n[확인] 수집 데이터 + 분석 결과 모두 삭제\\n[취소] 다음 창에서 분석 결과만 삭제 선택(월별 리뷰 코멘트·AI 판정 기록은 보존)\\n\\nCopilot 로그인 세션은 어느 쪽이든 유지됩니다.");
+ const all=confirm("데이터를 리셋합니다.\\n\\n[확인] 수집 데이터 + 분석 결과 모두 삭제\\n[취소] 다음 창에서 분석 결과만 삭제 선택(월별 리뷰 코멘트·AI 판정 기록은 보존)\\n\\n어느 쪽이든 Copilot 로그인 세션·채팅 기록, 아직 팀 서버로 보내지 못한 결과 묶음(report\\\\upload_pending), 팀 서버 기록 파일은 지우지 않습니다.");
  let what="all";
  if(!all){ if(!confirm("분석 결과(report 폴더)만 삭제할까요?\\n월별 리뷰 코멘트·AI 판정 기록은 보존합니다 — 다음 분석이 같은 달 코멘트를 이어서 쓰고, 이미 판정한 신호는 다시 묻지 않습니다."))return; what="report"; }
  const d=await fetch("/api/reset",{method:"POST",headers:{"Content-Type":"application/json"},
    body:JSON.stringify({what})}).then(r=>r.json()).catch(()=>({ok:false,hint:"서버와 연결이 끊겼습니다 — 대시보드를 다시 켠 뒤 다시 누르세요"}));
  // LM28(2026-10-18): 끝내 못 지운 파일(다른 프로그램이 쓰는 중)을 말한다 — 예전에는 말없이 건너뛰어 '리셋 완료'인데 결과가 남았다
- const nf=d.n_failed||0, ex=(d.failed||[]).slice(0,5).join("\\n");
+ // LM28(2026-10-19): 그 파일을 열고 있는 프로그램 이름(holders — 윈도가 아는 이름·이 대시보드·팀 서버)과 못 읽은 폴더의 까닭(reasons)을 '경로 — 이름' 으로
+ const nf=d.n_failed||0, hd=d.holders||{}, rs=d.reasons||{};
+ const ex=(d.failed||[]).slice(0,5).map(p=>p+(hd[p]?" — "+hd[p]:(rs[p]?" — "+rs[p]:""))).join("\\n");
+ const who=[...new Set((d.failed||[]).map(p=>hd[p]).filter(Boolean))];
+ // 지운 것이 있으면 업로드 카드·자동 보고 배너·수집 현황도 다시 읽는다(예전에는 결과 카드만 — 지운 배너가 남아 보였다)
+ if(d.error!=="busy"&&d.removed!=null){loaded={};refresh();tuLoad();trLoad(false);cvLoad();}
  if(d.ok){$("state").textContent=`리셋 완료 — ${d.removed}개 파일 삭제`+(d.kept_narratives?` · 월별 리뷰 코멘트 ${d.kept_narratives}개 파일 보존`:"")
-   +(nf?` · ${nf}개는 못 지움`:"");loaded={};refresh();
-   if(nf)alert(`리셋은 했지만 ${nf}개 파일을 지우지 못했습니다 — 다른 프로그램(엑셀·메모장·탐색기 미리보기 등)이 그 파일을 열고 있습니다.\\n\\n${ex}${nf>5?"\\n…":""}\\n\\n그 프로그램을 닫고 [데이터 리셋]을 한 번 더 누르세요.`);}
+   +(nf?` · ${nf}개는 못 지움`:"");
+   if(nf)alert(`리셋은 했지만 ${nf}개 파일을 지우지 못했습니다 — `
+    +(who.length?`그 파일을 열고 있는 프로그램: ${who.join(" · ")}.`:"다른 프로그램(엑셀·메모장·탐색기 미리보기 등)이 그 파일을 열고 있습니다.")
+    +`\\n\\n${ex}${nf>5?"\\n…":""}\\n\\n그 프로그램을 닫고 [데이터 리셋]을 한 번 더 누르세요.`);}
  else{alert(d.error==="busy"?(d.hint||"작업 실행 중에는 리셋할 수 없습니다"):("리셋 실패"+(d.hint?` — ${d.hint}`:"")));}
 };
 $("quit").onclick=async()=>{if(confirm("서버를 종료할까요?")){await fetch("/api/quit",{method:"POST"});
@@ -5046,6 +5339,13 @@ function lmAlive(vis){if(!lmLive())return;
  fetch("/api/alive",{method:"POST",headers:{"Content-Type":"application/json"},keepalive:true,
   body:JSON.stringify({id:LM_TAB,vis:vis||document.visibilityState})}).catch(()=>{});}
 function lmBeacon(path,vis){try{navigator.sendBeacon(path,JSON.stringify({id:LM_TAB,vis:vis||""}));}catch(e){}}
+// LM28(2026-10-19): 알림·확인·입력 창(alert·confirm·prompt)이 열려 있는 동안 브라우저는 이 화면의 타이머를 멈춘다 — 10초 신호가 끊겨
+// 3분 뒤 대시보드가 통째로 꺼졌다(제보: 팀 서버 업로드 실패 알림을 띄워 둔 채 다른 일을 하다 [데이터 리셋] → 실패). 창을 열기 직전에
+// 'dialog'(알림 창이 열려 있음)를 알리고, 닫히면 곧바로 평소 신호를 보낸다. 창의 결과는 그대로 돌려주고, 알리기가 실패해도 창은 연다.
+(function(){if(window.__lmDlg)return;window.__lmDlg=1;
+ ["alert","confirm","prompt"].forEach(function(k){const f0=window[k];if(typeof f0!=="function")return;
+  window[k]=function(){try{if(lmLive())lmBeacon("/api/alive","dialog");}catch(e){}
+   try{return f0.apply(window,arguments);}finally{try{if(lmLive())lmAlive();}catch(e){}}};});})();
 function leaveWarn(e){e.preventDefault();e.returnValue="";return "";}
 function leaveGuard(on){if(!lmLive()||on===!!window.__lmGuard)return;window.__lmGuard=on;
  if(on)window.addEventListener("beforeunload",leaveWarn);else window.removeEventListener("beforeunload",leaveWarn);}
@@ -5841,14 +6141,16 @@ class H(BaseHTTPRequestHandler):
                     # 받는 곳과 보는 곳을 못박는다 — 서버는 teamShareDir 를 우선 쓴다
                     if not str(cfg().get("teamShareDir") or "").strip():
                         _save_cfg("teamShareDir", os.path.join(ROOT, "teamdata"))
-                    lf = open(TS_LOG, "a", encoding="utf-8")
                     flags = NO_WIN
                     if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
                         flags |= subprocess.CREATE_NEW_PROCESS_GROUP
-                    pr = subprocess.Popen([sys.executable, os.path.join(ROOT, "teamserver.py"),
-                                           "--port", str(port)], cwd=ROOT, stdout=lf,
-                                          stderr=subprocess.STDOUT, creationflags=flags,
-                                          env=dict(os.environ, PYTHONIOENCODING="utf-8"))
+                    # LM28(2026-10-19): 기록 파일은 팀 서버(자식)가 물려받은 제 핸들로 쓴다 — 대시보드 쪽 사본은 띄우자마자 닫는다.
+                    # 예전에는 열어 둔 채 두어 [데이터 리셋]마다 teamserver.log 1개를 '다른 프로그램이 쓰는 중'으로 못 지웠다고 말했다.
+                    with open(TS_LOG, "a", encoding="utf-8") as lf:
+                        pr = subprocess.Popen([sys.executable, os.path.join(ROOT, "teamserver.py"),
+                                               "--port", str(port)], cwd=ROOT, stdout=lf,
+                                              stderr=subprocess.STDOUT, creationflags=flags,
+                                              env=dict(os.environ, PYTHONIOENCODING="utf-8"))
                     with open(TS_PID, "w", encoding="utf-8") as f:
                         f.write(str(pr.pid))
                 except OSError as e:
@@ -6207,42 +6509,66 @@ class H(BaseHTTPRequestHandler):
                 log("[중지] 지금 도는 작업은 중간 중단을 지원하지 않습니다 — 곧 끝나면 멈춥니다")
             self._send(200, {"ok": True, "stopped": was and had_pid})
         elif self.path == "/api/reset":
-            n = int(self.headers.get("Content-Length", 0))
+            # LM28(2026-10-19): 본문은 try 안에서 읽는다 — 깨졌거나 dict 가 아니면 {}(예전에는 dict 가 아닌 본문이 try 밖의 b.get 에서 죽어
+            # JOB 이 '데이터 리셋' 실행 중으로 굳었다). what 은 all|report 만 받는다(아니면 400 + 까닭). JOB 은 어느 길로 끝나도 비운다.
             try:
-                b = json.loads(self.rfile.read(n) or b"{}")
-            except Exception:
+                n = int(self.headers.get("Content-Length", 0) or 0)
+                b = json.loads(self.rfile.read(n) or b"{}") if n > 0 else {}
+            except (ValueError, OSError):
                 b = {}
+            if not isinstance(b, dict):
+                b = {}
+            what = str(b.get("what") or "report")          # report | all
+            if what not in ("all", "report"):
+                self._send(400, {"ok": False, "error": "bad what",
+                                 "hint": "리셋 범위는 'all'(수집 데이터+결과) 또는 'report'(분석 결과만)만 받습니다 — "
+                                         "화면을 새로고침(F5)한 뒤 다시 누르세요"})
+                return
             with LOCK:
                 if JOB["running"]:
-                    self._send(409, {"ok": False, "error": "busy"})
+                    # 무엇이 돌고 있는지 말한다(LM28 2026-10-19) — 예전에는 '작업 실행 중' 한 마디라 무엇을 기다려야 하는지 몰랐다
+                    step = str(JOB.get("step") or "")
+                    self._send(409, {"ok": False, "error": "busy", "step": step, "hint": reset_busy_hint(step)})
                     return
                 if self._freezing():        # 굽는 중에 report\ 를 지우면 사본이 반쪽·실패가 된다
                     return
                 JOB.update(running=True, step="데이터 리셋")
-            what = b.get("what") or "report"          # report | all
             removed = kept_nar = 0
-            failed, err = [], ""
+            failed, det, err = [], {}, ""
             try:
                 # 아직 못 보낸 팀 업로드 묶음은 기본 보존 · '분석 결과만' 이면 월별 리뷰 코멘트도 보존(reset_files)
-                removed, kept_nar = reset_files(what, keep_queue=not b.get("drop_queue"), failed=failed)
+                removed, kept_nar = reset_files(what, keep_queue=not b.get("drop_queue"), failed=failed, detail=det)
             except Exception as e:  # noqa: BLE001 - 리셋 중 오류는 화면에 까닭으로 돌려준다(예전에는 연결이 끊겨 '리셋 실패'만 떴다)
                 err = f"{type(e).__name__}: {e}"[:200]
             finally:
-                log(f"[리셋] {'수집 데이터+결과' if what == 'all' else '분석 결과'} {removed}개 파일 삭제"
-                    " (Copilot 로그인 세션은 유지)"
-                    + (f" (월별 리뷰 코멘트 {kept_nar}개 파일은 보존 — 지우려면 수집 데이터+결과 리셋)" if kept_nar else "")
-                    + (" (AI 판정 기록 judge_cache.json 은 보존 — 다음 분석이 이미 판정한 신호를 다시 묻지 않는다)"
-                       if what != "all" and os.path.isfile(os.path.join(REPORT, "judge_cache.json")) else "")
-                    + (f" · 못 지운 파일 {len(failed)}개(다른 프로그램이 쓰는 중 — 예: {', '.join(failed[:3])})" if failed else "")
-                    + (f" · 오류: {err}" if err else ""))
+                try:
+                    hold, ts_kept = det.get("holders") or {}, [x for x in (det.get("kept") or []) if x in TS_FILES]
+                    log(f"[리셋] {'수집 데이터+결과' if what == 'all' else '분석 결과'} {removed}개 파일 삭제"
+                        " (Copilot 로그인 세션·채팅 기록은 유지)"
+                        + (f" (월별 리뷰 코멘트 {kept_nar}개 파일은 보존 — 지우려면 수집 데이터+결과 리셋)" if kept_nar else "")
+                        + (" (AI 판정 기록 judge_cache.json 은 보존 — 다음 분석이 이미 판정한 신호를 다시 묻지 않는다)"
+                           if what != "all" and os.path.isfile(os.path.join(REPORT, "judge_cache.json")) else "")
+                        + (f" (팀 서버 파일 {'·'.join(ts_kept)} 은 보존 — 팀 서버가 쓰는 파일)" if ts_kept else "")
+                        + (f" · 바로 가기 연결(정션) {len(det.get('links') or [])}개는 따라 들어가지 않음(그 너머는 지우지 않는다)"
+                           if det.get("links") else "")
+                        + (f" · 못 지운 파일 {len(failed)}개 — " + ", ".join(
+                            (f"{x}({hold[x]})" if x in hold else x) for x in failed[:3]) if failed else "")
+                        + (f" · 오류: {err}" if err else ""))
+                except Exception:  # noqa: BLE001 - 기록 한 줄 때문에 JOB 이 '실행 중' 으로 굳지 않게
+                    pass
                 with LOCK:
                     JOB.update(running=False, step="")
+            hold, why = det.get("holders") or {}, det.get("reasons") or {}
+            body = {"removed": removed, "what": what, "kept_narratives": kept_nar,
+                    "failed": failed[:20], "n_failed": len(failed),
+                    # LM28(2026-10-19) 못 지운 파일을 열고 있는 프로그램 · 못 읽은 폴더의 까닭(failed 의 상대 경로가 열쇠)
+                    "holders": {k: hold[k] for k in failed[:20] if k in hold},
+                    "reasons": {k: why[k] for k in failed[:20] if k in why},
+                    "kept": det.get("kept") or [], "links": len(det.get("links") or [])}
             if err:
-                self._send(200, {"ok": False, "error": "failed", "hint": f"리셋 중 오류 — {err}", "removed": removed,
-                                 "failed": failed[:20], "n_failed": len(failed)})
+                self._send(200, dict(body, ok=False, error="failed", hint=f"리셋 중 오류 — {err}"))
                 return
-            self._send(200, {"ok": True, "removed": removed, "what": what, "kept_narratives": kept_nar,
-                             "failed": failed[:20], "n_failed": len(failed)})
+            self._send(200, dict(body, ok=True))
         elif self.path == "/api/report":
             # 보고서 3종(리포트·분석리포트·얼린 보고서) — in-process freeze.make_all. JOB 을 점유하지
             # 않고(얼린 사본에 '실행 중'이 굳는다) FREEZE_LOCK 으로만 직렬화; 분석 중이면 409.
@@ -6478,6 +6804,11 @@ def main():
     threading.Thread(target=_startup_cleanup, daemon=True).start()
     url = f"http://127.0.0.1:{port}/"
     print(f"[ui] LoadMonitor28 {VERSION} — {url}  (Ctrl+C 종료)")
+    # LM28(2026-10-19) 지난번에 스스로 끝났으면(report\ui_exit.json) 그 까닭을 한 번 — 콘솔과 화면의 진행 로그에
+    prev = prev_ui_exit()
+    if prev:
+        print(prev)
+        log(prev[len("[ui] "):])
     ccfg = _close_cfg()
     if ccfg["on"]:
         print("[ui] 대시보드 창을 모두 닫으면 실행 중인 작업도 멈추고 이 창이 닫힙니다(약 20초 뒤 · 팀 서버는 계속)")
