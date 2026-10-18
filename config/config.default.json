@@ -109,6 +109,22 @@
   "pcFloorWindow":"PC 가동 하한을 적용하는 시간 창 [시작시, 끝시] (기본 [8, 19] = LM24 와 같음). dayWindow 는 그대로 두고 하한에만 쓴다 — 줄이면(예: [9, 18]) 하한이 줄어든다",
   "noPcMonthDay": "PC 기록(켜짐 기록)이 평일 40% 미만인 달에서, 그날 PC 기록은 없지만 내가 남긴 흔적(보낸 메일·팀즈·저장한 파일 등)이 있는 평일의 근무 시간. \"standard\"(기본): 표준일 8h × (1−부재)로 추정한다(표준일 추정 — 보고서·대시보드에 일수를 표시, 저녁 흔적은 따로 더함) / \"trace\": 예전처럼 흔적 창(첫 흔적 −30분 ~ 마지막 흔적 +30분)으로만 잰다. 이벤트 로그가 롤오버된 앞쪽 달이 하루 수십 분으로 낮게 나오던 것을 막는다. 반일 근무가 많았던 달은 과대일 수 있다"
  },
+ "_attendance_설명": "출퇴근 추정(LM30) — 내가 남긴 흔적(저장·발신·커밋·수락한 회의·수동 기록·출장)과 PC를 켜고 끈 시각으로 날마다 출근·퇴근·근무 시간을 어림하고, useForMM이 true(기본)면 그 근무 시간으로 투입 MM을 잽니다. PC가 켜져만 있던 시간은 근무가 아니고, 휴게는 4시간마다 breakPer4hMin분을 뺍니다(덩어리 사이에 쉰 만큼 줄임). 날짜별 출근·퇴근 시각은 이 PC의 report\\attendance_<기간>.json에만 남고, 팀 서버·공유폴더에는 주·달 합계만 갑니다. 근태 기록(ERP)을 data\\근태\\*.csv(날짜·출근·퇴근 열 — 있으면 휴게(분)·인정연장·휴가)로 넣으면 근태에 없는 근무 시간을 셉니다. 키 — useForMM: false면 투입 MM은 예전(LM29) 방식이고 출퇴근 추정은 참고로만 보입니다 / leadMin·tailMin: PC를 켜고 끈 시각이 없을 때 첫 흔적 앞·마지막 흔적 뒤에 붙이는 분 / pcEdgeBeforeMin·pcEdgeAfterMin: 첫 흔적 앞·마지막 흔적 뒤 이 분 안에 PC를 켜고 껐으면 그 시각을 출근·퇴근으로 / bridgeAwayMin: 흔적 사이가 이 분 이하면 이어서 근무로 / bridgePcMin: 낮(mm.pcFloorWindow) 안에서 PC가 80% 이상 켜져 있던 공백은 이 분까지 이어서 / webJoinMin: 브라우저 방문이 흔적 앞뒤 이 분 안이면 출근·퇴근을 늘림(방문만으로는 근무가 아님) / offpcPadMin: PC가 꺼져 있던 덩어리(휴대폰·집)의 앞뒤 분 / breakPer4hMin: 4시간마다 빼는 휴게 분 / dayStartHour: 이 시각 전에 시작한 근무는 전날 근무 / weekHours·weekMaxHours: 주 기준 시간(넘은 시간 표시)·주 최대 시간(넘은 주 표시). 키가 없거나 블록이 없어도 기본값으로 이 방식을 씁니다",
+ "attendance": {
+  "useForMM": true,
+  "leadMin": 30,
+  "tailMin": 30,
+  "pcEdgeBeforeMin": 120,
+  "pcEdgeAfterMin": 90,
+  "bridgePcMin": 240,
+  "bridgeAwayMin": 90,
+  "webJoinMin": 60,
+  "offpcPadMin": 10,
+  "breakPer4hMin": 30,
+  "dayStartHour": 5,
+  "weekHours": 40,
+  "weekMaxHours": 52
+ },
  "_holidays_설명": "음력 명절·대체공휴일·선거일. 양력 고정 공휴일·근로자의날과 연도별 표(core\\extract.py KR_HOLIDAYS — 설·추석·대체공휴일·선거일, 2025~2027)는 내장돼 있어 비워 둬도 된다. 내장 표에 없는 연도·임시 공휴일만 [\"2028-02-14\", …] 로 추가. 팀 전원이 같은 값을 써야 한다(분모가 달라지면 팀 비교가 어긋남). 해가 바뀌면 정부 공고로 내장 표를 갱신할 것",
  "holidays": [],
  "_수집_설명": "감시할 작업 폴더와 확장자. 실제 산출물이 있는 곳을 넣어야 설계·SW개발이 잡힌다. 공유·동기화 폴더(UNC·OneDrive/SharePoint)를 넣으면 동료가 저장한 파일은 author(Office 문서의 lastModifiedBy·UNC 는 파일 소유자)로 걸러 '파일(타인)' 로만 남는다(owner·teamsSelfNames 와 비교, PDF·CAD 등은 구분 불가). 이전 실행이 관측한 파일 시각은 data\\files\\files_history.csv 에 400일 누적돼 다음 수정으로 덮여도 앞 달 근거가 남는다",

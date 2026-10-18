@@ -1739,8 +1739,12 @@ def _main():
             if _rows:
                 _wh, _hi = _XW.day_work_hours(data, _rows, _dd0, _dd1, _cfgw,
                                               file_times=_metaw.get("file_times"))
-                _XW.save_day_hours(os.path.join(ROOT, "report"),
-                                   f"{d0.replace('-', '')}-{d1.replace('-', '')}", _wh)
+                _tgw = f"{d0.replace('-', '')}-{d1.replace('-', '')}"
+                _XW.save_day_hours(os.path.join(ROOT, "report"), _tgw, _wh)
+                # LM30(2026-10-18): 출퇴근 추정의 날짜별 자료도 같은 자리에(이 PC 전용 — 팀 묶음·공유폴더 목록에 없다)
+                import attendance as _ATW
+                _ad, _au = _ATW.take_local(_hi)
+                _XW.save_attendance(os.path.join(ROOT, "report"), _tgw, _ad, _au, _hi.get("attendance"))
                 print(f"   근무 실측 {len(_wh)}일 저장 — 본 PC 추이 실선에 그대로 쓰입니다")
             _pg("근무시간 실측", 1, 1)
         except Exception as _e:  # noqa: BLE001

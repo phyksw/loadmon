@@ -41,6 +41,11 @@ LM22 2차 (감사 A1·A3·A6·A9·A13·A24·A25·A30~A35·D3·D4·D5·D7 의 시
   · 가용·부재     — 부재 추정 완화(A31)·추정일은 분모에서도 제외·미래 평일·오늘 비율(A34 mm_from_hours now)
   · 재산정(A30)   — rehours_after_judge: 판정에서 버린 신호를 뺀 시간·MM (judge·UI 가 호출)
   · 표기(D5)      — info.measure·coverage·cfg_used (mine.py 가 mm_meta 최상위에도 싣는다)
+
+LM30(2026-10-18 — 출퇴근 추정, 규칙은 core/attendance.py 머리말):
+  · day_work_hours 끝에서 같은 재료로 날마다 출근·퇴근·근무를 어림하고(config.attendance — useForMM 기본 켬), 그 근무가 투입
+    시간이다. LM29 시간은 lm29_day_hours·lm29_totals 로 남고 mm_from_hours 가 달마다 mm_lm29(LM29 방식이었다면)를 낸다.
+  · 날짜별 출퇴근 시각은 save_attendance(report/attendance_<기간>.json — 이 PC 전용)로만 — mm_meta 에는 시각 없는 합계뿐.
 """
 import csv
 import glob
@@ -1858,6 +1863,13 @@ UNTIMED_BASE = {"메일(발신·일자)": "메일(발신)", "팀즈(발신·일�
 # 본인 발신 라벨 — 사적 판정의 퇴근 후 +1점을 받지 않고(load_signals), AI 가 비업무(n)로 걸러도 시간 근거로 남는다(rehours_after_judge)
 OWN_SEND_SRC = ("메일(발신)", "메일(발신·일자)", "팀즈(발신)", "팀즈(발신·일자)")
 TIME_KEEP_SRC = OWN_SEND_SRC
+# LM30(2026-10-18) 출퇴근 추정(core\attendance)의 '확실한 흔적' 점 — 내가 만든 산출물·발신 중 시각을 아는 것. 날짜만 아는 발신
+# (UNTIMED_SRC)은 시각이 없고, '수동기록' 신호의 09:00 은 load_signals 의 자리표라 점으로 쓰지 않는다 — 수동 기록은 worklog 의
+# 구간(시작·끝)·시간(바닥값)으로 따로 받는다(manual_entries). 받은 글·열람·해석 출력은 사람이 한 일의 시각이 아니다.
+ATT_POINT_SRC = frozenset(NIGHT_PRODUCTIVE - UNTIMED_SRC - {"수동기록"})
+# 출퇴근 추정이 투입을 맡을 때 info 에서 lm29_totals 로 옮기는 LM29 합계(같은 키에는 출퇴근 추정 값이 들어간다)
+LM29_TOTAL_KEYS = ("overtime_h", "regular_h", "extended_h", "night_h", "holiday_h", "holiday_night_h",
+                   "weekend_days", "night_days", "long_days", "absent_worked_h")
 STD_DAY_H = 8.0
 # 근태어(A5) — 한글은 토큰 **접미 일치**(여름휴가·연차휴가·오후반차·육아휴직 ○ / 휴무일·휴가철·2연차 ×),
 # 영문은 단어 경계 구문. 놓치면 정상 근무로 계산되므로 놓치는 쪽이 안전한 방향이다.
@@ -2140,6 +2152,32 @@ def manual_hours(data_dir, d0, d1):
     return out
 
 
+def manual_entries(data_dir, d0, d1):
+    """LM30(2026-10-18) — worklog.csv(date,category,hours,entity,note,user,start,end) → [(날짜, 시간, 시작 분|None, 끝 분|None)].
+    manual_hours 는 시간만 읽어 시작·끝을 버렸다 — 출퇴근 추정은 시작·끝이 있는 행을 그 구간의 확실한 흔적으로, 시간만 적은 행은
+    바닥값으로 쓴다. 중복 거르기는 manual_hours 와 같다(추가PC 포함 — 같은 행은 1건, 구간이 다르면 다른 행). start·end 가 둘 다
+    읽히고 다를 때만 구간이다(끝 ≤ 시작 = 자정을 넘긴 구간 — 끝에 1440 을 더하는 것은 호출측)."""
+    out, seen = [], set()
+    for r in _read_multi(data_dir, "manual", "worklog.csv"):
+        t = _dt((r.get("date") or "").strip()[:10])
+        try:
+            h = float(r.get("hours") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not t or not (0 < h <= PHYS_CAP_H) or not (d0 <= t.date() <= d1):
+            continue
+        s0, s1 = _hhmm(r.get("start")), _hhmm(r.get("end"))
+        if s0 is None or s1 is None or s0 == s1:
+            s0 = s1 = None
+        key = (t.date(), (r.get("category") or "").strip(), h, (r.get("entity") or "").strip(),
+               (r.get("note") or "").strip(), s0, s1)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((t.date(), h, s0, s1))
+    return out
+
+
 def _pc_spans_rows(rows, d0, d1, anomalies=None):
     """pc_spans 행(start,end,src) → {date: [(m0, m1), …]} — read_pc_spans 의 본체. 루트별로 따로 부를 수 있게 뗐다(pc_daily 가
     구간이 어느 PC 것인지 알아야 한다)."""
@@ -2325,6 +2363,54 @@ def pc_daily(data_dir, d0, d1, day_win=None, anom=None, span_anoms=None, single_
     return pc, pc_wins, pc_spans, pc_win_all
 
 
+def att_presence(data_dir, d0, d1):
+    r"""LM30(2026-10-18) 출퇴근 추정(core\attendance)의 PC 재료 — 본 PC + data\추가PC\* → (pres, weak, live_ends)
+      pres       {date: [(m0, m1)]} PC 가 실제로 켜져 있던 구간 — pc_spans 의 이벤트 행(켜기·로그온·잠금 해제·절전 해제·원격 접속
+                 ~ 끄기·로그오프·잠금·절전 · 수집 중이면 수집 시각까지). 구간 파일이 없는 루트(옛 수집분)만 pc_on 행의
+                 first_on~last_off 창 — 구간 파일이 있는 루트의 pc_on 은 원장 파생 캐시라(브라우저 방문 구간까지 섞여) 쓰지 않는다.
+      weak       {date: [(m0, m1)]} 브라우저 방문(hint)·창 샘플러(sampler) 구간 — 켜짐이 아니라 약한 흔적
+      live_ends  [datetime] 수집 시각까지 켜져 있던 현재 세션(src live·boot)의 끝 — '끔' 이 아니다
+    pc_daily 와 같은 루트·유령 날 거르기(이동해 온 PC 의 첫 물리 이벤트 이전 힌트 날)를 쓴다. 호출측이 범위를 앞뒤 하루씩 넓혀 준다
+    (자정에서 자른 조각이 기간 첫날 00:00 에 가짜 '켬' 을 만들지 않게). 읽기만 한다."""
+    soft = ("hint", "sampler")
+    pres, weak, live = {}, {}, []
+    for root in _data_roots(data_dir):
+        rows = _read(os.path.join(root, "pc_spans.csv")) + _read(os.path.join(root, "pc", "pc_spans.csv"))
+        if os.path.exists(os.path.join(root, "pc", "pc_anchor.json")):
+            ev_dates, first = set(), None
+        else:
+            ev_dates, first = _evt_span_dates(rows, d0, d1)
+
+        def _ph(dd, _f=first, _e=ev_dates):
+            return _f is not None and dd < _f and dd not in _e
+        evt = [r for r in rows if str(r.get("src") or "").strip().lower() not in soft]
+        for dd, lst in _pc_spans_rows(evt, d0, d1).items():
+            if not _ph(dd):
+                pres.setdefault(dd, []).extend(lst)
+        for dd, lst in _pc_spans_rows([r for r in rows if str(r.get("src") or "").strip().lower() in soft],
+                                      d0, d1).items():
+            if not _ph(dd):
+                weak.setdefault(dd, []).extend(lst)
+        for r in evt:
+            if str(r.get("src") or "").strip().lower() in ("live", "boot"):
+                b = _dt(r.get("end"))
+                if b:
+                    live.append(b)
+        if rows:
+            continue
+        for r in _read(os.path.join(root, "pc", "pc_on.csv")):
+            try:
+                d = datetime.strptime((r.get("date") or "")[:10], "%Y-%m-%d").date()
+            except (ValueError, TypeError):
+                continue
+            if not (d0 <= d <= d1) or _ph(d):
+                continue
+            fo, lo = _hhmm(r.get("first_on")), _hhmm(r.get("last_off"))
+            if fo is not None and lo is not None and lo > fo:
+                pres.setdefault(d, []).append((fo, lo))
+    return ({dd: _union_spans(v) for dd, v in pres.items()}, {dd: _union_spans(v) for dd, v in weak.items()}, live)
+
+
 def save_day_hours(rep_dir, tag, day_hours):
     r"""근무시간(투입 실측) 아티팩트 — report\day_hours_<tag>.json.
     화면(추이 실선)은 이것을 **읽기만** 한다. v3 초기엔 /api/dash 가 요청 스레드에서 재계산해
@@ -2341,6 +2427,71 @@ def save_day_hours(rep_dir, tag, day_hours):
         return True
     except (OSError, ValueError, TypeError):
         return False
+
+
+def save_attendance(rep_dir, tag, days, usual=None, agg=None):
+    r"""LM30(2026-10-18) 출퇴근 추정의 날짜별 자료 — report\attendance_<tag>.json(**이 PC 전용** — 팀 묶음(teamup.FILE_NAMES)·
+    공유폴더(export.py) 목록에 없다). {"schema":1, "tag", "days":{날짜: 출근·퇴근·덩어리·시간·신뢰도…}, "usual":{평소 출근·퇴근},
+    "agg":{주·달·전체 합계}}. 판정 뒤 재산정(judge.rehours_meta)·수집만(run.py --collect-only)도 같은 함수로 다시 쓴다.
+    days 가 None(출퇴근 추정이 돌지 않았다)이면 쓰지 않는다. 쓰기 실패는 False — 분석은 계속한다."""
+    if days is None:
+        return False
+    p = os.path.join(rep_dir, f"attendance_{tag}.json")
+    tmp = f"{p}.{os.getpid()}.tmp"
+    try:
+        os.makedirs(rep_dir, exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"schema": 1, "tag": tag, "days": days, "usual": usual or {}, "agg": agg or {}},
+                      f, ensure_ascii=False)
+        os.replace(tmp, p)
+        return True
+    except (OSError, ValueError, TypeError):
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return False
+
+
+def load_attendance(rep_dir, tag):
+    r"""LM30(2026-10-18) — save_attendance 가 쓴 report\attendance_<tag>.json(이 PC 전용) → dict, 없거나 깨졌거나 꼴이 다르면 None.
+    화면 카드(/api/attendance)·리포트 §8(report_out)이 읽는다 — 팀 묶음·공유폴더 쪽은 읽지 않는다."""
+    if not tag:
+        return None
+    try:
+        with open(os.path.join(rep_dir, f"attendance_{tag}.json"), encoding="utf-8-sig") as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(d, dict) or not isinstance(d.get("days"), dict):
+        return None
+    return d
+
+
+def load_attendance_range(rep_dir, d0, d1):
+    r"""기간과 겹치는 모든 attendance_*.json 의 날짜별 행 → {iso: 행} — 겹치는 날은 mtime 이 늦은 파일이 이긴다(load_day_hours_range 와
+    같은 규칙). 추이 점 툴팁의 주·달 연장·휴일 시간(합계만 화면에 나간다)."""
+    out, order = {}, []
+    try:
+        for p in glob.glob(os.path.join(rep_dir, "attendance_*.json")):
+            try:
+                order.append((os.path.getmtime(p), p))
+            except OSError:
+                continue
+    except OSError:
+        return out
+    for _mt, p in sorted(order):
+        try:
+            with open(p, encoding="utf-8-sig") as f:
+                d = json.load(f)
+            days = d.get("days") if isinstance(d, dict) else None
+            for k, v in (days.items() if isinstance(days, dict) else ()):
+                k = str(k)[:10]
+                if isinstance(v, dict) and (not d0 or k >= str(d0)[:10]) and (not d1 or k <= str(d1)[:10]):
+                    out[k] = v
+        except (OSError, ValueError, TypeError, AttributeError):
+            continue
+    return out
 
 
 def load_day_hours_range(rep_dir, d0, d1):
@@ -3527,8 +3678,10 @@ def _meeting_skip(r, tentative="count"):
     return None
 
 
-def _meeting_spans(data_dir, d0, d1, nonwork, tentative="count", exclude=(), now=None, day_win=None):
+def _meeting_spans(data_dir, d0, d1, nonwork, tentative="count", exclude=(), now=None, day_win=None, acc_out=None):
     """returns (out, carried, accepted, blocks)
+      acc_out  dict 를 주면 {date: [(a,b)…]} 에 **수락한** 회의 구간(아래 accepted 와 같은 판정)만 채운다 — LM30(2026-10-18)
+               출퇴근 추정의 확실한 흔적(미정·미응답 초대는 와 있던 근거가 아니다). 반환 4-튜플은 그대로
       out      {date: [(a,b)…]} 회의 구간(분). 다일·자정 넘김은 날짜별로 잘라 각 날 상한 = max(8h, 주간 창 길이)
                (A6 — 6/1 09:00→6/3 18:00 출장의 둘째 날이 사라지지 않는다; 12h 현장 08~20 은 창 길이까지)
       carried  자정(또는 기간 시작 전날)에서 넘어온 조각이 있는 날짜 — 익일이 주말이어도 수락 회의의 연속
@@ -3592,6 +3745,8 @@ def _meeting_spans(data_dir, d0, d1, nonwork, tentative="count", exclude=(), now
                         out.setdefault(dd, []).append((a, b))
                         if acc:
                             accepted.add(dd)
+                            if acc_out is not None:
+                                acc_out.setdefault(dd, []).append((a, b))
                         if not first:
                             carried.add(dd)    # 익일이 주말이어도 이 조각은 수락 회의의 연속
             cur, first = seg_end, False
@@ -3786,6 +3941,114 @@ def tag_minutes(spans, off, reg_sp, night_sp):
     return {"regular": reg, "extended": max(0.0, tot - nt - reg), "night": nt, "holiday": 0.0, "holiday_night": 0.0}
 
 
+def _attendance(data_dir, signals, files, d0, d1, now, p, lm):
+    r"""LM30(2026-10-18) — day_work_hours 가 모은 재료를 core\attendance.compute 의 절대 분(d0 전날 00:00 부터) 입력으로 바꿔 넘긴다.
+      signals·files : 신호(시각 있는 내 산출물·발신만 점으로 — ATT_POINT_SRC) · 표본화 전 전체 파일 시각(해석 출력 anchor 제외)
+      lm            : LM29 쪽 중간 결과 — meets(수락 회의 {날짜: [(a,b)]}) · blk(출장·현장 약속 블록) · offsite(종일 행사 날짜) ·
+                      absence · holidays · untimed({날짜: 날짜만 아는 발신 인정 분}) · nopc(표준일 추정 날짜) · hours(LM29 날짜별
+                      시간) · day_basis(LM29 근거 — 야간 꼬리표) · std · day_win(낮 창 — PC 하한 창) · night_win · day_cap
+    PC 켜짐·브라우저 방문은 att_presence(기간 앞뒤 하루씩), 시작·끝을 적은 수동 기록은 manual_entries, 근태 기록 칸은
+    attendance.load_records. returns compute 의 {"days", "agg", "usual"}."""
+    import attendance as _att
+    base = d0 - _td(days=1)
+    now_lim = now + _td(minutes=FUTURE_SLACK_MIN)
+
+    def ab(dd, m):
+        return (dd - base).days * 1440.0 + float(m)
+
+    def at(t):
+        return ab(t.date(), t.hour * 60 + t.minute + t.second / 60.0)
+    pts = [at(t) for t, src, *_x in signals if src in ATT_POINT_SRC and d0 <= t.date() <= d1 and t <= now_lim]
+    for dd, lst in (files or {}).items():
+        if not (d0 <= dd <= d1):
+            continue
+        day0 = datetime(dd.year, dd.month, dd.day)
+        pts += [ab(dd, m) for m, code in lst if _sim_end(code) is None and day0 + _td(minutes=m) <= now_lim]
+    now_abs = at(now)
+    spans = [(ab(dd, a), ab(dd, b), "meeting") for dd, lst in lm["meets"].items() for a, b in lst]
+    spans += [(ab(dd, a), ab(dd, b), "offsite") for dd, lst in lm["blk"].items() for a, b in lst]
+    man_floor = {}
+    for dd, h, s0, s1 in manual_entries(data_dir, d0, d1):
+        if s0 is None:
+            man_floor[dd] = min(PHYS_CAP_H, man_floor.get(dd, 0.0) + h)      # 시간만 적은 행 — 바닥값(LM29 와 같다)
+            continue
+        a, b = ab(dd, s0), ab(dd, s1 if s1 > s0 else s1 + 1440.0)
+        if a < now_abs:
+            spans.append((a, min(b, now_abs), "manual"))
+    pres, weak, live = att_presence(data_dir, base, d1 + _td(days=1))
+    presence = [(ab(dd, a), ab(dd, b)) for dd, lst in pres.items() for a, b in lst]
+    # 방문 구간 = 첫 방문 ~ 마지막 방문 + 5분(Get-PcOnHints TAIL_MIN) — 점은 첫 방문과 마지막 방문 둘
+    wpts = [ab(dd, x) for dd, lst in weak.items() for a, b in lst for x in {a, max(a, b - _att.WEB_TAIL_MIN)}]
+    l29n = {}
+    for iso, db in (lm.get("day_basis") or {}).items():
+        tg = db.get("tags") if isinstance(db, dict) and isinstance(db.get("tags"), dict) else {}
+        v = float(tg.get("night") or 0) + float(tg.get("holiday_night") or 0)
+        if v > 0:
+            l29n[datetime.strptime(iso[:10], "%Y-%m-%d").date()] = v
+    holidays = lm["holidays"]
+    return _att.compute(base, pts, spans, wpts, presence, [at(t) for t in live], d0, d1, now, p, std=lm["std"],
+                        day_win=lm["day_win"], night_win=lm["night_win"],
+                        is_off=lambda dd: _is_off_day(dd, holidays), leave=lm["absence"], offsite=set(lm["offsite"]),
+                        manual_floor=man_floor, nopc=lm["nopc"], untimed_min=lm["untimed"], lm29=lm["hours"],
+                        lm29_night=l29n, day_cap=lm["day_cap"], records=_att.load_records(data_dir))
+
+
+def _att_apply(info, days, agg, lm_hours, inferred, p, d0, d1):
+    """LM30(2026-10-18) — 출퇴근 추정 근무를 투입 시간으로 쓴다(attendance.useForMM). → 새 {날짜: h}.
+    LM29 의 날짜별 시간은 info["lm29_day_hours"], 합계는 info["lm29_totals"], 날짜별 근거의 시간은 day_basis[날짜].lm29_h 로 옮기고,
+    같은 자리(h·tags·overtime_h·regular_h·extended_h·night_h·holiday_h·holiday_night_h·weekend_days·night_days·long_days·
+    absent_worked_h)에는 출퇴근 추정 값을 넣는다 — 꼬리표 정의는 하나: 정규+연장+휴일 = 근무, 야간(22~06)은 겹쳐 세는 할증 시간
+    (휴일 야간은 holiday_night 에도), 연장근무(overtime_h) = 연장 + 휴일, 야근일(night_days) = 20시 넘어 퇴근한 날(LM29 의 '19~20시
+    PC 가동만으로 야근' 과대를 고친다). day_basis[날짜].att = {work, ext, night, holiday, offpc, conf}(시각 없음).
+    부재 추정(inferred)은 투입이 0.25h 넘는 날을 뺀다 — 분모(가용)와 분자(투입)가 같은 시간을 본다."""
+    import attendance as _att
+    from datetime import date as _date
+    info["lm29_day_hours"] = {k.isoformat(): v for k, v in sorted(lm_hours.items())}
+    info["lm29_totals"] = {k: info.get(k) for k in LM29_TOTAL_KEYS}
+    hours, long_days = {}, []
+    hol_night = leave_h = 0.0
+    wk_days = 0
+    for iso in sorted(days):
+        r = days[iso]
+        dd = _date.fromisoformat(iso)
+        off = r["kind"] == "off"
+        if r["work_h"] > 0 and d0 <= dd <= d1:
+            hours[dd] = r["work_h"]
+            wk_days += 1 if off else 0
+            leave_h += r["work_h"] if r["leave_frac"] >= 1.0 else 0.0
+            if r["work_h"] > LONG_DAY_H:
+                long_days.append([iso, r["work_h"]])
+        if off:
+            hol_night += r["night_h"]
+        db = info["day_basis"].setdefault(iso, {"h": 0.0, "tags": {}})
+        db["lm29_h"] = r["lm29_h"]
+        db["h"] = r["work_h"]
+        db["tags"] = {k: v for k, v in (("regular", r["regular_h"]), ("extended", r["ext_h"]), ("night", r["night_h"]),
+                                        ("holiday", r["holiday_h"]), ("holiday_night", r["night_h"] if off else 0.0))
+                      if v > 0}
+        db["att"] = {"work": r["work_h"], "ext": r["ext_h"], "night": r["night_h"], "holiday": r["holiday_h"],
+                     "offpc": r["offpc_h"], "conf": r["conf"]}
+    for db in info["day_basis"].values():
+        if isinstance(db, dict):
+            _att.clock_to_hours(db)          # LM29 저녁·새벽 창의 시각 → 길이 — 날짜별 근거에 퇴근 무렵 시각을 남기지 않는다
+    t = agg["total"]
+    info.update(regular_h=t["regular_h"], extended_h=t["ext_h"], night_h=t["night_h"], holiday_h=t["holiday_h"],
+                holiday_night_h=round(hol_night, 2), overtime_h=round(t["ext_h"] + t["holiday_h"], 1),
+                weekend_days=wk_days, night_days=t["late_days"], long_days=long_days,
+                absent_worked_h=round(leave_h, 1))
+    for dd in [x for x in inferred if hours.get(x, 0.0) > 0.25]:
+        del inferred[dd]
+    info["inferred_absence_days"] = len(inferred)
+    info["inferred_absence_dates"] = [x.isoformat() for x in sorted(inferred)]
+    ms = info.get("measure")
+    if isinstance(ms, dict):
+        ms["lm29_method"] = ms.get("method")
+        ms["method"] = "출퇴근 추정"
+    info["lm29_basis"] = info.get("basis", "")
+    info["basis"] = _att.basis_text(p)
+    return hours
+
+
 def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=None):
     """투입 시간 = 그날 활동 흔적(회의·창 샘플러·신호 세션) 구간의 합집합 + PC 가동 구간 하한(구간 단위, A3).
     method="workday" 로 두면 예전처럼 '평일이면 표준 8h'로 계산한다(비교용).
@@ -3849,7 +4112,18 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
       · 밤샘 다음 날(cont_prev) 새벽 인정은 마지막 새벽 산출물 +30분에서 멈춘다(그 뒤 켜 둔 PC 는 잠든 시간).
       · day_basis 는 모든 평일과 흔적 있는 휴일에 남는다(0h 날 포함) — pc{on,night,rec,always_on} · ev{pc_after_h, act_after,
         pas_after, credit_h, why} · untimed{n, credit_min} · absent. 합계 evening_missed_days·evening_missed_pc_h·untimed_sends·
-        untimed_days·untimed_credit_h·std_nopc_days·std_nopc_h·hint_only_days·ai_n_time_kept(재산정 경로가 채운다)."""
+        untimed_days·untimed_credit_h·std_nopc_days·std_nopc_h·hint_only_days·ai_n_time_kept(재산정 경로가 채운다).
+
+    LM30(2026-10-18 — 출퇴근 추정, core\\attendance 머리말이 규칙):
+      · 위 LM29 계산은 그대로 돈다. 끝에서 같은 재료로 출퇴근을 어림하고 attendance.useForMM(기본 켬)이면 반환 시간이 출퇴근 추정
+        근무다 — day_basis[날짜].h·tags(정규+연장+휴일 = 근무 · 야간은 겹쳐 세는 할증)·att{work, ext, night, holiday, offpc, conf} ·
+        lm29_h, 합계 overtime_h(연장+휴일)·regular_h·extended_h·night_h·holiday_h·holiday_night_h·weekend_days·
+        night_days(20시 넘은 퇴근)·long_days·absent_worked_h 가 출퇴근 추정 값이고 LM29 값은 lm29_totals·lm29_day_hours·lm29_basis,
+        measure.method = "출퇴근 추정"(measure.lm29_method = LM29 방식 이름). day_basis 의 LM29 저녁·새벽 창(시각)은 길이
+        (evening_h·dawn_h)로 바뀐다 — 날짜별 근거에 퇴근 무렵 시각을 남기지 않는다.
+      · info["attendance"] = 시각 없는 합계(weeks·months·total·records·used_for_mm — 팀에 올려도 된다) · info["attendance_days"]·
+        info["attendance_usual"] = 날짜별 출퇴근·평소 시각(**이 PC 전용** — 호출측이 attendance.take_local 로 떼어
+        report\\attendance_<기간>.json 에만 쓴다). useForMM 을 꺼도 이 셋은 채운다(화면 참고용) · cfg_used.attendance = 쓴 설정."""
     from datetime import timedelta
     cfg = cfg if isinstance(cfg, dict) else {}
     mc, cfg_warns = norm_cfg(cfg)            # 잘못된 설정값은 죽지 않고 기본값 + info["config_warnings"]
@@ -3929,8 +4203,9 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
                                       idle_active=mc["idleActiveSec"], aux=aux_act)
     priv_sp = aux_act.get("private") or {}
     ledger = _ledger_days(data_dir, d0, d1)     # {날짜 iso: {축: 합성 상태}} | None(원장 없음 — LM24 방식)
+    meets_acc = {}                              # LM30(2026-10-18): 수락한 회의 구간만 — 출퇴근 추정의 확실한 흔적
     meets, meet_carry, accepted, blocks = _meeting_spans(
-        data_dir, d0, d1, nonwork, tentative, exclude=exclude, now=now, day_win=day_win)
+        data_dir, d0, d1, nonwork, tentative, exclude=exclude, now=now, day_win=day_win, acc_out=meets_acc)
     # 약속(ms 0) 블록 중 출장·현장·교육 키워드가 든 것은 그 시간만큼 근무(A19 — 오프사이트 폴백 근거). '재택근무'·'치과' 는 아니다.
     off_kws = _offsite_kws(cfg)
     blk = {}
@@ -4126,6 +4401,7 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
     night_tag_sp = _night_win_spans(nw0, nw1)
     pf_n, pf_h = mc.get("passiveFloorMinN") or 0, mc.get("passiveFloorMinH") or 0
     gap_run = []
+    nopc_days = set()                          # LM30(2026-10-18): 표준일 추정(PC 기록 없는 달)을 쓴 날 — 출퇴근 추정의 바닥값
     d = d0
     while d <= d1:
         base = []          # 이 날의 PC 가동 하한 재료 — 하한 계산을 건너뛴 날도 아래 메일 근거 집계가 읽는다
@@ -4538,6 +4814,7 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
         # ── PC 기록 없는 달의 평일(LM28 E — mm.noPcMonthDay="standard"): 표준일 × (1−부재)를 주간 하한으로 — 추정(표준일 추정).
         #    저녁·야간 흔적(night_min)은 그대로 더한다(표준일이 저녁 세션을 삼키지 않게). 꼬리표는 아래 잔여 경로로 정규. ──
         if nopc_std:
+            nopc_days.add(d)
             w_std = max(day_min / 60.0, std * (1.0 - absent)) + night_min / 60.0
             add_h = max(0.0, w_std - worked)
             worked = max(worked, w_std)
@@ -4763,6 +5040,35 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
                       + (f" · PC 기록 없는 달의 평일 {info['std_nopc_days']}일은 표준일 추정(mm.noPcMonthDay)"
                          if info["std_nopc_days"] else ""))
                      if method == "activity" else "투입 = 평일 표준 8h 기준(비교용)")
+    # ── LM30(2026-10-18) 출퇴근 추정(core\attendance) — 위의 LM29 시간·꼬리표·합계는 예전 그대로 쟀다. 같은 재료(신호·수락 회의·
+    #    수동 기록·출장 약속·PC 켜짐·브라우저 방문)로 날마다 출근·퇴근·근무를 어림하고, attendance.useForMM(기본 켬 — 블록·키가
+    #    없어도 켬 · mm.method=workday 면 끔)이면 그 근무가 투입 시간·꼬리표·합계를 맡는다(_att_apply — LM29 값은 lm29_* 로 남는다).
+    #    끄면 LM29 그대로이고 출퇴근 추정은 참고로만 info 에 싣는다. 날짜별 출퇴근(attendance_days)·평소 시각(attendance_usual)은
+    #    이 PC 전용 — 호출측(mine·judge 재산정·run 수집만)이 attendance.take_local 로 떼어 report\attendance_<기간>.json 에만 쓴다
+    #    (mm_meta·팀 묶음·Copilot 에는 시각 없는 주·달 합계 info["attendance"] 만). 계산이 깨지면 LM29 시간 + 경고 한 줄. ──
+    import attendance as _att
+    att_p, att_w = _att.norm(cfg)
+    cfg_warns.extend(att_w)
+    use_att = bool(att_p["useForMM"]) and method == "activity"
+    info["cfg_used"]["attendance"] = {k: (v if isinstance(v, bool) else round(float(v), 2)) for k, v in att_p.items()}
+    try:
+        un_min = {dd: sum(n * float(mins.get(UNTIMED_BASE.get(s, "메일(발신)"), 0) or 0) for s, n in c.items())
+                  for dd, c in untimed.items()}
+        att = _attendance(data_dir, signals, extra if extra is not None else (file_times or {}), d0, d1,
+                          now or datetime.now(), att_p,
+                          {"meets": meets_acc, "blk": blk, "offsite": offsite, "absence": absence, "holidays": holidays,
+                           "untimed": un_min, "nopc": nopc_days, "hours": hours, "day_basis": info["day_basis"],
+                           "std": std, "day_win": (fw0, fw1), "night_win": (nw0, nw1), "day_cap": day_cap})
+    except Exception as e:  # noqa: BLE001 - 출퇴근 추정이 깨져도 MM 산정은 LM29 방식으로 끝난다(이유는 경고 한 줄로 보인다)
+        att = None
+        cfg_warns.append(f"출퇴근 추정 실패({type(e).__name__}: {str(e)[:80]}) — 이번 결과는 LM29 방식으로 계산했습니다")
+    if att is not None:
+        att["agg"]["used_for_mm"] = use_att
+        info["attendance"] = att["agg"]
+        info["attendance_days"] = att["days"]
+        info["attendance_usual"] = att["usual"]
+        if use_att:
+            hours = _att_apply(info, att["days"], att["agg"], hours, inferred, att_p, d0, d1)
     return hours, info
 
 
@@ -4812,6 +5118,8 @@ def mm_from_hours(day_hours, d0, d1, workdays=(1, 2, 3, 4, 5), cfg=None, absence
                  평일수(1 MM 의 분모)에서도 뺀다 — 추정이 성공해도 투입 MM 분모가 20일 그대로이던 −15%(A31).
                  달력 근태(연차)는 예전처럼 가용에서만 빠진다. 로드율은 두 경우 모두 같다.
       info     : dict 를 주면 future_days·today_fraction 을 채운다(mine.py 가 day_work_hours info 를 넘긴다).
+                 LM30(2026-10-18): info 에 lm29_day_hours(출퇴근 추정이 투입을 맡았다)가 있으면 달마다 worked_lm29·mm_lm29(같은
+                 분모 — 'LM29 방식이었다면 X MM')를, info["mm_lm29"] 에 그 합계를 더 싣는다. 없으면 예전 그대로(키도 없다).
 
     returns ({'YYYY-MM': {...}}, 총 투입 MM, 총 가용 MM)"""
     import calendar as _cal
@@ -4827,6 +5135,15 @@ def mm_from_hours(day_hours, d0, d1, workdays=(1, 2, 3, 4, 5), cfg=None, absence
     today = now.date()
     now_m = now.hour * 60 + now.minute + now.second / 60.0
     today_frac = min(1.0, max(0.0, (now_m - dw0) / max(1.0, float(dw1 - dw0))))
+    l29 = info.get("lm29_day_hours") if isinstance(info, dict) else None
+    l29d = None
+    if isinstance(l29, dict):
+        l29d = {}
+        for k, v in l29.items():
+            try:
+                l29d[_date.fromisoformat(str(k)[:10])] = float(v or 0)
+            except (TypeError, ValueError):
+                continue
     future_days = 0
     months = {}
     d = d0
@@ -4844,8 +5161,10 @@ def mm_from_hours(day_hours, d0, d1, workdays=(1, 2, 3, 4, 5), cfg=None, absence
                     m["covered"] += frac
                     m["absent"] += min(frac, absence.get(d, 0.0))
         m["worked"] += day_hours.get(d, 0.0)
+        if l29d is not None:
+            m["worked_lm29"] = m.get("worked_lm29", 0.0) + l29d.get(d, 0.0)
         d += timedelta(days=1)
-    tot_mm = tot_cap = 0.0
+    tot_mm = tot_cap = tot_l29 = 0.0
     for mk, m in months.items():
         y, mo = int(mk[:4]), int(mk[5:7])
         full = sum(1 for dd in (_date(y, mo, i + 1) for i in range(_cal.monthrange(y, mo)[1]))
@@ -4861,6 +5180,10 @@ def mm_from_hours(day_hours, d0, d1, workdays=(1, 2, 3, 4, 5), cfg=None, absence
         m["load_pct"] = round(m["mm"] / m["avail_mm"] * 100, 1) if m["avail_mm"] > 0 else None
         m["worked"] = round(m["worked"], 1)
         m["absent"] = round(m["absent"], 1)
+        if l29d is not None:                                   # LM30 — LM29 방식이었다면(같은 분모)
+            m["mm_lm29"] = round(m["worked_lm29"] / m["capacity_h"], 3)
+            m["worked_lm29"] = round(m["worked_lm29"], 1)
+            tot_l29 += m["mm_lm29"]
         tot_mm += m["mm"]
         tot_cap += m["avail_mm"]
     if isinstance(info, dict):
@@ -4868,6 +5191,8 @@ def mm_from_hours(day_hours, d0, d1, workdays=(1, 2, 3, 4, 5), cfg=None, absence
             info["future_days"] = future_days
         if d0 <= today <= d1:
             info["today_fraction"] = round(today_frac, 2)
+        if l29d is not None:
+            info["mm_lm29"] = round(tot_l29, 3)
     return months, round(tot_mm, 3), round(tot_cap, 3)
 
 

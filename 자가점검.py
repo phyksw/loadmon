@@ -88,6 +88,8 @@ NEED = [
     "core/owner.py",
     "core/progress.py",
     "core/projmap.py",
+    # LM30 새 파일 — 출퇴근 추정(빠지면 분석이 시작부터 죽는다 — extract·mine 이 임포트)
+    "core/attendance.py",
     "docs/설정가이드.md",
     "docs/사용안내.html",
     "tools/copilot_auto.py",

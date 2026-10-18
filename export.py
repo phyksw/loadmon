@@ -103,6 +103,18 @@ def main():
                 elif inf.get("high_dropped"):
                     print(f"[export] {n}: 개인정보가 남은 신호 {inf['high_dropped']}행은 빼고 내보냅니다")
                 continue
+            if n == f"mm_meta_{tag}.json":
+                # LM30(2026-10-18): 이 PC 전용 칸(날짜별 출퇴근·평소 시각·저녁 창 시각)은 공유폴더에 내보내지 않는다 —
+                # 팀 서버 묶음과 같은 관문(teamup.team_signals → _team_meta). teamup 을 못 읽으면 예전처럼 복사(쓰는 쪽이 이미 뗐다)
+                try:
+                    import teamup
+                    with open(os.path.join(rep, n), encoding="utf-8-sig") as f:
+                        txt, _note = teamup.team_signals(n, f.read(), cfg)
+                    with open(longp(os.path.join(stage, n)), "w", encoding="utf-8") as f:
+                        f.write(txt)
+                    continue
+                except ImportError:
+                    pass
             shutil.copy2(os.path.join(rep, n), longp(os.path.join(stage, n)))
         except OSError as e:
             bad.append(f"{n}({type(e).__name__})")
@@ -151,6 +163,8 @@ def main():
                                "measure": teamup.measure_of(mj, b), "coverage": teamup.coverage_of(mj, b),
                                "cfg_used": teamup.cfg_used_of(mj, b),
                                "tool_usage": teamup.tool_usage_of(mj, b),
+                               # LM30 — 출퇴근 추정의 달·전체 합계(시각 없음 — teamup 묶음과 같은 헬퍼)
+                               "attendance": teamup.attendance_of(mj, b),
                                "rehours": bool(mj.get("rehours")), "dropped_h": teamup._hours(mj.get("dropped_h"))})
             except Exception as e:  # noqa: BLE001 - 스냅샷이 없어도 내보내기는 끝나야 한다
                 # 무엇이 없어서 빠졌는지 함께 적는다 — 이름만 찍으면 원인을 못 찾는다(실측: 동봉 파이썬이

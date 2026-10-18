@@ -27,6 +27,8 @@ freeze.py — 분석 결과를 '파일 하나' 보고서 3종으로 만든다 (L
 종료 코드: 0 전부 성공 · 2 일부만 성공 · 1 아무것도 못 만듦.
 HTML 은 팀 서버로 올리지 않는다(서버 NAME_OK 불변) — 공유폴더 저장(teamup --to-folder) 때만
 <공유폴더>\개인리포트\<이름>_<파일명> 으로 복사된다.
+LM30(2026-10-18): 그래서 ①·② 의 출퇴근·시간외 근무 카드·절은 주·달 합계만 싣는다 — 날짜별 출근·퇴근·평소 시각은 이 PC 의
+대시보드와 ③ 리포트(복사되지 않는다)에만 있다(_att_summary_only · report_out.attendance_section(per_day=False)).
 """
 import csv
 import glob
@@ -212,11 +214,24 @@ def latest_tag():
 
 FREEZE_EPS = ["/api/status", "/api/dash", "/api/projects", "/api/workflow",
               "/api/agentic", "/api/extra", "/api/teamserver", "/api/teamupload",
-              "/api/sharedir",
+              "/api/sharedir", "/api/attendance",
               "/api/review?g=week", "/api/review?g=month", "/api/review?g=all",
               "/api/data?src=files", "/api/data?src=recent", "/api/data?src=mail",
               "/api/data?src=cal", "/api/data?src=git", "/api/data?src=pc",
               "/api/data?src=teams", "/api/data?src=act"]
+# LM30(2026-10-18) — 출퇴근·시간외 근무 카드(/api/attendance)는 사본에 주·달 합계만 굽는다. 날짜별 출근·퇴근(days)·평소 시각(usual·
+# usual_text)은 이 PC 화면에만 — 얼린 보고서 고정명은 공유폴더 저장 때 <공유폴더>\개인리포트\ 로 복사된다(teamup.REPORT_HTML).
+ATT_LOCAL_KEYS = ("days", "usual", "usual_text")
+
+
+def _att_summary_only(v):
+    """/api/attendance 답 → 사본용(날짜별 행·평소 시각을 뺀다 · frozen 표식 — 화면이 '날짜별 시각은 본인 PC 에서만' 을 보인다)."""
+    if not isinstance(v, dict):
+        return v
+    out = {k: x for k, x in v.items() if k not in ATT_LOCAL_KEYS}
+    out["days"] = {}
+    out["frozen"] = True
+    return out
 
 INTERCEPT_JS = """(function(){
  "use strict";
@@ -364,6 +379,17 @@ def _freeze(tag, full, base_url, log, info):
         for k in ("urls", "here", "ip", "ips", "host", "occupant"):
             if k in ts:
                 ts[k] = [] if isinstance(ts.get(k), list) else ""
+    # LM30(2026-10-18) — 출퇴근 카드는 주·달 합계만(날짜별 출근·퇴근·평소 시각은 사본에 굳히지 않는다 — 공유폴더로 복사되는 파일).
+    # /api/dash 의 meta(mm_meta 그대로)도 한 번 더 거른다 — 옛 사본에 이 PC 전용 칸이 남아 있어도 사본에는 싣지 않는다(teamup·export 와
+    # 같은 관문 core\attendance.scrub_meta)
+    if "/api/attendance" in baked:
+        baked["/api/attendance"] = _att_summary_only(baked["/api/attendance"])
+    if isinstance(baked["/api/dash"].get("meta"), dict):
+        try:
+            import attendance as _att
+            _att.scrub_meta(baked["/api/dash"]["meta"])
+        except ImportError:
+            pass
 
     dash = baked["/api/dash"]
     meta = (dash.get("meta") or {}) if isinstance(dash.get("meta"), dict) else {}
@@ -623,6 +649,12 @@ def report_island(tag, full=True, log=_say):
         return []
     d0, d1 = tag_to_dates(tag)
     meta = _read_json(os.path.join(REPORT, f"mm_meta_{tag}.json")) or {}
+    try:        # LM30(2026-10-18) — 이 파일은 공유폴더로 복사된다: 옛 사본의 이 PC 전용 칸(날짜별 시각)을 한 번 더 뗀다
+        import attendance as _att
+        if isinstance(meta, dict):
+            _att.scrub_meta(meta)
+    except ImportError:
+        pass
     # 프로그램 사용(참고) — 투입 MM 과 다른 값이다(실행 흔적·파일·옛 창 기록). 그 점을 문구로 못 박는다(_tool_usage_html).
     _tu = meta.get("tool_usage")
     if not isinstance(_tu, dict):
@@ -818,6 +850,11 @@ def report_island(tag, full=True, log=_say):
             extra_html += ('<div class="card"><h2>5. 근무 꼬리표 · 초과근무 세분 · 미관측</h2><table>'
                            + "".join(f"<tr><th style='width:260px'>{_esc(k)}</th><td>{_esc(v)}</td></tr>" for k, v in _ot)
                            + "</table></div>")
+        # LM30(2026-10-18) 출퇴근·시간외 근무 — 리포트 §8 과 같은 함수. 분석리포트는 공유폴더(개인리포트\)로 복사되므로 날짜별
+        # 출근·퇴근·평소 시각은 싣지 않는다(per_day=False — attendance 파일은 넘기지 않고 mm_meta 의 주·달 합계만)
+        _as = _ro.attendance_section(meta, _b, None, per_day=False)
+        if _as:
+            extra_html += '<div class="card">' + "\n".join(_as) + "</div>"
         extra_html += '<div class="card">' + "\n".join(_ro.floor_section(meta, _b)) + "</div>"
         _sig = _ro._rows(os.path.join(REPORT, f"signals_{tag}.csv"))
         _pv = _read_json(os.path.join(REPORT, f"pivots_{tag}.json")) or {}

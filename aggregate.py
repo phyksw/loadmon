@@ -225,6 +225,38 @@ def norm_tool_usage(v):
     return out if (out.get("programs") or out.get("total_h") or out.get("inhouse") or out.get("inhouse_n")) else None
 
 
+ATT_KEYS = ("work_h", "ext_h", "night_h", "holiday_h", "offpc_h", "over52_weeks", "leave_work_days")
+ATT_COUNTS = ("over52_weeks", "leave_work_days")
+
+
+def norm_attendance(v):
+    """member.attendance(LM30 출퇴근 추정 — teamup.attendance_of 의 달·전체 합계, 시각 없음) → {used_for_mm, months{YYYY-MM:
+    {ATT_KEYS}}, total{ATT_KEYS}} / 객체가 아니거나 비었으면 None(LM29 이전 판 — 칸 없음). 숫자는 숫자로 강제하고 달은 36개까지
+    (업로드로 들어온 남의 값이다)."""
+    if not isinstance(v, dict):
+        return None
+
+    def row(x):
+        if not isinstance(x, dict):
+            return None
+        out = {}
+        for k in ATT_KEYS:
+            n = fnum(x.get(k))
+            if n is not None:
+                out[k] = int(round(n)) if k in ATT_COUNTS else round(n, 2)
+        return out
+    months = {}
+    src = v.get("months") if isinstance(v.get("months"), dict) else {}
+    for mk in sorted(src)[:36]:
+        r = row(src.get(mk))
+        if r is not None and re.match(r"^\d{4}-\d{2}$", str(mk)):
+            months[str(mk)] = r
+    total = row(v.get("total")) or {}
+    if not months and not total:
+        return None
+    return {"used_for_mm": bool(v.get("used_for_mm")), "months": months, "total": total}
+
+
 def norm_cfg_used(v):
     """member.cfg_used → 알려진 키만, 값은 스칼라 또는 문자열 목록(비교·표시용)"""
     if not isinstance(v, dict):
@@ -338,6 +370,7 @@ def norm_member(m, name=""):
     m["coverage"] = norm_coverage(m.get("coverage"))
     m["cfg_used"] = norm_cfg_used(m.get("cfg_used"))
     m["tool_usage"] = norm_tool_usage(m.get("tool_usage"))   # 프로그램 사용 이력(참고 지표 — 로드율과 무관)
+    m["attendance"] = norm_attendance(m.get("attendance"))   # LM30 출퇴근 추정 달·전체 합계(없으면 None)
     if bad:
         print(f"[aggregate] {name or m.get('owner')}: member.json 값 형식 이상 — "
               f"{', '.join(bad[:4])} (그 칸만 무시)")
@@ -650,6 +683,9 @@ def collect_team_data(share):
             "measure": m.get("measure"), "coverage": m.get("coverage"), "cfg_used": m.get("cfg_used"),
             # 프로그램 사용 이력 — 여기 빠지면 팀 화면에서 오류 없이 통째로 사라진다(조용한 화이트리스트)
             "tool_usage": m.get("tool_usage"),
+            # LM30 출퇴근 추정의 달·전체 합계(근무·연장·야간·휴일·PC 밖·52시간 넘은 주·휴가일 근무 — 시각 없음).
+            # 팀 통합 보고서 v3(로드율 제외본)에서는 개인 근무 시간이라 뺀다(team_report)
+            "attendance": m.get("attendance"),
             "measure_text": m.get("measure_text", ""),
             "unreliable": bool(m.get("unreliable")), "cfg_diff": bool(m.get("cfg_diff")),
             # 누가·언제·어디서 (없으면 빈 값 — 옛 클라이언트가 올린 자료도 그대로 표시된다)

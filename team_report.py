@@ -2500,6 +2500,18 @@ def render_full(share, html_dir, sender=None, log=say):
     # 값은 업로드로 들어온 남의 입력 — 숫자는 숫자로만(fnum/pct_text), 문자열은 esc 를 거친다
     vmax = max([_fnum(m.get("total_mm"), 0.0) for m in members_cmp] or [1]) or 1
 
+    def _att_td(m):
+        """LM30(2026-10-18) — 출퇴근 추정 합계(member.attendance.total — 시각 없음): 연장·야간·휴일·52시간 넘은 주.
+        출퇴근 추정이 없는 사람(LM28·LM29 판)은 '—'. 값은 업로드로 들어온 남의 입력 — 숫자로만."""
+        a = m.get("attendance") if isinstance(m.get("attendance"), dict) else {}
+        t = a.get("total") if isinstance(a.get("total"), dict) else {}
+        if not t:
+            return "<td class='num dim'>—</td>" * 4
+        n52 = int(_fnum(t.get("over52_weeks"), 0.0))
+        return (f"<td class='num'>{_fnum(t.get('ext_h'), 0.0):.1f}h</td><td class='num'>{_fnum(t.get('night_h'), 0.0):.1f}h</td>"
+                f"<td class='num'>{_fnum(t.get('holiday_h'), 0.0):.1f}h</td>"
+                + (f"<td class='num' style='color:#c0122f'><b>{n52}주</b></td>" if n52 > 0 else "<td class='num'>0주</td>"))
+
     def _row1(m, grey=False):
         return (
             f"<tr{' style=color:#8b929b' if grey else ''}><td><b>{esc(m['owner'])}</b></td>"
@@ -2510,7 +2522,8 @@ def render_full(share, html_dir, sender=None, log=say):
             f"<td class='num'><b>{ag.pct_text(m.get('load_pct'))}</b></td>"
             f"<td style='width:150px'>"
             + ("" if grey else f"<span class='mmbar' style='width:{max(2, round(_fnum(m.get('total_mm'), 0.0) / vmax * 140))}px'></span>")
-            + f"</td><td class='dim' style='font-size:11px'>{esc(ag.measure_text(m)) or '–'}</td>"
+            + "</td>" + _att_td(m)
+            + f"<td class='dim' style='font-size:11px'>{esc(ag.measure_text(m)) or '–'}</td>"
             f"<td class='dim'>신호 {esc(m.get('signals'))}건"
             + (f" · 무흔적 {esc(m['no_evidence_days'])}일" if m.get("no_evidence_days") else "")
             + (f" · 비업무 제외 −{_fnum(m.get('dropped_h'), 0.0):.1f}h"
@@ -2530,6 +2543,7 @@ def render_full(share, html_dir, sender=None, log=say):
             "<span class='state'>PC 가동 기록·창 샘플러·Outlook 일정이 모두 비어 근거가 파일 흔적뿐 — 수집 실패이지 "
             "낮은 로드가 아닙니다</span></div><div style='overflow-x:auto'><table><tr><th>이름</th><th>파트</th>"
             "<th>기간</th><th class='num'>투입</th><th class='num'>가용</th><th class='num'>로드율</th><th></th>"
+            "<th class='num'>연장</th><th class='num'>야간</th><th class='num'>휴일</th><th class='num'>52시간 넘은 주</th>"
             "<th>측정 방식</th><th>근거</th></tr>"
             + "".join(_row1(m, grey=True) for m in members_x) + "</table></div></div>")
 
@@ -2910,9 +2924,11 @@ background:#fff;cursor:pointer}} button:hover{{background:#f0f3f7}}
 
 <!--SEC1--><div class="card"><h2>1. 인별 로드율 <span class="state">투입 MM ÷ 가용 MM · 야근은 상한 없이(하루 24h 물리 한계만) ·
 측정 방식 = 샘플러 실측 / PC 가동 하한 / 흔적 폭 / 종일 행사 / 수동 기록 일수 · 배지: 신뢰·주의·측정 불충분(수집 결측 수) ·
-'산식 설정 상이' = 표준시간·점심·주간 창·공휴일 수가 팀 다수와 달라 분모가 다른 사람</span></h2>
+'산식 설정 상이' = 표준시간·점심·주간 창·공휴일 수가 팀 다수와 달라 분모가 다른 사람 ·
+연장·야간·휴일·52시간 넘은 주 = 출퇴근 추정(LM30)의 기간 합계 — 출퇴근 추정이 없는 판(LM28·LM29)은 —</span></h2>
 <div style='overflow-x:auto'><table><tr><th>이름</th><th>파트</th><th>기간</th><th class="num">투입</th><th class="num">가용</th>
-<th class="num">로드율</th><th></th><th>측정 방식</th><th>근거</th></tr>{rows1}</table></div>{rows1x}</div><!--/SEC1-->
+<th class="num">로드율</th><th></th><th class="num">연장</th><th class="num">야간</th><th class="num">휴일</th>
+<th class="num">52시간 넘은 주</th><th>측정 방식</th><th>근거</th></tr>{rows1}</table></div>{rows1x}</div><!--/SEC1-->
 
 <div class="card"><h2>2. 과제 × 인원 <span class="state">누적바 = 사람별 MM · 줄을 펼치면
 세부업무 구성 · 유사 표기·같은 계열은 합침 · 0.3 MM 미만 접힘 · 비과제성은 아래 따로</span></h2>
@@ -2972,8 +2988,9 @@ Agent 가능성 <span class="pill" style="background:#1d8a4a">상</span> 자동�
 </body></html>"""
 
     # v3 — 인별 로드율 절을 뺀 공유용. 데이터 섬에서도 개인 로드 수치·경로·PC 이름을 지운다.
+    # LM30(2026-10-18): 출퇴근 추정 합계(attendance — 개인 근무·연장·야간 시간)도 개인 로드 수치라 뺀다
     m3 = [{k9: v9 for k9, v9 in m9.items()
-           if k9 not in ("total_mm", "avail_mm", "load_pct", "worked_h", "overtime_h",
+           if k9 not in ("total_mm", "avail_mm", "load_pct", "worked_h", "overtime_h", "attendance",
                          "dir", "host", "uploaded_from")}
           for m9 in members]
     island3 = json.dumps({"kind": "lm-team-report", "generated": stamp, "share": share,

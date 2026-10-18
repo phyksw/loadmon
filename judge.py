@@ -2494,7 +2494,9 @@ def rehours_meta(kept, dropped, tag, cfg, rep, data_dir=None, say=print):
     누적: meta 가 이미 재산정본(rehours)이면 dropped_signals_<tag>.csv 의 이전 버림분을 합쳐 넘긴다 —
     mine 이 다시 돌면 meta 에 rehours 가 없으므로 장부는 새로 시작한다(옛 버림분이 새 신호를 지우지 않게).
     returns {"dropped_n"(누적),"dropped_h","before_mm","total_mm","avail_mm","load_pct","ai_n_time_kept"} — 버린 것이 없거나
-    (구판 core 로) 함수가 없거나 meta 가 없거나 저장이 막히면 None(그때는 mine 값이 그대로 남는다)."""
+    (구판 core 로) 함수가 없거나 meta 가 없거나 저장이 막히면 None(그때는 mine 값이 그대로 남는다).
+    LM30(2026-10-18): mm_meta 저장이 성공하면 추이 선 day_hours_<tag>.json 과 출퇴근 파일 attendance_<tag>.json(이 PC 전용 —
+    날짜별 시각은 mm_meta 에서 떼어 여기로만)도 같은 재산정 값으로 다시 쓴다 — 추이 선·MM 카드·투입 MM 이 같은 시간을 본다."""
     if not dropped:
         return None
     import extract
@@ -2567,10 +2569,21 @@ def rehours_meta(kept, dropped, tag, cfg, rep, data_dir=None, say=print):
     if isinstance(res.get("months"), dict):
         mj["mm_months"] = res["months"]
     info = res.get("info")
+    att_days = att_usual = None
     if isinstance(info, dict):
         info = dict(info)
         info.pop("inferred_absence", None)        # date 키 — mine 도 저장 전에 뺀다
+        # LM30(2026-10-18): 날짜별 출근·퇴근·평소 시각은 mm_meta(팀으로 올라간다)에 싣지 않는다 — mine 과 같이 떼어
+        # report\attendance_<tag>.json 으로만(아래 저장 성공 뒤)
+        try:
+            import attendance as _att
+            att_days, att_usual = _att.take_local(info)
+        except ImportError:                        # 구판 core — 칸만 버린다
+            info.pop("attendance_days", None)
+            info.pop("attendance_usual", None)
         mj["mm_basis"] = info
+        if info.get("mm_lm29") is not None:
+            mj["mm_lm29"] = info["mm_lm29"]       # 'LM29 방식이었다면 X MM' — mine.meta_doc 과 같은 최상위 키
         for k in ("coverage", "measure", "cfg_used", "tool_usage"):   # mine 과 같이 최상위에도 싣는다(팀 취합이 읽는다)
             if isinstance(info.get(k), dict):
                 mj[k] = info[k]
@@ -2597,6 +2610,12 @@ def rehours_meta(kept, dropped, tag, cfg, rep, data_dir=None, say=print):
         except OSError:
             pass
         return None
+    # LM30(2026-10-18): 추이 선(day_hours_<tag>.json)·출퇴근 파일도 다시 잰 값으로 — 예전에는 mm_meta 만 바뀌어 판정 뒤
+    # 대시보드의 추이 선과 MM 카드가 서로 다른 시간을 보였다. mm_meta 저장이 성공했을 때만 쓴다(실패면 셋 다 mine 값).
+    if day_hours and not extract.save_day_hours(rep, tag, day_hours):
+        say("        ※ 추이 선 갱신 실패(day_hours) — 다음 분석 때 다시 씁니다")
+    if att_days is not None and hasattr(extract, "save_attendance"):
+        extract.save_attendance(rep, tag, att_days, att_usual, (info or {}).get("attendance"))
     _write_dropped(rep, tag, dropped)          # 누적 장부 — 다음 UI 제외가 이번 버림분을 함께 넘긴다
     return {"dropped_n": len(dropped), "dropped_h": mj["dropped_h"], "before_mm": before_mm,
             "total_mm": total_mm, "avail_mm": avail_mm, "load_pct": mj["load_pct"],

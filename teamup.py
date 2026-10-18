@@ -387,10 +387,50 @@ def push_reports(share, owner, tag):
     return copied, bad
 
 
+ATT_TEAM_KEYS = ("work_h", "ext_h", "night_h", "holiday_h", "offpc_h", "over52_weeks", "leave_work_days")
+
+
+def attendance_of(mj, b):
+    r"""LM30(2026-10-18) 출퇴근 추정 합계(mm_basis.attendance) → 팀에 올리는 달·전체 합계
+    {"used_for_mm": 투입 MM 에 썼나, "months": {"YYYY-MM": {work_h, ext_h, night_h, holiday_h, offpc_h, over52_weeks,
+    leave_work_days}}, "total": {같은 칸}}. 날짜별 출근·퇴근·평소 시각은 애초에 mm_meta 에 없다(이 PC 의 report\attendance_<기간>.json
+    에만) — 여기서도 숫자 칸만 옮긴다. 출퇴근 추정이 없는 판(LM29 이전)이면 None."""
+    a = _obj(b.get("attendance")) or _obj(mj.get("attendance"))
+    if a is None:
+        return None
+
+    def row(x):
+        x = x if isinstance(x, dict) else {}
+        return {k: (_count(x.get(k)) if k in ("over52_weeks", "leave_work_days") else _hours(x.get(k)))
+                for k in ATT_TEAM_KEYS}
+    ms = a.get("months") if isinstance(a.get("months"), dict) else {}
+    return {"used_for_mm": bool(a.get("used_for_mm")),
+            "months": {str(k): row(v) for k, v in sorted(ms.items()) if re.match(r"^\d{4}-\d{2}$", str(k))},
+            "total": row(a.get("total"))}
+
+
+def _team_meta(text):
+    r"""mm_meta 본문에서 이 PC 전용 칸을 뺀다(LM30 — 날짜별 출퇴근·평소 시각·LM29 근거의 저녁·새벽 창 시각:
+    core\attendance.scrub_meta). 쓰는 쪽(mine·judge 재산정)이 이미 떼어 내므로 보통 그대로 돌려준다 — 옛 사본이나 다른 경로로 남은
+    것을 팀 서버·공유폴더로 나가기 직전에 한 번 더 막는 자리다. 못 읽으면(형식 오류·core 없음) 그대로."""
+    try:
+        import attendance
+        mj = json.loads(text)
+        if isinstance(mj, dict) and attendance.scrub_meta(mj):
+            return json.dumps(mj, ensure_ascii=False, indent=1)
+    except (ImportError, ValueError, TypeError):
+        pass
+    return text
+
+
 def team_signals(name, text, cfg):
     r"""G4 팀 반출 변환(core\privacy.team_export_rows — export.py 공유폴더와 같은 함수, WP7) → (본문 또는 None, 안내).
     who → 사내|고객사|협력사|외부, text 재정제, 고위험 잔여 행만 빼고 flag 열 제거. 이미 변환한 본문에 다시 걸어도 같다.
-    None = 이 PC·본인 식별자(카나리아)가 남아 그 파일만 보내지 않는다. 신호 파일이 아니면 그대로 돌려준다."""
+    None = 이 PC·본인 식별자(카나리아)가 남아 그 파일만 보내지 않는다. 신호 파일이 아니면 그대로 돌려준다.
+    LM30(2026-10-18): mm_meta_<기간>.json 은 이 PC 전용 칸(날짜별 출퇴근 시각)을 한 번 더 뺀다(_team_meta) — 묶음 만들기·
+    보내기 직전·공유폴더 저장이 모두 이 함수를 지난다."""
+    if re.match(r"^mm_meta_\d{8}-\d{8}\.json$", str(name)):
+        return _team_meta(text), ""
     if not re.match(r"^signals_\d{8}-\d{8}\.csv$", str(name)):
         return text, ""
     import privacy
@@ -448,6 +488,9 @@ def build(cfg, d0, d1):
               # 사람 차이로 읽지 않게. 구판 core 가 만든 meta 면 None(취합은 배지 없이 예전처럼 비교).
               "measure": measure_of(mj, b), "coverage": coverage_of(mj, b), "cfg_used": cfg_used_of(mj, b),
               "tool_usage": tool_usage_of(mj, b),
+              # LM30(2026-10-18) — 출퇴근 추정의 달·전체 합계(시각 없음). overtime_h 는 위 mm_basis 값 그대로 — 출퇴근 추정이
+              # 투입을 맡으면(useForMM) 연장 + 휴일이다. 없는 판(LM29 이전)이면 None
+              "attendance": attendance_of(mj, b),
               # A30 — 비업무 제외 후 시간 재산정 여부·뺀 시간(h)
               "rehours": bool(mj.get("rehours")), "dropped_h": _hours(mj.get("dropped_h")),
               "host": os.environ.get("COMPUTERNAME", ""),

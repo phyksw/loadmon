@@ -365,6 +365,26 @@ def _run_aggregate_once():
         return False
 
 
+def att_cells(m):
+    """LM30(2026-10-18) — member.attendance.total(출퇴근 추정 기간 합계 — 시각 없음) → [연장, 야간, 휴일, 52시간 넘은 주] 칸 글자.
+    출퇴근 추정이 없는 판(LM28·LM29)이나 숫자가 아닌 값은 '—'(업로드로 들어온 남의 입력 — 숫자로만 그린다)."""
+    a = m.get("attendance") if isinstance(m, dict) and isinstance(m.get("attendance"), dict) else {}
+    t = a.get("total") if isinstance(a.get("total"), dict) else {}
+    if not t:
+        return ["—"] * 4
+
+    def num(v):
+        try:
+            x = float(v)
+        except (TypeError, ValueError):
+            return None
+        return x if x == x and abs(x) != float("inf") else None
+    out = [("—" if num(t.get(k)) is None else f"{num(t.get(k)):.1f}h") for k in ("ext_h", "night_h", "holiday_h")]
+    n52 = num(t.get("over52_weeks"))
+    out.append("—" if n52 is None else f"{int(n52)}주")
+    return out
+
+
 def members():
     out = []
     if not os.path.isdir(TEAMDATA):
@@ -465,7 +485,8 @@ class H(BaseHTTPRequestHandler):
                     f"<td>{esc(per)}</td>"
                     f"<td>{lp_cell}</td>"
                     f"<td>{esc(m.get('total_mm', ''))}</td>"
-                    f"<td class='{cls}'>{esc(m.get('uploaded_at', ''))}</td></tr>")
+                    + "".join(f"<td>{x}</td>" for x in att_cells(m))
+                    + f"<td class='{cls}'>{esc(m.get('uploaded_at', ''))}</td></tr>")
             agg_html = os.path.join(TEAMDATA, "team_report.html")
             has_rep = os.path.exists(agg_html)
             full_html = os.path.join(TEAMDATA, REPORT_FILES["/full"])
@@ -487,10 +508,12 @@ class H(BaseHTTPRequestHandler):
                     "<a class='btn' href='/refresh'>지금 다시 취합</a></p>",
                     "<h2>인별 업로드 현황 (" + str(len(ms)) + "명)</h2>",
                     "<table><tr><th>이름</th><th>Function</th><th>기간</th><th>로드율</th>"
-                    "<th>투입 MM</th><th>업로드</th></tr>",
-                    "".join(rows) or "<tr><td colspan=6 class='note'>아직 업로드가 없습니다 — "
+                    "<th>투입 MM</th><th>연장</th><th>야간</th><th>휴일</th><th>52시간 넘은 주</th><th>업로드</th></tr>",
+                    "".join(rows) or "<tr><td colspan=10 class='note'>아직 업로드가 없습니다 — "
                     "각자 UI 의 [팀 서버 업로드] 또는 분석 실행 시 자동 업로드</td></tr>",
                     "</table>",
+                    "<p class='note'>연장·야간·휴일·52시간 넘은 주 = 출퇴근 추정(LM30)의 기간 합계 시간 — 출퇴근 추정이 없는 판"
+                    "(LM28·LM29)은 —</p>",
                     "<p class='note'>이 페이지는 2분마다 자동 새로고침 · "
                     + (esc(ast) + " · 지난 취합: " if ast else "")
                     + esc(STATE["agg_note"]) + "</p>"]

@@ -11,7 +11,8 @@ report_out.py — 현재 분석 결과를 하나의 리포트 파일로 출력�
 담기는 것: 투입/가용 MM·로드율 · 과제별 로드 · 업무분류 배분 · 공통업무(표준화·자동화 후보)
           · 월별 리뷰 코멘트(빠진 달은 다른 기간 파일에서 이월 — core/narratives) · Agentic AI 니즈 후보(LM29부터 — 발굴만)
           · 산정 근거와 신뢰도(초과근무 세분·미관측 일수)
-          · 산출 방식(PC 가동 하한의 근거·날짜별 방식 최신순·퇴근 후·시각 · 시간 근거 합계)
+          · 출퇴근·시간외 근무(LM30 — 결론 한 줄·재는 법·달·주 합계·최근 31일 날짜별 출근·퇴근·근태 기록 비교 · attendance_section)
+          · 산출 방식(PC 가동 하한의 근거·날짜별 방식 최신순·퇴근 후·시각 · 시간 근거 합계 — LM30 에서는 'LM29 방식(비교용) 근거')
           · raw 단서 요약 · 같이 일한 동료 · 연관 업무 · 업무 영역·과제 워크플로 요약(단위업무 등급)
 표기(LM28): 업무 영역(Level 1) / 과제(Level 2) / 세부업무(Level 3) / 업무분류(개발·사무·현장·협업).
 '대체 가능 MM' 은 계산하지도 보이지도 않는다(A-33 RP4 — 실측 투입·빈도만).
@@ -297,6 +298,115 @@ FLOOR_WHY = [
     "한계와 선택: PC 를 08~19 켜 두고 흔적이 하나라도 있으면 최대 10h 가 잡힐 수 있다(정규 09~18 근무자의 08~09·18~19 포함). "
     "정규 시간만 바닥으로 쓰려면 mm.pcFloorWindow=[9,18](퇴근 경계도 18:00 이 됨). 이 보고서에 쓴 값은 아래 '산식 설정' 에 남는다.",
 ]
+# ── LM30(2026-10-18) 출퇴근 추정 — 투입 MM 을 맡았으면 꼬리표·초과근무 줄은 그 값이고, LM29 의 PC 하한·저녁 인정 줄은 비교용 근거다 ──
+LM29_TAG = "LM29 방식(비교용) 근거"
+ATT_TAG_KO = {"night_h": "야간(22~06 — 위 시간과 겹쳐 셈)", "holiday_night_h": "휴일 중 야간(겹쳐 셈)"}
+LM29_ONLY = ("pc_floor_h", "pc_floor_days", "lunch_deducted_h", "evening_credit_h", "weekend_window_h",
+             "floor_blocked_passive_days", "dinner_deducted_h", "flex_edge_h", "sampler_bridge_h", "trace_window_days",
+             "trace_window_h", "pc_record_missing_days", "passive_capped_days", "weekend_pc_days", "sim_night")
+ATT_LABEL = {"overtime_h": "초과근무(h — 연장 + 휴일, 출퇴근 추정)", "night_days": "20시 넘어 퇴근한 날(일)",
+             "weekend_days": "주말·휴일 근무(일)", "absent_worked_h": "휴가일 근무(h)"}
+ATT_DOW = "월화수목금토일"
+
+
+def att_used(meta, b):
+    """출퇴근 추정이 투입 MM 을 맡았나 — mm_basis.attendance.used_for_mm 또는 measure.method == '출퇴근 추정'."""
+    a = _obj(_pick(meta, b, "attendance")) or {}
+    if a.get("used_for_mm"):
+        return True
+    ms = _obj(_pick(meta, b, "measure")) or {}
+    return ms.get("method") == "출퇴근 추정"
+
+
+def attendance_section(meta, b, att=None, per_day=True, max_days=31, max_weeks=26):
+    r"""8절 '출퇴근·시간외 근무'(LM30 2026-10-18 — 순수 함수 · 분석리포트 freeze.py 도 같은 함수) → HTML 조각 목록(출퇴근 추정이 없으면 []).
+      meta·b = mm_meta·mm_basis — 달·주·전체 합계·근태 기록 비교 합계(시각 없음) · att = report\attendance_<기간>.json(이 PC 전용 —
+      날짜별 출근·퇴근·평소 시각). per_day=False(공유폴더로 복사되는 분석리포트)면 att 를 쓰지 않는다 — 날짜별 표·평소 시각이 없다.
+    담는 것: 결론 한 줄(가장 최근 달) · 재는 법 · 달 합계 표 · 주 합계 표(최근 max_weeks 주) · 평소 출근·퇴근 · 날짜별 표(최근 max_days 일) ·
+    근태 기록 비교 · 무엇이 이 PC 에만 있나. 문구는 core\attendance(화면 카드와 같은 함수)."""
+    import attendance as _at
+    from datetime import date, timedelta
+    att = att if (per_day and isinstance(att, dict)) else {}
+    agg = _obj(_pick(meta, b, "attendance")) or _obj(att.get("agg")) or {}
+    months = agg.get("months") if isinstance(agg.get("months"), dict) else {}
+    weeks = agg.get("weeks") if isinstance(agg.get("weeks"), dict) else {}
+    if not months:
+        return []
+    cu = _obj(_pick(meta, b, "cfg_used")) or {}
+    p = cu.get("attendance") if isinstance(cu.get("attendance"), dict) else {}
+    wk_h = _h(p.get("weekHours")) or float(_at.DEFAULTS["weekHours"])
+    per = meta.get("period") if isinstance(meta.get("period"), list) else []
+    d1 = str(per[-1])[:10] if per else ""
+
+    def h1(v):
+        return f"{_h(v):.1f}h"
+    h = ["<h3 style='font-size:14px;margin:18px 0 4px'>출퇴근·시간외 근무</h3>",
+         f"<div><b>{esc(_at.headline(agg, d1))}</b> — "
+         + ("이 근무시간으로 투입 MM을 쟀습니다." if agg.get("used_for_mm")
+            else "투입 MM은 LM29 방식으로 쟀습니다(이 절은 참고 — 설정 attendance.useForMM).") + "</div>",
+         f"<div class='dim'>{esc(_at.rule_text(p or None, cu.get('standardDayHours'), cu.get('nightWindow')))}</div>"]
+    rec_on = any(isinstance(v, dict) and "unrecorded_h" in v for v in months.values())
+    h.append("<table><tr><th>월</th><th>근무</th><th>정규</th><th>연장</th><th>야간</th><th>휴일</th><th>PC 밖</th>"
+             "<th>LM29 방식</th><th>근무일</th><th>20시 넘은 퇴근</th><th>휴가일 근무</th><th>52시간 넘은 주</th>"
+             + ("<th>근태에 없는 근무</th>" if rec_on else "") + "</tr>")
+    tot = agg.get("total") if isinstance(agg.get("total"), dict) else {}
+    for lab, v in [(mk, months[mk]) for mk in sorted(months)] + ([("합계", tot)] if tot else []):
+        v = v if isinstance(v, dict) else {}
+        b0, b1 = ("<b>", "</b>") if lab == "합계" else ("", "")
+        h.append(f"<tr><td>{b0}{esc(lab)}{b1}</td><td><b>{h1(v.get('work_h'))}</b></td><td>{h1(v.get('regular_h'))}</td>"
+                 f"<td>{h1(v.get('ext_h'))}</td><td>{h1(v.get('night_h'))}</td><td>{h1(v.get('holiday_h'))}</td>"
+                 f"<td>{h1(v.get('offpc_h'))}</td><td>{h1(v.get('lm29_h'))}</td><td>{_n(v.get('days'))}일</td>"
+                 f"<td>{_n(v.get('late_days'))}일</td><td>{_n(v.get('leave_work_days'))}일</td>"
+                 f"<td>{_n(v.get('over52_weeks'))}주</td>"
+                 + (f"<td>{h1(v.get('unrecorded_h'))}</td>" if rec_on else "") + "</tr>")
+    h.append("</table>")
+    wk = sorted(((k, v) for k, v in weeks.items() if isinstance(v, dict)), reverse=True)[:max_weeks]
+    if wk:
+        h.append(f"<div class='dim'>주 합계(월~일) — 최근 {len(wk)}주"
+                 + (f"(전체 {len(weeks)}주 중)" if len(weeks) > len(wk) else "")
+                 + f" · {wk_h:g}시간 초과 = 그 주 근무에서 {wk_h:g}시간을 넘은 시간 · '일부' = 분석 기간에 걸친 주</div>")
+        h.append(f"<table><tr><th>주(월~일)</th><th>근무</th><th>연장</th><th>야간</th><th>휴일</th><th>PC 밖</th>"
+                 f"<th>{wk_h:g}시간 초과</th><th>52시간</th></tr>")
+        for _k, w in wk:
+            o52 = "<b style='color:#c0122f'>넘음</b>" if w.get("over52") else "–"
+            h.append(f"<tr><td>{esc(str(w.get('from'))[5:])}~{esc(str(w.get('to'))[5:])}"
+                     + (" <span class='dim'>일부</span>" if w.get("partial") else "") + "</td>"
+                     f"<td><b>{h1(w.get('work_h'))}</b></td><td>{h1(w.get('ext_h'))}</td><td>{h1(w.get('night_h'))}</td>"
+                     f"<td>{h1(w.get('holiday_h'))}</td><td>{h1(w.get('offpc_h'))}</td>"
+                     f"<td>{h1(w.get('over40_h')) if _h(w.get('over40_h')) > 0 else '–'}</td><td>{o52}</td></tr>")
+        h.append("</table>")
+    days = att.get("days") if isinstance(att.get("days"), dict) else {}
+    if per_day and att:
+        h.append(f"<div class='dim'>{esc(_at.usual_text(att.get('usual')))}</div>")
+    try:
+        end = date.fromisoformat(d1 or str(max(days))[:10]) if days else None
+    except ValueError:
+        end = None
+    if per_day and days and end is not None:
+        lo = (end - timedelta(days=max_days - 1)).isoformat()
+        rows = [(k, days[k]) for k in sorted(days, reverse=True)
+                if isinstance(days[k], dict) and lo <= str(k)[:10] <= end.isoformat()]
+        h.append(f"<div class='dim'>날짜별 출근·퇴근 — 최근 {max_days}일({len(rows)}일 · 최신순) · 근거 = 출근 쪽 → 퇴근 쪽</div>"
+                 "<table><tr><th>날짜(요일)</th><th>출근</th><th>퇴근</th><th>근무</th><th>연장</th><th>야간</th><th>휴일</th>"
+                 "<th>PC 밖</th><th>LM29 방식</th><th>근거</th><th>확실성</th></tr>")
+        for k, r in rows:
+            try:
+                dow = ATT_DOW[date.fromisoformat(str(k)[:10]).weekday()]
+            except ValueError:
+                dow = ""
+            lv = (("다음 날 " if _n(r.get("leave_day")) > 0 else "") + str(r.get("leave"))) if r.get("leave") else "–"
+            h.append(f"<tr><td>{esc(str(k)[5:10])}({dow})</td><td>{esc(r.get('arrive') or '–')}</td><td>{esc(lv)}</td>"
+                     f"<td><b>{h1(r.get('work_h'))}</b></td><td>{h1(r.get('ext_h'))}</td><td>{h1(r.get('night_h'))}</td>"
+                     f"<td>{h1(r.get('holiday_h'))}</td><td>{h1(r.get('offpc_h'))}</td><td>{h1(r.get('lm29_h'))}</td>"
+                     f"<td class='dim'>{esc(_at.day_why(r, p or None))}</td>"
+                     f"<td>{esc(_at.CONF_KO.get(r.get('conf'), '–'))}</td></tr>")
+        h.append("</table>")
+    h.append(f"<div class='dim'><b>근태 기록 비교</b> — {esc(_at.records_text(agg.get('records')))}</div>")
+    h.append("<div class='dim'>" + ("날짜별 출근·퇴근 추정 시각은 이 PC의 이 리포트와 대시보드에만 있습니다 — 팀 서버에는 주·달 합계 "
+                                    "시간만 가고, 공유폴더로 복사되는 보고서의 이 절에도 합계만 담깁니다." if per_day else
+                                    "날짜별 출근·퇴근 시각은 본인 PC의 대시보드·리포트에서만 보입니다 — 이 분석리포트에는 주·달 합계만 "
+                                    "담았습니다.") + "</div>")
+    return h
 
 
 def day_method(db):
@@ -370,21 +480,36 @@ def time_basis_line(meta, b):
     return " · ".join(bits)
 
 
-def floor_day_rows(day_basis, limit=None, edge="19:00"):
+def floor_day_rows(day_basis, limit=None, edge="19:00", lm29=False):
     """day_basis → [{date, h, method, open, add_h, cut, tags, extra, after}] **최신순**(LM28 E — 0h 평일·흔적 있는 휴일 포함 ·
-    after = '퇴근 후·시각' 칸). limit 이면 최근 limit 일만."""
+    after = '퇴근 후·시각' 칸). limit 이면 최근 limit 일만.
+    LM30(2026-10-18): lm29=True(출퇴근 추정이 투입을 맡은 결과)면 이 표는 'LM29 방식(비교용) 근거' 다 — h 는 LM29 방식 시간(lm29_h)이고
+    꼬리표 칸은 비운다(날짜별 꼬리표가 출퇴근 추정 값으로 바뀌었다). 출퇴근 추정 시간은 그 밖 칸에 적는다."""
     out = []
     for d in sorted(((day_basis or {}) if isinstance(day_basis, dict) else {}), reverse=True):
         db = day_basis[d] if isinstance(day_basis[d], dict) else {}
+        att = db.get("att") if isinstance(db.get("att"), dict) else {}
+        l29v = bool(lm29 and att and db.get("lm29_h") is not None)
+        if l29v:
+            db = dict(db, h=db.get("lm29_h"))
         fl = db.get("floor") if isinstance(db.get("floor"), dict) else {}
         cut = fl.get("cut") if isinstance(fl.get("cut"), dict) else {}
         cut_s = " · ".join(f"{CUT_KO.get(k, k)} {_h(v):.2f}h" if k != "half_day" else f"반차 {_h(v):.1f}일"
                            for k, v in cut.items() if v)
-        tags = db.get("tags") if isinstance(db.get("tags"), dict) else {}
+        tags = db.get("tags") if isinstance(db.get("tags"), dict) and not l29v else {}
         tag_s = " · ".join(f"{lab} {_h(tags.get(k[:-2])):.1f}h" for k, lab in TAG_KO if _h(tags.get(k[:-2])) > 0)
         extra = []
         if db.get("evening"):
             extra.append("저녁 " + ", ".join("~".join(str(x) for x in w) for w in db["evening"] if isinstance(w, list)))
+        elif _h(db.get("evening_h")) > 0:
+            # LM30(2026-10-18) — mm_meta 에는 저녁 창의 시각 대신 길이만 남는다(날짜별 시각은 이 PC 의 attendance 파일에만)
+            extra.append(f"저녁 {_h(db.get('evening_h')):.1f}h")
+        conf_ko = ({'high': '높음', 'mid': '보통', 'low': '낮음'}).get(att.get('conf'), '–') if att else ""
+        if l29v:
+            extra.append(f"출퇴근 추정 {_h(att.get('work')):.2f}h(신뢰도 {conf_ko})")
+        elif att:
+            extra.append(f"출퇴근 추정 신뢰도 {conf_ko}"
+                         + (f" · LM29 방식 {_h(db.get('lm29_h')):.2f}h" if db.get("lm29_h") is not None else ""))
         if db.get("remote_send"):
             extra.append(f"PC 밖 발신 {_n(db.get('remote_send'))}통")
         if db.get("private_min"):
@@ -398,20 +523,26 @@ def floor_day_rows(day_basis, limit=None, edge="19:00"):
 
 def floor_section(meta, b, max_rows=62):
     """'산출 방식 — PC 가동 하한의 근거' 절(★ 사용자 지시 2026-10-07 ②) → HTML 조각 목록.
-    LM28(E): 날짜표는 최신순(최근 max_rows 일)이고 0h 평일도 들어간다 · '퇴근 후·시각' 열 · 표 위에 시간 근거 합계 한 줄."""
+    LM28(E): 날짜표는 최신순(최근 max_rows 일)이고 0h 평일도 들어간다 · '퇴근 후·시각' 열 · 표 위에 시간 근거 합계 한 줄.
+    LM30(2026-10-18): 출퇴근 추정이 투입을 맡았으면(att_used) 이 절은 'LM29 방식(비교용) 근거' 다 — 제목·합계 줄·표 머리를 그렇게 적고
+    날짜표의 시간은 LM29 방식 시간이다(floor_day_rows lm29=True)."""
     cu = b.get("cfg_used") if isinstance(b.get("cfg_used"), dict) else (meta.get("cfg_used") or {})
     cu = cu if isinstance(cu, dict) else {}
+    a_on = att_used(meta, b)
     win = cu.get("pcFloorWindow")
     win_s = "~".join(str(x) for x in win) if isinstance(win, (list, tuple)) else "08:00~19:00"
     edge = str(win[1]) if isinstance(win, (list, tuple)) and len(win) == 2 and win[1] else "19:00"
-    h = [f"<h2>산출 방식 — PC 가동 하한의 근거</h2><div class='dim'>이 보고서의 하한 창: <b>{esc(win_s)}</b>"
+    head = (f"<h2>{LM29_TAG} — PC 가동 하한</h2><div class='dim'>투입 MM은 출퇴근 추정으로 쟀습니다(위 '출퇴근·시간외 근무'). "
+            "아래는 LM29 방식으로 쟀다면의 근거로, 비교용입니다. " if a_on else
+            "<h2>산출 방식 — PC 가동 하한의 근거</h2><div class='dim'>")
+    h = [head + f"이 보고서의 하한 창: <b>{esc(win_s)}</b>"
          + (f" · 근거 문구: {esc(cu.get('floorBasis'))}" if cu.get("floorBasis") else "") + "</div><ul>"]
     h += [f"<li style='margin:3px 0'>{t}</li>" for t in FLOOR_WHY]
     h.append("</ul>")
     tb = time_basis_line(meta, b)
     if tb:
-        h.append(f"<div class='dim'><b>시간 근거 합계</b> — {esc(tb)}</div>")
-    rows = floor_day_rows(b.get("day_basis") or meta.get("day_basis"), edge=edge)
+        h.append(f"<div class='dim'><b>시간 근거 합계{'(LM29 방식)' if a_on else ''}</b> — {esc(tb)}</div>")
+    rows = floor_day_rows(b.get("day_basis") or meta.get("day_basis"), edge=edge, lm29=a_on)
     if rows:
         cnt = {}
         for r in rows:
@@ -420,8 +551,8 @@ def floor_section(meta, b, max_rows=62):
                                                                          sorted(cnt.items(), key=lambda x: -x[1])))
                  + (f" (최근 {max_rows}일만 표시 · 전체는 mm_meta 의 mm_basis.day_basis)" if len(rows) > max_rows else "")
                  + "</div>")
-        h.append("<table><tr><th>날짜</th><th>인정</th><th>방식</th><th>하한을 연 흔적</th><th>하한이 더한 시간</th>"
-                 "<th>깎은 것</th><th>꼬리표</th><th>퇴근 후·시각</th><th>그 밖</th></tr>")
+        h.append(f"<table><tr><th>날짜</th><th>{'LM29 방식' if a_on else '인정'}</th><th>방식</th><th>하한을 연 흔적</th>"
+                 "<th>하한이 더한 시간</th><th>깎은 것</th><th>꼬리표</th><th>퇴근 후·시각</th><th>그 밖</th></tr>")
         for r in rows[:max_rows]:
             h.append(f"<tr><td>{esc(r['date'])}</td><td>{r['h']:.2f}h</td><td>{esc(r['method'])}</td>"
                      f"<td class='dim'>{esc(r['open']) or '–'}</td>"
@@ -434,21 +565,26 @@ def floor_section(meta, b, max_rows=62):
 
 
 def overtime_rows(meta, b):
-    """8절 초과근무 세분(A-22) — [(라벨, 값 문자열)]. 값이 없는 키는 뺀다."""
+    """8절 초과근무 세분(A-22) — [(라벨, 값 문자열)]. 값이 없는 키는 뺀다.
+    LM30(2026-10-18): 출퇴근 추정이 투입을 맡았으면(att_used) 꼬리표 줄은 출퇴근 추정 값(야간은 겹쳐 셈)이고, LM29 에만 있는 줄
+    (퇴근 후 인정 창·사적 차감·PC 밖 발신 통수·야간 해석 CPU)은 'LM29 방식(비교용) 근거' 로 적는다."""
+    a_on = att_used(meta, b)
+    pre = f"{LM29_TAG} — " if a_on else ""
     out = []
     for k, lab in TAG_KO:
         v = _pick(meta, b, k)
         if v is not None:
-            out.append((f"근무 꼬리표 — {lab}(h)", f"{_h(v):.1f}h"))
+            out.append((f"출퇴근 추정 — {ATT_TAG_KO.get(k, lab)}(h)" if a_on else f"근무 꼬리표 — {lab}(h)",
+                        f"{_h(v):.1f}h"))
     for k, lab in (("evening_window_h", "퇴근 후 인정 창(h)"), ("private_deducted_h", "사적 차감(h — 샘플러 연속 실측만)")):
         v = _pick(meta, b, k)
         if v is not None:
-            out.append((lab, f"{_h(v):.1f}h"))
+            out.append((pre + lab, f"{_h(v):.1f}h"))
     rs = _pick(meta, b, "remote_send")
     if rs:
-        out.append(("PC 밖 발신(통)", f"{_n(rs)}통"))
+        out.append((pre + "PC 밖 발신(통)", f"{_n(rs)}통"))
     if _pick(meta, b, "sim_night_cpu_denied"):
-        out.append(("야간 해석 CPU 미확인(인정 안 함, 일)", f"{_n(_pick(meta, b, 'sim_night_cpu_denied'))}일"))
+        out.append((pre + "야간 해석 CPU 미확인(인정 안 함, 일)", f"{_n(_pick(meta, b, 'sim_night_cpu_denied'))}일"))
     un = _pick(meta, b, "unobserved_days")
     if un is not None:
         out.append(("미관측 평일(원장 — 근거 없음, 0h 로 세지 않음)", _fmt_days(un)))
@@ -743,12 +879,17 @@ def build(tag, summary=False):
 
     mo = sorted((meta.get("mm_months") or {}).items())
     pcc = _obj(_pick(meta, b, "pc_coverage_by_month")) or {}
+    # LM30(2026-10-18) — 출퇴근 추정이 투입을 맡았으면 달마다 'LM29 방식이었다면' MM(같은 분모 — mm_months.mm_lm29)을 나란히
+    l29_on = any(isinstance(v, dict) and v.get("mm_lm29") is not None for _k, v in mo)
     if mo:
-        h.append("<h2>1. 월별 로드</h2><table><tr><th>월</th><th>투입 MM</th><th>가용 MM</th>"
-                 "<th>로드율</th><th>투입 시간</th><th>부재</th><th>그 달 평일</th>"
+        h.append("<h2>1. 월별 로드</h2><table><tr><th>월</th><th>투입 MM</th>" + ("<th>LM29 방식 MM</th>" if l29_on else "")
+                 + "<th>가용 MM</th><th>로드율</th><th>투입 시간</th><th>부재</th><th>그 달 평일</th>"
                  + ("<th>PC 기록</th>" if pcc else "") + "</tr>")
         for k, v in mo:
             v = v if isinstance(v, dict) else {}
+            l29_td = ""
+            if l29_on:
+                l29_td = f"<td>{_h(v.get('mm_lm29')):.2f}</td>" if v.get("mm_lm29") is not None else "<td class='dim'>–</td>"
             pc_td = ""
             if pcc:
                 r = pcc.get(k)
@@ -758,12 +899,17 @@ def build(tag, summary=False):
                     pc_td = (f"<td>{round(_h(r) * 100)}%"
                              + (" <b style='color:#b54708'>하한 미적용(PC 기록 없음)</b>" if _h(r) < 0.4 else "")
                              + "</td>")
-            h.append(f"<tr><td>{esc(k)}</td><td><b>{_h(v.get('mm')):.2f}</b></td>"
+            h.append(f"<tr><td>{esc(k)}</td><td><b>{_h(v.get('mm')):.2f}</b></td>{l29_td}"
                      f"<td>{_h(v.get('avail_mm')):.2f}</td>"
                      f"<td><b>{'–' if v.get('load_pct') is None else str(v['load_pct'])+'%'}</b></td>"
                      f"<td>{esc(v.get('worked'))}h</td><td>{esc(v.get('absent'))}일</td>"
                      f"<td>{esc(v.get('workdays'))}일</td>{pc_td}</tr>")
         h.append("</table>")
+        if l29_on:
+            t29 = meta.get("mm_lm29")
+            h.append("<div class='dim'>투입 MM은 출퇴근 추정(LM30 방식)으로 쟀습니다"
+                     + (f" — LM29 방식이었다면 {_h(t29):.2f} MM(차이 {_h(inmm) - _h(t29):+.2f} MM)" if t29 is not None else "")
+                     + " · 같은 분모(8h × 그 달 평일수) · 근거는 8절 '출퇴근·시간외 근무'</div>")
         if pcc:
             h.append("<div class='dim'>PC 기록 = 그 달 평일 중 PC 가동 기록이 있는 날의 비율 — 40% 미만이면 "
                      "PC 하한·부재 추정이 꺼져 그 달만 낮게 나올 수 있다(System 로그 롤오버·힌트 없음).</div>")
@@ -920,7 +1066,14 @@ def build(tag, summary=False):
                             if meta.get("total_mm_before_rehours") is not None else ""))
     BASIS_ROWS = BASIS_ROWS + (("rehours", "비업무 제외 재산정"),)
     tool_tbl = ""                       # 프로그램 사용(참고) 상세 표 — 이 표(셀이 통째로 esc 된다) 뒤에 따로 붙인다
+    # LM30(2026-10-18) — 출퇴근 추정이 투입을 맡았으면 초과근무·야근일·주말 근무는 그 값(이름을 그렇게)이고, PC 하한·점심·저녁 인정
+    # 같은 LM29 줄은 'LM29 방식(비교용) 근거' 로 적는다
+    a_on = att_used(meta, b)
     for k, label in BASIS_ROWS:
+        if a_on:
+            label = ATT_LABEL.get(k, label)
+            if k in LM29_ONLY:
+                label = f"{LM29_TAG} — {label}"
         if k not in bb:
             continue
         v = bb[k]
@@ -1015,6 +1168,8 @@ def build(tag, summary=False):
     for label, v in overtime_rows(meta, b):
         h.append(f"<tr><th style='width:180px'>{esc(label)}</th><td>{esc(v)}</td></tr>")
     h.append("</table>")
+    # LM30(2026-10-18) 출퇴근·시간외 근무 — 이 리포트는 이 PC 에만 있으므로(공유폴더로 복사되지 않는다) 날짜별 표까지 싣는다
+    h += attendance_section(meta, b, _json(os.path.join(REP, f"attendance_{tag}.json")), per_day=True)
     if tool_tbl:
         h.append(tool_tbl)
     h.append("<div class='dim'>해석 참고: 애자일 관행(SAFe 등)은 명목 가용의 70~80%를 실질 "

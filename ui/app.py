@@ -2114,6 +2114,17 @@ def trend(d0="", d1="", tag="", info=None):
     except Exception as _exw:  # noqa: BLE001 — 실측 판독 실패는 선을 비울 뿐, 추이를 막지 않는다
         if info is not None:
             info["wk_note"] = f"근무시간 실측 판독 실패({type(_exw).__name__}) — PC 가동 선만 표시"
+    # LM30(2026-10-18) — 점 툴팁의 연장·휴일 시간: 출퇴근 추정(report\attendance_*.json 의 날짜별 시간)을 이 버킷(주·달)으로 합친 값 —
+    # 시각은 싣지 않는다. 막대·선은 그대로(선은 day_hours). 출퇴근 추정이 없는 버킷은 키가 없다(화면이 툴팁에 넣지 않는다).
+    try:
+        import extract as _XA
+        for _iso, _ar in _XA.load_attendance_range(REPORT, start.isoformat(), end.isoformat()).items():
+            _i = slot(_iso)
+            if _i is not None:
+                out[_i]["ext_h"] = round(float(out[_i].get("ext_h") or 0) + float(_ar.get("ext_h") or 0), 2)
+                out[_i]["hol_h"] = round(float(out[_i].get("hol_h") or 0) + float(_ar.get("holiday_h") or 0), 2)
+    except Exception:  # noqa: BLE001 — 툴팁 재료 하나가 추이를 막지 않게
+        pass
 
     # PC 가동 시간 — 기간 안만. 본 PC + 추가PC 를 extract.pc_daily 로 합친다(구간 합집합 — 분석의 PC 하한과 같은 값).
     # 예전엔 본 PC 의 pc_on.csv 만 세어 추가 PC 의 가동이 이 선에서 통째로 빠졌다(제보: 'PC 가동시간 합산 안 됨').
@@ -2339,6 +2350,32 @@ def _fresh_refined(plain, ref):
         return True
 
 
+def result_file():
+    r"""화면에 띄울 결과 행 파일(report\mm_rows_<기간>[_refined].csv)의 경로 — 없으면 "". 고르는 규칙은 result_rows 머리말.
+    LM30(2026-10-18): /api/attendance 가 행을 읽지 않고 기간만 같은 규칙으로 고르게 따로 뺐다."""
+    bases = [f for f in glob.glob(os.path.join(REPORT, "mm_rows_*.csv"))
+             if not f.endswith("_refined.csv")]
+    base = max(bases, key=_mtime) if bases else ""
+    if base:
+        ref = base[:-4] + "_refined.csv"
+        return ref if _fresh_refined(base, ref) else base
+    # 정제본만 남은 폴더(옮겨 온 report\ 등) — 원본이 없다고 화면을 백지로 두지 않는다
+    # (리포트·flow 는 정제본만으로도 돌아간다 — 대시보드도 같은 규칙)
+    refs = glob.glob(os.path.join(REPORT, "mm_rows_*_refined.csv"))
+    return max(refs, key=_mtime) if refs else ""
+
+
+def meta_path_for(fn):
+    r"""화면에 띄운 결과 행 파일(mm_rows_<기간>…)과 **같은 기간**의 report\mm_meta_<기간>.json — 없으면 가장 최근 mm_meta.
+    /api/dash 와 /api/attendance 가 같은 규칙으로 기간을 고른다(LM30 — 한 곳). → 경로 또는 "" """
+    m2 = re.search(r"mm_rows_(\d{8}-\d{8})", fn or "")
+    if m2:
+        cand = os.path.join(REPORT, f"mm_meta_{m2.group(1)}.json")
+        if os.path.exists(cand):
+            return cand
+    return latest("mm_meta_*.json")
+
+
 def result_rows():
     # '가장 최근 분석'을 기준으로 고른다. 예전의 기간(tag) 무관 '정제본 우선'은,
     # 분석 기간 기본값이 날마다 바뀌어 tag 가 매일 달라지는 상황에서 과거 실패한 날의
@@ -2351,18 +2388,7 @@ def result_rows():
     # 분석리포트(새 원본)와 셋이 다른 값을 보였다. 1차 무효화는 run.py 가 추출 직후 정제본을 .stale 로 개명하는
     # 것이고, 여기 mtime 규칙은 mine 을 직접 돌린 경우의 안전망이다. 재분류 0건은 retag.py 가 파일을 다시 쓰지
     # 않으므로 화면이 튀지 않고, n>0·오할당 제외는 정제본을 지우므로 두 규칙이 같은 행을 본다.
-    bases = [f for f in glob.glob(os.path.join(REPORT, "mm_rows_*.csv"))
-             if not f.endswith("_refined.csv")]
-    base = max(bases, key=_mtime) if bases else ""
-    p = ""
-    if base:
-        ref = base[:-4] + "_refined.csv"
-        p = ref if _fresh_refined(base, ref) else base
-    else:
-        # 정제본만 남은 폴더(옮겨 온 report\ 등) — 원본이 없다고 화면을 백지로 두지 않는다
-        # (리포트·flow 는 정제본만으로도 돌아간다 — 대시보드도 같은 규칙)
-        refs = glob.glob(os.path.join(REPORT, "mm_rows_*_refined.csv"))
-        p = max(refs, key=_mtime) if refs else ""
+    p = result_file()
     rows = _rows(p) if p else []
 
     def _f(v):
@@ -2378,6 +2404,91 @@ def result_rows():
         r["share"] = round(_f(r.get("share")) * 100, 1)
     rows.sort(key=lambda r: -(r.get("mm") or 0))
     return (os.path.basename(p) if p else ""), rows
+
+
+ATT_RECENT_DAYS = 31      # 출퇴근 카드·리포트의 날짜별 표 — 최근 31일
+ATT_DAY_KEYS = ("arrive", "leave", "arrive_day", "leave_day", "work_h", "regular_h", "ext_h", "night_h", "holiday_h",
+                "offpc_h", "lm29_h", "kind", "leave_frac", "conf", "late", "rec")
+
+
+def attendance_view():
+    r"""LM30(2026-10-18) '출퇴근·시간외 근무' 카드(GET /api/attendance) — 화면 기간(/api/dash 와 같은 규칙: meta_path_for)의
+    report\attendance_<기간>.json(이 PC 전용 — 날짜별 출근·퇴근) + mm_meta 의 출퇴근 합계(시각 없음)·LM29 방식 MM.
+      · 기간: 화면 결과 행 파일과 같은 기간의 mm_meta → 없으면 가장 최근 mm_meta → 그것도 없으면(수집만 한 PC) 가장 최근 attendance 파일
+      · 합계(agg): mm_meta.mm_basis.attendance(투입 MM 과 같은 계산 — 판정 재산정 뒤 값) → 없으면 attendance 파일의 agg
+      · 날짜별 행(days): 기간 끝(오늘을 넘지 않게)부터 최근 31일만, 근거 한 줄(why — core\attendance.day_why)을 붙여서
+    없으면 ok False + 안내 한 줄. 파일만 읽는다(외부 전송 없음). 얼린 사본(freeze._att_summary_only)은 날짜별 행·평소 시각을 빼고 굽는다
+    — 그 사본이 공유폴더로 복사되기 때문이다."""
+    from datetime import date as _date, timedelta as _td
+
+    import attendance as _att
+    import extract as _X
+    out = {"ok": False, "tag": "", "period": ["", ""], "hint": "분석을 한 번 실행하면 보입니다.",
+           "recent_days": ATT_RECENT_DAYS}
+    mp = meta_path_for(os.path.basename(result_file()))
+    meta = {}
+    if mp:
+        try:
+            with open(mp, encoding="utf-8-sig") as f:
+                meta = json.load(f)
+        except (OSError, ValueError):
+            meta = {}
+    meta = meta if isinstance(meta, dict) else {}
+    tag = os.path.basename(mp)[len("mm_meta_"):-len(".json")] if mp else ""
+    doc = _X.load_attendance(REPORT, tag) if tag else None
+    if doc is None and not tag:
+        ap = latest("attendance_*.json")
+        if ap:
+            tag = os.path.basename(ap)[len("attendance_"):-len(".json")]
+            doc = _X.load_attendance(REPORT, tag)
+    out["tag"] = tag
+    b = meta.get("mm_basis") if isinstance(meta.get("mm_basis"), dict) else {}
+    agg = b.get("attendance") if isinstance(b.get("attendance"), dict) else None
+    src = "mm_meta"
+    if agg is None and isinstance((doc or {}).get("agg"), dict):
+        agg, src = doc["agg"], "file"
+    if not agg or not (isinstance(agg.get("months"), dict) and agg.get("months")):
+        if meta and doc is None:
+            out["hint"] = "이 분석 결과에는 출퇴근 추정이 없습니다 — [분석 실행]을 한 번 더 하면 보입니다."
+        return out
+    per = meta.get("period") if isinstance(meta.get("period"), list) and len(meta.get("period")) == 2 else []
+    if not per and re.match(r"^\d{8}-\d{8}$", tag):
+        per = [f"{tag[:4]}-{tag[4:6]}-{tag[6:8]}", f"{tag[9:13]}-{tag[13:15]}-{tag[15:]}"]
+    cu = b.get("cfg_used") if isinstance(b.get("cfg_used"), dict) else (
+        meta.get("cfg_used") if isinstance(meta.get("cfg_used"), dict) else {})
+    p = cu.get("attendance") if isinstance(cu.get("attendance"), dict) else _att.norm(cfg())[0]
+    days = (doc or {}).get("days") if isinstance((doc or {}).get("days"), dict) else {}
+    recent = {}
+    try:
+        end = min(_date.fromisoformat(str(per[1])[:10]), _date.today()) if per else _date.today()
+    except ValueError:
+        end = _date.today()
+    lo, hi = (end - _td(days=ATT_RECENT_DAYS - 1)).isoformat(), end.isoformat()
+    for iso in sorted(days, reverse=True):
+        r = days[iso]
+        if not (isinstance(r, dict) and lo <= str(iso)[:10] <= hi):
+            continue
+        row = {k: r.get(k) for k in ATT_DAY_KEYS if k in r}
+        row["why"] = _att.day_why(r, p)
+        recent[str(iso)[:10]] = row
+    mo = meta.get("mm_months") if isinstance(meta.get("mm_months"), dict) else {}
+    ms = b.get("measure") if isinstance(b.get("measure"), dict) else {}
+    out.update(
+        ok=True, period=[str(x)[:10] for x in per] or ["", ""], hint="", agg_src=src,
+        used_for_mm=bool(agg.get("used_for_mm")), method=ms.get("method") or "", lm29_method=ms.get("lm29_method") or "",
+        agg={k: agg.get(k) for k in ("weeks", "months", "total", "records") if k in agg},
+        headline=_att.headline(agg, per[1] if per else None),
+        rule=_att.rule_text(p, cu.get("standardDayHours"), cu.get("nightWindow")),
+        records_text=_att.records_text(agg.get("records")),
+        usual=(doc or {}).get("usual") if isinstance((doc or {}).get("usual"), dict) else {},
+        usual_text=_att.usual_text((doc or {}).get("usual")) if doc else "",
+        days=recent, days_n=len(days),
+        cfg={"weekHours": p.get("weekHours"), "weekMaxHours": p.get("weekMaxHours"),
+             "breakPer4hMin": p.get("breakPer4hMin"), "standardDayHours": cu.get("standardDayHours")},
+        mm={"months": {k: {x: v.get(x) for x in ("mm", "mm_lm29", "worked", "worked_lm29")}
+                       for k, v in sorted(mo.items()) if isinstance(v, dict)},
+            "total_mm": meta.get("total_mm"), "mm_lm29": meta.get("mm_lm29")})
+    return out
 
 
 def run_job(d0, d1, ai, skip, collect_only=False):
@@ -3021,6 +3132,12 @@ async function load(){
 const GC9={reliable:["#0f7a3d","신뢰"],caution:["#c98a00","주의"],unreliable:["#c0122f","측정 불충분"]};
 const covB=m=>{const c=(m.coverage&&typeof m.coverage==="object")?m.coverage:{};const g=GC9[c.grade];return g?` <span class="tag" style="border:1px solid ${g[0]};color:${g[0]};background:#fff" title="${esc((Array.isArray(c.reasons)?c.reasons:[]).join(" · ")||"측정 신뢰도 등급")}">${g[1]}</span>`:"";};
 const cfgB=m=>m.cfg_diff?` <span class="tag" style="border:1px solid #b06ef7;color:#6c4fb8;background:#fff" title="표준 근무시간·점심·주간 창·PC 하한·공휴일 수 등 산식 설정이 팀 다수와 다릅니다 — 분모가 달라 로드율 비교가 어긋납니다">산식 설정 상이</span>`:"";
+// LM30(2026-10-18) — 출퇴근 추정 합계(member.attendance.total — 시각 없음): 연장·야간·휴일·52시간 넘은 주. 없는 사람(LM28·LM29)은 '—'
+const attC=m=>{const a=(m.attendance&&typeof m.attendance==="object")?m.attendance:null;
+ const t=(a&&a.total&&typeof a.total==="object")?a.total:null;
+ if(!t)return '<td class="state">—</td><td class="state">—</td><td class="state">—</td><td class="state">—</td>';
+ const h=v=>{const x=Number(v);return Number.isFinite(x)?x.toFixed(1)+"h":"–";};const w=Number(t.over52_weeks);
+ return `<td>${h(t.ext_h)}</td><td>${h(t.night_h)}</td><td>${h(t.holiday_h)}</td><td>${Number.isFinite(w)?(w>0?`<b style="color:#c0122f">${w}주</b>`:"0주"):"–"}</td>`;};
 function render(){
  const ms=D.members||[];
  // 측정 불충분(unreliable)은 팀 평균·순위·과제 매트릭스에서 빼고 표에는 남긴다(별도 표시)
@@ -3040,6 +3157,7 @@ function render(){
  $("whotbl").innerHTML=ms.length?
   '<table><tr><th>이름</th><th style="width:74px">파트</th><th style="width:150px">기간</th>'
   +'<th style="width:62px">투입 MM</th><th style="width:56px">로드율</th>'
+  +'<th style="width:46px" title="출퇴근 추정(LM30) — 기간 합계. LM29 이전 판은 —">연장</th><th style="width:46px">야간</th><th style="width:46px">휴일</th><th style="width:58px">52시간 넘은 주</th>'
   +'<th style="width:210px">측정 방식</th>'
   +'<th style="width:118px">올린 시각</th><th style="width:104px">올린 PC</th>'
   +'<th style="width:118px">분석 시각</th><th style="width:104px">분석 PC</th></tr>'
@@ -3050,6 +3168,7 @@ function render(){
     return `<tr${m.unreliable?' style="color:#8b929b"':""}><td><b>${esc(m.owner)}</b>${m.via?` <span class="tag">${esc(m.via)}</span>`:""}${covB(m)}${cfgB(m)}</td>
      <td>${esc(m.function||"")}</td><td>${esc((m.period||[]).join(" ~ "))}</td>
      <td>${(m.total_mm||0).toFixed(2)}</td><td>${pct==null?"–":pct+"%"}${m.unreliable?' <span class="state">비교 제외</span>':""}</td>
+     ${attC(m)}
      <td style="font-size:11px">${esc(m.measure_text||"–")}</td>
      <td>${up?esc(up):`<span class="state">${esc(fa)||"–"}</span>`}</td>
      <td>${esc(upf)||"–"}</td><td>${esc(an)||"–"}</td><td>${esc(hs)||"–"}</td></tr>`;
@@ -3455,6 +3574,9 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
 <div class="card"><h2>MM 산정 근거 <span class="state">투입 ÷ 가용 = 로드율 · 1 MM = 8h × 그 달 평일수</span></h2>
  <div id="mmbasis"></div></div>
 
+<div class="card"><h2>출퇴근·시간외 근무 <span class="state" id="atstate">PC를 켜고 끈 시각과 내 흔적으로 추정 · 날짜별 시각은 이 PC에만</span></h2>
+ <div id="atbody"><div class="note">불러오는 중…</div></div></div>
+
 <div class="card"><h2>신호 출처 — 무엇이 계상되고 무엇이 빠졌나 <span class="state" id="metaper"></span></h2>
  <div class="row" id="mcount" style="margin-bottom:6px"></div>
  <div class="row" id="mexcl"></div>
@@ -3593,7 +3715,7 @@ function weekly(el,tr){
   const part=(w.pc_wd!==undefined&&w.pc_days<w.pc_wd);
   const _tot=Number(w.pc_h)||0, _rd=Number(w.pc_rd)||0, _avg=_rd>0?_tot/_rd:0;
   const _v=lineVal(w);
-  s+=`<circle cx="${(L+i*iw+iw/2).toFixed(1)}" cy="${(H-B-(H-T-B)*_v/hmax).toFixed(1)}" r="2.6" fill="${part?"#fff":"#c8a06a"}" stroke="#c8a06a" stroke-width="${part?1.4:0}"><title>${w.label}${hasWk?` 근무 ${_wk.toFixed(1)}h ·`:""} PC 가동 ${_tot.toFixed(1)}h${_rd?`(기록 ${_rd}일·평균 ${_avg.toFixed(1)}h/일)`:""}${w.pc_wd!==undefined?` (평일 ${w.pc_days}/${w.pc_wd})`:""}${_avg>=20?" · PC 종일 켜 둠(야간 포함)":""}</title></circle>`;}});
+  s+=`<circle cx="${(L+i*iw+iw/2).toFixed(1)}" cy="${(H-B-(H-T-B)*_v/hmax).toFixed(1)}" r="2.6" fill="${part?"#fff":"#c8a06a"}" stroke="#c8a06a" stroke-width="${part?1.4:0}"><title>${w.label}${hasWk?` 근무 ${_wk.toFixed(1)}h ·`:""}${w.ext_h!=null?` 연장 ${Number(w.ext_h).toFixed(1)}h ·`:""}${Number(w.hol_h)>0?` 휴일 ${Number(w.hol_h).toFixed(1)}h ·`:""} PC 가동 ${_tot.toFixed(1)}h${_rd?`(기록 ${_rd}일·평균 ${_avg.toFixed(1)}h/일)`:""}${w.pc_wd!==undefined?` (평일 ${w.pc_days}/${w.pc_wd})`:""}${_avg>=20?" · PC 종일 켜 둠(야간 포함)":""}</title></circle>`;}});
  el.innerHTML=s+"</svg>";
  $("wleg").innerHTML=keys.map(([k,c])=>`<span><span class="dot" style="background:${c}"></span>${k}</span>`).join("")+
   '<span><span class="dot" style="background:#c8a06a"></span>근무시간(h·오른쪽 축)</span>'+
@@ -4034,19 +4156,34 @@ async function refresh(){
   const tbNote=tbBits.length?`<div class="note"><b>시간 근거</b> — ${tbBits.join(" · ")} <span class="dim">— 날짜별 근거는 리포트의 '산출 방식' 표</span></div>`:"";
   const win=v=>Array.isArray(v)?v.join("~"):(v==null?"":String(v));
   const cfgNote=cu?`<div class="note">산식 설정 — 표준 ${esc(cu.standardDayHours)}h · PC 하한 ${cu.usePcFloor===false?"끔":"켬"}${cu.pcFloorNeeds?`(${esc(cu.pcFloorNeeds)})`:""} · 주간 창 ${esc(win(cu.dayWindow))} · 점심 ${esc(win(cu.lunch))}${cu.dinner?` · 저녁 ${esc(win(cu.dinner))}`:""} · 미정 회의 ${esc(cu.tentativeMeetings||"")} · 공휴일 ${num(cu.holidays_n)}일${cu.offsiteAsWork===false?" · 종일 행사 미인정":""}${cu.samplerGapBridgeMin!=null?` · 샘플러 공백 다리 ${num(cu.samplerGapBridgeMin)}분`:""}${cu.noPcMonthDay?` · PC 기록 없는 달 ${cu.noPcMonthDay==="trace"?"흔적 창(예전)":"표준일 추정(기본)"}`:""} — 팀과 다르면 팀 취합에 '산식 설정 상이' 배지가 붙습니다</div>`:"";
-  mmEl.innerHTML=mo.length?`<div class="note" style="margin:0 0 6px">${esc(nb.basis||"")} — 로드율 100% = 가용 시간을 꽉 채워 일함(회색 눈금). 야근하면 100%를 넘습니다.</div>`+
-   "<table><tr><th>월</th><th style='width:58px'>투입 MM</th><th style='width:58px'>가용 MM</th><th style='width:62px'>로드율</th><th style='width:130px'></th><th>투입 시간</th><th>부재</th><th>그 달 평일</th></tr>"+
-   mo.map(([k,v0])=>{const v=(v0&&typeof v0==="object")?v0:{};return `<tr><td>${esc(k)}</td><td><b>${num(v.mm).toFixed(2)}</b></td><td>${num(v.avail_mm).toFixed(2)}</td>
+  // LM30(2026-10-18) — 투입 MM 을 무엇으로 쟀나(출퇴근 추정 / LM29 방식)와 달마다 'LM29 방식' MM(같은 분모 — mm_months.mm_lm29)·차이를
+  // 나란히. 출퇴근 추정이 투입을 맡았으면 초과근무·야근일·주말 근무는 그 값이고, PC 하한·점심·저녁 인정은 LM29 방식(비교용) 근거다.
+  const att9=(nb.attendance&&typeof nb.attendance==="object")?nb.attendance:null;
+  const attOn=!!(att9&&att9.used_for_mm)||!!(ms9&&ms9.method==="출퇴근 추정");
+  const l29On=mo.some(([,v])=>v&&typeof v==="object"&&v.mm_lm29!=null);
+  const sgn=x=>(x>0?"+":"")+x.toFixed(2);
+  const l29Note=attOn?`<div class="note" style="margin:0 0 6px"><b>투입 MM은 출퇴근 추정(LM30 방식)으로 쟀습니다</b>${m.mm_lm29!=null?` — LM29 방식이었다면 ${num(m.mm_lm29).toFixed(2)} MM(차이 ${sgn(num(m.total_mm)-num(m.mm_lm29))} MM · 같은 분모)`:""}. 날짜별 출근·퇴근은 아래 '출퇴근·시간외 근무' 카드에 있습니다.</div>`
+   :(att9?'<div class="note" style="margin:0 0 6px"><b>투입 MM은 LM29 방식으로 쟀습니다</b>(설정 attendance.useForMM 꺼짐) — 출퇴근 추정은 아래 카드에 참고로만 보입니다.</div>':"");
+  const otNote=attOn
+   ?`<div class="note">연차·휴가 ${nb.absence_days||0}일은 <b>가용에서 차감</b>(일자에서 뺌) · 초과근무 ${num(nb.overtime_h).toFixed(0)}h(연장 + 휴일 — 출퇴근 추정)는
+   상한 없이 그대로 반영(하루 24h 물리 한계만 · 이상치 ${anoms.length}일은 아래 표) · 20시 넘어 퇴근한 날 ${nb.night_days||0}일 · 주말·휴일 근무 ${nb.weekend_days||0}일 · 공휴일 ${nb.holidays||0}일 제외</div>`
+   :`<div class="note">연차·휴가 ${nb.absence_days||0}일은 <b>가용에서 차감</b>(일자에서 뺌) · 초과근무 ${num(nb.overtime_h).toFixed(0)}h는
+   상한 없이 그대로 반영(하루 24h 물리 한계만 · 이상치 ${anoms.length}일은 아래 표) · 야근일 ${nb.night_days||0}일(산출물이 찍힌 시각의 폭으로 산정 — 취침 중 켜둔 PC는 제외) ·
+   주말 근무 ${nb.weekend_days||0}일 · PC가동 하한 보정 ${num(nb.pc_floor_h).toFixed(0)}h/${nb.pc_floor_days||0}일(흔적 있는 날의 주간 투입을 PC 가동시간까지 인정 — 저장 1번=1시간 과소 방지) · 공휴일 ${nb.holidays||0}일 제외</div>`;
+  const fixLead=attOn?`<b>LM29 방식(비교용) 근거</b> — PC가동 하한 보정 ${num(nb.pc_floor_h).toFixed(0)}h/${nb.pc_floor_days||0}일 · 점심 차감`:"측정 보정 — 점심 차감";
+  mmEl.innerHTML=mo.length?`<div class="note" style="margin:0 0 6px">${esc(nb.basis||"")} — 로드율 100% = 가용 시간을 꽉 채워 일함(회색 눈금). 야근하면 100%를 넘습니다.</div>`+l29Note+
+   "<table><tr><th>월</th><th style='width:58px'>투입 MM</th>"+(l29On?"<th style='width:62px'>LM29 방식</th><th style='width:52px'>차이</th>":"")+"<th style='width:58px'>가용 MM</th><th style='width:62px'>로드율</th><th style='width:130px'></th><th>투입 시간</th><th>부재</th><th>그 달 평일</th></tr>"+
+   mo.map(([k,v0])=>{const v=(v0&&typeof v0==="object")?v0:{};const dl=num(v.mm)-num(v.mm_lm29);
+    const l29c=l29On?(v.mm_lm29!=null?`<td>${num(v.mm_lm29).toFixed(2)}</td><td style="color:${dl>=0?"#0f7a3d":"#b54708"}">${sgn(dl)}</td>`:"<td>–</td><td>–</td>"):"";
+    return `<tr><td>${esc(k)}</td><td><b>${num(v.mm).toFixed(2)}</b></td>${l29c}<td>${num(v.avail_mm).toFixed(2)}</td>
     <td><b>${v.load_pct==null?"–":num(v.load_pct)+"%"}</b></td><td>${bar(num(v.load_pct))}</td>
     <td>${esc(v.worked)}h</td><td>${esc(v.absent||0)}일</td><td>${esc(v.workdays)}일 = ${esc(v.capacity_h)}h</td></tr>`;}).join("")+
-   `</table><div class="note">연차·휴가 ${nb.absence_days||0}일은 <b>가용에서 차감</b>(일자에서 뺌) · 초과근무 ${num(nb.overtime_h).toFixed(0)}h는
-   상한 없이 그대로 반영(하루 24h 물리 한계만 · 이상치 ${anoms.length}일은 아래 표) · 야근일 ${nb.night_days||0}일(산출물이 찍힌 시각의 폭으로 산정 — 취침 중 켜둔 PC는 제외) ·
-   주말 근무 ${nb.weekend_days||0}일 · PC가동 하한 보정 ${num(nb.pc_floor_h).toFixed(0)}h/${nb.pc_floor_days||0}일(흔적 있는 날의 주간 투입을 PC 가동시간까지 인정 — 저장 1번=1시간 과소 방지) · 공휴일 ${nb.holidays||0}일 제외</div>
-   <div class="note">측정 보정 — 점심 차감 ${num(nb.lunch_deducted_h).toFixed(0)}h · 저녁·새벽 가동 인정 ${num(nb.evening_credit_h).toFixed(1)}h · 주말 산출물 창 ${num(nb.weekend_window_h).toFixed(1)}h ·
+   `</table>${otNote}
+   <div class="note">${fixLead} ${num(nb.lunch_deducted_h).toFixed(0)}h · 저녁·새벽 가동 인정 ${num(nb.evening_credit_h).toFixed(1)}h · 주말 산출물 창 ${num(nb.weekend_window_h).toFixed(1)}h ·
    수동 흔적(수신·CC)만 있는 날 ${nb.floor_blocked_passive_days||0}일(하한 미적용 — 많으면 config.watchFolders 점검) · 미래 시각 신호 폐기 ${nb.future_signals_dropped||0}건 ·
    부재 추정 ${nb.inferred_absence_days||0}일(PC 도 흔적도 없는 평일 — 가용에서 차감${absd.length?": "+esc(absd.slice(0,12).join(", "))+(absd.length>12?" …":""):""})${simNote}</div>
    <div class="note">흔적 없는 평일 ${nb.no_evidence_days||0}일 — 이 수가 크면 수집이 덜 된 것입니다: Outlook을 켠 상태로 재실행하거나 config.watchFolders 를 확인하세요.</div>`
-   +measNote+toolNote+rhNote+tbNote+extraNote+pccNote+futNote+cfgNote
+   +measNote+toolNote+rhNote+(attOn?tbNote.replace("<b>시간 근거</b>","<b>시간 근거(LM29 방식 — 비교용)</b>"):tbNote)+extraNote+pccNote+futNote+cfgNote
    +((Array.isArray(nb.config_warnings)&&nb.config_warnings.length)?`<div class="note" style="color:#b54708"><b>설정 경고 ${nb.config_warnings.length}건</b> — 잘못된 값은 기본값으로 대체했습니다: ${esc(nb.config_warnings.slice(0,6).join(" · "))}${nb.config_warnings.length>6?" …":""}</div>`:"")
    +(nb.utc_suspect?`<div class="note" style="color:#b54708"><b>메일 시각이 UTC 로 기록된 것 같습니다</b> — 낮 발신이 새벽 야근으로 잡힐 수 있으니 config.mm.mailTimeOffsetH(예: 9)를 확인하세요.</div>`:"")
    +(anoms.length?`<div class="note"><b>이상치 ${anoms.length}일</b> — PC 기록이 물리적으로 맞지 않아 보정한 날(투입을 자르지 않고 표시만 합니다)
@@ -4063,6 +4200,47 @@ async function refresh(){
  const C={ok:"#0f7a3d",warn:"#c98a00",bad:"#c0122f",off:"#98a0a8"};
  $("src").innerHTML=d.sources.map(s=>`<span class="src"><span class="dot" style="background:${C[s.status]||C.off}"></span>
   <b>${s.name}</b> ${s.rows.toLocaleString()}건 · ${s.age}${s.hint?` <span style="color:${s.status==="warn"?"#c98a00":(s.status==="ok"?"#4a5159":"#c0122f")}">→ ${esc(s.hint)}</span>`:""}</span>`).join("");
+ attLoad();
+}
+// ── 출퇴근·시간외 근무 카드(LM30) — /api/attendance: 이 기간 report\\attendance_<기간>.json(날짜별 출근·퇴근 — 이 PC 전용) + mm_meta
+//    합계(시각 없음). 결론 한 줄 · 재는 법 · 최근 8주 표 · 평소 시각 · 근태 기록 비교 · 최근 31일 날짜별 표(접힘).
+//    얼린 사본에는 주·달 합계만 굳는다(freeze 가 날짜별 행·평소 시각을 뺀다 — a.frozen).
+const AT_CONF={high:"높음",mid:"보통",low:"낮음"},AT_DOW=["일","월","화","수","목","금","토"];
+async function attLoad(){
+ let a=null;
+ try{a=await fetch("/api/attendance").then(r=>r.json());}catch(e){a=null;}
+ attRender(a);
+}
+function attRender(a){
+ const el=$("atbody");if(!el)return;
+ if(!a||!a.ok){el.innerHTML=`<div class="note">${esc((a&&a.hint)||"분석을 한 번 실행하면 보입니다.")}</div>`;return;}
+ const n=v=>{const x=Number(v);return Number.isFinite(x)?x:0;};
+ const h=v=>n(v).toFixed(1)+"h";
+ const g=(a.agg&&typeof a.agg==="object")?a.agg:{};
+ const cf=(a.cfg&&typeof a.cfg==="object")?a.cfg:{};
+ const wH=n(cf.weekHours)||40,wM=n(cf.weekMaxHours)||52;
+ const md=s=>String(s||"").slice(5).replace("-","/");
+ const wks=Object.entries((g.weeks&&typeof g.weeks==="object")?g.weeks:{}).sort().slice(-8).reverse();
+ const wTbl=wks.length?`<table style="margin-top:6px"><tr><th>주(월~일)</th><th>근무</th><th>연장</th><th>야간</th><th>휴일</th><th>PC 밖</th><th>${wH}시간 초과</th><th>${wM}시간</th></tr>`
+  +wks.map(([,w0])=>{const w=(w0&&typeof w0==="object")?w0:{};
+   return `<tr><td>${esc(md(w.from))}~${esc(md(w.to))}${w.partial?' <span class="state">일부</span>':""}</td><td><b>${h(w.work_h)}</b></td><td>${h(w.ext_h)}</td><td>${h(w.night_h)}</td><td>${h(w.holiday_h)}</td><td>${h(w.offpc_h)}</td><td>${n(w.over40_h)>0?h(w.over40_h):"–"}</td><td>${w.over52?'<b style="color:#c0122f">넘음</b>':"–"}</td></tr>`;}).join("")+"</table>"
+  :'<div class="note">주별 합계가 아직 없습니다.</div>';
+ const ds=Object.entries((a.days&&typeof a.days==="object")?a.days:{}).sort().reverse();
+ const dRow=([iso,r0])=>{const r=(r0&&typeof r0==="object")?r0:{};const dt=new Date(iso+"T00:00:00");
+  const lv=r.leave?((n(r.leave_day)>0?"다음 날 ":"")+r.leave):"–";
+  return `<tr><td>${esc(iso.slice(5))}(${AT_DOW[dt.getDay()]||""})</td><td>${esc(r.arrive||"–")}</td><td>${esc(lv)}</td><td><b>${h(r.work_h)}</b></td><td>${h(r.ext_h)}</td><td>${h(r.night_h)}</td><td>${h(r.holiday_h)}</td><td>${h(r.offpc_h)}</td><td>${h(r.lm29_h)}</td><td style="font-size:11px;color:#4a5159">${esc(r.why||"")}</td><td>${esc(AT_CONF[r.conf]||"–")}</td></tr>`;};
+ const dTbl=a.frozen?'<div class="note">날짜별 출근·퇴근 시각은 본인 PC의 화면에서만 보입니다 — 이 사본에는 주·달 합계만 담았습니다.</div>'
+  :(ds.length?`<details style="margin:10px 0 0"><summary>최근 ${n(a.recent_days)||31}일 날짜별 출근·퇴근 <span class="state">${ds.length}일 · 최신순 · 근거 = 출근 쪽 → 퇴근 쪽</span></summary><div class="body"><div style="overflow-x:auto"><table><tr><th>날짜(요일)</th><th>출근</th><th>퇴근</th><th>근무</th><th>연장</th><th>야간</th><th>휴일</th><th>PC 밖</th><th>LM29 방식</th><th>근거</th><th>확실성</th></tr>${ds.map(dRow).join("")}</table></div></div></details>`
+   :'<div class="note">최근 31일에 근무로 센 날이 없습니다.</div>');
+ el.innerHTML=`<div style="font-size:13px;margin-bottom:2px"><b>${esc(a.headline||"")}</b></div>`
+  +`<div class="note" style="margin-top:2px">${a.used_for_mm?"<b>이 근무시간으로 투입 MM을 쟀습니다.</b>":"<b>투입 MM은 LM29 방식으로 쟀습니다</b> — 이 카드는 참고용입니다(설정 attendance.useForMM)."} ${esc(a.rule||"")}</div>`
+  +wTbl
+  +(a.frozen||!a.usual_text?"":`<div class="note">${esc(a.usual_text)}</div>`)
+  +`<div class="note">${esc(a.records_text||"")}</div>`
+  +dTbl
+  +'<div class="note">날짜별 출근·퇴근 시각은 이 PC에만 있습니다. 팀 서버에는 주·달 합계 시간만 올라갑니다.</div>';
+ const st=$("atstate");
+ if(st&&Array.isArray(a.period)&&a.period[0])st.textContent=`${a.period[0]} ~ ${a.period[1]||""} · 날짜별 시각은 이 PC에만`;
 }
 // ── 과제 지정 카드 ──
 let PJ=[];
@@ -5046,15 +5224,8 @@ class H(BaseHTTPRequestHandler):
             meta = {}
             # meta 는 화면에 띄운 rows 와 **같은 태그**를 우선한다 — mtime 최신만 고르면
             # 다른 기간의 meta 로 로드율을 계산하거나, 그 meta 가 없어서 rows 는 멀쩡한데
-            # 로드율만 '—' 가 되는 어긋남이 생긴다(실측: 회사 PC 화면).
-            mp = None
-            m2 = re.search(r"mm_rows_(\d{8}-\d{8})", fn or "")
-            if m2:
-                cand = os.path.join(REPORT, f"mm_meta_{m2.group(1)}.json")
-                if os.path.exists(cand):
-                    mp = cand
-            if not mp:
-                mp = latest("mm_meta_*.json")
+            # 로드율만 '—' 가 되는 어긋남이 생긴다(실측: 회사 PC 화면). 규칙은 meta_path_for 한 곳(/api/attendance 도 같은 기간).
+            mp = meta_path_for(fn)
             if mp:
                 # 깨진/중단 저장된 JSON도 견뎌야 한다 — 여기서 예외가 나면 /api/dash 전체가
                 # 실패해 대시보드가 통째로 백지가 된다. BOM 도 허용(utf-8-sig).
@@ -5297,6 +5468,13 @@ class H(BaseHTTPRequestHandler):
                                  "auto": _tu.auto_report_on(cfg())})
             except Exception as e:  # noqa: BLE001 - 모르면 '모름' — 화면은 배너를 띄우지 않는다
                 self._send(200, {"ok": False, "error": f"{type(e).__name__}: {str(e)[:80]}"})
+        elif self.path == "/api/attendance":
+            # LM30(2026-10-18) 출퇴근·시간외 근무 카드 — 이 PC 의 report\ 파일만 읽는다(attendance_view). 얼린 사본에는 합계만 굳는다.
+            try:
+                self._send(200, attendance_view())
+            except Exception as e:  # noqa: BLE001 - 카드 하나가 화면을 죽이지 않게(까닭은 카드에 한 줄)
+                self._send(200, {"ok": False, "hint": f"출퇴근 자료를 읽지 못했습니다({type(e).__name__}) — [분석 실행]을 "
+                                                      "한 번 더 하면 다시 만들어집니다."})
         elif self.path == "/api/projects":
             import projmap
             self._send(200, {"projects": projmap.load_user_projects(ROOT)})
