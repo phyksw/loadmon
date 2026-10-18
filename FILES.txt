@@ -26,13 +26,13 @@ retag.py                                               6,128 B  8d6f81d3
 team_refine.py                                         6,561 B  d1dcc861
 team_recalc.py                                        58,961 B  c6eb4569
 report_out.py                                         68,903 B  21b097a2
-README.md                                            128,637 B  c024c73e
+README.md                                            130,139 B  a449e833
 check.py                                               2,629 B  7badfe69
 judge.py                                             219,468 B  b00dd1eb
 mine.py                                               23,139 B  2aabf65f
 refine.py                                             56,939 B  9e8c4fe3
 FILES.txt                                                (이 파일)
-run.py                                               126,166 B  8c8f868f
+run.py                                               127,249 B  75d17014
 자가점검.py                                               11,250 B  6463ad08
 collect/Add-WorkLog.ps1                                3,873 B  7a375f51
 collect/Get-FileActivity.ps1                          50,401 B  a0dca613
@@ -57,20 +57,20 @@ collect/teams_parse.py                                14,389 B  d196eec3
 collect/Import-MailCal.py                             12,353 B  bec541e0
 collect/Get-ProgramUsage.py                           33,863 B  d262eb08
 core/meetnote.py                                      28,595 B  0ae77aa1
-config/config.json                                    53,155 B  c5a11165
-config/config.default.json                            60,021 B  9223fe28
+config/config.json                                    53,940 B  d7686691
+config/config.default.json                            60,806 B  40fc3a0d
 config/agentic_tasks.json                              4,426 B  2c9e5bb1
 core/board.py                                         13,181 B  86eaf661
 core/extract.py                                      313,705 B  af2dec04
 core/pc_ledger.py                                     21,509 B  c1f9d9e5
 core/budget.py                                         2,968 B  3297d2b6
 core/stage_state.py                                    7,301 B  d30a0590
-core/watch.py                                          6,594 B  33e30d52
+core/watch.py                                          7,926 B  9edb3c49
 core/teamaddr.py                                      20,045 B  b2433bb4
 core/lmname.py                                         4,771 B  c781496a
 core/privacy.py                                       68,484 B  15be852d
 core/coverage.py                                      17,502 B  b83c40f0
-core/proc.py                                          17,810 B  0c791ec1
+core/proc.py                                          19,644 B  020e1702
 core/collect_status.py                                 7,214 B  82b62ebb
 core/mailmerge.py                                     14,646 B  f08633c5
 core/timeshare.py                                      7,160 B  c7302bf2
@@ -80,7 +80,7 @@ core/narratives.py                                     9,240 B  b1a7b589
 core/owner.py                                          1,488 B  1f1dc049
 core/progress.py                                       1,648 B  15bfd33b
 core/projmap.py                                        8,988 B  1a49f512
-docs/설정가이드.md                                        124,802 B  00ceac14
+docs/설정가이드.md                                        125,917 B  83bff8b6
 docs/사용안내.html                                       276,640 B  0aa9de89
 tools/copilot_auto.py                                260,624 B  b71519b4
 tools/pc_hours_compare.py                             21,674 B  c43ff972
@@ -95,4 +95,4 @@ tools/Stop-LM28.ps1                                   18,723 B  763d0262
 tools/stop_lm28.py                                    22,121 B  b0895a3d
 tools/ps_launch.py                                     4,932 B  497bbb67
 tools/diag_bundle.py                                  10,236 B  9cca2c30
-ui/app.py                                            439,303 B  f70a4181
+ui/app.py                                            448,196 B  5e14cec7
