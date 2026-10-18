@@ -1554,6 +1554,33 @@ def team_report(c, d0, d1, built=True, on=None, hold=""):
     return st
 
 
+# 팀 공유폴더 내보내기(export.py — config.teamShareDir 가 있을 때 [분석 실행]의 맨 끝) 상한(초). LM28(2026-10-19): 예전에는 상한 없이
+# 기다려, 닿지 않는 공유폴더(\\서버\… — 사내망 밖)에서 SMB 시간 초과가 실행을 몇 분씩 붙잡았다(그동안 화면은 '실행 중' — [데이터 리셋]도
+# 못 했다). 팀 서버 보고와 같은 실행기(_RUN_STEP — Job 째 끊기 · 60초 진행 줄)로 돌린다. 끊어도 공유폴더는 이전 결과 그대로다(export.py 는
+# 임시 폴더에 다 모은 뒤에만 옮긴다).
+EXPORT_CAP_SEC = 120
+
+
+def share_export(c, d0, d1):
+    r"""[분석 실행] 끝 팀 공유폴더 내보내기 → (rc, how) | None(teamShareDir 없음 — 하지 않음). export.py 의 사람용 줄을 그대로 옮기고,
+    EXPORT_CAP_SEC 안에 끝나지 않으면 끊고 한 줄로 알린다(분석 결과·팀 서버 보고와는 무관 — 다음 실행 때 다시 내보낸다)."""
+    if not (c.get("teamShareDir") or "").strip():
+        return None
+    name = "팀 공유폴더 내보내기"
+    print(f"\n── {name}")
+    rc, tail, how = _RUN_STEP([sys.executable, os.path.join(ROOT, "export.py"), "--from", d0, "--to", d1],
+                              EXPORT_CAP_SEC, name)
+    for ln in tail:
+        if str(ln or "").strip():
+            print("   " + str(ln).strip())
+    if how == "timeout":
+        print(f"   [!] 팀 공유폴더가 {EXPORT_CAP_SEC}초 안에 답하지 않아 내보내기를 멈췄습니다 — 공유폴더에 닿는 망에서 다음 "
+              "[분석 실행] 때 다시 내보냅니다(분석 결과와 공유폴더의 이전 결과는 그대로)")
+    elif how != "ok":
+        print(f"   [!] 팀 공유폴더 내보내기를 끝내지 못했습니다({how}) — 다음 [분석 실행] 때 다시 내보냅니다")
+    return rc, how
+
+
 STOP_STAGE = "중단(창 닫힘)"      # last_run.json 단계 이름(ui\app.py 와 같다) — 다음 화면이 '마지막 단계: 중단(창 닫힘)' 으로 말한다
 EDGE_FAST_SEC = 2.5              # 콘솔 창 닫기 때 전용 Edge 닫기를 기다리는 상한(윈도는 처리기에 약 5초를 준다)
 
@@ -1973,11 +2000,8 @@ def _main():
     # [로컬PC 자료수집](--collect-only)·웹 읽기(--web-only)는 위에서 먼저 끝나 여기에 오지 않는다 — 보고하지 않는다.
     _rep = team_report(c, d0, d1, built=(rcb == 0), on=_auto, hold=_ai_hold)
 
-    if (c.get("teamShareDir") or "").strip():
-        print("\n── 팀 공유폴더 내보내기")
-        subprocess.run([sys.executable, os.path.join(ROOT, "export.py"),
-                        "--from", d0, "--to", d1], cwd=ROOT,
-                       env=dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1"))
+    # 팀 공유폴더 내보내기(teamShareDir 가 있을 때만) — LM28(2026-10-19) 상한 EXPORT_CAP_SEC · 팀 서버 보고와 같은 실행기(share_export)
+    share_export(c, d0, d1)
     # 어디서 시간이 갔나 — 진행 로그 한 줄 + '완료' 단계 note(사진 한 장으로 오래 걸린 단계를 안다 · LM28 2026-10-17).
     # 팀 서버 자동 보고 실패 두 줄(아래)이 콘솔 맨 끝에 남도록 그 앞에 찍는다.
     _slow = slow_stages()
