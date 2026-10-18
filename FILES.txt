@@ -65,7 +65,7 @@ core/pc_ledger.py                                     21,509 B  c1f9d9e5
 core/budget.py                                         2,968 B  3297d2b6
 core/stage_state.py                                    7,301 B  d30a0590
 core/watch.py                                          7,926 B  9edb3c49
-core/teamaddr.py                                      20,175 B  8264da8b
+core/teamaddr.py                                      21,966 B  2149ad6b
 core/lmname.py                                         6,426 B  5b576895
 core/privacy.py                                       68,484 B  15be852d
 core/coverage.py                                      17,502 B  b83c40f0

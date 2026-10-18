@@ -361,13 +361,44 @@ def relation(a, ips=None):
     return "unknown", f"PC 이름이라 이 PC 인지 확인하지 않았습니다 (이 PC 의 IP: {mine})"
 
 
-def describe(a, ips=None):
+def test_guard_note(a, root=None):
+    r"""LM30(2026-10-18) 시험판 보호 안내 한 줄 | "" — teamup.upload_guard 와 같은 판정이다: 설정 teamUpload.requireSavedAddress 가
+    켜져 있고(없거나 빈 값이면 켬 · false·0·off·no 면 끔 — teamup._tu_flag 와 같은 규칙) 주소가 기본 주소(기존 팀 서버)이거나
+    서버 IP·포트 어느 것도 team_server.json 에서 오지 않았으면 보내지 않는다. 보낼지는 teamup 이 정하고, 여기는 bat·자가점검이
+    '분석 후 이 주소로 올립니다' 라고 잘못 말하지 않게 하는 안내뿐이다."""
+    cfg = _read_json(os.path.join(root or ROOT, "config", "config.json")) or {}
+    tu = cfg.get("teamUpload")
+    v = tu.get("requireSavedAddress") if isinstance(tu, dict) else None
+    if v is None or (isinstance(v, str) and not v.strip()):
+        on = True
+    elif isinstance(v, bool):
+        on = v
+    else:
+        on = str(v).strip().lower() not in ("0", "false", "no", "off")
+    if not on:
+        return ""
+    if a.url.lower() == f"http://{DEFAULT_HOST}:{DEFAULT_PORT}".lower():
+        why = "기본 주소 = 기존 팀 서버"
+    elif "file" not in (a.source.get("host"), a.source.get("port")):
+        why = "이전 판 설정에서 이어받은 주소"
+    else:
+        return ""
+    return f"LM30 시험판은 이 주소({why})로 보내지 않습니다 — 시험용 팀 서버 주소를 {EDIT_BAT} 으로 정하면 그 주소로 보냅니다"
+
+
+def describe(a, ips=None, root=None):
     """사람이 읽는 한 덩어리 — bat·CLI·자가점검 출력용."""
     where = {"file": FILE_NAME, "legacy": f"config.json 의 옛 {LEGACY_KEY}", "default": "기본값"}
+    kind, rel = relation(a, ips)
+    note = test_guard_note(a, root)
+    if note and kind == "member":
+        rel = "다른 PC 의 주소입니다"           # '분석 후 이 주소로 올립니다' 가 아니다 — 아래 '보내기' 줄
     lines = [f"  서버 IP    : {a.host}   ({where[a.source['host']]})",
              f"  포트       : {a.port}   ({where[a.source['port']]})",
              f"  업로드 주소: {a.url}",
-             f"  이 PC 와   : {relation(a, ips)[1]}"]
+             f"  이 PC 와   : {rel}"]
+    if note:
+        lines.append(f"  보내기     : {note}")
     lines += [f"  [!] {w}" for w in a.warnings]
     return "\n".join(lines)
 
