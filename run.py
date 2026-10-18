@@ -1581,6 +1581,19 @@ def console_close(ev=None, budget=EDGE_FAST_SEC):
         pass
 
 
+def keep_awake_wanted(c=None):
+    """config.keepAwakeDuringRun — 기본 켬. false·"false"·0·"off"·"no" 면 끔(분석 중에도 PC 가 평소처럼 절전에 들어간다).
+    c 가 없으면 config.json 을 조용히 읽는다(깨졌으면 기본 켬 — 경고는 _main 의 cfg() 가 한 번 낸다)."""
+    if c is None:
+        try:
+            with open(os.path.join(ROOT, "config", "config.json"), encoding="utf-8-sig") as f:
+                c = json.load(f)
+        except (OSError, ValueError, UnicodeDecodeError):
+            c = {}
+    v = c.get("keepAwakeDuringRun", True) if isinstance(c, dict) else True
+    return not (v is False or str(v).strip().lower() in ("false", "0", "off", "no"))
+
+
 def main():
     """실행 전체 — 마지막 finally 에서 이 실행이 띄운 전용 Edge 를 1회 닫는다(로그인 대기면 둔다 · P6).
     콘솔 창을 X 로 닫으면 finally 가 돌지 않는다 — console_close 가 그 몇 초 안에 작업 트리와 전용 Edge 를 정리한다
@@ -1588,6 +1601,10 @@ def main():
     proc.on_console_close(console_close)
     proc.quiet_errors()          # 수집기가 못 켜질 때 Windows 오류 창(0xc0000142)이 떠 [확인]까지 멈추지 않게 — 자식이 물려받는다
     start_run_id()               # LM28 — 이번 실행의 표식(LM_RUN_ID): 사용량 제한으로 멈춘 기록이 이번 실행 것인지 가른다
+    # LM28(2026-10-18) — 분석이 도는 동안 PC 가 절전에 들어가지 않게(화면 꺼짐·화면 보호기·잠금은 그대로). 이 프로세스가 끝나면 윈도가
+    # 저절로 놓는다. 끄기: config.json keepAwakeDuringRun=false. 제보: "화면보호기로 꺼지는 경우가 있다"
+    if keep_awake_wanted():
+        proc.keep_awake(True)
     try:
         return _main()
     finally:

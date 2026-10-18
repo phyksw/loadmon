@@ -29,6 +29,8 @@ NO_WIN = 0x08000000
 CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 TAIL_MAX = 60                  # 모아 두는 출력 줄 수(LMSTATUS 줄 + 사람용 요약이 들어가고 남는다)
 BEAT_SEC = 60                  # 진행 줄 간격(초)
+RESUME_GAP = 30.0              # 수집기 감시 루프가 이만큼(초) 넘게 늦게 돌면 PC 가 잠들었다 깬 것으로 본다(core\watch 와 같다)
+_ES_CONTINUOUS, _ES_SYSTEM_REQUIRED = 0x80000000, 0x00000001
 _JOB_KILL_ON_CLOSE = 0x2000    # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
 _JOB_BREAKAWAY_OK = 0x800      # JOB_OBJECT_LIMIT_BREAKAWAY_OK
 _JOBS = {}                     # pid → Job 핸들(kill_tree 가 찾는다)
@@ -262,6 +264,24 @@ def quiet_errors():
     return True
 
 
+def keep_awake(on=True):
+    """LM28(2026-10-18) — 분석이 도는 동안 PC 가 절전(잠자기)에 들어가지 않게 한다(on) · 놓는다(on=False). 화면 꺼짐·화면 보호기·잠금은
+    그대로 된다(ES_DISPLAY_REQUIRED 는 쓰지 않는다). 부른 스레드 기준이고, 프로세스가 끝나면 윈도가 저절로 놓는다. 관리자 권한 없음 ·
+    프로세스를 띄우지 않는다(ctypes). 제보: "화면보호기로 꺼지는 경우가 있다" — 화면 보호기 뒤 PC 가 절전에 들어가면 깨는 순간 감시가
+    분석을 끊었다. → 걸었나(윈도가 아니거나 실패면 False)."""
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+        k = ctypes.WinDLL("kernel32")
+        k.SetThreadExecutionState.restype = ctypes.c_uint32
+        k.SetThreadExecutionState.argtypes = (ctypes.c_uint32,)
+        flags = _ES_CONTINUOUS | (_ES_SYSTEM_REQUIRED if on else 0)
+        return bool(k.SetThreadExecutionState(flags))
+    except Exception:  # noqa: BLE001 - 절전 막기는 덤이다 — 실패해도 실행은 계속
+        return False
+
+
 def run_step(cmd, timeout, name="", clock=None, *, beat=BEAT_SEC, on_line=None, cwd=None, env=None,
              stop=None, poll=1.0):
     """수집기 한 단계 → (rc, tail, status). 위 머리말 참고.
@@ -316,7 +336,7 @@ def _run_step_once(cmd, timeout, name="", clock=None, *, beat=BEAT_SEC, on_line=
 
     th = threading.Thread(target=_rd, daemon=True)
     th.start()
-    t0 = last_beat = clock()
+    t0 = last_beat = tick = clock()
     status, eof = "ok", False
     while True:
         try:
@@ -329,6 +349,12 @@ def _run_step_once(cmd, timeout, name="", clock=None, *, beat=BEAT_SEC, on_line=
         if ln.strip():
             tail.append(ln.strip())
         now = clock()                # 줄이 쉬지 않고 나와도 시간 초과·진행 줄을 본다
+        # LM28(2026-10-18): PC 가 잠들었다 깼다(루프가 RESUME_GAP 넘게 늦게 돎) — 그 시간은 이 수집기의 시간 초과로 세지 않는다
+        # (화면 보호기 뒤 절전에서 깨는 순간 돌던 수집기가 '시간 초과'로 끊기던 것). 시계는 절전 중에도 흐른다(GetTickCount64).
+        if now - tick > poll + RESUME_GAP:
+            t0 += now - tick - poll
+            last_beat += now - tick - poll
+        tick = now
         if p.poll() is not None:
             break
         if stop is not None and stop.is_set():

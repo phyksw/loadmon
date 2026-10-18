@@ -19,6 +19,10 @@ import subprocess
 import time
 
 NO_WIN = 0x08000000
+# LM28(2026-10-18): 감시 루프가 이만큼(초) 넘게 늦게 돌면 PC 가 잠들었다(절전·최대 절전) 깬 것으로 본다 — 그 시간만큼 정체·무진전·
+# 상한 시각을 민다. 화면 보호기 뒤 PC 가 절전에 들어가면 깨는 순간 '15분 넘게 아무 신호 없음'으로 분석을 끊던 것(현장 제보 "화면보호기로
+# 꺼지는 경우가 있다").
+RESUME_GAP = 30.0
 
 
 def kill_tree(pid):
@@ -61,6 +65,14 @@ def _state_probe(state_path):
     return None
 
 
+_NO_LINE = object()   # 줄 없이 5초가 지났다(queue.Empty) — 아래 루프의 표식
+
+
+def resume_offset(gap, wait):
+    """감시 루프 한 바퀴가 gap 초 걸렸다(평소에는 wait 초 안) → PC 가 잠들었다 깬 것이면 시각을 밀 만큼(초), 아니면 0."""
+    return gap - wait if gap > wait + RESUME_GAP else 0.0
+
+
 def watch_child(p, on_line, label, beat_sec=120, cfg_dict=None, state_path=None):
     r"""자식 출력을 릴레이하며 정체를 감시한다. 반환: 중단 사유(없으면 None).
     state_path 를 주면(신판 자식) 하트비트·done 을 함께 본다 — 왕복이 길어 출력이 없어도
@@ -90,12 +102,20 @@ def watch_child(p, on_line, label, beat_sec=120, cfg_dict=None, state_path=None)
             q.put(None)
 
     threading.Thread(target=_rd, daemon=True).start()
-    t0 = last = beat = prog = time.time()
+    t0 = last = beat = prog = tick = time.time()
     why = None
     while True:
         try:
             ln = q.get(timeout=5)
         except queue.Empty:
+            ln = _NO_LINE
+        # PC 가 잠들었다 깼다(루프가 RESUME_GAP 넘게 늦게 돎) — 그동안은 자식도 멈춰 있었다. 정체·무진전·상한을 그만큼 민다.
+        off = resume_offset(time.time() - tick, 5)
+        if off:
+            t0, last, prog, beat = t0 + off, last + off, prog + off, beat + off
+            print(f"   … PC 가 약 {max(1, int(off // 60))}분 쉬었다(절전) 깨어났습니다 — 그 시간은 정체로 세지 않습니다", flush=True)
+        tick = time.time()
+        if ln is _NO_LINE:
             now = time.time()
             st = _state_probe(state_path)
             if st is not None:
