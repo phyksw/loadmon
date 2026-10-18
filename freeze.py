@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 r"""
-freeze.py — 분석 결과를 '파일 하나' 보고서 3종으로 만든다 (LoadMonitor29).
+freeze.py — 분석 결과를 '파일 하나' 보고서 3종으로 만든다 (LoadMonitor30).
 
   python freeze.py --from 2026-01-01 --to 2026-08-25            # 3종 전부 (= --all)
   python freeze.py --from ... --to ... --freeze [--summary]     # 얼린 보고서만 (--summary: 원문 제외)
@@ -425,7 +425,7 @@ def _freeze(tag, full, base_url, log, info):
     # stub: 판정이 스텁(LM_COPILOT_STUB, 테스트 전용)이었던 결과 — 취합이 실자료와 구분한다.
     baked["_lm"] = {"kind": "frozen", "owner": owner, "host": host,
                     "period": [d0, d1], "tag": tag, "full": bool(full), "stub": stub,
-                    "generated": time.strftime("%Y-%m-%d %H:%M"), "generator": "LoadMonitor29 freeze.py"}
+                    "generated": time.strftime("%Y-%m-%d %H:%M"), "generator": "LoadMonitor30 freeze.py"}
     who = f"{os.environ.get('USERNAME', '?')}@{host or '?'}"
     ts = time.strftime("%Y-%m-%d %H:%M")
     mode_txt = ("메일·회의 제목 등 원문 근거가 들어 있습니다 — <b>팀 밖 공유 금지</b>"
@@ -633,7 +633,7 @@ def report_island(tag, full=True, log=_say):
         log(f"    [!] {tag} 결과(mm_rows·mm_meta)가 없어 분석리포트를 만들지 못했습니다.")
         return []
     wf = _read_json(os.path.join(REPORT, f"workflow_{tag}.json")) or {}
-    # LM29 — Agentic AI 니즈 후보만(팀 과제 매칭·오할당 없음). LM28 이 남긴 파일의 match·misassigned 는 섬에도 싣지 않는다.
+    # LM29부터 — Agentic AI 니즈 후보만(팀 과제 매칭·오할당 없음). LM28 이 남긴 파일의 match·misassigned 는 섬에도 싣지 않는다.
     _ag = _read_json(os.path.join(REPORT, f"agentic_{tag}.json"))
     _ag = _ag if isinstance(_ag, dict) else {}
     ag_new =[n for n in (_ag.get("new") if isinstance(_ag.get("new"), list) else []) if isinstance(n, dict)]
@@ -830,14 +830,14 @@ def report_island(tag, full=True, log=_say):
     generated = time.strftime("%Y-%m-%d %H:%M")
     stub = _is_stub()
     # 데이터 섬 — 팀 취합(팀보완툴·LM22 팀 취합)이 읽는 계약: kind/owner/host/period/tag/rows/workflow/agentic
-    # LM29: 계약 키 "agentic" 에는 니즈 후보만 싣는다 — {"kind": "needs", "new": [...]}(과제 매칭·오할당 없음).
+    # LM29부터: 계약 키 "agentic" 에는 니즈 후보만 싣는다 — {"kind": "needs", "new": [...]}(과제 매칭·오할당 없음).
     # stub: 판정이 스텁(LM_COPILOT_STUB, 테스트 전용)이었던 결과 — 취합이 실자료와 구분한다.
     island = json.dumps({
         "kind": "lm-personal-report", "owner": owner, "host": host,
         "period": [d0, d1], "tag": tag, "total_mm": total,
         "avail_mm": avail, "load_pct": pct, "rows_file": rows_file,
         "rows": rows, "workflow": wf, "agentic": {"kind": "needs", "new": ag_new},
-        "generated": generated, "generator": "LoadMonitor29 freeze.py",
+        "generated": generated, "generator": "LoadMonitor30 freeze.py",
         "merged_rows": n_merged, "full": bool(full), "stub": stub},
         ensure_ascii=False).replace("<", "\\u003c")
     stub_txt = " · <b>스텁 판정(테스트 전용 — 실제 Copilot 판정 아님)</b>" if stub else ""

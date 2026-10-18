@@ -53,7 +53,7 @@ copilot_auto.py — 사람 개입 없는 M365 Copilot 연동 (Edge DevTools Prot
     산출물에는 phase 로 '스텁 판정'임이 드러난다. 배포 환경에서는 이 변수를 두지 말 것.
 
 LM28 — 우리 Edge 만 다루고, 개인 계정·정책·잠금을 먼저 본다:
-  · ensure_edge 가 띄우면 data\\lm29_edge\\owner.json{pid,port,t,root,browser} 를 쓴다. close_own_edge 는 그 표식이 있고
+  · ensure_edge 가 띄우면 data\\lm30_edge\\owner.json{pid,port,t,root,browser} 를 쓴다. close_own_edge 는 그 표식이 있고
     브라우저 ID 가 같을 때만 CDP Browser.close 를 보낸다(taskkill 없음 · keepEdgeOpen·로그인 대기 중이면 두기).
   · Edge 는 CREATE_BREAKAWAY_FROM_JOB 로 띄운다 — 단계의 Job 정리에 휩쓸리지 않아 한 실행에 한 번만 뜬다.
     상위 Job 이 이탈을 막으면(ERROR_ACCESS_DENIED) 플래그 없이 1회.
@@ -113,10 +113,10 @@ ERROR_ACCESS_DENIED = 5                  # 상위 Job 이 이탈(BREAKAWAY_OK)�
 _sleep = time.sleep                      # 시험이 대기를 0 으로 바꿀 수 있게(Edge 수명주기 함수만)
 if os.path.join(ROOT, "core") not in sys.path:
     sys.path.insert(0, os.path.join(ROOT, "core"))
-import lmname  # noqa: E402  — LM29 이름 단일원(CDP 포트·전용 Edge 프로필)
+import lmname  # noqa: E402  — LM30 이름 단일원(CDP 포트·전용 Edge 프로필)
 
 # ── 설정 (config.json 의 copilotAuto 로 덮어쓰기 가능) ──
-# 포트·프로필은 LM24·LM28 과 다르게 둔다(lmname.CDP_PORT · data\lm29_edge) — 같은 PC 의 LM24·LM28 Edge 를 재사용·조종하지 않게.
+# 포트·프로필은 LM24·LM28·LM29 와 다르게 둔다(lmname.CDP_PORT · data\lm30_edge) — 같은 PC 의 LM24·LM28·LM29 Edge 를 재사용·조종하지 않게.
 DEFAULTS = {
     "url": "https://m365.cloud.microsoft/chat",
     "port": lmname.CDP_PORT,
@@ -303,7 +303,7 @@ def load_cfg(cfg_path=None):
                     if v or v is False or (k in KEEP_FALSY and v is not None and v != "")})
     except Exception:
         pass
-    # LM24·LM28 의 config.json 을 그대로 옮겨 온 경우(옛 포트·옛 프로필) — lmname 값이 우선한다.
+    # LM24·LM28·LM29 의 config.json 을 그대로 옮겨 온 경우(옛 포트·옛 프로필) — lmname 값이 우선한다.
     # 경고는 stderr 로 1줄(stdout 은 결과 JSON 한 건 계약) — 인프로세스 왕복은 이 함수를 자주 부르므로 프로세스당 1회.
     fixed = lmname.fix_edge_cfg(cfg, ROOT)
     if fixed:
@@ -343,7 +343,7 @@ REASON_HINT = {
     R_EDGEBUSY: "다른 작업(웹 메일·팀즈 읽기·AI 연결 진단 등)이 전용 Edge 를 쓰고 있습니다 — 그 작업이 끝난 뒤 다시 실행하세요",
     R_EDGEFOREIGN: "디버그 포트 {port} 를 다른 프로그램의 Edge 가 쓰고 있습니다 — 그 Edge 를 닫거나 "
                    "config\\config.json 의 copilotAuto.port 를 바꾸세요(우리 것이 아닌 브라우저는 조종하지 않습니다)",
-    R_EDGELAUNCH: "Edge 를 디버그 포트로 띄우지 못했습니다 — 열린 전용 Edge 창(data\\lm29_edge)을 닫고 다시 실행하세요",
+    R_EDGELAUNCH: "Edge 를 디버그 포트로 띄우지 못했습니다 — 열린 전용 Edge 창(data\\lm30_edge)을 닫고 다시 실행하세요",
     R_PERSONAL: "전용 Edge 가 개인 Microsoft 계정 화면(copilot.microsoft.com·login.live.com 등)입니다 — 업무 자료는 "
                 "보내지 않았습니다. 전용 Edge 창에서 회사(조직) 계정으로 로그인하세요",
     R_ACCOUNT: "전용 Edge 가 업무용 Copilot(m365.cloud.microsoft) 화면에 머물지 않아 계정 종류를 확인할 수 없습니다 — "
@@ -1979,7 +1979,7 @@ CHAT_WHY = {
     "nomenu": "메뉴가 열리지 않음", "nodelete": "메뉴에 '삭제' 없음", "noconfirm": "확인 창에 '삭제' 단추 없음",
     "mismatch": "지운 뒤에도 채팅이 화면에 남음", "error": "화면 조작 오류", "timeout": "시간 초과",
     "busy": "다른 작업이 전용 Edge 를 쓰는 중", "notab": "Copilot 탭 없음", "noedge": "전용 Edge 꺼짐",
-    "gen": "답을 쓰는 중이라 남김", "notitle": "목록 항목의 제목이 LM28 이 보낸 질문과 달라 남김",
+    "gen": "답을 쓰는 중이라 남김", "notitle": f"목록 항목의 제목이 {lmname.SHORT} 이 보낸 질문과 달라 남김",
 }
 # LM28 — 화면 사유로 남겼을 때(아래 코드) 대화 목록의 '구조'를 숫자·0/1 로만 센다(js_chat_census — 제목·글·주소·id 없음). 단계 로그에
 # 'CHAT_CENSUS_HEAD …' 한 줄(chat_line 의 둘째 줄)·copilot_trace·상태 파일 totals.census 에 남는다 — 현장 사진 한 장으로 왜 못 지웠는지
@@ -3099,7 +3099,7 @@ def _fresh_chat(cdp, cfg, why="fresh", reload=False):
 
 
 _FRESH_OK = [True]             # 마지막 _fresh_chat 이 새 채팅으로 옮긴 것을 확인했나(LM28 2026-10-17 — _open_fresh 가 본다)
-NO_NEW_CHAT = ("새 채팅이 열린 것을 확인하지 못해 보내지 않았습니다 — 사람이 쓰던 대화에 LM28 질문이 들어가지 않게 "
+NO_NEW_CHAT = (f"새 채팅이 열린 것을 확인하지 못해 보내지 않았습니다 — 사람이 쓰던 대화에 {lmname.SHORT} 질문이 들어가지 않게 "
                "(전용 Edge 의 Copilot 창에 '새 채팅' 단추가 보이는지 확인한 뒤 다시 실행하세요)")
 
 
@@ -3925,7 +3925,7 @@ def _run_parts(cdp, cfg, parts, fresh, deadline=None, reload=False):
             if why_c:
                 trace("chat", act=why_c, part=i)
                 return {"ok": False, "phase": "moved", "parts": total,
-                        "error": f"나눔 {i}/{total}: 화면이 LM28 채팅이 아니어서 남은 조각을 보내지 않았습니다(사람이 쓰던 대화에 넣지 않게)",
+                        "error": f"나눔 {i}/{total}: 화면이 {lmname.SHORT} 채팅이 아니어서 남은 조각을 보내지 않았습니다(사람이 쓰던 대화에 넣지 않게)",
                         "hint": "전용 Edge 의 Copilot 창에서 다른 대화를 누르지 마세요 — 다음 왕복은 새 채팅에서 다시 보냅니다"}
         res = _once(cdp, cfg, part)
         if not res.get("ok"):
@@ -4028,7 +4028,7 @@ def run_roundtrip_split(cfg, prompt, fresh=False, reload=False):
 # 있으면 그것을 먼저 본다. 아무것도 안 맞으면 default.json.
 STUB_KEYS = (
     ('"flows"', ("flow.json", "flows.json")),                      # flow.py
-    ('"new"', ("agentic.json", "new.json")),                       # agentic.py(LM29 — 니즈 후보 {"new":[…]})
+    ('"new"', ("agentic.json", "new.json")),                       # agentic.py(LM29부터 — 니즈 후보 {"new":[…]})
     ('"groups"', ("groups.json", "detail3.json")),                 # core/details 세부업무 병합
     ('"items"', ("refine.json", "items.json")),                    # refine.py
     ('"summary"', ("narrative.json", "summary.json")),             # judge 월별 내러티브

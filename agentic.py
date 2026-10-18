@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 r"""
-agentic.py — Agentic AI 니즈 후보 발굴 (LoadMonitor29 — LM28 의 Agentic 과제 매칭에서 '발굴'만 남긴 판)
+agentic.py — Agentic AI 니즈 후보 발굴 (LoadMonitor30 — LM29부터 LM28 의 Agentic 과제 매칭에서 '발굴'만 남겼다)
 
 Copilot 에게 [본인 업무(#번호·과제·세부업무·유형·설명)]만 주고, 그 사람이 반복해서 하는 업무에서 Agentic AI 로 자동화할
 만한 **니즈 후보**(new — 이름·동작 로직·발굴 사유·근거 업무)만 찾게 한다.
-  · 팀 과제 목록과 맞춰 보지 않는다 — LM29 에는 과제 목록 파일(config\agentic_tasks.json)·적합률·과제별 로드가 없다.
+  · 팀 과제 목록과 맞춰 보지 않는다 — LM29부터 과제 목록 파일(config\agentic_tasks.json)·적합률·과제별 로드가 없다.
   · 오할당(내 업무가 아닌데 내 업무로 분류된 행) 검증도 하지 않는다.
   · 팀 차원의 니즈 후보는 팀 취합(aggregate.merge_needs — 팀 화면·팀 통합 보고서)이 인원별 후보를 이름으로 모아 보여 준다.
 
@@ -200,7 +200,7 @@ def _sig_norm(s):
 
 
 def ag_prompt(rows):
-    """rows: 한 팀원의 업무 행 목록(MM 미전송) → 니즈 후보 발굴 프롬프트. 팀 과제 목록은 넣지 않는다(LM29).
+    """rows: 한 팀원의 업무 행 목록(MM 미전송) → 니즈 후보 발굴 프롬프트. 팀 과제 목록은 넣지 않는다(LM29부터).
     출력 예시는 <...> 자리표시자 — **예시 자체가 유효한 JSON 이 아니게** 한다: 회수가 어긋나 우리 프롬프트가 되돌아와도
     예시가 답으로 파싱되지 않는다. 근거 업무는 줄 앞의 '#번호' 로 답하게 한다."""
     hint = domain_hint()
@@ -547,7 +547,7 @@ def _rows_for_key(k, exact, loose, amap=None):
 
 def needs_only(o):
     """저장·화면·보고서용 꼴 — NEEDS_KEYS 만 남기고 kind='needs'. LM28 이 만든 파일의 match·misassigned·mm_recalc 같은
-    과제 매칭·오할당 키는 버린다(LM29 는 니즈 후보만). new 는 dict 항목만."""
+    과제 매칭·오할당 키는 버린다(LM29부터 니즈 후보만). new 는 dict 항목만."""
     o = o if isinstance(o, dict) else {}
     out = {k: o[k] for k in NEEDS_KEYS if k in o}
     out["kind"] = KIND

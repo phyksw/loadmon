@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 r"""diag_bundle.py — 메일·일정·팀즈 수집이 왜 비는지 보는 '진단 묶음' 한 파일 (LM28).
 
-LoadMonitor29-수집진단.bat 이 Diagnose-Collectors.ps1 다음에 부른다. 이 PC 의 실행 기록(report\last_run.json)·
+LoadMonitor30-수집진단.bat 이 Diagnose-Collectors.ps1 다음에 부른다. 이 PC 의 실행 기록(report\last_run.json)·
 날짜별 원장(data\coverage_ledger.json)·출처별 상태(data\outlook\*.json·src\*.json·m365\*.json)·수집 진단
 (report\collect_diag.txt)·수집 CSV 의 **월별 건수**를 바탕화면 텍스트 파일 하나로 모은다.
 
@@ -121,7 +121,7 @@ def ledger_summary(led):
 
 def build(root):
     data, rep = os.path.join(root, "data"), os.path.join(root, "report")
-    L = [f"LM29 수집 진단 묶음 — 만든 시각 {time.strftime('%Y-%m-%d %H:%M')} · 설치 폴더 {mask_text(root)}",
+    L = [f"LM30 수집 진단 묶음 — 만든 시각 {time.strftime('%Y-%m-%d %H:%M')} · 설치 폴더 {mask_text(root)}",
          "담긴 것: 실행 기록·날짜별 원장 요약·출처별 상태·수집 진단·CSV 월별 건수. 제목·본문·이름·주소·방 이름은 없습니다.", ""]
 
     def section(title, obj):
@@ -181,7 +181,7 @@ def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     root = argv[argv.index("--root") + 1] if "--root" in argv else ROOT
     out = argv[argv.index("--out") + 1] if "--out" in argv else os.path.join(
-        os.path.join(os.environ.get("USERPROFILE", root), "Desktop"), f"LM29_수집진단_{time.strftime('%Y%m%d_%H%M')}.txt")
+        os.path.join(os.environ.get("USERPROFILE", root), "Desktop"), f"LM30_수집진단_{time.strftime('%Y%m%d_%H%M')}.txt")
     text = build(root)
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     with open(out, "w", encoding="utf-8-sig", newline="\r\n") as f:

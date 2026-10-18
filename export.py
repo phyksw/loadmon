@@ -71,7 +71,7 @@ def main():
         return 1
     # teamup.FILE_NAMES(서버 업로드)와 같은 목록이어야 한다 — workflow 가 빠져 있어 공유폴더로 낸 사람만
     # 팀 통합 보고서의 워크플로우 절(§6~§9 · AX 가능 MM)에서 통째로 빠졌다(샘플 생성에서 실측).
-    # agentic(LM29 — 니즈 후보만)은 팀 통합 보고서 §5 '팀 Agentic AI 니즈 후보' 의 재료다.
+    # agentic(LM29부터 — 니즈 후보만)은 팀 통합 보고서 §5 '팀 Agentic AI 니즈 후보' 의 재료다.
     names = [f"mm_rows_{tag}.csv", f"mm_rows_{tag}_refined.csv", f"signals_{tag}.csv",
              f"mm_meta_{tag}.json", f"pivots_{tag}.json", f"ai_narratives_{tag}.json",
              f"entities_{tag}.json", f"agentic_{tag}.json", f"workflow_{tag}.json"]

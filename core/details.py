@@ -1646,7 +1646,7 @@ PHASE_TEXT = {
                        "전용 Edge 창(자동 프로필)에서 회사 계정으로 로그인한 뒤 다시 실행 — [AI 연결 진단]으로 확인"),
     "edge_not_found": ("Microsoft Edge 실행 파일을 찾지 못함", "Edge 설치 확인 후 다시 실행"),
     "launch_failed": ("Edge(자동 프로필)를 디버그 포트로 띄우거나 Copilot 탭을 만들지 못함",
-                      "이미 열려 있는 자동 프로필 Edge 창(data\\lm29_edge)을 모두 닫고 다시 실행 · "
+                      "이미 열려 있는 자동 프로필 Edge 창(data\\lm30_edge)을 모두 닫고 다시 실행 · "
                       "회사 보안 정책이 디버그 포트를 막으면 [AI 연결 진단]으로 확인"),
     "input_not_found": ("Copilot 채팅 입력창을 찾지 못함",
                         "Copilot 화면이 바뀌었을 수 있습니다 — data\\copilot_auto_debug.json 을 확인"),

@@ -302,7 +302,7 @@ elseif (-not $classicOk) { $findings.Add('클래식 Outlook 을 찾지 못함(�
 if ($classicOk -and $nProf -eq 0) { $findings.Add('메일 프로필 0개 → COM 기동 시 "Outlook 시작" 마법사가 뜹니다. Outlook 을 직접 실행해 계정 설정을 마치세요.' + $(if ($newOl -or $useNew -or $pOlk.Count) { ' (새 Outlook 흔적이 있어 수집기는 R-NEWOL 로 COM 을 건너뜁니다 - 새 Outlook 을 쓰는 PC 면 정상)' } else { '' })) }
 elseif ($nProf -gt 0 -and $prof.usable -eq 0) { $findings.Add('모든 메일 프로필이 주소록만 든 것으로 보입니다(R-NOPROF) → 띄우면 "Outlook 시작" 마법사가 뜹니다. Outlook 을 직접 실행해 메일 계정을 추가하세요.') }
 if ($null -ne $trace.autoMig -and [int]$trace.autoMig -eq 1) { $findings.Add('관리자 새 Outlook 전환 정책(DoNewOutlookAutoMigration=1) → Outlook 이 꺼져 있으면 수집기는 띄우지 않습니다(R-NEWOLPOL). 클래식 Outlook 을 켜 둔 채로 수집하세요.') }
-if ($elev -and $pOl.Count) { $findings.Add('이 진단(=수집)이 관리자 권한으로 돌고 있어 일반 권한 Outlook 에 붙지 못할 수 있습니다(R-ELEV) → LoadMonitor29 를 일반 권한으로 실행하세요.') }
+if ($elev -and $pOl.Count) { $findings.Add('이 진단(=수집)이 관리자 권한으로 돌고 있어 일반 권한 Outlook 에 붙지 못할 수 있습니다(R-ELEV) → LoadMonitor30 을 일반 권한으로 실행하세요.') }
 if (-not $pst.safe) { $findings.Add('보호 멤버 경고창 위험(' + $pst.why + ') → 수집기는 받는 사람·보낸 사람 이름을 읽지 않고 rcv=unknown 으로 둡니다(CC·단체 메일 구분이 흐려짐). 백신 상태·Outlook 보안 정책을 확인하세요.') }
 if ($pOl.Count -and $comMsg -notmatch '^붙음') { $findings.Add('클래식 Outlook 이 실행 중인데 COM 에 붙지 못함 → 마법사·프로필 선택·암호 창이 떠 있을 가능성(의심). 그 창을 닫고 메일 화면까지 연 뒤 재수집.') }
 if ($classicOk -and $useNew) { $findings.Add('UseNewOutlook 토글 켜짐 → 평소 새 Outlook 을 쓰는 PC. 클래식 Outlook 을 한 번 실행해 두면 COM 으로 붙습니다.') }

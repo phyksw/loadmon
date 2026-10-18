@@ -3125,7 +3125,7 @@ def _tool_usage_sampler(data_dir, d0, d1, mc, idle_act, extra, _P):
     if not n_samples:
         return {"samples": 0, "days": 0, "programs": [],
                 "why": "창 기록(data\\activity\\activity_*.csv)이 이 기간에 없습니다 — "
-                       "LM29 에는 창 샘플러가 없어 옛 기록이 있을 때만 채워집니다"}
+                       "LM30 에는 창 샘플러가 없어 옛 기록이 있을 때만 채워집니다"}
 
     first_last = {}
     for nm, ds in days_of.items():

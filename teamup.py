@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 r"""
-teamup.py — 분석 결과를 팀 저장소로 올린다 (LoadMonitor29: 묶음 '대기' → [분석 실행] 끝 자동 보고 → 실패면 버튼)
+teamup.py — 분석 결과를 팀 저장소로 올린다 (LoadMonitor30: 묶음 '대기' → [분석 실행] 끝 자동 보고 → 실패면 버튼)
 
 팀 서버는 특정 망에서만 닿는다. 분석은 아무 망에서나 하니 분석 끝에 보내면 실패가 잦고,
 LM19 이전에는 그 실패가 조용히 묻혀 결과가 사라졌다(실측). 그래서 이렇게 나눈다:
@@ -17,25 +17,32 @@ LM19 이전에는 그 실패가 조용히 묻혀 결과가 사라졌다(실측).
   python teamup.py --upload [--host <IP>] [--port <번호>]       대기분 전부 전송
       (주소는 팀 서버 주소 설정 config\team_server.json — core\teamaddr.py 가 읽는다.
        --host·--port·--url 은 이번 한 번만 쓰는 값이고 설정은 바꾸지 않는다 —
-       설정을 바꾸는 곳은 LoadMonitor29-팀서버주소.bat 하나)
+       설정을 바꾸는 곳은 LoadMonitor30-팀서버주소.bat 하나)
   python teamup.py --to-folder "\\서버\공유\LoadMonitor"          공유폴더로 대신 저장
       (개인 HTML 보고서 분석리포트_<기간>.html·보고서_<기간>.html 이 있으면
        <폴더>\개인리포트\<이름>_<파일명> 으로 함께 복사 — 팀 서버 묶음에는 넣지 않는다)
   (--json 을 붙이면 마지막 줄에 결과 JSON 한 줄 — 대시보드·run.py 자동 보고가 이걸 읽는다.
    --upload 는 묶음마다 results[].kind = sent·blocked·rejected·unreachable·slow, 주소가 없으면 no_url, 남은 대기 수 pending,
-   보내지 않고 남긴 묶음 수 left 와 그 사유 stopped)
+   보내지 않고 남긴 묶음 수 left 와 그 사유 stopped. LM30 시험판 보호에 걸리면 kind·no_test_server — 보내지 않음이지 실패가
+   아니다: ok null · 종료 코드 0 · 사유 note)
 
 기다림 상한(LM28 — "시도 1-2번 해서 안 되면 아닌 값… 업로드에서 기다리는 건 너무 로스"):
   연결 확인 3초 × 최대 2번(사이 2초) · 업로드 연결 3초(끊기면 1번만 다시) · 본문을 다 보낸 뒤 답 45초.
   답이 늦으면 다시 보내지 않고(서버가 이미 저장했을 수 있다) 남은 묶음도 멈춘다 — 자동 보고 전체가 1분 남짓이면 끝난다.
   config.teamUpload 의 pingTries·pingTimeoutSec·timeoutSec 로 바꾼다(wait_limits 가 범위 안으로 접는다).
 
+LM30 시험판 보호(사용자 결정 — "LM30 결과는 LoadMonitor30-팀서버주소.bat 으로 정한 시험용 팀 서버로"):
+  기본 주소(core\teamaddr.py)는 기존 팀 서버다. 거기로 보내면 서버가 TEAMDATA\<이름>\* 를 갈아 끼워 그 사람의 LM28·LM29
+  결과가 LM30 시험 결과로 덮인다. 그래서 config.teamUpload.requireSavedAddress(배포 설정 true · 키가 없어도 켬)가 켜져 있으면
+  시험용 서버 주소를 config\team_server.json 에 저장하기 전에는 --upload(자동 보고·[팀 서버 업로드]·팀업로드.bat)가 보내지
+  않는다(upload_guard — 묶음은 대기 그대로). 기본 주소는 바꾸지 않는다. 연결 확인·묶음 만들기·공유폴더 저장은 그대로 된다.
+
 묶음 내용은 팀 공유폴더 내보내기(export.py)와 동일하다 — 이미 excludePathKeywords 로 걸러진
 판정 결과다. 사내망 전용.
 LM28: signals 는 G4 팀 반출 변환(core\privacy.team_export_rows — export.py 와 같은 함수)을 거친다 — who 는
 사내|고객사|협력사|외부 로 접고, text 는 다시 정제하고, 고위험 잔여 행과 flag 열은 빼고, 이 PC·본인 식별자(카나리아)가
 남은 파일은 보내지 않는다. 묶음을 만들 때(build)와 보내기 직전(upload_one) 두 번 건다(다시 걸어도 같은 결과).
-member 에는 판 표식 lm_ver(LM_VER — 'LM29')를 추가 키로 싣는다(기존 키·파일명·measure·coverage·cfg_used 는 그대로).
+member 에는 판 표식 lm_ver(LM_VER — 'LM30')을 추가 키로 싣는다(기존 키·파일명·measure·coverage·cfg_used 는 그대로).
 """
 import http.client
 import io
@@ -57,7 +64,7 @@ SENT = os.path.join(REPORT, "upload_sent")
 # 대시보드는 이 파일로 실패 배너(다음 성공까지)와 실행 1회당 알림 1번을 정한다(at 이 그 열쇠)
 REPORT_STATUS = "team_report_status.json"
 MAX_BYTES = 30 * 1024 * 1024        # 서버 상한과 같다 — 넘으면 보내기 전에 알려 준다
-LM_VER = "LM29"                     # member.lm_ver — 묶음을 만든 판(추가 키만, 기존 키·파일명 불변)
+LM_VER = "LM30"                     # member.lm_ver — 묶음을 만든 판(추가 키만, 기존 키·파일명 불변)
 # 팀 서버 기다림 기본값(LM28) — 예전에는 연결 확인 4초 1번, 묶음마다 응답 360초, 실패해도 남은 묶음을 전부 시도해
 # 서버가 느린 날 자동 보고가 몇 분씩 붙잡혔다(사용자 지적). config.teamUpload 로 바꾸되 범위(_WAIT_RANGE)를 넘지 못한다 —
 # 가장 길게 잡아도 run.py 의 teamup 상한(TR_CAP_SEC 150초) 안에 끝나야 결과 JSON 이 남는다.
@@ -70,6 +77,12 @@ STOP_KINDS = ("unreachable", "slow")  # 이 갈래로 실패하면 남은 묶음
 _WAIT_RANGE = {"pingTries": (1, 3), "pingTimeoutSec": (1.0, 10.0), "timeoutSec": (5.0, 90.0)}
 SLOW_MSG = ("서버 응답 지연 — 서버에 저장됐을 수 있습니다. 묶음은 대기로 남겨 다음 실행 때 다시 보냅니다"
             "(덮어쓰기라 결과는 같습니다)")
+# LM30 시험판 보호(upload_guard) — 시험용 팀 서버 주소를 정하기 전에는 기본 주소(기존 팀 서버)로 보내지 않는다. 실패가 아니라
+# '보내지 않음' 이다: --upload 는 kind no_test_server(ok null · 종료 코드 0)로 답하고 묶음은 대기 그대로 — run.py 자동 보고는
+# 알림·배너 없이 '건너뜀' 으로 남기고, 화면 버튼은 실패 대신 까닭을 말한다
+NO_TEST_KIND = "no_test_server"
+NO_TEST_MSG = ("LM30 시험판은 시험용 팀 서버 주소를 LoadMonitor30-팀서버주소.bat 으로 정한 뒤에만 보냅니다 — "
+               "기존 팀 서버의 LM28·LM29 결과를 덮지 않게. 결과 묶음은 대기로 남습니다")
 if __name__ == "__main__":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, errors="replace", encoding=(
         (sys.stdout.encoding or "utf-8") if sys.stdout.isatty() else "utf-8"))  # 콘솔(bat)=콘솔 코드페이지 · 파이프(UI)=utf-8
@@ -184,7 +197,7 @@ def longp(p):
 FILE_NAMES = ("mm_rows_{t}.csv", "mm_rows_{t}_refined.csv", "signals_{t}.csv",
               "mm_meta_{t}.json", "pivots_{t}.json", "ai_narratives_{t}.json",
               "entities_{t}.json", "agentic_{t}.json", "workflow_{t}.json")
-# agentic_{t}.json — LM29 는 Agentic AI 니즈 후보만 싣는다(kind "needs" · 과제 매칭·오할당 없음). 팀 취합이 인원별 후보를 모은다.
+# agentic_{t}.json — LM29부터 Agentic AI 니즈 후보만 싣는다(kind "needs" · 과제 매칭·오할당 없음). 팀 취합이 인원별 후보를 모은다.
 # freeze.py 가 만드는 개인 HTML 보고서 — 묶음(files)·팀 서버에는 넣지 않는다(서버 NAME_OK 불변:
 # 업로드 HTML = 서버 origin 의 임의 스크립트, 얼린 보고서는 메일·회의 제목 원문 포함).
 # 공유폴더 저장(--to-folder) 때만 <공유폴더>\개인리포트\<이름>_<파일명> 으로 복사한다 —
@@ -440,7 +453,7 @@ def build(cfg, d0, d1):
               "host": os.environ.get("COMPUTERNAME", ""),
               # 누가·언제·어디서 — 팀장이 "이 숫자는 누구 것이고 언제 것인가"를 묻는다(사용자 요청)
               "analyzed_at": time.strftime("%Y-%m-%d %H:%M"),
-              # 판 표식(LM28 부터) — 추가 키라 LM24 서버·취합은 그대로 받는다(team_recalc 가 'LM29(v3)' 로 표시).
+              # 판 표식(LM28 부터) — 추가 키라 LM24 서버·취합은 그대로 받는다(team_recalc 가 'LM30(v3)' 로 표시).
               # measure·coverage·cfg_used 키는 바꾸지 않는다(팀 호환 불변 — 없으면 'LM20(추정)' 으로 오분류된다)
               "lm_ver": LM_VER}
     os.makedirs(PENDING, exist_ok=True)
@@ -534,7 +547,7 @@ def ping(url, timeout=None, tries=None):
     단정하지 않되, 닿지 않는 망에서는 8초 안에 끝낸다(예전 4초 1번). tries 는 결과에 몇 번 만에 닿았는지 남긴다."""
     if not url:
         return {"ok": False, "error": "팀 서버 주소가 비었거나 형식이 틀렸습니다 — "
-                                      "LoadMonitor29-팀서버주소.bat 에서 서버 IP·포트를 저장하세요"}
+                                      "LoadMonitor30-팀서버주소.bat 에서 서버 IP·포트를 저장하세요"}
     if timeout is None or tries is None:
         lim = wait_limits(load_cfg())
         timeout = lim["ping_timeout"] if timeout is None else timeout
@@ -902,19 +915,53 @@ def drop(which):
     return {"ok": True, "dropped": [it["file"] for it in hits], "pending": len(list_pending())}
 
 
+def _tu_flag(cfg, key):
+    """config.teamUpload 의 켬/끔 값 → bool. 없거나 null·빈 값이면 켬, false·"false"·0·"off"·"no" 면 끔(그 밖은 켬)."""
+    tu = cfg.get("teamUpload") if isinstance(cfg, dict) else None
+    v = tu.get(key) if isinstance(tu, dict) else None
+    if v is None or (isinstance(v, str) and not v.strip()):
+        return True
+    if isinstance(v, bool):
+        return v
+    return str(v).strip().lower() not in ("0", "false", "no", "off")
+
+
 def auto_report_on(cfg):
     r"""[분석 실행] 끝에 팀 서버로 자동 보고할까 → bool (LM28 사용자 요청 — "분석실행 마무리는 팀서버로 자동으로 레포팅까지").
     config.teamUpload.autoReport — 없거나 null·빈 값이면 켬(기본), false·"false"·0·"off"·"no" 면 끔. 이 키가 있으면 이것이 이긴다.
     옛 키 teamUpload.auto 는 보지 않는다: true 는 '켜기' 라 기본과 같고, false 는 LM19~LM24 배포 설정의 **기본값**이었을 뿐
     사용자가 고른 뜻이 아니다(끄기로 읽으면 옛 설정을 이어받은 PC 전부가 자동 보고를 못 받는다).
     run.py(보고 여부)·화면(카드 머리말)·status()(--list)가 모두 이 한 함수로 읽는다 — 해석이 갈리지 않게."""
-    tu = cfg.get("teamUpload") if isinstance(cfg, dict) else None
-    v = tu.get("autoReport") if isinstance(tu, dict) else None
-    if v is None or (isinstance(v, str) and not v.strip()):
-        return True
-    if isinstance(v, bool):
-        return v
-    return str(v).strip().lower() not in ("0", "false", "no", "off")
+    return _tu_flag(cfg, "autoReport")
+
+
+def require_saved_on(cfg):
+    r"""LM30 시험판 보호를 켤까 → bool — config.teamUpload.requireSavedAddress(배포 설정 true). 읽는 규칙은 autoReport 와 같다:
+    없거나 null·빈 값이면 **켬** — LM28·LM29 의 config.json 을 옮겨 와 이 키가 없어도 기존 팀 서버로 새지 않게.
+    false·"false"·0·"off"·"no" 면 끔(예전처럼 기본 주소로도 보낸다)."""
+    return _tu_flag(cfg, "requireSavedAddress")
+
+
+def upload_guard(cfg, url=None):
+    r"""LM30 시험판 보호 → 보내지 않는 사유 문구 | ""(보내도 됨). requireSavedAddress 가 켜져 있을 때만 막는다.
+    막는 경우: ① 보낼 주소가 기본 주소(core\teamaddr 의 DEFAULT_* = 기존 팀 서버) 그 자체 — 저장 파일이나 일회성
+    --url·--host 로 같은 주소를 적어도 막는다 ② 설정 주소로 보내는데 서버 IP·포트 어느 것도 config\team_server.json 에서 오지
+    않았다(teamaddr 의 source — 옛 판 config.json 에서 이어받은 주소). url = 이번에 보낼 주소(target_url) · None 이면 설정 주소.
+    주소가 비었으면 ""(no_url 이 따로 말한다). run.py 자동 보고·화면 업로드 카드·main(--upload)이 모두 이 한 함수로 가른다."""
+    if not require_saved_on(cfg):
+        return ""
+    import teamaddr
+    a = teamaddr.load(ROOT)
+    u = str(a.url if url is None else (url or "")).strip().rstrip("/").lower()
+    if not u:
+        return ""
+    if u == f"http://{teamaddr.DEFAULT_HOST}:{teamaddr.DEFAULT_PORT}".lower():
+        why = "기본 주소 = 기존 팀 서버"
+    elif u == a.url.lower() and "file" not in (a.source.get("host"), a.source.get("port")):
+        why = "이전 판 설정에서 이어받은 주소"
+    else:
+        return ""
+    return f"{NO_TEST_MSG} (지금 주소: {why})"
 
 
 def write_report_status(rep_dir, st):
@@ -957,9 +1004,11 @@ def _sent_status(r, via):
 
 
 def status(cfg, url=""):
-    """대시보드용 현황 — 도달성 확인은 하지 않는다(누를 때만 한다). auto = [분석 실행] 끝 자동 보고 켬(auto_report_on)."""
-    return {"url": url or target_url(cfg), "share": (cfg.get("teamShareDir") or "").strip(),
-            "auto": auto_report_on(cfg),
+    """대시보드용 현황 — 도달성 확인은 하지 않는다(누를 때만 한다). auto = [분석 실행] 끝 자동 보고 켬(auto_report_on).
+    guard = LM30 시험판 보호에 걸리면 그 사유(upload_guard — 업로드 카드가 규칙을 보이고 버튼이 까닭을 말한다) · 아니면 ""."""
+    url = url or target_url(cfg)
+    return {"url": url, "share": (cfg.get("teamShareDir") or "").strip(),
+            "auto": auto_report_on(cfg), "guard": upload_guard(cfg, url),
             "pending": list_pending(), "sent": list_sent(),
             # 묶음이 없어도 결과가 있으면 '지금 묶기'를 권할 수 있게(실측 제보)
             "available": buildable()}
@@ -978,6 +1027,8 @@ def main():
     if "--list" in sys.argv:
         st = status(cfg)
         lines = [f"[teamup] 서버: {st['url'] or '(미설정)'} · 대기 {len(st['pending'])}건"]
+        if st.get("guard"):
+            lines.append(f"         ! 보내지 않습니다 — {st['guard']}")
         for it in st["pending"]:
             lines.append(f"         - {it.get('tag', '?')}  {it.get('built', '')}  "
                          f"{it.get('files', 0)}개 파일  {it.get('bytes', 0) / 1024:.0f}KB")
@@ -1051,9 +1102,18 @@ def main():
         if not url:
             _out(js, {"ok": False, "error": "팀 서버 주소가 비었거나 형식이 틀렸습니다", "no_url": True,
                       "pending": len(list_pending())},
-                 "[teamup] 팀 서버 주소가 비었거나 형식이 틀렸습니다 — LoadMonitor29-팀서버주소.bat 에서 "
+                 "[teamup] 팀 서버 주소가 비었거나 형식이 틀렸습니다 — LoadMonitor30-팀서버주소.bat 에서 "
                  "서버 IP·포트를 저장하세요")
             return 1
+        why = upload_guard(cfg, url)
+        if why:
+            # LM30 시험판 보호 — 연결 확인도 하지 않는다(보낼 곳이 아니다). 실패가 아니라 '보내지 않음' 이라 종료 코드 0 ·
+            # ok null · results 없음 · 묶음은 대기 그대로. run.py 자동 보고·화면은 kind 로 가른다(알림·배너 없음)
+            n = len(list_pending())
+            _out(js, {"ok": None, "kind": NO_TEST_KIND, NO_TEST_KIND: True, "note": why, "sent": 0, "failed": 0,
+                      "results": [], "pending": n},
+                 f"[teamup] 보내지 않았습니다 — {why}\n         올릴 주소: {url} · 대기 {n}건")
+            return 0
         t0 = time.monotonic()                   # 시간 상한(BUDGET_SEC)은 연결 확인부터 잰다
         pg = ping(url)
         if not pg.get("ok"):
@@ -1084,6 +1144,10 @@ def main():
         url = target_url(cfg)
         if not url:
             print("[teamup] 주소 미설정 — 묶음만 준비했습니다 (대시보드에서 업로드)")
+            return 0
+        why = upload_guard(cfg, url)
+        if why:                             # LM30 시험판 보호 — --upload 와 같다(묶음만 준비)
+            print(f"[teamup] 묶음만 준비했습니다 — {why}")
             return 0
         t0 = time.monotonic()
         pg = ping(url)

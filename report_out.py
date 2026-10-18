@@ -9,7 +9,7 @@ report_out.py — 현재 분석 결과를 하나의 리포트 파일로 출력�
       report\\리포트_<기간>.doc    (더블클릭하면 Word로 열림 — 같은 내용)
 
 담기는 것: 투입/가용 MM·로드율 · 과제별 로드 · 업무분류 배분 · 공통업무(표준화·자동화 후보)
-          · 월별 리뷰 코멘트(빠진 달은 다른 기간 파일에서 이월 — core/narratives) · Agentic AI 니즈 후보(LM29 — 발굴만)
+          · 월별 리뷰 코멘트(빠진 달은 다른 기간 파일에서 이월 — core/narratives) · Agentic AI 니즈 후보(LM29부터 — 발굴만)
           · 산정 근거와 신뢰도(초과근무 세분·미관측 일수)
           · 산출 방식(PC 가동 하한의 근거·날짜별 방식 최신순·퇴근 후·시각 · 시간 근거 합계)
           · raw 단서 요약 · 같이 일한 동료 · 연관 업무 · 업무 영역·과제 워크플로 요약(단위업무 등급)
@@ -836,7 +836,7 @@ def build(tag, summary=False):
                      f"<td class='dim'>{esc(m.get('obs'))}</td></tr>")
         h.append("</table>")
 
-    # LM29 — Agentic AI 니즈 후보만(팀 과제 매칭·오할당 검증 없음). LM28 이 남긴 파일이면 match·misassigned 는 읽지 않는다.
+    # LM29부터 — Agentic AI 니즈 후보만(팀 과제 매칭·오할당 검증 없음). LM28 이 남긴 파일이면 match·misassigned 는 읽지 않는다.
     ag = _json(os.path.join(REP, f"agentic_{tag}.json"))
     ag = ag if isinstance(ag, dict) else {}
     ag_new =[n for n in (ag.get("new") if isinstance(ag.get("new"), list) else []) if isinstance(n, dict)]
@@ -1022,7 +1022,7 @@ def build(tag, summary=False):
              "지속적 100% 초과는 과부하 신호다.</div>")
     if not b.get("sampler_days"):
         h.append("<div class='dim'>※ 투입 시간은 PC 켜기·끄기 기록과 활동 흔적(회의·산출물·메일·커밋)으로 계산했습니다 "
-                 "(LM29 에는 창 샘플러가 없습니다).</div>")
+                 "(LM30 에는 창 샘플러가 없습니다).</div>")
     # ★ 사용자 지시(2026-10-07 ②): 산출 방식 — PC 가동 하한의 근거 + 날짜별 방식·하한을 연 흔적·깎은 시간
     h += floor_section(meta, b)
 

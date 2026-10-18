@@ -12,7 +12,7 @@ aggregate.py — 팀 공유폴더의 인별 결과를 모아 팀 총괄 리포�
 마지막 줄 JSON: {"ok","members","agentic","needs","report","full_report","full_v3","snapshots"}
   agentic = 니즈 후보 파일(agentic_<기간>.json)이 있는 인원 수 · needs = 합친 팀 니즈 후보 수
 
-팀 Agentic AI 니즈 후보(LM29): 인원별 agentic_<기간>.json 의 후보(new)만 읽어 이름(needs_key — core/details.fold 와 같은 축)으로
+팀 Agentic AI 니즈 후보(LM29부터): 인원별 agentic_<기간>.json 의 후보(new)만 읽어 이름(needs_key — core/details.fold 와 같은 축)으로
 합친다(merge_needs). LM28 이 올린 파일의 과제 매칭(match)·오할당(misassigned)은 읽지 않는다.
 """
 import ast
@@ -512,7 +512,7 @@ def load_aliases(share):
         return {"projects": _AliasMap({}), "details": _AliasMap({})}
 
 
-# ── 팀 Agentic AI 니즈 후보(LM29 — 팀 과제 매칭 없이 인원별 니즈 후보만 모은다) ─────────────────────
+# ── 팀 Agentic AI 니즈 후보(LM29부터 — 팀 과제 매칭 없이 인원별 니즈 후보만 모은다) ─────────────────────
 def needs_key(name):
     """니즈 후보 이름 비교 축 — core/details.fold 와 같은 규칙(구분자·괄호를 공백으로 · 공백 접기 · 대소문자 무시)."""
     t = unicodedata.normalize("NFKC", str(name or ""))
@@ -688,7 +688,7 @@ def collect_team_data(share):
         [{"detail": k, "models": sorted(v["models"]), "who": sorted(v["who"]),
           "mm": round(v["mm"], 3)} for k, v in common_all.items()],
         key=lambda x: -(len(x["who"]) * 10 + x["mm"]))[:15]
-    # 팀 Agentic AI 니즈 후보 — 인원별 후보를 이름으로 합친 것(LM29 · 팀 과제 매칭 없음)
+    # 팀 Agentic AI 니즈 후보 — 인원별 후보를 이름으로 합친 것(LM29부터 · 팀 과제 매칭 없음)
     out["needs"], out["agentic_n"], out["needs_other"] = collect_needs(members)
     return out
 

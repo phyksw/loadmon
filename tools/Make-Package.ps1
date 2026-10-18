@@ -37,7 +37,7 @@ $need = @()
 $expect = @{}
 foreach ($ln in Get-Content $filesTxt -Encoding UTF8) {
     if ($ln -match '^\s*$') { continue }
-    if ($ln -match '^(LoadMonitor29 필수|총 |\()') { continue }
+    if ($ln -match '^(LoadMonitor30 필수|총 |\()') { continue }
     if ($ln -match '^\s') { continue }              # 괄호 설명의 이어지는 줄
     $p = ($ln -split '\s{2,}')[0].Trim()
     if ($p) { $need += $p }
@@ -101,8 +101,8 @@ if ($stale.Count) {
     throw "FILES.txt 가 현재 파일과 다릅니다 ($($stale.Count)개: $($stale -join ', ')) — 받은 뒤 고친 파일이 있습니다. 원본을 다시 받아 덮어쓴 뒤(개발 PC 는 FILES.txt 를 다시 만든 뒤) 다시 시도하세요"
 }
 
-$stage = Join-Path ([System.IO.Path]::GetTempPath()) ("LM29pkg_" + [Guid]::NewGuid().ToString('N').Substring(0,8))
-$dest = Join-Path $stage 'LoadMonitor29'
+$stage = Join-Path ([System.IO.Path]::GetTempPath()) ("LM30pkg_" + [Guid]::NewGuid().ToString('N').Substring(0,8))
+$dest = Join-Path $stage 'LoadMonitor30'
 New-Item -ItemType Directory -Force $dest | Out-Null
 
 $missing = @()
@@ -127,10 +127,10 @@ Copy-Item $tpl (Join-Path $dest 'config\config.json') -Force
 
 # 팀 서버 주소(서버 IP·포트)는 '팀 공용 값'이라 개인 설정(config.json)과 달리 담는다 — v5 사용자 지시:
 # "그대로 폴더를 옮기면 그 서버 IP 변경이 유지되는 채로 일반 유저는 분석 후 그쪽 IP 로 올릴 수 있게".
-# LoadMonitor29-팀서버주소.bat 으로 저장한 config\team_server.json 이 있으면 받는 사람도 같은 주소로 올린다.
+# LoadMonitor30-팀서버주소.bat 으로 저장한 config\team_server.json 이 있으면 받는 사람도 같은 주소로 올린다.
 # 담기 전에 내용이 주소 두 값(host·port)뿐인지 확인한다 — 다른 것이 섞였으면 담지 않고 멈춘다.
 $teamAddr = Join-Path $root 'config\team_server.json'
-$teamAddrMsg = '팀 서버 주소 파일 없음 - 받는 사람은 기본 주소로 올립니다(바꾸려면 LoadMonitor29-팀서버주소.bat)'
+$teamAddrMsg = '팀 서버 주소 파일 없음 - 받는 사람은 기본 주소로 올립니다(바꾸려면 LoadMonitor30-팀서버주소.bat)'
 if (Test-Path $teamAddr) {
     $ta = $null
     try { $ta = Get-Content $teamAddr -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $ta = $null }
@@ -143,7 +143,7 @@ if (Test-Path $teamAddr) {
     }
     if (-not $ta -or $extra.Count -or -not ([string]$ta.host -match '^[A-Za-z0-9._-]{1,253}$') -or -not $portOk) {
         Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
-        throw '배포 위생 실패: config\team_server.json 이 팀 서버 주소 형식이 아닙니다 - LoadMonitor29-팀서버주소.bat 으로 다시 저장하세요'
+        throw '배포 위생 실패: config\team_server.json 이 팀 서버 주소 형식이 아닙니다 - LoadMonitor30-팀서버주소.bat 으로 다시 저장하세요'
     }
     Copy-Item $teamAddr (Join-Path $dest 'config\team_server.json') -Force
     $teamAddrMsg = "팀 서버 주소 동봉: http://$($ta.host):$($ta.port) (config\team_server.json - 받는 사람도 이 주소로 올립니다)"
@@ -184,7 +184,7 @@ if ($h1 -ne $h2) {
 }
 
 if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Force $OutDir | Out-Null }
-$kind = if ($Full) { 'LoadMonitor29_v1_풀패키지_' } else { 'LoadMonitor29_v1_' }
+$kind = if ($Full) { 'LoadMonitor30_v1_풀패키지_' } else { 'LoadMonitor30_v1_' }
 # 이름은 초 단위(HHmmss)까지, 이미 있으면 _2 _3 … 으로 비켜 간다 — 남의 zip 은 절대 지우지 않는다.
 # 압축은 임시 이름(.partial.zip)으로 한 뒤 같은 폴더 안에서 제 이름으로 옮긴다(같은 볼륨 → 원자적 rename).
 # 실측: 같은 분에 두 번 돌리면 뒤 실행이 ArchiveFileExists 로 죽거나, 앞 실행이 막 완성한 zip 을 지웠다.
@@ -211,6 +211,6 @@ Write-Host "         $teamAddrMsg"
 if ($Full) { Write-Host '         내장 파이썬 동봉 - 받는 PC 에 아무것도 설치할 필요 없이 bat 더블클릭으로 실행됩니다.' }
 Write-Host ""
 Write-Host "받는 사람 안내:"
-Write-Host "  1) 압축을 풀고 LoadMonitor29-UI.bat 실행"
+Write-Host "  1) 압축을 풀고 LoadMonitor30-UI.bat 실행"
 Write-Host "  2) 파이썬이 없으면 tools\Get-EmbeddedPython.ps1 을 먼저 실행"
 Write-Host "  3) Copilot 판정을 쓰려면 화면의 [AI 연결 진단] 으로 로그인 상태 확인"

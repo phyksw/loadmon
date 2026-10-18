@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 r"""
-team_report.py — 팀 통합 보고서(HTML 한 장) + 유사 항목 정리 엔진 (LoadMonitor29, 팀장용).
+team_report.py — 팀 통합 보고서(HTML 한 장) + 유사 항목 정리 엔진 (LoadMonitor30, 팀장용).
 LM28: 9-1 담당자 → 업무 영역 → 과제 간트(막대 = 10절 (담당자, 과제) 블록 wf-<담당자>-<과제 sha1 8> 링크 · signals 없는
 인원은 '자료 없음' 행) · '대체 가능 MM' 표시 없음(신규 후보는 근거 업무 행 수) · Agentic 과제 수는 등록된 목록 기준.
-LM29: Agentic 과제 매칭(옛 4절)을 뺐다. 신규 후보 절은 '5. 팀 Agentic AI 니즈 후보'로 남겼다 — 인원별 니즈 후보를 이름으로
+LM29부터: Agentic 과제 매칭(옛 4절)을 뺐다. 신규 후보 절은 '5. 팀 Agentic AI 니즈 후보'로 남겼다 — 인원별 니즈 후보를 이름으로
 합친 것(aggregate.merge_needs — 팀 과제 매칭 없음 · Copilot 통합 없음). 절 순서: 4 공통업무 · 5 팀 니즈 후보 · 6~8 워크플로우
 유형·자동화 우선순위·담당 업무 × 인원 · 8-1·8-2 간트 · 9 과제별 워크플로우 · 10 프로그램 사용. 옛 판(LM28)이 올린
 agentic_*.json 도 후보(new)만 읽고 과제 매칭·오할당은 읽지 않는다.
@@ -1051,7 +1051,7 @@ def member_report(mdir, member, out_dir):
 
     meta = _load_obj("mm_meta")
     wf = _load_obj("workflow")
-    # LM29 — Agentic AI 니즈 후보만(aggregate.norm_needs — LM28 이 올린 파일의 과제 매칭·오할당은 읽지 않는다)
+    # LM29부터 — Agentic AI 니즈 후보만(aggregate.norm_needs — LM28 이 올린 파일의 과제 매칭·오할당은 읽지 않는다)
     ag = _load_obj("agentic")
     ag_new = _agg().norm_needs(ag)["new"] if ag else []
     if not rows and not wf:
@@ -2818,7 +2818,7 @@ def render_full(share, html_dir, sender=None, log=say):
             f'<span class="state">{len(coarse)}건 · 유형 분석에서 제외</span></h2>'
             '<div class="note" style="margin:0 0 8px">프로젝트 하나에는 성격이 다른 업무가 여럿 '
             '섞여 있어 하나의 일의 순서로 정의할 수 없습니다. 아래 인원은 담당 업무 단위 '
-            '워크플로우가 아직 없어 유형 분석에 넣지 않았습니다 — 그 PC 에서 LoadMonitor29(또는 LoadMonitor28·LoadMonitor24) 로 '
+            '워크플로우가 아직 없어 유형 분석에 넣지 않았습니다 — 그 PC 에서 LoadMonitor30(또는 LoadMonitor29·LoadMonitor28·LoadMonitor24) 로 '
             '[분석 실행](AI 판정)을 다시 돌리면 담당 업무 단위로 만들어집니다.</div>'
             '<table><tr><th style="width:120px">이름</th><th>과제</th></tr>'
             + "".join(f"<tr><td><b>{esc(w)}</b></td><td>"

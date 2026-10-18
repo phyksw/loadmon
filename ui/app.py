@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-app.py — LoadMonitor29 로컬 HTML UI (표준 라이브러리만).
+app.py — LoadMonitor30 로컬 HTML UI (표준 라이브러리만).
 
-  python ui\\app.py          또는  LoadMonitor29-UI.bat 더블클릭
+  python ui\\app.py          또는  LoadMonitor30-UI.bat 더블클릭
 
 탭: 대시보드(요약 시각화) · 주간/월간 리뷰(raw 근거가 들어간 기간 리뷰) · 상세 리뷰(업무별 딥다이브+연결성)
 로컬 전용(127.0.0.1). 외부 전송 없음. Copilot 왕복만 사용자의 기존 세션으로 나간다.
@@ -27,12 +27,12 @@ sys.path.insert(0, os.path.join(ROOT, "core"))
 if ROOT not in sys.path:          # judge·aggregate 등 루트 모듈 임포트용
     sys.path.insert(0, ROOT)      # (ui\app.py 로 실행하면 sys.path[0]이 ui\ 라 루트가 안 잡힌다)
 from progress import parse as parse_progress  # noqa: E402  (core 경로 등록 뒤에 임포트)
-import lmname  # noqa: E402  — LM29 이름 단일원(작업·포트·Edge 프로필·%TEMP% 접두)
+import lmname  # noqa: E402  — LM30 이름 단일원(작업·포트·Edge 프로필·%TEMP% 접두)
 
 REPORT = os.path.join(ROOT, "report")
 DATA = os.path.join(ROOT, "data")
 NO_WIN = 0x08000000
-VERSION = "v5.0"          # lm24-v5 — 팀 서버 IP·포트를 별도 설정(config\team_server.json)으로 분리 · 바꾸기는 LoadMonitor29-팀서버주소.bat 하나
+VERSION = "v5.0"          # lm24-v5 — 팀 서버 IP·포트를 별도 설정(config\team_server.json)으로 분리 · 바꾸기는 LoadMonitor30-팀서버주소.bat 하나
 LOCK = threading.Lock()
 FREEZE_LOCK = threading.Lock()       # [보고서 만들기] 직렬화 — JOB 과 별개(사본에 '실행 중'이 굳지 않게)
 JOB = {"running": False, "log": [], "step": "", "started": 0.0, "pid": 0,
@@ -75,7 +75,7 @@ def close_edge(reason="ui", tidy=True):
 def kill_copilot_edge():
     r"""(수동 진단용 — LM28 은 자동으로 부르지 않는다. 시작·종료·[중지] 는 close_edge 가 CDP 로 닫는다.)
     Copilot 왕복용 전용 Edge 를 명령줄 패턴으로 종료 —
-    일반 Edge·LM24·LM28 의 전용 Edge 는 건드리지 않고 **이 설치본의** 프로필(<ROOT>\data\lm29_edge)로 뜬 것만.
+    일반 Edge·LM24·LM28·LM29 의 전용 Edge 는 건드리지 않고 **이 설치본의** 프로필(<ROOT>\data\lm30_edge)로 뜬 것만.
     예전 패턴(프로필 폴더 이름만 비교)은 같은 PC 의 다른 판·다른 폴더 Edge 까지 죽였다(W3-03)."""
     prof = lmname.edge_profile(ROOT).lower().replace("'", "''")     # PS 작은따옴표 문자열 이스케이프
     subprocess.run(["powershell", "-NoProfile", "-Command",
@@ -100,7 +100,7 @@ def drop_foreign_profile():
     덤으로 도착 즉시 수백 MB 가 사라진다(실측 프로필 100~529MB).
     """
     try:
-        prof = lmname.edge_profile(ROOT)       # <ROOT>\data\lm29_edge — 이 설치본의 전용 프로필만
+        prof = lmname.edge_profile(ROOT)       # <ROOT>\data\lm30_edge — 이 설치본의 전용 프로필만
         if not os.path.isdir(prof):
             return
         # 판정 기준은 run.py.archive_other_pc 와 **같아야 한다** — 한쪽만 '다른 PC' 라고 보면
@@ -440,7 +440,7 @@ def awake_watch(stop=None, every=15.0, conf=None):
 
 
 def console_close_cleanup(ev=None, budget=EDGE_FAST_SEC):
-    """콘솔 창(LoadMonitor29-UI.bat)을 닫을 때(core\\proc.on_console_close) — 윈도가 주는 몇 초 안에 끝나는 것만 한다.
+    """콘솔 창(LoadMonitor30-UI.bat)을 닫을 때(core\\proc.on_console_close) — 윈도가 주는 몇 초 안에 끝나는 것만 한다.
     Job 을 끝내고(작업 트리 — Job 안의 자식은 어차피 이 프로세스와 함께 끝난다), Job 밖에 남는 전용 Edge 를 채팅 정리 없이
     (tidy=False) 닫는다 — budget 초까지만 기다린다. 팀 서버는 건드리지 않는다. 예외를 내지 않는다."""
     try:
@@ -483,7 +483,7 @@ def team_cache_files():
 
 
 def agentic_view(a):
-    """agentic_<tag>.json → 화면(Agentic AI 탭)에 보낼 꼴 — LM29 는 니즈 후보만. agentic.needs_only 가 LM28 이 남긴 파일의
+    """agentic_<tag>.json → 화면(Agentic AI 탭)에 보낼 꼴 — LM29부터 니즈 후보만. agentic.needs_only 가 LM28 이 남긴 파일의
     과제 매칭(match)·오할당(misassigned)·MM 실측(mm_recalc) 키를 버린다. agentic 을 못 읽으면 그 키만 직접 지운다."""
     try:
         import agentic
@@ -575,7 +575,7 @@ def team_share_ex():
 
 def _ta():
     r"""팀 서버 주소 단일원(core\teamaddr.py — 설치 폴더의 config\team_server.json). 부를 때마다 파일을 다시
-    읽어 LoadMonitor29-팀서버주소.bat 에서 바꾼 값이 곧바로 반영된다. 화면은 주소를 보여 주기만 하고 바꾸지
+    읽어 LoadMonitor30-팀서버주소.bat 에서 바꾼 값이 곧바로 반영된다. 화면은 주소를 보여 주기만 하고 바꾸지
     않는다(사용자 지시: 바꾸는 곳은 별도 bat 하나). v5 이전처럼 config.teamServerUrl 을 직접 쪼개지 않는다."""
     import teamaddr
     return teamaddr
@@ -932,7 +932,7 @@ def _take_policy(ident, occ, root=None):
     한 번에 종료)은 같은 PC 의 **LM24 팀 서버**까지 내렸다. 이제 신원 응답(/api/whoami)의 root 가 이 설치 폴더일 때만
     (= 이 폴더의 옛 서버가 토큰·pid 증명 없이 남은 경우) 끈다. 그때도 종료 판단은 OS 사실로만 한다 — 리스너가 모두
     teamserver.py 이고 보호 대상이 아닐 것. 다른 폴더(LM24 포함)·구버전·남의 프로그램은 끄지 않고, 화면이
-    LoadMonitor29-팀서버주소.bat 의 대체 포트를 제안만 한다(LM27 portdiag '제안만, 남의 프로세스는 안 죽임')."""
+    LoadMonitor30-팀서버주소.bat 의 대체 포트를 제안만 한다(LM27 portdiag '제안만, 남의 프로세스는 안 죽임')."""
     if not occ or not _same_root((ident or {}).get("root"), root):
         return "no"
     if any(x.get("protected") for x in occ) or not all(x.get("teamserver") for x in occ):
@@ -992,7 +992,7 @@ def teamserver_status():
     return {"ok": True, "running": running, "port": port, "pid": pid if running else 0,
             "urls": [f"http://{ip}:{port}" for ip in ips], "log": tail,
             # 설정된 서버 주소(설치 폴더의 config\team_server.json) — 팀원은 분석 후 이 주소로 올린다.
-            # 화면은 보여 주기만 한다(바꾸는 곳은 LoadMonitor29-팀서버주소.bat).
+            # 화면은 보여 주기만 한다(바꾸는 곳은 LoadMonitor30-팀서버주소.bat).
             "host": a.host, "upload_url": a.url, "addr_kind": akind, "addr_note": anote,
             "addr_warnings": a.warnings, "edit_bat": ta.EDIT_BAT,
             # 포트는 열렸는데 내 서버가 아닐 때 — 화면이 사실대로 말할 수 있게
@@ -1024,7 +1024,7 @@ def _save_cfg(key, val):
 
 
 def _addr_payload():
-    r"""화면에 줄 팀 서버 주소(보여 주기만) — 값·출처·경고·이 PC 와의 관계. 바꾸는 곳은 LoadMonitor29-팀서버주소.bat."""
+    r"""화면에 줄 팀 서버 주소(보여 주기만) — 값·출처·경고·이 PC 와의 관계. 바꾸는 곳은 LoadMonitor30-팀서버주소.bat."""
     ta = _ta()
     a = ta.load(ROOT)
     akind, anote = ta.relation(a, local_ips())
@@ -1663,7 +1663,7 @@ def add_worklog(rec, data_dir=None):
 
 # ── 기간 빠른 선택(UD-18·W3-06) — 올해(기본)·1~4분기·상반기·하반기 ─────────────────────────────
 # LM27 lm27\ui\period.py 의 규칙만 가져왔다: 모두 오늘이 속한 해, 진행 중인 기간은 끝을 오늘로 자르고, 아직 시작하지
-# 않은 기간은 고를 수 없다(None). 같은 규칙의 JS 판 = PAGE 의 periodRange(), bat 판 = LoadMonitor29.bat 의 날짜 계산 1줄.
+# 않은 기간은 고를 수 없다(None). 같은 규칙의 JS 판 = PAGE 의 periodRange(), bat 판 = LoadMonitor30.bat 의 날짜 계산 1줄.
 PERIOD_SPANS = {"ytd": ("01-01", "12-31"), "q1": ("01-01", "03-31"), "q2": ("04-01", "06-30"),
                 "q3": ("07-01", "09-30"), "q4": ("10-01", "12-31"), "h1": ("01-01", "06-30"),
                 "h2": ("07-01", "12-31")}
@@ -2795,7 +2795,7 @@ def _rm_file(path, tries=3, pause=0.3):
 
 def reset_files(what="report", keep_queue=True, report=None, data=None, failed=None):
     r"""[데이터 리셋] — report\(what='all' 이면 data\ 도) 아래 파일을 지운다 → (지운 파일 수, 보존한 월별 코멘트 파일 수).
-    · Copilot 로그인 세션(data\lm29_edge)은 늘 보존, 아직 못 보낸 팀 업로드 묶음(upload_pending)은 keep_queue 면 보존.
+    · Copilot 로그인 세션(data\lm30_edge)은 늘 보존, 아직 못 보낸 팀 업로드 묶음(upload_pending)은 keep_queue 면 보존.
     · '분석 결과만 삭제'(what != 'all')는 월별 리뷰 코멘트(report\ai_narratives_*.json)를 남긴다 — Copilot 왕복 수십 번으로
       만든 것이고 같은 달 코멘트는 다음 분석이 이월해 쓴다(진단 C). 지우려면 수집 데이터+결과 리셋(what='all').
     · 같은 이유로 AI 판정 기록(report\judge_cache.json — 내용 해시 → 판정, 원문 없음)도 남긴다. 지우면 다음 분석이 수천 건을
@@ -2809,7 +2809,7 @@ def reset_files(what="report", keep_queue=True, report=None, data=None, failed=N
     removed = kept_nar = 0
     for base in [report] + ([data] if what == "all" else []):
         for root, _dirs, files in os.walk(base):
-            if lmname.EDGE_PROFILE_NAME in root:   # Copilot 로그인 세션(data\lm29_edge)은 보존
+            if lmname.EDGE_PROFILE_NAME in root:   # Copilot 로그인 세션(data\lm30_edge)은 보존
                 continue
             if keep_queue and "upload_pending" in root:
                 continue                      # 보내야 할 것을 리셋으로 잃지 않게(검증 지적)
@@ -2829,7 +2829,7 @@ def reset_files(what="report", keep_queue=True, report=None, data=None, failed=N
 
 
 TEAM_PAGE = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
-<title>LoadMonitor29 — 팀 취합</title><style>
+<title>LoadMonitor30 — 팀 취합</title><style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Malgun Gothic',system-ui,sans-serif;background:#f2f4f7;color:#12151a;padding:22px}
 .wrap{max-width:1180px;margin:0 auto}
@@ -2861,7 +2861,7 @@ body.snap .snaponly{display:block}
 .steps a,.steps span{display:inline-block;padding:5px 10px;border-radius:14px;border:1px solid #d7dbe0;background:#fff;color:#4a5159;text-decoration:none}
 .steps .on{background:#2a78d6;border-color:#2a78d6;color:#fff;font-weight:700}
 </style></head><body><div class="wrap">
-<h1>팀 취합<small id="ver">LoadMonitor29</small></h1>
+<h1>팀 취합<small id="ver">LoadMonitor30</small></h1>
 <div class="sub">공유폴더의 인별 결과를 실시간으로 읽어 시각화합니다. 원본 파일은 수정하지 않습니다.</div>
 <div class="steps nosnap">
  <a href="/" target="_blank">① 내 PC 분석</a>
@@ -2883,7 +2883,7 @@ body.snap .snaponly{display:block}
   </div>
  <div class="note" id="tsaddr"></div>
  <div class="note" id="tsurl"></div>
- <div class="note">여기서 켜면 이 PC 가 팀 취합 서버가 됩니다. 서버 IP·포트는 설치 폴더의 <b>LoadMonitor29-팀서버주소.bat</b>
+ <div class="note">여기서 켜면 이 PC 가 팀 취합 서버가 됩니다. 서버 IP·포트는 설치 폴더의 <b>LoadMonitor30-팀서버주소.bat</b>
  에서만 바꿉니다 — config\\team_server.json 에 저장되어, 이 폴더를 통째로 옮기거나 팀원에게 나눠 주면 같은 주소가
  그대로 따라갑니다. 팀원은 분석 후 그 주소로 [팀 서버 업로드]를 누르면 됩니다. 포트를 바꾼 뒤에는 켜져 있던 서버를
  [중지] 후 [팀 서버 시작]해야 새 포트로 열립니다. 대시보드를 닫아도 서버는 계속 돕니다(중지는 이 버튼으로).
@@ -3121,9 +3121,9 @@ function tsRender(d){
   unreadable:"확인하지 못한 프로그램",hidden:"잠깐 쓰이는 중(붙잡은 서버 없음)"};
  // 포트를 쥔 것이 '무엇인지' 이름으로 말한다 — '다른 프로그램' 으로는 손쓸 수 없다
  $("tstake").style.display=(busy&&TS.take&&TS.take!=="no")?"":"none";
- // 설정된 서버 주소(설치 폴더의 팀 서버 주소 파일) — 보여 주기만 한다. 바꾸는 곳은 LoadMonitor29-팀서버주소.bat.
+ // 설정된 서버 주소(설치 폴더의 팀 서버 주소 파일) — 보여 주기만 한다. 바꾸는 곳은 LoadMonitor30-팀서버주소.bat.
  const AK={server:"#0f7a3d",member:"#b26a00",loopback:"#c0122f",unknown:"#98a0a8"};
- const bat=esc(TS.edit_bat||"LoadMonitor29-팀서버주소.bat");
+ const bat=esc(TS.edit_bat||"LoadMonitor30-팀서버주소.bat");
  $("tsaddr").innerHTML=(TS.upload_url?`팀원 업로드 주소(설정): <b>${esc(TS.upload_url)}</b> — `
    +`<span style="color:${AK[TS.addr_kind]||"#98a0a8"}">${esc(TS.addr_note||"")}</span>`:"")
   +(busy&&TS.suggest_port?`<br><span style="color:#c0122f">포트 ${TS.port} 을 다른 프로그램이 쓰고 있습니다 — `
@@ -3144,7 +3144,7 @@ function tsRender(d){
       +((occ[0].exe&&!(occ[0].cmd||"").startsWith(occ[0].exe))?`<br><span class="state">${esc(occ[0].exe)}</span>`:"")
       +(occ[0].cmd?`<br><span class="state">${esc(occ[0].cmd)}</span>`:"")
       +(TS.foreign_root?`<br><span class="state">설치 폴더: ${esc(TS.foreign_root)}</span>`:"")
-     :"붙잡고 있는 서버를 찾지 못했습니다 — LoadMonitor29-팀서버주소.bat 에서 포트를 바꾸는 편이 확실합니다")
+     :"붙잡고 있는 서버를 찾지 못했습니다 — LoadMonitor30-팀서버주소.bat 에서 포트를 바꾸는 편이 확실합니다")
     :(TS.log?`<span class="state">${esc(TS.log)}</span>`:""));
 }
 async function tsLoad(){
@@ -3169,7 +3169,7 @@ $("tsopen").onclick=()=>{if(TS.urls&&TS.urls.length)window.open(TS.urls[0],"_bla
 $("tstake").onclick=()=>{
  const occ=TS.occupant||[], NL=String.fromCharCode(10);
  if(!occ.length){alert("포트를 쥔 프로그램을 확인하지 못해 가져올 수 없습니다."+NL
-  +"LoadMonitor29-팀서버주소.bat 에서 포트를 다른 번호로 바꾸세요.");return;}
+  +"LoadMonitor30-팀서버주소.bat 에서 포트를 다른 번호로 바꾸세요.");return;}
  // 무엇을 죽이는지 그대로 보여 준다 — 이름만 보고 누르면 사고가 난다
  const list=occ.map(x=>" · "+x.name+" (pid "+x.pid+")"+(x.owner?"  ["+x.owner+"]":"")
   +(x.exe?NL+"   "+x.exe:"")+(x.cmd?NL+"   "+x.cmd.slice(0,140):"")).join(NL);
@@ -3254,7 +3254,7 @@ load();tsLoad();
 </script></body></html>"""
 
 PAGE = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
-<title>LoadMonitor29</title><style>
+<title>LoadMonitor30</title><style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Malgun Gothic',system-ui,sans-serif;background:#f2f4f7;color:#12151a;padding:22px}
 .wrap{max-width:1080px;margin:0 auto}
@@ -3307,7 +3307,7 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
 .tl .s{color:#8b929b}.tl .p{font-weight:700}
 .tag{display:inline-block;background:#f0f3f7;border-radius:3px;padding:1px 7px;margin:1px 3px 1px 0;font-size:10.5px;color:#3d444c}
 </style></head><body><div class="wrap">
-<h1>LoadMonitor29<small id="ver">로컬 전용 · 외부 전송 없음</small></h1>
+<h1>LoadMonitor30<small id="ver">로컬 전용 · 외부 전송 없음</small></h1>
 <div id="stub_banner" style="display:none;background:#fff1c2;border:2px solid #e08a00;color:#6b3a00;border-radius:6px;padding:10px 14px;margin:8px 0 12px;font-size:13px;line-height:1.6"></div>
 <div class="steps">
  <span class="on">① 내 PC 분석 (지금 화면)</span>
@@ -3443,7 +3443,7 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
  <div class="note" id="tusent"></div>
  <div class="note" id="tureport"></div>
  <div class="note">팀 서버를 켜고 끄는 것과 취합 결과 보기는 <b><a href="/team" target="_blank">팀 취합 화면</a></b>에 있습니다
- (LoadMonitor29-팀취합.bat 과 같은 화면).</div>
+ (LoadMonitor30-팀취합.bat 과 같은 화면).</div>
  <div class="note">[분석 실행]이 끝나면 묶음을 먼저 <b>대기</b>로 만든 뒤 팀 서버로 <b>자동 보고</b>합니다(설정 teamUpload.autoReport).
  닿지 않는 망이면 묶음은 그대로 대기로 남고 화면에 실패 알림이 뜹니다 — 사내망에서 [팀 서버 업로드]를 한 번 누르면
  <b>밀린 기간까지 함께</b> 올라가고, 보낸 묶음은 <code>report\\upload_sent\\</code> 로 옮겨집니다.
@@ -3516,7 +3516,7 @@ const WTCOL={"개발":"#2a78d6","사무":"#e08a00","현장":"#0e8c7a","협업":"
 const PAL=["#2a78d6","#0e8c7a","#a61b4a","#e08a00","#6c4fb8","#3d8f3d","#c05a78","#4a7f9e","#8a6d3b","#556270"];
 const esc=s=>String(s??"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/"/g,"&quot;");
 const iso=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
-// 기간 빠른 선택 — 서버 quarter_range(ui\\app.py)·LoadMonitor29.bat 과 같은 규칙: 오늘이 속한 해, 끝이 미래면 오늘로,
+// 기간 빠른 선택 — 서버 quarter_range(ui\\app.py)·LoadMonitor30.bat 과 같은 규칙: 오늘이 속한 해, 끝이 미래면 오늘로,
 // 아직 시작하지 않은 분기·반기는 고를 수 없다(칩이 흐려진다). 'ytd' = 올해 1월 1일부터(팀 전체가 같은 기간이어야 취합이 맞다).
 const PSPAN={ytd:["01-01","12-31"],q1:["01-01","03-31"],q2:["04-01","06-30"],q3:["07-01","09-30"],q4:["10-01","12-31"],h1:["01-01","06-30"],h2:["07-01","12-31"]};
 function periodRange(k,today){const t=today||iso(new Date());const s=PSPAN[k];if(!s)return null;
@@ -4146,16 +4146,18 @@ async function tuLoad(){
    <td>${Math.round((x.bytes||0)/1024).toLocaleString()}KB</td>
    <td>${x.total_mm==null?"–":esc(x.total_mm)}</td>
    <td><button class="ghost" data-drop="${esc(x.tag||x.file)}" style="padding:1px 6px;font-size:11px">버리기</button></td></tr>`).join("")+"</table>"
-  :'<div class="note">대기 중인 묶음이 없습니다 — '+(d.auto===false?"[분석 실행]을 하면 여기에 쌓입니다."
+  :'<div class="note">대기 중인 묶음이 없습니다 — '+((d.auto===false||d.guard)?"[분석 실행]을 하면 여기에 쌓입니다."
     :"[분석 실행]이 끝나면 팀 서버로 자동 보고되고, 보내지 못한 것만 여기에 남습니다.")+'</div>';
  const sb=$("tusend");
  if(sb)sb.textContent="팀 서버 업로드"+(p.length?` (${p.length}건)`:"");
  const st=d.sent||[];
  $("tusent").textContent=st.length?`최근 보냄: ${st.slice(0,3).map(x=>x.when).join(" · ")}`:"";
- // 머리말 = 지금 설정(config.teamUpload.autoReport — teamup.auto_report_on 한 곳에서 읽은 값). 없으면(옛 서버) 기본 켬
+ // 머리말 = 지금 설정(config.teamUpload.autoReport — teamup.auto_report_on 한 곳에서 읽은 값). 없으면(옛 서버) 기본 켬.
+ // LM30 시험판 보호(d.guard — teamup.upload_guard)에 걸리면 그 규칙이 머리말이다
  const th=$("tuhead");
- if(th)th.textContent=d.auto===false?"자동 보고 꺼짐(config.teamUpload.autoReport=false) — 서버에 닿는 망에서 버튼으로 보냅니다"
-  :"[분석 실행]이 끝나면 팀 서버로 자동 보고합니다 — 닿지 않으면 대기로 남고, 사내망에서 버튼으로 보냅니다";
+ if(th)th.textContent=d.guard?"LM30 시험판 — 시험용 팀 서버 주소를 정하기 전에는 보내지 않습니다(결과 묶음은 대기로 남습니다)"
+  :(d.auto===false?"자동 보고 꺼짐(config.teamUpload.autoReport=false) — 서버에 닿는 망에서 버튼으로 보냅니다"
+  :"[분석 실행]이 끝나면 팀 서버로 자동 보고합니다 — 닿지 않으면 대기로 남고, 사내망에서 버튼으로 보냅니다");
  $("tupend").querySelectorAll("[data-drop]").forEach(btn=>btn.onclick=async()=>{
   if(!confirm(`${btn.dataset.drop} 묶음을 대기 목록에서 버릴까요?\\n(사본은 report\\\\upload_sent 에 남습니다)`))return;
   const r=await fetch("/api/teamdrop",{method:"POST",headers:{"Content-Type":"application/json"},
@@ -4164,7 +4166,7 @@ async function tuLoad(){
   tuLoad();
  });
 }
-// v5: 올릴 주소는 보여 주기만 한다 — 바꾸는 곳은 LoadMonitor29-팀서버주소.bat 하나.
+// v5: 올릴 주소는 보여 주기만 한다 — 바꾸는 곳은 LoadMonitor30-팀서버주소.bat 하나.
 // 설치 폴더의 config\\team_server.json 에 저장되어 폴더를 옮기거나 나눠 줘도 그대로 따라간다.
 function tuFill(d){
  if($("tuurl"))$("tuurl").textContent=d.url||"(주소 없음)";
@@ -4172,7 +4174,8 @@ function tuFill(d){
  const src=(d.source||{}).host, el=$("tuaddr");
  if(!el)return;
  el.innerHTML=(src&&SRC[src]?esc(SRC[src])+" · ":"")
-  +"바꾸려면 설치 폴더의 <b>"+esc(d.edit_bat||"LoadMonitor29-팀서버주소.bat")+"</b> 을 실행하세요(이 화면에서는 바꾸지 않습니다)."
+  +"바꾸려면 설치 폴더의 <b>"+esc(d.edit_bat||"LoadMonitor30-팀서버주소.bat")+"</b> 을 실행하세요(이 화면에서는 바꾸지 않습니다)."
+  +(d.guard?'<div style="color:#8a5a00"><b>시험용 팀 서버 주소를 정하기 전에는 보내지 않습니다.</b> '+esc(d.guard)+'</div>':"")
   +(d.addr_kind==="loopback"?`<div style="color:#c0122f">${esc(d.addr_note||"")}</div>`:"")
   +((d.warnings||[]).length?`<div style="color:#c0122f">${(d.warnings||[]).map(esc).join("<br>")}</div>`:"");
 }
@@ -4185,6 +4188,15 @@ $("tuping").onclick=async()=>{
    :`<span style="color:#c0122f">● 이 망에서는 닿지 않음</span>`;
  if(!r.ok&&r.error)$("tumsg").textContent=String(r.error).slice(0,80);
 };
+// LM30 시험판 보호(teamup.upload_guard) — 시험용 팀 서버 주소를 정하기 전에는 보내지 않는다. 기본 주소는 기존 팀 서버라
+// 거기로 보내면 팀원의 LM28·LM29 결과가 덮인다. 버튼은 실패라고 하지 않고 까닭과 할 일을 말한다(대기 묶음은 그대로)
+function tuGuard(msg){
+ const NL=String.fromCharCode(10);
+ alert("시험용 팀 서버 주소를 정하기 전에는 보내지 않습니다."+NL+NL+(msg||"")+NL+NL
+  +"설치 폴더의 "+((TU&&TU.edit_bat)||"LoadMonitor30-팀서버주소.bat")+" 으로 시험용 팀 서버 IP·포트를 저장한 뒤 "
+  +"이 버튼을 다시 누르면 밀린 묶음까지 보냅니다.");
+ $("tustat").innerHTML='<span class="state">● 보내지 않음 — 시험용 팀 서버 주소 없음</span>';
+}
 async function tuSend(){
  // v4: 판정 전에 **항상** 새로 읽는다 — 예전에는 TU(마지막 tuLoad 스냅샷)로 판정해서, 화면을
  // 분석 전에 열어 두면 분석이 끝나도 "보낼 결과가 없습니다" 가 떴다(UI 재시작으로만 풀리던 제보).
@@ -4192,6 +4204,7 @@ async function tuSend(){
  tuBusy(true,"대기 목록 확인 중…");
  await tuLoad();
  tuBusy(false,"");
+ if(TU.guard){tuGuard(TU.guard);return;}
  let p=(TU.pending||[]).length;
  if(!p){
   if(TU.unknown){
@@ -4220,6 +4233,7 @@ async function tuSendConfirmed(p){
  await tuLoad();
  trLoad(false);                  // 다 보냈으면 teamup 이 '성공' 을 남긴다 — 자동 보고 실패 배너가 여기서 내려간다
  if(r.error==="busy"){alert("다른 작업이 실행 중입니다 — 끝난 뒤 다시 누르세요.");return;}
+ if(r.kind==="no_test_server"){tuGuard(r.note);return;}
  if(r.unreachable){
   alert("이 망에서는 팀 서버에 닿지 않습니다.\\n\\n"+(r.error||"")+"\\n\\n묶음은 그대로 대기합니다 — 사내망에서 이 버튼을 다시 누르면 밀린 것까지 한 번에 올라갑니다.");
   $("tustat").innerHTML='<span style="color:#c0122f">● 이 망에서는 닿지 않음</span>';return;}
@@ -4387,12 +4401,12 @@ $("prepmove").onclick=async()=>{
  $("prepmove").disabled=true;$("state").textContent="이동 준비 중…";
  const r=await fetch("/api/prepmove",{method:"POST"}).then(x=>x.json()).catch(()=>({ok:false}));
  if(!r.ok){$("prepmove").disabled=false;$("state").textContent="대기 중";
-  alert("정리 창을 띄우지 못했습니다 — LoadMonitor29-이동준비.bat 을 직접 실행하세요."+(r.error?"\\n"+r.error:""));return;}
+  alert("정리 창을 띄우지 못했습니다 — LoadMonitor30-이동준비.bat 을 직접 실행하세요."+(r.error?"\\n"+r.error:""));return;}
  alert("정리 창이 열렸습니다.\\n그 창의 안내를 따라 주세요 — 잠시 뒤 이 대시보드는 닫힙니다.");
  fetch("/api/quit",{method:"POST"}).catch(()=>{});
  document.body.innerHTML='<div class="wrap"><h1>PC 이동 준비</h1>'
   +'<div class="card"><div class="note">대시보드를 종료했습니다. 열린 정리 창의 결과를 확인한 뒤 폴더를 옮기세요.<br>'
-  +'옮긴 PC 에서는 LoadMonitor29-UI.bat 을 실행하면 됩니다 — 지난 PC 데이터는 자동으로 합산됩니다.</div></div></div>';
+  +'옮긴 PC 에서는 LoadMonitor30-UI.bat 을 실행하면 됩니다 — 지난 PC 데이터는 자동으로 합산됩니다.</div></div></div>';
 };
 $("cdiag").onclick=async()=>{
  // PC 마다 Outlook·Teams 버전이 달라 메일·팀즈가 비는 실측 — 무엇이 막혔는지 이 PC 에서 바로 본다
@@ -4799,7 +4813,7 @@ async function loadReview(kind){
   return `<details${gi===0?" open":""}><summary>${head}</summary><div class="body">${body}</div></details>`;
  }).join("");
 }
-// ── Agentic AI 탭 — 니즈 후보 발굴만(LM29: 팀 과제 매칭·오할당 검증 없음) ──
+// ── Agentic AI 탭 — 니즈 후보 발굴만(LM29부터: 팀 과제 매칭·오할당 검증 없음) ──
 // 이어받기·멈춘 이유 — 다른 기간 결과를 이어받았으면 그 기간과 발굴 시작일, 남은 행이 있으면 왜 멈췄는지(stop_kind)
 function agCarry(a,pend){
  if(!a)return "";
@@ -5217,7 +5231,7 @@ class H(BaseHTTPRequestHandler):
                 else:
                     msg = ("<meta charset='utf-8'><body style=\"font-family:'Malgun Gothic'\">"
                            "<h3>팀 취합 결과가 아직 없습니다</h3>"
-                           "<p>대시보드의 [팀 취합] 버튼을 누르거나 LoadMonitor29-팀취합.bat 을 실행하세요.<br>"
+                           "<p>대시보드의 [팀 취합] 버튼을 누르거나 LoadMonitor30-팀취합.bat 을 실행하세요.<br>"
                            "config.teamShareDir 설정과 팀원들의 내보내기가 선행돼야 합니다.</p></body>")
                 self._send(200, msg.encode("utf-8"), "text/html; charset=utf-8")
         elif self.path == "/api/teamserver":
@@ -5236,6 +5250,8 @@ class H(BaseHTTPRequestHandler):
                       "share": (cfg().get("teamShareDir") or "").strip(),
                       # [분석 실행] 끝 자동 보고 켬 — run.py 와 같은 한 함수(config.teamUpload.autoReport · 기본 켬)
                       "auto": _tu.auto_report_on(cfg()),
+                      # LM30 시험판 보호 — 시험용 팀 서버 주소를 정하기 전이면 그 사유(teamup.upload_guard 한 곳 · 아니면 "")
+                      "guard": _tu.upload_guard(cfg()),
                       "pending": _tu.list_pending(), "sent": _tu.list_sent(),
                       "available": _tu.buildable()}
             except Exception as e:                # 임포트가 안 되면 예전 방식으로
@@ -5335,7 +5351,7 @@ class H(BaseHTTPRequestHandler):
                 out["busy"] = JOB["step"] if JOB["running"] else ""
             self._send(200, out)
         elif self.path == "/api/agentic":
-            # LM29 — Agentic AI 니즈 후보만. LM28 이 남긴 파일의 과제 매칭(match)·오할당(misassigned)은 화면에 보내지 않는다.
+            # LM29부터 — Agentic AI 니즈 후보만. LM28 이 남긴 파일의 과제 매칭(match)·오할당(misassigned)은 화면에 보내지 않는다.
             out = {"analysis": None, "stage_note": _stage_note("Agentic 니즈 발굴"),
                    "stage_kind": _stage_kind("Agentic 니즈 발굴")}
             sp = latest_signals()
@@ -5530,7 +5546,7 @@ class H(BaseHTTPRequestHandler):
             except Exception:
                 self._send(400, {"ok": False, "error": "bad json"})
                 return
-            # v5: 보낼 주소는 설치 폴더의 config\team_server.json(LoadMonitor29-팀서버주소.bat 에서만 바꾼다).
+            # v5: 보낼 주소는 설치 폴더의 config\team_server.json(LoadMonitor30-팀서버주소.bat 에서만 바꾼다).
             # 화면이 보낸 주소는 받지도 저장하지도 않는다 — teamup.py 가 같은 설정을 읽는다.
             cmd = [sys.executable, os.path.join(ROOT, "teamup.py"), "--json"]
             # LM28 — 팀 서버 쪽 상한은 teamup 이 스스로 지킨다(연결 확인 3초×2 · 답 45초 · 늦거나 끊기면 남은 묶음 멈춤 ·
@@ -5623,17 +5639,17 @@ class H(BaseHTTPRequestHandler):
                         msg = (f"포트 {port} 이 막혀 있는데 붙잡고 있는 서버가 없습니다.")
                         if rsv:
                             msg += (f"\n윈도우 예약 포트 범위({rsv})에 들어 있어 이 번호는 쓸 수 "
-                                    "없습니다 — LoadMonitor29-팀서버주소.bat 에서 포트를 다른 번호로 바꾸세요.")
+                                    "없습니다 — LoadMonitor30-팀서버주소.bat 에서 포트를 다른 번호로 바꾸세요.")
                         elif lo and lo <= port <= hi:
                             msg += (f"\n이 PC 의 임시 포트 범위가 {lo}~{hi} 이고 {port} 이 그 안에 "
                                     "듭니다 — 다른 프로그램이 '바깥으로 연결' 하며 잠깐 쓴 것입니다. "
-                                    "잠시 뒤 다시 누르거나, LoadMonitor29-팀서버주소.bat 에서 번호를 " + str(max(hi + 1, _alt_port_base()))
+                                    "잠시 뒤 다시 누르거나, LoadMonitor30-팀서버주소.bat 에서 번호를 " + str(max(hi + 1, _alt_port_base()))
                                     + " 처럼 그 범위 밖으로 바꾸면 다시 생기지 않습니다.")
                         else:
-                            msg += "\n잠시 뒤 다시 시도하거나 LoadMonitor29-팀서버주소.bat 에서 포트를 바꾸세요."
+                            msg += "\n잠시 뒤 다시 시도하거나 LoadMonitor30-팀서버주소.bat 에서 포트를 바꾸세요."
                     elif kind == "unreadable":
                         msg = (f"포트 {port} 이 쓰이고 있는데 무엇이 쥐고 있는지 확인하지 못했습니다"
-                               " (권한 또는 보안 프로그램). LoadMonitor29-팀서버주소.bat 에서 포트를 바꾸세요.")
+                               " (권한 또는 보안 프로그램). LoadMonitor30-팀서버주소.bat 에서 포트를 바꾸세요.")
                     else:
                         msg = (f"포트 {port} 을 LoadMonitor 가 아닌 프로그램이 쓰고 있습니다 — {who}")
                         if occ and occ[0].get("exe"):
@@ -5641,24 +5657,24 @@ class H(BaseHTTPRequestHandler):
                         if occ and occ[0].get("cmd"):
                             msg += f"\n명령줄: {occ[0]['cmd'][:160]}"
                         msg += ("\n무엇인지 모르겠으면 죽이지 마세요 — 사내 보안·백업 프로그램일 수 "
-                                "있습니다. LoadMonitor29-팀서버주소.bat 에서 포트를 바꾸는 편이 안전합니다.")
+                                "있습니다. LoadMonitor30-팀서버주소.bat 에서 포트를 바꾸는 편이 안전합니다.")
                     if not force:
                         if take == "no" and kind in ("legacy_lm", "other_lm", "unknown"):
                             # LM28: 다른 폴더(LM24 포함)·구버전·남의 프로그램은 끄지 않는다 — 대체 포트를 제안만(W3-08)
                             alt = int(st0.get("suggest_port") or 0)
                             msg += ("\n\n이 화면은 그 프로그램을 끄지 않습니다(같은 PC 의 LM24 팀 서버일 수 있습니다)."
-                                    + (f" 따로 켜려면 LoadMonitor29-팀서버주소.bat 에서 포트를 {alt} 처럼 비어 있는 번호로"
+                                    + (f" 따로 켜려면 LoadMonitor30-팀서버주소.bat 에서 포트를 {alt} 처럼 비어 있는 번호로"
                                        " 바꾸세요 — 팀원도 같은 주소로 맞춰야 합니다." if alt else
-                                       " 따로 켜려면 LoadMonitor29-팀서버주소.bat 에서 포트를 바꾸세요."))
+                                       " 따로 켜려면 LoadMonitor30-팀서버주소.bat 에서 포트를 바꾸세요."))
                             bad = [x for x in occ if x["protected"]]
                             if bad and any(x["self"] for x in bad):
                                 msg += ("\n\n[!] 그 프로세스는 이 대시보드 자신입니다 — "
                                         "팀 서버 포트와 대시보드 포트가 같습니다. "
-                                        "LoadMonitor29-팀서버주소.bat 에서 포트를 다른 번호로 바꾸세요.")
+                                        "LoadMonitor30-팀서버주소.bat 에서 포트를 다른 번호로 바꾸세요.")
                             elif bad:
                                 msg += ("\n\n이 프로그램은 강제로 끝낼 수 없습니다 "
                                         "(시스템 프로세스이거나 다른 계정 소유) — "
-                                        "그 계정에서 닫거나 LoadMonitor29-팀서버주소.bat 에서 포트를 바꾸세요.")
+                                        "그 계정에서 닫거나 LoadMonitor30-팀서버주소.bat 에서 포트를 바꾸세요.")
                         log("[팀 서버] 시작 거절 — " + msg.splitlines()[0])
                         self._send(200, {"ok": False, "error": msg, "occupied": True,
                                          "port": port, "running": False, "kind": kind,
@@ -5669,7 +5685,7 @@ class H(BaseHTTPRequestHandler):
                         self._send(200, {"ok": False, "occupied": True, "running": False,
                                          "kind": kind, "occupant": occ, "take": take,
                                          "error": f"강제로 끝낼 수 없는 프로세스입니다 — {who}. "
-                                                  "LoadMonitor29-팀서버주소.bat 에서 포트를 바꾸세요."})
+                                                  "LoadMonitor30-팀서버주소.bat 에서 포트를 바꾸세요."})
                         return
                     if take == "confirm_pid" and confirm_pid not in [x["pid"] for x in occ]:
                         # LoadMonitor 가 아닌 것을 죽이려면 pid 를 직접 입력해야 한다
@@ -5744,7 +5760,7 @@ class H(BaseHTTPRequestHandler):
                                      "port": port,
                                      "error": "포트를 넘겨받지 못했습니다 — 먼저 잡고 있던 서버가 "
                                               "계속 응답합니다. 방금 띄운 것은 정리했습니다.\n"
-                                              "그 서버 창을 직접 닫거나 LoadMonitor29-팀서버주소.bat 에서 포트를 바꾸세요."})
+                                              "그 서버 창을 직접 닫거나 LoadMonitor30-팀서버주소.bat 에서 포트를 바꾸세요."})
                     return
                 st = teamserver_status()
                 log("[팀 서버] " + ("시작됨 · " + (st["urls"][0] if st["urls"] else f"포트 {port}")
@@ -6178,7 +6194,7 @@ class H(BaseHTTPRequestHandler):
             try:
                 import shutil as _sh
                 import tempfile as _tf
-                tmp = os.path.join(_tf.gettempdir(), "LM29-Prepare-Move.ps1")   # LM24·LM28 의 사본과 겹치지 않게
+                tmp = os.path.join(_tf.gettempdir(), "LM30-Prepare-Move.ps1")   # LM24·LM28·LM29 의 사본과 겹치지 않게
                 _sh.copy2(ps1, tmp)
                 # 새 콘솔 창으로 띄운다 — 사용자가 결과를 봐야 하고, 우리가 죽어도 살아남아야 한다
                 flags = 0x00000010                       # CREATE_NEW_CONSOLE (DETACHED 는 쓰지 않는다 —
@@ -6306,7 +6322,7 @@ class H(BaseHTTPRequestHandler):
 
 def main():
     port = None
-    for p in lmname.UI_PORTS:          # 9268~9287 — LM24·LM28 대시보드 대역과 나눠 북마크·탭이 섞이지 않게
+    for p in lmname.UI_PORTS:          # 9288~9307 — LM24·LM28·LM29 대시보드 대역과 나눠 북마크·탭이 섞이지 않게
         try:
             s = socket.socket()
             s.bind(("127.0.0.1", p))
@@ -6338,7 +6354,7 @@ def main():
         drop_foreign_profile()
     threading.Thread(target=_startup_cleanup, daemon=True).start()
     url = f"http://127.0.0.1:{port}/"
-    print(f"[ui] LoadMonitor29 {VERSION} — {url}  (Ctrl+C 종료)")
+    print(f"[ui] LoadMonitor30 {VERSION} — {url}  (Ctrl+C 종료)")
     ccfg = _close_cfg()
     if ccfg["on"]:
         print("[ui] 대시보드 창을 모두 닫으면 실행 중인 작업도 멈추고 이 창이 닫힙니다(약 20초 뒤 · 팀 서버는 계속)")

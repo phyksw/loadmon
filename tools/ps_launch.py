@@ -10,9 +10,9 @@ r"""tools\ps_launch.py — bat 이 PowerShell 스크립트를 띄울 때 '켜지
   · proc.START_FAIL_SEC 안에 proc.START_FAIL_RC 로 끝나면 proc.START_WAIT(3초·8초) 쉬고 proc.START_RETRY(2)번 다시 띄운다.
     띄우기 자체가 OSError 면(PowerShell 없음·정책 차단) 다시 띄워도 같으므로 바로 '켜지지 못함' 으로 돌려준다.
 
-  launch(script, args) → (rc, start_failed)   start_failed = 끝내 켜지지 못했다(호출측이 대안을 고른다 — tools\stop_lm29.py)
+  launch(script, args) → (rc, start_failed)   start_failed = 끝내 켜지지 못했다(호출측이 대안을 고른다 — tools\stop_lm30.py)
   run_ps(script, args) → rc
-  python tools\ps_launch.py <스크립트.ps1> [인자…]     (LoadMonitor29-수집진단.bat)
+  python tools\ps_launch.py <스크립트.ps1> [인자…]     (LoadMonitor30-수집진단.bat)
 runner·sleep·clock·say 는 시험이 바꿔 끼운다(tests\test_p24_stop_startfail.py — 실제 powershell 은 띄우지 않는다).
 """
 import os

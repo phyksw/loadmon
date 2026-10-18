@@ -13,7 +13,7 @@ v5 는:
   · 서버 IP 와 포트를 **설치 폴더의 config\team_server.json** 에 따로 둔다(config.json 과 분리).
     설치 폴더 안의 파일이라 폴더를 통째로 옮기거나 복사해 나눠 주면 바꾼 주소가 그대로 따라간다
     (PC 이동 묶음·배포본 만들기도 이 파일을 담는다).
-  · 바꾸는 곳은 **LoadMonitor29-팀서버주소.bat 하나**다. 대시보드는 지금 주소를 보여 주기만 한다.
+  · 바꾸는 곳은 **LoadMonitor30-팀서버주소.bat 하나**다. 대시보드는 지금 주소를 보여 주기만 한다.
   · 쓰는 곳: 업로드(teamup.py · 대시보드 [팀 서버 업로드] · 분석 후 자동 업로드)는 http://서버IP:포트 로
     보내고, 팀 서버(teamserver.py)는 그 포트로 열면서 설정된 서버 IP 가 이 PC 의 주소인지 확인해 알린다.
   · 기본값 상수는 여기 한 곳뿐이다(tools\check_teamaddr.py 관문이 다른 곳의 IP 리터럴·옛 키 직접 읽기를 막는다).
@@ -42,7 +42,7 @@ DEFAULT_HOST = "10.115.147.68"
 DEFAULT_PORT = 9310
 FILE_NAME = "team_server.json"
 LEGACY_KEY = "teamServerUrl"          # v4 이하 config.json 의 한 줄 주소 — 읽기만(이어받기) 한다
-EDIT_BAT = "LoadMonitor29-팀서버주소.bat"
+EDIT_BAT = "LoadMonitor30-팀서버주소.bat"
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -391,11 +391,11 @@ def main(argv=None):
         print(json.dumps(obj, ensure_ascii=False) if js else text)
         return rc
     if "--set-env" in argv:
-        # bat(LoadMonitor29-팀서버주소.bat) 전용 — 사람이 입력한 값을 명령줄에 끼워 넣지 않고 환경변수로 받는다
+        # bat(LoadMonitor30-팀서버주소.bat) 전용 — 사람이 입력한 값을 명령줄에 끼워 넣지 않고 환경변수로 받는다
         # ('&'·'"' 같은 문자가 섞여도 cmd 가 명령으로 해석하지 않게). 빈 값 = 그대로 둔다.
-        # 이름은 LM29_TA_* — 같은 창에서 LM24·LM28 bat 을 돌린 뒤의 잔여값(LM24_TA_*·LM28 의 같은 꼴)을 읽지 않게
+        # 이름은 LM30_TA_* — 같은 창에서 LM24·LM28·LM29 bat 을 돌린 뒤의 잔여값(LM24_TA_*·LM28·LM29 의 같은 꼴)을 읽지 않게
         # (core\lmname.TEAM_ADDR_ENV 와 같다 — 이 파일은 형제 모듈을 import 하지 않으므로 글자로 둔다).
-        env = {k: _norm(os.environ.get(v, "")) for k, v in (("host", "LM29_TA_HOST"), ("port", "LM29_TA_PORT"))}
+        env = {k: _norm(os.environ.get(v, "")) for k, v in (("host", "LM30_TA_HOST"), ("port", "LM30_TA_PORT"))}
         if not any(env.values()):
             a = load(root)
             return out(dict(a.as_dict(), ok=True, changed=False),

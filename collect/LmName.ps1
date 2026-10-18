@@ -1,6 +1,6 @@
-﻿# LmName.ps1 - LM29 이름 단일원(PowerShell 쪽). core\lmname.py 와 같은 규칙이다 - 하나를 바꾸면 둘 다 바꾼다.
-# 같은 PC 의 LM29 두 벌(개발 사본·배포본)을 가르는 설치 폴더 해시 6자리(h6)를 낸다. LM29 에는 예약 작업·뮤텍스가 없다.
-# 같은 PC 의 LM28 과는 Short·Product·TmpPrefix 로 갈린다(시험이 core\lmname.py 의 SHORT·PRODUCT·TMP_PREFIX 와 비교한다).
+﻿# LmName.ps1 - LM30 이름 단일원(PowerShell 쪽). core\lmname.py 와 같은 규칙이다 - 하나를 바꾸면 둘 다 바꾼다.
+# 같은 PC 의 LM30 두 벌(개발 사본·배포본)을 가르는 설치 폴더 해시 6자리(h6)를 낸다. LM30 에는 예약 작업·뮤텍스가 없다.
+# 같은 PC 의 LM28·LM29 와는 Short·Product·TmpPrefix 로 갈린다(시험이 core\lmname.py 의 SHORT·PRODUCT·TMP_PREFIX 와 비교한다).
 # h6 = sha1(UTF-8(소문자(끝 구분자 제거(GetLongPathName(GetFullPath(경로))))))[:6]
 # 사용(dot-source):  . (Join-Path $PSScriptRoot 'LmName.ps1');  $nm = Get-LmNames $root;  $nm.H6
 # 시험: tests\ps\Test-LmName.ps1 (같은 고정 경로의 h6·이름을 Python 과 비교)
@@ -48,8 +48,8 @@ function Get-LmNames([string]$Root) {
     $h = Get-LmH6 $Root
     return @{
         H6            = $h
-        Short         = 'LM29'
-        Product       = 'LoadMonitor29'
-        TmpPrefix     = 'lm29_'
+        Short         = 'LM30'
+        Product       = 'LoadMonitor30'
+        TmpPrefix     = 'lm30_'
     }
 }

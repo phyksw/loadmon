@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-run.py — LoadMonitor29 통합 실행기: 수집 → 추출 → (AI 판정·내러티브) → 팀 내보내기.
+run.py — LoadMonitor30 통합 실행기: 수집 → 추출 → (AI 판정·내러티브) → 팀 내보내기.
 
   python run.py --from 2026-05-19 --to 2026-08-17            # 수집 + 추출
   python run.py --from ... --to ... --skip-collect            # 이미 모은 데이터로 추출만
@@ -1355,6 +1355,9 @@ TR_PENDING_HINT = "결과 묶음은 대기로 남았습니다. 사내망에서 [
 TR_CAP_SEC = 150
 TR_KIND = {"unreachable": "서버에 닿지 않음", "rejected": "서버 거부", "blocked": "보낼 수 없는 묶음",
            "slow": "서버 응답 지연"}
+# LM30 시험판 보호(teamup.upload_guard — kind no_test_server) 의 사유. 실패가 아니라 예상된 '보내지 않음'(ok None)이라
+# 화면 알림·배너·콘솔 끝 [!] 줄 없이 진행 로그·단계 기록·상태 파일(카드의 '자동 보고 건너뜀')에만 남긴다
+TR_TEST = "시험용 팀 서버 주소 없음"
 TR_HINT = {
     "서버에 닿지 않음": TR_PENDING_HINT,
     "서버 응답 지연": ("서버가 제때 답하지 않았습니다 — 서버에 이미 저장됐을 수 있습니다. 결과 묶음은 대기로 남겨 다음 실행 때 다시"
@@ -1367,7 +1370,9 @@ TR_HINT = {
     "대기 묶음 없음": "보낼 결과 묶음이 만들어지지 않았습니다 — 진행 로그의 '팀 업로드 묶음 준비' 사유를 확인한 뒤 [분석 실행]을 다시 하세요.",
     "이번 결과 묶음 없음": ("이번 결과 묶음이 만들어지지 않았습니다 — 진행 로그의 '팀 업로드 묶음 준비' 사유를 확인한 뒤"
                        " [분석 실행]을 다시 하세요."),
-    "주소 없음": "결과 묶음은 대기로 남았습니다. LoadMonitor29-팀서버주소.bat 에서 서버 IP·포트를 저장한 뒤 [팀 서버 업로드]를 누르세요.",
+    "주소 없음": "결과 묶음은 대기로 남았습니다. LoadMonitor30-팀서버주소.bat 에서 서버 IP·포트를 저장한 뒤 [팀 서버 업로드]를 누르세요.",
+    TR_TEST: ("LoadMonitor30-팀서버주소.bat 으로 시험용 팀 서버 IP·포트를 저장한 뒤 [팀 서버 업로드]를 누르면 대기 묶음까지 보내집니다"
+              " — 그전에는 기존 팀 서버의 LM28·LM29 결과를 덮지 않도록 보내지 않습니다."),
     "보고 결과를 읽지 못함": TR_PENDING_HINT + " (원인은 진행 로그의 [teamup] 줄에 있습니다)",
 }
 # 보내지 않고 멈추는 경우(team_report(hold=)) — (사유, 안내, 알림 여부). 규칙이 임시로 뽑은 결과가 서버에 있던 같은 기간의
@@ -1423,6 +1428,7 @@ def team_report_outcome(res, tag="", built=True):
     · 이번 묶음을 만들지 못했으면(built=False) 같은 기간의 지난 묶음이 대신 갔어도 실패다 — 이번 결과가 아니다.
     · 사유: 서버에 닿지 않음 · 서버 응답 지연 · 서버 거부 · 보낼 수 없는 묶음 · 대기 묶음 없음 · 이번 결과 묶음 없음 · 주소 없음 ·
       시간 상한으로 남김 · 보고 결과를 읽지 못함(JSON 없음 — 시간 초과·실행 실패) · 보고 실패(그 밖). detail 은 화면 알림·상태 파일에만 쓴다.
+    · LM30 — 시험용 팀 서버 주소 없음(teamup 의 kind no_test_server · 시험판 보호)은 실패가 아니다: ok None(알림·배너 없음).
     · LM28 — teamup 은 닿지 않거나(unreachable) 답이 늦으면(slow) 남은 묶음을 보내지 않고(left) 멈춘다. 이번 묶음이 그 남은
       쪽이면 멈춘 사유가 이번 실패의 사유다(밀려 있던 다른 묶음의 '보낼 수 없음' 보다 먼저)."""
     res = res if isinstance(res, dict) else {}
@@ -1438,6 +1444,8 @@ def team_report_outcome(res, tag="", built=True):
     why, pick = "", None
     if not res:
         why = "보고 결과를 읽지 못함"
+    elif res.get("no_test_server") or str(res.get("kind") or "") == "no_test_server":
+        why, out["ok"], out["kind"], out["detail"] = TR_TEST, None, "no_test_server", str(res.get("note") or "")
     elif res.get("no_url"):
         why, out["detail"] = "주소 없음", str(res.get("error") or "")
     elif res.get("unreachable"):
@@ -1479,9 +1487,12 @@ def team_report_outcome(res, tag="", built=True):
 
 
 def team_report(c, d0, d1, built=True, on=None, hold=""):
-    r"""[분석 실행] 끝 팀 서버 자동 보고 → 결과 dict(team_report_outcome + tag·via) | None(꺼짐·스텁·AI 없이 실행 — 보내지 않음).
+    r"""[분석 실행] 끝 팀 서버 자동 보고 → 결과 dict(team_report_outcome + tag·via) | None(꺼짐·스텁·AI 없이 실행·LM30 시험판
+    보호 — 보내지 않음).
     · hold(TR_HOLD 의 열쇠)가 있으면 보내지 않고 멈춘다 — 'AI 판정 실패' 는 실패(ok False — 화면 알림·배너), 'AI 없이 실행' 은
       건너뜀(ok None). 묶음은 대기로 남아 [팀 서버 업로드]로 직접 보낼 수 있다.
+    · LM30 시험판 보호(teamup.upload_guard — 시험용 팀 서버 주소를 정하기 전 · 기본 주소 = 기존 팀 서버)면 teamup 을 띄우지도,
+      연결 확인도 하지 않고 '보내지 않음'(ok None — 사유 TR_TEST)으로 진행 로그·단계 기록·상태 파일에 남긴다. 알림·배너는 없다.
     · teamup.py --upload --json 을 수집기와 같은 실행기(_RUN_STEP = core\proc.run_step — Job·시간 상한·60초 진행 줄)로 돌린다.
       teamup 이 먼저 ping(3초 × 최대 2번)해 닿지 않으면 곧바로 끝나고, 보내지 못한 묶음은 그대로 대기로 남는다(주소는 teamaddr 한 곳).
       답이 늦거나 끊기면 teamup 이 거기서 멈추므로 1분 남짓이면 끝난다 — 상한 TR_CAP_SEC(150초)는 안전판이다.
@@ -1517,26 +1528,35 @@ def team_report(c, d0, d1, built=True, on=None, hold=""):
             record(name, not alarm, 0.0, f"{why} — {hint}")
             tu.write_report_status(REPORT_DIR["p"], dict(st, at=time.strftime("%Y-%m-%d %H:%M:%S")))
             return st if alarm else None
-        print(f"\n── {name} (서버에 닿는지 먼저 확인합니다 — 닿지 않으면 결과 묶음은 대기로 남습니다)")
-        rc, tail, how = _RUN_STEP([sys.executable, os.path.join(ROOT, "teamup.py"), "--upload", "--json"],
-                                  TR_CAP_SEC, name)
-        res = {}
-        for ln in tail:
-            s = str(ln or "").strip()
-            if s.startswith("{") and s.endswith("}"):
-                try:
-                    o = json.loads(s)
-                except ValueError:
-                    o = None
-                if isinstance(o, dict):
-                    res = o
-                    continue
-            if s:
-                print("   " + s)
-        st = team_report_outcome(res, tag=tag, built=built)
-        if not res:
-            st["detail"] = (f"{TR_CAP_SEC}초 안에 끝나지 않아 끊었습니다" if how == "timeout"
-                            else next((str(x) for x in reversed(tail) if str(x).strip()), f"teamup.py 종료 코드 {rc}"))[:200]
+        try:
+            guard = tu.upload_guard(c)
+        except Exception:  # noqa: BLE001 - 판단을 못 하면 teamup --upload 가 같은 함수로 다시 본다(거기서도 막힌다)
+            guard = ""
+        if guard:
+            print(f"\n── {name} — 보내지 않음(LM30 시험판)")
+            st = team_report_outcome({"ok": None, "kind": tu.NO_TEST_KIND, "note": guard, "pending": _pending_count()},
+                                     tag=tag, built=built)
+        else:
+            print(f"\n── {name} (서버에 닿는지 먼저 확인합니다 — 닿지 않으면 결과 묶음은 대기로 남습니다)")
+            rc, tail, how = _RUN_STEP([sys.executable, os.path.join(ROOT, "teamup.py"), "--upload", "--json"],
+                                      TR_CAP_SEC, name)
+            res = {}
+            for ln in tail:
+                s = str(ln or "").strip()
+                if s.startswith("{") and s.endswith("}"):
+                    try:
+                        o = json.loads(s)
+                    except ValueError:
+                        o = None
+                    if isinstance(o, dict):
+                        res = o
+                        continue
+                if s:
+                    print("   " + s)
+            st = team_report_outcome(res, tag=tag, built=built)
+            if not res:
+                st["detail"] = (f"{TR_CAP_SEC}초 안에 끝나지 않아 끊었습니다" if how == "timeout"
+                                else next((str(x) for x in reversed(tail) if str(x).strip()), f"teamup.py 종료 코드 {rc}"))[:200]
     if st.get("pending") is None:
         st["pending"] = _pending_count()
     st.update(tag=tag, via="auto")
@@ -1544,14 +1564,19 @@ def team_report(c, d0, d1, built=True, on=None, hold=""):
         note = (f"보냄 {st['sent']}건" + (f" · 대기 {st['pending']}건" if st["pending"] else "")
                 + (f" · {st['detail']}" if st.get("detail") else ""))
         print(f"   → 팀 서버 보고 완료 — {st['sent']}건" + (f" ({st['detail']})" if st.get("detail") else ""))
+    elif st["ok"] is None:
+        # 보내지 않음(LM30 시험판 보호) — 실패 줄 없이 까닭과 할 일만. 단계 기록에는 주소를 싣지 않는다(얼린 사본의 /api/dash 에 굳는다)
+        note = f"보내지 않음: {st['reason']} — 대기 {st['pending']}건 — {st['hint']}"
+        print(f"   {st.get('detail') or st['reason']}")
+        print(f"   → 대기 {st['pending']}건 — {st['hint']}")
     else:
         note = f"실패: {st['reason']} — 보냄 {st['sent']}건 · 대기 {st['pending']}건 — {st['hint']}"
         print(f"   [!] 팀 서버 자동 보고 실패 — {st['reason']}" + (f" ({st['detail'][:120]})" if st.get("detail") else ""))
         print(f"       {st['hint']}")
-    record(name, bool(st["ok"]), time.time() - t0, note)
+    record(name, st["ok"] is not False, time.time() - t0, note)
     if tu is not None:
         tu.write_report_status(REPORT_DIR["p"], dict(st, at=time.strftime("%Y-%m-%d %H:%M:%S")))
-    return st
+    return None if st["ok"] is None else st
 
 
 STOP_STAGE = "중단(창 닫힘)"      # last_run.json 단계 이름(ui\app.py 와 같다) — 다음 화면이 '마지막 단계: 중단(창 닫힘)' 으로 말한다
@@ -1559,7 +1584,7 @@ EDGE_FAST_SEC = 2.5              # 콘솔 창 닫기 때 전용 Edge 닫기를 �
 
 
 def console_close(ev=None, budget=EDGE_FAST_SEC):
-    r"""콘솔 창(LoadMonitor29.bat)을 닫을 때(core\proc.on_console_close) — 윈도가 주는 몇 초 안에 끝나는 것만 한다.
+    r"""콘솔 창(LoadMonitor30.bat)을 닫을 때(core\proc.on_console_close) — 윈도가 주는 몇 초 안에 끝나는 것만 한다.
     Job 에 든 자식(수집기·mine·judge·copilot_auto)은 이 프로세스와 함께 끝나지만, Job 에서 이탈한 전용 Edge 는 남는다 —
     Job 을 먼저 끝내고(proc.kill_all) 그 Edge 를 채팅 정리 없이(tidy=False — 정리는 최대 25초) budget 초까지만 기다려 닫는다.
     로그인 대기 중(rc 2)이면 Edge 는 두고(사람이 그 창에서 로그인하는 중), last_run.json 에 '중단(창 닫힘)' 을 남긴다.
@@ -1613,7 +1638,7 @@ def main():
 
 def _main():
     c = cfg()
-    # 기본 기간은 화면(UI 칩 '올해')·LoadMonitor29.bat 과 같은 '올해 1월 1일부터' — 셋이 달라(이번 달 1일 / 최근 3개월 /
+    # 기본 기간은 화면(UI 칩 '올해')·LoadMonitor30.bat 과 같은 '올해 1월 1일부터' — 셋이 달라(이번 달 1일 / 최근 3개월 /
     # 올해) 나중에 돈 짧은 결과가 mtime 최신 규칙으로 화면을 차지해 "1월부터 보던 추이가 2주짜리가 됐다" 로 읽혔다(감사 재현).
     d0 = arg("--from") or date.today().replace(month=1, day=1).isoformat()
     d1 = arg("--to") or date.today().isoformat()
@@ -1632,7 +1657,7 @@ def _main():
                finished=None)
     record("시작", True, 0.0)
     CHATS["t0"] = chat_totals()            # Copilot 채팅 정리 누계 — 실행 끝 단계 'Copilot 채팅 정리' 가 이 차이를 적는다
-    print(f"[LoadMonitor29] {d0} ~ {d1}"
+    print(f"[LoadMonitor30] {d0} ~ {d1}"
           + ("  · AI 판정 포함" if "--ai" in sys.argv else "  · AI 판정 없음(규칙 결과만)"))
     if "--reset-cursors" in sys.argv:
         reset_cursors(c, data)
@@ -1893,7 +1918,7 @@ def _main():
             if rc2 not in (0, 2) and not run_throttled():
                 print("   AI 정제 실패 — report 폴더의 evidence 파일을 Copilot에 붙여넣어도 됩니다")
 
-            # Agentic AI 니즈 발굴 — 반복 업무에서 자동화 니즈 후보만 찾는다(LM29 — 팀 과제 매칭·오할당 검증 없음)
+            # Agentic AI 니즈 발굴 — 반복 업무에서 자동화 니즈 후보만 찾는다(LM29부터 — 팀 과제 매칭·오할당 검증 없음)
             # 선예약한 Agentic 몫 반환 — 앞 단계가 늦게 끝났어도 Agentic 은 제 몫(agenticReserveMin)을 받는다
             _dl_ag = agentic_deadline()
             if _dl_ag is not None:
@@ -1946,7 +1971,7 @@ def _main():
 
     # 팀 업로드 묶음은 보내기 **전에** report\upload_pending\ 에 먼저 만든다 — 팀 서버는 특정 망(사내망)에서만 닿는데 분석은
     # 아무 망에서나 하므로(실측: LM19 이전 분석 끝 자동 전송은 대부분 실패했고 결과가 조용히 사라졌다), 보고가 실패해도 묶음은
-    # 대기로 남아 서버에 닿는 망에서 대시보드 [팀 서버 업로드](또는 LoadMonitor29-팀업로드.bat)로 밀린 것까지 한 번에 간다.
+    # 대기로 남아 서버에 닿는 망에서 대시보드 [팀 서버 업로드](또는 LoadMonitor30-팀업로드.bat)로 밀린 것까지 한 번에 간다.
     print("\n── 팀 업로드 묶음 준비")
     _t4 = time.time()
     _p4 = subprocess.run([sys.executable, os.path.join(ROOT, "teamup.py"),

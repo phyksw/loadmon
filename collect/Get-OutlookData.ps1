@@ -754,7 +754,7 @@ try {
                 } catch {}
                 if ($why -eq 'R-ELEV') {
                     Write-Host '[outlook] 건너뜀: 이 수집이 관리자 권한으로 돌고 있어 일반 권한으로 뜬 Outlook 에 붙지 못합니다(R-ELEV).'
-                    Write-Host '          LoadMonitor29 를 관리자 권한 없이(일반 실행) 다시 실행하세요.'
+                    Write-Host '          LoadMonitor30 을 관리자 권한 없이(일반 실행) 다시 실행하세요.'
                     Set-SkipReason '수집이 관리자 권한으로 돌아 Outlook 에 붙지 못했습니다 — 일반 권한으로 다시 실행하세요'
                 } elseif ($why -eq 'R-BUSY') {
                     Write-Host ("[outlook] 건너뜀: Outlook 이 {0}초 동안 바쁨 응답만 했습니다(R-BUSY {1}) - 잠시 뒤 다시 수집하세요." -f $attachWait, $hr)

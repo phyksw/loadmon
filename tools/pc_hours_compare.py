@@ -5,7 +5,7 @@ r"""PC 가동시간 비교 — 이 PC 에서 **LM20 수집기**와 **현재 수�
     다른 PC 에서는 재현할 수 없다. 이 도구는 그 PC 에서 두 판본을 **실제로** 돌려 어느 단계(이벤트 로그 / 보강 /
     저장된 data / 화면 선)에서 시간이 갈라지는지 숫자로 보여 준다.
 
-안전: 실제 data\ 는 읽기만 한다. 두 수집기는 %TEMP%\lm_pc_compare\ 의 임시 폴더에서 돌고 끝나면 지운다.
+안전: 실제 data\ 는 읽기만 한다. 두 수집기는 %TEMP%\lm30_pc_compare\ 의 임시 폴더에서 돌고 끝나면 지운다(머리는 판마다 다른 lmname.TMP_PREFIX).
       결과(report\pc_hours_compare.txt)에는 **날짜별·달별 시간과 건수만** 있다 — URL·창 제목·메일 내용·사람 이름 없음.
       LM20 수집기 원본은 tools\lm20_ref\*.txt (LoadMonitor20 0551 풀패키지의 collect\ 그대로, 확장자만 .txt).
 
@@ -29,9 +29,12 @@ if __name__ == "__main__":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, errors="replace", encoding=(
         (sys.stdout.encoding or "utf-8") if sys.stdout.isatty() else "utf-8"))
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if os.path.join(ROOT, "core") not in sys.path:
+    sys.path.insert(0, os.path.join(ROOT, "core"))
+import lmname  # noqa: E402  — %TEMP% 머리(TMP_PREFIX) — 같은 PC 의 다른 판과 작업 폴더·History 사본이 겹치지 않게
 DATA = os.path.join(ROOT, "data")
 REF = os.path.join(ROOT, "tools", "lm20_ref")
-WORK = os.path.join(tempfile.gettempdir(), "lm_pc_compare")
+WORK = os.path.join(tempfile.gettempdir(), lmname.TMP_PREFIX + "pc_compare")
 NO_WIN = 0x08000000
 EPOCH = 11644473600
 LINES = []
@@ -109,7 +112,7 @@ def browser_counts(d0, d1):
     for base, brand in ((os.path.join(la, "Microsoft", "Edge", "User Data"), "Edge"),
                         (os.path.join(la, "Google", "Chrome", "User Data"), "Chrome")):
         for h in glob.glob(os.path.join(base, "*", "History")):
-            tmp = os.path.join(tempfile.gettempdir(), "lm_pccmp_hist")
+            tmp = os.path.join(tempfile.gettempdir(), lmname.TMP_PREFIX + "pccmp_hist")
             by, oldest = {}, None
             try:
                 shutil.copy2(h, tmp)

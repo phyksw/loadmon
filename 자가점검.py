@@ -10,17 +10,17 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 # 개발 전용 파일(시험 tests\·lint 관문·FILES.txt 생성·인코딩 정리 도구·현장점검 문서)은 배포(GitHub 내려받기)에 넣지 않으므로
 # 여기에도 적지 않는다 — 적으면 받은 PC 의 자가점검이 '누락'으로 멈춘다(.gitignore 의 '개발 전용' 묶음 · 2026-10-17).
 NEED = [
-    "LoadMonitor29-UI.bat",
-    "LoadMonitor29.bat",
-    "LoadMonitor29-팀취합.bat",
-    "LoadMonitor29-팀서버.bat",
-    "LoadMonitor29-팀업로드.bat",
-    "LoadMonitor29-팀서버주소.bat",
-    "LoadMonitor29-수집진단.bat",
-    "LoadMonitor29-가동시간비교.bat",
-    "LoadMonitor29-이동준비.bat",
-    "LoadMonitor29-팀로드율재계산.bat",
-    "LoadMonitor29-강제종료.bat",
+    "LoadMonitor30-UI.bat",
+    "LoadMonitor30.bat",
+    "LoadMonitor30-팀취합.bat",
+    "LoadMonitor30-팀서버.bat",
+    "LoadMonitor30-팀업로드.bat",
+    "LoadMonitor30-팀서버주소.bat",
+    "LoadMonitor30-수집진단.bat",
+    "LoadMonitor30-가동시간비교.bat",
+    "LoadMonitor30-이동준비.bat",
+    "LoadMonitor30-팀로드율재계산.bat",
+    "LoadMonitor30-강제종료.bat",
     "agentic.py",
     "freeze.py",
     "team_report.py",
@@ -99,8 +99,8 @@ NEED = [
     "tools/Make-Package.ps1",
     "tools/Make-MovePack.py",
     "tools/Prepare-Move.ps1",
-    "tools/Stop-LM29.ps1",
-    "tools/stop_lm29.py",
+    "tools/Stop-LM30.ps1",
+    "tools/stop_lm30.py",
     "tools/ps_launch.py",
     "tools/diag_bundle.py",
     "ui/app.py",
@@ -112,7 +112,7 @@ if miss:
     for m in miss:
         print("    " + m)
     sys.exit(1)
-print("[OK] 전부 있습니다. LoadMonitor29-UI.bat 을 실행하세요.")
+print("[OK] 전부 있습니다. LoadMonitor30-UI.bat 을 실행하세요.")
 
 
 # ── git 실행 파일 ────────────────────────────────────────────────────────
@@ -178,6 +178,20 @@ if _own and _mine and _own.replace(" ", "").lower() not in _mine:
     print("    남이 만든 배포본이면 그대로 두지 마세요. 팀 서버에서 그 사람 기록을 덮어씁니다.")
     print("    (대시보드 [팀 취합 업로드] 카드나 config\\config.json 의 owner 를 고치세요)")
 
+
+def _edge_profile_names():
+    """전용 Edge 프로필 폴더 이름 — 이 판(lm30_edge)과, LM24·LM28·LM29 폴더를 옮겨 오며 딸려 온 옛 판 프로필.
+    이름은 core\\lmname.py 단일원에서 읽는다(위 NEED 점검을 지났으니 파일은 있다). 못 읽으면 이 판 이름만 본다."""
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("lm_lmname", os.path.join(ROOT, "core", "lmname.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return (mod.EDGE_PROFILE_NAME,) + tuple(mod.OLD_PROFILES)
+    except Exception:          # 이름 모듈이 깨져도 자가점검은 죽지 않는다
+        return ("lm30_edge",)
+
+
 # 배포본에 남의 data\ report\ 가 딸려 오면, 받은 사람 화면에 **남의 분석 결과**가
 # 자기 결과처럼 뜬다(실측: 배포 zip 에 report 17개 + Edge 자격증명 30개가 들어갔고
 # 대시보드에 시험용 과제명 'coding'/'모듈 개발' 이 표시됐다).
@@ -195,7 +209,7 @@ if leak:
         extra = ""
         if d == "teamdata":
             extra = "  <- 팀원들의 분석 결과 포함, 팀 밖 공유 금지"
-        if d == "data" and os.path.isdir(os.path.join(ROOT, d, "lm29_edge")):     # 이 설치본의 전용 Edge 프로필
+        if d == "data" and any(os.path.isdir(os.path.join(ROOT, d, x)) for x in _edge_profile_names()):   # 이 판·옛 판 전용 Edge 프로필
             extra = "  <- Edge 로그인 정보 포함, 절대 공유 금지"
         print(f"    {d}\\  파일 {n:,}개{extra}")
     print("    (본인 PC 에서 쓰는 건 정상입니다. 배포본에만 없으면 됩니다.)")
@@ -221,7 +235,7 @@ if caches:
 
 # ── 팀 서버 주소 (v5) ──────────────────────────────────────────────────────
 # 폴더를 옮기거나 나눠 받은 뒤 '분석 결과가 어디로 올라가는지'를 바로 확인한다 — 서버 IP·포트는 설치 폴더의
-# config\team_server.json 에 있어 폴더와 함께 다닌다(바꾸는 곳은 LoadMonitor29-팀서버주소.bat 하나).
+# config\team_server.json 에 있어 폴더와 함께 다닌다(바꾸는 곳은 LoadMonitor30-팀서버주소.bat 하나).
 try:
     import importlib.util
     _spec = importlib.util.spec_from_file_location("lm_teamaddr", os.path.join(ROOT, "core", "teamaddr.py"))

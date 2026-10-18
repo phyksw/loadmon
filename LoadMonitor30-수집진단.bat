@@ -1,7 +1,7 @@
 @echo off
 >nul chcp 949
 cd /d "%~dp0"
-title LoadMonitor29 - 수집 진단
+title LoadMonitor30 - 수집 진단
 echo.
 echo  [수집 진단] 이 PC 의 Outlook·Teams 버전/상태에서 무엇이 막혔는지 확인합니다 (최대 2분).
 echo            결과: report\collect_diag.txt  (채팅·메일 내용은 마스킹 - [판정]대로 이 PC 안에서 조치, 막히면 아래 진단 묶음 파일을 보내 주세요)
