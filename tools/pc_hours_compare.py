@@ -5,7 +5,7 @@ r"""PC 가동시간 비교 — 이 PC 에서 **LM20 수집기**와 **현재 수�
     다른 PC 에서는 재현할 수 없다. 이 도구는 그 PC 에서 두 판본을 **실제로** 돌려 어느 단계(이벤트 로그 / 보강 /
     저장된 data / 화면 선)에서 시간이 갈라지는지 숫자로 보여 준다.
 
-안전: 실제 data\ 는 읽기만 한다. 두 수집기는 %TEMP%\lm30_pc_compare\ 의 임시 폴더에서 돌고 끝나면 지운다(머리는 판마다 다른 lmname.TMP_PREFIX).
+안전: 실제 data\ 는 읽기만 한다. 두 수집기는 %TEMP%\lm30v1_pc_compare\ 의 임시 폴더에서 돌고 끝나면 지운다(머리는 판마다 다른 lmname.TMP_PREFIX).
       결과(report\pc_hours_compare.txt)에는 **날짜별·달별 시간과 건수만** 있다 — URL·창 제목·메일 내용·사람 이름 없음.
       LM20 수집기 원본은 tools\lm20_ref\*.txt (LoadMonitor20 0551 풀패키지의 collect\ 그대로, 확장자만 .txt).
 

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 r"""
-team_report.py — 팀 통합 보고서(HTML 한 장) + 유사 항목 정리 엔진 (LoadMonitor30, 팀장용).
+team_report.py — 팀 통합 보고서(HTML 한 장) + 유사 항목 정리 엔진 (LoadMonitor30v1, 팀장용).
 LM28: 9-1 담당자 → 업무 영역 → 과제 간트(막대 = 10절 (담당자, 과제) 블록 wf-<담당자>-<과제 sha1 8> 링크 · signals 없는
 인원은 '자료 없음' 행) · '대체 가능 MM' 표시 없음(신규 후보는 근거 업무 행 수) · Agentic 과제 수는 등록된 목록 기준.
 LM29부터: Agentic 과제 매칭(옛 4절)을 뺐다. 신규 후보 절은 '5. 팀 Agentic AI 니즈 후보'로 남겼다 — 인원별 니즈 후보를 이름으로
@@ -2832,7 +2832,7 @@ def render_full(share, html_dir, sender=None, log=say):
             f'<span class="state">{len(coarse)}건 · 유형 분석에서 제외</span></h2>'
             '<div class="note" style="margin:0 0 8px">프로젝트 하나에는 성격이 다른 업무가 여럿 '
             '섞여 있어 하나의 일의 순서로 정의할 수 없습니다. 아래 인원은 담당 업무 단위 '
-            '워크플로우가 아직 없어 유형 분석에 넣지 않았습니다 — 그 PC 에서 LoadMonitor30(또는 LoadMonitor29·LoadMonitor28·LoadMonitor24) 로 '
+            '워크플로우가 아직 없어 유형 분석에 넣지 않았습니다 — 그 PC 에서 LoadMonitor30v1(또는 LoadMonitor30·LoadMonitor29·LoadMonitor28·LoadMonitor24) 로 '
             '[분석 실행](AI 판정)을 다시 돌리면 담당 업무 단위로 만들어집니다.</div>'
             '<table><tr><th style="width:120px">이름</th><th>과제</th></tr>'
             + "".join(f"<tr><td><b>{esc(w)}</b></td><td>"
@@ -2925,7 +2925,7 @@ background:#fff;cursor:pointer}} button:hover{{background:#f0f3f7}}
 <!--SEC1--><div class="card"><h2>1. 인별 로드율 <span class="state">투입 MM ÷ 가용 MM · 야근은 상한 없이(하루 24h 물리 한계만) ·
 측정 방식 = 샘플러 실측 / PC 가동 하한 / 흔적 폭 / 종일 행사 / 수동 기록 일수 · 배지: 신뢰·주의·측정 불충분(수집 결측 수) ·
 '산식 설정 상이' = 표준시간·점심·주간 창·공휴일 수가 팀 다수와 달라 분모가 다른 사람 ·
-연장·야간·휴일·52시간 넘은 주 = 출퇴근 추정(LM30)의 기간 합계 — 출퇴근 추정이 없는 판(LM28·LM29)은 —</span></h2>
+연장·야간·휴일·52시간 넘은 주 = 출퇴근 추정(LM30부터)의 기간 합계 — 출퇴근 추정이 없는 판(LM28·LM29)은 —</span></h2>
 <div style='overflow-x:auto'><table><tr><th>이름</th><th>파트</th><th>기간</th><th class="num">투입</th><th class="num">가용</th>
 <th class="num">로드율</th><th></th><th class="num">연장</th><th class="num">야간</th><th class="num">휴일</th>
 <th class="num">52시간 넘은 주</th><th>측정 방식</th><th>근거</th></tr>{rows1}</table></div>{rows1x}</div><!--/SEC1-->

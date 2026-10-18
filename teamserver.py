@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 r"""
-teamserver.py — 팀 취합 서버 (LoadMonitor30 — LM24 서버와 업로드 호환)
+teamserver.py — 팀 취합 서버 (LoadMonitor30v1 — LM24 서버와 업로드 호환)
 
 팀 공용 PC 에서 이 파일 하나를 돌려 두면:
   · 팀원들의 LoadMonitor 가 분석을 마칠 때마다 결과를 자동 업로드한다 (POST /api/upload)
@@ -14,7 +14,7 @@ teamserver.py — 팀 취합 서버 (LoadMonitor30 — LM24 서버와 업로드 
 
   python teamserver.py                        # 팀 서버 주소 설정(config\team_server.json)의 포트로 켠다
   python teamserver.py --port 9400            # 이번 한 번만 다른 포트(설정은 그대로)
-  (또는 LoadMonitor30-팀서버.bat — 서버 IP·포트 바꾸기는 LoadMonitor30-팀서버주소.bat)
+  (또는 LoadMonitor30v1-팀서버.bat — 서버 IP·포트 바꾸기는 LoadMonitor30v1-팀서버주소.bat)
 
 v5: 서버 IP·포트는 core\teamaddr.py(단일원)가 설치 폴더의 config\team_server.json 에서 읽는다 — 예전처럼
 config.teamServerUrl 한 줄을 쪼개 쓰지 않는다(옛 값은 teamaddr 가 이어받는다). 서버는 v4 처럼 모든
@@ -93,7 +93,7 @@ TOKEN = [""]
 STATE = {"last_agg": 0.0, "agg_note": "", "uploads": 0}
 
 # 받는 파일 이름 — export.py 가 내보내는 것과 동일한 화이트리스트.
-# agentic_<기간>.json — LM29·LM30 은 Agentic AI 니즈 후보(kind "needs")를, LM28 은 과제 매칭 결과를 싣는다. 취합(aggregate.merge_needs)은
+# agentic_<기간>.json — LM29부터는 Agentic AI 니즈 후보(kind "needs")를, LM28 은 과제 매칭 결과를 싣는다. 취합(aggregate.merge_needs)은
 # 어느 쪽이든 후보(new)만 읽어 '팀 Agentic AI 니즈 후보' 로 모은다.
 NAME_OK = re.compile(
     r"^(mm_rows_\d{8}-\d{8}(_refined)?\.csv|signals_\d{8}-\d{8}\.csv|"
@@ -512,7 +512,7 @@ class H(BaseHTTPRequestHandler):
                     "".join(rows) or "<tr><td colspan=10 class='note'>아직 업로드가 없습니다 — "
                     "각자 UI 의 [팀 서버 업로드] 또는 분석 실행 시 자동 업로드</td></tr>",
                     "</table>",
-                    "<p class='note'>연장·야간·휴일·52시간 넘은 주 = 출퇴근 추정(LM30)의 기간 합계 시간 — 출퇴근 추정이 없는 판"
+                    "<p class='note'>연장·야간·휴일·52시간 넘은 주 = 출퇴근 추정(LM30부터)의 기간 합계 시간 — 출퇴근 추정이 없는 판"
                     "(LM28·LM29)은 —</p>",
                     "<p class='note'>이 페이지는 2분마다 자동 새로고침 · "
                     + (esc(ast) + " · 지난 취합: " if ast else "")
@@ -752,7 +752,7 @@ def main():
     print(f"[team] 팀 서버 가동 — 포트 {port} · 모든 네트워크에서 받음  (저장: {TEAMDATA})")
     print(f"[team] 이 서버의 설치 폴더: {ROOT}")
     print(f"[team] 서버 IP·포트를 바꾸려면 {ta.EDIT_BAT} (팀원 업로드 주소도 같은 파일에서 나옵니다 — 팀원의 "
-          "[분석 실행]이 끝나면 자동으로 보고되고, 실패한 묶음은 [팀 서버 업로드] 버튼이나 LoadMonitor30-팀업로드.bat 으로 올립니다)")
+          "[분석 실행]이 끝나면 자동으로 보고되고, 실패한 묶음은 [팀 서버 업로드] 버튼이나 LoadMonitor30v1-팀업로드.bat 으로 올립니다)")
     print("[team] 종료: Ctrl+C (또는 대시보드의 [팀 서버 중지])")
     try:
         srv.serve_forever()

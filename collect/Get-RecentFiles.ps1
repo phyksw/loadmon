@@ -324,7 +324,7 @@ $rowKeys = New-Object System.Collections.Generic.List[string]
 $script:nSelf = 0
 
 # 자기 설치 폴더 제외 - 결과 CSV·MD 를 '열어보기만 해도' Recent/MRU 를 타고
-# 다음 수집에 업무 신호로 들어온다(자기 출력의 되먹임). LoadMonitor30.bat 이
+# 다음 수집에 업무 신호로 들어온다(자기 출력의 되먹임). LoadMonitor30v1.bat 이
 # 결과 폴더를 자동으로 열어주므로 이 경로는 반드시 막아야 한다. 다른 LoadMonitor 설치는 산출물
 # 폴더(data|report|teamdata|python)만 - core|collect|ui 까지 막으면 이 도구의 개발 흔적이 지워진다.
 # LM28: 이 설치본 절대경로 접두(끝 '\' 포함)를 먼저 보고, 폴더명 loadmonitor* 와 loadmon<숫자>* 둘 다 본다.

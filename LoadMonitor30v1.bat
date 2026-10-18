@@ -2,11 +2,11 @@
 >nul chcp 949
 setlocal EnableDelayedExpansion
 cd /d "%~dp0"
-title LoadMonitor30 - 업무 로드 MM 추출
+title LoadMonitor30v1 - 업무 로드 MM 추출
 
 echo.
 echo  ==========================================================
-echo   LoadMonitor30 - 개인 PC 흔적에서 업무 로드 MM 추출
+echo   LoadMonitor30v1 - 개인 PC 흔적에서 업무 로드 MM 추출
 echo  ==========================================================
 echo.
 
@@ -70,11 +70,11 @@ set "TO="
 if "%SEL%"=="5" goto ASKDATE
 
 rem 날짜 계산은 파이썬 1회 - 시작·끝을 한 번에 두 파일로 쓴다(예전에는 2회 실행. 프로세스를 아낀다).
-rem 임시 파일 이름은 lm30_ 접두 - 같은 PC 의 LM24·LM28·LM29 bat 과 동시에 돌려도 서로 덮어쓰지 않는다
-"%PY_EXE%" %PY_ARGS% -c "import datetime as D,sys;t=D.date.today();k=sys.argv[1];y=t.year;S={'q1':(1,1,3,31),'q2':(4,1,6,30),'q3':(7,1,9,30),'q4':(10,1,12,31),'h1':(1,1,6,30),'h2':(7,1,12,31)};a,b=((D.date(y,S[k][0],S[k][1]),D.date(y,S[k][2],S[k][3])) if k in S else ((D.date(y,1,1) if k=='ytd' else t-D.timedelta(days=int(k))),t));b=min(b,t);ok=a<=t;open(sys.argv[2],'w').write(a.isoformat() if ok else '');open(sys.argv[3],'w').write(b.isoformat() if ok else '')" %DAYS% "%TEMP%\lm30_from.txt" "%TEMP%\lm30_to.txt"
-set /p FROM=<"%TEMP%\lm30_from.txt"
-set /p TO=<"%TEMP%\lm30_to.txt"
-del "%TEMP%\lm30_from.txt" "%TEMP%\lm30_to.txt" >nul 2>&1
+rem 임시 파일 이름은 lm30v1_ 접두 - 같은 PC 의 LM24·LM28·LM29·LM30 bat 과 동시에 돌려도 서로 덮어쓰지 않는다
+"%PY_EXE%" %PY_ARGS% -c "import datetime as D,sys;t=D.date.today();k=sys.argv[1];y=t.year;S={'q1':(1,1,3,31),'q2':(4,1,6,30),'q3':(7,1,9,30),'q4':(10,1,12,31),'h1':(1,1,6,30),'h2':(7,1,12,31)};a,b=((D.date(y,S[k][0],S[k][1]),D.date(y,S[k][2],S[k][3])) if k in S else ((D.date(y,1,1) if k=='ytd' else t-D.timedelta(days=int(k))),t));b=min(b,t);ok=a<=t;open(sys.argv[2],'w').write(a.isoformat() if ok else '');open(sys.argv[3],'w').write(b.isoformat() if ok else '')" %DAYS% "%TEMP%\lm30v1_from.txt" "%TEMP%\lm30v1_to.txt"
+set /p FROM=<"%TEMP%\lm30v1_from.txt"
+set /p TO=<"%TEMP%\lm30v1_to.txt"
+del "%TEMP%\lm30v1_from.txt" "%TEMP%\lm30v1_to.txt" >nul 2>&1
 if not defined FROM (
   echo  [!] 아직 시작하지 않은 기간입니다 - 다른 번호를 고르세요.
   goto END

@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 r"""
-gerp.py — GERP 근무 기록 읽기(LM30 시험 기능 · 기본 꺼짐)의 판정·해석·저장·문구 (LoadMonitor30 · LM30(2026-10-19)).
+gerp.py — GERP 근무 기록 읽기(LM30v1 시험 기능 · 기본 꺼짐)의 판정·해석·저장·문구 (LoadMonitor30v1 · LM30(2026-10-19)).
 
-사람이 전용 Edge(data\lm30_edge)에서 직접 로그인해 둔 회사 인사 시스템(GERP)의 근무시간 현황 화면을 collect\Get-GerpWork.py 가
+사람이 전용 Edge(data\lm30v1_edge)에서 직접 로그인해 둔 회사 인사 시스템(GERP)의 근무시간 현황 화면을 collect\Get-GerpWork.py 가
 우리 탭 하나로 열어 읽는다. 이 모듈은 브라우저 밖의 일만 한다 — 로그인 판정(순수 함수)·표 칸 해석·태깅(입실·퇴실) 요약·저장
 (data\근태\gerp.csv · gerp_status.json)·화면 문구. 네트워크를 쓰지 않는다(시험이 그대로 부른다). 설정 검증은 core\attendance.norm_gerp.
 

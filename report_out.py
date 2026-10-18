@@ -8,11 +8,12 @@ report_out.py — 현재 분석 결과를 하나의 리포트 파일로 출력�
 출력: report\\리포트_<기간>.html   (브라우저에서 열람, Word에서 [파일 > 열기]로 편집 가능)
       report\\리포트_<기간>.doc    (더블클릭하면 Word로 열림 — 같은 내용)
 
-담기는 것: 투입/가용 MM·로드율 · 과제별 로드 · 업무분류 배분 · 공통업무(표준화·자동화 후보)
+담기는 것: 투입/가용 MM·로드율(LM30v1 — 법정 채움이면 1절이 달마다 1MM 기준·법정 채움·근무·LM30 방식 MM · legal_section)
+          · 과제별 로드 · 업무분류 배분 · 공통업무(표준화·자동화 후보)
           · 월별 리뷰 코멘트(빠진 달은 다른 기간 파일에서 이월 — core/narratives) · Agentic AI 니즈 후보(LM29부터 — 발굴만)
           · 산정 근거와 신뢰도(초과근무 세분·미관측 일수)
           · 출퇴근·시간외 근무(LM30 — 결론 한 줄·재는 법·달·주 합계·최근 31일 날짜별 출근·퇴근·근태 기록 비교 · attendance_section)
-          · 산출 방식(PC 가동 하한의 근거·날짜별 방식 최신순·퇴근 후·시각 · 시간 근거 합계 — LM30 에서는 'LM29 방식(비교용) 근거')
+          · 산출 방식(PC 가동 하한의 근거·날짜별 방식 최신순·퇴근 후·시각 · 시간 근거 합계 — LM30부터는 'LM29 방식(비교용) 근거')
           · raw 단서 요약 · 같이 일한 동료 · 연관 업무 · 업무 영역·과제 워크플로 요약(단위업무 등급)
 표기(LM28): 업무 영역(Level 1) / 과제(Level 2) / 세부업무(Level 3) / 업무분류(개발·사무·현장·협업).
 '대체 가능 MM' 은 계산하지도 보이지도 않는다(A-33 RP4 — 실측 투입·빈도만).
@@ -307,6 +308,9 @@ LM29_ONLY = ("pc_floor_h", "pc_floor_days", "lunch_deducted_h", "evening_credit_
 ATT_LABEL = {"overtime_h": "초과근무(h — 연장 + 휴일, 출퇴근 추정)", "night_days": "20시 넘어 퇴근한 날(일)",
              "weekend_days": "주말·휴일 근무(일)", "absent_worked_h": "휴가일 근무(h)"}
 ATT_DOW = "월화수목금토일"
+# LM30v1(2026-10-19) 법정 채움 MM 이면 휴가·부재 추정은 가용에서 빼지 않고 법정 시간으로 채운다 — 8절 줄 이름
+LEGAL_LABEL = {"absence_days": "달력 휴가(일 — 가용에서 빼지 않고 법정 시간으로 채움)",
+               "inferred_absence_days": "휴가 추정(일 — 근태 행이 없는 PC·흔적 없는 평일, mm.creditInferredLeave 면 채움)"}
 
 
 def att_used(meta, b):
@@ -316,6 +320,73 @@ def att_used(meta, b):
         return True
     ms = _obj(_pick(meta, b, "measure")) or {}
     return ms.get("method") == "출퇴근 추정"
+
+
+def legal_local(att):
+    """attendance 파일(이 PC 전용)의 법정 채움 나눔(agg["legal"] — 달마다 근태 기록 시간·+@·표시 날짜) | None"""
+    agg = att.get("agg") if isinstance(att, dict) and isinstance(att.get("agg"), dict) else {}
+    lg = agg.get("legal")
+    return lg if isinstance(lg, dict) else None
+
+
+def legal_section(meta, b, local=None, head="<h2>1. 월별 로드</h2>"):
+    r"""LM30v1(2026-10-19) 법정 채움 MM 표(순수 함수 — 리포트 1절·분석리포트 공용) → HTML 조각 목록(법정 채움 결과가 아니면 []).
+      달마다 1MM 기준(평일 N일 × 8시간) · 법정 채움(공휴일·유급휴가·휴가 추정) · 근무(근태 기록 + 디지털 +@ · 기록 없는 날 측정) ·
+      투입 MM · 가용 MM · 로드율 · LM30 방식 MM(비교) + 규칙 한 문장.
+      local = attendance 파일의 agg["legal"](legal_local — 근태 기록 시간·+@ 나눔과 '휴가 추정'·'근태·흔적 모두 없음' 날짜). 이 PC 의
+      리포트에서만 준다 — 공유폴더로 복사되는 분석리포트는 local=None 이라 달 합계만 담는다."""
+    import attendance as _at
+    if _at.mm_rule_of(meta) != "legal":
+        return []
+    mo = sorted((k, v) for k, v in (meta.get("mm_months") or {}).items() if isinstance(v, dict))
+    if not mo:
+        return []
+    cu = _obj(_pick(meta, b, "cfg_used")) or {}
+    std = _at._std(cu.get("standardDayHours"))
+    lm = local.get("months") if isinstance(local, dict) and isinstance(local.get("months"), dict) else {}
+
+    def h1(v):
+        return f"{_h(v):.1f}h"
+
+    def dd(v):
+        return f"{round(_h(v), 2):g}일"
+    h = [head, f"<div><b>{esc(_at.legal_rule_text(std))}</b></div>",
+         "<table><tr><th>월</th><th>1MM 기준</th><th>법정 채움</th><th>근무</th><th>투입 MM</th><th>가용 MM</th><th>로드율</th>"
+         "<th>LM30 방식 MM(비교)</th></tr>"]
+    for k, v in mo:
+        L = lm.get(k) if isinstance(lm.get(k), dict) else None
+        work = f"기록 없는 날 측정 {h1(v.get('measured_h'))}"
+        if L is not None:
+            work = f"근태 기록 {h1(L.get('hr_h'))} + 디지털 +@ {h1(L.get('plus_h'))} · " + work
+            if _h(L.get("credit_work_h")) >= 0.05:
+                work += f" · 그중 공휴일·휴가인 날 근무 {h1(L.get('credit_work_h'))}"
+        l30 = v.get("mm_lm30")
+        h.append(f"<tr><td>{esc(k)}</td><td>평일 {_n(v.get('workdays'))}일 × {std:g}시간 = {h1(v.get('capacity_h'))}</td>"
+                 f"<td><b>{h1(v.get('legal_h'))}</b> <span class='dim'>공휴일 {dd(v.get('holiday_days'))} · 유급휴가 "
+                 f"{dd(v.get('leave_days'))} · 휴가 추정 {dd(v.get('inferred_leave_days'))}</span></td>"
+                 f"<td><b>{h1(v.get('actual_h'))}</b> <span class='dim'>{esc(work)}</span></td>"
+                 f"<td><b>{_h(v.get('mm')):.2f}</b></td><td>{_h(v.get('avail_mm')):.2f}</td>"
+                 f"<td><b>{'–' if v.get('load_pct') is None else str(v['load_pct']) + '%'}</b></td>"
+                 f"<td>{'–' if l30 is None else format(_h(l30), '.2f') + ' (' + format(_h(v.get('mm')) - _h(l30), '+.2f') + ')'}</td></tr>")
+    h.append("</table>")
+    t30 = meta.get("mm_lm30")
+    h.append("<div class='dim'>투입 MM = (근무 + 법정 채움) ÷ 1MM · 가용 MM = 지난 평일의 비율 · 로드율 = 투입 ÷ 가용"
+             + (f" — LM30 방식이었다면 {_h(t30):.2f} MM(차이 {_h(meta.get('total_mm')) - _h(t30):+.2f} MM)" if t30 is not None else "")
+             + " · 평일이라는 이유만으로는 채우지 않습니다</div>")
+    if cu.get("creditInferredLeave") is False:
+        h.append("<div class='dim'>휴가 추정(기록 없음)은 채우지 않습니다(설정 mm.creditInferredLeave false).</div>")
+    if local is not None:
+        fl = local.get("flags") if isinstance(local.get("flags"), dict) else {}
+        for key in ("inferred", "nohr"):
+            t = _at.legal_flag_text(fl, key)
+            if t:
+                h.append(f"<div class='dim'><b>{esc(t)}</b></div>")
+        h.append("<div class='dim'>투입 MM(달 합계)에는 근태 기록 시간이 들어가 팀 서버로 갑니다. 날짜별 근태 기록, "
+                 "'근태 기록·디지털 +@' 나눔과 위 날짜 목록은 이 리포트와 대시보드에만 있습니다.</div>")
+    else:
+        h.append("<div class='dim'>근태 기록 시간과 디지털 +@의 나눔·날짜 목록은 본인 PC의 대시보드·리포트에서만 보입니다 — "
+                 "여기에는 달 합계만 담았습니다.</div>")
+    return h
 
 
 def attendance_section(meta, b, att=None, per_day=True, max_days=31, max_weeks=26):
@@ -361,7 +432,7 @@ def attendance_section(meta, b, att=None, per_day=True, max_days=31, max_weeks=2
          f"<div><b>{esc(_at.headline(agg, d1))}</b> — "
          + ("이 근무시간으로 투입 MM을 쟀습니다." if agg.get("used_for_mm")
             else "투입 MM은 LM29 방식으로 쟀습니다(이 절은 참고 — 설정 attendance.useForMM).") + "</div>",
-         f"<div class='dim'>{esc(_at.plus_note(std))}</div>",
+         f"<div class='dim'>{esc(_at.plus_note(std, _at.mm_rule_of(meta)))}</div>",
          f"<div class='dim'>{esc(_at.rule_text(p or None, cu.get('standardDayHours'), cu.get('nightWindow')))}</div>"]
     plus_th = "<th>+@</th>" if hr else "<th>+@(추정)</th>"
     h.append("<table><tr><th>월</th><th>근무</th><th>정규</th><th>연장</th><th>야간</th><th>휴일</th><th>PC 밖</th>"
@@ -883,6 +954,10 @@ def build(tag, summary=False):
     b = meta.get("mm_basis") or {}
     period = " ~ ".join(meta.get("period") or [tag])
     inmm = meta.get("total_mm") or 0
+    # LM30v1(2026-10-19) 법정 채움 MM — 1절은 legal_section(이 PC 리포트라 attendance 파일의 근태 기록 시간·+@ 나눔·표시 날짜까지)
+    import attendance as _at
+    legal_on = _at.mm_rule_of(meta) == "legal"
+    att_doc = _json(os.path.join(REP, f"attendance_{tag}.json"))
     avmm = meta.get("avail_mm") or 0
     pct = meta.get("load_pct")
     if pct is None and avmm:
@@ -906,9 +981,13 @@ def build(tag, summary=False):
          f"<div><span class='dim'>투입 MM</span><b>{inmm:.2f}</b></div>",
          f"<div><span class='dim'>가용 MM</span><b>{avmm:.2f}</b></div>",
          f"<div><span class='dim'>인정 시간</span><b>{esc(meta.get('worked_h'))}h</b></div></div>",
-         "<div class='dim'>로드율 = 투입 ÷ 가용 · 1 MM = 8h × 그 달 평일수 · "
-         "가용은 연차·휴가(+부재 추정)를 일자에서 뺀 값 · 투입은 상한 없이 실측 그대로"
-         "(하루 24h 물리 한계만 · 이상치는 8절 표에 표시)</div>"]
+         ("<div class='dim'>로드율 = 투입 ÷ 가용 · 1 MM = 8h × 그 달 평일 전부(공휴일 포함) · 투입 = 실제 근무(근태 기록이 있으면 그 "
+          "시간 + 디지털 +@) + 공휴일·유급휴가 법정 채움 · 가용 = 지난 평일의 비율 · 상한 없이 그대로(하루 24h 물리 한계만 · "
+          "이상치는 8절 표에 표시) · 인정 시간은 LM이 잰 근무(법정 채움 없음)</div>"
+          if legal_on else
+          "<div class='dim'>로드율 = 투입 ÷ 가용 · 1 MM = 8h × 그 달 평일수 · "
+          "가용은 연차·휴가(+부재 추정)를 일자에서 뺀 값 · 투입은 상한 없이 실측 그대로"
+          "(하루 24h 물리 한계만 · 이상치는 8절 표에 표시)</div>")]
     ml = measure_line(meta, b)
     if ml:
         cv = _obj(_pick(meta, b, "coverage")) or {}
@@ -934,7 +1013,13 @@ def build(tag, summary=False):
     pcc = _obj(_pick(meta, b, "pc_coverage_by_month")) or {}
     # LM30(2026-10-18) — 출퇴근 추정이 투입을 맡았으면 달마다 'LM29 방식이었다면' MM(같은 분모 — mm_months.mm_lm29)을 나란히
     l29_on = any(isinstance(v, dict) and v.get("mm_lm29") is not None for _k, v in mo)
-    if mo:
+    if mo and legal_on:
+        h += legal_section(meta, b, legal_local(att_doc), head="<h2>1. 월별 로드</h2>")
+        if pcc:
+            h.append("<div class='dim'>월별 PC 기록 — " + " · ".join(
+                f"{esc(k)} {round(_h(r) * 100)}%" + (" [하한 미적용]" if _h(r) < 0.4 else "") for k, r in sorted(pcc.items()))
+                + " (40% 미만인 달은 PC 하한·부재 추정이 꺼져 그 달만 낮게 나올 수 있다)</div>")
+    elif mo:
         h.append("<h2>1. 월별 로드</h2><table><tr><th>월</th><th>투입 MM</th>" + ("<th>LM29 방식 MM</th>" if l29_on else "")
                  + "<th>가용 MM</th><th>로드율</th><th>투입 시간</th><th>부재</th><th>그 달 평일</th>"
                  + ("<th>PC 기록</th>" if pcc else "") + "</tr>")
@@ -1118,6 +1203,16 @@ def build(tag, summary=False):
                          + (f" (투입 {_h(meta.get('total_mm_before_rehours')):.2f} → {inmm:.2f} MM)"
                             if meta.get("total_mm_before_rehours") is not None else ""))
     BASIS_ROWS = BASIS_ROWS + (("rehours", "비업무 제외 재산정"),)
+    # LM30v1(2026-10-19) 법정 채움 MM — 맨 위에 규칙 한 문장, 끝에 표시 날짜('휴가 추정'·'근태·흔적 모두 없음' — 이 PC 리포트만).
+    # 휴가·부재 추정 줄은 가용에서 빼지 않고 법정 시간으로 채우므로 이름을 바꾼다
+    if legal_on:
+        cu8 = _obj(_pick(meta, b, "cfg_used")) or {}
+        bb["mm_rule"] = "법정 채움(mm.basis legal) — " + _at.legal_rule_text(cu8.get("standardDayHours"))
+        lfl = (legal_local(att_doc) or {}).get("flags")
+        ftxt = " / ".join(t for t in (_at.legal_flag_text(lfl, k) for k in ("inferred", "nohr")) if t)
+        if ftxt:
+            bb["legal_flags"] = ftxt
+        BASIS_ROWS = (("mm_rule", "MM 기준"),) + BASIS_ROWS + (("legal_flags", "법정 채움 표시 날짜"),)
     tool_tbl = ""                       # 프로그램 사용(참고) 상세 표 — 이 표(셀이 통째로 esc 된다) 뒤에 따로 붙인다
     # LM30(2026-10-18) — 출퇴근 추정이 투입을 맡았으면 초과근무·야근일·주말 근무는 그 값(이름을 그렇게)이고, PC 하한·점심·저녁 인정
     # 같은 LM29 줄은 'LM29 방식(비교용) 근거' 로 적는다
@@ -1127,6 +1222,8 @@ def build(tag, summary=False):
             label = ATT_LABEL.get(k, label)
             if k in LM29_ONLY:
                 label = f"{LM29_TAG} — {label}"
+        if legal_on:
+            label = LEGAL_LABEL.get(k, label)
         if k not in bb:
             continue
         v = bb[k]
@@ -1230,7 +1327,7 @@ def build(tag, summary=False):
              "지속적 100% 초과는 과부하 신호다.</div>")
     if not b.get("sampler_days"):
         h.append("<div class='dim'>※ 투입 시간은 PC 켜기·끄기 기록과 활동 흔적(회의·산출물·메일·커밋)으로 계산했습니다 "
-                 "(LM30 에는 창 샘플러가 없습니다).</div>")
+                 "(LM30v1 에는 창 샘플러가 없습니다).</div>")
     # ★ 사용자 지시(2026-10-07 ②): 산출 방식 — PC 가동 하한의 근거 + 날짜별 방식·하한을 연 흔적·깎은 시간
     h += floor_section(meta, b)
 

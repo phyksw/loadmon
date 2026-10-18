@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 r"""
-attendance.py — 출퇴근·근무 시간 추정 (LoadMonitor30 · LM30(2026-10-18))
+attendance.py — 출퇴근·근무 시간 추정 (LoadMonitor30v1 · LM30(2026-10-18))
 
 이 PC가 이미 모으는 흔적만으로 날마다 언제 일을 시작해 언제 마쳤는지를 어림하고, 그 근무 시간으로 투입 MM을 잽니다.
 새 수집기·상주 프로그램·이벤트 로그 원천은 쓰지 않습니다. 계산 함수뿐이고, 파일은 근태 기록 칸(load_records)만 읽습니다
@@ -49,8 +49,8 @@ attendance.py — 출퇴근·근무 시간 추정 (LoadMonitor30 · LM30(2026-10
      날짜별 rec)은 합계라도 이 PC 밖으로 내보내지 않습니다 — 팀으로 가는 합계는 근태 기록 없이 다시 잰 것(compute 의 team)뿐이고,
      strip_hr·scrub_meta 가 나가기 직전에 한 번 더 뺍니다.
      ([공유폴더로 저장]이 복사하는 얼린 보고서 원문 포함본의 '수집 데이터 열람' 원자료 — PC 켜고 끈 시각 등 — 는 LM29와 같습니다.)
- 14. +@ — 근태 기록 = 확실히 일한 부분, +@ = 그 밖에서 LM이 찾은 근무(LM30(2026-10-19)). 투입 MM 은 그대로 LM 이 잰 근무시간
-     (work_h)이고 근태 기록은 참고입니다(MM 을 바꾸지 않는다).
+ 14. +@ — 근태 기록 = 확실히 일한 부분, +@ = 그 밖에서 LM이 찾은 근무(LM30(2026-10-19)). LM30 방식(mm.basis "measured")에서는
+     투입 MM 이 그대로 LM 이 잰 근무시간(work_h)이고 근태 기록은 참고입니다(MM 을 바꾸지 않는다). LM30v1 기본(mm.basis "legal")은 15.
      · 근태 기록이 있는 날(기록 칸 기간 안) — 근태 창 = [출근, 퇴근](퇴근이 이르면 다음 날). +@ = 그날 덩어리 중 창 밖(일찍 온 시간·
        늦게 간 시간·따로 떨어진 저녁·PC 밖 덩어리)의 근무. 휴게는 근태 기록이 뺀 만큼(휴게 열, 없으면 4시간마다 breakPer4hMin)을
        창 안에서 먼저 빼고, 그래도 남은 LM 휴게(더 길게 일해 늘어난 휴게)는 창 밖에서 뺍니다(퇴근 뒤 쪽 먼저) — 창 안 근무 + +@ =
@@ -64,6 +64,11 @@ attendance.py — 출퇴근·근무 시간 추정 (LoadMonitor30 · LM30(2026-10
        missing_h · gate_plus_h · rec_days · gate_days. 팀으로 가는 합계(team)에는 근태가 없으므로 모든 날이 추정 — plus_est_h 만.
      보여 주기(day_why·usual_text·headline·rule_text·records_text·plus_line·day_plus — 맨 끝)는 화면 카드·리포트가 같은 쉬운 말을
      쓰게 하는 문구 도구입니다.
+ 15. 법정 채움 MM(LM30v1(2026-10-19) — mm.basis "legal", 기본) — 1MM = 그달 평일 전부 × 8시간이고, 공휴일·유급휴가(·휴가 추정)는
+     법정 시간으로 채우고, 나머지는 실제 근무입니다(근태 출근·퇴근이 있는 날 = 근태 시간 + 그 밖 +@ · 없는 날 = LM 이 잰 근무). 여기서는
+     날짜별 근태 사실(hr_days — 출퇴근 있는 날·휴가만 있는 날·빈 날)만 만들고(info["attendance_hr"] — 이 PC 전용), 달 합계는
+     core\extract.mm_from_hours 가 냅니다. 달마다 근태 기록 시간·+@ 나눔과 표시 날짜(info["attendance_legal"])도 이 PC 전용 —
+     take_local 이 attendance 파일의 agg["legal"] 로 옮기고, strip_hr·scrub_meta 가 나가기 전에 뺍니다. 문구는 legal_rule_text.
 
 시각은 '절대 분' — base 날짜 00:00부터 센 분 — 으로 다룹니다(자정을 넘는 덩어리를 그대로 잇기 위해).
 """
@@ -102,7 +107,10 @@ REC_EPS_H = 0.05            # 근태 기록과 이 시간(3분) 넘게 다를 �
 RECORDS_DIR = "근태"        # data\근태\*.csv — 근태 기록 칸(사용자가 내려받아 넣는다)
 # info 의 이 PC 전용 칸 — mm_meta 에 실리기 전에 뗀다. attendance_agg(LM30 2026-10-19) = 근태 기록과 견준 값까지 든 합계(이 PC 의
 # attendance 파일로만 — info["attendance"] 는 근태 없이 잰 합계(compute 의 team))
-LOCAL_KEYS = ("attendance_days", "attendance_usual", "attendance_agg")
+LOCAL_KEYS = ("attendance_days", "attendance_usual", "attendance_agg", "attendance_hr", "attendance_legal")
+# LM30v1(2026-10-19) 법정 채움 MM 의 이 PC 전용 칸 — attendance_hr = 날짜별 근태 사실(hr_days) · attendance_legal = 달마다 근태 기록 시간·
+# +@ 나눔과 표시 날짜(extract.mm_from_hours). mm_months 에는 실리지 않지만(공유 칸만) 옛 사본에 섞여도 scrub_meta 가 달 칸에서 뺀다
+LEGAL_LOCAL_KEYS = ("hr_h", "plus_h", "hr_days", "credit_work_h")
 CLOCK_KEYS = ("evening", "dawn")                       # LM29 날짜별 근거의 시각 창 — mm_meta 에는 길이(h)로만
 _SUM_KEYS = ("work_h", "regular_h", "ext_h", "night_h", "holiday_h", "holiday_ext_h", "offpc_h", "lm29_h")
 _CNT_KEYS = ("days", "late_days", "night_days", "leave_work_days", "est_edge_days", "over52_weeks")
@@ -506,7 +514,8 @@ def compute(base, points, spans, weak, presence, live_ends, d0, d1, now, p, std=
       lm29     {날짜: LM29 방식 시간} · lm29_night {날짜: LM29 야간 꼬리표 h} · rec_days PC 기록이 있는 날(없으면 presence 로)
       day_cap  선택 상한(h) · records load_records() 결과(없으면 비교 안 함)
     returns {"days": {iso: 행}, "agg": 합계(시각 없음 — 근태 기록과 견준 값까지: 이 PC 전용), "team": 근태 기록 없이 잰 합계(팀·
-    mm_meta 로 가는 것 — records 가 None 이면 agg 와 같은 dict), "usual": 평소 출근·퇴근(이 PC 전용)}.
+    mm_meta 로 가는 것 — records 가 None 이면 agg 와 같은 dict), "usual": 평소 출근·퇴근(이 PC 전용), "hr_days": 날짜별 근태 사실
+    (hr_days — 법정 채움 MM 의 재료 · 이 PC 전용 · 근태 기록이 없으면 {})}.
     LM30(2026-10-19) +@ — 근태 기록이 있으면 hr_compare 가 날마다 견주어 행에 rec 을 붙인다(투입 시간 work_h 는 그대로)."""
     is_off = is_off or (lambda dd: dd.isoweekday() > 5)
     leave, manual_floor, untimed_min = leave or {}, manual_floor or {}, untimed_min or {}
@@ -536,12 +545,13 @@ def compute(base, points, spans, weak, presence, live_ends, d0, d1, now, p, std=
         d += timedelta(days=1)
     if records is None:
         agg = aggregate(days, d0, d1, p)
-        return {"days": days, "agg": agg, "team": agg, "usual": usual_times(days, d1, now)}
+        return {"days": days, "agg": agg, "team": agg, "usual": usual_times(days, d1, now), "hr_days": {}}
     hr = hr_compare(days, records, d0, d1, p)
     rec_sum = compare_records(days, records, d0, d1, p, hr)
     # 팀 쪽 합계는 근태 기록 없이 다시 잰다 — 근태에서 나온 칸이 없고, +@ 추정도 모든 날의 연장 + 휴일(근태가 있는 날을 빼지 않는다)
+    # LM30v1(2026-10-19) hr_days — 법정 채움 MM 이 쓰는 날짜별 근태 사실(이 PC 전용 — day_work_hours 가 info["attendance_hr"] 로)
     return {"days": days, "agg": aggregate(days, d0, d1, p, rec_sum, hr), "team": aggregate(days, d0, d1, p),
-            "usual": usual_times(days, d1, now)}
+            "usual": usual_times(days, d1, now), "hr_days": hr_days(records, hr, d0, d1, p)}
 
 
 # ════════════════════════════════ 합계 ════════════════════════════════
@@ -848,9 +858,10 @@ def load_records(data_dir):
     열은 읽지 않는다). 인코딩은 UTF-8(BOM 있음·없음), 아니면 CP949.
     → {"present": 파일이 있었나, "files": 읽은 파일 수, "rows": {날짜: {in, out(분 — 자정 넘김은 +1440), break_min, approved_ot,
        leave}}, "bad": 읽지 못한 행 수, "blank": 빈 날 수(_rec_row — 기록 없이 기간에만), "range": (첫 날짜, 끝 날짜) | None,
-       "gates": {날짜: {in, out}(분 — 첫 입실·마지막 퇴실, 다음 날 새벽은 +1440)}(근태 행·빈 날 모두 — 참고)}.
+       "gates": {날짜: {in, out}(분 — 첫 입실·마지막 퇴실, 다음 날 새벽은 +1440)}(근태 행·빈 날 모두 — 참고),
+       "blanks": 빈 날의 날짜 집합(근태 행이 있는 날은 빼고 — LM30v1(2026-10-19) 법정 채움 MM 의 '근태·흔적 모두 없음')}.
     폴더가 없으면 present False(오류 아님)."""
-    out = {"present": False, "files": 0, "rows": {}, "bad": 0, "blank": 0, "range": None, "gates": {}}
+    out = {"present": False, "files": 0, "rows": {}, "bad": 0, "blank": 0, "range": None, "gates": {}, "blanks": set()}
     blank = set()
     folder = os.path.join(str(data_dir or ""), RECORDS_DIR)
     try:
@@ -895,7 +906,8 @@ def load_records(data_dir):
                 blank.add(got[0])                             # 빈 날 — 기록이 아니라 파일 기간에만(LM30 2026-10-19)
                 continue
             out["rows"][got[0]] = _rec_merge(out["rows"].get(got[0]), got[1])
-    out["blank"] = len(blank - set(out["rows"]))
+    out["blanks"] = blank - set(out["rows"])
+    out["blank"] = len(out["blanks"])
     span = set(out["rows"]) | blank
     if span:
         ds = sorted(span)
@@ -1047,6 +1059,40 @@ def hr_compare(days, rec, d0, d1, p):
     return out
 
 
+def hr_days(rec, hr, d0, d1, p):
+    r"""LM30v1(2026-10-19) 법정 채움 MM(core\extract.mm_from_hours — mm.basis "legal")이 쓰는 날짜별 근태 사실 → {iso: {"k", "rec_h",
+    "plus_h", "lv"}}(시간 — **이 PC 전용**: day_work_hours 가 info["attendance_hr"] 로 넘기고 take_local·scrub_meta 가 뗀다).
+    근태 기록 칸(load_records)의 행·빈 날 중 [d0, d1] 안인 날만:
+      · k "times" — 출근·퇴근이 있고 종일 휴가가 아닌 행: rec_h = (퇴근 − 출근) − 휴게(_rec_minutes — 확실히 일한 부분) ·
+                    plus_h = 그 창 밖에서 LM 이 찾은 근무(hr_compare 의 plus — 디지털 +@) · lv = 휴가(반차 0.5)
+      · k "leave" — 출근·퇴근 없이 휴가만 있는 행, 또는 종일 휴가 행: lv(1 · 0.5)
+      · k "blank" — 날짜만 있고 출근·퇴근·휴가가 모두 빈 행(빈 날 — 근태 행은 있는데 아무것도 적히지 않은 날)
+    행도 빈 날도 없는 날은 넣지 않는다 — 근태 행이 없는 날은 달력 휴가·휴가 추정으로 본다(mm_from_hours)."""
+    rec = rec if isinstance(rec, dict) else {}
+    hr = hr if isinstance(hr, dict) else {}
+    out = {}
+    if not rec.get("present") or not rec.get("range"):
+        return out
+    rows = rec.get("rows") or {}
+    blanks = rec.get("blanks") or set()
+    for d in sorted(set(rows) | set(blanks)):
+        if not (d0 <= d <= d1):
+            continue
+        iso = d.isoformat()
+        v = rows.get(d)
+        if v is None:
+            out[iso] = {"k": "blank", "rec_h": 0.0, "plus_h": 0.0, "lv": 0.0}
+            continue
+        lv = _num0(v.get("leave"))
+        if v.get("in") is not None and v.get("out") is not None and lv < 1.0:
+            x = hr.get(iso) if isinstance(hr.get(iso), dict) else {}
+            out[iso] = {"k": "times", "rec_h": _r(_rec_minutes(v, p)[0] / 60.0), "plus_h": _r(_num0(x.get("plus")) / 60.0),
+                        "lv": lv}
+        else:
+            out[iso] = {"k": "leave", "rec_h": 0.0, "plus_h": 0.0, "lv": lv}
+    return out
+
+
 def compare_records(days, rec, d0, d1, p, hr=None):
     """날짜별 행에 근태 기록 비교(rec — hr_compare)를 붙이고 요약을 낸다(시각 없음 — 그래도 근태에서 나온 값이라 이 PC 전용).
     근태 시간 = (퇴근 − 출근) − (휴게 열, 없으면 4시간마다 breakPer4hMin). diff_h = 추정 근무 − 근태 시간. hr = hr_compare 값(없으면 잰다).
@@ -1114,13 +1160,19 @@ def take_local(info):
     덩어리·평소 시각은 report\attendance_<기간>.json 으로만 간다(core\extract.save_attendance). LM29 날짜별 근거의 저녁·새벽
     창(시각)도 같은 까닭으로 길이(evening_h·dawn_h)로 바꾼다. info 가 dict 가 아니면 (None, None, None).
     LM30(2026-10-19) agg = 근태 기록과 견준 값까지 든 합계(info["attendance_agg"] — 없으면 info["attendance"] 의 사본) — attendance
-    파일의 agg 로 쓴다. info["attendance"](mm_meta 로 가는 것)에는 근태 없이 잰 합계만 남는다(scrub_meta → strip_hr 가 한 번 더 본다)."""
+    파일의 agg 로 쓴다. info["attendance"](mm_meta 로 가는 것)에는 근태 없이 잰 합계만 남는다(scrub_meta → strip_hr 가 한 번 더 본다).
+    LM30v1(2026-10-19) 법정 채움 MM — 날짜별 근태 사실(info["attendance_hr"])은 버리고, 달마다 근태 기록 시간·+@ 나눔과 표시 날짜
+    (info["attendance_legal"] — mm_from_hours 가 채운다)는 agg["legal"] 로 옮긴다(attendance 파일에만 · 그래서 mm_from_hours 뒤에 부른다)."""
     if not isinstance(info, dict):
         return None, None, None
     days, usual = info.pop("attendance_days", None), info.pop("attendance_usual", None)
     agg = info.pop("attendance_agg", None)
+    info.pop("attendance_hr", None)
+    legal = info.pop("attendance_legal", None)
     if agg is None or agg is info.get("attendance"):
         agg = copy.deepcopy(info.get("attendance")) if isinstance(info.get("attendance"), dict) else agg
+    if isinstance(agg, dict) and isinstance(legal, dict):
+        agg["legal"] = legal
     scrub_meta(info)
     return days, usual, agg
 
@@ -1128,13 +1180,15 @@ def take_local(info):
 def strip_hr(a):
     """출퇴근 합계(dict — weeks·months·total·records)에서 근태 기록·GERP·태깅에서 나온 값을 뺀다(제자리) → 뺀 것이 있나.
     LM30(2026-10-19) — mm_meta·팀 묶음·공유폴더·얼린 보고서로 나가기 직전의 관문(scrub_meta·freeze). 근태 칸(HR_KEYS)이 섞인 칸의
-    +@ 추정(EST_KEYS)은 근태 기록이 있는 날을 뺀 값이라 같이 뺀다(보여 줄 때는 연장 + 휴일로 다시 낸다 — est_of)."""
+    +@ 추정(EST_KEYS)은 근태 기록이 있는 날을 뺀 값이라 같이 뺀다(보여 줄 때는 연장 + 휴일로 다시 낸다 — est_of).
+    LM30v1(2026-10-19) 법정 채움 MM 의 이 PC 전용 칸(legal — 달마다 근태 기록 시간·+@ 나눔·표시 날짜)도 뺀다."""
     if not isinstance(a, dict):
         return False
     hit = False
-    if "records" in a:
-        a.pop("records")
-        hit = True
+    for k in ("records", "legal"):
+        if k in a:
+            a.pop(k)
+            hit = True
     blocks = [a.get("total")]
     for k in ("months", "weeks"):
         if isinstance(a.get(k), dict):
@@ -1170,8 +1224,16 @@ def hr_view(agg):
 def scrub_meta(mj):
     """mm_meta(dict — 최상위와 mm_basis)에서 이 PC 전용 칸을 뺀다: attendance_days·attendance_usual·attendance_agg·
     attendance.usual/days·근태 기록에서 나온 합계 칸(strip_hr — LM30 2026-10-19)·day_basis 의 시각 창. 팀 묶음·공유폴더로 나가기
-    직전의 두 번째 관문(teamup·export·freeze). 뺀 것이 있으면 True."""
+    직전의 두 번째 관문(teamup·export·freeze). 뺀 것이 있으면 True.
+    LM30v1(2026-10-19) — 법정 채움 MM 의 이 PC 전용 칸(attendance_hr·attendance_legal — LOCAL_KEYS)과, 옛 사본의 mm_months 달 칸에
+    섞인 근태 기록 시간·+@ 나눔(LEGAL_LOCAL_KEYS)도 뺀다(달 칸에는 공유 칸 — 1MM 기준·법정 채움·실제 근무 합계·투입 MM — 만 남는다)."""
     hit = False
+    mo = mj.get("mm_months") if isinstance(mj, dict) else None
+    for v in (mo.values() if isinstance(mo, dict) else ()):
+        if isinstance(v, dict) and any(k in v for k in LEGAL_LOCAL_KEYS):
+            for k in LEGAL_LOCAL_KEYS:
+                v.pop(k, None)
+            hit = True
     for h in (mj, mj.get("mm_basis") if isinstance(mj, dict) else None):
         if not isinstance(h, dict):
             continue
@@ -1394,10 +1456,50 @@ def _std(std):
     return x if x > 0 else 8.0
 
 
-def plus_note(std=None):
-    """+@ 가 무엇인지 한 줄(카드·리포트 공용)"""
-    return (f"근태 기록 = 확실히 일한 부분, +@ = 그 밖에서 LM이 찾은 근무입니다(근태를 못 읽으면 하루 {_std(std):g}시간 넘은 "
-            "시간·휴일 근무로 추정합니다). 투입 MM은 그대로 LM이 잰 근무시간이고 근태 기록은 참고입니다.")
+def plus_note(std=None, rule=None):
+    """+@ 가 무엇인지 한 줄(카드·리포트 공용). rule = mm_rule_of(mm_meta) — "legal"(LM30v1 법정 채움)이면 투입 MM 에 근태 기록이
+    들어간다고 말한다(LM30v1 2026-10-19). 그 밖(LM30 방식)은 예전 문구."""
+    head = (f"근태 기록 = 확실히 일한 부분, +@ = 그 밖에서 LM이 찾은 근무입니다(근태를 못 읽으면 하루 {_std(std):g}시간 넘은 "
+            "시간·휴일 근무로 추정합니다). ")
+    if rule == "legal":
+        return head + ("투입 MM은 근태 기록(있으면)과 +@·디지털 흔적으로 잰 실제 근무에 공휴일·유급휴가를 법정 시간으로 채운 "
+                       "값입니다('MM 산정 근거').")
+    return head + "투입 MM은 그대로 LM이 잰 근무시간이고 근태 기록은 참고입니다."
+
+
+# ── LM30v1(2026-10-19) 법정 채움 MM(mm.basis "legal") — 화면 카드·리포트·분석리포트가 같은 쉬운 말을 쓰게(규칙은 머리말 15) ──
+def mm_rule_of(meta):
+    """mm_meta(또는 그 mm_basis) → "legal" | "measured" — 최상위·mm_basis 의 mm_rule, 없으면 달 칸(mm_months)의 basis. 둘 다 없으면
+    "measured"(LM30 이전 판이 만든 결과)."""
+    if not isinstance(meta, dict):
+        return "measured"
+    mb = meta.get("mm_basis") if isinstance(meta.get("mm_basis"), dict) else {}
+    r = meta.get("mm_rule") or mb.get("mm_rule")
+    if r in ("legal", "measured"):
+        return r
+    mo = meta.get("mm_months") if isinstance(meta.get("mm_months"), dict) else {}
+    return "legal" if any(isinstance(v, dict) and v.get("basis") == "legal" for v in mo.values()) else "measured"
+
+
+def legal_rule_text(std=None):
+    """법정 채움 MM 의 규칙 한 문장(카드·리포트 공용 — 숫자 없이 규칙만이라 어디에 실려도 된다)."""
+    return (f"1MM = 그달 평일 × {_std(std):g}시간입니다. 공휴일·유급휴가는 법으로 채운 것으로 치고, 나머지는 근태 기록(있으면)과 "
+            "디지털 흔적으로 잰 실제 근무입니다 — 1MM에서 시작하지 않으므로 실제 근무가 적으면 1MM보다 낮게, 인사 시스템이 못 잡은 "
+            "+@가 있으면 높게 나옵니다.")
+
+
+LEGAL_FLAG_KO = {"inferred": ("휴가 추정(기록 없음)", "근태·휴가 기록이 없고 PC·흔적도 없어 휴가로 보고 하루를 채운 평일"),
+                 "nohr": ("근태·흔적 모두 없음", "근태 행은 있는데 출근·퇴근·휴가가 비었고 LM 흔적도 없는 평일 — 채우지 않았습니다")}
+
+
+def legal_flag_text(flags, key, limit=20):
+    """표시 날짜 한 줄 — '휴가 추정(기록 없음) 2일 — 09-10, 09-11(근태·휴가 기록이 없고 …)'. 날짜가 없으면 ''(이 PC 화면·리포트만)."""
+    lst = [str(x)[:10] for x in ((flags or {}).get(key) or []) if str(x).strip()] if isinstance(flags, dict) else []
+    if not lst or key not in LEGAL_FLAG_KO:
+        return ""
+    lab, why = LEGAL_FLAG_KO[key]
+    more = " …" if len(lst) > limit else ""
+    return f"{lab} {len(lst)}일 — {', '.join(x[5:] for x in lst[:limit])}{more}({why})"
 
 
 def est_of(t):

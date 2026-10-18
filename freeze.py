@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 r"""
-freeze.py — 분석 결과를 '파일 하나' 보고서 3종으로 만든다 (LoadMonitor30).
+freeze.py — 분석 결과를 '파일 하나' 보고서 3종으로 만든다 (LoadMonitor30v1).
 
   python freeze.py --from 2026-01-01 --to 2026-08-25            # 3종 전부 (= --all)
   python freeze.py --from ... --to ... --freeze [--summary]     # 얼린 보고서만 (--summary: 원문 제외)
@@ -29,6 +29,8 @@ HTML 은 팀 서버로 올리지 않는다(서버 NAME_OK 불변) — 공유폴�
 <공유폴더>\개인리포트\<이름>_<파일명> 으로 복사된다.
 LM30(2026-10-18): 그래서 ①·② 의 출퇴근·시간외 근무 카드·절은 주·달 합계만 싣는다 — 날짜별 출근·퇴근·평소 시각은 이 PC 의
 대시보드와 ③ 리포트(복사되지 않는다)에만 있다(_att_summary_only · report_out.attendance_section(per_day=False)).
+LM30v1(2026-10-19): 법정 채움 MM 도 ①·② 에는 달 합계만 — 근태 기록 시간·+@ 나눔과 '휴가 추정'·'근태·흔적 모두 없음' 날짜는
+이 PC 의 대시보드와 ③ 리포트에만 있다(/api/dash 의 mm_local 을 빼고 · 분석리포트는 report_out.legal_section(local=None)).
 """
 import csv
 import glob
@@ -400,6 +402,9 @@ def _freeze(tag, full, base_url, log, info):
     # 같은 관문 core\attendance.scrub_meta)
     if "/api/attendance" in baked:
         baked["/api/attendance"] = _att_summary_only(baked["/api/attendance"])
+    # LM30v1(2026-10-19) 법정 채움 MM — 'MM 산정 근거' 카드의 근태 기록 시간·+@ 나눔과 표시 날짜(mm_local — attendance 파일)는 사본에
+    # 굽지 않는다. 사본의 카드는 mm_meta 의 달 합계(1MM 기준·법정 채움·근무·투입·가용·로드율·LM30 방식)만 그린다
+    baked["/api/dash"].pop("mm_local", None)
     if isinstance(baked["/api/dash"].get("meta"), dict):
         try:
             import attendance as _att
@@ -467,7 +472,7 @@ def _freeze(tag, full, base_url, log, info):
     # stub: 판정이 스텁(LM_COPILOT_STUB, 테스트 전용)이었던 결과 — 취합이 실자료와 구분한다.
     baked["_lm"] = {"kind": "frozen", "owner": owner, "host": host,
                     "period": [d0, d1], "tag": tag, "full": bool(full), "stub": stub,
-                    "generated": time.strftime("%Y-%m-%d %H:%M"), "generator": "LoadMonitor30 freeze.py"}
+                    "generated": time.strftime("%Y-%m-%d %H:%M"), "generator": "LoadMonitor30v1 freeze.py"}
     who = f"{os.environ.get('USERNAME', '?')}@{host or '?'}"
     ts = time.strftime("%Y-%m-%d %H:%M")
     mode_txt = ("메일·회의 제목 등 원문 근거가 들어 있습니다 — <b>팀 밖 공유 금지</b>"
@@ -866,6 +871,11 @@ def report_island(tag, full=True, log=_say):
             extra_html += ('<div class="card"><h2>5. 근무 꼬리표 · 초과근무 세분 · 미관측</h2><table>'
                            + "".join(f"<tr><th style='width:260px'>{_esc(k)}</th><td>{_esc(v)}</td></tr>" for k, v in _ot)
                            + "</table></div>")
+        # LM30v1(2026-10-19) 법정 채움 MM — 리포트 1절과 같은 함수(legal_section). 분석리포트는 공유폴더로 복사되므로 달 합계만
+        # (local=None — 근태 기록 시간·+@ 나눔과 표시 날짜는 싣지 않는다)
+        _lg = _ro.legal_section(meta, _b, None, head="<h2>MM 산정 근거 — 달 합계(1MM = 그달 평일 × 8시간 · 법정 채움)</h2>")
+        if _lg:
+            extra_html += '<div class="card">' + "\n".join(_lg) + "</div>"
         # LM30(2026-10-18) 출퇴근·시간외 근무 — 리포트 §8 과 같은 함수. 분석리포트는 공유폴더(개인리포트\)로 복사되므로 날짜별
         # 출근·퇴근·평소 시각은 싣지 않는다(per_day=False — attendance 파일은 넘기지 않고 mm_meta 의 주·달 합계만)
         _as = _ro.attendance_section(meta, _b, None, per_day=False)
@@ -890,7 +900,7 @@ def report_island(tag, full=True, log=_say):
         "period": [d0, d1], "tag": tag, "total_mm": total,
         "avail_mm": avail, "load_pct": pct, "rows_file": rows_file,
         "rows": rows, "workflow": wf, "agentic": {"kind": "needs", "new": ag_new},
-        "generated": generated, "generator": "LoadMonitor30 freeze.py",
+        "generated": generated, "generator": "LoadMonitor30v1 freeze.py",
         "merged_rows": n_merged, "full": bool(full), "stub": stub},
         ensure_ascii=False).replace("<", "\\u003c")
     stub_txt = " · <b>스텁 판정(테스트 전용 — 실제 Copilot 판정 아님)</b>" if stub else ""
@@ -898,6 +908,12 @@ def report_island(tag, full=True, log=_say):
     pct_txt = "–" if pct is None else f"{pct}%"
     top_pj = by_pj[0][0] if by_pj else "—"
     avail_txt = "–" if avail is None else format(_num(avail), ".2f")
+    # LM30v1(2026-10-19) 법정 채움 MM 이면 가용은 휴가를 빼지 않은 '지난 평일의 비율'이다(휴가는 투입에 법정 시간으로 채운다)
+    try:
+        import attendance as _att_k
+        avail_nt = "지난 평일의 비율(휴가는 채움)" if _att_k.mm_rule_of(meta) == "legal" else "연차·휴가 차감"
+    except ImportError:
+        avail_nt = "연차·휴가 차감"
     doc = f"""<!doctype html><html lang="ko"><head><meta charset="utf-8">
 <title>업무 분석 리포트 — {_esc(owner)} {d0}~{d1}</title><style>
 body{{font:13px/1.55 'Malgun Gothic','Segoe UI',sans-serif;color:#2c333b;background:#f4f6f8;margin:0}}
@@ -956,7 +972,7 @@ margin:1px 3px 1px 0;font-size:10.5px;color:#3d444c}}
 <div class="kpi"><div class="lb">투입 MM</div><div class="vl">{total:.2f}</div>
 <div class="nt">주력 {_esc(top_pj)}</div></div>
 <div class="kpi"><div class="lb">가용 MM</div><div class="vl">{avail_txt}</div>
-<div class="nt">연차·휴가 차감</div></div>
+<div class="nt">{avail_nt}</div></div>
 <div class="kpi"><div class="lb">업무 항목</div><div class="vl">{len(rows)}</div>
 <div class="nt">과제 {len(by_pj)}개</div></div>
 </div>

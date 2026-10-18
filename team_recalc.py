@@ -25,6 +25,10 @@ r"""팀취합본만으로 개인별 로드율 재계산 — 판(LM20 · LM24 v3 
                mm_basis.inferred_absence_dates)은 판 의존 재료라 기본 분모에 넣지 않고 표시만 한다(--inferred 로 넣을 수 있다).
   로드율(%)    = 월 투입시간 ÷ (8h × 가용일수) × 100 — workdays·capacity_h 는 약분되므로 이 형태가 판 무관 항등식이다.
                가용이 0 인 달(전월 부재·기간 꼬리)은 비율이 없고 팀 합계에도 넣지 않는다.
+  LM30v1 의 D : LM30v1(2026-10-19)이 법정 채움(mm.basis "legal" — mm_meta.mm_months[월].basis)으로 낸 달은 원값 D 가 그 판의 달 합계
+               (실제 근무 actual_h + 공휴일·유급휴가 법정 채움 legal_h)이고, D 의 분모도 그 판의 것이다 — D 로드율 = D ÷ (그 판의 하루
+               표준 × 지난 평일 covered), D MM = D ÷ capacity_h(그달 평일 전부 × 표준). 팀 합계의 D 분모도 이 값으로 더한다. 날짜별
+               day_hours 는 실제로 잰 근무뿐(채움 없음)이라 달 값으로 바꿔 쓴다. A·B·C3 는 모든 판에 같은 통일 산식 그대로.
 
 한계(팀취합본에 없는 재료 — 어느 산식도 복원하지 못한다)
   PC 가동 구간 · 샘플러 구간(총 분만) · 연차 '일자'(월 합계만) · 회의 수락 여부(수락분만 올라옴) · 표본화 전 파일 시각.
@@ -55,7 +59,7 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, errors="replace", encoding=(
     (sys.stdout.encoding or "utf-8") if sys.stdout.isatty() else "utf-8"))
 csv.field_size_limit(min(sys.maxsize, 2 ** 31 - 1))
 
-VERSION = "team_recalc 1.1"
+VERSION = "team_recalc 1.2"            # 1.2 — LM30v1(2026-10-19) 법정 채움 원값(D)
 STD_DAY_H = 8.0
 WORK_WIN = (9 * 60, 18 * 60)        # 표준 창 — 8h 바닥이 덮는 시간대(점심 포함). 이 밖의 능동 세션만 초과로 더한다
 DAY_WIN = (8 * 60, 19 * 60)         # 야간 판정 경계(v3 DAY_WIN 과 동일 — 야간 수동 신호는 세션을 만들지 않는다)
@@ -283,19 +287,27 @@ def read_signals(p):
     return out
 
 
+# 판 표식(member.lm_ver — 대문자로 견준다) → 판 키. LM30v1(2026-10-19): 예전처럼 앞 네 글자(mv[:4])만 보면 'LM30v1' 이 'LM30' 으로
+# 읽힌다 — 표식 전체를 견준다. 예전 꼴의 덧붙임('LM28.1'·'LM28-x')은 판 이름 다음이 글자·숫자가 아닐 때만 그 판으로 본다(LM30v2·LM301 은
+# 모르는 판 — 예전처럼 키로 판별).
+LM_VER_RX = re.compile(r"(LM28|LM29|LM30V1|LM30)(?![0-9A-Z])")
+
+
 def version_of(meta, member=None, tag=None):
     """판별 — LM28 은 member.json 의 lm_ver(teamup 이 'LM28' 을 싣는다)로 먼저 본다. member.json 은 그 사람의
     마지막 업로드 한 기간(tag)의 것이라, tag 를 주면 그 기간일 때만 믿는다(옛 기간 파일을 LM28 로 오표기하지 않게).
     lm_ver 가 없으면 예전처럼 키 유무로 본다(LM24·LM20 은 명시 버전 필드가 없다 — 기간 tag 파일 단위).
-    'lm28' 은 산식이 v3 와 같다 — 표시(LM28(v3))만 다르다. LM30(LM28 에서 Agentic AI 를 니즈 후보 발굴만 남긴 판 · 타팀 시험용)와
-    LM30(LM29 를 이은 판)도 같은 서버로 올라오므로 'lm29'·'lm30' 으로 따로 적는다(산식 같음 — 예전에는 LM24(v3) 로 오표기됐다).
+    'lm28' 은 산식이 v3 와 같다 — 표시(LM28(v3))만 다르다. LM29(LM28 에서 Agentic AI 를 니즈 후보 발굴만 남긴 판 · 타팀 시험용)와
+    LM30(LM29 를 이은 판)·LM30v1(LM30 을 이은 시험판)도 같은 서버로 올라오므로 'lm29'·'lm30'·'lm30v1' 으로 따로 적는다(산식 같음 —
+    예전에는 LM24(v3) 로 오표기됐다). 'LM30v1' 은 표식 전체로 가른다(LM_VER_RX — 'LM30' 으로 접지 않는다).
     LM30(2026-10-18): LM30 의 D(원값 — mm_meta.day_hours)는 출퇴근 추정 근무 시간이다. 이 도구는 D 를 읽기만 하고 다시 재지 않으므로
-    LM30 결과는 LM30 시간 그대로, LM28·LM29 결과는 예전 그대로 비교된다(A·B·C3 는 모든 판에 같은 통일 산식)."""
+    LM30·LM30v1 결과는 그 판의 시간 그대로, LM28·LM29 결과는 예전 그대로 비교된다(A·B·C3 는 모든 판에 같은 통일 산식)."""
     if not meta:
         return "unknown"
     mv = str((member or {}).get("lm_ver") or "").strip().upper()
-    if mv[:4] in ("LM28", "LM29", "LM30") and (tag is None or str((member or {}).get("tag") or "") == str(tag)):
-        return mv[:4].lower()
+    m = LM_VER_RX.match(mv)
+    if m and (tag is None or str((member or {}).get("tag") or "") == str(tag)):
+        return m.group(1).lower()
     if any(k in meta for k in ("measure", "coverage", "cfg_used")):
         return "v3"
     mb = meta.get("mm_basis") or {}
@@ -406,6 +418,21 @@ def analysis_time(meta, member, tag, meta_path, d0, d1, cal):
         return datetime.fromtimestamp(os.path.getmtime(meta_path)), "파일 시각"
     except (OSError, TypeError):
         return None, ""
+
+
+def legal_d(mi):
+    """LM30v1(2026-10-19) 법정 채움 달 칸(mm_meta.mm_months[월] — basis "legal") → (D 시간 = actual_h + legal_h, D 분모 h = 그 판의 하루
+    표준 × covered(지난 평일), D 1MM h = capacity_h) | None(법정 채움 달이 아니거나 칸이 모자라면 — 그때는 날짜별 원값 그대로)."""
+    if not isinstance(mi, dict) or str(mi.get("basis") or "") != "legal":
+        return None
+    try:
+        vals = [float(mi.get(k)) for k in ("actual_h", "legal_h", "covered", "workdays", "capacity_h")]
+    except (TypeError, ValueError):
+        return None
+    if any(x != x or abs(x) == float("inf") or x < 0 for x in vals) or vals[3] <= 0 or vals[4] <= 0:
+        return None
+    act, lg, cov, n, cap = vals
+    return act + lg, cap / n * cov, cap
 
 
 def recalc_period(sig, meta, d0, d1, cal, now, t_an, std=STD_DAY_H, has_sig=True, has_meta=True, version="unknown",
@@ -529,17 +556,25 @@ def recalc_period(sig, meta, d0, d1, cal, now, t_an, std=STD_DAY_H, has_sig=True
         m["avail_days"] = max(0.0, m["covered"] - m["absent"])
         m["avail_h"] = std * m["avail_days"]
         m["capacity_h"] = std * max(1, m["workdays"])
+        # LM30v1(2026-10-19) 법정 채움 — 그 판이 낸 달 합계(실제 근무 + 법정 채움)가 원값 D 이고 분모도 그 판의 것(머리말 'LM30v1 의 D')
+        m["D_avail_h"], m["D_cap_h"], m["D_legal"] = m["avail_h"], m["capacity_h"], False
+        lg = legal_d(mi) if (version == "lm30v1" and has_meta) else None
+        if lg is not None:
+            m["D"], m["D_avail_h"], m["D_cap_h"] = lg
+            m["D_legal"] = True
         for k in FORMULAS:
             if (k != "D" and not has_sig) or (k == "D" and not has_meta):
                 m[k], m[k + "_pct"], m[k + "_mm"] = None, None, None
                 continue
-            m[k + "_pct"] = round(m[k] / m["avail_h"] * 100.0, 1) if m["avail_h"] > 0 else None
-            m[k + "_mm"] = round(m[k] / m["capacity_h"], 3)
+            av, cap = (m["D_avail_h"], m["D_cap_h"]) if k == "D" else (m["avail_h"], m["capacity_h"])
+            m[k + "_pct"] = round(m[k] / av * 100.0, 1) if av > 0 else None
+            m[k + "_mm"] = round(m[k] / cap, 3)
         if not has_sig:
             m["noact_wd"], m["noact_zero"] = None, None
         m["meta_load_pct"] = mi.get("load_pct") if mi else None
         m["meta_workdays"] = mi.get("workdays") if mi else None
     flags = {"future_wd": future_wd, "truncated": future_wd > 0, "offsite_days": len(offsite_days),
+             "d_legal": any(m["D_legal"] for m in months.values()),
              "signals": len(sig), "active_days": len(gate_days) if has_sig else None,
              "inferred_days": sum(m["inferred"] for m in months.values()),
              "absent_scaled": any(m["absent_scaled"] for m in months.values()),
@@ -648,6 +683,9 @@ def person_notes(p):
         notes.append("signals 행 유실 의심(따옴표 불균형 등 — 파일을 다시 올리세요)")
     if fl.get("sig_bad"):
         notes.append(f"신호 {fl['sig_bad']}행 시각 불량 제외")
+    if fl.get("d_legal"):
+        notes.append("LM30v1 원값(D) = 법정 채움(1MM = 그달 평일 × 8시간 · 실제 근무 + 공휴일·유급휴가 채움 · 분모 = 지난 평일) — "
+                     "A·B·C3 와 분모가 다릅니다")
     if fl.get("inferred_days"):
         notes.append(f"LM24 부재 추정 {fl['inferred_days']}일(원 판은 평일수에서 뺌 — 재계산 가용에는 남김)")
     if fl["offsite_days"]:
@@ -677,7 +715,7 @@ def pct_cls(v):
     return "hi" if v >= 120 else ("ok" if v >= 70 else "lo")
 
 
-VER_LABEL = {"lm28": "LM28(v3)", "lm29": "LM29(v3)", "lm30": "LM30(v3)", "v3": "LM24(v3)", "lm20": "LM20(추정)", "unknown": "판 불명"}
+VER_LABEL = {"lm28": "LM28(v3)", "lm29": "LM29(v3)", "lm30": "LM30(v3)", "lm30v1": "LM30v1(v3)", "v3": "LM24(v3)", "lm20": "LM20(추정)", "unknown": "판 불명"}
 
 
 def person_sums(p, std):
@@ -685,7 +723,8 @@ def person_sums(p, std):
     ms = [m for m in p["res"]["months"].values() if m["avail_h"] > 0]
     avail_h = sum(m["avail_h"] for m in ms)
     sums = {k: (sum(m[k] for m in ms) if all(m[k] is not None for m in ms) and ms else None) for k in FORMULAS}
-    pcts = {k: (sums[k] / avail_h * 100 if (avail_h > 0 and sums[k] is not None) else None) for k in FORMULAS}
+    av = {k: (sum(m.get("D_avail_h", m["avail_h"]) for m in ms) if k == "D" else avail_h) for k in FORMULAS}   # LM30v1 법정 채움 D
+    pcts = {k: (sums[k] / av[k] * 100 if (av[k] > 0 and sums[k] is not None) else None) for k in FORMULAS}
     return avail_h, sums, pcts
 
 
@@ -701,7 +740,7 @@ def build_html(root, people, pick, now, std, extra_hol, out_csv_names, root_how)
         for k in FORMULAS:
             if m[k] is not None:          # signals 없는 기간은 A·B·C3, mm_meta 없는 기간은 D 에서 빠진다(0 으로 섞지 않는다)
                 t[k] += m[k]
-                t[k + "_av"] += m["avail_h"]
+                t[k + "_av"] += m["D_avail_h"] if k == "D" else m["avail_h"]     # LM30v1 법정 채움 D 는 그 판의 분모
                 t[k + "_n"] += 1
         t["avail_h"] += m["avail_h"]
         t["n"] += 1
@@ -728,6 +767,7 @@ def build_html(root, people, pick, now, std, extra_hol, out_csv_names, root_how)
              f"<b>C3(권장)</b> = 능동 흔적이 있는 평일은 {std:g}h 를 바닥으로, 09~18시 밖의 능동 세션만 초과로 더함 · 능동 없는 평일은 근거 구간(B, 수동 세션은 하루 60분까지) 그대로 · 주말·공휴일은 능동 있는 날만. "
              f"<b>A</b> = 능동 평일 {std:g}h(출근일 하한) + 주말·공휴일 활동일은 B. <b>B</b> = max(신호 세션 ∪ 회의 구간, 샘플러 활동분, 수동기록 시간). <b>D</b> = 그 판이 계산한 원값(비교 기준선).<br>"
              f"<b>가용</b> = 통일 달력 평일수(분석 시점 이후 제외) − mm_meta 의 월별 부재 일수 · <b>로드율</b> = 투입시간 ÷ ({std:g}h × 가용일). 가용 0 인 달은 비율·팀 합계에서 제외.<br>"
+             "<b>LM30v1(v3) 의 D</b> = 그 판이 법정 채움으로 낸 달 값(1MM = 그달 평일 × 8시간 · 실제 근무 + 공휴일·유급휴가 채움)이고, D 로드율의 분모도 그 판의 것(지난 평일)입니다.<br>"
              "<span class='warn'>한계</span>: PC 가동·샘플러 구간·연차 일자·회의 수락 여부·표본화 전 파일 시각은 팀에 올라오지 않아 어느 산식도 복원하지 못합니다. "
              "능동 흔적이 없는 평일은 8h 가 붙지 않아 C3 = 근거 구간뿐입니다 — '무흔적 평일(−부재)' 열을 함께 보세요.</div>")
     # 1. 팀 월별 합계

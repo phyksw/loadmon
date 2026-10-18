@@ -3,7 +3,7 @@
 Get-OutlookWeb.py — Outlook 웹(outlook.office.com)을 전용 Edge 프로필로 열어 메일·일정을 읽는다 (폴백).
 
 Outlook 의 '버전'과 무관한 경로다: 클래식/새 Outlook/2016 마법사/COM 미등록 어느 PC 든, Copilot 에
-쓰는 전용 Edge 프로필(data\\lm30_edge)에 회사 계정으로 한 번 로그인해 두면 동작한다. Copilot 처럼
+쓰는 전용 Edge 프로필(data\\lm30v1_edge)에 회사 계정으로 한 번 로그인해 두면 동작한다. Copilot 처럼
 LLM 을 거치지 않으므로 지어낸 행이 없고, 데이터는 PC 밖으로 나가지 않는다(브라우저가 내 사서함을 보여주는
 것을 읽을 뿐).
 

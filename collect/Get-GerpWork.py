@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 r"""
-Get-GerpWork.py — GERP 근무 기록 읽기(LM30 시험 기능 · 기본 꺼짐): 사람이 전용 Edge 에서 로그인해 둔 GERP 근무시간 현황 화면을 읽는다.
+Get-GerpWork.py — GERP 근무 기록 읽기(LM30v1 시험 기능 · 기본 꺼짐): 사람이 전용 Edge 에서 로그인해 둔 GERP 근무시간 현황 화면을 읽는다.
 
   python collect\Get-GerpWork.py            # 읽기 — 설정 config\config.json 의 attendance.gerp(꺼져 있으면 Edge 를 띄우지 않고 끝)
   python collect\Get-GerpWork.py --open     # [GERP 열기(직접 로그인)] — 전용 Edge 에 그 화면을 열어 둔다(사람이 그 창에서 로그인)
@@ -10,7 +10,7 @@ LM30(2026-10-19) 사용자 요청 — "GERP 에서 근무일 불러오는 건 �
  · 로그인하지 않는다 — 아이디·비밀번호를 넣지 않고 로그인 단추도 누르지 않는다. 쿠키를 읽거나 저장하지 않는다. 로그아웃 화면이면
    (core\gerp.login_state — 어느 프레임이든 input#userid·보이는 비밀번호 칸 · SSO 호스트로 넘어감) 아무것도 누르지 않고 우리 탭을 닫는다.
  · 전용 Edge 는 다른 웹 수집기(Get-OutlookWeb·Get-TeamsWeb)처럼 tools\copilot_auto 로 띄우거나 다시 쓰고(ensure_edge · 프로필
-   data\lm30_edge · edge_lock 안에서만), 우리가 새로 연 탭 하나만 쓰고 닫는다(사람의 GERP 탭·다른 탭은 건드리지 않는다).
+   data\lm30v1_edge · edge_lock 안에서만), 우리가 새로 연 탭 하나만 쓰고 닫는다(사람의 GERP 탭·다른 탭은 건드리지 않는다).
  · 프레임 — 같은 출처 프레임은 맨 위 문서에서 window.frames 를 걸어(JS_WALK·JS_AT), 다른 출처 프레임은 CDP 프레임 나무
    (Page.getFrameTree)와 프레임마다 격리 세계(Page.createIsolatedWorld — JS_DOC)로 읽는다.
  · 표 — 모든 프레임의 table 중 4번째 칸에 날짜(YYYY-MM-DD)가 있고 칸이 13개 이상인 행이 있는 표. 점수 = 보임×10000 + 날짜 행×100 +
@@ -220,7 +220,7 @@ class Tab:
 
     def _world(self, fid, fresh=False):
         if fresh or fid not in self.worlds:
-            r = self.cdp.call("Page.createIsolatedWorld", {"frameId": fid, "worldName": "lm30_gerp"}, timeout=15)
+            r = self.cdp.call("Page.createIsolatedWorld", {"frameId": fid, "worldName": "lm30v1_gerp"}, timeout=15)
             self.worlds[fid] = int(r.get("executionContextId") or 0)
         return self.worlds[fid]
 

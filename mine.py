@@ -149,6 +149,11 @@ def meta_doc(d0, d1, months, sig, meta, total_mm, avail_mm, load_pct, mm_months,
         doc["time_share"] = ts_stat
     if hinfo.get("mm_lm29") is not None:
         doc["mm_lm29"] = hinfo["mm_lm29"]          # LM30 — 출퇴근 추정이 투입을 맡았을 때 'LM29 방식이었다면 X MM'
+    # LM30v1(2026-10-19) 법정 채움 MM(mm.basis "legal") — 규칙 표식과 'LM30 방식이었다면 X MM'(비교). measured 면 둘 다 없다(LM30 그대로)
+    if hinfo.get("mm_rule"):
+        doc["mm_rule"] = hinfo["mm_rule"]
+    if hinfo.get("mm_lm30") is not None:
+        doc["mm_lm30"] = hinfo["mm_lm30"]
     return doc
 
 
@@ -189,25 +194,36 @@ def main():
     # 그 달 평일수(투입 MM 분모)에서도 뺀다(A31) — inferred 로 따로 넘긴다.
     inferred = hinfo.pop("inferred_absence", {}) or {}
     absence.update(inferred)
-    # LM30(2026-10-18): 날짜별 출근·퇴근·덩어리·평소 시각은 이 PC 에만 — mm_meta(팀으로 올라간다)에 실리기 전에 떼어
-    # report\attendance_<기간>.json 으로 쓴다(LM29 근거의 저녁·새벽 창 시각도 길이로 바뀐다)
-    # LM30(2026-10-19): 근태 기록·GERP 와 견준 합계(+@ — att_agg)도 이 PC 의 attendance 파일에만(mm_meta 에는 근태 없이 잰 합계)
-    att_days, att_usual, att_agg = attendance.take_local(hinfo)
-    tag_h = f"{d0.isoformat().replace('-', '')}-{d1.isoformat().replace('-', '')}"
-    extract.save_day_hours(os.path.join(ROOT, "report"), tag_h,
-                           day_hours)      # 추이 실선의 재료 — 화면은 읽기만 한다(재계산 금지)
-    extract.save_attendance(os.path.join(ROOT, "report"), tag_h, att_days, att_usual, att_agg)
     # 잘못된 설정값은 죽지 않고 기본값으로 대체됐다 — 무엇이 무시됐는지 사용자에게 보인다
     cfg_warns = list(dict.fromkeys(list(meta.get("config_warnings") or [])
                                    + list(hinfo.get("config_warnings") or [])))
     for w in cfg_warns:
         print(f"[설정] {w}")
     # 미래 평일·오늘 잔여는 가용이 아니다(A34) — future_days·today_fraction 이 hinfo 에 남는다
+    # LM30v1(2026-10-19): 법정 채움 MM 은 날짜별 근태 사실(hinfo["attendance_hr"] — 이 PC 전용)을 읽으므로 take_local 보다 먼저 잰다
     mm_months, total_mm, avail_mm = extract.mm_from_hours(
         day_hours, d0, d1, cfg=cfg, absence=absence, inferred=inferred, info=hinfo)
+    # LM30(2026-10-18): 날짜별 출근·퇴근·덩어리·평소 시각은 이 PC 에만 — mm_meta(팀으로 올라간다)에 실리기 전에 떼어
+    # report\attendance_<기간>.json 으로 쓴다(LM29 근거의 저녁·새벽 창 시각도 길이로 바뀐다)
+    # LM30(2026-10-19): 근태 기록·GERP 와 견준 합계(+@ — att_agg)도 이 PC 의 attendance 파일에만(mm_meta 에는 근태 없이 잰 합계)
+    # LM30v1(2026-10-19): 법정 채움의 날짜별 근태 사실은 버리고, 달마다 근태 기록 시간·+@ 나눔·표시 날짜는 att_agg["legal"] 로
+    att_days, att_usual, att_agg = attendance.take_local(hinfo)
+    tag_h = f"{d0.isoformat().replace('-', '')}-{d1.isoformat().replace('-', '')}"
+    extract.save_day_hours(os.path.join(ROOT, "report"), tag_h,
+                           day_hours)      # 추이 실선의 재료(잰 근무 — 법정 채움 없음) — 화면은 읽기만 한다(재계산 금지)
+    extract.save_attendance(os.path.join(ROOT, "report"), tag_h, att_days, att_usual, att_agg)
     load_pct = (total_mm / avail_mm * 100) if avail_mm else 0.0
     print(f"[MM] 투입 {total_mm:.2f} MM ({sum(day_hours.values()):.0f}h) / "
           f"가용 {avail_mm:.2f} MM  →  로드율 {load_pct:.0f}%")
+    if hinfo.get("mm_rule") == "legal":
+        # LM30v1(2026-10-19) 법정 채움 — 달 합계만 찍는다(근태 기록 시간·+@ 나눔·날짜는 이 PC 화면·리포트에서)
+        _lg = {k: round(sum(float((v or {}).get(k) or 0) for v in mm_months.values()), 2)
+               for k in ("actual_h", "legal_h", "holiday_days", "leave_days", "inferred_leave_days", "nohr_days")}
+        _sd = attendance._std((hinfo.get("cfg_used") or {}).get("standardDayHours"))
+        print(f"     1MM = 그달 평일 × {_sd:g}시간 · 실제 근무 {_lg['actual_h']:.1f}h + 법정 채움 {_lg['legal_h']:.1f}h(공휴일 "
+              f"{_lg['holiday_days']:g}일 · 유급휴가 {_lg['leave_days']:g}일 · 휴가 추정 {_lg['inferred_leave_days']:g}일)"
+              + (f" · 근태·흔적 모두 없음 {_lg['nohr_days']:g}일" if _lg["nohr_days"] else "")
+              + (f" · LM30 방식이었다면 {hinfo['mm_lm30']:.2f} MM" if hinfo.get("mm_lm30") is not None else ""))
     # LM30(2026-10-18) — 출퇴근 추정 합계(시간·일수만 — 출근·퇴근 시각은 로그에도 찍지 않는다)
     att = hinfo.get("attendance") if isinstance(hinfo.get("attendance"), dict) else {}
     at = att.get("total") or {}

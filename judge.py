@@ -2579,12 +2579,18 @@ def rehours_meta(kept, dropped, tag, cfg, rep, data_dir=None, say=print):
             import attendance as _att
             att_days, att_usual, att_agg = _att.take_local(info)
         except ImportError:                        # 구판 core — 칸만 버린다
-            info.pop("attendance_days", None)
-            info.pop("attendance_usual", None)
-            info.pop("attendance_agg", None)
+            for _k in ("attendance_days", "attendance_usual", "attendance_agg", "attendance_hr", "attendance_legal"):
+                info.pop(_k, None)
         mj["mm_basis"] = info
         if info.get("mm_lm29") is not None:
             mj["mm_lm29"] = info["mm_lm29"]       # 'LM29 방식이었다면 X MM' — mine.meta_doc 과 같은 최상위 키
+        # LM30v1(2026-10-19) 법정 채움 MM — 규칙 표식·'LM30 방식이었다면 X MM'(mine.meta_doc 과 같은 최상위 키). 재산정 때 기준이
+        # 바뀌었으면(measured) 옛 값을 남기지 않는다. 달마다 근태 기록 시간·+@ 나눔은 take_local 이 att_agg["legal"] 로 옮겼다
+        for k in ("mm_rule", "mm_lm30"):
+            if info.get(k) is not None:
+                mj[k] = info[k]
+            else:
+                mj.pop(k, None)
         for k in ("coverage", "measure", "cfg_used", "tool_usage"):   # mine 과 같이 최상위에도 싣는다(팀 취합이 읽는다)
             if isinstance(info.get(k), dict):
                 mj[k] = info[k]

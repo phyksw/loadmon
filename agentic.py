@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 r"""
-agentic.py — Agentic AI 니즈 후보 발굴 (LoadMonitor30 — LM29부터 LM28 의 Agentic 과제 매칭에서 '발굴'만 남겼다)
+agentic.py — Agentic AI 니즈 후보 발굴 (LoadMonitor30v1 — LM29부터 LM28 의 Agentic 과제 매칭에서 '발굴'만 남겼다)
 
 Copilot 에게 [본인 업무(#번호·과제·세부업무·유형·설명)]만 주고, 그 사람이 반복해서 하는 업무에서 Agentic AI 로 자동화할
 만한 **니즈 후보**(new — 이름·동작 로직·발굴 사유·근거 업무)만 찾게 한다.

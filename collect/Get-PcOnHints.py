@@ -74,7 +74,7 @@ def lmstatus(rc, reason="", counts=None):
 
 
 def history_files():
-    r"""Edge/Chrome 전 프로필의 History 경로 (LM 전용 Edge 프로필 data\lm30_edge 는 설치 폴더 안이라 여기 없음)"""
+    r"""Edge/Chrome 전 프로필의 History 경로 (LM 전용 Edge 프로필 data\lm30v1_edge 는 설치 폴더 안이라 여기 없음)"""
     la = os.environ.get("LOCALAPPDATA", "")
     outs = []
     for base in (os.path.join(la, "Microsoft", "Edge", "User Data"),
@@ -104,7 +104,7 @@ def visit_times(hist_path, t0, t1, include_synced=False, stats=None):
     """방문 시각 목록 — 브라우저가 잠그고 있어도 사본으로 읽는다 (URL 은 조회하지 않음).
     include_synced=False 면 visit_source.source=0(SOURCE_SYNCED — 다른 기기에서 동기화된 방문)을 뺀다.
     stats(dict)를 주면 synced(뺀 방문 수)를 더한다. 반환 방문 시각 목록."""
-    tmp = os.path.join(tempfile.gettempdir(), "lm30_hist_copy")     # LM24(lm_hist_copy)·LM28(lm28_…)·LM29(lm29_…)와 동시 실행해도 겹치지 않게
+    tmp = os.path.join(tempfile.gettempdir(), "lm30v1_hist_copy")   # LM24(lm_hist_copy)·LM28(lm28_…)·LM29(lm29_…)·LM30(lm30_…)과 동시 실행해도 겹치지 않게
     times = []
     try:
         shutil.copy2(hist_path, tmp)
