@@ -7,6 +7,7 @@ run.py — LoadMonitor30 통합 실행기: 수집 → 추출 → (AI 판정·내
   python run.py --from ... --to ... --ai                      # AI 정제까지 (Copilot 무개입)
   python run.py                                               # 기간 생략 = 올해 1월 1일 ~ 오늘 (화면·bat 기본과 같다)
   python run.py --from ... --to ... --web-only mail|teams     # 웹 경로만(화면 버튼용 — 기간을 늘 넘긴다 · LM28)
+  python run.py --from ... --to ... --web-only gerp           # GERP 근무 기록 읽기만(LM30 시험 기능 — attendance.gerp, 기본 꺼짐)
   python run.py --reset-cursors ...                           # 수집 커서·일자×축 원장을 지우고 처음부터 읽기(LM28)
 
 설계 원칙 (v5):
@@ -1309,10 +1310,74 @@ def collect_teams(c, d0, d1, data, ps, col, led=None, state=None):
     report_gaps(led, d0, d1, ("teams",), "팀즈 원장(미확인 날)")
 
 
+GERP_STAGE = "GERP 근무 기록 읽기"
+GERP_KINDS_OK = ("ok", "logged_out", "no_table", "disabled", "no_url")
+
+
+def gerp_stage(c):
+    r"""LM30(2026-10-19) GERP 근무 기록 읽기 — 시험 기능(config attendance.gerp.enabled · 기본 꺼짐 — 꺼져 있으면 단계도 없다).
+    [분석 실행](수집 끝·업무 로드 추출 전)과 화면 [GERP 근무 기록 읽기](--web-only gerp)에서만 돈다 — [로컬PC 자료수집]·[재분석만]은 하지 않는다.
+    collect\Get-GerpWork.py 한 번: 사람이 전용 Edge 에서 로그인해 둔 GERP 근무 현황 화면을 우리 탭 하나로 읽어(로그인하지 않는다 —
+    로그아웃이면 읽지 않음) 지난 날의 근무 기록을 data\근태\gerp.csv(근태 기록 칸)에 모은다 → 분석의 +@(근태 기록 밖에서 LM 이 찾은 근무 —
+    core\attendance 머리말 14 · 근태에서 나온 값은 이 PC 에만).
+    로그아웃·표 없음은 알림이 아닌 평범한 진행 줄(단계 ok)이고, 오류여도 실행은 계속한다(단계만 실패로 적는다 — 사유 코드 없이 쉬운 말).
+    → {"kind", "rows", "gate_days"} | None(꺼짐)"""
+    try:
+        import attendance as _att
+        g = _att.norm_gerp(c)[0]
+    except Exception:  # noqa: BLE001 - 설정을 못 읽으면 꺼진 것으로 본다
+        return None
+    if not g["enabled"]:
+        return None
+    print(f"\n── {GERP_STAGE} (시험 기능 — 로그인해 둔 GERP 화면만 읽습니다)")
+    t0 = time.time()
+    try:
+        import gerp as _gp
+        lim = _gp.timeout_sec(g)
+    except Exception:  # noqa: BLE001
+        _gp, lim = None, 330
+    if not g["url"]:
+        # 켰지만 주소가 비었거나 http(s) 주소가 아니다 — 수집기도 Edge 도 띄우지 않는다(상태 파일에만 남겨 화면 카드가 말한다)
+        note = "GERP 근무 현황 화면 주소(attendance.gerp.url)가 비어 있거나 http(s) 주소가 아니라 읽지 않았습니다"
+        print("   " + note)
+        if _gp is not None:
+            try:
+                data = os.path.join(ROOT, "data")
+                _gp.write_status(data, _gp.make_status("no_url", datetime.now(), why=note, prev=_gp.read_status(data)))
+            except Exception:  # noqa: BLE001 - 상태 파일을 못 써도 실행은 계속
+                pass
+        record(GERP_STAGE, True, time.time() - t0, note)
+        return {"kind": "no_url", "rows": 0, "gate_days": 0}
+    rc, tail, how = _RUN_STEP([sys.executable, os.path.join(ROOT, "collect", "Get-GerpWork.py")], lim, GERP_STAGE)
+    st = collect_status.parse(tail, rc, src="gerp", how=how)
+    cnt = st.get("counts") if isinstance(st.get("counts"), dict) else {}
+    kind = str(cnt.get("kind") or "")
+    lines = [str(ln).strip() for ln in st.get("lines") or [] if str(ln).strip()][-6:]
+    for ln in lines:
+        print("   " + ln)
+    if how != "ok" or kind not in GERP_KINDS_OK:
+        kind = "error"
+        if how == "timeout":
+            lines.append("GERP 화면이 제때 답하지 않아 멈췄습니다 — 이번 분석은 지난번까지 모은 GERP 기록으로 계속합니다")
+            print("   " + lines[-1])
+    note = lines[-1] if lines else ("GERP 근무 기록을 읽지 못했습니다" if kind == "error" else "")
+    record(GERP_STAGE, kind != "error", time.time() - t0, note)
+    return {"kind": kind, "rows": _n(cnt.get("rows")), "gate_days": _n(cnt.get("gate_days"))}
+
+
 def web_only(c, kind, d0, d1, data, col):
-    r"""--web-only mail|teams — 화면의 [Outlook 웹 읽기]·[팀즈 웹 읽기]용(LM28 F-14): 기간(d0·d1)을 늘 넘기고, 읽은 뒤
+    r"""--web-only mail|teams|gerp — 화면의 [Outlook 웹 읽기]·[팀즈 웹 읽기]용(LM28 F-14): 기간(d0·d1)을 늘 넘기고, 읽은 뒤
     원장·G1 정제(·메일은 병합)까지 한다. 사람이 누른 것이라 공백만이 아니라 기간 전체를 읽는다. 끝에 이 실행이 띄운
-    전용 Edge 를 닫는다(로그인 대기면 둔다). → 종료 코드(0 정상 · 2 로그인 필요 · 1 실패)"""
+    전용 Edge 를 닫는다(로그인 대기면 둔다). → 종료 코드(0 정상 · 2 로그인 필요 · 1 실패)
+    LM30(2026-10-19) gerp — [GERP 근무 기록 읽기](gerp_stage 한 번 — 원장·정제 없음 · 기간은 쓰지 않는다: 화면에 보이는 급여 기간을 읽는다).
+    로그아웃·표 없음도 0(알림 아님 — 화면이 상태 파일로 말한다), 오류·꺼짐만 1."""
+    if kind == "gerp":
+        st = gerp_stage(c)
+        if st is None:
+            print("\n── GERP 근무 기록 읽기 — 꺼져 있습니다(config attendance.gerp.enabled) · 읽지 않았습니다")
+            return 1
+        close_edge_once({}, "web_only")
+        return 0 if st["kind"] != "error" else 1
     state = {}
     led = open_ledger(c, data)
     sts = []
@@ -1690,8 +1755,8 @@ def _main():
         reset_cursors(c, data)
     wo = arg("--web-only")
     if "--web-only" in sys.argv:
-        if wo not in ("mail", "teams", "all"):
-            print("[!] --web-only 뒤에 mail · teams · all 중 하나를 적으세요 (예: --web-only mail --from 2026-01-01 --to 2026-06-30)")
+        if wo not in ("mail", "teams", "all", "gerp"):
+            print("[!] --web-only 뒤에 mail · teams · all · gerp 중 하나를 적으세요 (예: --web-only mail --from 2026-01-01 --to 2026-06-30)")
             return 1
         rc_w = web_only(c, wo, d0, d1, data, col)
         RUN["finished"] = time.strftime("%Y-%m-%d %H:%M")
@@ -1747,6 +1812,10 @@ def _main():
         led.save()
         if "--collect-only" in sys.argv:
             close_edge_once(STATE, "collect_end")    # 수집만 — 수집 끝에 닫는다(로그인 대기면 둔다)
+        else:
+            # LM30(2026-10-19) GERP 근무 기록 읽기 — 시험 기능(기본 꺼짐 — 꺼져 있으면 아무것도 하지 않는다). [분석 실행]에서만, 업무 로드
+            # 추출(근태 기록 칸을 읽는 곳) 전에. 로그아웃·표 없음은 진행 줄 하나이고 오류여도 실행은 계속한다.
+            gerp_stage(c)
 
     if "--collect-only" in sys.argv:
         # 근무시간 실측을 **로드바 안에서** 계산·저장한다 — 예전에는 화면이 열릴 때 재계산해
@@ -1770,8 +1839,8 @@ def _main():
                 _XW.save_day_hours(os.path.join(ROOT, "report"), _tgw, _wh)
                 # LM30(2026-10-18): 출퇴근 추정의 날짜별 자료도 같은 자리에(이 PC 전용 — 팀 묶음·공유폴더 목록에 없다)
                 import attendance as _ATW
-                _ad, _au = _ATW.take_local(_hi)
-                _XW.save_attendance(os.path.join(ROOT, "report"), _tgw, _ad, _au, _hi.get("attendance"))
+                _ad, _au, _ag = _ATW.take_local(_hi)          # _ag — 근태 기록과 견준 합계(+@)까지(LM30 2026-10-19)
+                _XW.save_attendance(os.path.join(ROOT, "report"), _tgw, _ad, _au, _ag)
                 print(f"   근무 실측 {len(_wh)}일 저장 — 본 PC 추이 실선에 그대로 쓰입니다")
             _pg("근무시간 실측", 1, 1)
         except Exception as _e:  # noqa: BLE001

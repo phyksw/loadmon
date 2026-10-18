@@ -90,6 +90,9 @@ NEED = [
     "core/projmap.py",
     # LM30 새 파일 — 출퇴근 추정(빠지면 분석이 시작부터 죽는다 — extract·mine 이 임포트)
     "core/attendance.py",
+    # LM30(2026-10-19) GERP 근무 기록 읽기(시험 기능 · 기본 꺼짐) — 빠지면 그 기능만 빠진다(화면 카드 한 줄·[분석 실행]의 그 단계)
+    "core/gerp.py",
+    "collect/Get-GerpWork.py",
     "docs/설정가이드.md",
     "docs/사용안내.html",
     "tools/copilot_auto.py",

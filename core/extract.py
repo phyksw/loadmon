@@ -2431,8 +2431,9 @@ def save_day_hours(rep_dir, tag, day_hours):
 
 def save_attendance(rep_dir, tag, days, usual=None, agg=None):
     r"""LM30(2026-10-18) 출퇴근 추정의 날짜별 자료 — report\attendance_<tag>.json(**이 PC 전용** — 팀 묶음(teamup.FILE_NAMES)·
-    공유폴더(export.py) 목록에 없다). {"schema":1, "tag", "days":{날짜: 출근·퇴근·덩어리·시간·신뢰도…}, "usual":{평소 출근·퇴근},
-    "agg":{주·달·전체 합계}}. 판정 뒤 재산정(judge.rehours_meta)·수집만(run.py --collect-only)도 같은 함수로 다시 쓴다.
+    공유폴더(export.py) 목록에 없다). {"schema":1, "tag", "days":{날짜: 출근·퇴근·덩어리·시간·신뢰도…(근태와 견준 rec 포함)},
+    "usual":{평소 출근·퇴근}, "agg":{주·달·전체 합계 — 근태 기록과 견준 값(+@)까지: attendance.take_local 의 세 번째 값}}.
+    판정 뒤 재산정(judge.rehours_meta)·수집만(run.py --collect-only)도 같은 함수로 다시 쓴다.
     days 가 None(출퇴근 추정이 돌지 않았다)이면 쓰지 않는다. 쓰기 실패는 False — 분석은 계속한다."""
     if days is None:
         return False
@@ -4121,9 +4122,11 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
         night_days(20시 넘은 퇴근)·long_days·absent_worked_h 가 출퇴근 추정 값이고 LM29 값은 lm29_totals·lm29_day_hours·lm29_basis,
         measure.method = "출퇴근 추정"(measure.lm29_method = LM29 방식 이름). day_basis 의 LM29 저녁·새벽 창(시각)은 길이
         (evening_h·dawn_h)로 바뀐다 — 날짜별 근거에 퇴근 무렵 시각을 남기지 않는다.
-      · info["attendance"] = 시각 없는 합계(weeks·months·total·records·used_for_mm — 팀에 올려도 된다) · info["attendance_days"]·
-        info["attendance_usual"] = 날짜별 출퇴근·평소 시각(**이 PC 전용** — 호출측이 attendance.take_local 로 떼어
-        report\\attendance_<기간>.json 에만 쓴다). useForMM 을 꺼도 이 셋은 채운다(화면 참고용) · cfg_used.attendance = 쓴 설정."""
+      · info["attendance"] = 시각 없는 합계(weeks·months·total·used_for_mm · +@ 추정 plus_est_h — 근태 기록 없이 잰 것: 팀에 올려도
+        된다) · info["attendance_agg"] = 근태 기록과 견준 값(records·plus_h·missing_h·gate_plus_h …)까지 든 합계 · info["attendance_days"]·
+        info["attendance_usual"] = 날짜별 출퇴근·평소 시각(이 셋은 **이 PC 전용** — 호출측이 attendance.take_local 로 떼어
+        report\\attendance_<기간>.json 에만 쓴다 · LM30 2026-10-19). useForMM 을 꺼도 채운다(화면 참고용) · cfg_used.attendance = 쓴 설정.
+        근태 기록은 참고라 투입 시간·MM 을 바꾸지 않는다."""
     from datetime import timedelta
     cfg = cfg if isinstance(cfg, dict) else {}
     mc, cfg_warns = norm_cfg(cfg)            # 잘못된 설정값은 죽지 않고 기본값 + info["config_warnings"]
@@ -5064,7 +5067,12 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
         cfg_warns.append(f"출퇴근 추정 실패({type(e).__name__}: {str(e)[:80]}) — 이번 결과는 LM29 방식으로 계산했습니다")
     if att is not None:
         att["agg"]["used_for_mm"] = use_att
-        info["attendance"] = att["agg"]
+        # LM30(2026-10-19) +@ — mm_meta 로 가는 합계는 근태 기록 없이 잰 것(team)뿐이다. 근태 기록·GERP 와 견준 값까지 든 합계(agg)는
+        # 이 PC 전용 칸 attendance_agg 로 — 호출측이 take_local 로 떼어 report\attendance_<기간>.json 에만 쓴다(근태가 없으면 같은 dict)
+        team = att.get("team") if isinstance(att.get("team"), dict) else att["agg"]
+        team["used_for_mm"] = use_att
+        info["attendance"] = team
+        info["attendance_agg"] = att["agg"]
         info["attendance_days"] = att["days"]
         info["attendance_usual"] = att["usual"]
         if use_att:

@@ -39,16 +39,36 @@ attendance.py — 출퇴근·근무 시간 추정 (LoadMonitor30 · LM30(2026-10
      낮음: LM29 방식 시간·바닥값을 쓴 날이거나 그날 PC 기록이 없는 날.
  11. 합계 — 주(월~일: 40시간을 넘은 시간·52시간을 넘은 주) · 달 · 전체. 평소 출근·퇴근(최근 28일 평일의 가운데 값)은
      이 PC에만 둡니다.
- 12. 근태 기록 칸 — data\근태\*.csv(날짜·출근·퇴근, 있으면 휴게(분)·인정연장·휴가)를 넣으면 날마다 근태 기록과 견주어
-     '근태에 없는 근무' 시간을 셉니다. 폴더가 없으면 견주지 않습니다(오류 아님). 읽지 못한 행은 건너뛰고 개수만 셉니다.
- 13. 개인정보 — 날짜별 출근·퇴근 시각·덩어리·평소 시각·근태 기록 비교는 report\attendance_<기간>.json(이 PC)에만 둡니다.
-     mm_meta·팀 업로드·공유폴더 사본의 출퇴근 절·Copilot에는 주·달 합계만 갑니다(take_local·scrub_meta가 떼어 냅니다).
+ 12. 근태 기록 칸 — data\근태\*.csv(날짜·출근·퇴근, 있으면 휴게(분)·인정연장·휴가 · 입실·퇴실)를 넣으면 날마다 근태 기록과
+     견주어 +@(아래 14)를 셉니다. 폴더가 없으면 견주지 않습니다(오류 아님). 읽지 못한 행은 건너뛰고 개수만 셉니다.
+     LM30(2026-10-19): 날짜만 있고 출근·퇴근·휴가가 빈 행(휴일·기록 없는 날)은 읽지 못한 행이 아니라 빈 날 — 파일 기간에만 넣습니다.
+     GERP 근무 기록 읽기(시험 기능 — config.attendance.gerp, 기본 꺼짐 · norm_gerp)가 같은 칸에 gerp.csv 를 모읍니다.
+ 13. 개인정보 — 날짜별 출근·퇴근 시각·덩어리·평소 시각은 report\attendance_<기간>.json(이 PC)에만 둡니다. mm_meta·팀 업로드·
+     공유폴더 사본의 출퇴근 절·Copilot에는 주·달 합계만 갑니다(take_local·scrub_meta가 떼어 냅니다).
+     LM30(2026-10-19): 근태 기록·GERP·태깅에서 나온 값(비교 요약 records · unrecorded_h · plus_h · missing_h · gate_plus_h ·
+     날짜별 rec)은 합계라도 이 PC 밖으로 내보내지 않습니다 — 팀으로 가는 합계는 근태 기록 없이 다시 잰 것(compute 의 team)뿐이고,
+     strip_hr·scrub_meta 가 나가기 직전에 한 번 더 뺍니다.
      ([공유폴더로 저장]이 복사하는 얼린 보고서 원문 포함본의 '수집 데이터 열람' 원자료 — PC 켜고 끈 시각 등 — 는 LM29와 같습니다.)
-     보여 주기(day_why·usual_text·headline·rule_text·records_text — 맨 끝)는 화면 카드·리포트가 같은 쉬운 말을 쓰게 하는 문구 도구입니다.
+ 14. +@ — 근태 기록 = 확실히 일한 부분, +@ = 그 밖에서 LM이 찾은 근무(LM30(2026-10-19)). 투입 MM 은 그대로 LM 이 잰 근무시간
+     (work_h)이고 근태 기록은 참고입니다(MM 을 바꾸지 않는다).
+     · 근태 기록이 있는 날(기록 칸 기간 안) — 근태 창 = [출근, 퇴근](퇴근이 이르면 다음 날). +@ = 그날 덩어리 중 창 밖(일찍 온 시간·
+       늦게 간 시간·따로 떨어진 저녁·PC 밖 덩어리)의 근무. 휴게는 근태 기록이 뺀 만큼(휴게 열, 없으면 4시간마다 breakPer4hMin)을
+       창 안에서 먼저 빼고, 그래도 남은 LM 휴게(더 길게 일해 늘어난 휴게)는 창 밖에서 뺍니다(퇴근 뒤 쪽 먼저) — 창 안 근무 + +@ =
+       덩어리 근무. 시각을 모르는 근무(LM29 방식·시간만 적은 수동 기록·출장 표준일로 채운 시간)는 창 안으로 봅니다.
+       기간 안인데 근태 행이 없는 날(빈 날 포함)·종일 휴가인 날·출퇴근 시각이 없는 날의 근무는 전부 +@ 입니다.
+     · missing_h(참고) = 근태 창 중 LM 이 흔적을 못 본 시간 − 근태 휴게 − 시각을 모르는 근무(회의·실험처럼 PC 를 떠난 시간).
+     · gate_plus_h(참고) = 입실~퇴실(태깅) 중 근태 창 밖에 있던 시간 — 건물에 더 머문 시간이고 근무에 더하지 않습니다.
+     · 근태 기록이 없는 날(기록 칸 기간 밖·기록 칸 없음) — +@ 추정 plus_est_h = 연장 + 휴일(평일 8시간 넘은 시간 · 휴일 근무 전부 ·
+       종일 휴가일 근무 전부), 그중 PC 밖 plus_est_offpc_h = min(PC 밖, 추정). GERP 를 못 읽어도 +@ 가 늘 보입니다.
+     · 합계(주·달·전체) — plus_h(근태와 견준 것) · plus_est_h(기록 없는 날의 추정) · plus_all_h(둘의 합 = +@) · plus_days ·
+       missing_h · gate_plus_h · rec_days · gate_days. 팀으로 가는 합계(team)에는 근태가 없으므로 모든 날이 추정 — plus_est_h 만.
+     보여 주기(day_why·usual_text·headline·rule_text·records_text·plus_line·day_plus — 맨 끝)는 화면 카드·리포트가 같은 쉬운 말을
+     쓰게 하는 문구 도구입니다.
 
 시각은 '절대 분' — base 날짜 00:00부터 센 분 — 으로 다룹니다(자정을 넘는 덩어리를 그대로 잇기 위해).
 """
 import bisect
+import copy
 import csv
 import io
 import math
@@ -56,6 +76,7 @@ import os
 import re
 import statistics
 from datetime import date, timedelta
+from urllib.parse import urlparse
 
 # ── 설정 기본값·허용 범위(config.attendance) — 키가 없거나 블록이 없으면 기본값(useForMM 켬) ──
 DEFAULTS = {"useForMM": True, "leadMin": 30, "tailMin": 30, "pcEdgeBeforeMin": 120, "pcEdgeAfterMin": 90,
@@ -77,13 +98,21 @@ NIGHT_DAY_H = 0.5           # 야간(22~06) 0.5h 이상이면 야간 근무일
 LONG_DAY_H = 16.0
 PHYS_CAP_H = 24.0
 USUAL_DAYS = 28
-REC_EPS_H = 0.05            # 근태 기록과 이 시간(3분) 넘게 다를 때만 '근태에 없는 근무'
+REC_EPS_H = 0.05            # 근태 기록과 이 시간(3분) 넘게 다를 때만 '근태에 없는 근무' · +@ 가 있는 날
 RECORDS_DIR = "근태"        # data\근태\*.csv — 근태 기록 칸(사용자가 내려받아 넣는다)
-LOCAL_KEYS = ("attendance_days", "attendance_usual")   # info 의 이 PC 전용 칸 — mm_meta 에 실리기 전에 뗀다
+# info 의 이 PC 전용 칸 — mm_meta 에 실리기 전에 뗀다. attendance_agg(LM30 2026-10-19) = 근태 기록과 견준 값까지 든 합계(이 PC 의
+# attendance 파일로만 — info["attendance"] 는 근태 없이 잰 합계(compute 의 team))
+LOCAL_KEYS = ("attendance_days", "attendance_usual", "attendance_agg")
 CLOCK_KEYS = ("evening", "dawn")                       # LM29 날짜별 근거의 시각 창 — mm_meta 에는 길이(h)로만
 _SUM_KEYS = ("work_h", "regular_h", "ext_h", "night_h", "holiday_h", "holiday_ext_h", "offpc_h", "lm29_h")
 _CNT_KEYS = ("days", "late_days", "night_days", "leave_work_days", "est_edge_days", "over52_weeks")
 _WEEK_KEYS = ("work_h", "regular_h", "ext_h", "night_h", "holiday_h", "offpc_h")
+# LM30(2026-10-19) +@ 합계 칸 — EST 는 LM 이 잰 값만(연장 + 휴일 — 팀에 올려도 된다), HR 은 근태 기록·GERP·태깅에서 나온 값(이 PC 전용 —
+# strip_hr·scrub_meta 가 팀·공유폴더·얼린 사본으로 나가기 전에 뺀다)
+EST_KEYS = ("plus_est_h", "plus_est_offpc_h")
+HR_SUM_KEYS = ("unrecorded_h", "plus_h", "plus_offpc_h", "plus_all_h", "missing_h", "gate_plus_h")
+HR_CNT_KEYS = ("plus_days", "rec_days", "gate_days")
+HR_KEYS = HR_SUM_KEYS + HR_CNT_KEYS
 
 
 # ════════════════════════════════ 설정 ════════════════════════════════
@@ -140,6 +169,64 @@ def norm(cfg):
                      f"{max(p['weekHours'], float(DEFAULTS['weekMaxHours'])):g} 적용")
         p["weekMaxHours"] = max(p["weekHours"], float(DEFAULTS["weekMaxHours"]))
     return p, warns
+
+
+# ── LM30(2026-10-19) GERP 근무 기록 읽기(시험 기능 — 기본 꺼짐) · config.attendance.gerp ──
+# 회사 인사 시스템(GERP)의 근무시간 현황 화면을 사람이 로그인해 둔 전용 Edge 에서 읽어 data\근태\gerp.csv(근태 기록 칸)에 모으는 선택 기능의
+# 설정이다(읽기 collect\Get-GerpWork.py · 해석·저장·문구 core\gerp.py). 블록이 없으면 꺼짐. 켜도 url 이 http(s) 주소가 아니면 아무것도
+# 하지 않는다. norm() 과 따로 둔다 — norm() 의 값은 cfg_used.attendance(숫자만)로 mm_meta 에 실리고 그 경고는 config_warnings 로 팀
+# 서버까지 간다. 그래서 GERP 경고는 GERP 단계만 찍고, 경고 글에 주소를 싣지 않는다(질의 문자열에 회사 코드·사번이 들 수 있다).
+GERP_DEFAULTS = {"enabled": False, "url": "", "readGate": True, "maxGateDays": 40, "timeoutSec": 60}
+GERP_RANGES = {"maxGateDays": (0, 400), "timeoutSec": (10, 600)}
+_URL_BAD = re.compile(r"[\s\x00-\x1f\x7f]")
+
+
+def _gerp_url(v):
+    """GERP 근무 현황 주소 → (쓸 주소 | "", 형식이 틀렸나). http·https 이고 호스트가 있는 주소만 받는다 — 공백·제어 문자·사용자 정보
+    (아이디@호스트)가 든 주소, 2000자 넘는 주소, 글자가 아닌 값은 받지 않는다. 비었으면 ("", False)."""
+    if v is None or (isinstance(v, str) and not v.strip()):
+        return "", False
+    if not isinstance(v, str):
+        return "", True
+    s = v.strip()
+    if len(s) > 2000 or _URL_BAD.search(s):
+        return "", True
+    try:
+        u = urlparse(s)
+        host = u.hostname or ""
+        _ = u.port                                            # 숫자가 아닌 포트는 ValueError
+    except ValueError:
+        return "", True
+    if u.scheme.lower() not in ("http", "https") or not host or u.username or u.password:
+        return "", True
+    return s, False
+
+
+def norm_gerp(cfg):
+    """config.attendance.gerp → (값 dict, 경고 list). 값 = GERP_DEFAULTS 의 키 + on(enabled 이고 url 을 쓸 수 있다).
+    블록이 없으면 꺼짐(경고 없음). 블록이 객체가 아니면 꺼짐 + 경고. enabled·readGate 는 true/false(글자 'true' 도), maxGateDays(0~400 —
+    0 이면 태깅을 읽지 않는다)·timeoutSec(10~600 — 화면이 뜨기를 기다리는 초)은 범위 밖·글자면 기본값 + 경고. 경고 글에 주소는 싣지 않는다."""
+    warns = []
+    g = dict(GERP_DEFAULTS)
+    a = cfg.get("attendance") if isinstance(cfg, dict) else None
+    blk = a.get("gerp") if isinstance(a, dict) else None
+    if blk is None:
+        g["on"] = False
+        return g, warns
+    if not isinstance(blk, dict):
+        warns.append(f"attendance.gerp 는 객체({{…}})여야 함({type(blk).__name__}) — GERP 근무 기록 읽기를 끕니다")
+        g["on"] = False
+        return g, warns
+    g["enabled"] = _bool(blk.get("enabled"), False, "attendance.gerp.enabled", warns)
+    g["readGate"] = _bool(blk.get("readGate"), True, "attendance.gerp.readGate", warns)
+    for k, (lo, hi) in GERP_RANGES.items():
+        g[k] = int(_num(blk.get(k), GERP_DEFAULTS[k], lo, hi, "attendance.gerp." + k, warns))
+    url, bad = _gerp_url(blk.get("url"))
+    if bad:
+        warns.append("attendance.gerp.url 이 http(s) 주소가 아닙니다 — GERP 근무 기록을 읽지 않습니다(주소 글은 적지 않습니다)")
+    g["url"] = url
+    g["on"] = bool(g["enabled"] and url)
+    return g, warns
 
 
 def _dur(m):
@@ -418,7 +505,9 @@ def compute(base, points, spans, weak, presence, live_ends, d0, d1, now, p, std=
       nopc     PC 기록 없는 달의 표준일 추정 날짜(LM29) · untimed_min {날짜: 날짜만 아는 발신 인정 분}
       lm29     {날짜: LM29 방식 시간} · lm29_night {날짜: LM29 야간 꼬리표 h} · rec_days PC 기록이 있는 날(없으면 presence 로)
       day_cap  선택 상한(h) · records load_records() 결과(없으면 비교 안 함)
-    returns {"days": {iso: 행}, "agg": 합계(시각 없음), "usual": 평소 출근·퇴근(이 PC 전용)}"""
+    returns {"days": {iso: 행}, "agg": 합계(시각 없음 — 근태 기록과 견준 값까지: 이 PC 전용), "team": 근태 기록 없이 잰 합계(팀·
+    mm_meta 로 가는 것 — records 가 None 이면 agg 와 같은 dict), "usual": 평소 출근·퇴근(이 PC 전용)}.
+    LM30(2026-10-19) +@ — 근태 기록이 있으면 hr_compare 가 날마다 견주어 행에 rec 을 붙인다(투입 시간 work_h 는 그대로)."""
     is_off = is_off or (lambda dd: dd.isoweekday() > 5)
     leave, manual_floor, untimed_min = leave or {}, manual_floor or {}, untimed_min or {}
     lm29, lm29_night = lm29 or {}, lm29_night or {}
@@ -445,8 +534,14 @@ def compute(base, points, spans, weak, presence, live_ends, d0, d1, now, p, std=
         if row is not None:
             days[d.isoformat()] = row
         d += timedelta(days=1)
-    rec_sum = compare_records(days, records, d0, d1, p) if records is not None else None
-    return {"days": days, "agg": aggregate(days, d0, d1, p, rec_sum), "usual": usual_times(days, d1, now)}
+    if records is None:
+        agg = aggregate(days, d0, d1, p)
+        return {"days": days, "agg": agg, "team": agg, "usual": usual_times(days, d1, now)}
+    hr = hr_compare(days, records, d0, d1, p)
+    rec_sum = compare_records(days, records, d0, d1, p, hr)
+    # 팀 쪽 합계는 근태 기록 없이 다시 잰다 — 근태에서 나온 칸이 없고, +@ 추정도 모든 날의 연장 + 휴일(근태가 있는 날을 빼지 않는다)
+    return {"days": days, "agg": aggregate(days, d0, d1, p, rec_sum, hr), "team": aggregate(days, d0, d1, p),
+            "usual": usual_times(days, d1, now)}
 
 
 # ════════════════════════════════ 합계 ════════════════════════════════
@@ -456,29 +551,70 @@ def _zero():
     return z
 
 
-def aggregate(days, d0, d1, p, records=None):
-    """날짜별 행 → {"schema", "method", "weeks", "months", "total"[, "records"]} — 시각이 없는 합계뿐(팀에 올려도 되는 것).
-      weeks  {"YYYY-Www": {from, to, work_h…offpc_h, days, over40_h, over52, partial}} (ISO 주 월~일)
+def _est(r):
+    """날짜별 행 → (+@ 추정 h, 그중 PC 밖 h) — 근태 기록이 없는 날의 +@ = 연장 + 휴일(평일 8시간 넘은 시간 · 휴일 근무 전부 · 종일 휴가일
+    근무 전부). LM 이 잰 값만 쓴다(팀에 올려도 된다). PC 밖은 많아야 그만큼."""
+    def f(k):
+        try:
+            x = float(r.get(k) or 0)
+        except (TypeError, ValueError):
+            return 0.0
+        return x if math.isfinite(x) else 0.0
+    e = max(0.0, f("ext_h") + f("holiday_h"))
+    return e, min(max(0.0, f("offpc_h")), e)
+
+
+def _week_key(d):
+    y, w, _wd = d.isocalendar()
+    return f"{y}-W{w:02d}"
+
+
+def aggregate(days, d0, d1, p, records=None, hr=None):
+    """날짜별 행 → {"schema", "method", "weeks", "months", "total"[, "records"]} — 시각이 없는 합계뿐.
+      weeks  {"YYYY-Www": {from, to, work_h…offpc_h, days, over40_h, over52, partial, plus_est_h, plus_est_offpc_h}} (ISO 주 월~일)
       months {"YYYY-MM": {work_h, regular_h, ext_h, night_h, holiday_h, holiday_ext_h, offpc_h, lm29_h, days, late_days,
-              night_days, leave_work_days, est_edge_days, over52_weeks[, unrecorded_h]}} — 52시간 넘은 주는 그 주 목요일의 달
-      total  months 와 같은 키 + weeks(주 수)·over40_h(주마다 40시간 넘은 시간의 합)"""
+              night_days, leave_work_days, est_edge_days, over52_weeks, plus_est_h, plus_est_offpc_h}} — 52시간 넘은 주는 그 주
+              목요일의 달
+      total  months 와 같은 키 + weeks(주 수)·over40_h(주마다 40시간 넘은 시간의 합)
+    records = compare_records 요약·hr = hr_compare 값(LM30 2026-10-19 +@). 근태 기록이 있으면(records.present — 이 PC 전용 합계)
+    weeks·months·total 에 HR_KEYS(unrecorded_h(달·전체) · plus_h · plus_offpc_h · plus_all_h · missing_h · gate_plus_h · plus_days ·
+    rec_days · gate_days)를 더하고 plus_est_h 는 기록 칸 기간 밖의 날만 센다. 없으면(팀으로 가는 합계) plus_est_h 는 모든 날.
+    근태에만 있는 날(이 PC 행이 없다)의 값은 그 주·달에 LM 행이 있을 때만 그 칸에, 전체에는 늘 들어간다."""
     has_rec = bool(records and records.get("present"))
-    weeks, months, total = {}, {}, _zero()
-    if has_rec:
-        total["unrecorded_h"] = 0.0
+    hr = hr if (has_rec and isinstance(hr, dict)) else {}
+    rng = records.get("range") if has_rec and isinstance(records.get("range"), (list, tuple)) else []
+    rng = [str(x)[:10] for x in rng] if len(rng) == 2 else []
+    eps = REC_EPS_H
+
+    def zero():
+        z = _zero()
+        z.update(dict.fromkeys(EST_KEYS, 0.0))
+        if has_rec:
+            z.update(dict.fromkeys(HR_SUM_KEYS, 0.0))
+            z.update(dict.fromkeys(HR_CNT_KEYS, 0))
+        return z
+    weeks, months, total = {}, {}, zero()
     for iso in sorted(days):
         r = days[iso]
         d = date.fromisoformat(iso)
         m = months.get(iso[:7])
         if m is None:
-            m = months[iso[:7]] = _zero()
-            if has_rec:
-                m["unrecorded_h"] = 0.0
+            m = months[iso[:7]] = zero()
         worked = r["work_h"] > 0
         un = 0.0
         rc = r.get("rec")
         if has_rec and isinstance(rc, dict) and rc.get("diff_h", 0) > REC_EPS_H:
             un = rc["diff_h"]
+        covered = bool(rng) and rng[0] <= iso <= rng[1]           # 근태 기록 칸 기간 안 — +@ 는 hr 에서
+        est, est_off = (0.0, 0.0) if covered else _est(r)
+        mon = d - timedelta(days=d.isoweekday() - 1)
+        wk = weeks.get(_week_key(d))
+        if wk is None:
+            wk = weeks[_week_key(d)] = {"from": mon.isoformat(), "to": (mon + timedelta(days=6)).isoformat(),
+                                        "days": 0, **dict.fromkeys(_WEEK_KEYS + EST_KEYS, 0.0)}
+            if has_rec:                                       # 주에는 unrecorded_h 가 없다(예전과 같이 달·전체만)
+                wk.update(dict.fromkeys((k for k in HR_SUM_KEYS if k != "unrecorded_h"), 0.0))
+                wk.update(dict.fromkeys(HR_CNT_KEYS, 0))
         for t in (m, total):
             for k in _SUM_KEYS:
                 t[k] += r[k]
@@ -489,19 +625,39 @@ def aggregate(days, d0, d1, p, records=None):
             t["est_edge_days"] += 1 if (worked and (r["arrive_src"] in EST_SRC or r["leave_src"] in EST_SRC)) else 0
             if has_rec:
                 t["unrecorded_h"] += un
-        y, w, _wd = d.isocalendar()
-        mon = d - timedelta(days=d.isoweekday() - 1)
-        wk = weeks.get(f"{y}-W{w:02d}")
-        if wk is None:
-            wk = weeks[f"{y}-W{w:02d}"] = {"from": mon.isoformat(), "to": (mon + timedelta(days=6)).isoformat(),
-                                            "days": 0, **dict.fromkeys(_WEEK_KEYS, 0.0)}
+        for t in (m, total, wk):
+            t["plus_est_h"] += est
+            t["plus_est_offpc_h"] += est_off
+            if has_rec:
+                t["plus_days"] += 1 if est > eps else 0
         for k in _WEEK_KEYS:
             wk[k] += r[k]
         wk["days"] += 1 if worked else 0
+    # 근태와 견준 값(이 PC 전용) — 근태에만 있는 날(LM 행 없음)도 hr 에 있다
+    for iso in sorted(hr):
+        x = hr[iso]
+        try:
+            d = date.fromisoformat(iso)
+        except ValueError:
+            continue
+        for t in (total, months.get(iso[:7]), weeks.get(_week_key(d))):
+            if t is None:
+                continue
+            t["plus_h"] += x["plus"] / 60.0
+            t["plus_offpc_h"] += x["plus_off"] / 60.0
+            t["missing_h"] += x["missing"] / 60.0
+            t["gate_plus_h"] += x["gate_plus"] / 60.0
+            t["plus_days"] += 1 if x["plus"] / 60.0 > eps else 0
+            t["rec_days"] += 1 if x["row"] else 0
+            t["gate_days"] += 1 if x["gate"] else 0
+    if has_rec:
+        for t in [total] + list(months.values()) + list(weeks.values()):
+            t["plus_all_h"] = t["plus_h"] + t["plus_est_h"]
     total["over40_h"] = 0.0
     for wk in weeks.values():
-        for k in _WEEK_KEYS:
-            wk[k] = _r(wk[k])
+        for k, v in list(wk.items()):
+            if isinstance(v, float):
+                wk[k] = _r(v)
         wk["over40_h"] = _r(max(0.0, wk["work_h"] - p["weekHours"]))
         wk["over52"] = bool(wk["work_h"] > p["weekMaxHours"] + 1e-9)
         wk["partial"] = bool(wk["from"] < d0.isoformat() or wk["to"] > d1.isoformat())
@@ -546,7 +702,9 @@ def usual_times(days, d1, now):
 
 # ════════════════════════════════ 근태 기록 칸 ════════════════════════════════
 _REC_COLS = {"date": ("날짜", "date"), "in": ("출근", "in", "start"), "out": ("퇴근", "out", "end"),
-             "break": ("휴게(분)", "break"), "approved_ot": ("인정연장", "approved_ot"), "leave": ("휴가", "leave")}
+             "break": ("휴게(분)", "break"), "approved_ot": ("인정연장", "approved_ot"), "leave": ("휴가", "leave"),
+             # LM30(2026-10-19) 태깅(출입 기록) — 첫 입실·마지막 퇴실(GERP 기록의 gerp.csv 에 있다 · 참고 — gate_plus_h)
+             "gate_in": ("입실", "gate_in"), "gate_out": ("퇴실", "gate_out")}
 _DATE_RE = re.compile(r"(\d{4})\s*[-./년]?\s*(\d{1,2})\s*[-./월]?\s*(\d{1,2})")
 _TIME_RE = re.compile(r"(\d{1,2}):(\d{2})(?::\d{2})?")
 _LEAVE_HALF = ("반차", "반휴", "오전", "오후", "half")
@@ -609,7 +767,10 @@ def _rleave(s):
 
 
 def _rec_row(r, idx):
-    """CSV 한 행 → (날짜, {in, out, break_min, approved_ot, leave}) 또는 None(읽을 수 없는 행)."""
+    """CSV 한 행 → (날짜, {in, out, break_min, approved_ot, leave}) · (날짜, None)(빈 날) · None(읽을 수 없는 행).
+    LM30(2026-10-19) 빈 날 — 날짜만 있고 출근·퇴근이 둘 다 비었고 휴가도 아닌 행(주말·휴일·근무 기록이 없는 날). 내려받은 근태 기록과
+    GERP 기록(core\\gerp — data\\근태\\gerp.csv)에는 이런 날이 늘 섞인다. 읽지 못한 행이 아니다(예전에는 '읽지 못한 행'으로 셌다) —
+    기록으로 쓰지 않고 파일 기간(range)에만 넣는다(그 기간 안의 근무는 '근태 기록이 없는 근무일'로 견준다)."""
     def cell(k):
         i = idx.get(k)
         return str(r[i]).strip() if i is not None and i < len(r) else ""
@@ -623,6 +784,8 @@ def _rec_row(r, idx):
     if t_in is None or t_out is None:
         if t_in is None and t_out is None and lv > 0:
             return d, {"in": None, "out": None, "break_min": None, "approved_ot": None, "leave": lv}
+        if t_in is None and t_out is None:
+            return d, None
         return None
     if t_out <= t_in:
         t_out += 1440.0                                       # 자정을 넘긴 퇴근
@@ -656,12 +819,39 @@ def _rec_merge(cur, v):
     return out
 
 
+def _rec_gate(r, idx):
+    """CSV 한 행의 태깅 칸(입실·퇴실 — LM30 2026-10-19) → {"in": 분|None, "out": 분|None} | None(둘 다 없거나 못 읽음).
+    '25:30'(다음 날 새벽)을 받고, 퇴실이 입실보다 이르면 다음 날로 본다. 못 읽은 태깅은 근태 행을 버리지 않는다(참고 칸이다)."""
+    def cell(k):
+        i = idx.get(k)
+        return str(r[i]).strip() if i is not None and i < len(r) else ""
+    gi, go = _rtime(cell("gate_in")), _rtime(cell("gate_out"))
+    if gi is None and go is None:
+        return None
+    if gi is not None and go is not None and go < gi:
+        go += 1440.0
+    return {"in": gi, "out": go}
+
+
+def _gate_merge(cur, g):
+    """같은 날 두 행의 태깅 — 이른 입실·늦은 퇴실"""
+    if cur is None:
+        return g
+    ins = [x for x in (cur["in"], g["in"]) if x is not None]
+    outs = [x for x in (cur["out"], g["out"]) if x is not None]
+    return {"in": min(ins) if ins else None, "out": max(outs) if outs else None}
+
+
 def load_records(data_dir):
-    r"""근태 기록 칸 — data\근태\*.csv(ERP 등에서 내려받아 넣는 파일). 머리말: 날짜|date · 출근|in|start · 퇴근|out|end ·
-    (있으면) 휴게(분)|break · 인정연장|approved_ot · 휴가|leave. 인코딩은 UTF-8(BOM 있음·없음), 아니면 CP949.
+    r"""근태 기록 칸 — data\근태\*.csv(ERP 등에서 내려받아 넣는 파일 · GERP 근무 기록 읽기가 모으는 gerp.csv). 머리말: 날짜|date ·
+    출근|in|start · 퇴근|out|end · (있으면) 휴게(분)|break · 인정연장|approved_ot · 휴가|leave · 입실|gate_in · 퇴실|gate_out(그 밖의
+    열은 읽지 않는다). 인코딩은 UTF-8(BOM 있음·없음), 아니면 CP949.
     → {"present": 파일이 있었나, "files": 읽은 파일 수, "rows": {날짜: {in, out(분 — 자정 넘김은 +1440), break_min, approved_ot,
-       leave}}, "bad": 읽지 못한 행 수, "range": (첫 날짜, 끝 날짜) | None}. 폴더가 없으면 present False(오류 아님)."""
-    out = {"present": False, "files": 0, "rows": {}, "bad": 0, "range": None}
+       leave}}, "bad": 읽지 못한 행 수, "blank": 빈 날 수(_rec_row — 기록 없이 기간에만), "range": (첫 날짜, 끝 날짜) | None,
+       "gates": {날짜: {in, out}(분 — 첫 입실·마지막 퇴실, 다음 날 새벽은 +1440)}(근태 행·빈 날 모두 — 참고)}.
+    폴더가 없으면 present False(오류 아님)."""
+    out = {"present": False, "files": 0, "rows": {}, "bad": 0, "blank": 0, "range": None, "gates": {}}
+    blank = set()
     folder = os.path.join(str(data_dir or ""), RECORDS_DIR)
     try:
         names = sorted(n for n in os.listdir(folder) if n.lower().endswith(".csv"))
@@ -698,49 +888,190 @@ def load_records(data_dir):
             if got is None:
                 out["bad"] += 1
                 continue
+            g = _rec_gate(r, idx)                             # 태깅(입실·퇴실) — 빈 날(기록 없이 건물에 온 날)에도(LM30 2026-10-19)
+            if g is not None:
+                out["gates"][got[0]] = _gate_merge(out["gates"].get(got[0]), g)
+            if got[1] is None:
+                blank.add(got[0])                             # 빈 날 — 기록이 아니라 파일 기간에만(LM30 2026-10-19)
+                continue
             out["rows"][got[0]] = _rec_merge(out["rows"].get(got[0]), got[1])
-    if out["rows"]:
-        ds = sorted(out["rows"])
+    out["blank"] = len(blank - set(out["rows"]))
+    span = set(out["rows"]) | blank
+    if span:
+        ds = sorted(span)
         out["range"] = (ds[0], ds[-1])
     return out
 
 
-def compare_records(days, rec, d0, d1, p):
-    """날짜별 행에 근태 기록 비교(rec{in, out, h, diff_h})를 붙이고 합계를 낸다(시각 없음).
-    근태 시간 = (퇴근 − 출근) − (휴게 열, 없으면 4시간마다 breakPer4hMin). diff_h = 추정 근무 − 근태 시간.
+def _rec_minutes(v, p):
+    """근태 행 → (근태 시간 분, 근태 휴게 분) — (퇴근 − 출근) − (휴게 열, 없으면 4시간마다 breakPer4hMin). 시각이 없으면 (0, 0)."""
+    if v is None or v.get("in") is None or v.get("out") is None:
+        return 0.0, 0.0
+    span = float(v["out"]) - float(v["in"])
+    bm = v["break_min"] if v.get("break_min") is not None else p["breakPer4hMin"] * math.floor(span / 240.0 + 1e-9)
+    return max(0.0, span - float(bm)), float(bm)
+
+
+def _ov(a0, a1, b0, b1):
+    """[a0, a1] 과 [b0, b1] 이 겹친 길이"""
+    return max(0.0, min(a1, b1) - max(a0, b0))
+
+
+def _hr_day(r, v, g, p):
+    r"""근태 기록 칸 기간 안의 하루 → 근태와 견준 값(분 — 이 PC 전용: 근태·GERP·태깅에서 나온 값) | None(견줄 것이 없다).
+    LM30(2026-10-19) +@ — 규칙은 머리말 14.
+      r = 날짜별 행(없으면 None — 근태에만 있는 날) · v = 근태 행(없으면 None — 기록 없는 날·빈 날) · g = 태깅 {in, out}(분) | None
+    → {kind: window(출근~퇴근 창이 있다)|norow(기록 없는 날)|leave(종일 휴가)|notimes(출퇴근 시각이 없는 날), row(근태 행이 있나),
+       rec_m(근태 시간), plus(+@), plus_off(그중 PC 밖), early·late(근태 출근 전·퇴근 뒤 — 휴게를 뺀 뒤, 합 = plus),
+       missing(창 중 LM 이 못 본 시간 − 근태 휴게 − 시각을 모르는 근무 — 참고), gate(태깅이 있나), gate_in·gate_out(분 | None),
+       gate_plus(입실~퇴실 중 창 밖 — 참고, 근무에 더하지 않는다)}"""
+    rr = r if isinstance(r, dict) else {}
+
+    def num(k):
+        try:
+            x = float(rr.get(k) or 0)
+        except (TypeError, ValueError):
+            return 0.0
+        return x if math.isfinite(x) else 0.0
+    work = num("work_h") * 60.0
+    bl = []
+    for b in rr.get("blocks") or []:
+        if isinstance(b, (list, tuple)) and len(b) >= 3:
+            try:
+                a0, a1 = float(b[0]), float(b[1])
+            except (TypeError, ValueError):
+                continue
+            if a1 > a0:
+                bl.append((a0, a1, str(b[2])))
+    raw = sum(b - a for a, b, _k in bl)
+    brk = min(raw, num("break_h") * 60.0)
+    gi = g.get("in") if isinstance(g, dict) else None
+    go = g.get("out") if isinstance(g, dict) else None
+    no_gate = gi is None and go is None
+    if v is None and work / 60.0 <= REC_EPS_H and no_gate:
+        return None                                         # 기록도 근무도 태깅도 없는 날 — 견줄 것이 없다
+    rec_m, hb = _rec_minutes(v, p)
+    lv = float((v or {}).get("leave") or 0)
+    win = None
+    if v is not None and v.get("in") is not None and v.get("out") is not None and lv < 1.0:
+        win = (float(v["in"]), float(v["out"]))
+    kind = "window" if win else ("norow" if v is None else ("leave" if lv >= 1.0 else "notimes"))
+    x = {"kind": kind, "row": v is not None, "rec_m": rec_m, "plus": 0.0, "plus_off": 0.0, "early": 0.0, "late": 0.0,
+         "missing": 0.0, "gate": not no_gate, "gate_in": gi, "gate_out": go, "gate_plus": 0.0}
+    if win is None:
+        x["plus"] = work                                     # 기록 없는 날·종일 휴가·시각 없는 날 — 그날 근무 전부가 +@
+        x["plus_off"] = min(work, num("offpc_h") * 60.0)
+    else:
+        w0, w1 = win
+        in_raw = sum(_ov(a, b, w0, w1) for a, b, _k in bl)
+        early = sum(_ov(a, b, -1e9, w0) for a, b, _k in bl)
+        out_raw = max(0.0, raw - in_raw)
+        late = max(0.0, out_raw - early)
+        b_in = min(brk, in_raw, hb)                          # 근태 기록이 뺀 만큼은 창 안에서(점심은 보통 창 안)
+        b_out = min(brk - b_in, out_raw)                     # 더 길게 일해 늘어난 휴게는 창 밖에서 — 퇴근 뒤 쪽 먼저
+        plus = max(0.0, min(out_raw - b_out, work))          # 하루 상한(dayCapHours·24시간)으로 줄인 날은 그 근무까지
+        late_n = late - min(b_out, late)
+        early_n = max(0.0, early - (b_out - min(b_out, late)))
+        if late_n + early_n > plus + 1e-9:
+            f = plus / (late_n + early_n)
+            late_n, early_n = late_n * f, early_n * f
+        unplaced = max(0.0, work - (raw - brk))              # 시각을 모르는 근무(LM29 방식·수동 기록·출장 표준일) — 창 안으로
+        # PC 밖 덩어리 중 창 밖 — 그날 PC 기록이 없으면 PC 밖으로 세지 않는다(_day_row 의 offpc_h 와 같다)
+        off_out = sum((b - a) - _ov(a, b, w0, w1) for a, b, k in bl if k == "offpc") if num("offpc_h") > 0 else 0.0
+        x.update(plus=plus, plus_off=min(plus, off_out), early=early_n, late=late_n,
+                 missing=max(0.0, (w1 - w0) - in_raw - hb - unplaced))
+    if gi is not None and go is not None:
+        g0, g1 = float(gi), float(go)
+        if g1 < g0:
+            g1 += 1440.0
+        x["gate_plus"] = max(0.0, (g1 - g0) - (_ov(g0, g1, *win) if win is not None else 0.0))
+    return x
+
+
+def _rec_view(r, v, x):
+    """_hr_day 값 → 날짜별 행의 rec(화면·리포트 — 근태 시각·시간: 이 PC 전용). 예전 칸(in·out·h·diff_h·out_day·leave·approved_ot·
+    missing(근태 행이 없는 날))은 그대로 두고 +@ 칸(kind·plus_h·plus_offpc_h·early_h·late_h·missing_h·gate_in·gate_out·
+    gate_out_day·gate_plus_h — 0 인 시간 칸은 뺀다)을 더한다."""
+    work = float(r.get("work_h") or 0)
+    if v is None:
+        rc = {"in": "", "out": "", "h": 0.0, "diff_h": _r(work), "missing": True}
+    else:
+        rc = {"in": hm(v["in"]) if v.get("in") is not None else "", "out": hm(v["out"]) if v.get("out") is not None else "",
+              "h": _r(x["rec_m"] / 60.0), "diff_h": _r(work - x["rec_m"] / 60.0)}
+        if v.get("out") is not None and v["out"] >= 1440:
+            rc["out_day"] = int(v["out"] // 1440)
+        if v.get("leave"):
+            rc["leave"] = v["leave"]
+        if v.get("approved_ot") is not None:
+            rc["approved_ot"] = v["approved_ot"]
+    rc["kind"] = x["kind"]
+    rc["plus_h"] = _r(x["plus"] / 60.0)
+    for k, key in (("plus_off", "plus_offpc_h"), ("early", "early_h"), ("late", "late_h"), ("missing", "missing_h"),
+                   ("gate_plus", "gate_plus_h")):
+        if x[k] / 60.0 >= 0.005:
+            rc[key] = _r(x[k] / 60.0)
+    if x["gate_in"] is not None:
+        rc["gate_in"] = hm(x["gate_in"])
+        if x["gate_in"] >= 1440:
+            rc["gate_in_day"] = int(x["gate_in"] // 1440)
+    if x["gate_out"] is not None:
+        go = float(x["gate_out"])
+        if x["gate_in"] is not None and go < float(x["gate_in"]):
+            go += 1440.0
+        rc["gate_out"] = hm(go)
+        if go >= 1440:
+            rc["gate_out_day"] = int(go // 1440)
+    return rc
+
+
+def hr_compare(days, rec, d0, d1, p):
+    r"""근태 기록 칸(load_records)과 날짜별 행을 날마다 견준다(LM30 2026-10-19 +@) → {iso: _hr_day 값(분)} — 기록 칸 기간 안이고
+    [d0, d1] 안인 날만(근태에만 있는 날 포함). LM 행이 있는 날에는 rec(_rec_view — 화면·리포트용, 이 PC 전용)을 붙인다.
+    투입 시간(work_h)·다른 칸은 건드리지 않는다(MM 이 그대로다)."""
+    rec = rec if isinstance(rec, dict) else {}
+    out = {}
+    rng = rec.get("range")
+    if not rec.get("present") or not rng:
+        return out
+    rows, gates = rec.get("rows") or {}, rec.get("gates") or {}
+    d, end = max(d0, rng[0]), min(d1, rng[1])
+    while d <= end:
+        iso = d.isoformat()
+        r, v = days.get(iso), rows.get(d)
+        x = _hr_day(r, v, gates.get(d), p)
+        if x is not None:
+            out[iso] = x
+            if isinstance(r, dict):
+                r["rec"] = _rec_view(r, v, x)
+        d += timedelta(days=1)
+    return out
+
+
+def compare_records(days, rec, d0, d1, p, hr=None):
+    """날짜별 행에 근태 기록 비교(rec — hr_compare)를 붙이고 요약을 낸다(시각 없음 — 그래도 근태에서 나온 값이라 이 PC 전용).
+    근태 시간 = (퇴근 − 출근) − (휴게 열, 없으면 4시간마다 breakPer4hMin). diff_h = 추정 근무 − 근태 시간. hr = hr_compare 값(없으면 잰다).
     → {present, files, bad_rows, days(기간 안 기록 행), unrecorded_h(+ 차이의 합 + 파일 기간 안인데 기록 행이 없는 날의 근무),
-       unrecorded_days, no_record_work_days, rec_only_days(근태에는 근무가 있는데 이 PC 흔적은 없는 날), range}"""
+       unrecorded_days, no_record_work_days, rec_only_days(근태에는 근무가 있는데 이 PC 흔적은 없는 날), range,
+       plus_h·plus_offpc_h·plus_days(+@ — 근태와 견준 것), missing_h, gate_plus_h, gate_days(LM30 2026-10-19)}"""
     rec = rec if isinstance(rec, dict) else {}
     s = {"present": bool(rec.get("present")), "files": int(rec.get("files") or 0), "bad_rows": int(rec.get("bad") or 0),
-         "days": 0, "unrecorded_h": 0.0, "unrecorded_days": 0, "no_record_work_days": 0, "rec_only_days": 0, "range": []}
+         "days": 0, "unrecorded_h": 0.0, "unrecorded_days": 0, "no_record_work_days": 0, "rec_only_days": 0, "range": [],
+         "plus_h": 0.0, "plus_offpc_h": 0.0, "plus_days": 0, "missing_h": 0.0, "gate_plus_h": 0.0, "gate_days": 0}
     if not s["present"]:
         return s
+    hr = hr_compare(days, rec, d0, d1, p) if hr is None else hr
     rows, rng = rec.get("rows") or {}, rec.get("range")
     if rng:
         s["range"] = [rng[0].isoformat(), rng[1].isoformat()]
     d = d0
     while d <= d1:
         r, v = days.get(d.isoformat()), rows.get(d)
-        work = r["work_h"] if r else 0.0
+        work = float(r.get("work_h") or 0) if isinstance(r, dict) else 0.0
         if v is not None:
             s["days"] += 1
-            rec_h = 0.0
-            if v["in"] is not None:
-                span = v["out"] - v["in"]
-                bm = v["break_min"] if v["break_min"] is not None else p["breakPer4hMin"] * math.floor(span / 240.0 + 1e-9)
-                rec_h = max(0.0, (span - bm) / 60.0)
+            rec_h = _rec_minutes(v, p)[0] / 60.0
             diff = work - rec_h
-            if r is not None:
-                rc = {"in": hm(v["in"]) if v["in"] is not None else "",
-                      "out": hm(v["out"]) if v["out"] is not None else "", "h": _r(rec_h), "diff_h": _r(diff)}
-                if v["out"] is not None and v["out"] >= 1440:
-                    rc["out_day"] = int(v["out"] // 1440)
-                if v["leave"]:
-                    rc["leave"] = v["leave"]
-                if v["approved_ot"] is not None:
-                    rc["approved_ot"] = v["approved_ot"]
-                r["rec"] = rc
-            elif rec_h > 0:
+            if r is None and rec_h > 0:
                 s["rec_only_days"] += 1
             if diff > REC_EPS_H:
                 s["unrecorded_h"] += diff
@@ -749,9 +1080,16 @@ def compare_records(days, rec, d0, d1, p):
             s["no_record_work_days"] += 1
             s["unrecorded_days"] += 1
             s["unrecorded_h"] += work
-            r["rec"] = {"in": "", "out": "", "h": 0.0, "diff_h": _r(work), "missing": True}
         d += timedelta(days=1)
-    s["unrecorded_h"] = _r(s["unrecorded_h"])
+    for x in hr.values():
+        s["plus_h"] += x["plus"] / 60.0
+        s["plus_offpc_h"] += x["plus_off"] / 60.0
+        s["plus_days"] += 1 if x["plus"] / 60.0 > REC_EPS_H else 0
+        s["missing_h"] += x["missing"] / 60.0
+        s["gate_plus_h"] += x["gate_plus"] / 60.0
+        s["gate_days"] += 1 if x["gate"] else 0
+    for k in ("unrecorded_h", "plus_h", "plus_offpc_h", "missing_h", "gate_plus_h"):
+        s[k] = _r(s[k])
     return s
 
 
@@ -772,19 +1110,67 @@ def clock_to_hours(db):
 
 
 def take_local(info):
-    r"""info(day_work_hours)에서 이 PC에만 둘 것을 떼어 낸다 → (days, usual). mm_meta 를 쓰기 전에 부른다 — 날짜별 출근·퇴근·
+    r"""info(day_work_hours)에서 이 PC에만 둘 것을 떼어 낸다 → (days, usual, agg). mm_meta 를 쓰기 전에 부른다 — 날짜별 출근·퇴근·
     덩어리·평소 시각은 report\attendance_<기간>.json 으로만 간다(core\extract.save_attendance). LM29 날짜별 근거의 저녁·새벽
-    창(시각)도 같은 까닭으로 길이(evening_h·dawn_h)로 바꾼다. info 가 dict 가 아니면 (None, None)."""
+    창(시각)도 같은 까닭으로 길이(evening_h·dawn_h)로 바꾼다. info 가 dict 가 아니면 (None, None, None).
+    LM30(2026-10-19) agg = 근태 기록과 견준 값까지 든 합계(info["attendance_agg"] — 없으면 info["attendance"] 의 사본) — attendance
+    파일의 agg 로 쓴다. info["attendance"](mm_meta 로 가는 것)에는 근태 없이 잰 합계만 남는다(scrub_meta → strip_hr 가 한 번 더 본다)."""
     if not isinstance(info, dict):
-        return None, None
+        return None, None, None
     days, usual = info.pop("attendance_days", None), info.pop("attendance_usual", None)
+    agg = info.pop("attendance_agg", None)
+    if agg is None or agg is info.get("attendance"):
+        agg = copy.deepcopy(info.get("attendance")) if isinstance(info.get("attendance"), dict) else agg
     scrub_meta(info)
-    return days, usual
+    return days, usual, agg
+
+
+def strip_hr(a):
+    """출퇴근 합계(dict — weeks·months·total·records)에서 근태 기록·GERP·태깅에서 나온 값을 뺀다(제자리) → 뺀 것이 있나.
+    LM30(2026-10-19) — mm_meta·팀 묶음·공유폴더·얼린 보고서로 나가기 직전의 관문(scrub_meta·freeze). 근태 칸(HR_KEYS)이 섞인 칸의
+    +@ 추정(EST_KEYS)은 근태 기록이 있는 날을 뺀 값이라 같이 뺀다(보여 줄 때는 연장 + 휴일로 다시 낸다 — est_of)."""
+    if not isinstance(a, dict):
+        return False
+    hit = False
+    if "records" in a:
+        a.pop("records")
+        hit = True
+    blocks = [a.get("total")]
+    for k in ("months", "weeks"):
+        if isinstance(a.get(k), dict):
+            blocks += list(a[k].values())
+    for t in blocks:
+        if isinstance(t, dict) and any(k in t for k in HR_KEYS):
+            for k in HR_KEYS + EST_KEYS:
+                t.pop(k, None)
+            hit = True
+    return hit
+
+
+def hr_view(agg):
+    """attendance 파일의 합계(근태 기록과 견준 값까지 — compute 의 agg) → 근태에서 나온 칸만 {"weeks", "months", "total", "records"}
+    (각 칸은 HR_KEYS + 그 합계의 plus_est_h·plus_est_offpc_h — 근태 기록이 없는 날만 센 추정) | None(근태 기록이 없었다).
+    화면 카드·리포트 §8 이 근태 없이 잰 합계(mm_meta) 위에 얹는다 — 이 PC 화면·리포트에서만 쓴다(얼린 사본·분석리포트는 쓰지 않는다)."""
+    if not isinstance(agg, dict):
+        return None
+    rc = agg.get("records")
+    if not (isinstance(rc, dict) and rc.get("present")):
+        return None
+    keys = HR_KEYS + EST_KEYS
+
+    def pick(t):
+        return {k: t[k] for k in keys if isinstance(t, dict) and k in t}
+    out = {"records": rc, "total": pick(agg.get("total"))}
+    for k in ("weeks", "months"):
+        src = agg.get(k) if isinstance(agg.get(k), dict) else {}
+        out[k] = {str(n): pick(v) for n, v in src.items() if isinstance(v, dict)}
+    return out
 
 
 def scrub_meta(mj):
-    """mm_meta(dict — 최상위와 mm_basis)에서 이 PC 전용 칸을 뺀다: attendance_days·attendance_usual·attendance.usual/days·
-    day_basis 의 시각 창. 팀 묶음·공유폴더로 나가기 직전의 두 번째 관문(teamup·export). 뺀 것이 있으면 True."""
+    """mm_meta(dict — 최상위와 mm_basis)에서 이 PC 전용 칸을 뺀다: attendance_days·attendance_usual·attendance_agg·
+    attendance.usual/days·근태 기록에서 나온 합계 칸(strip_hr — LM30 2026-10-19)·day_basis 의 시각 창. 팀 묶음·공유폴더로 나가기
+    직전의 두 번째 관문(teamup·export·freeze). 뺀 것이 있으면 True."""
     hit = False
     for h in (mj, mj.get("mm_basis") if isinstance(mj, dict) else None):
         if not isinstance(h, dict):
@@ -799,6 +1185,8 @@ def scrub_meta(mj):
                 if k in a:
                     a.pop(k)
                     hit = True
+            if strip_hr(a):
+                hit = True
         db = h.get("day_basis")
         if isinstance(db, dict):
             for v in db.values():
@@ -811,7 +1199,9 @@ def scrub_meta(mj):
 # ════════════════════════════════ 보여 주기(화면 카드·리포트 §8 공용 문구) ════════════════════════════════
 # LM30(2026-10-18) — 대시보드 '출퇴근·시간외 근무' 카드(ui\app.py /api/attendance)·리포트 §8(report_out.attendance_section)·분석리포트
 # (freeze — 날짜별 표 없이)가 같은 쉬운 말을 쓰게 한 곳에 둔다. day_why·usual_text 는 시각을 담는다 — 이 PC 의 화면·리포트에서만 쓴다
-# (얼린 사본·분석리포트는 그 칸을 싣지 않는다). headline·rule_text·records_text 는 합계·규칙뿐이라 어디에 실려도 된다.
+# (얼린 사본·분석리포트는 그 칸을 싣지 않는다). headline·rule_text 는 합계·규칙뿐이라 어디에 실려도 된다.
+# LM30(2026-10-19) +@ — records_text·day_plus·hr 를 준 plus_line 은 근태 기록에서 나온 값을 담는다(이 PC 의 화면·리포트에서만). 얼린
+# 사본·분석리포트는 plus_line(hr 없이 — 근태 없이 추정한 +@)과 FROZEN_REC_TEXT 를 쓴다.
 CONF_KO = {"high": "높음", "mid": "보통", "low": "낮음"}
 _IN_KO = {"pc": "PC 켬", "meeting": "회의 시작", "manual": "수동 기록 시작", "offsite": "출장·현장 시작", "web": "브라우저 사용"}
 _OUT_KO = {"pc": "PC 끔·잠금", "meeting": "회의 끝", "manual": "수동 기록 끝", "offsite": "출장·현장 끝"}
@@ -923,13 +1313,7 @@ def headline(agg, d1=None):
         return ""
     mk = keys[-1]
     m = ms[mk]
-    lab = f"{mk[:4]}년 {int(mk[5:7])}월"
-    try:
-        end = date.fromisoformat(str(d1)[:10]) if d1 else None
-    except ValueError:
-        end = None
-    if end is not None and end.strftime("%Y-%m") == mk and (end + timedelta(days=1)).month == end.month:
-        lab += f"({end.day}일까지)"
+    lab = _month_lab(mk, d1)
     try:
         n52 = int(m.get("over52_weeks") or 0)
     except (TypeError, ValueError):
@@ -938,8 +1322,23 @@ def headline(agg, d1=None):
             f"휴일 {_h1(m.get('holiday_h'))} · 52시간 넘은 주 {n52}주")
 
 
+def _month_lab(mk, d1=None, today=None):
+    """'YYYY-MM' → '2026년 10월' · today(날짜)가 그 달이면 '이번 달' · 분석 기간 끝(d1)이 그 달 중간이면 뒤에 '(N일까지)'."""
+    lab = f"{mk[:4]}년 {int(mk[5:7])}월"
+    if today is not None and hasattr(today, "strftime") and today.strftime("%Y-%m") == mk:
+        lab = "이번 달"
+    try:
+        end = date.fromisoformat(str(d1)[:10]) if d1 else None
+    except ValueError:
+        end = None
+    if end is not None and end.strftime("%Y-%m") == mk and (end + timedelta(days=1)).month == end.month:
+        lab += f"({end.day}일까지)"
+    return lab
+
+
 def records_text(rc, folder="data\\" + RECORDS_DIR):
-    """근태 기록 비교 합계(compare_records — 시각 없음) → 한 줄. 기록 칸이 비었으면 CSV 를 넣는 법."""
+    """근태 기록 비교 요약(compare_records — 시각 없음, 그래도 근태에서 나온 값이라 이 PC 의 화면·리포트에서만) → 한 줄.
+    기록 칸이 비었으면 CSV 를 넣는 법. LM30(2026-10-19) 요약에 plus_h 가 있으면 +@·근태 시간 중 PC 흔적 없는 시간·태깅을 말한다."""
     rc = rc if isinstance(rc, dict) else {}
 
     def n(k):
@@ -949,13 +1348,22 @@ def records_text(rc, folder="data\\" + RECORDS_DIR):
             return 0
     if not rc.get("present"):
         return (f"근태 기록과 견주려면 ERP에서 내려받은 출퇴근 CSV(열: 날짜,출근,퇴근)를 {folder} 폴더에 넣고 [분석 실행]을 "
-                "누르세요 — 날마다 견주어 근태 기록에 없는 근무 시간을 셉니다.")
-    try:
-        un = float(rc.get("unrecorded_h") or 0)
-    except (TypeError, ValueError):
-        un = 0.0
-    bits = [f"근태 기록보다 {un:.1f}시간 더 일했습니다({n('unrecorded_days')}일)" if un > 0
-            else "근태 기록에 없는 근무가 없습니다", f"기록 없는 근무일 {n('no_record_work_days')}일"]
+                "누르세요 — 날마다 견주어 근태 기록 밖에서 일한 시간(+@)을 셉니다.")
+    if "plus_h" in rc:
+        ph, ms, gp = _num0(rc.get("plus_h")), _num0(rc.get("missing_h")), _num0(rc.get("gate_plus_h"))
+        bits = [f"근태 기록과 견준 +@ {ph:.1f}시간({n('plus_days')}일)" if ph > 0 else "근태 기록과 견준 +@가 없습니다"]
+        if ms > 0:
+            bits.append(f"근태 시간 중 PC 흔적 없는 시간 {ms:.1f}h(회의·실험 등 — 참고)")
+        if n("gate_days"):
+            bits.append(f"입실·퇴실로 본 근태 밖 체류 {gp:.1f}h(참고 — 태깅 {n('gate_days')}일)")
+        bits.append(f"기록 없는 근무일 {n('no_record_work_days')}일")
+    else:
+        try:
+            un = float(rc.get("unrecorded_h") or 0)
+        except (TypeError, ValueError):
+            un = 0.0
+        bits = [f"근태 기록보다 {un:.1f}시간 더 일했습니다({n('unrecorded_days')}일)" if un > 0
+                else "근태 기록에 없는 근무가 없습니다", f"기록 없는 근무일 {n('no_record_work_days')}일"]
     if n("rec_only_days"):
         bits.append(f"근태 기록에만 있는 근무일 {n('rec_only_days')}일(이 PC 흔적 없음)")
     if n("bad_rows"):
@@ -963,3 +1371,126 @@ def records_text(rc, folder="data\\" + RECORDS_DIR):
     rg = rc.get("range") if isinstance(rc.get("range"), (list, tuple)) and len(rc.get("range")) == 2 else None
     return (" · ".join(bits) + f" — 근태 기록 {n('days')}일 · 파일 {n('files')}개"
             + (f" · {rg[0]}~{rg[1]}" if rg else ""))
+
+
+# ── LM30(2026-10-19) +@ 보여 주기 — 카드 결론 줄·설명 줄·날짜별 +@ 칸(규칙은 머리말 14) ──
+# 얼린 사본·분석리포트(공유폴더로 복사된다)의 '근태 기록 비교' 줄 — 근태에서 나온 값은 싣지 않는다
+FROZEN_REC_TEXT = ("근태 기록(GERP 포함)과 견준 값은 본인 PC의 화면·리포트에서만 보입니다 — 이 사본의 +@는 근태 기록 없이 "
+                   "추정한 값입니다.")
+
+
+def _num0(v):
+    """숫자 → float · 아니면(None·글자·NaN) 0"""
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return 0.0
+    return x if math.isfinite(x) else 0.0
+
+
+def _std(std):
+    """표준일(h — mm.standardDayHours) · 없거나 틀리면 8"""
+    x = _num0(std)
+    return x if x > 0 else 8.0
+
+
+def plus_note(std=None):
+    """+@ 가 무엇인지 한 줄(카드·리포트 공용)"""
+    return (f"근태 기록 = 확실히 일한 부분, +@ = 그 밖에서 LM이 찾은 근무입니다(근태를 못 읽으면 하루 {_std(std):g}시간 넘은 "
+            "시간·휴일 근무로 추정합니다). 투입 MM은 그대로 LM이 잰 근무시간이고 근태 기록은 참고입니다.")
+
+
+def est_of(t):
+    """합계 칸(주·달·전체) → +@ 추정 h — plus_est_h, 없으면(예전 합계·근태 칸을 뺀 사본) 연장 + 휴일(날마다 연장 + 휴일이라 합도 같다)"""
+    if not isinstance(t, dict):
+        return 0.0
+    if "plus_est_h" in t:
+        return _num0(t.get("plus_est_h"))
+    return max(0.0, _num0(t.get("ext_h")) + _num0(t.get("holiday_h")))
+
+
+def plus_of(t, ht=None):
+    """합계 칸의 +@ — 근태와 견준 칸(ht — hr_view 의 같은 칸)이 있으면 plus_all_h(근태와 견준 것 + 기록 없는 날의 추정), 없으면 추정"""
+    if isinstance(ht, dict) and "plus_all_h" in ht:
+        return _num0(ht.get("plus_all_h"))
+    return est_of(t)
+
+
+def plus_line(agg, hr=None, d1=None, today=None, std=None):
+    """가장 최근 달의 +@ 결론 한 줄 — '이번 달(16일까지) +@ 12.5시간 — 근태 기록과 견준 것 9.0h · 기록 없이 추정한 것 3.5h ·
+    그중 PC 밖 1.0h'. hr(hr_view)가 없으면 '… +@ 3.5시간 — 근태 기록 없이 추정한 것(하루 8시간 넘은 시간·휴일 근무)'.
+    agg = 근태 없이 잰 합계(mm_meta) · d1 = 분석 기간 끝 · today 를 주면 그 달은 '이번 달'(화면 — 리포트·사본은 주지 않는다).
+    달 합계가 없으면 ''. hr 를 주면 근태에서 나온 값을 담는다(이 PC 의 화면·리포트에서만)."""
+    ms = agg.get("months") if isinstance(agg, dict) and isinstance(agg.get("months"), dict) else {}
+    keys = sorted(k for k in ms if re.match(r"^\d{4}-\d{2}$", str(k)) and isinstance(ms[k], dict))
+    if not keys:
+        return ""
+    mk = keys[-1]
+    lab = _month_lab(mk, d1, today)
+    hm_ = ((hr or {}).get("months") or {}).get(mk) if isinstance(hr, dict) else None
+    if isinstance(hm_, dict) and "plus_h" in hm_:
+        a, b = _num0(hm_.get("plus_h")), est_of(hm_)
+        off = _num0(hm_.get("plus_offpc_h")) + _num0(hm_.get("plus_est_offpc_h"))
+        s = f"{lab} +@ {a + b:.1f}시간 — 근태 기록과 견준 것 {a:.1f}h · 기록 없이 추정한 것 {b:.1f}h"
+    else:
+        b = est_of(ms[mk])
+        off = _num0(ms[mk].get("plus_est_offpc_h"))
+        s = f"{lab} +@ {b:.1f}시간 — 근태 기록 없이 추정한 것(하루 {_std(std):g}시간 넘은 시간·휴일 근무)"
+    if off >= 0.05:
+        s += f" · 그중 PC 밖 {off:.1f}h"
+    return s
+
+
+def day_plus(r, std=None):
+    r"""날짜별 행 → {"h": +@ 시간, "est": 근태 기록 없이 추정했나, "why": 까닭 한 줄(쉬운 말)} — 화면·리포트의 날짜별 표(이 PC 전용 —
+    근태 출퇴근 시각을 담는다). 근태와 견준 날(rec 의 plus_h — hr_compare)은 그 값, 아니면 연장 + 휴일 추정(_est).
+    예) '근태 퇴근 18:00 뒤 2.0h(그중 PC 밖 0.8h) · 입실·퇴실로 보면 근태 밖 체류 0.5h(참고)' · '근태 기록 없는 근무' ·
+        '하루 8시간 넘은 시간 — 근태 기록 없이 추정'"""
+    r = r if isinstance(r, dict) else {}
+    eps = REC_EPS_H
+    rc = r.get("rec") if isinstance(r.get("rec"), dict) else None
+    if rc is not None and "plus_h" in rc:
+        h = _num0(rc.get("plus_h"))
+        kind = str(rc.get("kind") or "")
+        if kind == "norow":
+            why = "근태 기록 없는 근무" if h > eps else "근태 기록 없음"
+        elif kind == "leave":
+            why = "휴가인 날 근무" if h > eps else "휴가"
+        elif kind == "notimes":
+            why = "근태에 출퇴근 시각이 없는 날의 근무" if h > eps else "근태에 출퇴근 시각 없음"
+        else:
+            bits = []
+            e_, l_ = _num0(rc.get("early_h")), _num0(rc.get("late_h"))
+            if e_ >= 0.05:
+                bits.append(f"근태 출근 {rc.get('in') or ''} 전 {e_:.1f}h")
+            if l_ >= 0.05:
+                bits.append(f"근태 퇴근 {_clock(rc.get('out'), rc.get('out_day'))} 뒤 {l_:.1f}h")
+            why = " · ".join(bits) if bits else "근태 시간 안에서 일함"
+        off = _num0(rc.get("plus_offpc_h"))
+        if h > eps and off >= 0.05:
+            why += f"(그중 PC 밖 {off:.1f}h)"
+        more = []
+        ms = _num0(rc.get("missing_h"))
+        if ms >= 0.05:
+            more.append(f"근태 시간 중 PC 흔적 없는 시간 {ms:.1f}h(회의·실험 등 — 참고)")
+        gp = _num0(rc.get("gate_plus_h"))
+        if gp >= 0.05:
+            more.append(f"입실·퇴실로 보면 근태 밖 체류 {gp:.1f}h(참고)")
+        return {"h": _r(h), "est": False, "why": " · ".join([why] + more)}
+    est, off = _est(r)
+    if est <= eps:
+        return {"h": 0.0, "est": True, "why": ""}
+    lf = _num0(r.get("leave_frac"))
+    sd = _std(std)
+    if r.get("kind") == "off":
+        why = "휴일 근무"
+    elif lf >= 1.0:
+        why = "휴가일 근무"
+    elif lf > 0:
+        why = f"반차라 {sd * (1.0 - lf):g}시간 넘은 시간"
+    else:
+        why = f"하루 {sd:g}시간 넘은 시간"
+    why += " — 근태 기록 없이 추정"
+    if off >= 0.05:
+        why += f"(그중 PC 밖 {off:.1f}h)"
+    return {"h": _r(est), "est": True, "why": why}

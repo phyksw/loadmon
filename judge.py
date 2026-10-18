@@ -2569,18 +2569,19 @@ def rehours_meta(kept, dropped, tag, cfg, rep, data_dir=None, say=print):
     if isinstance(res.get("months"), dict):
         mj["mm_months"] = res["months"]
     info = res.get("info")
-    att_days = att_usual = None
+    att_days = att_usual = att_agg = None
     if isinstance(info, dict):
         info = dict(info)
         info.pop("inferred_absence", None)        # date 키 — mine 도 저장 전에 뺀다
         # LM30(2026-10-18): 날짜별 출근·퇴근·평소 시각은 mm_meta(팀으로 올라간다)에 싣지 않는다 — mine 과 같이 떼어
-        # report\attendance_<tag>.json 으로만(아래 저장 성공 뒤)
+        # report\attendance_<tag>.json 으로만(아래 저장 성공 뒤). LM30(2026-10-19): 근태 기록과 견준 합계(+@)도 같이(att_agg)
         try:
             import attendance as _att
-            att_days, att_usual = _att.take_local(info)
+            att_days, att_usual, att_agg = _att.take_local(info)
         except ImportError:                        # 구판 core — 칸만 버린다
             info.pop("attendance_days", None)
             info.pop("attendance_usual", None)
+            info.pop("attendance_agg", None)
         mj["mm_basis"] = info
         if info.get("mm_lm29") is not None:
             mj["mm_lm29"] = info["mm_lm29"]       # 'LM29 방식이었다면 X MM' — mine.meta_doc 과 같은 최상위 키
@@ -2615,7 +2616,7 @@ def rehours_meta(kept, dropped, tag, cfg, rep, data_dir=None, say=print):
     if day_hours and not extract.save_day_hours(rep, tag, day_hours):
         say("        ※ 추이 선 갱신 실패(day_hours) — 다음 분석 때 다시 씁니다")
     if att_days is not None and hasattr(extract, "save_attendance"):
-        extract.save_attendance(rep, tag, att_days, att_usual, (info or {}).get("attendance"))
+        extract.save_attendance(rep, tag, att_days, att_usual, att_agg if att_agg is not None else (info or {}).get("attendance"))
     _write_dropped(rep, tag, dropped)          # 누적 장부 — 다음 UI 제외가 이번 버림분을 함께 넘긴다
     return {"dropped_n": len(dropped), "dropped_h": mj["dropped_h"], "before_mm": before_mm,
             "total_mm": total_mm, "avail_mm": avail_mm, "load_pct": mj["load_pct"],

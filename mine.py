@@ -191,11 +191,12 @@ def main():
     absence.update(inferred)
     # LM30(2026-10-18): 날짜별 출근·퇴근·덩어리·평소 시각은 이 PC 에만 — mm_meta(팀으로 올라간다)에 실리기 전에 떼어
     # report\attendance_<기간>.json 으로 쓴다(LM29 근거의 저녁·새벽 창 시각도 길이로 바뀐다)
-    att_days, att_usual = attendance.take_local(hinfo)
+    # LM30(2026-10-19): 근태 기록·GERP 와 견준 합계(+@ — att_agg)도 이 PC 의 attendance 파일에만(mm_meta 에는 근태 없이 잰 합계)
+    att_days, att_usual, att_agg = attendance.take_local(hinfo)
     tag_h = f"{d0.isoformat().replace('-', '')}-{d1.isoformat().replace('-', '')}"
     extract.save_day_hours(os.path.join(ROOT, "report"), tag_h,
                            day_hours)      # 추이 실선의 재료 — 화면은 읽기만 한다(재계산 금지)
-    extract.save_attendance(os.path.join(ROOT, "report"), tag_h, att_days, att_usual, hinfo.get("attendance"))
+    extract.save_attendance(os.path.join(ROOT, "report"), tag_h, att_days, att_usual, att_agg)
     # 잘못된 설정값은 죽지 않고 기본값으로 대체됐다 — 무엇이 무시됐는지 사용자에게 보인다
     cfg_warns = list(dict.fromkeys(list(meta.get("config_warnings") or [])
                                    + list(hinfo.get("config_warnings") or [])))
@@ -217,11 +218,19 @@ def main():
               f"휴가일 근무 {at.get('leave_work_days', 0)}일 · 52시간 넘은 주 {at.get('over52_weeks', 0)}주 · "
               f"출근·퇴근을 어림한 날 {at.get('est_edge_days', 0)}일"
               + (f" · LM29 방식이었다면 {hinfo['mm_lm29']:.2f} MM" if hinfo.get("mm_lm29") is not None else ""))
-        rc = att.get("records") if isinstance(att.get("records"), dict) else {}
+        # LM30(2026-10-19) +@ — 근태 기록 = 확실히 일한 부분, +@ = 그 밖에서 LM 이 찾은 근무(근태가 없으면 연장 + 휴일로 추정).
+        # 근태에서 나온 값은 이 PC 의 attendance 파일 합계(att_agg)에만 있다 — 시간 합계만 찍는다(시각 없음)
+        la = att_agg if isinstance(att_agg, dict) else {}
+        lt = la.get("total") if isinstance(la.get("total"), dict) else {}
+        rc = la.get("records") if isinstance(la.get("records"), dict) else {}
         if rc.get("present"):
-            print(f"     근태 기록 비교 — 기록 {rc.get('days', 0)}일 · 근태에 없는 근무 {rc.get('unrecorded_h', 0):.1f}h"
-                  f"({rc.get('unrecorded_days', 0)}일) · 기록 없는 근무일 {rc.get('no_record_work_days', 0)}일 · "
-                  f"읽지 못한 행 {rc.get('bad_rows', 0)}개")
+            print(f"     +@ {lt.get('plus_all_h', 0):.1f}h — 근태 기록과 견준 것 {lt.get('plus_h', 0):.1f}h · 기록 없이 추정한 것 "
+                  f"{lt.get('plus_est_h', 0):.1f}h · 근태 기록 {rc.get('days', 0)}일 · 근태 시간 중 PC 흔적 없는 시간 "
+                  f"{rc.get('missing_h', 0):.1f}h · 기록 없는 근무일 {rc.get('no_record_work_days', 0)}일 · "
+                  f"읽지 못한 행 {rc.get('bad_rows', 0)}개(이 PC 에만)")
+        else:
+            _sd = attendance._std((hinfo.get("cfg_used") or {}).get("standardDayHours"))
+            print(f"     +@ {attendance.est_of(at):.1f}h — 근태 기록 없이 추정(하루 {_sd:g}시간 넘은 시간·휴일 근무)")
     print(f"     부재 {hinfo['absence_days']}일 차감 · 초과근무 {hinfo['overtime_h']:.0f}h · "
           f"주말근무 {hinfo['weekend_days']}일 · 야근일 {hinfo['night_days']}일 · "
           f"PC가동 하한 보정 {hinfo.get('pc_floor_h', 0):.0f}h/{hinfo.get('pc_floor_days', 0)}일")

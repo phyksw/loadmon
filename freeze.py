@@ -221,16 +221,32 @@ FREEZE_EPS = ["/api/status", "/api/dash", "/api/projects", "/api/workflow",
               "/api/data?src=teams", "/api/data?src=act"]
 # LM30(2026-10-18) — 출퇴근·시간외 근무 카드(/api/attendance)는 사본에 주·달 합계만 굽는다. 날짜별 출근·퇴근(days)·평소 시각(usual·
 # usual_text)은 이 PC 화면에만 — 얼린 보고서 고정명은 공유폴더 저장 때 <공유폴더>\개인리포트\ 로 복사된다(teamup.REPORT_HTML).
-ATT_LOCAL_KEYS = ("days", "usual", "usual_text")
+# LM30(2026-10-19) +@ — 근태 기록(GERP 포함)과 견준 값(hr·records_text·hr 를 쓴 결론 줄)도 사본에 굳히지 않는다: hr 를 빼고, 합계에
+# 섞인 근태 칸을 빼고(attendance.strip_hr), 결론 줄은 근태 없이 추정한 +@ 로 다시 쓰고, 근태 기록 비교 줄은 '본인 PC 에서만' 으로.
+ATT_LOCAL_KEYS = ("days", "usual", "usual_text", "hr")
 
 
 def _att_summary_only(v):
-    """/api/attendance 답 → 사본용(날짜별 행·평소 시각을 뺀다 · frozen 표식 — 화면이 '날짜별 시각은 본인 PC 에서만' 을 보인다)."""
+    """/api/attendance 답 → 사본용(날짜별 행·평소 시각·근태 기록과 견준 값을 뺀다 · frozen 표식 — 화면이 '날짜별 시각은 본인 PC
+    에서만' 을 보인다)."""
     if not isinstance(v, dict):
         return v
     out = {k: x for k, x in v.items() if k not in ATT_LOCAL_KEYS}
     out["days"] = {}
     out["frozen"] = True
+    try:
+        import attendance as _att
+    except ImportError:
+        return out
+    if isinstance(out.get("agg"), dict):
+        out["agg"] = json.loads(json.dumps(out["agg"]))
+        _att.strip_hr(out["agg"])
+    if "plus_text" in out:
+        per = out.get("period") if isinstance(out.get("period"), list) and len(out.get("period")) == 2 else ["", ""]
+        cfg_ = out.get("cfg") if isinstance(out.get("cfg"), dict) else {}
+        out["plus_text"] = _att.plus_line(out.get("agg"), None, per[1] or None, None, cfg_.get("standardDayHours"))
+    if "records_text" in out:
+        out["records_text"] = _att.FROZEN_REC_TEXT
     return out
 
 INTERCEPT_JS = """(function(){

@@ -323,11 +323,18 @@ def attendance_section(meta, b, att=None, per_day=True, max_days=31, max_weeks=2
       meta·b = mm_meta·mm_basis — 달·주·전체 합계·근태 기록 비교 합계(시각 없음) · att = report\attendance_<기간>.json(이 PC 전용 —
       날짜별 출근·퇴근·평소 시각). per_day=False(공유폴더로 복사되는 분석리포트)면 att 를 쓰지 않는다 — 날짜별 표·평소 시각이 없다.
     담는 것: 결론 한 줄(가장 최근 달) · 재는 법 · 달 합계 표 · 주 합계 표(최근 max_weeks 주) · 평소 출근·퇴근 · 날짜별 표(최근 max_days 일) ·
-    근태 기록 비교 · 무엇이 이 PC 에만 있나. 문구는 core\attendance(화면 카드와 같은 함수)."""
+    근태 기록 비교 · 무엇이 이 PC 에만 있나. 문구는 core\attendance(화면 카드와 같은 함수).
+    LM30(2026-10-19) +@ — 맨 위 +@ 줄 · 설명 줄 · 달·주 표의 +@ 칸 · 날짜별 표의 근태 출근·퇴근·입실·퇴실·+@·까닭. 근태 기록과 견준
+    값(attendance 파일 agg 의 근태 칸 — attendance.hr_view)은 per_day 일 때만(이 PC 리포트). 합계는 늘 근태 칸을 뺀 사본(strip_hr)이고,
+    per_day=False 면 +@ 는 근태 없이 추정한 값·근태 기록 비교 줄은 '본인 PC 에서만'(attendance.FROZEN_REC_TEXT)이다."""
+    import copy
+
     import attendance as _at
     from datetime import date, timedelta
     att = att if (per_day and isinstance(att, dict)) else {}
-    agg = _obj(_pick(meta, b, "attendance")) or _obj(att.get("agg")) or {}
+    agg = copy.deepcopy(_obj(_pick(meta, b, "attendance")) or _obj(att.get("agg")) or {})
+    _at.strip_hr(agg)                                   # 근태 칸은 hr 로만(옛 mm_meta 에 남은 것도 뺀다)
+    hr = _at.hr_view(att.get("agg")) if per_day and att else None
     months = agg.get("months") if isinstance(agg.get("months"), dict) else {}
     weeks = agg.get("weeks") if isinstance(agg.get("weeks"), dict) else {}
     if not months:
@@ -337,43 +344,61 @@ def attendance_section(meta, b, att=None, per_day=True, max_days=31, max_weeks=2
     wk_h = _h(p.get("weekHours")) or float(_at.DEFAULTS["weekHours"])
     per = meta.get("period") if isinstance(meta.get("period"), list) else []
     d1 = str(per[-1])[:10] if per else ""
+    std = cu.get("standardDayHours")
+    h_mo = (hr or {}).get("months") or {}
+    h_wk = (hr or {}).get("weeks") or {}
 
     def h1(v):
         return f"{_h(v):.1f}h"
+
+    def plus_td(v, hv):
+        """+@ 칸 — 근태와 견준 칸이 있으면 합(굵게), 없으면 추정"""
+        if isinstance(hv, dict) and "plus_all_h" in hv:
+            return f"<td><b>{h1(hv.get('plus_all_h'))}</b></td>"
+        return f"<td>{h1(_at.est_of(v))}</td>"
     h = ["<h3 style='font-size:14px;margin:18px 0 4px'>출퇴근·시간외 근무</h3>",
+         f"<div><b>{esc(_at.plus_line(agg, hr, d1, None, std))}</b></div>",
          f"<div><b>{esc(_at.headline(agg, d1))}</b> — "
          + ("이 근무시간으로 투입 MM을 쟀습니다." if agg.get("used_for_mm")
             else "투입 MM은 LM29 방식으로 쟀습니다(이 절은 참고 — 설정 attendance.useForMM).") + "</div>",
+         f"<div class='dim'>{esc(_at.plus_note(std))}</div>",
          f"<div class='dim'>{esc(_at.rule_text(p or None, cu.get('standardDayHours'), cu.get('nightWindow')))}</div>"]
-    rec_on = any(isinstance(v, dict) and "unrecorded_h" in v for v in months.values())
+    plus_th = "<th>+@</th>" if hr else "<th>+@(추정)</th>"
     h.append("<table><tr><th>월</th><th>근무</th><th>정규</th><th>연장</th><th>야간</th><th>휴일</th><th>PC 밖</th>"
              "<th>LM29 방식</th><th>근무일</th><th>20시 넘은 퇴근</th><th>휴가일 근무</th><th>52시간 넘은 주</th>"
-             + ("<th>근태에 없는 근무</th>" if rec_on else "") + "</tr>")
+             + plus_th + "</tr>")
     tot = agg.get("total") if isinstance(agg.get("total"), dict) else {}
     for lab, v in [(mk, months[mk]) for mk in sorted(months)] + ([("합계", tot)] if tot else []):
         v = v if isinstance(v, dict) else {}
         b0, b1 = ("<b>", "</b>") if lab == "합계" else ("", "")
+        hv = (hr or {}).get("total") if lab == "합계" else h_mo.get(lab)
         h.append(f"<tr><td>{b0}{esc(lab)}{b1}</td><td><b>{h1(v.get('work_h'))}</b></td><td>{h1(v.get('regular_h'))}</td>"
                  f"<td>{h1(v.get('ext_h'))}</td><td>{h1(v.get('night_h'))}</td><td>{h1(v.get('holiday_h'))}</td>"
                  f"<td>{h1(v.get('offpc_h'))}</td><td>{h1(v.get('lm29_h'))}</td><td>{_n(v.get('days'))}일</td>"
                  f"<td>{_n(v.get('late_days'))}일</td><td>{_n(v.get('leave_work_days'))}일</td>"
-                 f"<td>{_n(v.get('over52_weeks'))}주</td>"
-                 + (f"<td>{h1(v.get('unrecorded_h'))}</td>" if rec_on else "") + "</tr>")
+                 f"<td>{_n(v.get('over52_weeks'))}주</td>" + plus_td(v, hv) + "</tr>")
     h.append("</table>")
+    if hr:
+        ht = hr.get("total") if isinstance(hr.get("total"), dict) else {}
+        h.append(f"<div class='dim'>+@ 나눔(분석 기간 전체) — 근태 기록과 견준 것 {h1(ht.get('plus_h'))} · 기록 없이 추정한 것 "
+                 f"{h1(ht.get('plus_est_h'))} · 그중 PC 밖 {h1(_h(ht.get('plus_offpc_h')) + _h(ht.get('plus_est_offpc_h')))} · "
+                 f"근태 시간 중 PC 흔적 없는 시간 {h1(ht.get('missing_h'))}(참고) · 입실·퇴실로 본 근태 밖 체류 "
+                 f"{h1(ht.get('gate_plus_h'))}(참고)</div>")
     wk = sorted(((k, v) for k, v in weeks.items() if isinstance(v, dict)), reverse=True)[:max_weeks]
     if wk:
         h.append(f"<div class='dim'>주 합계(월~일) — 최근 {len(wk)}주"
                  + (f"(전체 {len(weeks)}주 중)" if len(weeks) > len(wk) else "")
                  + f" · {wk_h:g}시간 초과 = 그 주 근무에서 {wk_h:g}시간을 넘은 시간 · '일부' = 분석 기간에 걸친 주</div>")
         h.append(f"<table><tr><th>주(월~일)</th><th>근무</th><th>연장</th><th>야간</th><th>휴일</th><th>PC 밖</th>"
-                 f"<th>{wk_h:g}시간 초과</th><th>52시간</th></tr>")
-        for _k, w in wk:
+                 f"<th>{wk_h:g}시간 초과</th><th>52시간</th>{plus_th}</tr>")
+        for k, w in wk:
             o52 = "<b style='color:#c0122f'>넘음</b>" if w.get("over52") else "–"
             h.append(f"<tr><td>{esc(str(w.get('from'))[5:])}~{esc(str(w.get('to'))[5:])}"
                      + (" <span class='dim'>일부</span>" if w.get("partial") else "") + "</td>"
                      f"<td><b>{h1(w.get('work_h'))}</b></td><td>{h1(w.get('ext_h'))}</td><td>{h1(w.get('night_h'))}</td>"
                      f"<td>{h1(w.get('holiday_h'))}</td><td>{h1(w.get('offpc_h'))}</td>"
-                     f"<td>{h1(w.get('over40_h')) if _h(w.get('over40_h')) > 0 else '–'}</td><td>{o52}</td></tr>")
+                     f"<td>{h1(w.get('over40_h')) if _h(w.get('over40_h')) > 0 else '–'}</td><td>{o52}</td>"
+                     + plus_td(w, h_wk.get(k)) + "</tr>")
         h.append("</table>")
     days = att.get("days") if isinstance(att.get("days"), dict) else {}
     if per_day and att:
@@ -386,27 +411,55 @@ def attendance_section(meta, b, att=None, per_day=True, max_days=31, max_weeks=2
         lo = (end - timedelta(days=max_days - 1)).isoformat()
         rows = [(k, days[k]) for k in sorted(days, reverse=True)
                 if isinstance(days[k], dict) and lo <= str(k)[:10] <= end.isoformat()]
-        h.append(f"<div class='dim'>날짜별 출근·퇴근 — 최근 {max_days}일({len(rows)}일 · 최신순) · 근거 = 출근 쪽 → 퇴근 쪽</div>"
+        h.append(f"<div class='dim'>날짜별 출근·퇴근 — 최근 {max_days}일({len(rows)}일 · 최신순) · 근거 = 출근 쪽 → 퇴근 쪽 · "
+                 "+@ = 근태 기록 밖 근무(근태 기록이 없는 날은 추정)</div>"
                  "<table><tr><th>날짜(요일)</th><th>출근</th><th>퇴근</th><th>근무</th><th>연장</th><th>야간</th><th>휴일</th>"
-                 "<th>PC 밖</th><th>LM29 방식</th><th>근거</th><th>확실성</th></tr>")
+                 "<th>PC 밖</th><th>LM29 방식</th><th>근거</th><th>확실성</th>"
+                 "<th>근태 출근·퇴근</th><th>입실·퇴실</th><th>+@</th><th>+@ 까닭</th></tr>")
         for k, r in rows:
             try:
                 dow = ATT_DOW[date.fromisoformat(str(k)[:10]).weekday()]
             except ValueError:
                 dow = ""
             lv = (("다음 날 " if _n(r.get("leave_day")) > 0 else "") + str(r.get("leave"))) if r.get("leave") else "–"
+            rc = r.get("rec") if isinstance(r.get("rec"), dict) else None
+            pl = _at.day_plus(r, std)
+            pv = (f"<b>{h1(pl['h'])}</b>" + (" <span class='dim'>추정</span>" if pl["est"] else "")) if pl["h"] > 0 else "–"
             h.append(f"<tr><td>{esc(str(k)[5:10])}({dow})</td><td>{esc(r.get('arrive') or '–')}</td><td>{esc(lv)}</td>"
                      f"<td><b>{h1(r.get('work_h'))}</b></td><td>{h1(r.get('ext_h'))}</td><td>{h1(r.get('night_h'))}</td>"
                      f"<td>{h1(r.get('holiday_h'))}</td><td>{h1(r.get('offpc_h'))}</td><td>{h1(r.get('lm29_h'))}</td>"
                      f"<td class='dim'>{esc(_at.day_why(r, p or None))}</td>"
-                     f"<td>{esc(_at.CONF_KO.get(r.get('conf'), '–'))}</td></tr>")
+                     f"<td>{esc(_at.CONF_KO.get(r.get('conf'), '–'))}</td>"
+                     f"<td>{esc(_rec_span(rc))}</td><td>{esc(_gate_span(rc))}</td><td>{pv}</td>"
+                     f"<td class='dim'>{esc(pl['why'])}</td></tr>")
         h.append("</table>")
-    h.append(f"<div class='dim'><b>근태 기록 비교</b> — {esc(_at.records_text(agg.get('records')))}</div>")
-    h.append("<div class='dim'>" + ("날짜별 출근·퇴근 추정 시각은 이 PC의 이 리포트와 대시보드에만 있습니다 — 팀 서버에는 주·달 합계 "
-                                    "시간만 가고, 공유폴더로 복사되는 보고서의 이 절에도 합계만 담깁니다." if per_day else
-                                    "날짜별 출근·퇴근 시각은 본인 PC의 대시보드·리포트에서만 보입니다 — 이 분석리포트에는 주·달 합계만 "
-                                    "담았습니다.") + "</div>")
+    h.append(f"<div class='dim'><b>근태 기록 비교</b> — "
+             f"{esc(_at.records_text((hr or {}).get('records')) if per_day else _at.FROZEN_REC_TEXT)}</div>")
+    h.append("<div class='dim'>" + ("날짜별 출근·퇴근 추정 시각과 근태 기록(GERP 포함)에서 나온 값은 이 PC의 이 리포트와 대시보드에만 "
+                                    "있습니다 — 팀 서버와 공유폴더로 복사되는 보고서에는 근태 기록 없이 잰 주·달 합계 시간만 갑니다."
+                                    if per_day else
+                                    "날짜별 출근·퇴근 시각과 근태 기록은 본인 PC의 대시보드·리포트에서만 보입니다 — 이 분석리포트에는 "
+                                    "주·달 합계만 담았습니다.") + "</div>")
     return h
+
+
+def _rec_span(rc):
+    """날짜별 행의 rec → '근태 출근·퇴근' 칸 글(LM30 2026-10-19 — 이 PC 리포트만)"""
+    if not isinstance(rc, dict):
+        return "–"
+    if rc.get("in") and rc.get("out"):
+        return f"{rc['in']}~" + ("다음 날 " if _n(rc.get("out_day")) > 0 else "") + str(rc["out"])
+    if _h(rc.get("leave")) >= 1:
+        return "휴가"
+    return "기록 없음" if rc.get("missing") else "시각 없음"
+
+
+def _gate_span(rc):
+    """날짜별 행의 rec → '입실·퇴실' 칸 글(태깅 — 참고)"""
+    if not isinstance(rc, dict) or not (rc.get("gate_in") or rc.get("gate_out")):
+        return "–"
+    return (f"{rc.get('gate_in') or '?'}~" + ("다음 날 " if _n(rc.get("gate_out_day")) > 0 else "")
+            + str(rc.get("gate_out") or "?"))
 
 
 def day_method(db):
