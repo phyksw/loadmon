@@ -150,10 +150,12 @@ try {
 
 function Procs-Under([string]$root) {
     # 실행 파일이 이 폴더 안에 있거나(내장 파이썬), 명령줄이 이 폴더를 가리키는 프로세스
-    $esc = [regex]::Escape($root)
+    # LM30(2026-10-19): 폴더 경로 바로 뒤에 경계(\ / 따옴표 또는 끝)가 와야 이 폴더다 - 경로를 부분 문자열로만 찾으면
+    # '…\loadmon-lm30' 이 같은 곳의 '…\loadmon-lm30 (1)\…'·'…\loadmon-lm30-old\…' 의 앞부분이라 그 폴더의 파이썬·수집기까지 닫았다.
+    $rx = [regex]::Escape($root) + '(?=[\\/"'']|$)'
     Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-        ($_.ExecutablePath -and $_.ExecutablePath -match $esc) -or
-        ($_.CommandLine -and $_.CommandLine -match $esc)
+        ($_.ExecutablePath -and $_.ExecutablePath -match $rx) -or
+        ($_.CommandLine -and $_.CommandLine -match $rx)
     }
 }
 

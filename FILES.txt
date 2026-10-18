@@ -92,7 +92,7 @@ tools/trace_summary.py                                 8,222 B  eaf75c3a
 tools/Get-EmbeddedPython.ps1                           2,472 B  4e87aba5
 tools/Make-Package.ps1                                12,990 B  fcaff1c3
 tools/Make-MovePack.py                                12,691 B  d8aa67fb
-tools/Prepare-Move.ps1                                26,528 B  57115483
+tools/Prepare-Move.ps1                                26,870 B  55bdfea5
 tools/Stop-LM30.ps1                                   18,735 B  649a7270
 tools/stop_lm30.py                                    22,121 B  137c9af7
 tools/ps_launch.py                                     4,932 B  abe5c7e9
