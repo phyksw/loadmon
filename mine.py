@@ -234,6 +234,9 @@ def main():
         # LM30(2026-10-19) 시간외 나눠 보기 — 주말·휴일·저녁(19~22시)·야간(모두 투입에 든 시간 · 합계뿐)
         print("     시간외 — " + attendance.offhours_line(at, (hinfo.get("cfg_used") or {}).get("nightWindow"),
                                                         bool(att.get("used_for_mm"))))
+        # LM30(2026-10-20) PC 사용 시간(PC 를 실제로 쓴 시간 · 켜 둔 날 — 합계뿐)
+        for _pu in attendance.pc_usage_lines(at, (hinfo.get("cfg_used") or {}).get("pcFloorWindow")):
+            print("     " + _pu)
     # LM30(2026-10-19) 발신 흔적 빈 곳 — PC 는 켰는데 내 메일·팀즈 발신이 없다(새로 깐 PC 는 전용 Edge 에 한 번 로그인해야 읽는다)
     _sg = attendance.send_gap_text(hinfo.get("send_gap"))
     if _sg:

@@ -2456,6 +2456,20 @@ def result_file():
     return max(refs, key=_mtime) if refs else ""
 
 
+def pc_usage_view(meta):
+    r"""LM30(2026-10-20) 'MM 산정 근거' 카드의 PC 사용 시간 줄(GET /api/dash 의 pc_usage_text) → [줄, …] — mm_meta 의 출퇴근 합계
+    (mm_basis.attendance.total — 근태 기록 없이 잰 값)의 pc_usage_h·pc_usage_off_h·always_on_days(attendance.pc_usage_lines). 합계뿐이라
+    얼린 사본에도 남는다. PC 사용 시간으로 재지 않은 결과(그 칸이 없다)는 []."""
+    import attendance as _att
+    meta = meta if isinstance(meta, dict) else {}
+    b = meta.get("mm_basis") if isinstance(meta.get("mm_basis"), dict) else {}
+    att = b.get("attendance") if isinstance(b.get("attendance"), dict) else (
+        meta.get("attendance") if isinstance(meta.get("attendance"), dict) else {})
+    cu = b.get("cfg_used") if isinstance(b.get("cfg_used"), dict) else (
+        meta.get("cfg_used") if isinstance(meta.get("cfg_used"), dict) else {})
+    return _att.pc_usage_lines(att.get("total"), cu.get("pcFloorWindow"))
+
+
 def meta_path_for(fn):
     r"""화면에 띄운 결과 행 파일(mm_rows_<기간>…)과 **같은 기간**의 report\mm_meta_<기간>.json — 없으면 가장 최근 mm_meta.
     /api/dash 와 /api/attendance 가 같은 규칙으로 기간을 고른다(LM30 — 한 곳). → 경로 또는 "" """
@@ -2516,7 +2530,9 @@ def attendance_view():
       · 날짜별 행마다 plus = attendance.day_plus(+@ 시간·추정인가·까닭) — rec(근태 출근·퇴근·입실·퇴실)와 함께 이 PC 화면에서만
       얼린 사본은 hr·날짜별 행을 빼고 결론 줄을 근태 없이(추정만) 다시 쓴다(freeze._att_summary_only).
     LM30(2026-10-19) with_lm29(LM29 보다 적게 세지 않음 — 그 결과를 잰 설정) · offhours_text(분석 기간의 주말·휴일·저녁·야간 한 줄 —
-    attendance.offhours_line) · send_gap·send_gap_text(발신 흔적 빈 곳 — mm_basis.send_gap · 건수·날짜만)."""
+    attendance.offhours_line) · send_gap·send_gap_text(발신 흔적 빈 곳 — mm_basis.send_gap · 건수·날짜만).
+    LM30(2026-10-20) pc_usage(그 결과를 PC 사용 시간으로 쟀나) · pc_usage_text(분석 기간 PC 를 쓴 시간·켜 둔 날 — attendance.pc_usage_lines
+    · 합계뿐이라 얼린 사본에도 남는다) · rule 은 PC 사용 시간 문장(낮 창 = cfg_used.pcFloorWindow)."""
     import copy as _copy
     from datetime import date as _date, timedelta as _td
 
@@ -2587,12 +2603,13 @@ def attendance_view():
         agg={k: agg.get(k) for k in ("weeks", "months", "total") if k in agg},
         with_lm29=bool(p.get("withLM29")),
         offhours_text=_att.offhours_line(tot, cu.get("nightWindow"), bool(agg.get("used_for_mm"))) if tot else "",
+        pc_usage=bool(p.get("pcUsage")), pc_usage_text=_att.pc_usage_lines(tot, cu.get("pcFloorWindow")),
         send_gap=sg, send_gap_text=_att.send_gap_text(sg),
         hr=hr,
         plus_text=_att.plus_line(agg, hr, per[1] if per else None, _date.today(), std),
         plus_note=_att.plus_note(std),
         headline=_att.headline(agg, per[1] if per else None),
-        rule=_att.rule_text(p, cu.get("standardDayHours"), cu.get("nightWindow")),
+        rule=_att.rule_text(p, cu.get("standardDayHours"), cu.get("nightWindow"), cu.get("pcFloorWindow")),
         records_text=_att.records_text((hr or {}).get("records")),
         usual=(doc or {}).get("usual") if isinstance((doc or {}).get("usual"), dict) else {},
         usual_text=_att.usual_text((doc or {}).get("usual")) if doc else "",
@@ -4611,6 +4628,8 @@ async function refresh(){
   const ohOn=Object.keys(ohMo).length>0;
   const ohC=k=>ohOn?`<td style="font-size:11px;color:#4a5159">${esc(ohTxt(ohMo[k]))||"–"}</td>`:"";
   const ohNote=(att9&&att9.total&&typeof att9.total==="object")?`<div class="note"><b>시간외(분석 기간)</b> — ${esc(ohTxt(att9.total))} — ${attOn?"모두 투입에 들어 있습니다":"참고(투입 MM은 LM29 방식으로 쟀습니다)"}</div>`:"";
+  // LM30(2026-10-20) PC 사용 시간 줄(d.pc_usage_text — 분석 기간 PC를 쓴 시간·켜 둔 날 · attendance.pc_usage_lines 와 같은 글자)
+  const puNote=(Array.isArray(d.pc_usage_text)?d.pc_usage_text:[]).filter(x=>typeof x==="string"&&x).map(x=>`<div class="note">${esc(x)}</div>`).join("");
   const sgw=(nb.send_gap&&typeof nb.send_gap==="object"&&nb.send_gap.warn&&nb.send_gap.text)?nb.send_gap:null;
   const sgNote=sgw?`<div class="note" style="color:#b54708;margin:0 0 6px"><b>${esc(sgw.text)}</b></div>`:"";
   mmEl.innerHTML=mo.length?sgNote+`<div class="note" style="margin:0 0 6px">${esc(nb.basis||"")} — 로드율 100% = 가용 시간을 꽉 채워 일함(회색 눈금). 야근하면 100%를 넘습니다.</div>`+l29Note+
@@ -4620,7 +4639,7 @@ async function refresh(){
     return `<tr><td>${esc(k)}</td><td><b>${num(v.mm).toFixed(2)}</b></td>${l29c}<td>${num(v.avail_mm).toFixed(2)}</td>
     <td><b>${v.load_pct==null?"–":num(v.load_pct)+"%"}</b></td><td>${bar(num(v.load_pct))}</td>
     <td>${esc(v.worked)}h</td>${ohC(k)}<td>${esc(v.absent||0)}일</td><td>${esc(v.workdays)}일 = ${esc(v.capacity_h)}h</td></tr>`;}).join("")+
-   `</table>${ohNote}${otNote}
+   `</table>${ohNote}${puNote}${otNote}
    <div class="note">${fixLead} ${num(nb.lunch_deducted_h).toFixed(0)}h · 저녁·새벽 가동 인정 ${num(nb.evening_credit_h).toFixed(1)}h · 주말 산출물 창 ${num(nb.weekend_window_h).toFixed(1)}h ·
    수동 흔적(수신·CC)만 있는 날 ${nb.floor_blocked_passive_days||0}일(하한 미적용 — 많으면 config.watchFolders 점검) · 미래 시각 신호 폐기 ${nb.future_signals_dropped||0}건 ·
    부재 추정 ${nb.inferred_absence_days||0}일(PC 도 흔적도 없는 평일 — 가용에서 차감${absd.length?": "+esc(absd.slice(0,12).join(", "))+(absd.length>12?" …":""):""})${simNote}</div>
@@ -4697,6 +4716,7 @@ function attRender(a){
   +(a.plus_text?`<div style="font-size:13.5px;margin-bottom:2px"><b>${esc(a.plus_text)}</b></div>`:"")
   +`<div style="font-size:13px;margin-bottom:2px"><b>${esc(a.headline||"")}</b></div>`
   +(a.offhours_text?`<div class="note" style="margin-top:2px"><b>시간외(분석 기간)</b> — ${esc(a.offhours_text)}</div>`:"")
+  +(Array.isArray(a.pc_usage_text)?a.pc_usage_text:[]).filter(x=>typeof x==="string"&&x).map(x=>`<div class="note" style="margin-top:2px">${esc(x)}</div>`).join("")
   +(a.plus_note?`<div class="note" style="margin-top:2px">${esc(a.plus_note)}</div>`:"")
   +`<div class="note" style="margin-top:2px">${a.used_for_mm?"<b>이 근무시간으로 투입 MM을 쟀습니다.</b>":"<b>투입 MM은 LM29 방식으로 쟀습니다</b> — 이 카드는 참고용입니다(설정 attendance.useForMM)."} ${esc(a.rule||"")}</div>`
   +wTbl
@@ -5843,6 +5863,11 @@ class H(BaseHTTPRequestHandler):
                       max(x for x in (per[1], _ext[1]) if x) if (per[1] or _ext[1]) else ""]
             tinfo = {}
             tr = trend(per_tr[0], per_tr[1], (m2.group(1) if m2 else ""), info=tinfo)
+            # LM30(2026-10-20) PC 사용 시간 줄(분석 기간 합계 — 'MM 산정 근거' 카드 · 얼린 사본에도 남는다)
+            try:
+                pc_usage_text = pc_usage_view(meta)
+            except Exception:  # noqa: BLE001 - 한 줄 때문에 대시보드 전체가 죽지 않게
+                pc_usage_text = []
             try:
                 import details as _dl1m
                 _l1meta = _dl1m.l1_meta_payload()
@@ -5851,6 +5876,7 @@ class H(BaseHTTPRequestHandler):
             self._send(200, {"version": VERSION, "port": PORT[0], "sources": sources(per),
                              "l1meta": _l1meta,
                              "file": fn, "rows": rows, "meta": meta,
+                             "pc_usage_text": pc_usage_text,
                              # 메일·일정 수집 범위(달 단위) — 주간 활동 추이 밑에 '미수집 달'을 적는다(얼린 사본에도 굳는다)
                              "mail_coverage": outlook_coverage(per),
                              # 화면이 보고 있는 그 기간을 넘긴다 — 예전에는 오늘 기준

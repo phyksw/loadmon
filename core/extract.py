@@ -2363,7 +2363,7 @@ def pc_daily(data_dir, d0, d1, day_win=None, anom=None, span_anoms=None, single_
     return pc, pc_wins, pc_spans, pc_win_all
 
 
-def att_presence(data_dir, d0, d1):
+def att_presence(data_dir, d0, d1, raw=None):
     r"""LM30(2026-10-18) 출퇴근 추정(core\attendance)의 PC 재료 — 본 PC + data\추가PC\* → (pres, weak, live_ends)
       pres       {date: [(m0, m1)]} PC 가 실제로 켜져 있던 구간 — pc_spans 의 이벤트 행(켜기·로그온·잠금 해제·절전 해제·원격 접속
                  ~ 끄기·로그오프·잠금·절전 · 수집 중이면 수집 시각까지). 구간 파일이 없는 루트(옛 수집분)만 pc_on 행의
@@ -2371,7 +2371,9 @@ def att_presence(data_dir, d0, d1):
       weak       {date: [(m0, m1)]} 브라우저 방문(hint)·창 샘플러(sampler) 구간 — 켜짐이 아니라 약한 흔적
       live_ends  [datetime] 수집 시각까지 켜져 있던 현재 세션(src live·boot)의 끝 — '끔' 이 아니다
     pc_daily 와 같은 루트·유령 날 거르기(이동해 온 PC 의 첫 물리 이벤트 이전 힌트 날)를 쓴다. 호출측이 범위를 앞뒤 하루씩 넓혀 준다
-    (자정에서 자른 조각이 기간 첫날 00:00 에 가짜 '켬' 을 만들지 않게). 읽기만 한다."""
+    (자정에서 자른 조각이 기간 첫날 00:00 에 가짜 '켬' 을 만들지 않게). 읽기만 한다.
+    LM30(2026-10-20) raw(list 를 주면) — pres 와 같은 조각을 그 행의 src 와 함께 (date, m0, m1, src) 로 더 모은다(PC 사용 시간 —
+    attendance.pc_usage 의 재료: src event-cap = 끄기 기록 없이 20시간 캡으로 닫힌 켜짐 · pc_on 창은 window). 반환값은 그대로다."""
     soft = ("hint", "sampler")
     pres, weak, live = {}, {}, []
     for root in _data_roots(data_dir):
@@ -2387,6 +2389,12 @@ def att_presence(data_dir, d0, d1):
         for dd, lst in _pc_spans_rows(evt, d0, d1).items():
             if not _ph(dd):
                 pres.setdefault(dd, []).extend(lst)
+        if raw is not None:
+            for r in evt:
+                src = str(r.get("src") or "").strip().lower() or "event"
+                for dd, lst in _pc_spans_rows([r], d0, d1).items():
+                    if not _ph(dd):
+                        raw.extend((dd, a, b, src) for a, b in lst)
         for dd, lst in _pc_spans_rows([r for r in rows if str(r.get("src") or "").strip().lower() in soft],
                                       d0, d1).items():
             if not _ph(dd):
@@ -2408,6 +2416,8 @@ def att_presence(data_dir, d0, d1):
             fo, lo = _hhmm(r.get("first_on")), _hhmm(r.get("last_off"))
             if fo is not None and lo is not None and lo > fo:
                 pres.setdefault(d, []).append((fo, lo))
+                if raw is not None:
+                    raw.append((d, fo, lo, "window"))
     return ({dd: _union_spans(v) for dd, v in pres.items()}, {dd: _union_spans(v) for dd, v in weak.items()}, live)
 
 
@@ -3977,8 +3987,10 @@ def _attendance(data_dir, signals, files, d0, d1, now, p, lm):
         a, b = ab(dd, s0), ab(dd, s1 if s1 > s0 else s1 + 1440.0)
         if a < now_abs:
             spans.append((a, min(b, now_abs), "manual"))
-    pres, weak, live = att_presence(data_dir, base, d1 + _td(days=1))
+    raw = []                                  # LM30(2026-10-20) 같은 조각 + 그 행의 src — PC 사용 시간(attendance 머리말 19)의 재료
+    pres, weak, live = att_presence(data_dir, base, d1 + _td(days=1), raw=raw)
     presence = [(ab(dd, a), ab(dd, b)) for dd, lst in pres.items() for a, b in lst]
+    pc_raw = [(ab(dd, a), ab(dd, b), src) for dd, a, b, src in raw]
     # 방문 구간 = 첫 방문 ~ 마지막 방문 + 5분(Get-PcOnHints TAIL_MIN) — 점은 첫 방문과 마지막 방문 둘
     wpts = [ab(dd, x) for dd, lst in weak.items() for a, b in lst for x in {a, max(a, b - _att.WEB_TAIL_MIN)}]
     l29n = {}
@@ -3987,9 +3999,10 @@ def _attendance(data_dir, signals, files, d0, d1, now, p, lm):
         v = float(tg.get("night") or 0) + float(tg.get("holiday_night") or 0)
         if v > 0:
             l29n[datetime.strptime(iso[:10], "%Y-%m-%d").date()] = v
-    # LM30(2026-10-19) LM29 가 시각까지 정해 센 구간(lm["spans"] — 그날 분) → 절대 분 · 지금 뒤는 자른다(attendance.withLM29 일 때만)
+    # LM30(2026-10-19) LM29 가 시각까지 정해 센 구간(lm["spans"] — 그날 분) → 절대 분 · 지금 뒤는 자른다(attendance.withLM29 일 때만 —
+    # LM30(2026-10-20) 키가 없으면 끔)
     l29s = []
-    if p.get("withLM29", True):
+    if p.get("withLM29", False):
         for dd, lst in (lm.get("spans") or {}).items():
             if not (d0 <= dd <= d1):
                 continue
@@ -4002,7 +4015,8 @@ def _attendance(data_dir, signals, files, d0, d1, now, p, lm):
                         day_win=lm["day_win"], night_win=lm["night_win"],
                         is_off=lambda dd: _is_off_day(dd, holidays), leave=lm["absence"], offsite=set(lm["offsite"]),
                         manual_floor=man_floor, nopc=lm["nopc"], untimed_min=lm["untimed"], lm29=lm["hours"],
-                        lm29_night=l29n, day_cap=lm["day_cap"], records=_att.load_records(data_dir), lm29_spans=l29s)
+                        lm29_night=l29n, day_cap=lm["day_cap"], records=_att.load_records(data_dir), lm29_spans=l29s,
+                        pc_spans=pc_raw)
 
 
 def _att_apply(info, days, agg, lm_hours, inferred, p, d0, d1):
@@ -4057,7 +4071,8 @@ def _att_apply(info, days, agg, lm_hours, inferred, p, d0, d1):
         ms["lm29_method"] = ms.get("method")
         ms["method"] = "출퇴근 추정"
     info["lm29_basis"] = info.get("basis", "")
-    info["basis"] = _att.basis_text(p)
+    # LM30(2026-10-20) PC 사용 시간(attendance 머리말 19)이면 켜 둔 PC 를 세는 낮 창(mm.pcFloorWindow)도 문장에 넣는다
+    info["basis"] = _att.basis_text(p, (info.get("cfg_used") or {}).get("pcFloorWindow"))
     return hours
 
 
@@ -4138,10 +4153,15 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
         info["attendance_usual"] = 날짜별 출퇴근·평소 시각(이 셋은 **이 PC 전용** — 호출측이 attendance.take_local 로 떼어
         report\\attendance_<기간>.json 에만 쓴다 · LM30 2026-10-19). useForMM 을 꺼도 채운다(화면 참고용) · cfg_used.attendance = 쓴 설정.
         근태 기록은 참고라 투입 시간·MM 을 바꾸지 않는다.
-      · LM30(2026-10-19) LM29 보다 적게 세지 않음(attendance.withLM29 — 기본 켬 · core\\attendance 머리말 15): 날마다 LM29 가 시각까지
+      · LM30(2026-10-19) LM29 보다 적게 세지 않음(attendance.withLM29 — core\\attendance 머리말 15 · LM30(2026-10-20) 기본 끔 — 견줘
+        볼 때만 켠다): 날마다 LM29 가 시각까지
         정해 센 구간(PC 하한 — 차감 뒤 그대로 센 날만 · 시차 근무 창 밖 · 저녁(자정 넘김 포함)·새벽 인정 · 주말 산출물 창 · 야간 해석 —
         사적 차감 뒤)을 모아 출퇴근 추정의 흔적(lm29)으로 넘기고, 출퇴근 추정은 모든 날에 LM29 시간을 바닥으로 쓴다. 합계에 시간외 나눠
-        보기(weekend_h·offday_h·evening_h — 머리말 16). info["send_gap"] = 발신 흔적 빈 곳(건수·날짜만 — 머리말 17)."""
+        보기(weekend_h·offday_h·evening_h — 머리말 16). info["send_gap"] = 발신 흔적 빈 곳(건수·날짜만 — 머리말 17).
+      · LM30(2026-10-20) PC 사용 시간(attendance.pcUsage — 기본 켬 · core\\attendance 머리말 19): att_presence 가 PC 켜짐 조각을 그 행의
+        src 와 함께 모아(raw) 출퇴근 추정에 넘기고(pc_spans), 출퇴근 추정이 PC 를 실제로 쓴 구간(켜 둔 채인 PC 는 흔적 있는 날의 낮 창만 ·
+        흔적 없는 짧은 켜짐·새벽 업데이트 깨움은 뺌)을 근무 재료로 쓴다 — 흔적이 없어도 주말·휴일·밤에 PC 를 쓴 시간이 근무다. 합계에
+        pc_usage_h·pc_usage_off_h·always_on_days."""
     from datetime import timedelta
     cfg = cfg if isinstance(cfg, dict) else {}
     mc, cfg_warns = norm_cfg(cfg)            # 잘못된 설정값은 죽지 않고 기본값 + info["config_warnings"]

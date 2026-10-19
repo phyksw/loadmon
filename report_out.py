@@ -362,7 +362,8 @@ def attendance_section(meta, b, att=None, per_day=True, max_days=31, max_weeks=2
          + ("이 근무시간으로 투입 MM을 쟀습니다." if agg.get("used_for_mm")
             else "투입 MM은 LM29 방식으로 쟀습니다(이 절은 참고 — 설정 attendance.useForMM).") + "</div>",
          f"<div class='dim'>{esc(_at.plus_note(std))}</div>",
-         f"<div class='dim'>{esc(_at.rule_text(p or None, cu.get('standardDayHours'), cu.get('nightWindow')))}</div>"]
+         f"<div class='dim'>{esc(_at.rule_text(p or None, cu.get('standardDayHours'), cu.get('nightWindow'), cu.get('pcFloorWindow')))}"
+         "</div>"]
     plus_th = "<th>+@</th>" if hr else "<th>+@(추정)</th>"
     tot = agg.get("total") if isinstance(agg.get("total"), dict) else {}
     # LM30(2026-10-19) 시간외 나눠 보기 — 저녁(19~22시) 칸(evening_h 가 있는 합계만 — 예전 합계면 칸이 없다) · 분석 기간 한 줄 ·
@@ -389,6 +390,9 @@ def attendance_section(meta, b, att=None, per_day=True, max_days=31, max_weeks=2
     if tot:
         h.append(f"<div class='dim'><b>시간외(분석 기간)</b> — "
                  f"{esc(_at.offhours_line(tot, cu.get('nightWindow'), bool(agg.get('used_for_mm'))))}</div>")
+    # LM30(2026-10-20) PC 사용 시간 줄(attendance 머리말 19 — 분석 기간 PC 를 쓴 시간·켜 둔 날 · 합계뿐이라 분석리포트에도)
+    for t in _at.pc_usage_lines(tot, cu.get("pcFloorWindow")):
+        h.append(f"<div class='dim'>{esc(t)}</div>")
     if hr:
         ht = hr.get("total") if isinstance(hr.get("total"), dict) else {}
         h.append(f"<div class='dim'>+@ 나눔(분석 기간 전체) — 근태 기록과 견준 것 {h1(ht.get('plus_h'))} · 기록 없이 추정한 것 "
@@ -974,6 +978,12 @@ def build(tag, summary=False):
             h.append("<div class='dim'>투입 MM은 출퇴근 추정(LM30 방식)으로 쟀습니다"
                      + (f" — LM29 방식이었다면 {_h(t29):.2f} MM(차이 {_h(inmm) - _h(t29):+.2f} MM)" if t29 is not None else "")
                      + " · 같은 분모(8h × 그 달 평일수) · 근거는 8절 '출퇴근·시간외 근무'</div>")
+        # LM30(2026-10-20) PC 사용 시간 줄('MM 산정 근거' 카드와 같은 글자 — attendance 머리말 19 · mm_meta 의 출퇴근 합계(근태 기록 없이
+        # 잰 값)뿐이라 어디에 실려도 된다). PC 사용 시간으로 재지 않은 결과(그 칸이 없다)는 줄이 없다
+        import attendance as _at
+        _att_t = (_obj(_pick(meta, b, "attendance")) or {}).get("total")
+        for t in _at.pc_usage_lines(_att_t, (_obj(_pick(meta, b, "cfg_used")) or {}).get("pcFloorWindow")):
+            h.append(f"<div class='dim'>{esc(t)}</div>")
         if pcc:
             h.append("<div class='dim'>PC 기록 = 그 달 평일 중 PC 가동 기록이 있는 날의 비율 — 40% 미만이면 "
                      "PC 하한·부재 추정이 꺼져 그 달만 낮게 나올 수 있다(System 로그 롤오버·힌트 없음).</div>")
