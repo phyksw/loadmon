@@ -8,7 +8,8 @@ report_out.py — 현재 분석 결과를 하나의 리포트 파일로 출력�
 출력: report\\리포트_<기간>.html   (브라우저에서 열람, Word에서 [파일 > 열기]로 편집 가능)
       report\\리포트_<기간>.doc    (더블클릭하면 Word로 열림 — 같은 내용)
 
-담기는 것: 투입/가용 MM·로드율(LM30v1 — 법정 채움이면 1절이 달마다 1MM 기준·법정 채움·근무·LM30 방식 MM · legal_section)
+담기는 것: 투입/가용 MM·로드율(LM30v1 — 법정 채움이면 1절이 달마다 1MM 기준·법정 채움·근무(시간외 한 줄)·LM30·LM29 방식 MM과
+          그 판의 로드율 · 발신 흔적 빈 곳 경고 · legal_section)
           · 과제별 로드 · 업무분류 배분 · 공통업무(표준화·자동화 후보)
           · 월별 리뷰 코멘트(빠진 달은 다른 기간 파일에서 이월 — core/narratives) · Agentic AI 니즈 후보(LM29부터 — 발굴만)
           · 산정 근거와 신뢰도(초과근무 세분·미관측 일수)
@@ -334,7 +335,10 @@ def legal_section(meta, b, local=None, head="<h2>1. 월별 로드</h2>"):
       달마다 1MM 기준(평일 N일 × 8시간) · 법정 채움(공휴일·유급휴가·휴가 추정) · 근무(근태 기록 + 디지털 +@ · 기록 없는 날 측정) ·
       투입 MM · 가용 MM · 로드율 · LM30 방식 MM(비교) + 규칙 한 문장.
       local = attendance 파일의 agg["legal"](legal_local — 근태 기록 시간·+@ 나눔과 '휴가 추정'·'근태·흔적 모두 없음' 날짜). 이 PC 의
-      리포트에서만 준다 — 공유폴더로 복사되는 분석리포트는 local=None 이라 달 합계만 담는다."""
+      리포트에서만 준다 — 공유폴더로 복사되는 분석리포트는 local=None 이라 달 합계만 담는다.
+      LM30v1(2026-10-19) 달마다 근무 칸에 시간외 한 줄(mm_basis.attendance 의 주말·휴일·저녁·야간 — attendance.offhours_line)과
+      'LM29 방식 MM(비교)'(mm_lm29) 칸을 더하고, 두 비교 칸에 그 판의 로드율(load_pct_lm30·load_pct_lm29 — 예전 판이 보이던 로드율)을
+      적는다. 맨 위에 발신 흔적 빈 곳 경고(mm_basis.send_gap). 모두 근태 기록 없이 잰 값·건수라 분석리포트에도 실린다."""
     import attendance as _at
     if _at.mm_rule_of(meta) != "legal":
         return []
@@ -344,15 +348,30 @@ def legal_section(meta, b, local=None, head="<h2>1. 월별 로드</h2>"):
     cu = _obj(_pick(meta, b, "cfg_used")) or {}
     std = _at._std(cu.get("standardDayHours"))
     lm = local.get("months") if isinstance(local, dict) and isinstance(local.get("months"), dict) else {}
+    att = _obj(_pick(meta, b, "attendance")) or {}               # 근태 기록 없이 잰 주·달 합계(mm_meta — 팀으로 가는 것)
+    att_mo = att.get("months") if isinstance(att.get("months"), dict) else {}
+    used = bool(att.get("used_for_mm"))
+    l29_on = any(v.get("mm_lm29") is not None for _k, v in mo)
 
     def h1(v):
         return f"{_h(v):.1f}h"
 
     def dd(v):
         return f"{round(_h(v), 2):g}일"
-    h = [head, f"<div><b>{esc(_at.legal_rule_text(std))}</b></div>",
-         "<table><tr><th>월</th><th>1MM 기준</th><th>법정 채움</th><th>근무</th><th>투입 MM</th><th>가용 MM</th><th>로드율</th>"
-         "<th>LM30 방식 MM(비교)</th></tr>"]
+
+    def cmp(x, lp, mm):
+        """비교 칸 — 'X.XX (±차이)' + 그 판의 로드율 · 값이 없으면 '–'"""
+        if x is None:
+            return "–"
+        return (f"{_h(x):.2f} ({_h(mm) - _h(x):+.2f})"
+                + (f"<br><span class='dim'>로드율 {round(_h(lp), 1):g}%</span>" if lp is not None else ""))
+    h = [head]
+    sg_t = _at.send_gap_text(_obj(_pick(meta, b, "send_gap")))
+    if sg_t:
+        h.append(f"<div style='color:#b54708'><b>{esc(sg_t)}</b></div>")
+    h += [f"<div><b>{esc(_at.legal_rule_text(std))}</b></div>",
+          "<table><tr><th>월</th><th>1MM 기준</th><th>법정 채움</th><th>근무</th><th>투입 MM</th><th>가용 MM</th><th>로드율</th>"
+          "<th>LM30 방식 MM(비교)</th>" + ("<th>LM29 방식 MM(비교)</th>" if l29_on else "") + "</tr>"]
     for k, v in mo:
         L = lm.get(k) if isinstance(lm.get(k), dict) else None
         work = f"기록 없는 날 측정 {h1(v.get('measured_h'))}"
@@ -360,19 +379,33 @@ def legal_section(meta, b, local=None, head="<h2>1. 월별 로드</h2>"):
             work = f"근태 기록 {h1(L.get('hr_h'))} + 디지털 +@ {h1(L.get('plus_h'))} · " + work
             if _h(L.get("credit_work_h")) >= 0.05:
                 work += f" · 그중 공휴일·휴가인 날 근무 {h1(L.get('credit_work_h'))}"
-        l30 = v.get("mm_lm30")
+        oh = _at.offhours_line(att_mo.get(k), cu.get("nightWindow"), used) if isinstance(att_mo.get(k), dict) else ""
         h.append(f"<tr><td>{esc(k)}</td><td>평일 {_n(v.get('workdays'))}일 × {std:g}시간 = {h1(v.get('capacity_h'))}</td>"
                  f"<td><b>{h1(v.get('legal_h'))}</b> <span class='dim'>공휴일 {dd(v.get('holiday_days'))} · 유급휴가 "
                  f"{dd(v.get('leave_days'))} · 휴가 추정 {dd(v.get('inferred_leave_days'))}</span></td>"
-                 f"<td><b>{h1(v.get('actual_h'))}</b> <span class='dim'>{esc(work)}</span></td>"
+                 f"<td><b>{h1(v.get('actual_h'))}</b> <span class='dim'>{esc(work)}</span>"
+                 + (f"<br><span class='dim'>시간외 — {esc(oh)}</span>" if oh else "") + "</td>"
                  f"<td><b>{_h(v.get('mm')):.2f}</b></td><td>{_h(v.get('avail_mm')):.2f}</td>"
                  f"<td><b>{'–' if v.get('load_pct') is None else str(v['load_pct']) + '%'}</b></td>"
-                 f"<td>{'–' if l30 is None else format(_h(l30), '.2f') + ' (' + format(_h(v.get('mm')) - _h(l30), '+.2f') + ')'}</td></tr>")
+                 f"<td>{cmp(v.get('mm_lm30'), v.get('load_pct_lm30'), v.get('mm'))}</td>"
+                 + (f"<td>{cmp(v.get('mm_lm29'), v.get('load_pct_lm29'), v.get('mm'))}</td>" if l29_on else "") + "</tr>")
     h.append("</table>")
-    t30 = meta.get("mm_lm30")
+    t30, t29, tmm = _pick(meta, b, "mm_lm30"), _pick(meta, b, "mm_lm29"), _h(meta.get("total_mm"))
     h.append("<div class='dim'>투입 MM = (근무 + 법정 채움) ÷ 1MM · 가용 MM = 지난 평일의 비율 · 로드율 = 투입 ÷ 가용"
-             + (f" — LM30 방식이었다면 {_h(t30):.2f} MM(차이 {_h(meta.get('total_mm')) - _h(t30):+.2f} MM)" if t30 is not None else "")
+             + (f" — LM30 방식이었다면 {_h(t30):.2f} MM(차이 {tmm - _h(t30):+.2f} MM)" if t30 is not None else "")
+             + (f" · LM29 방식이었다면 {_h(t29):.2f} MM(차이 {tmm - _h(t29):+.2f} MM)" if t29 is not None else "")
              + " · 평일이라는 이유만으로는 채우지 않습니다</div>")
+    p30, p29 = _pick(meta, b, "load_pct_lm30"), _pick(meta, b, "load_pct_lm29")
+    if p30 is not None or p29 is not None:
+        lp = meta.get("load_pct")
+        h.append("<div class='dim'><b>예전 로드율과 견주기</b> — 이번 " + ("–" if lp is None else f"{round(_h(lp), 1):g}%")
+                 + (f" · LM30 방식이었다면 {round(_h(p30), 1):g}%" if p30 is not None else "")
+                 + (f" · LM29 방식이었다면 {round(_h(p29), 1):g}%" if p29 is not None else "")
+                 + " — 예전 판은 공휴일을 1MM에서 빼고 휴가를 가용에서 빼서 로드율을 냈습니다. 달마다의 값은 표 오른쪽 비교 칸에"
+                 " 있습니다.</div>")
+    if isinstance(att.get("total"), dict):
+        h.append(f"<div class='dim'><b>시간외(분석 기간)</b> — "
+                 f"{esc(_at.offhours_line(att['total'], cu.get('nightWindow'), used))}</div>")
     if cu.get("creditInferredLeave") is False:
         h.append("<div class='dim'>휴가 추정(기록 없음)은 채우지 않습니다(설정 mm.creditInferredLeave false).</div>")
     if local is not None:
@@ -435,20 +468,31 @@ def attendance_section(meta, b, att=None, per_day=True, max_days=31, max_weeks=2
          f"<div class='dim'>{esc(_at.plus_note(std, _at.mm_rule_of(meta)))}</div>",
          f"<div class='dim'>{esc(_at.rule_text(p or None, cu.get('standardDayHours'), cu.get('nightWindow')))}</div>"]
     plus_th = "<th>+@</th>" if hr else "<th>+@(추정)</th>"
-    h.append("<table><tr><th>월</th><th>근무</th><th>정규</th><th>연장</th><th>야간</th><th>휴일</th><th>PC 밖</th>"
+    tot = agg.get("total") if isinstance(agg.get("total"), dict) else {}
+    # LM30(2026-10-19) 시간외 나눠 보기 — 저녁(19~22시) 칸(evening_h 가 있는 합계만 — 예전 합계면 칸이 없다) · 분석 기간 한 줄 ·
+    # 발신 흔적 빈 곳 경고(mm_basis.send_gap — 건수만 본 고정 문구). 모두 합계뿐이라 분석리포트(공유폴더 사본)에도 실린다
+    ev_on = any(isinstance(v, dict) and "evening_h" in v for v in list(months.values()) + [tot])
+    sg_t = _at.send_gap_text(_obj(_pick(meta, b, "send_gap")))
+    if sg_t:
+        h.insert(1, f"<div style='color:#b54708'><b>{esc(sg_t)}</b></div>")
+    h.append("<table><tr><th>월</th><th>근무</th><th>정규</th><th>연장</th>" + ("<th>저녁(19~22시)</th>" if ev_on else "")
+             + "<th>야간</th><th>휴일</th><th>PC 밖</th>"
              "<th>LM29 방식</th><th>근무일</th><th>20시 넘은 퇴근</th><th>휴가일 근무</th><th>52시간 넘은 주</th>"
              + plus_th + "</tr>")
-    tot = agg.get("total") if isinstance(agg.get("total"), dict) else {}
     for lab, v in [(mk, months[mk]) for mk in sorted(months)] + ([("합계", tot)] if tot else []):
         v = v if isinstance(v, dict) else {}
         b0, b1 = ("<b>", "</b>") if lab == "합계" else ("", "")
         hv = (hr or {}).get("total") if lab == "합계" else h_mo.get(lab)
         h.append(f"<tr><td>{b0}{esc(lab)}{b1}</td><td><b>{h1(v.get('work_h'))}</b></td><td>{h1(v.get('regular_h'))}</td>"
-                 f"<td>{h1(v.get('ext_h'))}</td><td>{h1(v.get('night_h'))}</td><td>{h1(v.get('holiday_h'))}</td>"
+                 f"<td>{h1(v.get('ext_h'))}</td>" + (f"<td>{h1(v.get('evening_h'))}</td>" if ev_on else "")
+                 + f"<td>{h1(v.get('night_h'))}</td><td>{h1(v.get('holiday_h'))}</td>"
                  f"<td>{h1(v.get('offpc_h'))}</td><td>{h1(v.get('lm29_h'))}</td><td>{_n(v.get('days'))}일</td>"
                  f"<td>{_n(v.get('late_days'))}일</td><td>{_n(v.get('leave_work_days'))}일</td>"
                  f"<td>{_n(v.get('over52_weeks'))}주</td>" + plus_td(v, hv) + "</tr>")
     h.append("</table>")
+    if tot:
+        h.append(f"<div class='dim'><b>시간외(분석 기간)</b> — "
+                 f"{esc(_at.offhours_line(tot, cu.get('nightWindow'), bool(agg.get('used_for_mm'))))}</div>")
     if hr:
         ht = hr.get("total") if isinstance(hr.get("total"), dict) else {}
         h.append(f"<div class='dim'>+@ 나눔(분석 기간 전체) — 근태 기록과 견준 것 {h1(ht.get('plus_h'))} · 기록 없이 추정한 것 "

@@ -247,6 +247,13 @@ def main():
         else:
             _sd = attendance._std((hinfo.get("cfg_used") or {}).get("standardDayHours"))
             print(f"     +@ {attendance.est_of(at):.1f}h — 근태 기록 없이 추정(하루 {_sd:g}시간 넘은 시간·휴일 근무)")
+        # LM30(2026-10-19) 시간외 나눠 보기 — 주말·휴일·저녁(19~22시)·야간(모두 투입에 든 시간 · 합계뿐)
+        print("     시간외 — " + attendance.offhours_line(at, (hinfo.get("cfg_used") or {}).get("nightWindow"),
+                                                        bool(att.get("used_for_mm"))))
+    # LM30(2026-10-19) 발신 흔적 빈 곳 — PC 는 켰는데 내 메일·팀즈 발신이 없다(새로 깐 PC 는 전용 Edge 에 한 번 로그인해야 읽는다)
+    _sg = attendance.send_gap_text(hinfo.get("send_gap"))
+    if _sg:
+        print(f"[주의] {_sg}")
     print(f"     부재 {hinfo['absence_days']}일 차감 · 초과근무 {hinfo['overtime_h']:.0f}h · "
           f"주말근무 {hinfo['weekend_days']}일 · 야근일 {hinfo['night_days']}일 · "
           f"PC가동 하한 보정 {hinfo.get('pc_floor_h', 0):.0f}h/{hinfo.get('pc_floor_days', 0)}일")

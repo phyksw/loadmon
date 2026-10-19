@@ -1073,18 +1073,41 @@ def teamserver_status():
 def _save_cfg(key, val):
     r"""config\config.json 의 값 하나를 원자적으로 고친다(설명 키·다른 값은 보존).
 
-    쓰다 만 config 는 화면 전체에 '설정이 없다'로 읽힌다 — 사용자가 말한 그 '초기화'다."""
+    쓰다 만 config 는 화면 전체에 '설정이 없다'로 읽힌다 — 사용자가 말한 그 '초기화'다.
+    LM30(2026-10-19) key 가 튜플이면 중첩 경로(('attendance', 'gerp', 'url')) — _save_cfg_many 와 같다."""
+    return _save_cfg_many([(key, val)])
+
+
+def _save_cfg_many(updates):
+    r"""config\config.json 의 값 여러 개를 한 번에 원자적으로 고친다 → 썼나(LM30 2026-10-19 — GERP 켜기·끄기는 enabled·url 을 함께).
+    updates = [(키 | (키, 키, …), 값)] — 중첩 경로의 중간 블록이 없거나 객체가 아니면 새 블록으로 만든다. 다른 키·설명 키는 그대로,
+    파일 앞의 BOM 도 그대로 둔다(배포 config 는 UTF-8 BOM — 예전에는 쓰고 나면 BOM 이 사라졌다). 임시 파일에 쓴 뒤 바꿔 끼운다."""
+    p = os.path.join(ROOT, "config", "config.json")
+    tmp = p + ".tmp"
     try:
-        p = os.path.join(ROOT, "config", "config.json")
-        with open(p, encoding="utf-8-sig") as f:
-            c = json.load(f)
-        c[key] = val
-        tmp = p + ".tmp"
-        with open(tmp, "w", encoding="utf-8", newline="") as f:
+        with open(p, "rb") as f:
+            raw = f.read()
+        bom = raw.startswith(b"\xef\xbb\xbf")
+        c = json.loads(raw.decode("utf-8-sig"))
+        if not isinstance(c, dict):
+            return False
+        for key, val in updates:
+            path = [str(k) for k in key] if isinstance(key, (list, tuple)) else [str(key)]
+            cur = c
+            for k in path[:-1]:
+                if not isinstance(cur.get(k), dict):
+                    cur[k] = {}
+                cur = cur[k]
+            cur[path[-1]] = val
+        with open(tmp, "w", encoding="utf-8-sig" if bom else "utf-8", newline="") as f:
             json.dump(c, f, ensure_ascii=False, indent=1)
         os.replace(tmp, p)
         return True
     except (OSError, ValueError):
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
         return False
 
 
@@ -2512,7 +2535,9 @@ def attendance_view():
       · agg 는 늘 근태 기록 없이 잰 합계(mm_meta — 파일의 agg 를 쓸 때도 근태 칸을 뺀 사본 · attendance.strip_hr)
       · hr = attendance 파일 합계의 근태 칸(attendance.hr_view — 근태 기록이 없었으면 None) · plus_text(결론 첫 줄) · plus_note(설명)
       · 날짜별 행마다 plus = attendance.day_plus(+@ 시간·추정인가·까닭) — rec(근태 출근·퇴근·입실·퇴실)와 함께 이 PC 화면에서만
-      얼린 사본은 hr·날짜별 행을 빼고 결론 줄을 근태 없이(추정만) 다시 쓴다(freeze._att_summary_only)."""
+      얼린 사본은 hr·날짜별 행을 빼고 결론 줄을 근태 없이(추정만) 다시 쓴다(freeze._att_summary_only).
+    LM30(2026-10-19) with_lm29(LM29 보다 적게 세지 않음 — 그 결과를 잰 설정) · offhours_text(분석 기간의 주말·휴일·저녁·야간 한 줄 —
+    attendance.offhours_line) · send_gap·send_gap_text(발신 흔적 빈 곳 — mm_basis.send_gap · 건수·날짜만)."""
     import copy as _copy
     from datetime import date as _date, timedelta as _td
 
@@ -2574,10 +2599,16 @@ def attendance_view():
         recent[str(iso)[:10]] = row
     mo = meta.get("mm_months") if isinstance(meta.get("mm_months"), dict) else {}
     ms = b.get("measure") if isinstance(b.get("measure"), dict) else {}
+    # LM30(2026-10-19) 시간외 나눠 보기(주말·휴일·저녁·야간 — 합계뿐)·발신 흔적 빈 곳(건수·날짜뿐) — 얼린 사본에 남아도 된다
+    sg = b.get("send_gap") if isinstance(b.get("send_gap"), dict) else None
+    tot = agg.get("total") if isinstance(agg.get("total"), dict) else {}
     out.update(
         ok=True, period=[str(x)[:10] for x in per] or ["", ""], hint="", agg_src=src,
         used_for_mm=bool(agg.get("used_for_mm")), method=ms.get("method") or "", lm29_method=ms.get("lm29_method") or "",
         agg={k: agg.get(k) for k in ("weeks", "months", "total") if k in agg},
+        with_lm29=bool(p.get("withLM29")),
+        offhours_text=_att.offhours_line(tot, cu.get("nightWindow"), bool(agg.get("used_for_mm"))) if tot else "",
+        send_gap=sg, send_gap_text=_att.send_gap_text(sg),
         hr=hr,
         plus_text=_att.plus_line(agg, hr, per[1] if per else None, _date.today(), std),
         plus_note=_att.plus_note(std, _att.mm_rule_of(meta)),        # LM30v1(2026-10-19) 법정 채움이면 투입 MM 에 근태 기록이 든다고
@@ -2615,8 +2646,10 @@ def _gerp_work():
 
 
 def gerp_view():
-    r"""GET /api/gerp — 카드의 GERP 줄 재료: 설정(attendance.gerp — 켜짐·주소 있음만, 주소 글은 내보내지 않는다)·
-    data\근태\gerp_status.json(지난 시도)·gerp.csv(모아 둔 날 수·기간). 파일만 읽는다(외부 전송·Edge 없음)."""
+    r"""GET /api/gerp — 카드의 GERP 줄 재료: 설정(attendance.gerp — 켜짐·주소 있음)·data\근태\gerp_status.json(지난 시도)·
+    gerp.csv(모아 둔 날 수·기간). 파일만 읽는다(외부 전송·Edge 없음).
+    LM30(2026-10-19) 카드에서 켜고 끈다 — url(저장한 주소: 주소 칸을 채우는 데만 · 이 PC 의 화면 서버(127.0.0.1)에서만 나간다)·host(켜졌을 때
+    보이는 짧은 주소 — 호스트만). 상태 글(text)·로그·얼린 사본에는 주소를 싣지 않는다(얼린 사본은 /api/gerp 를 굽지 않는다)."""
     import attendance as _att
     import gerp as _gp
     g, _w = _att.norm_gerp(cfg())
@@ -2624,8 +2657,48 @@ def gerp_view():
     info = _gp.csv_info(DATA)
     keep = ("at", "ok", "kind", "rows", "gate_days", "period", "why", "last_ok_at")
     return {"ok": True, "enabled": bool(g["enabled"]), "url_ok": bool(g["url"]), "on": bool(g["on"]),
+            "url": g["url"], "host": _gp.host_of(g["url"]),
             "off_text": _gp.OFF_TEXT, "text": _gp.status_text(st, g, info) if g["enabled"] else "",
             "status": {k: st[k] for k in keep if k in st}, "stored": info}
+
+
+GERP_URL_MAX = 1000          # LM30(2026-10-19) 카드에서 받는 GERP 주소 길이 상한(config 를 손으로 고치면 2000 — attendance._gerp_url)
+
+
+def gerp_config_check(body, cur):
+    r"""POST /api/gerp_config 본문 검사(LM30 2026-10-19 — 카드의 [켜기]·[끄기]·[주소 바꾸기]) → (updates, 오류 글 | "").
+    body = {"enabled": true|false, "url"?: 글} · cur = 지금 config(dict). url 이 없으면 저장한 주소를 그대로 둔다 · "" 이면 지운다(끌 때만).
+    주소는 http·https 로 시작하는 한 줄(띄어쓰기·제어 문자·아이디@ 없이, 1000자 이하 — attendance._gerp_url 이 같은 규칙으로 본다).
+    오류 글에는 주소를 싣지 않는다. updates = _save_cfg_many 에 넘길 [(경로, 값)] — gerp 블록이 없으면 기본값 블록을 통째로 만든다."""
+    import attendance as _att
+    if not isinstance(body, dict) or not isinstance(body.get("enabled"), bool):
+        return None, "켜기·끄기 값을 읽지 못했습니다 — 화면을 새로 고친 뒤 다시 누르세요"
+    en = body["enabled"]
+    a = cur.get("attendance") if isinstance(cur, dict) else None
+    blk = a.get("gerp") if isinstance(a, dict) else None
+    url = None
+    if "url" in body:
+        v = body.get("url")
+        if not isinstance(v, str):
+            return None, "GERP 주소는 글자여야 합니다"
+        v = v.strip()
+        if v:
+            ok, bad = _att._gerp_url(v)
+            if bad or not ok or len(ok) > GERP_URL_MAX:
+                return None, ("GERP 주소는 http:// 또는 https:// 로 시작하는 한 줄 주소여야 합니다(띄어쓰기 없이 "
+                              f"{GERP_URL_MAX}자 이하) — 로그인한 브라우저의 주소 창에서 그대로 복사해 넣으세요")
+            v = ok
+        url = v
+    saved = _att.norm_gerp(cur)[0]["url"] if isinstance(cur, dict) else ""
+    eff = saved if url is None else url
+    if en and not eff:
+        return None, "켜려면 GERP 근무시간 현황 화면 주소를 넣으세요(로그인한 브라우저의 주소 창에서 복사)"
+    if not isinstance(blk, dict):
+        return [(("attendance", "gerp"), dict(_att.GERP_DEFAULTS, enabled=en, url=eff))], ""
+    ups = [(("attendance", "gerp", "enabled"), en)]
+    if url is not None:
+        ups.append((("attendance", "gerp", "url"), url))
+    return ups, ""
 
 
 def gerp_open():
@@ -4153,6 +4226,7 @@ async function poll(){
   // LM30(2026-10-19): GERP 열기·읽기(시험 기능)도 — 같은 전용 Edge 를 쓴다. 카드가 단추를 다시 그릴 때도 이 값으로 끈다(__lmBusy)
   window.__lmBusy=!!s.running;
   ["owa","teamsweb","cvreset","gerpopen","gerpread"].forEach(id=>{const b=$(id);if(b)b.disabled=!!s.running;});
+  ["gerpon","gerpoff","gerpchg","gerpsave"].forEach(id=>{const b=$(id);if(b)b.disabled=!!s.running;});   // LM30(2026-10-19) GERP 켜기·끄기도
   // LM28(2026-10-19): 작업이 도는 동안에는 [데이터 리셋]도 끈다(누르면 '실행 중'만 들었다) — 무엇이 도는지는 버튼에 마우스를 올리면 보인다
   const rsb=$("reset");if(rsb){rsb.disabled=!!s.running;rsb.title=s.running?`지금 도는 작업: ${s.step||"분석 실행"} — 끝나면 누를 수 있습니다`:"";}
   $("stop").style.display=s.running?"":"none";
@@ -4549,9 +4623,23 @@ async function refresh(){
    상한 없이 그대로 반영(하루 24h 물리 한계만 · 이상치 ${anoms.length}일은 아래 표) · 야근일 ${nb.night_days||0}일(산출물이 찍힌 시각의 폭으로 산정 — 취침 중 켜둔 PC는 제외) ·
    주말 근무 ${nb.weekend_days||0}일 · PC가동 하한 보정 ${num(nb.pc_floor_h).toFixed(0)}h/${nb.pc_floor_days||0}일(흔적 있는 날의 주간 투입을 PC 가동시간까지 인정 — 저장 1번=1시간 과소 방지) · 공휴일 ${nb.holidays||0}일 제외</div>`;
   const fixLead=attOn?`<b>LM29 방식(비교용) 근거</b> — PC가동 하한 보정 ${num(nb.pc_floor_h).toFixed(0)}h/${nb.pc_floor_days||0}일 · 점심 차감`:"측정 보정 — 점심 차감";
+  // LM30(2026-10-19) 시간외 나눠 보기 — 출퇴근 추정 합계(mm_basis.attendance)의 주말·휴일·저녁(19~22시)·야간을 달마다 칸으로, 분석 기간
+  // 전체를 한 줄로(모두 투입에 든 시간) · 발신 흔적 빈 곳 경고(mm_basis.send_gap — 건수만 본 고정 문구)
+  const ohNw=(cu&&Array.isArray(cu.nightWindow)&&cu.nightWindow.length===2)?cu.nightWindow.map(x=>String(x).slice(0,2)).join("~"):"22~06";
+  const ohTxt=t=>(t&&typeof t==="object")?`주말·휴일 ${num(t.offday_h!=null?t.offday_h:t.holiday_h).toFixed(1)}h`
+   +(t.evening_h!=null?` · 저녁(19~22시) ${num(t.evening_h).toFixed(1)}h`:"")+` · 야간(${ohNw}시) ${num(t.night_h).toFixed(1)}h`:"";
+  const ohMo=(att9&&att9.months&&typeof att9.months==="object")?att9.months:{};
+  const ohOn=Object.keys(ohMo).length>0;
+  const ohC=k=>ohOn?`<td style="font-size:11px;color:#4a5159">${esc(ohTxt(ohMo[k]))||"–"}</td>`:"";
+  const ohNote=(att9&&att9.total&&typeof att9.total==="object")?`<div class="note"><b>시간외(분석 기간)</b> — ${esc(ohTxt(att9.total))} — ${attOn?"모두 투입에 들어 있습니다":"참고(투입 MM은 LM29 방식으로 쟀습니다)"}</div>`:"";
+  const sgw=(nb.send_gap&&typeof nb.send_gap==="object"&&nb.send_gap.warn&&nb.send_gap.text)?nb.send_gap:null;
+  const sgNote=sgw?`<div class="note" style="color:#b54708;margin:0 0 6px"><b>${esc(sgw.text)}</b></div>`:"";
   // LM30v1(2026-10-19) 법정 채움 MM(mm.basis "legal" — 달 칸의 basis) — 달마다 1MM 기준(평일 N일 × 8시간) · 법정 채움(공휴일·유급휴가·
   // 휴가 추정) · 근무(근태 기록 + 디지털 +@ · 기록 없는 날 측정) · 투입 · 가용 · 로드율 · LM30 방식 MM(비교). 근태 기록 시간·+@ 나눔과
   // 표시 날짜(d.mm_local — attendance 파일)는 이 PC 화면에만 — 얼린 사본은 달 합계만 그린다(freeze 가 mm_local 을 뺀다).
+  // LM30v1(2026-10-19) 달마다 시간외 한 줄(근무 칸 — 주말·휴일·저녁·야간 · mm_basis.attendance)과 LM29 방식 MM(비교 — mm_lm29)을 더하고,
+  // 두 비교 칸에는 그 판의 로드율(load_pct_lm30·load_pct_lm29 — 휴가를 가용에서 뺀 예전 분모)을 함께 적는다(예전 로드율이 어디서 왔는지
+  // 견주게) · 맨 위에 발신 흔적 빈 곳 경고. 모두 근태 기록 없이 잰 값이라 얼린 사본에 남아도 된다.
   const lgOn=mo.some(([,v])=>v&&typeof v==="object"&&v.basis==="legal");
   const lgLoc=(d.mm_local&&typeof d.mm_local==="object")?d.mm_local:null;
   const lgLm=(lgLoc&&lgLoc.months&&typeof lgLoc.months==="object")?lgLoc.months:{};
@@ -4562,33 +4650,43 @@ async function refresh(){
   const lgCredInf=!(cu&&cu.creditInferredLeave===false);
   const lgFlag=(k,lab,why)=>{const a=(Array.isArray(lgFl[k])?lgFl[k]:[]).filter(x=>typeof x==="string");
    return a.length?`<div class="note"><b>${lab} ${a.length}일</b> — ${esc(a.slice(0,20).map(x=>x.slice(5)).join(", "))}${a.length>20?" …":""} <span class="dim">(${why})</span></div>`:"";};
+  const lgUse=attOn?"모두 투입에 들어 있습니다":"참고(투입 MM은 LM29 방식으로 쟀습니다)";
+  const lgOh=k=>(ohMo[k]&&typeof ohMo[k]==="object")?`<br><span class="dim">시간외 — ${esc(ohTxt(ohMo[k]))} — ${lgUse}</span>`:"";
+  const lgCmp=(x,lp,dl)=>x==null?"–":`${num(x).toFixed(2)} <span style="color:${dl>=0?"#0f7a3d":"#b54708"}">(${sgn(dl)})</span>`
+   +(lp!=null?`<br><span class="dim">로드율 ${num(lp)}%</span>`:"");
   const lgRow=([k,v0])=>{const v=(v0&&typeof v0==="object")?v0:{};const L=(lgLm[k]&&typeof lgLm[k]==="object")?lgLm[k]:null;
-   const dl=num(v.mm)-num(v.mm_lm30);
    const wk=L?`근태 기록 ${lgH(L.hr_h)} + 디지털 +@ ${lgH(L.plus_h)} · 기록 없는 날 측정 ${lgH(v.measured_h)}`+(num(L.credit_work_h)>=0.05?` · 그중 공휴일·휴가인 날 근무 ${lgH(L.credit_work_h)}`:"")
     :`기록 없는 날 측정 ${lgH(v.measured_h)}`;
    return `<tr><td>${esc(k)}</td><td>평일 ${num(v.workdays)}일 × ${lgStd}시간<br><span class="dim">= ${lgH(v.capacity_h)}</span></td>`
     +`<td><b>${lgH(v.legal_h)}</b><br><span class="dim">공휴일 ${lgD(v.holiday_days)} · 유급휴가 ${lgD(v.leave_days)} · 휴가 추정 ${lgD(v.inferred_leave_days)}</span></td>`
-    +`<td><b>${lgH(v.actual_h)}</b><br><span class="dim">${wk}</span></td>`
+    +`<td><b>${lgH(v.actual_h)}</b><br><span class="dim">${wk}</span>${lgOh(k)}</td>`
     +`<td><b>${num(v.mm).toFixed(2)}</b></td><td>${num(v.avail_mm).toFixed(2)}</td><td><b>${v.load_pct==null?"–":num(v.load_pct)+"%"}</b></td><td>${bar(num(v.load_pct))}</td>`
-    +`<td>${v.mm_lm30!=null?`${num(v.mm_lm30).toFixed(2)} <span style="color:${dl>=0?"#0f7a3d":"#b54708"}">(${sgn(dl)})</span>`:"–"}</td></tr>`;};
-  const lgHtml=lgOn?(`<div class="note" style="margin:0 0 6px"><b>${esc(d.mm_rule_text||"1MM = 그달 평일 × 8시간입니다. 공휴일·유급휴가는 법으로 채운 것으로 치고, 나머지는 실제 근무입니다.")}</b></div>`
-    +`<div class="note" style="margin:0 0 6px">투입 MM = (근무 + 법정 채움) ÷ 1MM · 가용 MM = 지난 평일의 비율 · 로드율 = 투입 ÷ 가용${m.mm_lm30!=null?` — LM30 방식이었다면 ${num(m.mm_lm30).toFixed(2)} MM(차이 ${sgn(num(m.total_mm)-num(m.mm_lm30))} MM)`:""}</div>`
-    +"<table><tr><th>월</th><th>1MM 기준</th><th>법정 채움</th><th>근무</th><th style='width:58px'>투입 MM</th><th style='width:58px'>가용 MM</th><th style='width:62px'>로드율</th><th style='width:130px'></th><th style='width:96px'>LM30 방식 MM(비교)</th></tr>"
-    +mo.map(lgRow).join("")+"</table>"
+    +`<td>${lgCmp(v.mm_lm30,v.load_pct_lm30,num(v.mm)-num(v.mm_lm30))}</td>`
+    +(l29On?`<td>${lgCmp(v.mm_lm29,v.load_pct_lm29,num(v.mm)-num(v.mm_lm29))}</td>`:"")+`</tr>`;};
+  const lgL30=pick("load_pct_lm30"),lgL29=pick("load_pct_lm29");
+  const lgLoad=(lgL30!=null||lgL29!=null)?`<div class="note" style="margin:0 0 6px"><b>예전 로드율과 견주기</b> — 이번 ${m.load_pct!=null?num(m.load_pct)+"%":"–"}`
+    +(lgL30!=null?` · LM30 방식이었다면 ${num(lgL30)}%`:"")+(lgL29!=null?` · LM29 방식이었다면 ${num(lgL29)}%`:"")
+    +` <span class="dim">— 예전 판은 공휴일을 1MM에서 빼고 휴가를 가용에서 빼서 로드율을 냈습니다. 달마다의 값은 표 오른쪽 비교 칸에 있습니다.</span></div>`:"";
+  const lgHtml=lgOn?(sgNote+`<div class="note" style="margin:0 0 6px"><b>${esc(d.mm_rule_text||"1MM = 그달 평일 × 8시간입니다. 공휴일·유급휴가는 법으로 채운 것으로 치고, 나머지는 실제 근무입니다.")}</b></div>`
+    +`<div class="note" style="margin:0 0 6px">투입 MM = (근무 + 법정 채움) ÷ 1MM · 가용 MM = 지난 평일의 비율 · 로드율 = 투입 ÷ 가용${m.mm_lm30!=null?` — LM30 방식이었다면 ${num(m.mm_lm30).toFixed(2)} MM(차이 ${sgn(num(m.total_mm)-num(m.mm_lm30))} MM)`:""}${m.mm_lm29!=null?` · LM29 방식이었다면 ${num(m.mm_lm29).toFixed(2)} MM(차이 ${sgn(num(m.total_mm)-num(m.mm_lm29))} MM)`:""}</div>`
+    +lgLoad
+    +"<table><tr><th>월</th><th>1MM 기준</th><th>법정 채움</th><th>근무</th><th style='width:58px'>투입 MM</th><th style='width:58px'>가용 MM</th><th style='width:62px'>로드율</th><th style='width:130px'></th><th style='width:96px'>LM30 방식 MM(비교)</th>"
+    +(l29On?"<th style='width:96px'>LM29 방식 MM(비교)</th>":"")+"</tr>"
+    +mo.map(lgRow).join("")+"</table>"+ohNote
     +`<div class="note">공휴일·유급휴가${lgCredInf?"·휴가 추정":""}은 <b>법정 시간으로 채웁니다</b>(가용에서 빼지 않음 — 평일이라는 이유만으로는 채우지 않습니다) · 초과근무 ${num(nb.overtime_h).toFixed(0)}h(연장 + 휴일 — 출퇴근 추정)는 상한 없이 그대로 반영(하루 24h 물리 한계만 · 이상치 ${anoms.length}일은 아래 표) · 20시 넘어 퇴근한 날 ${nb.night_days||0}일 · 주말·휴일 근무 ${nb.weekend_days||0}일</div>`
     +(lgCredInf?"":'<div class="note">휴가 추정(기록 없음)은 채우지 않습니다(설정 mm.creditInferredLeave false).</div>')
     +lgFlag("inferred","휴가 추정(기록 없음)","근태·휴가 기록이 없고 PC·흔적도 없어 휴가로 보고 하루를 채운 평일")
     +lgFlag("nohr","근태·흔적 모두 없음","근태 행은 있는데 출근·퇴근·휴가가 비었고 흔적도 없는 평일 — 채우지 않았습니다")
     +(lgLoc?`<div class="note">투입 MM(달 합계)에는 근태 기록 시간이 들어가 팀 서버로 갑니다. 날짜별 근태 기록, '근태 기록·디지털 +@' 나눔과 위 날짜 목록은 이 PC에만 있습니다.</div>`
       :`<div class="note">근태 기록 시간과 디지털 +@의 나눔·날짜 목록은 본인 PC의 화면에서만 보입니다 — 여기에는 달 합계만 담았습니다.</div>`)):"";
-  mmEl.innerHTML=mo.length?(lgOn?lgHtml:(`<div class="note" style="margin:0 0 6px">${esc(nb.basis||"")} — 로드율 100% = 가용 시간을 꽉 채워 일함(회색 눈금). 야근하면 100%를 넘습니다.</div>`+l29Note+
-   "<table><tr><th>월</th><th style='width:58px'>투입 MM</th>"+(l29On?"<th style='width:62px'>LM29 방식</th><th style='width:52px'>차이</th>":"")+"<th style='width:58px'>가용 MM</th><th style='width:62px'>로드율</th><th style='width:130px'></th><th>투입 시간</th><th>부재</th><th>그 달 평일</th></tr>"+
+  mmEl.innerHTML=mo.length?(lgOn?lgHtml:(sgNote+`<div class="note" style="margin:0 0 6px">${esc(nb.basis||"")} — 로드율 100% = 가용 시간을 꽉 채워 일함(회색 눈금). 야근하면 100%를 넘습니다.</div>`+l29Note+
+   "<table><tr><th>월</th><th style='width:58px'>투입 MM</th>"+(l29On?"<th style='width:62px'>LM29 방식</th><th style='width:52px'>차이</th>":"")+"<th style='width:58px'>가용 MM</th><th style='width:62px'>로드율</th><th style='width:130px'></th><th>투입 시간</th>"+(ohOn?"<th>그중 주말·휴일·저녁·야간</th>":"")+"<th>부재</th><th>그 달 평일</th></tr>"+
    mo.map(([k,v0])=>{const v=(v0&&typeof v0==="object")?v0:{};const dl=num(v.mm)-num(v.mm_lm29);
     const l29c=l29On?(v.mm_lm29!=null?`<td>${num(v.mm_lm29).toFixed(2)}</td><td style="color:${dl>=0?"#0f7a3d":"#b54708"}">${sgn(dl)}</td>`:"<td>–</td><td>–</td>"):"";
     return `<tr><td>${esc(k)}</td><td><b>${num(v.mm).toFixed(2)}</b></td>${l29c}<td>${num(v.avail_mm).toFixed(2)}</td>
     <td><b>${v.load_pct==null?"–":num(v.load_pct)+"%"}</b></td><td>${bar(num(v.load_pct))}</td>
-    <td>${esc(v.worked)}h</td><td>${esc(v.absent||0)}일</td><td>${esc(v.workdays)}일 = ${esc(v.capacity_h)}h</td></tr>`;}).join("")+
-   `</table>${otNote}`))+`
+    <td>${esc(v.worked)}h</td>${ohC(k)}<td>${esc(v.absent||0)}일</td><td>${esc(v.workdays)}일 = ${esc(v.capacity_h)}h</td></tr>`;}).join("")+
+   `</table>${ohNote}${otNote}`))+`
    <div class="note">${fixLead} ${num(nb.lunch_deducted_h).toFixed(0)}h · 저녁·새벽 가동 인정 ${num(nb.evening_credit_h).toFixed(1)}h · 주말 산출물 창 ${num(nb.weekend_window_h).toFixed(1)}h ·
    수동 흔적(수신·CC)만 있는 날 ${nb.floor_blocked_passive_days||0}일(하한 미적용 — 많으면 config.watchFolders 점검) · 미래 시각 신호 폐기 ${nb.future_signals_dropped||0}건 ·
    ${lgOn?"휴가 추정":"부재 추정"} ${nb.inferred_absence_days||0}일(PC 도 흔적도 없는 평일 — ${lgOn?(lgCredInf?"근태 행이 없으면 휴가로 보고 채움":"채우지 않음"):"가용에서 차감"}${absd.length?": "+esc(absd.slice(0,12).join(", "))+(absd.length>12?" …":""):""})${simNote}</div>
@@ -4660,8 +4758,11 @@ function attRender(a){
  const dTbl=a.frozen?'<div class="note">날짜별 출근·퇴근 시각과 근태 기록은 본인 PC의 화면에서만 보입니다 — 이 사본에는 주·달 합계만 담았습니다.</div>'
   :(ds.length?`<details style="margin:10px 0 0"><summary>최근 ${n(a.recent_days)||31}일 날짜별 출근·퇴근 <span class="state">${ds.length}일 · 최신순 · 근거 = 출근 쪽 → 퇴근 쪽 · +@ = 근태 기록 밖 근무</span></summary><div class="body"><div style="overflow-x:auto"><table><tr><th>날짜(요일)</th><th>출근</th><th>퇴근</th><th>근무</th><th>연장</th><th>야간</th><th>휴일</th><th>PC 밖</th><th>LM29 방식</th><th>근거</th><th>확실성</th><th>근태 출근·퇴근</th><th>입실·퇴실</th><th>+@</th><th>+@ 까닭</th></tr>${ds.map(dRow).join("")}</table></div></div></details>`
    :'<div class="note">최근 31일에 근무로 센 날이 없습니다.</div>');
- el.innerHTML=(a.plus_text?`<div style="font-size:13.5px;margin-bottom:2px"><b>${esc(a.plus_text)}</b></div>`:"")
+ // LM30(2026-10-19) 발신 흔적 빈 곳 경고(a.send_gap_text — 건수만 본다) · 시간외 나눠 보기 한 줄(a.offhours_text — 분석 기간 합계)
+ el.innerHTML=(a.send_gap_text?`<div class="note" style="color:#b54708;margin:0 0 4px"><b>${esc(a.send_gap_text)}</b></div>`:"")
+  +(a.plus_text?`<div style="font-size:13.5px;margin-bottom:2px"><b>${esc(a.plus_text)}</b></div>`:"")
   +`<div style="font-size:13px;margin-bottom:2px"><b>${esc(a.headline||"")}</b></div>`
+  +(a.offhours_text?`<div class="note" style="margin-top:2px"><b>시간외(분석 기간)</b> — ${esc(a.offhours_text)}</div>`:"")
   +(a.plus_note?`<div class="note" style="margin-top:2px">${esc(a.plus_note)}</div>`:"")
   +`<div class="note" style="margin-top:2px">${a.used_for_mm?"<b>이 근무시간으로 투입 MM을 쟀습니다.</b>":"<b>투입 MM은 LM29 방식으로 쟀습니다</b> — 이 카드는 참고용입니다(설정 attendance.useForMM)."} ${esc(a.rule||"")}</div>`
   +wTbl
@@ -4673,8 +4774,10 @@ function attRender(a){
  if(st&&Array.isArray(a.period)&&a.period[0])st.textContent=`${a.period[0]} ~ ${a.period[1]||""} · 날짜별 시각은 이 PC에만`;
 }
 // ── GERP 근무 기록(LM30 2026-10-19 시험 기능 — config attendance.gerp, 기본 꺼짐) — /api/gerp: 켜졌을 때만 [GERP 열기(직접 로그인)]·
-//    [GERP 근무 기록 읽기]와 상태 한 줄, 꺼져 있으면 짧은 안내 한 줄. 얼린 사본은 /api/gerp 를 굽지 않아(막힘) 아무것도 그리지 않는다.
-//    작업이 도는 동안에는 두 단추를 끈다(poll — window.__lmBusy). 로그인은 사람이 그 Edge 창에서 — 이 화면은 아이디·비밀번호를 받지 않는다.
+//    [GERP 근무 기록 읽기]와 상태 한 줄. 얼린 사본은 /api/gerp 를 굽지 않아(막힘) 아무것도 그리지 않는다.
+//    작업이 도는 동안에는 단추를 끈다(poll — window.__lmBusy). 로그인은 사람이 그 Edge 창에서 — 이 화면은 아이디·비밀번호를 받지 않는다.
+//    LM30(2026-10-19) 카드에서 켜고 끈다 — 꺼져 있으면 주소 칸(저장한 주소로 채움) + [켜기], 켜져 있으면 저장한 주소(호스트만)·[주소 바꾸기]·
+//    [끄기](POST /api/gerp_config — config\\config.json 의 attendance.gerp.enabled·url 만 · 이 PC 의 개인 설정).
 async function gerpLoad(){
  let g=null;
  try{g=await fetch("/api/gerp").then(r=>r.json());}catch(e){g=null;}
@@ -4683,15 +4786,46 @@ async function gerpLoad(){
 function gerpRender(g){
  const el=$("atgerp");if(!el)return;
  if(!g||g.ok!==true||typeof g.enabled!=="boolean"){el.innerHTML="";return;}
- if(!g.enabled){el.innerHTML=`<div class="note">${esc(g.off_text||"")}</div>`;return;}
+ const busy=!!window.__lmBusy;
+ const urlBox=`<input id="gerpurl" type="text" spellcheck="false" autocomplete="off" maxlength="1000" placeholder="GERP 근무시간 현황 화면 주소(https:&#47;&#47;…)" value="${esc(g.url||"")}" style="flex:1;min-width:260px;border:1px solid #c9cfd8;border-radius:4px;padding:4px 6px;font:inherit;font-size:12px">`;
+ if(!g.enabled){
+  el.innerHTML=`<div class="row" style="margin-top:10px;gap:6px;align-items:center;flex-wrap:wrap"><b style="font-size:12.5px">GERP 근무 기록 읽기(시험 기능)</b>`+urlBox
+   +`<button class="ghost" id="gerpon" title="이 주소로 GERP 근무 기록 읽기를 켭니다 — 주소는 이 PC의 config\\\\config.json 에만 둡니다">켜기</button></div>`
+   +`<div class="note">${esc(g.off_text||"")}</div>`;
+  $("gerpon").disabled=busy;
+  $("gerpon").onclick=()=>gerpCfg(true,$("gerpurl").value);
+  return;
+ }
  el.innerHTML=`<div class="row" style="margin-top:10px;gap:6px;align-items:center;flex-wrap:wrap"><b style="font-size:12.5px">GERP 근무 기록(시험)</b>`
+  +(g.host?`<span class="state" title="저장한 GERP 주소의 호스트만 보입니다(주소는 이 PC에만 둡니다)">주소 ${esc(g.host)}</span>`:"")
   +`<button class="ghost" id="gerpopen" title="전용 Edge 창에 GERP 근무 현황 화면을 엽니다 — 그 창에서 직접 로그인하세요(이 프로그램은 아이디·비밀번호를 넣거나 저장하지 않습니다)">GERP 열기(직접 로그인)</button>`
   +`<button class="ghost" id="gerpread" title="로그인해 둔 GERP 화면에서 지난 날의 근무 기록을 읽어 이 PC에 모읍니다 — 로그아웃돼 있으면 읽지 않습니다">GERP 근무 기록 읽기</button>`
+  +`<button class="ghost" id="gerpchg" title="GERP 근무시간 현황 화면 주소를 바꿉니다">주소 바꾸기</button>`
+  +`<button class="ghost" id="gerpoff" title="GERP 근무 기록 읽기를 끕니다 — 모아 둔 기록과 주소는 그대로 둡니다">끄기</button>`
   +`<span class="note" id="gerpst" style="margin:0">${esc(g.text||"")}</span></div>`
+  +`<div class="row" id="gerpedit" style="display:${g.url_ok?"none":"flex"};margin-top:4px;gap:6px;align-items:center;flex-wrap:wrap">`+urlBox
+  +`<button class="ghost" id="gerpsave">주소 저장</button></div>`
   +'<div class="note">GERP 기록은 확실히 일한 부분으로 봅니다. 그 밖에서 LM이 찾은 근무(+@)는 위 +@ 줄과 표에 보입니다 — 읽은 뒤 [재분석만]으로 다시 분석하면 반영됩니다. GERP를 읽지 못하거나 로그아웃돼 있어도 +@는 하루 8시간 넘은 시간·휴일 근무로 추정해 보입니다. GERP에서 읽은 기록과 그것으로 센 값은 이 PC에만 두고 팀 서버·공유폴더로 보내지 않습니다.</div>';
- const busy=!!window.__lmBusy;
- $("gerpopen").disabled=busy;$("gerpread").disabled=busy;
+ ["gerpopen","gerpread","gerpchg","gerpoff","gerpsave"].forEach(id=>{const b=$(id);if(b)b.disabled=busy;});
  $("gerpopen").onclick=gerpOpen;$("gerpread").onclick=gerpRead;
+ $("gerpchg").onclick=()=>{const e=$("gerpedit");if(e)e.style.display=(e.style.display==="none")?"flex":"none";};
+ $("gerpoff").onclick=()=>gerpCfg(false);
+ $("gerpsave").onclick=()=>gerpCfg(true,$("gerpurl").value);
+}
+async function gerpCfg(on,url){
+ // LM30(2026-10-19) [켜기]·[끄기]·[주소 저장] — POST /api/gerp_config {enabled, url?}. 주소를 비워 켜려 하면 묻기만 한다(서버도 같은 검사).
+ const body={enabled:!!on};
+ if(url!==undefined)body.url=String(url||"").trim();
+ if(on&&url!==undefined&&!body.url){alert("GERP 근무시간 현황 화면 주소를 넣으세요 — 로그인한 브라우저의 주소 창에서 복사합니다.");return;}
+ if(!on&&!confirm("GERP 근무 기록 읽기를 끌까요?\\n· 모아 둔 기록(data\\\\근태\\\\gerp.csv)과 주소는 그대로 둡니다 — 다시 켜면 이어서 읽습니다."))return;
+ ["gerpon","gerpoff","gerpsave","gerpchg"].forEach(id=>{const b=$(id);if(b)b.disabled=true;});
+ let r=null,d={};
+ try{r=await fetch("/api/gerp_config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+  d=await r.json().catch(e=>({ok:false,error:String(e)}));}catch(e){d={ok:false,error:String(e)};}
+ if(r&&r.status===409){alert(d.hint||"다른 작업이 도는 중입니다 — 끝난 뒤 누르세요");gerpLoad();return;}
+ if(d.gerp)gerpRender(d.gerp);else gerpLoad();
+ if(!d.ok){alert("GERP 설정을 바꾸지 못했습니다 — "+(d.error||""));return;}
+ if(on)alert((d.msg||"GERP 근무 기록 읽기를 켰습니다")+".\\n\\n[GERP 열기(직접 로그인)]로 그 창에서 로그인한 뒤 [GERP 근무 기록 읽기]를 누르세요.");
 }
 async function gerpOpen(){
  const b=$("gerpopen");if(b)b.disabled=true;
@@ -6891,12 +7025,56 @@ class H(BaseHTTPRequestHandler):
                     JOB.update(running=False, step="", pid=0)
         elif self.path == "/api/gerp_open":
             # LM30(2026-10-19) [GERP 열기(직접 로그인)] — 전용 Edge 에 GERP 화면을 연다(로그인은 사람이). 작업 중에는 하지 않는다(같은 Edge).
+            # 본문은 쓰지 않지만 먼저 읽는다 — 읽지 않은 채 409 로 닫으면 Windows 가 연결을 끊어(RST) 화면이 답을 못 받을 때가 있다
+            n = int(self.headers.get("Content-Length", 0) or 0)
+            if n > 0:
+                self.rfile.read(n)
             with LOCK:
                 if JOB["running"]:
                     self._send(409, {"ok": False, "error": "busy",
                                      "hint": "분석·다른 작업이 도는 중에는 열지 않습니다(전용 Edge 를 함께 씁니다) — 끝난 뒤 누르세요"})
                     return
             self._send(200, gerp_open())
+        elif self.path == "/api/gerp_config":
+            # LM30(2026-10-19) GERP 근무 기록 읽기 [켜기]·[끄기]·[주소 바꾸기](카드) — config\config.json 의 attendance.gerp.enabled·url 만
+            # 고친다(이 PC 의 개인 설정 — 팀 서버 주소 같은 팀 공통 값이 아니다 · BOM·다른 키 그대로 · gerp_config_check 가 검사).
+            # 작업이 도는 동안에는 바꾸지 않는다(409). 주소는 로그·오류 글에 싣지 않는다(답의 gerp.url 은 주소 칸을 채우는 데만).
+            n = int(self.headers.get("Content-Length", 0) or 0)
+            try:
+                b = json.loads(self.rfile.read(n) or b"{}") if n else {}
+            except ValueError:
+                b = None
+            busy_hint = "분석·다른 작업이 도는 중에는 GERP 설정을 바꾸지 않습니다 — 끝난 뒤 누르세요"
+            with LOCK:
+                busy = bool(JOB["running"])
+            if busy:
+                self._send(409, {"ok": False, "error": "busy", "hint": busy_hint})
+                return
+            import attendance as _att
+            cur = cfg()
+            prev_on = bool(_att.norm_gerp(cur)[0]["enabled"])
+            ups, err = gerp_config_check(b, cur)
+            if err:
+                self._send(400, {"ok": False, "error": err})
+                return
+            with LOCK:
+                if JOB["running"]:
+                    self._send(409, {"ok": False, "error": "busy", "hint": busy_hint})
+                    return
+                wrote = _save_cfg_many(ups)
+            if not wrote:
+                self._send(200, {"ok": False, "gerp": gerp_view(),
+                                 "error": "config\\config.json 을 쓰지 못했습니다 — 메모장 같은 다른 프로그램이 열고 있으면 닫고 다시 누르세요"})
+                return
+            g = gerp_view()
+            if not g["enabled"]:
+                msg = "GERP 근무 기록 읽기를 껐습니다"
+            elif prev_on and "url" in b:
+                msg = "GERP 주소를 바꿨습니다"
+            else:
+                msg = "GERP 근무 기록 읽기를 켰습니다"
+            log(f"[GERP] {msg} — 주소는 이 PC의 config\\config.json 에만 둡니다")
+            self._send(200, {"ok": True, "msg": msg, "gerp": g})
         elif self.path == "/api/gerp_read":
             # LM30(2026-10-19) [GERP 근무 기록 읽기] — 다른 웹 읽기 단추와 같은 작업(run.py --web-only gerp · JOB · Edge 정리). 시험 기능 —
             # 꺼져 있으면 띄우지 않는다. 답에 카드 재료(gerp — 상태 한 줄)를 함께 싣는다.
