@@ -3947,7 +3947,8 @@ def _attendance(data_dir, signals, files, d0, d1, now, p, lm):
       signals·files : 신호(시각 있는 내 산출물·발신만 점으로 — ATT_POINT_SRC) · 표본화 전 전체 파일 시각(해석 출력 anchor 제외)
       lm            : LM29 쪽 중간 결과 — meets(수락 회의 {날짜: [(a,b)]}) · blk(출장·현장 약속 블록) · offsite(종일 행사 날짜) ·
                       absence · holidays · untimed({날짜: 날짜만 아는 발신 인정 분}) · nopc(표준일 추정 날짜) · hours(LM29 날짜별
-                      시간) · day_basis(LM29 근거 — 야간 꼬리표) · std · day_win(낮 창 — PC 하한 창) · night_win · day_cap
+                      시간) · day_basis(LM29 근거 — 야간 꼬리표) · std · day_win(낮 창 — PC 하한 창) · night_win · day_cap ·
+                      spans(LM30 2026-10-19 — LM29 가 시각까지 정해 센 구간 {날짜: [(분, 분)]} · attendance.withLM29 일 때만 쓴다)
     PC 켜짐·브라우저 방문은 att_presence(기간 앞뒤 하루씩), 시작·끝을 적은 수동 기록은 manual_entries, 근태 기록 칸은
     attendance.load_records. returns compute 의 {"days", "agg", "usual"}."""
     import attendance as _att
@@ -3986,12 +3987,22 @@ def _attendance(data_dir, signals, files, d0, d1, now, p, lm):
         v = float(tg.get("night") or 0) + float(tg.get("holiday_night") or 0)
         if v > 0:
             l29n[datetime.strptime(iso[:10], "%Y-%m-%d").date()] = v
+    # LM30(2026-10-19) LM29 가 시각까지 정해 센 구간(lm["spans"] — 그날 분) → 절대 분 · 지금 뒤는 자른다(attendance.withLM29 일 때만)
+    l29s = []
+    if p.get("withLM29", True):
+        for dd, lst in (lm.get("spans") or {}).items():
+            if not (d0 <= dd <= d1):
+                continue
+            for a, b in lst:
+                a1, b1 = ab(dd, a), ab(dd, b)
+                if a1 < now_abs and b1 > a1:
+                    l29s.append((a1, min(b1, now_abs)))
     holidays = lm["holidays"]
     return _att.compute(base, pts, spans, wpts, presence, [at(t) for t in live], d0, d1, now, p, std=lm["std"],
                         day_win=lm["day_win"], night_win=lm["night_win"],
                         is_off=lambda dd: _is_off_day(dd, holidays), leave=lm["absence"], offsite=set(lm["offsite"]),
                         manual_floor=man_floor, nopc=lm["nopc"], untimed_min=lm["untimed"], lm29=lm["hours"],
-                        lm29_night=l29n, day_cap=lm["day_cap"], records=_att.load_records(data_dir))
+                        lm29_night=l29n, day_cap=lm["day_cap"], records=_att.load_records(data_dir), lm29_spans=l29s)
 
 
 def _att_apply(info, days, agg, lm_hours, inferred, p, d0, d1):
@@ -4126,7 +4137,11 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
         된다) · info["attendance_agg"] = 근태 기록과 견준 값(records·plus_h·missing_h·gate_plus_h …)까지 든 합계 · info["attendance_days"]·
         info["attendance_usual"] = 날짜별 출퇴근·평소 시각(이 셋은 **이 PC 전용** — 호출측이 attendance.take_local 로 떼어
         report\\attendance_<기간>.json 에만 쓴다 · LM30 2026-10-19). useForMM 을 꺼도 채운다(화면 참고용) · cfg_used.attendance = 쓴 설정.
-        근태 기록은 참고라 투입 시간·MM 을 바꾸지 않는다."""
+        근태 기록은 참고라 투입 시간·MM 을 바꾸지 않는다.
+      · LM30(2026-10-19) LM29 보다 적게 세지 않음(attendance.withLM29 — 기본 켬 · core\\attendance 머리말 15): 날마다 LM29 가 시각까지
+        정해 센 구간(PC 하한 — 차감 뒤 그대로 센 날만 · 시차 근무 창 밖 · 저녁(자정 넘김 포함)·새벽 인정 · 주말 산출물 창 · 야간 해석 —
+        사적 차감 뒤)을 모아 출퇴근 추정의 흔적(lm29)으로 넘기고, 출퇴근 추정은 모든 날에 LM29 시간을 바닥으로 쓴다. 합계에 시간외 나눠
+        보기(weekend_h·offday_h·evening_h — 머리말 16). info["send_gap"] = 발신 흔적 빈 곳(건수·날짜만 — 머리말 17)."""
     from datetime import timedelta
     cfg = cfg if isinstance(cfg, dict) else {}
     mc, cfg_warns = norm_cfg(cfg)            # 잘못된 설정값은 죽지 않고 기본값 + info["config_warnings"]
@@ -4405,15 +4420,22 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
     pf_n, pf_h = mc.get("passiveFloorMinN") or 0, mc.get("passiveFloorMinH") or 0
     gap_run = []
     nopc_days = set()                          # LM30(2026-10-18): 표준일 추정(PC 기록 없는 달)을 쓴 날 — 출퇴근 추정의 바닥값
+    # LM30(2026-10-19) l29_sp = LM29 가 시각까지 정해 근무로 센 구간 {날짜: [(분, 분)]} — PC 하한(차감 뒤 그대로 센 날만)·시차 근무 창 밖
+    # 인정·저녁(자정 넘김 포함)·새벽·주말 산출물 창·야간 해석. 출퇴근 추정이 확실한 흔적처럼 쓴다(attendance.withLM29 — 머리말 15).
+    # pc_act = PC 를 켠 날(발신 흔적 빈 곳 경고 — attendance.send_gap)
+    l29_sp, pc_act = {}, set()
     d = d0
     while d <= d1:
         base = []          # 이 날의 PC 가동 하한 재료 — 하한 계산을 건너뛴 날도 아래 메일 근거 집계가 읽는다
         floor_add, db_floor = None, None     # 하한이 더한 (분, 놓일 구간) · 날짜별 근거(LM28 — 꼬리표·day_basis)
+        l29_day = []                         # LM30(2026-10-19) 이 날 LM29 가 시각까지 정해 센 구간(위 l29_sp)
         off = _is_off_day(d, holidays)
         absent = absence.get(d, 0.0)
         has_pc_row = d in pc
         on, night, first_on, last_off = _pc_row(d)
         pcs = pc_spans.get(d) or []
+        if on > 0 or pcs:
+            pc_act.add(d)
         raw_day = max(0.0, on - night)
         day_on = min(day_max_h, raw_day)             # 주간창 ≤11h — worked ≤ 11 + 야간 13 = 24 보장
         if raw_day > PC_DAY_MAX_H + 1e-9:
@@ -4484,6 +4506,7 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
                 gain = min(on, _union_hours(spans + wins)) - before
                 if gain > 0:
                     spans += wins
+                    l29_day += wins
                     info["weekend_window_h"] += gain
         # ── 야간 해석(솔버) 인정(S4-N1): 그 밤의 실행 구간(제출 ~ 마지막 출력) 중 이 날짜 몫을 합집합으로 더한다.
         #    PC 가 꺼져 있어도 인정하므로(서버·클러스터) 아래 저녁·새벽 크레딧·시차 근무의 'PC 야간 가동' 여유에서는 뺀다.
@@ -4494,6 +4517,7 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
             if gain > 1e-9:
                 spans += gain_sp
                 sim_add = gain_sp
+                l29_day += gain_sp
                 info["sim_night_h"] += gain / 60.0
                 pcn = _night_zone(pc_spans.get(d) or _union_spans(pc_wins.get(d) or []))
                 info["sim_night_remote_h"] += _union_min(_subtract_spans(gain_sp, pcn)) / 60.0
@@ -4583,6 +4607,7 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
                 info["evening_credit_h"] += gain / 60.0
         ev_win = _union_spans(list(ev_day) + list(ev_hint) + _clip(fitted, dw1, 1440.0))     # 인정한 저녁 창(보고서 근거)
         dawn_win = _clip(fitted, 0.0, dw0)
+        l29_day += list(ev_win) + list(dawn_win)                       # LM30(2026-10-19) 저녁·새벽 인정(자정 넘김 — 24:00 까지)
         info["evening_window_h"] += _union_min(ev_win) / 60.0
         # ── 샘플러 공백 다리(D3a): 샘플러가 덮은 구간 안의 무입력 공백 중 ≤ bridge_min(점심·저녁 창 제외)은 근무 ──
         #   자리 토론·전화·즉석 회의(캘린더 없음)가 idle 로 버려지던 계통 과소. 장시간 이석·샘플러가 죽은 공백은 아니다.
@@ -4741,6 +4766,10 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
                     day_min = rest + floor_u * 60.0
                     # 꼬리표용 하한 위치 — 흔적이 덮지 않은 하한 구간에 더해진 분(gain)을 비례로 놓는다
                     floor_add = (gain * 60.0, _subtract_spans(floor_u_sp, day_spans))
+                    # LM30(2026-10-19) 하한 구간이 그대로 다 세졌으면(절전 공백·반차·표준일 상한으로 줄이지 않았으면) 그 시각이 곧
+                    # LM29 가 센 구간이다 — 줄인 날은 어디를 줄였는지 몰라 시각 없이 바닥값(attendance 의 모든 날 바닥값)으로만 남긴다
+                    if abs(_union_min(floor_u_sp) - floor_u * 60.0) <= 1.0:
+                        l29_day += list(floor_u_sp)
                     db_floor = {"kind": kind, "open": _floor_open(d, act_src, accepted, act, off_blk, is_offsite,
                                                                   is_manual, sim_days, passive_bulk, floor_needs),
                                 "win": [_fmt_hm(fw0), _fmt_hm(fw1)], "add_h": round(gain, 2),
@@ -4771,6 +4800,7 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
                     gain = _union_min(spans + fitted) - _union_min(spans)
                     if gain > 1e-9:
                         spans += fitted
+                        l29_day += list(fitted)
                         night_min = _union_min(_night_zone(spans))
                         info["flex_edge_h"] += gain / 60.0
         _msp = mail_sess.get(d) or []
@@ -4793,6 +4823,7 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
                     c_day, c_night = _union_min(_clip(cut, dw0, dw1)), _union_min(_night_zone(cut))
                     day_min, night_min = max(0.0, day_min - c_day), max(0.0, night_min - c_night)
                     spans = _subtract_spans(u, runs)
+                    l29_day = _subtract_spans(l29_day, runs)        # LM30(2026-10-19) 사적 차감은 LM29 구간에서도
                     priv_ded = c_day + c_night
                     info["private_deducted_h"] += priv_ded / 60.0
         worked = (day_min + night_min) / 60.0
@@ -4978,6 +5009,8 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
                     info["inferred_absence_days"] += 1
         if off and d.isoweekday() <= 5:
             info["holidays"] += 1
+        if l29_day and worked > 0 and method == "activity":
+            l29_sp[d] = _union_spans(_clip(l29_day, 0.0, 1440.0))
         d += timedelta(days=1)
     for k in ("overtime_h", "pc_floor_h", "lunch_deducted_h", "evening_credit_h",
               "weekend_window_h", "absent_worked_h", "offsite_h", "manual_h", "dinner_deducted_h",
@@ -5061,10 +5094,17 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
                           now or datetime.now(), att_p,
                           {"meets": meets_acc, "blk": blk, "offsite": offsite, "absence": absence, "holidays": holidays,
                            "untimed": un_min, "nopc": nopc_days, "hours": hours, "day_basis": info["day_basis"],
-                           "std": std, "day_win": (fw0, fw1), "night_win": (nw0, nw1), "day_cap": day_cap})
+                           "std": std, "day_win": (fw0, fw1), "night_win": (nw0, nw1), "day_cap": day_cap,
+                           "spans": l29_sp})
     except Exception as e:  # noqa: BLE001 - 출퇴근 추정이 깨져도 MM 산정은 LM29 방식으로 끝난다(이유는 경고 한 줄로 보인다)
         att = None
         cfg_warns.append(f"출퇴근 추정 실패({type(e).__name__}: {str(e)[:80]}) — 이번 결과는 LM29 방식으로 계산했습니다")
+    # LM30(2026-10-19) 발신 흔적 빈 곳(attendance 머리말 17) — PC 를 켠 평일은 있는데 내 메일·팀즈 발신(시각 있는 것·날짜만 아는 것)이
+    # 하나도 없는 최근 2주·달. 건수·날짜만 싣는다(mm_basis.send_gap — 대시보드 두 카드·리포트가 '전용 Edge 에 한 번 로그인' 을 안내)
+    sg = _att.send_gap(pc_act, {dd: len(v) for dd, v in sends.items()}, d0, d1, (now or datetime.now()).date(),
+                       lambda dd: _is_off_day(dd, holidays), {dd: sum(c.values()) for dd, c in untimed.items()})
+    sg["text"] = _att.send_gap_text(sg)          # 'MM 산정 근거' 카드가 그대로 쓰는 한 줄(고정 문구 — 메일 글이 아니다)
+    info["send_gap"] = sg
     if att is not None:
         att["agg"]["used_for_mm"] = use_att
         # LM30(2026-10-19) +@ — mm_meta 로 가는 합계는 근태 기록 없이 잰 것(team)뿐이다. 근태 기록·GERP 와 견준 값까지 든 합계(agg)는

@@ -25,11 +25,11 @@ export.py                                             11,247 B  8ebef818
 retag.py                                               6,128 B  8d6f81d3
 team_refine.py                                         6,526 B  cdeda0b1
 team_recalc.py                                        59,361 B  9319fec5
-report_out.py                                         83,949 B  fe5420b3
-README.md                                            148,778 B  cebaab04
+report_out.py                                         84,872 B  72680175
+README.md                                            151,024 B  fffeab60
 check.py                                               2,629 B  7badfe69
 judge.py                                             220,958 B  2ce4ffb6
-mine.py                                               26,294 B  dc5d0754
+mine.py                                               26,910 B  db07f03b
 refine.py                                             56,935 B  8c9f4266
 FILES.txt                                                (이 파일)
 run.py                                               136,628 B  4b06bc44
@@ -57,10 +57,10 @@ collect/teams_parse.py                                14,389 B  d196eec3
 collect/Import-MailCal.py                             12,353 B  bec541e0
 collect/Get-ProgramUsage.py                           33,863 B  d262eb08
 core/meetnote.py                                      28,595 B  0ae77aa1
-config/config.json                                    59,013 B  3736a0ba
-config/config.default.json                            66,603 B  fddbecb4
+config/config.json                                    59,430 B  1b903371
+config/config.default.json                            67,020 B  36d7bd12
 core/board.py                                         13,181 B  86eaf661
-core/extract.py                                      336,423 B  6899e5d0
+core/extract.py                                      340,206 B  3dbb08ca
 core/pc_ledger.py                                     21,509 B  c1f9d9e5
 core/budget.py                                         2,968 B  3297d2b6
 core/stage_state.py                                    7,301 B  d30a0590
@@ -79,10 +79,10 @@ core/narratives.py                                     9,240 B  b1a7b589
 core/owner.py                                          1,488 B  1f1dc049
 core/progress.py                                       1,648 B  15bfd33b
 core/projmap.py                                        8,988 B  4e45fe1f
-core/attendance.py                                    84,227 B  8d40eeed
-core/gerp.py                                          25,049 B  5217ce83
+core/attendance.py                                   100,638 B  4c1e8caa
+core/gerp.py                                          25,312 B  e20a1f06
 collect/Get-GerpWork.py                               40,590 B  bb9124a8
-docs/설정가이드.md                                        143,412 B  96ed0774
+docs/설정가이드.md                                        146,658 B  02336a29
 docs/사용안내.html                                       277,403 B  85bd9321
 tools/copilot_auto.py                                260,758 B  8d86e6f0
 tools/pc_hours_compare.py                             21,995 B  13040408
@@ -97,4 +97,4 @@ tools/Stop-LM30.ps1                                   18,735 B  649a7270
 tools/stop_lm30.py                                    22,121 B  137c9af7
 tools/ps_launch.py                                     4,932 B  abe5c7e9
 tools/diag_bundle.py                                  10,236 B  bd5b2e93
-ui/app.py                                            493,159 B  c55b9a5a
+ui/app.py                                            506,146 B  cff504a4

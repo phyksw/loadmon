@@ -364,20 +364,31 @@ def attendance_section(meta, b, att=None, per_day=True, max_days=31, max_weeks=2
          f"<div class='dim'>{esc(_at.plus_note(std))}</div>",
          f"<div class='dim'>{esc(_at.rule_text(p or None, cu.get('standardDayHours'), cu.get('nightWindow')))}</div>"]
     plus_th = "<th>+@</th>" if hr else "<th>+@(추정)</th>"
-    h.append("<table><tr><th>월</th><th>근무</th><th>정규</th><th>연장</th><th>야간</th><th>휴일</th><th>PC 밖</th>"
+    tot = agg.get("total") if isinstance(agg.get("total"), dict) else {}
+    # LM30(2026-10-19) 시간외 나눠 보기 — 저녁(19~22시) 칸(evening_h 가 있는 합계만 — 예전 합계면 칸이 없다) · 분석 기간 한 줄 ·
+    # 발신 흔적 빈 곳 경고(mm_basis.send_gap — 건수만 본 고정 문구). 모두 합계뿐이라 분석리포트(공유폴더 사본)에도 실린다
+    ev_on = any(isinstance(v, dict) and "evening_h" in v for v in list(months.values()) + [tot])
+    sg_t = _at.send_gap_text(_obj(_pick(meta, b, "send_gap")))
+    if sg_t:
+        h.insert(1, f"<div style='color:#b54708'><b>{esc(sg_t)}</b></div>")
+    h.append("<table><tr><th>월</th><th>근무</th><th>정규</th><th>연장</th>" + ("<th>저녁(19~22시)</th>" if ev_on else "")
+             + "<th>야간</th><th>휴일</th><th>PC 밖</th>"
              "<th>LM29 방식</th><th>근무일</th><th>20시 넘은 퇴근</th><th>휴가일 근무</th><th>52시간 넘은 주</th>"
              + plus_th + "</tr>")
-    tot = agg.get("total") if isinstance(agg.get("total"), dict) else {}
     for lab, v in [(mk, months[mk]) for mk in sorted(months)] + ([("합계", tot)] if tot else []):
         v = v if isinstance(v, dict) else {}
         b0, b1 = ("<b>", "</b>") if lab == "합계" else ("", "")
         hv = (hr or {}).get("total") if lab == "합계" else h_mo.get(lab)
         h.append(f"<tr><td>{b0}{esc(lab)}{b1}</td><td><b>{h1(v.get('work_h'))}</b></td><td>{h1(v.get('regular_h'))}</td>"
-                 f"<td>{h1(v.get('ext_h'))}</td><td>{h1(v.get('night_h'))}</td><td>{h1(v.get('holiday_h'))}</td>"
+                 f"<td>{h1(v.get('ext_h'))}</td>" + (f"<td>{h1(v.get('evening_h'))}</td>" if ev_on else "")
+                 + f"<td>{h1(v.get('night_h'))}</td><td>{h1(v.get('holiday_h'))}</td>"
                  f"<td>{h1(v.get('offpc_h'))}</td><td>{h1(v.get('lm29_h'))}</td><td>{_n(v.get('days'))}일</td>"
                  f"<td>{_n(v.get('late_days'))}일</td><td>{_n(v.get('leave_work_days'))}일</td>"
                  f"<td>{_n(v.get('over52_weeks'))}주</td>" + plus_td(v, hv) + "</tr>")
     h.append("</table>")
+    if tot:
+        h.append(f"<div class='dim'><b>시간외(분석 기간)</b> — "
+                 f"{esc(_at.offhours_line(tot, cu.get('nightWindow'), bool(agg.get('used_for_mm'))))}</div>")
     if hr:
         ht = hr.get("total") if isinstance(hr.get("total"), dict) else {}
         h.append(f"<div class='dim'>+@ 나눔(분석 기간 전체) — 근태 기록과 견준 것 {h1(ht.get('plus_h'))} · 기록 없이 추정한 것 "

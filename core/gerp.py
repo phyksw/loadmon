@@ -42,7 +42,9 @@ LEAVE_HALF = ("반차", "반휴")
 LEAVE_FULL = ("연차", "휴가")
 STAT_MAP = {"TNA_YM": "ym", "WORK_DAYS": "work_days", "FIXED_WORK_DAYS": "fixed_work_days",
             "MON_BASE_WRK_HOURS": "base_hours", "MON_MAX_WRK_HOURS": "max_hours", "MON_MAX_OT_HOUR": "max_ot_hours"}
-OFF_TEXT = "GERP 근무 기록 읽기는 시험용 선택 기능이라 꺼져 있습니다(config\\config.json 의 attendance.gerp.enabled)."
+# LM30(2026-10-19) 카드에서 켜고 끈다(ui\app.py /api/gerp_config) — 꺼져 있을 때 주소 칸·[켜기] 아래 한 줄
+OFF_TEXT = ("GERP 근무 기록 읽기는 시험용 선택 기능이라 꺼져 있습니다 — 근무시간 현황 화면 주소를 넣고 [켜기]를 누르면 켜집니다"
+            "(주소는 이 PC의 config\\config.json 에만 둡니다).")
 _KIND_KO = {"logged_out": "로그인 안 되어 있어 건너뜀", "no_table": "근무 현황 표를 찾지 못함", "disabled": "꺼져 있어 건너뜀",
             "no_url": "주소가 없어 건너뜀", "error": "읽지 못함"}
 
@@ -504,8 +506,8 @@ def status_text(st, g=None, info=None):
     st = st if isinstance(st, dict) else {}
     info = info if isinstance(info, dict) else {}
     if not g.get("url"):
-        return ("GERP 근무 현황 화면 주소가 비어 있습니다 — config\\config.json 의 attendance.gerp.url 에 넣으세요"
-                "(주소는 이 PC 에만 둡니다).")
+        return ("GERP 근무 현황 화면 주소가 비어 있습니다 — 아래 주소 칸에 넣고 [주소 저장]을 누르세요"
+                "(주소는 이 PC의 config\\config.json 에만 둡니다).")
     kind, at = str(st.get("kind") or ""), str(st.get("at") or "")
     bits = []
     if not kind or not at:
