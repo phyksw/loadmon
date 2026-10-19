@@ -406,6 +406,9 @@ def legal_section(meta, b, local=None, head="<h2>1. 월별 로드</h2>"):
     if isinstance(att.get("total"), dict):
         h.append(f"<div class='dim'><b>시간외(분석 기간)</b> — "
                  f"{esc(_at.offhours_line(att['total'], cu.get('nightWindow'), used))}</div>")
+        # LM30v1(2026-10-20) PC 사용 시간 줄('MM 산정 근거' 카드와 같은 글자 — 합계뿐이라 분석리포트에도)
+        for t in _at.pc_usage_lines(att["total"], cu.get("pcFloorWindow")):
+            h.append(f"<div class='dim'>{esc(t)}</div>")
     if cu.get("creditInferredLeave") is False:
         h.append("<div class='dim'>휴가 추정(기록 없음)은 채우지 않습니다(설정 mm.creditInferredLeave false).</div>")
     if local is not None:
@@ -466,7 +469,8 @@ def attendance_section(meta, b, att=None, per_day=True, max_days=31, max_weeks=2
          + ("이 근무시간으로 투입 MM을 쟀습니다." if agg.get("used_for_mm")
             else "투입 MM은 LM29 방식으로 쟀습니다(이 절은 참고 — 설정 attendance.useForMM).") + "</div>",
          f"<div class='dim'>{esc(_at.plus_note(std, _at.mm_rule_of(meta)))}</div>",
-         f"<div class='dim'>{esc(_at.rule_text(p or None, cu.get('standardDayHours'), cu.get('nightWindow')))}</div>"]
+         f"<div class='dim'>{esc(_at.rule_text(p or None, cu.get('standardDayHours'), cu.get('nightWindow'), cu.get('pcFloorWindow')))}"
+         "</div>"]
     plus_th = "<th>+@</th>" if hr else "<th>+@(추정)</th>"
     tot = agg.get("total") if isinstance(agg.get("total"), dict) else {}
     # LM30(2026-10-19) 시간외 나눠 보기 — 저녁(19~22시) 칸(evening_h 가 있는 합계만 — 예전 합계면 칸이 없다) · 분석 기간 한 줄 ·
@@ -493,6 +497,9 @@ def attendance_section(meta, b, att=None, per_day=True, max_days=31, max_weeks=2
     if tot:
         h.append(f"<div class='dim'><b>시간외(분석 기간)</b> — "
                  f"{esc(_at.offhours_line(tot, cu.get('nightWindow'), bool(agg.get('used_for_mm'))))}</div>")
+    # LM30v1(2026-10-20) PC 사용 시간 줄(attendance 머리말 19 — 분석 기간 PC 를 쓴 시간·켜 둔 날 · 합계뿐이라 분석리포트에도)
+    for t in _at.pc_usage_lines(tot, cu.get("pcFloorWindow")):
+        h.append(f"<div class='dim'>{esc(t)}</div>")
     if hr:
         ht = hr.get("total") if isinstance(hr.get("total"), dict) else {}
         h.append(f"<div class='dim'>+@ 나눔(분석 기간 전체) — 근태 기록과 견준 것 {h1(ht.get('plus_h'))} · 기록 없이 추정한 것 "

@@ -14,8 +14,9 @@ attendance.py — 출퇴근·근무 시간 추정 (LoadMonitor30v1 · LM30(2026-
     · 약한 흔적 — 브라우저 방문 시각. 덩어리의 첫·마지막 확실한 흔적에서 60분 안일 때만 시작·끝을 늘립니다. 방문끼리 잇거나
       방문만으로 근무를 만들지 않습니다(밤새 저절로 새로 고친 페이지가 야근이 되지 않게).
     · PC 켜짐 — 켜기·로그온·잠금 해제·절전 해제·원격 접속부터 끄기·로그오프·잠금·절전까지(수집하는 동안 켜져 있었으면 지금까지).
-      시작·끝 시각을 정할 때만 씁니다 — 흔적 없이 켜져만 있던 PC(잊고 켜 둔 PC·업데이트 깨움)는 근무가 아닙니다.
-      10분 이하로 끊긴 켜짐(업데이트 재부팅·잠깐 잠금)은 하나로 잇습니다.
+      시작·끝 시각을 정할 때 쓰고(3·4), 10분 이하로 끊긴 켜짐(업데이트 재부팅·잠깐 잠금)은 하나로 잇습니다.
+      LM30v1(2026-10-20) PC 를 실제로 쓴 시간 자체도 근무 재료입니다(19 — attendance.pcUsage, 기본 켬). 끄면 예전처럼 시작·끝에만 쓰고,
+      흔적 없이 켜져만 있던 PC 는 근무가 아닙니다. 켜도 잊고 켜 둔 PC(16시간 넘게 이어진 켜짐)·업데이트 깨움은 근무로 세지 않습니다.
  2. 덩어리 — 흔적을 시각 순으로 놓고 공백이 90분 이하면 잇습니다. 낮(08~19시 — mm.pcFloorWindow) 안의 공백은 PC가 그 공백의
     80% 이상 켜져 있었으면 4시간까지 잇습니다(자리에서 읽기·실험·점심). 저녁·밤은 90분만 잇습니다 — 켜 둔 PC가 18:30과
     22:50을 한 덩어리로 만들지 않게.
@@ -35,8 +36,8 @@ attendance.py — 출퇴근·근무 시간 추정 (LoadMonitor30v1 · LM30(2026-
     (두 번 세지 않게). 24시간이 물리 한계이고, 16시간이 넘으면 표시만 합니다.
  9. 나눔 — 휴일 근무는 전부 휴일 시간 · 평일은 8시간 × (1 − 휴가)까지 정규, 넘으면 연장(반차면 4시간부터 연장) · 종일 휴가일에
     일하면 전부 연장('휴가일 근무') · 야간(22~06시)은 따로 겹쳐 셉니다 · 20시가 넘어 퇴근하면 늦은 퇴근입니다.
- 10. 신뢰도 — 높음: 출근·퇴근 둘 다 PC·회의·수동 기록·출장 시각 · 보통: 한쪽이라도 어림(30분 앞뒤·브라우저·지금) ·
-     낮음: LM29 방식 시간·바닥값을 쓴 날이거나 그날 PC 기록이 없는 날.
+ 10. 신뢰도 — 높음: 출근·퇴근 둘 다 PC·회의·수동 기록·출장 시각(LM30v1 2026-10-20 — PC 사용 구간의 시작·끝 pcuse 도) · 보통: 한쪽이라도
+     어림(30분 앞뒤·브라우저·지금 · 켜 둔 날의 낮 창 pcwin) · 낮음: LM29 방식 시간·바닥값을 쓴 날이거나 그날 PC 기록이 없는 날.
  11. 합계 — 주(월~일: 40시간을 넘은 시간·52시간을 넘은 주) · 달 · 전체. 평소 출근·퇴근(최근 28일 평일의 가운데 값)은
      이 PC에만 둡니다.
  12. 근태 기록 칸 — data\근태\*.csv(날짜·출근·퇴근, 있으면 휴게(분)·인정연장·휴가 · 입실·퇴실)를 넣으면 날마다 근태 기록과
@@ -64,8 +65,10 @@ attendance.py — 출퇴근·근무 시간 추정 (LoadMonitor30v1 · LM30(2026-
        missing_h · gate_plus_h · rec_days · gate_days. 팀으로 가는 합계(team)에는 근태가 없으므로 모든 날이 추정 — plus_est_h 만.
      보여 주기(day_why·usual_text·headline·rule_text·records_text·plus_line·day_plus — 맨 끝)는 화면 카드·리포트가 같은 쉬운 말을
      쓰게 하는 문구 도구입니다.
- 15. LM29 보다 적게 세지 않음(config attendance.withLM29 — 기본 켬, 키가 없어도 켬 · LM30(2026-10-19)). 엄격한 LM30 방식은 저녁·주말·
+ 15. LM29 보다 적게 세지 않음(config attendance.withLM29 · LM30(2026-10-19)). 엄격한 LM30 방식은 저녁·주말·
      휴일처럼 흔적이 드문 시간을 LM29 보다 적게 셌다(실측 로드율 108% → 94% — 토요일 10시·17시 저장이면 PC 가 종일 켜져 있어도 두 시간).
+     LM30v1(2026-10-20) 기본 끔(키가 없어도 끔) — 사용자: "굳이 LM29 결과를 넣을 필요가" · 그 빈 곳은 PC 사용 시간(19)이 맡는다. 견줘 볼
+     때만 켠다(코드는 그대로).
      켜 두면
      · LM29 가 시각까지 정해 근무로 센 구간(PC 하한 — 점심·저녁·절전을 뺀 뒤 그대로 센 날만 · 시차 근무 창 밖 인정 · 저녁 인정(자정 넘김
        포함) · 새벽 인정 · 주말 산출물 창 · 야간 해석)을 확실한 흔적처럼 덩어리에 넣는다(종류 lm29 — LM29 가 이미 근무로 봤으니 그것만으로도
@@ -91,6 +94,24 @@ attendance.py — 출퇴근·근무 시간 추정 (LoadMonitor30v1 · LM30(2026-
      take_local 이 attendance 파일의 agg["legal"] 로 옮기고, strip_hr·scrub_meta 가 나가기 전에 뺍니다. 문구는 legal_rule_text.
      LM30v1(2026-10-19) 'MM 산정 근거' 카드·리포트 1절은 달마다 LM30 방식 MM·LM29 방식 MM(그 판의 로드율과 함께 — 예전 숫자와 견주게)과
      시간외 한 줄(16 — offhours_line)·발신 흔적 빈 곳(17)도 보인다(모두 근태 없이 잰 값이라 공유 사본에 남아도 된다).
+ 19. PC 사용 시간(LM30v1(2026-10-20) — config attendance.pcUsage, 기본 켬 · 키가 없어도 켬 · false = 예전 숫자 그대로). 사용자: "주말 근무를
+     했는데 체크가 안 되고, 일정이나 HR 근태에 너무 연연했다 — PC 사용시간 로그도 봐야 하지 않았을까". 이미 모으는 PC 켜짐 기록(pc_spans 의
+     이벤트 구간 — 브라우저 방문·창 샘플러 아님)에서 PC 를 실제로 쓴 구간을 만들어(pc_usage — 순수 함수) 덩어리 재료(종류 pc)로 넣는다.
+     · 겹치거나 10분 이하로 끊긴 조각은 잇는다(자정에서 자른 조각·겹친 원장 행도). 수집 직후의 현재 세션은 지금까지(_Pres 와 같다).
+     · pcUsageMaxSpanH(16시간)를 넘게 이어졌거나 20시간 캡으로 닫힌(event-cap) 켜짐 = 켜 둔 채(쓴 시간 모름) — 그 켜짐이 걸친 날 중
+       확실한 흔적(해석 출력 아님 · 근무일은 6 의 dayStartHour 규칙)이 하나라도 있는 날만 그날 낮 창(mm.pcFloorWindow 08~19시) ∩ 켜짐
+       (종류 pcwin — 예전 PC 하한의 '흔적 있는 날만' 규칙). 낮 창과 겹친 날은 모두 '켜 둔 날'(always_on_days — 흔적이 없으면 0시간)이고,
+       근무가 있는 날의 행에는 AO_NOTE 를 단다.
+     · pcUsageMinMin(15분)이 안 되는 켜짐은 안에 확실한·약한 흔적이 없으면 뺀다(업데이트 깨움·잠깐 켬).
+     · 00~06시 안에 다 든 60분 미만 켜짐은 안에 확실한 흔적이 없으면 뺀다(새벽 업데이트 깨움 — 밤새 저절로 새로 고친 브라우저 방문은
+       흔적으로 치지 않는다).
+     PC 사용 구간의 시작·끝은 그대로 가장자리다(앞뒤를 붙이지 않는다 — 이름 pcuse, 신뢰도 높음 · 켜 둔 날의 낮 창은 pcwin, 어림이라 보통 ·
+     지금까지 쓰는 중이면 now). 흔적 없이도 덩어리가 된다 — 주말·휴일·밤에 PC 를 쓴 시간은 저장·발신이 없어도 근무다. 확실한 흔적의
+     가장자리(3·4)와 겹치면 넓은 쪽. 잇기(2)·합치기·근무일(6)·휴게(7)는 예전 그대로 합친 재료 위에서 한다. 다만 확실한 흔적만으로 만든
+     (엄격한) 덩어리로 잰 근무·PC 밖 시간보다 적게 세지 않는다(15 와 같은 strict_bl — PC 사용 구간이 PC 를 끈 공백을 이어 이미 쉰 시간이
+     근무가 되고 휴게가 늘어 오히려 줄지 않게). 날짜별 행에 pc_usage_h(그 근무일
+     덩어리 안의 PC 사용 시간 — 휴게 빼기 전)·always_on, 합계(주·달·전체)에 pc_usage_h·pc_usage_off_h(그중 주말·휴일)·always_on_days 를
+     더한다(LM 이 잰 합계 — 팀에 올려도 된다). 카드·리포트 문구는 pc_usage_lines. 끄면 행·합계에 이 칸이 없다(예전과 같은 글자).
 
 시각은 '절대 분' — base 날짜 00:00부터 센 분 — 으로 다룹니다(자정을 넘는 덩어리를 그대로 잇기 위해).
 """
@@ -106,18 +127,33 @@ from datetime import date, timedelta
 from urllib.parse import urlparse
 
 # ── 설정 기본값·허용 범위(config.attendance) — 키가 없거나 블록이 없으면 기본값(useForMM 켬) ──
-# LM30(2026-10-19) withLM29 — LM29 가 센 시간보다 적게 세지 않는다(머리말 15 · 키가 없어도 켬 · false = 엄격한 LM30 방식, 비교·시험용)
-DEFAULTS = {"useForMM": True, "withLM29": True, "leadMin": 30, "tailMin": 30, "pcEdgeBeforeMin": 120, "pcEdgeAfterMin": 90,
-            "bridgePcMin": 240, "bridgeAwayMin": 90, "webJoinMin": 60, "offpcPadMin": 10, "breakPer4hMin": 30,
-            "dayStartHour": 5, "weekHours": 40, "weekMaxHours": 52}
-RANGES = {"leadMin": (0, 240), "tailMin": (0, 240), "pcEdgeBeforeMin": (0, 480), "pcEdgeAfterMin": (0, 480),
-          "bridgePcMin": (0, 720), "bridgeAwayMin": (0, 480), "webJoinMin": (0, 240), "offpcPadMin": (0, 120),
-          "breakPer4hMin": (0, 120), "dayStartHour": (0, 12), "weekHours": (1, 80), "weekMaxHours": (1, 120)}
+# LM30(2026-10-19) withLM29 — LM29 가 센 시간보다 적게 세지 않는다(머리말 15 · false = 엄격한 LM30 방식).
+# LM30v1(2026-10-20) withLM29 기본 끔(키가 없어도 끔 — 견줘 볼 때만 켠다) · pcUsage(머리말 19 — PC 를 실제로 쓴 시간을 근무 재료로 · 키가
+# 없어도 켬 · false = 예전 숫자) · pcUsageMinMin(이보다 짧은 켜짐은 흔적이 없으면 뺀다 — 업데이트 깨움) · pcUsageMaxSpanH(이보다 길게 이어진
+# 켜짐은 켜 둔 채 — 쓴 시간 모름)
+DEFAULTS = {"useForMM": True, "withLM29": False, "pcUsage": True, "pcUsageMinMin": 15, "pcUsageMaxSpanH": 16, "leadMin": 30,
+            "tailMin": 30, "pcEdgeBeforeMin": 120, "pcEdgeAfterMin": 90, "bridgePcMin": 240, "bridgeAwayMin": 90, "webJoinMin": 60,
+            "offpcPadMin": 10, "breakPer4hMin": 30, "dayStartHour": 5, "weekHours": 40, "weekMaxHours": 52}
+RANGES = {"pcUsageMinMin": (0, 120), "pcUsageMaxSpanH": (4, 24), "leadMin": (0, 240), "tailMin": (0, 240),
+          "pcEdgeBeforeMin": (0, 480), "pcEdgeAfterMin": (0, 480), "bridgePcMin": (0, 720), "bridgeAwayMin": (0, 480),
+          "webJoinMin": (0, 240), "offpcPadMin": (0, 120), "breakPer4hMin": (0, 120), "dayStartHour": (0, 12),
+          "weekHours": (1, 80), "weekMaxHours": (1, 120)}
 SPAN_KINDS = ("meeting", "manual", "offsite")     # 구간 흔적 — 그 시작·끝이 곧 가장자리
-HARD_SRC = ("pc", "meeting", "manual", "offsite")  # 기록된 시각인 가장자리(신뢰도 높음)
-EST_SRC = ("lead", "tail", "web", "lm29")          # 어림한 가장자리(est_edge_days)
+# LM30v1(2026-10-20) pcuse = PC 사용 구간(머리말 19)의 시작·끝(켜기·로그온·절전 해제 ~ 끄기·로그오프·절전 — 기록된 시각) · pcwin = 켜 둔
+# 날의 낮 창 가장자리(어림)
+HARD_SRC = ("pc", "meeting", "manual", "offsite", "pcuse")   # 기록된 시각인 가장자리(신뢰도 높음)
+EST_SRC = ("lead", "tail", "web", "lm29", "pcwin")           # 어림한 가장자리(est_edge_days)
 # LM30(2026-10-19) LM29 구간의 종류(머리말 15) — LM29 가 시각까지 정해 센 근무 구간. 그 가장자리는 'PC 켜진 시간(LM29 방식)'(신뢰도 보통)
 L29_KIND = "lm29"
+# LM30v1(2026-10-20) PC 사용 시간(머리말 19) — 덩어리 재료의 종류: pc = PC 를 실제로 쓴 구간 · pcwin = 켜 둔 채인 PC(쓴 시간 모름)의 흔적
+# 있는 날 낮 창. 둘 다 가장자리를 그대로 쓰고(앞뒤를 붙이지 않는다) 흔적 없이도 덩어리가 된다. 그 가장자리 이름은 PCU_EDGE·PCW_KIND
+PCU_KIND, PCW_KIND, PCU_EDGE = "pc", "pcwin", "pcuse"
+PCU_KINDS = (PCU_KIND, PCW_KIND)
+SOFT_KINDS = (L29_KIND,) + PCU_KINDS               # 확실한 흔적이 아닌 구간 — 가장자리 규칙 3·4 의 재료가 아니다(clusters 의 rs·re 밖)
+CAP_SRC = "event-cap"                              # 끄기 기록 없이 20시간 캡으로 닫힌 켜짐(수집기 Get-PcOnHistory) — 쓴 시간 모름
+WAKE_END_MIN, WAKE_MAX_MIN = 360.0, 60.0           # 00~06시 안에 다 든 60분 미만 켜짐 — 흔적이 없으면 새벽 업데이트 깨움
+AO_NOTE = "PC를 켜 둔 채(쓴 시간 모름) — 흔적이 있는 날만(평일은 낮 시간 · 주말·휴일은 흔적 앞뒤)"   # 켜 둔 날의 행 표시(day_why 가 그대로 보인다)
+PCU_WHY = "PC 사용(켜기·로그온·절전 해제 ~ 끄기·로그오프·절전)"         # 출근·퇴근이 둘 다 PC 사용 구간 가장자리인 날의 근거
 L29_FLOOR = "lm29+"                                # 모든 날 바닥값(withLM29)의 출처 이름(_day_row — 덩어리가 있는 날)
 L29_MORE = "LM29 방식 시간이 더 많음"             # 그 바닥값이 근무를 늘린 날의 표시
 EVENING_WIN = (19 * 60.0, 22 * 60.0)              # 저녁(19~22시) — evening_h(덩어리와 겹친 시간 · 보여 주기만, 투입에 이미 들어 있다)
@@ -145,6 +181,8 @@ CLOCK_KEYS = ("evening", "dawn")                       # LM29 날짜별 근거�
 _SUM_KEYS = ("work_h", "regular_h", "ext_h", "night_h", "holiday_h", "holiday_ext_h", "offpc_h", "lm29_h", "weekend_h",
              "evening_h")
 _CNT_KEYS = ("days", "late_days", "night_days", "leave_work_days", "est_edge_days", "over52_weeks")
+# LM30v1(2026-10-20) PC 사용 시간 합계 칸(머리말 19 — pcUsage 가 켜졌을 때만 · 셈 칸 always_on_days 는 따로) — LM 이 잰 값이라 팀에 올려도 된다
+PCU_SUM_KEYS = ("pc_usage_h", "pc_usage_off_h")
 _WEEK_KEYS = ("work_h", "regular_h", "ext_h", "night_h", "holiday_h", "offpc_h", "weekend_h", "evening_h")
 # LM30(2026-10-19) +@ 합계 칸 — EST 는 LM 이 잰 값만(연장 + 휴일 — 팀에 올려도 된다), HR 은 근태 기록·GERP·태깅에서 나온 값(이 PC 전용 —
 # strip_hr·scrub_meta 가 팀·공유폴더·얼린 사본으로 나가기 전에 뺀다)
@@ -201,7 +239,9 @@ def norm(cfg):
         warns.append(f"attendance 는 객체({{…}})여야 함({type(a).__name__}) — 출퇴근 추정 설정 전부 기본값")
         return p, warns
     p["useForMM"] = _bool(a.get("useForMM"), True, "attendance.useForMM", warns)
-    p["withLM29"] = _bool(a.get("withLM29"), True, "attendance.withLM29", warns)   # LM30(2026-10-19) 머리말 15
+    # LM30(2026-10-19) 머리말 15 · LM30v1(2026-10-20) 키가 없으면 끔(견줘 볼 때만 켠다)
+    p["withLM29"] = _bool(a.get("withLM29"), False, "attendance.withLM29", warns)
+    p["pcUsage"] = _bool(a.get("pcUsage"), True, "attendance.pcUsage", warns)        # LM30v1(2026-10-20) 머리말 19
     for k, (lo, hi) in RANGES.items():
         p[k] = _num(a.get(k), DEFAULTS[k], lo, hi, "attendance." + k, warns)
     if p["weekMaxHours"] < p["weekHours"]:
@@ -277,15 +317,37 @@ def _dur(m):
     return f"{h}시간" if h else f"{r}분"
 
 
-def basis_text(p):
-    """info["basis"] 한 문장(쉬운 말) — 보고서·대시보드의 '산출 근거'."""
-    return (f"투입 = 출퇴근 추정 — 내가 남긴 흔적(저장·발신·커밋·수락한 회의·수동 기록·출장)을 이어 근무 덩어리를 만들고, "
-            f"시작·끝은 PC를 켜고 끈 시각(첫 흔적 {_dur(p['pcEdgeBeforeMin'])} 전부터·마지막 흔적 "
-            f"{_dur(p['pcEdgeAfterMin'])} 뒤까지)으로, 그런 시각이 없으면 흔적 {_dur(p['leadMin'])} 앞·"
-            f"{_dur(p['tailMin'])} 뒤로 잡습니다. PC가 켜져만 있던 시간은 세지 않고, 휴게는 4시간마다 "
-            f"{_dur(p['breakPer4hMin'])}(덩어리 사이에 쉰 만큼 줄임)을 뺍니다"
-            # LM30(2026-10-19) 머리말 15 — 켜져 있으면 한 문장 더(p = norm() 값 — 키가 늘 있다)
-            + (". LM29 방식이 센 시간(저녁·주말·휴일 포함)보다 적게 세지 않습니다" if p.get("withLM29") else ""))
+def _win_hh(win):
+    """낮 창(mm.pcFloorWindow — ['08:00','19:00'] · [8, 19] · (480.0, 1140.0) 분) → ('08', '19'). 모르면 08~19."""
+    if not (isinstance(win, (list, tuple)) and len(win) == 2):
+        return "08", "19"
+    out = []
+    for i, dflt in ((0, "08"), (1, "19")):
+        v = win[i]
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and float(v) > 24:
+            v = int(float(v)) // 60                                  # 분으로 준 창(compute 의 day_win)
+        out.append(_hh(v, dflt))
+    return out[0], out[1]
+
+
+def basis_text(p, win=None):
+    """info["basis"] 한 문장(쉬운 말) — 보고서·대시보드의 '산출 근거'. win = 낮 창(mm.pcFloorWindow — 켜 둔 PC 를 세는 창).
+    LM30v1(2026-10-20) pcUsage(머리말 19)면 PC 를 실제로 쓴 시간 + PC 밖 일 − 휴게로 말한다(끄면 예전 문장)."""
+    if p.get("pcUsage"):
+        w0, w1 = _win_hh(win)
+        head = (f"투입 = 출퇴근 추정 — PC를 실제로 쓴 시간(켜기·로그온·절전 해제 ~ 끄기·로그오프·절전)에 PC 밖에서 한 일(휴대폰 메일·"
+                f"팀즈·회의·수동 기록·출장)을 더하고, 휴게(4시간마다 {_dur(p['breakPer4hMin'])} — 덩어리 사이에 쉰 만큼 줄임)를 뺍니다. "
+                f"흔적이 없어도 PC를 쓴 시간은 주말·휴일·밤 모두 셉니다. {float(p['pcUsageMaxSpanH']):g}시간 넘게 켜 둔 채인 PC는 쓴 "
+                f"시간을 알 수 없어 흔적이 있는 날의 낮({w0}~{w1}시 — 주말·휴일은 흔적 앞뒤)만 세고, {_dur(p['pcUsageMinMin'])}이 안 되는 켜짐과 새벽 업데이트 "
+                f"깨움은 흔적이 없으면 뺍니다")
+    else:
+        head = (f"투입 = 출퇴근 추정 — 내가 남긴 흔적(저장·발신·커밋·수락한 회의·수동 기록·출장)을 이어 근무 덩어리를 만들고, "
+                f"시작·끝은 PC를 켜고 끈 시각(첫 흔적 {_dur(p['pcEdgeBeforeMin'])} 전부터·마지막 흔적 "
+                f"{_dur(p['pcEdgeAfterMin'])} 뒤까지)으로, 그런 시각이 없으면 흔적 {_dur(p['leadMin'])} 앞·"
+                f"{_dur(p['tailMin'])} 뒤로 잡습니다. PC가 켜져만 있던 시간은 세지 않고, 휴게는 4시간마다 "
+                f"{_dur(p['breakPer4hMin'])}(덩어리 사이에 쉰 만큼 줄임)을 뺍니다")
+    # LM30(2026-10-19) 머리말 15 — 켜져 있으면 한 문장 더(p = norm() 값 — 키가 늘 있다)
+    return head + (". LM29 방식이 센 시간(저녁·주말·휴일 포함)보다 적게 세지 않습니다" if p.get("withLM29") else "")
 
 
 # ════════════════════════════════ 시각 도구 ════════════════════════════════
@@ -379,6 +441,95 @@ def night_overlap(s, e, nw):
     return tot
 
 
+# ════════════════════════════════ PC 사용 시간(LM30v1 2026-10-20 — 머리말 19) ════════════════════════════════
+def pc_usage(raw, points, spans, weak, live_ends, now_abs, p, day_win=(480.0, 1140.0), off_k=None):
+    r"""PC 켜짐 원자료 → PC 를 실제로 쓴 구간(순수 함수 — 규칙은 머리말 19) → (구간 [(a, b, kind)], 켜 둔 날 집합 {k}).
+      raw       [(a, b, src)] 절대 분 — 이벤트 구간만(브라우저 방문·창 샘플러 아님). 자정에서 자른 조각·겹친 원장 행이 섞여도 된다.
+                src 가 event-cap(끄기 기록 없이 20시간 캡으로 닫힘)인 조각이 든 켜짐은 쓴 시간을 모른다
+      points    확실한 흔적 점 · spans [(a, b, kind)] 확실한 흔적 구간(meeting·manual·offsite — LM29 구간 아님) · weak 약한 흔적(브라우저
+                방문) 점 — compute 의 입력 그대로(해석 출력은 호출측이 이미 뺐다)
+      live_ends 수집 시각까지 켜져 있던 세션의 끝 · now_abs 지금 · p = norm() 값 · day_win 낮 창(그날 분 — mm.pcFloorWindow)
+    kind = pc(쓴 구간 그대로) | pcwin(켜 둔 채인 켜짐의 흔적 있는 날 낮 창). k = base 로부터 날 수(그 날 00:00 = k × 1440) — 켜 둔 켜짐이
+    그날 낮 창과 겹친 날(흔적이 없어 0시간인 날도). 구간은 지금 뒤로 넘지 않고 시작 순이다.
+      off_k     (선택) k → 그날이 주말·휴일인가. LM30v1(2026-10-20): 켜 둔 PC 의 주말·휴일은 낮 창(08~19시) 통째가 아니라 그날 첫 확실한
+                흔적 − leadMin ~ 마지막 확실한 흔적 + tailMin(예전 주말 창과 같은 폭) — 주말에 한 번 저장했다고 11시간을 세지 않게.
+                없으면 모든 날을 평일처럼 낮 창으로 센다(순수 시험용 기본)."""
+    max_m = float(p.get("pcUsageMaxSpanH", DEFAULTS["pcUsageMaxSpanH"])) * 60.0
+    lead = float(p.get("leadMin", DEFAULTS["leadMin"]))
+    tail = float(p.get("tailMin", DEFAULTS["tailMin"]))
+    min_m = float(p.get("pcUsageMinMin", DEFAULTS["pcUsageMinMin"]))
+    ds = float(p.get("dayStartHour", DEFAULTS["dayStartHour"])) * 60.0
+    now_abs = float(now_abs)
+    rows = []
+    for x in raw or ():
+        try:
+            a, b = float(x[0]), float(x[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        src = str(x[2] if len(x) > 2 and x[2] is not None else "").strip().lower()
+        if math.isfinite(a) and math.isfinite(b) and b > a:
+            rows.append((a, b, src == CAP_SRC))
+    rows.sort()
+    joined = []                                               # [시작, 끝, cap] — 겹치거나 PRES_JOIN_MIN 이하로 끊긴 조각을 잇는다
+    for a, b, cap in rows:
+        if joined and a - joined[-1][1] <= PRES_JOIN_MIN:
+            j = joined[-1]
+            j[1], j[2] = max(j[1], b), (j[2] or cap)
+        else:
+            joined.append([a, b, cap])
+    pts = sorted(float(t) for t in points)
+    wk = sorted(float(t) for t in weak)
+    sps = sorted((float(s[0]), float(s[1])) for s in spans if float(s[1]) >= float(s[0]))
+
+    def _has(lst, a, b):
+        i = bisect.bisect_left(lst, a)
+        return i < len(lst) and lst[i] <= b
+
+    def strong_in(a, b):
+        return _has(pts, a, b) or any(s0 <= b and s1 >= a for s0, s1 in sps)
+
+    def wd(t):
+        return int(math.floor((t - ds) / 1440.0))            # 근무일(머리말 6 — 새벽 5시 전은 전날)
+    ev_days = {wd(t) for t in pts}                            # 확실한 흔적이 있는 근무일 — 켜 둔 PC 의 낮 창을 세는 날
+    for s0, s1 in sps:
+        ev_days.update(range(wd(s0), wd(max(s0, s1)) + 1))
+    out, ao = [], set()
+    w0, w1 = float(day_win[0]), float(day_win[1])
+    for a, b, cap in joined:
+        if any(abs(b - x) <= 1.0 for x in live_ends) and 0.0 <= now_abs - b <= LIVE_SLACK_MIN:
+            b = now_abs                                       # 수집 직후 — 지금도 켜져 있다(_Pres 와 같다)
+        b = min(b, now_abs)                                   # 아직 오지 않은 시각까지 늘리지 않는다
+        if b <= a:
+            continue
+        if cap or b - a > max_m:
+            # 켜 둔 채(쓴 시간 모름) — 흔적 있는 날의 낮 창만(예전 PC 하한의 '흔적 있는 날만' 규칙). 낮 창과 겹친 날은 모두 켜 둔 날
+            for k in range(int(math.floor(a / 1440.0)), int(math.floor((b - 1e-6) / 1440.0)) + 1):
+                x0, x1 = max(a, k * 1440.0 + w0), min(b, k * 1440.0 + w1)
+                if x1 <= x0:
+                    continue
+                ao.add(k)
+                if off_k is not None and off_k(k):
+                    # 주말·휴일 — 그날(달력 날) 확실한 흔적의 처음 − leadMin ~ 끝 + tailMin ∩ 켜짐. 흔적이 없으면 0
+                    d0, d1 = k * 1440.0, (k + 1) * 1440.0
+                    ts = pts[bisect.bisect_left(pts, d0):bisect.bisect_left(pts, d1)]
+                    ts = ts + [t for s0, s1 in sps if s0 < d1 and s1 >= d0 for t in (max(s0, d0), min(s1, d1))]
+                    if ts:
+                        y0, y1 = max(a, d0, min(ts) - lead), min(b, d1, max(ts) + tail)
+                        if y1 > y0:
+                            out.append((y0, y1, PCW_KIND))
+                    continue
+                if k in ev_days:
+                    out.append((x0, x1, PCW_KIND))
+            continue
+        if b - a < min_m and not strong_in(a, b) and not _has(wk, a, b):
+            continue                                          # 업데이트 깨움·잠깐 켬(흔적 없음)
+        d0m = math.floor(a / 1440.0) * 1440.0
+        if b <= d0m + WAKE_END_MIN and b - a < WAKE_MAX_MIN and not strong_in(a, b):
+            continue                                          # 새벽 업데이트 깨움(00~06시 · 브라우저 방문은 흔적으로 치지 않는다)
+        out.append((a, b, PCU_KIND))
+    return sorted(out), ao
+
+
 # ════════════════════════════════ 덩어리 ════════════════════════════════
 def clusters(points, spans, pres, p, day_win):
     """확실한 흔적(점 points · 구간 spans[(a, b, kind)]) → 덩어리 [{s, e, sk, ek, rs, re, rsk, rek, ls, le}] — s·e 는 첫·마지막 흔적,
@@ -386,13 +537,16 @@ def clusters(points, spans, pres, p, day_win):
     PC_COVER 이상 켜져 있었으면 bridgePcMin 까지 잇는다.
     LM30(2026-10-19) LM29 구간(kind lm29 — 머리말 15)도 같은 규칙으로 잇되, 확실한 흔적의 첫·끝(rs·re — 그 종류 rsk·rek)과 LM29 구간의
     첫·끝(ls·le)을 따로 적는다 — edges 가 둘 중 넓은 쪽을 쓴다(LM29 구간 끝이 저장 시각과 같아도 PC 를 끈 시각까지 늘릴 수 있게).
-    LM29 구간이 없으면 rs·re·rsk·rek = s·e·sk·ek(예전 그대로)."""
+    LM29 구간이 없으면 rs·re·rsk·rek = s·e·sk·ek(예전 그대로).
+    LM30v1(2026-10-20) PC 사용 구간(kind pc·pcwin — 머리말 19)도 같은 규칙으로 잇되 그 첫·끝(us·ue)과 그 종류(usk·uek)를 따로 적는다 —
+    edges 가 확실한 흔적 쪽과 넓은 쪽을 쓴다."""
     items = [(float(t), float(t), "pt") for t in points]
     items += [(float(a), float(b), k) for a, b, k in spans if b >= a]
     items.sort(key=lambda x: (x[0], x[2] == "pt", -x[1]))     # 같은 시각이면 구간(기록된 가장자리)이 먼저
     out = []
     for s, e, k in items:
-        l29 = k == L29_KIND
+        l29, pcu = k == L29_KIND, k in PCU_KINDS
+        soft = k in SOFT_KINDS
         if out:
             c = out[-1]
             gap = s - c["e"]
@@ -403,19 +557,26 @@ def clusters(points, spans, pres, p, day_win):
                 if l29:
                     c["ls"] = s if c["ls"] is None else min(c["ls"], s)
                     c["le"] = e if c["le"] is None else max(c["le"], e)
+                elif pcu:
+                    if c["us"] is None or s < c["us"]:
+                        c["us"], c["usk"] = s, k
+                    if c["ue"] is None or e > c["ue"]:
+                        c["ue"], c["uek"] = e, k
                 elif c["rs"] is None:
                     c.update(rs=s, re=e, rsk=k, rek=k)
                 elif e > c["re"] or (e == c["re"] and k != "pt"):
                     c["re"], c["rek"] = e, k
                 continue
         out.append({"s": s, "e": e, "sk": k, "ek": k,
-                    "rs": None if l29 else s, "re": None if l29 else e, "rsk": None if l29 else k,
-                    "rek": None if l29 else k, "ls": s if l29 else None, "le": e if l29 else None})
+                    "rs": None if soft else s, "re": None if soft else e, "rsk": None if soft else k,
+                    "rek": None if soft else k, "ls": s if l29 else None, "le": e if l29 else None,
+                    "us": s if pcu else None, "ue": e if pcu else None, "usk": k if pcu else None, "uek": k if pcu else None})
     return out
 
 
 def edges(c, pres, weak, p, now_abs):
-    """덩어리 하나의 시작·끝 → {s, e, ss, es, kind}. ss·es = pc·meeting·manual·offsite·web·lead·tail·now·lm29, kind = pc | offpc.
+    """덩어리 하나의 시작·끝 → {s, e, ss, es, kind}. ss·es = pc·meeting·manual·offsite·web·lead·tail·now·lm29·pcuse·pcwin(LM30v1
+    2026-10-20 — PC 사용 구간 · 켜 둔 날의 낮 창), kind = pc | offpc.
     weak = 정렬된 약한 흔적(브라우저 방문) 시각.
     LM30(2026-10-19) LM29 구간이 든 덩어리(머리말 15) — 확실한 흔적의 첫·끝(rs·re)으로 아래 규칙대로 잡은 시작·끝과 LM29 구간의
     첫·끝(ls·le — 앞뒤를 붙이지 않는다) 중 넓은 쪽(같으면 확실한 흔적 쪽 이름). LM29 구간만 있는 덩어리는 그 구간 그대로."""
@@ -458,6 +619,15 @@ def edges(c, pres, weak, p, now_abs):
             s, ss = c["ls"], L29_KIND
         if e is None or c["le"] > e + 1e-9:
             e, es = c["le"], L29_KIND
+    if c.get("us") is not None:
+        # LM30v1(2026-10-20) PC 사용 구간(머리말 19) — 그 시작·끝 그대로(앞뒤를 붙이지 않는다). 쓴 구간은 pcuse(기록된 시각), 켜 둔 날의
+        # 낮 창은 pcwin(어림). 지금까지 쓰는 중(수집 직후 세션을 지금까지 늘렸다)이면 끝은 now(일하는 중)
+        if s is None or c["us"] < s - 1e-9:
+            s, ss = c["us"], (PCU_EDGE if c["usk"] == PCU_KIND else PCW_KIND)
+        if e is None or c["ue"] > e + 1e-9:
+            e, es = c["ue"], (PCU_EDGE if c["uek"] == PCU_KIND else PCW_KIND)
+            if es == PCU_EDGE and e >= now_abs - 1e-6:
+                es = "now"
     return {"s": min(s, fs), "e": e, "ss": ss, "es": es, "kind": "offpc" if offpc else "pc"}
 
 
@@ -488,17 +658,20 @@ def _raw_brk(bl, p):
 
 
 def _day_row(d, base, bl, prev_bl, p, std, off, lf, offsite_day, man_h, nopc_day, un_min, l29, l29n, rec, day_cap,
-             night_win, with_l29=False, strict_bl=None):
+             night_win, with_l29=False, strict_bl=None, pcu_on=False, always_on=False):
     """하루(근무일 d)의 행 — 덩어리·바닥값·나눔·신뢰도. 덩어리도 시간도 LM29 시간도 없으면 None.
     LM30(2026-10-19) with_l29(attendance.withLM29 — 머리말 15) — 덩어리가 있는 날에도 LM29 방식 시간(이웃 날이 덮은 만큼 뺀 것)을
-    바닥으로 쓴다 · strict_bl = LM29 구간 없이 만든(엄격한) 덩어리 중 이 날 덩어리 안에 든 것 — 그 근무·PC 밖보다 적게 세지 않는다 ·
-    행에 evening_h(19~22시)·weekend_h(토·일 근무)를 더한다(머리말 16)."""
+    바닥으로 쓴다 · strict_bl = LM29 구간(LM30v1 2026-10-20 — PC 사용 구간도) 없이 만든(엄격한) 덩어리 중 이 날 덩어리 안에 든 것 —
+    그 근무·PC 밖보다 적게 세지 않는다 ·
+    행에 evening_h(19~22시)·weekend_h(토·일 근무)를 더한다(머리말 16).
+    LM30v1(2026-10-20) pcu_on(attendance.pcUsage — 머리말 19)이면 행에 pc_usage_h(그날 덩어리 안의 PC 사용 시간 — 덩어리의 pcu 분 합 ·
+    휴게 빼기 전)·always_on(켜 둔 날)을 더하고, 켜 둔 날이면 AO_NOTE 를 맨 앞에 단다. 끄면 예전과 같은 글자다."""
     d0m = (d - base).days * 1440.0
     bl = sorted(bl, key=lambda b: b["s"])
     # 전날 근무 덩어리가 이 달력 날(00:00~)을 덮은 분 — LM29 방식은 달력 날짜로 셌으니 그만큼 빼고 쓴다(두 번 세지 않게)
     other = sum(max(0.0, min(b["e"], d0m + 1440.0) - max(b["s"], d0m)) for b in prev_bl)
     l29_adj = max(0.0, l29 - other / 60.0)
-    notes, floors = [], []
+    notes, floors = ([AO_NOTE] if (pcu_on and always_on) else []), []
     if bl:
         raw, brk = _raw_brk(bl, p)
         work = (raw - brk) / 60.0
@@ -508,6 +681,7 @@ def _day_row(d, base, bl, prev_bl, p, std, off, lf, offsite_day, man_h, nopc_day
         if strict_bl:
             # LM30(2026-10-19) LM29 구간으로 이어 붙인 공백은 예전에 '이미 쉰 시간'(덩어리 사이 공백)이었다 — 이어 붙이면 체류가 늘어
             # 4시간마다 휴게를 더 빼 오히려 줄 수 있다. 엄격한 덩어리로 잰 근무보다 적으면 그 차이를 휴게로 본다(LM30 이 더 찾은 것을 지킨다).
+            # LM30v1(2026-10-20) PC 사용 구간(머리말 19)으로 이어 붙인 공백도 같다(엄격한 덩어리 = 확실한 흔적만).
             # PC 밖 시간도 엄격한 덩어리 쪽이 크면 그 값(PC 덩어리에 이어 붙어도 휴대폰 발신·수동 기록 구간은 PC 밖이다)
             sb = sorted(strict_bl, key=lambda b: b["s"])
             s_raw, s_brk = _raw_brk(sb, p)
@@ -585,21 +759,26 @@ def _day_row(d, base, bl, prev_bl, p, std, off, lf, offsite_day, man_h, nopc_day
         conf = "high"
     else:
         conf = "mid"                                          # LM29 구간 가장자리(lm29)·모든 날 바닥값이 늘린 날도 보통
-    return {"arrive": hm(a_m) if a_m is not None else "", "leave": hm(l_m) if l_m is not None else "",
-            "arrive_day": int(a_m // 1440) if a_m is not None else 0,
-            "leave_day": int(l_m // 1440) if l_m is not None else 0,
-            "arrive_src": a_src, "leave_src": l_src,
-            "blocks": [[int(round(b["s"] - d0m)), int(round(b["e"] - d0m)), b["kind"]] for b in bl],
-            "raw_h": _r(raw / 60.0), "break_h": _r(brk / 60.0), "work_h": _r(work), "regular_h": _r(reg),
-            "ext_h": _r(ext), "night_h": _r(night), "holiday_h": _r(hol), "holiday_ext_h": _r(hol_ext),
-            "offpc_h": _r(offpc), "lm29_h": _r(l29), "kind": "off" if off else "workday", "leave_frac": lf,
-            "conf": conf, "notes": notes, "late": bool(l_m is not None and l_m >= LATE_MIN),
-            "evening_h": _r(evening), "weekend_h": _r(weekend)}
+    row = {"arrive": hm(a_m) if a_m is not None else "", "leave": hm(l_m) if l_m is not None else "",
+           "arrive_day": int(a_m // 1440) if a_m is not None else 0,
+           "leave_day": int(l_m // 1440) if l_m is not None else 0,
+           "arrive_src": a_src, "leave_src": l_src,
+           "blocks": [[int(round(b["s"] - d0m)), int(round(b["e"] - d0m)), b["kind"]] for b in bl],
+           "raw_h": _r(raw / 60.0), "break_h": _r(brk / 60.0), "work_h": _r(work), "regular_h": _r(reg),
+           "ext_h": _r(ext), "night_h": _r(night), "holiday_h": _r(hol), "holiday_ext_h": _r(hol_ext),
+           "offpc_h": _r(offpc), "lm29_h": _r(l29), "kind": "off" if off else "workday", "leave_frac": lf,
+           "conf": conf, "notes": notes, "late": bool(l_m is not None and l_m >= LATE_MIN),
+           "evening_h": _r(evening), "weekend_h": _r(weekend)}
+    if pcu_on:                                                # LM30v1(2026-10-20) 머리말 19 — 끄면 예전과 같은 칸
+        row["pc_usage_h"] = _r(sum(float(b.get("pcu") or 0.0) for b in bl) / 60.0)
+        row["always_on"] = bool(always_on)
+    return row
 
 
 def compute(base, points, spans, weak, presence, live_ends, d0, d1, now, p, std=8.0, day_win=(480.0, 1140.0),
             night_win=(1320.0, 360.0), is_off=None, leave=None, offsite=(), manual_floor=None, nopc=(),
-            untimed_min=None, lm29=None, lm29_night=None, rec_days=None, day_cap=None, records=None, lm29_spans=None):
+            untimed_min=None, lm29=None, lm29_night=None, rec_days=None, day_cap=None, records=None, lm29_spans=None,
+            pc_spans=None):
     """흔적 → 날짜별 출퇴근·근무 + 합계. 시각 입력은 모두 절대 분(base 00:00 부터).
       points   확실한 흔적 점 · spans [(a, b, meeting|manual|offsite)] · weak 브라우저 방문 점
       presence PC 켜짐 [(a, b)] · live_ends 수집 시각까지 켜져 있던 세션의 끝(끔이 아니다)
@@ -613,8 +792,11 @@ def compute(base, points, spans, weak, presence, live_ends, d0, d1, now, p, std=
     mm_meta 로 가는 것 — records 가 None 이면 agg 와 같은 dict), "usual": 평소 출근·퇴근(이 PC 전용), "hr_days": 날짜별 근태 사실
     (hr_days — 법정 채움 MM 의 재료 · 이 PC 전용 · 근태 기록이 없으면 {})}.
     LM30(2026-10-19) +@ — 근태 기록이 있으면 hr_compare 가 날마다 견주어 행에 rec 을 붙인다(투입 시간 work_h 는 그대로).
-    LM30(2026-10-19) lm29_spans [(a, b)] — LM29 가 시각까지 정해 근무로 센 구간(머리말 15). p["withLM29"](기본 켬)일 때만 흔적(종류 lm29)에
-    더하고 모든 날에 LM29 시간 바닥값을 쓴다. 꺼져 있으면 예전(엄격한 LM30) 그대로."""
+    LM30(2026-10-19) lm29_spans [(a, b)] — LM29 가 시각까지 정해 근무로 센 구간(머리말 15). p["withLM29"](LM30v1 2026-10-20 — 기본 끔)일
+    때만 흔적(종류 lm29)에 더하고 모든 날에 LM29 시간 바닥값을 쓴다. 꺼져 있으면 그 구간을 쓰지 않는다.
+    LM30v1(2026-10-20) pc_spans [(a, b, src)] — PC 켜짐 원자료(이벤트 구간 · src 가 event-cap 이면 쓴 시간 모름 — 머리말 19). p["pcUsage"]
+    (기본 켬)면 pc_usage 로 PC 를 실제로 쓴 구간을 만들어 덩어리 재료(종류 pc·pcwin)로 더한다 — 없으면 presence 를 그 원자료로 쓴다(src
+    event). 행·합계에 pc_usage_h·always_on(_days)·pc_usage_off_h 가 붙는다. 꺼져 있으면 예전 숫자·칸 그대로."""
     is_off = is_off or (lambda dd: dd.isoweekday() > 5)
     leave, manual_floor, untimed_min = leave or {}, manual_floor or {}, untimed_min or {}
     lm29, lm29_night = lm29 or {}, lm29_night or {}
@@ -623,11 +805,25 @@ def compute(base, points, spans, weak, presence, live_ends, d0, d1, now, p, std=
     pres = _Pres(presence, live_ends, now_abs)
     rec_days = pres.days(base) if rec_days is None else set(rec_days)
     weak = sorted(float(x) for x in weak)
-    with_l29 = bool(p.get("withLM29", True))
+    with_l29 = bool(p.get("withLM29", False))
+    pcu_on = bool(p.get("pcUsage", True))
     sp = list(spans)
+    # LM30v1(2026-10-20) PC 사용 구간(머리말 19) — 덩어리 재료(종류 pc·pcwin · 가장자리 그대로 · 흔적 없이도 덩어리)
+    usage, ao_dates = [], set()
+    if pcu_on:
+        raw = pc_spans if pc_spans is not None else [(a, b, "event") for a, b in presence]
+        usage, ao_k = pc_usage(raw, points, spans, weak, live_ends, now_abs, p, day_win,
+                               off_k=lambda k: bool(is_off(base + timedelta(days=k))))
+        sp += usage
+        ao_dates = {base + timedelta(days=k) for k in ao_k}
     if with_l29 and lm29_spans:
         sp += [(float(a), float(b), L29_KIND) for a, b in lm29_spans if float(b) > float(a)]
     blocks = merge([edges(c, pres, weak, p, now_abs) for c in clusters(points, sp, pres, p, day_win)])
+    if pcu_on:
+        # 덩어리마다 그 안의 PC 사용 분(pcu — 행의 pc_usage_h). PC 사용 구간은 저마다 한 덩어리 안에 든다(가장자리를 그대로 쓴다)
+        uu = _union([(a, b) for a, b, _k in usage])
+        for b in blocks:
+            b["pcu"] = sum(max(0.0, min(u1, b["e"]) - max(u0, b["s"])) for u0, u1 in uu)
     ds = float(p["dayStartHour"]) * 60.0
     by_day, own = {}, []
     for b in blocks:
@@ -638,6 +834,9 @@ def compute(base, points, spans, weak, presence, live_ends, d0, d1, now, p, std=
         own.append((b["s"], b["e"], base + timedelta(days=k)))
     # LM30(2026-10-19) LM29 구간을 더했으면 엄격한 덩어리도 만들어, 저마다 그것을 품은 덩어리의 근무일에 맡긴다(_day_row 의 strict_bl —
     # 엄격한 근무보다 적게 세지 않게). 덩어리는 늘 엄격한 덩어리를 품는다(흔적이 같고 가장자리는 넓은 쪽) — 못 찾은 것은 쓰지 않는다
+    # LM30v1(2026-10-20) PC 사용 구간(머리말 19)을 더했을 때도 같다 — 엄격한 덩어리 = 확실한 흔적만(spans)으로 만든 덩어리. PC 를 18:00 에
+    # 끄고 19:00~21:00 수동 기록이면 PC 사용 구간이 둘을 이어(공백 60분 ≤ 90분) 이미 쉰 공백이 근무가 되고 휴게가 늘어 오히려 줄던 것
+    # (11.0h → 10.5h · PC 밖 2.0h → 0)을 막는다
     strict_by = None
     if len(sp) != len(spans):
         strict_by = {}
@@ -653,18 +852,19 @@ def compute(base, points, spans, weak, presence, live_ends, d0, d1, now, p, std=
                        bool(is_off(d)), float(leave.get(d, 0.0) or 0.0), d in offsite, float(manual_floor.get(d, 0.0)),
                        d in nopc, float(untimed_min.get(d, 0.0) or 0.0), float(lm29.get(d, 0.0) or 0.0),
                        float(lm29_night.get(d, 0.0) or 0.0), d in rec_days, day_cap, night_win, with_l29,
-                       strict_by.get(d) if strict_by is not None else None)
+                       strict_by.get(d) if strict_by is not None else None, pcu_on, d in ao_dates)
         if row is not None:
             days[d.isoformat()] = row
         d += timedelta(days=1)
+    ao = ao_dates if pcu_on else None                         # 켜 둔 날(합계의 always_on_days — 근무가 없어 행이 없는 날도)
     if records is None:
-        agg = aggregate(days, d0, d1, p)
+        agg = aggregate(days, d0, d1, p, ao=ao)
         return {"days": days, "agg": agg, "team": agg, "usual": usual_times(days, d1, now), "hr_days": {}}
     hr = hr_compare(days, records, d0, d1, p)
     rec_sum = compare_records(days, records, d0, d1, p, hr)
     # 팀 쪽 합계는 근태 기록 없이 다시 잰다 — 근태에서 나온 칸이 없고, +@ 추정도 모든 날의 연장 + 휴일(근태가 있는 날을 빼지 않는다)
     # LM30v1(2026-10-19) hr_days — 법정 채움 MM 이 쓰는 날짜별 근태 사실(이 PC 전용 — day_work_hours 가 info["attendance_hr"] 로)
-    return {"days": days, "agg": aggregate(days, d0, d1, p, rec_sum, hr), "team": aggregate(days, d0, d1, p),
+    return {"days": days, "agg": aggregate(days, d0, d1, p, rec_sum, hr, ao=ao), "team": aggregate(days, d0, d1, p, ao=ao),
             "usual": usual_times(days, d1, now), "hr_days": hr_days(records, hr, d0, d1, p)}
 
 
@@ -693,7 +893,7 @@ def _week_key(d):
     return f"{y}-W{w:02d}"
 
 
-def aggregate(days, d0, d1, p, records=None, hr=None):
+def aggregate(days, d0, d1, p, records=None, hr=None, ao=None):
     """날짜별 행 → {"schema", "method", "weeks", "months", "total"[, "records"]} — 시각이 없는 합계뿐.
       weeks  {"YYYY-Www": {from, to, work_h…offpc_h, days, over40_h, over52, partial, plus_est_h, plus_est_offpc_h}} (ISO 주 월~일)
       months {"YYYY-MM": {work_h, regular_h, ext_h, night_h, holiday_h, holiday_ext_h, offpc_h, lm29_h, days, late_days,
@@ -703,12 +903,16 @@ def aggregate(days, d0, d1, p, records=None, hr=None):
     records = compare_records 요약·hr = hr_compare 값(LM30 2026-10-19 +@). 근태 기록이 있으면(records.present — 이 PC 전용 합계)
     weeks·months·total 에 HR_KEYS(unrecorded_h(달·전체) · plus_h · plus_offpc_h · plus_all_h · missing_h · gate_plus_h · plus_days ·
     rec_days · gate_days)를 더하고 plus_est_h 는 기록 칸 기간 밖의 날만 센다. 없으면(팀으로 가는 합계) plus_est_h 는 모든 날.
-    근태에만 있는 날(이 PC 행이 없다)의 값은 그 주·달에 LM 행이 있을 때만 그 칸에, 전체에는 늘 들어간다."""
+    근태에만 있는 날(이 PC 행이 없다)의 값은 그 주·달에 LM 행이 있을 때만 그 칸에, 전체에는 늘 들어간다.
+    LM30v1(2026-10-20) ao = 켜 둔 날 집합(pcUsage 가 켜졌을 때만 compute 가 준다 — 머리말 19) — 주어지면 weeks·months·total 에
+    pc_usage_h(PC 사용 시간 — 휴게 빼기 전)·pc_usage_off_h(그중 주말·휴일)·always_on_days(켜 둔 날 — [d0, d1] 안 · 근무가 없어 행이
+    없는 날은 그 주·달에 행이 있을 때만 그 칸에, 전체에는 늘)를 더한다. None 이면 예전과 같은 칸."""
     has_rec = bool(records and records.get("present"))
     hr = hr if (has_rec and isinstance(hr, dict)) else {}
     rng = records.get("range") if has_rec and isinstance(records.get("range"), (list, tuple)) else []
     rng = [str(x)[:10] for x in rng] if len(rng) == 2 else []
     eps = REC_EPS_H
+    pcu = ao is not None                                      # LM30v1(2026-10-20) PC 사용 시간 칸(머리말 19)
 
     def zero():
         z = _zero()
@@ -716,6 +920,8 @@ def aggregate(days, d0, d1, p, records=None, hr=None):
         if has_rec:
             z.update(dict.fromkeys(HR_SUM_KEYS, 0.0))
             z.update(dict.fromkeys(HR_CNT_KEYS, 0))
+        if pcu:
+            z.update(dict.fromkeys(PCU_SUM_KEYS, 0.0), always_on_days=0)
         return z
     weeks, months, total = {}, {}, zero()
     for iso in sorted(days):
@@ -739,6 +945,13 @@ def aggregate(days, d0, d1, p, records=None, hr=None):
             if has_rec:                                       # 주에는 unrecorded_h 가 없다(예전과 같이 달·전체만)
                 wk.update(dict.fromkeys((k for k in HR_SUM_KEYS if k != "unrecorded_h"), 0.0))
                 wk.update(dict.fromkeys(HR_CNT_KEYS, 0))
+            if pcu:
+                wk.update(dict.fromkeys(PCU_SUM_KEYS, 0.0), always_on_days=0)
+        if pcu:
+            pu = _num0(r.get("pc_usage_h"))
+            for t in (m, total, wk):
+                t["pc_usage_h"] += pu
+                t["pc_usage_off_h"] += pu if r.get("kind") == "off" else 0.0     # 주말·휴일에 PC 를 쓴 시간
         for t in (m, total):
             for k in _SUM_KEYS:
                 t[k] += float(r.get(k) or 0.0)                # weekend_h·evening_h 가 없는 옛 행(LM30 2026-10-19 전)은 0
@@ -777,6 +990,12 @@ def aggregate(days, d0, d1, p, records=None, hr=None):
     if has_rec:
         for t in [total] + list(months.values()) + list(weeks.values()):
             t["plus_all_h"] = t["plus_h"] + t["plus_est_h"]
+    if pcu:
+        # LM30v1(2026-10-20) 켜 둔 날(머리말 19) — 근무가 없어 행이 없는 날도 센다(그 주·달에 행이 있을 때만 그 칸에, 전체에는 늘)
+        for dd in sorted(x for x in ao if isinstance(x, date) and d0 <= x <= d1):
+            for t in (total, months.get(dd.isoformat()[:7]), weeks.get(_week_key(dd))):
+                if t is not None:
+                    t["always_on_days"] += 1
     for t in [total] + list(months.values()) + list(weeks.values()):
         t["offday_h"] = t["holiday_h"]                        # LM30(2026-10-19) 주말 + 공휴일 근무(머리말 16 — holiday_h 와 같은 값)
     total["over40_h"] = 0.0
@@ -1381,11 +1600,11 @@ def scrub_meta(mj):
 # LM30(2026-10-19) +@ — records_text·day_plus·hr 를 준 plus_line 은 근태 기록에서 나온 값을 담는다(이 PC 의 화면·리포트에서만). 얼린
 # 사본·분석리포트는 plus_line(hr 없이 — 근태 없이 추정한 +@)과 FROZEN_REC_TEXT 를 쓴다.
 CONF_KO = {"high": "높음", "mid": "보통", "low": "낮음"}
-# LM30(2026-10-19) lm29 — LM29 구간의 가장자리(머리말 15)
+# LM30(2026-10-19) lm29 — LM29 구간의 가장자리(머리말 15) · LM30v1(2026-10-20) pcuse·pcwin — PC 사용 구간·켜 둔 날 낮 창의 가장자리(19)
 _IN_KO = {"pc": "PC 켬", "meeting": "회의 시작", "manual": "수동 기록 시작", "offsite": "출장·현장 시작", "web": "브라우저 사용",
-          L29_KIND: "PC 켜진 시간(LM29 방식)"}
+          L29_KIND: "PC 켜진 시간(LM29 방식)", PCU_EDGE: "PC 사용 시작", PCW_KIND: "낮 시작"}
 _OUT_KO = {"pc": "PC 끔·잠금", "meeting": "회의 끝", "manual": "수동 기록 끝", "offsite": "출장·현장 끝",
-           L29_KIND: "PC 켜진 시간(LM29 방식)"}
+           L29_KIND: "PC 켜진 시간(LM29 방식)", PCU_EDGE: "PC 사용 끝", PCW_KIND: "낮 끝"}
 _DAY_KO = {"lm29": "흔적이 적어 LM29 방식 값", "untimed": "시각 없이 날짜만 아는 발신", "offsite": "종일 출장·교육 — 표준일",
            "manual": "수동 기록 시간"}
 _FLOOR_KO = {"종일 출장·교육 — 표준일": "종일 출장·교육이라 표준일로 채움", "수동 기록 시간": "수동 기록 시간으로 채움",
@@ -1433,6 +1652,10 @@ def day_why(r, p=None):
     first_off = bl[0][2] == "offpc"
     last_off = max(bl, key=lambda b: b[1])[2] == "offpc"
     a_src, l_src = str(r.get("arrive_src") or ""), str(r.get("leave_src") or "")
+    if a_src == PCU_EDGE and l_src == PCU_EDGE:
+        # LM30v1(2026-10-20) 출근·퇴근이 둘 다 PC 사용 구간의 시작·끝(머리말 19) — 'PC 사용(켜기·로그온·절전 해제 ~ 끄기·로그오프·절전)'
+        return " · ".join([f"{PCU_WHY} {_clock(r.get('arrive'), r.get('arrive_day'))} → "
+                           f"{_clock(r.get('leave'), r.get('leave_day'))}"] + [_FLOOR_KO.get(n, n) for n in notes])
     if a_src in _IN_KO:
         a = f"{_IN_KO[a_src]} {_clock(r.get('arrive'), r.get('arrive_day'))}"
     elif a_src == "lead":
@@ -1472,22 +1695,47 @@ def _hh(v, dflt):
     return f"{int(m.group(1)):02d}" if m else dflt
 
 
-def rule_text(p=None, std=None, night=None):
-    """재는 법 한 문장(쉬운 말) — 카드·리포트가 같은 문구. std = 표준일(h — mm.standardDayHours) · night = 야간 창(mm.nightWindow)."""
+def rule_text(p=None, std=None, night=None, win=None):
+    """재는 법 한 문장(쉬운 말) — 카드·리포트가 같은 문구. std = 표준일(h — mm.standardDayHours) · night = 야간 창(mm.nightWindow) ·
+    win = 낮 창(mm.pcFloorWindow — 켜 둔 PC 를 세는 창).
+    LM30v1(2026-10-20) 그 결과를 잰 설정(cfg_used.attendance)에 pcUsage 가 켜져 있으면(머리말 19) 'PC 를 실제로 쓴 시간 + PC 밖 일 − 휴게'
+    로 말한다 — 그 키가 없는 옛 결과는 예전 문장(흔적으로 출근·퇴근을 어림하고 켜져만 있던 PC 는 세지 않던 방식)이다."""
     q = _p_view(p)
     try:
         sd = float(std) if std is not None else 8.0
     except (TypeError, ValueError):
         sd = 8.0
     nw = night if isinstance(night, (list, tuple)) and len(night) == 2 else ("22:00", "06:00")
-    return (f"출근·퇴근은 PC를 켜고 끈 시각과 메일·파일·팀즈·회의 흔적으로 추정합니다. 출근~퇴근에서 4시간마다 "
-            f"{_dur(q['breakPer4hMin'])} 휴게를 뺀 시간이 근무시간이고, 하루 {sd:g}시간을 넘으면 연장, "
-            f"{_hh(nw[0], '22')}~{_hh(nw[1], '06')}시는 야간, 주말·휴일 근무는 휴일 근무로 셉니다. "
-            "PC가 켜져만 있던 시간은 세지 않습니다."
-            # LM30(2026-10-19) 머리말 15 — 그 결과를 잰 설정(cfg_used.attendance)에 withLM29 가 켜져 있을 때만 한 문장 더(그 키가 없는
-            # 옛 결과는 엄격한 방식으로 잰 것이다)
-            + (" 다만 LM29 방식이 근무로 센 시간(저녁·주말·휴일에 PC를 켜고 일한 시간 포함)보다 적게 세지 않습니다."
-               if isinstance(p, dict) and p.get("withLM29") else ""))
+    split = (f"하루 {sd:g}시간을 넘으면 연장, {_hh(nw[0], '22')}~{_hh(nw[1], '06')}시는 야간, 주말·휴일 근무는 휴일 근무로 셉니다.")
+    if isinstance(p, dict) and p.get("pcUsage"):
+        w0, w1 = _win_hh(win)
+        head = (f"근무시간 = PC를 실제로 쓴 시간(켜기·로그온·절전 해제 ~ 끄기·로그오프·절전) + PC 밖에서 한 일(휴대폰 메일·팀즈·회의) "
+                f"− 휴게(4시간마다 {_dur(q['breakPer4hMin'])})입니다. 흔적이 없어도 PC를 쓴 시간은 주말·휴일·밤 모두 셉니다. "
+                f"{_num0(q['pcUsageMaxSpanH']):g}시간 넘게 켜 둔 채인 PC는 쓴 시간을 알 수 없어 흔적이 있는 날의 낮({w0}~{w1}시 — 주말·휴일은 흔적 앞뒤)만 세고, "
+                f"업데이트 깨움({_dur(q['pcUsageMinMin'])}이 안 되는 켜짐·새벽의 짧은 켜짐 — 흔적이 없을 때)은 뺍니다. " + split)
+    else:
+        head = (f"출근·퇴근은 PC를 켜고 끈 시각과 메일·파일·팀즈·회의 흔적으로 추정합니다. 출근~퇴근에서 4시간마다 "
+                f"{_dur(q['breakPer4hMin'])} 휴게를 뺀 시간이 근무시간이고, " + split + " PC가 켜져만 있던 시간은 세지 않습니다.")
+    # LM30(2026-10-19) 머리말 15 — 그 결과를 잰 설정(cfg_used.attendance)에 withLM29 가 켜져 있을 때만 한 문장 더(그 키가 없는
+    # 옛 결과는 엄격한 방식으로 잰 것이다)
+    return head + (" 다만 LM29 방식이 근무로 센 시간(저녁·주말·휴일에 PC를 켜고 일한 시간 포함)보다 적게 세지 않습니다."
+                   if isinstance(p, dict) and p.get("withLM29") else "")
+
+
+def pc_usage_lines(t, win=None):
+    """LM30v1(2026-10-20) PC 사용 시간 줄(머리말 19 — 카드 두 장·리포트 1절·8절 공용) — 합계 칸(주·달·전체의 한 칸) →
+    ['PC를 쓴 시간 Xh(주말·휴일 Yh) — 근무시간은 여기에 PC 밖 일(휴대폰 메일·팀즈·회의)을 더하고 휴게를 뺀 시간입니다'
+     (+ 켜 둔 날이 있으면 'PC를 켜 둔 채라 쓴 시간을 알 수 없는 날 N일 — 흔적이 있는 날의 낮(08~19시 — 주말·휴일은 흔적 앞뒤)만 셉니다')].
+    win = 낮 창(mm.pcFloorWindow). 칸에 pc_usage_h 가 없으면(pcUsage 끔·옛 결과) [] — 합계뿐이라 어디에 실려도 된다."""
+    if not isinstance(t, dict) or "pc_usage_h" not in t:
+        return []
+    out = [f"PC를 쓴 시간 {_num0(t.get('pc_usage_h')):.1f}h(주말·휴일 {_num0(t.get('pc_usage_off_h')):.1f}h) — 근무시간은 여기에 "
+           "PC 밖 일(휴대폰 메일·팀즈·회의)을 더하고 휴게를 뺀 시간입니다"]
+    n = int(_num0(t.get("always_on_days")))
+    if n > 0:
+        w0, w1 = _win_hh(win)
+        out.append(f"PC를 켜 둔 채라 쓴 시간을 알 수 없는 날 {n}일 — 흔적이 있는 날의 낮({w0}~{w1}시 — 주말·휴일은 흔적 앞뒤)만 셉니다")
+    return out
 
 
 # ── LM30(2026-10-19) 시간외 나눠 보기(머리말 16)·발신 흔적 빈 곳(머리말 17) — 카드·리포트 공용 문구 ──
