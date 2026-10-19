@@ -26,7 +26,7 @@ retag.py                                               6,128 B  8d6f81d3
 team_refine.py                                         6,526 B  cdeda0b1
 team_recalc.py                                        59,361 B  9319fec5
 report_out.py                                         84,872 B  72680175
-README.md                                            151,024 B  fffeab60
+README.md                                            151,329 B  fe66756d
 check.py                                               2,629 B  7badfe69
 judge.py                                             220,958 B  2ce4ffb6
 mine.py                                               26,910 B  db07f03b
@@ -82,7 +82,7 @@ core/projmap.py                                        8,988 B  4e45fe1f
 core/attendance.py                                   100,638 B  4c1e8caa
 core/gerp.py                                          25,312 B  e20a1f06
 collect/Get-GerpWork.py                               40,590 B  bb9124a8
-docs/설정가이드.md                                        146,658 B  02336a29
+docs/설정가이드.md                                        146,899 B  311ff371
 docs/사용안내.html                                       277,403 B  85bd9321
 tools/copilot_auto.py                                260,758 B  8d86e6f0
 tools/pc_hours_compare.py                             21,995 B  13040408
@@ -97,4 +97,4 @@ tools/Stop-LM30.ps1                                   18,735 B  649a7270
 tools/stop_lm30.py                                    22,121 B  137c9af7
 tools/ps_launch.py                                     4,932 B  abe5c7e9
 tools/diag_bundle.py                                  10,236 B  bd5b2e93
-ui/app.py                                            506,146 B  cff504a4
+ui/app.py                                            507,888 B  12fbd43b

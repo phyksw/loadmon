@@ -3871,6 +3871,7 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
  <label>시작 <input type="date" id="from"></label><label>끝 <input type="date" id="to"></label>
  <label><input type="checkbox" id="ai" checked> AI 정제</label>
  <label><input type="checkbox" id="skip"> 재분석만</label>
+ <label id="hronl" style="display:none" title="켜면 [분석 실행]이 GERP(인사 시스템) 근무 기록을 읽어 +@(근태 기록 밖 근무)를 근태와 견줍니다 — 시험 기능 · 전용 Edge 에 본인이 로그인해 둔 경우만 읽고, 로그아웃돼 있으면 건너뜁니다 · 기록은 이 PC에만 둡니다"><input type="checkbox" id="hron"> HR 근무 기록(GERP)</label>
  <button class="run" id="go" title="로컬PC 자료수집 + AI 분석 + 팀 서버 보고까지 한 번에 합니다">분석 실행</button>
  <button class="run local" id="collect2" title="이 PC 의 자료만 모읍니다(분석·보고 없음). 폴더째 분석할 PC 로 옮겨 [분석 실행]을 누르면 합쳐집니다">로컬PC 자료수집</button>
  <button class="run" id="stop" style="background:#c0122f;display:none">중지</button>
@@ -4204,7 +4205,7 @@ async function poll(){
   // LM30(2026-10-19): GERP 열기·읽기(시험 기능)도 — 같은 전용 Edge 를 쓴다. 카드가 단추를 다시 그릴 때도 이 값으로 끈다(__lmBusy)
   window.__lmBusy=!!s.running;
   ["owa","teamsweb","cvreset","gerpopen","gerpread"].forEach(id=>{const b=$(id);if(b)b.disabled=!!s.running;});
-  ["gerpon","gerpoff","gerpchg","gerpsave"].forEach(id=>{const b=$(id);if(b)b.disabled=!!s.running;});   // LM30(2026-10-19) GERP 켜기·끄기도
+  ["gerpon","gerpoff","gerpchg","gerpsave","hron"].forEach(id=>{const b=$(id);if(b)b.disabled=!!s.running;});   // LM30(2026-10-19) GERP 켜기·끄기도(옵션 줄 칸 포함)
   // LM28(2026-10-19): 작업이 도는 동안에는 [데이터 리셋]도 끈다(누르면 '실행 중'만 들었다) — 무엇이 도는지는 버튼에 마우스를 올리면 보인다
   const rsb=$("reset");if(rsb){rsb.disabled=!!s.running;rsb.title=s.running?`지금 도는 작업: ${s.step||"분석 실행"} — 끝나면 누를 수 있습니다`:"";}
   $("stop").style.display=s.running?"":"none";
@@ -4716,7 +4717,33 @@ async function gerpLoad(){
  try{g=await fetch("/api/gerp").then(r=>r.json());}catch(e){g=null;}
  gerpRender(g);
 }
+function hrSync(g){
+ // LM30(2026-10-19) 옵션 줄의 'HR 근무 기록(GERP)' 칸 — 카드와 같은 설정(attendance.gerp.enabled)을 보인다. /api/gerp 를 못 읽는 화면
+ // (얼린 사본·파일로 연 화면)에서는 숨긴다. 작업이 도는 동안에는 끈다(poll 도 같은 값으로 끈다).
+ const l=$("hronl"),c=$("hron");if(!l||!c)return;
+ const ok=!!(g&&g.ok===true&&typeof g.enabled==="boolean");
+ l.style.display=ok?"":"none";
+ if(ok){c.checked=!!g.enabled;c.disabled=!!window.__lmBusy;}
+}
+async function hrToggle(){
+ // 켜기: 저장한 주소가 없거나 틀렸으면 한 번 묻는다(주소는 이 PC의 설정에만) · 끄기: 카드의 [끄기]와 같다(확인 창). 끝나면 서버 값으로 다시 맞춘다.
+ const c=$("hron");if(!c)return;
+ if(c.checked){
+  let g=null;try{g=await fetch("/api/gerp").then(r=>r.json());}catch(e){g=null;}
+  let url=(g&&g.url)||"";
+  if(!(g&&g.url_ok)){
+   url=prompt("GERP 근무시간 현황 화면 주소를 붙여 넣으세요 — 로그인한 브라우저의 주소 창에서 복사합니다.\\n(주소는 이 PC의 설정에만 둡니다)",url)||"";
+   if(!url.trim()){gerpLoad();return;}
+  }
+  await gerpCfg(true,url);
+ }else{
+  await gerpCfg(false);
+ }
+ gerpLoad();
+}
+{const c=$("hron");if(c)c.onchange=hrToggle;}
 function gerpRender(g){
+ hrSync(g);
  const el=$("atgerp");if(!el)return;
  if(!g||g.ok!==true||typeof g.enabled!=="boolean"){el.innerHTML="";return;}
  const busy=!!window.__lmBusy;
