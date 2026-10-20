@@ -5151,7 +5151,11 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
         info["attendance_usual"] = att["usual"]
         # LM30v1(2026-10-19) 날짜별 근태 사실(attendance.hr_days — 출퇴근 있는 날·휴가만 있는 날·빈 날) — 법정 채움 MM(mm_from_hours)의
         # 재료. 이 PC 전용 칸이라 호출측이 mm_from_hours 뒤에 take_local 로 뗀다(mm_meta·팀으로 가지 않는다)
-        info["attendance_hr"] = att.get("hr_days") or {}
+        hr_d = att.get("hr_days") or {}
+        if not use_att:
+            # LM30v1(2026-10-20) 투입이 LM29 방식(달력 날짜 시간)이면 이웃 날 근태 창 몫(nb_h — 출퇴근 추정 덩어리 기준)은 맞지 않는다
+            hr_d = {k: {x: y for x, y in v.items() if x != "nb_h"} for k, v in hr_d.items() if isinstance(v, dict) and v.get("k")}
+        info["attendance_hr"] = hr_d
         if use_att:
             hours = _att_apply(info, att["days"], att["agg"], hours, inferred, att_p, d0, d1)
     return hours, info
@@ -5335,7 +5339,8 @@ def _mm_legal(day_hours, d0, d1, workdays, std, holidays, cal_abs, inf_days, hr,
         · 근태 행은 있는데 출근·퇴근·휴가가 비었고(blank) 잰 근무 ≤ LEGAL_NOWORK_H        → 채우지 않음 · nohr_days · 표시
         평일이라는 이유만으로는 채우지 않는다(1MM 에서 시작하지 않는다).
       실제 근무(모든 날)     : 근태 출근·퇴근이 있는 날(times) = rec_h(근태 시간) + plus_h(그 밖 디지털 +@) · 그 밖 = day_hours(잰 근무 —
-                             measured_h). 채운 날(공휴일·휴가)의 근무도 그대로 더한다(+@).
+                             measured_h · LM30v1 2026-10-20 이웃 날 근태 창 안의 시간 nb_h 는 뺀다 — 그 날 근태 시간이 셌다). 채운 날
+                             (공휴일·휴가)의 근무도 그대로 더한다(+@).
       workdays = 그달 평일 전부 · capacity_h = std × workdays(1MM) · legal_h = std × (holiday_days + leave_days + inferred_leave_days)
       mm = (actual_h + legal_h) ÷ capacity_h · avail_mm = covered ÷ workdays · load_pct = mm ÷ avail_mm × 100 · worked = Σ day_hours.
     hr = hr_days(core\attendance) {iso: {k, rec_h, plus_h, lv}} | None. → (months, local) — local = {"months": {YYYY-MM: {hr_h, plus_h,
@@ -5378,8 +5383,9 @@ def _mm_legal(day_hours, d0, d1, workdays, std, holidays, cal_abs, inf_days, hr,
             lm["plus_h"] += plus_h
             lm["hr_days"] += 1
         else:
-            act = meas                                                  # 근태 출근·퇴근이 없는 날 — LM 이 잰 근무
-            m["measured_h"] += meas
+            # 근태 출근·퇴근이 없는 날 — LM 이 잰 근무. LM30v1(2026-10-20) 이웃 날 근태 창 안의 시간(nb_h — 그 날 근태 시간이 이미 셌다)은 뺀다
+            act = max(0.0, meas - max(0.0, f(x.get("nb_h"))))
+            m["measured_h"] += act
         m["actual_h"] += act
         credit = 0.0
         if d.isoweekday() in workdays:
