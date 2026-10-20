@@ -26,7 +26,7 @@ retag.py                                               6,128 B  8d6f81d3
 team_refine.py                                         6,526 B  cdeda0b1
 team_recalc.py                                        59,361 B  9319fec5
 report_out.py                                         85,764 B  83d4ebeb
-README.md                                            155,520 B  8efea132
+README.md                                            158,175 B  ce1fbb99
 check.py                                               2,629 B  7badfe69
 judge.py                                             220,958 B  2ce4ffb6
 mine.py                                               27,147 B  98b73ad6
@@ -57,8 +57,8 @@ collect/teams_parse.py                                14,389 B  d196eec3
 collect/Import-MailCal.py                             12,353 B  bec541e0
 collect/Get-ProgramUsage.py                           33,863 B  d262eb08
 core/meetnote.py                                      28,595 B  0ae77aa1
-config/config.json                                    60,216 B  efff79a8
-config/config.default.json                            67,806 B  ac18f00b
+config/config.json                                    61,037 B  d92aab5f
+config/config.default.json                            68,627 B  b6682060
 core/board.py                                         13,181 B  86eaf661
 core/extract.py                                      342,067 B  612a3c46
 core/pc_ledger.py                                     21,509 B  c1f9d9e5
@@ -79,10 +79,10 @@ core/narratives.py                                     9,240 B  b1a7b589
 core/owner.py                                          1,488 B  1f1dc049
 core/progress.py                                       1,648 B  15bfd33b
 core/projmap.py                                        8,988 B  4e45fe1f
-core/attendance.py                                   123,249 B  f932f746
+core/attendance.py                                   138,795 B  7c4e1d0c
 core/gerp.py                                          25,312 B  e20a1f06
 collect/Get-GerpWork.py                               40,590 B  bb9124a8
-docs/설정가이드.md                                        150,828 B  f5b26529
+docs/설정가이드.md                                        154,399 B  9b6a146e
 docs/사용안내.html                                       277,403 B  85bd9321
 tools/copilot_auto.py                                260,758 B  8d86e6f0
 tools/pc_hours_compare.py                             21,995 B  13040408
