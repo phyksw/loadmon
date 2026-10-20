@@ -79,10 +79,10 @@ core/narratives.py                                     9,240 B  b1a7b589
 core/owner.py                                          1,488 B  1f1dc049
 core/progress.py                                       1,648 B  15bfd33b
 core/projmap.py                                        8,988 B  4e45fe1f
-core/attendance.py                                   138,795 B  7c4e1d0c
+core/attendance.py                                   138,860 B  e96a95ab
 core/gerp.py                                          25,312 B  e20a1f06
 collect/Get-GerpWork.py                               40,590 B  bb9124a8
-docs/설정가이드.md                                        154,399 B  9b6a146e
+docs/설정가이드.md                                        154,567 B  53f70ca0
 docs/사용안내.html                                       277,403 B  85bd9321
 tools/copilot_auto.py                                260,758 B  8d86e6f0
 tools/pc_hours_compare.py                             21,995 B  13040408
