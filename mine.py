@@ -257,6 +257,11 @@ def main():
     _sg = attendance.send_gap_text(hinfo.get("send_gap"))
     if _sg:
         print(f"[주의] {_sg}")
+    # LM30(2026-10-21) 달마다 근거 — 하루 8시간으로 채운 달(PC 켜고 끈 기록 없음)·발신 0건인 달·Windows 보관 주 수(일수·건수만 — 카드와 같은 글자)
+    _sg0 = hinfo.get("send_gap") if isinstance(hinfo.get("send_gap"), dict) else {}
+    for _ln in attendance.month_lines(hinfo.get("pc_months"), (_sg0.get("months") or []) if _sg0.get("warn") else (),
+                                      hinfo.get("pc_log")):
+        print(f"[주의] {_ln}")
     print(f"     부재 {hinfo['absence_days']}일 차감 · 초과근무 {hinfo['overtime_h']:.0f}h · "
           f"주말근무 {hinfo['weekend_days']}일 · 야근일 {hinfo['night_days']}일 · "
           f"PC가동 하한 보정 {hinfo.get('pc_floor_h', 0):.0f}h/{hinfo.get('pc_floor_days', 0)}일")

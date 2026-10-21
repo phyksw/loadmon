@@ -89,6 +89,19 @@ LM28 — Copilot 채팅 정리(copilotAuto.deleteChats, 기본 켬): LM28 이 �
   · LM28(2026-10-17): 조각을 많이 보내는 호출자(Copilot 메일·일정·팀즈 수집기)는 ChatKeep 으로 한 채팅을 이어 쓴다 — 첫 조각(앞 단계의
     우리 채팅이면 RESUME)·나쁜 조각 뒤·chatTurns 마다만 새 채팅. 이어 보내기(fresh 거짓) 직전 탭 주소의 대화 id 가 이 프로세스의 우리
     채팅과 다르면(사람이 전용 Edge 에서 다른 대화를 누름) 그 대화에 보내지 않고 새 채팅을 연다(_moved_away — 주소에 id 가 없으면 예전 그대로).
+
+LM30(2026-10-21) — Copilot 대화 목록이 LM 채팅으로 쌓이지 않게(사용자 제보: '아직도 코파일럿 채팅을 도배합니다'):
+  · LM 이 연 채팅은 지울 때까지 기록한다 — <프로필>.chats.json 의 owned[](대화 id·주소·제목 해시·앵커 해시 · 프롬프트 원문 없음).
+    예전에는 지금 채팅 한 칸만 기억해 한 번 못 지운 채팅은 다시 시도하지 않았다. 이제 지우지 못한 채팅은 기록에 남고, 실행 끝(close_own_edge
+    → sweep_owned)·화면의 [LM이 연 Copilot 채팅 지우기]가 같은 확인을 거쳐 다시 지운다. 3번(서로 다른 실행 2번 이상) 못 지웠거나 30일이
+    지난 기록은 빼고 '남김'으로 센다. 기록에 없는 채팅(예전 판이 연 것·사람이 붙여 넣은 것)은 LM 것인지 알 수 없어 건드리지 않는다.
+  · 지운 뒤 확인이 되지 않으면(mismatch) 그 실행 동안만 더 지우지 않는다(다음 실행에서 풀림 · 서로 다른 실행 3번이면 새 판까지) — CHAT_REV 3.
+  · 누르기 전 확인은 더 엄격하다: 메뉴 항목과 확인 단추는 정확한 허용 목록(삭제·대화 삭제·채팅 삭제·Delete·Delete chat·Delete conversation)만,
+    '모두·전체·모든·all·everything' 이 제목에 든 확인 창은 누르지 않음, 열린 메뉴가 그 항목의 '…' 단추 것인지(aria-expanded·aria-controls),
+    소유는 끝 앵커 또는 '머리 앵커 + 같은 대화 id' 로만(대화 목록을 뺀 대화 창의 글로 본다).
+  · 여는 채팅을 줄였다: 재시도 사다리는 새 채팅을 많아야 하나(방금 연 채팅이면 그 채팅에 다시) · 끊긴 답(cut)은 사다리 없이 돌려준다 ·
+    reload=RELOAD_KEEP(답을 남기지 않은 실패 뒤)는 같은 대화를 그 자리에서 새로 고쳐 이어 보낸다(우리 채팅임을 다시 확인한 뒤).
+  · 실행 끝 한 줄(chat_run_report): 'Copilot 채팅: 이번 실행에서 연 N개 · 지운 M개 · 남긴 K개 (까닭: …)' — 숫자와 까닭만.
 """
 import argparse
 import base64
@@ -624,20 +637,25 @@ def read_owner(cfg):
         return None
 
 
-def _write_json(path, obj):
+def _write_json(path, obj, tries=3):
+    """원자적 교체로 쓴다 → 썼나. LM30(2026-10-21): 백신·OneDrive 가 잠깐 잡은 파일 때문에 한 번 실패하면 채팅 기록이 조용히 빠졌다 —
+    tries 번(0.2·0.4초 쉬며) 다시 해 본다."""
     tmp = f"{path}.{os.getpid()}.tmp"
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(obj, f, ensure_ascii=False)
-        os.replace(tmp, path)
-        return True
-    except OSError:
+    for i in range(max(1, int(tries or 1))):
         try:
-            os.remove(tmp)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(obj, f, ensure_ascii=False)
+            os.replace(tmp, path)
+            return True
         except OSError:
-            pass
-        return False
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            if i + 1 < max(1, int(tries or 1)):
+                _sleep(0.2 * (i + 1))
+    return False
 
 
 def _version(port):
@@ -782,9 +800,11 @@ def ensure_edge(cfg):
     return None
 
 
-def close_own_edge(cfg=None, reason="", force=False, tidy=True):
+def close_own_edge(cfg=None, reason="", force=False, tidy=True, budget=None):
     """우리가 띄운 전용 Edge 만 닫는다 → {"closed": bool, "why": str(, "chats": 정리 코드)}. 작업 단위(수집 1회·분석 1회)가 끝날 때
     부른다(run.py · 화면의 시작·[중지]·종료).
+    LM30(2026-10-21): tidy 는 지금 채팅 하나가 아니라 LM 기록(owned[])의 채팅을 모두 다시 지워 본다(sweep_owned — 상한 budget 초 ·
+    기본 SWEEP_SEC · 채팅마다 SWEEP_PER_SEC). 정리 결과(숫자)는 _SWEEP_LAST[0] 에 남는다.
     · owner.json(ensure_edge 가 띄울 때 쓴 표식)이 없으면 아무것도 하지 않는다 — 사람이 띄운 Edge 는 건드리지 않는다.
     · keepEdgeOpen=true 면 닫지 않는다(종료 때 쿠키를 지우는 정책 PC — R-EDGEKEEP).
     · 로그인 대기 중(login_pending)이면 닫지 않는다 — 사람이 그 창에서 로그인하는 중일 수 있다(force 면 무시).
@@ -798,7 +818,7 @@ def close_own_edge(cfg=None, reason="", force=False, tidy=True):
         out = {"closed": False, "why": "keep"}
         own = read_owner(cfg) if tidy else None
         if own and not own.get("login_pending"):
-            code = _tidy_chats(cfg, reason)
+            code = _tidy_chats(cfg, reason, budget)
             if code != "none":
                 out["chats"] = code
         return out
@@ -819,7 +839,7 @@ def close_own_edge(cfg=None, reason="", force=False, tidy=True):
     if own.get("browser") and not ws.endswith(str(own["browser"])):
         _drop_owner(cfg)                        # 그 포트의 브라우저가 우리가 띄운 것이 아니다(표식이 낡았다)
         return {"closed": False, "why": "not_ours"}
-    chats = _tidy_chats(cfg, reason) if tidy else "none"
+    chats = _tidy_chats(cfg, reason, budget) if tidy else "none"
     try:
         b = CDP(ws)
         try:
@@ -1934,13 +1954,17 @@ def reload_page(cdp, cfg, wait=15):
 
 # ── LM28 — Copilot 채팅 정리: LM28 이 연 대화만, 다 쓴 때에 지운다 ─────────────────────────────────────────────────────
 # 제보: 프로세스마다 첫 왕복·chatTurns 회전·실패 사다리(새 채팅 2번)·월별 코멘트(달마다 새 채팅)·Copilot 메일/팀즈 조각·
-# [AI 연결 진단]이 저마다 새 대화를 열어 사람의 Copilot 대화 목록이 LM28 채팅으로 도배됐다. 월별 코멘트는 여전히 달마다 새 채팅이다
-# (문맥 분리 — 한 채팅에 이어 묻던 때 다른 달의 내용이 섞여 든 현장 제보). LM28(2026-10-17): Copilot 메일·일정·팀즈 수집기는 이제 조각마다
+# [AI 연결 진단]이 저마다 새 대화를 열어 사람의 Copilot 대화 목록이 LM28 채팅으로 도배됐다. LM30(2026-10-21): 월별 코멘트는 한 실행에 리뷰
+# 채팅 하나(첫 달만 새 채팅 · 달마다 '이 달만' 줄 · 다른 달이 섞이면 그 달만 새 채팅 — judge.narrate). LM28(2026-10-17): Copilot 메일·일정·팀즈 수집기는 이제 조각마다
 # 새 채팅을 열지 않고 한 채팅을 이어 쓴다(ChatKeep — 첫 조각·나쁜 조각 뒤·chatTurns 마다만 새 채팅). 그래도 여는 대화는 LM28 이 다 쓴
 # 때(다음 새 채팅 직전 · 실행 끝 Edge 를 닫기 전)에 대화 목록에서 지운다. 판정·정제·Agentic·워크플로우·수집기가 같은 탭을 차례로 쓰는 다른 프로세스라 소유는
 # <프로필>.chats.json 이 기억한다(edge_lock 안에서만 고친다 · 원자적 교체):
-#   {ours, sent, anchor_sha, alen, hsha, hlen, tpre, conv, href, pid, created_at, stage, t_last,
-#    totals: {made, deleted, kept, failed, why{사유: 수}, last{code, t}, last_fail, last_fail_t, hold{rev, t}, census}}
+#   {ours, sent, anchor_sha, alen, hsha, hlen, tpre, conv, href, nav, pid, created_at, stage, t_last, key,
+#    owned: [{key, conv, href, nav, tpre, anchor_sha, alen, hsha, hlen, made, run, stage, tries, why, t_try, runs[]}],   ← LM30 기록
+#    runs: {실행 열쇠: {t, made, del, del_old, gone, gone_old, left{사유: 수}, left_old{사유: 수}, savefail}},           ← LM30 실행별 셈
+#    totals: {made, deleted, kept, failed, why{사유: 수}, last{code, t}, last_fail, last_fail_t, hold{rev, run, runs[], t}, census}}
+#   LM30(2026-10-21): owned[] 는 LM 이 열고 보낸 채팅마다 하나(지운 것만 빠진다) — 지금 채팅 칸(ours…)이 다음 채팅으로 넘어가도 남아
+#   실행 끝 sweep_owned 가 다시 지운다. 실행 열쇠 = chat_run_key()(LM_CHAT_RUN · LM_RUN_ID · 없으면 이 프로세스).
 #   · 우리 것 = LM28 이 새 채팅을 열고(_fresh_chat — 주소의 대화 id 가 열기 전과 같으면 새 채팅이 아니다) 거기에 보낸 대화. 남이 연
 #     대화에 이어 보낸 것은 끝까지 우리 것이 아니다. 프롬프트 원문은 남기지 않는다 — 마지막 프롬프트의 끝 앵커(build_anchor, 공백 정리)와
 #     머리 앵커(첫 줄 앞 60자 — head_key)의 sha1·길이, 첫 프롬프트 앞부분 8~64자의 길이별 해시(tpre — title_prefixes · 목록 제목 확인용 ·
@@ -1953,7 +1977,8 @@ def reload_page(cdp, cfg, wait=15):
 #     확인 창에서 글자가 정확히 '삭제'인 단추(창이 안 뜨면 메뉴가 끝) → 확인: 두 앵커가 모두 화면에서 사라짐 · 또는 대화 id 가 바뀜 ·
 #     또는 화면은 그대로인데 목록 항목 수와 제목이 맞는 항목 수가 둘 다 딱 1 줄어듦(메뉴를 열기 전에 센 수 — js_chat_count) · 또는 링크로
 #     찾은 항목이 목록에서 사라짐. 눌렀는데도 확인되지 않으면(mismatch) 다른 대화를 지웠을 수 있다 — 이 프로세스는 더 지우지 않고
-#     (_CHAT_KILL) 상태 파일에 멈춤(hold)을 남겨 다른 프로세스도 CHAT_REV 판이 바뀔 때(새 배포)까지 지우지 않는다.
+#     (_CHAT_KILL) 상태 파일에 멈춤(hold)을 남겨 다른 프로세스도 지우지 않는다. LM30(2026-10-21): 멈춤은 그 실행(chat_run_key) 동안만이다
+#     — 다음 실행에서 풀리고, 서로 다른 실행에서 HOLD_RUNS 번 되풀이되면 CHAT_REV 판이 바뀔 때(새 배포)까지 멈춘다.
 #   · 목록이 접혀 있으면(현장 사진: 125~150% 배율의 1150px 전용 Edge — 좁은 배치라 대화 기록이 서랍으로만 열려 하나도 지우지 못했다)
 #     항목을 찾기 전에 길만 연다(무엇을 지울지는 정하지 않는다 — _chat_find): 대화 기록 펼침 단추 1번 → 탐색 창 단추(이름이 탐색·사이드·
 #     패널·확장 … 이고 하나뿐일 때) 1번 → 넓은 화면 흉내(CDP Emulation 폭 1600 — _chat_wide) 뒤 다시 보고, 그래도 없으면 그 화면에서
@@ -1964,30 +1989,62 @@ CHATS_FILE = ".chats.json"
 CHAT_RETIRE_SEC = 25           # 정리 한 번의 상한(초) — 넘기면 'timeout' 으로 남기고 하던 일을 계속한다
 CHAT_LOCK_WAIT = 15            # 실행 끝 정리가 잠금을 기다리는 상한(초) — 다른 작업이 Edge 를 쓰면 정리를 미룬다(busy)
 CHAT_PENDING_SEC = 7200        # 열고 아직 보내지 않은 '우리 채팅' 표시가 유효한 시간(초 — 연 프로세스 안에서만 믿는다)
-CHAT_REV = 2                   # 화면 조작 규칙의 판 — mismatch 로 멈춘 삭제는 이 판이 바뀔 때까지 멈춘다.
+CHAT_REV = 3                   # 화면 조작 규칙의 판 — 서로 다른 실행에서 HOLD_RUNS 번 mismatch 로 멈춘 삭제는 이 판이 바뀔 때까지 멈춘다.
 #                                2(LM28 2026-10-17): 화면 규칙이 바뀌었다(목록 제목 확인 · 접힌 목록 열기 · 머리 앵커 · 목록 셈으로 확인) —
 #                                판 1 에서 남은 멈춤(hold rev 1)은 풀린다(새 규칙으로 다시 해 본다)
+#                                3(LM30 2026-10-21): 멈춤은 그 실행 동안만(hold.run) · 확인 단추도 메뉴와 같은 정확한 허용 목록 · '모두·전체·
+#                                all' 창은 누르지 않음 · 열린 메뉴가 그 항목 것인지(aria-expanded) · 소유는 끝 앵커 또는 머리 앵커+같은 대화 id ·
+#                                확인 창 8초·지운 뒤 확인 15초 · 대화 목록 셈은 목록 영역만 — 판 2 에서 남은 멈춤(hold rev 2)은 풀린다
 CHAT_LINE_HEAD = "[copilot] 채팅 정리: "     # 단계 로그 한 줄의 머리 — run.py 가 실패 사유 줄로 오인하지 않게 이 머리로 거른다
+# 누를 수 있는 이름(정확히 — 공백을 한 칸으로 줄이고 소문자로 맞춘 뒤 같아야 한다). 대화 하나를 지우는 이름만 둔다 — '모두'·'전체'·'all' 이 든
+# 이름은 넣지 않는다(시험이 지킨다). LM30(2026-10-21): 확인 창 단추도 같은 목록이다 — 예전에는 '삭제'·'Delete' 만 받아 단추가 '채팅 삭제'·
+# 'Delete chat' 인 화면에서 늘 'noconfirm' 이었다(조사 보고 4).
 CHAT_DELETE_LABELS = ("삭제", "대화 삭제", "채팅 삭제", "delete", "delete chat", "delete conversation")   # 메뉴 항목(정확히)
-CHAT_CONFIRM_LABELS = ("삭제", "delete")      # 확인 창 단추(정확히) — '취소'·'닫기' 는 보지도 않는다
+CHAT_CONFIRM_LABELS = CHAT_DELETE_LABELS      # 확인 창 단추(정확히) — '취소'·'닫기' 는 보지도 않는다
+# 여러 대화를 한꺼번에 지우는 창의 표지 — 확인 창의 제목(aria-label·aria-labelledby·첫 줄)이나 누를 단추·메뉴 항목에 있으면 누르지 않는다('bulk').
+# JS 에도 같은 글이 들어간다(js_chat_menu·js_chat_confirm — 0/1 표지만 돌려준다).
+CHAT_BULK_KO = ("모두", "전체", "모든")
+CHAT_BULK_EN = ("all", "everything")
 CHAT_FAIL = frozenset({"noitem", "ambiguous", "covered", "nomore", "nomenu", "nodelete", "noconfirm", "mismatch",
-                       "error", "timeout", "notitle"})  # 화면 조작이 막힌 사유(실패) — 그 밖의 '남김'은 설정·소유 사유
+                       "error", "timeout", "notitle", "menuown", "bulk"})  # 화면 조작이 막힌 사유(실패) — 그 밖의 '남김'은 설정·소유 사유
 CHAT_WHY = {
-    "deleted": "지움", "off": "설정으로 끔", "hold": "삭제 멈춤(지난번 확인 실패)", "lost": "화면이 다른 대화로 바뀜",
+    "deleted": "지움", "off": "설정으로 끔", "hold": "삭제 멈춤(지운 뒤 확인이 되지 않음)", "lost": "화면이 다른 대화로 바뀜",
     "noanchor": "확인용 줄이 없는 프롬프트", "replaced": "정리 전에 새 채팅이 열림", "noitem": "대화 목록에서 못 찾음",
     "ambiguous": "대화 목록에서 하나로 못 정함", "covered": "다른 창에 가려 누르지 못함", "nomore": "'추가 작업(…)' 단추 없음",
     "nomenu": "메뉴가 열리지 않음", "nodelete": "메뉴에 '삭제' 없음", "noconfirm": "확인 창에 '삭제' 단추 없음",
     "mismatch": "지운 뒤에도 채팅이 화면에 남음", "error": "화면 조작 오류", "timeout": "시간 초과",
     "busy": "다른 작업이 전용 Edge 를 쓰는 중", "notab": "Copilot 탭 없음", "noedge": "전용 Edge 꺼짐",
     "gen": "답을 쓰는 중이라 남김", "notitle": f"목록 항목의 제목이 {lmname.SHORT} 이 보낸 질문과 달라 남김",
+    # LM30(2026-10-21) — 기록(owned[])·다시 지우기(sweep_owned)의 사유
+    "menuown": "열린 메뉴가 그 대화의 것인지 확인하지 못함", "bulk": "여러 대화를 지우는 창이라 누르지 않음",
+    "noid": "대화 주소를 몰라 다시 찾지 못함", "expired": "여러 번 지우지 못해 기록에서 뺌",
+    "login": "전용 Edge 로그인이 필요함", "savefail": "채팅 기록을 저장하지 못함",
+    "pending": "아직 지우지 못함(다음 정리 때 다시 지움)", "gone": "이미 대화 목록에 없음",
 }
+# LM30(2026-10-21) — 기록(owned[])과 다시 지우기(sweep_owned)
+SWEEP_SEC = 180                # 실행 끝 정리(close_own_edge → sweep_owned)의 전체 상한(초)
+SWEEP_PER_SEC = 45             # 기록 하나(지난 채팅을 열어 지우기)의 상한(초) — 실행 중 지우기(다음 새 채팅 직전)는 CHAT_RETIRE_SEC 그대로
+SWEEP_UI_SEC = 60              # 화면의 [중지]·종료가 기다려 주는 정리 상한(초) — 남은 기록은 다음 정리가 잇는다
+SWEEP_BUTTON_SEC = 300         # [LM이 연 Copilot 채팅 지우기] 의 상한(초)
+SWEEP_LOAD_POLLS = 15          # 지난 채팅 주소로 옮긴 뒤 화면·앵커를 기다리는 횟수(1초씩)
+GEN_WAIT_SEC = 60              # 지울 채팅이 아직 답을 쓰는 중이면 이만큼까지 기다려 본다(정리 상한 안에서) — 그래도 쓰는 중이면 'gen'(남김)
+CONFIRM_POLLS = 20             # 확인 창을 기다리는 횟수(0.4초씩 = 8초) — 예전 3.2초는 늦게 뜬 창을 '창 없음'으로 보고 mismatch 를 냈다
+VERIFY_POLLS = 30              # 누른 뒤 사라졌는지 확인하는 횟수(0.5초씩 = 15초)
+OWNED_MAX_TRIES = 3            # 기록 하나를 이만큼 못 지웠고
+OWNED_MIN_RUNS = 2             # 서로 다른 실행이 이만큼 이상이면 기록에서 뺀다('expired' — 남김으로 센다)
+OWNED_MAX_DAYS = 30            # 이보다 오래된 기록도 뺀다
+OWNED_MAX = 200                # 기록 수 상한(넘치면 오래된 것부터 뺀다)
+HOLD_RUNS = 3                  # 서로 다른 실행에서 mismatch 가 이만큼이면 판이 바뀔 때까지 멈춘다
+RUNS_KEEP = 8                  # 실행별 셈(runs)은 최근 이만큼만 둔다
+NO_TRY_CODES = frozenset({"hold", "busy", "noedge", "notab", "login", "pending", "off"})   # 화면에 닿지 않은 사유 — 시도 수에 넣지 않는다
+CHAT_RUN_HEAD = "Copilot 채팅: "                  # 실행 끝 한 줄의 머리(chat_run_line — 진행 로그·last_run·화면)
 # LM28 — 화면 사유로 남겼을 때(아래 코드) 대화 목록의 '구조'를 숫자·0/1 로만 센다(js_chat_census — 제목·글·주소·id 없음). 단계 로그에
 # 'CHAT_CENSUS_HEAD …' 한 줄(chat_line 의 둘째 줄)·copilot_trace·상태 파일 totals.census 에 남는다 — 현장 사진 한 장으로 왜 못 지웠는지
 # (목록이 접혔나·링크에 대화 id 가 있나·'현재' 표시가 있나) 알 수 있게. 삭제 판정은 바꾸지 않는다(조사는 읽기만).
 # LM28(2026-10-17): 'notitle'(제목이 다름)도 조사한다 · _retire_steps 가 적은 표시(CENSUS_CTX_KEYS — 넓은 화면 흉내·탐색 창 단추·제목 일치,
 # 숫자만)를 함께 싣는다.
 CHAT_CENSUS_CODES = frozenset({"noitem", "ambiguous", "covered", "nomore", "nomenu", "nodelete", "noconfirm", "timeout",
-                               "notitle"})
+                               "notitle", "menuown"})
 CHAT_CENSUS_HEAD = "[copilot] 채팅 정리 구조: "   # run.py CHAT_LINE_HEAD('[copilot] 채팅 정리')로 시작 — 실패 사유 줄로 집지 않는다
 CENSUS_TEXT = (("nnav", "탐색 창"), ("navw", "탐색 창 너비"), ("fold", "탐색 창 접힘 추정"), ("nreg", "목록 영역"),
                ("nrow", "목록 항목"), ("nlink", "목록 링크"), ("nid", "대화 id 꼴 링크"), ("nhc", "이 대화 id 링크"),
@@ -2005,7 +2062,10 @@ CHAT_WIDE_W = 1600             # 넓은 화면 흉내의 폭(CSS px) — 이만�
 CHAT_RESUME_SEC = 1200
 RESUME = "resume"              # fresh 자리의 값(judge.copilot_send → send_inproc) — 화면이 우리 채팅일 때만 이어 쓰고, 아니면 새 채팅
 _RESUMED = [None]              # 이번 _send 에서 RESUME 이 실제로 이어 썼나(None = RESUME 아님) — 결과의 resumed
-_CHAT_KILL = [False]           # 이 프로세스의 삭제 멈춤(mismatch 뒤 — 더 지우지 않는다)
+_CHAT_KILL = [False]           # 이 프로세스의 삭제 멈춤(mismatch 뒤 — 더 지우지 않는다) · LM30: 그 실행의 열쇠(다른 실행이면 풀림)
+_RUN_KEY = [None]              # 이 프로세스 안에서 실행 열쇠를 덮어쓴다([LM이 연 Copilot 채팅 지우기] — 화면 프로세스의 버튼 한 번)
+_PROC_KEY = f"p{os.getpid()}-{time.strftime('%Y%m%d%H%M%S')}"   # 실행 표식이 없는 프로세스(단계를 따로 돌림·시험)의 열쇠
+_SWEEP_LAST = [None]           # 마지막 sweep_owned 의 결과(숫자 dict) — close_own_edge 를 부른 쪽이 읽는다
 # 이 프로세스 몫(단계 로그 한 줄 — chat_line). notfresh = 새 채팅을 열었는데 주소의 대화 id 가 그대로라 맡지 않은 수(우리 것 아님 —
 # 남김에 넣지 않는다. 현장 주소 꼴이 예상과 다르면 여기가 커진다 — 사진으로 안다)
 _CHAT_PROC = {"made": 0, "deleted": 0, "kept": 0, "failed": 0, "notfresh": 0, "why": {}}
@@ -2035,7 +2095,134 @@ def chat_state(cfg=None):
 
 
 def _chats_save(cfg, st):
-    return _write_json(_chats_path(cfg), st)
+    """상태 파일 쓰기 → 썼나. LM30(2026-10-21): 못 쓴 횟수는 다음에 쓸 때 이번 실행의 셈(runs[…].savefail)에 얹는다 — 실행 끝 한 줄이
+    '채팅 기록을 저장하지 못함'을 말한다(예전에는 조용히 빠져 그 채팅은 LM 것으로 기록되지도, 지워지지도 않았다)."""
+    pend = int(_CHAT_PROC.get("save_pend") or 0)
+    obj = st
+    if pend and isinstance(st, dict):
+        try:
+            obj = json.loads(json.dumps(st))
+            rt = _run_tally(obj)
+            rt["savefail"] = int(rt.get("savefail") or 0) + pend
+        except (TypeError, ValueError):
+            obj = st
+    if _write_json(_chats_path(cfg), obj):
+        _CHAT_PROC["save_pend"] = 0
+        return True
+    _CHAT_PROC["save_pend"] = pend + 1
+    _CHAT_PROC["savefail"] = int(_CHAT_PROC.get("savefail") or 0) + 1
+    return False
+
+
+def chat_run_key():
+    """채팅 기록의 '이번 실행' 열쇠 — 화면 버튼(_RUN_KEY) · LM_CHAT_RUN(화면 작업) · LM_RUN_ID(run.py — 자식 단계가 물려받는다) ·
+    없으면 이 프로세스(_PROC_KEY). 멈춤(hold)·실행 끝 한 줄(chat_run_report)이 이 열쇠로 실행을 가른다."""
+    if _RUN_KEY[0]:
+        return str(_RUN_KEY[0])[:64]
+    for k in ("LM_CHAT_RUN", "LM_RUN_ID"):
+        v = str(os.environ.get(k) or "").strip()
+        if v:
+            return v[:64]
+    return _PROC_KEY
+
+
+def _run_tally(st, run=None):
+    """상태 파일의 이번 실행 셈(runs[열쇠]) — 없으면 만든다. 최근 RUNS_KEEP 개만 둔다."""
+    runs = st.get("runs") if isinstance(st.get("runs"), dict) else {}
+    run = str(run or chat_run_key())
+    rt = runs.get(run)
+    if not isinstance(rt, dict):
+        rt = {"t": _now(), "made": 0, "del": 0, "del_old": 0, "gone": 0, "gone_old": 0, "left": {}, "left_old": {}}
+        runs[run] = rt
+        if len(runs) > RUNS_KEEP:
+            for k in sorted(runs, key=lambda x: str((runs[x] or {}).get("t") or "") if isinstance(runs[x], dict) else "")[
+                    :len(runs) - RUNS_KEEP]:
+                if k != run:
+                    runs.pop(k, None)
+    for k in ("left", "left_old"):
+        if not isinstance(rt.get(k), dict):
+            rt[k] = {}
+    st["runs"] = runs
+    return rt
+
+
+def _owned_list(st):
+    """상태 파일의 LM 채팅 기록(owned[]) — 깨진 항목은 뺀다. 늘 같은 목록 객체를 그 자리에서 고쳐 돌려준다(부른 쪽이 쥔 목록과 어긋나지 않게)."""
+    xs = st.get("owned")
+    if not isinstance(xs, list):
+        xs = []
+        st["owned"] = xs
+    xs[:] = [e for e in xs if isinstance(e, dict) and e.get("key")]
+    return xs
+
+
+def _owned_get(st, key):
+    return next((e for e in _owned_list(st) if key and e.get("key") == key), None)
+
+
+def _owned_expired(e):
+    """기록을 빼야 하나 — OWNED_MAX_TRIES 번 못 지웠고 서로 다른 실행이 OWNED_MIN_RUNS 이상 · 또는 OWNED_MAX_DAYS 일이 지났다."""
+    tries = int(e.get("tries") or 0)
+    runs = {str(x) for x in (e.get("runs") or []) if x}
+    return (tries >= OWNED_MAX_TRIES and len(runs) >= OWNED_MIN_RUNS) or _age_sec(e.get("made")) > OWNED_MAX_DAYS * 86400
+
+
+def _owned_drop(st, e, code):
+    """기록 하나를 지우지 못한 채 뺀다 — 이번 실행의 셈에 '남김(code)'으로 넣는다(그 기록을 만든 실행이 이번이면 left, 아니면 left_old)."""
+    xs = _owned_list(st)
+    if e in xs:
+        xs.remove(e)
+    rt = _run_tally(st)
+    bucket = rt["left"] if e.get("run") == chat_run_key() else rt["left_old"]
+    bucket[code] = int(bucket.get(code) or 0) + 1
+
+
+def _owned_sync(st):
+    """지금 채팅 칸(ours·sent>0)의 주소·앵커·제목 해시를 그 기록(key)에 옮긴다 — 없으면 새로 만든다(이 실행의 채팅)."""
+    xs = _owned_list(st)
+    key = str(st.get("key") or "")
+    e = _owned_get(st, key)
+    if e is None:
+        key = f"{int(time.time() * 1000):x}{os.getpid() % 0xFFFF:04x}{len(xs) % 0xFF:02x}"
+        st["key"] = key
+        e = {"key": key, "made": _now(), "run": chat_run_key(), "stage": str(os.environ.get("LM_STAGE") or "")[:40],
+             "tries": 0, "why": "", "runs": []}
+        xs.append(e)
+    for k in ("anchor_sha", "alen", "hsha", "hlen", "tpre", "conv", "href", "nav"):
+        if k in st:
+            e[k] = st.get(k)
+    while len(xs) > OWNED_MAX:
+        _owned_drop(st, xs[0], "expired")
+    return e
+
+
+def _owned_after(st, key, code):
+    """정리 한 번의 결과를 기록에 반영 — deleted·gone 이면 기록에서 빼고(이번 실행 셈 del·gone), 그 밖이면 남겨 다시 지운다
+    (화면에 닿은 시도면 tries+1 · 실행 열쇠를 runs 에). 주소에 대화 id 가 없던 채팅은 다시 찾을 수 없어(지금 채팅일 때만 다시 해 본다)
+    바로 빼고 남김으로 센다. 설정으로 껐으면(off) 기록을 남기지 않는다. 오래됐거나 여러 번 실패한 기록도 뺀다('expired')."""
+    e = _owned_get(st, key)
+    if e is None:
+        return
+    rt = _run_tally(st)
+    mine = e.get("run") == chat_run_key()
+    if code in ("deleted", "gone"):
+        _owned_list(st).remove(e)
+        k = ("del" if code == "deleted" else "gone") + ("" if mine else "_old")
+        rt[k] = int(rt.get(k) or 0) + 1
+        return
+    e["why"], e["t_try"] = str(code or ""), _now()
+    if code not in NO_TRY_CODES:
+        e["tries"] = int(e.get("tries") or 0) + 1
+        rs = [str(x) for x in (e.get("runs") or []) if x]
+        if chat_run_key() not in rs:
+            rs.append(chat_run_key())
+        e["runs"] = rs[-5:]
+    if code == "off":
+        _owned_drop(st, e, "off")
+    elif not e.get("conv"):
+        _owned_drop(st, e, code if code and code != "pending" else "noid")
+    elif _owned_expired(e):
+        _owned_drop(st, e, "expired")
 
 
 def _now():
@@ -2050,16 +2237,56 @@ def _age_sec(ts):
 
 
 def _chat_held(st):
-    """상태 파일의 삭제 멈춤(mismatch)이 지금 판(CHAT_REV)의 것인가."""
+    """상태 파일의 삭제 멈춤(mismatch)이 지금 지우기를 막는가 — 지금 판(CHAT_REV)의 멈춤이고, 그 실행(hold.run)이 지금 실행이거나
+    서로 다른 실행에서 HOLD_RUNS 번 되풀이됐을 때만(LM30 — 예전에는 한 번이면 새 판까지 모든 삭제가 멈췄다). 실행 열쇠가 없는 멈춤(옛 꼴)은
+    막는다(모르면 지우지 않는다)."""
     h = ((st or {}).get("totals") or {}).get("hold") if isinstance((st or {}).get("totals"), dict) else None
-    return isinstance(h, dict) and h.get("rev") == CHAT_REV
+    if not (isinstance(h, dict) and h.get("rev") == CHAT_REV):
+        return False
+    if "run" not in h:
+        return True
+    if len({str(x) for x in (h.get("runs") or []) if x}) >= HOLD_RUNS:
+        return True
+    return str(h.get("run") or "") == chat_run_key()
+
+
+def _chat_hold_kind(st):
+    """멈춤의 갈래 — '' (없음·풀림) · 'run'(이 실행 동안만) · 'perm'(서로 다른 실행에서 되풀이 — 새 판까지 · 옛 꼴 포함)."""
+    if not _chat_held(st):
+        return ""
+    h = ((st or {}).get("totals") or {}).get("hold") or {}
+    if "run" not in h or len({str(x) for x in (h.get("runs") or []) if x}) >= HOLD_RUNS:
+        return "perm"
+    return "run"
+
+
+def _chat_killed():
+    """이 프로세스가 이번 실행에서 mismatch 를 봤나(_CHAT_KILL — 실행 열쇠가 같을 때만)."""
+    k = _CHAT_KILL[0]
+    return bool(k) and (k is True or str(k) == chat_run_key())
+
+
+def _set_hold(st):
+    """mismatch — 이 실행 동안 더 지우지 않는다(상태 파일 hold{rev, run, runs[], t} · 이 프로세스 _CHAT_KILL)."""
+    tot = st.get("totals")
+    if not isinstance(tot, dict):
+        tot = st["totals"] = {}
+    h = tot.get("hold") if isinstance(tot.get("hold"), dict) and tot["hold"].get("rev") == CHAT_REV else {}
+    run = chat_run_key()
+    rs = [str(x) for x in (h.get("runs") or []) if x]
+    if run not in rs:
+        rs.append(run)
+    tot["hold"] = {"rev": CHAT_REV, "run": run, "runs": rs[-HOLD_RUNS * 2:], "t": _now()}
+    _CHAT_KILL[0] = run
 
 
 def _chat_reset(st):
-    """소유 칸만 비운다(누계 totals 는 둔다) → 같은 dict."""
+    """소유 칸만 비운다(누계 totals·LM 채팅 기록 owned·실행별 셈 runs 는 둔다) → 같은 dict."""
     tot = st.get("totals") if isinstance(st.get("totals"), dict) else {}
+    keep = {k: st[k] for k in ("owned", "runs") if k in st}
     st.clear()
     st.update(ours=False, sent=0, totals=tot)
+    st.update(keep)
     return st
 
 
@@ -2162,11 +2389,45 @@ def head_key(prompt):
 
 
 def _page_is_ours(text, st):
-    """화면 글이 우리 채팅을 보여 주나 — 마지막 프롬프트의 끝 앵커(anchor_sha·alen) 또는 머리 앵커(hsha·hlen)가 있으면 참(해시로만).
-    보내기 전(_chat_before_send)·이어 쓰기(_resume_ok)·지우기 전 확인과 지운 뒤 확인(둘 다 없어야 '사라짐')이 같이 쓴다."""
+    """화면 글에 우리 채팅의 흔적이 남아 있나 — 마지막 프롬프트의 끝 앵커(anchor_sha·alen) 또는 머리 앵커(hsha·hlen)가 있으면 참(해시로만).
+    LM30(2026-10-21): 이제 지운 뒤 확인('사라짐' = 둘 다 없음)에만 쓴다(느슨한 쪽이 안전한 자리). 무엇을 누르거나 보낼지 정하는 확인은
+    _owns_screen(더 엄격)이다."""
     st = st if isinstance(st, dict) else {}
     return (page_has_anchor(text, st.get("anchor_sha"), st.get("alen"))
             or page_has_anchor(text, st.get("hsha"), st.get("hlen")))
+
+
+def _owns_screen(text, st, cid=""):
+    """LM30(2026-10-21) — 이 화면이 그 우리 채팅인가(누르거나 이어 보내기 전): 끝 앵커(마지막 프롬프트 끝 줄 — 채팅마다 다르다)가 있거나,
+    머리 앵커(첫 줄 앞 60자 — 판정·정제·워크플로우 채팅끼리 같을 수 있다)가 있고 주소의 대화 id(cid)가 적어 둔 id 와 같을 때만. 머리 앵커만으로는
+    부족하다 — 사람이 LM 프롬프트를 자기 대화에 붙여 넣으면 첫 줄이 같다(조사 보고 b2)."""
+    st = st if isinstance(st, dict) else {}
+    if page_has_anchor(text, st.get("anchor_sha"), st.get("alen")):
+        return True
+    c0 = str(st.get("conv") or "")
+    return bool(cid and c0 and cid == c0 and page_has_anchor(text, st.get("hsha"), st.get("hlen")))
+
+
+def js_pane_text(cfg):
+    """LM30(2026-10-21) — 대화 창의 글만(채팅 루트 innerText 에서 탐색 창·대화 목록 nav·aside·navigation·tree 의 글을 뺀 것). 예전에는 루트가
+    대화 목록을 품으면 목록 제목(첫 질문의 앞부분)이 '우리 앵커가 아직 보인다'로 읽혀 지운 뒤 확인이 늘 실패했다(조사 보고 2). 글은 소유 확인
+    (해시)에만 쓴다."""
+    sels = json.dumps(cfg["chatRootSelectors"])
+    return ("/*LM30:pane*/(function(){let root=null;for(const s of " + sels + "){const el=document.querySelector(s);"
+            "if(el&&el.innerText&&el.innerText.length>0){root=el;break;}}"
+            "if(!root)root=document.body;if(!root)return '';let t=root.innerText||'';"
+            "for(const n of root.querySelectorAll(\"nav,aside,[role='navigation'],[role='tree']\")){"
+            "const s=n.innerText;if(s&&s.length>=8)t=t.split(s).join('\\n');}"
+            "return t;})()")
+
+
+def _pane_text(cdp, cfg, timeout=30):
+    """대화 창의 글(js_pane_text) — 못 읽거나 글이 아니면 None."""
+    try:
+        t = cdp.eval(js_pane_text(cfg), timeout=timeout)
+    except Exception:  # noqa: BLE001
+        return None
+    return t if isinstance(t, str) else None
 
 
 # ── LM28(2026-10-17) — 대화 목록 항목의 제목 확인 ─────────────────────────────────────────────────────────────────────────
@@ -2285,48 +2546,60 @@ def js_chat_row(conv="", act="find", tpre=None):
     listbox 일 수도 있다)에 data-lm28-pre 표식을 단다(js_chat_menu 는 그 뒤에 열린 메뉴만 본다). 점마다 elementFromPoint 로 가림을 본다.
     tm(LM28 2026-10-17 · ok 일 때): 그 항목의 제목(_JS_TITLE — 첫 줄 · 아이콘 글꼴 문자 뺌 · 공백 정리 · 끝 '…'·'...' 뗌)의 앞
     L(= min(길이, TITLE_MAX)) UTF-16 단위의 해시가 tpre[L](첫 프롬프트 앞부분 — title_prefixes)과 같으면 1, 아니면 0(L < TITLE_MIN 이면 0).
-    항목을 고르는 규칙은 그대로다 — tm 은 호출자가 한 번 더 거르는 데만 쓴다."""
+    항목을 고르는 규칙은 그대로다 — tm 은 호출자가 한 번 더 거르는 데만 쓴다.
+    LM30(2026-10-21) — 더 엄격하게: '현재'·'선택' 표시 후보는 aria-label·title·보이는 글을 **따로** 탐색 이름(NAVW)·'새 채팅'과 맞춰 본다(예전에는
+    셋을 이어 붙여 'Copilot Copilot' 같은 앱 레일 항목이 걸러지지 않았다) · 제목이 TITLE_MIN 자보다 짧은 항목은 후보가 아니다.
+    find 결과에 nidl(목록 영역의 보이는 링크 중 경로에 대화 id 꼴이 든 수)을 싣는다 — 목록이 링크로 된 화면에서 주소에 대화 id 가 있는데
+    링크로 못 찾고 '현재' 표시로만 찾았으면 호출자가 누르지 않는다. more 는 고른 '…' 단추에 data-lm30-more 표식을 단다(js_chat_menu 가
+    열린 메뉴가 그 단추 것인지 본다)."""
     return ("/*LM28:chat_row*/(function(){\n"
             "const CONV=" + json.dumps(str(conv or "")) + ",ACT=" + json.dumps(str(act or "find")) + ";\n"
             + _js_title(tpre) + r"""const vis=e=>{const r=e.getBoundingClientRect();return r.width>4&&r.height>4;};
-const lab=e=>((e.getAttribute("aria-label")||"")+" "+(e.getAttribute("title")||"")+" "+(e.innerText||""))
-  .replace(PUA,"").replace(/\s+/g," ").trim();
+const nm=s=>String(s||"").replace(PUA,"").replace(/\s+/g," ").trim();
+const lab=e=>nm((e.getAttribute("aria-label")||"")+" "+(e.getAttribute("title")||"")+" "+(e.innerText||""));
+const parts=e=>[nm(e.getAttribute("aria-label")),nm(e.getAttribute("title")),nm(e.innerText)].filter(Boolean);
 const POP="[role='menu'],[role='menubar'],[role='dialog'],[role='alertdialog'],[role='tooltip'],[role='combobox']";
 const REG="nav,aside,[role='navigation'],[role='tree'],[role='list'],[role='listbox'],[role='grid'],ul,ol";
 const NEWC=/^(새 채팅|새 대화|new chat|new conversation)/i;
 const NAVW=/^(채팅|대화|copilot|chat|chats|home|홈|에이전트|agents?|페이지|pages|노트북|notebooks|만들기|create|라이브러리|library|검색|search)$/i;
+const IDRX=/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|(?=[A-Za-z0-9_-]*\d)(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{16,}/i;
 const rowOf=e=>e.closest("li,[role='listitem'],[role='treeitem'],[role='option'],[role='row']")||e;
 const inReg=e=>vis(e)&&!e.closest(POP)&&!!e.closest(REG);
 const uniq=xs=>xs.filter((x,i)=>xs.indexOf(x)===i);
 const same=(a,b)=>a===b||a.contains(b)||b.contains(a);
-let hr=[],cr=[];
-if(CONV){for(const a of document.querySelectorAll("a[href]")){
+let hr=[],cr=[],nidl=0;
+for(const a of document.querySelectorAll("a[href]")){
+  if(!inReg(a))continue;
+  let p="";try{p=new URL(a.getAttribute("href")||"",document.baseURI).pathname;}catch(_){p="";}
+  if(IDRX.test(p))nidl++;
   const h=(a.getAttribute("href")||"")+" "+(a.href||"");
-  if(h.indexOf(CONV)>=0&&inReg(a))hr.push(rowOf(a));}}
+  if(CONV&&h.indexOf(CONV)>=0)hr.push(rowOf(a));}
 for(const e of document.querySelectorAll("[aria-current='page'],[aria-current='true'],[aria-selected='true']")){
   if(!inReg(e))continue;
-  const t=lab(e);
-  if(NEWC.test(t)||NAVW.test(t))continue;
-  cr.push(rowOf(e));}
+  const ps=parts(e);
+  if(!ps.length||ps.some(t=>NEWC.test(t)||NAVW.test(t)))continue;
+  const r=rowOf(e);
+  if(ttl(r).length<@MIN@)continue;
+  cr.push(r);}
 hr=uniq(hr);cr=uniq(cr);
 let row=null,how="";
-if(hr.length>1)return {r:"many",nh:hr.length,nc:cr.length};
+if(hr.length>1)return {r:"many",nh:hr.length,nc:cr.length,nidl:nidl};
 if(hr.length===1){row=hr[0];how="href";
-  if(cr.length){if(!cr.some(c=>same(c,row)))return {r:"split",nh:1,nc:cr.length};how="both";}}
+  if(cr.length){if(!cr.some(c=>same(c,row)))return {r:"split",nh:1,nc:cr.length,nidl:nidl};how="both";}}
 else if(cr.length===1){row=cr[0];how="cur";}
-else if(cr.length>1)return {r:"many",nh:0,nc:cr.length};
+else if(cr.length>1)return {r:"many",nh:0,nc:cr.length,nidl:nidl};
 if(!row){
   const tg=[...document.querySelectorAll("button,[role='button']")].filter(b=>vis(b)&&b.getAttribute("aria-expanded")==="false"
     &&!b.closest(POP)&&!NEWC.test(lab(b))&&/(대화|채팅 기록|conversation|chats|history)/i.test(lab(b)));
   if(tg.length===1){const q=tg[0].getBoundingClientRect();
-    return {r:"none",nh:0,nc:0,tg:[Math.round(q.left+q.width/2),Math.round(q.top+q.height/2)]};}
-  return {r:"none",nh:0,nc:0,ntg:tg.length};}
+    return {r:"none",nh:0,nc:0,nidl:nidl,tg:[Math.round(q.left+q.width/2),Math.round(q.top+q.height/2)]};}
+  return {r:"none",nh:0,nc:0,nidl:nidl,ntg:tg.length};}
 const pt=e=>{const q=e.getBoundingClientRect(),x=Math.round(q.left+q.width/2),y=Math.round(q.top+q.height/2);
   const h=document.elementFromPoint(x,y);return {x:x,y:y,ok:!!h&&(h===e||e.contains(h))};};
 if(ACT==="find"){
   try{row.scrollIntoView({block:"nearest"});}catch(_){}
   const p=pt(row);if(!p.ok)return {r:"covered",how:how};
-  return {r:"ok",how:how,x:p.x,y:p.y,nh:hr.length,nc:cr.length,tm:tmOf(row)};}
+  return {r:"ok",how:how,x:p.x,y:p.y,nh:hr.length,nc:cr.length,nidl:nidl,tm:tmOf(row)};}
 const MORE=/(…|\.\.\.|\bmore\b|기타|더 보기|옵션|추가 작업|options)/i;
 const pick=box=>[...box.querySelectorAll("button,[role='button']")].filter(b=>vis(b)&&(b.getAttribute("aria-haspopup")||MORE.test(lab(b))));
 let bs=pick(row);
@@ -2337,22 +2610,27 @@ const b=bs.find(x=>x.getAttribute("aria-haspopup"))||bs[0];
 const p=pt(b);if(!p.ok)return {r:"covered",how:how};
 document.querySelectorAll("[data-lm28-pre]").forEach(x=>x.removeAttribute("data-lm28-pre"));
 document.querySelectorAll("[role='menu'],[role='listbox']").forEach(x=>{if(vis(x))x.setAttribute("data-lm28-pre","1");});
+document.querySelectorAll("[data-lm30-more]").forEach(x=>x.removeAttribute("data-lm30-more"));
+b.setAttribute("data-lm30-more","1");
 return {r:"ok",how:how,x:p.x,y:p.y,nb:bs.length,tm:tmOf(row)};
-})()""")
+})()""").replace("@MIN@", str(TITLE_MIN))
 
 
 def js_chat_count(tpre=None):
     """LM28(2026-10-17) — 보이는 대화 목록 항목 수(n)와 그중 제목이 첫 프롬프트 앞부분과 맞는 항목 수(nt) → {n, nt}(숫자만 — 제목·글
     없음). 항목 = js_chat_row 와 같은 영역(nav·aside·list·tree·ul·ol … · 메뉴·대화상자 밖)의 li·listitem·treeitem·option·row·링크·'현재'·
     '선택' 표시를 가장 가까운 항목으로 모은 것. 지운 뒤에도 화면이 그 대화를 그대로 보여 줄 때 '목록에서 딱 하나 · 제목이 맞는 것도 딱
-    하나 빠졌나'를 메뉴를 열기 전에 센 수와 맞춰 보는 데만 쓴다(_retire_steps ⑤ — 무엇을 지울지는 정하지 않는다)."""
+    하나 빠졌나'를 메뉴를 열기 전에 센 수와 맞춰 보는 데만 쓴다(_retire_steps ⑤ — 무엇을 지울지는 정하지 않는다).
+    LM30(2026-10-21): 대화 목록 영역만 센다 — 탐색 영역(nav·aside·navigation·tree) 안이거나 대화 창(main) 밖의 목록. 예전에는 답 안의 글머리
+    목록(ul·li)까지 세어 셈이 흔들렸다(조사 보고 2)."""
     return ("/*LM28:chat_count*/(function(){\n" + _js_title(tpre)
             + r"""const vis=e=>{const q=e.getBoundingClientRect();return q.width>4&&q.height>4;};
 const POP="[role='menu'],[role='menubar'],[role='dialog'],[role='alertdialog'],[role='tooltip'],[role='combobox']";
 const REG="nav,aside,[role='navigation'],[role='tree'],[role='list'],[role='listbox'],[role='grid'],ul,ol";
+const HREG="nav,aside,[role='navigation'],[role='tree']";
 const ROW="li,[role='listitem'],[role='treeitem'],[role='option'],[role='row']";
 const rowOf=e=>e.closest(ROW)||e;
-const inReg=e=>vis(e)&&!e.closest(POP)&&!!e.closest(REG);
+const inReg=e=>vis(e)&&!e.closest(POP)&&!!e.closest(REG)&&(!!e.closest(HREG)||!e.closest("main,[role='main']"));
 let es=[];
 try{es=[...document.querySelectorAll(ROW+",a[href],[aria-current='page'],[aria-current='true'],[aria-selected='true']")];}catch(_){es=[];}
 const rs=[...new Set(es.filter(inReg).map(rowOf))];
@@ -2404,14 +2682,25 @@ def js_chat_menu():
     """'추가 작업'을 누른 **뒤에 열린** 메뉴(menu·listbox — 그 전부터 보이던 것은 js_chat_row(more)가 단 data-lm28-pre 로 뺀다)에서
     글자가 **정확히** CHAT_DELETE_LABELS 중 하나인 항목 하나 → {r: ok · nomenu · nodelete · many · covered, x, y, n}(글은 돌려주지
     않는다). 보이는 글이 있으면 그 글로만, 없으면 aria-label 로 본다(아이콘 글꼴 문자는 뺀다). 같은 이름이 둘이면 누르지 않는다.
-    ok 를 돌려주기 전에 지금 보이는 대화상자에 data-lm28-pred 표식을 단다(js_chat_confirm 은 그 뒤에 뜬 확인 창만 본다)."""
+    ok 를 돌려주기 전에 지금 보이는 대화상자에 data-lm28-pred 표식을 단다(js_chat_confirm 은 그 뒤에 뜬 확인 창만 본다).
+    LM30(2026-10-21) — 열린 메뉴가 우리 항목의 메뉴인가(menuown): js_chat_row(more)가 표식(data-lm30-more)을 단 '…' 단추가 있어야 하고, 그
+    단추가 팝업을 여는 단추(aria-haspopup)면 aria-expanded 가 'true' 여야 하며, aria-controls 가 있으면 그 id 의 메뉴만 본다. 고른 항목의 이름에
+    '모두·전체·모든·all·everything' 이 있으면 누르지 않는다(bulk — 허용 목록에는 그런 이름이 없다 · 이중 잠금)."""
     return ("/*LM28:chat_menu*/(function(){\nconst WANT=" + json.dumps(list(CHAT_DELETE_LABELS), ensure_ascii=False) + ";"
-            + r"""
+            + "\nconst BULK=new RegExp(" + json.dumps(_bulk_rx_src(), ensure_ascii=False) + ',"i");' + r"""
 const vis=e=>{const r=e.getBoundingClientRect();return r.width>4&&r.height>4;};
 const PUA=new RegExp("["+String.fromCharCode(57344)+"-"+String.fromCharCode(63743)+"]","g");   // 아이콘 글꼴 문자
 const nrm=s=>(s||"").replace(PUA,"").replace(/\s+/g," ").trim().toLowerCase();
-const pops=[...document.querySelectorAll("[role='menu'],[role='listbox']")].filter(e=>vis(e)&&!e.closest("[data-lm28-pre]"));
+let pops=[...document.querySelectorAll("[role='menu'],[role='listbox']")].filter(e=>vis(e)&&!e.closest("[data-lm28-pre]"));
 if(!pops.length)return {r:"nomenu"};
+const trg=document.querySelector("[data-lm30-more]");
+if(!trg)return {r:"menuown",n:pops.length};
+if(trg.getAttribute("aria-haspopup")){
+  if(trg.getAttribute("aria-expanded")!=="true")return {r:"menuown",n:pops.length};
+  const ctl=trg.getAttribute("aria-controls");
+  if(ctl){const own=document.getElementById(ctl);
+    pops=pops.filter(p=>!!own&&(p===own||own.contains(p)||p.contains(own)));
+    if(!pops.length)return {r:"menuown"};}}
 let hs=[],n=0;
 for(const p of pops)for(const it of p.querySelectorAll("[role='menuitem'],[role='menuitemradio'],[role='option'],button")){
   if(!vis(it))continue;n++;
@@ -2420,6 +2709,7 @@ for(const p of pops)for(const it of p.querySelectorAll("[role='menuitem'],[role=
 hs=hs.filter((x,i)=>hs.indexOf(x)===i&&!hs.some(y=>y!==x&&x.contains(y)));
 if(!hs.length)return {r:"nodelete",n:n};
 if(hs.length>1)return {r:"many",n:n};
+if(BULK.test(nrm(hs[0].innerText)||nrm(hs[0].getAttribute("aria-label"))))return {r:"bulk",n:n};
 const q=hs[0].getBoundingClientRect(),x=Math.round(q.left+q.width/2),y=Math.round(q.top+q.height/2);
 const h=document.elementFromPoint(x,y);
 if(!(h&&(h===hs[0]||hs[0].contains(h))))return {r:"covered",n:n};
@@ -2429,12 +2719,24 @@ return {r:"ok",x:x,y:y,n:n};
 })()""")
 
 
+def _bulk_rx_src():
+    """여러 대화를 한꺼번에 지우는 이름의 정규식 글(JS·파이썬 같이) — 한국어는 글자 그대로, 영어는 낱말 단위."""
+    return "(" + "|".join(CHAT_BULK_KO) + ")|\\b(" + "|".join(CHAT_BULK_EN) + ")\\b"
+
+
+def is_bulk_label(s):
+    """이름에 '모두·전체·모든·all·everything' 이 있나(파이썬 거울 — 시험·허용 목록 점검용)."""
+    return bool(re.search(_bulk_rx_src(), str(s or ""), re.I))
+
+
 def js_chat_confirm():
     """'삭제'를 누른 **뒤에 뜬** 확인 창(dialog·alertdialog·dialog[open] — 그 전부터 보이던 것은 data-lm28-pred 로 뺀다)의 단추 중
-    글자가 **정확히** CHAT_CONFIRM_LABELS('삭제'·'Delete')인 것 하나 → {r: ok · none(창 없음) · nobtn · many · covered, x, y}.
-    '취소'·'닫기' 는 보지도 않는다."""
+    글자가 **정확히** CHAT_CONFIRM_LABELS 인 것 하나 → {r: ok · none(창 없음) · nobtn · many · covered · bulk, x, y}.
+    '취소'·'닫기' 는 보지도 않는다. LM30(2026-10-21): 허용 목록이 메뉴와 같아졌다('채팅 삭제'·'Delete chat' 단추도 누른다) · 확인 창의 제목
+    (aria-label · aria-labelledby 가 가리키는 글 · 창 글의 첫 줄)이나 그 단추 이름에 '모두·전체·모든·all·everything' 이 있으면 누르지 않는다
+    (bulk — 여러 대화를 지우는 창일 수 있다). 글은 돌려주지 않는다(0/1 코드만)."""
     return ("/*LM28:chat_confirm*/(function(){\nconst WANT=" + json.dumps(list(CHAT_CONFIRM_LABELS), ensure_ascii=False) + ";"
-            + r"""
+            + "\nconst BULK=new RegExp(" + json.dumps(_bulk_rx_src(), ensure_ascii=False) + ',"i");' + r"""
 const vis=e=>{const r=e.getBoundingClientRect();return r.width>4&&r.height>4;};
 const PUA=new RegExp("["+String.fromCharCode(57344)+"-"+String.fromCharCode(63743)+"]","g");   // 아이콘 글꼴 문자
 const nrm=s=>(s||"").replace(PUA,"").replace(/\s+/g," ").trim().toLowerCase();
@@ -2448,6 +2750,12 @@ for(const d of ds)for(const b of d.querySelectorAll("button,[role='button']")){
 hs=hs.filter((x,i)=>hs.indexOf(x)===i&&!hs.some(y=>y!==x&&x.contains(y)));
 if(!hs.length)return {r:"nobtn",n:ds.length};
 if(hs.length>1)return {r:"many",n:ds.length};
+const dg=hs[0].closest("[role='dialog'],[role='alertdialog'],dialog");
+let head=nrm(dg&&dg.getAttribute("aria-label"));
+const lby=(dg&&dg.getAttribute("aria-labelledby"))||"";
+for(const id of lby.split(/\s+/)){if(!id)continue;const el=document.getElementById(id);if(el)head+=" "+nrm(el.innerText);}
+head+=" "+(String((dg&&dg.innerText)||"").split(/\r\n?|\n/).map(nrm).find(Boolean)||"");
+if(BULK.test(head)||BULK.test(nrm(hs[0].innerText)||nrm(hs[0].getAttribute("aria-label"))))return {r:"bulk",n:ds.length};
 const q=hs[0].getBoundingClientRect(),x=Math.round(q.left+q.width/2),y=Math.round(q.top+q.height/2);
 const h=document.elementFromPoint(x,y);
 if(!(h&&(h===hs[0]||hs[0].contains(h))))return {r:"covered",n:ds.length};
@@ -2519,11 +2827,12 @@ def _chat_before_send(cdp, cfg, text):
             _chats_save(cfg, _chat_reset(st))
             return False
         cid, cid0 = conv_id(_chat_url(cdp), cfg), str(st.get("conv") or "")
-        if _page_is_ours(text, st) and not (cid and cid0 and cid != cid0):
+        pane = _pane_text(cdp, cfg)                   # LM30 — 대화 창의 글만(대화 목록 제목은 뺀다)
+        if _owns_screen(pane if pane is not None else text, st, cid) and not (cid and cid0 and cid != cid0):
             return True
         sent = int(st.get("sent") or 0)
         _chat_tally(st, "lost")
-        _chats_save(cfg, _chat_reset(st))
+        _chats_save(cfg, _chat_reset(st))             # 지금 칸만 놓는다 — 그 채팅의 기록(owned)은 남아 실행 끝에 다시 지운다
         trace("chat", act="lost", sent=sent)
         return False
     except Exception:  # noqa: BLE001
@@ -2545,15 +2854,21 @@ def _chat_after_send(cdp, cfg, prompt, own):
         sent = int(st.get("sent") or 0)
         if sent <= 0:
             _chat_tally(st, "made")
+            rt = _run_tally(st)
+            rt["made"] = int(rt.get("made") or 0) + 1              # LM30 — 이번 실행이 연 채팅 수(실행 끝 한 줄)
             trace("chat", act="made", step=str(os.environ.get("LM_STAGE") or "")[:40])
             st["tpre"] = title_prefixes(prompt)
         sha, n = anchor_key(prompt)
         if not sha:
             _chat_tally(st, "noanchor")
+            if sent <= 0:
+                lf = _run_tally(st)["left"]                            # 확인할 수 없는 채팅 — 기록하지 않고 남김으로 센다
+                lf["noanchor"] = int(lf.get("noanchor") or 0) + 1
             _chats_save(cfg, _chat_reset(st))
             return
         hs, hn = head_key(prompt)
         st.update(anchor_sha=sha, alen=n, hsha=hs, hlen=hn, sent=sent + 1, pid=os.getpid(), t_last=_now())
+        _owned_sync(st)                                                # LM30 — 지울 때까지 남는 기록(owned[] — 해시·주소만)
         _chats_save(cfg, st)
     except Exception:  # noqa: BLE001
         pass
@@ -2571,7 +2886,11 @@ def _chat_seen(cdp, cfg, ok=None):
         cid = conv_id(url, cfg)
         dirty = False
         if cid and (cid != st.get("conv") or not st.get("href")):
-            st.update(conv=cid, href=_plain_href(url))
+            # nav(LM30) — 다시 열 주소: 대화 id 가 경로에 있으면 경로까지(href), 질의·# 에만 있으면 그 주소 그대로(id 가 든 경우만 · 300자)
+            nav = _plain_href(url)
+            if conv_id(nav, cfg) != cid:
+                nav = str(url)[:300] if conv_id(str(url)[:300], cfg) == cid else ""
+            st.update(conv=cid, href=_plain_href(url), nav=nav)
             dirty = True
         if ok is not None:
             st["last_ok"] = bool(ok)
@@ -2579,6 +2898,8 @@ def _chat_seen(cdp, cfg, ok=None):
                 st["t_ok"] = _now()
             dirty = True
         if dirty:
+            if st.get("key"):
+                _owned_sync(st)                     # 기록에도 대화 id·주소를 옮긴다(실행 끝에 다시 열어 지울 때 쓴다)
             _chats_save(cfg, st)
     except Exception:  # noqa: BLE001
         pass
@@ -2607,10 +2928,10 @@ def _resume_ok(cdp, cfg):
         if not (st.get("ours") and int(st.get("sent") or 0) > 0 and st.get("last_ok") is True
                 and _age_sec(st.get("t_ok")) < CHAT_RESUME_SEC):
             return False
-        if not _page_is_ours(cdp.eval(js_chat_text(cfg), timeout=30), st):
+        cid, cid0 = conv_id(_chat_url(cdp), cfg), str(st.get("conv") or "")
+        if not _owns_screen(cdp.eval(js_pane_text(cfg), timeout=30), st, cid):     # LM30 — 더 엄격한 소유 확인
             return False
-        cid0 = str(st.get("conv") or "")
-        if cid0 and conv_id(_chat_url(cdp), cfg) != cid0:
+        if cid0 and cid != cid0:
             return False
         return cdp.eval(js_is_generating(), timeout=10) is not True
     except Exception:  # noqa: BLE001 - 확인하지 못하면 새 채팅
@@ -2629,7 +2950,9 @@ def _continue_why(cdp, cfg):
         st = chat_state(cfg)
         if not (st.get("ours") and int(st.get("sent") or 0) > 0 and st.get("pid") == os.getpid()):
             return "unverified"
-        return "" if _page_is_ours(cdp.eval(js_chat_text(cfg), timeout=30), st) else "unverified"
+        cid = conv_id(_chat_url(cdp), cfg)
+        # LM30 — 대화 창의 글만 보고, 머리 앵커만 보이면 대화 id 까지 같아야 우리 채팅이다(_owns_screen)
+        return "" if _owns_screen(cdp.eval(js_pane_text(cfg), timeout=30), st, cid) else "unverified"
     except Exception:  # noqa: BLE001 - 확인하지 못하면 이어 보내지 않는다
         return "unverified"
 
@@ -2743,23 +3066,48 @@ def _chat_done(cfg, code, why="", t0=None, census=None, flags=None):
     mismatch 면 이 프로세스는 더 지우지 않고(_CHAT_KILL), 상태 파일에 멈춤(hold — CHAT_REV)을 남긴다.
     census(LM28 — 화면 사유로 남김일 때의 구조 조사 · 숫자만): 상태 파일 totals.census · 이 프로세스 몫(_CHAT_PROC['census'] —
     chat_line 의 둘째 줄) · copilot_trace 에 남긴다. flags(LM28 2026-10-17 — _retire_steps 의 표시 wide·navtg·tm, 숫자만)는
-    copilot_trace 에만 싣는다(지운 때도 — 넓은 화면·탐색 창 단추로 지웠는지 사진 없이 안다)."""
+    copilot_trace 에만 싣는다(지운 때도 — 넓은 화면·탐색 창 단추로 지웠는지 사진 없이 안다).
+    LM30(2026-10-21): 지금 채팅의 기록(owned[] — key)에 결과를 반영한다(_owned_after) — 지웠으면 기록에서 빼고, 못 지웠으면 남겨 실행 끝
+    정리(sweep_owned)가 다시 지운다(예전에는 여기서 소유를 비우면 그 채팅은 다시 시도되지 않았다). mismatch 의 멈춤은 그 실행 동안만(_set_hold)."""
     st = chat_state(cfg)
     sent = int(st.get("sent") or 0)
     _chat_tally(st, code)
     if code == "mismatch":
-        _CHAT_KILL[0] = True
-        st["totals"]["hold"] = {"rev": CHAT_REV, "t": _now()}
+        _set_hold(st)
     cz = dict(census, code=code) if isinstance(census, dict) and census else None
     if cz:
         st["totals"]["census"] = dict(cz, t=_now())
         _CHAT_PROC["census"] = cz
+    if st.get("key"):
+        _owned_after(st, str(st.get("key")), code)
     _chats_save(cfg, _chat_reset(st))
     extra = {k: v for k, v in (flags or {}).items()
              if k in CENSUS_CTX_KEYS and isinstance(v, int) and not isinstance(v, bool)}
     if cz:
         extra["census"] = cz
     trace("chat", act="retire", code=code, why=str(why or "")[:24], sent=sent,
+          sec=round(time.time() - (t0 or time.time()), 1), **extra)
+
+
+def _entry_done(cfg, key, code, why="", t0=None, census=None, flags=None):
+    """LM30(2026-10-21) — 실행 끝 정리(sweep_owned)가 지난 채팅 하나(owned[] — key)를 다룬 끝: 세기·기록 반영(_owned_after)·멈춤·trace.
+    지금 채팅 칸(ours…)은 건드리지 않는다. 'gone'(이미 목록에 없음 — 아무것도 누르지 않음)은 남김으로 세지 않는다."""
+    st = chat_state(cfg)
+    if code != "gone":
+        _chat_tally(st, code)
+    if code == "mismatch":
+        _set_hold(st)
+    cz = dict(census, code=code) if isinstance(census, dict) and census else None
+    if cz:
+        st.setdefault("totals", {})["census"] = dict(cz, t=_now())
+        _CHAT_PROC["census"] = cz
+    _owned_after(st, key, code)
+    _chats_save(cfg, st)
+    extra = {k: v for k, v in (flags or {}).items()
+             if k in CENSUS_CTX_KEYS and isinstance(v, int) and not isinstance(v, bool)}
+    if cz:
+        extra["census"] = cz
+    trace("chat", act="retire", code=code, why=str(why or "")[:24], sweep=1,
           sec=round(time.time() - (t0 or time.time()), 1), **extra)
 
 
@@ -2902,6 +3250,7 @@ def _chat_find(cdp, cid, tpre, ctx, press, left):
         if isinstance(tg, list) and len(tg) == 2:
             press({"x": tg[0], "y": tg[1]})
             done.append(tg)
+            ctx["drawer"] = 1                   # LM30 — 서랍을 열었다(지운 뒤 서랍이 닫히면 '항목 사라짐'을 믿지 않는다)
             _sleep(1.2)
             r = look()
             if r.get("r") != "none":
@@ -2942,7 +3291,14 @@ def _retire_steps(cdp, cfg, st, t_end, touched, ctx=None):
       · 목록이 접혀 있으면 길만 연다(_chat_find — 펼침 단추·탐색 창 단추·넓은 화면 흉내). ctx 에 tm·navtg·wide 를 적는다(wide 는
         retire_chat 의 finally 가 되돌린다 — 뒤 단계는 그 화면에서 한다).
       · ⑤ 확인: 두 앵커가 모두 사라짐 · 대화 id 가 바뀜 · 화면은 그대로인데 메뉴를 열기 전에 센 목록 항목 수와 제목이 맞는 항목 수가 둘 다
-        딱 1 줄어듦(js_chat_count) · 링크로 찾은 항목이 목록에서 사라짐 — 아니면 mismatch(멈춤)."""
+        딱 1 줄어듦(js_chat_count) · 링크로 찾은 항목이 목록에서 사라짐 — 아니면 mismatch(멈춤).
+    LM30(2026-10-21) — 누르기 전은 더 엄격하게, 누른 뒤 확인은 더 참을성 있게(조사 보고 b2·b3·b6):
+      · 소유는 _owns_screen(끝 앵커 · 또는 머리 앵커 + 같은 대화 id) — 대화 창의 글만 본다(js_pane_text · 대화 목록 제목을 뺀다).
+      · 아직 답을 쓰는 중이면 상한 안에서 GEN_WAIT_SEC 까지 기다려 본다(그래도 쓰는 중이면 'gen' — 남김, 실행 끝에 다시).
+      · 주소에 대화 id 가 있고 목록이 대화 id 링크로 된 화면(nidl)인데 링크로 못 찾고 '현재' 표시로만 찾았으면 누르지 않는다('ambiguous').
+      · 메뉴는 그 항목의 '…' 단추 것이어야 한다(js_chat_menu 'menuown') · '모두·전체·all' 이름·창은 누르지 않는다('bulk').
+      · 확인 창은 CONFIRM_POLLS(8초)까지 기다리고, 누른 뒤 VERIFY_POLLS(15초)까지 본다: 앵커가 모두 사라짐(느슨한 _page_is_ours) · 대화 id 가
+        바뀜 · 목록 영역의 제목 일치 항목이 딱 1 줄어듦 · 링크로 찾았던 항목이 사라짐(목록 서랍을 연 화면은 서랍이 닫힌 것일 수 있어 보지 않는다)."""
     ctx = ctx if isinstance(ctx, dict) else {}
 
     def left():
@@ -2952,17 +3308,25 @@ def _retire_steps(cdp, cfg, st, t_end, touched, ctx=None):
         touched[0] = True
         _chat_mouse(cdp, p.get("x"), p.get("y"), click=click)
 
-    txt = cdp.eval(js_chat_text(cfg), timeout=max(5.0, min(20.0, left())))
-    if not _page_is_ours(txt, st):
-        return "lost"
+    txt = cdp.eval(js_pane_text(cfg), timeout=max(5.0, min(20.0, left())))
     cid, cid0 = conv_id(_chat_url(cdp), cfg), str(st.get("conv") or "")
+    if not _owns_screen(txt, st, cid):
+        return "lost"
     if cid and cid0 and cid != cid0:
         return "lost"
     ctx["cid"] = cid
-    # ⓪ 아직 답을 쓰는 중이면 지우지 않는다(LM28 — 남김 'gen'). 물어보지 못했으면 예전처럼 다음 단계로(아래 확인들이 그대로 지킨다)
+    # ⓪ 아직 답을 쓰는 중이면 지우지 않는다(LM28 — 남김 'gen'). LM30: 정리 상한 안에서 끝나기를 잠깐 기다려 본다(GEN_WAIT_SEC · 2초씩).
+    #   물어보지 못했으면 예전처럼 다음 단계로(아래 확인들이 그대로 지킨다)
     try:
         if cdp.eval(js_is_generating(), timeout=8) is True:
-            return "gen"
+            gen = True
+            for _ in range(int(max(0.0, min(float(GEN_WAIT_SEC), left() - 10.0)) // 2)):
+                _sleep(2)
+                if cdp.eval(js_is_generating(), timeout=8) is not True:
+                    gen = False
+                    break
+            if gen:
+                return "gen"
     except (TimeoutError, RuntimeError, OSError):
         pass
     # 목록 제목을 맞춰 볼 재료가 없다(예전 판이 연 채팅) — 아무것도 누르지 않고 남긴다
@@ -2973,13 +3337,17 @@ def _retire_steps(cdp, cfg, st, t_end, touched, ctx=None):
     r = _chat_find(cdp, cid, tpre, ctx, press, left)
     if r.get("r") != "ok":
         return {"many": "ambiguous", "split": "ambiguous", "covered": "covered"}.get(str(r.get("r") or ""), "noitem")
+    # LM30 — 목록이 대화 id 링크로 된 화면인데 우리 대화 id 의 링크가 없다: '현재' 표시만으로는 그 항목이 우리 대화인지 모른다
+    nidl = r.get("nidl")
+    if cid and r.get("how") == "cur" and isinstance(nidl, int) and not isinstance(nidl, bool) and nidl > 0:
+        return "ambiguous"
     # 그 항목의 제목이 우리 첫 프롬프트의 앞부분이 아니면(사람의 대화가 '현재' 항목인 화면 등) 그 항목은 누르지 않는다
     ctx["tm"] = 1 if r.get("tm") == 1 else 0
     if not ctx["tm"]:
         return "notitle"
     if left() <= 0:
         return "timeout"
-    c0 = _chat_count(cdp, tpre)         # ⑤ 의 셈 기준 — 메뉴를 열기 전(숫자만)
+    c0 = _chat_count(cdp, tpre)         # ⑤ 의 셈 기준 — 메뉴를 열기 전(숫자만 · 목록 영역만)
     # ② 그 항목 위에 신뢰 마우스(가려진 '추가 작업' 단추가 나타난다) → 그 항목 안의 단추(제목을 한 번 더 본다)
     press(r, click=False)
     _sleep(0.6)
@@ -2991,7 +3359,7 @@ def _retire_steps(cdp, cfg, st, t_end, touched, ctx=None):
         ctx["tm"] = 0
         return "notitle"
     press(m)
-    # ③ 메뉴 — 글자가 정확히 '삭제'인 항목 하나만
+    # ③ 메뉴 — 그 항목의 '…' 단추가 연 메뉴에서, 글자가 정확히 허용 목록인 항목 하나만
     mn = {}
     for _ in range(6):
         _sleep(0.4)
@@ -2999,28 +3367,36 @@ def _retire_steps(cdp, cfg, st, t_end, touched, ctx=None):
         if mn.get("r") != "nomenu":
             break
     if mn.get("r") != "ok":
-        return {"nomenu": "nomenu", "covered": "covered", "many": "ambiguous"}.get(str(mn.get("r") or ""), "nodelete")
+        return {"nomenu": "nomenu", "covered": "covered", "many": "ambiguous", "menuown": "menuown",
+                "bulk": "bulk"}.get(str(mn.get("r") or ""), "nodelete")
     if left() <= 0:
         return "timeout"
     press(mn)
-    # ④ 확인 창 — 글자가 정확히 '삭제'인 단추만. 창이 뜨지 않으면 메뉴 클릭이 끝(확인 없는 화면)으로 보고 ⑤ 로
+    # ④ 확인 창 — 글자가 정확히 허용 목록인 단추만(LM30: 8초까지 기다린다). 창이 뜨지 않으면 메뉴 클릭이 끝(확인 없는 화면)으로 보고 ⑤ 로 —
+    #   창 없이 이미 지워진 화면(주소의 대화 id 가 바뀜)이면 기다리지 않는다
     seen = False
-    for _ in range(8):
+    for i in range(CONFIRM_POLLS):
         _sleep(0.4)
         c = _jsd(cdp, js_chat_confirm())
         if c.get("r") == "ok":
             press(c)
             seen = False
             break
+        if c.get("r") == "bulk":
+            return "bulk"
         seen = seen or c.get("r") in ("nobtn", "many", "covered")
+        if not seen and i >= 4 and cid and conv_id(_chat_url(cdp), cfg) != cid:
+            break
     if seen:
         return "noconfirm"
     # ⑤ 확인 — 두 앵커가 화면에서 모두 사라졌나(지운 대화는 새 채팅 화면으로 바뀐다) · 주소의 대화 id 가 바뀌었나 · 화면은 그대로인데
-    #   목록 항목 수와 제목이 맞는 항목 수가 둘 다 딱 1 줄었나(메뉴를 열기 전에 센 c0 — 다른 항목이 사라졌으면 제목 셈이 그대로라 아니다)
-    for _ in range(16):
+    #   목록 영역에서 제목이 맞는 항목 수가 딱 1 줄었나(메뉴를 열기 전에 센 c0 — 다른 항목이 사라졌으면 제목 셈이 그대로라 아니다) ·
+    #   링크로 찾았던 항목이 목록에서 사라졌나(서랍을 연 화면은 서랍이 닫힌 것과 가를 수 없어 보지 않는다 · 목록 링크가 남아 있을 때만)
+    by_link = r.get("how") in ("href", "both") and not ctx.get("drawer") and not ctx.get("navtg")
+    for i in range(VERIFY_POLLS):
         _sleep(0.5)
         try:
-            t2 = cdp.eval(js_chat_text(cfg), timeout=10)
+            t2 = cdp.eval(js_pane_text(cfg), timeout=10)
         except (TimeoutError, RuntimeError, OSError):
             continue
         if not _page_is_ours(t2, st):
@@ -3028,11 +3404,13 @@ def _retire_steps(cdp, cfg, st, t_end, touched, ctx=None):
         if cid and conv_id(_chat_url(cdp), cfg) != cid:
             return "deleted"
         c1 = _chat_count(cdp, tpre) if c0 else None
-        if c0 and c1 and c1[0] == c0[0] - 1 and c1[1] == c0[1] - 1:
+        if c0 and c1 and c1[1] == c0[1] - 1 and c1[0] <= c0[0]:
             return "deleted"
-    # 화면은 그대로인데 링크 주소로 찾았던 항목(강한 일치)이 목록에서 사라졌다 — 지워졌고 화면만 늦다
-    if r.get("how") in ("href", "both") and _jsd(cdp, js_chat_row(cid, "find", tpre)).get("r") == "none":
-        return "deleted"
+        if by_link and (i % 4 == 3 or i == VERIFY_POLLS - 1):
+            g = _jsd(cdp, js_chat_row(cid, "find", tpre))
+            nl = g.get("nidl")
+            if g.get("r") == "none" and (nl is None or (isinstance(nl, int) and nl > 0)):
+                return "deleted"
     return "mismatch"
 
 
@@ -3044,7 +3422,9 @@ def retire_chat(cdp, cfg, why="", budget=CHAT_RETIRE_SEC):
     LM28: 생성 중이면 'gen'(남김 — 실패 아님) · 화면 사유(CHAT_CENSUS_CODES)로 남기면 구조 조사(_chat_census — 숫자만)를 함께 남긴다.
     LM28(2026-10-17): 목록 제목이 우리 첫 질문과 다르거나 확인 재료가 없으면 'notitle'(누르지 않음 · 구조 조사함). 넓은 화면 흉내
     (_chat_wide)를 켰으면 어떻게 끝나든(예외·이른 반환 포함) finally 에서 되돌린다(_chat_unwide — 구조 조사·Esc 뒤). _retire_steps 의
-    표시(wide·navtg·tm — 숫자)는 구조 조사와 copilot_trace 에 싣는다."""
+    표시(wide·navtg·tm — 숫자)는 구조 조사와 copilot_trace 에 싣는다.
+    LM30(2026-10-21): 지우지 못한 채팅은 기록(owned[])에 남아 실행 끝 정리(sweep_owned)가 다시 지운다(_chat_done → _owned_after) ·
+    멈춤은 그 실행 동안만(_chat_killed·_chat_held)."""
     t0 = time.time()
     census, flags = None, None
     try:
@@ -3056,30 +3436,39 @@ def retire_chat(cdp, cfg, why="", budget=CHAT_RETIRE_SEC):
             return "unsent"
         if not _chat_on(cfg):
             code = "off"
-        elif _CHAT_KILL[0] or _chat_held(st):
+        elif _chat_killed() or _chat_held(st):
             code = "hold"
         elif cdp is None:
             return "nocdp"
         else:
-            touched, ctx = [False], {}
-            try:
-                try:
-                    code = _retire_steps(cdp, cfg, st, t0 + max(5.0, float(budget or CHAT_RETIRE_SEC)), touched, ctx)
-                except Exception:  # noqa: BLE001 - 화면 조작 오류는 '남김'으로(왕복·닫기를 막지 않는다)
-                    code = "error"
-                if code in CHAT_CENSUS_CODES:
-                    # 화면 사유로 남긴다 — 메뉴·확인 창을 닫기 전에 구조를 센다(읽기만 · 숫자만). 판정은 바꾸지 않는다.
-                    census = _chat_census(cdp, cfg, ctx.get("cid") or str(st.get("conv") or ""), ctx)
-                if touched[0] and code != "deleted":
-                    _chat_esc(cdp)
-            finally:
-                if ctx.get("wide"):
-                    _chat_unwide(cdp)                   # 넓은 화면 흉내는 어떻게 끝나든 되돌린다
-            flags = {k: ctx[k] for k in CENSUS_CTX_KEYS if isinstance(ctx.get(k), int)}
+            code, census, flags = _retire_on_screen(cdp, cfg, st, t0 + max(5.0, float(budget or CHAT_RETIRE_SEC)))
         _chat_done(cfg, code, why, t0, census=census, flags=flags)
         return code
     except Exception:  # noqa: BLE001 - 정리가 왕복·닫기를 막지 않는다
         return "error"
+
+
+def _retire_on_screen(cdp, cfg, st, t_end):
+    """화면에서 한 채팅을 지워 본다(_retire_steps) → (코드, 구조 조사 | None, 표시 dict). 화면 사유로 남기면 메뉴·확인 창을 닫기 전에 구조를
+    센다(읽기만 · 숫자만) · 무엇이든 눌렀는데 지우지 못했으면 Esc · 넓은 화면 흉내는 어떻게 끝나든(예외 포함) 되돌린다. 예외를 내지 않는다."""
+    touched, ctx, census = [False], {}, None
+    code = "error"
+    try:
+        try:
+            code = _retire_steps(cdp, cfg, st, t_end, touched, ctx)
+        except Exception:  # noqa: BLE001 - 화면 조작 오류는 '남김'으로(왕복·닫기를 막지 않는다)
+            code = "error"
+        if code in CHAT_CENSUS_CODES:
+            census = _chat_census(cdp, cfg, ctx.get("cid") or str(st.get("conv") or ""), ctx)
+        if touched[0] and code != "deleted":
+            _chat_esc(cdp)
+    except Exception:  # noqa: BLE001
+        pass
+    finally:
+        if ctx.get("wide"):
+            _chat_unwide(cdp)                           # 넓은 화면 흉내는 어떻게 끝나든 되돌린다
+    flags = {k: ctx[k] for k in CENSUS_CTX_KEYS if isinstance(ctx.get(k), int)}
+    return code, census, flags
 
 
 def _fresh_chat(cdp, cfg, why="fresh", reload=False):
@@ -3170,15 +3559,16 @@ def _chat_tab_ws(cfg):
 
 
 def retire_current(cfg=None, why="end", budget=CHAT_RETIRE_SEC):
-    """지금 탭의 우리 채팅을 지운다(실행 끝 · [AI 연결 진단] 왕복 뒤) → 결과 코드. 우리 Edge(프로필 포트)가 살아 있고 채팅 탭이
-    있을 때만 화면에 닿는다 — 잠금(CHAT_LOCK_WAIT 초)을 못 얻으면 'busy', 탭이 없으면 'notab', Edge 가 없으면 'noedge'
-    (그때는 소유를 그대로 둔다 — 다음 프로세스가 확인한다). 예외를 내지 않는다."""
+    """지금 탭의 우리 채팅을 지운다([AI 연결 진단] 왕복 뒤 — LM30: 실행 끝은 sweep_owned 가 지금 채팅과 기록의 지난 채팅을 함께 한다) →
+    결과 코드. 우리 Edge(프로필 포트)가 살아 있고 채팅 탭이 있을 때만 화면에 닿는다 — 잠금(CHAT_LOCK_WAIT 초)을 못 얻으면 'busy',
+    탭이 없으면 'notab', Edge 가 없으면 'noedge'(그때는 소유를 그대로 둔다 — 다음 프로세스가 확인한다). 못 지운 채팅은 기록에 남는다.
+    예외를 내지 않는다."""
     try:
         cfg = cfg if isinstance(cfg, dict) else load_cfg()
         st = chat_state(cfg)
         if not st.get("ours"):
             return "none"
-        if int(st.get("sent") or 0) <= 0 or not _chat_on(cfg) or _CHAT_KILL[0] or _chat_held(st):
+        if int(st.get("sent") or 0) <= 0 or not _chat_on(cfg) or _chat_killed() or _chat_held(st):
             return retire_chat(None, cfg, why)          # 화면에 닿지 않고 판정·세기만(보낸 적 없음·끔·멈춤)
         if not debugger_alive(cfg["port"]) or not owns_port(cfg):
             return "noedge"
@@ -3197,12 +3587,257 @@ def retire_current(cfg=None, why="end", budget=CHAT_RETIRE_SEC):
         return "error"
 
 
-def _tidy_chats(cfg, reason=""):
-    """close_own_edge 의 닫기 전 정리 — retire_current(상한 CHAT_RETIRE_SEC) · 예외 없음."""
+def _tidy_chats(cfg, reason="", budget=None):
+    """close_own_edge 의 닫기 전 정리 → 대표 코드. LM30(2026-10-21): 지금 채팅만이 아니라 LM 기록의 지난 채팅까지 다시 지운다(sweep_owned —
+    상한 budget 초 · 기본 SWEEP_SEC). 예외 없음."""
     try:
-        return retire_current(cfg, "close:" + str(reason or "")[:16])
+        rep = sweep_owned(cfg, budget=SWEEP_SEC if budget is None else budget, why="close:" + str(reason or "")[:16])
+        return str(rep.get("code") or "none")
     except Exception:  # noqa: BLE001
         return "error"
+
+
+def js_chat_haslink(conv):
+    """LM30(2026-10-21) — 문서 어디에든(보이지 않아도) 그 대화 id 가 든 링크가 있나 → {h: 0/1, n: 경로에 대화 id 꼴이 든 링크 수}(글·주소는
+    돌려주지 않는다). 지난 채팅 주소로 옮겼는데 화면이 다른 곳으로 갔을 때, 대화 목록 링크가 그려져 있는데(n ≥ 1) 그 id 만 없으면
+    '이미 목록에 없음(gone)'으로 본다(아무것도 누르지 않는다)."""
+    return ("/*LM30:haslink*/(function(){const C=" + json.dumps(str(conv or "")) + ";" + r"""
+const IDRX=/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|(?=[A-Za-z0-9_-]*\d)(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{16,}/i;
+let h=0,n=0;
+for(const a of document.querySelectorAll("a[href]")){
+  const s=(a.getAttribute("href")||"")+" "+(a.href||"");
+  let p="";try{p=new URL(a.getAttribute("href")||"",document.baseURI).pathname;}catch(_){p="";}
+  if(IDRX.test(p))n++;
+  if(C&&s.indexOf(C)>=0)h=1;}
+return {h:h,n:n};
+})()""")
+
+
+def _sweep_targets(st):
+    """다시 지울 지난 채팅 — 기록(owned[]) 중 지금 채팅이 아닌 것, 최근 것부터."""
+    cur = str(st.get("key") or "") if st.get("ours") else ""
+    xs = [e for e in _owned_list(st) if e.get("key") != cur]
+    return sorted(xs, key=lambda e: str(e.get("made") or ""), reverse=True)
+
+
+def _sweep_prune(cfg, st):
+    """정리 전 기록 손질(아무것도 누르지 않는다) — 대화 id 가 없는 지난 기록(다시 찾을 수 없다)·오래됐거나 여러 번 못 지운 기록은 빼고 남김으로
+    센다(_owned_drop). 바뀌었으면 저장한다 → 바뀌었나."""
+    cur = str(st.get("key") or "") if st.get("ours") else ""
+    changed = False
+    for e in list(_owned_list(st)):
+        if e.get("key") == cur:
+            continue
+        if not e.get("conv"):
+            w = str(e.get("why") or "")
+            _owned_drop(st, e, w if w and w != "pending" else "noid")
+            changed = True
+        elif _owned_expired(e):
+            _owned_drop(st, e, "expired")
+            changed = True
+    if changed:
+        _chats_save(cfg, st)
+    return changed
+
+
+def _sweep_count(out, code):
+    out["tried"] += 1
+    if code == "deleted":
+        out["deleted"] += 1
+    elif code == "gone":
+        out["gone"] += 1
+    else:
+        out["kept"] += 1
+        out["why"][code] = int(out["why"].get(code) or 0) + 1
+
+
+def _sweep_one(cdp, cfg, e, budget):
+    """지난 채팅 하나(기록 e)를 다시 지워 본다 → (코드, 구조 조사, 표시). 기록한 대화 id 가 든 주소(nav·href)로만 옮긴다. 화면이 업무 Copilot 이고
+    주소의 대화 id 가 같고 우리 앵커(끝 앵커 또는 머리 앵커+id — _owns_screen)가 보일 때만 _retire_steps 로 지운다. 로그인 화면이면 'login'
+    (아무것도 하지 않는다). 화면이 다른 곳(업무 Copilot)으로 갔고 그려진 대화 목록에 그 id 의 링크가 없으면 'gone'(누르지 않음). 그 밖은 'lost'."""
+    t_end = time.time() + max(5.0, float(budget or SWEEP_PER_SEC))
+    cid = str(e.get("conv") or "")
+    url0 = str(e.get("nav") or e.get("href") or "")
+    if not cid or conv_id(url0, cfg) != cid:
+        return "noid", None, None
+    try:
+        cdp.call("Page.navigate", {"url": url0}, timeout=20)
+    except (TimeoutError, RuntimeError, OSError):
+        return "error", None, None
+    ours, url, kind, ready = False, "", "", False
+    for i in range(SWEEP_LOAD_POLLS):
+        _sleep(1)
+        try:
+            s = cdp.eval(js_state(), timeout=10) or {}
+        except (TimeoutError, RuntimeError, OSError):
+            continue
+        url = str(s.get("url") or "")
+        kind = page_kind(url, cfg)
+        ready = s.get("ready") in ("interactive", "complete")
+        if kind in ("login", "adfs") or (kind == "personal" and _truthy(cfg.get("requireWorkAccount"), True)):
+            return "login", None, None
+        if not ready or not _sendable(kind, cfg):
+            continue
+        if conv_id(url, cfg) == cid:
+            t = _pane_text(cdp, cfg)
+            if t is not None and _owns_screen(t, e, cid):
+                ours = True
+                break
+        elif i >= 4:
+            break                                   # 다른 곳으로 갔다 — 지운 대화는 보통 새 채팅 화면으로 돌아간다
+        if time.time() >= t_end - 5:
+            break
+    if not ours:
+        if ready and _sendable(kind, cfg) and conv_id(url, cfg) != cid:
+            try:
+                hl = cdp.eval(js_chat_haslink(cid), timeout=10)
+            except Exception:  # noqa: BLE001 - 모르면 '이미 없음'으로 보지 않는다
+                hl = None
+            if isinstance(hl, dict) and hl.get("h") == 0 and isinstance(hl.get("n"), int) and hl.get("n") >= 1:
+                return "gone", None, None
+        return ("error" if kind in ("dead", "blank") else "lost"), None, None
+    return _retire_on_screen(cdp, cfg, e, t_end)
+
+
+def sweep_owned(cfg=None, budget=SWEEP_SEC, per=SWEEP_PER_SEC, why="end", launch=False, run=None, lock_wait=None):
+    """LM30(2026-10-21) — LM 이 연 Copilot 채팅을 다시 지운다(실행 끝 close_own_edge · 화면의 [LM이 연 Copilot 채팅 지우기]) → 숫자·코드만의 dict
+    {code(대표), current(지금 채팅 코드|None), deleted, gone, kept, tried, left(남은 기록 수), login, launched, why{코드: 수}}.
+      ① 지금 채팅(상태 파일의 우리 채팅 — 보낸 적 있음)은 retire_chat(예전 retire_current 와 같다).
+      ② 기록(owned[])의 지난 채팅을 최근 것부터 하나씩(채팅마다 per 초 · 전체 budget 초): _sweep_one(기록한 대화 id 의 주소로만 옮겨 소유를 다시
+         확인한 뒤 같은 단계로 지운다) — 결과는 _entry_done(지웠거나 이미 없으면 기록에서 빼고, 아니면 남겨 다음 정리가 다시 해 본다).
+      ③ 지난 채팅을 열었으면 끝에 채팅 시작 주소(빈 새 채팅)로 돌려 둔다 — 뒤 단계가 정리가 연 채팅에 이어 보내지 않게.
+    기록에 없는 채팅(예전 판이 연 것·사람이 붙여 넣은 것)은 LM 것인지 알 수 없어 건드리지 않는다. 로그인 화면이면 아무것도 하지 않고 login
+    (LM 은 로그인하지 않는다). 설정으로 껐으면 off · 이 실행의 멈춤이면 hold · Edge 가 꺼졌거나 남의 것이면 noedge(launch 면 띄운다 — launched) ·
+    잠금(lock_wait — 기본 CHAT_LOCK_WAIT 초)을 못 얻으면 busy · 채팅 탭이 없으면 notab. run: 실행 열쇠(화면 버튼 — chat_run_key 대신).
+    새 프로세스를 띄우지 않는다(launch 로 Edge 를 띄울 때만). 예외를 내지 않는다."""
+    t0 = time.time()
+    out = {"code": "none", "current": None, "deleted": 0, "gone": 0, "kept": 0, "tried": 0, "left": 0,
+           "login": False, "launched": False, "why": {}}
+    prev = _RUN_KEY[0]
+    if run:
+        _RUN_KEY[0] = str(run)[:64]
+    cfg = cfg if isinstance(cfg, dict) else load_cfg()
+    try:
+        st = chat_state(cfg)
+        cur = bool(st.get("ours") and int(st.get("sent") or 0) > 0)
+        if not cur and not _owned_list(st):
+            return out
+        if not _chat_on(cfg):
+            if cur:
+                out["current"] = retire_chat(None, cfg, why)         # 세기만(off — 기록에서 뺀다)
+            out["code"] = "off"
+            return out
+        if _chat_killed() or _chat_held(st):
+            if cur:
+                out["current"] = retire_chat(None, cfg, why)         # 세기만(hold)
+            out["code"] = "hold"
+            return out
+        if not debugger_alive(cfg["port"]):
+            if not launch:
+                out["code"] = "noedge"
+                return out
+            how = ensure_edge(cfg)
+            if how is None:
+                out["code"] = "noedge"
+                return out
+            out["launched"] = how == "launched"
+        elif not owns_port(cfg):
+            out["code"] = "noedge"
+            return out
+        with edge_lock(cfg, timeout=CHAT_LOCK_WAIT if lock_wait is None else lock_wait):
+            ws = _chat_tab_ws(cfg) or (find_tab(cfg) if launch else "")
+            if not ws:
+                out["code"] = "notab"
+                return out
+            cdp = CDP(ws)
+            try:
+                _sweep_on(cdp, cfg, out, t0, float(budget or SWEEP_SEC), float(per or SWEEP_PER_SEC), why)
+            finally:
+                cdp.close()
+    except EdgeBusy:
+        out["code"] = "busy"
+    except Exception:  # noqa: BLE001 - 정리가 닫기·화면을 막지 않는다
+        if not out["tried"]:
+            out["code"] = "error"
+    finally:
+        try:
+            out["left"] = len(_owned_list(chat_state(cfg)))
+        except Exception:  # noqa: BLE001
+            pass
+        _RUN_KEY[0] = prev
+        _SWEEP_LAST[0] = dict(out, why=dict(out["why"]))
+    return out
+
+
+def _sweep_on(cdp, cfg, out, t0, budget, per, why):
+    """sweep_owned 의 화면 단계(잠금 안) — out 을 채운다."""
+    def left():
+        return t0 + budget - time.time()
+
+    state = {}
+    for _ in range(15):                                 # 막 띄운 Edge·옮기는 중인 탭 — 준비될 때까지(1초씩)
+        try:
+            state = cdp.eval(js_state(), timeout=10) or {}
+        except (TimeoutError, RuntimeError, OSError):
+            state = {}
+        if state.get("ready") in ("interactive", "complete") and page_kind(state.get("url"), cfg) != "blank":
+            break
+        _sleep(1)
+    if not _sendable(page_kind(state.get("url"), cfg), cfg):
+        out["code"], out["login"] = "login", True       # 로그인 화면·계정 화면 — LM 은 로그인하지 않는다(아무것도 누르지 않음)
+        return out
+    st = chat_state(cfg)
+    _sweep_prune(cfg, st)
+    nav, done = False, set()
+    if st.get("ours") and int(st.get("sent") or 0) > 0:
+        key0 = st.get("key")
+        code = retire_chat(cdp, cfg, why, budget=max(5.0, min(per, left())))
+        out["current"] = code
+        _sweep_count(out, code)
+        if key0 and code != "lost":
+            done.add(key0)                              # 이번 정리에서 한 번만 — 화면이 다른 대화였으면(lost) 그 주소로 옮겨 한 번 더 본다
+    while left() > 12:
+        st = chat_state(cfg)
+        if _chat_killed() or _chat_held(st):
+            out["code"] = "hold"
+            break
+        tg = [e for e in _sweep_targets(st) if e.get("key") not in done]
+        if not tg:
+            break
+        e = tg[0]
+        done.add(e.get("key"))
+        t1 = time.time()
+        code, census, flags = _sweep_one(cdp, cfg, e, min(per, left()))
+        nav = nav or code != "noid"
+        if code == "login":
+            out["code"], out["login"] = "login", True   # 그 사이 로그인이 풀렸다 — 시도로 세지 않고 멈춘다
+            break
+        _entry_done(cfg, e.get("key"), code, why, t1, census, flags)
+        _sweep_count(out, code)
+    if nav:
+        try:                                            # 정리가 연 지난 채팅에 뒤 단계가 이어 보내지 않게 — 빈 새 채팅 화면으로
+            cdp.call("Page.navigate", {"url": cfg["url"]}, timeout=20)
+            for _ in range(10):
+                _sleep(1)
+                s = cdp.eval(js_state(), timeout=10) or {}
+                if s.get("ready") in ("interactive", "complete"):
+                    break
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            st = chat_state(cfg)
+            if st.get("ours"):
+                _chats_save(cfg, _chat_reset(st))
+        except Exception:  # noqa: BLE001
+            pass
+    if out["code"] in ("none", "hold", "login") and out["tried"]:
+        out["code"] = (out["current"] if out["current"] is not None else
+                       "deleted" if out["deleted"] else
+                       max(out["why"], key=out["why"].get) if out["why"] else
+                       "gone" if out["gone"] else out["code"])
+    elif out["current"] is not None:
+        out["code"] = out["current"]
+    return out
 
 
 CHAT_COUNTS = ("made", "deleted", "kept", "failed", "notfresh")
@@ -3252,7 +3887,7 @@ def chat_note(d):
     if d.get("left"):
         s += " · 이어 쓰는 채팅 1개는 다음 새 채팅·실행 끝에 정리"
     if d.get("hold"):
-        s += " · 삭제 멈춤 — 지운 뒤에도 채팅이 화면에 남아 더 지우지 않습니다(이 줄을 사진으로 보내 주세요)"
+        s += " · 삭제 멈춤 — 지운 뒤 확인이 되지 않아 이번 실행에서는 더 지우지 않습니다(이 줄을 사진으로 보내 주세요)"
     return s
 
 
@@ -3268,7 +3903,7 @@ def chat_line():
         left = bool(st.get("ours") and int(st.get("sent") or 0) > 0 and st.get("pid") == os.getpid())
     except Exception:  # noqa: BLE001
         left = False
-    s = CHAT_LINE_HEAD + chat_note(dict(p, left=left, hold=_CHAT_KILL[0]))
+    s = CHAT_LINE_HEAD + chat_note(dict(p, left=left, hold=_chat_killed()))
     cz = p.get("census")
     if isinstance(cz, dict) and cz:
         s += "\n" + CHAT_CENSUS_HEAD + census_note(cz.get("code"), cz)
@@ -3296,8 +3931,91 @@ def chat_status(cfg=None):
             s += f" · 새 채팅으로 확인되지 않아 맡지 않은 채팅 {t['notfresh']}"
     if not _chat_on(cfg):
         s += " · 설정으로 끔(copilotAuto.deleteChats=false)"
+    n_own = len(_owned_list(st))
+    if n_own:
+        s += f" · {lmname.SHORT} 기록에 남은 채팅 {n_own}개(다음 정리 때 다시 지웁니다)"
     if t["hold"]:
         s += " · 삭제 멈춤 — 지운 뒤에도 채팅이 화면에 남았습니다(이 줄을 사진으로 보내 주세요)"
+    return s
+
+
+def chat_run_report(cfg=None, run=None, button=False):
+    """LM30(2026-10-21) — 한 실행(chat_run_key)의 Copilot 채팅 셈(숫자·사유 코드만) → {run, made, deleted, kept, gone, deleted_old, gone_old,
+    old_left, left_old, why{코드: 수}, hold, savefail, line}.
+      made = 이번 실행이 연(보낸) 채팅 · deleted = 그중 지운 것 · kept = 그중 아직 기록에 남은 것(다음 정리가 다시 지운다 — 까닭은 마지막 시도의
+      사유, 아직 시도하지 않았으면 pending) + 지우지 못한 채 기록에서 뺀 것(확인 줄 없음·주소 모름·여러 번 실패 …) · gone = 그중 이미 목록에 없던 것 ·
+      deleted_old·gone_old·left_old = 이번 실행이 다룬 지난 실행의 채팅 · old_left = 지난 실행에서 남아 아직 기록에 있는 것.
+    button=True([LM이 연 Copilot 채팅 지우기]): 연 채팅이 없으니 지운·남긴 수를 모든 기록에 대해 합친다. line = chat_run_line."""
+    cfg = cfg if isinstance(cfg, dict) else load_cfg()
+    st = chat_state(cfg)
+    run = str(run or chat_run_key())
+    runs = st.get("runs") if isinstance(st.get("runs"), dict) else {}
+    rt = runs.get(run) if isinstance(runs.get(run), dict) else {}
+    owned = _owned_list(st)
+    left = {str(k): int(v or 0) for k, v in (rt.get("left") or {}).items() if int(v or 0) > 0}
+    left_old = {str(k): int(v or 0) for k, v in (rt.get("left_old") or {}).items() if int(v or 0) > 0}
+    mine = [e for e in owned if e.get("run") == run]
+    why = dict(left)
+    for e in (owned if button else mine):
+        k = str(e.get("why") or "pending")
+        why[k] = why.get(k, 0) + 1
+    rep = {"run": run, "made": int(rt.get("made") or 0), "deleted": int(rt.get("del") or 0),
+           "kept": len(mine) + sum(left.values()), "gone": int(rt.get("gone") or 0),
+           "deleted_old": int(rt.get("del_old") or 0), "gone_old": int(rt.get("gone_old") or 0),
+           "old_left": len(owned) - len(mine), "left_old": sum(left_old.values()), "why": why,
+           "hold": _chat_hold_kind(st), "savefail": int(rt.get("savefail") or 0) + int(_CHAT_PROC.get("save_pend") or 0)}
+    if button:
+        for k, v in left_old.items():
+            why[k] = why.get(k, 0) + v
+        rep.update(made=0, deleted=rep["deleted"] + rep["deleted_old"], gone=rep["gone"] + rep["gone_old"],
+                   kept=len(owned) + sum(left.values()) + sum(left_old.values()), deleted_old=0, gone_old=0,
+                   old_left=0, left_old=0, why=why)
+    rep["line"] = chat_run_line(rep, button=button)
+    return rep
+
+
+def chat_run_busy(rep):
+    """실행 끝 한 줄을 남길 일이 있었나(연·지운·남긴·이미 없던 채팅 · 지난 실행 몫 · 저장 실패 · 멈춤)."""
+    r = rep if isinstance(rep, dict) else {}
+    return bool(any(int(r.get(k) or 0) for k in ("made", "deleted", "kept", "gone", "deleted_old", "gone_old",
+                                                  "old_left", "left_old", "savefail")) or r.get("hold"))
+
+
+def chat_run_line(rep, button=False):
+    """실행 끝 한 줄(합니다체 · 숫자와 까닭만 — 제목·글 없음):
+    'Copilot 채팅: 이번 실행에서 연 N개 · 지운 M개 · 남긴 K개 (까닭: 대화 목록에서 못 찾음 1) · 지난 실행에서 남은 2개도 지웠습니다'.
+    button 이면 'Copilot 채팅: 이번에 지운 M개 · 남긴 K개 (까닭: …)'."""
+    r = rep if isinstance(rep, dict) else {}
+
+    def n(k):
+        try:
+            return max(0, int(r.get(k) or 0))
+        except (TypeError, ValueError):
+            return 0
+    why = {str(k): int(v or 0) for k, v in (r.get("why") or {}).items() if int(v or 0) > 0} if isinstance(
+        r.get("why"), dict) else {}
+    if button:
+        s = f"{CHAT_RUN_HEAD}이번에 지운 {n('deleted')}개 · 남긴 {n('kept')}개"
+    else:
+        s = f"{CHAT_RUN_HEAD}이번 실행에서 연 {n('made')}개 · 지운 {n('deleted')}개 · 남긴 {n('kept')}개"
+    if why and n("kept"):
+        s += " (까닭: " + ", ".join(f"{CHAT_WHY.get(k, k)} {v}" for k, v in sorted(why.items(), key=lambda x: (-x[1], x[0]))) + ")"
+    if n("gone"):
+        s += f" · 이미 대화 목록에 없던 {n('gone')}개는 기록에서 뺐습니다"
+    if n("deleted_old"):
+        s += f" · 지난 실행에서 남은 {n('deleted_old')}개도 지웠습니다"
+    if n("gone_old"):
+        s += f" · 지난 실행에서 남은 {n('gone_old')}개는 이미 대화 목록에 없어 기록에서 뺐습니다"
+    if n("left_old"):
+        s += f" · 지난 실행에서 남은 {n('left_old')}개는 여러 번 지우지 못해 기록에서 뺐습니다"
+    if n("old_left"):
+        s += f" · 지난 실행에서 남은 {n('old_left')}개는 다음 정리 때 다시 지웁니다"
+    if n("savefail"):
+        s += f" · 채팅 기록을 저장하지 못한 적이 {n('savefail')}번 있습니다(그 채팅은 지우지 못할 수 있습니다)"
+    if r.get("hold") == "perm":
+        s += " · 지운 뒤 확인이 되지 않는 일이 여러 실행에서 되풀이돼 새 판이 나올 때까지 더 지우지 않습니다(이 줄을 사진으로 보내 주세요)"
+    elif r.get("hold"):
+        s += " · 지운 뒤 확인이 되지 않아 이번 실행에서는 더 지우지 않았습니다(다음 실행에서 다시 지웁니다)"
     return s
 
 
@@ -3368,7 +4086,18 @@ def run_roundtrip(cfg, prompt, fresh=False, reload=False):
     LM28: 답을 기다리던 중에 사용량 제한을 알아챈 왕복(_roundtrip_once 의 phase 'throttled')도 사다리를 타지 않고 그대로 돌려준다.
     LM28 느린 긴 답: slow(왕복 예산 안에 다 못 받은 답 — ok+cut)도 사다리를 타지 않고 그대로 돌려준다. fresh=RESUME(다음 단계의 첫
     왕복)이면 화면이 상태 파일의 우리 채팅일 때만(_resume_ok) 새 채팅 없이 이어 보내고, 아니면 fresh 와 같다.
-    LM28(2026-10-17): 이어 보내기(fresh 거짓)도 화면이 이 프로세스의 우리 채팅에서 다른 대화로 옮겨 갔으면(_moved_away) 새 채팅에 보낸다."""
+    LM28(2026-10-17): 이어 보내기(fresh 거짓)도 화면이 이 프로세스의 우리 채팅에서 다른 대화로 옮겨 갔으면(_moved_away) 새 채팅에 보낸다.
+    LM30(2026-10-21) — 여는 채팅을 줄인다(사용자 제보: Copilot 대화 목록 도배):
+      · 끊긴 답(cut — 생성 중단 문구)은 사다리 없이 돌려준다(slow 와 같다) — 같은 프롬프트를 새 채팅에 또 보내면 같은 길이의 답이 또 끊겼고
+        채팅만 늘었다. 호출자(judge·refine·flow)가 잘린 앞부분을 쓰고 빠진 것만 작게 다시 묻는다(이어 쓰는 채팅에서).
+      · 사다리는 새 채팅을 많아야 하나 연다: ① 처음 보낸 채팅이 방금 연 새 채팅이면 그 채팅에 다시(이어 보내기 확인 뒤), 이어 쓰던 채팅이면
+        새 채팅 하나 ② ①의 채팅에 이어서(자동 모델) — 새 채팅을 더 열지 않는다. retry 노트의 '새 채팅'은 정말 새 채팅을 열었을 때만 쓴다.
+      · reload=RELOAD_KEEP: 같은 대화를 그 자리에서 새로 고쳐(주소에 이 프로세스의 우리 대화 id 가 있을 때만 — _reload_same) 이어 보낸다
+        (judge 의 쉬었다 다시 보내기 중 앞 왕복이 답을 남기지 않은 경우). 이어 보내기 확인(_continue_why)은 그대로 — 확인 못 하면 새 채팅.
+        이때 사다리 ①도 그 채팅에 다시 보낸다(쉬기 사다리가 이미 느린 재시도다 — 새 채팅을 보태지 않는다)."""
+    keep = reload == RELOAD_KEEP
+    if keep:
+        reload = False
     _t_rt = time.time()
     _rt_max = max(0, int(cfg.get("roundtripMaxSec") or 0))
     global _RT_DEADLINE           # v3: 고정 대기(준비·입력창·유휴 폴링)도 왕복 예산 안에서 끝나게
@@ -3399,6 +4128,9 @@ def run_roundtrip(cfg, prompt, fresh=False, reload=False):
             ok_r = (not reload) and _resume_ok(cdp, cfg)
             _RESUMED[0] = ok_r
             fresh = not ok_r
+        # LM30 — 답을 남기지 않은 실패 뒤의 다시 보내기(RELOAD_KEEP): 같은 대화를 그 자리에서 새로 고친다(우리 대화 id 가 주소에 있을 때만)
+        if keep and not fresh:
+            _reload_same(cdp, cfg)
         # LM28(2026-10-17) — 이어 보내기 직전 화면이 이 프로세스의 우리 채팅임을 확인하지 못하면(사람이 전용 Edge 에서 자기 대화를 누름 ·
         # 주소의 대화 id 가 다름 · 소유를 놓침) 그 대화에 보내지 않고 새 채팅을 연다 — 사람이 쓰던 채팅은 건드리지 않는다(사용자 요구).
         why_c = ""
@@ -3410,18 +4142,24 @@ def run_roundtrip(cfg, prompt, fresh=False, reload=False):
         # 새 채팅은 늘 _open_fresh(→ _fresh_chat)로 연다 — 다 쓴 우리 채팅을 먼저 목록에서 지우고, 새 채팅을 '우리 것'으로 적는다(LM28 채팅
         # 정리). 새 채팅으로 옮긴 것을 확인하지 못하면 보내지 않는다(NO_NEW_CHAT — 열려 있던 대화는 사람의 것일 수 있다). 지금 화면이 우리
         # 채팅이 아닌 것을 알면(why_c) 단추 대신 채팅 시작 주소로 새로 들어가고, 화면 글이 그대로면 보내지 않는다(guard_text).
+        # LM30 — 이번 왕복이 방금 연 새 채팅에서 시작했나(사다리 ①이 새 채팅을 또 열지 않는다). 같은 대화 새로 고침(RELOAD_KEEP — judge 의
+        # 쉬었다 다시 보내기)도 같다: 쉬기 사다리가 이미 느린 재시도이므로 ①이 새 채팅을 보태지 않는다.
+        opened = bool(keep)
         if why_c:
             if not _open_fresh(cdp, cfg, "fresh", reload=True, guard_text=True):
                 return _no_new_chat()
+            opened = True
         elif reload:
             # 쉬었다 다시 보내기·chatTurns 회전 — 오래 쓴 탭은 새 채팅 버튼만으로는 실패가 이어졌다(진단 A).
             if not _open_fresh(cdp, cfg, "reload", reload=True):
                 return _no_new_chat()
+            opened = True
         elif fresh:
             # 판정처럼 '깨끗한 문맥'이 필요한 왕복은 새 채팅에서 시작한다 —
             # 앞선 실패 대화(예: 팀즈 조회 거절)가 문맥에 남으면 답이 오염된다.
             if not _open_fresh(cdp, cfg, "fresh"):
                 return _no_new_chat()
+            opened = True
         res = _once(cdp, cfg, prompt)
         # 사용량 제한 문구 — 사다리(새 채팅·자동 모델로 즉시 재전송)를 타지 않는다. 다시 보내면 제한이 길어진다.
         # (답을 기다리던 중에 알아챈 것은 이미 phase 'throttled' 로 온다)
@@ -3433,16 +4171,17 @@ def run_roundtrip(cfg, prompt, fresh=False, reload=False):
         # 같은 길이의 답을 또 기다리고, Copilot 은 앞 채팅들의 답을 뒤에서 마저 써 대화 목록에 같은 답이 쌓인다(현장 제보).
         if res.get("slow"):
             return res
-        # 끊긴 답(cut)도 재시도 사유다 — 다만 앞부분에 잘린 JSON 이 남아 있을 수 있어 전부 실패하면
-        # 그 답을 ok+cut 으로 돌려주고 호출자가 복구·부분 재시도한다(judge/refine 의 적응 분할).
-        bad = ((res.get("ok") and (is_error_reply(res.get("reply")) or res.get("cut")))
+        # LM30 — 끊긴 답(cut)도 사다리를 타지 않는다: 앞부분의 잘린 JSON 을 ok+cut 으로 돌려주고 호출자가 복구·부분 재시도한다(judge/refine 의
+        # 적응 분할 · flow 의 빠진 단위만 작게) — 같은 채팅에서 이어서(새 채팅을 열지 않는다).
+        if res.get("ok") and res.get("cut") and not is_error_reply(res.get("reply")):
+            return res
+        bad = ((res.get("ok") and is_error_reply(res.get("reply")))
                or res.get("phase") in ("no_reply", "empty_reply"))
         if not bad:
             return res
-        # ① 새 채팅에서 같은 모델로 재시도 (대화 문맥 오염·일시 오류 해소)
-        # 재시도는 **더 짧게 기다린다** — 1차가 replyTimeoutSec 를 다 쓰고 실패했다면 그 채팅·그 시각의
-        # Copilot 이 느린 것이고, 같은 예산으로 세 번 기다리면 왕복 하나에 최악 24분이 든다(감사 실측).
-        # 절반으로 줄여도 재시도 '횟수' 는 그대로라 회수 가능성은 유지되고 최악은 16분이 된다.
+        # ① 같은 모델로 재시도 — 이어 쓰던 채팅이었으면 새 채팅 하나(대화 문맥 오염·긴 대화의 느려짐 해소), 방금 연 새 채팅이었으면 그 채팅에
+        #   다시 보낸다(새 채팅을 또 열어도 얻는 것이 없다 · LM30). 재시도는 **더 짧게 기다린다** — 1차가 replyTimeoutSec 를 다 쓰고 실패했다면
+        #   그 채팅·그 시각의 Copilot 이 느린 것이고, 같은 예산으로 세 번 기다리면 왕복 하나에 최악 24분이 든다(감사 실측).
         cfg2 = dict(cfg)
         cfg2["replyTimeoutSec"] = max(120, int(cfg.get("replyTimeoutSec") or 480) // 2)
         # 빈 답·무응답이 한 번 확인된 뒤의 재시도는 '첫 글자 유예' 도 짧게 본다 — 유예 180초를 세 번 쓰면
@@ -3453,56 +4192,94 @@ def run_roundtrip(cfg, prompt, fresh=False, reload=False):
             return res
         _err_pause(res)
         cfg2["replyTimeoutSec"] = int(min(cfg2["replyTimeoutSec"], max(60, _rt_left() - 60)))
-        # 실패한 채팅(우리 것이면)을 먼저 지우고 새 채팅 — 사다리가 대화 목록에 실패 채팅을 남기지 않게. 새 채팅을 확인하지 못하면 재시도하지
-        # 않는다(LM28 2026-10-17 — 사람이 쓰던 대화에 보내지 않게)
-        how2 = _open_fresh(cdp, cfg, "ladder1")
-        if not how2:
-            return _no_new_chat(res)
+        if opened:
+            # 방금 연 우리 새 채팅 — 그 채팅임을 다시 확인한 뒤 그 채팅에 다시 보낸다(확인 못 하면 다시 보내지 않는다)
+            if _continue_why(cdp, cfg):
+                res["retry"] = "같은 채팅임을 다시 확인하지 못해 재시도하지 않았습니다"
+                return res
+            how2, where2 = "같은 채팅", "같은 채팅"
+        else:
+            # 실패한 채팅(우리 것이면)을 먼저 지우고 새 채팅 — 사다리가 대화 목록에 실패 채팅을 남기지 않게. 새 채팅을 확인하지 못하면
+            # 재시도하지 않는다(LM28 2026-10-17 — 사람이 쓰던 대화에 보내지 않게)
+            how2 = _open_fresh(cdp, cfg, "ladder1")
+            if not how2:
+                return _no_new_chat(res)
+            where2 = f"새 채팅 · {how2}"
         res2 = _once(cdp, cfg2, prompt)
         if res2.get("phase") == "throttled":
             return res2
         if res2.get("ok") and is_throttle_reply(res2.get("reply")):
             return _throttled(cfg, res2.get("reply"))
         if res2.get("slow"):
-            res2["retry"] = f"1단계 재시도(새 채팅 · {how2}) — 답이 길어 받은 데까지"
+            res2["retry"] = f"1단계 재시도({where2}) — 답이 길어 받은 데까지"
             return res2
-        if res2.get("ok") and not is_error_reply(res2.get("reply")) and not res2.get("cut"):
-            res2["retry"] = f"1단계 재시도 성공 (새 채팅 · {how2})"
+        if res2.get("ok") and res2.get("cut") and not is_error_reply(res2.get("reply")):
+            res2["retry"] = f"1단계 재시도({where2}) — 끊긴 답(받은 데까지)"
             return res2
-        # ② 새 채팅 + 자동 모델 폴백 (특정 모델 라우팅 장애 대비)
+        if res2.get("ok") and not is_error_reply(res2.get("reply")):
+            res2["retry"] = f"1단계 재시도 성공 ({where2})"
+            return res2
+        # ② ①의 채팅에 이어서 자동 모델로(특정 모델 라우팅 장애 대비) — 새 채팅을 더 열지 않는다(LM30). 그 채팅이 우리 채팅임을 다시 확인하지
+        #   못하면 보내지 않는다.
         if _rt_left() < 120:
             res2["retry"] = f"왕복 예산 {_rt_max // 60}분을 다 써 2단계 재시도는 하지 않았습니다"
             return res2 if res2.get("reply") else res
         _err_pause(res2)
         cfg2["replyTimeoutSec"] = int(min(cfg2["replyTimeoutSec"], max(60, _rt_left() - 60)))
-        if not _open_fresh(cdp, cfg, "ladder2"):
-            return _no_new_chat(res2 if res2.get("reply") else res)
+        if _continue_why(cdp, cfg):
+            final = res2 if res2.get("reply") else res
+            final["retry"] = "1단계 재시도 실패 — 같은 채팅임을 다시 확인하지 못해 2단계 재시도는 하지 않았습니다"
+            return final
         res3 = _once(cdp, cfg2, prompt, model_override="자동")
         if res3.get("phase") == "throttled":
             return res3
         if res3.get("ok") and is_throttle_reply(res3.get("reply")):
             return _throttled(cfg, res3.get("reply"))
         if res3.get("slow"):
-            res3["retry"] = "2단계 재시도(새 채팅 + 자동 모델) — 답이 길어 받은 데까지"
+            res3["retry"] = f"2단계 재시도({where2} + 자동 모델) — 답이 길어 받은 데까지"
             return res3
-        if res3.get("ok") and not is_error_reply(res3.get("reply")) and not res3.get("cut"):
-            res3["retry"] = "2단계 재시도 성공 (새 채팅 + 자동 모델)"
+        if res3.get("ok") and not is_error_reply(res3.get("reply")):
+            res3["retry"] = (f"2단계 재시도({where2} + 자동 모델) — 끊긴 답(받은 데까지)" if res3.get("cut")
+                             else f"2단계 재시도 성공 ({where2} + 자동 모델)")
             return res3
-        # 전부 실패 — 마지막 결과에 실패 이력. 끊긴 답 중에는 가장 긴 것을 남긴다(복구 재료).
-        cuts = [r for r in (res, res2, res3) if r.get("ok") and r.get("cut") and not is_error_reply(r.get("reply"))]
-        if cuts:
-            final = max(cuts, key=lambda r: len(r.get("reply") or ""))
-            final["retry"] = "끊긴 답 — 새 채팅·자동 모델 재시도에도 반복(잘린 앞부분만 회수)"
-            return final
         final = res3 if res3.get("reply") else (res2 if res2.get("reply") else res)
         if final.get("ok") and is_error_reply(final.get("reply")):
             final = {"ok": False, "phase": "copilot_error", "reply": final.get("reply", ""),
                      "error": "Copilot 일시 오류 — 3단계 재시도 모두 실패",
                      "hint": "잠시 후 다시 실행하거나 Copilot 창에서 상태를 확인하세요"}
-        final["retry"] = "새 채팅·자동 모델 재시도 모두 실패"
+        final["retry"] = ("새 채팅·자동 모델 재시도 모두 실패" if where2.startswith("새 채팅")
+                          else "같은 채팅·자동 모델 재시도 모두 실패")
         return final
     finally:
         cdp.close()
+
+
+RELOAD_KEEP = "keep"           # reload 자리의 값(LM30) — 새 채팅 대신 같은 대화를 그 자리에서 새로 고친다(_reload_same)
+
+
+def _reload_same(cdp, cfg, wait=15):
+    """LM30(2026-10-21) — 같은 대화를 그 자리에서 새로 고친다(Page.reload) → 했나. 상태 파일이 이 프로세스의 우리 채팅(보낸 적 있음)이고 탭
+    주소의 대화 id 가 적어 둔 id 와 같을 때만 — 아니면 아무것도 하지 않는다(뒤의 이어 보내기 확인이 새 채팅을 연다). 예외를 내지 않는다."""
+    try:
+        st = chat_state(cfg)
+        if not (st.get("ours") and int(st.get("sent") or 0) > 0 and st.get("pid") == os.getpid()):
+            return False
+        cid = conv_id(_chat_url(cdp), cfg)
+        if not cid or cid != str(st.get("conv") or ""):
+            return False
+        cdp.call("Page.reload", {"ignoreCache": False}, timeout=20)
+        for _ in range(max(1, int(wait))):
+            _sleep(1)
+            try:
+                s = cdp.eval(js_state(), timeout=10) or {}
+            except (TimeoutError, RuntimeError, OSError):
+                continue
+            if s.get("ready") in ("interactive", "complete"):
+                break
+        trace("chat", act="reload_same")
+        return True
+    except Exception:  # noqa: BLE001 - 못 했으면 이어 보내기 확인이 정한다
+        return False
 
 
 def _once(cdp, cfg, prompt, model_override=None):
@@ -3893,12 +4670,18 @@ def _run_parts(cdp, cfg, parts, fresh, deadline=None, reload=False):
     LM28 느린 긴 답: 어느 조각이든 slow(왕복 예산 끝에 받은 데까지)면 _wait_rest 로 더 기다리거나 남은 조각을 보내지 않고 그대로 돌려준다
     (ok — 호출자 run_roundtrip_split 이 새 채팅 전체 재전송을 하지 않는다). fresh=RESUME·이어 보내기 확인(_continue_why)·새 채팅 확인
     (_open_fresh — 확인 못 하면 보내지 않음)은 run_roundtrip 과 같다. 둘째 조각부터도 보내기 직전에 화면이 우리 채팅인지 보고, 아니면 남은
-    조각을 보내지 않는다(LM28 2026-10-17 — 조각 사이에 사람이 다른 대화를 눌렀어도 그 대화에 넣지 않는다)."""
+    조각을 보내지 않는다(LM28 2026-10-17 — 조각 사이에 사람이 다른 대화를 눌렀어도 그 대화에 넣지 않는다).
+    LM30: reload=RELOAD_KEEP 이면 같은 대화를 그 자리에서 새로 고친 뒤 이어 보낸다(run_roundtrip 과 같다)."""
     total = len(parts)
+    keep = reload == RELOAD_KEEP
+    if keep:
+        reload = False
     if fresh == RESUME:
         ok_r = (not reload) and _resume_ok(cdp, cfg)
         _RESUMED[0] = ok_r
         fresh = not ok_r
+    if keep and not fresh:
+        _reload_same(cdp, cfg)
     why_c = ""
     if not reload and not fresh:
         why_c = _continue_why(cdp, cfg)  # LM28(2026-10-17) — 우리 채팅임을 확인하지 못하면 새 채팅(run_roundtrip 과 같다)
@@ -3975,8 +4758,9 @@ def run_roundtrip_split(cfg, prompt, fresh=False, reload=False):
     결과 dict 형식은 run_roundtrip 과 같고 parts(조각 수)만 더한다. reload: 첫 시도 전에 채팅 페이지 새로 고침.
     사용량 제한(throttled)이면 새 채팅 전체 재시도도 하지 않는다."""
     parts = make_parts(prompt, reserve=len(PLEDGE_TAIL))
+    rl = RELOAD_KEEP if reload == RELOAD_KEEP else bool(reload)   # LM30 — 같은 대화 새로 고침(RELOAD_KEEP)은 그대로 넘긴다
     if len(parts) == 1:
-        res = (run_roundtrip(cfg, prompt + PLEDGE_TAIL, fresh=fresh, reload=True) if reload
+        res = (run_roundtrip(cfg, prompt + PLEDGE_TAIL, fresh=fresh, reload=rl) if rl
                else run_roundtrip(cfg, prompt + PLEDGE_TAIL, fresh=fresh))
         res["parts"] = 1
         return res
@@ -3999,7 +4783,7 @@ def run_roundtrip_split(cfg, prompt, fresh=False, reload=False):
         activate(cdp)                    # 탭을 앞으로 — 비활성 탭은 답이 자라지 않는다(배경 스로틀링, v24.13)
         try:
             res = _run_parts(cdp, cfg, parts, fresh=(True if attempt == 2 else fresh), deadline=_deadline,
-                             reload=bool(reload and attempt == 1))
+                             reload=(rl if (rl and attempt == 1) else False))
         except Exception as e:
             res = {"ok": False, "phase": "error", "error": f"{type(e).__name__}: {e}"}
         finally:
@@ -4201,7 +4985,7 @@ def _send(cfg, prompt, fresh=False, no_split=False, lock_wait=EDGE_LOCK_WAIT, re
         return blocked_result(prompt)
     if stub_dir():
         return run_stub(cfg, prompt, fresh=bool(fresh))       # 테스트 전용 — Edge 미기동
-    kw = {"reload": True} if reload else {}
+    kw = {"reload": (RELOAD_KEEP if reload == RELOAD_KEEP else True)} if reload else {}   # LM30 — 같은 대화 새로 고침은 그대로
     fr = RESUME if fresh == RESUME else bool(fresh)          # RESUME(다음 단계의 첫 왕복)은 그대로 넘긴다 — 화면 확인은 왕복 함수
     _RESUMED[0] = None
     try:
@@ -4237,7 +5021,8 @@ def send_inproc(prompt, fresh=False, deadline=None, cfg=None, stage="", reload=F
         os.environ["LM_STAGE"] = str(stage)[:40]        # 계측(copilot_trace)의 단계 이름
     try:
         if reload:
-            return _send(cfg, prompt, fresh=fresh, lock_wait=lock_wait, reload=True)
+            return _send(cfg, prompt, fresh=fresh, lock_wait=lock_wait,
+                         reload=(RELOAD_KEEP if reload == RELOAD_KEEP else True))
         return _send(cfg, prompt, fresh=fresh, lock_wait=lock_wait)
     except Exception as e:  # noqa: BLE001 - --send 와 같은 꼴로
         return {"ok": False, "phase": "error", "error": f"{type(e).__name__}: {e}",
@@ -4345,6 +5130,8 @@ def main():
     ap.add_argument("--port", type=int, help="디버그 포트 덮어쓰기")
     ap.add_argument("--reload", action="store_true",
                     help="보내기 전에 채팅 페이지를 새로 고침 (오래 쓴 탭 — 판정의 쉬었다 다시 보내기)")
+    ap.add_argument("--reload-keep", action="store_true",
+                    help="보내기 전에 같은 대화를 그 자리에서 새로 고침 (새 채팅 아님 — 답을 남기지 않은 실패 뒤 다시 보내기 · LM30)")
     ap.add_argument("--model", help="이번 왕복만 모델 바꾸기 (config 의 model 대신 — 예: 자동)")
     ap.add_argument("--retire", action="store_true",
                     help="--send 와 함께: 왕복 뒤 이 채팅을 Copilot 대화 목록에서 지운다(우리가 연 채팅만 — [AI 연결 진단])")
@@ -4372,8 +5159,9 @@ def main():
         elif a.send:
             with open(a.send, encoding="utf-8-sig") as f:
                 prompt = f.read()
-            if a.reload:
-                res = _send(cfg, prompt, fresh=bool(a.fresh), no_split=bool(a.no_split), reload=True)
+            if a.reload or getattr(a, "reload_keep", False):
+                res = _send(cfg, prompt, fresh=bool(a.fresh), no_split=bool(a.no_split),
+                            reload=(RELOAD_KEEP if getattr(a, "reload_keep", False) else True))
             else:
                 res = _send(cfg, prompt, fresh=bool(a.fresh), no_split=bool(a.no_split))   # send_inproc 과 같은 길
             if a.retire:

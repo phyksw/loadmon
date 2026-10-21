@@ -210,10 +210,14 @@ def roundtrip_timeout(n_parts=1):
 
 _FIRST_SEND = [True]        # 판정 세션의 첫 왕복인지 (새 채팅으로 시작)
 _NEED_FRESH = [False]       # 직전 왕복이 실패했거나 답을 해석 못 했다 — 다음 왕복은 새 채팅에서
+                            # (LM30: 끊긴 답·느린 답은 아니다 — 드라이버가 이어 보내기 직전에 우리 채팅인지 다시 보고 아니면 새 채팅을 연다)
+_ROTATIONS = [0]            # LM30 — 이 프로세스의 chatTurns 회전(같은 채팅에 상한만큼 보내 새 채팅으로 넘어간) 횟수 — 판정 기록·구조 줄
+NOANS_PHASES = ("no_reply", "empty_reply")   # LM30 — 실패한 왕복이 채팅에 답 글을 남기지 않은 갈래(쉬었다 같은 채팅에 다시 — RELOAD_KEEP)
 _TURNS = [0]                # 지금 채팅에서 성공한 왕복 수 — config.copilotAuto.chatTurns 에 닿으면 다음 왕복은 새 채팅
 _CHAT_TURNS = [None]        # chatTurns 캐시 (None = 아직 안 읽음)
 CHAT_TURNS_DEFAULT = 12     # 한 채팅에 이어 보내는 왕복 상한. 0 = 묶음마다 새 채팅(LM22 1차 방식)
 _RESUME = "resume"          # = copilot_auto.RESUME — 다음 단계의 첫 왕복을 앞 단계의 우리 채팅에 이어 보낸다(화면 확인은 드라이버)
+_RELOAD_KEEP = "keep"       # = copilot_auto.RELOAD_KEEP — 새 채팅 대신 같은 대화를 그 자리에서 새로 고친 뒤 이어 보낸다(LM30)
 # 이어 쓸 수 있는 왕복 이름(정제·Agentic·워크플로우·세부업무 병합의 첫 왕복) — 판정 묶음·체계 수립·월별 코멘트는 늘 예전 규칙(새 채팅)
 RESUME_NAMES = ("refine", "agentic", "flow", "detail3")
 
@@ -547,7 +551,7 @@ def _send_once(prompt_text, pf, name, want_fresh, n_parts, reload=False):
     """_transport 1회 — 새로 고침(reload)·대체 모델(_MODEL_FALLBACK)은 켜졌을 때만 넘긴다(옛 꼴의 _transport 와도 맞게)."""
     kw = {}
     if reload:
-        kw["reload"] = True
+        kw["reload"] = _RELOAD_KEEP if reload == _RELOAD_KEEP else True     # LM30 — 같은 대화 새로 고침은 그대로 넘긴다
     if _MODEL_FALLBACK[0]:
         kw["model"] = _MODEL_FALLBACK[0]
     res = _transport(prompt_text, pf, name, want_fresh, roundtrip_timeout(n_parts), **kw)
@@ -650,6 +654,8 @@ def copilot_send(prompt_text, tag, name, fresh=None):
     # chatTurns 회전(같은 탭을 오래 쓴 뒤의 새 채팅)이면 페이지도 새로 고친다 — 몇 시간 쓴 탭(만료된 페이지 토큰·커진 대화)은
     # 새 채팅 버튼만으로는 실패가 이어졌다(진단 A). 첫 왕복·실패 뒤의 새 채팅은 예전처럼 버튼만.
     reload = bool(want_fresh and not _FIRST_SEND[0] and 0 < limit <= _TURNS[0])
+    if reload and fresh is None and not _NEED_FRESH[0]:
+        _ROTATIONS[0] += 1                       # LM30 — 회전은 그대로 두되 센다(판정 기록 rotations · 구조 줄)
     if want_fresh:
         # 판정의 첫 왕복은 새 채팅에서 — 수집 단계의 실패 대화가 판정을 오염시키지 않게.
         # 직전 왕복이 실패했을 때도 새 채팅 — 끊긴 생성·오류 문구가 남은 채팅은 다음 답을 오염시킨다.
@@ -718,8 +724,13 @@ def copilot_send(prompt_text, tag, name, fresh=None):
         _COOLDOWNS[0] += 1
         k += 1
         lk += 1
-        _TURNS[0] = 0                            # 새로 고친 새 채팅에서 다시 보낸다
-        res = _send_once(prompt_text, pf, name, True, n_parts, True)
+        if str(res.get("phase") or "") in NOANS_PHASES:
+            # LM30 — 실패한 왕복이 답 글을 남기지 않았다(무응답·빈 답): 새 채팅을 열지 않고 같은 대화를 그 자리에서 새로 고쳐 다시 보낸다
+            # (드라이버 RELOAD_KEEP — 우리 채팅임을 다시 확인하고, 못 하면 그때 새 채팅). 오류 문구가 남은 채팅은 예전처럼 새 채팅.
+            res = _send_once(prompt_text, pf, name, False, n_parts, _RELOAD_KEEP)
+        else:
+            _TURNS[0] = 0                        # 새로 고친 새 채팅에서 다시 보낸다
+            res = _send_once(prompt_text, pf, name, True, n_parts, True)
     if k:
         res = dict(res, cooldowns=k)
     if res.get("phase") == "blocked":
@@ -730,7 +741,10 @@ def copilot_send(prompt_text, tag, name, fresh=None):
     if res.get("ok"):
         _FIRST_SEND[0] = False       # 성공했을 때만 소진 — 실패하면 다음도 새 채팅
         _HARD[0] = False             # 제한이 풀렸다 — 다음 일시 오류는 다시 쉬는 사다리부터
-        _NEED_FRESH[0] = bool(res.get("cut"))   # 끊긴 답이 남은 채팅도 다음엔 새 채팅
+        # LM30(2026-10-21) — 끊긴 답·느린 답(cut·slow) 뒤에도 새 채팅을 열지 않는다(사용자 제보: Copilot 채팅 도배). 호출자가 잘린 앞부분을 쓰고
+        # 빠진 것만 작게 다시 묻는 왕복은 같은 채팅에 이어 보낸다 — 드라이버가 보내기 직전에 우리 채팅인지(앵커·대화 id) 다시 보고, 아니면 그때
+        # 새 채팅을 연다(_continue_why). 예전에는 끊긴 답마다 다음 왕복이 새 채팅이었다. 해석 실패(note_bad_reply)·왕복 실패는 그대로 새 채팅.
+        _NEED_FRESH[0] = False
         if resume and not res.get("resumed"):
             _TURNS[0] = 0                        # 이어 쓰려 했지만 화면이 그 채팅이 아니어서 새 채팅을 열었다
         # 드라이버가 재시도 사다리로 새 채팅을 열었으면 그 채팅의 첫 왕복이다
@@ -775,7 +789,7 @@ def _transport(prompt_text, pf, name, want_fresh, lim, reload=False, model=None)
         threading.Thread(target=_beat_loop, daemon=True).start()
         kw = {}
         if reload:
-            kw["reload"] = True
+            kw["reload"] = _RELOAD_KEEP if reload == _RELOAD_KEEP else True
         if model:
             kw["cfg"] = dict(ca.load_cfg(), model=str(model))
         try:
@@ -789,7 +803,7 @@ def _transport(prompt_text, pf, name, want_fresh, lim, reload=False, model=None)
         if want_fresh:
             cmd.append("--fresh")
         if reload:
-            cmd.append("--reload")
+            cmd.append("--reload-keep" if reload == _RELOAD_KEEP else "--reload")
         if model:
             cmd += ["--model", str(model)]
         # LM_STAGE — 드라이버가 report\copilot_trace.jsonl 에 '어느 단계의 왕복인지' 를 남기게 한다.
@@ -2808,6 +2822,27 @@ def _narr_name(name, real):
     return real[best] if best else None
 
 
+_MONTH_RX = re.compile(r"(20\d{2})\s*(?:[-./]|년)\s*(\d{1,2})(?!\d)")
+
+
+def _narr_mixed(o, mk, names_by):
+    """LM30(2026-10-21) — 한 채팅에 이어 물은 달의 리뷰 답에 다른 달이 섞였나: 요약·과제 줄에 다른 달(YYYY-MM · YYYY.M · YYYY년 M월)이
+    보이거나, 이 달 AI 판정 행에는 없고 다른 달에만 있는 과제 이름(정확한 이름 키)을 댔으면 참. names_by = {달: {과제 이름}}."""
+    try:
+        y, m = int(str(mk)[:4]), int(str(mk)[5:7])
+    except ValueError:
+        return False
+    projs = [p for p in _as_list((o or {}).get("projects")) if isinstance(p, dict)]
+    texts = [str((o or {}).get("summary") or "")] + [str(p.get(k) or "") for p in projs for k in ("name", "story")]
+    for t in texts:
+        for a, b in _MONTH_RX.findall(t):
+            if 1 <= int(b) <= 12 and (int(a), int(b)) != (y, m):
+                return True
+    here = {_nm_key(n) for n in (names_by or {}).get(mk, set())} | {_nm_key("공통")}
+    others = {_nm_key(n) for k2, ns in (names_by or {}).items() if k2 != mk for n in ns} - here
+    return any(_nm_key(p.get("name")) in others for p in projs if str(p.get("name") or "").strip())
+
+
 def narrate(kept, total_mm, tag, force_all=False, max_consec=2, cap_min=20.0):
     r"""월별 리뷰 코멘트 → {달: 항목}(이번에 새로 만든 달만). 저장은 달마다 save_narratives(늘 이월 — 끊겨도
     이전 달이 가려지지 않는다)로 하고, 끝에 한 번 더 한다.
@@ -2885,6 +2920,10 @@ def narrate(kept, total_mm, tag, force_all=False, max_consec=2, cap_min=20.0):
             _dl, _bud = _cap, float(cap_min)
     _consec = 0
     _n = max(len(plan), 1)
+    # LM30(2026-10-21) — 한 실행의 월별 리뷰는 한 채팅(review_chat — 첫 달이 연 채팅에 다음 달을 이어서). 다른 달에만 있는 과제 이름(달별
+    # AI 판정 행의 과제)은 '다른 달이 섞였나'를 가르는 데 쓴다(_narr_mixed).
+    review_chat = [False]
+    names_by = {m: {str(r.get("model")) for r in by_month[m] if _is_ai_row(r) and r.get("model")} for m in valid}
     for _i, (_pri, mk, rows, ai_rows) in enumerate(plan):
         # 예산·연속 실패 관문 — 예전에는 달마다 새 채팅으로 끝까지 시도했고, 그 사이에 부모의 단계 상한에
         # 걸리면 **성공한 달까지 통째로 사라졌다**(저장이 마지막에 한 번뿐이었다).
@@ -2899,6 +2938,8 @@ def narrate(kept, total_mm, tag, force_all=False, max_consec=2, cap_min=20.0):
         progress("월별 리뷰", _i, _n)
         head = [
             f"당신은 업무 리뷰 작성자입니다. {mk} 한 달의 판정된 업무 신호가 아래에 있습니다.",
+            # LM30 — 한 채팅에 달마다 이어 묻는다. 이 질문은 이 달만이다(앞 질문·답은 다른 달 — 섞지 않게 못 박는다)
+            f"이 질문은 {mk} 한 달만 다룹니다. 이 대화의 앞선 질문과 답(다른 달)은 참고하지 말고, 이 질문의 [신호] 목록만 근거로 쓰세요.",
             "과제별로 사용자가 어떤 업무에 리소스를 기여했는지, 업무유형(개발/사무/현장/협업)",
             "배분이 어땠는지 서술하세요. 불필요한 정보는 빼고 업무 내용만.",
             # 이 한 줄이 필요한 이유: 예전에는 달마다 같은 채팅을 이어 써서 앞선 달·판정 청크의
@@ -2924,26 +2965,39 @@ def narrate(kept, total_mm, tag, force_all=False, max_consec=2, cap_min=20.0):
             print(f"        {mk} 내러티브 — 관문을 통과한 신호가 없어 보내지 않습니다(이전 코멘트 유지)")
             continue
         prompt = "\n".join(head + lines)
-        # ★ 달마다 **새 채팅**에서 묻는다. 예전에는 fresh 를 주지 않아 '같은 채팅에서 이어서' 가 됐고,
+        # ★ 첫 달은 **새 채팅**에서 묻는다. 예전에는 fresh 를 주지 않아 '같은 채팅에서 이어서' 가 됐고,
         # narrate 는 judge.main 끝에서 돌므로 그 채팅에는 이미 **분석 기간 전체**(최근 달 포함)의 판정
         # 청크가 들어 있었다. 그래서 6월 리뷰에 8~9월 일이 적히는 일이 생겼다(제보).
-        # 판정 청크는 앞 묶음의 과제 표기를 이어받는 이득이 있어 같은 채팅을 쓰지만, 월별 리뷰는
-        # 프롬프트가 혼자서 완결이라 이어받을 이득이 없고 오염만 남는다.
-        res = copilot_send(prompt, tag, f"narr_{mk}", fresh=True)
-        if res.get("phase") == "blocked":
-            # 최종 검사는 프롬프트 전체(과제명·상대 표기 포함)를 본다 — 표본 단계는 text 열만 정제하므로 한 줄
-            # 때문에 그 달 전체가 막히던 경로(LM24 에 없던 것). 걸린 줄만 빼고 한 번 더 보낸다.
-            ok_lines = [ln for ln in lines if g3_prompt(ln)]
-            if 20 <= len(ok_lines) < len(lines):
-                print(f"        {mk} 내러티브 — 관문에 걸린 신호 {len(lines) - len(ok_lines)}줄을 빼고 다시 보냅니다")
-                res = copilot_send("\n".join(head + ok_lines), tag, f"narr_{mk}", fresh=True)
+        # LM30(2026-10-21) — 다음 달부터는 그 리뷰 채팅에 이어 묻는다(fresh=None — 앞 달이 실패·해석 실패면 copilot_send 가 새 채팅). 예전에는
+        # 달마다 새 채팅이라 첫 실행·폴더를 합친 실행에서 리뷰 채팅만 10개씩 대화 목록에 쌓였다(사용자 제보). 섞임은 프롬프트의 '이 달만' 줄로
+        # 막고, 그래도 답에 다른 달(다른 YYYY-MM · 이 달에는 없고 다른 달에만 있는 과제)이 보이면 그 달만 새 채팅에서 한 번 더 묻는다.
+        fr = None if review_chat[0] else True
+        o = None
+        for _try in (0, 1):
+            res = copilot_send(prompt, tag, f"narr_{mk}", fresh=fr)
             if res.get("phase") == "blocked":
-                # 개인정보 관문 — 보내지 않았다. 실패가 아니므로 연속 실패에 넣지 않는다(이전 코멘트 유지)
-                print(f"        {mk} 내러티브 — 개인정보 관문에 걸려 보내지 않았습니다(이전 코멘트 유지)")
-                continue
-        if res.get("ok"):
+                # 최종 검사는 프롬프트 전체(과제명·상대 표기 포함)를 본다 — 표본 단계는 text 열만 정제하므로 한 줄
+                # 때문에 그 달 전체가 막히던 경로(LM24 에 없던 것). 걸린 줄만 빼고 한 번 더 보낸다.
+                ok_lines = [ln for ln in lines if g3_prompt(ln)]
+                if 20 <= len(ok_lines) < len(lines):
+                    print(f"        {mk} 내러티브 — 관문에 걸린 신호 {len(lines) - len(ok_lines)}줄을 빼고 다시 보냅니다")
+                    res = copilot_send("\n".join(head + ok_lines), tag, f"narr_{mk}", fresh=fr)
+            if res.get("phase") == "blocked" or not res.get("ok"):
+                break
+            review_chat[0] = True                  # 리뷰 채팅이 열렸다 — 다음 달은 이어서
             o = rfind_json(res.get("reply", ""), "summary", skip=(NARRATIVE_EXAMPLE,)) \
                 or repair_json(res.get("reply", ""), "summary", skip=(NARRATIVE_EXAMPLE,))
+            if (_try == 0 and fr is None and o and str(o.get("summary") or "").strip()
+                    and _narr_mixed(o, mk, names_by)):
+                print(f"        {mk} 리뷰에 다른 달 내용이 섞여 새 채팅에서 이 달만 한 번 더 묻습니다")
+                fr = True
+                continue
+            break
+        if res.get("phase") == "blocked":
+            # 개인정보 관문 — 보내지 않았다. 실패가 아니므로 연속 실패에 넣지 않는다(이전 코멘트 유지)
+            print(f"        {mk} 내러티브 — 개인정보 관문에 걸려 보내지 않았습니다(이전 코멘트 유지)")
+            continue
+        if res.get("ok"):
             if o and str(o.get("summary") or "").strip():
                 # 답이 든 과제 이름이 **그 달에 실제로 있는 이름**인지 확인한다. 예전에는 아무 검증이
                 # 없어, 프롬프트 예시의 '프로젝트A' 같은 것이 그대로 리뷰에 실릴 수 있었다(같은 계열의
@@ -3486,6 +3540,7 @@ def main():
                    "filled_rows": {k: int(filled_n.get(k, 0)) for k in ("same", "conv", "token", "sim")},
                    "rule_rows": rule_rows, "abort_kind": st["abort_kind"], "abort_reason": st["abort_reason"],
                    "cooldowns": _COOLDOWNS[0], "model_fallback": _MODEL_FALLBACK[0] or "",
+                   "rotations": _ROTATIONS[0],          # LM30 — chatTurns 회전(새 채팅으로 넘어간) 횟수
                    "items": {str(k): dict(v, sig=signal_sig(rows[k])) for k, v in judged.items()
                              if 0 <= k < len(rows)}}, f, ensure_ascii=False, indent=1)
 
@@ -3511,6 +3566,7 @@ def main():
     print(f"[judge] 구조: 신호 {len(rows)} · 재사용 {n_reused} · 같은 내용 대표 {len(reps)}(→{len(reps) + n_members}행) · "
           f"짧은 대화 {len(lowinfo)} · 왕복 {st['roundtrips']} · 대기 {_COOLDOWNS[0]}회 · 채움 {len(fills)} · "
           f"규칙 {rule_rows} · 중단 {st['abort_kind'] or '없음'}"
+          + (f" · 채팅 회전 {_ROTATIONS[0]}회(chatTurns {chat_turns()}번마다 새 채팅)" if _ROTATIONS[0] else "")
           + (f" · 대체 모델 {_MODEL_FALLBACK[0]}" if _MODEL_FALLBACK[0] else ""))
 
     if not judged:

@@ -55,21 +55,99 @@ def kill_job():
             JOB["pid"] = 0
 
 
-def close_edge(reason="ui", tidy=True):
+def _ca_mod():
+    r"""tools\copilot_auto(같은 프로세스 — 처음 쓸 때 한 번 불러온다)."""
+    tools = os.path.join(ROOT, "tools")
+    if tools not in sys.path:
+        sys.path.insert(0, tools)
+    import copilot_auto
+    return copilot_auto
+
+
+def close_edge(reason="ui", tidy=True, budget=None):
     r"""우리가 띄운 전용 Edge 만 CDP Browser.close 로 닫는다(tools\copilot_auto.close_own_edge — owner.json 표식).
     프로세스를 띄우지 않는다(예전 시작·종료 정리는 매번 powershell 을 띄웠다 — W3-15). 로그인 대기 중이거나
     keepEdgeOpen 이면 닫지 않고, 사람이 띄운 Edge·LM24 의 Edge 는 표식이 없어 건드리지 않는다(P6).
-    tidy=False — 닫기 전 Copilot 채팅 정리(최대 25초)를 건너뛴다(콘솔 창 닫기 — 윈도가 몇 초만 준다)."""
+    tidy=False — 닫기 전 Copilot 채팅 정리를 건너뛴다(콘솔 창 닫기 — 윈도가 몇 초만 준다).
+    budget(LM30) — 닫기 전 정리(LM 이 연 채팅 다시 지우기 — sweep_owned)의 상한(초). 없으면 copilot_auto.SWEEP_SEC."""
     try:
-        tools = os.path.join(ROOT, "tools")
-        if tools not in sys.path:
-            sys.path.insert(0, tools)
-        import copilot_auto
+        copilot_auto = _ca_mod()
         if not tidy:
             return copilot_auto.close_own_edge(None, reason, tidy=False)
+        if budget is not None:
+            return copilot_auto.close_own_edge(None, reason, budget=budget)
         return copilot_auto.close_own_edge(None, reason)
     except Exception as e:  # noqa: BLE001 - 정리 실패가 화면·종료를 막지 않는다
         return {"closed": False, "why": f"error:{type(e).__name__}"}
+
+
+UI_SWEEP_SEC = 60          # LM30 — [중지]·대시보드 종료가 기다려 주는 채팅 정리 상한(초 · copilot_auto.SWEEP_UI_SEC 와 같다)
+CHAT_SWEEP_SEC = 300       # LM30 — [LM이 연 Copilot 채팅 지우기] 의 상한(초 · copilot_auto.SWEEP_BUTTON_SEC 와 같다)
+CHAT_SWEEP_NOTE = ("기록에 없는 채팅(예전 판이 연 것·직접 붙여 넣은 것)은 LM 것인지 확인할 수 없어 그대로 두었습니다")
+
+
+def chat_job_run():
+    r"""LM30(2026-10-21) — 화면 작업([니즈 후보 발굴]·[워크플로우 재분석]·[리뷰 코멘트 재생성]·[유사 항목 정리])의 실행 열쇠. 자식 프로세스에
+    LM_CHAT_RUN 으로 넘기면 그 작업이 연 Copilot 채팅이 한 실행으로 묶인다(끝 한 줄 — job_chat_end)."""
+    return f"job-{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}-{int(time.time() * 1000) % 1000:03d}"
+
+
+def job_chat_end(run, label=""):
+    r"""LM30(2026-10-21) — 화면 작업이 끝난 뒤: LM 이 연 Copilot 채팅을 다시 지우고(copilot_auto.sweep_owned — 같은 프로세스 · 상한
+    UI_SWEEP_SEC·3) 그 작업의 한 줄('Copilot 채팅: 이번 실행에서 연 N개 · 지운 M개 · 남긴 K개 (까닭: …)')을 진행 로그에 남긴다 → 그 줄 | "".
+    전용 Edge 가 꺼져 있으면 띄우지 않는다(남은 채팅은 다음 정리가 지운다). 예외를 내지 않는다."""
+    try:
+        ca = _ca_mod()
+        ca.sweep_owned(None, budget=UI_SWEEP_SEC * 3, why="job", run=run)
+        rep = ca.chat_run_report(None, run=run)
+        if not ca.chat_run_busy(rep):
+            return ""
+        line = str(rep.get("line") or "")
+        if line:
+            log((f"[{label}] " if label else "") + line)
+        return line
+    except Exception as e:  # noqa: BLE001 - 정리 실패가 작업 결과를 바꾸지 않는다
+        log(f"[Copilot 채팅] 정리를 건너뜀({type(e).__name__})")
+        return ""
+
+
+def chat_sweep_now():
+    r"""LM30(2026-10-21) — [LM이 연 Copilot 채팅 지우기]: LM 기록(owned[])에 있는 채팅만 다시 지운다(copilot_auto.sweep_owned — 같은 프로세스).
+    전용 Edge 가 꺼져 있으면 띄우되 로그인은 하지 않는다(로그인 화면이면 아무것도 하지 않고 안내) · 이 버튼이 띄운 Edge 만 끝나고 닫는다.
+    → {"ok", "line", "note", "login", "code", "deleted", "kept", "left"} (숫자·사유만)."""
+    ca = _ca_mod()
+    run = "btn-" + chat_job_run()[4:]
+    rep = ca.sweep_owned(None, budget=CHAT_SWEEP_SEC, why="button", launch=True, run=run, lock_wait=30)
+    out = {"ok": True, "code": str(rep.get("code") or ""), "login": bool(rep.get("login")),
+           "deleted": int(rep.get("deleted") or 0), "kept": int(rep.get("kept") or 0), "left": int(rep.get("left") or 0),
+           "note": CHAT_SWEEP_NOTE}
+    code, tried = out["code"], int(rep.get("tried") or 0)
+    if code == "none" and not tried:
+        out["line"] = "Copilot 채팅: LM 기록에 지울 채팅이 없습니다"
+    elif out["login"] and not tried:
+        out["ok"] = False
+        out["line"] = "전용 Edge 창에서 로그인한 뒤 다시 누르세요(LM 은 로그인하지 않습니다 — 아무것도 지우지 않았습니다)"
+    elif code == "busy":
+        out["ok"] = False
+        out["line"] = "다른 작업이 전용 Edge 를 쓰고 있습니다 — 끝난 뒤 다시 누르세요"
+    elif code in ("noedge", "notab") and not tried:
+        out["ok"] = False
+        out["line"] = "전용 Edge 의 Copilot 창을 열지 못했습니다 — [AI 연결 진단]으로 상태를 확인한 뒤 다시 누르세요"
+    elif code == "off":
+        out["line"] = "Copilot 채팅 지우기가 설정으로 꺼져 있습니다(config.json 의 copilotAuto.deleteChats)"
+    else:
+        r2 = ca.chat_run_report(None, run=run, button=True)
+        out["line"] = str(r2.get("line") or "")
+        if code == "hold":
+            out["line"] += " · 지운 뒤 확인이 되지 않아 더 지우지 않았습니다"
+        if out["login"]:
+            out["line"] += " · 그 사이 로그인이 풀려 남은 채팅은 지우지 못했습니다(전용 Edge 창에서 로그인한 뒤 다시 누르세요)"
+    if rep.get("launched"):
+        try:
+            ca.close_own_edge(None, "chat_sweep", tidy=False)       # 이 버튼이 띄운 Edge 만 닫는다(이미 정리했다)
+        except Exception:  # noqa: BLE001
+            pass
+    return out
 
 
 def kill_copilot_edge():
@@ -154,7 +232,7 @@ def cleanup_children():
     except Exception:
         pass
     try:
-        close_edge("ui_exit")
+        close_edge("ui_exit", budget=UI_SWEEP_SEC)
     except Exception:
         pass
 
@@ -445,7 +523,7 @@ def ui_close_exit(server, why, out=None, tabs=None, now=None):
         pass
     log(line[len("[ui] "):])
     _write_ui_exit(why, busy, tabs, now)
-    for fn in (kill_job, proc.kill_all, lambda: close_edge("ui_close")):
+    for fn in (kill_job, proc.kill_all, lambda: close_edge("ui_close", budget=UI_SWEEP_SEC)):
         try:
             fn()
         except Exception:  # noqa: BLE001 - 정리 하나가 실패해도 종료는 한다
@@ -2491,6 +2569,99 @@ def pc_usage_view(meta):
     return _att.pc_usage_lines(att.get("total"), cu.get("pcFloorWindow"))
 
 
+def pc_months_view(meta):
+    r"""LM30(2026-10-21) 'MM 산정 근거'·'출퇴근·시간외 근무' 카드의 달마다 근거(GET /api/dash·/api/attendance 의 pc_months) →
+    {"cells": {달: 'PC 기록' 칸 글}, "lines": [경고·안내 줄], "fill8": 하루 8시간으로 채운 평일 수, "capped": 그런 달이 있나} —
+    mm_meta 의 mm_basis.pc_months(일수·건수만 — 시각 없음)·pc_log(Windows 보관 주 수)·send_gap(이미 말한 달은 발신 0건 줄에서 뺀다)
+    (core\attendance.month_cell·month_lines — 리포트와 같은 글자). 그 칸이 없는 예전 결과면 빈 값. 합계뿐이라 얼린 사본에도 남는다."""
+    import attendance as _att
+    meta = meta if isinstance(meta, dict) else {}
+    b = meta.get("mm_basis") if isinstance(meta.get("mm_basis"), dict) else {}
+    pm = b.get("pc_months") if isinstance(b.get("pc_months"), dict) else {}
+    pm = {str(k): v for k, v in pm.items() if isinstance(v, dict)}
+    if not pm:
+        return {"cells": {}, "lines": [], "fill8": 0, "capped": False}
+    sg = b.get("send_gap") if isinstance(b.get("send_gap"), dict) else {}
+    lines = _att.month_lines(pm, (sg.get("months") or []) if sg.get("warn") else (), b.get("pc_log"))
+    return {"cells": {k: _att.month_cell(v) for k, v in sorted(pm.items())}, "lines": lines,
+            "fill8": int(sum(_att._num0(v.get("fill8")) for v in pm.values())),
+            "capped": any(bool(v.get("capped")) for v in pm.values())}
+
+
+# ── LM30(2026-10-21) 예전 판 PC 가동 기록 가져오기(core\pc_import) — 'MM 산정 근거' 카드의 줄. 이 프로세스 안에서 찾고 가져온다(새 프로세스
+#    없음). 찾기는 폴더 300개·2초까지라 10분 동안 같은 답을 쓴다. 폴더 경로는 이 PC 화면에만(얼린 사본은 /api/pc_import 를 굽지 않는다).
+PCIMP = {"t": 0.0, "v": None}
+PCIMP_TTL_S = 600.0
+
+
+def pc_import_view(refresh=False):
+    r"""GET /api/pc_import — 예전 판 설치 폴더(이 PC 의 형제·사용자 폴더)와 지난 가져오기 기록 → {"ok", "found": [{folder, name, same,
+    who, events, hints, new, done, when}], "record": [{name, when, added, total, same, events, hints}], "scanned", "secs"}.
+    읽기만 한다(core\pc_import.scan)."""
+    now = time.time()
+    with LOCK:
+        if not refresh and PCIMP["v"] is not None and now - PCIMP["t"] < PCIMP_TTL_S:
+            return PCIMP["v"]
+    try:
+        import pc_import as _pi
+        s = _pi.scan(ROOT, DATA)
+    except Exception as e:  # noqa: BLE001 - 찾기가 깨져도 대시보드는 그대로(이 줄만 빈다)
+        return {"ok": False, "error": f"{type(e).__name__}"}
+    found = [{"folder": x.get("folder"), "name": x.get("name"), "same": x.get("same_pc"), "who": _pi.same_pc_text(x.get("same_pc")),
+              "events": x.get("events") or [], "hints": x.get("hints") or [], "new": int(x.get("new") or 0),
+              "done": bool(x.get("done")), "when": x.get("when") or ""} for x in s.get("found") or []]
+    rec = [{"name": r.get("name"), "when": r.get("when"), "added": r.get("added"), "total": r.get("total"),
+            "same": r.get("same_pc"), "events": r.get("events") or [], "hints": r.get("hints") or []}
+           for r in s.get("record") or [] if isinstance(r, dict)]
+    v = {"ok": True, "found": found, "record": rec, "scanned": s.get("scanned"), "secs": s.get("secs")}
+    with LOCK:
+        PCIMP.update(t=now, v=v)
+    return v
+
+
+def pc_import_run(body):
+    r"""POST /api/pc_import — {"folders": [찾은 폴더 경로…]} 또는 {"folder": 사람이 적은 폴더(다른 PC 에서 복사해 온 data\pc 등)} →
+    {"ok", "results": [{name, ok, added, who, error}], "added", "msg"}. 찾은 폴더는 지난 찾기 결과에 있는 것만 받는다. 그 폴더에는 아무것도
+    쓰지 않고, 이 설치의 원장(data\pc · data\추가PC\<이름>\pc)에만 더한다(원장 잠금 · 같은 행은 건너뜀)."""
+    import pc_import as _pi
+    b = body if isinstance(body, dict) else {}
+    paths = []
+    if isinstance(b.get("folders"), list):
+        known = {os.path.normcase(os.path.abspath(str(x.get("folder") or ""))): str(x.get("folder") or "")
+                 for x in (pc_import_view().get("found") or [])}
+        for f in b["folders"][:20]:
+            k = os.path.normcase(os.path.abspath(str(f or "")))
+            if k in known:
+                paths.append(known[k])
+    elif str(b.get("folder") or "").strip():
+        f = str(b.get("folder")).strip().strip('"')
+        if not os.path.isdir(f):
+            return {"ok": False, "error": "그 폴더가 없습니다 — 탐색기 주소 창의 경로를 그대로 붙여 넣으세요"}
+        paths.append(f)
+    if not paths:
+        return {"ok": False, "error": "가져올 폴더가 없습니다"}
+    hid, hnm = _pi.here_identity()
+    res, total = [], 0
+    for f in paths:
+        r = _pi.import_folder(f, DATA, hid, hnm, root=ROOT)
+        total += int(r.get("added") or 0) if r.get("ok") else 0
+        res.append({"name": r.get("name"), "ok": bool(r.get("ok")), "added": int(r.get("added") or 0),
+                    "who": _pi.same_pc_text(r.get("same_pc")), "error": r.get("error") or ""})
+        log(f"[PC 기록 가져오기] {r.get('name')}: " + (f"{int(r.get('added') or 0):,}줄 더함({_pi.same_pc_text(r.get('same_pc'))})"
+                                                  if r.get("ok") else str(r.get("error") or "실패")))
+    with LOCK:
+        PCIMP.update(t=0.0, v=None)                # 다음 GET 이 다시 찾는다(새로 가져올 행 수가 바뀌었다)
+    ok = any(x["ok"] for x in res)
+    if total > 0:
+        msg = (f"PC 가동 기록 {total:,}줄을 가져왔습니다. [재분석만]을 누르면 PC 기록이 없던 달을 다시 잽니다"
+               "(가져온 기록으로 잰 값이 예전 추정보다 작은 날은 예전 값을 그대로 둡니다).")
+    elif ok:
+        msg = "새로 가져올 기록이 없습니다 — 이미 가져왔거나 이 설치에 같은 기록이 있습니다."
+    else:
+        msg = "가져오지 못했습니다 — " + "; ".join(x["error"] for x in res if x["error"])[:200]
+    return {"ok": ok, "results": res, "added": total, "msg": msg}
+
+
 def meta_path_for(fn):
     r"""화면에 띄운 결과 행 파일(mm_rows_<기간>…)과 **같은 기간**의 report\mm_meta_<기간>.json — 없으면 가장 최근 mm_meta.
     /api/dash 와 /api/attendance 가 같은 규칙으로 기간을 고른다(LM30 — 한 곳). → 경로 또는 "" """
@@ -2625,6 +2796,8 @@ def attendance_view():
         with_lm29=bool(p.get("withLM29")),
         offhours_text=_att.offhours_line(tot, cu.get("nightWindow"), bool(agg.get("used_for_mm"))) if tot else "",
         pc_usage=bool(p.get("pcUsage")), pc_usage_text=_att.pc_usage_lines(tot, cu.get("pcFloorWindow")),
+        # LM30(2026-10-21) 달마다 근거 — 하루 8시간으로 채운 달·발신 0건인 달·Windows 보관 주 수(일수·건수만 — 얼린 사본에도 남는다)
+        pc_months_text=pc_months_view(meta)["lines"],
         send_gap=sg, send_gap_text=_att.send_gap_text(sg),
         hr=hr,
         plus_text=_att.plus_line(agg, hr, per[1] if per else None, _date.today(), std),
@@ -2998,11 +3171,12 @@ def tool_job(kind, extra=()):
     tag, targs = _tag_args()
     _WATCH_STATE_PATH["p"] = (os.path.join(REPORT, f"stage_state_{tag}_{kind}.json") if tag else None)
     res = {"ok": False, "error": "실행 실패", "hint": ""}
+    run = chat_job_run()                 # LM30 — 이 작업이 연 Copilot 채팅을 한 실행으로 묶는다(끝 한 줄 — job_chat_end)
     try:
         cmd = [sys.executable, os.path.join(ROOT, script)] + targs + list(extra)
         log(f"[{step}] 시작 — 기간 {tag or '(최신)'}")
         p = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                             env=dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1"),
+                             env=dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1", LM_CHAT_RUN=run),
                              creationflags=NO_WIN)
         job = proc.attach(p)                 # LM28: 끊을 때 Job 째(taskkill 없음)
         with LOCK:
@@ -3053,6 +3227,9 @@ def tool_job(kind, extra=()):
                 res["ok"] = False
         log(f"=== {step} " + ("완료" if res.get("ok") else f"실패: {str(res.get('error') or '')[:80]}"
                                 + (f" — {str(res.get('hint') or '')[:120]}" if res.get("hint") else "")) + " ===")
+        cl = job_chat_end(run, step)         # LM30 — 이 작업이 연 Copilot 채팅을 지우고 한 줄(연·지운·남긴 수와 까닭)
+        if cl:
+            res["chats_line"] = cl
     except Exception as e:  # noqa: BLE001 - 어떤 예외도 JOB 을 '실행 중'으로 남기면 안 된다
         res = {"ok": False, "error": f"실행 오류({type(e).__name__})", "hint": str(e)[:150]}
         log(f"오류: {e}")
@@ -3087,9 +3264,10 @@ def narrate_job(all_months=False):
         cmd = narrate_cmd(tag, all_months)
         log(f"[리뷰] {tag} 코멘트 재생성 시작 — "
             + ("모든 달 다시 만들기" if all_months else "빠진 달·최근 달·데이터가 바뀐 달만"))
+        run = chat_job_run()             # LM30 — 이 작업이 연 Copilot 채팅을 한 실행으로 묶는다(끝 한 줄 — job_chat_end)
         p = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                              env=dict(os.environ, PYTHONIOENCODING="utf-8",
-                                      PYTHONUNBUFFERED="1"), creationflags=NO_WIN)
+                                      PYTHONUNBUFFERED="1", LM_CHAT_RUN=run), creationflags=NO_WIN)
         with LOCK:
             JOB["pid"] = p.pid
         job = proc.attach(p)
@@ -3117,6 +3295,7 @@ def narrate_job(all_months=False):
         else:
             log("=== 리뷰 코멘트 완료 ===" if p.returncode == 0
                 else "=== 리뷰 코멘트를 새로 만들지 못했습니다 — 위 사유를 확인하세요(이전 코멘트는 그대로 둡니다) ===")
+        job_chat_end(run, "리뷰")            # LM30 — 이 작업이 연 Copilot 채팅을 지우고 한 줄
     except Exception as e:
         log(f"오류: {e}")
     finally:
@@ -3920,6 +4099,7 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
  <button class="ghost" id="teamagg">팀 취합</button>
  <button class="ghost" id="teamup">팀 서버 업로드</button>
  <button class="ghost" id="diag">AI 연결 진단</button>
+ <button class="ghost" id="chatsweep" title="LM이 열고 기록해 둔 Copilot 채팅만 다시 지웁니다 — 사람이 쓰던 채팅·기록에 없는 채팅은 건드리지 않습니다(분석·다른 작업 중에는 꺼집니다)">LM이 연 Copilot 채팅 지우기</button>
  <button class="ghost" id="cdiag">수집 진단</button>
  <button class="ghost" id="prepmove">PC 이동 준비</button>
  <button class="ghost" id="owa">Outlook 웹 읽기</button>
@@ -3934,7 +4114,8 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
  <div style="height:8px;background:#eef0f3;border-radius:4px;overflow:hidden">
   <i id="pg_bar" style="display:block;height:100%;width:0%;background:#2a78d6;transition:width .4s"></i></div>
  <div class="note" style="margin-top:5px" id="pg_hint"></div>
-</div></div>
+</div>
+<div class="note" id="chatline" style="display:none;margin-top:6px"></div></div>
 <div id="tr_banner" style="display:none;background:#fdecee;border:1px solid #f0b8c2;color:#8a1020;border-radius:6px;padding:9px 14px;margin:0 0 12px;font-size:12.5px;line-height:1.6"></div>
 
 <div class="row" id="tabs" style="margin-bottom:12px">
@@ -4036,7 +4217,8 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
 
 
 <div class="card"><h2>MM 산정 근거 <span class="state">투입 ÷ 가용 = 로드율 · 1 MM = 8h × 그 달 평일수</span></h2>
- <div id="mmbasis"></div></div>
+ <div id="mmbasis"></div>
+ <div id="pcimp"></div></div>
 
 <div class="card"><h2>출퇴근·시간외 근무 <span class="state" id="atstate">PC를 켜고 끈 시각과 내 흔적으로 추정 · 날짜별 시각은 이 PC에만</span></h2>
  <div id="atbody"><div class="note">불러오는 중…</div></div>
@@ -4244,7 +4426,9 @@ async function poll(){
   // LM30(2026-10-19): GERP 열기·읽기(시험 기능)도 — 같은 전용 Edge 를 쓴다. 카드가 단추를 다시 그릴 때도 이 값으로 끈다(__lmBusy)
   window.__lmBusy=!!s.running;
   ["owa","teamsweb","cvreset","gerpopen","gerpread"].forEach(id=>{const b=$(id);if(b)b.disabled=!!s.running;});
+  {const cs=$("chatsweep");if(cs)cs.disabled=!!s.running;}   // LM30 — [LM이 연 Copilot 채팅 지우기]도 같은 전용 Edge 를 쓴다
   ["gerpon","gerpoff","gerpchg","gerpsave","hron"].forEach(id=>{const b=$(id);if(b)b.disabled=!!s.running;});   // LM30(2026-10-19) GERP 켜기·끄기도(옵션 줄 칸 포함)
+  if(s.running)["pcimpgo","pcimprf","pcimpone"].forEach(id=>{const b=$(id);if(b)b.disabled=true;});   // LM30(2026-10-21) 가져오기 — 수집이 같은 원장에 쓴다(끝나면 카드를 다시 그린다)
   // LM28(2026-10-19): 작업이 도는 동안에는 [데이터 리셋]도 끈다(누르면 '실행 중'만 들었다) — 무엇이 도는지는 버튼에 마우스를 올리면 보인다
   const rsb=$("reset");if(rsb){rsb.disabled=!!s.running;rsb.title=s.running?`지금 도는 작업: ${s.step||"분석 실행"} — 끝나면 누를 수 있습니다`:"";}
   $("stop").style.display=s.running?"":"none";
@@ -4282,6 +4466,7 @@ async function refresh(){
   }else{ sbn.style.display="none"; }
  }
  const rs=d.rows||[];
+ try{chatLine(d.last_run);}catch(e){}         // LM30 — 마지막 실행의 Copilot 채팅 한 줄(연·지운·남긴 수와 까닭)
  const mm=d.meta||{};
  const inMM=(mm.total_mm!=null?mm.total_mm:d.total)||0, avMM=mm.avail_mm||0;
  $("k_load").textContent=avMM?Math.round(inMM/avMM*100)+"%":"–";
@@ -4350,6 +4535,7 @@ async function refresh(){
  if(ji.group_rows>0) jiInfo.push(`같은 내용 묶음 ${ji.group_rows}행`);
  if(ji.lowinfo_rows>0) jiInfo.push(`짧은 대화 ${ji.lowinfo_rows}행(보내지 않음)`);
  if(ji.cooldowns>0) jiInfo.push(`대기 ${ji.cooldowns}회`);
+ if(ji.rotations>0) jiInfo.push(`채팅 회전 ${ji.rotations}회`);   // LM30 — chatTurns 마다 새 채팅으로 넘어간 횟수
  if(ji.model_fallback) jiInfo.push(`대체 모델 ${esc(ji.model_fallback)}`);
  const jiLine=(jiBits.length?('· 판정 기록: '+jiBits.join(' · ')):"")
   +(jiInfo.length?((jiBits.length?'<br>':'')+'· 판정 구조: '+jiInfo.join(' · ')):"");
@@ -4592,8 +4778,9 @@ async function refresh(){
   const GC={reliable:["#0f7a3d","신뢰"],caution:["#c98a00","주의"],unreliable:["#c0122f","측정 불충분"]};
   const cvReasons=cv?((Array.isArray(cv.reasons)&&cv.reasons.length)?cv.reasons:(Array.isArray(cv.missing)?cv.missing:[])):[];
   const covBadge=(cv&&GC[cv.grade])?`<span style="display:inline-block;border:1px solid ${GC[cv.grade][0]};color:${GC[cv.grade][0]};border-radius:3px;padding:0 6px;font-size:11px;margin-left:4px" title="${esc(cvReasons.join(" · "))}">${GC[cv.grade][1]}</span>`:"";
+  // LM30(2026-10-21) '표준일 추정' → 'PC 기록 없어 8시간 채움'(Windows가 지운 달 — LM30도 그 값을 근무로 쓴다)
   const measTxt=ms9?`샘플러 ${cnt(ms9.sampler_days)}일 / PC 하한 ${cnt(ms9.pc_floor_days)}일 / 흔적폭 ${cnt(ms9.trace_window_days)}일 / 출장 ${cnt(ms9.offsite_days)}일 / 수동 ${cnt(ms9.manual_days)}일`
-    +(cnt(ms9.std_nopc_days)?` / 표준일 추정 ${cnt(ms9.std_nopc_days)}일`:"")+(cnt(ms9.hint_only_days)?` / 브라우저 기록만 ${cnt(ms9.hint_only_days)}일`:"")
+    +(cnt(ms9.std_nopc_days)?` / PC 기록 없어 8시간 채움 ${cnt(ms9.std_nopc_days)}일`:"")+(cnt(ms9.hint_only_days)?` / 브라우저 기록만 ${cnt(ms9.hint_only_days)}일`:"")
     +(ms9.method?` (${esc(ms9.method)})`:""):"";
   const measNote=(measTxt||covBadge)?`<div class="note"><b>측정 방식</b> ${measTxt}${covBadge}${cvReasons.length?` — ${esc(cvReasons.slice(0,4).join(" · "))}`:""}${cv&&cv.grade==="unreliable"?" · <b style='color:#c0122f'>팀 비교에서 제외되는 결과입니다</b>":""}</div>`:"";
   const H=k=>pick(k)!=null;
@@ -4611,19 +4798,31 @@ async function refresh(){
   const snH=num(pick("sim_night_h")),snD=cnt(pick("sim_night_days"));
   const simNote=(snH||snD)?` · <b>야간 해석 인정 ${snH.toFixed(1)}h</b> · ${snD}일(상한 ${cnt(pick("sim_night_capped_days"))}일 · 재실행으로 상한 해제 ${cnt(pick("sim_night_unlocked_days"))}일 · PC 밖 ${num(pick("sim_night_remote_h")).toFixed(1)}h)`:"";
   const pcc=obj("pc_coverage_by_month");
-  const pccNote=pcc?`<div class="note">월별 PC 기록 — ${Object.entries(pcc).sort().map(([k,v])=>`${esc(k)} ${Math.round(num(v)*100)}%${num(v)<0.4?" <b style='color:#b54708'>[하한 미적용]</b>":""}`).join(" · ")} (40% 미만인 달은 PC 하한·부재 추정이 꺼집니다)</div>`:"";
+  // LM30(2026-10-21) 40% 미만인 달 = PC 기록이 없는 평일을 하루 8시간으로 채운 달(예전 글 'PC 하한·부재 추정이 꺼집니다')
+  const pccNote=pcc?`<div class="note">월별 PC 기록 — ${Object.entries(pcc).sort().map(([k,v])=>`${esc(k)} ${Math.round(num(v)*100)}%${num(v)<0.4?" <b style='color:#b54708'>[8시간 채움]</b>":""}`).join(" · ")} (40% 미만인 달은 PC 기록이 없는 평일 중 메일·파일 흔적이 있는 날을 하루 8시간으로 채우고, 흔적 없는 날을 부재로 추정하지 않습니다)</div>`:"";
   const fut=pick("future_days"),tf=pick("today_fraction");
   const futNote=(fut!=null||tf!=null)?`<div class="note">가용 기준 — ${fut!=null?`미래 평일 ${cnt(fut)}일은 가용에서 제외`:""}${(fut!=null&&tf!=null)?" · ":""}${tf!=null?`오늘은 ${Math.round(num(tf)*100)}% 만 가용(분석 시각${d.as_of?" "+esc(d.as_of):""} 기준 — 다시 분석하면 갱신)`:""}</div>`:"";
   const rhNote=m.rehours?`<div class="note"><b>비업무 제외 ${num(m.dropped_n)}건 · −${num(m.dropped_h).toFixed(1)}h</b> — 판정 후 시간을 다시 재어 투입 ${m.total_mm_before_rehours!=null?num(m.total_mm_before_rehours).toFixed(2)+" → ":""}${num(m.total_mm).toFixed(2)} MM 으로 갱신했습니다(버린 신호의 시간이 남은 행에 옮겨 붙지 않습니다)</div>`:"";
   // LM28(E) 시간 근거 한 줄 — 퇴근 후 미인정·시각 미상 발신·표준일 추정(PC 기록 없는 달)·브라우저 기록만 있는 평일·
   // AI 비업무 발신 시간 유지. 값이 있는 것만(mine 요약 줄·리포트 '산출 방식' 표 위 합계와 같은 숫자 — mm_basis 키)
   const tbBits=[];
+  let tbStd=-1;
   if(num(pick("evening_missed_days"))>0)tbBits.push(`퇴근 후 미인정 ${num(pick("evening_missed_days"))}일·PC ${num(pick("evening_missed_pc_h")).toFixed(1)}h <span class="dim">(퇴근 뒤 PC 는 켜져 있었는데 내 흔적 없음)</span>`);
   if(num(pick("untimed_sends"))>0)tbBits.push(`시각 미상 발신 ${num(pick("untimed_sends"))}통 <span class="dim">(${num(pick("untimed_credit_h")).toFixed(1)}h 인정)</span>`);
-  if(num(pick("std_nopc_days"))>0)tbBits.push(`표준일 추정 ${num(pick("std_nopc_days"))}일 <span class="dim">(+${num(pick("std_nopc_h")).toFixed(1)}h — PC 기록 없는 달)</span>`);
+  // LM30(2026-10-21) 출퇴근 추정이 투입을 맡았으면 하루 8시간으로 채운 날은 'LM29 방식 — 비교용' 줄(tbNoteAtt)에서 빼고 f8Note 로(LM30도 쓰는 값)
+  if(num(pick("std_nopc_days"))>0){tbStd=tbBits.length;tbBits.push(`표준일 추정 ${num(pick("std_nopc_days"))}일 <span class="dim">(+${num(pick("std_nopc_h")).toFixed(1)}h — PC 기록 없는 달)</span>`);}
   if(num(pick("hint_only_days"))>0)tbBits.push(`브라우저 기록만 있는 평일 ${num(pick("hint_only_days"))}일`);
   if(num(pick("ai_n_time_kept"))>0)tbBits.push(`AI 비업무 발신 시간 유지 ${num(pick("ai_n_time_kept"))}건 <span class="dim">(과제 배분에서만 빼고 시간 근거로 남김)</span>`);
-  const tbNote=tbBits.length?`<div class="note"><b>시간 근거</b> — ${tbBits.join(" · ")} <span class="dim">— 날짜별 근거는 리포트의 '산출 방식' 표</span></div>`:"";
+  const tbOf=bits=>bits.length?`<div class="note"><b>시간 근거</b> — ${bits.join(" · ")} <span class="dim">— 날짜별 근거는 리포트의 '산출 방식' 표</span></div>`:"";
+  const tbNote=tbOf(tbBits),tbNoteAtt=tbOf(tbBits.filter((x,i)=>i!==tbStd));
+  // LM30(2026-10-21) 달마다 근거(d.pc_months — 일수·건수만): 'PC 기록' 칸 · 하루 8시간으로 채운 달·발신 0건인 달·Windows 보관 주 수 경고
+  const pcm=(d.pc_months&&typeof d.pc_months==="object")?d.pc_months:{};
+  const pcmC=(pcm.cells&&typeof pcm.cells==="object")?pcm.cells:{};
+  const pcmOn=Object.keys(pcmC).length>0;
+  const PCM_TH="<th title='PC를 켜고 끈 기록이 있는 평일 / 그 달 평일(오늘까지) · 가져온 기록 · 브라우저 기록만 · 하루 8시간으로 채운 날'>PC 기록</th>";
+  window.__pcCapped=!!pcm.capped;
+  const pcmNote=(Array.isArray(pcm.lines)?pcm.lines:[]).filter(x=>typeof x==="string"&&x).map(x=>`<div class="note" style="color:#b54708;margin:0 0 6px"><b>${esc(x)}</b></div>`).join("");
+  const f8Note=num(pcm.fill8)>0?`<div class="note"><b>PC 기록이 없어 하루 8시간으로 채운 평일 ${num(pcm.fill8)}일</b> — Windows가 PC를 켜고 끈 기록을 지운 날은 메일·파일 흔적이 있으면 하루 8시간(+저녁 흔적)으로 채워 근무로 씁니다(표의 'PC 기록' 칸 · 예전 판 기록을 가져오면 그 날을 PC 기록으로 다시 잽니다).</div>`:"";
   const win=v=>Array.isArray(v)?v.join("~"):(v==null?"":String(v));
   const cfgNote=cu?`<div class="note">산식 설정 — 표준 ${esc(cu.standardDayHours)}h · PC 하한 ${cu.usePcFloor===false?"끔":"켬"}${cu.pcFloorNeeds?`(${esc(cu.pcFloorNeeds)})`:""} · 주간 창 ${esc(win(cu.dayWindow))} · 점심 ${esc(win(cu.lunch))}${cu.dinner?` · 저녁 ${esc(win(cu.dinner))}`:""} · 미정 회의 ${esc(cu.tentativeMeetings||"")} · 공휴일 ${num(cu.holidays_n)}일${cu.offsiteAsWork===false?" · 종일 행사 미인정":""}${cu.samplerGapBridgeMin!=null?` · 샘플러 공백 다리 ${num(cu.samplerGapBridgeMin)}분`:""}${cu.noPcMonthDay?` · PC 기록 없는 달 ${cu.noPcMonthDay==="trace"?"흔적 창(예전)":"표준일 추정(기본)"}`:""} — 팀과 다르면 팀 취합에 '산식 설정 상이' 배지가 붙습니다</div>`:"";
   // LM30(2026-10-18) — 투입 MM 을 무엇으로 쟀나(출퇴근 추정 / LM29 방식)와 달마다 'LM29 방식' MM(같은 분모 — mm_months.mm_lm29)·차이를
@@ -4660,6 +4859,9 @@ async function refresh(){
   // LM30v1(2026-10-19) 달마다 시간외 한 줄(근무 칸 — 주말·휴일·저녁·야간 · mm_basis.attendance)과 LM29 방식 MM(비교 — mm_lm29)을 더하고,
   // 두 비교 칸에는 그 판의 로드율(load_pct_lm30·load_pct_lm29 — 휴가를 가용에서 뺀 예전 분모)을 함께 적는다(예전 로드율이 어디서 왔는지
   // 견주게) · 맨 위에 발신 흔적 빈 곳 경고. 모두 근태 기록 없이 잰 값이라 얼린 사본에 남아도 된다.
+  // LM30v1(2026-10-21) 달마다 근거(LM30 표와 같은 것 — d.pc_months · 일수·건수만이라 얼린 사본에도): 맨 위 경고 줄(pcmNote) · 근무 칸 오른쪽
+  // 'PC 기록' 칸(pcmC) · 표 아래 lgF8(출퇴근 추정이 투입을 맡았을 때 — 하루 8시간으로 채운 날은 '기록 없는 날 측정'에 든다). 이 PC 화면이면
+  // 근무 칸에 '그중 PC 기록이 없어 하루 8시간으로 채운 평일 N일'(d.mm_local 달의 fill8_days — 근태 출근·퇴근이 없는 날만 센 수).
   const lgOn=mo.some(([,v])=>v&&typeof v==="object"&&v.basis==="legal");
   const lgLoc=(d.mm_local&&typeof d.mm_local==="object")?d.mm_local:null;
   const lgLm=(lgLoc&&lgLoc.months&&typeof lgLoc.months==="object")?lgLoc.months:{};
@@ -4675,43 +4877,47 @@ async function refresh(){
   const lgCmp=(x,lp,dl)=>x==null?"–":`${num(x).toFixed(2)} <span style="color:${dl>=0?"#0f7a3d":"#b54708"}">(${sgn(dl)})</span>`
    +(lp!=null?`<br><span class="dim">로드율 ${num(lp)}%</span>`:"");
   const lgRow=([k,v0])=>{const v=(v0&&typeof v0==="object")?v0:{};const L=(lgLm[k]&&typeof lgLm[k]==="object")?lgLm[k]:null;
-   const wk=L?`근태 기록 ${lgH(L.hr_h)} + 디지털 +@ ${lgH(L.plus_h)} · 기록 없는 날 측정 ${lgH(v.measured_h)}`+(num(L.credit_work_h)>=0.05?` · 그중 공휴일·휴가인 날 근무 ${lgH(L.credit_work_h)}`:"")
+   const f8=L?Math.round(num(L.fill8_days)):0;
+   const wk=L?`근태 기록 ${lgH(L.hr_h)} + 디지털 +@ ${lgH(L.plus_h)} · 기록 없는 날 측정 ${lgH(v.measured_h)}`+(f8>0?`(그중 PC 기록이 없어 하루 8시간으로 채운 평일 ${f8}일)`:"")+(num(L.credit_work_h)>=0.05?` · 그중 공휴일·휴가인 날 근무 ${lgH(L.credit_work_h)}`:"")
     :`기록 없는 날 측정 ${lgH(v.measured_h)}`;
    return `<tr><td>${esc(k)}</td><td>평일 ${num(v.workdays)}일 × ${lgStd}시간<br><span class="dim">= ${lgH(v.capacity_h)}</span></td>`
     +`<td><b>${lgH(v.legal_h)}</b><br><span class="dim">공휴일 ${lgD(v.holiday_days)} · 유급휴가 ${lgD(v.leave_days)} · 휴가 추정 ${lgD(v.inferred_leave_days)}</span></td>`
     +`<td><b>${lgH(v.actual_h)}</b><br><span class="dim">${wk}</span>${lgOh(k)}</td>`
+    +(pcmOn?`<td style="font-size:11px;color:#4a5159">${esc(pcmC[k]||"–")}</td>`:"")
     +`<td><b>${num(v.mm).toFixed(2)}</b></td><td>${num(v.avail_mm).toFixed(2)}</td><td><b>${v.load_pct==null?"–":num(v.load_pct)+"%"}</b></td><td>${bar(num(v.load_pct))}</td>`
     +`<td>${lgCmp(v.mm_lm30,v.load_pct_lm30,num(v.mm)-num(v.mm_lm30))}</td>`
     +(l29On?`<td>${lgCmp(v.mm_lm29,v.load_pct_lm29,num(v.mm)-num(v.mm_lm29))}</td>`:"")+`</tr>`;};
+  const lgF8=num(pcm.fill8)>0?`<div class="note"><b>PC 기록이 없어 하루 8시간으로 채운 평일 ${num(pcm.fill8)}일</b> — Windows가 PC를 켜고 끈 기록을 지운 날은 메일·파일 흔적이 있으면 하루 8시간(+저녁 흔적)으로 채웁니다. 법정 채움 MM에서는 이 값이 근무 칸의 '기록 없는 날 측정'(근태 출근·퇴근이 없는 날의 근무)에 들어갑니다 — 근태 출근·퇴근이 있는 날은 근태 시간을 씁니다(표의 'PC 기록' 칸 · 예전 판 기록을 가져오면 그 날을 PC 기록으로 다시 잽니다).</div>`:"";
   const lgL30=pick("load_pct_lm30"),lgL29=pick("load_pct_lm29");
   const lgLoad=(lgL30!=null||lgL29!=null)?`<div class="note" style="margin:0 0 6px"><b>예전 로드율과 견주기</b> — 이번 ${m.load_pct!=null?num(m.load_pct)+"%":"–"}`
     +(lgL30!=null?` · LM30 방식이었다면 ${num(lgL30)}%`:"")+(lgL29!=null?` · LM29 방식이었다면 ${num(lgL29)}%`:"")
     +` <span class="dim">— 예전 판은 공휴일을 1MM에서 빼고 휴가를 가용에서 빼서 로드율을 냈습니다. 달마다의 값은 표 오른쪽 비교 칸에 있습니다.</span></div>`:"";
-  const lgHtml=lgOn?(sgNote+`<div class="note" style="margin:0 0 6px"><b>${esc(d.mm_rule_text||"1MM = 그달 평일 × 8시간입니다. 공휴일·유급휴가는 법으로 채운 것으로 치고, 나머지는 실제 근무입니다.")}</b></div>`
+  const lgHtml=lgOn?(sgNote+pcmNote+`<div class="note" style="margin:0 0 6px"><b>${esc(d.mm_rule_text||"1MM = 그달 평일 × 8시간입니다. 공휴일·유급휴가는 법으로 채운 것으로 치고, 나머지는 실제 근무입니다.")}</b></div>`
     +`<div class="note" style="margin:0 0 6px">투입 MM = (근무 + 법정 채움) ÷ 1MM · 가용 MM = 지난 평일의 비율 · 로드율 = 투입 ÷ 가용${m.mm_lm30!=null?` — LM30 방식이었다면 ${num(m.mm_lm30).toFixed(2)} MM(차이 ${sgn(num(m.total_mm)-num(m.mm_lm30))} MM)`:""}${m.mm_lm29!=null?` · LM29 방식이었다면 ${num(m.mm_lm29).toFixed(2)} MM(차이 ${sgn(num(m.total_mm)-num(m.mm_lm29))} MM)`:""}</div>`
     +lgLoad
-    +"<table><tr><th>월</th><th>1MM 기준</th><th>법정 채움</th><th>근무</th><th style='width:58px'>투입 MM</th><th style='width:58px'>가용 MM</th><th style='width:62px'>로드율</th><th style='width:130px'></th><th style='width:96px'>LM30 방식 MM(비교)</th>"
+    +"<table><tr><th>월</th><th>1MM 기준</th><th>법정 채움</th><th>근무</th>"+(pcmOn?PCM_TH:"")+"<th style='width:58px'>투입 MM</th><th style='width:58px'>가용 MM</th><th style='width:62px'>로드율</th><th style='width:130px'></th><th style='width:96px'>LM30 방식 MM(비교)</th>"
     +(l29On?"<th style='width:96px'>LM29 방식 MM(비교)</th>":"")+"</tr>"
-    +mo.map(lgRow).join("")+"</table>"+ohNote+puNote
+    +mo.map(lgRow).join("")+"</table>"+ohNote+puNote+(attOn?lgF8:"")
     +`<div class="note">공휴일·유급휴가${lgCredInf?"·휴가 추정":""}은 <b>법정 시간으로 채웁니다</b>(가용에서 빼지 않음 — 평일이라는 이유만으로는 채우지 않습니다) · 초과근무 ${num(nb.overtime_h).toFixed(0)}h(연장 + 휴일 — 출퇴근 추정)는 상한 없이 그대로 반영(하루 24h 물리 한계만 · 이상치 ${anoms.length}일은 아래 표) · 20시 넘어 퇴근한 날 ${nb.night_days||0}일 · 주말·휴일 근무 ${nb.weekend_days||0}일</div>`
     +(lgCredInf?"":'<div class="note">휴가 추정(기록 없음)은 채우지 않습니다(설정 mm.creditInferredLeave false).</div>')
     +lgFlag("inferred","휴가 추정(기록 없음)","근태·휴가 기록이 없고 PC·흔적도 없어 휴가로 보고 하루를 채운 평일")
     +lgFlag("nohr","근태·흔적 모두 없음","근태 행은 있는데 출근·퇴근·휴가가 비었고 흔적도 없는 평일 — 채우지 않았습니다")
     +(lgLoc?`<div class="note">투입 MM(달 합계)에는 근태 기록 시간이 들어가 팀 서버로 갑니다. 날짜별 근태 기록, '근태 기록·디지털 +@' 나눔과 위 날짜 목록은 이 PC에만 있습니다.</div>`
       :`<div class="note">근태 기록 시간과 디지털 +@의 나눔·날짜 목록은 본인 PC의 화면에서만 보입니다 — 여기에는 달 합계만 담았습니다.</div>`)):"";
-  mmEl.innerHTML=mo.length?(lgOn?lgHtml:(sgNote+`<div class="note" style="margin:0 0 6px">${esc(nb.basis||"")} — 로드율 100% = 가용 시간을 꽉 채워 일함(회색 눈금). 야근하면 100%를 넘습니다.</div>`+l29Note+
-   "<table><tr><th>월</th><th style='width:58px'>투입 MM</th>"+(l29On?"<th style='width:62px'>LM29 방식</th><th style='width:52px'>차이</th>":"")+"<th style='width:58px'>가용 MM</th><th style='width:62px'>로드율</th><th style='width:130px'></th><th>투입 시간</th>"+(ohOn?"<th>그중 주말·휴일·저녁·야간</th>":"")+"<th>부재</th><th>그 달 평일</th></tr>"+
+  mmEl.innerHTML=mo.length?(lgOn?lgHtml:(sgNote+pcmNote+`<div class="note" style="margin:0 0 6px">${esc(nb.basis||"")} — 로드율 100% = 가용 시간을 꽉 채워 일함(회색 눈금). 야근하면 100%를 넘습니다.</div>`+l29Note+
+   "<table><tr><th>월</th><th style='width:58px'>투입 MM</th>"+(l29On?"<th style='width:62px'>LM29 방식</th><th style='width:52px'>차이</th>":"")+"<th style='width:58px'>가용 MM</th><th style='width:62px'>로드율</th><th style='width:130px'></th><th>투입 시간</th>"+(ohOn?"<th>그중 주말·휴일·저녁·야간</th>":"")+(pcmOn?PCM_TH:"")+"<th>부재</th><th>그 달 평일</th></tr>"+
    mo.map(([k,v0])=>{const v=(v0&&typeof v0==="object")?v0:{};const dl=num(v.mm)-num(v.mm_lm29);
     const l29c=l29On?(v.mm_lm29!=null?`<td>${num(v.mm_lm29).toFixed(2)}</td><td style="color:${dl>=0?"#0f7a3d":"#b54708"}">${sgn(dl)}</td>`:"<td>–</td><td>–</td>"):"";
+    const pcmc=pcmOn?`<td style="font-size:11px;color:#4a5159">${esc(pcmC[k]||"–")}</td>`:"";
     return `<tr><td>${esc(k)}</td><td><b>${num(v.mm).toFixed(2)}</b></td>${l29c}<td>${num(v.avail_mm).toFixed(2)}</td>
     <td><b>${v.load_pct==null?"–":num(v.load_pct)+"%"}</b></td><td>${bar(num(v.load_pct))}</td>
-    <td>${esc(v.worked)}h</td>${ohC(k)}<td>${esc(v.absent||0)}일</td><td>${esc(v.workdays)}일 = ${esc(v.capacity_h)}h</td></tr>`;}).join("")+
-   `</table>${ohNote}${puNote}${otNote}`))+`
+    <td>${esc(v.worked)}h</td>${ohC(k)}${pcmc}<td>${esc(v.absent||0)}일</td><td>${esc(v.workdays)}일 = ${esc(v.capacity_h)}h</td></tr>`;}).join("")+
+   `</table>${ohNote}${puNote}${otNote}${attOn?f8Note:""}`))+`
    <div class="note">${fixLead} ${num(nb.lunch_deducted_h).toFixed(0)}h · 저녁·새벽 가동 인정 ${num(nb.evening_credit_h).toFixed(1)}h · 주말 산출물 창 ${num(nb.weekend_window_h).toFixed(1)}h ·
    수동 흔적(수신·CC)만 있는 날 ${nb.floor_blocked_passive_days||0}일(하한 미적용 — 많으면 config.watchFolders 점검) · 미래 시각 신호 폐기 ${nb.future_signals_dropped||0}건 ·
    ${lgOn?"휴가 추정":"부재 추정"} ${nb.inferred_absence_days||0}일(PC 도 흔적도 없는 평일 — ${lgOn?(lgCredInf?"근태 행이 없으면 휴가로 보고 채움":"채우지 않음"):"가용에서 차감"}${absd.length?": "+esc(absd.slice(0,12).join(", "))+(absd.length>12?" …":""):""})${simNote}</div>
    <div class="note">흔적 없는 평일 ${nb.no_evidence_days||0}일 — 이 수가 크면 수집이 덜 된 것입니다: Outlook을 켠 상태로 재실행하거나 config.watchFolders 를 확인하세요.</div>`
-   +measNote+toolNote+rhNote+(attOn?tbNote.replace("<b>시간 근거</b>","<b>시간 근거(LM29 방식 — 비교용)</b>"):tbNote)+extraNote+pccNote+futNote+cfgNote
+   +measNote+toolNote+rhNote+(attOn?tbNoteAtt.replace("<b>시간 근거</b>","<b>시간 근거(LM29 방식 — 비교용)</b>"):tbNote)+extraNote+pccNote+futNote+cfgNote
    +((Array.isArray(nb.config_warnings)&&nb.config_warnings.length)?`<div class="note" style="color:#b54708"><b>설정 경고 ${nb.config_warnings.length}건</b> — 잘못된 값은 기본값으로 대체했습니다: ${esc(nb.config_warnings.slice(0,6).join(" · "))}${nb.config_warnings.length>6?" …":""}</div>`:"")
    +(nb.utc_suspect?`<div class="note" style="color:#b54708"><b>메일 시각이 UTC 로 기록된 것 같습니다</b> — 낮 발신이 새벽 야근으로 잡힐 수 있으니 config.mm.mailTimeOffsetH(예: 9)를 확인하세요.</div>`:"")
    +(anoms.length?`<div class="note"><b>이상치 ${anoms.length}일</b> — PC 기록이 물리적으로 맞지 않아 보정한 날(투입을 자르지 않고 표시만 합니다)
@@ -4728,7 +4934,53 @@ async function refresh(){
  const C={ok:"#0f7a3d",warn:"#c98a00",bad:"#c0122f",off:"#98a0a8"};
  $("src").innerHTML=d.sources.map(s=>`<span class="src"><span class="dot" style="background:${C[s.status]||C.off}"></span>
   <b>${s.name}</b> ${s.rows.toLocaleString()}건 · ${s.age}${s.hint?` <span style="color:${s.status==="warn"?"#c98a00":(s.status==="ok"?"#4a5159":"#c0122f")}">→ ${esc(s.hint)}</span>`:""}</span>`).join("");
+ pcImpLoad(false);
  attLoad();
+}
+// ── 예전 판 PC 가동 기록 가져오기(LM30 2026-10-21) — /api/pc_import: 이 PC의 형제·사용자 폴더에서 찾은 예전 판 설치 폴더와 지난 가져오기.
+//    [예전 판 PC 가동 기록 가져오기]·[이 폴더에서 가져오기](POST — 그 폴더는 읽기만 · 이 설치의 원장에만 더함). 분석이 도는 동안에는 단추를 끈다.
+//    얼린 사본은 /api/pc_import 를 굽지 않아(막힘) 아무것도 그리지 않는다.
+async function pcImpLoad(refresh){
+ let g=null;
+ try{g=await fetch("/api/pc_import"+(refresh?"?refresh=1":"")).then(r=>r.json());}catch(e){g=null;}
+ pcImpRender(g);
+}
+function pcImpRender(g){
+ const el=$("pcimp");if(!el)return;
+ if(!g||g.ok!==true){el.innerHTML="";return;}
+ const found=(Array.isArray(g.found)?g.found:[]).filter(x=>x&&typeof x==="object");
+ const rec=(Array.isArray(g.record)?g.record:[]).filter(x=>x&&typeof x==="object");
+ if(!found.length&&!rec.length&&!window.__pcCapped){el.innerHTML="";return;}
+ const busy=!!window.__lmBusy;
+ const rng=r=>(Array.isArray(r)&&r.length===2)?`${esc(r[0])}~${esc(String(r[1]).slice(5))}`:"없음";
+ const todo=found.filter(x=>Number(x.new)>0);
+ const line=x=>`<div class="note" style="margin:2px 0" title="${esc(x.folder||"")}"><b>${esc(x.name||"")}</b> — ${esc(x.who||"")} · PC 켜고 끈 기록 ${rng(x.events)} · 브라우저 기록 ${rng(x.hints)} · `
+  +(Number(x.new)>0?`<b>새로 가져올 기록 ${Number(x.new).toLocaleString()}줄</b>`:"새로 가져올 기록 없음")+(x.done?` <span class="dim">(가져옴 ${esc(x.when||"")})</span>`:"")+`</div>`;
+ el.innerHTML=`<div class="row" style="margin-top:10px;gap:6px;align-items:center;flex-wrap:wrap"><b style="font-size:12.5px">예전 판 PC 가동 기록 가져오기</b>`
+  +`<button class="ghost" id="pcimpgo" title="찾은 예전 판 폴더의 PC 켜고 끈 기록을 이 설치로 가져옵니다 — 그 폴더는 읽기만 합니다">예전 판 PC 가동 기록 가져오기</button>`
+  +`<button class="ghost" id="pcimprf" title="예전 판 폴더를 다시 찾습니다(형제 폴더·다운로드·바탕 화면·문서)">다시 찾기</button></div>`
+  +(found.length?found.map(line).join(""):'<div class="note" style="margin:2px 0">이 PC의 형제 폴더·다운로드·바탕 화면·문서에서 다른 판(LM28·LM29·LM30 등) 설치 폴더를 찾지 못했습니다.</div>')
+  +(rec.length?`<div class="note dim" style="margin:2px 0">지난 가져오기 — ${rec.slice(-4).map(r=>`${esc(r.name||"")} ${esc(r.when||"")} ${Number(r.added||0).toLocaleString()}줄`).join(" · ")}</div>`:"")
+  +`<div class="row" style="margin-top:4px;gap:6px;align-items:center;flex-wrap:wrap"><input id="pcimpdir" type="text" spellcheck="false" autocomplete="off" maxlength="400" placeholder="다른 폴더(예: 다른 PC에서 복사해 온 data\\\\pc 폴더 · 예전 판 설치 폴더)" style="flex:1;min-width:260px;border:1px solid #c9cfd8;border-radius:4px;padding:4px 6px;font:inherit;font-size:12px">`
+  +`<button class="ghost" id="pcimpone" title="적은 폴더의 PC 켜고 끈 기록을 가져옵니다 — 이 PC 것이 아니면 data\\\\추가PC\\\\(그 PC 이름) 으로 들어가 함께 셉니다">이 폴더에서 가져오기</button></div>`
+  +'<div class="note">가져온 뒤 [재분석만]을 누르면 PC 기록이 없던 달을 PC 기록으로 다시 잽니다. 가져온 기록으로 잰 값이 예전 추정(하루 8시간)보다 작은 날은 예전 값을 그대로 둡니다 — 가져오기는 시간을 줄이지 않습니다. 예전 폴더는 읽기만 하고, 가져온 기록은 이 PC에만 둡니다(팀 서버로 가지 않습니다).</div>';
+ const go=$("pcimpgo"),rf=$("pcimprf"),one=$("pcimpone");
+ if(go){go.disabled=busy||!todo.length;go.onclick=()=>pcImpRun({folders:todo.map(x=>x.folder)},todo.length+"곳");}
+ if(rf){rf.disabled=busy;rf.onclick=()=>pcImpLoad(true);}
+ if(one){one.disabled=busy;one.onclick=()=>{const v=String(($("pcimpdir")||{}).value||"").trim();
+  if(!v){alert("가져올 폴더 경로를 적으세요 — 탐색기 주소 창의 경로를 그대로 붙여 넣으면 됩니다.");return;}
+  pcImpRun({folder:v},"이 폴더");};}
+}
+async function pcImpRun(body,what){
+ if(!confirm(`${what}의 PC 켜고 끈 기록을 이 설치로 가져옵니다.\\n· 그 폴더는 읽기만 합니다(지우거나 바꾸지 않습니다).\\n· 같은 기록은 한 번만 들어갑니다(여러 번 눌러도 됩니다).\\n· 가져온 뒤 [재분석만]을 누르면 그 달들을 다시 잽니다.\\n\\n계속할까요?`))return;
+ ["pcimpgo","pcimprf","pcimpone"].forEach(id=>{const b=$(id);if(b)b.disabled=true;});
+ let r=null,d={};
+ try{r=await fetch("/api/pc_import",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+  d=await r.json().catch(e=>({ok:false,error:String(e)}));}catch(e){d={ok:false,error:String(e)};}
+ if(r&&r.status===409){alert(d.hint||"다른 작업이 도는 중입니다 — 끝난 뒤 누르세요");pcImpLoad(false);return;}
+ const lines=(Array.isArray(d.results)?d.results:[]).map(x=>`· ${x.name}: `+(x.ok?`${Number(x.added||0).toLocaleString()}줄(${x.who})`:x.error)).join("\\n");
+ alert((d.msg||d.error||"가져오지 못했습니다")+(lines?"\\n\\n"+lines:""));
+ pcImpLoad(true);
 }
 // ── 출퇴근·시간외 근무 카드(LM30) — /api/attendance: 이 기간 report\\attendance_<기간>.json(날짜별 출근·퇴근 — 이 PC 전용) + mm_meta
 //    합계(시각 없음). 결론 한 줄 · 재는 법 · 최근 8주 표 · 평소 시각 · 근태 기록 비교 · 최근 31일 날짜별 표(접힘).
@@ -4780,6 +5032,8 @@ function attRender(a){
    :'<div class="note">최근 31일에 근무로 센 날이 없습니다.</div>');
  // LM30(2026-10-19) 발신 흔적 빈 곳 경고(a.send_gap_text — 건수만 본다) · 시간외 나눠 보기 한 줄(a.offhours_text — 분석 기간 합계)
  el.innerHTML=(a.send_gap_text?`<div class="note" style="color:#b54708;margin:0 0 4px"><b>${esc(a.send_gap_text)}</b></div>`:"")
+  // LM30(2026-10-21) 달마다 근거 — 하루 8시간으로 채운 달·발신 0건인 달·Windows 보관 주 수(a.pc_months_text — 'MM 산정 근거' 카드와 같은 글자)
+  +(Array.isArray(a.pc_months_text)?a.pc_months_text:[]).filter(x=>typeof x==="string"&&x).map(x=>`<div class="note" style="color:#b54708;margin:0 0 4px"><b>${esc(x)}</b></div>`).join("")
   +(a.plus_text?`<div style="font-size:13.5px;margin-bottom:2px"><b>${esc(a.plus_text)}</b></div>`:"")
   +`<div style="font-size:13px;margin-bottom:2px"><b>${esc(a.headline||"")}</b></div>`
   +(a.offhours_text?`<div class="note" style="margin-top:2px"><b>시간외(분석 기간)</b> — ${esc(a.offhours_text)}</div>`:"")
@@ -5207,6 +5461,27 @@ $("diag").onclick=async()=>{
  if(!d.ok)L.push("\\n대개는 전용 Edge 창에서 회사 계정 재로그인으로 해결됩니다.");
  alert(L.join("\\n"));
 };
+// LM30(2026-10-21) [LM이 연 Copilot 채팅 지우기] — LM 기록에 있는 채팅만 다시 지운다(사람이 쓰던 채팅·기록에 없는 채팅은 그대로).
+// 분석·다른 작업 중에는 꺼진다(poll) · 서버도 409. 끝나면 실행 끝과 같은 한 줄을 알림 창과 아래 줄(chatline)에 보여 준다.
+$("chatsweep").onclick=async()=>{
+ if(!confirm("LM이 열고 기록해 둔 Copilot 채팅만 대화 목록에서 지웁니다(최대 5분).\\n사람이 쓰던 채팅과 기록에 없는 채팅은 건드리지 않습니다.\\n전용 Edge 가 로그인돼 있지 않으면 아무것도 지우지 않고 알려 드립니다.\\n\\n계속할까요?"))return;
+ const b=$("chatsweep");b.disabled=true;$("state").textContent="LM이 연 Copilot 채팅 지우는 중… (최대 5분)";
+ if(!timer){timer=setInterval(poll,1000);}
+ const r=await fetch("/api/chat_sweep",{method:"POST"}).catch(e=>null);
+ const d=r?await r.json().catch(e=>({ok:false,line:String(e)})):{ok:false,line:"서버 연결 끊김"};
+ b.disabled=false;$("state").textContent="대기 중";
+ if(r&&r.status===409){alert(d.hint||"다른 작업이 도는 중입니다 — 끝난 뒤 누르세요");return;}
+ if(d.line)window.__chatBtn=d.line;
+ const el=$("chatline");if(el&&d.line){el.textContent=d.line;el.style.display="";}
+ alert((d.line||"Copilot 채팅 지우기를 마치지 못했습니다 — 진행 로그를 확인하세요")+(d.note?"\\n\\n"+d.note:""));
+};
+// 마지막 실행의 Copilot 채팅 한 줄(LM30 — last_run.json 의 chats_line · 없으면 'Copilot 채팅 정리' 단계 note). 이 세션에서 버튼을 눌렀으면 그 줄
+function chatLine(lr){
+ const el=$("chatline");if(!el)return;
+ const r=lr||{};const st=(r.stages||[]).find(x=>x&&x.name==="Copilot 채팅 정리");
+ const ln=window.__chatBtn||r.chats_line||(st&&st.note)||"";
+ if(ln){el.textContent=(window.__chatBtn?"":"마지막 실행 — ")+ln;el.style.display="";}else{el.style.display="none";}
+}
 // [Outlook 웹 읽기]·[팀즈 웹 읽기] — LM28: 화면 기간(시작~끝)을 넘기고 run.py --web-only 가 정제·병합·원장·Edge 정리까지 한다.
 // 분석·다른 작업 중에는 버튼이 꺼진다(poll) — 같은 전용 Edge 를 두 작업이 함께 쓰지 않게(F-16).
 async function webRead(kind,btn){
@@ -5940,6 +6215,11 @@ class H(BaseHTTPRequestHandler):
                 pc_usage_text = pc_usage_view(meta)
             except Exception:  # noqa: BLE001 - 한 줄 때문에 대시보드 전체가 죽지 않게
                 pc_usage_text = []
+            # LM30(2026-10-21) 달마다 근거(일수·건수만 — 'PC 기록' 칸·8시간으로 채운 달 경고 · 얼린 사본에도 남는다)
+            try:
+                pc_months = pc_months_view(meta)
+            except Exception:  # noqa: BLE001
+                pc_months = {"cells": {}, "lines": [], "fill8": 0, "capped": False}
             try:
                 import details as _dl1m
                 _l1meta = _dl1m.l1_meta_payload()
@@ -5949,6 +6229,7 @@ class H(BaseHTTPRequestHandler):
                              "l1meta": _l1meta,
                              "file": fn, "rows": rows, "meta": meta,
                              "mm_local": mm_local, "mm_rule_text": mm_rule_text, "pc_usage_text": pc_usage_text,
+                             "pc_months": pc_months,
                              # 메일·일정 수집 범위(달 단위) — 주간 활동 추이 밑에 '미수집 달'을 적는다(얼린 사본에도 굳는다)
                              "mail_coverage": outlook_coverage(per),
                              # 화면이 보고 있는 그 기간을 넘긴다 — 예전에는 오늘 기준
@@ -6161,6 +6442,12 @@ class H(BaseHTTPRequestHandler):
             try:
                 self._send(200, gerp_view())
             except Exception as e:  # noqa: BLE001 - 카드 한 줄이 화면을 죽이지 않게(화면은 아무것도 그리지 않는다)
+                self._send(200, {"ok": False, "error": f"{type(e).__name__}"})
+        elif self.path in ("/api/pc_import", "/api/pc_import?refresh=1"):
+            # LM30(2026-10-21) 예전 판 PC 가동 기록 가져오기 — 찾은 폴더·지난 가져오기(pc_import_view — 읽기만). 얼린 사본에는 굽지 않는다.
+            try:
+                self._send(200, pc_import_view(refresh=self.path.endswith("refresh=1")))
+            except Exception as e:  # noqa: BLE001 - 이 줄 하나가 화면을 죽이지 않게
                 self._send(200, {"ok": False, "error": f"{type(e).__name__}"})
         elif self.path == "/api/projects":
             import projmap
@@ -6817,14 +7104,16 @@ class H(BaseHTTPRequestHandler):
                 # 정상 왕복을 끊고 응답 없이 연결을 닫아 '알 수 없는 오류'로 보였다(검증 확정).
                 # LM22: 정리 ≤3회 + 통합 보고서 캐시(계열·과제분류·세부·후보) 왕복까지 이어지므로 60분.
                 # 넘겨도 그때까지의 결과는 캐시에 남아 '다시 누르면 이어서' 가 성립한다.
+                run = chat_job_run()         # LM30 — 이 작업이 연 Copilot 채팅을 한 실행으로 묶는다(끝 한 줄 — job_chat_end)
                 p = subprocess.run(cmd, capture_output=True, timeout=3600, cwd=ROOT,
                                    env=dict(os.environ, PYTHONIOENCODING="utf-8",
-                                            PYTHONUNBUFFERED="1"), creationflags=NO_WIN)
+                                            PYTHONUNBUFFERED="1", LM_CHAT_RUN=run), creationflags=NO_WIN)
                 txt = (p.stdout or b"").decode("utf-8", "replace").strip()
                 err = (p.stderr or b"").decode("utf-8", "replace").strip()
                 for ln in txt.splitlines():
                     if ln and not ln.startswith("{"):
                         log(ln)
+                job_chat_end(run, "팀 유사 항목 정리")     # LM30 — 이 작업이 연 Copilot 채팅을 지우고 한 줄
                 try:
                     self._send(200, json.loads(txt.splitlines()[-1]))
                 except Exception:
@@ -6938,7 +7227,7 @@ class H(BaseHTTPRequestHandler):
             # 정리 중 예외가 나도 반드시 응답해야 한다 — 응답이 안 나가면 [중지] 버튼이
             # disabled 인 채로 영구히 남아 사용자가 다시 누를 수 없다.
             # LM28: 전용 Edge 는 CDP 로 우리가 띄운 것만 닫는다(로그인 대기 중이면 두고 — P6). powershell 을 띄우지 않는다.
-            for fn2 in (kill_job, lambda: close_edge("ui_stop")):
+            for fn2 in (kill_job, lambda: close_edge("ui_stop", budget=UI_SWEEP_SEC)):
                 try:
                     fn2()
                 except Exception as e:
@@ -7087,6 +7376,24 @@ class H(BaseHTTPRequestHandler):
                                      "hint": "분석·다른 작업이 도는 중에는 열지 않습니다(전용 Edge 를 함께 씁니다) — 끝난 뒤 누르세요"})
                     return
             self._send(200, gerp_open())
+        elif self.path == "/api/pc_import":
+            # LM30(2026-10-21) [예전 판 PC 가동 기록 가져오기] — 이 프로세스 안에서 가져온다(pc_import_run — 원장 잠금 · 같은 행은 건너뜀 ·
+            # 그 폴더에는 쓰지 않는다). 분석이 도는 동안에는 하지 않는다(409 — 수집이 같은 원장에 쓴다)
+            n = int(self.headers.get("Content-Length", 0) or 0)
+            try:
+                b = json.loads(self.rfile.read(n) or b"{}") if n else {}
+            except ValueError:
+                b = {}
+            with LOCK:
+                busy = bool(JOB["running"])
+            if busy:
+                self._send(409, {"ok": False, "error": "busy",
+                                 "hint": "분석·다른 작업이 도는 중에는 가져오지 않습니다 — 끝난 뒤 누르세요"})
+                return
+            try:
+                self._send(200, pc_import_run(b))
+            except Exception as e:  # noqa: BLE001 - 실패 까닭은 한 줄로
+                self._send(200, {"ok": False, "error": f"가져오지 못했습니다({type(e).__name__})"})
         elif self.path == "/api/gerp_config":
             # LM30(2026-10-19) GERP 근무 기록 읽기 [켜기]·[끄기]·[주소 바꾸기](카드) — config\config.json 의 attendance.gerp.enabled·url 만
             # 고친다(이 PC 의 개인 설정 — 팀 서버 주소 같은 팀 공통 값이 아니다 · BOM·다른 키 그대로 · gerp_config_check 가 검사).
@@ -7250,6 +7557,34 @@ class H(BaseHTTPRequestHandler):
                  + str(res.get("error", ""))))
             if res.get("chats"):
                 log("[진단] Copilot 채팅 정리: " + str(res["chats"])[:300])
+            self._send(200, res)
+        elif self.path == "/api/chat_sweep":
+            # LM30(2026-10-21) [LM이 연 Copilot 채팅 지우기] — LM 기록(owned[])에 있는 채팅만 다시 지운다(같은 프로세스 · 파이썬을 띄우지
+            # 않는다 — 전용 Edge 가 꺼져 있을 때만 그 Edge 를 띄운다). 다른 작업이 도는 동안은 409(같은 전용 Edge 를 함께 쓰지 않게) · 도는 동안
+            # JOB 을 잡아 다른 작업도 막는다. 로그인은 하지 않는다(로그인 화면이면 아무것도 지우지 않고 안내).
+            try:
+                n = int(self.headers.get("Content-Length", 0) or 0)
+                if 0 < n <= 4096:
+                    self.rfile.read(n)                  # 본문은 쓰지 않지만 먼저 읽는다(409 로 닫을 때 연결이 끊기지 않게)
+            except (ValueError, OSError):
+                pass
+            with LOCK:
+                if JOB["running"]:
+                    self._send(409, {"ok": False, "error": "busy",
+                                     "hint": f"지금 도는 작업({JOB.get('step') or '분석 실행'})이 끝난 뒤 누르세요"})
+                    return
+                JOB.update(running=True, step="Copilot 채팅 지우기", started=time.time(), phase="", done=0, total=0)
+            res = {"ok": False, "line": "", "note": CHAT_SWEEP_NOTE}
+            try:
+                log("[Copilot 채팅] LM 기록에 있는 채팅을 다시 지웁니다(최대 5분 — 사람이 쓰던 채팅은 건드리지 않습니다)")
+                res = chat_sweep_now()
+                log("[Copilot 채팅] " + str(res.get("line") or "")[:400])
+            except Exception as e:  # noqa: BLE001 - 어떤 예외도 JOB 을 '실행 중'으로 남기면 안 된다
+                res = {"ok": False, "line": f"Copilot 채팅 지우기 실패({type(e).__name__})", "note": CHAT_SWEEP_NOTE}
+                log("[Copilot 채팅] " + res["line"])
+            finally:
+                with LOCK:
+                    JOB.update(running=False, step="", pid=0, phase="", done=0, total=0)
             self._send(200, res)
         elif self.path == "/api/narrate":
             # 본문 {"all": true} = 모든 달 다시 만들기(--all) · 없으면 빠진 달·최근 달·데이터가 바뀐 달만.

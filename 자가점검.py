@@ -93,6 +93,8 @@ NEED = [
     # LM30(2026-10-19) GERP 근무 기록 읽기(시험 기능 · 기본 꺼짐) — 빠지면 그 기능만 빠진다(화면 카드 한 줄·[분석 실행]의 그 단계)
     "core/gerp.py",
     "collect/Get-GerpWork.py",
+    # LM30(2026-10-21) 예전 판 PC 가동 기록 가져오기 — 빠지면 그 기능만 빠진다(카드의 그 줄·[분석 실행] 안내 한 줄)
+    "core/pc_import.py",
     "docs/설정가이드.md",
     "docs/사용안내.html",
     "tools/copilot_auto.py",

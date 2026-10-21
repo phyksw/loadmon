@@ -1460,8 +1460,10 @@ def detgrp_refine(share, det2, sender=None, log=say):
             mapped = sorted({cache.get((pj, d), d) for d in ds})
             if len(mapped) >= 2:
                 secs.append((pj, f"[과제] {pj}\n" + "\n".join(f"- {d}" for d in mapped)))
+        # LM30(2026-10-21) — 첫 줄 앞 64자에는 마크다운(**)을 두지 않는다(Copilot 대화 목록 제목 = 첫 질문의 앞부분 — 지울 채팅을 제목으로
+        # 확인하지 못해 남던 원인 · core.details.MERGE_HEAD 와 같다)
         head_txt = (
-            "다음은 여러 과제의 세부업무 이름 목록이다. **같은 과제 안에서만**, 같은 묶음의 "
+            "다음은 여러 과제의 세부업무 이름 목록이다. 반드시 같은 과제 안에서만, 같은 묶음의 "
             "일(한 덩어리 업무의 논의/회의/협의/검토/관리 같은 국면들)이면 묶어라.\n"
             "확실할 때만 묶고, 성격이 다른 업무·다른 과제끼리는 절대 묶지 마라.\n"
             "이름 끝 괄호 표기('(양산)'/'(선행)' 등)가 다르면 절대 묶지 마라 — 실제 구분이다.\n"
