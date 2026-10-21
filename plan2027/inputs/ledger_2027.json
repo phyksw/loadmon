@@ -1,0 +1,174 @@
+{
+ "_about": "AXBoard 원장(_build/final_data.json)·로스터(agent_roster.json)에서 2027 계획에 쓰는 부분만 — 3과제 '27 마일스톤과 '27 Agent",
+ "ledger": {
+  "tasks": [
+   {
+    "code": "AL-1",
+    "milestones": [
+     {
+      "ref": "M-AL1-06",
+      "date": "2027-Q1",
+      "label": "구조 해석 자동화 착수 (RAG 재학습)"
+     },
+     {
+      "ref": "M-AL1-07",
+      "date": "2027-Q2",
+      "label": "구조 해석 파일럿 적용"
+     },
+     {
+      "ref": "M-AL1-08",
+      "date": "2027-Q3",
+      "label": "열 해석 확장"
+     },
+     {
+      "ref": "M-AL1-09",
+      "date": "2027-Q4",
+      "label": "야간 무인해석 시범 운영 개시 (DAY-NIGHT-MORNING 루프)"
+     }
+    ]
+   },
+   {
+    "code": "VV-1",
+    "milestones": [
+     {
+      "ref": "M-VV1-03",
+      "date": "2027-Q1",
+      "label": "센서모델링·GT 자동생성"
+     },
+     {
+      "ref": "M-VV1-04",
+      "date": "2027-Q2",
+      "label": "합성데이터 인지모델 학습"
+     },
+     {
+      "ref": "M-VV1-05",
+      "date": "2027-Q3",
+      "label": "인지모델 검증·시나리오 확충"
+     },
+     {
+      "ref": "M-VV1-06",
+      "date": "2027-Q4",
+      "label": "ODD 커버리지 40% 달성"
+     }
+    ]
+   },
+   {
+    "code": "VV-3",
+    "milestones": [
+     {
+      "ref": "M-VV3-03",
+      "date": "2027-Q1",
+      "label": "회로 SI/PI 해석 자동화 착수"
+     },
+     {
+      "ref": "M-VV3-04",
+      "date": "2027-Q2",
+      "label": "EMC(HFSS/Maxwell) 확대"
+     },
+     {
+      "ref": "M-VV3-05",
+      "date": "2027-Q3",
+      "label": "기구 열·공차 해석 착수"
+     },
+     {
+      "ref": "M-VV3-06",
+      "date": "2027-Q4",
+      "label": "회로·기구 해석 자동화 1차 완료"
+     },
+     {
+      "ref": "M-VV3-07",
+      "date": "2027-H2",
+      "label": "기구 구조·열·광학 해석 확대 · AFM/AFMEA·수율 선예측"
+     },
+     {
+      "ref": "M-VV3-10",
+      "date": "2027-H1",
+      "label": "RVTM 추적체계 정의"
+     }
+    ]
+   }
+  ]
+ },
+ "roster": {
+  "agents": [
+   {
+    "key": "al1-entity",
+    "name": "형상·물성 추출",
+    "task": "AL-1",
+    "phase": "'27 1Q"
+   },
+   {
+    "key": "al1-optimizer",
+    "name": "최적화 탐색",
+    "task": "AL-1",
+    "phase": "'27 하"
+   },
+   {
+    "key": "al1-night-batch",
+    "name": "야간 배치 관제",
+    "task": "AL-1",
+    "phase": "'27 하"
+   },
+   {
+    "key": "sh-design-kb",
+    "name": "설계지식 검색",
+    "task": "AL-1",
+    "phase": "'27 1Q"
+   },
+   {
+    "key": "vv3-lead",
+    "name": "설계변경 검토 조율",
+    "task": "VV-3",
+    "phase": "'27 1Q"
+   },
+   {
+    "key": "vv3-design-pack",
+    "name": "설계자료 구성",
+    "task": "VV-3",
+    "phase": "'27 상"
+   },
+   {
+    "key": "vv3-rvtm",
+    "name": "요구 추적(RVTM)",
+    "task": "VV-3",
+    "phase": "'27 상"
+   },
+   {
+    "key": "vv3-hw-precheck",
+    "name": "회로·기구 선검증",
+    "task": "VV-3",
+    "phase": "'27 1Q"
+   },
+   {
+    "key": "vv3-redesign-draft",
+    "name": "재설계안 후보",
+    "task": "VV-3",
+    "phase": "'27 하"
+   },
+   {
+    "key": "vv1-lead",
+    "name": "엔진 검증 조율",
+    "task": "VV-1",
+    "phase": "'27 상"
+   },
+   {
+    "key": "vv1-scenario-gen",
+    "name": "ODD 시나리오 생성",
+    "task": "VV-1",
+    "phase": "'27 상"
+   },
+   {
+    "key": "vv1-gt-label",
+    "name": "합성데이터 GT 라벨",
+    "task": "VV-1",
+    "phase": "'27 1Q"
+   },
+   {
+    "key": "vv1-perception-verify",
+    "name": "인지모델 검증",
+    "task": "VV-1",
+    "phase": "'27 하"
+   }
+  ]
+ }
+}

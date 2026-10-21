@@ -1,0 +1,512 @@
+{
+ "_about": "개발 방법(바이브 코딩·외부 MCP·이식 계층)과 운영안 전제 — research/R1~R6 (2026-10-21, 독립 검증 반영값). hi = 보수(효과 작음·공수 큼), lo = 낙관. 모두 추정이며 '27 실측으로 3·6·9월에 보정",
+ "vibe": {
+  "_src": "R1 검증 후 값 — 리뷰·보안·재작업을 넣은 순효과 배수 (1.0 = 변화 없음)",
+  "ext": {
+   "AI": {
+    "hi": 0.97,
+    "base": 0.87,
+    "lo": 0.73
+   },
+   "DATA": {
+    "hi": 1.02,
+    "base": 0.93,
+    "lo": 0.82
+   },
+   "OPS": {
+    "hi": 1.01,
+    "base": 0.95,
+    "lo": 0.88
+   },
+   "CAE": {
+    "hi": 1.03,
+    "base": 0.98,
+    "lo": 0.9
+   },
+   "ML": {
+    "hi": 0.99,
+    "base": 0.94,
+    "lo": 0.89
+   },
+   "SIM": {
+    "hi": 1.03,
+    "base": 0.98,
+    "lo": 0.9
+   },
+   "MBSE": {
+    "hi": 1.03,
+    "base": 0.99,
+    "lo": 0.94
+   },
+   "AX": {
+    "hi": 0.98,
+    "base": 0.92,
+    "lo": 0.85
+   },
+   "RUN": {
+    "hi": 1.08,
+    "base": 0.97,
+    "lo": 0.87
+   }
+  },
+  "local_effect": {
+   "hi": 0.0,
+   "base": 0.25,
+   "lo": 0.6,
+   "_src": "R1 — 2안(로컬 코딩)은 외부 대비 순절감의 이 비율만 남음. R5: 로컬 코딩 에이전트를 의무화하면 프런티어 대비 1.15~2.0배 공수(순손실 가능)"
+  },
+  "ramp_months": {
+   "hi": 4,
+   "base": 3,
+   "lo": 2
+  }
+ },
+ "mcp": {
+  "_src": "R3 검증 후 값 — 절감은 바이브 코딩과 겹치는 몫(k)을 뺀 값, 검증·재검토 공수 포함하면 '27 순효과 −3.8 MM(기준)",
+  "servers": {
+   "hi": 12,
+   "base": 9,
+   "lo": 7
+  },
+  "vetting_mm_per_server": {
+   "hi": 0.55,
+   "base": 0.35,
+   "lo": 0.25
+  },
+  "setup_mm": {
+   "hi": 1.5,
+   "base": 0.6,
+   "lo": 0.3
+  },
+  "rereview_mm_per_server_year": {
+   "hi": 0.35,
+   "base": 0.18,
+   "lo": 0.12
+  },
+  "wp": {
+   "A1": {
+    "mcp": "ansys-aedt-mcp (기존 자체 PyAEDT 도구 계층을 점진적으로 대체)",
+    "saving_hi": 0,
+    "saving_base": 0.014,
+    "saving_lo": 0.03,
+    "note": "조건 보정 0 / 0.02 / 0.05 × k. 이전 비용이 들고, 줄어드는 것은 유지보수 몫뿐입니다."
+   },
+   "A2": {
+    "mcp": "docling-mcp (+ 벡터DB MCP는 ACL 때문에 실익 미미)",
+    "saving_hi": 0,
+    "saving_base": 0.014,
+    "saving_lo": 0.036,
+    "note": "조건 보정 0 / 0.02 / 0.06. 등급별 ACL 검색을 직접 만들면 벡터DB MCP 검색 도구는 에이전트에 붙일 수 없습니다."
+   },
+   "A3": {
+    "mcp": "ansys-mechanical-mcp (공식, 도구 28개, v0.3.0 Alpha)",
+    "saving_hi": 0.022,
+    "saving_base": 0.049,
+    "saving_lo": 0.09,
+    "note": "조건 보정 0.03 / 0.07 / 0.15. 0.3.0 breaking change, 사내 버전 호환 미확인, run_python_code 제한용 프록시가 필요하고, EM 프레임 재사용으로 WP가 이미 줄어 있습니다."
+   },
+   "A5": {
+    "mcp": "ansys-aedt-mcp (Icepak) + ansys-mechanical-mcp (thermal)",
+    "saving_hi": 0.007,
+    "saving_base": 0.021,
+    "saving_lo": 0.048,
+    "note": "조건 보정 0.01 / 0.03 / 0.08. AEDT 세션은 A1 자체 계층과 겹치고, Mechanical 연결은 A3에서 이미 셌습니다."
+   },
+   "A7": {
+    "mcp": "mcp-grafana + kubernetes-mcp-server (read-only)",
+    "saving_hi": 0.007,
+    "saving_base": 0.021,
+    "saving_lo": 0.048,
+    "note": "조건 보정 0.01 / 0.03 / 0.08. 아침 리포트는 결정론적 코드가 Prometheus API를 직접 부릅니다."
+   },
+   "A9": {
+    "mcp": "(조건부) MATLAB MCP Server",
+    "saving_hi": 0,
+    "saving_base": 0,
+    "saving_lo": 0.036,
+    "note": "조건 보정 0 / 0 / 0.06. 기준 9개 서버에 없으므로 base는 0입니다."
+   },
+   "A11": {
+    "mcp": "zemax-mcp-server (커뮤니티) — 참고만",
+    "saving_hi": 0,
+    "saving_base": 0.014,
+    "saving_lo": 0.048,
+    "note": "조건 보정 0 / 0.02 / 0.08. 라이선스가 미확인이라 코드를 재사용할 수 없습니다."
+   },
+   "A12": {
+    "mcp": "ansys-aedt-mcp · ansys-mechanical-mcp",
+    "saving_hi": 0,
+    "saving_base": 0.014,
+    "saving_lo": 0.03,
+    "note": "조건 보정 0 / 0.02 / 0.05. 총 절감으로 두고, 재검토 비용은 별도 파라미터로 둡니다(이중 차감 해소)."
+   },
+   "V3": {
+    "mcp": "참고: ansys-common-mcp 패턴, ros-mcp-server (조건부)",
+    "saving_hi": 0,
+    "saving_base": 0.021,
+    "saving_lo": 0.09,
+    "note": "조건 보정 0 / 0.03 / 0.15. ros-mcp는 기준 서버가 아닙니다."
+   },
+   "V6": {
+    "mcp": "MLflow MCP (trace 조회·피드백) + CARLA-MCP (참고)",
+    "saving_hi": 0.007,
+    "saving_base": 0.021,
+    "saving_lo": 0.048,
+    "note": "조건 보정 0.01 / 0.03 / 0.08. trace 기록은 SDK autolog가 합니다."
+   },
+   "V7": {
+    "mcp": "MLflow MCP (trace만), (조건부) W&B MCP",
+    "saving_hi": 0,
+    "saving_base": 0.014,
+    "saving_lo": 0.036,
+    "note": "조건 보정 0 / 0.02 / 0.06. 최신판의 run 도구 유무는 미확인입니다."
+   },
+   "V8": {
+    "mcp": "CARLA-MCP · ScenarioRunner — 참고",
+    "saving_hi": 0,
+    "saving_base": 0.007,
+    "saving_lo": 0.03,
+    "note": "조건 보정 0 / 0.01 / 0.05"
+   },
+   "V9": {
+    "mcp": "mcp-grafana, (조건부) MCP Toolbox",
+    "saving_hi": 0,
+    "saving_base": 0.007,
+    "saving_lo": 0.03,
+    "note": "조건 보정 0 / 0.01 / 0.05"
+   },
+   "V10": {
+    "mcp": "mcp-grafana",
+    "saving_hi": 0,
+    "saving_base": 0.021,
+    "saving_lo": 0.06,
+    "note": "조건 보정 0 / 0.03 / 0.10. 개발 MM이 0.3입니다."
+   },
+   "V12": {
+    "mcp": "MLflow MCP · mcp-grafana",
+    "saving_hi": 0,
+    "saving_base": 0.014,
+    "saving_lo": 0.024,
+    "note": "조건 보정 0 / 0.02 / 0.04(유지)"
+   },
+   "H1": {
+    "mcp": "docling-mcp, (조건부) cad-mcp-server",
+    "saving_hi": 0.007,
+    "saving_base": 0.021,
+    "saving_lo": 0.048,
+    "note": "조건 보정 0.01 / 0.03 / 0.08. PoC를 운영으로 전환하는 WP라 기존 파싱 이전 비용이 들고, cad-mcp-server는 라이선스가 미확인입니다."
+   },
+   "H2": {
+    "mcp": "외부 MCP 없음 — 참고 구현만",
+    "saving_hi": 0,
+    "saving_base": 0.014,
+    "saving_lo": 0.036,
+    "note": "조건 보정 0 / 0.02 / 0.06"
+   },
+   "H3": {
+    "mcp": "해당 없음",
+    "saving_hi": 0,
+    "saving_base": 0,
+    "saving_lo": 0.018,
+    "note": "조건 보정 0 / 0 / 0.03. 원 보고서 스스로 '거의 없음'이라고 했습니다."
+   },
+   "H4": {
+    "mcp": "ansys-aedt-mcp (HFSS·Circuit; 3D Layout·SIwave·EDB 미지원)",
+    "saving_hi": 0,
+    "saving_base": 0.014,
+    "saving_lo": 0.036,
+    "note": "조건 보정 0 / 0.02 / 0.06. AEDT 세션은 자체 계층이고, PCB SI/PI는 pyedb로 직접 만듭니다."
+   },
+   "H5": {
+    "mcp": "ansys-aedt-mcp (HFSS·Maxwell)",
+    "saving_hi": 0.007,
+    "saving_base": 0.021,
+    "saving_lo": 0.048,
+    "note": "조건 보정 0.01 / 0.03 / 0.08. WP가 이미 플랫폼 재사용으로 줄어 있습니다."
+   },
+   "H6": {
+    "mcp": "참고: AI for Capella(상용), @casys/mcp-syson",
+    "saving_hi": 0,
+    "saving_base": 0,
+    "saving_lo": 0.024,
+    "note": "조건 보정 0 / 0 / 0.04"
+   },
+   "H7": {
+    "mcp": "(조건부) Obeo AI for Capella",
+    "saving_hi": 0,
+    "saving_base": 0.007,
+    "saving_lo": 0.09,
+    "note": "조건 보정 0 / 0.01 / 0.15. 상용 제품을 사면 구매비가 따로 듭니다. py-capellambse로 직접 만드는 것은 외부 MCP가 아닙니다."
+   },
+   "H8": {
+    "mcp": "filesystem + docling-mcp",
+    "saving_hi": 0.007,
+    "saving_base": 0.028,
+    "saving_lo": 0.06,
+    "note": "조건 보정 0.01 / 0.04 / 0.10. 하네스와 deepagents에 파일 도구가 이미 들어 있습니다."
+   },
+   "H9": {
+    "mcp": "ansys-mechanical-mcp (열은 A5 재사용)",
+    "saving_hi": 0,
+    "saving_base": 0.014,
+    "saving_lo": 0.03,
+    "note": "조건 보정 0 / 0.02 / 0.05"
+   },
+   "H10": {
+    "mcp": "ansys MCP (이미 연결됨)",
+    "saving_hi": 0,
+    "saving_base": 0.007,
+    "saving_lo": 0.024,
+    "note": "조건 보정 0 / 0.01 / 0.04"
+   },
+   "H11": {
+    "mcp": "(조건부) MCP Toolbox for Databases",
+    "saving_hi": 0,
+    "saving_base": 0,
+    "saving_lo": 0.024,
+    "note": "조건 보정 0 / 0 / 0.04. 기준 서버가 아닙니다."
+   },
+   "H12": {
+    "mcp": "zemax-mcp-server (참고)",
+    "saving_hi": 0,
+    "saving_base": 0.014,
+    "saving_lo": 0.06,
+    "note": "조건 보정 0 / 0.02 / 0.10. 라이선스가 미확인입니다."
+   },
+   "H13": {
+    "mcp": "ansys MCP",
+    "saving_hi": 0,
+    "saving_base": 0.014,
+    "saving_lo": 0.024,
+    "note": "조건 보정 0 / 0.02 / 0.04(유지)"
+   },
+   "H14": {
+    "mcp": "ansys MCP",
+    "saving_hi": 0,
+    "saving_base": 0.007,
+    "saving_lo": 0.024,
+    "note": "조건 보정 0 / 0.01 / 0.04"
+   },
+   "H15": {
+    "mcp": "filesystem · docling-mcp",
+    "saving_hi": 0,
+    "saving_base": 0.007,
+    "saving_lo": 0.018,
+    "note": "조건 보정 0 / 0.01 / 0.03(유지)"
+   },
+   "C3": {
+    "mcp": "mcp-grafana + kubernetes-mcp-server (read-only)",
+    "saving_hi": 0,
+    "saving_base": 0.014,
+    "saving_lo": 0.03,
+    "note": "조건 보정 0 / 0.02 / 0.05(유지)"
+   },
+   "C13": {
+    "mcp": "filesystem · git (레퍼런스) + langchain.mcp (beta)",
+    "saving_hi": 0.015,
+    "saving_base": 0.035,
+    "saving_lo": 0.072,
+    "note": "조건 보정 0.02 / 0.05 / 0.12. deepagents FilesystemMiddleware가 기본으로 들어 있고, WP 자체가 MCP 공유를 전제로 합니다. 개발 MM은 method.json의 portability_build_mm 4.0 / 3.0 / 2.0입니다(2.5 가정은 폐기)."
+   }
+  }
+ },
+ "portability_build_mm": {
+  "hi": 12,
+  "base": 7,
+  "lo": 4,
+  "_src": "R4 — 게이트웨이·모델 어댑터·평가 하네스·자산 로더 (C2 의 게이트웨이 몫은 C13 으로 옮김)"
+ },
+ "learning_mm": {
+  "hi": 8,
+  "base": 5,
+  "lo": 3,
+  "_src": "R4 framework_learning_mm — LangGraph·MCP·A2A·바이브 코딩 규칙"
+ },
+ "hire_ramp": {
+  "_src": "R6 — 경력 입사 후 정상 생산성까지 4개월(0.3/0.5/0.7/0.85). 사내 공모·전환은 회사·도메인을 알아 2개월, 시민개발 3개월(추정)",
+  "채용(경력)": {
+   "hi": [
+    0.2,
+    0.35,
+    0.5,
+    0.65,
+    0.8,
+    0.9
+   ],
+   "base": [
+    0.3,
+    0.5,
+    0.7,
+    0.85
+   ],
+   "lo": [
+    0.5,
+    0.8
+   ]
+  },
+  "사내 공모": {
+   "hi": [
+    0.4,
+    0.6,
+    0.8
+   ],
+   "base": [
+    0.6,
+    0.85
+   ],
+   "lo": [
+    0.8
+   ]
+  },
+  "사내 전환배치": {
+   "hi": [
+    0.4,
+    0.6,
+    0.8
+   ],
+   "base": [
+    0.6,
+    0.85
+   ],
+   "lo": [
+    0.8
+   ]
+  },
+  "DRI 시민개발": {
+   "hi": [
+    0.3,
+    0.5,
+    0.7,
+    0.85
+   ],
+   "base": [
+    0.4,
+    0.6,
+    0.8
+   ],
+   "lo": [
+    0.6,
+    0.85
+   ]
+  }
+ },
+ "lead": {
+  "_src": "R6 — 경력 채용 착수~입사 6개월(보수 9·낙관 4), 사내 공모 3, 전환 2",
+  "채용(경력)": {
+   "hi": 9,
+   "base": 6,
+   "lo": 4
+  },
+  "사내 공모": {
+   "hi": 4,
+   "base": 3,
+   "lo": 2
+  },
+  "사내 전환배치": {
+   "hi": 4,
+   "base": 2,
+   "lo": 1
+  }
+ },
+ "citizen_dev_share": {
+  "hi": 0.2,
+  "base": 0.35,
+  "lo": 0.5,
+  "_src": "R6 — 현업 엔지니어가 바이브 코딩으로 맡을 수 있는 CAE·평가 스크립트 비율"
+ },
+ "options": {
+  "A": {
+   "name": "1안 투트랙",
+   "full": "1안 — 바이브 코딩 하네스 주 + LangGraph/API 보조 (C3 는 온프렘 별도 경로)",
+   "coding": "ext",
+   "vibe_start": {
+    "hi": 5,
+    "base": 2,
+    "lo": 1
+   },
+   "portability_mult": 1.0,
+   "run_mult": 1.0,
+   "platform": {
+    "OPS": {
+     "hi": 1.25,
+     "base": 0.85,
+     "lo": 0.6
+    },
+    "AI": {
+     "hi": 1.05,
+     "base": 0.7,
+     "lo": 0.45
+    },
+    "AX": {
+     "hi": 0.5,
+     "base": 0.25,
+     "lo": 0.15
+    }
+   }
+  },
+  "B": {
+   "name": "2안 로컬 단일",
+   "full": "2안 — 온프렘 로컬 LLM 으로 개발·운영 모두",
+   "coding": "local",
+   "vibe_start": {
+    "hi": 7,
+    "base": 3,
+    "lo": 2
+   },
+   "portability_mult": 0.7,
+   "run_mult": 1.3,
+   "platform": {
+    "OPS": {
+     "hi": 1.6,
+     "base": 1.0,
+     "lo": 0.65
+    },
+    "AI": {
+     "hi": 0.6,
+     "base": 0.35,
+     "lo": 0.25
+    },
+    "AX": {
+     "hi": 0.3,
+     "base": 0.15,
+     "lo": 0.1
+    }
+   }
+  },
+  "C": {
+   "name": "혼합안",
+   "full": "혼합안 — 개발은 바이브 코딩(외부), 운영은 LangGraph 단일 런타임 + 등급 라우팅(C0~C1 API · C3 온프렘)",
+   "coding": "ext",
+   "vibe_start": {
+    "hi": 5,
+    "base": 2,
+    "lo": 1
+   },
+   "portability_mult": 1.0,
+   "run_mult": 1.0,
+   "platform": {
+    "OPS": {
+     "hi": 0.95,
+     "base": 0.75,
+     "lo": 0.5
+    },
+    "AI": {
+     "hi": 0.6,
+     "base": 0.4,
+     "lo": 0.3
+    },
+    "AX": {
+     "hi": 0.25,
+     "base": 0.15,
+     "lo": 0.1
+    }
+   }
+  }
+ },
+ "platform_ramp": {
+  "_src": "플랫폼 운영 = R4 4-5 플랫폼 소계(1안 1.8 · 2안 1.5 · 혼합 1.3 FTE)를 역할로 나눔. 3~6월은 API 경로·브리지만이라 50%, 온프렘 가동 7월부터 100%",
+  "from": 3,
+  "half_until": 6
+ },
+ "pick": "C"
+}

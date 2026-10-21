@@ -1,0 +1,67 @@
+[
+ {
+  "key": "base",
+  "label": "기본안 — 마일스톤 14개 유지",
+  "note": "사내 공모·전환 7명까지",
+  "ok": true,
+  "heads": 10,
+  "internal": 7,
+  "hires": 3,
+  "total": 148.1,
+  "ms": "14/14",
+  "cash": 12.1,
+  "result": ""
+ },
+ {
+  "key": "int8",
+  "label": "사내 8명까지 허용",
+  "note": "공모·전환 1명 더 → 경력 채용이 줄어듦",
+  "ok": true,
+  "heads": 9,
+  "internal": 8,
+  "hires": 1,
+  "total": 148.1,
+  "ms": "14/14",
+  "cash": 9.4,
+  "result": ""
+ },
+ {
+  "key": "scope",
+  "label": "범위 축소 — 레버 Agent 3개 '28 이월 + 외부 MCP 3개",
+  "note": "최적화·설계자료·재설계안 Agent 를 '28 로 · MCP 는 Ansys 2 + 문서 파싱",
+  "ok": true,
+  "heads": 9,
+  "internal": 7,
+  "hires": 2,
+  "total": 139.9,
+  "ms": "14/14",
+  "cash": 10.7,
+  "result": ""
+ },
+ {
+  "key": "int5",
+  "label": "사내 5명 한도",
+  "note": "마일스톤 14개 유지",
+  "ok": false,
+  "heads": "—",
+  "internal": "—",
+  "hires": "—",
+  "total": 148.1,
+  "ms": "14/14",
+  "cash": "—",
+  "result": "사내 한도 안에서 조합 없음"
+ },
+ {
+  "key": "delay",
+  "label": "전체 일정 한 분기 늦춤 (사내 5명)",
+  "note": "같은 일이 남은 9개월에 몰림",
+  "ok": false,
+  "heads": 14,
+  "internal": 5,
+  "hires": 9,
+  "total": 133.7,
+  "ms": "3/14",
+  "cash": 18.3,
+  "result": "점검 실패: seq, bridge"
+ }
+]
