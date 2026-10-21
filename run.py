@@ -44,7 +44,8 @@ import proc  # noqa: E402
 _RUN_STEP = proc.run_step      # 시험이 바꿔 끼운다(사슬 시험 — 실제 수집기를 띄우지 않는다)
 _CLOSE_EDGE = None             # 시험 주입 — None 이면 tools\copilot_auto.close_own_edge
 _CHAT_TOTALS = None            # 시험 주입 — None 이면 tools\copilot_auto.chat_totals(Copilot 채팅 정리 누계)
-CHATS = {"t0": None}           # 이 실행 시작 때의 Copilot 채팅 정리 누계 — 실행 끝 단계 'Copilot 채팅 정리' 가 차이를 적는다
+_CHAT_REPORT = None            # 시험 주입 — None 이면 tools\copilot_auto.chat_run_report(이번 실행의 Copilot 채팅 셈 — LM30)
+CHATS = {"t0": None}           # 이 실행 시작 때의 Copilot 채팅 정리 누계 — 실행 끝 단계 'Copilot 채팅 정리' 를 남길 실행인지의 표식
 CHAT_STAGE = "Copilot 채팅 정리"
 CHAT_LINE_HEAD = "[copilot] 채팅 정리"   # 단계 로그의 정리 한 줄(copilot_auto.CHAT_LINE_HEAD) — 실패 사유 줄로 집지 않는다
 REPORT_DIR = {"p": os.path.join(ROOT, "report")}     # last_run.json 위치(시험은 임시 폴더로 바꾼다)
@@ -471,18 +472,17 @@ def mail_fallbacks(c, d0, d1, data, ps, col, t_run=None, led=None, state=None):
         g3 = led.gaps(MAIL_AXES, d0, _yday(d1), witness="copilot") if _yday(d1) >= d0 else {}
         rm = coverage.union(g3, ("mail_in", "mail_out"))
         rc_ = g3.get("cal") or []
-        jobs = ([("", rm)] if rm and rm == rc_ else [(k, r) for k, r in (("mail", rm), ("cal", rc_)) if r])
+        jobs = copilot_witness_jobs(rm, rc_)
         if not jobs:
             record(name3, True, 0.0, "건너뜀 — 남은 미검증 날 없음(또는 이미 Copilot 이 답한 날)")
-        for kind, rs in jobs:
+        for kind, extra, ndays in jobs:
             if state.get("login_pending"):
                 _skip_login(name3)
                 break
             nm = name3 + (f" — {'메일' if kind == 'mail' else '일정'}" if kind else "")
-            st3 = run_collector(nm, [sys.executable, os.path.join(col, "Get-MailViaCopilot.py"), "--from", d0, "--to", d1,
-                                     "--ranges", coverage.fmt_ranges(rs), "--out-dir", src_dir, "--tag", "copilot"]
-                                + (["--only", kind] if kind else []),
-                                300 + 600 * 2 * max(1, coverage.n_days(rs) // 30 + 1), src="copilot", led=led)
+            st3 = run_collector(nm, [sys.executable, os.path.join(col, "Get-MailViaCopilot.py"), "--from", d0, "--to", d1]
+                                + extra + ["--out-dir", src_dir, "--tag", "copilot"],
+                                300 + 600 * 2 * max(1, ndays // 30 + 1), src="copilot", led=led)
             _edge_rc2(st3, state, nm, "Copilot")
     # ④ 반입 파일(사람이 넣은 .eml·.ics·.csv) — 있을 때만
     imp = _import_files(data)
@@ -495,6 +495,20 @@ def mail_fallbacks(c, d0, d1, data, ps, col, t_run=None, led=None, state=None):
     report_gaps(led, d0, d1, MAIL_AXES, "메일·일정 원장(미확인 날)")
     led.save()
     return info
+
+
+def copilot_witness_jobs(rm, rc):
+    r"""Copilot 메일·일정 증인 단계의 프로세스 목록 → [(종류 꼬리 ''|'mail'|'cal', 추가 인자, 물을 날 수)].
+    LM30(2026-10-21): 메일(rm)·일정(rc) 모두 물을 날이 있으면 구간이 달라도 **한 프로세스**로 부른다(--ranges 메일 · --ranges-cal 일정) —
+    그 프로세스의 ChatKeep 이 한 채팅을 메일·일정이 이어 쓴다(예전에는 구간이 다르면 종류마다 프로세스·새 채팅 하나 — 채팅 도배 제보).
+    한쪽만 있으면 그 종류만(--only)."""
+    if rm and rc:
+        if rm == rc:
+            return [("", ["--ranges", coverage.fmt_ranges(rm)], coverage.n_days(rm))]
+        return [("", ["--ranges", coverage.fmt_ranges(rm), "--ranges-cal", coverage.fmt_ranges(rc)],
+                 coverage.n_days(rm) + coverage.n_days(rc))]
+    return [(k, ["--ranges", coverage.fmt_ranges(r), "--only", k], coverage.n_days(r))
+            for k, r in (("mail", rm), ("cal", rc)) if r]
 
 
 def _outlook_budget(c, d0, d1):
@@ -969,6 +983,23 @@ def migrate_extra_pc_ledgers(data):
             print("[원장] 추가PC" + chr(92) + f"{name}: 이행 보류({type(e).__name__}) — 기존 기록 그대로")
 
 
+def pc_import_hint(data, d0):
+    r"""LM30(2026-10-21) 예전 판(LM28·LM29 등) 설치 폴더에 이 설치가 아직 가져오지 않은 PC 가동 기록이 있으면 진행 로그에 한 줄 —
+    대시보드 'MM 산정 근거' 카드의 [예전 판 PC 가동 기록 가져오기]를 안내한다(core\pc_import.hint_line — 이 프로세스 안에서 폴더 목록과
+    원장만 읽는다 · 폴더 300개·2초 · 폴더 이름만 적는다). 이 설치가 직접 모은 PC 기록이 분석 시작(d0)까지 닿지 않을 때만 찾는다
+    (pc_import.needs_hint). 가져오기는 사람이 누를 때만 한다. 실패해도 실행은 계속한다."""
+    try:
+        import pc_import
+        if not pc_import.needs_hint(data, d0):
+            return ""
+        line = pc_import.hint_line(ROOT, data)
+    except Exception:  # noqa: BLE001 - 안내 한 줄 때문에 분석이 멈추지 않게
+        return ""
+    if line:
+        print("\n" + line, flush=True)
+    return line
+
+
 def own_data_empty(data):
     r"""이 PC 가 직접 모은 자료가 없는가 — data\ 의 수집 폴더(추가PC 제외)에 쓸 만한 CSV 가 하나도 없으면 True.
 
@@ -1202,28 +1233,44 @@ def slow_stages(stages=None, top=4, min_sec=SLOW_MIN_SEC, started=None, now=None
     return head + "오래 걸린 단계: " + " · ".join(parts)
 
 
+def chat_report():
+    r"""이번 실행의 Copilot 채팅 셈(copilot_auto.chat_run_report — 숫자·사유 코드와 한 줄) · 못 읽으면 None."""
+    try:
+        fn = _CHAT_REPORT if _CHAT_REPORT is not None else _copilot_mod().chat_run_report
+        r = fn(None, RUN.get("run_id") or None)
+        return r if isinstance(r, dict) else None
+    except Exception:  # noqa: BLE001 - 정리 기록이 실행을 막지 않는다
+        return None
+
+
 def chat_stage():
-    r"""실행 끝 단계 'Copilot 채팅 정리' — 시작 때 누계(CHATS['t0'])와의 차이(만든·지운·남긴 수 + 남긴 사유 · 숫자와 사유만,
-    제목·글 없음)를 last_run.json 과 콘솔(진행 로그)에 남긴다. 한 실행에 1회(close_edge_once 끝). 이 실행이 Copilot 채팅을 만들지도
-    지우지도 남기지도 않았으면 적지 않는다. 화면이 '마지막 단계' 로 실패 지점을 말하므로 끝 단계(완료·종료) 앞에 둔다.
-    지우지 못한 사유(화면 조작 실패)나 삭제 멈춤이 있으면 ok=False — 현장 사진으로 고칠 곳을 안다."""
+    r"""실행 끝 단계 'Copilot 채팅 정리' — 한 실행에 1회(close_edge_once 끝 · 실행 끝 정리 sweep_owned 뒤).
+    LM30(2026-10-21): 이번 실행의 셈(copilot_auto.chat_run_report — LM 기록 owned[]·실행별 셈 runs)으로 한 줄을 만든다:
+    'Copilot 채팅: 이번 실행에서 연 N개 · 지운 M개 · 남긴 K개 (까닭: …)' (+ 지난 실행에서 남은 것을 지웠으면 그 수). 진행 로그·콘솔(stdout)·
+    last_run.json(단계 note · chats 숫자 · chats_line)에 남고 화면의 마지막 실행 줄이 그대로 보여 준다. 제목·글은 없다.
+    시작 때 표식(CHATS['t0'])이 없으면(시험·직접 호출) 적지 않는다 · 연·지운·남긴 것이 없으면 적지 않는다. 화면이 '마지막 단계' 로 실패
+    지점을 말하므로 끝 단계(완료·종료) 앞에 둔다. 화면 조작으로 못 지운 까닭이나 삭제 멈춤이 있으면 ok=False."""
     t0 = CHATS.get("t0")
     CHATS["t0"] = None
     if t0 is None:
         return None
-    t1 = chat_totals()
-    if t1 is None:
+    rep = chat_report()
+    if rep is None:
         return None
     try:
         ca = _copilot_mod()
-        d = ca.chat_delta(t0, t1)
-        note = ca.chat_note(d)
+        if not ca.chat_run_busy(rep):
+            return None
+        line = str(rep.get("line") or ca.chat_run_line(rep))
+        fail = any(k in ca.CHAT_FAIL for k in (rep.get("why") or {}))
     except Exception:  # noqa: BLE001
         return None
-    if not ca.chat_busy(d):
-        return None
-    print(f"\n── {CHAT_STAGE}\n   {note}")
-    record(CHAT_STAGE, not (d.get("failed") or d.get("hold")), 0.0, note)
+    print(f"\n── {CHAT_STAGE}\n   {line}", flush=True)
+    RUN["chats"] = dict({k: int(rep.get(k) or 0) for k in ("made", "deleted", "kept", "gone", "deleted_old", "gone_old",
+                                                           "old_left", "left_old", "savefail")},
+                        why={str(k): int(v or 0) for k, v in (rep.get("why") or {}).items()}, hold=str(rep.get("hold") or ""))
+    RUN["chats_line"] = line[:600]
+    record(CHAT_STAGE, not (fail or rep.get("hold")), 0.0, line)
     st = RUN["stages"]
     ent = st.pop()                                  # 방금 붙인 이 단계 — 끝 단계(완료·종료) 앞으로 옮긴다
     k = len(st)
@@ -1231,7 +1278,7 @@ def chat_stage():
         k -= 1
     st.insert(k, ent)
     _save_run()
-    return d
+    return rep
 
 
 def _teams_rows(data, d0, d1):
@@ -1854,6 +1901,7 @@ def _main():
         record("완료(로컬PC 자료수집)", True, 0.0, "로컬PC 자료수집 — 분석·팀 서버 보고는 폴더를 옮긴 PC 의 [분석 실행]에서")
         return 0
 
+    pc_import_hint(data, d0)               # LM30(2026-10-21) 예전 판 PC 가동 기록이 남아 있으면 가져오기 안내 한 줄
     print("\n── 업무 로드 추출 (주40h 근무일 기준)")
     _t = time.time()
     # 출력을 흘려보내면서 꼬리를 보관한다 — mine 이 죽으면 마지막 오류 줄이 last_run.json 에

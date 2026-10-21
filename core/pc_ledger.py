@@ -117,6 +117,9 @@ HINT_SRC = "hint"                                         # 브라우저 방문 
 SAMPLER_SRC = "sampler"                                   # 창 샘플러
 MIGR_SRC = "migr"                                         # 1회 이행으로 살린 구판 행
 DAY_WIN = (8 * 60, 19 * 60)                               # 주간 경계(분) — extract.DAY_WIN 과 같은 값
+# LM30(2026-10-21) 예전 판 설치 폴더에서 가져온 행(core\pc_import)의 seen 머리 — 'import:<폴더 이름>'. 읽는 쪽(extract)은 이 머리로
+# '이 설치가 직접 모은 기록' 과 '가져온 기록' 을 가른다(extract.IMPORT_SEEN 과 같은 값).
+IMPORT_SEEN = "import:"
 
 
 def _dt(s):

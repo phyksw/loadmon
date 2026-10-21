@@ -26,9 +26,12 @@ LM28(C-16·C-34·W1-04·W1-13):
     G3 관문에 막힌 조각(phase 'blocked')은 보내지 않은 것으로 둔다(실패로 세지 않음).
   · LM28(2026-10-17): 조각마다 새 채팅을 열지 않는다(대화 목록에 조각 수만큼 채팅이 쌓였다 — 현장 사진). 새 채팅이냐 이어 쓰기냐는
     copilot_auto.ChatKeep 이 정한다 — 첫 조각(앞 단계의 우리 채팅이면 이어서)·나쁜 조각 뒤·chatTurns 마다만 새 채팅. 조각 결과는
-    _one_slice 가 알린다: 표·'없음'을 끊김 없이 받으면 좋음, 오류·끊김·느린 답·'조회 불가'·표 아닌 답은 나쁨(다음 조각은 새 채팅 · 그
-    채팅은 다음 단계도 이어 쓰지 않게 chat_mark_bad). 그래서 '조회 불가' 뒤 검색형 재질의는 예전처럼 새 채팅이다. 프롬프트 끝 줄(★)에
-    이번 기간을 적어 조각마다 응답 앵커가 다르다(같은 채팅에서 앞 조각의 답을 이번 답으로 집지 않게).
+    _one_slice 가 알린다: LM30(2026-10-21) 표·'없음'·표 아닌 답이면 끊기거나 느렸어도 다음 조각은 같은 채팅, 오류·'조회 불가'면 새 채팅
+    (끊김·느린 답·표 아닌 답·오류·'조회 불가'가 남은 채팅은 다음 단계도 이어 쓰지 않게 chat_mark_bad). 그래서 '조회 불가' 뒤 검색형
+    재질의는 예전처럼 새 채팅이다. 프롬프트 끝 줄(★)에 이번 기간을 적어 조각마다 응답 앵커가 다르다(같은 채팅에서 앞 조각의 답을 이번 답으로
+    집지 않게).
+  · LM30(2026-10-21): --ranges-cal 'A:B,…' — 일정 조각의 구간(없으면 --ranges). run.py 는 메일·일정의 미관측 구간이 달라도 한 프로세스로
+    부른다 — 한 채팅을 메일·일정이 이어 쓴다(예전에는 종류마다 프로세스 하나 · 채팅 하나).
   · 'empty'(없음)·'other'(표 아닌 답)는 실패로 세지 않는다 — 진짜 빈 주도 있다. 드라이버가 답을 못 받은 조각만 연속 ERR_MAX 번이면 멈춘다.
   · 저장은 병합(owa_parse.merge_slices) — 표를 받은 조각의 옛 행만 바꾸고 나머지 옛 행은 둔다(통째 덮어쓰기 금지).
     --out-dir·--tag 면 <폴더>\\mail_<tag>.csv·cal_<tag>.csv·mail_source_<tag>.json(병합 규칙은 mailmerge — WP6).
@@ -325,15 +328,15 @@ def _keep():
     return _KEEP["k"]
 
 
-def _keep_done(good, res=None):
-    """조각 결과를 ChatKeep 에 알린다 — 나쁜 조각이면 그 채팅을 다음 단계도 이어 쓰지 않게 표시한다(chat_mark_bad).
-    진짜 _send 를 쓴 적이 없으면(시험이 _send 를 바꿈) 아무것도 하지 않는다."""
+def _keep_done(good, res=None, mark=None):
+    """조각 결과를 ChatKeep 에 알린다(good = 다음 조각을 같은 채팅에 이어도 되나) — mark(없으면 not good)면 그 채팅을 다음 단계도 이어 쓰지
+    않게 표시한다(chat_mark_bad). 진짜 _send 를 쓴 적이 없으면(시험이 _send 를 바꿈) 아무것도 하지 않는다."""
     k = _KEEP.get("k")
     if k is None:
         return
     try:
         k.done(good, res)
-        if not good:
+        if (not good) if mark is None else mark:
             _ca().chat_mark_bad()
     except Exception:  # noqa: BLE001 — 셈 오류가 수집을 막지 않는다
         pass
@@ -359,7 +362,11 @@ def _one_slice(kind, s0, s1, alt=False):
     rows, st, res = _ask(kind, s0, s1, alt)
     if st != "blocked":
         r = res if isinstance(res, dict) else {}
-        _keep_done(st in ("table", "empty") and not r.get("cut") and not r.get("slow"), r)
+        # LM30(2026-10-21) — 표·'없음'·표 아닌 답은 끊기거나 느렸어도 다음 조각을 같은 채팅에 잇는다(조각 프롬프트는 기간을 못 박고 파서가
+        # 기간 밖 행을 버린다 — 채팅 도배 제보). 새 채팅은 오류·'조회 불가' 뒤에만. 끊김·느린 답·표 아닌 답이 남은 채팅은 다음 단계가 이어
+        # 쓰지 않게만 표시한다(chat_mark_bad).
+        clean = st in ("table", "empty") and not r.get("cut") and not r.get("slow")
+        _keep_done(st in ("table", "empty", "other"), r, mark=not clean)
     return rows, st
 
 
@@ -703,7 +710,10 @@ def main():
     src_p = os.path.join(out_dir, f"mail_source_{tag}.json" if tag else "mail_source.json")
     flag_p = os.path.join(out_dir, "mail_copilot_unavailable.json")
     ranges = parse_ranges(arg("--ranges")) if "--ranges" in sys.argv else None
-    if ranges is not None and not ranges:
+    # LM30(2026-10-21) — 일정 조각의 구간(없으면 --ranges). run.py 가 메일·일정의 미관측 구간이 달라도 한 프로세스로 부른다(채팅 하나)
+    ranges_cal = parse_ranges(arg("--ranges-cal")) if "--ranges-cal" in sys.argv else ranges
+    rng_by = {"mail": ranges, "cal": ranges_cal}
+    if all(r is not None and not r for r in rng_by.values()):
         print("[mail-copilot] --ranges 에 물을 날이 없습니다 — 왕복 생략")
         emit_status(0, [], {"chunks": 0}, src=src_name)
         return 0
@@ -727,6 +737,8 @@ def main():
     for kind in ("mail", "cal"):
         if only and kind != only:
             continue
+        if rng_by[kind] is not None and not rng_by[kind]:
+            continue                    # LM30 — 이 종류는 물을 날이 없다(--ranges-cal 과 --ranges 가 다른 경우)
         # 출처별 파일(--tag)은 이 수집기 것이라 늘 묻는다. LM24 경로(공용 파일)는 COM·색인이 모은 것을 지키려 --force 때만.
         if not tag and _has_data(paths[kind]) and not force:
             print(f"[mail-copilot] {os.path.basename(paths[kind])} 에 이미 자료가 있어 건너뜀 (덮어쓰려면 --force)")
@@ -740,7 +752,7 @@ def main():
     fatal = False
     LAST_FATAL.clear()
     for kind in todo:
-        n, unable, fat, chunks = collect_kind(kind, d0, d1, store_subject, ranges=ranges, dst=paths[kind])
+        n, unable, fat, chunks = collect_kind(kind, d0, d1, store_subject, ranges=rng_by[kind], dst=paths[kind])
         total += n
         counts[kind] = n
         if unable:
@@ -764,6 +776,8 @@ def main():
                    "warnings": ([f"시각을 못 읽은 메일 {_pd}/{_pa}통 — 시간 계상 제외(클래식 Outlook 을 켜고 재수집 권장)"]
                                 if _pd else []),
                    "ranges": [list(x) for x in ranges] if ranges else [[d0, d1]], "counts": dict(tally)}
+            if ranges_cal is not ranges:
+                src["ranges_cal"] = [list(x) for x in ranges_cal] if ranges_cal else [[d0, d1]]
             if "cal" in todo:
                 # 프롬프트가 회차마다 한 행을 요구한다 — 반복 마스터만 남는 색인 폴백과 달리 '완전' 로 표시(LLM 회수 한계는 별개)
                 src["calendar_complete"] = bool(counts.get("cal"))

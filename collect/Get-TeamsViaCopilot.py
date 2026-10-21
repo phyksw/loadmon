@@ -17,9 +17,9 @@ LM28(W1-13·W1-17·W2-12):
   · 왕복은 copilot_auto.send_inproc(같은 프로세스 — 조각마다 파이썬을 띄우지 않는다). G3 관문에 막힌 조각은 보내지 않은 것으로 둔다.
   · LM28(2026-10-17): 조각마다 새 채팅을 열지 않는다(대화 목록에 조각 수만큼 채팅이 쌓였다 — 현장 사진). 새 채팅이냐 이어 쓰기냐는
     copilot_auto.ChatKeep 이 정한다 — 첫 조각(앞 단계의 우리 채팅이면 이어서)·나쁜 조각 뒤·chatTurns 마다만 새 채팅(10일 재질의도 같은
-    채팅). 표·'없음'을 끊김 없이 받으면 좋음, 오류·끊김·느린 답·'조회 불가'·표 아닌 답은 나쁨(다음 조각은 새 채팅 · 그 채팅은 다음
-    단계도 이어 쓰지 않게 chat_mark_bad) — '조회 불가' 뒤 검색형 재질의는 예전처럼 새 채팅이다. 프롬프트 끝 줄(★)에 이번 기간을 적어
-    조각마다 응답 앵커가 다르다(같은 채팅에서 앞 조각의 답을 이번 답으로 집지 않게).
+    채팅). LM30(2026-10-21): 표·'없음'·표 아닌 답이면 끊기거나 느렸어도 다음 조각은 같은 채팅, 오류·'조회 불가'면 새 채팅(끊김·느린 답·
+    표 아닌 답·오류·'조회 불가'가 남은 채팅은 다음 단계도 이어 쓰지 않게 chat_mark_bad) — '조회 불가' 뒤 검색형 재질의는 예전처럼 새
+    채팅이다. 프롬프트 끝 줄(★)에 이번 기간을 적어 조각마다 응답 앵커가 다르다(같은 채팅에서 앞 조각의 답을 이번 답으로 집지 않게).
   · 저장은 teams_parse.merge_keep_outside — 표를 받은 조각 기간의 옛 행만 이번 행으로 바꾸고 그 밖의 옛 행은 둔다
     (LM24 는 이번 기간 행만 'w' 로 써서 짧은 기간으로 다시 돌리면 다른 기간 자료가 사라졌다).
   · '조회 불가'는 서로 다른 날 2회일 때만 14일 동안 생략한다(TTL — 메일 Copilot 과 같은 규칙. LM24 의 'if True' 는 한 번의
@@ -264,15 +264,15 @@ def _keep():
     return _KEEP["k"]
 
 
-def _keep_done(good, res=None):
-    """조각 결과를 ChatKeep 에 알린다 — 나쁜 조각이면 그 채팅을 다음 단계도 이어 쓰지 않게 표시한다(chat_mark_bad).
-    진짜 _send 를 쓴 적이 없으면(시험이 _send 를 바꿈) 아무것도 하지 않는다."""
+def _keep_done(good, res=None, mark=None):
+    """조각 결과를 ChatKeep 에 알린다(good = 다음 조각을 같은 채팅에 이어도 되나) — mark(없으면 not good)면 그 채팅을 다음 단계도 이어 쓰지
+    않게 표시한다(chat_mark_bad). 진짜 _send 를 쓴 적이 없으면(시험이 _send 를 바꿈) 아무것도 하지 않는다."""
     k = _KEEP.get("k")
     if k is None:
         return
     try:
         k.done(good, res)
-        if not good:
+        if (not good) if mark is None else mark:
             _ca().chat_mark_bad()
     except Exception:  # noqa: BLE001 — 셈 오류가 수집을 막지 않는다
         pass
@@ -298,7 +298,10 @@ def _one_slice(s0, s1, alt=False):
     rows, st, res = _ask(s0, s1, alt)
     if st != "blocked":
         r = res if isinstance(res, dict) else {}
-        _keep_done(st in ("table", "empty") and not r.get("cut") and not r.get("slow"), r)
+        # LM30(2026-10-21) — 표·'없음'·표 아닌 답은 끊기거나 느렸어도 다음 조각을 같은 채팅에 잇는다(새 채팅은 오류·'조회 불가' 뒤에만 —
+        # 채팅 도배 제보). 끊김·느린 답·표 아닌 답이 남은 채팅은 다음 단계가 이어 쓰지 않게만 표시한다(chat_mark_bad).
+        clean = st in ("table", "empty") and not r.get("cut") and not r.get("slow")
+        _keep_done(st in ("table", "empty", "other"), r, mark=not clean)
     return rows, st
 
 

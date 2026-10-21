@@ -2219,6 +2219,110 @@ def read_pc_spans(data_dir, d0, d1, anomalies=None):
 
 # migr(구판 행 이행분)도 물리 증거로 친다 — 유령 필터가 이행분을 지우면 안 된다(v3 최종 검증 CRITICAL)
 EVENT_SPAN_SRC = ("event", "event-gap", "event-cap", "live", "boot", "migr")
+# LM30(2026-10-21) 예전 판 설치 폴더에서 가져온 원장 행(core\pc_import)의 seen 머리 — core\pc_ledger.IMPORT_SEEN 과 같은 값.
+# 이 표시로 '이 설치(·추가PC)가 직접 모은 기록' 과 '가져온 기록' 을 가른다(_native_pc).
+IMPORT_SEEN = "import:"
+# LM30(2026-10-21) 첫 PC 켜고 끈 기록(가져온 것 빼고) 전 평일은 기록이 '없던' 것이 아니라 Windows 가 '지운' 것이다 — 그 달 PC 기록이 40%를
+# 넘어도(기록이 시작된 달·가져오기로 채운 달) 흔적이 있으면 표준일 추정(하루 8시간)을 바닥으로 둔다(시험이 False 로 바꿔 예전 숫자를 본다).
+NOPC_BEFORE_NATIVE = True
+
+
+def _native_pc(data_dir, d0, d1):
+    r"""LM30(2026-10-21) 가져온 PC 기록(core\pc_import — seen 'import:…')과 직접 모은 기록을 가른다(모든 루트 — 본 PC + 추가PC) →
+    (imp_only, first) — imp_only = [d0, d1] 안에서 그 날의 원장 행이 가져온 것뿐인 날 · first = 가져온 것을 뺀 PC 켜고 끈 기록(이벤트
+    계열 — 브라우저 방문·창 샘플러 아님)의 첫 날짜(없으면 None). 구간 파일이 없는 루트(옛 수집분)의 pc_on 행은 직접 모은 기록이다.
+    읽기만 한다."""
+    soft = ("hint", "sampler")
+    imp, own, first = set(), set(), None
+    for root in _data_roots(data_dir):
+        rows = _read(os.path.join(root, "pc_spans.csv")) + _read(os.path.join(root, "pc", "pc_spans.csv"))
+        mine = [r for r in rows if not str(r.get("seen") or "").startswith(IMPORT_SEEN)]
+        theirs = [r for r in rows if str(r.get("seen") or "").startswith(IMPORT_SEEN)]
+        imp.update(_pc_spans_rows(theirs, d0, d1))
+        own.update(_pc_spans_rows(mine, d0, d1))
+        for r in mine:
+            if str(r.get("src") or "").strip().lower() in soft:
+                continue
+            a = _dt(r.get("start"))
+            if a and (first is None or a.date() < first):
+                first = a.date()
+        if rows:
+            continue
+        for r in _read(os.path.join(root, "pc", "pc_on.csv")):
+            try:
+                dd = datetime.strptime((r.get("date") or "")[:10], "%Y-%m-%d").date()
+            except (ValueError, TypeError):
+                continue
+            if d0 <= dd <= d1:
+                own.add(dd)
+            if first is None or dd < first:
+                first = dd
+    return imp - own, first
+
+
+PC_MONTH_KEYS = ("wd", "rec", "imp", "hint", "fill8", "l29", "none", "mail", "teams", "untimed")
+
+
+def _pc_months(pc_fact, att_days, nopc_days, hours, sends, untimed):
+    r"""LM30(2026-10-21) 달마다 근거 보기(core\attendance 머리말 21) → {"YYYY-MM": {wd 평일(오늘까지) · rec PC 켜고 끈 기록이 있는 평일 ·
+    imp 그중 가져온 기록뿐인 날 · hint 브라우저 기록만 있는 평일 · fill8 하루 8시간으로 채운 평일 · l29 그 밖의 LM29 방식 값으로 채운
+    평일 · none 근무 0시간 평일(휴가 빼고) · mail·teams 시각 있는 발신 수 · untimed 날짜만 아는 발신 수 · hint_h 브라우저 사용 시간 ·
+    capped 8시간으로 채운 달(fill8 ≥ max(5, 평일/3))}}. 일수·건수만이다(시각 없음 — mm_meta·팀 묶음에 실려도 된다).
+    att_days = 출퇴근 추정 날짜별 행(없으면 nopc_days 로 fill8 만 센다)."""
+    import attendance as _att
+    out = {}
+    for d, (evt, imp, hint, absent) in sorted(pc_fact.items()):
+        m = out.setdefault(d.strftime("%Y-%m"), dict.fromkeys(PC_MONTH_KEYS, 0))
+        m["wd"] += 1
+        m["rec"] += 1 if evt else 0
+        m["imp"] += 1 if imp else 0
+        m["hint"] += 1 if hint else 0
+        if att_days is not None:
+            notes = ((att_days.get(d.isoformat()) or {}).get("notes") or [])
+            fill8 = any(n in _att.FILL8_NOTES for n in notes)
+            l29 = not fill8 and any(n in (_att.L29_NOTE_NOPC, _att.L29_NOTE_THIN) for n in notes)
+        else:
+            fill8, l29 = d in nopc_days, False
+        m["fill8"] += 1 if fill8 else 0
+        m["l29"] += 1 if l29 else 0
+        m["none"] += 1 if (float(hours.get(d, 0.0) or 0.0) <= 0 and absent < 1.0) else 0
+    for dd, lst in (sends or {}).items():
+        m = out.get(dd.strftime("%Y-%m"))
+        if m is not None:
+            for _mm, src in lst:
+                m["mail" if str(src).startswith("메일") else "teams"] += 1
+    for dd, cnt in (untimed or {}).items():
+        m = out.get(dd.strftime("%Y-%m"))
+        if m is not None:
+            m["untimed"] += sum(cnt.values())
+    for iso, r in (att_days or {}).items():
+        m = out.get(str(iso)[:7])
+        hu = float((r or {}).get("hint_usage_h") or 0.0) if isinstance(r, dict) else 0.0
+        if m is not None and hu > 0:
+            m["hint_h"] = round(m.get("hint_h", 0.0) + hu, 2)
+    for m in out.values():
+        m["capped"] = bool(m["fill8"] >= max(_att.FILL8_CAP_MIN, m["wd"] / 3.0))
+    return out
+
+
+def _log_reach(data_dir):
+    r"""LM30(2026-10-21) 이 PC 의 Windows 가 PC 켜고 끈 기록을 얼마나 보관하나(본 PC 의 data\pc\pc_source.json) → {"weeks", "reach",
+    "generated"} 또는 {} — 수집기가 요청 기간 시작까지 닿지 못했을 때(reach_start > 기간 시작)만 잰다(그때 보관 기간 ≈ 수집 시각 − 도달
+    시작). 이벤트 0건(부팅 폴백)이면 모른다."""
+    try:
+        with open(os.path.join(data_dir, "pc", "pc_source.json"), encoding="utf-8-sig") as f:
+            src = json.load(f)
+        rs = str(src.get("reach_start") or "")[:10]
+        rng = src.get("range") if isinstance(src.get("range"), list) else []
+        gen = str(src.get("generated") or "")[:10]
+        if src.get("fallback_boot") or not (rs and gen and rng):
+            return {}
+        if rs <= str(rng[0])[:10]:
+            return {}
+        days = (datetime.strptime(gen, "%Y-%m-%d") - datetime.strptime(rs, "%Y-%m-%d")).days
+        return {"weeks": max(1, int(round(days / 7.0))), "reach": rs, "generated": gen} if days >= 0 else {}
+    except (OSError, ValueError, TypeError, AttributeError):
+        return {}
 
 
 def _evt_span_dates(rows, d0, d1):
@@ -4011,12 +4115,14 @@ def _attendance(data_dir, signals, files, d0, d1, now, p, lm):
                 if a1 < now_abs and b1 > a1:
                     l29s.append((a1, min(b1, now_abs)))
     holidays = lm["holidays"]
+    # LM30(2026-10-21) 브라우저 방문·창 샘플러 구간(attendance 머리말 20 — PC 를 켜고 끈 기록이 없는 날만 attendance.hint_usage 가 고른다)
+    hint_spans = [(ab(dd, a), ab(dd, b)) for dd, lst in weak.items() for a, b in lst]
     return _att.compute(base, pts, spans, wpts, presence, [at(t) for t in live], d0, d1, now, p, std=lm["std"],
                         day_win=lm["day_win"], night_win=lm["night_win"],
                         is_off=lambda dd: _is_off_day(dd, holidays), leave=lm["absence"], offsite=set(lm["offsite"]),
                         manual_floor=man_floor, nopc=lm["nopc"], untimed_min=lm["untimed"], lm29=lm["hours"],
                         lm29_night=l29n, day_cap=lm["day_cap"], records=_att.load_records(data_dir), lm29_spans=l29s,
-                        pc_spans=pc_raw)
+                        pc_spans=pc_raw, hint_spans=hint_spans, std_floor=lm.get("std_floor"))
 
 
 def _att_apply(info, days, agg, lm_hours, inferred, p, d0, d1):
@@ -4161,7 +4267,16 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
       · LM30(2026-10-20) PC 사용 시간(attendance.pcUsage — 기본 켬 · core\\attendance 머리말 19): att_presence 가 PC 켜짐 조각을 그 행의
         src 와 함께 모아(raw) 출퇴근 추정에 넘기고(pc_spans), 출퇴근 추정이 PC 를 실제로 쓴 구간(켜 둔 채인 PC 는 흔적 있는 날의 낮 창만 ·
         흔적 없는 짧은 켜짐·새벽 업데이트 깨움은 뺌)을 근무 재료로 쓴다 — 흔적이 없어도 주말·휴일·밤에 PC 를 쓴 시간이 근무다. 합계에
-        pc_usage_h·pc_usage_off_h·always_on_days."""
+        pc_usage_h·pc_usage_off_h·always_on_days.
+      · LM30(2026-10-21 — 사용자: "부풀리기를 줄이려다가 실제 일한 것들을 없앨까봐" · 이 PC 101% · 다른 PC 131%). 더하기만 한다:
+        ① 브라우저 사용 구간(attendance.pcHintUsage — core\\attendance 머리말 20): PC 를 켜고 끈 기록이 없는 날은 흔적과 이어진 브라우저
+          사용 구간을 PC 를 쓴 시간으로(그 날의 바닥값은 그대로).
+        ② 가져온 기록(core\\pc_import — seen 'import:…')만 있는 날은 달 비율(pc_alive_own)에 넣지 않고(_native_pc), 그 평일은 늘 표준일
+          추정 날이다 — 출퇴근 추정은 가져온 기록으로 다시 재되 가져오기 전의 값(std_est — PC 기록 없이 잰 값 · 평일이면 표준일 추정)보다
+          적게 세지 않는다.
+        ③ 직접 모은 첫 PC 켜고 끈 기록(native_first) 전 평일은 달 비율과 무관하게 표준일 추정(NOPC_BEFORE_NATIVE — 기록이 시작된 달의 앞
+          평일이 흔적 창으로 떨어지던 40% 문턱).
+        ④ 달마다 근거 info["pc_months"](_pc_months — 일수·건수만) · info["pc_native_first"] · info["pc_log"](Windows 보관 주 수 — _log_reach)."""
     from datetime import timedelta
     cfg = cfg if isinstance(cfg, dict) else {}
     mc, cfg_warns = norm_cfg(cfg)            # 잘못된 설정값은 죽지 않고 기본값 + info["config_warnings"]
@@ -4234,6 +4349,8 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
                                                  kinds=pc_kinds)
     evt_days = pc_kinds.get("evt_days") or set()
     hint_sp = {dd: _union_spans(sp) for dd, sp in (pc_kinds.get("hint_sp") or {}).items()}
+    # LM30(2026-10-21) 가져온 PC 기록만 있는 날 · 직접 모은 PC 켜고 끈 기록의 첫 날(core\pc_import — 표준일 추정을 줄이지 않게)
+    imp_only, native_first = _native_pc(data_dir, d0, d1)
     for dd, kind in span_anoms:
         _anom(dd, kind, None, None)
     aux_act = {}                               # 사적·미디어 연속 구간 · 솔버 CPU 틱(LM28)
@@ -4406,7 +4523,9 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
     def cont_prev(dd):
         return cont_next(dd - timedelta(days=1))
     # PC 로그 생존 여부(월별) — 롤오버로 통째로 빈 달에는 부재 추정을 하지 않고, 월별 비율은 리포트 배지(A9)로 나간다
-    pc_alive = {}
+    # LM30(2026-10-21) pc_alive_own = 가져온 기록(core\pc_import)만 있는 날을 뺀 같은 비율 — 표준일 추정(PC 기록 없는 달)은 이것으로 정해
+    # 예전 판 기록을 가져와도 그 달의 표준일 추정 평일이 줄지 않는다
+    pc_alive, pc_alive_own = {}, {}
     d = d0
     while d <= d1:
         if not _is_off_day(d, holidays):
@@ -4415,6 +4534,9 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
             # 종일 행사·수동 기록일은 PC 기록이 있는 날과 같이 센다 — 현장 근무자가 'PC 기록 40% 미만' 으로 오인되지 않게
             has_pc = (pc.get(d, (0.0,))[0] > 0 or bool(pc_spans.get(d)) or d in offsite or d in manual)
             pc_alive[k] = (n + 1, m + (1 if has_pc else 0))
+            own_pc = ((pc.get(d, (0.0,))[0] > 0 or bool(pc_spans.get(d))) and d not in imp_only) or d in offsite or d in manual
+            n2, m2 = pc_alive_own.get(k, (0, 0))
+            pc_alive_own[k] = (n2 + 1, m2 + (1 if own_pc else 0))
         d += timedelta(days=1)
     info["pc_coverage_by_month"] = {k: round(m / n, 2) for k, (n, m) in sorted(pc_alive.items()) if n}
     info["pc_record_days"] = sum(m for _n, m in pc_alive.values())
@@ -4440,6 +4562,9 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
     pf_n, pf_h = mc.get("passiveFloorMinN") or 0, mc.get("passiveFloorMinH") or 0
     gap_run = []
     nopc_days = set()                          # LM30(2026-10-18): 표준일 추정(PC 기록 없는 달)을 쓴 날 — 출퇴근 추정의 바닥값
+    # LM30(2026-10-21) std_est = 가져온 PC 기록만 있는 표준일 추정 평일의 'PC 기록 없이 잰 값'(출퇴근 추정의 바닥값 — attendance 머리말 21) ·
+    # pc_fact = 달마다 근거 보기(pc_months)의 날짜별 재료(평일만 — 일수·건수)
+    std_est, pc_fact = {}, {}
     # LM30(2026-10-19) l29_sp = LM29 가 시각까지 정해 근무로 센 구간 {날짜: [(분, 분)]} — PC 하한(차감 뒤 그대로 센 날만)·시차 근무 창 밖
     # 인정·저녁(자정 넘김 포함)·새벽·주말 산출물 창·야간 해석. 출퇴근 추정이 확실한 흔적처럼 쓴다(attendance.withLM29 — 머리말 15).
     # pc_act = PC 를 켠 날(발신 흔적 빈 곳 경고 — attendance.send_gap)
@@ -4486,12 +4611,30 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
                     and not pc_spans.get(d) and bool(_pn) and _pm / _pn < 0.4 and active_day and not act.get(d)
                     and not cov.get(d) and not is_offsite and not is_manual
                     and d < now_lim.date())          # 오늘(아직 끝나지 않은 날)은 표준일로 채우지 않는다
+        # LM30(2026-10-21) 가져온 기록(core\pc_import)만 있는 평일은 늘 표준일 추정 날이다 — 그 날은 가져온 기록으로 다시 재되 가져오기 전의
+        # 값(표준일 추정 — std_est)보다 적게 세지 않는다(가져오기는 줄이지 않는다). 기록이 하나도 없는 평일의 달 비율은 가져온 기록을 뺀
+        # 비율(pc_alive_own)로 본다 — 가져온 기록이 달을 40% 위로 올려도 그 평일이 흔적 창으로 떨어지지 않게. 또 이 설치·추가PC 가 직접
+        # 모은 첫 PC 켜고 끈 기록(native_first) 전 평일은 Windows 가 지운 날이라 달 비율과 무관하게 표준일 추정(기록이 시작된 달의 앞
+        # 평일이 '흔적 창'(예: 8 → 5시간)으로 떨어지던 40% 문턱)
+        rec_any = has_pc_row or bool(pc_spans.get(d))
+        _qn, _qm = pc_alive_own.get(d.strftime("%Y-%m"), (0, 0))
+        if (not nopc_std and nopc_mode == "standard" and method == "activity" and not off and absent < 1.0
+                and active_day and not act.get(d) and not cov.get(d) and not is_offsite and not is_manual
+                and d < now_lim.date()
+                and ((rec_any and d in imp_only)
+                     or (not rec_any and ((bool(_qn) and _qm / _qn < 0.4)
+                                          or (NOPC_BEFORE_NATIVE and native_first is not None and d < native_first))))):
+            nopc_std = True
         spans = list(act.get(d, [])) + list(meets.get(d, [])) + list(sess.get(d, [])) + list(off_blk)
         if off and not active_day:
             # 주말·공휴일은 능동 흔적(산출물·수락 회의·샘플러)이 있는 날만 — 수신 메일 1통은 근무가 아니다.
             # 자정을 넘어 이어진 회의 조각(수락 회의의 연속)은 남긴다 — 버리면 금요일 심야→
             # 토요일 새벽 회의의 새벽분이 조용히 소실된다(검증 확정)
             spans = list(meets.get(d, [])) if d in meet_carry else []
+        spans_sig = list(spans)              # LM30(2026-10-21) PC 기록 없이 잰 재료(std_est — 가져온 기록이 더하는 하한·저녁 인정 전)
+        if not off and d <= now_lim.date():
+            # LM30(2026-10-21) 달마다 근거(pc_months)의 재료 — PC 켜고 끈 기록 · 가져온 기록뿐 · 브라우저 기록만 · 부재
+            pc_fact[d] = (d in evt_days, rec_any and d in imp_only, hint_only, absent)
         # 흔적 폭(A33): 신호 시각 ±5분 + 회의·샘플러·행사 블록 구간 — 점심·저녁·창 가장자리 판정에 쓴다(세션 꼬리 ±30분은 아니다)
         trace_sp = ([(m - TRACE_PAD_MIN, m + TRACE_PAD_MIN) for m in tp.get(d, [])]
                     + list(meets.get(d, [])) + list(act.get(d, [])) + list(off_blk))
@@ -4869,15 +5012,22 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
         #    저녁·야간 흔적(night_min)은 그대로 더한다(표준일이 저녁 세션을 삼키지 않게). 꼬리표는 아래 잔여 경로로 정규. ──
         if nopc_std:
             nopc_days.add(d)
+            if rec_any:
+                # LM30(2026-10-21) 가져온 PC 기록만 있는 날 — 출퇴근 추정의 바닥값은 그 기록 없이 잰 표준일 추정(가져오기 전의 값 —
+                # attendance 머리말 21). LM29 쪽 값(w_std)은 가져온 기록으로 잰 하한·저녁 인정까지 든 값이라 비교 칸에만 남는다
+                std_est[d] = round(max(_union_min(_clip(spans_sig, dw0, dw1)) / 60.0, std * (1.0 - absent))
+                                   + _union_min(_night_zone(spans_sig)) / 60.0, 2)
             w_std = max(day_min / 60.0, std * (1.0 - absent)) + night_min / 60.0
             add_h = max(0.0, w_std - worked)
             worked = max(worked, w_std)
-            info["std_nopc_days"] += 1
-            info["std_nopc_h"] += add_h
-            info["pc_record_missing_days"] += 1
-            db_floor = {"kind": "std_nopc", "open": _floor_open(d, act_src, accepted, act, off_blk, is_offsite, is_manual,
-                                                                 sim_days, False, floor_needs),
-                        "win": [_fmt_hm(fw0), _fmt_hm(fw1)], "add_h": round(add_h, 2), "est": True}
+            if not rec_any or add_h > 1e-9:          # 가져온 기록으로 잰 값이 이미 더 크면 표준일 추정 날로 세지 않는다
+                info["std_nopc_days"] += 1
+                info["std_nopc_h"] += add_h
+                if not rec_any:
+                    info["pc_record_missing_days"] += 1
+                db_floor = {"kind": "std_nopc", "open": _floor_open(d, act_src, accepted, act, off_blk, is_offsite, is_manual,
+                                                                     sim_days, False, floor_needs),
+                            "win": [_fmt_hm(fw0), _fmt_hm(fw1)], "add_h": round(add_h, 2), "est": True}
         # ── 시각 미상 발신(LM28 E): 날짜만 아는 발신이 있는데 하한이 놓이지 않았고 시각 있는 능동 흔적·수락 회의·샘플러·행사
         #    블록도 없는 날 — 건당 signalMinutes(메일(발신) 20·팀즈(발신) 10)를 더한다(PC 기록이 있으면 on 이하). 꼬리표는 잔여
         #    경로(평일 정규·휴일 휴일). 날짜만 수신(정오 5분 수동 세션)은 예전 그대로다. ──
@@ -5031,6 +5181,12 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
             info["holidays"] += 1
         if l29_day and worked > 0 and method == "activity":
             l29_sp[d] = _union_spans(_clip(l29_day, 0.0, 1440.0))
+        if rec_any and d in imp_only and d not in std_est and method == "activity":
+            # LM30(2026-10-21) 가져온 기록만 있는 그 밖의 날(주말·휴일 · 흔적 없는 평일) — 가져오기 전의 값(흔적 세션만 — PC 기록 없이)을
+            # 출퇴근 추정의 바닥으로(가져온 기록이 짧아도 줄지 않게 · attendance 머리말 21)
+            pre = round(_union_min(_clip(spans_sig, 0.0, 1440.0)) / 60.0, 2)
+            if pre > 0:
+                std_est[d] = pre
         d += timedelta(days=1)
     for k in ("overtime_h", "pc_floor_h", "lunch_deducted_h", "evening_credit_h",
               "weekend_window_h", "absent_worked_h", "offsite_h", "manual_h", "dinner_deducted_h",
@@ -5115,7 +5271,7 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
                           {"meets": meets_acc, "blk": blk, "offsite": offsite, "absence": absence, "holidays": holidays,
                            "untimed": un_min, "nopc": nopc_days, "hours": hours, "day_basis": info["day_basis"],
                            "std": std, "day_win": (fw0, fw1), "night_win": (nw0, nw1), "day_cap": day_cap,
-                           "spans": l29_sp})
+                           "spans": l29_sp, "std_floor": std_est})
     except Exception as e:  # noqa: BLE001 - 출퇴근 추정이 깨져도 MM 산정은 LM29 방식으로 끝난다(이유는 경고 한 줄로 보인다)
         att = None
         cfg_warns.append(f"출퇴근 추정 실패({type(e).__name__}: {str(e)[:80]}) — 이번 결과는 LM29 방식으로 계산했습니다")
@@ -5137,6 +5293,10 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
         info["attendance_usual"] = att["usual"]
         if use_att:
             hours = _att_apply(info, att["days"], att["agg"], hours, inferred, att_p, d0, d1)
+    # LM30(2026-10-21) 달마다 근거 보기(attendance 머리말 21 — 일수·건수만) · 직접 모은 첫 PC 켜고 끈 기록 · Windows 보관 주 수
+    info["pc_months"] = _pc_months(pc_fact, att["days"] if att is not None else None, nopc_days, hours, sends, untimed)
+    info["pc_native_first"] = native_first.isoformat() if native_first else ""
+    info["pc_log"] = _log_reach(data_dir)
     return hours, info
 
 
