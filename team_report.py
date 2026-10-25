@@ -71,6 +71,11 @@ def _fint(v, default=None):
     return _agg().fint(v, default)
 
 
+def _noev(m):
+    """LM30(2026-10-21) 무흔적 평일 = 흔적 없는 평일 − 휴가로 본 평일(가용에서 뺀 날 — 일하지 않은 날처럼 보이지 않게)"""
+    return max(0, (_fint(m.get("no_evidence_days"), 0) or 0) - (_fint(m.get("inferred_absence_days"), 0) or 0))
+
+
 # 프로그램 사용(참고) — LM28 은 창 샘플러가 없어 '맨 앞 창 시간' 대신 Windows 실행 기록(실행 횟수·포커스 시간 — 관리자 권한
 # 불필요)과 파일 흔적(도구별 파일을 만진 날)을 함께 싣는다(core/extract.tool_usage). 옛 판(창 기록만)은 시간 칸 그대로 읽는다.
 TOOL_BASIS_NOTE = ("창 기록 시간·Windows 실행 기록(실행 횟수·포커스 시간)·파일 흔적(그 도구 파일을 만진 날)을 합친 참고 지표입니다. "
@@ -1247,7 +1252,7 @@ margin:1px 3px 1px 0;font-size:10.5px;color:#3d444c}}
 <div class="nt">주력 {esc(by_pj[0][0] if by_pj else '—')}</div></div>
 <div class="kpi"><div class="lb">가용 MM</div><div class="vl">
 {'–' if avail is None else format(avail, '.2f')}</div>
-<div class="nt">연차·휴가 차감</div></div>
+<div class="nt">유급휴가는 가용에서 뺌</div></div>
 <div class="kpi"><div class="lb">업무 항목</div><div class="vl">{len(rows)}</div>
 <div class="nt">과제 {len(by_pj)}개</div></div>
 </div>
@@ -2527,7 +2532,8 @@ def render_full(share, html_dir, sender=None, log=say):
             + "</td>" + _att_td(m)
             + f"<td class='dim' style='font-size:11px'>{esc(ag.measure_text(m)) or '–'}</td>"
             f"<td class='dim'>신호 {esc(m.get('signals'))}건"
-            + (f" · 무흔적 {esc(m['no_evidence_days'])}일" if m.get("no_evidence_days") else "")
+            # LM30(2026-10-21) 무흔적 = 흔적 없는 평일 중 휴가로 본 날을 뺀 수(휴가를 일하지 않은 날처럼 보이지 않게)
+            + (f" · 무흔적 {_noev(m)}일" if _noev(m) else "")
             + (f" · 비업무 제외 −{_fnum(m.get('dropped_h'), 0.0):.1f}h"
                if m.get("rehours") and _fnum(m.get("dropped_h")) else "")
             + ag.anomaly_badge(m)            # 'PC 기록 이상 N일 · 16h 초과 N일' — 개인 이상치 장부의 일수

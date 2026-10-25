@@ -2593,7 +2593,8 @@ def rehours_meta(kept, dropped, tag, cfg, rep, data_dir=None, say=print):
             import attendance as _att
             att_days, att_usual, att_agg = _att.take_local(info)
         except ImportError:                        # 구판 core — 칸만 버린다
-            for _k in ("attendance_days", "attendance_usual", "attendance_agg", "attendance_hr", "attendance_legal"):
+            # LM30(2026-10-21) leave_local = 유급휴가 날짜(이 PC 전용)
+            for _k in ("attendance_days", "attendance_usual", "attendance_agg", "attendance_hr", "attendance_legal", "leave_local"):
                 info.pop(_k, None)
         mj["mm_basis"] = info
         if info.get("mm_lm29") is not None:

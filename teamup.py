@@ -414,15 +414,45 @@ def attendance_of(mj, b):
 def _team_meta(text):
     r"""mm_meta 본문에서 이 PC 전용 칸을 뺀다(LM30 — 날짜별 출퇴근·평소 시각·LM29 근거의 저녁·새벽 창 시각:
     core\attendance.scrub_meta). 쓰는 쪽(mine·judge 재산정)이 이미 떼어 내므로 보통 그대로 돌려준다 — 옛 사본이나 다른 경로로 남은
-    것을 팀 서버·공유폴더로 나가기 직전에 한 번 더 막는 자리다. 못 읽으면(형식 오류·core 없음) 그대로."""
+    것을 팀 서버·공유폴더로 나가기 직전에 한 번 더 막는 자리다. 못 읽으면(형식 오류·core 없음) 그대로.
+    LM30(2026-10-21) 휴가 날짜(day_basis 의 휴가 칸·'휴가일 근무' 이상치)도 여기서 뗀다(outbound — attendance 머리말 22 · 일수는 남는다)."""
     try:
         import attendance
         mj = json.loads(text)
-        if isinstance(mj, dict) and attendance.scrub_meta(mj):
+        if isinstance(mj, dict) and attendance.scrub_meta(mj, outbound=True):
             return json.dumps(mj, ensure_ascii=False, indent=1)
     except (ImportError, ValueError, TypeError):
         pass
     return text
+
+
+def leave_days_of(mj, b=None):
+    r"""LM30(2026-10-21) 팀 표의 '유급휴가 N일'(가용 칸) — 가용에서 실제로 뺀 유급휴가 일수(달마다 absent 합 · 오늘까지 · 반차 0.5 ·
+    휴가로 본 평일 포함 — core\attendance 머리말 22). mm_basis.absence_days 는 기간 전체(앞날 휴가 포함) 값이라 이 칸에 쓰지 않는다.
+    달 값이 없으면 leave_n, 그것도 없으면 None(팀 표는 예전처럼 absence_days)."""
+    mj = mj if isinstance(mj, dict) else {}
+    mo = mj.get("mm_months") if isinstance(mj.get("mm_months"), dict) else {}
+    vs = [v for v in mo.values() if isinstance(v, dict) and v.get("absent") is not None]
+    try:
+        if vs:
+            return round(sum(float(v.get("absent") or 0) for v in vs), 1)
+        b = b if isinstance(b, dict) else (mj.get("mm_basis") if isinstance(mj.get("mm_basis"), dict) else {})
+        return round(float(b["leave_n"]), 1) if b.get("leave_n") is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def anomaly_days_of(b):
+    r"""mm_basis.anomalies → 'PC 기록 이상' 일수 — LM30(2026-10-21) '휴가일 근무' 표시는 세지 않는다(휴가인 날 일한 것은 이상이 아니다 —
+    core\attendance.is_leave_anom). 못 읽으면 예전처럼 목록 길이."""
+    an = (b or {}).get("anomalies") if isinstance(b, dict) else None
+    if not isinstance(an, list):
+        return _count(an)
+    try:
+        import attendance
+        return len([a for a in an if not attendance.is_leave_anom(a)])
+    except ImportError:
+        return len(an)
 
 
 def team_signals(name, text, cfg):
@@ -479,10 +509,12 @@ def build(cfg, d0, d1):
               "load_pct": mj.get("load_pct"), "worked_h": mj.get("worked_h"),
               "signals": mj.get("signals"),
               "absence_days": b.get("absence_days"), "overtime_h": b.get("overtime_h"),
+              # LM30(2026-10-21) 가용에서 뺀 유급휴가 일수(반차 0.5 · 오늘까지 — 팀 표의 '유급휴가 N일' · 일수만, 날짜 없음)
+              "leave_days": leave_days_of(mj, b),
               "no_evidence_days": b.get("no_evidence_days"), "gap_days": b.get("gap_days"),
               # 측정 품질 표시(LM22 mm_basis) — 팀 취합·팀 통합 보고서가 '상한 없는 야근' 의 이상치·장시간일·
-              # 부재 추정·점심 차감을 인별로 보여 준다. 목록은 일수(len)로, 없으면 0.
-              "anomaly_days": _count(b.get("anomalies")),
+              # 휴가로 본 평일·점심 차감을 인별로 보여 준다. 목록은 일수(len)로, 없으면 0.
+              "anomaly_days": anomaly_days_of(b),
               "long_days": _count(b.get("long_days")),
               "inferred_absence_days": _count(b.get("inferred_absence_days")),
               "lunch_deducted_h": _hours(b.get("lunch_deducted_h")),

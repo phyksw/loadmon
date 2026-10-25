@@ -38,7 +38,9 @@ LM22 2차 (감사 A1·A3·A6·A9·A13·A24·A25·A30~A35·D3·D4·D5·D7 의 시
   · 샘플러        — 고착일 폐기(A1)·같은 제목 이어붙임 실동작(A24)·미커버 구간만 하한(A25)·공백 다리(D3 samplerGapBridgeMin)
   · 폴백·하한     — PC 기록 없는 날 흔적 창(A9 pcFloorFallback)·종일 행사 표준일(A6)·수동 기록(A13)·시차 근무 창 밖(D4 flexEdgeH)·
                     주말 "pc"(D7)·두 PC 병합(A32)
-  · 가용·부재     — 부재 추정 완화(A31)·추정일은 분모에서도 제외·미래 평일·오늘 비율(A34 mm_from_hours now)
+  · 가용·휴가     — 휴가 추정 완화(A31 — 휴가로 본 평일 · LM30(2026-10-21)부터 다른 유급휴가처럼 가용에서 뺌)·미래 평일·
+                    오늘 비율(A34 mm_from_hours now) · LM30(2026-10-25) 하루 유급휴가인 평일은 내가 한 일만 시간으로(받은 메일·
+                    수락 회의·출장 약속 빼고 — LEAVE_OWN_SRC · attendance 머리말 22 · PC 하한은 예전처럼 휴가인 날 쓰지 않는다)
   · 재산정(A30)   — rehours_after_judge: 판정에서 버린 신호를 뺀 시간·MM (judge·UI 가 호출)
   · 표기(D5)      — info.measure·coverage·cfg_used (mine.py 가 mm_meta 최상위에도 싣는다)
 
@@ -48,10 +50,12 @@ LM30(2026-10-18 — 출퇴근 추정, 규칙은 core/attendance.py 머리말):
   · 날짜별 출퇴근 시각은 save_attendance(report/attendance_<기간>.json — 이 PC 전용)로만 — mm_meta 에는 시각 없는 합계뿐.
 
 LM30v1(2026-10-19 — 법정 채움 MM, config mm.basis "legal" 기본 · 키가 없어도 legal · "measured" = LM30 그대로):
-  · mm_from_hours 가 달마다 1MM = 8h × 그달 평일 전부(평일 공휴일 포함) · 투입 = (실제 근무 + 법정 채움) ÷ 1MM · 가용 = 지난 평일의
-    비율로 낸다. 법정 채움 = 지난 평일 공휴일 8h · 유급휴가 8h × (1 · 0.5)(근태 행이 있으면 근태의 휴가, 없으면 달력 부재) · 근태 행이
-    없는 날의 휴가 추정 8h(mm.creditInferredLeave). 실제 근무 = 근태 출근·퇴근이 있는 날은 근태 시간 + 그 밖 +@, 없는 날은 LM 이 잰
-    근무(day_hours). 평일이라는 이유만으로는 채우지 않는다. LM30 방식 값은 달마다 mm_lm30 으로 나란히 남는다.
+  · mm_from_hours 가 달마다 1MM = 8h × 그달 평일 전부(평일 공휴일 포함) · 투입 = (실제 근무 + 공휴일 채움) ÷ 1MM · 가용 = (지난 평일 −
+    유급휴가 − 휴가 추정) ÷ 그달 평일로 낸다. 공휴일 채움 = 지난 평일 공휴일 8h. LM30v1(2026-10-25) 유급휴가(근태 출근·퇴근이나 휴가가
+    적힌 근태 행은 그 행의 휴가, 아니면 달력·근태 기록·'휴가 날짜' 칸 · 반차 0.5)와 근태 행이 없는 날의 휴가 추정(mm.creditInferredLeave)은
+    채우지 않고 가용에서 뺀다 — 법정 휴가라 일하지 않은 날로 세지 않는다(예전에는 8h 씩 채웠다). 실제 근무 = 근태 출근·퇴근이 있는 날은
+    근태 시간 + 그 밖 +@, 없는 날은 LM 이 잰 근무(day_hours). 평일이라는 이유만으로는 채우지 않는다. LM30 방식 값은 달마다 mm_lm30 으로
+    나란히 남는다.
   · 날짜별 근태 사실(info["attendance_hr"])과 달마다 근태 기록 시간·+@ 나눔·표시 날짜(info["attendance_legal"])는 이 PC 전용 —
     core/attendance.take_local 이 떼어 attendance 파일로만 보낸다(mm_months 에는 합계 칸만).
 """
@@ -381,10 +385,12 @@ MM_CHOICES = {"method": ("activity", "workday"), "pcFloorNeeds": ("active", "any
               "simNight": ("span", "anchor", "off"),
               # PC 기록이 평일 40% 미만인 달의 흔적 있는 평일(LM28 E): standard(표준일 × (1−부재) 추정) · trace(예전 흔적 창)
               "noPcMonthDay": ("standard", "trace"),
-              # LM30v1(2026-10-19) 투입 MM 의 기준: legal(기본 — 1MM = 평일 전부 × 8h, 공휴일·유급휴가 법정 채움 + 실제 근무) ·
-              # measured(LM30 그대로 — 투입 = 잰 근무 ÷ (8h × 공휴일 뺀 평일), 가용에서 휴가를 뺀다). 키가 없으면 legal(LM30 config 를 옮겨 와도)
+              # LM30v1(2026-10-19) 투입 MM 의 기준: legal(기본 — 1MM = 평일 전부 × 8h, 공휴일 법정 채움 + 실제 근무 · 2026-10-25 부터
+              # 유급휴가는 채우지 않고 가용에서 뺀다) · measured(LM30 그대로 — 투입 = 잰 근무 ÷ (8h × 공휴일 뺀 평일), 가용에서 휴가를 뺀다).
+              # 키가 없으면 legal(LM30 config 를 옮겨 와도)
               "basis": ("legal", "measured")}
-# creditInferredLeave(LM30v1 2026-10-19 · 기본 true) — 근태 행이 없는 평일의 휴가 추정(inferAbsence)을 법정 채움으로 8h 채운다
+# creditInferredLeave(LM30v1 2026-10-19 · 기본 true) — 근태 행이 없는 평일의 휴가 추정(inferAbsence)을 유급휴가처럼 본다(2026-10-25 부터
+# 가용에서 뺀다 — 예전에는 법정 채움으로 8h 채웠다). false 면 그 날은 가용에 남는다
 MM_BOOLS = ("usePcFloor", "inferAbsence", "eveningCredit", "spanFromAllFiles", "offsiteAsWork",
             "simNightHumanUnlock", "creditInferredLeave")
 MM_BOOLS_FALSE = ("viewCountsAsActive", "simNightNeedsPc")   # 기본 false 인 참/거짓 키
@@ -1879,6 +1885,9 @@ TIME_KEEP_SRC = OWN_SEND_SRC
 # (UNTIMED_SRC)은 시각이 없고, '수동기록' 신호의 09:00 은 load_signals 의 자리표라 점으로 쓰지 않는다 — 수동 기록은 worklog 의
 # 구간(시작·끝)·시간(바닥값)으로 따로 받는다(manual_entries). 받은 글·열람·해석 출력은 사람이 한 일의 시각이 아니다.
 ATT_POINT_SRC = frozenset(NIGHT_PRODUCTIVE - UNTIMED_SRC - {"수동기록"})
+# LM30(2026-10-25) 하루 유급휴가인 평일(알려진 휴가 — attendance 머리말 22)의 신호 세션 재료 — 내가 만든 산출물·발신만. 받은 메일·팀즈·
+# 오더·열람·회의 신호·해석 출력은 그 날 근무가 아니다(날짜만 아는 발신·수동기록은 세션을 만들지 않는다 — signalMinutes 0 · 따로 센다)
+LEAVE_OWN_SRC = frozenset(NIGHT_PRODUCTIVE)
 # 출퇴근 추정이 투입을 맡을 때 info 에서 lm29_totals 로 옮기는 LM29 합계(같은 키에는 출퇴근 추정 값이 들어간다)
 LM29_TOTAL_KEYS = ("overtime_h", "regular_h", "extended_h", "night_h", "holiday_h", "holiday_night_h",
                    "weekend_days", "night_days", "long_days", "absent_worked_h")
@@ -1890,6 +1899,7 @@ ABSENCE_KW_EN = ("vacation", "pto", "annual leave", "out of office", "ooo")
 ABSENCE_KW = ABSENCE_KW_KR + ABSENCE_KW_EN
 HALF_KW = ("반차", "반휴", "오전", "오후", "half day", "half-day")
 ABSENCE_GUARD = ("안내", "공지", "웹진", "캠페인", "신청 방법", "사용 촉진", "권장", "현황", "집계")
+SELF_TOKEN = "[나]"           # core\privacy 가 제목의 내 이름을 바꿔 넣는 가림 표식(G1 정제 — _absence_skip 이 내 이름으로 본다)
 _ABS_SPLIT = re.compile(r"[\s_\-·/()\[\],:：]+")
 _ABS_STRIP = re.compile(r"(입니다|사용|신청|중|임|함)$")
 _ABS_EN = re.compile(r"(?<![a-z])(" + "|".join(re.escape(k) for k in ABSENCE_KW_EN) + r")(?![a-z])")
@@ -1966,7 +1976,9 @@ def _absence_skip(r, selfs=()):
       meeting_status 3=받은 초대 / 5·7=취소 · response 4=거절 5=미응답 · busy 0=한가함
     열이 없는 경로(웹·색인·Copilot — meeting_status·response 가 모두 빈 행)는 LM28(E)부터 내가 부재중(busy 3)으로 표시한 것이거나
     제목에 내 이름(selfs — _self_names 의 정규화 조각)이 든 것만 근태로 본다. 웹 일정은 받은 초대를 구분할 열이 없어, 동료의
-    '[휴가] 이름' 종일 초대가 '바쁨'(2)으로 읽혀 내 부재 1.0일이 되고 그날 PC 하한이 꺼졌다."""
+    '[휴가] 이름' 종일 초대가 '바쁨'(2)으로 읽혀 내 부재 1.0일이 되고 그날 PC 하한이 꺼졌다.
+    LM30(2026-10-21) 수집 직후 정제(run.g1_mail — core\\privacy)가 제목의 내 이름을 SELF_TOKEN('[나]')으로 바꾸므로 그 표식도 내 이름으로
+    본다 — 예전에는 정제 뒤 '[휴가] [나]' 가 내 이름과 맞지 않아 내 휴가가 빠지고 그날이 일하지 않은 평일로 남았다."""
     ms = str(r.get("meeting_status") or "").strip()
     resp = str(r.get("response") or "").strip()
     busy = str(r.get("busy_status") or "").strip()
@@ -1979,22 +1991,28 @@ def _absence_skip(r, selfs=()):
     if not ms and not resp:
         if busy == "3":
             return False
+        if SELF_TOKEN in str(r.get("subject") or ""):
+            return False
         subj = re.sub(r"[\s._\-]+", "", str(r.get("subject") or "").lower())
         return not any(len(n) >= 2 and n in subj for n in (selfs or ()))
     return False
 
 
-def absence_days(data_dir, d0, d1, spans=None, cfg=None):
-    """근태 부재일 — Outlook 종일 일정·부재중(OOF)·시간제 근태 일정에서 읽는다.
-    returns {date: 0.5(반차) | 1.0(종일)}   ※ 출장·교육은 근무이므로 부재가 아니다(offsite_days 가 맡는다).
+def absence_days(data_dir, d0, d1, spans=None, cfg=None, src=None):
+    """유급휴가일(내부 이름 '부재' — 키 호환) — Outlook 종일 일정·부재중(OOF)·시간제 근태 일정에서 읽는다.
+    returns {date: 0.5(반차) | 1.0(종일)}   ※ 출장·교육은 근무이므로 휴가가 아니다(offsite_days 가 맡는다).
       · 종일: 제목에 반차 표식(오전/오후/반차/AM/PM)이면 0.5, 아니면 1.0
       · 시간제 OOF(busy 3): 길이 ≤5h 또는 반차 표식이면 0.5, 그 밖에 1.0 (A5 — 예전엔 무조건 1.0)
       · 시간제 바쁨: ≥6h → 1.0 · ≥3h → 0.5 · 그 미만 0 (예전과 같음)
       · 남이 보낸·취소·거절·미응답 초대(_absence_skip)는 아니다(A4)
-    spans(dict 를 넘기면) 에 {date: [(m0, m1)]} 부재 구간(분)을 채운다 — 반차 시각. 종일 반차는 오전이면
+    spans(dict 를 넘기면) 에 {date: [(m0, m1)]} 휴가 구간(분)을 채운다 — 반차 시각. 종일 반차는 오전이면
     주간 창 시작~점심 끝, 오후면 점심 시작~주간 창 끝으로 둔다.
     cfg(없으면 config\\config.json) — '나' 의 이름(owner·teamsSelfNames·계정·로그온 표시명·mail_source me — 파일 author 다수결은
-    읽지 않는다)으로 열 없는 경로의 일정이 내 근태인지 본다(_absence_skip, LM28 E)."""
+    읽지 않는다)으로 열 없는 경로의 일정이 내 근태인지 본다(_absence_skip, LM28 E).
+    LM30(2026-10-21) 근태 기록 칸의 휴가 열(data\\근태\\*.csv · gerp.csv)과 '휴가 날짜' 칸에 직접 넣은 날(휴가_직접입력.csv)도 합친다
+    (core\\attendance.load_records 의 leave · 머리말 22) — 같은 날이면 큰 쪽(종일 > 반차). 예전에는 근태 기록에만 있는 연차가 가용에 남아
+    일하지 않은 평일로 세어졌다(로드율 −5%p 안팎/일). src(dict 를 넘기면)에 {date: cal|rec|gerp|manual} 출처(달력 → 근태 기록 → GERP →
+    직접 순으로 먼저 안 곳)를 채운다. 근태·직접 넣은 반차는 시각을 모르므로 spans 에 넣지 않는다(PC 하한의 반차 상한 표준일 × 0.5 만)."""
     from datetime import timedelta
     out = {}
     selfs = _self_names(data_dir, cfg if isinstance(cfg, dict) else load_cfg(), file_rows=[])
@@ -2038,9 +2056,21 @@ def absence_days(data_dir, d0, d1, spans=None, cfg=None):
         while d <= last:
             if d0 <= d <= d1:
                 out[d] = max(out.get(d, 0.0), frac)
+                if src is not None:
+                    src.setdefault(d, "cal")
                 if spans is not None and seg is not None:
                     spans.setdefault(d, []).append(seg)
             d += timedelta(days=1)
+    try:
+        import attendance as _att
+        rec_lv = _att.load_records(data_dir).get("leave") or {}
+    except Exception:  # noqa: BLE001 - 근태 기록 칸을 못 읽어도 달력 휴가는 그대로 쓴다
+        rec_lv = {}
+    for d, (f, s) in sorted(rec_lv.items()):
+        if d0 <= d <= d1 and f > 0:
+            out[d] = max(out.get(d, 0.0), float(f))
+            if src is not None:
+                src.setdefault(d, s)
     return out
 
 
@@ -2272,19 +2302,24 @@ def _native_pc(data_dir, d0, d1):
     return imp - own, first
 
 
-PC_MONTH_KEYS = ("wd", "rec", "imp", "hint", "fill8", "l29", "none", "mail", "teams", "untimed")
+PC_MONTH_KEYS = ("wd", "rec", "imp", "hint", "fill8", "l29", "none", "mail", "teams", "untimed", "lv")
 
 
-def _pc_months(pc_fact, att_days, nopc_days, hours, sends, untimed):
-    r"""LM30(2026-10-21) 달마다 근거 보기(core\attendance 머리말 21) → {"YYYY-MM": {wd 평일(오늘까지) · rec PC 켜고 끈 기록이 있는 평일 ·
-    imp 그중 가져온 기록뿐인 날 · hint 브라우저 기록만 있는 평일 · fill8 하루 8시간으로 채운 평일 · l29 그 밖의 LM29 방식 값으로 채운
-    평일 · none 근무 0시간 평일(휴가 빼고) · mail·teams 시각 있는 발신 수 · untimed 날짜만 아는 발신 수 · hint_h 브라우저 사용 시간 ·
-    capped 8시간으로 채운 달(fill8 ≥ max(5, 평일/3))}}. 일수·건수만이다(시각 없음 — mm_meta·팀 묶음에 실려도 된다).
+def _pc_months(pc_fact, att_days, nopc_days, hours, sends, untimed, inferred=None):
+    r"""LM30(2026-10-21) 달마다 근거 보기(core\attendance 머리말 21) → {"YYYY-MM": {wd 평일(오늘까지 · 휴가인 날 빼고) · rec PC 켜고 끈
+    기록이 있는 평일 · imp 그중 가져온 기록뿐인 날 · hint 브라우저 기록만 있는 평일 · fill8 하루 8시간으로 채운 평일 · l29 그 밖의 LM29 방식
+    값으로 채운 평일 · none 근무 0시간 평일(휴가 빼고) · mail·teams 시각 있는 발신 수 · untimed 날짜만 아는 발신 수 · lv 휴가인 평일(하루
+    휴가 + 휴가로 본 날 inferred — 머리말 22 · 위 평일 수에 넣지 않는다) · hint_h 브라우저 사용 시간 · capped 8시간으로 채운 달(fill8 ≥
+    max(5, 평일/3))}}. 일수·건수만이다(시각 없음 — mm_meta·팀 묶음에 실려도 된다).
     att_days = 출퇴근 추정 날짜별 행(없으면 nopc_days 로 fill8 만 센다)."""
     import attendance as _att
     out = {}
+    inf = set(inferred or ())
     for d, (evt, imp, hint, absent) in sorted(pc_fact.items()):
         m = out.setdefault(d.strftime("%Y-%m"), dict.fromkeys(PC_MONTH_KEYS, 0))
+        if absent >= 1.0 or d in inf:
+            m["lv"] += 1                  # 휴가인 날 — PC 기록이 없는 게 당연하다(일하지 않은 날·기록 빠진 날로 세지 않는다)
+            continue
         m["wd"] += 1
         m["rec"] += 1 if evt else 0
         m["imp"] += 1 if imp else 0
@@ -2616,6 +2651,34 @@ def load_attendance_range(rep_dir, d0, d1):
                 k = str(k)[:10]
                 if isinstance(v, dict) and (not d0 or k >= str(d0)[:10]) and (not d1 or k <= str(d1)[:10]):
                     out[k] = v
+        except (OSError, ValueError, TypeError, AttributeError):
+            continue
+    return out
+
+
+def load_leave_range(rep_dir, d0, d1):
+    r"""LM30(2026-10-21) 기간과 겹치는 모든 attendance_*.json(이 PC 전용)의 유급휴가 날짜(agg.leave.dates — core\attendance 머리말 22) →
+    {iso: 비율} — 겹치는 날은 mtime 이 늦은 파일이 이긴다(load_attendance_range 와 같은 규칙). 추이 카드가 'PC 기록 없음' 주를 휴가로
+    말하는 재료(주·달 일수만 화면에 나간다 · 얼린 사본은 그 칸도 뺀다 — freeze)."""
+    out, order = {}, []
+    try:
+        for p in glob.glob(os.path.join(rep_dir, "attendance_*.json")):
+            try:
+                order.append((os.path.getmtime(p), p))
+            except OSError:
+                continue
+    except OSError:
+        return out
+    for _mt, p in sorted(order):
+        try:
+            with open(p, encoding="utf-8-sig") as f:
+                d = json.load(f)
+            lv = ((d.get("agg") or {}).get("leave") or {}).get("dates") if isinstance(d, dict) else None
+            for k, v in (lv.items() if isinstance(lv, dict) else ()):
+                k = str(k)[:10]
+                f0 = float((v[0] if isinstance(v, (list, tuple)) and v else v) or 0)
+                if f0 > 0 and (not d0 or k >= str(d0)[:10]) and (not d1 or k <= str(d1)[:10]):
+                    out[k] = f0
         except (OSError, ValueError, TypeError, AttributeError):
             continue
     return out
@@ -4144,7 +4207,7 @@ def _att_apply(info, days, agg, lm_hours, inferred, p, d0, d1):
     absent_worked_h)에는 출퇴근 추정 값을 넣는다 — 꼬리표 정의는 하나: 정규+연장+휴일 = 근무, 야간(22~06)은 겹쳐 세는 할증 시간
     (휴일 야간은 holiday_night 에도), 연장근무(overtime_h) = 연장 + 휴일, 야근일(night_days) = 20시 넘어 퇴근한 날(LM29 의 '19~20시
     PC 가동만으로 야근' 과대를 고친다). day_basis[날짜].att = {work, ext, night, holiday, offpc, conf}(시각 없음).
-    부재 추정(inferred)은 투입이 0.25h 넘는 날을 뺀다 — 분모(가용)와 분자(투입)가 같은 시간을 본다."""
+    휴가 추정(inferred — 휴가로 본 평일)은 투입이 0.25h 넘는 날을 뺀다 — 분모(가용)와 분자(투입)가 같은 시간을 본다."""
     import attendance as _att
     from datetime import date as _date
     info["lm29_day_hours"] = {k.isoformat(): v for k, v in sorted(lm_hours.items())}
@@ -4182,6 +4245,9 @@ def _att_apply(info, days, agg, lm_hours, inferred, p, d0, d1):
                 absent_worked_h=round(leave_h, 1))
     for dd in [x for x in inferred if hours.get(x, 0.0) > 0.25]:
         del inferred[dd]
+        _dbi = info["day_basis"].get(dd.isoformat())
+        if isinstance(_dbi, dict):
+            _dbi.pop("inf", None)            # LM30(2026-10-21) 일한 날이다 — '휴가로 본 평일' 표식도 거둔다
     info["inferred_absence_days"] = len(inferred)
     info["inferred_absence_dates"] = [x.isoformat() for x in sorted(inferred)]
     ms = info.get("measure")
@@ -4213,7 +4279,7 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
       · 종일 행사(A6)·수동 기록(A13): 표준일×(1−부재)·기록 시간을 하한으로, 능동 흔적, 부재 추정 제외.
       · 시차 근무(D4) : 산출물 없어도 주간 창 밖 PC 가동을 앞뒤 각 flexEdgeH 까지(야간 합 ≤ PC night).
       · 주말 "pc"(D7) : weekendWindow="pc" 면 능동 흔적이 있는 주말은 평일과 같은 PC 하한.
-      · 부재 추정(A31): 투입 ≤15분·PC ≤30분·능동 흔적 없음(수신 1통·유지관리 깨움 허용).
+      · 휴가 추정(A31 — 휴가로 본 평일): 투입 ≤15분·PC ≤30분·능동 흔적 없음(수신 1통·유지관리 깨움 허용).
       · 야간 해석(S4-N1): 밤새 돌린 솔버(ANSYS·Zemax·CFD…)의 출력 뭉치를 근무로 인정한다 — mm.simNight
                        span(제출~마지막 출력 구간, 기본) · anchor(뭉치당 30분) · off(게이트만, 시간 0).
                        상한 mm.simNightCapH(밤당 4h, 0=무제한) · 첫 출력 뒤 사람 흔적이 있으면 상한 해제
@@ -4394,16 +4460,27 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
     # 흡수된 몫' 까지 말할 수 있어야 "메일이 반영되지 않는다" 를 숫자로 답할 수 있다(감사 지적).
     mail_sess, _md = _signal_spans([g for g in signals if str(g[1]).startswith("메일")], d0, d1, mins,
                                    now=now, gap=gap, day_win=day_win, passive_max_min=mc["passiveDayMaxMin"])
-    abs_spans = {}
-    absence = absence_days(data_dir, d0, d1, spans=abs_spans, cfg=cfg)
+    abs_spans, lv_src = {}, {}
+    # LM30(2026-10-21) 유급휴가 = 달력 + 근태 기록 칸의 휴가 열 + '휴가 날짜' 칸(attendance 머리말 22) — lv_src 에 날짜별 출처
+    absence = absence_days(data_dir, d0, d1, spans=abs_spans, cfg=cfg, src=lv_src)
     holidays = _holiday_set(cfg)
+    # LM30(2026-10-25) 하루 유급휴가인 평일(attendance 머리말 22)은 내가 한 일만 근무로 센다 — 받은 메일·팀즈·수락 회의·출장 약속(달력)은
+    # 그 날 근무가 아니다(예전: 휴가인 날 받은 메일 3통 + 수락 회의 1시간이 '휴가일 근무' 1.25시간). 그 날의 신호 세션은 내 산출물·발신
+    # (LEAVE_OWN_SRC)과 사람이 저장한 파일 시각(해석 출력 anchor 제외)만으로 다시 만든다. 주말·휴일은 그 규칙 그대로(바꾸지 않는다)
+    lv_full = {dd for dd, v in absence.items() if v >= 1.0 and d0 <= dd <= d1 and not _is_off_day(dd, holidays)}
+    sess_own = {}
+    if lv_full:
+        sess_own = _signal_spans([g for g in signals if g[0].date() in lv_full and g[1] in LEAVE_OWN_SRC], d0, d1, mins,
+                                 now=now, extra={dd: [(m, c) for m, c in lst if _sim_end(c) is None]
+                                                 for dd, lst in (extra or {}).items() if dd in lv_full},
+                                 gap=gap, day_win=day_win, passive_max_min=mc["passiveDayMaxMin"])[0]
     hours, inferred = {}, {}
     cal_n = 0
     for r in _read_multi(data_dir, "outlook", "calendar.csv"):
         t = _dt(r.get("start"))
         if t and d0 <= t.date() <= d1:
             cal_n += 1
-    # 화면의 '부재 N일 차감'은 실제로 가용에서 빠지는 평일만 센다 — 연차 기간에 낀 주말은 차감 대상이 아니다
+    # absence_days(유급휴가 일수)는 실제로 가용에서 빠지는 평일만 센다 — 연차 기간에 낀 주말은 빼지 않는다
     info = {"absence_days": round(sum(v for dd, v in absence.items() if not _is_off_day(dd, holidays)), 1),
             "overtime_h": 0.0, "gap_days": 0,
             "weekend_days": 0, "night_days": 0, "no_evidence_days": 0, "holidays": 0,
@@ -4534,10 +4611,13 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
 
     def cont_prev(dd):
         return cont_next(dd - timedelta(days=1))
-    # PC 로그 생존 여부(월별) — 롤오버로 통째로 빈 달에는 부재 추정을 하지 않고, 월별 비율은 리포트 배지(A9)로 나간다
+    # PC 로그 생존 여부(월별) — 롤오버로 통째로 빈 달에는 휴가 추정을 하지 않고, 월별 비율은 리포트 배지(A9)로 나간다
     # LM30(2026-10-21) pc_alive_own = 가져온 기록(core\pc_import)만 있는 날을 뺀 같은 비율 — 표준일 추정(PC 기록 없는 달)은 이것으로 정해
     # 예전 판 기록을 가져와도 그 달의 표준일 추정 평일이 줄지 않는다
-    pc_alive, pc_alive_own = {}, {}
+    # LM30(2026-10-21) pc_alive_lv = 하루 휴가인 평일을 뺀 같은 비율(attendance 머리말 22) — 휴가인 날은 PC 기록이 없는 게 당연하다.
+    # 휴가가 많은 달이 'PC 기록 30% — 측정 불충분'·'하루 8시간 채움' 배지가 되고 휴가 추정이 막히던 것. 게이트는 둘 중 유리한 쪽이라
+    # (_cov_low·_cov_ok) 예전보다 채움·추정이 줄지 않는다 — 비율 표시(pc_coverage_by_month)·신뢰도는 휴가를 뺀 값
+    pc_alive, pc_alive_own, pc_alive_lv = {}, {}, {}
     d = d0
     while d <= d1:
         if not _is_off_day(d, holidays):
@@ -4549,8 +4629,23 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
             own_pc = ((pc.get(d, (0.0,))[0] > 0 or bool(pc_spans.get(d))) and d not in imp_only) or d in offsite or d in manual
             n2, m2 = pc_alive_own.get(k, (0, 0))
             pc_alive_own[k] = (n2 + 1, m2 + (1 if own_pc else 0))
+            if absence.get(d, 0.0) < 1.0:
+                n3, m3 = pc_alive_lv.get(k, (0, 0))
+                pc_alive_lv[k] = (n3 + 1, m3 + (1 if has_pc else 0))
         d += timedelta(days=1)
-    info["pc_coverage_by_month"] = {k: round(m / n, 2) for k, (n, m) in sorted(pc_alive.items()) if n}
+
+    def _cov_low(k):
+        """그 달 PC 기록이 평일의 40% 미만인가(표준일 추정을 여는 쪽) — 휴가를 넣은 비율·뺀 비율 중 하나라도(예전보다 덜 채우지 않게)"""
+        n0, m0 = pc_alive.get(k, (0, 0))
+        n1, m1 = pc_alive_lv.get(k, (0, 0))
+        return bool(n0) and (m0 / n0 < 0.4 or (bool(n1) and m1 / n1 < 0.4))
+
+    def _cov_ok(k):
+        """그 달 PC 기록이 평일의 40% 이상인가(휴가 추정을 여는 쪽) — 휴가를 넣은 비율·뺀 비율 중 하나라도(예전보다 덜 추정하지 않게)"""
+        n0, m0 = pc_alive.get(k, (0, 0))
+        n1, m1 = pc_alive_lv.get(k, (0, 0))
+        return bool(n0 and m0 / n0 >= 0.4) or bool(n1 and m1 / n1 >= 0.4)
+    info["pc_coverage_by_month"] = {k: round(m / n, 2) for k, (n, m) in sorted(pc_alive_lv.items()) if n}
     info["pc_record_days"] = sum(m for _n, m in pc_alive.values())
     # ── 야간 해석(솔버) 인정(S4-N1) — 한 밤이 자정을 넘어 두 날짜에 걸치므로 하루씩 도는 아래 루프 안에서는
     #    만들 수 없다. 밤 단위로 미리 인정 구간을 계산해 두고 루프는 그날 몫만 합집합으로 더한다. ──
@@ -4588,6 +4683,7 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
         l29_day = []                         # LM30(2026-10-19) 이 날 LM29 가 시각까지 정해 센 구간(위 l29_sp)
         off = _is_off_day(d, holidays)
         absent = absence.get(d, 0.0)
+        lv_day = d in lv_full                # LM30(2026-10-25) 하루 유급휴가인 평일 — 내가 한 일만(위 sess_own)
         has_pc_row = d in pc
         on, night, first_on, last_off = _pc_row(d)
         pcs = pc_spans.get(d) or []
@@ -4598,7 +4694,7 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
         if raw_day > PC_DAY_MAX_H + 1e-9:
             _anom(d, f"PC 주간 가동 {raw_day:g}h > {PC_DAY_MAX_H:g}h(야간열 누락 추정)",
                   [on, night], [day_on, night])
-        off_blk = list(blk.get(d, []))
+        off_blk = [] if lv_day else list(blk.get(d, []))     # 하루 휴가인 평일의 출장 약속(달력)은 근무가 아니다(LM30 2026-10-25)
         if off_blk:
             # 하루짜리(≥6h) 행사 블록('협력사 현장 출장 09~18')은 점심을 덮는다 — 흔적이 없는 점심 부분은 뺀다(표준일 8h 와 일치)
             tr0 = ([(m - TRACE_PAD_MIN, m + TRACE_PAD_MIN) for m in tp.get(d, [])]
@@ -4618,9 +4714,8 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
         # PC 기록 없는 달의 평일(LM28 E — mm.noPcMonthDay="standard"): 그 달 PC 기록이 평일 40% 미만이고 그날 PC 기록이 없는데
         # 능동 흔적이 있으면 아래 '종일 행사' 다음에 표준일 × (1−부재)를 주간 하한으로 둔다(추정). 창 샘플러가 잰 날·종일 행사·
         # 수동 기록일은 각자의 규칙이 맡는다. "trace" 면 예전 흔적 창 폴백.
-        _pn, _pm = pc_alive.get(d.strftime("%Y-%m"), (0, 0))
         nopc_std = (nopc_mode == "standard" and method == "activity" and not off and absent < 1.0 and not has_pc_row
-                    and not pc_spans.get(d) and bool(_pn) and _pm / _pn < 0.4 and active_day and not act.get(d)
+                    and not pc_spans.get(d) and _cov_low(d.strftime("%Y-%m")) and active_day and not act.get(d)
                     and not cov.get(d) and not is_offsite and not is_manual
                     and d < now_lim.date())          # 오늘(아직 끝나지 않은 날)은 표준일로 채우지 않는다
         # LM30(2026-10-21) 가져온 기록(core\pc_import)만 있는 평일은 늘 표준일 추정 날이다 — 그 날은 가져온 기록으로 다시 재되 가져오기 전의
@@ -4638,6 +4733,9 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
                                           or (NOPC_BEFORE_NATIVE and native_first is not None and d < native_first))))):
             nopc_std = True
         spans = list(act.get(d, [])) + list(meets.get(d, [])) + list(sess.get(d, [])) + list(off_blk)
+        if lv_day:
+            # LM30(2026-10-25) 하루 휴가인 평일 — 창 샘플러(내 키보드·마우스)와 내 산출물·발신 세션만(받은 메일·수락 회의는 근무가 아니다)
+            spans = list(act.get(d, [])) + list(sess_own.get(d, []))
         if off and not active_day:
             # 주말·공휴일은 능동 흔적(산출물·수락 회의·샘플러)이 있는 날만 — 수신 메일 1통은 근무가 아니다.
             # 자정을 넘어 이어진 회의 조각(수락 회의의 연속)은 남긴다 — 버리면 금요일 심야→
@@ -5046,7 +5144,7 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
         un_n = sum((untimed.get(d) or {}).values())
         un_min = 0.0
         if (un_n and method == "activity" and floor_add is None and not nopc_std and not is_offsite and not is_manual
-                and not hum_pt.get(d) and d not in accepted and not act.get(d) and not off_blk):
+                and not hum_pt.get(d) and (lv_day or d not in accepted) and not act.get(d) and not off_blk):
             un_min = sum(n * float(mins.get(UNTIMED_BASE.get(s, "메일(발신)"), 0) or 0) for s, n in untimed[d].items())
             if on > 0:
                 un_min = min(un_min, max(0.0, on * 60.0 - worked * 60.0))
@@ -5072,9 +5170,9 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
                     base = 0.0
                 worked = max(worked, base)
         if absent >= 1.0 and worked > 0:
-            # 연차인데 흔적이 있다 — 예전 4h 클램프 대신 장부에 남기고 흔적만큼 그대로 계상
+            # 휴가인데 일한 흔적이 있다 — 예전 4h 클램프 대신 장부에 남기고 흔적만큼 그대로 센다(휴가일 근무 — attendance 머리말 22)
             info["absent_worked_h"] += worked
-            _anom(d, "부재일(연차·휴가) 흔적 — 자르지 않고 흔적만큼 계상", None, [round(worked, 2)])
+            _anom(d, "휴가일 근무 — 휴가인 날 일한 흔적을 자르지 않고 그대로 셉니다", None, [round(worked, 2)])
         if worked > PHYS_CAP_H:                  # 입력 검증이 정상이면 닿지 않는 마지막 물리 한계
             info["phys_cap_days"] += 1
             _anom(d, "24h 물리 한계 초과", [round(worked, 2)], [PHYS_CAP_H])
@@ -5177,18 +5275,23 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
             info["day_basis"][d.isoformat()] = db
         if not off and absent <= 0.0 and infer_abs and method == "activity":
             k = d.strftime("%Y-%m")
-            n, m = pc_alive.get(k, (0, 0))
-            # 부재 추정(A31 완화): 투입 ≤15분·PC 가동 ≤30분(유지관리 깨움)·능동 흔적 없음(수신 1통 허용)인 평일 —
-            # 그 달 PC 기록이 평일의 40% 이상 살아 있을 때만(수집 실패를 부재로 오인하지 않게). 호출측이 가용에서 차감한다.
+            # 휴가 추정(내부 이름 '부재 추정' — A31 완화): 투입 ≤15분·PC 가동 ≤30분(유지관리 깨움)·능동 흔적 없음(수신 1통 허용)인 평일 —
+            # 그 달 PC 기록이 평일의 40% 이상 살아 있을 때만(수집 실패를 휴가로 오인하지 않게 · LM30(2026-10-21) 하루 휴가인 평일을 뺀 비율도
+            # 본다 — _cov_ok). 호출측이 가용에서 뺀다.
             # 달력 근태가 있는 날(반차 0.5 포함)은 추정하지 않는다(VF-H7 — 반차일이 추정 1.0 이 되어 분모에서 통째로 빠지던 것).
-            # 메일 축(받은·보낸)이 미관측인 날은 추정하지 않는다(LM28 — 못 읽은 날을 '부재'로 만들지 않게. 원장이 없으면 LM24).
+            # 메일 축(받은·보낸)이 미관측인 날은 추정하지 않는다(LM28 — 못 읽은 날을 휴가로 만들지 않게. 원장이 없으면 LM24).
             if (worked <= 0.25 and on <= 0.5 and not active_day and not is_offsite and not is_manual
-                    and n and m / n >= 0.4):
+                    and _cov_ok(k)):
                 if mail_un:
                     info["inferred_absence_blocked_unobserved"] += 1
                 else:
                     inferred[d] = 1.0
                     info["inferred_absence_days"] += 1
+                    # LM30(2026-10-21) 날짜별 근거에 '휴가로 본 평일' 표식(inf) — 리포트가 그 날을 0시간 평일이 아니라 휴가로 적는다
+                    # (attendance 머리말 22 · 휴가 날짜라 scrub_meta(outbound) 가 그 줄째 뗀다 · _att_apply 가 추정을 거두면 표식도 뗀다)
+                    _dbi = info["day_basis"].get(d.isoformat())
+                    if isinstance(_dbi, dict):
+                        _dbi["inf"] = 1
         if off and d.isoweekday() <= 5:
             info["holidays"] += 1
         if l29_day and worked > 0 and method == "activity":
@@ -5230,6 +5333,10 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
                        "std_nopc_days": info["std_nopc_days"], "hint_only_days": info["hint_only_days"]}
     wd_n = sum(n for n, _m in pc_alive.values())
     pc_ratio = (info["pc_record_days"] / wd_n) if wd_n else 0.0
+    # LM30(2026-10-21) 하루 휴가인 평일을 뺀 비율이 더 높으면 그것으로(휴가가 많은 기간이 '측정 불충분'이 되지 않게 — 머리말 22)
+    wd_lv = sum(n for n, _m in pc_alive_lv.values())
+    if wd_lv:
+        pc_ratio = max(pc_ratio, sum(m for _n, m in pc_alive_lv.values()) / wd_lv)
     reasons = []
     if pc_ratio < 0.4:
         reasons.append(f"PC 기록 평일 {round(pc_ratio * 100)}%(<40%)")
@@ -5249,7 +5356,8 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
                         "nightWindow": [_fmt_hm(nw0), _fmt_hm(nw1)], "privateRunMin": priv_min,
                         "shareBasis": mc["shareBasis"], "eveningCredit": evening_credit,
                         "noPcMonthDay": nopc_mode,                 # LM28(E) — standard 면 PC 기록 없는 달 평일은 표준일 추정
-                        # LM30v1(2026-10-19) — 투입 MM 의 기준(legal 법정 채움 · measured LM30)과 휴가 추정 채움
+                        # LM30v1(2026-10-19) — 투입 MM 의 기준(legal 법정 채움 · measured LM30)과 휴가 추정을 휴가로 볼지
+                        # (2026-10-25 부터 가용에서 뺀다)
                         "basis": mc["basis"], "creditInferredLeave": mc["creditInferredLeave"]}
     # 프로그램 사용 이력 — 참고 지표다. MM·로드율 계산에는 들어가지 않는다(core/programs.py 머리말).
     # mm_basis 안에 두는 이유: judge 의 재산정이 mm_basis 를 통째로 갈아 끼우므로 여기 있어야 살아남는다.
@@ -5315,10 +5423,57 @@ def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=Non
         if use_att:
             hours = _att_apply(info, att["days"], att["agg"], hours, inferred, att_p, d0, d1)
     # LM30(2026-10-21) 달마다 근거 보기(attendance 머리말 21 — 일수·건수만) · 직접 모은 첫 PC 켜고 끈 기록 · Windows 보관 주 수
-    info["pc_months"] = _pc_months(pc_fact, att["days"] if att is not None else None, nopc_days, hours, sends, untimed)
+    info["pc_months"] = _pc_months(pc_fact, att["days"] if att is not None else None, nopc_days, hours, sends, untimed,
+                                   inferred=inferred)
     info["pc_native_first"] = native_first.isoformat() if native_first else ""
     info["pc_log"] = _log_reach(data_dir)
+    # LM30(2026-10-21) 유급휴가 보기(attendance 머리말 22) — 날짜·출처는 이 PC 전용 칸 leave_local(take_local 이 attendance 파일로 옮긴다),
+    # 일수만 leave_n(mm_meta·팀 묶음에 실려도 된다). 근태 출근·퇴근이 있는 날은 '휴가로 보지 않은 평일' 목록에 넣지 않는다
+    try:
+        rec_rows = _att.load_records(data_dir).get("rows") or {}
+    except Exception:  # noqa: BLE001 - 근태 기록 칸을 못 읽어도 휴가 보기는 달력·추정으로
+        rec_rows = {}
+    hr_days = {dd for dd, v in rec_rows.items() if isinstance(v, dict) and v.get("in") is not None and v.get("out") is not None}
+    lvl = _leave_local(absence, lv_src, inferred, hours, d0, d1, (now or datetime.now()).date(), holidays, std, hr_days)
+    info["leave_local"] = lvl
+    info["leave_n"] = lvl["n"]
     return hours, info
+
+
+def _leave_local(absence, src, inferred, hours, d0, d1, today, holidays, std, hr_days=()):
+    r"""LM30(2026-10-21) 유급휴가 보기(core\attendance 머리말 22) → {"dates": {날짜: [비율, 출처 cal|rec|gerp|manual|inf]}, "n": 휴가로 본
+    날 수, "by": {cal·rec(GERP 포함)·manual·inf: 일수}, "missed": [근무가 표준일의 1/4(2시간) 안 되는데 휴가로 보지 않은 평일 — 최근 31일],
+    "missed_n", "missed_h": 그 문턱(h), "upto": 센 마지막 날}. 날짜는 분석 기간 안 · 오늘까지 · 주말·휴일 빼고(추정은 하루). '휴가로 보지 않은
+    평일'은 첫 근무일부터 어제까지에서 휴가·추정·근태 출근·퇴근이 있는 날(hr_days)을 뺀 것이다(첫 근무일 전은 수집 전일 수 있다)."""
+    from datetime import timedelta
+    end = min(d1, today)
+    dates, by = {}, {"cal": 0.0, "rec": 0.0, "manual": 0.0, "inf": 0.0}
+    for dd in sorted(absence or {}):
+        f = min(1.0, float(absence.get(dd) or 0.0))
+        if f <= 0 or not (d0 <= dd <= end) or _is_off_day(dd, holidays):
+            continue
+        s = str((src or {}).get(dd) or "cal")
+        dates[dd.isoformat()] = [round(f, 2), s]
+        by["rec" if s in ("rec", "gerp") else (s if s in by else "cal")] += f
+    for dd in sorted(inferred or ()):
+        iso = dd.isoformat()
+        if iso in dates or not (d0 <= dd <= end) or _is_off_day(dd, holidays):
+            continue
+        dates[iso] = [1.0, "inf"]
+        by["inf"] += 1.0
+    thr = round(float(std) / 4.0, 2)
+    worked = [dd for dd, v in (hours or {}).items() if float(v or 0) > 0]
+    missed = []
+    if worked:
+        dd = max(min(worked), d0)
+        last = min(d1, today - timedelta(days=1))
+        while dd <= last:
+            if (not _is_off_day(dd, holidays) and dd.isoformat() not in dates and float((hours or {}).get(dd, 0.0) or 0.0) < thr
+                    and dd not in hr_days):
+                missed.append(dd.isoformat())
+            dd += timedelta(days=1)
+    return {"dates": dates, "n": round(sum(by.values()), 1), "by": {k: round(v, 1) for k, v in by.items()},
+            "missed": missed[-31:], "missed_n": len(missed), "missed_h": thr, "upto": end.isoformat()}
 
 
 def _gap_fw(gap_h, win_d, win_f):
@@ -5355,17 +5510,20 @@ def mm_from_hours(day_hours, d0, d1, workdays=(1, 2, 3, 4, 5), cfg=None, absence
 
       1 MM      = 8h × 그 달 '달력상 전체' 평일수  (부분월도 이 분모를 쓴다 — 기간 내 평일로
                   나누면 부분월이 각각 1.0을 채워 3개월 분석이 4.0 MM으로 부푼다)
-      가용 MM   = (평일수 − 부재일수) ÷ 평일수      ← 연차는 '일자에서' 빠진다
-      투입 MM   = 그 달 투입시간 ÷ (8h × 평일수)    ← 상한 없음. 야근하면 1.0을 넘는다
+      가용 MM   = (평일수 − 유급휴가 일수) ÷ 평일수  ← 유급휴가는 일하지 않은 날로 세지 않고 가용에서 뺀다
+      투입 MM   = 그 달 투입시간 ÷ (8h × 평일수)    ← 상한 없음. 야근하면 1.0을 넘는다 · 휴가 시간은 넣지 않는다
       로드율(%) = 투입 MM ÷ 가용 MM × 100
 
     LM22 2차:
       now      : 분석 시각(기본 datetime.now()). 오늘보다 뒤의 평일은 가용에서 뺀다(info["future_days"]),
                  오늘은 주간 창에서 지금까지 지난 비율만 가용(info["today_fraction"]) — 09시에 돌리면 오늘 잔여가
                  통째로 가용이던 −27pt 과소(A34).
-      inferred : 부재 '추정' 일자(day_work_hours info["inferred_absence"] 의 키). 이 날은 미등록 공휴일처럼 그 달
-                 평일수(1 MM 의 분모)에서도 뺀다 — 추정이 성공해도 투입 MM 분모가 20일 그대로이던 −15%(A31).
-                 달력 근태(연차)는 예전처럼 가용에서만 빠진다. 로드율은 두 경우 모두 같다.
+      inferred : 휴가로 본 평일(내부 이름 '부재 추정' — day_work_hours info["inferred_absence"] 의 키).
+                 LM30(2026-10-21 · core\\attendance 머리말 22) 다른 유급휴가(달력·근태 기록·'휴가 날짜' 칸)와 똑같이 가용에서
+                 뺀다(그 달 평일수 = 1 MM 의 분모에는 남긴다) — 같은 근무시간이면 휴가를 어디서 알았든 투입 MM·과제 MM·가용 MM 이
+                 같다. 예전(A31)에는 미등록 공휴일처럼 분모에서도 빼 투입 MM·과제 MM 이 휴가 몫만큼 커 보였고, 달 표가 '유급휴가
+                 0일 · 그 달 평일 18일' 로 보였다. 로드율은 두 방식이 같다. 달마다 그중 휴가로 본 평일 몫은 absent_inferred
+                 (absent 에 든 일수 — 팀 재계산이 이 키로 새 방식임을 알고 두 번 빼지 않는다).
       info     : dict 를 주면 future_days·today_fraction 을 채운다(mine.py 가 day_work_hours info 를 넘긴다).
                  LM30(2026-10-18): info 에 lm29_day_hours(출퇴근 추정이 투입을 맡았다)가 있으면 달마다 worked_lm29·mm_lm29(같은
                  분모 — 'LM29 방식이었다면 X MM')를, info["mm_lm29"] 에 그 합계를 더 싣는다. 없으면 예전 그대로(키도 없다).
@@ -5373,9 +5531,12 @@ def mm_from_hours(day_hours, d0, d1, workdays=(1, 2, 3, 4, 5), cfg=None, absence
     위 식은 mm.basis "measured"(LM30 방식 — 값·키 모두 LM30 그대로)다. LM30v1(2026-10-19) 기본 mm.basis "legal"(키가 없어도)은
     같은 LM30 계산을 비교용(mm_lm30)으로 두고 달 값을 법정 채움으로 다시 낸다(_mm_legal — 식은 그 머리말):
       1 MM      = 8h × 그 달 평일(월~금) 전부 — 평일 공휴일도 분모에 남는다(capacity_h·workdays 의 뜻이 바뀐다)
-      투입 MM   = (실제 근무 actual_h + 법정 채움 legal_h) ÷ 1 MM
-      가용 MM   = 기간 안에서 지난 평일 ÷ 그 달 평일(오늘은 지난 비율만 · 다 지난 달은 1.0) — 휴가를 빼지 않는다(채웠으므로)
+      투입 MM   = (실제 근무 actual_h + 공휴일 채움 legal_h) ÷ 1 MM
+      가용 MM   = (기간 안에서 지난 평일 − 유급휴가 − 휴가 추정) ÷ 그 달 평일(오늘은 지난 비율만)
       로드율(%) = 투입 MM ÷ 가용 MM × 100
+    LM30v1(2026-10-25) 유급휴가·휴가 추정은 채우지 않고 가용에서 뺀다(예전 2026-10-19 에는 8시간씩 채우고 가용에서 빼지 않았다 —
+    core\attendance 머리말 22). info 에 leave_local(day_work_hours 의 '휴가로 본 날' — 이 PC 전용)이 있으면 법정 채움 MM 이 실제로
+    가용에서 뺀 날로 다시 쓰고 leave_n 도 그 수로 바꾼다(_legal_leave_local — 카드·리포트의 'LM이 휴가로 본 날' 이 표와 어긋나지 않게).
     info 에는 mm_rule("legal")·mm_lm30(LM30 방식 합계)과 이 PC 전용 attendance_legal(달마다 근태 기록 시간·+@ 나눔·표시 날짜 —
     take_local 이 attendance 파일로 옮긴다)을 더 싣는다. 날짜별 근태 사실은 info["attendance_hr"](day_work_hours)에서 읽는다.
     LM30v1(2026-10-19) 비교 — 달 칸에 mm_lm30·mm_lm29·worked_lm29(LM29 방식 — lm29_day_hours 가 있을 때)와 그 판의 로드율
@@ -5409,17 +5570,18 @@ def mm_from_hours(day_hours, d0, d1, workdays=(1, 2, 3, 4, 5), cfg=None, absence
     d = d0
     while d <= d1:
         m = months.setdefault(d.strftime("%Y-%m"),
-                              {"worked": 0.0, "workdays": 0, "covered": 0, "absent": 0.0, "_inf": 0})
+                              {"worked": 0.0, "workdays": 0, "covered": 0, "absent": 0.0, "absent_inferred": 0.0})
         if not _is_off_day(d, holidays, workdays):
             if d > today:
                 future_days += 1                          # 아직 오지 않은 평일 — 가용이 아니다(A34)
             else:
                 frac = today_frac if d == today else 1.0
+                m["covered"] += frac
+                # LM30(2026-10-21) 휴가로 본 평일도 유급휴가 — 가용에서 뺀다(분모에는 남긴다 · 머리말의 inferred)
+                ab = max(float(absence.get(d, 0.0) or 0.0), 1.0 if d in inf_days else 0.0)
+                m["absent"] += min(frac, ab)
                 if d in inf_days:
-                    m["_inf"] += 1                        # 추정 부재 — 분모(그 달 평일수)에서도 뺀다(A31)
-                else:
-                    m["covered"] += frac
-                    m["absent"] += min(frac, absence.get(d, 0.0))
+                    m["absent_inferred"] += min(frac, 1.0)
         m["worked"] += day_hours.get(d, 0.0)
         if l29d is not None:
             m["worked_lm29"] = m.get("worked_lm29", 0.0) + l29d.get(d, 0.0)
@@ -5429,10 +5591,9 @@ def mm_from_hours(day_hours, d0, d1, workdays=(1, 2, 3, 4, 5), cfg=None, absence
         y, mo = int(mk[:4]), int(mk[5:7])
         full = sum(1 for dd in (_date(y, mo, i + 1) for i in range(_cal.monthrange(y, mo)[1]))
                    if not _is_off_day(dd, holidays, workdays))
-        full = max(0, full - m.pop("_inf"))
-        m["workdays"] = full                                   # 달 전체 평일수(추정 부재 제외)
+        m["workdays"] = full                                   # 달 전체 평일수(유급휴가·휴가로 본 평일 포함 — 1 MM 의 분모)
         m["capacity_h"] = std * max(1, full)                   # 1 MM 에 해당하는 시간
-        # 가용: 이 기간에 실제로 일할 수 있었던 날 (부재 차감). 기간 밖·미래 날짜는 가용이 아니다.
+        # 가용: 이 기간에 실제로 일할 수 있었던 날(유급휴가 — 휴가로 본 평일 포함 — 를 뺀다). 기간 밖·미래 날짜는 가용이 아니다.
         avail_days = max(0.0, m["covered"] - m["absent"])
         m["covered"] = round(m["covered"], 3)
         m["avail_mm"] = round(avail_days / max(1, full), 3)
@@ -5440,6 +5601,8 @@ def mm_from_hours(day_hours, d0, d1, workdays=(1, 2, 3, 4, 5), cfg=None, absence
         m["load_pct"] = round(m["mm"] / m["avail_mm"] * 100, 1) if m["avail_mm"] > 0 else None
         m["worked"] = round(m["worked"], 1)
         m["absent"] = round(m["absent"], 1)
+        _ai = round(m["absent_inferred"], 2)
+        m["absent_inferred"] = int(_ai) if _ai == int(_ai) else _ai
         if l29d is not None:                                   # LM30 — LM29 방식이었다면(같은 분모)
             m["mm_lm29"] = round(m["worked_lm29"] / m["capacity_h"], 3)
             m["worked_lm29"] = round(m["worked_lm29"], 1)
@@ -5457,9 +5620,11 @@ def mm_from_hours(day_hours, d0, d1, workdays=(1, 2, 3, 4, 5), cfg=None, absence
         return months, round(tot_mm, 3), round(tot_cap, 3)          # mm.basis "measured" — LM30 그대로
     # ── LM30v1(2026-10-19) 법정 채움 — 위 LM30 계산은 비교용(mm_lm30)으로 남기고 달 값을 다시 낸다 ──
     hr = info.get("attendance_hr") if isinstance(info, dict) else None
-    cal_abs = {d: v for d, v in absence.items() if d not in inf_days}     # 달력 부재 — 추정 부재는 따로(inf_days)
+    # 알려진 유급휴가(달력·근태 기록·'휴가 날짜' 칸 — absence_days) — 휴가로 본 평일은 따로(inf_days)
+    cal_abs = {d: v for d, v in absence.items() if d not in inf_days}
+    decided = {}
     lg, local = _mm_legal(day_hours, d0, d1, workdays, std, holidays, cal_abs, inf_days, hr, today, today_frac,
-                          mc["creditInferredLeave"], fill8=_fill8_days(info))
+                          mc["creditInferredLeave"], fill8=_fill8_days(info), decided=decided)
     l_mm = l_av = 0.0
     for mk, m in lg.items():
         old = months.get(mk) or {}
@@ -5484,7 +5649,37 @@ def mm_from_hours(day_hours, d0, d1, workdays=(1, 2, 3, 4, 5), cfg=None, absence
             if l29d is not None:
                 info["load_pct_lm29"] = round(tot_l29 / tot_cap * 100, 1)
         info["attendance_legal"] = local                               # 이 PC 전용 — take_local 이 attendance 파일로
+        # LM30v1(2026-10-25) 'LM이 휴가로 본 날' 줄 — 법정 채움 MM 이 가용에서 실제로 뺀 날로 다시 쓴다(core\attendance 머리말 22)
+        if isinstance(info.get("leave_local"), dict):
+            info["leave_local"] = _legal_leave_local(info["leave_local"], decided, day_hours, d0, d1, today, holidays, std, hr)
+            info["leave_n"] = info["leave_local"]["n"]
     return lg, round(l_mm, 3), round(l_av, 3)
+
+
+def _legal_leave_local(lvl, decided, day_hours, d0, d1, today, holidays, std, hr):
+    r"""LM30v1(2026-10-25) day_work_hours 의 유급휴가 보기(leave_local — LM30 방식의 '휴가로 본 날') → 법정 채움 MM 이 가용에서 실제로 뺀
+    날(decided — _mm_legal)로 다시 쓴 같은 꼴(_leave_local). 출처는 원래 줄의 것(없으면 근태 기록 'rec'). 법정 채움은 출근·퇴근이 적힌
+    근태 행의 달력 휴가를 쓰지 않고, 근태 행이 있는 날·오늘·creditInferredLeave false 인 날은 휴가로 추정하지 않으므로 그런 날은 '휴가로
+    본 날'에서 빠지고 '휴가로 보지 않은 평일'에 들 수 있다(가용에 남은 날). 날짜는 이 PC 전용 그대로(take_local 이 attendance 파일로)."""
+    from datetime import date as _date
+    src = {}
+    for iso, v in ((lvl.get("dates") or {}) if isinstance(lvl.get("dates"), dict) else {}).items():
+        try:
+            src[_date.fromisoformat(str(iso)[:10])] = str(v[1]) if isinstance(v, (list, tuple)) and len(v) > 1 else "rec"
+        except (TypeError, ValueError):
+            continue
+    absence = {d: f for d, (f, k) in decided.items() if k == "leave"}
+    inferred = {d for d, (_f, k) in decided.items() if k == "inf"}
+    src = {d: (src.get(d) if src.get(d) not in (None, "inf") else "rec") for d in absence}
+    hr = hr if isinstance(hr, dict) else {}
+    hr_days = set()
+    for iso, x in hr.items():
+        if isinstance(x, dict) and x.get("k") == "times":
+            try:
+                hr_days.add(_date.fromisoformat(str(iso)[:10]))
+            except ValueError:
+                continue
+    return _leave_local(absence, src, inferred, day_hours, d0, d1, today, holidays, std, hr_days)
 
 
 LEGAL_NOWORK_H = 0.25      # '근태·흔적 모두 없음' — 그날 LM 이 잰 근무가 이 시간(15분 — 부재 추정과 같은 문턱) 이하
@@ -5512,24 +5707,35 @@ def _fill8_days(info):
     return out
 
 
-def _mm_legal(day_hours, d0, d1, workdays, std, holidays, cal_abs, inf_days, hr, today, today_frac, credit_inf, fill8=None):
+def _mm_legal(day_hours, d0, d1, workdays, std, holidays, cal_abs, inf_days, hr, today, today_frac, credit_inf, fill8=None,
+              decided=None):
     r"""LM30v1(2026-10-19) 법정 채움 MM — 달마다(기간 안 · 오늘까지의 날만 · 오늘은 지난 비율 today_frac):
-      평일(workdays)        : covered += 지난 비율. 법정 채움(std × 비율)은 아래 하나만 —
-        · 평일 공휴일(_is_off_day — 내장 표·config.holidays)                          → holiday_days
-        · 유급휴가 — 근태 행(times·leave·blank)이 있으면 그 행의 휴가, 없으면 달력 부재 → leave_days(1 · 0.5 — absent 도 같은 값)
-        · 근태 행이 없는 날의 휴가 추정(inf_days — day_work_hours 의 부재 추정, credit_inf) → inferred_leave_days · 표시 '휴가 추정'
-        · 근태 행은 있는데 출근·퇴근·휴가가 비었고(blank) 잰 근무 ≤ LEGAL_NOWORK_H        → 채우지 않음 · nohr_days · 표시
+      평일(workdays)        : covered += 지난 비율. 그 밖에 아래 하나만 —
+        · 평일 공휴일(_is_off_day — 내장 표·config.holidays)                → 법정 채움(std × 비율 — legal_h) · holiday_days
+        · 유급휴가 — 근태 출근·퇴근이나 휴가가 적힌 근태 행(times·leave)은 그 행의 휴가('휴가 날짜' 칸 포함 — attendance.hr_days), 빈 근태
+          행(blank)과 근태 행이 없는 날은 달력·근태 기록·'휴가 날짜' 칸을 합친 휴가(cal_abs) → leave_days(1 · 0.5) · 가용에서 뺀다
+        · 근태 행이 없는 지난 날의 휴가 추정(inf_days — day_work_hours 의 휴가로 본 평일, credit_inf) → inferred_leave_days · 가용에서
+          뺀다 · 표시 '휴가 추정'
+        · 근태 행은 있는데 출근·퇴근·휴가가 비었고(blank) 휴가도 없고 잰 근무 ≤ LEGAL_NOWORK_H → nohr_days · 표시(가용에 남는다)
         평일이라는 이유만으로는 채우지 않는다(1MM 에서 시작하지 않는다).
+      LM30v1(2026-10-25) 사용자: "유급휴가일을 일 안한것으로 빼면 안됩니다 차라리 휴가만큼 투입 MM을 빼는게 계산이 옳을 수 있습니다".
+      예전(2026-10-19)에는 유급휴가·휴가 추정도 8시간씩 법정 채움(legal_h)에 넣고 가용에서 빼지 않았다 — 휴가 시간이 투입 MM·과제 MM 에
+      들고, 휴가가 있는 달의 로드율이 100% 쪽으로 끌렸다(평일 20일 · 휴가 2일 · 하루 6시간 → 77.5% — 실제 근무 비율은 75%). 이제 공휴일만
+      채우고 휴가는 가용에서 뺀다(같은 달 75% · 하루 8시간이면 100% · 10시간이면 125%).
       실제 근무(모든 날)     : 근태 출근·퇴근이 있는 날(times) = rec_h(근태 시간) + plus_h(그 밖 디지털 +@) · 그 밖 = day_hours(잰 근무 —
-                             measured_h · LM30v1 2026-10-20 이웃 날 근태 창 안의 시간 nb_h 는 뺀다 — 그 날 근태 시간이 셌다). 채운 날
-                             (공휴일·휴가)의 근무도 그대로 더한다(+@).
-      workdays = 그달 평일 전부 · capacity_h = std × workdays(1MM) · legal_h = std × (holiday_days + leave_days + inferred_leave_days)
-      mm = (actual_h + legal_h) ÷ capacity_h · avail_mm = covered ÷ workdays · load_pct = mm ÷ avail_mm × 100 · worked = Σ day_hours.
+                             measured_h · LM30v1 2026-10-20 이웃 날 근태 창 안의 시간 nb_h 는 뺀다 — 그 날 근태 시간이 셌다). 공휴일·
+                             휴가인 날의 근무도 그대로 더한다(+@ · 휴가일 근무 — local 달의 credit_work_h).
+      workdays = 그달 평일 전부 · capacity_h = std × workdays(1MM) · legal_h = std × holiday_days
+      absent = leave_days + inferred_leave_days(가용에서 뺀 날 — LM30 방식 달 칸과 같은 뜻) · absent_inferred = inferred_leave_days
+      mm = (actual_h + legal_h) ÷ capacity_h · avail_mm = (covered − absent) ÷ workdays · load_pct = mm ÷ avail_mm × 100 ·
+      worked = Σ day_hours.
     hr = hr_days(core\attendance) {iso: {k, rec_h, plus_h, lv}} | None. → (months, local) — local = {"months": {YYYY-MM: {hr_h, plus_h,
     hr_days, credit_work_h[, fill8_days]}}, "flags": {"inferred": [iso], "nohr": [iso]}} — 근태에서 나온 나눔·날짜라 이 PC 전용.
     LM30v1(2026-10-21) fill8 = PC 기록이 없어 하루 8시간으로 채운 날(_fill8_days) — 그중 근태 출근·퇴근이 없는 날(그 8시간이 measured_h 에
     든 날)만 local 달의 fill8_days 로 센다(그런 날이 있는 달만 · 카드·리포트 근무 칸 '그중 PC 기록이 없어 하루 8시간으로 채운 평일 N일'). 근태 행이 있는 날을 뺀
-    수라 이 PC 전용(attendance.LEGAL_LOCAL_KEYS)."""
+    수라 이 PC 전용(attendance.LEGAL_LOCAL_KEYS).
+    LM30v1(2026-10-25) decided(dict 를 주면)에 가용에서 뺀 날 {date: (휴가 비율, "leave" | "inf")}를 채운다(오늘까지 · 이 PC 전용 —
+    mm_from_hours 가 'LM이 휴가로 본 날' 줄(leave_local)을 이것으로 다시 쓴다)."""
     import calendar as _cal
     from datetime import date as _date, timedelta
     hr = hr if isinstance(hr, dict) else {}
@@ -5547,7 +5753,7 @@ def _mm_legal(day_hours, d0, d1, workdays, std, holidays, cal_abs, inf_days, hr,
         mk = d.strftime("%Y-%m")
         m = months.get(mk)
         if m is None:
-            m = months[mk] = {"worked": 0.0, "workdays": 0, "covered": 0.0, "absent": 0.0, "capacity_h": 0.0,
+            m = months[mk] = {"worked": 0.0, "workdays": 0, "covered": 0.0, "absent": 0.0, "absent_inferred": 0.0, "capacity_h": 0.0,
                               "avail_mm": 0.0, "mm": 0.0, "load_pct": None, "basis": "legal", "legal_h": 0.0,
                               "holiday_days": 0.0, "leave_days": 0.0, "inferred_leave_days": 0.0, "nohr_days": 0,
                               "actual_h": 0.0, "measured_h": 0.0}
@@ -5576,29 +5782,40 @@ def _mm_legal(day_hours, d0, d1, workdays, std, holidays, cal_abs, inf_days, hr,
                 # LM30v1(2026-10-21) 그 측정이 하루 8시간 채움인 날 — 그런 날이 있는 달만 칸이 생긴다(없으면 예전 칸 그대로)
                 lm["fill8_days"] = int(lm.get("fill8_days") or 0) + 1
         m["actual_h"] += act
-        credit = 0.0
+        credit, day_off = 0.0, False
         if d.isoweekday() in workdays:
             m["covered"] += frac
             if _is_off_day(d, holidays, workdays):
-                credit = frac                                           # 평일 공휴일 — 법으로 채운다
+                credit, day_off = frac, True                            # 평일 공휴일 — 법으로 채운다
                 m["holiday_days"] += frac
             else:
-                lf = min(1.0, max(0.0, f(x.get("lv")) if kind else f(cal_abs.get(d))))
+                # LM30v1(2026-10-25) 유급휴가 — 출근·퇴근이나 휴가가 적힌 근태 행은 그 행의 휴가('휴가 날짜' 칸 포함), 빈 근태 행·근태 행이
+                # 없는 날은 달력·근태 기록·'휴가 날짜' 칸을 합친 휴가(빈 근태 행은 휴가를 막지 않는다). 채우지 않고 가용에서 뺀다
+                lf = f(x.get("lv")) if kind in ("times", "leave") else max(f(x.get("lv")), f(cal_abs.get(d)))
+                lf = min(1.0, max(0.0, lf))
                 if lf > 0:
-                    credit = min(frac, lf)                              # 유급휴가(근태 행의 휴가 · 없으면 달력)
-                    m["leave_days"] += credit
-                    m["absent"] += credit
+                    lvd = min(frac, lf)
+                    m["leave_days"] += lvd
+                    m["absent"] += lvd
+                    day_off = True
+                    if decided is not None:
+                        decided[d] = (lf, "leave")
                 elif not kind and d in inf_days and credit_inf and d < today:
-                    # 근태 행 없는 지난 날의 휴가 추정 — 오늘은 아직 끝나지 않았다(아침에는 흔적이 없어 부재로 보일 뿐이다)
-                    credit = frac
+                    # 근태 행 없는 지난 날의 휴가 추정 — 오늘은 아직 끝나지 않았다(아침에는 흔적이 없어 휴가로 보일 뿐이다) · 가용에서 뺀다
                     m["inferred_leave_days"] += frac
+                    m["absent"] += frac
+                    m["absent_inferred"] += frac
+                    day_off = True
                     flags["inferred"].append(iso)
+                    if decided is not None:
+                        decided[d] = (1.0, "inf")
                 elif kind == "blank" and meas <= LEGAL_NOWORK_H:
-                    m["nohr_days"] += 1                                 # 근태 행은 있는데 비었고 흔적도 없다 — 채우지 않는다
+                    m["nohr_days"] += 1                                 # 근태 행은 있는데 비었고 흔적도 없다 — 가용에 남는다
                     flags["nohr"].append(iso)
         if credit > 0:
             m["legal_h"] += std * credit
-            lm["credit_work_h"] += act                                  # 채운 날의 근무(+@ — 공휴일·휴가인 날 근무)
+        if day_off:
+            lm["credit_work_h"] += act                                  # 공휴일·휴가인 날의 근무(+@ · 휴가일 근무)
         d += timedelta(days=1)
     for mk, m in months.items():
         y, mo = int(mk[:4]), int(mk[5:7])
@@ -5607,11 +5824,14 @@ def _mm_legal(day_hours, d0, d1, workdays, std, holidays, cal_abs, inf_days, hr,
         m["workdays"] = n                                               # 그 달 평일 전부(공휴일 포함 — LM30 은 공휴일을 뺐다)
         m["capacity_h"] = round(cap, 2)                                 # 1 MM = std × 그 달 평일 전부
         m["mm"] = round((m["actual_h"] + m["legal_h"]) / cap, 3)
-        m["avail_mm"] = round(m["covered"] / max(1, n), 3)
+        # LM30v1(2026-10-25) 가용 = (지난 평일 − 유급휴가 − 휴가 추정) ÷ 그 달 평일 — 휴가는 일하지 않은 날로 세지 않는다
+        m["avail_mm"] = round(max(0.0, m["covered"] - m["absent"]) / max(1, n), 3)
         m["load_pct"] = round(m["mm"] / m["avail_mm"] * 100, 1) if m["avail_mm"] > 0 else None
         m["worked"] = round(m["worked"], 1)
         m["covered"] = round(m["covered"], 3)
         m["absent"] = round(m["absent"], 1)
+        _ai = round(m["absent_inferred"], 2)                            # LM30 방식 달 칸과 같은 꼴(정수면 정수 — 팀 재계산이 읽는다)
+        m["absent_inferred"] = int(_ai) if _ai == int(_ai) else _ai
         for k in ("legal_h", "actual_h", "measured_h", "holiday_days", "leave_days", "inferred_leave_days"):
             m[k] = round(m[k], 2)
         for k in ("hr_h", "plus_h", "credit_work_h"):
