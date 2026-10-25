@@ -1,0 +1,394 @@
+{
+ "headline": "'26 BOM PoC → '27 해석 4도메인·RVTM → '28 VP·상관 80%(Gate 2) → '30 수율 90%",
+ "as_is": [
+  "실측 1위 38.08 MM·27명, P0 승격 결재 미확인 (2차보완보고 슬6)",
+  "실물 의존 검증: 시제품 3차수·Re-spin 1~2회",
+  "요구-설계-검증 추적 단절, RVTM은 템플릿 단계",
+  "VV-3 해석 도메인 0개, PLM API·보안 승인 미확보"
+ ],
+ "to_be": [
+  "全기종 시제품 발주 전 VP 판정 ('30 H1)",
+  "시제품 1~2차수·Re-spin 0~1회",
+  "요구→검증 추적성 100%, 全기종 RVTM(추정)",
+  "설계 단계 수율 선예측 정합 90% ('30 H2)"
+ ],
+ "steps": [
+  {
+   "id": "S0",
+   "short": "BOM PoC·Gate 1",
+   "start_m": 0,
+   "end_m": 2,
+   "phase": "P1",
+   "period": "'26.10–'26.12",
+   "goal": "diff-review PoC 12월 판정, MBSE 범위·툴 후보로 Gate 1 VV-3 입력",
+   "key_out": "PoC 판정·대체 MM 보고, MBSE 범위서, SKILL.md v1",
+   "exit": "PoC 판정·대체 MM 보고 12/15 · MBSE 범위서 12/11 · Gate 1 입력 12/15 (과제별 12/10 예외)",
+   "needs": "PLM export·보안 승인(신청 기한 경과), P0 결재 확인",
+   "roles": "A·B 24.5인일, DRI 1.5인일, 제안자 3명 (원장 effort)",
+   "gate": "Gate 1 G1-EV-03 (PoC·MBSE 범위)"
+  },
+  {
+   "id": "S1",
+   "short": "SI/PI·EMC·RVTM",
+   "start_m": 3,
+   "end_m": 8,
+   "phase": "P2",
+   "period": "'27.1–'27.6",
+   "goal": "AL-1 플랫폼 위 SI/PI·EMC 플러그인 릴리즈, 1D Echo Gen2 RVTM v1 정의",
+   "key_out": "SI/PI·EMC 플러그인 2종, RVTM v1(Capella)",
+   "exit": "회로 골든셋 통과, 요구 전 항목 검증 매핑·trace gap DRI 승인",
+   "needs": "인터페이스 v1 '27.1, HFSS 배치 '27.1.29, CAE 1명 '27.1",
+   "roles": "v4 13.2 MM: CAE 4.4·MBSE 3.5·회로 2.5·AI 0.9·A·B 0.8",
+   "gate": "Gate 2 '가상' 쪽 플러그인 준비"
+  },
+  {
+   "id": "S2",
+   "short": "열·공차·1차 통합",
+   "start_m": 9,
+   "end_m": 14,
+   "phase": "P2",
+   "period": "'27.7–'27.12",
+   "goal": "열·공차 더해 4도메인 1차 통합, 비교 쌍 수집 시작, '28 VP 설계",
+   "key_out": "공차 플러그인, 1차 통합 판정, VP 설계서·합의서",
+   "exit": "4도메인 골든셋 통과, 비교 쌍 10~20(추정), VP 합의서 '27.12",
+   "needs": "AL-1 A5 β '27.7, LIC_THERM '27.5, INF-1 '27.7",
+   "roles": "v4 11.6 MM: CAE 3.2·AI 2.8·기구 2.4·ML 1.4 + 쌍 0.4~0.6(추정)",
+   "gate": "Gate 2 비교 쌍·상관 산식 초안"
+  },
+  {
+   "id": "S3",
+   "short": "변경검토 Agent·VP",
+   "start_m": 15,
+   "end_m": 20,
+   "phase": "P2",
+   "period": "'28.1–'28.6",
+   "goal": "PLM 조회·RVTM·변경검토·선검증 Agent 4개, 6월 VP 판정·상관 부록",
+   "key_out": "Agent 4개, VP 판정 보고, VV-3 상관 부록",
+   "exit": "정의서 '28.3 승인, ECR 1건 lead 경유, VP 판정 '28.6",
+   "needs": "A6 계약 '28.2, PLM 계정, VV-1 VP 입력, 시험 슬롯",
+   "roles": "추정 약 13 MM: AI 1.0·CAE 0.4·A·B 0.2·MBSE 0.2명분 + 시험 0.75~2.5 MM",
+   "gate": "Gate 2 VP 가동·정의서·실측 쌍"
+  },
+  {
+   "id": "S4",
+   "short": "운영 전환·Gate 2",
+   "start_m": 21,
+   "end_m": 26,
+   "phase": "P2",
+   "period": "'28.7–'28.12",
+   "goal": "diff-review 운영·재설계 Agent, 상관 80%·보완설계 실적으로 Gate 2",
+   "key_out": "diff-review 운영판, 재설계 Agent, Gate 2 입력",
+   "exit": "'28.11.30 상관 80%·trace gap 0 측정, 입력 '28.12.10",
+   "needs": "AL-1 광학 '28.10·sh-design-kb '28.12, AF-3·QE-1 조건부",
+   "roles": "추정 약 13 MM: AI 0.9·CAE 0.4~0.5·A·B 0.2·ML 0.1~0.2명분 + 시험 0.4~1.25 MM",
+   "gate": "Gate 2 상관 80%·보완설계 VV-3 몫"
+  },
+  {
+   "id": "S5",
+   "short": "차수 확정·확대",
+   "start_m": 27,
+   "end_m": 38,
+   "phase": "P3",
+   "period": "'29.1–'29.12",
+   "goal": "VP 통과 기종 차수 확정, 3개 기종 확대, design-pack·수율 모델 v1",
+   "key_out": "차수 확정 보고, 다기종 RVTM, 수율 모델 v1",
+   "exit": "H1 1~2차수 확정, H2 3개 기종 VP·표준 편입 합의",
+   "needs": "Gate 2 P3 범위·ML 공급원, AF-4 데이터(조건부)",
+   "roles": "추정: AI 0.7~0.8·ML 0.5~1.0·CAE 0.3~0.5·MBSE 0.3명분",
+   "gate": "Gate 없음 — P3(Gate 2 범위)"
+  },
+  {
+   "id": "S6",
+   "short": "全기종 표준",
+   "start_m": 39,
+   "end_m": 44,
+   "phase": "P3",
+   "period": "'30.1–'30.6",
+   "goal": "VP 판정·RVTM 추적을 全기종 개발 절차의 표준 단계로 편입",
+   "key_out": "선검증 표준 절차서, 全기종 RVTM, 수율 모델 v2",
+   "exit": "진행 全기종 발주 전 VP 판정 기록, 수율 정합 80%(추정)",
+   "needs": "'29 H2 표준 편입 합의, VV-1 全기종 표준(M-VV1-08)",
+   "roles": "추정: AI 0.6~0.7·ML 0.5·CAE 0.3·A·B 0.2명분",
+   "gate": "Gate 없음 — P3 운영"
+  },
+  {
+   "id": "S7",
+   "short": "수율 90%·이관",
+   "start_m": 45,
+   "end_m": 50,
+   "phase": "P3",
+   "period": "'30.7–'30.12",
+   "goal": "설계 단계 수율 선예측 정합 90% 판정, 운영 체계로 이관",
+   "key_out": "수율 90% 판정, 5개년 성과, '31 운영 예산안",
+   "exit": "Gate 2 확정 산식으로 정합 90% 이상, '31 예산 편성",
+   "needs": "수율 모델 v2·全기종 데이터, AF-4 양산 데이터(조건부)",
+   "roles": "추정: AI 0.5·ML 0.5·CAE 0.2·A·B 0.2명분",
+   "gate": "Gate 없음 — P3 운영"
+  }
+ ],
+ "milestones": [
+  {
+   "ref": "M-VV3-00",
+   "short": "MBSE 범위·툴 정의",
+   "orig_m": 2,
+   "plan_m": 2,
+   "status": "재정의",
+   "note": "'26.12 범위·툴 후보만, 정의는 '27 H1"
+  },
+  {
+   "ref": "M-VV3-01",
+   "short": "BOM 정합 PoC 판정",
+   "orig_m": 2,
+   "plan_m": 2,
+   "status": "원안대로",
+   "note": "선행 P-VV3-01·03 기한 경과 확인"
+  },
+  {
+   "ref": "M-VV3-02",
+   "short": "GATE 1 심의",
+   "orig_m": 2,
+   "plan_m": 2,
+   "status": "원안대로",
+   "note": "VV-3 입력 G1-EV-03, 12/15 판정"
+  },
+  {
+   "ref": "M-VV3-03",
+   "short": "SI/PI 자동화 착수",
+   "orig_m": 3,
+   "plan_m": 3,
+   "status": "원안대로",
+   "note": "H4 '27.1~4, 인터페이스 v1 '27.1"
+  },
+  {
+   "ref": "M-VV3-04",
+   "short": "EMC 확대",
+   "orig_m": 8,
+   "plan_m": 8,
+   "status": "원안대로",
+   "note": "H5 '27.4~6, ansys-aedt-mcp"
+  },
+  {
+   "ref": "M-VV3-10",
+   "short": "RVTM 추적체계 정의",
+   "orig_m": 8,
+   "plan_m": 8,
+   "status": "원안대로",
+   "note": "H6 '27.1~6, Capella 모델"
+  },
+  {
+   "ref": "M-VV3-05",
+   "short": "열·공차 해석 착수",
+   "orig_m": 9,
+   "plan_m": 9,
+   "status": "원안대로",
+   "note": "H9 '27.7, 열은 AL-1 A5 재사용"
+  },
+  {
+   "ref": "M-VV3-06",
+   "short": "회로·기구 1차 완료",
+   "orig_m": 14,
+   "plan_m": 14,
+   "status": "원안대로",
+   "note": "H10 통합 판정·비교 쌍 기록 시작"
+  },
+  {
+   "ref": "M-VV3-07",
+   "short": "기구 확대·수율 PoC",
+   "orig_m": 14,
+   "plan_m": 26,
+   "status": "재정의",
+   "note": "'27.12 PoC·구조 '28.6·광학 '28.12"
+  },
+  {
+   "ref": "M-VV3-08a",
+   "short": "VP 통합검증",
+   "orig_m": 20,
+   "plan_m": 20,
+   "status": "원안대로",
+   "note": "'28.6 판정, 1개 기종, 광학 제외"
+  },
+  {
+   "ref": "M-VV3-08b",
+   "short": "시제품 3→1~2차수",
+   "orig_m": 20,
+   "plan_m": 32,
+   "status": "이월",
+   "note": "'28.11 선행 지표, '29 H1 확정"
+  },
+  {
+   "ref": "M-VV3-09",
+   "short": "수율 선예측 90%",
+   "orig_m": 50,
+   "plan_m": 50,
+   "status": "원안대로",
+   "note": "산식·소유(VV-3/AF-4) Gate 2 확정"
+  },
+  {
+   "ref": "M-CTD-09",
+   "short": "Gate 2 심의",
+   "orig_m": 26,
+   "plan_m": 26,
+   "status": "원안대로",
+   "note": "VV-3 입력 '28.12.10 (추정)"
+  }
+ ],
+ "agents": [
+  {
+   "key": "vv3-diff-review",
+   "name": "도면·BOM 정합",
+   "roster_m": 0,
+   "build_start_m": 21,
+   "run_m": 24,
+   "moved": true,
+   "note": "'26.12 PoC 판정·'27 수동 배치"
+  },
+  {
+   "key": "sh-data-query",
+   "name": "PLM 설계데이터 조회",
+   "roster_m": 3,
+   "build_start_m": 15,
+   "run_m": 18,
+   "moved": true,
+   "note": "구축 VV-3 H2·소유 CT-A"
+  },
+  {
+   "key": "vv3-rvtm",
+   "name": "요구 추적(RVTM)",
+   "roster_m": 3,
+   "build_start_m": 15,
+   "run_m": 19,
+   "moved": true,
+   "note": "H7 이월, trace gap은 DRI 확정"
+  },
+  {
+   "key": "vv3-lead",
+   "name": "설계변경 검토 조율",
+   "roster_m": 3,
+   "build_start_m": 17,
+   "run_m": 21,
+   "moved": true,
+   "note": "A6 계약 '28.2 뒤, ECR 시험 6월"
+  },
+  {
+   "key": "vv3-hw-precheck",
+   "name": "회로·기구 선검증",
+   "roster_m": 3,
+   "build_start_m": 17,
+   "run_m": 21,
+   "moved": true,
+   "note": "al1-lead 실의뢰 '28.7~"
+  },
+  {
+   "key": "vv3-redesign-draft",
+   "name": "재설계안 후보",
+   "roster_m": 9,
+   "build_start_m": 21,
+   "run_m": 25,
+   "moved": true,
+   "note": "광학 위임 '28.11·KB '28.12"
+  },
+  {
+   "key": "vv3-design-pack",
+   "name": "설계자료 구성",
+   "roster_m": 3,
+   "build_start_m": 27,
+   "run_m": 30,
+   "moved": true,
+   "note": "sh-design-kb '28.12 뒤 H8"
+  }
+ ],
+ "kpis": [
+  {
+   "kpi": "시제품 차수",
+   "now": "3차수",
+   "y2027": "영향 기록 시작",
+   "y2028": "선행 지표 3종",
+   "y2029": "1~2차수 확정",
+   "y2030": "1~2차수(추정)",
+   "src": "빅플랜 p.11·17"
+  },
+  {
+   "kpi": "Re-spin",
+   "now": "1~2회",
+   "y2027": "측정 전",
+   "y2028": "측정 전",
+   "y2029": "0~1회 확인",
+   "y2030": "0~1회(추정)",
+   "src": "빅플랜 p.11"
+  },
+  {
+   "kpi": "요구→검증 추적성",
+   "now": "추적 단절",
+   "y2027": "RVTM v1 1기종",
+   "y2028": "100%(1기종)",
+   "y2029": "2기종+(추정)",
+   "y2030": "全기종(추정)",
+   "src": "빅플랜 p.11"
+  },
+  {
+   "kpi": "가상-실측 상관",
+   "now": "미측정",
+   "y2027": "비교 쌍 10~20",
+   "y2028": "80% (Gate 2) · 쌍 누적 40~80 (추정)",
+   "y2029": "보정(추정)",
+   "y2030": "유지(추정)",
+   "src": "빅플랜 p.02"
+  },
+  {
+   "kpi": "수율 선예측 정합",
+   "now": "정의 없음",
+   "y2027": "PoC",
+   "y2028": "산식 확정",
+   "y2029": "70%(추정)",
+   "y2030": "90%",
+   "src": "빅플랜 p.11·16"
+  },
+  {
+   "kpi": "해석 도메인 수",
+   "now": "0개",
+   "y2027": "4개",
+   "y2028": "+구조·광학",
+   "y2029": "광정렬(추정)",
+   "y2030": "유지(추정)",
+   "src": "v4 H4·H5·H9"
+  }
+ ],
+ "resource_rows": [
+  {
+   "period": "'26 4Q",
+   "demand": "A·B 24.5인일 (3과제 약 60 / 상한 약 95, 추정) · DRI 1.5인일",
+   "infra": "PLM export 폴더, 추가 투자 없음",
+   "basis": "원안"
+  },
+  {
+   "period": "'27 (v4)",
+   "demand": "24.8 MM: CAE 7.7·MBSE 3.5·AI 3.6·도메인 판정 7.1 등",
+   "infra": "HFSS·Icepak 배치, Capella, INF-1",
+   "basis": "v4"
+  },
+  {
+   "period": "'28 H1",
+   "demand": "약 13 MM: AI 1.0·CAE 0.4·A·B 0.2·MBSE 0.2명분 + 시험 0.75~2.5 MM",
+   "infra": "PLM MCP 서버, INF-1, 배치 라이선스",
+   "basis": "추정"
+  },
+  {
+   "period": "'28 H2",
+   "demand": "약 13 MM: AI 0.9·CAE 0.4~0.5·A·B 0.2·ML 0.1~0.2명분 + 시험 0.4~1.25 MM",
+   "infra": "LIC_OPT, M안(HGX H200) Gate 2",
+   "basis": "추정"
+  },
+  {
+   "period": "'29",
+   "demand": "31~41 MM (수율 VV-3 소유) / 26~31 (AF-4 이관): AI 0.7~0.8·ML 0.5~1.0·CAE 0.3~0.5·MBSE 0.3명분",
+   "infra": "INF-2 공유, Cameo 판단, 야간 HPC",
+   "basis": "추정"
+  },
+  {
+   "period": "'30",
+   "demand": "19~25 MM (수율 VV-3 소유) / 14~22 (AF-4 이관): AI 0.5~0.7·ML 0.5·CAE 0.2~0.3·A·B 0.2명분",
+   "infra": "온프렘 유지보수 구매가 10%/년",
+   "basis": "추정"
+  }
+ ]
+}
