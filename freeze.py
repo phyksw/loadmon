@@ -223,11 +223,12 @@ FREEZE_EPS = ["/api/status", "/api/dash", "/api/projects", "/api/workflow",
 # usual_text)은 이 PC 화면에만 — 얼린 보고서 고정명은 공유폴더 저장 때 <공유폴더>\개인리포트\ 로 복사된다(teamup.REPORT_HTML).
 # LM30(2026-10-19) +@ — 근태 기록(GERP 포함)과 견준 값(hr·records_text·hr 를 쓴 결론 줄)도 사본에 굳히지 않는다: hr 를 빼고, 합계에
 # 섞인 근태 칸을 빼고(attendance.strip_hr), 결론 줄은 근태 없이 추정한 +@ 로 다시 쓰고, 근태 기록 비교 줄은 '본인 PC 에서만' 으로.
-ATT_LOCAL_KEYS = ("days", "usual", "usual_text", "hr")
+# LM30(2026-10-21) 유급휴가 줄(leave_lines — 날짜를 담는다)도 사본에는 일수만(attendance.leave_frozen_line — 머리말 22)
+ATT_LOCAL_KEYS = ("days", "usual", "usual_text", "hr", "leave_lines")
 
 
 def _att_summary_only(v):
-    """/api/attendance 답 → 사본용(날짜별 행·평소 시각·근태 기록과 견준 값을 뺀다 · frozen 표식 — 화면이 '날짜별 시각은 본인 PC
+    """/api/attendance 답 → 사본용(날짜별 행·평소 시각·근태 기록과 견준 값·휴가 날짜를 뺀다 · frozen 표식 — 화면이 '날짜별 시각은 본인 PC
     에서만' 을 보인다)."""
     if not isinstance(v, dict):
         return v
@@ -238,6 +239,8 @@ def _att_summary_only(v):
         import attendance as _att
     except ImportError:
         return out
+    _lf = _att.leave_frozen_line(out.get("leave_n"))
+    out["leave_lines"] = [_lf] if _lf else []
     if isinstance(out.get("agg"), dict):
         out["agg"] = json.loads(json.dumps(out["agg"]))
         _att.strip_hr(out["agg"])
@@ -248,6 +251,23 @@ def _att_summary_only(v):
     if "records_text" in out:
         out["records_text"] = _att.FROZEN_REC_TEXT
     return out
+
+
+def _dash_leave_only_counts(dash):
+    """/api/dash 사본(LM30 2026-10-21 — 머리말 22) — 'MM 산정 근거' 카드의 유급휴가 줄(leave_text — 날짜를 담는다)은 일수만으로 바꾸고,
+    추이 점의 주·달 휴가 일수(pc_lv·pc_lv_rec — 이 PC 의 휴가 날짜에서 센 것)는 뺀다(사본은 공유폴더로 복사된다)."""
+    if not isinstance(dash, dict):
+        return
+    try:
+        import attendance as _att
+        lf = _att.leave_frozen_line(_att.leave_n_of(dash.get("meta") if isinstance(dash.get("meta"), dict) else {}))
+    except ImportError:
+        lf = ""
+    dash["leave_text"] = [lf] if lf else []
+    for w in dash.get("trend") if isinstance(dash.get("trend"), list) else []:
+        if isinstance(w, dict):
+            w.pop("pc_lv", None)
+            w.pop("pc_lv_rec", None)
 
 INTERCEPT_JS = """(function(){
  "use strict";
@@ -403,9 +423,11 @@ def _freeze(tag, full, base_url, log, info):
     if isinstance(baked["/api/dash"].get("meta"), dict):
         try:
             import attendance as _att
-            _att.scrub_meta(baked["/api/dash"]["meta"])
+            # LM30(2026-10-21) 휴가 날짜도 뗀다(outbound — 사본은 공유폴더로 복사된다 · 머리말 22)
+            _att.scrub_meta(baked["/api/dash"]["meta"], outbound=True)
         except ImportError:
             pass
+    _dash_leave_only_counts(baked["/api/dash"])
 
     dash = baked["/api/dash"]
     meta = (dash.get("meta") or {}) if isinstance(dash.get("meta"), dict) else {}
@@ -668,7 +690,7 @@ def report_island(tag, full=True, log=_say):
     try:        # LM30(2026-10-18) — 이 파일은 공유폴더로 복사된다: 옛 사본의 이 PC 전용 칸(날짜별 시각)을 한 번 더 뗀다
         import attendance as _att
         if isinstance(meta, dict):
-            _att.scrub_meta(meta)
+            _att.scrub_meta(meta, outbound=True)        # LM30(2026-10-21) 휴가 날짜도(일수만 남는다 — 머리말 22)
     except ImportError:
         pass
     # 프로그램 사용(참고) — 투입 MM 과 다른 값이다(실행 흔적·파일·옛 창 기록). 그 점을 문구로 못 박는다(_tool_usage_html).
@@ -956,7 +978,7 @@ margin:1px 3px 1px 0;font-size:10.5px;color:#3d444c}}
 <div class="kpi"><div class="lb">투입 MM</div><div class="vl">{total:.2f}</div>
 <div class="nt">주력 {_esc(top_pj)}</div></div>
 <div class="kpi"><div class="lb">가용 MM</div><div class="vl">{avail_txt}</div>
-<div class="nt">연차·휴가 차감</div></div>
+<div class="nt">유급휴가는 가용에서 뺌</div></div>
 <div class="kpi"><div class="lb">업무 항목</div><div class="vl">{len(rows)}</div>
 <div class="nt">과제 {len(by_pj)}개</div></div>
 </div>

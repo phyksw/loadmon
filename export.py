@@ -156,7 +156,8 @@ def main():
             # 공유폴더로 낸 사람만 팀 리포트의 '측정 방식·신뢰도' 열이 비어 사람 차이로 읽힌다(샘플 생성에서 실측).
             try:
                 import teamup
-                member.update({"anomaly_days": teamup._count(b.get("anomalies")),
+                member.update({"leave_days": teamup.leave_days_of(mj, b),      # LM30(2026-10-21) 가용에서 뺀 유급휴가 일수
+                               "anomaly_days": teamup.anomaly_days_of(b),
                                "long_days": teamup._count(b.get("long_days")),
                                "inferred_absence_days": teamup._count(b.get("inferred_absence_days")),
                                "lunch_deducted_h": teamup._hours(b.get("lunch_deducted_h")),

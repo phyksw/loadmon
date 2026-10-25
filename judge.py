@@ -2596,6 +2596,7 @@ def rehours_meta(kept, dropped, tag, cfg, rep, data_dir=None, say=print):
             info.pop("attendance_days", None)
             info.pop("attendance_usual", None)
             info.pop("attendance_agg", None)
+            info.pop("leave_local", None)          # LM30(2026-10-21) 유급휴가 날짜(이 PC 전용)
         mj["mm_basis"] = info
         if info.get("mm_lm29") is not None:
             mj["mm_lm29"] = info["mm_lm29"]       # 'LM29 방식이었다면 X MM' — mine.meta_doc 과 같은 최상위 키

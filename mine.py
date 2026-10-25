@@ -178,15 +178,17 @@ def main():
         print("[출처] 제외: " + ", ".join(f"{k} {v}" for k, v in meta["excluded"].items())
               + "   ← CC·단체발송·비업무는 본인 업무로 계상하지 않음")
 
-    # MM v4: 투입 MM(실제 투입시간, 상한 없음) 과 가용 MM(연차를 일자에서 뺀 값)을 나란히 낸다.
+    # MM v4: 투입 MM(실제 투입시간, 상한 없음) 과 가용 MM(유급휴가를 일자에서 뺀 값)을 나란히 낸다.
     # 로드율 = 투입 ÷ 가용. PC 가동시간은 시간의 근거가 아니라 그날 일했는지 교차확인과
     # 초과근무 산정에만 쓴다 (PC 시간만으로 재면 MM이 실제의 1/5로 붕괴).
+    # LM30(2026-10-21) 유급휴가 = 달력 + 근태 기록 칸의 휴가 열 + '휴가 날짜' 칸(attendance 머리말 22) — 일하지 않은 날로 세지 않고 가용에서 뺀다
     progress("신호 수집", 1, 3)
     absence = dict(extract.absence_days(data_dir, d0, d1))
     day_hours, hinfo = extract.day_work_hours(data_dir, sig, d0, d1, cfg,
                                               file_times=meta.get("file_times"))
-    # 부재 추정(PC 도 흔적도 없는 평일)은 달력 근태와 합쳐 가용에서 차감한다 (LM22). 추정일은 미등록 공휴일처럼
-    # 그 달 평일수(투입 MM 분모)에서도 뺀다(A31) — inferred 로 따로 넘긴다.
+    # 휴가 추정(PC 도 흔적도 없는 평일 — 내부 이름 inferred_absence)은 달력 휴가와 합쳐 가용에서 뺀다 (LM22). LM30(2026-10-21)부터는
+    # 다른 유급휴가처럼 가용에서만 뺀다(그 달 평일수 = 투입 MM 분모에는 남긴다 — 예전 A31 은 분모에서도 뺐다) — inferred 로 따로 넘겨
+    # 달마다 그 몫(absent_inferred)을 적는다.
     inferred = hinfo.pop("inferred_absence", {}) or {}
     absence.update(inferred)
     # LM30(2026-10-18): 날짜별 출근·퇴근·덩어리·평소 시각은 이 PC 에만 — mm_meta(팀으로 올라간다)에 실리기 전에 떼어
@@ -246,7 +248,15 @@ def main():
     for _ln in attendance.month_lines(hinfo.get("pc_months"), (_sg0.get("months") or []) if _sg0.get("warn") else (),
                                       hinfo.get("pc_log")):
         print(f"[주의] {_ln}")
-    print(f"     부재 {hinfo['absence_days']}일 차감 · 초과근무 {hinfo['overtime_h']:.0f}h · "
+    # LM30(2026-10-21) 유급휴가 — 일하지 않은 날로 세지 않고 가용에서 뺀다(일수만 — 진행 로그는 얼린 사본에 남을 수 있어 날짜를 싣지 않는다)
+    _lvl = att_agg.get("leave") if isinstance(att_agg, dict) else None
+    # 출퇴근 추정이 깨져 attendance 파일에 휴가 칸이 없으면 일수만(leave_n — 오늘까지 휴가로 본 날 · 없으면 달마다 가용에서 뺀 휴가 합)
+    _lvn = hinfo.get("leave_n")
+    if _lvn is None:
+        _lvn = round(sum(float((v or {}).get("absent") or 0) for v in mm_months.values() if isinstance(v, dict)), 1)
+    print("     " + (attendance.leave_count_line(_lvl) if isinstance(_lvl, dict) else
+                     f"유급휴가 {_lvn:g}일 — 법정 휴가라 일하지 않은 날로 세지 않고 가용에서 뺍니다"))
+    print(f"     초과근무 {hinfo['overtime_h']:.0f}h · "
           f"주말근무 {hinfo['weekend_days']}일 · 야근일 {hinfo['night_days']}일 · "
           f"PC가동 하한 보정 {hinfo.get('pc_floor_h', 0):.0f}h/{hinfo.get('pc_floor_days', 0)}일")
     # LM28(WP8) — 시간 꼬리표(휴일 > 야간 > 정규 > 연장)·퇴근 후 인정·PC 밖 발신·사적 차감·미관측
@@ -254,14 +264,15 @@ def main():
           f"야간 {hinfo.get('night_h', 0):.1f}h · 휴일 {hinfo.get('holiday_h', 0):.1f}h"
           f"(휴일 야간 {hinfo.get('holiday_night_h', 0):.1f}h) · 퇴근 후 인정 창 {hinfo.get('evening_window_h', 0):.1f}h · "
           f"PC 밖 발신 {hinfo.get('remote_send', 0)}건 · 사적 차감 {hinfo.get('private_deducted_h', 0):.1f}h"
-          + (f" · 미관측 평일 {len(hinfo.get('unobserved_days') or [])}일(부재 추정 안 함 "
-             f"{hinfo.get('inferred_absence_blocked_unobserved', 0)}일)" if hinfo.get("coverage_ledger") else ""))
+          + (f" · 미관측 평일 {len(hinfo.get('unobserved_days') or [])}일(그중 "
+             f"{hinfo.get('inferred_absence_blocked_unobserved', 0)}일은 읽지 못한 날이라 휴가로 보지 않았습니다)"
+             if hinfo.get("coverage_ledger") else ""))
     print(f"     점심 차감 {hinfo.get('lunch_deducted_h', 0):.0f}h · "
           f"저녁 식사 차감 {hinfo.get('dinner_deducted_h', 0):.1f}h · "
           f"저녁·새벽 인정 {hinfo.get('evening_credit_h', 0):.0f}h · "
           f"주말 산출물 창 {hinfo.get('weekend_window_h', 0):.0f}h · "
           f"수동흔적만 {hinfo.get('floor_blocked_passive_days', 0)}일(하한 미적용) · "
-          f"부재 추정 {hinfo.get('inferred_absence_days', 0)}일(가용 차감) · "
+          f"휴가로 본 평일 {hinfo.get('inferred_absence_days', 0)}일(PC 기록도 흔적도 없는 평일 — 휴가로 보고 가용에서 뺐습니다) · "
           f"미래시각 폐기 {hinfo.get('future_signals_dropped', 0)}건")
     # LM28(E) — 퇴근 후 미인정·시각 미상 발신·표준일 추정(PC 기록 없는 달)·AI 비업무 발신 시간 유지 — 값이 있을 때만 한 줄
     if any(hinfo.get(k) for k in ("evening_missed_days", "untimed_sends", "std_nopc_days", "hint_only_days",
@@ -273,7 +284,7 @@ def main():
               f"{hinfo.get('hint_only_days', 0)}일 · AI 비업무 발신 시간 유지 {hinfo.get('ai_n_time_kept', 0)}건")
     print(f"     상한 없음(하루 24h 물리 한계만) · 이상치 {len(hinfo.get('anomalies') or [])}일 · "
           f"16h 초과 {len(hinfo.get('long_days') or [])}일 · "
-          f"부재일 흔적 {hinfo.get('absent_worked_h', 0):.1f}h"
+          f"휴가일 근무 {hinfo.get('absent_worked_h', 0):.1f}h"
           + ("   ★ 발신 메일의 60% 이상이 00~08시 — 시각이 UTC 로 기록된 듯합니다. "
              "config.mm.mailTimeOffsetH(예: 9) 로 보정하세요" if hinfo.get("utc_suspect") else ""))
     # LM22 2차 — 측정 방식·신뢰도(D5)와 새 보정(A6·A9·A13·A33·D3·D4·D7·A34) 한 줄씩

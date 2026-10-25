@@ -2334,6 +2334,13 @@ def trend(d0="", d1="", tag="", info=None):
                    + (" · 제외: " + ", ".join(_bad_roots[:3]) if _bad_roots else "")
                    + ") — 읽힌 폴더만 합산했습니다")
     # 버킷마다 '평일 수'와 'PC 기록이 있는 평일 수' — 기록 없음과 0h 를 화면이 구분하게.
+    # LM30(2026-10-21) 하루 휴가인 평일(pc_lv)과 그중 PC 기록이 있는 날(pc_lv_rec) — 이 PC 의 attendance 파일(core\attendance 머리말 22)에서.
+    # 화면이 'PC 기록 없음' 주를 유급휴가로 말한다(얼린 사본은 이 두 칸을 뺀다 — freeze). 그런 날이 있는 버킷에만 키가 생긴다
+    try:
+        import extract as _XL
+        lvd = _XL.load_leave_range(REPORT, start.isoformat(), end.isoformat())
+    except Exception:  # noqa: BLE001 — 휴가 재료 하나가 추이를 막지 않게
+        lvd = {}
     dd = start
     while dd <= end:
         i = key(dd)
@@ -2341,6 +2348,9 @@ def trend(d0="", d1="", tag="", info=None):
             out[i]["pc_wd"] += 1
             if dd in pcd:
                 out[i]["pc_days"] += 1
+            if float(lvd.get(dd.isoformat(), 0.0) or 0.0) >= 1.0:
+                out[i]["pc_lv"] = out[i].get("pc_lv", 0) + 1
+                out[i]["pc_lv_rec"] = out[i].get("pc_lv_rec", 0) + (1 if dd in pcd else 0)
         dd += timedelta(days=1)
     for w in out:
         w["pc_h"] = round(w["pc_h"], 1)
@@ -2567,6 +2577,71 @@ def pc_months_view(meta):
             "capped": any(bool(v.get("capped")) for v in pm.values())}
 
 
+def leave_view_lines(meta, tag):
+    r"""LM30(2026-10-21) 'MM 산정 근거' 카드의 유급휴가 줄(GET /api/dash 의 leave_text — core\attendance 머리말 22) — 같은 기간의
+    report\attendance_<기간>.json(이 PC 전용)의 agg.leave 로 휴가로 본 날·휴가로 보지 않은 평일(날짜). 그 칸이 없는 예전 결과는 mm_meta 의
+    일수만. 얼린 사본은 freeze 가 일수만으로 바꾼다."""
+    import attendance as _att
+    import extract as _X
+    doc = _X.load_attendance(REPORT, tag) if tag else None
+    return _att.leave_lines_for(meta, None, doc, local=True)
+
+
+# ── LM30(2026-10-21) 유급휴가 '휴가 날짜' 칸(core\attendance 머리말 22) — data\근태\휴가_직접입력.csv 를 이 프로세스 안에서 읽고 쓴다(새
+#    프로세스 없음). 날짜는 이 PC 에만(얼린 사본은 /api/leave_days 를 굽지 않는다 — freeze.FREEZE_EPS 밖). 다음 [분석 실행]·[재분석만]이 읽는다.
+LEAVE_BODY_MAX = 32768        # 칸 글 상한(attendance.LEAVE_TEXT_MAX 8000자 — 한글은 3바이트) + JSON 여유
+LEAVE_DRAIN_MAX = 1 << 20     # 너무 큰 본문은 이만큼까지만 읽어 버리고 400(메모리에 담지 않는다)
+LEAVE_BUSY_HINT = "분석·다른 작업이 도는 중에는 휴가 날짜를 저장하지 않습니다 — 끝난 뒤 누르세요"
+
+
+def _leave_is_off():
+    """휴가 날짜 칸의 주말·공휴일(설정의 holidays 포함 — 분석과 같은 달력)"""
+    import extract as _X
+    hol = _X._holiday_set(cfg())
+    return lambda d: _X._is_off_day(d, hol)
+
+
+def leave_days_view():
+    r"""GET /api/leave_days → {"ok", "text": 칸에 보일 글(이어진 평일은 '~' 로 묶음), "n": 날 수, "days": 휴가 일수(반차 0.5), "file":
+    data\근태\휴가_직접입력.csv}. 파일이 없으면 빈 글."""
+    import attendance as _att
+    d = _att.read_manual_leave(DATA)
+    return {"ok": True, "text": _att.leave_text_of(d, _leave_is_off()), "n": len(d),
+            "days": round(sum(d.values()), 1), "file": "data\\" + _att.RECORDS_DIR + "\\" + _att.MANUAL_LEAVE_CSV}
+
+
+def leave_days_save(body):
+    r"""POST /api/leave_days 본문 {"text"} → (상태, 답). 읽지 못한 항목이 있으면 400(아무것도 쓰지 않는다) · 날짜가 너무 많으면 400 ·
+    쓰기 실패는 200 + ok False(엑셀 등에서 열려 있으면 닫고 다시) · 성공이면 ok True + msg + 다시 읽은 칸 글 + log(진행 로그 한 줄 —
+    일수만 · 호출측이 LOCK 밖에서 남긴다). 바쁜지는 호출측이 LOCK 안에서 본다(이 함수는 LOCK 을 잡지 않는다)."""
+    import attendance as _att
+    b = body if isinstance(body, dict) else {}
+    text = str(b.get("text") or "")
+    if len(text) > _att.LEAVE_TEXT_MAX:
+        return 400, {"ok": False, "error": f"글이 너무 깁니다({_att.LEAVE_TEXT_MAX}자까지)"}
+    r = _att.parse_leave_text(text, None, _leave_is_off())
+    if r["bad"]:
+        return 400, {"ok": False, "bad": r["bad"],
+                     "error": "읽지 못한 날짜가 있어 저장하지 않았습니다 — " + ", ".join(r["bad"])
+                              + " (예: 2026-10-05, 10-06~10-08, 10/15 반차)"}
+    if r["over"]:
+        return 400, {"ok": False, "error": f"날짜가 너무 많습니다({_att.LEAVE_DATES_MAX}일까지)"}
+    try:
+        _att.write_manual_leave(DATA, r["dates"])
+    except OSError:
+        return 200, {"ok": False, "error": "휴가 날짜 파일을 쓰지 못했습니다 — 엑셀 등에서 열려 있으면 닫고 다시 누르세요"}
+    n, days = len(r["dates"]), round(sum(r["dates"].values()), 1)
+    line = f"[휴가 날짜] {n}일(휴가 {days:g}일) 저장 — 날짜는 이 PC 의 data\\근태 에만 둡니다"
+    if n:
+        msg = (f"휴가 날짜 {n}일(휴가 {days:g}일)을 저장했습니다"
+               + (f" · 주말·휴일 {r['off']}일은 뺐습니다" if r["off"] else "")
+               + " — [재분석만] 또는 [분석 실행]을 누르면 그 날을 휴가로 봅니다(일하지 않은 날로 세지 않고 가용에서 뺍니다).")
+    else:
+        msg = "휴가 날짜를 모두 지웠습니다 — [재분석만] 또는 [분석 실행]을 누르면 반영됩니다."
+    v = leave_days_view()
+    return 200, dict(v, ok=True, msg=msg, off=r["off"], log=line)
+
+
 # ── LM30(2026-10-21) 예전 판 PC 가동 기록 가져오기(core\pc_import) — 'MM 산정 근거' 카드의 줄. 이 프로세스 안에서 찾고 가져온다(새 프로세스
 #    없음). 찾기는 폴더 300개·2초까지라 10분 동안 같은 답을 쓴다. 폴더 경로는 이 PC 화면에만(얼린 사본은 /api/pc_import 를 굽지 않는다).
 PCIMP = {"t": 0.0, "v": None}
@@ -2682,6 +2757,43 @@ def result_rows():
     return (os.path.basename(p) if p else ""), rows
 
 
+# ── LM30(2026-10-25) 화면 표시 설정 — '0.04 MM 이하 숨기기'(config ui.hideSmallMM · 기본 켜짐 · 이 PC 의 개인 설정) ─────────────────────
+# 사용자: "UI 대시보드 디스플레이에 0.04이하는 안보이게 하는 on/off 옵션 넣고, 디폴트는 on 되게해줘". 대시보드(PAGE)·팀 취합 화면(TEAM_PAGE)의
+# 과제·업무 목록(표·범례·칩·막대·원)에서 화면에 보이는 MM(소수 둘째 자리)이 0.04 이하인 항목을 숨긴다 — 화면 스크립트가 그릴 때만 거른다.
+# 결과 파일·합계·투입·가용·로드율·리포트·얼린 사본·팀으로 보내는 자료는 그대로다(지우거나 다시 계산하지 않는다). 숨긴 개수와 합은 표 아래 한 줄.
+# 문턱은 고정: SMALL_MM 0.04 — 둘째 자리로 반올림해 0.04 이하 = SMALL_MM_LT(0.045) 미만, 0·음수 포함(화면 JS 의 SMALL_LT·smallV 와 같은 규칙).
+# 옵션 줄 칸(팀 취합 화면에도 같은 칸)이 GET·POST /api/ui_prefs 로 읽고 쓴다. 얼린 사본에는 굽지 않는다(freeze.FREEZE_EPS 밖 — 사본은 모두 보인다).
+SMALL_MM = 0.04
+SMALL_MM_LT = 0.045
+UI_PREFS_BODY_MAX = 1024     # {"hideSmallMM": true} 한 줄이면 된다 — 넘으면 읽어 담지 않고 버린 뒤 400
+_UI_OFF_WORDS = ("false", "0", "off", "no", "n", "끔", "끄기")
+
+
+def hide_small_on(c):
+    r"""config → '0.04 MM 이하 숨기기'가 켜졌나(bool). ui.hideSmallMM 이 없거나(ui 블록째 없어도) 읽을 수 없는 값이면 켜짐(기본) —
+    끄는 값은 false·0·"false"·"off"·"끔" 같은 것만이다."""
+    u = c.get("ui") if isinstance(c, dict) else None
+    v = u.get("hideSmallMM", True) if isinstance(u, dict) else True
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return v != 0
+    if isinstance(v, str):
+        return v.strip().lower() not in _UI_OFF_WORDS
+    return True
+
+
+def is_small_mm(v):
+    r"""숨길 MM 인가 — 화면 JS smallV 와 같은 규칙: 숫자이고 SMALL_MM_LT(0.045) 미만(둘째 자리로 0.04 이하 · 0·음수 포함).
+    숫자가 아니면(MM 을 모르는 항목) 숨기지 않는다."""
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and float("-inf") < v < SMALL_MM_LT
+
+
+def ui_prefs_view():
+    r"""GET /api/ui_prefs — 화면 표시 설정('0.04 MM 이하 숨기기' — 켜짐·문턱). 파일만 읽는다."""
+    return {"ok": True, "hideSmallMM": hide_small_on(cfg()), "threshold": SMALL_MM}
+
+
 ATT_RECENT_DAYS = 31      # 출퇴근 카드·리포트의 날짜별 표 — 최근 31일
 ATT_DAY_KEYS = ("arrive", "leave", "arrive_day", "leave_day", "work_h", "regular_h", "ext_h", "night_h", "holiday_h",
                 "offpc_h", "lm29_h", "kind", "leave_frac", "conf", "late", "rec")
@@ -2792,6 +2904,10 @@ def attendance_view():
         mm={"months": {k: {x: v.get(x) for x in ("mm", "mm_lm29", "worked", "worked_lm29")}
                        for k, v in sorted(mo.items()) if isinstance(v, dict)},
             "total_mm": meta.get("total_mm"), "mm_lm29": meta.get("mm_lm29")})
+    # LM30(2026-10-21) 유급휴가 보기(core\attendance 머리말 22) — 휴가로 본 날·휴가로 보지 않은 평일(날짜를 담는다 — 이 PC 화면에만 ·
+    # 얼린 사본은 leave_n 으로 일수만 — freeze._att_summary_only)
+    out["leave_lines"] = _att.leave_lines_for(meta, b, doc, local=True)
+    out["leave_n"] = _att.leave_n_of(meta, b)
     return out
 
 
@@ -3486,6 +3602,11 @@ def reset_files(what="report", keep_queue=True, report=None, data=None, failed=N
     base_dir = os.path.dirname(os.path.abspath(report))
     prof = lmname.EDGE_PROFILE_NAME.lower()
     ts_keep = {x.lower() for x in TS_FILES}
+    try:                                             # LM30(2026-10-21) 사람이 적은 휴가 날짜(data\근태\휴가_직접입력.csv)는 수집 자료가 아니다 — 남긴다
+        import attendance as _att
+        lv_keep = (_att.RECORDS_DIR.lower(), _att.MANUAL_LEAVE_CSV.lower())
+    except ImportError:
+        lv_keep = None
     removed = kept_nar = 0
     left, kept, links, stuck = [], [], [], []      # 다시 지울 것 · 보존한 이름 · 들어가지 않은 연결 · 못 읽은 폴더(경로, 까닭)
 
@@ -3519,6 +3640,10 @@ def reset_files(what="report", keep_queue=True, report=None, data=None, failed=N
                     continue
                 if top and kind == "data" and fl.startswith(prof + "."):
                     kept.append(fn)                  # Copilot 기록(채팅 소유·보내기 간격·쉬는 시간·잠금)
+                    continue
+                if (lv_keep and kind == "data" and fl == lv_keep[1]
+                        and os.path.basename(os.path.normpath(root)).lower() == lv_keep[0]):
+                    kept.append(fn)                  # LM30(2026-10-21) '휴가 날짜' 칸에 사람이 적은 유급휴가 날짜
                     continue
                 if what != "all" and top and kind == "report" and fn.startswith("ai_narratives_") and fn.endswith(".json"):
                     kept_nar += 1
@@ -3628,6 +3753,7 @@ body.snap .snaponly{display:block}
  <button class="run" id="refine">Copilot으로 유사 항목 정리</button>
  <button class="ghost" id="undoalias" style="display:none">정리 되돌리기</button>
  <button class="ghost" id="savehtml">정적 리포트 다시 만들기 (team_report·통합 보고서)</button>
+ <label title="켜면(기본) 아래 '과제 × 인원'·'공통업무'·'세부업무 상위'에서 팀 합산 MM이 0.04 이하인 줄과 이름표를 숨기고, 표 아래에 숨긴 개수와 합을 적습니다 — 화면 표시만 바꾸고 인원·로드율·저장하는 리포트는 그대로입니다 · 대시보드 옵션 줄과 같은 설정(이 PC)"><input type="checkbox" id="hidesm" checked> 0.04 MM 이하 숨기기</label>
  <span class="state" id="msg" style="font-size:11.5px;color:#5a626b"></span>
 </div>
 <div class="row" style="margin-top:8px">
@@ -3667,11 +3793,12 @@ v3 는 인별 로드율을 뺀 공유용, [스냅샷 저장]은 팀통합보고�
  <div class="card"><h2>팀 Agentic AI 니즈 후보 <span class="state" id="needst"></span></h2>
   <div class="note" style="margin:0 0 4px">팀원 각자의 반복 업무에서 찾은 자동화 니즈 후보를 이름으로 합쳤습니다 — 팀 과제와 매칭하지 않습니다 · 근거 업무 N행 = 제안한 사람들의 근거 업무 행 수 합(MM 아님)</div>
   <div id="needlist"></div></div>
- <div class="card"><h2>공통업무 (여러 사람·여러 과제 반복)</h2><table id="commtbl"></table></div>
+ <div class="card"><h2>공통업무 (여러 사람·여러 과제 반복)</h2><table id="commtbl"></table><div class="note" id="commsm" style="display:none"></div></div>
 </div>
 
 <div class="card"><h2>세부업무 상위 (팀 합산) <span class="state" style="font-weight:400;font-size:11px;color:#8b929b">유사 항목 정리 후 같은 일이 한 줄로 합쳐졌는지 확인</span></h2>
- <table id="dtltbl"></table></div>
+ <table id="dtltbl"></table>
+ <div class="note" id="dtlsm" style="display:none"></div></div>
 
 </div><script>
 const $=id=>document.getElementById(id);
@@ -3679,6 +3806,37 @@ const PAL=["#2a78d6","#0e8c7a","#a61b4a","#e08a00","#6c4fb8","#3d8f3d","#c05a78"
 const WTC={"개발":"#2a78d6","사무":"#e08a00","현장":"#0e8c7a","협업":"#6c4fb8"};
 const esc=s=>String(s??"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/"/g,"&quot;");
 let D=null;
+// ── LM30(2026-10-25) '0.04 MM 이하 숨기기'(대시보드 옵션 줄과 같은 설정 — config ui.hideSmallMM · 기본 켜짐 · GET·POST /api/ui_prefs) ──
+// 대시보드 화면 스크립트(PAGE)의 같은 이름 함수와 같은 규칙: 화면에 보이는 MM 이 0.04 이하(0.045 미만 · 0·음수 포함)인 과제·세부업무 줄과
+// 이름표를 숨기고 표 아래 한 줄로 말한다. 인원·합계·로드율은 그대로. 저장본(정적 팀 리포트 — window.__TEAM_DATA__)·파일로 연 화면은 숨기지
+// 않는다(칸은 저장본에서 nosnap 카드와 함께 숨는다).
+const SMALL_LT=0.045;
+const SMALL_LIVE=location.protocol.indexOf("http")===0&&!window.__TEAM_DATA__;
+let HIDE_SMALL=SMALL_LIVE, SMALL_TOUCHED=false;
+const smallV=v=>typeof v==="number"&&Number.isFinite(v)&&v<SMALL_LT;
+function smallSplit(xs,mm,t){const vis=[],hid=[];let sum=0;
+ (xs||[]).forEach(x=>{const v=mm(x);if(HIDE_SMALL&&smallV(v)){hid.push(x);sum+=v;}else vis.push(x);});
+ if(t){t.n+=hid.length;t.sum+=sum;}
+ return {vis,hid,n:hid.length,sum};}
+const smallTally=()=>({n:0,sum:0});
+const smallText=t=>`0.04 MM 이하 ${t.n}개(합 ${(Math.round(t.sum*100)/100||0).toFixed(2)} MM)는 숨겼습니다 — 옵션을 끄면 모두 보입니다`;
+const smallLine=t=>(t&&t.n)?`<div class="note">${smallText(t)}</div>`:"";
+const smallNote=(el,t)=>{if(!el)return;el.innerHTML=(t&&t.n)?smallText(t):"";el.style.display=(t&&t.n)?"":"none";};
+async function uiPrefsLoad(){
+ if(!SMALL_LIVE)return;
+ let g=null;try{g=await fetch("/api/ui_prefs").then(r=>r.json());}catch(e){g=null;}
+ if(SMALL_TOUCHED||!(g&&g.ok===true&&typeof g.hideSmallMM==="boolean"))return;
+ const c=$("hidesm");if(c)c.checked=g.hideSmallMM;
+ if(g.hideSmallMM!==HIDE_SMALL){HIDE_SMALL=g.hideSmallMM;if(D&&!D.error)render();}
+}
+async function uiPrefsToggle(){
+ const c=$("hidesm");if(!c)return;
+ SMALL_TOUCHED=true;HIDE_SMALL=!!c.checked;if(D&&!D.error)render();     // 이미 읽은 팀 자료로 바로 다시 그린다
+ let r=null;
+ try{r=await fetch("/api/ui_prefs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({hideSmallMM:HIDE_SMALL})}).then(x=>x.json());}catch(e){r=null;}
+ if(!(r&&r.ok))alert("표시 설정을 저장하지 못했습니다 — 이 화면에는 반영했지만 다음에 열 때는 예전 설정으로 보입니다."+((r&&r.error)?" ("+r.error+")":""));
+}
+{const c=$("hidesm");if(c)c.onchange=uiPrefsToggle;}
 async function loadDir(){
  try{const d=await fetch("/api/sharedir").then(r=>r.json());
   $("sharedir").value=d.dir||"";
@@ -3746,6 +3904,8 @@ async function load(){
 const GC9={reliable:["#0f7a3d","신뢰"],caution:["#c98a00","주의"],unreliable:["#c0122f","측정 불충분"]};
 const covB=m=>{const c=(m.coverage&&typeof m.coverage==="object")?m.coverage:{};const g=GC9[c.grade];return g?` <span class="tag" style="border:1px solid ${g[0]};color:${g[0]};background:#fff" title="${esc((Array.isArray(c.reasons)?c.reasons:[]).join(" · ")||"측정 신뢰도 등급")}">${g[1]}</span>`:"";};
 const cfgB=m=>m.cfg_diff?` <span class="tag" style="border:1px solid #b06ef7;color:#6c4fb8;background:#fff" title="표준 근무시간·점심·주간 창·PC 하한·공휴일 수 등 산식 설정이 팀 다수와 다릅니다 — 분모가 달라 로드율 비교가 어긋납니다">산식 설정 상이</span>`:"";
+// LM30(2026-10-21) 무흔적 평일 = 흔적 없는 평일 중 휴가로 본 날(가용에서 뺀 날)을 뺀 수 — 휴가를 일하지 않은 날처럼 보이지 않게
+const noEv=m=>Math.max(0,(Number(m.no_evidence_days)||0)-(Number(m.inferred_absence_days)||0));
 // LM30(2026-10-18) — 출퇴근 추정 합계(member.attendance.total — 시각 없음): 연장·야간·휴일·52시간 넘은 주. 없는 사람(LM28·LM29)은 '—'
 const attC=m=>{const a=(m.attendance&&typeof m.attendance==="object")?m.attendance:null;
  const t=(a&&a.total&&typeof a.total==="object")?a.total:null;
@@ -3799,19 +3959,21 @@ function render(){
     <rect width="${w*4.6}" height="16" rx="3" fill="${m.unreliable?"#c9cfd8":(over?"#e08a00":(pct>=70?"#2a78d6":"#98a0a8"))}"/>
     <line x1="307" x2="307" y1="0" y2="16" stroke="#8b929b" stroke-dasharray="2"/></svg>
    <b style="font-size:12px;width:52px">${pct}%</b>
-   <span style="font-size:10.5px;color:#8b929b">투입 ${m.total_mm.toFixed(2)} / 가용 ${m.avail_mm.toFixed(2)}${m.no_evidence_days?` · 무흔적 ${m.no_evidence_days}일`:""}${m.measure_text?` · ${esc(m.measure_text)}`:""}${covB(m)}${cfgB(m)}</span></div>`;
+   <span style="font-size:10.5px;color:#8b929b">투입 ${m.total_mm.toFixed(2)} / 가용 ${m.avail_mm.toFixed(2)}${noEv(m)?` · 무흔적 ${noEv(m)}일`:""}${m.measure_text?` · ${esc(m.measure_text)}`:""}${covB(m)}${cfgB(m)}</span></div>`;
  }).join("")||'<div class="note">데이터 없음</div>';
  // 과제 × 인원 스택바 — 서버(aggregate.collect_team_data)가 측정 불충분 인원을 매트릭스에서 이미 뺐다
  const owners=okm.map(m=>m.owner);const oc=o=>PAL[owners.indexOf(o)%PAL.length];
  const pjs=Object.entries(D.matrix||{});
  const pmax=Math.max(...pjs.map(([_,v])=>Object.values(v).reduce((a,b)=>a+b,0)),0.001);
- $("pjstack").innerHTML=pjs.map(([pj,v])=>{
+ // LM30(2026-10-25) 팀 합산이 0.04 MM 이하인 과제 줄은 숨긴다(막대 길이의 기준 pmax 는 모든 과제로 — 보이는 줄의 길이가 그대로) · 아래 한 줄
+ const tJ=smallTally();
+ $("pjstack").innerHTML=(smallSplit(pjs,([_,v])=>Object.values(v).reduce((a,b)=>a+b,0),tJ).vis.map(([pj,v])=>{
   const tot=Object.values(v).reduce((a,b)=>a+b,0);
   const segs=owners.map(o=>v[o]?`<i style="display:inline-block;height:14px;width:${v[o]/pmax*300}px;background:${oc(o)}" title="${esc(o)} ${v[o].toFixed(2)}MM"></i>`:"").join("");
   return `<div style="display:flex;align-items:center;gap:8px;margin:4px 0">
    <span style="width:150px;font-size:11.5px;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><b>${esc(pj)}</b></span>
    <span>${segs}</span><span style="font-size:11px;color:#5a626b">${tot.toFixed(2)} MM</span></div>`;
- }).join("")||'<div class="note">데이터 없음</div>';
+ }).join("")+smallLine(tJ))||'<div class="note">데이터 없음</div>';
  $("pjleg").innerHTML=owners.map(o=>`<span style="font-size:11px"><span class="dot" style="background:${oc(o)}"></span>${esc(o)}</span>`).join("");
  // 업무유형 스택 (비교 가능 인원만 — 측정 불충분은 유형 분포도 뺀다)
  $("wtstack").innerHTML=okm.map(m=>{
@@ -3828,16 +3990,20 @@ function render(){
   <b>${esc(g.name)}</b> <span style="font-size:10.5px;color:#8b929b">제안 ${Number(g.n)||0}명(${(g.who||[]).map(esc).join(", ")}) · 근거 업무 ${Number(g.ev)||0}행</span>
   ${g.logic?`<div style="font-size:11px;color:#5a626b">로직: ${esc(g.logic)}</div>`:""}${g.reason?`<div style="font-size:11px;color:#5a626b">사유: ${esc(g.reason)}</div>`:""}</div>`).join("")
   ||'<div class="note">발굴된 니즈 후보가 없습니다 — 팀원이 [분석 실행](AI 판정)을 마치고 결과를 올리면 여기에 모입니다.</div>';
- // 공통업무
+ // 공통업무 — LM30(2026-10-25) 0.04 MM 이하 줄은 숨기고 표 아래 한 줄
+ const tC=smallTally(), cm=D.common||[];
  $("commtbl").innerHTML="<tr><th>세부업무</th><th>관련 과제</th><th>수행 인원</th><th style='width:56px'>MM</th></tr>"+
-  ((D.common||[]).map(c=>`<tr><td><b>${esc(c.detail)}</b></td><td>${(c.models||[]).map(esc).join(", ")}</td>
-   <td>${(c.who||[]).map(esc).join(", ")}</td><td>${(c.mm||0).toFixed(2)}</td></tr>`).join("")||"<tr><td colspan=4 class='note'>없음</td></tr>");
- // 세부업무 상위
+  (smallSplit(cm,c=>c.mm||0,tC).vis.map(c=>`<tr><td><b>${esc(c.detail)}</b></td><td>${(c.models||[]).map(esc).join(", ")}</td>
+   <td>${(c.who||[]).map(esc).join(", ")}</td><td>${(c.mm||0).toFixed(2)}</td></tr>`).join("")||(cm.length?"":"<tr><td colspan=4 class='note'>없음</td></tr>"));
+ smallNote($("commsm"),tC);
+ // 세부업무 상위 — LM30(2026-10-25) 팀 합산 0.04 MM 이하 줄은 담당 이름표와 함께 숨기고, 보이는 줄의 0.04 MM 이하 이름표는 그 이름표만 뺀다
+ const tT=smallTally();
  $("dtltbl").innerHTML="<tr><th>과제 / 세부업무</th><th>담당</th><th style='width:70px'>팀 합산 MM</th></tr>"+
-  Object.entries(D.details||{}).slice(0,25).map(([k,v])=>{
+  smallSplit(Object.entries(D.details||{}).slice(0,25),([_,v])=>Object.values(v).reduce((a,b)=>a+b,0),tT).vis.map(([k,v])=>{
    const tot=Object.values(v).reduce((a,b)=>a+b,0);
-   return`<tr><td><b>${esc(k)}</b></td><td>${Object.entries(v).map(([o,x])=>`<span class="tag">${esc(o)} ${x.toFixed(2)}</span>`).join("")}</td><td>${tot.toFixed(2)}</td></tr>`;
+   return`<tr><td><b>${esc(k)}</b></td><td>${smallSplit(Object.entries(v),([_,x])=>x,tT).vis.map(([o,x])=>`<span class="tag">${esc(o)} ${x.toFixed(2)}</span>`).join("")}</td><td>${tot.toFixed(2)}</td></tr>`;
   }).join("");
+ smallNote($("dtlsm"),tT);
 }
 // ── 팀 서버 켜기/끄기 (팀 공용 PC 용) ──
 let TS={running:false,port:0,urls:[]};
@@ -3988,7 +4154,7 @@ if(lmLive()){
  window.addEventListener("pageshow",e=>{if(e.persisted){LM_TAB=Math.random().toString(36).slice(2,10)+Date.now().toString(36);lmAlive();}});
  window.addEventListener("pagehide",()=>lmBeacon("/api/bye"));
 }
-load();tsLoad();
+uiPrefsLoad();load();tsLoad();
 </script></body></html>"""
 
 PAGE = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
@@ -4055,7 +4221,7 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
  <a href="/team" target="_blank">④ 팀 취합 화면 →</a>
  <a href="/guide" target="_blank">사용 안내</a>
 </div>
-<div class="sub">PC 흔적에서 업무 로드를 추출합니다. <b>투입 MM</b>(실제 일한 양)과 <b>가용 MM</b>(일할 수 있었던 양 — 연차는 일자에서 차감)을
+<div class="sub">PC 흔적에서 업무 로드를 추출합니다. <b>투입 MM</b>(실제 일한 양)과 <b>가용 MM</b>(일할 수 있었던 양 — 연차·반차는 법정 휴가라 일하지 않은 날로 세지 않고 가용에서 뺍니다)을
  나란히 내고 <b>로드율 = 투입 ÷ 가용</b>으로 비교합니다. 1 MM = 8h × 그 달 평일수(주40시간). 야근은 상한 없이 그대로 반영됩니다.</div>
 
 <div class="card"><div class="row">
@@ -4068,6 +4234,7 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
  <label><input type="checkbox" id="ai" checked> AI 정제</label>
  <label><input type="checkbox" id="skip"> 재분석만</label>
  <label id="hronl" style="display:none" title="켜면 [분석 실행]이 GERP(인사 시스템) 근무 기록을 읽어 +@(근태 기록 밖 근무)를 근태와 견줍니다 — 시험 기능 · 전용 Edge 에 본인이 로그인해 둔 경우만 읽고, 로그아웃돼 있으면 건너뜁니다 · 기록은 이 PC에만 둡니다"><input type="checkbox" id="hron"> HR 근무 기록(GERP)</label>
+ <label id="hidesml" title="켜면(기본) 과제·업무 목록(표·범례·막대)에서 MM이 0.04 이하인 항목을 숨기고, 표 아래에 숨긴 개수와 합을 적습니다 — 화면 표시만 바꾸고 합계·로드율·보고서·팀으로 보내는 자료는 그대로입니다 · 이 PC의 설정에 저장합니다"><input type="checkbox" id="hidesm" checked> 0.04 MM 이하 숨기기</label>
  <button class="run" id="go" title="로컬PC 자료수집 + AI 분석 + 팀 서버 보고까지 한 번에 합니다">분석 실행</button>
  <button class="run local" id="collect2" title="이 PC 의 자료만 모읍니다(분석·보고 없음). 폴더째 분석할 PC 로 옮겨 [분석 실행]을 누르면 합쳐집니다">로컬PC 자료수집</button>
  <button class="run" id="stop" style="background:#c0122f;display:none">중지</button>
@@ -4141,6 +4308,7 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
 
 <div class="card"><h2>업무별 상세 <span class="state" id="rsrc"></span></h2>
  <table id="res"></table>
+ <div class="note" id="ressm" style="display:none"></div>
  <div class="note">상세설명은 Copilot이 원문 근거를 읽고 작성합니다. 원문은 주간/월간/상세 리뷰 탭에서 확인.</div></div>
 
 <div class="card"><h2>수집 데이터 현황</h2><div class="row" id="src"></div>
@@ -4153,7 +4321,7 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
   <button class="ghost" id="cvreset" title="다음 [분석 실행]이 기간 전체를 처음부터 다시 읽게 합니다(수집한 자료는 지우지 않음)">커서 초기화</button>
   <span class="state" id="cvmsg"></span></div>
  <div class="note">날 수는 한 원천(data\\coverage_ledger.json)에서 셉니다. <b>읽음</b>=확인된 날(0건 확인 포함) · <b>일부</b>=읽었지만 끝까지 확인하지 못한 날 ·
- <b>미관측</b>=못 읽은 날(0시간이 아니라 '근거 없음' — 부재로 추정하지 않습니다) · <b>해당 없음</b>=이 PC 에서 팀즈를 쓰지 않음.
+ <b>미관측</b>=못 읽은 날(0시간이 아니라 '근거 없음' — 휴가로 보지 않습니다) · <b>해당 없음</b>=이 PC 에서 팀즈를 쓰지 않음.
  '불가' 사유는 실측 전이라 <b>의심</b>으로 적습니다. 이 PC 의 원장인지 모르면 PC 이름 대신 출처만 보입니다.</div></div>
 
 <div class="card"><h2>수동 기록 <span class="state">PC 밖 업무(출장·현장·장비 점검) — data\\manual\\worklog.csv (collect\\Add-WorkLog.ps1 과 같은 열)</span></h2>
@@ -4200,6 +4368,7 @@ details .body{background:#fff;border:1px solid #e4e7eb;border-top:0;border-radiu
 
 <div class="card"><h2>출퇴근·시간외 근무 <span class="state" id="atstate">PC를 켜고 끈 시각과 내 흔적으로 추정 · 날짜별 시각은 이 PC에만</span></h2>
  <div id="atbody"><div class="note">불러오는 중…</div></div>
+ <div id="atleave"></div>
  <div id="atgerp"></div></div>
 
 <div class="card"><h2>신호 출처 — 무엇이 계상되고 무엇이 빠졌나 <span class="state" id="metaper"></span></h2>
@@ -4281,6 +4450,54 @@ document.querySelectorAll("[data-d]").forEach(c=>{
  else if(PSPAN[v]){const r=periodRange(v);c.title=r[0]+" ~ "+r[1];}
  c.onclick=()=>{if(PSPAN[v]&&!periodRange(v))return;setDays(PSPAN[v]?v:+v,c);};});
 setDays("ytd",document.querySelector('[data-d="ytd"]'));
+// ── LM30(2026-10-25) '0.04 MM 이하 숨기기'(옵션 줄 칸 — 기본 켜짐 · 이 PC의 설정 config ui.hideSmallMM · GET·POST /api/ui_prefs) ──
+// 사용자: "UI 대시보드 디스플레이에 0.04이하는 안보이게 하는 on/off 옵션 넣고, 디폴트는 on". 화면에 보이는 MM(소수 둘째 자리)이 0.04 이하인
+// 항목(0·음수 포함 = 0.045 미만 — 서버 SMALL_MM_LT 와 같은 문턱)을 과제·업무 목록(표·범례·칩·막대·원)에서 숨긴다. 그릴 때만 거른다 — 합계·비중·
+// 개수·로드율은 그대로(지우거나 다시 계산하지 않는다)이고 숨긴 개수와 합은 표 아래 한 줄로 말한다. 부모(과제·흐름 카드)가 0.04 이하면 자식과
+// 함께 숨기고, 보이는 부모 밑의 작은 자식은 그 자리에서만 빠진다. 막대·원은 숨긴 몫을 연회색 한 칸으로 모아 길이와 다른 항목의 비율을 그대로
+// 둔다. MM 을 모르는 항목(숫자가 아님)은 숨기지 않는다. 얼린 사본·파일로 연 화면은 설정을 읽지 않고 모두 보인다(칸도 숨긴다).
+const SMALL_LT=0.045;
+const SMALL_LIVE=location.protocol.indexOf("http")===0&&!document.getElementById("lm-frozen-data");
+let HIDE_SMALL=SMALL_LIVE;            // 설정을 읽기 전에도 기본(켜짐)으로 그린다 — 끈 PC 는 읽은 뒤 한 번 다시 그린다(uiPrefsLoad)
+let SMALL_TOUCHED=false;              // 읽기 전에 사람이 칸을 바꿨으면 읽은 값으로 되돌리지 않는다
+const smallV=v=>typeof v==="number"&&Number.isFinite(v)&&v<SMALL_LT;
+// xs 를 보이는 것(vis)과 숨긴 것(hid)으로 가른다 — mm(x) = 그 항목의 MM · 꺼져 있으면 모두 보인다 · 숨긴 개수·합은 t(표 하나의 셈)에도 더한다
+function smallSplit(xs,mm,t){const vis=[],hid=[];let sum=0;
+ (xs||[]).forEach(x=>{const v=mm(x);if(HIDE_SMALL&&smallV(v)){hid.push(x);sum+=v;}else vis.push(x);});
+ if(t){t.n+=hid.length;t.sum+=sum;}
+ return {vis,hid,n:hid.length,sum};}
+// 거르지 않는 목록(smallSplit 과 같은 모양 — 주간 리뷰: 한 주의 MM 은 작아 0.04 문턱이면 대부분 숨는다 · 2026-10-25)
+const smallAll=xs=>({vis:xs||[],hid:[],n:0,sum:0});
+const smallTally=()=>({n:0,sum:0});
+const smallText=t=>`0.04 MM 이하 ${t.n}개(합 ${(Math.round(t.sum*100)/100||0).toFixed(2)} MM)는 숨겼습니다 — 옵션을 끄면 모두 보입니다`;
+const smallLine=t=>(t&&t.n)?`<div class="note">${smallText(t)}</div>`:"";
+const smallNote=(el,t)=>{if(!el)return;el.innerHTML=(t&&t.n)?smallText(t):"";el.style.display=(t&&t.n)?"":"none";};
+// 막대의 숨긴 몫 — 연회색 한 칸(w = 너비 %) · 툴팁에 개수와 합
+const smallSeg=(s,w)=>(s.n&&w>0)?`<i style="width:${w.toFixed(1)}%;background:#e4e7eb" title="${smallText(s)}"></i>`:"";
+// 설정 읽기 — 읽지 못하면 기본(켜짐) 그대로. 얼린 사본·파일로 연 화면은 칸을 숨기고 읽지 않는다
+async function uiPrefsLoad(){
+ const l=$("hidesml"),c=$("hidesm");
+ if(!SMALL_LIVE){if(l)l.style.display="none";return;}
+ let g=null;try{g=await fetch("/api/ui_prefs").then(r=>r.json());}catch(e){g=null;}
+ if(SMALL_TOUCHED||!(g&&g.ok===true&&typeof g.hideSmallMM==="boolean"))return;
+ if(c)c.checked=g.hideSmallMM;
+ if(g.hideSmallMM!==HIDE_SMALL){HIDE_SMALL=g.hideSmallMM;smallRedraw();}
+}
+// 칸을 바꾸면 화면은 바로(이미 읽은 자료로 — 다시 분석하거나 새로 고치지 않는다) 다시 그리고, 설정은 이 PC의 config 에 저장한다
+async function uiPrefsToggle(){
+ const c=$("hidesm");if(!c)return;
+ SMALL_TOUCHED=true;HIDE_SMALL=!!c.checked;smallRedraw();
+ let r=null;
+ try{r=await fetch("/api/ui_prefs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({hideSmallMM:HIDE_SMALL})}).then(x=>x.json());}catch(e){r=null;}
+ if(!(r&&r.ok))alert("표시 설정을 저장하지 못했습니다 — 이 화면에는 반영했지만 다음에 열 때는 예전 설정으로 보입니다."+((r&&r.error)?" ("+r.error+")":""));
+}
+// 이미 읽은 자료로 다시 그린다 — 대시보드 표(window.__dash)·읽어 둔 리뷰 탭(RVC)·워크플로우 탭(FLC)
+function smallRedraw(){
+ try{if(window.__dash)drawMM(window.__dash);}catch(e){console.error(e);}
+ Object.keys(RVC).forEach(k=>{try{drawReview(k);}catch(e){console.error(e);}});
+ try{if(FLC)drawFlow(FLC);}catch(e){console.error(e);}
+}
+{const c=$("hidesm");if(c)c.onchange=uiPrefsToggle;}
 
 function donut(el,data,center,unit){
  const tot=data.reduce((a,b)=>a+b.v,0);
@@ -4321,8 +4538,11 @@ function weekly(el,tr){
  //   모든 달이 회색이라 "집계가 안 뜬다" 로 보였다(실측 스크린샷: 1~5월 막대 없음 · 축만 13,203). LM24 에서는 PC 기록이
  //   있는 달만 그려져 발현하지 않았고, LM20 에는 이 띠가 없었다.
  const has=w=>(w.pc_rd!==undefined)?(w.pc_rd>0):((w.pc_wd===undefined)?(w.pc_h>0):(w.pc_days>0));
+ // LM30(2026-10-21) 하루 휴가인 평일(pc_lv — 이 PC 화면에만)은 'PC 기록 없음'으로 말하지 않는다(유급휴가 — 일하지 않은 날로 세지 않는다)
+ const lvW=w=>Number(w.pc_lv)||0;
+ const wdW=w=>Math.max(0,(Number(w.pc_wd)||0)-lvW(w)), pdW=w=>Math.max(0,(Number(w.pc_days)||0)-(Number(w.pc_lv_rec)||0));
  tr.forEach((w,i)=>{if(w.pc_wd!==undefined&&!has(w))
-  s+=`<rect x="${(L+i*iw).toFixed(1)}" y="${T}" width="${iw.toFixed(1)}" height="${(H-T-B).toFixed(1)}" fill="#f2f3f5"><title>${w.label} PC 기록 없음 (평일 ${w.pc_wd}일 중 0일) — 0시간이 아니라 기록이 없는 구간입니다. 막대(신호)는 그대로 셉니다</title></rect>`;});
+  s+=`<rect x="${(L+i*iw).toFixed(1)}" y="${T}" width="${iw.toFixed(1)}" height="${(H-T-B).toFixed(1)}" fill="#f2f3f5"><title>${(lvW(w)>0&&wdW(w)===0)?`${w.label} 유급휴가 — 일하지 않은 날로 세지 않습니다`:`${w.label} PC 기록 없음 (평일 ${wdW(w)}일 중 0일${lvW(w)>0?` · 유급휴가 ${lvW(w)}일은 뺐습니다`:""}) — 0시간이 아니라 기록이 없는 구간입니다. 막대(신호)는 그대로 셉니다`}</title></rect>`;});
  // ② 막대
  tr.forEach((w,i)=>{
   const x=L+i*iw+iw*0.18,bw=iw*0.64;let y=H-B;
@@ -4337,14 +4557,14 @@ function weekly(el,tr){
  flush();
 
  tr.forEach((w,i)=>{const _wk=Number(w.wk_h)||0;if(has(w)||(hasWk&&_wk>0)){
-  const part=(w.pc_wd!==undefined&&w.pc_days<w.pc_wd);
+  const part=(w.pc_wd!==undefined&&pdW(w)<wdW(w));
   const _tot=Number(w.pc_h)||0, _rd=Number(w.pc_rd)||0, _avg=_rd>0?_tot/_rd:0;
   const _v=lineVal(w);
-  s+=`<circle cx="${(L+i*iw+iw/2).toFixed(1)}" cy="${(H-B-(H-T-B)*_v/hmax).toFixed(1)}" r="2.6" fill="${part?"#fff":"#c8a06a"}" stroke="#c8a06a" stroke-width="${part?1.4:0}"><title>${w.label}${hasWk?` 근무 ${_wk.toFixed(1)}h ·`:""}${w.ext_h!=null?` 연장 ${Number(w.ext_h).toFixed(1)}h ·`:""}${Number(w.hol_h)>0?` 휴일 ${Number(w.hol_h).toFixed(1)}h ·`:""} PC 가동 ${_tot.toFixed(1)}h${_rd?`(기록 ${_rd}일·평균 ${_avg.toFixed(1)}h/일)`:""}${w.pc_wd!==undefined?` (평일 ${w.pc_days}/${w.pc_wd})`:""}${_avg>=20?" · PC 종일 켜 둠(야간 포함)":""}</title></circle>`;}});
+  s+=`<circle cx="${(L+i*iw+iw/2).toFixed(1)}" cy="${(H-B-(H-T-B)*_v/hmax).toFixed(1)}" r="2.6" fill="${part?"#fff":"#c8a06a"}" stroke="#c8a06a" stroke-width="${part?1.4:0}"><title>${w.label}${hasWk?` 근무 ${_wk.toFixed(1)}h ·`:""}${w.ext_h!=null?` 연장 ${Number(w.ext_h).toFixed(1)}h ·`:""}${Number(w.hol_h)>0?` 휴일 ${Number(w.hol_h).toFixed(1)}h ·`:""} PC 가동 ${_tot.toFixed(1)}h${_rd?`(기록 ${_rd}일·평균 ${_avg.toFixed(1)}h/일)`:""}${w.pc_wd!==undefined?` (평일 ${pdW(w)}/${wdW(w)}${lvW(w)>0?` · 유급휴가 ${lvW(w)}일`:""})`:""}${_avg>=20?" · PC 종일 켜 둠(야간 포함)":""}</title></circle>`;}});
  el.innerHTML=s+"</svg>";
  $("wleg").innerHTML=keys.map(([k,c])=>`<span><span class="dot" style="background:${c}"></span>${k}</span>`).join("")+
   '<span><span class="dot" style="background:#c8a06a"></span>근무시간(h·오른쪽 축)</span>'+
-  '<span><span class="dot" style="background:#f2f3f5;border:1px solid #d7dbe0"></span>PC 기록 없음</span>';
+  '<span><span class="dot" style="background:#f2f3f5;border:1px solid #d7dbe0"></span>PC 기록 없음·유급휴가</span>';
 }
 // 409 의 사유(hint)를 그대로 보여 준다 — '이미 실행 중' 한 마디로는 보고서 굽는 중인지 알 수 없다
 async function busyMsg(r,dflt){let h="";try{h=(await r.json()).hint||"";}catch(e){}return h||dflt;}
@@ -4407,6 +4627,7 @@ async function poll(){
   {const cs=$("chatsweep");if(cs)cs.disabled=!!s.running;}   // LM30 — [LM이 연 Copilot 채팅 지우기]도 같은 전용 Edge 를 쓴다
   ["gerpon","gerpoff","gerpchg","gerpsave","hron"].forEach(id=>{const b=$(id);if(b)b.disabled=!!s.running;});   // LM30(2026-10-19) GERP 켜기·끄기도(옵션 줄 칸 포함)
   if(s.running)["pcimpgo","pcimprf","pcimpone"].forEach(id=>{const b=$(id);if(b)b.disabled=true;});   // LM30(2026-10-21) 가져오기 — 수집이 같은 원장에 쓴다(끝나면 카드를 다시 그린다)
+  {const lb=$("lvsave");if(lb)lb.disabled=!!s.running;}   // LM30(2026-10-21) '휴가 날짜' 저장 — 분석이 그 파일을 읽는다(서버도 409)
   // LM28(2026-10-19): 작업이 도는 동안에는 [데이터 리셋]도 끈다(누르면 '실행 중'만 들었다) — 무엇이 도는지는 버튼에 마우스를 올리면 보인다
   const rsb=$("reset");if(rsb){rsb.disabled=!!s.running;rsb.title=s.running?`지금 도는 작업: ${s.step||"분석 실행"} — 끝나면 누를 수 있습니다`:"";}
   $("stop").style.display=s.running?"":"none";
@@ -4423,6 +4644,64 @@ async function poll(){
  }catch(e){$("state").textContent="서버 연결 끊김 — 창을 닫고 다시 실행하세요";}
 }
 let wasRunning=false;
+// LM30(2026-10-25) 과제·업무 MM 목록 — 프로젝트별 로드(원·범례) · 프로젝트 내 업무 로드 · 세부업무 분포 · 업무별 상세 표. refresh 가 읽은
+// /api/dash(window.__dash)로 그린다 — '0.04 MM 이하 숨기기'를 바꾸면 다시 읽지 않고 이것만 다시 부른다(smallRedraw). 숨긴 것은 각 카드 아래 한 줄.
+function drawMM(d){
+ const rs=d.rows||[];
+ const projs=[...new Set(rs.map(r=>r["Level 2"]))];
+ const col=p=>PAL[projs.indexOf(p)%PAL.length];
+ const byP={};rs.forEach(r=>byP[r["Level 2"]]=(byP[r["Level 2"]]||0)+(r.mm||0));
+ // 표시 정리: 항목이 많으면 상위 10개 + '기타(묶음)' — 수십 개 나열은 읽을 수 없다(실측)
+ // 0.04 MM 이하 과제는 범례에서 빼고 원에서만 연회색 한 조각으로 남긴다 — 다른 조각의 비율이 그대로이게
+ const tD=smallTally(), sD=smallSplit(Object.entries(byP).sort((a,b)=>b[1]-a[1]),([,v])=>v,tD);
+ let dd=sD.vis.map(([l,v])=>({l,v,c:col(l)}));
+ if(dd.length>12){
+  const rest=dd.slice(10), sum=rest.reduce((s,x)=>s+x.v,0);
+  dd=dd.slice(0,10); dd.push({l:`기타 (${rest.length}개 묶음)`,v:sum,c:"#98a0a8"});
+ }
+ donut($("donut"),(sD.n&&sD.sum>0)?dd.concat([{l:`0.04 MM 이하 ${sD.n}개(숨김)`,v:sD.sum,c:"#e4e7eb"}]):dd,(d.total||0).toFixed(1),"MM 합계");
+ $("dleg").innerHTML=(dd.map(x=>`<div><span class="dot" style="background:${x.c}"></span>${esc(x.l)}<span class="v">${x.v.toFixed(2)} MM</span></div>`).join("")+smallLine(tD))||'<div class="note">분석을 실행하세요</div>';
+ // 프로젝트 내 업무 로드 — 과제(Level 2) 안에서 중위 업무(Level 3)별 MM 과 과제 내 비중.
+ // 예: A 프로젝트 → A-1 시뮬레이션 0.4MM(50%), A-2 보고서 작성 0.2MM(25%)
+ // 0.04 MM 이하 과제는 업무와 함께 숨기고, 보이는 과제 안의 0.04 MM 이하 업무는 범례에서 빼 막대 끝 연회색 한 칸으로(비중·업무 수는 과제 전체 기준 그대로)
+ const byPj={};rs.forEach(r=>{
+  const p2=r["Level 2"]||"미지정", w=r["Level 3"]||"기타";
+  (byPj[p2]=byPj[p2]||{}); byPj[p2][w]=(byPj[p2][w]||0)+(r.mm||0);});
+ const tP=smallTally();
+ const pjs=smallSplit(Object.entries(byPj).map(([p2,ws])=>({p2,ws,tot:Object.values(ws).reduce((a,b)=>a+b,0)}))
+  .sort((a,b)=>b.tot-a.tot).slice(0,8),pj=>pj.tot,tP).vis;
+ $("pjwork").innerHTML=(pjs.map(pj=>{
+  const all=Object.entries(pj.ws).sort((a,b)=>b[1]-a[1]), sw=smallSplit(all,([,v])=>v,tP), det=sw.vis;
+  const bar=det.map(([w,v],i)=>`<i style="width:${(v/(pj.tot||1)*100).toFixed(1)}%;background:${PAL[i%PAL.length]}" title="${esc(w)} ${v.toFixed(2)} MM"></i>`).join("")
+   +smallSeg(sw,sw.sum/(pj.tot||1)*100);
+  const leg=det.map(([w,v],i)=>`<div><span class="dot" style="background:${PAL[i%PAL.length]}"></span>${esc(w)}<span class="v">${v.toFixed(2)} MM · ${(v/(pj.tot||1)*100).toFixed(0)}%</span></div>`).join("");
+  return `<div style="margin:8px 0 12px">
+   <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:3px">
+    <span class="dot" style="background:${col(pj.p2)}"></span><b>${esc(pj.p2)}</b>
+    <span class="state">${pj.tot.toFixed(2)} MM · 업무 ${all.length}개</span></div>
+   <div class="bigbar">${bar}</div>
+   <div class="leg" style="font-size:11px">${leg}</div></div>`;
+ }).join("")+smallLine(tP))||'<div class="note">분석을 실행하세요</div>';
+ // 분포 개요는 9종 활동 범주('활동' 열, 정제 후) — 없으면 Level 3 로 폴백(정제 전).
+ const byA={};rs.forEach(r=>{const k=(r["활동"]||"").trim()||r["Level 3"]||"기타";byA[k]=(byA[k]||0)+(r.mm||0);});
+ const aa=Object.entries(byA).sort((a,b)=>b[1]-a[1]);
+ const atot=aa.reduce((s,[,v])=>s+v,0)||1;
+ const tA=smallTally(), sA=smallSplit(aa,([,v])=>v,tA);
+ $("actbar").innerHTML=sA.vis.map(([l,v],i)=>`<i style="width:${(v/atot*100).toFixed(1)}%;background:${PAL[(i+3)%PAL.length]}" title="${esc(l)} ${(v/atot*100).toFixed(0)}%"></i>`).join("")
+  +smallSeg(sA,sA.sum/atot*100);
+ $("actleg").innerHTML=(sA.vis.map(([l,v],i)=>`<div><span class="dot" style="background:${PAL[(i+3)%PAL.length]}"></span>${esc(l)}<span class="v">${(v/atot*100).toFixed(0)}% · ${v.toFixed(2)} MM</span></div>`).join("")+smallLine(tA))||'<div class="note">분석을 실행하세요</div>';
+ // 업무별 상세 — 0.04 MM 이하 행은 빼고 표 아래 한 줄(항목 수·비중은 그대로)
+ const tR=smallTally(), vr=smallSplit(rs,r=>r.mm,tR).vis;
+ $("res").innerHTML="<tr><th style='width:80px'>Level 1</th><th style='width:60px'>유형</th><th style='width:150px'>Level 2 (과제)</th><th style='width:90px'>Level 3</th><th>상세설명</th><th style='width:120px'>근거(출처)</th><th style='width:58px'>비중</th><th style='width:48px'>MM</th><th style='width:36px'>확신</th></tr>"+
+  (rs.length?vr.map(r=>`<tr><td>${esc(r["Level 1"])||"-"}</td><td>${esc(r["유형"]||"")}</td>
+   <td><span class="dot" style="background:${col(r["Level 2"])}"></span><b>${esc(r["Level 2"])}</b></td>
+   <td>${esc(r["Level 3"])}</td>
+   <td style="color:#4a5159">${esc(r["상세설명"])||"<span style='color:#b9c0c8'>(AI 정제 전)</span>"}</td>
+   <td style="color:#8b929b;font-size:11px">${esc(r["근거"])}</td>
+   <td>${r.share}%</td><td><b>${r.mm}</b></td><td>${esc(r["확신도"])}</td></tr>`).join("")
+   :"<tr><td colspan=9 style='color:#8b929b'>아직 결과가 없습니다 — 위에서 [분석 실행]을 누르세요.</td></tr>");
+ smallNote($("ressm"),tR);
+}
 async function refresh(){
  let d;
  try{ d=keepDash(await fetch("/api/dash").then(r=>r.json())); }
@@ -4451,8 +4730,6 @@ async function refresh(){
  $("sb_load").textContent=avMM?`로드율 ${Math.round(inMM/avMM*100)}% (투입 ${inMM.toFixed(2)}/가용 ${avMM.toFixed(2)} MM)`:"";
  $("sb_ver").textContent=`${d.version} · 포트 ${d.port}`;
  $("k_mm").textContent=avMM?`투입 ${inMM.toFixed(2)} / 가용 ${avMM.toFixed(2)} MM`:(d.total?d.total.toFixed(2)+" MM":"분석 전");
- const projs=[...new Set(rs.map(r=>r["Level 2"]))];
- const col=p=>PAL[projs.indexOf(p)%PAL.length];
  const byP={};rs.forEach(r=>byP[r["Level 2"]]=(byP[r["Level 2"]]||0)+(r.mm||0));
  // 주력 업무 = 프로젝트 '합계' 최대 — 단일 행 최대(rs[0])로 하면 행이 여러 개로 쪼개진
  // 프로젝트가 밀려나 아래 '프로젝트별 로드' 도넛과 다른 답이 나온다(실측 지적).
@@ -4587,38 +4864,7 @@ async function refresh(){
    +jiLine+'<br>· 조치: '+jiHow;
   jw.style.display="";
  } else { jw.style.display="none"; }
- // 표시 정리: 항목이 많으면 상위 10개 + '기타(묶음)' — 수십 개 나열은 읽을 수 없다(실측)
- let dd=Object.entries(byP).sort((a,b)=>b[1]-a[1]).map(([l,v])=>({l,v,c:col(l)}));
- if(dd.length>12){
-  const rest=dd.slice(10), sum=rest.reduce((s,x)=>s+x.v,0);
-  dd=dd.slice(0,10); dd.push({l:`기타 (${rest.length}개 묶음)`,v:sum,c:"#98a0a8"});
- }
- donut($("donut"),dd,(d.total||0).toFixed(1),"MM 합계");
- $("dleg").innerHTML=dd.map(x=>`<div><span class="dot" style="background:${x.c}"></span>${esc(x.l)}<span class="v">${x.v.toFixed(2)} MM</span></div>`).join("")||'<div class="note">분석을 실행하세요</div>';
- // 프로젝트 내 업무 로드 — 과제(Level 2) 안에서 중위 업무(Level 3)별 MM 과 과제 내 비중.
- // 예: A 프로젝트 → A-1 시뮬레이션 0.4MM(50%), A-2 보고서 작성 0.2MM(25%)
- const byPj={};rs.forEach(r=>{
-  const p2=r["Level 2"]||"미지정", w=r["Level 3"]||"기타";
-  (byPj[p2]=byPj[p2]||{}); byPj[p2][w]=(byPj[p2][w]||0)+(r.mm||0);});
- const pjs=Object.entries(byPj).map(([p2,ws])=>({p2,ws,tot:Object.values(ws).reduce((a,b)=>a+b,0)}))
-  .sort((a,b)=>b.tot-a.tot).slice(0,8);
- $("pjwork").innerHTML=pjs.map(pj=>{
-  const det=Object.entries(pj.ws).sort((a,b)=>b[1]-a[1]);
-  const bar=det.map(([w,v],i)=>`<i style="width:${(v/(pj.tot||1)*100).toFixed(1)}%;background:${PAL[i%PAL.length]}" title="${esc(w)} ${v.toFixed(2)} MM"></i>`).join("");
-  const leg=det.map(([w,v],i)=>`<div><span class="dot" style="background:${PAL[i%PAL.length]}"></span>${esc(w)}<span class="v">${v.toFixed(2)} MM · ${(v/(pj.tot||1)*100).toFixed(0)}%</span></div>`).join("");
-  return `<div style="margin:8px 0 12px">
-   <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:3px">
-    <span class="dot" style="background:${col(pj.p2)}"></span><b>${esc(pj.p2)}</b>
-    <span class="state">${pj.tot.toFixed(2)} MM · 업무 ${det.length}개</span></div>
-   <div class="bigbar">${bar}</div>
-   <div class="leg" style="font-size:11px">${leg}</div></div>`;
- }).join("")||'<div class="note">분석을 실행하세요</div>';
- // 분포 개요는 9종 활동 범주('활동' 열, 정제 후) — 없으면 Level 3 로 폴백(정제 전).
- const byA={};rs.forEach(r=>{const k=(r["활동"]||"").trim()||r["Level 3"]||"기타";byA[k]=(byA[k]||0)+(r.mm||0);});
- const aa=Object.entries(byA).sort((a,b)=>b[1]-a[1]);
- const atot=aa.reduce((s,[,v])=>s+v,0)||1;
- $("actbar").innerHTML=aa.map(([l,v],i)=>`<i style="width:${(v/atot*100).toFixed(1)}%;background:${PAL[(i+3)%PAL.length]}" title="${esc(l)} ${(v/atot*100).toFixed(0)}%"></i>`).join("");
- $("actleg").innerHTML=aa.map(([l,v],i)=>`<div><span class="dot" style="background:${PAL[(i+3)%PAL.length]}"></span>${esc(l)}<span class="v">${(v/atot*100).toFixed(0)}% · ${v.toFixed(2)} MM</span></div>`).join("")||'<div class="note">분석을 실행하세요</div>';
+ drawMM(d);              // 프로젝트별 로드·프로젝트 내 업무 로드·세부업무 분포·업무별 상세 표(LM30 2026-10-25 — '0.04 MM 이하 숨기기'를 바꾸면 이것만 다시)
  weekly($("weekly"),d.trend||[]);
  // 제목은 묶음 단위를 따른다 — 1·3개월은 '주간', 6개월·1년·올해는 '월간' 활동 추이. 그린 기간을 제목에 적어
  // '어느 기간의 결과를 보고 있는지' 가 화면에 남게 한다(기본 기간이 bat·run.py·화면에서 서로 달라 기간이
@@ -4682,14 +4928,6 @@ async function refresh(){
   ).join(""):"";}
  const max=Math.max(...rs.map(r=>r.mm||0),0.0001);
  $("rsrc").textContent=d.file?`${d.file} · ${rs.length}항목`:"결과 없음";
- $("res").innerHTML="<tr><th style='width:80px'>Level 1</th><th style='width:60px'>유형</th><th style='width:150px'>Level 2 (과제)</th><th style='width:90px'>Level 3</th><th>상세설명</th><th style='width:120px'>근거(출처)</th><th style='width:58px'>비중</th><th style='width:48px'>MM</th><th style='width:36px'>확신</th></tr>"+
-  (rs.length?rs.map(r=>`<tr><td>${esc(r["Level 1"])||"-"}</td><td>${esc(r["유형"]||"")}</td>
-   <td><span class="dot" style="background:${col(r["Level 2"])}"></span><b>${esc(r["Level 2"])}</b></td>
-   <td>${esc(r["Level 3"])}</td>
-   <td style="color:#4a5159">${esc(r["상세설명"])||"<span style='color:#b9c0c8'>(AI 정제 전)</span>"}</td>
-   <td style="color:#8b929b;font-size:11px">${esc(r["근거"])}</td>
-   <td>${r.share}%</td><td><b>${r.mm}</b></td><td>${esc(r["확신도"])}</td></tr>`).join("")
-   :"<tr><td colspan=9 style='color:#8b929b'>아직 결과가 없습니다 — 위에서 [분석 실행]을 누르세요.</td></tr>");
  const m=d.meta||{};
  const nb=m.mm_basis||m.night||{};
  $("metaper").textContent=m.period?`${m.period[0]} ~ ${m.period[1]} · 신호 ${m.signals}건`+(m.worked_h?` · 인정 근무 ${m.worked_h}h`:""):"분석 전";
@@ -4776,8 +5014,8 @@ async function refresh(){
   const snH=num(pick("sim_night_h")),snD=cnt(pick("sim_night_days"));
   const simNote=(snH||snD)?` · <b>야간 해석 인정 ${snH.toFixed(1)}h</b> · ${snD}일(상한 ${cnt(pick("sim_night_capped_days"))}일 · 재실행으로 상한 해제 ${cnt(pick("sim_night_unlocked_days"))}일 · PC 밖 ${num(pick("sim_night_remote_h")).toFixed(1)}h)`:"";
   const pcc=obj("pc_coverage_by_month");
-  // LM30(2026-10-21) 40% 미만인 달 = PC 기록이 없는 평일을 하루 8시간으로 채운 달(예전 글 'PC 하한·부재 추정이 꺼집니다')
-  const pccNote=pcc?`<div class="note">월별 PC 기록 — ${Object.entries(pcc).sort().map(([k,v])=>`${esc(k)} ${Math.round(num(v)*100)}%${num(v)<0.4?" <b style='color:#b54708'>[8시간 채움]</b>":""}`).join(" · ")} (40% 미만인 달은 PC 기록이 없는 평일 중 메일·파일 흔적이 있는 날을 하루 8시간으로 채우고, 흔적 없는 날을 부재로 추정하지 않습니다)</div>`:"";
+  // LM30(2026-10-21) 40% 미만인 달 = PC 기록이 없는 평일을 하루 8시간으로 채운 달(예전 글은 그런 달에 PC 하한과 휴가 추정이 꺼진다고 적었다)
+  const pccNote=pcc?`<div class="note">월별 PC 기록 — ${Object.entries(pcc).sort().map(([k,v])=>`${esc(k)} ${Math.round(num(v)*100)}%${num(v)<0.4?" <b style='color:#b54708'>[8시간 채움]</b>":""}`).join(" · ")} (유급휴가인 날은 빼고 셉니다 · 40% 미만인 달은 PC 기록이 없는 평일 중 메일·파일 흔적이 있는 날을 하루 8시간으로 채우고, 흔적 없는 날을 휴가로 보지 않습니다)</div>`:"";
   const fut=pick("future_days"),tf=pick("today_fraction");
   const futNote=(fut!=null||tf!=null)?`<div class="note">가용 기준 — ${fut!=null?`미래 평일 ${cnt(fut)}일은 가용에서 제외`:""}${(fut!=null&&tf!=null)?" · ":""}${tf!=null?`오늘은 ${Math.round(num(tf)*100)}% 만 가용(분석 시각${d.as_of?" "+esc(d.as_of):""} 기준 — 다시 분석하면 갱신)`:""}</div>`:"";
   const rhNote=m.rehours?`<div class="note"><b>비업무 제외 ${num(m.dropped_n)}건 · −${num(m.dropped_h).toFixed(1)}h</b> — 판정 후 시간을 다시 재어 투입 ${m.total_mm_before_rehours!=null?num(m.total_mm_before_rehours).toFixed(2)+" → ":""}${num(m.total_mm).toFixed(2)} MM 으로 갱신했습니다(버린 신호의 시간이 남은 행에 옮겨 붙지 않습니다)</div>`:"";
@@ -4810,10 +5048,17 @@ async function refresh(){
   const sgn=x=>(x>0?"+":"")+x.toFixed(2);
   const l29Note=attOn?`<div class="note" style="margin:0 0 6px"><b>투입 MM은 출퇴근 추정(LM30 방식)으로 쟀습니다</b>${m.mm_lm29!=null?` — LM29 방식이었다면 ${num(m.mm_lm29).toFixed(2)} MM(차이 ${sgn(num(m.total_mm)-num(m.mm_lm29))} MM · 같은 분모)`:""}. 날짜별 출근·퇴근은 아래 '출퇴근·시간외 근무' 카드에 있습니다.</div>`
    :(att9?'<div class="note" style="margin:0 0 6px"><b>투입 MM은 LM29 방식으로 쟀습니다</b>(설정 attendance.useForMM 꺼짐) — 출퇴근 추정은 아래 카드에 참고로만 보입니다.</div>':"");
+  // LM30(2026-10-21) 유급휴가 — 일하지 않은 날로 세지 않고 가용에서 뺀다(일수 = 달마다 가용에서 뺀 휴가 합 · 오늘까지 · 그중 휴가로 본
+  // 평일 absent_inferred — 예전 결과에는 없다 · core\\attendance 머리말 22)
+  const lvN=Math.round(mo.reduce((s,[,v])=>s+num(v&&v.absent),0)*10)/10;
+  const lvInf=Math.round(mo.reduce((s,[,v])=>s+num(v&&v.absent_inferred),0)*10)/10;
+  const lvTxt=`유급휴가 ${lvN}일${lvInf>0?`(휴가로 본 평일 ${lvInf}일 포함)`:""} — 법정 휴가라 일하지 않은 날로 세지 않습니다(투입 MM에 넣지 않고 가용에서 뺍니다)`;
+  // 휴가로 본 날·휴가로 보지 않은 평일(d.leave_text — 날짜는 이 PC 화면에만 · 얼린 사본은 일수만 — freeze)
+  const lvNote=(Array.isArray(d.leave_text)?d.leave_text:[]).filter(x=>typeof x==="string"&&x).map(x=>`<div class="note">${esc(x)}</div>`).join("");
   const otNote=attOn
-   ?`<div class="note">연차·휴가 ${nb.absence_days||0}일은 <b>가용에서 차감</b>(일자에서 뺌) · 초과근무 ${num(nb.overtime_h).toFixed(0)}h(연장 + 휴일 — 출퇴근 추정)는
+   ?`<div class="note">${lvTxt} · 초과근무 ${num(nb.overtime_h).toFixed(0)}h(연장 + 휴일 — 출퇴근 추정)는
    상한 없이 그대로 반영(하루 24h 물리 한계만 · 이상치 ${anoms.length}일은 아래 표) · 20시 넘어 퇴근한 날 ${nb.night_days||0}일 · 주말·휴일 근무 ${nb.weekend_days||0}일 · 공휴일 ${nb.holidays||0}일 제외</div>`
-   :`<div class="note">연차·휴가 ${nb.absence_days||0}일은 <b>가용에서 차감</b>(일자에서 뺌) · 초과근무 ${num(nb.overtime_h).toFixed(0)}h는
+   :`<div class="note">${lvTxt} · 초과근무 ${num(nb.overtime_h).toFixed(0)}h는
    상한 없이 그대로 반영(하루 24h 물리 한계만 · 이상치 ${anoms.length}일은 아래 표) · 야근일 ${nb.night_days||0}일(산출물이 찍힌 시각의 폭으로 산정 — 취침 중 켜둔 PC는 제외) ·
    주말 근무 ${nb.weekend_days||0}일 · PC가동 하한 보정 ${num(nb.pc_floor_h).toFixed(0)}h/${nb.pc_floor_days||0}일(흔적 있는 날의 주간 투입을 PC 가동시간까지 인정 — 저장 1번=1시간 과소 방지) · 공휴일 ${nb.holidays||0}일 제외</div>`;
   const fixLead=attOn?`<b>LM29 방식(비교용) 근거</b> — PC가동 하한 보정 ${num(nb.pc_floor_h).toFixed(0)}h/${nb.pc_floor_days||0}일 · 점심 차감`:"측정 보정 — 점심 차감";
@@ -4831,18 +5076,18 @@ async function refresh(){
   const sgw=(nb.send_gap&&typeof nb.send_gap==="object"&&nb.send_gap.warn&&nb.send_gap.text)?nb.send_gap:null;
   const sgNote=sgw?`<div class="note" style="color:#b54708;margin:0 0 6px"><b>${esc(sgw.text)}</b></div>`:"";
   mmEl.innerHTML=mo.length?sgNote+pcmNote+`<div class="note" style="margin:0 0 6px">${esc(nb.basis||"")} — 로드율 100% = 가용 시간을 꽉 채워 일함(회색 눈금). 야근하면 100%를 넘습니다.</div>`+l29Note+
-   "<table><tr><th>월</th><th style='width:58px'>투입 MM</th>"+(l29On?"<th style='width:62px'>LM29 방식</th><th style='width:52px'>차이</th>":"")+"<th style='width:58px'>가용 MM</th><th style='width:62px'>로드율</th><th style='width:130px'></th><th>투입 시간</th>"+(ohOn?"<th>그중 주말·휴일·저녁·야간</th>":"")+(pcmOn?"<th title='PC를 켜고 끈 기록이 있는 평일 / 그 달 평일(오늘까지) · 가져온 기록 · 브라우저 기록만 · 하루 8시간으로 채운 날'>PC 기록</th>":"")+"<th>부재</th><th>그 달 평일</th></tr>"+
+   "<table><tr><th>월</th><th style='width:58px'>투입 MM</th>"+(l29On?"<th style='width:62px'>LM29 방식</th><th style='width:52px'>차이</th>":"")+"<th style='width:58px'>가용 MM</th><th style='width:62px'>로드율</th><th style='width:130px'></th><th>투입 시간</th>"+(ohOn?"<th>그중 주말·휴일·저녁·야간</th>":"")+(pcmOn?"<th title='PC를 켜고 끈 기록이 있는 평일 / 그 달 평일(오늘까지 · 유급휴가 뺌) · 가져온 기록 · 브라우저 기록만 · 하루 8시간으로 채운 날 · 휴가(하루 휴가·휴가로 본 날)'>PC 기록</th>":"")+"<th title='법정 휴가라 일하지 않은 날로 세지 않고 가용에서 뺀 날(반차는 0.5일)'>유급휴가</th><th>그 달 평일</th></tr>"+
    mo.map(([k,v0])=>{const v=(v0&&typeof v0==="object")?v0:{};const dl=num(v.mm)-num(v.mm_lm29);
     const l29c=l29On?(v.mm_lm29!=null?`<td>${num(v.mm_lm29).toFixed(2)}</td><td style="color:${dl>=0?"#0f7a3d":"#b54708"}">${sgn(dl)}</td>`:"<td>–</td><td>–</td>"):"";
     const pcmc=pcmOn?`<td style="font-size:11px;color:#4a5159">${esc(pcmC[k]||"–")}</td>`:"";
     return `<tr><td>${esc(k)}</td><td><b>${num(v.mm).toFixed(2)}</b></td>${l29c}<td>${num(v.avail_mm).toFixed(2)}</td>
     <td><b>${v.load_pct==null?"–":num(v.load_pct)+"%"}</b></td><td>${bar(num(v.load_pct))}</td>
     <td>${esc(v.worked)}h</td>${ohC(k)}${pcmc}<td>${esc(v.absent||0)}일</td><td>${esc(v.workdays)}일 = ${esc(v.capacity_h)}h</td></tr>`;}).join("")+
-   `</table>${ohNote}${puNote}${otNote}${attOn?f8Note:""}
+   `</table>${ohNote}${puNote}${otNote}${lvNote}${attOn?f8Note:""}
    <div class="note">${fixLead} ${num(nb.lunch_deducted_h).toFixed(0)}h · 저녁·새벽 가동 인정 ${num(nb.evening_credit_h).toFixed(1)}h · 주말 산출물 창 ${num(nb.weekend_window_h).toFixed(1)}h ·
    수동 흔적(수신·CC)만 있는 날 ${nb.floor_blocked_passive_days||0}일(하한 미적용 — 많으면 config.watchFolders 점검) · 미래 시각 신호 폐기 ${nb.future_signals_dropped||0}건 ·
-   부재 추정 ${nb.inferred_absence_days||0}일(PC 도 흔적도 없는 평일 — 가용에서 차감${absd.length?": "+esc(absd.slice(0,12).join(", "))+(absd.length>12?" …":""):""})${simNote}</div>
-   <div class="note">흔적 없는 평일 ${nb.no_evidence_days||0}일 — 이 수가 크면 수집이 덜 된 것입니다: Outlook을 켠 상태로 재실행하거나 config.watchFolders 를 확인하세요.</div>`
+   휴가로 본 평일 ${nb.inferred_absence_days||0}일(PC 기록도 흔적도 없는 평일 — 휴가로 보고 가용에서 뺐습니다${absd.length?": "+esc(absd.slice(0,12).join(", "))+(absd.length>12?" …":""):""})${simNote}</div>
+   <div class="note">흔적 없는 평일 ${Math.max(0,num(nb.no_evidence_days)-num(nb.inferred_absence_days))}일(휴가로 본 날 빼고) — 이 수가 크면 수집이 덜 된 것입니다: Outlook을 켠 상태로 재실행하거나 config.watchFolders 를 확인하세요.</div>`
    +measNote+toolNote+rhNote+(attOn?tbNoteAtt.replace("<b>시간 근거</b>","<b>시간 근거(LM29 방식 — 비교용)</b>"):tbNote)+extraNote+pccNote+futNote+cfgNote
    +((Array.isArray(nb.config_warnings)&&nb.config_warnings.length)?`<div class="note" style="color:#b54708"><b>설정 경고 ${nb.config_warnings.length}건</b> — 잘못된 값은 기본값으로 대체했습니다: ${esc(nb.config_warnings.slice(0,6).join(" · "))}${nb.config_warnings.length>6?" …":""}</div>`:"")
    +(nb.utc_suspect?`<div class="note" style="color:#b54708"><b>메일 시각이 UTC 로 기록된 것 같습니다</b> — 낮 발신이 새벽 야근으로 잡힐 수 있으니 config.mm.mailTimeOffsetH(예: 9)를 확인하세요.</div>`:"")
@@ -4916,6 +5161,7 @@ async function pcImpRun(body,what){
 const AT_CONF={high:"높음",mid:"보통",low:"낮음"},AT_DOW=["일","월","화","수","목","금","토"];
 async function attLoad(){
  gerpLoad();                                  // LM30(2026-10-19) GERP 근무 기록 줄(시험 기능) — 카드와 함께 그린다
+ leaveLoad();                                 // LM30(2026-10-21) '휴가 날짜' 칸(유급휴가) — 카드와 함께 그린다
  let a=null;
  try{a=await fetch("/api/attendance").then(r=>r.json());}catch(e){a=null;}
  attRender(a);
@@ -4962,6 +5208,8 @@ function attRender(a){
   +(Array.isArray(a.pc_months_text)?a.pc_months_text:[]).filter(x=>typeof x==="string"&&x).map(x=>`<div class="note" style="color:#b54708;margin:0 0 4px"><b>${esc(x)}</b></div>`).join("")
   +(a.plus_text?`<div style="font-size:13.5px;margin-bottom:2px"><b>${esc(a.plus_text)}</b></div>`:"")
   +`<div style="font-size:13px;margin-bottom:2px"><b>${esc(a.headline||"")}</b></div>`
+  // LM30(2026-10-21) 유급휴가 — 휴가로 본 날·휴가로 보지 않은 평일(a.leave_lines — 날짜는 이 PC 화면에만 · 얼린 사본은 일수만)
+  +(Array.isArray(a.leave_lines)?a.leave_lines:[]).filter(x=>typeof x==="string"&&x).map(x=>`<div class="note" style="margin-top:2px">${esc(x)}</div>`).join("")
   +(a.offhours_text?`<div class="note" style="margin-top:2px"><b>시간외(분석 기간)</b> — ${esc(a.offhours_text)}</div>`:"")
   +(Array.isArray(a.pc_usage_text)?a.pc_usage_text:[]).filter(x=>typeof x==="string"&&x).map(x=>`<div class="note" style="margin-top:2px">${esc(x)}</div>`).join("")
   +(a.plus_note?`<div class="note" style="margin-top:2px">${esc(a.plus_note)}</div>`:"")
@@ -4973,6 +5221,35 @@ function attRender(a){
   +'<div class="note">날짜별 출근·퇴근 시각과 근태 기록(GERP 포함)에서 나온 값은 이 PC에만 있습니다. 팀 서버에는 주·달 합계 시간만 올라갑니다(근태 기록 없이 잰 값).</div>';
  const st=$("atstate");
  if(st&&Array.isArray(a.period)&&a.period[0])st.textContent=`${a.period[0]} ~ ${a.period[1]||""} · 날짜별 시각은 이 PC에만`;
+}
+// ── 휴가 날짜(LM30 2026-10-21 — 유급휴가 · core\\attendance 머리말 22) — /api/leave_days: 직접 넣은 휴가 날짜(data\\근태\\휴가_직접입력.csv
+//    — 이 PC 에만). 저장하면 다음 [분석 실행]·[재분석만]이 그 날을 휴가로 본다(일하지 않은 날로 세지 않고 가용에서 뺀다). 얼린 사본은
+//    /api/leave_days 를 굽지 않아(막힘) 칸을 그리지 않는다. 작업이 도는 동안에는 [저장]을 끈다(poll — window.__lmBusy · 서버도 409).
+async function leaveLoad(){
+ let v=null;
+ try{v=await fetch("/api/leave_days").then(r=>r.json());}catch(e){v=null;}
+ leaveRender(v);
+}
+function leaveRender(v){
+ const el=$("atleave");if(!el)return;
+ if(!v||v.ok!==true||typeof v.text!=="string"){el.innerHTML="";return;}
+ el.innerHTML=`<div class="row" style="margin-top:10px;gap:6px;align-items:flex-start;flex-wrap:wrap"><b style="font-size:12.5px">휴가 날짜</b>`
+  +`<textarea id="lvtext" rows="2" spellcheck="false" maxlength="8000" placeholder="예: 2026-10-05, 10-06~10-08, 10/15 반차" style="flex:1;min-width:260px;border:1px solid #c9cfd8;border-radius:4px;padding:4px 6px;font:inherit;font-size:12px">${esc(v.text)}</textarea>`
+  +`<button class="ghost" id="lvsave" title="적은 날짜를 이 PC에 저장합니다 — 다음 [분석 실행]·[재분석만]부터 그 날을 휴가로 봅니다">저장</button>`
+  +`<span class="state" id="lvmsg">${v.n?`저장한 날 ${v.n}일(휴가 ${v.days}일)`:""}</span></div>`
+  +`<div class="note">유급휴가(연차·반차·병가 등)를 쓴 날을 적으면 그 날을 휴가로 봅니다 — 법정 휴가라 일하지 않은 날로 세지 않고, 투입 MM에 넣지 않고 가용에서 뺍니다. 달력·근태 기록에 없는 휴가만 적으면 됩니다. 반나절이면 날짜 뒤에 '반차'를 붙이고, 이어진 날은 '~'로 적습니다. 저장한 뒤 [재분석만]이나 [분석 실행]을 누르면 반영됩니다. 날짜는 이 PC의 ${esc(v.file||"")}에만 두고 팀 서버·공유폴더로 보내지 않습니다(팀에는 가용 MM 안의 일수만 갑니다).</div>`;
+ const b=$("lvsave");if(b){b.disabled=!!window.__lmBusy;b.onclick=leaveSave;}
+}
+async function leaveSave(){
+ const t=$("lvtext");if(!t)return;
+ const b=$("lvsave");if(b)b.disabled=true;
+ let r=null,d={};
+ try{r=await fetch("/api/leave_days",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text:t.value})});
+  d=await r.json().catch(e=>({ok:false,error:String(e)}));}catch(e){d={ok:false,error:String(e)};}
+ if(r&&r.status===409){alert(d.hint||"다른 작업이 도는 중입니다 — 끝난 뒤 누르세요");if(b)b.disabled=!!window.__lmBusy;return;}
+ if(!d.ok){alert("휴가 날짜를 저장하지 않았습니다 — "+(d.error||""));if(b)b.disabled=!!window.__lmBusy;return;}
+ leaveRender(d);
+ const m=$("lvmsg");if(m)m.textContent=d.msg||"저장했습니다";
 }
 // ── GERP 근무 기록(LM30 2026-10-19 시험 기능 — config attendance.gerp, 기본 꺼짐) — /api/gerp: 켜졌을 때만 [GERP 열기(직접 로그인)]·
 //    [GERP 근무 기록 읽기]와 상태 한 줄. 얼린 사본은 /api/gerp 를 굽지 않아(막힘) 아무것도 그리지 않는다.
@@ -5032,7 +5309,7 @@ function gerpRender(g){
   +`<span class="note" id="gerpst" style="margin:0">${esc(g.text||"")}</span></div>`
   +`<div class="row" id="gerpedit" style="display:${g.url_ok?"none":"flex"};margin-top:4px;gap:6px;align-items:center;flex-wrap:wrap">`+urlBox
   +`<button class="ghost" id="gerpsave">주소 저장</button></div>`
-  +'<div class="note">GERP 기록은 확실히 일한 부분으로 봅니다. 그 밖에서 LM이 찾은 근무(+@)는 위 +@ 줄과 표에 보입니다 — 읽은 뒤 [재분석만]으로 다시 분석하면 반영됩니다. GERP를 읽지 못하거나 로그아웃돼 있어도 +@는 하루 8시간 넘은 시간·휴일 근무로 추정해 보입니다. GERP에서 읽은 기록과 그것으로 센 값은 이 PC에만 두고 팀 서버·공유폴더로 보내지 않습니다.</div>';
+  +'<div class="note">GERP 기록은 확실히 일한 부분으로 봅니다. 그 밖에서 LM이 찾은 근무(+@)는 위 +@ 줄과 표에 보입니다 — 읽은 뒤 [재분석만]으로 다시 분석하면 반영됩니다. GERP를 읽지 못하거나 로그아웃돼 있어도 +@는 하루 8시간 넘은 시간·휴일 근무로 추정해 보입니다. GERP에서 읽은 기록과 그것으로 센 값은 이 PC에만 두고 팀 서버·공유폴더로 보내지 않습니다(GERP의 휴가는 유급휴가 일수로만 가용 MM에 들어갑니다 — 날짜는 이 PC에만).</div>';
  ["gerpopen","gerpread","gerpchg","gerpoff","gerpsave"].forEach(id=>{const b=$(id);if(b)b.disabled=busy;});
  $("gerpopen").onclick=gerpOpen;$("gerpread").onclick=gerpRead;
  $("gerpchg").onclick=()=>{const e=$("gerpedit");if(e)e.style.display=(e.style.display==="none")?"flex":"none";};
@@ -5566,10 +5843,18 @@ function mergeLine(m){
   +'띄어쓰기만 다른 이름은 규칙이 다시 합치므로, 영영 갈라 두려면 같은 파일 <b>never</b> 에 '
   +'<code>["이름A", "이름B"]</code> 를 적으면 됩니다. 다음 [워크플로우 재분석]부터 반영됩니다.</div></details>';
 }
+// LM30(2026-10-25) 마지막으로 읽은 워크플로우(/api/workflow) — '0.04 MM 이하 숨기기'를 바꾸면 다시 읽지 않고 이것으로 다시 그린다(smallRedraw)
+let FLC=null;
 async function loadFlow(){
  const el=$("rv-flow");
  el.innerHTML='<div class="card"><div class="note">불러오는 중…</div></div>';
  const d=await fetch("/api/workflow").then(r=>r.json()).catch(()=>({}));
+ FLC=d;
+ drawFlow(d);
+ if(d.running&&$("flowre"))waitIdle().then(()=>{loaded["flow"]=0;loadFlow();});
+}
+function drawFlow(d){
+ const el=$("rv-flow");if(!el)return;
  const nflows=(d.flows||[]).length;
  // 워크플로우는 이제 한 번의 실행으로 끝까지 판정한다(진전이 있는 한 자동으로 마저 묻는다).
  // 그래도 남았다면 두 가지 중 하나다 — 시간 예산·상한에 걸려 끊긴 것(다시 누르면 이어진다)이거나,
@@ -5585,13 +5870,14 @@ async function loadFlow(){
   +(ruleN?`<div class="note">AI 판정 대기 <b>${ruleN}개</b> — [재분석만] 후 생성 <span class="dim">(신호 대부분이 규칙 판정이라 묻지 않은 업무${ruleU.length?": "+ruleU.slice(0,6).map(u=>`${esc(u.project||"")} / ${esc(u.detail||"")}(${Number(u.signals)||0}건·규칙 ${Math.round((Number(u.rule_share)||0)*100)}%)`).join(", ")+(ruleU.length>6?" …":""):""})</span></div>`:"")
   +(gateN?`<div class="note">개인정보 관문 <b>${gateN}개</b> — 조치 불필요 <span class="dim" title="${esc(gateU.slice(0,30).join(", "))}">(관문에 걸려 보내지 않은 업무 — 미판정으로 세지 않습니다)</span></div>`:"")
   +(d.merge_skipped?`<div class="note">세부업무 병합 왕복 건너뜀 — ${esc(d.merge_skipped)} 규칙 병합과 캐시만 썼습니다</div>`:"");
- const btn='<div class="card"><div class="row" style="align-items:center;gap:10px">'
+ const btnTop='<div class="card"><div class="row" style="align-items:center;gap:10px">'
   +'<button class="ghost" id="flowre">'+(d.partial&&d.missing_count&&d.resumable?"이어서 분석(남은 "+d.missing_count+"개)":"워크플로우 재분석")+'</button>'
   +'<span class="state" id="flowmsg">'+(d.running?"워크플로우 분석 진행 중… (진행률은 상단 진행 바)":(d.generated?esc(`생성 ${d.generated} · ${d.model_name||""}`)+(d.basis==="규칙"?" · 규칙 축(AI 판정 없음)":""):""))+'</span></div>'
   +'<div class="note">과제별로 <b>역할 → 일의 순서 → 단계별 Agent 가능성</b>을 raw 근거에서 판정합니다. '
   +'MM 배분 숫자는 AI 가 아니라 판정 실측치입니다.'+(nflows?` 업무 ${nflows}/${d.rows_units||nflows}개 판정`+partial+salv:"")+'</div>'+lastErr+flowExtra
   +(d.reextracted?'<div class="note" style="color:#8a5a00">⚠ <b>재추출 이후 결과</b> — '+esc(d.reextracted_note||"이 결과는 마지막 업무 로드 재추출 이전의 것입니다")+' · [워크플로우 재분석]으로 갱신하세요</div>':"")
-  +mergeLine(d.merge2)+mixedLine(d.level1_mixed)+manualLine(d.manual)+'</div>';
+  +mergeLine(d.merge2)+mixedLine(d.level1_mixed)+manualLine(d.manual);
+ const btn=btnTop+'</div>';
  if(!d.ok||!nflows){
   // 홑따옴표 문자열에서는 ${...} 가 치환되지 않는다 — 템플릿 리터럴로 써야 사유가 실제로 보인다
   // '결과가 없다' 와 '다른 기간 것만 있다' 는 다르다 — 구분해서 말한다
@@ -5617,11 +5903,15 @@ async function loadFlow(){
   const FOPEN=window.__flowOpen||(window.__flowOpen=new Set());
   let _grpOpen=0;                       // 지금 열려 있는 그룹 <details> 수(상위·과제) — 끝에서 닫는다
   const _first={l1:null,pj:null};
-  el.innerHTML=btn+d.flows.map(f=>{
-   const mm=f.mm||{}, det=Object.entries(mm.details||{});
-   const mtot=det.reduce((s,[,v])=>s+v,0)||1;
-   const mmBar=det.length?('<div class="bigbar" style="margin:4px 0">'
+  // LM30(2026-10-25) 0.04 MM 이하인 담당 업무(흐름 카드)는 숨긴다 — 머리말의 과제·업무 수도 보이는 카드로 센다(MM 을 모르는 카드는 그대로).
+  // 보이는 카드 안의 작은 세부 몫은 범례에서 빼고 막대 끝 연회색 한 칸으로. 숨긴 개수·합은 위 카드 끝 한 줄(업무 N/M개 판정은 그대로)
+  const tF=smallTally(), fl=smallSplit(d.flows,f=>(f.mm||{}).mm,tF).vis;
+  const cards=fl.map(f=>{
+   const mm=f.mm||{}, all=Object.entries(mm.details||{}), sd=smallSplit(all,([,v])=>v,tF), det=sd.vis;
+   const mtot=all.reduce((s,[,v])=>s+v,0)||1;
+   const mmBar=all.length?('<div class="bigbar" style="margin:4px 0">'
      +det.map(([k,v],i)=>`<i style="width:${(v/mtot*100).toFixed(1)}%;background:${PAL[i%PAL.length]}" title="${esc(k)} ${v} MM"></i>`).join("")
+     +smallSeg(sd,sd.sum/mtot*100)
      +'</div><div class="leg" style="font-size:11px">'
      +det.map(([k,v],i)=>`<div><span class="dot" style="background:${PAL[i%PAL.length]}"></span>${esc(k)}<span class="v">${v} MM</span></div>`).join("")+'</div>'):"";
    const steps=(f.steps||[]).map(s=>`
@@ -5630,7 +5920,7 @@ async function loadFlow(){
      <td>${esc(s.desc)}${s.evidence?`<div style="color:#98a0a8;font-size:11px">근거: ${esc(s.evidence)}</div>`:""}</td>
      <td style="width:220px"><span style="display:inline-block;padding:1px 8px;border-radius:9px;color:#fff;font-size:11px;background:${AGENT_C[s.agent]||"#8b929b"}">Agent ${esc(s.agent)}</span>
       ${s.agent_how?`<div style="font-size:11px;color:#4a5159;margin-top:2px">${esc(s.agent_how)}</div>`:""}</td></tr>`).join("");
-   const fi=d.flows.indexOf(f);
+   const fi=fl.indexOf(f);
    const cur=f.level1||"";
    // 계층: 상위(업무 성격) → 과제(중위) → 담당업무(하위, 카드). 보완2 처럼 담당업무마다 흐름이 따로 서되,
    // 화면에서는 자기 과제 밑에 모여 있어야 '뒤죽박죽' 으로 읽히지 않는다.
@@ -5649,15 +5939,15 @@ async function loadFlow(){
     // 앞 그룹들을 닫는다(과제 → 상위 순서)
     while(_grpOpen>0){head+="</div></details>";_grpOpen--;}
     if(_first.l1===null)_first.l1="l1:"+cur;
-    const _k="l1:"+cur, _n=new Set(d.flows.filter(x=>(x.level1||"")===cur).map(pkOf)).size;
-    const _nf=d.flows.filter(x=>(x.level1||"")===cur).length;
+    const _k="l1:"+cur, _n=new Set(fl.filter(x=>(x.level1||"")===cur).map(pkOf)).size;
+    const _nf=fl.filter(x=>(x.level1||"")===cur).length;
     const _op=(FOPEN.size?FOPEN.has(_k):_k===_first.l1)?" open":"";
     head+=`<details class="grp1" data-k="${esc(_k)}"${_op} style="margin:14px 0 4px">
       <summary style="font-size:12.5px;color:#4a5159;padding:6px 10px;background:#f3f5f8;border-radius:6px">
       <b>${l1lab}</b> <span class="dim">— 과제 ${_n}개 · 담당 업무 ${_nf}개</span></summary><div class="body">`;
     _grpOpen++;_pjprev=null;}
    if(hasDet&&pk!==_pjprev){
-    const sibs=d.flows.filter(x=>pkOf(x)===pk&&(x.level1||"")===cur).length;
+    const sibs=fl.filter(x=>pkOf(x)===pk&&(x.level1||"")===cur).length;
     // 신호가 얕아 흐름을 만들지 않은 업무 — 콘솔에만 있던 것을 과제 밑에 한 줄로 알린다.
     // 이것이 안 보이면 사용자에게는 '내 일이 통째로 사라졌다' 로 읽힌다.
     const th=(d.thin||[]).filter(t=>fold2(t.project)===pk);
@@ -5696,6 +5986,7 @@ async function loadFlow(){
     ${mmBar}
     <table style="margin-top:6px"><tr><th></th><th>단계</th><th>무슨 일</th><th>Agent 가능성</th></tr>${steps}</table>
     </div></details>`;}).join("")+(function(){let s="";while(_grpOpen>0){s+="</div></details>";_grpOpen--;}return s;})();
+  el.innerHTML=btnTop+smallLine(tF)+'</div>'+cards;
   // 접고 펴는 상태를 기억한다 — 1초 주기 갱신이나 탭 이동 뒤에도 보던 자리가 유지된다
   el.querySelectorAll("details[data-k]").forEach(dt=>{
    dt.addEventListener("toggle",()=>{const k=dt.getAttribute("data-k");
@@ -5713,7 +6004,7 @@ async function loadFlow(){
   if(!timer){timer=setInterval(poll,1000);}poll();
   await waitIdle();loaded["flow"]=0;loadFlow();
  };
- if(d.running&&rb){rb.disabled=true;waitIdle().then(()=>{loaded["flow"]=0;loadFlow();});}
+ if(d.running&&rb)rb.disabled=true;      // 끝나기를 기다려 다시 읽는 것은 loadFlow 한 곳(다시 그릴 때마다 기다림을 늘리지 않게)
 }
 document.querySelectorAll("#tabs [data-t]").forEach(c=>c.onclick=()=>{
  document.querySelectorAll("#tabs [data-t]").forEach(x=>x.classList.toggle("on",x===c));
@@ -5767,12 +6058,21 @@ function whyEmpty(kind, redo){
  }[kind||"none"]||"";
 }
 function keepDash(d){window.__dash=d;return d;}
+// LM30(2026-10-25) 마지막으로 읽은 리뷰 자료(탭마다 {d, extra}) — '0.04 MM 이하 숨기기'를 바꾸면 다시 읽지 않고 이것으로 다시 그린다(smallRedraw)
+const RVC={};
 async function loadReview(kind){
  const el=$("rv-"+kind);
  el.innerHTML='<div class="card"><div class="note">불러오는 중…</div></div>';
  const g={week:"week",month:"month",deep:"all"}[kind];
  const d=await fetch("/api/review?g="+g).then(r=>r.json());
  let extra={};try{extra=await fetch("/api/extra").then(r=>r.json());}catch(e){}
+ RVC[kind]={d,extra};
+ drawReview(kind);
+}
+function drawReview(kind){
+ const el=$("rv-"+kind), rc=RVC[kind];
+ if(!el||!rc)return;
+ const d=rc.d, extra=rc.extra||{};
  const nar=extra.narratives||{};
  if(!d.groups.length){el.innerHTML='<div class="card"><div class="note">데이터 없음 — [분석 실행]을 먼저 돌리면 신호별 내역이 생성됩니다.</div></div>';return;}
  const allP=[...new Set(d.groups.flatMap(x=>x.projects.map(p=>p.name)))];
@@ -5793,25 +6093,31 @@ async function loadReview(kind){
  }
  if(kind==="deep"&&extra.pivots&&extra.pivots.by_model){
   const pv=extra.pivots,WTC={"개발":"#2a78d6","사무":"#e08a00","현장":"#0e8c7a","협업":"#6c4fb8"};
-  const chips=o=>Object.entries(o||{}).map(([k,v])=>`<span class="tag" style="border-left:3px solid ${WTC[k]||"#98a0a8"}">${esc(k)} ${v.toFixed(2)}</span>`).join("");
-  const mrows=Object.entries(pv.by_model).map(([m2,v])=>`<tr><td><b>${esc(m2)}</b></td><td><b>${v.mm.toFixed(2)}</b></td><td>${chips(v.worktypes)}</td><td>${Object.entries(v.details).slice(0,6).map(([k,x2])=>`<span class="tag">${esc(k)} ${x2.toFixed(2)}</span>`).join("")}</td></tr>`).join("");
-  const wrows=Object.entries(pv.by_worktype).map(([w2,v])=>`<tr><td><b style="color:${WTC[w2]||"#333"}">${esc(w2)}</b></td><td><b>${v.mm.toFixed(2)}</b></td><td>${Object.entries(v.models).map(([k,x2])=>`<span class="tag">${esc(k)} ${x2.toFixed(2)}</span>`).join("")}</td></tr>`).join("");
-  const crows=(pv.common||[]).map(c=>`<tr><td><b>${esc(c.detail)}</b></td><td>${c.models.map(esc).join(", ")}</td><td>${c.mm.toFixed(2)}</td></tr>`).join("");
+  // LM30(2026-10-25) 0.04 MM 이하 — 과제·유형 줄은 그 칩과 함께 숨기고, 보이는 줄 안의 작은 칩은 그 칩만 뺀다 · 표마다 아래 한 줄
+  const tM=smallTally(), tW=smallTally(), tC=smallTally(), cmn=pv.common||[];
+  const chips=o=>smallSplit(Object.entries(o||{}),([,v])=>v,tM).vis.map(([k,v])=>`<span class="tag" style="border-left:3px solid ${WTC[k]||"#98a0a8"}">${esc(k)} ${v.toFixed(2)}</span>`).join("");
+  const mrows=smallSplit(Object.entries(pv.by_model),([,v])=>v.mm,tM).vis.map(([m2,v])=>`<tr><td><b>${esc(m2)}</b></td><td><b>${v.mm.toFixed(2)}</b></td><td>${chips(v.worktypes)}</td><td>${smallSplit(Object.entries(v.details).slice(0,6),([,x2])=>x2,tM).vis.map(([k,x2])=>`<span class="tag">${esc(k)} ${x2.toFixed(2)}</span>`).join("")}</td></tr>`).join("");
+  const wrows=smallSplit(Object.entries(pv.by_worktype),([,v])=>v.mm,tW).vis.map(([w2,v])=>`<tr><td><b style="color:${WTC[w2]||"#333"}">${esc(w2)}</b></td><td><b>${v.mm.toFixed(2)}</b></td><td>${smallSplit(Object.entries(v.models),([,x2])=>x2,tW).vis.map(([k,x2])=>`<span class="tag">${esc(k)} ${x2.toFixed(2)}</span>`).join("")}</td></tr>`).join("");
+  const crows=smallSplit(cmn,c=>c.mm,tC).vis.map(c=>`<tr><td><b>${esc(c.detail)}</b></td><td>${c.models.map(esc).join(", ")}</td><td>${c.mm.toFixed(2)}</td></tr>`).join("");
   const ep=pv.episodes||{};
   const orows=(ep.orders||[]).slice(0,10).map(o=>`<tr><td>${esc(o.start.slice(5,16))}</td><td>${esc(o.model)}</td><td>${esc(o.req)}</td><td>→ ${esc(o.done)}</td><td><b>${o.lead_h}h</b></td></tr>`).join("");
   const srows=(ep.spans||[]).slice(0,10).map(o=>`<span class="tag">${esc(o.model)} ${esc(o.start.slice(5))}~${esc(o.end.slice(5))} (${o.signals}건)</span>`).join("");
-  pre+=`<div class="card"><h2>과제 → 업무유형 · 세부업무 (MM)${pv.consistent_with?` <span class="state">기준: ${esc(pv.consistent_with)} — 대시보드와 동일</span>`:""}</h2><table><tr><th>과제</th><th style="width:52px">MM</th><th>유형 배분</th><th>세부업무 상위</th></tr>${mrows}</table></div>
-  <div class="grid2"><div class="card"><h2>업무유형 → 과제 (MM)</h2><table><tr><th>유형</th><th style="width:52px">MM</th><th>과제 배분</th></tr>${wrows}</table></div>
-  <div class="card"><h2>공통업무 — 표준화·자동화 후보</h2>${crows?`<table><tr><th>세부업무</th><th>관련 과제</th><th style="width:52px">MM</th></tr>${crows}</table>`:'<div class="note">2개 이상 과제에 걸친 세부업무가 아직 없습니다 (AI 판정 후 생성)</div>'}<div class="note">여러 과제에 반복되는 업무일수록 표준화·AI 대체 우선순위가 높습니다.</div></div></div>
+  pre+=`<div class="card"><h2>과제 → 업무유형 · 세부업무 (MM)${pv.consistent_with?` <span class="state">기준: ${esc(pv.consistent_with)} — 대시보드와 동일</span>`:""}</h2><table><tr><th>과제</th><th style="width:52px">MM</th><th>유형 배분</th><th>세부업무 상위</th></tr>${mrows}</table>${smallLine(tM)}</div>
+  <div class="grid2"><div class="card"><h2>업무유형 → 과제 (MM)</h2><table><tr><th>유형</th><th style="width:52px">MM</th><th>과제 배분</th></tr>${wrows}</table>${smallLine(tW)}</div>
+  <div class="card"><h2>공통업무 — 표준화·자동화 후보</h2>${crows?`<table><tr><th>세부업무</th><th>관련 과제</th><th style="width:52px">MM</th></tr>${crows}</table>`:(cmn.length?"":'<div class="note">2개 이상 과제에 걸친 세부업무가 아직 없습니다 (AI 판정 후 생성)</div>')}${smallLine(tC)}<div class="note">여러 과제에 반복되는 업무일수록 표준화·AI 대체 우선순위가 높습니다.</div></div></div>
   <div class="card"><h2>업무 에피소드 <span class="state">외부요청 → 산출 리드타임${ep.avg_lead_h?` · 평균 ${ep.avg_lead_h}h`:""}</span></h2>
   ${orows?`<table><tr><th>요청 시각</th><th>과제</th><th>요청(시작)</th><th>산출(끝)</th><th style="width:56px">리드</th></tr>${orows}</table>`:'<div class="note">오더→산출 페어가 없습니다</div>'}
   ${srows?`<div style="margin-top:8px"><span class="state">자체진행 구간(연속 신호, 3일 공백 시 분리):</span><div style="margin-top:4px">${srows}</div></div>`:""}
   <div class="note">시작 = 외부요청(팀즈 오더·메일 수신) / 끝 = 요청과 <b>내용 연관(공통 단어·같은 세부업무)이 확인된</b> 첫 발신·산출물 — 연관 산출을 못 찾은 요청은 페어하지 않습니다. 자체진행 업무는 시작이 불명확해 연속 신호 구간으로 근사합니다.</div></div>`;
  }
  el.innerHTML=pre+d.groups.map((x,gi)=>{
-  const bar='<div class="bigbar" style="height:18px">'+x.projects.map(p=>
-   `<i style="width:${(p.share*100).toFixed(1)}%;background:${col(p.name)}" title="${esc(p.name)} ${(p.share*100).toFixed(0)}%"></i>`).join("")+"</div>";
-  const psec=x.projects.map(p=>{
+  // LM30(2026-10-25) 이 묶음(달·전체)에서 0.04 MM 이하인 과제는 숨긴다 — 막대에서는 연회색 한 칸(비중 그대로), 과제 줄 아래 한 줄.
+  // 주간 리뷰는 거르지 않는다 — 한 주의 과제 MM 은 대개 작아(1주 ≈ 0.25 MM) 0.04 문턱이면 과제 대부분이 숨는다
+  const tG=smallTally(), sG=kind==="week"?smallAll(x.projects):smallSplit(x.projects,p=>p.mm,tG);
+  const bar='<div class="bigbar" style="height:18px">'+sG.vis.map(p=>
+   `<i style="width:${(p.share*100).toFixed(1)}%;background:${col(p.name)}" title="${esc(p.name)} ${(p.share*100).toFixed(0)}%"></i>`).join("")
+   +smallSeg(sG,sG.hid.reduce((s,p)=>s+(Number(p.share)||0),0)*100)+"</div>";
+  const psec=sG.vis.map(p=>{
    const acts=p.acts.map(a=>`${esc(a.name)} ${a.pct}%`).join(" · ");
    const ppl=p.people.map(([w,n])=>`<span class="tag">${esc(w)} ×${n}</span>`).join("");
    const fls=p.files.map(f=>`<span class="tag" style="background:#eef4fb">${esc(f)}</span>`).join("");
@@ -5846,7 +6152,7 @@ async function loadReview(kind){
    상단 <b>[리뷰 코멘트 재생성]</b> 이 이미 판정된 신호로 빠진 달·최근 달·데이터가 바뀐 달을 다시 만듭니다 — 재수집·재판정은 하지 않습니다.</div>`:"");
   const wtsum=(x.wt||[]).map(([k,v])=>`${k} ${v}%`).join(" · ");
   const head=`${esc(x.label)} <span class="state">신호 ${x.signals}건 · 활동 ${x.days}일${wtsum?" · "+esc(wtsum):""}</span>`;
-  const body=`${narH}${bar}${psec}${connSVG(x,col)}
+  const body=`${narH}${bar}${psec}${smallLine(tG)}${connSVG(x,col)}
    <details style="margin-top:6px"><summary style="padding:8px 12px;font-size:12px">원문 근거 타임라인 (해석 검증용 — 판정된 업무 신호만)</summary>
    <div class="body tl" style="max-height:420px;overflow:auto">${tl}</div></details>
    <div class="note" style="margin-top:6px">${x.mm_basis==="mm_meta"?`과제 MM = 이 기간 투입 ${(x.mm||0).toFixed(2)} MM(대시보드·리포트와 같은 mm_meta) × 과제 몫(신호 비중)`:"과제 MM 은 기간×신호 비중 개략치 — 이 기간의 mm_meta 가 없어 대시보드 확정 MM 과 다를 수 있습니다"}</div>`;
@@ -5995,7 +6301,7 @@ if(lmLive()){
  window.addEventListener("pagehide",()=>lmBeacon("/api/bye"));
 }
 setInterval(()=>{if(!timer)poll();},3000);
-refresh();poll();tuLoad();cvLoad();
+uiPrefsLoad();refresh();poll();tuLoad();cvLoad();
 </script>
 </body></html>"""
 
@@ -6141,6 +6447,11 @@ class H(BaseHTTPRequestHandler):
                 pc_months = pc_months_view(meta)
             except Exception:  # noqa: BLE001
                 pc_months = {"cells": {}, "lines": [], "fill8": 0, "capped": False}
+            # LM30(2026-10-21) 유급휴가 줄(core\attendance 머리말 22 — 날짜를 담는다: 이 PC 화면만 · 얼린 사본은 일수만 — freeze)
+            try:
+                leave_text = leave_view_lines(meta, os.path.basename(mp)[len("mm_meta_"):-len(".json")] if mp else "")
+            except Exception:  # noqa: BLE001 - 한 줄 때문에 대시보드 전체가 죽지 않게
+                leave_text = []
             try:
                 import details as _dl1m
                 _l1meta = _dl1m.l1_meta_payload()
@@ -6149,7 +6460,7 @@ class H(BaseHTTPRequestHandler):
             self._send(200, {"version": VERSION, "port": PORT[0], "sources": sources(per),
                              "l1meta": _l1meta,
                              "file": fn, "rows": rows, "meta": meta,
-                             "pc_usage_text": pc_usage_text, "pc_months": pc_months,
+                             "pc_usage_text": pc_usage_text, "pc_months": pc_months, "leave_text": leave_text,
                              # 메일·일정 수집 범위(달 단위) — 주간 활동 추이 밑에 '미수집 달'을 적는다(얼린 사본에도 굳는다)
                              "mail_coverage": outlook_coverage(per),
                              # 화면이 보고 있는 그 기간을 넘긴다 — 예전에는 오늘 기준
@@ -6363,6 +6674,15 @@ class H(BaseHTTPRequestHandler):
                 self._send(200, gerp_view())
             except Exception as e:  # noqa: BLE001 - 카드 한 줄이 화면을 죽이지 않게(화면은 아무것도 그리지 않는다)
                 self._send(200, {"ok": False, "error": f"{type(e).__name__}"})
+        elif self.path == "/api/leave_days":
+            # LM30(2026-10-21) '휴가 날짜' 칸(유급휴가 — core\attendance 머리말 22) — 저장한 날짜를 읽기만. 얼린 사본에는 굽지 않는다.
+            try:
+                self._send(200, leave_days_view())
+            except Exception as e:  # noqa: BLE001 - 칸 하나가 화면을 죽이지 않게(화면은 칸을 그리지 않는다)
+                self._send(200, {"ok": False, "error": f"{type(e).__name__}"})
+        elif self.path == "/api/ui_prefs":
+            # LM30(2026-10-25) 화면 표시 설정('0.04 MM 이하 숨기기' — config ui.hideSmallMM · 없으면 켜짐). 얼린 사본에는 굽지 않는다.
+            self._send(200, ui_prefs_view())
         elif self.path in ("/api/pc_import", "/api/pc_import?refresh=1"):
             # LM30(2026-10-21) 예전 판 PC 가동 기록 가져오기 — 찾은 폴더·지난 가져오기(pc_import_view — 읽기만). 얼린 사본에는 굽지 않는다.
             try:
@@ -7314,6 +7634,75 @@ class H(BaseHTTPRequestHandler):
                 self._send(200, pc_import_run(b))
             except Exception as e:  # noqa: BLE001 - 실패 까닭은 한 줄로
                 self._send(200, {"ok": False, "error": f"가져오지 못했습니다({type(e).__name__})"})
+        elif self.path == "/api/leave_days":
+            # LM30(2026-10-21) '휴가 날짜' 칸 [저장](유급휴가 — core\attendance 머리말 22) — data\근태\휴가_직접입력.csv 만 갈아 쓴다(이 PC 에만).
+            # 작업이 도는 동안에는 쓰지 않는다(409 — 분석이 그 파일을 읽는다). 본문은 LEAVE_BODY_MAX 까지 — 넘으면 읽어 담지 않고 버린 뒤
+            # 400(큰 본문을 메모리에 올리지 않는다 · 끝까지 비워야 브라우저가 응답 대신 리셋을 보지 않는다). 날짜는 로그에 싣지 않는다(일수만)
+            try:
+                n = int(self.headers.get("Content-Length", 0) or 0)
+            except ValueError:
+                n = -1
+            if n < 0 or n > LEAVE_BODY_MAX:
+                left = min(max(n, 0), LEAVE_DRAIN_MAX)
+                while left > 0:
+                    chunk = self.rfile.read(min(65536, left))
+                    if not chunk:
+                        break
+                    left -= len(chunk)
+                self._send(400, {"ok": False, "error": "글이 너무 깁니다"})
+                return
+            raw = self.rfile.read(n) if n > 0 else b""
+            try:
+                b = json.loads(raw or b"{}")
+            except ValueError:
+                b = None
+            if not (isinstance(b, dict) and isinstance(b.get("text"), str)):
+                # 칸 글(text)이 없는 본문으로 저장하지 않는다 — 빈 글('')이 '모두 지우기'라 깨진 본문이 파일을 지우면 안 된다
+                self._send(400, {"ok": False, "error": "본문을 읽지 못했습니다"})
+                return
+            with LOCK:
+                busy = bool(JOB["running"])
+            if busy:
+                self._send(409, {"ok": False, "error": "busy", "hint": LEAVE_BUSY_HINT})
+                return
+            with LOCK:
+                if JOB["running"]:
+                    self._send(409, {"ok": False, "error": "busy", "hint": LEAVE_BUSY_HINT})
+                    return
+                st, ans = leave_days_save(b)
+            if ans.get("log"):
+                log(ans.pop("log"))                      # LOCK 밖에서(log 가 LOCK 을 잡는다)
+            self._send(st, ans)
+        elif self.path == "/api/ui_prefs":
+            # LM30(2026-10-25) 옵션 줄 '0.04 MM 이하 숨기기' 칸(팀 취합 화면에도 같은 칸) — config\config.json 의 ui.hideSmallMM 만 고친다(이 PC 의
+            # 개인 설정 · BOM·다른 키·설명 키 그대로 — _save_cfg_many). 화면 표시만 바꾸는 값이라 분석이 도는 중에도 받는다(분석·보고서는 이 값을
+            # 읽지 않는다). 본문은 UI_PREFS_BODY_MAX 까지 — 넘으면 읽어 담지 않고 버린 뒤 400 · 값이 참·거짓이 아니면 400(파일은 그대로).
+            n = int(self.headers.get("Content-Length", 0) or 0)
+            if n < 0 or n > UI_PREFS_BODY_MAX:
+                left = min(max(n, 0), LEAVE_DRAIN_MAX)
+                while left > 0:
+                    chunk = self.rfile.read(min(65536, left))
+                    if not chunk:
+                        break
+                    left -= len(chunk)
+                self._send(400, {"ok": False, "error": "본문이 너무 깁니다"})
+                return
+            try:
+                b = json.loads(self.rfile.read(n) or b"{}") if n > 0 else {}
+            except ValueError:
+                b = None
+            if not (isinstance(b, dict) and isinstance(b.get("hideSmallMM"), bool)):
+                self._send(400, {"ok": False, "error": "켜기·끄기 값을 읽지 못했습니다 — 화면을 새로 고친 뒤 다시 누르세요"})
+                return
+            on = b["hideSmallMM"]
+            with LOCK:                          # 같은 파일을 쓰는 다른 단추(GERP 켜기·끄기)와 겹쳐 한쪽 값을 잃지 않게
+                wrote = _save_cfg_many([(("ui", "hideSmallMM"), on)])
+            if not wrote:
+                self._send(200, {"ok": False, "hideSmallMM": hide_small_on(cfg()),
+                                 "error": "config\\config.json 을 쓰지 못했습니다 — 메모장 같은 다른 프로그램이 열고 있으면 닫고 다시 누르세요"})
+                return
+            self._send(200, {"ok": True, "hideSmallMM": on,
+                             "msg": "0.04 MM 이하 항목을 숨깁니다" if on else "모든 항목을 보입니다"})
         elif self.path == "/api/gerp_config":
             # LM30(2026-10-19) GERP 근무 기록 읽기 [켜기]·[끄기]·[주소 바꾸기](카드) — config\config.json 의 attendance.gerp.enabled·url 만
             # 고친다(이 PC 의 개인 설정 — 팀 서버 주소 같은 팀 공통 값이 아니다 · BOM·다른 키 그대로 · gerp_config_check 가 검사).

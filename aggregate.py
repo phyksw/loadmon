@@ -85,7 +85,8 @@ def mm_scale(total_mm, rows_sum):
     return t / s
 
 
-_NUM_KEYS = ("total_mm", "avail_mm", "load_pct", "worked_h", "overtime_h", "dropped_h")
+# LM30(2026-10-21) leave_days — 가용에서 뺀 유급휴가 일수(반차 0.5 — 개수가 아니라 소수 그대로 · teamup.leave_days_of)
+_NUM_KEYS = ("total_mm", "avail_mm", "load_pct", "worked_h", "overtime_h", "dropped_h", "leave_days")
 _CNT_KEYS = ("signals", "no_evidence_days", "absence_days", "gap_days", "anomaly_days", "long_days")
 _STR_KEYS = ("function", "tag", "host", "analyzed_at", "uploaded_at", "uploaded_from", "via")
 
@@ -452,6 +453,15 @@ def load_members(share):
     return mark_members(out)       # unreliable · cfg_diff · measure_text — 모든 소비자가 같은 표식을 본다
 
 
+def leave_days_text(m):
+    r"""LM30(2026-10-21) 팀 표 가용 칸 옆 '유급휴가 N일' — 가용에서 실제로 뺀 일수(leave_days — 반차 0.5 · 오늘까지 · teamup.leave_days_of).
+    예전 판 member(leave_days 없음)는 absence_days(기간 전체 달력 휴가). 0 이거나 없으면 ''(core\attendance 머리말 22 — 일수만)."""
+    v = fnum(m.get("leave_days")) if isinstance(m, dict) else None
+    if v is None:
+        v = fnum(m.get("absence_days")) if isinstance(m, dict) else None
+    return f"유급휴가 {round(v, 1):g}일" if v and v > 0 else ""
+
+
 def anomaly_badge(m):
     """'PC 기록 이상 N일 · 16h 초과 N일' 배지 — 개인 분석의 입력 이상치 장부를 팀장도 보게(둘 다 0 이면 빈 문자열).
     aggregate 표와 팀 통합 보고서 §1 근거 칸이 같은 함수를 쓴다."""
@@ -459,8 +469,8 @@ def anomaly_badge(m):
     parts = ([f"PC 기록 이상 {an}일"] if an > 0 else []) + ([f"16h 초과 {ld}일"] if ld > 0 else [])
     if not parts:
         return ""
-    return ('<span title="그 PC 의 mm_basis 이상치 장부(자르지 않고 표시만) — PC 가동 기록 오류·부재일 흔적, '
-            '하루 16h 를 넘긴 날" style="font-size:10px;color:#b3541e;border:1px solid #e0b394;'
+    return ('<span title="그 PC 의 mm_basis 이상치 장부(자르지 않고 표시만) — PC 가동 기록 오류, '
+            '하루 16h 를 넘긴 날(휴가일 근무는 세지 않습니다)" style="font-size:10px;color:#b3541e;border:1px solid #e0b394;'
             'border-radius:3px;padding:0 4px;margin-left:6px;white-space:nowrap">'
             + esc(" · ".join(parts)) + "</span>")
 
@@ -676,6 +686,10 @@ def collect_team_data(share):
             "signals": m.get("signals"), "worked_h": m.get("worked_h"),
             "no_evidence_days": m.get("no_evidence_days"),
             "absence_days": m.get("absence_days"),
+            # LM30(2026-10-21) 가용에서 뺀 유급휴가 일수(leave_days_text) · 휴가로 본 평일 수 — 화면이 '무흔적 평일'에서 뺀다(휴가를 일하지
+            # 않은 날처럼 보이지 않게)
+            "leave_days": m.get("leave_days"),
+            "inferred_absence_days": m.get("inferred_absence_days") or 0,
             # PC 기록 이상·16h 초과 일수 — 개인 mm_basis 의 anomalies/long_days 를 teamup 이 개수로 올린다
             "anomaly_days": m.get("anomaly_days") or 0,
             "long_days": m.get("long_days") or 0,
@@ -857,18 +871,20 @@ def main():
         if pct is None and av:
             pct = round(t / av * 100, 1)
         warn = []
-        if m.get("no_evidence_days"):
-            warn.append(f"무흔적 평일 {m['no_evidence_days']}일")
+        # LM30(2026-10-21) 무흔적 평일은 휴가로 본 평일을 뺀 수 · 유급휴가는 신뢰도 근거(경고)가 아니다 — 가용 칸에 일수만(일하지 않은 날로 세지 않는다)
+        noev = max(0, fint(m.get("no_evidence_days"), 0) - fint(m.get("inferred_absence_days"), 0))
+        if noev:
+            warn.append(f"무흔적 평일 {noev}일")
         if m.get("gap_days"):
             warn.append(f"연속공백 {m['gap_days']}회 제외")
-        if m.get("absence_days"):
-            warn.append(f"부재 {m['absence_days']}일")
         if m.get("rehours") and fnum(m.get("dropped_h")):
             warn.append(f"비업무 제외 −{fnum(m.get('dropped_h'), 0.0):.1f}h")
         badge = anomaly_badge(m) + coverage_badge(m) + cfg_badge(m)
         return (f"<tr{' style=color:#8b929b' if grey else ''}><td>{esc(m['owner'])}</td><td>{esc(m.get('function'))}</td>"
                 f"<td>{esc('~'.join(m.get('period') or []))}</td><td><b>{t:.2f}</b></td>"
-                f"<td>{'–' if av is None else format(av, '.2f')}</td>"
+                f"<td>{'–' if av is None else format(av, '.2f')}"
+                + (f" <span class='dim'>{esc(leave_days_text(m))}</span>" if leave_days_text(m) else "")
+                + "</td>"
                 f"<td><b>{pct_text(pct)}</b></td>"
                 f"<td>{'' if grey else bar(t, vmax)}</td>"
                 f"<td class='dim'>{esc(measure_text(m)) or '-'}</td>"
@@ -878,7 +894,7 @@ def main():
     HEAD1 = ("<table><tr><th>이름</th><th>파트</th><th>기간</th><th>투입 MM</th><th>가용 MM</th>"
              "<th>로드율</th><th></th><th>측정 방식</th><th>신뢰도 근거</th></tr>")
     h.append("<h2>1. 인별 로드율 (투입 MM ÷ 가용 MM)</h2>"
-             "<p class='dim'>가용 MM = 그 기간에 일할 수 있었던 양(연차·휴가는 일자에서 차감) · "
+             "<p class='dim'>가용 MM = 그 기간에 일할 수 있었던 양 — 유급휴가(연차·반차)는 법정 휴가라 일하지 않은 날로 세지 않고 가용에서 뺍니다 · "
              "투입 MM = 실제 투입 시간(야근은 상한 없이 반영(하루 24h 물리 한계만)) · 로드율 100% = 가용을 꽉 채워 일함 · "
              "'PC 기록 이상'·'16h 초과' 는 그 PC 의 입력 이상치 장부(자르지 않고 표시만)에서 온 일수 · "
              "측정 방식 = 투입 시간을 무엇으로 쟀는가(샘플러 실측 / PC 가동 하한 / 흔적 폭 / 종일 행사 / 수동 기록 일수) · "

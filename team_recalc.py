@@ -3,7 +3,7 @@ r"""팀취합본만으로 개인별 로드율 재계산 — 판(LM20 · LM24 v3 
 
 왜 이 도구가 있나
   개인 PC 의 원자료(PC 가동·샘플러·달력)는 팀에 올라오지 않는다. 팀에 남은 것은 인별 폴더의
-  signals_<tag>.csv(신호 원문: 시각·출처·가중치)와 mm_meta_<tag>.json(그 판이 계산한 일별 투입시간·월별 부재)뿐이다.
+  signals_<tag>.csv(신호 원문: 시각·출처·가중치)와 mm_meta_<tag>.json(그 판이 계산한 일별 투입시간·월별 유급휴가 일수)뿐이다.
   두 파일은 LM20 과 LM24 계열이 **글자까지 같은 헤더·키**로 올리므로(teamup FILE_NAMES 동일 — 실측), 이 둘만으로
   모든 인원을 **하나의 산식·하나의 달력**으로 다시 재면 판 차이가 섞인 팀 취합을 같은 자리에서 비교할 수 있다.
   기존 team_report.html 등은 건드리지 않고 새 파일(팀로드율_재계산_<시각>.html/.csv)만 옆에 만든다.
@@ -19,19 +19,22 @@ r"""팀취합본만으로 개인별 로드율 재계산 — 판(LM20 · LM24 v3 
                (다중 에이전트 실측: 합성 3유형에서 공휴일 보정 참값 대비 −7/−3/−16p 로 세 유형 모두 아래·방향 일정 ·
                 신호 30% 유실에도 밀집 유형 −2~−7%. LM20 규칙의 '수동 다리' 과대(회의형 +14p)와 v3 의 PC 없는 날 과소를 둘 다 피한다.
                 단 C3 는 PC 가동·샘플러 구간을 보지 못하는 **하한 성격**이라 원 판(D)이 그것을 실측했다면 D 가 더 클 수 있다.)
-  가용(분모)   : 통일 달력(주말 + 양력 고정 공휴일 + 내장 연도표 + --holidays) 의 기간 내 평일수 − mm_meta.mm_months[월].absent(부재 일수).
-               분석 시점 이후의 평일은 가용이 아니다(v3 A34 규칙을 두 판에 같이 적용 — 기간 종료 전에 올린 자료는 '기간 미완' 표시).
-               LM20 의 부재는 기간 전체(미래 연차 포함) 값이라 기간 미완이면 절단 비율로 배분한다. v3 의 부재 '추정'(A31,
-               mm_basis.inferred_absence_dates)은 판 의존 재료라 기본 분모에 넣지 않고 표시만 한다(--inferred 로 넣을 수 있다).
+  가용(분모)   : 통일 달력(주말 + 양력 고정 공휴일 + 내장 연도표 + --holidays) 의 기간 내 평일수 − mm_meta.mm_months[월].absent(유급휴가
+               일수 — 내부 키 이름은 absent). 분석 시점 이후의 평일은 가용이 아니다(v3 A34 규칙을 두 판에 같이 적용 — 기간 종료 전에 올린
+               자료는 '기간 미완' 표시). LM20 의 유급휴가 일수는 기간 전체(미래 연차 포함) 값이라 기간 미완이면 절단 비율로 배분한다.
+               v3 의 휴가 추정(A31 — 휴가로 본 평일, mm_basis.inferred_absence_dates)도 가용에서 뺀다(LM30(2026-10-21) — 유급휴가는 일하지
+               않은 날로 세지 않는다. 예전 기본처럼 가용에 남기려면 --keep-inferred · --inferred 는 예전 이름 그대로 받는다).
+               2026-10-21 뒤 LM30 은 날짜를 팀으로 보내지 않고 달마다 일수(mm_months[월].absent_inferred — absent 에 이미 들었다)만
+               올린다 — 이 키가 있는 달은 두 번 빼지 않는다(--keep-inferred 면 그 몫을 가용에 되돌린다).
   로드율(%)    = 월 투입시간 ÷ (8h × 가용일수) × 100 — workdays·capacity_h 는 약분되므로 이 형태가 판 무관 항등식이다.
-               가용이 0 인 달(전월 부재·기간 꼬리)은 비율이 없고 팀 합계에도 넣지 않는다.
+               가용이 0 인 달(전월 휴가·기간 꼬리)은 비율이 없고 팀 합계에도 넣지 않는다.
 
 한계(팀취합본에 없는 재료 — 어느 산식도 복원하지 못한다)
-  PC 가동 구간 · 샘플러 구간(총 분만) · 연차 '일자'(월 합계만) · 회의 수락 여부(수락분만 올라옴) · 표본화 전 파일 시각.
-  능동 흔적이 없는 평일은 8h 가 붙지 않아 C3 = 근거 구간뿐이다 — '무흔적 평일(−부재)' 열을 같이 보라.
+  PC 가동 구간 · 샘플러 구간(총 분만) · 유급휴가 '일자'(월 합계만) · 회의 수락 여부(수락분만 올라옴) · 표본화 전 파일 시각.
+  능동 흔적이 없는 평일은 8h 가 붙지 않아 C3 = 근거 구간뿐이다 — '무흔적 평일(유급휴가 뺌)' 열을 같이 보라.
 
 사용
-  python team_recalc.py [팀 폴더] [--out 폴더] [--now "YYYY-MM-DD HH:MM"] [--holidays 2026-11-02,...] [--std 8] [--inferred]
+  python team_recalc.py [팀 폴더] [--out 폴더] [--now "YYYY-MM-DD HH:MM"] [--holidays 2026-11-02,...] [--std 8] [--keep-inferred]
   팀 폴더를 지정하면 그 폴더만 본다(없거나 인별 폴더가 없으면 실패 — 다른 곳으로 조용히 바꾸지 않는다).
   생략하면 이 파일 폴더·상위 폴더의 teamdata\ → config\config.json 의 teamShareDir → 이 파일의 폴더 → 현재 폴더 순서로
   인별 폴더(member.json 또는 mm_meta_*.json·signals_*.csv 가 있는 하위 폴더)가 있는 곳을 찾는다('자동 탐색' 으로 표시).
@@ -409,7 +412,7 @@ def analysis_time(meta, member, tag, meta_path, d0, d1, cal):
 
 
 def recalc_period(sig, meta, d0, d1, cal, now, t_an, std=STD_DAY_H, has_sig=True, has_meta=True, version="unknown",
-                  use_inferred=False):
+                  use_inferred=True):
     """(owner, tag) 하나의 일별·월별 재계산. returns dict(months={...}, days={...}, flags={...}).
     has_sig=False(signals 없음·못 읽음)면 A·B·C3 는 None, has_meta=False 면 D 는 None — 팀 합계에서 그 산식만 빠진다(0 으로 섞지 않는다)."""
     w = meta.get("weights") if isinstance(meta.get("weights"), dict) else {}
@@ -483,7 +486,7 @@ def recalc_period(sig, meta, d0, d1, cal, now, t_an, std=STD_DAY_H, has_sig=True
         d_h = dh_meta.get(d, 0.0) if d <= cut.date() else 0.0     # 원값도 분석 시점까지만(재계산 분모와 같은 창)
         days[d] = {"A": a_h, "B": b, "C3": c_h, "D": d_h, "off": off, "active": active}
         d += timedelta(days=1)
-    # 월별 — 가용은 통일 달력 × 분석 시점 절단, 부재는 mm_months[월].absent
+    # 월별 — 가용은 통일 달력 × 분석 시점 절단, 유급휴가는 mm_months[월].absent(+ 휴가로 본 평일 — use_inferred)
     mmm = meta.get("mm_months") if isinstance(meta.get("mm_months"), dict) else {}
     today = cut.date()
     now_m = cut.hour * 60 + cut.minute + cut.second / 60.0
@@ -520,10 +523,20 @@ def recalc_period(sig, meta, d0, d1, cal, now, t_an, std=STD_DAY_H, has_sig=True
         m["absent_raw"] = absent
         m["absent_scaled"] = False
         if version == "lm20" and future_wd > 0 and m["wd_in_period"] > 0 and m["covered"] < m["wd_in_period"] - 1e-9:
-            # LM20 의 부재는 기간 전체(분석 이후 연차 포함) 값 — 절단된 가용에서 통째로 빼면 과대. 절단 비율로 배분한다.
+            # LM20 의 유급휴가 일수는 기간 전체(분석 이후 연차 포함) 값 — 절단된 가용에서 통째로 빼면 과대. 절단 비율로 배분한다.
             absent = absent * m["covered"] / m["wd_in_period"]
             m["absent_scaled"] = True
-        if use_inferred:
+        try:
+            inc = float(mi["absent_inferred"]) if "absent_inferred" in mi else None
+        except (TypeError, ValueError):
+            inc = None
+        if inc is not None:
+            # LM30(2026-10-21) 새 판 — absent 에 휴가로 본 평일(absent_inferred)이 이미 들었다(날짜는 팀으로 오지 않는다 — 일수만).
+            # 두 번 빼지 않는다 · --keep-inferred 면 그 몫을 가용에 되돌린다
+            m["inferred"] = round(max(0.0, inc), 2)
+            if not use_inferred:
+                absent = max(0.0, absent - m["inferred"])
+        elif use_inferred:
             absent += m["inferred"]
         m["absent"] = min(absent, m["covered"])
         m["avail_days"] = max(0.0, m["covered"] - m["absent"])
@@ -541,13 +554,13 @@ def recalc_period(sig, meta, d0, d1, cal, now, t_an, std=STD_DAY_H, has_sig=True
         m["meta_workdays"] = mi.get("workdays") if mi else None
     flags = {"future_wd": future_wd, "truncated": future_wd > 0, "offsite_days": len(offsite_days),
              "signals": len(sig), "active_days": len(gate_days) if has_sig else None,
-             "inferred_days": sum(m["inferred"] for m in months.values()),
+             "inferred_days": round(sum(m["inferred"] for m in months.values()), 2), "use_inferred": bool(use_inferred),
              "absent_scaled": any(m["absent_scaled"] for m in months.values()),
              "zero_avail_h": round(sum((m["C3"] or 0.0) for m in months.values() if m["avail_h"] <= 0), 1)}
     return {"months": months, "days": days, "flags": flags}
 
 
-def load_team(root, cal, now, std, log, use_inferred=False):
+def load_team(root, cal, now, std, log, use_inferred=True):
     people = []
     for mdir in member_dirs(root):
         name = os.path.basename(mdir)
@@ -639,9 +652,9 @@ def person_notes(p):
     if fl["truncated"]:
         notes.append(f"기간 미완 — 분석 {fl['t_an']}({fl['t_src']}) 이후 평일 {fl['future_wd']}일 제외")
     if fl.get("absent_scaled"):
-        notes.append("LM20 부재는 기간 전체 값 — 절단 비율로 배분")
+        notes.append("LM20 유급휴가 일수는 기간 전체 값이라 기간 비율로 나눴습니다")
     if not fl["has_meta"]:
-        notes.append("mm_meta 없음 — 부재 0 가정 · D 없음(신뢰도 낮음)")
+        notes.append("mm_meta 없음 — 유급휴가 0일로 봄 · D 없음(신뢰도 낮음)")
     if not fl["has_sig"]:
         notes.append(f"signals 못 씀({fl.get('sig_err') or '출처 라벨 미인식 — 인코딩·형식 의심'}) — A·B·C3 계산 불가(D 만)")
     if fl.get("sig_lost"):
@@ -649,7 +662,9 @@ def person_notes(p):
     if fl.get("sig_bad"):
         notes.append(f"신호 {fl['sig_bad']}행 시각 불량 제외")
     if fl.get("inferred_days"):
-        notes.append(f"LM24 부재 추정 {fl['inferred_days']}일(원 판은 평일수에서 뺌 — 재계산 가용에는 남김)")
+        _inf_n = f"{float(fl['inferred_days']):g}"
+        notes.append(f"휴가로 본 평일 {_inf_n}일(PC 기록도 흔적도 없는 평일 — 가용에서 뺐습니다)" if fl.get("use_inferred", True)
+                     else f"휴가로 본 평일 {_inf_n}일(원 판은 가용에서 뺐습니다 — --keep-inferred 라 재계산 가용에는 남겼습니다)")
     if fl["offsite_days"]:
         notes.append(f"종일 행사(회사 밖 근무) {fl['offsite_days']}일 — LM24 만 8h 회의로 싣는 항목")
     if fl.get("zero_avail_h"):
@@ -727,9 +742,9 @@ def build_html(root, people, pick, now, std, extra_hol, out_csv_names, root_how)
              "같은 사람이 판에 따라 수십 p 갈립니다(실측). 기존 team_report.html 등은 건드리지 않았습니다.<br>"
              f"<b>C3(권장)</b> = 능동 흔적이 있는 평일은 {std:g}h 를 바닥으로, 09~18시 밖의 능동 세션만 초과로 더함 · 능동 없는 평일은 근거 구간(B, 수동 세션은 하루 60분까지) 그대로 · 주말·공휴일은 능동 있는 날만. "
              f"<b>A</b> = 능동 평일 {std:g}h(출근일 하한) + 주말·공휴일 활동일은 B. <b>B</b> = max(신호 세션 ∪ 회의 구간, 샘플러 활동분, 수동기록 시간). <b>D</b> = 그 판이 계산한 원값(비교 기준선).<br>"
-             f"<b>가용</b> = 통일 달력 평일수(분석 시점 이후 제외) − mm_meta 의 월별 부재 일수 · <b>로드율</b> = 투입시간 ÷ ({std:g}h × 가용일). 가용 0 인 달은 비율·팀 합계에서 제외.<br>"
-             "<span class='warn'>한계</span>: PC 가동·샘플러 구간·연차 일자·회의 수락 여부·표본화 전 파일 시각은 팀에 올라오지 않아 어느 산식도 복원하지 못합니다. "
-             "능동 흔적이 없는 평일은 8h 가 붙지 않아 C3 = 근거 구간뿐입니다 — '무흔적 평일(−부재)' 열을 함께 보세요.</div>")
+             f"<b>가용</b> = 통일 달력 평일수(분석 시점 이후 제외) − mm_meta 의 월별 유급휴가 일수(일하지 않은 날로 세지 않습니다 — 휴가로 본 평일 포함) · <b>로드율</b> = 투입시간 ÷ ({std:g}h × 가용일). 가용 0 인 달은 비율·팀 합계에서 제외.<br>"
+             "<span class='warn'>한계</span>: PC 가동·샘플러 구간·유급휴가 일자·회의 수락 여부·표본화 전 파일 시각은 팀에 올라오지 않아 어느 산식도 복원하지 못합니다. "
+             "능동 흔적이 없는 평일은 8h 가 붙지 않아 C3 = 근거 구간뿐입니다 — '무흔적 평일(유급휴가 뺌)' 열을 함께 보세요.</div>")
     # 1. 팀 월별 합계
     h.append("<h2>1. 팀 합계 (월별) — 인원별로 그 달을 덮는 기간 파일 하나씩</h2><table><tr><th class='l'>월</th><th>인원<br><span class='dim'>(C3/D)</span></th><th>가용(h)<br><span class='dim'>전원</span></th>"
              "<th>C3(h)</th><th>C3 로드율</th><th>A(h)</th><th>A 로드율</th><th>B(h)</th><th>B 로드율</th><th>D 원값(h)</th><th>D 로드율</th></tr>")
@@ -748,7 +763,7 @@ def build_html(root, people, pick, now, std, extra_hol, out_csv_names, root_how)
              "mm_meta 가 없는 기간은 D 에서 빠지므로 산식마다 분모 인원이 다를 수 있습니다. '가용(h) 전원' 은 전원 합계라 C3 로드율 검산에는 쓰지 마세요.</div>")
     # 2. 인별 요약(기간 파일 단위)
     h.append("<h2>2. 인별 요약 (기간 파일 단위)</h2><table><tr><th class='l'>이름</th><th class='l'>기능</th><th class='l'>기간</th><th class='l'>판</th>"
-             "<th>신호</th><th>능동일</th><th>무흔적 평일<br><span class='dim'>(−부재)</span></th><th>부재(일)</th><th>가용(일)</th>"
+             "<th>신호</th><th>능동일</th><th>무흔적 평일<br><span class='dim'>(유급휴가 뺌)</span></th><th>유급휴가(일)</th><th>가용(일)</th>"
              "<th>C3(h)</th><th>C3 로드율</th><th>A 로드율</th><th>B 로드율</th><th>D 로드율<br><span class='dim'>(재계산 분모)</span></th>"
              "<th>원 판 로드율<br><span class='dim'>(mm_meta)</span></th><th>C3−D(p)</th><th class='l'>비고</th></tr>")
     for p in sorted(people, key=lambda x: (x["owner"], x["tag"])):
@@ -758,9 +773,10 @@ def build_html(root, people, pick, now, std, extra_hol, out_csv_names, root_how)
         noact = sum(m["noact_wd"] or 0 for m in ms.values()) if fl["has_sig"] else None
         absent = sum(m["absent"] for m in ms.values())
         inferred = fl.get("inferred_days") or 0
+        lv_all = absent if fl.get("use_inferred", True) else absent + inferred     # 가용에서 뺀 유급휴가에 휴가로 본 평일이 이미 들었나
         ver = fl["version"]
         diff = (pcts["C3"] - pcts["D"]) if (pcts["C3"] is not None and pcts["D"] is not None) else None
-        noact_cell = (f"{noact} <span class='dim'>({max(0, noact - absent - inferred):.0f})</span>" if noact is not None else "—")
+        noact_cell = (f"{noact} <span class='dim'>({max(0, noact - lv_all):.0f})</span>" if noact is not None else "—")
         h.append(f"<tr><td class='l'><b>{esc(p['owner'])}</b></td><td class='l'>{esc(p['function'])}</td>"
                  f"<td class='l'>{esc(p['d0'].isoformat())} ~ {esc(p['d1'].isoformat())}</td>"
                  f"<td class='l'><span class='badge {esc(ver)}'>{esc(VER_LABEL.get(ver, ver))}</span></td>"
@@ -772,7 +788,7 @@ def build_html(root, people, pick, now, std, extra_hol, out_csv_names, root_how)
     h.append("</table><div class='dim'>"
              "<b>C3−D</b> 가 크게 양수면 원 판이 PC 없이 세션만 재었을 가능성(흔적이 적은 근무 유형)입니다. 음수면 (a) 원 판이 수동 신호 다리(LM20)·PC 가장자리로 더 잡았거나 "
              "(b) C3 가 보지 못하는 PC 가동·샘플러 구간을 원 판이 실측한 경우입니다 — C3 는 합성 참값 대비 −3~−16p 아래로 재는 하한 성격이므로 −15p 안의 음수는 판 차이로 단정하지 마세요.<br>"
-             "<b>'D 로드율(재계산 분모)' 과 '원 판 로드율'</b> 의 차이는 달력(공휴일표)·분석 시점 절단·LM24 부재 추정(A31 — 원 판은 그 날을 평일수에서 빼지만 재계산은 가용에 남김, 비고에 일수)·원 판의 반올림(MM·가용 MM 소수 3자리) 때문입니다.</div>")
+             "<b>'D 로드율(재계산 분모)' 과 '원 판 로드율'</b> 의 차이는 달력(공휴일표)·분석 시점 절단·휴가로 본 평일(A31 — LM24~LM29 와 2026-10-21 전 LM30 원 판은 그 날을 평일수에서도 빼고 재계산은 가용에서만 뺌, 비고에 일수)·원 판의 반올림(MM·가용 MM 소수 3자리) 때문입니다.</div>")
     # 3. 인별 월별
     h.append("<h2>3. 인별 월별 (C3 기본 · 괄호 안 A / D)</h2><table><tr><th class='l'>이름</th>"
              + "".join(f"<th>{esc(mk)}</th>" for mk in months_all) + "<th>합계</th></tr>")
@@ -792,7 +808,7 @@ def build_html(root, people, pick, now, std, extra_hol, out_csv_names, root_how)
                 continue
             s_c3 += m["C3"]
             s_av += m["avail_h"]
-            cells.append(f"<td class='{pct_cls(m['C3_pct'])}' title='C3 {fmt(m['C3'])}h / 가용 {fmt(m['avail_days'])}일 · 부재 {fmt(m['absent'])} · 무흔적 평일 {m['noact_wd']} · 기간 {esc(people[idx]['tag'])}'>"
+            cells.append(f"<td class='{pct_cls(m['C3_pct'])}' title='C3 {fmt(m['C3'])}h / 가용 {fmt(m['avail_days'])}일 · 유급휴가 {fmt(m['absent'])} · 무흔적 평일 {m['noact_wd']} · 기간 {esc(people[idx]['tag'])}'>"
                          f"<b>{fmt(m['C3_pct'], 0, '%')}</b><br><span class='dim'>({fmt(m['A_pct'], 0)} / {fmt(m['D_pct'], 0)})</span></td>")
         tp = s_c3 / s_av * 100 if s_av > 0 else None
         h.append(f"<tr><td class='l'><b>{esc(o)}</b></td>{''.join(cells)}<td class='{pct_cls(tp)}'><b>{fmt(tp, 1, '%')}</b></td></tr>")
@@ -832,8 +848,8 @@ def build_html(root, people, pick, now, std, extra_hol, out_csv_names, root_how)
              "· 샘플러(작업창) 활동분 = weight ÷ 분당 가중치, 수동기록 시간 = weight ÷ 시간당 가중치 — 구간 위치를 몰라 B 의 하한으로만 쓴다(LM20 파일은 샘플 간격 60초 가정).<br>"
              "· 달력: 주말 + 양력 고정 공휴일 + 내장 연도표(2025~2027 설·추석·대체공휴일·선거일) + --holidays. 두 판의 원 분모(workdays)는 쓰지 않는다(LM20 은 내장 연도표가 없어 같은 달을 하루 더 센다).<br>"
              "· 분석 시점 절단: 기간 종료 전에 올린 자료는 분석 시점 이후 평일을 가용에서 뺀다(LM24 A34 규칙을 두 판에 같이 적용 — LM20 원값은 미래 평일을 가용에 넣어 같은 자료를 훨씬 낮게 낸다). "
-             "LM20 의 부재는 기간 전체 값이라 절단 비율로 배분한다(비고).<br>"
-             "· 부재는 월 합계만 있어 일자별로 차감하지 못한다 — 연차일에 능동 신호(외부 발신 등)가 있으면 그날 8h 가 붙는다(최대 그 달 부재 일수만큼, 대개 ≤1일의 위쪽 오차).<br>"
+             "LM20 유급휴가 일수는 기간 전체 값이라 기간 비율로 나눴습니다(비고).<br>"
+             "· 유급휴가는 달 합계만 있어 날짜별로 가리지 못한다 — 휴가인 날에 능동 신호(외부 발신 등)가 있으면 그날 8h 가 붙는다(최대 그 달 유급휴가 일수만큼, 대개 ≤1일의 위쪽 오차 · 원 판은 날짜별로 가려 휴가인 날에 8시간을 붙이지 않는다).<br>"
              f"· 같은 데이터는 CSV 로도 저장했다: {esc(' · '.join(out_csv_names))}</div></body></html>")
     return "".join(h)
 
@@ -846,7 +862,7 @@ def write_csvs(base, people, pick):
     months_csv = base + "_월별.csv"
     with open(months_csv, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["이름", "기능", "기간", "판", "월", "달력평일", "가용일(절단·부재 전)", "부재일", "부재일(원값)", "추정부재일(LM24)", "가용일",
+        w.writerow(["이름", "기능", "기간", "판", "월", "달력평일", "가용일(절단·휴가 전)", "유급휴가일", "유급휴가일(원값)", "휴가로 본 평일", "가용일",
                     "무흔적평일", "무흔적(B=0)", "종일행사일", "C3_h", "A_h", "B_h", "D_h", "C3_pct", "A_pct", "B_pct", "D_pct",
                     "원판_load_pct", "원판_workdays", "C3_MM", "D_MM", "팀합계_사용", "비고"])
         for p in sorted(people, key=lambda x: (x["owner"], x["tag"])):
@@ -924,7 +940,9 @@ def main(argv=None):
     ap.add_argument("--now", help="기준 시각 'YYYY-MM-DD HH:MM'(기본: 지금) — 미래 평일 절단·미래 신호 폐기 기준")
     ap.add_argument("--holidays", default="", help="추가 공휴일(쉼표 구분 YYYY-MM-DD) — 내장 연도표에 없는 임시 휴일")
     ap.add_argument("--std", type=float, default=STD_DAY_H, help="표준일 시간(기본 8)")
-    ap.add_argument("--inferred", action="store_true", help="LM24 의 부재 '추정' 일자(A31)도 가용에서 뺀다(기본: 표시만)")
+    ap.add_argument("--inferred", action="store_true", help="(예전 이름 — 이제 기본) 휴가로 본 평일(A31)도 가용에서 뺀다")
+    ap.add_argument("--keep-inferred", action="store_true",
+                    help="휴가로 본 평일(A31)을 가용에 남긴다(LM30 2026-10-21 이전 기본 — 그 날이 일하지 않은 날로 세어진다)")
     ap.add_argument("--quiet", action="store_true")
     a = ap.parse_args(argv)
 
@@ -951,7 +969,7 @@ def main(argv=None):
         print("    팀 공유폴더(또는 teamdata) 경로를 인자로 주세요:  python team_recalc.py <팀 폴더>   (경로 끝의 \\ 는 빼세요)")
         return 1
     log(f"[재계산] 팀 폴더({how}): {root}")
-    people = load_team(root, cal, now, a.std, log, use_inferred=a.inferred)
+    people = load_team(root, cal, now, a.std, log, use_inferred=not a.keep_inferred)
     if not people:
         print("[!] 재계산할 기간 파일이 없습니다.")
         return 1
