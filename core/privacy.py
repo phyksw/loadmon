@@ -1142,7 +1142,9 @@ def scrub_csv(path, cols, key_cols=None, *, ctx=None, cfg=None, audit_path=None,
 
 # ── G4 팀 반출 ─────────────────────────────────────────────────────────────────────
 WHO_CLASSES = ("사내", "고객사", "협력사", "외부")
-TEAM_DROP_COLS = ("flag",)            # 팀으로 내보내지 않는 열(광고 의심 표식 등 로컬 판정용)
+# 팀으로 내보내지 않는 열(로컬 판정용) — flag(광고 의심 표식) · conv(팀즈 대화 키 — 대화방 이름의 소금 친 sha1, LM30 2026-10-27) ·
+# via(그 행이 과제를 받은 길 — AI 직접·같은 문장 묶음·지난 판정·채움, 이 PC 화면의 근거 한 줄용)
+TEAM_DROP_COLS = ("flag", "conv", "via")
 _EXTERNAL_MARK = re.compile(r"\((?:외부|external|guest|게스트)\)", re.I)
 
 

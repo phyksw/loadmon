@@ -58,9 +58,16 @@ LM30v1(2026-10-19 — 법정 채움 MM, config mm.basis "legal" 기본 · 키가
     나란히 남는다.
   · 날짜별 근태 사실(info["attendance_hr"])과 달마다 근태 기록 시간·+@ 나눔·표시 날짜(info["attendance_legal"])는 이 PC 전용 —
     core/attendance.take_local 이 떼어 attendance 파일로만 보낸다(mm_months 에는 합계 칸만).
+
+LM30(2026-10-27 — 사용자 '한 사람과 채팅한다고 한 일을 하는 게 아닌데 여러 과제가 하나로 묶인다'):
+  · 팀즈 행마다 이 PC 안에서만 쓰는 대화 키(conv_key — 대화방 이름의 소금 친 sha1, 프로세스마다 새 소금)를 meta["conv"] 에 둔다
+    (mine 이 signals 끝 conv 열로 쓴다). Copilot 프롬프트·팀 반출·내보내기에는 싣지 않는다(privacy.TEAM_DROP_COLS).
+  · 대화 낱말(talk_word — 맞장구·인사·호칭·시각·흔한 소통 낱말·'…습니다/…요/…까' 꼴)은 규칙 과제 토큰이 되지 않는다(_cand_ok).
+    content_words 는 원문에서 일을 가리키는 낱말만 남긴다 — judge 의 짧은 팀즈 대화 판정(is_lowinfo)이 쓴다.
 """
 import csv
 import glob
+import hashlib
 import json
 import os
 import re
@@ -1072,6 +1079,27 @@ def _file_times(data_dir, d0, d1, exclude=(), cfg=None, burst_n=None, self_names
     return out, burst, nb, set(sim_cluster)
 
 
+_CONV_SALT = [None]          # 대화 키 소금 — 프로세스마다 새로(os.urandom). 시험은 바꿔 끼울 수 있다
+
+
+def conv_key(chat):
+    """팀즈 대화방 이름 → 이 PC 안에서만 쓰는 대화 키 'c' + sha1(소금 + 정규화한 방 이름) 앞 12자 · 빈 이름은 ""(대화를 모름).
+    소금이 프로세스마다 새로라 키는 한 번의 분석(mine → signals) 안에서만 같고, 키로 방 이름을 되짚을 수 없다.
+    키는 judge 의 같은 내용 묶음·주변 채우기에만 쓴다 — Copilot 프롬프트·팀 반출·내보내기에는 싣지 않는다(privacy.TEAM_DROP_COLS)."""
+    s = " ".join(str(chat or "").split()).lower()
+    if not s:
+        return ""
+    if _CONV_SALT[0] is None:
+        _CONV_SALT[0] = os.urandom(16)
+    return "c" + hashlib.sha1(_CONV_SALT[0] + s.encode("utf-8")).hexdigest()[:12]
+
+
+def conv_of(meta, t, src, text, who=""):
+    """load_signals 의 meta["conv"] 에서 신호 하나(시각·라벨·정제문·보낸이 20자)의 대화 키 → 키 또는 ""(팀즈가 아니거나 방을 모름)."""
+    cv = (meta or {}).get("conv") or {}
+    return cv.get((t, src, text, str(who or "")[:20]), "") if cv else ""
+
+
 def load_signals(data_dir, d0, d1, exclude=(), cfg=None):
     """수집 폴더 → (signals, meta)
     signals: [(dt, source_label, text, weight)] — weight는 시간이 아니라 '관여 강도'
@@ -1159,7 +1187,7 @@ def load_signals(data_dir, d0, d1, exclude=(), cfg=None):
             _pvs["rel"] = ({d for d in doms if not _pctx().is_internal(d)}, sent_c - {""})
         return _pvs["rel"]
 
-    def add(t, src, text, w, label=None, who="", dkey=None):
+    def add(t, src, text, w, label=None, who="", dkey=None, conv=""):
         if not (t and text):
             return
         text = _one_line(text, None)       # 개행·탭·연속 공백 → 한 칸(S2) — 프롬프트 한 줄·CSV 셀이 갈라지지 않게
@@ -1182,6 +1210,9 @@ def load_signals(data_dir, d0, d1, exclude=(), cfg=None):
                 fl = meta.get("flags")
                 if fl and old in fl:
                     fl[(sig[i][0], lbl, sig[i][2])] = fl.pop(old)
+                cv = meta.get("conv")           # 대화 키도 새 라벨로 옮긴다(LM30 2026-10-27)
+                if cv and old + (sig[i][4],) in cv:
+                    cv[(sig[i][0], lbl, sig[i][2], sig[i][4])] = cv.pop(old + (sig[i][4],))
                 meta["counted"][lbl] += 1
             return
         _dedup[key] = None
@@ -1231,6 +1262,8 @@ def load_signals(data_dir, d0, d1, exclude=(), cfg=None):
         sig.append((t, lbl, clean, w, who_s[:20]))
         if flag:
             meta.setdefault("flags", {})[(t, lbl, clean)] = flag
+        if conv:                               # 팀즈 대화 키(이 PC 안에서만) — mine 이 signals 의 conv 열로 쓴다
+            meta.setdefault("conv", {})[(t, lbl, clean, who_s[:20])] = conv
         meta["counted"][lbl] += 1
 
     # ── 메일: 발신 > 직접수신 > CC. 단체발송·공지·수신전용 발신자는 업무 증거로 쓰지 않는다 ──
@@ -1564,7 +1597,8 @@ def load_signals(data_dir, d0, d1, exclude=(), cfg=None):
             if t and d0 <= t.date() <= d1:
                 meta["excluded"]["공지·시스템 발신(정부24·HR 등)"] += 1
             continue
-        add(t, "팀즈", r.get("summary"), w, lbl, frm)
+        # 대화 키(LM30 2026-10-27) — 같은 내용 묶음·주변 채우기를 같은 대화방 안에서만 하게. 방 이름은 키로만(되짚을 수 없다)
+        add(t, "팀즈", r.get("summary"), w, lbl, frm, conv=conv_key(r.get("chat")))
 
     # ── 작업창: 순활동 '분' 단위 — 샘플 수가 아니라 실측 간격 × 샘플(A28). idle 임계는 시간 계산(_activity_spans)과
     # 같은 mm.idleActiveSec 을 쓴다(예전 180 고정은 읽기 구간을 시간엔 넣고 가중치엔 빼는 불일치). IDE·코드 창은 촘촘히 ──
@@ -1686,6 +1720,84 @@ def rule_name_ok(tok):
     return bool(t) and t not in RULE_NAME_NOISE and not _RULE_NAME_RX.match(t)
 
 
+# ── 대화 낱말(LM30 2026-10-27 — 사용자 '한 사람과 채팅한다고 한 일을 하는 게 아니라 여러 일을 복합적으로 하잖아') ─────────────
+#    맞장구·인사·호칭·시각·흔한 소통 낱말과 '…습니다/…요/…까/…드린' 같은 문장 끝 꼴은 일을 가리키지 않는다. 이런 낱말뿐인 팀즈 줄
+#    ('네 확인했습니다'·'자료 보내드렸습니다'·'[사람] 책임님 확인 부탁드립니다')은 Copilot 에 보내지 않고 같은 대화에서 채운다
+#    (judge.is_lowinfo). 규칙 과제 토큰(_cand_ok)·과제(Level 2) 이름(talk_name — details.task_name_ok·judge)도 되지 않는다.
+#    '정리해서'·'요청해' 같은 이음 꼴은 낱말로 남긴다 — 문장 끝 꼴·호칭·시각·맞장구만 뺀다.
+TALK_WORDS = frozenset((
+    # 맞장구·인사
+    "네네", "넵넵", "예예", "응응", "오케이", "ok", "okay", "thanks", "thank", "thx", "noted", "sure", "yes", "please", "pls",
+    "fyi", "asap", "수고", "안녕", "죄송", "실례", "괜찮", "그럼", "그래", "그래서", "그리고", "근데", "그런데", "그러면",
+    # 부사·대명사
+    "혹시", "혹시나", "아직", "이미", "벌써", "먼저", "바로", "일단", "우선", "다시", "계속", "같이", "함께", "모두", "다들", "조금",
+    "많이", "너무", "정말", "진짜", "아마", "역시", "특히", "그냥", "어떻게", "언제", "언제쯤", "어디", "얼마나", "저희", "제가",
+    "저는", "저도", "그쪽", "이쪽", "여기", "거기", "저기", "이거", "그거", "저거", "이건", "그건", "이것", "그것", "이번", "다음",
+    "지난", "해당",
+    # 시각·날
+    "오늘", "내일", "어제", "모레", "그제", "금일", "명일", "익일", "오전", "오후", "아침", "점심", "저녁", "새벽", "지금", "방금",
+    "이따", "이따가", "아까", "나중", "주말", "주중", "평일", "이번주", "다음주", "지난주", "금주", "차주", "내주", "이번달",
+    "다음달", "지난달", "월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일", "시간", "잠깐", "잠시", "당일", "퇴근",
+    "출근",
+    # 흔한 소통 낱말 — 메일·회신·공유·확인 같은 것은 STOP·RULE_NAME_NOISE 에 이미 있다
+    "통화", "전화", "연락", "말씀", "메시지", "문자", "채팅", "답장",
+    # 호칭(낱말 하나 — '책임님' 처럼 '님' 이 붙은 꼴은 아래 규칙)
+    "책임", "선임", "수석", "매니저", "프로", "팀장", "파트장", "그룹장", "실장", "센터장", "본부장", "부장", "차장", "과장", "대리",
+    "사원", "주임", "연구원", "위원", "박사", "교수", "담당", "담당자", "팀원", "여러분",
+    # 수
+    "하나", "다섯", "여섯", "일곱", "여덟", "아홉", "한두", "두세", "서너"))
+# 문장 끝 꼴(…습니다·…요·…까·…죠)·높임 꼴(…드린·…드려·…주시면)·평서 끝(…했음·…됐다)
+_TALK_END_RX = re.compile(r"(?:니다|요|까|죠|드림|드린|드릴|드려|드렸|드리고|드리면|드리며|드려서|드리는|드리기|주시면|주시고|주셔서"
+                          r"|하시면|하시고|하셔서|했음|됐음|있음|없음|했어|됐어|했다|됐다|한다|된다)$")
+_TALK_NUM_RX = re.compile(r"^\d+(?:시|분|일|월|주|년|개|건|번|명|부|장|회|초|시간|분기|주차|차)(?:쯤|경|에|까지|부터|간|째|씩|반)?$")
+_TALK_JAMO_RX = re.compile(r"^[ㄱ-ㅎㅏ-ㅣ]+$")
+_TALK_SPLIT_RX = re.compile(r"[\s_\-\.\\/\[\]()<>:,·|~!?\"'+…^*;=&#%@]+")
+_TALK_PART2_RX = re.compile(r"(?:으로|에서|에게|까지|부터|처럼|한테|이랑|에는|에도|에선|께서)$")
+_TALK_PART1_RX = re.compile(r"(?:의|를|을|은|는|이|가|에|로|와|과|도|께|만)$")
+
+
+def talk_word(tok):
+    """일을 가리키지 않는 대화 낱말인가 — TALK_WORDS · '…님'(호칭) · 문장 끝·높임 꼴 · '3시'·'2개' 같은 수 · 자모('ㅎㅎ')."""
+    t = str(tok or "").strip().lower()
+    if not t:
+        return False
+    return (t in TALK_WORDS or (len(t) >= 2 and t.endswith("님")) or bool(_TALK_END_RX.search(t))
+            or bool(_TALK_NUM_RX.match(t)) or bool(_TALK_JAMO_RX.match(t)))
+
+
+def _talk_tokens(text):
+    """대화 낱말 판정용 낱말 목록 — _tokens 와 같은 앞손질(가림 토큰·RE/FW·확장자·날짜·버전) 뒤 두 글자 조사('으로'·'에서'…)부터
+    뗀다('중으로' → '중' — _tokens 는 '중으' 를 남겨 낱말로 셌다). 두 글자 미만·숫자만은 뺀다."""
+    t = _pv().TOKEN_RX.sub(" ", str(text or ""))
+    t = re.sub(r"^\s*((re|fw|fwd|답장|전달|회신)\s*[:：]\s*)+", "", t, flags=re.I)
+    t = re.sub(r"\.(pptx|xlsx|docx|pdf|hwp|png|jpg|zip|csv|py|c|cpp|m)\b", " ", t, flags=re.I)
+    t = re.sub(r"\d{4}[-_.]?\d{2}[-_.]?\d{2}|\bv?\d+(?:[._]\d+)+\b", " ", t)
+    out = []
+    for tok in _TALK_SPLIT_RX.split(t.lower()):
+        tok = tok.strip()
+        if len(tok) >= 3:
+            t2 = _TALK_PART2_RX.sub("", tok)
+            tok = t2 if t2 != tok else _TALK_PART1_RX.sub("", tok)
+        if len(tok) >= 2 and not tok.isdigit():
+            out.append(tok)
+    return out
+
+
+def content_words(text):
+    """원문에서 일을 가리키는 낱말 — 상투어(STOP·RULE_NAME_NOISE)·버전·날짜·가림 토큰·대화 낱말(talk_word)을 뺀 나머지(순서 유지).
+    빈 목록이면 그 줄은 일을 가리키지 않는다(judge 의 짧은 팀즈 대화 — 보내지 않고 같은 대화에서 채운다)."""
+    return [x for x in _talk_tokens(text) if x not in STOP and rule_name_ok(x) and not talk_word(x)]
+
+
+def talk_name(name):
+    """이름이 대화 낱말(과 상투어)뿐인가 — '책임님'·'보내드렸습니다'·'[사람] 책임님'·'네 확인했습니다' 는 True(과제·규칙 이름 금지).
+    대화 낱말이 하나는 있어야 한다 — 상투어·버전 꼴뿐인 이름('V2X' 같은 대문자 코드·'보고서')은 다른 관문(_model_name_ok·잡음)이 본다.
+    낱말이 하나도 없으면(빈 값·가림 토큰뿐) False — 그쪽은 사람 이름 관문이 본다."""
+    toks = _talk_tokens(name)
+    return (any(talk_word(x) for x in toks)
+            and not any(x not in STOP and rule_name_ok(x) and not talk_word(x) for x in toks))
+
+
 def _needle_hit(needle, low, toks):
     """시드 매칭어 ↔ 신호. 토큰 경계로 판정한다 — raw 부분문자열은 오탐이 실측됐다
     ('ai'⊂'email', 'cad'⊂'cascade'). projmap 의 판정기를 그대로 재사용."""
@@ -1716,8 +1828,10 @@ def _name_guard(signals):
 
 
 def _cand_ok(x, df, n, guard):
-    """규칙 과제 후보 토큰 — 3~20자 · 2회 이상이되 너무 흔하지 않음(신호의 1/3, 최소 3) · 상투어 아님 · 사람·공지 아님."""
-    return 3 <= len(x) <= 20 and 2 <= df[x] <= max(3, n // 3) and rule_name_ok(x) and guard(x)
+    """규칙 과제 후보 토큰 — 3~20자 · 2회 이상이되 너무 흔하지 않음(신호의 1/3, 최소 3) · 상투어 아님 · 사람·공지 아님 ·
+    대화 낱말 아님(LM30 2026-10-27 — '보내드렸습니다'·'책임님'·'가능하실까요' 가 팀즈 행의 규칙 과제명이 되던 것)."""
+    return (3 <= len(x) <= 20 and 2 <= df[x] <= max(3, n // 3) and rule_name_ok(x) and not talk_word(x)
+            and guard(x))
 
 
 def build_items2(signals, projects=None, min_w=1.0):

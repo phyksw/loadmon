@@ -1213,9 +1213,10 @@ def _run(judge, tag, rep, _ss):
             _pinned = [p.get("name") for p in (_pm.load_user_projects(ROOT) or []) if p.get("name")]
         except Exception:  # noqa: BLE001 - 지정 과제 목록이 없어도 병합은 돈다
             _pinned = []
+        # AI 체계가 따로 세운 과제 이름(LM30 2026-10-27) — 그 둘은 담당업무·제품이 겹쳐도 합치지 않는다
         pmap, n_p_rule, n_p_ev, p_note = details.project_merge_map(
             rows_plain or [], details.read_signals(tag, rep), refmap=_refine_orig(tag, rep),
-            pinned=_pinned, log=lambda m: print(f"[flow]{m}"))
+            pinned=_pinned, log=lambda m: print(f"[flow]{m}"), models=details.taxonomy_names(rep, tag))
         if pmap:
             details.apply_project_map(rows_plain, None, pmap)     # 아래 세부 병합이 합쳐진 과제 축을 보게
         amap, n_rule, n_ai = details.detail_merge_map(tag, sender, rows=rows_plain or None,
@@ -1570,6 +1571,8 @@ def _run(judge, tag, rep, _ss):
                           "rejected": len(p_note.get("rejects") or []), "dupes": len(_dupes),
                           "pairs": (p_note.get("pairs") or [])[:50],
                           "rejects": (p_note.get("rejects") or [])[:30],
+                          # LM30(2026-10-27) 합치지 않고 확인을 기다리는 것(이름이 달라 자동으로 합치지 않은 쌍·예전 판의 근거 병합)
+                          "ask": (p_note.get("ask") or [])[:30],
                           "flow_dupes": _dupes[:30]},
                "rows_units": len(mats)}
         _save_json(dst, out)

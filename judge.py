@@ -72,9 +72,21 @@ LM28 진단 A — 수천 행 규모의 판정:
     묶음은 보내지 않고 여기까지의 결과를 지킨다(사용자 요청 '분석이 길면 업무에도 지장 — 3~5분으로').
   · AI 가 직접 못 본 행은 같은 내용·같은 대화·규칙 토큰·비슷한 신호의 판정을 빌려 'AI(유사)' 로 채운다(판정 기록·캐시에는 넣지 않는다).
     signals 의 judge: 'AI'(직접·재사용·같은 내용) · 'AI(유사)'(채움) · '규칙'. 버린 행 장부: 'ad'(광고 의심) · 'AI-n'(AI 비업무).
+
+LM30(2026-10-27) — 과제가 하나로 묶이던 것(사용자 '한 사람과 채팅한다고 한 일을 하는 게 아니라 여러 일을 복합적으로 하잖아'):
+  · 팀즈 줄은 signals 의 conv 열(대화방 이름의 소금 친 키 — 이 PC 안에서만, 프롬프트에 싣지 않는다)로 대화를 가른다. 같은 내용 묶음은
+    같은 대화·같은 날 안에서만(group_key), 같은 내용 재사용(지난 판정의 같은 문장)은 팀즈에 쓰지 않는다.
+  · 짧은 팀즈 대화(is_lowinfo)는 맞장구·호칭·시각·문장 끝 꼴뿐인 줄('네 확인했습니다'·'자료 보내드렸습니다'·'[사람] 책임님 확인
+    부탁드립니다')까지 넓혔다 — 보내지 않고 같은 대화에서 채운다(fill_unjudged ②·⑤ — 같은 보낸이를 먼저 고르지 않는다). 보내는 줄이 준다.
+  · 판정 캐시 v2 — 짧은 팀즈 대화의 지난 판정은 쓰지 않고 지운다(예전 같은 문장 묶음이 다른 방·다른 과제의 판정을 옮겨 놓았을 수 있다).
+    다음 [분석 실행]·[재분석만]이 다시 모으지 않고 같은 대화에서 다시 채운다(Copilot 왕복 없음).
+  · 판정 머리말: 과제는 '그 줄의 내용이 가리키는 과제'(같은 상대·같은 대화방이라도 줄마다 다를 수 있다) · '이 묶음의 줄만 보고'.
+  · 체계 통합(consolidate)은 표기 변형만 합친다 · 체계·통합 표본에서 팀즈 줄은 40% 까지 · '통합: A ← B, C' 를 로그에 남긴다.
+  · signals 끝 via 열 — 그 행이 과제를 받은 길(ai·group·cache·reuse·same·conv·token·sim·rule). 리뷰 화면의 과제별 한 줄과 구조 줄이 쓴다.
 """
 import bisect
 import csv
+import functools
 import hashlib
 import io
 import json
@@ -147,6 +159,7 @@ HARD_RECENT_SEC = 300               # 다른 프로세스가 남긴 강한 제�
 THROTTLE_WAIT_SEC = 120
 # 이어서 판정 캐시(report\judge_cache.json) — 기간 tag 가 날마다 바뀌어도 이미 판정한 신호는 다시 묻지 않는다
 JUDGE_CACHE = "judge_cache.json"
+JUDGE_CACHE_V = 2                   # LM30(2026-10-27) v2 — 짧은 팀즈 대화의 지난 판정은 쓰지 않고 같은 대화에서 다시 채운다
 CACHE_MAX = 150_000                 # 상한 — 넘으면 오래 쓰지 않은 판정부터 뺀다
 CACHE_KEEP_DAYS = 450               # 분석 시작일보다 이만큼 앞서 마지막으로 쓴 판정은 뺀다
 LEGACY_JUDGMENT_FILES = 10          # 캐시 이전 판의 ai_judgments_*.json 을 최신부터 이만큼 읽는다
@@ -1048,6 +1061,59 @@ def _fit_samples(rows, k, fmt, head_len, budget=PROMPT_BUDGET, k_min=20):
     return samples
 
 
+# 체계·통합 표본의 팀즈 줄 상한(LM30 2026-10-27) — 팀즈 웹 읽기가 켜지면 표본 대부분이 채팅이 되고, 채팅 줄은 대개 과제 이름이 없어
+# 체계가 거칠어졌다(합성 실측: 표본 54줄 중 채팅 37줄, 그중 과제 이름이 있는 줄 7). 다른 출처가 CHAT_CAP_MIN_OTHER 줄 미만이면 그대로.
+CHAT_SAMPLE_SHARE = 0.4
+CHAT_CAP_MIN_OTHER = 10
+
+
+def _even_idx(n, k):
+    """0..n-1 에서 고르게 퍼진 k 개 번호(끝 포함) — _sample_lines 와 같은 식."""
+    if k <= 0 or n <= 0:
+        return []
+    if k >= n:
+        return list(range(n))
+    return sorted({round(j * (n - 1) / (k - 1)) for j in range(k)}) if k > 1 else [n - 1]
+
+
+def _cap_chat(rows, share=CHAT_SAMPLE_SHARE, min_other=CHAT_CAP_MIN_OTHER):
+    """표본 후보에서 팀즈 줄을 고르게 솎아 share 이하로 → (행 목록, 상한을 걸었나). 다른 출처가 min_other 줄 미만이면 그대로 둔다
+    (채팅밖에 없는 사람의 표본을 비우지 않게)."""
+    rows = list(rows or [])
+    chat = [i for i, r in enumerate(rows) if _fam(r) == "팀즈"]
+    other = len(rows) - len(chat)
+    if not chat or other < min_other:
+        return rows, False
+    allow = int(other * share / (1.0 - share) + 1e-9)
+    if len(chat) <= allow:
+        return rows, True
+    keep = {chat[j] for j in _even_idx(len(chat), allow)}
+    return [r for i, r in enumerate(rows) if _fam(r) != "팀즈" or i in keep], True
+
+
+def _trim_chat(pick, share):
+    """고른 표본에서 팀즈 줄이 share 를 넘으면 넘는 만큼 고르게 뺀다(다른 줄은 그대로)."""
+    chat = [i for i, r in enumerate(pick) if _fam(r) == "팀즈"]
+    allow = int((len(pick) - len(chat)) * share / (1.0 - share) + 1e-9)
+    if len(chat) <= allow:
+        return pick
+    keep = {chat[j] for j in _even_idx(len(chat), allow)}
+    return [r for i, r in enumerate(pick) if _fam(r) != "팀즈" or i in keep]
+
+
+def _fit_rows(rows, k, fmt, head_len, budget=PROMPT_BUDGET, k_min=20, share=None):
+    """_fit_samples 의 행 판 — 고르게 퍼진 k 행을 고르고(share 를 주면 팀즈 줄을 그 몫까지만) 머리말 + 표본이 budget 을 넘으면
+    표본을 고르게 줄인다(k_min 까지) → 줄 목록."""
+    while True:
+        pick = _sample_lines(rows, k, lambda r: r)
+        if share is not None:
+            pick = _trim_chat(pick, share)
+        lines = [fmt(r) for r in pick]
+        if k <= k_min or len(lines) <= k_min or head_len + sum(len(s) + 1 for s in lines) <= budget:
+            return lines
+        k = max(k_min, int(k * 0.85))
+
+
 # l1(상위) 예시 값은 details.L1_META 에서 꺼낸다 — 상위 이름을 details 밖에 하드코딩하지 않는다(tools/check_l1.py)
 TAXONOMY_EXAMPLE = json.dumps(
     {"models": [{"name": "프로젝트A", "match": ["proja"], "obs": "근거가 된 raw 조각", "product": "제품X",
@@ -1058,6 +1124,8 @@ CONSOLIDATE_EXAMPLE = '{"models":[{"name":"대표이름","match":["키워드"],"
 
 
 def taxonomy_prompt(rows, hints, pinned=()):
+    # 팀즈 줄은 표본의 40% 까지(LM30 2026-10-27) — 전체에서 먼저 솎은 뒤 표본을 고른다
+    rows, capped = _cap_chat(rows)
     # G3 — 표본 후보(고르게 퍼진 200행)만 관문에 통과시킨 사본에서 고른다(광고·고위험 잔여·카나리아 행 제외, 재정제)
     rows = g3_pick(rows, 100)
 
@@ -1105,19 +1173,21 @@ def taxonomy_prompt(rows, hints, pinned=()):
                      + " — 참고만 하고, 채택 여부는 raw 관찰로 판단할 것")
     lines += ["", "[raw 표본]"]
     head_len = sum(len(x) + 1 for x in lines)
-    return "\n".join(lines + _fit_samples(rows, 100, fmt, head_len))
+    return "\n".join(lines + _fit_rows(rows, 100, fmt, head_len, share=(CHAT_SAMPLE_SHARE if capped else None)))
 
 
 def consolidate_prompt(models, rows):
     """초안 과제 목록에서 '같은 실체가 다른 이름으로 갈린 것'을 통합하도록 한 번 더 묻는다.
     같은 raw 라도 실행마다 체계가 흔들려(예: 'AX' 와 'Agentic AI' 가 분리) 로드 배분이
-    달라지던 문제(9d) 완화 — 왕복 1회를 더 쓰는 대신 실행 간 일관성을 얻는다."""
+    달라지던 문제(9d) 완화 — 왕복 1회를 더 쓰는 대신 실행 간 일관성을 얻는다.
+    LM30(2026-10-27): 표기 변형만 합친다 — 예전 '상위/하위 관계면 합친다' 가 한 제품의 다른 갈래(시험·인증 등)를 한 과제로 묶었다."""
     names = [m["name"] for m in models]
     lines = [
         "아래는 한 엔지니어의 업무를 분류하기 위해 초안으로 뽑은 '상위 과제(제품·프로젝트)' 목록입니다.",
         "같은 실체가 다른 이름으로 갈린 것을 하나로 합쳐 최종 목록을 만들어 주세요.",
         "",
-        "· 상위/하위 관계이거나 같은 프로그램의 축약·확장이면 합친다 (대표 이름 하나 선택).",
+        "· 같은 과제의 표기 변형(띄어쓰기·대소문자·한/영 표기·약어와 풀어 쓴 이름)만 합친다 (대표 이름 하나 선택).",
+        "· 같은 제품·고객사라도 일의 갈래가 다르고 raw 에서 따로 불리면 합치지 않는다.",
         "· 서로 다른 제품·과제는 합치지 않는다.",
         "· 프로젝트가 아닌 공통 사무·팀 운영은 '공통' 하나로.",
         "· merged 에는 그 이름으로 흡수된 초안 이름들을 적는다.",
@@ -1129,8 +1199,25 @@ def consolidate_prompt(models, rows):
         "",
         "[raw 표본]"]
     head_len = sum(len(x) + 1 for x in lines)
+    rows, capped = _cap_chat(rows)             # 팀즈 줄은 표본의 40% 까지(LM30 2026-10-27)
     rows = g3_pick(rows, 40)                   # G3 — 표본은 관문을 통과한 사본에서
-    return "\n".join(lines + _fit_samples(rows, 40, lambda r: f"- {(r.get('text') or '')[:70]}", head_len))
+    return "\n".join(lines + _fit_rows(rows, 40, lambda r: f"- {(r.get('text') or '')[:70]}", head_len,
+                                       share=(CHAT_SAMPLE_SHARE if capped else None)))
+
+
+def merge_log_lines(models):
+    """통합 왕복 결과(models 의 merged) → 로그 줄 ['통합: 대표 ← 흡수1, 흡수2', …] — 표기만 다른 같은 이름은 적지 않는다."""
+    out = []
+    for m in models or ():
+        if not isinstance(m, dict) or not str(m.get("name") or "").strip():
+            continue
+        nm = str(m["name"]).strip()
+        mg = [str(x).strip() for x in _as_list(m.get("merged"))
+              if str(x).strip() and ukey2(str(x)) != ukey2(nm)]
+        mg = list(dict.fromkeys(mg))
+        if mg:
+            out.append(f"통합: {nm} ← {', '.join(mg[:8])}" + (f" 외 {len(mg) - 8}개" if len(mg) > 8 else ""))
+    return out
 
 
 def apply_merges(models, draft=()):
@@ -1289,11 +1376,13 @@ def final_model(raw, models, people=(), pinned_keys=()):
     return md
 
 
+@functools.lru_cache(maxsize=8192)
 def _rule_name_ok(s):
-    """규칙 과제명·매칭어로 쓸 수 있는가 — 상투어·버전·6~8자리 날짜·Untitled·copy 는 아니다(F-19·W2-13, extract 와 같은 규칙)."""
+    """규칙 과제명·매칭어로 쓸 수 있는가 — 상투어·버전·6~8자리 날짜·Untitled·copy 는 아니다(F-19·W2-13, extract 와 같은 규칙).
+    LM30(2026-10-27): 대화 낱말뿐인 이름('책임님'·'보내드렸습니다'·'가능하실까요')도 아니다(extract.talk_name)."""
     try:
-        from extract import rule_name_ok
-        return rule_name_ok(s)
+        from extract import rule_name_ok, talk_name
+        return rule_name_ok(s) and not talk_name(s)
     except ImportError:
         return bool(str(s or "").strip())
 
@@ -1373,7 +1462,10 @@ def judge_prompt(chunk, start, models, first=True, seen_details=(), idxs=None):
         "  단, 이미 목록에 같은 개체의 다른 표기가 있으면 그 표기를 쓴다. 어느 쪽도 아니면 \"공통\".",
         "   → " + ", ".join(
             m["name"] + (f"({str(m.get('desc'))[:30]})" if m.get("desc") else "") for m in models),
-        "  ★ 사람 이름·호칭·부서·채팅방 이름은 과제가 아니다 — 그 사람과 한 일이 속한 과제, 모르면 \"공통\".",
+        # LM30(2026-10-27) — 예전 '그 사람과 한 일이 속한 과제' 는 과제가 상대를 따라간다는 뜻으로 읽혔다(한 사람과 여러 일을 한다)
+        "  ★ 사람 이름·호칭·부서·채팅방 이름은 과제가 아니다 — 그 줄의 내용이 가리키는 과제 — 같은 상대·같은 대화방이라도"
+        " 줄마다 다를 수 있습니다. 모르면 \"공통\".",
+        "  ★ 이 묶음의 줄만 보고 판정하세요 — 앞 묶음에서는 과제·세부업무 표기만 이어 쓰세요.",
         "  ★ 근태·인사·발령·공지·교육 안내는 과제가 아니다 — 단순 공지는 n, 내가 처리한 행정이면 \"공통\".",
         "· 유형 : 개발 / 사무 / 현장 / 협업 중 하나",
         "· 세부업무 : 짧은 명사구 — 같은 일은 같은 이름으로 (예: '설계 검토', '부품 발주',",
@@ -1522,18 +1614,23 @@ def _write_json_atomic(path, obj):
 
 
 def load_judge_cache(rep):
-    r"""report\judge_cache.json → {"v":1, "since": 캐시 시작 시각(epoch), "migrated": 옛 기록을 이미 옮겼나,
+    r"""report\judge_cache.json → {"v": 파일의 판(없으면 1), "since": 캐시 시작 시각(epoch), "migrated": 옛 기록을 이미 옮겼나,
     "items": {키: {"w","m","t","d","at"}}}. 없거나 깨졌으면 빈 캐시(since 0·migrated False — 옛 판정 기록
-    ai_judgments_*.json 을 한 번 이어받는다)."""
+    ai_judgments_*.json 을 한 번 이어받는다). v2(LM30 2026-10-27)부터 짧은 팀즈 대화의 판정은 쓰지 않는다 — 판과 무관하게
+    main 이 그 줄의 항목을 건너뛰고 지운다(v1 의 같은 문장 묶음이 다른 방·다른 과제에서 옮겨 놓은 판정)."""
     try:
         with open(os.path.join(rep, JUDGE_CACHE), encoding="utf-8-sig") as f:
             o = json.load(f)
         if isinstance(o, dict) and isinstance(o.get("items"), dict):
-            return {"v": 1, "since": float(o.get("since") or 0), "migrated": bool(o.get("migrated")),
+            try:
+                v = int(o.get("v") or 1)
+            except (TypeError, ValueError):
+                v = 1
+            return {"v": v, "since": float(o.get("since") or 0), "migrated": bool(o.get("migrated")),
                     "items": o["items"]}
     except (OSError, ValueError, TypeError):
         pass
-    return {"v": 1, "since": 0.0, "migrated": False, "items": {}}
+    return {"v": JUDGE_CACHE_V, "since": 0.0, "migrated": False, "items": {}}
 
 
 def save_judge_cache(rep, cache, d0, prune=True):
@@ -1556,7 +1653,7 @@ def save_judge_cache(rep, cache, d0, prune=True):
                 del items[k]
     # migrated — 이 캐시가 저장된 뒤로는 판정마다 캐시에 남으므로 옛 판정 기록(ai_judgments_*.json)을 다시 읽지 않는다
     return _write_json_atomic(os.path.join(rep, JUDGE_CACHE),
-                              {"v": 1, "since": cache.get("since") or 0, "migrated": True, "items": items})
+                              {"v": JUDGE_CACHE_V, "since": cache.get("since") or 0, "migrated": True, "items": items})
 
 
 def _legacy_judgments(rep, tag, since=0.0, limit=LEGACY_JUDGMENT_FILES):
@@ -1627,6 +1724,11 @@ def _fam(r):
     return str((r or {}).get("source") or "").split("(")[0]
 
 
+def _conv(r):
+    """팀즈 줄의 대화 키(signals conv 열 — 대화방 이름의 소금 친 키, LM30 2026-10-27) · 팀즈가 아니거나 방을 모르면 ""."""
+    return str((r or {}).get("conv") or "").strip() if _fam(r) == "팀즈" else ""
+
+
 def _substantive(text):
     """업무를 가리킬 낱말이 하나라도 있는가 — extract._tokens 중 상투어·버전·날짜가 아닌 것(rule_name_ok)."""
     try:
@@ -1636,10 +1738,22 @@ def _substantive(text):
     return any(rule_name_ok(t) for t in _tokens(text))
 
 
+def _has_content(text):
+    """일을 가리키는 낱말이 있는가(LM30 2026-10-27) — extract.content_words: 상투어·버전·날짜에 더해 대화 낱말(맞장구·인사·호칭·
+    시각·흔한 소통 낱말·'…습니다/…요/…까/…드린' 꼴)도 뺀다. extract 가 없으면 예전 _substantive."""
+    try:
+        from extract import content_words
+    except ImportError:
+        return _substantive(text)
+    return bool(content_words(text))
+
+
 def group_key(r):
     """같은 내용 묶음 키 → (계열, 정규화한 원문 앞 95자) 또는 None(혼자 보낸다).
     메일·회의는 RE/FW/회신 머리를 떼고, 파일은 규모 꼬리(' 외 N건' 등)를 뗀 뒤 소문자·앞뒤 구두점 정리. 숫자는 남긴다
-    ('설계 검토 1' 과 '설계 검토 2' 는 다른 일). 커밋·수동기록, 6자 미만, 업무 낱말이 하나도 없는 원문은 묶지 않는다."""
+    ('설계 검토 1' 과 '설계 검토 2' 는 다른 일). 커밋·수동기록, 6자 미만, 업무 낱말이 하나도 없는 원문은 묶지 않는다.
+    팀즈(LM30 2026-10-27)는 같은 대화(conv)·같은 날 안에서만 묶는다 — 키에 대화 키와 날짜가 들어간다. 대화방을 모르는 팀즈 줄은
+    묶지 않는다(예전에는 '자료 보내드렸습니다' 같은 줄이 방·사람·과제를 넘어 한 판정을 나눠 가졌다)."""
     fam = _fam(r)
     if fam in ("커밋", "수동기록"):
         return None
@@ -1655,17 +1769,25 @@ def group_key(r):
     t = t.lower().strip(" .-_~!?")
     if len(t) < 6 or not _substantive(t):
         return None
+    if fam == "팀즈":
+        cv = _conv(r)
+        if not cv:
+            return None
+        return fam, f"{cv}|{str(r.get('time') or '')[:10]}|{t[:GROUP_KEY_CHARS]}"
     return fam, t[:GROUP_KEY_CHARS]
 
 
 def is_lowinfo(r):
-    """짧은 팀즈 대화(인사·맞장구 — '네'·'감사합니다'·'ㅎㅎ')인가 — Copilot 에 보내지 않고 주변 판정으로 채운다(실패가 아니다).
-    가림 토큰·구두점을 뺀 글이 6자 미만이거나, 맞장구 정형이거나, 업무 낱말이 하나도 없으면."""
+    """짧은 팀즈 대화인가 — Copilot 에 보내지 않고 같은 대화의 판정으로 채운다(실패가 아니다).
+    가림 토큰·구두점을 뺀 글이 6자 미만이거나, 맞장구 정형이거나, 일을 가리키는 낱말이 하나도 없으면(_has_content).
+    LM30(2026-10-27): '네 확인했습니다'·'자료 보내드렸습니다'·'[사람] 책임님 확인 부탁드립니다'·'오후에 잠깐 통화 가능하실까요' 처럼
+    맞장구·호칭·시각·문장 끝 꼴뿐인 줄도 짧은 대화다 — 예전에는 이런 줄이 '업무 낱말 있음' 으로 같은 문장 묶음이 되어 방·사람·과제를
+    넘어 한 판정을 나눠 가졌다. 판정 캐시 v2 는 이런 줄의 지난 판정을 쓰지 않는다."""
     if _fam(r) != "팀즈":
         return False
     t = " ".join(str(r.get("text") or "").split())
     core = re.sub(r"[\W_]+", "", _MASK_TOKEN.sub(" ", t))
-    return len(core) < 6 or bool(_ACK_RX.match(t)) or not _substantive(t)
+    return len(core) < 6 or bool(_ACK_RX.match(t)) or not _has_content(t)
 
 
 def _wt(r):
@@ -1897,13 +2019,17 @@ def _who_key(r):
 
 def fill_unjudged(rows, judged, targets, keys=None):
     """AI 가 직접 못 본 행을 비슷한 판정으로 채운다 → {행: (판정, 방법)} — 방법은 same·conv·token·sim.
-    ① same — 같은 내용 묶음 키(group_key)인 판정 행 중 가장 흔한 판정(비업무 n 도 옮기는 유일한 단계)
-    ② conv — 팀즈: 앞뒤 30분 안의 팀즈 판정 업무 행(같은 상대 먼저, 가까운 시각 먼저)
-    ③ token — mine 규칙 토큰(project — 미지정·공통·상투어 제외): 그 토큰 판정 행의 60% 이상(3행 이상)이 한 과제면 그 과제와
+    ① same — 같은 내용 묶음 키(group_key — 팀즈는 같은 대화·같은 날)인 판정 행 중 가장 흔한 판정(비업무 n 도 옮기는 유일한 단계)
+    ② conv — 팀즈: 같은 대화(conv 열 — 방을 모르는 줄끼리는 '방 모름' 한 묶음)의 앞뒤 30분 안 판정 업무 행 중 가장 가까운 것(같으면
+       앞의 것). LM30(2026-10-27) — 예전에는 방 경계 없이 같은 보낸이를 먼저 골라 다른 방·다른 과제의 판정을 빌렸다.
+    ③ token — mine 규칙 토큰(project — 미지정·공통·상투어·대화 낱말 제외): 그 토큰 판정 행의 60% 이상(3행 이상)이 한 과제면 그 과제와
        그 과제의 가장 흔한 (유형, 세부업무)
-    ④ sim — 드문 낱말(df ≤ max(30, 0.5%·N))의 IDF 합(Σ log(N/df))이 가장 큰 판정 행(합 ≥ log(N/30) · 같으면 가까운 시각) —
-       그 행이 업무일 때만(비업무와 가장 닮았으면 채우지 않는다)
-    ②~④는 업무 판정만 옮기고 행을 버리지 않는다. 강한 행정 공지 제목은 ②~④로 채우지 않는다(규칙의 '공통/공지·근태').
+    ④ sim — 드문 낱말(df ≤ max(30, 0.5%·N) · 대화 낱말 제외)의 IDF 합(Σ log(N/df))이 가장 큰 판정 행(합 ≥ log(N/30) · 같으면 가까운
+       시각) — 그 행이 업무일 때만(비업무와 가장 닮았으면 채우지 않는다)
+    ⑤ conv(같은 대화 넓게 — LM30 2026-10-27) — 방을 아는 팀즈 줄 중 아직 못 채운 것: 같은 대화의 같은 날 판정 업무 행 중 가장 가까운 것,
+       그것도 없으면 그 대화에서 판정된 행의 60% 이상(3행 이상)이 한 과제일 때 그 과제(가장 흔한 유형·세부업무). 맞장구·호칭뿐인 짧은
+       대화는 30분 안에 내용 있는 줄이 없을 때가 많다 — 다른 방의 판정을 빌리지 않고 같은 대화 안에서만 넓힌다.
+    ②~⑤는 업무 판정만 옮기고 행을 버리지 않는다. 강한 행정 공지 제목은 ②~⑤로 채우지 않는다(규칙의 '공통/공지·근태').
     targets: 채울 후보(판정 없음·광고 아님·관문 아님 — 짧은 대화 포함). keys: group_key 목록(없으면 새로 만든다)."""
     out = {}
     targets = [i for i in targets if i not in judged]
@@ -1931,11 +2057,19 @@ def fill_unjudged(rows, judged, targets, keys=None):
         if i not in tm:
             tm[i] = _tmin(rows[i])
         return tm[i]
-    tl = sorted((_t(i), i) for i in work if _fam(rows[i]) == "팀즈" and _t(i) is not None)
-    tt = [x[0] for x in tl]
+    # 대화별 판정 업무 행(시각순) — 방을 모르는 줄('')끼리도 한 묶음(예전 판 signals·방 이름이 없는 수집기 — 그 안에서만 빌린다)
+    by_conv = defaultdict(list)
+    for i in work:
+        if _fam(rows[i]) == "팀즈" and _t(i) is not None:
+            by_conv[_conv(rows[i])].append((_t(i), i))
+    for v in by_conv.values():
+        v.sort()
+    tt_conv = {k: [x[0] for x in v] for k, v in by_conv.items()}
     rest = []
-    for i in left:                                            # ② conv
+    for i in left:                                            # ② conv — 같은 대화 · 앞뒤 30분
         ti = _t(i)
+        cv = _conv(rows[i])
+        tl, tt = by_conv.get(cv) or [], tt_conv.get(cv) or []
         if _fam(rows[i]) != "팀즈" or ti is None or not tl:
             rest.append(i)
             continue
@@ -1943,9 +2077,7 @@ def fill_unjudged(rows, judged, targets, keys=None):
         if not cands:
             rest.append(i)
             continue
-        who = _who_key(rows[i])
-        same = [c for c in cands if who and _who_key(rows[c[1]]) == who]
-        j = min(same or cands, key=lambda c: (abs(c[0] - ti), c[1]))[1]
+        j = min(cands, key=lambda c: (abs(c[0] - ti), c[1]))[1]
         out[i] = (dict(work[j], via="conv"), "conv")
     left = rest
 
@@ -1973,16 +2105,24 @@ def fill_unjudged(rows, judged, targets, keys=None):
                 continue
         rest.append(i)
     left = rest
-    if not left:
-        return out
-    try:                                                      # ④ sim
-        from extract import _tokens, rule_name_ok
+    if left:
+        _fill_sim(rows, judged, left, out, _t)                # ④ sim
+        left = [i for i in left if i not in out]
+    if left:
+        _fill_conv_wide(rows, judged, work, by_conv, left, out, _t)   # ⑤ 같은 대화 넓게
+    return out
+
+
+def _fill_sim(rows, judged, left, out, _t):
+    """fill_unjudged ④ sim — 드문 낱말의 IDF 합이 가장 큰 판정 행(업무일 때만). 대화 낱말은 낱말로 치지 않는다(LM30 2026-10-27)."""
+    try:
+        from extract import _tokens, rule_name_ok, talk_word
     except ImportError:
-        return out
+        return
     n_all = len(rows)
     toks, df = [], Counter()
     for r in rows:
-        ts = {t for t in _tokens(r.get("text") or "") if rule_name_ok(t)}
+        ts = {t for t in _tokens(r.get("text") or "") if rule_name_ok(t) and not talk_word(t)}
         toks.append(ts)
         df.update(ts)
     lim = max(30.0, 0.005 * n_all)
@@ -2009,7 +2149,39 @@ def fill_unjudged(rows, judged, targets, keys=None):
                 key=lambda j: (abs(_t(j) - ti) if (ti is not None and _t(j) is not None) else float("inf"), j))
         if judged[j].get("work"):
             out[i] = (dict(judged[j], via="sim"), "sim")
-    return out
+
+
+def _fill_conv_wide(rows, judged, work, by_conv, left, out, _t):
+    """fill_unjudged ⑤ — 방을 아는 팀즈 줄만: 같은 대화의 같은 날 판정 업무 행 중 가장 가까운 것(같으면 앞의 것), 없으면 그 대화에서
+    판정된 행(업무·비업무)의 FILL_TOKEN_SHARE 이상·FILL_TOKEN_MIN 행 이상이 한 과제일 때 그 과제와 가장 흔한 (유형, 세부업무)."""
+    tot = Counter(_conv(rows[i]) for i in judged if _fam(rows[i]) == "팀즈")
+    major = {}
+
+    def _major(cv):
+        if cv not in major:
+            c = Counter(str(work[i].get("model") or "") for _t0, i in by_conv.get(cv, ()))
+            major[cv] = None
+            if c:
+                m, n = c.most_common(1)[0]
+                if n >= FILL_TOKEN_MIN and n >= FILL_TOKEN_SHARE * tot[cv]:
+                    wd = Counter((str(work[i].get("worktype") or ""), str(work[i].get("detail") or ""))
+                                 for _t0, i in by_conv.get(cv, ()) if str(work[i].get("model") or "") == m)
+                    wt, dt = wd.most_common(1)[0][0]
+                    major[cv] = {"work": True, "model": m, "worktype": wt, "detail": dt}
+        return major[cv]
+    for i in left:
+        cv = _conv(rows[i])
+        if not cv or i in out:
+            continue
+        ti, day = _t(i), str(rows[i].get("time") or "")[:10]
+        cands = [c for c in by_conv.get(cv, ()) if str(rows[c[1]].get("time") or "")[:10] == day] if ti is not None else []
+        if cands:
+            j = min(cands, key=lambda c: (abs(c[0] - ti), c[1]))[1]
+            out[i] = (dict(work[j], via="conv"), "conv")
+            continue
+        mj = _major(cv)
+        if mj:
+            out[i] = (dict(mj, via="conv"), "conv")
 
 
 # ── 피벗·공통업무·에피소드 ─────────────────────────────────────────────────
@@ -3152,13 +3324,20 @@ def main():
     ckeys = [_ckey(signal_sig2(r) + (NOTE_KEY_SEP + notes[i] if i in notes else "")) for i, r in enumerate(rows)]
     judged, n_fail, n_partial, last_err = {}, 0, 0, ""
     redo = "--redo" in sys.argv                   # 처음부터 판정 — 캐시를 새로 시작한다(옛 판정 기록도 잇지 않는다)
-    cache = {"v": 1, "since": time.time(), "migrated": True, "items": {}} if redo else load_judge_cache(rep)
+    cache = {"v": JUDGE_CACHE_V, "since": time.time(), "migrated": True, "items": {}} if redo else load_judge_cache(rep)
     citems = cache["items"]
-    n_exact = n_named = 0
+    # 짧은 팀즈 대화(LM30 2026-10-27 — 맞장구·호칭·시각·문장 끝 꼴뿐인 줄)는 판정 캐시를 쓰지 않는다(v2). 예전 같은 문장 묶음이
+    # 다른 방·다른 과제의 판정을 옮겨 놓았을 수 있어, 그 항목은 지우고 아래에서 같은 대화의 판정으로 다시 채운다(왕복 없음).
+    generic = {i for i, r in enumerate(rows) if is_lowinfo(r)}
+    n_exact = n_named = n_generic_old = 0
     if not redo:
         # 캐시 이전 판의 판정 기록은 캐시가 처음 생길 때 한 번만 이어받는다(그 뒤의 판정은 모두 캐시에 있다)
         legacy = {} if cache.get("migrated") else _legacy_judgments(rep, tag, cache.get("since") or 0.0)
         for i in range(len(rows)):
+            if i in generic:
+                if citems.pop(ckeys[i], None) is not None or ckeys[i] in legacy:
+                    n_generic_old += 1
+                continue
             e = citems.get(ckeys[i])
             j = _from_cache(e)
             from_legacy = j is None
@@ -3183,20 +3362,21 @@ def main():
     for i, nt in notes.items():                   # 안건이 붙은 회의는 안건까지 같아야 한 묶음이다(Copilot 이 보는 줄이 같게)
         if gkeys[i] is not None:
             gkeys[i] = (gkeys[i][0], gkeys[i][1] + NOTE_SEP + nt)
-    # (a) 같은 내용 재사용 — 지난 판정이 있는 묶음 키의 새 행(옛 스레드의 새 회신 등)은 왕복 없이 그 판정을 쓴다
+    # (a) 같은 내용 재사용 — 지난 판정이 있는 묶음 키의 새 행(옛 스레드의 새 회신 등)은 왕복 없이 그 판정을 쓴다.
+    #     팀즈는 쓰지 않는다(LM30 2026-10-27 — 같은 문장이 다른 날·다른 일로 오가는 대화라 지난 판정을 옮기면 과제가 하나로 묶였다)
     by_key = defaultdict(Counter)
     for i, j in judged.items():
         if gkeys[i] is not None:
             by_key[gkeys[i]][_jt(j)] += 1
     n_keyed = 0
     for i in range(len(rows)):
-        if i in judged or i in ad_idx or gkeys[i] is None or gkeys[i] not in by_key:
+        if i in judged or i in ad_idx or gkeys[i] is None or gkeys[i] not in by_key or _fam(rows[i]) == "팀즈":
             continue
-        judged[i] = dict(_jd(by_key[gkeys[i]].most_common(1)[0][0]), via="group")
+        judged[i] = dict(_jd(by_key[gkeys[i]].most_common(1)[0][0]), via="reuse")
         citems[ckeys[i]] = _cache_entry(judged[i], today)
         n_keyed += 1
-    # (b) 짧은 팀즈 대화(인사·맞장구)는 보내지 않는다 — 실패가 아니다(아래에서 주변 판정으로 채운다)
-    lowinfo = {i for i in range(len(rows)) if i not in judged and i not in ad_idx and is_lowinfo(rows[i])}
+    # (b) 짧은 팀즈 대화(인사·맞장구·호칭·시각·문장 끝 꼴뿐)는 보내지 않는다 — 실패가 아니다(아래에서 같은 대화의 판정으로 채운다)
+    lowinfo = {i for i in generic if i not in judged and i not in ad_idx}
     # (c) 남은 행은 같은 내용끼리 묶어 대표만 보낸다(대표의 판정을 구성원 전체에)
     todo = [i for i in range(len(rows)) if i not in judged and i not in ad_idx and i not in lowinfo]
     reps, members = group_reps(rows, todo, gkeys)
@@ -3207,8 +3387,10 @@ def main():
               + (f"(같은 내용 {n_keyed}건 포함)" if n_keyed else "")
               + (f" · 사람 이름·공지류 과제로 판정된 {n_named}건은 다시 판정" if n_named else "")
               + f" · 남은 {len(todo)}건")
+    if n_generic_old:
+        print(f"        짧은 팀즈 대화의 지난 판정 {n_generic_old}건은 다시 쓰지 않고 같은 대화에서 채웁니다(판정 캐시 v2 — 왕복 없음)")
     if lowinfo:
-        print(f"        짧은 팀즈 대화(인사·맞장구) {len(lowinfo)}건은 보내지 않고 주변 판정으로 채웁니다")
+        print(f"        짧은 팀즈 대화(인사·맞장구·호칭·시각뿐) {len(lowinfo)}건은 보내지 않고 같은 대화의 판정으로 채웁니다")
     if members:
         print(f"        같은 내용 묶음 — 대표 {len(members)}줄이 {len(members) + n_members}행을 대신합니다"
               f"(보낼 줄 {len(reps)})")
@@ -3269,6 +3451,8 @@ def main():
                 if cand and len(cand) <= len(models):
                     merged_names = [m["name"] for m in cand]
                     print("        통합 후: " + ", ".join(merged_names[:10]))
+                    for _ln in merge_log_lines(cand):      # 무엇을 무엇에 합쳤는지(LM30 2026-10-27) — 과병합을 로그로 찾게
+                        print("        " + _ln)
                     models = apply_merges(cand, draft)     # 통합 응답에 없는 product·l1 은 초안에서 옮긴다
                 else:
                     print("        통합 결과가 유효하지 않아 초안 유지")
@@ -3439,6 +3623,7 @@ def main():
             else:
                 r.update(model=rule_model(r, models), worktype=("협업" if i in lowinfo else "사무"),
                          detail=r.get("activity") or "기타", judge="규칙")
+            r["via"] = "rule"
             kept.append(r)
         elif not j["work"]:
             r["judge"] = "AI-n"
@@ -3448,7 +3633,10 @@ def main():
             if details.is_person_name(dt, people):
                 dt = r.get("activity") or "기타"
             r.update(model=final_model(j["model"], models, people, pinned_keys), worktype=j["worktype"] or "사무",
-                     detail=dt, judge=("AI(유사)" if j.get("via") in ("conv", "token", "sim") else "AI"))
+                     detail=dt, judge=("AI(유사)" if j.get("via") in ("conv", "token", "sim") else "AI"),
+                     # 과제를 받은 길(LM30 2026-10-27 — 이 PC 화면의 근거 한 줄용 · 팀 반출에서 뺀다): ai 직접 · group 같은 문장 묶음 ·
+                     # cache 지난 판정 · reuse 지난 판정의 같은 문장 · same/conv/token/sim 채움
+                     via=str(j.get("via") or "ai"))
             kept.append(r)
     rule_rows = sum(1 for r in kept if r.get("judge") == "규칙")
     # 실패 행 다시 세기 — 판정 없음 − 광고 − 관문 − 짧은 대화 − 모델이 빠뜨린 행(대표가 실패하면 구성원도 실패다)
@@ -3469,9 +3657,10 @@ def main():
     # 유사 세부업무 통합을 signals 저장 '전에' 끝낸다 — 리뷰 탭(signals)과 대시보드(mm_rows)의
     # 세부업무 이름이 갈리지 않게. write_outputs 가 다시 불러도 결과는 같다(멱등).
     merge_details(kept)
-    # flag(G2 광고 의심 표식 — mine 이 끝 열에 둔다)는 되쓸 때도 끝에 남긴다(관문·팀 반출이 읽는다)
+    # flag(G2 광고 의심 표식 — mine 이 끝 열에 둔다)는 되쓸 때도 끝에 남긴다(관문·팀 반출이 읽는다).
+    # conv(팀즈 대화 키)·via(과제를 받은 길)는 이 PC 안에서만 — 팀 반출·내보내기는 열째 뺀다(privacy.TEAM_DROP_COLS, LM30 2026-10-27)
     cols = ["time", "source", "who", "project", "activity", "weight", "text",
-            "model", "worktype", "detail", "judge", "flag"]
+            "model", "worktype", "detail", "judge", "flag", "conv", "via"]
     with open(sp, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.DictWriter(f, fieldnames=cols)
         w.writeheader()
@@ -3517,6 +3706,7 @@ def main():
         print("        판정 0건 — 기존 entities 파일을 보존합니다(규칙 폴백 체계로 덮지 않음)")
 
     dropped = len(dropped_rows)
+    _tms = details.teams_via_counts(kept)           # 팀즈 근거가 과제를 받은 길(LM30 2026-10-27 — 구조 줄·판정 기록)
     # failed_chunks = 0건으로 끝난 청크(왕복 실패·JSON 없음 모두 — 예전엔 JSON 없음이 빠져 0 으로 보였다),
     # partial_chunks = 일부만 판정된 청크, failed_rows = AI 가 직접 못 본 행(판정 없음 − 광고 − 관문 − 짧은 대화 − 빠뜨림,
     # 비슷한 판정으로 채운 행 포함), omitted_rows = 온전한 답인데 모델이 빠뜨린 행, repaired = 잘린 답을 복구한 왕복,
@@ -3542,6 +3732,9 @@ def main():
                    "rule_rows": rule_rows, "abort_kind": st["abort_kind"], "abort_reason": st["abort_reason"],
                    "cooldowns": _COOLDOWNS[0], "model_fallback": _MODEL_FALLBACK[0] or "",
                    "rotations": _ROTATIONS[0],          # LM30 — chatTurns 회전(새 채팅으로 넘어간) 횟수
+                   # LM30(2026-10-27) 팀즈 근거가 과제를 받은 길 — 업무 행 수 · 같은 문장 묶음(대표·같은 내용 채움) · 지난 판정 ·
+                   # 짧은 대화라 다시 쓰지 않은 지난 판정(판정 캐시 v2)
+                   "cache_version": JUDGE_CACHE_V, "teams": dict(_tms, generic_cache_dropped=n_generic_old),
                    "items": {str(k): dict(v, sig=signal_sig(rows[k])) for k, v in judged.items()
                              if 0 <= k < len(rows)}}, f, ensure_ascii=False, indent=1)
 
@@ -3568,7 +3761,9 @@ def main():
           f"짧은 대화 {len(lowinfo)} · 왕복 {st['roundtrips']} · 대기 {_COOLDOWNS[0]}회 · 채움 {len(fills)} · "
           f"규칙 {rule_rows} · 중단 {st['abort_kind'] or '없음'}"
           + (f" · 채팅 회전 {_ROTATIONS[0]}회(chatTurns {chat_turns()}번마다 새 채팅)" if _ROTATIONS[0] else "")
-          + (f" · 대체 모델 {_MODEL_FALLBACK[0]}" if _MODEL_FALLBACK[0] else ""))
+          + (f" · 대체 모델 {_MODEL_FALLBACK[0]}" if _MODEL_FALLBACK[0] else "")
+          # LM30(2026-10-27) 팀즈 근거 중 같은 문장이라 함께 들어온 줄·지난 판정을 다시 쓴 줄(리뷰 화면 과제별 한 줄과 같은 수)
+          + (f" · 팀즈 {_tms['rows']}건 중 같은 문장 {_tms['same']} · 지난 판정 {_tms['reused']}" if _tms["rows"] else ""))
 
     if not judged:
         # 판정이 한 건도 없다 — 왕복이 전부 실패했거나 응답을 하나도 해석하지 못했다. 예전에는

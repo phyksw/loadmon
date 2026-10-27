@@ -2426,6 +2426,17 @@ def review_mm(meta, gran, key, days=None):
         return None
 
 
+def _via_note(tv):
+    """리뷰 과제 한 줄(LM30 2026-10-27) — 그 과제의 팀즈 근거 행들({source, via})의 수로 core\\details.via_note(합니다체). 없으면 ""."""
+    if not tv:
+        return ""
+    try:
+        import details as _dv
+        return _dv.via_note(_dv.teams_via_counts(tv))
+    except Exception:  # noqa: BLE001 - 근거 한 줄이 리뷰를 막지 않는다
+        return ""
+
+
 def review(gran="week", rows=None, meta=None):
     """주간/월간/전체 업무 리뷰 — 신호별 귀속 내역(signals_*.csv)을 기간으로 묶어
     프로젝트별 raw 근거·타임라인·사람/산출물 연결까지 만든다. '요약'이 아니라 원문이 들어간 리뷰.
@@ -2465,9 +2476,11 @@ def review(gran="week", rows=None, meta=None):
         txt = (r.get("text") or "").strip()
         pp = g["proj"].setdefault(pj, {"w": 0.0, "n": 0, "acts": Counter(), "people": Counter(),
                                        "files": Counter(), "meets": Counter(), "comms": Counter(),
-                                       "wt": Counter()})
+                                       "wt": Counter(), "tv": []})
         pp["w"] += w
         pp["n"] += 1
+        if src.startswith("팀즈"):                   # 팀즈 근거가 과제를 받은 길(via — LM30 2026-10-27 · 과제별 한 줄)
+            pp["tv"].append({"source": src, "via": r.get("via") or ""})
         pp["acts"][r.get("detail") or r.get("activity") or "기타"] += w
         pp["wt"][r.get("worktype") or "사무"] += w
         g.setdefault("wt", Counter())[r.get("worktype") or "사무"] += w
@@ -2502,7 +2515,9 @@ def review(gran="week", rows=None, meta=None):
                 "people": [[k, v] for k, v in pp["people"].most_common(6)],
                 "files": [k for k, _v in pp["files"].most_common(6)],
                 "meets": [k for k, _v in pp["meets"].most_common(4)],
-                "comms": [k for k, _v in pp["comms"].most_common(5)]})
+                "comms": [k for k, _v in pp["comms"].most_common(5)],
+                # LM30(2026-10-27) — '이 과제의 팀즈 근거 N건 중 M건은 같은 문장이라 함께 들어왔고, K건은 지난 판정을 다시 썼습니다'
+                "note": _via_note(pp["tv"])})
         timeline = [{"date": d, "lines": sorted(g["tl"][d], key=lambda x: x["t"])[:60]}
                     for d in sorted(g["tl"], reverse=True)][:45]
         # 연결성: 사람↔프로젝트, 프로젝트↔산출물 간선
@@ -2613,6 +2628,9 @@ def leave_view_lines(meta, tag):
 LEAVE_BODY_MAX = 32768        # 칸 글 상한(attendance.LEAVE_TEXT_MAX 8000자 — 한글은 3바이트) + JSON 여유
 LEAVE_DRAIN_MAX = 1 << 20     # 너무 큰 본문은 이만큼까지만 읽어 버리고 400(메모리에 담지 않는다)
 LEAVE_BUSY_HINT = "분석·다른 작업이 도는 중에는 휴가 날짜를 저장하지 않습니다 — 끝난 뒤 누르세요"
+# LM30(2026-10-27) 워크플로우 탭 '이름 병합' 표의 [분리](POST /api/project_split — 과제 이름 두 개)
+SPLIT_BODY_MAX = 4096
+SPLIT_BUSY_HINT = "분석·다른 작업이 도는 중에는 과제 이름 병합을 나누지 않습니다 — 끝난 뒤 누르세요"
 
 
 def _leave_is_off():
@@ -5915,25 +5933,46 @@ function mixedLine(mx){
 // 사람이 찾을 수 없다. 접어 두고, 펼치면 표와 되돌리는 방법을 보여준다.
 function mergeLine(m){
  if(!m)return"";
- const np=(m.pairs||[]).length, nd=(m.flow_dupes||[]).length, nr=(m.rejects||[]).length;
- if(!np&&!nd&&!nr)return"";
+ const np=(m.pairs||[]).length, nd=(m.flow_dupes||[]).length, nr=(m.rejects||[]).length, na=(m.ask||[]).length;
+ if(!np&&!nd&&!nr&&!na)return"";
+ // LM30(2026-10-27) 합친 줄마다 [분리] — 두 이름을 never 에 적어 다시 합치지 않는다(POST /api/project_split · 작업 중이면 409).
+ // 얼린 사본·파일로 연 화면에는 단추를 두지 않는다(lmLive — 보낼 곳이 없다)
+ const live=lmLive();
  const rows=(m.pairs||[]).map(p=>`<tr><td>${esc(p.from)}</td><td style="color:#8b929b">→</td><td><b>${esc(p.to)}</b></td>`
   +`<td class="dim">${esc(p.why||"")}</td><td style="text-align:right">${(p.mm||0).toFixed(2)} MM</td>`
-  +`<td style="text-align:right" class="dim">신호 ${p.signals||0}</td></tr>`).join("");
+  +`<td style="text-align:right" class="dim">신호 ${p.signals||0}</td>`
+  +(live?`<td style="text-align:right"><button class="ghost" style="padding:1px 8px;font-size:11px" data-a="${esc(p.from)}" data-b="${esc(p.to)}" `
+  +`onclick="projSplit(this)" title="두 과제를 다시 합치지 않게 적습니다 — 다음 [워크플로우 재분석]부터 따로 보입니다">분리</button></td>`:"<td></td>")
+  +`</tr>`).join("");
  const dups=(m.flow_dupes||[]).map(x=>`<tr><td colspan="3">${esc(x.kept)}</td>`
-  +`<td class="dim">${esc(x.why||"")}</td><td colspan="2" style="text-align:right" class="dim">`
+  +`<td class="dim">${esc(x.why||"")}</td><td colspan="3" style="text-align:right" class="dim">`
   +`단계 ${(x.steps||[0,0])[0]}개 유지 · ${(x.steps||[0,0])[1]}개 버림</td></tr>`).join("");
  const rej=(m.rejects||[]).map(r=>`<tr><td colspan="3">${esc(r.a)} ↔ ${esc(r.b)}</td>`
-  +`<td colspan="3" class="dim">${esc(r.why||"")}</td></tr>`).join("");
+  +`<td colspan="4" class="dim">${esc(r.why||"")}</td></tr>`).join("");
+ const ask=(m.ask||[]).map(r=>`<tr><td colspan="3">${esc(r.a)} ↔ ${esc(r.b)}</td>`
+  +`<td colspan="4" class="dim">${esc(r.why||"")}</td></tr>`).join("");
  return '<details style="margin-top:8px"><summary style="cursor:pointer;font-size:12px;color:#4a5159">'
   +`이름 병합 ${np}건 · 흐름 중복 제거 ${nd}건${nr?` <span class="dim">(합치지 않은 것 ${nr}건)</span>`:""}`
+  +`${na?` <span class="dim">· 확인이 필요한 것 ${na}건(합치지 않음)</span>`:""}`
   +'</summary><table style="width:100%;font-size:12px;margin-top:6px">'
-  +(rows?'<tr><th colspan="6" style="text-align:left;color:#8b929b;font-weight:normal">합친 과제 이름</th></tr>'+rows:"")
-  +(dups?'<tr><th colspan="6" style="text-align:left;color:#8b929b;font-weight:normal;padding-top:6px">중복으로 지운 흐름</th></tr>'+dups:"")
-  +(rej?'<tr><th colspan="6" style="text-align:left;color:#8b929b;font-weight:normal;padding-top:6px">합치지 않은 것</th></tr>'+rej:"")
-  +'</table><div class="note">잘못 합쳐졌으면 <b>config\\project_aliases.json</b> 의 그 줄을 지우세요. '
-  +'띄어쓰기만 다른 이름은 규칙이 다시 합치므로, 영영 갈라 두려면 같은 파일 <b>never</b> 에 '
-  +'<code>["이름A", "이름B"]</code> 를 적으면 됩니다. 다음 [워크플로우 재분석]부터 반영됩니다.</div></details>';
+  +(rows?'<tr><th colspan="7" style="text-align:left;color:#8b929b;font-weight:normal">합친 과제 이름</th></tr>'+rows:"")
+  +(dups?'<tr><th colspan="7" style="text-align:left;color:#8b929b;font-weight:normal;padding-top:6px">중복으로 지운 흐름</th></tr>'+dups:"")
+  +(ask?'<tr><th colspan="7" style="text-align:left;color:#8b929b;font-weight:normal;padding-top:6px">확인이 필요한 것 — 이름이 달라 합치지 않았습니다</th></tr>'+ask:"")
+  +(rej?'<tr><th colspan="7" style="text-align:left;color:#8b929b;font-weight:normal;padding-top:6px">합치지 않은 것</th></tr>'+rej:"")
+  +'</table><div class="note">잘못 합쳐졌으면 그 줄의 <b>[분리]</b>를 누르세요 — 두 이름을 config 폴더 project_aliases.json 의 '
+  +'<b>never</b> 에 적어 다시 합치지 않고, 다음 [워크플로우 재분석]부터 따로 보입니다. 이름이 다른 과제는 담당 업무·제품이 겹쳐도 '
+  +'자동으로 합치지 않고 "확인이 필요한 것" 으로만 보입니다.</div></details>';
+}
+async function projSplit(b){
+ const a=b.getAttribute("data-a")||"", c=b.getAttribute("data-b")||"";
+ if(!a||!c)return;
+ if(!confirm(`'${a}' 와(과) '${c}' 를 나눕니다 — 다시 합치지 않게 적고, 다음 [워크플로우 재분석]부터 따로 보입니다. 나눌까요?`))return;
+ b.disabled=true;
+ let r=null,d={};
+ try{r=await fetch("/api/project_split",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({a:a,b:c})});d=await r.json();}catch(e){d={ok:false,error:"보내지 못했습니다 — 화면을 새로 고친 뒤 다시 누르세요"};}
+ if(r&&r.status===409){alert(d.hint||"다른 작업이 도는 중입니다 — 끝난 뒤 누르세요");b.disabled=false;return;}
+ if(!d.ok){alert(d.error||"나누지 못했습니다");b.disabled=false;return;}
+ b.textContent="나눔";b.title=d.msg||"";
 }
 // LM30(2026-10-25) 마지막으로 읽은 워크플로우(/api/workflow) — '0.04 MM 이하 숨기기'를 바꾸면 다시 읽지 않고 이것으로 다시 그린다(smallRedraw)
 let FLC=null;
@@ -6221,6 +6260,7 @@ function drawReview(kind){
     <div style="margin-top:3px;font-size:11.5px">${(p.wt||[]).map(([k,v])=>`<span class="tag" style="border-left:3px solid ${WTCOL[k]||"#98a0a8"}">${esc(k)} ${v}%</span>`).join("")}
      <span class="state">· ${acts}</span></div>
     ${ppl?`<div style="margin-top:5px"><span class="state">함께:</span> ${ppl}</div>`:""}
+    ${p.note?`<div class="note" style="margin-top:3px">${esc(p.note)}</div>`:""}
     ${fls?`<div style="margin-top:3px"><span class="state">산출물:</span> ${fls}</div>`:""}
     ${mts?`<div style="margin-top:3px"><span class="state">회의:</span> ${mts}</div>`:""}
     ${cms?`<div style="margin-top:4px">${cms}</div>`:""}
@@ -7771,6 +7811,41 @@ class H(BaseHTTPRequestHandler):
             if ans.get("log"):
                 log(ans.pop("log"))                      # LOCK 밖에서(log 가 LOCK 을 잡는다)
             self._send(st, ans)
+        elif self.path == "/api/project_split":
+            # LM30(2026-10-27) 워크플로우 탭 '이름 병합' 표의 [분리] — config\project_aliases.json 에 두 과제 이름을 never 로 적고 둘을 잇는
+            # map 항목을 지운다(이 PC 의 파일 · 프로세스 없음). 작업이 도는 동안에는 쓰지 않는다(409 — 워크플로우가 그 파일을 읽고 쓴다).
+            try:
+                n = int(self.headers.get("Content-Length", 0) or 0)
+            except ValueError:
+                n = -1
+            if n < 0 or n > SPLIT_BODY_MAX:
+                left = min(max(n, 0), LEAVE_DRAIN_MAX)
+                while left > 0:
+                    chunk = self.rfile.read(min(65536, left))
+                    if not chunk:
+                        break
+                    left -= len(chunk)
+                self._send(400, {"ok": False, "error": "본문이 너무 깁니다"})
+                return
+            try:
+                b = json.loads(self.rfile.read(n) or b"{}") if n > 0 else {}
+            except ValueError:
+                b = None
+            if not (isinstance(b, dict) and isinstance(b.get("a"), str) and isinstance(b.get("b"), str)):
+                self._send(400, {"ok": False, "error": "나눌 두 과제 이름을 읽지 못했습니다 — 화면을 새로 고친 뒤 다시 누르세요"})
+                return
+            with LOCK:
+                if JOB["running"]:
+                    self._send(409, {"ok": False, "error": "busy", "hint": SPLIT_BUSY_HINT})
+                    return
+                try:
+                    import details as _dsp
+                    ans = _dsp.split_project_pair(b["a"], b["b"], path=os.path.join(ROOT, "config", "project_aliases.json"))
+                except OSError:
+                    ans = {"ok": False, "error": "config 폴더의 project_aliases.json 을 쓰지 못했습니다 — 다른 프로그램이 열고 있으면 닫고 다시 누르세요"}
+            if ans.get("ok"):
+                log("[워크플로우] 과제 이름 병합 1건을 나눴습니다 — 다음 [워크플로우 재분석]부터 따로 보입니다")
+            self._send(400 if ans.pop("bad", False) else 200, ans)
         elif self.path == "/api/ui_prefs":
             # LM30(2026-10-25) 옵션 줄 '0.04 MM 이하 숨기기' 칸(팀 취합 화면에도 같은 칸) — config\config.json 의 ui.hideSmallMM 만 고친다(이 PC 의
             # 개인 설정 · BOM·다른 키·설명 키 그대로 — _save_cfg_many). 화면 표시만 바꾸는 값이라 분석이 도는 중에도 받는다(분석·보고서는 이 값을
