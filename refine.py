@@ -25,6 +25,9 @@ refine.py — AI 정제: 추출된 업무 항목을 Copilot이 '원문 근거를
   · LM28 G3: 근거 줄은 제외어(privacy.excluded_keywords — mine·judge 와 같은 단일원) 줄을 빼고, 남은 줄은 관문
     (judge.g3_rows)을 거친 재정제 줄만 보낸다. 광고 의심(signals flag 'ad') 신호는 근거에 넣지 않는다. 관문에 막힌 청크는
     보내지 않고 원본 그대로 둔다 — 실패가 아니다(skipped_chunks·gated_items, 연속 실패 계수 밖).
+  · LM30(2026-10-27) 과제 관문: 병합(m)은 같은 과제(Level 2) 안의 항목끼리만 받는다 — 과제가 다른 항목을 합친 답은 과제별로 나누고
+    (task_guard_groups), 과제 이름은 구성원의 과제를 지킨다('공통'·'미지정' 구성원만 정제가 다른 과제로 옮길 수 있다). 프롬프트에도
+    'm 은 같은 과제 안의 항목끼리만' 줄을 둔다(예전에는 과제가 다른 '주간보고' 끼리 합쳐 두 과제가 하나로 묶였다).
 """
 import csv
 import io
@@ -259,6 +262,8 @@ def build_prompt(rows, evidence_md, model_names=(), ev_mode="aligned", overlap=(
         "",
         "할 일:",
         "1. 같은 업무가 여러 항목으로 쪼개져 있으면 **하나로 합칠 것** (m 에 합칠 원본 항목번호들)",
+        # LM30(2026-10-27) — 과제가 다른 '주간보고'·'일정 조율' 끼리 합쳐 과제가 하나로 묶였다(코드도 같은 과제끼리만 받는다)
+        "   m 은 같은 과제 안의 항목끼리만 — 과제가 다르면 이름이 같은 업무라도 합치지 마세요.",
         "2. l2 = 실제 과제·프로젝트명으로 정규화 (원문에서 읽어낸 이름. 토큰 조각 금지)"
         + (" — 이미 확정된 과제 체계가 있으니 그 표기를 그대로 유지할 것(변형·재작명 금지): "
            + ", ".join(model_names) if model_names else ""),
@@ -654,6 +659,43 @@ def merge_groups(items, rows):
     return [g for g in groups if g["idxs"]], owner
 
 
+GENERIC_L2 = ("", "공통", "미지정")   # 정제가 다른 과제로 옮겨도 되는 원본 과제(실제 과제가 아닌 자리)
+
+
+def task_guard_groups(groups, rows):
+    """정제 병합의 과제 관문(LM30 2026-10-27) → (새 그룹 목록, 나눈 그룹 수).
+    한 그룹의 구성원이 서로 다른 과제(Level 2 — ukey2, '공통'·'미지정' 제외)를 가지면 과제별로 나눈다 — 정제가 과제가 다른
+    '주간보고'·'일정 조율' 끼리 합쳐 두 과제가 하나로 묶이던 것. '공통'·'미지정' 구성원은 AI 가 고른 과제(l2)가 그 그룹의 과제
+    가운데 하나이면 그쪽에, 아니면 따로 남는다. 각 그룹에 own(구성원의 과제 — 없으면 None)을 붙인다: own 이 있으면 정제가
+    고른 과제 이름 대신 own 을 쓴다(과제 이름은 '공통'·'미지정' 일 때만 바꿀 수 있다)."""
+    out, n_split = [], 0
+
+    def _own(ids):
+        return _majority((rows[i].get("Level 2"), rows[i].get("share")) for i in ids)
+    for g in groups:
+        by, gen = {}, []
+        for i in sorted(g["idxs"]):
+            l2 = str(rows[i].get("Level 2") or "").strip()
+            if l2 in GENERIC_L2:
+                gen.append(i)
+            else:
+                by.setdefault(ukey2(l2), []).append(i)
+        if len(by) <= 1:
+            ids = next(iter(by.values()), [])
+            out.append(dict(g, own=(_own(ids) if ids else None)))
+            continue
+        n_split += 1
+        lk = ukey2(str(_g(g["it"], "level2") or "").strip())
+        for k, ids in by.items():
+            part = ids + (gen if k == lk else [])
+            out.append({"idxs": set(part), "it": g["it"], "pick_share": sum(_f(rows[i].get("share")) for i in part),
+                        "own": _own(ids)})
+        if gen and lk not in by:
+            out.append({"idxs": set(gen), "it": g["it"], "pick_share": sum(_f(rows[i].get("share")) for i in gen),
+                        "own": None})
+    return out, n_split
+
+
 def _pinned_projects():
     r"""지정 과제(config\projects.json) → (이름 목록, {ukey2(이름): 상위}) — 과제명 관문 통과·상위 채움용(못 읽으면 빈 값)."""
     try:
@@ -798,6 +840,10 @@ def main():
     # 원본 다수결로 되돌려지거나 새 과제로 남는다(judge·flow 와 같은 축을 쓴다).
     known_lv2 = {ukey2(r.get("Level 2")) for r in rows} | {ukey2(n) for n in model_names}
     groups, owner = merge_groups(rf.items, rows)
+    # 과제 관문(LM30 2026-10-27) — 과제가 다른 항목을 합친 병합은 과제별로 나누고, 과제 이름은 구성원의 과제를 지킨다
+    groups, n_split = task_guard_groups(groups, rows)
+    if n_split:
+        print(f"[refine] 과제가 다른 항목을 합친 병합 {n_split}건은 과제별로 나눴습니다(같은 과제 안에서만 합칩니다)")
     final = []
     for g in groups:
         it, idxs = g["it"], sorted(g["idxs"])
@@ -820,6 +866,9 @@ def main():
             lv2 = "미지정"
         # 과제명 관문(LM28 진단 B) — 사람 이름·채팅방·공지류면 원본 다수결, 그것도 걸리면 '공통'
         lv2 = _guard_lv2(lv2, lambda: _vote("Level 2"), people, pinned)
+        # 과제 관문(LM30 2026-10-27) — 구성원의 과제가 '공통'·'미지정' 이 아니면 정제가 다른 과제로 옮기지 못한다
+        if g.get("own") and ukey2(lv2) != ukey2(g["own"]):
+            lv2 = g["own"]
         # level3 는 실제 업무 항목명(중위개체) — AI 가 비웠거나 9종 범주로 축약해 오면
         # 원본 세부업무명(다수결)을 지킨다. 범주는 activity('활동') 열이 따로 담는다.
         lv3 = str(_g(it, "level3") or "").strip()

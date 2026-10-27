@@ -394,11 +394,13 @@ def main():
 
     def _w_sig(f):
         w = csv.writer(f)
-        w.writerow(["time", "source", "who", "project", "activity", "weight", "text", "flag"])
+        # conv(LM30 2026-10-27) — 팀즈 대화 키(대화방 이름의 소금 친 sha1 — 이 PC 안에서만). judge 가 같은 내용 묶음·주변 채우기를
+        # 같은 대화방 안에서만 하게 쓴다. Copilot 에 보내지 않고 팀 반출·내보내기에서는 열째 뺀다(privacy.TEAM_DROP_COLS)
+        w.writerow(["time", "source", "who", "project", "activity", "weight", "text", "flag", "conv"])
         for t, src, text, wt, who, proj, act in assigns:
             # S2: activity·text 는 한 줄로(개행·탭·앞뒤 공백 정규화) — 열 이름·text ≤100자 계약은 그대로
             w.writerow([t.strftime("%Y-%m-%d %H:%M"), src, who, proj, extract._one_line(act), round(wt, 3),
-                        _sig_text(src, text), sig_flags.get((t, src, text), "")])
+                        _sig_text(src, text), sig_flags.get((t, src, text), ""), extract.conv_of(meta, t, src, text, who)])
 
     def _w_meta(f):
         json.dump(meta_doc(d0, d1, months, sig, meta, total_mm, avail_mm, load_pct, mm_months, cfg_warns,
