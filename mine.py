@@ -129,10 +129,10 @@ def _locked_writes(jobs):
 
 
 def meta_doc(d0, d1, months, sig, meta, total_mm, avail_mm, load_pct, mm_months, cfg_warns, day_hours, hinfo,
-             ts_stat=None):
+             ts_stat=None, admin_mm=None):
     """mm_meta_<기간>.json 본문. measure·coverage·cfg_used(D5)는 mm_basis 에도 남고 최상위에도 싣는다 — 팀 취합(teamup)·
     리포트·UI 가 읽는다. LM28: unobserved_days(원장이 미관측이라 한 흔적 없는 평일)·time_share(shareBasis=time 일 때)를
-    최상위에 더한다(추가 키만 — 팀 호환 불변)."""
+    최상위에 더한다(추가 키만 — 팀 호환 불변). LM30(2026-10-28): admin_mm(근태·출장 등록 몫 — 건수·일수만)."""
     doc = {"period": [d0.isoformat(), d1.isoformat()], "months": round(months, 2),
            "signals": len(sig), "counted": meta["counted"],
            "excluded": meta["excluded"], "weights": meta["weights"],
@@ -154,6 +154,10 @@ def meta_doc(d0, d1, months, sig, meta, total_mm, avail_mm, load_pct, mm_months,
         doc["mm_rule"] = hinfo["mm_rule"]
     if hinfo.get("mm_lm30") is not None:
         doc["mm_lm30"] = hinfo["mm_lm30"]
+    # LM30v1(2026-10-28 · LM30 edc1ca9) 근태·출장 등록 몫(건수·일수만 · 날짜는 admin_days 파일 — 이 PC 전용). 과제 몫만 바꾸므로
+    # 위 투입·가용·로드율·법정 채움 키는 admin_mm 이 있든 없든 같다
+    if admin_mm:
+        doc["admin_mm"] = admin_mm
     return doc
 
 
@@ -350,10 +354,23 @@ def main():
     people = details.person_keys(s[4] for s in sig)
     kp = known_projects(cfg, people)
     items, assigns = extract.build_items2(sig, kp)
+    # LM30(2026-10-28) 근태·출장 등록 표기 — 등록뿐인 행은 공통 · 행정 처리(과제 몫 1분), 일정·수동기록이 표기뿐이면 그 시간을 그때 한
+    # 내 일의 과제로 나눈다(extract.admin_share_rows — 근무시간·총 MM 은 그대로). signals 파일의 weight(시간 근거)는 그대로 둔다.
+    assigns, adm_n = extract.admin_assigns(assigns, people)
+    adm_st, srows, admin_mm = {}, None, None
+    if adm_n["reg"] or adm_n["time"]:
+        srows = extract.admin_share_rows([extract.assign_row(a) for a in assigns], weights=meta.get("weights"),
+                                         holidays=extract._holiday_set(cfg), stats=adm_st, people=people)
+        items = extract.items_of_rows(srows)
+        admin_mm = extract.admin_counts(adm_st)
+        _an = extract.admin_note(admin_mm)
+        if _an:
+            print(f"     {_an}")
     # 과제 몫 — 기본 'weight'(LM24 가중치 비율). mm.shareBasis="time" 이면 그날 투입 분을 과제에 나눈다(core\timeshare, LM28)
     shares, ts_stat = None, None
     if extract.norm_cfg(cfg)[0]["shareBasis"] == "time":
-        shares, ts_stat = extract.time_shares(assigns, day_hours, cfg)
+        shares, ts_stat = (extract.time_shares_rows(srows, day_hours, cfg) if srows is not None
+                           else extract.time_shares(assigns, day_hours, cfg))
         print(f"     과제 몫 = 시간(shareBasis=time) · 근무 중 미분류 {ts_stat.get('unclassified_min', 0) / 60:.1f}h")
     rows = extract.to_rows(items, total_mm, owner, func, shares=shares,
                            l1_map={details.ukey2(p["name"]): p["l1"] for p in kp if p.get("l1")},
@@ -421,9 +438,10 @@ def main():
 
     def _w_meta(f):
         json.dump(meta_doc(d0, d1, months, sig, meta, total_mm, avail_mm, load_pct, mm_months, cfg_warns,
-                           day_hours, hinfo, ts_stat), f, ensure_ascii=False, indent=1)
+                           day_hours, hinfo, ts_stat, admin_mm), f, ensure_ascii=False, indent=1)
 
     locked = _locked_writes([(out, _w_rows), (ev, _w_ev), (sp, _w_sig), (meta_path, _w_meta)])
+    extract.save_admin_days(out_dir, tag2, adm_st)     # LM30(2026-10-28) 출장·근태계획 날짜 — 이 PC 전용(화면의 목적 미상 날짜)
     if locked:
         print(f"[mine] 저장 실패(다른 프로그램에서 열려 있음 — Excel 등, 또는 같은 폴더에서 다른 분석이 "
               f"동시에 실행 중): {', '.join(locked)}")

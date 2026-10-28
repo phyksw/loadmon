@@ -19,6 +19,9 @@ CAP_RATIO = 1.0             # 신호 없는 분을 과제에 줄 때 과제별 �
 MEET_W_PER_H = 2.0          # 회의: 시간당 2.0 → 길이 = w / 2.0 h (30분~5h)
 WIN_MIN_PER_W = {"작업창": 20.0, "작업창(IDE)": 12.0}   # 작업창: 20분당 1.0 · IDE 12분당 1.0
 MANUAL_W_PER_H = 2.0        # 수동기록: 시간당 2.0, 09:00 부터
+# LM30(2026-10-28) 근태·출장 등록 행(core\extract.admin_share_rows 의 '_cap') — 1분짜리 행정이라 그 시각의 1분만 덮는다
+ADMIN_SRC = "행정(등록)"
+ADMIN_COVER_MIN = 1.0
 
 
 def tie_key(k):
@@ -58,6 +61,8 @@ def cover_of(src, minute, weight, minutes_map=None):
         w = 0.0
     if w <= 0:
         return None
+    if src == ADMIN_SRC:
+        return (m, min(1440.0, m + ADMIN_COVER_MIN))
     if src == "회의":
         dur = min(300.0, max(30.0, w / MEET_W_PER_H * 60.0))
         return (m, min(1440.0, m + dur))

@@ -83,6 +83,15 @@ LM30(2026-10-27) — 과제가 하나로 묶이던 것(사용자 '한 사람과 
   · 판정 머리말: 과제는 '그 줄의 내용이 가리키는 과제'(같은 상대·같은 대화방이라도 줄마다 다를 수 있다) · '이 묶음의 줄만 보고'.
   · 체계 통합(consolidate)은 표기 변형만 합친다 · 체계·통합 표본에서 팀즈 줄은 40% 까지 · '통합: A ← B, C' 를 로그에 남긴다.
   · signals 끝 via 열 — 그 행이 과제를 받은 길(ai·group·cache·reuse·same·conv·token·sim·rule). 리뷰 화면의 과제별 한 줄과 구조 줄이 쓴다.
+
+LM30(2026-10-28) — 근태계획·국내출장을 올리는 일은 1분짜리(사용자 '국내출장을 가서 무엇을 하는 업무인지가 중요'):
+  · extract.admin_kind 로 행을 가른다. 'reg'(등록 표기뿐 — 메일·팀즈 '[결재요청] 국내출장 신청'·'근태계획 올렸습니다')는 보내지 않고
+    공통 · extract.ADMIN_DETAIL(via 'admin') — 과제 몫은 1분(write_outputs 가 extract.admin_share_rows 로 상한). 'time'(일정·수동기록이 표기뿐 —
+    '국내출장' 종일 · '근태계획' 18~21시)은 보내지 않고 공통 · ADMIN_TIME_DETAIL 자리표(via 'trip') — 과제 몫을 셀 때 그때 한 내 일의 과제로
+    나눈다. 'label'(표기 + 내용)은 판정 줄에서 표기를 떼고 '(출장) A사 B 시험 입회' 로 보낸다(가중치 그대로) — 일정·수동기록인데 판정이 '공통'
+    이면(교육·행사 목적이 아니면) 목적을 과제로 못 짚은 것이라 자리표로 돌린다. 등록 표기뿐인 과제·세부업무 이름은 받지 않는다(관문).
+  · signals 의 weight 는 그대로(시간 근거 — 팀 재계산). 근무시간·투입 MM 합계는 바뀌지 않고 어느 과제로 가는지만 바뀐다. 판정 캐시 판은
+    그대로(등록 행은 캐시를 쓰지 않고 지운다 · 표기 과제로 판정된 옛 판정은 과제명 관문이 다시 묻는다).
 """
 import bisect
 import csv
@@ -1467,6 +1476,8 @@ def judge_prompt(chunk, start, models, first=True, seen_details=(), idxs=None):
         " 줄마다 다를 수 있습니다. 모르면 \"공통\".",
         "  ★ 이 묶음의 줄만 보고 판정하세요 — 앞 묶음에서는 과제·세부업무 표기만 이어 쓰세요.",
         "  ★ 근태·인사·발령·공지·교육 안내는 과제가 아니다 — 단순 공지는 n, 내가 처리한 행정이면 \"공통\".",
+        # LM30(2026-10-28) — 등록 표기는 떼어 '(출장) …' 으로 보낸다(extract.admin_mark)
+        "  ★ 근태계획·출장 같은 등록 표기는 과제가 아닙니다 — 그 시간에 한 일(목적)의 과제로 판정하세요(줄 앞 '(출장)' 은 그 표기를 뗀 표시).",
         "· 유형 : 개발 / 사무 / 현장 / 협업 중 하나",
         "· 세부업무 : 짧은 명사구 — 같은 일은 같은 이름으로 (예: '설계 검토', '부품 발주',",
         "   '시험 결과 정리', '고객 대응', '주간보고'). 조사 붙은 조각('보고의' 등) 금지.",
@@ -1831,7 +1842,7 @@ def recent_details(judged, prev_idxs=()):
     allc = Counter(j["detail"] for j in judged.values() if j.get("work") and j.get("detail"))
     out, size = [], 0
     for name, _ in list(prev.most_common()) + list(allc.most_common()):
-        if name in out:
+        if name in out or not details.detail_name_ok(name):     # 등록 표기뿐인 이름은 이어 쓰게 하지 않는다(LM30 2026-10-28)
             continue
         if len(out) >= SEEN_MAX_NAMES or size + len(name) + 3 > SEEN_MAX_CHARS:
             break
@@ -1897,12 +1908,15 @@ def judge_rows(idxs, rows, models, seen, tag, label, depth, st):
     # 회의 안건(LM28 — st['meet_notes'] = {회의 행 번호: 안건}, main 의 meeting_notes 가 관문을 미리 통과시킨 것)은 'note'
     # 필드로 행과 같은 관문을 다시 지난다. 회의가 아닌 행·안건 없는 행에는 note 가 없다(signals 에 같은 이름 열이 생겨도 싣지 않음)
     notes = st.get("meet_notes") or {}
+    marks = st.get("admin_marks") or {}           # LM30(2026-10-28) 등록 표기 + 내용 행 — 표기를 뗀 판정 줄(extract.admin_mark)
     items = []
     for i in idxs:
         it = dict(rows[i], _gi=i)
         it.pop("note", None)
         if i in notes and _fam(rows[i]) == "회의":
             it["note"] = notes[i]
+        if i in marks:
+            it["text"] = marks[i]
         items.append(it)
     kept, why = g3_rows(items, ("text", "note") if notes else ("text",))
     n_gated = len(idxs) - len(kept)
@@ -2576,6 +2590,12 @@ def merge_details(rows, amap=None):
     canon = {}
     for md, dts in by_model.items():
         reps = []
+        # LM30(2026-10-28) 근태·출장 등록에 붙이는 세부업무(행정 처리·출장·근태계획 시간 자리표·목적 미상)는 합치지도, 다른 이름을
+        # 받지도 않는다 — 자리표가 다른 이름에 흡수되면 그 시간이 그때 한 일로 나뉘지 않는다
+        for name in dts:
+            if details.admin_detail(name):
+                canon[(md, name)] = name
+        dts = {k: v for k, v in dts.items() if not details.admin_detail(k)}
         fixed = fixed_by.get(md, set())
         ordered = sorted(dts.items(), key=lambda kv: -kv[1])
         for name, _w in ordered:
@@ -2832,21 +2852,41 @@ def _time_alloc(kept, mj, cfg):
             day_min[date.fromisoformat(str(k)[:10])] = int(round(float(v or 0) * 60))
         except (TypeError, ValueError):
             continue
-    rows = []
-    for r in kept:
-        try:
-            t = datetime.strptime(str(r.get("time") or "")[:16], "%Y-%m-%d %H:%M")
-            w = float(r.get("weight") or 0)
-        except (TypeError, ValueError):
-            continue
-        rows.append((t, r.get("source") or "", w, (r["model"], r["detail"])))
-    alloc, st = timeshare.allocate(day_min, rows, mc["signalMinutes"])
+    # kept 는 과제 몫을 셀 행(extract.admin_share_rows 결과 — LM30 2026-10-28): 등록 행은 1분만 덮고, 출장·근태계획 조각은 원래 행이
+    # 덮던 길이를 조각 가중치대로 나눈다(extract.admin_allocate — 날마다 Σ = 투입 그대로)
+    alloc, st = extract.admin_allocate(day_min, kept, lambda r: (r["model"], r["detail"]), mc["signalMinutes"])
     tot = sum(alloc.values())
     if not tot:
         return {}, {}, 0
     print(f"        과제 몫 = 시간(shareBasis=time) · 근무 중 미분류 {st.get('unclassified_min', 0) / 60:.1f}h")
     return ({k: v / tot for k, v in alloc.items()}, {k: v for k, v in alloc.items() if k != UNCLASSIFIED},
             alloc.get(UNCLASSIFIED, 0))
+
+
+def _save_admin(rep, tag, meta_p, mj, stats, say=print):
+    """근태·출장 등록 몫(LM30 2026-10-28 — extract.admin_share_rows 의 stats) → mm_meta.admin_mm(건수·일수만 — 팀으로 가도 되는 값)·
+    report\\admin_days_<기간>.json(날짜 — 이 PC 전용) · 진행 로그 한 줄(건수만). mm_meta 가 없거나 값이 같으면 다시 쓰지 않는다."""
+    import extract
+    counts = extract.admin_counts(stats)
+    note = extract.admin_note(counts)
+    if note:
+        say(f"        {note}")
+    extract.save_admin_days(rep, tag, stats)
+    if (not os.path.exists(meta_p) or mj.get("admin_mm") == counts
+            or ("admin_mm" not in mj and not any(counts[k] for k in ("reg", "time_rows", "time_days")))):
+        return counts                                  # 근태·출장 등록이 없는 결과는 mm_meta 를 다시 쓰지 않는다
+    mj["admin_mm"] = counts
+    tmp = f"{meta_p}.{os.getpid()}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(mj, f, ensure_ascii=False, indent=1, default=str)
+        os.replace(tmp, meta_p)
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+    return counts
 
 
 def write_outputs(kept, tag, cfg, rep):
@@ -2894,6 +2934,18 @@ def write_outputs(kept, tag, cfg, rep):
     # 화면에는 0, CSV에는 1.00 MM 으로 내보내 두 산출물이 어긋나게 했다.
     tm = mj.get("total_mm")
     total_mm = float(tm) if tm is not None else float(mj.get("months") or 0)
+    # LM30(2026-10-28) 과제 몫을 셀 행 — 근태·출장 등록 행은 1분(가중치 상한), 출장·근태계획 시간 자리표는 그때 한 내 일의 과제로
+    # 나눈 조각(extract.admin_share_rows). signals 의 weight(시간 근거)는 그대로 — 근무시간·총 MM 은 바뀌지 않는다.
+    import extract
+    signals_rows = kept
+    _ast = {}
+    try:
+        _hol = extract._holiday_set(cfg)
+    except Exception:  # noqa: BLE001 - 공휴일 설정을 못 읽어도 주말만 빼고 앞뒤 근무일을 본다
+        _hol = set()
+    kept = extract.admin_share_rows(signals_rows, weights=mj.get("weights"), holidays=_hol, stats=_ast,
+                                    people=details.person_keys(r.get("who") for r in signals_rows))
+    _save_admin(rep, tag, meta_p, mj, _ast)
     tot_w = sum(float(r["weight"] or 0) for r in kept) or 1e-9
     agg = defaultdict(lambda: {"w": 0.0, "days": set(), "src": Counter(), "wt": Counter()})
     for r in kept:
@@ -3329,11 +3381,27 @@ def main():
     # 짧은 팀즈 대화(LM30 2026-10-27 — 맞장구·호칭·시각·문장 끝 꼴뿐인 줄)는 판정 캐시를 쓰지 않는다(v2). 예전 같은 문장 묶음이
     # 다른 방·다른 과제의 판정을 옮겨 놓았을 수 있어, 그 항목은 지우고 아래에서 같은 대화의 판정으로 다시 채운다(왕복 없음).
     generic = {i for i, r in enumerate(rows) if is_lowinfo(r)}
-    n_exact = n_named = n_generic_old = 0
+    # LM30(2026-10-28) 근태·출장 등록 표기(extract.admin_kind) — 'reg'(등록뿐 — 1분짜리 행정)·'time'(일정·수동기록이 표기뿐 — 그때 한 일로
+    # 나눌 시간)은 Copilot 에 보내지 않고 캐시도 쓰지 않는다(지난 판정은 지운다 — 표기 과제·세부업무로 판정됐을 수 있다). 'label'(표기 +
+    # 내용)은 표기를 뗀 줄('(출장) A사 B 시험 입회')로 보낸다. 광고 의심 행은 보지 않는다(광고로 버린다).
+    admin = {}
+    for i, r in enumerate(rows):
+        if not is_ad_row(r):
+            _k = extract.admin_kind(r.get("text"), r.get("source"), people)
+            if _k:
+                admin[i] = _k
+    adm_skip = {i for i, k in admin.items() if k in ("reg", "time")}
+    marks = {i: extract.admin_mark(rows[i].get("text")) for i, k in admin.items() if k == "label"}
+    generic -= adm_skip
+    n_exact = n_named = n_generic_old = n_admin_old = 0
     if not redo:
         # 캐시 이전 판의 판정 기록은 캐시가 처음 생길 때 한 번만 이어받는다(그 뒤의 판정은 모두 캐시에 있다)
         legacy = {} if cache.get("migrated") else _legacy_judgments(rep, tag, cache.get("since") or 0.0)
         for i in range(len(rows)):
+            if i in adm_skip:
+                if citems.pop(ckeys[i], None) is not None:
+                    n_admin_old += 1
+                continue
             if i in generic:
                 if citems.pop(ckeys[i], None) is not None or ckeys[i] in legacy:
                     n_generic_old += 1
@@ -3370,7 +3438,8 @@ def main():
             by_key[gkeys[i]][_jt(j)] += 1
     n_keyed = 0
     for i in range(len(rows)):
-        if i in judged or i in ad_idx or gkeys[i] is None or gkeys[i] not in by_key or _fam(rows[i]) == "팀즈":
+        if (i in judged or i in ad_idx or i in adm_skip or gkeys[i] is None or gkeys[i] not in by_key
+                or _fam(rows[i]) == "팀즈"):
             continue
         judged[i] = dict(_jd(by_key[gkeys[i]].most_common(1)[0][0]), via="reuse")
         citems[ckeys[i]] = _cache_entry(judged[i], today)
@@ -3378,7 +3447,7 @@ def main():
     # (b) 짧은 팀즈 대화(인사·맞장구·호칭·시각·문장 끝 꼴뿐)는 보내지 않는다 — 실패가 아니다(아래에서 같은 대화의 판정으로 채운다)
     lowinfo = {i for i in generic if i not in judged and i not in ad_idx}
     # (c) 남은 행은 같은 내용끼리 묶어 대표만 보낸다(대표의 판정을 구성원 전체에)
-    todo = [i for i in range(len(rows)) if i not in judged and i not in ad_idx and i not in lowinfo]
+    todo = [i for i in range(len(rows)) if i not in judged and i not in ad_idx and i not in lowinfo and i not in adm_skip]
     reps, members = group_reps(rows, todo, gkeys)
     n_members = sum(len(v) for v in members.values())
     n_reused = n_exact + n_keyed
@@ -3391,16 +3460,35 @@ def main():
         print(f"        짧은 팀즈 대화의 지난 판정 {n_generic_old}건은 다시 쓰지 않고 같은 대화에서 채웁니다(판정 캐시 v2 — 왕복 없음)")
     if lowinfo:
         print(f"        짧은 팀즈 대화(인사·맞장구·호칭·시각뿐) {len(lowinfo)}건은 보내지 않고 같은 대화의 판정으로 채웁니다")
+    _adm_n = Counter(admin.values())
+    if admin:
+        print(f"        근태·출장 등록 표기 {len(admin)}건 — 등록뿐인 {_adm_n['reg']}건은 1분짜리 행정으로, 일정 표기뿐인 "
+              f"{_adm_n['time']}건은 그때 한 일의 과제로 나누고 AI 에 보내지 않습니다 · 내용이 있는 {_adm_n['label']}건은 "
+              "표기를 떼고 보냅니다" + (f" · 지난 판정 {n_admin_old}건은 다시 쓰지 않습니다" if n_admin_old else ""))
     if members:
         print(f"        같은 내용 묶음 — 대표 {len(members)}줄이 {len(members) + n_members}행을 대신합니다"
               f"(보낼 줄 {len(reps)})")
-    # 체계·통합 표본은 같은 내용을 한 줄로(광고·짧은 대화 제외) — 팀즈 잡담·스레드 회신이 표본을 덮지 않게(진단 B)
-    _sreps, _sm = group_reps(rows, [i for i in range(len(rows)) if i not in ad_idx and i not in lowinfo], gkeys)
-    sample_rows = [rows[i] for i in _sreps] or rows
+
+    def _view(i):
+        """프롬프트에 싣는 행 — 회의 안건·표기를 뗀 판정 줄(원본 행은 그대로)."""
+        r = rows[i]
+        if i in notes or i in marks:
+            r = dict(r)
+            if i in notes:
+                r["note"] = notes[i]
+            if i in marks:
+                r["text"] = marks[i]
+        return r
+    # 체계·통합 표본은 같은 내용을 한 줄로(광고·짧은 대화·근태·출장 등록 제외) — 팀즈 잡담·스레드 회신이 표본을 덮지 않게(진단 B)
+    _sreps, _sm = group_reps(rows, [i for i in range(len(rows))
+                                    if i not in ad_idx and i not in lowinfo and i not in adm_skip], gkeys)
+    sample_rows = ([dict(rows[i], text=marks[i]) if i in marks else rows[i] for i in _sreps]
+                   or [r for i, r in enumerate(rows) if i not in adm_skip] or rows)
     st = {"roundtrips": 0, "repaired": 0, "retries": 0, "failed_rows": 0, "omitted_rows": 0,
           "notes": [], "last_err": "", "soft": False, "aborted": False, "gated_rows": 0,
           "gated_idx": set(), "omitted_idx": set(), "group_rows": 0, "abort_kind": "", "abort_reason": "",
-          "meet_notes": notes}                    # 회의 안건 {행 번호: 안건} — judge_rows 가 그 회의 줄에만 붙인다
+          "meet_notes": notes,                    # 회의 안건 {행 번호: 안건} — judge_rows 가 그 회의 줄에만 붙인다
+          "admin_marks": marks}                   # 등록 표기 + 내용 행 {행 번호: 표기를 뗀 줄} — LM30(2026-10-28)
 
     # [0] 엔티티 체계 — 지정은 항상 포함(코드로 강제), 나머지는 AI가 raw에서 자동 발견
     n_chunks = -(-len(reps) // chunk_n)
@@ -3483,7 +3571,7 @@ def main():
     # '앞서 쓴 이름' 목록 상한을 포함해 잰다.
     # 회의 안건이 있으면 그 줄 길이(안건 포함)와 머리말 안내 한 줄까지 예산에 넣는다(넘치면 드라이버가 나눠 왕복이 늘어난다)
     head_len = len(judge_prompt([], 0, models)) + SEEN_MAX_CHARS + 160 + (len(NOTE_HINT) + 1 if notes else 0)
-    plan = pack_chunks([dict(rows[i], note=notes[i]) if i in notes else rows[i] for i in reps], chunk_n, head_len)
+    plan = pack_chunks([_view(i) for i in reps], chunk_n, head_len)
     chunks = [reps[s:s + n] for s, n in plan]          # 청크마다 대표 행 번호(원본 행 인덱스)
     if len(chunks) != n_chunks and not n_reused:
         print(f"        글자 예산({PROMPT_BUDGET:,}자)에 맞춰 청크 {n_chunks}→{len(chunks)}개"
@@ -3601,7 +3689,8 @@ def main():
     # AI 가 직접 못 본 행 채우기(진단 A) — 같은 내용·같은 대화·규칙 토큰·비슷한 판정 순. 관문 행·광고는 채우지 않는다.
     # 채운 판정은 판정 기록(items)·캐시에 넣지 않는다(다음 실행이 AI 에 다시 묻는다).
     gated = st["gated_idx"]
-    unseen = [i for i in range(len(rows)) if i not in judged and i not in ad_idx and i not in gated]
+    # 근태·출장 등록 행(adm_skip)은 채우지 않는다 — 아래에서 공통 · 행정 처리 / 출장·근태계획 시간 자리표로 둔다(LM30 2026-10-28)
+    unseen = [i for i in range(len(rows)) if i not in judged and i not in ad_idx and i not in gated and i not in adm_skip]
     fills = fill_unjudged(rows, judged, unseen, gkeys)
     filled_n = Counter(how for _j, how in fills.values())
 
@@ -3610,6 +3699,16 @@ def main():
     shutil.copy2(sp, os.path.join(rep, f"signals_{tag}_rules.csv"))
     kept, dropped_rows = [], []
     for i, r in enumerate(rows):
+        if i in adm_skip:
+            # LM30(2026-10-28) 등록뿐 → 공통 · 행정 처리(과제 몫 1분 — write_outputs) · 일정 표기뿐 → 출장·근태계획 시간 자리표(과제 몫을 셀 때
+            # 그때 한 내 일의 과제로 나눈다). 행·weight(시간 근거)는 그대로 남긴다.
+            if admin[i] == "reg":
+                r.update(model="공통", worktype="사무", detail=extract.ADMIN_DETAIL, judge="규칙", via="admin")
+            else:
+                r.update(model="공통", worktype=extract.admin_worktype(r.get("text")), detail=extract.ADMIN_TIME_DETAIL,
+                         judge="규칙", via="trip")
+            kept.append(r)
+            continue
         j = judged.get(i)
         if j is None and i in fills:
             j = fills[i][0]
@@ -3630,7 +3729,8 @@ def main():
             dropped_rows.append(r)          # 비업무 — 시간 재산정(rehours_meta)에서도 뺀다(본인 발신 시각 근거는 extract 가 남긴다)
         else:
             dt = j["detail"] or r.get("activity") or "기타"
-            if details.is_person_name(dt, people):
+            # 사람 이름 · 근태·출장 등록 표기뿐인 세부업무('출장'·'근태계획'·'출장 신청' — LM30 2026-10-28)는 활동명으로
+            if details.is_person_name(dt, people) or not details.detail_name_ok(dt):
                 dt = r.get("activity") or "기타"
             r.update(model=final_model(j["model"], models, people, pinned_keys), worktype=j["worktype"] or "사무",
                      detail=dt, judge=("AI(유사)" if j.get("via") in ("conv", "token", "sim") else "AI"),
@@ -3638,9 +3738,9 @@ def main():
                      # cache 지난 판정 · reuse 지난 판정의 같은 문장 · same/conv/token/sim 채움
                      via=str(j.get("via") or "ai"))
             kept.append(r)
-    rule_rows = sum(1 for r in kept if r.get("judge") == "규칙")
-    # 실패 행 다시 세기 — 판정 없음 − 광고 − 관문 − 짧은 대화 − 모델이 빠뜨린 행(대표가 실패하면 구성원도 실패다)
-    _unj = {i for i in range(len(rows)) if i not in judged and i not in ad_idx}
+    rule_rows = sum(1 for r in kept if r.get("judge") == "규칙") - len(adm_skip)
+    # 실패 행 다시 세기 — 판정 없음 − 광고 − 관문 − 짧은 대화 − 모델이 빠뜨린 행(대표가 실패하면 구성원도 실패다) − 근태·출장 등록 행
+    _unj = {i for i in range(len(rows)) if i not in judged and i not in ad_idx and i not in adm_skip}
     st["omitted_rows"] = len(_unj & st["omitted_idx"])
     st["failed_rows"] = len(_unj - gated - lowinfo - st["omitted_idx"])
     st["gated_rows"] = max(int(st["gated_rows"]), len(_unj & gated))
@@ -3654,6 +3754,18 @@ def main():
         if rn:
             print("        지정 규칙 자동 적용: "
                   + " · ".join(f"{k} {v}건" for k, v in sorted(rby.items(), key=lambda x: -x[1])))
+    # LM30(2026-10-28) 표기 + 내용인 일정·수동기록이 '공통' 으로 판정됐으면(교육·행사 목적이 아니면) 목적을 과제로 짚지 못한 출장·근태계획
+    # 시간이다 — 자리표로 돌려 그때 한 내 일의 과제로 나눈다(write_outputs). 지정 과제로 간 행·비업무로 버린 행은 그대로.
+    _kept_ids = {id(r) for r in kept}
+    n_label_time = 0
+    for i, k in admin.items():
+        r = rows[i]
+        if (k == "label" and id(r) in _kept_ids and str(r.get("source") or "") in extract.ADMIN_TIME_SRC
+                and str(r.get("model") or "") == "공통" and not extract.admin_common_purpose(marks.get(i) or r.get("text"))):
+            r.update(detail=extract.ADMIN_TIME_DETAIL, worktype=extract.admin_worktype(r.get("text")), via="trip")
+            n_label_time += 1
+    if n_label_time:
+        print(f"        목적을 과제로 짚지 못한 출장·근태계획 일정 {n_label_time}건은 그때 한 일의 과제로 나눕니다")
     # 유사 세부업무 통합을 signals 저장 '전에' 끝낸다 — 리뷰 탭(signals)과 대시보드(mm_rows)의
     # 세부업무 이름이 갈리지 않게. write_outputs 가 다시 불러도 결과는 같다(멱등).
     merge_details(kept)
@@ -3735,6 +3847,10 @@ def main():
                    # LM30(2026-10-27) 팀즈 근거가 과제를 받은 길 — 업무 행 수 · 같은 문장 묶음(대표·같은 내용 채움) · 지난 판정 ·
                    # 짧은 대화라 다시 쓰지 않은 지난 판정(판정 캐시 v2)
                    "cache_version": JUDGE_CACHE_V, "teams": dict(_tms, generic_cache_dropped=n_generic_old),
+                   # LM30(2026-10-28) 근태·출장 등록 표기 — 등록뿐(1분)·일정 표기뿐(그때 한 일로)·표기 + 내용(표기를 떼고 보냄)·
+                   # 그중 '공통' 판정이라 자리표로 돌린 일정 · 쓰지 않고 지운 지난 판정(건수만)
+                   "admin": {"reg_rows": _adm_n["reg"], "time_rows": _adm_n["time"], "label_rows": _adm_n["label"],
+                             "label_to_time": n_label_time, "cache_dropped": n_admin_old},
                    "items": {str(k): dict(v, sig=signal_sig(rows[k])) for k, v in judged.items()
                              if 0 <= k < len(rows)}}, f, ensure_ascii=False, indent=1)
 
@@ -3763,7 +3879,10 @@ def main():
           + (f" · 채팅 회전 {_ROTATIONS[0]}회(chatTurns {chat_turns()}번마다 새 채팅)" if _ROTATIONS[0] else "")
           + (f" · 대체 모델 {_MODEL_FALLBACK[0]}" if _MODEL_FALLBACK[0] else "")
           # LM30(2026-10-27) 팀즈 근거 중 같은 문장이라 함께 들어온 줄·지난 판정을 다시 쓴 줄(리뷰 화면 과제별 한 줄과 같은 수)
-          + (f" · 팀즈 {_tms['rows']}건 중 같은 문장 {_tms['same']} · 지난 판정 {_tms['reused']}" if _tms["rows"] else ""))
+          + (f" · 팀즈 {_tms['rows']}건 중 같은 문장 {_tms['same']} · 지난 판정 {_tms['reused']}" if _tms["rows"] else "")
+          # LM30(2026-10-28) 근태·출장 등록 표기 — 보내지 않은 등록·일정 표기 · 표기를 떼고 보낸 줄
+          + (f" · 근태·출장 표기 {len(admin)}(등록 {_adm_n['reg']} · 일정 {_adm_n['time']} · 내용 {_adm_n['label']})"
+             if admin else ""))
 
     if not judged:
         # 판정이 한 건도 없다 — 왕복이 전부 실패했거나 응답을 하나도 해석하지 못했다. 예전에는

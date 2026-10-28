@@ -15,7 +15,7 @@ LoadMonitor30v1-이동준비.bat                               1,435 B  46dce2c7
 LoadMonitor30v1-팀로드율재계산.bat                            2,091 B  b194200e
 LoadMonitor30v1-강제종료.bat                               1,661 B  9b404a87
 agentic.py                                            64,476 B  a46d2561
-freeze.py                                             65,669 B  5e116c80
+freeze.py                                             66,049 B  7581308d
 team_report.py                                       164,965 B  2ab174c2
 flow.py                                              118,283 B  f6719caa
 teamserver.py                                         40,469 B  525df1fa
@@ -26,11 +26,11 @@ retag.py                                               6,128 B  8d6f81d3
 team_refine.py                                         6,528 B  fcd2ba7e
 team_recalc.py                                        65,843 B  ef5ca779
 report_out.py                                        106,962 B  d50acf94
-README.md                                            185,860 B  719b06ef
+README.md                                            187,917 B  241ba139
 check.py                                               2,629 B  7badfe69
-judge.py                                             241,301 B  9cd63ef4
-mine.py                                               31,122 B  897c322c
-refine.py                                             60,677 B  5ee226e2
+judge.py                                             251,138 B  c4f04023
+mine.py                                               32,679 B  ba555b71
+refine.py                                             62,659 B  90a4760e
 FILES.txt                                                (이 파일)
 run.py                                               140,119 B  c99b03e0
 자가점검.py                                               12,574 B  68d31069
@@ -60,7 +60,7 @@ core/meetnote.py                                      28,595 B  0ae77aa1
 config/config.json                                    64,121 B  9c968b77
 config/config.default.json                            73,527 B  09741926
 core/board.py                                         13,181 B  86eaf661
-core/extract.py                                      397,272 B  40b0a0c9
+core/extract.py                                      426,309 B  483bfcbf
 core/pc_ledger.py                                     21,808 B  feed3576
 core/budget.py                                         2,968 B  3297d2b6
 core/stage_state.py                                    7,301 B  d30a0590
@@ -72,9 +72,9 @@ core/coverage.py                                      17,502 B  b83c40f0
 core/proc.py                                          19,644 B  020e1702
 core/collect_status.py                                 7,214 B  82b62ebb
 core/mailmerge.py                                     14,646 B  f08633c5
-core/timeshare.py                                      7,160 B  c7302bf2
+core/timeshare.py                                      7,436 B  e5388200
 core/programs.py                                      45,184 B  d6b34a8d
-core/details.py                                      116,555 B  728b523b
+core/details.py                                      118,243 B  6fded125
 core/narratives.py                                     9,240 B  b1a7b589
 core/owner.py                                          1,488 B  1f1dc049
 core/progress.py                                       1,648 B  15bfd33b
@@ -83,7 +83,7 @@ core/attendance.py                                   203,695 B  ec285b7a
 core/gerp.py                                          25,318 B  d01757af
 collect/Get-GerpWork.py                               40,596 B  9f903ca2
 core/pc_import.py                                     25,730 B  9b87ae80
-docs/설정가이드.md                                        185,245 B  ca5ac998
+docs/설정가이드.md                                        186,399 B  a00894f6
 docs/사용안내.html                                       278,448 B  b43c58f8
 tools/copilot_auto.py                                313,041 B  0de1d452
 tools/pc_hours_compare.py                             21,997 B  93176275
@@ -98,4 +98,4 @@ tools/Stop-LM30v1.ps1                                 19,072 B  2e53e00e
 tools/stop_lm30v1.py                                  22,159 B  f06bb7f7
 tools/ps_launch.py                                     4,936 B  a7994e0b
 tools/diag_bundle.py                                  10,242 B  ed956c0d
-ui/app.py                                            589,090 B  814ceafc
+ui/app.py                                            591,839 B  d50b6884
