@@ -1,0 +1,514 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>AX 3대 과제 단계 설계</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+/* 레이아웃: 위에서 아래로 — 한눈에(일정) → 세 과제를 잇는 고리 → 과제별(목표·결과·방법·효과 → 단계 줄) → 로직 검토 → 공통 기반 */
+:root{
+  --bg:#F3F4F0; --card:#FBFBF8; --ink:#18212C; --body:#3A4757; --muted:#5D6873; --line:#D2D7D0; --line2:#B9C0B7; --accent:#0D6680;
+  --al1:#2166B8; --al1-t:#DCE8F7; --vv1:#B5481A; --vv1-t:#F6E1D6; --vv3:#127A55; --vv3-t:#D5EDE3;
+  --ok:#127A55; --ok-bg:#D5EDE3; --warn:#9E5E00; --warn-bg:#F2E2C4; --bad:#8A2A12; --bad-bg:#F6D9CF;
+  --font:'IBM Plex Sans KR','Malgun Gothic','Apple SD Gothic Neo',sans-serif; --mono:'IBM Plex Mono',Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#12181F; --card:#1A222B; --ink:#E6EAEE; --body:#C3CBD3; --muted:#9AA6B1; --line:#2C3742; --line2:#3B4855; --accent:#4FB0CC;
+  --al1:#6EA2E6; --al1-t:#1B2A3E; --vv1:#E28A62; --vv1-t:#3A231A; --vv3:#4CC08F; --vv3-t:#163126;
+  --ok:#5CC89A; --ok-bg:#163126; --warn:#E3A845; --warn-bg:#3A2E18; --bad:#EE8B72; --bad-bg:#3B1F19; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#12181F; --card:#1A222B; --ink:#E6EAEE; --body:#C3CBD3; --muted:#9AA6B1; --line:#2C3742; --line2:#3B4855; --accent:#4FB0CC;
+  --al1:#6EA2E6; --al1-t:#1B2A3E; --vv1:#E28A62; --vv1-t:#3A231A; --vv3:#4CC08F; --vv3-t:#163126;
+  --ok:#5CC89A; --ok-bg:#163126; --warn:#E3A845; --warn-bg:#3A2E18; --bad:#EE8B72; --bad-bg:#3B1F19; color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--body);font-family:var(--font);font-size:15px;line-height:1.65;margin:0}
+.wrap{max-width:1160px;margin:0 auto;padding-block:28px 72px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:flex;flex-direction:column;gap:44px}
+h1,h2,h3,h4,h5{color:var(--ink);margin:0;line-height:1.3;text-wrap:balance}
+h1{font-size:30px} h2{font-size:23px} h3{font-size:17px} h4{font-size:16px} h5{font-size:13px;letter-spacing:.06em;color:var(--muted);font-weight:600}
+p{margin:0} ul{margin:0;padding-left:18px} li{margin:2px 0}
+a{color:var(--accent)} a:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.eyebrow{font-size:12px;font-weight:600;letter-spacing:.12em;color:var(--accent)}
+.muted{color:var(--muted)} .num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 18px;min-width:0}
+.chip{display:inline-block;font-size:12px;font-weight:700;padding:1px 9px;border-radius:999px;white-space:nowrap;vertical-align:1px}
+.chip.ok{background:var(--ok-bg);color:var(--ok)} .chip.warn{background:var(--warn-bg);color:var(--warn)} .chip.bad{background:var(--bad-bg);color:var(--bad)}
+.chip.al1{background:var(--al1-t);color:var(--al1)} .chip.vv1{background:var(--vv1-t);color:var(--vv1)} .chip.vv3{background:var(--vv3-t);color:var(--vv3)}
+header.top{display:flex;flex-direction:column;gap:8px}
+.meta{font-size:13px;color:var(--muted)}
+nav.toc{display:flex;flex-wrap:wrap;gap:8px}
+nav.toc a{font-size:13.5px;text-decoration:none;border:1px solid var(--line2);border-radius:999px;padding:3px 12px;color:var(--ink);background:var(--card)}
+section{display:flex;flex-direction:column;gap:16px;scroll-margin-top:12px}
+.head{display:flex;flex-direction:column;gap:6px}
+/* 한눈에 카드 */
+.tri{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+.tcard{border-radius:12px;padding:16px 18px;background:var(--card);border:1px solid var(--line);display:flex;flex-direction:column;gap:8px;min-width:0}
+.tcard .code{font-family:var(--mono);font-weight:600;font-size:13px}
+.tcard h3{font-size:16.5px}
+.tcard ul{font-size:14px}
+/* 일정표 */
+.gantt-wrap{overflow-x:auto}
+.gantt{display:grid;grid-template-columns:150px repeat(17,minmax(44px,1fr));min-width:980px;font-size:12.5px;row-gap:4px}
+.gantt .yh{text-align:center;font-weight:600;color:var(--ink);border-bottom:1px solid var(--line);padding:2px 0}
+.gantt .qh{text-align:center;color:var(--muted);font-family:var(--mono);padding:2px 0}
+.gantt .rl{font-weight:600;color:var(--ink);padding:3px 8px 3px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gantt .rl small{font-weight:500;color:var(--muted)}
+.gantt .task-l{grid-column:1/-1;font-family:var(--mono);font-weight:700;padding:8px 0 0}
+.bar{border-radius:5px;padding:3px 8px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:6px;position:relative}
+.bar.al1{background:var(--al1-t);color:var(--al1);border:1px solid var(--al1)} .bar.vv1{background:var(--vv1-t);color:var(--vv1);border:1px solid var(--vv1)} .bar.vv3{background:var(--vv3-t);color:var(--vv3);border:1px solid var(--vv3)}
+.bar.done{border-style:solid;border-width:2px}
+.gnote{font-size:12.5px;color:var(--muted)}
+/* 고리 그림 */
+.loop{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;align-items:stretch}
+.lnode{border-radius:10px;padding:12px;background:var(--card);border:1px solid var(--line);display:flex;flex-direction:column;gap:4px;position:relative;min-width:0}
+.lnode .who{font-family:var(--mono);font-size:12.5px;font-weight:700}
+.lnode b{color:var(--ink);font-size:14.5px}
+.lnode span{font-size:13px}
+.lnode:not(:last-child)::after{content:"→";position:absolute;right:-12px;top:50%;transform:translateY(-50%);color:var(--muted);font-weight:700}
+.back{font-size:13.5px;color:var(--muted);text-align:center}
+.shared{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.shared .card{padding:12px 14px;font-size:13.5px;display:flex;flex-direction:column;gap:4px}
+.shared b{color:var(--ink)}
+/* 과제 블록 */
+.task{gap:18px}
+.task-head{display:flex;flex-direction:column;gap:6px;padding-left:14px;border-left:6px solid var(--line2)}
+.task.al1 .task-head{border-left-color:var(--al1)} .task.vv1 .task-head{border-left-color:var(--vv1)} .task.vv3 .task-head{border-left-color:var(--vv3)}
+.code-big{font-family:var(--mono);font-weight:700;font-size:14px}
+.task.al1 .code-big{color:var(--al1)} .task.vv1 .code-big{color:var(--vv1)} .task.vv3 .code-big{color:var(--vv3)}
+.why{font-size:14.5px}
+.facets{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.facet{display:flex;flex-direction:column;gap:8px}
+.facet ul{font-size:14.5px}
+.kpi{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.kpi div{border-radius:8px;background:var(--bg);padding:8px 10px;display:flex;flex-direction:column;gap:0}
+.kpi .v{font-family:var(--mono);font-weight:600;color:var(--ink);font-size:16px;line-height:1.3}
+.kpi .k{font-size:12.5px;color:var(--muted);line-height:1.35}
+.pipe{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:13px}
+.pipe span{border:1px solid var(--line2);border-radius:6px;padding:2px 8px;background:var(--bg);color:var(--ink)}
+.pipe i{font-style:normal;color:var(--muted)}
+/* 단계 줄 */
+.stages{display:flex;flex-direction:column;gap:12px}
+.stage{display:grid;grid-template-columns:150px minmax(0,1fr);gap:16px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+.stage-tag{display:flex;flex-direction:column;gap:4px}
+.sno{font-family:var(--mono);font-weight:700;font-size:20px;color:var(--ink)}
+.task.al1 .sno{color:var(--al1)} .task.vv1 .sno{color:var(--vv1)} .task.vv3 .sno{color:var(--vv3)}
+.period{font-size:13.5px;font-weight:600;color:var(--ink)}
+.state{align-self:flex-start}
+.who-b{font-size:12.5px;color:var(--muted);line-height:1.4}
+.stage-body{display:flex;flex-direction:column;gap:10px;min-width:0}
+.stage-body .what{font-size:14.5px}
+.cols3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+.cols3 ul{font-size:14px}
+.ms{list-style:none;padding:0}
+.ms li{display:grid;grid-template-columns:88px minmax(0,1fr);gap:6px;font-size:14px}
+.ms li b{font-family:var(--mono);color:var(--ink);font-weight:600}
+.handoff{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;border-top:1px solid var(--line);padding-top:10px;font-size:13.5px}
+.handoff b{display:block;color:var(--ink);font-size:12.5px;letter-spacing:.04em}
+.note{font-size:13.5px;border-radius:8px;padding:10px 12px;background:var(--warn-bg);color:var(--ink)}
+.note b{color:var(--warn)}
+/* 로직 검토 */
+.verdict{border-radius:12px;padding:16px 18px;background:var(--ink);color:var(--bg);display:flex;flex-direction:column;gap:6px}
+.verdict h3{color:var(--bg)}
+.verdict p{opacity:.88}
+.tbl-wrap{overflow-x:auto}
+table.check{border-collapse:collapse;width:100%;min-width:900px;font-size:13.5px}
+table.check th{text-align:left;font-size:12.5px;color:var(--muted);font-weight:600;padding:6px 8px;border-bottom:2px solid var(--ink)}
+table.check td{padding:9px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+table.check td:first-child{color:var(--ink);font-weight:600;width:16%}
+table.check td .chip{margin-bottom:3px}
+ol.fixes{margin:0;padding-left:22px;display:flex;flex-direction:column;gap:10px}
+ol.fixes li{font-size:14.5px}
+ol.fixes b{color:var(--ink)}
+table.hand{border-collapse:collapse;width:100%;min-width:760px;font-size:13.5px}
+table.hand th{text-align:left;font-size:12.5px;color:var(--muted);font-weight:600;padding:6px 8px;border-bottom:2px solid var(--ink)}
+table.hand td{padding:8px;border-bottom:1px solid var(--line);vertical-align:top}
+/* 공통 */
+.grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.who-grid{display:grid;grid-template-columns:120px repeat(4,minmax(0,1fr));gap:4px;font-size:13px;min-width:720px}
+.who-grid div{padding:6px 8px;border-radius:6px;background:var(--bg)}
+.who-grid .h{background:transparent;font-weight:600;color:var(--muted)}
+.who-grid .t{background:transparent;font-family:var(--mono);font-weight:700}
+.dec{display:flex;flex-direction:column}
+.dec div{display:grid;grid-template-columns:96px minmax(0,1fr);gap:12px;padding:8px 0;border-bottom:1px solid var(--line);font-size:14px}
+.dec div:last-child{border-bottom:none}
+.dec b{font-family:var(--mono);color:var(--ink)}
+details{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 16px}
+details summary{cursor:pointer;font-weight:700;color:var(--ink)}
+details[open] summary{margin-bottom:10px}
+table.words{border-collapse:collapse;width:100%;font-size:14px}
+table.words td{padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+table.words td:first-child{color:var(--ink);font-weight:600;white-space:nowrap}
+@media (max-width:860px){
+  .tri,.facets,.cols3,.handoff,.grid2,.shared{grid-template-columns:minmax(0,1fr)}
+  .loop{grid-template-columns:minmax(0,1fr)} .lnode:not(:last-child)::after{content:"↓";right:auto;left:50%;top:auto;bottom:-14px;transform:translateX(-50%)}
+  .stage{grid-template-columns:minmax(0,1fr)}
+  .kpi{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+<p class="eyebrow">AX 3대 과제 · 단계 설계 · 2026-10-28</p>
+<h1>AX 3대 과제 단계 설계 — 목표·결과·방법·효과와 단계별 마일스톤</h1>
+<p class="meta">AL-1 자율 설계·해석 · VV-1 LiDAR 가상검증 · VV-3 MBSE 기반 HW 선검증. 단계 틀은 AL-1·VV-1은 담당자가 정한 것, VV-3(MBSE)는 이번에 새로 설계한 것입니다. ’27 일정은 리소스 플랜 v4, ’28 이후 날짜는 추정입니다.</p>
+<nav class="toc" aria-label="목차"><a href="#overview">한눈에</a><a href="#loop">세 과제를 잇는 고리</a><a href="#al1">AL-1</a><a href="#vv1">VV-1</a><a href="#vv3">VV-3 MBSE</a><a href="#review">로직 검토</a><a href="#base">공통 기반</a></nav>
+</header>
+
+<section id="overview" aria-labelledby="ov-h">
+<div class="head"><p class="eyebrow">한눈에</p><h2 id="ov-h">세 과제, 4단계, ’26 4분기 ~ ’30</h2></div>
+<div class="tri">
+<div class="tcard al1"><span class="code" style="color:var(--al1)">AL-1 자율 설계·해석</span><h3>도면을 넣으면 해석 설정·실행까지, 끝내 목표 성능만 주면 설계안까지</h3>
+<ul><li>해석 1회 준비 4시간 → 0.1시간, 모든 도메인</li><li>야간 무인 해석 월 100시간</li><li>설계안 채택률 30% → 50%</li></ul>
+<p class="muted" style="font-size:13px">1단계 Maxwell 설정 에이전트 — ’26 완료 목표</p></div>
+<div class="tcard vv1"><span class="code" style="color:var(--vv1)">VV-1 LiDAR 가상검증</span><h3>설계가 바뀌면 조립 전에 실제 시나리오 성능을 보고, 요구를 못 맞추면 재설계안까지</h3>
+<ul><li>가상-실측 상관 80% 이상</li><li>운행 조건 커버리지 70% 이상</li><li>全기종 신규 설계 가상 선검증 표준(’30 상반기)</li></ul>
+<p class="muted" style="font-size:13px">1단계 시뮬레이터 ↔ 연산엔진 연결 — ’26 완료 목표</p></div>
+<div class="tcard vv3"><span class="code" style="color:var(--vv3)">VV-3 MBSE 기반 HW 선검증</span><h3>요구에서 검증까지 한 모델로 잇고, 변경이 오면 해석으로 먼저 걸러 시제품을 줄인다</h3>
+<ul><li>시제품 3차수 → 1~2차수, Re-spin 0~1회</li><li>요구→검증 추적성 100%</li><li>수율 선예측 정합 90%(’30 하반기)</li></ul>
+<p class="muted" style="font-size:13px">1단계 정합성 점검 PoC(’26.12) + 요구-검증 추적표 v1(’27.6)</p></div>
+</div>
+
+<div class="card gantt-wrap" style="padding:14px">
+<div class="gantt" role="img" aria-label="세 과제의 단계별 일정, 2026년 4분기부터 2030년까지">
+<div></div><div class="yh">’26</div><div class="yh" style="grid-column:span 4">2027</div><div class="yh" style="grid-column:span 4">2028</div><div class="yh" style="grid-column:span 4">2029</div><div class="yh" style="grid-column:span 4">2030</div>
+<div></div><div class="qh">4Q</div><div class="qh">1Q</div><div class="qh">2Q</div><div class="qh">3Q</div><div class="qh">4Q</div><div class="qh">1Q</div><div class="qh">2Q</div><div class="qh">3Q</div><div class="qh">4Q</div><div class="qh">1Q</div><div class="qh">2Q</div><div class="qh">3Q</div><div class="qh">4Q</div><div class="qh">1Q</div><div class="qh">2Q</div><div class="qh">3Q</div><div class="qh">4Q</div>
+
+<div class="task-l" style="color:var(--al1)">AL-1 자율 설계·해석</div>
+<div class="rl">1단계 <small>Maxwell</small></div><div class="bar al1 done" style="grid-column:2 / span 1" title="’26.10 EM 릴리즈, ’26.12 1차 점검">EM</div><div style="grid-column:3 / span 16"></div>
+<div class="rl">2단계 <small>4도메인 + MCP</small></div><div style="grid-column:2 / span 1"></div><div class="bar al1" style="grid-column:3 / span 8" title="구조 ’27.6 · 열 ’27.9 · 회로·EMC ’27 · 광학 ’28.10">구조 ’27.6 · 열 ’27.9 · 회로·EMC · 광학 ’28.10</div><div style="grid-column:11 / span 8"></div>
+<div class="rl">3단계 <small>케이스 → 셋업</small></div><div style="grid-column:2 / span 5"></div><div class="bar al1" style="grid-column:7 / span 4" title="야간 시범 ’28.4 · 정규 ’28.7">야간 시범 ’28.4 · 정규 ’28.7</div><div style="grid-column:11 / span 8"></div>
+<div class="rl">4단계 <small>목표 → 설계</small></div><div style="grid-column:2 / span 9"></div><div class="bar al1" style="grid-column:11 / span 8" title="설계안 v1 ’29.6 · 채택 30% ’29 하반기 · 50% ’30 하반기">설계안 v1 ’29.6 · 채택 30% → 50%</div>
+
+<div class="task-l" style="color:var(--vv1)">VV-1 LiDAR 가상검증</div>
+<div class="rl">1단계 <small>시뮬레이터 ↔ 엔진</small></div><div class="bar vv1 done" style="grid-column:2 / span 1" title="엔진 릴리즈 ’26.10.29 · 1차 점검 ’26.12">연결</div><div style="grid-column:3 / span 16"></div>
+<div class="rl">2단계 <small>광학·로직</small></div><div style="grid-column:2 / span 1"></div><div class="bar vv1" style="grid-column:3 / span 2" title="실측 대조 ’27.3 · 광학·로직 반영 ’27.6">’27.3 실측 · ’27.6</div><div style="grid-column:5 / span 14"></div>
+<div class="rl">2.5단계 <small>회로·기구</small></div><div style="grid-column:2 / span 3"></div><div class="bar vv1" style="grid-column:5 / span 4" title="회로 ’27.12 · 기구 ’28.3">회로 ’27.12 · 기구 ’28.3</div><div style="grid-column:9 / span 10"></div>
+<div class="rl">3단계 <small>조립 전 점검</small></div><div style="grid-column:2 / span 5"></div><div class="bar vv1" style="grid-column:7 / span 4" title="정의서 ’28.3 · VP ’28.6 · 상관 판정 ’28.11">VP ’28.6 · 상관 80% ’28.11</div><div style="grid-column:11 / span 8"></div>
+<div class="rl">4단계 <small>RFQ → 재설계</small></div><div style="grid-column:2 / span 9"></div><div class="bar vv1" style="grid-column:11 / span 8" title="기종 확대 ’29 · RFQ 평가 시범 ’29 하반기 · 全기종 표준 ’30 상반기">RFQ 평가 ’29 · 全기종 표준 ’30</div>
+
+<div class="task-l" style="color:var(--vv3)">VV-3 MBSE 기반 HW 선검증</div>
+<div class="rl">1단계 <small>뼈대·정합성</small></div><div class="bar vv3" style="grid-column:2 / span 3" title="정합성 PoC ’26.12 · 툴 결정 ’27.2 · 추적표 v1 ’27.6">PoC ’26.12 · 추적표 ’27.6</div><div style="grid-column:5 / span 14"></div>
+<div class="rl">2단계 <small>선검증 해석</small></div><div style="grid-column:2 / span 1"></div><div class="bar vv3" style="grid-column:3 / span 4" title="회로 ’27.3 · EMC ’27.6 · 열·공차 ’27.9 · 비교 쌍 ’27.12">회로 · EMC · 열·공차</div><div style="grid-column:7 / span 12"></div>
+<div class="rl">3단계 <small>VP 통합</small></div><div style="grid-column:2 / span 5"></div><div class="bar vv3" style="grid-column:7 / span 4" title="PLM 조회 ’28.1 · VP ’28.6 · 2차 점검 ’28.12">PLM ’28.1 · VP ’28.6</div><div style="grid-column:11 / span 8"></div>
+<div class="rl">4단계 <small>닫힌 고리</small></div><div style="grid-column:2 / span 9"></div><div class="bar vv3" style="grid-column:11 / span 8" title="2기종 ’29 · 全기종 ’30 상반기 · 수율 90% ’30 하반기">2기종 ’29 · 全기종 ’30 · 수율 90%</div>
+</div>
+<p class="gnote" style="margin-top:8px">굵은 테두리 = ’26에 끝내는 1단계 · 1차 점검 ’26.12 · 2차 점검 ’28.12(가상-실측 상관 80% + 보완설계 실적) · 막대에 마우스를 올리면 마일스톤 날짜</p>
+</div>
+</section>
+
+<section id="loop" aria-labelledby="loop-h">
+<div class="head"><p class="eyebrow">세 과제를 잇는 고리</p><h2 id="loop-h">세 과제는 4단계에서 하나의 고리가 된다</h2>
+<p>AL-1은 부품 해석, VV-1은 LiDAR 시스템 성능, VV-3는 요구와 HW 검증을 맡습니다. 4단계에서 셋이 한 바퀴로 이어지고, 이 고리의 시작인 ‘요구’는 VV-3 MBSE에서 나옵니다.</p></div>
+<div class="loop">
+<div class="lnode vv3"><span class="who" style="color:var(--vv3)">VV-3</span><b>요구</b><span>RFQ → 시스템 요구 → 설계 변수 → 검증 항목 (요구-검증 추적표)</span></div>
+<div class="lnode vv1"><span class="who" style="color:var(--vv1)">VV-1</span><b>성능 평가</b><span>시나리오에서 요구 충족 여부, 부족한 항목과 원인(광학·회로·로직·기구)</span></div>
+<div class="lnode al1"><span class="who" style="color:var(--al1)">AL-1</span><b>재설계안</b><span>목표 성능을 받아 설계 변수 탐색 → 해석으로 평가 → 후보</span></div>
+<div class="lnode vv3"><span class="who" style="color:var(--vv3)">VV-3</span><b>HW 선검증</b><span>회로 SI/PI·EMC·열·공차를 후보에 돌려 걸러냄, 추적표 갱신</span></div>
+<div class="lnode vv1"><span class="who" style="color:var(--vv1)">VV-1</span><b>재평가</b><span>통과한 후보로 다시 시나리오 성능 확인 → 사람이 채택</span></div>
+</div>
+<p class="back">↺ 채택 안 되면 부족 항목을 다시 AL-1로 · 채택 기록은 AL-1의 탐색 전략과 VV-1의 판정 기준을 고친다</p>
+<div class="shared">
+<div class="card"><b>공용 1 · 해석 플러그인</b><span>AL-1이 만들고 VV-3 선검증과 VV-1 광학·기구 반영이 같이 쓴다</span></div>
+<div class="card"><b>공용 2 · PLM 조회 연결</b><span>VV-3가 만들고(읽기 전용) AL-1 3단계 형상 가져오기가 같이 쓴다</span></div>
+<div class="card"><b>공용 3 · 상관 정의서</b><span>세 과제가 하나로 — 가상-실측 비교 방법·표본·판정 기준</span></div>
+<div class="card"><b>공용 4 · 사내 서버·MCP</b><span>사내 LLM, 게이트웨이, 업체·사내 MCP를 세 과제가 함께</span></div>
+</div>
+</section>
+
+<section id="al1" class="task al1" aria-labelledby="al1-h">
+<div class="task-head"><span class="code-big">AL-1</span><h2 id="al1-h">자율 설계·해석 — 도면을 넣으면 설정·실행까지, 목표 성능을 주면 설계안까지</h2>
+<p class="why"><b>지금</b> — 해석 1회 준비·실행 약 4시간, 근무 시간에만. 솔버·메쉬·물성 설정을 사람이 매번 다시 하고, 과거 사례는 엔지니어 머리와 폴더에만 있다. 관련 업무 27명·월 25.7 인월(실측 적합 73%). 도메인 플러그인은 기구 EM 1종만 실증.</p></div>
+<div class="facets">
+<div class="card facet"><h3>목표 (2030)</h3>
+<div class="kpi"><div><span class="v">4h → 0.1h</span><span class="k">해석 1회 사람 시간, 모든 도메인 (×40)</span></div><div><span class="v">월 100h</span><span class="k">야간 무인 해석</span></div><div><span class="v">30% → 50%</span><span class="k">설계안 채택률 ’29 → ’30</span></div></div>
+<ul><li>EM·구조·열·회로·광학을 한 창구에서 해석</li><li>엔지니어는 아침에 채택·반려만 판단</li></ul></div>
+<div class="card facet"><h3>예상 결과 (만드는 것)</h3><ul>
+<li>해석 사례 지식베이스(과거 케이스의 형상 특징·설정·결과)</li>
+<li>자연어로 설정을 바꾸는 해석 설정 에이전트 — Maxwell에서 4도메인으로</li>
+<li>도메인 플러그인 + 도구 연결(MCP) — Ansys 공식 2종 + 사내(회로·광학)</li>
+<li>케이스 지시 → 형상·물성·경계·환경 자동 셋업, 야간 대기열·아침 판정 화면</li>
+<li>목표 성능 → 설계안 생성 고리(최적화 + 대리모델 + 제안 모델), 실행 근거 기록</li></ul></div>
+<div class="card facet"><h3>진행 방법</h3>
+<div class="pipe"><span>도면·자연어 지시</span><i>→</i><span>유사 사례 검색</span><i>→</i><span>설정안</span><i>→</i><span>사람 승인</span><i>→</i><span>솔버 실행(MCP)</span><i>→</i><span>정답 예제로 검증</span><i>→</i><span>보고</span></div>
+<ul><li>지식: 과거 케이스를 사내 서버의 벡터 DB로. 도면은 반출 금지 자료라 사내 모델만</li>
+<li>흐름: LangGraph 그래프로 단계 고정, 모델은 검색 결과로 설정안 채우기·자연어 해석</li>
+<li>개발은 Claude Code(합성·비식별 자료), 운영은 사내 서버</li>
+<li>사람: 해석 엔지니어(과제 책임 팀)가 정답 예제·아침 판정, 해석·CAE·MBSE 묶음이 플러그인, AI·ML·MLOps 묶음이 흐름·검색·서버</li></ul></div>
+<div class="card facet"><h3>기대효과</h3><ul>
+<li>해석 준비 시간 97.5% 감소 (4시간 → 6분, 사람 접촉 시간 기준)</li>
+<li>장비·라이선스를 밤에도 써서 해석 처리량 월 100시간 추가</li>
+<li>설정 품질이 사람에 따라 달라지지 않음 — 신규 인원도 같은 출발점</li>
+<li>4단계: 해석↔수정 반복 횟수 감소, 사람이 보지 못한 설계 후보 — VV-3의 시제품 차수 감소에 기여</li></ul></div>
+</div>
+
+<h3>단계별 개발 · 마일스톤 · 기대효과</h3>
+<div class="stages">
+<article class="stage"><div class="stage-tag"><span class="sno">1단계</span><span class="period">’26 · 12월 완료</span><span class="chip ok state">’26 완료 목표</span><span class="who-b">AI·ML·MLOps, 해석 엔지니어</span></div>
+<div class="stage-body"><h4>Maxwell 해석 설정 에이전트 — 도면이 오면 비슷한 사례로 설정, 말로 고친다</h4>
+<p class="what">Maxwell 과거 해석 케이스를 LangChain으로 벡터 DB에 담는다. 도면이 들어오면 형상 특징으로 유사 케이스를 찾아 솔버·메쉬·물성 설정을 제안하고, “코일 주변 메쉬를 더 촘촘하게”처럼 자연어로 받은 지시를 설정 변경으로 바꿔 PyAEDT로 실행한다.</p>
+<div class="cols3"><div><h5>만드는 것</h5><ul><li>Maxwell 케이스 DB v1</li><li>설정 에이전트 EM 릴리즈</li><li>정답 예제 5건 이상</li></ul></div>
+<div><h5>마일스톤</h5><ul class="ms"><li><b>’26.10</b>EM 릴리즈</li><li><b>’26.10.30</b>리드타임 산식 합의(사람·기계 시간 분리)</li><li><b>’26.12</b>1차 점검 — 0.1시간(×40) 실측 5건</li></ul></div>
+<div><h5>기대효과</h5><ul><li>EM 해석 준비 4시간 → 0.1시간</li><li>셋업 실수·재작업 감소</li><li>사례가 쌓일수록 제안이 좋아지는 구조의 시작</li></ul></div></div>
+<div class="handoff"><div><b>다음 단계에 넘기는 것</b>케이스 DB 틀, 설정 에이전트 틀, 정답 예제 형식</div><div><b>선행 조건</b>도면은 사내 임시 GPU에서만(사내 서버 ’27.7 전), 해석 팀 정답 예제 판정</div><div><b>위험</b>케이스 수가 적으면 검색 품질이 낮다 — 최소 건수 정하기</div></div></div></article>
+
+<article class="stage"><div class="stage-tag"><span class="sno">2단계</span><span class="period">’27 ~ ’28</span><span class="chip warn state">’27 시작</span><span class="who-b">해석·CAE·MBSE, AI·ML·MLOps</span></div>
+<div class="stage-body"><h4>기구·회로·광학으로 확장하고 MCP로 연결</h4>
+<p class="what">1단계 틀(케이스 DB + 설정 에이전트)을 구조(Mechanical)·열(Icepak)·회로 SI/PI(SIwave)·EMC(HFSS)·광학(Zemax)으로 넓힌다. 해석 도구 연결은 MCP로 표준화해 하나의 해석 창구가 도메인을 골라 맡긴다. 회로·EMC 플러그인은 VV-3 선검증과 함께 만든다.</p>
+<div class="cols3"><div><h5>만드는 것</h5><ul><li>도메인 플러그인 4종</li><li>MCP: Ansys 공식 2종(시험판) + 사내(회로·광학)</li><li>도메인별 정답 예제·케이스 DB</li></ul></div>
+<div><h5>마일스톤</h5><ul class="ms"><li><b>’27.6</b>구조 파일럿</li><li><b>’27.9</b>열 플러그인</li><li><b>’27</b>회로 SI/PI·EMC (VV-3 공용)</li><li><b>’28.10</b>광학 릴리즈</li></ul></div>
+<div><h5>기대효과</h5><ul><li>모든 도메인 준비 시간 97.5% 감소 (’28)</li><li>도메인 사이 설정 지식 공유</li><li>VV-3·VV-1이 같은 플러그인을 씀</li></ul></div></div>
+<div class="handoff"><div><b>다음 단계에 넘기는 것</b>도메인별 실행 계층(MCP), 물성·경계 조건 사전</div><div><b>선행 조건</b>사내 서버 ’27.7, 해석 배치 라이선스, 광학 무인 실행 시험(’27.8~9)</div><div><b>위험</b>구조·열·회로·EMC가 ’27 상반기에 몰림 — 해석·CAE·MBSE 1명의 2.3배</div></div></div></article>
+
+<article class="stage"><div class="stage-tag"><span class="sno">3단계</span><span class="period">’28</span><span class="chip warn state">’28</span><span class="who-b">AI·ML·MLOps, 해석·CAE·MBSE, 해석 엔지니어</span></div>
+<div class="stage-body"><h4>솔루션 케이스를 지시받으면 형상에서 환경까지 셋업</h4>
+<p class="what">“이 모듈을 85℃ 조건으로 열 해석”처럼 케이스를 지시하면 PLM에서 형상을 가져와 단순화하고, 물성 DB를 맞추고, 경계·환경 조건(온도·하중·전원) 템플릿과 메쉬·실행 계획까지 자동으로 만든다. 사람이 승인한 케이스는 밤에 돌고 아침에 판정한다.</p>
+<div class="cols3"><div><h5>만드는 것</h5><ul><li>케이스 템플릿 라이브러리(도메인 × 대표 케이스)</li><li>형상 가져오기·단순화</li><li>야간 대기열·아침 판정 화면</li></ul></div>
+<div><h5>마일스톤</h5><ul class="ms"><li><b>’28.3</b>판정 기준서(채택률 분모)</li><li><b>’28.4</b>야간 시범</li><li><b>’28.7</b>사람 승인 야간 정규 운영</li><li><b>’28.12</b>2차 점검 — 해석-실측 대조</li></ul></div>
+<div><h5>기대효과</h5><ul><li>오늘 지시하면 내일 아침 결과</li><li>야간 해석 월 50시간(’28.9) → 100시간</li><li>엔지니어는 셋업 대신 판정</li></ul></div></div>
+<div class="handoff"><div><b>다음 단계에 넘기는 것</b>케이스·결과 기록(대리모델 학습 데이터), 채택 기록</div><div><b>선행 조건</b>PLM 조회 연결(VV-3 3단계 공용), 야간 실행 위치 확인(’27.3), 라이선스 야간 사용</div><div><b>위험</b>복잡 형상 단순화 자동화 난도, 대기열이 비면 100시간 미달</div></div></div></article>
+
+<article class="stage"><div class="stage-tag"><span class="sno">4단계</span><span class="period">’29 ~ ’30</span><span class="chip warn state">’29</span><span class="who-b">AI·ML·MLOps, 해석·CAE·MBSE</span></div>
+<div class="stage-body"><h4>목표 성능을 주면 설계안이 나올 때까지 에이전트가 피드백으로 개선</h4>
+<p class="what">목표 성능(예: 인덕턴스 ≥ X, 온도 ≤ Y)을 받으면 설계 변수 범위를 정하고 실험계획·최적화·대리모델로 후보를 만든다. 해석 결과를 보고 다음 후보 제안 방식을 고치는 반복을 돌린다. 여기서 ‘스스로 개선(RSI)’은 결과와 채택 기록으로 탐색 전략·템플릿·대리모델을 갱신하는 것이다. 에이전트가 자기 코드를 고치는 것은 아니다.</p>
+<div class="cols3"><div><h5>만드는 것</h5><ul><li>설계안 생성 v1(최적화 중심)</li><li>v2: 조건 생성·지식 재축적</li><li>채택률 측정</li></ul></div>
+<div><h5>마일스톤</h5><ul class="ms"><li><b>’29.6</b>설계안 생성 v1</li><li><b>’29 하반기</b>채택률 30%</li><li><b>’30 하반기</b>채택률 50%</li></ul></div>
+<div><h5>기대효과</h5><ul><li>설계 반복 횟수 감소</li><li>탐색 범위 확대</li><li>VV-1 4단계 재설계 루프의 엔진</li></ul></div></div>
+<div class="handoff"><div><b>다른 과제에 넘기는 것</b>재설계 후보 → VV-3 선검증 → VV-1 재평가</div><div><b>선행 조건</b>목표 성능의 공식 출처(VV-3 요구 추적표), 3단계 야간 데이터(도메인당 해석 30~100건)</div><div><b>위험</b>사내 모델은 장시간 자율 실행이 약함 — 최적화기가 주도하고 모델은 제안만, 사람 채택 단계</div></div></div></article>
+</div>
+</section>
+
+<section id="vv1" class="task vv1" aria-labelledby="vv1-h">
+<div class="task-head"><span class="code-big">VV-1</span><h2 id="vv1-h">LiDAR 가상검증 — 설계가 바뀌면 조립 전에 시나리오 성능을 보고, 요구를 못 맞추면 재설계안까지</h2>
+<p class="why"><b>지금</b> — 성능 확인이 실물·실차 시험에 의존해 설계 변경 영향이 늦게 보인다. 자율주행 시나리오 시뮬레이터(Applied Intuition)와 자체 LiDAR 연산엔진(d-ToF 해석식·수치식, FMCW 해석식)을 잇는 중. 일부 설계에만 맞고 렌즈·센서 변경에 따른 광학·회로·로직 변화는 실시간 반영이 안 된다. 관련 업무 23명.</p></div>
+<div class="facets">
+<div class="card facet"><h3>목표 (2030)</h3>
+<div class="kpi"><div><span class="v">80%↑</span><span class="k">가상-실측 상관</span></div><div><span class="v">40 → 70%</span><span class="k">운행 조건 커버리지 ’28</span></div><div><span class="v">’30 상반기</span><span class="k">全기종 신규 설계 가상 선검증 표준</span></div></div>
+<ul><li>RFQ 요구를 시뮬레이터 판정 기준으로 평가하고 재설계안까지</li><li>설계 변경 → 재시뮬레이션이 정해진 시간 안에</li></ul></div>
+<div class="card facet"><h3>예상 결과 (만드는 것)</h3><ul>
+<li>시뮬레이터 ↔ 연산엔진 연결(d-ToF·FMCW)</li>
+<li>설계 변수 → 엔진 자동 반영: 광학·로직, 이어서 회로·기구</li>
+<li>조립 전 가상 선검증 리포트, 가상-실측 상관 판정</li>
+<li>RFQ → 판정 기준 변환, 부족 원인 분해, 재설계 루프</li>
+<li>시나리오 DB·커버리지 측정, 실측 대조 셀</li></ul></div>
+<div class="card facet"><h3>진행 방법</h3>
+<div class="pipe"><span>설계 변수(렌즈·센서·회로·기구)</span><i>→</i><span>엔진 재구성</span><i>→</i><span>시나리오(도로·물체·날씨)</span><i>→</i><span>뎁스·점군</span><i>→</i><span>KPI·커버리지</span><i>→</i><span>실측 대조</span></div>
+<ul><li>엔진: 광학 → 수신 신호 → 회로(노이즈·타이밍) → 로직(신호처리·거리) → 뎁스</li>
+<li>연결: 설계 도구 결과를 파라미터 파일·사내 MCP로 엔진에 자동 반영</li>
+<li>판정: 상관 정의서(보정 셀과 판정 셀 분리, 판정 셀 30개 이상)</li>
+<li>사람: LiDAR 시뮬레이션 묶음이 엔진·시나리오, AI·ML·MLOps 묶음이 자동화·학습, 시스템 엔지니어(과제 책임 팀)가 판정</li></ul></div>
+<div class="card facet"><h3>기대효과</h3><ul>
+<li>설계 변경의 성능 영향을 시제품 없이 비교 — 주 단위에서 시간 단위로(추정)</li>
+<li>성능 미달 설계를 조립 전에 거름 — VV-3와 함께 시제품 차수 3 → 1~2</li>
+<li>RFQ에 “맞출 수 있나”를 설계 전에 답함</li>
+<li>실차 시험 일부 대체(실차 대체율 60%는 VV-4 주도, 3과제 밖)</li></ul></div>
+</div>
+
+<h3>단계별 개발 · 마일스톤 · 기대효과</h3>
+<div class="stages">
+<article class="stage"><div class="stage-tag"><span class="sno">1단계</span><span class="period">’26 · 12월 완료</span><span class="chip ok state">’26 완료 목표</span><span class="who-b">LiDAR 시뮬레이션, 연산엔진 개발자</span></div>
+<div class="stage-body"><h4>시나리오 시뮬레이터와 자체 LiDAR 연산엔진 연결 — 시나리오에서 뎁스를 얻는다</h4>
+<p class="what">Applied Intuition 자율주행 시나리오 시뮬레이터와 자체 연산엔진을 연결해 시나리오에서 LiDAR 뎁스 값을 얻는다. 엔진은 d-ToF(해석식·수치식)와 FMCW(해석식)를 계산한다. 아직 일부 설계에 한정되고, 렌즈·센서 변경으로 생기는 광학·회로·로직 변화는 실시간 반영이 안 된다.</p>
+<div class="cols3"><div><h5>만드는 것</h5><ul><li>연산엔진 1차 릴리즈</li><li>시뮬레이터 연동</li><li>레이턴시 판정 기준서</li></ul></div>
+<div><h5>마일스톤</h5><ul class="ms"><li><b>’26.10.29</b>엔진 1차 릴리즈</li><li><b>’26.12</b>1차 점검 — 연동 가동·레이턴시 판정</li></ul></div>
+<div><h5>기대효과</h5><ul><li>시나리오 기반 LiDAR 출력을 처음 얻음</li><li>정해진 설계 하나를 여러 시나리오로 반복 시험</li></ul></div></div>
+<div class="handoff"><div><b>다음 단계에 넘기는 것</b>엔진 입력 파라미터 목록, 시뮬레이터 연결 인터페이스</div><div><b>선행 조건</b>시뮬레이터 라이선스·사내 설치 범위, 판정 기준(목표값과 실측값 분리)</div><div><b>위험</b>목표값을 릴리즈 직전에 정하면 실측에 맞춘 목표가 됨</div></div></div></article>
+
+<article class="stage"><div class="stage-tag"><span class="sno">2단계</span><span class="period">’27 상반기</span><span class="chip warn state">’27 시작</span><span class="who-b">LiDAR 시뮬레이션, 광학 엔지니어</span></div>
+<div class="stage-body"><h4>광학·로직을 실시간 반영</h4>
+<p class="what">렌즈·센서를 바꾸면 광학 설계 도구 결과(빔 발산, 수광 효율, 점 퍼짐)가 엔진 파라미터로 자동 변환되고, 신호처리 로직(피크 검출·거리 계산·필터)을 바꾸면 엔진에 바로 반영돼 시나리오가 다시 돈다. ‘실시간’은 “변경 1건 → 재시뮬레이션 N분 이내”로 숫자를 정한다.</p>
+<div class="cols3"><div><h5>만드는 것</h5><ul><li>광학 파라미터 브리지(광학 도구 → 엔진)</li><li>로직 모듈 교체 구조</li><li>변경 이력별 성능 비교 리포트</li></ul></div>
+<div><h5>마일스톤</h5><ul class="ms"><li><b>’27.3</b>센서 모델 1종 + 벤치 실측 5~8셀 대조</li><li><b>’27.6</b>광학·로직 변경 → 자동 재시뮬레이션</li></ul></div>
+<div><h5>기대효과</h5><ul><li>렌즈·센서·로직 대안을 시제품 없이 비교</li><li>첫 실측 대조로 엔진 신뢰도 확인(’28.6 → ’27.3)</li></ul></div></div>
+<div class="handoff"><div><b>다음 단계에 넘기는 것</b>파라미터 사전(설계 변수 ↔ 엔진 변수), 변경 → 재실행 파이프라인</div><div><b>선행 조건</b>광학 도구 결과 파일 형식, RT 코어 GPU(’27.2~6 임시)</div><div><b>위험</b>AL-1 광학 플러그인은 ’28.10 — ’27에는 광학 도구 결과를 직접 읽는 브리지로 시작</div></div></div></article>
+
+<article class="stage"><div class="stage-tag"><span class="sno">2.5단계</span><span class="period">’27 하반기 ~ ’28 상반기</span><span class="chip warn state">’27 하반기</span><span class="who-b">LiDAR 시뮬레이션, 해석·CAE·MBSE</span></div>
+<div class="stage-body"><h4>회로·기구 효과를 실시간 반영</h4>
+<p class="what">회로(수신단 노이즈, 대역폭, 타이밍 지터, 증폭기 포화)와 기구(정렬 공차, 열 변형, 진동)가 성능에 주는 영향을 엔진에 넣는다. 숫자는 VV-3 2단계 선검증 해석(SI/PI·열·공차)과 AL-1 구조·열 해석에서 받고, 공차는 몬테카를로로 성능 분포를 낸다.</p>
+<div class="cols3"><div><h5>만드는 것</h5><ul><li>회로 노이즈·타이밍 모델</li><li>기구 공차·열 변형 반영 모듈</li><li>공차 → 성능 분포</li></ul></div>
+<div><h5>마일스톤</h5><ul class="ms"><li><b>’27.9</b>결과 형식 합의(VV-3·AL-1)</li><li><b>’27.12</b>회로 효과 반영</li><li><b>’28.3</b>기구 공차·열 반영</li></ul></div>
+<div><h5>기대효과</h5><ul><li>회로·기구 원인의 성능 저하를 설계 단계에서 숫자로</li><li>공차 배분의 근거</li></ul></div></div>
+<div class="handoff"><div><b>다음 단계에 넘기는 것</b>광학·로직·회로·기구 전체가 반영된 엔진</div><div><b>선행 조건</b>VV-3 2단계 해석 결과, AL-1 2단계 열·구조 플러그인</div><div><b>위험</b>세 과제의 결과 형식이 다르면 수작업 변환이 남음</div></div></div></article>
+
+<article class="stage"><div class="stage-tag"><span class="sno">3단계</span><span class="period">’28</span><span class="chip warn state">’28</span><span class="who-b">LiDAR 시뮬레이션, 시스템 엔지니어</span></div>
+<div class="stage-body"><h4>조립 전에 시뮬레이터로 성능을 먼저 점검</h4>
+<p class="what">시제품 발주 전, 확정 직전 설계 변수 전체로 시나리오 성능을 평가하고 상관 정의서 기준으로 판정한다. VV-3의 가상 시제품(VP) 판정과 같은 절차로 묶어 HW 판정(VV-3)과 시스템 성능(VV-1)을 한 번에 낸다.</p>
+<div class="cols3"><div><h5>만드는 것</h5><ul><li>조립 전 가상 선검증 리포트</li><li>가상-실측 상관 판정</li><li>커버리지 40 → 70%</li></ul></div>
+<div><h5>마일스톤</h5><ul class="ms"><li><b>’28.3</b>상관 정의서 승인</li><li><b>’28.6</b>VP 판정(VV-3와 같이)</li><li><b>’28.11</b>상관 80%·커버리지 70%</li><li><b>’28.12</b>2차 점검</li></ul></div>
+<div><h5>기대효과</h5><ul><li>성능 미달 설계를 시제품 전에 거름</li><li>시제품 차수 3 → 1~2(VV-3 공동)</li><li>실물 시험 일부 대체</li></ul></div></div>
+<div class="handoff"><div><b>다음 단계에 넘기는 것</b>판정된 엔진, 커버리지 분모, 실측 셀 세트</div><div><b>선행 조건</b>실측 셀(벤치·챔버), VP 대상 기종 합의(’27.12)</div><div><b>위험</b>판정 셀 20개면 80% 판정 신뢰구간 58~92% — 30개 이상</div></div></div></article>
+
+<article class="stage"><div class="stage-tag"><span class="sno">4단계</span><span class="period">’29 ~ ’30</span><span class="chip warn state">’29</span><span class="who-b">LiDAR 시뮬레이션, AI·ML·MLOps</span></div>
+<div class="stage-body"><h4>RFQ 목표 성능을 만족하는지 평가 → 부족한 부분 판단 → 재설계안 도출 후 평가</h4>
+<p class="what">RFQ 요구(거리·해상도·시야각·반사율별 탐지 등)를 시뮬레이터 판정 기준으로 바꿔 충족 여부를 평가한다. 미달 항목은 광학·회로·로직·기구 민감도로 원인을 나누고, AL-1 4단계에 재설계안을 요청해 다시 평가한다. 요구 원본은 VV-3 요구-검증 추적표에서 받는다.</p>
+<div class="cols3"><div><h5>만드는 것</h5><ul><li>RFQ → 판정 기준 변환</li><li>민감도·원인 진단</li><li>재설계 루프, 全기종 표준 절차</li></ul></div>
+<div><h5>마일스톤</h5><ul class="ms"><li><b>’29 상반기</b>기종 확대(기종별 상관 셀)</li><li><b>’29 하반기</b>RFQ 평가 시범 1~2기종</li><li><b>’30 상반기</b>全기종 신규 설계 표준</li></ul></div>
+<div><h5>기대효과</h5><ul><li>RFQ 대응 속도</li><li>재설계 반복 단축</li><li>요구 미달을 설계 단계에서 발견</li></ul></div></div>
+<div class="handoff"><div><b>다른 과제와</b>요구 ← VV-3 · 재설계안 ← AL-1 · HW 선검증 → VV-3</div><div><b>선행 조건</b>VV-3 추적표, AL-1 설계안 생성, 상관 80% 유지</div><div><b>위험</b>기종마다 실측 셀이 없으면 상관이 유지되지 않음</div></div></div></article>
+</div>
+</section>
+
+<section id="vv3" class="task vv3" aria-labelledby="vv3-h">
+<div class="task-head"><span class="code-big">VV-3</span><h2 id="vv3-h">MBSE 기반 HW 선검증 — 요구에서 검증까지 한 모델로 잇고, 변경이 오면 해석으로 먼저 거른다</h2>
+<p class="why"><b>지금</b> — 요구-설계-검증 추적이 끊겨 있고, 실물에 기대 검증해 Re-spin 1~2회·시제품 3차수(빅플랜). 설계 변경(ECR) 영향은 사람 기억으로 판단하고 BOM·도면 정합성은 수작업. 실측 우선순위 1위(27명·38.1 인월·적합률 78%). 단계 계획이 없었다 — 아래 4단계는 이번에 새로 설계했다.</p></div>
+<div class="facets">
+<div class="card facet"><h3>목표 (2030)</h3>
+<div class="kpi"><div><span class="v">3 → 1~2</span><span class="k">시제품 차수 (Re-spin 0~1회)</span></div><div><span class="v">100%</span><span class="k">요구 → 검증 추적성</span></div><div><span class="v">90%</span><span class="k">수율 선예측 정합 ’30 하반기</span></div></div>
+<ul><li>全기종이 시제품 발주 전에 가상 시제품(VP) 판정</li><li>시제품 차수 절감 과제당 13억(빅플랜 ’28 중기 목표)</li></ul></div>
+<div class="card facet"><h3>예상 결과 (만드는 것)</h3><ul>
+<li>시스템 모델(SysML·Capella)과 요구-검증 추적표</li>
+<li>BOM·도면 정합성 자동 점검</li>
+<li>변경 영향 분석 에이전트 — 변경 → 영향받는 요구·부품·검증 항목</li>
+<li>HW 선검증 해석 자동 실행 — 회로 SI/PI·EMC·열·공차</li>
+<li>VP 판정, 재설계 후보, 수율 예측</li></ul></div>
+<div class="card facet"><h3>진행 방법</h3>
+<div class="pipe"><span>설계 변경(ECR)</span><i>→</i><span>변경 비교</span><i>→</i><span>영향 요구</span><i>→</i><span>선검증 해석</span><i>→</i><span>판정</span><i>→</i><span>재설계 후보</span><i>→</i><span>추적표 갱신</span></div>
+<ul><li>모델: RFQ·요구 → 시스템 모델 → 부품(BOM) → 검증 항목. 툴은 Capella(무료) 또는 SysML v2(CATIA Magic) 중 ’27.2 결정</li>
+<li>데이터: PLM의 BOM·도면·변경 이력을 읽기 전용 사내 MCP로(공식 PLM MCP는 반출 금지 자료에 못 씀)</li>
+<li>해석: AL-1 플러그인을 같이 씀</li>
+<li>사람: 시스템 엔지니어(모델·요구), 회로·기구 판정(과제 책임 팀), 해석·CAE·MBSE 묶음(해석 자동화·추적표 유지)</li></ul></div>
+<div class="card facet"><h3>기대효과</h3><ul>
+<li>회로·기구 문제를 도면 단계에서 발견 — 시제품 1차수 절감, 과제당 13억(빅플랜)</li>
+<li>변경 영향 판단: 회의·기억 → 추적표 조회(일 → 시간, 추정)</li>
+<li>요구 누락·검증 누락을 표로 확인</li>
+<li>AL-1·VV-1 4단계의 ‘목표 성능’을 공식 요구로 공급</li></ul></div>
+</div>
+
+<h3>단계별 개발 · 마일스톤 · 기대효과 (새 설계)</h3>
+<div class="stages">
+<article class="stage"><div class="stage-tag"><span class="sno">1단계</span><span class="period">’26 4분기 ~ ’27 상반기</span><span class="chip ok state">’26 시작</span><span class="who-b">시스템 엔지니어, 해석·CAE·MBSE, AX 추진·관리</span></div>
+<div class="stage-body"><h4>요구-설계-검증을 잇는 뼈대 + 설계 변경 정합성 점검</h4>
+<p class="what">먼저 설계 변경 때 BOM·도면 불일치를 자동으로 찾는 PoC(PLM 내보내기·규칙 비교)로 효과를 확인한다. 이어 MBSE 툴을 정하고 1기종(1D Echo Gen2)의 요구를 시스템 모델과 검증 항목에 연결한 요구-검증 추적표 v1을 만든다.</p>
+<div class="cols3"><div><h5>만드는 것</h5><ul><li>BOM·도면 정합성 점검 PoC</li><li>MBSE 툴 결정·범위서</li><li>추적표 v1 + HW 관련 하위 시스템 모델</li></ul></div>
+<div><h5>마일스톤</h5><ul class="ms"><li><b>’26.12</b>PoC 판정(1차 점검 입력)</li><li><b>’27.2</b>MBSE 툴 최종 결정</li><li><b>’27.6</b>추적표 v1 — 요구↔검증 링크 완결</li><li><b>’27.9</b>하위 시스템 모델</li></ul></div>
+<div><h5>기대효과</h5><ul><li>BOM·도면 불일치 자동 발견(지금 수작업)</li><li>요구와 검증 항목이 처음으로 한 표에</li><li>빠진 검증 항목이 보임</li></ul></div></div>
+<div class="handoff"><div><b>다음 단계에 넘기는 것</b>추적표(어느 요구를 어떤 해석으로 검증하나), 모델 틀</div><div><b>선행 조건</b>PLM 내보내기 권한, 시스템 엔지니어 1명 지정, 요구 원본 형식</div><div><b>위험</b>PLM 내장 비교가 하는 일을 성과로 세지 않기 — 내장 비교 대비 추가 탐지분만</div></div></div></article>
+
+<article class="stage"><div class="stage-tag"><span class="sno">2단계</span><span class="period">’27</span><span class="chip warn state">’27</span><span class="who-b">해석·CAE·MBSE, 회로·기구 판정</span></div>
+<div class="stage-body"><h4>HW 선검증 해석을 요구에 묶는다</h4>
+<p class="what">회로 SI/PI·EMC, 기구 열·공차 해석을 추적표의 검증 항목에 연결해, 설계가 바뀌면 관련 해석이 자동으로 돌고 판정 기준과 비교된다(AL-1 2단계 플러그인 공용). 가상-실측 비교 쌍의 형식을 먼저 고정하고 모으기 시작한다. 수율은 공차 → 조립 수율 예측 시험으로 시작한다.</p>
+<div class="cols3"><div><h5>만드는 것</h5><ul><li>선검증 해석 4종 자동 실행</li><li>비교 쌍 형식·수집</li><li>수율 예측 시험(공차 기반)</li></ul></div>
+<div><h5>마일스톤</h5><ul class="ms"><li><b>’27.3</b>회로 SI/PI 판정</li><li><b>’27.6</b>EMC · 수율 KPI 정의 합의</li><li><b>’27.9</b>열·공차 연결, 쌍 형식 고정</li><li><b>’27.12</b>비교 쌍 10~20</li></ul></div>
+<div><h5>기대효과</h5><ul><li>회로·기구 문제를 도면 단계에서 해석으로</li><li>해석 셋업 반복 감소</li><li>실측 비교 데이터 축적 시작</li></ul></div></div>
+<div class="handoff"><div><b>다음 단계에 넘기는 것</b>선검증 결과(VV-1 2.5단계도 씀), 비교 쌍</div><div><b>선행 조건</b>AL-1 2단계 플러그인, 회로 판정 담당 1~2명(회로 팀 이미 130%), 해석 배치 라이선스 상반기분</div><div><b>위험</b>MBSE를 맡을 사람이 ’27.7 이후 확약 0</div></div></div></article>
+
+<article class="stage"><div class="stage-tag"><span class="sno">3단계</span><span class="period">’28</span><span class="chip warn state">’28</span><span class="who-b">AI·ML·MLOps, 해석·CAE·MBSE, 시스템 엔지니어</span></div>
+<div class="stage-body"><h4>가상 시제품(VP) 통합 검증과 변경 검토 에이전트</h4>
+<p class="what">PLM 조회 연결(읽기 전용)과 변경 검토 에이전트를 만든다. 변경이 들어오면 영향받는 요구·부품·검증 항목을 찾아 선검증을 자동 요청하고 판정을 요약한다. 시제품 발주 전 VP 판정은 HW 4도메인(VV-3)과 시스템 성능(VV-1)을 한 번에 본다.</p>
+<div class="cols3"><div><h5>만드는 것</h5><ul><li>PLM 조회 연결(AL-1 공용)</li><li>변경 검토 에이전트</li><li>VP 판정 절차</li></ul></div>
+<div><h5>마일스톤</h5><ul class="ms"><li><b>’28.1</b>PLM 조회 연결</li><li><b>’28.3</b>상관 정의서(도메인당 20쌍 이상)</li><li><b>’28.6</b>VP 판정 1기종</li><li><b>’28.12</b>2차 점검 — 보완설계 실적</li></ul></div>
+<div><h5>기대효과</h5><ul><li>시제품 발주 전 VP 통과/불통과</li><li>시제품 차수 3 → 1~2(목표)</li><li>변경 영향 판단 일 → 시간(추정)</li></ul></div></div>
+<div class="handoff"><div><b>다음 단계에 넘기는 것</b>변경 → 영향 → 선검증 흐름, VP 판정 기록</div><div><b>선행 조건</b>PLM 보안 승인(’27.12), VP 통과를 발주 조건으로 하는 기종 PM 합의(’27.12)</div><div><b>위험</b>VP 대상 기종 시제품은 ’28 상반기에 없음 — 쌍은 다른 기종·이전 차수에서</div></div></div></article>
+
+<article class="stage"><div class="stage-tag"><span class="sno">4단계</span><span class="period">’29 ~ ’30</span><span class="chip warn state">’29</span><span class="who-b">해석·CAE·MBSE, AI·ML·MLOps, 시스템 엔지니어</span></div>
+<div class="stage-body"><h4>변경 → 영향 → 재설계 → 재검증의 닫힌 고리와 기종 확대</h4>
+<p class="what">재설계 후보(AL-1 4단계)를 받아 선검증하고 추적표를 갱신하는 고리를 닫는다. 대상을 2개 기종에서 ’30.1 이후 시제품을 발주하는 신규 기종 전체로 넓히고, 설계 단계 수율 예측을 파일럿·시제품 1차 수율과 비교해 정합 90%를 본다.</p>
+<div class="cols3"><div><h5>만드는 것</h5><ul><li>재설계 → 재검증 자동 연결</li><li>기종별 추적표·VP</li><li>수율 예측 모델</li></ul></div>
+<div><h5>마일스톤</h5><ul class="ms"><li><b>’29 상반기</b>2기종 확대</li><li><b>’29 하반기</b>시제품 차수 확정(2개 기종 이상)</li><li><b>’30 상반기</b>全기종 표준</li><li><b>’30 하반기</b>수율 정합 90%</li></ul></div>
+<div><h5>기대효과</h5><ul><li>시제품 차수 절감 과제당 13억(빅플랜)</li><li>요구·검증 누락 0</li><li>수율 문제를 설계 단계에서</li></ul></div></div>
+<div class="handoff"><div><b>다른 과제와</b>요구 → VV-1 · 재설계 후보 ← AL-1 · 선검증 결과 → VV-1</div><div><b>선행 조건</b>수율 데이터 제공(품질·생산, ’27.6.30 합의), ’29 MBSE·CAE 공급원(’28.6)</div><div><b>위험</b>1개 기종으로는 차수 감소를 증명하기 어려움 — 2개 기종 이상, 과거 평균과 비교</div></div></div></article>
+</div>
+</section>
+
+<section id="review" aria-labelledby="rv-h">
+<div class="head"><p class="eyebrow">로직 검토</p><h2 id="rv-h">단계 구성이 맞물리는가</h2></div>
+<div class="verdict"><h3>단계 순서는 세 과제 모두 맞다. 다만 단계 사이에 고칠 연결이 일곱 가지 있다</h3>
+<p>세 과제 모두 앞 단계의 결과물(케이스 DB·플러그인, 파라미터 사전, 추적표)이 다음 단계의 입력이 된다. 걸리는 곳은 과제 사이의 시점과 ‘목표’의 출처다. 4단계의 목표 성능은 MBSE 요구에서 와야 하는데 MBSE가 가장 늦게 계획돼 있었다.</p></div>
+
+<ol class="fixes">
+<li><b>MBSE(VV-3) 1단계를 지금 시작한다.</b> AL-1·VV-1 4단계의 ‘목표 성능’과 ‘RFQ 판정 기준’은 VV-3 요구-검증 추적표가 공급한다. 추적표 v1(’27.6)이 늦으면 두 과제의 4단계가 출처 없는 목표로 돈다.</li>
+<li><b>VV-1 2단계 광학은 AL-1 광학보다 1년 이르다.</b> VV-1은 ’27 상반기에 광학 반영이 필요하고 AL-1 광학 플러그인은 ’28.10이다. ’27에는 광학 설계 도구 결과 파일을 직접 읽는 브리지로 시작하고, ’28에 AL-1 플러그인으로 바꾼다.</li>
+<li><b>조립 전 판정은 하나의 절차로 한다.</b> VV-1 3단계(조립 전 성능 점검)와 VV-3 3단계(VP 판정)는 같은 시점(’28.6)·같은 기종을 본다. 하나의 VP 판정으로 묶어 HW(VV-3)와 시스템 성능(VV-1)을 한 번에 낸다.</li>
+<li><b>실측 대조를 앞당긴다.</b> VV-1 엔진을 실측과 처음 대는 때가 ’28.6이면 1년 반 동안 검증되지 않은 엔진 위에 쌓인다. 2단계에 벤치 실측 5~8셀(’27.3)을 넣는다.</li>
+<li><b>PLM 조회 연결은 한 번 만든다.</b> AL-1 3단계(형상 가져오기)와 VV-3 3단계(변경 검토)가 같은 PLM 연결을 쓴다. VV-3가 읽기 전용으로 만들고(’28.1) AL-1이 같이 쓴다. 보안 설계서 ’27.6 → 승인 ’27.12.</li>
+<li><b>AL-1 4단계의 ‘스스로 개선(RSI)’ 범위를 정한다.</b> 결과·채택 기록으로 탐색 전략·템플릿·대리모델을 갱신하는 것까지로 정하고, 최적화기가 주도하며 사람이 채택한다. 사내 모델은 장시간 자율 실행에서 12~33%p 약하다.</li>
+<li><b>사람이 먼저 걸린다.</b> 단계 구성은 맞지만 4묶음 4.0명 기준으로 계획된 일이 약 2배다(’28 AI·ML·MLOps 약 3배, 해석·CAE·MBSE ’27 상반기 2.3배). 2단계 확장 도메인의 순서와 ’28 범위를 ’27.6.30에 정한다.</li>
+</ol>
+
+<div class="tbl-wrap card" style="padding:8px 12px">
+<table class="check" aria-label="과제별 로직 점검">
+<thead><tr><th>점검</th><th style="color:var(--al1)">AL-1 자율 설계·해석</th><th style="color:var(--vv1)">VV-1 LiDAR 가상검증</th><th style="color:var(--vv3)">VV-3 MBSE HW 선검증</th></tr></thead>
+<tbody>
+<tr><td>단계 순서·인계물</td><td><span class="chip ok">맞음</span><br>EM 1도메인 → 4도메인 → 케이스 셋업 → 목표 기반 생성. 케이스 DB·플러그인·야간 데이터가 차례로 넘어감</td><td><span class="chip ok">맞음</span><br>연결 → 광학·로직 → 회로·기구 → 조립 전 통합 → RFQ 고리. 파라미터 사전이 축</td><td><span class="chip ok">맞음</span><br>뼈대 → 해석 연결 → VP 통합 → 닫힌 고리. 추적표가 축</td></tr>
+<tr><td>1단계 ’26 완료 조건</td><td><span class="chip warn">보완</span><br>도면은 반출 금지 → 사내 서버(’27.7) 전에는 임시 GPU에서만. 0.1시간 산식(사람 시간) 10/30 합의</td><td><span class="chip warn">확인</span><br>Applied Intuition 라이선스·사내 설치·센서 연결 방식 확인. v4는 외부 시뮬레이터 계약을 ’27.3로 잡음 — 정리 필요</td><td><span class="chip warn">보완</span><br>PoC 성과는 PLM 내장 비교 대비 추가 탐지분만. 계정 없으면 골든셋 마감 11/13</td></tr>
+<tr><td>데이터 경로</td><td><span class="chip ok">맞음</span><br>케이스 DB·도면은 사내 서버, 개발은 합성·비식별 자료</td><td><span class="chip warn">확인</span><br>센서 파라미터·합성 점군·실측 기록의 자료 등급 판정(’27.1)</td><td><span class="chip warn">보완</span><br>PLM 공식 MCP는 반출 금지 자료에 못 씀 → 읽기 전용 사내 MCP</td></tr>
+<tr><td>도구·MCP</td><td><span class="chip warn">보완</span><br>공식 MCP는 Ansys 2종(시험판)뿐, 회로·광학은 사내 MCP. 코드 실행 도구는 승인 스크립트만</td><td><span class="chip ok">맞음</span><br>연산엔진 MCP는 사내 개발(FMCW를 다루는 업체 없음)</td><td><span class="chip warn">보완</span><br>회로 SI/PI는 공식 MCP 없음 → PyEDB 직접. MBSE 툴 ’27.2 결정</td></tr>
+<tr><td>실측 대조</td><td><span class="chip warn">보완</span><br>해석-실측 대조 N과 채택 N을 ’28 시험 계획에서 역산</td><td><span class="chip bad">위험</span><br>첫 대조 ’28.6 → ’27.3 벤치 5~8셀로 앞당김. 판정 셀 30개 이상</td><td><span class="chip bad">위험</span><br>VP 대상 시제품이 ’28 상반기에 없음 — 다른 기종 쌍, 도메인당 20쌍 이상</td></tr>
+<tr><td>목표의 출처</td><td><span class="chip bad">위험</span><br>4단계 ‘목표 성능’은 VV-3 요구에서 와야 함</td><td><span class="chip bad">위험</span><br>4단계 RFQ 판정 기준도 VV-3 요구에서</td><td><span class="chip warn">보완</span><br>수율 90% 산식·소유·데이터 ’27.6.30</td></tr>
+<tr><td>사람(4묶음 4.0명)</td><td><span class="chip bad">위험</span><br>2단계 도메인 확장이 해석·CAE·MBSE 1명에 몰림, 3단계 AI 부족</td><td><span class="chip ok">맞음</span><br>LiDAR 시뮬레이션 1명은 여유 — 학습 데이터·시나리오 운영을 받을 수 있음</td><td><span class="chip bad">위험</span><br>시스템 엔지니어 확약 0(’27.7 이후), 회로 팀 130%</td></tr>
+<tr><td>종료 기준이 숫자인가</td><td><span class="chip ok">맞음</span><br>×40, 월 100시간, 채택률 30·50%</td><td><span class="chip warn">보완</span><br>‘실시간’을 “변경 1건 → N분 이내”로</td><td><span class="chip ok">맞음</span><br>추적성 100%, 차수 1~2, 수율 90%</td></tr>
+</tbody></table>
+</div>
+
+<div class="tbl-wrap card" style="padding:8px 12px">
+<table class="hand" aria-label="과제 사이에 주고받는 것">
+<thead><tr><th>언제</th><th>주는 쪽</th><th>받는 쪽</th><th>무엇</th></tr></thead>
+<tbody>
+<tr><td class="num">’27.6</td><td><span class="chip vv3">VV-3 1단계</span></td><td><span class="chip al1">AL-1</span> <span class="chip vv1">VV-1</span></td><td>요구-검증 추적표 v1 — 어떤 요구를 어떤 해석·시뮬레이션으로 검증하나</td></tr>
+<tr><td class="num">’27</td><td><span class="chip al1">AL-1 2단계</span></td><td><span class="chip vv3">VV-3 2단계</span></td><td>회로 SI/PI·EMC·열 플러그인(공용)</td></tr>
+<tr><td class="num">’27.9 → ’28.3</td><td><span class="chip vv3">VV-3 2단계</span> <span class="chip al1">AL-1</span></td><td><span class="chip vv1">VV-1 2.5단계</span></td><td>회로 노이즈·타이밍, 기구 공차·열 변형 결과(형식 ’27.9 합의)</td></tr>
+<tr><td class="num">’28.1</td><td><span class="chip vv3">VV-3 3단계</span></td><td><span class="chip al1">AL-1 3단계</span></td><td>PLM 조회 연결(읽기 전용) — 형상 가져오기</td></tr>
+<tr><td class="num">’28.3</td><td>세 과제</td><td>세 과제</td><td>단일 상관 정의서 — 비교 방법·표본·판정 기준</td></tr>
+<tr><td class="num">’28.6</td><td><span class="chip vv1">VV-1 3단계</span> <span class="chip vv3">VV-3 3단계</span></td><td>2차 점검</td><td>하나의 VP 판정 — HW와 시스템 성능</td></tr>
+<tr><td class="num">’29 ~</td><td><span class="chip al1">AL-1 4단계</span></td><td><span class="chip vv3">VV-3</span> → <span class="chip vv1">VV-1</span></td><td>재설계 후보 → 선검증 → 재평가</td></tr>
+</tbody></table>
+</div>
+</section>
+
+<section id="base" aria-labelledby="base-h">
+<div class="head"><p class="eyebrow">공통 기반</p><h2 id="base-h">세 과제가 같이 쓰는 것</h2></div>
+<div class="grid2">
+<div class="card" style="display:flex;flex-direction:column;gap:8px"><h3>만들고 돌리는 방식</h3><ul>
+<li>개발은 Claude Code — 코드와 합성·비식별 자료만, Claude 모델만 쓰므로 반출 금지 자료는 넣지 않음</li>
+<li>운영은 사내 서버의 LangGraph — 흐름을 코드로 고정, 사내 공개 모델이 반출 금지 자료를 처리</li>
+<li>도구 연결은 MCP — Claude Code 표준(.mcp.json·관리자 허용 목록)으로 들이고 운영에서 같은 서버를 씀</li>
+<li>사내 서버: 임시 GPU ’27.2~6 → 추론 서버 1호기·시뮬레이션·학습 서버 ’27.7</li></ul></div>
+<div class="card" style="display:flex;flex-direction:column;gap:8px"><h3>정할 일정</h3>
+<div class="dec">
+<div><b>’26.10.30</b><span>AL-1 리드타임 산식, 1차 점검 수치 합의</span></div>
+<div><b>’26.11.15</b><span>4묶음 사람 지정 · 임시 GPU</span></div>
+<div><b>’26.12</b><span>1차 점검 — AL-1·VV-1 1단계, VV-3 PoC</span></div>
+<div><b>’27.2</b><span>MBSE 툴 결정</span></div>
+<div><b>’27.6.30</b><span>’28 범위·인원, 수율 KPI 정의, HIL 소유</span></div>
+<div><b>’27.12</b><span>PLM 보안 승인, VP 대상 기종 PM 합의</span></div>
+<div><b>’28.12</b><span>2차 점검 — 상관 80% + 보완설계 실적</span></div>
+</div></div>
+</div>
+<div class="card tbl-wrap"><h3 style="margin-bottom:8px">단계별 주로 맡는 묶음</h3>
+<div class="who-grid">
+<div class="h"></div><div class="h">1단계</div><div class="h">2단계 (VV-1 2·2.5)</div><div class="h">3단계</div><div class="h">4단계</div>
+<div class="t" style="color:var(--al1)">AL-1</div><div>AI·ML·MLOps + 해석 엔지니어</div><div>해석·CAE·MBSE 주도</div><div>AI·ML·MLOps 주도</div><div>AI·ML·MLOps + 해석·CAE·MBSE</div>
+<div class="t" style="color:var(--vv1)">VV-1</div><div>LiDAR 시뮬레이션</div><div>LiDAR 시뮬레이션 + 해석·CAE·MBSE</div><div>LiDAR 시뮬레이션 + 시스템 엔지니어</div><div>LiDAR 시뮬레이션 + AI·ML·MLOps</div>
+<div class="t" style="color:var(--vv3)">VV-3</div><div>시스템 엔지니어 + 해석·CAE·MBSE</div><div>해석·CAE·MBSE + 회로·기구 판정</div><div>AI·ML·MLOps + 시스템 엔지니어</div><div>해석·CAE·MBSE + AI·ML·MLOps</div>
+</div>
+<p class="muted" style="font-size:13px;margin-top:8px">AX 추진·관리(0.5명)는 모든 단계의 기준·승인·점검을 맡는다. 과제 책임 팀의 판정·정답 예제·시험은 4묶음 밖.</p></div>
+</section>
+
+<details id="words"><summary>쉬운 말 대응표</summary>
+<table class="words"><tbody>
+<tr><td>반출 금지 자료</td><td>도면·3D 모델(STP)·BOM 원본 — 사내 서버의 사내 모델만 (이전 표기 C3)</td></tr>
+<tr><td>과제 책임 팀</td><td>해석·회로·기구·광학·시스템 각 팀 (이전 표기 DRI)</td></tr>
+<tr><td>1차·2차 점검</td><td>’26.12 · ’28.12 심의 (이전 표기 Gate 1·2)</td></tr>
+<tr><td>요구-검증 추적표</td><td>요구 → 시스템 모델 → 검증 항목을 잇는 표 (RVTM)</td></tr>
+<tr><td>가상 시제품(VP) 판정</td><td>시제품 발주 전에 해석·시뮬레이션으로 통과/불통과를 내는 것</td></tr>
+<tr><td>운행 조건 커버리지</td><td>검증한 운행 조건(ODD) 조합의 비율</td></tr>
+<tr><td>정답 예제</td><td>결과가 알려진 평가용 사례 묶음 (골든셋)</td></tr>
+<tr><td>스스로 개선(RSI)</td><td>결과·채택 기록으로 탐색 전략·템플릿·대리모델을 갱신하는 반복</td></tr>
+</tbody></table>
+</details>
+
+<details id="sources"><summary>근거</summary>
+<ul>
+<li>단계 틀: AL-1 4단계·VV-1 1~4단계(2.5단계 포함)는 AX 추진 담당이 정한 것(2026-10-28), VV-3 4단계는 이번 설계</li>
+<li>목표 수치: 빅플랜 p.10·p.11·p.16·p.17(리드타임 0.1시간, 야간 월 100시간, 채택률 30·50%, 시제품 1~2차수, Re-spin 0~1회, 추적성 100%, 수율 90%, 13억/과제), 원장 마일스톤</li>
+<li>현재 상태: 2차보완보고 슬라이드 6·7(실측 인원·인월·적합률), 단계 계획(2026-10-25), ’27 리소스 플랜 v4(2026-10-22)</li>
+<li>검토 근거: 현실성 검토(2026-10-26) — 업체 MCP 상태, 실측 대조 시점, 판정 표본(Wilson 구간), PLM 공식 MCP 부재, 사내 모델 격차</li>
+<li>인원: 역할 4묶음 4.0명 계산(2026-10-27)</li>
+</ul>
+</details>
+
+</div>
+</body>
+</html>
