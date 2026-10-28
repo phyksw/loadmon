@@ -2451,6 +2451,13 @@ def review(gran="week", rows=None, meta=None):
     meta = meta if isinstance(meta, dict) else {}
     if not rows:
         return []
+    # LM30(2026-10-28) 과제 몫 — 근태·출장 등록 행은 1분짜리 행정, 출장·근태계획 시간 자리표는 그때 한 내 일의 과제로 나눈 조각
+    # (judge.write_outputs·대시보드와 같은 규칙 — core\extract.admin_share_rows · signals 파일은 그대로)
+    try:
+        import extract as _Xa
+        rows = _Xa.admin_share_rows(rows, weights=meta.get("weights"), holidays=_Xa._holiday_set(cfg()))
+    except Exception:  # noqa: BLE001 - 나누지 못해도 리뷰는 그린다(signals 그대로)
+        pass
     groups = {}
     for r in rows:
         try:
@@ -2590,6 +2597,25 @@ def pc_months_view(meta):
     return {"cells": {k: _att.month_cell(v) for k, v in sorted(pm.items())}, "lines": lines,
             "fill8": int(sum(_att._num0(v.get("fill8")) for v in pm.values())),
             "capped": any(bool(v.get("capped")) for v in pm.values())}
+
+
+def admin_view_lines(meta, tag, local=True):
+    r"""LM30(2026-10-28) 'MM 산정 근거' 카드의 근태·출장 등록 줄(GET /api/dash 의 admin_text) — mm_meta.admin_mm(건수·일수만)의
+    core\extract.admin_note 한 줄 + local 이면 목적을 알 수 없는 날의 날짜(report\admin_days_<기간>.json — 이 PC 전용 · 얼린 사본은 freeze 가
+    건수 줄만 남긴다). 해당이 없으면 []."""
+    import extract as _X
+    meta = meta if isinstance(meta, dict) else {}
+    c = meta.get("admin_mm") if isinstance(meta.get("admin_mm"), dict) else {}
+    note = _X.admin_note(c)
+    if not note:
+        return []
+    out = [note]
+    if local and tag and int(c.get("unknown_days") or 0):
+        doc = _X.load_admin_days(REPORT, tag) or {}
+        days = [str(x) for x in (doc.get("unknown_days") or []) if str(x).strip()]
+        if days:
+            out.append("목적을 알 수 없는 날(이 PC에만 보입니다): " + ", ".join(days[:20]) + (" …" if len(days) > 20 else ""))
+    return out
 
 
 def leave_view_lines(meta, tag):
@@ -5037,6 +5063,8 @@ async function refresh(){
   const fut=pick("future_days"),tf=pick("today_fraction");
   const futNote=(fut!=null||tf!=null)?`<div class="note">가용 기준 — ${fut!=null?`미래 평일 ${cnt(fut)}일은 가용에서 제외`:""}${(fut!=null&&tf!=null)?" · ":""}${tf!=null?`오늘은 ${Math.round(num(tf)*100)}% 만 가용(분석 시각${d.as_of?" "+esc(d.as_of):""} 기준 — 다시 분석하면 갱신)`:""}</div>`:"";
   const rhNote=m.rehours?`<div class="note"><b>비업무 제외 ${num(m.dropped_n)}건 · −${num(m.dropped_h).toFixed(1)}h</b> — 판정 후 시간을 다시 재어 투입 ${m.total_mm_before_rehours!=null?num(m.total_mm_before_rehours).toFixed(2)+" → ":""}${num(m.total_mm).toFixed(2)} MM 으로 갱신했습니다(버린 신호의 시간이 남은 행에 옮겨 붙지 않습니다)</div>`:"";
+  // LM30(2026-10-28) 근태·출장 등록 — 등록은 1분짜리 행정, 출장·근태계획 시간은 그때 한 일의 과제로(d.admin_text — 건수 · 목적 미상 날짜는 이 PC 화면에만)
+  const adNote=(Array.isArray(d.admin_text)?d.admin_text:[]).filter(x=>typeof x==="string"&&x).map((x,i)=>`<div class="note">${i?"":"<b>근태·출장 등록</b> — "}${esc(x)}</div>`).join("");
   // LM28(E) 시간 근거 한 줄 — 퇴근 후 미인정·시각 미상 발신·표준일 추정(PC 기록 없는 달)·브라우저 기록만 있는 평일·
   // AI 비업무 발신 시간 유지. 값이 있는 것만(mine 요약 줄·리포트 '산출 방식' 표 위 합계와 같은 숫자 — mm_basis 키)
   const tbBits=[];
@@ -5106,7 +5134,7 @@ async function refresh(){
    수동 흔적(수신·CC)만 있는 날 ${nb.floor_blocked_passive_days||0}일(하한 미적용 — 많으면 config.watchFolders 점검) · 미래 시각 신호 폐기 ${nb.future_signals_dropped||0}건 ·
    휴가로 본 평일 ${nb.inferred_absence_days||0}일(PC 기록도 흔적도 없는 평일 — 휴가로 보고 가용에서 뺐습니다${absd.length?": "+esc(absd.slice(0,12).join(", "))+(absd.length>12?" …":""):""})${simNote}</div>
    <div class="note">흔적 없는 평일 ${Math.max(0,num(nb.no_evidence_days)-num(nb.inferred_absence_days))}일(휴가로 본 날 빼고) — 이 수가 크면 수집이 덜 된 것입니다: Outlook을 켠 상태로 재실행하거나 config.watchFolders 를 확인하세요.</div>`
-   +measNote+toolNote+rhNote+(attOn?tbNoteAtt.replace("<b>시간 근거</b>","<b>시간 근거(LM29 방식 — 비교용)</b>"):tbNote)+extraNote+pccNote+futNote+cfgNote
+   +measNote+toolNote+rhNote+adNote+(attOn?tbNoteAtt.replace("<b>시간 근거</b>","<b>시간 근거(LM29 방식 — 비교용)</b>"):tbNote)+extraNote+pccNote+futNote+cfgNote
    +((Array.isArray(nb.config_warnings)&&nb.config_warnings.length)?`<div class="note" style="color:#b54708"><b>설정 경고 ${nb.config_warnings.length}건</b> — 잘못된 값은 기본값으로 대체했습니다: ${esc(nb.config_warnings.slice(0,6).join(" · "))}${nb.config_warnings.length>6?" …":""}</div>`:"")
    +(nb.utc_suspect?`<div class="note" style="color:#b54708"><b>메일 시각이 UTC 로 기록된 것 같습니다</b> — 낮 발신이 새벽 야근으로 잡힐 수 있으니 config.mm.mailTimeOffsetH(예: 9)를 확인하세요.</div>`:"")
    +(anoms.length?`<div class="note"><b>이상치 ${anoms.length}일</b> — PC 기록이 물리적으로 맞지 않아 보정한 날(투입을 자르지 않고 표시만 합니다)
@@ -6492,6 +6520,11 @@ class H(BaseHTTPRequestHandler):
                 leave_text = leave_view_lines(meta, os.path.basename(mp)[len("mm_meta_"):-len(".json")] if mp else "")
             except Exception:  # noqa: BLE001 - 한 줄 때문에 대시보드 전체가 죽지 않게
                 leave_text = []
+            # LM30(2026-10-28) 근태·출장 등록 줄(건수 + 이 PC 에서만 목적 미상 날짜 — 얼린 사본은 건수만 — freeze)
+            try:
+                admin_text = admin_view_lines(meta, os.path.basename(mp)[len("mm_meta_"):-len(".json")] if mp else "")
+            except Exception:  # noqa: BLE001 - 한 줄 때문에 대시보드 전체가 죽지 않게
+                admin_text = []
             try:
                 import details as _dl1m
                 _l1meta = _dl1m.l1_meta_payload()
@@ -6501,6 +6534,7 @@ class H(BaseHTTPRequestHandler):
                              "l1meta": _l1meta,
                              "file": fn, "rows": rows, "meta": meta,
                              "pc_usage_text": pc_usage_text, "pc_months": pc_months, "leave_text": leave_text,
+                             "admin_text": admin_text,
                              # 메일·일정 수집 범위(달 단위) — 주간 활동 추이 밑에 '미수집 달'을 적는다(얼린 사본에도 굳는다)
                              "mail_coverage": outlook_coverage(per),
                              # 화면이 보고 있는 그 기간을 넘긴다 — 예전에는 오늘 기준

@@ -264,6 +264,13 @@ def _dash_leave_only_counts(dash):
     except ImportError:
         lf = ""
     dash["leave_text"] = [lf] if lf else []
+    # LM30(2026-10-28) 근태·출장 등록 줄 — 사본에는 건수 줄만(목적을 알 수 없는 날의 날짜는 이 PC 화면에만)
+    try:
+        import extract as _X
+        an = _X.admin_note((dash.get("meta") or {}).get("admin_mm") if isinstance(dash.get("meta"), dict) else {})
+    except ImportError:
+        an = ""
+    dash["admin_text"] = [an] if an else []
     for w in dash.get("trend") if isinstance(dash.get("trend"), list) else []:
         if isinstance(w, dict):
             w.pop("pc_lv", None)

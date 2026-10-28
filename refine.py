@@ -37,7 +37,7 @@ import re
 import subprocess
 import sys
 import time
-from collections import Counter
+from collections import Counter, defaultdict
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(ROOT, "core"))
@@ -696,6 +696,29 @@ def task_guard_groups(groups, rows):
     return out, n_split
 
 
+def admin_guard_groups(groups, rows):
+    """근태·출장 등록 관문(LM30 2026-10-28) → (새 그룹 목록, 떼어 낸 행 수). 이 도구가 근태·출장 등록에 붙이는 세부업무
+    (details.admin_detail — 행정 처리·목적 미상) 행은 다른 업무와 합치지 않는다 — 섞인 그룹에서 (과제, 세부업무)별로 떼어 'admin' 표식을
+    단 그룹으로 둔다(정제가 이름을 바꾸지 않는다)."""
+    out, n = [], 0
+    for g in groups:
+        adm = defaultdict(list)
+        for i in sorted(g["idxs"]):
+            l3 = str(rows[i].get("Level 3") or "").strip()
+            if _details.admin_detail(l3):
+                adm[(str(rows[i].get("Level 2") or "").strip(), l3)].append(i)
+        if not adm:
+            out.append(g)
+            continue
+        rest = set(g["idxs"]) - {i for ids in adm.values() for i in ids}
+        if rest:
+            n += sum(len(ids) for ids in adm.values())
+            out.append(dict(g, idxs=rest, pick_share=sum(_f(rows[i].get("share")) for i in rest)))
+        for ids in adm.values():
+            out.append(dict(g, idxs=set(ids), pick_share=sum(_f(rows[i].get("share")) for i in ids), admin=True))
+    return out, n
+
+
 def _pinned_projects():
     r"""지정 과제(config\projects.json) → (이름 목록, {ukey2(이름): 상위}) — 과제명 관문 통과·상위 채움용(못 읽으면 빈 값)."""
     try:
@@ -844,6 +867,10 @@ def main():
     groups, n_split = task_guard_groups(groups, rows)
     if n_split:
         print(f"[refine] 과제가 다른 항목을 합친 병합 {n_split}건은 과제별로 나눴습니다(같은 과제 안에서만 합칩니다)")
+    # 근태·출장 등록 관문(LM30 2026-10-28) — 행정 처리·목적 미상 행은 다른 업무와 합치지 않고 이름을 그대로 둔다
+    groups, n_adm = admin_guard_groups(groups, rows)
+    if n_adm:
+        print(f"[refine] 근태·출장 등록 행 {n_adm}개는 다른 업무와 합치지 않았습니다")
     final = []
     for g in groups:
         it, idxs = g["it"], sorted(g["idxs"])
@@ -871,9 +898,12 @@ def main():
             lv2 = g["own"]
         # level3 는 실제 업무 항목명(중위개체) — AI 가 비웠거나 9종 범주로 축약해 오면
         # 원본 세부업무명(다수결)을 지킨다. 범주는 activity('활동') 열이 따로 담는다.
+        # LM30(2026-10-28) 근태·출장 등록 표기뿐인 이름('출장'·'근태계획'·'출장 신청')도 받지 않는다
         lv3 = str(_g(it, "level3") or "").strip()
-        if not lv3 or lv3 in ACT_CATS:
+        if not lv3 or lv3 in ACT_CATS or not _details.detail_name_ok(lv3):
             lv3 = _vote("Level 3") or lv3 or "기타"
+        if g.get("admin"):                   # 근태·출장 등록 행 — 과제·세부업무 이름을 그대로(admin_guard_groups)
+            lv2, lv3 = (str(rows[idxs[0]].get("Level 2") or "") or lv2), str(rows[idxs[0]].get("Level 3") or lv3)
         act = str(_g(it, "activity") or "").strip()
         detail = re.sub(r"\s+", " ", str(_g(it, "detail") or "")).strip()[:DETAIL_MAX * 2]
         final.append({"유형": _vote("유형"), "제품": _vote("제품"),

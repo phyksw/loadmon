@@ -54,8 +54,17 @@ LM30(2026-10-27 — 사용자 '한 사람과 채팅한다고 한 일을 하는 �
     (mine 이 signals 끝 conv 열로 쓴다). Copilot 프롬프트·팀 반출·내보내기에는 싣지 않는다(privacy.TEAM_DROP_COLS).
   · 대화 낱말(talk_word — 맞장구·인사·호칭·시각·흔한 소통 낱말·'…습니다/…요/…까' 꼴)은 규칙 과제 토큰이 되지 않는다(_cand_ok).
     content_words 는 원문에서 일을 가리키는 낱말만 남긴다 — judge 의 짧은 팀즈 대화 판정(is_lowinfo)이 쓴다.
+
+LM30(2026-10-28 — 사용자 '근태계획·국내출장을 올리는 일은 1분도 안 되는 일 — 그때 무슨 일을 했는지가 중요하다'):
+  · 근태·출장 등록 표기(ADMIN_* — 근태계획·연장근무·재택근무·국내출장·외근 … + 신청·결재·상신·승인 …)만 있는 신호는 admin_kind 'reg'
+    (1분짜리 행정 — 과제 몫 가중치 ≤ admin_cap_w = 작업창 1분 · 공통 · ADMIN_DETAIL), 일정·수동기록이 표기뿐이면 'time'(그 시간은 그때
+    한 내 일의 과제로 — admin_share_rows), 표기 + 내용이면 'label'(가중치 그대로 · 판정 줄은 admin_mark '(출장) A사 B 시험 입회').
+  · signals 의 weight 는 그대로 둔다(시간 근거 — 팀 재계산이 회의·작업창·수동기록 weight 로 시간을 잰다). 과제 몫을 세는 곳(judge.
+    write_outputs·리뷰 화면·mine 규칙 결과)만 admin_share_rows 로 상한·나눔을 적용한다 — 근무시간·투입 MM 합계는 그대로.
+  · 표기뿐인 이름은 과제·세부업무가 되지 않는다(admin_name — details.task_name_ok·judge·refine·병합) · 규칙 과제 토큰도(_cand_ok).
 """
 import csv
+import functools
 import glob
 import hashlib
 import json
@@ -1782,6 +1791,423 @@ def talk_name(name):
             and not any(x not in STOP and rule_name_ok(x) and not talk_word(x) for x in toks))
 
 
+# ── 근무 형태·근태·출장 등록 표기(LM30 2026-10-28 — 사용자 '근태계획·국내출장을 올리는 일 자체는 1분도 안 되는 일 — 그때 무슨 일을 하는지가
+#    중요하다') ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+#    표기(ADMIN_TRIP·ADMIN_PLAN)가 있고 그 밖에 등록 행위·군말·시스템 이름·날짜·시각·사람·호칭·괄호·대화 낱말만 남으면 '일' 이 아니라 등록이다.
+#    admin_kind: 'reg'(등록 — 과제 몫 1분 · 공통 · ADMIN_DETAIL · AI 에 보내지 않음) · 'time'(일정·수동기록이 표기뿐 — 그 시간은 그때 한 내 일의
+#    과제로 · AI 에 보내지 않음) · 'label'(표기 + 내용 — 가중치 그대로 · 판정 줄은 admin_mark) · ''(표기 없음). 일반어만 둔다(회사·기관 이름 없음).
+ADMIN_TRIP = ("국내출장", "해외출장", "출장비", "출장", "외근", "근무지외")
+ADMIN_PLAN = ("근태계획", "근무계획", "근태", "연장근무", "휴일근무", "특근", "야근", "잔업", "시차출퇴근", "시차출근", "시차근무",
+              "유연근무", "탄력근무", "선택근무", "재택근무", "원격근무", "재택", "출퇴근", "외출", "조퇴", "지각", "휴가", "연차", "반차",
+              "반반차", "대체휴무", "보상휴가", "근무")
+# 등록 행위 — 일정·수동기록이라도 이 낱말이 있으면 시간이 아니라 등록이다('출장 신청' 일정)
+ADMIN_REG_ACT = ("결재요청", "승인요청", "결재상신", "전자결재", "신청서", "품의서", "정산서", "결재", "상신", "승인", "신청", "등록",
+                 "품의", "정산", "반려", "회수", "제출", "접수", "기안", "숙박비", "교통비", "식비", "경비", "여비", "일비", "비용",
+                 "영수증")
+ADMIN_PROC = ADMIN_REG_ACT + ("취소", "변경", "통보", "완료", "요청", "알림", "안내", "확인", "처리", "관리", "기록", "현황", "내역")
+# 군말·장소 갈래(목적이 아니다 — '고객사 방문 출장'·'출장(현장)')·시스템 이름
+ADMIN_FILL = ("계획서", "계획", "일정", "예정", "관련", "건", "및", "등", "내용", "사항", "목록", "양식", "서식", "기간", "날짜", "일자",
+              "현장", "고객사", "협력사", "방문", "외부", "국내", "해외", "지방", "본사", "공장", "사업장", "현지", "업체")
+ADMIN_SYS = ("gerp", "erp", "hr", "hrm", "groupware", "그룹웨어", "포털", "portal", "인트라넷", "intranet", "시스템", "system",
+             "웹", "web", "페이지", "page", "화면", "메뉴", "edge", "chrome", "whale", "explorer", "microsoft", "internet", "인터넷",
+             "브라우저", "결재함", "msedge")
+# 일의 갈래 — 괄호 속 낱말이 이것이면 행선지가 아니라 목적이다('출장(시험)')
+ADMIN_WORK_WORDS = ("시험", "검사", "점검", "입회", "설치", "시운전", "시연", "검수", "납품", "수리", "조사", "견학", "교육", "세미나",
+                    "워크숍", "워크샵", "학회", "전시회", "박람회", "실사", "감사", "인증", "심사", "평가", "측정", "조립", "셋업",
+                    "설계", "강의", "특강", "면접", "채용", "대응", "지원", "협의", "논의", "test", "demo", "setup", "audit",
+                    "training", "workshop", "seminar")
+# 공통 일로 남겨도 되는 목적(판정이 '공통' 이어도 나누지 않는다 — 교육·행사 출장)
+ADMIN_COMMON_PURPOSE = tuple(dict.fromkeys(EDU_KW + ("웨비나", "학회", "컨퍼런스", "conference", "포럼", "forum", "전시회", "박람회",
+                                                     "전시", "채용", "면접", "행사", "체육대회", "봉사", "training", "seminar")))
+ADMIN_TIME_SRC = ("회의", "수동기록")          # 시간이 있는 신호(일정·수동 기록) — 표기뿐이면 그 시간은 그때 한 일로
+ADMIN_DETAIL = "행정 처리(근태·출장 등록)"      # 등록 행 — 공통 · 이 세부업무 · 과제 몫 1분
+ADMIN_TIME_DETAIL = "출장·근태계획 시간"         # signals 의 자리표 — 과제 몫을 셀 때 그때 한 일의 과제로 나눈다(admin_share_rows)
+ADMIN_UNKNOWN_DETAIL = "출장·근태계획(목적 미상)"   # 그때 한 일이 하나도 없는 날(±3 근무일까지 없음)
+ADMIN_DETAILS = (ADMIN_DETAIL, ADMIN_TIME_DETAIL, ADMIN_UNKNOWN_DETAIL)
+ADMIN_CAP_MIN = 1.0                             # 등록 행의 과제 몫 = 작업창 이 분(기본 가중치 1/20 분당 → 0.05)
+ADMIN_NEAR_WD = 3                               # 그때 한 일이 없으면 앞뒤 이 근무일까지 본다
+_ADMIN_LABEL_SET = frozenset(ADMIN_TRIP + ADMIN_PLAN)
+_ADMIN_REG_SET = frozenset(ADMIN_REG_ACT)
+_ADMIN_PARTS = tuple(sorted(set(ADMIN_TRIP + ADMIN_PLAN + ADMIN_PROC + ADMIN_FILL + ADMIN_SYS), key=lambda p: (-len(p), p)))
+_ADMIN_PURPOSE_MASK = re.compile(r"\[과제(?::[A-Za-z0-9_\-]{1,16})?\]")      # 가린 과제 이름 — 목적이다
+_ADMIN_BRACKET_RX = re.compile(r"[(（\[【<〔]([^)）\]】>〕]{0,40})[)）\]】>〕]")
+_ADMIN_SEP_RX = re.compile(r"(\s+|[\[\]()（）【】<>〔〕{}:：,·|~!?\"'+…^*;=&#%@/\\—–_\-.]+)")
+_ADMIN_TAG = {"국내출장": "출장", "해외출장": "출장", "출장비": "출장", "근무지외": "외근"}
+# 판정 줄에서 표기와 함께 떼는 낱말 — 등록 행위·계획 군말·시스템 이름(장소 갈래·일반 동사는 남긴다)
+_ADMIN_MARK_DROP = frozenset(ADMIN_REG_ACT + ("계획서", "계획", "일정", "예정") + ADMIN_SYS)
+# 빠른 거름 — 표기(또는 등록 행위)가 글 어디에도 없으면 낱말을 나눠 볼 필요가 없다(수천 행 판정 앞 · 이름 관문)
+_ADMIN_LABEL_RX = re.compile("|".join(re.escape(x) for x in sorted(_ADMIN_LABEL_SET, key=len, reverse=True)))
+_ADMIN_REG_RX = re.compile("|".join(re.escape(x) for x in sorted(_ADMIN_REG_SET, key=len, reverse=True)))
+
+
+@functools.lru_cache(maxsize=16384)
+def _admin_tok(tok):
+    """낱말 하나 → (찾은 표기 tuple, 등록 행위가 있나, 남은 낱말 또는 ""). 표기·등록 행위·군말·시스템 이름을 앞·뒤에서 긴 것부터 뗀다
+    ('국내출장신청서' → ('국내출장',), True, ''). 한 글자 조각('건'·'및')은 낱말 전체일 때만 — '건축'의 '건' 을 떼지 않는다.
+    남은 것이 두 글자 미만·숫자뿐이면 ""."""
+    t = str(tok or "").strip().lower()
+    labels, reg = [], False
+    for _ in range(8):
+        hit = next((p for p in _ADMIN_PARTS if t == p or (len(p) >= 2 and len(t) > len(p)
+                                                          and (t.startswith(p) or t.endswith(p)))), None)
+        if hit is None:
+            break
+        if hit in _ADMIN_LABEL_SET:
+            labels.append(hit)
+        reg = reg or hit in _ADMIN_REG_SET
+        if t == hit:
+            t = ""
+            break
+        t = t[len(hit):] if t.startswith(hit) else t[:-len(hit)]
+    return tuple(labels), reg, (t if len(t) >= 2 and not t.isdigit() else "")
+
+
+def _admin_person(x, people):
+    """사람 이름 낱말인가(people = details.person_keys 키 — 없으면 보지 않는다)."""
+    if not people:
+        return False
+    try:
+        from details import is_person_name
+    except ImportError:
+        return False
+    return is_person_name(x, people)
+
+
+def _admin_noncontent(x, people=None):
+    """일을 가리키지 않는 낱말 — 대화 낱말·상투어(STOP·RULE_NAME_NOISE)·사람 이름."""
+    return talk_word(x) or x in STOP or not rule_name_ok(x) or _admin_person(x, people)
+
+
+def _admin_strip_particle(tok):
+    """_talk_tokens 와 같은 조사 떼기 — 두 글자 조사부터, 세 글자 이상 낱말만."""
+    if len(tok) >= 3:
+        t2 = _TALK_PART2_RX.sub("", tok)
+        return t2 if t2 != tok else _TALK_PART1_RX.sub("", tok)
+    return tok
+
+
+def _admin_scan(text, people=None):
+    """글 → (표기 목록, 등록 행위가 있나, 내용 낱말 목록, 가린 과제 이름이 있나) — 가림 토큰·RE/FW·날짜·버전은 _talk_tokens 가 뗀다."""
+    s = str(text or "")
+    labels, reg, content = [], False, []
+    for tok in _talk_tokens(s):
+        lb, rg, rest = _admin_tok(tok)
+        labels.extend(lb)
+        reg = reg or rg
+        if rest and not _admin_noncontent(rest, people):
+            content.append(rest)
+    return labels, reg, content, bool(_ADMIN_PURPOSE_MASK.search(s))
+
+
+def admin_kind(text, source="", people=None):
+    """신호 하나의 근태·출장 등록 표기 판정 → 'reg' | 'time' | 'label' | ''.
+      ''     표기(ADMIN_TRIP·ADMIN_PLAN)가 없다 — 보통 신호
+      'reg'  표기와 등록 행위·군말·시스템 이름·날짜·시각·사람·호칭·대화 낱말뿐(메일·팀즈·파일·작업창은 표기뿐이어도) — 1분짜리 행정
+      'time' 일정(회의)·수동기록이 표기뿐('국내출장' 종일 · '근태계획' 18~21시 · '출장(평택)' — 괄호 속 한두 낱말은 일의 갈래가 아니면
+             행선지) — 그 시간은 그때 한 내 일의 과제로 나눈다(admin_share_rows)
+      'label' 표기 + 내용('국내출장 - A사 B 시험 입회'·'휴일근무 계획: C과제 데이터 정리'·가린 과제 이름) — 가중치 그대로, 목적으로 판정"""
+    if not _ADMIN_LABEL_RX.search(str(text or "").lower()):
+        return ""
+    labels, reg, content, purpose = _admin_scan(text, people)
+    if not labels:
+        return ""
+    if purpose:
+        return "label"
+    timed = str(source or "").strip() in ADMIN_TIME_SRC
+    if not content:
+        return "time" if (timed and not reg) else "reg"
+    if timed and any(lb in ADMIN_TRIP for lb in labels) and len(content) <= 2:
+        s = _pv().TOKEN_RX.sub(" ", str(text or ""))
+        outer = _admin_scan(_ADMIN_BRACKET_RX.sub(" ", s), people)[2]
+        if not outer and not any(w in c for c in content for w in ADMIN_WORK_WORDS):
+            return "time"                              # 행선지만 괄호에 — '출장(평택)'
+    return "label"
+
+
+def admin_worktype(text):
+    """출장·근태계획 시간 자리표의 유형 — 출장 갈래(국내·해외 출장·외근)면 '현장', 그 밖(근태계획·연장근무·재택근무 …)은 '사무'."""
+    return "현장" if any(lb in ADMIN_TRIP for lb in _admin_scan(text)[0]) else "사무"
+
+
+def admin_common_purpose(text):
+    """목적이 공통 일(교육·세미나·워크숍·학회·전시회·채용·행사 …)인가 — 이런 출장은 판정이 '공통' 이어도 그대로 둔다."""
+    low = str(text or "").lower()
+    return any(w in low for w in ADMIN_COMMON_PURPOSE)
+
+
+def admin_word(tok):
+    """규칙 과제 토큰 관문 — 낱말이 표기·등록 행위(+군말)뿐인가('근태계획'·'국내출장'·'출장신청'·'결재요청')."""
+    low = str(tok or "").strip().lower()
+    if not _ADMIN_LABEL_RX.search(low) and not _ADMIN_REG_RX.search(low):
+        return False
+    lb, rg, rest = _admin_tok(_admin_strip_particle(low))
+    return bool(lb or rg) and (not rest or _admin_noncontent(rest))
+
+
+def admin_name(name, strict=False):
+    """이름이 근태·출장 등록 표기뿐인가 — '국내출장'·'근태계획'·'출장 신청'·'근태 관리'·'재택근무'·'현장 출장' 은 True(과제·세부업무가
+    되지 않는다). 표기에 흔한 문서·회의 낱말만 붙은 것('출장 보고서')도 True. strict(과제 — Level 2)면 표기 없이 등록 행위뿐인
+    이름('결재'·'전자결재'·'결재 처리')도 True. ADMIN_DETAILS(이 도구가 붙이는 세부업무)는 False."""
+    s = " ".join(str(name or "").split())
+    if not s or s in ADMIN_DETAILS:
+        return False
+    low = s.lower()
+    if not _ADMIN_LABEL_RX.search(low) and not (strict and _ADMIN_REG_RX.search(low)):
+        return False
+    labels, reg, content, purpose = _admin_scan(s)
+    if purpose or content:
+        return False
+    return bool(labels) or (strict and reg)
+
+
+def admin_mark(text):
+    """판정 줄 — 표기·등록 행위 낱말을 떼고 앞에 '(출장)'·'(근태계획)' 을 붙인다('국내출장 - A사 B 시험 입회' → '(출장) A사 B 시험 입회').
+    표기가 없으면 그대로."""
+    s = str(text or "")
+    first, out = None, []
+    for p in _ADMIN_SEP_RX.split(s):
+        if not p or _ADMIN_SEP_RX.fullmatch(p):
+            out.append(p)
+            continue
+        low = p.lower()
+        lb, rg, rest = _admin_tok(_admin_strip_particle(low))
+        if lb or (not rest and (rg or _admin_strip_particle(low) in _ADMIN_MARK_DROP)):
+            if lb and first is None:
+                first = lb[0]
+            k = low.find(rest) if rest else -1
+            out.append((p[k:k + len(rest)] if len(low) == len(p) else rest) if k >= 0 else "")
+            continue
+        out.append(p)
+    if first is None:
+        return s
+    body = re.sub(r"[(（\[【<〔]\s*[)）\]】>〕]", " ", "".join(out))
+    body = " ".join(body.split()).strip(" -:：,·|~—–/_.")
+    return f"({_ADMIN_TAG.get(first, first)}) {body}".strip()
+
+
+def admin_cap_w(weights=None):
+    """등록 행의 과제 몫 가중치 상한 — 작업창 ADMIN_CAP_MIN 분(weights 의 작업창_분당 · 기본 1/20 → 0.05)."""
+    try:
+        rate = float((weights or {}).get("작업창_분당") or 0)
+    except (TypeError, ValueError, AttributeError):
+        rate = 0.0
+    if not rate > 0:
+        rate = 1 / 20
+    return round(rate * ADMIN_CAP_MIN, 4)
+
+
+def _row_dt(r):
+    try:
+        return datetime.strptime(str((r or {}).get("time") or "")[:16], "%Y-%m-%d %H:%M")
+    except (TypeError, ValueError):
+        return None
+
+
+def _row_w(r):
+    try:
+        return float((r or {}).get("weight") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _near_workdays(d, n, holidays):
+    """d 앞뒤로 k 번째 근무일(k = 1..n) → [(k, [앞, 뒤]), …] — 주말·공휴일(_is_off_day)은 건너뛴다."""
+    out, prev, nxt = [], d, d
+    for k in range(1, n + 1):
+        for _ in range(15):
+            prev -= _td(days=1)
+            if not _is_off_day(prev, holidays or set()):
+                break
+        for _ in range(15):
+            nxt += _td(days=1)
+            if not _is_off_day(nxt, holidays or set()):
+                break
+        out.append((k, [prev, nxt]))
+    return out
+
+
+def admin_share_rows(rows, weights=None, holidays=None, stats=None, people=None):
+    """signals 행(dict — time·source·weight·text·model|project·detail|activity·worktype …) → 과제 몫을 셀 행 목록(원본은 그대로 —
+    바뀐 행만 새 dict). judge.write_outputs·리뷰 화면·mine 규칙 결과가 쓴다. signals 의 weight(시간 근거)는 고치지 않는다.
+      ① 세부업무가 ADMIN_DETAIL(등록)이면 weight = min(weight, admin_cap_w) · '_cap' 표식(시간 몫은 1분 — admin_allocate)
+      ② 과제 '공통' · 세부업무 ADMIN_TIME_DETAIL(출장·근태계획 시간 자리표)이면 그 가중치를 그때 한 내 일(OWN_WORK_SRC — 등록·자리표
+         행 빼고)의 (과제, 유형, 세부업무)에 가중치 비례로 나눈 조각 행들 — 시간제 일정은 그 구간 안 → 같은 날, 종일 일정·수동기록은 같은
+         날 → 앞뒤 ADMIN_NEAR_WD 근무일(가까운 날부터) → 공통 · ADMIN_UNKNOWN_DETAIL. 조각은 '_grp'(원래 행 번호)·'_w0'(원래 가중치)를 단다.
+      그 밖의 행은 같은 객체 그대로. 조각 가중치의 합 = 원래 가중치(합계·총 MM 은 그대로 — 어느 과제로 가는지만 바뀐다).
+    stats(dict)에 reg·reg_w·cap_w·time_rows·time_w·split_days·near_days·unknown_days·purpose_days(날짜 집합 — 이 PC 에서만 쓴다)."""
+    def _pos(k, dflt):
+        try:
+            v = float((weights or {}).get(k, dflt))
+            return v if v > 0 else dflt
+        except (TypeError, ValueError, AttributeError):
+            return dflt
+    w_meet = _pos("회의", 2.0)
+    cap = admin_cap_w(weights)
+    parsed = []
+    for r in rows or ():
+        if not isinstance(r, dict):
+            continue
+        md = str(r.get("model") or r.get("project") or "").strip()
+        dt = str(r.get("detail") or r.get("activity") or "").strip()
+        parsed.append((r, _row_dt(r), str(r.get("source") or "").strip(), _row_w(r), md, dt))
+    own_by_day = defaultdict(list)
+    for i, (_r, t, src, w, md, dt) in enumerate(parsed):
+        if t is not None and w > 0 and src in OWN_WORK_SRC and md and dt not in ADMIN_DETAILS:
+            own_by_day[t.date()].append((t.hour * 60 + t.minute, i))
+    st = stats if isinstance(stats, dict) else {}
+    st.update(reg=0, reg_w=0.0, cap_w=cap, time_rows=0, time_w=0.0, split_days=set(), near_days=set(),
+              unknown_days=set(), purpose_days=set())
+
+    def _set(c, md, wt, dt):
+        """조각 행의 과제·세부업무 — judge 행(model·detail)과 mine·리뷰 행(project·activity) 어느 쪽으로 읽어도 같게."""
+        c["model"], c["project"], c["detail"], c["activity"] = md, md, dt, dt
+        if wt:
+            c["worktype"] = wt
+        return c
+
+    out = []
+    for i, (r, t, src, w, md, dt) in enumerate(parsed):
+        if dt == ADMIN_DETAIL:
+            st["reg"] += 1
+            st["reg_w"] += w
+            c = dict(r, _cap=True)
+            c["weight"] = min(w, cap) if w > 0 else w
+            out.append(c)
+            continue
+        if dt == ADMIN_TIME_DETAIL and md == "공통" and t is not None and w > 0:
+            st["time_rows"] += 1
+            st["time_w"] += w
+            d, m0 = t.date(), t.hour * 60 + t.minute
+            whole = src != "회의" or w / w_meet >= STD_DAY_H - 1e-6
+            cands, how = [], ""
+            if not whole:
+                m1 = m0 + max(30.0, w / w_meet * 60.0)
+                cands, how = [j for mm, j in own_by_day.get(d, ()) if m0 <= mm <= m1], "window"
+            if not cands:
+                cands, how = [j for _mm, j in own_by_day.get(d, ())], "day"
+            if not cands:
+                for _k, days in _near_workdays(d, ADMIN_NEAR_WD, holidays):
+                    cands = [j for dd in days for _mm, j in own_by_day.get(dd, ())]
+                    if cands:
+                        how = "near"
+                        break
+            g = defaultdict(float)
+            for j in cands:
+                rj = parsed[j]
+                g[(rj[4], str(rj[0].get("worktype") or "").strip(), rj[5])] += rj[3]
+            tot = sum(g.values())
+            if tot <= 0:
+                st["unknown_days"].add(d)
+                c = _set(dict(r, _grp=i, _w0=w), "공통", "", ADMIN_UNKNOWN_DETAIL)
+                c["weight"] = w
+                out.append(c)
+                continue
+            (st["near_days"] if how == "near" else st["split_days"]).add(d)
+            keys = sorted(g, key=lambda k: (-g[k], k))
+            parts = [round(w * g[k] / tot, 6) for k in keys]
+            parts[0] = round(parts[0] + (w - sum(parts)), 6)       # 반올림 잔차는 가장 큰 조각에 — 합 = 원래 가중치
+            for k, wk in zip(keys, parts, strict=True):
+                c = _set(dict(r, _grp=i, _w0=w), k[0], k[1], k[2])
+                c["weight"] = wk
+                out.append(c)
+            continue
+        if (src in ADMIN_TIME_SRC and t is not None and md not in ("", "공통", "미지정")
+                and admin_kind(r.get("text"), src, people) == "label"):
+            st["purpose_days"].add(t.date())             # 목적이 적힌 출장·근태계획 시간 — 그 과제로 판정됨
+        out.append(r)
+    return out
+
+
+def admin_counts(stats):
+    """admin_share_rows 의 stats → 건수·일수만(mm_meta.admin_mm — 팀으로 가도 되는 값 · 날짜 없음)."""
+    st = stats if isinstance(stats, dict) else {}
+    days = set(st.get("split_days") or ()) | set(st.get("near_days") or ()) | set(st.get("purpose_days") or ())
+    return {"reg": int(st.get("reg") or 0), "time_days": len(days), "unknown_days": len(st.get("unknown_days") or ()),
+            "near_days": len(st.get("near_days") or ()), "time_rows": int(st.get("time_rows") or 0),
+            "cap_w": float(st.get("cap_w") or admin_cap_w())}
+
+
+def admin_note(counts):
+    """근태·출장 등록 한 줄(합니다체 — 건수·일수만) — 대시보드 'MM 산정 근거' 카드·진행 로그가 같은 글을 쓴다. 해당이 없으면 ""."""
+    c = counts if isinstance(counts, dict) else {}
+    n, m, k = int(c.get("reg") or 0), int(c.get("time_days") or 0), int(c.get("unknown_days") or 0)
+    bits = []
+    if n:
+        bits.append(f"근태계획·출장 등록 {n}건은 1분짜리 행정으로만 셉니다")
+    if m:
+        bits.append(f"출장·근태계획 시간 {m}일은 목적이나 그때 한 일로 과제에 나눴습니다")
+    if k:
+        bits.append(f"목적을 알 수 없는 날 {k}일(일정 제목에 목적을 적으면 그 과제로 들어갑니다)")
+    return " · ".join(bits)
+
+
+ADMIN_DAYS_FILE = "admin_days_{tag}.json"        # report\ — 목적 미상·나눈 날짜(이 PC 전용 · 팀·사본으로 보내지 않는다)
+
+
+def save_admin_days(rep_dir, tag, stats):
+    """출장·근태계획 시간의 날짜(나눈 날·앞뒤 근무일에서 찾은 날·목적 미상 날·목적이 적힌 날) → report\\admin_days_<기간>.json(이 PC 전용).
+    실패해도 분석은 계속(False)."""
+    st = stats if isinstance(stats, dict) else {}
+    doc = {k: sorted(x.isoformat() for x in (st.get(k) or ()) if hasattr(x, "isoformat"))
+           for k in ("split_days", "near_days", "unknown_days", "purpose_days")}
+    p = os.path.join(rep_dir, ADMIN_DAYS_FILE.format(tag=tag))
+    if not any(doc.values()) and not os.path.exists(p):
+        return True                                    # 출장·근태계획 시간이 없다 — 파일을 만들지 않는다
+    try:
+        os.makedirs(rep_dir, exist_ok=True)
+        tmp = f"{p}.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(doc, f, ensure_ascii=False, indent=1)
+        os.replace(tmp, p)
+        return True
+    except OSError:
+        return False
+
+
+def load_admin_days(rep_dir, tag):
+    """report\\admin_days_<기간>.json → dict | None(없거나 깨짐)."""
+    try:
+        with open(os.path.join(rep_dir, ADMIN_DAYS_FILE.format(tag=tag)), encoding="utf-8-sig") as f:
+            o = json.load(f)
+        return o if isinstance(o, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def admin_allocate(day_min, share_rows, key_of, minutes_map=None):
+    """과제 몫의 시간화(mm.shareBasis="time") — admin_share_rows 결과를 core\\timeshare 로 나눈다. 등록 행('_cap')은 1분만 덮고,
+    출장·근태계획 조각('_grp')은 원래 행 하나(원래 가중치 '_w0' — 덮는 길이는 예전과 같다)로 나눈 뒤 그 분을 조각 가중치대로 조각의
+    키에 다시 나눈다(정수 최대잉여 — 날마다 Σ = 투입 그대로). → ({키: 분}, 통계)."""
+    import timeshare
+    rows, groups, seen = [], defaultdict(dict), set()
+    for r in share_rows or ():
+        t = _row_dt(r)
+        if t is None:
+            continue
+        src = str(r.get("source") or "").strip()
+        w = _row_w(r)
+        if r.get("_cap"):
+            src = timeshare.ADMIN_SRC
+        if "_grp" in r:
+            gk = ("\x00admin", r["_grp"])
+            k = key_of(r)
+            groups[gk][k] = groups[gk].get(k, 0.0) + w
+            if gk not in seen:
+                seen.add(gk)
+                rows.append((t, src, float(r.get("_w0") or w), gk))
+            continue
+        rows.append((t, src, w, key_of(r)))
+    alloc, st = timeshare.allocate(day_min, rows, minutes_map)
+    out = defaultdict(int)
+    for k, v in alloc.items():
+        if k in groups and any(x > 0 for x in groups[k].values()):
+            for kk, vv in timeshare.split_int(int(v), {a: b for a, b in groups[k].items() if b > 0}).items():
+                out[kk] += vv
+        else:
+            out[k] += v
+    return dict(out), st
+
+
 def _needle_hit(needle, low, toks):
     """시드 매칭어 ↔ 신호. 토큰 경계로 판정한다 — raw 부분문자열은 오탐이 실측됐다
     ('ai'⊂'email', 'cad'⊂'cascade'). projmap 의 판정기를 그대로 재사용."""
@@ -1813,9 +2239,10 @@ def _name_guard(signals):
 
 def _cand_ok(x, df, n, guard):
     """규칙 과제 후보 토큰 — 3~20자 · 2회 이상이되 너무 흔하지 않음(신호의 1/3, 최소 3) · 상투어 아님 · 사람·공지 아님 ·
-    대화 낱말 아님(LM30 2026-10-27 — '보내드렸습니다'·'책임님'·'가능하실까요' 가 팀즈 행의 규칙 과제명이 되던 것)."""
+    대화 낱말 아님(LM30 2026-10-27 — '보내드렸습니다'·'책임님'·'가능하실까요' 가 팀즈 행의 규칙 과제명이 되던 것) ·
+    근태·출장 등록 표기 아님(LM30 2026-10-28 — '국내출장'·'근태계획'·'결재요청' 이 규칙 과제명이 되던 것)."""
     return (3 <= len(x) <= 20 and 2 <= df[x] <= max(3, n // 3) and rule_name_ok(x) and not talk_word(x)
-            and guard(x))
+            and not admin_word(x) and guard(x))
 
 
 def build_items2(signals, projects=None, min_w=1.0):
@@ -1842,6 +2269,62 @@ def build_items2(signals, projects=None, min_w=1.0):
             proj = sorted(cand, key=lambda x: (-df[x], x))[0] if cand else "미지정"
         assigns.append((t, src, text, w, who, proj, activity_of(text, src)))
     return items, assigns
+
+
+def admin_assigns(assigns, people=None):
+    """mine 규칙 경로(LM30 2026-10-28) — build_items2 의 assigns 중 근태·출장 등록 표기 행의 (과제, 활동) 자리를 바꾼다:
+    'reg' → ('공통', ADMIN_DETAIL) · 'time' → ('공통', ADMIN_TIME_DETAIL)(과제 몫을 셀 때 그때 한 일로 나눈다). 가중치는 그대로.
+    → (새 assigns, {"reg": n, "time": n})."""
+    out, n = [], Counter()
+    for a in assigns or ():
+        t, src, text, w, who, proj, act = a
+        k = admin_kind(text, src, people)
+        if k == "reg":
+            a = (t, src, text, w, who, "공통", ADMIN_DETAIL)
+        elif k == "time":
+            a = (t, src, text, w, who, "공통", ADMIN_TIME_DETAIL)
+        if k in ("reg", "time"):
+            n[k] += 1
+        out.append(a)
+    return out, {"reg": n["reg"], "time": n["time"]}
+
+
+def assign_row(a):
+    """assigns 튜플 → admin_share_rows 가 읽는 행(dict)."""
+    t, src, text, w, who, proj, act = a
+    return {"time": t.strftime("%Y-%m-%d %H:%M"), "source": src, "text": text, "weight": w, "who": who,
+            "project": proj, "activity": act, "_t": t}
+
+
+def items_of_rows(rows, min_w=1.0):
+    """admin_share_rows 결과(mine 규칙 행) → build_items 와 같은 (과제, 활동) 격자 — 가중치·출처·날짜·근거 6줄, min_w 문턱도 같다."""
+    items = defaultdict(lambda: {"w": 0.0, "ev": [], "src": Counter(), "days": set()})
+    for r in rows or ():
+        t = r.get("_t") or _row_dt(r)
+        if t is None:
+            continue
+        it = items[(str(r.get("project") or "미지정"), str(r.get("activity") or "기타"))]
+        it["w"] += _row_w(r)
+        it["src"][r.get("source") or ""] += 1
+        it["days"].add(t.date())
+        if len(it["ev"]) < 6:
+            it["ev"].append(f"{t:%m-%d} [{r.get('source') or ''}] {str(r.get('text') or '')[:70]}")
+    # 근태·출장 등록 몫(1분짜리라 늘 작다)은 문턱과 상관없이 남긴다 — 표에서 사라지면 그 몫이 다른 과제로 옮겨 간다
+    kept = {k: v for k, v in items.items() if v["w"] >= min_w and k[1] not in ADMIN_DETAILS}
+    if not kept:
+        return dict(items)
+    kept.update({k: v for k, v in items.items() if k[1] in ADMIN_DETAILS})
+    return kept
+
+
+def time_shares_rows(rows, day_hours, cfg=None):
+    """time_shares 의 admin_share_rows 판(LM30 2026-10-28) — 등록 행은 1분, 출장·근태계획 조각은 원래 덮던 길이를 조각대로 나눈다."""
+    mins = norm_cfg(cfg)[0]["signalMinutes"]
+    day_min = {d: int(round(float(h) * 60)) for d, h in (day_hours or {}).items() if h and float(h) > 0}
+    alloc, st = admin_allocate(day_min, rows, lambda r: (str(r.get("project") or "미지정"),
+                                                         str(r.get("activity") or "기타")), mins)
+    tot = sum(alloc.values())
+    return ({k: v / tot for k, v in alloc.items()} if tot else {}), st
 
 
 def build_items(signals, projects=None, min_w=1.0, _guard=None):
@@ -1970,6 +2453,8 @@ def time_shares(assigns, day_hours, cfg=None):
 # 기계가 쓴 시각이라 야간 산출물(NIGHT_PRODUCTIVE)은 아니다 — 밤새 돌린 솔버의 03:00 출력이 새벽 크레딧·야간 세션이 되지
 # 않는다(VF-H1). 주간 창 안의 시각은 day_work_hours 가 예전처럼 산출물·흔적으로 쓴다.
 NIGHT_PRODUCTIVE = {"파일", "파일(코드)", "커밋", "메일(발신)", "팀즈(발신)", "수동기록", "메일(발신·일자)", "팀즈(발신·일자)"}
+# LM30(2026-10-28) 내가 한 일 — 출장·근태계획 시간을 그때 한 일의 과제로 나눌 때 보는 신호(admin_share_rows · 받은 글·남의 파일 아님)
+OWN_WORK_SRC = frozenset(NIGHT_PRODUCTIVE) | {"회의", "작업창", "작업창(IDE)", "파일(해석출력)"}
 # LM28(E) — 날짜만 아는 신호(12:00 은 자리표). 발신은 '그날 일했다'는 능동 흔적(하한 게이트·시각 미상 인정)이지만 시각 근거가
 # 아니다 — 산출물·흔적 폭·주말 창·흔적 창의 기준점으로 쓰지 않는다(예전엔 정오에 가짜 창이 생기고 저녁 인정이 불가능했다).
 # 받은 글(팀즈 날짜만)은 아무 시간도 만들지 않는다. UNTIMED_BASE = 시각 미상 인정 1건의 분을 빌려 올 라벨(signalMinutes).

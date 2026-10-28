@@ -406,11 +406,14 @@ def _set_alias(amap, pj, x, canon):
 
 
 def _detail_pools(rows):
-    """행 → 과제별 세부업무 집합·(과제, 세부업무) MM 가중치."""
+    """행 → 과제별 세부업무 집합·(과제, 세부업무) MM 가중치. LM30(2026-10-28): 근태·출장 등록에 붙이는 세부업무(admin_detail)와
+    등록 표기뿐인 이름은 병합 후보가 아니다 — 다른 업무와 합치거나 그 이름으로 다른 업무를 부르지 않는다."""
     by_pj, mm_w = {}, {}
     for r in rows:
         pj = (r.get("Level 2") or "").strip() or "공통"
         d = (r.get("Level 3") or "").strip()
+        if d and (admin_detail(d) or _admin_name(d)):
+            continue
         if d:
             by_pj.setdefault(pj, set()).add(d)
             mm = r["_mm"] if "_mm" in r else _f(r.get("mm"))
@@ -867,15 +870,43 @@ def _talk_name(name):
     return talk_name(name)
 
 
+def _admin_name(name, strict=False):
+    """extract.admin_name(근태·출장 등록 표기뿐인 이름 — '국내출장'·'근태계획'·'출장 신청') — extract 를 못 읽으면 False."""
+    try:
+        from extract import admin_name
+    except ImportError:
+        return False
+    return admin_name(name, strict)
+
+
+def admin_detail(name):
+    """이 도구가 근태·출장 등록에 붙이는 세부업무(extract.ADMIN_DETAILS — 행정 처리·출장·근태계획 시간·목적 미상)인가.
+    병합·정제가 이 이름을 다른 업무와 합치거나 바꾸지 않는다(LM30 2026-10-28)."""
+    try:
+        from extract import ADMIN_DETAILS
+    except ImportError:
+        return False
+    return str(name or "").strip() in ADMIN_DETAILS
+
+
+def detail_name_ok(name):
+    """세부업무(Level 3) 이름으로 써도 되는가(LM30 2026-10-28) — 근태·출장 등록 표기뿐인 이름('출장'·'근태계획'·'출장 신청'·
+    '근태 관리')은 아니다. 이 도구가 붙이는 이름(admin_detail)은 된다."""
+    s = str(name or "").strip()
+    return bool(s) and (admin_detail(s) or not _admin_name(s))
+
+
 def task_name_ok(name, people=(), pinned=()):
     """과제(Level 2) 이름으로 써도 되는가 — 지정(pinned: 이름 또는 키)은 늘 통과, 아니면 사람 이름·공지류가 아닐 때만.
-    LM30(2026-10-27): 대화 낱말뿐인 이름('책임님'·'보내드렸습니다'·'가능하실까요')도 과제가 아니다."""
+    LM30(2026-10-27): 대화 낱말뿐인 이름('책임님'·'보내드렸습니다'·'가능하실까요')도 과제가 아니다.
+    LM30(2026-10-28): 근태·출장 등록 표기뿐인 이름('국내출장'·'근태계획'·'재택근무'·'출장 신청'·'근태 관리'·'결재')도 과제가 아니다."""
     k = ukey2(name)
     if not k:
         return False
     if pinned and k in {ukey2(p.get("name") if isinstance(p, dict) else p) for p in pinned}:
         return True
-    return not is_person_name(name, people) and not is_notice_name(name) and not _talk_name(name)
+    return (not is_person_name(name, people) and not is_notice_name(name) and not _talk_name(name)
+            and not _admin_name(name, True))
 
 
 # ── 팀즈 근거가 과제를 받은 길(LM30 2026-10-27 — signals 의 via 열 · 이 PC 화면과 judge 구조 줄이 같은 수를 쓴다) ──────────────────
