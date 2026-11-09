@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PB 피드백 루프 결과 보고서</title>
+<style>
+:root{--bg:#f7f8fa;--card:#fff;--ink:#1d2330;--mute:#5b6475;--line:#dde1e8;--acc:#2f6fdb;--ok:#1f8a4c;--bad:#c23b3b;--warn:#b7791f;--bar1:#9aa5b8;--bar2:#2f6fdb;--bar3:#1f8a4c}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#11151c;--card:#1a2029;--ink:#e6e9ef;--mute:#9aa3b2;--line:#2c3440;--acc:#6c9cf0;--ok:#4cc27e;--bad:#e06a6a;--warn:#e0a84a;--bar1:#5d6778;--bar2:#6c9cf0;--bar3:#4cc27e}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.6 "Pretendard","Malgun Gothic","Apple SD Gothic Neo",system-ui,sans-serif}
+main{max-width:1060px;margin:0 auto;padding:24px 16px 64px}
+h1{font-size:24px;margin:0 0 4px}h2{font-size:19px;margin:34px 0 10px;padding-bottom:6px;border-bottom:2px solid var(--line)}h3{font-size:16px;margin:18px 0 8px}
+.sub{color:var(--mute);font-size:13px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin:10px 0}
+.grid{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
+.kpi b{display:block;font-size:22px}.kpi span{color:var(--mute);font-size:13px}
+table{width:100%;border-collapse:collapse;font-size:13.5px;background:var(--card)}
+th,td{border:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}
+th{background:color-mix(in srgb,var(--line) 45%,var(--card))}
+.scroll{overflow-x:auto}
+.pass{color:var(--ok);font-weight:700}.fail{color:var(--bad);font-weight:700}.na{color:var(--mute)}
+.tag{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px;border:1px solid var(--line);color:var(--mute)}
+.bars .row{display:grid;grid-template-columns:150px 1fr 70px;gap:8px;align-items:center;margin:4px 0;font-size:13px}
+.track{background:color-mix(in srgb,var(--line) 60%,transparent);border-radius:4px;height:16px;position:relative}
+.fill{height:16px;border-radius:4px}.gate{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--bad)}
+.flow{display:flex;flex-wrap:wrap;gap:6px;align-items:stretch;margin:8px 0}
+.step{flex:1 1 150px;background:var(--card);border:1px solid var(--line);border-left:4px solid var(--acc);border-radius:8px;padding:8px 10px;font-size:13px}
+.step b{display:block;font-size:13.5px}.arrow{align-self:center;color:var(--mute);font-size:18px}
+ol li,ul li{margin:4px 0}
+.note{font-size:13px;color:var(--mute)}
+</style>
+</head>
+<body>
+<main>
+<h1>PB 모델 피드백 루프 — 테스트 결과 보고서</h1>
+<div class="sub">작성 2026-11-09 · 범위: iteration 0 (정직한 기준선) 완료, iteration 1 진행 중 · 노이즈 OFF · 모든 렌즈 영상은 광선추적 렌더러(optrender 1.2.0)로 광학계를 실제로 통과시켜 생성</div>
+
+<div class="card">
+<b>한 줄 결론</b> — 현재 PB 모델(v0)은 검정 세트에서 5개 게이트를 모두 통과하지 못한다. 가장 큰 병목은 학습 부족이 아니라
+<b>① 촬영 설계(차트 한 자세로는 배율·롤이 분리되지 않음)</b>, <b>② v1 렌즈 상태 표현력의 바닥</b>, <b>③ 측정 반경 너머 코너 외삽</b>이다.
+정답 렌즈 상태를 주면 relaxed 는 충실도 게이트(G4)를 통과하므로, slim_7p_relaxed 방향은 복원으로 target 에 도달할 수 있는 근거가 있다.
+</div>
+
+<div class="grid">
+<div class="card kpi"><b class="fail">0 / 5</b><span>게이트 통과 (추정 경로, 두 설계 모두)</span></div>
+<div class="card kpi"><b>26.7 dB</b><span>relaxed 차트 PSNR (복원 전 23.2 → 추정 복원) · 정답 상태면 45.7 dB</span></div>
+<div class="card kpi"><b>81–99.8 %</b><span>왜곡 오차 중 차트 배치(배율·롤·위치) 성분</span></div>
+<div class="card kpi"><b>0.41</b><span>PB-A MTF RMS 오차 (게이트 0.05) — v0 는 축소 미리보기만 사용</span></div>
+</div>
+
+<h2>1. 모델 프로세스</h2>
+<h3>1-1. 데이터 생성 (정답을 만드는 쪽)</h3>
+<div class="flow">
+<div class="step"><b>렌즈 동물원</b>설계 24개 (5·6·7매, F/1.70–2.69, 화각 34.5–40.5°) + target_7p · slim_6p · slim_7p_relaxed</div><div class="arrow">→</div>
+<div class="step"><b>as-built 유닛</b>회전대칭 공차 + 센서 틸트·회전·시프트 + AA 재초점</div><div class="arrow">→</div>
+<div class="step"><b>광선추적 렌더 (optrender)</b>Debye 파동 PSF, 플럭스 가중, CFA×QE×IR-cut 분광, 센서 4000×3000 @ 2.44 µm</div><div class="arrow">→</div>
+<div class="step"><b>보정 촬영</b>차트 in-focus · flat · 디포커스 −20/−10/+10/+20 µm, 1000×750 미리보기 + 원해상도 창</div>
+</div>
+<h3>1-2. PB 모델 A — 렌즈 파라미터 추정</h3>
+<div class="flow">
+<div class="step"><b>공개 촬영만 입력</b>정답 파일 접근 차단, 렌더러 import 금지 (inverse crime 방지)</div><div class="arrow">→</div>
+<div class="step"><b>측정 토큰</b>타깃 중심 · ESF/MTF · flat 비 · 디포커스 5면</div><div class="arrow">→</div>
+<div class="step"><b>블록별 추정</b>기하(왜곡·배율색수차) → 셰이딩(RI) → 블러(Zernike, 5면 위상복원) → 틸트</div><div class="arrow">→</div>
+<div class="step"><b>LensState</b>v1 (현재) → v2 (iteration 1: 실제 상고, 채널별 spline 왜곡·RI)</div>
+</div>
+<h3>1-3. PB 모델 B — 복원 (image2image 아님, 물리 연산자 순서)</h3>
+<div class="flow">
+<div class="step"><b>slim 영상</b>광학 통과 렌더</div><div class="arrow">→</div>
+<div class="step"><b>기하 리맵</b>h<sub>slim</sub> ∘ h<sub>target</sub><sup>−1</sup> (왜곡·배율색수차)</div><div class="arrow">→</div>
+<div class="step"><b>RI 이득</b>RI<sub>target</sub> / RI<sub>slim</sub></div><div class="arrow">→</div>
+<div class="step"><b>PSF 전달</b>H<sub>t</sub>·conj(H<sub>s</sub>) / (|H<sub>s</sub>|² + NSR), 필드별</div><div class="arrow">→</div>
+<div class="step"><b>복원 영상</b>target 렌즈 룩과 비교</div>
+</div>
+<h3>1-4. 평가와 피드백 루프</h3>
+<div class="flow">
+<div class="step"><b>관측량 정답</b>채널별 PSF 중심 지도 · 렌더 flat RI · 방향별 OTF</div><div class="arrow">→</div>
+<div class="step"><b>게이트 G1–G5</b>설계별 판정, 봉인 test 는 통과/실패만</div><div class="arrow">→</div>
+<div class="step"><b>6-항 오차 예산</b>R 표현 · F 모델 · M 측정 · C 자세 · X 외삽 · E 추정</div><div class="arrow">→</div>
+<div class="step"><b>재설계 → 재학습 → 검정</b>지배 항부터 수정, 사전 등록 마진으로 채택 판정 (최소 5회)</div>
+</div>
+
+<h2>2. 실험 조건</h2>
+<div class="scroll"><table>
+<tr><th>항목</th><th>내용</th></tr>
+<tr><td>분할</td><td>train: zoo 학습 설계 14 + slim seed 100–189 · <b>val</b>: relaxed seed 0–5, 6P seed 0–5, zoo 검정 설계 4 · <b>val_unseen</b> (미학습 설계, 채택 판단용): zoo_r6_f25, zoo_t6_f27 · <b>test (봉인)</b>: slim seed 6–9 + 미학습 설계 4</td></tr>
+<tr><td>차트</td><td>학습용 C_train 5종 (edge_grid 4방향, dot_grid, checker_x, mt_full, micro_dot) · 미학습 C_test 4종 (ring, Siemens star, noise, mt_alt)</td></tr>
+<tr><td>학습 데이터</td><td>내용 중립만 (C_train 차트, dead-leaves, 1/f 텍스처, flat). 실사·동물 사진은 검정 전용</td></tr>
+<tr><td>게이트</td><td>G1 왜곡 &lt; 0.1 px · G2 RI &lt; 0.5 % · G3 MTF50 비 0.95–1.05 · G4 PSNR ≥ 40 dB(차트)/38 dB(장면), SSIM ≥ 0.98 · G5 미학습 설계·차트 일반화 (MTF RMS ≤ 0.05, 왜곡 ≤ 0.3 px, RI ≤ 1 %, 틸트 ≤ 0.05°)</td></tr>
+</table></div>
+
+<h2>3. 게이트 결과 (val, iteration 0 = PB 모델 v0)</h2>
+<div class="scroll"><table>
+<tr><th>설계 / 경로</th><th>G1 기하</th><th>G2 RI</th><th>G3 선예도 (MTF50 비)</th><th>G4 PSNR 차트/장면, SSIM</th><th>G5</th></tr>
+<tr><td>relaxed · 추정 (실사용 경로)</td><td class="fail">32.7 px</td><td class="fail">4.60 %</td><td class="fail">0.10–0.99</td><td class="fail">26.7 / 22.4 dB, 0.720</td><td class="fail">실패</td></tr>
+<tr><td>relaxed · 정답 상태 (복원기 한계)</td><td class="fail">1.03 px</td><td class="fail">1.07 %</td><td class="fail">0.38–1.81 (d95 1.17 과선명)</td><td class="pass">45.7 / 43.9 dB, 0.992</td><td class="na">—</td></tr>
+<tr><td>relaxed · 복원 안 함</td><td>41.0 px</td><td>10.0 %</td><td>—</td><td>23.2 / 21.8 dB, 0.705</td><td class="na">—</td></tr>
+<tr><td>6P · 추정</td><td class="fail">17.9 px</td><td class="fail">2.72 %</td><td class="fail">0.23–1.61</td><td class="fail">29.0 / 24.5 dB, 0.754</td><td class="fail">실패</td></tr>
+<tr><td>6P · 정답 상태</td><td class="fail">3.09 px</td><td class="fail">1.56 %</td><td class="fail">0.28–1.11 (d95 0.40 복원 부족)</td><td class="fail">36.5 / 36.2 dB, 0.960</td><td class="na">—</td></tr>
+<tr><td>6P · 복원 안 함</td><td>20.0 px</td><td>6.8 %</td><td>—</td><td>25.7 / 25.0 dB</td><td class="na">—</td></tr>
+</table></div>
+
+<h3>복원 전후 PSNR (빨간 선 = 게이트)</h3>
+<div class="card bars">
+<div class="row"><span>relaxed 차트 · 복원 안 함</span><div class="track"><div class="fill" style="width:46.4%;background:var(--bar1)"></div><div class="gate" style="left:80%"></div></div><span>23.2 dB</span></div>
+<div class="row"><span>relaxed 차트 · 추정</span><div class="track"><div class="fill" style="width:53.4%;background:var(--bar2)"></div><div class="gate" style="left:80%"></div></div><span>26.7 dB</span></div>
+<div class="row"><span>relaxed 차트 · 정답 상태</span><div class="track"><div class="fill" style="width:91.4%;background:var(--bar3)"></div><div class="gate" style="left:80%"></div></div><span>45.7 dB</span></div>
+<div class="row"><span>6P 차트 · 복원 안 함</span><div class="track"><div class="fill" style="width:51.4%;background:var(--bar1)"></div><div class="gate" style="left:80%"></div></div><span>25.7 dB</span></div>
+<div class="row"><span>6P 차트 · 추정</span><div class="track"><div class="fill" style="width:58%;background:var(--bar2)"></div><div class="gate" style="left:80%"></div></div><span>29.0 dB</span></div>
+<div class="row"><span>6P 차트 · 정답 상태</span><div class="track"><div class="fill" style="width:73%;background:var(--bar3)"></div><div class="gate" style="left:80%"></div></div><span>36.5 dB</span></div>
+<div class="note">막대 길이 = PSNR / 50 dB. 장면 PSNR 은 relaxed 21.8 → 22.4 → 43.9 dB, 6P 25.0 → 24.5 → 36.2 dB (게이트 38 dB).</div>
+</div>
+
+<h3>PB-A 추정 일반화 (G5 대리 지표, 미학습 셀 포함)</h3>
+<div class="scroll"><table>
+<tr><th>셀</th><th>왜곡 p95 (자세 제거)</th><th>MTF RMS</th><th>RI</th><th>틸트</th></tr>
+<tr><td>seen (val 16 유닛)</td><td class="fail">51.8 px (8.1 px)</td><td class="fail">0.409</td><td class="fail">2.16 %</td><td class="fail">0.097°</td></tr>
+<tr><td>unseen_design (미학습 설계)</td><td class="fail">41.1 px (10.8 px)</td><td class="fail">0.345</td><td class="fail">1.82 %</td><td class="fail">0.073°</td></tr>
+<tr><td>unseen_chart (Siemens star)</td><td colspan="4" class="fail">능력 공백 — v0 가 이 차트 종류를 전혀 쓰지 못함 (기본값 반환)</td></tr>
+</table></div>
+
+<h2>4. 병목 — 무엇이 막고 있나</h2>
+<h3>4-1. 오차 예산 (값 / 허용치 배수, 로그 막대)</h3>
+<div class="card bars">
+<div class="row"><span>relaxed C 차트 자세</span><div class="track"><div class="fill" style="width:98%;background:var(--warn)"></div></div><span>×2677</span></div>
+<div class="row"><span>relaxed G1/X 외삽</span><div class="track"><div class="fill" style="width:70%;background:var(--bar2)"></div></div><span>×285</span></div>
+<div class="row"><span>relaxed G1/E 추정</span><div class="track"><div class="fill" style="width:63%;background:var(--bar2)"></div></div><span>×166</span></div>
+<div class="row"><span>relaxed G3/X 외삽</span><div class="track"><div class="fill" style="width:62%;background:var(--bar2)"></div></div><span>×146</span></div>
+<div class="row"><span>relaxed G1/R 표현</span><div class="track"><div class="fill" style="width:56%;background:var(--bar2)"></div></div><span>×89</span></div>
+<div class="row"><span>6P C 차트 자세</span><div class="track"><div class="fill" style="width:94%;background:var(--warn)"></div></div><span>×1941</span></div>
+<div class="row"><span>6P G1/R 표현</span><div class="track"><div class="fill" style="width:77%;background:var(--bar3)"></div></div><span>×497</span></div>
+<div class="row"><span>6P G1/X 외삽</span><div class="track"><div class="fill" style="width:76%;background:var(--bar3)"></div></div><span>×454</span></div>
+<div class="row"><span>6P G1/E 추정</span><div class="track"><div class="fill" style="width:70%;background:var(--bar3)"></div></div><span>×284</span></div>
+<div class="row"><span>6P G3/R 표현</span><div class="track"><div class="fill" style="width:60%;background:var(--bar3)"></div></div><span>×130</span></div>
+<div class="note">막대 길이 = log10(배수) / 3.5. 노란 막대(C)는 측정 설계 문제라 모델로는 줄일 수 없어, 판정에서 제외(D3a)하고 절대값은 따로 보고한다.</div>
+</div>
+
+<h3>4-2. 병목 순위</h3>
+<ol>
+<li><b>측정 설계 — 평면 차트 한 자세 (C 항).</b> 촬영마다 다른 차트 거리·롤·위치 오차를 PB-A 가 fx·회전·시프트로 흡수했다 (왜곡 오차의 81–99.8 %, 실제 배치 오차와 배율 0.155 %, 롤 0.0005° 이내 일치).
+원리적으로 분리 불가 → 판정은 4자유도 닮음변환을 뺀 값으로(D3a), 랩 촬영에는 콜리메이터 같은 절대 기준이나 두 번째 차트 자세가 필요하다.</li>
+<li><b>표현력의 바닥 (R 항) — v1 렌즈 상태.</b> 왜곡 k1..k3 다항식은 정답에 맞춰도 6P 4.7–5.8 px 가 남는다 (채널별 spline 이면 0.04 px).
+필드 6 노드 선형 보간은 MTF50 오차 p90 0.52–0.80 (33 노드면 0.02–0.05). v1 규약(이상 상고, 이상 좌표 PSF, 픽셀 적분 2회)이 MTF 오차 0.15–0.29 를 만든다 — Zernike 차수 한계(≤ 0.05)보다 훨씬 크다.</li>
+<li><b>코너 외삽 (X 항).</b> 고정 검정 데이터의 측정 창이 r ≈ 0.973 에서 끝나 코너(r = 1)는 외삽이다: relaxed 5.7 px, 6P 9.1 px, 미학습 설계 zoo_r6_f25 25 px.</li>
+<li><b>추정기 (E 항).</b> v0 는 1000×750 축소 미리보기만 보고 원해상도·디포커스 창을 쓰지 않는다 → MTF RMS 0.35–0.41. 미학습 차트(Siemens) 처리 불가. 6매 설계에서 가짜 틸트 0.085–0.097°.</li>
+<li><b>복원 연산자 (PB-B v0).</b> 정답 상태로도 relaxed 코너 과선명(MTF50 비 1.17), 6P 중·외곽 복원 부족과 링잉(0.40–0.63) → G3 실패, 6P 는 G4 도 실패.</li>
+<li><b>식별성.</b> 디포커스 5면이면 7매 설계는 Zernike 부호가 모두 정해지지만, 6매 설계는 80 필드 중 10 필드(주로 축상)가 여전히 모호 → 미세 점 패널이 필요.</li>
+<li><b>계산·운영.</b> slim_6p 렌더 0.95 창/초 (target 3.1), 고정 데이터 생성 11.8 GPU-시간, BSOD 이력 때문에 무거운 작업은 한 번에 하나씩(가드), 그리고 LLM 토큰 사용량.</li>
+</ol>
+
+<h3>4-3. 표현력 바닥 (정답 관측량에 대한 최선 맞춤)</h3>
+<div class="scroll"><table>
+<tr><th>표현</th><th>target</th><th>relaxed</th><th>6P</th><th>대안 (v2)</th></tr>
+<tr><td>왜곡 k1..k3 최대 잔차</td><td>0.98 px</td><td>1.33–1.85 px</td><td>4.72–5.83 px</td><td>채널별 spline16: 0.04 px (공칭)</td></tr>
+<tr><td>6 노드 |ΔMTF50| p90</td><td>0.38</td><td>0.18–0.22</td><td>0.52–0.80</td><td>33 노드: 0.02–0.054</td></tr>
+<tr><td>Fringe-37 MTF RMS 바닥</td><td>≤ 0.016</td><td>≤ 0.012</td><td>≤ 0.048</td><td>(v1 정답 상태 실측 0.15–0.29 → 규약 문제)</td></tr>
+<tr><td>RI 다항식 (반경 / 화소별)</td><td>0.36 / 0.85 %</td><td>1.1 / 2.03 %</td><td>2.3 / 6.56 %</td><td>채널별 spline: ≤ 0.08 %</td></tr>
+</table></div>
+
+<h3>4-4. 디포커스 촬영 면 수와 식별성 (Fisher, val 80 필드)</h3>
+<div class="scroll"><table>
+<tr><th>촬영 면</th><th>최악 계수 CRB 중앙값 (wave)</th><th>부호(twin) 모호 필드</th></tr>
+<tr><td>1 면 (초점만)</td><td>5.41</td><td class="fail">80 / 80</td></tr>
+<tr><td>2 면 (0, +10 µm)</td><td>0.49</td><td>36 / 80</td></tr>
+<tr><td>4 면 (±10, ±20 µm)</td><td>0.15</td><td>12 / 80</td></tr>
+<tr><td>5 면 (0, ±10, ±20 µm)</td><td>0.13</td><td>10 / 80 (모두 6매 설계)</td></tr>
+</table></div>
+
+<h2>5. 설계 방향 비교 (relaxed vs 6P)</h2>
+<div class="card">정답 상태로 복원해도 6P 는 relaxed 보다 차트 9.2 dB, 장면 7.7 dB 낮다 (45.7/43.9 vs 36.5/36.2 dB). TTL 축소는 relaxed −5.3 %, 6P −8.9 %.
+두 설계 모두 MTF 가 0 에 가까운 대역(복원 불가 성분)은 없었다 → 6P 의 차이는 원리적 한계가 아니라 현재 연산자·표현의 한계다. 현재 수치는 팀의 relaxed 우선 판단을 지지한다.</div>
+
+<h2>6. 봉인 테스트 (미학습 렌즈·차트, 통과/실패만 공개)</h2>
+<div class="card">두 slim 설계 모두 G2·G3·G4·G5 와 보고 목표(PSNR ≥ 36 dB) <span class="fail">실패</span>. G1 은 test 복원 세트에 dot 차트가 없어 측정 불가 (iteration 1 에서 보완 예정).
+G5 의 모든 셀 실패. val 과 test 가 같은 양상이고 iteration 0 은 아무것도 튜닝하지 않았으므로 과적합 신호는 없다. 수치는 봉인 폴더에만 있다.</div>
+
+<h2>7. 독립 검정 지적 사항과 조치</h2>
+<div class="scroll"><table>
+<tr><th>ID</th><th>심각도</th><th>내용</th><th>조치</th></tr>
+<tr><td>V0-01</td><td>높음</td><td>차트 자세는 한 자세 촬영으로 관측 불가</td><td>D3a 채택 (닮음변환 제거 후 판정, 절대값 별도 보고)</td></tr>
+<tr><td>V0-02</td><td>높음</td><td>미학습 차트(Siemens)에서 별이 겹쳐 음의 휘도</td><td>수정, 재렌더, val/val_unseen 재고정</td></tr>
+<tr><td>V0-11</td><td>높음</td><td>PB-A 가 추정값에 따라 메모리 최대 ~19 GB 할당</td><td>수정 (장면 여백·크기 상한, 실패 시 대체 경로)</td></tr>
+<tr><td>V0-03·04·05·06</td><td>중간</td><td>봉인 캐시 위치, G1/G3 측정 견고성, 모델 불일치 미측정, test 에 dot 차트 없음</td><td>iteration 1 에서 일부 처리 중 (D3a·측정 보강·봉인 캐시 우선)</td></tr>
+<tr><td>V0-07–10</td><td>낮음</td><td>무결성 도구 보완, 정답 격리 강화, 용량 표 주석, flat 정답 설정</td><td>보류 (기록됨)</td></tr>
+</table></div>
+
+<h2>8. 현재 진행 — iteration 1</h2>
+<div class="card">
+<b>목표</b>: 기하(왜곡·배율색수차)·셰이딩(RI) 규약과 표현력 교정 — LensState v2 (실제 상고, 채널별 spline 왜곡·RI, 센서 좌표 PSF, 픽셀 적분 1회),
+차트 종류와 무관한 중심 측정으로 PB-A 기하·RI 추정 (Siemens 차트에서도 처음으로 수치), PB-B 채널별 리맵·RI 이득·센서 좌표 PSF 전달.<br>
+<b>예상</b>: 왜곡·RI 오차 70 % 이상 감소, 차트 PSNR +2–3 dB 이상. 선예도(MTF)는 iteration 2 (블러 재구축 + 5면 위상복원)에서 다룬다. 이번 회차는 학습 요소가 없어 재학습 없음.<br>
+<b>진행 상태</b>: 제안 2건·판정·LensState v2 계약 완료. 토큰 절약 방식으로 전환해 평가기·PB-A v1·PB-B v1 을 순서대로 구현 중이며, 측정은 사람 개입 없는 스크립트로 실행한다.
+</div>
+<p class="note">이 보고서는 집계 수치만 담는다. 내부 R&D 용 장면 사진과 봉인 테스트 수치는 포함하지 않았다.</p>
+</main>
+</body>
+</html>
