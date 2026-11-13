@@ -19,13 +19,13 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 
-# 패키징 훅: lint 11관문(ruff·PS 파서·화면 JS 문법·bat/ps1 인코딩·개발 PC 실경로·L1 어휘·추이 계약·재계산기 계약·팀 서버 주소 단일원)을 통과해야 담는다.
+# 패키징 훅: lint 9관문(ruff·PS 파서·화면 페이지 \n·bat/ps1 인코딩·화면 JS 문법·개발 PC 실경로·L1 어휘·팀 서버 주소 단일원)을 통과해야 담는다.
 # 실사고 — JS 문법 오류 하나로 버튼 11개가 전부 죽은 배포본이 나간 적이 있다. 배포 직전이 마지막 관문이다.
 if (-not $SkipLint) {
     $lint = Join-Path $PSScriptRoot 'lint.ps1'
     if (Test-Path $lint) {
         Write-Host '[배포본] lint 관문 실행 (tools\lint.ps1)...'
-        & powershell -NoProfile -ExecutionPolicy Bypass -File $lint -Full      # 배포 직전은 관문 11(팀 서버 끝단)까지
+        & powershell -NoProfile -ExecutionPolicy Bypass -File $lint -Full      # 배포 직전은 관문 9(팀 서버 끝단)까지
         if ($LASTEXITCODE -ne 0) { throw 'lint 관문 실패 - 위 항목을 고친 뒤 다시 실행하세요 (-SkipLint 는 비상용)' }
     }
 }
@@ -37,7 +37,7 @@ $need = @()
 $expect = @{}
 foreach ($ln in Get-Content $filesTxt -Encoding UTF8) {
     if ($ln -match '^\s*$') { continue }
-    if ($ln -match '^(LoadMonitor30 필수|총 |\()') { continue }
+    if ($ln -match '^(AgentFinder32 필수|총 |\()') { continue }
     if ($ln -match '^\s') { continue }              # 괄호 설명의 이어지는 줄
     $p = ($ln -split '\s{2,}')[0].Trim()
     if ($p) { $need += $p }
@@ -46,6 +46,25 @@ foreach ($ln in Get-Content $filesTxt -Encoding UTF8) {
     }
 }
 if ($need.Count -lt 10) { throw "FILES.txt 파싱 실패 (경로 $($need.Count)개)" }
+
+# 배포본에 넣지 않는 파일 — 사람마다 다른 값이거나 따로 나눠 주는 파일이다. FILES.txt 에 들어 있으면 담지 않고 멈춘다.
+#   config\af32_team_server.json  조직장 서버 주소·참여 코드(받는 사람이 AgentFinder32-팀서버주소.bat 으로 넣는다)
+#   config\restricted_customers.json  제한 고객 목록(운영 담당이 따로 나눠 준다 - 이름이 든 파일은 배포본에 넣지 않는다)
+#   config\team_server.json  옛 LoadMonitor 의 팀 서버 주소(AgentFinder32 는 읽지 않는다)
+$noShip = @('config/af32_team_server.json', 'config/restricted_customers.json', 'config/team_server.json')
+$shipBad = @($need | Where-Object { $noShip -contains (($_ -replace '\\', '/').ToLowerInvariant()) })
+if ($shipBad.Count) { throw "배포 위생 실패: FILES.txt 에 배포본에 넣지 않는 파일이 있습니다 ($($shipBad -join ', '))" }
+# 개발 전용 파일 — 배포본에 넣지 않는다(.gitignore 의 '개발 전용' 묶음 · tools\update_files.py 의 DEV_ONLY 와 같다): 시험·작업 메모·
+# lint 관문·점검 도구·FILES.txt 생성 도구·인코딩 정리 도구·현장점검 문서. FILES.txt 에 들어 있으면 담지 않고 멈춘다.
+$devOnly = @('tests/*', '.wf/*', '.claude/*', 'ruff.toml', 'tools/lint.ps1', 'tools/check_*.py', 'tools/lm_fixenc.py',
+             'tools/update_files.py', 'docs/현장점검_*.md')
+function Test-DevOnly([string]$Rel) {
+    $r = ($Rel -replace '\\', '/').TrimStart('/')
+    foreach ($pat in $devOnly) { if ($r -like $pat) { return $true } }
+    return $false
+}
+$devBad = @($need | Where-Object { Test-DevOnly $_ })
+if ($devBad.Count) { throw "배포 위생 실패: FILES.txt 에 개발 전용 파일이 있습니다 ($($devBad -join ', '))" }
 
 # FILES.txt 가 지금 트리와 맞는지 — 크기·crc32 를 실제 파일과 대조한다.
 # 실측: README·ui\app.py 를 고친 뒤 FILES.txt 를 다시 만들지 않아 낡은 목록이 zip 에 실렸다.
@@ -101,8 +120,8 @@ if ($stale.Count) {
     throw "FILES.txt 가 현재 파일과 다릅니다 ($($stale.Count)개: $($stale -join ', ')) — 받은 뒤 고친 파일이 있습니다. 원본을 다시 받아 덮어쓴 뒤(개발 PC 는 FILES.txt 를 다시 만든 뒤) 다시 시도하세요"
 }
 
-$stage = Join-Path ([System.IO.Path]::GetTempPath()) ("LM30pkg_" + [Guid]::NewGuid().ToString('N').Substring(0,8))
-$dest = Join-Path $stage 'LoadMonitor30'
+$stage = Join-Path ([System.IO.Path]::GetTempPath()) ("AF32pkg_" + [Guid]::NewGuid().ToString('N').Substring(0,8))
+$dest = Join-Path $stage 'AgentFinder32'
 New-Item -ItemType Directory -Force $dest | Out-Null
 
 $missing = @()
@@ -119,35 +138,14 @@ if ($missing.Count) {
 }
 
 # 설정은 '만든 사람의 것'이 아니라 배포 템플릿을 담는다 —
-# 그러지 않으면 owner·개인 폴더 키워드·공유폴더 경로가 팀 전체로 나가고,
-# 받은 사람이 그대로 쓰면 팀 서버의 그 사람 기록을 덮어쓴다(검증 확정).
+# 그러지 않으면 만든 사람의 이름·키워드·고객사 목록이 팀 전체로 나간다(검증 확정).
 $tpl = Join-Path $root 'config\config.default.json'
 if (-not (Test-Path $tpl)) { Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue; throw 'config\config.default.json 이 없습니다 — 배포 템플릿이 있어야 합니다' }
 Copy-Item $tpl (Join-Path $dest 'config\config.json') -Force
 
-# 팀 서버 주소(서버 IP·포트)는 '팀 공용 값'이라 개인 설정(config.json)과 달리 담는다 — v5 사용자 지시:
-# "그대로 폴더를 옮기면 그 서버 IP 변경이 유지되는 채로 일반 유저는 분석 후 그쪽 IP 로 올릴 수 있게".
-# LoadMonitor30-팀서버주소.bat 으로 저장한 config\team_server.json 이 있으면 받는 사람도 같은 주소로 올린다.
-# 담기 전에 내용이 주소 두 값(host·port)뿐인지 확인한다 — 다른 것이 섞였으면 담지 않고 멈춘다.
-$teamAddr = Join-Path $root 'config\team_server.json'
-$teamAddrMsg = '팀 서버 주소 파일 없음 - 받는 사람은 기본 주소로 올립니다(바꾸려면 LoadMonitor30-팀서버주소.bat)'
-if (Test-Path $teamAddr) {
-    $ta = $null
-    try { $ta = Get-Content $teamAddr -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $ta = $null }
-    $extra = @()
-    $portOk = $false
-    if ($ta) {
-        $extra = @($ta.PSObject.Properties.Name | Where-Object { $_ -notin @('_설명', 'host', 'port', 'saved_at') })
-        $pv = 0
-        $portOk = [int]::TryParse([string]$ta.port, [ref]$pv) -and $pv -ge 1 -and $pv -le 65535
-    }
-    if (-not $ta -or $extra.Count -or -not ([string]$ta.host -match '^[A-Za-z0-9._-]{1,253}$') -or -not $portOk) {
-        Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
-        throw '배포 위생 실패: config\team_server.json 이 팀 서버 주소 형식이 아닙니다 - LoadMonitor30-팀서버주소.bat 으로 다시 저장하세요'
-    }
-    Copy-Item $teamAddr (Join-Path $dest 'config\team_server.json') -Force
-    $teamAddrMsg = "팀 서버 주소 동봉: http://$($ta.host):$($ta.port) (config\team_server.json - 받는 사람도 이 주소로 올립니다)"
-}
+# 조직장 서버 주소·참여 코드(config\af32_team_server.json)와 제한 고객 목록(config\restricted_customers.json)은 담지 않는다 —
+# 받는 사람이 AgentFinder32-팀서버주소.bat 으로 주소를 넣고, 제한 고객 목록은 운영 담당이 따로 나눠 준다.
+$teamAddrMsg = '조직장 서버 주소·참여 코드와 제한 고객 목록은 담지 않았습니다 - 받는 사람이 따로 넣습니다'
 Write-Host "[배포본] $teamAddrMsg"
 
 # 빈 폴더만 만들어 둔다 — 받는 사람이 처음 실행할 때 자기 데이터가 여기 쌓인다
@@ -175,16 +173,31 @@ if ($leak.Count) {
     Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
     throw "배포 위생 실패: data/report 에 파일 $($leak.Count)개가 들어갔습니다"
 }
+$cfgLeak = @($noShip | Where-Object { Test-Path (Join-Path $dest ($_ -replace '/', '\')) })
+$cfgLeak += @(Get-ChildItem $dest -Recurse -File -Force | ForEach-Object { $_.FullName.Substring($dest.Length + 1) } |
+             Where-Object { Test-DevOnly $_ })
+if (Test-Path (Join-Path $dest 'teamdata')) { $cfgLeak += 'teamdata' }
+if ($cfgLeak.Count) {
+    Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
+    throw ("배포 위생 실패: 배포본에 넣지 않는 파일이 들어갔습니다 (" + ($cfgLeak -join ', ') + ")")
+}
 $stagedCfg = Join-Path $dest 'config\config.json'
-$h1 = (Get-FileHash $stagedCfg -Algorithm SHA256).Hash
-$h2 = (Get-FileHash $tpl -Algorithm SHA256).Hash
+# SHA-256 은 .NET 으로 직접 계산한다 - Get-FileHash 는 PSModulePath 에 PowerShell 7 의 모듈 경로가 섞인 창
+# (pwsh 나 그 터미널에서 띄운 powershell)에서는 찾지 못해 배포본을 만들지 못했다(실측).
+function Get-Sha256Hex([string]$Path) {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { return ([System.BitConverter]::ToString($sha.ComputeHash([System.IO.File]::ReadAllBytes($Path)))).Replace('-', '') }
+    finally { $sha.Dispose() }
+}
+$h1 = Get-Sha256Hex $stagedCfg
+$h2 = Get-Sha256Hex $tpl
 if ($h1 -ne $h2) {
     Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
     throw "배포 위생 실패: 담긴 config.json 이 배포 템플릿과 다릅니다"
 }
 
 if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Force $OutDir | Out-Null }
-$kind = if ($Full) { 'LoadMonitor30_v1_풀패키지_' } else { 'LoadMonitor30_v1_' }
+$kind = if ($Full) { 'AgentFinder32_v1_풀패키지_' } else { 'AgentFinder32_v1_' }
 # 이름은 초 단위(HHmmss)까지, 이미 있으면 _2 _3 … 으로 비켜 간다 — 남의 zip 은 절대 지우지 않는다.
 # 압축은 임시 이름(.partial.zip)으로 한 뒤 같은 폴더 안에서 제 이름으로 옮긴다(같은 볼륨 → 원자적 rename).
 # 실측: 같은 분에 두 번 돌리면 뒤 실행이 ArchiveFileExists 로 죽거나, 앞 실행이 막 완성한 zip 을 지웠다.
@@ -211,6 +224,9 @@ Write-Host "         $teamAddrMsg"
 if ($Full) { Write-Host '         내장 파이썬 동봉 - 받는 PC 에 아무것도 설치할 필요 없이 bat 더블클릭으로 실행됩니다.' }
 Write-Host ""
 Write-Host "받는 사람 안내:"
-Write-Host "  1) 압축을 풀고 LoadMonitor30-UI.bat 실행"
-Write-Host "  2) 파이썬이 없으면 tools\Get-EmbeddedPython.ps1 을 먼저 실행"
-Write-Host "  3) Copilot 판정을 쓰려면 화면의 [AI 연결 진단] 으로 로그인 상태 확인"
+Write-Host "  - 이 도구는 서면 동의서를 낸 사람만 씁니다. 동의는 서면으로 따로 받으며, 이 도구는 동의를 묻거나 기록하지 않습니다."
+Write-Host "  1) %LOCALAPPDATA%\AgentFinder32 같은 내 사용자 폴더 안의 새 폴더에 압축을 풉니다 (OneDrive·네트워크 폴더·LoadMonitor 폴더 위에는 풀지 않습니다)"
+Write-Host "     사용자 폴더 밖에 풀면 처음 시작할 때 그 폴더를 내 계정 전용으로 바꾸고, 바꾸지 못하면 시작하지 않습니다"
+Write-Host "  2) 운영 담당이 나눠 준 config\restricted_customers.json 을 config 폴더에 넣습니다"
+Write-Host "  3) AgentFinder32-UI.bat 을 실행합니다 (파이썬이 없으면 tools\Get-EmbeddedPython.ps1 먼저)"
+Write-Host "  4) Copilot 판정을 쓰려면 화면의 [AI 연결 진단] 으로 로그인 상태를 확인합니다"

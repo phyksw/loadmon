@@ -1,23 +1,22 @@
 # -*- coding: utf-8 -*-
 r"""
-details.py — 세부업무(Level 3) 표기 병합 맵 (LoadMonitor24, 보완2 이식)
+details.py — 업무 분류(work_rows)·세부업무 표기 병합·과제명 관문·Copilot 실패 해석의 단일원 (AgentFinder32)
 
-AI 가 청크마다 '구조 시뮬레이션'/'구조시뮬레이션', '레이아웃 검토'/'레이아웃 수정'/'레이아웃
-리뷰 회의' 처럼 같은 일에 다른 이름을 붙이면 (과제 × 세부업무) 격자가 조각나 워크플로우가
-쪼개진다. 여기서 (과제, 세부업무) → 대표 이름 맵을 만들어
-flow·freeze(분석리포트)·judge 가 같은 축을 쓰게 한다.
+AI 가 묶음마다 '구조 시뮬레이션'/'구조시뮬레이션', '레이아웃 검토'/'레이아웃 수정' 처럼 같은 일에 다른 이름을 붙이면
+(과제 × 세부업무) 격자가 조각나 워크플로우가 쪼개진다. 여기서 (과제, 세부업무) → 대표 이름 맵을 만들어
+judge·refine·agentic·flow 가 같은 축을 쓰게 한다.
 
-  ① 규칙 — ukey3 동일(띄어쓰기·구분자 변형)만. 대표 = MM 큰 이름, 같으면 공백 정규화가
-     짧은 이름('빌드  논의' 오타가 대표가 되지 않게).
-  ② Copilot — 같은 과제 안에서 '같은 묶음의 일' 만. 보내는 것은 과제명·업무명뿐
-     (사람 이름·MM 미전송). 결과는 _accept_group3(실재 이름·2개 이상·괄호 꼬리 동일)로만 채택.
+  ① 규칙 — ukey3 동일(띄어쓰기·구분자 변형)·구조 규칙. 대표 = 근거건수 큰 이름, 같으면 공백 정규화가 짧은 이름.
+  ② Copilot — 같은 과제 안에서 '같은 묶음의 일' 만. 보내는 것은 과제명·업무명뿐이고, 보내기 전에 쌍마다
+     privacy.gate_items(제한 고객·민감정보·식별번호·카나리아)를 지난 것만, 관문이 가린 사본으로 싣는다(gate_pairs —
+     지정 과제 이름에 든 사람 이름·고객사는 가린 채 · 답의 이름은 이 PC 에서 원래 이름으로 되돌린다). 결과는
+     _accept_group3(실재 이름·2개 이상·괄호 꼬리 동일)로만 채택.
 
-캐시: config\detail_aliases.json — 데이터 리셋이 report\ 를 비워도 살아남는다
-(config\excluded_work.json 과 같은 자리). 첫 로드 때 옛 report\보완툴\detail_aliases.json 이
-있으면 한 번 흡수한다. 한 줄 지우면 그 병합만 원복.
+캐시: data\cache\detail_aliases.json · data\cache\project_aliases.json — 경로는 cache_path(name) 하나로만 만든다.
+config\ 의 옛 사본은 읽지 않는다(옛 판 자료 — retention.purge_legacy 가 지운다). 보관기한은 중간 자료(intermediateDays).
+한 줄 지우면 그 병합만 원복.
 
-※ 배포본 judge.merge_details 는 괄호를 토큰으로 갈라 '(양산)/(선행)' 을 오병합한다(실측) —
-  여기 축(_fold3/ukey3/_note3)은 괄호 꼬리를 보존한다.
+단계 공용: consent_gate(stage) — 시작 확인(다른 사용자의 자료면 종료 코드 4 · 지우는 중이면 3) · af32_tag_ok(tag) — run_meta 의 AgentFinder32 표식 확인.
 """
 import csv
 import json
@@ -30,9 +29,18 @@ from datetime import date as _date2
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 REPORT = os.path.join(ROOT, "report")
-CONFIG = os.path.join(ROOT, "config")
-ALIAS_FILE = os.path.join(CONFIG, "detail_aliases.json")
-LEGACY_ALIAS_FILE = os.path.join(REPORT, "보완툴", "detail_aliases.json")
+PRODUCT = "AgentFinder32"     # = lmname.PRODUCT — 산출물·캐시 표식
+# D19 — agentic·flow 프롬프트가 더하는 문장(이름 대신 업무 행위로). judge.GENERIC_WORDING 이 이것을 쓴다.
+GENERIC_WORDING = "고객사·제품·과제·사람 이름과 약어를 쓰지 말고 업무 행위로 쓰세요."
+
+
+def cache_path(name, root=None):
+    r"""사람별 캐시 파일 경로 — <root>\data\cache\<name> (detail_aliases.json · project_aliases.json · excluded_work.json ·
+    name_hashes.json). 캐시 경로를 만드는 유일한 도우미다(judge·ui 도 이것을 쓴다)."""
+    return os.path.join(str(root or ROOT), "data", "cache", str(name))
+
+
+ALIAS_FILE = cache_path("detail_aliases.json")
 KEY_SEP = "␟"                 # '␟' — JSON 키 "과제␟세부업무"
 
 SECTION_BUDGET = 6000              # 과제 하나의 목록이 이보다 크면 겹침 2줄로 나눈다
@@ -80,7 +88,7 @@ def fold(s):
     return " ".join(t.split()).casefold()
 
 
-# ── 자료 읽기 (flow·freeze 공용) ──────────────────────────────────
+# ── 자료 읽기 (refine·agentic·flow 공용) ──────────────────────────────────
 def _fresh_refined(plain, refined):
     """정제본을 써도 되는가 — 원본보다 오래된 정제본은 쓰지 않는다(배포본 규칙)."""
     if not os.path.exists(refined):
@@ -94,27 +102,28 @@ def _fresh_refined(plain, refined):
 
 def rows_path(tag, rep=None):
     rep = rep or REPORT
-    plain = os.path.join(rep, f"mm_rows_{tag}.csv")
-    ref = os.path.join(rep, f"mm_rows_{tag}_refined.csv")
+    plain = os.path.join(rep, f"work_rows_{tag}.csv")
+    ref = os.path.join(rep, f"work_rows_{tag}_refined.csv")
     if _fresh_refined(plain, ref):
         return ref
     return plain if os.path.exists(plain) else (ref if os.path.exists(ref) else plain)
 
 
 def read_rows(tag, rep=None, plain=False):
-    """mm_rows(정제본 우선) → (행 목록, 파일명). 각 행에 _mm(float) 을 붙인다.
+    """work_rows(정제본 우선) → (행 목록, 파일명). 각 행에 _n(int — 근거건수)과 _w(float — share, 정렬용 상대값)를 붙인다.
 
-    plain=True 면 정제본을 건너뛰고 원본 mm_rows_<tag>.csv 만 읽는다 — 신호(signals)와 **같은 이름 축**이
-    필요한 곳(워크플로우 MM 조회)에서 쓴다. 정제본은 refine 이 이름을 합치고 바꾸므로
+    plain=True 면 정제본을 건너뛰고 원본 work_rows_<tag>.csv 만 읽는다 — 신호(signals)와 **같은 이름 축**이
+    필요한 곳(워크플로우 근거 조회)에서 쓴다. 정제본은 refine 이 이름을 합치고 바꾸므로
     (예: '판정엔진'·'검증' → '판정엔진 고도화 및 검증') 신호 축 키로 찾으면 하나도 안 맞는다(실측)."""
-    p = os.path.join(rep or REPORT, f"mm_rows_{tag}.csv") if plain else rows_path(tag, rep)
+    p = os.path.join(rep or REPORT, f"work_rows_{tag}.csv") if plain else rows_path(tag, rep)
     try:
         with open(p, encoding="utf-8-sig", errors="replace") as f:
             rows = list(csv.DictReader(f))
     except (OSError, ValueError):
         return [], ""
     for r in rows:
-        r["_mm"] = _f(r.get("mm"))
+        r["_n"] = _n(r.get("근거건수"))
+        r["_w"] = _f(r.get("share"))
         # 읽기 경계 스냅 — 옛 정제본(v24.15 이전·타 판 PC 업로드분)의 스냅 전 상위 이름을 여기서
         # 접는다. v2 는 소비자 7곳이 각자 스냅을 불렀고 안 부른 통로가 계속 새로 생겼다(구조 감사).
         _l1 = r.get("Level 1")
@@ -134,7 +143,7 @@ def read_signals(tag, rep=None):
 
 def refine_orig(tag, rep=None):
     r"""report\refine_map_<tag>.json → {"정제L2/정제L3": [(원본L2, 원본L3), …]}. 없거나 깨졌으면 빈 dict.
-    정제 행 하나가 덮은 원본 mm_rows (과제, 세부업무) 쌍 — flow(상위·설명 되짚기)가 쓴다."""
+    정제 행 하나가 덮은 원본 work_rows (과제, 세부업무) 쌍 — flow(상위·설명 되짚기)가 쓴다."""
     p = os.path.join(rep or REPORT, f"refine_map_{tag}.json")
     try:
         with open(p, encoding="utf-8-sig") as f:
@@ -155,7 +164,7 @@ def rule_share(sigs):
     """signals → {(과제, 세부업무): (규칙 판정 신호 수, 전체 신호 수)}.
     judge 열이 '규칙'(AI 가 보지 못해 규칙으로 둔 행)인 것만 규칙으로 센다 — 'AI'·'AI(유사)' 는 판정된 것이다.
     judge 열이 없는 기간(규칙 축만 있는 신호)은 규칙 0건이 된다(그 경우는 거를 근거가 없으므로 예전처럼 다 보낸다).
-    키는 원본 mm_rows 의 (Level 2, Level 3) 와 같은 축 — 빈 값은 '공통'/'기타'(judge 집계와 같은 기본값)."""
+    키는 원본 work_rows 의 (Level 2, Level 3) 와 같은 축 — 빈 값은 '공통'/'기타'(judge 집계와 같은 기본값)."""
     out = {}
     for s in sigs or []:
         md = (s.get("model") or s.get("project") or "").strip() or "공통"
@@ -172,9 +181,66 @@ def _f(x):
         return 0.0
 
 
+def _n(x):
+    """근거건수 셀 → int(빈칸·비숫자는 0)."""
+    try:
+        return max(0, int(float(x or 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def row_n(r):
+    """work_rows 행의 근거건수 — read_rows 가 붙인 _n, 없으면 셀."""
+    return r["_n"] if "_n" in r else _n(r.get("근거건수"))
+
+
+# ── 단계 공용(judge·refine·agentic·flow) ─────────────────────────────────────────
+def consent_gate(stage, root=None):
+    """시작 확인(consent.require) — 내 자료이고 지우는 중이 아니면 None, 아니면 안내 한 줄과 마지막 줄 JSON 을 찍고 종료 코드를
+    돌려준다: 다른 사용자의 자료·주인을 모르는 자료는 4, '모두 지우기'가 진행 중이면 3(consent.ConsentRequired.code · D17).
+    JSON 의 code 는 "no_consent"(이름은 그대로 둔다), reason 은 other_user | withdrawn."""
+    import afcfg
+    import consent
+    root = root or ROOT
+    try:
+        consent.require(root, afcfg.load(root))
+        return None
+    except consent.ConsentRequired as e:
+        print(f"[{stage}] {e}")
+        print(json.dumps({"ok": False, "code": "no_consent", "reason": e.reason, "error": str(e)}, ensure_ascii=False))
+        return 4 if getattr(e, "code", 3) == 4 else 3
+
+
+def restricted_gate(stage, root=None):
+    r"""제한 고객 목록 확인(privacy.load_restricted · D9) — 읽히면 None, 없거나 형식이 틀리면 안내 한 줄과 마지막 줄 JSON
+    (code "no_restricted")을 찍고 4(종료 코드 — 설정 거부)를 돌려준다. AI 단계 CLI 는 결과 파일을 읽거나 쓰기 전에 부른다
+    (관문이 닫힌 채 돌아 빈 결과로 덮어쓰지 않게)."""
+    import afcfg
+    import privacy
+    root = root or ROOT
+    try:
+        privacy.load_restricted(afcfg.load(root), root)
+        return None
+    except privacy.RestrictedListError as e:
+        print(f"[{stage}] {e.message}")
+        print(json.dumps({"ok": False, "code": "no_restricted", "error": e.message}, ensure_ascii=False))
+        return 4
+
+
+def af32_tag_ok(tag, rep=None):
+    r"""이 기간(tag)의 자료가 AgentFinder32 것인가 — report\run_meta_<tag>.json 에 product 표식이 있어야 참(D20).
+    옛 판(LoadMonitor)이 남긴 signals·work_rows 는 같은 이름이라도 읽지 않는다."""
+    try:
+        with open(os.path.join(rep or REPORT, f"run_meta_{tag}.json"), encoding="utf-8-sig") as f:
+            o = json.load(f)
+    except (OSError, ValueError):
+        return False
+    return isinstance(o, dict) and o.get("product") == PRODUCT
+
+
 # ── 캐시 ──────────────────────────────────────────────────────────────────
 def _cycle_rep(members):
-    """순환 구성원 중 결정적 대표 — 공백 정규화가 짧은 이름 → 짧은 이름 → 사전순(MM 무관)."""
+    """순환 구성원 중 결정적 대표 — 공백 정규화가 짧은 이름 → 짧은 이름 → 사전순(건수 무관)."""
     return min(members, key=lambda x: (len(" ".join(x.split())), len(x), x))
 
 
@@ -229,17 +295,8 @@ def _read_alias_file(p):
 
 
 def load_detail_aliases():
-    """config\\detail_aliases.json → {(과제, 세부업무): 대표}. 사슬은 풀어서 돌려준다.
-    config 파일이 아직 없고 옛 report\\보완툴\\detail_aliases.json 이 있으면 한 번 흡수한다."""
+    """data\\cache\\detail_aliases.json → {(과제, 세부업무): 대표}. 사슬은 풀어서 돌려준다(없거나 깨졌으면 빈 맵)."""
     amap = _read_alias_file(ALIAS_FILE) if os.path.exists(ALIAS_FILE) else None
-    if amap is None and not os.path.exists(ALIAS_FILE) and os.path.exists(LEGACY_ALIAS_FILE):
-        old = _read_alias_file(LEGACY_ALIAS_FILE)
-        if old:
-            amap = _flatten3_map(old)
-            try:
-                save_detail_aliases(amap, note=f"흡수: {LEGACY_ALIAS_FILE}")
-            except OSError:
-                pass
     return _flatten3_map(amap or {})
 
 
@@ -249,7 +306,7 @@ def save_detail_aliases(amap, note=None):
     p = ALIAS_FILE
     if os.path.exists(p) and _read_alias_file(p) is None:
         # 조용히 덮으면 누적된 Copilot 병합이 소실된다(검증 확정) — 옮겨 두고 새로 만든다
-        bak = p + time.strftime(".깨짐백업_%Y%m%d_%H%M%S")
+        bak = p + time.strftime(".깨짐백업_%Y%m%d") + f"_{os.getpid()}"
         try:
             os.replace(p, bak)
             _say(f"    [!] detail_aliases.json 이 깨져 있어 {os.path.basename(bak)} 로 옮겨 두고 "
@@ -257,8 +314,8 @@ def save_detail_aliases(amap, note=None):
         except OSError:
             pass
     os.makedirs(os.path.dirname(p), exist_ok=True)
-    body = {"_설명": "세부업무 표기 병합 맵 — 키 '과제␟이름' → 대표 이름. 한 줄 지우면 그 병합만 원복.",
-            "updated": time.strftime("%Y-%m-%d %H:%M"),
+    body = {"product": PRODUCT, "_설명": "세부업무 표기 병합 맵 — 키 '과제␟이름' → 대표 이름. 한 줄 지우면 그 병합만 원복.",
+            "updated": time.strftime("%Y-%m-%d"),
             "map": {KEY_SEP.join(k): v for k, v in sorted(amap.items())}}
     if note:
         body["note"] = note
@@ -296,7 +353,7 @@ def _accept_group3(grp, pool, weight=None):
     · 괄호 꼬리('(양산)' vs '(선행)')는 **그룹 거부가 아니라 멤버 배제**로 바꿨다. 예전에는 꼬리가
       다른 이름 하나가 섞이면 나머지 유효한 병합까지 함께 사라졌다(실측: 유효 2건 동반 소실).
       가장 많은 꼬리 쪽을 남기고 다른 꼬리는 뺀 뒤, 남은 것이 2개 이상이면 채택한다.
-    · 대표는 MM 이 큰 이름 — '리뷰 회의' 같은 곁가지가 묶음의 이름이 되면 어색하다."""
+    · 대표는 근거건수가 큰 이름 — '리뷰 회의' 같은 곁가지가 묶음의 이름이 되면 어색하다."""
     if not isinstance(grp, (list, tuple)):
         return None
     snap = _snap3(pool)
@@ -374,9 +431,9 @@ def _same_detail3(a, b):
     return ""
 
 
-def _rule_canon(names, pj, mm_w):
-    """규칙 병합 대표 — MM 큰 이름, 같으면 공백 정규화가 짧은 이름, 그다음 원문 짧은 이름."""
-    return max(names, key=lambda x: (mm_w.get((pj, x), 0.0),
+def _rule_canon(names, pj, n_w):
+    """규칙 병합 대표 — 근거건수 큰 이름, 같으면 공백 정규화가 짧은 이름, 그다음 원문 짧은 이름."""
+    return max(names, key=lambda x: (n_w.get((pj, x), 0.0),
                                      -len(" ".join(x.split())), -len(x), x))
 
 
@@ -406,19 +463,16 @@ def _set_alias(amap, pj, x, canon):
 
 
 def _detail_pools(rows):
-    """행 → 과제별 세부업무 집합·(과제, 세부업무) MM 가중치. LM30(2026-10-28): 근태·출장 등록에 붙이는 세부업무(admin_detail)와
-    등록 표기뿐인 이름은 병합 후보가 아니다 — 다른 업무와 합치거나 그 이름으로 다른 업무를 부르지 않는다."""
-    by_pj, mm_w = {}, {}
+    """행 → 과제별 세부업무 집합·(과제, 세부업무) 근거건수 가중치. 행정 표기가 든 이름(detail_name_ok 거짓)은 병합 후보가 아니다."""
+    by_pj, n_w = {}, {}
     for r in rows:
         pj = (r.get("Level 2") or "").strip() or "공통"
         d = (r.get("Level 3") or "").strip()
-        if d and (admin_detail(d) or _admin_name(d)):
+        if not d or not detail_name_ok(d):
             continue
-        if d:
-            by_pj.setdefault(pj, set()).add(d)
-            mm = r["_mm"] if "_mm" in r else _f(r.get("mm"))
-            mm_w[(pj, d)] = mm_w.get((pj, d), 0.0) + mm
-    return by_pj, mm_w
+        by_pj.setdefault(pj, set()).add(d)
+        n_w[(pj, d)] = n_w.get((pj, d), 0.0) + row_n(r)
+    return by_pj, n_w
 
 
 # ── 중위(과제) 표기 병합 ──────────────────────────────────────────────────
@@ -426,12 +480,11 @@ def _detail_pools(rows):
 # 소문자 정확 일치가 전부라, 띄어쓰기 하나만 흔들려도 새 과제가 생겼다. 그 변형은 다시
 # entities_*.json 에 discovered 로 적립돼 다음 실행의 후보로 되먹여져 분할이 영구화된다.
 # 갈라지면 (1) 워크플로우 카드가 여러 장이 되고 (2) _detail_pools 의 파티션 키가 raw Level 2 라
-# 세부업무 병합까지 반쪽이 되며 (3) MM 은 fold 축에서 조회되므로 갈라진 카드마다 같은 MM 이
-# 붙어 총합이 부푼다(감사 합성 실측: 1.8 MM vs 실제 1.2).
+# 세부업무 병합까지 반쪽이 되며 (3) 근거가 갈라진 카드마다 따로 세어진다.
 #
 # 여기서는 **Copilot 왕복을 새로 만들지 않는다** — 표기 규칙과 이미 저장소에 있는 증거
-# (refine_map · 담당업무 집합 · 제품 열 · 신호 시간대)만 쓴다. 도메인 어휘는 한 글자도 쓰지 않는다.
-PROJ_ALIAS_FILE = os.path.join(CONFIG, "project_aliases.json")
+# (refine_map · 담당업무 집합 · 신호 날짜 범위)만 쓴다. 도메인 어휘는 한 글자도 쓰지 않는다.
+PROJ_ALIAS_FILE = cache_path("project_aliases.json")
 GENERIC2 = {"공통", "기타", "미분류", "일반"}   # 기본값 이름 — 병합 후보에서 제외
 MAX_ABSORB2 = 4        # 한 대표가 한 실행에서 흡수할 수 있는 다른 이름 수
 MAX_GROUP2 = 5         # 한 병합 무리의 최대 크기 — 넘으면 그 무리를 통째로 거부
@@ -511,20 +564,20 @@ LEVEL1_ALL = LEVEL1_SET + tuple(x for x in _level1_extra()
 _L1_BY_KEY = {ukey1(x): x for x in LEVEL1_ALL}
 
 # ── 상위 어휘의 **표현 속성 단일원** — 색·정렬·엑셀 단계·프롬프트 문구 전부 여기서 파생한다.
-# v2 는 이 표가 flow(정렬)·ui(JS 색)·freeze(색)·board(엑셀 단계)·refine(프롬프트)에 raw 문자열
-# 사전 4벌로 흩어져 있었고, 범주가 바뀔 때 빠진 곳은 회색·맨뒤·'기타' 로 **조용히** 틀렸다.
-# 이제 소비자는 l1_color/l1_order/l1_stage/l1_prompt_lines/l1_meta_payload 만 쓴다 —
+# 예전에는 이 표가 flow(정렬)·ui(JS 색)·refine(프롬프트)에 raw 문자열 사전으로 흩어져 있었고, 범주가 바뀔 때
+# 빠진 곳은 회색·맨뒤·'기타' 로 **조용히** 틀렸다.
+# 이제 소비자는 l1_color/l1_order/l1_prompt_lines/l1_meta_payload 만 쓴다 —
 # tools/check_l1.py(lint 관문 8)가 이 표 밖의 하드코딩 재출현을 막는다.
 L1_META = {
-    "개발": {"color": "#2a78d6", "order": 0, "stage": "개발",
+    "개발": {"color": "#2a78d6", "order": 0,
              "desc": "선행·신제품·요소기술 개발 (과제 이름이 프로젝트 코드네임인 경우가 많다)"},
-    "양산": {"color": "#e08a00", "order": 1, "stage": "양산준비",
+    "양산": {"color": "#e08a00", "order": 1,
              "desc": "양산 이관·양산 대응 (역시 코드네임)"},
-    EXT_L1: {"color": "#0e8c7a", "order": 2, "stage": "기타",
+    EXT_L1: {"color": "#0e8c7a", "order": 2,
              "desc": "외부 지원 — 국책·산학·포럼·학회·파견·교육(팀의 직접 업무가 아닌 대외 업무)"},
-    "AX": {"color": "#6c4fb8", "order": 3, "stage": "기타",
+    "AX": {"color": "#6c4fb8", "order": 3,
            "desc": "AI 를 활용한 자동화 과제(도구를 만들거나 업무에 적용하는 일)"},
-    "공통": {"color": "#8b929b", "order": 4, "stage": "기타",
+    "공통": {"color": "#8b929b", "order": 4,
              "desc": "일반 사무 — 회계·재무·예산·총무·실험실 관리·특허·정보보안 등"},
 }
 # config.level1Set 추가 범주 — 표 순서 기반 예약 팔레트(이름 해시가 아니라 순서라, 타 판 PC 와
@@ -532,7 +585,7 @@ L1_META = {
 _L1_EXTRA_PALETTE = ("#a61b4a", "#3d8f3d", "#c05a78", "#4a7f9e", "#8a6d3b", "#556270")
 for _i, _x in enumerate(x for x in LEVEL1_ALL if x not in L1_META):
     L1_META[_x] = {"color": _L1_EXTRA_PALETTE[_i % len(_L1_EXTRA_PALETTE)],
-                   "order": 5 + _i, "stage": "기타", "desc": "config.level1Set 추가 범주"}
+                   "order": 5 + _i, "desc": "config.level1Set 추가 범주"}
 
 
 def l1_color(name, default="#8b929b"):
@@ -545,12 +598,6 @@ def l1_order(name):
     """상위 이름(옛 이름 포함) → 정렬 순번. 미분류·모르는 이름은 맨 뒤."""
     m = L1_META.get(snap1(name) or str(name or ""))
     return m["order"] if m else 99
-
-
-def l1_stage(name):
-    """상위 이름 → 팀 배분표 엑셀의 '단계' 열 값."""
-    m = L1_META.get(snap1(name) or str(name or ""))
-    return m["stage"] if m else "기타"
 
 
 def l1_prompt_lines():
@@ -612,7 +659,7 @@ L1_KW_ORDER = (EXT_L1, "AX", "공통", "양산", "개발")
 # head 모드에서 키워드 조각으로 오인되는 흔한 낱말 — 이 토큰은 영역·분야 키워드 판정에서 뺀다('라인'⊂'온라인' 등)
 _KW_STOP_TOKENS = frozenset({"온라인", "오프라인", "가이드라인", "파이프라인", "데드라인", "헤드라인", "타임라인",
                              "베이스라인", "개인사", "생산성", "코드네임", "대시보드", "키보드", "화이트보드"})
-# 분야(REQ-33 — mm_rows 끝 field 열): 일반어 키워드 표. 레지스트리 없음 — 규칙으로만 붙이는 참고 열이다.
+# 분야(REQ-33 — work_rows 끝 field 열): 일반어 키워드 표. 레지스트리 없음 — 규칙으로만 붙이는 참고 열이다.
 FIELD_KW = (
     ("기구", ("기구", "기구설계", "금형", "사출", "하우징", "브라켓", "브래킷", "판금", "체결", "조립도", "공차", "도면",
              "cad", "creo", "solidworks", "catia", "3d모델")),
@@ -666,14 +713,14 @@ def _kw_table_hits(table, text):
 
 
 def ax_flag(text, ax=None):
-    """AX 연계 표식(REQ-32 — mm_rows ax 열): 강한 AX어(llm·rag·copilot·에이전트·agentic·생성형 …) 1개 또는 AX어 2개면 1.
-    MM 은 원래 영역에 둔다(이중 계상 없음 — 표식만)."""
+    """AX 연계 표식(REQ-32 — work_rows ax 열): 강한 AX어(llm·rag·copilot·에이전트·agentic·생성형 …) 1개 또는 AX어 2개면 1.
+    상위(Level 1)는 그대로 둔다(표식만)."""
     hits = {k for k, _n in _kw_table_hits([("AX", ax or _L1_AX_DEFAULT)], text)}
     return 1 if (hits & AX_STRONG or len(hits) >= 2) else 0
 
 
 def field_of(text):
-    """분야(REQ-33 — mm_rows field 열): FIELD_KW 표의 첫 분야(긴 키워드 우선). 못 정하면 ""."""
+    """분야(REQ-33 — work_rows field 열): FIELD_KW 표의 첫 분야(긴 키워드 우선). 못 정하면 ""."""
     hits = _kw_table_hits(FIELD_KW, text)
     names = {n for _k, n in hits}
     return next((n for n, _ks in FIELD_KW if n in names), "")
@@ -723,7 +770,8 @@ def level1_of(text, l2="", root=None, cfg=None):
 # 웹 경로(OWA·Teams 웹)로 신호가 수천 건이 되자 규칙 토큰(가장 잦은 낱말)·AI 가 새로 적은 이름·규칙 폴백 체계·지난
 # entities 가 아무 관문 없이 과제명이 됐고, 사람 이름과 '근태공지' 가 과제 칸을 차지했다(제보). 여기가 그 관문의
 # 단일원이다 — judge(체계·판정·발견)·extract(규칙 후보·공지 메일)·mine(지난 체계)·refine(정제 과제명)이 같은 함수를 쓴다.
-# 사람 키는 signals 의 who 열에서만 뽑는다(코드에 이름을 두지 않는다). 지정(pinned) 과제는 늘 통과한다.
+# 사람 키는 signals 의 who 열과 G1 이 남긴 이름 해시(data\cache\name_hashes.json — 이름 원문 없음)에서만 얻는다(코드에 이름을
+# 두지 않는다 · AF32 의 who 는 가명이라 해시가 주된 재료다). 지정(pinned) 과제는 늘 통과한다.
 _TITLES = (r"(?:님|씨|책임|선임|수석|매니저|프로|팀장|파트장|그룹장|실장|센터장|본부장|부장|차장|과장|대리|사원|주임"
            r"|연구원|위원|박사|교수)")          # core/privacy.TITLES 와 같은 호칭 목록
 _TITLE_TAIL = re.compile(r"\s*" + _TITLES + r"$")
@@ -767,10 +815,64 @@ def _person_key(seg):
     return ukey2(s) if _LATIN_NAME.match(s) else ""
 
 
-def person_keys(whos):
-    """signals who 값들 → 사람 키 집합(ukey2). '나'·'-'·'(상대)'·주소(@)·부서는 뺀다.
+class PersonKeys(set):
+    r"""사람 키 집합(ukey2) + G1 이 남긴 이름 해시(data\cache\name_hashes.json — 이름 원문 없음, D8).
+    `k in keys` 는 k 가 집합에 있거나, k 의 해시(privacy.name_hash · 설치 소금)가 이름 해시 집합에 있을 때 참이다.
+    AF32 의 signals.who 는 가명(p:…)·'나'·"" 뿐이라 who 로 얻는 사람 키는 거의 비어 있다 — 과제·세부업무 이름의 사람 이름
+    관문(LM28 진단 B)은 이 해시가 받친다. 해시가 있으면 집합이 비어도 참(bool)이다."""
+
+    def __init__(self, keys=(), hashes=(), salt=""):
+        super().__init__(keys)
+        self.hashes = frozenset(hashes or ())
+        self.salt = str(salt or "")
+
+    def __contains__(self, k):
+        if set.__contains__(self, k):
+            return True
+        if not (self.hashes and self.salt and k):
+            return False
+        import privacy
+        return privacy.name_hash(k, self.salt) in self.hashes
+
+    def __bool__(self):
+        return set.__len__(self) > 0 or bool(self.hashes and self.salt)
+
+    def mask(self, text):
+        """글 안의 이름 조각(해시가 이름 해시 집합에 든 것) → [사람](privacy._hash_mask — 한글 덩어리의 첫머리·영문 낱말).
+        Copilot 이 돌려준 후보·단계·설명 글에 사람 이름이 섞여도 저장하지 않게 한다(D8). 해시가 없으면 그대로."""
+        s = "" if text is None else str(text)
+        if not (s and self.hashes and self.salt):
+            return s
+        import privacy
+        return privacy._hash_mask(s, self.hashes, self.salt)
+
+
+def mask_people(text, people):
+    """people(PersonKeys)로 글 속 사람 이름을 [사람] 으로 — PersonKeys 가 아니면(옛 호출·빈 키) 그대로."""
+    return people.mask(text) if isinstance(people, PersonKeys) else ("" if text is None else str(text))
+
+
+def name_hash_gate(root=None):
+    r"""(이름 해시 집합, 설치 소금) — data\cache\name_hashes.json 과 data\install.json 을 읽기만 한다(만들지 않는다).
+    둘 중 하나라도 없거나 깨졌으면 (빈 집합, "")."""
+    import privacy
+    r = str(root or ROOT)
+    hashes = privacy.load_name_hashes(r)
+    if not hashes:
+        return frozenset(), ""
+    try:
+        with open(os.path.join(r, "data", "install.json"), encoding="utf-8-sig") as f:
+            s = str((json.load(f) or {}).get("salt") or "")
+    except (OSError, ValueError, AttributeError):
+        return frozenset(), ""
+    return (frozenset(hashes), s) if re.fullmatch(r"[0-9a-f]{64}", s) else (frozenset(), "")
+
+
+def person_keys(whos, root=None):
+    """signals who 값들 → 사람 키 집합(PersonKeys · ukey2). '나'·'-'·'(상대)'·주소(@)·부서는 뺀다.
     표시 이름의 첫 조각(구분자 / ( , | ; < [ 앞)에서 호칭을 떼고 3~4자 한글 이름 또는 2~4낱말 로마자 이름만 받는다.
-    'Last, First' 는 두 순서를 다 넣는다. '이름 부서'·'부서 이름' 꼴은 이름 쪽만."""
+    'Last, First' 는 두 순서를 다 넣는다. '이름 부서'·'부서 이름' 꼴은 이름 쪽만.
+    G1 이 남긴 이름 해시(root 의 data\\cache\\name_hashes.json)도 싣는다 — 해시에 든 이름 조각도 사람 키로 본다."""
     keys, seen = set(), set()
     for w in whos or ():
         s = " ".join(str(w or "").split())
@@ -792,7 +894,7 @@ def person_keys(whos):
             k = _person_key(m.group(1)) if m else ""
         if k:
             keys.add(k)
-    return keys
+    return PersonKeys(keys, *name_hash_gate(root))
 
 
 def is_person_name(name, keys=()):
@@ -870,77 +972,30 @@ def _talk_name(name):
     return talk_name(name)
 
 
-def _admin_name(name, strict=False):
-    """extract.admin_name(근태·출장 등록 표기뿐인 이름 — '국내출장'·'근태계획'·'출장 신청') — extract 를 못 읽으면 False."""
-    try:
-        from extract import admin_name
-    except ImportError:
-        return False
-    return admin_name(name, strict)
-
-
-def admin_detail(name):
-    """이 도구가 근태·출장 등록에 붙이는 세부업무(extract.ADMIN_DETAILS — 행정 처리·출장·근태계획 시간·목적 미상)인가.
-    병합·정제가 이 이름을 다른 업무와 합치거나 바꾸지 않는다(LM30 2026-10-28)."""
-    try:
-        from extract import ADMIN_DETAILS
-    except ImportError:
-        return False
-    return str(name or "").strip() in ADMIN_DETAILS
+def _admin_word(name):
+    """행정·근태 표기가 든 이름인가(privacy.admin_hit — 근태·연차·휴가·출장·재택·부재 …). 그런 행은 G1 에서 이미 빠지므로
+    이름에 남아 있으면 과제·세부업무가 아니다."""
+    import privacy
+    return bool(privacy.admin_hit(str(name or "")))
 
 
 def detail_name_ok(name):
-    """세부업무(Level 3) 이름으로 써도 되는가(LM30 2026-10-28) — 근태·출장 등록 표기뿐인 이름('출장'·'근태계획'·'출장 신청'·
-    '근태 관리')은 아니다. 이 도구가 붙이는 이름(admin_detail)은 된다."""
+    """세부업무(Level 3) 이름으로 써도 되는가 — 빈 값·행정 표기가 든 이름('출장'·'근태계획'·'휴가 신청')은 아니다."""
     s = str(name or "").strip()
-    return bool(s) and (admin_detail(s) or not _admin_name(s))
+    return bool(s) and not _admin_word(s)
 
 
 def task_name_ok(name, people=(), pinned=()):
     """과제(Level 2) 이름으로 써도 되는가 — 지정(pinned: 이름 또는 키)은 늘 통과, 아니면 사람 이름·공지류가 아닐 때만.
     LM30(2026-10-27): 대화 낱말뿐인 이름('책임님'·'보내드렸습니다'·'가능하실까요')도 과제가 아니다.
-    LM30(2026-10-28): 근태·출장 등록 표기뿐인 이름('국내출장'·'근태계획'·'재택근무'·'출장 신청'·'근태 관리'·'결재')도 과제가 아니다."""
+    행정 표기가 든 이름('국내출장'·'근태계획'·'재택근무'·'휴가 신청')도 과제가 아니다(privacy.admin_hit)."""
     k = ukey2(name)
     if not k:
         return False
     if pinned and k in {ukey2(p.get("name") if isinstance(p, dict) else p) for p in pinned}:
         return True
     return (not is_person_name(name, people) and not is_notice_name(name) and not _talk_name(name)
-            and not _admin_name(name, True))
-
-
-# ── 팀즈 근거가 과제를 받은 길(LM30 2026-10-27 — signals 의 via 열 · 이 PC 화면과 judge 구조 줄이 같은 수를 쓴다) ──────────────────
-VIA_SAME = ("group", "same")           # 같은 문장이라 함께 들어옴(대표의 판정 · 같은 대화·같은 날 같은 내용 채움)
-VIA_REUSED = ("cache", "reuse")        # 지난 판정을 다시 씀(같은 줄의 지난 판정 · 지난 판정의 같은 문장)
-
-
-def teams_via_counts(rows):
-    """signals 행들 → {"rows": 팀즈 행 수, "same": 같은 문장이라 함께 들어온 행, "reused": 지난 판정을 다시 쓴 행}."""
-    n = s = k = 0
-    for r in rows or ():
-        if not str((r or {}).get("source") or "").startswith("팀즈"):
-            continue
-        n += 1
-        v = str(r.get("via") or "")
-        if v in VIA_SAME:
-            s += 1
-        elif v in VIA_REUSED:
-            k += 1
-    return {"rows": n, "same": s, "reused": k}
-
-
-def via_note(c):
-    """과제 하나의 팀즈 근거 한 줄(합니다체) — 같은 문장 묶음·지난 판정이 없으면 ""."""
-    c = c if isinstance(c, dict) else {}
-    n, s, k = int(c.get("rows") or 0), int(c.get("same") or 0), int(c.get("reused") or 0)
-    if not n or not (s or k):
-        return ""
-    head = f"이 과제의 팀즈 근거 {n}건 중 "
-    if s and k:
-        return head + f"{s}건은 같은 문장이라 함께 들어왔고, {k}건은 지난 판정을 다시 썼습니다."
-    if s:
-        return head + f"{s}건은 같은 문장이라 함께 들어왔습니다."
-    return head + f"{k}건은 지난 판정을 다시 썼습니다."
+            and not _admin_word(name))
 
 
 def level1_fill(l2, l3="", l1_map=None, pin=None, root=None):
@@ -982,7 +1037,8 @@ def entities_is_fallback(ent):
 
 
 def newest_entities(rep=None):
-    r"""report\entities_*.json 을 최신(수정 시각)부터 훑어 규칙 폴백이 아닌 첫 파일 → (내용, 경로). 없으면 ({}, "").
+    r"""report\entities_*.json 을 최신(수정 시각)부터 훑어 AgentFinder32 표식(product)이 있고 규칙 폴백이 아닌 첫 파일
+    → (내용, 경로). 없으면 ({}, "") — 옛 판(LoadMonitor)의 체계는 쓰지 않는다.
     judge(지난 체계 힌트)·mine(규칙 기준선 과제)이 같은 판정을 쓴다 — 폴백 체계(규칙 토큰)가 되먹임되지 않게."""
     import glob
 
@@ -997,7 +1053,7 @@ def newest_entities(rep=None):
                 ent = json.load(f)
         except (OSError, ValueError):
             continue
-        if not entities_is_fallback(ent):
+        if isinstance(ent, dict) and ent.get("product") == PRODUCT and not entities_is_fallback(ent):
             return ent, fp
     return {}, ""
 
@@ -1013,7 +1069,7 @@ def taxonomy_names(rep=None, tag=""):
                 ent = json.load(f)
         except (OSError, ValueError):
             ent = {}
-    if not isinstance(ent, dict) or not ent or entities_is_fallback(ent):
+    if not isinstance(ent, dict) or not ent or ent.get("product") != PRODUCT or entities_is_fallback(ent):
         ent, _p = newest_entities(rep)
     out = []
     for m in (ent.get("models") or []) if isinstance(ent, dict) else []:
@@ -1024,7 +1080,7 @@ def taxonomy_names(rep=None, tag=""):
 
 
 def ukey2(s):
-    """중위(과제) 신원 축 — ukey3·team_report.ukey 와 **같은 규칙**.
+    """중위(과제) 신원 축 — ukey3 와 **같은 규칙**.
     괄호 꼬리는 남기고(='(양산)'/'(선행)' 은 실제 구분) 공백·구분자·대소문자는 무시한다."""
     return _fold3(s, drop_note=False).replace(" ", "")
 
@@ -1035,7 +1091,7 @@ def note2(s):
 
 
 def bigram_dice(a, b):
-    """이름 유사도 — team_report.bigram_dice 와 같은 축(개인·팀이 같은 값을 본다)."""
+    """이름 유사도 — 2-gram Dice(공백·구분자·대소문자 무시)."""
     def bg(t):
         t = _fold3(t).replace(" ", "")
         return {t[i:i + 2] for i in range(len(t) - 1)} or {t}
@@ -1064,7 +1120,7 @@ def _pair2(a, b):
     return frozenset((ukey2(a), ukey2(b)))
 
 
-# ── 캐시 (config\project_aliases.json) ────────────────────────────────────
+# ── 캐시 (data\cache\project_aliases.json) ────────────────────────────────────
 def _flatten2_map(pmap, log=None):
     """사슬(A→B→C) 평탄화 — _flatten3_map 의 2층판(스코프 없음). 순환은 지우지 않고 대표를 정한다."""
     out, cycles = {}, []
@@ -1130,7 +1186,7 @@ def _parse_proj_obj(o):
 
 
 def _read_proj_file(path=None):
-    """config\\project_aliases.json 객체 — 없거나 JSON 이 아니면 None."""
+    """data\\cache\\project_aliases.json 객체 — 없거나 JSON 이 아니면 None."""
     try:
         with open(path or PROJ_ALIAS_FILE, encoding="utf-8-sig") as f:
             return json.load(f)
@@ -1153,7 +1209,7 @@ def _proj_meta(o):
 
 
 def load_project_aliases(path=None):
-    """config\\project_aliases.json → (맵, never 비교키, never 원문쌍). 사슬은 풀어서 돌려준다."""
+    """data\\cache\\project_aliases.json → (맵, never 비교키, never 원문쌍). 사슬은 풀어서 돌려준다."""
     o = _read_proj_file(path)
     if o is None:
         return {}, set(), []
@@ -1162,7 +1218,7 @@ def load_project_aliases(path=None):
 
 
 def save_project_aliases(pmap, never_raw=(), note=None, ask=None, path=None):
-    """맵 저장(사슬 평탄화 후 · UTF-8 BOM — config\\*.json 과 같다). 손편집으로 깨진 캐시는 백업으로 옮기고 새로 쓴다.
+    """맵 저장(사슬 평탄화 후 · UTF-8 BOM · 표식 product). 손편집으로 깨진 캐시는 백업으로 옮기고 새로 쓴다.
     ask(LM30 2026-10-27 — 적용하지 않은 병합 후보 [{"a","b","why"}])를 주지 않으면 파일의 것을 그대로 둔다. 판은 PROJ_ALIAS_V."""
     pmap = _flatten2_map(dict(pmap or {}))
     p = path or PROJ_ALIAS_FILE
@@ -1171,7 +1227,7 @@ def save_project_aliases(pmap, never_raw=(), note=None, ask=None, path=None):
         o = _read_proj_file(p)
         broken = o is None or _parse_proj_obj(o)[0] is None
         if broken:
-            bak = p + time.strftime(".깨짐백업_%Y%m%d_%H%M%S")
+            bak = p + time.strftime(".깨짐백업_%Y%m%d") + f"_{os.getpid()}"
             try:
                 os.replace(p, bak)
                 _say(f"    [!] project_aliases.json 이 깨져 있어 {os.path.basename(bak)} 로 옮겨 두고 "
@@ -1181,12 +1237,12 @@ def save_project_aliases(pmap, never_raw=(), note=None, ask=None, path=None):
         else:
             cur_ask = _proj_meta(o)[1]
     os.makedirs(os.path.dirname(p), exist_ok=True)
-    body = {"_설명": "과제(중위) 표기 병합 맵 — '변형' → '대표'. 한 줄 지우면 그 병합만 원복됩니다. "
+    body = {"product": PRODUCT, "_설명": "과제(중위) 표기 병합 맵 — '변형' → '대표'. 한 줄 지우면 그 병합만 원복됩니다. "
                      "다만 띄어쓰기·구분자만 다른 이름은 규칙이 다음 실행에 다시 합치므로, "
                      "영영 갈라 두려면 never 에 [\"이름A\", \"이름B\"] 쌍을 적으세요(워크플로우 탭 '이름 병합' 표의 [분리] 단추가 "
                      "적어 줍니다). ask 는 합치지 않고 확인을 기다리는 후보입니다 — 합치려면 그 쌍을 map 에 \"변형\": \"대표\" 로 옮기세요.",
             "v": PROJ_ALIAS_V,
-            "updated": time.strftime("%Y-%m-%d %H:%M"),
+            "updated": time.strftime("%Y-%m-%d"),
             "map": dict(sorted(pmap.items())),
             "never": [list(x) for x in (never_raw or [])],
             "ask": list(cur_ask if ask is None else ask)[:50]}
@@ -1224,50 +1280,9 @@ def split_project_pair(a, b, path=None):
             "msg": f"'{a}' 와(과) '{b}' 를 다시 합치지 않게 적었습니다 — 다음 [워크플로우 재분석]부터 따로 보입니다."}
 
 
-# ── 채택 가드 ──────────────────────────────────────────────────────────────
-def _accept_pair2(a, b, ev, never_keys, ctx):
-    """두 과제 이름을 합쳐도 되는가 → (채택, 사유 한 줄).
-
-    never 다음은 **표기 동일(ukey2)** 이다. 그 아래 구조 검사는 표기만 다른 쌍에는 정의상 무의미한데
-    (정규화하면 같은 문자열이라 괄호 꼬리·숫자 토큰·토큰 집합이 반드시 같다), 예전에는 채택이 거부
-    규칙 **뒤에** 있어서 '담당업무 완전 배타'·'신호 시간대 비겹침'·'둘 다 지정 과제' 에 걸렸다.
-    표기가 갈린 과제는 대개 기간이 나뉘어 담당업무가 안 겹치는 바로 그 모습이라, **가장 안전한
-    병합이 가장 자주 막혔다**(감사 실측). 게다가 pinned 검사는 ukey2 가 같으면 한 항목을 두 번
-    보는 셈이라 지정 과제의 표기 변형을 늘 거부했다.
-    표기가 다르면 그때 구조 검사를 모두 거치고, 서로 독립인 근거가 2개 이상일 때만 채택한다 —
-    서로 다른 업무가 한 카드에 섞이는 것이 이 기능의 유일한 심각한 실패이므로 애매하면 합치지 않는다."""
-    if _pair2(a, b) in never_keys:
-        return False, "never 목록(사용자가 다르다고 표시)"
-    if ev.get("ukey2"):
-        return True, "표기 동일(공백·구분자·대소문자만 다름)"
-    if note2(a) != note2(b):
-        return False, f"괄호 꼬리 상이('{note2(a)}' vs '{note2(b)}')"
-    if _nums2(a) != _nums2(b):
-        return False, "숫자 토큰 상이(차수·버전)"
-    ta, tb = _toks2(a), _toks2(b)
-    if (ta < tb or tb < ta) and len(ta ^ tb) >= 2:
-        return False, "한쪽이 다른 쪽의 진부분집합 + 잔여 토큰 2개 이상(상위/하위 관계 의심)"
-    la, lb = ctx["l3"].get(a) or set(), ctx["l3"].get(b) or set()
-    if len(la) >= 2 and len(lb) >= 2 and not (la & lb):
-        return False, "담당업무 집합이 완전 배타"
-    sa, sb = ctx["span"].get(a), ctx["span"].get(b)
-    lim = int(ctx.get("half_days") or 0)
-    if sa and sb and lim:
-        gap = (max(sa[0], sb[0]) - min(sa[1], sb[1])).days
-        if gap >= lim:
-            return False, f"신호 시간대 비겹침({gap}일 간격)"
-    pin = ctx.get("pinned") or set()
-    if ukey2(a) in pin and ukey2(b) in pin:
-        return False, "둘 다 사용자 지정 과제(config\\projects.json)"
-    hit = [k for k in ("dice", "refine", "l3", "product") if ev.get(k)]
-    if len(hit) >= 2:
-        return True, f"독립 근거 {len(hit)}개({'·'.join(hit)})"
-    return False, f"근거 부족({len(hit)}개 — 2개 필요)"
-
-
 # ── 점수와 제약 클러스터링 ────────────────────────────────────────────────
 # 예전에는 근거를 **개수로 세고**(2개 이상) 그 앞에 **하드 비토**를 뒀다. 그래서 담당업무 집합이
-# 완전히 같은(Jaccard 1.0) 두 과제가 '근거 부족 1개' 로 거부되고, 이름이 닮고 제품이 같은 짝이
+# 완전히 같은(Jaccard 1.0) 두 과제가 '근거 부족 1개' 로 거부되고, 이름이 닮은 짝이
 # '담당업무 완전 배타' 로 거부됐다 — 기간이 갈린 같은 과제가 바로 그 모습이라, 가장 안전한 병합이
 # 가장 자주 막혔다(감사 실측). 이제 **가중치를 합산**하고 두 문턱으로 나눈다.
 #
@@ -1314,9 +1329,6 @@ def pair_score(a, b, ev, never_keys, ctx):
     if ev.get("refine"):
         sc += 1.0
         why.append("정제가 함께 묶음")
-    if ev.get("product"):
-        sc += 1.2
-        why.append("제품 일치")
     ta, tb = _toks2(a), _toks2(b)
     if (ta < tb or tb < ta) and len(ta ^ tb) >= 2:
         sc -= 0.5
@@ -1328,8 +1340,8 @@ def pair_score(a, b, ev, never_keys, ctx):
         if gap >= lim:
             sc -= 0.6
             why.append(f"시간대 비겹침 {gap}일 -0.6")
-    # LM30(2026-10-27) — 표기가 다른 병합은 이름이 닮아야(2-gram Dice ≥ DICE2) 자동으로 한다. 근거(담당업무·제품·정제)만으로는
-    # 합치지 않고 '확인 필요(ask)' 까지만 — 흔한 세부업무·같은 제품만으로 서로 다른 과제가 한 카드로 묶였다(합성 실측 점수 1.00~2.20)
+    # 표기가 다른 병합은 이름이 닮아야(2-gram Dice ≥ DICE2) 자동으로 한다. 근거(담당업무·정제)만으로는
+    # 합치지 않고 '확인 필요(ask)' 까지만 — 흔한 세부업무만으로 서로 다른 과제가 한 카드로 묶였다(합성 실측)
     if dice < DICE2 and sc >= W_MERGE:
         sc = W_MERGE - 0.01
         why.append("이름이 달라 자동으로 합치지 않음")
@@ -1370,8 +1382,8 @@ def cluster2(names, W, order, cap):
 
     ★ 제약은 **무리 안에서** 강제한다. 쌍 단위 거부만 하던 예전에는 never 로 갈라 둔 두 이름이
     제3의 이름을 경유해 같은 무리가 됐다(감사 확인) — 쌍 거부는 추이적으로 우회된다.
-    order 는 결정적이어야 한다(MM 내림 → 사전순, 캐시 대표 우선) — 그래야 기간이 바뀌어도
-    같은 자료면 같은 파티션이 나온다(예전에는 MM 값만 달라져도 셋으로 갈렸다)."""
+    order 는 결정적이어야 한다(근거건수 내림 → 사전순, 캐시 대표 우선) — 그래야 기간이 바뀌어도
+    같은 자료면 같은 파티션이 나온다(예전에는 가중치 값만 달라져도 셋으로 갈렸다)."""
     part, placed = [], set()
     for p in order:
         if p in placed:
@@ -1425,24 +1437,21 @@ def project_merge_map(rows, sigs=None, refmap=None, pinned=(), log=print, models
     """과제(중위) 표기 병합 맵 → (pmap, 규칙 병합 수, 증거 병합 수, 기록).
 
     기록 = {"pairs": [...], "rejects": [...], "ask": [...]} — 무엇을 왜 합쳤고 무엇을 왜 거부했는지, 무엇을 합치지 않고 확인을
-    기다리는지. rows = mm_rows(plain) · sigs = signals · refmap = flow._refine_orig 결과 · pinned = config\\projects.json 의 지정
+    기다리는지. rows = work_rows(plain) · sigs = signals · refmap = refine_orig 결과 · pinned = config\\projects.json 의 지정
     과제명 · models = AI 체계(entities)의 과제 이름(LM30 2026-10-27 — 체계가 따로 세운 두 과제는 합치지 않는다). Copilot 왕복 없음.
     LM30(2026-10-27): 흔한 세부업무(generic_detail)는 담당업무 겹침에서 빼고, 표기가 다른 병합은 이름이 닮아야(DICE2) 자동으로 한다.
     v1 파일의 표기 변형이 아닌 병합은 'ask' 로 내린다(적용하지 않음 — 새 규칙이 다시 합치면 map 으로 돌아온다)."""
     rows = rows or []
-    names, mm_w, l3, prod, sig_n = set(), {}, {}, {}, {}
+    names, n_w, l3, sig_n = set(), {}, {}, {}
     for r in rows:
         pj = (r.get("Level 2") or "").strip()
         if not pj or pj in GENERIC2:
             continue
         names.add(pj)
-        mm_w[pj] = mm_w.get(pj, 0.0) + (r["_mm"] if "_mm" in r else _f(r.get("mm")))
+        n_w[pj] = n_w.get(pj, 0.0) + row_n(r)
         d = (r.get("Level 3") or "").strip()
         if d and not generic_detail(d):         # 흔한 세부업무(주간보고·일정 조율 …)는 두 과제가 같다는 근거가 못 된다
             l3.setdefault(pj, set()).add(ukey3(d))
-        p = (r.get("제품") or "").strip()
-        if p:
-            prod.setdefault(pj, set()).add(_fold3(p))
     if len(names) < 2:
         return {}, 0, 0, {"pairs": [], "rejects": []}
 
@@ -1484,7 +1493,7 @@ def project_merge_map(rows, sigs=None, refmap=None, pinned=(), log=print, models
     ver, ask_file = _proj_meta(_read_proj_file())
     n_demoted = 0
     if ver < PROJ_ALIAS_V and pmap:
-        # v1 의 표기 변형이 아닌 병합(담당업무·제품·정제 근거로 합친 것) — 적용하지 않고 'ask' 로 내린다(한 번만 · 파일에 v2 를 적는다)
+        # v1 의 표기 변형이 아닌 병합(담당업무·정제 근거로 합친 것) — 적용하지 않고 'ask' 로 내린다(한 번만 · 파일에 v2 를 적는다)
         for x, y in sorted(pmap.items()):
             if ukey2(x) != ukey2(y):
                 ask_file.append({"a": x, "b": y, "why": "예전 판이 근거로 합친 것 — 이름이 달라 확인이 필요합니다(적용하지 않음)"})
@@ -1497,16 +1506,16 @@ def project_merge_map(rows, sigs=None, refmap=None, pinned=(), log=print, models
 
     def _canon2(group):
         """대표 — 캐시가 이미 대표로 쓰는 이름이 무리에 있으면 그것을 고정(방향 뒤집힘 방지),
-        없으면 MM 큰 이름 → **띄어쓰기가 살아 있는 이름** → 원문 짧은 이름 → 사전순.
+        없으면 근거건수 큰 이름 → **띄어쓰기가 살아 있는 이름** → 원문 짧은 이름 → 사전순.
 
         Level 3 의 _rule_canon 은 '공백 정규화가 짧은 이름' 을 고르는데, 그것을 과제에 그대로 쓰면
         '설계 검토'/'설계검토' 에서 붙여 쓴 쪽이 대표가 되어 카드 머리말이 읽기 나빠진다(실측).
-        과제 이름은 화면에 그대로 보이므로 team_report.local_groups 와 같이 '정보가 많은 표기' 를
+        과제 이름은 화면에 그대로 보이므로 '정보가 많은 표기' 를
         고른다. 그러면서도 '빌드  논의'(공백 둘) 같은 오타는 원문 길이 비교에서 걸러진다 —
         정규화하면 길이가 같고, 원문이 긴 쪽이 지기 때문이다."""
         cached = [x for x in group if x in cached_reps]
         pool = cached or list(group)
-        return max(pool, key=lambda x: (mm_w.get(x, 0.0), len(" ".join(x.split())), -len(x), x))
+        return max(pool, key=lambda x: (n_w.get(x, 0.0), len(" ".join(x.split())), -len(x), x))
 
     def _take(x, canon, why, kind):
         # 흡수 한도(MAX_ABSORB2)는 폐기했다 — 그 쌍의 '지역 대표' 를 세는 값이라 사슬로 우회됐고
@@ -1516,7 +1525,7 @@ def project_merge_map(rows, sigs=None, refmap=None, pinned=(), log=print, models
             return
         absorbed[ukey2(canon)] = absorbed.get(ukey2(canon), 0) + 1
         pairs.append({"from": x, "to": _final2(pmap, canon), "why": why,
-                      "mm": round(mm_w.get(x, 0.0), 3), "signals": sig_n.get(x, 0)})
+                      "근거건수": int(n_w.get(x, 0)), "signals": sig_n.get(x, 0)})
         if kind == "rule":
             n_rule += 1
         else:
@@ -1531,8 +1540,7 @@ def project_merge_map(rows, sigs=None, refmap=None, pinned=(), log=print, models
         for j2 in range(i2 + 1, len(ns)):
             a, b = ns[i2], ns[j2]
             ev = {"ukey2": ukey2(a) == ukey2(b),
-                  "refine": _pair2(a, b) in ref_pairs,
-                  "product": bool((prod.get(a) or set()) & (prod.get(b) or set()))}
+                  "refine": _pair2(a, b) in ref_pairs}
             w, why = pair_score(a, b, ev, never_keys, ctx)
             # 이름이 닮지 않은 쌍은 클러스터링에서 끌어당기지 않는다(LM30 2026-10-27 — 국소탐색이 문턱 아래 양수 간선으로 옮기지 않게)
             sim = ev["ukey2"] or bigram_dice(a, b) >= DICE2
@@ -1540,15 +1548,14 @@ def project_merge_map(rows, sigs=None, refmap=None, pinned=(), log=print, models
             pair_why[(a, b)] = why
             if W_ASK <= w < W_MERGE:
                 ask.append({"a": a, "b": b, "why": why})
-            elif w != NEG_INF and w < W_ASK and (ev["refine"] or ev["product"] or bigram_dice(a, b) >= 0.5):
+            elif w != NEG_INF and w < W_ASK and (ev["refine"] or bigram_dice(a, b) >= 0.5):
                 rejects.append({"a": a, "b": b, "why": why})
             elif w == NEG_INF:
                 rejects.append({"a": a, "b": b, "why": why})
 
     # ── 제약 클러스터링 ─────────────────────────────────────────────────────
-    # 순서는 결정적이어야 한다 — 캐시가 이미 대표로 쓰는 이름 먼저, 그다음 MM 내림, 사전순.
-    # 예전 그리디는 MM 값만 달라져도 파티션이 셋으로 갈렸다(감사 실측).
-    order = sorted(ns, key=lambda x: (0 if x in cached_reps else 1, -mm_w.get(x, 0.0), x))
+    # 순서는 결정적이어야 한다 — 캐시가 이미 대표로 쓰는 이름 먼저, 그다음 근거건수 내림, 사전순.
+    order = sorted(ns, key=lambda x: (0 if x in cached_reps else 1, -n_w.get(x, 0.0), x))
     for grp in cluster2(ns, W, order, MAX_GROUP2):
         if len(grp) < 2:
             continue
@@ -1588,17 +1595,17 @@ def project_merge_map(rows, sigs=None, refmap=None, pinned=(), log=print, models
     for x in sorted(names):
         y = pmap.get(x)
         if y and y != x and x not in new_from:
-            pairs.append({"from": x, "to": y, "why": "지난 실행에서 합침(config\\project_aliases.json)",
-                          "mm": round(mm_w.get(x, 0.0), 3), "signals": sig_n.get(x, 0), "cached": True})
-    # 한 과제가 전체 MM 의 60% 를 넘게 빨아들였으면 채택은 하되 눈에 띄게 알린다
-    tot = sum(mm_w.values())
+            pairs.append({"from": x, "to": y, "why": "지난 실행에서 합침(data\\cache\\project_aliases.json)",
+                          "근거건수": int(n_w.get(x, 0)), "signals": sig_n.get(x, 0), "cached": True})
+    # 한 과제가 전체 근거의 60% 를 넘게 빨아들였으면 채택은 하되 눈에 띄게 알린다
+    tot = sum(n_w.values())
     if tot > 0:
         after = {}
         for n in names:
-            after[_final2(pmap, n)] = after.get(_final2(pmap, n), 0.0) + mm_w.get(n, 0.0)
+            after[_final2(pmap, n)] = after.get(_final2(pmap, n), 0.0) + n_w.get(n, 0.0)
         big = [k for k, v in after.items() if v > 0.6 * tot]
         if big and len(after) > 1:
-            _say(f"    [!] 병합 뒤 '{big[0]}' 하나가 전체 MM 의 60% 를 넘습니다 — 과병합이 아닌지 확인하세요", log)
+            _say(f"    [!] 병합 뒤 '{big[0]}' 하나가 전체 근거의 60% 를 넘습니다 — 과병합이 아닌지 확인하세요", log)
     # 애매한 쌍(점수가 문턱 사이) — 합치지 않고 사람에게 보여 준다. 문헌의 3분할과 같은 취지:
     # 자동으로 처리할 수 있는 구간만 자동으로 하고, 경계는 사람이 한 번 정하면 캐시가 기억한다.
     return pmap, n_rule, n_ev, {"pairs": pairs, "rejects": rejects, "ask": ask[:20]}
@@ -1606,7 +1613,7 @@ def project_merge_map(rows, sigs=None, refmap=None, pinned=(), log=print, models
 
 # ── 적용 ──────────────────────────────────────────────────────────────────
 def apply_project_map(rows, sigs, pmap):
-    """mm_rows 행의 Level 2 와 신호의 model|project 를 대표 이름으로 — 원본 파일은 무수정.
+    """work_rows 행의 Level 2 와 신호의 model|project 를 대표 이름으로 — 원본 파일은 무수정.
 
     **반드시 apply_detail_map 보다 먼저** 부른다. 세부업무 맵의 키가 (과제, 이름) 이라
     과제 이름이 먼저 대표가 돼야 맞고, _detail_pools 의 파티션 키도 raw Level 2 라서
@@ -1637,25 +1644,29 @@ def remap_detail_scope(amap, pmap):
     return {(pmap.get(pj, pj), d): v for (pj, d), v in amap.items()}
 
 
-def merge_prompt_sections(by_pj, amap):
+def merge_prompt_sections(by_pj, amap, send=None):
     """과제별 목록 조각 [(과제, 텍스트)] — 한 과제가 SECTION_BUDGET 을 넘으면 겹침 2줄로 나눈다.
-    pools = {과제: 보낸 이름 집합}(채택 가드용)."""
+    pools = {과제: 보낸 이름 집합}(채택 가드용). send(gate_pairs 의 결과 {과제: (보낼 과제 표기, {보낼 세부업무 표기: 원래 이름})})가
+    있으면 그 과제만, 관문을 지난 '보낼 표기'로 싣는다 — pools 도 보낼 표기의 집합이다(답은 그 표기로 온다)."""
     pools, secs = {}, []
-    for pj, ds in sorted(by_pj.items()):
-        todo = sorted({amap.get((pj, d), d) for d in ds})
+    for pj, ds in sorted((send if send is not None else by_pj).items()):
+        if send is not None:
+            head, todo = ds[0], sorted(ds[1])
+        else:
+            head, todo = pj, sorted({amap.get((pj, d), d) for d in ds})
         if len(todo) < 2:
             continue
         pools[pj] = set(todo)
         piece, psize = [], 0
         for line in (f"- {d}" for d in todo):
             if piece and psize + len(line) > SECTION_BUDGET:
-                secs.append((pj, f"[과제] {pj}\n" + "\n".join(piece)))
+                secs.append((pj, f"[과제] {head}\n" + "\n".join(piece)))
                 piece = piece[-2:]             # 겹침 2줄 — 잘린 자리 앞뒤를 같이 보게
                 psize = sum(len(x) for x in piece)
             piece.append(line)
             psize += len(line)
         if piece:
-            secs.append((pj, f"[과제] {pj}\n" + "\n".join(piece)))
+            secs.append((pj, f"[과제] {head}\n" + "\n".join(piece)))
     return pools, secs
 
 
@@ -1862,7 +1873,7 @@ PHASE_TEXT = {
                        "전용 Edge 창(자동 프로필)에서 회사 계정으로 로그인한 뒤 다시 실행 — [AI 연결 진단]으로 확인"),
     "edge_not_found": ("Microsoft Edge 실행 파일을 찾지 못함", "Edge 설치 확인 후 다시 실행"),
     "launch_failed": ("Edge(자동 프로필)를 디버그 포트로 띄우거나 Copilot 탭을 만들지 못함",
-                      "이미 열려 있는 자동 프로필 Edge 창(data\\lm30_edge)을 모두 닫고 다시 실행 · "
+                      "이미 열려 있는 자동 프로필 Edge 창(data\\af32_edge)을 모두 닫고 다시 실행 · "
                       "회사 보안 정책이 디버그 포트를 막으면 [AI 연결 진단]으로 확인"),
     "input_not_found": ("Copilot 채팅 입력창을 찾지 못함",
                         "Copilot 화면이 바뀌었을 수 있습니다 — data\\copilot_auto_debug.json 을 확인"),
@@ -1870,12 +1881,12 @@ PHASE_TEXT = {
     "copilot_error": ("Copilot 일시 오류 응답", "잠시 뒤 다시 실행 — 반복되면 Copilot 창 상태 확인"),
     # LM28 진단 A: 사용량 제한 문구 — 호출자(judge.copilot_send)가 쉬었다 다시 보낸다(비치명). 세 번 쉬고도 막히면 결과의
     # hard=True 가 치명으로 바꾼다(explain_failure).
-    "throttled": ("Copilot 사용량 제한(일시)", "몇 분 쉬었다 자동으로 이어 보냅니다 — 계속되면 1~2시간 뒤 [재분석만]"),
-    "stub": ("스텁 응답 없음(LM_COPILOT_STUB)", "스텁 폴더에 응답 파일을 두거나 환경 변수를 지우세요"),
+    "throttled": ("Copilot 사용량 제한(일시)", "몇 분 쉬었다 자동으로 이어 보냅니다 — 계속되면 1~2시간 뒤 [다시 읽지 않고 분석만]을 켜고 [분석 실행]"),
+    "stub": ("스텁 응답 없음(AF32_COPILOT_STUB)", "스텁 폴더에 응답 파일을 두거나 환경 변수를 지우세요"),
     "timeout": ("왕복 시간 초과", "Copilot 응답 지연 — 잠시 뒤 다시 실행"),
     # LM28(WP5 G3): 최종 프롬프트 검사에 걸려 보내지 않은 묶음 — 그 묶음만 규칙 판정(비치명)
     "blocked": ("개인정보 관문 — 보내지 않음",
-                "사적·자격증명·본인 식별자가 섞인 묶음이라 Copilot 에 보내지 않고 규칙으로 판정했습니다 — 조치 필요 없음"),
+                "제한 고객·민감정보·식별번호·본인 식별자가 섞인 묶음이라 Copilot 에 보내지 않고 규칙으로 판정했습니다 — 조치 필요 없음"),
     # LM28(2026-10-17): 사람이 쓰던 Copilot 대화를 건드리지 않으려고 보내지 않은 왕복(비치명 — 그 묶음만 규칙 판정)
     "no_new_chat": ("새 채팅이 열린 것을 확인하지 못해 보내지 않음",
                     "사람이 쓰던 대화에 질문이 들어가지 않게 멈췄습니다 — 전용 Edge 의 Copilot 창에 '새 채팅' 단추가 보이는지 확인"),
@@ -1887,7 +1898,7 @@ _FATAL_ERRORS = ("드라이버 실행 실패", "프롬프트 파일 쓰기 실�
 # 그대로 쓴다(단일원). 예전에는 R-PERSONAL 이 phase login_required 의 일반 문구 'Copilot 로그인 필요(만료)' 로 보였다.
 REASON_WHY = {
     "R-PERSONAL": "개인 Microsoft 계정 화면 — 업무 자료를 보내지 않음",
-    "R-ACCOUNT": "업무용 Copilot 화면이 아님(계정 종류 확인 불가) — 보내지 않음",
+    "R-ACCOUNT": "Copilot 창의 계정이 회사 계정임을 확인하지 못함 — 보내지 않음",
     "R-LOGIN": "Copilot 로그인 필요",
     "R-LOGIN-DEVICE": "회사 장치 조건부 액세스 — Edge 프로필 로그인 필요",
     "R-LOGIN-WAIT": "로그인 화면에 남은 단계(약관·추가 인증)",
@@ -1905,7 +1916,7 @@ REASON_WHY = {
 # 강한 사용량 제한(judge.copilot_send 가 세 번 쉬고도 막힘 → 결과 hard=True) — 남은 묶음을 보내지 않는다(치명).
 # 사유 문구에 '사용량 제한' 을 넣는다 — run.py·agentic·flow 가 이 낱말로 재시도하지 않는다.
 HARD_THROTTLE = ("Copilot 사용량 제한 — 쉬었다 다시 보내도 막힘",
-                 "남은 묶음은 보내지 않고 여기까지의 결과를 지켰습니다 — 1~2시간 뒤 [재분석만]")
+                 "남은 묶음은 보내지 않고 여기까지의 결과를 지켰습니다 — 1~2시간 뒤 [다시 읽지 않고 분석만]을 켜고 [분석 실행]")
 
 
 def _reason_hint(reason):
@@ -1923,7 +1934,7 @@ def _reason_hint(reason):
 def explain_failure(res):
     """실패 dict(드라이버·judge.copilot_send) → (사유 한 줄, 조치, fatal).
     LM28: res["reason"](사유 코드)이 있으면 그 사유·드라이버 REASON_HINT 조치를 쓴다(fatal 판정은 phase 그대로).
-    LM28 진단 A: res["hard"] 가 True(강한 사용량 제한 — 쉬고도 막힘)면 무엇이든 fatal — judge·refine·agentic·flow·narrate 가
+    LM28 진단 A: res["hard"] 가 True(강한 사용량 제한 — 쉬고도 막힘)면 무엇이든 fatal — judge·refine·agentic·flow 가
     남은 묶음을 보내지 않고 지금까지의 결과를 지킨다. reason R-EDGEBUSY(다른 작업이 전용 Edge 사용 중)는 fatal 이 아니다 —
     접지 않고 쉬었다 다시 보낸다. phase 'throttled'(일시 제한)도 fatal 이 아니다(FATAL_PHASES 밖)."""
     res = res if isinstance(res, dict) else {}
@@ -1933,6 +1944,9 @@ def explain_failure(res):
     reason = str(res.get("reason") or "").strip()
     if res.get("hard") is True:
         return HARD_THROTTLE[0], HARD_THROTTLE[1], True
+    if reason == "R-ACCOUNT" and res.get("account"):
+        # 보내기 전 계정 확인(copilot_auto.account_check) — 못 읽음·회사 밖·개인 계정·회사 도메인 모름마다 드라이버의 사유·조치 그대로
+        return (err or REASON_WHY[reason]), (hint or _reason_hint(reason)), phase in FATAL_PHASES
     if reason and (reason in REASON_WHY or phase in PHASE_TEXT):
         why = REASON_WHY.get(reason) or PHASE_TEXT.get(phase, ("왕복 실패", ""))[0]
         how = _reason_hint(reason) or hint or PHASE_TEXT.get(phase, ("", ""))[1]
@@ -2020,12 +2034,12 @@ def detail_merge_map(tag, sender=None, rows=None, log=print, deadline=None):
     sender: judge.copilot_send 계약 — sender(prompt_text, tag, name) -> {"ok","reply",...}.
       None 이면 규칙 병합만(Copilot 이 안 되는 날·--no-merge). sender 가 주어졌으면 왕복
       여부는 호출자 책임 — env 게이트를 또 걸면 모의 sender 테스트·수동 호출까지 막힌다(실측).
-    rows: 이미 읽은 mm_rows 행(없으면 tag 로 읽는다).
+    rows: 이미 읽은 work_rows 행(없으면 tag 로 읽는다).
     deadline: time.monotonic() 기준 마감 — 넘으면 남은 왕복을 묻지 않는다. 종류와 무관하게(해석 실패 포함) 2묶음 연속
       실패해도 접는다 — 예전에는 해석 실패를 그냥 건너뛰어, Copilot 이 거절하는 날 워크플로우 앞에서 12왕복을 다 기다렸다."""
     if rows is None:
         rows, _fn = read_rows(tag)
-    by_pj, mm_w = _detail_pools(rows)
+    by_pj, n_w = _detail_pools(rows)
     amap = load_detail_aliases()
     loaded = dict(amap)
     reps_by = {}                          # 과제별 캐시 대표(값) 집합 — 규칙 대표 선택에 우선한다
@@ -2037,7 +2051,7 @@ def detail_merge_map(tag, sender=None, rows=None, log=print, deadline=None):
         by_k = {}
         for d in ds:
             by_k.setdefault(ukey3(d), []).append(d)
-        heads = sorted(by_k.values(), key=lambda v: (-mm_w.get((pj, v[0]), 0.0), v[0]))
+        heads = sorted(by_k.values(), key=lambda v: (-n_w.get((pj, v[0]), 0.0), v[0]))
         merged_into = {}
         for i, vi in enumerate(heads):
             hi = vi[0]
@@ -2053,10 +2067,10 @@ def detail_merge_map(tag, sender=None, rows=None, log=print, deadline=None):
         for v in list(by_k.values()):
             if len(v) > 1:
                 # 캐시가 이미 대표로 쓰는 이름이 무리 안에 있으면 그것을 대표로 고정한다 — 기간별
-                # MM 에 따라 대표가 뒤집혀 캐시와 반대 방향의 간선이 생기고, 평탄화가 그 순환을 통째로
-                # 지워 병합이 격번으로 빠지던 결함(F4). 없으면 예전대로 MM 큰 이름.
+                # 건수에 따라 대표가 뒤집혀 캐시와 반대 방향의 간선이 생기고, 평탄화가 그 순환을 통째로
+                # 지워 병합이 격번으로 빠지던 결함(F4). 없으면 근거건수 큰 이름.
                 fixed = [x for x in v if x in reps_by.get(pj, ())]
-                canon = _rule_canon(fixed or v, pj, mm_w)
+                canon = _rule_canon(fixed or v, pj, n_w)
                 for x in v:
                     if _set_alias(amap, pj, x, canon):
                         n_rule += 1
@@ -2065,8 +2079,15 @@ def detail_merge_map(tag, sender=None, rows=None, log=print, deadline=None):
     n_ai = 0
     if sender is not None:
         # 과제마다 따로 왕복하면 과제 수만큼 Copilot 을 기다려 멈춘 것처럼 보인다(제보) —
-        # 여러 과제를 한 프롬프트에 묶어 7,000자 단위로만 나눈다.
-        pools, secs = merge_prompt_sections(by_pj, amap)
+        # 여러 과제를 한 프롬프트에 묶어 7,000자 단위로만 나눈다. 보내기 전에 (과제, 세부업무) 쌍마다 G3 행 관문
+        # (privacy.gate_items — 제한 고객·민감정보·식별번호·카나리아)을 지난 것만, 관문이 가린 사본으로 싣는다(걸린 쌍은 규칙
+        # 병합만). 싣는 이름은 병합 대표(amap)이므로 대표 이름을 관문에 넣는다. 답의 이름은 원래 이름으로 되돌린다(back).
+        cand = {pj: {amap.get((pj, d), d) for d in ds} for pj, ds in by_pj.items()}
+        send, n_gated = gate_pairs(cand)
+        if n_gated:
+            _say(f"  [details] 개인정보 관문 — 세부업무 이름 {n_gated}개는 Copilot 에 보내지 않습니다(규칙 병합만)", log)
+        pools, secs = merge_prompt_sections(cand, amap, send)
+        back_pj = {v[0]: pj for pj, v in send.items()}          # 보낸 과제 표기 → 원래 과제 이름
         batches = merge_batches(secs)
         if len(batches) > MAX_ROUNDTRIPS:
             _say(f"  [details] 세부 병합 묶음 {len(batches)}개 중 앞 {MAX_ROUNDTRIPS}개만 "
@@ -2108,22 +2129,23 @@ def detail_merge_map(tag, sender=None, rows=None, log=print, deadline=None):
             for grp in (o.get("groups") or []):
                 if not isinstance(grp, dict):
                     continue
-                pj = str(grp.get("project") or "").strip()
+                pj = back_pj.get(" ".join(str(grp.get("project") or "").split()), "")   # 보낸 표기 → 원래 과제 이름
                 pool = pools.get(pj)
                 if not pool:
                     rejected += 1                # 지어낸 과제명·다른 과제 섞기 방지
                     continue
+                back = send[pj][1]               # 보낸 세부업무 표기 → 원래 이름
                 for items in (grp.get("items") or []):
                     if not isinstance(items, list):
                         continue
-                    acc = _accept_group3(items, pool, {d: mm_w.get((pj, d), 0.0) for d in pool})
+                    acc = _accept_group3(items, pool, {s: n_w.get((pj, back[s]), 0.0) for s in pool})
                     if not acc:
                         if len([x for x in items if str(x or "").strip() in pool]) >= 2:
                             _say(f"    [가드] {pj}: 괄호 꼬리가 다른 묶음 거부 — "
                                  f"{' / '.join(str(x)[:20] for x in items[:3])}", log)
                         rejected += 1
                         continue
-                    canon, alts = acc
+                    canon, alts = back[acc[0]], [back[x] for x in acc[1]]
                     for x in alts:
                         if _set_alias(amap, pj, x, canon):     # 캐시 방향 우선(F4)
                             n_ai += 1
@@ -2139,9 +2161,42 @@ def detail_merge_map(tag, sender=None, rows=None, log=print, deadline=None):
     return amap, n_rule, n_ai
 
 
+def gate_pairs(by_pj, cfg=None, root=None):
+    """{과제: {세부업무}} → ({과제: (보낼 과제 표기, {보낼 세부업무 표기: 원래 이름})}, 걸린 쌍 수).
+    privacy.gate_items 로 쌍마다 과제 이름·세부업무 이름을 본다 — 제한 고객·민감정보·식별번호·카나리아가 든 쌍은 빼고(제한 고객
+    목록을 못 읽으면 모두 걸린다 — fail-closed), 남은 쌍은 관문이 가린 사본('보낼 표기')으로 돌려준다. 프롬프트에는 그 표기만 싣는다
+    — 관문을 지났다는 판정만 받고 원문을 실으면 지정 과제 이름에 든 사람 이름·고객사(privacy.customers)가 그대로 Copilot 에 갔다.
+    보낼 표기가 다른 과제의 것과 겹치는 과제, 같은 과제 안에서 다른 세부업무와 겹치는 세부업무는 답을 원래 이름에 맞출 수 없으므로
+    싣지 않는다(걸린 쌍으로 센다 — 규칙 병합만)."""
+    import privacy
+    root = root or ROOT
+    if cfg is None:
+        import afcfg
+        cfg = afcfg.load(root)
+    items = [{"pj": pj, "d": d, "_pj": pj, "_d": d} for pj, ds in sorted(by_pj.items()) for d in sorted(ds)]
+    try:
+        kept, _why = privacy.gate_items(items, ("pj", "d"), cfg, data_dir=os.path.join(root, "data"))
+    except Exception:  # noqa: BLE001 - 관문을 세우지 못하면 보내지 않는다
+        kept = []
+    heads, taken, names = {}, {}, {}        # 과제 → 보낼 표기 · 보낼 표기 → 과제 · 과제 → {보낼 세부업무 표기: [원래 이름…]}
+    for it in kept:
+        pj, d = it["_pj"], it["_d"]
+        spj, sd = " ".join(str(it.get("pj") or "").split()), " ".join(str(it.get("d") or "").split())
+        if not spj or not sd or taken.setdefault(spj, pj) != pj:
+            continue
+        heads[pj] = spj
+        names.setdefault(pj, {}).setdefault(sd, []).append(d)
+    out = {}
+    for pj, by_sd in names.items():
+        one = {sd: ds[0] for sd, ds in by_sd.items() if len(ds) == 1}
+        if one:
+            out[pj] = (heads[pj], one)
+    return out, len(items) - sum(len(v[1]) for v in out.values())
+
+
 # ── 적용 ──────────────────────────────────────────────────────────────────
 def apply_detail_map(rows, sigs, amap):
-    """mm_rows 행과 신호의 Level 3 표기를 병합 맵의 대표 이름으로 — 원본 파일은 무수정.
+    """work_rows 행과 신호의 Level 3 표기를 병합 맵의 대표 이름으로 — 원본 파일은 무수정.
     (rows/sigs 를 제자리에서 바꾼다. 원본을 지키려면 사본을 넘길 것.)"""
     if not amap:
         return rows, sigs
@@ -2164,30 +2219,14 @@ def apply_detail_map(rows, sigs, amap):
     return rows, sigs
 
 
-def merge_report_rows(rows):
-    """분석리포트 업무별 상세용 — 같은 (Level 2, Level 3) 행을 한 줄로(mm·share 합산)."""
-    by, order = {}, []
-    for r in rows:
-        k = ((r.get("Level 2") or "").strip(), (r.get("Level 3") or "").strip())
-        if k in by:
-            g = by[k]
-            g["mm"] = str(round(_f(g.get("mm")) + _f(r.get("mm")), 3))
-            g["share"] = str(round(_f(g.get("share")) + _f(r.get("share")), 4))
-            if "_mm" in g or "_mm" in r:
-                g["_mm"] = _f(g.get("_mm")) + _f(r.get("_mm"))
-            if r.get("상세설명") and r["상세설명"] not in (g.get("상세설명") or ""):
-                g["상세설명"] = ((g.get("상세설명") or "") + " · " + r["상세설명"]).strip(" ·")
-            if r.get("근거") and r["근거"] not in (g.get("근거") or ""):
-                g["근거"] = ((g.get("근거") or "") + "·" + r["근거"]).strip("·")
-        else:
-            by[k] = dict(r)
-            order.append(k)
-    return [by[k] for k in order]
-
-
 if __name__ == "__main__":
-    # python core\details.py <tag>  → 규칙 병합만 실행하고 맵을 출력(진단용)
+    # python core\details.py <tag>  → 규칙 병합만 실행하고 맵을 출력(진단용). 다른 사용자의 자료(종료 코드 4)거나 지우는 중(3)이면 읽지 않는다.
     import sys
+    if os.path.dirname(os.path.abspath(__file__)) not in sys.path:   # 동봉 파이썬(._pth)은 스크립트 폴더를 경로에 넣지 않는다
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    _rc = consent_gate("details")
+    if _rc:
+        sys.exit(_rc)
     _tag = sys.argv[1] if len(sys.argv) > 1 else ""
     if _tag:
         _amap, _nr, _na = detail_merge_map(_tag, None)

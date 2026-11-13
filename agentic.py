@@ -1,50 +1,51 @@
 # -*- coding: utf-8 -*-
 r"""
-agentic.py — Agentic AI 니즈 후보 발굴 (LoadMonitor30 — LM29부터 LM28 의 Agentic 과제 매칭에서 '발굴'만 남겼다)
+agentic.py — Agentic AI 전환 후보 발굴 (AgentFinder32)
 
-Copilot 에게 [본인 업무(#번호·과제·세부업무·유형·설명)]만 주고, 그 사람이 반복해서 하는 업무에서 Agentic AI 로 자동화할
-만한 **니즈 후보**(new — 이름·동작 로직·발굴 사유·근거 업무)만 찾게 한다.
-  · 팀 과제 목록과 맞춰 보지 않는다 — LM29부터 과제 목록 파일(config\agentic_tasks.json)·적합률·과제별 로드가 없다.
-  · 오할당(내 업무가 아닌데 내 업무로 분류된 행) 검증도 하지 않는다.
-  · 팀 차원의 니즈 후보는 팀 취합(aggregate.merge_needs — 팀 화면·팀 통합 보고서)이 인원별 후보를 이름으로 모아 보여 준다.
+Copilot 에게 [본인 업무(#번호·과제·세부업무·유형·설명)]만 주고, 그 사람이 반복해서 하는 업무에서 Agentic AI 로 바꾸거나
+도울 만한 **후보**(new — 이름·동작 로직·발굴 사유·근거 업무)를 찾게 한다. 업무 목록은 내 메일·일정에서 분류한 것이다.
+이 결과는 Agentic AI 전환 과제 발굴에만 쓴다 — 사람을 평가하거나 업무량을 비교하는 데 쓰지 않는다.
 
-LM28 agentic.py 에서 그대로 가져온 규칙:
-  · 업무 행마다 실행 전체에서 고정된 '#번호'(MM 큰 순)를 붙여 보내고, 답의 근거 업무(work)는 번호로 받는다(이름 표기도 받는다:
-    번호 → 이 묶음 행 이름 → 전체 행 이름 순). 근거는 그 행의 원본 mm_rows (과제, 세부업무) 쌍(keys — 정제 행이면 refine_map
+규칙:
+  · 업무 행마다 실행 전체에서 고정된 '#번호'(근거건수 많은 순)를 붙여 보내고, 답의 근거 업무(work)는 번호로 받는다(이름 표기도 받는다:
+    번호 → 이 묶음 행 이름 → 전체 행 이름 순). 근거는 그 행의 원본 work_rows (과제, 세부업무) 쌍(keys — 정제 행이면 refine_map
     으로 되짚는다)으로 상한 없이 쌓는다. agenticMaxWork 는 화면에 보일 근거 업무 이름(work) 수의 상한일 뿐이다.
-  · MM 은 프롬프트에 넣지 않는다(사람·MM 미전송 원칙). 후보에도 MM('대체 가능 MM≈')을 붙이지 않고 근거 행 수(evidence_rows)만 센다.
+  · 프롬프트에는 건수·비중·날짜를 넣지 않는다. 후보에는 근거 행 수(evidence_rows)와 task_type(근거 행에서 가장 흔한 유형)만 붙인다.
+  · 프롬프트는 "고객사·제품·과제·사람 이름과 약어를 쓰지 말고 업무 행위로 쓰세요" 를 더한다(D19 — 후보 이름·로직·사유가 공유돼도
+    이름이 새지 않게). 맨 앞 머리말(AI_PREFIX)은 judge.copilot_send 가 붙인다.
   · 업무 행을 8,300자 묶음으로 나눠 보낸다 — 묶음 경계는 앞 묶음 끝 3행(600자) 겹침, 겹친 행은 rows_analyzed 에 세지 않는다.
   · 묶음은 같은 채팅에서 이어 보낸다(fresh=None — 첫 왕복·실패 뒤·config.copilotAuto.chatTurns 마다만 새 채팅). 되풀이돼 섞여
     오는 앞 답은 strip_prompt_echo·find_json 이 걷어내고, 답을 해석하지 못하면 judge.note_bad_reply 로 다음 왕복을 새 채팅에서 연다.
   · 잘린 JSON·코드펜스·굽은 따옴표는 core/details.find_json 이 복구한다(부분 결과는 salvaged_chunks 로 센다). 프롬프트의 출력
     예시는 <...> 자리표시자라 되돌아온 프롬프트가 답으로 파싱되지 않는다.
   · 로그인 만료·Edge 미기동처럼 사람이 손대야 하는 실패와 Copilot 사용량 제한(hard)은 그 자리에서 접고, 그 밖의 실패는 연속
-    3회면 접는다. 마지막 줄 JSON 의 error/hint 에 실제 사유를, stop_kind 에 중단 갈래를 싣는다(rc 0 완료 · 2 부분 · 1 실패).
+    3회면 접는다. 마지막 줄 JSON 의 error/hint 에 실제 사유를, stop_kind 에 중단 갈래를 싣는다(rc 0 완료 · 2 부분 · 1 실패 · 3 지우는 중 · 4 다른 사용자의 자료).
   · 답이 왔는데 해석 못 했거나 잘려 건질 게 없거나 응답이 없는 묶음(parse·no_reply)만 반으로 나눠 1회 더 묻는다(적응 분할).
     일시 오류(copilot_error·시간 초과 등)는 나누지 않고 coolDownSec(기본 90초) 쉰 뒤 같은 묶음을 한 번만 다시 보낸다 — 드라이버가
     이미 쉬고 다시 보냈으면(결과의 cooldowns) 또 쉬지 않는다. 쉬는 초는 이번 실행의 쉬는 시간 합계(copilotAuto.runWaitMaxSec —
     judge.wait_room) 안이고, 다 썼으면 쉬지 않고 바로 한 번 더 보낸다.
   · 신호의 80%(config.agentic.ruleRowShare) 이상이 규칙 판정(AI 판정이 중단돼 규칙으로 남은 행)인 업무는 보내지 않는다
-    (rows_rule · 'AI 판정 대기') — 판정이 회복되면([재분석만]) 다음 실행이 보낸다.
-  · G3 — 업무 행의 상세설명은 관문(judge.g3_rows)을 거친 재정제 사본으로 보내고, 자기 줄이 최종 검사(judge.g3_prompt)에
-    걸리는 행은 **그 행만** 빼고 보낸다(판정 끝으로 두고 gate_skipped_rows 로 센다).
+    (rows_rule · 'AI 판정 대기') — 판정이 회복되면([다시 읽지 않고 분석만]을 켜고 [분석 실행]) 다음 실행이 보낸다.
+  · G3 — 업무 행의 과제·세부업무 이름·상세설명은 관문(judge.g3_rows)을 거친 재정제 사본으로 보내고(지정 과제 이름에 든 사람
+    이름·고객사는 가린 채 — 답은 '#번호' 로 행을 가리킨다), 자기 줄이 최종 검사(judge.g3_prompt)에 걸리는 행은 **그 행만** 빼고
+    보낸다(판정 끝으로 두고 gate_skipped_rows 로 센다).
   · 묶음이 끝날 때마다 저장하고(중단돼도 그때까지의 결과가 남는다), rows_done 으로 **다음 실행은 남은 행만 이어서** 보낸다
-    (--redo 면 처음부터). 행 식별자는 '과제|세부업무|유형'(MM 제외). --carry(run.py 가 늘 붙인다)면 기간 끝날짜가 바뀌어 오늘
-    파일이 없을 때 같은 시작일의 최근 결과(matched_since 7일 이내)를 이어받고, 다 끝난 결과는 왕복 없이 근거 행 수만 다시 센다.
-    화면의 [니즈 후보 발굴 실행](--carry 없음)은 다 끝난 결과면 처음부터 다시 묻는다.
+    (--redo 면 처음부터). 행 식별자는 '과제|세부업무|유형'. --carry(run.py 가 늘 붙인다)면 기간 끝날짜가 바뀌어 오늘
+    파일이 없을 때 같은 시작일의 최근 결과(matched_since 7일 이내 · AgentFinder32 표식이 있는 것)를 이어받고, 다 끝난 결과는
+    왕복 없이 근거 행 수만 다시 센다. 화면의 [후보 발굴 실행](--carry 없음)은 다 끝난 결과면 처음부터 다시 묻는다.
   · 모든 묶음이 정상인데 후보가 0건이면 실패가 아니라 '후보 없음' 결과다.
   · 프롬프트 첫 줄의 팀 업무 영역은 config.agentic.domainHint(비면 일반 문구) — 조직 고유 문구를 코드에 두지 않는다.
+  · 시작할 때 내 자료인지(consent.require — 다른 사용자의 자료면 종료 코드 4 · 지우는 중이면 3)와 run_meta 의 AgentFinder32 표식을 확인한다.
 
   python agentic.py                          # 최신 결과 대상
   python agentic.py --from ... --to ... [--redo] [--carry] [--budget 8300] [--max-chunks 30]
-  python agentic.py --recalc [--from --to]   # 왕복 없이 후보의 근거 행 수(evidence_rows)만 다시 센다
+  python agentic.py --recalc [--from --to]   # 왕복 없이 후보의 근거 행 수(evidence_rows)·task_type 만 다시 센다
 
-출력: report\agentic_<기간>.json → 대시보드 'Agentic AI' 탭 · 리포트 · 분석리포트 · 팀 취합(팀 Agentic AI 니즈 후보)
-  {tag, kind:"needs", new[{name,logic,reason,work,evidence_rows,evidence_missing,keys[원본 '과제␟세부업무'],missing[못 찾은 원문]}],
-   rows_analyzed, rows_total, rows_pending, rows_done[], rows_rule[], rule_rows, rule_share_cut, rows_gate[], row_keys{sent,rule,gate},
-   partial, chunks, failed_chunks, salvaged_chunks, gate_skipped_rows, note, last_error, generated, carried_from, matched_since,
-   stop_kind, cooldowns}
-  LM28 이 만든 파일(match·misassigned·mm_recalc 가 든 것)을 읽으면 그 키는 버리고 후보(new)만 쓴다(needs_only).
+출력: report\agentic_<기간>.json(§5.8) → 화면 'Agentic AI 후보' 탭 · 개인 리포트
+  {product, tag, kind:"needs", new[{name,logic,reason,task_type,work,evidence_rows,evidence_missing,keys[원본 '과제␟세부업무'],
+   missing[못 찾은 원문]}], rows_analyzed, rows_total, rows_pending, rows_done[], rows_rule[], rule_rows, rule_share_cut, rows_gate[],
+   row_keys{sent,rule,gate}, partial, chunks, failed_chunks, salvaged_chunks, gate_skipped_rows, note, last_error, generated(날짜),
+   carried_from, matched_since, stop_kind, cooldowns}
 """
 import glob
 import io
@@ -64,7 +65,7 @@ from progress import progress  # noqa: E402
 import details  # noqa: E402
 from details import fold, _fresh_refined  # noqa: E402,F401  (호환: 옛 이름 유지)
 
-PROMPT_BUDGET = 8300           # 한 왕복 프롬프트 글자 상한 — flow 와 같은 값(드라이버 분할 문턱 SAFE_PROMPT 9,000 − 서약 아래).
+PROMPT_BUDGET = 8300           # 한 왕복 프롬프트 글자 상한 — flow 와 같은 값(드라이버 분할 문턱 SAFE_PROMPT 9,000 − 서약·머리말 아래).
 OVERLAY_ROWS = 3               # 묶음 경계 겹침 행 수
 OVERLAY_CHARS = 600            # 겹침 행 글자 상한 (예산 안에 포함해 계산한다)
 MAX_WORK = 60                  # 후보별 근거 업무 **표시** 상한(config.copilotAuto.agenticMaxWork) — 근거 키(keys)는 상한 없음
@@ -75,10 +76,12 @@ RULE_ROW_SHARE = 0.8           # 행의 신호 중 규칙 판정 비중이 이 �
 CARRY_DAYS = 7                 # --carry 로 다른 기간 결과를 이어받는 상한(일) — matched_since 기준
 COOL_DOWN_SEC = 90             # 일시 오류 뒤 같은 묶음을 다시 보내기 전 쉬는 시간(초) — config.copilotAuto.coolDownSec
 MISSING_CAP = 12               # 후보별 '못 찾은 업무 이름' 보관 상한
-NEW_CAP = 12                   # 저장하는 후보 수 상한 — 근거 행이 많은 후보부터(LM28 은 발견 순 8건)
-KIND = "needs"                 # 결과 파일의 종류 표식 — LM28 의 과제 매칭 결과와 구분한다
-# 저장 파일·화면·보고서에 남기는 키 — 이 밖의 키(LM28 의 match·misassigned·mm_recalc·axes …)는 needs_only 가 버린다
-NEEDS_KEYS = ("tag", "kind", "new", "rows_analyzed", "rows_total", "rows_pending", "rows_done", "rows_rule", "rule_rows",
+NEW_CAP = 12                   # 저장하는 후보 수 상한 — 근거 행이 많은 후보부터
+KIND = "needs"                 # 결과 파일의 종류 표식
+PRODUCT = details.PRODUCT      # 산출물 표식(D20)
+GENERIC_WORDING = details.GENERIC_WORDING   # D19 — 이름 대신 업무 행위로
+# 저장 파일·화면·보고서에 남기는 키 — 이 밖의 키(옛 판의 match·misassigned·mm_recalc·axes …)는 needs_only 가 버린다
+NEEDS_KEYS = ("product", "tag", "kind", "new", "rows_analyzed", "rows_total", "rows_pending", "rows_done", "rows_rule", "rule_rows",
               "rule_share_cut", "rows_gate", "row_keys", "partial", "chunks", "failed_chunks", "salvaged_chunks",
               "gate_skipped_rows", "note", "last_error", "generated", "carried_from", "matched_since", "stop_kind",
               "cooldowns")
@@ -130,8 +133,12 @@ def rule_cut():
 
 
 def latest_tag():
-    fs = sorted(glob.glob(os.path.join(ROOT, "report", "mm_meta_*.json")), key=os.path.getmtime)
-    return os.path.basename(fs[-1])[len("mm_meta_"):-len(".json")] if fs else ""
+    """가장 최근 분석 기간 — AgentFinder32 표식(run_meta.product)이 있는 것만."""
+    rep = os.path.join(ROOT, "report")
+    fs = sorted(glob.glob(os.path.join(rep, "run_meta_*.json")), key=os.path.getmtime)
+    tags = [os.path.basename(f)[len("run_meta_"):-len(".json")] for f in fs]
+    tags = [t for t in tags if details.af32_tag_ok(t, rep)]
+    return tags[-1] if tags else ""
 
 
 DOMAIN_HINT_DEFAULT = "엔지니어링 팀"
@@ -148,13 +155,18 @@ def domain_hint():
     return " ".join(str(v or "").split())[:60]
 
 
+G3_FIELDS = ("Level 2", "Level 3", "상세설명", "근거")     # 프롬프트 줄(row_line)에 싣는 글 — 모두 관문을 지난 사본으로
+
+
 def g3_part(rows):
-    """G3 관문 — 업무 행의 상세설명·근거를 재정제한 사본(자격증명·고위험 잔여·카나리아 행은 뺀다). 과제·세부업무 이름은
-    답의 표기와 대조하는 열쇠라 바꾸지 않는다(그 이름의 잔여는 행 줄 단위 최종 검사가 본다 — _run 의 ask)."""
+    """G3 관문 — 업무 행의 과제·세부업무 이름·상세설명·근거를 재정제한 사본(제한 고객·민감정보·식별번호·카나리아 행은 뺀다).
+    프롬프트 줄(row_line)은 이 사본으로 만든다 — 지정 과제 이름에 든 사람 이름·고객사(privacy.customers)도 가린 채로 나간다
+    (예전에는 이름을 원문 그대로 실었다). 답은 줄 앞의 '#번호'(_rid)로 근거 업무를 가리키므로 가린 이름이 대조를 막지 않는다 —
+    원래 행은 by_rid 가 쥐고 있고, 이 사본은 프롬프트에만 쓴다. 남은 잔여는 행 줄 단위 최종 검사가 본다(_run 의 ask)."""
     if not rows:
         return []
     import judge
-    return judge.g3_rows(rows, ("상세설명", "근거"))[0]
+    return judge.g3_rows(rows, G3_FIELDS)[0]
 
 
 def rfind_json(reply, want_key):
@@ -169,7 +181,7 @@ def _one_line(s, n):
 
 
 def row_line(r):
-    """행 한 줄 — MM 은 넣지 않는다. '· #번호 과제 / 세부업무 / 유형 — 설명[:50]'
+    """행 한 줄 — 건수·비중은 넣지 않는다. '· #번호 과제 / 세부업무 / 유형 — 설명[:50]'
     번호(_rid)는 실행 전체에서 고정된 행 번호 — 답은 근거 업무를 이 번호로 돌려준다(이름 대조 대신 번호 대조). 번호가 없는
     행(옛 호출)은 '#' 없이."""
     rid = r.get("_rid")
@@ -186,38 +198,31 @@ def row_key(r):
 
 
 def row_sig(r):
-    """행 식별자(이어서 판정용) — '과제|세부업무|유형'. MM 은 넣지 않는다 — 재판정·다음 날 MM 이 바뀌어도 이어진다."""
+    """행 식별자(이어서 판정용) — '과제|세부업무|유형'. 건수는 넣지 않는다 — 다음 날 건수가 바뀌어도 이어진다."""
     return (f"{_one_line(r.get('Level 2'), 80)}|{_one_line(r.get('Level 3'), 120)}|"
             f"{_one_line(r.get('유형'), 10)}")
 
 
-_SIG_MM = re.compile(r"\|-?\d+\.\d{3}$")
-
-
-def _sig_norm(s):
-    """옛 결과의 행 식별자('…|유형|0.123')에서 MM 꼬리를 뗀다 — 지금 식별자와 같은 꼴로."""
-    return _SIG_MM.sub("", str(s or ""))
-
-
 def ag_prompt(rows):
-    """rows: 한 팀원의 업무 행 목록(MM 미전송) → 니즈 후보 발굴 프롬프트. 팀 과제 목록은 넣지 않는다(LM29부터).
+    """rows: 한 사람의 업무 행 목록(건수 미전송) → 후보 발굴 프롬프트. 팀 과제 목록은 넣지 않는다.
     출력 예시는 <...> 자리표시자 — **예시 자체가 유효한 JSON 이 아니게** 한다: 회수가 어긋나 우리 프롬프트가 되돌아와도
     예시가 답으로 파싱되지 않는다. 근거 업무는 줄 앞의 '#번호' 로 답하게 한다."""
     hint = domain_hint()
     lines = [
         (f"당신은 '{hint}' 업무를 하는 팀의 Agentic AI 니즈 발굴 분석가입니다." if hint
          else f"당신은 {DOMAIN_HINT_DEFAULT}의 Agentic AI 니즈 발굴 분석가입니다."),
-        "[현재 업무]는 한 팀원의 실제 업무(PC 흔적 기반 자동 분석) 목록입니다. 각 줄 앞의 '#번호' 가 그 업무의 번호입니다.",
+        "[현재 업무]는 한 사람의 메일·일정에서 분류한 업무 목록입니다. 각 줄 앞의 '#번호' 가 그 업무의 번호입니다.",
         "",
-        "이 사람이 반복해서 하는 업무에서 Agentic AI 로 자동화하거나 도울 만한 니즈 후보(new)를 찾으세요:",
-        "   name(후보 이름) · logic(무엇을 입력받아 무엇을 자동화하는지) · reason(왜 니즈인지 — 반복·분량 등 근거 1~2문장) ·",
+        "이 사람이 반복해서 하는 업무에서 Agentic AI 로 자동화하거나 도울 만한 후보(new)를 찾으세요:",
+        "   name(후보 이름) · logic(무엇을 입력받아 무엇을 자동화하는지) · reason(왜 후보인지 — 반복·절차 등 근거 1~2문장) ·",
         "   work(근거가 된 업무의 **번호** 목록 — 줄 앞의 '#번호' 를 그대로, 예: \"#12\". 번호가 없는 줄만 세부업무 표기 그대로).",
         "   근거가 약하면 빈 배열로 두세요. 억지로 만들지 마세요.",
+        "   name·logic·reason 에는 " + GENERIC_WORDING,
         "",
         "출력은 JSON 하나만 (설명 문장·코드펜스 금지, 짧게). <...> 자리에 실제 값을 넣으세요:",
         '{"new":[{"name":<후보 이름>,"logic":<자동화 로직>,"reason":<발굴 사유>,"work":[<"#번호">]}]}',
         "",
-        "[현재 업무 — #번호 과제 / 세부업무 / 유형 — 설명]  (MM 순)",
+        "[현재 업무 — #번호 과제 / 세부업무 / 유형 — 설명]",
     ]
     for r in rows:
         lines.append(row_line(r))
@@ -227,10 +232,10 @@ def ag_prompt(rows):
 def split_rows(rows, budget=PROMPT_BUDGET, ov_n=OVERLAY_ROWS, ov_chars=OVERLAY_CHARS):
     """업무 행을 프롬프트 예산 단위로 나눈다 → [(rows_part, n_new)].
 
-    MM 내림차순으로 정렬해 큰 업무가 앞 묶음에 오게 하고, 머리말+겹침 여유(ov_chars)+행 합이 budget 을 넘으면 자른다.
+    근거건수 내림차순으로 정렬해 근거가 많은 업무가 앞 묶음에 오게 하고, 머리말+겹침 여유(ov_chars)+행 합이 budget 을 넘으면 자른다.
     다음 묶음 앞에는 앞 묶음 끝 ov_n 행(ov_chars 이내)을 겹쳐 붙인다(오버레이) — 겹친 행은 두 번 보여도 병합이 흡수하고,
     n_new(실판정 행 수)에는 세지 않는다."""
-    rows = sorted(rows, key=lambda r: -(r["_mm"] if "_mm" in r else details._f(r.get("mm"))))
+    rows = sorted(rows, key=lambda r: -details.row_n(r))
     base = len(ag_prompt([])) + ov_chars
     sizes = {id(r): len(row_line(r)) + 1 for r in rows}
     chunks, cur, size = [], [], 0
@@ -261,7 +266,7 @@ def split_rows(rows, budget=PROMPT_BUDGET, ov_n=OVERLAY_ROWS, ov_chars=OVERLAY_C
 
 # ── 원본 축(키) ────────────────────────────────────────────────────────────
 def key_of(a, b):
-    """원본 mm_rows (과제, 세부업무) → 키 문자열 '과제␟세부업무'(details.KEY_SEP — 세부업무 병합 맵과 같은 구분자)."""
+    """원본 work_rows (과제, 세부업무) → 키 문자열 '과제␟세부업무'(details.KEY_SEP — 세부업무 병합 맵과 같은 구분자)."""
     return f"{a}{details.KEY_SEP}{b}"
 
 
@@ -276,7 +281,7 @@ def _loose(a, b):
 
 
 def _pairs_of(r):
-    """행 → 신호 축(원본 mm_rows) (과제, 세부업무) 쌍들. 정제 행이면 refine_map 의 원본 쌍(_pairs), 아니면 자기 이름
+    """행 → 신호 축(원본 work_rows) (과제, 세부업무) 쌍들. 정제 행이면 refine_map 의 원본 쌍(_pairs), 아니면 자기 이름
     (세부업무 병합 맵을 적용하기 전 이름 _raw3)."""
     ps = r.get("_pairs")
     if ps:
@@ -294,23 +299,13 @@ def attach_pairs(rows, tag, rep=None, rows_fn=""):
     return rows
 
 
-def row_rule_share(r, rshare, pmm=None):
-    """행의 규칙 판정 비중 — 원본 쌍마다 (규칙 신호 / 전체 신호)를 원본 MM 으로 가중 평균(MM 이 없으면 신호 수로).
-    rshare = details.rule_share(signals) · pmm = {(과제, 세부업무): 원본 MM}."""
-    num = den = 0.0
+def row_rule_share(r, rshare):
+    """행의 규칙 판정 비중 — 원본 쌍들의 (규칙 신호 합 / 전체 신호 합). rshare = details.rule_share(signals)."""
     n_rule = n_all = 0
     for a, b in _pairs_of(r):
-        k = (a or "공통", b or "기타")
-        nr, na = rshare.get(k, (0, 0))
-        if not na:
-            continue
+        nr, na = rshare.get((a or "공통", b or "기타"), (0, 0))
         n_rule += nr
         n_all += na
-        w = (pmm or {}).get(k, 0.0)
-        num += w * nr / na
-        den += w
-    if den > 0:
-        return num / den
     return (n_rule / n_all) if n_all else 0.0
 
 
@@ -450,18 +445,23 @@ def merge_new(news, o, res=None):
     items = o.get("new")
     if isinstance(items, dict):                    # {"후보 이름": {...}}
         items = [(dict(v, name=v.get("name") or k) if isinstance(v, dict) else v) for k, v in items.items()]
+    # D8 — Copilot 이 돌려준 글에 사람 이름(G1 이 남긴 이름 해시에 든 것)이 섞이면 [사람] 으로 바꿔 저장한다
+    people = details.person_keys((), ROOT)
+
+    def _m(s):
+        return details.mask_people(s, people)
     for x in (items if isinstance(items, list) else []):
         if not isinstance(x, dict) or not str(x.get("name") or "").strip() or _placeholder(x.get("name")):
             continue
-        # 후보에는 MM 을 붙이지 않는다('대체 가능 MM≈' 은 만들지 않는다 — RP4). 근거는 recalc_evidence 의 evidence_rows.
-        item = {"name": str(x["name"]).strip()[:60],
-                "logic": "" if _placeholder(x.get("logic")) else str(x.get("logic") or "")[:300],
-                "reason": "" if _placeholder(x.get("reason")) else str(x.get("reason") or "")[:300],
-                "work": [] if res is not None else _clean_list(x.get("work"))}
+        # 후보에는 근거 행 수(evidence_rows)와 task_type 만 붙인다(recalc_evidence).
+        item = {"name": _m(str(x["name"]).strip()[:60]),
+                "logic": "" if _placeholder(x.get("logic")) else _m(str(x.get("logic") or "")[:300]),
+                "reason": "" if _placeholder(x.get("reason")) else _m(str(x.get("reason") or "")[:300]),
+                "work": [] if res is not None else [_m(w) for w in _clean_list(x.get("work"))]}
         if res is not None:
             hit, miss = res(_clean_list(x.get("work"), cap=0))
             item["keys"], item["missing"] = set(), []
-            _add_hits(item, hit, miss)
+            _add_hits(item, hit, [_m(w) for w in miss])
         dup = next((u for u in news if fold(u["name"]) == fold(item["name"])), None)
         if dup is None:
             news.append(item)
@@ -546,26 +546,26 @@ def _rows_for_key(k, exact, loose, amap=None):
 
 
 def needs_only(o):
-    """저장·화면·보고서용 꼴 — NEEDS_KEYS 만 남기고 kind='needs'. LM28 이 만든 파일의 match·misassigned·mm_recalc 같은
-    과제 매칭·오할당 키는 버린다(LM29부터 니즈 후보만). new 는 dict 항목만."""
+    """저장·화면·보고서용 꼴 — NEEDS_KEYS 만 남기고 kind='needs'·product 표식. 옛 판의 match·misassigned·mm_recalc 같은
+    과제 매칭·오할당 키는 버린다. new 는 dict 항목만."""
     o = o if isinstance(o, dict) else {}
     out = {k: o[k] for k in NEEDS_KEYS if k in o}
     out["kind"] = KIND
+    out["product"] = PRODUCT
     v = o.get("new")
     out["new"] = [n for n in v if isinstance(n, dict)] if isinstance(v, list) else []
     return out
 
 
 def recalc_evidence(out, rows, amap=None, plain_rows=None):
-    """후보(new)의 근거 행 수(evidence_rows)·못 찾은 이름(evidence_missing)을 내 자료로 다시 센다(out 제자리 갱신 · 왕복 없음).
-    · 근거 키(keys — 원본 mm_rows (과제, 세부업무) 쌍)가 있으면 원본 행(plain_rows)에서 키로 찾는다 — 정제본이 지워져 행 파일이
+    """후보(new)의 근거 행 수(evidence_rows)·못 찾은 이름(evidence_missing)·task_type(근거 행에서 가장 흔한 유형 — §5.8)을
+    내 자료로 다시 센다(out 제자리 갱신 · 왕복 없음).
+    · 근거 키(keys — 원본 work_rows (과제, 세부업무) 쌍)가 있으면 원본 행(plain_rows)에서 키로 찾는다 — 정제본이 지워져 행 파일이
       원본으로 바뀌어도 그대로다. 원본 행이 없으면 표시 행의 원본 쌍(_pairs)으로 찾는다.
     · 키가 없는 옛 후보는 근거 업무 이름 → 행 이름 대조(find_rows)로 찾는다.
-    · MM 은 붙이지 않는다(옛 결과의 new[].load_mm·load_mm_ai 는 지운다)."""
+    · 건수 말고는 붙이지 않는다."""
     rows = [dict(r) for r in rows]
     for r in rows:
-        if "_mm" not in r:
-            r["_mm"] = details._f(r.get("mm"))
         r.setdefault("_raw3", r.get("Level 3"))       # 맵 적용 전 이름 — 근거 대조는 원 표기·대표 이름 둘 다로
     if amap:
         details.apply_detail_map(rows, None, amap)
@@ -590,8 +590,6 @@ def recalc_evidence(out, rows, amap=None, plain_rows=None):
         return got
 
     for n in news:
-        n.pop("load_mm_ai", None)
-        n.pop("load_mm", None)                         # '대체 가능 MM≈' 산출 없음 — 빈도(근거 행 수)만
         hit, miss = [], []
         if isinstance(n.get("keys"), list):
             for k in n["keys"]:
@@ -604,8 +602,15 @@ def recalc_evidence(out, rows, amap=None, plain_rows=None):
                     hit += _to_axis(rs)
                 else:
                     miss.append(w)
-        n["evidence_rows"] = len({id(r) for r in hit})
+        uniq = list({id(r): r for r in hit}.values())
+        n["evidence_rows"] = len(uniq)
         n["evidence_missing"] = miss[:6]
+        wt = Counter()
+        for r in uniq:
+            t = str(r.get("유형") or "").strip()
+            if t:
+                wt[t] += max(1, details.row_n(r))
+        n["task_type"] = wt.most_common(1)[0][0] if wt else ""
     out["new"] = news
     return out
 
@@ -624,12 +629,12 @@ def _load_json(path):
 
 
 def recalc_file(tag, rep=None, log=print):
-    """agentic_<tag>.json 을 읽어 후보의 근거 행 수만 다시 세어 저장(왕복 없음 — run.py 가 워크플로우 뒤·AI 없는 실행에서 부른다).
-    LM28 이 만든 파일이면 과제 매칭·오할당 키를 버리고 니즈 후보만 남긴다(needs_only). 반환: 저장 경로 / 실패 None."""
+    """agentic_<tag>.json 을 읽어 후보의 근거 행 수·task_type 만 다시 세어 저장(왕복 없음 — run.py 가 워크플로우 뒤·AI 없는 실행에서
+    부른다). AgentFinder32 표식이 없는 파일(옛 판)은 읽지 않는다. 반환: 저장 경로 / 실패 None."""
     rep = rep or os.path.join(ROOT, "report")
     ap = os.path.join(rep, f"agentic_{tag}.json")
     ag = _load_json(ap)
-    if ag is None:
+    if ag is None or ag.get("product") != PRODUCT:
         return None
     rows, fn = details.read_rows(tag, rep)
     if not rows:
@@ -644,7 +649,7 @@ def recalc_file(tag, rep=None, log=print):
     recalc_evidence(ag, rows, amap, plain_rows=plain)
     _save_json(ap, ag)
     try:
-        log(f"[agentic] 근거 행 다시 셈: 니즈 후보 {len(ag['new'])}건 · 근거 업무 "
+        log(f"[agentic] 근거 행 다시 셈: 후보 {len(ag['new'])}건 · 근거 업무 "
             f"{sum(int(n.get('evidence_rows') or 0) for n in ag['new'])}행 ({fn})")
     except (UnicodeEncodeError, OSError, ValueError):
         pass
@@ -678,14 +683,21 @@ def _seed_keys(e, m, to_keys=None):
 
 def _seed_prev(prev, to_keys=None):
     """이어서 판정할 때 지난 결과의 후보(new)를 누적판으로 되살린다(근거 keys 는 그대로 이어받는다).
-    LM28 결과의 과제 매칭(match)·오할당(misassigned)은 읽지 않는다."""
+    D8 — 이어받는 글도 지금의 이름 해시(G1 이 그 뒤에 새로 본 이름 포함)로 다시 가린다(merge_new 와 같은 규칙)."""
+    people = details.person_keys((), ROOT)
+
+    def _m(s):
+        return details.mask_people(s, people)
     news = []
     for x in (prev.get("new") or []):
         if not isinstance(x, dict) or not str(x.get("name") or "").strip() or _placeholder(x.get("name")):
             continue
-        item = {"name": str(x["name"]).strip()[:60], "logic": str(x.get("logic") or "")[:300],
-                "reason": str(x.get("reason") or "")[:300], "work": _clean_list(x.get("work"))}
-        _seed_keys(item, x, to_keys)
+        item = {"name": _m(str(x["name"]).strip()[:60]), "logic": _m(str(x.get("logic") or "")[:300]),
+                "reason": _m(str(x.get("reason") or "")[:300]), "work": _clean_list(x.get("work"))}
+        _seed_keys(item, x, to_keys)                 # 근거 풀기는 원래 이름으로 — 보이는 이름 목록만 가린다
+        item["work"] = [_m(w) for w in item.get("work") or []]
+        if isinstance(item.get("missing"), list):
+            item["missing"] = [_m(w) for w in item["missing"]]
         if not any(fold(u["name"]) == fold(item["name"]) for u in news):
             news.append(item)
     return news
@@ -720,7 +732,7 @@ def _carry_prev(rep, tag, today, days=CARRY_DAYS):
             continue
     for _mt, p, t in sorted(cands, reverse=True):
         o = _load_json(p)
-        if not o or not isinstance(o.get("rows_done"), list):
+        if not o or o.get("product") != PRODUCT or not isinstance(o.get("rows_done"), list):
             continue
         age = _age_days(o.get("matched_since") or str(o.get("generated") or "")[:10], today)
         if age is not None and 0 <= age <= days:
@@ -788,21 +800,25 @@ def _bad_reply(judge):
 
 
 def main():
+    rc = details.consent_gate("agentic", ROOT) or details.restricted_gate("agentic", ROOT)   # 다른 사용자의 자료 4 · 지우는 중 3 · 제한 고객 목록 없음 4
+    if rc:
+        return rc
     import judge
     d0, d1 = arg("--from"), arg("--to")
     tag = (f"{d0.replace('-', '')}-{d1.replace('-', '')}" if d0 and d1 else latest_tag())
     rep = os.path.join(ROOT, "report")
-    if not tag:
+    if not tag or not details.af32_tag_ok(tag, rep):
         print("[agentic] 분석 결과가 없습니다 — 먼저 [분석 실행]")
         print(json.dumps({"ok": False, "error": "no result", "stop_kind": "fatal",
-                          "hint": "report\\ 에 분석 결과(mm_meta)가 없습니다 — 먼저 [분석 실행]"}, ensure_ascii=False))
+                          "hint": "report\\ 에 AgentFinder32 분석 결과(run_meta)가 없습니다 — 먼저 [분석 실행]"},
+                         ensure_ascii=False))
         return 1
     if "--recalc" in sys.argv:
         # 왕복 없는 재계산은 단계 상태 파일을 열지 않는다 — 열고 닫지 않으면 화면이 90초 뒤 '정체로 중단' 이라고 보인다
         ap = recalc_file(tag, rep)
         print(json.dumps({"ok": bool(ap), "tag": tag, "recalc": True,
                           **({} if ap else {"error": "no file",
-                                            "hint": f"agentic_{tag}.json 또는 mm_rows_{tag}.csv 가 없습니다"})},
+                                            "hint": f"agentic_{tag}.json 또는 work_rows_{tag}.csv 가 없습니다"})},
                          ensure_ascii=False))
         return 0 if ap else 1
     from stage_state import open_stage
@@ -830,11 +846,11 @@ def _run(judge, tag, rep, _ss):
 
     rows, rows_fn = details.read_rows(tag, rep)
     if not rows:
-        exists = os.path.exists(os.path.join(rep, f"mm_rows_{tag}.csv")) or \
-            os.path.exists(os.path.join(rep, f"mm_rows_{tag}_refined.csv"))
-        hint = (f"mm_rows_{tag}(_refined).csv 에 업무 행이 없습니다(0행) — 그 기간의 신호가 없거나 전부 제외됐습니다"
+        exists = os.path.exists(os.path.join(rep, f"work_rows_{tag}.csv")) or \
+            os.path.exists(os.path.join(rep, f"work_rows_{tag}_refined.csv"))
+        hint = (f"work_rows_{tag}(_refined).csv 에 업무 행이 없습니다(0행) — 그 기간의 신호가 없거나 전부 제외됐습니다"
                 if exists else
-                f"report\\mm_rows_{tag}.csv(또는 _refined) 가 없습니다 — 화면 기간({tag})과 결과 파일 기간이 다르면 "
+                f"report\\work_rows_{tag}.csv(또는 _refined) 가 없습니다 — 화면 기간({tag})과 결과 파일 기간이 다르면 "
                 "그 기간을 [분석 실행]으로 다시 만드세요")
         print(f"[agentic] 업무 행이 없습니다 — {hint}")
         return _end(1, {"ok": False, "error": "no rows", "hint": hint}, "failed", "fatal", hint, "no rows", hint)
@@ -847,8 +863,8 @@ def _run(judge, tag, rep, _ss):
     sigs = details.read_signals(tag, rep)
     plain_rows = details.read_rows(tag, rep, plain=True)[0] or None
     attach_pairs(rows, tag, rep, rows_fn)
-    # 행 번호 — MM 큰 순으로 실행 전체에 고정(묶음 경계·겹침과 무관). 답은 근거 업무를 이 번호로 돌려준다.
-    rows.sort(key=lambda r: -r["_mm"])
+    # 행 번호 — 근거건수 많은 순으로 실행 전체에 고정(묶음 경계·겹침과 무관). 답은 근거 업무를 이 번호로 돌려준다.
+    rows.sort(key=lambda r: (-details.row_n(r), -float(r.get("_w") or 0)))
     for i, r in enumerate(rows, 1):
         r["_rid"] = i
     by_rid = {r["_rid"]: r for r in rows}
@@ -866,17 +882,13 @@ def _run(judge, tag, rep, _ss):
     # AI 판정 대기 — 신호 대부분이 규칙 판정인 행은 보내지 않는다(판정 끝으로도 세지 않는다 — 판정이 회복되면 보낸다)
     cut = rule_cut()
     rshare = details.rule_share(sigs)
-    pmm = {}
-    for r in (plain_rows or []):
-        k = ((r.get("Level 2") or "").strip() or "공통", (r.get("Level 3") or "").strip() or "기타")
-        pmm[k] = pmm.get(k, 0.0) + r["_mm"]
-    rule_now = {row_sig(r) for r in rows if row_rule_share(r, rshare, pmm) >= cut}
+    rule_now = {row_sig(r) for r in rows if row_rule_share(r, rshare) >= cut}
 
     # 이어서 판정 — 지난 실행이 판정한 행(식별자 '과제|세부업무|유형')은 두고 남은 행만 보낸다
     sig_all = [row_sig(r) for r in rows]
     sig_set = set(sig_all)
     prev = None if "--redo" in sys.argv else _load_json(ap)
-    if prev is not None and prev.get("tag") not in (None, "", tag):
+    if prev is not None and (prev.get("tag") not in (None, "", tag) or prev.get("product") != PRODUCT):
         prev = None
     carried_from = ""
     if prev is None and carry:
@@ -884,16 +896,16 @@ def _run(judge, tag, rep, _ss):
         prev, carried_from = _carry_prev(rep, tag, today)
     done_prev = set()
     if prev and isinstance(prev.get("rows_done"), list):
-        done_prev = (({_sig_norm(s) for s in prev["rows_done"]}
-                      - {_sig_norm(s) for s in (prev.get("rows_rule") or [])}) & sig_set) - rule_now
+        done_prev = (({str(s) for s in prev["rows_done"]}
+                      - {str(s) for s in (prev.get("rows_rule") or [])}) & sig_set) - rule_now
         if not carry and done_prev >= (sig_set - rule_now):
-            done_prev = set()                    # 다 끝난 결과 — 처음부터 다시(화면 [니즈 후보 발굴 실행]). --carry 는 이어받는다
+            done_prev = set()                    # 다 끝난 결과 — 처음부터 다시(화면 [후보 발굴 실행]). --carry 는 이어받는다
     todo = [r for r in rows if row_sig(r) not in done_prev and row_sig(r) not in rule_now]
     if done_prev:
         news = _seed_prev(prev, to_keys=lambda names: resolve_work(names, {}, None, idx_all))
         matched_since = str(prev.get("matched_since") or str(prev.get("generated") or "")[:10] or today)
         src = f"지난 기간 결과({carried_from})" if carried_from else "지난 실행"
-        print(f"[agentic] {src}가 {len(done_prev)}/{len(rows)}행까지 판정했습니다 — "
+        print(f"[agentic] {src}에서 {len(done_prev)}/{len(rows)}행을 이미 판정했습니다 — "
               f"남은 {len(todo)}행만 이어서 보냅니다(처음부터 하려면 --redo)")
     else:
         news = []
@@ -907,18 +919,16 @@ def _run(judge, tag, rep, _ss):
               f"남은 {deferred}행은 다음 실행이 이어서 봅니다")
         parts = parts[:max_chunks]
     if rule_now:
-        _rmm = sum(r["_mm"] for r in rows if row_sig(r) in rule_now)
-        print(f"[agentic] AI 판정 대기 — 신호의 {int(round(cut * 100))}% 이상이 규칙 판정인 업무 {len(rule_now)}행"
-              f"({_rmm:.2f} MM)은 보내지 않습니다(규칙 토큰이라 니즈를 가늠할 수 없음 — [재분석만]으로 판정을 마친 뒤 "
-              "[니즈 후보 발굴 실행])")
+        print(f"[agentic] AI 판정 대기 — 신호의 {int(round(cut * 100))}% 이상이 규칙 판정인 업무 {len(rule_now)}행은 "
+              "보내지 않습니다(규칙 토큰이라 후보를 가늠할 수 없음 — [다시 읽지 않고 분석만]을 켜고 [분석 실행]으로 판정을 마친 뒤 [후보 발굴 실행])")
     if todo:
-        print(f"[agentic] 니즈 후보 발굴 왕복 — 업무 {len(todo)}행을 {len(parts)}묶음으로 나눠 보냅니다 "
-              f"(팀 과제와 매칭하지 않음 · 업무는 #번호로 · 묶음 경계는 앞 행 겹침 · MM 미전송 · 같은 채팅에서 이어서{_chat_note()})")
+        print(f"[agentic] 후보 발굴 왕복 — 업무 {len(todo)}행을 {len(parts)}묶음으로 나눠 보냅니다 "
+              f"(업무는 #번호로 · 묶음 경계는 앞 행 겹침 · 건수 미전송 · 같은 채팅에서 이어서{_chat_note()})")
     elif done_prev:
         print("[agentic] 지난 결과가 보낼 행을 모두 판정했습니다 — 이번 실행은 Copilot 왕복 없이 근거 행 수만 다시 셉니다")
 
     done_sigs = set(done_prev)
-    gate_sigs = ({_sig_norm(s) for s in ((prev or {}).get("rows_gate") or [])} & done_prev) if done_prev else set()
+    gate_sigs = ({str(s) for s in ((prev or {}).get("rows_gate") or [])} & done_prev) if done_prev else set()
     failed, salvaged, fails = 0, 0, []
     consec, stopped, n_sent = 0, "", 0
     st = {"kind": "", "cool": 0}                 # kind=중단 갈래 · cool=쉬고 다시 보낸 횟수
@@ -980,7 +990,7 @@ def _run(judge, tag, rep, _ss):
         got = merge_new(news, o, res=res)
         for r in part_rows[-n_new:]:
             done_sigs.add(row_sig(r))
-        print(f"[agentic] {ci}/{len(parts)}{note} — 업무 {n_new}행(겹침 {len(part_rows) - n_new}) → 새 니즈 후보 {got}건")
+        print(f"[agentic] {ci}/{len(parts)}{note} — 업무 {n_new}행(겹침 {len(part_rows) - n_new}) → 새 후보 {got}건")
 
     def write_out(final=False):
         pending = [s for s in sig_all if s not in done_sigs and s not in rule_now]
@@ -994,7 +1004,7 @@ def _run(judge, tag, rep, _ss):
             b = ("rule" if s in rule_now else "gate" if s in gate_sigs else ("sent" if s in done_sigs else ""))
             if b:
                 rk[b].update(key_of(a, c) for a, c in _pairs_of(r))
-        out = {"tag": tag, "kind": KIND, "new": [_export(n) for n in news],
+        out = {"product": PRODUCT, "tag": tag, "kind": KIND, "new": [_export(n) for n in news],
                # 실제로 판정에 쓰인 행 수만 적는다(겹침 제외) — 반쪽 결과가 완전한 결과처럼 보이면 안 된다
                "rows_analyzed": analyzed, "rows_total": len(rows), "rows_pending": len(pending),
                "rows_done": sorted(done_sigs & sig_set),
@@ -1007,7 +1017,7 @@ def _run(judge, tag, rep, _ss):
                "note": ("" if not pending else
                         (f"{len(pending)}행 미판정 — " + (stopped or "다시 실행하면 남은 행만 이어서 봅니다"))),
                "last_error": ({"error": why, "hint": how} if why else {}),
-               "generated": time.strftime("%Y-%m-%d %H:%M"),
+               "generated": time.strftime("%Y-%m-%d"),          # 날짜만(D10)
                # 이어받기 — 다른 기간 결과에서 이어받았으면 그 기간. matched_since = 처음부터 발굴을 시작한 날(이어받기 상한 기준)
                "carried_from": carried_from, "matched_since": matched_since,
                "stop_kind": st["kind"], "cooldowns": st["cool"]}
@@ -1128,7 +1138,7 @@ def _run(judge, tag, rep, _ss):
         if consec >= MAX_CONSEC_FAIL and ci < len(parts):
             st["kind"] = "fail"
             stopped = (f"{consec}묶음 연속 실패({info.get('error', '')[:40]}) — "
-                       "Copilot 상태를 확인한 뒤 [니즈 후보 발굴 실행]으로 이어서")
+                       "Copilot 상태를 확인한 뒤 [후보 발굴 실행]으로 이어서")
             failed += len(parts) - ci
             print(f"[agentic] {consec}묶음 연속 실패 — 남은 {len(parts) - ci}묶음은 보내지 않습니다 "
                   "(잠시 뒤 재실행하면 남은 행만 이어서 판정합니다)")
@@ -1151,10 +1161,11 @@ def _run(judge, tag, rep, _ss):
 
     out = write_out(final=True)
     if not out["new"] and not out["rows_pending"] and not rule_now:
-        print(f"[agentic] 업무 {len(rows)}행을 모두 봤지만 근거가 충분한 니즈 후보가 없습니다 — 후보 0건(실패 아님)")
-    print(f"[agentic] Agentic AI 니즈 후보 {len(out['new'])}건 → agentic_{tag}.json")
+        print(f"[agentic] 업무 {len(rows)}행을 모두 봤지만 근거가 충분한 후보가 없습니다 — 후보 0건(실패 아님)")
+    print(f"[agentic] Agentic AI 전환 후보 {len(out['new'])}건 → agentic_{tag}.json")
     for n in out["new"][:6]:
         print(f"   · {str(n.get('name') or '')[:40]:41s} 근거 업무 {int(n.get('evidence_rows') or 0)}행"
+              + (f" · {n.get('task_type')}" if n.get("task_type") else "")
               + (" [근거 없음]" if not n.get("evidence_rows") else ""))
     if out["rows_pending"]:
         print(f"[agentic] [!] 업무 {out['rows_analyzed']}/{len(rows)}행만 판정했습니다 — {out['note']}")

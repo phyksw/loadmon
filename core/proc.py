@@ -8,13 +8,15 @@ r"""core\proc.py — 수집 단계 실행기(LM28 P6·F-23·W1-06·W1-07): 자�
     · BREAKAWAY_OK 라서 CREATE_BREAKAWAY_FROM_JOB 로 띄운 손자(전용 Edge — copilot_auto._popen_edge)는 Job 이 닫혀도 산다
       (1실행 1기동 — Edge 는 owner.json + close_own_edge 가 닫는다).
     · 정상 종료 뒤에도 Job 을 닫는다 — 끝난 자식이 남긴 고아 손자가 다음 단계와 충돌하지 않게.
-    · 출력은 마지막 TAIL_MAX 줄만 모은다. 60초마다 '진행 중' 줄을 낸다 — 화면(UI)의 정체 감시(15분 무출력)가
-      긴 수집(팀즈 웹·Copilot)을 죽음으로 오진하지 않게(W1-06).
+    · 출력은 마지막 TAIL_MAX 줄만 모은다. 60초마다 '진행 중' 줄을 낸다 — 화면(UI)의 정체 확인(15분 무출력)이
+      긴 수집(Outlook 웹·Copilot)을 죽음으로 오진하지 않게(W1-06).
     · status: ok(스스로 끝남) · timeout(시간 초과로 끝냄) · stopped(stop 이벤트로 끝냄) · error(띄우지 못함).
       rc: 자식 종료 코드 · 시간 초과/중지 -1 · 실행 실패 -2.
-  attach(p) / release(job) / kill_tree(pid) — 감시기(core\watch.watch_child)가 쓰는 종료 수단을 Job 으로 바꿀 때 쓴다.
+  attach(p) / release(job) / kill_tree(pid) — 정체 확인기(core\watch.watch_child)가 쓰는 종료 수단을 Job 으로 바꿀 때 쓴다.
   kill_all() / run_within(fn, sec) / on_console_close(fn) — 콘솔 창(bat)을 닫을 때의 빠른 정리(ui\app.py·run.py main 이 건다):
     Job 을 모두 끝내고, 남는 전용 Edge 를 몇 초 안에 닫는다(윈도가 처리기에 주는 시간이 짧다).
+  process_info(pid) / process_list(names) — 프로세스 읽기만(살아 있나·실행 파일·명령줄). retention.run_active(분석 잠금의 pid 가
+    정말 이 폴더의 run.py 인가)와 전용 Edge 가 떠 있나를 본다 — 새 프로세스·WMI 없이 ctypes 만.
 윈도가 아니거나 Job 을 만들지 못하면(정책) 직계 자식만 끝낸다(LM24 와 같다).
 """
 import collections
@@ -27,9 +29,9 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NO_WIN = 0x08000000
 CREATE_BREAKAWAY_FROM_JOB = 0x01000000
-TAIL_MAX = 60                  # 모아 두는 출력 줄 수(LMSTATUS 줄 + 사람용 요약이 들어가고 남는다)
+TAIL_MAX = 60                  # 모아 두는 출력 줄 수(AF32STATUS 줄 + 사람용 요약이 들어가고 남는다)
 BEAT_SEC = 60                  # 진행 줄 간격(초)
-RESUME_GAP = 30.0              # 수집기 감시 루프가 이만큼(초) 넘게 늦게 돌면 PC 가 잠들었다 깬 것으로 본다(core\watch 와 같다)
+RESUME_GAP = 30.0              # 수집기 확인 루프가 이만큼(초) 넘게 늦게 돌면 PC 가 잠들었다 깬 것으로 본다(core\watch 와 같다)
 _ES_CONTINUOUS, _ES_SYSTEM_REQUIRED = 0x80000000, 0x00000001
 _JOB_KILL_ON_CLOSE = 0x2000    # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
 _JOB_BREAKAWAY_OK = 0x800      # JOB_OBJECT_LIMIT_BREAKAWAY_OK
@@ -116,7 +118,7 @@ def release(job, pid=None, kill=False):
     k = _k32()
     if not job:
         return
-    # 한 번만 닫는다 — 감시기가 kill_tree 로 이미 닫은 Job 을 호출측이 다시 닫으면 남의 핸들을 닫을 수 있다
+    # 한 번만 닫는다 — 정체 확인기가 kill_tree 로 이미 닫은 Job 을 호출측이 다시 닫으면 남의 핸들을 닫을 수 있다
     keys = [q for q, j in _JOBS.items() if j == job and (pid is None or q == pid)]
     if not keys:
         return
@@ -133,7 +135,7 @@ def release(job, pid=None, kill=False):
 
 
 def kill_tree(pid):
-    """감시기용 종료 — 그 pid 의 Job 이 있으면 트리째(Job), 없으면 그 프로세스만(TerminateProcess). taskkill 은 쓰지 않는다."""
+    """정체 확인기용 종료 — 그 pid 의 Job 이 있으면 트리째(Job), 없으면 그 프로세스만(TerminateProcess). taskkill 은 쓰지 않는다."""
     job = _JOBS.get(pid)
     if job:
         release(job, pid, kill=True)
@@ -152,6 +154,113 @@ def kill_tree(pid):
             k.CloseHandle(h)
     except (OSError, ValueError):
         pass
+
+
+_QK = {"k": None}
+_STILL_ACTIVE = 259
+_CMDLINE_CLASS = 60                # ProcessCommandLineInformation(Windows 8.1+)
+
+
+def _qk():
+    """프로세스 읽기용 ctypes(kernel32·ntdll 전용 인스턴스 · 구조체) → dict | None(윈도 아님)."""
+    if os.name != "nt":
+        return None
+    if _QK["k"] is not None:
+        return _QK["k"]
+    import ctypes
+    from ctypes import wintypes as W
+
+    class _Entry(ctypes.Structure):            # PROCESSENTRY32W
+        _fields_ = [("dwSize", W.DWORD), ("cntUsage", W.DWORD), ("th32ProcessID", W.DWORD),
+                    ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", W.DWORD), ("cntThreads", W.DWORD),
+                    ("th32ParentProcessID", W.DWORD), ("pcPriClassBase", ctypes.c_long), ("dwFlags", W.DWORD),
+                    ("szExeFile", ctypes.c_wchar * 260)]
+
+    class _UStr(ctypes.Structure):             # UNICODE_STRING
+        _fields_ = [("Length", W.USHORT), ("MaximumLength", W.USHORT), ("Buffer", ctypes.c_void_p)]
+
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    for fn, args, res in (("CreateToolhelp32Snapshot", [W.DWORD, W.DWORD], W.HANDLE),
+                          ("Process32FirstW", [W.HANDLE, ctypes.POINTER(_Entry)], W.BOOL),
+                          ("Process32NextW", [W.HANDLE, ctypes.POINTER(_Entry)], W.BOOL),
+                          ("OpenProcess", [W.DWORD, W.BOOL, W.DWORD], W.HANDLE),
+                          ("CloseHandle", [W.HANDLE], W.BOOL),
+                          ("QueryFullProcessImageNameW", [W.HANDLE, W.DWORD, W.LPWSTR, ctypes.POINTER(W.DWORD)], W.BOOL),
+                          ("GetExitCodeProcess", [W.HANDLE, ctypes.POINTER(W.DWORD)], W.BOOL)):
+        f = getattr(k, fn)
+        f.argtypes, f.restype = args, res
+    nt = ctypes.WinDLL("ntdll")
+    nt.NtQueryInformationProcess.argtypes = [W.HANDLE, W.ULONG, ctypes.c_void_p, W.ULONG, ctypes.POINTER(W.ULONG)]
+    nt.NtQueryInformationProcess.restype = ctypes.c_long
+    _QK["k"] = {"ct": ctypes, "W": W, "k": k, "nt": nt, "Entry": _Entry, "UStr": _UStr}
+    return _QK["k"]
+
+
+def _cmdline_of(q, h):
+    ct = q["ct"]
+    n, got = 4096, q["W"].ULONG(0)
+    for _ in range(3):
+        buf = ct.create_string_buffer(n)
+        if q["nt"].NtQueryInformationProcess(h, _CMDLINE_CLASS, buf, n, ct.byref(got)) == 0:
+            us = q["UStr"].from_buffer(buf)
+            return ct.wstring_at(us.Buffer, us.Length // 2) if us.Buffer and us.Length else ""
+        need = int(got.value)
+        if need <= n or need > (1 << 17):
+            return ""
+        n = need
+    return ""
+
+
+def process_info(pid):
+    """그 pid 의 프로세스 → (살아 있나, 실행 파일 경로, 명령줄). 열 수 없으면(없음·다른 계정) (None, '', '') —
+    살아 있는지도 모른다. 읽기만 한다(PROCESS_QUERY_LIMITED_INFORMATION)."""
+    q = _qk()
+    if q is None or not pid:
+        return None, "", ""
+    ct, k = q["ct"], q["k"]
+    try:
+        h = k.OpenProcess(0x1000, False, int(pid))
+    except (OSError, ValueError, OverflowError):
+        return None, "", ""
+    if not h:
+        return (False if ct.get_last_error() == 87 else None), "", ""    # 87 = 그 pid 의 프로세스가 없다
+    try:
+        code = q["W"].DWORD(0)
+        alive = bool(k.GetExitCodeProcess(h, ct.byref(code))) and code.value == _STILL_ACTIVE
+        buf, n = ct.create_unicode_buffer(32768), q["W"].DWORD(32768)
+        exe = buf.value if k.QueryFullProcessImageNameW(h, 0, buf, ct.byref(n)) else ""
+        return alive, exe, _cmdline_of(q, h)
+    finally:
+        k.CloseHandle(h)
+
+
+def process_list(names=()):
+    """지금 프로세스 중 실행 파일 이름(소문자)이 names 에 드는 것 → [(pid, 명령줄)] (못 읽은 명령줄은 ''). 윈도가 아니면 []."""
+    q = _qk()
+    if q is None:
+        return []
+    ct, k = q["ct"], q["k"]
+    want = {str(n).lower() for n in names}
+    snap = k.CreateToolhelp32Snapshot(0x2, 0)                       # TH32CS_SNAPPROCESS
+    if not snap or snap == ct.c_void_p(-1).value:
+        return []
+    rows = []
+    try:
+        e = q["Entry"]()
+        e.dwSize = ct.sizeof(q["Entry"])
+        ok = k.Process32FirstW(snap, ct.byref(e))
+        while ok:
+            if not want or str(e.szExeFile).lower() in want:
+                rows.append(int(e.th32ProcessID))
+            ok = k.Process32NextW(snap, ct.byref(e))
+    finally:
+        k.CloseHandle(snap)
+    out = []
+    for pid in rows:
+        alive, _exe, cmd = process_info(pid)
+        if alive is not False:
+            out.append((pid, cmd))
+    return out
 
 
 def kill_all():
@@ -267,7 +376,7 @@ def quiet_errors():
 def keep_awake(on=True):
     """LM28(2026-10-18) — 분석이 도는 동안 PC 가 절전(잠자기)에 들어가지 않게 한다(on) · 놓는다(on=False). 화면 꺼짐·화면 보호기·잠금은
     그대로 된다(ES_DISPLAY_REQUIRED 는 쓰지 않는다). 부른 스레드 기준이고, 프로세스가 끝나면 윈도가 저절로 놓는다. 관리자 권한 없음 ·
-    프로세스를 띄우지 않는다(ctypes). 제보: "화면보호기로 꺼지는 경우가 있다" — 화면 보호기 뒤 PC 가 절전에 들어가면 깨는 순간 감시가
+    프로세스를 띄우지 않는다(ctypes). 제보: "화면보호기로 꺼지는 경우가 있다" — 화면 보호기 뒤 PC 가 절전에 들어가면 깨는 순간 정체 확인이
     분석을 끊었다. → 걸었나(윈도가 아니거나 실패면 False)."""
     if os.name != "nt":
         return False

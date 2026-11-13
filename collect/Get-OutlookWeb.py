@@ -1,98 +1,50 @@
 # -*- coding: utf-8 -*-
 """
-Get-OutlookWeb.py — Outlook 웹(outlook.office.com)을 전용 Edge 프로필로 열어 메일·일정을 읽는다 (폴백).
+Get-OutlookWeb.py — AgentFinder32 Outlook 웹 수집기: 이 도구 전용 Edge 창(data\\af32_edge — 사용자가 직접 로그인한 회사 계정)에서
+outlook.office.com 의 내 메일 목록·일정 주 보기를 읽는다(메일을 열지 않는다 — 읽음 표시도 본문도 없다).
 
-Outlook 의 '버전'과 무관한 경로다: 클래식/새 Outlook/2016 마법사/COM 미등록 어느 PC 든, Copilot 에
-쓰는 전용 Edge 프로필(data\\lm30_edge)에 회사 계정으로 한 번 로그인해 두면 동작한다. Copilot 처럼
-LLM 을 거치지 않으므로 지어낸 행이 없고, 데이터는 PC 밖으로 나가지 않는다(브라우저가 내 사서함을 보여주는
-것을 읽을 뿐).
+  python collect\\Get-OutlookWeb.py --from 2026-08-01 --to 2026-10-31 [--only mail|cal] [--out-dir data\\outlook\\src --tag owa]
+         [--budget-sec N]
 
-  python collect\\Get-OutlookWeb.py --from 2026-06-01 --to 2026-06-30 [--only mail|cal] [--force]
-         [--out-dir data\\outlook\\src --tag owa] [--budget-sec N]
-
-출력: data\\outlook\\mail.csv      (box,time,sender,subject,conversation,rcv,time_precision)   ← COM 스키마 + 정밀도 열
-                                  time_precision: minute(시각 해석) | date(날짜만 보여 12:00 으로 둔 행 — 시간 근거로 쓰지 말 것)
-      data\\outlook\\calendar.csv  (start,end,all_day,busy_status,subject,categories,location,response,meeting_status,body)
-                                  ※ response/meeting_status 는 COM 수집기(Get-OutlookData.ps1)만 채운다 — 여기선 빈값
-                                  ※ busy_status 0 한가함 · 1 미정 · 2 바쁨 · 3 부재중 · 4 다른 곳에서 작업(3·4 는 LM28-OWA-4)
-                                  ※ 여러 날에 걸친 일정(휴가·출장·워크숍)은 start~end 한 행(첫날~마지막날) — extract 가 일자로 전개한다
-                                  ※ body = 회의 본문 발췌(LM28-OWA-5 · 600자 · 없으면 빈값) — 끝 열이라 옛 9열 파일도 그대로 읽힌다
-      LM28: --out-dir·--tag 를 주면 <폴더>\\mail_<tag>.csv·cal_<tag>.csv·mail_source_<tag>.json(출처별 파일 — 병합은 mailmerge).
-            없으면 LM24 처럼 data\\outlook\\mail.csv·calendar.csv·mail_source.json(자료가 있으면 --force 때만).
-            어느 쪽이든 통째로 덮어쓰지 않는다 — 이번에 검증한 날의 옛 행만 새 행으로 바꾸고 나머지는 둔다(W1-04).
-종료 코드(= LMSTATUS rc, LM28): 0 정상(덜 읽은 날은 ranges 가 말한다) / 2 로그인 필요(전용 Edge 창에서 1회 · R-LOGIN·R-PERSONAL 등)
-          / 3 불가·불완전(R-WEBSEL 모든 조각 미검증 · R-TIMEOUT · R-EDGEBUSY · Edge 기동 사유). LM24 의 1(아무것도 못 읽음)은 없앴다.
-마지막 줄: LMSTATUS {v,src,rc,reason,counts,ranges[{axis: mail_in|mail_out|cal, from, to, st}]}
+AgentFinder32 규칙(spec D1·D2·D3·D7·D8·D13·§5.0~§5.2):
+  · 내 자료가 아니거나 지우는 중이면(core\\consent.require) Edge 를 띄우지 않고 종료 코드 3(R-CONSENT). 제한 고객 목록이 없거나 사내 메일 도메인을 알 수
+    없으면 종료 코드 4(R-NORESTRICTED·R-NODOMAIN) — G1 문맥(privacy.G1Context)을 먼저 세운 뒤에만 화면을 연다.
+  · 기간은 period.clamp(끝은 어제까지 · period.maxDays 일 이하)로 자른다.
+  · 원자료 파일을 쓰지 않는다 — 화면에서 읽은 항목은 이 프로세스 메모리에만 있고, 항목마다 privacy.g1_row 를 거친 정제 행만
+    privacy.G1Writer 로 <out-dir>\\mail_<tag>.csv(§5.1)·cal_<tag>.csv(§5.2)에 쓴다. 옛 정제 행과는 owa_parse.merge_slices 로 합친다
+    (이번에 끝까지 읽은 날의 옛 행만 바꾼다 — 통째 덮어쓰기 금지).
+  · 참여자(D7): 목록 항목의 속성(title·aria-label)에 드러난 메일 주소만 쓴다(owa_parse.addresses_in) — 받은 메일은 첫 주소를 보낸
+    사람, 나머지를 참조로, 보낸 메일은 받는 사람으로. 주소가 없으면 빈칸이라 G1 이 external_unknown 으로 뺀다. '외부(External)' 표지가
+    보이는 메일은 사외(external)로 센다. 일정 주 보기는 참석자 주소를 보여 주지 않아 회의는 늘 증명할 수 없다(external_unknown) —
+    그래서 회의 상세(본문)를 열지 않는다.
+  · '비공개·Private' 표지는 민감도 2(G1 이 private 로 뺀다). privacy.excludeMailFolders 의 폴더는 다른 폴더 읽기에서 뺀다.
+  · 끝나면 전용 Edge 의 Outlook·M365 사이트 자료(캐시·저장소 — 쿠키는 남김)를 지운다(copilot_auto.clear_site_data — D13).
+  · AF32STATUS counts.g1 = {kept, excluded}(숫자만) · 정제 건수는 <out-dir>\\g1_<tag>.json 에도(core\\mailmerge.save_g1_counts).
+종료 코드(= AF32STATUS rc): 0 정상(덜 읽은 날은 ranges 가 말한다) / 2 로그인 필요(전용 Edge 창에서 1회 · R-LOGIN·R-PERSONAL 등)
+          / 3 불가·불완전·시작 거부(R-CONSENT · R-WEBSEL · R-TIMEOUT · R-EDGEBUSY · Edge 기동 사유) / 4 설정 거부.
+마지막 줄: AF32STATUS {v,src,rc,reason,counts,ranges[{axis: mail_in|mail_out|cal, from, to, st}]}
           st: ok(그 날을 끝까지 읽음 — 0건인 날 포함) · zero_ok(검색 결과 없음 확인) · partial · unverified. 오늘은 ok 대신 partial.
 
-LM28 '읽음' 규칙(F-03·F-04·F-05 — 검증된 조각만 읽음으로 적는다 · P4):
+'읽음' 규칙(검증된 조각만 읽음으로 적는다):
   · 메일은 달 조각(최신 달부터) × 폴더마다 기간 검색 뒤 결과를 끝까지 내리며 owa_parse.slice_verdict 로 판정한다. 검색 표기는
-    공개 도움말의 AQS(received:MM/DD/YYYY..MM/DD/YYYY) → KQL(received>=…) → ISO 범위 순으로 시도하고, 조각 안 결과를 한 번
-    본 표기만 이 실행에서 계속 쓴다 — 그 표기에서만 '결과 없음'이 0건 확인(zero_ok)이다(모르는 표기는 낱말 검색이 되어 결과
-    없음이 나온다). 결과에 조각 밖 날짜가 보이면 검색이 화면에 안 걸린 것(폴더 목록 그대로)이라 이 실행의 검색을 접고, 폴더마다
-    **1회** 목록을 최신부터 기간 시작 앞 날짜에 닿을 때까지 내린다(폴백 — LIST_SCREENS·시간 예산 안, 잘리면 partial).
-    끊김 없이 D 까지 내려갔으면 [D+1, 끝] 은 ok, D 이하는 partial. 목록의 오늘(시각만)·이번 주(요일+시각)·어제 표기도 날짜로 읽는다(F-04).
-  · 목록 칸(LM28 현장 2026-10-08): 화면의 '첫 listbox'가 아니라 메일 행(data-convid·날짜·시각 조각)이 가장 많은 칸(본문 안쪽
-    우선 — owa_parse.pick_list)을 읽고, 스크롤은 그 행의 가장 가까운 '실제로 스크롤되는' 조상(overflow auto/scroll·
-    data-is-scrollable)에 건다 — 새 Outlook 웹은 가상 목록의 스크롤 칸이 listbox **안쪽**에 있다. 가상 목록(창 밖 행은 DOM 에
-    없음)이라 화면마다 새 행만 모으고(화면 위치순), scrollTop 대입이 안 먹으면 실제 휠 입력(CDP)을 쓴다.
-  · 목록 '끝'의 근거는 둘뿐이다 — ① 기간 시작 앞 날짜에 닿음 ② 바닥에서 새 행 0 이 END_CONFIRM 번(사이에 결과 '더 보기'·휠·
-    더 긴 대기, '불러오는 중' 표시 없음)이고 그 칸이 메일 목록으로 확인됨(owa_parse.mail_list_ok). 'fits'(칸이 화면에 다
-    들어감)는 근거가 아니다 — 현장에서 첫 listbox 는 늘 '다 들어감'이라 받은·보낸 17건으로 281일을 읽음으로 적었다.
-    근거가 없으면 partial(끊김 없이 읽은 최신 쪽만 ok)·unverified 로 남겨 다음 경로·다음 실행이 다시 읽는다.
-  · 날짜만 보이는 줄은 항목의 다른 title·aria-label·<time datetime>(로컬로 바꿈)에서 시각을 찾고, 보낸 편지함은 그래도
-    없으면 항목을 열어 읽기 창 머리에서 owaTimeRecoverMax(150)건까지 시각을 얻는다(받은 메일은 열지 않는다 — 읽음 표시).
-    LM28-OWA-4: 지난 실행이 분 단위로 남긴 같은 메일(상자·날·보낸이·제목)의 시각은 열지 않고 먼저 물려받고(recovered_known),
-    병합은 분 단위를 날짜만으로 낮추지 않는다(owa_parse.merge_slices 래칫) — 복원이 실행마다 누적된다.
-  · 일정은 가장 최근 주만 URL 로 열고, 그다음은 '이전 주' 단추를 1회씩 눌러 순차로 읽는다. 단추가 없거나 끝내 안 먹으면(머리가
-    그대로) 주소(/calendar/view/week/Y/M/D)로 그 주를 연다 — 주소도 무시되면 멈추고 남은 주는 미확인. 매번 화면 머리의 날짜
-    범위가 기대한 주와 같을 때만 그 주를 읽음으로 하고(실제로 지나간 주만 weeks_ok), 다르면 그 주의 행을 버린다(클릭 수 ≤
-    주 수 + 3). 일정 0개인 주는 이 실행에서 일정을 한 번이라도 읽었을 때만 ok(선택자가 빗나가면 모든 주가 0개로 보인다),
-    못 읽은 일정 막대(data-calitemid)가 있는 주는 partial. calendar_complete 는 기간의 지난 날이 모두 확인됐을 때만 true.
-  · LM28 현장(2026-10-11 — 막대 108 중 16 못 읽음 · 9주 중 1주 확인 · '이전 주' 34번): 라벨로 못 읽은 막대는 화면 구조와
-    무관한 위치로 보충한다 — 가로 가운데가 든 요일 열(열 머리 칸의 날짜·위치)이 날짜, 종일 줄이면 종일, 시간 칸 안이면 세로
-    위치를 시간 눈금(시각 글의 세로 위치 — 라벨로 시각을 안 막대로 보정)으로 시각. 열·눈금을 못 찾으면 그 주는 그대로 일부.
-    칩('+2 더 보기')·머리 칸·본문 밖 옆 창의 막대는 막대 수·못 읽음에서 뺀다(숨은 일정 칩이 있는 주는 일부). 주소가 무시된
-    화면에서 시작 주가 2주 이상 뒤면 왼쪽 작은 달력(날짜 고르기)에서 그 주의 날을 눌러 바로 가고(머리로 확인) — 안 되면 예전 길.
+    AQS(received:MM/DD/YYYY..MM/DD/YYYY) → KQL(received>=…) → ISO 범위 순으로 시도하고, 조각 안 결과를 한 번 본 표기만 이 실행에서
+    계속 쓴다 — 그 표기에서만 '결과 없음'이 0건 확인(zero_ok)이다. 결과에 조각 밖 날짜가 보이면 검색이 화면에 안 걸린 것이라 이
+    실행의 검색을 접고, 폴더마다 1회 목록을 최신부터 기간 시작 앞 날짜에 닿을 때까지 내린다(폴백 — 잘리면 partial).
+  · 목록 칸: 메일 행(data-convid·날짜·시각 조각)이 가장 많은 칸(owa_parse.pick_list)을 읽고, 스크롤은 그 행의 가장 가까운 '실제로
+    스크롤되는' 조상에 건다. 가상 목록이라 화면마다 새 행만 모으고, scrollTop 대입이 안 먹으면 실제 휠 입력(CDP)을 쓴다.
+  · 목록 '끝'의 근거는 둘뿐이다 — ① 기간 시작 앞 날짜에 닿음 ② 바닥에서 새 행 0 이 END_CONFIRM 번이고 그 칸이 메일 목록으로 확인됨.
+  · 날짜만 보이는 줄은 그 항목의 다른 title·aria-label·<time datetime>에서 시각을 찾는다(항목을 열지 않는다 — 못 찾으면 time_precision
+    =date). 다른 메일 폴더(사람이 만든·이름을 바꾼·보관·받은/보낸 하위)는 왼쪽 폴더 창에서 찾아 목록으로 1회 읽고, 그날 상태를
+    낮추기만 한다(owa_parse.cap_extra).
+  · 일정은 가장 최근 주만 URL 로 열고, 그다음은 '이전 주' 단추(안 되면 작은 달력·주소)로 순차로 읽는다. 화면 머리의 날짜 범위가 기대한
+    주와 같을 때만 그 주를 읽음으로 하고, 라벨로 못 읽은 막대는 요일 열·시간 눈금 위치로 보충한다.
   · 전용 Edge 는 copilot_auto.edge_lock 안에서만 쓰고(다른 작업과 직렬), 이 수집기가 연 탭만 닫는다(로그인 대기면 둔다).
-    메일·일정을 함께 읽으면 메일은 시간 예산의 끝 일부(최대 300초)를 일정에 남기고 멈춘다.
-  · LM28-OWA-5 다른 메일 폴더(사용자 제보 — 폴더로 옮기거나 이름을 바꾼 메일이 빠진다): 받은·보낸 편지함 다음에 왼쪽 폴더 창
-    (role=tree·treeitem)에서 기본 사서함의 다른 폴더(사람이 만든 폴더·받은/보낸 편지함의 하위·보관 — 이름·언어 무관)를 찾아 읽는다.
-    즐겨찾기·그룹·나와 공유·공유 사서함·온라인 보관 사서함은 보지 않고, 지운 편지함·정크·임시 보관함·보낼 편지함·대화 기록·RSS·
-    동기화 문제·메모·검색 폴더·예약됨과 그 하위는 뺀다(owa_parse.plan_folders · config.owaExtraFolderSkip 으로 더 뺀다). 접힌 폴더는
-    펼치고(포커스 + 신뢰 키 → → 펼침 단추에 신뢰 마우스 → 합성 사건, 실행마다 XF_EXPAND_MAX 번) 폴더는 이름 글에 신뢰 마우스로
-    눌러 연 뒤 그 항목의 선택 표시와 주소 바뀜으로 확인한다(메일은 열지 않는다 — 읽음 표시). 폴더마다 목록을 최신부터 기간 시작 앞까지
-    1회 읽는다(_read_screens 목록 모드). 검색은 쓰지 않는다 — 새 Outlook 웹의 검색 범위는 '모든 폴더'일 수 있어 폴더 하나의 끝을
-    증명할 수 없고, 사람이 만든 폴더는 대개 작아 목록 한 번이 달마다 검색보다 싸다. 앞 폴더 목록이 남은 화면(전환 직후)은 읽지 않는다.
-    box 는 행의 폴더 조각 > 보낸 편지함 하위면 sent > 그 밖 inbox(COM 수집기와 같다). 이미 받은 메일(같은 항목 키 · 같은 편지함·시각·
-    보낸이·제목 — 모든 폴더 검색 결과로 먼저 받았을 수 있다)은 다시 넣지 않는다. 읽음 규칙: 다른 폴더는 그날 상태를 **낮추기만**
-    한다(owa_parse.cap_extra) — 끝 근거 없이 멈춘 폴더·전환 실패·시간에 잘려 못 읽은 폴더가 덮지 못한 날의 ok·zero_ok 는 partial.
-    상한(owaExtraFolderMax)으로 뺀 폴더는 낮추지 않고 로그에 수를 남긴다. 폴더 창을 못 찾으면 받은·보낸 판정은 그대로(counts.xf_enum).
-    메일 단계 앞에 폴더 창만 훑어(누르지 않는다) 다른 폴더가 있을 법하면 메일 예산 끝 일부(XF_RESERVE)를 그 폴더들에 남긴다.
-  · LM28-OWA-5 일정 본문(회의 안건 — 분석이 core\\meetnote 로 판정에 덧붙인다): 확인한 주의 지난 회의 막대를 신뢰 마우스로 눌러
-    상세(peek)를 열고 본문 칸(role=document → 본문·설명 aria-label → 머리 아래의 단추·목록·사람 칸 없는 가장 긴 글 덩어리)만 읽어
-    core\\meetnote.clean_body(600자 — 못 불러오면 링크·줄바꿈만 걷기)로 거른 발췌를 일정 CSV 끝 열 body 에 싣는다. 본문 칸을 못 찾으면
-    비운다(대화 상자 전체·참석자·이끌이 줄은 읽지 않는다). 상세 머리 제목이 그 일정 제목과 다르면 버리고, Esc 로 닫은 뒤 닫혔는지
-    본다(안 닫히면 '닫기' 단추). 종일·비공개·오늘 이후(참가 단추가 뜨는 회의)·참가 단추가 든 막대·이미 읽은 회의(발췌 캐시
-    cal_body_<tag>.json)는 열지 않는다. 실행마다 owaCalBodyMax(60)번·CB_TIME_MAX 초 — 남은 주를 읽을 시간을 먼저 남긴다. 연 뒤
-    주 보기가 바뀌면 그 주로 되돌리고 CB_OFF_DAYS 일 쉰다. storeMailSubject=false 면 읽지 않는다(저장물 최소화).
-
-화면 구조는 Microsoft 가 바꿀 수 있어 '역할(role)·aria-label·title' 같은 접근성 속성만 의지하고, 무엇을 몇 개
-인식했는지 남긴다(회사 PC 의 원문을 밖으로 보낼 수 없으므로 진단은 구조로 한다): 마지막 요약 줄 앞에
-'[outlook-web] 구조: …' 한 줄(사진 한 장으로 원인 확정용 — run.py 가 '구조:' 줄을 last_run.json 단계에 따로 싣는다)과,
-일정을 읽었으면 바로 뒤에 '[outlook-web] 구조+: …'(위치 해석으로 살린 수·요일 열·시간 눈금·작은 달력·못 읽은 막대 꼴 최대
-3개 — 글자 x, 숫자·구두점·오전/오후·요일·종일만), LMSTATUS counts.dom_census(같은 내용 + 행 골격 — 태그·role·aria-label 길이·
-data-convid 표식·data-app-section 값·개수·크기·위치·스크롤 상태만, 글자는 x · 3.9KB 이내)를 낸다.
-발신/수신 구분: 받은 편지함·보낸 편지함 폴더 URL 을 따로 열어 슬라이스마다 검색하고(폴더가 곧 box), 화면에
-폴더명 조각('보낸 편지함')이 있으면 그것을 우선한다 — 제목·미리보기의 영어 단어(presentation·consent·
-'Sent from my iPhone')로 발신을 판정하던 부분 문자열 규칙은 폐기(감사 outlook-5).
-시험용: LM_OWA_FAKE=<json> 이면 브라우저 없이 그 파일의 항목을 화면 대신 쓴다(회귀용 — 검색·스크롤·주 이동은 건너뛴다).
-        mail: {"YYYY-MM": [item…]} (받은 편지함 슬라이스) 또는 {"YYYY-MM": {"inbox": [...], "sent": [...],
-              "folders": {"<폴더 경로 — '상위/하위'>": [...]}}} (folders = 다른 폴더 — 맨 앞 마디가 보낸 편지함이면 sent)
-        cal:  {"YYYY-MM-DD(그 주 월요일)": [ev…]} — ev.body 가 있으면 그 회의의 본문 발췌로 받는다
-        검색 무시·URL 무시 같은 화면 결함 재현은 tests\\fakes\\fake_browser.py(FakeBrowser — 이 모듈의 JS 상수에 각본 응답)로 한다.
+화면 구조는 '역할(role)·aria-label·title' 같은 접근성 속성만 의지하고, 무엇을 몇 개 인식했는지 '[outlook-web] 구조: …' 한 줄과
+AF32STATUS counts.dom_census(구조만 — 글자는 x, aria-label 은 길이)로 남긴다(회사 PC 의 원문을 밖으로 보내지 않는다).
+시험용: AF32_OWA_FAKE=<json> 이면 브라우저 없이 그 파일의 항목을 화면 대신 쓴다(검색·스크롤·주 이동은 건너뛴다).
+        mail: {"YYYY-MM": [item…]} 또는 {"YYYY-MM": {"inbox": [...], "sent": [...], "folders": {"<상위/하위>": [...]}}}
+        cal:  {"YYYY-MM-DD(그 주 월요일)": [ev…]}
 """
-import hashlib
 import importlib.util
 import io
 import json
@@ -108,22 +60,19 @@ if __name__ == "__main__":
         (sys.stdout.encoding or "utf-8") if sys.stdout.isatty() else "utf-8"))  # 콘솔(bat)=콘솔 코드페이지 · 파이프(UI)=utf-8
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _HERE = os.path.dirname(os.path.abspath(__file__))
-if _HERE not in sys.path:                  # Get-TeamsWeb 이 이 파일을 경로로 불러도 owa_parse 를 찾게
+if _HERE not in sys.path:                  # 다른 곳에서 이 파일을 경로로 불러도 owa_parse 를 찾게
     sys.path.insert(0, _HERE)
 import owa_parse  # noqa: E402  — LM28 순수 판정 함수(목록 날짜·조각 판정·주 머리·병합)
 
+_CORE = os.path.join(ROOT, "core")
+if _CORE not in sys.path:
+    sys.path.insert(0, _CORE)
+
 _sleep = time.sleep                        # 시험(FakeBrowser)이 대기를 0 으로 바꿀 수 있게 — 수집 루프의 대기만
-OUT_DIR = os.path.join(ROOT, "data", "outlook")
-# 판정 규칙의 판 — mail_source 에 '판|collect.cursorEpoch' 로, LMSTATUS counts.collector_ver 로 싣는다.
-# 2: 'fits' 를 끝 근거에서 뺌 · 메일 목록 칸 고르기 · 검색 표기 확인(결과 없음은 걸린 표기에서만 0건) · 일정 주소 이동·0개 주 증명
-# 3: 일정 막대 위치 해석(요일 열·시간 눈금·종일 줄) · 칩/옆 창 제외(숨은 일정 칩이 있는 주는 일부) · 작은 달력 주 이동
-# 4: 지난 실행이 복원한 보낸 메일 시각 재사용(run.known — 실행마다 150건씩 누적) · 병합 정밀도 래칫(분 단위를 날짜만으로 낮추지
-#    않음) · 아바타 머리글자 잎 제외 · 일정 '부재중'→busy 3·'다른 곳에서 작업'→busy 4
-# 5: 받은·보낸 편지함 밖의 다른 메일 폴더(사람이 만든·이름을 바꾼·보관·받은/보낸 하위 — 폴더 창에서 찾아 목록으로) — 다른 폴더는
-#    그날 상태를 낮추기만 한다 · 앞 폴더 목록이 남은 화면 거르기 · 빈 폴더 표식 보강 · 일정 본문 발췌(끝 열 body · 캐시) ·
-#    원장 owa 판정 규칙 판 3(core\coverage.SRC_RULES — 지난 판이 '읽음'으로 적은 날을 다른 폴더까지 한 번 다시 읽는다)
-COLLECTOR_VER = "LM28-OWA-5"
-SEARCH_SCREENS = 150                       # 검색 결과 한 조각을 내리는 화면 수 상한(LM24 의 달마다 400회 대신)
+OUT_DIR = os.path.join(ROOT, "data", "outlook", "src")
+# 판정 규칙의 판 — mail_source 에 '판|collect.cursorEpoch' 로, AF32STATUS counts.collector_ver 로 싣는다.
+COLLECTOR_VER = "AF32-OWA-1"
+SEARCH_SCREENS = 150                       # 검색 결과 한 조각을 내리는 화면 수 상한
 LIST_SCREENS = 800                         # 폴백(검색 없이 최신부터) 한 폴더를 내리는 화면 수 상한
 STALL_MAX = 3                              # 내렸는데 새 항목 없는 화면이 이만큼 이어지면 멈춘다(끝을 모른다)
 END_CONFIRM = 3                            # 바닥에서 새 항목 0 이 이만큼 이어지면(사이에 '더 보기'·휠·더 긴 대기) 목록 끝 — 메일 목록일 때만
@@ -146,15 +95,6 @@ XF_RESERVE = 300.0                         # 메일 단계가 다른 폴더에 �
 XF_HOW = ("key", "chev", "synth")          # 펼치는 방법 — 포커스 + 신뢰 키 → · 펼침 단추 신뢰 마우스 · 펼침 단추 합성 사건
 XF_NAV = ("mouse", "synth", "key")         # 여는 방법 — 이름 글 신뢰 마우스 · 합성 사건 · 포커스 + 신뢰 Enter
 XF_STALE_MAX = 4                           # 전환 직후 앞 폴더 목록이 남은 화면을 기다리는 횟수(1초씩) — 넘으면 그 폴더는 끝 근거 없음
-# LM28-OWA-5 일정 본문 발췌 — 주 읽기(확인)가 우선이다
-CB_MAX = 60                                # owaCalBodyMax 기본 — 실행마다 여는 일정 상세 수(0 = 끔)
-CB_TIME_MAX = 150.0                        # 본문 읽기에 쓰는 시간 상한(초 · 실행마다)
-CB_WEEK_SEC = 7.0                          # 남은 주 하나를 읽을 시간(초) — 이만큼 × 남은 주 + CB_SPARE 가 남아 있을 때만 연다
-CB_SPARE = 30.0
-CB_LEN = 600                               # 발췌 길이(core\meetnote.BODY_MAX 와 같다)
-CB_KEEP = 4000                             # 발췌 캐시 상한(회의 수) — 넘으면 시작이 이른 것부터 버린다
-CB_OFF_DAYS = 7                            # 상세를 연 뒤 주 보기가 바뀐 화면이면 이만큼 본문 읽기를 쉰다(캐시 파일 off_until)
-CB_NONE_MAX = 3                            # 처음부터 이만큼 눌러도 상세가 안 뜨면 이 실행은 그만
 # 기간 검색 표기 — 공개 도움말(Outlook 웹 AQS: 'Received:01/01/2017', 날짜는 MM/DD/YYYY, 범위는 '..')을 먼저, LM28 처음 표기(KQL)·ISO 범위를
 # 다음으로. 이 실행에서 조각 안 결과를 한 번 본 표기만 계속 쓴다(Run.srch.proven).
 SEARCH_FORMS = (("aqs", lambda s, e: f"received:{s:%m/%d/%Y}..{e:%m/%d/%Y}"),
@@ -166,8 +106,6 @@ END_KO = {"d0": "시작 앞 도달", "bottom": "목록 끝", "busy": "불러오�
 SC_KO = {"anc": "스크롤칸 찾음", "dis": "스크롤칸 찾음(속성)", "doc": "문서 스크롤", "anc0": "스크롤칸 넘침 없음", "": "스크롤칸 없음"}
 AXIS_OF = {"inbox": "mail_in", "sent": "mail_out"}
 FOCUSED_WORDS = ("중요", "기타", "focused", "other")   # 받은 편지함 '중요/기타' 탭 — 목록 폴백은 한쪽만 보여 준다
-MAIL_HDR = "box,time,sender,subject,conversation,rcv,time_precision"
-CAL_HDR = "start,end,all_day,busy_status,subject,categories,location,response,meeting_status,body"   # body 끝 열(LM28-OWA-5)
 MAIL_URL = "https://outlook.office.com/mail/"
 # 폴더별 슬라이스 — 폴더 URL 이 곧 box 다(검색 범위가 '현재 폴더'인 OWA). 화면에 폴더명 조각이 있으면 그쪽이 우선.
 MAIL_FOLDERS = (("inbox", MAIL_URL + "inbox"), ("sent", MAIL_URL + "sentitems"))
@@ -397,18 +335,90 @@ def _folder_tokens(pool):
     return toks
 
 
-def _conv_token(conv):
-    """storeMailSubject=false 일 때 conversation 열에 남기는 대체값 — 원문 대신 짧은 해시.
-    extract 의 '회신 이력'(발신 conversation ∩ 수신 conversation) 판정은 문자열 동일성만 보므로 그대로 동작한다."""
-    s = re.sub(r"\s+", " ", str(conv or "")).strip().lower()
-    return "#" + hashlib.sha1(s.encode("utf-8")).hexdigest()[:10] if s else ""
+def _head_frags(text, today, d0=None, d1=None, leaves=()):
+    """머리 글(title·aria-label)의 쉼표 조각 가운데 날짜·시각을 찾을 조각만. aria-label 은 날짜 뒤에 미리보기(메일 본문 앞머리)를
+    싣는다 — 회신 메일의 인용문 머리글('2026년 6월 12일 (금) 오전 10:00, 홍길동 님이 작성:')이 메일의 날짜·시각이 되지 않게(D18):
+      · '날짜·시각뿐인' 조각 가운데 목록 칸의 잎 글(leaves)과 통째로 같은 것만 본다(목록의 날짜 칸 — 날짜 꼴 제목도 잎이다).
+      · 그런 조각이 없으면 첫 '날짜·시각뿐인' 조각 하나만.
+      · 고른 조각에 시각이 없고 바로 다음 조각이 시각뿐이면('Thu 3/5/2026, 3:12 PM' — 잎 글에도 그렇게 있을 때) 그 조각도.
+      · 고른 조각이 여럿인데(날짜 꼴 제목 + 날짜 칸) 어느 것에도 시각이 없으면 마지막 것(날짜 칸은 제목 뒤에 온다)."""
+    fr = owa_parse.frags_of(text)
+    pure = [k for k, f in enumerate(fr) if owa_parse.parse_list_date(f, today, d0, d1)]
+    if not pure:
+        return fr
+    lv = {str(x).strip() for x in leaves or ()}
+    keep = [k for k in pure if fr[k] in lv] or pure[:1]
+
+    def hm(k):
+        return owa_parse.parse_list_date(fr[k], today, d0, d1)[1]
+
+    def pair(k):
+        """그 조각 바로 다음의 시각뿐인 조각 — 잎 글이 있으면 잎에도 있어야 한다(미리보기 첫머리의 시각이 아니게)."""
+        nxt = fr[k + 1] if k + 1 < len(fr) else ""
+        if (k + 1) in keep or hm(k) or not owa_parse.time_only(nxt, today):
+            return ""
+        if lv and nxt not in lv and not any(fr[k] in x and nxt in x and owa_parse.is_datetime_text(x) for x in lv):
+            return ""
+        return nxt
+    if len(keep) > 1 and not any(hm(k) or pair(k) for k in keep):
+        keep = keep[-1:]
+    out = []
+    for k in keep:
+        out.append(fr[k])
+        if pair(k):
+            out.append(pair(k))
+    return out
+
+
+def _date_near_time(text, d0=None, d1=None):
+    """글 속의 날짜(find_date 와 같은 것)와 그 날짜에 **붙은** 시각 → (date, (시, 분) | None) | None. 시각은 날짜 조각과의 사이에
+    날짜·시각·요일 낱말과 구두점만 있을 때만 쓴다('2026-11-05 (목) 오전 10:30'). aria-label 은 날짜 뒤에 미리보기(메일 본문 앞머리)를
+    싣는다 — 그 글의 '내일 오후 3:00' 같은 시각을 메일 시각으로 쓰지 않는다(D18)."""
+    t = text or ""
+    d = find_date(t, d0, d1)
+    if not d:
+        return None
+    for rx in (RE_YMD, RE_MDY, RE_MONEN, RE_DMONEN, RE_MD_KO, RE_MD):       # find_date 와 같은 순서 — 그 날짜를 낸 조각의 자리
+        for m in rx.finditer(t):
+            if find_date(m.group(0), d0, d1) != d:
+                continue
+            for mt in RE_TIME.finditer(t):
+                if mt.start() >= m.end():
+                    seg = t[m.start():mt.end()]
+                elif mt.end() <= m.start():
+                    seg = t[mt.start():m.end()]
+                else:
+                    continue                 # 날짜 조각 안의 숫자('10.06.2026' 의 '10.06')
+                hm = _hhmm(mt)
+                if hm and len(seg) <= 48 and owa_parse.is_datetime_text(seg):
+                    return d, hm
+            return d, None
+    return d, None
+
+
+def _sender_leaf(x, d0=None, d1=None):
+    """목록 칸 잎이 보낸이(보낸 편지함이면 받는 사람) 자리일 수 있는가 — 표지('외부'·'비공개')·상태어·폴더명·참조 머리·아바타
+    머리글자·날짜·시각·숫자뿐인 잎과 120자 넘는 잎은 아니다."""
+    s = str(x or "").strip()
+    xl = s.lower()
+    if not s or len(s) > 120 or re.fullmatch(r"[A-Z]{1,3}", s) or not re.search(r"\w", s):
+        return False                     # 아바타 머리글자('JS') — 보낸이·제목이 한 칸씩 밀려 이름이 제목이 되던 것(LM28 E·B) · 기호뿐인 잎
+    if find_times(s) or find_date(s, d0, d1):
+        return False
+    if xl in STATUS_WORDS or xl in SENT_WORDS or xl in INBOX_WORDS or xl in CC_WORDS or xl.rstrip(":：").strip() in CC_WORDS:
+        return False
+    if owa_parse.is_external_label([s]) or owa_parse.is_private_label([s]):
+        return False
+    return not re.fullmatch(r"[\d\s.,:/\-]+", s)
 
 
 def parse_mail_item(item, d0, d1, folder="", today=None, info=None):
-    """화면 항목(aria-label·title·leaf texts) → [box,time,sender,subject,conversation,rcv,time_precision] 또는 None
+    """화면 항목(aria-label·title·leaf texts) → [box,time,sender,subject,conversation,rcv,time_precision,주소 목록,표지 dict] 또는 None
+    주소 목록 = 항목 속성(title·aria-label)에 드러난 메일 주소(owa_parse.addresses_in — 미리보기 글은 보지 않는다) ·
+    표지 = {"ext": '외부' 표지, "priv": '비공개' 표지}(AgentFinder32 D3·D7 — G1 이 쓴다).
     folder: 이 항목을 읽은 폴더 슬라이스('inbox'|'sent'|'') — 화면에 폴더명 조각이 없을 때의 box.
     today: 목록의 상대 날짜(오늘=시각만·이번 주=요일+시각·어제)를 풀 기준 날(LM28 F-04 — 없으면 오늘).
-    info(dict): 판정용 메모 — date(항목 날짜, 지운·정크 폴더 항목도), src(시각 출처 head·lm24·text, 날짜만이면 '')."""
+    info(dict): 판정용 메모 — date(항목 날짜, 지운·정크 폴더 항목도), src(시각 출처 head·list·text, 날짜만이면 '')."""
     label = item.get("label") or ""
     titles = [t for t in (item.get("titles") or []) if t]
     texts = [t for t in (item.get("texts") or []) if t]
@@ -427,31 +437,37 @@ def parse_mail_item(item, d0, d1, folder="", today=None, info=None):
     #   어제 표기도 날짜로 읽고, 제목 속 '3/5 보고' 같은 글은 날짜로 읽지 않는다. 시각까지 있을 때만 여기서 확정한다.
     pure_d = None
     for cand in head:
-        r = owa_parse.list_when(owa_parse.frags_of(cand), td, d0, d1)
+        r = owa_parse.list_when(_head_frags(cand, td, d0, d1, texts), td, d0, d1)
         if r and r[1]:
             when, src = (r[0], r[1]), "head"
             break
         if r and pure_d is None:
             pure_d = r[0]
-    if not when:
+    # 날짜·시각뿐인 조각이 하나도 없는 머리 글(쉼표로 나뉘지 않은 aria-label 등)만 글 속에서 찾는다 — 첫 날짜와 그 **곁의** 시각.
+    #   날짜뿐인 조각이 있었으면(pure_d) 그것이 목록의 날짜 칸이다: 그 뒤의 글(미리보기)에서 날짜도 시각도 찾지 않는다.
+    if not when and pure_d is None:
         for cand in head:
-            d = find_date(cand, d0, d1)
-            ts = find_times(cand)
-            if d and ts:
-                when, src = (d, ts[0]), "lm24"
+            got = _date_near_time(cand, d0, d1)
+            if got and got[1]:
+                when, src = got, "list"
                 break
     if not when:
         d = pure_d
         ts = None
-        for cand in head:
-            d = d or find_date(cand, d0, d1)
-            ts = ts or (find_times(cand) or None)
-        src = "lm24"
-        # 시각은 본문 조각에서 와도 된다(날짜를 머리에서 이미 짚었을 때만) — 날짜만 본문에서 오면 안 된다.
+        if d is None:
+            for cand in head:
+                got = _date_near_time(cand, d0, d1)
+                if got:
+                    d = got[0]
+                    break
+        src = "list"
+        # 시각은 목록 칸의 '날짜·시각뿐인' 잎에서만 더 찾는다(날짜를 머리에서 이미 짚었을 때만) — 미리보기(메일 본문 앞머리)의
+        #   '내일 오후 3:00' 같은 글은 시각으로 쓰지 않는다(D18 — 본문은 읽지도 쓰지도 않는다). 날짜만 본문에서 오면 안 된다.
         if d and not ts:
             src = "text"
             for cand in texts:
-                ts = ts or (find_times(cand) or None)
+                if owa_parse.is_datetime_text(cand):
+                    ts = ts or (find_times(cand) or None)
         if d and ts:
             when = (d, ts[0])
         elif d:
@@ -478,38 +494,52 @@ def parse_mail_item(item, d0, d1, folder="", today=None, info=None):
         box = "inbox"
     else:
         box = "sent" if folder == "sent" else "inbox"    # 폴더 조각이 없으면 읽은 폴더가 곧 box(없으면 보수적으로 수신)
-    # 발신자·제목: 시각/날짜/상태어/폴더명이 아닌 짧은 leaf 텍스트의 첫째·둘째
-    cands = []
-    for x in texts:
-        xl = x.lower().strip()
-        if not xl or len(x) > 120:
+    # 보낸이·제목: 보낸이 = 표지·상태어·폴더명·날짜·시각·숫자가 아닌 첫 잎, 제목 = **그 바로 다음 잎**. 제목 자리의 잎은
+    #   길이·숫자·상태어·날짜 꼴이라고 건너뛰지 않는다 — 건너뛰면 그 뒤의 미리보기(메일 본문 앞머리)가 제목 자리에 들어와 저장된다(D18).
+    #   긴 제목은 120자에서 자른다. 그 자리가 날짜·시각뿐인 잎(제목 없는 메일)이면 aria-label 의 첫 날짜·시각 조각 앞 둘째 조각, 그것도
+    #   없으면 ''.
+    parts = []                           # aria-label 의 '보낸이, 제목 …' 조각 — 첫 날짜·시각 조각 앞까지(상태어·표지는 뺀다)
+    for p in (p.strip() for p in re.split(r"[,，]\s*", label)):
+        if not p:
             continue
-        if re.fullmatch(r"[A-Z]{1,3}", x.strip()):
-            continue                     # 아바타 머리글자('JS') — 보낸이·제목이 한 칸씩 밀려 이름이 제목이 되던 것(LM28 E·B)
-        if find_times(x) or find_date(x, d0, d1):
+        if find_times(p) or find_date(p, d0, d1) or owa_parse.is_datetime_text(p):
+            break                        # 첫 날짜·시각 조각 — 그 뒤(미리보기 자리)는 보지 않는다
+        pl = p.lower()
+        if pl in STATUS_WORDS or pl in SENT_WORDS or pl in INBOX_WORDS or owa_parse.is_external_label([p]) \
+                or owa_parse.is_private_label([p]):
             continue
-        if xl in STATUS_WORDS or xl in SENT_WORDS or xl in INBOX_WORDS or xl in CC_WORDS or xl.rstrip(":：").strip() in CC_WORDS:
-            continue
-        if re.fullmatch(r"[\d\s.,:/\-]+", x):
-            continue
-        cands.append(x.strip())
-    sender = cands[0] if cands else ""
-    subject = cands[1] if len(cands) > 1 else ""
-    if not subject and label:
-        # aria-label 에서 상태어 제거 후 "보낸이, 제목, ..." 형태로 보완
-        parts = [p.strip() for p in re.split(r"[,，]\s*", label) if p.strip()]
-        parts = [p for p in parts if p.lower() not in STATUS_WORDS and p.lower() not in SENT_WORDS
-                 and p.lower() not in INBOX_WORDS and not find_times(p) and not find_date(p, d0, d1)]
-        if len(parts) >= 2:
+        parts.append(p)
+    si = next((k for k, x in enumerate(texts) if _sender_leaf(x, d0, d1)), None)
+    if parts:
+        # 보낸이 이름이 숫자·머리글자 꼴('114'·'HR')이면 위 판정이 그 잎을 건너뛰어 제목이 보낸이 자리로, 미리보기가 제목 자리로 밀린다 —
+        # aria-label 의 첫 조각과 같은 잎이 그 앞에 있으면 그 잎이 보낸이다(같은 글이 이어지면 마지막 것 — 머리글자 잎 다음의 이름 잎).
+        lim = len(texts) if si is None else si
+        same = [k for k in range(lim) if texts[k].strip() == parts[0]]
+        if same:
+            si = same[-1]
+    sender = texts[si].strip() if si is not None else ""
+    subject = ""
+    if si is not None and si + 1 < len(texts):
+        x = texts[si + 1].strip()
+        if not owa_parse.is_datetime_text(x):
+            subject = x[:120]
+    if not subject and len(parts) >= 2:
+        # 제목 잎이 없을 때만 aria-label 의 둘째 조각 — 그 글이 목록 칸의 다른 잎(보낸이 잎 말고 — 미리보기)과 겹치면 쓰지 않는다
+        cand = parts[1][:120]
+        rest = [x.strip() for k, x in enumerate(texts) if k != si and not owa_parse.is_datetime_text(x)]
+        if not any(x.startswith(cand) or (len(x) >= 2 and cand.startswith(x)) for x in rest if x):
             sender = sender or parts[0]
-            subject = parts[1]
+            subject = cand
     conv = re.sub(r"^((RE|FW|FWD|답장|전달|회신)\s*:\s*)+", "", subject, flags=re.I)
     if box == "sent":
         rcv = ""
     else:
         # 수신 구분은 화면에 거의 없다 — '참조' 조각이 보일 때만 cc, 아니면 보수적으로 직접 수신
         rcv = "cc" if any(x in CC_WORDS for x in toks) else "to"
-    return [box, t, sender, subject, conv, rcv, precision]
+    addrs = owa_parse.addresses_in(titles + [label])
+    flags = {"ext": owa_parse.is_external_label(titles + [label] + texts),
+             "priv": owa_parse.is_private_label(titles + [label] + texts)}
+    return [box, t, sender, subject, conv, rcv, precision, addrs, flags]
 
 
 _SHOW_PRE = r"(?:(?:상태|표시|표시 방법|show as|status)\s*[:：]?\s*)?"
@@ -620,8 +650,8 @@ def parse_event(ev, d0, d1, geo=None, info=None):
         if len(c) >= 2:
             subj = c.split(",")[0].strip()[:120]
             break
-    # 표시 상태 — '부재중'(3)·'다른 곳에서 작업'(4)은 한가함·미정보다 먼저 본다(LM28 E — extract 가 열 없는 웹 행은 내 부재중(3)만
-    # 근태로 본다). 제목 속 낱말과 섞이지 않게 쉼표 조각 전체가 상태어(앞에 '상태:' 정도)일 때만.
+    # 표시 상태 — '부재중'(3)·'다른 곳에서 작업'(4)은 한가함·미정보다 먼저 본다(G1 이 0·3·4 를 빼고 분석에 넣지 않는다).
+    # 제목 속 낱말과 섞이지 않게 쉼표 조각 전체가 상태어(앞에 '상태:' 정도)일 때만.
     frs = [x.strip() for x in re.split(r"[,，|·\n]", joined) if x.strip()]
     if any(_SHOW_OOF.fullmatch(x) for x in frs):
         busy = "3"
@@ -639,7 +669,7 @@ def parse_event(ev, d0, d1, geo=None, info=None):
 
 
 # ── 브라우저(CDP) ─────────────────────────────────────────────────────────────
-# JS 상수 머리의 /*LM28:이름*/ 은 시험의 FakeBrowser 가 어느 화면 읽기인지 알아보는 표식이다(페이지에서는 주석).
+# JS 상수 머리의 /*AF32:이름*/ 은 시험의 FakeBrowser 가 어느 화면 읽기인지 알아보는 표식이다(페이지에서는 주석).
 # 자리표 __LIB__(아래 공용 조각)·__PICK__(고른 칸 순번, -1 = 후보 칸 사실만)·__SKEL__·__MODE__ 는 _js() 가 채운다.
 #
 # LM28(현장 2026-10-08 — 메일 17건으로 281일 '읽음'): 예전엔 document.querySelector('[role="listbox"]')(화면의 **첫** listbox)
@@ -668,10 +698,10 @@ _JS_LIB = r"""
     return cs.slice(0, 12);
   };
   const pickC = () => {
-    const w = window.__lm_c;
-    if (w && w.isConnected && w.__lm_i === PICK) return w;
+    const w = window.__af32_c;
+    if (w && w.isConnected && w.__af32_i === PICK) return w;
     const c = conts()[PICK] || null;
-    if (c) { c.__lm_i = PICK; window.__lm_c = c; }
+    if (c) { c.__af32_i = PICK; window.__af32_c = c; }
     return c;
   };
   const OVF = /(auto|scroll|overlay)/;
@@ -704,7 +734,7 @@ _JS_LIB = r"""
 #       datetime 속성 — 시각 복원용), 화면마다 empty('결과 없음/비어 있음' 표식)·sel(선택된 폴더 이름)·pivots(선택된 탭 글 — 중요/기타).
 #       SKEL 이면 첫 행의 골격(태그·role·aria-label 길이·잎 글 — 파이썬이 owa_parse.skeleton 으로 가린 뒤에만 남긴다).
 #       잎 글(texts)은 아바타·머리글자 칸(사진 대신 그리는 'JS')·그림 안의 글을 뺀다(LM28 E — 보낸이·제목이 한 칸씩 밀렸다).
-JS_MAIL = r"""/*LM28:owa_list*/
+JS_MAIL = r"""/*AF32:owa_list*/
 (() => {
   const PICK = __PICK__, SKEL = __SKEL__;
 __LIB__
@@ -717,7 +747,7 @@ __LIB__
   const isEmpty = () => { const m = document.querySelector('[role="main"]') || document.body; const t = ((m && m.innerText) || "").slice(0, 3000);
     return /결과가 없|결과를 찾을 수 없|찾지 못했|항목이 없|비어 있|아무것도 없|didn.t find|did not find|no results|no items|nothing in (this )?folder|folder is empty|nothing (is )?here|looks empty/i.test(t); };
   if (PICK < 0) {
-    window.__lm_c = null;
+    window.__af32_c = null;
     out.cands = conts().map(fact);
     out.sec = [...new Set([...document.querySelectorAll("[data-app-section]")].map(e => e.getAttribute("data-app-section") || ""))].filter(v => /^[A-Za-z][\w-]{0,39}$/.test(v)).slice(0, 10);
     if (!out.cands.some(c => c.mailish > 0)) out.empty = isEmpty();
@@ -726,7 +756,7 @@ __LIB__
   const c = pickC();
   if (!c) return JSON.stringify(out);
   const rows = rowsIn(c).sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
-  window.__lm_mail = rows;
+  window.__af32_mail = rows;
   const sc = scOf(c, rows);
   out.lst = Object.assign(fact(c, PICK), sc ? {how: sc.how, d: sc.d, where: where(c, sc.el), sh: sc.el.scrollHeight, ch: sc.el.clientHeight,
     st: Math.round(sc.el.scrollTop)} : {how: "", d: -1, where: "", sh: 0, ch: 0, st: 0}, {busy: ((sc && busyIn(sc.el)) || busyIn(c)) ? 1 : 0});
@@ -753,7 +783,7 @@ __LIB__
 # LM28: 고른 칸(PICK)의 스크롤 칸을 한 화면 내린다 → {r, how, d, sh, ch, st, busy, x, y}
 #   r: scrolled(내려감) · bottom(이미 바닥 — 넘치지 않는 칸 포함, 끝인지는 파이썬이 여러 번 확인) · no-move(대입이 안 먹음 — 휠로)
 #      · no-scroller(스크롤 칸 못 찾음 — 끝을 모른다) · no-list(칸 없음) · top(MODE=top — 맨 위로). x·y = 휠 입력 자리(칸 가운데)
-JS_SCROLL = r"""/*LM28:owa_scroll*/
+JS_SCROLL = r"""/*AF32:owa_scroll*/
 (() => {
   const PICK = __PICK__, MODE = "__MODE__";
 __LIB__
@@ -775,7 +805,7 @@ __LIB__
 })()
 """
 # LM28: 목록 바닥의 결과 '더 보기'류 단추(마지막 행 **아래**에 있는 것만 — 대화 펼치기·옵션·필터·폴더 범위 단추는 누르지 않는다)
-JS_MORE = r"""/*LM28:owa_more*/
+JS_MORE = r"""/*AF32:owa_more*/
 (() => {
   const PICK = __PICK__;
 __LIB__
@@ -810,7 +840,7 @@ __LIB__
 #     파이썬(owa_parse.day_columns·time_scale)이 위치로 가린다. sc: 시간 눈금 글이 가장 많이 든 스크롤 칸(눈금 글이 DOM 글자가
 #     아니면 막대들의 스크롤 칸)의 위·아래.
 #   · 같은 이름의 막대는 겹친(조상·자손) 것과 크기 0 사본만 하나로 — 날짜 없는 반복 막대(같은 이름)가 날마다 따로 남게.
-JS_CAL = r"""/*LM28:owa_cal*/
+JS_CAL = r"""/*AF32:owa_cal*/
 (() => {
   const out = {href: location.href, n: 0, events: [], heads: [], cols: [], grid: false, nc: 0, nb: 0, nt: 0, pts: [], sc: null};
   out.grid = !!document.querySelector('[role="grid"], [role="main"] [role="row"]');
@@ -917,23 +947,22 @@ JS_CAL = r"""/*LM28:owa_cal*/
     const texts = [...r.e.querySelectorAll("span,div")].filter(x => x.childElementCount === 0).map(x => (x.textContent || "").trim()).filter(Boolean).slice(0, 10);
     out.events.push(Object.assign({label: r.l, cal: r.cal, alt: r.alt, na: r.na, texts}, r.g));
   }
-  window.__lm_ev = kept.map(r => r.e);        // LM28-OWA-5: 본문 읽기(owa_cal_bar)가 events 순번으로 막대를 다시 찾는다
   out.n = out.events.length;
   return JSON.stringify(out);
 })()
 """
 # LM28(현장 2026-10-11 — '이전 주' 34번으로 9주): 작은 달력(날짜 고르기)으로 목표 주에 바로 간다. 주소 이동이 무시되는 화면에서도
-#   된다. __ACT__: read(칸 이름·달 넘기기 단추 유무 — 칸은 window.__lm_pk 에 둔다) · day(__K__ 번째 칸을 누름) · prev·next(달 넘기기)
+#   된다. __ACT__: read(칸 이름·달 넘기기 단추 유무 — 칸은 window.__af32_pk 에 둔다) · day(__K__ 번째 칸을 누름) · prev·next(달 넘기기)
 #   · open(왼쪽 달력이 없을 때 머리 날짜 범위 단추 __HEAD__ 를 눌러 날짜 고르기 창을 연다). 칸: role=grid·table 안의 이름(aria-label·
 #   title)에 숫자가 든 보이는 단추·gridcell 20~60개(달 한 장) — 숨김·사용 안 함은 뺀다. 날짜는 파이썬(owa_parse.picker_date)이 읽는다.
-JS_CAL_PICK = r"""/*LM28:owa_cal_pick*/
+JS_CAL_PICK = r"""/*AF32:owa_cal_pick*/
 (() => {
   const ACT = "__ACT__", K = __K__, HEAD = __HEAD__;
   const vis = e => { const r = e.getBoundingClientRect(); return r.width > 2 && r.height > 2; };
   const nm = e => (e.getAttribute("aria-label") || e.getAttribute("title") || "").trim();
   const fire = e => { for (const t of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
     e.dispatchEvent(new MouseEvent(t, {bubbles: true, cancelable: true, view: window})); } };
-  const st = window.__lm_pk || {};
+  const st = window.__af32_pk || {};
   if (ACT === "day") { const c = (st.cells || [])[K]; if (!c || !c.isConnected) return "gone"; fire(c); return "ok"; }
   if (ACT === "prev" || ACT === "next") { const b = st[ACT]; if (!b || !b.isConnected) return "none"; fire(b); return "ok"; }
   if (ACT === "open") {
@@ -956,7 +985,7 @@ JS_CAL_PICK = r"""/*LM28:owa_cal_pick*/
     out.grids++;
     if (!best || cs.length > best.cs.length) best = {g, cs};
   }
-  if (!best) { window.__lm_pk = {}; return JSON.stringify(out); }
+  if (!best) { window.__af32_pk = {}; return JSON.stringify(out); }
   const PRV = /(이전|지난)\s*(달|월)|previous month|prev(ious)?\s*month|last month/i, NXT = /다음\s*(달|월)|next month/i;
   let prev = null, next = null, p = best.g.parentElement;
   for (let d = 0; p && d < 6 && !(prev && next); d++, p = p.parentElement) {
@@ -968,7 +997,7 @@ JS_CAL_PICK = r"""/*LM28:owa_cal_pick*/
       if (!next && NXT.test(n)) next = b;
     }
   }
-  window.__lm_pk = {cells: best.cs, prev, next};
+  window.__af32_pk = {cells: best.cs, prev, next};
   out.cells = best.cs.map((c, k) => ({k, l: nm(c).slice(0, 60)}));
   out.prev = prev ? 1 : 0;
   out.next = next ? 1 : 0;
@@ -976,7 +1005,7 @@ JS_CAL_PICK = r"""/*LM28:owa_cal_pick*/
 })()
 """
 # LM28(F-05): 주 보기의 '이전 주' 단추 — 주/week 가 든 이름(aria-label·title)을 먼저, 없으면 '이전'·'Previous' 로 시작하는 이름
-JS_CAL_PREV = r"""/*LM28:owa_cal_prev*/
+JS_CAL_PREV = r"""/*AF32:owa_cal_prev*/
 (() => {
   const bs = [...document.querySelectorAll('button, [role="button"]')].filter(b => !b.disabled && b.offsetParent !== null);
   const name = b => ((b.getAttribute("aria-label") || "") + " " + (b.getAttribute("title") || "")).trim();
@@ -987,45 +1016,18 @@ JS_CAL_PREV = r"""/*LM28:owa_cal_prev*/
   return "ok";
 })()
 """
-# LM28(UD-08 보완): 보낸 편지함 항목 하나를 연다(받은 메일은 열지 않는다 — 읽음 표시). __IDX__ = owa_list 의 idx
-JS_OPEN = r"""/*LM28:owa_open*/
-(() => {
-  const e = (window.__lm_mail || [])[__IDX__];
-  if (!e || !e.isConnected) return "gone";
-  for (const t of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
-    e.dispatchEvent(new MouseEvent(t, {bubbles: true, cancelable: true, view: window}));
-  }
-  return "ok";
-})()
-"""
-# 읽기 창 머리의 보낸 시각 조각만(title·datetime·글자 120자) — 본문은 읽지 않는다(LM27 선택자 이식)
-JS_HEAD = r"""/*LM28:owa_head*/
-(() => {
-  const sels = ['[data-testid="SentReceivedSavedTime"]', '[role="main"] [data-testid*="Time"]', '[role="main"] time'];
-  const out = {found: false, head: []};
-  for (const s of sels) {
-    for (const e of document.querySelectorAll(s)) {
-      const t = ((e.getAttribute("title") || "") + " " + (e.getAttribute("datetime") || "") + " " + (e.textContent || "")).trim().slice(0, 120);
-      if (t) out.head.push(t);
-      if (out.head.length >= 4) break;
-    }
-    if (out.head.length) { out.found = true; break; }
-  }
-  return JSON.stringify(out);
-})()
-"""
-JS_FOCUS_SEARCH = r"""/*LM28:owa_focus_search*/
+JS_FOCUS_SEARCH = r"""/*AF32:owa_focus_search*/
 (() => {
   const sels = ['#topSearchInput', 'input[role="searchbox"]', '[role="search"] input', 'input[aria-label*="검색"]', 'input[aria-label*="Search"]', 'input[placeholder*="검색"]', 'input[placeholder*="Search"]', '[role="combobox"][aria-label*="검색"]', '[role="combobox"][aria-label*="Search"]'];
   const vis = el => { const r = el.getBoundingClientRect(); return r.width > 40 && r.height > 8; };
-  for (const s of sels) { for (const c of document.querySelectorAll(s)) { if (vis(c)) { c.focus(); c.click(); window.__lm_sb = c; return "ok:" + s; } } }
+  for (const s of sels) { for (const c of document.querySelectorAll(s)) { if (vis(c)) { c.focus(); c.click(); window.__af32_sb = c; return "ok:" + s; } } }
   const btn = document.querySelector('button[aria-label*="검색"], button[aria-label*="Search"]');
   if (btn) { btn.click(); return "button"; }
   return "none";
 })()
 """
-JS_CLEAR_SEARCH = r"""/*LM28:owa_clear_search*/
-(() => { const el = window.__lm_sb; if (!el) return "none";
+JS_CLEAR_SEARCH = r"""/*AF32:owa_clear_search*/
+(() => { const el = window.__af32_sb; if (!el) return "none";
   el.focus(); try { el.select && el.select(); } catch (e) {}
   const d = Object.getOwnPropertyDescriptor(el.__proto__, 'value'); if (d && d.set) { d.set.call(el, ''); } else { el.value = ''; }
   el.dispatchEvent(new Event('input', {bubbles: true})); return "cleared"; })()
@@ -1033,11 +1035,11 @@ JS_CLEAR_SEARCH = r"""/*LM28:owa_clear_search*/
 # LM28-OWA-5: 왼쪽 폴더 창(role=tree·treeitem — 접근성 속성만). __ACT__:
 #   read      나무 사실(aria-label·항목 수)과 항목마다 {i, t 나무 순번, lvl aria-level, par DOM 조상 항목 순번, n 이름(title → 이 항목의
 #             잎 글 — 숫자뿐인 읽지 않은 수 칸은 뺀다 → aria-label), al, wk data-folder-name, ex 펼침 1·0·-1, sel, v} — 이름은 파이썬이
-#             메모리에서만 쓴다(로그·진단에는 수만). 항목은 window.__lm_ti 에 둔다.
+#             메모리에서만 쓴다(로그·진단에는 수만). 항목은 window.__af32_ti 에 둔다.
 #   aim       __K__ 번째 항목(이름이 __NAME__ 일 때만 — 아니면 gone)의 이름 글 위 한 점(그 점의 요소가 이 항목 안이고 하위 항목·작은
 #             단추('…'·즐겨찾기 별)·링크가 아닌 곳) — 파이썬이 CDP 신뢰 입력으로 누른다 · synth = 그 점에 합성 사건
 #   chev      펼침 단추(chevron·expand 이름)의 가운데 점 · synthchev = 그 단추에 합성 사건 · focus = 항목에 포커스(파이썬이 CDP 키)
-JS_TREE = r"""/*LM28:owa_tree*/
+JS_TREE = r"""/*AF32:owa_tree*/
 (() => {
   const ACT = "__ACT__", K = __K__, NAME = __NAME__;
   const vis = e => { const r = e.getBoundingClientRect(); return r.width > 2 && r.height > 2; };
@@ -1060,7 +1062,7 @@ JS_TREE = r"""/*LM28:owa_tree*/
   if (ACT === "read") {
     const trees = [...document.querySelectorAll('[role="tree"]')].slice(0, 12);
     const items = [...document.querySelectorAll('[role="treeitem"]')].slice(0, 800);
-    window.__lm_ti = items;
+    window.__af32_ti = items;
     const pos = new Map(items.map((e, i) => [e, i]));
     const out = {href: location.href, items: [], trees: trees.map(t => ({al: (t.getAttribute("aria-label") || "").trim().slice(0, 80),
       n: t.querySelectorAll('[role="treeitem"]').length, v: vis(t) ? 1 : 0}))};
@@ -1074,7 +1076,7 @@ JS_TREE = r"""/*LM28:owa_tree*/
     });
     return JSON.stringify(out);
   }
-  const e = (window.__lm_ti || [])[K];
+  const e = (window.__af32_ti || [])[K];
   if (!e || !e.isConnected || own(e)[0].slice(0, 120) !== NAME) return JSON.stringify({r: "gone"});
   const inView = q => q.width > 2 && q.height > 2 && q.top >= 0 && q.left >= 0 && q.bottom <= innerHeight && q.right <= innerWidth;
   if (!inView(e.getBoundingClientRect())) { try { e.scrollIntoView({block: "center", inline: "nearest"}); } catch (z) {} }
@@ -1110,93 +1112,6 @@ JS_TREE = r"""/*LM28:owa_tree*/
   return JSON.stringify({r: "cover"});
 })()
 """
-# LM28-OWA-5: 일정 막대 하나(JS_CAL 이 남긴 window.__lm_ev 의 __K__ 번째)를 누를 점. 막대 안에 참가(Join)·Teams 단추가 있으면 누르지
-#   않는다(join — 회의에 들어가게 된다). 점은 그 점의 요소가 막대 안이고 막대 안의 작은 단추·링크가 아닌 곳(가운데부터 몇 곳).
-JS_CAL_BAR = r"""/*LM28:owa_cal_bar*/
-(() => {
-  const K = __K__;
-  const e = (window.__lm_ev || [])[K];
-  if (!e || !e.isConnected) return JSON.stringify({r: "gone"});
-  const INTER = 'button, a[href], [role="button"], [role="link"], [role="menuitem"], [aria-haspopup], input, select, textarea';
-  for (const b of e.querySelectorAll(INTER)) {
-    const t = ((b.getAttribute("aria-label") || "") + " " + (b.getAttribute("title") || "") + " " + (b.textContent || "")).trim();
-    if (/참가|참여|join|teams/i.test(t)) return JSON.stringify({r: "join"});
-  }
-  let r = e.getBoundingClientRect();
-  if (r.width < 4 || r.height < 4) return JSON.stringify({r: "small"});
-  if (r.top < 0 || r.left < 0 || r.bottom > innerHeight || r.right > innerWidth) {
-    try { e.scrollIntoView({block: "center", inline: "nearest"}); } catch (z) {}
-    r = e.getBoundingClientRect();
-  }
-  for (const [fx, fy] of [[0.5, 0.5], [0.3, 0.3], [0.7, 0.6], [0.5, 0.2], [0.2, 0.75]]) {
-    const x = Math.round(r.left + r.width * fx), y = Math.round(r.top + r.height * fy);
-    if (x <= 0 || y <= 0 || x >= innerWidth || y >= innerHeight) continue;
-    const h = document.elementFromPoint(x, y);
-    if (!h || !(h === e || e.contains(h))) continue;
-    const b = h.closest(INTER);
-    if (b && b !== e && e.contains(b)) continue;
-    return JSON.stringify({r: "ok", x, y});
-  }
-  return JSON.stringify({r: "cover"});
-})()
-"""
-# LM28-OWA-5: 일정 상세(peek·callout·옆 창). __ACT__: read = 가장 나중에 뜬 보이는 대화 상자(일정 막대를 품지 않은 role=dialog·
-#   aria-modal·complementary)를 window.__lm_dlg 에 두고 {found, how, text(본문 칸만 · 2000자), hd(머리 제목 120자 — 그 일정이 맞는지
-#   파이썬이 메모리에서만 맞댄다), n}. 본문 칸: ① role=document ② aria-label 이 본문·설명인 칸(편집·작성 칸 제외 · 사람·참석자 칸
-#   아님) ③ 머리 아래의 보이는 글 덩어리 중 단추·링크·입력·목록·사람(persona·참석자·이끌이) 칸을 품지 않은 가장 긴 것(40자 이상).
-#   못 찾으면 how '' · text '' — 대화 상자 전체 글·참석자·이끌이 줄은 내지 않는다.
-#   state = 그 상자가 아직 보이나(open·gone) · xbtn = 그 상자 안의 이름이 정확히 '닫기'·'Close' 인 단추를 누른다(ok·none·gone).
-JS_CAL_DETAIL = r"""/*LM28:owa_cal_detail*/
-(() => {
-  const ACT = "__ACT__";
-  const vis = e => { if (!e || !e.isConnected) return false; const r = e.getBoundingClientRect(); return r.width > 20 && r.height > 20; };
-  if (ACT === "state") return vis(window.__lm_dlg) ? "open" : "gone";
-  if (ACT === "xbtn") {
-    const d = window.__lm_dlg;
-    if (!vis(d)) return "gone";
-    const RX = /^\s*(닫기|close|dismiss)\s*$/i;
-    for (const b of d.querySelectorAll('button, [role="button"]')) {
-      const nm = (b.getAttribute("aria-label") || b.getAttribute("title") || b.textContent || "").trim();
-      if (RX.test(nm) && b.getBoundingClientRect().width > 2) { b.click(); return "ok"; }
-    }
-    return "none";
-  }
-  const out = {found: 0, how: "", text: "", hd: "", n: 0};
-  const dl = [...document.querySelectorAll('[role="dialog"], [aria-modal="true"], [role="complementary"]')].filter(d => vis(d) && !d.querySelector("[data-calitemid]"));
-  out.n = dl.length;
-  const d = dl.length ? dl[dl.length - 1] : null;
-  window.__lm_dlg = d;
-  if (!d) return JSON.stringify(out);
-  out.found = 1;
-  const txt = e => ((e.innerText || e.textContent || "") + "").trim();
-  const hd = d.querySelector('[role="heading"], h1, h2, h3');
-  out.hd = hd ? txt(hd).slice(0, 120) : "";
-  const BAN = '[class*="ersona" i], [class*="ttendee" i], [aria-label*="참석" i], [aria-label*="attendee" i], [aria-label*="organizer" i], [aria-label*="이끌이"], [aria-label*="구성자"], [aria-label*="주최"], [role="list"], [role="listitem"]';
-  const banned = e => !!e.closest(BAN) || !!e.querySelector(BAN);
-  const EDIT = '[contenteditable="true"], textarea, input';
-  let best = null, how = "", bl = 0;
-  for (const e of d.querySelectorAll('[role="document"]')) { const n = txt(e).length; if (n > bl && !e.closest(EDIT)) { best = e; bl = n; how = "doc"; } }
-  if (!best) {
-    for (const e of d.querySelectorAll("[aria-label]")) {
-      const a = e.getAttribute("aria-label") || "";
-      if (!/메시지\s*본문|본문|message body|event body|description|설명/i.test(a) || /편집|edit|작성|compose/i.test(a) || banned(e)) continue;
-      const n = txt(e).length;
-      if (n > bl) { best = e; bl = n; how = "aria"; }
-    }
-  }
-  if (!best) {
-    const y0 = hd ? hd.getBoundingClientRect().bottom : d.getBoundingClientRect().top;
-    for (const e of d.querySelectorAll("div, p, section")) {
-      if (!vis(e) || e.getBoundingClientRect().top < y0 - 1) continue;
-      if (e.querySelector('button, a[href], [role="button"], [role="link"], input, textarea, select, [contenteditable="true"]') || banned(e)) continue;
-      const n = txt(e).length;
-      if (n >= 40 && n > bl) { best = e; bl = n; how = "big"; }
-    }
-  }
-  if (best && bl > 0) { out.how = how; out.text = txt(best).slice(0, 2000); }
-  return JSON.stringify(out);
-})()
-"""
 
 
 class Browser:
@@ -1208,7 +1123,7 @@ class Browser:
         self.port = self.cfg["port"]
         self.cdp = None
         self.own_tab = ""          # LM28: 이 수집기가 /json/new 로 연 탭 id — 끝에 이것만 닫는다(사람·다른 작업의 탭은 두기)
-        self.reason = ""           # LM28: 로그인·기동 실패 사유 코드(LMSTATUS reason)
+        self.reason = ""           # LM28: 로그인·기동 실패 사유 코드(AF32STATUS reason)
 
     def start(self):
         if not self.ca.ensure_edge(self.cfg):
@@ -1255,11 +1170,9 @@ class Browser:
             return ""
 
     def kind(self, url):
-        """탭 주소 → copilot_auto.page_kind(호스트 정확·마디 일치 — WP5). 개인 Outlook(outlook.live.com)은 개인 계정 화면이다."""
-        k = "personal" if self.ca._host(url) == "outlook.live.com" else self.ca.page_kind(url, self.cfg)
-        if k == "personal" and not self.ca._truthy(self.cfg.get("requireWorkAccount"), True):
-            return "work" if self.ca.host_in(self.ca._host(url), HOSTS) else "login"     # LM24 처럼(개인 계정 허용 설정)
-        return k
+        """탭 주소 → copilot_auto.page_kind(호스트 정확·마디 일치). 개인 Outlook(outlook.live.com)은 개인 계정 화면이다 —
+        회사 계정만 읽는다(copilotAuto.requireWorkAccount 는 늘 true)."""
+        return "personal" if self.ca._host(url) == "outlook.live.com" else self.ca.page_kind(url, self.cfg)
 
     def _login(self, kind):
         """로그인 화면 → 'login' | 'personal'. 사유(AADSTS 번호로 나눔)를 남기고, 사람이 그 탭에서 로그인하는 중일 수 있으니
@@ -1275,7 +1188,8 @@ class Browser:
                     code = ""
             self.reason = self.ca.aadsts_reason(code) if code else "R-LOGIN"
         try:
-            self.ca._update_owner(self.cfg, login_pending=time.strftime("%Y-%m-%d %H:%M:%S"))
+            # 날짜만 — 시각은 data\outlook 밖에 두지 않는다(D10 · 수집 진단 report\collect_diag.txt 가 이 값을 옮겨 적는다)
+            self.ca._update_owner(self.cfg, login_pending=time.strftime("%Y-%m-%d"))
         except Exception:
             pass
         return "personal" if kind == "personal" else "login"
@@ -1387,17 +1301,13 @@ def _days(d0, d1):
 
 
 class Run:
-    """한 번의 수집(LM28) — 기간·오늘·시간 예산·계수(LMSTATUS counts)·화면 진단(selector_diag·cen)·시각 복원 예산·검색 표기 상태.
+    """한 번의 수집 — 기간·오늘·시간 예산·계수(AF32STATUS counts)·화면 진단(selector_diag·cen)·검색 표기 상태.
     시험은 today·deadline 을 넘긴다(deadline=None 이면 예산 없음). reserve = 메일 단계가 일정에 남기는 예산 끝(초)."""
 
-    def __init__(self, d0, d1, today=None, deadline=None, recover_max=150, reserve=0.0):
+    def __init__(self, d0, d1, today=None, deadline=None, reserve=0.0):
         self.d0, self.d1 = d0, d1
         self.today = today or date.today()
         self.deadline = deadline
-        try:
-            self.recover_left = max(0, int(recover_max))
-        except (TypeError, ValueError):
-            self.recover_left = 150
         try:
             self.reserve = max(0.0, float(reserve or 0))
         except (TypeError, ValueError):
@@ -1405,17 +1315,13 @@ class Run:
         self.phase = ""
         self.timed_out = False
         self.hit_time = False                  # 앞 단계(메일)가 제 몫의 예산에 닿았다 — 사유 R-TIMEOUT 은 남긴다
-        self.last_head = None
         self.c = {"slices_ok": 0, "list_verified": 0, "filter_ineffective": 0, "slices_unverified": 0,
                   "fallback_scroll": 0, "weeks_ok": 0, "weeks_unverified": 0, "weeks_partial": 0, "weeks_total": 0,
-                  "cal_clicks": 0, "cal_complete": False, "date_only": 0, "recovered": 0, "recovered_known": 0,
-                  "opened": 0, "rows": 0}
-        # 지난 실행이 분 단위로 남긴 메일 시각(LM28 E) — {(상자, 날, 보낸이, 제목|대화 해시): ['HH:MM', …]}. 날짜만 행은 여기서 먼저
-        # 채운다(열지 않음·예산 소모 없음) — 실행마다 owaTimeRecoverMax 건씩 새로 복원돼 누적된다. main 이 메일 파일에서 채운다.
-        self.store_subject = True
-        self.known = {}
+                  "cal_clicks": 0, "cal_complete": False, "date_only": 0, "recovered": 0, "rows": 0}
         self.sd = {}
-        self.cen = {"mail": {}, "cal": {}}     # 화면 구조 진단(dom_census) — 구조만(글자는 owa_parse.mask_shape, aria-label 은 길이)
+        self.cen = {"mail": {}, "cal": {}}     # 화면 구조 진단(dom_census) — 구조만(글자는 owa_parse.mask_shape·mask_cal, aria-label 은 길이)
+        # 내 표시 이름·주소(privacy.me_list — main 이 채운다) — 폴더 창에서 내 사서함 머리를 가리는 데만 쓴다(파일·로그에 남기지 않는다)
+        self.me = ()
         # 기간 검색 표기 — proven: 이 실행에서 조각 안 결과를 본 표기 · broken: 결과가 폴더 목록 그대로(검색이 화면에 안 걸림) ·
         #   dead: 날짜를 다르게 읽은 표기 · nobox: 검색창 없음 · slices/hit: 검색한 조각 수 / 검색이 걸린(확인·일부 확인) 조각 수 ·
         #   tries: 검색 입력 횟수
@@ -1428,12 +1334,6 @@ class Run:
         self.xf = {"enum": "", "pre": 0, "tree": 0, "found": 0, "read": 0, "ok": 0, "sys": 0, "user": 0, "cap": 0, "exp": 0,
                    "expok": 0, "expf": 0, "expcap": 0, "fail": 0, "left": 0, "rows": 0, "down": 0, "urlskip": 0, "screens": 0,
                    "ends": {}, "v": {}, "shape": {}}
-        # LM28-OWA-5 일정 본문 발췌 — cb_cache: 지난 실행까지 읽은 {열쇠: 발췌}(main 이 캐시 파일에서) · cb_new: 이번에 읽은 것 ·
-        #   cb_off: 'YYYY-MM-DD' 까지 쉰다(주 보기가 깨진 화면) · cb: 진단 수(글자 없음)
-        self.cb_max, self.cb_path, self.cb_cache, self.cb_new, self.cb_off = CB_MAX, "", {}, {}, ""
-        self.cb_seen = set()
-        self.cb = {"open": 0, "found": 0, "body": 0, "closed": 0, "cache": 0, "cap": 0, "skip": 0, "join": 0, "none": 0,
-                   "mis": 0, "xbtn": 0, "dead": "", "t": 0.0, "how": {}}
 
     def bump(self, k, n=1):
         self.sd[k] = self.sd.get(k, 0) + n
@@ -1471,71 +1371,11 @@ def _when_from(strings, day, today, d0=None, d1=None):
     return None
 
 
-def _open_head(br, run, it):
-    """보낸 편지함 항목을 열어 읽기 창 머리의 시각 글 → [글] | None. 지금 화면에 있는 항목만(idx — owa_list 의 순번).
-    머리가 앞 항목 것과 같으면(아직 안 바뀜) 잠깐 더 기다린다."""
-    try:
-        idx = int(it.get("idx"))
-    except (TypeError, ValueError):
-        return None
-    try:
-        r = str(br.cdp.eval(JS_OPEN.replace("__IDX__", str(idx))) or "")
-    except Exception:
-        r = ""
-    if r != "ok":
-        run.bump("open_fail")
-        return None
-    run.c["opened"] += 1
-    for _ in range(4):
-        _sleep(0.8)
-        try:
-            h = br.eval_json(JS_HEAD) or {}
-        except Exception:
-            h = {}
-        head = [str(x) for x in h.get("head") or [] if x]
-        if h.get("found") and head and tuple(head) != run.last_head:
-            run.last_head = tuple(head)
-            return head
-    run.bump("head_none")
-    return None
-
-
-def known_key(box, day, sender, subject, conv, store_subject=True):
-    """지난 실행의 분 단위 행과 이번 날짜만 행을 맞출 열쇠(LM28 E) — (상자, 날, 보낸이, 제목). 제목을 남기지 않는 설정이면 저장된
-    대화 해시(_conv_token)로 — 파일에는 제목이 비어 있다."""
-    return (str(box or ""), str(day or "")[:10], str(sender or ""),
-            str(subject or "") if store_subject else _conv_token(conv))
-
-
-def known_times(path, store_subject=True):
-    """메일 파일(mail.csv · mail_<tag>.csv)의 분 단위 행 → {known_key: ['HH:MM', …](오름차순)}. 저장된 행은 이미 제목이 지워지고
-    대화가 해시인 꼴(storeMailSubject=false)이라 그대로 열쇠를 만든다."""
-    out = {}
-    for r in _read_rows(path, 6):
-        if len(r) > 6 and str(r[6]).strip().lower() == "minute" and re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}", r[1][:16]):
-            k = (str(r[0]), r[1][:10], str(r[2]), str(r[3]) if store_subject else str(r[4]))
-            out.setdefault(k, []).append(r[1][11:16])
-    for v in out.values():
-        v.sort()
-    return out
-
-
-def _recover(br, run, it, r, folder):
-    """날짜만 행(r)의 시각 복원(LM28 UD-08 보완) — ① 항목의 다른 title·aria-label·<time datetime>(목록 화면에 이미 있음)
-    ② 지난 실행이 같은 메일(상자·날·보낸이·제목)에 남긴 분 단위 시각(run.known — LM28 E · 열지 않음 · 예산 소모 없음 ·
-    recovered_known) ③ 보낸 편지함은 그래도 없으면 항목을 열어 읽기 창 머리(owaTimeRecoverMax 건까지·예산 안 — 받은 메일은 열지
-    않는다). ② 덕분에 실행마다 ③ 의 예산이 새 메일에만 쓰여 복원이 누적된다(예전엔 다음 병합이 다시 날짜만으로 되돌렸다)."""
+def _recover(run, it, r):
+    """날짜만 행(r)의 시각 — 그 항목의 다른 title·aria-label·<time datetime>(목록 화면에 이미 있음)에서만 찾는다. 항목을 열지 않는다
+    (AgentFinder32 — 읽음 표시·본문을 건드리지 않는다). 못 찾으면 time_precision=date 그대로."""
     day = date.fromisoformat(r[1][:10])
     hm = _when_from(it.get("dts") or [], day, run.today, run.d0, run.d1)
-    if hm is None and run.known:
-        lst = run.known.get(known_key(r[0], r[1], r[2], r[3], r[4], run.store_subject))
-        if lst:
-            s = lst.pop()                        # 목록은 최신부터 읽는다 — 같은 열쇠가 여럿이면 늦은 시각부터
-            hm = (int(s[:2]), int(s[3:5]))
-            run.c["recovered_known"] += 1
-    if hm is None and folder == "sent" and br is not None and run.recover_left > 0 and not run.out_of_time():
-        run.recover_left -= 1
-        hm = _when_from(_open_head(br, run, it) or [], day, run.today, run.d0, run.d1)
     if not hm:
         return False
     r[1] = f"{r[1][:10]} {hm[0]:02d}:{hm[1]:02d}"
@@ -1565,7 +1405,7 @@ def _int(v, d=0):
 
 
 def _js(js, pick=-1, skel=False, mode="down"):
-    """JS 상수의 자리표 채우기(__LIB__ 공용 조각·__PICK__ 고른 칸 순번·__SKEL__·__MODE__) — 머리 표식(/*LM28:…*/)은 맨 앞 그대로."""
+    """JS 상수의 자리표 채우기(__LIB__ 공용 조각·__PICK__ 고른 칸 순번·__SKEL__·__MODE__) — 머리 표식(/*AF32:…*/)은 맨 앞 그대로."""
     return (js.replace("__LIB__", _JS_LIB).replace("__PICK__", str(int(pick)))
             .replace("__SKEL__", "1" if skel else "0").replace("__MODE__", mode))
 
@@ -1600,7 +1440,7 @@ def _more(br, pick):
         return False
 
 
-def _read_screens(br, run, folder, s, e, list_mode, opener=True, stale=None):
+def _read_screens(br, run, folder, s, e, list_mode, stale=None):
     """지금 화면(검색 결과 또는 폴더 목록)을 위에서부터 내린다 → (got, meta).
     got = [(항목, 날짜|None, 행|None)] 화면 순서 · meta = {reached, empty, sel, pivots, screens, end, mail_ok, pick, lst, …}.
     · 칸: 첫 화면에서 후보 칸의 사실(JS_MAIL PICK=-1 — 칸마다 행 수·메일 행 수·data-convid·본문 안쪽)을 받아
@@ -1610,7 +1450,7 @@ def _read_screens(br, run, folder, s, e, list_mode, opener=True, stale=None):
     · 끝(reached): 바닥에서 새 행 0 이 END_CONFIRM 번(그 사이 '더 보기'·실제 휠·더 긴 대기) + '불러오는 중' 없음 + 메일 목록
       확인(owa_parse.mail_list_ok)일 때만. 'fits'(칸이 다 들어감)는 근거가 아니다. 그 밖(스크롤 칸 없음·안 움직임·새 행 없음·
       불러오는 중이 계속·화면 수 상한·예산)은 끝을 모른 채 멈춘다(그 아래 날은 partial).
-    · LM28-OWA-5: opener=False 면 시각 복원에 항목을 열지 않는다(다른 폴더 — 받은 메일이 섞여 있다). stale(앞 목록 화면의 항목
+    · 날짜만 보이는 행의 시각은 그 항목의 다른 속성에서만 찾는다(_recover — 열지 않는다). stale(앞 목록 화면의 항목
       키)이 있으면 첫 화면의 항목 절반 이상이 그 키인 동안(폴더를 누른 직후 앞 폴더 목록이 남은 화면) 1초씩 XF_STALE_MAX 번
       기다리고, 그래도 그대로면 읽지 않는다(end 'stale' — 끝 근거 없음). 화면마다 run.last_keys 에 그 화면의 항목 키를 둔다."""
     got, seen_k = [], set()
@@ -1723,7 +1563,7 @@ def _read_screens(br, run, folder, s, e, list_mode, opener=True, stale=None):
             if d is not None and not list_mode and (d < lo or d > hi):
                 stop = True                  # 검색이 안 걸린 화면 — 더 내리지 않는다
             if r and r[6] == "date" and d0s <= r[1][:10] <= d1s:
-                _recover(br if opener else None, run, it, r, folder)
+                _recover(run, it, r)
         if stop:
             meta["end"] = "outside"
             break
@@ -1969,7 +1809,7 @@ def _cdp_input(br, method, params):
 
 
 def _click_at(br, x, y):
-    """신뢰 입력 누르기 — CDP Input.dispatchMouseEvent 옮김 → 누름(왼쪽 1번) → 뗌(Get-TeamsWeb._mouse 와 같은 꼴). → 보냈나."""
+    """신뢰 입력 누르기 — CDP Input.dispatchMouseEvent 옮김 → 누름(왼쪽 1번) → 뗌. → 보냈나."""
     x, y = _int(x), _int(y)
     if x <= 0 or y <= 0:
         return False
@@ -2003,15 +1843,16 @@ def _order(pref, how):
     return ([pref] if pref in how else []) + [m for m in how if m != pref]
 
 
-def _xf_expand(br, run, nodes, trees, i):
+def _xf_expand(br, run, nodes, trees, i, mid=None):
     """접힌 폴더(또는 사서함 머리) 하나를 펼친다 → (펼쳐졌나, 새 노드, 새 나무). 방법은 이 실행에서 통한 것을 먼저 —
     ① 포커스 + 신뢰 키 →(트리 표준 · 폴더를 열지 않는다) ② 펼침 단추에 신뢰 마우스 ③ 펼침 단추에 합성 사건. 방법마다 폴더 창을
-    다시 읽어 그 항목(node_key — 다시 그려져도 같은 폴더)의 aria-expanded=true 또는 하위 항목이 생겼는지로 확인한다."""
+    다시 읽어 그 항목(node_key — 다시 그려져도 같은 폴더)의 aria-expanded=true 또는 하위 항목이 생겼는지로 확인한다.
+    mid(내 사서함의 표 — _xf_find)를 주면 그 사서함 안의 항목만 다룬다."""
     key = owa_parse.node_key(nodes, i, trees)
     for how in _order(run.xf_how, XF_HOW):
         if run.out_of_time() or run.xf["exp"] >= XF_EXPAND_MAX:
             break
-        j = owa_parse.find_node(nodes, key, trees)
+        j = _xf_find(nodes, trees, key, mid)
         if j is None:
             break
         if how == "key":
@@ -2027,11 +1868,20 @@ def _xf_expand(br, run, nodes, trees, i):
         for _ in range(3):
             _sleep(0.6)
             nodes, trees, _h = _tree(br, run)
-            j = owa_parse.find_node(nodes, key, trees)
+            j = _xf_find(nodes, trees, key, mid)
             if j is not None and (nodes[j]["ex"] == 1 or nodes[j]["kids"]):
                 run.xf_how = how
                 return True, nodes, trees
     return False, nodes, trees
+
+
+def _xf_find(nodes, trees, key, mid=None):
+    """node_key 로 그 폴더의 순번 | None. mid(owa_parse.mailbox_id — 내 것임을 보인 사서함의 표)가 있으면 이 폴더 창에서 그 사서함을
+    다시 찾아(owa_parse.mailbox_of) 그 안에서만 찾는다 — 이름이 같은 사서함이 둘이라 가릴 수 없으면 None(누르지 않는다)."""
+    if mid is None:
+        return owa_parse.find_node(nodes, key, trees)
+    mb = owa_parse.mailbox_of(nodes, trees, mid, XF_GOOD)
+    return owa_parse.find_node(nodes, key, trees, mb) if mb else None
 
 
 def _xf_selected(nodes, j):
@@ -2042,30 +1892,32 @@ def _xf_selected(nodes, j):
     return len(sel) == 1 and sel[0]["name"] == nodes[j]["name"]
 
 
-def _xf_reveal(br, run, key):
-    """폴더 창에서 그 폴더가 안 보이면(조상이 접힘) 머리부터 조상을 차례로 펼친다 → (노드, 나무, 찾은 순번 | None)."""
+def _xf_reveal(br, run, key, mid=None):
+    """폴더 창에서 그 폴더가 안 보이면(조상이 접힘) 머리부터 조상을 차례로 펼친다 → (노드, 나무, 찾은 순번 | None).
+    mid 를 주면 내 사서함 안에서만 찾고 펼친다(_xf_find)."""
     nodes, trees, _h = _tree(br, run)
-    j = owa_parse.find_node(nodes, key, trees)
+    j = _xf_find(nodes, trees, key, mid)
     for k in range(2, len(key)):
         if j is not None or run.xf["exp"] >= XF_EXPAND_MAX:
             break
-        a = owa_parse.find_node(nodes, key[:k], trees)
+        a = _xf_find(nodes, trees, key[:k], mid)
         if a is None:
             break
         if nodes[a]["ex"] == 0:
-            _ok, nodes, trees = _xf_expand(br, run, nodes, trees, a)
-        j = owa_parse.find_node(nodes, key, trees)
+            _ok, nodes, trees = _xf_expand(br, run, nodes, trees, a, mid)
+        j = _xf_find(nodes, trees, key, mid)
     return nodes, trees, j
 
 
-def _xf_open(br, run, key, href0):
+def _xf_open(br, run, key, href0, mid=None):
     """다른 폴더 하나를 연다 — 폴더 창을 다시 읽어 그 항목(node_key)을 찾고 이름 글을 누른다(이 실행에서 통한 방법 먼저: 신뢰
     마우스 → 합성 사건 → 포커스 + 신뢰 Enter). 그 항목의 선택 표시와 주소 바뀜(앞 폴더 주소 href0 와 다름)으로 확인한다.
-    → 연 주소 | None(전환 실패 — 그 폴더는 읽지 않는다)."""
+    누르기 직전에 다시 읽은 폴더 창에서 그 항목이 내 것임을 보인 사서함(mid) 안의 폴더일 때만 누른다 — 이름과 경로가 같은 다른
+    사서함의 폴더는 누르지 않는다. → 연 주소 | None(전환 실패 — 그 폴더는 읽지 않는다)."""
     for how in _order(run.xf_nav, XF_NAV):
         if run.out_of_time():
             return None
-        nodes, trees, j = _xf_reveal(br, run, key)
+        nodes, trees, j = _xf_reveal(br, run, key, mid)
         if j is None:
             run.bump("xf_gone")
             return None
@@ -2081,7 +1933,7 @@ def _xf_open(br, run, key, href0):
         for _ in range(XF_WAIT):
             _sleep(0.8)
             nodes, trees, href = _tree(br, run)
-            j2 = owa_parse.find_node(nodes, key, trees)
+            j2 = _xf_find(nodes, trees, key, mid)
             if href and href != href0 and j2 is not None:
                 weak = not any(n["sel"] for n in nodes)  # 선택 표시(aria-selected)를 아예 쓰지 않는 폴더 창 — 주소 바뀜만
                 if _xf_selected(nodes, j2) or weak:
@@ -2111,7 +1963,7 @@ def _xf_scan(br, run):
     nodes, trees, _h = _tree(br, run)
     if not nodes:
         return False
-    scope, _why = owa_parse.pick_mailbox(nodes, trees)
+    scope, _why = owa_parse.pick_mailbox(nodes, trees, run.me, XF_GOOD)
     if scope is None or scope["score"] < XF_GOOD:
         return True
     p = owa_parse.plan_folders(nodes, scope, run.xf_skip)
@@ -2141,7 +1993,12 @@ def _xf_down(run, day_st, folders, d0, d1):
 def _xf_run(br, run, d0, d1, day_st, take):
     """받은·보낸 편지함 다음 — 기본 사서함의 다른 폴더를 찾아(접힌 폴더는 펼쳐) 하나씩 열고 목록으로 읽는다(LM28-OWA-5).
     take(got) → 받은 행 수(같은 항목 키·같은 메일은 뺀다). day_st 는 낮추기만 한다(owa_parse.cap_extra). → None | 'login' | 'personal'.
-    로그는 수만 — 폴더 이름은 쓰지 않는다."""
+    내 것임을 보인 사서함만 읽는다(owa_parse.pick_mailbox: 내 주소(run.me)를 담은 머리 또는 받은 편지함 주소로 연 화면의 선택 표시 —
+    표시 이름이 같다는 것만으로는 읽지 않는다).
+    보이지 않으면 접힌 머리(내 주소를 담은 머리가 있으면 그것만)를 펼쳐 다시 고르고, 그래도 못 가리면 받은·보낸 편지함만 읽는다 —
+    공유·위임 사서함의 폴더를 내 메일로 읽지 않는다. 고른 사서함은 표(owa_parse.mailbox_id — 나무 이름·머리 이름)로 기억하고, 폴더를
+    펼치거나 누를 때마다 다시 읽은 폴더 창에서 그 사서함 안의 항목인지 확인한다(_xf_find) — 이름이 같은 사서함이 둘이면 다른 폴더는
+    읽지 않는다. 로그는 수만 — 폴더 이름은 쓰지 않는다."""
     xf = run.xf
     # 받은 편지함 주소로 한 번 — 앞 단계가 남긴 검색 결과·검색어를 걷고 폴더 창을 새로 그린다. 그 목록 화면의 키가 첫 폴더의
     # '앞 목록 그대로' 거르기 재료다(폴더를 누른 직후 받은 편지함 목록이 남은 화면을 그 폴더로 읽지 않게).
@@ -2163,20 +2020,29 @@ def _xf_run(br, run, d0, d1, day_st, take):
             "다른 폴더도 읽습니다")
         return None
     tried = set()
-    scope, why = owa_parse.pick_mailbox(nodes, trees)
-    if scope is None or scope["score"] < XF_GOOD:   # 기본 사서함 머리가 접혀 있을 수 있다 — 접힌 머리를 펼쳐 다시 고른다
+    scope, why = owa_parse.pick_mailbox(nodes, trees, run.me, XF_GOOD)
+    if scope is None or scope["score"] < XF_GOOD:   # 내 사서함 머리가 접혀 있을 수 있다 — 접힌 머리를 펼쳐 다시 고른다
         for _ in range(XF_ROOT_OPEN):
-            cand = [i for i in owa_parse.open_roots(nodes, trees) if owa_parse.node_key(nodes, i, trees) not in tried]
+            cand = [i for i in owa_parse.open_roots(nodes, trees, run.me) if owa_parse.node_key(nodes, i, trees) not in tried]
             if not cand or run.out_of_time():
                 break
             tried.add(owa_parse.node_key(nodes, cand[0], trees))
             ok, nodes, trees = _xf_expand(br, run, nodes, trees, cand[0])
             xf["expok" if ok else "expf"] += 1
-        scope, why = owa_parse.pick_mailbox(nodes, trees)
+            scope, why = owa_parse.pick_mailbox(nodes, trees, run.me, XF_GOOD)
+            if scope is not None and scope["score"] >= XF_GOOD:
+                break                               # 내 사서함을 가렸다 — 다른 머리(공유·위임 사서함)는 펼치지 않는다
+    mid = None
+    if scope is not None and scope["score"] >= XF_GOOD:
+        # 고른 사서함의 표 — 같은 표(나무 이름·머리 이름)의 사서함이 이 화면에 또 있으면 다시 읽은 폴더 창에서 내 것을 가릴 수 없다
+        mid = owa_parse.mailbox_id(nodes, trees, scope)
+        mb = owa_parse.mailbox_of(nodes, trees, mid, XF_GOOD)
+        if mb is None or (mb["kind"], mb["root"], mb["tree"]) != (scope["kind"], scope["root"], scope["tree"]):
+            scope, why = None, "nomb"
     if scope is None or scope["score"] < XF_GOOD:
-        # 시스템 폴더가 몇 개뿐인 곳(이름 표시 없는 즐겨찾기 — 공유 사서함 폴더가 섞일 수 있다)은 기본 사서함으로 믿지 않는다
+        # 내 것임을 보이지 못한 사서함(공유·위임 사서함일 수 있다)과 시스템 폴더가 몇 개뿐인 곳(이름 표시 없는 즐겨찾기)은 읽지 않는다
         xf["enum"], xf["shape"] = why or "nomb", owa_parse.tree_shape(nodes, trees, scope)
-        log("다른 메일 폴더: 폴더 창에서 기본 사서함(받은 편지함을 품은 곳)을 가리지 못해 받은·보낸 편지함만 읽었습니다")
+        log("다른 메일 폴더: 폴더 창에서 내 사서함을 가리지 못해 받은·보낸 편지함만 읽었습니다")
         return None
     fails = 0
     while True:                              # 접힌 폴더 펼치기 — 펼칠 때마다 다시 읽어 새로 보인 하위도 본다
@@ -2190,17 +2056,20 @@ def _xf_run(br, run, d0, d1, day_st, take):
                 "폴더는 이번에 읽지 않습니다")
             break
         tried.add(owa_parse.node_key(nodes, todo[0], trees))
-        ok, nodes, trees = _xf_expand(br, run, nodes, trees, todo[0])
+        ok, nodes2, trees2 = _xf_expand(br, run, nodes, trees, todo[0], mid)
         xf["expok" if ok else "expf"] += 1
         fails = 0 if ok else fails + 1
         if fails >= XF_DEAD and not xf["expok"]:
             xf["expcap"] = len(todo) - 1
             log("다른 메일 폴더: 접힌 폴더를 펼치는 방법이 이 화면에서 먹지 않습니다 — 보이는 폴더만 읽습니다")
             break
-        scope2, _w = owa_parse.pick_mailbox(nodes, trees)
-        if scope2 is None:
+        scope2, _w = owa_parse.pick_mailbox(nodes2, trees2, run.me, XF_GOOD)
+        if scope2 is None or scope2["score"] < XF_GOOD or owa_parse.mailbox_id(nodes2, trees2, scope2) != mid:
+            # 다시 읽은 폴더 창에서 같은 사서함을 같은 근거로 가리지 못했다 — 그 화면의 순번을 앞 화면의 범위에 섞지 않는다
+            # (노드·나무·범위는 늘 같은 한 장의 것) · 앞 화면까지 본 폴더만 읽는다
+            run.bump("xf_repick")
             break
-        scope = scope2
+        nodes, trees, scope = nodes2, trees2, scope2
     plan = owa_parse.plan_folders(nodes, scope, run.xf_skip)
     xf["shape"] = owa_parse.tree_shape(nodes, trees, scope)
     xf["sys"], xf["user"], xf["enum"] = plan["sys"], plan["user"], "ok"
@@ -2224,7 +2093,7 @@ def _xf_run(br, run, d0, d1, day_st, take):
             log(f"다른 메일 폴더: 시간 예산에 닿아 {len(left)}개는 읽지 못했습니다 — 그 폴더가 덮는 날은 '일부'로 남아 다음 실행이 "
                 "다시 읽습니다")
             break
-        url = _xf_open(br, run, f["key"], href)
+        url = _xf_open(br, run, f["key"], href, mid)
         if not url:
             xf["fail"] += 1
             _xf_down(run, day_st, [f], d0, d1)
@@ -2243,20 +2112,23 @@ def _xf_run(br, run, d0, d1, day_st, take):
             xf["urlskip"] += 1                   # 이름으로 못 알아본 시스템 폴더 — 주소가 말한다(읽지 않음 · 낮추지 않음)
             continue
         xf["read"] += 1
-        got, meta = _read_screens(br, run, f["box"], d0, d1, True, opener=False, stale=set(run.last_keys))
+        got, meta = _read_screens(br, run, f["box"], d0, d1, True, stale=set(run.last_keys))
         if meta["end"] == "nolist" and not got:  # 목록 칸이 안 그려졌다 — 기억한 주소로 한 번 다시 연다
             st = br.goto(url)
             if st in ("login", "personal"):
                 return st
             if st == "ok":
                 run.bump("xf_regoto")
-                got, meta = _read_screens(br, run, f["box"], d0, d1, True, opener=False)
+                got, meta = _read_screens(br, run, f["box"], d0, d1, True)
         v, D = owa_parse.slice_verdict([g[1] for g in got], d0, d1, meta["empty"], True, meta["reached"])
         if v != "empty_verified" and not meta["mail_ok"]:
             v, D = "unverified", None            # 메일 목록으로 확인 못 한 칸 — 행은 받되 끝 근거는 없다
         if owa_parse.same_folder(meta["sel"], f["name"]) is False:
             run.bump("xf_mismatch")              # 선택된 폴더가 다른 곳 — 다른 폴더의 행을 이 폴더로 적지 않는다
             got, v, D = [], "unverified", None
+        for _it, _d, r in got:
+            if r:
+                r[8]["folder"] = f["name"]
         _xf_ends(run, meta, v, D, d0)
         xf["down"] += owa_parse.cap_extra(day_st[AXIS_OF[f["box"]]], owa_parse.verdict_ranges(v, D, d0, d1))
         xf["rows"] += take(got)
@@ -2268,7 +2140,7 @@ def _xf_run(br, run, d0, d1, day_st, take):
 
 
 def _xf_fake(run, d0, d1, fake, take):
-    """회귀용(LM_OWA_FAKE) 다른 폴더 — 달마다 'folders': {'상위/하위': [항목…]} 를 폴더별로 모아 읽은 것으로 친다(끝 근거 있음 —
+    """회귀용(AF32_OWA_FAKE) 다른 폴더 — 달마다 'folders': {'상위/하위': [항목…]} 를 폴더별로 모아 읽은 것으로 친다(끝 근거 있음 —
     낮추지 않는다). 첫 마디가 시스템 폴더면 뺀다 · 보낸 편지함이면 sent · 받은·보낸 편지함 자신(한 마디)은 이미 읽었다."""
     xf = run.xf
     folders = {}
@@ -2298,7 +2170,9 @@ def _xf_fake(run, d0, d1, fake, take):
             info = {}
             r = parse_mail_item(it, d0, d1, box, run.today, info)
             if r and r[6] == "date":
-                _recover(None, run, it, r, box)
+                _recover(run, it, r)
+            if r:
+                r[8]["folder"] = name
             got.append((it, info.get("date"), r))
         xf["rows"] += take(got)
 
@@ -2394,13 +2268,13 @@ def collect_mail(br, d0, d1, fake=None, today=None, run=None):
                 continue
             tried = True
             ax = AXIS_OF[folder]
-            if fake is not None:            # 회귀용(LM_OWA_FAKE) — 검색·스크롤 없이 그 달 항목이 곧 검색 결과
+            if fake is not None:            # 회귀용(AF32_OWA_FAKE) — 검색·스크롤 없이 그 달 항목이 곧 검색 결과
                 got = []
                 for it in _fake_mail_batch(fake, s.strftime("%Y-%m"), folder):
                     info = {}
                     r = parse_mail_item(it, s, e, folder, run.today, info)
                     if r and r[6] == "date":
-                        _recover(None, run, it, r, folder)
+                        _recover(run, it, r)
                     got.append((it, info.get("date"), r))
                 diag["pages"] += 1
                 v, D = owa_parse.slice_verdict([g[1] for g in got], s, e, bool(fake.get("empty_marker")), False, True)
@@ -2566,8 +2440,8 @@ def _cen_geo(cc, pg, geo, live, calib):
 
 
 def _bad_shape(cc, ev, why):
-    """못 읽은 일정 막대의 꼴(최대 3개 — 구조만): 라벨·글은 owa_parse.mask_cal 로 가린 것(글자 x — 숫자·구두점·오전/오후·요일·
-    종일만) · 날짜 표기 꼴(fmt_flags) · 까닭(why) · 막대 안 aria-label 수(al) · 위치 요약(p). 같은 꼴은 한 번, 칸이 찼으면 새
+    """못 읽은 일정 막대의 꼴(최대 3개 — 구조만): 라벨·글은 owa_parse.mask_cal 로 가린 것(글자 x — 날짜·시각 꼴의 숫자·구두점·
+    오전/오후·요일·종일만, 그 밖의 숫자는 #) · 날짜 표기 꼴(fmt_flags) · 까닭(why) · 막대 안 aria-label 수(al) · 위치 요약(p). 같은 꼴은 한 번, 칸이 찼으면 새
     (표기 꼴·까닭) 조합이 같은 조합 둘째 것을 밀어낸다 — 사진 한 장에 서로 다른 꼴이 보이게."""
     bl = cc.setdefault("bad", [])
     label = str(ev.get("label") or "")
@@ -2686,286 +2560,22 @@ def _pick_week(br, run, tgt, head=""):
     return fail("cap")
 
 
-# ── 일정 본문 발췌(LM28-OWA-5 — core\meetnote 가 분석에서 판정에 덧붙인다) ───────────────────────────────
-_MN = {}
-
-
-def _meetnote():
-    """core\\meetnote.clean_body(text, max_len) — 처음 쓸 때 한 번 불러온다(이 모듈의 최상위는 가볍게 — Get-TeamsWeb 도 이 파일을
-    불러온다). 못 불러오면 None(아래 대체 정리만)."""
-    if "f" not in _MN:
-        core = os.path.join(ROOT, "core")
-        if core not in sys.path:
-            sys.path.insert(0, core)
-        try:
-            import meetnote
-            _MN["f"] = getattr(meetnote, "clean_body", None)
-        except Exception:                   # 없거나 깨진 모듈 — 본문 읽기는 대체 정리로 계속한다
-            _MN["f"] = None
-    return _MN["f"]
-
-
-def _clean_body(text):
-    """상세의 본문 칸 글 → 발췌(줄바꿈·탭은 공백, CB_LEN 자). core\\meetnote.clean_body(온라인 회의 안내문·링크·연락처·참석자
-    목록을 걷는다)를 쓰고, 못 쓰면 링크만 걷고 자른다(G1 — run.g1_mail 이 다음에 같은 규칙으로 다시 정제한다)."""
-    t = str(text or "")
-    if not t.strip():
-        return ""
-    fn = _meetnote()
-    if fn is not None:
-        try:
-            out = fn(t, max_len=CB_LEN)
-        except Exception:
-            out = None
-        if isinstance(out, str):
-            return re.sub(r"\s+", " ", out).strip()[:CB_LEN]
-    t = re.sub(r"(?i)<?\b(?:https?://|www\.)[^\s<>\"']+>?", " ", t)
-    return re.sub(r"\s+", " ", t).strip()[:CB_LEN]
-
-
-def _cb_on(run):
-    """이 실행에서 본문을 읽나 — owaCalBodyMax>0 · storeMailSubject(저장물 최소화면 읽지 않는다) · 멈추지 않음 · 쉬는 날 아님."""
-    return (run.cb_max > 0 and run.store_subject and not run.cb["dead"]
-            and not (run.cb_off and run.today.isoformat() <= run.cb_off))
-
-
 def _private(ev):
-    return bool(re.search(r"비공개|private", " ".join([str(ev.get("label") or "")] + [str(x) for x in ev.get("alt") or []]
-                                                       + [str(x) for x in ev.get("texts") or []]), re.I))
+    """일정 막대의 '비공개·Private' 표지(잠금 표시 이름) — 민감도 2(G1 이 private 로 뺀다)."""
+    return owa_parse.is_private_label([str(ev.get("label") or "")] + [str(x) for x in ev.get("alt") or []]
+                                      + [str(x) for x in ev.get("texts") or []])
 
 
-def _cb_want(run, ev, r):
-    """본문을 읽을 회의인가 → 캐시 열쇠 | None. 한 실행에 회의마다 한 번만 센다(여러 주에 걸친 막대). 이미 읽음(캐시)·종일·오늘
-    이후(진행 중·곧 시작할 회의엔 참가 단추가 뜬다)·비공개는 열지 않는다."""
-    key = owa_parse.body_key(r[0], r[1], r[4])
-    if key in run.cb_seen:
-        return None
-    run.cb_seen.add(key)
-    if key in run.cb_cache:
-        run.cb["cache"] += 1
-        return None
-    if r[2] == "True" or r[1][:10] >= run.today.isoformat() or _private(ev):
-        run.cb["skip"] += 1
-        return None
-    return key
+_DECLINED = re.compile(r"(?i)(?<![가-힣A-Za-z])(?:거절함|거절됨|declined)(?![A-Za-z])")
+_CANCELED = re.compile(r"(?i)^\s*(?:취소됨|취소|canceled|cancelled)\s*[:：]|(?<![가-힣A-Za-z])(?:취소된\s*(?:모임|회의|이벤트)|canceled|cancelled)(?![A-Za-z])")
 
 
-def _cb_room(run, weeks_left):
-    """본문을 하나 더 열 시간이 있나 — 본문 읽기 상한(CB_TIME_MAX) 안이고, 남은 주를 읽을 시간(주마다 CB_WEEK_SEC + CB_SPARE)이 남았다."""
-    if run.cb["t"] >= CB_TIME_MAX or run.out_of_time():
-        return False
-    return run.deadline is None or run.deadline - time.time() > weeks_left * CB_WEEK_SEC + CB_SPARE
-
-
-def _same_title(hd, subject):
-    """상세 머리 제목이 그 일정 제목인가 — 공백 접기·소문자, 한쪽이 다른 쪽을 품으면(제목 속 쉼표에서 잘린 제목 포함). 모르면 True."""
-    a = re.sub(r"\s+", " ", str(hd or "")).strip().lower()[:80]
-    b = re.sub(r"\s+", " ", str(subject or "")).strip().lower()[:80]
-    if not a or not b:
-        return True
-    return a in b or b in a
-
-
-def _bar_act(br, k):
-    try:
-        r = br.eval_json(JS_CAL_BAR.replace("__K__", str(int(k)))) or {}
-    except Exception:
-        return {}
-    return r if isinstance(r, dict) else {}
-
-
-def _cal_detail(br, act="read"):
-    """JS_CAL_DETAIL — read → dict · state·xbtn → 글('open'·'gone'·'ok'·'none')."""
-    js = JS_CAL_DETAIL.replace("__ACT__", act)
-    try:
-        if act == "read":
-            r = br.eval_json(js) or {}
-            return r if isinstance(r, dict) else {}
-        return str(br.cdp.eval(js) or "")
-    except Exception:
-        return {} if act == "read" else ""
-
-
-def _cb_close(br, run):
-    """연 상세를 닫는다 — 신뢰 Esc → 닫혔나(1.5초) → 안 닫혔으면 그 상자의 '닫기' 단추 → 닫혔나. → 닫혔나."""
-    _key(br, "Escape")
-    for _ in range(3):
-        _sleep(0.5)
-        if _cal_detail(br, "state") == "gone":
-            return True
-    if _cal_detail(br, "xbtn") == "ok":
-        for _ in range(3):
-            _sleep(0.5)
-            if _cal_detail(br, "state") == "gone":
-                run.cb["xbtn"] += 1
-                return True
-    return False
-
-
-def _cb_view_ok(br, run, ref):
-    """상세를 연 뒤 주 보기가 그 주(ref) 그대로인가 — 아니면 Esc 한 번 더 → 그래도 아니면 그 주 주소로 되돌리고 본문 읽기를
-    CB_OFF_DAYS 일 쉰다(다음 '이전 주'가 엉뚱한 화면에서 눌리지 않게). → 그대로였나."""
-    if cal_screen_range(_cal_page(br, 2), run.today) == ref:
-        return True
-    _key(br, "Escape")
-    _sleep(1.0)
-    if cal_screen_range(_cal_page(br, 2), run.today) == ref:
-        return True
-    run.cb["dead"] = "view"
-    run.cb_off = (run.today + timedelta(days=CB_OFF_DAYS)).isoformat()
-    back = br.goto(_cal_url(br, ref[0]), wait=5.0) == "ok" and cal_screen_range(_cal_page(br), run.today) == ref
-    run.bump("cb_view_restore" if back else "cb_view_lost")
-    log(f"일정 본문: 회의 상세를 연 뒤 주 보기가 바뀌어 {'그 주로 되돌렸습니다' if back else '되돌리지 못했습니다'} — 본문 읽기는 "
-        f"{CB_OFF_DAYS}일 쉽니다")
-    return False
-
-
-def _cal_bodies(br, run, pg, pairs, ref, weeks_left):
-    """확인한 주(ref)의 지난 회의 본문 발췌(LM28-OWA-5). 막대(JS_CAL 의 window.__lm_ev 순번)를 신뢰 마우스로 눌러 상세를 열고
-    본문 칸만 읽어(_clean_body) run.cb_new[열쇠] 에 둔다 — 본문 칸을 찾았는데 안내문뿐이면 빈 발췌도 둔다(다시 열지 않게). 상세 머리
-    제목이 그 일정 제목과 다르면 버린다. 닫기를 확인하지 못하면 이 실행은 그만(cb.dead 'stuck'), 처음부터 CB_NONE_MAX 번 상세가
-    안 뜨면 그만('none'), 처음 연 뒤·상세가 안 뜬 뒤에는 주 보기가 그대로인지 본다(_cb_view_ok). 수만 센다 — 글은 남기지 않는다."""
-    if not _cb_on(run) or not isinstance(pg, dict):
-        return
-    evs = pg.get("events") or []
-    todo = []
-    for ev, r in pairs:
-        key = _cb_want(run, ev, r)
-        k = next((i for i, x in enumerate(evs) if x is ev), -1) if key else -1
-        if k >= 0:
-            todo.append((k, ev, r, key))
-    cb = run.cb
-    for n_, (k, ev, r, key) in enumerate(todo):
-        if cb["open"] >= run.cb_max or not _cb_room(run, weeks_left):
-            cb["cap"] += len(todo) - n_
-            break
-        t0 = time.time()
-        a = _bar_act(br, k)
-        if a.get("r") == "gone":            # 막대가 다시 그려졌다 — 주 화면을 다시 읽어 같은 이름의 막대로
-            evs2 = _cal_page(br, 1).get("events") or []
-            k = next((i for i, x in enumerate(evs2) if isinstance(x, dict) and x.get("label") == ev.get("label")), -1)
-            a = _bar_act(br, k) if k >= 0 else {}
-        if a.get("r") != "ok" or not _click_at(br, a.get("x"), a.get("y")):
-            cb["join" if a.get("r") == "join" else "skip"] += 1
-            cb["t"] += time.time() - t0
-            continue
-        cb["open"] += 1
-        d = {}
-        for _ in range(5):
-            _sleep(0.6)
-            d = _cal_detail(br, "read")
-            if d.get("found"):
-                break
-        if d.get("found"):
-            cb["found"] += 1
-            if d.get("how") and not _same_title(d.get("hd"), r[4]):
-                cb["mis"] += 1              # 다른 회의의 상세 — 이 회의 본문으로 적지 않는다
-            elif d.get("how"):
-                body = _clean_body(d.get("text"))
-                run.cb_new[key] = body
-                if body:
-                    cb["body"] += 1
-                    cb["how"][d["how"]] = cb["how"].get(d["how"], 0) + 1
-            if not _cb_close(br, run):
-                cb["dead"] = "stuck"
-                cb["t"] += time.time() - t0
-                log("일정 본문: 회의 상세가 닫히지 않아 이번 실행은 본문 읽기를 멈춥니다")
-                return
-            cb["closed"] += 1
-        else:
-            cb["none"] += 1
-            _key(br, "Escape")              # 무엇이 열렸는지 모른다 — 한 번 닫아 본다
-        cb["t"] += time.time() - t0
-        if (cb["open"] == 1 or not d.get("found")) and not _cb_view_ok(br, run, ref):
-            return
-        if cb["none"] >= CB_NONE_MAX and not cb["found"]:
-            cb["dead"] = "none"
-            log("일정 본문: 회의 막대를 눌러도 상세가 뜨지 않아 이번 실행은 본문 읽기를 멈춥니다")
-            return
-
-
-def _cb_fake(run, pairs):
-    """회귀용(LM_OWA_FAKE) — 일정의 body 를 그 회의 상세의 본문 칸으로 친다(같은 건너뛰기 규칙·상한)."""
-    if not _cb_on(run):
-        return
-    for ev, r in pairs:
-        key = _cb_want(run, ev, r)
-        if not key:
-            continue
-        if run.cb["open"] >= run.cb_max:
-            run.cb["cap"] += 1
-            continue
-        run.cb["open"] += 1
-        run.cb["found"] += 1
-        run.cb["closed"] += 1
-        if "body" in ev:
-            body = _clean_body(ev.get("body"))
-            run.cb_new[key] = body
-            run.cb["body"] += 1 if body else 0
-
-
-def _set_body(r, body):
-    """일정 행(7열·9열) 끝 열 body 에 싣는다(10열로)."""
-    if len(r) < 9:
-        r.extend([""] * (9 - len(r)))
-    if len(r) == 9:
-        r.append(body)
-    else:
-        r[9] = body
-
-
-def _cb_fill(run, rows):
-    """이번에 읽은 발췌·캐시의 발췌를 행의 끝 열 body 에 싣는다(제목·시작·끝으로 맞댄다)."""
-    if not (run.cb_new or run.cb_cache) or not run.store_subject:
-        return
-    for r in rows:
-        k = owa_parse.body_key(r[0], r[1], r[4])
-        b = run.cb_new.get(k) or run.cb_cache.get(k)
-        if b:
-            _set_body(r, b)
-
-
-def _cb_load(path):
-    """발췌 캐시 파일 → ({열쇠: 발췌}, 쉬는 날 'YYYY-MM-DD'|''). 없거나 깨졌으면 ({}, ''). 발췌는 'body' 목록([열쇠, 발췌] 쌍)에
-    둔다 — tools\\diag_bundle 이 'body' 키의 값을 '<가림: n개>' 로 바꾸므로 진단 묶음에 글이 실리지 않는다."""
-    try:
-        with open(path, encoding="utf-8-sig") as f:
-            o = json.load(f)
-    except (OSError, ValueError):
-        return {}, ""
-    if not isinstance(o, dict):
-        return {}, ""
-    out = {}
-    for x in o.get("body") or []:
-        if isinstance(x, list) and len(x) == 2 and isinstance(x[0], str) and isinstance(x[1], str):
-            out[x[0][:60]] = x[1][:CB_LEN]
-    off = str(o.get("off_until") or "")[:10]
-    return out, (off if re.fullmatch(r"\d{4}-\d{2}-\d{2}", off) else "")
-
-
-def _cb_save(run, off0=""):
-    """발췌 캐시를 쓴다(이번에 읽은 것을 더하고 CB_KEEP 개 — 시작이 늦은 것부터 남긴다). 읽은 것도 쉬는 날 바뀜도 없으면 안 쓴다."""
-    if not run.cb_path or not run.store_subject or (not run.cb_new and run.cb_off == off0):
-        return False
-    allb = dict(run.cb_cache)
-    allb.update(run.cb_new)
-    keep = sorted(allb.items(), reverse=True)[:CB_KEEP]
-    o = {"v": 1, "note": "Outlook 웹 일정 본문 발췌 캐시(LM28-OWA-5) — 한 번 읽은 회의는 다시 열지 않습니다. 지워도 됩니다(다음 "
-                         "실행이 다시 엽니다).",
-         "off_until": run.cb_off or "", "body": [[k, v] for k, v in sorted(keep)]}
-    tmp = run.cb_path + ".tmp"
-    try:
-        os.makedirs(os.path.dirname(run.cb_path) or ".", exist_ok=True)
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(o, f, ensure_ascii=False)
-        os.replace(tmp, run.cb_path)
-        return True
-    except OSError:
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
-        return False
+def _cal_meta(ev):
+    """일정 막대 → G1 재료 {"priv", "resp", "ms"} — 비공개 표지 · 거절함(응답 4) · 취소됨(회의 상태 5). 글은 남기지 않는다."""
+    joined = " | ".join([str(ev.get("label") or "")] + [str(x) for x in ev.get("alt") or []]
+                        + [str(x) for x in ev.get("texts") or []])
+    return {"priv": _private(ev), "resp": "4" if _DECLINED.search(joined) else "",
+            "ms": "5" if _CANCELED.search(joined) else ""}
 
 
 def collect_cal(br, d0, d1, fake=None, today=None, run=None):
@@ -2999,7 +2609,6 @@ def collect_cal(br, d0, d1, fake=None, today=None, run=None):
     zero_weeks = []                         # 일정 0개로 확인한 주 — 끝에 '이 실행에서 일정을 읽었나'로 ok·partial 을 정한다
     n_weeks = ((d1 - timedelta(days=d1.weekday())) - (d0 - timedelta(days=d0.weekday()))).days // 7 + 1
     run.c["weeks_total"] = n_weeks
-    last_pairs = []                         # LM28-OWA-5: 마지막 keep 이 읽은 (막대, 행) — 확인한 주의 회의 본문 읽기 재료
 
     def keep(evs, hs, he, check, pg=None):
         """그 주 화면의 일정 → (그 주의 행 | None, 못 읽은 일정 막대 수, 숨은 일정 칩 수). 기간과 겹치는 것만·중복 한 번 rows 에
@@ -3028,8 +2637,7 @@ def collect_cal(br, d0, d1, fake=None, today=None, run=None):
             if outs and len(outs) * 10 <= len(pos) * 4:
                 live = [ev for ev in live if id(ev) not in outs]
                 side += len(outs)
-        got, todo, calib, pairs = [], [], [], []
-        last_pairs[:] = []
+        got, todo, calib = [], [], []
         for ev in live:
             info = {}
             r = parse_event(ev, hs, he, None, info)
@@ -3038,8 +2646,8 @@ def collect_cal(br, d0, d1, fake=None, today=None, run=None):
                 continue
             if check and (r[1][:10] < (hs - one).isoformat() or r[0][:10] > (he + one).isoformat()):
                 return None, 0, 0
+            r.append(_cal_meta(ev))
             got.append(r)
-            pairs.append((ev, r))
             if (geo and info.get("nt", 0) >= 2 and r[2] == "False" and r[0][:10] == r[1][:10] and _pos_ok(ev)
                     and _int(ev.get("in")) == 1 and not _int(ev.get("ad"))):
                 calib.append((ev.get("t"), _mins(r[0]), ev.get("b"), _mins(r[1])))
@@ -3052,8 +2660,8 @@ def collect_cal(br, d0, d1, fake=None, today=None, run=None):
                 info = {}
                 r = parse_event(ev, hs, he, geo, info)
             if r:
+                r.append(_cal_meta(ev))
                 got.append(r)
-                pairs.append((ev, r))
                 ev_n["pos"] += 1
                 for k in (info.get("d"), info.get("t")):
                     if k in ps_n:
@@ -3086,7 +2694,6 @@ def collect_cal(br, d0, d1, fake=None, today=None, run=None):
             if r[0][:10] != r[1][:10]:
                 diag["multi_day"] = diag.get("multi_day", 0) + 1
             rows.append(r)
-        last_pairs[:] = pairs
         return got, bad, more
 
     def done(st):
@@ -3103,19 +2710,17 @@ def collect_cal(br, d0, d1, fake=None, today=None, run=None):
         cc["weeks"] = {"ok": run.c["weeks_ok"], "zero": wk["zero"], "part": run.c["weeks_partial"],
                        "unv": run.c["weeks_unverified"], "total": n_weeks}
         rows.sort(key=lambda r: r[0])
-        _cb_fill(run, rows)                 # 회의 본문 발췌(이번에 읽은 것 + 캐시) → 끝 열 body
         log(f"일정: {diag['weeks']}주(확인 {run.c['weeks_ok']} · 일부 {run.c['weeks_partial']} · 미확인 "
             f"{run.c['weeks_unverified']} · 클릭 {run.c['cal_clicks']}) · 요소 {diag['events']}개 중 해석 {len(rows)}건 "
             f"(다일 {diag.get('multi_day', 0)}건)")
         return rows, st, diag, day_st
 
-    if fake is not None:                    # 회귀용(LM_OWA_FAKE) — LM24 처럼 월요일 주마다, 각본에 있는 주는 읽음
+    if fake is not None:                    # 회귀용(AF32_OWA_FAKE) — LM24 처럼 월요일 주마다, 각본에 있는 주는 읽음
         cur = d0 - timedelta(days=d0.weekday())
         while cur <= d1:
             diag["weeks"] += 1
             evs = (fake.get("cal") or {}).get(cur.isoformat())
             keep([ev for ev in evs or [] if isinstance(ev, dict)], cur, cur + timedelta(days=6), False)
-            _cb_fake(run, list(last_pairs))
             if evs is not None:
                 wk["ok"] += 1
                 owa_parse.apply_ranges(day_st, [(max(cur, d0), min(cur + timedelta(days=6), d1), "ok")], run.today)
@@ -3298,8 +2903,6 @@ def collect_cal(br, d0, d1, fake=None, today=None, run=None):
                 else:
                     wk["zero"] += 1
                     zero_weeks.append((a, b))
-                if got:                     # LM28-OWA-5: 확인한 주의 지난 회의 본문 발췌 — 남은 주를 읽을 시간을 먼저 남긴다
-                    _cal_bodies(br, run, pg, list(last_pairs), ref, max(0, (ref[0] - d0).days // 7))
             else:
                 wk["unv"] += 1
         if ref[0] <= d0 or run.out_of_time():
@@ -3315,31 +2918,6 @@ def collect_cal(br, d0, d1, fake=None, today=None, run=None):
     return done("ok" if rows else "empty")
 
 
-def _esc(s):
-    s = re.sub(r"[\r\n]+", " ", str(s or ""))
-    return '"' + s.replace('"', '""') + '"' if ("," in s or '"' in s) else s
-
-
-def _has_data(path):
-    try:
-        with open(path, encoding="utf-8-sig") as f:
-            return sum(1 for ln in f if ln.strip()) > 1
-    except OSError:
-        return False
-
-
-def _read_rows(path, min_cols):
-    """기존 CSV 의 행(머리 제외) — 없거나 못 읽으면 []. 열이 모자란 행은 버린다(extract._read 와 같은 기준)."""
-    import csv as _csv
-    try:
-        with open(path, encoding="utf-8-sig", errors="replace", newline="") as f:
-            rd = _csv.reader(f)
-            next(rd, None)
-            return [list(r) for r in rd if r and len(r) >= min_cols]
-    except OSError:
-        return []
-
-
 def _verified(day_st_by_axis):
     """{축: {날짜: st}} → {축: [(from, to)]} — 이번에 끝까지 읽은 날(ok·zero_ok)만. 병합이 이 날의 옛 행을 바꾼다."""
     out = {}
@@ -3348,46 +2926,72 @@ def _verified(day_st_by_axis):
     return out
 
 
-def _save(kind, rows, store_subject, dst=None, verified=None, bodies=None):
-    """LM28: 통째로 덮어쓰지 않는다(W1-04) — 옛 행과 owa_parse.merge_slices 로 합친다: 이번에 검증한 날(verified)의 옛 행만
-    새 행으로 바꾸고, 미검증 날의 옛 행은 그대로 둔다. 임시 파일에 쓴 뒤 바꿔 넣는다. → (경로, 쓴 행 수)
-    LM28-OWA-5 일정: 끝 열 body(옛 9열 파일의 행은 빈 값으로 늘린다). bodies({body_key: 발췌} — 캐시 포함)로 본문이 빈 행을 채운다
-    (미검증 주의 옛 행은 새 행으로 바뀌지 않으니 거기에도 싣는다). storeMailSubject=false 면 모든 행의 본문을 비운다(저장물 최소화)."""
-    dst = dst or os.path.join(OUT_DIR, "mail.csv" if kind == "mail" else "calendar.csv")
-    hdr = MAIL_HDR if kind == "mail" else CAL_HDR
-    hdr_n = hdr.count(",") + 1
-    new = []
-    for r in rows:
-        r = list(r)
-        r += [""] * (hdr_n - len(r))     # 새 열(response,meeting_status)은 빈값 — 열 수가 모자라면 extract._read 가 행을 버린다
-        if not store_subject:            # 제목을 남기지 않는다 — conversation 도 원문 대신 해시(회신 이력 판정만 유지)
-            if kind == "mail":
-                r[3] = ""
-                r[4] = _conv_token(r[4])
-            else:
-                r[4] = ""
-        new.append(r)
-    old = [r + [""] * (hdr_n - len(r)) for r in _read_rows(dst, 6 if kind == "mail" else 7)]
-    merged = owa_parse.merge_slices(old, new, verified or {}, "mail" if kind == "mail" else "cal")
-    if kind != "mail":
-        for r in merged:
-            r += [""] * (hdr_n - len(r))
-            if not store_subject:
-                r[9] = ""
-            elif bodies and not r[9]:
-                r[9] = bodies.get(owa_parse.body_key(r[0], r[1], r[4])) or ""
-    os.makedirs(os.path.dirname(dst), exist_ok=True)
-    tmp = dst + ".tmp"
-    with open(tmp, "w", encoding="utf-8-sig", newline="") as f:
-        f.write(hdr + "\n")
-        for r in merged:
-            f.write(",".join(_esc(c) for c in r[:hdr_n]) + "\n")
-    os.replace(tmp, dst)
-    return dst, len(merged)
+def raw_mail(r):
+    """메일 행(parse_mail_item) → G1 원자료 dict(§5.0 열 — 이 프로세스 메모리에서만). 받은 메일은 첫 주소가 보낸 사람·나머지는 참조,
+    보낸 메일은 주소 모두가 받는 사람. 주소가 없으면 빈칸(G1 이 증명할 수 없는 행으로 뺀다).
+    D7 — 목록 화면은 받은 메일의 받는 사람·참조를 보여 주지 않는다. 보낸 사람 주소만으로 사내 메일임을 증명하지 않는다 —
+    받은 메일의 받는 사람은 늘 '? <>'(증명 불가 · raw_cal 의 참석자와 같다)라 G1 이 external_unknown 으로 뺀다."""
+    addrs = list(r[7]) if len(r) > 7 and isinstance(r[7], (list, tuple)) else []
+    fl = r[8] if len(r) > 8 and isinstance(r[8], dict) else {}
+    box = "sent" if r[0] == "sent" else "inbox"
+    d = {"box": box, "time": r[1], "sender_name": r[2], "sender_addr": "", "to": "", "cc": "", "rcv": r[5],
+         "time_precision": r[6], "subject": r[3], "conversation": r[4], "sensitivity": "2" if fl.get("priv") else "0",
+         "categories": "", "folder": str(fl.get("folder") or box)}
+    if box == "sent":
+        d["to"] = "; ".join(f"<{a}>" for a in addrs)
+    else:
+        d["to"] = "? <>"
+        if addrs:
+            d["sender_addr"] = addrs[0]
+            d["cc"] = "; ".join(f"<{a}>" for a in addrs[1:])
+    return d
+
+
+def raw_cal(r):
+    """일정 행(parse_event + _cal_meta) → G1 원자료 dict. 주 보기는 참석자 주소를 보여 주지 않는다 — 참석자는 늘 '? <>'(증명할 수
+    없음 — G1 이 external_unknown 으로 뺀다)."""
+    m = r[7] if len(r) > 7 and isinstance(r[7], dict) else {}
+    return {"start": r[0], "end": r[1], "all_day": r[2], "busy_status": r[3], "subject": r[4], "categories": r[5],
+            "location": r[6], "response": m.get("resp", ""), "meeting_status": m.get("ms", ""),
+            "sensitivity": "2" if m.get("priv") else "0", "organizer": "", "attendees": "? <>"}
+
+
+def _merger(kind, verified):
+    """G1Writer 의 merge — 옛 정제 행과 이번 정제 행을 owa_parse.merge_slices(이번에 끝까지 읽은 날의 옛 행만 바꾼다)로 합친다.
+    정제 열의 앞부분(메일 box·time·sender·subject·conversation·rcv·time_precision / 일정 start·end·…)이 그 함수의 열 순서와 같다."""
+    import privacy
+    cols = privacy.MAIL_COLS if kind == "mail" else privacy.CAL_COLS + ["body"]
+
+    def merge(old, new):
+        lo = [[str(r.get(c, "") or "") for c in cols] for r in old or ()]
+        ln = [[str(r.get(c, "") or "") for c in cols] for r in new or ()]
+        out = owa_parse.merge_slices(lo, ln, verified or {}, "mail" if kind == "mail" else "cal")
+        return [dict(zip(cols, (r + [""] * len(cols))[:len(cols)], strict=True)) for r in out]
+    return merge
+
+
+def save_g1(kind, rows, path, ctx, verified):
+    """이번에 읽은 행 → 항목마다 privacy.g1_row → G1Writer(옛 정제 행과 병합) → (쓴 행 수, 이번에 남긴 행 수).
+    '외부' 표지가 보인 메일은 사외로 센다(G1 에 넘기지 않는다).
+    쓰기 전에 이번 행 전부를 G1 문맥에 먼저 보인다(ctx.prepare — g1_file 과 같다): 뒤 행에서 처음 본 이름도 앞 행의 제목에서
+    가린다(화면 순서와 상관없이)."""
+    import privacy
+    kept = 0
+    raws = [(r, raw_mail(r) if kind == "mail" else raw_cal(r)) for r in rows]
+    ctx.prepare([x for _r, x in raws], "mail" if kind == "mail" else "cal")
+    with privacy.G1Writer(path, kind, merge=_merger(kind, verified)) as w:
+        for r, raw in raws:
+            if kind == "mail" and len(r) > 8 and isinstance(r[8], dict) and r[8].get("ext"):
+                ctx.excluded["external"] = ctx.excluded.get("external", 0) + 1
+                continue
+            why = w.add(raw, ctx)
+            kept += why is None
+        res = w.close()             # 병합한 뒤 파일에 쓴 행 수 — with 를 나온 뒤의 close() 는 이 값을 다시 주지 않을 수 있다
+    return int(res.get("rows") or 0), kept
 
 
 def _precision_counts(out_dir, name="mail.csv"):
-    """방금 쓴 메일 파일의 (전체, 시각을 못 읽은) 통수 — mail_source.json 에 남겨 화면이 손실을 말할 수 있게 한다."""
+    """방금 쓴 정제 메일 파일의 (전체, 시각을 못 읽은) 통수 — mail_source_<tag>.json 에 남긴다(수만)."""
     import csv as _csv
     p = os.path.join(out_dir, name)
     n_all = n_date = 0
@@ -3403,9 +3007,9 @@ def _precision_counts(out_dir, name="mail.csv"):
 
 
 def emit_status(rc, reasons=(), counts=None, ranges=None, src="owa"):
-    """수집기 마지막 줄(LM28 P3) — 'LMSTATUS ' + JSON 한 줄. reason 은 사유 코드를 쉼표로(첫 코드가 주 사유)."""
+    """수집기 마지막 줄(LM28 P3) — 'AF32STATUS ' + JSON 한 줄. reason 은 사유 코드를 쉼표로(첫 코드가 주 사유)."""
     rs = ",".join(dict.fromkeys(r for r in reasons if r))
-    print("LMSTATUS " + json.dumps({"v": 1, "src": src, "rc": int(rc), "reason": rs, "counts": counts or {},
+    print("AF32STATUS " + json.dumps({"v": 1, "src": src, "rc": int(rc), "reason": rs, "counts": counts or {},
                                     "ranges": ranges or []}, ensure_ascii=False))
     sys.stdout.flush()
 
@@ -3449,38 +3053,71 @@ def _web(br, run, d0, d1, todo, results):
         br.close(keep_tab=keep)
 
 
+def _me_list():
+    r"""내 표시 이름·주소 — privacy.me_list(data\outlook 의 mail_source*.json me[] — Outlook 앱 수집기가 본 내 기본 사서함의 것).
+    폴더 창에서 내 사서함 머리를 가리는 데만 쓴다(메모리 · 파일·로그에 남기지 않는다). 못 읽으면 ()."""
+    try:
+        import privacy
+        return tuple(privacy.me_list(os.path.join(ROOT, "data")))
+    except Exception:  # noqa: BLE001 — 근거가 없으면 받은 편지함 선택 표시로만 가린다
+        return ()
+
+
+def _setup(cfg, d0s, d1s):
+    """시작 확인·기간·G1 문맥 → (cfg2, d0, d1, ctx) 또는 (rc, 사유). 화면을 열기 전에 확인한다."""
+    import afcfg
+    import consent
+    import period
+    import privacy
+    try:
+        consent.require(ROOT, cfg)
+    except consent.ConsentRequired as e:
+        log(f"{e.message} — 메일·일정을 읽지 않았습니다")
+        return 3, "R-CONSENT"
+    cfg2, _w = afcfg.effective(cfg)
+    try:
+        d0, d1, info = period.clamp(d0s or None, d1s or None, cfg2)
+    except ValueError as e:
+        log(str(e))
+        return 3, "R-ARGS"
+    if info.get("clamped"):
+        log(period.notice_text(info, d0, d1, cfg2))
+    try:
+        ctx = privacy.G1Context(cfg2, ROOT, src="owa", period=(d0, d1))
+    except privacy.RestrictedListError as e:
+        log(e.message)
+        return 4, "R-NORESTRICTED"
+    except privacy.SetupRefused as e:
+        log(e.message)
+        return 4, "R-NODOMAIN"
+    return cfg2, d0, d1, ctx
+
+
 def main():
     t0 = time.time()
-    d0s = arg("--from") or (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
-    d1s = arg("--to") or datetime.now().strftime("%Y-%m-%d")
-    d0, d1 = date.fromisoformat(d0s), date.fromisoformat(d1s)
     only = arg("--only")
-    force = "--force" in sys.argv
-    tag = arg("--tag")
-    src_name = tag or "owa"
-    if tag and not re.fullmatch(r"[A-Za-z0-9_-]{1,24}", tag):
+    tag = arg("--tag") or "owa"
+    src_name = tag
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,24}", tag):
         log(f"--tag 값이 올바르지 않습니다: {tag}")
         emit_status(3, ["R-ARGS"], src="owa")
         return 3
     out_arg = arg("--out-dir")
     out_dir = (out_arg if os.path.isabs(out_arg) else os.path.join(ROOT, out_arg)) if out_arg else OUT_DIR
-    paths = {"mail": os.path.join(out_dir, f"mail_{tag}.csv" if tag else "mail.csv"),
-             "cal": os.path.join(out_dir, f"cal_{tag}.csv" if tag else "calendar.csv")}
-    src_p = os.path.join(out_dir, f"mail_source_{tag}.json" if tag else "mail_source.json")
+    paths = {"mail": os.path.join(out_dir, f"mail_{tag}.csv"), "cal": os.path.join(out_dir, f"cal_{tag}.csv")}
+    src_p = os.path.join(out_dir, f"mail_source_{tag}.json")
     try:
-        cfg = json.load(open(os.path.join(ROOT, "config", "config.json"), encoding="utf-8-sig"))
+        with open(os.path.join(ROOT, "config", "config.json"), encoding="utf-8-sig") as f:
+            cfg = json.load(f)
+        cfg = cfg if isinstance(cfg, dict) else {}
     except (OSError, ValueError):
         cfg = {}
-    store_subject = bool(cfg.get("storeMailSubject", True))
-    todo = []
-    for kind in ("mail", "cal"):
-        if only and kind != only:
-            continue
-        # 출처별 파일(--tag)은 이 수집기 것이라 늘 읽는다. LM24 경로(공용 파일)는 COM·색인이 모은 것을 지키려 --force 때만.
-        if not tag and _has_data(paths[kind]) and not force:
-            log(f"{os.path.basename(paths[kind])} 에 이미 자료가 있어 건너뜀 (덮어쓰려면 --force)")
-        else:
-            todo.append(kind)
+    st = _setup(cfg, arg("--from"), arg("--to"))
+    if isinstance(st[0], int):
+        emit_status(st[0], [st[1]], src=src_name)
+        return st[0]
+    cfg, d0, d1, ctx = st
+    todo = [k for k in ("mail", "cal") if not only or k == only]
     if not todo:
         emit_status(0, [], {"skipped": 1}, src=src_name)
         return 0
@@ -3489,25 +3126,19 @@ def main():
         budget = float(arg("--budget-sec") or 0)
     except ValueError:
         budget = 0.0
-    if budget <= 0:                         # 부르는 쪽 상한(run.py 180+150×개월 · 화면 1500초)보다 짧게 — 저장할 시간을 남긴다
+    if budget <= 0:                         # 부르는 쪽 상한(run.py 180+150×개월)보다 짧게 — 저장할 시간을 남긴다
         budget = min(1380.0, 120.0 + 140.0 * months)
     # 메일·일정을 함께 읽으면 메일은 예산 끝의 일부를 일정에 남긴다 — 큰 사서함의 목록 폴백이 일정을 통째로 굶기지 않게
     reserve = min(300.0, 0.25 * budget) if len(todo) > 1 else 0.0
-    run = Run(d0, d1, deadline=t0 + budget, recover_max=cfg.get("owaTimeRecoverMax", 150), reserve=reserve)
-    run.store_subject = store_subject
-    if "mail" in todo:                      # 지난 실행이 분 단위로 남긴 시각(LM28 E) — 날짜만 행을 열지 않고 먼저 채운다
-        run.known = known_times(paths["mail"], store_subject)
-    _cfg_xf(run, cfg)                       # LM28-OWA-5: 다른 메일 폴더·일정 본문 설정
-    run.cb_path = os.path.join(out_dir, f"cal_body_{tag}.json" if tag else "cal_body.json")
-    cb_off0 = ""
-    if "cal" in todo and _cb_on(run):
-        run.cb_cache, run.cb_off = _cb_load(run.cb_path)
-        cb_off0 = run.cb_off
+    run = Run(d0, d1, deadline=t0 + budget, reserve=reserve)
+    _cfg_xf(run, cfg)                       # 다른 메일 폴더 설정(제외 폴더 포함)
+    run.me = _me_list()                     # 폴더 창에서 내 사서함을 가리는 근거(이름·주소)
     fake = None
-    fk = os.environ.get("LM_OWA_FAKE", "")
+    fk = os.environ.get("AF32_OWA_FAKE", "")
     if fk:
         try:
-            fake = json.load(open(fk, encoding="utf-8-sig"))
+            with open(fk, encoding="utf-8-sig") as f:
+                fake = json.load(f)
         except (OSError, ValueError):
             fake = {}
         if fake.get("login"):
@@ -3517,8 +3148,8 @@ def main():
     results = {}
     fail = None
     if fake is None:
-        if os.environ.get("LM_NO_BROWSER"):
-            log("LM_NO_BROWSER 설정 — 브라우저를 띄우지 않습니다(시험용)")
+        if os.environ.get("AF32_NO_BROWSER"):
+            log("AF32_NO_BROWSER 설정 — 브라우저를 띄우지 않습니다(시험용)")
             emit_status(3, ["R-NOBROWSER"], src=src_name)
             return 3
         try:
@@ -3528,20 +3159,28 @@ def main():
             emit_status(3, ["R-DRIVER"], src=src_name)
             return 3
         try:
-            with br.ca.edge_lock(br.cfg):   # 같은 전용 Edge 를 쓰는 작업(Copilot·팀즈 웹·진단)과 직렬(F-16)
+            with br.ca.edge_lock(br.cfg):   # 같은 전용 Edge 를 쓰는 작업(Copilot·진단)과 직렬
                 fail = _web(br, run, d0, d1, todo, results)
         except br.ca.EdgeBusy as e:
             log(f"{e} — 다른 작업이 끝난 뒤 다시 실행하세요")
             emit_status(3, ["R-EDGEBUSY"], src=src_name)
             return 3
+        finally:
+            _clear_site(br)
     else:
         for kind in todo:
             run.start_phase(kind)
             results[kind] = (collect_mail(None, d0, d1, fake, run=run) if kind == "mail"
                              else collect_cal(None, d0, d1, fake, run=run))
-    if "cal" in todo:
-        _cb_save(run, cb_off0)              # 일정 본문 발췌 캐시 — 로그인으로 끊겨도 그 앞에서 읽은 것은 남긴다
-    return finish(results, fail, run, todo, paths, src_p, out_dir, tag, src_name, store_subject, cfg)
+    return finish(results, fail, run, todo, paths, src_p, out_dir, tag, src_name, ctx, cfg)
+
+
+def _clear_site(br):
+    """전용 Edge 의 Outlook·M365 사이트 자료(캐시·저장소 — 쿠키는 남김)를 지운다(D13). 실패해도 수집 결과는 그대로."""
+    try:
+        br.ca.clear_site_data(br.port)
+    except Exception as e:  # noqa: BLE001 — 지우기 실패는 다음 단계(run.py 수집 끝)가 다시 지운다
+        log(f"전용 Edge 의 사이트 자료를 지우지 못했습니다({type(e).__name__}) — 수집 끝에 다시 지웁니다")
 
 
 def _cfg_int(v, d, lo=0, hi=10000):
@@ -3553,20 +3192,15 @@ def _cfg_int(v, d, lo=0, hi=10000):
 
 
 def _cfg_xf(run, cfg):
-    """config → 다른 메일 폴더·일정 본문 설정(LM28-OWA-5): owaExtraFolders(기본 true) · owaExtraFolderMax(기본 40) ·
-    owaExtraFolderSkip(이름 일부 목록 — 기본 []) · owaCalBodyMax(기본 60 · 0 = 끔). 이상한 값은 기본값."""
+    """config → 다른 메일 폴더 설정: owaExtraFolders(기본 true) · owaExtraFolderMax(기본 40) · owaExtraFolderSkip + privacy.excludeMailFolders
+    (이름 일부 목록 — 그 폴더와 하위는 읽지 않는다 · AgentFinder32 D3). 이상한 값은 기본값."""
+    import afcfg
     v = cfg.get("owaExtraFolders", True)
     run.xf_on = not (v is False or str(v).strip().lower() in ("0", "false", "no", "off"))
     run.xf_max = _cfg_int(cfg.get("owaExtraFolderMax", XF_MAX), XF_MAX, 0, 500)
     sk = cfg.get("owaExtraFolderSkip") or []
-    run.xf_skip = [str(x).strip() for x in (sk if isinstance(sk, list) else [sk]) if str(x or "").strip()][:50]
-    run.cb_max = _cfg_int(cfg.get("owaCalBodyMax", CB_MAX), CB_MAX, 0, 1000)
-    # 회의 안건을 판정에 쓰지 않기로 했으면(calendar.bodyToAI=false) 웹에서도 상세를 열지 않는다 — 쓰지 않을 본문을 모으지
-    # 않는다(클래식 Outlook 수집기와 같은 기준 · 값 해석은 core\meetnote.enabled 와 같다).
-    _cal = cfg.get("calendar") if isinstance(cfg.get("calendar"), dict) else {}
-    _bv = _cal.get("bodyToAI", True)
-    if _bv is False or _bv is None or str(_bv).strip().lower() in ("0", "false", "no", "n", "off", ""):
-        run.cb_max = 0
+    sk = list(sk if isinstance(sk, list) else [sk]) + list(afcfg.get(cfg, "privacy.excludeMailFolders") or [])
+    run.xf_skip = list(dict.fromkeys(str(x).strip() for x in sk if str(x or "").strip()))[:60]
 
 
 def _verdict_ko(day_st_by_axis, today, axes=("mail_in", "mail_out")):
@@ -3591,7 +3225,7 @@ def _fit(cen, cap=CENSUS_MAX):
     c = cen.get("cal") if isinstance(cen.get("cal"), dict) else {}
     for root, drop in ((m, ("skel",)), (m, ("l", "cands")), (m, ("s", "cands")), (m, ("l", "sec")), (m, ("s", "sec")),
                        (c, ("bad1",)), (m, ("box",)), (m, ("xf", "shape")), (c, ("bad",)), (c, ("geo",)), (c, ("pick",)),
-                       (c, ("ps",)), (m, ("xf",)), (c, ("body",))):
+                       (c, ("ps",)), (m, ("xf",))):
         if drop == ("bad1",):
             if isinstance(c.get("bad"), list) and len(c["bad"]) > 1:
                 c["bad"] = c["bad"][:1]
@@ -3639,7 +3273,7 @@ def _census(run, todo, results):
         xk = _xf_ko(run.xf)
         parts.append(f"{a} · 검색창 {'예' if sb else '아니오'} · {b} · 가장 이른 날짜 {cm.get('earliest') or '없음'} · "
                      f"끝 근거 {'·'.join(ends) or '없음'} · 시각 복원 {run.c.get('recovered', 0)}"
-                     f"(지난 판 {run.c.get('recovered_known', 0)})" + (f" · {xk}" if xk else "") + f" → {vd}")
+                     + (f" · {xk}" if xk else "") + f" → {vd}")
         xf = run.xf
         cen["mail"] = dict(cm, srch=dict(sr), verdict=vd,
                            xf={k: xf[k] for k in ("enum", "pre", "tree", "found", "read", "ok", "sys", "user", "cap", "exp", "expok",
@@ -3667,9 +3301,7 @@ def _census(run, todo, results):
         parts.append(f"일정 주 {w.get('ok', 0)}/{w.get('total', 0)}(일부 {w.get('part', 0)}·머리 {'예' if cc.get('hdr') else '아니오'}·"
                      f"이전 주 {prev}{pick}·주소 {url}·막대 {ev.get('seen', 0)}·못 읽음 {ev.get('unparsed', 0)}{pos}) → "
                      f"{'완료' if run.c.get('cal_complete') else '미완'}")
-        cb = run.cb
-        cen["cal"] = dict(cc, complete=bool(run.c.get("cal_complete")),
-                          body={k: (round(cb[k], 1) if k == "t" else cb[k]) for k in cb if k != "how"} | {"how": dict(cb["how"])})
+        cen["cal"] = dict(cc, complete=bool(run.c.get("cal_complete")))
     return "구조: " + " | ".join(parts), _fit(cen)
 
 
@@ -3692,7 +3324,6 @@ def _xf_ko(xf):
 WHY_KO = {"nd": "날짜없음", "np": "위치없음", "nh": "열머리없음", "nc": "열밖", "nt": "시각없음", "ng": "눈금없음"}
 PICK_KO = {"nogrid": "달력 없음", "nodate": "칸 날짜 못 읽음", "nocell": "칸 없음", "nonav": "달 넘기기 없음", "gone": "칸 사라짐",
            "head": "머리 다름", "cap": "달 상한", "time": "시간 예산"}
-CB_DEAD_KO = {"stuck": "안 닫힘", "view": "주 보기 바뀜", "none": "상세 안 뜸"}
 
 
 def _census_plus(run, todo, results):
@@ -3713,13 +3344,6 @@ def _census_plus(run, todo, results):
     if pk.get("try"):
         out.append(f"작은달력 {pk.get('ok', 0)}/{pk['try']}(칸 {pk.get('cells', 0)}·{pk.get('fmt') or '-'}·달넘김 {pk.get('nav', 0)}"
                    + (f"·{PICK_KO.get(pk['why'], pk['why'])}" if pk.get("why") else "") + ")")
-    cb = run.cb
-    rest = bool(run.cb_off and run.today.isoformat() <= run.cb_off)
-    if cb["open"] or cb["cache"] or cb["dead"] or rest:   # LM28-OWA-5 회의 본문 — 연 수·상세·본문·닫힘·캐시·상한(수만)
-        out.append(f"본문 {cb['body']}/{cb['open']}(상세 {cb['found']}·닫힘 {cb['closed']}·저장됨 {cb['cache']}"
-                   + (f"·상한 {cb['cap']}" if cb["cap"] else "") + (f"·다름 {cb['mis']}" if cb["mis"] else "")
-                   + (f"·멈춤 {CB_DEAD_KO.get(cb['dead'], cb['dead'])}" if cb["dead"] else "")
-                   + (f"·쉼 ~{run.cb_off[5:]}" if rest else "") + ")")
     shapes = []
     for b in (cc.get("bad") or [])[:3]:
         s = str(b.get("l") or "")[:44] + (" | " + str(b["t"])[:16] if b.get("t") else "")
@@ -3729,8 +3353,10 @@ def _census_plus(run, todo, results):
     return ("구조+: " + " · ".join(out))[:380]
 
 
-def finish(results, fail, run, todo, paths, src_p, out_dir, tag, src_name, store_subject, cfg):
-    """읽은 결과 저장(병합) → mail_source(_<tag>).json → LMSTATUS. 로그인으로 끊겨도 그 앞에서 읽은 것은 저장한다."""
+def finish(results, fail, run, todo, paths, src_p, out_dir, tag, src_name, ctx, cfg):
+    """읽은 결과 → 항목마다 G1(privacy.g1_row) → 정제 파일(병합) → mail_source_<tag>.json → AF32STATUS(counts.g1 포함).
+    로그인으로 끊겨도 그 앞에서 읽은 것은 정제해 저장한다. 화면에서 읽은 원래 행은 이 함수가 끝나면 메모리에서도 사라진다."""
+    import mailmerge
     total, counts, ranges = 0, {}, []
     axes = {"mail": ("mail_in", "mail_out"), "cal": ("cal",)}
     any_read = False
@@ -3748,23 +3374,17 @@ def finish(results, fail, run, todo, paths, src_p, out_dir, tag, src_name, store
                 f"(보낸 {diag['sent']} · 참조 {diag['cc']} · 날짜만 {diag['date_only']}) · 페이지 {diag['pages']}")
             run.c["date_only"] = diag["date_only"]
         vers[kind] = _verified(by_axis)
-    if "mail" in todo:                     # LM28-OWA-5 다른 메일 폴더 — 수만(폴더 이름 없음)
+    if "mail" in todo:                     # 다른 메일 폴더 — 수만(폴더 이름 없음)
         xf = run.xf
         run.c.update(xf_enum=xf["enum"] or ("off" if not run.xf_on else ""), xf_tree=xf["tree"], xf_found=xf["found"],
                      xf_read=xf["read"], xf_ok=xf["ok"], xf_sys=xf["sys"], xf_user=xf["user"], xf_cap=xf["cap"],
                      xf_expand=xf["exp"], xf_fail=xf["fail"], xf_rows=xf["rows"])
-    if "cal" in todo:                      # LM28-OWA-5 일정 본문 — 수만(글 없음)
-        cb = run.cb
-        run.c.update(cb_open=cb["open"], cb_found=cb["found"], cb_body=cb["body"], cb_closed=cb["closed"],
-                     cb_cache=cb["cache"], cb_cap=cb["cap"])
     run.c["collector_ver"] = COLLECTOR_VER
     if run.cen["mail"].get("box") or run.cen["cal"].get("url"):
-        # 화면 구조 한 줄 — 저장 요약 줄 바로 앞(run.py 는 마지막 12줄을 화면에, '구조:' 줄은 last_run.json 단계 census 로 따로
-        # 싣는다 — 수집 진단 화면이 note 아래에 그대로 보여 준다). 같은 내용 + 행 골격은 counts.dom_census(4KB 이내).
         line, cen = _census(run, todo, results)
         run.c["dom_census"] = cen
         log(line)
-        plus = _census_plus(run, todo, results)      # 둘째 줄 '구조+:' — 일정 위치 해석·작은 달력·못 읽은 막대 꼴(가린 것)
+        plus = _census_plus(run, todo, results)
         if plus:
             log(plus)
     for kind in todo:
@@ -3774,19 +3394,30 @@ def finish(results, fail, run, todo, paths, src_p, out_dir, tag, src_name, store
         ver = vers[kind]
         if rows or any(ver.values()):
             try:
-                bodies = dict(run.cb_cache, **run.cb_new) if kind == "cal" else None
-                _, n_file = _save(kind, rows, store_subject, paths[kind], ver, bodies)
-                log(f"{kind}: 이번 {len(rows)}건 읽음 · 파일 {n_file}행(검증한 날만 교체)")
+                n_file, n_kept = save_g1(kind, rows, paths[kind], ctx, ver)
+                log(f"{kind}: 이번 {len(rows)}건 읽음 → 정제 뒤 {n_kept}건 남김 · 파일 {n_file}행(확인한 날만 교체)")
             except OSError as e:
                 log(f"{kind}: 저장 실패({type(e).__name__})")
         else:
             log(f"{kind}: 읽은 것이 없음 — 화면 항목은 보이는데 해석이 0이면 표기 형식 문제(로그의 '항목/해석' 수 참고)")
         total += len(rows)
         counts[kind] = len(rows)
+        results[kind] = ([], ) + tuple(results[kind][1:])     # 화면에서 읽은 행은 더 들고 있지 않는다
+    g1 = ctx.finish()
+    try:
+        mailmerge.save_g1_counts(out_dir, tag, g1)
+    except OSError:
+        pass
+    ex = {k: v for k, v in (g1.get("excluded") or {}).items() if v}
+    kk = g1.get("kept") or {}
+    log(f"정제(G1): 남김 받은 메일 {kk.get('mail_in', 0)} · 보낸 메일 {kk.get('mail_out', 0)} · 회의 {kk.get('meetings', 0)}"
+        + (" · 뺀 항목 " + " · ".join(f"{k} {v}" for k, v in ex.items()) if ex else "")
+        + (f" · 기간 밖 {g1.get('out_of_period')}" if g1.get("out_of_period") else ""))
     run.c["rows"] = total
     run.c["mail"] = counts.get("mail", 0)
     run.c["cal"] = counts.get("cal", 0)
     run.c["selector_diag"] = dict(run.sd)
+    run.c["g1"] = {"kept": dict(g1.get("kept") or {}), "excluded": dict(g1.get("excluded") or {})}
     reasons = []
     if fail:
         rc, why = fail
@@ -3799,34 +3430,19 @@ def finish(results, fail, run, todo, paths, src_p, out_dir, tag, src_name, store
     if run.timed_out or run.hit_time:
         reasons.append("R-TIMEOUT")
         log("시간 예산에 닿아 멈췄습니다 — 못 읽은 날은 다음 실행이 다시 읽습니다")
-    # mail_source — LM24 경로(공용 파일)는 행을 읽었을 때만(LM24 와 같게), 출처별 파일은 정상 종료면 늘
-    if (total and not tag) or (tag and rc == 0):
+    if rc == 0:
         try:
-            mail_name = os.path.basename(paths["mail"])
-            _pa, _pd = _precision_counts(out_dir, mail_name)
-            src = {"source": "owa", "when": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            _pa, _pd = _precision_counts(out_dir, os.path.basename(paths["mail"]))
+            src = {"product": "AgentFinder32", "source": tag, "when": datetime.now().strftime("%Y-%m-%d"),
                    "kinds": todo, "rows": total, "mail": counts.get("mail", 0), "calendar": counts.get("cal", 0),
-                   "me": [],                           # 내 주소는 화면에 없다 — rcv 는 to/cc(참조 조각) 만
-                   # 시각을 못 읽은 통수 — 목록 화면은 어제 이전 항목에 날짜만 보인다. 그 행은 시간 계상에서 빠지므로
-                   # (core/extract A38) 화면이 '몇 통이 빠졌는지' 를 말할 수 있어야 한다(감사 지적: 콘솔에만 있었다).
-                   "mail_rows": _pa, "date_only": _pd,
-                   "warnings": ([f"시각을 못 읽은 메일 {_pd}/{_pa}통 — 시간 계상 제외(클래식 Outlook 을 켜고 재수집 권장)"]
-                                if _pd else []),
+                   "me": [], "mail_rows": _pa, "date_only": _pd,
+                   "warnings": ([f"시각을 못 읽은 메일 {_pd}/{_pa}통(날짜만)"] if _pd else []),
                    "ver": f"{COLLECTOR_VER}|{int(((cfg.get('collect') or {}).get('cursorEpoch')) or 1)}",
-                   "period": [run.d0.isoformat(), run.d1.isoformat()], "counts": dict(run.c)}
-            if "cal" in todo:
-                # 주 보기는 반복 회의를 회차마다 그린다 — 색인 폴백(마스터 1건)과 달리 회차가 다 보인다. LM28: '완전'은 기간의
-                # 지난 날이 모두 확인됐을 때만(예전엔 확인한 주가 하나만 있어도 true — 현장: 일정 2건·cal_stale 1 인데 true)
-                src["calendar_complete"] = bool(run.c.get("cal_complete"))
-                src["calendar_recurring_masters"] = 0
+                   "period": [run.d0.isoformat(), run.d1.isoformat()],
+                   "calendar_complete": bool(run.c.get("cal_complete")) if "cal" in todo else None}
             os.makedirs(os.path.dirname(src_p), exist_ok=True)
             with open(src_p, "w", encoding="utf-8") as f:
                 json.dump(src, f, ensure_ascii=False)
-            if not tag and "mail" in todo and _has_data(paths["mail"]):
-                try:
-                    os.remove(os.path.join(OUT_DIR, "outlook_skip.json"))
-                except OSError:
-                    pass
         except (OSError, ValueError, TypeError):
             pass
     emit_status(rc, reasons, dict(run.c), ranges, src=src_name)

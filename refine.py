@@ -1,92 +1,71 @@
 # -*- coding: utf-8 -*-
-"""
-refine.py — AI 정제: 추출된 업무 항목을 Copilot이 '원문 근거를 읽고' 다듬는다.
+r"""
+refine.py — AI 정제(AgentFinder32): 판정된 업무 분류(work_rows)를 Copilot 이 근거(메일·회의 제목)를 읽고 다듬는다.
 
-규칙으로 못 하는 것만 AI에게 맡긴다:
-  ① 같은 업무가 토큰별로 쪼개진 행 병합   ② 프로젝트명 정규화(실제 과제명으로)
-  ③ Level 1 부여                        ④ 상세설명 한 줄 작성 (고유명사 포함)
-비중(share)은 규칙이 계산한 값을 유지·재정규화한다 — AI가 총량을 바꾸지 못하게.
+규칙으로 못 하는 것만 AI 에게 맡긴다:
+  ① 같은 업무가 쪼개진 행 병합   ② 과제명 정규화(체계 표기 유지)   ③ Level 1 부여   ④ 상세설명 한 줄(업무 행위·산출물)
+프롬프트에는 과제·세부업무 이름과 근거 제목만 싣는다 — 비중(%)·활동일수·건수·날짜는 싣지 않는다(D10).
+근거는 judge 가 판정 축으로 쓴 report\evidence_<tag>.md(§5.5)에서 항목별로 뽑는다.
 
-  python refine.py --from 2026-05-19 --to 2026-08-17 [--chunk 20]
+  python refine.py --from 2026-08-01 --to 2026-10-31 [--chunk 20]
 
-청크·한도(LM22 S1):
-  · 청크 20항목이지만 프롬프트는 **글자 예산(PROMPT_BUDGET 8,400)** 안에서 만든다 — 근거 슬라이스 상한을
-    고정 9,000자로 두던 예전에는 20항목이 9,700~10,800자가 되어 드라이버가 매번 2조각으로 나눠 보냈다(실측).
-  · 오버레이: 다음 청크 앞에 앞 청크 끝 3항목(600자 이내)을 '겹침' 표시로 다시 보인다 — 청크 경계에서 갈린
-    같은 업무를 합칠 수 있게. 겹침 항목이 이번 청크의 새 항목과 함께 merge 되면 앞 청크의 그룹과 **이어
-    붙인다**(union). 겹침 항목만으로 된 출력은 무시(앞 청크 결과 유지).
+산출: report\work_rows_<tag>_refined.csv(§5.5 열 + 유형 뒤 '활동') · report\refine_map_<tag>.json(정제 행 → 원본 쌍 · 날짜만).
+근거건수는 구성원 행의 합, share 는 정렬용 상대값(재정규화)이다.
+
+청크·한도:
+  · 청크 20항목이지만 프롬프트는 글자 예산(PROMPT_BUDGET 8,400) 안에서 만든다.
+  · 오버레이: 다음 청크 앞에 앞 청크 끝 3항목(600자 이내)을 '겹침' 표시로 다시 보인다 — 청크 경계에서 갈린 같은 업무를
+    합칠 수 있게. 겹침 항목이 이번 청크의 새 항목과 함께 merge 되면 앞 청크의 그룹과 이어 붙인다(union).
   · 응답 줄이기: 키 축약(m/l1/l2/l3/a/d/w — 옛 긴 키도 받는다) + 상세설명 90자 이내.
   · 적응 분할: 잘린 JSON 은 마지막 완전한 항목까지 복구하고 빠진 항목만 다시 묻는다. JSON 이 없으면
     청크를 반으로(최소 5항목·깊이 2) 나눠 재시도. 부분 성공은 그대로 쓰고 나머지는 원본 유지.
   · 마지막 줄에 {"ok":…,"chunks","failed_chunks","roundtrips","repaired","retries","bad_rows"} JSON 을 남긴다.
-  · 병합 행의 제품·유형·Level 2/3 다수결은 결정적이다(_majority — 동률이면 비중 큰 원본 행의 값). 정제 행 → 원본
-    (Level 2, Level 3) 매핑을 report\\refine_map_<tag>.json 에 남겨 UI 오할당 제외가 병합 행의 신호를 전부 찾는다.
-  · mm_rows 의 share·mm·활동일수 가 빈칸·비숫자(엑셀 재저장·손편집)여도 죽지 않는다 — 0 으로 두고 행 수를 로그·JSON 에 남긴다.
-  · LM28 G3: 근거 줄은 제외어(privacy.excluded_keywords — mine·judge 와 같은 단일원) 줄을 빼고, 남은 줄은 관문
-    (judge.g3_rows)을 거친 재정제 줄만 보낸다. 광고 의심(signals flag 'ad') 신호는 근거에 넣지 않는다. 관문에 막힌 청크는
-    보내지 않고 원본 그대로 둔다 — 실패가 아니다(skipped_chunks·gated_items, 연속 실패 계수 밖).
-  · LM30(2026-10-27) 과제 관문: 병합(m)은 같은 과제(Level 2) 안의 항목끼리만 받는다 — 과제가 다른 항목을 합친 답은 과제별로 나누고
-    (task_guard_groups), 과제 이름은 구성원의 과제를 지킨다('공통'·'미지정' 구성원만 정제가 다른 과제로 옮길 수 있다). 프롬프트에도
-    'm 은 같은 과제 안의 항목끼리만' 줄을 둔다(예전에는 과제가 다른 '주간보고' 끼리 합쳐 두 과제가 하나로 묶였다).
+  · G3: 근거 줄은 개인 주제어(privacy.keyword_hit) 줄을 빼고, 남은 줄은 관문(judge.g3_rows)을 거친 재정제 줄만 보낸다.
+    과제 체계의 이름과 항목 줄의 과제 이름도 관문을 지난 사본으로 싣는다(judge.sendable·send_l2 — 지정 과제 이름에 든 사람
+    이름·고객사는 가린 채 · 답의 가린 이름은 judge.unmask_name 이 원래 이름으로 되돌린다).
+    관문에 막힌 청크는 보내지 않고 원본 그대로 둔다 — 실패가 아니다(skipped_chunks·gated_items, 연속 실패 계수 밖).
+  · 과제 관문: 병합(m)은 같은 과제(Level 2) 안의 항목끼리만 받는다(task_guard_groups). 과제 이름은 구성원의 과제를 지킨다.
+  · 시작할 때 내 자료인지(consent.require — 다른 사용자의 자료면 종료 코드 4 · 지우는 중이면 3)와 run_meta 의 AgentFinder32 표식을 확인한다.
 """
 import csv
 import io
 import json
 import os
 import re
-import subprocess
 import sys
 import time
-from collections import Counter, defaultdict
+from collections import Counter
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(ROOT, "core"))
 if ROOT not in sys.path:
     # 내장 파이썬(python\python.exe)은 ._pth 때문에 isolated 모드로 뜨고, 스크립트 폴더가
-    # sys.path 에 들어가지 않는다. 그러면 아래 `from judge import` 가 임포트 단계에서
-    # 죽어 **AI 정제만 단독으로** 실패한다(파이썬이 설치된 PC 에서는 안 보이는 결함).
-    # agentic.py·retag.py·team_refine.py·ui/app.py 는 모두 ROOT 를 넣는다 — 여기만 빠져 있었다.
+    # sys.path 에 들어가지 않는다 — 아래 `import judge` 가 임포트 단계에서 죽지 않게 넣는다.
     sys.path.insert(0, ROOT)
 from details import l1_prompt_lines  # noqa: E402  - 상위 정의 줄 생성(L1_META 단일원)
 from details import ukey2  # noqa: E402  - judge·flow 와 같은 과제 신원 축
 from details import ukey3  # noqa: E402  - 담당업무(하위) 신원 축 — 같은 업무를 두 행으로 남기지 않게
 import details as _details  # noqa: E402  - explain_failure(로그인 필요 등 치명 실패 판정)
-from details import snap1  # noqa: E402  - 상위(Level 1)를 4개 고정 범주로 스냅
+from details import snap1  # noqa: E402  - 상위(Level 1)를 고정 범주로 스냅
 from progress import progress  # noqa: E402
+import judge as _judge  # noqa: E402  - Copilot 왕복 단일 접점(copilot_send — D19 머리말·G3 관문)
 if __name__ == "__main__":      # import 시엔 건드리지 않는다 — 임포트한 쪽의 stdout 이
     # 교체·GC 되면서 버퍼가 닫혀 이후 출력이 전부 죽는다(다른 모듈과 같은 관례)
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, errors="replace", encoding=(
         (sys.stdout.encoding or "utf-8") if sys.stdout.isatty() else "utf-8"))  # 콘솔(bat)=콘솔 코드페이지 · 파이프(UI)=utf-8
-NO_WIN = 0x08000000
-_DEC = json.JSONDecoder()
+chunk_default = _judge.chunk_default
+PROMPT_BUDGET = _judge.PROMPT_BUDGET
+REFINED_COLS = ["Function", "Level 1", "유형", "활동", "Level 2", "Level 3", "상세설명", "근거건수", "근거", "확신도", "ax",
+                "field", "share"]        # §5.5 + 유형 뒤 '활동'
 
 
 def arg(flag, d=""):
     return sys.argv[sys.argv.index(flag) + 1] if flag in sys.argv else d
 
 
-# Copilot 왕복은 judge.copilot_send 하나로 통일한다(LM22) — 드라이버의 긴 프롬프트 분할·
-# [[전송끝]] 서약·왕복 예산(조각 수 반영)이 정제에도 그대로 적용되고, 보완 도구·회귀
-# 테스트가 judge.copilot_send 만 바꿔치기하면 정제까지 모의 sender 로 돈다.
-try:
-    import judge as _judge  # noqa: E402
-    chunk_default = _judge.chunk_default
-    PROMPT_BUDGET = _judge.PROMPT_BUDGET
-except ImportError:                      # judge 를 못 읽어도 정제 자체는 돌아야 한다
-    _judge = None
-    PROMPT_BUDGET = 8400
-
-    def chunk_default(key, default):
-        try:
-            return int(arg("--chunk", "") or 0) or int(default)
-        except ValueError:
-            return int(default)
-
 def _chat_note():
     """마지막 줄 JSON 앞의 Copilot 채팅 정리 한 줄(judge.chat_note — 이 프로세스가 연·지운·남긴 채팅 수, 숫자만)."""
-    fn = getattr(_judge, "chat_note", None) if _judge is not None else None
-    if callable(fn):
-        fn()
+    _judge.chat_note()
 
 
 OV_N = 3                 # 오버레이 항목 수(앞 청크 끝)
@@ -100,67 +79,16 @@ FAIL_STOP_RETRY = 3      # 연속 실패 청크가 이만큼이면 적응 재시
 
 
 def copilot_send(prompt_text, tag, name, fresh=None):
-    """왕복 1회 — 호출 시점의 judge.copilot_send 를 쓴다(보완 도구·회귀 테스트가 그 이름을
-    모의 sender 로 바꿔치기해도 정제까지 닿는다). 옛 3인자 sender(prompt, tag, name) 도
-    받아들인다 — fresh 를 못 받으면 빼고 부른다."""
-    if _judge is not None:
-        fn = getattr(_judge, "copilot_send", None)
-        if callable(fn):
-            try:
-                import inspect
-                ps = inspect.signature(fn).parameters
-                takes_fresh = "fresh" in ps or any(p.kind == p.VAR_KEYWORD for p in ps.values())
-            except (TypeError, ValueError):
-                takes_fresh = True
-            return fn(prompt_text, tag, name, fresh=fresh) if takes_fresh else fn(prompt_text, tag, name)
-    return _send_via_driver(prompt_text, tag, name, fresh=fresh)
-
-
-def _send_via_driver(prompt_text, tag, name, fresh=None):
-    """예비 경로 — 드라이버 직접 호출(judge 부재 시에만). 분할·서약은 드라이버가 처리.
-    LM28: config.copilotAuto.inProcess(기본 true)면 드라이버를 임포트해 같은 프로세스에서(send_inproc — G3 최종 검사 포함),
-    false 면 예전처럼 자식 프로세스(--send 도 같은 검사를 한다). 한도를 넘기면 드라이버 프로세스만 끝난다(taskkill 없음)."""
-    pf = os.path.join(ROOT, "report", f"judge_{name}_{tag}.md")
+    """왕복 1회 — 호출 시점의 judge.copilot_send 를 쓴다(회귀 테스트가 그 이름을 모의 sender 로 바꿔치기해도 정제까지
+    닿는다). 옛 3인자 sender(prompt, tag, name) 도 받아들인다 — fresh 를 못 받으면 빼고 부른다."""
+    fn = _judge.copilot_send
     try:
-        try:
-            with open(os.path.join(ROOT, "config", "config.json"), encoding="utf-8-sig") as _cf:
-                _ip = (json.load(_cf).get("copilotAuto") or {}).get("inProcess", True)
-        except (OSError, ValueError, TypeError, AttributeError):
-            _ip = True
-        if not (_ip is False or str(_ip).strip().lower() in ("0", "false", "no", "n", "off")):
-            import importlib.util
-            ca = sys.modules.get("copilot_auto")
-            if ca is None:
-                spec = importlib.util.spec_from_file_location(
-                    "copilot_auto", os.path.join(ROOT, "tools", "copilot_auto.py"))
-                ca = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(ca)
-                sys.modules["copilot_auto"] = ca
-            return ca.send_inproc(prompt_text, fresh=bool(fresh), stage=str(name or "")[:40])
-        os.makedirs(os.path.dirname(pf), exist_ok=True)
-        with open(pf, "w", encoding="utf-8") as f:
-            f.write(prompt_text)
-        cmd = [sys.executable, os.path.join(ROOT, "tools", "copilot_auto.py"), "--send", pf]
-        if fresh:
-            cmd.append("--fresh")
-        # v3: judge 와 같은 한도 공식 — 옛 len//8000+1 은 judge 가 '2배 늦게 끊던 결함'으로
-        # 이미 교정한 조각 산식의 잔재 사본이었다(구조 감사 — 사본에 교정이 전파되지 않는 구조).
-        try:
-            import judge as _j
-            budget = _j.roundtrip_timeout(_j.n_parts_of(prompt_text or ""))
-        except Exception:  # noqa: BLE001
-            try:
-                with open(os.path.join(ROOT, "config", "config.json"), encoding="utf-8-sig") as _cf:
-                    _rt = float((json.load(_cf).get("copilotAuto") or {}).get("roundtripMaxSec") or 900)
-            except (OSError, ValueError, TypeError, AttributeError):
-                _rt = 900.0
-            budget = _rt + 300.0
-        out = subprocess.run(cmd, capture_output=True, timeout=budget, cwd=ROOT,
-                             env=dict(os.environ, PYTHONIOENCODING="utf-8"), creationflags=NO_WIN)
-        res = json.loads((out.stdout or b"").decode("utf-8", "replace").strip().splitlines()[-1])
-        return res if isinstance(res, dict) else {"ok": False, "error": "드라이버 출력 형식 오류"}
-    except Exception as e:  # noqa: BLE001 - 한 청크 실패가 정제 전체를 멈추지 않게
-        return {"ok": False, "error": f"드라이버 실패({type(e).__name__})", "hint": str(e)[:120]}
+        import inspect
+        ps = inspect.signature(fn).parameters
+        takes_fresh = "fresh" in ps or any(p.kind == p.VAR_KEYWORD for p in ps.values())
+    except (TypeError, ValueError):
+        takes_fresh = True
+    return fn(prompt_text, tag, name, fresh=fresh) if takes_fresh else fn(prompt_text, tag, name)
 
 
 ACT_CATS = {"설계", "해석·시뮬레이션", "SW개발", "검증·평가", "입고검사·현장",
@@ -187,7 +115,7 @@ def _g(it, key):
 
 
 def _f(x):
-    """숫자 셀 → float. 빈칸·비숫자(엑셀 재저장·손편집)는 0 — 셀 하나로 정제 전체가 죽지 않게(V-05)."""
+    """숫자 셀 → float. 빈칸·비숫자(엑셀 재저장·손편집)는 0 — 셀 하나로 정제 전체가 죽지 않게."""
     try:
         return float(x or 0)
     except (TypeError, ValueError):
@@ -211,9 +139,8 @@ def _num_ok(x):
 
 
 def _majority(pairs):
-    """다수결(결정적, V-03) — pairs: [(값, 비중)]. 최빈값을 고르고, 동률이면 비중이 가장 큰 원본 행의 값, 그래도
-    같으면 원본 순서의 첫 값. 예전 max(set(x), key=x.count) 는 set 순회 순서가 해시 시드에 따라 달라 동률일 때
-    병합 행의 제품·유형·Level 2/3 가 실행마다 뒤바뀌었고, agentic 이 '행이 바뀌었다' 고 보고 옛 매칭을 승계했다."""
+    """다수결(결정적) — pairs: [(값, 비중)]. 최빈값을 고르고, 동률이면 비중이 가장 큰 원본 행의 값, 그래도
+    같으면 원본 순서의 첫 값(set 순회 순서는 해시 시드에 따라 달라 동률일 때 실행마다 뒤바뀌었다)."""
     vals = [(str(v).strip(), _f(s)) for v, s in pairs if str(v or "").strip()]
     if not vals:
         return ""
@@ -227,10 +154,18 @@ def _majority(pairs):
     return max(order, key=lambda v: (best[v], -order.index(v)))
 
 
+def send_l2(name):
+    """항목 줄에 싣는 과제 이름 — G3 행 관문을 지난 사본(judge.sendable: 지정 과제 이름에 든 사람 이름·고객사는 가린 채). 답의
+    l2 가 그 가린 이름이면 judge.unmask_name 이 원래 이름으로 되돌린다(main). 관문이 싣지 못하게 한 이름(제한 고객 등 — None)은
+    원문 그대로 둔다 — 그 청크는 보내기 직전 최종 검사가 막아 보내지 않는다(예전과 같다)."""
+    s = str(name or "")
+    return (_judge.sendable(s) or s) if s.strip() else s
+
+
 def item_line(i, r, overlap=False):
+    """항목 줄 — 번호·과제·세부업무만(비중·활동일수·건수는 싣지 않는다 — D10). 과제 이름은 관문을 지난 사본(send_l2)."""
     tagx = " (겹침·참고)" if overlap else ""
-    return (f"  #{i}{tagx} {r.get('Level 2', '')} / {r.get('Level 3', '')} · 비중 {_f(r.get('share'))*100:.1f}% "
-            f"· {_i(r.get('활동일수'))}일 · 근거 {r.get('근거', '')}")
+    return f"  #{i}{tagx} {send_l2(r.get('Level 2', ''))} / {r.get('Level 3', '')}"
 
 
 def build_prompt(rows, evidence_md, model_names=(), ev_mode="aligned", overlap=()):
@@ -241,30 +176,30 @@ def build_prompt(rows, evidence_md, model_names=(), ev_mode="aligned", overlap=(
     # LM30(2026-10-21) — 프롬프트 앞 64자(첫 줄 + 이 줄의 앞부분)에는 마크다운(**)을 두지 않는다: Copilot 대화 목록의 제목이 첫 질문의
     # 앞부분이라, 화면이 ** 를 지우고 보여 주면 LM 이 지울 채팅을 제목으로 확인하지 못했다(조사 보고 3d).
     if evidence_md and ev_mode == "aligned":
-        head = "각 항목의 실제 원문 근거(메일 제목·파일명·커밋 메시지·회의명·작업창)입니다."
-        rule5 = [f"5. d = 상세설명 **한 줄, {DETAIL_MAX}자 이내** — 근거의 고유명사를 살려 '무엇을 어떻게 했는지'",
+        head = "각 항목의 실제 근거(메일 제목·회의 제목)입니다."
+        rule5 = [f"5. d = 상세설명 **한 줄, {DETAIL_MAX}자 이내** — 근거의 업무 행위와 산출물을 살려 '무엇을 어떻게 했는지'",
                  "   (좋은 예: '시제품 2차 성능 시험용 부품 발주 및 입고 일정 관리')",
-                 "   (나쁜 예: '관련 업무 수행', '자료 작성' — 이런 건 쓰지 말 것)"]
+                 "   (나쁜 예: '관련 업무 수행', '자료 작성' — 이런 건 쓰지 말 것). 사람 이름은 쓰지 말 것"]
     elif evidence_md:
-        head = ("일부 항목의 원문 근거입니다. **근거는 항목별로 완전히 정렬되어 있지 않습니다** — "
+        head = ("일부 항목의 근거입니다. **근거는 항목별로 완전히 정렬되어 있지 않습니다** — "
                 "근거 블록의 `## #번호` 와 항목 번호를 대조해 쓰세요.")
-        rule5 = [f"5. d = 상세설명 **한 줄, {DETAIL_MAX}자 이내** — 대응 근거가 있으면 그 고유명사를 살릴 것",
+        rule5 = [f"5. d = 상세설명 **한 줄, {DETAIL_MAX}자 이내** — 대응 근거가 있으면 그 업무 행위를 살릴 것(사람 이름 금지)",
                  "   5-b. 대응 근거가 없는 항목은 Level 2·Level 3 를 자연어로 풀어 쓰고,",
                  "        **확인되지 않은 파일명·메일 제목·수량을 만들어내지 말 것**"]
     else:
-        head = "업무 항목 목록입니다. 원문 근거는 이번 요청에 포함되지 않았습니다."
+        head = "업무 항목 목록입니다. 근거는 이번 요청에 포함되지 않았습니다."
         rule5 = [f"5. d = 상세설명 **한 줄, {DETAIL_MAX}자 이내** — 항목 줄의 Level 2·Level 3 만으로 쓸 것",
                  "   **파일명·메일 제목·건수 등 주어지지 않은 고유명사를 지어내지 말 것**",
                  "   (금지 예: 'xxx_1부터 xxx_11까지' 처럼 확인 안 된 목록·수량)"]
     lines = [
-        "당신은 업무 로드율 분석의 판정자입니다. 아래는 한 사람의 PC에서 추출한 업무 항목과",
+        "당신은 Agentic AI 전환 과제 발굴을 위한 업무 분류의 정리자입니다. 아래는 한 사람의 메일·일정에서 뽑은 업무 항목과",
         head,
         "",
         "할 일:",
         "1. 같은 업무가 여러 항목으로 쪼개져 있으면 **하나로 합칠 것** (m 에 합칠 원본 항목번호들)",
         # LM30(2026-10-27) — 과제가 다른 '주간보고'·'일정 조율' 끼리 합쳐 과제가 하나로 묶였다(코드도 같은 과제끼리만 받는다)
         "   m 은 같은 과제 안의 항목끼리만 — 과제가 다르면 이름이 같은 업무라도 합치지 마세요.",
-        "2. l2 = 실제 과제·프로젝트명으로 정규화 (원문에서 읽어낸 이름. 토큰 조각 금지)"
+        "2. l2 = 실제 과제명으로 정규화 (근거에서 읽어낸 이름. 토큰 조각 금지)"
         + (" — 이미 확정된 과제 체계가 있으니 그 표기를 그대로 유지할 것(변형·재작명 금지): "
            + ", ".join(model_names) if model_names else ""),
         # 상위 정의 줄은 details.L1_META 에서 생성 — config.level1Set 추가 범주가 프롬프트에
@@ -292,29 +227,12 @@ def build_prompt(rows, evidence_md, model_names=(), ev_mode="aligned", overlap=(
     for i, r in rows:                      # (원본 인덱스, 행)
         lines.append(item_line(i, r, overlap=(i in overlap)))
     if evidence_md:
-        lines += ["", "[항목별 원문 근거]", evidence_md]
+        lines += ["", "[항목별 근거]", evidence_md]
     return "\n".join(lines)
 
 
 def _rfind(reply, key, skip=()):
-    if _judge is not None and hasattr(_judge, "rfind_json"):
-        try:
-            return _judge.rfind_json(reply, key, skip=skip)
-        except TypeError:                      # 구판 judge(skip 없음)
-            return _judge.rfind_json(reply, key)
-    skip_n = {re.sub(r"\s+", "", s) for s in (skip or ()) if s}      # judge 부재 폴백에도 예시 방어
-    i = reply.rfind("{")
-    n = 0
-    while i != -1 and n < 400:
-        try:
-            o, end = _DEC.raw_decode(reply, i)
-            if isinstance(o, dict) and key in o and re.sub(r"\s+", "", reply[i:end]) not in skip_n:
-                return o
-        except ValueError:
-            pass
-        n += 1
-        i = reply.rfind("{", 0, i)
-    return {}
+    return _judge.rfind_json(reply, key, skip=skip)
 
 
 def extract_items_ex(reply):
@@ -326,15 +244,11 @@ def extract_items_ex(reply):
     if isinstance(o, dict) and isinstance(o.get("items"), list) and o["items"]:
         info["json"] = True
         return [it for it in o["items"] if isinstance(it, dict)], info
-    if _judge is not None and hasattr(_judge, "repair_json"):
-        try:
-            o = _judge.repair_json(reply, "items", skip=REFINE_EXAMPLES)
-        except TypeError:                          # 구판 judge(skip 없음)
-            o = _judge.repair_json(reply, "items")
-        items = [it for it in (o.get("items") or []) if isinstance(it, dict)] if isinstance(o, dict) else []
-        if items:
-            info["json"] = info["repaired"] = True
-            return items, info
+    o = _judge.repair_json(reply, "items", skip=REFINE_EXAMPLES)
+    items = [it for it in (o.get("items") or []) if isinstance(it, dict)] if isinstance(o, dict) else []
+    if items:
+        info["json"] = info["repaired"] = True
+        return items, info
     return [], info
 
 
@@ -343,31 +257,31 @@ def extract_items(reply):
     return extract_items_ex(reply)[0]
 
 
-def load_signal_evidence(rep, tag):
-    """근거는 judge 가 판정 축으로 재작성하는 signals_{tag}.csv 에서 (Level 2, Level 3) 로 뽑는다.
-    evidence_*.md 는 mine 축(규칙 이름)이라 판정 뒤에는 키가 절대 맞지 않는다 —
-    judge 가 mm_rows 의 Level 2 만 덮어쓰고 evidence 는 재생성하지 않기 때문이다(실측 0건 매칭)."""
-    sp = os.path.join(rep, f"signals_{tag}.csv")
-    if not os.path.exists(sp):
-        return None, False
+_EV_HEAD = re.compile(r"^##\s+(.*?)\s+—\s+근거\s+\d+건\s*$")
+_EV_LINE = re.compile(r"^-\s+(?:\d{2}-\d{2}\s+)?(.*)$")
+
+
+def load_evidence(rep, tag):
+    r"""report\evidence_<tag>.md(§5.5 — judge 가 판정 축으로 쓴다) → {(Level 2, Level 3): ['- 제목', …]} · 없으면 None.
+    머리 '## <L2> / <L3> — 근거 N건' 의 건수와 줄 앞 날짜(MM-DD)는 프롬프트에 싣지 않으려고 떼어 낸다."""
+    p = os.path.join(rep, f"evidence_{tag}.md")
     try:
-        with open(sp, encoding="utf-8-sig") as f:
-            rows = list(csv.DictReader(f))
-    except (OSError, csv.Error, UnicodeDecodeError):
-        return None, False
-    if not rows:
-        return None, False
-    judged = "model" in rows[0]          # judge 미실행이면 mine 판(model 컬럼 없음)
-    k2, k3 = ("model", "detail") if judged else ("project", "activity")
-    by = {}
-    for r in rows:
-        if re.search(r"(?<![a-z])ad(?![a-z])", str(r.get("flag") or ""), re.I):
-            continue                     # G3 — 광고 의심(G2 flag 'ad') 신호는 근거로 보내지 않는다
-        key = (str(r.get(k2) or "").strip(), str(r.get(k3) or "").strip())
-        line = (f"- {(r.get('time') or '')[:10]} [{r.get('source') or ''}] "
-                f"{(r.get('text') or '')[:100]}")
-        by.setdefault(key, []).append(line)
-    return by, judged
+        with open(p, encoding="utf-8-sig") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return None
+    by, key = {}, None
+    for ln in lines:
+        m = _EV_HEAD.match(ln.strip())
+        if m:
+            l2, _sep, l3 = m.group(1).partition(" / ")
+            key = (l2.strip(), l3.strip())
+            by.setdefault(key, [])
+            continue
+        m = _EV_LINE.match(ln.strip())
+        if key is not None and m and m.group(1).strip():
+            by[key].append("- " + m.group(1).strip()[:100])
+    return by or None
 
 
 def slice_for_chunk(by, ch, cap=9000, overlap=()):
@@ -397,69 +311,32 @@ def slice_for_chunk(by, ch, cap=9000, overlap=()):
     return text, hit
 
 
-def _evidence_slice(ev_text, names):
-    """이 청크에 등장하는 과제(Level 2)의 근거 단락만 골라낸다 — 전체 근거를 매번 보내면
-    프롬프트가 비대해져 응답이 잘린다.
-    헤더의 Level 2 부분만 대조한다: Level 3(활동 범주)는 여러 과제가 공유하므로 그걸로
-    매칭하면 다른 과제의 근거가 섞인다. 못 맞추면 **빈 문자열** — 예전처럼 앞부분 4000자를
-    넣으면 다른 항목의 근거가 이 청크의 근거인 양 전달돼 오히려 판단을 망친다."""
-    if not ev_text:
-        return ""
-    want = {str(n).strip().lower() for n in names if str(n).strip()}
-    keep, take = [], False
-    for ln in ev_text.splitlines():
-        if ln.startswith("#"):
-            # 헤더 형식 '## {Level 2} / {Level 3} — …' 의 Level 2 부분만 본다
-            head = ln.lstrip("# ").split(" / ")[0].strip().lower()
-            take = any(w and (w == head or w in head) for w in want)
-        if take:
-            keep.append(ln)
-    return "\n".join(keep)
-
-
 def load_exclude():
-    """개인 폴더·파일 제외어 — 단일원 privacy.excluded_keywords(내장 EXCLUDE ∪ config.excludePathKeywords).
-    예전에는 설정 목록만 읽어 mine·judge 와 거르는 범위가 달랐다(W2-16)."""
-    try:
-        with open(os.path.join(ROOT, "config", "config.json"), encoding="utf-8-sig") as f:
-            cfg = json.load(f)
-    except Exception:  # noqa: BLE001 - 설정이 깨져도 내장 제외어는 쓴다
-        cfg = {}
+    """개인 주제어 — 단일원 privacy.excluded_keywords(내장 EXCLUDE ∪ privacy.excludeKeywords). mine·judge 와 같은 범위."""
+    import afcfg
     import privacy
-    return [k for k in privacy.excluded_keywords(cfg if isinstance(cfg, dict) else {}) if k and len(k) >= 2]
+    return [k for k in privacy.excluded_keywords(afcfg.load(ROOT)) if k and len(k) >= 2]
 
 
 def sanitize_evidence(ev_text, kws):
-    """개인정보가 있는 '근거 줄'만 빼고 나머지는 보낸다.
-    (전체 중단은 도구를 멈추게 하고, 통째 전송은 유출을 낳는다 — 줄 단위가 안전선)
-    ① 제외어(개인 폴더·파일)가 든 근거 줄 삭제 ② 남은 근거 줄은 G3 관문(judge.g3_rows → privacy.gate_items)을 거친다 —
-    자격증명·고위험 잔여·카나리아 줄은 빼고, 나머지는 재정제한 줄로 바꾼다. 반환 형식은 그대로(글, 뺀 줄 수, 걸린 제외어·사유)."""
-    # 경로 전용 토큰·ASCII 부분일치 오탐 방지 — extract.load_signals 와 같은 규칙
-    # ('temp'⊂'temperature' 로 정상 근거 줄이 삭제되던 결함의 자매 지점)
-    from extract import PATH_ONLY_KW
-    kr = [str(k).lower() for k in kws if k and not str(k).isascii()
-          and str(k).lower() not in PATH_ONLY_KW]
-    asc = [str(k).lower() for k in kws if k and str(k).isascii()
-           and str(k).lower() not in PATH_ONLY_KW]
-    pat = (re.compile("|".join(f"(?<![a-z0-9]){re.escape(k)}(?![a-z0-9])" for k in asc))
-           if asc else None)
+    """개인정보가 있는 '근거 줄'만 빼고 나머지는 보낸다(전체 중단은 도구를 멈추게 하고, 통째 전송은 유출을 낳는다).
+    ① 개인 주제어(privacy.keyword_hit — 한글 부분 일치·영문 단어 경계)가 든 근거 줄 삭제 ② 남은 근거 줄은 G3 관문
+    (judge.g3_rows → privacy.gate_items)을 거친다 — 제한 고객·민감정보·식별번호·카나리아 줄은 빼고, 나머지는 재정제한 줄로
+    바꾼다. 반환: (글, 뺀 줄 수, 걸린 낱말·사유)."""
+    import privacy
+    words = tuple(kws or ())
     keep, dropped, hits = [], 0, set()
     ev_lines = []                                   # (keep 안 위치, 줄) — 관문에 함께 넘긴다
     for ln in ev_text.splitlines():
-        low = ln.lower()
-        h = [k for k in kr if k in low]
-        if not h and pat:
-            m = pat.search(low)
-            if m:
-                h = [m.group(0)]
-        if h and ln.strip().startswith("-"):        # 근거 항목 줄만 제거 (제목 줄은 유지)
-            dropped += 1
-            hits.update(h)
-            continue
         if ln.strip().startswith("-"):
+            h = privacy.keyword_hit(ln, words=words)
+            if h:                                   # 근거 항목 줄만 제거 (제목 줄은 유지)
+                dropped += 1
+                hits.add(h)
+                continue
             ev_lines.append((len(keep), ln))
         keep.append(ln)
-    if ev_lines and _judge is not None and hasattr(_judge, "g3_rows"):
+    if ev_lines:
         kept, why = _judge.g3_rows([{"text": ln, "_k": k} for k, ln in ev_lines], ("text",))
         ok = {it["_k"]: it["text"] for it in kept}
         for k, _ln in ev_lines:
@@ -500,8 +377,8 @@ def plan_chunks(idxed, chunk_n):
 class Refiner:
     """청크 왕복 + 적응 분할. items 에 (보낸 번호 집합, 겹침 번호 집합, 항목 dict) 를 쌓는다."""
 
-    def __init__(self, tag, rep, sig_by, ev, model_names, say=print):
-        self.tag, self.rep, self.sig_by, self.ev, self.model_names, self.say = tag, rep, sig_by, ev, model_names, say
+    def __init__(self, tag, rep, sig_by, model_names, say=print):
+        self.tag, self.rep, self.sig_by, self.model_names, self.say = tag, rep, sig_by, model_names, say
         self.items = []
         self.st = {"roundtrips": 0, "repaired": 0, "retries": 0, "failed_items": 0, "notes": []}
         self.excl = load_exclude()
@@ -511,16 +388,8 @@ class Refiner:
     def make_prompt(self, ch, ov, label):
         head = build_prompt(ch, "", self.model_names, "aligned", ov)     # 가장 긴 머리말로 예산을 잰다
         cap = PROMPT_BUDGET - len(head) - 40
-        if self.sig_by:
-            sub_ev, hit = slice_for_chunk(self.sig_by, ch, cap, ov)
-            ev_mode = "aligned" if hit == len(ch) else ("partial" if hit else "none")
-        else:
-            # signals 가 없다 — 예전 근거 파일을 항목별 정렬 없이 보낸다.
-            # 정렬을 보장할 수 없다는 사실을 프롬프트가 명시하므로 창작으로 이어지지 않는다.
-            sub_ev = _evidence_slice(self.ev, [r["Level 2"] for _i, r in ch]) or self.ev[:min(4000, cap)]
-            sub_ev = sub_ev[:cap]
-            ev_mode = "unaligned" if sub_ev else "none"
-            hit = 0
+        sub_ev, hit = slice_for_chunk(self.sig_by, ch, cap, ov) if self.sig_by else ("", 0)
+        ev_mode = "aligned" if hit == len(ch) else ("partial" if hit else "none")
         if sub_ev:
             sub_ev, dropped, hits = sanitize_evidence(sub_ev, self.excl)
             if dropped and self.first_filter_note:
@@ -529,16 +398,9 @@ class Refiner:
         if ev_mode != "aligned":
             self.say(f"        근거 정렬: {ev_mode} ({hit}/{len(ch)}항목) — "
                      f"프롬프트가 '지어내지 말 것'을 명시합니다")
-        prompt = build_prompt(ch, sub_ev, self.model_names, ev_mode, ov)
-        # 사람이 Copilot 에 직접 붙여넣을 수 있게 프롬프트 파일은 예전 이름 그대로 남긴다
-        # (judge.copilot_send 의 report\judge_refine{n}_{tag}.md 는 성공 왕복 뒤 지워진다 — V-06)
-        pf = os.path.join(self.rep, f"refine_prompt_{self.tag}_{label}.md")
-        try:
-            with open(pf, "w", encoding="utf-8") as f:
-                f.write(prompt)
-        except OSError:
-            pass
-        return prompt
+        # 실패한 왕복의 프롬프트는 judge.copilot_send 가 report\judge_refine{n}_{tag}.md 로 남긴다(회사 Copilot 에 붙여 넣기용 —
+        # 성공 왕복의 파일은 지운다). 여기서 따로 쓰지 않는다.
+        return build_prompt(ch, sub_ev, self.model_names, ev_mode, ov)
 
     def run(self, ch, ov, label, depth=0):
         """청크 하나(겹침 포함) → 이 청크가 덮은 원본 번호 수. 실패·잘림은 적응 분할."""
@@ -568,8 +430,7 @@ class Refiner:
                 self.say(f"        잘린 응답 복구 — {len(got)}개 항목")
             elif not got:
                 self.say("        응답에서 JSON을 찾지 못함")
-                if _judge is not None and hasattr(_judge, "note_bad_reply"):
-                    _judge.note_bad_reply()
+                _judge.note_bad_reply()
             elif res.get("cut"):
                 self.say(f"        생성 중단 응답 — {len(got)}개 항목 회수")
         else:
@@ -585,8 +446,7 @@ class Refiner:
                 return 0
             # 일시 실패(사용량 제한·무응답·시간 초과 …)는 copilot_send 가 이미 쉬고 같은 청크를 다시 보냈다(cooldowns) —
             # 반으로 나눠 또 보내면 막힌 Copilot 에 왕복만 늘어난다(마감 직전이라 쉬지 못했으면 최대 7번). 원본 그대로 둔다.
-            if res.get("cooldowns") or (_judge is not None and hasattr(_judge, "_is_transient")
-                                        and _judge._is_transient(res)):
+            if res.get("cooldowns") or _judge._is_transient(res):
                 self.st["failed_items"] += len({i for i, _ in ch} - set(ov))
                 return 0
         ch_ok = {i for i, _ in ch}
@@ -696,29 +556,6 @@ def task_guard_groups(groups, rows):
     return out, n_split
 
 
-def admin_guard_groups(groups, rows):
-    """근태·출장 등록 관문(LM30 2026-10-28) → (새 그룹 목록, 떼어 낸 행 수). 이 도구가 근태·출장 등록에 붙이는 세부업무
-    (details.admin_detail — 행정 처리·목적 미상) 행은 다른 업무와 합치지 않는다 — 섞인 그룹에서 (과제, 세부업무)별로 떼어 'admin' 표식을
-    단 그룹으로 둔다(정제가 이름을 바꾸지 않는다)."""
-    out, n = [], 0
-    for g in groups:
-        adm = defaultdict(list)
-        for i in sorted(g["idxs"]):
-            l3 = str(rows[i].get("Level 3") or "").strip()
-            if _details.admin_detail(l3):
-                adm[(str(rows[i].get("Level 2") or "").strip(), l3)].append(i)
-        if not adm:
-            out.append(g)
-            continue
-        rest = set(g["idxs"]) - {i for ids in adm.values() for i in ids}
-        if rest:
-            n += sum(len(ids) for ids in adm.values())
-            out.append(dict(g, idxs=rest, pick_share=sum(_f(rows[i].get("share")) for i in rest)))
-        for ids in adm.values():
-            out.append(dict(g, idxs=set(ids), pick_share=sum(_f(rows[i].get("share")) for i in ids), admin=True))
-    return out, n
-
-
 def _pinned_projects():
     r"""지정 과제(config\projects.json) → (이름 목록, {ukey2(이름): 상위}) — 과제명 관문 통과·상위 채움용(못 읽으면 빈 값)."""
     try:
@@ -731,7 +568,7 @@ def _pinned_projects():
 
 
 def _guard_lv2(lv2, vote, people=(), pinned=()):
-    """정제가 고른 과제명(Level 2) 관문(LM28 진단 B) — 사람 이름·채팅방·공지류(근태공지·인사발령 …)는 과제가 아니다.
+    """정제가 고른 과제명(Level 2) 관문 — 사람 이름·공지류(인사발령 …)·행정 표기는 과제가 아니다.
     걸리면 원본 다수결(vote()), 그것도 걸리면 '공통'. 빈칸·'미지정'·지정 과제는 그대로."""
     if not lv2 or lv2 == "미지정" or _details.task_name_ok(lv2, people, pinned):
         return lv2
@@ -740,69 +577,88 @@ def _guard_lv2(lv2, vote, people=(), pinned=()):
 
 
 def _stage_budget(floor_min=15.0):
-    r"""core.budget.stage_budget 위임 — v3 에서 3벌 사본을 한 벌로 모았다(구조 감사:
-    사본 유사도 0.925~1.000 · 정책 수정이 한 곳씩 빠지던 원인). 시그니처는 관행 유지."""
+    r"""core.budget.stage_budget 위임 — 단계 시간 예산(config.aiStageBudgetMin · 전체 마감 AF32_AI_DEADLINE)."""
     from budget import stage_budget
     return stage_budget(floor_min=floor_min, root=ROOT, now=time.time, mono=time.monotonic)
 
 
+_FAM_RX = re.compile(r"([^\s·\d][^·\d]*?)\s*(\d+)")
+
+
+def _fams(s):
+    """근거 글('메일 12 · 회의 3') → Counter({계열: 건수})."""
+    c = Counter()
+    for name, n in _FAM_RX.findall(str(s or "")):
+        name = name.strip()
+        if name:
+            c[name] += int(n)
+    return c
+
+
+def _confidence(fams, n):
+    """확신도 — judge 와 같은 규칙(출처 계열 수·근거건수): 상 = 2계열·5건 이상 · 중 = 2계열 또는 3건 이상 · 하."""
+    return _judge._confidence(fams, n)
+
+
 def main():
     d0, d1 = arg("--from"), arg("--to")
+    rc = _details.consent_gate("refine", ROOT) or _details.restricted_gate("refine", ROOT)   # 다른 사용자의 자료 4 · 지우는 중 3 · 제한 고객 목록 없음 4
+    if rc:
+        return rc
     tag = f"{d0.replace('-','')}-{d1.replace('-','')}"
-    from stage_state import open_stage
-    _ss = open_stage(os.path.join(ROOT, "report"), tag, "refine")
     rep = os.path.join(ROOT, "report")
-    src = os.path.join(rep, f"mm_rows_{tag}.csv")
-    evp = os.path.join(rep, f"evidence_{tag}.md")
-    if not os.path.exists(src):
-        print(f"[refine] 입력 없음 — 먼저 mine.py 를 실행하세요 ({src})")
+    from stage_state import open_stage
+    _ss = open_stage(rep, tag, "refine")
+    src = os.path.join(rep, f"work_rows_{tag}.csv")
+    if not os.path.exists(src) or not _details.af32_tag_ok(tag, rep):
+        why = ("입력 없음 — 먼저 mine.py·judge.py 를 실행하세요" if not os.path.exists(src)
+               else f"report\\run_meta_{tag}.json 에 {_judge.PRODUCT} 표식이 없어 이 기간 자료를 쓰지 않습니다")
+        print(f"[refine] {why} ({src})")
         if _ss is not None:
-            _ss.finish("failed", stop_kind="fatal", reason="입력 없음")
+            _ss.finish("failed", stop_kind="fatal", reason=why)
         return 1
-    rows = list(csv.DictReader(open(src, encoding="utf-8-sig")))
-    # 숫자 셀을 먼저 확정한다(V-05) — 빈칸·비숫자 셀 하나에 item_line/병합의 float()/int() 가 ValueError 로 죽어
-    # run.py 가 'AI 정제 실패' 로만 남기던 결함. 0 으로 두고 행 수를 로그·마지막 JSON(bad_rows)에 남긴다.
+    with open(src, encoding="utf-8-sig") as f:
+        rows = list(csv.DictReader(f))
+    # 숫자 셀을 먼저 확정한다 — 빈칸·비숫자 셀 하나에 병합의 float()/int() 가 ValueError 로 죽지 않게. 0 으로 두고 행 수를
+    # 로그·마지막 JSON(bad_rows)에 남긴다.
     bad_rows = 0
     for r in rows:
-        if not all(_num_ok(r.get(k)) for k in ("share", "mm", "활동일수")):
+        if not all(_num_ok(r.get(k)) for k in ("share", "근거건수")):
             bad_rows += 1
-        r["share"], r["mm"], r["활동일수"] = _f(r.get("share")), _f(r.get("mm")), _i(r.get("활동일수"))
+        r["share"], r["근거건수"] = _f(r.get("share")), _i(r.get("근거건수"))
     if bad_rows:
-        print(f"[refine] 숫자 변환 실패 {bad_rows}행 — share/mm/활동일수 가 빈칸·비숫자(엑셀 재저장·손편집?) → 0 으로 두고 계속합니다")
-    # 근거는 판정 축과 키가 같은 signals 를 우선한다. 없을 때만 예전 evidence 파일.
-    sig_by, sig_judged = load_signal_evidence(rep, tag)
-    ev = open(evp, encoding="utf-8").read() if os.path.exists(evp) else ""
-    if sig_by:
-        print(f"[refine] 근거 원천: signals_{tag}.csv "
-              f"({'판정 축' if sig_judged else '규칙 축'}, {len(sig_by)}묶음)")
-    elif ev:
-        print(f"[refine] 근거 원천: evidence_{tag}.md (signals 없음 — 정렬 보장 안 됨)")
-    # 과제명 관문(LM28 진단 B) — 사람 키는 signals 의 who 열에서만 뽑는다. 지정 과제는 늘 통과한다.
-    people = _details.person_keys(r.get("who") for r in _details.read_signals(tag, rep))
+        print(f"[refine] 숫자 변환 실패 {bad_rows}행 — share/근거건수 가 빈칸·비숫자(엑셀 재저장·손편집?) → 0 으로 두고 계속합니다")
+    # 근거는 judge 가 판정 축으로 쓴 evidence_<tag>.md 에서 (Level 2, Level 3) 로 뽑는다.
+    sig_by = load_evidence(rep, tag)
+    print(f"[refine] 근거 원천: evidence_{tag}.md ({len(sig_by)}묶음)" if sig_by
+          else f"[refine] 근거 없음(evidence_{tag}.md) — 항목 이름만으로 정제합니다")
+    # 과제명 관문 — 사람 키는 signals 의 who 열과 G1 이 남긴 이름 해시(data\cache\name_hashes.json)에서 얻는다. 지정 과제는 늘 통과한다.
+    people = _details.person_keys((r.get("who") for r in _details.read_signals(tag, rep)), ROOT)
     pinned, pin = _pinned_projects()
-    # judge가 확정한 과제 체계가 있으면 Level 2 재작명을 막는 제약으로 전달. 체계의 l1(상위)은 AI 가 상위를 비운
-    # 행의 채움 재료다(details.level1_fill). 옛 체계에 남은 사람 이름·공지류는 제약 목록에서 뺀다.
+    # judge 가 확정한 과제 체계가 있으면 Level 2 재작명을 막는 제약으로 전달. 체계의 l1(상위)은 AI 가 상위를 비운
+    # 행의 채움 재료다(details.level1_fill). 옛 체계에 남은 사람 이름·공지류는 제약 목록에서 뺀다. 프롬프트에는
+    # G3 행 관문을 지난 사본만 싣는다(judge.sendable — 가린 이름은 가린 채 · 답의 가린 이름은 judge.unmask_name 이 되돌린다).
     ent_p = os.path.join(rep, f"entities_{tag}.json")
     model_names, l1_map = [], {}
     if os.path.exists(ent_p):
         try:
-            _ms = [m for m in json.load(open(ent_p, encoding="utf-8")).get("models", [])
-                   if isinstance(m, dict) and m.get("name")]
+            with open(ent_p, encoding="utf-8-sig") as f:
+                _ms = [m for m in json.load(f).get("models", []) if isinstance(m, dict) and m.get("name")]
             model_names = [m["name"] for m in _ms
                            if m.get("pinned") or _details.task_name_ok(m["name"], people, pinned)]
             l1_map = {ukey2(m["name"]): snap1(m.get("l1")) for m in _ms if snap1(m.get("l1"))}
         except (OSError, ValueError, AttributeError):
             pass
+    send_names = list(dict.fromkeys(x for x in (_judge.sendable(n) for n in model_names) if x))
     # 항목이 많으면 한 번의 왕복으로는 응답이 잘리거나 실패한다 — 청크로 나눠 여러 번 돈다.
     # 실패한 청크는 '병합 없음'으로 두고 계속 진행한다(전부 버리지 않는다).
-    # 40항목 ≈ 12,200자(근거 포함)로 입력 한도(9,000자)를 넘겼다 — 20항목이 안전값(실측).
     # --chunk 명시 > config.copilotAuto.refineChunk > 20. 근거 슬라이스는 예산에 맞춰 잘린다.
     chunk_n = chunk_default("refineChunk", 20)
     idxed = list(enumerate(rows))
     plan = plan_chunks(idxed, chunk_n)
     print(f"[refine] {len(rows)}항목 → {len(plan)}회 왕복 (청크 {chunk_n}항목 · 겹침 {OV_N}항목 · "
           f"예산 {PROMPT_BUDGET:,}자)")
-    rf = Refiner(tag, rep, sig_by, ev, model_names)
+    rf = Refiner(tag, rep, sig_by, send_names)
     failed, consec, skipped = 0, 0, 0
     _dl, _bud = _stage_budget()
     _stopped = ""
@@ -847,93 +703,77 @@ def main():
         tail["stopped"] = _stopped
         tail["hint"] = _stopped
     if not rf.items:
-        print("[refine] 정제된 항목이 없습니다 — 규칙 결과를 그대로 둡니다")
-        print("        report\\refine_prompt_*.md 를 Copilot에 직접 붙여넣어도 됩니다")
+        print("[refine] 정제된 항목이 없습니다 — 판정 결과(work_rows)를 그대로 둡니다")
+        print("        실패한 왕복의 프롬프트는 report\\judge_refine*_<기간>.md 에 남습니다 — 손으로 붙여 쓸 때는 "
+              "회사 M365 Copilot(m365.cloud.microsoft, 회사 계정)에만 붙여 넣으세요")
         _chat_note()
         print(json.dumps(dict(tail, ok=False, error="정제 0건"), ensure_ascii=False))
+        if _ss is not None:
+            _ss.finish("failed", stop_kind="fatal", reason="정제 0건")
         return 1
     if failed or st["repaired"] or st["retries"]:
         print(f"[refine] 청크 {failed}/{len(plan)} 실패 · 왕복 {st['roundtrips']}회(재시도 {st['retries']}) · "
               f"잘린 응답 복구 {st['repaired']}회 · 원본 유지 항목 {st['failed_items']} — 해당 항목은 원본 그대로 보존됩니다")
 
-    # 병합 + 비중 재정규화 (AI가 총량을 바꾸지 못하게 규칙이 통제)
-    # 과제명(Level 2)은 기존 이름으로 스냅한다 — AI가 새 이름을 지어내면 대시보드(refined)와
-    # 상세리뷰 피벗(judge)의 과제 축이 갈라져 MM 이 다르게 보인다(실측 지적: 미스매칭).
-    # 신원 축은 ukey2 — .lower() 로 보면 AI 가 띄어쓰기만 바꿔도 '모르는 이름' 이 되어
-    # 원본 다수결로 되돌려지거나 새 과제로 남는다(judge·flow 와 같은 축을 쓴다).
+    # 병합 + 비중 재정규화(AI 가 총량을 바꾸지 못하게 규칙이 통제). 과제명(Level 2)은 기존 이름으로 스냅한다 — AI 가 새 이름을
+    # 지어내면 정제본과 판정 피벗의 과제 축이 갈라진다. 신원 축은 ukey2(judge·flow 와 같은 축).
     known_lv2 = {ukey2(r.get("Level 2")) for r in rows} | {ukey2(n) for n in model_names}
     groups, owner = merge_groups(rf.items, rows)
-    # 과제 관문(LM30 2026-10-27) — 과제가 다른 항목을 합친 병합은 과제별로 나누고, 과제 이름은 구성원의 과제를 지킨다
+    # 과제 관문 — 과제가 다른 항목을 합친 병합은 과제별로 나누고, 과제 이름은 구성원의 과제를 지킨다
     groups, n_split = task_guard_groups(groups, rows)
     if n_split:
         print(f"[refine] 과제가 다른 항목을 합친 병합 {n_split}건은 과제별로 나눴습니다(같은 과제 안에서만 합칩니다)")
-    # 근태·출장 등록 관문(LM30 2026-10-28) — 행정 처리·목적 미상 행은 다른 업무와 합치지 않고 이름을 그대로 둔다
-    groups, n_adm = admin_guard_groups(groups, rows)
-    if n_adm:
-        print(f"[refine] 근태·출장 등록 행 {n_adm}개는 다른 업무와 합치지 않았습니다")
     final = []
     for g in groups:
         it, idxs = g["it"], sorted(g["idxs"])
         if _g(it, "work") is False:
             continue
-        share = sum(_f(rows[i].get("share")) for i in idxs)
-        days = max(_i(rows[i].get("활동일수")) for i in idxs)
-        srcs = " · ".join(sorted({str(rows[i].get("근거") or "") for i in idxs}))
 
         def _vote(col, ids=idxs):
-            """구성원 행의 col 다수결 — 동률이면 비중 큰 행의 값(결정적, V-03)"""
+            """구성원 행의 col 다수결 — 동률이면 비중 큰 행의 값(결정적)"""
             return _majority((rows[i].get(col), rows[i].get("share")) for i in ids)
-        lv2 = str(_g(it, "level2") or "").strip()
+        lv2 = _judge.unmask_name(str(_g(it, "level2") or "").strip())   # 가려 보낸 과제 이름이면 원래 이름으로
         # 스냅은 judge 체계(entities)가 있을 때만 — 축을 맞출 피벗이 있는 경우다.
-        # judge 미실행/실패로 체계가 없으면 AI 정규화(토큰 조각→실제 과제명)를 허용해야
-        # 한다: 무조건 되돌리면 refine 단독 사용의 핵심 기능이 죽는다(검증 확정).
         if model_names and ukey2(lv2) not in known_lv2:     # AI 개명 → 원본 다수결로
             lv2 = _vote("Level 2") or "공통"
         elif not lv2:
             lv2 = "미지정"
-        # 과제명 관문(LM28 진단 B) — 사람 이름·채팅방·공지류면 원본 다수결, 그것도 걸리면 '공통'
         lv2 = _guard_lv2(lv2, lambda: _vote("Level 2"), people, pinned)
-        # 과제 관문(LM30 2026-10-27) — 구성원의 과제가 '공통'·'미지정' 이 아니면 정제가 다른 과제로 옮기지 못한다
+        # 구성원의 과제가 '공통'·'미지정' 이 아니면 정제가 다른 과제로 옮기지 못한다
         if g.get("own") and ukey2(lv2) != ukey2(g["own"]):
             lv2 = g["own"]
-        # level3 는 실제 업무 항목명(중위개체) — AI 가 비웠거나 9종 범주로 축약해 오면
-        # 원본 세부업무명(다수결)을 지킨다. 범주는 activity('활동') 열이 따로 담는다.
-        # LM30(2026-10-28) 근태·출장 등록 표기뿐인 이름('출장'·'근태계획'·'출장 신청')도 받지 않는다
+        # level3 는 실제 업무 항목명 — AI 가 비웠거나 활동 범주로 축약해 오면 원본 세부업무명(다수결)을 지킨다.
+        # 범주는 '활동' 열이 따로 담는다. 행정 표기·사람 이름이 든 이름도 받지 않는다(details.detail_name_ok·is_person_name).
         lv3 = str(_g(it, "level3") or "").strip()
-        if not lv3 or lv3 in ACT_CATS or not _details.detail_name_ok(lv3):
-            lv3 = _vote("Level 3") or lv3 or "기타"
-        if g.get("admin"):                   # 근태·출장 등록 행 — 과제·세부업무 이름을 그대로(admin_guard_groups)
-            lv2, lv3 = (str(rows[idxs[0]].get("Level 2") or "") or lv2), str(rows[idxs[0]].get("Level 3") or lv3)
+        if (not lv3 or lv3 in ACT_CATS or not _details.detail_name_ok(lv3)
+                or _details.is_person_name(lv3, people)):
+            lv3 = _vote("Level 3") or ("" if _details.is_person_name(lv3, people) else lv3) or "기타"
         act = str(_g(it, "activity") or "").strip()
-        detail = re.sub(r"\s+", " ", str(_g(it, "detail") or "")).strip()[:DETAIL_MAX * 2]
-        final.append({"유형": _vote("유형"), "제품": _vote("제품"),
-                      "활동": act if act in ACT_CATS else "",
-                      # 상위는 AI 판정 우선, 비었을 때만 채움(지정 상위 > 체계 l1 > 규칙 > 과제명이 곧 범주) —
-                      # 예전에는 규칙 폴백이 없어 정제가 못 짚은 행의 상위가 통째로 빈칸이었다
+        # 상세설명은 AI 가 쓴 글 — 사람 이름(G1 이름 해시)은 [사람] 으로(D8)
+        detail = _details.mask_people(re.sub(r"\s+", " ", str(_g(it, "detail") or "")).strip()[:DETAIL_MAX * 2], people)
+        final.append({"유형": _vote("유형"), "활동": act if act in ACT_CATS else "",
+                      # 상위는 AI 판정 우선, 비었을 때만 채움(지정 상위 > 체계 l1 > 규칙 > 과제명이 곧 범주)
                       "Level 1": (snap1(_g(it, "level1"))
-                                  or _details.level1_fill(lv2, f"{lv3} {detail}", l1_map, pin, ROOT)), "Level 2": lv2,
-                      "Level 3": lv3, "상세설명": detail,
-                      "share": share, "활동일수": days, "근거": srcs,
-                      "확신도": "상" if days >= 3 and len(idxs) > 1 else "중",
+                                  or _details.level1_fill(lv2, f"{lv3} {detail}", l1_map, pin, ROOT)),
+                      "Level 2": lv2, "Level 3": lv3, "상세설명": detail,
+                      "share": sum(_f(rows[i].get("share")) for i in idxs),
+                      "근거건수": sum(_i(rows[i].get("근거건수")) for i in idxs),
+                      "_fam": sum((_fams(rows[i].get("근거")) for i in idxs), Counter()),
                       # 정제 행이 덮은 원본 (Level 2, Level 3) — refine_map 용(CSV 열에는 안 나간다)
                       "_orig": [(str(rows[i].get("Level 2") or ""), str(rows[i].get("Level 3") or "")) for i in idxs]})
     for i, r in enumerate(rows):                      # AI가 언급 안 한 항목은 그대로 보존
         if i not in owner:
-            final.append({"유형": r.get("유형", ""), "제품": r.get("제품", ""),
-                          "활동": r.get("활동", ""),
-                          # AI 가 언급하지 않은 행 — 먼저 **기존 Level 1 을 보존**한다(옛 이름·수기 값을
-                          # snap1 로 새 4범주에 접어). 예전에는 이 값을 읽지 않고 규칙으로만 재계산해
-                          # 코드네임 과제의 상위가 정제 한 번에 빈칸이 됐다(제보 ③ · 검증 CONFIRMED).
+            final.append({"유형": r.get("유형", ""), "활동": r.get("활동", ""),
+                          # AI 가 언급하지 않은 행 — 먼저 기존 Level 1 을 보존한다(옛 이름·수기 값을 snap1 로 접어)
                           "Level 1": (snap1(r.get("Level 1", ""))
                                       or _details.level1_fill(r.get("Level 2", ""), r.get("Level 3", ""),
                                                               l1_map, pin, ROOT)),
                           "Level 2": r.get("Level 2", ""), "Level 3": r.get("Level 3", ""),
-                          "상세설명": "", "share": _f(r.get("share")), "활동일수": _i(r.get("활동일수")),
-                          "근거": r.get("근거", ""), "확신도": r.get("확신도", ""),
+                          "상세설명": "", "share": _f(r.get("share")), "근거건수": _i(r.get("근거건수")),
+                          "_fam": _fams(r.get("근거")),
                           "_orig": [(str(r.get("Level 2") or ""), str(r.get("Level 3") or ""))]})
-    # 같은 (과제, 담당업무)가 두 행으로 남는 것을 접는다 — 청크가 달라 각각 다른 이름으로 왔거나,
-    # 겹침 항목이 따로 판정된 경우다(제보: '하위·중위가 오버레이 청크 때문인지 다른 일로 인식').
-    # 접는 축은 judge·flow 와 같은 ukey2/ukey3. 비중은 합하고 대표 표기·설명은 비중 큰 쪽을 쓴다.
+    # 같은 (과제, 담당업무)가 두 행으로 남는 것을 접는다 — 청크가 달라 각각 다른 이름으로 왔거나, 겹침 항목이 따로 판정된 경우다.
+    # 접는 축은 judge·flow 와 같은 ukey2/ukey3. 비중·근거건수는 합하고 대표 표기·설명은 비중 큰 쪽을 쓴다.
     _fold, _order = {}, []
     for f in final:
         k = (ukey2(f.get("Level 2")), ukey3(f.get("Level 3")))
@@ -943,16 +783,16 @@ def main():
             _order.append(k)
             continue
         if f["share"] > g["share"]:
-            for col in ("Level 1", "Level 2", "Level 3", "상세설명", "활동", "유형", "제품"):
+            for col in ("Level 1", "Level 2", "Level 3", "상세설명", "활동", "유형"):
                 if str(f.get(col) or "").strip():
                     g[col] = f[col]
         else:
-            for col in ("Level 1", "상세설명", "활동", "유형", "제품"):
+            for col in ("Level 1", "상세설명", "활동", "유형"):
                 if not str(g.get(col) or "").strip() and str(f.get(col) or "").strip():
                     g[col] = f[col]
         g["share"] = _f(g.get("share")) + _f(f.get("share"))
-        g["활동일수"] = max(_i(g.get("활동일수")), _i(f.get("활동일수")))
-        g["근거"] = " · ".join(sorted({x for x in (str(g.get("근거") or ""), str(f.get("근거") or "")) if x}))
+        g["근거건수"] = _i(g.get("근거건수")) + _i(f.get("근거건수"))
+        g["_fam"] = g["_fam"] + f["_fam"]
         g["_orig"] = (g.get("_orig") or []) + (f.get("_orig") or [])
     if len(_fold) < len(final):
         print(f"[refine] 같은 업무로 판정된 {len(final) - len(_fold)}행을 접었습니다 "
@@ -960,38 +800,28 @@ def main():
     final = [_fold[k] for k in _order]
     if len(final) > len(rows):
         # 정제는 행을 합칠 수만 있고 늘릴 수 없다 — 늘었다면 응답 번호가 중복된 것이다.
-        # 왜곡된 배분으로 좋은 결과를 덮지 않고 규칙 결과를 그대로 둔다.
         print(f"[refine] 이상: {len(rows)}항목이 {len(final)}항목으로 늘었습니다 "
-              "(응답의 항목번호 중복) — 정제본을 쓰지 않고 규칙 결과를 유지합니다")
+              "(응답의 항목번호 중복) — 정제본을 쓰지 않고 판정 결과를 유지합니다")
         _chat_note()
         print(json.dumps(dict(tail, ok=False, error="항목 수 증가"), ensure_ascii=False))
+        if _ss is not None:
+            _ss.finish("failed", stop_kind="fatal", reason="항목 수 증가")
         return 1
     tot = sum(f["share"] for f in final) or 1.0
-    # share 0(실측 총량 0)이면 0으로 둔다 — 1.0 폴백은 빈 기간을 1MM 규모로 지어내는 결함
-    # (judge.py 의 `or 1` 폴백 제거와 같은 취지)
-    # 총 MM 은 Σmm/Σshare 로 잰다 — 예전 rows[0] 한 행의 mm/share 는 반올림(mm 3자리·share 4자리)이
-    # 작은 첫 행에서 크게 증폭됐다(합성 실측: 7.80 MM 이 8.33 으로).
-    tot_mm = sum(_f(r.get("mm")) for r in rows)
-    tot_sh = sum(_f(r.get("share")) for r in rows)
-    months = tot_mm / tot_sh if tot_sh else 0.0
+    fn = rows[0].get("Function", "") if rows else ""
     for f in final:
         f["share"] = round(f["share"] / tot, 4)
-        f["mm"] = round(f["share"] * months, 3)
-        f["이름"] = rows[0].get("이름", "")
-        f["Function"] = rows[0].get("Function", "")
-    final.sort(key=lambda x: -x["mm"])
+        f["Function"] = fn
+        f["근거"] = " · ".join(f"{s} {n}" for s, n in f["_fam"].most_common())
+        f["확신도"] = _confidence(len(f["_fam"]), f["근거건수"])
+        f["ax"] = _details.ax_flag(f"{f['Level 2']} {f['Level 3']} {f.get('상세설명') or ''}")
+        f["field"] = _details.field_of(f"{f['Level 2']} {f['Level 3']}")
+    final.sort(key=lambda x: (-x["share"], -x["근거건수"]))
 
-    dst = os.path.join(rep, f"mm_rows_{tag}_refined.csv")
-    cols = ["Function", "Level 1", "제품", "유형", "활동", "Level 2", "Level 3", "이름", "상세설명",
-            "share", "mm", "근거", "확신도", "활동일수"]
-    with open(dst, "w", encoding="utf-8-sig", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=cols)
-        w.writeheader()
-        for r in final:
-            w.writerow({c: r.get(c, "") for c in cols})
-    # 정제 행 → 원본 (Level 2, Level 3) 매핑(V-02) — UI 오할당 제외(app.exclude_work)가 정제·병합으로 이름이 바뀐
-    # 행도 signals 의 원본 쌍으로 풀어 구성원 신호를 전부 제외한다. 정제본과 운명을 같이한다(run.py 가 .stale 로
-    # 개명, exclude 가 함께 삭제). 같은 이름의 정제 행이 둘이면 원본 쌍을 합친다.
+    dst = os.path.join(rep, f"work_rows_{tag}_refined.csv")
+    _judge._write_csv_atomic(dst, REFINED_COLS, final)
+    # 정제 행 → 원본 (Level 2, Level 3) 매핑 — UI 오할당 제외가 정제·병합으로 이름이 바뀐 행도 signals 의 원본 쌍으로 풀어
+    # 구성원 신호를 전부 제외한다. 정제본과 운명을 같이한다. 같은 이름의 정제 행이 둘이면 원본 쌍을 합친다.
     rmap = {}
     for r in final:
         key = f"{r.get('Level 2', '')}/{r.get('Level 3', '')}"
@@ -999,18 +829,17 @@ def main():
         for a, b in r.get("_orig", []):
             if [a, b] not in lst:
                 lst.append([a, b])
-    mp = os.path.join(rep, f"refine_map_{tag}.json")
     try:
-        with open(mp, "w", encoding="utf-8") as f:
-            json.dump({"tag": tag, "generated": time.strftime("%Y-%m-%d %H:%M"), "rows_file": os.path.basename(src),
-                       "refined_file": os.path.basename(dst), "map": rmap}, f, ensure_ascii=False, indent=1)
+        _judge._write_json_atomic(os.path.join(rep, f"refine_map_{tag}.json"),
+                                  {"product": _judge.PRODUCT, "tag": tag, "generated": time.strftime("%Y-%m-%d"),
+                                   "rows_file": os.path.basename(src), "refined_file": os.path.basename(dst),
+                                   "map": rmap})
     except OSError as e:
         print(f"[refine] 정제 매핑(refine_map) 저장 실패({type(e).__name__}) — 오할당 제외는 이름 일치로만 찾습니다")
-    print(f"[refine] {len(rows)}항목 → {len(final)}항목 (병합 {len(rows)-len(final)}) · "
-          f"총 {sum(f['mm'] for f in final):.2f} MM")
+    print(f"[refine] {len(rows)}항목 → {len(final)}항목 (병합 {len(rows)-len(final)})")
     for f in final[:8]:
         print(f"   {str(f.get('Level 2') or '')[:22]:23s} {str(f.get('Level 3') or '')[:12]:13s} "
-              f"{f['mm']:5.2f} MM  {str(f.get('상세설명') or '')[:44]}")
+              f"근거 {f['근거건수']:4d}건  {str(f.get('상세설명') or '')[:44]}")
     print(f"[refine] → {dst}")
     _chat_note()
     print(json.dumps(dict(tail, ok=True, rows=len(rows), refined=len(final)), ensure_ascii=False))

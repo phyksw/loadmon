@@ -8,7 +8,7 @@ v3 구조 감사 실측: 같은 _stage_budget 이 judge/refine/agentic 세 파�
 
 규칙(기존 의미 그대로):
  · config.aiStageBudgetMin(기본 120, 0=끔)이 이 단계의 자기 예산.
- · run.py 가 물려준 전체 마감(LM_AI_DEADLINE, epoch 초)과 비교해 이른 쪽.
+ · run.py 가 물려준 전체 마감(AF32_AI_DEADLINE, epoch 초)과 비교해 이른 쪽.
  · 전체 마감이 이미 지났어도 최소 몫(floor_min)은 준다 — "진행되다가 안 된다" 방지.
  · extra_cap_min 을 주면 그 값과도 min (flow 의 flowBudgetMin 편입 — 0 이면 무시=무제한).
 """
@@ -44,7 +44,7 @@ def stage_budget(floor_min=15.0, extra_cap_min=None, root=None, now=None, mono=N
         mins = min(mins, float(extra_cap_min)) if mins > 0 else float(extra_cap_min)
     dl = (mono() + mins * 60.0) if mins > 0 else None
     try:
-        total_at = float(os.environ.get("LM_AI_DEADLINE") or 0)
+        total_at = float(os.environ.get("AF32_AI_DEADLINE") or 0)
     except ValueError:
         total_at = 0.0
     if total_at > 0:

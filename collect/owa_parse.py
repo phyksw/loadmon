@@ -12,21 +12,26 @@ r"""collect\owa_parse.py — Outlook 웹(OWA) 화면 판정용 순수 함수(LM2
     분 단위 시각은 날짜만으로 낮추지 않는다(정밀도 래칫 — LM28 E).
   · iso_local(s) — <time datetime> ISO(Z·오프셋) → 이 PC 로컬 (date, (시, 분))(C-35).
   · apply_ranges(day_st, rngs, cap) · ranges_of(day_st, axis) — {날짜: st} 에 판정 반영(나은 상태만 · 오늘은 partial) →
-    LMSTATUS ranges 조각(이어진 같은 상태끼리).
+    AF32STATUS ranges 조각(이어진 같은 상태끼리).
   · pick_list(cands) · mail_list_ok(lst, parsed, total) — 화면의 목록 칸 후보(JS 가 센 구조 사실) 중 메일 목록 칸 고르기·확인
     (LM28 현장 2026-10-08: 화면의 첫 listbox 가 메일 목록이 아니었다).
   · weekday_date(text, d0, d1) — 날짜 없이 요일만 있는 일정 글 → 그 주 안의 그 요일.
   · mask_shape(s) · skeleton(node) · fmt_flags(text) — 화면 구조 진단용(글자 → x · 태그·role·aria-label 길이 · 날짜 표기 꼴만).
+    skeleton 의 잎 글은 mask_cal 로 가린다 — 날짜·시각 꼴 밖의 숫자(전화·주민번호·발주 번호)는 모두 #.
   · 일정 위치 해석(LM28 현장 2026-10-11 — 라벨에 날짜·시각이 없는 막대): header_date · day_columns · col_date · col_span(요일 열)
     · hour_label · time_scale · y_to_min(시간 눈금) · cal_nonevent(칩·머리 칸) · picker_date(작은 달력 칸) · mask_cal(못 읽은
-    막대 꼴 — 글자 x, 숫자·구두점·오전/오후·요일·종일만).
+    막대 꼴 — 글자 x, 날짜·시각 꼴의 숫자·구두점·오전/오후·요일·종일만 · 그 밖의 숫자는 #).
   · 다른 메일 폴더(LM28-OWA-5 — 받은·보낸 편지함 밖으로 옮긴·이름을 바꾼·보관한 메일): folder_name · folder_kind(시스템 폴더
     여러 언어·data-folder-name) · tree_nodes(폴더 창 treeitem → 부모·하위) · pick_mailbox(즐겨찾기·그룹·공유·온라인 보관을 빼고
-    기본 사서함) · plan_folders(읽을 폴더·box·펼칠 폴더·제외 수) · node_key·find_node(화면이 다시 그려져도 같은 폴더) ·
+    내 것임을 보인 기본 사서함만 — 내 주소(me)를 담은 머리 또는 받은 편지함 주소로 연 화면의 선택 표시. 표시 이름이 같다는 것만으로는
+    고르지 않는다) · open_roots(접힌 머리 — 내 주소를 담은 머리 먼저) · mailbox_id·mailbox_of·in_mailbox(고른 사서함을 다시 읽은
+    폴더 창에서 알아보기 — 이름이 같은 사서함이 둘이면 None) · plan_folders(읽을 폴더·box·펼칠 폴더·제외 수) ·
+    node_key·find_node(화면이 다시 그려져도 같은 폴더 — 고른 사서함 안에서만) ·
     cap_extra(다른 폴더 판정은 그날 상태를 **낮추기만**) · url_kind(주소의 잘 알려진 폴더 마디) · same_folder.
-  · body_key(시작, 끝, 제목) — 일정 본문 발췌 캐시 열쇠(제목은 해시만).
+  · 참여자(AgentFinder32 D3·D7): addresses_in(글들) — 화면 속성(title·aria-label)에 드러난 메일 주소만(소문자) ·
+    is_external_label(글들) — Outlook 웹의 '외부'·'External' 표지 · is_private_label(글들) — '비공개'·'Private' 표지(잠금 표시).
+    주소가 화면에 없으면 수집기는 빈칸으로 두고 G1 이 사내/사외를 증명할 수 없는 행으로 뺀다.
 """
-import hashlib
 import re
 from datetime import date, datetime, timedelta, timezone
 from urllib.parse import urlparse
@@ -192,6 +197,12 @@ def parse_list_date(text, today, d0=None, d1=None):
     '2026-03-05'·'2026년 3월 5일 (목) 오후 3:12' · 'Mar 5'·'5 Mar 2026' · '3/5'(연도는 오늘 이전이 되게)."""
     r = _parse(text, today, d0, d1)
     return (r[0], r[1]) if r else None
+
+
+def time_only(text, today):
+    """글 전체가 시각뿐('오후 3:12' — 날짜·요일·상대 날짜 낱말 없음)이면 (시, 분), 아니면 None."""
+    r = _parse(text, today)
+    return r[1] if r and r[2] else None
 
 
 def list_when(frags, today, d0=None, d1=None):
@@ -562,8 +573,9 @@ def mask_shape(s, n=24):
 
 
 def skeleton(node, n=320):
-    """JS 가 낸 행 골격({t 태그, r role, al aria-label 길이, cv data-convid, x 잎 글, c 자식[], k 자식 수}) → 한 줄
-    'div[option,al87,cv]{div{span'xxx'|span'2026-09-02'}}' — 태그·role·길이·표식만 남기고 잎 글은 mask_shape 로 가린다."""
+    r"""JS 가 낸 행 골격({t 태그, r role, al aria-label 길이, cv data-convid, x 잎 글, c 자식[], k 자식 수}) → 한 줄
+    'div[option,al87,cv]{div{span'xxx'|span'2026-09-02'}}' — 태그·role·길이·표식만 남기고 잎 글은 mask_cal 로 가린다(글자 x ·
+    날짜·시각 꼴 밖의 숫자 # — 첫 행의 보낸이·제목·미리보기 속 전화·주민번호·발주 번호가 report\last_run.json 에 남지 않게)."""
     def one(o, d):
         if not isinstance(o, dict) or d > 6:
             return ""
@@ -580,7 +592,7 @@ def skeleton(node, n=320):
         if at:
             s += "[" + ",".join(a for a in at if a) + "]"
         if o.get("x"):
-            s += "'" + mask_shape(o["x"], 16) + "'"
+            s += "'" + mask_cal(o["x"], 16) + "'"
         kids = [k for k in (one(c, d + 1) for c in (o.get("c") or [])[:6]) if k]
         if kids:
             s += "{" + "|".join(kids) + "}"
@@ -921,19 +933,70 @@ RE_KEEP_CAL = re.compile(
     r"(?i:(?<=\d,\s)(?:" + _MONTHS_EN + r")(?![A-Za-z]))")
 
 
+_RE_UNIT_NUM = re.compile(r"(?<!\d)(?:(?:19|20)\d{2}\s?년|\d{1,2}\s?[월일시분])")
+
+
+def _date_spans(t):
+    """글 속 날짜·시각 꼴의 자리 [(a, b)] — 연월일 · 월/일/연 · 영문 월 · 'n월 n일' · 'n시 n분' · 시각 · 'M/D' · 숫자 + 년·월·일·시·분.
+    해는 19xx·20xx, 월·일·시·분은 있을 수 있는 값일 때만(긴 숫자 무리의 한 토막을 날짜로 보지 않는다)."""
+    def dig(k):
+        return 0 <= k < len(t) and t[k].isdigit()
+
+    def year(y):
+        return y is not None and y[:2] in ("19", "20")
+    out = []
+    for m in RE_YMD.finditer(t):
+        y, s1, mo, s2, dd = m.groups()
+        if year(y) and _safe(y, mo, dd) and ((s1 == "년" and s2 == "월") or (s1 == s2 and s1 != "년")) \
+                and not dig(m.start() - 1) and not dig(m.end(5)):
+            out.append((m.start(), m.end(5)))
+    for m in RE_MDY.finditer(t):
+        a, b, y = m.groups()
+        if year(y) and (_safe(y, a, b) or _safe(y, b, a)):
+            out.append(m.span())
+    for m in RE_MONEN.finditer(t):                 # 'October 5, 2026' · 'Oct 5' — 숫자가 바로 이어지면 날짜가 아니다
+        y = m.group(3)
+        if 1 <= int(m.group(2)) <= 31 and not dig(m.end(2)) and (y is None or (year(y) and not dig(m.end(3)))):
+            out.append((m.start(), m.end(3) if y else m.end(2)))
+    for m in RE_DMONEN.finditer(t):                # '5 Oct 2026' · '5 Oct'
+        y = m.group(3)
+        if 1 <= int(m.group(1)) <= 31 and (y is None or (year(y) and not dig(m.end(3)))):
+            out.append((m.start(), m.end(3) if y else m.end(2)))
+    for m in RE_MD_KO.finditer(t):
+        if not dig(m.start() - 1) and 1 <= int(m.group(1)) <= 12 and 1 <= int(m.group(2)) <= 31:
+            out.append(m.span())
+    for rx in (RE_HM_WORD, _RE_UNIT_NUM):
+        out += [m.span() for m in rx.finditer(t)]
+    for m in RE_TIME.finditer(t):
+        if int(m.group(2)) <= 23 and int(m.group(3)) <= 59:
+            out.append(m.span())
+    for m in RE_MD.finditer(t):
+        a, b = int(m.group(1)), int(m.group(2))
+        if (1 <= a <= 12 and 1 <= b <= 31) or (1 <= b <= 12 and 1 <= a <= 31):
+            out.append(m.span())
+    return out
+
+
+def _mask_digits(t):
+    """날짜·시각 꼴(_date_spans) 밖의 숫자 → # — 전화·주민번호·발주 번호·회의 번호는 자릿수와 구두점 꼴만 남는다."""
+    keep = set()
+    for a, b in _date_spans(t):
+        keep.update(range(a, b))
+    return "".join("#" if (c.isdigit() and k not in keep) else c for k, c in enumerate(t))
+
+
 def mask_cal(s, n=60):
-    """못 읽은 일정 막대 꼴(구조 진단 — 회사 PC 화면을 볼 수 없어 사진 한 장으로 라벨 꼴을 확정하려는 것): 글자 → x, 숫자·구두점·
-    공백과 오전/오후·AM/PM·요일·종일·날짜 단위(숫자 뒤 년·월·일·시·분)·숫자 곁의 영문 달 이름만 그대로. 4자리 넘는 숫자 무리와
-    해(19xx·20xx)가 아닌 4자리 숫자는 #(회의실·전화·회의 번호). n 자에서 자른다."""
-    t, out, i = str(s or ""), [], 0
+    """구조 진단에 남기는 글 꼴(못 읽은 일정 막대 · 메일 목록 첫 행 골격의 잎 글 — 회사 PC 화면을 볼 수 없어 사진 한 장으로 라벨 꼴을
+    확정하려는 것): 글자 → x, 구두점·공백과 오전/오후·AM/PM·요일·종일·날짜 단위(숫자 뒤 년·월·일·시·분)·숫자 곁의 영문 달 이름만
+    그대로. 숫자는 날짜·시각 꼴 안의 것만 그대로 두고 그 밖은 모두 #(전화·주민번호·발주 번호·회의실·회의 번호 — 세 자리 무리나
+    해처럼 보이는 네 자리도 남기지 않는다). n 자에서 자른다."""
+    t, out, i = _mask_digits(str(s or "")), [], 0
     for m in RE_KEEP_CAL.finditer(t):
         out.append(RE_LETTER.sub("x", t[i:m.start()]))
         out.append(m.group(0))
         i = m.end()
     out.append(RE_LETTER.sub("x", t[i:]))
     t = re.sub(r"\s+", " ", "".join(out)).strip()
-    t = re.sub(r"\d{4,}", lambda m: m.group(0) if (len(m.group(0)) == 4 and m.group(0)[:2] in ("19", "20"))
-               else "#" * len(m.group(0)), t)
     return t[:n] + ("…" if len(t) > n else "")
 
 
@@ -1043,7 +1106,8 @@ def tree_nodes(items):
     """JS owa_tree(read) 의 항목 사실 [{i, t 나무 순번, lvl aria-level, par DOM 조상 항목 순번, n 이름, al aria-label, wk
     data-folder-name, ex 펼침 1·0·-1(속성 없음), sel, v}] → 노드 [{i, t, lvl, name, raw, wk, ex, sel, v, par, kids}](화면 순서).
     부모는 DOM 조상 항목(par) → 없으면 같은 나무의 앞선 항목 중 aria-level 이 작은 가장 가까운 것(OWA 폴더 창은 하위 묶음이
-    머리 항목의 형제로 그려져 DOM 만으로는 부모를 모를 수 있다). raw = JS 가 낸 이름 그대로(누르기 직전 같은 항목인지 맞춘다)."""
+    머리 항목의 형제로 그려져 DOM 만으로는 부모를 모를 수 있다). raw = JS 가 낸 이름 그대로(누르기 직전 같은 항목인지 맞춘다).
+    al = aria-label(상태 꼬리를 뗀 것 — 사서함 머리가 내 것인지 이름·주소로 맞출 때만 쓴다)."""
     nodes, src = [], {}
     for it in items or ():
         if not isinstance(it, dict):
@@ -1052,7 +1116,8 @@ def tree_nodes(items):
         src[_int(it.get("i"), k)] = k
         raw = str(it.get("n") or "")[:120]
         nodes.append({"i": k, "t": _int(it.get("t"), -1), "lvl": max(0, _int(it.get("lvl"))), "dp": _int(it.get("par"), -1),
-                      "raw": raw, "name": folder_name(raw or it.get("al")), "wk": str(it.get("wk") or "")[:40].lower(),
+                      "raw": raw, "name": folder_name(raw or it.get("al")), "al": folder_name(it.get("al")),
+                      "wk": str(it.get("wk") or "")[:40].lower(),
                       "ex": _int(it.get("ex"), -1), "sel": 1 if _int(it.get("sel")) else 0, "v": 1 if _int(it.get("v"), 1) else 0,
                       "par": -1, "kids": []})
     for n in nodes:
@@ -1073,29 +1138,79 @@ def _tree_labels(trees):
     return {k: label_kind(t.get("al")) for k, t in enumerate(trees or ()) if isinstance(t, dict)}
 
 
-def pick_mailbox(nodes, trees=()):
-    """폴더 창 노드 → (기본 사서함 범위 {kind 'root'|'tree', root, tree, top[맨 위 폴더 순번], score} | None, 사유 ''·'none'·'nomb').
+MB_GOOD = 5                                    # 사서함 맨 위 시스템 폴더 종류가 이만큼은 돼야 사서함으로 믿는다(Get-OutlookWeb.XF_GOOD)
+
+
+def _id_norm(s):
+    """사서함·사람 이름 비교용 — 상태 꼬리를 떼고 공백을 접어 소문자로."""
+    return folder_name(s).casefold()
+
+
+def me_ids(me=()):
+    """내 표시 이름·주소(privacy.me_list — 이 PC 의 Outlook 앱이 본 내 기본 사서함의 것) → (이름 집합, 주소 집합). 두 글자 미만은 버린다."""
+    names, addrs = set(), set()
+    for x in me or ():
+        s = str(x or "").strip()
+        a = addresses_in([s])
+        if a:
+            addrs.update(a)
+        elif len(_id_norm(s)) >= 2:
+            names.add(_id_norm(s))
+    return names, addrs
+
+
+def _me_match(labels, ids):
+    """머리 이름·aria-label·나무 이름과 내 표시 이름·주소 → 'addr'(내 주소를 담는다 — 주소는 사서함마다 다르다) · 'name'(내 표시
+    이름과 **같다** — 부분 일치는 아니다. 이름이 같은 다른 사람의 사서함·공유 사서함일 수 있어 이것만으로는 내 것이라는 근거가
+    아니다) · ''."""
+    names, addrs = ids
+    hit = ""
+    for lab in labels:
+        lab = str(lab or "")
+        if not lab.strip():
+            continue
+        if addrs and addrs & set(addresses_in([lab])):
+            return "addr"
+        if names and (_id_norm(lab) in names or (frags_of(lab) and _id_norm(frags_of(lab)[0]) in names)):
+            hit = "name"
+    return hit
+
+
+def _tree_al(trees, t):
+    return str(trees[t].get("al") or "") if 0 <= t < len(trees or ()) and isinstance(trees[t], dict) else ""
+
+
+def pick_mailbox(nodes, trees=(), me=(), good=MB_GOOD):
+    """폴더 창 노드 → (기본 사서함 범위 {kind 'root'|'tree', root, tree, top[맨 위 폴더 순번], score, proof} | None, 사유 ''·'none'·'nomb').
     후보는 즐겨찾기·그룹·나와 공유·온라인 보관(머리 이름·나무 aria-label)이 아닌 ① 머리 항목 — 하위에 받은 편지함이 있음 ② 나무 —
-    머리 없이 맨 위 폴더에 받은 편지함이 있음. 고르기: 맨 위 시스템 폴더 종류 수(사서함은 받은·보낸·지운·정크·임시… — 이름 표시가
-    없는 즐겨찾기는 두세 개) → 받은 편지함이 선택된 쪽 → 화면 순서(기본 사서함이 공유·보관 사서함보다 위에 그려진다)."""
+    머리 없이 맨 위 폴더에 받은 편지함이 있음. 시스템 폴더를 다 갖췄다고 내 사서함은 아니다(공유·위임 사서함도 다 갖췄다).
+    **내 것임을 보인 후보만** 고른다:
+      'me'  — 머리 이름·aria-label 또는 나무 이름이 내 메일 주소를 담는다(me = privacy.me_list 의 주소). 주소는 사서함마다 다르다.
+      'sel' — 받은 편지함 주소(/mail/inbox)로 연 화면에서 선택된 받은 편지함을 맨 위에 품고 시스템 폴더가 good 종류 이상인 후보가
+              하나뿐이다(그 주소는 늘 내 사서함의 받은 편지함을 연다 — 공유 사서함의 받은 편지함은 선택되지 않는다).
+    내 표시 이름과 같은 머리·나무 이름은 **근거가 아니다** — 이름이 같은 다른 사람의 사서함(위임)·공유 사서함일 수 있다. 다만 이름이
+    같은 후보가 선택 표시를 가진 후보와 다르면 어느 쪽도 믿지 않는다. 주소가 맞는 후보가 둘 이상이면 선택 표시로 가르고, 주소가 맞는
+    후보가 아닌 다른 사서함이 선택 표시를 가졌으면 고르지 않는다. 증명된 후보가 없으면 (None, 'nomb') — 수집기는 받은·보낸
+    편지함만 주소로 읽는다."""
     if not nodes:
         return None, "none"
+    ids = me_ids(me)
     tlab = _tree_labels(trees)
     roots = [n for n in nodes if n["par"] < 0]
     cands = []
 
-    def add(kind, root, tree, top):
+    def add(kind, root, tree, top, labels):
         kinds = [folder_kind(nodes[k]["name"], nodes[k]["wk"]) for k in top]
         if "inbox" not in kinds:
             return
         sel = any(nodes[k]["sel"] and kd == "inbox" for k, kd in zip(top, kinds, strict=True))
         score = len(set(kinds) & SYS_KINDS)
-        cands.append(((score, 1 if sel else 0, -min(top)),
-                      {"kind": kind, "root": root, "tree": tree, "top": list(top), "score": score}))
+        cands.append({"kind": kind, "root": root, "tree": tree, "top": list(top), "score": score,
+                      "sel": sel, "me": _me_match(labels, ids)})
     for r in roots:
         if tlab.get(r["t"]) or label_kind(r["name"]) or not r["kids"]:
             continue
-        add("root", r["i"], r["t"], r["kids"])
+        add("root", r["i"], r["t"], r["kids"], (r["raw"], r["name"], r.get("al", "")))
     by_t = {}
     for r in roots:
         by_t.setdefault(r["t"], []).append(r["i"])
@@ -1104,16 +1219,37 @@ def pick_mailbox(nodes, trees=()):
             continue
         top = [i for i in top if not label_kind(nodes[i]["name"])]
         if top:
-            add("tree", -1, t, top)
+            add("tree", -1, t, top, (_tree_al(trees, t),))
     if not cands:
         return None, "nomb"
-    return max(cands, key=lambda c: c[0])[1], ""
+    sel_good = [c for c in cands if c["sel"] and c["score"] >= good]
+    addr = [c for c in cands if c["me"] == "addr"]
+    if len(addr) > 1:
+        addr = [c for c in addr if c["sel"]]
+    if len(addr) == 1:
+        pick, proof = addr[0], "me"
+        if not pick["sel"] and any(c is not pick for c in sel_good):
+            return None, "nomb"                 # 주소는 이것, 선택 표시는 다른 사서함 — 어느 쪽도 믿지 않는다
+    elif not addr and len(sel_good) == 1 and not any(c["me"] for c in cands if c is not sel_good[0]):
+        pick, proof = sel_good[0], "sel"        # 이름·주소가 맞는 다른 후보가 있으면(위) 선택 표시도 믿지 않는다
+    else:
+        return None, "nomb"
+    return {"kind": pick["kind"], "root": pick["root"], "tree": pick["tree"], "top": pick["top"], "score": pick["score"],
+            "proof": proof}, ""
 
 
-def open_roots(nodes, trees=()):
-    """접힌 머리 항목(즐겨찾기·그룹·나와 공유·온라인 보관이 아닌 것)의 순번 — 펼쳐야 기본 사서함의 폴더가 그려진다(화면 순서)."""
+def open_roots(nodes, trees=(), me=()):
+    """접힌 머리 항목(즐겨찾기·그룹·나와 공유·온라인 보관이 아닌 것)의 순번 — 펼쳐야 그 사서함의 폴더가 그려진다.
+    내 주소(me)를 담은 접힌 머리가 있으면 그것만 — 공유·위임 사서함 머리는 펼치지 않는다. 없으면 내 표시 이름과 같은 머리를 먼저,
+    그다음 나머지(화면 순서 — 펼쳐도 내 것임이 보여야만 읽는다: pick_mailbox)."""
     tlab = _tree_labels(trees)
-    return [n["i"] for n in nodes if n["par"] < 0 and n["ex"] == 0 and not tlab.get(n["t"]) and not label_kind(n["name"])]
+    out = [n["i"] for n in nodes if n["par"] < 0 and n["ex"] == 0 and not tlab.get(n["t"]) and not label_kind(n["name"])]
+    ids = me_ids(me)
+    how = {i: _me_match((nodes[i]["raw"], nodes[i]["name"], nodes[i].get("al", "")), ids) for i in out}
+    mine = [i for i in out if how[i] == "addr"]
+    if mine:
+        return mine
+    return [i for i in out if how[i] == "name"] + [i for i in out if how[i] != "name"]
 
 
 def plan_folders(nodes, scope, skip=()):
@@ -1164,17 +1300,74 @@ def node_key(nodes, i, trees=()):
     return (tl,) + tuple(reversed(names))
 
 
-def find_node(nodes, key, trees=()):
-    """node_key 로 노드 순번 | None."""
+def find_node(nodes, key, trees=(), mb=None):
+    """node_key 로 노드 순번 | None. mb(mailbox_of 가 다시 찾은 내 사서함)를 주면 그 사서함의 머리와 그 안의 폴더만 —
+    이름이 같은 다른 사서함의 같은 경로 폴더를 집지 않는다."""
     for n in nodes:
         if n["name"] == key[-1] and node_key(nodes, n["i"], trees) == key:
-            return n["i"]
+            if mb is None or in_mailbox(nodes, mb, n["i"], root_ok=True):
+                return n["i"]
     return None
+
+
+def mailbox_id(nodes, trees, scope):
+    """고른 사서함(pick_mailbox 의 범위)을 다시 읽은 폴더 창에서 알아보는 표 — (꼴 'root'|'tree', 나무 이름, 머리 이름).
+    순번은 화면이 다시 그려지면 바뀌므로 넣지 않는다."""
+    if scope["kind"] == "root":
+        return "root", _tree_al(trees, scope["tree"]), nodes[scope["root"]]["name"]
+    return "tree", _tree_al(trees, scope["tree"]), ""
+
+
+def _sys_score(nodes, top):
+    """맨 위 폴더들의 시스템 폴더 종류 수 — 사서함은 받은·보낸·지운·정크·임시… 를 다 갖췄다(pick_mailbox 의 score)."""
+    return len({folder_kind(nodes[k]["name"], nodes[k]["wk"]) for k in top} & SYS_KINDS)
+
+
+def mailbox_of(nodes, trees, mid, good=MB_GOOD):
+    """mailbox_id 의 사서함을 이 폴더 창에서 다시 찾는다 → {kind, root, tree, top} | None. 그 표(나무 이름·머리 이름)를 가진 사서함이
+    **하나뿐일 때만** 준다 — 이름이 같은 사서함이 둘이면 어느 쪽이 내 것인지 이름으로는 가릴 수 없으므로 None(다른 폴더를 열지 않는다).
+    사서함으로 세는 것: 머리 꼴은 접혀 있거나(안을 모른다) 시스템 폴더가 good 종류 이상인 머리, 나무 꼴은 맨 위 폴더의 시스템 폴더가
+    good 종류 이상인 나무(이름 없는 즐겨찾기 두세 개는 사서함이 아니다)."""
+    if not mid:
+        return None
+    kind, tl, rname = mid
+    tlab = _tree_labels(trees)
+    roots = [n for n in nodes if n["par"] < 0 and not tlab.get(n["t"]) and _tree_al(trees, n["t"]) == tl
+             and not label_kind(n["name"])]
+    if kind == "root":
+        hit = [n for n in roots if n["name"] == rname and (n["ex"] == 0 or _sys_score(nodes, n["kids"]) >= good)]
+        if len(hit) != 1:
+            return None
+        return {"kind": "root", "root": hit[0]["i"], "tree": hit[0]["t"], "top": list(hit[0]["kids"])}
+    by_t = {}
+    for n in roots:
+        by_t.setdefault(n["t"], []).append(n["i"])
+    hit = [(t, top) for t, top in sorted(by_t.items()) if _sys_score(nodes, top) >= good]
+    if len(hit) != 1:
+        return None
+    return {"kind": "tree", "root": -1, "tree": hit[0][0], "top": hit[0][1]}
+
+
+def in_mailbox(nodes, mb, j, root_ok=False):
+    """노드 j 가 그 사서함(mailbox_of) 안의 폴더인가 — 맨 위 조상이 그 사서함의 머리(머리 꼴)거나 그 나무의 맨 위 폴더(나무 꼴).
+    root_ok 면 사서함 머리 자신도 참(접힌 머리를 펼칠 때)."""
+    if not mb or not 0 <= j < len(nodes):
+        return False
+    a, guard = j, 0
+    while nodes[a]["par"] >= 0 and guard < 64:
+        a = nodes[a]["par"]
+        guard += 1
+    if nodes[a]["par"] >= 0:
+        return False
+    if mb["kind"] == "root":
+        return a == mb["root"] and (root_ok or j != a)
+    return nodes[a]["t"] == mb["tree"] and a in mb["top"]
 
 
 def tree_shape(nodes, trees=(), scope=None):
     """폴더 창 구조 진단(글자 없음 — 수와 종류 기호만): 나무 수·항목 수·aria-level 있는 수·DOM 부모 있는 수·data-folder-name 있는
-    수·선택 수·머리 종류(f 즐겨찾기 · g 그룹 · s 공유 · a 온라인 보관 · m 고른 사서함 · o 그 밖, 8개까지)·고른 범위 꼴(r·t)."""
+    수·선택 수·머리 종류(f 즐겨찾기 · g 그룹 · s 공유 · a 온라인 보관 · m 고른 사서함 · o 그 밖, 8개까지)·고른 범위 꼴(r·t)·
+    내 것임을 보인 근거(pf: m 내 주소 · s 받은 편지함 선택 표시)."""
     tlab = _tree_labels(trees)
     roots = [n for n in nodes if n["par"] < 0]
     code = {"fav": "f", "group": "g", "shared": "s", "arch": "a"}
@@ -1188,7 +1381,8 @@ def tree_shape(nodes, trees=(), scope=None):
     return {"trees": len(trees or ()), "items": len(nodes), "lvl": sum(1 for n in nodes if n["lvl"]),
             "dom": sum(1 for n in nodes if n["dp"] >= 0), "wk": sum(1 for n in nodes if n["wk"]),
             "sel": sum(1 for n in nodes if n["sel"]), "roots": len(roots), "rk": rk,
-            "pick": (scope or {}).get("kind", "")[:1], "score": int((scope or {}).get("score") or 0)}
+            "pick": (scope or {}).get("kind", "")[:1], "score": int((scope or {}).get("score") or 0),
+            "pf": str((scope or {}).get("proof") or "")[:1]}
 
 
 def cap_extra(day_st, rngs):
@@ -1234,7 +1428,37 @@ def same_folder(sel, name):
     return a.startswith(b) or b.startswith(a)
 
 
-def body_key(start, end, subject):
-    """일정 본문 발췌 캐시 열쇠 'start|end|sha1(제목)[:12]' — 캐시 파일에 제목 원문을 남기지 않는다(LM28-OWA-5)."""
-    s = re.sub(r"\s+", " ", str(subject or "")).strip()
-    return f"{str(start or '')[:16]}|{str(end or '')[:16]}|{hashlib.sha1(s.encode('utf-8')).hexdigest()[:12]}"
+# ── 참여자 표지(AgentFinder32 D3·D7) ─────────────────────────────────────────────
+_ADDR_RX = re.compile(r"(?<![A-Za-z0-9._%+\-])[A-Za-z0-9._%+'\-]{1,64}@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,24}"
+                      r"(?![A-Za-z0-9\-])")
+_EXT_RX = re.compile(r"(?i)^\s*(?:\[?\s*(?:외부|external)\s*\]?|외부\s*(?:발신자|보낸\s*사람)|external\s+sender)\s*$")
+_PRIV_RX = re.compile(r"(?i)^\s*(?:\[?\s*(?:비공개|private|개인|personal|기밀|confidential)\s*\]?|비공개\s*(?:항목|일정|약속|메시지))\s*$")
+
+
+def addresses_in(strings):
+    """화면 글들(title·aria-label) → 그 안의 메일 주소 목록(소문자·처음 나온 순서·중복 없음). 이름·글은 돌려주지 않는다."""
+    out = []
+    for s in strings or ():
+        for m in _ADDR_RX.finditer(str(s or "")):
+            a = m.group(0).lower()
+            if a not in out:
+                out.append(a)
+    return out
+
+
+def _frags(strings):
+    for s in strings or ():
+        for x in re.split(r"[,，|·;\n]", str(s or "")):
+            x = x.strip()
+            if x:
+                yield x
+
+
+def is_external_label(strings):
+    """Outlook 웹이 사외 보낸 사람에 붙이는 표지('외부'·'External'·'[External]')가 조각 하나로 있나 — 제목 속 낱말은 보지 않는다."""
+    return any(_EXT_RX.match(x) for x in _frags(strings))
+
+
+def is_private_label(strings):
+    """'비공개'·'Private'·'개인'·'기밀' 표지가 조각 하나로 있나(잠금 표시의 이름) — 제목 속 낱말은 보지 않는다."""
+    return any(_PRIV_RX.match(x) for x in _frags(strings))

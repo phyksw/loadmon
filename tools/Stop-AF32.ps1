@@ -1,23 +1,24 @@
-﻿# Stop-LM30.ps1 - 이 설치 폴더의 LM30 작업을 묻지 않고 모두 끝낸다(LoadMonitor30-강제종료.bat 이 부른다).
+﻿# Stop-AF32.ps1 - 이 설치 폴더의 AF32 작업을 묻지 않고 모두 끝낸다(AgentFinder32-강제종료.bat 이 부른다).
 # 왜: 창을 닫아 끝났다고 생각했는데 뒤에서 분석·수집·전용 Edge 가 계속 돌 수 있다(제보). 대시보드·콘솔 창을 닫을 때의 정리
-#     (ui\app.py 창 닫기 감시 · ui\app.py·run.py 콘솔 닫기 처리기)가 기본이고, 이것은 그래도 남았을 때 한 번에 끝내는 비상 단추다.
-# 무엇을 끝내나 - 이 폴더(bat 이 있는 폴더)의 것만. 프로세스 이름만으로는 고르지 않는다(같은 PC 의 LM24·LM28·LM29·다른 폴더 사본·사람이 띄운
-# python·Edge 는 그대로). 경로는 대소문자 없이 전체 경로로 비교하고 끝에 \ 를 붙여 'LoadMonitor30-old' 같은 이웃 폴더를 빼낸다.
-#   · python/pythonw/py - 명령줄이나 실행 파일이 이 폴더를 가리키는 것(ui\app.py·run.py·mine·judge·수집기·tools\*.py, 동봉 python\python.exe),
+#     (ui\app.py 창 닫기 처리 · ui\app.py·run.py 콘솔 닫기 처리기)가 기본이고, 이것은 그래도 남았을 때 한 번에 끝내는 비상 단추다.
+# 무엇을 끝내나 - 이 폴더(bat 이 있는 폴더)의 것만. 프로세스 이름만으로는 고르지 않는다(같은 PC 의 다른 판·다른 폴더 사본·사람이 띄운
+# python·Edge 는 그대로). 경로는 대소문자 없이 전체 경로로 비교하고 끝에 \ 를 붙여 'AgentFinder32-old' 같은 이웃 폴더를 빼낸다.
+#   · python/pythonw/py - 명령줄이나 실행 파일이 이 폴더를 가리키는 것(ui\app.py·run.py·mine·judge·메일·일정 수집기·tools\*.py, 동봉 python\python.exe),
 #     또는 이 폴더의 bat 이 띄운 것(부모 cmd 의 명령줄이 이 폴더의 .bat - PC 에 깔린 python 으로 상대 경로 실행한 경우)
 #   · powershell/pwsh - 이 폴더 안의 .ps1 을 돌리는 것(collect\*.ps1·tools\*.ps1) - 이 스크립트 자신과 그 부모 줄기는 뺀다
-#   · msedge - --user-data-dir 가 이 폴더 data\ 아래인 것(전용 프로필 data\lm30_edge)과 그 자식 - 사람의 Edge 는 건드리지 않는다
+#   · msedge - --user-data-dir 가 이 폴더 data\ 아래인 것(전용 프로필 data\af32_edge)과 그 자식 - 사람의 Edge 는 건드리지 않는다
 #   · 위의 자손(ParentProcessId 줄기 · CreationDate 로 PID 재사용을 거른다) - conhost·explorer·사람의 브라우저는 뺀다
 #   · 위를 띄운 이 폴더 bat 의 콘솔 창(cmd) - 먼저 닫는다(파이썬이 먼저 죽으면 bat 이 '서버 오류' 안내를 띄우고 멈춰 기다린다)
-# 두는 것: 팀 서버(teamserver.py - 팀 전체가 쓴다 · -IncludeTeamServer 면 함께 끈다) · PC 이동 준비 창(Prepare-Move - 폴더 이름을
-#   되돌리는 중일 수 있다).
+# 두는 것: 팀 서버(teamserver.py - 팀 전체가 쓴다 · -IncludeTeamServer 면 함께 끈다).
 # -Status 는 목록만 보여 준다. 관리자 권한·임시 파일·예약 작업 없음(Stop-Process -Force 는 내 계정 프로세스만). 하나라도 못 끝내면 exit 1.
-# -KeepPid '<pid>[,<pid>]' - 그 pid 와 부모 줄기도 끝내지 않는다. 강제종료 bat 은 파이썬(tools\stop_lm30.py)을 거쳐 이 스크립트를
+# 이 폴더의 AF32 작업이 하나도 남지 않으면(다 끝냈거나 원래 없음) 멈춘 수집이 남긴 Outlook 앱 원자료(data\outlook\raw\* - 사외 사람
+# 이름·주소)를 지운다(Remove-LmRawLeftovers - core\retention.drop_raw 와 같은 규칙: 바로 아래의 보통 파일만, 연결은 따라가지 않는다).
+# -KeepPid '<pid>[,<pid>]' - 그 pid 와 부모 줄기도 끝내지 않는다. 강제종료 bat 은 파이썬(tools\stop_af32.py)을 거쳐 이 스크립트를
 #   띄우고(PowerShell 이 켜지다 실패(0xc0000142)하면 다시 띄우고, 끝내 안 되면 파이썬이 같은 규칙으로 끝낸다 - 2026-10-15), 그 파이썬이
 #   자기 pid 를 넘긴다. 이 폴더의 python 이라 고를 대상처럼 보이지만 끝내면 안 된다(부모 줄기로도 빠지지만 한 번 더 못 박는다).
 #   문자열로 받는다 - 이상한 인자가 와도 형 변환 오류로 멈추지 않게(숫자가 아닌 조각은 버린다).
-# 고르는 규칙을 고치면 tools\stop_lm30.py 의 select_targets(파이썬 사본)도 함께 고친다 - tests\test_p24 가 둘을 대조한다.
-# 시험(tests\ps\Test-StopLM30.ps1)은 이 파일을 dot-source 해 Select-LmTargets 에 가짜 프로세스 목록을 넣는다 - 그때는 아래 본문이 돌지 않는다.
+# 고르는 규칙을 고치면 tools\stop_af32.py 의 select_targets(파이썬 사본)도 함께 고친다 - tests\test_p24 가 둘을 대조한다.
+# 시험(tests\ps\Test-StopAF32.ps1)은 이 파일을 dot-source 해 Select-LmTargets 에 가짜 프로세스 목록을 넣는다 - 그때는 아래 본문이 돌지 않는다.
 param(
     [switch]$Status,
     [switch]$IncludeTeamServer,
@@ -42,7 +43,7 @@ function ConvertTo-LmNorm([string]$s) {
 }
 
 function Get-LmRootKey([string]$Path) {
-    # 'c:\...\loadmonitor28\' - 끝 \ 까지 붙여야 'loadmonitor28-old\' 를 이 폴더로 잘못 보지 않는다
+    # 'c:\...\agentfinder32\' - 끝 \ 까지 붙여야 'agentfinder32-old\' 를 이 폴더로 잘못 보지 않는다
     $full = [System.IO.Path]::GetFullPath($Path).TrimEnd('\')
     return (ConvertTo-LmNorm $full) + '\'
 }
@@ -70,7 +71,6 @@ function Get-LmKeep($P) {
     $name = ([string]$P.Name).ToLowerInvariant()
     $cmd = ConvertTo-LmNorm ([string]$P.CommandLine)
     if ($script:LmPyNames -contains $name -and $cmd -match 'teamserver\.py') { return 'teamserver' }
-    if ($script:LmPsNames -contains $name -and $cmd -match 'prepare-move\.ps1') { return 'move' }
     return ''
 }
 
@@ -102,7 +102,7 @@ function Get-LmKind($P, [string]$Key, [string]$DataKey) {
 
 function Select-LmTargets {
     # 순수 함수 - 프로세스 목록(Win32_Process 꼴: ProcessId·ParentProcessId·Name·CommandLine·ExecutablePath·CreationDate)에서
-    # 이 폴더의 LM30 것을 고른다 → @{ Targets = @(항목); Kept = @(항목) }. 항목 = Pid·Name·Kind·Why·Keep·Created.
+    # 이 폴더의 AF32 것을 고른다 → @{ Targets = @(항목); Kept = @(항목) }. 항목 = Pid·Name·Kind·Why·Keep·Created.
     param(
         [object[]]$Processes,
         [string]$Root,
@@ -124,7 +124,7 @@ function Select-LmTargets {
         [void]$kids[$pp].Add($p)
     }
     # 자기 줄기 - 이 스크립트의 powershell 과 그것을 띄운 강제종료 bat 의 cmd(…) 는 끝내지 않는다.
-    # -KeepPid(그것을 띄운 tools\stop_lm30.py 의 파이썬)와 그 부모 줄기도 같다.
+    # -KeepPid(그것을 띄운 tools\stop_af32.py 의 파이썬)와 그 부모 줄기도 같다.
     $self = @{}
     foreach ($start in @(@($SelfPid) + @($KeepPid))) {
         $cur = [int]$start
@@ -157,7 +157,7 @@ function Select-LmTargets {
         }
         if (-not $kind) { continue }
         $keep = Get-LmKeep $p
-        if ($keep -eq 'move' -or ($keep -eq 'teamserver' -and -not $IncludeTeamServer)) {
+        if ($keep -eq 'teamserver' -and -not $IncludeTeamServer) {
             $kept[$id] = & $item $p $kind $why $keep
             continue
         }
@@ -185,7 +185,7 @@ function Select-LmTargets {
                 continue
             }
             $keep = Get-LmKeep $c
-            if ($keep -eq 'move' -or ($keep -eq 'teamserver' -and -not $IncludeTeamServer)) {
+            if ($keep -eq 'teamserver' -and -not $IncludeTeamServer) {
                 $kept[$cid] = & $item $c 'python' ('child:' + $n.Pid) $keep
                 continue
             }
@@ -240,7 +240,7 @@ function Format-LmState($Sel, [datetime]$Now) {
     # 화면에 찍을 줄들(문자열 배열) - 종류별 개수 · PID(띄운 지 얼마나) · 둔 것
     $lines = New-Object System.Collections.Generic.List[string]
     $t = @($Sel.Targets)
-    if ($t.Count -eq 0) { $lines.Add('  끝낼 LM30 작업이 없습니다.') }
+    if ($t.Count -eq 0) { $lines.Add('  끝낼 AF32 작업이 없습니다.') }
     else {
         $lines.Add(('  끝낼 것 {0}개' -f $t.Count))
         foreach ($k in $script:LmKindKo.Keys) {
@@ -251,11 +251,7 @@ function Format-LmState($Sel, [datetime]$Now) {
         }
     }
     foreach ($x in @($Sel.Kept)) {
-        if ($x.Keep -eq 'teamserver') {
-            $lines.Add(('  [둠] 팀 서버 pid {0}({1}) - 팀 전체가 쓰는 서버라 두었습니다(함께 끄려면 LoadMonitor30-강제종료.bat -IncludeTeamServer)' -f $x.Pid, (Format-LmAge $x.Created $Now)))
-        } else {
-            $lines.Add(('  [둠] PC 이동 준비 창 pid {0} - 폴더 정리 중일 수 있어 두었습니다(그 창의 안내대로 끝내세요)' -f $x.Pid))
-        }
+        $lines.Add(('  [둠] 팀 서버 pid {0}({1}) - 팀 전체가 쓰는 서버라 두었습니다(함께 끄려면 AgentFinder32-강제종료.bat -IncludeTeamServer)' -f $x.Pid, (Format-LmAge $x.Created $Now)))
     }
     return $lines.ToArray()
 }
@@ -282,10 +278,32 @@ function Stop-LmTargets($Targets) {
     return $fail
 }
 
+function Remove-LmRawLeftovers([string]$Folder) {
+    # 멈춘 수집이 남긴 Outlook 앱 원자료(data\outlook\raw\*)를 지운다 → 지운 수. data·outlook·raw 중 하나라도 연결(정션·링크)이면
+    # 손대지 않는다. 바로 아래의 보통 파일만(하위 폴더·링크 파일은 그대로) - core\retention.drop_raw 와 같은 규칙.
+    $chain = @((Join-Path $Folder 'data'), (Join-Path $Folder 'data\outlook'), (Join-Path $Folder 'data\outlook\raw'))
+    foreach ($d in $chain) {
+        $it = Get-Item -LiteralPath $d -Force -ErrorAction SilentlyContinue
+        if ($null -eq $it -or -not $it.PSIsContainer) { return 0 }
+        if ($it.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { return 0 }
+    }
+    $n = 0
+    foreach ($f in @(Get-ChildItem -LiteralPath $chain[2] -Force -File -ErrorAction SilentlyContinue)) {
+        if ($f.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { continue }
+        try { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop; $n++ } catch { }
+    }
+    return $n
+}
+
+function Write-LmRawLeftovers([string]$Folder) {
+    $n = [int](@(Remove-LmRawLeftovers $Folder) | Select-Object -Last 1)
+    if ($n -gt 0) { Write-Host ('  [정리] 멈춘 수집이 남긴 Outlook 앱 원자료 {0}개를 지웠습니다(이름·주소가 든 임시 파일).' -f $n) }
+}
+
 function Invoke-StopLm([string]$Folder, [bool]$OnlyStatus, [bool]$WithTeamServer, [int[]]$Keep = @()) {
     Write-Host ''
     Write-Host ' =========================================================='
-    Write-Host '  LoadMonitor30 강제 종료 - 이 폴더의 LM30 작업만 끝냅니다'
+    Write-Host '  AgentFinder32 강제 종료 - 이 폴더의 AF32 작업만 끝냅니다'
     Write-Host ' =========================================================='
     Write-Host ('  폴더: {0}' -f $Folder)
     Write-Host ''
@@ -299,7 +317,8 @@ function Invoke-StopLm([string]$Folder, [bool]$OnlyStatus, [bool]$WithTeamServer
     }
     $n0 = @($before.Targets).Count
     if ($n0 -eq 0) {
-        Write-Host '  [결과] 이미 모두 끝나 있습니다 - 끝낼 LM30 작업이 없습니다.'
+        Write-Host '  [결과] 이미 모두 끝나 있습니다 - 끝낼 AF32 작업이 없습니다.'
+        Write-LmRawLeftovers $Folder
         return 0
     }
     Write-Host '  끝내는 중...'
@@ -312,10 +331,11 @@ function Invoke-StopLm([string]$Folder, [bool]$OnlyStatus, [bool]$WithTeamServer
     Write-Host ''
     $left = @($after.Targets)
     if ($left.Count -eq 0) {
-        Write-Host ('  [결과] LM30 작업을 모두 끝냈습니다({0}개).' -f $n0)
+        Write-Host ('  [결과] AF32 작업을 모두 끝냈습니다({0}개).' -f $n0)
         if (@($after.Kept | Where-Object { $_.Keep -eq 'teamserver' }).Count -gt 0) {
             Write-Host '         팀 서버는 팀 전체가 쓰므로 그대로 두었습니다.'
         }
+        Write-LmRawLeftovers $Folder
         return 0
     }
     Write-Host ('  [결과] {0}개가 아직 남아 있습니다:' -f $left.Count)

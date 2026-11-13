@@ -1,6 +1,7 @@
-﻿# OutlookCommon.ps1 - Outlook 수집기 공용 함수(dot-source). Get-OutlookData·Get-OutlookIndex·Diagnose-Collectors 가 함께 쓴다.
+﻿# OutlookCommon.ps1 - Outlook 수집기 공용 함수(dot-source). Get-OutlookData·Diagnose-Collectors 가 함께 쓴다.
 # LM27 Get-OutlookCom.ps1 의 판 판정(Find-ClassicOutlook·전환 정책·프로필 상태)·필터 카나리아·메일 폴더 재귀·지평선 판정을
-# 한 벌로 모았다(LM27 은 같은 함수가 탐침·COM·색인 수집기에 3벌 복제돼 있었다).
+# 한 벌로 모았다. AF32(D1): 이 PC 를 훑지 않는다 - 레지스트리·프로세스는 Outlook 을 붙이거나 띄울 수 있는지(띄우면 모달이
+#   확실한지)만 보고, 창 제목·백신·보안 센터·정책 목록은 읽지 않는다. 보호 멤버(주소) 읽기는 실제로 한 번 읽어 보고 정한다.
 # 원칙(LM24 와 같다): 판 판정은 진단과 사유 표기에만 쓰고, 수집은 먼저 시도한 결과로 판정한다. 띄우면 모달이 확실한 경우
 #   (Outlook 미실행 + 프로필 0 · 관리자 전환 정책)만 시도하지 않는다. 실측 전 '불가'는 '의심'으로 적는다.
 # 순수 함수 위주 - 레지스트리·파일·프로세스는 -Reg 해시로 주입할 수 있다(시험: tests\ps\Test-OutlookCommon.ps1).
@@ -9,8 +10,9 @@
 # 이 파일은 프로세스를 띄우지 않는다(Add-Type·외부 명령 없음 - 개발 PC 는 끝난 프로세스가 커널에 남는다). CIM 은 인프로세스.
 # 목록 규칙: 제네릭 List 는 [List[T]]::new() 로 만든다 - New-Object 로 만든(PSObject 로 싼) List[object] 를 @($list) 로 바꾸면
 #   'Argument types do not match' 예외가 난다(PS 5.1·7 실측, List[string] 은 괜찮다 - try 안이면 조용히 삼켜진다).
-# 수집기 마지막 줄: LMSTATUS {"v":1,"src","rc","reason","counts","ranges":[{"axis","from","to","st"}]} (Format-LmStatus)
-#   rc 0 정상 · 1 대상 없음 · 3 불가·불완전(reason 필수) · 4 새 행 0. reason = 사유 코드를 쉼표로(첫 코드가 주 사유).
+# 수집기 마지막 줄: AF32STATUS {"v":1,"src","rc","reason","counts","ranges":[{"axis","from","to","st"}]} (Format-LmStatus)
+#   rc 0 정상 · 1 대상 없음 · 3 불가·불완전·시작 거부(reason 필수) · 4 설정 거부(사내 도메인 없음 R-NODOMAIN).
+#   reason = 사유 코드를 쉼표로(첫 코드가 주 사유).
 #   axis = mail_in · mail_out · cal, from·to = 'yyyy-MM-dd'(둘 다 포함), st = ok · zero_ok · partial · unverified ·
 #   out_of_horizon · blocked.
 
@@ -24,6 +26,9 @@ $script:OC_INBOX_RX = '^(받은\s*(편지함|메일함)|Inbox)$'
 $script:OC_SENT_RX = '^(보낸\s*(편지함|메일함|항목)|Sent(\s+(Items|Mail|Messages))?)$'
 $script:OC_CAL_RX = '^(일정|Calendar)$'
 $script:OC_ADDR_RX = '^[^@\s<>"]+@[^@\s<>"]+\.[^@\s<>"]+$'
+# 공용 개인 메일 도메인 - 사내 도메인이 될 수 없다(D7). core\afcfg.py PERSONAL_MAIL_DOMAINS 와 같은 목록이다 - 하나를 바꾸면 둘 다 바꾼다
+$script:OC_PERSONAL_DOMAINS = @('gmail.com', 'naver.com', 'daum.net', 'hanmail.net', 'kakao.com', 'nate.com', 'outlook.com',
+                                'hotmail.com', 'live.com', 'yahoo.com', 'icloud.com', 'me.com', 'proton.me')
 
 # ── 주입 가능한 읽기(레지스트리·파일·프로세스) ─────────────────────────────────────────────
 function ConvertTo-OcRegPath([string]$Key) {
@@ -66,6 +71,30 @@ function Get-OcCfg($Cfg, [string]$Sec, [string]$Key, $Default) {
     } catch {}
     return $Default
 }
+function Get-OcCfgList($Cfg, [string]$Sec, [string]$Key, [string[]]$Default) {
+    # config.json 의 섹션 목록 키(문자열 목록) - 없으면 기본값. 빈 값은 뺀다.
+    $v = Get-OcCfg $Cfg $Sec $Key $null
+    if ($null -eq $v) { return @($Default) }
+    return @(@($v) | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ })
+}
+function Test-OcNameHit([string]$Text, [string[]]$Words) {
+    # 범주·폴더 이름이 제외 목록에 걸리나 - 범주는 ';'·',' 로 나눠 낱낱이 같을 때(대소문자 무시), 폴더 이름은 낱말을 품을 때
+    if (-not $Text) { return $false }
+    foreach ($w in $Words) {
+        if (-not $w) { continue }
+        if ($Text.IndexOf($w, [StringComparison]::OrdinalIgnoreCase) -ge 0) { return $true }
+    }
+    return $false
+}
+function Test-OcCategoryHit([string]$Categories, [string[]]$Words) {
+    if (-not $Categories) { return $false }
+    foreach ($c in ($Categories -split '[;,]')) {
+        $c = $c.Trim()
+        if (-not $c) { continue }
+        foreach ($w in $Words) { if ($w -and $c -ieq $w) { return $true } }
+    }
+    return $false
+}
 function Test-OcElevated {
     # 관리자 권한(UAC 상승)으로 도는가 - 상승한 PowerShell 은 일반 권한 Outlook 의 COM(ROT)에 붙지 못한다
     try { return ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) } catch { return $false }
@@ -82,6 +111,64 @@ function Get-OcKey([string]$s) {
     $sha = [System.Security.Cryptography.SHA1]::Create()
     try { $h = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes([string]$s)) } finally { $sha.Dispose() }
     return ((($h | ForEach-Object { $_.ToString('x2') }) -join '').Substring(0, 12))
+}
+function Resolve-OcDir([string]$Root, [string]$Value, [string]$Default, [string]$Base, [switch]$Exact) {
+    # 수집기 -OutDir·-RawDir 값 → 전체 경로 | ''(받지 않음). 값이 없으면 <설치 폴더>\$Default. 상대 경로는 설치 폴더 기준.
+    # <설치 폴더>\$Base 아래만 받는다(-Exact 면 $Base 그 자체만) - '..'·다른 드라이브·UNC 는 GetFullPath 뒤 비교로 걸러진다.
+    # 원자료가 G1·[중지]·보관기한 정리가 지우는 곳(data\outlook\raw) 밖에 남지 않게 한다.
+    try {
+        $rootF = [System.IO.Path]::GetFullPath($Root).TrimEnd('\')
+        $baseF = [System.IO.Path]::GetFullPath((Join-Path $rootF $Base)).TrimEnd('\')
+        $v = $(if ($Value) { $Value } else { $Default })
+        $cand = $(if ([System.IO.Path]::IsPathRooted($v)) { $v } else { Join-Path $rootF $v })
+        $cand = [System.IO.Path]::GetFullPath($cand).TrimEnd('\')
+    } catch { return '' }
+    if ($cand -ieq $baseF) { return $cand }
+    if (-not $Exact -and $cand.StartsWith($baseF + '\', [StringComparison]::OrdinalIgnoreCase)) { return $cand }
+    return ''
+}
+function Test-OcRestrictedList([string]$Path, $Today = $null) {
+    # 제한 고객 목록 파일(D9 - privacy.restrictedCustomersFile)의 형식만 본다. 이름은 여기서 쓰지 않는다(G1 이 메모리에서 맞댄다).
+    # 반환 @{ ok; why } - why: ok · missing(없음) · invalid(JSON·customers 목록·항목 꼴이 아님 - 항목은 name 또는 domains 가 든 개체 ·
+    #   모르는 키가 있음) · template(배포 견본을 그대로 쓴 것 - '_template' 키가 있거나 confirmed 가 'YYYY-MM-DD' 자리표)
+    #   · date(confirmed 가 실제 날짜가 아님 - 2026-99-99·0000-00-00) · future(confirmed 가 오늘보다 뒤).
+    # core\privacy.py load_restricted 가 받지 않는 파일을 여기서 받지 않게 한다('_' 로 시작하는 키는 설명 - '_template' 만 견본 표식).
+    # 이름 길이·약칭·도메인 꼴 같은 세부 검사는 파이썬(G1) 쪽이 한다 - 여기서 받은 파일도 거기서 받지 않으면 정제하지 않는다.
+    $day = $(if ($Today) { ([datetime]$Today).Date } else { (Get-Date).Date })
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return @{ ok = $false; why = 'missing' } }
+    $j = $null
+    try {
+        $txt = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
+        # 맨 위가 개체({…})가 아니면 받지 않는다 - 한 칸짜리 배열을 개체로 풀어 주는 PowerShell 판에서도 같은 판정이 되게 글로 먼저 본다
+        if (-not $txt.TrimStart([char]0xFEFF, ' ', "`t", "`r", "`n").StartsWith('{', [StringComparison]::Ordinal)) { return @{ ok = $false; why = 'invalid' } }
+        $j = $txt | ConvertFrom-Json
+    } catch { $j = $null }
+    if ($null -eq $j -or $j -isnot [System.Management.Automation.PSCustomObject]) { return @{ ok = $false; why = 'invalid' } }
+    $ord = [StringComparison]::Ordinal
+    foreach ($p in @($j.PSObject.Properties)) {
+        if ($p.Name -ceq '_template') { return @{ ok = $false; why = 'template' } }      # 값과 상관없이 - 견본에서 그 줄을 지워야 목록이다
+        if (-not $p.Name.StartsWith('_', $ord) -and @('confirmed', 'customers') -cnotcontains $p.Name) { return @{ ok = $false; why = 'invalid' } }
+    }
+    $conf = ([string]$j.confirmed).Trim()
+    if ($conf -match '^(?i)y{4}-m{2}-d{2}$') { return @{ ok = $false; why = 'template' } }
+    $cp = $j.PSObject.Properties['customers']
+    if (-not $cp -or $null -eq $cp.Value -or $cp.Value -is [string] -or $cp.Value -isnot [System.Collections.IEnumerable]) { return @{ ok = $false; why = 'invalid' } }
+    foreach ($c in @($cp.Value)) {
+        if ($c -isnot [System.Management.Automation.PSCustomObject]) { return @{ ok = $false; why = 'invalid' } }
+        foreach ($p in @($c.PSObject.Properties)) {
+            if (-not $p.Name.StartsWith('_', $ord) -and @('name', 'aliases', 'domains') -cnotcontains $p.Name) { return @{ ok = $false; why = 'invalid' } }
+        }
+        $nm = ([string]$c.name).Trim()
+        $dm = @(@($c.domains) | Where-Object { $_ -and ([string]$_).Trim() })
+        if (-not $nm -and -not $dm.Count) { return @{ ok = $false; why = 'invalid' } }
+    }
+    if ($conf -notmatch '^\d{4}-\d{2}-\d{2}$') { return @{ ok = $false; why = 'invalid' } }
+    $d = [datetime]::MinValue
+    if (-not [datetime]::TryParseExact($conf, 'yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::None, [ref]$d)) {
+        return @{ ok = $false; why = 'date' }
+    }
+    if ($d.Date -gt $day) { return @{ ok = $false; why = 'future' } }
+    return @{ ok = $true; why = 'ok' }
 }
 
 # ── 판 판정(진단·사유 표기 전용) ─────────────────────────────────────────────────────────
@@ -250,69 +337,53 @@ function Get-ProfileVerdict {
     return ''
 }
 
-function Get-ProtectedState {
-    # 보호 멤버(Object Model Guard - To·CC·Recipients·SenderName·CurrentUser·Account.SmtpAddress 등)를 읽어도 경고창이 안 뜨는가.
-    # 위험의 긍정 증거가 있을 때만 safe=$false(C-05): 정책 '항상 묻기/거부'(PromptOOMAddress*=1·0) · Trust Center '항상 경고'
-    # (ObjectModelGuard=1) · 백신 정보는 있는데 켜지고 최신인 것이 하나도 없음. '자동 승인'(=2)·'경고 안 함'(ObjectModelGuard=2)은
-    # 안전. 알 수 없으면(SecurityCenter2 없음·조회 실패·제품 0) LM24 처럼 읽는다. 값의 뜻은 문서 기준(실측 전 - 의심).
-    # -Av: 'auto' = root\SecurityCenter2 AntiVirusProduct productState 를 인프로세스 CIM 으로 · $null = 정보 없음 · int[] = 시험 주입.
-    # 반환 @{ safe; why; av }.
-    param($Reg = $null, $Av = 'auto')
-    $r = @{ safe = $true; why = 'unknown'; av = 'unknown' }
-    $vals = [System.Collections.Generic.List[object]]::new()
-    foreach ($v in @('16.0', '15.0')) {
-        foreach ($k in @("HKCU:\Software\Policies\Microsoft\Office\$v\Outlook\Security", "HKLM:\SOFTWARE\Policies\Microsoft\Office\$v\Outlook\Security")) {
-            foreach ($n in @('PromptOOMAddressInformationAccess', 'PromptOOMAddressBookAccess')) {
-                $x = Get-OcReg $Reg $k $n; if ($null -ne $x) { $vals.Add(@{ n = 'prompt'; v = $x }) }
+function Test-OcProtectedRead {
+    # 보호 멤버(Object Model Guard - 보낸 사람 주소·받는 사람·참석자)를 경고창 없이 읽을 수 있는가(AF32 D1·D7).
+    # 정책·백신·보안 센터는 보지 않는다 - 같은 프로세스의 다른 스레드(런스페이스)가 따로 Outlook 에 붙어 받은 편지함(비었으면 보낸
+    # 편지함)의 메일 하나의 보낸 사람 주소를 -Sec 초 안에 실제로 읽어 본다. 막힌 COM 호출은 멈출 수 없어 그 스레드는 버린다.
+    # 반환 @{ ok; why } - why: read(읽힘) · none(읽을 메일 없음 - 읽어도 된다고 본다) · deny(예외 - 읽기 거부) ·
+    #   noattach(그 스레드가 붙지 못함) · prompt(-Sec 초 무응답 - 보안 확인 창이 떠 있다고 본다). ok = read·none 일 때만.
+    #   ok 가 아니면 수집기는 주소를 읽지 않는다 - 사내/사외를 증명할 수 없는 메일·회의는 G1 이 external_unknown 으로 뺀다.
+    param([int]$Sec = 20)
+    $r = Invoke-OcTimed -Sec $Sec -Script {
+        $o = $null
+        try { $o = [Runtime.InteropServices.Marshal]::GetActiveObject('Outlook.Application') } catch { return 'noattach' }
+        try {
+            $ns = $o.GetNamespace('MAPI')
+            foreach ($n in @(6, 5)) {
+                $items = $null
+                try { $items = $ns.GetDefaultFolder($n).Items } catch { continue }
+                $it = $null; try { $it = $items.GetFirst() } catch {}
+                $k = 0
+                while ($null -ne $it -and $k -lt 20) {
+                    $k++
+                    $cls = 0; try { $cls = [int]$it.Class } catch {}
+                    if ($cls -eq 43) {
+                        $null = [string]$it.SenderEmailAddress
+                        return 'read'
+                    }
+                    try { $it = $items.GetNext() } catch { $it = $null }
+                }
             }
-            $x = Get-OcReg $Reg $k 'ObjectModelGuard'; if ($null -ne $x) { $vals.Add(@{ n = 'omg'; v = $x }) }
-        }
-        foreach ($k in @("HKLM:\SOFTWARE\Microsoft\Office\$v\Outlook\Security", "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Office\$v\Outlook\Security",
-                         "HKCU:\Software\Microsoft\Office\$v\Outlook\Security")) {
-            $x = Get-OcReg $Reg $k 'ObjectModelGuard'; if ($null -ne $x) { $vals.Add(@{ n = 'omg'; v = $x }) }
-        }
+            return 'none'
+        } catch { return 'deny' }
     }
-    $approved = $false
-    foreach ($e in $vals) {
-        $iv = -1; try { $iv = [int]$e.v } catch {}
-        if ($e.n -eq 'prompt') {
-            if ($iv -eq 1) { $r.safe = $false; $r.why = 'policy-prompt'; return $r }      # 사용자에게 묻기 = 경고창
-            if ($iv -eq 0) { $r.safe = $false; $r.why = 'policy-deny'; return $r }        # 자동 거부 = 읽으면 예외
-            if ($iv -eq 2) { $approved = $true }                                          # 자동 승인
-        } else {
-            if ($iv -eq 1) { $r.safe = $false; $r.why = 'omg-always'; return $r }         # 항상 경고
-            if ($iv -eq 2) { $approved = $true }                                          # 경고 안 함
-        }
-    }
-    if ($approved) { $r.why = 'policy-approve'; return $r }
-    $states = $null
-    if ($Av -is [string] -and $Av -eq 'auto') {
-        try { $states = @(Get-CimInstance -Namespace 'root\SecurityCenter2' -ClassName 'AntiVirusProduct' -ErrorAction Stop | ForEach-Object { [int]$_.productState }) }
-        catch { $states = $null }
-    } elseif ($null -ne $Av) { $states = @($Av) }
-    if ($null -eq $states -or $states.Count -eq 0) { $r.av = 'unknown'; return $r }      # 정보 없음 - LM24 처럼 읽는다
-    foreach ($s in $states) {
-        # productState 16진 6자리: 가운데 바이트 0x10/0x11 = 켜짐, 끝 바이트 0x00 = 최신(0x10 = 낡음)
-        if ((([int]$s) -band 0x1000) -ne 0 -and (([int]$s) -band 0x10) -eq 0) { $r.av = 'ok'; $r.why = 'av-ok'; return $r }
-    }
-    $r.av = 'off'; $r.safe = $false; $r.why = 'av-off'
-    return $r
-}
-function Test-ProtectedSafe {
-    param($Reg = $null, $Av = 'auto')
-    return [bool](Get-ProtectedState -Reg $Reg -Av $Av).safe
+    if (-not $r.done) { return @{ ok = $false; why = 'prompt' } }
+    $w = [string](@($r.out) | Select-Object -Last 1)
+    if (-not $w) { $w = 'deny' }
+    return @{ ok = ($w -eq 'read' -or $w -eq 'none'); why = $w }
 }
 function Get-CalBody {
-    # 일정 본문(회의 안건) 한 칸(LM28 - 사용자 요청 '일정 회의 내용도 참고, 걸러서'). AppointmentItem.Body 는 보호 멤버(Object Model
-    # Guard)라 받는 사람·보낸 사람 이름과 같은 판정(-ProtOk = Get-ProtectedState.safe - 위험의 긍정 증거가 있으면 $false)을 따른다:
-    # $false 면 Body 를 건드리지 않는다(경고창이 뜰 일이 없다). 비공개(Sensitivity 2)·기밀(3) 일정도 Body 를 읽지 않는다.
-    # 앞 -Max 자만(줄바꿈·탭·제어 문자 → 공백, 연속 공백 접기 - 끝의 반쪽 서로게이트는 버린다). 정제(온라인 회의 안내문·링크·연락처
-    # 걷기·개인정보 가림)는 run.py G1(core\meetnote.prep_body_csv → privacy.scrub_csv)이 한다. 원문은 이 칸 말고 남기지 않는다.
+    # 일정 본문(회의 안건) 한 칸 - config.calendar.collectBody 가 켜졌을 때만 부른다(AF32 D18 - 기본은 읽지 않는다).
+    # AppointmentItem.Body 는 보호 멤버라 주소와 같은 판정(-ProtOk = Test-OcProtectedRead.ok)을 따른다: $false 면 Body 를 건드리지 않는다.
+    # 개인(Sensitivity 1)·비공개(2)·기밀(3) 일정은 읽지 않는다(그 일정은 수집기가 행째 뺀다).
+    # 앞 -Max 자만(줄바꿈·탭·제어 문자 → 공백, 연속 공백 접기 - 끝의 반쪽 서로게이트는 버린다). 원자료 파일(data\outlook\raw)의 이 칸은
+    # G1(core\mailmerge.g1_com → meetnote.prep_raw_body → privacy.g1_file)이 정리·가린 뒤 원자료와 함께 지운다.
     # 반환 @{ body; why } - why: ok · empty · private · prot · err (호출측은 why 별 건수만 센다).
     param($Item, [bool]$ProtOk, [int]$Max = 600)
     $sens = 0
     try { $sens = [int]$Item.Sensitivity } catch {}
-    if ($sens -eq 2 -or $sens -eq 3) { return @{ body = ''; why = 'private' } }
+    if ($sens -ge 1 -and $sens -le 3) { return @{ body = ''; why = 'private' } }
     if (-not $ProtOk) { return @{ body = ''; why = 'prot' } }
     $b = ''
     try { $b = [string]$Item.Body } catch { return @{ body = ''; why = 'err' } }
@@ -380,7 +451,7 @@ function Limit-ColdVerdict($V, [bool]$Cold) {
     # 이 수집이 직접 띄운 Outlook(캐시 모드이거나 새 Outlook 흔적이 있는 PC - '차가운 COM')의 판정을 낮춘다(LM28 회사 PC 실측:
     # 새 Outlook 을 쓰는 PC 에서 클래식을 띄워 읽었더니 받은 53건·보낸 0건으로 열 달을 '0건 확인' 했다). 그 캐시(OST)가 사서함 전체를
     # 담았는지 이 수집은 증명할 수 없다 - 행이 있는 창은 partial(행은 쓰되 확인 아님), 0행 창은 unverified, 완료 표에는 적지 않는다.
-    # 원장은 그 날들을 색인·Outlook 웹으로 계속 확인한다. 지평선 밖(out_of_horizon)·미확인은 그대로.
+    # 원장은 그 날들을 Outlook 웹으로 계속 확인한다. 지평선 밖(out_of_horizon)·미확인은 그대로.
     if (-not $Cold -or $null -eq $V) { return $V }
     $st = [string]$V.st
     if ($st -eq 'ok') { $st = 'partial' } elseif ($st -eq 'zero_ok') { $st = 'unverified' }
@@ -388,7 +459,7 @@ function Limit-ColdVerdict($V, [bool]$Cold) {
 }
 function Test-CoverageUsable($J, [string]$Ver, [string]$Writer, [bool]$StoreSubject) {
     # 달별 완료 표 머리 검사 - 형식 3 · 판('수집기판|collect.cursorEpoch') · 작성자(com/selftest) · 제목 저장 설정이 이번 실행과 같을
-    # 때만 쓴다. 판이 다르면(규칙이 바뀌었거나 cursorEpoch 를 올림) 그 표의 '완료'를 믿지 않는다(F-09). 다른 경로(색인·웹·Copilot)
+    # 때만 쓴다. 판이 다르면(규칙이 바뀌었거나 cursorEpoch 를 올림) 그 표의 '완료'를 믿지 않는다(F-09). 다른 경로(웹·Copilot)
     # 가 무엇을 썼는지는 보지 않는다 - 출처마다 자기 파일만 쓴다(P5). 반환 @{ ok; why }.
     # (변수 이름 주의: PowerShell 변수는 대소문자를 가리지 않는다 - $Ver 매개변수와 겹치지 않게 $jver)
     if ($null -eq $J) { return @{ ok = $false; why = '표 없음' } }
@@ -410,9 +481,10 @@ function Get-MailFolderList {
     # '대화 기록' · DefaultItemType≠0(메일 폴더 아님 - 하위는 계속 본다) · 항목 0개(하위는 계속 본다). 상한 $Max(넘으면 capped).
     # 받은·보낸 편지함을 먼저 넣어 상한에 닿아도 기본 폴더는 빠지지 않는다. 보낸 편지함 하위는 box=sent, 그 밖은 inbox.
     # $Root·노드: EntryID·Name·DefaultItemType·Items.Count·Folders 를 가진 COM 폴더(시험은 같은 모양의 개체).
-    # $Defaults = @{ <OlDefaultFolders 번호> = EntryID }(6 받은 · 5 보낸 · 제외 목록). 반환 @{ folders; seen; excluded; empty; capped }.
-    param($Root, [hashtable]$Defaults, [int]$Max = $script:OC_FOLDERS_MAX)
-    $r = @{ folders = ([System.Collections.Generic.List[object]]::new()); seen = 0; excluded = 0; empty = 0; capped = $false }
+    # $Defaults = @{ <OlDefaultFolders 번호> = EntryID }(6 받은 · 5 보낸 · 제외 목록). -Exclude = privacy.excludeMailFolders(이름에 그
+    # 낱말이 든 폴더와 그 하위는 읽지 않는다 - 개인 폴더, AF32 D3). 반환 @{ folders; seen; excluded; private; empty; capped }.
+    param($Root, [hashtable]$Defaults, [int]$Max = $script:OC_FOLDERS_MAX, [string[]]$Exclude = @())
+    $r = @{ folders = ([System.Collections.Generic.List[object]]::new()); seen = 0; excluded = 0; private = 0; empty = 0; capped = $false }
     $skip = @{}
     foreach ($n in $script:OC_SKIP_FOLDERS) { if ($Defaults.ContainsKey($n) -and $Defaults[$n]) { $skip[[string]$Defaults[$n]] = $n } }
     $inId = ''; if ($Defaults.ContainsKey(6)) { $inId = [string]$Defaults[6] }
@@ -435,6 +507,7 @@ function Get-MailFolderList {
         if ($skip.ContainsKey($id)) { $r.excluded++; continue }                       # 하위 포함 제외
         $fname = ''; try { $fname = ([string]$node.Name).Trim() } catch {}
         if ($script:OC_CONV_HISTORY -contains $fname) { $r.excluded++; continue }     # 대화 기록(하위 포함)
+        if ($id -ne $inId -and $id -ne $sentId -and (Test-OcNameHit $fname $Exclude)) { $r.private++; continue }   # 개인 폴더(하위 포함)
         $under = $e.under
         $role = 'subfolder'; $box = 'inbox'
         if ($inId -and $id -eq $inId) { $role = 'inbox'; $under = 'inbox' }
@@ -489,35 +562,129 @@ function Get-CanaryItem($Folders) {
     return $null
 }
 
-# ── 색인 주 저장소(F-29) ───────────────────────────────────────────────────────────────────
-function Split-OcPath([string]$p) {
-    return @(([string]$p -split '[\\/]') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+# ── 참여자 주소(AF32 D7·D8) ──────────────────────────────────────────────────────────────
+$script:OC_PR_SMTP = 'http://schemas.microsoft.com/mapi/proptag/0x39FE001E'          # PR_SMTP_ADDRESS
+$script:OC_PR_SENDER_SMTP = 'http://schemas.microsoft.com/mapi/proptag/0x5D01001F'   # PR_SENDER_SMTP_ADDRESS
+function ConvertTo-OcAddr($v) {
+    # 주소 꼴이면 소문자로, 아니면 ''(Exchange 내부 주소 '/o=…' 는 주소가 아니다 - 사내/사외를 그것만으로 정하지 않는다)
+    $s = ([string]$v).Trim()
+    if ($s -match $script:OC_ADDR_RX) { return $s.ToLowerInvariant() }
+    return ''
 }
-function Get-StoreScope {
-    # 색인 행의 폴더 표시 경로 첫 조각 = 저장소(메일함 계정). 첫 조각이 내 주소와 같은 행이 1건 이상일 때만 그 저장소로 거른다
-    # (mode=addr - 공유·추가 사서함·보관 사서함 행을 뺀다). 0건이면(표시명 저장소 등) 거르지 않는다(mode=unknown - 내 메일을
-    # 잃어 0건으로 확정하는 쪽이 더 나쁘다). 반환 @{ mode; stores(내 저장소 이름 목록, 소문자); n(본 저장소 수) }.
-    param([string[]]$Paths, [string[]]$My)
-    $mine = @($My | Where-Object { $_ -and $_ -match '@' } | ForEach-Object { ([string]$_).Trim().ToLowerInvariant() })
-    $seen = @{}; $hit = [System.Collections.Generic.List[string]]::new()
-    foreach ($p in $Paths) {
-        $segs = Split-OcPath $p
-        if ($segs.Count -lt 2) { continue }
-        $f = $segs[0].ToLowerInvariant()
-        $seen[$f] = $true
-        if ($mine -contains $f -and -not $hit.Contains($f)) { $hit.Add($f) }
+function Get-OcSmtp($Ae) {
+    # AddressEntry → SMTP 주소(소문자) | ''. PR_SMTP_ADDRESS → Exchange 사용자(0·5)·목록(1)의 PrimarySmtpAddress → Address 순.
+    # 보호 멤버라 부르는 쪽이 Test-OcProtectedRead 가 ok 일 때만 부른다. 못 읽으면 '' - G1 이 external_unknown 으로 뺀다.
+    if ($null -eq $Ae) { return '' }
+    $a = ''
+    try { $a = ConvertTo-OcAddr ($Ae.PropertyAccessor.GetProperty($script:OC_PR_SMTP)) } catch {}
+    if (-not $a) {
+        $t = -1; try { $t = [int]$Ae.AddressEntryUserType } catch {}
+        if ($t -eq 0 -or $t -eq 5) { try { $x = $Ae.GetExchangeUser(); if ($x) { $a = ConvertTo-OcAddr $x.PrimarySmtpAddress } } catch {} }
+        elseif ($t -eq 1) { try { $x = $Ae.GetExchangeDistributionList(); if ($x) { $a = ConvertTo-OcAddr $x.PrimarySmtpAddress } } catch {} }
     }
-    if ($hit.Count) { return @{ mode = 'addr'; stores = @($hit); n = $seen.Count } }
-    return @{ mode = 'unknown'; stores = @(); n = $seen.Count }
+    if (-not $a) { try { $a = ConvertTo-OcAddr $Ae.Address } catch {} }
+    return $a
 }
-function Test-OtherStore([string]$Path, $Scope) {
-    # 주 저장소 필터가 걸렸을 때(mode=addr) 이 행이 다른 저장소의 것인가. 경로에 저장소 조각이 없는 모양('\받은 편지함\…')은 거르지 않는다.
-    if ($null -eq $Scope -or $Scope.mode -ne 'addr') { return $false }
-    $segs = Split-OcPath $Path
-    if ($segs.Count -lt 2) { return $false }
-    $f = $segs[0]
-    if ($f -match $script:OC_INBOX_RX -or $f -match $script:OC_SENT_RX -or $f -match $script:OC_CAL_RX) { return $false }
-    return (@($Scope.stores) -notcontains $f.ToLowerInvariant())
+function Get-OcRecipientAddr($Rc) {
+    # Recipient → SMTP 주소 | '' (PR_SMTP_ADDRESS 한 번이 대개 답 - 아니면 AddressEntry 로)
+    $a = ''
+    try { $a = ConvertTo-OcAddr ($Rc.PropertyAccessor.GetProperty($script:OC_PR_SMTP)) } catch {}
+    if (-not $a) { try { $a = ConvertTo-OcAddr $Rc.Address } catch {} }
+    if (-not $a) { try { $a = Get-OcSmtp $Rc.AddressEntry } catch {} }
+    return $a
+}
+function Get-OcSenderAddr($Item) {
+    # 메일 보낸 사람 → SMTP 주소 | ''. SMTP 형식이면 SenderEmailAddress, Exchange 면 PR_SENDER_SMTP_ADDRESS → Sender(AddressEntry).
+    $a = ''
+    $typ = ''; try { $typ = [string]$Item.SenderEmailType } catch {}
+    if ($typ -ne 'EX') { try { $a = ConvertTo-OcAddr $Item.SenderEmailAddress } catch {} }
+    if (-not $a) { try { $a = ConvertTo-OcAddr ($Item.PropertyAccessor.GetProperty($script:OC_PR_SENDER_SMTP)) } catch {} }
+    if (-not $a) { try { $a = Get-OcSmtp $Item.Sender } catch {} }
+    return $a
+}
+function Format-OcPerson([string]$Name, [string]$Addr) {
+    # 원자료 칸의 한 사람 'Name <addr>' - 이름의 ';'·'<'·'>'·따옴표는 지운다(목록 구분자). 주소를 못 읽었으면 'Name <>'(증명 불가).
+    $n = ([string]$Name -replace '[;<>"\r\n]+', ' ').Trim()
+    return ('{0} <{1}>' -f $n, ([string]$Addr).Trim()).Trim()
+}
+function Get-OcPeople($Recipients, [int]$Max = 100) {
+    # Recipients → @{ to; cc; n; capped } - to = 받는 사람(1), cc = 참조(2)·숨은 참조(3)·그 밖. ';' 로 이은 'Name <addr>'.
+    # $Max 명을 넘으면 나머지는 읽지 않고 '? <>' 를 하나 더한다(증명 불가 - G1 이 뺀다). 예외가 나면 그 사람은 'Name <>'.
+    $to = [System.Collections.Generic.List[string]]::new(); $cc = [System.Collections.Generic.List[string]]::new()
+    $n = 0; $capped = $false
+    foreach ($rc in $Recipients) {
+        $n++
+        if ($n -gt $Max) { $capped = $true; break }
+        $nm = ''; try { $nm = [string]$rc.Name } catch {}
+        $typ = 1; try { $typ = [int]$rc.Type } catch {}
+        $p = Format-OcPerson $nm (Get-OcRecipientAddr $rc)
+        if ($typ -eq 1) { $to.Add($p) } else { $cc.Add($p) }
+    }
+    if ($capped) { $cc.Add('? <>') }
+    return @{ to = ($to -join '; '); cc = ($cc -join '; '); n = $n; capped = $capped }
+}
+function Get-OcMailRecipients($Recipients, [int]$Max = 100) {
+    # 메일 받는 사람·참조(D7) - Get-OcPeople 에 더해, 한 사람도 읽지 못했으면(받는 사람 목록이 빔·숨은 참조로만 받음 등)
+    # 참조에 '? <>'(증명 불가)를 둔다 - 보낸 사람 주소만으로 사내 메일임을 증명하지 않는다(G1 이 external_unknown 으로 뺀다).
+    # 반환 = Get-OcPeople 의 값 + none($true 면 받는 사람을 하나도 읽지 못함 - 받은 메일의 수신 구분은 unknown).
+    $pp = Get-OcPeople $Recipients $Max
+    $pp.none = (-not $pp.to -and -not $pp.cc)
+    if ($pp.none) { $pp.cc = '? <>' }
+    return $pp
+}
+function Get-OcMyAddresses($Ns, [bool]$ProtOk) {
+    # 내 주소(me[] - 사내 도메인(D7)의 근거 · 받은 메일의 수신 구분) - 내 기본 사서함의 것만:
+    #   ① 기본 저장소로 메일이 배달되는 계정(Account.DeliveryStore.StoreID = Namespace.DefaultStore.StoreID)의 SMTP 주소
+    #   ② CurrentUser 의 Exchange 기본 SMTP 주소(AddressEntry.GetExchangeUser().PrimarySmtpAddress)
+    #   ③ CurrentUser 표시 이름 - 주소 꼴이 아닐 때만(수신 구분과 내 이름 가림에만 쓴다 - 도메인 근거가 아니다). 주소 꼴이면
+    #      ①②에 이미 있는 주소일 때만 남는다(표시 이름이 다른 도메인의 주소여도 그 도메인이 사내가 되지 않는다).
+    #   프로필의 다른 계정(개인·협력사 메일 계정)·주소 꼴 계정 표시 이름·config owner 는 넣지 않는다 - 그 도메인이 사내가 되면
+    #   개인·사외 메일이 모든 경로에서 사내로 통과한다. 모두 보호 멤버라 -ProtOk(Test-OcProtectedRead.ok)일 때만 읽는다.
+    #   반환 = 소문자 목록(중복 없음 · 두 글자 이상 · 주소 먼저).
+    $out = [System.Collections.Generic.List[string]]::new()
+    if (-not $ProtOk -or $null -eq $Ns) { return @() }
+    $sid = ''
+    try { $sid = [string]$Ns.DefaultStore.StoreID } catch {}
+    if ($sid) {
+        try {
+            foreach ($a in $Ns.Accounts) {
+                $ds = ''
+                try { $ds = [string]$a.DeliveryStore.StoreID } catch {}
+                if ($ds -and $ds -eq $sid) {
+                    $x = ''
+                    try { $x = ConvertTo-OcAddr $a.SmtpAddress } catch {}
+                    if ($x) { $out.Add($x) }
+                }
+            }
+        } catch {}
+    }
+    try {
+        $xu = $Ns.CurrentUser.AddressEntry.GetExchangeUser()
+        if ($xu) { $x = ConvertTo-OcAddr $xu.PrimarySmtpAddress; if ($x) { $out.Add($x) } }
+    } catch {}
+    try {
+        $nm = ([string]$Ns.CurrentUser.Name).Trim().ToLower()
+        if ($nm -and ($nm -notmatch $script:OC_ADDR_RX -or $out.Contains($nm))) { $out.Add($nm) }
+    } catch {}
+    return @($out | Where-Object { $_.Length -ge 2 } | Select-Object -Unique)
+}
+function Get-OcInternalDomains([string[]]$CfgDomains, [string[]]$Me) {
+    # 사내 도메인(D7) = privacy.internalDomains ∪ 내 주소(me[])의 도메인 - 공용 개인 메일 도메인($script:OC_PERSONAL_DOMAINS)은 뺀다
+    # (core\privacy.py internal_domains 와 같다). 내 기본 사서함이 개인 메일 계정이어도 그 도메인 사람 모두가 사내가 되지 않는다.
+    # 비면 수집기는 아무것도 읽지 않는다(R-NODOMAIN). 반환 = 소문자 도메인 목록(중복 없음 · 설정 먼저).
+    $out = [System.Collections.Generic.List[string]]::new()
+    $cand = [System.Collections.Generic.List[string]]::new()
+    foreach ($x in @($CfgDomains)) { if ($x) { $cand.Add(([string]$x).Trim().ToLowerInvariant().TrimStart('@').TrimEnd('.')) } }
+    foreach ($a in @($Me)) {
+        if ($a -and ([string]$a) -match $script:OC_ADDR_RX) {
+            $s = [string]$a
+            $cand.Add($s.Substring($s.LastIndexOf('@') + 1).Trim().ToLowerInvariant().TrimEnd('.'))
+        }
+    }
+    foreach ($d in $cand) {
+        if ($d -and $script:OC_PERSONAL_DOMAINS -notcontains $d -and -not $out.Contains($d)) { $out.Add($d) }
+    }
+    return @($out)
 }
 
 # ── 프로세스 규율(F-15) ────────────────────────────────────────────────────────────────────
@@ -536,7 +703,7 @@ function Stop-OutlookWeStarted {
     return $n
 }
 function Start-OcLaunchWatchdog {
-    # 꺼진 Outlook 을 COM 으로 띄울 때의 무진전 감시(F-15·V8). 같은 프로세스의 다른 스레드(런스페이스)에서 $Sec 초를 재고,
+    # 꺼진 Outlook 을 COM 으로 띄울 때의 무진전 확인(F-15·V8). 같은 프로세스의 다른 스레드(런스페이스)에서 $Sec 초를 재고,
     # 그 안에 $w.sync.attached 가 서지 않으면(시작 마법사·프로필 선택·암호 창에서 멈춤) 이 수집이 띄운 Outlook 만 끝낸다 -
     # 막힌 New-Object·GetNamespace 가 RPC 오류로 풀린다. 자식 프로세스를 띄우지 않는다. 반환 = Stop-OcLaunchWatchdog 에 넘길 값.
     param([int]$Sec, [datetime]$Since)
@@ -582,7 +749,7 @@ function Invoke-OcTimed {
     return @{ done = $true; out = $out; error = $err }
 }
 
-# ── LMSTATUS ────────────────────────────────────────────────────────────────────────────────
+# ── AF32STATUS ────────────────────────────────────────────────────────────────────────────────
 function ConvertTo-LmRanges {
     # 한 달·한 축의 Test-MonthDone 결과 → ranges 조각(창 앞뒤는 out_of_horizon). $Start·$End = 그 달에서 이번에 다룬 [start, end).
     # 조각을 하나씩 내보낸다 - 호출측은 @(…) 로 받는다.
@@ -596,29 +763,12 @@ function ConvertTo-LmRanges {
     [ordered]@{ axis = $Axis; from = $V.lo.ToString($d); to = $V.hi.AddDays(-1).ToString($d); st = $V.st }
     if ($V.hi -lt $End) { [ordered]@{ axis = $Axis; from = $V.hi.ToString($d); to = $End.AddDays(-1).ToString($d); st = 'out_of_horizon' } }
 }
-function ConvertTo-DayRanges {
-    # 날짜('yyyy-MM-dd') 목록 → 이어진 날끼리 묶은 ranges(같은 st). 색인처럼 '행이 있는 날만 ok' 인 수집기용. 호출측은 @(…) 로 받는다.
-    param([string]$Axis, [string[]]$Days, [string]$St)
-    $out = [System.Collections.Generic.List[object]]::new()
-    $ds = @($Days | Where-Object { $_ } | Sort-Object -Unique)
-    if (-not $ds.Count) { return }
-    $inv = [Globalization.CultureInfo]::InvariantCulture
-    $a = [datetime]::ParseExact($ds[0], 'yyyy-MM-dd', $inv); $b = $a
-    for ($i = 1; $i -le $ds.Count; $i++) {
-        $c = $null
-        if ($i -lt $ds.Count) { $c = [datetime]::ParseExact($ds[$i], 'yyyy-MM-dd', $inv) }
-        if ($null -ne $c -and $c -eq $b.AddDays(1)) { $b = $c; continue }
-        $out.Add([ordered]@{ axis = $Axis; from = $a.ToString('yyyy-MM-dd'); to = $b.ToString('yyyy-MM-dd'); st = $St })
-        if ($null -ne $c) { $a = $c; $b = $c }
-    }
-    return $out
-}
 function Format-LmStatus {
-    # 수집기 마지막 줄(P3) - 'LMSTATUS ' + JSON 한 줄. reason 은 사유 코드 목록을 쉼표로(첫 코드가 주 사유).
+    # 수집기 마지막 줄(P3) - 'AF32STATUS ' + JSON 한 줄. reason 은 사유 코드 목록을 쉼표로(첫 코드가 주 사유).
     param([string]$Src, [int]$Rc, [string[]]$Reasons = @(), $Counts = @{}, $Ranges = @())
     $o = [ordered]@{ v = 1; src = $Src; rc = $Rc; reason = ((@($Reasons) | Where-Object { $_ } | Select-Object -Unique) -join ',');
                      counts = $Counts; ranges = @($Ranges) }
-    return ('LMSTATUS ' + ($o | ConvertTo-Json -Compress -Depth 8))
+    return ('AF32STATUS ' + ($o | ConvertTo-Json -Compress -Depth 8))
 }
 function Write-LmStatus {
     param([string]$Src, [int]$Rc, [string[]]$Reasons = @(), $Counts = @{}, $Ranges = @())

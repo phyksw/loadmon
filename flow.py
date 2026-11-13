@@ -1,57 +1,56 @@
 # -*- coding: utf-8 -*-
 r"""
-flow.py — 담당자 워크플로우 분석 (LoadMonitor24: 과제 / 담당업무 단위)
+flow.py — 업무 워크플로우와 Agent 가능성 (AgentFinder32 · 과제 / 담당업무 단위)
 
-**(과제, 담당 업무)** 마다 Copilot 에게 [시간순 신호 표본 + 정제 설명]을 주고 세 가지를 판정시킨다:
-  ① 역할     — 이 담당 업무에서 사용자가 어떤 롤인가 (주도/실무/검토/조율 등 + 근거)
-  ② 워크플로우 — 일이 실제로 흘러간 순서: 단계별로 무슨 일을 했고 어떤 주기로 반복되는지
-  ③ Agent 가능성 — 각 단계를 Agentic AI 가 대체/보조할 수 있는지 (상/중/하 + 방안)
+**(과제, 담당 업무)** 마다 Copilot 에게 [날짜순 메일·일정 표본(MM-DD) + 요청→산출 짝 + 정제 설명]을 주고 두 가지를 판정시킨다:
+  ① 워크플로우 — 일이 실제로 흘러간 순서: 단계마다 무엇을 받아(input) 무엇을 만들었는지(output)
+  ② Agent 가능성 — 각 단계를 Agentic AI 가 대체·보조할 수 있는지(상/중/하 + 방안)
+사람의 역할·투입량은 묻지도 싣지도 않는다 — 이 결과는 Agentic AI 전환 과제 발굴에만 쓴다.
 
-LoadMonitor20 과 다른 점:
-  · 과제(model) 단위로 묶으면 관계없는 업무가 한 흐름으로 엮였다(실측) → (과제, 담당업무) 단위.
-    신호 3건 미만인 단위는 흐름이라 할 수 없어 제외한다.
-  · 먼저 세부업무 표기 병합 맵(core/details — 규칙 + Copilot, config\detail_aliases.json 캐시)을
-    만들어 적용한다: '레이아웃 검토/수정/리뷰 회의' 처럼 조각난 이름이 한 단위가 된다. --no-merge 면
-    규칙 병합만.
-  · MM 은 AI 가 만들지 않는다 — mm_rows(정제본 우선) 실측 합을 프로그램이 붙인다(프롬프트에는
-    신호 건수만 보낸다 — LM28: 단위 머리말의 '실측 MM'·세부업무 MM 값도 지웠다, W2-11).
-  · LM28 G3: 표본 신호·요청→산출 페어는 관문(judge.g3_rows)을 거친 재정제 사본만 보낸다. 관문에 막힌 묶음은
+규칙:
+  · (과제, 담당업무) 단위 — 신호 3건 미만인 단위는 흐름이라 할 수 없어 제외한다.
+  · 먼저 세부업무 표기 병합 맵(core/details — 규칙 + Copilot, data\cache\detail_aliases.json 캐시)을
+    만들어 적용한다: '레이아웃 검토/수정/리뷰 회의' 처럼 조각난 이름이 한 단위가 된다. --no-merge 면 규칙 병합만.
+  · 프롬프트에는 건수·비중·시각을 싣지 않는다(D10). 표본 줄의 날짜는 MM-DD 까지만. 맨 앞 머리말(AI_PREFIX)은
+    judge.copilot_send 가 붙이고, 프롬프트는 "고객사·제품·과제·사람 이름과 약어를 쓰지 말고 업무 행위로 쓰세요" 를 더한다(D19).
+  · 요청→산출 짝은 단위의 신호에서 바로 만든다(받은 메일의 요청 단서 → 14일 안의 내 발신·회의 중 내용 낱말이 겹치는 것) —
+    시간 간격은 싣지 않는다.
+  · G3: 표본 신호·요청→산출 짝은 관문(judge.g3_rows)을 거친 재정제 사본만 보낸다. 관문에 막힌 묶음은
     실패가 아니다(연속 실패·적응 분할에 넣지 않는다).
   · 판정(model) 열이 없는 기간은 규칙 축(project/activity)으로 만들되 basis:"규칙" 을 남긴다.
+  · 시작할 때 내 자료인지(consent.require — 다른 사용자의 자료면 종료 코드 4 · 지우는 중이면 3)와 run_meta 의 AgentFinder32 표식을 확인한다.
 
   python flow.py                          # 최신 결과 대상
   python flow.py --from ... --to ... [--no-merge] [--budget 7000]
 
-묶음이 많은 사람이 통째로 실패하던 것(S2)에 대한 보강 — agentic.py 와 같은 규칙:
+묶음이 많은 사람이 통째로 실패하지 않게 — agentic.py 와 같은 규칙:
   · 묶음은 같은 채팅에서 이어 보낸다(fresh=None — 첫 왕복·실패 뒤·chatTurns 마다만 새 채팅, 앞 묶음의 표기를 기억)
-    · 묶음당 단위 6개 상한(답이 잘리지 않게) · 잘린 JSON 복구(core/details.find_json)
+    · 묶음당 단위 상한(답이 잘리지 않게) · 잘린 JSON 복구(core/details.find_json)
   · fatal(로그인 만료·Edge 미기동) 즉시 중단 + 사유 hint · 연속 실패 3회 중단 · 적응 분할
   · 묶음별 저장 + 이어서 판정(지난 결과의 flows 는 두고 missing 만 보낸다, --redo 면 처음부터)
   · 신호 3건 이상인 단위가 없으면 실패가 아니라 '결과 없음'(ok:true, flows:[], empty_reason) 으로 저장한다.
 
-긴 판정 뒤 Copilot 이 지쳐 있을 때 결과가 통째로 사라지던 것(제보: 워크플로우 간헐 미생성)에 대한 보강:
-  · --carry(run.py 가 늘 붙인다): 기간 끝날짜가 바뀌어 오늘 파일이 없으면 같은 시작일의 가장 최근 결과에서
-    asked_at 이 config.flowCarryDays(기본 7일) 이내인 흐름을 이어받고, 빠졌거나 오래된 단위만 묻는다. 다 끝난
-    결과도 처음부터 다시 묻지 않는다(화면의 [재분석]은 --carry 없이 — 예전처럼 다 끝났으면 처음부터).
-    지난 흐름의 키는 표기 축 스냅(_key_resolver)으로 오늘 키에 맞춘다(예전: 글자까지 같아야 이어받음).
+긴 판정 뒤 Copilot 이 지쳐 있을 때 결과가 통째로 사라지지 않게:
+  · --carry(run.py 가 늘 붙인다): 기간 끝날짜가 바뀌어 오늘 파일이 없으면 같은 시작일의 가장 최근 결과(AgentFinder32 표식)에서
+    asked_at 이 config.flowCarryDays(기본 7일) 이내인 흐름을 이어받고, 빠졌거나 오래된 단위만 묻는다.
   · 일시 오류(copilot_error·시간 초과 등)는 반으로 나누지 않고 coolDownSec(기본 90초) 쉰 뒤 새 채팅에서 같은 묶음을
     한 번만 다시 보낸다. 반분은 답이 왔는데 해석 못 했거나(parse) 응답이 없을 때(no_reply)만. 드라이버가 이미 쉬었으면
     (결과의 cooldowns) 또 쉬지 않고, Copilot 사용량 제한(hard)이면 그 자리에서 멈춘다(stop_kind throttle). 쉬는 초는 이번
-    실행의 쉬는 시간 합계(copilotAuto.runWaitMaxSec — judge.wait_room) 안이고, 다 썼으면 쉬지 않고 바로 한 번 더 보낸다(LM28).
+    실행의 쉬는 시간 합계(copilotAuto.runWaitMaxSec — judge.wait_room) 안이다.
   · 세부 병합 왕복은 AI 판정이 중단된 직후·전체 마감 20분 미만이면 건너뛰고(규칙·캐시만), 돌더라도 min(15분, 남은 시간의 1/4).
   · 신호의 80% 이상이 규칙 판정(judge '규칙')인 단위는 묻지 않는다(rule_units — 'AI 판정 대기'). 키·설명·요청→산출 줄이
     개인정보 관문에 걸리는 단위는 따로 두고(gate_units) 나머지 묶음은 그대로 보낸다.
+  · 프롬프트의 과제 이름·단위 키·세부업무 이름은 G3 행 관문을 지난 사본으로 싣는다(_send_names — 지정 과제 이름에 든 사람
+    이름·고객사는 가린 채). 답의 key 는 그 표기로 오고 sanitize_flows 가 원래 키로 되돌린다(저장하는 이름은 원래 이름).
   · 모든 반환 경로가 상태 파일(stage_state_<기간>_flow.json)에 state·stop.kind 를 남기고, 마지막 줄 JSON 에도 stop_kind 를
     싣는다 — budget · login · fatal · throttle · fail(연속 실패) · gain(마무리 이득 부족) · gate(모든 묶음 관문).
-    결과가 없을 때 '파싱 실패' 는 실제로 답을 받았는데 해석하지 못한 경우에만 쓴다.
 
-출력: report\workflow_<기간>.json  →  UI '담당자 워크플로우' 탭 (f.model/role/summary/steps/mm.mm/signals)
-  {ok, tag, generated, model_name, unit:"과제"|"과제/담당업무", basis, flows[{model:"과제"(기본) 또는 "과제 / 담당업무",
-   level1:"신제품개발|기술 내재화|양산준비|일반업무"(상위 · 정제 단계가 채운다. 없으면 빈 문자열),
-   branch:"흐름 이름"(한 과제 안에서 서로 이어지지 않는 일은 흐름을 나눠 여러 건이 된다. 하나뿐이면 ""),
-   upstream/downstream:"같은 과제의 앞·뒤 담당업무 키"(이어짐만 표시 · 흐름은 합치지 않는다. 없으면 ""),
-   project, detail, role, summary, steps[≤8], mm:{mm}, signals, asked_at:"YYYY-MM-DD"}], chunks, failed_chunks,
-   salvaged_chunks, missing, missing_count, partial, note, last_error, dropped, merge:{rule, ai}, rows_units,
+출력: report\workflow_<기간>.json(§5.9)  →  UI '워크플로우' 탭 · 개인 리포트
+  {product, ok, tag, generated(날짜), model_name, unit:"과제"|"과제/담당업무", basis, flows[{model:"과제 / 담당업무",
+   level1(상위 · 정제 단계가 채운다. 없으면 ""), level1_mix, branch(한 과제 안에서 이어지지 않는 일은 흐름을 나눈다),
+   upstream/downstream(같은 과제의 앞·뒤 담당업무 키), project, detail, summary,
+   steps[≤8 {order, name, input, output, agent:"상|중|하", agent_how, evidence:"MM-DD"}], signals, pjkey, asked_at}],
+   chunks, failed_chunks, salvaged_chunks, missing, missing_count, partial, note, last_error, dropped, merge:{rule, ai}, rows_units,
    rule_units[{project,detail,signals,rule_share}], rule_units_count, gate_units[키], gate_units_count,
    carried_from, carried, expired, asked_new, cooldowns, stop_kind, merge_skipped, empty_reason?}
 """
@@ -78,12 +77,15 @@ if __name__ == "__main__":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, errors="replace", encoding=(
         (sys.stdout.encoding or "utf-8") if sys.stdout.isatty() else "utf-8"))  # 콘솔(bat)=콘솔 코드페이지 · 파이프(UI)=utf-8
 
+PRODUCT = details.PRODUCT       # 산출물 표식(D20)
+GENERIC_WORDING = details.GENERIC_WORDING   # D19 — 이름 대신 업무 행위로
+
 PROMPT_BUDGET = 8300            # 한 번에 보낼 프롬프트 글자 수 상한 (입력 잘림 방지)
 #                                 7,000 이던 것을 올렸다 — 묶음이 잘게 갈려 왕복이 1.6배가 됐고
 #                                 그중 14~21%는 단위 1개짜리로 예산의 45%만 쓰고 있었다(감사 실측).
 #                                 답 길이는 ANSWER_BUDGET 5,500 이 그대로 제동하므로 '답 잘림' 위험은 없고,
-#                                 최대 프롬프트 8,102자 < 드라이버 분할 문턱(SAFE_PROMPT 9,000 − 서약 38)
-#                                 이라 2조각 분할도 생기지 않는다. 실측 시뮬: 묶음 118 → 98(-17%).
+#                                 최대 프롬프트 8,102자 + 머리말(AI_PREFIX) < 드라이버 분할 문턱(SAFE_PROMPT 9,000 − 서약)
+#                                 이라 2조각 분할도 생기지 않는다.
 
 
 def _chat_note():
@@ -95,7 +97,7 @@ def _chat_note():
         return ""
     return " — 설정 chatTurns=0: 묶음마다 새 채팅" if n <= 0 else f" · 첫 왕복·실패 뒤·{n}회마다 새 채팅"
 L1_MARGIN = 0.60                # 상위(업무 성격) 확정에 필요한 1위 표 비중 — 못 넘으면 찍지 않고 '혼재' 로 남긴다.
-L1_COVER_MIN = 0.50             # 과제 MM 중 상위가 분류된 비율의 하한 — 미분류가 과반이면 한 행이 과제를
+L1_COVER_MIN = 0.50             # 과제 근거건수 중 상위가 분류된 비율의 하한 — 미분류가 과반이면 한 행이 과제를
 #                                 확정하지 못하게 '혼재(미분류 포함)' 로 남긴다(제보 ③ · 검증 CONFIRMED).
 #                                 51:49 로 갈린 과제와 100:0 인 과제를 같게 다루던 argmax 를 대신한다(감사 지적).
 #                                 계층 분류 문헌의 통례 — 확신이 없으면 하위로 내려가지 않고 기권한다.
@@ -135,8 +137,12 @@ def arg(flag, d=""):
 
 
 def latest_tag():
-    fs = sorted(glob.glob(os.path.join(ROOT, "report", "mm_meta_*.json")), key=os.path.getmtime)
-    return os.path.basename(fs[-1])[len("mm_meta_"):-len(".json")] if fs else ""
+    """가장 최근 분석 기간 — AgentFinder32 표식(run_meta.product)이 있는 것만."""
+    rep = os.path.join(ROOT, "report")
+    fs = sorted(glob.glob(os.path.join(rep, "run_meta_*.json")), key=os.path.getmtime)
+    tags = [os.path.basename(f)[len("run_meta_"):-len(".json")] for f in fs]
+    tags = [t for t in tags if details.af32_tag_ok(t, rep)]
+    return tags[-1] if tags else ""
 
 
 def _spread(lst, n):
@@ -158,10 +164,59 @@ def _g3_rows(rows):
 
 
 def _g3_texts(lines):
-    """요청→산출 페어 같은 글 조각 목록 — 관문을 통과한 것만 재정제해서."""
+    """요청→산출 짝 같은 글 조각 목록 — 관문을 통과한 것만 재정제해서."""
     if not lines:
         return []
     return [it["text"] for it in _g3_rows([{"text": str(s)} for s in lines])]
+
+
+# 요청→산출 짝 — 받은 메일의 요청 단서와 그 뒤 PAIR_DAYS 일 안의 내 발신 메일·회의가 내용 낱말을 나누면 한 짝으로 본다.
+_REQ_RX = re.compile(
+    r"[\[【](?:요청|의뢰|검토\s*요청|검토\s*의뢰|확인\s*요청|작성\s*요청|제출\s*요청|승인\s*요청|협조|협조\s*요청|회신\s*요망|"
+    r"action|request|req|todo)[\]】]"
+    r"|요청|의뢰|부탁|요망|해\s*주세요|주십시오|주시기\s*바랍|please|request|action\s*required|could\s*you|can\s*you", re.I)
+_REP_RX = re.compile(r"보고|결과|송부|공유\s*드|공유드|제출|완료|첨부와\s*같이|report|result|attached|done|completed", re.I)
+PAIR_DAYS = 14
+
+
+def _day_of(r):
+    try:
+        return date.fromisoformat(str(r.get("time") or "")[:10]).toordinal()
+    except ValueError:
+        return None
+
+
+def request_pairs(ss, cap=3):
+    """단위 신호(날짜순) → ["요청 '…' → 산출 '…'"] 최대 cap 개 — 받은 메일(요청 단서가 있고 보고 단서는 없는 것)과 그 뒤
+    PAIR_DAYS 일 안의 내 발신 메일·회의 중 내용 낱말(extract.content_words)이 겹치는 첫 줄. 시간 간격은 싣지 않는다."""
+    from extract import content_words
+    rows = [(r, _day_of(r)) for r in ss]
+    out, used = [], set()
+    for i, (r, d) in enumerate(rows):
+        txt = " ".join(str(r.get("text") or "").split())
+        if (not str(r.get("source") or "").startswith("메일(수신") or d is None
+                or not _REQ_RX.search(txt) or _REP_RX.search(txt)):
+            continue
+        rw = set(content_words(txt))
+        if not rw:
+            continue
+        for j in range(i + 1, len(rows)):
+            r2, d2 = rows[j]
+            if d2 is None or j in used:
+                continue
+            if d2 - d > PAIR_DAYS:
+                break
+            s2 = str(r2.get("source") or "")
+            if not (s2.startswith("메일(발신") or s2.startswith("회의")):
+                continue
+            t2 = " ".join(str(r2.get("text") or "").split())
+            if rw & set(content_words(t2)):
+                used.add(j)
+                out.append(f"요청 '{txt[:50]}' → 산출 '{t2[:50]}'")
+                break
+        if len(out) >= cap:
+            break
+    return out
 
 
 THIN = []                       # gather 가 문턱 미달로 뺀 (과제, 담당업무, 신호수) — main 이 알린다
@@ -174,12 +229,12 @@ def unit_key(md, dt):
 
 def _seed_from_refine(amap, tag, rep, rows_plain):
     """refine 이 한 행으로 합친 원본 (과제, 담당업무) 들을 별칭 맵에 보탠다 → 새로 넣은 수.
-    같은 과제 안의 병합만 쓰고, 괄호 꼬리가 다르면 거부(_accept_group3), 대표는 MM 큰 이름,
+    같은 과제 안의 병합만 쓰고, 괄호 꼬리가 다르면 거부(_accept_group3), 대표는 근거건수 큰 이름,
     캐시에 이미 있는 방향은 지킨다(_set_alias). 원본 파일은 건드리지 않는다."""
     rmap = _refine_orig(tag, rep)
     if not rmap or not rows_plain:
         return 0
-    by_pj, mm_w = details._detail_pools(rows_plain)
+    by_pj, n_w = details._detail_pools(rows_plain)
     n = 0
     for rk, pairs in rmap.items():
         pjs = {p for p, _d in pairs if p}
@@ -188,11 +243,11 @@ def _seed_from_refine(amap, tag, rep, rows_plain):
         pj = next(iter(pjs))
         pool = by_pj.get(pj) or set()
         names = [d for _p, d in pairs if d]
-        acc = details._accept_group3(names, pool, {d: mm_w.get((pj, d), 0.0) for d in pool})
+        acc = details._accept_group3(names, pool, {d: n_w.get((pj, d), 0.0) for d in pool})
         if not acc:
             continue                         # 실재하지 않는 이름·1개짜리·괄호 꼬리 상이 → 거부(가드는 그대로)
         # 대표 이름은 refine 이 지은 이름(refine_map 키 '과제/정제이름' 의 뒷부분)으로 — 그래야 워크플로우 카드가
-        # 분석 리포트 '업무별 상세' 표와 같은 이름으로 보인다. 신호·행 모두 apply_detail_map 으로 그 이름이 되므로
+        # 업무 분류 표와 같은 이름으로 보인다. 신호·행 모두 apply_detail_map 으로 그 이름이 되므로
         # 신호 축에 없는 이름이어도 단위 키는 어긋나지 않는다.
         refined = rk.split("/", 1)[1].strip() if "/" in rk else ""
         canon = refined or acc[0]
@@ -248,8 +303,8 @@ PREV_L1 = {}            # 지난 실행 결과의 과제 키 → 상위. 정제�
 
 def gather(rep, tag, amap=None, pmap=None):
     """(과제, 담당 업무) 단위 재료 → (mats, basis, err).
-    signals 를 (model|project, detail|activity) 로 묶고 MIN_SIGNALS 미만 제외, 시간순 표본,
-    mm 은 mm_rows(정제본 우선) (Level 2, Level 3) fold 합, desc 는 정제 상세설명."""
+    signals 를 (model|project, detail|activity) 로 묶고 MIN_SIGNALS 미만 제외, 날짜순 표본(MM-DD), 요청→산출 짝,
+    desc 는 정제 상세설명, 상위(level1)는 근거건수 가중 투표."""
     sigs = details.read_signals(tag, rep)
     if not sigs:
         return [], "", f"signals_{tag}.csv 가 없거나 비었습니다 — 그 기간을 다시 분석하세요"
@@ -260,10 +315,8 @@ def gather(rep, tag, amap=None, pmap=None):
         basis = "규칙"
     else:
         return [], "", f"signals_{tag}.csv 에 판정(model)·규칙(project) 열이 모두 없습니다"
-    # ★ MM 은 **판정 축**(원본 mm_rows)에서 읽는다. 예전에는 정제본을 우선해서 읽었는데, refine 이
-    #   이름을 합치고 바꾸므로 신호(signals)의 (과제, 담당업무) 키와 하나도 맞지 않아 **모든 단위의 MM 이
-    #   0.0** 으로 나왔다(실데이터 실측: 12/12 단위 0.0, 원본으로 바꾸면 합 0.339 로 정상 복구).
-    #   MM 총량을 다시 계산하는 것이 아니라 '조회 축'만 바로잡는 것이라 로드율에는 영향이 없다.
+    # 판정 축(원본 work_rows)에서 읽는다 — refine 은 이름을 합치고 바꾸므로 정제본 이름은 신호(signals)의
+    # (과제, 담당업무) 키와 맞지 않는다(실측: 12/12 단위 불일치).
     rows, _fn = details.read_rows(tag, rep, plain=True)
     # 과제(중위) 병합이 **먼저**다 — 세부업무 맵의 키가 (과제, 이름) 이고 _detail_pools 의 파티션 키도
     # raw Level 2 라, 과제가 갈린 채로 두면 세부 병합까지 반쪽이 된다(감사 실측).
@@ -271,28 +324,21 @@ def gather(rep, tag, amap=None, pmap=None):
         details.apply_project_map(rows, sigs, pmap)
     if amap:
         details.apply_detail_map(rows, sigs, amap)
-    mm_by, desc_by = {}, {}
+    desc_by = {}
     for r in rows:
-        # 신호 쪽 기본값('공통'/'기타')과 같은 축으로 — 과제나 세부업무가 빈 행의 MM 이 단위에 붙지 않던 것
         k = (fold((r.get("Level 2") or "").strip() or "공통"), fold((r.get("Level 3") or "").strip() or "기타"))
-        mm_by[k] = mm_by.get(k, 0.0) + r["_mm"]
         d = " ".join((r.get("상세설명") or "").split())
         if d:
             desc_by.setdefault(k, d[:120])
     # 정제 상세설명은 정제본에만 있다 — refine_map 으로 원본 이름에 되짚어 얹는다(설명이라 중복은 무해).
-    # MM 은 여기서 손대지 않는다: 정제 행 하나가 원본 여럿에서 왔을 때 원본마다 같은 MM 을 붙이면 총량이 부푼다.
-    # 상위(Level 1)는 판정 단계에서 빈칸이고 정제 단계만 채운다 — 정제본에서 원본 이름 축으로 되짚어 온다.
-    parts_by, dsc_by = {}, {}   # 과제 축 — 세부업무 MM 배분 / 정제 설명(아래 두 루프가 함께 채운다)
-    # ★ 키는 **과제 병합 대표** 이름이어야 한다. 예전에는 병합 전 원본 이름(fold(o2))으로 표를 만들고
-    #   조회는 병합 후 대표 이름으로 해서, 흡수된 과제의 상위 표가 통째로 버려졌다 — 합성 실측에서
-    #   전체 MM 의 절반을 차지한 '양산준비' 표가 사라지고 0.5MM 짜리가 과제 전체를 대표했다(감사 확인).
-    #   축도 fold 가 아니라 병합과 같은 ukey2 를 쓴다. fold 는 괄호를 지워, 병합이 일부러 갈라 둔
-    #   '(양산)'/'(선행)' 두 과제가 서로의 상위를 가져갔다(감사 실측).
+    # 상위(Level 1)는 판정 단계의 초안이고 정제 단계가 다듬는다 — 정제본에서 원본 이름 축으로 되짚어 온다.
+    parts_by, dsc_by = {}, {}   # 과제 축 — 세부업무 근거건수 / 정제 설명(아래 두 루프가 함께 채운다)
+    # 키는 **과제 병합 대표** 이름이고 축은 병합과 같은 ukey2 다(fold 는 괄호를 지워 '(양산)'/'(선행)' 이 서로의 상위를 가져갔다).
     def _l1k(name):
         return details.ukey2((pmap or {}).get(str(name or "").strip(), str(name or "").strip()) or "공통")
 
-    l1_w = {}          # ukey2(병합 대표 과제) → {상위: mm 합}
-    l1_seen = {}       # ukey2 → 분류 여부와 무관한 과제 MM 합(커버리지 분모 — F6)
+    l1_w = {}          # ukey2(병합 대표 과제) → {상위: 근거건수 합}
+    l1_seen = {}       # ukey2 → 분류 여부와 무관한 과제 근거건수 합(커버리지 분모)
     global REFINED_USED
     REFINED_USED = False
     try:
@@ -301,8 +347,7 @@ def gather(rep, tag, amap=None, pmap=None):
             REFINED_USED = True
             rmap = _refine_orig(tag, rep)
             for r in rrows:
-                # 읽을 때도 스냅한다 — refine 은 저장 시 스냅하지만, **이미 만들어진 정제본**에는
-                # 스냅 전 값이 남아 있다. 그걸 그대로 쓰면 '기술내재화'가 다섯 번째 상위로 화면에 뜬다.
+                # 읽을 때도 스냅한다 — 이미 만들어진 정제본에는 스냅 전 값이 남아 있을 수 있다.
                 l1 = details.snap1(r.get("Level 1"))
                 d = " ".join((r.get("상세설명") or "").split())
                 l2 = (r.get("Level 2") or "").strip()
@@ -311,58 +356,38 @@ def gather(rep, tag, amap=None, pmap=None):
                 if d:
                     # 별칭 병합이 refine 이 지은 이름을 대표로 쓰면 단위 키가 그 이름이 된다 — 그 축으로도 색인
                     desc_by.setdefault((fold(l2 or "공통"), fold(l3 or "기타")), d[:120])
+                w = details.row_n(r) / max(1, len(pairs))     # 정제 행 하나가 원본 여럿에서 왔으면 나눠 싣는다
                 for (o2, o3) in pairs:
                     _wk = _l1k(o2)
-                    l1_seen[_wk] = l1_seen.get(_wk, 0.0) + r["_mm"] / max(1, len(pairs))
+                    l1_seen[_wk] = l1_seen.get(_wk, 0.0) + w
                     if d:
                         desc_by.setdefault((fold(o2 or "공통"), fold(o3 or "기타")), d[:120])
-                        # 과제 단위 카드도 정제 설명을 받아야 한다 — 판정 축(원본 mm_rows)의 상세설명은
-                        # 비어 있으므로, 여기서 과제 축으로도 모아 두지 않으면 0줄이 나간다(실측).
                         dsc_by.setdefault(fold(o2 or "공통"), []).append(f"{o3}: {d[:80]}")
                     if l1:
-                        # 정제 행 하나가 원본 여럿에서 왔으면 MM 을 나눠 싣는다(총량이 부풀지 않게)
-                        w = r["_mm"] / max(1, len(pairs))
-                        g = l1_w.setdefault(_l1k(o2), {})
+                        g = l1_w.setdefault(_wk, {})
                         g[l1] = g.get(l1, 0.0) + w
     except Exception:  # noqa: BLE001 - 설명·상위가 없어도 워크플로우는 나와야 한다
         pass
     if not REFINED_USED:
-        # 정제본이 없는 실행(판정 rc 2/3·정제 실패·생략) — 원본 mm_rows 의 상위 초안(판정 단계가 규칙·과제 체계로 채운
-        # Level 1)으로 투표한다. 예전에는 상위를 정제본에서만 읽어 이 경우 카드가 전부 '상위 미분류' 로 떨어져
-        # '상위 > 과제 > 담당업무' 계층이 사라졌다. 행은 이미 과제 병합 맵을 거친 원본 축이다.
+        # 정제본이 없는 실행(판정 rc 2/3·정제 실패·생략) — 원본 work_rows 의 상위 초안으로 투표한다.
         for r in rows:
             _wk = _l1k(r.get("Level 2"))
-            l1_seen[_wk] = l1_seen.get(_wk, 0.0) + r["_mm"]
+            l1_seen[_wk] = l1_seen.get(_wk, 0.0) + details.row_n(r)
             l1 = details.snap1(r.get("Level 1"))
             if l1:
                 g = l1_w.setdefault(_wk, {})
-                g[l1] = g.get(l1, 0.0) + r["_mm"]
+                g[l1] = g.get(l1, 0.0) + details.row_n(r)
 
-    # 과제 안의 세부업무 MM 배분 — 과제 단위 카드가 LM20 처럼 '무엇에 얼마' 를 보여 주는 재료.
+    # 과제 안의 세부업무 근거건수 — 과제 단위 카드의 '세부업무' 순서 재료(이름만 프롬프트에 싣는다).
     for r in rows:
         l2 = (r.get("Level 2") or "").strip() or "공통"
         l3 = (r.get("Level 3") or "").strip() or "기타"
         f2 = fold(l2)
         parts_by.setdefault(f2, {})
-        parts_by[f2][l3] = parts_by[f2].get(l3, 0.0) + r["_mm"]
+        parts_by[f2][l3] = parts_by[f2].get(l3, 0) + details.row_n(r)
         d = " ".join((r.get("상세설명") or "").split())
         if d:
             dsc_by.setdefault(f2, []).append(f"{l3}: {d[:80]}")
-
-    # 요청→산출 페어(에피소드) — pivots 가 만든 '무엇이 요청돼 무엇으로 끝났고 리드타임이 얼마인가'.
-    # 흐름을 잇는 핵심 재료인데 LM22 에서 통째로 빠져 있었다(모델이 시간순 나열만 보고 순서를 지어냈다).
-    eps_by = {}
-    try:
-        with open(os.path.join(rep, f"pivots_{tag}.json"), encoding="utf-8-sig") as f:
-            _pv = json.load(f)
-        for od in ((_pv.get("episodes") or {}).get("orders") or []):
-            if not isinstance(od, dict):
-                continue
-            eps_by.setdefault(fold(od.get("model") or ""), []).append(
-                f"요청 '{str(od.get('req') or '')[:50]}' → 산출 '{str(od.get('done') or '')[:50]}'"
-                + (f" (리드 {od.get('lead_h')}h)" if od.get("lead_h") is not None else ""))
-    except (OSError, ValueError, AttributeError):
-        pass
 
     unit = workflow_unit()
     groups = {}
@@ -385,7 +410,7 @@ def gather(rep, tag, amap=None, pmap=None):
             THIN.append((md, dt, len(ss)))
             del groups[(md, dt)]
     # AI 판정 대기 — 신호 대부분이 규칙 판정(판정이 중단돼 규칙 토큰으로 남은 '공통 / 기타' 같은 묶음)인 단위는 묻지 않는다.
-    # 무관한 신호가 한 덩어리라 흐름을 지어내기 쉽고, 판정이 회복되면(재분석만) 제 과제·업무로 다시 들어온다.
+    # 무관한 신호가 한 덩어리라 흐름을 지어내기 쉽고, 판정이 회복되면(다시 읽지 않고 분석만) 제 과제·업무로 다시 들어온다.
     RULE_UNITS.clear()
     _cut = rule_cut()
     for (md, dt), ss in list(groups.items()):
@@ -400,21 +425,19 @@ def gather(rep, tag, amap=None, pmap=None):
         if len(ss) < floor:
             continue
         ss.sort(key=lambda r: str(r.get("time") or ""))
-        # G3 — 표본 행은 관문(judge.g3_rows → privacy.gate_items)을 거친 사본으로: 광고 의심·자격증명·고위험 잔여·
-        # 카나리아 행은 빼고 나머지는 재정제한다. 표본 후보를 두 배 뽑아 걸러도 표본 수가 줄지 않게 한다.
-        ev = [f"- {(r.get('time') or '')[5:16]} [{r.get('source')}] "
+        # G3 — 표본 행은 관문(judge.g3_rows → privacy.gate_items)을 거친 사본으로: 광고 의심·제한 고객·민감정보·식별번호·
+        # 카나리아 행은 빼고 나머지는 재정제한다. 표본 후보를 두 배 뽑아 걸러도 표본 수가 줄지 않게 한다. 날짜는 MM-DD 까지만.
+        ev = [f"- {str(r.get('time') or '')[5:10]} [{r.get('source')}] "
               f"{' '.join((r.get('text') or '').split())[:80]}"
               for r in _spread(_g3_rows(_spread(ss, per_cap * 2)), per_cap)]
         f2 = fold(md)
         if dt:
-            mm = round(mm_by.get((f2, fold(dt)), 0.0), 3)
             desc = desc_by.get((f2, fold(dt)), "")
             parts = []
         else:
-            # 과제 단위: 그 과제의 세부업무 MM 을 모두 더하고, 배분은 parts 로 함께 넘긴다(LM20 과 같은 카드).
+            # 과제 단위: 그 과제의 세부업무 이름(근거가 많은 순)을 함께 넘긴다 — 단계를 나눌 재료(숫자는 싣지 않는다).
             pv = parts_by.get(f2) or {}
-            mm = round(sum(pv.values()), 3)
-            parts = [[n, round(v, 3)] for n, v in sorted(pv.items(), key=lambda kv: -kv[1])[:8] if v > 0]
+            parts = [n for n, v in sorted(pv.items(), key=lambda kv: -kv[1])[:8] if v > 0]
             desc = " · ".join((dsc_by.get(f2) or [])[:6])
         # 상위는 표가 갈리면 **찍지 않는다**. 1위 비중이 L1_MARGIN 에 못 미치면 빈 값으로 두고
         # 진 표를 level1_mix 에 남겨 화면이 '상위 혼재' 로 알린다 — 혼재 자체가 '과제가 과병합됐거나
@@ -436,141 +459,131 @@ def gather(rep, tag, amap=None, pmap=None):
                     # 미분류가 과반 — 그 사실을 혼재 목록 맨 앞에 실어 '재배치 필요' 로 보인다
                     level1_mix = [["미분류", round(_seen - tot, 3)]] + level1_mix[:2]
         out.append({"model": md, "detail": dt, "key": unit_key(md, dt), "signals": len(ss),
-                    "level1": level1, "level1_mix": level1_mix, "mm": mm, "desc": desc, "parts": parts,
-                    # 요청→산출 페어 — 파일 스스로 '흐름을 잇는 핵심 재료' 라 부르는 것인데 담당업무 카드에는
-                    # 한 건도 안 실려 모델이 시간순 나열만 보고 순서를 지어냈다(실측: 페어 0). 되살린다.
-                    # 과제 전체 페어라 다른 업무 것이 섞일 수 있으므로 '이 과제의 페어' 라고 밝혀 붙인다.
-                    "episodes": _g3_texts((eps_by.get(f2) or [])[:(5 if not dt else 3)]), "evidence": ev})
+                    "level1": level1, "level1_mix": level1_mix, "desc": desc, "parts": parts,
+                    # 요청→산출 짝 — 흐름을 잇는 핵심 재료(없으면 모델이 날짜순 나열만 보고 순서를 지어낸다).
+                    "episodes": _g3_texts(request_pairs(ss, 3 if dt else 5)), "evidence": ev})
     if not out:
         if RULE_UNITS:
             return [], basis, (f"AI 판정이 끝나지 않은 담당 업무 {len(RULE_UNITS)}개만 있어 흐름을 만들지 않았습니다"
-                               f"(신호의 {int(_cut * 100)}% 이상이 규칙 판정) — [재분석만]으로 판정을 마친 뒤 다시 만드세요")
+                               f"(신호의 {int(_cut * 100)}% 이상이 규칙 판정) — [다시 읽지 않고 분석만]을 켜고 [분석 실행]으로 판정을 마친 뒤 다시 만드세요")
         return [], basis, (f"흐름을 만들 단위가 없습니다 (단위 {len(groups)}개 · 신호 {len(sigs)}건)")
     # 상위(업무 성격)로 먼저 묶고 그 안에서 무거운 순 — LM20 처럼 상위 단위로도 읽히게 한다.
     # 정렬 순번은 details.L1_META 단일원에서 — 옛 이름은 l1_order 가 스냅해 같은 자리를 준다
     # 과제(중위) 안에서는 무거운 순 — 담당업무 카드가 자기 과제 밑에 모여 '상위 → 과제 → 담당업무' 로 읽힌다.
-    # 과제 순서 자체는 그 과제의 MM 합(내림차순)으로 정한다.
-    pj_mm = {}
+    # 과제 순서 자체는 그 과제의 신호 수 합(내림차순)으로 정한다.
+    pj_n = {}
     for x in out:
-        pj_mm[fold(x["model"])] = pj_mm.get(fold(x["model"]), 0.0) + x["mm"]
+        pj_n[fold(x["model"])] = pj_n.get(fold(x["model"]), 0) + x["signals"]
     out.sort(key=lambda x: (details.l1_order(x.get("level1") or ""), x.get("level1") or "힣",
-                            -pj_mm.get(fold(x["model"]), 0.0), fold(x["model"]),
-                            -(x["mm"] * 100 + x["signals"])))
+                            -pj_n.get(fold(x["model"]), 0), fold(x["model"]), -x["signals"]))
     return out, basis, ""
 
 
+_STEP_RULES = [
+    "   각 단계: name(단계명) · input(그 단계가 받는 것) · output(그 단계가 만드는 것) ·",
+    "   evidence(근거가 된 표본 줄의 날짜 MM-DD 하나).",
+]
+_AGENT_RULES = [
+    "2. 각 단계의 agent — Agentic AI 가 그 단계를 대체·보조할 가능성:",
+    "   '상'(정형 반복 — 지금 기술로 자동화 가능) / '중'(보조 가능 — 사람 확인 필요) /",
+    "   '하'(판단·협상·책임 — 사람 몫). agent_how 에 구체 방안 1문장",
+    "   (무슨 데이터를 입력받아 무엇을 자동으로 하는지).",
+]
+_STEP_EXAMPLE = ('   "summary": <2문장>, "steps": [ {"order": 1, "name": <단계명>, "input": <받는 것>,',
+                 '     "output": <만드는 것>, "evidence": <MM-DD>, "agent": <상|중|하>,',
+                 '     "agent_how": <방안 1문장>} ]} ]}')
+
+
 def build_prompt(mats):
+    """묶음 프롬프트 — 사람의 역할·건수·시각은 싣지 않는다. 단계는 input/output 으로 묻는다(§5.9)."""
     # 단위가 '과제' 인지 '과제/담당업무' 인지에 따라 말을 바꾼다 — 프롬프트가 단위와 어긋나면
     # 모델이 한 흐름 안에서 여러 업무를 섞거나, 반대로 과제를 더 쪼개려 든다.
     by_task = not any(m.get("detail") for m in mats)
     unit_word = "과제" if by_task else "담당 업무"
     if not by_task:
-        # 보완2 의 문안 그대로(간결 · 3~6단계 · 다른 업무 섞지 말 것). 업무 내용 예시는 두지 않는다 —
-        # 사람마다 하는 일이 달라 예시가 틀이 된다(제보).
-        # LM30(2026-10-21) — 첫 줄에는 마크다운(**)을 두지 않는다: Copilot 대화 목록의 제목이 첫 질문의 앞부분이라, 화면이 ** 를 지우고
-        # 보여 주면 LM 이 지울 채팅을 제목으로 확인하지 못했다(조사 보고 3d — 남은 채팅 제목 '당신은 업무 프로세스 분석가입니다').
+        # 첫 줄에는 마크다운(**)을 두지 않는다 — Copilot 대화 목록의 제목이 첫 질문의 앞부분이다.
         lines = [
-            "당신은 업무 프로세스 분석가입니다. 아래는 한 엔지니어의 담당 업무별 실제 활동 흔적입니다",
-            "(과제 / 담당 업무 단위 · 시간순 raw 신호 표본 · 요청→산출 페어 · AI 가 정제한 설명).",
+            "당신은 Agentic AI 전환 과제 발굴을 위한 업무 프로세스 분석가입니다. 아래는 한 사람의 담당 업무별 메일·일정 흔적입니다",
+            "(과제 / 담당 업무 단위 · 날짜순 표본 · 요청→산출 짝 · AI 가 정제한 설명).",
             "",
-            "담당 업무마다 세 가지를 판정하세요 — 반드시 아래 근거에서 관찰되는 것만, 지어내지 말 것:",
-            "1. role — 이 담당 업무에서 이 사람의 역할 한 줄.",
-            "   근거에 드러난 것만 쓰세요 — 누구에게 받아 무엇을 만들어 누구에게 넘겼는지,",
-            "   주도했는지 요청을 받아 처리했는지. 근거가 약하면 '판단 유보'.",
-            "2. steps — 일이 실제로 흘러간 **순서**. 시간순 신호와 요청→산출 페어에서 반복되는",
-            "   흐름을 읽어 3~7단계로. 각 단계: name(단계명) · desc(무슨 일을 했는지 1문장) ·",
-            "   evidence(근거가 된 신호 원문 조각 하나) · cycle(반복 주기: 매일/주 1회/수시 등).",
+            "담당 업무마다 두 가지를 판정하세요 — 반드시 아래 근거에서 관찰되는 것만, 지어내지 말 것:",
+            "1. steps — 일이 실제로 흘러간 **순서**. 날짜순 표본과 요청→산출 짝에서 반복되는",
+            "   흐름을 읽어 3~7단계로.",
+            *_STEP_RULES,
             "   ★ **다른 담당 업무의 일을 이 흐름에 섞지 마세요.** 한 흐름은 그 업무 안에서만 이어집니다.",
             "   ★★ 다만 한 업무의 산출물이 **같은 과제의 다른 담당 업무**의 입력이 되면, 그 상대 업무명을",
             "      upstream(앞) · downstream(뒤) 에 적으세요. 아래 '### 과제:' 머리말 밑의 업무들끼리만입니다.",
             "      흐름을 합치지는 말고, 이어진다는 사실만 적습니다.",
-            "3. 각 단계의 agent — Agentic AI 가 그 단계를 대체·보조할 가능성:",
-            "   '상'(정형 반복 — 지금 기술로 자동화 가능) / '중'(보조 가능 — 사람 확인 필요) /",
-            "   '하'(판단·협상·책임 — 사람 몫). agent_how 에 구체 방안 1문장",
-            "   (무슨 데이터를 입력받아 무엇을 자동으로 하는지).",
+            *_AGENT_RULES,
             "",
-            "summary — 이 담당 업무에서 실제로 한 일 2문장 요약.",
+            "summary — 이 담당 업무의 흐름 2문장 요약.",
+            "name·input·output·agent_how·summary 에는 " + GENERIC_WORDING,
             "",
             "출력은 JSON 하나만 (설명 문장 금지). <...> 자리에 실제 값을 넣으세요:",
-            '{"flows": [ {"key": <아래 목록의 "과제 / 담당업무" 를 그대로>, "role": <한 줄>,',
+            '{"flows": [ {"key": <아래 목록의 "과제 / 담당업무" 를 그대로>,',
             '   "upstream": <앞 업무명 또는 "">, "downstream": <뒤 업무명 또는 "">,',
-            '   "summary": <2문장>, "steps": [ {"order": 1, "name": <단계명>, "desc": <1문장>,',
-            '     "evidence": <근거 조각>, "cycle": <주기>, "agent": <상|중|하>,',
-            '     "agent_how": <방안 1문장>} ]} ]}',
+            *_STEP_EXAMPLE,
             "",
         ]
         # 같은 과제의 담당업무를 한 덩어리로 보여 준다 — 묶음이 과제 단위로 짜이므로 여기서도 과제 머리말을
-        # 두어야 모델이 '이 업무들은 서로 이어질 수 있다' 를 안다. 요청→산출 페어는 과제 블록에 한 번만.
+        # 두어야 모델이 '이 업무들은 서로 이어질 수 있다' 를 안다.
         _pj_prev = None
         for m in mats:
             _pj = m["model"]
             if _pj != _pj_prev:
-                _sib = [x["detail"] for x in mats if x["model"] == _pj]
-                lines.append(f"### 과제: {_pj} — 담당 업무 {len(_sib)}개"
-                             + (f"  [상위: {m['level1']}]" if m.get("level1") else ""))
-                if len(_sib) > 1:
+                # 과제 이름·단위 키는 보낼 표기(_show — 관문을 지난 사본)로 싣는다. 묶는 축(_pj)은 원래 과제 이름 그대로
+                lines.append(f"### 과제: {_show(m, 'model')}" + (f"  [상위: {m['level1']}]" if m.get("level1") else ""))
+                if len([x for x in mats if x["model"] == _pj]) > 1:
                     lines.append("    (아래 ## 들은 모두 이 과제의 업무입니다 — 서로 이어지면 upstream/downstream 에 적으세요)")
-                for e in (m.get("episodes") or []):
-                    lines.append(f"    [요청→산출] {e}")
                 _pj_prev = _pj
-            # MM 은 보내지 않는다(W2-11 — 미전송 원칙 · 모델이 MM 크기에 끌려 판정하지 않게). 신호 건수만.
-            lines.append(f"## {m['key']}  (신호 {m['signals']}건)")
+            lines.append(f"## {_show(m, 'key')}")
+            for e2 in (m.get("episodes") or []):
+                lines.append(f"[요청→산출] {e2}")
             if m.get("desc"):
                 lines.append(f"[정제 설명] {m['desc']}")
-            lines.append("[시간순 신호 표본]")
+            lines.append("[날짜순 표본]")
             lines += m["evidence"]
             lines.append("")
         return "\n".join(lines)
     lines = [
-        f"당신은 업무 프로세스 분석가입니다. 아래는 한 엔지니어의 {unit_word}별 실제 활동 흔적입니다",
-        "(시간순 raw 신호 표본, 요청→산출 페어, AI 가 정제한 세부업무 설명).",
+        f"당신은 Agentic AI 전환 과제 발굴을 위한 업무 프로세스 분석가입니다. 아래는 한 사람의 {unit_word}별 메일·일정 흔적입니다",
+        "(날짜순 표본, 요청→산출 짝, AI 가 정제한 세부업무 설명).",
         "",
-        f"{unit_word}마다 세 가지를 판정하세요 — 반드시 아래 근거에서 관찰되는 것만, 지어내지 말 것:",
-        f"1. role — 이 {unit_word}에서 이 사람의 역할 한 줄.",
-        "   근거에 드러난 것만 쓰세요 — 누구에게 받아 무엇을 만들어 누구에게 넘겼는지,",
-        "   주도했는지 요청을 받아 처리했는지. 근거가 약하면 '판단 유보'.",
-        "2. steps — 일이 실제로 흘러간 **순서**. 시간순 신호와 요청→산출 페어에서 반복되는",
-        "   흐름을 읽어 3~7단계로. 각 단계: name(단계명) · desc(무슨 일을 했는지 1문장) ·",
-        "   evidence(근거가 된 신호 원문 조각 하나) · cycle(반복 주기: 매일/주 1회/수시 등).",
+        f"{unit_word}마다 두 가지를 판정하세요 — 반드시 아래 근거에서 관찰되는 것만, 지어내지 말 것:",
+        "1. steps — 일이 실제로 흘러간 **순서**. 날짜순 표본과 요청→산출 짝에서 반복되는",
+        "   흐름을 읽어 3~7단계로.",
+        *_STEP_RULES,
         f"   ★ **다른 {unit_word}의 일을 이 흐름에 섞지 마세요.** 한 흐름은 그 안에서만 이어집니다.",
         f"   ★★ 한 {unit_word} 안의 [세부업무]가 **서로 이어지지 않으면 흐름을 나눠** 답하세요.",
         "      같은 key 로 여러 개를 답하고 branch 에 그 흐름 이름(어느 세부업무들인지)을 적습니다.",
         "      나눌지 합칠지는 아래 근거만 보고 정하세요 — 한 일의 산출물이 다음 일의 입력이 되는가,",
-        "      요청→산출 페어가 서로 이어지는가, 같은 시기에 번갈아 진행되는가.",
+        "      요청→산출 짝이 서로 이어지는가, 같은 시기에 번갈아 진행되는가.",
         "      그렇지 않으면 다른 흐름입니다. **억지로 한 줄기로 엮지 마세요.**",
         "      반대로 실제로 이어지는 일을 굳이 쪼개지도 마세요.",
         f"      한 {unit_word}의 흐름은 최대 {MAX_BRANCHES}개까지.",
-        "3. 각 단계의 agent — Agentic AI 가 그 단계를 대체·보조할 가능성:",
-        "   '상'(정형 반복 — 지금 기술로 자동화 가능) / '중'(보조 가능 — 사람 확인 필요) /",
-        "   '하'(판단·협상·책임 — 사람 몫). agent_how 에 구체 방안 1문장",
-        "   (무슨 데이터를 입력받아 무엇을 자동으로 하는지).",
+        *_AGENT_RULES,
         "",
-        f"summary — 이 {unit_word}에서 실제로 한 일 2문장 요약.",
+        f"summary — 이 {unit_word}의 흐름 2문장 요약.",
+        "name·input·output·agent_how·summary·branch 에는 " + GENERIC_WORDING,
         "",
         "출력은 JSON 하나만 (설명 문장 금지). <...> 자리에 실제 값을 넣으세요:",
         # 자리표시자를 <...> 로 둬 **이 예시 자체가 유효한 JSON 이 아니게** 한다 —
         # 회수가 어긋나 우리 프롬프트가 되돌아와도 이것이 답으로 파싱되지 않는다(실측 사고).
         '{"flows": [ {"key": <아래 목록의 머리말 이름을 그대로>, "branch": <흐름 이름 · 하나뿐이면 "">,',
-        '   "role": <한 줄>,',
-        # LM20 은 3~7단계였다. 상한을 6 으로 줄이면 긴 흐름이 잘려 '생략된' 것처럼 보인다.
-        '   "summary": <2문장>, "steps": [ {"order": 1, "name": <단계명>, "desc": <1문장>,',
-        '     "evidence": <근거 조각>, "cycle": <주기>, "agent": <상|중|하>,',
-        '     "agent_how": <방안 1문장>} ]} ]}',
+        *_STEP_EXAMPLE,
         "",
     ]
     for m in mats:
-        lines.append(f"## {m['key']}  (신호 {m['signals']}건)"
-                     + (f"  [상위: {m['level1']}]" if m.get("level1") else ""))
-        for e in (m.get("episodes") or []):
-            lines.append(f"[요청→산출] {e}")
-        if m.get("parts"):
-            # 과제 단위일 때 그 안의 세부업무를 알려 준다 — 단계를 나눌 재료가 된다. MM 값은 보내지 않고
-            # 순서(투입이 큰 순)만 남긴다(W2-11 — MM 미전송 원칙).
-            lines.append("[세부업무 · 투입 큰 순] " + " · ".join(str(n) for n, _v in m["parts"]))
+        lines.append(f"## {_show(m, 'key')}" + (f"  [상위: {m['level1']}]" if m.get("level1") else ""))
+        for e2 in (m.get("episodes") or []):
+            lines.append(f"[요청→산출] {e2}")
+        if _show_parts(m):
+            # 과제 단위일 때 그 안의 세부업무를 알려 준다 — 단계를 나눌 재료가 된다(이름만 · 숫자 없음 · 보낼 표기).
+            lines.append("[세부업무] " + " · ".join(_show_parts(m)))
         if m.get("desc"):
             lines.append(f"[정제 설명] {m['desc']}")
         if m.get("evidence"):
-            lines.append("[시간순 신호 표본]")
+            lines.append("[날짜순 표본]")
         lines += m["evidence"]
         lines.append("")
     return "\n".join(lines)
@@ -606,6 +619,7 @@ def rfind_json(reply, want_key):
 
 
 AGENT_OK = {"상", "중", "하"}
+_EV_DATE = re.compile(r"(?<!\d)(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])(?!\d)")
 
 # 같은 뜻으로 쓰이는 구분자들 — 표기만 다른 것을 한 축으로 모은다
 _SEP = {"·": "·", "・": "·", "ㆍ": "·", "‧": "·",
@@ -763,15 +777,14 @@ def _dedupe_flows(flows, unit, log=None):
     잘린 답 복구 · 자동 마무리 회차. sanitize_flows 의 seen 은 **한 호출 안에서만** 살아 있어
     이들 사이는 못 막는다(감사 재현).
 
-    남기는 쪽은 단계가 많은 쪽 → 역할·요약이 긴 쪽 → 먼저 온 쪽. **steps 를 합치지는 않는다** —
+    남기는 쪽은 단계가 많은 쪽 → 요약이 긴 쪽 → 먼저 온 쪽. **steps 를 합치지는 않는다** —
     두 답의 단계 순서가 다르면 시간순이 깨지고, 근거가 서로 다른 신호를 가리키면 한 카드 안에
     서로 다른 업무가 섞인다. 버린 쪽은 요약만 남겨 사람이 확인할 수 있게 한다."""
     def _sig(f):
         return {details.ukey3(str(x.get("name") or "")) for x in (f.get("steps") or []) if x.get("name")}
 
     def _rank(f):
-        return (len(f.get("steps") or []),
-                len(str(f.get("role") or "")) + len(str(f.get("summary") or "")))
+        return (len(f.get("steps") or []), len(str(f.get("summary") or "")))
 
     best, order, dupes = {}, [], []
     for f in flows:
@@ -791,12 +804,26 @@ def _dedupe_flows(flows, unit, log=None):
         dupes.append({"kept": str(keep.get("model") or ""),
                       "dropped_branch": str(drop.get("branch") or ""),
                       "steps": [len(keep.get("steps") or []), len(drop.get("steps") or [])],
-                      "role": str(drop.get("role") or "")[:40],
                       "why": "담당업무 모드 · 같은 단위 재답변" if unit != "과제" else "같은 흐름을 다른 이름으로"})
     if dupes and log:
         for d in dupes[:5]:
             log(f"[flow] 흐름 중복 제거: '{d['kept']}' (단계 {d['steps'][0]}개 유지 · {d['steps'][1]}개 버림)")
     return [best[k] for k in order], dupes
+
+
+def mask_flow(f, people):
+    """이어받는 흐름(지난 실행·지난 기간 결과)의 글 — 설명·갈래·단계 이름·입력·산출·Agent 방법 — 을 지금의 이름 해시로 다시 가린다
+    (D8 — G1 이 그 뒤에 새로 본 이름도 남기지 않는다 · sanitize_flows 와 같은 규칙). 없는 칸은 만들지 않는다."""
+    def _m(s):
+        return details.mask_people(s, people)
+    out = dict(f)
+    for k in ("summary", "branch"):
+        if k in out:
+            out[k] = _m(out[k])
+    if isinstance(out.get("steps"), list):
+        out["steps"] = [dict(s, **{k: _m(s[k]) for k in ("name", "input", "output", "agent_how") if k in s})
+                        if isinstance(s, dict) else s for s in out["steps"]]
+    return out
 
 
 def sanitize_flows(raw_flows, keys, mats_by=None, dropped=None):
@@ -807,7 +834,7 @@ def sanitize_flows(raw_flows, keys, mats_by=None, dropped=None):
     {"과제 / 업무": {...}} 객체이거나 흐름 하나뿐인 객체 · 키를 key 대신 model·unit·name·업무 로 적음 ·
     steps 를 문자열 목록(또는 {"1": {...}} 객체·한 줄 문자열)으로 적음."""
     if isinstance(raw_flows, dict):
-        if any(k in raw_flows for k in ("steps", "key", "model", "role", "summary")):
+        if any(k in raw_flows for k in ("steps", "key", "model", "summary")):
             raw_flows = [raw_flows]                       # 흐름 하나를 목록 없이 보냈다
         else:
             # 단위 이름을 키로 쓴 객체 — 키를 key 로 넣어 목록으로({key: k, **v})
@@ -817,23 +844,37 @@ def sanitize_flows(raw_flows, keys, mats_by=None, dropped=None):
     keys = keys or {}
     if mats_by is None:
         mats_by = keys
-    # 모든 비교 축은 후보가 유일할 때만 쓴다(F2 — 모호한 축 값은 빠진다)
-    low_map, fold_map, norm_map, note_map, ns_map, fns_map = _key_maps(keys)
+    # 답의 key 는 프롬프트에 실은 표기(보낼 키 — send_key: 관문이 가린 사본 · 없으면 원래 키)로 온다 — 그 표기 축에서 풀고
+    # 원래 키로 되돌린다(가린 이름이 없으면 두 축은 같다). 모든 비교 축은 후보가 유일할 때만 쓴다(F2 — 모호한 축 값은 빠진다)
+    sent, orig_of = {}, {}
+    for k, m in keys.items():
+        sk = str((m.get("send_key") if isinstance(m, dict) else "") or k)
+        if sk not in sent:
+            sent[sk], orig_of[sk] = m, k
+    low_map, fold_map, norm_map, note_map, ns_map, fns_map = _key_maps(sent)
+
+    def _key_of(raw):
+        hit = _resolve_key(raw, sent, low_map, fold_map, norm_map, note_map, ns_map, fns_map)
+        return orig_of.get(hit, "") if hit else ""
     out, seen, n_branch = [], set(), {}
+    # D8 — 답의 단계·설명 글에 사람 이름(G1 이 남긴 이름 해시에 든 것)이 섞이면 [사람] 으로 바꿔 저장한다
+    people = details.person_keys((), ROOT)
+
+    def _m(s):
+        return details.mask_people(s, people)
     for f in flows:
         if not isinstance(f, dict):
             continue
         raw_name = str(f.get("key") or f.get("model") or f.get("unit") or f.get("name")
                        or f.get("업무") or "").strip()
-        key = (_resolve_key(raw_name, keys, low_map, fold_map, norm_map, note_map, ns_map, fns_map)
-               if raw_name else "")
+        key = _key_of(raw_name) if raw_name else ""
         if not key:
             if dropped is not None and raw_name:
                 dropped.append(raw_name)
             continue
         # 한 과제 안에서 서로 이어지지 않는 일은 흐름(branch)을 나눠 답하게 했다. 예전에는 과제당
         # 하나만 남겨(if key in seen) 무관한 담당업무가 한 타임라인으로 엮였다(제보).
-        branch = " ".join(str(f.get("branch") or f.get("stream") or "").split())[:40]
+        branch = _m(" ".join(str(f.get("branch") or f.get("stream") or "").split())[:40])
         # 담당업무 단위(기본)에서는 프롬프트가 branch 를 요구하지 않는다 — 모델이 자유롭게 붙인 이름이
         # 공백 하나만 달라도 같은 단위의 재답변이 그대로 통과해 카드가 두 장이 됐다(감사 재현).
         # 그 모드에서는 branch 를 중복 판정에서 아예 뺀다.
@@ -851,22 +892,24 @@ def sanitize_flows(raw_flows, keys, mats_by=None, dropped=None):
         steps = []
         for s in steps_raw[:8]:
             if isinstance(s, str):
-                # 단계를 문장으로만 적은 답 — 이름(앞 40자)·설명(전문)으로 살린다(번호 머리는 뗀다)
+                # 단계를 문장으로만 적은 답 — 이름(앞 40자)으로 살린다(번호 머리는 뗀다)
                 t = re.sub(r"^\s*(?:\d+\s*[.)]|[-·•])\s*", "", " ".join(s.split()))
                 if not t:
                     continue
-                s = {"name": t[:40], "desc": t}
+                s = {"name": t[:40]}
             if not isinstance(s, dict):
                 continue
             ag = str(s.get("agent") or "").strip()
             i = len(steps) + 1                 # 건너뛴 항목이 있어도 번호가 비지 않게
+            # 근거는 날짜(MM-DD)만 남긴다(§5.9) — 원문 조각·시각을 저장하지 않는다
+            ev_m = _EV_DATE.search(str(s.get("evidence") or ""))
             steps.append({"order": i,
-                          "name": str(s.get("name") or "")[:40] or f"단계 {i}",
-                          "desc": str(s.get("desc") or "")[:200],
-                          "evidence": str(s.get("evidence") or "")[:120],
-                          "cycle": str(s.get("cycle") or "")[:20],
+                          "name": _m(str(s.get("name") or "")[:40]) or f"단계 {i}",
+                          "input": _m(str(s.get("input") or "")[:120]),
+                          "output": _m(str(s.get("output") or "")[:120]),
                           "agent": ag if ag in AGENT_OK else "중",
-                          "agent_how": str(s.get("agent_how") or "")[:200]})
+                          "agent_how": _m(str(s.get("agent_how") or "")[:200]),
+                          "evidence": ev_m.group(0) if ev_m else ""})
         if not steps:
             if dropped is not None:
                 dropped.append(f"{raw_name}(단계 없음)")
@@ -880,7 +923,7 @@ def sanitize_flows(raw_flows, keys, mats_by=None, dropped=None):
             r = str(v or "").strip()
             if not r:
                 return ""
-            k2 = _resolve_key(r, keys, low_map, fold_map, norm_map, note_map, ns_map, fns_map)
+            k2 = _key_of(r)
             if not k2 or k2 == key:
                 return ""
             a, b = (mats_by.get(k2) or {}), hit
@@ -895,11 +938,8 @@ def sanitize_flows(raw_flows, keys, mats_by=None, dropped=None):
                     "level1_mix": hit.get("level1_mix") or [],
                     "upstream": _link(f.get("upstream")), "downstream": _link(f.get("downstream")),
                     "project": hit.get("model", ""), "detail": hit.get("detail", ""),
-                    "role": str(f.get("role") or "")[:160],
-                    "summary": str(f.get("summary") or "")[:400],
+                    "summary": _m(str(f.get("summary") or "")[:400]),
                     "steps": steps,
-                    # MM 은 실측(mm_rows) — AI 숫자가 아니라 프로그램이 붙인다
-                    "mm": {"mm": hit.get("mm", 0.0)},
                     "signals": hit.get("signals", 0)})
     return out
 
@@ -1041,9 +1081,9 @@ def _judge_abort(rep, tag):
 
 
 def _ai_left_min():
-    """run.py 가 물려준 AI 단계 전체 마감(LM_AI_DEADLINE, epoch 초)까지 남은 분 — 마감이 없으면(화면 수동 실행) None."""
+    """run.py 가 물려준 AI 단계 전체 마감(AF32_AI_DEADLINE, epoch 초)까지 남은 분 — 마감이 없으면(화면 수동 실행) None."""
     try:
-        at = float(os.environ.get("LM_AI_DEADLINE") or 0)
+        at = float(os.environ.get("AF32_AI_DEADLINE") or 0)
     except ValueError:
         return None
     return (at - time.time()) / 60.0 if at > 0 else None
@@ -1122,15 +1162,50 @@ def _carry_prev(rep, tag):
             continue
     for _mt, p, t in sorted(cands, reverse=True):
         o = _load_json(p)
-        if o and o.get("unit") == UNIT and isinstance(o.get("flows"), list) and o["flows"]:
+        if (o and o.get("product") == PRODUCT and o.get("unit") == UNIT and isinstance(o.get("flows"), list)
+                and o["flows"]):
             return o, t
     return None, ""
 
 
+def _send_names(judge, mats):
+    """단위마다 프롬프트에 싣는 표기를 붙인다(제자리) — send_model(과제 이름)·send_key(단위 키)·send_parts(과제 단위의 세부업무
+    이름): 모두 G3 행 관문을 지난 사본(judge.sendable — 지정 과제 이름에 든 사람 이름·고객사는 가린 채 · 예전에는 이름을 원문 그대로
+    실었다). 관문이 싣지 못하게 한 이름(제한 고객 등)이거나 보낼 키가 다른 단위의 것과 겹치면 send_key 를 "" 로 둔다 — 그 단위는
+    보내지 않는다(_unit_gate_ok). 답의 key 는 보낸 표기로 오고, sanitize_flows 가 원래 키로 되돌린다."""
+    taken = {}
+    for m in mats or ():
+        sm = judge.sendable(m.get("model")) or ""
+        dt = str(m.get("detail") or "")
+        sd = (judge.sendable(dt) or "") if dt else ""
+        sk = unit_key(sm, sd) if (sm and (sd or not dt)) else ""
+        if sk and taken.setdefault(sk, m.get("key")) != m.get("key"):
+            sk = ""
+        m["send_model"], m["send_key"] = sm, sk
+        if m.get("parts"):
+            names = (str(n[0] if isinstance(n, (list, tuple)) else n) for n in m["parts"])
+            m["send_parts"] = list(dict.fromkeys(x for x in (judge.sendable(n) for n in names) if x))
+    return mats
+
+
+def _show(m, what):
+    """프롬프트에 싣는 표기 — 보낼 표기(send_model·send_key — _send_names)가 있으면 그것, 없으면(옛 호출) 원래 이름."""
+    return str(m.get("send_" + what) or m.get(what) or "")
+
+
+def _show_parts(m):
+    ps = m.get("send_parts") if "send_parts" in m else m.get("parts")
+    return [str(n[0] if isinstance(n, (list, tuple)) else n) for n in (ps or [])]
+
+
 def _unit_gate_ok(judge, m):
-    """단위 하나가 개인정보 관문을 통과하나 — 과제 머리말·키·정제 설명·요청→산출·표본 줄을 최종 검사(judge.g3_prompt)에.
-    걸리는 단위는 그 단위만 따로 둔다 — 예전에는 묶음 전체가 관문에 막혀 함께 보낸 다른 업무까지 빠졌다."""
-    txt = "\n".join([f"### 과제: {m.get('model', '')}", f"## {m.get('key', '')}", str(m.get("desc") or "")]
+    """단위 하나가 개인정보 관문을 통과하나 — 프롬프트에 싣는 과제 머리말·키(보낼 표기)·세부업무 이름·정제 설명·요청→산출·표본
+    줄을 최종 검사(judge.g3_prompt)에. 보낼 표기를 만들지 못한 단위(send_key "")는 보내지 않는다. 걸리는 단위는 그 단위만 따로 둔다
+    — 예전에는 묶음 전체가 관문에 막혀 함께 보낸 다른 업무까지 빠졌다."""
+    if "send_key" in m and not m["send_key"]:
+        return False
+    txt = "\n".join([f"### 과제: {_show(m, 'model')}", f"## {_show(m, 'key')}", " · ".join(_show_parts(m)),
+                     str(m.get("desc") or "")]
                     + [str(e) for e in (m.get("episodes") or [])] + [str(e) for e in (m.get("evidence") or [])])
     return bool(judge.g3_prompt(txt))
 
@@ -1144,15 +1219,19 @@ def _bad_reply(judge):
 
 
 def main():
+    rc = details.consent_gate("flow", ROOT) or details.restricted_gate("flow", ROOT)   # 다른 사용자의 자료 4 · 지우는 중 3 · 제한 고객 목록 없음 4
+    if rc:
+        return rc
     import judge
     _sync_unit()               # 출력 JSON 의 unit·캐시 유효성 판정을 지금 설정에 맞춘다
     d0, d1 = arg("--from"), arg("--to")
     tag = (f"{d0.replace('-', '')}-{d1.replace('-', '')}" if d0 and d1 else latest_tag())
     rep = os.path.join(ROOT, "report")
-    if not tag:
+    if not tag or not details.af32_tag_ok(tag, rep):
         print("[flow] 분석 결과가 없습니다 — 먼저 [분석 실행]")
         print(json.dumps({"ok": False, "error": "no result", "stop_kind": "fatal",
-                          "hint": "report\\ 에 분석 결과(mm_meta)가 없습니다 — 먼저 [분석 실행]"}, ensure_ascii=False))
+                          "hint": "report\\ 에 AgentFinder32 분석 결과(run_meta)가 없습니다 — 먼저 [분석 실행]"},
+                         ensure_ascii=False))
         return 1
     from stage_state import open_stage
     _ss = open_stage(rep, tag, "flow")
@@ -1201,7 +1280,7 @@ def _run(judge, tag, rep, _ss):
     amap, n_rule, n_ai, n_ref = {}, 0, 0, 0
     pmap, n_p_rule, n_p_ev, p_note = {}, 0, 0, {"pairs": [], "rejects": []}
     try:
-        # ★ 병합 맵은 **신호 축(원본 mm_rows 이름)** 으로 만든다. 예전에는 read_rows 기본(정제본 우선)으로
+        # ★ 병합 맵은 **신호 축(원본 work_rows 이름)** 으로 만든다. 예전에는 read_rows 기본(정제본 우선)으로
         #   만들어 별칭 키가 정제본 이름이었고, 원본 이름을 가진 신호에는 하나도 적용되지 않았다
         #   (규칙 병합 0건 실측). LM20 refine 은 Level 3 를 유지했지만 LM22 refine 은 합치고 바꾼다.
         rows_plain, _pf = details.read_rows(tag, rep, plain=True)
@@ -1213,7 +1292,7 @@ def _run(judge, tag, rep, _ss):
             _pinned = [p.get("name") for p in (_pm.load_user_projects(ROOT) or []) if p.get("name")]
         except Exception:  # noqa: BLE001 - 지정 과제 목록이 없어도 병합은 돈다
             _pinned = []
-        # AI 체계가 따로 세운 과제 이름(LM30 2026-10-27) — 그 둘은 담당업무·제품이 겹쳐도 합치지 않는다
+        # AI 체계가 따로 세운 과제 이름 — 그 둘은 담당업무가 겹쳐도 합치지 않는다
         pmap, n_p_rule, n_p_ev, p_note = details.project_merge_map(
             rows_plain or [], details.read_signals(tag, rep), refmap=_refine_orig(tag, rep),
             pinned=_pinned, log=lambda m: print(f"[flow]{m}"), models=details.taxonomy_names(rep, tag))
@@ -1232,7 +1311,7 @@ def _run(judge, tag, rep, _ss):
                 pass
         if n_rule or n_ai or n_ref:
             print(f"[flow] 세부업무 유사 병합: 규칙 {n_rule}건 · Copilot {n_ai}건 · 정제 결과 {n_ref}건 → "
-                  "config\\detail_aliases.json (한 줄 지우면 그 병합만 원복)")
+                  "data\\cache\\detail_aliases.json (한 줄 지우면 그 병합만 원복)")
         elif amap:
             print(f"[flow] 세부업무 병합 맵 {len(amap)}건 적용(캐시)")
         # 캐시에 남은 (옛 과제, 이름) 키는 과제가 합쳐지면 고아가 된다 — 대표 축으로 접는다.
@@ -1240,9 +1319,9 @@ def _run(judge, tag, rep, _ss):
             amap = details.remap_detail_scope(amap, pmap)
         if n_p_rule or n_p_ev:
             print(f"[flow] 과제 표기 병합: 규칙 {n_p_rule}건 · 증거 {n_p_ev}건 · 거부 "
-                  f"{len(p_note.get('rejects') or [])}건 → config\\project_aliases.json")
+                  f"{len(p_note.get('rejects') or [])}건 → data\\cache\\project_aliases.json")
             for pr in (p_note.get("pairs") or [])[:6]:
-                print(f"[flow]   '{pr['from']}' → '{pr['to']}'  ({pr['why']} · {pr['mm']:.2f} MM · 신호 {pr['signals']}건)")
+                print(f"[flow]   '{pr['from']}' → '{pr['to']}'  ({pr['why']} · 신호 {pr['signals']}건)")
             for rj in (p_note.get("rejects") or [])[:4]:
                 print(f"[flow]   [거부] '{rj['a']}' ↔ '{rj['b']}' — {rj['why']}")
             print("[flow]   (한 줄 지우면 그 병합만 원복 · 규칙이 다시 합치면 never 에 쌍을 적으세요)")
@@ -1263,7 +1342,7 @@ def _run(judge, tag, rep, _ss):
             _h = f"report\\signals_{tag}.csv 를 만드는 [분석 실행]을 그 기간으로 다시 돌리세요"
             return _end(1, {"ok": False, "error": err, "hint": _h}, "failed", "fatal", err, err, _h)
         # 신호는 있는데 흐름이라 할 단위가 없다 — 실패가 아니라 '결과 없음'. 옛 판은 rc1 로 재시도까지 했다.
-        out = {"ok": True, "tag": tag, "generated": time.strftime("%Y-%m-%d %H:%M"), "model_name": "",
+        out = {"product": PRODUCT, "ok": True, "tag": tag, "generated": time.strftime("%Y-%m-%d"), "model_name": "",
                "unit": UNIT, "basis": basis, "flows": [], "chunks": 0, "failed_chunks": 0, "missing": [],
                "dropped": [], "merge": {"rule": n_rule, "ai": n_ai, "aliases": len(amap or {})},
                "rows_units": 0, "empty_reason": err,
@@ -1276,6 +1355,7 @@ def _run(judge, tag, rep, _ss):
         print("[flow] 판정(model) 열이 없어 규칙 분류(project/activity) 축으로 만듭니다 — "
               "과제명이 AI 가 정리한 상위개체가 아니라 품질이 낮습니다(basis: 규칙)")
     keys = {m["key"]: m for m in mats}
+    _send_names(judge, mats)                    # 프롬프트에 싣는 과제·단위 이름은 G3 행 관문을 지난 사본으로(가린 이름은 가린 채)
     if THIN:
         # 어떤 담당업무가 왜 빠졌는지 화면에 남긴다 — 예전에는 조용히 사라져 '워크플로우가 너무 적다' 로 읽혔다
         print(f"[flow] 신호 {MIN_SIGNALS}건 미만이라 흐름을 만들지 않은 담당 업무 {len(THIN)}개: "
@@ -1286,7 +1366,7 @@ def _run(judge, tag, rep, _ss):
         print(f"[flow] AI 판정 대기 — 신호 대부분이 규칙 판정인 담당 업무 {len(RULE_UNITS)}개는 묻지 않습니다: "
               + ", ".join((f"{md} / {dt}({n})" if dt else f"{md}({n})") for md, dt, n, _s in RULE_UNITS[:5])
               + (" …" if len(RULE_UNITS) > 5 else "")
-              + " — [재분석만]으로 판정을 마치면 다음 실행에 들어옵니다")
+              + " — [다시 읽지 않고 분석만]을 켜고 [분석 실행]으로 판정을 마치면 다음 실행에 들어옵니다")
 
     # 세부 병합 왕복이 '사람이 손대야 하는' 이유로 죽었으면 흐름 왕복도 같은 이유로 죽는다 — 헛되이 보내지 않는다
     if merge_fail.get("fatal") and sender is not None:
@@ -1299,6 +1379,8 @@ def _run(judge, tag, rep, _ss):
     # 지난 결과의 상위 표 — --redo 여도 읽는다(흐름은 다시 묻되 상위 '기억' 은 정제본이 없을 때의 폴백이다)
     PREV_L1.clear()
     _pv0 = _load_json(dst)
+    if not (isinstance(_pv0, dict) and _pv0.get("product") == PRODUCT):
+        _pv0 = None                              # 옛 판(LoadMonitor)의 결과는 이어받지 않는다
     if isinstance(_pv0, dict) and _pv0.get("tag") == tag and isinstance(_pv0.get("flows"), list):
         for _f0 in _pv0["flows"]:
             if isinstance(_f0, dict) and _f0.get("model") and _f0.get("level1"):
@@ -1313,6 +1395,7 @@ def _run(judge, tag, rep, _ss):
     if (prev and (prev.get("tag") == tag or carried_from) and prev.get("unit") == UNIT
             and isinstance(prev.get("flows"), list)):
         resolve = _key_resolver(keys)
+        people = details.person_keys((), ROOT)        # 이어받는 글도 지금의 이름 해시로 다시 가린다(D8 — mask_flow)
         gen = str(prev.get("generated") or "")[:10]
         for f in prev["flows"]:
             # 단계가 MIN_STEPS 미만인 흐름은 잘린 답에서 온 것일 수 있다 — 이어받지 말고 다시 묻는다.
@@ -1339,12 +1422,12 @@ def _run(judge, tag, rep, _ss):
             # 정제본을 읽은 실행이면 이번 값이 진실('' 도 '혼재' 라는 답) — 옛 값으로 덮지 않는다(감사 지적).
             # 정제본이 없는 실행만 지난 상위를 이어받는다.
             _l1 = hit.get("level1", "") if REFINED_USED else (hit.get("level1", "") or f.get("level1", ""))
-            f = dict(f, model=k2, project=hit["model"], detail=hit["detail"], mm={"mm": hit["mm"]},
+            f = dict(mask_flow(f, people), model=k2, project=hit["model"], detail=hit["detail"],
                      signals=hit["signals"], level1=_l1, asked_at=at)
             kept.append(f)
         # 한 과제가 여러 흐름(branch)을 가질 수 있으므로 '흐름 수' 가 아니라 '끝난 과제 수' 로 본다.
         # 그러지 않으면 분기가 하나만 생겨도 len(kept) > len(keys) 가 되어 다 끝난 줄 알고 전부 다시 돌린다.
-        # 다 끝난 결과는 화면 [재분석](--carry 없음)이면 처음부터 다시, run.py(--carry)는 그대로 이어받는다.
+        # 다 끝난 결과는 화면 [워크플로우 재분석](--carry 없음)이면 처음부터 다시, run.py(--carry)는 그대로 이어받는다.
         if not carry and len({f["model"] for f in kept}) >= len(keys):
             kept = []
     done_keys = {f["model"] for f in kept}
@@ -1384,7 +1467,7 @@ def _run(judge, tag, rep, _ss):
     except ValueError:
         budget_min = float(BUDGET_MIN)
     t_start = time.monotonic()
-    # v3: flow 도 전체 마감(LM_AI_DEADLINE)에 참여하되, run.py 가 flow 몫을 **선예약**하므로 앞
+    # v3: flow 도 전체 마감(AF32_AI_DEADLINE)에 참여하되, run.py 가 flow 몫을 **선예약**하므로 앞
     # 단계 소진에 굶지 않는다. 단계 예산은 flowBudgetMin **단일원** — aiStageBudgetMin 이 flow 를
     # 몰래 조이던 잠복 경로(실측: aiStageBudgetMin=10 이면 v2 60/60 → v3 36/60)를 차단한다.
     from budget import stage_budget as _sb
@@ -1533,7 +1616,7 @@ def _run(judge, tag, rep, _ss):
         # 관문에 걸린 업무는 미판정으로 세지 않는다 — 다시 실행해도 보내지 않으므로 '이어서' 를 권하면 헛수고다
         missing = [k for k in keys if k not in done and k not in gate_keys]
         why, how = _fail_summary(fails) if (missing or failed) else ("", "")
-        out = {"ok": True, "tag": tag, "generated": time.strftime("%Y-%m-%d %H:%M"),
+        out = {"product": PRODUCT, "ok": True, "tag": tag, "generated": time.strftime("%Y-%m-%d"),
                "model_name": model_name, "unit": UNIT, "basis": basis, "flows": flows,
                "chunks": len(chunks), "failed_chunks": failed, "salvaged_chunks": salvaged, "roundtrips": n_sent,
                # 왜 어떤 단위가 비었는지 나중에도 알 수 있게 남긴다
@@ -1545,7 +1628,7 @@ def _run(judge, tag, rep, _ss):
                                 for m in mats if m.get("level1_mix")][:100],
                "thin": [{"project": md, "detail": dt, "signals": n} for md, dt, n in THIN[:200]],
                "thin_count": len(THIN),
-               # AI 판정 대기(신호 대부분이 규칙 판정) — 묻지 않은 단위. [재분석만] 뒤 다시 만들면 들어온다
+               # AI 판정 대기(신호 대부분이 규칙 판정) — 묻지 않은 단위. [다시 읽지 않고 분석만]을 켜고 [분석 실행] 뒤 다시 만들면 들어온다
                "rule_units": rule_units[:200], "rule_units_count": len(rule_units),
                # 개인정보 관문에 걸려 보내지 않은 단위(조치 불필요 — 미판정으로 세지 않는다)
                "gate_units": sorted(gate_keys)[:200], "gate_units_count": len(gate_keys),
@@ -1571,7 +1654,7 @@ def _run(judge, tag, rep, _ss):
                           "rejected": len(p_note.get("rejects") or []), "dupes": len(_dupes),
                           "pairs": (p_note.get("pairs") or [])[:50],
                           "rejects": (p_note.get("rejects") or [])[:30],
-                          # LM30(2026-10-27) 합치지 않고 확인을 기다리는 것(이름이 달라 자동으로 합치지 않은 쌍·예전 판의 근거 병합)
+                          # 합치지 않고 확인을 기다리는 것(이름이 달라 자동으로 합치지 않은 쌍)
                           "ask": (p_note.get("ask") or [])[:30],
                           "flow_dupes": _dupes[:30]},
                "rows_units": len(mats)}
@@ -1686,7 +1769,7 @@ def _run(judge, tag, rep, _ss):
         if consec >= MAX_CONSEC_FAIL and ci < len(chunks):
             st["kind"] = "fail"
             stopped = (f"{consec}묶음 연속 실패({info.get('error', '')[:40]}) — "
-                       "Copilot 상태를 확인한 뒤 [재분석]으로 이어서")
+                       "Copilot 상태를 확인한 뒤 [이어서 분석]으로 이어서")
             failed += len(chunks) - ci
             print(f"[flow] {consec}묶음 연속 실패 — 남은 {len(chunks) - ci}묶음은 보내지 않습니다 "
                   "(잠시 뒤 재실행하면 남은 업무만 이어서 판정합니다)")
@@ -1816,8 +1899,9 @@ def _run(judge, tag, rep, _ss):
 
     out = write_out()
     for fl in flows:
-        print(f"   {fl['model']}: 역할={fl['role'][:40]} · 단계 {len(fl['steps'])}개 · "
-              f"Agent 상 {sum(1 for s in fl['steps'] if s['agent'] == '상')}건 · {fl['mm']['mm']} MM")
+        print(f"   {fl['model']}: 단계 {len(fl['steps'])}개 · "
+              f"Agent 상 {sum(1 for s in fl['steps'] if s['agent'] == '상')}건 · "
+              f"중 {sum(1 for s in fl['steps'] if s['agent'] == '중')}건")
     if out["missing_count"]:
         print(f"[flow] [!] 업무 {len(flows)}/{len(mats)}개만 판정했습니다 — {out['note']}")
     print(f"[flow] → {dst}")

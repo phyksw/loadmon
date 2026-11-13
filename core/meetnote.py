@@ -1,26 +1,24 @@
 # -*- coding: utf-8 -*-
 r"""
-core\meetnote.py — 일정 본문(회의 안건)을 걸러서 AI 판정의 참고로 쓴다(LM28).
+core\meetnote.py — 일정 본문(회의 안건)을 걸러서 AI 판정의 참고로 쓴다(AgentFinder32 D18 — 기본은 꺼져 있다).
 
-사용자 요청: '일정 회의 내용도 참고하면 좋겠다(물론 필터링 되어서)'. 일정 본문은 대부분 온라인 회의 안내문(Teams·Zoom·
-Webex·Meet 의 참가 링크·회의 ID·암호·전화 접속 번호)이고 사람이 쓴 안건은 그 앞 몇 줄이다. 그 몇 줄만 남겨 회의 신호의
-판정(judge)에 '안건' 으로 덧붙인다 — 제목이 '주간 회의' 뿐이어도 안건이 과제를 가리키면 Copilot 이 맞는 과제·세부업무를 고른다.
+일정 본문은 config.calendar.collectBody 가 켜졌을 때만 모으고(collect_enabled), calendar.bodyToAI 도 켜졌을 때만 판정 프롬프트에
+붙인다(enabled). 둘 다 기본 false 다 — 서면 동의서가 일정 본문까지 다룰 때만 켠다(도구는 다시 묻지 않는다). 메일 본문은 어느 경우에도 읽지 않는다.
+일정 본문은 대부분 온라인 회의 안내문(Teams·Zoom·Webex·Meet 의 참가 링크·회의 ID·암호·전화 접속 번호)이고 사람이 쓴 안건은 그 앞
+몇 줄이다. 그 몇 줄만 남긴다.
 
-관문(원문이 밖으로 나가지 않게 — core\privacy 의 네 관문 위에 얹는다):
-  · 수집 직후(G1 — run.g1_mail → prep_body_csv → g1_body): 출처 파일(data\outlook\src\cal_<tag>.csv)의 body 열을
-    clean_body → privacy.sanitize → 600자(자르기는 정제 뒤 — 다음 G1 이 다시 자르지 않게)로 바꾸고, 자격증명이 남은 본문은
-    비운다(행은 남긴다 — scrub_csv 는 자격증명 행을 통째로 버리므로 회의 자체가 사라지지 않게). 이어지는 scrub_csv 의 body 정제는
-    이미 정제된 글이라 바꾸지 않는다. 열이 없는 옛 파일은 건드리지 않는다.
-  · 분석(judge → load_notes): 종일·취소·거절·한가함·미정(설정)·근태·부재중·비업무·개인 제외어·비공개 일정은 붙이지 않는다.
-    본문은 다시 clean_body → privacy.sanitize(자격증명이면 버림) → 사적·친목(private_score)이 아닌 것만 → noteMaxChars 자.
-    회의 신호와는 (날짜, 시작 HH:MM, 정제 제목) 으로만 맞댄다 — 다른 출처의 행에는 붙지 않는다.
+관문:
+  · 수집 직후(G1): Outlook 앱 원자료(data\outlook\raw\cal_com.csv)의 body 열은 prep_raw_body 가 clean_body 로 안내문·링크·연락처·
+    참석자 목록을 걷고(제자리 — 원자료는 곧 지워진다), privacy.g1_row 가 이름 가림·정제·600자 자르기를 한다. Outlook 웹은 상세 창의
+    본문 칸을 clean_body 로 걸러 g1_row 에 넘긴다(캐시 파일 없음).
+  · 분석(judge → load_notes): 휴가·행방·비업무·개인 제외어·비공개 일정은 붙이지 않는다. 본문은 다시 clean_body → privacy.sanitize
+    (자격증명이면 버림) → 사적·친목(private_score)이 아닌 것만 → noteMaxChars 자. 회의 신호와는 note_key(날짜, 제목) 으로만 맞댄다.
   · Copilot 직전(G3): judge 가 안건을 행의 'note' 필드로 같은 관문(gate_items)에 넣는다.
-  · 팀 반출: 나가지 않는다 — signals·mm_rows 의 열은 그대로이고 안건은 판정 프롬프트에만 실린다.
+  · 공유: 나가지 않는다 — signals·work_rows 의 열은 그대로이고 안건은 판정 프롬프트에만 실린다.
 불변식: clean_body 는 순수 함수(표준 라이브러리 re·unicodedata 만, 부작용·기록 없음)이고 멱등이다 —
-clean_body(clean_body(x)) == clean_body(x). G1 이 다음 실행에 정제된 본문을 다시 걸러도 바뀌지 않는다(가림 토큰 [사람]·[전화] 류를
-깨지 않는다 — 이메일 로컬파트는 ASCII 만 보고, 자를 때 토큰 중간을 자르지 않는다). 원문·안건을 출력하지 않는다(건수만).
-collect\Get-OutlookWeb.py(웹 경로)는 clean_body(text, max_len=600) 만 늦게 임포트해 쓴다 — 이 모듈의 최상위는 무거운 모듈을
-임포트하지 않는다(extract·privacy 는 쓰는 함수 안에서).
+clean_body(clean_body(x)) == clean_body(x). 가림 토큰 [사람]·[전화] 류를 깨지 않는다(이메일 로컬파트는 ASCII 만 보고, 자를 때 토큰
+중간을 자르지 않는다). 원문·안건을 출력하지 않는다(건수만). 이 모듈의 최상위는 무거운 모듈을 임포트하지 않는다(privacy 는 쓰는
+함수 안에서).
 """
 import csv
 import io
@@ -276,10 +274,19 @@ def _cal_cfg(cfg):
     return c if isinstance(c, dict) else {}
 
 
+def _flag(v):
+    return v is True or str(v).strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def collect_enabled(cfg):
+    """config.calendar.collectBody — 일정 본문을 모으나(기본 false)."""
+    return _flag(_cal_cfg(cfg).get("collectBody", False))
+
+
 def enabled(cfg):
-    """config.calendar.bodyToAI — 기본 true. 문자열 "false"/"0"/"off" 도 거짓."""
-    v = _cal_cfg(cfg).get("bodyToAI", True)
-    return not (v is False or v is None or str(v).strip().lower() in ("0", "false", "no", "n", "off", ""))
+    """일정 본문을 판정 프롬프트에 붙이나 — calendar.collectBody 와 calendar.bodyToAI 가 모두 참일 때만(기본 false)."""
+    c = _cal_cfg(cfg)
+    return collect_enabled(cfg) and _flag(c.get("bodyToAI", False))
 
 
 def note_max(cfg):
@@ -298,20 +305,10 @@ def norm_subject(s):
     return " ".join(str(s or "").split()).lower()[:60]
 
 
-def note_key(time_s, subject):
-    """회의 신호의 (time 'YYYY-MM-DD HH:MM', text) 또는 일정 행의 (start, 정제 제목) → (날짜, 'HH:MM', 정규화 제목)."""
-    t = " ".join(str(time_s or "").split())
-    return (t[:10], t[11:16], norm_subject(subject))
-
-
-def _mods():
-    """(extract, privacy) — 평평한 import(core 가 sys.path 에 있을 때)와 core 패키지 import 를 둘 다 받는다."""
-    try:
-        import extract
-        import privacy
-    except ImportError:
-        from core import extract, privacy
-    return extract, privacy
+def note_key(day, subject):
+    """회의 신호의 (time 'YYYY-MM-DD', text) 또는 일정 행의 (start, 정제 제목) → (날짜 'YYYY-MM-DD', 정규화 제목).
+    signals 는 날짜만 가진다(D10) — 시각으로 맞대지 않는다."""
+    return (" ".join(str(day or "").split())[:10], norm_subject(subject))
 
 
 def _as_date(v):
@@ -331,19 +328,31 @@ _PRIVATE_RX = re.compile(r"(?<![A-Za-z])(?:private|personal|confidential)(?![A-Z
 _PRIVATE_CAT_RX = re.compile(r"(?<![A-Za-z])(?:private|personal|confidential|family)(?![A-Za-z])|비공개|사적|개인|가족", re.I)
 
 
-def skip_reason(r, tentative="count", nonwork=(), hit=None):
-    """일정 행에 안건을 붙이지 않을 사유(문자열) 또는 None — 종일 · 참석 아님(취소·거절·한가함·설정상 미정 — extract._meeting_skip
-    과 같은 판정) · 부재중(busy 3)·근태 · 비업무 · 개인 제외어 · 비공개(분류·제목의 비공개/개인 표기)."""
-    ex, _pv = _mods()
-    if ex._truthy(r.get("all_day")):
+def _nonwork(cfg):
+    """비업무 일정 낱말(소문자) — 내장 최소 목록(배포 기본 nonWorkKeywords: 취소·자동 회신·부재·휴가류) ∪ config.nonWorkKeywords.
+    설정은 더하기만 한다 — nonWorkKeywords 를 비워도 취소·부재·휴가류 회의의 안건은 프롬프트에 붙지 않는다(E5)."""
+    import afcfg
+    v = cfg.get("nonWorkKeywords") if isinstance(cfg, dict) else None
+    out = []
+    for x in list(afcfg.DEFAULTS.get("nonWorkKeywords") or []) + (v if isinstance(v, list) else []):
+        s = str(x).strip().lower()
+        if s and s not in out:
+            out.append(s)
+    return out
+
+
+def skip_reason(r, nonwork=(), hit=None):
+    """일정 행에 안건을 붙이지 않을 사유(문자열) 또는 None — 종일 · 휴가·행방(privacy.admin_hit) · 비업무(nonWorkKeywords) ·
+    개인 제외어(hit) · 비공개(분류·제목의 비공개/개인 표기). G1 이 이미 뺀 행이 대부분이다 — 분석 쪽의 두 번째 확인이다."""
+    import privacy
+    if str(r.get("all_day") or "").strip().lower() in ("1", "true", "-1", "yes"):
         return "종일"
-    if ex._meeting_skip(r, tentative):
-        return "참석 아님"
     subj = str(r.get("subject") or "")
+    if str(r.get("busy_status") or "").strip() in ("0", "3", "4") or privacy.admin_hit(
+            "\n".join(str(r.get(k) or "") for k in ("subject", "location", "categories"))):
+        return "휴가·행방"
     low = subj.lower()
-    if str(r.get("busy_status") or "").strip() == "3" or ex._absence_hit(subj):
-        return "근태"
-    if ex._nonwork_hit(low, nonwork):
+    if any(w and w in low for w in nonwork):
         return "비업무"
     if hit is not None and hit(low):
         return "제외어"
@@ -352,25 +361,40 @@ def skip_reason(r, tentative="count", nonwork=(), hit=None):
     return None
 
 
+def _one_line(s, n=100):
+    return " ".join(str(s or "").split())[:n]
+
+
+def _read_calendar(path):
+    try:
+        with open(path, encoding="utf-8-sig", errors="replace", newline="") as f:
+            return [r for r in csv.DictReader(f) if isinstance(r, dict)]
+    except (OSError, csv.Error):
+        return []
+
+
 def load_notes(data_dir, d0, d1, cfg=None, *, ctx=None, stats=None):
-    r"""data\outlook\calendar.csv(본 PC + data\추가PC\*) → {(날짜, 'HH:MM', 정규화 제목): 안건}. bodyToAI=false 면 {}.
-    · 기간 [d0, d1] 의 시작만 · skip_reason 이 있는 행은 뺀다.
-    · 안건 = clean_body(본문) → 개인 제외어가 남으면 뺌 → privacy.sanitize(자격증명이면 뺌) → private_score 가 work 일 때만 →
-      noteMaxChars 자. 키의 제목은 회의 신호와 같은 정제(sanitize · 한 줄)를 거친 것이다(신호 text 와 맞대려고).
-    · 같은 회의가 여러 뿌리(본 PC·추가 PC)에 있으면 긴 안건을 남긴다.
-    stats(dict)를 주면 사유별 건수만 센다(원문 없음)."""
+    r"""data\outlook\calendar.csv → {(날짜, 정규화 제목): 안건}. enabled(cfg) 가 아니면 {}.
+    · 기간 [d0, d1] 에 시작한 행만 · skip_reason 이 있는 행은 뺀다.
+    · 안건 = clean_body(본문) → 근태·행방(privacy.admin_hit)·민감 낱말(privacy.sensitive_hit)이 있으면 뺌 → 개인 제외어가 남으면
+      뺌 → privacy.sanitize(자격증명이면 뺌) → private_score 가 work 일 때만 → 이름 해시에 든 이름은 [사람] → noteMaxChars 자.
+      키의 제목은 회의 신호와 같은 정제(sanitize · 한 줄 · 시각·메일 도메인 · 이름 해시)를 거친 것이다.
+    · 같은 날 같은 제목의 회의가 여럿이면 긴 안건을 남긴다. stats(dict)를 주면 사유별 건수만 센다(원문 없음)."""
     cfg = cfg if isinstance(cfg, dict) else {}
     if not enabled(cfg):
         return {}
-    ex, pv = _mods()
-    rows = [r for r in ex._read_multi(data_dir, "outlook", "calendar.csv") if str(r.get("body") or "").strip()]
+    import privacy
+    rows = [r for r in _read_calendar(os.path.join(data_dir, "outlook", "calendar.csv"))
+            if str(r.get("body") or "").strip()]
     if not rows:
         return {}
     a, b = _as_date(d0), _as_date(d1)
-    tentative = ex.norm_cfg(cfg)[0]["tentativeMeetings"]
-    nonwork = ex._nonwork_list(cfg)
-    hit = ex._text_filter(pv.excluded_keywords(cfg))
-    ctx = ctx if ctx is not None else pv.make_ctx(cfg, data_dir)
+    nonwork = _nonwork(cfg)
+
+    def hit(low):
+        return privacy.keyword_hit(low, cfg)
+    ctx = ctx if ctx is not None else privacy.make_ctx(cfg, data_dir)
+    hashes, salt = privacy.name_gate(os.path.dirname(os.path.abspath(data_dir)), cfg=cfg)
     nmax = note_max(cfg)
     st = stats if isinstance(stats, dict) else {}
 
@@ -378,127 +402,81 @@ def load_notes(data_dir, d0, d1, cfg=None, *, ctx=None, stats=None):
         st[k] = st.get(k, 0) + 1
     out = {}
     for r in rows:
-        t = ex._dt(r.get("start"))
-        if t is None or (a and t.date() < a) or (b and t.date() > b):
+        day = _as_date(r.get("start"))
+        if day is None or (a and day < a) or (b and day > b):
             continue
-        why = skip_reason(r, tentative, nonwork, hit)
+        why = skip_reason(r, nonwork, hit)
         if why:
             bump(why)
             continue
-        subj, _c, sdrop = pv.sanitize(ex._one_line(r.get("subject"), None), "signal", ctx)
+        subj, _c, sdrop = privacy.sanitize(_one_line(r.get("subject")), "signal", ctx)
+        # 회의 신호 글과 같은 꼴(extract G2 — [시각]·[이메일]·이름 해시의 [사람])이어야 키가 맞는다
+        subj = privacy.mask_known_names(privacy.minimize_text(subj), hashes, salt)
         note = clean_body(r.get("body"), BODY_MAX)
         if sdrop or not subj or not note:
             bump("본문 없음")
             continue
+        if privacy.admin_hit(note):              # 안건에 든 근태·행방(휴직·당직·야근 …) — 일정 행은 G1 이 이미 봤어도 한 번 더
+            bump("휴가·행방")
+            continue
+        if privacy.sensitive_hit(note, cfg):
+            bump("민감")
+            continue
         if hit(note.lower()):
             bump("제외어")
             continue
-        note, _c, drop = pv.sanitize(note, "body", ctx)
+        note, _c, drop = privacy.sanitize(note, "body", ctx)
         if drop or not note:
             bump("자격증명")
             continue
-        if pv.private_score(note) != "work":
+        note = privacy.minimize_text(note)         # D10 — 안건의 시각은 Copilot 에 싣지 않는다 · R5 — 바깥 도메인 없이
+        if privacy.private_score(note) != "work":
             bump("사적")
             continue
+        note = privacy.mask_known_names(note, hashes, salt)
         note = _cut(note, nmax)
-        k = note_key(t.strftime("%Y-%m-%d %H:%M"), subj)
+        k = note_key(day.isoformat(), subj)
         if len(note) > len(out.get(k, "")):
             out[k] = note
         bump("붙임")
     return out
 
 
-# ── G1 앞단 — 출처 일정 파일의 body 열 ───────────────────────────────────────────────────
-def g1_body(text, ctx=None, max_len=BODY_MAX):
-    """G1 의 본문 한 칸 → (본문, 자격증명이라 비웠나). clean_body(자르지 않고) → privacy.sanitize → max_len 자(토큰을 자르지 않는 경계).
-    자르기를 정제 **뒤**에 한다 — 정제가 글을 늘리면('홍길동' → '[사람]') 앞에서 600자로 자른 본문이 다음 수집의 G1 에서 또 잘려
-    실행마다 끝 낱말이 깎였다. 정제된 본문에 다시 걸어도 그대로다."""
-    c = clean_body(text, _IN_MAX)
-    if not c:
-        return "", False
-    _ex, pv = _mods()
-    s, _cats, drop = pv.sanitize(c, "body", ctx)
-    if drop:
-        return "", True
-    return _cut(s, max_len), False
-
-
-def prep_body_csv(path, ctx=None, *, key_cols=None, max_len=BODY_MAX):
-    """출처 일정 파일(cal_<tag>.csv)의 body 열을 g1_body(정리·정제·600자)로 제자리 바꾼다(머리글·열 수·열 순서 불변 — body 열이 없으면
-    손대지 않음). 이어지는 scrub_csv 의 body 정제는 이미 정제된 글이라 바꾸지 않는다(멱등).
-    · 자격증명이 남은 본문은 비운다(행은 남긴다) — 다음 단계 scrub_csv 가 자격증명 행을 통째로 버려 회의가 사라지지 않게.
-    · key_cols(웹·Copilot 출처 — scrub_csv 가 정제 키로 같은 일정을 접는다)를 주면 접혀 사라질 뒤 행의 본문을 남는 첫 행으로
-      옮긴다(수집기가 다음 실행에 다시 붙인 원문 행에만 본문이 있을 때 본문이 함께 접혀 사라지지 않게).
-    → {"ok", "rows", "cleaned", "blanked", "moved", "changed"} · 실패 {"ok": False, "error"}. 원문·본문을 기록하지 않는다."""
+# ── G1 앞단 — Outlook 앱 원자료의 body 열 ───────────────────────────────────────────────
+def prep_raw_body(path, max_len=_IN_MAX):
+    r"""Outlook 앱 원자료(data\outlook\raw\cal_com.csv)의 body 열을 clean_body(안내문·링크·연락처·참석자 목록 걷기 — 자르지 않음)로
+    제자리 바꾼다(머리글·열 순서 불변 · body 열이 없으면 손대지 않음). 가림·600자 자르기는 다음 단계 privacy.g1_row 가 한다.
+    원자료는 G1 뒤 곧 지워진다. → {"ok", "rows", "cleaned"} · 실패 {"ok": False, "error"}. 원문·본문을 기록하지 않는다."""
     try:
         with open(path, "rb") as f:
             raw = f.read()
     except OSError as e:
         return {"ok": False, "error": type(e).__name__}
-    bom = raw.startswith(b"\xef\xbb\xbf")
     try:
         text = raw.decode("utf-8-sig")
-        enc = "utf-8-sig" if bom else "utf-8"
     except UnicodeDecodeError:
-        text = raw.decode("cp949", "replace")          # Excel 이 다시 저장한 파일 — 다시 쓸 때는 UTF-8(BOM)
-        enc = "utf-8-sig"
-    nl = "\r\n" if "\r\n" in text[:4096] or not text else "\n"
+        text = raw.decode("cp949", "replace")
     try:
         rows = list(csv.reader(io.StringIO(text, newline="")))
     except csv.Error as e:
         return {"ok": False, "error": f"csv: {e}"}
-    info = {"ok": True, "rows": max(0, len(rows) - 1), "cleaned": 0, "blanked": 0, "moved": 0, "changed": False}
+    info = {"ok": True, "rows": max(0, len(rows) - 1), "cleaned": 0}
     if not rows or "body" not in rows[0]:
         return info
-    _ex, pv = _mods()
-    head = rows[0]
-    bi = head.index("body")
-    kidx = [head.index(c) for c in (key_cols or ()) if c in head]
-
-    def fold_key(r):
-        """scrub_csv 와 같은 접기 키 — key_cols 값(제목만 정제 뒤 값). 제목이 자격증명으로 버려질 행은 접히지 않는다(None)."""
-        vals = []
-        for i in kidx:
-            v = r[i] if i < len(r) else ""
-            if head[i] == "subject":
-                v, _c, dr = pv.sanitize(v, "subject", ctx)
-                if dr:
-                    return None
-            vals.append(v)
-        return tuple(vals)
-    first = {}
-    for n, r in enumerate(rows[1:], 1):
-        if not r:
-            continue
-        if bi < len(r):
-            old = r[bi]
-            new, blank = g1_body(old, ctx, max_len) if old else ("", False)
-            if blank:
-                info["blanked"] += 1
-            if new != old:
+    bi = rows[0].index("body")
+    for r in rows[1:]:
+        if bi < len(r) and r[bi]:
+            new = clean_body(r[bi], max_len)
+            if new != r[bi]:
                 r[bi] = new
                 info["cleaned"] += 1
-        if not kidx:
-            continue
-        k = fold_key(r)
-        if k is None:
-            continue
-        j = first.setdefault(k, n)
-        if j != n and bi < len(r) and r[bi]:
-            rj = rows[j]
-            if len(rj) <= bi:                           # 본문 열이 생기기 전의 짧은 행 — 빈칸으로 늘려 옮긴다
-                rj.extend([""] * (bi + 1 - len(rj)))
-            if not rj[bi]:
-                rj[bi] = r[bi]
-                info["moved"] += 1
-    info["changed"] = bool(info["cleaned"] or info["moved"])
-    if not info["changed"]:
+    if not info["cleaned"]:
         return info
     buf = io.StringIO()
-    csv.writer(buf, lineterminator=nl).writerows(rows)
-    tmp = f"{path}.{os.getpid()}.lm28tmp"
+    csv.writer(buf, lineterminator="\r\n").writerows(rows)
+    tmp = f"{path}.{os.getpid()}.af32tmp"
     try:
-        with open(tmp, "w", encoding=enc, newline="") as f:
+        with open(tmp, "w", encoding="utf-8-sig", newline="") as f:
             f.write(buf.getvalue())
         os.replace(tmp, path)
     except OSError as e:

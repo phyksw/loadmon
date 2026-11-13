@@ -1,16 +1,18 @@
 # -*- coding: utf-8 -*-
-r"""tools\stop_lm30.py — LoadMonitor30-강제종료.bat 의 입구: PowerShell 이 못 켜져도 끝까지 끝낸다 (LM28 2026-10-15).
+r"""tools\stop_af32.py — AgentFinder32-강제종료.bat 의 입구: PowerShell 이 못 켜져도 끝까지 끝낸다.
 
-  python tools\stop_lm30.py [-Status] [-IncludeTeamServer]
+  python tools\stop_af32.py [-Status] [-IncludeTeamServer]
 
 왜: 개발 PC(2026-10-15)에서 강제종료 bat 이 바로 띄운 powershell 이 켜지는 순간 실패해(0xc0000142) 오류 창만 남기고
-    Stop-LM28.ps1 이 한 줄도 돌지 않았다 — 비상 단추가 정작 필요할 때 듣지 않았다.
-  1) tools\Stop-LM30.ps1 을 tools\ps_launch 로 띄운다 — 오류 창 없이, 켜지다 실패하면 3초·8초 뒤 두 번 다시 띄운다.
+    정리 스크립트가 한 줄도 돌지 않았다 — 비상 단추가 정작 필요할 때 듣지 않았다.
+  1) tools\Stop-AF32.ps1 을 tools\ps_launch 로 띄운다 — 오류 창 없이, 켜지다 실패하면 3초·8초 뒤 두 번 다시 띄운다.
      인자는 그대로 넘기고 이 파이썬의 pid 를 -KeepPid 로 붙인다(이 파이썬과 그 부모 줄기 — 강제종료 bat 창 — 는 끝내지 않게).
-  2) 그래도 PowerShell 이 켜지지 못하면 같은 규칙으로 파이썬이 직접 끝낸다: select_targets 는 Stop-LM30.ps1 의
+  2) 그래도 PowerShell 이 켜지지 못하면 같은 규칙으로 파이썬이 직접 끝낸다: select_targets 는 Stop-AF32.ps1 의
      Select-LmTargets 를 그대로 옮긴 순수 함수이고, 프로세스 목록 읽기·끝내기는 ctypes(표준 라이브러리)만 쓴다 —
-     새 프로세스·WMI·관리자 권한·임시 파일 없음. 화면 문구도 Stop-LM30.ps1 과 같다.
-규칙(무엇을 끝내고 무엇을 두나)의 원본은 Stop-LM30.ps1 머리말이다 — 고칠 때는 둘을 함께 고친다
+     새 프로세스·WMI·관리자 권한·임시 파일 없음. 화면 문구도 Stop-AF32.ps1 과 같다.
+  3) 이 폴더의 AF32 작업이 하나도 남지 않으면(다 끝냈거나 원래 없음 · -Status 가 아닐 때) 멈춘 수집이 남긴 Outlook 앱 원자료
+     (data\outlook\raw\* — 사외 사람 이름·주소)를 지운다(core\retention.drop_raw — Stop-AF32.ps1 의 Remove-LmRawLeftovers 와 같다).
+규칙(무엇을 끝내고 무엇을 두나)의 원본은 Stop-AF32.ps1 머리말이다 — 고칠 때는 둘을 함께 고친다
 (tests\test_p24_stop_startfail.py 가 같은 가짜 프로세스 목록으로 둘의 결과를 대조한다).
 """
 import collections
@@ -20,12 +22,18 @@ import sys
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if os.path.join(ROOT, "tools") not in sys.path:          # 내장 파이썬(._pth)은 스크립트 폴더를 sys.path 에 넣지 않는다
-    sys.path.insert(0, os.path.join(ROOT, "tools"))
+for _p in (os.path.join(ROOT, "tools"), os.path.join(ROOT, "core")):   # 내장 파이썬(._pth)은 스크립트 폴더를 sys.path 에 넣지 않는다
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 import ps_launch  # noqa: E402  — tools\ps_launch.py(오류 창 막기·다시 띄우기)
+try:
+    import retention  # noqa: E402  — core\retention.py(drop_raw — 남은 수집 원자료 지우기)
+except Exception:  # noqa: BLE001 - 강제 종료는 비상 단추다: 정리 모듈을 읽지 못해도(복사 누락 등) 끝내기는 해야 한다
+    retention = None
 
-STOP_PS1 = os.path.join(ROOT, "tools", "Stop-LM30.ps1")
+STOP_PS1 = os.path.join(ROOT, "tools", "Stop-AF32.ps1")
 FALLBACK_LINE = "  PowerShell 을 끝내 띄우지 못해 파이썬으로 같은 규칙대로 끝냅니다"
+RAW_LINE = "  [정리] 멈춘 수집이 남긴 Outlook 앱 원자료 {n}개를 지웠습니다(이름·주소가 든 임시 파일)."
 
 PY_NAMES = ("python.exe", "pythonw.exe", "py.exe")
 PS_NAMES = ("powershell.exe", "pwsh.exe")
@@ -46,18 +54,18 @@ def _say(s):
 
 # 프로세스 한 줄(Win32_Process 꼴) — created 는 epoch 초(모르면 None)
 Proc = collections.namedtuple("Proc", "pid ppid name cmd exe created")
-# 고른 항목(Stop-LM30.ps1 의 Pid·Name·Kind·Why·Keep·Created·Ppid)
+# 고른 항목(Stop-AF32.ps1 의 Pid·Name·Kind·Why·Keep·Created·Ppid)
 Item = collections.namedtuple("Item", "pid name kind why keep created ppid")
 
 
-# ── 고르기(순수 함수 — Stop-LM30.ps1 의 같은 이름 함수를 그대로 옮겼다) ─────────────────────────────
+# ── 고르기(순수 함수 — Stop-AF32.ps1 의 같은 이름 함수를 그대로 옮겼다) ─────────────────────────────
 def norm(s):
     """ConvertTo-LmNorm — / → \\ · 소문자."""
     return (s or "").replace("/", "\\").lower()
 
 
 def root_key(path):
-    """Get-LmRootKey — 'c:\\...\\loadmonitor28\\' (끝 \\ 까지 붙여야 'loadmonitor28-old\\' 를 이 폴더로 보지 않는다)."""
+    """Get-LmRootKey — 'c:\\...\\agentfinder32\\' (끝 \\ 까지 붙여야 'agentfinder32-old\\' 를 이 폴더로 보지 않는다)."""
     return norm(os.path.abspath(path).rstrip("\\/")) + "\\"
 
 
@@ -70,12 +78,10 @@ def older(parent, child):
 
 
 def get_keep(p):
-    """Get-LmKeep — 'teamserver' | 'move' | ''."""
+    """Get-LmKeep — 'teamserver' | ''."""
     name, cmd = (p.name or "").lower(), norm(p.cmd)
     if name in PY_NAMES and re.search(r"teamserver\.py", cmd):
         return "teamserver"
-    if name in PS_NAMES and re.search(r"prepare-move\.ps1", cmd):
-        return "move"
     return ""
 
 
@@ -123,7 +129,7 @@ def self_chain(by_pid, pids):
 
 
 def select_targets(procs, root, include_team=False, self_pid=0, keep_pids=()):
-    """Select-LmTargets — 프로세스 목록에서 이 폴더의 LM30 것을 고른다 → {'targets': [Item], 'kept': [Item]}(pid 순).
+    """Select-LmTargets — 프로세스 목록에서 이 폴더의 AF32 것을 고른다 → {'targets': [Item], 'kept': [Item]}(pid 순).
     self_pid·keep_pids 와 그 부모 줄기(강제종료 bat 창·이 파이썬)는 끝내지 않는다."""
     key = root_key(root)
     data_key = key + "data\\"
@@ -149,7 +155,7 @@ def select_targets(procs, root, include_team=False, self_pid=0, keep_pids=()):
         if not kind:
             continue
         keep = get_keep(p)
-        if keep == "move" or (keep == "teamserver" and not include_team):
+        if keep == "teamserver" and not include_team:
             kept[pid] = _item(p, kind, why, keep)
             continue
         sel[pid] = _item(p, kind, why, keep)
@@ -174,7 +180,7 @@ def select_targets(procs, root, include_team=False, self_pid=0, keep_pids=()):
                     queue.append(sel[cid])
                 continue
             keep = get_keep(c)
-            if keep == "move" or (keep == "teamserver" and not include_team):
+            if keep == "teamserver" and not include_team:
                 kept[cid] = _item(c, "python", f"child:{n.pid}", keep)
                 continue
             kind = "other"
@@ -220,7 +226,7 @@ def format_state(sel, now):
     lines = []
     t = list(sel["targets"])
     if not t:
-        lines.append("  끝낼 LM30 작업이 없습니다.")
+        lines.append("  끝낼 AF32 작업이 없습니다.")
     else:
         lines.append(f"  끝낼 것 {len(t)}개")
         for k, ko in KIND_KO.items():
@@ -230,11 +236,8 @@ def format_state(sel, now):
             ids = " ".join(f"{x.pid}({format_age(x.created, now)})" for x in g)
             lines.append(f"   · {ko} {len(g)}개 - pid {ids}")
     for x in sel["kept"]:
-        if x.keep == "teamserver":
-            lines.append(f"  [둠] 팀 서버 pid {x.pid}({format_age(x.created, now)}) - 팀 전체가 쓰는 서버라 두었습니다"
-                         "(함께 끄려면 LoadMonitor30-강제종료.bat -IncludeTeamServer)")
-        else:
-            lines.append(f"  [둠] PC 이동 준비 창 pid {x.pid} - 폴더 정리 중일 수 있어 두었습니다(그 창의 안내대로 끝내세요)")
+        lines.append(f"  [둠] 팀 서버 pid {x.pid}({format_age(x.created, now)}) - 팀 전체가 쓰는 서버라 두었습니다"
+                     "(함께 끄려면 AgentFinder32-강제종료.bat -IncludeTeamServer)")
     return lines
 
 
@@ -374,6 +377,18 @@ class WinProcs:
             k.CloseHandle(h)
 
 
+def drop_raw_left(root, say=None):
+    r"""이 폴더의 AF32 작업이 하나도 남지 않았을 때 — 멈춘 수집이 남긴 Outlook 앱 원자료(data\outlook\raw\*)를 지운다
+    (retention.drop_raw — 바로 아래의 보통 파일만 · 연결은 따라가지 않는다) → 지운 수. 실패는 삼킨다(다음 시작 때 run.py·화면이 지운다)."""
+    try:
+        n = int(retention.drop_raw(root) or 0)
+    except Exception:  # noqa: BLE001 - 정리는 덤 — 강제 종료의 결과를 바꾸지 않는다
+        return 0
+    if n:
+        (say or _say)(RAW_LINE.format(n=n))
+    return n
+
+
 def stop_targets(targets, osapi):
     """Stop-LmTargets — 콘솔 창 → 파이썬 → PowerShell → 전용 Edge → 나머지 순서로 끝낸다 → {pid: 실패 사유}."""
     fail = {}
@@ -393,14 +408,14 @@ def run_fallback(root, status=False, include_team=False, *, osapi=None, say=None
         osapi = osapi or WinProcs()
         me = os.getpid() if self_pid is None else self_pid
         return _invoke(root, status, include_team, osapi, say, sleep, now, me, keep_pids)
-    except Exception as e:  # noqa: BLE001 - Stop-LM30.ps1 의 catch 와 같다 — 사유를 보여 주고 exit 1
+    except Exception as e:  # noqa: BLE001 - Stop-AF32.ps1 의 catch 와 같다 — 사유를 보여 주고 exit 1
         say(f"  [!] 강제 종료 중 오류: {e}")
         return 1
 
 
 def _invoke(root, status, include_team, osapi, say, sleep, now, me, keep_pids):
     for ln in ("", " ==========================================================",
-               "  LoadMonitor30 강제 종료 - 이 폴더의 LM30 작업만 끝냅니다",
+               "  AgentFinder32 강제 종료 - 이 폴더의 AF32 작업만 끝냅니다",
                " ==========================================================", f"  폴더: {root}", ""):
         say(ln)
     before = select_targets(osapi.list(), root, include_team, me, keep_pids)
@@ -413,7 +428,8 @@ def _invoke(root, status, include_team, osapi, say, sleep, now, me, keep_pids):
         return 0
     n0 = len(before["targets"])
     if n0 == 0:
-        say("  [결과] 이미 모두 끝나 있습니다 - 끝낼 LM30 작업이 없습니다.")
+        say("  [결과] 이미 모두 끝나 있습니다 - 끝낼 AF32 작업이 없습니다.")
+        drop_raw_left(root, say)
         return 0
     say("  끝내는 중...")
     fail = stop_targets(before["targets"], osapi)
@@ -426,9 +442,10 @@ def _invoke(root, status, include_team, osapi, say, sleep, now, me, keep_pids):
     say("")
     left = after["targets"]
     if not left:
-        say(f"  [결과] LM30 작업을 모두 끝냈습니다({n0}개).")
+        say(f"  [결과] AF32 작업을 모두 끝냈습니다({n0}개).")
         if any(x.keep == "teamserver" for x in after["kept"]):
             say("         팀 서버는 팀 전체가 쓰므로 그대로 두었습니다.")
+        drop_raw_left(root, say)
         return 0
     say(f"  [결과] {len(left)}개가 아직 남아 있습니다:")
     for x in left:
@@ -456,7 +473,7 @@ def parse_opts(argv):
 
 
 def main(argv, *, runner=None, sleep=None, clock=None, say=None, fallback=None):
-    """Stop-LM30.ps1 을 띄우고(→ 그 종료 코드), 끝내 못 켜지면 파이썬으로 같은 규칙대로 끝낸다."""
+    """Stop-AF32.ps1 을 띄우고(→ 그 종료 코드), 끝내 못 켜지면 파이썬으로 같은 규칙대로 끝낸다."""
     say = say or _say
     args = list(argv) + ["-KeepPid", str(os.getpid())]
     rc, failed = ps_launch.launch(STOP_PS1, args, runner=runner, sleep=sleep, clock=clock, say=say)

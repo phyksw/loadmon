@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-projmap.py — 사용자 지정 과제 (LoadMonitor24)
+projmap.py — 사용자 지정 과제 (AgentFinder32)
 
-사용자가 UI에서 지정한 프로젝트는 config\\projects.json 에 저장된다:
+사용자가 UI에서 지정한 과제는 config\\projects.json 에 저장된다(이 PC 에만 — 공유 리포트에는 이름이 가려진다):
   [{"name": "프로젝트A", "match": ["proja", "간섭계"], "desc": "무엇에 관한 과제인지 설명"}]
 
 역할 구분:
@@ -17,6 +17,8 @@ projmap.py — 사용자 지정 과제 (LoadMonitor24)
   그 외 0 — 재귀속하지 않음 (임계 RETAG_THRESHOLD=0.5 · 1·2위 차 RETAG_MARGIN=0.3 — 동점이면 옮기지 않음, LM28)
 키워드 판정(_kw_hit)은 LM28 에서 LM27 경계(한글 앞 경계·head 접두 ≤3·'ai' 단어 경계)로 바꿨다(A-30).
 사용자가 지정한 다른 프로젝트로 이미 판정된 신호는 존중하고 건드리지 않는다.
+지정 과제의 이름·설명·키워드는 G3 행 관문(judge.sendable — 제한 고객·민감정보·식별번호는 빼고, 사람 이름·고객사는 가린 사본)을
+지난 사본으로만 Copilot 프롬프트에 실린다. 걸리면 이 PC 의 규칙 재분류에만 쓴다. 숫자는 신호 건수만 다룬다(시간·MM 없음).
 """
 import difflib
 import json

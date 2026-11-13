@@ -1,50 +1,75 @@
 # -*- coding: utf-8 -*-
-"""
-mine.py — 개인 PC 수집 데이터에서 업무 로드를 추출한다.
+r"""
+mine.py — 정제된 메일·일정에서 업무 분류 초안을 만든다(AgentFinder32 분석 첫 단계 · Agentic AI 전환 과제 발굴용).
 
-  python mine.py <수집데이터폴더> --from 2026-05-19 --to 2026-08-17 [--name 홍길동] [--func System]
+  python mine.py <수집데이터폴더> [--from 2026-08-01] [--to 2026-10-31]
 
-출력: 화면 표 + report\\mm_rows_<기간>.csv ([매핑데이터] 형식)
+  · 시작 검사: 설치 위치·옛 LoadMonitor 파일(core\install.startup_check — 막히면 종료 4) → 내 자료인지(core\consent.require —
+    다른 사용자의 자료면 종료 4 · 지우는 중이면 3) → 제한 고객 목록(core\privacy.load_restricted — 없으면 종료 4).
+  · 기간은 core\period.clamp 로 맞춘다(어제까지 · 최대 period.maxDays 일). 잘렸으면 한 줄로 알린다.
+  · --name · --func 는 받기만 하고 쓰지 않는다(Function 은 config.function).
+
+출력(report\ — 날짜만, 시각 없음)
+  work_rows_<기간>.csv   Function,Level 1,유형,Level 2,Level 3,상세설명,근거건수,근거,확신도,ax,field,share
+  evidence_<기간>.md     '## 과제 / 세부업무 — 근거 N건' + '- MM-DD 글' 줄
+  signals_<기간>.csv     time,source,who,project,activity,weight,text,flag
+  run_meta_<기간>.json   {"product","tag","period","clamped","generated","signals","counted","excluded","weights",
+                          "restricted_sha256","config_warnings"}
+
+종료 코드: 0 정상 · 1 오류 · 2 신호 0건 · 3 지우는 중 · 4 시작 거부(다른 사용자의 자료·설치 위치·옛 파일·제한 고객 목록) · 5 결과 파일이 열려 있음
 """
 import csv
-import json
 import io
+import json
 import os
 import sys
 from datetime import date
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "core"))
+ROOT = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(ROOT, "core"))
 from progress import progress  # noqa: E402
+import afcfg  # noqa: E402
+import consent  # noqa: E402
+import details  # noqa: E402  - 과제명 관문(사람·공지)·지난 체계(entities)·상위 채움
 import extract  # noqa: E402
-import attendance  # noqa: E402  - LM30(2026-10-18) 출퇴근 추정 — 날짜별 시각은 이 PC 전용(take_local)
-import details  # noqa: E402  - 과제명 관문(사람·공지)·지난 체계(entities) 판별·상위 채움 단일원(LM28 진단 B)
+import install  # noqa: E402
+import lmname  # noqa: E402
+import period  # noqa: E402
+import privacy  # noqa: E402
+
+RC_OK, RC_FAIL, RC_EMPTY, RC_CONSENT, RC_REFUSED, RC_LOCKED = 0, 1, 2, 3, 4, 5
+WORK_COLS = ["Function", "Level 1", "유형", "Level 2", "Level 3", "상세설명", "근거건수", "근거", "확신도", "ax", "field",
+             "share"]
+SIGNAL_COLS = ["time", "source", "who", "project", "activity", "weight", "text", "flag"]
 
 
 def _wrap_stdout():
-    """콘솔(bat)=콘솔 코드페이지 · 파이프(UI)=utf-8. 스크립트로 돌 때만 바꿔 끼운다(LM28 — 예전엔 임포트만 해도 바꿔 끼워
-    run.py·시험의 sys.stdout 이 갈렸다)."""
+    """콘솔(bat)=콘솔 코드페이지 · 파이프(UI)=utf-8. 스크립트로 돌 때만 바꿔 끼운다(임포트만으로 sys.stdout 을 바꾸지 않는다)."""
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, errors="replace", encoding=(
         (sys.stdout.encoding or "utf-8") if sys.stdout.isatty() else "utf-8"))
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
-# 개인 파일 제외 — 리포트·AI 프롬프트에 실리면 안 되는 경로 키워드. 단일원은 core\privacy(EXCLUDE ∪
-# config.excludePathKeywords = privacy.excluded_keywords — WP7). 이 이름은 run.py(--collect-only) 호환용으로만 남긴다.
-import privacy  # noqa: E402
-EXCLUDE = list(privacy.EXCLUDE)
-
 
 def arg(flag, dflt=""):
-    return sys.argv[sys.argv.index(flag) + 1] if flag in sys.argv else dflt
+    return sys.argv[sys.argv.index(flag) + 1] if flag in sys.argv[:-1] else dflt
+
+
+def positional(argv):
+    """플래그와 그 값을 뺀 위치 인자(--name·--func 의 값이 수집 폴더로 잡히지 않게)."""
+    out, skip = [], False
+    for a in argv:
+        if skip:
+            skip = False
+            continue
+        if a.startswith("--"):
+            skip = a in ("--from", "--to", "--name", "--func")
+            continue
+        out.append(a)
+    return out
 
 
 def known_projects(cfg, people=()):
-    """규칙 기준선이 쓸 과제 — config 힌트 + UI 지정 + **이전 판정에서 발견된 과제**.
-    한 번이라도 판정에 성공했다면 그 이름이 재사용되므로, 이후 판정이 실패해도 화면이
-    파일명 조각이 아니라 과제명으로 묶인다(실측 대응).
-    LM28(진단 B): entities 는 최신부터 훑어 규칙 폴백 산출물("fallback": true · 옛 판은 AI 흔적 없는 목록 —
-    details.entities_is_fallback)을 건너뛴다 — 예전 판별(match 유무)은 폴백 항목도 늘 match 를 가져 듣지 않았다.
-    entities 에서 온 이름은 사람 이름(people = details.person_keys 키)·공지류면 버린다 — 한 번 과제로 적힌
-    사람 이름이 다음 mine 에서 그 사람이 나오는 신호를 전부 끌어오던 되먹임을 끊는다. config·지정은 사람이 적은 것이라 그대로.
+    """규칙 기준선이 쓸 과제 — config 지정 + 화면 지정(projects.json) + **이전 판정에서 발견된 과제**.
+    entities 는 최신부터 훑어 규칙 폴백 산출물을 건너뛰고(details.newest_entities), 거기서 온 이름이 사람 이름·공지류면 버린다.
     returns [{"name", "match"[], "l1", "pinned"}] — l1 = 상위(지정 level1 > entities l1, 고정 범주로 스냅, 없으면 "")."""
     out, idx = [], {}
 
@@ -60,12 +85,12 @@ def known_projects(cfg, people=()):
             for a in alts:
                 if a.lower() not in {x.lower() for x in cur["match"]}:
                     cur["match"].append(a)
-            if l1 and (pinned or not cur["l1"]):       # 사람이 못 박은 상위가 이긴다
+            if l1 and (pinned or not cur["l1"]):       # 사람이 정한 상위가 이긴다
                 cur["l1"] = l1
             cur["pinned"] = cur["pinned"] or pinned
             return
         idx[key] = len(out)
-        out.append({"name": name, "match": alts, "l1": l1, "pinned": pinned})   # 별칭은 이름이 아니라 '매칭어'로
+        out.append({"name": name, "match": alts, "l1": l1, "pinned": pinned})
 
     for p in extract.cfg_list(cfg, "projects"):
         if isinstance(p, dict):
@@ -73,22 +98,19 @@ def known_projects(cfg, people=()):
         else:
             add(p)
     try:
-        sys.path.insert(0, os.path.join(ROOT, "core"))
         import projmap
         for p in projmap.load_user_projects(ROOT):
             add(p.get("name"), p.get("match") or [], p.get("level1") or "", pinned=True)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"[mine] 지정 과제 로드 건너뜀({type(e).__name__})")
     try:
-        # 최신순으로 훑되, 판정이 실제로 성공한 체계를 만나면 그것을 쓴다.
-        # (직전 실행이 실패해 규칙 토큰만 남겼어도, 그 이전의 성공 체계를 재사용한다)
         ent, _fp = details.newest_entities(os.path.join(ROOT, "report"))
         for m in ent.get("models") or []:
             if not isinstance(m, dict):
                 continue
             nm = str(m.get("name") or "").strip()
             if details.ukey2(nm) not in idx and not details.task_name_ok(nm, people):
-                continue                      # 사람 이름·공지류 — 과제가 아니다(지정·config 와 같은 이름이면 합친다)
+                continue                      # 사람 이름·공지류 — 과제가 아니다
             add(nm, m.get("match") or [], m.get("l1") or "")
     except (OSError, ValueError, AttributeError, TypeError):
         pass
@@ -96,18 +118,13 @@ def known_projects(cfg, people=()):
 
 
 def _locked_writes(jobs):
-    """결과 파일 4종을 임시파일에 쓴 뒤 교체한다. Excel 등이 파일을 열어두면(Windows 잠금)
-    교체가 PermissionError 로 실패하는데, 예전엔 거기서 통째로 죽어 mm_rows 만 새것이고
-    meta 는 낡은 반쪽 상태가 됐다(실측: 로드율 '—' + '종료' 배너). 잠긴 파일은 건너뛰고
-    나머지는 마저 쓴 뒤, 무엇이 잠겼는지 돌려준다.
-    임시파일 이름에는 pid 를 붙인다 — 같은 사본에서 분석이 동시에 돌면(UI 재실행·팀 일괄) 같은
-    .tmp 를 서로 지우고 덮어써 한쪽이 '열려 있음' 으로 실패했다(실측 exit 4)."""
+    """결과 파일을 임시파일에 쓴 뒤 교체한다. Excel 등이 파일을 열어 두면(Windows 잠금) 교체가 실패한다 — 잠긴 파일은
+    건너뛰고 나머지는 마저 쓴 뒤 잠긴 이름 목록을 돌려준다. 임시파일 이름에 pid 를 붙인다(같은 폴더의 동시 실행 대비)."""
     import glob as _glob
     import time as _time
     locked = []
     for path, writer in jobs:
-        # 죽은 실행이 남긴 임시파일만 정리(10분 이상) — 지금 동시에 도는 다른 분석의 것은 건드리지 않는다
-        for old in _glob.glob(_glob.escape(path) + ".*.tmp"):
+        for old in _glob.glob(_glob.escape(path) + ".*.tmp"):     # 죽은 실행이 남긴 임시파일만(10분 이상)
             try:
                 if _time.time() - os.path.getmtime(old) > 600:
                     os.remove(old)
@@ -128,308 +145,166 @@ def _locked_writes(jobs):
     return locked
 
 
-def meta_doc(d0, d1, months, sig, meta, total_mm, avail_mm, load_pct, mm_months, cfg_warns, day_hours, hinfo,
-             ts_stat=None, admin_mm=None):
-    """mm_meta_<기간>.json 본문. measure·coverage·cfg_used(D5)는 mm_basis 에도 남고 최상위에도 싣는다 — 팀 취합(teamup)·
-    리포트·UI 가 읽는다. LM28: unobserved_days(원장이 미관측이라 한 흔적 없는 평일)·time_share(shareBasis=time 일 때)를
-    최상위에 더한다(추가 키만 — 팀 호환 불변). LM30(2026-10-28): admin_mm(근태·출장 등록 몫 — 건수·일수만)."""
-    doc = {"period": [d0.isoformat(), d1.isoformat()], "months": round(months, 2),
-           "signals": len(sig), "counted": meta["counted"],
-           "excluded": meta["excluded"], "weights": meta["weights"],
-           "total_mm": total_mm, "avail_mm": avail_mm,
-           "load_pct": round(load_pct, 1), "mm_months": mm_months,
-           "config_warnings": cfg_warns,
-           "worked_h": round(sum(day_hours.values()), 1),
-           "measure": hinfo.get("measure"), "coverage": hinfo.get("coverage"),
-           "cfg_used": hinfo.get("cfg_used"), "tool_usage": hinfo.get("tool_usage"),
-           "unobserved_days": list(hinfo.get("unobserved_days") or []),
-           "mm_basis": hinfo,
-           "day_hours": {k.isoformat(): round(v, 2) for k, v in day_hours.items()}}
-    if ts_stat:
-        doc["time_share"] = ts_stat
-    if hinfo.get("mm_lm29") is not None:
-        doc["mm_lm29"] = hinfo["mm_lm29"]          # LM30 — 출퇴근 추정이 투입을 맡았을 때 'LM29 방식이었다면 X MM'
-    if admin_mm:
-        doc["admin_mm"] = admin_mm                 # LM30(2026-10-28) — 근태·출장 등록 몫(건수·일수만 · 날짜는 admin_days 파일 — 이 PC 전용)
-    return doc
+def collect_excluded(data_dir):
+    r"""data\outlook\collect_summary.json(§5.3)의 수집 때 제외 건수 — 없거나 깨졌으면 0."""
+    out = dict.fromkeys(extract.COLLECT_EXCLUDED_KEYS, 0)
+    try:
+        with open(os.path.join(data_dir, "outlook", "collect_summary.json"), encoding="utf-8-sig") as f:
+            doc = json.load(f)
+        ex = doc.get("excluded") if isinstance(doc, dict) else None
+    except (OSError, ValueError):
+        ex = None
+    if isinstance(ex, dict):
+        for k in out:
+            try:
+                out[k] = max(0, int(ex.get(k) or 0))
+            except (TypeError, ValueError):
+                out[k] = 0
+    return out
+
+
+def excluded_doc(collected, analysed):
+    """run_meta.excluded — 수집 때 칸(§5.3)은 수집 건수 + 분석 때 같은 규칙으로 다시 뺀 건수, 그 뒤 분석 때만 생기는 칸."""
+    out = {k: int(collected.get(k, 0)) + int(analysed.get(k, 0)) for k in extract.COLLECT_EXCLUDED_KEYS}
+    out.update({k: int(analysed.get(k, 0)) for k in extract.ANALYSIS_EXCLUDED_KEYS})
+    return out
+
+
+def meta_doc(d0, d1, info, sig, meta, excluded, restricted_sha256, cfg_warns, *, today=None):
+    """run_meta_<기간>.json 본문(spec §5.6) — 시간·MM·가용·부하·날짜 목록은 없다."""
+    return {"product": lmname.PRODUCT, "tag": period.tag_of(d0, d1),
+            "period": {"from": d0.isoformat(), "to": d1.isoformat()},
+            "clamped": info if (isinstance(info, dict) and info.get("clamped")) else None,
+            "generated": (today or date.today()).isoformat(),
+            "signals": len(sig),
+            "counted": {k: int(meta["counted"].get(k, 0)) for k in ("mail_in", "mail_out", "meetings")},
+            "excluded": excluded,
+            "weights": dict(meta["weights"]),
+            "restricted_sha256": restricted_sha256,
+            "config_warnings": list(cfg_warns)}
+
+
+def run_clamp(info):
+    """run.py 가 이미 줄인 기간을 넘기면(환경 AF32_CLAMP = period.clamp 의 info JSON) 그 줄임 정보를 쓴다 —
+    넘겨받은 날짜로 다시 재면 늘 '안 줄임'이 되어 run_meta.clamped 가 비었다(D2)."""
+    raw = os.environ.get("AF32_CLAMP") or ""
+    if not raw:
+        return info
+    try:
+        got = json.loads(raw)
+    except ValueError:
+        return info
+    if isinstance(got, dict) and got.get("clamped") and isinstance(got.get("requested"), dict):
+        return got
+    return info
 
 
 def main():
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    args = positional(sys.argv[1:])
     if not args:
         print(__doc__)
-        return 2
-    data_dir = args[0]
-    d0 = date.fromisoformat(arg("--from", "2026-01-01"))
-    d1 = date.fromisoformat(arg("--to", date.today().isoformat()))
-    owner = arg("--name", os.environ.get("USERNAME", ""))
-    func = arg("--func", "")
-    months = max(0.5, (d1 - d0).days / 30.44)
+        return RC_EMPTY
+    data_dir = os.path.abspath(args[0])
+    # ── 시작 검사 ─────────────────────────────────────────────────────────────────────
+    msg = install.startup_check(ROOT)
+    if msg:
+        print(f"[mine] {msg}")
+        return RC_REFUSED
+    cfg_raw = afcfg.load(ROOT)
+    cfg, eff_warns = afcfg.effective(cfg_raw)
+    try:
+        consent.require(ROOT, cfg_raw)
+    except consent.ConsentRequired as e:
+        print(f"[mine] {e.message}")
+        return RC_REFUSED if getattr(e, "code", RC_CONSENT) == RC_REFUSED else RC_CONSENT
+    try:
+        d0, d1, info = period.clamp(arg("--from") or None, arg("--to") or None, cfg)
+    except ValueError as e:
+        print(f"[mine] {e}")
+        return RC_FAIL
+    from_run = bool(os.environ.get("AF32_CLAMP"))
+    info = run_clamp(info)
+    note = period.notice_text(info, d0, d1, cfg)
+    if note and not from_run:                # run.py 가 넘긴 기간이면 run.py 가 이미 알렸다
+        print(f"[기간] {note}")
+    try:
+        restricted = privacy.load_restricted(cfg, ROOT)
+    except privacy.RestrictedListError as e:
+        print(f"[mine] {e.message}")
+        return RC_REFUSED
 
-    cfg = extract.load_cfg()
-    exclude = privacy.excluded_keywords(cfg)      # 내장 EXCLUDE ∪ config.excludePathKeywords(judge·refine 와 같은 단일원)
     progress("신호 수집", 0, 3)
-    sig, meta = extract.load_signals(data_dir, d0, d1, exclude, cfg)
-    if not sig:
-        print(f"[mine] 신호 0건 — 수집 폴더 확인: {data_dir}")
-        return 2                     # 2 = 신호 없음 (예외 사망(3)과 구분 — run.py 가 다르게 안내)
-    print(f"[mine] {d0}~{d1} ({months:.1f}개월) · 신호 {len(sig)}건")
-    print("[출처] 채택: " + ", ".join(f"{k} {v}" for k, v in
-                                    sorted(meta["counted"].items(), key=lambda x: -x[1])))
-    if meta["excluded"]:
-        print("[출처] 제외: " + ", ".join(f"{k} {v}" for k, v in meta["excluded"].items())
-              + "   ← CC·단체발송·비업무는 본인 업무로 계상하지 않음")
-
-    # MM v4: 투입 MM(실제 투입시간, 상한 없음) 과 가용 MM(유급휴가를 일자에서 뺀 값)을 나란히 낸다.
-    # 로드율 = 투입 ÷ 가용. PC 가동시간은 시간의 근거가 아니라 그날 일했는지 교차확인과
-    # 초과근무 산정에만 쓴다 (PC 시간만으로 재면 MM이 실제의 1/5로 붕괴).
-    # LM30(2026-10-21) 유급휴가 = 달력 + 근태 기록 칸의 휴가 열 + '휴가 날짜' 칸(attendance 머리말 22) — 일하지 않은 날로 세지 않고 가용에서 뺀다
-    progress("신호 수집", 1, 3)
-    absence = dict(extract.absence_days(data_dir, d0, d1))
-    day_hours, hinfo = extract.day_work_hours(data_dir, sig, d0, d1, cfg,
-                                              file_times=meta.get("file_times"))
-    # 휴가 추정(PC 도 흔적도 없는 평일 — 내부 이름 inferred_absence)은 달력 휴가와 합쳐 가용에서 뺀다 (LM22). LM30(2026-10-21)부터는
-    # 다른 유급휴가처럼 가용에서만 뺀다(그 달 평일수 = 투입 MM 분모에는 남긴다 — 예전 A31 은 분모에서도 뺐다) — inferred 로 따로 넘겨
-    # 달마다 그 몫(absent_inferred)을 적는다.
-    inferred = hinfo.pop("inferred_absence", {}) or {}
-    absence.update(inferred)
-    # LM30(2026-10-18): 날짜별 출근·퇴근·덩어리·평소 시각은 이 PC 에만 — mm_meta(팀으로 올라간다)에 실리기 전에 떼어
-    # report\attendance_<기간>.json 으로 쓴다(LM29 근거의 저녁·새벽 창 시각도 길이로 바뀐다)
-    # LM30(2026-10-19): 근태 기록·GERP 와 견준 합계(+@ — att_agg)도 이 PC 의 attendance 파일에만(mm_meta 에는 근태 없이 잰 합계)
-    att_days, att_usual, att_agg = attendance.take_local(hinfo)
-    tag_h = f"{d0.isoformat().replace('-', '')}-{d1.isoformat().replace('-', '')}"
-    extract.save_day_hours(os.path.join(ROOT, "report"), tag_h,
-                           day_hours)      # 추이 실선의 재료 — 화면은 읽기만 한다(재계산 금지)
-    extract.save_attendance(os.path.join(ROOT, "report"), tag_h, att_days, att_usual, att_agg)
-    # 잘못된 설정값은 죽지 않고 기본값으로 대체됐다 — 무엇이 무시됐는지 사용자에게 보인다
-    cfg_warns = list(dict.fromkeys(list(meta.get("config_warnings") or [])
-                                   + list(hinfo.get("config_warnings") or [])))
+    sig, meta = extract.load_signals(data_dir, d0, d1, privacy.excluded_keywords(cfg), cfg, restricted=restricted)
+    cfg_warns = list(dict.fromkeys(list(eff_warns) + list(meta.get("config_warnings") or [])))
     for w in cfg_warns:
         print(f"[설정] {w}")
-    # 미래 평일·오늘 잔여는 가용이 아니다(A34) — future_days·today_fraction 이 hinfo 에 남는다
-    mm_months, total_mm, avail_mm = extract.mm_from_hours(
-        day_hours, d0, d1, cfg=cfg, absence=absence, inferred=inferred, info=hinfo)
-    load_pct = (total_mm / avail_mm * 100) if avail_mm else 0.0
-    print(f"[MM] 투입 {total_mm:.2f} MM ({sum(day_hours.values()):.0f}h) / "
-          f"가용 {avail_mm:.2f} MM  →  로드율 {load_pct:.0f}%")
-    # LM30(2026-10-18) — 출퇴근 추정 합계(시간·일수만 — 출근·퇴근 시각은 로그에도 찍지 않는다)
-    att = hinfo.get("attendance") if isinstance(hinfo.get("attendance"), dict) else {}
-    at = att.get("total") or {}
-    if at:
-        print(f"     출퇴근 추정({'투입 MM 에 씀' if att.get('used_for_mm') else '참고 — 투입 MM 은 LM29 방식'}) — "
-              f"근무 {at.get('work_h', 0):.1f}h · 연장 {at.get('ext_h', 0):.1f}h · 야간 {at.get('night_h', 0):.1f}h · "
-              f"휴일 {at.get('holiday_h', 0):.1f}h · PC 밖 {at.get('offpc_h', 0):.1f}h · 20시 넘은 퇴근 {at.get('late_days', 0)}일 · "
-              f"휴가일 근무 {at.get('leave_work_days', 0)}일 · 52시간 넘은 주 {at.get('over52_weeks', 0)}주 · "
-              f"출근·퇴근을 어림한 날 {at.get('est_edge_days', 0)}일"
-              + (f" · LM29 방식이었다면 {hinfo['mm_lm29']:.2f} MM" if hinfo.get("mm_lm29") is not None else ""))
-        # LM30(2026-10-19) +@ — 근태 기록 = 확실히 일한 부분, +@ = 그 밖에서 LM 이 찾은 근무(근태가 없으면 연장 + 휴일로 추정).
-        # 근태에서 나온 값은 이 PC 의 attendance 파일 합계(att_agg)에만 있다 — 시간 합계만 찍는다(시각 없음)
-        la = att_agg if isinstance(att_agg, dict) else {}
-        lt = la.get("total") if isinstance(la.get("total"), dict) else {}
-        rc = la.get("records") if isinstance(la.get("records"), dict) else {}
-        if rc.get("present"):
-            print(f"     +@ {lt.get('plus_all_h', 0):.1f}h — 근태 기록과 견준 것 {lt.get('plus_h', 0):.1f}h · 기록 없이 추정한 것 "
-                  f"{lt.get('plus_est_h', 0):.1f}h · 근태 기록 {rc.get('days', 0)}일 · 근태 시간 중 PC 흔적 없는 시간 "
-                  f"{rc.get('missing_h', 0):.1f}h · 기록 없는 근무일 {rc.get('no_record_work_days', 0)}일 · "
-                  f"읽지 못한 행 {rc.get('bad_rows', 0)}개(이 PC 에만)")
-        else:
-            _sd = attendance._std((hinfo.get("cfg_used") or {}).get("standardDayHours"))
-            print(f"     +@ {attendance.est_of(at):.1f}h — 근태 기록 없이 추정(하루 {_sd:g}시간 넘은 시간·휴일 근무)")
-        # LM30(2026-10-19) 시간외 나눠 보기 — 주말·휴일·저녁(19~22시)·야간(모두 투입에 든 시간 · 합계뿐)
-        print("     시간외 — " + attendance.offhours_line(at, (hinfo.get("cfg_used") or {}).get("nightWindow"),
-                                                        bool(att.get("used_for_mm"))))
-        # LM30(2026-10-20) PC 사용 시간(PC 를 실제로 쓴 시간 · 켜 둔 날 — 합계뿐)
-        for _pu in attendance.pc_usage_lines(at, (hinfo.get("cfg_used") or {}).get("pcFloorWindow")):
-            print("     " + _pu)
-    # LM30(2026-10-19) 발신 흔적 빈 곳 — PC 는 켰는데 내 메일·팀즈 발신이 없다(새로 깐 PC 는 전용 Edge 에 한 번 로그인해야 읽는다)
-    _sg = attendance.send_gap_text(hinfo.get("send_gap"))
-    if _sg:
-        print(f"[주의] {_sg}")
-    # LM30(2026-10-21) 달마다 근거 — 하루 8시간으로 채운 달(PC 켜고 끈 기록 없음)·발신 0건인 달·Windows 보관 주 수(일수·건수만 — 카드와 같은 글자)
-    _sg0 = hinfo.get("send_gap") if isinstance(hinfo.get("send_gap"), dict) else {}
-    for _ln in attendance.month_lines(hinfo.get("pc_months"), (_sg0.get("months") or []) if _sg0.get("warn") else (),
-                                      hinfo.get("pc_log")):
-        print(f"[주의] {_ln}")
-    # LM30(2026-10-21) 유급휴가 — 일하지 않은 날로 세지 않고 가용에서 뺀다(일수만 — 진행 로그는 얼린 사본에 남을 수 있어 날짜를 싣지 않는다)
-    _lvl = att_agg.get("leave") if isinstance(att_agg, dict) else None
-    # 출퇴근 추정이 깨져 attendance 파일에 휴가 칸이 없으면 일수만(leave_n — 오늘까지 휴가로 본 날 · 없으면 달마다 가용에서 뺀 휴가 합)
-    _lvn = hinfo.get("leave_n")
-    if _lvn is None:
-        _lvn = round(sum(float((v or {}).get("absent") or 0) for v in mm_months.values() if isinstance(v, dict)), 1)
-    print("     " + (attendance.leave_count_line(_lvl) if isinstance(_lvl, dict) else
-                     f"유급휴가 {_lvn:g}일 — 법정 휴가라 일하지 않은 날로 세지 않고 가용에서 뺍니다"))
-    print(f"     초과근무 {hinfo['overtime_h']:.0f}h · "
-          f"주말근무 {hinfo['weekend_days']}일 · 야근일 {hinfo['night_days']}일 · "
-          f"PC가동 하한 보정 {hinfo.get('pc_floor_h', 0):.0f}h/{hinfo.get('pc_floor_days', 0)}일")
-    # LM28(WP8) — 시간 꼬리표(휴일 > 야간 > 정규 > 연장)·퇴근 후 인정·PC 밖 발신·사적 차감·미관측
-    print(f"     정규 {hinfo.get('regular_h', 0):.1f}h · 연장 {hinfo.get('extended_h', 0):.1f}h · "
-          f"야간 {hinfo.get('night_h', 0):.1f}h · 휴일 {hinfo.get('holiday_h', 0):.1f}h"
-          f"(휴일 야간 {hinfo.get('holiday_night_h', 0):.1f}h) · 퇴근 후 인정 창 {hinfo.get('evening_window_h', 0):.1f}h · "
-          f"PC 밖 발신 {hinfo.get('remote_send', 0)}건 · 사적 차감 {hinfo.get('private_deducted_h', 0):.1f}h"
-          + (f" · 미관측 평일 {len(hinfo.get('unobserved_days') or [])}일(그중 "
-             f"{hinfo.get('inferred_absence_blocked_unobserved', 0)}일은 읽지 못한 날이라 휴가로 보지 않았습니다)"
-             if hinfo.get("coverage_ledger") else ""))
-    print(f"     점심 차감 {hinfo.get('lunch_deducted_h', 0):.0f}h · "
-          f"저녁 식사 차감 {hinfo.get('dinner_deducted_h', 0):.1f}h · "
-          f"저녁·새벽 인정 {hinfo.get('evening_credit_h', 0):.0f}h · "
-          f"주말 산출물 창 {hinfo.get('weekend_window_h', 0):.0f}h · "
-          f"수동흔적만 {hinfo.get('floor_blocked_passive_days', 0)}일(하한 미적용) · "
-          f"휴가로 본 평일 {hinfo.get('inferred_absence_days', 0)}일(PC 기록도 흔적도 없는 평일 — 휴가로 보고 가용에서 뺐습니다) · "
-          f"미래시각 폐기 {hinfo.get('future_signals_dropped', 0)}건")
-    # LM28(E) — 퇴근 후 미인정·시각 미상 발신·표준일 추정(PC 기록 없는 달)·AI 비업무 발신 시간 유지 — 값이 있을 때만 한 줄
-    if any(hinfo.get(k) for k in ("evening_missed_days", "untimed_sends", "std_nopc_days", "hint_only_days",
-                                   "ai_n_time_kept")):
-        print(f"     퇴근 후 미인정 {hinfo.get('evening_missed_days', 0)}일·PC {hinfo.get('evening_missed_pc_h', 0):.1f}h"
-              f"(퇴근 뒤 PC 는 켜져 있었는데 내 흔적 없음) · 시각 미상 발신 {hinfo.get('untimed_sends', 0)}통"
-              f"({hinfo.get('untimed_credit_h', 0):.1f}h 인정) · 표준일 추정 {hinfo.get('std_nopc_days', 0)}일"
-              f"(+{hinfo.get('std_nopc_h', 0):.1f}h — PC 기록 없는 달) · 브라우저 기록만 있는 평일 "
-              f"{hinfo.get('hint_only_days', 0)}일 · AI 비업무 발신 시간 유지 {hinfo.get('ai_n_time_kept', 0)}건")
-    print(f"     상한 없음(하루 24h 물리 한계만) · 이상치 {len(hinfo.get('anomalies') or [])}일 · "
-          f"16h 초과 {len(hinfo.get('long_days') or [])}일 · "
-          f"휴가일 근무 {hinfo.get('absent_worked_h', 0):.1f}h"
-          + ("   ★ 발신 메일의 60% 이상이 00~08시 — 시각이 UTC 로 기록된 듯합니다. "
-             "config.mm.mailTimeOffsetH(예: 9) 로 보정하세요" if hinfo.get("utc_suspect") else ""))
-    # LM22 2차 — 측정 방식·신뢰도(D5)와 새 보정(A6·A9·A13·A33·D3·D4·D7·A34) 한 줄씩
-    ms = hinfo.get("measure") or {}
-    cv = hinfo.get("coverage") or {}
-    grade = {"reliable": "신뢰", "caution": "주의", "unreliable": "측정 불충분"}.get(cv.get("grade"), "–")
-    print(f"     측정 {ms.get('method', '–')} · 샘플러 {ms.get('sampler_days', 0)}일 / PC 하한 {ms.get('pc_floor_days', 0)}일 / "
-          f"흔적 창 {ms.get('trace_window_days', 0)}일 / 종일 행사 {ms.get('offsite_days', 0)}일 / "
-          f"수동 기록 {ms.get('manual_days', 0)}일 · PC 기록 평일 {round((cv.get('pc_weekday_ratio') or 0) * 100)}% · "
-          f"신뢰도 {grade}" + (" — " + " · ".join(cv.get("reasons") or []) if cv.get("reasons") else ""))
-    extra_bits = []
-    if hinfo.get("offsite_days"):
-        extra_bits.append(f"종일 행사(출장·현장·교육) {hinfo['offsite_days']}일 {hinfo.get('offsite_h', 0):.1f}h 인정")
-    if hinfo.get("manual_days"):
-        extra_bits.append(f"수동 기록 {hinfo['manual_days']}일 {hinfo.get('manual_h', 0):.1f}h 인정")
-    if hinfo.get("sampler_stuck_days"):
-        extra_bits.append(f"샘플러 idle 고착 {hinfo['sampler_stuck_days']}일(폐기 → PC 하한)")
-    if hinfo.get("sampler_bridge_h"):
-        extra_bits.append(f"샘플러 공백 다리 {hinfo['sampler_bridge_h']:.1f}h")
-    if hinfo.get("flex_edge_h"):
-        extra_bits.append(f"시차 근무 창 밖 인정 {hinfo['flex_edge_h']:.1f}h")
-    if hinfo.get("weekend_pc_days"):
-        extra_bits.append(f"주말 PC 창 인정 {hinfo['weekend_pc_days']}일")
-    if hinfo.get("pc_record_missing_days"):
-        extra_bits.append(f"PC 기록 결측 평일 {hinfo['pc_record_missing_days']}일"
-                          f"(흔적 창 폴백 {hinfo.get('trace_window_h', 0):.1f}h/{hinfo.get('trace_window_days', 0)}일)")
-    pcc = hinfo.get("pc_coverage_by_month") or {}
-    low = [k for k, v in sorted(pcc.items()) if v < 0.4]
-    if low:
-        extra_bits.append("PC 기록 40% 미만(하한 미적용) " + ", ".join(f"{k} {round(pcc[k] * 100)}%" for k in low))
-    if hinfo.get("future_days"):
-        extra_bits.append(f"미래 평일 {hinfo['future_days']}일 가용 제외")
-    if hinfo.get("today_fraction") is not None:
-        extra_bits.append(f"오늘 {round(hinfo['today_fraction'] * 100)}% 가용")
-    if extra_bits:
-        print("     " + " · ".join(extra_bits))
-    # 야간 해석(솔버) 인정(S4-N1) — 밤 단위. 값이 0 이면 줄 자체를 내지 않는다
-    if hinfo.get("sim_night_h") or hinfo.get("sim_night_days"):
-        print(f"     야간 해석 인정 {hinfo.get('sim_night_h', 0):.1f}h · {hinfo.get('sim_night_days', 0)}일"
-              f"(상한 {hinfo.get('sim_night_capped_days', 0)}일 · "
-              f"재실행으로 상한 해제 {hinfo.get('sim_night_unlocked_days', 0)}일 · "
-              f"PC 밖 {hinfo.get('sim_night_remote_h', 0):.1f}h)")
-    progress("신호 수집", 2, 3)
-    # 과제명 관문(LM28 진단 B) — 사람 키는 신호 who 에서만 뽑는다. 지난 체계의 사람 이름·공지류는 기준선에서 빠지고,
-    # 규칙 토큰 후보에서도 빠진다(extract.build_items2). 상위는 지정 level1 > 지난 체계 l1 > 규칙 순(extract.to_rows).
-    people = details.person_keys(s[4] for s in sig)
+    if meta.get("unreadable"):
+        print(f"[mine] 날짜를 읽지 못한 행 {meta['unreadable']}개는 건너뛰었습니다")
+    if not sig:
+        print(f"[mine] 신호 0건 — {d0}~{d1} 기간의 메일·일정이 없습니다(수집 폴더: {data_dir})")
+        return RC_EMPTY
+    c = meta["counted"]
+    print(f"[mine] {d0}~{d1} · 신호 {len(sig)}건 (받은 메일 {c['mail_in']} · 보낸 메일 {c['mail_out']} · 회의 {c['meetings']})")
+    ex = excluded_doc(collect_excluded(data_dir), meta["excluded"])
+    if any(ex.values()):
+        print("[출처] 제외: " + ", ".join(f"{k} {v}" for k, v in ex.items() if v))
+    progress("신호 수집", 1, 3)
+
+    # 과제명 관문 — 사람 키는 신호 who(가명·'나' 뿐이라 대개 비어 있다)와 G1 이 남긴 이름 해시(data\cache\name_hashes.json)에서
+    # 얻는다. 상위는 지정 > 지난 체계 > 규칙.
+    people = details.person_keys((s[4] for s in sig), ROOT)
     kp = known_projects(cfg, people)
+    progress("신호 수집", 2, 3)
     items, assigns = extract.build_items2(sig, kp)
-    # LM30(2026-10-28) 근태·출장 등록 표기 — 등록뿐인 행은 공통 · 행정 처리(과제 몫 1분), 일정·수동기록이 표기뿐이면 그 시간을 그때 한
-    # 내 일의 과제로 나눈다(extract.admin_share_rows — 근무시간·총 MM 은 그대로). signals 파일의 weight(시간 근거)는 그대로 둔다.
-    assigns, adm_n = extract.admin_assigns(assigns, people)
-    adm_st, srows, admin_mm = {}, None, None
-    if adm_n["reg"] or adm_n["time"]:
-        srows = extract.admin_share_rows([extract.assign_row(a) for a in assigns], weights=meta.get("weights"),
-                                         holidays=extract._holiday_set(cfg), stats=adm_st, people=people)
-        items = extract.items_of_rows(srows)
-        admin_mm = extract.admin_counts(adm_st)
-        _an = extract.admin_note(admin_mm)
-        if _an:
-            print(f"     {_an}")
-    # 과제 몫 — 기본 'weight'(LM24 가중치 비율). mm.shareBasis="time" 이면 그날 투입 분을 과제에 나눈다(core\timeshare, LM28)
-    shares, ts_stat = None, None
-    if extract.norm_cfg(cfg)[0]["shareBasis"] == "time":
-        shares, ts_stat = (extract.time_shares_rows(srows, day_hours, cfg) if srows is not None
-                           else extract.time_shares(assigns, day_hours, cfg))
-        print(f"     과제 몫 = 시간(shareBasis=time) · 근무 중 미분류 {ts_stat.get('unclassified_min', 0) / 60:.1f}h")
-    rows = extract.to_rows(items, total_mm, owner, func, shares=shares,
+    rows = extract.to_rows(items, str(afcfg.get(cfg, "function") or ""),
                            l1_map={details.ukey2(p["name"]): p["l1"] for p in kp if p.get("l1")},
                            pin={details.ukey2(p["name"]): p["l1"] for p in kp if p.get("pinned") and p.get("l1")})
     progress("신호 수집", 3, 3)
-    # 총계는 [MM] 줄과 같은 total_mm 으로 — 행별 반올림 합(7.585→'7.58')과 총계('7.59')가 어긋나던 표시 결함
-    print(f"[mine] 업무 항목 {len(rows)}개 · 총 {total_mm:.2f} MM (주40h 근무일 기준)\n")
-
-    print(f"{'Level 2 (프로젝트)':26s} {'Level 3 (활동)':16s} {'비중':>6s} {'MM':>6s} {'일수':>4s} 확신 근거")
-    print("-" * 108)
+    print(f"[mine] 업무 항목 {len(rows)}개\n")
+    print(f"{'Level 2 (과제)':26s} {'Level 3 (세부업무)':18s} {'근거':>5s} 확신 근거 갈래")
+    print("-" * 80)
     for r in rows[:20]:
-        print(f"{r['Level 2'][:25]:26s} {r['Level 3'][:15]:16s} "
-              f"{r['share']*100:5.1f}% {r['mm']:6.2f} {r['활동일수']:4d}  {r['확신도']}  {r['근거'][:34]}")
+        print(f"{r['Level 2'][:25]:26s} {r['Level 3'][:17]:18s} {r['근거건수']:5d}  {r['확신도']}  {r['근거'][:30]}")
 
     out_dir = os.path.join(ROOT, "report")
     os.makedirs(out_dir, exist_ok=True)
-    tag2 = f"{d0:%Y%m%d}-{d1:%Y%m%d}"
-    out = os.path.join(out_dir, f"mm_rows_{tag2}.csv")
-    ev = os.path.join(out_dir, f"evidence_{tag2}.md")
-    sp = os.path.join(out_dir, f"signals_{tag2}.csv")
-    meta_path = os.path.join(out_dir, f"mm_meta_{tag2}.json")
-    # ax(AX 연계 표식)·field(분야)는 끝에 더한 열(LM28 — 기존 열·순서 불변, 읽는 쪽은 열 이름으로 읽는다)
-    cols = ["Function", "Level 1", "제품", "Level 2", "Level 3", "이름", "상세설명",
-            "share", "mm", "근거", "확신도", "활동일수", "ax", "field"]
+    tag = period.tag_of(d0, d1)
+    out = os.path.join(out_dir, f"work_rows_{tag}.csv")
+    ev = os.path.join(out_dir, f"evidence_{tag}.md")
+    sp = os.path.join(out_dir, f"signals_{tag}.csv")
+    meta_path = os.path.join(out_dir, f"run_meta_{tag}.json")
 
     def _w_rows(f):
-        w = csv.DictWriter(f, fieldnames=cols)
+        w = csv.DictWriter(f, fieldnames=WORK_COLS, extrasaction="ignore")
         w.writeheader()
         for r in rows:
-            row = {c: r.get(c, "") for c in cols}
-            row["Level 3"] = extract._one_line(row.get("Level 3"))   # S2: 세부업무 이름의 개행·탭은 셀·프롬프트를 가른다
-            w.writerow(row)
+            w.writerow({k: r.get(k, "") for k in WORK_COLS})
 
     def _w_ev(f):
         for r in rows:
-            f.write(f"## {r['Level 2']} / {r['Level 3']} — {r['mm']:.2f} MM ({r['share']*100:.1f}%)\n")
+            f.write(f"## {r['Level 2']} / {r['Level 3']} — 근거 {r['근거건수']}건\n")
             for x in r["evidence"]:
                 f.write(f"- {x}\n")
             f.write("\n")
 
-    def _sig_text(src, text):
-        """text 열은 100자 계약. 해석 출력 대표('이름 | 폴더:라벨 (해석 출력 N건)')는 폴더 라벨이 곧 신호라 꼬리(폴더·규모)를
-        남기고 이름 쪽을 줄인다(VF-H3 — 긴 결과 파일명이 라벨을 잘라내면 판정 뒤 재산정이 그 뭉치를 찾지 못했다)."""
-        s = extract._one_line(text, None)
-        if len(s) <= 100:
-            return s
-        if src == "파일(해석출력)":
-            i = s.rfind(" | 폴더:")
-            if i > 0 and len(s) - i < 100:
-                tail = s[i:]
-                return s[:100 - len(tail)].rstrip() + tail
-        return s[:100]
-
-    sig_flags = meta.get("flags") or {}        # G2(WP7): 광고 의심 메일 = 'ad' — Copilot 관문이 빼고, 팀 반출은 열째 뺀다
-
     def _w_sig(f):
         w = csv.writer(f)
-        # conv(LM30 2026-10-27) — 팀즈 대화 키(대화방 이름의 소금 친 sha1 — 이 PC 안에서만). judge 가 같은 내용 묶음·주변 채우기를
-        # 같은 대화방 안에서만 하게 쓴다. Copilot 에 보내지 않고 팀 반출·내보내기에서는 열째 뺀다(privacy.TEAM_DROP_COLS)
-        w.writerow(["time", "source", "who", "project", "activity", "weight", "text", "flag", "conv"])
+        w.writerow(SIGNAL_COLS)
         for t, src, text, wt, who, proj, act in assigns:
-            # S2: activity·text 는 한 줄로(개행·탭·앞뒤 공백 정규화) — 열 이름·text ≤100자 계약은 그대로
-            w.writerow([t.strftime("%Y-%m-%d %H:%M"), src, who, proj, extract._one_line(act), round(wt, 3),
-                        _sig_text(src, text), sig_flags.get((t, src, text), ""), extract.conv_of(meta, t, src, text, who)])
+            w.writerow([t.strftime("%Y-%m-%d"), src, who, proj, extract._one_line(act), round(wt, 3),
+                        extract._one_line(text, 100), ""])
 
     def _w_meta(f):
-        json.dump(meta_doc(d0, d1, months, sig, meta, total_mm, avail_mm, load_pct, mm_months, cfg_warns,
-                           day_hours, hinfo, ts_stat, admin_mm), f, ensure_ascii=False, indent=1)
+        json.dump(meta_doc(d0, d1, info, sig, meta, ex, restricted.sha256, cfg_warns), f, ensure_ascii=False, indent=1)
 
     locked = _locked_writes([(out, _w_rows), (ev, _w_ev), (sp, _w_sig), (meta_path, _w_meta)])
-    extract.save_admin_days(out_dir, tag2, adm_st)     # LM30(2026-10-28) 출장·근태계획 날짜 — 이 PC 전용(화면의 목적 미상 날짜)
     if locked:
         print(f"[mine] 저장 실패(다른 프로그램에서 열려 있음 — Excel 등, 또는 같은 폴더에서 다른 분석이 "
               f"동시에 실행 중): {', '.join(locked)}")
         print("       그 파일을 닫거나 다른 분석이 끝난 뒤 다시 실행하세요 — 닫지 않으면 화면이 낡은 값을 보여줍니다.")
-        return 4                          # 4 = 결과 파일 잠김 (원인 구분용)
-    print(f"\n[mine] 행 → {out}\n[mine] 근거 → {ev}\n[mine] 출처 메타 → {meta_path}")
-    return 0
+        return RC_LOCKED
+    print(f"\n[mine] 행 → {out}\n[mine] 근거 → {ev}\n[mine] 실행 정보 → {meta_path}")
+    return RC_OK
 
 
 if __name__ == "__main__":
@@ -442,4 +317,4 @@ if __name__ == "__main__":
         import traceback
         traceback.print_exc()        # 전문은 UI 로그로
         print(f"[mine] 오류로 중단: {sys.exc_info()[0].__name__}: {sys.exc_info()[1]}")
-        sys.exit(3)                  # 3 = 예외 사망
+        sys.exit(RC_FAIL)

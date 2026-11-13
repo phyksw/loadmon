@@ -1,7 +1,7 @@
 @echo off
 >nul chcp 949
 cd /d "%~dp0"
-title LoadMonitor30 - 팀 서버 주소 설정
+title AgentFinder32 - 조직장 팀 서버 주소
 
 set "PY_EXE="
 set "PY_ARGS="
@@ -35,46 +35,50 @@ if not exist "core\teamaddr.py" (
   exit /b 1
 )
 echo.
-echo  [팀 서버 주소] 팀 서버의 IP 와 포트를 따로 저장합니다 - 설치 폴더의 config\team_server.json
-echo     팀원 PC    : 분석 후 이 주소로 올립니다 - 대시보드 [팀 서버 업로드] 또는 LoadMonitor30-팀업로드.bat
-echo     팀 서버 PC : 이 포트로 팀 서버가 열리고, 이 IP 로 들어온 결과를 모아 취합합니다.
-echo     이 폴더를 통째로 옮기거나 팀원에게 나눠 주면 바꾼 주소가 그대로 따라갑니다.
-echo     대시보드는 주소를 보여 주기만 합니다 - 바꾸는 곳은 이 파일 하나입니다.
+echo  [조직장 팀 서버 주소] 조직장이 알려 준 주소와 참여 코드를 저장합니다 - 설치 폴더의 config\af32_team_server.json
+echo     저장만 합니다. 공유는 화면 [공유] 탭에서 내가 미리 보고 고를 때만 보냅니다.
+echo     화면은 주소를 보여 주기만 합니다 - 바꾸는 곳은 이 파일 하나입니다.
 echo.
 "%PY_EXE%" %PY_ARGS% core\teamaddr.py --show
 echo.
 echo  바꿀 값만 입력하고, 그대로 둘 값은 Enter 만 누르세요.
+echo  주소 칸에는 접속정보의 주소를 그대로 붙여 넣어도 됩니다(예: http://10.0.0.5:포트 - https 면 https://).
 rem 입력값은 명령줄에 끼워 넣지 않고 환경변수로만 넘긴다 - 특수문자가 섞여도 명령으로 해석되지 않게.
-rem 이름은 LM30_TA_* (core\teamaddr.py --set-env 가 읽는 이름과 같다)
-set "LM30_TA_HOST="
-set "LM30_TA_PORT="
-set /p "LM30_TA_HOST=  새 서버 IP (예: 10.0.0.5) : "
-set /p "LM30_TA_PORT=  새 포트 (1~65535)        : "
+rem 이름은 AF32_TA_* (core\teamaddr.py --set-env 가 읽는 이름과 같다)
+set "AF32_TA_HOST="
+set "AF32_TA_PORT="
+set "AF32_TA_JOIN="
+set /p "AF32_TA_HOST=  서버 주소 (IP 또는 PC 이름)  : "
+set /p "AF32_TA_PORT=  포트                         : "
+set /p "AF32_TA_JOIN=  참여 코드 (XXXX-XXXX-XXXX)    : "
 echo.
 "%PY_EXE%" %PY_ARGS% core\teamaddr.py --set-env
 if errorlevel 1 (
+  set "AF32_TA_JOIN="
   echo.
   echo  [주의] 저장하지 않았습니다 - 위 사유를 확인하고 다시 실행하세요.
   echo.
   pause
   exit /b 1
 )
+set "AF32_TA_JOIN="
 echo.
-echo  이 PC 에서 팀 서버가 켜져 있었다면 [중지] 후 다시 시작해야 새 포트로 열립니다.
+rem 저장만으로는 조직장 서버에 붙지 않는다 - 연결 확인은 y 를 입력했을 때만(Enter 는 하지 않음). 확인은 서버의 인사만 받는다.
 set "TA_PING="
-set /p "TA_PING=  지금 이 망에서 팀 서버에 닿는지 확인할까요 [Y/n] : "
+set /p "TA_PING=  지금 조직장 서버에 연결해 볼까요 - 연결 확인만 하고 자료는 보내지 않습니다 [y/N] : "
 rem 입력값 비교는 지연 확장으로만 한다 - 따옴표·앰퍼샌드가 섞여도 if 줄이 깨지지 않게.
 setlocal EnableDelayedExpansion
-if /i "!TA_PING!"=="n" (
+if /i not "!TA_PING!"=="y" (
   endlocal
   goto END
 )
 endlocal
 echo.
+echo  조직장 서버에 연결해 봅니다.
 "%PY_EXE%" %PY_ARGS% teamup.py --ping
 if errorlevel 1 (
   echo.
-  echo  이 망에서는 닿지 않습니다 - 주소는 저장됐습니다. 서버에 닿는 망에서 다시 확인하세요.
+  echo  지금은 닿지 않습니다 - 주소는 저장됐습니다. 사내망에서 다시 확인하세요.
 )
 :END
 echo.

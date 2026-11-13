@@ -19,7 +19,7 @@ def progress(phase, done, total):
     except (ValueError, TypeError):
         pass
     # v3: 상태 파일 피기백 — stdout 줄은 그대로(하위 호환), 열린 스테이지 상태가 있으면 함께 갱신.
-    # 무진전 감시는 이제 이 done 값을 본다(updated 는 하트비트 스레드가 갱신 — 생존 전용).
+    # 무진전 판정은 이제 이 done 값을 본다(updated 는 하트비트 스레드가 갱신 — 생존 전용).
     try:
         from stage_state import current
         st = current()

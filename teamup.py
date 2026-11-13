@@ -1,1246 +1,1331 @@
 # -*- coding: utf-8 -*-
 r"""
-teamup.py — 분석 결과를 팀 저장소로 올린다 (LoadMonitor30: 묶음 '대기' → [분석 실행] 끝 자동 보고 → 실패면 버튼)
+teamup.py — 조직장 팀 서버로 공유하기 (AgentFinder32 · spec §7 · D14). 화면 [공유] 탭이 부른다. 자동으로 보내는 길은 없다.
 
-팀 서버는 특정 망에서만 닿는다. 분석은 아무 망에서나 하니 분석 끝에 보내면 실패가 잦고,
-LM19 이전에는 그 실패가 조용히 묻혀 결과가 사라졌다(실측). 그래서 이렇게 나눈다:
+공유는 두 갈래이고 따로 고른다(처음에는 둘 다 꺼져 있다):
+  (a) 개인 리포트 — 공유용 리포트(report_out.build(variant="share"))를 조직장에게. 조직장만 연다.
+  (b) 익명 팀 집계 — 고른 Agentic AI 전환 후보의 이름·업무 유형과 기간의 끝 달만. 이름·설치 ID 를 싣지 않는다.
+  두 갈래는 서로 다른 요청으로 보내고 둘을 잇는 값이 없다. 실패한 전송은 자동으로 다시 보내지 않는다.
 
-  1) 분석이 끝나면  → 보낼 묶음을 report\upload_pending\ 에 **먼저** 만들어 둔다(어떤 실패에도 대기로 남는다)
-  2) 이어서 run.py 가 --upload --json 으로 자동 보고한다(LM28 사용자 요청 · config.teamUpload.autoReport 기본 켬).
-     결과는 report\team_report_status.json 에 남고, 실패하면 화면이 알림 1번 + 배너로 말한다(조용히 묻지 않는다)
-  3) 서버에 닿는 망에서 → 대시보드 [팀 서버 업로드] 버튼(또는 이 스크립트)으로 밀린 것까지 한 번에 보낸다
-     밀린 기간이 여러 개면 전부 함께 올라가고, 보낸 묶음은 report\upload_sent\ 로 옮긴다
+명령(모두 마지막 줄에 JSON 한 줄 {"ok","code","msg",...} · 종료 코드 0 성공 · 1 오류 · 2 거절 · 3 서버에 닿지 않음)
+  python teamup.py --status [--offline] [--verify]
+      주소·조직 이름·전송 방식·닿는지·영수증(보낸 날·갈래·보관기한). --offline 은 서버에 묻지 않는다(저장한 주소와 영수증만 —
+      화면 [공유] 탭을 열 때). --offline 이 없으면 hello 를 한 번 묻는다([연결 확인]·[보내기…]).
+  python teamup.py --ping                  hello 만(보내지 않는다)
+  python teamup.py --preview [--tag T] [--personal] [--team] [--owner 이름 --function 파트]
+      → report\share\preview_<tag>.json(항목과 id) + preview_<tag>.html(공유용 리포트 — 개인 리포트를 고를 때). 화면 체크 상자용 항목.
+      가린 뒤에도 이름이 남았을 수 있는 항목은 "flagged": true, "flag_terms": [...] — 익명 팀 집계에는 넣지 않는다(parts 에 team 없음).
+  python teamup.py --share --ticket report\share\ticket_<nonce>.json --preview-file P [--sha256 H] [--include id ...]
+                   [--personal] [--team]
+      화면이 확인 창에서 [보내기]를 누른 뒤 쓴 일회용 표(ticket)가 있어야 보낸다. 표는 읽자마자 지운다(한 번만). 30분이 지난 표·
+      미리보기 파일(sha256)·고른 항목·갈래와 다른 표·지금 서버의 hello(주소·server_id·조직 이름·전송 방식·서버 보관기한)와 다른 표면
+      보내지 않는다. --sha256·--include·--personal·--team 은 주면 표와 같아야 하고, 주지 않으면 표의 것을 쓴다.
+      참여 코드는 환경변수 AF32_JOIN(없으면 teamaddr 에 저장한 값) — 명령줄로 받지 않는다. 미리보기가 바뀌었거나 30분이 지났거나
+      제한 고객 목록이 분석 뒤에 바뀌었으면 보내지 않는다. 보낼 글은 미리보기 파일에서 가져오지 않고 분석
+      결과에서 다시 만들어(가리기 포함) 미리보기와 같을 때만 보낸다. 보내기 전에 data\share_receipts.json 에 영수증(서버·server_id·
+      조직·갈래·id·이 PC 가 만든 토큰·보낸 날·보관기한 · "pending": true)을 먼저 쓰고, 서버가 받았다고 답하면 pending 을 뗀다 —
+      답을 못 받아도 그 영수증으로 서버 사본을 지울 수 있다. 결과의 "sent" 는 서버가 받았다고 답한 갈래만이고, 받았는지 모르는
+      갈래가 있으면 "unknown": true · "unsure": [갈래] 를 싣는다(서버가 거절한 것은 받지 않은 것 — 영수증도 남기지 않는다).
+  python teamup.py --withdraw [--all] [--part personal|team]
+      영수증마다 그 서버에 DELETE. 그 주소의 서버가 영수증의 server_id 와 같을 때만 지운다(다른 서버의 404 를 '지웠다'로 보지
+      않는다). 200·404 면 영수증을 지운다. --all 이 없으면 지금 주소의 서버 것만. --part personal 이면 같은 서버의 익명 기여분 중
+      '개인 리포트를 함께 보냈다'로 표시된 것도 함께 거둔다(표시가 틀린 채 남지 않게).
+code ∈ ok · no_consent · no_address · not_af32 · unreachable · bad_join · token_mismatch · no_result · too_big · server_error ·
+       not_internal · http_personal_refused
+API(가져다 쓸 때 부작용 없음): status · ping · preview · share · withdraw · withdraw_all(root, cfg, timeout=10) ·
+     retry_withdrawals(root, cfg, timeout=5) · load_receipts · resolve_target · hello_problem
 
-  python teamup.py --build --from 2026-05-19 --to 2026-08-17   묶음 준비(전송 안 함)
-  python teamup.py --list                                      대기 목록
-  python teamup.py --ping [--host <IP>] [--port <번호>]         이 망에서 닿는지 확인(빠름)
-  python teamup.py --upload [--host <IP>] [--port <번호>]       대기분 전부 전송
-      (주소는 팀 서버 주소 설정 config\team_server.json — core\teamaddr.py 가 읽는다.
-       --host·--port·--url 은 이번 한 번만 쓰는 값이고 설정은 바꾸지 않는다 —
-       설정을 바꾸는 곳은 LoadMonitor30-팀서버주소.bat 하나)
-  python teamup.py --to-folder "\\서버\공유\LoadMonitor"          공유폴더로 대신 저장
-      (개인 HTML 보고서 분석리포트_<기간>.html·보고서_<기간>.html 이 있으면
-       <폴더>\개인리포트\<이름>_<파일명> 으로 함께 복사 — 팀 서버 묶음에는 넣지 않는다)
-  (--json 을 붙이면 마지막 줄에 결과 JSON 한 줄 — 대시보드·run.py 자동 보고가 이걸 읽는다.
-   --upload 는 묶음마다 results[].kind = sent·blocked·rejected·unreachable·slow, 주소가 없으면 no_url, 남은 대기 수 pending,
-   보내지 않고 남긴 묶음 수 left 와 그 사유 stopped. LM30 시험판 보호에 걸리면 kind·no_test_server — 보내지 않음이지 실패가
-   아니다: ok null · 종료 코드 0 · 사유 note)
-
-기다림 상한(LM28 — "시도 1-2번 해서 안 되면 아닌 값… 업로드에서 기다리는 건 너무 로스"):
-  연결 확인 3초 × 최대 2번(사이 2초) · 업로드 연결 3초(끊기면 1번만 다시) · 본문을 다 보낸 뒤 답 45초.
-  답이 늦으면 다시 보내지 않고(서버가 이미 저장했을 수 있다) 남은 묶음도 멈춘다 — 자동 보고 전체가 1분 남짓이면 끝난다.
-  config.teamUpload 의 pingTries·pingTimeoutSec·timeoutSec 로 바꾼다(wait_limits 가 범위 안으로 접는다).
-
-LM30 시험판 보호(사용자 결정 — "LM30 결과는 LoadMonitor30-팀서버주소.bat 으로 정한 시험용 팀 서버로"):
-  기본 주소(core\teamaddr.py)는 기존 팀 서버다. 거기로 보내면 서버가 TEAMDATA\<이름>\* 를 갈아 끼워 그 사람의 LM28·LM29
-  결과가 LM30 시험 결과로 덮인다. 그래서 config.teamUpload.requireSavedAddress(배포 설정 true · 키가 없어도 켬)가 켜져 있으면
-  시험용 서버 주소를 config\team_server.json 에 저장하기 전에는 --upload(자동 보고·[팀 서버 업로드]·팀업로드.bat)가 보내지
-  않는다(upload_guard — 묶음은 대기 그대로). 기본 주소는 바꾸지 않는다. 연결 확인·묶음 만들기·공유폴더 저장은 그대로 된다.
-
-묶음 내용은 팀 공유폴더 내보내기(export.py)와 동일하다 — 이미 excludePathKeywords 로 걸러진
-판정 결과다. 사내망 전용.
-LM28: signals 는 G4 팀 반출 변환(core\privacy.team_export_rows — export.py 와 같은 함수)을 거친다 — who 는
-사내|고객사|협력사|외부 로 접고, text 는 다시 정제하고, 고위험 잔여 행과 flag 열은 빼고, 이 PC·본인 식별자(카나리아)가
-남은 파일은 보내지 않는다. 묶음을 만들 때(build)와 보내기 직전(upload_one) 두 번 건다(다시 걸어도 같은 결과).
-member 에는 판 표식 lm_ver(LM_VER — 'LM30')을 추가 키로 싣는다(기존 키·파일명·measure·coverage·cfg_used 는 그대로).
+망 규칙: 프록시를 쓰지 않는다(urllib.request.build_opener(ProxyHandler({}))). 서버 주소가 루프백·사내 대역(10/8 · 172.16/12 ·
+192.168/16) 또는 설정 share.allowedNetworks 안으로 풀릴 때만 보낸다(not_internal). HTTP·HTTPS 모두 확인한 IP 로 바로 붙는다
+(HTTPS 는 인증서·SNI 만 이름으로 — 이름을 다시 풀지 않는다). 보내기 전에 GET /af32/hello 가 product AgentFinder32 · schema
+af32-share-1 · server_id · 하한(minGroupSize ≥ 5 · minCellSize ≥ 3 · serverPersonalDays ≤ 90 · serverTeamDays ≤ 180)을 말해야
+한다(not_af32). hello 가 transport=http 이고 personalOverHttp=false 면 개인 리포트는 보내지 않는다(http_personal_refused).
 """
+import hashlib
+import html
 import http.client
 import io
+import ipaddress
 import json
-import math
 import os
 import re
-import shutil
+import secrets
+import socket
+import ssl
+import stat
 import sys
 import time
 import urllib.error
 import urllib.request
+from datetime import date, timedelta
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-REPORT = os.path.join(ROOT, "report")
-PENDING = os.path.join(REPORT, "upload_pending")
-SENT = os.path.join(REPORT, "upload_sent")
-# 마지막 팀 서버 보고 결과(LM28) — run.py 자동 보고가 성공·실패를, 여기 --upload·--to-folder 가 '다 보냄' 을 쓴다.
-# 대시보드는 이 파일로 실패 배너(다음 성공까지)와 실행 1회당 알림 1번을 정한다(at 이 그 열쇠)
-REPORT_STATUS = "team_report_status.json"
-MAX_BYTES = 30 * 1024 * 1024        # 서버 상한과 같다 — 넘으면 보내기 전에 알려 준다
-LM_VER = "LM30"                     # member.lm_ver — 묶음을 만든 판(추가 키만, 기존 키·파일명 불변)
-# 팀 서버 기다림 기본값(LM28) — 예전에는 연결 확인 4초 1번, 묶음마다 응답 360초, 실패해도 남은 묶음을 전부 시도해
-# 서버가 느린 날 자동 보고가 몇 분씩 붙잡혔다(사용자 지적). config.teamUpload 로 바꾸되 범위(_WAIT_RANGE)를 넘지 못한다 —
-# 가장 길게 잡아도 run.py 의 teamup 상한(TR_CAP_SEC 150초) 안에 끝나야 결과 JSON 이 남는다.
-PING_TRIES = 2                      # 연결 확인 시도 수 — 순간 끊김 한 번으로 '닿지 않음' 이라 단정하지 않을 만큼만
-PING_TIMEOUT = 3.0                  # 연결 확인 1번(초) — 업로드의 '연결' 단계도 이 값으로 끊는다
-UP_TIMEOUT = 45.0                   # 본문을 다 보낸 뒤 서버 답을 기다리는 상한(초)
-RETRY_PAUSE = 2.0                   # 다시 시도하기 전 쉼(초)
-BUDGET_SEC = 75.0                   # 이 실행에서 다음 묶음을 시작해도 되는 시간 상한(초) — 넘기면 남은 묶음은 대기로 둔다
-STOP_KINDS = ("unreachable", "slow")  # 이 갈래로 실패하면 남은 묶음은 보내지 않는다(같은 서버라 같은 결과를 또 기다린다)
+for _p in (os.path.join(ROOT, "core"), ROOT):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)        # 동봉 파이썬(._pth)은 스크립트 폴더를 sys.path 에 넣지 않는다
+import afcfg  # noqa: E402
+import consent  # noqa: E402
+import install  # noqa: E402
+import lmname  # noqa: E402
+import teamaddr  # noqa: E402
+
+P = lmname.SHARE_PREFIX
+JOIN_ENV = "AF32_JOIN"
+RECEIPTS_FILE = consent.RECEIPTS_FILE          # data\share_receipts.json
+SHARE_DIR = ("report", "share")
+PREVIEW_MAX_AGE = 30 * 60                      # 미리보기를 믿는 시간(초)
+TICKET_MAX_AGE = 30 * 60                       # 화면이 쓴 보내기 표(ticket)를 믿는 시간(초) — 파일 수정 시각으로
+MAX_BODY = 5 * 1024 * 1024                     # 서버 상한과 같다
+RESP_MAX = 1024 * 1024
+RETRY_PAUSE = 1.0
+TEAM_LIMITS = {"needs": 30, "name": 200, "task_type": 40}   # 서버(teamserver NEEDS_MAX·NEED_*_MAX)와 같다
+FLAG_TERMS_MAX = 8
+FLAG_FIELDS = ("name", "logic", "reason", "agent_how", "task_type")
+TAG_RX = re.compile(r"^\d{8}-\d{8}$")
+_HEX32 = re.compile(r"^[0-9a-f]{32}$")
+_HEX64 = re.compile(r"^[0-9a-f]{64}$")
+_DATE_RX = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_TICKET_NAME = re.compile(r"^ticket_[A-Za-z0-9_-]{8,128}\.json$")
+RFC1918 = tuple(ipaddress.ip_network(n) for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
+FLOORS = {"minGroupSize": (afcfg.TEAM_MIN["minGroupSize"], None), "minCellSize": (afcfg.TEAM_MIN["minCellSize"], None),
+          "serverPersonalDays": (1, afcfg.RETENTION_MAX["serverPersonalDays"]),
+          "serverTeamDays": (1, afcfg.RETENTION_MAX["serverTeamDays"])}
+# 기다림 값의 범위 — 상한을 올리면 화면이 --share 를 기다리는 상한(ui\app.SHARE_WAIT_SEC)도 올린다(먼저 끊으면 영수증을 잃는다)
 _WAIT_RANGE = {"pingTries": (1, 3), "pingTimeoutSec": (1.0, 10.0), "timeoutSec": (5.0, 90.0)}
-SLOW_MSG = ("서버 응답 지연 — 서버에 저장됐을 수 있습니다. 묶음은 대기로 남겨 다음 실행 때 다시 보냅니다"
-            "(덮어쓰기라 결과는 같습니다)")
-# LM30 시험판 보호(upload_guard) — 시험용 팀 서버 주소를 정하기 전에는 기본 주소(기존 팀 서버)로 보내지 않는다. 실패가 아니라
-# '보내지 않음' 이다: --upload 는 kind no_test_server(ok null · 종료 코드 0)로 답하고 묶음은 대기 그대로 — run.py 자동 보고는
-# 알림·배너 없이 '건너뜀' 으로 남기고, 화면 버튼은 실패 대신 까닭을 말한다
-NO_TEST_KIND = "no_test_server"
-NO_TEST_MSG = ("LM30 시험판은 시험용 팀 서버 주소를 LoadMonitor30-팀서버주소.bat 으로 정한 뒤에만 보냅니다 — "
-               "기존 팀 서버의 LM28·LM29 결과를 덮지 않게. 결과 묶음은 대기로 남습니다")
-if __name__ == "__main__":
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, errors="replace", encoding=(
-        (sys.stdout.encoding or "utf-8") if sys.stdout.isatty() else "utf-8"))  # 콘솔(bat)=콘솔 코드페이지 · 파이프(UI)=utf-8
+CODES = ("ok", "no_consent", "no_address", "not_af32", "unreachable", "bad_join", "token_mismatch", "no_result",
+         "too_big", "server_error", "not_internal", "http_personal_refused")
+EXIT = {"ok": 0, "server_error": 1, "unreachable": 3}          # 그 밖의 code 는 2(거절)
+PARTS = ("personal", "team")
+PART_LABEL = {"personal": "개인 리포트", "team": "익명 팀 집계"}
+PENDING_MSG = "조직장 서버에서 아직 지우지 못했습니다 (서버 보관기한 {date} 에 자동 삭제)"
+NO_ADDRESS_MSG = (f"공유할 조직장 팀 서버가 정해지지 않았습니다 — 조직장이 알려 준 주소와 참여 코드를 "
+                  f"{teamaddr.EDIT_BAT} 에서 저장하세요")
+TICKET_MSG = "화면 [공유] 탭의 확인 창에서 [보내기]를 눌러야 보냅니다 — 다시 미리 보고 보내세요"
+STALE_MSG = "제한 고객 목록이 분석 뒤에 바뀌었습니다 — 다시 분석한 뒤 공유하세요"
+UNSURE_MSG = " — 서버가 받았는지 확인하지 못했습니다. [보낸 공유 모두 거두기]로 서버 사본을 지울 수 있습니다"
+GONE_MSG = " · 앞서 보낸 익명 팀 집계 기여분 {n}건은 지웠습니다 — 다시 넣으려면 익명 팀 집계를 골라 보내세요"
+MOVED_MSG = "영수증의 서버가 아닙니다 — 주소의 서버가 바뀌었습니다(지우지 않고 영수증을 남깁니다)"
 
 
-FLAGS = {"--build", "--build-all", "--build-latest", "--scan", "--list", "--ping",
-         "--upload", "--to-folder", "--drop", "--json", "--url", "--host", "--port", "--from", "--to"}
+class ShareError(Exception):
+    """공유 명령의 실패 — code 는 CODES 중 하나, msg 는 사람에게 보일 한국어 문장."""
+
+    def __init__(self, code, msg, **extra):
+        super().__init__(msg)
+        self.code = code if code in CODES else "server_error"
+        self.msg = msg
+        self.extra = extra
+
+    def result(self):
+        return result(self.code, self.msg, **self.extra)
 
 
-def arg(flag, d=""):
-    """플래그의 값. 값이 없거나(마지막) 다음 토큰이 또 다른 플래그면 기본값 —
-    '--to-folder --json' 이 '--json' 이라는 폴더를 만들어 묶음을 흘리던 실측 결함 방어."""
-    if flag in sys.argv:
-        i = sys.argv.index(flag) + 1
-        if i < len(sys.argv) and sys.argv[i] not in FLAGS and not sys.argv[i].startswith("--"):
-            return sys.argv[i]
+def result(code="ok", msg="", **kw):
+    d = {"ok": code == "ok", "code": code, "msg": msg}
+    d.update(kw)
     return d
 
 
-sys.path.insert(0, os.path.join(ROOT, "core"))
-try:
-    from owner import safe_owner  # noqa: E402
-except ImportError:                 # teamup.py 만 떼어 온 최소 환경에서도 돌아야 한다
-    def safe_owner(v):
-        """core\\owner.py 와 같은 규칙(그 파일이 없을 때만 쓰인다 — 규칙이 갈리면 인원이 두 폴더로 나뉜다)"""
-        s = re.sub(r'[\\/:*?"<>|.]', '_', str(v or '').strip())
-        s = re.sub(r'\s+', ' ', s).strip()[:40].strip()
-        return s or '이름미상'
-
-# 서버(teamserver.py NAME_OK)와 같은 파일명 규칙 — 보내기 전에 이쪽에서 먼저 걸러 낸다
-NAME_OK = re.compile(r"^(mm_rows_\d{8}-\d{8}(_refined)?\.csv|signals_\d{8}-\d{8}\.csv|"
-                     r"(mm_meta|pivots|ai_narratives|entities|agentic|workflow)_\d{8}-\d{8}\.json)$")
+def exit_code(res):
+    return EXIT.get(res.get("code"), 2)
 
 
-def blockers(member, files):
-    """이 묶음이 '보낼 수 없는' 이유 목록 — 준비할 때와 보낼 때 같은 규칙으로 본다.
-    준비 단계에서 미리 알려 주지 않으면, 며칠 뒤 서버망에서야 실패를 알게 된다(검증 확정)."""
-    out = []
-    n = len(json.dumps({"member": member, "files": files}, ensure_ascii=False).encode("utf-8"))
-    if n > MAX_BYTES:
-        out.append(f"묶음이 서버 상한을 넘습니다 ({n / 1048576:.1f}MB > 30MB) — 기간을 나눠 분석하세요")
-    ow = str((member or {}).get("owner") or "")
-    if not ow or ow != safe_owner(ow) or len(ow) > 40:
-        out.append(f"이름이 서버 규칙에 맞지 않습니다: '{ow}' — config.owner 를 고치세요(경로문자·점 불가)")
-    bad = [k for k in (files or {}) if not NAME_OK.match(str(k))]
-    if bad:
-        out.append(f"서버가 받지 않는 파일명: {bad[:3]}")
-    return out
+def _today():
+    return date.today()
 
 
-def load_cfg():
-    try:
-        return json.load(open(os.path.join(ROOT, "config", "config.json"), encoding="utf-8-sig"))
-    except (OSError, ValueError):
-        return {}
+def _cfg(cfg, root):
+    if isinstance(cfg, dict):
+        c, _w = afcfg.effective(cfg)
+        return c
+    c, _w = afcfg.load_effective(root)
+    return c
 
 
-def wait_limits(cfg=None):
-    r"""팀 서버 기다림 값 → {ping_tries, ping_timeout, timeout} — config.teamUpload 의 pingTries·pingTimeoutSec·timeoutSec.
-    없거나 형식이 틀리면 기본값, 범위(_WAIT_RANGE) 밖이면 가장자리로 접는다. 큰 값을 적어도 자동 보고가 몇 분씩 붙잡히지
-    않게 — 가장 길게 잡아도 연결 확인 34초 + 묶음 하나(연결 22초 또는 답 90초)라 run.py 상한 150초 안에 끝난다."""
-    tu = (cfg if isinstance(cfg, dict) else {}).get("teamUpload")
-    tu = tu if isinstance(tu, dict) else {}
-
+def wait_limits(cfg):
+    """share.pingTries·pingTimeoutSec·timeoutSec → {tries, ping, timeout} (범위 밖이면 가장자리로)."""
     def pick(key, dflt):
         lo, hi = _WAIT_RANGE[key]
-        v = tu.get(key)
+        v = afcfg.get(cfg, "share." + key, dflt)
         try:
-            v = dflt if v is None or isinstance(v, bool) or v == "" else float(v)
+            v = float(v)
         except (TypeError, ValueError):
-            v = dflt
-        return min(hi, max(lo, v if math.isfinite(v) else dflt))
-    return {"ping_tries": int(pick("pingTries", PING_TRIES)), "ping_timeout": pick("pingTimeoutSec", PING_TIMEOUT),
-            "timeout": pick("timeoutSec", UP_TIMEOUT)}
+            v = float(dflt)
+        if v != v:
+            v = float(dflt)
+        return min(hi, max(lo, v))
+    return {"tries": int(pick("pingTries", 2)), "ping": pick("pingTimeoutSec", 3), "timeout": pick("timeoutSec", 45)}
 
 
-def target_url(cfg, override=""):
-    r"""보낼 주소 — 우선순위: 함수 인자 > --url > --host/--port > 팀 서버 주소 설정(teamaddr).
-    v5: 설정은 core\teamaddr.py 한 곳에서만 읽는다(예전처럼 config.teamServerUrl 을 직접 읽지 않는다).
-    형식이 틀린 일회성 값은 빈 문자열로 돌려 '주소 없음' 으로 멈추게 한다 — 엉뚱한 곳으로 보내지 않게."""
-    import teamaddr
-    one = (override or arg("--url") or "").strip().rstrip("/")
-    if one:
-        pu = teamaddr.parse_url(one)
-        if pu is None:
-            return ""
-        return f"http://{pu[0]}:{pu[1] or teamaddr.load(ROOT).port}"
-    h, p = arg("--host"), arg("--port")
-    if h or p:
-        a = teamaddr.load(ROOT)
-        hh, pp, err = teamaddr.split_input(h or a.host, p or None)
-        if err:
-            return ""
-        return f"http://{hh}:{pp or a.port}"
-    return teamaddr.load(ROOT).url
-
-
-# 윈도우 경로 길이(260자) — 공유폴더가 깊으면 <공유폴더>\<이름>\<파일> 이 이를 넘겨 저장이 실패한다
-# (실측: FileNotFoundError 로 나와 원인이 안 보인다). 필요한 때만 확장 경로(\\?\)로 연다.
-MAXP = 240
-
-
-def longp(p):
-    """길면 확장 경로로 — 짧으면 그대로(평소 동작을 바꾸지 않는다)"""
-    p = os.path.abspath(p)
-    if os.name != "nt" or len(p) < MAXP or p.startswith("\\\\?\\"):
-        return p
-    return ("\\\\?\\UNC" + p[1:]) if p.startswith("\\\\") else ("\\\\?\\" + p)
-
-
-# ── 묶음 만들기 ──────────────────────────────────────────────────────────────
-FILE_NAMES = ("mm_rows_{t}.csv", "mm_rows_{t}_refined.csv", "signals_{t}.csv",
-              "mm_meta_{t}.json", "pivots_{t}.json", "ai_narratives_{t}.json",
-              "entities_{t}.json", "agentic_{t}.json", "workflow_{t}.json")
-# agentic_{t}.json — LM29부터 Agentic AI 니즈 후보만 싣는다(kind "needs" · 과제 매칭·오할당 없음). 팀 취합이 인원별 후보를 모은다.
-# freeze.py 가 만드는 개인 HTML 보고서 — 묶음(files)·팀 서버에는 넣지 않는다(서버 NAME_OK 불변:
-# 업로드 HTML = 서버 origin 의 임의 스크립트, 얼린 보고서는 메일·회의 제목 원문 포함).
-# 공유폴더 저장(--to-folder) 때만 <공유폴더>\개인리포트\<이름>_<파일명> 으로 복사한다 —
-# 팀 취합(팀보완툴·LM22 팀 취합)이 그 자리의 데이터 섬(lm-report-data / lm-frozen-data)을 읽는다.
-# 고정명은 언제나 원문 포함(full) 본이다 — freeze --summary 의 요약본은 *_<기간>_요약.html 로 따로 쓰이고
-# 여기 목록에 없으므로 공유폴더에 나가지 않는다(요약/원문이 구분 없이 섞여 나가던 결함 방어).
-REPORT_HTML = ("분석리포트_{t}.html", "보고서_{t}.html")
-REPORT_HTML_DIR = "개인리포트"
-
-
-def _count(v):
-    """mm_basis 의 목록(anomalies·long_days)은 길이, 숫자는 정수 — 없거나 형식이 다르면 0.
-    팀 취합(aggregate/team_report)이 member.json 에서 정수로 읽는다(형식 오류 하나가 취합을 죽이지 않게)."""
-    if isinstance(v, bool):
-        return 0
-    if isinstance(v, (list, tuple, dict)):
-        return len(v)
+def require_consent(root, cfg):
+    """내 자료이고 지우는 중이 아닌가(consent.require · D17) — 아니면 ShareError('no_consent')."""
     try:
-        n = float(v)
-    except (TypeError, ValueError):
-        return 0
-    return int(n) if math.isfinite(n) else 0
+        return consent.require(root, cfg)
+    except consent.ConsentRequired as e:
+        raise ShareError("no_consent", e.message) from None
 
 
-def _hours(v):
-    """시간(h) 실수 — 없거나 형식이 다르면 0.0"""
-    if isinstance(v, bool):
-        return 0.0
+def _other_user(root, cfg):
+    r"""이 설치 폴더의 자료가 다른 Windows 사용자의 것이거나 주인을 알 수 없는 것인가(D17). 상태만 보는 길이라 data\install.json
+    을 새로 만들지 않는다 — 그 파일이 없으면 이 설치의 자료(살아 있는 영수증 포함 — install.owned_data)가 남아 있을 때만 참이다
+    (그 파일을 지워도 남의 공유 기록이 열리지 않는다). 확인하지 못하면 참(보이지 않는 쪽)."""
+    root = str(root)
     try:
-        n = float(v)
-    except (TypeError, ValueError):
-        return 0.0
-    return round(n, 2) if math.isfinite(n) else 0.0
+        if not os.path.isfile(os.path.join(root, "data", "install.json")):
+            fn = getattr(install, "owned_data", None)
+            return bool(fn(root)) if callable(fn) else False
+        st = consent.status(root, cfg)
+    except Exception:  # noqa: BLE001 - 누구 것인지 확인하지 못한 자료는 보이지 않는다
+        return True
+    return bool(st.get("other_user") or st.get("unknown_owner"))
 
 
-def _obj(v):
-    """dict 만 통과 — mm_meta 의 measure/coverage/cfg_used 는 객체여야 한다(아니면 None)"""
-    return v if isinstance(v, dict) and v else None
-
-
-def measure_of(mj, b):
-    """측정 방식 요약(D5) — mine 이 mm_meta 최상위/mm_basis 에 실은 measure 를 우선, 없으면(구판 core)
-    mm_basis 의 일수 키로 조립한다. 팀 취합은 '샘플러 N일/PC 하한 N일/흔적폭 N일/출장 N일/수동 N일' 을 보여 준다."""
-    ms = _obj(mj.get("measure")) or _obj(b.get("measure"))
-    if ms is None:
-        if not b:
-            return None
-        ms = {"method": b.get("method"),
-              "sampler_days": b.get("sampler_days"), "pc_floor_days": b.get("pc_floor_days"),
-              "floor_blocked_passive_days": b.get("floor_blocked_passive_days"),
-              "trace_window_days": b.get("trace_window_days"),
-              "pc_record_missing_days": b.get("pc_record_missing_days"),
-              "offsite_days": b.get("offsite_days"), "manual_days": b.get("manual_days")}
-    out = {"method": str(ms.get("method") or b.get("method") or "")[:20]}
-    for k in ("sampler_days", "pc_floor_days", "floor_blocked_passive_days", "pc_record_days",
-              "trace_window_days", "pc_record_missing_days", "offsite_days", "manual_days"):
-        if k in ms and ms.get(k) is not None:
-            out[k] = _count(ms.get(k))
-    return out
-
-
-def coverage_of(mj, b):
-    """측정 신뢰도 등급 — {grade: reliable|caution|unreliable, reasons:[…]} / 없으면 None(구판 core)"""
-    cv = _obj(mj.get("coverage")) or _obj(b.get("coverage"))
-    if cv is None:
-        return None
-    g = str(cv.get("grade") or "").strip().lower()
-    reasons = cv.get("reasons") if isinstance(cv.get("reasons"), list) else \
-        (cv.get("missing") if isinstance(cv.get("missing"), list) else [])
-    out = {"grade": g if g in ("reliable", "caution", "unreliable") else "",
-           "reasons": [str(x)[:60] for x in reasons][:6]}
-    r = cv.get("pc_weekday_ratio")
-    if isinstance(r, (int, float)) and not isinstance(r, bool) and math.isfinite(r):
-        out["pc_weekday_ratio"] = round(float(r), 2)
-    return out
-
-
-def cfg_used_of(mj, b):
-    """산식 설정 스냅샷 — 팀 취합이 '팀 다수와 다름' 배지를 붙이는 재료. 값은 스칼라/문자열 목록만."""
-    cu = _obj(mj.get("cfg_used")) or _obj(b.get("cfg_used"))
-    if cu is None:
-        return None
-    out = {}
-    for k in ("standardDayHours", "usePcFloor", "pcFloorNeeds", "dayWindow", "lunch", "dinner",
-              "tentativeMeetings", "holidays_n", "offsiteAsWork", "samplerGapBridgeMin"):
-        if k not in cu:
-            continue
-        v = cu.get(k)
-        if isinstance(v, (list, tuple)):
-            out[k] = [str(x) for x in v][:4]
-        elif isinstance(v, (bool, int, float, str)) or v is None:
-            out[k] = v
-    return out
-
-
-def tool_usage_of(mj, b):
-    """프로그램 사용 이력 요약 — 팀 취합에 올릴 만큼만 줄인다(상위 12개·합계).
-
-    ★ 참고 지표다. 로드율·MM 과 무관하므로 팀 리포트에서도 '얼마나 일했나' 로 읽히지 않게
-      '프로그램 사용' 절에만 쓴다. 창 제목은 애초에 집계에 들어가지 않아 과제명·사람 이름이 없다."""
-    tu = _obj(mj.get("tool_usage")) or _obj(b.get("tool_usage"))
-    if tu is None:
-        return None
-    out = {}
-    for k in ("samples", "days"):
-        if tu.get(k) is not None:
-            out[k] = _count(tu.get(k))
-    for k in ("total_h", "known_h", "unknown_h", "sim_h", "cad_h", "solver_bg_h"):
-        if tu.get(k) is not None:
-            out[k] = _hours(tu.get(k))
-    progs = tu.get("programs") if isinstance(tu.get("programs"), list) else []
-
-    def _opt(x, f):           # 증가분을 모르는 칸(None — 실행 기록 스냅샷 1장)은 None 그대로: 0 이면 '안 썼다' 로 읽힌다
-        return None if x is None else f(x)
-    out["programs"] = []
-    for p in [p for p in progs if isinstance(p, dict)][:12]:
-        row = {"name": str(p.get("name") or "")[:40], "kind": str(p.get("kind") or "")[:6],
-               "cat": str(p.get("cat") or "")[:10], "hours": _hours(p.get("hours")),
-               "bg_hours": _hours(p.get("bg_hours")), "days": _count(p.get("days"))}
-        if isinstance(p.get("src"), list):
-            # LM28 — 출처(창기록·실행기록·파일)·실행 횟수·포커스 시간·마지막 실행·파일 일수(숫자·날짜만 — 경로·파일 이름 없음)
-            row.update(src=[str(s)[:6] for s in p["src"]][:3], runs=_opt(p.get("runs"), _count),
-                       runs_cum=_opt(p.get("runs_cum"), _count), taskbar=_opt(p.get("taskbar"), _count),
-                       focus_h=_opt(p.get("focus_h"), _hours), focus_h_cum=_opt(p.get("focus_h_cum"), _hours),
-                       last_run=str(p.get("last_run") or "")[:16], file_days=_count(p.get("file_days")),
-                       files=_count(p.get("files")))
-        out["programs"].append(row)
-    for k in ("by_cat", "by_kind"):
-        v = tu.get(k)
-        if isinstance(v, list):
-            out[k] = [[str(x[0])[:12], _hours(x[1])] for x in v
-                      if isinstance(x, (list, tuple)) and len(x) >= 2][:8]
-    for k in ("by_kind_n", "by_cat_n"):          # 프로그램 수 — '자체·프로토타입(추정)' 이 잘리지 않게 14자
-        v = tu.get(k)
-        if isinstance(v, list):
-            out[k] = [[str(x[0])[:14], _count(x[1])] for x in v if isinstance(x, (list, tuple)) and len(x) >= 2][:8]
-    # 자체·프로토타입(추정) — 이름은 core 가 G3 관문(privacy.gate_items)을 거친 것만 mm_meta 에 실었다. 상위 12개·숫자만 더한다
-    if isinstance(tu.get("inhouse"), list):
-        out["inhouse"] = [{"name": str(x.get("name") or "")[:40], "cls": str(x.get("cls") or "")[:12],
-                           "runs": _opt(x.get("runs"), _count), "runs_cum": _opt(x.get("runs_cum"), _count),
-                           "focus_h": _opt(x.get("focus_h"), _hours), "last_run": str(x.get("last_run") or "")[:16]}
-                          for x in tu["inhouse"] if isinstance(x, dict) and x.get("name")][:12]
-        out["inhouse_n"] = _count(tu.get("inhouse_n"))
-        out["inhouse_hidden"] = _count(tu.get("inhouse_hidden"))
-    src = tu.get("sources")
-    if isinstance(src, dict):                    # 원천 요약 — 스칼라만(이유 글·스냅샷 날짜·건수)
-        out["sources"] = {str(sk)[:8]: {str(kk)[:16]: (vv[:200] if isinstance(vv, str) else
-                                                       [str(y)[:10] for y in vv][:2] if isinstance(vv, list) else vv)
-                                        for kk, vv in list(sv.items())[:16]
-                                        if vv is None or isinstance(vv, (bool, int, float, str, list))}
-                          for sk, sv in list(src.items())[:4] if isinstance(sv, dict)}
-    if isinstance(tu.get("note"), str):
-        out["note"] = tu["note"][:200]
-    return out
-
-
-def push_reports(share, owner, tag):
-    r"""report\ 의 개인 HTML 보고서를 <share>\개인리포트\<owner>_<파일명> 으로 복사 → (복사한 이름들, 실패)
-    없는 파일은 조용히 건너뛴다(보고서 생성 단계가 실패했어도 묶음 저장은 그대로 유효하다)."""
-    copied, bad = [], []
-    srcs = [(n, os.path.join(REPORT, n)) for n in (p.format(t=tag) for p in REPORT_HTML)
-            if os.path.exists(os.path.join(REPORT, n))]
-    if not srcs:
-        return copied, bad
-    who = safe_owner(owner)
-    ddir = os.path.join(share, REPORT_HTML_DIR)
-    try:
-        if not os.path.isdir(longp(ddir)):
-            os.mkdir(longp(ddir))            # 공유폴더 바로 아래 한 단계만(확장 경로 makedirs 함정)
-    except FileExistsError:
-        pass
-    except OSError as e:
-        return copied, [f"{REPORT_HTML_DIR}({type(e).__name__})"]
-    for name, src in srcs:
-        dst = os.path.join(ddir, f"{who}_{name}")
-        tmp = dst + ".part"
+# ── 망 ────────────────────────────────────────────────────────────────────────
+def _nets(cfg):
+    out = []
+    for n in afcfg.get(cfg, "share.allowedNetworks") or []:
         try:
-            shutil.copyfile(longp(src), longp(tmp))
-            os.replace(longp(tmp), longp(dst))   # 읽다 만 반쪽 HTML 을 취합이 보지 않게
-            copied.append(os.path.basename(dst))
-        except OSError as e:
-            bad.append(f"{name}({type(e).__name__})")
-            try:
-                os.remove(longp(tmp))
-            except OSError:
-                pass
-    return copied, bad
+            out.append(ipaddress.ip_network(str(n).strip(), strict=False))
+        except ValueError:
+            continue
+    return out
 
 
-ATT_TEAM_KEYS = ("work_h", "ext_h", "night_h", "holiday_h", "offpc_h", "over52_weeks", "leave_work_days")
+def internal_ip(ip, nets=()):
+    """루프백 · 사내 대역(RFC1918) · share.allowedNetworks 안인가."""
+    try:
+        a = ipaddress.ip_address(str(ip).split("%")[0])
+    except ValueError:
+        return False
+    if a.version == 6 and a.ipv4_mapped:
+        a = a.ipv4_mapped
+    if a.is_loopback:
+        return True
+    if a.version == 4 and any(a in n for n in RFC1918):
+        return True
+    return any(a.version == n.version and a in n for n in nets)
 
 
-def attendance_of(mj, b):
-    r"""LM30(2026-10-18) 출퇴근 추정 합계(mm_basis.attendance) → 팀에 올리는 달·전체 합계
-    {"used_for_mm": 투입 MM 에 썼나, "months": {"YYYY-MM": {work_h, ext_h, night_h, holiday_h, offpc_h, over52_weeks,
-    leave_work_days}}, "total": {같은 칸}}. 날짜별 출근·퇴근·평소 시각은 애초에 mm_meta 에 없다(이 PC 의 report\attendance_<기간>.json
-    에만) — 여기서도 숫자 칸만 옮긴다. 출퇴근 추정이 없는 판(LM29 이전)이면 None."""
-    a = _obj(b.get("attendance")) or _obj(mj.get("attendance"))
-    if a is None:
+class Target:
+    """확인을 마친 서버 — scheme·host·port 와 붙을 IP."""
+
+    def __init__(self, scheme, host, port, ip):
+        self.scheme, self.host, self.port, self.ip = scheme, host, int(port), ip
+
+    @property
+    def url(self):
+        return f"{self.scheme}://{self.host}:{self.port}"
+
+    @property
+    def host_header(self):
+        return f"{self.host}:{self.port}"
+
+    def request_url(self, path):
+        if self.scheme == "https":
+            return f"https://{self.host}:{self.port}{path}"     # 인증서·SNI 는 이 이름 — 붙는 곳은 확인한 IP(_PinnedHTTPSConnection)
+        ip = f"[{self.ip}]" if ":" in self.ip else self.ip
+        return f"http://{ip}:{self.port}{path}"                  # 확인한 IP 로 바로(이름을 다시 풀지 않는다)
+
+
+def resolve_target(scheme, host, port, cfg):
+    """서버 이름 → Target. 모든 주소가 사내망이어야 한다(not_internal). 찾지 못하면 unreachable."""
+    try:
+        infos = socket.getaddrinfo(host, int(port), type=socket.SOCK_STREAM)
+    except (socket.gaierror, UnicodeError, OSError):
+        raise ShareError("unreachable", f"서버 주소 {host} 를 찾지 못했습니다 — 사내망에서 다시 하세요") from None
+    ips = []
+    for i in infos:
+        ip = str(i[4][0])
+        if ip not in ips:
+            ips.append(ip)
+    if not ips:
+        raise ShareError("unreachable", f"서버 주소 {host} 를 찾지 못했습니다 — 사내망에서 다시 하세요")
+    nets = _nets(cfg)
+    bad = [ip for ip in ips if not internal_ip(ip, nets)]
+    if bad:
+        raise ShareError("not_internal", (f"서버 주소 {host} 가 사내망 주소가 아니어서 보내지 않습니다({', '.join(bad[:3])}) — "
+                                          "사내 IP(10.x · 172.16~31.x · 192.168.x)이거나 설정 share.allowedNetworks 의 망이어야 합니다"))
+    ips.sort(key=lambda x: ":" in x)                             # IPv4 먼저
+    return Target(scheme, host, port, ips[0])
+
+
+def target_of_url(url, cfg):
+    pu = teamaddr.parse_url(url)
+    if pu is None or not pu[1]:
+        raise ShareError("no_address", f"영수증의 서버 주소를 읽지 못했습니다: {str(url)[:60]}")
+    return resolve_target(pu[2] or "http", pu[0], pu[1], cfg)
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """다른 곳으로 넘기는 답은 따르지 않는다 — 오류로 본다."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
 
-    def row(x):
-        x = x if isinstance(x, dict) else {}
-        return {k: (_count(x.get(k)) if k in ("over52_weeks", "leave_work_days") else _hours(x.get(k)))
-                for k in ATT_TEAM_KEYS}
-    ms = a.get("months") if isinstance(a.get("months"), dict) else {}
-    return {"used_for_mm": bool(a.get("used_for_mm")),
-            "months": {str(k): row(v) for k, v in sorted(ms.items()) if re.match(r"^\d{4}-\d{2}$", str(k))},
-            "total": row(a.get("total"))}
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPS 연결 — 이름을 다시 풀지 않고 resolve_target 이 사내망으로 확인한 IP 에 붙는다. 인증서 확인·SNI·Host 는 이름 그대로."""
+
+    def __init__(self, host, *, pin_ip, **kw):
+        super().__init__(host, **kw)
+        self._pin_ip = str(pin_ip)
+        self._create_connection = self._connect_pinned
+
+    def _connect_pinned(self, address, *a, **kw):
+        return socket.create_connection((self._pin_ip, address[1]), *a, **kw)
 
 
-def _team_meta(text):
-    r"""mm_meta 본문에서 이 PC 전용 칸을 뺀다(LM30 — 날짜별 출퇴근·평소 시각·LM29 근거의 저녁·새벽 창 시각:
-    core\attendance.scrub_meta). 쓰는 쪽(mine·judge 재산정)이 이미 떼어 내므로 보통 그대로 돌려준다 — 옛 사본이나 다른 경로로 남은
-    것을 팀 서버·공유폴더로 나가기 직전에 한 번 더 막는 자리다. 못 읽으면(형식 오류·core 없음) 그대로.
-    LM30(2026-10-21) 휴가 날짜(day_basis 의 휴가 칸·'휴가일 근무' 이상치)도 여기서 뗀다(outbound — attendance 머리말 22 · 일수는 남는다)."""
+class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self, pin_ip, context):
+        super().__init__(context=context)
+        self._pin_ip = pin_ip
+
+    def https_open(self, req):
+        ip = self._pin_ip
+        return self.do_open(lambda host, **kw: _PinnedHTTPSConnection(host, pin_ip=ip, **kw), req, context=self._context)
+
+
+def _opener(scheme, ip=None):
+    hs = [urllib.request.ProxyHandler({}), _NoRedirect()]
+    if scheme == "https":
+        ctx = ssl.create_default_context()
+        hs.append(_PinnedHTTPSHandler(ip, ctx) if ip else urllib.request.HTTPSHandler(context=ctx))
+    return urllib.request.build_opener(*hs)
+
+
+def _parse(raw):
     try:
-        import attendance
-        mj = json.loads(text)
-        if isinstance(mj, dict) and attendance.scrub_meta(mj, outbound=True):
-            return json.dumps(mj, ensure_ascii=False, indent=1)
-    except (ImportError, ValueError, TypeError):
-        pass
-    return text
-
-
-def leave_days_of(mj, b=None):
-    r"""LM30(2026-10-21) 팀 표의 '유급휴가 N일'(가용 칸) — 가용에서 실제로 뺀 유급휴가 일수(달마다 absent 합 · 오늘까지 · 반차 0.5 ·
-    휴가로 본 평일 포함 — core\attendance 머리말 22). mm_basis.absence_days 는 기간 전체(앞날 휴가 포함) 값이라 이 칸에 쓰지 않는다.
-    달 값이 없으면 leave_n, 그것도 없으면 None(팀 표는 예전처럼 absence_days)."""
-    mj = mj if isinstance(mj, dict) else {}
-    mo = mj.get("mm_months") if isinstance(mj.get("mm_months"), dict) else {}
-    vs = [v for v in mo.values() if isinstance(v, dict) and v.get("absent") is not None]
-    try:
-        if vs:
-            return round(sum(float(v.get("absent") or 0) for v in vs), 1)
-        b = b if isinstance(b, dict) else (mj.get("mm_basis") if isinstance(mj.get("mm_basis"), dict) else {})
-        return round(float(b["leave_n"]), 1) if b.get("leave_n") is not None else None
-    except (TypeError, ValueError):
+        d = json.loads((raw or b"").decode("utf-8", "replace"))
+    except ValueError:
         return None
+    return d
 
 
-def anomaly_days_of(b):
-    r"""mm_basis.anomalies → 'PC 기록 이상' 일수 — LM30(2026-10-21) '휴가일 근무' 표시는 세지 않는다(휴가인 날 일한 것은 이상이 아니다 —
-    core\attendance.is_leave_anom). 못 읽으면 예전처럼 목록 길이."""
-    an = (b or {}).get("anomalies") if isinstance(b, dict) else None
-    if not isinstance(an, list):
-        return _count(an)
+def _call(t, method, path, *, body=None, headers=None, timeout=5.0):
+    """요청 하나 → (HTTP 상태, JSON|None). 연결 실패·시간 초과는 ShareError('unreachable')."""
+    hdr = {"Host": t.host_header, "Accept": "application/json", "User-Agent": lmname.PRODUCT}
+    hdr.update(headers or {})
+    data = None
+    if body is not None:
+        data = body if isinstance(body, bytes) else json.dumps(body, ensure_ascii=False).encode("utf-8")
+        hdr["Content-Type"] = "application/json; charset=utf-8"
+    req = urllib.request.Request(t.request_url(path), data=data, method=method, headers=hdr)
     try:
-        import attendance
-        return len([a for a in an if not attendance.is_leave_anom(a)])
-    except ImportError:
-        return len(an)
+        with _opener(t.scheme, t.ip).open(req, timeout=timeout) as r:
+            return r.status, _parse(r.read(RESP_MAX))
+    except urllib.error.HTTPError as e:
+        try:
+            raw = e.read(RESP_MAX)
+        except (OSError, http.client.HTTPException):
+            raw = b""
+        return e.code, _parse(raw)
+    except (urllib.error.URLError, OSError, http.client.HTTPException, ValueError) as e:
+        reason = getattr(e, "reason", e)
+        if isinstance(reason, ssl.SSLCertVerificationError):
+            raise ShareError("unreachable", ("서버 인증서를 확인하지 못했습니다 — 조직장 서버의 인증서가 회사가 발급한 것인지, "
+                                             "주소가 인증서의 이름과 같은지 조직장에게 확인하세요")) from None
+        if isinstance(reason, (TimeoutError, socket.timeout)) or isinstance(e, (TimeoutError, socket.timeout)):
+            raise ShareError("unreachable", f"서버가 {timeout:.0f}초 안에 답하지 않았습니다 — 사내망에서 다시 하세요") from None
+        raise ShareError("unreachable", f"서버에 닿지 않았습니다({type(reason).__name__}) — 사내망에서 다시 하세요") from None
 
 
-def team_signals(name, text, cfg):
-    r"""G4 팀 반출 변환(core\privacy.team_export_rows — export.py 공유폴더와 같은 함수, WP7) → (본문 또는 None, 안내).
-    who → 사내|고객사|협력사|외부, text 재정제, 고위험 잔여 행만 빼고 flag 열 제거. 이미 변환한 본문에 다시 걸어도 같다.
-    None = 이 PC·본인 식별자(카나리아)가 남아 그 파일만 보내지 않는다. 신호 파일이 아니면 그대로 돌려준다.
-    LM30(2026-10-18): mm_meta_<기간>.json 은 이 PC 전용 칸(날짜별 출퇴근 시각)을 한 번 더 뺀다(_team_meta) — 묶음 만들기·
-    보내기 직전·공유폴더 저장이 모두 이 함수를 지난다."""
-    if re.match(r"^mm_meta_\d{8}-\d{8}\.json$", str(name)):
-        return _team_meta(text), ""
-    if not re.match(r"^signals_\d{8}-\d{8}\.csv$", str(name)):
-        return text, ""
-    import privacy
-    out, inf = privacy.team_export_csv(text, cfg=cfg, data_dir=os.path.join(ROOT, "data"))
-    if out is None:
-        return None, f"{name} 은 보내지 않습니다 — {inf.get('why') or '변환 실패'}"
-    note = f"{name}: 개인정보가 남은 신호 {inf['high_dropped']}행은 빼고 보냅니다" if inf.get("high_dropped") else ""
-    return out, note
-
-
-def build(cfg, d0, d1):
-    """report 의 산출물로 업로드 묶음(서버 전송 본문 그대로)을 만든다 → 경로 또는 None.
-    같은 기간을 다시 분석하면 그 기간 대기 묶음을 갈아끼운다(같은 것이 쌓이지 않게).
-    signals 는 팀 반출 변환(team_signals)을 거친 본문을 싣는다 — 서버·공유폴더 어느 쪽으로 가도 같은 행."""
-    tag = f"{d0.replace('-', '')}-{d1.replace('-', '')}"
-    files = {}
-    for pat in FILE_NAMES:
-        n = pat.format(t=tag)
-        p = os.path.join(REPORT, n)
-        if os.path.exists(p):
-            try:
-                files[n] = open(p, encoding="utf-8-sig", errors="replace").read()
-            except OSError:
-                pass
-            if n in files:
-                txt, note = team_signals(n, files[n], cfg)
-                if note:
-                    print(f"[teamup] {note}")
-                if txt is None:
-                    del files[n]
-                else:
-                    files[n] = txt
-    if not files:
+def hello_problem(h, scheme=None, *, need_id=True, minimal=False):
+    """hello 응답이 AgentFinder32 팀 서버의 것이 아니거나 하한을 어기면 까닭, 아니면 None.
+    need_id: server_id(32 hex)도 있어야 한다(보내기·상태). minimal: 제품·형식만 본다(철회 — 지우기는 하한과 상관없이 한다)."""
+    if not isinstance(h, dict):
+        return "응답이 AgentFinder32 팀 서버의 것이 아닙니다"
+    if h.get("product") != lmname.PRODUCT or h.get("schema") != lmname.SHARE_SCHEMA:
+        return "이 주소의 서버는 AgentFinder32 팀 서버가 아닙니다(옛 LoadMonitor 서버일 수 있습니다)"
+    if minimal:
         return None
-    meta_p = os.path.join(REPORT, f"mm_meta_{tag}.json")
-    try:
-        mj = json.load(open(meta_p, encoding="utf-8-sig")) if os.path.exists(meta_p) else {}
-    except (OSError, ValueError):
-        mj = {}
-    b = mj.get("mm_basis") or {}
-    member = {"owner": safe_owner(cfg.get("owner") or os.environ.get("USERNAME", "")),
-              "function": cfg.get("function", ""), "period": [d0, d1], "tag": tag,
-              "total_mm": mj.get("total_mm"), "avail_mm": mj.get("avail_mm"),
-              "load_pct": mj.get("load_pct"), "worked_h": mj.get("worked_h"),
-              "signals": mj.get("signals"),
-              "absence_days": b.get("absence_days"), "overtime_h": b.get("overtime_h"),
-              # LM30(2026-10-21) 가용에서 뺀 유급휴가 일수(반차 0.5 · 오늘까지 — 팀 표의 '유급휴가 N일' · 일수만, 날짜 없음)
-              "leave_days": leave_days_of(mj, b),
-              "no_evidence_days": b.get("no_evidence_days"), "gap_days": b.get("gap_days"),
-              # 측정 품질 표시(LM22 mm_basis) — 팀 취합·팀 통합 보고서가 '상한 없는 야근' 의 이상치·장시간일·
-              # 휴가로 본 평일·점심 차감을 인별로 보여 준다. 목록은 일수(len)로, 없으면 0.
-              "anomaly_days": anomaly_days_of(b),
-              "long_days": _count(b.get("long_days")),
-              "inferred_absence_days": _count(b.get("inferred_absence_days")),
-              "lunch_deducted_h": _hours(b.get("lunch_deducted_h")),
-              # D5 — 측정 방식·신뢰도·산식 설정 스냅샷: 수집 환경 차이(샘플러 유무·PC 기록 결측·설정)를 팀 취합이
-              # 사람 차이로 읽지 않게. 구판 core 가 만든 meta 면 None(취합은 배지 없이 예전처럼 비교).
-              "measure": measure_of(mj, b), "coverage": coverage_of(mj, b), "cfg_used": cfg_used_of(mj, b),
-              "tool_usage": tool_usage_of(mj, b),
-              # LM30(2026-10-18) — 출퇴근 추정의 달·전체 합계(시각 없음). overtime_h 는 위 mm_basis 값 그대로 — 출퇴근 추정이
-              # 투입을 맡으면(useForMM) 연장 + 휴일이다. 없는 판(LM29 이전)이면 None
-              "attendance": attendance_of(mj, b),
-              # A30 — 비업무 제외 후 시간 재산정 여부·뺀 시간(h)
-              "rehours": bool(mj.get("rehours")), "dropped_h": _hours(mj.get("dropped_h")),
-              "host": os.environ.get("COMPUTERNAME", ""),
-              # 누가·언제·어디서 — 팀장이 "이 숫자는 누구 것이고 언제 것인가"를 묻는다(사용자 요청)
-              "analyzed_at": time.strftime("%Y-%m-%d %H:%M"),
-              # 판 표식(LM28 부터) — 추가 키라 LM24 서버·취합은 그대로 받는다(team_recalc 가 'LM30(v3)' 로 표시).
-              # measure·coverage·cfg_used 키는 바꾸지 않는다(팀 호환 불변 — 없으면 'LM20(추정)' 으로 오분류된다)
-              "lm_ver": LM_VER}
-    os.makedirs(PENDING, exist_ok=True)
-    dst = os.path.join(PENDING, f"{tag}.json")
-    tmp = dst + ".tmp"
-    payload = {"member": member, "files": files,
-               "built": time.strftime("%Y-%m-%d %H:%M"),
-               "blocked": blockers(member, files)}
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False)
-    os.replace(tmp, dst)                    # 쓰다 만 묶음이 남지 않게
-    return dst
+    for k, (lo, hi) in FLOORS.items():
+        v = h.get(k)
+        if isinstance(v, bool) or not isinstance(v, int) or v < lo or (hi is not None and v > hi):
+            return f"서버 설정 {k}={v!r} 이(가) 규칙(최소 인원·보관기한)에 맞지 않아 보내지 않습니다"
+    if h.get("transport") not in ("http", "https") or (scheme and h.get("transport") != scheme):
+        return "서버의 전송 방식이 주소와 맞지 않습니다"
+    if not isinstance(h.get("personalOverHttp"), bool):
+        return "서버가 개인 리포트 전송 규칙을 말하지 않았습니다"
+    if need_id and not _HEX32.match(str(h.get("server_id") or "")):
+        return "서버가 자기 ID(server_id)를 말하지 않았습니다 — 조직장에게 AgentFinder32 팀 서버를 새 판으로 켜 달라고 하세요"
+    return None
 
 
-def _info(p):
-    """대기 묶음 한 개의 요약 (본문 전체를 읽지 않고 필요한 것만)"""
+def hello(t, cfg, *, need_id=True, minimal=False, timeout=None, tries=None):
+    """GET /af32/hello(pingTries 번까지 · tries·timeout 으로 줄일 수 있다) → 확인한 hello dict. 닿지 않으면 unreachable,
+    아니면 not_af32."""
+    lim = wait_limits(cfg)
+    n = lim["tries"] if tries is None else max(1, int(tries))
+    tmo = lim["ping"] if timeout is None else float(timeout)
+    last = None
+    for i in range(n):
+        if i:
+            time.sleep(RETRY_PAUSE)
+        try:
+            code, d = _call(t, "GET", P + "/hello", timeout=tmo)
+            break
+        except ShareError as e:
+            last = e
+    else:
+        raise last
+    if code != 200:
+        raise ShareError("not_af32", f"이 주소의 서버는 AgentFinder32 팀 서버가 아닙니다(HTTP {code})")
+    why = hello_problem(d, t.scheme, need_id=need_id, minimal=minimal)
+    if why:
+        raise ShareError("not_af32", why)
+    return d
+
+
+def _http_error(code, d):
+    err = d.get("error") if isinstance(d, dict) else ""
+    if code == 401:
+        return ShareError("bad_join", f"참여 코드가 맞지 않습니다 — 조직장에게 받은 참여 코드를 {teamaddr.EDIT_BAT} 에서 다시 저장하세요")
+    if code == 403 and err == "http_personal_refused":
+        return ShareError("http_personal_refused", "이 서버는 암호화 없는 HTTP 로는 개인 리포트를 받지 않습니다")
+    if code == 403:
+        return ShareError("token_mismatch", ("이 서버에 앞서 보낸 공유의 영수증이 이 PC 에 없어 바꾸거나 지울 수 없습니다 — "
+                                             "조직장에게 삭제를 요청하거나 서버 보관기한이 지난 뒤 다시 보내세요"))
+    if code == 413:
+        return ShareError("too_big", "보낼 내용이 서버 상한(5MB)을 넘습니다 — 항목을 줄여 다시 미리 보세요")
+    if code == 404:
+        return ShareError("not_af32", "이 주소의 서버가 공유를 받지 않습니다(AgentFinder32 팀 서버가 아닙니다)")
+    if code == 429:
+        return ShareError("server_error", "요청이 많아 서버가 잠시 막았습니다 — 1분 뒤 다시 하세요")
+    if code == 400:
+        return ShareError("server_error", "서버가 보낸 내용의 형식을 받지 않았습니다 — 다시 미리 본 뒤 보내세요")
+    return ShareError("server_error", f"서버 오류(HTTP {code})")
+
+
+# ── 영수증 ──────────────────────────────────────────────────────────────────────
+def receipts_path(root=None):
+    return os.path.join(str(root or ROOT), "data", RECEIPTS_FILE)
+
+
+def load_receipts(root=None, *, prune=True):
+    r"""data\share_receipts.json → 영수증 목록. 서버 보관기한이 지난 것은 서버에서 이미 지워졌으므로 뺀다(prune)."""
+    p = receipts_path(root)
     try:
         with open(p, encoding="utf-8-sig") as f:
             d = json.load(f)
     except (OSError, ValueError):
-        return {"file": os.path.basename(p), "bad": True,
-                "bytes": os.path.getsize(p) if os.path.exists(p) else 0}
-    m = d.get("member") or {}
-    return {"file": os.path.basename(p), "tag": m.get("tag", ""),
-            "owner": m.get("owner", ""), "period": m.get("period") or [],
-            "built": d.get("built", ""), "files": len(d.get("files") or {}),
-            "bytes": os.path.getsize(p), "total_mm": m.get("total_mm"),
-            "load_pct": m.get("load_pct"), "blocked": d.get("blocked") or []}
-
-
-def report_tags():
-    r"""report\ 에 산출물이 있는 기간 목록(최신순) — 묶음이 없어도 '보낼 수 있는 것'을 찾는다.
-    묶음은 분석하는 순간에만 만들어지므로, 예전 버전으로 분석한 PC 는 결과만 있고 묶음이 없다."""
-    seen = {}
-    try:
-        for n in os.listdir(REPORT):
-            m = re.match(r"^mm_rows_(\d{8})-(\d{8})(_refined)?\.csv$", n)
-            if not m:
-                continue
-            tag = f"{m.group(1)}-{m.group(2)}"
-            try:
-                t = os.path.getmtime(os.path.join(REPORT, n))
-            except OSError:
-                t = 0
-            seen[tag] = max(seen.get(tag, 0), t)
-    except OSError:
         return []
+    lst = d.get("receipts") if isinstance(d, dict) else d
     out = []
-    for tag, t in sorted(seen.items(), key=lambda kv: -kv[1]):
-        a, b = tag.split("-")
-        out.append({"tag": tag,
-                    "period": [f"{a[:4]}-{a[4:6]}-{a[6:8]}", f"{b[:4]}-{b[4:6]}-{b[6:8]}"],
-                    "at": time.strftime("%Y-%m-%d %H:%M", time.localtime(t)) if t else ""})
+    today = _today().isoformat()
+    for r in lst if isinstance(lst, list) else []:
+        if not isinstance(r, dict) or r.get("part") not in PARTS or not r.get("token") or not r.get("server"):
+            continue
+        if prune and str(r.get("expires") or "9999") < today:
+            continue
+        out.append(r)
+    if prune and isinstance(lst, list) and len(out) != len(lst):
+        save_receipts(root, out)
     return out
 
 
-def buildable():
-    """아직 대기 묶음이 없는 기간 (이미 보낸 것도 다시 묶을 수 있게 보여 준다)"""
-    have = {x.get("tag") for x in list_pending()}
-    return [t for t in report_tags() if t["tag"] not in have]
-
-
-def list_pending():
-    if not os.path.isdir(PENDING):
-        return []
-    out = [_info(os.path.join(PENDING, n)) for n in sorted(os.listdir(PENDING))
-           if n.endswith(".json")]
-    return out
-
-
-def list_sent(limit=10):
-    if not os.path.isdir(SENT):
-        return []
-    ns = sorted((n for n in os.listdir(SENT) if n.endswith(".json")), reverse=True)[:limit]
-    out = []
-    for n in ns:
-        p = os.path.join(SENT, n)
+def save_receipts(root, items):
+    p = receipts_path(root)
+    if not items:
         try:
-            out.append({"file": n, "when": time.strftime("%Y-%m-%d %H:%M",
-                                                         time.localtime(os.path.getmtime(p))),
-                        "bytes": os.path.getsize(p)})
+            os.remove(p)
         except OSError:
             pass
-    return out
+        return
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    tmp = f"{p}.{os.getpid()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"product": lmname.PRODUCT, "receipts": items}, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, p)
 
 
-# ── 서버 ────────────────────────────────────────────────────────────────────
-def ping(url, timeout=None, tries=None):
-    """이 망에서 서버에 닿는가 — 짧게 확인한다(응답이 오면 도달로 본다).
-    LM28: 3초 × 최대 2번(사이 2초 — config.teamUpload.pingTimeoutSec·pingTries). 순간 끊김 한 번으로 '닿지 않음' 이라
-    단정하지 않되, 닿지 않는 망에서는 8초 안에 끝낸다(예전 4초 1번). tries 는 결과에 몇 번 만에 닿았는지 남긴다."""
-    if not url:
-        return {"ok": False, "error": "팀 서버 주소가 비었거나 형식이 틀렸습니다 — "
-                                      "LoadMonitor30-팀서버주소.bat 에서 서버 IP·포트를 저장하세요"}
-    if timeout is None or tries is None:
-        lim = wait_limits(load_cfg())
-        timeout = lim["ping_timeout"] if timeout is None else timeout
-        tries = lim["ping_tries"] if tries is None else tries
-    tries = max(1, int(tries))
-    t0 = time.time()
-    err, n = None, 0
-    while n < tries:
-        if n:
-            time.sleep(RETRY_PAUSE)
-        n += 1
-        try:
-            req = urllib.request.Request(url + "/api/team", method="GET")
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                r.read(2048)
-                code = r.status
-        except urllib.error.HTTPError as e:      # 404 라도 서버는 살아 있다 = 이 망에서 닿는다
-            code = e.code
-        except ValueError as e:                  # 주소 형식 — 다시 해도 같다
-            err = e
-            break
-        except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
-            err = e
-            continue
-        return {"ok": True, "url": url, "code": code, "ms": int((time.time() - t0) * 1000), "tries": n}
-    reason = getattr(err, "reason", err)
-    return {"ok": False, "url": url, "ms": int((time.time() - t0) * 1000), "tries": n,
-            "error": f"{reason}",
-            "hint": "이 망에서는 팀 서버에 닿지 않습니다 — 서버망(사내망)에서 다시 눌러 주세요. "
-                    "묶음은 그대로 대기합니다."}
+def public_receipt(r):
+    """화면·로그용 — 토큰·id·server_id 없이. pending = 서버가 받았는지 아직 모른다(거두기로 지울 수 있다)."""
+    return {"server": r.get("server"), "org_label": r.get("org_label") or "", "part": r.get("part"),
+            "sent": r.get("sent"), "expires": r.get("expires"), "pending": bool(r.get("pending"))}
 
 
-class _PhaseConn(http.client.HTTPConnection):
-    r"""업로드 연결 — 연결은 짧게(connect_timeout), 답은 길게(read_timeout) 기다리고, 끊긴 단계를 phase[0] 에 남긴다.
-    connect(연결 중) → send(본문 보내는 중) → wait(본문을 다 보내고 답을 기다리는 중).
-    한 상한으로 묶으면 닿지 않는 서버를 45초씩 기다리고, 끊긴 단계를 모르면 서버가 이미 받았을 수 있는 묶음을 또 보낸다."""
-
-    def __init__(self, host, timeout=None, *, connect_timeout, read_timeout, phase, **kw):
-        super().__init__(host, timeout=connect_timeout, **kw)
-        self._read_timeout = read_timeout
-        self._phase = phase
-
-    def connect(self):
-        self._phase[0] = "connect"
-        super().connect()
-        self.sock.settimeout(self._read_timeout)
-        self._phase[0] = "send"
-
-    def getresponse(self):
-        self._phase[0] = "wait"
-        return super().getresponse()
+def _same_server(r, h):
+    """영수증 r 이 hello h 를 답한 서버의 것인가 — server_id 로. server_id 가 없는 옛 영수증은 조직 이름이 같을 때만."""
+    sid = str(r.get("server_id") or "")
+    if sid:
+        return sid == str(h.get("server_id") or "")
+    return bool(r.get("org_label")) and r.get("org_label") == (h.get("org_label") or "")
 
 
-class _PhaseHandler(urllib.request.HTTPHandler):
-    """urllib 이 업로드 연결을 _PhaseConn 으로 만들게 한다(프록시·오류 처리는 urllib 그대로)"""
-
-    def __init__(self, connect_timeout, read_timeout, phase):
-        super().__init__()
-        self._kw = {"connect_timeout": connect_timeout, "read_timeout": read_timeout, "phase": phase}
-
-    def http_open(self, req):
-        return self.do_open(lambda host, **kw: _PhaseConn(host, **kw, **self._kw), req)
+def _on_server(r, t, h):
+    """보내기에서 '이 서버의 앞선 영수증' — server_id 가 같으면(주소 글자가 달라도). 옛 영수증은 주소·조직 이름이 같을 때만."""
+    if r.get("server_id"):
+        return _same_server(r, h)
+    return r.get("server") == t.url and _same_server(r, h)
 
 
-def _proxy_handler():
-    r"""프록시는 예전 urlopen 과 같은 길을 따른다 — 설치된 오프너(urllib.request.install_opener)가 있으면 그 설정,
-    없으면 시스템 설정(환경 변수·인터넷 옵션). 업로드만 연결·답 시간을 따로 재려고 오프너를 새로 짓기 때문이다."""
-    for h in getattr(getattr(urllib.request, "_opener", None), "handlers", None) or ():
-        if isinstance(h, urllib.request.ProxyHandler):
-            return urllib.request.ProxyHandler(dict(h.proxies))
-    return urllib.request.ProxyHandler()
+def _expect(h, part):
+    """서버 보관기한의 예상 날짜(영수증 — 서버 답을 받기 전) — 개인 리포트 오늘+serverPersonalDays · 기여분 이달 1일+serverTeamDays."""
+    today = _today()
+    if part == "personal":
+        return (today + timedelta(days=int(h.get("serverPersonalDays") or 0))).isoformat()
+    return (today.replace(day=1) + timedelta(days=int(h.get("serverTeamDays") or 0))).isoformat()
 
 
-def _is_timeout(e):
-    return isinstance(e, TimeoutError) or isinstance(getattr(e, "reason", None), TimeoutError)
+# ── 상태·연결 확인 ──────────────────────────────────────────────────────────────
+def _server_info(h):
+    return {"org_label": h.get("org_label") or "", "server_id": str(h.get("server_id") or ""),
+            "transport": h.get("transport"), "personalOverHttp": h.get("personalOverHttp"),
+            "serverPersonalDays": h.get("serverPersonalDays"), "serverTeamDays": h.get("serverTeamDays"),
+            "minGroupSize": h.get("minGroupSize"), "minCellSize": h.get("minCellSize")}
 
 
-def _post_json(url, body, connect_timeout, read_timeout, phase):
-    """본문 POST → 서버 답(JSON). 실패는 예외 그대로 — 어느 단계였는지는 phase[0] 이 말한다."""
-    op = urllib.request.build_opener(_proxy_handler(), _PhaseHandler(connect_timeout, read_timeout, phase))
-    req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json; charset=utf-8"})
-    with op.open(req, timeout=read_timeout) as r:
-        return json.loads(r.read().decode("utf-8", "replace"))
+def ping(root=None, cfg=None):
+    """hello 만 — 보내지 않는다."""
+    root = root or ROOT
+    cfg = _cfg(cfg, root)
+    a = teamaddr.load(root)
+    if not a.configured:
+        raise ShareError("no_address", NO_ADDRESS_MSG)
+    t = resolve_target(a.scheme, a.host, a.port, cfg)
+    h = hello(t, cfg)
+    return result("ok", f"{h.get('org_label') or '조직'} 의 팀 서버에 닿습니다({t.url} · {str(h.get('transport')).upper()})",
+                  address=t.url, reachable=True, **_server_info(h))
 
 
-def upload_one(url, path, timeout=None, connect_timeout=None):
-    """대기 묶음 한 개 전송 → (ok, 메시지, 갈래). timeout = 본문을 다 보낸 뒤 답 상한, connect_timeout = 연결 상한
-    (없으면 wait_limits — config.teamUpload.timeoutSec 45초 · pingTimeoutSec 3초).
-    갈래(LM28) — 자동 보고(run.py)가 실패 사유를 한국어 문구의 부분 문자열이 아니라 이 값으로 가른다(문구를 다듬어도
-    분류가 깨지지 않게): sent 보냄 · blocked 이 묶음은 이대로 보낼 수 없음(읽기 실패·크기·이름·파일명·개인정보 관문·형식) ·
-    rejected 서버가 받지 않음(HTTP 오류·ok:false·응답 해석 불가) · unreachable 연결 실패(2번)·보내는 중이나 답 전에 끊김 ·
-    slow 본문은 갔는데 답이 상한 안에 오지 않음(서버에 저장됐을 수 있다 — 다시 보내지 않는다)."""
+def _withdrawal_pending(root):
+    return os.path.exists(os.path.join(str(root), "data", consent.WITHDRAWAL_FILE))
+
+
+def status(root=None, cfg=None, *, verify=False, offline=False):
+    """주소·조직·전송 방식·닿는지·영수증. 주소가 없거나 닿지 않아도 영수증은 싣는다.
+    offline=True 면 서버에 묻지 않는다(주소와 영수증만 — reachable None · checked False). 다른 사용자의 자료면 영수증 없이
+    no_consent(D17)."""
+    root = root or ROOT
+    cfg = _cfg(cfg, root)
+    if _other_user(root, cfg):
+        return result("no_consent", install.OTHER_USER_MSG, address="", configured=False, join_set=False, transport="",
+                      org_label="", reachable=None, checked=False, receipts=[], withdrawal_pending=False, warnings=[],
+                      other_user=True)
+    a = teamaddr.load(root)
+    recs = load_receipts(root)
+    base = {"address": a.url, "configured": a.configured, "join_set": bool(a.join), "transport": a.scheme,
+            "org_label": "", "reachable": None if offline else False, "checked": not offline,
+            "receipts": [public_receipt(r) for r in recs],
+            "withdrawal_pending": any(_marked(r) for r in recs) and _withdrawal_pending(root), "warnings": list(a.warnings)}
+    if not a.configured:
+        return result("no_address", NO_ADDRESS_MSG, **base)
+    if offline:
+        return result("ok", "저장한 주소와 보낸 공유 기록입니다 — 조직장 서버에는 묻지 않았습니다", **base)
     try:
-        raw = open(path, "rb").read()
-    except OSError as e:
-        return False, f"묶음을 읽지 못했습니다: {e}", "blocked"
-    if len(raw) > MAX_BYTES:
-        return False, (f"묶음이 너무 큽니다 ({len(raw) / 1048576:.1f}MB > 30MB) — "
-                       "기간을 나눠 분석한 뒤 다시 시도하세요"), "blocked"
-    # 저장한 본문에는 built 가 더 들어 있다. 서버는 member/files 만 보므로 그대로 보내도 되지만,
-    # 계약을 명확히 하려고 두 키만 추려 보낸다.
+        t = resolve_target(a.scheme, a.host, a.port, cfg)
+        h = hello(t, cfg)
+    except ShareError as e:
+        return result(e.code, e.msg, **base)
+    base.update(_server_info(h), reachable=True)
+    if verify:
+        for pr, r in zip(base["receipts"], recs, strict=True):
+            if not _on_server(r, t, h):
+                continue
+            try:
+                code, d = _call(t, "GET", f"{P}/share/{r['part']}/{r['id']}", headers={"X-AF32-Token": r["token"]},
+                                timeout=wait_limits(cfg)["ping"])
+                pr["on_server"] = code == 200
+            except ShareError:
+                pr["on_server"] = None
+    return result("ok", f"{h.get('org_label') or '조직'} 의 팀 서버에 닿습니다", **base)
+
+
+# ── 미리보기 ────────────────────────────────────────────────────────────────────
+def _share_dir(root):
+    return os.path.join(str(root), *SHARE_DIR)
+
+
+def _typed(v, cap=40):
+    s = re.sub(r"[\x00-\x1f\x7f]", " ", str(v or ""))
+    return re.sub(r"\s+", " ", s).strip()[:cap]
+
+
+def _sha_file(p):
+    try:
+        with open(p, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+    except OSError:
+        return ""
+
+
+def _sources(root, tag):
+    rep = os.path.join(str(root), "report")
+    names = (f"run_meta_{tag}.json", f"agentic_{tag}.json", f"workflow_{tag}.json",
+             f"work_rows_{tag}.csv", f"work_rows_{tag}_refined.csv", f"entities_{tag}.json")
+    return {n: _sha_file(os.path.join(rep, n)) for n in names}
+
+
+def _write_bytes(p, data):
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    tmp = f"{p}.{os.getpid()}.tmp"
+    with open(tmp, "wb") as f:
+        f.write(data)
+    os.replace(tmp, p)
+
+
+def _scrubber(cfg, root, tag):
+    import privacy
+    try:
+        return privacy.ShareScrubber(cfg, root=root, tag=tag)
+    except privacy.RestrictedListError as e:
+        raise ShareError("no_result", e.message) from None
+
+
+def _restricted_stale(root, tag, restricted):
+    r"""분석 결과(report\run_meta_<tag>.json 의 restricted_sha256)가 지금 제한 고객 목록으로 만든 것이 아닌가 — 값이 없거나
+    다르면 참(retention.restricted_stale 이 있으면 그것을 쓴다)."""
+    try:
+        import retention
+        fn = getattr(retention, "restricted_stale", None)
+        if callable(fn):
+            return bool(fn(str(root), tag, restricted))
+    except Exception:  # noqa: BLE001 - 아래의 같은 규칙으로 본다
+        pass
+    try:
+        with open(os.path.join(str(root), "report", f"run_meta_{tag}.json"), encoding="utf-8-sig") as f:
+            meta = json.load(f)
+    except (OSError, ValueError):
+        return True
+    want = str(meta.get("restricted_sha256") or "") if isinstance(meta, dict) else ""
+    return not want or want != str(getattr(restricted, "sha256", "") or "")
+
+
+def _refuse_stale(root, tag, sc):
+    """제한 고객 목록이 분석 뒤에 바뀌었으면 보내지도 미리 보지도 않는다(그 고객의 메일로 만든 후보가 남아 있을 수 있다 — D9)."""
+    if _restricted_stale(root, tag, getattr(sc, "restricted", None)):
+        raise ShareError("no_result", STALE_MSG)
+
+
+def _blocked(it, cfg, sc=None):
+    """가린 뒤에도 민감한 낱말·식별번호·제한 고객의 이름·도메인이 남은 항목은 미리보기에 올리지 않는다(보내지 않는다).
+    제한 고객은 가림 도구(sc — privacy.ShareScrubber)가 같은 맞춤 규칙으로 이미 가린다. 여기는 가림을 지나친 글을 한 번 더 막는
+    자리다(privacy.restricted_hit — 가림 도구가 목록을 들고 있지 않으면 닫는다). 가림 도구 없이 부르면 목록을 모르므로 보지 않는다."""
+    import privacy
+    t = " ".join(str(it.get(k) or "") for k in ("name", "logic", "reason", "task_type", "agent_how"))
+    if privacy.sensitive_hit(t, cfg) or privacy.has_identifier(t):
+        return True
+    return bool(sc is not None and privacy.restricted_hit(t, getattr(sc, "restricted", None)))
+
+
+def _flag_terms(sc, it):
+    """가린 뒤에도 이름(고객사·제품·사람)일 수 있는 낱말 — privacy.ShareScrubber.leftover. 없으면 []."""
+    fn = getattr(sc, "leftover", None) if sc is not None else None
+    if not callable(fn):
+        return []
+    import report_out
+    out = []
+    for k in FLAG_FIELDS:
+        v = str(it.get(k) or "").strip()
+        if not v or (k == "task_type" and v in report_out.WORKTYPES):
+            continue
+        try:
+            terms = fn(v)
+        except Exception:  # noqa: BLE001 - 확인하지 못한 글은 표시한다(안전한 쪽)
+            terms = ["(확인하지 못함)"]
+        for x in terms or ():
+            s = str(x).strip()
+            if s and s not in out:
+                out.append(s)
+    return out[:FLAG_TERMS_MAX]
+
+
+def _share_html(root, cfg, tag, scrubber, ids, owner, function):
+    """공유용 리포트(report_out.build(variant="share")) — 스크립트가 없어야 한다."""
+    import report_out
+    h = report_out.build(tag, variant="share", scrubber=scrubber, include=list(ids), owner=owner, function=function,
+                         root=root, cfg=cfg)
+    if not isinstance(h, str) or not h.strip():
+        raise ShareError("no_result", "공유용 리포트를 만들지 못했습니다 — 분석 결과를 확인하세요")
+    if "<script" in h.lower():
+        raise ShareError("no_result", "공유용 리포트에 스크립트가 있어 보내지 않습니다")
+    return h
+
+
+def _allowed(items, cfg, personal, team, sc=None):
+    r"""report_out.share_items 의 항목 → (미리보기에 올릴 항목[parts 붙임], 민감한 내용이 남아 뺀 수). 미리보기와 보내기가 같은 규칙을 쓴다.
+    가린 뒤에도 민감한 낱말·식별번호·제한 고객의 이름이 남은 항목은 뺀다(_blocked).
+    가린 뒤에도 이름일 수 있는 낱말이 남은 항목은 "flagged": true · "flag_terms" 를 붙이고 익명 팀 집계에는 넣지 않는다(parts 에
+    team 없음 — 화면은 표시하고 체크를 꺼 둔다. 개인 리포트에는 팀원이 확인하고 고를 때만 실린다)."""
+    allowed, blocked = [], 0
+    for it in items:
+        kind = it.get("kind")
+        if kind not in ("candidate", "step") or (kind == "step" and not personal):
+            continue
+        if not str(it.get("name") or "").strip():
+            continue
+        if _blocked(it, cfg, sc):
+            blocked += 1
+            continue
+        terms = _flag_terms(sc, it)
+        parts = [p for p in PARTS if (p == "personal" and personal)
+                 or (p == "team" and team and kind == "candidate" and not terms)]
+        row = dict(it, parts=parts)
+        if terms:
+            row.update(flagged=True, flag_terms=terms)
+        allowed.append(row)
+    return allowed, blocked
+
+
+def _canon(o):
+    return json.dumps(o, ensure_ascii=False, sort_keys=True)
+
+
+def _rederive(root, cfg, doc, sc):
+    r"""보낼 때 공유본 항목·기간을 분석 결과에서 다시 만든다(report_out.share_items · ShareScrubber — 미리보기와 같은 규칙).
+    미리보기 파일의 것과 하나라도 다르면 보내지 않는다 — 미리보기 파일을 손으로 고치고 해시를 맞춰도 가리지 않은 글(고객사·과제·
+    사람 이름)이 명령줄·API 로 나가지 않는다(R6·R9). → (항목 목록, 기간 'YYYY-MM~YYYY-MM')."""
+    import report_out
+    tag = str(doc.get("tag") or "")
+    fresh = report_out.share_items(tag, scrubber=sc, root=root, cfg=cfg)
+    if fresh is None:
+        raise ShareError("no_result", f"{tag} 는 AgentFinder32 분석 결과가 아닙니다 — 다시 분석하세요")
+    pp = doc.get("parts") if isinstance(doc.get("parts"), dict) else {}
+    items, _b = _allowed(fresh, cfg, bool(pp.get("personal")), bool(pp.get("team")), sc)
+    per = report_out.share_period(tag, root=root)
+    if (_canon(items) != _canon(doc.get("items")) or doc.get("period") != per
+            or doc.get("month") != (per.split("~")[-1] if per else "")):
+        raise ShareError("no_result", "미리보기와 지금 만든 공유본이 다릅니다 — 다시 미리 보세요")
+    return items, per
+
+
+def _check_excluded(text, items, keep_ids):
+    """고르지 않은 항목의 글이 공유용 리포트에 남아 있으면 ShareError — 미리보기와 보내는 것이 같아야 한다."""
+    kept = " ".join(str(it.get(k) or "") for it in items if it["id"] in keep_ids for k in ("name", "logic", "reason", "agent_how"))
+    for it in items:
+        if it["id"] in keep_ids:
+            continue
+        for k in ("name", "logic", "reason", "agent_how"):
+            v = str(it.get(k) or "").strip()
+            if len(v) >= 4 and v not in kept and html.escape(v, quote=True) in text:
+                raise ShareError("no_result", "고르지 않은 항목이 공유용 리포트에 남아 보내지 않았습니다 — 다시 미리 보세요")
+
+
+def preview(root=None, cfg=None, *, tag=None, personal=True, team=True, owner="", function=""):
+    r"""공유 미리보기 — report\share\preview_<tag>.json(+ 개인 리포트를 고르면 preview_<tag>.html). 보내지 않는다."""
+    root = os.path.abspath(str(root or ROOT))
+    cfg = _cfg(cfg, root)
+    require_consent(root, cfg)
+    import report_out
+    if not personal and not team:
+        personal = team = True
+    tag = tag or report_out.latest_tag(os.path.join(root, "report"))
+    if not tag or not TAG_RX.match(str(tag)):
+        raise ShareError("no_result", "공유할 분석 결과가 없습니다 — 먼저 [분석 실행]을 하세요")
+    sc = _scrubber(cfg, root, tag)
+    _refuse_stale(root, tag, sc)
+    items = report_out.share_items(tag, scrubber=sc, root=root, cfg=cfg)
+    if items is None:
+        raise ShareError("no_result", f"{tag} 는 AgentFinder32 분석 결과가 아닙니다 — 다시 분석하세요")
+    owner, function = _typed(owner), _typed(function)
+    allowed, blocked = _allowed(items, cfg, personal, team, sc)
+    if not allowed:
+        raise ShareError("no_result", "공유할 수 있는 항목이 없습니다")
+    if not any(it["parts"] for it in allowed):
+        raise ShareError("no_result", "보낼 수 있는 항목이 없습니다 — 이름이 남았을 수 있는 후보는 익명 팀 집계에 넣지 않습니다")
+    flagged = sum(1 for it in allowed if it.get("flagged"))
+    sdir = _share_dir(root)
+    html_rel, html_sha = "", ""
+    if personal:
+        text = _share_html(root, cfg, tag, sc, [i["id"] for i in allowed], owner, function)
+        hp = os.path.join(sdir, f"preview_{tag}.html")
+        _write_bytes(hp, text.encode("utf-8"))
+        html_rel = os.path.relpath(hp, root)
+        html_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    per = report_out.share_period(tag, root=root)
+    # 시각(epoch)은 글에 두지 않는다(D10 — report\ 아래는 날짜만). 30분 신선도는 미리보기 파일의 수정 시각으로 본다(_load_preview).
+    doc = {"product": lmname.PRODUCT, "schema": lmname.SHARE_SCHEMA, "kind": "preview", "tag": tag,
+           "created": _today().isoformat(),
+           "owner": owner, "function": function, "period": per,
+           "month": per.split("~")[-1] if per else "", "parts": {"personal": bool(personal), "team": bool(team)},
+           "team_fields": ["name", "task_type"], "items": allowed, "blocked": blocked,
+           "html": html_rel, "html_sha256": html_sha, "sources": _sources(root, tag), "masked": sc.table()}
+    raw = json.dumps(doc, ensure_ascii=False, indent=1).encode("utf-8")
+    pf = os.path.join(sdir, f"preview_{tag}.json")
+    _write_bytes(pf, raw)
+    msg = f"미리보기를 만들었습니다 — 항목 {len(allowed)}개"
+    if blocked:
+        msg += f" · 민감한 내용이 남아 뺀 항목 {blocked}개"
+    if flagged:
+        msg += f" · 이름이 남았을 수 있어 표시한 항목 {flagged}개(익명 팀 집계에는 넣지 않습니다)"
+    return result("ok", msg, tag=tag, preview_file=pf, sha256=hashlib.sha256(raw).hexdigest(),
+                  html=(os.path.join(root, html_rel) if html_rel else ""), items=allowed, blocked=blocked, flagged=flagged,
+                  parts=doc["parts"], period=per, owner=owner, function=function, masked=doc["masked"])
+
+
+# ── 보내기 표(화면이 확인 창 뒤에 쓴다 — 계약 C9) ───────────────────────────────────────────────
+def _take_ticket(root, path):
+    r"""report\share\ticket_<nonce>.json → dict. 읽자마자 지운다(한 번만 쓴다). report\share 밖·이름이 틀림·링크·30분이 지남·
+    형식이 틀림이면 ShareError('no_result'). report\share 밖의 파일은 지우지 않는다."""
+    sdir = os.path.normcase(os.path.abspath(_share_dir(root)))
+    p = os.path.abspath(str(path or ""))
+    if not path or os.path.normcase(os.path.dirname(p)) != sdir or not _TICKET_NAME.match(os.path.basename(p)):
+        raise ShareError("no_result", TICKET_MSG)
+    try:
+        st = os.lstat(p)
+        if not stat.S_ISREG(st.st_mode) or (getattr(st, "st_file_attributes", 0) or 0) & 0x400:
+            raise ShareError("no_result", TICKET_MSG)
+        with open(p, "rb") as f:
+            raw = f.read(65536)
+    except OSError:
+        raise ShareError("no_result", TICKET_MSG) from None
+    finally:
+        try:
+            if os.path.isfile(p) and not os.path.islink(p):
+                os.remove(p)
+        except OSError:
+            pass
+    age = time.time() - st.st_mtime
+    if not -300 <= age <= TICKET_MAX_AGE:
+        raise ShareError("no_result", "확인 창에서 보내기를 누른 지 30분이 지났습니다 — 다시 미리 보고 보내세요")
     try:
         d = json.loads(raw.decode("utf-8-sig"))
-        member = d.get("member") or {}
-        files = d.get("files") or {}
-        # 이름이 서버 규칙에 어긋날 때만 지금 설정으로 고쳐 각인한다 — 잘못된 이름 때문에 영구히
-        # 거부되는 것은 막되, 다른 사람의 묶음을 대신 올릴 때(USB 로 옮겨 온 경우) 그 사람의
-        # 이름이 올리는 사람 것으로 바뀌지 않게 한다.
-        _ow = str(member.get("owner") or "")
-        if not _ow or _ow != safe_owner(_ow) or len(_ow) > 40:
-            member["owner"] = safe_owner(load_cfg().get("owner") or _ow
-                                         or os.environ.get("USERNAME", ""))
-        # 보내는 시점의 흔적 — 대리 업로드여도 '올린 PC'는 여기서 찍힌다(이름은 원저자 유지)
-        member["uploaded_at"] = time.strftime("%Y-%m-%d %H:%M")
-        member["uploaded_from"] = os.environ.get("COMPUTERNAME", "")
-        # G4 — 보내기 직전에도 팀 반출 변환을 한 번 더 건다. LM28 build 묶음은 이미 변환됐지만(다시 걸어도 같다),
-        # 예전 판이 만든 묶음이 upload_pending 에 남아 있으면 신호 원문이 그대로 나갔다(WP7 지적).
-        _cfg0 = load_cfg()
-        for _n in list(files):
-            _txt, _note = team_signals(_n, files[_n], _cfg0)
-            if _note:
-                print(f"[teamup] {_note}")
-            if _txt is None:
-                del files[_n]
-            else:
-                files[_n] = _txt
-        if not files:
-            return False, "보낼 수 있는 파일이 없습니다 — 신호 파일이 개인정보 관문에 막혔습니다(다시 분석하세요)", "blocked"
-        stop = blockers(member, files)
-        if stop:
-            return False, stop[0], "blocked"
-        body = json.dumps({"member": member, "files": files},
-                          ensure_ascii=False).encode("utf-8")
     except (ValueError, UnicodeDecodeError):
-        return False, "묶음 형식이 깨졌습니다 — 해당 기간을 다시 분석하세요", "blocked"
-    if timeout is None or connect_timeout is None:
-        lim = wait_limits(load_cfg())
-        timeout = lim["timeout"] if timeout is None else timeout
-        connect_timeout = lim["ping_timeout"] if connect_timeout is None else connect_timeout
-    # 연결 단계 실패(거부·경로 없음·이름 풀이·연결 시간 초과)만 1번 다시 한다 — 서버는 본문을 받지 못했으니 다시 보내도 안전하다.
-    # 본문을 다 보낸 뒤(wait) 답이 늦으면 다시 보내지 않는다: 서버가 이미 저장했을 수 있고, 느린 서버에 다시 보내면 기다림만 두 배다.
-    for attempt in range(2):
-        phase = ["connect"]
-        try:
-            res = _post_json(url + "/api/upload", body, connect_timeout, timeout, phase)
-            break
-        except urllib.error.HTTPError as e:
-            detail = ""
-            try:
-                detail = e.read().decode("utf-8", "replace")[:200]
-            except (OSError, http.client.HTTPException):
-                pass
-            return False, f"서버가 거부했습니다 (HTTP {e.code}) {detail}", "rejected"
-        except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
-            reason = getattr(e, "reason", e)
-            if phase[0] == "connect":
-                if attempt == 0:
-                    time.sleep(RETRY_PAUSE)
-                    continue
-                return False, f"연결 실패(2번 시도): {reason}", "unreachable"
-            if phase[0] == "send":
-                return False, f"보내는 중 연결이 끊겼습니다: {reason}", "unreachable"
-            if _is_timeout(e):
-                return False, f"{SLOW_MSG} ({timeout:.0f}초 안에 답이 없었습니다)", "slow"
-            return False, (f"답을 받기 전에 연결이 끊겼습니다({reason}) — 서버에 저장됐을 수 있습니다. "
-                           "묶음은 대기로 남겨 다음 실행 때 다시 보냅니다(덮어쓰기라 결과는 같습니다)"), "unreachable"
-        except ValueError:
-            return False, "서버 응답을 해석하지 못했습니다", "rejected"
-    if not isinstance(res, dict) or not res.get("ok"):
-        return False, f"서버 거부: {res.get('error', '') if isinstance(res, dict) else ''}", "rejected"
-    where = str(res.get("store") or "")
-    host = str(res.get("host") or "")
-    me = os.environ.get("COMPUTERNAME", "")
-    same_pc = bool(host and me and host == me)
-    other_folder = same_pc and os.path.normcase(os.path.abspath(str(res.get("root") or ""))) \
-        != os.path.normcase(os.path.abspath(ROOT))
-    note = ""
-    if where:
-        note = f" · 저장 위치: {where}" + (f" ({host})" if host and not same_pc else "")
-    if other_folder:
-        # 같은 PC 인데 다른 설치 폴더가 받았다 — 사용자가 겪은 바로 그 상황
-        note += "  [!] 이 PC 의 다른 폴더가 받았습니다 — 그 폴더의 팀 취합에 들어갑니다"
-    if res.get("queued"):
-        # LM28 서버 — 저장하자마자 답하고 취합은 뒤에서 돈다(queued — aggregated 는 "queued"). 예전 서버는 취합을 마친 뒤 aggregated 로 답한다
-        return True, f"{res.get('saved')}개 파일 저장됨 — 팀 취합은 서버가 이어서 갱신합니다" + note, "sent"
-    return True, (f"{res.get('saved')}개 파일 저장, 팀 취합 "
-                  f"{'갱신됨' if res.get('aggregated') else '갱신 실패(서버 로그 확인)'}" + note), "sent"
+        raise ShareError("no_result", TICKET_MSG) from None
+    if not _ticket_ok(d):
+        raise ShareError("no_result", TICKET_MSG)
+    return d
 
 
-def upload_all(url, timeout=None, connect_timeout=None, budget=None, t0=None):
-    """대기 묶음을 차례로 전송. 성공분만 upload_sent 로 옮긴다(실패분은 그대로 대기). 묶음마다 kind(upload_one 의 갈래).
-    LM28 — 닿지 않거나(unreachable) 답이 늦으면(slow) 거기서 멈춘다: 같은 서버라 남은 묶음도 같은 기다림을 되풀이한다.
-    t0(time.monotonic — 연결 확인 전 시각)부터 budget 초가 지나 다음 묶음의 답 상한까지 기다릴 여유가 없으면 새로 시작하지
-    않는다(첫 묶음은 언제나 보낸다). 남긴 묶음은 대기 그대로 — 건수는 left, 사유는 stopped."""
-    items = list_pending()
-    results = []
-    if not items:
-        return {"ok": True, "sent": 0, "failed": 0, "results": [],
-                "note": "보낼 대기 묶음이 없습니다 — 먼저 [분석 실행]을 하세요"}
-    if timeout is None or connect_timeout is None:
-        lim = wait_limits(load_cfg())
-        timeout = lim["timeout"] if timeout is None else timeout
-        connect_timeout = lim["ping_timeout"] if connect_timeout is None else connect_timeout
-    budget = BUDGET_SEC if budget is None else budget
-    t0 = time.monotonic() if t0 is None else t0
-    os.makedirs(SENT, exist_ok=True)
-    sent = failed = left = 0
-    stopped = ""
-    for i, it in enumerate(items):
-        if i and time.monotonic() - t0 + timeout > budget:
-            left = len(items) - i
-            stopped = (f"시간 상한({budget:.0f}초)에 닿아 나머지 {left}건은 보내지 않고 대기로 남겼습니다 — "
-                       "[팀 서버 업로드]를 다시 누르거나 다음 실행 때 이어서 보냅니다")
-            break
-        p = os.path.join(PENDING, it["file"])
-        ok, msg, kind = upload_one(url, p, timeout, connect_timeout)
-        if ok:
-            sent += 1
-            try:                            # 보낸 것은 옮겨 두 번 보내지 않는다(기록은 남긴다)
-                shutil.move(p, os.path.join(SENT, it["file"]))
-            except OSError:
-                pass
-            prune_sent()
-        else:
-            failed += 1
-        results.append({"file": it["file"], "tag": it.get("tag", ""), "ok": ok, "msg": msg, "kind": kind})
-        if not ok and kind in STOP_KINDS:
-            left = len(items) - i - 1
-            if left:
-                stopped = (f"{'서버 응답 지연으로' if kind == 'slow' else '서버 연결 실패로'} 나머지 {left}건은 보내지 않고 "
-                           "대기로 남겼습니다 — 다음 실행 때 다시 보냅니다")
-            break
-    r = {"ok": failed == 0 and not left, "sent": sent, "failed": failed, "left": left, "results": results}
-    if stopped:
-        r["stopped"] = stopped
-    return r
+def _ticket_ok(d):
+    if not isinstance(d, dict) or d.get("product") != lmname.PRODUCT or d.get("kind") != "share_ticket":
+        return False
+    if not _DATE_RX.match(str(d.get("created") or "")) or not _HEX64.match(str(d.get("preview_sha256") or "")):
+        return False
+    ids, parts = d.get("ids"), d.get("parts")
+    if not isinstance(ids, list) or not ids or not all(isinstance(x, str) and x for x in ids):
+        return False
+    if not isinstance(parts, list) or not parts or len(set(parts)) != len(parts) or not set(parts) <= set(PARTS):
+        return False
+    if not isinstance(d.get("server"), str) or not _HEX32.match(str(d.get("server_id") or "")):
+        return False
+    if not isinstance(d.get("org_label"), str) or not d["org_label"] or d.get("transport") not in ("http", "https"):
+        return False
+    days = d.get("server_days")
+    return isinstance(days, dict) and all(isinstance(days.get(k), int) and not isinstance(days.get(k), bool)
+                                          for k in PARTS)
 
 
-def to_folder(share):
-    """서버 대신 공유폴더로 — <공유폴더>\\<이름>\\ 에 파일과 member.json 을 쓴다(export.py 와 동일 형식)"""
-    items = list_pending()
-    if not items:
-        return {"ok": True, "sent": 0, "failed": 0, "results": [],
-                "note": "보낼 대기 묶음이 없습니다"}
-    share = os.path.expandvars(str(share or "").strip().strip('"').strip("'"))
-    if not share:
-        return {"ok": False, "error": "공유폴더 경로가 비어 있습니다 (config.teamShareDir)"}
-    # 상대경로·오타는 엉뚱한 폴더를 만들어 '저장됐다'고 믿게 만든다(검증 확정) — 미리 막는다
-    if not os.path.isabs(share):
-        return {"ok": False, "error": f"절대경로나 UNC 여야 합니다: {share}"}
-    if not os.path.isdir(longp(share)):
-        return {"ok": False, "error": f"공유폴더가 없거나 이 망에서 닿지 않습니다: {share}"}
-    sent = failed = 0
-    results = []
-    os.makedirs(SENT, exist_ok=True)
-    for it in items:
-        p = os.path.join(PENDING, it["file"])
-        try:
-            d = json.load(open(p, encoding="utf-8-sig"))
-        except (OSError, ValueError):
-            results.append({"file": it["file"], "ok": False, "msg": "묶음 형식이 깨졌습니다"})
-            failed += 1
-            continue
-        m = d.get("member") or {}
-        owner = m.get("owner") or "이름미상"
-        dst = os.path.join(share, owner)
-        try:
-            # 공유폴더 자체는 이미 있어야 하므로 만들 것은 <이름> 한 단계뿐이다
-            # (os.makedirs 는 확장 경로에서 부모까지 거슬러 올라가다 깨진다 — 한 단계만 만든다)
-            if not os.path.isdir(longp(dst)):
-                os.mkdir(longp(dst))
-        except FileExistsError:
-            pass
-        except OSError as e:
-            hint = " (경로가 260자를 넘습니다 — 더 짧은 공유폴더를 쓰세요)" if len(os.path.abspath(dst)) >= MAXP else ""
-            results.append({"file": it["file"], "ok": False,
-                            "msg": f"공유폴더 접근 실패: {e}{hint} — 이 망에서 닿지 않을 수 있습니다"})
-            failed += 1
-            continue
-        want, cfg0 = {}, load_cfg()
-        for name, text in (d.get("files") or {}).items():
-            # 예전 판이 만든 묶음도 같은 팀 반출 변환을 거친다(이미 변환한 본문이면 그대로 — 멱등)
-            txt, note = team_signals(name, text, cfg0)
-            if note:
-                print(f"[teamup] {note}")
-            if txt is not None:
-                want[name] = txt
-        n_ok, bad = 0, []
-        for name, text in want.items():
-            try:
-                with open(longp(os.path.join(dst, name)), "w", encoding="utf-8-sig", newline="") as f:
-                    f.write(text)
-                n_ok += 1
-            except OSError as e:
-                bad.append(f"{name}({type(e).__name__})")
-        # 일부만 써 놓고 member.json 을 갱신하면 팀 취합이 '신호 없는 인원'으로 집계된다(검증 확정).
-        # 전부 성공했을 때만 member.json 을 쓰고, 그럴 때만 대기열에서 뺀다.
-        if n_ok == len(want) and want and not bad:
-            try:
-                # host 를 지우지 않는다 — 어느 PC 에서 나온 결과인지 팀장이 알아야 한다(사용자 요청)
-                mm = dict(m)
-                mm["uploaded_at"] = time.strftime("%Y-%m-%d %H:%M")
-                mm["uploaded_from"] = os.environ.get("COMPUTERNAME", "")
-                mm["via"] = "공유폴더"
-                with open(longp(os.path.join(dst, "member.json")), "w", encoding="utf-8") as f:
-                    json.dump(mm, f, ensure_ascii=False, indent=1)
-            except OSError as e:
-                bad.append(f"member.json({type(e).__name__})")
-        if n_ok == len(want) and want and not bad:
-            sent += 1
-            # 개인 HTML 보고서(분석리포트·얼린 보고서)는 묶음이 아니라 여기서 따로 —
-            # <share>\개인리포트\<이름>_<파일명>. 복사 실패는 알리되 묶음 저장 성공을 되돌리지 않는다.
-            rep_msg = ""
-            try:
-                copied, rbad = push_reports(share, owner, m.get("tag") or it.get("tag") or "")
-            except Exception as e:  # noqa: BLE001 - 부가 복사가 본 저장을 망치지 않게
-                copied, rbad = [], [f"개인리포트({type(e).__name__})"]
-            if copied:
-                rep_msg += f" · 개인리포트 {len(copied)}개"
-            if rbad:
-                rep_msg += f" · 개인리포트 복사 실패: {', '.join(rbad[:2])}"
-            results.append({"file": it["file"], "tag": it.get("tag", ""), "ok": True,
-                            "msg": f"{os.path.abspath(dst)} 에 {n_ok}개 파일{rep_msg}",
-                            "reports": copied})
-            try:
-                shutil.move(p, os.path.join(SENT, it["file"]))
-            except OSError:
-                pass
-        else:
-            failed += 1
-            results.append({"file": it["file"], "tag": it.get("tag", ""), "ok": False,
-                            "msg": f"{n_ok}/{len(want)}개만 저장됨 — 실패: {', '.join(bad[:3])} "
-                                   "(대기 유지 — 잠금이 풀린 뒤 다시 시도하세요)"})
-    return {"ok": failed == 0, "sent": sent, "failed": failed, "results": results,
-            "dest": share}
+def _bind_ticket(tk, sha256, include, personal, team):
+    """명령줄 값과 표를 맞춘다 → (sha256, include, personal, team). 주지 않은 값은 표의 것 · 준 값이 표와 다르면 거절."""
+    if sha256 and str(sha256).strip().lower() != tk["preview_sha256"]:
+        raise ShareError("no_result", "확인한 미리보기와 보내려는 미리보기가 다릅니다 — 다시 미리 보세요")
+    ids = list(dict.fromkeys(tk["ids"]))
+    if include and set(include) != set(ids):
+        raise ShareError("no_result", "확인한 항목과 보내려는 항목이 다릅니다 — 다시 미리 보세요")
+    parts = set(tk["parts"])
+    if (personal or team) and {p for p, on in (("personal", personal), ("team", team)) if on} != parts:
+        raise ShareError("no_result", "확인한 갈래(개인 리포트·익명 팀 집계)와 보내려는 갈래가 다릅니다 — 다시 미리 보세요")
+    return tk["preview_sha256"], list(include) if include else ids, "personal" in parts, "team" in parts
 
 
-def prune_sent(keep=20):
-    """보낸 기록 보관 상한 — 묶음은 통째로 크므로 오래된 것부터 지운다"""
+def _ticket_vs_hello(tk, t, h):
+    """확인 창에서 본 서버(표)와 지금 hello 가 같아야 보낸다 — 주소·server_id·조직 이름·전송 방식·서버 보관기한."""
+    want = {"server": t.url, "server_id": str(h.get("server_id") or ""), "org_label": h.get("org_label") or "",
+            "transport": h.get("transport"),
+            "server_days": {"personal": h.get("serverPersonalDays"), "team": h.get("serverTeamDays")}}
+    bad = [k for k, v in want.items() if tk.get(k) != v]
+    if bad:
+        raise ShareError("not_af32", f"확인 창에서 본 서버와 지금 서버가 다릅니다({', '.join(bad)}) — 다시 미리 보고 확인하세요")
+
+
+# ── 보내기 ──────────────────────────────────────────────────────────────────────
+def _load_preview(root, cfg, preview_file, sha256):
+    sdir = os.path.normcase(os.path.abspath(_share_dir(root)))
+    pf = os.path.abspath(str(preview_file or ""))
+    if os.path.normcase(os.path.dirname(pf)) != sdir or not re.fullmatch(r"preview_\d{8}-\d{8}\.json", os.path.basename(pf)):
+        raise ShareError("no_result", "미리보기 파일이 report\\share 의 것이 아닙니다 — 다시 미리 보세요")
     try:
-        ns = sorted((n for n in os.listdir(SENT) if n.endswith(".json")),
-                    key=lambda n: os.path.getmtime(os.path.join(SENT, n)), reverse=True)
+        with open(pf, "rb") as f:
+            raw = f.read()
     except OSError:
-        return
-    for n in ns[keep:]:
-        try:
-            os.remove(os.path.join(SENT, n))
-        except OSError:
-            pass
+        raise ShareError("no_result", "미리보기 파일이 없습니다 — 다시 미리 보세요") from None
+    if not sha256 or hashlib.sha256(raw).hexdigest() != str(sha256).strip().lower():
+        raise ShareError("no_result", "미리보기가 바뀌었습니다 — 다시 미리 보세요")
+    try:
+        doc = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        raise ShareError("no_result", "미리보기 파일이 깨졌습니다 — 다시 미리 보세요") from None
+    if not isinstance(doc, dict) or doc.get("product") != lmname.PRODUCT or doc.get("kind") != "preview":
+        raise ShareError("no_result", "AgentFinder32 미리보기가 아닙니다 — 다시 미리 보세요")
+    try:
+        age = time.time() - os.path.getmtime(pf)       # 미리보기를 쓴 때 = 파일 수정 시각(글에는 날짜만 — D10)
+    except OSError:
+        raise ShareError("no_result", "미리보기 파일이 없습니다 — 다시 미리 보세요") from None
+    if not -300 <= age <= PREVIEW_MAX_AGE:
+        raise ShareError("no_result", "미리보기를 만든 지 30분이 지났습니다 — 다시 미리 보세요")
+    tag = str(doc.get("tag") or "")
+    if not TAG_RX.match(tag) or doc.get("sources") != _sources(root, tag):
+        raise ShareError("no_result", "미리보기 뒤에 분석 결과가 바뀌었습니다 — 다시 미리 보세요")
+    return doc
 
 
-def drop(which):
-    """보낼 수 없는 묶음을 대기열에서 치운다(기록은 upload_sent 로 옮겨 남긴다)"""
-    hits = [it for it in list_pending()
-            if which in (it.get("file", ""), it.get("tag", ""))]
-    if not hits:
-        return {"ok": False, "error": f"대기 목록에 없습니다: {which}"}
-    os.makedirs(SENT, exist_ok=True)
-    for it in hits:
-        try:
-            shutil.move(os.path.join(PENDING, it["file"]),
-                        os.path.join(SENT, "dropped_" + it["file"]))
-        except OSError as e:
-            return {"ok": False, "error": f"치우지 못했습니다: {e}"}
-    return {"ok": True, "dropped": [it["file"] for it in hits], "pending": len(list_pending())}
+def _post(t, path, body, headers, cfg):
+    """보내기 요청 하나 → 서버 답 dict. 실패는 ShareError — 서버가 HTTP 로 거절했으면 extra["http"] 에 그 상태(받지 않았다),
+    닿지 않았거나 답을 읽지 못했으면 없음(받았는지 모른다)."""
+    raw = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    if len(raw) > MAX_BODY:
+        raise ShareError("too_big", "보낼 내용이 서버 상한(5MB)을 넘습니다 — 항목을 줄여 다시 미리 보세요", http=0)
+    code, d = _call(t, "POST", path, body=raw, headers=headers, timeout=wait_limits(cfg)["timeout"])
+    if code == 200 and isinstance(d, dict) and d.get("ok") and isinstance(d.get("token"), str) and d["token"]:
+        return d
+    if code == 200:
+        raise ShareError("server_error", "서버 답을 읽지 못했습니다")
+    e = _http_error(code, d)
+    e.extra["http"] = code
+    raise e
 
 
-def _tu_flag(cfg, key):
-    """config.teamUpload 의 켬/끔 값 → bool. 없거나 null·빈 값이면 켬, false·"false"·0·"off"·"no" 면 끔(그 밖은 켬)."""
-    tu = cfg.get("teamUpload") if isinstance(cfg, dict) else None
-    v = tu.get(key) if isinstance(tu, dict) else None
-    if v is None or (isinstance(v, str) and not v.strip()):
+def _not_stored(e):
+    """서버가 받지 않은 것이 확실한 실패인가 — HTTP 4xx 거절이거나 보내기 전에 멈춘 것(http=0). 그 밖(닿지 않음·시간 초과·5xx·
+    답을 못 읽음)은 받았는지 모른다."""
+    h = e.extra.get("http")
+    return isinstance(h, int) and (h == 0 or 400 <= h < 500)
+
+
+def _delete(t, r, cfg, timeout):
+    """영수증 하나를 그 서버에서 지운다 → True(지움·이미 없음) | ShareError. 부르는 쪽이 그 서버가 영수증의 서버(server_id)인지
+    먼저 확인한다 — 다른 서버의 404 를 '지웠다'로 보지 않게."""
+    code, d = _call(t, "DELETE", f"{P}/share/{r['part']}/{r['id']}", headers={"X-AF32-Token": r["token"]}, timeout=timeout)
+    if code in (200, 404):
         return True
-    if isinstance(v, bool):
-        return v
-    return str(v).strip().lower() not in ("0", "false", "no", "off")
+    raise _http_error(code, d)
 
 
-def auto_report_on(cfg):
-    r"""[분석 실행] 끝에 팀 서버로 자동 보고할까 → bool (LM28 사용자 요청 — "분석실행 마무리는 팀서버로 자동으로 레포팅까지").
-    config.teamUpload.autoReport — 없거나 null·빈 값이면 켬(기본), false·"false"·0·"off"·"no" 면 끔. 이 키가 있으면 이것이 이긴다.
-    옛 키 teamUpload.auto 는 보지 않는다: true 는 '켜기' 라 기본과 같고, false 는 LM19~LM24 배포 설정의 **기본값**이었을 뿐
-    사용자가 고른 뜻이 아니다(끄기로 읽으면 옛 설정을 이어받은 PC 전부가 자동 보고를 못 받는다).
-    run.py(보고 여부)·화면(카드 머리말)·status()(--list)가 모두 이 한 함수로 읽는다 — 해석이 갈리지 않게."""
-    return _tu_flag(cfg, "autoReport")
-
-
-def require_saved_on(cfg):
-    r"""LM30 시험판 보호를 켤까 → bool — config.teamUpload.requireSavedAddress(배포 설정 true). 읽는 규칙은 autoReport 와 같다:
-    없거나 null·빈 값이면 **켬** — LM28·LM29 의 config.json 을 옮겨 와 이 키가 없어도 기존 팀 서버로 새지 않게.
-    false·"false"·0·"off"·"no" 면 끔(예전처럼 기본 주소로도 보낸다)."""
-    return _tu_flag(cfg, "requireSavedAddress")
-
-
-def upload_guard(cfg, url=None):
-    r"""LM30 시험판 보호 → 보내지 않는 사유 문구 | ""(보내도 됨). requireSavedAddress 가 켜져 있을 때만 막는다.
-    막는 경우: ① 보낼 주소가 기본 주소(core\teamaddr 의 DEFAULT_* = 기존 팀 서버) 그 자체 — 저장 파일이나 일회성
-    --url·--host 로 같은 주소를 적어도 막는다 ② 설정 주소로 보내는데 서버 IP·포트 어느 것도 config\team_server.json 에서 오지
-    않았다(teamaddr 의 source — 옛 판 config.json 에서 이어받은 주소). url = 이번에 보낼 주소(target_url) · None 이면 설정 주소.
-    주소가 비었으면 ""(no_url 이 따로 말한다). run.py 자동 보고·화면 업로드 카드·main(--upload)이 모두 이 한 함수로 가른다."""
-    if not require_saved_on(cfg):
-        return ""
-    import teamaddr
-    a = teamaddr.load(ROOT)
-    u = str(a.url if url is None else (url or "")).strip().rstrip("/").lower()
-    if not u:
-        return ""
-    if u == f"http://{teamaddr.DEFAULT_HOST}:{teamaddr.DEFAULT_PORT}".lower():
-        why = "기본 주소 = 기존 팀 서버"
-    elif u == a.url.lower() and "file" not in (a.source.get("host"), a.source.get("port")):
-        why = "이전 판 설정에서 이어받은 주소"
-    else:
-        return ""
-    return f"{NO_TEST_MSG} (지금 주소: {why})"
-
-
-def write_report_status(rep_dir, st):
-    r"""report\team_report_status.json 쓰기(임시 파일 → 교체 — 화면이 반쪽 파일을 읽지 않게) → 경로 | None.
-    at 이 없으면 지금 시각(초까지 — 화면이 이 값을 열쇠로 '끝난 실행 1번당 알림 1번' 을 가른다).
-    싣는 것은 건수·사유·시각뿐이다(묶음 본문·메일 제목 없음). 쓰기 실패는 삼킨다 — 기록이 분석·업로드를 실패로 만들지 않게."""
-    try:
-        d = dict(st or {})
-        d.setdefault("at", time.strftime("%Y-%m-%d %H:%M:%S"))
-        os.makedirs(rep_dir, exist_ok=True)
-        p = os.path.join(rep_dir, REPORT_STATUS)
-        with open(p + ".tmp", "w", encoding="utf-8") as f:
-            json.dump(d, f, ensure_ascii=False, indent=1)
-        os.replace(p + ".tmp", p)
-        return p
-    except (OSError, TypeError, ValueError):
-        return None
-
-
-def read_report_status(rep_dir):
-    """마지막 팀 서버 보고 결과(dict) — 없거나 깨졌으면 {}"""
-    try:
-        with open(os.path.join(rep_dir, REPORT_STATUS), encoding="utf-8-sig") as f:
-            d = json.load(f)
-    except (OSError, ValueError):
-        return {}
-    return d if isinstance(d, dict) else {}
-
-
-def _sent_status(r, via):
-    """버튼·bat(--upload)·공유폴더(--to-folder)가 대기분을 **다** 보냈을 때만 '성공' 을 남긴다 — 자동 보고 실패 배너는
-    다음 성공까지 뜨므로, 사람이 사내망에서 밀린 것을 보내면 그 배너가 내려가야 한다. 일부라도 실패면 지난 기록 그대로."""
-    try:
-        done = isinstance(r, dict) and r.get("ok") and int(r.get("sent") or 0) > 0 and not int(r.get("failed") or 0)
-    except (TypeError, ValueError):
-        done = False
-    if done:
-        write_report_status(REPORT, {"ok": True, "sent": int(r["sent"]), "failed": 0, "pending": len(list_pending()),
-                                     "reason": "", "hint": "", "via": via})
-
-
-def status(cfg, url=""):
-    """대시보드용 현황 — 도달성 확인은 하지 않는다(누를 때만 한다). auto = [분석 실행] 끝 자동 보고 켬(auto_report_on).
-    guard = LM30 시험판 보호에 걸리면 그 사유(upload_guard — 업로드 카드가 규칙을 보이고 버튼이 까닭을 말한다) · 아니면 ""."""
-    url = url or target_url(cfg)
-    return {"url": url, "share": (cfg.get("teamShareDir") or "").strip(),
-            "auto": auto_report_on(cfg), "guard": upload_guard(cfg, url),
-            "pending": list_pending(), "sent": list_sent(),
-            # 묶음이 없어도 결과가 있으면 '지금 묶기'를 권할 수 있게(실측 제보)
-            "available": buildable()}
-
-
-def _out(js, obj, human=""):
-    if human:
-        print(human)
-    if js:
-        print(json.dumps(obj, ensure_ascii=False))
-
-
-def main():
-    cfg = load_cfg()
-    js = "--json" in sys.argv
-    if "--list" in sys.argv:
-        st = status(cfg)
-        lines = [f"[teamup] 서버: {st['url'] or '(미설정)'} · 대기 {len(st['pending'])}건"]
-        if st.get("guard"):
-            lines.append(f"         ! 보내지 않습니다 — {st['guard']}")
-        for it in st["pending"]:
-            lines.append(f"         - {it.get('tag', '?')}  {it.get('built', '')}  "
-                         f"{it.get('files', 0)}개 파일  {it.get('bytes', 0) / 1024:.0f}KB")
-        if not st["pending"]:
-            lines.append("         (없음 — 분석을 실행하면 묶음이 준비됩니다)")
-        _out(js, st, "\n".join(lines))
-        return 0
-    if "--scan" in sys.argv:
-        r = {"ok": True, "tags": report_tags(), "buildable": buildable()}
-        lines = [f"[teamup] report 에 결과가 있는 기간 {len(r['tags'])}개"]
-        for t in r["tags"]:
-            lines.append(f"         - {t['tag']}  ({' ~ '.join(t['period'])})  {t['at']}")
-        _out(js, r, "\n".join(lines))
-        return 0
-    if "--build-all" in sys.argv or "--build-latest" in sys.argv:
-        want = buildable()
-        if "--build-latest" in sys.argv:
-            want = want[:1]
-        made, skipped = [], []
-        for t in want:
-            p = build(cfg, t["period"][0], t["period"][1])
-            (made if p else skipped).append(t["tag"])
-        r = {"ok": bool(made), "built": made, "skipped": skipped,
-             "pending": len(list_pending())}
-        if not made:
-            r["error"] = "묶을 결과가 없습니다"
-            r["hint"] = ("report 폴더에 mm_rows_<기간>.csv 가 없습니다 — 먼저 [분석 실행]을 하세요."
-                         if not report_tags() else "이미 모든 기간의 묶음이 준비돼 있습니다.")
-        _out(js, r, f"[teamup] 묶음 생성: {len(made)}개 {made} — 대기 {r['pending']}건"
-                    + (f" · {r.get('hint', '')}" if r.get("hint") else ""))
-        return 0 if made else 1
-    if "--drop" in sys.argv:
-        r = drop(arg("--drop"))
-        _out(js, r, f"[teamup] {'치웠습니다' if r.get('ok') else '실패'}: "
-                    f"{r.get('dropped') or r.get('error', '')}")
-        return 0 if r.get("ok") else 1
-    if "--ping" in sys.argv:
-        r = ping(target_url(cfg))
-        _out(js, r, f"[teamup] {'닿음' if r.get('ok') else '닿지 않음'}: {r.get('url', '')} "
-                    f"{r.get('ms', '')}ms {r.get('error', '')}")
-        return 0 if r.get("ok") else 1
-    if "--build" in sys.argv:
-        d0, d1 = arg("--from"), arg("--to")
-        if not d0 or not d1:
-            print("[teamup] 사용법: python teamup.py --build --from YYYY-MM-DD --to YYYY-MM-DD")
-            return 1
-        p = build(cfg, d0, d1)
-        if not p:
-            _out(js, {"ok": False, "error": "산출물 없음"},
-                 f"[teamup] {d0}~{d1} 산출물이 없습니다 — 기간을 확인하세요")
-            return 1
-        info = _info(p)
-        head = (f"[teamup] 업로드 묶음 준비됨: {info['tag']} ({info['files']}개 파일, "
-                f"{info['bytes'] / 1024:.0f}KB) — 대기 {len(list_pending())}건")
-        if info.get("blocked"):
-            # 지금 알려 주지 않으면 며칠 뒤 서버망에서야 실패를 알게 된다
-            head += "\n         ! 이대로는 보낼 수 없습니다: " + " / ".join(info["blocked"])
+def _personal_on_server(t, h, recs, cfg, root):
+    """익명 팀 집계만 보낼 때 — 이 서버에 내 개인 리포트가 있나(영수증으로 본다 · personal_also 의 근거). 받은 것이 확인된 개인
+    리포트 영수증이 있으면 참. '받았는지 모르는'(pending) 영수증뿐이면 서버에 한 번 물어 정한다: 200 받았다(표시를 뗀다) → 참 ·
+    403 다른 토큰으로 저장된 내 개인 리포트가 있다(이 영수증으로는 못 지우니 지운다) → 참 · 404 없다(영수증을 지운다) → 거짓 ·
+    닿지 않거나 그 밖의 답이면 None(모른다 — 부르는 쪽이 보내지 않는다). → (참|거짓|None, 새 영수증 목록)"""
+    out, found, unsure, changed = list(recs), False, False, False
+    for r in [x for x in recs if x["part"] == "personal" and _on_server(x, t, h)]:
+        if not r.get("pending"):
+            found = True
+            continue
+        try:
+            code, d = _call(t, "GET", f"{P}/share/personal/{r['id']}", headers={"X-AF32-Token": r["token"]},
+                            timeout=wait_limits(cfg)["ping"])
+        except ShareError:
+            unsure = True
+            break
+        if code == 200:
+            r.pop("pending", None)
+            if isinstance(d, dict) and d.get("expires"):
+                r["expires"] = str(d["expires"])
+            found = changed = True
+        elif code in (403, 404):
+            out = [x for x in out if x is not r]
+            changed = True
+            found = found or code == 403
         else:
-            head += "\n         서버에 닿는 망에서 대시보드 [팀 서버 업로드] 버튼을 누르면 전송됩니다."
-        _out(js, {"ok": True, "bundle": info, "blocked": info.get("blocked") or []}, head)
-        return 0
-    if "--to-folder" in sys.argv:
-        share = arg("--to-folder") or (cfg.get("teamShareDir") or "")
-        r = to_folder(share)
-        _sent_status(r, "folder")
-        _out(js, r, f"[teamup] 공유폴더 저장: 성공 {r.get('sent', 0)} / 실패 {r.get('failed', 0)}"
-                    + (f" — {r.get('error', '')}" if r.get("error") else ""))
-        return 0 if r.get("ok") else 1
-    if "--upload" in sys.argv:
-        url = target_url(cfg)
-        if not url:
-            _out(js, {"ok": False, "error": "팀 서버 주소가 비었거나 형식이 틀렸습니다", "no_url": True,
-                      "pending": len(list_pending())},
-                 "[teamup] 팀 서버 주소가 비었거나 형식이 틀렸습니다 — LoadMonitor30-팀서버주소.bat 에서 "
-                 "서버 IP·포트를 저장하세요")
-            return 1
-        why = upload_guard(cfg, url)
-        if why:
-            # LM30 시험판 보호 — 연결 확인도 하지 않는다(보낼 곳이 아니다). 실패가 아니라 '보내지 않음' 이라 종료 코드 0 ·
-            # ok null · results 없음 · 묶음은 대기 그대로. run.py 자동 보고·화면은 kind 로 가른다(알림·배너 없음)
-            n = len(list_pending())
-            _out(js, {"ok": None, "kind": NO_TEST_KIND, NO_TEST_KIND: True, "note": why, "sent": 0, "failed": 0,
-                      "results": [], "pending": n},
-                 f"[teamup] 보내지 않았습니다 — {why}\n         올릴 주소: {url} · 대기 {n}건")
-            return 0
-        t0 = time.monotonic()                   # 시간 상한(BUDGET_SEC)은 연결 확인부터 잰다
-        pg = ping(url)
-        if not pg.get("ok"):
-            _out(js, {"ok": False, "error": pg.get("error", ""), "hint": pg.get("hint", ""),
-                      "unreachable": True, "pending": len(list_pending())},
-                 f"[teamup] 이 망에서 서버에 닿지 않습니다 ({url} · {pg.get('tries', 1)}번 시도) — {pg.get('error', '')}\n"
-                 f"         묶음 {len(list_pending())}건은 그대로 대기합니다. "
-                 "서버망에서 다시 실행하면 한 번에 올라갑니다.")
-            return 1
-        r = upload_all(url, t0=t0)
-        r["pending"] = len(list_pending())      # 보낸 뒤 남은 대기 수(LM28 — 자동 보고·화면 배너가 읽는다)
-        _sent_status(r, "upload")
-        lines = [f"[teamup] 전송 완료: 성공 {r['sent']} / 실패 {r['failed']}"]
-        for x in r.get("results", []):
-            lines.append(f"         - {x.get('tag', x['file'])}: {'OK' if x['ok'] else '실패'} {x['msg']}")
-        for k in ("stopped", "note"):
-            if r.get(k):
-                lines.append("         " + r[k])
-        _out(js, r, "\n".join(lines))
-        return 0 if r.get("ok") else 1
-    # 하위 호환: 예전처럼 --from/--to 만 주면 '준비 후 곧바로 전송 시도'
-    d0, d1 = arg("--from"), arg("--to")
-    if d0 and d1:
-        p = build(cfg, d0, d1)
-        if not p:
-            print(f"[teamup] {d0}~{d1} 산출물이 없습니다")
-            return 1
-        url = target_url(cfg)
-        if not url:
-            print("[teamup] 주소 미설정 — 묶음만 준비했습니다 (대시보드에서 업로드)")
-            return 0
-        why = upload_guard(cfg, url)
-        if why:                             # LM30 시험판 보호 — --upload 와 같다(묶음만 준비)
-            print(f"[teamup] 묶음만 준비했습니다 — {why}")
-            return 0
-        t0 = time.monotonic()
-        pg = ping(url)
-        if not pg.get("ok"):
-            print(f"[teamup] 이 망에서 서버에 닿지 않습니다 — 묶음은 대기합니다 ({pg.get('error', '')})")
-            return 1
-        r = upload_all(url, t0=t0)
-        _sent_status(r, "upload")
-        print(f"[teamup] 전송: 성공 {r['sent']} / 실패 {r['failed']}")
-        for x in r.get("results", []):      # 무엇이 어떻게 됐는지 화면에 남긴다(서버 갱신 여부 포함)
-            print(f"         - {x.get('tag', x['file'])}: {'OK' if x['ok'] else '실패'} {x['msg']}")
-        if r.get("stopped"):
-            print("         " + r["stopped"])
-        return 0 if r.get("ok") else 1
-    print(__doc__.strip().splitlines()[1])
-    print("[teamup] --build / --list / --ping / --upload / --to-folder 중 하나를 주세요")
-    return 1
+            unsure = True
+    if changed:
+        save_receipts(root, out)
+    return (True if found else (None if unsure else False)), out
+
+
+def _sent_copy(root, tag, part, data):
+    r"""보낸 사본(report\share — 보관기한 shareDays)."""
+    try:
+        name = f"sent_{tag}_{part}." + ("html" if part == "personal" else "json")
+        _write_bytes(os.path.join(_share_dir(root), name),
+                     data.encode("utf-8") if isinstance(data, str) else json.dumps(data, ensure_ascii=False, indent=1).encode("utf-8"))
+    except OSError:
+        pass
+
+
+def share(root=None, cfg=None, *, preview_file=None, sha256=None, include=None, personal=False, team=False, join=None,
+          ticket=None):
+    """미리보기에서 고른 항목을 보낸다 — (a) 개인 리포트 (b) 익명 팀 집계, 각각 따로. ticket(화면이 쓴 보내기 표 경로)을 주면
+    표를 먼저 지우고(한 번만) 그 값과 미리보기·지금 hello 를 맞춘다 — 명령줄(--share)은 표가 있어야 한다."""
+    root = os.path.abspath(str(root or ROOT))
+    tk = _take_ticket(root, ticket) if ticket is not None else None
+    cfg = _cfg(cfg, root)
+    require_consent(root, cfg)
+    if tk is not None:
+        sha256, include, personal, team = _bind_ticket(tk, sha256, include, personal, team)
+    doc = _load_preview(root, cfg, preview_file, sha256)
+    if not personal and not team:
+        raise ShareError("no_result", "보낼 갈래(개인 리포트·익명 팀 집계)를 하나 이상 고르세요")
+    for p, on in (("personal", personal), ("team", team)):
+        if on and not (doc.get("parts") or {}).get(p):
+            raise ShareError("no_result", f"미리보기에 {PART_LABEL[p]} 이(가) 없습니다 — 그 갈래를 골라 다시 미리 보세요")
+    tag = doc["tag"]
+    sc = _scrubber(cfg, root, tag)
+    _refuse_stale(root, tag, sc)
+    # 보낼 글(후보 이름·업무 유형·단계·기간)은 미리보기 파일에서 가져오지 않고 분석 결과에서 다시 만든다 — 미리본 것과 같아야 보낸다
+    items, per = _rederive(root, cfg, doc, sc)
+    by_id = {it["id"]: it for it in items}
+    want = []
+    for i in include or []:
+        if i not in by_id:
+            raise ShareError("no_result", "미리보기에 없는 항목을 골랐습니다 — 다시 미리 보세요")
+        if i not in want:
+            want.append(i)
+    keep = set(want)
+    sel = [it for it in items if it["id"] in keep]
+    if not sel:
+        raise ShareError("no_result", "보낼 항목을 하나 이상 고르세요")
+    flagged = [it for it in sel if it.get("kind") == "candidate" and it.get("flagged")]
+    cands = [it for it in sel if it.get("kind") == "candidate" and "team" in (it.get("parts") or ()) and not it.get("flagged")]
+    if team and not personal and flagged:           # 표시된 후보는 익명 팀 집계에 넣지 않는다(C4) — 그것만 보내려 하면 거절
+        raise ShareError("no_result", ("익명 팀 집계에 넣을 수 없는 후보를 골랐습니다(가린 뒤에도 이름이 남았을 수 있습니다) — "
+                                       "표시된 항목의 체크를 끄고 보내세요"))
+    if team and not cands:
+        raise ShareError("no_result", "익명 팀 집계에 넣을 Agentic AI 전환 후보를 하나 이상 고르세요"
+                         + (" — 이름이 남았을 수 있는 후보는 익명 팀 집계에 넣지 않습니다" if flagged else ""))
+    if team and (len(cands) > TEAM_LIMITS["needs"]
+                 or any(len(str(c.get("name") or "")) > TEAM_LIMITS["name"]
+                        or len(str(c.get("task_type") or "")) > TEAM_LIMITS["task_type"] for c in cands)):
+        raise ShareError("no_result", f"익명 팀 집계에는 후보를 {TEAM_LIMITS['needs']}개까지, 이름은 {TEAM_LIMITS['name']}자까지 넣을 수 "
+                                      "있습니다 — 후보를 줄여 고르세요")
+    owner, function = _typed(doc.get("owner")), _typed(doc.get("function"))
+    body_p = None
+    if personal:
+        if not owner:
+            raise ShareError("no_result", "개인 리포트에 쓸 이름을 [공유] 탭에 적고 다시 미리 보세요")
+        text = _share_html(root, cfg, tag, sc, [it["id"] for it in sel], owner, function)
+        _check_excluded(text, items, keep)
+        body_p = {"owner_id": install.install_id(root), "owner": owner, "function": function, "period": per,
+                  "report_html": text}
+        if len(json.dumps(body_p, ensure_ascii=False).encode("utf-8")) > MAX_BODY:
+            raise ShareError("too_big", "개인 리포트가 서버 상한(5MB)을 넘습니다 — 항목을 줄여 다시 미리 보세요")
+    a = teamaddr.load(root)
+    if not a.configured:
+        raise ShareError("no_address", NO_ADDRESS_MSG)
+    jn = teamaddr.norm_join(join or os.environ.get(JOIN_ENV) or a.join)
+    if not jn:
+        raise ShareError("bad_join", f"참여 코드가 없습니다 — 조직장이 알려 준 참여 코드를 {teamaddr.EDIT_BAT} 에서 저장하세요")
+    t = resolve_target(a.scheme, a.host, a.port, cfg)
+    h = hello(t, cfg)
+    if tk is not None:
+        _ticket_vs_hello(tk, t, h)
+    if personal and h["transport"] == "http" and not h["personalOverHttp"]:
+        raise ShareError("http_personal_refused", (f"{h.get('org_label') or '조직장'} 서버는 암호화 없는 HTTP 로는 개인 리포트를 받지 "
+                                                   "않습니다 — 익명 팀 집계만 고르거나 조직장에게 HTTPS 를 요청하세요"))
+    info = _server_info(h)
+    sent = []
+    today = _today().isoformat()
+    lim = wait_limits(cfg)
+    recs = load_receipts(root)
+    live_personal = False                                   # 익명 팀 집계만 보낼 때 — 이 서버에 내 개인 리포트가 있나
+    if team and not personal:
+        live_personal, recs = _personal_on_server(t, h, recs, cfg, root)
+        if live_personal is None:
+            raise ShareError("server_error", ("앞서 보낸 개인 리포트가 서버에 있는지 확인하지 못해 익명 기여분을 보내지 않았습니다 — "
+                                              "잠시 뒤 다시 보내거나 [보낸 공유 모두 거두기]로 지운 뒤 보내세요"),
+                             sent=sent, server=t.url, **info)
+    mine = [r for r in recs if _on_server(r, t, h)]
+    gone = 0                                                # 지우고 새 기여분으로 바꾸지 못한(않은) 앞선 익명 기여분 수
+
+    def failed(e, unsure=None):
+        """보내기 실패에 어디까지 갔는지를 싣는다 — sent(받았다고 답한 갈래) · unsure(받았는지 모르는 갈래 · unknown) ·
+        team_removed(지우고 새로 보내지 못한 앞선 익명 기여분) · 서버 값. → e"""
+        if unsure:
+            e.msg += UNSURE_MSG
+            e.extra.update(unsure=[unsure], unknown=True)
+        if gone and unsure != "team":
+            e.msg += GONE_MSG.format(n=gone)
+        e.extra.update(sent=list(sent), server=t.url, team_removed=gone, **info)
+        e.extra.pop("http", None)
+        return e
+
+    def drop_team(rs):
+        nonlocal recs, gone
+        for r in rs:
+            try:
+                _delete(t, r, cfg, lim["timeout"])
+            except ShareError as e:
+                raise failed(ShareError(e.code, "앞서 보낸 익명 기여분을 지우지 못해 새로 보내지 않았습니다 — " + e.msg)) from None
+            recs = [x for x in recs if x is not r]
+            save_receipts(root, recs)
+            gone += 1
+
+    old_team = [r for r in mine if r["part"] == "team"]
+    if personal:
+        # 개인 리포트를 보내면 이 서버의 익명 기여분은 '개인 리포트를 함께 보냈다'(personal_also)가 참이어야 한다 — 참이 아닌 것은
+        # 개인 리포트를 보내기 전에 거둔다(표시가 틀린 기여분이 개인 리포트와 함께 서버에 있으면 D16 의 기준이 틀어진다)
+        drop_team([r for r in old_team if r.get("personal_also") is not True])
+        old_team = [r for r in old_team if r.get("personal_also") is True]
+        prev = [r for r in recs if _on_server(r, t, h) and r["part"] == "personal" and r.get("id") == body_p["owner_id"]]
+        was_live = any(not r.get("pending") for r in prev)
+        tok = prev[-1]["token"] if prev else secrets.token_hex(24)
+        rec = {"server": t.url, "server_id": info["server_id"], "org_label": info["org_label"], "part": "personal",
+               "id": body_p["owner_id"], "token": tok, "sent": today, "expires": _expect(h, "personal"), "pending": True}
+        others = [r for r in recs if not any(r is x for x in prev)]
+        recs = others + [rec]
+        save_receipts(root, recs)                           # 보내기 전에 영수증부터(답을 못 받아도 지울 수 있게)
+        try:
+            d = _post(t, P + "/share/personal", body_p, {"X-AF32-Join": jn, "X-AF32-Token": tok}, cfg)
+        except ShareError as e:
+            unsure = not _not_stored(e)
+            if not unsure:
+                recs = others + prev                        # 받지 않았다 — 영수증을 보내기 전으로
+            elif was_live:
+                rec.pop("pending", None)                    # 앞서 받은 사본이 같은 토큰으로 서버에 있다
+            save_receipts(root, recs)
+            failed(e, "personal" if unsure else None)
+            raise
+        rec.update(token=str(d.get("token") or tok), expires=str(d.get("expires") or rec["expires"]))
+        rec.pop("pending", None)
+        save_receipts(root, recs)
+        sent.append("personal")
+        _sent_copy(root, tag, "personal", body_p["report_html"])
+    if team:
+        drop_team(old_team)                                 # 한 사람 = 기여분 하나 — 앞서 보낸 것은 지우고 새로 보낸다
+        personal_also = "personal" in sent or live_personal
+        tok = secrets.token_hex(24)
+        body_t = {"contribution_id": secrets.token_hex(16), "month": (per.split("~")[-1] if per else "") or today[:7],
+                  "personal_also": personal_also,
+                  "needs": [{"name": c.get("name"), "task_type": c.get("task_type") or ""} for c in cands]}
+        rec = {"server": t.url, "server_id": info["server_id"], "org_label": info["org_label"], "part": "team",
+               "id": body_t["contribution_id"], "token": tok, "sent": today, "expires": _expect(h, "team"),
+               "personal_also": personal_also, "pending": True}
+        recs = recs + [rec]
+        save_receipts(root, recs)
+        try:
+            d = _post(t, P + "/share/team", body_t, {"X-AF32-Join": jn, "X-AF32-Token": tok}, cfg)
+        except ShareError as e:
+            unsure = not _not_stored(e)
+            if not unsure:
+                recs = [x for x in recs if x is not rec]
+            save_receipts(root, recs)
+            failed(e, "team" if unsure else None)
+            raise
+        rec.update(token=str(d.get("token") or tok), expires=str(d.get("expires") or rec["expires"]))
+        rec.pop("pending", None)
+        save_receipts(root, recs)
+        sent.append("team")
+        gone = 0                                            # 새 기여분으로 바꿨다
+        _sent_copy(root, tag, "team", {k: body_t[k] for k in ("month", "personal_also", "needs")})
+    labels = " · ".join(PART_LABEL[p] for p in sent)
+    msg = f"{info['org_label'] or '조직장'} 에게 보냈습니다: {labels}"
+    if gone:                                                # 개인 리포트만 보냈다 — 표시가 틀려 거둔 기여분
+        msg += (f" · 앞서 보낸 익명 팀 집계 기여분 {gone}건은 개인 리포트를 함께 보냈는지가 바뀌어 지웠습니다 — 다시 넣으려면 "
+                "익명 팀 집계를 골라 보내세요")
+    if team and flagged:
+        msg += f" · 이름이 남았을 수 있는 후보 {len(flagged)}개는 익명 팀 집계에 넣지 않았습니다"
+    return result("ok", msg, sent=sent, server=t.url, team_removed=gone,
+                  receipts=[public_receipt(r) for r in recs if _on_server(r, t, h)], **info)
+
+
+# ── 철회 ──────────────────────────────────────────────────────────────────────
+def _hello_at(url, cfg, seen, timeout):
+    """영수증 주소의 서버 hello(철회용 — 제품·형식만 본다 · 한 번만 묻는다) → (Target, hello). 주소마다 한 번만(seen)."""
+    v = seen.get(url)
+    if v is None:
+        try:
+            t = target_of_url(url, cfg)
+            v = (t, hello(t, cfg, need_id=False, minimal=True, timeout=timeout, tries=1))
+        except ShareError as e:
+            v = e
+        seen[url] = v
+    if isinstance(v, ShareError):
+        raise v
+    return v
+
+
+def _locate(r, cfg, seen, timeout, cur):
+    """영수증 r 의 서버를 찾는다 → (Target, hello). 영수증 주소의 서버가 그 서버(server_id)가 아니거나 닿지 않으면 지금 저장한
+    주소를 본다 — 같은 서버면 영수증 주소를 그리로 옮긴다. 아니면 ShareError(다른 서버면 not_af32)."""
+    first = None
+    for url in dict.fromkeys(u for u in (r.get("server"), cur) if u):
+        try:
+            t, h = _hello_at(url, cfg, seen, timeout)
+        except ShareError as e:
+            first = first or e
+            continue
+        if _same_server(r, h):
+            if url != r.get("server"):
+                r["server"] = url                    # 같은 서버를 지금 주소에서 찾았다(서버 IP·이름이 바뀌었다)
+            return t, h
+        first = first or ShareError("not_af32", MOVED_MSG)
+    raise first or ShareError("no_address", "영수증의 서버 주소를 읽지 못했습니다")
+
+
+def _withdraw(root, cfg, select, budget=None):
+    """고른 영수증을 그 서버에서 지운다 → (지운 수, 남은 영수증 목록, 첫 실패 ShareError|None)."""
+    t0 = time.time()
+    recs = load_receipts(root)
+    todo = [r for r in recs if select(r)]
+    lim = wait_limits(cfg)
+    a = teamaddr.load(root)
+    cur = a.url if a.configured else ""
+    removed, first, moved, done = 0, None, False, []
+    seen = {}
+    for r in todo:
+        left = None if budget is None else budget - (time.time() - t0)
+        if left is not None and left <= 0.5:
+            first = first or ShareError("unreachable", "시간 안에 다 지우지 못했습니다 — 다음 시작 때 다시 합니다")
+            break
+        timeout = lim["timeout"] if left is None else max(1.0, min(lim["ping"] + 2.0, left))
+        before = r.get("server")
+        try:
+            t, _h = _locate(r, cfg, seen, timeout, cur)
+            moved = moved or r.get("server") != before
+            _delete(t, r, cfg, timeout)
+        except ShareError as e:
+            first = first or e
+            continue
+        recs = [x for x in recs if x is not r]
+        save_receipts(root, recs)
+        done.append(r)
+        removed += 1
+    if moved:
+        save_receipts(root, recs)
+    return removed, [r for r in todo if not any(r is x for x in done)], first
+
+
+def _same_place(a, b):
+    """두 영수증이 같은 서버의 것인가(server_id, 없으면 주소)."""
+    if a.get("server_id") and b.get("server_id"):
+        return a["server_id"] == b["server_id"]
+    return a.get("server") == b.get("server")
+
+
+def _rkey(r):
+    """영수증 하나를 가리키는 값 — 서버(server_id, 없으면 주소)·갈래·id. 개인 리포트의 id(설치 ID)는 어느 서버에서나 같으므로
+    서버를 함께 봐야 다른 서버의 영수증과 섞이지 않는다."""
+    return (r.get("server_id") or r.get("server"), r.get("part"), r.get("id"))
+
+
+def withdraw(root=None, cfg=None, *, all_servers=False, part=None):
+    """공유 철회 — 영수증마다 그 서버에 DELETE(200·404 면 영수증을 지운다). 시작 확인을 거치지 않는다(지우기는 늘 할 수 있다).
+    all_servers 가 아니면 지금 저장한 주소의 서버 것만(그 주소로 적힌 영수증과, 그것과 server_id 가 같은 영수증).
+    part="personal" 이면 같은 서버의 익명 기여분 중 '개인 리포트를 함께 보냈다'(personal_also)가 거짓이 아닌 것도 함께 거둔다."""
+    root = os.path.abspath(str(root or ROOT))
+    cfg = _cfg(cfg, root)
+    a = teamaddr.load(root)
+    cur = a.url if (a.configured and not all_servers) else None
+    recs = load_receipts(root)
+    here = {r["server_id"] for r in recs if cur is not None and r["server"] == cur and r.get("server_id")}
+
+    def base(r):
+        return ((cur is None or r["server"] == cur or r.get("server_id") in here)
+                and (part is None or r["part"] == part))
+    chosen = [r for r in recs if base(r)]
+    extra = set()
+    if part == "personal":
+        extra = {_rkey(r) for r in recs if r["part"] == "team" and r.get("personal_also") is not False
+                 and any(_same_place(r, p) for p in chosen)}
+    if not chosen:
+        return result("ok", "지울 공유가 없습니다", removed=0, left=0, pending=[])
+    removed, left, first = _withdraw(root, cfg, lambda r: base(r) or _rkey(r) in extra)
+    pending = [public_receipt(r) for r in left]
+    also = (" · 개인 리포트를 함께 보냈다고 표시한 익명 팀 집계 기여분도 함께 거뒀습니다 — 다시 넣으려면 [공유] 탭에서 익명 팀 집계를 "
+            "골라 보내세요") if extra else ""
+    if left:
+        last = max(str(r.get("expires") or "") for r in left)
+        return result(first.code if first else "server_error", PENDING_MSG.format(date=last) + (f" — {first.msg}" if first else ""),
+                      removed=removed, left=len(left), pending=pending)
+    return result("ok", f"조직장 서버에서 공유 {removed}건을 지웠습니다" + also, removed=removed, left=0, pending=[])
+
+
+def withdraw_all(root=None, cfg=None, timeout=10):
+    """모두 지우기 ②(spec §6.2) — 모든 영수증을 각 서버에서 지운다(전체 timeout 초). 예외를 던지지 않는다.
+    → {"ok","removed","left","pending":[{server, org_label, part, sent, expires, pending}],"msg"} (토큰·id 없음 — withdrawal.json
+    에 그대로 남겨도 된다)."""
+    root = os.path.abspath(str(root or ROOT))
+    try:
+        cfg = _cfg(cfg, root)
+        if not load_receipts(root):
+            return {"ok": True, "removed": 0, "left": 0, "pending": [], "msg": ""}
+        removed, left, first = _withdraw(root, cfg, lambda r: True, budget=float(timeout))
+    except Exception as e:  # noqa: BLE001 - 지우기의 나머지(이 PC 자료 지우기)는 계속돼야 한다
+        recs = load_receipts(root, prune=False)
+        return {"ok": False, "removed": 0, "left": len(recs), "pending": [public_receipt(r) for r in recs],
+                "msg": f"서버 사본을 지우는 중 오류({type(e).__name__})"}
+    msg = ""
+    if left:
+        msg = PENDING_MSG.format(date=max(str(r.get("expires") or "") for r in left))
+    return {"ok": not left, "removed": removed, "left": len(left), "pending": [public_receipt(r) for r in left],
+            "msg": msg, "code": "ok" if not left else (first.code if first else "server_error")}
+
+
+def _marked(r):
+    """모두 지우기 때 서버에서 못 지워 남긴 영수증인가(consent.withdraw 가 "withdraw": true 를 붙인다)."""
+    return bool(r.get("withdraw"))
+
+
+def retry_withdrawals(root=None, cfg=None, timeout=5):
+    r"""모두 지우기를 했는데 서버에서 못 지운 영수증이 남았으면 다시 지운다 — 화면·run.py 가 시작할 때 부른다. 할 일이 없으면 None.
+    그때 표시한 영수증("withdraw": true)만 지운다 — 그 뒤에 새로 보낸 공유는 그대로 둔다."""
+    root = os.path.abspath(str(root or ROOT))
+    if not _withdrawal_pending(root) or not [r for r in load_receipts(root) if _marked(r)]:
+        return None
+    try:
+        cfg = _cfg(cfg, root)
+        removed, left, first = _withdraw(root, cfg, _marked, budget=float(timeout))
+    except Exception as e:  # noqa: BLE001 - 시작을 막지 않는다(다음 시작 때 다시)
+        left = [r for r in load_receipts(root, prune=False) if _marked(r)]
+        return {"ok": False, "removed": 0, "left": len(left), "pending": [public_receipt(r) for r in left],
+                "msg": f"서버 사본을 지우는 중 오류({type(e).__name__})"}
+    msg = PENDING_MSG.format(date=max(str(r.get("expires") or "") for r in left)) if left else ""
+    return {"ok": not left, "removed": removed, "left": len(left), "pending": [public_receipt(r) for r in left],
+            "msg": msg, "code": "ok" if not left else (first.code if first else "server_error")}
+
+
+# ── 명령줄 ──────────────────────────────────────────────────────────────────────
+def _arg(argv, flag, d=""):
+    if flag in argv:
+        i = argv.index(flag) + 1
+        if i < len(argv) and not argv[i].startswith("--"):
+            return argv[i]
+    return d
+
+
+def _args_after(argv, flag):
+    if flag not in argv:
+        return []
+    out = []
+    for x in argv[argv.index(flag) + 1:]:
+        if x.startswith("--"):
+            break
+        out += [y for y in x.split(",") if y.strip()]
+    return [y.strip() for y in out]
+
+
+def run(argv, root=None):
+    """명령 하나 → 결과 dict(마지막 줄 JSON 이 될 것)."""
+    root = os.path.abspath(_arg(argv, "--root") or root or ROOT)
+    try:
+        cfg, _w = afcfg.load_effective(root)
+        if "--status" in argv:
+            return status(root, cfg, verify="--verify" in argv, offline="--offline" in argv)
+        if "--ping" in argv:
+            return ping(root, cfg)
+        if "--preview" in argv:
+            return preview(root, cfg, tag=_arg(argv, "--tag") or None, personal="--personal" in argv,
+                           team="--team" in argv, owner=_arg(argv, "--owner"), function=_arg(argv, "--function"))
+        if "--share" in argv:
+            tk = _arg(argv, "--ticket")
+            if not tk:
+                return result("no_result", TICKET_MSG)          # 화면의 확인 창(일회용 표) 없이는 보내지 않는다(D14)
+            return share(root, cfg, preview_file=_arg(argv, "--preview-file"), sha256=_arg(argv, "--sha256"),
+                         include=_args_after(argv, "--include"), personal="--personal" in argv, team="--team" in argv,
+                         ticket=tk)
+        if "--withdraw" in argv:
+            part = _arg(argv, "--part") or None
+            if part is not None and part not in PARTS:
+                return result("no_result", "--part 는 personal 또는 team 입니다")
+            return withdraw(root, cfg, all_servers="--all" in argv, part=part)
+        return result("no_result", "명령을 고르세요 — --status · --ping · --preview · --share · --withdraw")
+    except ShareError as e:
+        return e.result()
+    except Exception as e:  # noqa: BLE001 - 마지막 줄 JSON 계약을 지킨다(화면이 읽는다)
+        return result("server_error", f"뜻밖의 오류({type(e).__name__}) — 다시 해 보고, 계속되면 담당자에게 알리세요")
+
+
+def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    res = run(argv)
+    if res.get("msg"):
+        print(f"[teamup] {res['msg']}")
+    print(json.dumps(res, ensure_ascii=False))
+    return exit_code(res)
 
 
 if __name__ == "__main__":
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, errors="replace", encoding=(
+        (sys.stdout.encoding or "utf-8") if sys.stdout.isatty() else "utf-8"))  # 콘솔(bat)=콘솔 코드페이지 · 파이프(UI)=utf-8
     sys.exit(main())

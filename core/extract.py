@@ -1,80 +1,71 @@
 # -*- coding: utf-8 -*-
-"""
-extract.py — 개인 PC 흔적에서 업무 로드를 추출해 [매핑데이터] 형식 행으로 만든다. (LoadMonitor24)
+r"""
+extract.py — 정제된 메일·일정(data\outlook\mail.csv · calendar.csv)에서 업무 신호를 뽑아 업무 분류 행으로 만든다.
+AgentFinder32 의 분석 첫 단계(mine.py)가 쓴다. 목적은 Agentic AI 로 바꿀 만한 업무를 찾는 것 하나다.
 
-v3 변경 (사용자 피드백 반영):
-  · CC 분리     — 메일 rcv 열(to/cc/bulk)로 참조·단체발송을 구분. CC는 약하게(0.25×),
-                  단체발송(bulk)은 계상하지 않고 '제외 집계'로만 남긴다. 팀즈도 단체채팅·단순수신은 감쇠.
-  · SW 개발 부스트 — 코드 파일 가중 ×2, 커밋 기본가중 상향+변경량 반영, IDE 작업창은 12분당 1.0
-                  (문서 20분당 1.0보다 촘촘하게) — "개발 MM이 적게 잡힌다" 보정.
-  · 출처 명시    — 모든 신호에 출처가 남고, 소스별 채택/제외 건수를 meta로 반환한다 (데이터 출처 확인용).
+읽는 것(§5.1 · §5.2 — 수집 직후 G1 을 거친 파일만)
+  mail.csv      box,time,sender,subject,conversation,rcv,time_precision,src,notice
+  calendar.csv  start,end,all_day,busy_status,subject,categories,location,response,meeting_status,src[,body]
+  이 밖의 파일(파일·폴더 흔적·Teams·작업창·PC 기록 등)은 읽지 않는다. _data_roots 는 늘 [data_dir] 하나다.
 
-MM은 절대시간이 아니라 기간 대비 비율(share)이다. 합이 항상 100%.
+신호 = (날짜, 출처 라벨, 정제한 글, 가중치, who)
+  · 날짜만 남긴다(그날 00:00 — 시각은 이 모듈 안의 중복 판정에만 쓰고 밖으로 내보내지 않는다).
+  · who = 받은 메일의 보낸이 가명 'p:<12hex>' · 내가 보낸 메일 '나' · 회의는 "".
+  · 가중치 = 관여의 세기(시간이 아니다) — signalWeights {메일, 메일발신, 메일CC, 회의}. 회의는 길이와 상관없이 회의 상수.
+    5통 넘게 받기만 하고 한 번도 회신하지 않은 보낸이의 메일은 알림성이라 약하게(×0.2 · 참조 ×0.4) 센다.
+  · 공지·광고 발신(notice=1)·단체발송(rcv=bulk)·행정 공지 제목은 업무 근거로 쓰지 않는다(bulk 로 센다).
 
-LM22 (로드율 보완):
-  · 상한 폐기    — 출력 worked 를 자르던 16h 상한·연차 4h 클램프 삭제. 입력의 물리 한계(PC on≤24·
-                  night≤13·주간≤11h, 구간 [0,1440], 미래 시각·역행 회의 폐기)만 검증해 worked≤24 를
-                  구성상 보장하고, 이상치는 info["anomalies"]·["long_days"] 로 표시한다(자르지 않는다).
-  · 과대 보정    — PC 하한은 능동 흔적이 있는 날만 · 점심 1h 차감 · 반차 비례 · 수동 신호끼리 다리 금지 ·
-                  회의 신호 패드 0 · 미정/거절/미응답 회의 설정 · 파일 일괄 버스트는 시간 근거 제외.
-  · 과소 보정    — 샘플러 간격 실측·idle 300s·같은 제목 이어붙임·부분 가동 보정 · 저녁/새벽 크레딧 ·
-                  주말 산출물 창 · 표본화 전 전체 파일 시각을 세션 재료로 · 부재 추정(가용 차감).
+분석 때 다시 거르는 것(G2 — 수집 때 거른 것과 같은 규칙을 한 번 더, 건수만 남긴다)
+  restricted 제한 고객 · private 개인 주제어 · admin 근태·행방(종일·취소·거절 일정 포함) · nonwork 비업무 일정·자동 회신 ·
+  sensitive 민감 주제 · credential 자격증명 · identifier 식별번호 · private_text 사적 대화 · duplicate 같은 항목의 사본 ·
+  bulk 공지·단체발송.
 
-LM22 2차 (감사 A4~A38 의 신호·달력·부재 부분):
-  · 근태        — 남의 초대(_absence_skip)·복합 근태어 접미 일치(_absence_hit)·시간제 OOF ≤5h 반차·반차 시각(spans)
-  · 종일 행사    — offsite_days(출장·현장·교육 = 근무), 다일 회의 날짜별 8h, 약속(ms 0)은 blocks 로 분리(_meeting_spans)
-  · 파일        — 버스트 분당 anchor 1건(뭉치 ≥N×5 는 0)·대표 1건 w=0·이력(files_history)·author(타인)·열람(Recent)·
-                  중복 키 (분,이름,확장자,폴더명)·코드 30건 이상 그룹 ×2 미적용
-                  S3: 확장자 179종(CODE_EXTS·EXT_ACT)·file_hint 크기/자리표시자 가드·해석 출력 뭉치(같은 폴더·연속 분,
-                  SIM_OUT_EXTS)는 시작 분 anchor 1건 + 대표 '파일(해석출력)'(W 파일해석출력 1.5·30분·능동 흔적)
-  · 메일·팀즈    — 공지 발신자 조각 일치·회신자 면제, 미응답 초대는 설정으로, 내 발신의 수신 사본 제외, 팀즈 시각 보정,
-                  날짜만 아는 발신은 세션 없이 능동 흔적만, 수동 세션 일 상한(passiveDayMaxMin)
-  · 달력        — KR_HOLIDAYS(2025~2027 설·추석·대체·선거) 내장 · 수동기록(worklog)·pc_spans 읽기
-
-LM22 2차 (감사 A1·A3·A6·A9·A13·A24·A25·A30~A35·D3·D4·D5·D7 의 시간·집계 부분 — day_work_hours·mm_from_hours):
-  · PC 하한(A3)   — 스칼라 max 가 아니라 구간: 주간 창을 [가동 창 밖 흔적 | 샘플러가 덮은 구간 | 덮지 않은 가동 구간] 로 나눠
-                    마지막 조각에만 하한(pc_spans ∩ 창, 없으면 first_on~last_off − 설명되지 않는 절전 공백). 점심·저녁(A33)은
-                    흔적 ±5분이 없는 부분만 · 창 양끝 trimIdleEdgesMin · 항상 켜진 PC 는 흔적 창 · 반차 시각 제외 · A35
-  · 샘플러        — 고착일 폐기(A1)·같은 제목 이어붙임 실동작(A24)·미커버 구간만 하한(A25)·공백 다리(D3 samplerGapBridgeMin)
-  · 폴백·하한     — PC 기록 없는 날 흔적 창(A9 pcFloorFallback)·종일 행사 표준일(A6)·수동 기록(A13)·시차 근무 창 밖(D4 flexEdgeH)·
-                    주말 "pc"(D7)·두 PC 병합(A32)
-  · 가용·휴가     — 휴가 추정 완화(A31 — 휴가로 본 평일 · LM30(2026-10-21)부터 다른 유급휴가처럼 가용에서 뺌)·미래 평일·
-                    오늘 비율(A34 mm_from_hours now) · LM30(2026-10-25) 하루 유급휴가인 평일은 내가 한 일만 시간으로(받은 메일·
-                    수락 회의·출장 약속 빼고 — LEAVE_OWN_SRC · attendance 머리말 22 · PC 하한은 예전처럼 휴가인 날 쓰지 않는다)
-  · 재산정(A30)   — rehours_after_judge: 판정에서 버린 신호를 뺀 시간·MM (judge·UI 가 호출)
-  · 표기(D5)      — info.measure·coverage·cfg_used (mine.py 가 mm_meta 최상위에도 싣는다)
-
-LM30(2026-10-18 — 출퇴근 추정, 규칙은 core/attendance.py 머리말):
-  · day_work_hours 끝에서 같은 재료로 날마다 출근·퇴근·근무를 어림하고(config.attendance — useForMM 기본 켬), 그 근무가 투입
-    시간이다. LM29 시간은 lm29_day_hours·lm29_totals 로 남고 mm_from_hours 가 달마다 mm_lm29(LM29 방식이었다면)를 낸다.
-  · 날짜별 출퇴근 시각은 save_attendance(report/attendance_<기간>.json — 이 PC 전용)로만 — mm_meta 에는 시각 없는 합계뿐.
-
-LM30(2026-10-27 — 사용자 '한 사람과 채팅한다고 한 일을 하는 게 아닌데 여러 과제가 하나로 묶인다'):
-  · 팀즈 행마다 이 PC 안에서만 쓰는 대화 키(conv_key — 대화방 이름의 소금 친 sha1, 프로세스마다 새 소금)를 meta["conv"] 에 둔다
-    (mine 이 signals 끝 conv 열로 쓴다). Copilot 프롬프트·팀 반출·내보내기에는 싣지 않는다(privacy.TEAM_DROP_COLS).
-  · 대화 낱말(talk_word — 맞장구·인사·호칭·시각·흔한 소통 낱말·'…습니다/…요/…까' 꼴)은 규칙 과제 토큰이 되지 않는다(_cand_ok).
-    content_words 는 원문에서 일을 가리키는 낱말만 남긴다 — judge 의 짧은 팀즈 대화 판정(is_lowinfo)이 쓴다.
-
-LM30(2026-10-28 — 사용자 '근태계획·국내출장을 올리는 일은 1분도 안 되는 일 — 그때 무슨 일을 했는지가 중요하다'):
-  · 근태·출장 등록 표기(ADMIN_* — 근태계획·연장근무·재택근무·국내출장·외근 … + 신청·결재·상신·승인 …)만 있는 신호는 admin_kind 'reg'
-    (1분짜리 행정 — 과제 몫 가중치 ≤ admin_cap_w = 작업창 1분 · 공통 · ADMIN_DETAIL), 일정·수동기록이 표기뿐이면 'time'(그 시간은 그때
-    한 내 일의 과제로 — admin_share_rows), 표기 + 내용이면 'label'(가중치 그대로 · 판정 줄은 admin_mark '(출장) A사 B 시험 입회').
-  · signals 의 weight 는 그대로 둔다(시간 근거 — 팀 재계산이 회의·작업창·수동기록 weight 로 시간을 잰다). 과제 몫을 세는 곳(judge.
-    write_outputs·리뷰 화면·mine 규칙 결과)만 admin_share_rows 로 상한·나눔을 적용한다 — 근무시간·투입 MM 합계는 그대로.
-  · 표기뿐인 이름은 과제·세부업무가 되지 않는다(admin_name — details.task_name_ok·judge·refine·병합) · 규칙 과제 토큰도(_cand_ok).
+공개 함수(다른 모듈이 쓴다 — spec §6.0)
+  load_cfg · norm_cfg · cfg_list · load_signals · build_items2 · to_rows · _one_line · _read · _tokens · content_words ·
+  talk_name · _meeting_skip · rule_name_ok
 """
 import csv
-import functools
-import glob
-import hashlib
 import json
 import os
 import re
+import sys
 from collections import Counter, defaultdict
-from datetime import datetime
-from datetime import timedelta as _td
+from datetime import date, datetime, timedelta
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+import afcfg  # noqa: E402
+import privacy  # noqa: E402
+
+ROOT = os.path.dirname(_HERE)
+
+# ── 신호 출처 라벨 · 가중치 ────────────────────────────────────────────────────────────────────
+MAIL_SENT = "메일(발신)"
+MAIL_IN = "메일(수신)"
+MAIL_CC = "메일(CC)"
+MAIL_ONEWAY = "메일(수신전용)"          # 받기만 하고 회신한 적 없는 보낸이(알림성) — 약하게
+MEETING = "회의"
+SIGNAL_WEIGHT_KEYS = ("메일", "메일발신", "메일CC", "회의")
+DEFAULT_WEIGHTS = {k: float(afcfg.DEFAULTS["signalWeights"][k]) for k in SIGNAL_WEIGHT_KEYS}
+ONEWAY_MIN = 5                         # 이만큼 받았는데 회신한 대화가 없으면 알림성
+ONEWAY_IN, ONEWAY_CC = 0.2, 0.4
+TENTATIVE_CHOICES = ("count", "skip", "response")
+
+# 제외 건수의 칸(run_meta.excluded) — 수집(collect_summary §5.3)과 같은 칸 + 분석 때만 생기는 칸
+COLLECT_EXCLUDED_KEYS = tuple(privacy.EXCLUDE_KEYS)
+ANALYSIS_EXCLUDED_KEYS = ("nonwork", "bulk", "private_text", "credential", "duplicate")
+EXCLUDED_KEYS = COLLECT_EXCLUDED_KEYS + ANALYSIS_EXCLUDED_KEYS
+
+
+def signal_class(label):
+    """출처 라벨 → run_meta.counted 칸(mail_out · mail_in · meetings)."""
+    s = str(label or "")
+    if s.startswith("메일(발신"):
+        return "mail_out"
+    if s.startswith("메일"):
+        return "mail_in"
+    return "meetings"
 
 
 def _level1_of(text, l2=""):
@@ -88,7 +79,7 @@ def _level1_of(text, l2=""):
 
 def _level1_fill(l2, l3="", l1_map=None, pin=None):
     """상위 채움(core/details.level1_fill — 지정 상위 > taxonomy l1 > 규칙 > 과제명이 곧 범주('공통')).
-    임포트 실패하면 예전 규칙 상위(_level1_of)로 계속."""
+    임포트 실패하면 규칙 상위(_level1_of)로 계속."""
     try:
         from details import level1_fill
     except ImportError:
@@ -100,14 +91,15 @@ def _level1_fill(l2, l3="", l1_map=None, pin=None):
 
 
 def _is_notice_subject(text):
-    """강한 행정 공지 제목인가(core/details.is_notice_subject — 근태·인사발령·부고·뉴스레터 …). 임포트 실패면 거르지 않는다."""
+    """강한 행정 공지 제목인가(core/details.is_notice_subject — 인사발령·부고·뉴스레터 …). 임포트 실패면 거르지 않는다."""
     try:
         from details import is_notice_subject
     except ImportError:
         return False
     return is_notice_subject(text)
 
-# 활동(Level 3) 규칙 — 신호 텍스트에서 '무슨 활동인가'를 뽑는다
+
+# 활동(Level 3) 규칙 — 신호 글에서 '무슨 활동인가'를 뽑는다(메일 제목·회의 제목의 낱말)
 ACT_RULES = [
     ("설계", ["설계", "도면", "회로", "구조", "레이아웃", "schematic", "layout", "cad",
              ".dwg", ".sldprt", ".catpart", "design"]),
@@ -117,73 +109,16 @@ ACT_RULES = [
               ".cs", ".ipynb", "algorithm", "펌웨어", "firmware", "리팩터", "빌드에러"]),
     ("검증·평가", ["검증", "평가", "측정", "시험", "test", "v&v", "dv", "pv", "신뢰성",
                 "계측", "실험"]),
-    ("입고검사·현장", ["입고", "검사", "조립", "출장", "현장", "설비", "장비", "빌드", "샘플"]),
+    ("입고검사·현장", ["입고", "검사", "조립", "현장", "설비", "장비", "빌드", "샘플"]),
     ("자재·발주", ["자재", "발주", "구매", "ers", "bom", "부품", "조달", "견적"]),
     ("불량·대응", ["불량", "고장", "이슈", "fa ", "faca", "8d", "대책", "클레임", "ncr"]),
     ("회의·협업", ["회의", "미팅", "meeting", "리뷰", "review", "협의", "보고회"]),
     ("문서·보고", ["보고", "자료", "발표", "ppt", ".pptx", ".docx", "문서", "정리", "요약"]),
 ]
-CODE_EXTS = {".py", ".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".hh", ".cs", ".java", ".js", ".ts", ".tsx",
-             ".ipynb", ".m", ".mlx", ".jl", ".lua", ".v", ".sv", ".vhd", ".vhdl", ".xdc", ".tcl", ".ps1", ".sh", ".bat",
-             ".sql", ".r", ".go", ".rs"}
-# 확장자 → 업무유형(Level 3) 단서(S3-P2). ACT_RULES 는 텍스트 부분 문자열이라 '.len'⊂'.length'·'.dat'⊂'.data' 오탐이 있고
-# '.asm'(어셈블리 소스)은 설계 규칙에 먼저 잡힌다 — 확장자는 이름 **끝**으로 따로 판정한다. 범용 확장자(.dat .db .txt .csv)는
-# 넣지 않는다(폴더명·힌트로 판정). .zpl/.lsf(Zemax·Lumerical 스크립트)는 해석 쪽.
-EXT_ACT = {}
-for _n, _exts in (
-    # CAD·도면 — .asm 은 Creo/Solid Edge 어셈블리로 둔다. 예전엔 SW개발이라 판번호 없이 저장한 어셈블리
-    # (bracket.asm)가 전부 SW개발 시간이 됐다. 어셈블리 언어 소스도 .asm 이지만 이 도구를 쓰는 조직에서는
-    # CAD 쪽이 압도적이고, CODE_EXTS 에는 .asm 이 없어 코드 판정에는 원래 쓰이지 않았다.
-    ("설계", ".dwg .dxf .sldprt .sldasm .slddrw .catpart .catproduct .catdrawing .catanalysis .cgr .3dxml .model "
-            ".prt .asm .drw .frm .sec .lay .mfg .gph .ipt .iam .idw .par .psm .dft .fcstd .scdoc .scdocx .agdb "
-            ".step .stp .igs .iges .x_t .x_b .sat .jt .stl .pcbdoc .schdoc .prjpcb .schlib .pcblib "
-            ".kicad_pcb .kicad_sch .kicad_pro .kicad_sym .kicad_mod .brd .dsn .opj .sch .gbr .gtl .gbl .drl"),
-    # 해석·시뮬레이션 — 솔버 입력·결과·실행 로그. 새 확장자를 watchExtensions 에 넣을 때는 반드시 여기에도 넣어라.
-    # 안 넣으면 ACT_RULES 의 맨몸 '.c' 부분문자열에 걸려 'SW개발' 로 떨어진다(.cwr·.cst·.comm·.cvg 실측).
-    ("해석·시뮬레이션", ".zmx .zar .zos .zpl .zsc .zdf .zrd .zbf .seq .len .lis .lts .frd .oml .inr .fsp .lms .ldev .lsf .ind "
-                   ".aedt .aedtz .siw .wbpj .wbpz .mechdb .mechdat .rth .rmg .cdb .anf .trn .jou .flprj "
-                   ".cas .dat.gz .cas.gz .cas.h5 .dat.h5 .msh .msh.h5 .msh.gz .rst .mph .inp .odb .cae .sta "
-                   ".op2 .f06 .f04 .xdb .pch .bdf .nas .neu .sim .fem .afm .modfem .fno "
-                   ".fld .cfld .cpt .fbd .cwr .cst .h3d .hm .t16 .sts .sdy .mfr .k "
-                   ".stt .rpt .comm .cvg .su2 .sif .unv .vtu .vtk .pvsm .plt .asc .s2p .slx .mdl"),
-    ("SW개발", ".hex .elf .map .bin .ioc .uvprojx .ewp .eww .xpr .qpf .qsf .bit .sof .sln .vcxproj .csproj .lvproj .lvlib .vi .ctl"),
-    # .asc 는 LTspice 회로 도면과 점군(ASCII)이 겹친다 — 예전대로 해석 쪽에 둔다(LTspice = 회로 시뮬레이션).
-    ("검증·평가", ".tdms .lvm .pcd .las .laz .ply .bag .mcap .db3 .pcap .pcapng .h5 .hdf5 .npy .npz .parquet .mat"),
-):
-    for _e in _exts.split():
-        EXT_ACT[_e] = _n
-# Creo 판번호 파일 bracket.prt.3 — 수집기(collect/Get-FileActivity.ps1·Get-RecentFiles.ps1 의 creoRe)와 **같은 목록**이어야 한다.
-# 셋(수집기 정규식·watchExtensions·이 정규식) 중 하나만 고치면 그 확장자는 0건이거나 '기타'로 떨어진다(감사 확정).
-_CREO_RE = re.compile(r"\.(prt|asm|drw|frm|sec|lay|mfg|gph|neu)\.\d{1,4}$", re.I)
-_SIG_SUFFIX_RE = re.compile(r"( 외 \d+건| \((?:일괄|해석 출력) \d+건\))+$")   # load_signals 가 붙이는 규모 표기
-
-
-def _sig_name(text):
-    """파일 신호 텍스트('이름 § 힌트 | 폴더:… (일괄 N건)') 의 파일 이름 부분 — 소문자, 규모 표기 제거."""
-    name = str(text or "").split(" § ")[0].split(" | 폴더:")[0].strip().lower()
-    return _SIG_SUFFIX_RE.sub("", name).strip()
-
-
-# 점이 둘인 복합 확장자 — 수집기(watchExtensions)와 분석기가 **같은 목록**을 봐야 한다. Fluent 2020R1 부터 기본 포맷이
-# .cas.h5/.dat.h5 인데 이 목록에 없으면 '.h5'(검증·평가)로 읽혀 해석 시간이 사라진다(감사 확정).
-COMPOUND_EXTS = (".cas.gz", ".dat.gz", ".cas.h5", ".dat.h5", ".msh.h5", ".msh.gz")
-
-
-def _ext_of_signal_text(text):
-    """파일 신호 텍스트에서 확장자 — 복합(.cas.h5)·Creo 판번호(.prt.3 → .prt) 인식."""
-    name = _sig_name(text)
-    m = _CREO_RE.search(name)
-    if m:
-        return "." + m.group(1)
-    for ce in COMPOUND_EXTS:
-        if name.endswith(ce):
-            return ce
-    return os.path.splitext(name)[1]
-
-
-IDE_HINTS = ["visual studio", "vscode", "vs code", "pycharm", "intellij", "matlab",
-             "qt creator", "eclipse", "notepad++", "vim", "spyder", "jupyter",
-             "code.exe", "devenv", "android studio"]
+# 활동 → 업무유형(개발·사무·현장·협업 — judge 의 유형 4종과 같다). 규칙 결과의 초안이고 AI 판정이 덮어쓴다.
+WORKTYPE_OF_ACT = {"설계": "개발", "해석·시뮬레이션": "개발", "SW개발": "개발", "검증·평가": "개발",
+                   "입고검사·현장": "현장", "불량·대응": "현장", "자재·발주": "사무", "문서·보고": "사무",
+                   "회의·협업": "협업"}
 STOP = {"검토", "요청", "회신", "공유", "확인", "전달", "관련", "안내", "파일", "문서", "최종",
         "수정", "신규", "완료", "송부", "부탁", "주간", "월간", "일정", "메일", "첨부", "내용",
         "re", "fw", "fwd", "pptx", "xlsx", "docx", "pdf", "hwp", "microsoft", "teams",
@@ -191,81 +126,50 @@ STOP = {"검토", "요청", "회신", "공유", "확인", "전달", "관련", "�
 
 
 def _one_line(s, n=120):
-    """개행·탭·연속 공백을 한 칸으로, 앞뒤 공백 제거(S2). Outlook 제목·파일명에서 온 세부업무 이름에 개행이 남으면
-    프롬프트의 '· 과제 / 세부업무' 한 줄이 갈라지고 CSV 셀이 쪼개진다 — 쓰는 쪽(원천)에서 한 번 정규화한다.
-    n=None 이면 자르지 않는다."""
+    """개행·탭·연속 공백을 한 칸으로, 앞뒤 공백 제거. 제목에서 온 세부업무 이름에 개행이 남으면 프롬프트의 한 줄이
+    갈라지고 CSV 셀이 쪼개진다 — 쓰는 쪽(원천)에서 한 번 정규화한다. n=None 이면 자르지 않는다."""
     return " ".join(str(s or "").split())[:n]
 
 
-# 비업무 기본 키워드 — 전부 소문자로 비교한다(대소문자·철자 변형 방어)
-# '집중 시간'·'미리 알림' 류 나혼자 일정은 회의가 아니다 (Viva Insights 도 회의 집계에서 제외)
-# 경로에만 나타나는 제외 키워드 — 제목 대조에서는 뺀다.
-# 'temp' 가 'temperature' 헤더를, '임시' 가 '임시 회의' 를 지우던 실측 경로 차단.
-PATH_ONLY_KW = {"temp", "downloads", "다운로드", "임시"}
-
-# 교육·세미나류 키워드 (소문자 비교) — 신호 필터와 시간 계상이 같은 판정을 공유한다
-EDU_KW = ("교육", "세미나", "특강", "강의", "webinar", "워크샵", "워크숍", "workshop", "설명회")
-
+# ── 비업무 일정·자동 메일 ──────────────────────────────────────────────────────────────────────
+# 비업무 기본 키워드 — 소문자로 비교한다. config.nonWorkKeywords 는 더하기만 한다(_nonwork_list).
 NONWORK_DEFAULT = ["집중 시간", "focus time", "미리 알림", "reminder", "할 일",
-                   "연차", "휴가", "반차", "병가", "경조", "건강검진", "휴무",
+                   "연차", "휴가", "반차", "반휴", "월차", "공가", "휴직", "병가", "경조", "건강검진", "휴무",
                    "취소됨", "취소된", "canceled", "cancelled", "취소:",
                    "자동 회신", "automatic reply", "auto-reply", "out of office",
                    "부재중", "발송 실패", "undeliverable", "delivery has failed",
                    "read receipt", "읽음 확인"]
-
-def _pv():
-    """core\\privacy(개인정보 정제 단일원 — WP7) — 평평한 import 와 core 패키지 import 를 둘 다 받는다."""
-    try:
-        import privacy
-    except ImportError:
-        from core import privacy
-    return privacy
-
-
-# 'system' 은 뺐다 — 이 조직의 Function 명(System/OE/ME/EE)이 표시 이름('김철수/System')에 들어간다(A23).
-# LM28(W2-15): 일반어만 둔다 — 조직 고유 알림 계정(교육·윤리·인사 시스템 등)은 받은 사람이 config.noticeSenders 에.
-# config.noticeSenders 가 있으면 그것을 쓰고(배포 템플릿과 같은 일반어 목록), 없을 때만 이 기본값.
-NOTICE_DEFAULT = ["no-reply", "noreply", "do-not-reply", "알림", "notification", "notice", "뉴스레터", "newsletter",
-                  "웹진", "webzine", "공지", "설문", "survey", "시스템", "sharepoint", "yammer", "viva", "helpdesk",
-                  "보안", "보안공지", "(광고)", "광고", "promotion", "프로모션", "마케팅", "수신거부", "unsubscribe"]
-# 일반 명사 키워드 — 표시 이름의 부서명·성씨('개발시스템팀'·'공지영'·'Vivaldi')에 부분 일치하지 않도록
-# 조각(이름/직급/부서 구분자로 나눈 단위) **전체 일치**만 인정한다. 나머지 키워드는 조각 시작 일치.
-NOTICE_GENERIC = {"시스템", "system", "공지", "알림", "설문", "보안", "광고", "마케팅", "viva", "notice",
-                  "survey", "promotion", "프로모션", "notification"}
-_NOTICE_SEG = re.compile(r"[\s/|,;()\[\]<>\"'@._-]+")
-
-# ── 종일 '회사 밖 근무'(출장·현장·교육) 제목 키워드 — config.mm.offsiteKeywords 가 우선(A6) ──
-OFFSITE_KW = ("출장", "현장", "외근", "교육", "세미나", "전시", "박람회", "고객사", "방문", "시험",
-              "workshop", "trip", "site", "training", "offsite", "field")
-# 파일 흔적 원천 — 현재 스냅샷 + 수집기가 400일 누적하는 이력(A15). 같은 (분, 이름, 확장자, 폴더명)은 1건.
-FILE_SOURCES = ("files.csv", "recent.csv", "files_history.csv", "recent_history.csv")
-# Recent 의 '열람만' 경로 — Outlook 첨부 임시 폴더는 언제나 열람이다(D2b)
-VIEW_PATH_KW = ("content.outlook", "inetcache", "olk\\attachments", "olk/attachments", "\\temp\\", "/temp/",
-                "\\temporary internet files\\")
-CODE_GROUP_MAX = 30        # 한 (폴더,날)에 코드 파일이 이 이상이면 설치·체크아웃으로 보고 코드 ×2 를 주지 않는다(A16 2차 방어)
-
-# 비업무 키워드의 판정 규칙(A36) — 예전 '어디서든 부분일치'는 'Reminder: 제출 마감'·'연차 사용 현황'·
-# '취소된 발주 재검토'·'휴가철 캠페인' 같은 정상 업무 신호를 지우고 회의는 시간까지 없앴다.
-#   접두(콜론)  : Outlook 이 자동으로 붙이는 '취소됨: '·'Canceled: '·'자동 회신: ' 류 — 제목 시작에 '키워드:' 일 때만
-#   정확 일치   : Viva·Outlook 자동 항목('집중 시간'·'미리 알림'·'reminder'·'할 일') — 제목 전체가 그것일 때만
-#   근태어      : _absence_hit 와 같은 토큰 접미 규칙('연차'·'여름휴가' ○ / '연차 사용 현황'·'휴가철' ×)
-#   시스템 문구 : 자동회신·발송실패·읽음확인 — 어디에 있어도(실제 업무 제목에 나올 일이 없다)
-#   그 밖의 config 추가어는 예전처럼 부분일치(사용자가 넣은 말은 사용자의 의도대로)
+# 판정 규칙 — '어디서든 부분일치'는 'Reminder: 제출 마감'·'취소된 발주 재검토' 같은 업무 제목을 지운다.
+#   접두(콜론) : Outlook 이 붙이는 '취소됨: '·'Canceled: '·'자동 회신: ' 류 — 제목 시작에 '키워드:' 일 때만
+#   정확 일치  : Viva·Outlook 자동 항목('집중 시간'·'미리 알림'·'reminder'·'할 일') — 제목 전체가 그것일 때만
+#   근태어     : 토큰 접미 일치('연차'·'여름휴가' ○ / '연차 사용 현황'·'휴가철' ×)
+#   시스템 문구 : 자동회신·발송실패·읽음확인 — 어디에 있어도
+#   그 밖의 config 추가어는 부분일치(사용자가 넣은 말은 사용자의 뜻대로)
 NONWORK_PREFIX = {"취소됨", "취소된", "취소", "canceled", "cancelled", "자동 회신", "automatic reply", "auto-reply",
                   "undeliverable", "발송 실패"}
 NONWORK_EXACT = {"미리 알림", "reminder", "할 일", "집중 시간", "focus time"}
 NONWORK_TOKEN = {"연차", "휴가", "반차", "반휴", "병가", "경조", "경조사", "건강검진", "휴무", "휴직", "월차", "공가"}
-NONWORK_SUBSTR = {"자동 회신", "automatic reply", "auto-reply", "out of office", "부재중", "발송 실패", "undeliverable",
-                  "delivery has failed", "read receipt", "읽음 확인"}
+_RE_PREFIX = re.compile(r"^\s*((re|fw|fwd|답장|전달|회신)\s*[:：]\s*)+", re.I)
+_TOK_SPLIT = re.compile(r"[\s_\-·/()\[\],:：]+")
+_TOK_STRIP = re.compile(r"(입니다|사용|신청|중|임|함)$")
+
+
+def _token_suffix_hit(s, kws, limit=8):
+    """토큰이 키워드로 **끝나면** 인정 — '여름휴가'·'오후반차' ○, '휴무일'·'휴가철' ×. 숫자만 앞에 붙은 토큰('2연차')은 아니다."""
+    for t in _TOK_SPLIT.split(str(s or "").strip().lower())[:limit]:
+        t = _TOK_STRIP.sub("", t.strip())
+        if not t:
+            continue
+        for k in kws:
+            if t == k or (t.endswith(k) and not t[:-len(k)].isdigit()):
+                return True
+    return False
 
 
 def _nonwork_list(cfg):
-    """기본 목록 + config 추가분의 **합집합**. 예전엔 config 가 있으면 기본을 통째로
-    대체해서, config 에 빠진 '집중 시간'·'미리 알림'(Viva Insights 자동 블록)이
-    업무 회의로 계상됐다."""
-    extra = cfg_list(cfg, "nonWorkKeywords")
+    """기본 목록 + config.nonWorkKeywords 의 합집합(소문자, 순서 유지)."""
     seen, out = set(), []
-    for n in list(NONWORK_DEFAULT) + list(extra):
+    for n in list(NONWORK_DEFAULT) + list(cfg_list(cfg, "nonWorkKeywords")):
         s = str(n).strip().lower()
         if s and s not in seen:
             seen.add(s)
@@ -273,12 +177,8 @@ def _nonwork_list(cfg):
     return out
 
 
-_RE_PREFIX = re.compile(r"^\s*((re|fw|fwd|답장|전달|회신)\s*[:：]\s*)+", re.I)
-
-
 def _nonwork_hit(low, nonwork):
-    """비업무 판정 — 걸린 키워드 또는 None. load_signals.add(메일·회의·팀즈)·_meeting_spans·offsite_days 가 공유한다.
-    파일명에는 적용하지 않는다(파일은 산출물이지 근태 이벤트가 아니다 — 호출측이 건너뛴다)."""
+    """비업무 판정 — 걸린 키워드 또는 None(위 규칙)."""
     s = _RE_PREFIX.sub("", str(low or "").strip().lower())
     if not s:
         return None
@@ -292,36 +192,39 @@ def _nonwork_hit(low, nonwork):
         elif k in NONWORK_TOKEN:
             if _token_suffix_hit(s, (k,)):
                 return k
-        elif k in s:                      # 시스템 문구(어디서든) · config 추가어(부분일치, 예전 동작)
+        elif k in s:
             return k
     return None
 
 
+def _truthy(v):
+    return str(v or "").strip().lower() in ("true", "-1", "1", "yes", "y")
+
+
+# ── 설정 ──────────────────────────────────────────────────────────────────────────────────
 def load_cfg():
-    """config 를 읽는다. 메모장 등으로 저장하면 BOM이 붙는데 utf-8 로만 읽으면 파싱이
-    깨져 설정 전체가 조용히 무시된다(실측) — utf-8-sig 로 읽고, 실패하면 경고를 남긴다."""
-    p = os.path.join(ROOT, "config", "config.json")
-    try:
-        with open(p, encoding="utf-8-sig") as f:
-            cfg = json.load(f)
-    except FileNotFoundError:
-        return {}
-    except (ValueError, OSError) as e:
-        print(f"[!] config\\config.json 을 읽지 못했습니다 ({type(e).__name__}: {e}) — "
-              "기본값으로 진행합니다. JSON 문법(쉼표·따옴표)을 확인하세요.")
-        return {}
-    if not isinstance(cfg, dict):
-        print(f"[!] config\\config.json 의 최상위가 객체({{…}})가 아닙니다({type(cfg).__name__}) — "
-              "기본값으로 진행합니다.")
-        return {}
-    return cfg
+    r"""config\config.json 을 읽는다(없으면 config\config.default.json). 메모장 저장은 BOM 이 붙으므로 utf-8-sig.
+    깨졌으면 경고 한 줄을 찍고 {} — 기본값(core\afcfg.DEFAULTS)으로 진행한다."""
+    for name in ("config.json", "config.default.json"):
+        p = os.path.join(ROOT, "config", name)
+        if not os.path.exists(p):
+            continue
+        try:
+            with open(p, encoding="utf-8-sig") as f:
+                cfg = json.load(f)
+        except (ValueError, OSError) as e:
+            print(f"[!] config\\{name} 을 읽지 못했습니다 ({type(e).__name__}) — 기본값으로 진행합니다. "
+                  "JSON 문법(쉼표·따옴표)을 확인하세요.")
+            return {}
+        if not isinstance(cfg, dict):
+            print(f"[!] config\\{name} 의 최상위가 객체({{…}})가 아닙니다 — 기본값으로 진행합니다.")
+            return {}
+        return cfg
+    return {}
 
 
-# ── config 값 검증 — 잘못된 값은 traceback 으로 죽거나 조용히 무시되는 대신 기본값 + 경고 ──
-# (경고는 load_signals meta["config_warnings"]·day_work_hours info["config_warnings"] 로 나가
-#  mine.py 출력·mm_meta.json 에 남는다 — 오타를 사용자가 알 수 있게)
 def _num(v, dflt, lo=None, hi=None, key="", warns=None):
-    """config 숫자 키 → float. 없음·빈 값은 기본값(경고 없음). bool·문자열·NaN·범위 밖은 기본값 + 경고."""
+    """config 숫자 값 → float. 없음·빈 값은 기본값(경고 없음). bool·글자·NaN·범위 밖은 기본값 + 경고."""
     if v is None or (isinstance(v, str) and not v.strip()):
         return dflt
     x = None
@@ -341,24 +244,6 @@ def _num(v, dflt, lo=None, hi=None, key="", warns=None):
     return dflt
 
 
-def _bool(v, dflt, key="", warns=None):
-    """config 참/거짓 키. 문자열 "false"/"0"/"no" 도 거짓으로 읽는다 — bool("false") 는 참이었다."""
-    if v is None:
-        return dflt
-    if isinstance(v, bool):
-        return v
-    if isinstance(v, (int, float)) and v == v:
-        return bool(v)
-    s = str(v).strip().lower()
-    if s in ("true", "1", "yes", "y", "on"):
-        return True
-    if s in ("false", "0", "no", "n", "off", ""):
-        return False
-    if warns is not None:
-        warns.append(f"{key}={v!r} 는 true/false 가 아님 — 기본값 {str(dflt).lower()} 적용")
-    return dflt
-
-
 def _choice(v, dflt, allowed, key="", warns=None):
     if v is None or (isinstance(v, str) and not v.strip()):
         return dflt
@@ -371,8 +256,8 @@ def _choice(v, dflt, allowed, key="", warns=None):
 
 
 def cfg_list(cfg, key, warns=None):
-    """config 의 목록 키 → list. 문자열 하나면 [그것], 그 밖의 형식은 [] + 경고.
-    (문자열을 그대로 순회하면 글자 단위 키워드가 돼 신호 대부분을 지운다)"""
+    """config 의 목록 키 → list. 글자 하나면 [그것], 그 밖의 형식은 [] + 경고
+    (글자를 그대로 순회하면 한 글자 키워드가 돼 신호 대부분을 지운다)."""
     v = (cfg or {}).get(key) if isinstance(cfg, dict) else None
     if v is None:
         return []
@@ -385,141 +270,59 @@ def cfg_list(cfg, key, warns=None):
     return []
 
 
-MM_CHOICES = {"method": ("activity", "workday"), "pcFloorNeeds": ("active", "any"),
-              "tentativeMeetings": ("count", "skip", "response"), "pcFloorFallback": ("trace", "none"),
-              # 야간 해석(솔버) 근무 인정(S4-N1): span(실행 구간) · anchor(뭉치당 30분) · off(게이트만, 시간 0)
-              "simNight": ("span", "anchor", "off"),
-              # PC 기록이 평일 40% 미만인 달의 흔적 있는 평일(LM28 E): standard(표준일 × (1−부재) 추정) · trace(예전 흔적 창)
-              "noPcMonthDay": ("standard", "trace")}
-MM_BOOLS = ("usePcFloor", "inferAbsence", "eveningCredit", "spanFromAllFiles", "offsiteAsWork",
-            "simNightHumanUnlock")
-MM_BOOLS_FALSE = ("viewCountsAsActive", "simNightNeedsPc")   # 기본 false 인 참/거짓 키
-
-
 def norm_cfg(cfg):
-    """config 전체를 한 번에 검증해 (정규화된 값 dict, 경고 list) 를 돌려준다.
-    load_signals·day_work_hours·mm_from_hours 가 같은 값을 쓴다. mm·signalWeights 가 객체가 아니면 {}."""
+    """분석에 쓰는 설정을 검증해 (값 dict, 경고 list) — 잘못된 값은 죽지 않고 기본값 + 경고(run_meta.config_warnings).
+    값: tentativeMeetings(calendar.tentativeMeetings — count·skip·response) · mailTimeOffsetH(collect.mailTimeOffsetH,
+    −24~24 — 웹 경로가 UTC 로 남긴 시각 보정) · signalWeights({메일, 메일발신, 메일CC, 회의} — 0 이상, 다른 키는 무시)."""
     warns = []
     cfg = cfg if isinstance(cfg, dict) else {}
-    mmc = cfg.get("mm")
-    if mmc is None:
-        mmc = {}
-    elif not isinstance(mmc, dict):
-        warns.append(f"mm 은 객체({{…}})여야 함({type(mmc).__name__}) — mm 설정 전부 기본값")
-        mmc = {}
-    n = {"standardDayHours": _num(mmc.get("standardDayHours"), STD_DAY_H, 0.5, 24,
-                                  "mm.standardDayHours", warns),
-         "sessionGapMin": _num(mmc.get("sessionGapMin"), float(SESSION_GAP_MIN), 0, 1440,
-                               "mm.sessionGapMin", warns),
-         "idleActiveSec": _num(mmc.get("idleActiveSec"), float(IDLE_ACTIVE_SEC), 0, 86400,
-                               "mm.idleActiveSec", warns),
-         "fileBurstN": int(_num(mmc.get("fileBurstN"), FILE_BURST_N, 2, 100000, "mm.fileBurstN", warns)),
-         "mailTimeOffsetH": _num(mmc.get("mailTimeOffsetH"), 0.0, -24, 24, "mm.mailTimeOffsetH", warns),
-         "samplerIntervalSec": _num(cfg.get("samplerIntervalSec"), 60.0, 1, 3600,
-                                    "samplerIntervalSec", warns),
-         "dayCapHours": _day_cap(mmc, warns),
-         "dayWindow": _win_cfg(mmc.get("dayWindow"), DAY_WIN, "mm.dayWindow", warns),
-         "lunch": _win_cfg(mmc.get("lunch"), LUNCH, "mm.lunch", warns),
-         # ── LM22 2차 시간 보정 키(A18·A33·D3·D4·A9) — 이름은 공통 계약 그대로 ──
-         "dinner": _win_cfg(mmc.get("dinner"), DINNER, "mm.dinner", warns),
-         "passiveDayMaxMin": _num(mmc.get("passiveDayMaxMin"), PASSIVE_DAY_MAX_MIN, 0, 1440,
-                                  "mm.passiveDayMaxMin", warns),
-         # 수동 흔적(수신 메일·CC·팀즈 수신)만 있는 날에도 PC 가동 하한을 열어 주는 문턱 — 물량과 분포를 함께 본다.
-         # 0 이면 끈다(예전 동작: 능동 흔적이 없는 날은 하루 최대 passiveDayMaxMin).
-         "passiveFloorMinN": _num(mmc.get("passiveFloorMinN"), PASSIVE_FLOOR_MIN_N, 0, 500,
-                                  "mm.passiveFloorMinN", warns),
-         "passiveFloorMinH": _num(mmc.get("passiveFloorMinH"), PASSIVE_FLOOR_MIN_H, 0, 12,
-                                  "mm.passiveFloorMinH", warns),
-         "samplerGapBridgeMin": _num(mmc.get("samplerGapBridgeMin"), SAMPLER_GAP_BRIDGE_MIN, 0, 1440,
-                                     "mm.samplerGapBridgeMin", warns),
-         "flexEdgeH": _num(mmc.get("flexEdgeH"), FLEX_EDGE_H, 0, 12, "mm.flexEdgeH", warns),
-         "trimIdleEdgesMin": _num(mmc.get("trimIdleEdgesMin"), TRIM_IDLE_EDGES_MIN, 0, 240,
-                                  "mm.trimIdleEdgesMin", warns),
-         # 야간 해석 인정 상한(밤당 h, 0 = 무제한) — 재실행 흔적이 있는 밤은 simNightHumanUnlock 이 이 상한을 푼다
-         "simNightCapH": _num(mmc.get("simNightCapH"), SIM_NIGHT_CAP_H, 0, 24, "mm.simNightCapH", warns),
-         # ── LM28(WP8) — 과제 몫 방식·꼬리표 야간창·사적 차감·PC 하한 창. 기본값은 LM24 동작 ──
-         # shareBasis: weight(기본 — LM24 가중치 비율) · time(core\timeshare 로 그날 투입 분을 과제에 나눈다)
-         "shareBasis": _choice(mmc.get("shareBasis"), "weight", ("weight", "time"), "mm.shareBasis", warns),
-         # 꼬리표(휴일 > 야간 > 정규 > 연장)의 야간 시간대 — [시, 시] 자정을 넘을 수 있다(기본 22~06)
-         "nightWindow": _hwin_cfg(mmc.get("nightWindow"), NIGHT_WIN, "mm.nightWindow", warns, wrap=True),
-         # 창 샘플러가 사적·미디어 창을 이 분 이상 연속으로 실측한 구간만 투입에서 뺀다(0 = 끔, A-14)
-         "privateRunMin": _num(mmc.get("privateRunMin"), PRIVATE_RUN_MIN, 0, 1440, "mm.privateRunMin", warns)}
-    # PC 가동 하한을 거는 창 [시, 시] — dayWindow 는 그대로 두고 하한·퇴근 경계에만 쓴다(없으면 dayWindow = LM24 [8,19])
-    n["pcFloorWindow"] = _hwin_cfg(mmc.get("pcFloorWindow"), n["dayWindow"], "mm.pcFloorWindow", warns)
-    for k, allowed in MM_CHOICES.items():
-        n[k] = _choice(mmc.get(k), allowed[0], allowed, "mm." + k, warns)
-    for k in MM_BOOLS:
-        n[k] = _bool(mmc.get(k), True, "mm." + k, warns)
-    for k in MM_BOOLS_FALSE:
-        n[k] = _bool(mmc.get(k), False, "mm." + k, warns)
-    # weekendWindow: true(산출물 ±30분 창) · "pc"(능동 흔적이 있으면 PC 가동 구간 전체, D7c) · false
-    wv = mmc.get("weekendWindow")
-    n["weekendWindow"] = ("pc" if isinstance(wv, str) and wv.strip().lower() == "pc"
-                          else _bool(wv, True, "mm.weekendWindow", warns))
-    mins = dict(LONE_SIGNAL_MIN)
-    sm = mmc.get("signalMinutes")
-    if isinstance(sm, dict):
-        for k, v in sm.items():
-            x = _num(v, None, None, None, "", None)
-            if x is None:
-                warns.append(f"mm.signalMinutes[{k}]={v!r} 는 숫자가 아님 — 무시")
-            else:
-                mins[str(k)] = x
-    elif sm is not None:
-        warns.append(f"mm.signalMinutes 는 객체({{\"파일\":60,…}})여야 함({type(sm).__name__}) — 무시")
-    n["signalMinutes"] = mins
-    weights = {}
+    cal = cfg.get("calendar") if isinstance(cfg.get("calendar"), dict) else {}
+    col = cfg.get("collect") if isinstance(cfg.get("collect"), dict) else {}
+    n = {"tentativeMeetings": _choice(cal.get("tentativeMeetings"), "count", TENTATIVE_CHOICES,
+                                      "calendar.tentativeMeetings", warns),
+         "mailTimeOffsetH": _num(col.get("mailTimeOffsetH"), 0.0, -24, 24, "collect.mailTimeOffsetH", warns)}
+    weights = dict(DEFAULT_WEIGHTS)
     sw = cfg.get("signalWeights")
     if isinstance(sw, dict):
         for k, v in sw.items():
-            x = _num(v, None, 0, None, "", None)
+            k = str(k)
+            if k.startswith("_"):
+                continue                               # '_설명' 류
+            if k not in SIGNAL_WEIGHT_KEYS:
+                warns.append(f"signalWeights[{k}] 는 쓰지 않는 가중치라 무시합니다(메일·메일발신·메일CC·회의만)")
+                continue
+            x = _num(v, None, 0, None)
             if x is None:
-                warns.append(f"signalWeights[{k}]={v!r} 는 0 이상의 숫자가 아님 — 기본 가중치 유지")
+                warns.append(f"signalWeights[{k}]={v!r} 는 0 이상의 숫자가 아님 — 기본 가중치 {DEFAULT_WEIGHTS[k]:g}")
             else:
-                weights[str(k)] = x
+                weights[k] = x
     elif sw is not None:
         warns.append(f"signalWeights 는 객체({{…}})여야 함({type(sw).__name__}) — 기본 가중치")
     n["signalWeights"] = weights
-    bad = [x for x in cfg_list(cfg, "holidays", warns) if not _dt(str(x))]
-    if bad:
-        warns.append(f"holidays 의 {bad!r} 는 날짜(YYYY-MM-DD)가 아님 — 무시")
-    for k in ("nonWorkKeywords", "noticeSenders", "excludePathKeywords", "projects"):
+    for k in ("nonWorkKeywords", "noticeSenders", "projects"):
         cfg_list(cfg, k, warns)
     return n, warns
 
 
-EXTRA_PC_DIR = "추가PC"      # data\추가PC\<PC이름>\ — 다른 PC 에서 수집해 온 데이터
-
-
+# ── CSV 읽기 ──────────────────────────────────────────────────────────────────────────────
 def _data_roots(data_dir):
-    """본 수집 폴더 + 추가 PC 보관 폴더들. 여러 PC 를 쓰는 사람의 흔적을 한 번에 합친다."""
-    roots = [data_dir]
-    base = os.path.join(data_dir, EXTRA_PC_DIR)
-    if os.path.isdir(base):
-        roots += sorted(p for p in glob.glob(os.path.join(base, "*")) if os.path.isdir(p))
-    return roots
+    r"""읽을 수집 폴더 — 늘 [data_dir] 하나(다른 PC 의 자료를 합치지 않는다)."""
+    return [data_dir]
 
 
 def _read_multi(data_dir, *rel):
-    """모든 루트에서 같은 상대경로의 CSV 를 읽어 이어붙인다."""
+    """_data_roots 의 같은 상대경로 CSV 를 읽는다."""
     rows = []
     for root in _data_roots(data_dir):
         rows += _read(os.path.join(root, *rel))
     return rows
 
 
-def _glob_multi(data_dir, *rel_pattern):
-    """모든 루트에 패턴을 적용한 파일 목록."""
-    outs = []
-    for root in _data_roots(data_dir):
-        outs += glob.glob(os.path.join(root, *rel_pattern))
-    return sorted(outs)
-
-
 READ_DROPPED = {}          # {경로: 버린 행 수} — 화면이 "읽지 못한 행 N개" 를 말할 수 있게
 
 
 def _read(path):
+    """CSV → [dict]. 없거나 못 읽으면 []. 열이 남는 행은 버리고(READ_DROPPED 에 센다), 열이 모자란 행은 빈칸으로 채운다."""
     if not os.path.exists(path):
         return []
     try:
@@ -528,21 +331,14 @@ def _read(path):
     except OSError:
         return []
     except csv.Error:
-        # 잘린 파일의 깨진 따옴표가 13만 자 초과 필드를 만들면 csv.Error — 예전엔 이게 pc_daily 밖으로
-        # 새어 화면이 예외 폴백(행-max)으로 떨어지며 그 달이 하루치(~8h)로 붕괴했다(제보 ①). 파일만 버린다.
         READ_DROPPED[path] = READ_DROPPED.get(path, 0) + 1
         return []
     out, dropped = [], 0
     for r in rows:
         if None in r:
-            # 열 수가 **남는** 행(None 키에 잔여 값) — 버린다. 6열 머리말 파일에 7열 행이 섞이면
-            # time_precision 이 조용히 사라져 '날짜만' 메일이 정오 발신으로 승격됐다(감사 실측).
             dropped += 1
             continue
         if None in r.values():
-            # 열 수가 **부족**한 행(수집기 강제 종료로 잘린 꼬리) — 예전에는 버렸다. 그런데 한 줄 때문에
-            # 그 파일의 기록이 통째로 빠지는 일이 있어(제보: PC 집계가 낮다), 빈칸으로 채워 살린다.
-            # 읽는 쪽은 모두 빈 값 가드가 있다(float(x or 0) · _hhmm → None).
             r = {k: ("" if v is None else v) for k, v in r.items()}
         out.append(r)
     if dropped:
@@ -551,9 +347,7 @@ def _read(path):
 
 
 def _dt(s, fmts=("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d")):
-    """시각 문자열 → datetime. 시간부가 있는데 앞 형식이 모두 실패하면('2026-07-28 26:00:00')
-    None — 예전의 날짜 폴백(s[:10])은 그 행을 '그날 00:00 신호'로 만들어 야간 0.5h·야근일 +1 을
-    조용히 보탰다(실측). 호출측은 None 을 '시각 형식 오류'로 집계한다."""
+    """시각 글자 → datetime. 시각부가 있는데 앞 형식이 모두 실패하면 None(날짜만으로 살리지 않는다)."""
     s = (s or "").strip()
     for f in fmts:
         if f == "%Y-%m-%d" and len(s) > 10:
@@ -565,1080 +359,250 @@ def _dt(s, fmts=("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d")):
     return None
 
 
-# 폴더 근거 — 프로젝트가 아니라 그 안의 구획인 폴더명은 건너뛰고 위로 올라간다
-GENERIC_DIR = {"documents", "문서", "desktop", "바탕 화면", "바탕화면", "downloads",
-               "다운로드", "onedrive", "work", "작업", "업무", "temp", "임시", "new folder",
-               "새 폴더", "자료", "data", "docs", "doc", "share", "공유", "backup", "백업",
-               "users", "user", "내 pc", "pc", "폴더", "project", "projects", "프로젝트",
-               "src", "source", "소스", "bin", "lib", "libs", "include", "inc", "obj",
-               "build", "builds", "out", "output", "dist", "release", "debug", "target",
-               "test", "tests", "테스트", "script", "scripts", "tool", "tools", "util",
-               "utils", "config", "설정", "log", "logs", "로그", "result", "results",
-               "결과", "report", "reports", "리포트", "보고", "img", "image", "images",
-               "그림", "asset", "assets", "정리", "old", "archive", "보관", "이전",
-               "final", "최종", "draft", "초안", "v1", "v2", "v3"}
+def _as_day(v):
+    if isinstance(v, datetime):
+        return v.date()
+    if isinstance(v, date):
+        return v
+    return date.fromisoformat(str(v)[:10])
 
 
-def folder_label(folder):
-    """파일이 속한 '프로젝트 폴더' 이름. 일반·구획 폴더면 한 단계 위로.
-    사람이 프로젝트를 폴더로 나눠 쓰기 때문에 파일명 조각보다 훨씬 안정적인 근거다."""
-    parts = [x for x in re.split(r"[\\/]+", str(folder or "")) if x.strip()]
-    for x in reversed(parts):
-        c = re.sub(r"\s+", " ", x).strip(" -_·|[](){}")[:40]
-        if not c or c.lower() in GENERIC_DIR or re.fullmatch(r"[a-zA-Z]:", c):
-            continue
-        if re.fullmatch(r"\d{4}([-_.]?\d{2})*", c):      # 날짜 폴더
-            continue
-        return c
-    return ""
-
-
-def _is_ide(proc, title):
-    t = f"{proc} {title}".lower()
-    return any(h in t for h in IDE_HINTS) or any(e + " " in t or t.endswith(e) for e in CODE_EXTS)
-
-
-_HINT_CACHE = None
-_HINT_DIRTY = 0
-_HINT_FLUSH_EVERY = 200     # 새 항목 N건마다 + 종료 때 저장 — 항목마다 전체 JSON 을 다시 쓰면 결과 폴더 5,000건에 O(n²) I/O
-# 첫 줄 단서를 읽을 텍스트 확장자(S3-P3) — Abaqus *Heading·CODE V 렌즈 제목·Zemax 매크로 주석·MATLAB % 주석
-HINT_TEXT_EXTS = {".txt", ".md", ".csv", ".tsv", ".py", ".m", ".c", ".cpp", ".cc", ".h", ".hpp", ".cs", ".js", ".ts", ".jl",
-                  ".r", ".sh", ".bat", ".ps1", ".sql", ".tcl", ".lis", ".len", ".seq", ".inp", ".zpl", ".lsf", ".asc", ".lvm",
-                  ".ioc", ".yaml", ".yml", ".toml", ".v", ".sv", ".vhd", ".vhdl", ".xdc", ".s2p"}
-HINT_OOXML = (".docx", ".pptx", ".xlsx")
-HINT_MAX_KB = 50_000        # 이보다 큰 파일은 열지 않는다 — 공유 폴더의 AV 온액세스 스캔·수 GB 측정 파일(줄바꿈 없는 .txt/.csv)
-_PLACEHOLDER = 0x400000 | 0x40000 | 0x1000   # OneDrive 자리표시자(RECALL_ON_DATA_ACCESS·RECALL_ON_OPEN)·오프라인 — 열면 내려받기 시작
-# 이진 해석 결과(.cas .rst .h5 .mat .odb .mph .db .dat …)는 위 두 목록에 없으므로 stat 도 open 도 하지 않는다
-
-
-def _hint_cache_path():
-    return os.path.join(ROOT, "data", "files", "file_hints.json")
-
-
-def _hint_cache_flush():
-    global _HINT_DIRTY
-    if not _HINT_DIRTY or _HINT_CACHE is None:
-        return
-    cache_p = _hint_cache_path()
+def _self_pseudonyms(data_dir, cfg):
+    r"""내 주소·이름의 가명 집합 — 내가 나에게 보낸 메일(받은편지함의 사본)을 받은 메일로 두 번 세지 않게.
+    소금은 <data_dir>\install.json 이 이미 있을 때만 읽는다(여기서 만들거나 고치지 않는다). 없거나 깨졌으면 빈 집합."""
     try:
-        os.makedirs(os.path.dirname(cache_p), exist_ok=True)
-        with open(cache_p, "w", encoding="utf-8") as f:
-            json.dump(_HINT_CACHE, f, ensure_ascii=False)
-        _HINT_DIRTY = 0
-    except OSError:
-        pass
+        with open(os.path.join(data_dir, "install.json"), encoding="utf-8-sig") as f:
+            salt = str((json.load(f) or {}).get("salt") or "")
+    except (OSError, ValueError, AttributeError):
+        return set()
+    if not re.fullmatch(r"[0-9a-f]{64}", salt):
+        return set()
+    vals = list(privacy.me_list(data_dir)) + [str((cfg or {}).get("owner") or "")]
+    return {p for p in (privacy.pseudonym(v, salt) for v in vals if str(v or "").strip()) if p}
 
 
-def _cache_put(key, hint):
-    """빈 힌트도 캐시한다 — 큰 파일·자리표시자를 매번 stat/open 하지 않게. 저장은 N건마다·종료 때(atexit)."""
-    global _HINT_DIRTY
-    if _HINT_CACHE is not None:
-        _HINT_CACHE[key] = hint
-        _HINT_DIRTY += 1
-        if _HINT_DIRTY >= _HINT_FLUSH_EVERY:
-            _hint_cache_flush()
-    return hint
-
-
-def file_hint(path, size_kb=None):
-    """파일 내용의 가벼운 단서 — 텍스트 파일 첫 의미 줄(4KB 안에서), office 문서는 내장 제목/첫 슬라이드 제목.
-    무거운 요약 대신 '무슨 자료인지' 알 수 있는 최소 단서만. 결과는 캐시.
-    열지 않는 것(S3-P3): 단서를 낼 수 없는 확장자(이진 해석 결과 등 — stat 도 하지 않는다) · HINT_MAX_KB 보다 큰 파일
-    (수집기의 size_kb 또는 st_size) · OneDrive 자리표시자(st_file_attributes). 텍스트는 4KB 만 읽는다 —
-    줄바꿈 없는 2GB 측정 .txt 를 `for ln in f` 로 읽으면 한 줄이 통째로 메모리에 올라왔다."""
-    global _HINT_CACHE
-    ext = _ext_of_signal_text(os.path.basename(str(path or "")))   # .cas.gz 는 여기서 걸러진다
-    if ext not in HINT_TEXT_EXTS and ext not in HINT_OOXML:
-        return ""
-    if _HINT_CACHE is None:
-        try:
-            with open(_hint_cache_path(), encoding="utf-8") as f:
-                _HINT_CACHE = json.load(f)
-            if not isinstance(_HINT_CACHE, dict):
-                _HINT_CACHE = {}
-        except Exception:
-            _HINT_CACHE = {}
-        import atexit
-        atexit.register(_hint_cache_flush)
-    try:
-        skb = float(size_kb) if size_kb not in (None, "") else None
-    except (TypeError, ValueError):
-        skb = None
-    try:
-        st = os.stat(path)
-        key = f"{path}|{st.st_mtime:.0f}"
-    except OSError:
-        return ""
-    if key in _HINT_CACHE:
-        return _HINT_CACHE[key]
-    if ((skb is not None and skb > HINT_MAX_KB) or st.st_size > HINT_MAX_KB * 1024
-            or (getattr(st, "st_file_attributes", 0) & _PLACEHOLDER)):
-        return _cache_put(key, "")
-    hint = ""
-    try:
-        if ext in HINT_TEXT_EXTS:
-            with open(path, encoding="utf-8", errors="replace") as f:
-                head = f.read(4096)                              # 한 줄이 2GB 여도 4KB 만
-            for ln in head.splitlines():
-                ln = ln.strip()
-                if re.match(r"\*[A-Za-z]", ln):                  # Abaqus 키워드 줄(*Heading·*Node …) — 제목은 그 다음 줄
-                    continue
-                ln = ln.lstrip("#/*-%!; ")                       # MATLAB %·Zemax !·Abaqus ** 주석 접두
-                if len(ln) >= 6:
-                    hint = ln[:70]
-                    break
-        elif ext in HINT_OOXML:
-            import re as _re
-            import zipfile
-            with zipfile.ZipFile(path) as z:
-                try:
-                    core = z.read("docProps/core.xml").decode("utf-8", "replace")
-                    m = _re.search(r"<dc:title>([^<]{3,80})</dc:title>", core)
-                    if m:
-                        hint = m.group(1)
-                except KeyError:
-                    pass
-                if not hint and ext == ".pptx":
-                    try:
-                        s1 = z.read("ppt/slides/slide1.xml").decode("utf-8", "replace")
-                        texts = _re.findall(r"<a:t>([^<]+)</a:t>", s1)
-                        hint = " ".join(texts)[:70]
-                    except KeyError:
-                        pass
-                if not hint and ext == ".docx":
-                    try:
-                        d1 = z.read("word/document.xml").decode("utf-8", "replace")
-                        texts = _re.findall(r"<w:t[^>]*>([^<]+)</w:t>", d1)
-                        hint = " ".join(texts)[:70]
-                    except KeyError:
-                        pass
-    except Exception:
-        hint = ""
-    return _cache_put(key, hint)
-
-
-def _text_filter(exclude):
-    """개인정보 제외어 판정기 — text.lower() → 걸린 키워드 또는 None.
-    load_signals(신호) 와 _file_times(시간 근거) 가 같은 규칙을 공유한다.
-     · 경로 전용 토큰은 제외한다 — 경로는 수집기가 이미 거른다.
-     · ASCII 는 단어 경계를 요구한다('temp'⊄'template'). 한글은 부분일치 유지
-       ('개인'⊂'개인자료' 를 잡아야 하는 마지막 방어선)."""
-    ex_all = [str(e).lower() for e in exclude if e]
-    ex_kr = [e for e in ex_all if not e.isascii() and e not in PATH_ONLY_KW]
-    ex_ascii = [e for e in ex_all if e.isascii() and e not in PATH_ONLY_KW]
-    ex_pat = (re.compile("|".join(f"(?<![a-z0-9]){re.escape(e)}(?![a-z0-9])"
-                                  for e in ex_ascii)) if ex_ascii else None)
-
-    def hit(low):
-        h = next((e for e in ex_kr if e in low), None)
-        if not h and ex_pat:
-            m = ex_pat.search(low)
-            h = m.group(0) if m else None
-        return h
-    return hit
-
-
-def _norm_person(s):
-    """사람 표기 정규화 — 'CORP\\cs.kim'·'cs.kim@corp.com'·'Kim Chulsoo'·'김철수 (개발팀)' 을 비교 가능한 조각으로.
-    도메인 접두·메일 도메인·괄호 뒤·공백·점·하이픈을 걷어낸 소문자."""
-    s = str(s or "").strip().lower()
-    s = s.split("\\")[-1].split("@")[0]
-    s = re.sub(r"[\(\[/|].*$", "", s)              # '김철수 (개발팀)'·'홍길동/책임/…' → 이름만
-    return re.sub(r"[\s._\-]+", "", s)
-
-
-_LOGON_DISP = []                     # 로그온 표시명 캐시(한 프로세스에 한 번 — 레지스트리 읽기)
-
-
-def _logon_display_name():
-    r"""로그온 화면 표시명(HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\LogonUI 의 LastLoggedOnDisplayName) —
-    마지막 로그온 계정(LastLoggedOnSAMUser, 없으면 LastLoggedOnUser)의 끝 조각이 지금 USERNAME 일 때만(Get-TeamsWindow.ps1 과
-    같은 규칙 — 다른 사람이 마지막으로 로그온한 PC 에서 그 사람을 '나' 로 보지 않게). 못 읽으면 ''. 프로세스를 띄우지 않는다."""
-    if _LOGON_DISP:
-        return _LOGON_DISP[0]
-    disp = ""
-    try:
-        import winreg
-        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
-                            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\LogonUI") as k:
-            def _v(name):
-                try:
-                    return str(winreg.QueryValueEx(k, name)[0] or "").strip()
-                except OSError:
-                    return ""
-            name, user = _v("LastLoggedOnDisplayName"), _v("LastLoggedOnSAMUser") or _v("LastLoggedOnUser")
-        me = str(os.environ.get("USERNAME") or "").strip().lower()
-        if name and user and me and user.split("\\")[-1].strip().lower() == me:
-            disp = name
-    except (ImportError, OSError):
-        disp = ""
-    _LOGON_DISP.append(disp)
-    return disp
-
-
-def _self_names(data_dir, cfg=None, file_rows=None, warns=None):
-    """'나' 로 볼 이름 집합(정규화) — config.owner · Windows 계정 · 로그온 표시명(LM28) · teamsSelfNames · mail_source.json 의 me[].
-    owner·teamsSelfNames·me 가 **전부 비어** '나' 후보가 Windows 계정뿐일 때만 파일 author 의 최빈값을 보탠다(owner
-    미설정 PC 에서 내 문서 전부가 '타인' 으로 빠지는 것 방지). 세는 단위는 행이 아니라 (폴더, 날) 그룹 — 공유 결과 폴더에
-    동료가 쓴 해석 뭉치 5,000행이 표를 지배해 동료가 '나' 가 되던 것 차단(VF-H2). 그룹 ≥3 이고 절반 이상일 때 적용하고,
-    warns(list) 를 주면 한 줄 남긴다(이름은 가려서 — mm_meta 는 팀 서버로 올라간다).
-    이름은 밖으로 나가지 않는다(Copilot 프롬프트·팀 묶음에 싣지 않음)."""
-    cfg = cfg if isinstance(cfg, dict) else {}
-    configured = {cfg.get("owner")}
-    configured.update(cfg_list(cfg, "teamsSelfNames"))
-    for root in _data_roots(data_dir):
-        try:
-            with open(os.path.join(root, "outlook", "mail_source.json"), encoding="utf-8-sig") as f:
-                me = (json.load(f) or {}).get("me") or []
-            configured.update(x for x in me if isinstance(x, str))
-        except (OSError, ValueError, AttributeError):
-            pass
-    configured = {_norm_person(n) for n in configured if n}
-    configured = {n for n in configured if len(n) >= 2}
-    out = set(configured)
-    acct = _norm_person(os.environ.get("USERNAME", ""))
-    if len(acct) >= 2:
-        out.add(acct)
-    # LM28(E): 로그온 화면 표시명(회사 AD 표시명 = 팀즈 표시명이 대부분 — Get-TeamsWindow.ps1·Get-TeamsWeb 과 같은 규칙). 이미 모은
-    # 팀즈 행 중 보낸이가 내 표시명인 글을 '팀즈(발신)' 으로 바로잡는다. configured 에는 넣지 않는다 — 표시명 표기가 Office 작성자
-    # 표기와 다르면(영문·한글) author 다수결이 여전히 필요하다.
-    disp = _norm_person(_logon_display_name())
-    if len(disp) >= 2:
-        out.add(disp)
-    if configured:
-        return out                     # 사용자가 '나' 를 알려줬다 — 파일 author 다수결은 쓰지 않는다
-    if file_rows is None:
-        file_rows = [r for p in FILE_SOURCES for r in _read_multi(data_dir, "files", p)]
-    groups = set()
-    for r in file_rows:
-        a = _norm_person(r.get("author"))
-        if not a:
-            continue
-        t = _dt(r.get("mtime"))
-        groups.add((a, _burst_folder(r.get("folder")), t.date() if t else None))
-    cnt = Counter(a for a, _f, _d in groups)
-    if cnt:
-        top, n = cnt.most_common(1)[0]
-        tot = sum(cnt.values())
-        if n >= 3 and n * 2 >= tot and len(top) >= 2 and top not in out:
-            out.add(top)
-            if warns is not None:
-                warns.append(f"config.owner·teamsSelfNames 미설정 — 파일 author 최빈값 '{top[0]}{'*' * (len(top) - 1)}'"
-                             f"((폴더,날) 그룹 {n}/{tot})을 나로 간주합니다. 다른 사람이면 config.owner 를 설정하세요")
-    return out
-
-
-def _is_me(author, self_names):
-    """author 가 '나' 인가 — 비어 있으면 나(검사 불가). 정규화 후 완전 일치 또는 author 가 내 이름을 포함."""
-    a = _norm_person(author)
-    if not a:
-        return True
-    return a in self_names or any(len(s) >= 3 and s in a for s in self_names)
-
-
-def _view_only(r, view_active=False):
-    """recent.csv 행이 '열람만' 인가(D2b) — Outlook 첨부·임시 경로는 언제나 열람. 그 밖에는 target_mtime(원본의
-    수정 시각)이 열람 시각(mtime)보다 2분 넘게 오래됐을 때(열어서 편집하지 않았다). 열이 없는 옛 recent.csv 는
-    열람으로 보지 않는다. viewCountsAsActive=true 면 첨부 경로만 열람."""
-    fol = (r.get("folder") or "").lower().replace("/", "\\")
-    if any(k.replace("/", "\\") in fol for k in VIEW_PATH_KW):
-        return True
-    if view_active:
-        return False
-    tm, t = _dt(r.get("target_mtime")), _dt(r.get("mtime"))
-    return bool(tm and t and tm < t - _td(minutes=2))
-
-
-def _file_rows(data_dir):
-    """모든 루트의 FILE_SOURCES 행 — 행마다 _root(루트 경로)·_recent(Recent 계열)·_hist(이력 파일) 표식을 남긴다."""
-    out = []
-    for rt in _data_roots(data_dir):
-        for p in FILE_SOURCES:
-            for r in _read(os.path.join(rt, "files", p)):
-                r["_root"] = rt
-                r["_recent"] = p.startswith("recent")
-                r["_hist"] = p.endswith("_history.csv")
-                out.append(r)
-    return out
-
-
-# 해석·시뮬레이션·기록 장비의 출력 확장자(S3-P4). 같은 폴더의 연속 분에 이런 파일이 수천 건 몰린 뭉치는 기계가 썼지만
-# '내 일'(해석을 돌린 날)이다 — 뭉치가 이 집합으로 90% 이상이면 해석 출력형(_is_sim_output).
-# ※ watchExtensions 와 한 세트다 — 여기에만 넣고 수집 목록에 없으면 죽은 항목이고(수집이 안 되니 축약할 것도 없다),
-#   수집 목록에만 넣고 여기 없으면 밤샘 해석이 허구의 새벽 근무로 계상되거나 흔적 0 으로 사라진다(감사 확정).
-SIM_OUT_EXTS = {".dat", ".csv", ".tsv", ".txt", ".lis", ".out", ".h5", ".hdf5", ".npy", ".npz", ".mat", ".parquet", ".pkl",
-                ".pcd", ".las", ".laz", ".ply", ".bag", ".mcap", ".db3", ".pcap", ".pcapng", ".tdms", ".lvm", ".rst", ".odb",
-                ".cas", ".cas.gz", ".dat.gz", ".cas.h5", ".dat.h5", ".msh", ".msh.h5", ".msh.gz", ".bin",
-                # 솔버 결과·실행 로그(2차 보강) — Nastran·FLOEFD·Creo Simulate·ANSYS·Marc·오픈소스
-                ".op2", ".f06", ".f04", ".xdb", ".pch", ".plt", ".rth", ".rmg", ".cdb", ".trn",
-                ".fld", ".cfld", ".cpt", ".fbd", ".stt", ".rpt", ".t16", ".sts", ".sta",
-                ".cvg", ".vtu", ".vtk", ".h3d", ".zrd", ".zbf"}
-
-
-_VER_TAIL_RE = re.compile(r"\.\d{1,4}$")            # Creo 판번호 꼬리 bracket.prt.3
-
-
-def _base_name(name, ext):
-    """확장자·Creo 판번호를 뗀 파일 이름(소문자) — 솔버가 한 번에 내놓는 세트(job.f06/job.op2)를 묶는 열쇠."""
-    n = (name or "").strip().lower()
-    n = _VER_TAIL_RE.sub("", n)                     # bracket.prt.3 → bracket.prt
-    e = (ext or "").lower()
-    if e and n.endswith(e):
-        n = n[:-len(e)]
-    else:
-        n = os.path.splitext(n)[0]
-    return n.strip() or (name or "").strip().lower()
-
-
-def _burst_folder(folder):
-    """버스트 키의 폴더 조각 — 원 경로 소문자. folder_label 이 아니다: 라벨은 'results' 같은 일반명을 위 폴더로 올려
-    서로 다른 결과 폴더를 합쳐 버린다."""
-    return str(folder or "").lower().replace("/", "\\").rstrip("\\")
-
-
-def _clusters(minutes, gap=2):
-    """분 목록 → 연속(간격 ≤gap) 뭉치 [[m…], …] (정렬)"""
-    out, cur = [], []
-    for m in sorted(minutes):
-        if cur and m - cur[-1] > gap:
-            out.append(cur)
-            cur = []
-        cur.append(m)
-    if cur:
-        out.append(cur)
-    return out
-
-
-def _is_sim_output(exts, bases=None):
-    """뭉치가 해석 출력형인가 — 90% 이상이 SIM_OUT_EXTS 이고, 그 위에 둘 중 하나:
-      ① 확장자 종류 ≤2 (기록 장비처럼 한 종류를 쏟아내는 뭉치)
-      ② 같은 base 이름을 여러 확장자가 공유하는 뭉치가 절반 이상 (job.f06/job.f04/job.op2 처럼 솔버가 한 번에 내놓는 세트)
-    ②가 없으면 Nastran·FLOEFD·Creo Simulate·LS-DYNA 처럼 '한 번 솔브 = 여러 종류' 인 솔버는 확장자를 아무리 늘려도
-    축약이 걸리지 않아 밤샘 해석이 허구의 새벽 근무가 되거나 흔적 0 으로 사라진다(감사 확정).
-    bases: Counter{base 이름: 그 base 로 나온 파일 수} — 주지 않으면 ①만 본다."""
-    tot = sum(exts.values())
-    if not (tot and sum(n for e, n in exts.items() if e in SIM_OUT_EXTS) >= 0.9 * tot):
-        return False
-    if len(exts) <= 2:
-        return True
-    if bases:
-        shared = sum(n for _b, n in bases.items() if n >= 2)
-        return shared >= 0.5 * sum(bases.values())
-    return False
-
-
-def _sim_end(code):
-    """file_times 의 code 가 해석 출력 뭉치 anchor 면 그 뭉치의 끝 분, 아니면 None.
-    code 는 False(일반 파일) · True(코드 파일) · ("sim", 끝 분). 옛 판이 남긴 문자열 "sim" 은 −1(끝 모름)로 —
-    호출측이 max(시작, 끝) 으로 쓰면 폭 0 이 되어 야간 해석 인정이 조용히 늘지 않는다."""
-    if isinstance(code, tuple) and code and code[0] == "sim":
-        return float(code[1])
-    return -1.0 if code == "sim" else None
-
-
-def _file_times(data_dir, d0, d1, exclude=(), cfg=None, burst_n=None, self_names=None, sim_drop=None):
-    """파일 흔적(FILE_SOURCES: 스냅샷 + 이력)의 **표본화 전 전체** 시각
-    → ({date: [(분, code)]}, burst, n_burst, sim_bulk)   burst·sim_bulk 의 키는 (date, 분, 폴더 소문자)
-      code 는 False(일반) · True(코드 파일) · ("sim", 끝 분)(해석 출력 뭉치의 시작 분 anchor — 기계가 쓴 시각, VF-H1.
-      뭉치의 **시작·끝 분을 함께** 돌려준다: 야간 해석 인정(S4-N1, mm.simNight)이 실행 구간의 끝을 알아야 한다)
-    · 시간 근거 전용이다 — 판정용 신호는 load_signals 의 표본(폴더·일 8건)을 그대로 쓴다.
-      표본화가 긴 하루의 세션을 조각내 야간분을 잃던 과소(실측 07-08: 20.75h→16.5h)를 막는다.
-    · 버스트 키는 (date, 분, 폴더) (S3-P4) — 폴더가 다르면 서로 버스트를 만들지 않는다. 해석이 두 시간 동안 결과 폴더에
-      1초당 1파일을 쓰는 사이 다른 폴더에 손으로 저장한 pptx 가 '같은 분' 이라는 이유로 일괄로 접히지 않게.
-    · 해석 출력 뭉치 = 같은 (date, 폴더)의 연속 버스트 분 합계 ≥ burst_n×5 이고 확장자가 해석 출력형(SIM_OUT_EXTS,
-      종류 ≤2·90%) — 0 이 아니라 **뭉치 시작 분 anchor 1건**(해석만 돌린 날도 능동 흔적이 남아 하한이 열린다).
-      load_signals 는 그 뭉치의 대표 1건을 '파일(해석출력)' 으로 남긴다(sim_bulk). anchor 는 code "sim" 으로 표시해
-      day_work_hours·_signal_spans 가 하한 게이트에만 쓰고 야간 세션·저녁/새벽 크레딧 재료로는 쓰지 않는다(밤새 돌린
-      솔버의 03:00 출력 3,000건이 새벽 크레딧 4.5h 가 되던 과대, VF-H1).
-    · sim_drop = [(date, 폴더 라벨(소문자), 분, exact)] — 판정에서 대표를 버린 해석 뭉치(rehours_after_judge, VF-H3). 그 (날, 폴더)
-      의 뭉치는 anchor 를 남기지 않는다. 라벨은 exact 면 완전 일치, 아니면 접두 일치(signals CSV 의 100자 절단으로 잘린 라벨),
-      라벨이 없으면 대표 시각(분)으로 찾는다.
-    · 그 밖의 파일은 예전 규칙 그대로(A7): 해석 뭉치를 뺀 **폴더 무관** (date, 분) 합계로 burst_n 건 이상이면 버스트 →
-      분당 anchor 1건, 연속 뭉치 합계 ≥ burst_n×5 면 기계 생성(재동기화·복사·체크아웃)으로 0건. 재동기화가 여러 하위 폴더에
-      흩어져 폴더마다 문턱 아래로 떨어지는 것을 폴더별 키만으로는 막지 못한다(F11: 5폴더×20건). 추가PC 루트별로 따로 세어
-      max 를 쓴다 — 같은 동기화 폴더가 두 PC 에서 들어와 문턱이 절반이 되지 않게(A29).
-    · 중복 키는 (분, 이름, 확장자, 프로젝트 폴더명) — 원경로·힌트와 무관(A29·A15).
-    · 타인 저장 파일(author ≠ 나, A14)·열람만 한 Recent(D2b)·개인정보 제외어는 시간 근거가 아니다.
-      비업무 키워드는 파일명에 적용하지 않는다(A36)."""
-    cfg = cfg if isinstance(cfg, dict) else {}
-    mc = norm_cfg(cfg)[0]
-    burst_n = int(burst_n) if burst_n else mc["fileBurstN"]
-    mmc = cfg.get("mm") if isinstance(cfg.get("mm"), dict) else {}
-    view_active = _bool(mmc.get("viewCountsAsActive"), False)
-    hit = _text_filter(exclude)
-    all_rows = _file_rows(data_dir)
-    if self_names is None:
-        self_names = _self_names(data_dir, cfg, all_rows)
-    rows, seen = [], set()
-    pm_by_root = defaultdict(Counter)
-    ext_by_key = defaultdict(Counter)           # (date, 분, 폴더) → 확장자 분포(해석 출력형 판정)
-    base_by_key = defaultdict(Counter)           # (date, 분, 폴더) → base 이름 분포 — 솔버가 한 번에 내놓는 세트 판정
-    for r in all_rows:
-        t = _dt(r.get("mtime"))
-        if not t or not (d0 <= t.date() <= d1):
-            continue
-        name = r.get("name") or ""
-        ext = (r.get("ext") or "").lower()
-        fol = folder_label(r.get("folder"))
-        dk = (t.replace(second=0, microsecond=0), name.lower(), ext, fol.lower())
-        if dk in seen:                          # 스냅샷·이력·추가PC 에 같은 파일이 겹친다
-            continue
-        seen.add(dk)
-        key = (t.date(), t.hour * 60 + t.minute, _burst_folder(r.get("folder")))
-        pm_by_root[r.get("_root")][key] += 1    # 버스트 판정은 필터 전 전체 건수로(루트별)
-        ext_by_key[key][ext] += 1
-        base_by_key[key][_base_name(name, ext)] += 1
-        if not _is_me(r.get("author"), self_names):
-            continue                            # 동료가 저장한 파일 — 내 시간 근거가 아니다
-        if r.get("_recent") and _view_only(r, view_active):
-            continue                            # 열람만 — 수동 흔적(D2b)
-        low = (name + (" | 폴더:" + fol if fol else "")).lower()
-        if hit(low):
-            continue
-        rows.append((key, ext in CODE_EXTS))
-    per_min = Counter()
-    for pm in pm_by_root.values():
-        for k, n in pm.items():
-            per_min[k] = max(per_min[k], n)
-    big = burst_n * 5
-    # ① 폴더별 버스트 → 연속 뭉치 ≥ big 이고 해석 출력형이면 해석 출력 뭉치(키 → 뭉치 id = (date, 시작 분, 폴더))
-    burst_f = {k for k, n in per_min.items()
-               if n + per_min.get((k[0], k[1] - 1, k[2]), 0) + per_min.get((k[0], k[1] + 1, k[2]), 0) >= burst_n}
-    by_df = defaultdict(list)
-    for k in burst_f:
-        by_df[(k[0], k[2])].append(k[1])
-    sim_cluster = {}
-    for (day, folk), mins in by_df.items():
-        for cl in _clusters(mins):
-            span = [(day, x, folk) for x in range(cl[0], cl[-1] + 1)]
-            if sum(per_min.get(k, 0) for k in span) < big:
-                continue
-            exts, bases = Counter(), Counter()
-            for k in span:
-                exts.update(ext_by_key.get(k, {}))
-                bases.update(base_by_key.get(k, {}))
-            if _is_sim_output(exts, bases):
-                for x in cl:
-                    sim_cluster[(day, x, folk)] = (day, cl[0], folk)
-    # ② 해석 뭉치를 뺀 나머지는 폴더 무관 (date, 분) 으로 예전 규칙(A7) — 분당 anchor 1건, 뭉치 ≥ big 은 0건
-    glob = Counter()
-    for k, n in per_min.items():
-        if k not in sim_cluster:
-            glob[(k[0], k[1])] += n
-    burst_g = {g for g, n in glob.items()
-               if n + glob.get((g[0], g[1] - 1), 0) + glob.get((g[0], g[1] + 1), 0) >= burst_n}
-    by_day = defaultdict(list)
-    for g in burst_g:
-        by_day[g[0]].append(g[1])
-    huge_g = set()
-    for day, mins in by_day.items():
-        for cl in _clusters(mins):
-            if sum(glob.get((day, x), 0) for x in range(cl[0], cl[-1] + 1)) >= big:
-                huge_g.update((day, x) for x in cl)
-    burst = set(sim_cluster) | {k for k in per_min if k not in sim_cluster and (k[0], k[1]) in burst_g}
-    out, nb, anchored, sim_first = {}, 0, set(), {}
-    for key, code in rows:
-        cid = sim_cluster.get(key)
-        if cid is not None:                      # 해석 출력 뭉치 — 시작·끝 분(rows 는 시간순이 아니다)
-            nb += 1
-            m0, m1 = sim_first.get(cid, (key[1], key[1]))
-            sim_first[cid] = (min(m0, key[1]), max(m1, key[1]))
-            continue
-        g = (key[0], key[1])
-        if g in burst_g:
-            nb += 1
-            if g in huge_g or g in anchored:
-                continue
-            anchored.add(g)                      # 분당 anchor 1건 — ±half 만 남고 prod 게이트 재료는 유지
-        out.setdefault(key[0], []).append((key[1], code))
-    # 해석 출력 뭉치의 시작 분 anchor — 판정에서 대표를 버린 (날, 폴더) 는 남기지 않는다(VF-H3). 대표는 (폴더 라벨, 날)당 1건이라
-    # 라벨이 온전하면(exact) 그 라벨의 폴더(하위 폴더 여럿이 한 라벨로 접힌 경우 전부)·그날 다른 뭉치도 함께 뺀다. 잘린 라벨(접두)·
-    # 라벨 없음은 후보가 여럿이면 대표 시각(분)이 anchor 와 맞는 폴더로 좁힌다.
-    by_folk = {}
-    for (day, _m0, folk), (m, _mend) in sim_first.items():
-        by_folk.setdefault((day, folk), set()).add(m)
-    drop_folk = set()
-    for dd, pre, mm, exact in (sim_drop or ()):
-        if not pre and mm is None:
-            continue
-        cands = [k for k in by_folk if k[0] == dd
-                 and (not pre or (folder_label(k[1]).lower() == pre if exact else folder_label(k[1]).lower().startswith(pre)))]
-        if not exact and len(cands) > 1 and mm is not None:
-            cands = [k for k in cands if int(mm) in by_folk[k]] or cands
-        drop_folk.update(cands)
-    for (day, _m0, folk), (m, mend) in sim_first.items():
-        if (day, folk) not in drop_folk:
-            out.setdefault(day, []).append((m, ("sim", mend)))
-    return out, burst, nb, set(sim_cluster)
-
-
-_CONV_SALT = [None]          # 대화 키 소금 — 프로세스마다 새로(os.urandom). 시험은 바꿔 끼울 수 있다
-
-
-def conv_key(chat):
-    """팀즈 대화방 이름 → 이 PC 안에서만 쓰는 대화 키 'c' + sha1(소금 + 정규화한 방 이름) 앞 12자 · 빈 이름은 ""(대화를 모름).
-    소금이 프로세스마다 새로라 키는 한 번의 분석(mine → signals) 안에서만 같고, 키로 방 이름을 되짚을 수 없다.
-    키는 judge 의 같은 내용 묶음·주변 채우기에만 쓴다 — Copilot 프롬프트·팀 반출·내보내기에는 싣지 않는다(privacy.TEAM_DROP_COLS)."""
-    s = " ".join(str(chat or "").split()).lower()
-    if not s:
-        return ""
-    if _CONV_SALT[0] is None:
-        _CONV_SALT[0] = os.urandom(16)
-    return "c" + hashlib.sha1(_CONV_SALT[0] + s.encode("utf-8")).hexdigest()[:12]
-
-
-def conv_of(meta, t, src, text, who=""):
-    """load_signals 의 meta["conv"] 에서 신호 하나(시각·라벨·정제문·보낸이 20자)의 대화 키 → 키 또는 ""(팀즈가 아니거나 방을 모름)."""
-    cv = (meta or {}).get("conv") or {}
-    return cv.get((t, src, text, str(who or "")[:20]), "") if cv else ""
-
-
-def load_signals(data_dir, d0, d1, exclude=(), cfg=None):
-    """수집 폴더 → (signals, meta)
-    signals: [(dt, source_label, text, weight)] — weight는 시간이 아니라 '관여 강도'
-    meta: {"counted": {출처: 건수}, "excluded": {사유: 건수}, "weights": {...},
-           "file_times": {date: [(분, code)]} — 표본화 전 전체 파일 시각(시간 근거용, JSON 아님)}"""
+def load_signals(data_dir, d0, d1, exclude=(), cfg=None, *, restricted=None):
+    r"""수집 폴더(data\) → (signals, meta).
+    signals: [(datetime 그날 00:00, 출처 라벨, 정제한 글, 가중치, who)] — 날짜순.
+    meta: {"counted": {mail_in, mail_out, meetings}, "excluded": {EXCLUDED_KEYS: 건수}, "weights": {메일·메일발신·메일CC·회의},
+           "config_warnings": [...], "unreadable": 시각을 읽지 못한 행 수}
+    exclude = 개인 주제어(없으면 privacy.excluded_keywords(cfg)). restricted = privacy.Restricted(없으면 설정의 목록을 읽는다 —
+    목록이 없거나 깨졌으면 privacy.RestrictedListError, 분석하지 않는다). 기간 [d0, d1] 밖의 행은 세지도 않는다.
+    이름: 신호 글의 '이름 + 호칭'(sanitize)과 이름 해시(남은 모든 분석의 것 — privacy.name_gate)에 든 이름은 [사람] 이다(D8 · G2).
+    이 분석(tag = d0~d1)의 이름 해시를 report\name_hashes_<tag>.json 에 남긴다(privacy.snapshot_name_hashes — 결과와 함께 산다)."""
     cfg = cfg if (isinstance(cfg, dict) and cfg) else load_cfg()
-    mc, cfg_warns = norm_cfg(cfg)          # mm·signalWeights 가 객체가 아니어도 죽지 않는다(기본값 + 경고)
+    d0, d1 = _as_day(d0), _as_day(d1)
+    mc, cfg_warns = norm_cfg(cfg)
     tentative = mc["tentativeMeetings"]
-    mail_off = mc["mailTimeOffsetH"]       # 웹·Copilot 경로의 UTC 기록 보정
-    W = {"파일": 3.0, "커밋": 4.0, "회의": 2.0, "메일": 1.0, "메일발신": 1.5, "메일CC": 0.25,
-         "팀즈오더": 1.2, "팀즈": 0.4, "작업창_분당": 1 / 20, "IDE_분당": 1 / 12,
-         "코드파일배수": 2.0,
-         # LM22 2차: 열람만 한 Recent(D2b) · 동료 저장 파일(A14, 과제 맥락용) · 수동 기록(A13, 시간당)
-         "파일열람": 1.0, "파일타인": 0.3, "수동기록_시간당": 2.0,
-         # S3-P4: 해석 출력 뭉치(같은 폴더·연속 분에 데이터 파일 수천 건) 의 대표 1건 — 해석을 돌린 날의 산출
-         "파일해석출력": 1.5}
-    W.update(mc["signalWeights"])
-    # 비업무 키워드는 대소문자 무시로 비교한다 — "Canceled:"(영문 Outlook)·"Cancelled:"(영국식)이
-    # 소문자 'canceled' 목록을 통과해 취소 회의가 회의 가중치로 계상되던 결함이 실측됐다.
+    mail_off = mc["mailTimeOffsetH"]
+    W = dict(mc["signalWeights"])
     nonwork = _nonwork_list(cfg)
-    # 개인정보 필터를 '제목'에 걸 때의 오탐 방지:
-    #  · 경로 전용 토큰은 제외한다 — 경로는 수집기가 이미 거른다.
-    #  · ASCII 는 단어 경계를 요구한다('temp'⊄'template'). 한글은 부분일치 유지
-    #    ('개인'⊂'개인자료' 를 잡아야 하는 마지막 방어선).
-    _hit = _text_filter(exclude)
-    mmc = cfg.get("mm") if isinstance(cfg.get("mm"), dict) else {}
-    view_active = _bool(mmc.get("viewCountsAsActive"), False)
-    all_frows = _file_rows(data_dir)
-    # '나' 의 이름 집합(owner·계정·teamsSelfNames·mail_source me — 전부 비면 author 최빈값, VF-H2) — 파일 author(A14)·
-    # 내가 보낸 메일의 수신 사본(A29) 판정에 쓴다. 이름은 meta 에도 싣지 않는다(다수결 적용은 config_warnings 한 줄, 이름 가림).
-    self_names = _self_names(data_dir, cfg, all_frows, warns=cfg_warns)
+    words = [str(x) for x in (exclude or privacy.excluded_keywords(cfg)) if str(x).strip()]
+    if restricted is None:
+        restricted = privacy.load_restricted(cfg, ROOT)
+    allow = afcfg.get(cfg, "privacy.allowPatterns") or []
+    pctx = privacy.make_ctx(cfg, data_dir)
+    root_dir = os.path.dirname(os.path.abspath(data_dir))
+    try:
+        import period
+        privacy.snapshot_name_hashes(root_dir, period.tag_of(d0, d1), cfg=cfg)
+    except OSError:
+        pass                                # 남기지 못해도 분석은 한다(공유 가림은 data\cache 의 해시로)
+    hashes, salt = privacy.name_gate(root_dir, cfg=cfg)
     sig = []
-    meta = {"counted": Counter(), "excluded": Counter(), "weights": {}, "config_warnings": cfg_warns,
-            "view_only": 0, "author_excluded": 0}
-    _dedup = {}                            # 중복 키 → sig 색인(None = 걸러진 신호)
+    counted = Counter()
+    excl = Counter()
+    unreadable = [0]
+    dedup = {}                              # 중복 키 → sig 색인(None = 걸러진 항목)
+    verdicts = {}                           # 글 → (정제문, 자격증명인가, 뺄 칸|None) — 같은 제목이 수백 번 온다
 
-    def _pt(s):
-        """시각 파싱 + 형식 오류 집계 — 값이 있는데 못 읽으면 그 행은 조용히 사라지지 않고 센다"""
+    def verdict(text):
+        """G2 — 원문으로 제한 고객 → 개인 주제어 → 근태·행방 → 비업무 → 민감 주제를 보고, 정제(sanitize) 뒤 자격증명 →
+        남은 식별번호 → 사적 대화를 본다. 처음 걸린 칸 하나만 센다(수집 때 G1 의 순서와 같은 앞부분)."""
+        v = verdicts.get(text)
+        if v is None:
+            c, _hits, drop = privacy.sanitize(text, "signal", pctx)
+            # D10 — 제목의 시각은 [시각] · R5 — 메일 주소 토큰에 바깥 도메인을 남기지 않는다([이메일]) · D8 — 이름 해시에 든 이름은 [사람]
+            clean = privacy.mask_known_names(privacy.minimize_text(_one_line(c, None)), hashes, salt)
+            cred = bool(drop)
+            if restricted.hit(text):
+                why = "restricted"
+            elif privacy.keyword_hit(text, words=words):
+                why = "private"
+            elif privacy.admin_hit(text):
+                why = "admin"
+            elif _nonwork_hit(text.lower(), nonwork):
+                why = "nonwork"
+            elif privacy.sensitive_hit(text, cfg):
+                why = "sensitive"
+            elif cred:
+                why = "credential"
+            elif privacy.has_identifier(clean, allow_patterns=allow):
+                why = "identifier"
+            elif privacy.private_score(clean) != "work":
+                why = "private_text"
+            else:
+                why = None
+            v = verdicts[text] = (clean, cred, why)
+        return v
+
+    def in_period(t):
+        return t is not None and d0 <= t.date() <= d1
+
+    def skip(key, t):
+        if in_period(t):
+            excl[key] += 1
+
+    def pt(s):
         t = _dt(s)
         if t is None and str(s or "").strip():
-            meta["excluded"]["시각 형식 오류"] += 1
+            unreadable[0] += 1
         return t
 
-    # ── G2 개인정보 정제(core\privacy — WP7) ──────────────────────────────────────────────
-    # 제외어(_hit)·비업무는 **원문**으로 먼저 판정하고(가리기 전 — 제외어로 지정한 고객사명이 [고객사] 로 바뀌어
-    # 필터를 빠져나가지 않게), 통과한 신호만 정제한 텍스트로 남긴다. 중복 키도 정제된 텍스트로 만든다 — 추가PC 의
-    # 원문 행과 G1 이 가린 행(같은 메일·메시지)이 섞여도 한 번만 센다. 자격증명이 든 행은 건수만.
-    # 메일 광고: drop 은 '광고필터' 건수만, suspect 는 meta["flags"][(시각, 라벨, 정제문)] = 'ad'(signals CSV 끝 flag 열 —
-    # Copilot 관문이 뺀다). 메일·팀즈의 사적·친목은 신호에서 빼고 meta["private_days"] 에 날짜별 건수만 남긴다.
-    _pvs = {"cache": {}}
-    _privacy = _pv()
-
-    def _pctx():
-        if "ctx" not in _pvs:
-            _pvs["ctx"] = _privacy.make_ctx(cfg, data_dir)
-        return _pvs["ctx"]
-
-    def _clean(s):
-        """sanitize 결과 캐시 — 같은 제목·발신자가 수백 번 온다."""
-        r = _pvs["cache"].get(s)
-        if r is None:
-            r = _pvs["cache"][s] = _privacy.sanitize(s, "signal", _pctx())
-        return r
-
-    def _conv_norm(conv, subj):
-        """메일 대화 키 — 정제된 대화(없으면 제목)에서 RE:/FW: 를 떼고 소문자 앞 40자."""
-        return _RE_PREFIX.sub("", _clean((conv or subj or "").strip())[0].lower())[:40]
-
-    def _mail_rel():
-        """(왕래 도메인, 내가 보낸 대화 키) — 왕래 = 보낸 메일의 수신 도메인(열이 있을 때) ∪ 회신 이력이 있는 발신자의
-        도메인, 사내 제외. mail_rows·replied 는 메일 단계에서 정해진다(그 전에 부르면 빈 값)."""
-        if "rel" not in _pvs:
-            try:
-                rows_, rep_ = mail_rows, replied
-            except NameError:
-                rows_, rep_ = [], set()
-            doms, sent_c = set(), set()
-            for r in rows_:
-                if r.get("box") == "sent":
-                    sent_c.add(_conv_norm(r.get("conversation"), r.get("subject")))
-                    for col in ("to", "cc", "recipients"):
-                        doms |= _privacy.domains_in(r.get(col))
-            for s in rep_:
-                doms |= _privacy.domains_in(s)
-            _pvs["rel"] = ({d for d in doms if not _pctx().is_internal(d)}, sent_c - {""})
-        return _pvs["rel"]
-
-    def add(t, src, text, w, label=None, who="", dkey=None, conv=""):
-        if not (t and text):
+    def add(t, lbl, text, w, who="", dkey=None):
+        if not in_period(t):
             return
-        text = _one_line(text, None)       # 개행·탭·연속 공백 → 한 칸(S2) — 프롬프트 한 줄·CSV 셀이 갈라지지 않게
+        text = _one_line(text, None)
         if not text:
             return
-        lbl = label or src
-        clean, _cats, drop = _clean(text)
-        who_s = (who or "").strip()
-        # 추가 PC 취합·파일 이력에서 같은 신호가 두 번 온다. 호출측이 준 키(파일: 분·이름·확장자·폴더명 —
-        # 힌트·원경로와 무관, 메일: 분·편지함·정제된 대화 — 라벨·발신자 표기와 무관) 또는 (시각, 출처, 정제문, 발신자)가
-        # 같으면 한 번만 계상하고, 나중 것의 가중치가 높으면 그쪽(라벨 포함)을 남긴다(A29).
-        key = dkey or (t, lbl, (text if drop else clean)[:120], _clean(who_s)[0] if who_s else "")
-        if key in _dedup:
-            meta["excluded"]["중복(추가 PC 취합·이력)"] += 1
-            i = _dedup[key]
-            if i is not None and w > sig[i][3]:
-                meta["counted"][sig[i][1]] -= 1
-                old = (sig[i][0], sig[i][1], sig[i][2])
+        clean, cred, why = verdict(text)
+        key = dkey or (t, lbl, (text if cred else clean)[:120], who)
+        if key in dedup:
+            excl["duplicate"] += 1
+            i = dedup[key]
+            if i is not None and w > sig[i][3]:          # 같은 항목이면 더 센 쪽(라벨 포함)을 남긴다
                 sig[i] = (sig[i][0], lbl, sig[i][2], w, sig[i][4])
-                fl = meta.get("flags")
-                if fl and old in fl:
-                    fl[(sig[i][0], lbl, sig[i][2])] = fl.pop(old)
-                cv = meta.get("conv")           # 대화 키도 새 라벨로 옮긴다(LM30 2026-10-27)
-                if cv and old + (sig[i][4],) in cv:
-                    cv[(sig[i][0], lbl, sig[i][2], sig[i][4])] = cv.pop(old + (sig[i][4],))
-                meta["counted"][lbl] += 1
             return
-        _dedup[key] = None
-        if not (d0 <= t.date() <= d1):
-            return
-        low = text.lower()                 # 제외어·비업무는 원문으로 판정(정제 전)
-        hit = _hit(low)
-        if hit:
-            # 어떤 키워드가 무엇을 지웠는지 남긴다 — 조용한 삭제는 추적이 불가능하다
-            meta["excluded"]["개인정보필터"] += 1
-            meta["excluded"][f"개인정보필터({hit})"] += 1
-            return
-        if src != "파일":                    # 파일명에는 비업무 목록을 적용하지 않는다(A36) — 산출물이지 근태가 아니다
-            nw = _nonwork_hit(low, nonwork)
-            if nw:
-                meta["excluded"]["비업무(연차·취소 등)"] += 1
-                meta["excluded"][f"비업무({nw})"] += 1
-                return
-        if drop:
-            meta["excluded"]["개인정보(자격증명)"] += 1
-            return
-        flag = ""
-        if src == "메일":
-            exch, sent_c = _mail_rel()
-            sent = lbl.startswith("메일(발신")
-            mine_conv = bool(dkey) and len(dkey) == 4 and dkey[3] in sent_c
-            _sc, band = _privacy.ad_score(text, who_s, "sent" if sent else "inbox", "", exch,
-                                          internal_domains=_pctx().internal_domains, i_sent_in_conv=mine_conv)
-            if band == "drop":
-                meta["excluded"]["광고필터"] += 1
-                return
-            if band == "suspect":
-                flag = "ad"
-        if src in ("메일", "팀즈"):
-            # 퇴근 후·주말 +1점은 받은 글에만(LM28 E) — 내가 보낸 저녁 짧은 답('네 ㅎㅎ')이 약한 사적어 하나로 통째로 빠져 야근 시각
-            # 근거가 사라졌다. 강한 사적어·친목어는 보낸 글도 지금처럼 뺀다.
-            offh = (t.weekday() >= 5 or t.hour >= 19 or t.hour < 7) and lbl not in OWN_SEND_SRC
-            cls = _privacy.private_score(clean, False if lbl == "팀즈(단체)" else None, offh,
-                                         _privacy.is_personal_addr(who_s, _pctx()))
-            if cls != "work":
-                meta["excluded"]["사적 대화(제외)" if cls == "private" else "친목(제외)"] += 1
-                pdays = meta.setdefault("private_days", {})
-                dk = t.date().isoformat()
-                pdays[dk] = pdays.get(dk, 0) + 1
-                return
-        _dedup[key] = len(sig)
-        sig.append((t, lbl, clean, w, who_s[:20]))
-        if flag:
-            meta.setdefault("flags", {})[(t, lbl, clean)] = flag
-        if conv:                               # 팀즈 대화 키(이 PC 안에서만) — mine 이 signals 의 conv 열로 쓴다
-            meta.setdefault("conv", {})[(t, lbl, clean, who_s[:20])] = conv
-        meta["counted"][lbl] += 1
+        dedup[key] = None
+        if why:
+            excl[why] += 1
+        else:
+            dedup[key] = len(sig)
+            sig.append((datetime(t.year, t.month, t.day), lbl, clean, w, who))
+            counted[signal_class(lbl)] += 1
 
-    # ── 메일: 발신 > 직접수신 > CC. 단체발송·공지·수신전용 발신자는 업무 증거로 쓰지 않는다 ──
-    notice = [str(x).strip().lower() for x in (cfg_list(cfg, "noticeSenders") or NOTICE_DEFAULT)
-              if str(x).strip()]
+    # ── 메일: 발신 > 직접 수신 > 참조. 공지·광고·단체발송은 업무 근거가 아니다 ───────────────────────────
+    def conv_norm(conv, subj=""):
+        return _RE_PREFIX.sub("", " ".join(str(conv or subj or "").split()).lower())[:40]
+
+    def sender_of(r):
+        s = str(r.get("sender") or "").strip().lower()
+        return s if privacy.PSEUDO_RX.fullmatch(s) else ""
+
     mail_rows = _read_multi(data_dir, "outlook", "mail.csv")
-    # 행동 기반 판별의 재료: 내가 발신한 대화(conversation) 집합 + 발신자별 수신 횟수.
-    # 대화 키는 정제된 대화(_conv_norm — RE:/FW: 제거·소문자·40자)로 본다(LM28 WP8 — G1 이 가린 본 PC 행과 추가PC 원문 행이
-    # 섞여도 회신 이력이 어긋나지 않게). 대화 열이 빈 행은 예전처럼 대화 키가 없다(제목으로 대신하지 않는다).
-    sent_conv = {_conv_norm(r.get("conversation"), "")
-                 for r in mail_rows if r.get("box") == "sent"} - {""}
-    recv_cnt = Counter()
-    replied = set()
+    my_ids = _self_pseudonyms(data_dir, cfg)
+    sent_conv = {conv_norm(r.get("conversation")) for r in mail_rows
+                 if str(r.get("box") or "").strip().lower() == "sent"} - {""}
+    recv_cnt, replied = Counter(), set()
     for r in mail_rows:
-        if r.get("box") != "sent":
-            snd = (r.get("sender") or "").strip().lower()
+        if str(r.get("box") or "").strip().lower() != "sent":
+            snd = sender_of(r)
             recv_cnt[snd] += 1
-            if _conv_norm(r.get("conversation"), "") in sent_conv:
-                replied.add(snd)      # 이 발신자와는 실제로 주고받은 이력이 있다
-
-    def is_notice(snd, exempt=True):
-        """공지·시스템 발신자 판정(A23) — 표시 이름을 조각(이름/직급/부서 구분자)으로 나눠 본다.
-        일반 명사(시스템·공지·알림·viva…)는 조각 **전체 일치**만('개발시스템팀'·'공지영'·'Vivaldi' 는 아님),
-        구분자가 든 키워드('no-reply'·'인사팀 공지')는 부분 문자열, 나머지는 조각 시작 일치.
-        회신 이력이 있는 발신자(replied)는 무조건 공지가 아니다."""
-        s = (snd or "").strip().lower()
-        if not s:
-            return False
-        if exempt and s in replied:
-            return False
-        segs = [x for x in _NOTICE_SEG.split(s) if x]
-        for k in notice:
-            kk = k.strip("()[] ")
-            if not kk:
-                continue
-            if _NOTICE_SEG.search(kk):
-                if kk in s:
-                    return True
-            elif kk in NOTICE_GENERIC:
-                if kk in segs:
-                    return True
-            elif any(seg == kk or seg.startswith(kk) for seg in segs):
-                return True
-        return False
-
-    def _mail_key(t, box, conv, subj, snd):
-        """추가PC 취합용 중복 키(A29) — (분, 편지함, 대화 정규화 또는 제목 앞 40자). 둘 다 비면 발신자로 구분.
-        대화·제목은 **정제된 텍스트**로 본다(WP7) — 추가PC 의 원문 행과 G1 이 가린 행이 같은 키가 되게."""
-        c = _conv_norm(conv, subj)
-        return (t.replace(second=0, microsecond=0), "메일", "sent" if box == "sent" else "inbox",
-                c or ("@" + _norm_person(snd)))
-
-    _mail_rows = mail_rows
-    # ★ 같은 메일이 두 뿌리(본 PC·추가PC)에 있고 한쪽은 정확한 시각, 한쪽은 '날짜만' 이면 분 단위 중복 키가 서로 달라
-    #   두 번 세어졌다(감사 실측: 같은 200통이 신호 400·가중치 410). 정확한 시각 사본이 있는 (날짜·편지함·대화/제목)
-    #   묶음의 '날짜만' 행은 버린다. 분 단위 키는 그대로 둔다 — 날짜 단위로 낮추면 같은 스레드 하루 5통이 1통이 된다.
-    _exact = set()
-    for r in _mail_rows:
-        if (r.get("time_precision") or "").strip().lower() != "date":
-            _t0 = _pt(r.get("time"))
-            if _t0:
-                _exact.add((_t0.date(), (r.get("box") or "").strip(),
-                            _conv_norm(r.get("conversation"), r.get("subject"))))
-    for r in _mail_rows:
-        t = _pt(r.get("time"))
-        if not t:
+            if snd and conv_norm(r.get("conversation")) in sent_conv:
+                replied.add(snd)                       # 이 보낸이와는 주고받은 적이 있다
+    # 같은 메일을 정확한 시각과 '날짜만'(웹 경로)으로 두 번 받았으면 날짜만 행은 사본이다
+    exact = set()
+    for r in mail_rows:
+        if str(r.get("time_precision") or "").strip().lower() != "date":
+            t0 = _dt(r.get("time"))
+            if t0:
+                exact.add((t0.date(), str(r.get("box") or "").strip().lower(),
+                           conv_norm(r.get("conversation"), r.get("subject"))))
+    for r in mail_rows:
+        t = pt(r.get("time"))
+        if t is None:
             continue
-        if d0 <= t.date() <= d1:
-            meta["mail_rows_total"] = meta.get("mail_rows_total", 0) + 1
-        if (r.get("time_precision") or "").strip().lower() == "date":
-            if d0 <= t.date() <= d1:
-                meta["mail_date_only"] = meta.get("mail_date_only", 0) + 1
-            _k0 = (t.date(), (r.get("box") or "").strip(), _conv_norm(r.get("conversation"), r.get("subject")))
-            if _k0 in _exact:
-                if d0 <= t.date() <= d1:
-                    meta["excluded"]["중복(같은 메일의 정확한 시각 사본 있음)"] += 1
-                continue
+        box = str(r.get("box") or "").strip().lower()
+        sent = box == "sent"
+        date_only = str(r.get("time_precision") or "").strip().lower() == "date"
+        conv = conv_norm(r.get("conversation"), r.get("subject"))
+        if date_only and (t.date(), box, conv) in exact:
+            skip("duplicate", t)
+            continue
         if mail_off:
-            t = t + _td(hours=mail_off)
-        # 웹·Copilot 경로가 날짜만 알아낸 행(time_precision=date) — 시각은 정오로 두고 시간 근거에서 뺀다(A38):
-        # 발신은 전용 라벨(세션 없음·능동 흔적 유지), 수신은 수동 신호라 정오 5분이 상한 안에서 묻힌다
-        date_only = (r.get("time_precision") or "").strip().lower() == "date"
+            t = t + timedelta(hours=mail_off)
         if date_only:
             t = t.replace(hour=12, minute=0, second=0, microsecond=0)
         subj = r.get("subject")
-        snd = (r.get("sender") or "").strip()
-        key = _mail_key(t, r.get("box"), r.get("conversation"), subj, snd)
-        if r.get("box") == "sent":
-            add(t, "메일", subj, W["메일발신"], "메일(발신·일자)" if date_only else "메일(발신)", "나", dkey=key)
+        snd = sender_of(r)
+        key = (t.replace(second=0, microsecond=0), "메일", "sent" if sent else "inbox", conv or ("@" + snd))
+        if sent:
+            add(t, MAIL_SENT, subj, W["메일발신"], "나", dkey=key)
             continue
-        sl = snd.lower()
-        if _norm_person(sl) in self_names:        # 나에게 보낸 메모·다른 경로의 발신 사본 — 수신이 아니다(A29)
-            if d0 <= t.date() <= d1:
-                meta["excluded"]["내가 보낸 메일의 수신 사본"] += 1
+        if snd and snd in my_ids:                     # 내가 나에게 보낸 메일 — 보낸 메일로 이미 셌다
+            skip("duplicate", t)
             continue
-        if is_notice(sl):             # ① 공지·시스템 발신자 — 업무 아님, 연결성에도 미포함
-            if d0 <= t.date() <= d1:
-                meta["excluded"]["공지·시스템 발신(정부24·HR 등)"] += 1
+        if str(r.get("notice") or "").strip() == "1":   # 공지·시스템·광고 발신(G1 이 정함)
+            skip("bulk", t)
             continue
-        # ①-b 단체발송 대신 제목(LM28 진단 B): 웹 경로(OWA·Copilot·가져오기 — src 가 com·index 가 아님)와 받는 사람을 못 읽은
-        #     행(rcv=unknown)은 내가 To/CC 에 있는지 모른다 — 늘 직접 수신으로 와서, LM24(COM)가 단체발송(bulk)으로 버리던
-        #     전사 공지(근태·인사발령·부고·뉴스레터 …)가 업무 신호가 되고 과제 칸까지 올라왔다(제보). 강한 행정 공지 제목만
-        #     거른다. 내가 회신한 대화는 남긴다(내가 처리한 행정).
-        if (((r.get("src") or "").strip().lower() not in ("com", "index")
-             or (r.get("rcv") or "").strip().lower() == "unknown")
-                and _is_notice_subject(subj) and _conv_norm(r.get("conversation"), "") not in sent_conv):
-            if d0 <= t.date() <= d1:
-                meta["excluded"]["공지·근태 메일(제목 — 웹 경로는 단체발송 구분 불가)"] += 1
+        rcv = str(r.get("rcv") or "to").strip().lower()
+        # 웹 경로·받는 사람을 못 읽은 행은 내가 받는 사람·참조에 있었는지 모른다 — 강한 행정 공지 제목은 단체발송으로 본다
+        # (내가 회신한 대화는 남긴다)
+        if ((str(r.get("src") or "").strip().lower() != "com" or rcv == "unknown")
+                and _is_notice_subject(subj) and conv_norm(r.get("conversation")) not in sent_conv):
+            skip("bulk", t)
             continue
-        rcv = (r.get("rcv") or "to").lower()     # 구버전 데이터(rcv 없음)는 직접 수신 취급
         if rcv == "bulk":
-            if d0 <= t.date() <= d1:
-                meta["excluded"]["메일 단체발송(To/CC 아님)"] += 1
+            skip("bulk", t)
             continue
-        # ② 행동 기반: 5통 이상 받았는데 회신 대화가 한 번도 없는 발신자 = 알림성 → 강한 감쇠
-        oneway = recv_cnt[sl] >= 5 and sl not in replied
+        oneway = bool(snd) and recv_cnt[snd] >= ONEWAY_MIN and snd not in replied
         if rcv == "cc":
-            add(t, "메일", subj, W["메일CC"] * (0.4 if oneway else 1.0),
-                "메일(수신전용)" if oneway else "메일(CC)", snd, dkey=key)
+            add(t, MAIL_ONEWAY if oneway else MAIL_CC, subj, W["메일CC"] * (ONEWAY_CC if oneway else 1.0), snd, dkey=key)
         else:
-            add(t, "메일", subj, (W["메일"] * 0.2) if oneway else W["메일"],
-                "메일(수신전용)" if oneway else "메일(수신)", snd, dkey=key)
+            add(t, MAIL_ONEWAY if oneway else MAIL_IN, subj, W["메일"] * (ONEWAY_IN if oneway else 1.0), snd, dkey=key)
 
-    off_kws = _offsite_kws(cfg)
+    # ── 회의: 참석한 회의만, 가중치는 회의 상수(길이를 쓰지 않는다) ───────────────────────────────────
     for r in _read_multi(data_dir, "outlook", "calendar.csv"):
-        t, en = _pt(r.get("start")), _dt(r.get("end"))
-        h = max(0.5, min(5.0, (en - t).total_seconds() / 3600)) if (t and en and en > t) else 1.0
-        subj = r.get("subject") or ""
-        busy = str(r.get("busy_status") or "2")
-        # 종일 일정은 회의가 아니다 — 근태·행사·기간 블록이 5시간짜리 회의로 계상되던 것을 차단.
-        # 단 종일 '회사 밖 근무'(출장·현장·교육 — offsite_days 와 같은 판정, A6)는 표준일 8h 만큼의 회의 가중치로
-        # 날마다 남겨 과제 배분 근거가 되게 한다(시간은 day_work_hours 가 offsite_days 로 인정).
-        if _truthy(r.get("all_day")):
-            if t and _offsite_row(r, off_kws, nonwork, tentative, _hit):
-                for dd in _allday_dates(t, en):
-                    if d0 <= dd <= d1:
-                        add(datetime(dd.year, dd.month, dd.day, 9, 0), "회의", subj, STD_DAY_H * W["회의"])
-                continue
-            if t and d0 <= t.date() <= d1:
-                meta["excluded"]["종일 일정(회의 아님)"] += 1
+        t = pt(r.get("start"))
+        if t is None:
             continue
-        # 한가함(Free)·거절·미응답·취소·(설정 시)미정 = 참석 근거 없음 — 시간 계상(_meeting_spans)과 같은 판정
-        skip = _meeting_skip(r, tentative)
-        if skip:
-            if t and d0 <= t.date() <= d1:
-                meta["excluded"][skip] += 1
+        busy = str(r.get("busy_status") or "").strip()
+        if _truthy(r.get("all_day")) or busy in ("3", "4"):
+            skip("admin", t)                           # 종일·부재중·다른 곳에서 작업 — 행방이지 회의가 아니다
             continue
-        if _edu_unaccepted(r, subj, busy):
-            if t and d0 <= t.date() <= d1:      # 수락(busy/OOF·응답 1/3) 아닌 교육 = 미참여 추정
-                meta["excluded"]["교육(미참여 추정 — 일정 미수락)"] += 1
+        why = _meeting_skip(r, tentative)
+        if why:
+            skip("nonwork" if "tentativeMeetings" in why else "admin", t)
             continue
-        add(t, "회의", subj, h * W["회의"])
-
-    # ── 파일: 산출물 = 최강 신호. 코드 파일은 추가 배수 (SW 개발 과소계상 보정) ──
-    # 파일 신호는 먼저 모아서 축약한다. 시뮬레이션 배치·압축 해제 같은 기계 생성
-    # 파일은 한 폴더·한 날에 수천 건이 몰리는데(실측: 한 주 3,058건), 그대로 신호가 되면
-    # ① AI 판정 왕복이 수십 배로 늘고 ② 과제가 파일명 토큰 수프로 흩어지고 ③ 투입 MM 이
-    # 실제 일한 양과 무관하게 부푼다. 사람 손이 만든 파일은 하루 한 폴더 8건을 넘기 어렵다.
-    # 표본화 전 전체 시각(시간 근거)과 일괄 버스트 분(分)을 먼저 뽑는다 — day_work_hours 가
-    # meta["file_times"] 를 세션 재료로 쓴다. 버스트(같은 분 ±1 에 N건)는 시간 근거에서 분당 anchor 1건만
-    # 남기고(A7), 판정 신호로는 (폴더,날)당 대표 1건 '파일(일괄)' 을 가중치 0 으로 둔다(AI 표식용 —
-    # 시간 0 인 일괄 파일이 월 MM 의 43% 를 가져가던 부작용 차단). 해석 출력 뭉치(S3-P4: 같은 폴더·연속 분에
-    # 데이터 파일 수천 건)는 시작 분 anchor 1건 + 대표 1건 '파일(해석출력)'(W["파일해석출력"], 30분 세션, 능동 흔적).
-    # 원천은 스냅샷 + 수집기가 누적한 이력(A15) — 같은 (분, 이름, 확장자, 폴더명)은 1건(A29).
-    # author 가 나와 다른 파일(공유·동기화 폴더의 동료 저장, A14)은 '파일(타인)' 로만, Recent 의 열람만 한 행
-    # (D2b: 첨부 임시 경로·열람 시각이 원본 수정보다 늦음)은 '파일(열람)' 로 남긴다 — 둘 다 시간 근거·능동 흔적이 아니다.
-    meta["file_times"], burst, _nb, sim_bulk = _file_times(data_dir, d0, d1, exclude, cfg, self_names=self_names)
-    file_groups = {}
-    seen_f = set()
-    for r in all_frows:
-        t = _pt(r.get("mtime"))
-        if not t:
-            continue
-        ext = (r.get("ext") or "").lower()
-        code = ext in CODE_EXTS
-        name = r.get("name") or ""
-        fol = folder_label(r.get("folder"))
-        dkey = (t.replace(second=0, microsecond=0), "파일", name.lower(), ext, fol.lower())
-        if dkey in seen_f:
-            if not r.get("_hist"):
-                meta["excluded"]["중복(추가 PC 취합·이력)"] += 1
-            continue
-        seen_f.add(dkey)
-        if not (d0 <= t.date() <= d1):
-            continue
-        other = not _is_me(r.get("author"), self_names)
-        view = (not other) and bool(r.get("_recent")) and _view_only(r, view_active)
-        if other:
-            meta["author_excluded"] += 1
-        if view:
-            meta["view_only"] += 1
-        # 잘린 행은 folder 가 None(restval)이다 — .get(k, "") 는 '키는 있고 값이 None'을
-        # 못 거른다. os.path.join(None,…) 으로 죽던 실측 재현 지점. 타인 파일은 내용 단서를 열지 않는다.
-        hint = "" if other else file_hint(os.path.join(r.get("folder") or "", name), r.get("size_kb"))
-        text = (name + (" § " + hint if hint else "") + (" | 폴더:" + fol if fol else ""))
-        bkey = (t.date(), t.hour * 60 + t.minute, _burst_folder(r.get("folder")))
-        bulk = (not other) and (not view) and bkey in burst
-        sim = bulk and bkey in sim_bulk
-        file_groups.setdefault((fol or (r.get("folder") or ""), t.date()), []).append(
-            (t, text, code, bulk, dkey, other, view, sim))
-
-    PER_GROUP, PER_DAY = 8, 40
-
-    def _spread(lst, n):
-        """시간순으로 고르게 n 건 표본 — 하루의 앞·중간·끝이 남아 세션 폭이 보존된다."""
-        lst = sorted(lst, key=lambda x: x[0])
-        if len(lst) <= n:
-            return lst
-        if n <= 1:                       # 예산이 1칸 남은 날 — (n-1) 나눗셈 즉사 방지(재현 확정)
-            return lst[:1]
-        step = (len(lst) - 1) / (n - 1)
-        return [lst[round(i * step)] for i in range(n)]
-
-    day_load = Counter()
-    dropped_files = n_bulk = n_sim = 0
-    # 작은 그룹부터 — 예산(PER_DAY)이 차도 사람 손 파일(소규모 폴더)이 통째로 밀리지 않게(A7).
-    for (_fol, day), grp in sorted(file_groups.items(), key=lambda kv: (kv[0][1], len(kv[1]))):
-        hand = [x for x in grp if not x[3]]
-        sim_grp = [x for x in grp if x[3] and x[7]]
-        bulk_grp = [x for x in grp if x[3] and not x[7]]
-        if sim_grp:                      # 해석 출력 뭉치(S3-P4) — 예산에 세지 않고 대표 1건, 가중치 W["파일해석출력"]
-            t, text, code, _b, dkey, _o, _v, _s = sorted(sim_grp, key=lambda x: x[0])[0]
-            add(t, "파일", text + f" (해석 출력 {len(sim_grp)}건)", W["파일해석출력"], "파일(해석출력)", dkey=dkey)
-            n_sim += len(sim_grp)
-            dropped_files += len(sim_grp) - 1
-        if bulk_grp:                     # 일괄(버스트) 파일 — 예산에 세지 않고 대표 1건만 w=0
-            t, text, code, _b, dkey, _o, _v, _s = sorted(bulk_grp, key=lambda x: x[0])[0]
-            add(t, "파일", text + f" (일괄 {len(bulk_grp)}건)", 0.0, "파일(일괄)", dkey=dkey)
-            n_bulk += len(bulk_grp)
-            dropped_files += len(bulk_grp) - 1
-        if not hand:
-            continue
-        keep = _spread(hand, PER_GROUP)
-        room = PER_DAY - day_load[day]
-        if room <= 0:
-            dropped_files += len(hand)
-            continue
-        if len(keep) > room:
-            keep = _spread(keep, room)
-        day_load[day] += len(keep)
-        dropped_files += len(hand) - len(keep)
-        # 한 (폴더,날)에 코드 파일이 CODE_GROUP_MAX 이상이면 pip/npm 설치·체크아웃 — 코드 ×2 를 주지 않는다(A16)
-        code_x2 = sum(1 for x in hand if x[2]) < CODE_GROUP_MAX
-        for i, (t, text, code, _b, dkey, other, view, _s) in enumerate(keep):
-            if len(hand) > len(keep) and i == len(keep) - 1:
-                text += f" 외 {len(hand) - len(keep)}건"     # AI 가 규모를 알게 한다
-            if other:
-                add(t, "파일", text, W["파일타인"], "파일(타인)", dkey=dkey)
-            elif view:
-                add(t, "파일", text, W["파일열람"], "파일(열람)", dkey=dkey)
-            else:
-                add(t, "파일", text,
-                    W["파일"] * (W["코드파일배수"] if (code and code_x2) else 1.0),
-                    "파일(코드)" if code else "파일", dkey=dkey)
-    if dropped_files:
-        meta["excluded"]["파일 축약(같은 폴더·같은 날 표본화)"] += dropped_files
-    if n_bulk:
-        meta["excluded"]["파일 일괄생성(시간 근거 anchor 1건·(폴더,날)당 대표 1건 w=0)"] += n_bulk
-    if n_sim:
-        meta["excluded"]["파일 해석출력 뭉치(시작 분 anchor 1건·(폴더,날)당 대표 1건)"] += n_sim
-    if meta["view_only"]:
-        meta["excluded"]["파일 열람만(수동 흔적 — 하한 미개방)"] += meta["view_only"]
-    if meta["author_excluded"]:
-        meta["excluded"]["타인 저장 파일(author ≠ 나 — 시간 근거 제외)"] += meta["author_excluded"]
-    for _lbl in ("파일(일괄)", "파일(해석출력)"):
-        if not meta["counted"][_lbl]:
-            del meta["counted"][_lbl]
-
-    # ── 수동 기록(A13): collect/Add-WorkLog.ps1 의 worklog.csv — PC 밖 업무(출장·조립·현장) ──
-    # 시간은 day_work_hours 가 manual_hours 로 하한 인정한다. 여기서는 과제 배분 근거(시간당 2.0)와
-    # 능동 흔적(NIGHT_PRODUCTIVE)만 — 세션은 만들지 않는다(signalMinutes 0).
-    for dd, (mh, texts) in sorted(manual_hours(data_dir, d0, d1).items()):
-        add(datetime(dd.year, dd.month, dd.day, 9, 0), "수동기록",
-            (" · ".join(texts) or "수동 기록")[:120], mh * W["수동기록_시간당"], "수동기록", "나")
-
-    for r in _read_multi(data_dir, "files", "git_commits.csv"):
-        try:
-            churn = float(r.get("insertions") or 0) + float(r.get("deletions") or 0)
-        except ValueError:               # Excel 재저장 등으로 오염된 수치 — 가중치만 포기
-            churn = 0.0
-        add(_pt(r.get("time")), "커밋",
-            f"{r.get('repo','')} {r.get('subject','')}", W["커밋"] + min(4.0, churn / 150))
-
-    # ── 팀즈: 오더(요청류) > 발신 > 단순 수신. 단체채팅 수신은 감쇠 (CC성 분리) ──
-    # mailTimeOffsetH 는 팀즈 행에도 적용한다(A27 — Graph 경로가 UTC 로 남긴 시각 보정, 창 읽기는 보통 0)
-    # LM28(E): 팀즈 웹이 날짜만 짚은 행(time_precision=date — 12:00 은 자리표)은 메일 '날짜만' 과 같이 다룬다. 내 글은
-    #   '팀즈(발신·일자)'(그날 일했다는 능동 흔적 — 시각 근거 아님), 남의 글은 '팀즈(수신·일자)'(세션 없음). 같은 글(날짜·보낸이·
-    #   정제 요지)의 분 단위 사본이 어느 팀즈 파일에든 있으면 날짜만 행은 버린다(두 경로·두 실행이 잡은 같은 글을 두 번 세지 않게).
-    t_rows = [r for p in _glob_multi(data_dir, "m365", "teams_*.csv") for r in _read(p)]
-
-    def _tkey(r, t):
-        return (t.date(), _norm_person(r.get("from")), _clean(_one_line(r.get("summary"), None))[0][:60].lower())
-
-    _texact = set()
-    for r in t_rows:
-        if (r.get("time_precision") or "").strip().lower() != "date":
-            _t0 = _dt(r.get("time"))
-            if _t0:
-                _texact.add(_tkey(r, _t0 + _td(hours=mail_off) if mail_off else _t0))
-    for r in t_rows:
-        t = _pt(r.get("time"))
-        t_date = (r.get("time_precision") or "").strip().lower() == "date"
-        if t and t_date:
-            if _tkey(r, t) in _texact:
-                if d0 <= t.date() <= d1:
-                    meta["excluded"]["중복(같은 팀즈 글의 정확한 시각 사본 있음)"] += 1
-                continue
-            t = t.replace(hour=12, minute=0, second=0, microsecond=0)    # 자리표 — 날짜는 화면 구분선(현지)이라 보정 없음
-        elif t and mail_off:
-            t = t + _td(hours=mail_off)
-        kind = (r.get("kind") or "").lower()
-        frm0 = (r.get("from") or "").strip()
-        # A8: 창 읽기 경로(구판 수집분)는 본인 메시지도 kind=msg 로 남겼다 — 발신자가 '나' 면 발신으로 본다
-        # (팀즈로 일한 날이 수동 흔적만 남아 PC 하한이 막히던 원인). self_names 는 owner·계정·로그온 표시명·teamsSelfNames.
-        if kind not in ("sent", "order") and frm0 and _norm_person(frm0) in self_names:
-            kind = "sent"
-        group = (r.get("chat") or "").count(",") >= 2   # 참여자 3명 이상 = 단체채팅
-        if kind == "order":
-            w, lbl = W["팀즈오더"], "팀즈(오더)"
-        elif kind == "sent":
-            w, lbl = W["메일발신"] * 0.6, ("팀즈(발신·일자)" if t_date else "팀즈(발신)")
-        else:
-            w, lbl = W["팀즈"], "팀즈(수신)"
-        if group and kind not in ("order", "sent"):   # 내가 보낸 단체방 메시지는 발신(능동)으로 남긴다
-            w *= 0.5
-            lbl = "팀즈(단체)"
-        if t_date and kind != "sent":
-            lbl = "팀즈(수신·일자)"                    # 날짜만 아는 남의 글(오더·단체 포함) — 시각 근거·세션 없음(가중치는 그대로)
-        frm = (r.get("from") or "").strip()
-        if is_notice(frm, exempt=False):
-            if t and d0 <= t.date() <= d1:
-                meta["excluded"]["공지·시스템 발신(정부24·HR 등)"] += 1
-            continue
-        # 대화 키(LM30 2026-10-27) — 같은 내용 묶음·주변 채우기를 같은 대화방 안에서만 하게. 방 이름은 키로만(되짚을 수 없다)
-        add(t, "팀즈", r.get("summary"), w, lbl, frm, conv=conv_key(r.get("chat")))
-
-    # ── 작업창: 순활동 '분' 단위 — 샘플 수가 아니라 실측 간격 × 샘플(A28). idle 임계는 시간 계산(_activity_spans)과
-    # 같은 mm.idleActiveSec 을 쓴다(예전 180 고정은 읽기 구간을 시간엔 넣고 가중치엔 빼는 불일치). IDE·코드 창은 촘촘히 ──
-    import statistics
-    idle_act = mc["idleActiveSec"]
-    day_len_min = float(mc["dayWindow"][1] - mc["dayWindow"][0])
-    for p in _glob_multi(data_dir, "activity", "activity_*.csv"):
-        rows = []
-        for r in _read(p):
-            t = _pt(r.get("time"))
-            try:
-                idle = float(r.get("idle_sec") or 0)
-            except ValueError:           # 샘플러 강제종료로 열이 밀린 행 — 폐기(하단 스팬 계산과 동일 패턴)
-                continue
-            if t and str(r.get("sess") or "").strip().lower() != "locked":   # 잠금 화면 틱은 활동이 아니다(LM28)
-                rows.append((t, idle, r.get("process") or "", (r.get("title") or "")[:70]))
-        rows.sort(key=lambda x: x[0])
-        deltas = [(rows[i + 1][0] - rows[i][0]).total_seconds() for i in range(len(rows) - 1)
-                  if 0 < (rows[i + 1][0] - rows[i][0]).total_seconds() <= 600]
-        step = statistics.median(deltas) if deltas else float(mc["samplerIntervalSec"])
-        step = min(300.0, max(float(mc["samplerIntervalSec"]), step))
-        per = defaultdict(lambda: {"n": 0, "min": 0.0, "t0": None, "ide": False})
-        for t, idle, proc, title in rows:
-            if not title or idle > idle_act:
-                continue
-            s = per[(t.date(), title)]
-            s["n"] += 1
-            s["min"] += step / 60.0
-            s["t0"] = min(s["t0"] or t, t)
-            s["ide"] = s["ide"] or _is_ide(proc, title)
-        for (_d, title), s in per.items():
-            if s["n"] < 5:
-                continue
-            rate = W["IDE_분당"] if s["ide"] else W["작업창_분당"]
-            add(s["t0"], "작업창", title, min(s["min"], day_len_min) * rate,
-                "작업창(IDE)" if s["ide"] else "작업창")
+        add(t, MEETING, r.get("subject"), W["회의"], "")
 
     sig.sort(key=lambda x: x[0])
-    meta["counted"] = dict(meta["counted"])
-    meta["excluded"] = dict(meta["excluded"])
-    meta["weights"] = {k: round(v, 4) if isinstance(v, float) else v for k, v in W.items()}
+    meta = {"counted": {k: counted.get(k, 0) for k in ("mail_in", "mail_out", "meetings")},
+            "excluded": {k: excl.get(k, 0) for k in EXCLUDED_KEYS},
+            "weights": {k: round(float(W[k]), 4) for k in SIGNAL_WEIGHT_KEYS},
+            "config_warnings": cfg_warns,
+            "unreadable": unreadable[0]}
     return sig, meta
 
 
+def _meeting_skip(r, tentative="count"):
+    """일정 행을 '참석'으로 볼 수 없는 사유(글자) 또는 None.
+      busy_status   : 0 한가함(미수락·정보성) — 주최(1)·수락(3)했으면 참석
+      response      : 0 없음/1 주최/2 미정/3 수락/4 거절/5 미응답 — 열이 있을 때만
+      meeting_status: 5·7 취소된 회의 — 열이 있을 때만
+      tentative     : "count"(기본) 미정도 셈 · "skip" 미정 제외 · "response" 응답 기준(미정·미응답 제외)
+    수집 파일(§5.2)은 이 열들을 비워 쓴다 — 그때는 늘 None(수집 때 이미 거른 것)."""
+    busy = str(r.get("busy_status") or "2").strip()
+    resp = str(r.get("response") or "").strip()
+    ms = str(r.get("meeting_status") or "").strip()
+    if ms in ("5", "7"):
+        return "취소된 회의(meeting_status)"
+    if resp == "4":
+        return "거절한 회의(response)"
+    if busy == "0" and resp not in ("1", "3"):
+        return "미수락 일정(한가함 상태)"
+    pending = resp in ("2", "5") or (not resp and busy == "1")
+    if tentative == "skip" and (pending or busy == "1"):
+        return "미정 회의(tentativeMeetings=skip)"
+    if tentative == "response" and pending:
+        return "미정 회의(tentativeMeetings=response)"
+    return None
+
+
+# ── 낱말 ─────────────────────────────────────────────────────────────────────────────────
 def _tokens(text):
-    # 개인정보 가림 토큰([전화]·[금액]·[사람]·[이메일@…] …)은 과제 후보가 아니다(WP7 — G2 정제 뒤 신호에 들어온다)
-    t = _pv().TOKEN_RX.sub(" ", text or "")
+    """과제 후보 낱말 집합 — 가림 토큰([사람]·[전화] …)·RE/FW·확장자·날짜·버전·상투어(STOP)·숫자는 뺀다."""
+    t = privacy.TOKEN_RX.sub(" ", text or "")
     t = re.sub(r"^\s*((re|fw|fwd|답장|전달|회신)\s*[:：]\s*)+", "", t, flags=re.I)
     t = re.sub(r"\.(pptx|xlsx|docx|pdf|hwp|png|jpg|zip|csv|py|c|cpp|m)\b", " ", t, flags=re.I)
     t = re.sub(r"\d{4}[-_.]?\d{2}[-_.]?\d{2}|\bv?\d+(?:[._]\d+)+\b", " ", t)
@@ -1649,8 +613,7 @@ def _tokens(text):
             out.add(s)
     for tok in re.split(r"[\s_\-\.\\/\[\]()<>:,·|~!?\"'+]+", t.lower()):
         tok = tok.strip()
-        # 조사 어미 제거 — '보고의'·'문의의'·'과제명와' 같은 조각이 프로젝트명으로 새는 것 방지
-        if len(tok) >= 3:
+        if len(tok) >= 3:                       # 조사 꼬리 — '보고의'·'과제명와' 가 과제명으로 새지 않게
             tok = re.sub(r"(의|를|을|은|는|이|가|에|로|와|과|도|께)$", "", tok)
         if 2 <= len(tok) <= 24 and tok not in STOP and not tok.isdigit():
             out.add(tok)
@@ -1658,27 +621,25 @@ def _tokens(text):
 
 
 def activity_of(text, source=""):
-    """신호 → 활동(Level 3). 커밋·IDE·코드 파일은 SW개발, 파일 신호는 먼저 확장자(이름 끝, EXT_ACT — S3-P2)로,
-    그 다음 텍스트 규칙(ACT_RULES)으로 본다."""
-    if source.startswith("커밋") or "IDE" in source or source == "파일(코드)":
-        return "SW개발"
-    if source.startswith("파일"):
-        if _CREO_RE.search(_sig_name(text)):
-            return "설계"      # Creo 판번호(housing.asm.12·a.frm.1)는 CAD 가 확정 — '.asm'(어셈블리 소스) 규칙보다 먼저(VF-H4)
-        a = EXT_ACT.get(_ext_of_signal_text(text))
-        if a:
-            return a
+    """신호 → 활동(Level 3) — 글의 낱말 규칙(ACT_RULES). 걸리는 것이 없으면 회의는 '회의·협업', 그 밖은 '기타'."""
     low = (text or "").lower()
     for name, kws in ACT_RULES:
         if any(k in low for k in kws):
             return name
-    return "회의·협업" if source == "회의" else "기타"
+    return "회의·협업" if source == MEETING else "기타"
+
+
+def worktype_of(activity, kinds=()):
+    """활동(Level 3) → 업무유형(개발·사무·현장·협업). 규칙에 없는 활동은 근거가 회의뿐이면 협업, 아니면 사무."""
+    wt = WORKTYPE_OF_ACT.get(str(activity or ""))
+    if wt:
+        return wt
+    ks = set(kinds or ())
+    return "협업" if ks and ks <= {MEETING} else "사무"
 
 
 def _norm_projects(projects):
-    """지정을 (표시이름, [매칭어…]) 로 정규화. 문자열이면 이름 자신이 매칭어(기존 동작).
-    (이름, [별칭]) 이면 **별칭에 걸려도 상위 과제명으로 귀속**된다 —
-    별칭이 그대로 과제명처럼 표시되던 문제 방지."""
+    """지정을 (표시이름, [매칭어…]) 로. 글자면 이름 자신이 매칭어, (이름, [별칭]) 이면 별칭에 걸려도 이름으로 귀속."""
     out = []
     for p in projects or []:
         if isinstance(p, dict):
@@ -1695,8 +656,7 @@ def _norm_projects(projects):
     return out
 
 
-# ── 규칙 과제명 잡음(F-19·W2-13 — LM28): AI 가 실패한 날 규칙 폴백이 토큰 조각을 과제명으로 쓴다. 상투어·버전 표기·
-#    6~8자리 날짜·편집기 기본 이름(Untitled·새 문서)·사본 표기는 과제 후보가 아니다(_tokens 가 STOP·날짜·점 버전을 이미 뺀 뒤).
+# ── 규칙 과제명 잡음 — 상투어·버전 표기·6~8자리 날짜·편집기 기본 이름·사본 표기는 과제 후보가 아니다 ──────────────────
 RULE_NAME_NOISE = {
     "untitled", "copy", "사본", "복사본", "복사", "수정본", "최종본", "final", "draft", "초안", "new", "old", "temp", "tmp",
     "backup", "백업", "test", "sample", "document", "book", "image", "presentation", "제목", "제목없음", "통합", "새",
@@ -1708,16 +668,13 @@ _RULE_NAME_RX = re.compile(r"^(v|ver|rev|r|버전)\.?\d+[a-z]?$|^\d{6,8}$|^(unti
 
 
 def rule_name_ok(tok):
-    """규칙 과제명 후보로 쓸 수 있는 토큰인가 — 상투어·버전·날짜·Untitled·copy 를 거른다(F-19·W2-13)."""
+    """규칙 과제명 후보로 쓸 수 있는 낱말인가 — 상투어·버전·날짜·Untitled·copy 를 거른다."""
     t = str(tok or "").strip().lower()
     return bool(t) and t not in RULE_NAME_NOISE and not _RULE_NAME_RX.match(t)
 
 
-# ── 대화 낱말(LM30 2026-10-27 — 사용자 '한 사람과 채팅한다고 한 일을 하는 게 아니라 여러 일을 복합적으로 하잖아') ─────────────
-#    맞장구·인사·호칭·시각·흔한 소통 낱말과 '…습니다/…요/…까/…드린' 같은 문장 끝 꼴은 일을 가리키지 않는다. 이런 낱말뿐인 팀즈 줄
-#    ('네 확인했습니다'·'자료 보내드렸습니다'·'[사람] 책임님 확인 부탁드립니다')은 Copilot 에 보내지 않고 같은 대화에서 채운다
-#    (judge.is_lowinfo). 규칙 과제 토큰(_cand_ok)·과제(Level 2) 이름(talk_name — details.task_name_ok·judge)도 되지 않는다.
-#    '정리해서'·'요청해' 같은 이음 꼴은 낱말로 남긴다 — 문장 끝 꼴·호칭·시각·맞장구만 뺀다.
+# ── 대화 낱말 — 맞장구·인사·호칭·시각·흔한 소통 낱말과 '…습니다/…요/…까/…드린' 같은 문장 끝 꼴은 일을 가리키지 않는다.
+#    규칙 과제 토큰(_cand_ok)·과제 이름(talk_name — details.task_name_ok·judge)이 되지 않는다. ──────────────────────────
 TALK_WORDS = frozenset((
     # 맞장구·인사
     "네네", "넵넵", "예예", "응응", "오케이", "ok", "okay", "thanks", "thank", "thx", "noted", "sure", "yes", "please", "pls",
@@ -1739,7 +696,6 @@ TALK_WORDS = frozenset((
     "사원", "주임", "연구원", "위원", "박사", "교수", "담당", "담당자", "팀원", "여러분",
     # 수
     "하나", "다섯", "여섯", "일곱", "여덟", "아홉", "한두", "두세", "서너"))
-# 문장 끝 꼴(…습니다·…요·…까·…죠)·높임 꼴(…드린·…드려·…주시면)·평서 끝(…했음·…됐다)
 _TALK_END_RX = re.compile(r"(?:니다|요|까|죠|드림|드린|드릴|드려|드렸|드리고|드리면|드리며|드려서|드리는|드리기|주시면|주시고|주셔서"
                           r"|하시면|하시고|하셔서|했음|됐음|있음|없음|했어|됐어|했다|됐다|한다|된다)$")
 _TALK_NUM_RX = re.compile(r"^\d+(?:시|분|일|월|주|년|개|건|번|명|부|장|회|초|시간|분기|주차|차)(?:쯤|경|에|까지|부터|간|째|씩|반)?$")
@@ -1759,9 +715,8 @@ def talk_word(tok):
 
 
 def _talk_tokens(text):
-    """대화 낱말 판정용 낱말 목록 — _tokens 와 같은 앞손질(가림 토큰·RE/FW·확장자·날짜·버전) 뒤 두 글자 조사('으로'·'에서'…)부터
-    뗀다('중으로' → '중' — _tokens 는 '중으' 를 남겨 낱말로 셌다). 두 글자 미만·숫자만은 뺀다."""
-    t = _pv().TOKEN_RX.sub(" ", str(text or ""))
+    """대화 낱말 판정용 낱말 목록 — _tokens 와 같은 앞손질 뒤 두 글자 조사('으로'·'에서'…)부터 뗀다. 두 글자 미만·숫자만은 뺀다."""
+    t = privacy.TOKEN_RX.sub(" ", str(text or ""))
     t = re.sub(r"^\s*((re|fw|fwd|답장|전달|회신)\s*[:：]\s*)+", "", t, flags=re.I)
     t = re.sub(r"\.(pptx|xlsx|docx|pdf|hwp|png|jpg|zip|csv|py|c|cpp|m)\b", " ", t, flags=re.I)
     t = re.sub(r"\d{4}[-_.]?\d{2}[-_.]?\d{2}|\bv?\d+(?:[._]\d+)+\b", " ", t)
@@ -1777,456 +732,36 @@ def _talk_tokens(text):
 
 
 def content_words(text):
-    """원문에서 일을 가리키는 낱말 — 상투어(STOP·RULE_NAME_NOISE)·버전·날짜·가림 토큰·대화 낱말(talk_word)을 뺀 나머지(순서 유지).
-    빈 목록이면 그 줄은 일을 가리키지 않는다(judge 의 짧은 팀즈 대화 — 보내지 않고 같은 대화에서 채운다)."""
+    """글에서 일을 가리키는 낱말 — 상투어·버전·날짜·가림 토큰·대화 낱말을 뺀 나머지(순서 유지). 빈 목록이면 일을 가리키지 않는다."""
     return [x for x in _talk_tokens(text) if x not in STOP and rule_name_ok(x) and not talk_word(x)]
 
 
 def talk_name(name):
-    """이름이 대화 낱말(과 상투어)뿐인가 — '책임님'·'보내드렸습니다'·'[사람] 책임님'·'네 확인했습니다' 는 True(과제·규칙 이름 금지).
-    대화 낱말이 하나는 있어야 한다 — 상투어·버전 꼴뿐인 이름('V2X' 같은 대문자 코드·'보고서')은 다른 관문(_model_name_ok·잡음)이 본다.
-    낱말이 하나도 없으면(빈 값·가림 토큰뿐) False — 그쪽은 사람 이름 관문이 본다."""
+    """이름이 대화 낱말(과 상투어)뿐인가 — '책임님'·'보내드렸습니다'·'네 확인했습니다' 는 True(과제 이름 금지).
+    대화 낱말이 하나는 있어야 한다. 낱말이 하나도 없으면(빈 값·가림 토큰뿐) False — 그쪽은 사람 이름 관문이 본다."""
     toks = _talk_tokens(name)
     return (any(talk_word(x) for x in toks)
             and not any(x not in STOP and rule_name_ok(x) and not talk_word(x) for x in toks))
 
 
-# ── 근무 형태·근태·출장 등록 표기(LM30 2026-10-28 — 사용자 '근태계획·국내출장을 올리는 일 자체는 1분도 안 되는 일 — 그때 무슨 일을 하는지가
-#    중요하다') ─────────────────────────────────────────────────────────────────────────────────────────────────────────
-#    표기(ADMIN_TRIP·ADMIN_PLAN)가 있고 그 밖에 등록 행위·군말·시스템 이름·날짜·시각·사람·호칭·괄호·대화 낱말만 남으면 '일' 이 아니라 등록이다.
-#    admin_kind: 'reg'(등록 — 과제 몫 1분 · 공통 · ADMIN_DETAIL · AI 에 보내지 않음) · 'time'(일정·수동기록이 표기뿐 — 그 시간은 그때 한 내 일의
-#    과제로 · AI 에 보내지 않음) · 'label'(표기 + 내용 — 가중치 그대로 · 판정 줄은 admin_mark) · ''(표기 없음). 일반어만 둔다(회사·기관 이름 없음).
-ADMIN_TRIP = ("국내출장", "해외출장", "출장비", "출장", "외근", "근무지외")
-ADMIN_PLAN = ("근태계획", "근무계획", "근태", "연장근무", "휴일근무", "특근", "야근", "잔업", "시차출퇴근", "시차출근", "시차근무",
-              "유연근무", "탄력근무", "선택근무", "재택근무", "원격근무", "재택", "출퇴근", "외출", "조퇴", "지각", "휴가", "연차", "반차",
-              "반반차", "대체휴무", "보상휴가", "근무")
-# 등록 행위 — 일정·수동기록이라도 이 낱말이 있으면 시간이 아니라 등록이다('출장 신청' 일정)
-ADMIN_REG_ACT = ("결재요청", "승인요청", "결재상신", "전자결재", "신청서", "품의서", "정산서", "결재", "상신", "승인", "신청", "등록",
-                 "품의", "정산", "반려", "회수", "제출", "접수", "기안", "숙박비", "교통비", "식비", "경비", "여비", "일비", "비용",
-                 "영수증")
-ADMIN_PROC = ADMIN_REG_ACT + ("취소", "변경", "통보", "완료", "요청", "알림", "안내", "확인", "처리", "관리", "기록", "현황", "내역")
-# 군말·장소 갈래(목적이 아니다 — '고객사 방문 출장'·'출장(현장)')·시스템 이름
-ADMIN_FILL = ("계획서", "계획", "일정", "예정", "관련", "건", "및", "등", "내용", "사항", "목록", "양식", "서식", "기간", "날짜", "일자",
-              "현장", "고객사", "협력사", "방문", "외부", "국내", "해외", "지방", "본사", "공장", "사업장", "현지", "업체")
-ADMIN_SYS = ("gerp", "erp", "hr", "hrm", "groupware", "그룹웨어", "포털", "portal", "인트라넷", "intranet", "시스템", "system",
-             "웹", "web", "페이지", "page", "화면", "메뉴", "edge", "chrome", "whale", "explorer", "microsoft", "internet", "인터넷",
-             "브라우저", "결재함", "msedge")
-# 일의 갈래 — 괄호 속 낱말이 이것이면 행선지가 아니라 목적이다('출장(시험)')
-ADMIN_WORK_WORDS = ("시험", "검사", "점검", "입회", "설치", "시운전", "시연", "검수", "납품", "수리", "조사", "견학", "교육", "세미나",
-                    "워크숍", "워크샵", "학회", "전시회", "박람회", "실사", "감사", "인증", "심사", "평가", "측정", "조립", "셋업",
-                    "설계", "강의", "특강", "면접", "채용", "대응", "지원", "협의", "논의", "test", "demo", "setup", "audit",
-                    "training", "workshop", "seminar")
-# 공통 일로 남겨도 되는 목적(판정이 '공통' 이어도 나누지 않는다 — 교육·행사 출장)
-ADMIN_COMMON_PURPOSE = tuple(dict.fromkeys(EDU_KW + ("웨비나", "학회", "컨퍼런스", "conference", "포럼", "forum", "전시회", "박람회",
-                                                     "전시", "채용", "면접", "행사", "체육대회", "봉사", "training", "seminar")))
-ADMIN_TIME_SRC = ("회의", "수동기록")          # 시간이 있는 신호(일정·수동 기록) — 표기뿐이면 그 시간은 그때 한 일로
-ADMIN_DETAIL = "행정 처리(근태·출장 등록)"      # 등록 행 — 공통 · 이 세부업무 · 과제 몫 1분
-ADMIN_TIME_DETAIL = "출장·근태계획 시간"         # signals 의 자리표 — 과제 몫을 셀 때 그때 한 일의 과제로 나눈다(admin_share_rows)
-ADMIN_UNKNOWN_DETAIL = "출장·근태계획(목적 미상)"   # 그때 한 일이 하나도 없는 날(±3 근무일까지 없음)
-ADMIN_DETAILS = (ADMIN_DETAIL, ADMIN_TIME_DETAIL, ADMIN_UNKNOWN_DETAIL)
-ADMIN_CAP_MIN = 1.0                             # 등록 행의 과제 몫 = 작업창 이 분(기본 가중치 1/20 분당 → 0.05)
-ADMIN_NEAR_WD = 3                               # 그때 한 일이 없으면 앞뒤 이 근무일까지 본다
-_ADMIN_LABEL_SET = frozenset(ADMIN_TRIP + ADMIN_PLAN)
-_ADMIN_REG_SET = frozenset(ADMIN_REG_ACT)
-_ADMIN_PARTS = tuple(sorted(set(ADMIN_TRIP + ADMIN_PLAN + ADMIN_PROC + ADMIN_FILL + ADMIN_SYS), key=lambda p: (-len(p), p)))
-_ADMIN_PURPOSE_MASK = re.compile(r"\[과제(?::[A-Za-z0-9_\-]{1,16})?\]")      # 가린 과제 이름 — 목적이다
-_ADMIN_BRACKET_RX = re.compile(r"[(（\[【<〔]([^)）\]】>〕]{0,40})[)）\]】>〕]")
-_ADMIN_SEP_RX = re.compile(r"(\s+|[\[\]()（）【】<>〔〕{}:：,·|~!?\"'+…^*;=&#%@/\\—–_\-.]+)")
-_ADMIN_TAG = {"국내출장": "출장", "해외출장": "출장", "출장비": "출장", "근무지외": "외근"}
-# 판정 줄에서 표기와 함께 떼는 낱말 — 등록 행위·계획 군말·시스템 이름(장소 갈래·일반 동사는 남긴다)
-_ADMIN_MARK_DROP = frozenset(ADMIN_REG_ACT + ("계획서", "계획", "일정", "예정") + ADMIN_SYS)
-# 빠른 거름 — 표기(또는 등록 행위)가 글 어디에도 없으면 낱말을 나눠 볼 필요가 없다(수천 행 판정 앞 · 이름 관문)
-_ADMIN_LABEL_RX = re.compile("|".join(re.escape(x) for x in sorted(_ADMIN_LABEL_SET, key=len, reverse=True)))
-_ADMIN_REG_RX = re.compile("|".join(re.escape(x) for x in sorted(_ADMIN_REG_SET, key=len, reverse=True)))
-
-
-@functools.lru_cache(maxsize=16384)
-def _admin_tok(tok):
-    """낱말 하나 → (찾은 표기 tuple, 등록 행위가 있나, 남은 낱말 또는 ""). 표기·등록 행위·군말·시스템 이름을 앞·뒤에서 긴 것부터 뗀다
-    ('국내출장신청서' → ('국내출장',), True, ''). 한 글자 조각('건'·'및')은 낱말 전체일 때만 — '건축'의 '건' 을 떼지 않는다.
-    남은 것이 두 글자 미만·숫자뿐이면 ""."""
-    t = str(tok or "").strip().lower()
-    labels, reg = [], False
-    for _ in range(8):
-        hit = next((p for p in _ADMIN_PARTS if t == p or (len(p) >= 2 and len(t) > len(p)
-                                                          and (t.startswith(p) or t.endswith(p)))), None)
-        if hit is None:
-            break
-        if hit in _ADMIN_LABEL_SET:
-            labels.append(hit)
-        reg = reg or hit in _ADMIN_REG_SET
-        if t == hit:
-            t = ""
-            break
-        t = t[len(hit):] if t.startswith(hit) else t[:-len(hit)]
-    return tuple(labels), reg, (t if len(t) >= 2 and not t.isdigit() else "")
-
-
-def _admin_person(x, people):
-    """사람 이름 낱말인가(people = details.person_keys 키 — 없으면 보지 않는다)."""
-    if not people:
-        return False
-    try:
-        from details import is_person_name
-    except ImportError:
-        return False
-    return is_person_name(x, people)
-
-
-def _admin_noncontent(x, people=None):
-    """일을 가리키지 않는 낱말 — 대화 낱말·상투어(STOP·RULE_NAME_NOISE)·사람 이름."""
-    return talk_word(x) or x in STOP or not rule_name_ok(x) or _admin_person(x, people)
-
-
-def _admin_strip_particle(tok):
-    """_talk_tokens 와 같은 조사 떼기 — 두 글자 조사부터, 세 글자 이상 낱말만."""
-    if len(tok) >= 3:
-        t2 = _TALK_PART2_RX.sub("", tok)
-        return t2 if t2 != tok else _TALK_PART1_RX.sub("", tok)
-    return tok
-
-
-def _admin_scan(text, people=None):
-    """글 → (표기 목록, 등록 행위가 있나, 내용 낱말 목록, 가린 과제 이름이 있나) — 가림 토큰·RE/FW·날짜·버전은 _talk_tokens 가 뗀다."""
-    s = str(text or "")
-    labels, reg, content = [], False, []
-    for tok in _talk_tokens(s):
-        lb, rg, rest = _admin_tok(tok)
-        labels.extend(lb)
-        reg = reg or rg
-        if rest and not _admin_noncontent(rest, people):
-            content.append(rest)
-    return labels, reg, content, bool(_ADMIN_PURPOSE_MASK.search(s))
-
-
-def admin_kind(text, source="", people=None):
-    """신호 하나의 근태·출장 등록 표기 판정 → 'reg' | 'time' | 'label' | ''.
-      ''     표기(ADMIN_TRIP·ADMIN_PLAN)가 없다 — 보통 신호
-      'reg'  표기와 등록 행위·군말·시스템 이름·날짜·시각·사람·호칭·대화 낱말뿐(메일·팀즈·파일·작업창은 표기뿐이어도) — 1분짜리 행정
-      'time' 일정(회의)·수동기록이 표기뿐('국내출장' 종일 · '근태계획' 18~21시 · '출장(평택)' — 괄호 속 한두 낱말은 일의 갈래가 아니면
-             행선지) — 그 시간은 그때 한 내 일의 과제로 나눈다(admin_share_rows)
-      'label' 표기 + 내용('국내출장 - A사 B 시험 입회'·'휴일근무 계획: C과제 데이터 정리'·가린 과제 이름) — 가중치 그대로, 목적으로 판정"""
-    if not _ADMIN_LABEL_RX.search(str(text or "").lower()):
-        return ""
-    labels, reg, content, purpose = _admin_scan(text, people)
-    if not labels:
-        return ""
-    if purpose:
-        return "label"
-    timed = str(source or "").strip() in ADMIN_TIME_SRC
-    if not content:
-        return "time" if (timed and not reg) else "reg"
-    if timed and any(lb in ADMIN_TRIP for lb in labels) and len(content) <= 2:
-        s = _pv().TOKEN_RX.sub(" ", str(text or ""))
-        outer = _admin_scan(_ADMIN_BRACKET_RX.sub(" ", s), people)[2]
-        if not outer and not any(w in c for c in content for w in ADMIN_WORK_WORDS):
-            return "time"                              # 행선지만 괄호에 — '출장(평택)'
-    return "label"
-
-
-def admin_worktype(text):
-    """출장·근태계획 시간 자리표의 유형 — 출장 갈래(국내·해외 출장·외근)면 '현장', 그 밖(근태계획·연장근무·재택근무 …)은 '사무'."""
-    return "현장" if any(lb in ADMIN_TRIP for lb in _admin_scan(text)[0]) else "사무"
-
-
-def admin_common_purpose(text):
-    """목적이 공통 일(교육·세미나·워크숍·학회·전시회·채용·행사 …)인가 — 이런 출장은 판정이 '공통' 이어도 그대로 둔다."""
-    low = str(text or "").lower()
-    return any(w in low for w in ADMIN_COMMON_PURPOSE)
-
-
-def admin_word(tok):
-    """규칙 과제 토큰 관문 — 낱말이 표기·등록 행위(+군말)뿐인가('근태계획'·'국내출장'·'출장신청'·'결재요청')."""
-    low = str(tok or "").strip().lower()
-    if not _ADMIN_LABEL_RX.search(low) and not _ADMIN_REG_RX.search(low):
-        return False
-    lb, rg, rest = _admin_tok(_admin_strip_particle(low))
-    return bool(lb or rg) and (not rest or _admin_noncontent(rest))
-
-
-def admin_name(name, strict=False):
-    """이름이 근태·출장 등록 표기뿐인가 — '국내출장'·'근태계획'·'출장 신청'·'근태 관리'·'재택근무'·'현장 출장' 은 True(과제·세부업무가
-    되지 않는다). 표기에 흔한 문서·회의 낱말만 붙은 것('출장 보고서')도 True. strict(과제 — Level 2)면 표기 없이 등록 행위뿐인
-    이름('결재'·'전자결재'·'결재 처리')도 True. ADMIN_DETAILS(이 도구가 붙이는 세부업무)는 False."""
-    s = " ".join(str(name or "").split())
-    if not s or s in ADMIN_DETAILS:
-        return False
-    low = s.lower()
-    if not _ADMIN_LABEL_RX.search(low) and not (strict and _ADMIN_REG_RX.search(low)):
-        return False
-    labels, reg, content, purpose = _admin_scan(s)
-    if purpose or content:
-        return False
-    return bool(labels) or (strict and reg)
-
-
-def admin_mark(text):
-    """판정 줄 — 표기·등록 행위 낱말을 떼고 앞에 '(출장)'·'(근태계획)' 을 붙인다('국내출장 - A사 B 시험 입회' → '(출장) A사 B 시험 입회').
-    표기가 없으면 그대로."""
-    s = str(text or "")
-    first, out = None, []
-    for p in _ADMIN_SEP_RX.split(s):
-        if not p or _ADMIN_SEP_RX.fullmatch(p):
-            out.append(p)
-            continue
-        low = p.lower()
-        lb, rg, rest = _admin_tok(_admin_strip_particle(low))
-        if lb or (not rest and (rg or _admin_strip_particle(low) in _ADMIN_MARK_DROP)):
-            if lb and first is None:
-                first = lb[0]
-            k = low.find(rest) if rest else -1
-            out.append((p[k:k + len(rest)] if len(low) == len(p) else rest) if k >= 0 else "")
-            continue
-        out.append(p)
-    if first is None:
-        return s
-    body = re.sub(r"[(（\[【<〔]\s*[)）\]】>〕]", " ", "".join(out))
-    body = " ".join(body.split()).strip(" -:：,·|~—–/_.")
-    return f"({_ADMIN_TAG.get(first, first)}) {body}".strip()
-
-
-def admin_cap_w(weights=None):
-    """등록 행의 과제 몫 가중치 상한 — 작업창 ADMIN_CAP_MIN 분(weights 의 작업창_분당 · 기본 1/20 → 0.05)."""
-    try:
-        rate = float((weights or {}).get("작업창_분당") or 0)
-    except (TypeError, ValueError, AttributeError):
-        rate = 0.0
-    if not rate > 0:
-        rate = 1 / 20
-    return round(rate * ADMIN_CAP_MIN, 4)
-
-
-def _row_dt(r):
-    try:
-        return datetime.strptime(str((r or {}).get("time") or "")[:16], "%Y-%m-%d %H:%M")
-    except (TypeError, ValueError):
-        return None
-
-
-def _row_w(r):
-    try:
-        return float((r or {}).get("weight") or 0)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def _near_workdays(d, n, holidays):
-    """d 앞뒤로 k 번째 근무일(k = 1..n) → [(k, [앞, 뒤]), …] — 주말·공휴일(_is_off_day)은 건너뛴다."""
-    out, prev, nxt = [], d, d
-    for k in range(1, n + 1):
-        for _ in range(15):
-            prev -= _td(days=1)
-            if not _is_off_day(prev, holidays or set()):
-                break
-        for _ in range(15):
-            nxt += _td(days=1)
-            if not _is_off_day(nxt, holidays or set()):
-                break
-        out.append((k, [prev, nxt]))
-    return out
-
-
-def admin_share_rows(rows, weights=None, holidays=None, stats=None, people=None):
-    """signals 행(dict — time·source·weight·text·model|project·detail|activity·worktype …) → 과제 몫을 셀 행 목록(원본은 그대로 —
-    바뀐 행만 새 dict). judge.write_outputs·리뷰 화면·mine 규칙 결과가 쓴다. signals 의 weight(시간 근거)는 고치지 않는다.
-      ① 세부업무가 ADMIN_DETAIL(등록)이면 weight = min(weight, admin_cap_w) · '_cap' 표식(시간 몫은 1분 — admin_allocate)
-      ② 과제 '공통' · 세부업무 ADMIN_TIME_DETAIL(출장·근태계획 시간 자리표)이면 그 가중치를 그때 한 내 일(OWN_WORK_SRC — 등록·자리표
-         행 빼고)의 (과제, 유형, 세부업무)에 가중치 비례로 나눈 조각 행들 — 시간제 일정은 그 구간 안 → 같은 날, 종일 일정·수동기록은 같은
-         날 → 앞뒤 ADMIN_NEAR_WD 근무일(가까운 날부터) → 공통 · ADMIN_UNKNOWN_DETAIL. 조각은 '_grp'(원래 행 번호)·'_w0'(원래 가중치)를 단다.
-      그 밖의 행은 같은 객체 그대로. 조각 가중치의 합 = 원래 가중치(합계·총 MM 은 그대로 — 어느 과제로 가는지만 바뀐다).
-    stats(dict)에 reg·reg_w·cap_w·time_rows·time_w·split_days·near_days·unknown_days·purpose_days(날짜 집합 — 이 PC 에서만 쓴다)."""
-    def _pos(k, dflt):
-        try:
-            v = float((weights or {}).get(k, dflt))
-            return v if v > 0 else dflt
-        except (TypeError, ValueError, AttributeError):
-            return dflt
-    w_meet = _pos("회의", 2.0)
-    cap = admin_cap_w(weights)
-    parsed = []
-    for r in rows or ():
-        if not isinstance(r, dict):
-            continue
-        md = str(r.get("model") or r.get("project") or "").strip()
-        dt = str(r.get("detail") or r.get("activity") or "").strip()
-        parsed.append((r, _row_dt(r), str(r.get("source") or "").strip(), _row_w(r), md, dt))
-    own_by_day = defaultdict(list)
-    for i, (_r, t, src, w, md, dt) in enumerate(parsed):
-        if t is not None and w > 0 and src in OWN_WORK_SRC and md and dt not in ADMIN_DETAILS:
-            own_by_day[t.date()].append((t.hour * 60 + t.minute, i))
-    st = stats if isinstance(stats, dict) else {}
-    st.update(reg=0, reg_w=0.0, cap_w=cap, time_rows=0, time_w=0.0, split_days=set(), near_days=set(),
-              unknown_days=set(), purpose_days=set())
-
-    def _set(c, md, wt, dt):
-        """조각 행의 과제·세부업무 — judge 행(model·detail)과 mine·리뷰 행(project·activity) 어느 쪽으로 읽어도 같게."""
-        c["model"], c["project"], c["detail"], c["activity"] = md, md, dt, dt
-        if wt:
-            c["worktype"] = wt
-        return c
-
-    out = []
-    for i, (r, t, src, w, md, dt) in enumerate(parsed):
-        if dt == ADMIN_DETAIL:
-            st["reg"] += 1
-            st["reg_w"] += w
-            c = dict(r, _cap=True)
-            c["weight"] = min(w, cap) if w > 0 else w
-            out.append(c)
-            continue
-        if dt == ADMIN_TIME_DETAIL and md == "공통" and t is not None and w > 0:
-            st["time_rows"] += 1
-            st["time_w"] += w
-            d, m0 = t.date(), t.hour * 60 + t.minute
-            whole = src != "회의" or w / w_meet >= STD_DAY_H - 1e-6
-            cands, how = [], ""
-            if not whole:
-                m1 = m0 + max(30.0, w / w_meet * 60.0)
-                cands, how = [j for mm, j in own_by_day.get(d, ()) if m0 <= mm <= m1], "window"
-            if not cands:
-                cands, how = [j for _mm, j in own_by_day.get(d, ())], "day"
-            if not cands:
-                for _k, days in _near_workdays(d, ADMIN_NEAR_WD, holidays):
-                    cands = [j for dd in days for _mm, j in own_by_day.get(dd, ())]
-                    if cands:
-                        how = "near"
-                        break
-            g = defaultdict(float)
-            for j in cands:
-                rj = parsed[j]
-                g[(rj[4], str(rj[0].get("worktype") or "").strip(), rj[5])] += rj[3]
-            tot = sum(g.values())
-            if tot <= 0:
-                st["unknown_days"].add(d)
-                c = _set(dict(r, _grp=i, _w0=w), "공통", "", ADMIN_UNKNOWN_DETAIL)
-                c["weight"] = w
-                out.append(c)
-                continue
-            (st["near_days"] if how == "near" else st["split_days"]).add(d)
-            keys = sorted(g, key=lambda k: (-g[k], k))
-            parts = [round(w * g[k] / tot, 6) for k in keys]
-            parts[0] = round(parts[0] + (w - sum(parts)), 6)       # 반올림 잔차는 가장 큰 조각에 — 합 = 원래 가중치
-            for k, wk in zip(keys, parts, strict=True):
-                c = _set(dict(r, _grp=i, _w0=w), k[0], k[1], k[2])
-                c["weight"] = wk
-                out.append(c)
-            continue
-        if (src in ADMIN_TIME_SRC and t is not None and md not in ("", "공통", "미지정")
-                and admin_kind(r.get("text"), src, people) == "label"):
-            st["purpose_days"].add(t.date())             # 목적이 적힌 출장·근태계획 시간 — 그 과제로 판정됨
-        out.append(r)
-    return out
-
-
-def admin_counts(stats):
-    """admin_share_rows 의 stats → 건수·일수만(mm_meta.admin_mm — 팀으로 가도 되는 값 · 날짜 없음)."""
-    st = stats if isinstance(stats, dict) else {}
-    days = set(st.get("split_days") or ()) | set(st.get("near_days") or ()) | set(st.get("purpose_days") or ())
-    return {"reg": int(st.get("reg") or 0), "time_days": len(days), "unknown_days": len(st.get("unknown_days") or ()),
-            "near_days": len(st.get("near_days") or ()), "time_rows": int(st.get("time_rows") or 0),
-            "cap_w": float(st.get("cap_w") or admin_cap_w())}
-
-
-def admin_note(counts):
-    """근태·출장 등록 한 줄(합니다체 — 건수·일수만) — 대시보드 'MM 산정 근거' 카드·진행 로그가 같은 글을 쓴다. 해당이 없으면 ""."""
-    c = counts if isinstance(counts, dict) else {}
-    n, m, k = int(c.get("reg") or 0), int(c.get("time_days") or 0), int(c.get("unknown_days") or 0)
-    bits = []
-    if n:
-        bits.append(f"근태계획·출장 등록 {n}건은 1분짜리 행정으로만 셉니다")
-    if m:
-        bits.append(f"출장·근태계획 시간 {m}일은 목적이나 그때 한 일로 과제에 나눴습니다")
-    if k:
-        bits.append(f"목적을 알 수 없는 날 {k}일(일정 제목에 목적을 적으면 그 과제로 들어갑니다)")
-    return " · ".join(bits)
-
-
-ADMIN_DAYS_FILE = "admin_days_{tag}.json"        # report\ — 목적 미상·나눈 날짜(이 PC 전용 · 팀·사본으로 보내지 않는다)
-
-
-def save_admin_days(rep_dir, tag, stats):
-    """출장·근태계획 시간의 날짜(나눈 날·앞뒤 근무일에서 찾은 날·목적 미상 날·목적이 적힌 날) → report\\admin_days_<기간>.json(이 PC 전용).
-    실패해도 분석은 계속(False)."""
-    st = stats if isinstance(stats, dict) else {}
-    doc = {k: sorted(x.isoformat() for x in (st.get(k) or ()) if hasattr(x, "isoformat"))
-           for k in ("split_days", "near_days", "unknown_days", "purpose_days")}
-    p = os.path.join(rep_dir, ADMIN_DAYS_FILE.format(tag=tag))
-    if not any(doc.values()) and not os.path.exists(p):
-        return True                                    # 출장·근태계획 시간이 없다 — 파일을 만들지 않는다
-    try:
-        os.makedirs(rep_dir, exist_ok=True)
-        tmp = f"{p}.{os.getpid()}.tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(doc, f, ensure_ascii=False, indent=1)
-        os.replace(tmp, p)
-        return True
-    except OSError:
-        return False
-
-
-def load_admin_days(rep_dir, tag):
-    """report\\admin_days_<기간>.json → dict | None(없거나 깨짐)."""
-    try:
-        with open(os.path.join(rep_dir, ADMIN_DAYS_FILE.format(tag=tag)), encoding="utf-8-sig") as f:
-            o = json.load(f)
-        return o if isinstance(o, dict) else None
-    except (OSError, ValueError):
-        return None
-
-
-def admin_allocate(day_min, share_rows, key_of, minutes_map=None):
-    """과제 몫의 시간화(mm.shareBasis="time") — admin_share_rows 결과를 core\\timeshare 로 나눈다. 등록 행('_cap')은 1분만 덮고,
-    출장·근태계획 조각('_grp')은 원래 행 하나(원래 가중치 '_w0' — 덮는 길이는 예전과 같다)로 나눈 뒤 그 분을 조각 가중치대로 조각의
-    키에 다시 나눈다(정수 최대잉여 — 날마다 Σ = 투입 그대로). → ({키: 분}, 통계)."""
-    import timeshare
-    rows, groups, seen = [], defaultdict(dict), set()
-    for r in share_rows or ():
-        t = _row_dt(r)
-        if t is None:
-            continue
-        src = str(r.get("source") or "").strip()
-        w = _row_w(r)
-        if r.get("_cap"):
-            src = timeshare.ADMIN_SRC
-        if "_grp" in r:
-            gk = ("\x00admin", r["_grp"])
-            k = key_of(r)
-            groups[gk][k] = groups[gk].get(k, 0.0) + w
-            if gk not in seen:
-                seen.add(gk)
-                rows.append((t, src, float(r.get("_w0") or w), gk))
-            continue
-        rows.append((t, src, w, key_of(r)))
-    alloc, st = timeshare.allocate(day_min, rows, minutes_map)
-    out = defaultdict(int)
-    for k, v in alloc.items():
-        if k in groups and any(x > 0 for x in groups[k].values()):
-            for kk, vv in timeshare.split_int(int(v), {a: b for a, b in groups[k].items() if b > 0}).items():
-                out[kk] += vv
-        else:
-            out[k] += v
-    return dict(out), st
-
-
+# ── 신호 → (과제 × 활동) 격자 ─────────────────────────────────────────────────────────────────
 def _needle_hit(needle, low, toks):
-    """시드 매칭어 ↔ 신호. 토큰 경계로 판정한다 — raw 부분문자열은 오탐이 실측됐다
-    ('ai'⊂'email', 'cad'⊂'cascade'). projmap 의 판정기를 그대로 재사용."""
+    """지정 매칭어 ↔ 신호 — 낱말 경계로 본다('ai'⊂'email' 같은 부분 문자열 오탐 방지). projmap 의 판정기를 그대로 쓴다."""
     try:
         import projmap
         return projmap._kw_hit(needle, toks)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return len(needle) >= 4 and needle in low
 
 
 def _name_guard(signals):
-    """규칙 과제 후보 관문(LM28 진단 B) — 사람 이름(신호 who 에서 뽑은 키)·공지류('근태공지' 등) 토큰은 과제가 아니다.
-    웹 경로의 수천 건에서는 사람 이름·[근태공지] 꼬리표가 가장 잦은 토큰이 되어 규칙 과제명을 차지했다(제보).
-    토큰별 판정을 기억하는 함수를 돌려준다 — core/details 가 없으면 늘 통과."""
+    """규칙 과제 후보 관문 — 사람 이름·공지류('근태공지' 등) 낱말은 과제가 아니다. 낱말별 판정을 기억하는 함수를 돌려준다
+    (core/details 가 없으면 늘 통과)."""
     try:
         from details import is_notice_name, is_person_name, person_keys, ukey2
     except ImportError:
         return lambda _x: True
-    people = person_keys({s[4] for s in signals if len(s) > 4})
+    people = person_keys({s[4] for s in signals if len(s) > 4}, ROOT)     # who 열 + G1 이름 해시(D8)
     memo = {}
 
     def ok(x):
@@ -2238,19 +773,16 @@ def _name_guard(signals):
 
 
 def _cand_ok(x, df, n, guard):
-    """규칙 과제 후보 토큰 — 3~20자 · 2회 이상이되 너무 흔하지 않음(신호의 1/3, 최소 3) · 상투어 아님 · 사람·공지 아님 ·
-    대화 낱말 아님(LM30 2026-10-27 — '보내드렸습니다'·'책임님'·'가능하실까요' 가 팀즈 행의 규칙 과제명이 되던 것) ·
-    근태·출장 등록 표기 아님(LM30 2026-10-28 — '국내출장'·'근태계획'·'결재요청' 이 규칙 과제명이 되던 것)."""
+    """규칙 과제 후보 낱말 — 3~20자 · 2회 이상이되 너무 흔하지 않음(신호의 1/3, 최소 3) · 상투어·대화 낱말 아님 ·
+    근태·행방 낱말 아님(privacy.admin_hit) · 사람·공지 아님."""
     return (3 <= len(x) <= 20 and 2 <= df[x] <= max(3, n // 3) and rule_name_ok(x) and not talk_word(x)
-            and not admin_word(x) and guard(x))
+            and not privacy.admin_hit(x) and guard(x))
 
 
 def build_items2(signals, projects=None, min_w=1.0):
-    """build_items + 신호별 귀속 내역 반환 — 주간/월별/분기 리뷰의 원천.
-    returns (items, assigns)  assigns: [(dt, source, text, weight, project, activity)]"""
+    """build_items + 신호별 귀속 → (items, assigns). assigns: [(날짜, 출처, 글, 가중치, who, 과제, 활동)] — signals 파일의 행."""
     guard = _name_guard(signals)
     items = build_items(signals, projects, min_w, _guard=guard)
-    # 같은 매칭 규칙으로 신호별 귀속 재현
     pl = _norm_projects(projects)
     df = Counter()
     parsed = []
@@ -2262,8 +794,7 @@ def build_items2(signals, projects=None, min_w=1.0):
     assigns = []
     for t, src, text, w, who, tk in parsed:
         low = text.lower()
-        proj = next((name for name, nls in pl
-                     if any(_needle_hit(n, low, tk) for n in nls)), None)
+        proj = next((name for name, nls in pl if any(_needle_hit(n, low, tk) for n in nls)), None)
         if proj is None:
             cand = [x for x in tk if _cand_ok(x, df, len(parsed), guard)]
             proj = sorted(cand, key=lambda x: (-df[x], x))[0] if cand else "미지정"
@@ -2271,64 +802,12 @@ def build_items2(signals, projects=None, min_w=1.0):
     return items, assigns
 
 
-def admin_assigns(assigns, people=None):
-    """mine 규칙 경로(LM30 2026-10-28) — build_items2 의 assigns 중 근태·출장 등록 표기 행의 (과제, 활동) 자리를 바꾼다:
-    'reg' → ('공통', ADMIN_DETAIL) · 'time' → ('공통', ADMIN_TIME_DETAIL)(과제 몫을 셀 때 그때 한 일로 나눈다). 가중치는 그대로.
-    → (새 assigns, {"reg": n, "time": n})."""
-    out, n = [], Counter()
-    for a in assigns or ():
-        t, src, text, w, who, proj, act = a
-        k = admin_kind(text, src, people)
-        if k == "reg":
-            a = (t, src, text, w, who, "공통", ADMIN_DETAIL)
-        elif k == "time":
-            a = (t, src, text, w, who, "공통", ADMIN_TIME_DETAIL)
-        if k in ("reg", "time"):
-            n[k] += 1
-        out.append(a)
-    return out, {"reg": n["reg"], "time": n["time"]}
-
-
-def assign_row(a):
-    """assigns 튜플 → admin_share_rows 가 읽는 행(dict)."""
-    t, src, text, w, who, proj, act = a
-    return {"time": t.strftime("%Y-%m-%d %H:%M"), "source": src, "text": text, "weight": w, "who": who,
-            "project": proj, "activity": act, "_t": t}
-
-
-def items_of_rows(rows, min_w=1.0):
-    """admin_share_rows 결과(mine 규칙 행) → build_items 와 같은 (과제, 활동) 격자 — 가중치·출처·날짜·근거 6줄, min_w 문턱도 같다."""
-    items = defaultdict(lambda: {"w": 0.0, "ev": [], "src": Counter(), "days": set()})
-    for r in rows or ():
-        t = r.get("_t") or _row_dt(r)
-        if t is None:
-            continue
-        it = items[(str(r.get("project") or "미지정"), str(r.get("activity") or "기타"))]
-        it["w"] += _row_w(r)
-        it["src"][r.get("source") or ""] += 1
-        it["days"].add(t.date())
-        if len(it["ev"]) < 6:
-            it["ev"].append(f"{t:%m-%d} [{r.get('source') or ''}] {str(r.get('text') or '')[:70]}")
-    # 근태·출장 등록 몫(1분짜리라 늘 작다)은 문턱과 상관없이 남긴다 — 표에서 사라지면 그 몫이 다른 과제로 옮겨 간다
-    kept = {k: v for k, v in items.items() if v["w"] >= min_w and k[1] not in ADMIN_DETAILS}
-    if not kept:
-        return dict(items)
-    kept.update({k: v for k, v in items.items() if k[1] in ADMIN_DETAILS})
-    return kept
-
-
-def time_shares_rows(rows, day_hours, cfg=None):
-    """time_shares 의 admin_share_rows 판(LM30 2026-10-28) — 등록 행은 1분, 출장·근태계획 조각은 원래 덮던 길이를 조각대로 나눈다."""
-    mins = norm_cfg(cfg)[0]["signalMinutes"]
-    day_min = {d: int(round(float(h) * 60)) for d, h in (day_hours or {}).items() if h and float(h) > 0}
-    alloc, st = admin_allocate(day_min, rows, lambda r: (str(r.get("project") or "미지정"),
-                                                         str(r.get("activity") or "기타")), mins)
-    tot = sum(alloc.values())
-    return ({k: v / tot for k, v in alloc.items()} if tot else {}), st
+EVIDENCE_PER_ITEM = 6          # evidence_<tag>.md 의 항목당 근거 줄 수
 
 
 def build_items(signals, projects=None, min_w=1.0, _guard=None):
-    """신호 → (프로젝트 × 활동) 격자. projects 지정 시 우선 매칭, 없으면 토큰 자동 발견(사람 이름·공지류 토큰 제외)."""
+    """신호 → {(과제, 활동): {"w", "ev", "src", "days"}}. 지정 과제가 먼저, 없으면 자주 나온 낱말(사람·공지 낱말 제외).
+    ev = 'MM-DD 글' 근거 줄(최대 EVIDENCE_PER_ITEM). 가중치 합이 min_w 미만인 칸은 뺀다(전부 빠지면 그대로 둔다)."""
     pl = _norm_projects(projects)
     guard = _guard or _name_guard(signals)
     df = Counter()
@@ -2349,22 +828,18 @@ def build_items(signals, projects=None, min_w=1.0, _guard=None):
 
     items = defaultdict(lambda: {"w": 0.0, "ev": [], "src": Counter(), "days": set()})
     for t, src, text, w, tk in parsed:
-        p = match_project(text, tk)
-        a = activity_of(text, src)
-        it = items[(p, a)]
+        it = items[(match_project(text, tk), activity_of(text, src))]
         it["w"] += w
         it["src"][src] += 1
         it["days"].add(t.date())
-        if len(it["ev"]) < 6:
-            it["ev"].append(f"{t:%m-%d} [{src}] {text[:70]}")
+        if len(it["ev"]) < EVIDENCE_PER_ITEM:
+            it["ev"].append(f"{t:%m-%d} {_one_line(text)[:70]}")
     kept = {k: v for k, v in items.items() if v["w"] >= min_w}
-    # 전부 걸러지면(약한 신호만 있는 기간) 문턱 없이 돌려준다 — rows 가 비어 총 MM 과 어긋나지 않게
     return kept if kept or not items else dict(items)
 
 
 def _ax_field(text):
-    """mm_rows 끝 열(LM28 — 추가 열만): ax(AX 연계 표식 1/0 — MM 은 원래 영역에 둔다, REQ-32) · field(분야, REQ-33).
-    core/details 규칙 — 임포트 실패해도 추출은 계속(0·빈칸)."""
+    """work_rows 끝 열: ax(AX 연계 표식 1/0) · field(분야) — core/details 규칙. 임포트 실패해도 추출은 계속(0·빈칸)."""
     try:
         from details import ax_flag, field_of
         return ax_flag(text), field_of(text)
@@ -2372,3893 +847,34 @@ def _ax_field(text):
         return 0, ""
 
 
-def to_rows(items, months, owner="", function="", shares=None, l1_map=None, pin=None):
-    """가중치 → 비율(share) → 총 MM 배분. share 합이 항상 1.0 — 미분류 없음.
-    총 MM이 0이면 0을 그대로 쓴다 — 예전 `months or 1` 폴백은 인정 근무 0h인 기간을
-    화면에는 0, CSV에는 1.00 MM으로 내보내 두 산출물이 어긋나게 했다.
-    shares(LM28, mm.shareBasis="time" 일 때만 — time_shares 결과)를 주면 몫을 가중치 대신 시간 몫으로 쓴다. 신호가 덮지 않은
-    근무 분 중 직접 분 비례 상한을 넘친 몫은 '근무 중 미분류' 행으로 남는다(숨기지 않는다). 기본(None)은 LM24 그대로.
-    l1_map·pin(LM28 진단 B — ukey2(과제) → 상위): 지난 체계의 l1·사람이 못 박은 상위(projects.json level1). 상위는
-    details.level1_fill(지정 > l1 > 규칙 > 과제명이 곧 범주)로 채운다 — mine 단독 실행에서도 '큰 분류' 가 선다."""
-    tot = sum(v["w"] for v in items.values()) or 1e-9
-    months = float(months) if months is not None else 0.0
-    if shares is not None:
-        from timeshare import UNCLASSIFIED
-        st = sum(shares.get(k, 0.0) for k in items) + shares.get(UNCLASSIFIED, 0.0)
+def evidence_kind(label):
+    """출처 라벨 → 근거 갈래('메일(수신)' → '메일' · '회의' → '회의')."""
+    return str(label or "").split("(")[0] or "기타"
 
-        def _share(k, v):
-            return (shares.get(k, 0.0) / st) if st > 0 else v["w"] / tot
-        order = sorted(items.items(), key=lambda kv: -_share(*kv))
-    else:
-        def _share(k, v):
-            return v["w"] / tot
-        order = sorted(items.items(), key=lambda kv: -kv[1]["w"])
+
+def to_rows(items, function="", l1_map=None, pin=None):
+    """격자 → work_rows 행(spec §5.5). 행 = {Function, Level 1, 유형, Level 2, Level 3, 상세설명, 근거건수, 근거, 확신도, ax,
+    field, share, evidence}. 근거건수 = 신호 수 · 근거 = '메일 12 · 회의 3' · share = 가중치 비율(순서용 — 시간이 아니다) ·
+    evidence = 'MM-DD 글' 목록(evidence_<tag>.md 로만 — CSV 에는 쓰지 않는다).
+    확신도: 근거 갈래 2개 이상 + 서로 다른 날 3일 이상이면 상, 둘 중 하나면 중, 아니면 하(날짜 수는 여기서만 쓰고 남기지 않는다).
+    l1_map·pin(ukey2(과제) → 상위): 지난 체계의 l1·사람이 정한 상위 — details.level1_fill 로 상위를 채운다."""
+    tot = sum(v["w"] for v in items.values()) or 1e-9
+    order = sorted(items.items(), key=lambda kv: (-kv[1]["w"], kv[0]))
     rows = []
     for (proj, act), v in order:
-        share = _share((proj, act), v)
-        srcs = len({s.split("(")[0] for s in v["src"]})
-        conf = "상" if (srcs >= 2 and len(v["days"]) >= 3) else ("중" if srcs >= 2 or len(v["days"]) >= 3 else "하")
-        ax, fld = _ax_field(f"{proj} {_one_line(act)}")
+        kinds = Counter()
+        for s, c in v["src"].items():
+            kinds[evidence_kind(s)] += c
+        n_days = len(v["days"])
+        conf = "상" if (len(kinds) >= 2 and n_days >= 3) else ("중" if len(kinds) >= 2 or n_days >= 3 else "하")
+        l3 = _one_line(act)
+        ax, fld = _ax_field(f"{proj} {l3}")
         rows.append({
-            # 규칙 단독(AI 판정·정제 없이) 실행에서도 상위를 채운다 — judge.py 초안과 같은 규칙·우선순위.
-            # 예전에는 늘 빈칸이라 대시보드 상세 리뷰 표의 Level 1 열이 전부 '-' 였다(제보 ③).
-            "Function": function, "Level 1": _level1_fill(proj, _one_line(act), l1_map, pin),
-            "Level 2": proj, "Level 3": _one_line(act),
-            "이름": owner, "상세설명": "",
-            "share": round(share, 4), "mm": round(share * months, 3),
-            "근거": " · ".join(f"{s}{n}" for s, n in v["src"].most_common()),
-            "확신도": conf, "활동일수": len(v["days"]),
-            "evidence": v["ev"], "ax": ax, "field": fld,
+            "Function": function, "Level 1": _level1_fill(proj, l3, l1_map, pin), "유형": worktype_of(l3, kinds),
+            "Level 2": proj, "Level 3": l3, "상세설명": "",
+            "근거건수": int(sum(kinds.values())),
+            "근거": " · ".join(f"{k} {c}" for k, c in sorted(kinds.items(), key=lambda kv: (-kv[1], kv[0]))),
+            "확신도": conf, "ax": ax, "field": fld, "share": round(v["w"] / tot, 4),
+            "evidence": list(v["ev"]),
         })
-    if shares is not None and st > 0 and shares.get(UNCLASSIFIED, 0.0) > 0:
-        share = shares[UNCLASSIFIED] / st
-        rows.append({"Function": function, "Level 1": "", "Level 2": UNCLASSIFIED, "Level 3": UNCLASSIFIED,
-                     "이름": owner, "상세설명": "신호가 덮지 않은 근무 분 중 과제별 직접 분 비례 상한을 넘친 몫",
-                     "share": round(share, 4), "mm": round(share * months, 3), "근거": "", "확신도": "하",
-                     "활동일수": 0, "evidence": [], "ax": 0, "field": ""})
-        rows.sort(key=lambda r: -r["share"])
-    if rows:
-        # 행별 반올림(소수 3자리) 잔차를 가장 큰 행에 얹는다 — 행 합계와 총 MM 이 화면에서 어긋나지 않게
-        # (실측: 행 합 7.585 → '7.58' vs 총 7.587 → '7.59')
-        resid = round(months - sum(r["mm"] for r in rows), 3)
-        if abs(resid) >= 0.0005:
-            rows[0]["mm"] = max(0.0, round(rows[0]["mm"] + resid, 3))
     return rows
-
-
-def time_shares(assigns, day_hours, cfg=None):
-    """mm.shareBasis="time"(LM28 옵션 — REQ-26·A-24) — build_items2 의 assigns 와 day_work_hours 의 날짜별 투입시간 →
-    ({(과제, 활동) | UNCLASSIFIED: 몫}, 통계). 총량(그날 투입)은 바꾸지 않고 나누기만 한다(core\\timeshare — 날마다 Σ assert)."""
-    import timeshare
-    mins = norm_cfg(cfg)[0]["signalMinutes"]
-    day_min = {d: int(round(float(h) * 60)) for d, h in (day_hours or {}).items() if h and float(h) > 0}
-    rows = [(t, src, w, (proj, act)) for t, src, _text, w, _who, proj, act in (assigns or [])]
-    alloc, st = timeshare.allocate(day_min, rows, mins)
-    tot = sum(alloc.values())
-    return ({k: v / tot for k, v in alloc.items()} if tot else {}), st
-
-
-# ── MM v4: 투입 MM ↔ 가용 MM (로드율 비교용) ───────────────────────────────
-# 사용자 확정 설계:
-#   · 1 MM 의 정의 = 8h × 그 달 평일수 (주40시간 기준)
-#   · 연차·휴가는 '일자에서 뺀다' → 가용 MM 의 분자에서 그 날짜가 빠진다
-#   · 실제 업무시간이 주 52시간을 넘어도 자르지 않는다 — 상한 없이 실측 그대로
-#   · 두 숫자를 나란히 낸다:  투입 MM(실제 일한 양)  /  가용 MM(일할 수 있었던 양)
-#     로드율(%) = 투입 MM ÷ 가용 MM      100% = 가용 시간을 꽉 채워 일함
-#
-# 야간(19~08시)은 'PC가 켜져 있던 시간'이 아니라 **산출물 신호가 실제로 찍힌 시각의 폭**으로
-# 잰다. 그래야 취침 중 켜둔 PC를 근무로 세지 않으면서도 진짜 야근은 상한 없이 정직하게 잡힌다.
-# '수동기록'(Add-WorkLog)·날짜만 아는 발신(메일(발신·일자))도 그날의 능동 흔적이다 — 세션은 만들지 않는다(signalMinutes 0)
-# '파일(해석출력)'(S3-P4) — 해석 출력 뭉치의 대표 1건: 해석을 돌린 날의 산출이라 능동 흔적(ACTIVE_SRC — PC 하한이 열린다)이지만
-# 기계가 쓴 시각이라 야간 산출물(NIGHT_PRODUCTIVE)은 아니다 — 밤새 돌린 솔버의 03:00 출력이 새벽 크레딧·야간 세션이 되지
-# 않는다(VF-H1). 주간 창 안의 시각은 day_work_hours 가 예전처럼 산출물·흔적으로 쓴다.
-NIGHT_PRODUCTIVE = {"파일", "파일(코드)", "커밋", "메일(발신)", "팀즈(발신)", "수동기록", "메일(발신·일자)", "팀즈(발신·일자)"}
-# LM30(2026-10-28) 내가 한 일 — 출장·근태계획 시간을 그때 한 일의 과제로 나눌 때 보는 신호(admin_share_rows · 받은 글·남의 파일 아님)
-OWN_WORK_SRC = frozenset(NIGHT_PRODUCTIVE) | {"회의", "작업창", "작업창(IDE)", "파일(해석출력)"}
-# LM28(E) — 날짜만 아는 신호(12:00 은 자리표). 발신은 '그날 일했다'는 능동 흔적(하한 게이트·시각 미상 인정)이지만 시각 근거가
-# 아니다 — 산출물·흔적 폭·주말 창·흔적 창의 기준점으로 쓰지 않는다(예전엔 정오에 가짜 창이 생기고 저녁 인정이 불가능했다).
-# 받은 글(팀즈 날짜만)은 아무 시간도 만들지 않는다. UNTIMED_BASE = 시각 미상 인정 1건의 분을 빌려 올 라벨(signalMinutes).
-UNTIMED_SRC = {"메일(발신·일자)", "팀즈(발신·일자)"}
-UNTIMED_PAS = {"팀즈(수신·일자)"}
-UNTIMED_BASE = {"메일(발신·일자)": "메일(발신)", "팀즈(발신·일자)": "팀즈(발신)"}
-# 본인 발신 라벨 — 사적 판정의 퇴근 후 +1점을 받지 않고(load_signals), AI 가 비업무(n)로 걸러도 시간 근거로 남는다(rehours_after_judge)
-OWN_SEND_SRC = ("메일(발신)", "메일(발신·일자)", "팀즈(발신)", "팀즈(발신·일자)")
-TIME_KEEP_SRC = OWN_SEND_SRC
-# LM30(2026-10-18) 출퇴근 추정(core\attendance)의 '확실한 흔적' 점 — 내가 만든 산출물·발신 중 시각을 아는 것. 날짜만 아는 발신
-# (UNTIMED_SRC)은 시각이 없고, '수동기록' 신호의 09:00 은 load_signals 의 자리표라 점으로 쓰지 않는다 — 수동 기록은 worklog 의
-# 구간(시작·끝)·시간(바닥값)으로 따로 받는다(manual_entries). 받은 글·열람·해석 출력은 사람이 한 일의 시각이 아니다.
-ATT_POINT_SRC = frozenset(NIGHT_PRODUCTIVE - UNTIMED_SRC - {"수동기록"})
-# LM30(2026-10-25) 하루 유급휴가인 평일(알려진 휴가 — attendance 머리말 22)의 신호 세션 재료 — 내가 만든 산출물·발신만. 받은 메일·팀즈·
-# 오더·열람·회의 신호·해석 출력은 그 날 근무가 아니다(날짜만 아는 발신·수동기록은 세션을 만들지 않는다 — signalMinutes 0 · 따로 센다)
-LEAVE_OWN_SRC = frozenset(NIGHT_PRODUCTIVE)
-# 출퇴근 추정이 투입을 맡을 때 info 에서 lm29_totals 로 옮기는 LM29 합계(같은 키에는 출퇴근 추정 값이 들어간다)
-LM29_TOTAL_KEYS = ("overtime_h", "regular_h", "extended_h", "night_h", "holiday_h", "holiday_night_h",
-                   "weekend_days", "night_days", "long_days", "absent_worked_h")
-STD_DAY_H = 8.0
-# 근태어(A5) — 한글은 토큰 **접미 일치**(여름휴가·연차휴가·오후반차·육아휴직 ○ / 휴무일·휴가철·2연차 ×),
-# 영문은 단어 경계 구문. 놓치면 정상 근무로 계산되므로 놓치는 쪽이 안전한 방향이다.
-ABSENCE_KW_KR = ("연차", "휴가", "반차", "반휴", "병가", "경조", "경조사", "대체휴무", "휴무", "휴직", "월차", "공가")
-ABSENCE_KW_EN = ("vacation", "pto", "annual leave", "out of office", "ooo")
-ABSENCE_KW = ABSENCE_KW_KR + ABSENCE_KW_EN
-HALF_KW = ("반차", "반휴", "오전", "오후", "half day", "half-day")
-ABSENCE_GUARD = ("안내", "공지", "웹진", "캠페인", "신청 방법", "사용 촉진", "권장", "현황", "집계")
-SELF_TOKEN = "[나]"           # core\privacy 가 제목의 내 이름을 바꿔 넣는 가림 표식(G1 정제 — _absence_skip 이 내 이름으로 본다)
-_ABS_SPLIT = re.compile(r"[\s_\-·/()\[\],:：]+")
-_ABS_STRIP = re.compile(r"(입니다|사용|신청|중|임|함)$")
-_ABS_EN = re.compile(r"(?<![a-z])(" + "|".join(re.escape(k) for k in ABSENCE_KW_EN) + r")(?![a-z])")
-# 양력 고정 공휴일 + 근로자의날. 음력 명절·대체공휴일·선거일은 아래 KR_HOLIDAYS(연도별) 로 내장하고,
-# 표에 없는 연도·임시 공휴일은 config.holidays 로 보충한다(A31). 그래도 없으면 '연휴 감지'가 과대계상을 막는다.
-FIXED_HOLIDAYS = {(1, 1), (3, 1), (5, 1), (5, 5), (6, 6), (8, 15), (10, 3), (10, 9), (12, 25)}
-# ★ 배포 전 정부 공고(인사혁신처·관보)로 재확인할 것 — 설·추석 연휴, 대체공휴일, 선거일, 임시공휴일.
-#   2025: 설 1/28~30(+임시 1/27) · 삼일절 대체 3/3 · 어린이날/부처님오신날 대체 5/6 · 대선 6/3 · 추석 10/6~7 + 대체 10/8
-#   2026: 설 2/16~18 · 삼일절 대체 3/2 · 부처님오신날 대체 5/25 · 지방선거 6/3 · 광복절 대체 8/17 ·
-#         추석 9/24~25 + 대체 9/28 · 개천절 대체 10/5
-#   2027: 설 2/8 + 대체 2/9~10 · 부처님오신날 5/13 · 광복절 대체 8/16 · 추석 9/14~16 · 개천절 대체 10/4 · 한글날 대체 10/11 ·
-#         성탄절(토) 대체 12/27 (2023년부터 성탄·부처님오신날도 대체공휴일 적용)
-#   2028: 설 1/25~27 · 국회의원선거 4/12 · 부처님오신날 5/2 · 추석 10/2~4 + 개천절(10/3) 겹침 대체 10/5 (LM28 WP8 — 음력 환산
-#         기준의 예정일, 정부 공고로 재확인)
-KR_HOLIDAYS = {
-    2025: {(1, 27), (1, 28), (1, 29), (1, 30), (3, 3), (5, 6), (6, 3), (10, 6), (10, 7), (10, 8)},
-    2026: {(2, 16), (2, 17), (2, 18), (3, 2), (5, 25), (6, 3), (8, 17), (9, 24), (9, 25), (9, 28), (10, 5)},
-    2027: {(2, 8), (2, 9), (2, 10), (5, 13), (8, 16), (9, 14), (9, 15), (9, 16), (10, 4), (10, 11), (12, 27)},
-    2028: {(1, 25), (1, 26), (1, 27), (4, 12), (5, 2), (10, 2), (10, 4), (10, 5)},
-}
-GAP_DAYS = 3
-NIGHT_PAD_H = 0.5          # 야간 산출물 앞뒤로 인정하는 준비·마무리 시간
-
-
-def _is_night(t, day_win=None):
-    # 수집기(Get-PcOnHistory.ps1)가 night_hours 를 '08:00 이전 + 19:00 이후'로 적산하므로
-    # 판정도 같은 경계(DAY_WIN)를 쓴다. 06시 기준이면 06~08시 근무가 인정시간에서 통째로 사라진다.
-    # day_win 은 호출측(day_work_hours)의 지역 설정 — 모듈 전역을 덮어쓰지 않는다.
-    a, b = day_win or DAY_WIN
-    m = t.hour * 60 + t.minute
-    return m >= b or m < a
-
-
-def _truthy(v):
-    return str(v or "").strip().lower() in ("true", "-1", "1", "yes", "y")
-
-
-def _token_suffix_hit(s, kws, limit=8):
-    """토큰이 키워드로 **끝나면** 인정(A5) — '여름휴가'·'연차휴가'·'오후반차'·'육아휴직' ○, '휴무일'·'휴가철' ×.
-    숫자만 앞에 붙은 토큰('2연차' = 2년차)은 근태가 아니다. 어미(입니다·사용·신청·중…)는 떼고 본다."""
-    for t in _ABS_SPLIT.split(str(s or "").strip().lower())[:limit]:
-        t = _ABS_STRIP.sub("", t.strip())
-        if not t:
-            continue
-        for k in kws:
-            if t == k or (t.endswith(k) and not t[:-len(k)].isdigit()):
-                return True
-    return False
-
-
-def _absence_hit(subj):
-    """제목이 실제 근태인지 — '휴가철 안전 캠페인'·'휴무일 근무 협조'·'연차 사용 현황' 같은 공지가 하루를
-    통째로 차감하지 않도록 오탐 가드어가 있으면 아니고, 한글은 토큰 접미 일치·영문은 단어 경계 구문만 인정한다.
-    놓치면 정상 근무로 계산되므로 놓치는 쪽이 안전한 방향이다."""
-    s = str(subj or "")
-    if any(x in s for x in ABSENCE_GUARD):
-        return False
-    low = s.lower()
-    if _ABS_EN.search(low):
-        return True
-    return _token_suffix_hit(low, ABSENCE_KW_KR)
-
-
-def _half_hit(subj):
-    """반차 표식 — 반차·반휴·오전·오후·half day, 또는 토큰 AM/PM(mm-formula-14)."""
-    low = str(subj or "").lower()
-    if any(k in low for k in HALF_KW):
-        return True
-    return any(t in ("am", "pm") for t in _ABS_SPLIT.split(low))
-
-
-def _absence_skip(r, selfs=()):
-    """남이 보낸·취소된·거절한·미응답 초대는 내 근태가 아니다(A4 — 동료 '[연차] 이름' 팀 공유 초대).
-      meeting_status 3=받은 초대 / 5·7=취소 · response 4=거절 5=미응답 · busy 0=한가함
-    열이 없는 경로(웹·색인·Copilot — meeting_status·response 가 모두 빈 행)는 LM28(E)부터 내가 부재중(busy 3)으로 표시한 것이거나
-    제목에 내 이름(selfs — _self_names 의 정규화 조각)이 든 것만 근태로 본다. 웹 일정은 받은 초대를 구분할 열이 없어, 동료의
-    '[휴가] 이름' 종일 초대가 '바쁨'(2)으로 읽혀 내 부재 1.0일이 되고 그날 PC 하한이 꺼졌다.
-    LM30(2026-10-21) 수집 직후 정제(run.g1_mail — core\\privacy)가 제목의 내 이름을 SELF_TOKEN('[나]')으로 바꾸므로 그 표식도 내 이름으로
-    본다 — 예전에는 정제 뒤 '[휴가] [나]' 가 내 이름과 맞지 않아 내 휴가가 빠지고 그날이 일하지 않은 평일로 남았다."""
-    ms = str(r.get("meeting_status") or "").strip()
-    resp = str(r.get("response") or "").strip()
-    busy = str(r.get("busy_status") or "").strip()
-    if ms in ("5", "7") or resp in ("4", "5"):
-        return True
-    if ms == "3" and busy != "3":              # 받은 초대는 내가 OOF 로 표시한 것만 근태로 인정
-        return True
-    if busy == "0" and ms != "0":              # 한가함 초대(정보성)
-        return True
-    if not ms and not resp:
-        if busy == "3":
-            return False
-        if SELF_TOKEN in str(r.get("subject") or ""):
-            return False
-        subj = re.sub(r"[\s._\-]+", "", str(r.get("subject") or "").lower())
-        return not any(len(n) >= 2 and n in subj for n in (selfs or ()))
-    return False
-
-
-def absence_days(data_dir, d0, d1, spans=None, cfg=None, src=None):
-    """유급휴가일(내부 이름 '부재' — 키 호환) — Outlook 종일 일정·부재중(OOF)·시간제 근태 일정에서 읽는다.
-    returns {date: 0.5(반차) | 1.0(종일)}   ※ 출장·교육은 근무이므로 휴가가 아니다(offsite_days 가 맡는다).
-      · 종일: 제목에 반차 표식(오전/오후/반차/AM/PM)이면 0.5, 아니면 1.0
-      · 시간제 OOF(busy 3): 길이 ≤5h 또는 반차 표식이면 0.5, 그 밖에 1.0 (A5 — 예전엔 무조건 1.0)
-      · 시간제 바쁨: ≥6h → 1.0 · ≥3h → 0.5 · 그 미만 0 (예전과 같음)
-      · 남이 보낸·취소·거절·미응답 초대(_absence_skip)는 아니다(A4)
-    spans(dict 를 넘기면) 에 {date: [(m0, m1)]} 휴가 구간(분)을 채운다 — 반차 시각. 종일 반차는 오전이면
-    주간 창 시작~점심 끝, 오후면 점심 시작~주간 창 끝으로 둔다.
-    cfg(없으면 config\\config.json) — '나' 의 이름(owner·teamsSelfNames·계정·로그온 표시명·mail_source me — 파일 author 다수결은
-    읽지 않는다)으로 열 없는 경로의 일정이 내 근태인지 본다(_absence_skip, LM28 E).
-    LM30(2026-10-21) 근태 기록 칸의 휴가 열(data\\근태\\*.csv · gerp.csv)과 '휴가 날짜' 칸에 직접 넣은 날(휴가_직접입력.csv)도 합친다
-    (core\\attendance.load_records 의 leave · 머리말 22) — 같은 날이면 큰 쪽(종일 > 반차). 예전에는 근태 기록에만 있는 연차가 가용에 남아
-    일하지 않은 평일로 세어졌다(로드율 −5%p 안팎/일). src(dict 를 넘기면)에 {date: cal|rec|gerp|manual} 출처(달력 → 근태 기록 → GERP →
-    직접 순으로 먼저 안 곳)를 채운다. 근태·직접 넣은 반차는 시각을 모르므로 spans 에 넣지 않는다(PC 하한의 반차 상한 표준일 × 0.5 만)."""
-    from datetime import timedelta
-    out = {}
-    selfs = _self_names(data_dir, cfg if isinstance(cfg, dict) else load_cfg(), file_rows=[])
-    for r in _read_multi(data_dir, "outlook", "calendar.csv"):
-        if _absence_skip(r, selfs):
-            continue
-        t0, t1 = _dt(r.get("start")), _dt(r.get("end"))
-        subj = r.get("subject") or ""
-        if not t0 or not _absence_hit(subj):
-            continue
-        allday = _truthy(r.get("all_day"))
-        oof = str(r.get("busy_status") or "").strip() == "3"
-        half = _half_hit(subj)
-        seg = None
-        if allday:
-            frac = 0.5 if half else 1.0
-            if half:
-                low = subj.lower()
-                seg = ((DAY_WIN[0], LUNCH[1]) if ("오전" in low or "am" in _ABS_SPLIT.split(low))
-                       else (LUNCH[0], DAY_WIN[1]))
-        elif t1 and t1 > t0:
-            dur = (t1 - t0).total_seconds() / 3600
-            if oof:
-                frac = 0.5 if (half or dur <= 5) else 1.0
-            else:
-                # 종일이 아닌 '바쁨' 상태로 올린 근태 — 길이로 판단한다. 이걸 놓치면
-                # nonWorkKeywords 가 신호만 지우고 그날은 정상 8h 근무로 남는다.
-                frac = 1.0 if dur >= 6 else (0.5 if dur >= 3 else 0.0)
-                if frac == 1.0 and half:
-                    frac = 0.5
-            if frac == 0.0:
-                continue
-            if frac == 0.5 and t1.date() == t0.date():
-                seg = (t0.hour * 60 + t0.minute, t1.hour * 60 + t1.minute)
-        else:
-            continue
-        last = (t1 or t0).date()
-        if t1 and t1.hour == 0 and t1.minute == 0 and last > t0.date():
-            last -= timedelta(days=1)      # 종일/OOF 일정의 end 는 익일 00:00 (하루 더 차감 방지)
-        d = t0.date()
-        while d <= last:
-            if d0 <= d <= d1:
-                out[d] = max(out.get(d, 0.0), frac)
-                if src is not None:
-                    src.setdefault(d, "cal")
-                if spans is not None and seg is not None:
-                    spans.setdefault(d, []).append(seg)
-            d += timedelta(days=1)
-    try:
-        import attendance as _att
-        rec_lv = _att.load_records(data_dir).get("leave") or {}
-    except Exception:  # noqa: BLE001 - 근태 기록 칸을 못 읽어도 달력 휴가는 그대로 쓴다
-        rec_lv = {}
-    for d, (f, s) in sorted(rec_lv.items()):
-        if d0 <= d <= d1 and f > 0:
-            out[d] = max(out.get(d, 0.0), float(f))
-            if src is not None:
-                src.setdefault(d, s)
-    return out
-
-
-def _allday_dates(t0, t1):
-    """종일 일정의 날짜 목록 — end 가 익일 00:00 이면 그 전날까지."""
-    from datetime import timedelta
-    if not t0:
-        return []
-    last = (t1 or t0).date()
-    if t1 and t1.hour == 0 and t1.minute == 0 and last > t0.date():
-        last -= timedelta(days=1)
-    out, d = [], t0.date()
-    while d <= last and len(out) < 62:      # 두 달 넘는 종일 블록은 행사가 아니다
-        out.append(d)
-        d += timedelta(days=1)
-    return out
-
-
-def _offsite_kws(cfg):
-    """종일 '회사 밖 근무' 키워드 — config.mm.offsiteKeywords(기본 OFFSITE_KW) + 교육류(EDU_KW). 소문자."""
-    cfg = cfg if isinstance(cfg, dict) else {}
-    mmc = cfg.get("mm") if isinstance(cfg.get("mm"), dict) else {}
-    kws = [str(k).strip().lower() for k in (cfg_list(mmc, "offsiteKeywords") or OFFSITE_KW) if str(k).strip()]
-    return tuple(dict.fromkeys(kws + [k.lower() for k in EDU_KW]))
-
-
-def _edu_unaccepted(r, subj, busy):
-    """교육·세미나 일정인데 수락 근거가 없다(busy 2·3 도 아니고 응답 1·3 도 아님) = 미참여 추정."""
-    resp = str(r.get("response") or "").strip()
-    return (any(k in subj.lower() for k in EDU_KW) and str(busy).strip() not in ("2", "3")
-            and resp not in ("1", "3"))
-
-
-def _is_block_row(r, subj_low):
-    """캘린더 행이 '회의가 아닌 블록' 인가(A19) — 약속(meeting_status 0)은 언제나 블록. 상태 열이 없는 폴백 경로에서는
-    5h 를 넘고 출장·교육 키워드도 없는 시간제 일정('재택근무' 09~18)만 블록(자정을 넘는 4h 회의는 회의다).
-    _meeting_spans(시간 근거 제외)와 offsite_days(종일 행사 폴백)가 같은 판정을 공유한다."""
-    ms = str(r.get("meeting_status") or "").strip()
-    if ms == "0":
-        return True
-    if ms:
-        return False
-    t0, t1 = _dt(r.get("start")), _dt(r.get("end"))
-    if not (t0 and t1 and t1 > t0):
-        return False
-    off_kws = tuple(k.lower() for k in OFFSITE_KW) + tuple(k.lower() for k in EDU_KW)
-    return (t1 - t0).total_seconds() / 60 > 300 and not any(k in subj_low for k in off_kws)
-
-
-def _offsite_row(r, kws, nonwork, tentative="count", hit=None):
-    """캘린더 행이 '회사 밖 근무'(출장·현장·교육) 하루인가(A6) — 종일 일정, 또는 회의가 아닌 하루짜리(≥6h) 시간제
-    블록(A19 의 blocks: '협력사 현장 09~18' OOF 약속). busy 3(부재중)·4(근무지 외), 또는 busy 2 이고 제목에 키워드.
-    근태(_absence_hit)·비업무·개인정보 제외어·취소/거절/한가함/설정상 미정(_meeting_skip)·남이 보낸 초대(ms 3 인데
-    내가 부재중/근무지외로 표시하지 않음)는 아니다."""
-    subj = r.get("subject") or ""
-    low = subj.lower()
-    if not _truthy(r.get("all_day")):
-        t0, t1 = _dt(r.get("start")), _dt(r.get("end"))
-        if not (t0 and t1 and (t1 - t0) >= _td(hours=6) and _is_block_row(r, low)):
-            return False                        # 시간제 회의는 _meeting_spans 가 시간으로 센다(이중 계상 방지)
-    if _absence_hit(subj) or _nonwork_hit(low, nonwork) or (hit is not None and hit(low)):
-        return False
-    if _meeting_skip(r, tentative):
-        return False
-    busy = str(r.get("busy_status") or "2").strip()
-    ms = str(r.get("meeting_status") or "").strip()
-    resp = str(r.get("response") or "").strip()
-    if ms == "3" and busy not in ("3", "4") and resp not in ("1", "3"):
-        return False                            # 남이 보낸 초대('[출장] 이름')는 내가 수락했거나 부재중/근무지외 표시일 때만
-    return busy in ("3", "4") or (busy == "2" and any(k in low for k in kws))
-
-
-def offsite_days(data_dir, d0, d1, cfg=None, exclude=None):
-    """'회사 밖 근무' 일(A6) → {date: subject} — 종일 일정 + 하루짜리(≥6h) 시간제 블록(재택근무가 아닌 출장·현장·교육,
-    A19 의 blocks 중 부재중/근무지외 또는 키워드). config.mm.offsiteAsWork=false 면 {}.
-    day_work_hours 가 그날을 표준일 × (1−부재) 하한·능동 흔적으로 인정하고 부재 추정에서 뺀다.
-    exclude(개인정보 제외어)를 주지 않으면 config.excludePathKeywords 를 쓴다."""
-    cfg = cfg if isinstance(cfg, dict) else {}
-    mmc = cfg.get("mm") if isinstance(cfg.get("mm"), dict) else {}
-    if not _bool(mmc.get("offsiteAsWork"), True):
-        return {}
-    kws = _offsite_kws(cfg)
-    nonwork = _nonwork_list(cfg)
-    tentative = norm_cfg(cfg)[0]["tentativeMeetings"]
-    hit = _text_filter(cfg_list(cfg, "excludePathKeywords") if exclude is None else exclude)
-    out = {}
-    for r in _read_multi(data_dir, "outlook", "calendar.csv"):
-        if not _offsite_row(r, kws, nonwork, tentative, hit):
-            continue
-        t0, t1 = _dt(r.get("start")), _dt(r.get("end"))
-        days = _allday_dates(t0, t1) if _truthy(r.get("all_day")) else [
-            dd for dd in _allday_dates(t0, t1)
-            if dd == t0.date() or dd < t1.date() or (t1.hour * 60 + t1.minute) >= 360]   # 마지막 날은 6h 이상일 때만
-        for dd in days:
-            if d0 <= dd <= d1 and dd not in out:
-                out[dd] = (r.get("subject") or "").strip()
-    return out
-
-
-def manual_hours(data_dir, d0, d1):
-    """collect/Add-WorkLog.ps1 의 data/manual/worklog.csv(date,category,hours,entity,note,user) → {date: (hours, [text…])}
-    PC 밖 업무(출장·조립·장비 점검)의 유일한 원천(A13). 추가PC 포함(같은 행은 1건), 0 < h, 하루 합계 ≤ PHYS_CAP_H.
-    day_work_hours 가 그날을 기록 시간 하한·능동 흔적으로 인정하고 부재 추정에서 뺀다."""
-    out, seen = {}, set()
-    for r in _read_multi(data_dir, "manual", "worklog.csv"):
-        t = _dt((r.get("date") or "").strip()[:10])
-        try:
-            h = float(r.get("hours") or 0)
-        except (TypeError, ValueError):
-            continue
-        if not t or not (0 < h <= PHYS_CAP_H) or not (d0 <= t.date() <= d1):
-            continue
-        key = (t.date(), (r.get("category") or "").strip(), h, (r.get("entity") or "").strip(),
-               (r.get("note") or "").strip())
-        if key in seen:
-            continue
-        seen.add(key)
-        txt = " ".join(x for x in key[1:2] + key[3:5] if x)
-        h0, lst = out.get(t.date(), (0.0, []))
-        out[t.date()] = (min(PHYS_CAP_H, h0 + h), lst + ([txt] if txt else []))
-    return out
-
-
-def manual_entries(data_dir, d0, d1):
-    """LM30(2026-10-18) — worklog.csv(date,category,hours,entity,note,user,start,end) → [(날짜, 시간, 시작 분|None, 끝 분|None)].
-    manual_hours 는 시간만 읽어 시작·끝을 버렸다 — 출퇴근 추정은 시작·끝이 있는 행을 그 구간의 확실한 흔적으로, 시간만 적은 행은
-    바닥값으로 쓴다. 중복 거르기는 manual_hours 와 같다(추가PC 포함 — 같은 행은 1건, 구간이 다르면 다른 행). start·end 가 둘 다
-    읽히고 다를 때만 구간이다(끝 ≤ 시작 = 자정을 넘긴 구간 — 끝에 1440 을 더하는 것은 호출측)."""
-    out, seen = [], set()
-    for r in _read_multi(data_dir, "manual", "worklog.csv"):
-        t = _dt((r.get("date") or "").strip()[:10])
-        try:
-            h = float(r.get("hours") or 0)
-        except (TypeError, ValueError):
-            continue
-        if not t or not (0 < h <= PHYS_CAP_H) or not (d0 <= t.date() <= d1):
-            continue
-        s0, s1 = _hhmm(r.get("start")), _hhmm(r.get("end"))
-        if s0 is None or s1 is None or s0 == s1:
-            s0 = s1 = None
-        key = (t.date(), (r.get("category") or "").strip(), h, (r.get("entity") or "").strip(),
-               (r.get("note") or "").strip(), s0, s1)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append((t.date(), h, s0, s1))
-    return out
-
-
-def _pc_spans_rows(rows, d0, d1, anomalies=None):
-    """pc_spans 행(start,end,src) → {date: [(m0, m1), …]} — read_pc_spans 의 본체. 루트별로 따로 부를 수 있게 뗐다(pc_daily 가
-    구간이 어느 PC 것인지 알아야 한다)."""
-    out = {}
-    for r in rows:
-        a, b = _dt(r.get("start")), _dt(r.get("end"))
-        if not (a and b and b > a):
-            continue
-        note = ((f"pc_spans {(r.get('src') or '').strip() or 'event'} 구간 {round((b - a).total_seconds() / 3600, 1):g}h(>48h) — "
-                 "자정 분할해 수용") if (b - a) > _td(hours=48) else None)
-        cur = a
-        while cur < b:
-            dd = cur.date()
-            nxt = datetime(dd.year, dd.month, dd.day) + _td(days=1)
-            seg_end = min(b, nxt)
-            if d0 <= dd <= d1:
-                m0 = cur.hour * 60 + cur.minute + cur.second / 60.0
-                m1 = 1440.0 if seg_end == nxt else seg_end.hour * 60 + seg_end.minute + seg_end.second / 60.0
-                if m1 > m0:
-                    out.setdefault(dd, []).append((m0, m1))
-                    if note and anomalies is not None:
-                        anomalies.append((dd, note))
-                        note = None                    # 행마다 한 번(첫 해당 날짜)
-            cur = seg_end
-    return out
-
-
-def read_pc_spans(data_dir, d0, d1, anomalies=None):
-    """data/pc_spans.csv 또는 data/pc/pc_spans.csv(start,end,src — 로컬 시각, 자정 분할 없음) → {date: [(m0, m1), …]}
-    없으면 {}. 자정을 넘는 구간은 날짜별로 자른다(끝이 자정이면 1440). 추가PC 의 구간도 그대로 모은다 —
-    합집합·주간 창 교집합은 호출측(day_work_hours)이 한다.
-    행 길이에 상한을 두지 않는다(VF-H8) — 수집기 계약이 'live = 현재 부팅 세션 → 지금까지 · 닫힌 구간 길이 무관' 이라 며칠
-    켜 둔 PC 는 한 행(live·event-gap)이 된다. 예전 48h 상한은 그 행을 통째로 버려 pc_on 이 없으면 'PC 기록 결측' 으로 집계됐다.
-    물리 한계는 자정 분할 조각(저마다 ≤24h)이 지킨다. 48h 를 넘는 행은 anomalies(list 를 주면) 에 (첫 해당 날짜, 설명) 으로
-    남겨 결측과 구분한다. 시각 형식 오류·end ≤ start 행은 버린다."""
-    rows = _read_multi(data_dir, "pc_spans.csv") + _read_multi(data_dir, "pc", "pc_spans.csv")
-    return _pc_spans_rows(rows, d0, d1, anomalies)
-
-
-# migr(구판 행 이행분)도 물리 증거로 친다 — 유령 필터가 이행분을 지우면 안 된다(v3 최종 검증 CRITICAL)
-EVENT_SPAN_SRC = ("event", "event-gap", "event-cap", "live", "boot", "migr")
-# LM30(2026-10-21) 예전 판 설치 폴더에서 가져온 원장 행(core\pc_import)의 seen 머리 — core\pc_ledger.IMPORT_SEEN 과 같은 값.
-# 이 표시로 '이 설치(·추가PC)가 직접 모은 기록' 과 '가져온 기록' 을 가른다(_native_pc).
-IMPORT_SEEN = "import:"
-# LM30(2026-10-21) 첫 PC 켜고 끈 기록(가져온 것 빼고) 전 평일은 기록이 '없던' 것이 아니라 Windows 가 '지운' 것이다 — 그 달 PC 기록이 40%를
-# 넘어도(기록이 시작된 달·가져오기로 채운 달) 흔적이 있으면 표준일 추정(하루 8시간)을 바닥으로 둔다(시험이 False 로 바꿔 예전 숫자를 본다).
-NOPC_BEFORE_NATIVE = True
-
-
-def _native_pc(data_dir, d0, d1):
-    r"""LM30(2026-10-21) 가져온 PC 기록(core\pc_import — seen 'import:…')과 직접 모은 기록을 가른다(모든 루트 — 본 PC + 추가PC) →
-    (imp_only, first) — imp_only = [d0, d1] 안에서 그 날의 원장 행이 가져온 것뿐인 날 · first = 가져온 것을 뺀 PC 켜고 끈 기록(이벤트
-    계열 — 브라우저 방문·창 샘플러 아님)의 첫 날짜(없으면 None). 구간 파일이 없는 루트(옛 수집분)의 pc_on 행은 직접 모은 기록이다.
-    읽기만 한다."""
-    soft = ("hint", "sampler")
-    imp, own, first = set(), set(), None
-    for root in _data_roots(data_dir):
-        rows = _read(os.path.join(root, "pc_spans.csv")) + _read(os.path.join(root, "pc", "pc_spans.csv"))
-        mine = [r for r in rows if not str(r.get("seen") or "").startswith(IMPORT_SEEN)]
-        theirs = [r for r in rows if str(r.get("seen") or "").startswith(IMPORT_SEEN)]
-        imp.update(_pc_spans_rows(theirs, d0, d1))
-        own.update(_pc_spans_rows(mine, d0, d1))
-        for r in mine:
-            if str(r.get("src") or "").strip().lower() in soft:
-                continue
-            a = _dt(r.get("start"))
-            if a and (first is None or a.date() < first):
-                first = a.date()
-        if rows:
-            continue
-        for r in _read(os.path.join(root, "pc", "pc_on.csv")):
-            try:
-                dd = datetime.strptime((r.get("date") or "")[:10], "%Y-%m-%d").date()
-            except (ValueError, TypeError):
-                continue
-            if d0 <= dd <= d1:
-                own.add(dd)
-            if first is None or dd < first:
-                first = dd
-    return imp - own, first
-
-
-PC_MONTH_KEYS = ("wd", "rec", "imp", "hint", "fill8", "l29", "none", "mail", "teams", "untimed", "lv")
-
-
-def _pc_months(pc_fact, att_days, nopc_days, hours, sends, untimed, inferred=None):
-    r"""LM30(2026-10-21) 달마다 근거 보기(core\attendance 머리말 21) → {"YYYY-MM": {wd 평일(오늘까지 · 휴가인 날 빼고) · rec PC 켜고 끈
-    기록이 있는 평일 · imp 그중 가져온 기록뿐인 날 · hint 브라우저 기록만 있는 평일 · fill8 하루 8시간으로 채운 평일 · l29 그 밖의 LM29 방식
-    값으로 채운 평일 · none 근무 0시간 평일(휴가 빼고) · mail·teams 시각 있는 발신 수 · untimed 날짜만 아는 발신 수 · lv 휴가인 평일(하루
-    휴가 + 휴가로 본 날 inferred — 머리말 22 · 위 평일 수에 넣지 않는다) · hint_h 브라우저 사용 시간 · capped 8시간으로 채운 달(fill8 ≥
-    max(5, 평일/3))}}. 일수·건수만이다(시각 없음 — mm_meta·팀 묶음에 실려도 된다).
-    att_days = 출퇴근 추정 날짜별 행(없으면 nopc_days 로 fill8 만 센다)."""
-    import attendance as _att
-    out = {}
-    inf = set(inferred or ())
-    for d, (evt, imp, hint, absent) in sorted(pc_fact.items()):
-        m = out.setdefault(d.strftime("%Y-%m"), dict.fromkeys(PC_MONTH_KEYS, 0))
-        if absent >= 1.0 or d in inf:
-            m["lv"] += 1                  # 휴가인 날 — PC 기록이 없는 게 당연하다(일하지 않은 날·기록 빠진 날로 세지 않는다)
-            continue
-        m["wd"] += 1
-        m["rec"] += 1 if evt else 0
-        m["imp"] += 1 if imp else 0
-        m["hint"] += 1 if hint else 0
-        if att_days is not None:
-            notes = ((att_days.get(d.isoformat()) or {}).get("notes") or [])
-            fill8 = any(n in _att.FILL8_NOTES for n in notes)
-            l29 = not fill8 and any(n in (_att.L29_NOTE_NOPC, _att.L29_NOTE_THIN) for n in notes)
-        else:
-            fill8, l29 = d in nopc_days, False
-        m["fill8"] += 1 if fill8 else 0
-        m["l29"] += 1 if l29 else 0
-        m["none"] += 1 if (float(hours.get(d, 0.0) or 0.0) <= 0 and absent < 1.0) else 0
-    for dd, lst in (sends or {}).items():
-        m = out.get(dd.strftime("%Y-%m"))
-        if m is not None:
-            for _mm, src in lst:
-                m["mail" if str(src).startswith("메일") else "teams"] += 1
-    for dd, cnt in (untimed or {}).items():
-        m = out.get(dd.strftime("%Y-%m"))
-        if m is not None:
-            m["untimed"] += sum(cnt.values())
-    for iso, r in (att_days or {}).items():
-        m = out.get(str(iso)[:7])
-        hu = float((r or {}).get("hint_usage_h") or 0.0) if isinstance(r, dict) else 0.0
-        if m is not None and hu > 0:
-            m["hint_h"] = round(m.get("hint_h", 0.0) + hu, 2)
-    for m in out.values():
-        m["capped"] = bool(m["fill8"] >= max(_att.FILL8_CAP_MIN, m["wd"] / 3.0))
-    return out
-
-
-def _log_reach(data_dir):
-    r"""LM30(2026-10-21) 이 PC 의 Windows 가 PC 켜고 끈 기록을 얼마나 보관하나(본 PC 의 data\pc\pc_source.json) → {"weeks", "reach",
-    "generated"} 또는 {} — 수집기가 요청 기간 시작까지 닿지 못했을 때(reach_start > 기간 시작)만 잰다(그때 보관 기간 ≈ 수집 시각 − 도달
-    시작). 이벤트 0건(부팅 폴백)이면 모른다."""
-    try:
-        with open(os.path.join(data_dir, "pc", "pc_source.json"), encoding="utf-8-sig") as f:
-            src = json.load(f)
-        rs = str(src.get("reach_start") or "")[:10]
-        rng = src.get("range") if isinstance(src.get("range"), list) else []
-        gen = str(src.get("generated") or "")[:10]
-        if src.get("fallback_boot") or not (rs and gen and rng):
-            return {}
-        if rs <= str(rng[0])[:10]:
-            return {}
-        days = (datetime.strptime(gen, "%Y-%m-%d") - datetime.strptime(rs, "%Y-%m-%d")).days
-        return {"weeks": max(1, int(round(days / 7.0))), "reach": rs, "generated": gen} if days >= 0 else {}
-    except (OSError, ValueError, TypeError, AttributeError):
-        return {}
-
-
-def _evt_span_dates(rows, d0, d1):
-    r"""pc_spans 행에서 **물리 이벤트**(전원·부팅·세션 = event 계열) 구간이 있는 날짜 집합과 그 최소 날짜.
-    힌트(브라우저 방문)·샘플러(창) 구간은 제외 — '이 PC 를 실제로 켠 첫 물리 증거'의 하한을 잡기 위해서다.
-    이동해 온 PC 에서 브라우저 동기화 방문이 '이 PC 를 쓰기 전' 날짜에 가짜 가동을 만들던 것을 막는다(제보 ②)."""
-    dates = set()
-    for r in rows:
-        if str(r.get("src") or "").strip().lower() not in EVENT_SPAN_SRC:
-            continue
-        a = _dt(r.get("start"))
-        if a and d0 <= a.date() <= d1:
-            dates.add(a.date())
-    return dates, (min(dates) if dates else None)
-
-
-def _span_kinds(rows, d0, d1, kinds, skip=None):
-    """pc_spans 행 → kinds 에 채운다(LM28 E): evt_days(물리 이벤트 구간 — src 가 hint·sampler 가 아닌 행, 빈 src 는 event — 이
-    있는 날) · hint_sp {date: [(m0, m1)]}(브라우저 방문·창 샘플러 구간). 자정 분할은 _pc_spans_rows 와 같다. skip(dd) 가 참인
-    날(이동해 온 PC 의 유령 날 — pc_daily 의 _phantom)은 넣지 않는다."""
-    soft = ("hint", "sampler")
-    evt = [r for r in rows if str(r.get("src") or "").strip().lower() not in soft]
-    hint = [r for r in rows if str(r.get("src") or "").strip().lower() in soft]
-    for dd in _pc_spans_rows(evt, d0, d1):
-        if not (skip and skip(dd)):
-            kinds["evt_days"].add(dd)
-    for dd, lst in _pc_spans_rows(hint, d0, d1).items():
-        if not (skip and skip(dd)):
-            kinds["hint_sp"].setdefault(dd, []).extend(lst)
-
-
-def pc_daily(data_dir, d0, d1, day_win=None, anom=None, span_anoms=None, single_root=False, kinds=None):
-    r"""PC 가동 기록을 날짜별로 합친다(본 PC + data\추가PC\*) → (pc, pc_wins, pc_spans, pc_win_all).
-      pc         {date: (on_h, night_h, first_on_min|None, last_off_min|None)}
-      pc_wins    {date: [(first_on, last_off), …]} — pc_on 행별 가동 창(두 PC 면 두 창, VF-H9)
-      pc_spans   {date: [(m0, m1), …]} — pc_spans.csv **실제 구간**의 합집합(모든 루트)
-      pc_win_all {date: [(m0, m1), …]} — 여러 PC 가 섞인 날에 한해, 실제 구간 ∪ 구간 없는 PC 의 창(하한 창의 재료)
-    · PC 한 대(루트 하나)뿐인 날은 예전 규칙 그대로다 — pc_on 행이 있으면 그 행(on·night 는 수집기 값), 없으면
-      _pc_row 가 구간에서 파생. 자기 구간과 자기 창을 섞지 않는다(잠금·절전 몇 분 공백·HH:mm 반올림으로 창이 구간보다
-      조금 길어져 always_on·저녁 게이트가 뒤집히던 것 — 재검증 실측).
-    · 여러 PC(루트 ≥2)가 기록을 남긴 날: 모든 PC 실제 구간의 합집합 + 구간 파일이 없는 PC(옛 수집분)의 '끊김 없는
-      행(on ≈ 창 길이 ±15분)'의 창을 합쳐 그 길이를 가동 시간으로 쓴다 — 예전 (주간·야간) max 는 두 PC 를 다른 시간에
-      쓴 날(데스크톱 08~12 + 노트북 13~18)을 5h 로 깎았다(제보). 스칼라 병합값과의 max 라 예전 값 밑으로는 안 간다.
-      야간 조각은 수집기 경계(DAY_WIN 08/19시)로 잰다 — 행의 night 열과 같은 축이어야 max 가 이중 계상이 안 된다.
-    · 화면의 주간 추이 PC 선도 이 함수(pc)를 쓴다.
-    anom(d, kind, raw, used) 를 주면 기록 오류를 그리로 보고한다(기간 안 날짜만). span_anoms(list)는 구간 이상치.
-    kinds(dict 를 주면 — LM28 E, 반환 4-튜플은 그대로): kinds["evt_days"] = 물리 이벤트 기록이 있는 날(구간 파일이 없는 루트의
-    pc_on 날짜 포함) · kinds["hint_sp"] = {date: [(m0, m1)]} 브라우저 방문·창 샘플러 구간(_span_kinds). day_work_hours 가 '브라우저
-    기록만 있는 날'(hint_only)을 가려 하한·저녁 규칙을 바꾼다."""
-    day_win = day_win or DAY_WIN
-    cw0, cw1 = float(DAY_WIN[0]), float(DAY_WIN[1])      # 야간 조각은 수집기 경계로(행의 night 열과 같은 축)
-    pc, pc_wins, syn, roots_with, real_by_root = {}, {}, {}, {}, {}
-    if kinds is not None:
-        kinds.setdefault("evt_days", set())
-        kinds.setdefault("hint_sp", {})
-    roots = [data_dir] if single_root else _data_roots(data_dir)
-    for ri, root in enumerate(roots):
-        rows_sp = _read(os.path.join(root, "pc_spans.csv")) + _read(os.path.join(root, "pc", "pc_spans.csv"))
-        real_by_root[ri] = _pc_spans_rows(rows_sp, d0, d1, anomalies=span_anoms)
-        # 이동해 온 PC 방어(제보 ②) — 이 루트의 첫 물리 이벤트 이전이면서 그 날 구간이 전부 힌트/샘플러인
-        # 날은 '이 PC 를 쓰기 전' 브라우저 동기화 방문이 만든 가짜다. 그 루트에서 행·구간을 함께 무시한다.
-        # v3 루트(pc_anchor.json)는 쓰기 시점(앵커)에 이미 걸러졌다 — 읽기 필터를 끈다.
-        # 최종 검증 CRITICAL: 이 분기가 pc_coverage 에만 있고 여기 없어서, migr 이행분이
-        # '첫 물리 이벤트 이전 힌트' 로 오판돼 화면(추이·하한)에서만 통째로 증발했다(진단과 재분열).
-        if os.path.exists(os.path.join(root, "pc", "pc_anchor.json")):
-            _evt_dates, _first_evt = set(), None
-        else:
-            _evt_dates, _first_evt = _evt_span_dates(rows_sp, d0, d1)
-
-        def _phantom(dd, _fe=_first_evt, _ed=_evt_dates):
-            return _fe is not None and dd < _fe and dd not in _ed
-
-        if _first_evt is not None:
-            for dd in [x for x in real_by_root[ri] if _phantom(dd=x)]:
-                del real_by_root[ri][dd]
-        for dd in real_by_root[ri]:
-            roots_with.setdefault(dd, set()).add(ri)
-        if kinds is not None and rows_sp:
-            _span_kinds(rows_sp, d0, d1, kinds, lambda x: _phantom(dd=x))
-        for r in _read(os.path.join(root, "pc", "pc_on.csv")):
-            try:
-                d = datetime.strptime((r.get("date") or "")[:10], "%Y-%m-%d").date()
-                on, ni = float(r.get("on_hours") or 0), float(r.get("night_hours") or 0)
-            except (ValueError, TypeError):
-                continue
-            if _phantom(dd=d):                  # 첫 물리 증거 이전의 힌트 전용 날 — 그 행은 가짜
-                continue
-            if kinds is not None and not rows_sp and d0 <= d <= d1:
-                kinds["evt_days"].add(d)        # 구간 파일이 없는 루트(옛 수집분)의 행은 이벤트 기록으로 본다
-            raw = (on, ni)
-            roots_with.setdefault(d, set()).add(ri)
-            if not (0.0 <= on <= PHYS_CAP_H and 0.0 <= ni <= min(on, PC_NIGHT_MAX_H)):
-                on = min(max(on, 0.0), PHYS_CAP_H)
-                ni = min(max(ni, 0.0), on, PC_NIGHT_MAX_H)
-                if anom is not None and d0 <= d <= d1:
-                    anom(d, f"pc_on 기록 오류(on {raw[0]:g}h·night {raw[1]:g}h)", [raw[0], raw[1]], [on, ni])
-            fo, lo = _hhmm(r.get("first_on")), _hhmm(r.get("last_off"))
-            if fo is not None and lo is not None and fo > lo:
-                # 켠 시각이 끈 시각보다 늦다 — 가동 창을 알 수 없으니(옛 3열 형식처럼) 창 없이 계산하고 표시만
-                if anom is not None and d0 <= d <= d1:
-                    anom(d, f"pc_on first_on {_fmt_hm(fo)} > last_off {_fmt_hm(lo)}(가동 창 무시)", None, None)
-                fo = lo = None
-            if fo is not None and lo is not None and lo > fo:
-                pc_wins.setdefault(d, []).append((fo, lo))
-                if abs((lo - fo) / 60.0 - on) <= 0.25:           # 켠 뒤 끄기까지 끊김 없던 행 — 창이 곧 구간
-                    syn.setdefault(d, []).append((fo, lo, ri))
-            o_on, o_ni, o_fo, o_lo = pc.get(d, (0.0, 0.0, None, None))
-            day_m, ni_m = max(o_on - o_ni, on - ni), max(o_ni, ni)
-            pc[d] = (min(PHYS_CAP_H, day_m + ni_m), ni_m,
-                     min((x for x in (o_fo, fo) if x is not None), default=None),
-                     max((x for x in (o_lo, lo) if x is not None), default=None))
-    pc_spans = {}
-    for m in real_by_root.values():
-        for dd, lst in m.items():
-            pc_spans.setdefault(dd, []).extend(lst)
-    pc_spans = {dd: _union_spans(lst) for dd, lst in pc_spans.items()}
-    pc_win_all = {}
-    for dd in set(pc_spans) | set(syn):
-        # 실제 구간의 합집합으로 그 날 가동 시간을 채운다 — **모든 날**에 적용한다.
-        # 예전에는 여러 PC 가 기록한 날만 이 경로를 탔고, 한 대뿐인 날은 pc_on 행들의 max 였다.
-        # 그래서 (a) 하루에 세션 행이 여러 개면 가장 긴 세션 하나만 세고(3h+3h+3h → 3h),
-        # (b) pc_on 행이 없고 구간만 있는 날은 0h 였다 → 추이 선의 PC 가동이 통째로 빠졌다
-        # (제보: "수십 시간인데 한 달에 8h"). 구간은 측정값이므로 이것이 사실에 가깝다.
-        multi = len(roots_with.get(dd, ())) >= 2
-        real = list(pc_spans.get(dd) or [])
-        # '구간 없는 PC 의 창' 은 여러 PC 가 섞인 날에만 보탠다 — 한 대뿐인 날에 자기 창을 섞으면
-        # 잠금·절전 몇 분 공백·HH:mm 반올림으로 창이 구간보다 길어져 always_on·저녁 게이트가 뒤집힌다.
-        extra = ([(a, b) for a, b, ri in syn.get(dd, []) if dd not in real_by_root.get(ri, {})]
-                 if multi else [])
-        sp = _union_spans(real + extra)
-        if not sp:
-            continue
-        if multi:
-            pc_win_all[dd] = sp                        # 하한 창의 재료 — 여러 PC 인 날만(예전 그대로)
-        u_on = _union_min(sp) / 60.0
-        u_ni = _union_min(_clip(sp, 0, cw0) + _clip(sp, cw1, 1440)) / 60.0
-        o_on, o_ni, o_fo, o_lo = pc.get(dd, (0.0, 0.0, None, None))
-        day_m, ni_m = max(o_on - o_ni, u_on - u_ni), max(o_ni, u_ni)
-        pc[dd] = (min(PHYS_CAP_H, day_m + ni_m), ni_m,
-                 min((x for x in (o_fo, sp[0][0]) if x is not None), default=None),
-                 max((x for x in (o_lo, sp[-1][1]) if x is not None), default=None))
-    return pc, pc_wins, pc_spans, pc_win_all
-
-
-def att_presence(data_dir, d0, d1, raw=None):
-    r"""LM30(2026-10-18) 출퇴근 추정(core\attendance)의 PC 재료 — 본 PC + data\추가PC\* → (pres, weak, live_ends)
-      pres       {date: [(m0, m1)]} PC 가 실제로 켜져 있던 구간 — pc_spans 의 이벤트 행(켜기·로그온·잠금 해제·절전 해제·원격 접속
-                 ~ 끄기·로그오프·잠금·절전 · 수집 중이면 수집 시각까지). 구간 파일이 없는 루트(옛 수집분)만 pc_on 행의
-                 first_on~last_off 창 — 구간 파일이 있는 루트의 pc_on 은 원장 파생 캐시라(브라우저 방문 구간까지 섞여) 쓰지 않는다.
-      weak       {date: [(m0, m1)]} 브라우저 방문(hint)·창 샘플러(sampler) 구간 — 켜짐이 아니라 약한 흔적
-      live_ends  [datetime] 수집 시각까지 켜져 있던 현재 세션(src live·boot)의 끝 — '끔' 이 아니다
-    pc_daily 와 같은 루트·유령 날 거르기(이동해 온 PC 의 첫 물리 이벤트 이전 힌트 날)를 쓴다. 호출측이 범위를 앞뒤 하루씩 넓혀 준다
-    (자정에서 자른 조각이 기간 첫날 00:00 에 가짜 '켬' 을 만들지 않게). 읽기만 한다.
-    LM30(2026-10-20) raw(list 를 주면) — pres 와 같은 조각을 그 행의 src 와 함께 (date, m0, m1, src) 로 더 모은다(PC 사용 시간 —
-    attendance.pc_usage 의 재료: src event-cap = 끄기 기록 없이 20시간 캡으로 닫힌 켜짐 · pc_on 창은 window). 반환값은 그대로다."""
-    soft = ("hint", "sampler")
-    pres, weak, live = {}, {}, []
-    for root in _data_roots(data_dir):
-        rows = _read(os.path.join(root, "pc_spans.csv")) + _read(os.path.join(root, "pc", "pc_spans.csv"))
-        if os.path.exists(os.path.join(root, "pc", "pc_anchor.json")):
-            ev_dates, first = set(), None
-        else:
-            ev_dates, first = _evt_span_dates(rows, d0, d1)
-
-        def _ph(dd, _f=first, _e=ev_dates):
-            return _f is not None and dd < _f and dd not in _e
-        evt = [r for r in rows if str(r.get("src") or "").strip().lower() not in soft]
-        for dd, lst in _pc_spans_rows(evt, d0, d1).items():
-            if not _ph(dd):
-                pres.setdefault(dd, []).extend(lst)
-        if raw is not None:
-            for r in evt:
-                src = str(r.get("src") or "").strip().lower() or "event"
-                for dd, lst in _pc_spans_rows([r], d0, d1).items():
-                    if not _ph(dd):
-                        raw.extend((dd, a, b, src) for a, b in lst)
-        for dd, lst in _pc_spans_rows([r for r in rows if str(r.get("src") or "").strip().lower() in soft],
-                                      d0, d1).items():
-            if not _ph(dd):
-                weak.setdefault(dd, []).extend(lst)
-        for r in evt:
-            if str(r.get("src") or "").strip().lower() in ("live", "boot"):
-                b = _dt(r.get("end"))
-                if b:
-                    live.append(b)
-        if rows:
-            continue
-        for r in _read(os.path.join(root, "pc", "pc_on.csv")):
-            try:
-                d = datetime.strptime((r.get("date") or "")[:10], "%Y-%m-%d").date()
-            except (ValueError, TypeError):
-                continue
-            if not (d0 <= d <= d1) or _ph(d):
-                continue
-            fo, lo = _hhmm(r.get("first_on")), _hhmm(r.get("last_off"))
-            if fo is not None and lo is not None and lo > fo:
-                pres.setdefault(d, []).append((fo, lo))
-                if raw is not None:
-                    raw.append((d, fo, lo, "window"))
-    return ({dd: _union_spans(v) for dd, v in pres.items()}, {dd: _union_spans(v) for dd, v in weak.items()}, live)
-
-
-def save_day_hours(rep_dir, tag, day_hours):
-    r"""근무시간(투입 실측) 아티팩트 — report\day_hours_<tag>.json.
-    화면(추이 실선)은 이것을 **읽기만** 한다. v3 초기엔 /api/dash 가 요청 스레드에서 재계산해
-    로드바 완료 뒤 수 분 CPU 가 말없이 돌았다(제보 "끝났는데 탐색하듯 돈다") — 계산은 수집·분석이
-    로드바 안(progress 표시)에서 하고 여기 저장한다."""
-    try:
-        p = os.path.join(rep_dir, f"day_hours_{tag}.json")
-        with open(p + ".tmp", "w", encoding="utf-8") as f:
-            json.dump({"schema": 1,
-                       "days": {(k.isoformat() if hasattr(k, "isoformat") else str(k)[:10]):
-                                round(float(v), 3) for k, v in (day_hours or {}).items()}},
-                      f, ensure_ascii=False)
-        os.replace(p + ".tmp", p)
-        return True
-    except (OSError, ValueError, TypeError):
-        return False
-
-
-def save_attendance(rep_dir, tag, days, usual=None, agg=None):
-    r"""LM30(2026-10-18) 출퇴근 추정의 날짜별 자료 — report\attendance_<tag>.json(**이 PC 전용** — 팀 묶음(teamup.FILE_NAMES)·
-    공유폴더(export.py) 목록에 없다). {"schema":1, "tag", "days":{날짜: 출근·퇴근·덩어리·시간·신뢰도…(근태와 견준 rec 포함)},
-    "usual":{평소 출근·퇴근}, "agg":{주·달·전체 합계 — 근태 기록과 견준 값(+@)까지: attendance.take_local 의 세 번째 값}}.
-    판정 뒤 재산정(judge.rehours_meta)·수집만(run.py --collect-only)도 같은 함수로 다시 쓴다.
-    days 가 None(출퇴근 추정이 돌지 않았다)이면 쓰지 않는다. 쓰기 실패는 False — 분석은 계속한다."""
-    if days is None:
-        return False
-    p = os.path.join(rep_dir, f"attendance_{tag}.json")
-    tmp = f"{p}.{os.getpid()}.tmp"
-    try:
-        os.makedirs(rep_dir, exist_ok=True)
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"schema": 1, "tag": tag, "days": days, "usual": usual or {}, "agg": agg or {}},
-                      f, ensure_ascii=False)
-        os.replace(tmp, p)
-        return True
-    except (OSError, ValueError, TypeError):
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
-        return False
-
-
-def load_attendance(rep_dir, tag):
-    r"""LM30(2026-10-18) — save_attendance 가 쓴 report\attendance_<tag>.json(이 PC 전용) → dict, 없거나 깨졌거나 꼴이 다르면 None.
-    화면 카드(/api/attendance)·리포트 §8(report_out)이 읽는다 — 팀 묶음·공유폴더 쪽은 읽지 않는다."""
-    if not tag:
-        return None
-    try:
-        with open(os.path.join(rep_dir, f"attendance_{tag}.json"), encoding="utf-8-sig") as f:
-            d = json.load(f)
-    except (OSError, ValueError):
-        return None
-    if not isinstance(d, dict) or not isinstance(d.get("days"), dict):
-        return None
-    return d
-
-
-def load_attendance_range(rep_dir, d0, d1):
-    r"""기간과 겹치는 모든 attendance_*.json 의 날짜별 행 → {iso: 행} — 겹치는 날은 mtime 이 늦은 파일이 이긴다(load_day_hours_range 와
-    같은 규칙). 추이 점 툴팁의 주·달 연장·휴일 시간(합계만 화면에 나간다)."""
-    out, order = {}, []
-    try:
-        for p in glob.glob(os.path.join(rep_dir, "attendance_*.json")):
-            try:
-                order.append((os.path.getmtime(p), p))
-            except OSError:
-                continue
-    except OSError:
-        return out
-    for _mt, p in sorted(order):
-        try:
-            with open(p, encoding="utf-8-sig") as f:
-                d = json.load(f)
-            days = d.get("days") if isinstance(d, dict) else None
-            for k, v in (days.items() if isinstance(days, dict) else ()):
-                k = str(k)[:10]
-                if isinstance(v, dict) and (not d0 or k >= str(d0)[:10]) and (not d1 or k <= str(d1)[:10]):
-                    out[k] = v
-        except (OSError, ValueError, TypeError, AttributeError):
-            continue
-    return out
-
-
-def load_leave_range(rep_dir, d0, d1):
-    r"""LM30(2026-10-21) 기간과 겹치는 모든 attendance_*.json(이 PC 전용)의 유급휴가 날짜(agg.leave.dates — core\attendance 머리말 22) →
-    {iso: 비율} — 겹치는 날은 mtime 이 늦은 파일이 이긴다(load_attendance_range 와 같은 규칙). 추이 카드가 'PC 기록 없음' 주를 휴가로
-    말하는 재료(주·달 일수만 화면에 나간다 · 얼린 사본은 그 칸도 뺀다 — freeze)."""
-    out, order = {}, []
-    try:
-        for p in glob.glob(os.path.join(rep_dir, "attendance_*.json")):
-            try:
-                order.append((os.path.getmtime(p), p))
-            except OSError:
-                continue
-    except OSError:
-        return out
-    for _mt, p in sorted(order):
-        try:
-            with open(p, encoding="utf-8-sig") as f:
-                d = json.load(f)
-            lv = ((d.get("agg") or {}).get("leave") or {}).get("dates") if isinstance(d, dict) else None
-            for k, v in (lv.items() if isinstance(lv, dict) else ()):
-                k = str(k)[:10]
-                f0 = float((v[0] if isinstance(v, (list, tuple)) and v else v) or 0)
-                if f0 > 0 and (not d0 or k >= str(d0)[:10]) and (not d1 or k <= str(d1)[:10]):
-                    out[k] = f0
-        except (OSError, ValueError, TypeError, AttributeError):
-            continue
-    return out
-
-
-def load_day_hours_range(rep_dir, d0, d1):
-    r"""기간과 겹치는 모든 day_hours_*.json 을 합쳐 {date: h} — 겹치는 날은 mtime 이 늦은 파일이
-    이긴다(가장 최근 계산이 최신 자료 기준)."""
-    out, order = {}, []
-    try:
-        for p in glob.glob(os.path.join(rep_dir, "day_hours_*.json")):
-            try:
-                order.append((os.path.getmtime(p), p))
-            except OSError:
-                continue
-        for _mt, p in sorted(order):
-            try:
-                with open(p, encoding="utf-8-sig") as f:
-                    d = json.load(f)
-                for k, v in (d.get("days") or {}).items():
-                    k = str(k)[:10]
-                    if (not d0 or k >= str(d0)[:10]) and (not d1 or k <= str(d1)[:10]):
-                        out[k] = float(v)
-            except (OSError, ValueError, TypeError):
-                continue
-    except OSError:
-        pass
-    return out
-
-
-def pc_coverage(data_dir, d0, d1):
-    r"""PC 가동 기록의 **출처 진단** — 화면이 "합산이 안 된 숫자 아니냐" 에 숫자로 답하게.
-    반환 {"hours", "days", "roots": [{"name","hours","days","rows","spans"}], "coverage_days",
-          "range_days", "reach_start", "generated", "warn", "dropped"}
-    roots 의 시간은 그 폴더 파일에 적힌 값의 단순 합이다 — 최종 합산은 구간 합집합이라(pc_daily)
-    단순 합과 다를 수 있다. 그 사실도 화면 문구에 적는다."""
-    out = {"roots": [], "hours": 0.0, "days": 0, "coverage_days": None, "range_days": None,
-           "reach_start": "", "generated": "", "warn": "", "dropped": 0, "fallback_boot": False}
-    roots = _data_roots(data_dir)
-    base = os.path.abspath(_data_roots(data_dir)[0]) if roots else ""
-    for root in roots:
-        name = "본 PC" if os.path.abspath(root) == base else os.path.basename(os.path.normpath(root))
-        rows = _read(os.path.join(root, "pc", "pc_on.csv"))
-        # pc_daily 와 **같은 유령 필터** — v2 에서는 이 진단만 필터 없이 원값 합을 내서, 같은
-        # 폴더가 추이 8h·진단 618h 로 갈렸다(v3 구조 감사 실측 77배). v3 루트(pc_anchor.json
-        # 있음)는 쓰기 시점에 이미 걸러져 필터가 무의미하고, 구판 루트만 읽기 안전망을 태운다.
-        _sp_rows = _read(os.path.join(root, "pc_spans.csv")) + _read(os.path.join(root, "pc", "pc_spans.csv"))
-        if os.path.exists(os.path.join(root, "pc", "pc_anchor.json")):
-            def _ph(dd):
-                return False
-        else:
-            _evd, _fe = _evt_span_dates(_sp_rows, d0, d1)
-
-            def _ph(dd, _fe=_fe, _evd=_evd):
-                return _fe is not None and dd < _fe and dd not in _evd
-        hrs, days = 0.0, set()
-        for r in rows:
-            try:
-                d = datetime.strptime((r.get("date") or "")[:10], "%Y-%m-%d").date()
-            except (ValueError, TypeError):
-                continue
-            if not (d0 <= d <= d1) or _ph(d):
-                continue
-            days.add(d)
-            out.setdefault("_day_union", set()).add(d)     # 합계 일수는 루트 합집합(이동 PC 2폴더 절반 표시 방지)
-            try:
-                hrs += float(r.get("on_hours") or 0)
-            except (TypeError, ValueError):
-                pass
-        sp = _pc_spans_rows(_sp_rows, d0, d1)
-        n_sp = sum(len(v) for v in sp.values())
-        out["roots"].append({"name": name, "hours": round(hrs, 1), "days": len(days),
-                             "rows": len(rows), "spans": n_sp})
-        # 수집기 요약(pc_source.json) — 이벤트 로그가 기간을 얼마나 덮는지
-        try:
-            with open(os.path.join(root, "pc", "pc_source.json"), encoding="utf-8-sig") as f:
-                src = json.load(f)
-            if isinstance(src, dict) and (out["generated"] or "") <= str(src.get("generated") or ""):
-                out["coverage_days"] = src.get("coverage_days")
-                out["range_days"] = src.get("range_days")
-                out["reach_start"] = str(src.get("reach_start") or "")
-                out["generated"] = str(src.get("generated") or "")
-                out["fallback_boot"] = bool(src.get("fallback_boot"))   # 이벤트 0건 → 부팅 폴백 1구간(제보 ①)
-                w = src.get("warnings")
-                out["warn"] = str((w or [""])[0])[:160] if isinstance(w, list) else ""
-        except (OSError, ValueError, TypeError, AttributeError):
-            pass
-    out["dropped"] = sum(n for p, n in READ_DROPPED.items() if "pc" in p.replace(chr(92), "/"))
-    out["hours"] = round(sum(r["hours"] for r in out["roots"]), 1)
-    out["days"] = len(out.pop("_day_union", set()) or []) or max([r["days"] for r in out["roots"]] or [0])
-    return out
-
-
-def _holiday_set(cfg):
-    out = set()
-    for x in cfg_list(cfg, "holidays"):
-        dt = _dt(str(x))
-        if dt:
-            out.add(dt.date())
-    return out
-
-
-def _is_off_day(d, holidays, workdays=(1, 2, 3, 4, 5)):
-    """주말 · config.holidays · 양력 고정 공휴일 · 내장 연도별 표(KR_HOLIDAYS: 설·추석·대체공휴일·선거일)"""
-    md = (d.month, d.day)
-    return (d.isoweekday() not in workdays or d in holidays
-            or md in FIXED_HOLIDAYS or md in KR_HOLIDAYS.get(d.year, ()))
-
-
-def holiday_table_warnings(d0, d1, cfg=None):
-    """분석 기간의 연도 중 내장 표(KR_HOLIDAYS)에 없고 config.holidays 에도 그 해 날짜가 하나도 없는 해 → 경고 목록(REQ-19).
-    그 해는 양력 고정 공휴일만 빠지고 설·추석·대체공휴일·선거일이 근무일로 남아 1 MM 분모(평일수)가 커진다."""
-    have = {x.year for x in _holiday_set(cfg)}
-    lo, hi = min(KR_HOLIDAYS), max(KR_HOLIDAYS)
-    return [f"공휴일 표에 {y}년이 없음(내장 {lo}~{hi}) — 설·추석·대체공휴일·선거일을 config.holidays 에 "
-            f"[\"{y}-MM-DD\", …] 로 넣으세요(양력 고정 공휴일만 반영 중)"
-            for y in range(d0.year, d1.year + 1) if y not in KR_HOLIDAYS and y not in have]
-
-
-# ── 활동 구간(interval) 기반 투입시간 ──────────────────────────────────────
-# '평일이면 8h'는 출근 여부일 뿐 업무 투입량이 아니다. 실제로 흔적이 남은 시간대만
-# 합집합으로 더해 '근무 중 업무에 활용된 시간'을 잰다.
-#   · 회의      : 캘린더 시작~종료 구간 그대로 (회의 '신호'는 세션을 만들지 않는다)
-#   · 창 샘플러 : 무입력이 아닌 샘플 구간 (있으면 가장 정확)
-#   · 신호 세션 : 파일·메일·커밋·팀즈 타임스탬프를 간격 SESSION_GAP_MIN 이내로 묶은 구간
-# 구간이 겹치면 한 번만 센다(합집합). 근거가 없는 시간은 세지 않는다.
-#
-# LM22 — 출력 worked 를 자르는 상한(16h·연차 4h)은 없다. 대신 **입력의 물리 한계**만 검증해
-# (PC on≤24·night≤13·주간≤11h, 모든 구간 [0,1440], 미래 시각·역행 회의 폐기) worked≤24 가
-# 구성상 보장되고, 이상치는 잘라내는 대신 info["anomalies"]·["long_days"] 로 '표시'한다.
-SESSION_GAP_MIN = 45       # 이 간격 안이면 같은 작업 세션 (config.mm.sessionGapMin 로 조정)
-# ※ ActivityWatch 등은 수 분 단위 AFK 로 끊지만, 신호 밀도가 낮은 이 도구에서 너무 짧으면
-#   실제 연속 작업이 조각난다 — 45분은 그 절충값이다. 수동 신호(수신·CC·단체)끼리는 다리를
-#   놓지 않는다(40분 간격 수신 8통이 4.75h 로 부풀던 실측 E3).
-# 흩어진 신호 하나가 함의하는 최소 작업시간(분). 설계 파일 한 번 저장은 30분이 아니라
-# 한 시간 안팎의 작업을 뜻한다 — 산출물일수록 길게 잡는다. config.mm.signalMinutes 로 조정.
-# 회의 0 = 회의 신호는 세션을 만들지 않는다. _meeting_spans 가 캘린더 구간을 정확히 재는데
-# ±30분 패드가 겹쳐 회의마다 시작 전 30분이 얹혔다(실측 E17b: 1h 회의 4건 → 6h).
-# 목록에 없는 라벨은 세션을 만들지 않는다(A18 — 예전 기본 10분은 가장 약한 '메일(수신전용)' 에 수신의 2배를 줬다).
-LONE_SIGNAL_MIN = {"파일": 60, "파일(코드)": 90, "커밋": 90, "회의": 0,
-                   "메일(발신)": 20, "팀즈(발신)": 10, "팀즈(오더)": 15,
-                   # 메일(CC)·메일(수신전용) 은 5 로 둔다 — _signal_spans 의 half = max(2.5, lone/2) 하한 때문에
-                   # 5분 미만 값은 어차피 5분으로 세어졌다(감사 실측: 선언 3·2 와 무관하게 셋 다 5.0분).
-                   # 차등은 가중치 W(메일CC 0.25·알림성 0.2~0.4×)가 맡는다. 시간 차등이 필요하면 half 하한부터 고칠 것.
-                   "메일(수신)": 5, "메일(CC)": 5, "메일(수신전용)": 5, "팀즈(수신)": 5, "팀즈(단체)": 3,
-                   # 열람만 한 Recent 는 수신 메일 수준의 수동 흔적(D2b) · 타인 파일·일괄 대표·수동기록·
-                   # 날짜만 아는 발신은 시간 근거가 아니다(가중치·게이트만)
-                   "파일(열람)": 5, "파일(타인)": 0, "파일(일괄)": 0, "수동기록": 0, "메일(발신·일자)": 0,
-                   "팀즈(발신·일자)": 0, "팀즈(수신·일자)": 0,          # 팀즈 웹 날짜만(LM28 E) — 메일 날짜만과 같다
-                   # 해석 출력 뭉치 대표(S3-P4) — 시작 분 anchor(file_times) 와 별도로 30분 세션(주간만 — 야간은 NIGHT_PRODUCTIVE
-                   # 가 아니라 세션이 없다, VF-H1)
-                   "파일(해석출력)": 30,
-                   # 작업창 0 = 샘플러 신호는 세션을 만들지 않는다 — 샘플러 스팬(_activity_spans)이 이미
-                   # 정확한데 lone 10분 기본값이 첫 샘플 앞 5분을 매일 덧붙였다(실측 9h → 9.08h)
-                   "작업창": 0, "작업창(IDE)": 0}
-ACTIVE_SRC = set(NIGHT_PRODUCTIVE) | {"회의", "팀즈(오더)", "작업창", "작업창(IDE)", "파일(해석출력)"}   # 능동 흔적
-PASSIVE_DAY_MAX_MIN = 60.0  # 수동 신호만으로 만든 세션의 하루 합계 상한(분) — config.mm.passiveDayMaxMin(A18)
-# 수동 흔적만 있는 날(메일·Teams 만 한 날)의 PC 가동 하한 게이트 — 통수 N 이상이고 주간 창 안에서 H 시간 이상에 걸쳐
-# 분포하면 그날도 하한을 연다. 예전엔 능동 흔적(파일 저장·발신)이 하나라도 없으면 하루 최대 60분이었다(감사 실측:
-# 수신 80통·PC 09~18 인 날이 1.0h — LM20 은 9.38h). 물량·분포 조건이 없으면 'CC 한 통 = 하루 7.7h' 과대가 된다.
-PASSIVE_FLOOR_MIN_N = 8.0
-PASSIVE_FLOOR_MIN_H = 3.0
-# ── 물리 한계·보정 파라미터 (config.mm 로 조정) ──
-PHYS_CAP_H = 24.0          # 하루 24h — 유일한 출력 한계. 입력 검증이 정상이면 닿을 수 없다
-PC_NIGHT_MAX_H = 13.0      # 야간창 19~24 + 00~08 = 13시간(입력 검증용 — 출력 상한이 아니다)
-PC_DAY_MAX_H = 11.0        # 주간창 08~19 = 11h — on−night 가 이보다 크면 야간열 누락으로 본다
-DAY_WIN = (8 * 60, 19 * 60)   # 주간 창(분). 수집기 night_hours 정의(08시 이전·19시 이후)와 같은 경계
-LUNCH = (12 * 60, 13 * 60)    # PC 하한에서 차감하는 점심 — 그 시간에 흔적이 있으면 차감하지 않는다
-DINNER = (18 * 60, 18 * 60 + 30)  # 야근일(PC 야간 가동 + 이 창 끝까지 켜짐)에 흔적이 없으면 차감하는 저녁 식사(A33)
-TRACE_PAD_MIN = 5          # 점심·저녁·창 가장자리 판정에서 신호 1건이 뜻하는 '흔적 폭' ±분(A33 — 세션 꼬리 ±30분은 흔적이 아니다)
-SAMPLER_GAP_BRIDGE_MIN = 60.0  # 샘플러 가동 창 안의 무입력 공백 중 이 분 이하는 근무로 잇는다(D3a, 점심·저녁 창 제외)
-FLEX_EDGE_H = 1.0          # 시차 근무: 산출물 없이도 주간 창 밖 PC 가동을 앞뒤 각 이 시간까지 인정(D4a, 야간 합 ≤ PC night)
-TRIM_IDLE_EDGES_MIN = 10.0  # PC 가동 창 양끝 이 분 안에 흔적이 없으면 창을 그만큼(첫/마지막 흔적까지) 다듬는다(A33)
-SIM_NIGHT_CAP_H = 4.0      # 야간 해석(솔버) 인정 상한 — 밤(야간 창)당 h. config.mm.simNightCapH, 0 이면 무제한
-SIM_NIGHT_ANCHOR_MIN = 30.0  # mm.simNight="anchor": 야간 해석 뭉치마다 인정하는 분(제출·확인 시간)
-STUCK_COVER_H = 14.0       # 샘플러 고착(A1): 하루 샘플이 이 시간 이상을 덮는데 idle>0 비율이 STUCK_IDLE_RATIO 미만이면 폐기
-STUCK_IDLE_RATIO = 0.02
-IDLE_ACTIVE_SEC = 300      # 샘플러: 이 안이면 '읽는 중'도 활동 (기존 180s 는 읽기·생각 구간을 버렸다)
-SAME_TITLE_BRIDGE_MIN = 10  # 같은 창 제목이 유지되면 이 간격까지 이어붙임
-FILE_BURST_N = 8           # 같은 분(±1분)에 파일 N건 이상 = 일괄 동기화·복사 → 시간 근거 아님
-FUTURE_SLACK_MIN = 5       # now+5분 이후 시각의 신호 = 시계 오류 → 시간 근거에서 폐기(집계)
-LONG_DAY_H = 16.0          # 이보다 긴 날은 자르지 않고 long_days 에 표시만 한다
-# ── LM28(WP8) 시간 꼬리표·사적 차감·솔버 확인 ──
-NIGHT_WIN = (22 * 60, 6 * 60)  # 꼬리표 야간(22~06) — config.mm.nightWindow. 주간 창(DAY_WIN)과 다른 축이다(그쪽은 수집기 경계)
-PRIVATE_RUN_MIN = 30.0     # 사적·미디어 창이 이 분 이상 연속으로 실측된 구간만 뺀다(config.mm.privateRunMin, A-14 R-P3)
-SOLVER_CORE_MIN = 0.5      # 솔버 확인(UD-13): solver_cpu_s ÷ 간격 ≥ 0.5 코어인 틱이
-SOLVER_RUN_TICKS = 3       # 이만큼 이어져야 그 밤의 야간 해석 인정을 준다(열이 없으면 LM24 방식)
-# PC 하한 창(mm.pcFloorWindow)의 근거 — cfg_used·basis 문구에 싣는다(★ 사용자 지시 2026-10-07 ②)
-FLOOR_BASIS = ("법정 1일 8h + 휴게 1h = 09~18 · 시차출퇴근 ±1h · 수집기 주간/야간 경계 08/19 — "
-               "퇴근 후는 퇴근 경계(하한 창 끝)~마지막 저녁 산출물 시각 전체")
-
-
-def _hhmm(s):
-    """'HH:MM' → 분. '24:00' 은 1440. 못 읽으면 None."""
-    s = str(s or "").strip()
-    if not s:
-        return None
-    if s == "24:00":
-        return 1440.0
-    try:
-        h, m = s.split(":")[:2]
-        v = int(h) * 60 + int(m)
-        return float(v) if 0 <= v <= 1440 else None
-    except ValueError:
-        return None
-
-
-def _win_cfg(v, dflt, key="", warns=None):
-    """config 의 ["HH:MM","HH:MM"] → (분,분). 형식이 이상하면 기본값(+경고)."""
-    if v is None:
-        return dflt
-    try:
-        a, b = _hhmm(v[0]), _hhmm(v[1])
-        if a is not None and b is not None and 0 <= a < b <= 1440:
-            return (a, b)
-    except (TypeError, IndexError, KeyError):
-        pass
-    if warns is not None:
-        warns.append(f"{key}={v!r} 는 [\"HH:MM\",\"HH:MM\"](시작<끝) 형식이 아님 — "
-                     f"기본값 {_fmt_hm(dflt[0])}-{_fmt_hm(dflt[1])} 적용")
-    return dflt
-
-
-def _hwin_cfg(v, dflt, key="", warns=None, wrap=False):
-    """config 의 [시, 시](숫자 — 8·19·8.5) 또는 ["HH:MM","HH:MM"] → (분, 분). wrap=True 면 자정을 넘는 창(22→6)을 받는다.
-    형식이 이상하면 기본값(+경고) — mm.pcFloorWindow·mm.nightWindow(LM28)."""
-    if v is None:
-        return dflt
-
-    def one(x):
-        if isinstance(x, bool):
-            return None
-        if isinstance(x, (int, float)):
-            return float(x) * 60.0 if 0 <= x <= 24 else None
-        s = str(x).strip()
-        if ":" in s:
-            return _hhmm(s)
-        try:
-            f = float(s)
-        except ValueError:
-            return None
-        return f * 60.0 if 0 <= f <= 24 else None
-    try:
-        a, b = one(v[0]), one(v[1])
-        if len(v) == 2 and a is not None and b is not None and (a < b or (wrap and a != b)):
-            return (a, b)
-    except (TypeError, IndexError, KeyError):
-        pass
-    if warns is not None:
-        warns.append(f"{key}={v!r} 는 [시작시, 끝시](예: [8, 19]) 형식이 아님 — "
-                     f"기본값 {_fmt_hm(dflt[0])}-{_fmt_hm(dflt[1])} 적용")
-    return dflt
-
-
-def _fmt_hm(m):
-    return f"{int(m) // 60:02d}:{int(m) % 60:02d}"
-
-
-def _day_cap(mmc, warns=None):
-    """config.mm.dayCapHours — 원하면 설정으로만 거는 선택 상한(기본 없음).
-    null·0·""·false = 없음. true 같은 bool·문자열·0.5~24 밖의 값은 상한 없음 + 경고."""
-    cap = (mmc or {}).get("dayCapHours")
-    if cap is None or cap is False or cap == 0 or (isinstance(cap, str) and cap.strip().lower()
-                                                   in ("", "0", "null", "none", "false")):
-        return None
-    x = _num(cap, None, 0.5, 24, "mm.dayCapHours", None)
-    if x is None and warns is not None:
-        warns.append(f"mm.dayCapHours={cap!r} 는 쓸 수 없는 값(0.5~24 시간 또는 null) — 상한 없음")
-    return x
-
-
-def _clip(spans, lo, hi):
-    return [(max(a, lo), min(b, hi)) for a, b in spans if min(b, hi) > max(a, lo)]
-
-
-def _union_min(spans):
-    """[(시작분, 끝분)] 합집합의 총 분 — 반올림 없음(크레딧 맞춤 계산용)"""
-    total, cur_s, cur_e = 0.0, None, None
-    for a, b in sorted((a, b) for a, b in spans if b > a):
-        if cur_e is not None and a <= cur_e:
-            cur_e = max(cur_e, b)
-        else:
-            if cur_e is not None:
-                total += cur_e - cur_s
-            cur_s, cur_e = a, b
-    if cur_e is not None:
-        total += cur_e - cur_s
-    return total
-
-
-def _union_hours(spans):
-    """[(시작분, 끝분)] 합집합의 총 시간(h) — 겹치는 구간을 이중으로 세지 않는다"""
-    return round(_union_min(spans) / 60.0, 2) if spans else 0.0
-
-
-# ── 구간 산술(A3 — 하한을 스칼라 max 가 아니라 구간 단위로 합치기 위한 도구) ──
-def _union_spans(spans):
-    """[(a, b)] → 겹침을 합친 정렬 목록(빈 구간 제거)"""
-    out = []
-    for a, b in sorted((float(a), float(b)) for a, b in spans if b > a):
-        if out and a <= out[-1][1]:
-            if b > out[-1][1]:
-                out[-1] = (out[-1][0], b)
-        else:
-            out.append((a, b))
-    return out
-
-
-def _subtract_spans(a, b):
-    """a − b (구간 목록, 분)"""
-    out = _union_spans(a)
-    for ba, bb in _union_spans(b):
-        nxt = []
-        for x, y in out:
-            if bb <= x or ba >= y:
-                nxt.append((x, y))
-                continue
-            if x < ba:
-                nxt.append((x, ba))
-            if bb < y:
-                nxt.append((bb, y))
-        out = nxt
-    return out
-
-
-def _intersect_spans(a, b):
-    """a ∩ b (구간 목록, 분)"""
-    out = []
-    ub = _union_spans(b)
-    for x, y in _union_spans(a):
-        for ba, bb in ub:
-            lo, hi = max(x, ba), min(y, bb)
-            if hi > lo:
-                out.append((lo, hi))
-    return _union_spans(out)
-
-
-def _trace_window(pts, spans, pad_min=NIGHT_PAD_H * 60):
-    """능동 흔적(시각 pts + 구간 spans)의 '첫 흔적 −pad ~ 마지막 흔적 +pad' 창 [(a, b)] — 없으면 [].
-    항상 켜 두는 PC(A3f)·PC 기록이 없는 날(A9)의 하한 재료."""
-    lo = list(pts) + [a for a, _b in spans]
-    hi = list(pts) + [b for _a, b in spans]
-    if not lo:
-        return []
-    a, b = max(0.0, min(lo) - pad_min), min(1440.0, max(hi) + pad_min)
-    return [(a, b)] if b > a else []
-
-
-def _trim_edges(window, trace_sp, trim_min):
-    """PC 가동 창 양끝 trim_min 분 안에 흔적(trace_sp)이 없으면 그 끝을 안쪽으로 최대 trim_min 만큼(첫/마지막 흔적을
-    넘지 않게) 다듬는다(A33 — 출퇴근 전후 켜 둔 시간). 창은 [(a, b)] 합집합, 흔적은 [(a, b)] 목록."""
-    sp = _union_spans(window)
-    if not sp or trim_min <= 0:
-        return sp
-    a0, b0 = sp[0][0], sp[-1][1]
-    # 자정(00:00·24:00)에 닿은 끝은 수집기의 날짜 분할이지 켜고 끈 시각이 아니다 — 다듬지 않는다
-    if a0 > 0 and not _intersect_spans([(a0, a0 + trim_min)], trace_sp):
-        first_tr = min((x for x, y in trace_sp if y > a0), default=a0 + trim_min)
-        sp = _clip(sp, min(a0 + trim_min, max(a0, first_tr)), 1440.0)
-    if sp and b0 < 1440 and not _intersect_spans([(b0 - trim_min, b0)], trace_sp):
-        last_tr = max((y for x, y in trace_sp if x < b0), default=b0 - trim_min)
-        sp = _clip(sp, 0.0, max(b0 - trim_min, min(b0, last_tr)))
-    return sp
-
-
-def _fit_credit(credit, spans, allowed):
-    """저녁·새벽 크레딧 [(a, b, anchor)] 을 '기존 구간에 더해지는 양 ≤ allowed(분)' 안에 맞춘다.
-    줄일 때는 산출물 쪽 끝(anchor 'b' 저녁=끝, 'a' 새벽=시작)을 고정하고 창 가장자리 쪽을 깎는다 —
-    가장자리 기준으로 줄이면 산출물 시각 자체가 크레딧 밖으로 밀려난다. 더해지는 양은 배율에 단조라
-    이분 탐색으로 맞춘다. returns [(a, b)]"""
-    def at(s):
-        out = []
-        for a, b, anchor in credit:
-            ln = (b - a) * s
-            out.append((b - ln, b) if anchor == "b" else (a, a + ln))
-        return [(a, b) for a, b in out if b > a + 1e-9]
-
-    base = _union_min(spans)
-
-    def gain(s):
-        return _union_min(spans + at(s)) - base
-
-    if gain(1.0) <= allowed + 1e-9:
-        return at(1.0)
-    lo, hi = 0.0, 1.0
-    for _ in range(40):
-        mid = (lo + hi) / 2
-        if gain(mid) <= allowed + 1e-9:
-            lo = mid
-        else:
-            hi = mid
-    return at(lo)
-
-
-def _tail_clip(spans, limit):
-    """구간 목록에서 **뒤쪽 limit 분**만 남긴다(앞을 깎는다). 야간 해석 인정의 상한 —
-    해석 출력이 찍힌 끝쪽을 남겨야 인정 구간이 산출물 시각 밖으로 밀려나지 않는다(_fit_credit 과 같은 원칙)."""
-    sp = _union_spans(spans)
-    drop = _union_min(sp) - float(limit)
-    if limit <= 0 or drop <= 1e-9:
-        return sp
-    out = []
-    for a, b in sp:
-        if drop <= 1e-9:
-            out.append((a, b))
-        elif b - a <= drop + 1e-9:
-            drop -= b - a
-        else:
-            out.append((a + drop, b))
-            drop = 0.0
-    return out
-
-
-def _sim_night_credit(sim_sp, hum_pt, hum_sp, view_pt, pc_night, d0, d1, day_win,
-                      mode="span", cap_h=SIM_NIGHT_CAP_H, unlock=True, needs_pc=False, cpu=None):
-    """야간 해석(솔버) 근무 인정(S4-N1) — 밤새 돌린 해석(ANSYS·Zemax·CFD…)의 실행 구간을 근무로 돌려준다.
-
-    밤 = 주간 창 밖의 한 덩어리(기본 19:00~다음날 08:00) — 자정을 넘으므로 두 날짜에 걸친다.
-      · end   = 그 밤 안 마지막 해석 출력 시각(뭉치의 끝 — _file_times 가 시작·끝을 함께 준다)
-      · start = 그 밤 안에서 첫 해석 출력 **이전**의 마지막 사람 능동 흔적(= job 제출 시각). 없으면 첫 출력 시각
-      · needs_pc 면 내 PC 야간 가동 구간과 겹치는 만큼만 — 기본 false(서버·클러스터에서 도는 해석이 대부분)
-      · 상한 cap_h(밤당 h, 0=무제한)는 앞을 깎는다(출력 쪽 끝을 남긴다). 첫 출력 **뒤**에 사람 흔적(능동 신호·
-        열람·샘플러·회의)이 있으면 = 새벽에 결과를 보고 다시 돌린 밤이라 상한을 풀고 구간 전체를 인정한다
-        (unlock). 제출 시각(첫 출력 전)의 흔적은 해제 사유가 아니다.
-      · mode="anchor" 는 뭉치마다 SIM_NIGHT_ANCHOR_MIN 분(제출·확인)만, "off" 는 아무것도 인정하지 않는다.
-    입력은 모두 {date: …}(그날 0~1440분). sim_sp·hum_sp·pc_night 은 [(a, b)], hum_pt·view_pt 는 [분].
-    returns ({date: [(a, b)]}, {"nights": 인정한 밤, "capped": 상한이 걸린 밤, "unlocked": 상한이 풀린 밤})
-    구간은 날짜별로 잘라 돌려준다 — 호출측이 그날 흔적에 합집합으로 더한다(중복 계상 없음). 한 날짜가 두 밤
-    (전날 밤의 새벽 + 그날 밤의 저녁)에 걸리면 날짜 합계에도 같은 상한을 건다.
-    LM28(UD-13 — LM24 상한 유지 + CPU 확인): cpu = {PC: [(날짜, 분, 코어)]}(창 샘플러 solver_cpu_s ÷ 간격)를 주면, 그 밤 창 안에
-    값이 있는 틱이 있을 때 ≥SOLVER_CORE_MIN 코어 틱이 SOLVER_RUN_TICKS 번 이어진 PC 가 있어야 인정한다(st["cpu_denied"]).
-    그 밤에 값 있는 틱이 없으면(PC 꺼짐·서버 해석·열 없음) LM24 방식 그대로다."""
-    out, free, st = {}, set(), {"nights": 0, "capped": 0, "unlocked": 0, "cpu_denied": 0}
-    dw0, dw1 = float(day_win[0]), float(day_win[1])
-    if mode == "off" or not sim_sp or dw1 - dw0 >= 1440:
-        return out, st
-    base = d0.toordinal()
-
-    def _am(dd, m):
-        return (dd.toordinal() - base) * 1440.0 + float(m)
-
-    def _pts(src):
-        return sorted(_am(dd, m) for dd, lst in (src or {}).items() if d0 <= dd <= d1 for m in lst)
-
-    def _sps(src):
-        return _union_spans([(_am(dd, a), _am(dd, b)) for dd, lst in (src or {}).items()
-                             if d0 <= dd <= d1 for a, b in lst])
-
-    # 뭉치는 폭이 0 일 수 있다(한 분에 몰린 출력 수천 건·대표 신호 1건) — 합집합으로 접으면 사라지므로 그대로 둔다
-    sim_a = sorted((_am(dd, a), _am(dd, max(a, b))) for dd, lst in (sim_sp or {}).items()
-                   if d0 <= dd <= d1 for a, b in lst)
-    hum_a, view_a = _pts(hum_pt), _pts(view_pt)
-    hums_a, pc_a = _sps(hum_sp), _sps(pc_night)
-    cpu_a = [sorted((_am(dd, m), c) for dd, m, c in lst) for lst in (cpu or {}).values()]
-
-    def _cpu_ok(w0, w1):
-        """그 밤 창의 솔버 CPU 확인 — None(값 있는 틱 없음 → LM24) · True · False"""
-        seen, best = False, 0
-        for lst in cpu_a:
-            run, prev = 0, None
-            for t, c in lst:
-                if not (w0 <= t < w1):
-                    continue
-                seen = True
-                if prev is not None and t - prev > 10.0:
-                    run = 0                    # 샘플러가 멈췄던 공백(> 10분)은 '이어짐'이 아니다
-                run = run + 1 if c >= SOLVER_CORE_MIN else 0
-                best, prev = max(best, run), t
-        return (best >= SOLVER_RUN_TICKS) if seen else None
-    nd = d0 - _td(days=1)
-    while nd <= d1:
-        # 밤의 경계는 _is_night 과 같다 — 19:00 은 밤, 08:00 은 낮
-        w0, w1 = _am(nd, dw1), _am(nd, 1440.0) + dw0
-        nd += _td(days=1)
-        cl = [(max(a, w0), min(b, w1)) for a, b in sim_a if b >= w0 and a < w1]
-        if not cl:
-            continue
-        if cpu_a and _cpu_ok(w0, w1) is False:
-            st["cpu_denied"] += 1              # 샘플러가 그 밤을 봤는데 솔버가 돌지 않았다(UD-13)
-            continue
-        first, last = min(a for a, _b in cl), max(b for _a, b in cl)
-        if mode == "anchor":
-            seg = [(a, min(a + SIM_NIGHT_ANCHOR_MIN, w1)) for a, _b in cl]
-        else:
-            # job 제출 = 첫 출력 이전의 마지막 사람 흔적. 구간 흔적(회의·샘플러)은 그 끝을 흔적 시각으로 본다
-            cand = [t for t in hum_a if w0 <= t <= first]
-            cand += [min(b, first) for a, b in hums_a if b > w0 and a <= first]
-            seg = [(max(cand) if cand else first, last)]
-        if needs_pc:
-            seg = _intersect_spans(seg, _clip(pc_a, w0, w1))
-        seg = _union_spans(seg)
-        if not seg:
-            continue
-        opened = bool(unlock and (any(first < t <= w1 for t in hum_a)
-                                  or any(first < t <= w1 for t in view_a)
-                                  or any(b > first and a < w1 for a, b in hums_a)))
-        if opened:
-            st["unlocked"] += 1
-        elif cap_h > 0 and _union_min(seg) > cap_h * 60 + 1e-9:
-            seg, st["capped"] = _tail_clip(seg, cap_h * 60), st["capped"] + 1
-        st["nights"] += 1
-        for a, b in seg:                       # 자정을 넘는 구간은 날짜별로 분할해 각 날에 배분
-            while b > a + 1e-9:
-                k = int(a // 1440)
-                edge = min(b, (k + 1) * 1440.0)
-                dd = datetime.fromordinal(base + k).date()
-                if d0 <= dd <= d1:
-                    out.setdefault(dd, []).append((a - k * 1440.0, edge - k * 1440.0))
-                    if opened:
-                        free.add(dd)
-                a = edge
-    res = {}
-    for dd, sp in out.items():
-        sp = _union_spans(sp)
-        if cap_h > 0 and dd not in free and _union_min(sp) > cap_h * 60 + 1e-9:
-            sp = _tail_clip(sp, cap_h * 60)    # 한 날짜가 두 밤에 걸린 경우 — 날짜 합계에도 같은 상한
-        res[dd] = sp
-    return res, st
-
-
-def _activity_spans(data_dir, d0, d1, interval_sec=60, idle_active=IDLE_ACTIVE_SEC, aux=None):
-    """창 샘플러 → (spans, cov_spans, stuck_days)
-      spans      {date: [(분,분)]} 활동 구간(idle ≤ idle_active 샘플, 같은 창 제목 10분 이어붙임)
-      cov_spans  {date: [(분,분)]} 샘플이 실제로 덮은 구간의 합집합(idle 샘플 포함, 샘플마다 (m, m+3×step)) —
-                 샘플러가 켜지기 전·죽은 뒤·중간 공백은 여기 없다(A25 — 미커버 구간에만 PC 하한)
-      stuck_days {date} 고착 판정(A1): 그날 샘플이 STUCK_COVER_H(14h) 이상을 덮는데 idle>0 인 샘플 비율이
-                 STUCK_IDLE_RATIO(2%) 미만 — TickCount 랩(가동 24.9~49.7일)·원격 세션의 idle 0 고착. 그날은
-                 spans·cov 에서 빼서 PC 하한 모드로 폴백한다(예전엔 ≥20h 를 '표시'만 하고 24h 를 계상했다)
-    · 샘플 간격은 config 가 아니라 파일에서 실측(인접 간격 중앙값, ≤300s)한다 — 120s 로 돌린
-      샘플러를 60s 로 가정하면 절반이 사라졌다(실측 E5).
-    · idle ≤ idle_active(300s) 는 '읽는 중'도 활동. 같은 창 제목이 10분 안에 이어지면 붙인다 — idle 샘플에서도
-      prev 를 유지해야 다음 활동 샘플이 잇는다(A24: 예전엔 idle 샘플이 prev 를 지워 실제로 붙은 적이 없었다).
-    · 같은 시각 중복 샘플은 한 번만.
-    LM28(WP8):
-    · 고착 판정은 (PC, 날짜) 단위다 — PC = 행의 host 열(없으면 그 파일의 데이터 루트). 한 PC 가 고착인 날도 다른 PC 의
-      실측은 남는다(예전엔 그 날짜 전체를 버렸다). stuck_days 는 어느 PC 든 고착이 나온 날짜.
-    · sess=locked 틱(잠금 화면·LogonUI — activity CSV 의 sess 열)은 활동이 아니다. 덮은 구간(cov)에는
-      남기고(샘플러가 돌았고 사람이 없었다 — 그 시간에 하한을 걸지 않게) 활동·같은 제목 이어붙임에서는 뺀다.
-      고착 판정에서는 '입력 없음' 쪽(idle>0)으로 센다.
-    · aux(dict) 를 주면 부가 재료를 채운다(시간 계산은 그대로):
-        aux["private"] {date: [(a, b)]} 사적·미디어 창(core\\privacy.window_class)이 이어진 구간 — 틱 간격 ≤ 2×간격,
-                       잠금 틱·다른 창에서 끊긴다. idle 과 무관(영상 시청은 입력이 없다). 길이 문턱은 호출측(privateRunMin).
-        aux["cpu"]     {PC: [(date, 분, 코어)]} solver_cpu_s ÷ 실측 간격(초) — 값이 빈 틱은 넣지 않는다(UD-13 솔버 확인)."""
-    import statistics
-    out_pc, cov_pc, stat, priv_pc = {}, {}, {}, {}
-    cpu = {}
-    wc = None
-    if aux is not None:
-        try:
-            wc = _pv().window_class
-        except Exception:  # noqa: BLE001 - 사적 차감 재료가 없어도 시간 계산은 계속
-            wc = None
-    for f in _glob_multi(data_dir, "activity", "activity_*.csv"):
-        root_id = os.path.dirname(os.path.dirname(os.path.abspath(f))).lower()
-        rows, seen = [], set()
-        for r in _read(f):
-            t = _dt(r.get("time") or r.get("ts"))
-            if not t or not (d0 <= t.date() <= d1) or t in seen:
-                continue
-            try:
-                idle = float(r.get("idle_sec") or r.get("idle") or 0)
-            except ValueError:
-                continue                     # 강제종료로 열이 밀린 행 — 활동으로 세지 않는다
-            seen.add(t)
-            full = r.get("title") or ""
-            rows.append((t, idle, full[:70], str(r.get("sess") or "").strip().lower() == "locked",
-                         str(r.get("host") or "").strip().lower() or root_id, r.get("process") or "", full,
-                         str(r.get("solver_cpu_s") or "").strip()))
-        rows.sort(key=lambda x: x[0])
-        deltas = [(rows[i + 1][0] - rows[i][0]).total_seconds() for i in range(len(rows) - 1)
-                  if 0 < (rows[i + 1][0] - rows[i][0]).total_seconds() <= 600]
-        step = statistics.median(deltas) if deltas else float(interval_sec)
-        step = min(300.0, max(float(interval_sec), step))
-        prev = None
-        run = None                          # 사적·미디어 연속 [키, 시작 분, 마지막 틱 분]
-
-        def _close(rn):
-            if rn:
-                priv_pc.setdefault(rn[0], []).append((rn[1], min(1440.0, rn[2] + step / 60.0)))
-        for t, idle, title, locked, pcid, proc, full, cpu_s in rows:
-            dd = t.date()
-            key = (pcid, dd)
-            m = t.hour * 60 + t.minute + t.second / 60.0
-            cov_pc.setdefault(key, []).append((m, min(1440.0, m + 3 * step / 60.0)))
-            s = stat.setdefault(key, [0, 0])
-            s[0] += 1
-            s[1] += 1 if (idle > 0 or locked) else 0
-            if aux is not None:
-                if cpu_s:
-                    try:
-                        cpu.setdefault(pcid, []).append((dd, m, float(cpu_s) / step))
-                    except ValueError:
-                        pass
-                cls = wc(proc, full) if (wc and not locked) else ""
-                if cls in ("private", "media"):
-                    if run and run[0] == key and m - run[2] <= 2 * step / 60.0 + 1e-6:
-                        run[2] = m
-                    else:
-                        _close(run)
-                        run = [key, m, m]
-                else:
-                    _close(run)
-                    run = None
-            if locked:
-                prev = None                  # 잠금 화면은 활동이 아니다 — 같은 제목 이어붙임도 끊는다
-                continue
-            if idle > idle_active:
-                # 같은 창을 계속 보고 있는 동안(≤10분)은 prev 를 지우지 않는다 — 다음 활동 샘플이 a=prev[1] 로 잇는다
-                if not (prev and prev[2] == title and prev[3] == key and 0 <= m - prev[1] <= SAME_TITLE_BRIDGE_MIN):
-                    prev = None
-                continue
-            a, b = m, min(1440.0, m + step / 60.0)
-            if (prev and prev[2] == title and prev[3] == key
-                    and 0 <= a - prev[1] <= SAME_TITLE_BRIDGE_MIN):
-                a = prev[1]                  # 같은 창을 계속 보고 있었다 — 읽기 구간을 잇는다
-            out_pc.setdefault(key, []).append((a, b))
-            prev = (a, b, title, key)
-        _close(run)
-    stuck = set()
-    out, cov, priv = {}, {}, {}
-    for key, (n, n_pos) in stat.items():
-        dd = key[1]
-        if n and _union_min(cov_pc[key]) >= STUCK_COVER_H * 60 and n_pos / n < STUCK_IDLE_RATIO:
-            stuck.add(dd)                    # 그 PC 의 그날만 버린다 — 다른 PC 의 실측은 남는다
-            continue
-        if key in out_pc:
-            out.setdefault(dd, []).extend(out_pc[key])
-        cov.setdefault(dd, []).extend(cov_pc[key])
-        if key in priv_pc:
-            priv.setdefault(dd, []).extend(priv_pc[key])
-    for dd in list(cov):
-        cov[dd] = _union_spans(cov[dd])
-    if aux is not None:
-        aux["private"] = {dd: _union_spans(sp) for dd, sp in priv.items()}
-        aux["cpu"] = {k: sorted(v) for k, v in cpu.items()}
-    return out, cov, stuck
-
-
-_TOOL_USAGE_CACHE = {}          # (data_dir, 기간, 설정, 재료 파일 상태 — 창 기록·실행 기록 스냅샷·파일 흔적) → 집계 결과
-SAMPLER_SRC, REG_SRC, FILE_SRC = "창기록", "실행기록", "파일"     # tool_usage 프로그램 행의 src(출처) 이름 — 이 순서로 적는다
-REG_SPILL = _td(hours=36)       # 증가분 구간이 기간 앞뒤로 이만큼까지 넘쳐도 '기간 안' 으로 본다(하루 1장 — 전날 저녁 장이 기준)
-
-
-def tool_usage(data_dir, d0, d1, cfg=None):
-    """프로그램 사용 이력(참고 지표) — 창기록·실행기록·파일 세 원천을 한 표로 합친다(사용자 요청: 상용·비상용 사용 이력).
-
-    ★ MM 과 무관하다. 여기 값은 load_signals 로 들어가지 않고 mm_basis["tool_usage"] 에만 실린다.
-      신호로 만들면 to_rows 의 가중치 비율이 바뀌어 지금까지의 MM 이 통째로 달라진다(core/programs.py 머리말).
-
-    원천(프로그램 행마다 src 에 이름이 남는다)
-      · 창기록   — 옛 창 샘플러(_tool_usage_sampler — 예전 집계 그대로: 맨 앞 창 시간 hours · 배경 솔버 bg_hours).
-                   LM28 에는 샘플러가 없다 — 옛 기록·추가PC 기록이 있을 때만 채워진다.
-      · 실행기록 — collect\\Get-ProgramUsage.py 스냅샷(data\\programs + 추가PC — Windows 가 계정에 남긴 실행 흔적).
-                   누적 카운터라 기간은 이렇게 본다(_registry_usage): 스냅샷이 둘 이상이면 '기간 시작 전 마지막 장(없으면
-                   기간 안 첫 장) ~ 기간 끝 전 마지막 장' 사이 증가분(한 장씩 이어 더한다 — 줄어든 칸은 카운터 초기화로 보고
-                   뒤 값을 그대로 더한다). 한 장뿐이면 마지막 실행 시각이 기간 안인 것만 '썼다' 로 보고 횟수·시간은 누적
-                   (runs_cum·focus_h_cum)으로만 — 증가분을 지어내지 않는다. PC(스냅샷 pc 열쇠)·뿌리별로 따로 빼고 더한다.
-      · 파일     — 파일·Recent 수집 행(FILE_SOURCES, 추가PC 포함)의 확장자 → 도구(programs.file_program, _file_tool_usage).
-                   모호한 확장자(.prt .sim …)는 실행·창 기록에 후보가 하나만 보일 때만 그 도구로, 아니면 ambiguous_files 로만.
-    자체·프로토타입(추정) — 카탈로그 밖 실행 파일이 사용자 폴더·다른 드라이브·네트워크에서 돈 것(inhouse — programs 와 따로).
-    이름(자체·미상·procs)은 G3 관문(privacy.gate_items — 정제·카나리아·고위험 잔여)을 거친 것만 싣는다: mm_meta 는 팀
-    서버·공유폴더로 그대로 올라간다(teamup.FILE_NAMES). 못 거친 자체 도구는 inhouse_hidden 건수로만.
-
-    반환(전부 JSON 안전 · 예전 키 그대로 + 새 키)
-      {"samples","days"(창기록), "programs":[{"name","vendor","kind","cat","hours","bg_hours","days","first","last","procs",
-         "src","runs","runs_cum","focus_h","focus_h_cum","taskbar","last_run","file_days","files"}],
-       "by_cat","by_kind"(창기록 시간 — 예전 뜻), "by_kind_n","by_cat_n"(프로그램 수 — 자체 도구 포함),
-       "inhouse":[{"name","cls","runs","runs_cum","focus_h","focus_h_cum","taskbar","last_run"}], "inhouse_n","inhouse_hidden",
-       "unknown_n"(카탈로그 밖 설치 프로그램 수 — 이름은 싣지 않는다: 사적 앱이 섞인다), "ambiguous_files":[[확장자, 파일 수, [후보]]],
-       "sources":{"창기록":{…},"실행기록":{snapshots,pcs,basis(delta|cum),window,full,first,latest,programs,inhouse,bam…},
-                  "파일":{files,programs,ambiguous}} — 빈 원천은 why, "note",
-       창기록이 있으면 예전 키(step_sec·idle_active_sec·total_h·known_h·unknown_h·sim_h·cad_h·solver_bg_h·solver_bg_top·unknown_top),
-       세 원천이 다 비면 "why"}  — runs·focus_h·taskbar 는 증가분을 알 때만 숫자(아니면 None — 화면은 누적으로 적는다)."""
-    try:                          # 이 저장소는 core\ 를 sys.path 에 넣고 평평하게 부른다(mine.py: import extract).
-        import programs as _P     # core 패키지로 부르는 곳(uipp.py 일부 경로)도 있어 둘 다 받는다.
-    except ImportError:
-        from core import programs as _P
-    cfg = cfg if isinstance(cfg, dict) else {}
-    mc = norm_cfg(cfg)[0]
-    idle_act = mc["idleActiveSec"]
-    extra = cfg.get("programsExtra")
-    extra = extra if isinstance(extra, list) else []
-    # 한 번 실행에 세 번 불린다(mine 1회 · rehours_after_judge 2회) — 같은 재료면 다시 읽지 않는다.
-    # 재료 = 창 기록 + 실행 기록 스냅샷 + 파일 흔적(뿌리가 여럿이라 전체 경로로). 이름 관문·제외어가 설정을 본다.
-    _mat = (sorted(_glob_multi(data_dir, "activity", "activity_*.csv")) + _glob_multi(data_dir, "programs", "snap_*.json")
-            + [p for p in (os.path.join(rt, "files", n) for rt in _data_roots(data_dir) for n in FILE_SOURCES)
-               if os.path.exists(p)])
-    try:
-        _sig = tuple((x, os.path.getmtime(x), os.path.getsize(x)) for x in _mat)
-    except OSError:
-        _sig = tuple(_mat)
-    _csig = json.dumps([cfg.get(k) for k in ("programsExtra", "excludePathKeywords", "owner", "teamsSelfNames",
-                                             "privacy", "level1Codenames")], ensure_ascii=False, sort_keys=True, default=str)
-    ck = (str(data_dir), d0, d1, idle_act, _csig, _sig)
-    if ck in _TOOL_USAGE_CACHE:
-        return _TOOL_USAGE_CACHE[ck]
-    base = _tool_usage_sampler(data_dir, d0, d1, mc, idle_act, extra, _P)
-    reg = _registry_usage(data_dir, d0, d1, extra, _P)
-    fil = _file_tool_usage(data_dir, d0, d1, cfg, extra, _P)
-    out = _tool_usage_merge(base, reg, fil, d0, d1, data_dir, cfg, _P)
-    _TOOL_USAGE_CACHE[ck] = out
-    return out
-
-
-def _tool_usage_sampler(data_dir, d0, d1, mc, idle_act, extra, _P):
-    """창기록 — 옛 창 샘플러의 process 열 → 프로그램별 사용 시간(참고 지표 · LM28 이전 집계 그대로, tool_usage 가 합친다).
-
-    ★ MM 과 무관하다. 여기 값은 load_signals 로 들어가지 않고 mm_basis["tool_usage"] 에만 실린다.
-      신호로 만들면 to_rows 의 가중치 비율이 바뀌어 지금까지의 MM 이 통째로 달라진다(core/programs.py 머리말).
-
-    세는 법
-      · 맨 앞 창(foreground): idle ≤ mm.idleActiveSec 인 샘플만 — Creo 를 띄운 채 퇴근한 밤을
-        '12시간 사용' 으로 적지 않기 위해서다. 한 샘플 = 실측 간격(step, 인접 간격 중앙값 ≤300s).
-      · 배경 솔버(solvers_running): idle 과 무관하게 센다 — 밤새 도는 것이 정상이고, 그것이 이 열의
-        존재 이유다. 다만 '내가 쓴 시간' 과 섞이지 않게 bg_h 로 따로 적는다.
-      · 고착일(_activity_spans 의 stuck_days: idle 이 종일 0 으로 굳은 날)은 통째로 뺀다 — 시간 계산과
-        같은 판정을 써야 화면의 두 숫자가 어긋나지 않는다.
-      · 창 제목은 읽지 않는다. 제목에는 과제명·사람 이름이 들어가므로 이 집계는 실행 파일 이름만 본다.
-
-    반환(전부 JSON 안전)
-      {"samples","days","step_sec","idle_active_sec","total_h","known_h","unknown_h",
-       "programs":[{"name","vendor","kind","cat","hours","bg_hours","days","first","last","procs"}],
-       "by_cat":[[분류,h]], "by_kind":[[상용/비상용,h]], "sim_h", "cad_h",
-       "unknown_top":[[process,h]], "solver_bg_h", "why"}
-      샘플이 없으면 {"samples":0, "days":0, "programs":[], "why":"…"} — tool_usage 가 sources["창기록"] 으로 옮긴다."""
-    import statistics
-    _, _, stuck = _activity_spans(data_dir, d0, d1, mc["samplerIntervalSec"], idle_act)
-
-    fg = defaultdict(float)          # 표시 이름 → 분(맨 앞 창)
-    bg = defaultdict(float)          # 표시 이름 → 분(배경 솔버)
-    unk = defaultdict(float)         # 못 맞힌 process → 분
-    seen_proc = defaultdict(set)     # 표시 이름 → 실제 process 이름들(무엇으로 맞혔는지 보여 준다)
-    days_of = defaultdict(set)       # 표시 이름 → 쓴 날
-    ident = {}                       # 표시 이름 → {vendor, kind, cat}
-    solver_bg = defaultdict(float)   # process → 분(배경, 이름 못 맞혀도 센다)
-    n_samples, all_days, step_used = 0, set(), []
-
-    for f in _glob_multi(data_dir, "activity", "activity_*.csv"):
-        rows, seen = [], set()
-        for r in _read(f):
-            t = _dt(r.get("time") or r.get("ts"))
-            if not t or not (d0 <= t.date() <= d1) or t.date() in stuck or t in seen:
-                continue
-            try:
-                idle = float(r.get("idle_sec") or r.get("idle") or 0)
-            except ValueError:
-                continue             # 샘플러 강제종료로 열이 밀린 행
-            seen.add(t)
-            rows.append((t, idle, r.get("process") or "", r.get("solvers_running") or ""))
-        if not rows:
-            continue
-        rows.sort(key=lambda x: x[0])
-        deltas = [(rows[i + 1][0] - rows[i][0]).total_seconds() for i in range(len(rows) - 1)
-                  if 0 < (rows[i + 1][0] - rows[i][0]).total_seconds() <= 600]
-        step = statistics.median(deltas) if deltas else float(mc["samplerIntervalSec"])
-        step = min(300.0, max(float(mc["samplerIntervalSec"]), step))
-        step_used.append(step)
-        unit = step / 60.0
-        for t, idle, proc, solvers in rows:
-            n_samples += 1
-            all_days.add(t.date())
-            for s in str(solvers).replace("|", ";").split(";"):
-                s = s.strip().lower()
-                if not s or _P.is_noise(s):
-                    continue          # ansysli_client 는 로그온 내내 떠 있다 — 솔버로 세면 하루 종일 해석이 된다
-                solver_bg[s] += unit
-                it = _P.classify(s, extra)
-                if it:
-                    bg[it["name"]] += unit
-                    ident.setdefault(it["name"], it)
-                    seen_proc[it["name"]].add(s)
-            if idle > idle_act:
-                continue              # 자리를 비운 사이 떠 있던 창은 '쓴 시간' 이 아니다
-            it = _P.classify(proc, extra)
-            if it is None:
-                if proc and not _P.is_noise(proc):
-                    unk[str(proc).strip().lower()] += unit
-                continue
-            nm = it["name"]
-            fg[nm] += unit
-            ident.setdefault(nm, it)
-            seen_proc[nm].add(str(proc).strip().lower())
-            days_of[nm].add(t.date())
-
-    if not n_samples:
-        return {"samples": 0, "days": 0, "programs": [],
-                "why": "창 기록(data\\activity\\activity_*.csv)이 이 기간에 없습니다 — "
-                       "LM30 에는 창 샘플러가 없어 옛 기록이 있을 때만 채워집니다"}
-
-    first_last = {}
-    for nm, ds in days_of.items():
-        first_last[nm] = (min(ds).isoformat(), max(ds).isoformat())
-
-    progs = []
-    for nm in set(fg) | set(bg):
-        it = ident.get(nm) or {}
-        fo, bo = first_last.get(nm, ("", ""))
-        progs.append({"name": nm, "vendor": it.get("vendor", ""), "kind": it.get("kind", ""),
-                      "cat": it.get("cat", ""), "hours": round(fg.get(nm, 0.0) / 60.0, 2),
-                      "bg_hours": round(bg.get(nm, 0.0) / 60.0, 2),
-                      "days": len(days_of.get(nm, ())), "first": fo, "last": bo,
-                      "procs": sorted(seen_proc.get(nm, ()))[:6]})
-    progs.sort(key=lambda x: (-(x["hours"] + x["bg_hours"]), x["name"]))
-
-    by_cat, by_kind = defaultdict(float), defaultdict(float)
-    for p in progs:
-        by_cat[p["cat"] or "기타"] += p["hours"]
-        by_kind[p["kind"] or "미상"] += p["hours"]
-    known_h = round(sum(p["hours"] for p in progs), 2)
-    unknown_h = round(sum(unk.values()) / 60.0, 2)
-    out = {"samples": n_samples, "days": len(all_days),
-           "step_sec": round(statistics.median(step_used), 1) if step_used else None,
-           "idle_active_sec": idle_act,
-           "total_h": round(known_h + unknown_h, 2), "known_h": known_h, "unknown_h": unknown_h,
-           "programs": progs[:40],
-           "by_cat": sorted(((k, round(v, 2)) for k, v in by_cat.items()), key=lambda x: -x[1]),
-           "by_kind": sorted(((k, round(v, 2)) for k, v in by_kind.items()), key=lambda x: -x[1]),
-           "sim_h": round(by_cat.get("해석", 0.0) + by_cat.get("광학", 0.0), 2),
-           "cad_h": round(by_cat.get("CAD", 0.0), 2),
-           "solver_bg_h": round(sum(solver_bg.values()) / 60.0, 2),
-           "solver_bg_top": sorted(((k, round(v / 60.0, 2)) for k, v in solver_bg.items()),
-                                   key=lambda x: -x[1])[:10],
-           "unknown_top": sorted(((k, round(v / 60.0, 2)) for k, v in unk.items()),
-                                 key=lambda x: -x[1])[:12]}
-    return out
-
-
-def _ni(v):
-    """스냅샷 숫자 칸 → 0 이상의 정수(깨진 값·bool 은 0)."""
-    if isinstance(v, bool):
-        return 0
-    try:
-        return max(0, int(v))
-    except (TypeError, ValueError):
-        return 0
-
-
-def _prog_snaps(data_dir):
-    r"""data\programs\snap_*.json(본 PC + 추가PC) → ({뿌리|PC 열쇠: [(찍은 시각, 스냅샷)…시각순]}, 깨진 파일 수).
-    PC 열쇠로 가르는 이유: 폴더째 다른 PC 로 옮기면(run.archive_other_pc 는 programs 를 옮기지 않는다) 두 PC 의 장이 한 폴더에
-    섞인다 — 서로 다른 레지스트리의 누적값을 빼면 증가분이 엉터리가 된다."""
-    groups, bad = defaultdict(list), 0
-    for p in _glob_multi(data_dir, "programs", "snap_*.json"):
-        try:
-            with open(p, encoding="utf-8-sig") as f:
-                s = json.load(f)
-        except (OSError, ValueError):
-            bad += 1
-            continue
-        t = _dt(str(s.get("taken") or "")) if isinstance(s, dict) else None
-        if t is None or not isinstance(s.get("items"), list):
-            bad += 1
-            continue
-        root = os.path.dirname(os.path.dirname(os.path.abspath(p))).lower()
-        groups[root + "|" + str(s.get("pc") or "")].append((t, s))
-    for seq in groups.values():
-        seq.sort(key=lambda x: x[0])
-    return groups, bad
-
-
-def _snap_measure(s, extra, _P, memo=None):
-    """스냅샷 한 장 → {(판정, 이름): {"run","ms","tb","last","procs","ident","cls"}} (판정 = prog·inhouse·unknown).
-    실행 횟수·포커스 시간은 실행 파일 기록과 바로 가기 기록 중 큰 쪽 — 시작 메뉴로 띄우면 두 곳에 함께 적힐 수 있어 더하면
-    두 번 센다. tb = 작업 표시줄 전환 + 실행(FeatureUsage). last = UserAssist·BAM 마지막 실행 중 늦은 쪽.
-    memo: 판정 캐시 {(exe, cls, vf, k): 판정} — 1년 기간이면 하루 1장 × 수백 항목을 매번 카탈로그로 맞히지 않게."""
-    acc = {}
-    memo = {} if memo is None else memo
-    for it in s.get("items") or ():
-        if not isinstance(it, dict):
-            continue
-        mk = tuple(str(it.get(f) or "") for f in ("exe", "cls", "vf", "k"))   # 손상된 장의 목록·객체 값도 열쇠가 되게
-        r = memo[mk] if mk in memo else memo.setdefault(mk, _P.registry_item(it, extra))
-        if r is None:
-            continue
-        kind, v = r
-        key = (kind, v["name"] if kind == "prog" else v)
-        m = acc.get(key)
-        if m is None:
-            m = acc[key] = {"xr": 0, "xm": 0, "lr": 0, "lm": 0, "tb": 0, "last": None, "procs": set(),
-                            "ident": v if kind == "prog" else None, "cls": str(it.get("cls") or "")}
-        lnk = it.get("k") == "lnk"
-        m["lr" if lnk else "xr"] += _ni(it.get("ua_run"))
-        m["lm" if lnk else "xm"] += _ni(it.get("ua_ms"))
-        m["tb"] += _ni(it.get("fu_sw")) + _ni(it.get("fu_la"))
-        for f in ("ua_last", "bam_last"):
-            t = _dt(str(it.get(f) or ""))
-            if t and (m["last"] is None or t > m["last"]):
-                m["last"] = t
-        if kind == "prog" and not lnk:
-            m["procs"].add(str(it.get("exe") or "")[:40])
-    for m in acc.values():
-        m["run"], m["ms"] = max(m["xr"], m["lr"]), max(m["xm"], m["lm"])
-    return acc
-
-
-def _chain_sum(vals):
-    """누적 카운터 열 → 증가분 합. 줄어든 칸은 카운터 초기화(계정 정리·기록 삭제·다시 설치)로 보고 뒤 값을 그대로 더한다."""
-    tot = 0
-    for a, b in zip(vals, vals[1:], strict=False):
-        tot += (b - a) if b >= a else b
-    return tot
-
-
-def _registry_usage(data_dir, d0, d1, extra, _P):
-    """실행 기록 스냅샷 → 기간 사용(tool_usage 머리말의 기간 규칙).
-    PC 열쇠마다: 사슬 = [기간 시작 전 마지막 장] + 기간 안 장들(기간 안 장이 없으면 + 기간 뒤 첫 장).
-      · 사슬이 둘 이상 → 증가분(원천을 못 읽은 장은 그 원천 계산에서 뺀다). '썼다' = 마지막 실행이 기간 안이거나,
-        증가분 구간이 기간 앞뒤로 REG_SPILL 안에 들고 증가분이 있다(띄워 둔 채 며칠 쓴 도구 — 실행 시각은 기간 전).
-      · 한 장 → 마지막 실행이 기간 안인 것만. 횟수·시간은 그 장의 누적(runs_cum)뿐 — 증가분은 None.
-    → {"items": {(판정, 이름): 지표}, "known": 어느 장(사슬 + 최신 장)에든 보인 프로그램 이름, 원천 요약 칸…}"""
-    groups, bad = _prog_snaps(data_dir)
-    t0 = datetime(d0.year, d0.month, d0.day)
-    t1 = datetime(d1.year, d1.month, d1.day) + _td(days=1)
-    res, known, modes, wins, firsts = {}, set(), set(), [], []
-    latest, memo = None, {}
-
-    def _ok(s, src):
-        return (s.get("sources") or {}).get(src, True) is not False
-
-    for seq in groups.values():
-        firsts.append(seq[0][0])
-        if latest is None or seq[-1][0] > latest[0]:
-            latest = seq[-1]
-        known.update(k[1] for k in _snap_measure(seq[-1][1], extra, _P, memo) if k[0] == "prog")
-        pre = [x for x in seq if x[0] < t0]
-        ins = [x for x in seq if t0 <= x[0] < t1]
-        chain = pre[-1:] + ins
-        if not ins:
-            chain += [x for x in seq if x[0] >= t1][:1]       # 기간을 사이에 둔 두 장 — 또는 기간 뒤 첫 장 하나
-        if not chain:
-            continue
-        meas = [(t, s, _snap_measure(s, extra, _P, memo)) for t, s in chain]
-        for _t, _s, mm in meas:
-            known.update(k[1] for k in mm if k[0] == "prog")
-        delta = len(chain) >= 2
-        inside = (t0 - chain[0][0]) <= REG_SPILL and (chain[-1][0] - t1) <= REG_SPILL
-        modes.add("delta" if delta else "cum")
-        if delta:
-            wins.append((chain[0][0], chain[-1][0]))
-        ua = [mm for _t, s, mm in meas if _ok(s, "ua")]
-        fu = [mm for _t, s, mm in meas if _ok(s, "fu")]
-        end = meas[-1][2]
-        for key in set().union(*(mm.keys() for _t, _s, mm in meas)):
-            last = max((mm[key]["last"] for _t, _s, mm in meas if key in mm and mm[key]["last"]), default=None)
-            d_run = _chain_sum([mm[key]["run"] if key in mm else 0 for mm in ua]) if delta else None
-            d_ms = _chain_sum([mm[key]["ms"] if key in mm else 0 for mm in ua]) if delta else None
-            d_tb = _chain_sum([mm[key]["tb"] if key in mm else 0 for mm in fu]) if delta else None
-            used = bool(last and t0 <= last < t1) or (delta and inside and bool(d_run or d_ms or d_tb))
-            if not used:
-                continue
-            e = end.get(key) or {}
-            src_m = next(mm[key] for _t, _s, mm in reversed(meas) if key in mm)
-            r = res.get(key)
-            if r is None:
-                r = res[key] = {"run": None, "ms": None, "tb": None, "run_cum": 0, "ms_cum": 0, "last": None,
-                                "procs": set(), "ident": src_m["ident"], "cls": src_m["cls"]}
-            if delta:
-                r["run"] = (r["run"] or 0) + d_run
-                r["ms"] = (r["ms"] or 0) + d_ms
-                r["tb"] = (r["tb"] or 0) + d_tb
-            r["run_cum"] += e.get("run", 0)
-            r["ms_cum"] += e.get("ms", 0)
-            if last and (r["last"] is None or last > r["last"]):
-                r["last"] = last
-            for _t, _s, mm in meas:
-                if key in mm:
-                    r["procs"] |= mm[key]["procs"]
-    srcs = (latest[1].get("sources") or {}) if latest else {}
-    return {"items": res, "known": known, "snapshots": sum(len(v) for v in groups.values()), "bad": bad,
-            "pcs": len(groups), "basis": "delta" if "delta" in modes else ("cum" if modes else ""),
-            "window": ([min(a for a, _b in wins).date().isoformat(), max(b for _a, b in wins).date().isoformat()]
-                       if wins else None),
-            "full": bool(wins) and min(a for a, _b in wins) < t0,
-            "first": min(firsts).date().isoformat() if firsts else "",
-            "latest": latest[0].date().isoformat() if latest else "",
-            "bam": ("ok" if srcs.get("bam") else str(srcs.get("bam_why") or "")) if latest else "",
-            "track_off": srcs.get("ua_track") is False}      # '앱 실행 추적' 꺼짐 — 횟수가 늘지 않는다(안 쓴 것과 다르다)
-
-
-def _file_tool_usage(data_dir, d0, d1, cfg, extra, _P):
-    """파일 흔적(FILE_SOURCES · 추가PC) → ({표시 이름: {"ident","days","files"}}, {확장자: {"cands","days","files"}}, 센 행 수).
-    _file_times 와 같은 거르기 — 같은 파일 1건((분, 이름, 확장자, 폴더명)) · 동료가 저장한 파일(author ≠ 나) · 개인 폴더
-    제외어. 파일 하나 = (폴더명, Creo 판번호를 뗀 이름) — bracket.prt.3 과 .prt.4 는 같은 모델이다. 폴더명은 세는 데만 쓴다."""
-    rows = _file_rows(data_dir)
-    if not rows:
-        return {}, {}, 0
-    hit = _text_filter(_pv().excluded_keywords(cfg))
-    self_names = _self_names(data_dir, cfg, rows)
-    seen, prog, amb, n = set(), {}, {}, 0
-    for r in rows:
-        t = _dt(r.get("mtime"))
-        if not t or not (d0 <= t.date() <= d1):
-            continue
-        name = r.get("name") or ""
-        ext = (r.get("ext") or "").lower()
-        fol = folder_label(r.get("folder"))
-        dk = (t.replace(second=0, microsecond=0), name.lower(), ext, fol.lower())
-        if dk in seen:                          # 스냅샷·이력·추가PC 에 같은 파일이 겹친다
-            continue
-        seen.add(dk)
-        if not _is_me(r.get("author"), self_names):
-            continue
-        if hit((name + (" | 폴더:" + fol if fol else "")).lower()):
-            continue
-        fp = _P.file_program(name, ext, extra)
-        if fp is None:
-            continue
-        if fp[0] == "prog":
-            g = prog.setdefault(fp[1]["name"], {"ident": fp[1], "days": set(), "files": set()})
-        else:
-            g = amb.setdefault(fp[1], {"cands": tuple(fp[2]), "days": set(), "files": set()})
-        g["days"].add(t.date())
-        g["files"].add((fol.lower(), _VER_TAIL_RE.sub("", name.lower())))
-        n += 1
-    return prog, amb, n
-
-
-def _tool_gate(names, cfg, data_dir):
-    """자체·미상 프로그램 이름 → 실어도 되는 이름(G3 관문 privacy.gate_items — 정제·카나리아·고위험 잔여) 또는 None.
-    mm_meta 는 팀 서버·공유폴더로 그대로 올라간다 — 실행 파일 이름에 사람 이름·이 PC 계정·고객사가 들 수 있다."""
-    names = [x for x in dict.fromkeys(names) if x]
-    if not names:
-        return {}
-    pv = _pv()
-    ctx = pv.make_ctx(cfg, data_dir)
-    cans = pv.canaries(cfg, data_dir)
-    out = {}
-    for x in names:
-        kept, _drop = pv.gate_items([{"name": x}], ["name"], cfg, canaries=cans, ctx=ctx, max_chars=60)
-        out[x] = kept[0]["name"] if kept else None
-    return out
-
-
-def _tool_usage_merge(base, reg, fil, d0, d1, data_dir, cfg, _P):
-    """창기록(base — 예전 키 그대로) + 실행기록 + 파일 → tool_usage 한 표(머리말의 반환 꼴)."""
-    out = dict(base)
-    rows = {}
-
-    def row(ident):
-        nm = ident["name"]
-        r = rows.get(nm)
-        if r is None:
-            r = rows[nm] = {"name": nm, "vendor": ident.get("vendor", ""), "kind": ident.get("kind", ""),
-                            "cat": ident.get("cat", ""), "hours": 0.0, "bg_hours": 0.0, "days": 0, "first": "",
-                            "last": "", "procs": [], "src": [], "runs": None, "runs_cum": None, "focus_h": None,
-                            "focus_h_cum": None, "taskbar": None, "last_run": "", "file_days": 0, "files": 0,
-                            "_d": set(), "_f": set()}
-        return r
-
-    for p in base.get("programs") or ():
-        if isinstance(p, dict) and p.get("name"):
-            r = row(p)
-            r.update(p)                         # 예전 칸(hours·bg_hours·days·first·last·procs) 그대로
-            r["src"].append(SAMPLER_SRC)
-    reg_procs = {}
-    for (kind, _nm), m in reg["items"].items():
-        if kind != "prog":
-            continue
-        r = row(m["ident"])
-        if REG_SRC not in r["src"]:
-            r["src"].append(REG_SRC)
-        if m["run"] is not None:
-            r["runs"] = (r["runs"] or 0) + int(m["run"])
-            r["taskbar"] = (r["taskbar"] or 0) + int(m["tb"] or 0)
-            r["focus_h"] = round((r["focus_h"] or 0.0) + m["ms"] / 3.6e6, 2)
-        r["runs_cum"] = (r["runs_cum"] or 0) + int(m["run_cum"])
-        r["focus_h_cum"] = round((r["focus_h_cum"] or 0.0) + m["ms_cum"] / 3.6e6, 2)
-        if m["last"]:
-            r["last_run"] = max(r["last_run"], m["last"].strftime("%Y-%m-%d %H:%M"))
-        reg_procs.setdefault(r["name"], set()).update(m["procs"])
-    for g in fil[0].values():
-        r = row(g["ident"])
-        r["_d"] |= g["days"]
-        r["_f"] |= g["files"]
-    # 모호한 확장자 — 실행·창 기록(어느 장이든)에 후보가 하나만 보이면 그 도구로, 아니면 '도구 불명' 으로만 남긴다
-    known = set(reg["known"]) | {p.get("name") for p in base.get("programs") or () if isinstance(p, dict)}
-    amb_out = []
-    for ext, g in sorted(fil[1].items()):
-        hits = [c for c in g["cands"] if c in known]
-        ident = _P.program_info(hits[0]) if len(hits) == 1 else None
-        if ident:
-            r = row(ident)
-            r["_d"] |= g["days"]
-            r["_f"] |= g["files"]
-        else:
-            amb_out.append([ext, len(g["files"]), list(g["cands"])])
-    inh = sorted(((nm, m) for (kind, nm), m in reg["items"].items() if kind == "inhouse"),
-                 key=lambda x: (-(x[1]["run"] if x[1]["run"] is not None else x[1]["run_cum"]), x[0]))
-    # 카탈로그 밖 '설치된' 프로그램(Program Files·AppData·제거 프로그램이 있는 설치본)은 개수만 — 이름을 싣지 않는다.
-    # mm_meta 는 팀으로 그대로 올라가는데, 이 목록에는 게임·영상 편집기 같은 사적 앱이 섞인다(개발 PC 실측). 이름은
-    # 이 PC 의 data\programs 스냅샷에만 있다(카탈로그·programsExtra 에 보탤 때 본다).
-    n_unk = sum(1 for (kind, _nm) in reg["items"] if kind == "unknown")
-    gate = _tool_gate([nm for nm, _m in inh] + [x for ps in reg_procs.values() for x in sorted(ps)], cfg, data_dir)
-    lo, hi = d0.isoformat(), d1.isoformat()
-    order = (SAMPLER_SRC, REG_SRC, FILE_SRC)
-    for r in rows.values():
-        d, f = r.pop("_d"), r.pop("_f")
-        if d:
-            r["src"].append(FILE_SRC)
-            r["file_days"], r["files"] = len(d), len(f)
-            r["first"] = min(x for x in (r["first"], min(d).isoformat()) if x)
-            r["last"] = max(r["last"], max(d).isoformat())
-        lr = r["last_run"][:10]
-        if lr and lo <= lr <= hi:
-            r["last"] = max(r["last"], lr)
-            r["first"] = r["first"] or lr
-        if r["name"] in reg_procs:
-            r["procs"] = sorted(set(r["procs"]) | {gate.get(x) for x in reg_procs[r["name"]] if gate.get(x)})[:6]
-        r["src"] = [s for s in order if s in r["src"]]
-
-    def _rank(r):
-        runs = r["runs"] if r["runs"] is not None else (r["runs_cum"] or 0)
-        return (r["cat"] in _P.GENERAL_CATS, -(float(r.get("hours") or 0) + float(r.get("bg_hours") or 0)),
-                -r["file_days"], -runs, r["name"])
-    progs = sorted(rows.values(), key=_rank)
-    inhouse, hidden = [], 0
-    for nm, m in inh:
-        g = gate.get(nm)
-        if not g:
-            hidden += 1                         # 이름에 사람·계정·고객사가 남는 도구 — 건수로만
-            continue
-        inhouse.append({"name": g, "cls": m["cls"], "runs": m["run"], "runs_cum": m["run_cum"],
-                        "focus_h": round(m["ms"] / 3.6e6, 2) if m["ms"] is not None else None,
-                        "focus_h_cum": round(m["ms_cum"] / 3.6e6, 2), "taskbar": m["tb"],
-                        "last_run": m["last"].strftime("%Y-%m-%d %H:%M") if m["last"] else ""})
-    kind_n = Counter(r["kind"] or "미상" for r in progs)
-    if inh:
-        kind_n[_P.INHOUSE_KIND] += len(inh)
-    cat_n = Counter(r["cat"] or "기타" for r in progs)
-    srcs = {}
-    if base.get("samples"):
-        srcs[SAMPLER_SRC] = {"samples": base.get("samples"), "days": base.get("days"),
-                             "programs": sum(1 for r in progs if SAMPLER_SRC in r["src"])}
-    else:
-        srcs[SAMPLER_SRC] = {"samples": 0, "why": base.get("why") or "창 기록이 없습니다"}
-    rs = {k: reg[k] for k in ("snapshots", "pcs", "basis", "window", "full", "first", "latest", "bam", "track_off")}
-    rs.update(programs=sum(1 for r in progs if REG_SRC in r["src"]), inhouse=len(inh), unknown=n_unk)
-    if reg["bad"]:
-        rs["bad"] = reg["bad"]
-    if not reg["snapshots"]:
-        rs["why"] = ("실행 기록 스냅샷(data\\programs)이 없습니다 — [분석 실행]·[로컬PC 자료수집]이 수집할 때마다 한 장씩 남깁니다")
-    elif not reg["basis"]:
-        rs["why"] = f"이 기간 뒤의 실행 기록 스냅샷이 없습니다(가장 최근 {reg['latest']}) — 기간이 끝난 뒤 수집하면 채워집니다"
-    elif not reg["items"]:
-        rs["why"] = f"실행 기록에 이 기간에 쓴 프로그램이 없습니다(스냅샷 {reg['first']}~{reg['latest']})"
-    srcs[REG_SRC] = rs
-    fs = {"files": fil[2], "programs": sum(1 for r in progs if FILE_SRC in r["src"]),
-          "ambiguous": sum(x[1] for x in amb_out)}
-    if not fil[2]:
-        fs["why"] = "도구를 알 수 있는 확장자의 파일 흔적이 이 기간에 없습니다(config.watchFolders·watchExtensions)"
-    srcs[FILE_SRC] = fs
-    out.update(programs=progs[:40], by_kind_n=[[k, n] for k, n in sorted(kind_n.items(), key=lambda x: -x[1])],
-               by_cat_n=[[k, n] for k, n in sorted(cat_n.items(), key=lambda x: -x[1])], inhouse=inhouse[:20],
-               inhouse_n=len(inh), inhouse_hidden=hidden, unknown_n=n_unk,
-               ambiguous_files=amb_out[:12], sources=srcs, note=_P.TOOL_NOTE)
-    if progs or inh:
-        out.pop("why", None)
-    else:
-        out["why"] = " · ".join(v["why"] for v in srcs.values() if v.get("why"))[:400]
-    return out
-
-
-def _meeting_skip(r, tentative="count"):
-    """캘린더 행을 '참석'으로 볼 수 없는 사유(문자열) 또는 None. 신호 필터(load_signals)와
-    시간 계상(_meeting_spans)이 같은 판정을 공유한다.
-      busy_status  : 0 한가함(미수락·정보성) — 제외
-      response     : Outlook ResponseStatus (0 없음/1 주최/2 미정/3 수락/4 거절/5 미응답) — 열이 있을 때만
-      meeting_status: 5·7 = 취소된 회의 — 열이 있을 때만
-      tentative    : "count"(기본) 미정(busy 1)도 계상 · "skip" 미정 제외 ·
-                     "response" 응답 기준(미정·미응답·거절 제외, 열이 없으면 busy 1 제외)"""
-    busy = str(r.get("busy_status") or "2").strip()
-    resp = str(r.get("response") or "").strip()
-    ms = str(r.get("meeting_status") or "").strip()
-    if ms in ("5", "7"):
-        return "취소된 회의(meeting_status)"
-    if resp == "4":
-        return "거절한 회의(response)"
-    if busy == "0" and resp not in ("1", "3"):     # 주최(1)·수락(3)한 회의는 Free 표시라도 참석(A36)
-        return "미수락 일정(한가함 상태)"
-    # 미응답(5)·미정(2)·response 없는 busy 1 = '미정' 한 부류 — 설정(tentativeMeetings)이 판정한다(A17).
-    # 수집 경로(COM 만 response 를 채움)에 따라 같은 캘린더가 달라지지 않도록 count 모드에서는 계상.
-    pending = resp in ("2", "5") or (not resp and busy == "1")
-    if tentative == "skip" and (pending or busy == "1"):
-        return "미정 회의(tentativeMeetings=skip)"
-    if tentative == "response" and pending:
-        return "미정 회의(tentativeMeetings=response)"
-    return None
-
-
-def _meeting_spans(data_dir, d0, d1, nonwork, tentative="count", exclude=(), now=None, day_win=None, acc_out=None):
-    """returns (out, carried, accepted, blocks)
-      acc_out  dict 를 주면 {date: [(a,b)…]} 에 **수락한** 회의 구간(아래 accepted 와 같은 판정)만 채운다 — LM30(2026-10-18)
-               출퇴근 추정의 확실한 흔적(미정·미응답 초대는 와 있던 근거가 아니다). 반환 4-튜플은 그대로
-      out      {date: [(a,b)…]} 회의 구간(분). 다일·자정 넘김은 날짜별로 잘라 각 날 상한 = max(8h, 주간 창 길이)
-               (A6 — 6/1 09:00→6/3 18:00 출장의 둘째 날이 사라지지 않는다; 12h 현장 08~20 은 창 길이까지)
-      carried  자정(또는 기간 시작 전날)에서 넘어온 조각이 있는 날짜 — 익일이 주말이어도 수락 회의의 연속
-      accepted 하한 게이트를 여는 '실제 회의' 가 있는 날짜(A19) — 열이 있으면 meeting_status 1·3 또는 response 1·3,
-               열이 없으면 busy 2·3 폴백. '치과' 약속 1h 는 게이트를 열지 않는다
-      blocks   {date: [(a, b, subject)]} 참석자 없는 약속(meeting_status 0 — 재택근무·출장·개인 OOF 블록)과 상태를
-               알 수 없는 4h 이상 블록(폴백 경로, 출장·교육 키워드가 없을 때) — 회의 시간이 아니다. day_work_hours 가
-               오프사이트 폴백 근거로만 쓴다(A19)
-    개인정보 제외어(exclude, load_signals 와 같은 규칙)·비업무·취소/거절/한가함/설정상 미정은 시간이 아니다.
-    end ≤ start(역행·시각 오류)·종일 일정은 버리고, now 이후(아직 열리지 않은 회의)는 잘라낸다."""
-    out, carried, accepted, blocks = {}, set(), set(), {}
-    hit = _text_filter(exclude)
-    now = (now or datetime.now()) + _td(minutes=FUTURE_SLACK_MIN)
-    dw = day_win or DAY_WIN
-    cap_single = max(8 * 60.0, float(dw[1] - dw[0]))   # 하루짜리 긴 일정(12h 현장 08~20)은 주간 창 길이까지
-    cap_multi = 8 * 60.0                                # 다일 일정(출장·교육 6/1 09:00→6/3 18:00)은 각 날 8h
-    for r in _read_multi(data_dir, "outlook", "calendar.csv"):
-        t0, t1 = _dt(r.get("start")), _dt(r.get("end"))
-        subj_raw = (r.get("subject") or "").strip()
-        subj = subj_raw.lower()
-        if _nonwork_hit(subj, nonwork) or _meeting_skip(r, tentative) or hit(subj):
-            continue                       # 취소·연차·미수락·거절·개인정보 일정은 업무 시간이 아니다
-        if not (t0 and t1 and t1 > t0) or _truthy(r.get("all_day")):
-            continue
-        if not (d0 <= t1.date() and t0.date() <= d1):     # 기간 시작 전날 밤 회의의 당일 조각도 남긴다(A36)
-            continue
-        busy = str(r.get("busy_status") or "2").strip()
-        resp = str(r.get("response") or "").strip()
-        ms = str(r.get("meeting_status") or "").strip()
-        # 미수락 교육은 시간 계상에서도 뺀다 — 신호 필터(load_signals)와 판정 일치
-        if _edu_unaccepted(r, subj, busy):
-            continue
-        dur_min = (t1 - t0).total_seconds() / 60
-        is_block = _is_block_row(r, subj)      # 약속(ms 0)·상태 없는 5h 초과 비키워드 블록 — 회의 시간이 아니다
-        cap = cap_multi if dur_min > 1440 else cap_single
-        if ms or resp:
-            acc = ms in ("1", "3") or resp in ("1", "3")
-        else:
-            acc = busy in ("2", "3")
-        cur, first = t0, True
-        while cur < t1:
-            dd = cur.date()
-            nxt = datetime(dd.year, dd.month, dd.day) + _td(days=1)
-            seg_end = min(t1, nxt)
-            if cur > now:
-                break
-            if d0 <= dd <= d1:
-                a = cur.hour * 60 + cur.minute + cur.second / 60.0
-                b = 1440.0 if seg_end == nxt else seg_end.hour * 60 + seg_end.minute + seg_end.second / 60.0
-                if seg_end > now:              # 진행 중인 회의는 지금까지만
-                    b = min(b, now.hour * 60 + now.minute + now.second / 60.0)
-                if b - a > cap:                # 긴 조각은 주간 창과 겹치는 부분(없으면 시작부터 상한)만
-                    ca, cb = max(a, float(dw[0])), min(b, float(dw[1]))
-                    a, b = (ca, cb) if cb > ca else (a, a + cap)
-                    if b - a > cap:
-                        b = a + cap
-                if b > a:
-                    if is_block:
-                        blocks.setdefault(dd, []).append((a, b, subj_raw))
-                    else:
-                        out.setdefault(dd, []).append((a, b))
-                        if acc:
-                            accepted.add(dd)
-                            if acc_out is not None:
-                                acc_out.setdefault(dd, []).append((a, b))
-                        if not first:
-                            carried.add(dd)    # 익일이 주말이어도 이 조각은 수락 회의의 연속
-            cur, first = seg_end, False
-    return out, carried, accepted, blocks
-
-
-def _signal_spans(signals, d0, d1, mins=None, now=None, extra=None, gap=None, day_win=None,
-                  passive_max_min=None, stats=None):
-    """신호 타임스탬프 → 세션 구간. returns ({date: [(a,b)]}, 미래 시각으로 폐기한 신호 수)
-    · 흩어진 신호는 각자 최소 작업시간(LONE_SIGNAL_MIN)을 시각 앞뒤로 대칭 배치한다.
-      목록(signalMinutes)에 없는 라벨은 세션을 만들지 않는다(A18 — 예전 기본 10분).
-    · 야간(19~08시)의 수동 신호(수신 메일·CC·팀즈 수신)는 세션을 만들지 않는다 —
-      '야간은 산출물이 있을 때만'이라는 원칙.
-    · 수동 신호는 세션 간격(gap, 기본 SESSION_GAP_MIN)으로 서로 다리를 놓지 않는다 — 능동 흔적끼리만.
-      수동 신호만으로 만든 세션은 하루 합계 passive_max_min(기본 PASSIVE_DAY_MAX_MIN=60, config.mm.passiveDayMaxMin)
-      까지만 남긴다(A18 — 연차·PC 없는 날 수신 30통이 3h 가 되던 과대). stats(dict) 를 주면
-      stats["passive_capped_days"] 에 상한이 걸린 날 수를 채운다.
-    · now+5분 이후 시각(시계 오류·타임존) 은 폐기하고 센다. '파일(일괄)' 은 시간 근거가 아니다.
-    · extra = {date: [(분, code)]} 표본화 전 전체 파일 시각(시간 재료로만 합친다) — 표본 신호와 같이
-      signalMinutes 가 0 이하면 세션을 만들지 않는다(파일 세션을 설정으로 끌 수 있어야 한다).
-      code "sim"(해석 출력 뭉치의 시작 분 anchor, VF-H1)은 기계가 쓴 시각이라 야간이면 건너뛴다(밤새 돌린 솔버 ≠ 야근) —
-      주간이면 예전처럼 파일 1건의 세션(해석을 돌린 날의 흔적).
-    · gap·day_win 은 인자로 받는다 — 모듈 전역을 고치지 않는다(재진입 안전)."""
-    now = (now or datetime.now()) + _td(minutes=FUTURE_SLACK_MIN)
-    mins = mins or LONE_SIGNAL_MIN
-    gap = float(SESSION_GAP_MIN) if gap is None else float(gap)
-    passive_max = PASSIVE_DAY_MAX_MIN if passive_max_min is None else float(passive_max_min)
-    by_day, dropped = {}, 0
-    for t, src, _x, _w, _who in signals:
-        if not (d0 <= t.date() <= d1):
-            continue
-        if t > now:
-            dropped += 1
-            continue
-        if src == "파일(일괄)" or mins.get(src, 0) <= 0:
-            continue
-        if _is_night(t, day_win) and src not in NIGHT_PRODUCTIVE and src != "회의":
-            continue
-        by_day.setdefault(t.date(), []).append((t.hour * 60 + t.minute, src))
-    for d, lst in (extra or {}).items():
-        if not (d0 <= d <= d1):
-            continue
-        day0 = datetime(d.year, d.month, d.day)
-        for m, code in lst:
-            if _sim_end(code) is not None:
-                if _is_night(day0 + _td(minutes=m), day_win):
-                    continue                     # 해석 출력 anchor 의 야간 시각 — 세션 재료가 아니다(VF-H1·S4-N1)
-                label = "파일"
-            else:
-                label = "파일(코드)" if code else "파일"
-            if mins.get(label, 0) <= 0 or day0 + _td(minutes=m) > now:
-                continue
-            by_day.setdefault(d, []).append((m, label))
-    out, capped_days = {}, 0
-    for d, items in by_day.items():
-        items.sort()
-        spans, cur, pend = [], None, []     # pend = 능동 세션(cur) 뒤에 떨어져 온 수동 조각 — cur 를 닫지 않고 보류
-        for m, src in items:
-            lone = mins.get(src, 0)
-            half = max(2.5, lone / 2)
-            a, b = m - half, m + half
-            active = src in ACTIVE_SRC
-            if cur:
-                g = gap if (active and cur[2]) else 0.0
-                if a - cur[1] <= g:
-                    # 시작도 함께 확장한다 — 신호 종류마다 폭(half)이 2.5~45분으로 달라
-                    # 뒤 신호의 a 가 cur[0] 보다 앞설 수 있다. 끝만 늘리면 그 앞부분이 잘려
-                    # '신호를 더 넣을수록 시간이 줄어드는' 비단조 과소계상이 된다.
-                    cur = (min(cur[0], a), max(cur[1], b), cur[2] or active)
-                    if pend:                  # 늘어난 능동 세션이 덮은 보류 조각은 버린다(수동 상한에서 빼지 않게)
-                        pend = [(max(p0, cur[1]), p1, False) for p0, p1, _ in pend if p1 > cur[1]]
-                    continue
-                # ★ 수동 신호(수신 메일 등)가 능동 세션을 닫지 않는다. 예전에는 '파일 10:00 · 수신 10:50 · 파일 11:20'
-                #   에서 수신 한 건이 능동 세션을 닫아 두 파일 사이 45분 다리가 끊겼다 — 신호를 더 넣을수록 시간이
-                #   줄었다(감사 실측: 토요일 2.33h → 2.04h, LM20 2.33h). 수동 조각은 보류했다가 능동 세션이 끝날 때 붙인다.
-                if cur[2] and not active:
-                    if pend and a <= pend[-1][1]:
-                        # 시작도 함께 늘린다(뒤 신호의 폭이 더 크면 a 가 앞설 수 있다) · 앞 조각과 이어지면 합친다
-                        pend[-1] = (min(pend[-1][0], a), max(pend[-1][1], b), False)
-                        while len(pend) > 1 and pend[-2][1] >= pend[-1][0]:
-                            q = pend.pop()
-                            pend[-1] = (min(pend[-1][0], q[0]), max(pend[-1][1], q[1]), False)
-                    else:
-                        pend.append((a, b, False))
-                    continue
-                spans.append(cur)
-                if active:                    # 새 능동 신호와 겹치는 보류 조각은 그 세션에 흡수(예전과 같다)
-                    while pend and a <= pend[-1][1]:
-                        p0, p1, _ = pend.pop()
-                        a, b = min(a, p0), max(b, p1)
-                spans.extend(pend)
-                pend = []
-            cur = (a, b, active)
-        if cur:
-            spans.append(cur)
-            spans.extend(pend)
-        # 자정 클램프 — 00시 직후 신호가 음수 분(전날)으로, 24시 직전이 1440분 초과로 새지 않게.
-        # 수동만으로 만든 세션(ac=False)은 일 합계 passive_max 까지만(A18).
-        res, pas, capped = [], 0.0, False
-        for a, b, ac in spans:
-            a, b = max(0.0, a), min(1440.0, b)
-            if b <= a:
-                continue
-            if not ac and passive_max >= 0:
-                room = passive_max - pas
-                if room <= 1e-9:
-                    capped = True
-                    continue
-                if b - a > room:
-                    b, capped = a + room, True
-                pas += b - a
-            res.append((a, b))
-        out[d] = res
-        capped_days += 1 if capped else 0
-    if stats is not None:
-        stats["passive_capped_days"] = capped_days
-    return out, dropped
-
-
-def _utc_suspect(data_dir, d0, d1, offset_h=0.0):
-    """발신(메일 sent + 팀즈 kind=sent, A27)의 60% 이상이 00~08시면 시각이 UTC 로 기록된 것으로 의심
-    (웹·Copilot·Graph 수집 경로). 낮 발신이 새벽 '야근'으로 옮겨가는 구조적 오류 — 경고만 하고
-    config.mm.mailTimeOffsetH 로 보정한다(보정값을 적용한 뒤의 시각으로 판정하므로 offset 을 맞추면 경고가 사라진다).
-    날짜만 아는 행(time_precision=date)은 판정에서 뺀다."""
-    n = k = 0
-    rows = [r for r in _read_multi(data_dir, "outlook", "mail.csv") if r.get("box") == "sent"
-            and (r.get("time_precision") or "").strip().lower() != "date"]
-    for p in _glob_multi(data_dir, "m365", "teams_*.csv"):
-        rows += [r for r in _read(p) if (r.get("kind") or "").strip().lower() == "sent"
-                 and (r.get("time_precision") or "").strip().lower() != "date"]     # 팀즈 웹 날짜만(LM28 E)도 뺀다
-    for r in rows:
-        t = _dt(r.get("time"))
-        if not t:
-            continue
-        if offset_h:
-            t = t + _td(hours=offset_h)
-        if not (d0 <= t.date() <= d1):
-            continue
-        n += 1
-        k += 1 if t.hour < 8 else 0
-    return bool(n >= 5 and k / n >= 0.6)
-
-
-LEDGER_FILE = "coverage_ledger.json"         # core\coverage.FILE_NAME 과 같은 값(WP6 — data\coverage_ledger.json)
-LEDGER_AXES = ("mail_in", "mail_out", "teams")
-VERIFIED_ST = ("ok", "zero_ok")
-
-
-def _ledger_days(data_dir, d0, d1):
-    r"""일자×축 수집 원장(data\coverage_ledger.json, core\coverage — WP6) → {날짜 iso: {축: 합성 상태}}.
-    원장 파일이 없거나 비어 있으면 None — 그때는 LM24 방식(미관측 구분 없음)이다. 판·PC 검사는 하지 않는다(읽기만)."""
-    p = os.path.join(data_dir, LEDGER_FILE)
-    if not os.path.isfile(p):
-        return None
-    try:
-        import coverage as _cov            # core\coverage(같은 core 폴더) — 표준 도구 coverage 와 이름만 같다
-        led = _cov.Ledger.load(p)
-        if not getattr(led, "days", None) and not getattr(led, "na", None):
-            return None
-        return led.day_status(d0, d1, axes=LEDGER_AXES)
-    except Exception:  # noqa: BLE001 - 원장을 못 읽어도 시간 계산은 LM24 방식으로 계속
-        return None
-
-
-def _unobserved(st):
-    """원장 한 날 {축: 상태} → (메일 축 미관측, 팀즈 축 미관측). 팀즈 'na'(팀즈를 쓰지 않는 PC)는 관측으로 본다."""
-    if st is None:
-        return False, False
-    mail = any(st.get(ax) not in VERIFIED_ST for ax in ("mail_in", "mail_out"))
-    teams = st.get("teams") not in VERIFIED_ST + ("na",)
-    return mail, teams
-
-
-def _night_win_spans(nw0, nw1):
-    """꼬리표 야간창(분) → 그날 [(a, b)] — 22~06 처럼 자정을 넘으면 두 조각."""
-    return [(nw0, 1440.0), (0.0, nw1)] if nw0 > nw1 else [(nw0, nw1)]
-
-
-def tag_minutes(spans, off, reg_sp, night_sp):
-    """하루 근무 구간 → 꼬리표별 분(A-22 — 배타: 휴일 > 야간 > 정규 > 연장).
-      off      : 휴일(주말·공휴일·config.holidays) — 그날의 모든 분이 휴일(그중 야간창은 holiday_night 에도 센다)
-      reg_sp   : 정규 구간 [(a, b)] — 하한 창 − 점심 − 반차 시각(종일 연차면 [])
-      night_sp : 야간창 구간 [(a, b)](_night_win_spans)
-    returns {"regular", "extended", "night", "holiday", "holiday_night"} (분)"""
-    sp = _union_spans(spans)
-    tot = _union_min(sp)
-    nt = _union_min(_intersect_spans(sp, night_sp)) if sp else 0.0
-    if off:
-        return {"regular": 0.0, "extended": 0.0, "night": 0.0, "holiday": tot, "holiday_night": nt}
-    rest = _subtract_spans(sp, night_sp)
-    reg = _union_min(_intersect_spans(rest, reg_sp)) if (rest and reg_sp) else 0.0
-    return {"regular": reg, "extended": max(0.0, tot - nt - reg), "night": nt, "holiday": 0.0, "holiday_night": 0.0}
-
-
-def _attendance(data_dir, signals, files, d0, d1, now, p, lm):
-    r"""LM30(2026-10-18) — day_work_hours 가 모은 재료를 core\attendance.compute 의 절대 분(d0 전날 00:00 부터) 입력으로 바꿔 넘긴다.
-      signals·files : 신호(시각 있는 내 산출물·발신만 점으로 — ATT_POINT_SRC) · 표본화 전 전체 파일 시각(해석 출력 anchor 제외)
-      lm            : LM29 쪽 중간 결과 — meets(수락 회의 {날짜: [(a,b)]}) · blk(출장·현장 약속 블록) · offsite(종일 행사 날짜) ·
-                      absence · holidays · untimed({날짜: 날짜만 아는 발신 인정 분}) · nopc(표준일 추정 날짜) · hours(LM29 날짜별
-                      시간) · day_basis(LM29 근거 — 야간 꼬리표) · std · day_win(낮 창 — PC 하한 창) · night_win · day_cap ·
-                      spans(LM30 2026-10-19 — LM29 가 시각까지 정해 센 구간 {날짜: [(분, 분)]} · attendance.withLM29 일 때만 쓴다)
-    PC 켜짐·브라우저 방문은 att_presence(기간 앞뒤 하루씩), 시작·끝을 적은 수동 기록은 manual_entries, 근태 기록 칸은
-    attendance.load_records. returns compute 의 {"days", "agg", "usual"}."""
-    import attendance as _att
-    base = d0 - _td(days=1)
-    now_lim = now + _td(minutes=FUTURE_SLACK_MIN)
-
-    def ab(dd, m):
-        return (dd - base).days * 1440.0 + float(m)
-
-    def at(t):
-        return ab(t.date(), t.hour * 60 + t.minute + t.second / 60.0)
-    pts = [at(t) for t, src, *_x in signals if src in ATT_POINT_SRC and d0 <= t.date() <= d1 and t <= now_lim]
-    for dd, lst in (files or {}).items():
-        if not (d0 <= dd <= d1):
-            continue
-        day0 = datetime(dd.year, dd.month, dd.day)
-        pts += [ab(dd, m) for m, code in lst if _sim_end(code) is None and day0 + _td(minutes=m) <= now_lim]
-    now_abs = at(now)
-    spans = [(ab(dd, a), ab(dd, b), "meeting") for dd, lst in lm["meets"].items() for a, b in lst]
-    spans += [(ab(dd, a), ab(dd, b), "offsite") for dd, lst in lm["blk"].items() for a, b in lst]
-    man_floor = {}
-    for dd, h, s0, s1 in manual_entries(data_dir, d0, d1):
-        if s0 is None:
-            man_floor[dd] = min(PHYS_CAP_H, man_floor.get(dd, 0.0) + h)      # 시간만 적은 행 — 바닥값(LM29 와 같다)
-            continue
-        a, b = ab(dd, s0), ab(dd, s1 if s1 > s0 else s1 + 1440.0)
-        if a < now_abs:
-            spans.append((a, min(b, now_abs), "manual"))
-    raw = []                                  # LM30(2026-10-20) 같은 조각 + 그 행의 src — PC 사용 시간(attendance 머리말 19)의 재료
-    pres, weak, live = att_presence(data_dir, base, d1 + _td(days=1), raw=raw)
-    presence = [(ab(dd, a), ab(dd, b)) for dd, lst in pres.items() for a, b in lst]
-    pc_raw = [(ab(dd, a), ab(dd, b), src) for dd, a, b, src in raw]
-    # 방문 구간 = 첫 방문 ~ 마지막 방문 + 5분(Get-PcOnHints TAIL_MIN) — 점은 첫 방문과 마지막 방문 둘
-    wpts = [ab(dd, x) for dd, lst in weak.items() for a, b in lst for x in {a, max(a, b - _att.WEB_TAIL_MIN)}]
-    l29n = {}
-    for iso, db in (lm.get("day_basis") or {}).items():
-        tg = db.get("tags") if isinstance(db, dict) and isinstance(db.get("tags"), dict) else {}
-        v = float(tg.get("night") or 0) + float(tg.get("holiday_night") or 0)
-        if v > 0:
-            l29n[datetime.strptime(iso[:10], "%Y-%m-%d").date()] = v
-    # LM30(2026-10-19) LM29 가 시각까지 정해 센 구간(lm["spans"] — 그날 분) → 절대 분 · 지금 뒤는 자른다(attendance.withLM29 일 때만 —
-    # LM30(2026-10-20) 키가 없으면 끔)
-    l29s = []
-    if p.get("withLM29", False):
-        for dd, lst in (lm.get("spans") or {}).items():
-            if not (d0 <= dd <= d1):
-                continue
-            for a, b in lst:
-                a1, b1 = ab(dd, a), ab(dd, b)
-                if a1 < now_abs and b1 > a1:
-                    l29s.append((a1, min(b1, now_abs)))
-    holidays = lm["holidays"]
-    # LM30(2026-10-21) 브라우저 방문·창 샘플러 구간(attendance 머리말 20 — PC 를 켜고 끈 기록이 없는 날만 attendance.hint_usage 가 고른다)
-    hint_spans = [(ab(dd, a), ab(dd, b)) for dd, lst in weak.items() for a, b in lst]
-    return _att.compute(base, pts, spans, wpts, presence, [at(t) for t in live], d0, d1, now, p, std=lm["std"],
-                        day_win=lm["day_win"], night_win=lm["night_win"],
-                        is_off=lambda dd: _is_off_day(dd, holidays), leave=lm["absence"], offsite=set(lm["offsite"]),
-                        manual_floor=man_floor, nopc=lm["nopc"], untimed_min=lm["untimed"], lm29=lm["hours"],
-                        lm29_night=l29n, day_cap=lm["day_cap"], records=_att.load_records(data_dir), lm29_spans=l29s,
-                        pc_spans=pc_raw, hint_spans=hint_spans, std_floor=lm.get("std_floor"))
-
-
-def _att_apply(info, days, agg, lm_hours, inferred, p, d0, d1):
-    """LM30(2026-10-18) — 출퇴근 추정 근무를 투입 시간으로 쓴다(attendance.useForMM). → 새 {날짜: h}.
-    LM29 의 날짜별 시간은 info["lm29_day_hours"], 합계는 info["lm29_totals"], 날짜별 근거의 시간은 day_basis[날짜].lm29_h 로 옮기고,
-    같은 자리(h·tags·overtime_h·regular_h·extended_h·night_h·holiday_h·holiday_night_h·weekend_days·night_days·long_days·
-    absent_worked_h)에는 출퇴근 추정 값을 넣는다 — 꼬리표 정의는 하나: 정규+연장+휴일 = 근무, 야간(22~06)은 겹쳐 세는 할증 시간
-    (휴일 야간은 holiday_night 에도), 연장근무(overtime_h) = 연장 + 휴일, 야근일(night_days) = 20시 넘어 퇴근한 날(LM29 의 '19~20시
-    PC 가동만으로 야근' 과대를 고친다). day_basis[날짜].att = {work, ext, night, holiday, offpc, conf}(시각 없음).
-    휴가 추정(inferred — 휴가로 본 평일)은 투입이 0.25h 넘는 날을 뺀다 — 분모(가용)와 분자(투입)가 같은 시간을 본다."""
-    import attendance as _att
-    from datetime import date as _date
-    info["lm29_day_hours"] = {k.isoformat(): v for k, v in sorted(lm_hours.items())}
-    info["lm29_totals"] = {k: info.get(k) for k in LM29_TOTAL_KEYS}
-    hours, long_days = {}, []
-    hol_night = leave_h = 0.0
-    wk_days = 0
-    for iso in sorted(days):
-        r = days[iso]
-        dd = _date.fromisoformat(iso)
-        off = r["kind"] == "off"
-        if r["work_h"] > 0 and d0 <= dd <= d1:
-            hours[dd] = r["work_h"]
-            wk_days += 1 if off else 0
-            leave_h += r["work_h"] if r["leave_frac"] >= 1.0 else 0.0
-            if r["work_h"] > LONG_DAY_H:
-                long_days.append([iso, r["work_h"]])
-        if off:
-            hol_night += r["night_h"]
-        db = info["day_basis"].setdefault(iso, {"h": 0.0, "tags": {}})
-        db["lm29_h"] = r["lm29_h"]
-        db["h"] = r["work_h"]
-        db["tags"] = {k: v for k, v in (("regular", r["regular_h"]), ("extended", r["ext_h"]), ("night", r["night_h"]),
-                                        ("holiday", r["holiday_h"]), ("holiday_night", r["night_h"] if off else 0.0))
-                      if v > 0}
-        db["att"] = {"work": r["work_h"], "ext": r["ext_h"], "night": r["night_h"], "holiday": r["holiday_h"],
-                     "offpc": r["offpc_h"], "conf": r["conf"]}
-    for db in info["day_basis"].values():
-        if isinstance(db, dict):
-            _att.clock_to_hours(db)          # LM29 저녁·새벽 창의 시각 → 길이 — 날짜별 근거에 퇴근 무렵 시각을 남기지 않는다
-    t = agg["total"]
-    info.update(regular_h=t["regular_h"], extended_h=t["ext_h"], night_h=t["night_h"], holiday_h=t["holiday_h"],
-                holiday_night_h=round(hol_night, 2), overtime_h=round(t["ext_h"] + t["holiday_h"], 1),
-                weekend_days=wk_days, night_days=t["late_days"], long_days=long_days,
-                absent_worked_h=round(leave_h, 1))
-    for dd in [x for x in inferred if hours.get(x, 0.0) > 0.25]:
-        del inferred[dd]
-        _dbi = info["day_basis"].get(dd.isoformat())
-        if isinstance(_dbi, dict):
-            _dbi.pop("inf", None)            # LM30(2026-10-21) 일한 날이다 — '휴가로 본 평일' 표식도 거둔다
-    info["inferred_absence_days"] = len(inferred)
-    info["inferred_absence_dates"] = [x.isoformat() for x in sorted(inferred)]
-    ms = info.get("measure")
-    if isinstance(ms, dict):
-        ms["lm29_method"] = ms.get("method")
-        ms["method"] = "출퇴근 추정"
-    info["lm29_basis"] = info.get("basis", "")
-    # LM30(2026-10-20) PC 사용 시간(attendance 머리말 19)이면 켜 둔 PC 를 세는 낮 창(mm.pcFloorWindow)도 문장에 넣는다
-    info["basis"] = _att.basis_text(p, (info.get("cfg_used") or {}).get("pcFloorWindow"))
-    return hours
-
-
-def day_work_hours(data_dir, signals, d0, d1, cfg=None, now=None, file_times=None):
-    """투입 시간 = 그날 활동 흔적(회의·창 샘플러·신호 세션) 구간의 합집합 + PC 가동 구간 하한(구간 단위, A3).
-    method="workday" 로 두면 예전처럼 '평일이면 표준 8h'로 계산한다(비교용).
-      now        : 미래 시각 판정 기준(테스트용, 기본 datetime.now())
-      file_times : load_signals meta["file_times"] — 표본화 전 전체 파일 시각(없으면 직접 읽는다)
-    returns ({date: 투입시간h}, info) — info 키는 기존 키를 유지하고 추가만 한다.
-
-    LM22 2차(시간 쪽) 규칙 요약:
-      · PC 하한(A3)   : 주간 창을 세 조각으로 나눈다 — PC 가동 창 밖 흔적(그대로 더함) · 샘플러가 덮은 구간(실측) ·
-                       샘플러가 덮지 않은 PC 가동 구간(하한). 하한 = 가동 구간(pc_spans ∩ 주간 창, 없으면 first_on~last_off)
-                       − 점심·저녁 공백(흔적 ±5분이 없을 때만) − 설명되지 않는 절전 공백(가동 창 − on 중 점심·회의로
-                       설명되지 않는 만큼). PC 가 꺼진 시간의 수락 회의는 흡수되지 않고 더해진다.
-      · 창 다듬기(A33): 가동 창 양끝 trimIdleEdgesMin 분 안에 흔적이 없으면 그만큼 안쪽으로(출퇴근 전후 켜 둔 PC).
-      · 항상 켜진 PC  : first_on≤0·last_off≥24:00 또는 on≥20h — 가동 창 대신 '첫 능동 흔적 −30 ~ 마지막 +30'.
-      · PC 기록 없음(A9): pcFloorFallback=trace 면 능동 흔적·회의의 첫 −30 ~ 마지막 +30 ∩ 주간 창(점심 차감, 표준일 상한).
-      · 샘플러(A25·D3): 미커버 구간에만 하한(50% 문턱 절벽 없음) · 가동 창 안 ≤samplerGapBridgeMin 공백은 근무(점심 제외).
-      · 종일 행사(A6)·수동 기록(A13): 표준일×(1−부재)·기록 시간을 하한으로, 능동 흔적, 부재 추정 제외.
-      · 시차 근무(D4) : 산출물 없어도 주간 창 밖 PC 가동을 앞뒤 각 flexEdgeH 까지(야간 합 ≤ PC night).
-      · 주말 "pc"(D7) : weekendWindow="pc" 면 능동 흔적이 있는 주말은 평일과 같은 PC 하한.
-      · 휴가 추정(A31 — 휴가로 본 평일): 투입 ≤15분·PC ≤30분·능동 흔적 없음(수신 1통·유지관리 깨움 허용).
-      · 야간 해석(S4-N1): 밤새 돌린 솔버(ANSYS·Zemax·CFD…)의 출력 뭉치를 근무로 인정한다 — mm.simNight
-                       span(제출~마지막 출력 구간, 기본) · anchor(뭉치당 30분) · off(게이트만, 시간 0).
-                       상한 mm.simNightCapH(밤당 4h, 0=무제한) · 첫 출력 뒤 사람 흔적이 있으면 상한 해제
-                       (simNightHumanUnlock) · mm.simNightNeedsPc=true 면 내 PC 야간 가동과 겹치는 만큼만.
-                       PC 가 꺼져 있어도 인정하므로 저녁·새벽 크레딧의 '야간 합 ≤ PC night' 캡 계산에서는 제외한다.
-    info 새 키: sampler_stuck_days(A1)·offsite_days·offsite_h·manual_days·manual_h·dinner_deducted_h·flex_edge_h·
-      sampler_bridge_h·passive_capped_days·weekend_pc_days·pc_record_missing_days·pc_record_days·trace_window_h·
-      trace_window_days·pc_coverage_by_month{YYYY-MM:비율}·always_on_days·measure·coverage·cfg_used(D5)·
-      sim_night_h·sim_night_days·sim_night_capped_days·sim_night_unlocked_days·sim_night_remote_h(S4-N1)
-
-    LM28(WP8 — 기존 키·값은 그대로, 추가만):
-      · PC 하한 창(mm.pcFloorWindow, 기본 [8,19] = LM24): 하한은 이 창 안에서만 건다(dayWindow 는 그대로). 근거 문구는
-        cfg_used.floorBasis·basis 에, 날짜별로 하한이 열린 이유·깎은 것은 day_basis{날짜: …} 에 남는다(보고서 표시 — WP9).
-      · 저녁(★ 사용자 지시 2026-10-07): 평일 퇴근 경계(하한 창 끝) 뒤에 능동 산출물이 있으면 [max(경계, 그 뒤 PC 를 켠 시각),
-        마지막 저녁 산출물 시각] 전체를 인정한다 — LM24 의 +30분 꼬리(NIGHT_PAD) 없음. 자정 넘김(cont_next)·PC 가동 창 안·
-        야간 합 ≤ PC 야간 가동(_fit_credit)은 LM24 그대로. 새벽은 LM24 그대로. eveningCredit=false 면 0.
-      · PC 밖 발신(A-19): 창 밖(하한 창 밖·휴일)의 발신이 PC 가동 구간·샘플러 ±5분 밖이면 발신 세션만(LM24) + remote_send 표식.
-        그 세션은 PC 야간 가동이 아니므로 저녁 크레딧의 야간 캡 계산에서 뺀다(야간 해석 인정분과 같은 원칙).
-      · 사적 차감(A-14): 창 샘플러가 사적·미디어 창을 privateRunMin(30)분 이상 연속으로 실측한 구간만 마지막 단계에서 뺀다
-        (회의·산출물 ±5분은 빼지 않는다 — 업무 우선). 추정으로 깎지 않는다. 메일·팀즈의 사적·친목 행은 load_signals 가 이미
-        신호에서 뺐으므로 앵커가 되지 않는다(WP7 — private_days 는 건수만). private_deducted_h.
-      · 꼬리표(A-22): 분마다 휴일 > 야간(nightWindow 22~06) > 정규(하한 창 − 점심 − 반차 시각) > 연장. 자정을 넘는 근무는
-        그 분의 날짜(구간이 이미 날짜별로 잘려 있다). regular_h·extended_h·night_h·holiday_h·holiday_night_h(휴일 중 야간 —
-        holiday_h 에 포함). overtime_h·night_days 는 LM24 그대로.
-      · 솔버 확인(UD-13): 샘플러 solver_cpu_s 열이 그 밤을 봤으면 ≥0.5 코어 틱 3번 연속일 때만 야간 해석 인정(sim_night_cpu_denied).
-      · 고착(A1)은 (PC, 날짜) 단위 · sess=locked 틱은 활동이 아니다(_activity_spans).
-      · 미관측(C-31): data\\coverage_ledger.json(core\\coverage — WP6)이 있으면 흔적 없는 평일을 evidence_none_observed(관측됐고
-        흔적 없음)와 unobserved_days(메일 받은·보낸 축 또는 팀즈 축이 미관측 — 팀즈 na 는 무시)로 나눈다. 부재 추정은 메일 축이
-        미관측인 날에는 하지 않는다(inferred_absence_blocked_unobserved). 원장이 없으면 LM24 방식.
-      · 공휴일 표 밖 연도는 config_warnings 에 경고(holiday_table_warnings).
-
-    LM28(E — 야근·밤샘·주말이 덜 잡히던 것):
-      · 날짜만 아는 발신(UNTIMED_SRC — 메일·팀즈 웹)은 시각 근거가 아니다: 그날 일했다는 능동 흔적(하한 게이트)만 열고 정오
-        자리표를 산출물·흔적 폭·주말 창·흔적 창의 기준점으로 쓰지 않는다. 하한도 시각 있는 능동 흔적·수락 회의·샘플러도 없는 날은
-        건당 signalMinutes(메일(발신) 20·팀즈(발신) 10)를 '시각 미상 발신' 으로 더한다(PC 기록이 있으면 on 이하 — untimed_credit_h).
-      · 브라우저 기록(hint)·창 샘플러 구간만 있는 날(hint_only): 평일 하한은 PC 가동 구간 대신 흔적 창(능동 흔적·회의·방문 구간의
-        첫 −30 ~ 마지막 +30, 표준일 상한 — trace_hint), 저녁은 PC 야간 가동 캡 없이 19시 이후 첫 흔적 −30 ~ 마지막 저녁 산출물.
-        항상 켜진 PC·흔적 창 폴백의 기준점에도 방문 구간을 보탠다(사람이 한 활동 — 샘플러와 같게).
-      · PC 기록이 평일 40% 미만인 달의 PC 기록 없는 평일(mm.noPcMonthDay="standard", 기본): 능동 흔적이 있으면 표준일 × (1−부재)를
-        주간 하한으로 — 추정(std_nopc). 저녁 세션은 그대로 더한다. "trace" 면 예전 흔적 창.
-      · 밤샘 다음 날(cont_prev) 새벽 인정은 마지막 새벽 산출물 +30분에서 멈춘다(그 뒤 켜 둔 PC 는 잠든 시간).
-      · day_basis 는 모든 평일과 흔적 있는 휴일에 남는다(0h 날 포함) — pc{on,night,rec,always_on} · ev{pc_after_h, act_after,
-        pas_after, credit_h, why} · untimed{n, credit_min} · absent. 합계 evening_missed_days·evening_missed_pc_h·untimed_sends·
-        untimed_days·untimed_credit_h·std_nopc_days·std_nopc_h·hint_only_days·ai_n_time_kept(재산정 경로가 채운다).
-
-    LM30(2026-10-18 — 출퇴근 추정, core\\attendance 머리말이 규칙):
-      · 위 LM29 계산은 그대로 돈다. 끝에서 같은 재료로 출퇴근을 어림하고 attendance.useForMM(기본 켬)이면 반환 시간이 출퇴근 추정
-        근무다 — day_basis[날짜].h·tags(정규+연장+휴일 = 근무 · 야간은 겹쳐 세는 할증)·att{work, ext, night, holiday, offpc, conf} ·
-        lm29_h, 합계 overtime_h(연장+휴일)·regular_h·extended_h·night_h·holiday_h·holiday_night_h·weekend_days·
-        night_days(20시 넘은 퇴근)·long_days·absent_worked_h 가 출퇴근 추정 값이고 LM29 값은 lm29_totals·lm29_day_hours·lm29_basis,
-        measure.method = "출퇴근 추정"(measure.lm29_method = LM29 방식 이름). day_basis 의 LM29 저녁·새벽 창(시각)은 길이
-        (evening_h·dawn_h)로 바뀐다 — 날짜별 근거에 퇴근 무렵 시각을 남기지 않는다.
-      · info["attendance"] = 시각 없는 합계(weeks·months·total·used_for_mm · +@ 추정 plus_est_h — 근태 기록 없이 잰 것: 팀에 올려도
-        된다) · info["attendance_agg"] = 근태 기록과 견준 값(records·plus_h·missing_h·gate_plus_h …)까지 든 합계 · info["attendance_days"]·
-        info["attendance_usual"] = 날짜별 출퇴근·평소 시각(이 셋은 **이 PC 전용** — 호출측이 attendance.take_local 로 떼어
-        report\\attendance_<기간>.json 에만 쓴다 · LM30 2026-10-19). useForMM 을 꺼도 채운다(화면 참고용) · cfg_used.attendance = 쓴 설정.
-        근태 기록은 참고라 투입 시간·MM 을 바꾸지 않는다.
-      · LM30(2026-10-19) LM29 보다 적게 세지 않음(attendance.withLM29 — core\\attendance 머리말 15 · LM30(2026-10-20) 기본 끔 — 견줘
-        볼 때만 켠다): 날마다 LM29 가 시각까지
-        정해 센 구간(PC 하한 — 차감 뒤 그대로 센 날만 · 시차 근무 창 밖 · 저녁(자정 넘김 포함)·새벽 인정 · 주말 산출물 창 · 야간 해석 —
-        사적 차감 뒤)을 모아 출퇴근 추정의 흔적(lm29)으로 넘기고, 출퇴근 추정은 모든 날에 LM29 시간을 바닥으로 쓴다. 합계에 시간외 나눠
-        보기(weekend_h·offday_h·evening_h — 머리말 16). info["send_gap"] = 발신 흔적 빈 곳(건수·날짜만 — 머리말 17).
-      · LM30(2026-10-20) PC 사용 시간(attendance.pcUsage — 기본 켬 · core\\attendance 머리말 19): att_presence 가 PC 켜짐 조각을 그 행의
-        src 와 함께 모아(raw) 출퇴근 추정에 넘기고(pc_spans), 출퇴근 추정이 PC 를 실제로 쓴 구간(켜 둔 채인 PC 는 흔적 있는 날의 낮 창만 ·
-        흔적 없는 짧은 켜짐·새벽 업데이트 깨움은 뺌)을 근무 재료로 쓴다 — 흔적이 없어도 주말·휴일·밤에 PC 를 쓴 시간이 근무다. 합계에
-        pc_usage_h·pc_usage_off_h·always_on_days.
-      · LM30(2026-10-21 — 사용자: "부풀리기를 줄이려다가 실제 일한 것들을 없앨까봐" · 이 PC 101% · 다른 PC 131%). 더하기만 한다:
-        ① 브라우저 사용 구간(attendance.pcHintUsage — core\\attendance 머리말 20): PC 를 켜고 끈 기록이 없는 날은 흔적과 이어진 브라우저
-          사용 구간을 PC 를 쓴 시간으로(그 날의 바닥값은 그대로).
-        ② 가져온 기록(core\\pc_import — seen 'import:…')만 있는 날은 달 비율(pc_alive_own)에 넣지 않고(_native_pc), 그 평일은 늘 표준일
-          추정 날이다 — 출퇴근 추정은 가져온 기록으로 다시 재되 가져오기 전의 값(std_est — PC 기록 없이 잰 값 · 평일이면 표준일 추정)보다
-          적게 세지 않는다.
-        ③ 직접 모은 첫 PC 켜고 끈 기록(native_first) 전 평일은 달 비율과 무관하게 표준일 추정(NOPC_BEFORE_NATIVE — 기록이 시작된 달의 앞
-          평일이 흔적 창으로 떨어지던 40% 문턱).
-        ④ 달마다 근거 info["pc_months"](_pc_months — 일수·건수만) · info["pc_native_first"] · info["pc_log"](Windows 보관 주 수 — _log_reach)."""
-    from datetime import timedelta
-    cfg = cfg if isinstance(cfg, dict) else {}
-    mc, cfg_warns = norm_cfg(cfg)            # 잘못된 설정값은 죽지 않고 기본값 + info["config_warnings"]
-    cfg_warns.extend(holiday_table_warnings(d0, d1, cfg))
-    fw0, fw1 = float(mc["pcFloorWindow"][0]), float(mc["pcFloorWindow"][1])   # PC 하한 창·퇴근 경계(LM28)
-    nw0, nw1 = float(mc["nightWindow"][0]), float(mc["nightWindow"][1])       # 꼬리표 야간창(자정을 넘을 수 있다)
-    priv_min = mc["privateRunMin"]
-    std = mc["standardDayHours"]
-    method = mc["method"]
-    use_pc_floor = mc["usePcFloor"]
-    floor_needs = mc["pcFloorNeeds"]                                    # active | any
-    tentative = mc["tentativeMeetings"]                                 # count | skip | response
-    infer_abs = mc["inferAbsence"]
-    weekend_win = mc["weekendWindow"]                                   # True | "pc" | False (D7c)
-    weekend_pc = weekend_win == "pc"
-    evening_credit = mc["eveningCredit"]
-    span_all_files = mc["spanFromAllFiles"]
-    sim_mode = mc["simNight"]                                           # span | anchor | off (S4-N1)
-    sim_cap_h = mc["simNightCapH"]
-    sim_unlock = mc["simNightHumanUnlock"]
-    sim_needs_pc = mc["simNightNeedsPc"]
-    # 창·간격은 지역 변수다 — 예전엔 모듈 전역(DAY_WIN·LUNCH·SESSION_GAP_MIN)을 덮어써서 같은
-    # 프로세스의 다음 호출(UI·테스트)에 설정이 새어 나갔다(재진입 안전).
-    day_win, lunch, gap = mc["dayWindow"], mc["lunch"], mc["sessionGapMin"]
-    dinner = mc["dinner"]
-    day_cap = mc["dayCapHours"]
-    mail_off = mc["mailTimeOffsetH"]
-    bridge_min = mc["samplerGapBridgeMin"]
-    flex_h = mc["flexEdgeH"]
-    trim_min = mc["trimIdleEdgesMin"]
-    fallback = mc["pcFloorFallback"]
-    offsite_on = mc["offsiteAsWork"]
-    nopc_mode = mc["noPcMonthDay"]                                      # standard | trace (LM28 E)
-    dw0, dw1 = float(day_win[0]), float(day_win[1])
-    if fw0 < dw0 or fw1 > dw1:
-        # 하한 창은 주간 창 안이어야 한다 — 밖으로 넓히면 하한(주간 몫)이 야간 시간을 주간으로 세게 된다
-        c0, c1 = max(fw0, dw0), min(fw1, dw1)
-        c0, c1 = (c0, c1) if c1 > c0 else (dw0, dw1)
-        cfg_warns.append(f"mm.pcFloorWindow {_fmt_hm(fw0)}-{_fmt_hm(fw1)} 는 주간 창({_fmt_hm(dw0)}-{_fmt_hm(dw1)}) 밖으로 "
-                         f"넓을 수 없음 — {_fmt_hm(c0)}-{_fmt_hm(c1)} 로 제한")
-        fw0, fw1 = c0, c1
-    # PC 주간 가동 하한의 상한 — 수집기 야간 경계(08/19시)의 11h 와 주간 창 길이 중 작은 쪽. 창을 줄이면
-    # (09~18시) 창보다 긴 하한이 걸리던 결함 방지. 창이 수집기 경계와 다르면 한 줄 경고를 남긴다
-    # (PC night 는 수집기 경계로 적산돼 있어 창 밖 시간의 크레딧·물리 한계가 정확하지 않다).
-    day_max_h = min(PC_DAY_MAX_H, (dw1 - dw0) / 60.0)
-    if tuple(day_win) != tuple(DAY_WIN):
-        cfg_warns.append(f"mm.dayWindow {_fmt_hm(day_win[0])}-{_fmt_hm(day_win[1])} 는 수집기 야간 경계"
-                         f"({_fmt_hm(DAY_WIN[0])}-{_fmt_hm(DAY_WIN[1])})와 다름 — PC 주간 가동 하한을 "
-                         f"{day_max_h:g}h 로 제한하지만 24h 물리 한계 보장·저녁 크레딧 정확도는 떨어진다")
-    nonwork = _nonwork_list(cfg)
-    exclude = cfg_list(cfg, "excludePathKeywords")
-    anomalies, _anom_idx = [], {}
-
-    def _anom(d, kind, raw=None, used=None):
-        k = d.isoformat()
-        if k in _anom_idx:                     # 하루 한 줄 — 종류만 잇는다
-            a = anomalies[_anom_idx[k]]
-            a["kind"] += " · " + kind
-            if used is not None:
-                a["used"] = used
-            return
-        _anom_idx[k] = len(anomalies)
-        anomalies.append({"date": k, "kind": kind, "raw": raw, "used": used})
-
-    # ── PC 가동 기록(pc_on.csv + pc_spans.csv, 본 PC + 추가PC/*) — 날짜별 병합은 pc_daily 한 곳에서 한다(화면의 주간 추이
-    #    PC 선도 같은 함수). 여러 PC 의 구간은 합집합, 구간 없는 행은 (주간·야간) max(A32) — 제보: 'PC 가동시간 합산 안 됨'. ──
-    span_anoms = []
-    pc_kinds = {}                              # 물리 이벤트 기록이 있는 날 · 브라우저 방문(hint)·창 샘플러 구간(LM28 E)
-    pc, pc_wins, pc_spans, pc_win_all = pc_daily(data_dir, d0, d1, day_win=day_win, anom=_anom, span_anoms=span_anoms,
-                                                 kinds=pc_kinds)
-    evt_days = pc_kinds.get("evt_days") or set()
-    hint_sp = {dd: _union_spans(sp) for dd, sp in (pc_kinds.get("hint_sp") or {}).items()}
-    # LM30(2026-10-21) 가져온 PC 기록만 있는 날 · 직접 모은 PC 켜고 끈 기록의 첫 날(core\pc_import — 표준일 추정을 줄이지 않게)
-    imp_only, native_first = _native_pc(data_dir, d0, d1)
-    for dd, kind in span_anoms:
-        _anom(dd, kind, None, None)
-    aux_act = {}                               # 사적·미디어 연속 구간 · 솔버 CPU 틱(LM28)
-    act, cov, stuck = _activity_spans(data_dir, d0, d1, interval_sec=mc["samplerIntervalSec"],
-                                      idle_active=mc["idleActiveSec"], aux=aux_act)
-    priv_sp = aux_act.get("private") or {}
-    ledger = _ledger_days(data_dir, d0, d1)     # {날짜 iso: {축: 합성 상태}} | None(원장 없음 — LM24 방식)
-    meets_acc = {}                              # LM30(2026-10-18): 수락한 회의 구간만 — 출퇴근 추정의 확실한 흔적
-    meets, meet_carry, accepted, blocks = _meeting_spans(
-        data_dir, d0, d1, nonwork, tentative, exclude=exclude, now=now, day_win=day_win, acc_out=meets_acc)
-    # 약속(ms 0) 블록 중 출장·현장·교육 키워드가 든 것은 그 시간만큼 근무(A19 — 오프사이트 폴백 근거). '재택근무'·'치과' 는 아니다.
-    off_kws = _offsite_kws(cfg)
-    blk = {}
-    for dd, lst in blocks.items():
-        for a, b, subj in lst:
-            if any(k in (subj or "").lower() for k in off_kws):
-                blk.setdefault(dd, []).append((a, b))
-    offsite = offsite_days(data_dir, d0, d1, cfg, exclude) if (offsite_on and method == "activity") else {}
-    manual = manual_hours(data_dir, d0, d1)
-    mins = mc["signalMinutes"]
-    extra = None
-    if span_all_files and method == "activity":
-        extra = (file_times if file_times is not None
-                 else _file_times(data_dir, d0, d1, exclude, cfg)[0])
-    sstats = {}
-    sess, future_dropped = _signal_spans(signals, d0, d1, mins, now=now, extra=extra, gap=gap, day_win=day_win,
-                                         passive_max_min=mc["passiveDayMaxMin"], stats=sstats)
-    # 보고용 — '메일이 만든 시간 근거' 를 따로 잰다(합산에는 쓰지 않는다). 화면·리포트가 'PC 가동 하한에
-    # 흡수된 몫' 까지 말할 수 있어야 "메일이 반영되지 않는다" 를 숫자로 답할 수 있다(감사 지적).
-    mail_sess, _md = _signal_spans([g for g in signals if str(g[1]).startswith("메일")], d0, d1, mins,
-                                   now=now, gap=gap, day_win=day_win, passive_max_min=mc["passiveDayMaxMin"])
-    abs_spans, lv_src = {}, {}
-    # LM30(2026-10-21) 유급휴가 = 달력 + 근태 기록 칸의 휴가 열 + '휴가 날짜' 칸(attendance 머리말 22) — lv_src 에 날짜별 출처
-    absence = absence_days(data_dir, d0, d1, spans=abs_spans, cfg=cfg, src=lv_src)
-    holidays = _holiday_set(cfg)
-    # LM30(2026-10-25) 하루 유급휴가인 평일(attendance 머리말 22)은 내가 한 일만 근무로 센다 — 받은 메일·팀즈·수락 회의·출장 약속(달력)은
-    # 그 날 근무가 아니다(예전: 휴가인 날 받은 메일 3통 + 수락 회의 1시간이 '휴가일 근무' 1.25시간). 그 날의 신호 세션은 내 산출물·발신
-    # (LEAVE_OWN_SRC)과 사람이 저장한 파일 시각(해석 출력 anchor 제외)만으로 다시 만든다. 주말·휴일은 그 규칙 그대로(바꾸지 않는다)
-    lv_full = {dd for dd, v in absence.items() if v >= 1.0 and d0 <= dd <= d1 and not _is_off_day(dd, holidays)}
-    sess_own = {}
-    if lv_full:
-        sess_own = _signal_spans([g for g in signals if g[0].date() in lv_full and g[1] in LEAVE_OWN_SRC], d0, d1, mins,
-                                 now=now, extra={dd: [(m, c) for m, c in lst if _sim_end(c) is None]
-                                                 for dd, lst in (extra or {}).items() if dd in lv_full},
-                                 gap=gap, day_win=day_win, passive_max_min=mc["passiveDayMaxMin"])[0]
-    hours, inferred = {}, {}
-    cal_n = 0
-    for r in _read_multi(data_dir, "outlook", "calendar.csv"):
-        t = _dt(r.get("start"))
-        if t and d0 <= t.date() <= d1:
-            cal_n += 1
-    # absence_days(유급휴가 일수)는 실제로 가용에서 빠지는 평일만 센다 — 연차 기간에 낀 주말은 빼지 않는다
-    info = {"absence_days": round(sum(v for dd, v in absence.items() if not _is_off_day(dd, holidays)), 1),
-            "overtime_h": 0.0, "gap_days": 0,
-            "weekend_days": 0, "night_days": 0, "no_evidence_days": 0, "holidays": 0,
-            "sampler_days": len(act), "method": method,
-            "pc_floor_h": 0.0, "pc_floor_days": 0,
-            # ── LM22 추가(기존 키는 위에 그대로) ──
-            "floor_blocked_passive_days": 0, "lunch_deducted_h": 0.0, "evening_credit_h": 0.0,
-            # 메일 근거 — mail_session_min: 메일 신호만으로 만든 세션 합(분) · mail_in_floor_min: 그중 PC 가동 하한 구간에
-            # 흡수돼 따로 더해지지 않은 몫 · passive_floor_days: 수동 물량·분포로 하한을 연 날
-            "mail_session_min": 0.0, "mail_in_floor_min": 0.0, "passive_floor_days": 0,
-            "weekend_window_h": 0.0, "sampler_partial_days": 0, "sampler_stuck_days": len(stuck),
-            "inferred_absence_days": 0, "future_signals_dropped": future_dropped,
-            "phys_cap_days": 0, "day_cap_days": 0, "day_cap_hours": day_cap,
-            "absent_worked_h": 0.0, "long_days": [], "anomalies": anomalies,
-            "utc_suspect": _utc_suspect(data_dir, d0, d1, mail_off),
-            "config_warnings": cfg_warns,
-            # ── LM22 2차(A6·A9·A13·A18·A33·D3·D4·D7·D5) ──
-            "offsite_days": 0, "offsite_h": 0.0, "manual_days": 0, "manual_h": 0.0,
-            "dinner_deducted_h": 0.0, "flex_edge_h": 0.0, "sampler_bridge_h": 0.0,
-            "passive_capped_days": int(sstats.get("passive_capped_days", 0)), "weekend_pc_days": 0,
-            "pc_record_missing_days": 0, "pc_record_days": 0, "trace_window_h": 0.0, "trace_window_days": 0,
-            "pc_coverage_by_month": {}, "always_on_days": 0,
-            # ── S4-N1: 야간 해석(솔버) 근무 인정 — 밤(야간 창) 단위로 센다 ──
-            "sim_night_h": 0.0, "sim_night_days": 0, "sim_night_capped_days": 0,
-            "sim_night_unlocked_days": 0, "sim_night_remote_h": 0.0,
-            "basis": "",
-            # ── LM28(WP8): 꼬리표(분 단위 배타 — 휴일 > 야간 > 정규 > 연장)·저녁 창·PC 밖 발신·사적 차감·미관측 ──
-            "regular_h": 0.0, "extended_h": 0.0, "night_h": 0.0, "holiday_h": 0.0, "holiday_night_h": 0.0,
-            "evening_window_h": 0.0, "remote_send": 0, "remote_send_dates": [], "private_deducted_h": 0.0,
-            "sim_night_cpu_denied": 0, "coverage_ledger": ledger is not None,
-            "evidence_none_observed": 0, "unobserved_days": [], "inferred_absence_blocked_unobserved": 0,
-            "day_basis": {},
-            # ── LM28(E): 퇴근 후 미인정(19시 이후 PC 는 켜져 있는데 내 흔적 0)·시각 미상 발신·표준일 추정·브라우저 기록만 있는 날 ──
-            "evening_missed_days": 0, "evening_missed_pc_h": 0.0, "untimed_sends": 0, "untimed_days": 0,
-            "untimed_credit_h": 0.0, "std_nopc_days": 0, "std_nopc_h": 0.0, "hint_only_days": 0, "ai_n_time_kept": 0}
-    for dd in sorted(stuck):
-        if d0 <= dd <= d1:
-            _anom(dd, "샘플러 idle 0 고착(TickCount 랩·원격 세션) — 그 PC 의 그날 샘플러 폐기, PC 하한 모드", None, None)
-    # 능동 산출물(파일·코드·커밋·발신·수동기록) 시각 — 주말 근거·저녁 크레딧·PC 하한 게이트·흔적 창의 재료.
-    # tp = 모든 신호 시각(수동 포함) — 점심·저녁·창 가장자리의 '흔적 ±5분' 판정(A33).
-    # sim_days = 해석 출력 뭉치(대표 '파일(해석출력)'·anchor code "sim")가 있는 날 — 기계가 쓴 시각이라 하한 게이트(active_day)만
-    # 열고, 주간 창 안의 시각만 산출물·흔적으로 쓴다(VF-H1: 밤새 돌린 솔버의 03:00 출력이 새벽 크레딧·흔적 창·자정 연속성의
-    # 재료가 되던 과대 — '취침 중 켜둔 PC 를 근무로 세지 않는다').
-    # sim_sp/hum_pt/view_pt = 야간 해석 인정(S4-N1)의 재료 — 해석 출력 뭉치의 (시작, 끝) · 사람 능동 흔적 시각 ·
-    # 열람만 한 흔적(상한 해제 판정에만 쓴다). '파일(해석출력)' 자신은 사람 흔적이 아니다.
-    prod, tp, sim_days = {}, {}, set()
-    sim_sp, hum_pt, view_pt = {}, {}, {}
-    # LM28: sends = 정밀 시각 발신(PC 밖 발신 판정, A-19) · act_src = 그날 능동 흔적의 종류(하한이 열린 이유 — day_basis)
-    sends, act_src = {}, {}
-    # LM28(E): untimed = 날짜만 아는 발신 {날짜: Counter(라벨)} · pas_pt = 시각 있는 수동 흔적(받은 메일·팀즈 등 — 퇴근 후 근거 설명)
-    untimed, pas_pt = {}, {}
-    now_lim = (now or datetime.now()) + timedelta(minutes=FUTURE_SLACK_MIN)   # 미래 시각(시계 오류)은 흔적이 아니다
-    for t, src, _x, _w, _who in signals:
-        if src in UNTIMED_SRC or src in UNTIMED_PAS:
-            # 날짜만 아는 신호(12:00 은 자리표) — 날짜로만 본다. 발신은 '그날 일했다'는 능동 흔적(게이트·시각 미상 인정)만,
-            # 받은 글은 아무것도 아니다. 산출물(prod)·흔적 폭(tp)·사람 흔적(hum_pt)에 넣지 않는다 — 정오에 가짜 창이 생기지 않게.
-            if d0 <= t.date() <= d1 and t.date() <= now_lim.date() and src in UNTIMED_SRC:
-                act_src.setdefault(t.date(), set()).add(src)
-                untimed.setdefault(t.date(), Counter())[src] += 1
-            continue
-        if not (d0 <= t.date() <= d1) or t > now_lim:
-            continue
-        m = t.hour * 60 + t.minute
-        if src not in ACTIVE_SRC and src != "회의":
-            pas_pt.setdefault(t.date(), []).append(m)
-        if src in ACTIVE_SRC:
-            act_src.setdefault(t.date(), set()).add(src)
-        if src in ("메일(발신)", "팀즈(발신)"):
-            sends.setdefault(t.date(), []).append((float(m), src))
-        if src == "파일(해석출력)":
-            sim_days.add(t.date())
-            sim_sp.setdefault(t.date(), []).append((float(m), float(m)))
-            if dw0 <= m < dw1:
-                prod.setdefault(t.date(), []).append(m)
-                tp.setdefault(t.date(), []).append(m)
-            continue
-        if src != "회의":                       # 회의는 캘린더 구간(meets)이 정확한 흔적이다 — 시작 시각 ±5분을 덧붙이지 않는다
-            tp.setdefault(t.date(), []).append(m)
-        if src in NIGHT_PRODUCTIVE:
-            prod.setdefault(t.date(), []).append(m)
-        if src in ACTIVE_SRC:
-            hum_pt.setdefault(t.date(), []).append(float(m))
-        elif src == "파일(열람)":
-            view_pt.setdefault(t.date(), []).append(float(m))
-    for dd, lst in (extra or {}).items():
-        if d0 <= dd <= d1 and lst:
-            day0 = datetime(dd.year, dd.month, dd.day)
-            ok = []
-            for m, c in lst:
-                if day0 + timedelta(minutes=m) > now_lim:
-                    continue
-                end = _sim_end(c)
-                if end is not None:              # 해석 출력 anchor — 대표 신호와 같은 규칙(게이트만, 주간 창 안일 때만 산출물)
-                    sim_days.add(dd)
-                    sim_sp.setdefault(dd, []).append((float(m), min(1440.0, max(float(m), end))))
-                    if not (dw0 <= m < dw1):
-                        continue
-                else:
-                    hum_pt.setdefault(dd, []).append(float(m))   # 표본에서 빠진 사람 저장 파일도 제출 흔적이다
-                ok.append(m)
-            if ok:
-                prod.setdefault(dd, []).extend(ok)
-                tp.setdefault(dd, []).extend(ok)
-
-    def _night_zone(sp):
-        return _clip(sp, 0, dw0) + _clip(sp, dw1, 1440)
-
-    # 자정 연속성 — 수집기는 자정에 하루를 끊는다(전날 last_off 24:00 · 당일 first_on 00:00). PC 가 자정을
-    # 넘겨 켜져 있고 양쪽에 야간 산출물이 있으면 그 자정은 경계가 아니라 한 세션의 한가운데다
-    # (야간 근무자 20~04시: 전날 저녁 크레딧은 24:00 까지, 당일 새벽 크레딧은 00:00 부터).
-    def _night_prod(dd, evening):
-        return any((m >= dw1) if evening else (m < dw0) for m in (prod.get(dd) or ()))
-
-    def _pc_row(dd):
-        """pc_on 행(없으면 pc_spans 에서 파생) → (on, night, first_on, last_off)"""
-        row = pc.get(dd)
-        sp = pc_spans.get(dd)
-        if row is None and sp:
-            return (_union_min(sp) / 60.0, _union_min(_night_zone(sp)) / 60.0, sp[0][0], sp[-1][1])
-        return row or (0.0, 0.0, None, None)
-
-    def cont_next(dd):
-        nd = dd + timedelta(days=1)
-        r0, r1 = _pc_row(dd), _pc_row(nd)
-        return bool(r0[1] > 0 and r1[1] > 0
-                    and r0[3] is not None and r0[3] >= 1440 and r1[2] is not None and r1[2] <= 0
-                    and _night_prod(dd, True) and _night_prod(nd, False))
-
-    def cont_prev(dd):
-        return cont_next(dd - timedelta(days=1))
-    # PC 로그 생존 여부(월별) — 롤오버로 통째로 빈 달에는 휴가 추정을 하지 않고, 월별 비율은 리포트 배지(A9)로 나간다
-    # LM30(2026-10-21) pc_alive_own = 가져온 기록(core\pc_import)만 있는 날을 뺀 같은 비율 — 표준일 추정(PC 기록 없는 달)은 이것으로 정해
-    # 예전 판 기록을 가져와도 그 달의 표준일 추정 평일이 줄지 않는다
-    # LM30(2026-10-21) pc_alive_lv = 하루 휴가인 평일을 뺀 같은 비율(attendance 머리말 22) — 휴가인 날은 PC 기록이 없는 게 당연하다.
-    # 휴가가 많은 달이 'PC 기록 30% — 측정 불충분'·'하루 8시간 채움' 배지가 되고 휴가 추정이 막히던 것. 게이트는 둘 중 유리한 쪽이라
-    # (_cov_low·_cov_ok) 예전보다 채움·추정이 줄지 않는다 — 비율 표시(pc_coverage_by_month)·신뢰도는 휴가를 뺀 값
-    pc_alive, pc_alive_own, pc_alive_lv = {}, {}, {}
-    d = d0
-    while d <= d1:
-        if not _is_off_day(d, holidays):
-            k = d.strftime("%Y-%m")
-            n, m = pc_alive.get(k, (0, 0))
-            # 종일 행사·수동 기록일은 PC 기록이 있는 날과 같이 센다 — 현장 근무자가 'PC 기록 40% 미만' 으로 오인되지 않게
-            has_pc = (pc.get(d, (0.0,))[0] > 0 or bool(pc_spans.get(d)) or d in offsite or d in manual)
-            pc_alive[k] = (n + 1, m + (1 if has_pc else 0))
-            own_pc = ((pc.get(d, (0.0,))[0] > 0 or bool(pc_spans.get(d))) and d not in imp_only) or d in offsite or d in manual
-            n2, m2 = pc_alive_own.get(k, (0, 0))
-            pc_alive_own[k] = (n2 + 1, m2 + (1 if own_pc else 0))
-            if absence.get(d, 0.0) < 1.0:
-                n3, m3 = pc_alive_lv.get(k, (0, 0))
-                pc_alive_lv[k] = (n3 + 1, m3 + (1 if has_pc else 0))
-        d += timedelta(days=1)
-
-    def _cov_low(k):
-        """그 달 PC 기록이 평일의 40% 미만인가(표준일 추정을 여는 쪽) — 휴가를 넣은 비율·뺀 비율 중 하나라도(예전보다 덜 채우지 않게)"""
-        n0, m0 = pc_alive.get(k, (0, 0))
-        n1, m1 = pc_alive_lv.get(k, (0, 0))
-        return bool(n0) and (m0 / n0 < 0.4 or (bool(n1) and m1 / n1 < 0.4))
-
-    def _cov_ok(k):
-        """그 달 PC 기록이 평일의 40% 이상인가(휴가 추정을 여는 쪽) — 휴가를 넣은 비율·뺀 비율 중 하나라도(예전보다 덜 추정하지 않게)"""
-        n0, m0 = pc_alive.get(k, (0, 0))
-        n1, m1 = pc_alive_lv.get(k, (0, 0))
-        return bool(n0 and m0 / n0 >= 0.4) or bool(n1 and m1 / n1 >= 0.4)
-    info["pc_coverage_by_month"] = {k: round(m / n, 2) for k, (n, m) in sorted(pc_alive_lv.items()) if n}
-    info["pc_record_days"] = sum(m for _n, m in pc_alive.values())
-    # ── 야간 해석(솔버) 인정(S4-N1) — 한 밤이 자정을 넘어 두 날짜에 걸치므로 하루씩 도는 아래 루프 안에서는
-    #    만들 수 없다. 밤 단위로 미리 인정 구간을 계산해 두고 루프는 그날 몫만 합집합으로 더한다. ──
-    sim_night, sim_stat = {}, {"nights": 0, "capped": 0, "unlocked": 0}
-    if sim_mode != "off" and method == "activity" and sim_sp:
-        pc_night = {}
-        for dd in set(pc_spans) | set(pc_wins):
-            nz = _night_zone(pc_spans.get(dd) or _union_spans(pc_wins.get(dd) or []))
-            if nz:
-                pc_night[dd] = nz
-        hum_sp = {dd: _union_spans(list(meets.get(dd, [])) + list(act.get(dd, [])))
-                  for dd in set(meets) | set(act)}
-        sim_night, sim_stat = _sim_night_credit(sim_sp, hum_pt, hum_sp, view_pt, pc_night, d0, d1, day_win,
-                                                mode=sim_mode, cap_h=sim_cap_h, unlock=sim_unlock,
-                                                needs_pc=sim_needs_pc, cpu=aux_act.get("cpu"))
-    info["sim_night_days"] = sim_stat["nights"]
-    info["sim_night_capped_days"] = sim_stat["capped"]
-    info["sim_night_unlocked_days"] = sim_stat["unlocked"]
-    info["sim_night_cpu_denied"] = sim_stat.get("cpu_denied", 0)
-    night_tag_sp = _night_win_spans(nw0, nw1)
-    pf_n, pf_h = mc.get("passiveFloorMinN") or 0, mc.get("passiveFloorMinH") or 0
-    gap_run = []
-    nopc_days = set()                          # LM30(2026-10-18): 표준일 추정(PC 기록 없는 달)을 쓴 날 — 출퇴근 추정의 바닥값
-    # LM30(2026-10-21) std_est = 가져온 PC 기록만 있는 표준일 추정 평일의 'PC 기록 없이 잰 값'(출퇴근 추정의 바닥값 — attendance 머리말 21) ·
-    # pc_fact = 달마다 근거 보기(pc_months)의 날짜별 재료(평일만 — 일수·건수)
-    std_est, pc_fact = {}, {}
-    # LM30(2026-10-19) l29_sp = LM29 가 시각까지 정해 근무로 센 구간 {날짜: [(분, 분)]} — PC 하한(차감 뒤 그대로 센 날만)·시차 근무 창 밖
-    # 인정·저녁(자정 넘김 포함)·새벽·주말 산출물 창·야간 해석. 출퇴근 추정이 확실한 흔적처럼 쓴다(attendance.withLM29 — 머리말 15).
-    # pc_act = PC 를 켠 날(발신 흔적 빈 곳 경고 — attendance.send_gap)
-    l29_sp, pc_act = {}, set()
-    d = d0
-    while d <= d1:
-        base = []          # 이 날의 PC 가동 하한 재료 — 하한 계산을 건너뛴 날도 아래 메일 근거 집계가 읽는다
-        floor_add, db_floor = None, None     # 하한이 더한 (분, 놓일 구간) · 날짜별 근거(LM28 — 꼬리표·day_basis)
-        l29_day = []                         # LM30(2026-10-19) 이 날 LM29 가 시각까지 정해 센 구간(위 l29_sp)
-        off = _is_off_day(d, holidays)
-        absent = absence.get(d, 0.0)
-        lv_day = d in lv_full                # LM30(2026-10-25) 하루 유급휴가인 평일 — 내가 한 일만(위 sess_own)
-        has_pc_row = d in pc
-        on, night, first_on, last_off = _pc_row(d)
-        pcs = pc_spans.get(d) or []
-        if on > 0 or pcs:
-            pc_act.add(d)
-        raw_day = max(0.0, on - night)
-        day_on = min(day_max_h, raw_day)             # 주간창 ≤11h — worked ≤ 11 + 야간 13 = 24 보장
-        if raw_day > PC_DAY_MAX_H + 1e-9:
-            _anom(d, f"PC 주간 가동 {raw_day:g}h > {PC_DAY_MAX_H:g}h(야간열 누락 추정)",
-                  [on, night], [day_on, night])
-        off_blk = [] if lv_day else list(blk.get(d, []))     # 하루 휴가인 평일의 출장 약속(달력)은 근무가 아니다(LM30 2026-10-25)
-        if off_blk:
-            # 하루짜리(≥6h) 행사 블록('협력사 현장 출장 09~18')은 점심을 덮는다 — 흔적이 없는 점심 부분은 뺀다(표준일 8h 와 일치)
-            tr0 = ([(m - TRACE_PAD_MIN, m + TRACE_PAD_MIN) for m in tp.get(d, [])]
-                   + list(meets.get(d, [])) + list(act.get(d, [])))
-            lunch_gap0 = _subtract_spans([tuple(lunch)], tr0)
-            off_blk = [s for a, b in off_blk
-                       for s in (_subtract_spans([(a, b)], lunch_gap0)
-                                 if (b - a >= 6 * 60 and a <= lunch[0] and b >= lunch[1]) else [(a, b)])]
-        is_offsite = d in offsite and absent < 1.0
-        is_manual = d in manual
-        # 날짜만 아는 발신(untimed — LM28 E)도 그날 일했다는 능동 흔적이다(예전엔 정오 자리표가 prod 로 같은 일을 했다)
-        active_day = ((d in prod) or (d in sim_days) or (d in accepted) or bool(act.get(d)) or bool(off_blk)
-                      or is_offsite or is_manual or (d in untimed))
-        # 브라우저 방문·창 샘플러 구간(hint)만 있는 날(LM28 E) — PC 가동 구간이 아니라 '사람이 한 활동' 으로 본다
-        h_sp = hint_sp.get(d) or []
-        hint_only = bool(h_sp) and d not in evt_days
-        # PC 기록 없는 달의 평일(LM28 E — mm.noPcMonthDay="standard"): 그 달 PC 기록이 평일 40% 미만이고 그날 PC 기록이 없는데
-        # 능동 흔적이 있으면 아래 '종일 행사' 다음에 표준일 × (1−부재)를 주간 하한으로 둔다(추정). 창 샘플러가 잰 날·종일 행사·
-        # 수동 기록일은 각자의 규칙이 맡는다. "trace" 면 예전 흔적 창 폴백.
-        nopc_std = (nopc_mode == "standard" and method == "activity" and not off and absent < 1.0 and not has_pc_row
-                    and not pc_spans.get(d) and _cov_low(d.strftime("%Y-%m")) and active_day and not act.get(d)
-                    and not cov.get(d) and not is_offsite and not is_manual
-                    and d < now_lim.date())          # 오늘(아직 끝나지 않은 날)은 표준일로 채우지 않는다
-        # LM30(2026-10-21) 가져온 기록(core\pc_import)만 있는 평일은 늘 표준일 추정 날이다 — 그 날은 가져온 기록으로 다시 재되 가져오기 전의
-        # 값(표준일 추정 — std_est)보다 적게 세지 않는다(가져오기는 줄이지 않는다). 기록이 하나도 없는 평일의 달 비율은 가져온 기록을 뺀
-        # 비율(pc_alive_own)로 본다 — 가져온 기록이 달을 40% 위로 올려도 그 평일이 흔적 창으로 떨어지지 않게. 또 이 설치·추가PC 가 직접
-        # 모은 첫 PC 켜고 끈 기록(native_first) 전 평일은 Windows 가 지운 날이라 달 비율과 무관하게 표준일 추정(기록이 시작된 달의 앞
-        # 평일이 '흔적 창'(예: 8 → 5시간)으로 떨어지던 40% 문턱)
-        rec_any = has_pc_row or bool(pc_spans.get(d))
-        _qn, _qm = pc_alive_own.get(d.strftime("%Y-%m"), (0, 0))
-        if (not nopc_std and nopc_mode == "standard" and method == "activity" and not off and absent < 1.0
-                and active_day and not act.get(d) and not cov.get(d) and not is_offsite and not is_manual
-                and d < now_lim.date()
-                and ((rec_any and d in imp_only)
-                     or (not rec_any and ((bool(_qn) and _qm / _qn < 0.4)
-                                          or (NOPC_BEFORE_NATIVE and native_first is not None and d < native_first))))):
-            nopc_std = True
-        spans = list(act.get(d, [])) + list(meets.get(d, [])) + list(sess.get(d, [])) + list(off_blk)
-        if lv_day:
-            # LM30(2026-10-25) 하루 휴가인 평일 — 창 샘플러(내 키보드·마우스)와 내 산출물·발신 세션만(받은 메일·수락 회의는 근무가 아니다)
-            spans = list(act.get(d, [])) + list(sess_own.get(d, []))
-        if off and not active_day:
-            # 주말·공휴일은 능동 흔적(산출물·수락 회의·샘플러)이 있는 날만 — 수신 메일 1통은 근무가 아니다.
-            # 자정을 넘어 이어진 회의 조각(수락 회의의 연속)은 남긴다 — 버리면 금요일 심야→
-            # 토요일 새벽 회의의 새벽분이 조용히 소실된다(검증 확정)
-            spans = list(meets.get(d, [])) if d in meet_carry else []
-        spans_sig = list(spans)              # LM30(2026-10-21) PC 기록 없이 잰 재료(std_est — 가져온 기록이 더하는 하한·저녁 인정 전)
-        if not off and d <= now_lim.date():
-            # LM30(2026-10-21) 달마다 근거(pc_months)의 재료 — PC 켜고 끈 기록 · 가져온 기록뿐 · 브라우저 기록만 · 부재
-            pc_fact[d] = (d in evt_days, rec_any and d in imp_only, hint_only, absent)
-        # 흔적 폭(A33): 신호 시각 ±5분 + 회의·샘플러·행사 블록 구간 — 점심·저녁·창 가장자리 판정에 쓴다(세션 꼬리 ±30분은 아니다)
-        trace_sp = ([(m - TRACE_PAD_MIN, m + TRACE_PAD_MIN) for m in tp.get(d, [])]
-                    + list(meets.get(d, [])) + list(act.get(d, [])) + list(off_blk))
-        # PC 가동 창 — pc_spans 가 있으면 그 구간, 없으면 pc_on 행별 first_on~last_off 의 합집합(두 PC 면 두 구간, VF-H9).
-        # 양끝 다듬기(A33 trimIdleEdgesMin).
-        # 여러 PC 가 섞인 날은 실제 구간 ∪ 구간 없는 PC 의 창(pc_win_all)을 예전 창에 **더한다** — 가동 시간(pc_daily)과 같은
-        # 재료로 하한 창을 만들되 예전 창보다 좁아지지는 않게(창 길이보다 on 이 큰 잘못된 행의 창도 예전엔 창에 들어갔다)
-        pc_win = list(pcs) if pcs else _union_spans(pc_wins.get(d) or [])
-        if pc_win_all.get(d):
-            pc_win = _union_spans(list(pc_win) + list(pc_win_all[d]))
-        always_on = (on >= 20.0 or (first_on is not None and last_off is not None
-                                    and first_on <= 0 and last_off >= 1440))
-        if pc_win and trim_min > 0 and not always_on:
-            pc_win = _trim_edges(pc_win, trace_sp, trim_min)
-        t_first = pc_win[0][0] if pc_win else first_on
-        t_last = pc_win[-1][1] if pc_win else last_off
-        # 주말 하한 모드(D7c): weekendWindow="pc" 이고 능동 흔적이 있으면 평일과 같은 규칙
-        floor_day = (not off) or (weekend_pc and active_day and bool(pc_win))
-        # ── 주말·공휴일 산출물 창: PC 가동을 '첫 산출물−30분 ~ 마지막 산출물+30분' 안에서만 인정 ──
-        if (weekend_win and not floor_day and off and d in prod and on > 0 and t_first is not None
-                and t_last is not None and not act.get(d)):
-            win = (t_first if cont_prev(d) else max(t_first, min(prod[d]) - NIGHT_PAD_H * 60),
-                   t_last if cont_next(d) else min(t_last, max(prod[d]) + NIGHT_PAD_H * 60))
-            wins = [win] if win[1] > win[0] else []
-            # 창 안의 점심(≥30분)에 흔적(신호 ±5분·회의·샘플러)이 없으면 그 부분은 뺀다(평일 하한과 같은 규칙, A35)
-            if wins:
-                lw = _intersect_spans(wins, [tuple(lunch)])
-                if _union_min(lw) >= 30:
-                    wins = _subtract_spans(wins, _subtract_spans(lw, trace_sp))
-            if wins:
-                before = _union_hours(spans)
-                gain = min(on, _union_hours(spans + wins)) - before
-                if gain > 0:
-                    spans += wins
-                    l29_day += wins
-                    info["weekend_window_h"] += gain
-        # ── 야간 해석(솔버) 인정(S4-N1): 그 밤의 실행 구간(제출 ~ 마지막 출력) 중 이 날짜 몫을 합집합으로 더한다.
-        #    PC 가 꺼져 있어도 인정하므로(서버·클러스터) 아래 저녁·새벽 크레딧·시차 근무의 'PC 야간 가동' 여유에서는 뺀다.
-        sim_add = []                           # 실제로 **더해진** 몫만 — 이미 다른 흔적이 덮은 시간은 야간 해석 인정분이 아니다
-        if sim_night.get(d):
-            gain_sp = _subtract_spans(sim_night[d], spans)
-            gain = _union_min(gain_sp)
-            if gain > 1e-9:
-                spans += gain_sp
-                sim_add = gain_sp
-                l29_day += gain_sp
-                info["sim_night_h"] += gain / 60.0
-                pcn = _night_zone(pc_spans.get(d) or _union_spans(pc_wins.get(d) or []))
-                info["sim_night_remote_h"] += _union_min(_subtract_spans(gain_sp, pcn)) / 60.0
-        # ── PC 밖 발신(A-19 — LM28): 창 밖(하한 창 밖·휴일) 발신이 PC 가동 구간·샘플러 ±5분 밖이면(웹·모바일) 발신 세션만
-        #    (LM24 그대로 — 위 sess 에 이미 있다) + remote_send 표식. 그 세션은 PC 야간 가동이 아니므로 아래 캡에서 뺀다.
-        #    구간 없는 옛 pc_on 행(가동 창 모름)만 있는 날은 판정하지 않는다.
-        remote_sp, n_remote = [], 0
-        raw_pc = _union_spans(list(pcs) + list(pc_wins.get(d) or []) + list(pc_win_all.get(d) or []))
-        if raw_pc or on <= 0:
-            for m, src in sends.get(d, []):
-                if not off and fw0 <= m < fw1:
-                    continue
-                near = [(m - TRACE_PAD_MIN, m + TRACE_PAD_MIN)]
-                if _intersect_spans(near, raw_pc) or _intersect_spans(near, act.get(d, [])):
-                    continue
-                n_remote += 1
-                half = max(2.5, float(mins.get(src, 0)) / 2.0)
-                remote_sp.append((max(0.0, m - half), min(1440.0, m + half)))
-        if n_remote:
-            info["remote_send"] += n_remote
-            info["remote_send_dates"].append(d.isoformat())
-        # ── 저녁·새벽 크레딧: 평일 야간 PC 가동을, **PC 가동 창(first_on~last_off) 안에서만**, 야간 합계 ≤ PC 야간 가동으로 인정
-        #    (취침 중 켜둔 PC 는 마지막 산출물 뒤라 제외) ──
-        #   · 저녁(★ 사용자 지시 2026-10-07) = [max(퇴근 경계, 그 뒤 PC 를 켠 시각), 마지막 저녁 산출물 시각] 전체 — 퇴근 경계는
-        #     PC 하한 창 끝(mm.pcFloorWindow[1], 기본 19:00 = LM24 dayWindow 끝). LM24 의 +30분 꼬리(NIGHT_PAD)는 붙이지 않는다.
-        #     경계가 주간 창 안이면(하한 창 끝 < dayWindow 끝) 그 몫은 PC 가동 구간 안에서 야간 캡 없이 — '전체'라 식사 차감 없음.
-        #   · 새벽 = max(first_on, 첫 새벽 산출물−30) ~ min(주간창 시작, last_off) — LM24 그대로
-        #   · PC 가 자정을 넘겨 켜져 있고 양쪽에 야간 산출물이 있으면(야간 근무자) 자정은 경계가 아니다
-        #   · 합계가 PC 야간 가동을 넘으면 산출물 쪽 끝은 두고 창 가장자리 쪽을 깎는다(_fit_credit)
-        #   · 브라우저 기록만 있는 날(hint_only — LM28 E): 방문 구간은 PC 가동 시간이 아니다 — 야간 가동 게이트·캡 없이
-        #     [max(퇴근 경계, 19시 이후 첫 흔적(능동 산출물·방문 시작) −30), 마지막 저녁 산출물] (19시 이후 능동 흔적이 있을 때만)
-        #   · 밤샘 다음 날(cont_prev) 새벽은 마지막 새벽 산출물 +30분에서 멈춘다(LM28 E — 잠든 동안 켜 둔 PC 를 08:00 까지 세지 않게)
-        ev_day, fitted, ev_hint, ev_capped = [], [], [], False
-        if evening_credit and not off and (night > 0 or hint_only) and d in prod and t_last is not None:
-            ev_last = max((m for m in prod[d] if m >= fw1), default=None)
-            ev_first = min((m for m in prod[d] if m < dw0), default=None)
-            credit = []                    # (a, b, 고정할 끝) — 'b' 저녁(끝 고정) · 'a' 새벽(시작 고정)
-            if ev_last is not None and hint_only:
-                firsts = [m for m in prod[d] if m >= fw1] + [max(a, fw1) for a, b in h_sp if b > fw1]
-                e_a = max(fw1, min(firsts) - NIGHT_PAD_H * 60)
-                if ev_last > e_a:
-                    ev_hint = [(e_a, float(ev_last))]
-            elif ev_last is not None:
-                e_a = fw1                  # 퇴근 경계 — PC 가 그때 꺼져 있었으면 그 뒤 PC 를 켠 시각
-                if pc_win:
-                    e_a = next((max(a, fw1) for a, b in pc_win if b > fw1), None)
-                elif t_first is not None:
-                    e_a = max(fw1, t_first)
-                e_b = min(t_last, 1440.0 if cont_next(d) else ev_last)
-                if e_a is not None and e_b > e_a:
-                    if e_a < dw1:
-                        ev_day = [(e_a, min(e_b, dw1))]
-                        if pc_win:
-                            ev_day = _intersect_spans(ev_day, pc_win)
-                    if e_b > max(e_a, dw1):
-                        credit.append((max(e_a, dw1), e_b, "b"))
-            if ev_first is not None and t_first is not None and night > 0:
-                cp = cont_prev(d)
-                m_a = max(t_first, 0.0 if cp else ev_first - NIGHT_PAD_H * 60)
-                m_b = min(dw0, t_last)
-                if cp:
-                    last_dawn = max(m for m in prod[d] if m < dw0)
-                    if last_dawn < dw0 - 60:
-                        m_b = min(m_b, last_dawn + NIGHT_PAD_H * 60)
-                if m_b > m_a:
-                    credit.append((m_a, m_b, "a"))
-            gain = 0.0
-            for add_sp in (ev_day, ev_hint):
-                if add_sp:
-                    g = _union_min(spans + add_sp) - _union_min(spans)
-                    if g > 1e-9:
-                        spans += add_sp
-                        gain += g
-            if credit:
-                # 야간 합계 ≤ PC 야간 가동 — 단 야간 해석 인정분·PC 밖 발신 세션(PC 밖에서도 인정)은 이 캡의 대상이 아니다
-                allowed = night * 60 - _union_min(_subtract_spans(_night_zone(spans), sim_add + remote_sp))
-                if allowed > 1e-9:
-                    fitted = _fit_credit(credit, spans, allowed)
-                    g = _union_min(spans + fitted) - _union_min(spans)
-                    if g > 1e-9:
-                        spans += fitted
-                        gain += g
-                req = [(a, b) for a, b, anc in credit if anc == "b"]
-                # 요청한 저녁 중 1분 넘게 못 들어갔다 — PC 야간 가동 캡에 걸림(day_basis ev.why = capped)
-                ev_capped = bool(req) and _union_min(_subtract_spans(req, spans)) > 1.0
-            if gain > 1e-9:
-                info["evening_credit_h"] += gain / 60.0
-        ev_win = _union_spans(list(ev_day) + list(ev_hint) + _clip(fitted, dw1, 1440.0))     # 인정한 저녁 창(보고서 근거)
-        dawn_win = _clip(fitted, 0.0, dw0)
-        l29_day += list(ev_win) + list(dawn_win)                       # LM30(2026-10-19) 저녁·새벽 인정(자정 넘김 — 24:00 까지)
-        info["evening_window_h"] += _union_min(ev_win) / 60.0
-        # ── 샘플러 공백 다리(D3a): 샘플러가 덮은 구간 안의 무입력 공백 중 ≤ bridge_min(점심·저녁 창 제외)은 근무 ──
-        #   자리 토론·전화·즉석 회의(캘린더 없음)가 idle 로 버려지던 계통 과소. 장시간 이석·샘플러가 죽은 공백은 아니다.
-        covered_all = cov.get(d) or []
-        if act.get(d) and bridge_min > 0 and covered_all and (not off or floor_day):
-            base_u = _union_spans(spans)
-            skip_w = [tuple(lunch)]
-            if night > 0 or (t_last is not None and t_last >= dinner[1]) or base_u[-1][1] >= dinner[1]:
-                skip_w.append(tuple(dinner))
-            bridged = []
-            for i in range(1, len(base_u)):
-                g = (base_u[i - 1][1], base_u[i][0])
-                if g[1] - g[0] <= 1e-9:
-                    continue
-                if _union_min(_intersect_spans([g], covered_all)) < (g[1] - g[0]) - 1e-6:
-                    continue                    # 샘플러가 없던 공백(죽음·절전) — 하한 블록이 맡는다
-                eff = _subtract_spans([g], skip_w)
-                if eff and _union_min(eff) <= bridge_min:
-                    bridged += eff
-            if bridged:
-                gain = _union_min(spans + bridged) - _union_min(spans)
-                if gain > 1e-9:
-                    spans += bridged
-                    info["sampler_bridge_h"] += gain / 60.0
-        day_spans = _clip(spans, dw0, dw1)
-        day_min = _union_min(day_spans)
-        night_min = _union_min(_night_zone(spans))
-        # 야간 해석 인정분을 뺀 야간 사용량 — 시차 근무(D4a)의 'PC 야간 가동' 여유를 잴 때만 쓴다(S4-N1)
-        night_min_ex = _union_min(_subtract_spans(_night_zone(spans), sim_add)) if sim_add else night_min
-        # ── PC 주간 가동 하한 (과소평가 보정) — 구간 단위(A3·A25·A9·A33·A35) ──────────
-        # 신호 세션만으로는 '3시간 일하고 파일 1번 저장'이 1시간으로 계상된다. 그날 **능동** 흔적
-        # (산출물·수락 회의·샘플러·행사·수동 기록)이 있으면 주간 투입을 PC 가동 구간으로 끌어올린다.
-        #   · 흔적이 0인 날은 그대로 0 — 'PC 켜짐 = 근무'로 되돌아가지 않는다(v2 붕괴 원인)
-        #   · 수동 신호(수신·CC)만 있는 날은 하한 미적용(pcFloorNeeds=active) — CC 1통이 10h 가 되던 과대
-        #   · 점심·저녁 차감(그 시간에 흔적 ±5분이 있으면 그만큼 차감 안 함) · 반차는 표준일×(1−부재) 상한(흔적 초과분 인정)
-        #   · 샘플러가 덮은 구간은 실측 우선, 덮지 않은 가동 구간만 하한 · 야간 PC 가동은 하한에 넣지 않는다
-        #   · 야간 해석 인정분은 이 게이트를 열지 않는다(S4-N1) — 밤에 솔버가 돌았다는 것이 그날 **주간**에
-        #     자리에 있었다는 근거는 아니다. 켜 둔 PC + 야간 해석만으로 주간 8h 가 붙던 것을 막는다.
-        #   · 날짜만 아는 발신(untimed — LM28 E)뿐인 날도 연다 — 그날 일한 것은 확실하고 시각만 모른다(세션 0 이라 예전엔 막혔다)
-        if (use_pc_floor and method == "activity" and floor_day and absent < 1.0
-                and ((day_min + night_min_ex) > 0 or d in untimed)):
-            # ★ 수동 흔적(수신 메일·CC·팀즈 수신)만 있는 날도 물량·분포가 충분하면 하한을 연다(mm.passiveFloorMinN/H).
-            #   예전엔 능동 흔적이 없으면 하루 최대 60분이었다 — 메일·Teams 만 한 날이 1.0h 로 찍혔다(감사 실측).
-            _pas = sorted(m for m in (tp.get(d) or []) if dw0 <= m <= dw1)
-            passive_bulk = bool(_pas and pf_n > 0 and pf_h > 0 and len(_pas) >= pf_n
-                                and (_pas[-1] - _pas[0]) >= pf_h * 60.0)
-            if passive_bulk and not active_day:
-                info["passive_floor_days"] += 1
-            gate_ok = (floor_needs != "active") or active_day or passive_bulk
-            base, kind, gap_h, day_on_eff = [], None, 0.0, day_on
-            alt = None          # (base, kind, gap_h, day_on_eff) — 구간 방식과 함께 계산해 하한이 큰 쪽을 쓰는 대안
-            # 하한은 PC 하한 창(mm.pcFloorWindow — 기본 [8,19] = 주간 창, LM24 와 같음) 안에서만 건다(LM28). 절전 공백(gap)은
-            # 수집기 주간 가동(day_on, 08~19 적산)과 주간 창 길이의 차이로 잰 뒤 하한 창 길이에 비례해 줄인다(반차와 같은 원칙).
-            if gate_ok:
-                if hint_only and not off:
-                    # 브라우저 기록(hint)·창 샘플러 구간만 있는 평일(LM28 E): 방문 구간 합은 PC 가동 시간이 아니다(예전엔 하한이 브라우징
-                    # 시간만큼으로 줄었다) — 흔적 창(능동 흔적·회의·행사·방문 구간의 첫 −30 ~ 마지막 +30) ∩ 하한 창, 표준일 상한(trace 와
-                    # 같다)·시차 근무 창 밖 인정 없음.
-                    tw = _clip(_trace_window(prod.get(d, []), list(meets.get(d, [])) + list(act.get(d, [])) + list(off_blk)
-                                             + list(h_sp)), fw0, fw1)
-                    if tw:
-                        base, kind, day_on_eff = tw, "trace_hint", _union_min(tw) / 60.0
-                elif pcs:
-                    base = _clip(pc_win, fw0, fw1)
-                    kind, day_on_eff = "spans", _union_min(base) / 60.0
-                    # ★ 구간 파일이 없는 PC(옛 판본 수집분)·보존 행의 pc_on 이 점심 절전 등으로 끊겨 있으면 pc_win_all 에
-                    #   들어가지 못해 하한에서 통째로 빠졌다(감사 실측: PC 이동 날 8.0h → 3.0h, LM20 8.0h). 구간 합집합이
-                    #   병합 가동시간보다 뚜렷이 짧으면 그 행의 창을 하한 재료로 쓰는 **창 방식도** 계산한다. 창 방식은 절전
-                    #   공백을 차감하므로 두 PC 를 다른 시간에 쓴 날엔 구간 방식보다 작아질 수 있다(재검토 실측 8.17h→6.06h) —
-                    #   그래서 대체하지 않고 둘 중 하한이 큰 쪽을 쓴다(아래 _floor_calc).
-                    span_day = _union_min(_clip(_union_spans(list(pcs) + list(pc_win_all.get(d) or [])), dw0, dw1)) / 60.0
-                    if pc_wins.get(d) and day_on > span_day + 0.25:
-                        wb_d = _clip(_union_spans(list(pc_win) + list(pc_wins[d])), dw0, dw1)
-                        wb = _clip(wb_d, fw0, fw1)
-                        alt = (wb, "window", _gap_fw(max(0.0, _union_min(wb_d) / 60.0 - day_on), wb_d, wb), day_on)
-                elif day_on > 0 and pc_win:
-                    base_d = _clip(pc_win, dw0, dw1)
-                    base = _clip(base_d, fw0, fw1)
-                    kind, gap_h = "window", _gap_fw(max(0.0, _union_min(base_d) / 60.0 - day_on), base_d, base)
-                elif day_on > 0:
-                    base, kind = [(fw0, fw1)], "nowin"
-                    gap_h = _gap_fw(max(0.0, (dw1 - dw0) / 60.0 - day_on), [(dw0, dw1)], base)
-                if base and always_on and kind != "trace_hint":
-                    # 항상 켜 두는 PC(A3f): day_on 포화 대신 '첫 능동 흔적 −30 ~ 마지막 +30' 만. 브라우저 방문 구간(hint)도 사람이 한
-                    # 활동이라 기준점에 보탠다(LM28 E — 날짜만 아는 발신의 정오 자리표가 1h 창을 만들던 것 대신)
-                    tw = _trace_window(prod.get(d, []), list(meets.get(d, [])) + list(act.get(d, [])) + list(off_blk)
-                                       + list(h_sp))
-                    base = _intersect_spans(base, _clip(tw, fw0, fw1))
-                    kind, gap_h, day_on_eff = "always_on", 0.0, _union_min(base) / 60.0
-                    alt = None
-                    info["always_on_days"] += 1
-                if (not base and fallback == "trace" and not nopc_std and not act.get(d) and not is_offsite
-                        and not is_manual and ((d in prod) or (d in accepted) or off_blk or h_sp)):
-                    # PC 기록이 없는 날(A9): 흔적 창 [첫 능동 흔적 −30, 마지막 +30] ∩ 주간 창(표준일 상한).
-                    # 종일 행사·수동 기록일은 PC 가 꺼진 게 당연하다 — 결측이 아니고 각자의 규칙(A6·A13)이 맡는다.
-                    # PC 기록 없는 달의 평일(nopc_std)은 아래 표준일 추정이 맡는다(LM28 E).
-                    tw = _clip(_trace_window(prod.get(d, []), list(meets.get(d, [])) + list(off_blk) + list(h_sp)),
-                               fw0, fw1)
-                    if tw:
-                        base, kind, day_on_eff = tw, "trace", _union_min(tw) / 60.0
-                        if not has_pc_row:
-                            info["pc_record_missing_days"] += 1
-            elif day_on > 0 or pcs:
-                info["floor_blocked_passive_days"] += 1
-            if base:
-                def _floor_calc(base, kind, gap_h, day_on_eff):
-                    """하한 계산 한 벌 — (floor_u, inside_u, rest, lunch_ded, dinner_ded, covered, floor_u_sp, sleep_h).
-                    floor_u_sp = 하한이 놓일 수 있는 구간(꼬리표 위치), sleep_h = 깎은 절전 공백(h, 날짜별 근거)."""
-                    if abs_spans.get(d):
-                        # 반차 시각(A5) — 그 시간은 가동 창이 아니다. 절전 공백(gap)은 어디 있었는지 모르므로 남은 창 길이에 비례해 줄인다
-                        len0 = _union_min(base)
-                        base = _subtract_spans(base, abs_spans[d])
-                        if len0 > 0 and kind == "window":
-                            gap_h *= _union_min(base) / len0
-                    covered = _clip(covered_all, dw0, dw1) if act.get(d) else []
-                    unc = _subtract_spans(base, covered) if covered else list(base)
-                    # 점심(A35 — day_on 크기와 무관하게 창이 점심을 ≥30분 덮으면) · 저녁(A33 — 야근일만) 공백: 흔적 ±5분이 없는 부분
-                    lunch_gap, dinner_gap = [], []
-                    lw = _intersect_spans(base, [tuple(lunch)])
-                    if _union_min(lw) >= 30 and (kind != "window" or _union_min(lw) / 60.0 <= day_on_eff + 1e-9):
-                        lunch_gap = _subtract_spans(lw, trace_sp)
-                    if night > 0 and day_on_eff >= 6 and last_off is not None and last_off >= dinner[1]:
-                        dinner_gap = _subtract_spans(_intersect_spans(base, [tuple(dinner)]), trace_sp)
-                    floor_u_sp = _intersect_spans(_subtract_spans(base, lunch_gap + dinner_gap), unc)
-                    lunch_ded = _union_min(_intersect_spans(lunch_gap, unc)) / 60.0
-                    dinner_ded = _union_min(_intersect_spans(dinner_gap, unc)) / 60.0
-                    floor_u = _union_min(floor_u_sp) / 60.0
-                    meet_h = _union_min(_intersect_spans(list(meets.get(d, [])) + list(off_blk), unc)) / 60.0   # PC 밖 달력 회의
-                    sleep_h = 0.0
-                    if kind == "window":
-                        # 절전·잠금 PC(A3e): 가동 창과 on 의 차이(gap) 중 점심·달력 회의로 설명되는 만큼은 근무 — 나머지는 뺀다
-                        sleep_h = min(floor_u, max(0.0, gap_h - lunch_ded - meet_h))
-                        floor_u = max(0.0, floor_u - max(0.0, gap_h - lunch_ded - meet_h))
-                    elif kind == "nowin":
-                        # 창을 모르면 on 이 상한 — 단 PC 절전 중의 달력 회의(unc 안)는 on 밖의 근무라 더한다(VF-H6: 옛 3열 pc_on 에서
-                        # 회의 1h 가 상한에 흡수되던 과소)
-                        floor_u = max(0.0, min(floor_u, day_on - lunch_ded - dinner_ded + meet_h))
-                    elif kind in ("trace", "trace_hint"):
-                        floor_u = min(floor_u, std)
-                    inside_u = _union_min(_intersect_spans(day_spans, unc))    # 미커버 가동 구간 안의 실측 흔적
-                    rest = day_min - inside_u                                   # 창 밖 흔적 + 샘플러 실측 — 그대로 더한다
-                    if 0 < absent < 1:
-                        floor_u = min(floor_u, max(0.0, std * (1.0 - absent) - rest / 60.0))
-                    return floor_u, inside_u, rest, lunch_ded, dinner_ded, covered, floor_u_sp, sleep_h
-
-                (floor_u, inside_u, rest, lunch_ded, dinner_ded, covered,
-                 floor_u_sp, sleep_h) = _floor_calc(base, kind, gap_h, day_on_eff)
-                if alt:
-                    a_res = _floor_calc(*alt)
-                    # 결과 투입(분)으로 비교한다 — 하한이 흔적보다 작으면 흔적(day_min)이 그대로 남는다
-                    if max(day_min, a_res[2] + a_res[0] * 60.0) > max(day_min, rest + floor_u * 60.0) + 1e-9:
-                        floor_u, inside_u, rest, lunch_ded, dinner_ded, covered, floor_u_sp, sleep_h = a_res
-                        base, kind, gap_h, day_on_eff = alt
-                if floor_u * 60.0 > inside_u + 1e-9:
-                    gain = (floor_u * 60.0 - inside_u) / 60.0
-                    day_min = rest + floor_u * 60.0
-                    # 꼬리표용 하한 위치 — 흔적이 덮지 않은 하한 구간에 더해진 분(gain)을 비례로 놓는다
-                    floor_add = (gain * 60.0, _subtract_spans(floor_u_sp, day_spans))
-                    # LM30(2026-10-19) 하한 구간이 그대로 다 세졌으면(절전 공백·반차·표준일 상한으로 줄이지 않았으면) 그 시각이 곧
-                    # LM29 가 센 구간이다 — 줄인 날은 어디를 줄였는지 몰라 시각 없이 바닥값(attendance 의 모든 날 바닥값)으로만 남긴다
-                    if abs(_union_min(floor_u_sp) - floor_u * 60.0) <= 1.0:
-                        l29_day += list(floor_u_sp)
-                    db_floor = {"kind": kind, "open": _floor_open(d, act_src, accepted, act, off_blk, is_offsite,
-                                                                  is_manual, sim_days, passive_bulk, floor_needs),
-                                "win": [_fmt_hm(fw0), _fmt_hm(fw1)], "add_h": round(gain, 2),
-                                "cut": {k: v for k, v in (("lunch_h", round(lunch_ded, 2)),
-                                                          ("dinner_h", round(dinner_ded, 2)),
-                                                          ("sleep_gap_h", round(sleep_h, 2)),
-                                                          ("half_day", absent if 0 < absent < 1 else 0),
-                                                          ("day_cap_11h", round(max(0.0, raw_day - day_on), 2)))
-                                        if v}}
-                    info["lunch_deducted_h"] += lunch_ded
-                    info["dinner_deducted_h"] += dinner_ded
-                    if kind == "trace":
-                        info["trace_window_days"] += 1
-                        info["trace_window_h"] += gain
-                    else:
-                        info["pc_floor_h"] += gain
-                        info["pc_floor_days"] += 1
-                    if covered:
-                        info["sampler_partial_days"] += 1
-                    if off:
-                        info["weekend_pc_days"] += 1
-            # ── 시차 근무(D4a): 산출물 없어도 주간 창 밖 PC 가동을 앞뒤 각 flex_h 까지(야간 합 ≤ PC night) ──
-            if flex_h > 0 and gate_ok and kind in ("window", "spans") and pc_win and not off:
-                cand = (_clip(pc_win, max(0.0, dw0 - flex_h * 60), dw0) + _clip(pc_win, dw1, min(1440.0, dw1 + flex_h * 60)))
-                allowed = night * 60 - night_min_ex
-                if cand and allowed > 1e-9:
-                    fitted = _fit_credit([(a, b, "b") if b <= dw0 else (a, b, "a") for a, b in cand], spans, allowed)
-                    gain = _union_min(spans + fitted) - _union_min(spans)
-                    if gain > 1e-9:
-                        spans += fitted
-                        l29_day += list(fitted)
-                        night_min = _union_min(_night_zone(spans))
-                        info["flex_edge_h"] += gain / 60.0
-        _msp = mail_sess.get(d) or []
-        if _msp:
-            info["mail_session_min"] += _union_min(_msp)
-            if base:
-                info["mail_in_floor_min"] += _union_min(_intersect_spans(_msp, base))
-        # ── 사적 차감(A-14 — LM28, 마지막 단계): 창 샘플러가 사적·미디어 창을 privateRunMin 분 이상 연속으로 **실측**한 구간만
-        #    근무 구간에서 뺀다(추정으로 깎지 않는다). 회의·산출물 ±5분은 업무 우선이라 남긴다. 하한은 샘플러가 덮지 않은 구간에만
-        #    걸리므로 사적 구간(샘플러 실측)과 겹치지 않는다 — 구간(spans)과 그 분만큼의 day_min·night_min 에서만 뺀다.
-        priv_ded = 0.0
-        if priv_min > 0 and priv_sp.get(d) and method == "activity":
-            runs = [(a, b) for a, b in priv_sp[d] if b - a >= priv_min - 1e-6]
-            if runs:
-                runs = _subtract_spans(runs, list(meets.get(d, []))
-                                       + [(m - TRACE_PAD_MIN, m + TRACE_PAD_MIN) for m in prod.get(d, [])])
-                u = _union_spans(spans)
-                cut = _intersect_spans(u, runs)
-                if cut:
-                    c_day, c_night = _union_min(_clip(cut, dw0, dw1)), _union_min(_night_zone(cut))
-                    day_min, night_min = max(0.0, day_min - c_day), max(0.0, night_min - c_night)
-                    spans = _subtract_spans(u, runs)
-                    l29_day = _subtract_spans(l29_day, runs)        # LM30(2026-10-19) 사적 차감은 LM29 구간에서도
-                    priv_ded = c_day + c_night
-                    info["private_deducted_h"] += priv_ded / 60.0
-        worked = (day_min + night_min) / 60.0
-        # 야간 시간은 경계에 걸친 구간도 겹치는 만큼만 정확히 잰다 (18~20시 연장근무 누락 방지)
-        night_h = night_min / 60.0
-        if act.get(d) and _union_hours(act[d]) >= 20:
-            _anom(d, "샘플러 활동 ≥20h(원격세션 idle 고착 의심)", [round(_union_hours(act[d]), 2)], None)
-        # ── 종일 행사(A6): 출장·현장·교육 — 표준일 × (1−부재) 를 하한으로(PC 없음·휴대폰 발신 2통이 0h 이던 날) ──
-        if is_offsite and not off and method == "activity":
-            base_off = std * (1.0 - absent)
-            info["offsite_days"] += 1
-            if worked < base_off:
-                info["offsite_h"] += base_off - worked
-                worked = base_off
-        # ── 수동 기록(A13): collect/Add-WorkLog.ps1 — 기록 시간을 하한으로(대체가 아니라 하한) ──
-        if is_manual and method == "activity":
-            mh = float(manual[d][0])
-            info["manual_days"] += 1
-            if worked < mh:
-                info["manual_h"] += mh - worked
-                worked = mh
-        # ── PC 기록 없는 달의 평일(LM28 E — mm.noPcMonthDay="standard"): 표준일 × (1−부재)를 주간 하한으로 — 추정(표준일 추정).
-        #    저녁·야간 흔적(night_min)은 그대로 더한다(표준일이 저녁 세션을 삼키지 않게). 꼬리표는 아래 잔여 경로로 정규. ──
-        if nopc_std:
-            nopc_days.add(d)
-            if rec_any:
-                # LM30(2026-10-21) 가져온 PC 기록만 있는 날 — 출퇴근 추정의 바닥값은 그 기록 없이 잰 표준일 추정(가져오기 전의 값 —
-                # attendance 머리말 21). LM29 쪽 값(w_std)은 가져온 기록으로 잰 하한·저녁 인정까지 든 값이라 비교 칸에만 남는다
-                std_est[d] = round(max(_union_min(_clip(spans_sig, dw0, dw1)) / 60.0, std * (1.0 - absent))
-                                   + _union_min(_night_zone(spans_sig)) / 60.0, 2)
-            w_std = max(day_min / 60.0, std * (1.0 - absent)) + night_min / 60.0
-            add_h = max(0.0, w_std - worked)
-            worked = max(worked, w_std)
-            if not rec_any or add_h > 1e-9:          # 가져온 기록으로 잰 값이 이미 더 크면 표준일 추정 날로 세지 않는다
-                info["std_nopc_days"] += 1
-                info["std_nopc_h"] += add_h
-                if not rec_any:
-                    info["pc_record_missing_days"] += 1
-                db_floor = {"kind": "std_nopc", "open": _floor_open(d, act_src, accepted, act, off_blk, is_offsite, is_manual,
-                                                                     sim_days, False, floor_needs),
-                            "win": [_fmt_hm(fw0), _fmt_hm(fw1)], "add_h": round(add_h, 2), "est": True}
-        # ── 시각 미상 발신(LM28 E): 날짜만 아는 발신이 있는데 하한이 놓이지 않았고 시각 있는 능동 흔적·수락 회의·샘플러·행사
-        #    블록도 없는 날 — 건당 signalMinutes(메일(발신) 20·팀즈(발신) 10)를 더한다(PC 기록이 있으면 on 이하). 꼬리표는 잔여
-        #    경로(평일 정규·휴일 휴일). 날짜만 수신(정오 5분 수동 세션)은 예전 그대로다. ──
-        un_n = sum((untimed.get(d) or {}).values())
-        un_min = 0.0
-        if (un_n and method == "activity" and floor_add is None and not nopc_std and not is_offsite and not is_manual
-                and not hum_pt.get(d) and (lv_day or d not in accepted) and not act.get(d) and not off_blk):
-            un_min = sum(n * float(mins.get(UNTIMED_BASE.get(s, "메일(발신)"), 0) or 0) for s, n in untimed[d].items())
-            if on > 0:
-                un_min = min(un_min, max(0.0, on * 60.0 - worked * 60.0))
-            if un_min > 1e-9:
-                worked += un_min / 60.0
-                info["untimed_credit_h"] += un_min / 60.0
-                db_floor = {"kind": "untimed", "open": sorted(untimed[d]), "add_h": round(un_min / 60.0, 2)}
-        if un_n:
-            info["untimed_sends"] += un_n
-            info["untimed_days"] += 1
-        if method != "activity":                 # 예전 방식(비교용)
-            if not off and absent < 1.0:
-                base = std * (1.0 - absent)
-                evidence = worked > 0 or on > 0
-                if not evidence:
-                    gap_run.append(d)
-                else:
-                    gap_run = []
-                if len(gap_run) >= GAP_DAYS:      # 연휴·장기부재 — 8h 채움 중단 (v5에서 소실 복원)
-                    for gd in gap_run:
-                        hours.pop(gd, None)
-                    info["gap_days"] += 1
-                    base = 0.0
-                worked = max(worked, base)
-        if absent >= 1.0 and worked > 0:
-            # 휴가인데 일한 흔적이 있다 — 예전 4h 클램프 대신 장부에 남기고 흔적만큼 그대로 센다(휴가일 근무 — attendance 머리말 22)
-            info["absent_worked_h"] += worked
-            _anom(d, "휴가일 근무 — 휴가인 날 일한 흔적을 자르지 않고 그대로 셉니다", None, [round(worked, 2)])
-        if worked > PHYS_CAP_H:                  # 입력 검증이 정상이면 닿지 않는 마지막 물리 한계
-            info["phys_cap_days"] += 1
-            _anom(d, "24h 물리 한계 초과", [round(worked, 2)], [PHYS_CAP_H])
-            worked = PHYS_CAP_H
-        if day_cap and worked > day_cap:         # 사용자가 설정으로만 거는 선택 상한
-            info["day_cap_days"] += 1
-            worked = day_cap
-        if worked > LONG_DAY_H:
-            info["long_days"].append([d.isoformat(), round(worked, 2)])
-        mail_un, teams_un = _unobserved(ledger.get(d.isoformat())) if ledger is not None else (False, False)
-        db = None
-        if worked > 0:
-            hours[d] = round(worked, 2)
-            if off:
-                info["weekend_days"] += 1
-                info["overtime_h"] += worked
-            else:
-                info["overtime_h"] += max(0.0, worked - std)
-            if night_h >= 0.5:
-                info["night_days"] += 1
-            # ── 꼬리표(A-22 — LM28): 분마다 휴일 > 야간 > 정규(하한 창 − 점심 − 반차 시각) > 연장. 흔적 구간 + 하한이 더한 분
-            #    (그 놓일 구간에 비례) + 구간 없이 더한 몫(종일 행사·수동 기록·workday 표준일 → 정규, 휴일이면 휴일).
-            #    상한(물리 24h·dayCapHours)으로 줄었으면 비례로 줄인다 — 합계 = 그날 투입. ──
-            reg_sp = ([] if absent >= 1.0
-                      else _subtract_spans([(fw0, fw1)], [tuple(lunch)] + list(abs_spans.get(d) or [])))
-            tg = tag_minutes(spans, off, reg_sp, night_tag_sp)
-            if floor_add:
-                add_min, loc = floor_add
-                ln = _union_min(loc)
-                if ln > 1e-9:
-                    t2 = tag_minutes(loc, off, reg_sp, night_tag_sp)
-                    for k in tg:
-                        tg[k] += t2[k] * add_min / ln
-                else:
-                    tg["holiday" if off else "regular"] += add_min
-            tsum = tg["regular"] + tg["extended"] + tg["night"] + tg["holiday"]
-            if worked * 60.0 > tsum + 1e-6:
-                tg["holiday" if off else "regular"] += worked * 60.0 - tsum
-            elif tsum > 0 and worked * 60.0 < tsum - 1e-6:
-                f = worked * 60.0 / tsum
-                tg = {k: v * f for k, v in tg.items()}
-            for k in ("regular", "extended", "night", "holiday", "holiday_night"):
-                info[k + "_h"] += tg[k] / 60.0
-            # 날짜별 근거(★ 사용자 지시 ②) — 하한이 열린 이유·깎은 것·저녁 창·PC 밖 발신·사적 차감·꼬리표(보고서가 표시 — WP9)
-            db = {"h": round(worked, 2), "tags": {k: round(v / 60.0, 2) for k, v in tg.items() if v > 1e-6}}
-            if db_floor:
-                db["floor"] = db_floor
-            if ev_win:
-                db["evening"] = [[_fmt_hm(a), _fmt_hm(b)] for a, b in ev_win]
-            if dawn_win:
-                db["dawn"] = [[_fmt_hm(a), _fmt_hm(b)] for a, b in dawn_win]
-            if n_remote:
-                db["remote_send"] = n_remote
-            if priv_ded:
-                db["private_min"] = round(priv_ded)
-            if is_offsite or is_manual:
-                db["offsite" if is_offsite else "manual"] = True
-        elif not off and absent < 1.0:
-            info["no_evidence_days"] += 1
-            # 미관측(C-31 — LM28): 원장이 있으면 '관측했는데 흔적 없음'과 '못 읽은 날'을 나눈다(팀즈 na 는 관측으로 본다)
-            if ledger is not None:
-                if mail_un or teams_un:
-                    info["unobserved_days"].append(d.isoformat())
-                else:
-                    info["evidence_none_observed"] += 1
-        # ── 날짜별 근거(LM28 E — 0h 평일·흔적 있는 휴일 포함): PC 기록(가동·야간·종류) · 퇴근 후(퇴근 경계 뒤 PC 가동·내 능동 흔적·
-        #    받은 흔적 수·인정한 창·빠진 이유) · 시각 미상 발신 · 부재. 보고서·대시보드가 '저녁이 왜 빠졌나' 를 날짜마다 보인다.
-        #    why: credited(인정) · capped(PC 야간 가동 캡에 걸려 일부만) · no_active_after(퇴근 뒤 PC 는 켜져 있었는데 내 능동
-        #    흔적 0 — 항상 켜진 PC 는 제외) · no_pc_after(능동 흔적은 있는데 퇴근 뒤 PC 기록 없음) · ''. ──
-        if hint_only and not off and active_day:
-            info["hint_only_days"] += 1
-        if db is not None or not off or tp.get(d) or prod.get(d) or untimed.get(d) or meets.get(d) or act.get(d):
-            db = db if db is not None else {"h": 0.0, "tags": {}}
-            db["pc"] = {"on": round(on, 2), "night": round(night, 2), "always_on": bool(always_on),
-                        "rec": "hint" if hint_only else ("event" if (has_pc_row or pcs) else "none")}
-            pc_after = _union_min(_clip(raw_pc, fw1, 1440.0)) / 60.0
-            act_after = sum(1 for m in prod.get(d, ()) if m >= fw1)
-            pas_after = sum(1 for m in pas_pt.get(d, ()) if m >= fw1)
-            ev_h = _union_min(ev_win) / 60.0
-            why = ""
-            if not off and evening_credit:
-                if ev_capped:
-                    why = "capped"
-                elif ev_h > 1e-9:
-                    why = "credited"
-                elif act_after == 0 and pc_after >= 0.25 and not always_on:
-                    why = "no_active_after"
-                elif act_after > 0 and pc_after < 0.25:
-                    why = "no_pc_after"
-            if why == "no_active_after":
-                info["evening_missed_days"] += 1
-                info["evening_missed_pc_h"] += pc_after
-            if pc_after > 0 or act_after or pas_after or ev_h > 0 or why:
-                db["ev"] = {"pc_after_h": round(pc_after, 2), "act_after": act_after, "pas_after": pas_after,
-                            "credit_h": round(ev_h, 2), "why": why}
-            if un_n:
-                db["untimed"] = {"n": un_n, "credit_min": round(un_min)}
-            if absent > 0:
-                db["absent"] = absent
-            info["day_basis"][d.isoformat()] = db
-        if not off and absent <= 0.0 and infer_abs and method == "activity":
-            k = d.strftime("%Y-%m")
-            # 휴가 추정(내부 이름 '부재 추정' — A31 완화): 투입 ≤15분·PC 가동 ≤30분(유지관리 깨움)·능동 흔적 없음(수신 1통 허용)인 평일 —
-            # 그 달 PC 기록이 평일의 40% 이상 살아 있을 때만(수집 실패를 휴가로 오인하지 않게 · LM30(2026-10-21) 하루 휴가인 평일을 뺀 비율도
-            # 본다 — _cov_ok). 호출측이 가용에서 뺀다.
-            # 달력 근태가 있는 날(반차 0.5 포함)은 추정하지 않는다(VF-H7 — 반차일이 추정 1.0 이 되어 분모에서 통째로 빠지던 것).
-            # 메일 축(받은·보낸)이 미관측인 날은 추정하지 않는다(LM28 — 못 읽은 날을 휴가로 만들지 않게. 원장이 없으면 LM24).
-            if (worked <= 0.25 and on <= 0.5 and not active_day and not is_offsite and not is_manual
-                    and _cov_ok(k)):
-                if mail_un:
-                    info["inferred_absence_blocked_unobserved"] += 1
-                else:
-                    inferred[d] = 1.0
-                    info["inferred_absence_days"] += 1
-                    # LM30(2026-10-21) 날짜별 근거에 '휴가로 본 평일' 표식(inf) — 리포트가 그 날을 0시간 평일이 아니라 휴가로 적는다
-                    # (attendance 머리말 22 · 휴가 날짜라 scrub_meta(outbound) 가 그 줄째 뗀다 · _att_apply 가 추정을 거두면 표식도 뗀다)
-                    _dbi = info["day_basis"].get(d.isoformat())
-                    if isinstance(_dbi, dict):
-                        _dbi["inf"] = 1
-        if off and d.isoweekday() <= 5:
-            info["holidays"] += 1
-        if l29_day and worked > 0 and method == "activity":
-            l29_sp[d] = _union_spans(_clip(l29_day, 0.0, 1440.0))
-        if rec_any and d in imp_only and d not in std_est and method == "activity":
-            # LM30(2026-10-21) 가져온 기록만 있는 그 밖의 날(주말·휴일 · 흔적 없는 평일) — 가져오기 전의 값(흔적 세션만 — PC 기록 없이)을
-            # 출퇴근 추정의 바닥으로(가져온 기록이 짧아도 줄지 않게 · attendance 머리말 21)
-            pre = round(_union_min(_clip(spans_sig, 0.0, 1440.0)) / 60.0, 2)
-            if pre > 0:
-                std_est[d] = pre
-        d += timedelta(days=1)
-    for k in ("overtime_h", "pc_floor_h", "lunch_deducted_h", "evening_credit_h",
-              "weekend_window_h", "absent_worked_h", "offsite_h", "manual_h", "dinner_deducted_h",
-              "flex_edge_h", "sampler_bridge_h", "trace_window_h", "sim_night_h", "sim_night_remote_h"):
-        info[k] = round(info[k], 1)
-    for k in ("regular_h", "extended_h", "night_h", "holiday_h", "holiday_night_h", "evening_window_h",
-              "private_deducted_h", "evening_missed_pc_h", "untimed_credit_h", "std_nopc_h"):
-        info[k] = round(info[k], 2)
-    info["inferred_absence"] = inferred
-    info["inferred_absence_dates"] = [x.isoformat() for x in sorted(inferred)]
-    # ── D5: 측정 방식·신뢰도·산식 설정 — mine.py 가 mm_meta 최상위에 싣고 팀 취합·리포트가 배지로 보인다 ──
-    wd_hours = sum(1 for dd in hours if not _is_off_day(dd, holidays))
-    if method != "activity":
-        meth = "표준일(workday)"
-    elif info["sampler_days"] and info["sampler_days"] >= max(1, wd_hours) * 0.5:
-        meth = "샘플러 실측"
-    elif info["pc_floor_days"]:
-        meth = "PC 하한"
-    elif info["trace_window_days"]:
-        meth = "흔적 창"
-    elif info["std_nopc_days"]:
-        meth = "표준일 추정"                     # PC 기록 없는 달 — mm.noPcMonthDay=standard(LM28 E)
-    else:
-        meth = "신호 세션"
-    info["measure"] = {"method": meth, "sampler_days": info["sampler_days"], "pc_floor_days": info["pc_floor_days"],
-                       "floor_blocked_passive_days": info["floor_blocked_passive_days"],
-                       "pc_record_days": info["pc_record_days"], "trace_window_days": info["trace_window_days"],
-                       "offsite_days": info["offsite_days"], "manual_days": info["manual_days"],
-                       "std_nopc_days": info["std_nopc_days"], "hint_only_days": info["hint_only_days"]}
-    wd_n = sum(n for n, _m in pc_alive.values())
-    pc_ratio = (info["pc_record_days"] / wd_n) if wd_n else 0.0
-    # LM30(2026-10-21) 하루 휴가인 평일을 뺀 비율이 더 높으면 그것으로(휴가가 많은 기간이 '측정 불충분'이 되지 않게 — 머리말 22)
-    wd_lv = sum(n for n, _m in pc_alive_lv.values())
-    if wd_lv:
-        pc_ratio = max(pc_ratio, sum(m for _n, m in pc_alive_lv.values()) / wd_lv)
-    reasons = []
-    if pc_ratio < 0.4:
-        reasons.append(f"PC 기록 평일 {round(pc_ratio * 100)}%(<40%)")
-    if not info["sampler_days"]:
-        reasons.append("창 샘플러 0일")
-    if not cal_n:
-        reasons.append("달력 0행")
-    info["coverage"] = {"grade": "reliable" if not reasons else ("caution" if len(reasons) == 1 else "unreliable"),
-                        "reasons": reasons, "pc_weekday_ratio": round(pc_ratio, 2)}
-    info["cfg_used"] = {"standardDayHours": std, "usePcFloor": use_pc_floor, "pcFloorNeeds": floor_needs,
-                        "dayWindow": [_fmt_hm(dw0), _fmt_hm(dw1)], "lunch": [_fmt_hm(lunch[0]), _fmt_hm(lunch[1])],
-                        "dinner": [_fmt_hm(dinner[0]), _fmt_hm(dinner[1])], "tentativeMeetings": tentative,
-                        "holidays_n": len(holidays), "offsiteAsWork": offsite_on,
-                        "samplerGapBridgeMin": bridge_min,
-                        # ── LM28(WP8) — 추가 키만(기존 키·값 불변). 하한 창과 그 근거는 보고서가 그대로 보인다 ──
-                        "pcFloorWindow": [_fmt_hm(fw0), _fmt_hm(fw1)], "floorBasis": FLOOR_BASIS,
-                        "nightWindow": [_fmt_hm(nw0), _fmt_hm(nw1)], "privateRunMin": priv_min,
-                        "shareBasis": mc["shareBasis"], "eveningCredit": evening_credit,
-                        "noPcMonthDay": nopc_mode}                 # LM28(E) — standard 면 PC 기록 없는 달 평일은 표준일 추정
-    # 프로그램 사용 이력 — 참고 지표다. MM·로드율 계산에는 들어가지 않는다(core/programs.py 머리말).
-    # mm_basis 안에 두는 이유: judge 의 재산정이 mm_basis 를 통째로 갈아 끼우므로 여기 있어야 살아남는다.
-    try:
-        info["tool_usage"] = tool_usage(data_dir, d0, d1, cfg)
-    except Exception as e:  # noqa: BLE001 - 참고 지표 하나 때문에 MM 산정이 멈추면 안 된다
-        # 왜 실패했는지 화면·보고서에 그대로 보인다 — 조용히 빈칸으로 두면 '샘플러가 없는 사람' 과
-        # 구분이 안 된다(실제로 import 규칙이 어긋나 세 명 모두 빈칸이던 것을 샘플 생성에서 잡았다).
-        info["tool_usage"] = {"samples": 0, "programs": [],
-                              "why": f"프로그램 사용 집계 실패({type(e).__name__}: {e})"[:200]}
-    info["basis"] = (("투입 = 활동 흔적(회의·창 샘플러·신호 세션) 구간의 합집합 · PC 가동 구간 하한(구간 단위) · 상한 없음"
-                      f"(하루 24h 물리 한계만) · 이상치 {len(anomalies)}일 표시 · PC 하한 창 "
-                      f"{_fmt_hm(fw0)}~{_fmt_hm(fw1)}(근거: {FLOOR_BASIS})"
-                      + (f" · PC 기록 없는 달의 평일 {info['std_nopc_days']}일은 표준일 추정(mm.noPcMonthDay)"
-                         if info["std_nopc_days"] else ""))
-                     if method == "activity" else "투입 = 평일 표준 8h 기준(비교용)")
-    # ── LM30(2026-10-18) 출퇴근 추정(core\attendance) — 위의 LM29 시간·꼬리표·합계는 예전 그대로 쟀다. 같은 재료(신호·수락 회의·
-    #    수동 기록·출장 약속·PC 켜짐·브라우저 방문)로 날마다 출근·퇴근·근무를 어림하고, attendance.useForMM(기본 켬 — 블록·키가
-    #    없어도 켬 · mm.method=workday 면 끔)이면 그 근무가 투입 시간·꼬리표·합계를 맡는다(_att_apply — LM29 값은 lm29_* 로 남는다).
-    #    끄면 LM29 그대로이고 출퇴근 추정은 참고로만 info 에 싣는다. 날짜별 출퇴근(attendance_days)·평소 시각(attendance_usual)은
-    #    이 PC 전용 — 호출측(mine·judge 재산정·run 수집만)이 attendance.take_local 로 떼어 report\attendance_<기간>.json 에만 쓴다
-    #    (mm_meta·팀 묶음·Copilot 에는 시각 없는 주·달 합계 info["attendance"] 만). 계산이 깨지면 LM29 시간 + 경고 한 줄. ──
-    import attendance as _att
-    att_p, att_w = _att.norm(cfg)
-    cfg_warns.extend(att_w)
-    use_att = bool(att_p["useForMM"]) and method == "activity"
-    info["cfg_used"]["attendance"] = {k: (v if isinstance(v, bool) else round(float(v), 2)) for k, v in att_p.items()}
-    try:
-        un_min = {dd: sum(n * float(mins.get(UNTIMED_BASE.get(s, "메일(발신)"), 0) or 0) for s, n in c.items())
-                  for dd, c in untimed.items()}
-        att = _attendance(data_dir, signals, extra if extra is not None else (file_times or {}), d0, d1,
-                          now or datetime.now(), att_p,
-                          {"meets": meets_acc, "blk": blk, "offsite": offsite, "absence": absence, "holidays": holidays,
-                           "untimed": un_min, "nopc": nopc_days, "hours": hours, "day_basis": info["day_basis"],
-                           "std": std, "day_win": (fw0, fw1), "night_win": (nw0, nw1), "day_cap": day_cap,
-                           "spans": l29_sp, "std_floor": std_est})
-    except Exception as e:  # noqa: BLE001 - 출퇴근 추정이 깨져도 MM 산정은 LM29 방식으로 끝난다(이유는 경고 한 줄로 보인다)
-        att = None
-        cfg_warns.append(f"출퇴근 추정 실패({type(e).__name__}: {str(e)[:80]}) — 이번 결과는 LM29 방식으로 계산했습니다")
-    # LM30(2026-10-19) 발신 흔적 빈 곳(attendance 머리말 17) — PC 를 켠 평일은 있는데 내 메일·팀즈 발신(시각 있는 것·날짜만 아는 것)이
-    # 하나도 없는 최근 2주·달. 건수·날짜만 싣는다(mm_basis.send_gap — 대시보드 두 카드·리포트가 '전용 Edge 에 한 번 로그인' 을 안내)
-    sg = _att.send_gap(pc_act, {dd: len(v) for dd, v in sends.items()}, d0, d1, (now or datetime.now()).date(),
-                       lambda dd: _is_off_day(dd, holidays), {dd: sum(c.values()) for dd, c in untimed.items()})
-    sg["text"] = _att.send_gap_text(sg)          # 'MM 산정 근거' 카드가 그대로 쓰는 한 줄(고정 문구 — 메일 글이 아니다)
-    info["send_gap"] = sg
-    if att is not None:
-        att["agg"]["used_for_mm"] = use_att
-        # LM30(2026-10-19) +@ — mm_meta 로 가는 합계는 근태 기록 없이 잰 것(team)뿐이다. 근태 기록·GERP 와 견준 값까지 든 합계(agg)는
-        # 이 PC 전용 칸 attendance_agg 로 — 호출측이 take_local 로 떼어 report\attendance_<기간>.json 에만 쓴다(근태가 없으면 같은 dict)
-        team = att.get("team") if isinstance(att.get("team"), dict) else att["agg"]
-        team["used_for_mm"] = use_att
-        info["attendance"] = team
-        info["attendance_agg"] = att["agg"]
-        info["attendance_days"] = att["days"]
-        info["attendance_usual"] = att["usual"]
-        if use_att:
-            hours = _att_apply(info, att["days"], att["agg"], hours, inferred, att_p, d0, d1)
-    # LM30(2026-10-21) 달마다 근거 보기(attendance 머리말 21 — 일수·건수만) · 직접 모은 첫 PC 켜고 끈 기록 · Windows 보관 주 수
-    info["pc_months"] = _pc_months(pc_fact, att["days"] if att is not None else None, nopc_days, hours, sends, untimed,
-                                   inferred=inferred)
-    info["pc_native_first"] = native_first.isoformat() if native_first else ""
-    info["pc_log"] = _log_reach(data_dir)
-    # LM30(2026-10-21) 유급휴가 보기(attendance 머리말 22) — 날짜·출처는 이 PC 전용 칸 leave_local(take_local 이 attendance 파일로 옮긴다),
-    # 일수만 leave_n(mm_meta·팀 묶음에 실려도 된다). 근태 출근·퇴근이 있는 날은 '휴가로 보지 않은 평일' 목록에 넣지 않는다
-    try:
-        rec_rows = _att.load_records(data_dir).get("rows") or {}
-    except Exception:  # noqa: BLE001 - 근태 기록 칸을 못 읽어도 휴가 보기는 달력·추정으로
-        rec_rows = {}
-    hr_days = {dd for dd, v in rec_rows.items() if isinstance(v, dict) and v.get("in") is not None and v.get("out") is not None}
-    lvl = _leave_local(absence, lv_src, inferred, hours, d0, d1, (now or datetime.now()).date(), holidays, std, hr_days)
-    info["leave_local"] = lvl
-    info["leave_n"] = lvl["n"]
-    return hours, info
-
-
-def _leave_local(absence, src, inferred, hours, d0, d1, today, holidays, std, hr_days=()):
-    r"""LM30(2026-10-21) 유급휴가 보기(core\attendance 머리말 22) → {"dates": {날짜: [비율, 출처 cal|rec|gerp|manual|inf]}, "n": 휴가로 본
-    날 수, "by": {cal·rec(GERP 포함)·manual·inf: 일수}, "missed": [근무가 표준일의 1/4(2시간) 안 되는데 휴가로 보지 않은 평일 — 최근 31일],
-    "missed_n", "missed_h": 그 문턱(h), "upto": 센 마지막 날}. 날짜는 분석 기간 안 · 오늘까지 · 주말·휴일 빼고(추정은 하루). '휴가로 보지 않은
-    평일'은 첫 근무일부터 어제까지에서 휴가·추정·근태 출근·퇴근이 있는 날(hr_days)을 뺀 것이다(첫 근무일 전은 수집 전일 수 있다)."""
-    from datetime import timedelta
-    end = min(d1, today)
-    dates, by = {}, {"cal": 0.0, "rec": 0.0, "manual": 0.0, "inf": 0.0}
-    for dd in sorted(absence or {}):
-        f = min(1.0, float(absence.get(dd) or 0.0))
-        if f <= 0 or not (d0 <= dd <= end) or _is_off_day(dd, holidays):
-            continue
-        s = str((src or {}).get(dd) or "cal")
-        dates[dd.isoformat()] = [round(f, 2), s]
-        by["rec" if s in ("rec", "gerp") else (s if s in by else "cal")] += f
-    for dd in sorted(inferred or ()):
-        iso = dd.isoformat()
-        if iso in dates or not (d0 <= dd <= end) or _is_off_day(dd, holidays):
-            continue
-        dates[iso] = [1.0, "inf"]
-        by["inf"] += 1.0
-    thr = round(float(std) / 4.0, 2)
-    worked = [dd for dd, v in (hours or {}).items() if float(v or 0) > 0]
-    missed = []
-    if worked:
-        dd = max(min(worked), d0)
-        last = min(d1, today - timedelta(days=1))
-        while dd <= last:
-            if (not _is_off_day(dd, holidays) and dd.isoformat() not in dates and float((hours or {}).get(dd, 0.0) or 0.0) < thr
-                    and dd not in hr_days):
-                missed.append(dd.isoformat())
-            dd += timedelta(days=1)
-    return {"dates": dates, "n": round(sum(by.values()), 1), "by": {k: round(v, 1) for k, v in by.items()},
-            "missed": missed[-31:], "missed_n": len(missed), "missed_h": thr, "upto": end.isoformat()}
-
-
-def _gap_fw(gap_h, win_d, win_f):
-    """절전 공백(주간 창 기준 h)을 하한 창 길이 비율로 줄인다 — 하한 창 = 주간 창(기본)이면 그대로(LM24)."""
-    ld = _union_min(win_d)
-    return gap_h * (_union_min(win_f) / ld) if ld > 0 else 0.0
-
-
-def _floor_open(d, act_src, accepted, act, off_blk, is_offsite, is_manual, sim_days, passive_bulk, floor_needs):
-    """그날 PC 하한이 열린 이유(능동 흔적 종류) — day_basis 근거 문구(★ 사용자 지시 ②)."""
-    out = sorted(act_src.get(d) or ())
-    if d in accepted:
-        out.append("수락 회의")
-    if act.get(d):
-        out.append("창 샘플러")
-    if off_blk:
-        out.append("행사 블록")
-    if is_offsite:
-        out.append("종일 행사")
-    if is_manual:
-        out.append("수동 기록")
-    if d in sim_days:
-        out.append("해석 출력")
-    if passive_bulk and not out:
-        out.append("수동 흔적 물량")
-    if floor_needs != "active" and not out:
-        out.append("pcFloorNeeds=any")
-    return list(dict.fromkeys(out))
-
-
-def mm_from_hours(day_hours, d0, d1, workdays=(1, 2, 3, 4, 5), cfg=None, absence=None, now=None, inferred=None,
-                  info=None):
-    """월별 투입 MM · 가용 MM · 로드율.
-
-      1 MM      = 8h × 그 달 '달력상 전체' 평일수  (부분월도 이 분모를 쓴다 — 기간 내 평일로
-                  나누면 부분월이 각각 1.0을 채워 3개월 분석이 4.0 MM으로 부푼다)
-      가용 MM   = (평일수 − 유급휴가 일수) ÷ 평일수  ← 유급휴가는 일하지 않은 날로 세지 않고 가용에서 뺀다
-      투입 MM   = 그 달 투입시간 ÷ (8h × 평일수)    ← 상한 없음. 야근하면 1.0을 넘는다 · 휴가 시간은 넣지 않는다
-      로드율(%) = 투입 MM ÷ 가용 MM × 100
-
-    LM22 2차:
-      now      : 분석 시각(기본 datetime.now()). 오늘보다 뒤의 평일은 가용에서 뺀다(info["future_days"]),
-                 오늘은 주간 창에서 지금까지 지난 비율만 가용(info["today_fraction"]) — 09시에 돌리면 오늘 잔여가
-                 통째로 가용이던 −27pt 과소(A34).
-      inferred : 휴가로 본 평일(내부 이름 '부재 추정' — day_work_hours info["inferred_absence"] 의 키).
-                 LM30(2026-10-21 · core\\attendance 머리말 22) 다른 유급휴가(달력·근태 기록·'휴가 날짜' 칸)와 똑같이 가용에서
-                 뺀다(그 달 평일수 = 1 MM 의 분모에는 남긴다) — 같은 근무시간이면 휴가를 어디서 알았든 투입 MM·과제 MM·가용 MM 이
-                 같다. 예전(A31)에는 미등록 공휴일처럼 분모에서도 빼 투입 MM·과제 MM 이 휴가 몫만큼 커 보였고, 달 표가 '유급휴가
-                 0일 · 그 달 평일 18일' 로 보였다. 로드율은 두 방식이 같다. 달마다 그중 휴가로 본 평일 몫은 absent_inferred
-                 (absent 에 든 일수 — 팀 재계산이 이 키로 새 방식임을 알고 두 번 빼지 않는다).
-      info     : dict 를 주면 future_days·today_fraction 을 채운다(mine.py 가 day_work_hours info 를 넘긴다).
-                 LM30(2026-10-18): info 에 lm29_day_hours(출퇴근 추정이 투입을 맡았다)가 있으면 달마다 worked_lm29·mm_lm29(같은
-                 분모 — 'LM29 방식이었다면 X MM')를, info["mm_lm29"] 에 그 합계를 더 싣는다. 없으면 예전 그대로(키도 없다).
-
-    returns ({'YYYY-MM': {...}}, 총 투입 MM, 총 가용 MM)"""
-    import calendar as _cal
-    from datetime import date as _date, timedelta
-    cfg = cfg or {}
-    mc = norm_cfg(cfg)[0]
-    std = mc["standardDayHours"]                         # 0·문자열 등 잘못된 값은 기본 8h(경고)
-    dw0, dw1 = mc["dayWindow"]
-    holidays = _holiday_set(cfg)
-    absence = absence or {}
-    inf_days = set(inferred.keys() if isinstance(inferred, dict) else (inferred or ()))
-    now = now or datetime.now()
-    today = now.date()
-    now_m = now.hour * 60 + now.minute + now.second / 60.0
-    today_frac = min(1.0, max(0.0, (now_m - dw0) / max(1.0, float(dw1 - dw0))))
-    l29 = info.get("lm29_day_hours") if isinstance(info, dict) else None
-    l29d = None
-    if isinstance(l29, dict):
-        l29d = {}
-        for k, v in l29.items():
-            try:
-                l29d[_date.fromisoformat(str(k)[:10])] = float(v or 0)
-            except (TypeError, ValueError):
-                continue
-    future_days = 0
-    months = {}
-    d = d0
-    while d <= d1:
-        m = months.setdefault(d.strftime("%Y-%m"),
-                              {"worked": 0.0, "workdays": 0, "covered": 0, "absent": 0.0, "absent_inferred": 0.0})
-        if not _is_off_day(d, holidays, workdays):
-            if d > today:
-                future_days += 1                          # 아직 오지 않은 평일 — 가용이 아니다(A34)
-            else:
-                frac = today_frac if d == today else 1.0
-                m["covered"] += frac
-                # LM30(2026-10-21) 휴가로 본 평일도 유급휴가 — 가용에서 뺀다(분모에는 남긴다 · 머리말의 inferred)
-                ab = max(float(absence.get(d, 0.0) or 0.0), 1.0 if d in inf_days else 0.0)
-                m["absent"] += min(frac, ab)
-                if d in inf_days:
-                    m["absent_inferred"] += min(frac, 1.0)
-        m["worked"] += day_hours.get(d, 0.0)
-        if l29d is not None:
-            m["worked_lm29"] = m.get("worked_lm29", 0.0) + l29d.get(d, 0.0)
-        d += timedelta(days=1)
-    tot_mm = tot_cap = tot_l29 = 0.0
-    for mk, m in months.items():
-        y, mo = int(mk[:4]), int(mk[5:7])
-        full = sum(1 for dd in (_date(y, mo, i + 1) for i in range(_cal.monthrange(y, mo)[1]))
-                   if not _is_off_day(dd, holidays, workdays))
-        m["workdays"] = full                                   # 달 전체 평일수(유급휴가·휴가로 본 평일 포함 — 1 MM 의 분모)
-        m["capacity_h"] = std * max(1, full)                   # 1 MM 에 해당하는 시간
-        # 가용: 이 기간에 실제로 일할 수 있었던 날(유급휴가 — 휴가로 본 평일 포함 — 를 뺀다). 기간 밖·미래 날짜는 가용이 아니다.
-        avail_days = max(0.0, m["covered"] - m["absent"])
-        m["covered"] = round(m["covered"], 3)
-        m["avail_mm"] = round(avail_days / max(1, full), 3)
-        m["mm"] = round(m["worked"] / m["capacity_h"], 3)       # 투입
-        m["load_pct"] = round(m["mm"] / m["avail_mm"] * 100, 1) if m["avail_mm"] > 0 else None
-        m["worked"] = round(m["worked"], 1)
-        m["absent"] = round(m["absent"], 1)
-        _ai = round(m["absent_inferred"], 2)
-        m["absent_inferred"] = int(_ai) if _ai == int(_ai) else _ai
-        if l29d is not None:                                   # LM30 — LM29 방식이었다면(같은 분모)
-            m["mm_lm29"] = round(m["worked_lm29"] / m["capacity_h"], 3)
-            m["worked_lm29"] = round(m["worked_lm29"], 1)
-            tot_l29 += m["mm_lm29"]
-        tot_mm += m["mm"]
-        tot_cap += m["avail_mm"]
-    if isinstance(info, dict):
-        if future_days:
-            info["future_days"] = future_days
-        if d0 <= today <= d1:
-            info["today_fraction"] = round(today_frac, 2)
-        if l29d is not None:
-            info["mm_lm29"] = round(tot_l29, 3)
-    return months, round(tot_mm, 3), round(tot_cap, 3)
-
-
-def rehours_after_judge(data_dir, kept_rows, dropped_rows, d0, d1, cfg, exclude=()):
-    """A30 — 판정에서 버린(비업무 'n'·오할당 제외) 신호를 뺀 채 투입시간·MM 을 다시 잰다.
-    kept_rows/dropped_rows: report\\signals_<tag>.csv 행(dict: time·source·who·text·weight…, judge/ui 가 넘긴다).
-    버린 파일 신호의 폴더 라벨·파일명은 _file_times 의 제외어로도 넘겨, 표본화에서 빠졌던 같은 폴더의 파일 시각이
-    시간 근거에 남지 않게 한다(판정 신호는 폴더·일 8건 표본이지만 시간 근거는 전체 파일 시각이다).
-    returns {"day_hours": {iso: h}, "info", "total_mm", "avail_mm", "months", "dropped_h", "time_kept_n"} — dropped_h 는
-    (kept+dropped 로 잰 시간) − (kept 만으로 잰 시간). 예전에는 mine 단계 total_mm 이 그대로 남아 버린 신호의
-    시간이 남은 행에 옮겨 붙었다.
-    LM28(E): AI 가 비업무(n)로 거른 본인 발신(judge=='AI-n' 이고 source 가 TIME_KEEP_SRC — 저녁 짧은 팀즈 답장 등)은 과제 배분
-    에서만 빠지고 시간 근거로는 남는다(time_kept_n · info.ai_n_time_kept · day_basis[날짜].ai_n_kept). 그 시각이 저녁 인정·
-    자정 연속·주말 창·하한 게이트의 근거였다. 광고('ad')·AI 비업무 파일·수신·회의, 화면 '내 업무 아님'(judge AI·규칙)은 예전처럼
-    시간에서도 뺀다."""
-    cfg = cfg if isinstance(cfg, dict) else {}
-
-    def _sig(rows):
-        out = []
-        for r in rows or []:
-            if not isinstance(r, dict):
-                continue
-            t = _dt(r.get("time"))
-            if not t:
-                continue
-            try:
-                w = float(r.get("weight") or 0)
-            except (TypeError, ValueError):
-                w = 0.0
-            out.append((t, (r.get("source") or "").strip(), (r.get("text") or "").strip() or "-", w,
-                        (r.get("who") or "").strip()[:20]))
-        out.sort(key=lambda x: x[0])
-        return out
-
-    keep_t = [r for r in (dropped_rows or []) if isinstance(r, dict)
-              and str(r.get("judge") or "").strip() == "AI-n" and str(r.get("source") or "").strip() in TIME_KEEP_SRC]
-    kept_sig = _sig(list(kept_rows or []) + keep_t)
-    all_sig = _sig(list(kept_rows or []) + list(dropped_rows or []))
-    ex = [str(e) for e in (exclude or ()) if str(e).strip()]
-
-    def _fol(text, force=False):
-        m = re.search(r"\| 폴더:(.+?)(?: 외 \d+건| \((?:일괄|해석 출력) \d+건\))?$", text)
-        # 100자에서 잘린 원문의 폴더 라벨은 믿지 않는다(부분 일치 위험) — force 는 접두 일치로 쓸 때(해석 출력 대표, VF-H3)
-        return m.group(1).strip().lower() if (m and (force or len(text) < 100)) else ""
-
-    kept_fols = {_fol(str(r.get("text") or "")) for r in (kept_rows or []) if isinstance(r, dict)
-                 and str(r.get("source") or "").startswith("파일")} - {""}
-    ex_drop, sim_drop = set(), []
-    for r in dropped_rows or []:
-        src = str(r.get("source") or "").strip() if isinstance(r, dict) else ""
-        if not src.startswith("파일"):
-            continue
-        text = str(r.get("text") or "")
-        if src == "파일(해석출력)":
-            # 해석 출력 뭉치의 대표(VF-H3) — 뭉치(날, 폴더) 단위가 곧 신호다. 텍스트 길이와 무관하게 (날짜, 폴더 라벨[잘렸으면
-            # 접두], 대표 시각) 으로 _file_times 가 그 뭉치의 anchor 를 남기지 않게 한다. 예전엔 파일명 1건(run_00000.dat)만
-            # 빠져 다음 파일이 anchor 가 되고 PC 하한이 그대로 남았다(dropped_h 0).
-            t = _dt(r.get("time"))
-            if t:
-                # 라벨이 온전한가 — 100자 미만이거나 꼬리 '(해석 출력 N건)' 이 남아 있으면(mine.py 가 꼬리를 보존) 완전 일치, 아니면 접두
-                exact = len(text) < 100 or bool(re.search(r" \(해석 출력 \d+건\)$", text))
-                sim_drop.append((t.date(), _fol(text, force=True), t.hour * 60 + t.minute, exact))
-        head = re.split(r" § | \| 폴더:| 외 \d+건| \((?:일괄|해석 출력) \d+건\)", text)[0].strip()
-        if len(head) >= 3:
-            ex_drop.add(head.lower())                      # 파일명 — 같은 파일의 다른 저장 시각도 시간 근거에서
-        fol = _fol(text)
-        # 폴더 라벨은 그 폴더의 표본이 **전부** 버려졌을 때만(개인 폴더) — 업무 폴더의 파일 1건을 버렸다고 폴더 전체의
-        # 시간 근거가 사라지지 않게. kept 에 같은 폴더의 파일 신호가 남아 있으면 파일명으로만 뺀다.
-        if len(fol) >= 2 and fol not in kept_fols:
-            ex_drop.add(fol)
-    ft_kept = _file_times(data_dir, d0, d1, ex + sorted(ex_drop), cfg, sim_drop=sim_drop)[0]
-    ft_all = _file_times(data_dir, d0, d1, ex, cfg)[0] if (ex_drop or sim_drop) else ft_kept
-    hours_k, info_k = day_work_hours(data_dir, kept_sig, d0, d1, cfg, file_times=ft_kept)
-    hours_a, _info_a = day_work_hours(data_dir, all_sig, d0, d1, cfg, file_times=ft_all)
-    absence = dict(absence_days(data_dir, d0, d1, cfg=cfg))
-    inferred = info_k.get("inferred_absence") or {}
-    absence.update(inferred)
-    months, tmm, tcap = mm_from_hours(hours_k, d0, d1, cfg=cfg, absence=absence, inferred=inferred, info=info_k)
-    dropped_h = max(0.0, sum(hours_a.values()) - sum(hours_k.values()))
-    info_k["ai_n_time_kept"] = len(keep_t)
-    for t, *_rest in _sig(keep_t):
-        if d0 <= t.date() <= d1:
-            db = info_k.setdefault("day_basis", {}).setdefault(t.date().isoformat(), {"h": 0.0, "tags": {}})
-            db["ai_n_kept"] = db.get("ai_n_kept", 0) + 1
-    return {"day_hours": {k.isoformat(): round(v, 2) for k, v in hours_k.items()}, "info": info_k,
-            "total_mm": tmm, "avail_mm": tcap, "months": months, "dropped_h": round(dropped_h, 2),
-            "time_kept_n": len(keep_t)}

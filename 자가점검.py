@@ -10,67 +10,40 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 # 개발 전용 파일(시험 tests\·lint 관문·FILES.txt 생성·인코딩 정리 도구·현장점검 문서)은 배포(GitHub 내려받기)에 넣지 않으므로
 # 여기에도 적지 않는다 — 적으면 받은 PC 의 자가점검이 '누락'으로 멈춘다(.gitignore 의 '개발 전용' 묶음 · 2026-10-17).
 NEED = [
-    "LoadMonitor30-UI.bat",
-    "LoadMonitor30.bat",
-    "LoadMonitor30-팀취합.bat",
-    "LoadMonitor30-팀서버.bat",
-    "LoadMonitor30-팀업로드.bat",
-    "LoadMonitor30-팀서버주소.bat",
-    "LoadMonitor30-수집진단.bat",
-    "LoadMonitor30-가동시간비교.bat",
-    "LoadMonitor30-이동준비.bat",
-    "LoadMonitor30-팀로드율재계산.bat",
-    "LoadMonitor30-강제종료.bat",
+    "AgentFinder32-UI.bat",
+    "AgentFinder32.bat",
+    "AgentFinder32-팀서버.bat",
+    "AgentFinder32-팀서버주소.bat",
+    "AgentFinder32-수집진단.bat",
+    "AgentFinder32-강제종료.bat",
     "agentic.py",
-    "freeze.py",
-    "team_report.py",
     "flow.py",
     "teamserver.py",
     "teamup.py",
-    "aggregate.py",
-    "export.py",
+    "team_summary.py",
     "retag.py",
-    "team_refine.py",
-    "team_recalc.py",
     "report_out.py",
     "README.md",
-    "check.py",
     "judge.py",
     "mine.py",
     "refine.py",
     "FILES.txt",
     "run.py",
     "자가점검.py",
-    "collect/Add-WorkLog.ps1",
-    "collect/Get-FileActivity.ps1",
-    "collect/Get-GitActivity.py",
-    "collect/Get-LicenseUsage.ps1",
     "collect/Get-OutlookData.ps1",
-    "collect/Get-OutlookIndex.ps1",
     "collect/Get-MailViaCopilot.py",
     "collect/Get-OutlookWeb.py",
-    "collect/Get-PcOnHistory.ps1",
-    "collect/Get-PcOnHints.py",
-    "collect/Get-RecentFiles.ps1",
-    "collect/Get-TeamsChats.py",
-    "collect/Get-TeamsViaCopilot.py",
-    "collect/Get-TeamsWeb.py",
-    "collect/Get-TeamsWindow.ps1",
     "collect/Diagnose-Collectors.ps1",
     "collect/LmName.ps1",
-    # LM28 새 파일 — 빠지면 배포본이 시작부터 죽는다(run.py·수집기·app.py 가 모듈 머리에서 임포트·dot-source)
+    # 빠지면 배포본이 시작부터 죽는다(run.py·수집기·app.py 가 모듈 머리에서 임포트·dot-source)
     "collect/OutlookCommon.ps1",
     "collect/owa_parse.py",
-    "collect/teams_parse.py",
-    "collect/Import-MailCal.py",
-    # LM28 2026-10-14 — 빠지면 그 기능만 빠진다(프로그램 실행 기록 단계 실패 · 회의 안건 없이 판정)
-    "collect/Get-ProgramUsage.py",
+    # 빠지면 회의 안건 없이 판정한다
     "core/meetnote.py",
     "config/config.json",
     "config/config.default.json",
-    "core/board.py",
+    "config/restricted_customers.example.json",
     "core/extract.py",
-    "core/pc_ledger.py",
     "core/budget.py",
     "core/stage_state.py",
     "core/watch.py",
@@ -81,35 +54,26 @@ NEED = [
     "core/proc.py",
     "core/collect_status.py",
     "core/mailmerge.py",
-    "core/timeshare.py",
-    "core/programs.py",
     "core/details.py",
-    "core/narratives.py",
     "core/owner.py",
     "core/progress.py",
     "core/projmap.py",
-    # LM30 새 파일 — 출퇴근 추정(빠지면 분석이 시작부터 죽는다 — extract·mine 이 임포트)
-    "core/attendance.py",
-    # LM30(2026-10-19) GERP 근무 기록 읽기(시험 기능 · 기본 꺼짐) — 빠지면 그 기능만 빠진다(화면 카드 한 줄·[분석 실행]의 그 단계)
-    "core/gerp.py",
-    "collect/Get-GerpWork.py",
-    # LM30(2026-10-21) 예전 판 PC 가동 기록 가져오기 — 빠지면 그 기능만 빠진다(카드의 그 줄·[분석 실행] 안내 한 줄)
-    "core/pc_import.py",
+    # AF32 규칙 단일원 — 설정 하한·기간·설치 검사·시작 확인·보관기한(빠지면 모든 시작점이 멈춘다)
+    "core/afcfg.py",
+    "core/period.py",
+    "core/install.py",
+    "core/consent.py",
+    "core/retention.py",
     "docs/설정가이드.md",
     "docs/사용안내.html",
+    "docs/운영기준.md",
     "tools/copilot_auto.py",
-    "tools/pc_hours_compare.py",
-    "tools/lm20_ref/Get-PcOnHistory.ps1.txt",
-    "tools/lm20_ref/Get-PcOnHints.py.txt",
     "tools/trace_summary.py",
     "tools/Get-EmbeddedPython.ps1",
     "tools/Make-Package.ps1",
-    "tools/Make-MovePack.py",
-    "tools/Prepare-Move.ps1",
-    "tools/Stop-LM30.ps1",
-    "tools/stop_lm30.py",
+    "tools/Stop-AF32.ps1",
+    "tools/stop_af32.py",
     "tools/ps_launch.py",
-    "tools/diag_bundle.py",
     "ui/app.py",
 ]
 miss = [p for p in NEED if not os.path.exists(os.path.join(ROOT, p.replace("/", os.sep)))]
@@ -119,50 +83,20 @@ if miss:
     for m in miss:
         print("    " + m)
     sys.exit(1)
-print("[OK] 전부 있습니다. LoadMonitor30-UI.bat 을 실행하세요.")
-
-
-# ── git 실행 파일 ────────────────────────────────────────────────────────
-# git 이 PATH 에 없으면 예전 수집기는 조용히 '커밋 0건'(rc 0) 을 냈다(2차 감사 실측 — GitHub Desktop·
-# SourceTree 내장 git 사용자는 커밋 신호 전량 소실). 수집기의 탐색 규칙(_find_git)을 그대로 빌려 미리 말한다.
-def _git_exe(cfg):
-    try:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location(
-            "lm_git_collector", os.path.join(ROOT, "collect", "Get-GitActivity.py"))
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        fn = getattr(mod, "_find_git", None) or getattr(mod, "find_git", None)
-        if fn:
-            r = fn(cfg)                        # (경로 또는 None, 찾아본 곳 목록) — config.gitExe 최우선
-            if isinstance(r, (tuple, list)):
-                r = r[0] if r else ""
-            return str(r or "")
-    except Exception:          # 수집기가 바뀌어도 자가점검은 죽지 않는다 — PATH 만 본다
-        pass
-    import shutil
-    return shutil.which("git") or ""
-
+print("[OK] 전부 있습니다. AgentFinder32-UI.bat 을 실행하세요.")
+print("     이 도구는 Agentic AI 로 바꿀 만한 업무를 찾는 데만 씁니다. 결과는 이 PC 에 남고, 공유는 [공유] 탭에서 고를 때만 보냅니다.")
 
 try:
     _cfg = json.load(open(os.path.join(ROOT, "config", "config.json"), encoding="utf-8-sig"))
 except (OSError, ValueError):
     _cfg = {}
-_gexe = str(_cfg.get("gitExe") or "").strip()
-if _gexe and not os.path.exists(_gexe):
-    print(f"[!] config.gitExe='{_gexe}' 경로가 없습니다 — 확인하세요")
-_gfound = _git_exe(_cfg)
-if _gfound:
-    print(f"[git] 실행 파일: {_gfound}")
-else:
-    print("[!] git 실행 파일을 찾지 못했습니다 — PATH·Git for Windows·GitHub Desktop·SourceTree·VS 내장 git 어디에도 없음.")
-    print("    gitRepos 를 쓰면 커밋 신호가 수집되지 않습니다(수집 단계가 실패로 기록되고 data\\git_source.json 에 사유가 남습니다).")
-    print("    config\\config.json 의 gitExe 에 git.exe 전체 경로를 적으세요. (git 을 쓰지 않으면 무시해도 됩니다)")
+if not isinstance(_cfg, dict):
+    _cfg = {}
 
 # ── 배포 위생 ────────────────────────────────────────────────────────────
-# 남의 설정(owner)을 그대로 쓰면 팀 서버의 그 사람 기록을 내 결과로 덮어쓴다(검증 지적).
+# 남이 만든 설정(owner)이 그대로 남은 배포본은 받은 사람의 화면·리포트에 남의 이름을 보인다.
 # data\ report\ 가 비어 있어도 owner 는 남는다 — 폴더째 복사한 뒤 data\ report\ 만 지운 배포본이
-# 그 경우라, 잔존 파일 유무와 무관하게 항상 본다(예전엔 잔존 파일이 있을 때만 검사해 조용히 지나갔다).
+# 그 경우라, 잔존 파일 유무와 무관하게 항상 본다.
 def _my_names():
     """이 PC 의 계정명과 표시 이름(AD 의 '홍길동' 같은 이름) — owner 는 대개 표시 이름으로 적는다."""
     names = {os.environ.get("USERNAME", "")}
@@ -182,12 +116,11 @@ _mine = _my_names()
 if _own and _mine and _own.replace(" ", "").lower() not in _mine:
     print()
     print(f"[!] config.owner 가 '{_own}' 입니다 — 본인 이름이 맞습니까? (이 PC 계정: {os.environ.get('USERNAME', '')})")
-    print("    남이 만든 배포본이면 그대로 두지 마세요. 팀 서버에서 그 사람 기록을 덮어씁니다.")
-    print("    (대시보드 [팀 취합 업로드] 카드나 config\\config.json 의 owner 를 고치세요)")
+    print("    남이 만든 배포본이면 그대로 두지 마세요. config\\config.json 의 owner 를 비우거나 고치세요.")
 
 
 def _edge_profile_names():
-    """전용 Edge 프로필 폴더 이름 — 이 판(lm30_edge)과, LM24·LM28·LM29 폴더를 옮겨 오며 딸려 온 옛 판 프로필.
+    """전용 Edge 프로필 폴더 이름 — 이 판(af32_edge)과, 옛 판 폴더를 옮겨 오며 딸려 온 옛 판 프로필.
     이름은 core\\lmname.py 단일원에서 읽는다(위 NEED 점검을 지났으니 파일은 있다). 못 읽으면 이 판 이름만 본다."""
     try:
         import importlib.util
@@ -196,7 +129,7 @@ def _edge_profile_names():
         spec.loader.exec_module(mod)
         return (mod.EDGE_PROFILE_NAME,) + tuple(mod.OLD_PROFILES)
     except Exception:          # 이름 모듈이 깨져도 자가점검은 죽지 않는다
-        return ("lm30_edge",)
+        return ("af32_edge",)
 
 
 # 배포본에 남의 data\ report\ 가 딸려 오면, 받은 사람 화면에 **남의 분석 결과**가
@@ -215,7 +148,7 @@ if leak:
     for d, n in leak:
         extra = ""
         if d == "teamdata":
-            extra = "  <- 팀원들의 분석 결과 포함, 팀 밖 공유 금지"
+            extra = "  <- 조직장 서버가 받은 공유 자료 포함, 이 PC 밖으로 옮기지 마세요"
         if d == "data" and any(os.path.isdir(os.path.join(ROOT, d, x)) for x in _edge_profile_names()):   # 이 판·옛 판 전용 Edge 프로필
             extra = "  <- Edge 로그인 정보 포함, 절대 공유 금지"
         print(f"    {d}\\  파일 {n:,}개{extra}")
@@ -240,16 +173,19 @@ if caches:
     print(r"     .ruff_cache 는 옛 lint 실행의 잔재 — 지금은 tools\lint.ps1 --no-cache, ruff.toml cache-dir=%TEMP% 라 다시 생기지 않습니다.)")
 
 
-# ── 팀 서버 주소 (v5) ──────────────────────────────────────────────────────
-# 폴더를 옮기거나 나눠 받은 뒤 '분석 결과가 어디로 올라가는지'를 바로 확인한다 — 서버 IP·포트는 설치 폴더의
-# config\team_server.json 에 있어 폴더와 함께 다닌다(바꾸는 곳은 LoadMonitor30-팀서버주소.bat 하나).
+# ── 조직장 서버 주소 ────────────────────────────────────────────────────────
+# 공유는 화면의 [공유] 탭에서 본인이 고를 때만 이 주소로 보낸다(자동으로 보내지 않는다). 주소·참여 코드는
+# AgentFinder32-팀서버주소.bat 으로 넣는다. 주소를 넣지 않았으면 아무 데도 보내지 않는다.
 try:
     import importlib.util
     _spec = importlib.util.spec_from_file_location("lm_teamaddr", os.path.join(ROOT, "core", "teamaddr.py"))
     _ta = importlib.util.module_from_spec(_spec)
     _spec.loader.exec_module(_ta)
     print()
-    print(f"[팀 서버] 분석 결과를 올릴 주소 — 바꾸려면 {_ta.EDIT_BAT}")
-    print(_ta.describe(_ta.load(ROOT)))
+    print(f"[조직장 서버] 공유할 때만 쓰는 주소 — 바꾸려면 {getattr(_ta, 'EDIT_BAT', 'AgentFinder32-팀서버주소.bat')}")
+    _desc = getattr(_ta, "describe", None)
+    _load = getattr(_ta, "load", None)
+    if callable(_desc) and callable(_load):
+        print(_desc(_load(ROOT)))
 except Exception as _e:            # 주소 확인이 실패해도 파일 점검 결과는 그대로 둔다
-    print(f"[!] 팀 서버 주소를 읽지 못했습니다({type(_e).__name__}) — core\\teamaddr.py 를 확인하세요")
+    print(f"[!] 조직장 서버 주소를 읽지 못했습니다({type(_e).__name__}) — core\\teamaddr.py 를 확인하세요")

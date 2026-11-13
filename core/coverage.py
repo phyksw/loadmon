@@ -1,50 +1,43 @@
 # -*- coding: utf-8 -*-
-r"""core\coverage.py — 일자×축 수집 원장(LM28 C-31·C-09·REQ-18·REQ-51) — data\coverage_ledger.json.
+r"""core\coverage.py — 일자×축 수집 원장(AgentFinder32) — data\coverage_ledger.json.
 
-축: mail_in(받은 메일)·mail_out(보낸 메일)·cal(일정)·teams·pc. 출처(src)마다 그날 그 축을 어떻게 읽었는지 적고,
-합성 상태는 출처 중 최선값이다. 미관측 날을 0시간(일 안 한 날)으로 세지 않게 하는 근거이고(C-31), 수집 사슬은
-gaps() 가 빈 날이 남는 동안 다음 경로를 돈다(P3 — 첫 성공에서 멈추지 않는다).
-  순위: ok > zero_ok > partial > unverified = out_of_horizon = blocked(= asked) > not_attempted · na 는 축 단위로 따로.
-  규칙(LM27 ledger 의 순위·_comgap 1.3 만 가져왔다 — 계획기·rcmap·셀 키는 들이지 않는다):
-   · 색인은 zero_ok 를 줄 수 없다(0행이 '없음'의 증거가 아니다). 반복 마스터가 있으면(counts.recurring_masters>0) cal ok 도 없다.
-     마지막 COM 이 차가웠으면(counts.cold — 이 수집이 띄운 캐시 Outlook) 같은 캐시를 비추는 색인의 ok 도 partial 이다.
-   · Copilot(copilot·teams_copilot)은 증인이다 — ok·zero_ok 를 만들지 않고, 합성에서 다른 출처의 미관측을 덮지 않는다.
+축: mail_in(받은 메일)·mail_out(보낸 메일)·cal(일정) 셋뿐이다. 출처(src — com·owa·copilot)마다 그날 그 축을 어떻게 읽었는지 적고,
+합성 상태는 출처 중 최선값이다. 날마다 '확인됨(verified — ok·zero_ok)' 과 '확인 안 됨(unverified — 그 밖)' 으로 나뉜다 —
+확인 안 된 날은 메일·회의가 없다는 뜻이 아니라 근거가 없다는 뜻이고, 수집 사슬은 gaps() 가 빈 날이 남는 동안 다음 경로를 돈다.
+  순위: ok > zero_ok > partial > unverified = out_of_horizon = blocked(= asked) > not_attempted.
+  규칙:
+   · Outlook 웹(owa)은 받은 메일 축에 칸을 적지 않는다(SRC_BLIND) — 목록이 받는 사람을 보여 주지 않아 받은 메일 행을 모두 빼므로
+     (D7), Outlook 웹이 읽은 날도 받은 메일은 확인된 날이 아니다. 그 날의 받은 메일은 다음 경로(Copilot)가 묻는다. 보낸 메일·일정
+     칸은 그대로 적는다.
+   · Copilot(copilot)은 증인이다 — ok·zero_ok 를 만들지 않고(partial 로 낮춘다), 합성에서 다른 출처의 미관측을 덮지 않는다.
      Copilot 이 답했는데 표가 없던 날은 'asked'(다시 묻지 않는다 — gaps(witness=…)).
-   · COM 이 zero_ok 인데 색인 행이 있거나, 색인/COM > 1.3(차이 2통 이상)이면 그날 그 축은 suspect — COM·색인의 '읽음'을
-     믿지 않고 다른 경로(웹·반입)가 확인할 때까지 공백으로 둔다(C-09 'COM 누락 의심 → 폴백 계속').
-   · teams: 모든 출처의 행이 0이고 teams_present=false 면 na(팀즈를 쓰지 않는 PC) — gaps 에서 뺀다.
    · 같은 출처의 새 관측이 그 날의 지난 관측을 바꾼다. 다만 오늘 이전 날의 ok·zero_ok 는 더 나쁜 관측으로 내리지 않는다
      (지난 실행이 확인한 날을 이번 실행의 막힘이 지우지 않게). 오늘 이후 날은 받지 않는다.
-   · 판(LM28-COV-1|collect.cursorEpoch)·PC(host)가 다르면 원장을 버린다 — cursorEpoch 를 올리거나 폴더째 다른 PC 로
-     옮기면 처음부터. --reset-cursors 는 reset() 으로 모든 축을 not_attempted 로 되돌린다.
-   · 출처별 판정 규칙의 판(SRC_RULES)이 원장과 다르면 그 출처의 칸만 지운다 — 웹 경로의 확인 규칙을 고친 판이 나가면
-     지난 판이 잘못 '읽음'으로 적은 날을 다음 실행이 다시 읽는다(다른 출처의 표시는 그대로).
-읽기 쪽(WP8·WP9): Ledger.load(path).composite(day, axis) · day_status(d0, d1) · summary(d0, d1).
+   · 판(AF32-COV-1|collect.cursorEpoch)·PC(host)가 다르면 원장을 버린다. --reset-cursors 는 reset() 으로 모든 축을 not_attempted 로.
+   · 출처별 판정 규칙의 판(SRC_RULES)이 원장과 다르면 그 출처의 칸만 지운다.
+   · 원자료가 지워지면(보관기한 — retention 의 raw 분류는 data\outlook\** 와 이 원장을 함께 지운다) 원장도 처음부터다: 불러올 때
+     정제 파일(data\outlook\src\mail_*.csv·cal_*.csv)이 하나도 없으면 지난 칸을 믿지 않는다(dropped='raw_purged').
+   · 분석 기간 창 밖의 날은 prune(d0, d1) 이 지운다(D13 — 그 날의 행도 mailmerge 가 지운다. 나중에 더 긴 기간으로 부르면 다시 읽는다).
+읽기 쪽: Ledger.load(path).composite(day, axis) · is_verified · day_flags(d0, d1) · day_status(d0, d1) · summary(d0, d1).
 """
-import csv
+import glob
 import json
 import os
 import time
 from datetime import date, timedelta
 
-AXES = ("mail_in", "mail_out", "cal", "teams", "pc")
-MAIL_AXES = ("mail_in", "mail_out", "cal")
+AXES = ("mail_in", "mail_out", "cal")
+MAIL_AXES = AXES
 RANK = {"ok": 0, "zero_ok": 1, "partial": 2, "unverified": 3, "out_of_horizon": 3, "blocked": 3, "asked": 3,
         "not_attempted": 4}
 VERIFIED = ("ok", "zero_ok")
-WITNESS = frozenset({"copilot", "teams_copilot"})
-COMGAP_RATIO = 1.3
-COMGAP_MIN_DIFF = 2             # 비율 규칙의 최소 차이(통) — 하루 1~2통 날의 흔들림을 의심으로 만들지 않는다
-LEDGER_VER = "LM28-COV-1"
-# 출처별 '읽음' 판정 규칙의 판 — 웹 경로의 확인 규칙을 고치면 여기를 올린다. 불러올 때 판이 다른(또는 판이 없는) 출처의
-# 칸만 지우고 그 날들을 다시 읽게 한다(다른 출처의 표시는 둔다). 2: 회사 PC 실측 — 첫 listbox 'fits' 로 메일 17건에
-# 281일을 확인 처리했고(OWA), 팀즈 웹 전환 확인이 전부 빗나갔다(LM28 OWA-2·TW-2).
-# owa 3(LM28-OWA-5 — 사용자 제보 '폴더를 옮기거나 이름을 바꾼 메일이 빠진다'): 지난 판은 받은·보낸 편지함만 읽고 그 날을 '읽음'으로
-#   적었다 — 사람이 만든·이름을 바꾼·보관 폴더의 메일이 빠진 채 확인된 날을 한 번 지워 다른 폴더까지 다시 읽게 한다. 칸 지우기는
-#   출처 단위라 Outlook 웹의 일정(cal) 칸도 한 번 다시 읽는다(그때 회의 본문 발췌가 채워진다). 다시 읽어 확인하지 못한 날은
-#   다음 경로(Copilot 증인)가 묻는다. Copilot 은 판을 올리지 않는다 — 증인이라 '읽음'을 만들지 않고, 지난 증언을 다시 물으면
-#   판정용 Copilot 세션을 크게 쓴다(새 질문은 모든 폴더를 묻는다 — Get-MailViaCopilot.MAIL_SCOPE).
-SRC_RULES = {"owa": "3", "teams_web": "2", "com": "2"}   # com 2: 차가운 COM(이 수집이 띄운 캐시 Outlook)의 '0건 확인' 무효
+WITNESS = frozenset({"copilot"})
+# 그 출처가 확인하지 못하는 축 — 칸을 적지 않는다(put 이 거절하고, 옛 원장의 그런 칸은 불러올 때 지운다).
+# Outlook 웹: 목록에 받는 사람이 없어 받은 메일 행을 모두 뺀다(D7). 남기는 행이 없으니 그날의 받은 메일을 읽었다고 적지 않는다.
+SRC_BLIND = {"owa": ("mail_in",)}
+LEDGER_VER = "AF32-COV-1"
+# 출처별 '읽음' 판정 규칙의 판 — 수집기의 확인 규칙을 고치면 올린다(불러올 때 판이 다른 출처의 칸만 지운다)
+SRC_RULES = {"com": "1", "owa": "1"}
 FILE_NAME = "coverage_ledger.json"
 DAY = timedelta(days=1)
 
@@ -97,7 +90,7 @@ def span(gaps, axes=None):
 
 
 def fmt_ranges(rs):
-    """[(from, to)] → 'A:B,C:D' (Get-MailViaCopilot·Get-TeamsViaCopilot --ranges 형식)"""
+    """[(from, to)] → 'A:B,C:D' (Get-MailViaCopilot --ranges 형식)"""
     return ",".join(f"{a}:{b}" for a, b in rs)
 
 
@@ -105,30 +98,11 @@ def n_days(rs):
     return sum(((_d(b) - _d(a)).days + 1) for a, b in rs if _d(a) and _d(b))
 
 
-def day_counts(path, kind):
-    """출처 파일 하나의 (날, 축) → 행 수. kind 'mail'(box=sent → mail_out, 그 밖 mail_in) · 'cal'(start)."""
-    out = {}
-    try:
-        with open(path, encoding="utf-8-sig", errors="replace", newline="") as f:
-            for r in csv.DictReader(f):
-                if kind == "mail":
-                    d = str(r.get("time") or "")[:10]
-                    ax = "mail_out" if str(r.get("box") or "").strip().lower() == "sent" else "mail_in"
-                else:
-                    d = str(r.get("start") or "")[:10]
-                    ax = "cal"
-                if _d(d):
-                    out[(d, ax)] = out.get((d, ax), 0) + 1
-    except (OSError, csv.Error):
-        pass
-    return out
-
-
-def src_counts(src_dir, tag):
-    """data\\outlook\\src 의 mail_<tag>.csv + cal_<tag>.csv → {(날, 축): 행 수}"""
-    out = day_counts(os.path.join(src_dir, f"mail_{tag}.csv"), "mail")
-    out.update(day_counts(os.path.join(src_dir, f"cal_{tag}.csv"), "cal"))
-    return out
+def _raw_present(src_dir):
+    """정제 파일(mail_*.csv·cal_*.csv)이 하나라도 있나 — 없으면 원자료 보관기한이 지나 지워진 것(원장도 처음부터)."""
+    if not src_dir:
+        return True
+    return bool(glob.glob(os.path.join(src_dir, "mail_*.csv")) or glob.glob(os.path.join(src_dir, "cal_*.csv")))
 
 
 class Ledger:
@@ -138,30 +112,46 @@ class Ledger:
         self.path, self.ver, self.host = path, ver, host
         self.today = today or date.today()
         self.days = {}          # {날: {축: {출처: 상태}}}
-        self.suspect = {}       # {날: [축]}
-        self.na = {}            # {축: bool}
+        self.na = {}            # 해당 없음 축 — AF32 의 세 축은 늘 해당한다(읽는 쪽 호환을 위해 빈 dict 로 둔다)
         self.last = {}          # {출처: {rc, reason, at}}
-        self.dropped = ""       # 불러올 때 버린 이유(판·PC 가 다름 — 화면 안내용)
+        self.dropped = ""       # 불러올 때 버린 이유(ver · host · raw_purged — 화면 안내용)
         self.dropped_src = []   # 불러올 때 판정 규칙의 판이 달라 칸을 지운 출처(SRC_RULES)
 
     @classmethod
-    def load(cls, path, ver="", host="", today=None):
+    def load(cls, path, ver="", host="", today=None, src_dir=None):
+        r"""원장 파일 → Ledger. src_dir(없으면 원장 옆 outlook\src)에 정제 파일이 하나도 없으면 지난 칸을 버린다(raw_purged)."""
         led = cls(path, ver, host, today)
         try:
             with open(path, encoding="utf-8-sig") as f:
                 o = json.load(f)
-        except (OSError, ValueError):
+        except (OSError, ValueError, TypeError):
             return led
         if not isinstance(o, dict):
             return led
         if (ver and o.get("ver") != ver) or (host and o.get("host") and o.get("host") != host):
             led.dropped = "ver" if (ver and o.get("ver") != ver) else "host"
             return led
-        for k in ("days", "suspect", "na", "last"):
+        sd = src_dir if src_dir is not None else os.path.join(os.path.dirname(os.path.abspath(path)), "outlook", "src")
+        if not _raw_present(sd):
+            led.dropped = "raw_purged"
+            return led
+        for k in ("days", "last"):
             if isinstance(o.get(k), dict):
                 setattr(led, k, o[k])
-        # 판정 규칙의 판이 바뀐 출처의 칸 지우기는 쓰는 쪽(수집 — 판 ver 를 주고 연다)만 한다. 읽기만 하는 분석·화면은 파일 그대로 —
-        # 수집이 그 칸을 지우고 src_rules 를 적어 저장한 뒤에 읽는다.
+        for day in list(led.days):              # 옛 판의 다른 축(팀즈·PC)은 읽지 않는다
+            row = led.days[day] if isinstance(led.days[day], dict) else {}
+            for ax in list(row):
+                if ax not in AXES:
+                    del row[ax]
+                elif isinstance(row[ax], dict):                 # 그 출처가 확인하지 못하는 축의 옛 칸(SRC_BLIND)은 믿지 않는다
+                    blind = [s for s in row[ax] if ax in SRC_BLIND.get(s, ())]
+                    for s in blind:
+                        del row[ax][s]
+                    if blind and not row[ax]:
+                        del row[ax]
+            if not row:
+                del led.days[day]
+        # 판정 규칙의 판이 바뀐 출처의 칸 지우기는 쓰는 쪽(수집 — 판 ver 를 주고 연다)만 한다
         old = o.get("src_rules") if isinstance(o.get("src_rules"), dict) else {}
         stale = sorted(s for s, v in SRC_RULES.items() if str(old.get(s) or "") != v)
         if ver and stale:
@@ -169,7 +159,7 @@ class Ledger:
         return led
 
     def drop_sources(self, srcs):
-        """그 출처들의 칸을 모두 지운다 → {출처: 지운 칸 수}. 판정 규칙이 바뀐 출처의 지난 '읽음'을 믿지 않게(SRC_RULES)."""
+        """그 출처들의 칸을 모두 지운다 → {출처: 지운 칸 수}."""
         n = dict.fromkeys(srcs, 0)
         for day in list(self.days):
             row = self.days[day] if isinstance(self.days[day], dict) else {}
@@ -188,8 +178,8 @@ class Ledger:
     def save(self):
         if not self.path:
             return False
-        o = {"v": 1, "ver": self.ver, "host": self.host, "updated": time.strftime("%Y-%m-%d %H:%M:%S"),
-             "src_rules": dict(SRC_RULES), "days": self.days, "suspect": self.suspect, "na": self.na, "last": self.last}
+        o = {"v": 2, "ver": self.ver, "host": self.host, "updated": time.strftime("%Y-%m-%d"),
+             "src_rules": dict(SRC_RULES), "days": self.days, "last": self.last}
         tmp = f"{self.path}.{os.getpid()}.tmp"
         try:
             os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
@@ -205,7 +195,8 @@ class Ledger:
             return False
 
     # ── 쓰기 ──
-    def _clamp(self, src, axis, st, rc, counts):
+    @staticmethod
+    def _clamp(src, st, rc):
         if st not in RANK:
             st = "unverified"
         if src in WITNESS:
@@ -213,19 +204,13 @@ class Ledger:
                 st = "partial"
             if st == "unverified" and rc == 0:
                 st = "asked"               # 답은 받았는데 표가 없었다 — 다음 실행이 같은 날을 다시 묻지 않게
-        elif src == "index":
-            if st == "zero_ok":
-                st = "unverified"          # 색인 0행은 '없음'의 증거가 아니다
-            if axis == "cal" and st == "ok" and int((counts or {}).get("recurring_masters") or 0) > 0:
-                st = "partial"             # 반복 회의 미전개(C-11) — 웹이 다시 읽게
-            if st == "ok" and (self.last.get("com") or {}).get("cold"):
-                st = "partial"             # 색인은 같은 캐시(OST)를 비춘다 — 차가운 COM 이 본 캐시면 색인의 '읽음'도 믿지 않는다
         return st
 
     def put(self, src, axis, day, st):
-        """한 칸 — 같은 출처의 새 관측이 바꾸되, 지난 날의 ok·zero_ok 는 더 나쁜 관측으로 내리지 않는다."""
+        """한 칸 — 같은 출처의 새 관측이 바꾸되, 지난 날의 ok·zero_ok 는 더 나쁜 관측으로 내리지 않는다.
+        그 출처가 확인하지 못하는 축(SRC_BLIND — Outlook 웹의 받은 메일)은 적지 않는다."""
         d = _d(day)
-        if d is None or d > self.today or axis not in AXES:
+        if d is None or d > self.today or axis not in AXES or axis in SRC_BLIND.get(src, ()):
             return False
         cell = self.days.setdefault(day, {}).setdefault(axis, {})
         old = cell.get(src)
@@ -237,49 +222,22 @@ class Ledger:
         return True
 
     def apply(self, st, src=None):
-        """수집기 상태(collect_status.parse 결과 또는 LMSTATUS dict) 하나 반영 → 바뀐 칸 수."""
+        """수집기 상태(collect_status.parse 결과 또는 AF32STATUS dict) 하나 반영 → 바뀐 칸 수."""
         src = src or str(st.get("src") or "")
         if not src:
             return 0
         rc = st.get("rc")
-        counts = st.get("counts") if isinstance(st.get("counts"), dict) else {}
         n = 0
         for x in st.get("ranges") or []:
             ax = x.get("axis")
             if ax not in AXES:
                 continue
-            s = self._clamp(src, ax, str(x.get("st") or ""), rc, counts)
+            s = self._clamp(src, str(x.get("st") or ""), rc)
             for day in _days(x.get("from"), x.get("to")):
                 n += self.put(src, ax, day, s)
         self.last[src] = {"rc": rc, "reason": str(st.get("reason") or "")[:120],
-                          "at": time.strftime("%Y-%m-%d %H:%M")}
-        if src == "com":
-            self.last[src]["cold"] = bool(counts.get("cold"))   # 뒤에 오는 색인(같은 OST)의 '읽음'을 낮추는 근거
+                          "at": time.strftime("%Y-%m-%d")}
         return n
-
-    def comgap(self, com_counts, idx_counts, d0, d1, ratio=COMGAP_RATIO):
-        """COM ↔ 색인 일자 대조(C-09) → suspect [(날, 축)]. 기간 안의 지난 의심 표시는 지우고 다시 단다."""
-        hits = []
-        for day in list(self.suspect):
-            if str(d0) <= day <= str(d1):
-                del self.suspect[day]
-        for day in _days(d0, d1):
-            for ax in MAIL_AXES:
-                st = ((self.days.get(day) or {}).get(ax) or {}).get("com")
-                if st not in VERIFIED:
-                    continue
-                nc, ni = int(com_counts.get((day, ax)) or 0), int(idx_counts.get((day, ax)) or 0)
-                if not ni:
-                    continue
-                if (nc == 0 and st == "zero_ok") or (nc and ni / nc > ratio and ni - nc >= COMGAP_MIN_DIFF):
-                    self.suspect.setdefault(day, [])
-                    if ax not in self.suspect[day]:
-                        self.suspect[day].append(ax)
-                    hits.append((day, ax))
-        return hits
-
-    def set_na(self, axis, flag):
-        self.na[axis] = bool(flag)
 
     def reset(self, axes=None):
         """모든(또는 주어진) 축을 not_attempted 로 — --reset-cursors"""
@@ -289,28 +247,25 @@ class Ledger:
                 self.days[day].pop(ax, None)
             if not self.days[day]:
                 del self.days[day]
-        for day in list(self.suspect):
-            self.suspect[day] = [a for a in self.suspect[day] if a not in axes]
-            if not self.suspect[day]:
-                del self.suspect[day]
-        for ax in axes:
-            self.na.pop(ax, None)
+
+    def prune(self, d0, d1):
+        """분석 기간 창 [d0, d1] 밖의 날을 지운다(D13) → 지운 날 수."""
+        a, b = _d(d0), _d(d1)
+        n = 0
+        for day in list(self.days):
+            d = _d(day)
+            if d is None or (a and d < a) or (b and d > b):
+                del self.days[day]
+                n += 1
+        return n
 
     # ── 읽기 ──
-    def is_suspect(self, day, axis):
-        return axis in (self.suspect.get(day) or ())
-
     def composite(self, day, axis):
-        """그날 그 축의 합성 상태 — 증인(Copilot)은 빼고 최선값. na 축은 'na'."""
-        if self.na.get(axis):
-            return "na"
+        """그날 그 축의 합성 상태 — 증인(Copilot)은 빼고 최선값."""
         best = "not_attempted"
-        sus = self.is_suspect(day, axis)
         for src, s in ((self.days.get(day) or {}).get(axis) or {}).items():
             if src in WITNESS:
                 continue
-            if sus and src in ("com", "index") and s in VERIFIED:
-                s = "partial"              # COM 누락 의심 — COM·색인의 '읽음'을 믿지 않는다
             if RANK.get(s, 9) < RANK[best]:
                 best = s
         return best
@@ -322,14 +277,11 @@ class Ledger:
         return ((self.days.get(day) or {}).get(axis) or {}).get(src)
 
     def gaps(self, axes, d0, d1, witness=None):
-        """미검증 날 {축: [(from, to)]} — [d0, min(d1, 오늘)] 에서 합성이 ok·zero_ok 가 아닌 날(na 축 제외).
+        """미검증 날 {축: [(from, to)]} — [d0, min(d1, 오늘)] 에서 합성이 ok·zero_ok 가 아닌 날.
         witness(출처 이름)를 주면 그 출처가 이미 증언(partial)했거나 답한(asked) 날은 뺀다 — Copilot 에 같은 날을 다시 묻지 않게."""
         hi = min(_d(d1) or self.today, self.today)
         out = {}
         for ax in axes:
-            if self.na.get(ax):
-                out[ax] = []
-                continue
             miss = []
             for day in _days(d0, hi.isoformat()):
                 if self.composite(day, ax) in VERIFIED:
@@ -341,16 +293,27 @@ class Ledger:
         return out
 
     def day_status(self, d0, d1, axes=AXES):
-        """{날: {축: 합성 상태}} — 보고서·분석(WP8·WP9)용"""
+        """{날: {축: 합성 상태}}"""
         hi = min(_d(d1) or self.today, self.today)
         return {day: {ax: self.composite(day, ax) for ax in axes} for day in _days(d0, hi.isoformat())}
 
+    def day_flags(self, d0, d1, axes=AXES):
+        """{날: {축: 'verified' | 'unverified'}} — 확인 안 된 날은 '없음'이 아니라 '근거 없음'이다."""
+        return {day: {ax: ("verified" if s in VERIFIED else "unverified") for ax, s in row.items()}
+                for day, row in self.day_status(d0, d1, axes).items()}
+
     def summary(self, d0, d1, axes=AXES):
-        """{축: {상태: 날 수}} + suspect 날 수 + na 축 — 화면·last_run 요약"""
+        """{축: {상태: 날 수}} — 화면·last_run 요약"""
         out = {ax: {} for ax in axes}
         for _day, row in self.day_status(d0, d1, axes).items():
             for ax, s in row.items():
                 out[ax][s] = out[ax].get(s, 0) + 1
-        out["_suspect"] = sum(1 for day in self.suspect if str(d0) <= day <= str(d1))
-        out["_na"] = sorted(a for a, v in self.na.items() if v)
+        return out
+
+    def verified_counts(self, d0, d1, axes=AXES):
+        """{축: {"verified": 날 수, "unverified": 날 수}} — 수집·제외 현황 카드용(날짜 목록 없이 수만)."""
+        out = {ax: {"verified": 0, "unverified": 0} for ax in axes}
+        for _day, row in self.day_flags(d0, d1, axes).items():
+            for ax, f in row.items():
+                out[ax][f] += 1
         return out

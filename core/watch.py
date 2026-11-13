@@ -1,25 +1,30 @@
 # -*- coding: utf-8 -*-
-r"""자식 스테이지 감시 — **한 벌** (v3 구조 감사 4계층).
+r"""자식 단계 정체 확인 — **한 벌** (v3 구조 감사 4계층).
 
-v2 는 같은 감시기 3함수(watch_child·_stage_limits·kill_tree)가 run.py 와 ui/app.py 에 통째로
+v2 는 같은 정체 확인 3함수(watch_child·_stage_limits·kill_tree)가 run.py 와 ui/app.py 에 통째로
 복제돼(유사도 0.981·1.000·1.000) 따로 진화했고, 판정 근거가 'stdout 침묵'뿐이라 긴 Copilot
 왕복(출력 없음·정상)과 죽음을 구분하지 못했다 — 정상 판정을 끊고 뒤 단계를 전멸시킨 사고의 뿌리.
 
 v3 규약:
- · **생존**은 stdout 또는 상태 파일 하트비트(updated) 어느 쪽이든 뛰면 산 것이다 —
+ · **생존**은 stdout 또는 상태 파일 하트비트(파일 수정 시각 — stage_state.probe) 어느 쪽이든 뛰면 산 것이다 —
    두 신호가 모두 stall 한도를 넘겨야 죽인다(백신이 상태 파일 쓰기를 막아도 stdout 폴백).
- · **무진전**은 상태 파일 done(없으면 stdout [progress])에만 적용한다 — updated 와 분리
+ · **무진전**은 상태 파일 done(없으면 stdout [progress])에만 적용한다 — 하트비트와 분리
    (구조 감사 검증 에이전트: 이 둘을 섞으면 '느림 vs 죽음' 오진이 재발한다).
- · 중단 판단의 1차 권한은 스테이지 자신(예산 자가 중단·rc 2 부분)이고, 감시는 마지막 안전망이다.
+ · 중단 판단의 1차 권한은 스테이지 자신(예산 자가 중단·rc 2 부분)이고, 정체 확인은 마지막 안전망이다.
 run.py 와 ui/app.py 는 이 모듈을 임포트한다 — 사본 재출현은 lint 관문 8(tools/check_l1.py 계약 검사)이 막는다.
 """
-import json
 import os
 import subprocess
+import sys
 import time
 
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+import stage_state  # noqa: E402  — 상태 파일 읽기(하트비트 = 파일 수정 시각)
+
 NO_WIN = 0x08000000
-# LM28(2026-10-18): 감시 루프가 이만큼(초) 넘게 늦게 돌면 PC 가 잠들었다(절전·최대 절전) 깬 것으로 본다 — 그 시간만큼 정체·무진전·
+# LM28(2026-10-18): 확인 루프가 이만큼(초) 넘게 늦게 돌면 PC 가 잠들었다(절전·최대 절전) 깬 것으로 본다 — 그 시간만큼 정체·무진전·
 # 상한 시각을 민다. 화면 보호기 뒤 PC 가 절전에 들어가면 깨는 순간 '15분 넘게 아무 신호 없음'으로 분석을 끊던 것(현장 제보 "화면보호기로
 # 꺼지는 경우가 있다").
 RESUME_GAP = 30.0
@@ -52,29 +57,21 @@ def stage_limits(cfg_dict=None):
 
 
 def _state_probe(state_path):
-    """상태 파일에서 (updated, done, state) — 없거나 깨졌으면 None(구판 자식 폴백)."""
-    if not state_path:
-        return None
-    try:
-        with open(state_path, encoding="utf-8-sig") as f:
-            d = json.load(f)
-        if isinstance(d, dict) and d.get("schema") == 1:
-            return float(d.get("updated") or 0), int(d.get("done") or 0), str(d.get("state") or "")
-    except (OSError, ValueError, TypeError):
-        pass
-    return None
+    r"""상태 파일에서 (마지막 하트비트 epoch, done, state) — 없거나 깨졌으면 None(구판 자식 폴백).
+    AF32(D10): 상태 파일 글에는 시각이 없다 — 하트비트는 파일 수정 시각이고 core\stage_state.probe 가 읽는다(계약 한 벌)."""
+    return stage_state.probe(state_path)
 
 
 _NO_LINE = object()   # 줄 없이 5초가 지났다(queue.Empty) — 아래 루프의 표식
 
 
 def resume_offset(gap, wait):
-    """감시 루프 한 바퀴가 gap 초 걸렸다(평소에는 wait 초 안) → PC 가 잠들었다 깬 것이면 시각을 밀 만큼(초), 아니면 0."""
+    """확인 루프 한 바퀴가 gap 초 걸렸다(평소에는 wait 초 안) → PC 가 잠들었다 깬 것이면 시각을 밀 만큼(초), 아니면 0."""
     return gap - wait if gap > wait + RESUME_GAP else 0.0
 
 
 def watch_child(p, on_line, label, beat_sec=120, cfg_dict=None, state_path=None):
-    r"""자식 출력을 릴레이하며 정체를 감시한다. 반환: 중단 사유(없으면 None).
+    r"""자식 출력을 릴레이하며 정체를 확인한다. 반환: 중단 사유(없으면 None).
     state_path 를 주면(신판 자식) 하트비트·done 을 함께 본다 — 왕복이 길어 출력이 없어도
     하트비트가 뛰면 살아 있는 것으로 친다."""
     import queue

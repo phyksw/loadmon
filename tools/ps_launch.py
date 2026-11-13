@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-r"""tools\ps_launch.py — bat 이 PowerShell 스크립트를 띄울 때 '켜지는 순간 실패(0xc0000142)' 를 견디는 실행기 (LM28 2026-10-15).
+r"""tools\ps_launch.py — bat 이 PowerShell 스크립트를 띄울 때 '켜지는 순간 실패(0xc0000142)' 를 견디는 실행기.
 
-왜: 개발 PC(2026-10-15)에서 LoadMonitor28-강제종료.bat 이 바로 띄운 powershell 이 켜지는 순간 Windows 초기화에 실패해
-    '응용 프로그램을 제대로 시작하지 못했습니다(0xc0000142)' 창을 띄우고 [확인]까지 멈췄다 — Stop-LM28.ps1 은 한 줄도 돌지
+왜: 개발 PC(2026-10-15)에서 강제종료 bat 이 바로 띄운 powershell 이 켜지는 순간 Windows 초기화에 실패해
+    '응용 프로그램을 제대로 시작하지 못했습니다(0xc0000142)' 창을 띄우고 [확인]까지 멈췄다 — 정리 스크립트는 한 줄도 돌지
     않았다. 수집기는 core\proc 가 이미 막는다(quiet_errors + run_step 다시 띄우기). bat 이 powershell 을 바로 부르면 그 보호가
     없으므로 bat 은 이 실행기를 거쳐 띄운다.
   · proc.quiet_errors() — 오류 창을 막는다(자식이 오류 모드를 물려받는다 → 못 켜진 powershell 은 창 없이 곧바로 끝난다).
@@ -10,9 +10,9 @@ r"""tools\ps_launch.py — bat 이 PowerShell 스크립트를 띄울 때 '켜지
   · proc.START_FAIL_SEC 안에 proc.START_FAIL_RC 로 끝나면 proc.START_WAIT(3초·8초) 쉬고 proc.START_RETRY(2)번 다시 띄운다.
     띄우기 자체가 OSError 면(PowerShell 없음·정책 차단) 다시 띄워도 같으므로 바로 '켜지지 못함' 으로 돌려준다.
 
-  launch(script, args) → (rc, start_failed)   start_failed = 끝내 켜지지 못했다(호출측이 대안을 고른다 — tools\stop_lm30.py)
+  launch(script, args) → (rc, start_failed)   start_failed = 끝내 켜지지 못했다(호출측이 대안을 고른다 — tools\stop_af32.py)
   run_ps(script, args) → rc
-  python tools\ps_launch.py <스크립트.ps1> [인자…]     (LoadMonitor30-수집진단.bat)
+  python tools\ps_launch.py <스크립트.ps1> [인자…]     (AgentFinder32-수집진단.bat)
 runner·sleep·clock·say 는 시험이 바꿔 끼운다(tests\test_p24_stop_startfail.py — 실제 powershell 은 띄우지 않는다).
 """
 import os

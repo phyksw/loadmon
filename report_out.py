@@ -1,1366 +1,790 @@
 # -*- coding: utf-8 -*-
+r"""
+report_out.py — 개인 리포트(spec §5.11). Agentic AI 전환 과제 발굴 결과를 정적 HTML 한 장으로 만든다.
+
+  python report_out.py [--from YYYY-MM-DD --to YYYY-MM-DD] [--variant local]
+      → report\개인리포트_<tag>.html (이 PC 에서만 본다). 마지막 줄은 JSON {"ok","html","tag"} (실패면 + "code","msg").
+      기간을 주지 않으면 run_meta 에 "product":"AgentFinder32" 가 있는 가장 최근 결과를 쓴다.
+      시작 때 install.startup_check(종료 4) → consent.require(내 자료가 아니면 종료 4 · 모두 지우는 중이면 종료 3).
+      종료 코드 0 · 1 실패(결과 없음·잘못된 인자) · 3 · 4.
+      공유본(share)은 이 명령으로 만들지 않는다 — 화면 [공유] 탭(teamup --preview/--share)만 build(variant="share")를 부른다.
+
+build(tag, *, variant="local"|"share", scrubber=None, include=None, owner=None, function=None, root=None, cfg=None) -> str|None
+  읽는 결과는 report\run_meta_<tag>.json 에 "product":"AgentFinder32" 가 있는 tag 뿐이다(아니면 None).
+  agentic_·workflow_·pivots_<tag>.json · data\outlook\collect_summary.json 도 같은 표식이 있어야 읽는다.
+  local  머리 띠 "이 파일은 PC 밖으로 보내지 않습니다 — 공유는 [공유] 탭에서만 합니다".
+         1 분석 개요(목적 문장·기간·수집 경로·남긴/뺀 건수·자동 삭제일) · 2 Agentic AI 전환 후보(이름·동작 로직·
+         발굴 사유·업무 유형·근거건수) · 3 워크플로우와 Agent 가능성(단계·입력→출력·Agent 상/중/하·방법) · 4 업무 분류
+         (Level 1~3·근거건수) · 5 공통 업무. 시각·사람·원문 근거는 싣지 않는다(워크플로 단계의 MM-DD 근거도 싣지 않는다).
+  share  조직장에게 보내는 공유본. 구조화된 칸(agentic_<tag>.json · workflow_<tag>.json)에서 새로 만든다(local HTML 을 고쳐 쓰지
+         않는다). 이름·파트(owner·function — 공유 탭에 적은 그대로) · 기간 YYYY-MM~YYYY-MM · 고정 문장(SHARE_PURPOSE) ·
+         후보 {이름·동작 로직·발굴 사유·업무 유형} · 워크플로 단계 {이름·Agent 상/중/하·방법}. 글은 모두 scrubber.text()
+         (core\privacy.ShareScrubber — 없으면 이 tag 로 만든다. 제한 고객 목록이 없으면 privacy.RestrictedListError)를 거친다.
+         업무 유형(개발·사무·현장·협업)과 Agent 등급(상·중·하)은 정해진 낱말이라 그대로 쓴다.
+         메일·일정에서 나온 숫자(근거건수·건수·날짜)·Level 2/3 이름·흐름 번호·script·JSON 섬이 없다.
+         include = 미리보기에서 남긴 항목 id 모음(None 이면 전부). id 는 share_items() 가 준다.
+share_items(tag, *, scrubber=None, root=None, cfg=None) -> list|None   미리보기 체크 상자용 — 공유본에 실릴 글 그대로(가린 뒤)
+  [{"id":"c-…","kind":"candidate","name","logic","reason","task_type"},
+   {"id":"s-…","kind":"step","flow":"f-…","name","agent","agent_how"}]  (id = 설치 소금 HMAC — 내용이 바뀌면 id 도 바뀐다.
+  id 는 이 PC 의 미리보기 파일에만 둔다 — 서버로 보내지 않는다.)
+share_period(tag, *, root=None) -> "YYYY-MM~YYYY-MM" | ""        공유본·공유 요청의 기간 표기
+csp(*, sandbox=True) -> str                                       이 리포트에 맞는 Content-Security-Policy(스타일 해시 포함)
+두 갈래 모두 정적 HTML 이다 — script·이벤트 속성·style 속성·외부 자원·양식이 없고, 스타일은 <style> 하나뿐(문서 안 CSP 메타가
+그 해시만 허용한다).
 """
-report_out.py — 현재 분석 결과를 하나의 리포트 파일로 출력한다 (8b).
-
-  python report_out.py                       # 최신 결과
-  python report_out.py --from ... --to ...
-
-출력: report\\리포트_<기간>.html   (브라우저에서 열람, Word에서 [파일 > 열기]로 편집 가능)
-      report\\리포트_<기간>.doc    (더블클릭하면 Word로 열림 — 같은 내용)
-
-담기는 것: 투입/가용 MM·로드율 · 과제별 로드 · 업무분류 배분 · 공통업무(표준화·자동화 후보)
-          · 월별 리뷰 코멘트(빠진 달은 다른 기간 파일에서 이월 — core/narratives) · Agentic AI 니즈 후보(LM29부터 — 발굴만)
-          · 산정 근거와 신뢰도(초과근무 세분·미관측 일수)
-          · 출퇴근·시간외 근무(LM30 — 결론 한 줄·재는 법·달·주 합계·최근 31일 날짜별 출근·퇴근·근태 기록 비교 · attendance_section)
-          · 산출 방식(PC 가동 하한의 근거·날짜별 방식 최신순·퇴근 후·시각 · 시간 근거 합계 — LM30 에서는 'LM29 방식(비교용) 근거')
-          · raw 단서 요약 · 같이 일한 동료 · 연관 업무 · 업무 영역·과제 워크플로 요약(단위업무 등급)
-표기(LM28): 업무 영역(Level 1) / 과제(Level 2) / 세부업무(Level 3) / 업무분류(개발·사무·현장·협업).
-'대체 가능 MM' 은 계산하지도 보이지도 않는다(A-33 RP4 — 실측 투입·빈도만).
-"""
+import base64
 import csv
-import glob
+import hashlib
+import hmac
 import html
 import io
 import json
 import os
+import re
 import sys
-from collections import defaultdict
+import tempfile
+import time
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 REP = os.path.join(ROOT, "report")
-if os.path.join(ROOT, "core") not in sys.path:         # privacy(동료 절의 외부 계급)·details — LM28
-    sys.path.insert(0, os.path.join(ROOT, "core"))
+DATA = os.path.join(ROOT, "data")
+_CORE = os.path.join(ROOT, "core")
+if _CORE not in sys.path:
+    sys.path.insert(0, _CORE)
+import afcfg  # noqa: E402
+import consent  # noqa: E402
+import install  # noqa: E402
+import lmname  # noqa: E402
+import period  # noqa: E402
+import retention  # noqa: E402
+
+PRODUCT = lmname.PRODUCT
+VARIANTS = ("local", "share")
+OUT_PREFIX = "개인리포트_"
+LOCAL_BANNER = "이 파일은 PC 밖으로 보내지 않습니다 — 공유는 [공유] 탭에서만 합니다"
+SHARE_PURPOSE = "이 리포트는 Agentic AI 전환 과제 발굴에만 씁니다. 인사평가·근태·업무량 비교에 쓰지 않습니다"
+# 공유본이 가리는 것 — 안내문의 공유 항목과 같은 문장을 그대로 쓴다(core\consent.py · 지키는 만큼만 말한다)
+SHARE_MASK_NOTE = f"{consent.SHARE_MASK_LINE} {consent.SHARE_CHECK_LINE}"
+LOCAL_TITLE = "Agentic AI 전환 과제 발굴 — 개인 리포트"
+SHARE_TITLE = "Agentic AI 전환 과제 — 공유 리포트"
+TAG_RX = re.compile(r"^\d{8}-\d{8}$")
+_DATE_RX = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+KEY_SEP = "␟"                                  # agentic keys '과제␟세부업무'
+WORKTYPES = {"개발": "wt-dev", "사무": "wt-off", "현장": "wt-site", "협업": "wt-col"}
+AGENT_CLASS = {"상": "ag-hi", "중": "ag-mid", "하": "ag-lo"}
+CHANNEL_LABEL = {"com": "Outlook 앱", "owa": "Outlook 웹", "copilot": "M365 Copilot"}
+KEPT_LABEL = (("mail_in", "받은 메일"), ("mail_out", "보낸 메일"), ("meetings", "회의"))
+EXCL_COLLECT = (("private", "비공개·개인 항목"), ("admin", "휴가·출장·부재 같은 항목"), ("sensitive", "민감한 내용"),
+                ("identifier", "번호류(주민번호·카드·계좌 등)"), ("external", "사외 사람이 있는 항목"),
+                ("external_unknown", "사내인지 확인할 수 없는 항목"), ("restricted", "제한 고객 관련 항목"))
+EXCL_ANALYSE = (("nonwork", "업무가 아닌 항목(자동 회신 등)"), ("bulk", "단체·알림 메일"), ("private_text", "사적인 내용"),
+                ("credential", "비밀번호류가 든 항목"), ("duplicate", "중복"))
+TYPED_MAX = 40                                      # 공유 탭에 적은 이름·파트의 최대 글자 수
+DASH = "<span class=\"dim\">–</span>"
+
+CSS = (
+    ":root{color-scheme:light}*{box-sizing:border-box}"
+    "body{font:13px/1.6 'Malgun Gothic','Segoe UI',sans-serif;color:#2c333b;background:#f4f6f8;margin:0}"
+    ".top{background:#1c2b3a;color:#fff;padding:9px 16px;font-size:12px}"
+    ".wrap{max-width:1080px;margin:0 auto;padding:16px 16px 60px}"
+    "h1{font-size:19px;margin:10px 0 2px;color:#1c232b}"
+    "h1 .sub{font-size:13px;font-weight:400;color:#5a626b;margin-left:8px}"
+    ".meta{color:#8b929b;font-size:11.5px;margin-bottom:6px}"
+    ".purpose{background:#eef4fb;border:1px solid #d5e3f3;border-radius:8px;padding:10px 14px;margin:10px 0 12px;"
+    "font-size:12.5px;color:#1f3b5a}"
+    ".card{background:#fff;border:1px solid #e4e7eb;border-radius:8px;padding:16px;margin-bottom:12px}"
+    ".card h2{font-size:14px;margin:0 0 10px;color:#2c333b}"
+    ".state{font-size:12px;color:#5a626b;font-weight:400;margin-left:8px}"
+    ".note{font-size:11px;color:#8b929b;margin-top:8px;line-height:1.6}"
+    ".warn{font-size:12px;color:#b54708;margin:6px 0}"
+    ".dim{color:#8b929b;font-size:11.5px}"
+    ".sub{color:#8b929b;font-size:11px}"
+    "table{width:100%;border-collapse:collapse;font-size:12px}"
+    "th{background:#f6f8fa;color:#3d4a5c;text-align:left;padding:6px 8px;font-weight:700;"
+    "border-bottom:2px solid #e4e7eb;font-size:11px}"
+    "td{padding:6px 8px;border-bottom:1px solid #eef0f3;vertical-align:top}"
+    "td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}"
+    "td.ord{width:28px;text-align:center;color:#8b929b}td.agc{width:240px}"
+    "table.kv th{width:160px;background:#fafbfc;border-bottom:1px solid #eef0f3;font-size:12px}"
+    "tr.l1 td{background:#fafbfc;font-weight:700;color:#4a5159}"
+    ".cand{border-left:3px solid #6c4fb8;padding:4px 0 4px 12px;margin:12px 0}"
+    ".cand .nm{font-weight:700;font-size:13px}"
+    ".cand .ln{font-size:12px;margin-top:3px}.cand .ln b{color:#4a5159;margin-right:6px}"
+    ".area{margin:16px 0 6px;font-size:12px;color:#4a5159;font-weight:700}"
+    ".flow{border:1px solid #e4e7eb;border-radius:8px;padding:12px 14px;margin:10px 0}"
+    ".flow .ft{font-weight:700;font-size:13px;margin-bottom:4px}"
+    "ol.steps{margin:6px 0 0;padding-left:22px}ol.steps li{margin:6px 0}"
+    ".pill{display:inline-block;padding:1px 8px;border-radius:9px;color:#fff;font-size:11px;white-space:nowrap;margin-left:6px}"
+    ".ag-hi{background:#1d8a4a}.ag-mid{background:#c98a00}.ag-lo{background:#8b929b}"
+    ".tag{display:inline-block;background:#f0f3f7;border-radius:3px;padding:1px 7px;margin:1px 3px 1px 0;"
+    "font-size:11px;color:#3d444c}"
+    ".wt-dev{color:#2a78d6}.wt-off{color:#e08a00}.wt-site{color:#0e8c7a}.wt-col{color:#6c4fb8}"
+    "@media(max-width:640px){.wrap{padding:12px}table.kv th{width:96px}td.agc{width:auto}}"
+    "@media print{body{background:#fff}.card,.flow,.cand{break-inside:avoid}"
+    ".top{background:#fff;color:#1c2b3a;border-bottom:2px solid #1c2b3a}}"
+)
+STYLE_HASH = "sha256-" + base64.b64encode(hashlib.sha256(CSS.encode("utf-8")).digest()).decode("ascii")
+CSP_META = (f"default-src 'none'; style-src '{STYLE_HASH}'; img-src 'none'; font-src 'none'; "
+            "base-uri 'none'; form-action 'none'")
 
 
-def _fresh_refined(plain, refined):
-    """정제본을 써도 되는가 — 원본보다 오래된 정제본은 쓰지 않는다.
-
-    정제 없이 다시 분석해 원본만 새로 쓰인 경우, 옛 정제본을 그대로 쓰면 화면·리포트·
-    워크플로우가 옛 숫자를 말한다(실측 확인된 결함)."""
-    if not os.path.exists(refined):
-        return False
-    try:
-        return (not os.path.exists(plain)
-                or os.path.getmtime(refined) >= os.path.getmtime(plain))
-    except OSError:
-        return True
+def csp(*, sandbox=True):
+    """이 리포트를 HTTP 로 보일 때 쓸 Content-Security-Policy — 스크립트·외부 자원 없음, <style> 은 해시로만."""
+    return CSP_META + ("; frame-ancestors 'none'; sandbox" if sandbox else "")
 
 
-def arg(flag, d=""):
-    return sys.argv[sys.argv.index(flag) + 1] if flag in sys.argv else d
-
-
-def esc(x):
-    return html.escape(str(x if x is not None else ""))
+# ── 읽기 ────────────────────────────────────────────────────────────────────────────────────
+def _dirs(root=None):
+    """(설치 폴더, report\\, data\\) — root 가 없으면 모듈 값(시험이 REP·DATA 를 바꿔 끼울 수 있다)."""
+    if root:
+        r = os.path.abspath(str(root))
+        return r, os.path.join(r, "report"), os.path.join(r, "data")
+    return ROOT, REP, DATA
 
 
 def _json(p):
     try:
-        with open(p, encoding="utf-8") as f:
+        with open(p, encoding="utf-8-sig") as f:
             return json.load(f)
     except (OSError, ValueError):
-        return {}
+        return None
+
+
+def _af32(d):
+    return isinstance(d, dict) and d.get("product") == PRODUCT
 
 
 def _rows(p):
-    # 다른 도구가 CP949 로 저장한 CSV 도 견딘다 — UnicodeDecodeError 로 리포트 생성이
-    # 통째로 죽던 결함(검증 확정). utf-8 실패 시 cp949 재시도로 내용까지 살린다.
+    """CSV → dict 행 목록. 다른 도구가 CP949 로 저장한 파일도 읽는다(utf-8 실패 시 cp949)."""
     for enc in ("utf-8-sig", "cp949"):
         try:
-            with open(p, encoding=enc) as f:
+            with open(p, encoding=enc, newline="") as f:
                 return list(csv.DictReader(f))
         except UnicodeDecodeError:
             continue
         except (OSError, csv.Error):
             return []
+    return []
+
+
+def _fresh_refined(plain, refined):
+    """정제본을 써도 되는가 — 원본보다 오래된 정제본은 쓰지 않는다(정제 없이 다시 분석한 경우 옛 숫자를 말하지 않게)."""
+    if not os.path.exists(refined):
+        return False
     try:
-        with open(p, encoding="utf-8-sig", errors="replace") as f:
-            return list(csv.DictReader(f))
-    except (OSError, csv.Error):
-        return []
+        return not os.path.exists(plain) or os.path.getmtime(refined) >= os.path.getmtime(plain)
+    except OSError:
+        return True
 
 
-def latest_tag():
-    fs = sorted(glob.glob(os.path.join(REP, "mm_meta_*.json")), key=os.path.getmtime)
-    return os.path.basename(fs[-1])[len("mm_meta_"):-len(".json")] if fs else ""
-
-
-# ── LM22 2차: 측정 방식·신뢰도·추가 보정 키 (mm_basis → meta 최상위 → meta.mm_info 순으로 찾는다) ──
-GRADE_LABEL = {"reliable": "신뢰", "caution": "주의", "unreliable": "측정 불충분"}
-GRADE_COLOR = {"reliable": "#0f7a3d", "caution": "#c98a00", "unreliable": "#c0122f"}
-
-
-def _pick(meta, b, key):
-    for src in (b, meta, meta.get("mm_info") if isinstance(meta.get("mm_info"), dict) else {}):
-        if isinstance(src, dict) and src.get(key) is not None:
-            return src.get(key)
-    return None
-
-
-def _obj(v):
-    return v if isinstance(v, dict) else None
-
-
-def _n(v):
-    """일수·건수 — 목록/객체면 길이, 숫자면 정수, 아니면 0"""
-    if isinstance(v, bool):
-        return 0
-    if isinstance(v, (list, tuple, dict)):
-        return len(v)
+def _int(v, d=0):
+    if isinstance(v, bool) or v is None:
+        return d
     try:
         return int(round(float(v)))
     except (TypeError, ValueError):
-        return 0
+        return d
 
 
-def _h(v):
+def _mtime(p):
     try:
-        return float(v)
-    except (TypeError, ValueError):
-        return 0.0
+        return os.path.getmtime(p)
+    except OSError:
+        return None
 
 
-def measure_line(meta, b):
-    """'샘플러 N일 / PC 하한 N일 / 흔적폭 N일 / 출장 N일 / 수동 N일' (+ 산정 방법) — measure 가 없으면 mm_basis 일수로"""
-    ms = _obj(_pick(meta, b, "measure")) or {}
-    src = ms if ms else b
-    if not src:
+def latest_tag(rep=None):
+    """run_meta 에 "product":"AgentFinder32" 가 있는 가장 최근 tag — 없으면 ""."""
+    rep = rep or _dirs()[1]
+    best, bt = "", -1.0
+    try:
+        names = os.listdir(rep)
+    except OSError:
         return ""
-    parts = [f"샘플러 {_n(src.get('sampler_days'))}일", f"PC 하한 {_n(src.get('pc_floor_days'))}일",
-             f"흔적폭 {_n(src.get('trace_window_days'))}일", f"출장 {_n(src.get('offsite_days'))}일",
-             f"수동 {_n(src.get('manual_days'))}일"]
-    # LM28(E) — PC 기록 없는 달의 표준일 추정·브라우저 기록만 있는 평일(값이 있을 때만)
-    if _n(src.get("std_nopc_days")):
-        parts.append(f"표준일 추정 {_n(src.get('std_nopc_days'))}일")
-    if _n(src.get("hint_only_days")):
-        parts.append(f"브라우저 기록만 {_n(src.get('hint_only_days'))}일")
-    meth = str(ms.get("method") or b.get("method") or "")
-    return " / ".join(parts) + (f" ({esc(meth)})" if meth else "")
+    for n in names:
+        if not (n.startswith("run_meta_") and n.endswith(".json")):
+            continue
+        tag = n[len("run_meta_"):-len(".json")]
+        p = os.path.join(rep, n)
+        if not TAG_RX.match(tag) or not _af32(_json(p)):
+            continue
+        mt = _mtime(p) or 0.0
+        if mt > bt:
+            best, bt = tag, mt
+    return best
 
 
-def coverage_badge(meta, b):
-    cv = _obj(_pick(meta, b, "coverage")) or {}
-    g = str(cv.get("grade") or "").lower()
-    if g not in GRADE_LABEL:
-        return ""
-    reasons = cv.get("reasons") if isinstance(cv.get("reasons"), list) else (
-        cv.get("missing") if isinstance(cv.get("missing"), list) else [])
-    tip = " · ".join(str(x) for x in reasons) or "측정 신뢰도 등급(PC 기록 40%·샘플러·달력 결측 수)"
-    return (f"<span class='tag' title='{esc(tip)}' style='border:1px solid {GRADE_COLOR[g]};color:{GRADE_COLOR[g]};"
-            f"background:#fff;vertical-align:middle'>{GRADE_LABEL[g]}</span>")
+def _period(meta, tag):
+    """(시작, 끝) 'YYYY-MM-DD' — run_meta.period({from,to} 또는 [from,to]), 없으면 tag."""
+    p = meta.get("period") if isinstance(meta, dict) else None
+    a = b = None
+    if isinstance(p, dict):
+        a, b = p.get("from"), p.get("to")
+    elif isinstance(p, (list, tuple)) and len(p) == 2:
+        a, b = p
+    a, b = str(a or "")[:10], str(b or "")[:10]
+    if not (_DATE_RX.match(a) and _DATE_RX.match(b)):
+        a, b = f"{tag[:4]}-{tag[4:6]}-{tag[6:8]}", f"{tag[9:13]}-{tag[13:15]}-{tag[15:17]}"
+    return a, b
 
 
-TOOL_NOTE = "참고 지표 — 투입 MM·로드율과 무관 · 실행 기록은 Windows 가 사용자 계정에 남긴 실행 흔적(관리자 권한 불필요)"
+def _load(tag, root=None):
+    """tag 의 결과 묶음 dict | None(AF32 결과가 아님). 표식 없는 JSON 은 없는 것으로 본다."""
+    if not isinstance(tag, str) or not TAG_RX.match(tag):
+        return None
+    r, rep, data = _dirs(root)
+    meta = _json(os.path.join(rep, f"run_meta_{tag}.json"))
+    if not _af32(meta):
+        return None
+
+    def af(name):
+        d = _json(os.path.join(rep, name))
+        return d if _af32(d) else {}
+    plain = os.path.join(rep, f"work_rows_{tag}.csv")
+    refined = os.path.join(rep, f"work_rows_{tag}_refined.csv")
+    rows = (_rows(refined) if _fresh_refined(plain, refined) else []) or _rows(plain)
+    d0, d1 = _period(meta, tag)
+    summ = _json(os.path.join(data, "outlook", "collect_summary.json"))
+    sp = summ.get("period") if _af32(summ) else None
+    if not (isinstance(sp, dict) and str(sp.get("from") or "")[:10] == d0 and str(sp.get("to") or "")[:10] == d1):
+        summ = {}                         # 다른 기간을 모은 기록이면 이 결과의 건수가 아니다
+    ag_path = os.path.join(rep, f"agentic_{tag}.json")
+    return {"tag": tag, "root": r, "rep": rep, "meta": meta, "period": (d0, d1), "rows": [x for x in rows if isinstance(x, dict)],
+            "pivots": af(f"pivots_{tag}.json"), "agentic": af(f"agentic_{tag}.json"), "workflow": af(f"workflow_{tag}.json"),
+            "summary": summ, "agentic_mtime": _mtime(ag_path) if os.path.exists(ag_path) else None}
 
 
-def _tool_ev(p):
-    """프로그램 한 줄의 가장 센 근거 한 마디 — 창기록 시간 > 실행 증가분 > 누적 실행 > 파일 일수 > 배경 솔버."""
-    if _h(p.get("hours")) >= 0.05:
-        return f"{_h(p.get('hours')):.1f}h" + (f"(배경 {_h(p.get('bg_hours')):.0f}h)" if _h(p.get("bg_hours")) >= 1 else "")
-    if p.get("runs") is not None and _n(p.get("runs")):
-        return f"실행 {_n(p.get('runs'))}회"
-    if p.get("focus_h") is not None and _h(p.get("focus_h")) >= 0.05:      # 띄워 둔 채 쓴 도구 — 새 실행 없이 포커스만
-        return f"포커스 {_h(p.get('focus_h')):.1f}h"
-    if p.get("runs_cum") is not None and _n(p.get("runs_cum")):
-        return f"누적 실행 {_n(p.get('runs_cum'))}회"
-    if _n(p.get("file_days")):
-        return f"파일 {_n(p.get('file_days'))}일"
-    if _h(p.get("bg_hours")) >= 1:
-        return f"배경 {_h(p.get('bg_hours')):.0f}h"
-    return str(p.get("last_run") or "")[:10]
+# ── 결과 다듬기(두 갈래 공용) ──────────────────────────────────────────────────────────────────
+def _row_index(rows):
+    idx = {}
+    for r in rows:
+        k = f"{str(r.get('Level 2') or '').strip()}\x1f{str(r.get('Level 3') or '').strip()}"
+        idx.setdefault(k, []).append(r)
+    return idx
 
 
-def tool_usage_text(tu):
-    """8절 '프로그램 사용(참고)' 칸의 글(태그 없이 — 셀은 부르는 쪽이 통째로 esc 한다). 옛 꼴(창기록만)·새 꼴 둘 다. 비면 ''."""
-    tu = tu if isinstance(tu, dict) else {}
-    progs = [p for p in (tu.get("programs") or []) if isinstance(p, dict) and p.get("name")]
-    inh = [x for x in (tu.get("inhouse") or []) if isinstance(x, dict) and x.get("name")]
-    if not progs and not inh and not _n(tu.get("inhouse_hidden")):
-        return str(tu.get("why") or "").strip()
-    v = " · ".join(f"{p.get('name')}({_tool_ev(p)})" if _tool_ev(p) else str(p.get("name")) for p in progs[:6])
-    kinds = [x for x in (tu.get("by_kind_n") or []) if isinstance(x, (list, tuple)) and len(x) >= 2]
-    if kinds:
-        v += " / 구분: " + " · ".join(f"{x[0]} {_n(x[1])}개" for x in kinds)
-    else:
-        hk = [x for x in (tu.get("by_kind") or []) if isinstance(x, (list, tuple)) and len(x) >= 2 and _h(x[1]) > 0]
-        if hk:
-            v += " / 구분: " + " · ".join(f"{x[0]} {_h(x[1]):.1f}h" for x in hk)
-    if inh or _n(tu.get("inhouse_hidden")):
-        v += f" / 자체·프로토타입(추정) {len(inh) + _n(tu.get('inhouse_hidden'))}개"
-    if _h(tu.get("solver_bg_h")) >= 1:
-        v += f" / 배경 솔버 가동 {_h(tu.get('solver_bg_h')):.0f}h"
-    if _h(tu.get("unknown_h")) >= 1:
-        v += f" / 창기록 미상 {_h(tu.get('unknown_h')):.0f}h(카탈로그에 없는 실행 파일)"
-    return v + " / ※ " + str(tu.get("note") or TOOL_NOTE) + (" — 상세는 아래 표" if tu.get("sources") else "")
+def _cand_rows(n, idx):
+    """후보의 근거 업무 행(keys '과제␟세부업무' 로 찾는다 — 같은 행은 한 번만)."""
+    hit, seen = [], set()
+    for k in n.get("keys") if isinstance(n.get("keys"), list) else []:
+        a, _s, b = str(k).partition(KEY_SEP)
+        for r in idx.get(f"{a.strip()}\x1f{b.strip()}", []):
+            if id(r) not in seen:
+                seen.add(id(r))
+                hit.append(r)
+    return hit
 
 
-def tool_usage_table(tu):
-    """8절 뒤에 붙는 프로그램 사용 상세 표(HTML — 값은 전부 esc). 출처·실행 횟수·포커스 시간·마지막 실행·파일 일수와
-    자체·프로토타입(추정) 목록. 새 꼴(sources 가 있는 것)만 — 옛 꼴은 8절 한 칸으로 충분하다. 비면 ''."""
-    tu = tu if isinstance(tu, dict) else {}
-    if not isinstance(tu.get("sources"), dict):
-        return ""
-    progs = [p for p in (tu.get("programs") or []) if isinstance(p, dict) and p.get("name")]
-    inh = [x for x in (tu.get("inhouse") or []) if isinstance(x, dict) and x.get("name")]
-    if not progs and not inh:
-        return ""
+def _cand_count(n, hit):
+    """근거건수 — 후보의 '근거건수' 칸 → 근거 업무 행의 근거건수 합 → evidence_rows. 모르면 None."""
+    v = _int(n.get("근거건수"), None)
+    if v is not None:
+        return v
+    if hit:
+        return sum(_int(r.get("근거건수")) for r in hit)
+    return _int(n.get("evidence_rows"), None)
 
-    def cnt(v, c):
-        if v is None:
-            return "–" if c is None else f"누적 {_n(c):,}"
-        return f"{_n(v):,}회"
 
-    def hrs(v, c):
-        if v is None:
-            return f"누적 {_h(c):.1f}h" if _h(c) else "–"
-        return f"{_h(v):.1f}h"
-    reg = tu["sources"].get("실행기록") if isinstance(tu["sources"].get("실행기록"), dict) else {}
-    win = reg.get("window") if isinstance(reg.get("window"), list) and len(reg.get("window")) == 2 else None
-    basis = (f"실행 횟수·포커스 시간 = 실행 기록 스냅샷 {win[0]}~{win[1]} 사이 증가분" if reg.get("basis") == "delta" and win
-             else ("실행 기록 스냅샷이 1장뿐이라 횟수·시간은 이 계정의 누적값" if reg.get("basis") == "cum" else ""))
-    h = ["<h3 style='font-size:14px'>프로그램 사용(참고) — 상용·비상용·자체 도구</h3>",
-         f"<div class='dim'>{esc(str(tu.get('note') or TOOL_NOTE))}" + (f" · {esc(basis)}" if basis else "") + "</div>"]
-    if progs:
-        h.append("<table><tr><th>프로그램</th><th>구분·분류</th><th>출처</th><th>실행 횟수</th><th>포커스 시간</th>"
-                 "<th>마지막 실행</th><th>파일 일수</th><th>창기록</th></tr>")
-        for p in progs[:25]:
-            src = p.get("src") if isinstance(p.get("src"), list) else ["창기록"]
-            side = (f"{_h(p.get('hours')):.1f}h" if _h(p.get("hours")) >= 0.05 else
-                    (f"배경 {_h(p.get('bg_hours')):.0f}h" if _h(p.get("bg_hours")) >= 1 else "–"))
-            h.append(f"<tr><td><b>{esc(p.get('name'))}</b></td>"
-                     f"<td>{esc(p.get('kind'))}{(' · ' + esc(p.get('cat'))) if p.get('cat') else ''}</td>"
-                     f"<td>{esc('·'.join(str(s) for s in src))}</td><td>{esc(cnt(p.get('runs'), p.get('runs_cum')))}</td>"
-                     f"<td>{esc(hrs(p.get('focus_h'), p.get('focus_h_cum')))}</td>"
-                     f"<td>{esc(str(p.get('last_run') or '')[:16]) or '–'}</td>"
-                     f"<td>{(str(_n(p.get('file_days'))) + '일') if _n(p.get('file_days')) else '–'}</td>"
-                     f"<td>{esc(side)}</td></tr>")
-        h.append("</table>")
-    if inh or _n(tu.get("inhouse_hidden")):
-        h.append("<div style='margin:6px 0'><b>자체·프로토타입(추정)</b> " + " · ".join(
-            f"{esc(x.get('name'))}(" + (f"실행 {_n(x.get('runs'))}회" if x.get("runs") is not None
-                                       else f"누적 실행 {_n(x.get('runs_cum'))}회")
-            + (f" · {esc(str(x.get('last_run'))[:10])}" if x.get("last_run") else "") + ")" for x in inh[:15])
-            + (f" · 이름을 가린 도구 {_n(tu.get('inhouse_hidden'))}개" if _n(tu.get("inhouse_hidden")) else "")
-            + "<div class='dim'>카탈로그에 없는 실행 파일이 사용자 폴더·다른 드라이브·네트워크에서 돈 것 — "
-              "무료 휴대용 도구일 수도 있다(config.programsExtra 로 이름표를 붙인다)</div></div>")
-    amb = [x for x in (tu.get("ambiguous_files") or []) if isinstance(x, (list, tuple)) and len(x) >= 2]
-    more = ([f"카탈로그 밖 설치 프로그램 {_n(tu.get('unknown_n'))}개(이름은 싣지 않는다)"] if _n(tu.get("unknown_n")) else [])
-    if amb:
-        more.append("도구 불명 파일(확장자를 여러 도구가 쓴다): " + " · ".join(f"{esc(x[0])} {_n(x[1])}개" for x in amb[:8]))
-    if reg.get("track_off"):
-        more.append("앱 실행 추적이 꺼져 있다(설정 &gt; 개인 정보 &gt; 일반 또는 회사 정책) — 실행 횟수가 늘지 않아 안 쓴 것처럼 보일 수 있다")
-    if more:
-        h.append("<div class='dim'>" + " / ".join(more) + "</div>")
+def _cand_type(n, hit):
+    """업무 유형 — 후보의 task_type, 없으면 근거 업무 행에서 가장 많은 유형."""
+    t = str(n.get("task_type") or "").strip()
+    if t or not hit:
+        return t
+    cnt = {}
+    for r in hit:
+        u = str(r.get("유형") or "").strip()
+        if u:
+            cnt[u] = cnt.get(u, 0) + 1
+    return max(sorted(cnt), key=lambda k: cnt[k]) if cnt else ""
+
+
+def _candidates(d):
+    """[(후보 dict, 근거건수|None, 업무 유형)] — 근거건수 많은 순(같으면 파일 순)."""
+    ag = d["agentic"]
+    idx = _row_index(d["rows"])
+    out = []
+    for n in ag.get("new") if isinstance(ag.get("new"), list) else []:
+        if not isinstance(n, dict) or not str(n.get("name") or "").strip():
+            continue
+        hit = _cand_rows(n, idx)
+        out.append((n, _cand_count(n, hit), _cand_type(n, hit)))
+    out.sort(key=lambda x: -(x[1] or 0))
+    return out
+
+
+def _flows(d):
+    """[(흐름 dict, [단계 dict — 순서대로])] — 이름 있는 단계가 하나도 없는 흐름은 뺀다."""
+    wf = d["workflow"]
+    out = []
+    for fl in wf.get("flows") if isinstance(wf.get("flows"), list) else []:
+        if not isinstance(fl, dict):
+            continue
+        steps = [(i, s) for i, s in enumerate(fl.get("steps") or []) if isinstance(s, dict) and str(s.get("name") or "").strip()]
+        if not steps:
+            continue
+        steps.sort(key=lambda x: (_int(x[1].get("order"), x[0] + 1), x[0]))
+        out.append((fl, [s for _i, s in steps]))
+    return out
+
+
+def _agent(v):
+    v = str(v or "").strip()
+    return v if v in AGENT_CLASS else ""
+
+
+# ── HTML 조각 ─────────────────────────────────────────────────────────────────────────────────
+def esc(x):
+    return html.escape(str(x if x is not None else ""), quote=True)
+
+
+def _head(title, variant, tag=""):
+    meta_tag = f"<meta name=\"af32-tag\" content=\"{esc(tag)}\">" if tag else ""
+    return ("<!doctype html><html lang=\"ko\"><head><meta charset=\"utf-8\">"
+            f"<meta http-equiv=\"Content-Security-Policy\" content=\"{esc(CSP_META)}\">"
+            "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+            "<meta name=\"referrer\" content=\"no-referrer\">"
+            f"<meta name=\"product\" content=\"{esc(PRODUCT)}\"><meta name=\"af32-variant\" content=\"{esc(variant)}\">"
+            f"{meta_tag}<title>{esc(title)}</title><style>{CSS}</style></head><body>")
+
+
+def _worktype(t):
+    t = str(t or "").strip()
+    return f"<span class=\"tag {WORKTYPES[t]}\">{esc(t)}</span>" if t in WORKTYPES else (
+        f"<span class=\"tag\">{esc(t)}</span>" if t else "")
+
+
+def _pill(a):
+    a = _agent(a)
+    return f"<span class=\"pill {AGENT_CLASS[a]}\">Agent {esc(a)}</span>" if a else ""
+
+
+def _counts(obj, labels, unit="건"):
+    obj = obj if isinstance(obj, dict) else {}
+    parts = [f"{lab} {_int(obj.get(k)):,}{unit}" for k, lab in labels if k in obj]
+    return " · ".join(parts)
+
+
+# ── local ─────────────────────────────────────────────────────────────────────────────────────
+def _restricted_line(meta, cfg, root):
+    r"""분석 개요의 '제한 고객 목록' 칸(HTML) — 지금 목록을 확인한 날·지문(sha256 앞 8자)과, 이 결과를 다른 목록으로 만들었으면
+    알림. 이름은 싣지 않는다. 목록이 없거나 형식이 틀리면 그렇다고만."""
+    import privacy
+    try:
+        rl = privacy.load_restricted(cfg, root)
+    except (privacy.RestrictedListError, OSError, ValueError):
+        return esc("목록이 없거나 형식이 틀립니다 — 분석과 공유를 하지 않습니다")
+    out = esc(f"{rl.confirmed} 에 확인한 목록 · 지문 {str(rl.sha256)[:8]}")
+    used = str((meta or {}).get("restricted_sha256") or "") if isinstance(meta, dict) else ""
+    if used and used != rl.sha256:
+        out += (f"<div class=\"warn\">{esc(f'이 결과는 다른 목록(지문 {used[:8]})으로 분석했습니다 — 다시 분석해야 공유할 수 있습니다')}"
+                "</div>")
+    elif not used:
+        out += f"<div class=\"warn\">{esc('이 결과를 만든 목록을 알 수 없습니다 — 다시 분석해야 공유할 수 있습니다')}</div>"
+    return out
+
+
+def _overview(d, cfg, root):
+    meta, summ = d["meta"], d["summary"]
+    d0, d1 = d["period"]
+    kv = [("목적", esc(consent.PURPOSE_LINE))]
+    pv = f"{esc(d0)} ~ {esc(d1)}"
+    cl = meta.get("clamped")
+    if isinstance(cl, dict) and cl.get("clamped"):
+        note = period.notice_text(cl, d0, d1, cfg)
+        if note:
+            pv += f"<div class=\"sub\">{esc(note)}</div>"
+    kv.append(("분석 기간", pv + "<div class=\"sub\">오늘은 넣지 않고 어제까지 분석합니다</div>"))
+    ch = summ.get("channels") if isinstance(summ.get("channels"), dict) else {}
+    used = []
+    for k, lab in CHANNEL_LABEL.items():
+        c = ch.get(k) if isinstance(ch.get(k), dict) else None
+        if c is None or (c.get("rc") is None and not _int(c.get("rows"))):
+            continue
+        s = f"{lab} {_int(c.get('rows')):,}건"
+        if c.get("rc") not in (0, None):
+            s += "(끝까지 읽지 못함)"
+        used.append(s)
+    if used:
+        kv.append(("수집 경로", esc(" · ".join(used))
+                   + "<div class=\"sub\">내 사서함의 메일·일정 목록만 읽습니다. 메일 본문·첨부·Teams 채팅은 읽지 않습니다</div>"))
+    elif ch:
+        kv.append(("수집 경로", "이 기간에 읽은 경로가 없습니다"))
+    dom = [str(x) for x in (summ.get("internal_domains") or []) if str(x).strip()] if summ else []
+    if dom:
+        kv.append(("사내로 본 메일 도메인", esc(" · ".join(dom[:12]) + (" …" if len(dom) > 12 else ""))))
+    if isinstance(summ.get("kept"), dict):
+        kv.append(("모은 항목", esc(_counts(summ["kept"], KEPT_LABEL))))
+    if isinstance(meta.get("counted"), dict):
+        kv.append(("분석에 쓴 항목", esc(_counts(meta["counted"], KEPT_LABEL))))
+    ex = meta.get("excluded") if isinstance(meta.get("excluded"), dict) else {}
+    exc = summ.get("excluded") if isinstance(summ.get("excluded"), dict) else ex
+    if exc:
+        kv.append(("모을 때 뺀 항목", esc(_counts(exc, EXCL_COLLECT))
+                   + "<div class=\"sub\">뺀 항목은 저장하지 않고 건수만 남깁니다</div>"))
+    if any(k in ex for k, _l in EXCL_ANALYSE):
+        kv.append(("분석할 때 뺀 항목", esc(_counts(ex, EXCL_ANALYSE))))
+    kv.append(("제한 고객 목록", _restricted_line(meta, cfg, root)))
+    try:
+        dl = [f"이 리포트 파일 {retention.expiry_date(cfg, 'html')}"]
+        if d["agentic_mtime"]:
+            dl.append(f"분석 결과(후보·워크플로우) {retention.expiry_date(cfg, 'result', when=d['agentic_mtime'])}")
+        days = {k: _int(afcfg.get(cfg, 'retention.' + k)) for k in ("rawDays", "intermediateDays")}
+        kv.append(("자동 삭제", esc(" · ".join(dl))
+                   + f"<div class=\"sub\">수집 자료는 마지막 수집 뒤 {days['rawDays']}일, 중간 자료는 {days['intermediateDays']}일이 "
+                   "지나면 지웁니다. 화면 [내 데이터] 탭에서 지금 지울 수 있고, [모두 지우기(서버 사본 포함)]는 조직장 서버에 보낸 "
+                   "사본까지 지웁니다</div>"))
+    except (ValueError, TypeError, OSError):
+        pass
+    warns = [str(x) for x in (meta.get("config_warnings") or []) if str(x).strip()]
+    if warns:
+        kv.append(("설정 경고", esc(" · ".join(warns[:8]) + (" …" if len(warns) > 8 else ""))))
+    return ("<div class=\"card\"><h2>1. 분석 개요</h2><table class=\"kv\">"
+            + "".join(f"<tr><th>{esc(k)}</th><td>{v}</td></tr>" for k, v in kv) + "</table></div>")
+
+
+def _local_candidates(d):
+    ag = d["agentic"]
+    h = ["<div class=\"card\"><h2>2. Agentic AI 전환 후보 <span class=\"state\">내 반복 업무에서 Agentic AI 로 바꿀 만한 "
+         "과제 · 근거건수 = 근거가 된 내 업무의 메일·회의 수</span></h2>"]
+    cands = _candidates(d)
+    for n, cnt, tt in cands:
+        h.append("<div class=\"cand\"><div class=\"nm\">" + esc(str(n.get("name")).strip()) + " " + _worktype(tt)
+                 + (f"<span class=\"state\">근거 {cnt:,}건</span>" if cnt is not None else "") + "</div>"
+                 + (f"<div class=\"ln\"><b>동작 로직</b>{esc(n.get('logic'))}</div>" if n.get("logic") else "")
+                 + (f"<div class=\"ln\"><b>발굴 사유</b>{esc(n.get('reason'))}</div>" if n.get("reason") else "")
+                 + "</div>")
+    if not ag:
+        h.append("<div class=\"note\">후보 발굴 결과가 없습니다 — 화면의 [Agentic AI 후보] 탭에서 만들 수 있습니다.</div>")
+    elif not cands:
+        h.append("<div class=\"note\">근거가 충분한 후보가 없습니다.</div>")
+    if _int(ag.get("failed_chunks")):
+        h.append(f"<div class=\"warn\">판정 묶음 {_int(ag.get('chunks')) or '?'}개 중 {_int(ag.get('failed_chunks'))}개를 "
+                 "판정하지 못했습니다 — 후보가 실제보다 적을 수 있습니다</div>")
+    if _int(ag.get("rule_rows")):
+        h.append(f"<div class=\"note\">AI 판정을 기다리는 업무 {_int(ag.get('rule_rows'))}행은 아직 후보 찾기에 보내지 않았습니다.</div>")
+    h.append("</div>")
     return "".join(h)
 
 
-def _fmt_days(v):
-    """일수 값 — {date: subject}·[date…]·숫자 모두 표시(날짜 앞 12개)"""
-    if isinstance(v, dict):
-        items = sorted(v.items())
-        return f"{len(items)}일" + (" — " + " · ".join(
-            f"{str(k)[5:]} {str(x)[:24]}" if x not in (None, True, "") else str(k)[5:] for k, x in items[:12])
-            + (" …" if len(items) > 12 else "") if items else "")
-    if isinstance(v, (list, tuple)):
-        return f"{len(v)}일" + (" — " + " · ".join(str(x)[5:] if len(str(x)) >= 10 else str(x) for x in v[:12])
-                               + (" …" if len(v) > 12 else "") if v else "")
-    return f"{_n(v)}일"
-
-
-# ══ LM28(WP9) 새 절 — 순수 함수(파일을 읽지 않는다 · 분석리포트 freeze.py 도 같은 함수를 쓴다) ═══════════════════
-# 표기(REQ-27·W2-18): 업무 영역(Level 1) / 과제(Level 2) / 세부업무(Level 3) / 업무분류(유형 — 개발·사무·현장·협업).
-FLOOR_KIND_KO = {"spans": "PC 하한(가동 구간)", "window": "PC 하한(가동 창 − 절전 공백)", "nowin": "PC 하한(창 정보 없음)",
-                 "always_on": "PC 하한(늘 켜 둔 PC — 흔적 ±30분)", "trace": "흔적 창(PC 기록 없음)",
-                 # LM28(E) — 브라우저 기록만 있는 날의 흔적 창 · PC 기록 없는 달의 표준일 추정(어디서나 '표준일 추정') · 날짜만 아는 발신
-                 "trace_hint": "흔적 창(브라우저 사용)", "std_nopc": "표준일 추정(PC 기록 없는 달)",
-                 "untimed": "시각 미상 발신"}
-CUT_KO = {"lunch_h": "점심", "dinner_h": "저녁 식사", "sleep_gap_h": "절전·꺼짐 공백", "half_day": "반차",
-          "day_cap_11h": "하루 상한 11h"}
-TAG_KO = (("regular_h", "정규"), ("extended_h", "연장"), ("night_h", "야간(22~06)"), ("holiday_h", "휴일"),
-          ("holiday_night_h", "휴일 중 야간"))
-# 직접 관계 — CC·단체·수신전용(bulk)은 빼고 센다. 팀즈 웹이 날짜만 짚은 남의 글('팀즈(수신·일자)' — LM28 E)은 단체·오더가
-# 한 라벨로 섞여 직접 관계를 가를 수 없어 세지 않는다(단체 채팅 상대가 동료로 부풀지 않게).
-PEER_DIRECT = ("메일(수신)", "팀즈(수신)", "팀즈(오더)", "회의")
-PEER_REL = {"메일(수신)": "메일", "팀즈(수신)": "팀즈", "팀즈(오더)": "의뢰(팀즈)", "회의": "회의"}
-MEETING_MAX = 10                                                  # 이보다 큰 회의로만 엮인 사람은 동료가 아니다(A-37)
-FLOOR_WHY = [
-    "디지털 신호는 시각의 '점'이라 신호만 이으면 '3시간 작업 후 저장 1번' 이 1시간 미만이 된다. 그날 일했다는 "
-    "<b>능동 증거</b>가 있을 때만, PC 가 실제로 켜져 있던 주간 구간을 근무의 바닥값(하한)으로 쓴다.",
-    "창 08:00~19:00 의 근거: ① 법정 1일 근로 8시간(근로기준법 제50조 제2항) + 8시간 근로 시 휴게 1시간 이상(제54조 제1항) "
-    "→ 정규 09~18(체류 9h) ② 시차출퇴근(08~10시 출근) 여유 앞뒤 1h ③ PC 가동 수집기가 08시·19시 경계로 주간·야간을 나눠 "
-    "적산하므로 같은 경계를 써야 주간·야간 숫자가 맞는다(LM20·LM24 와 같은 값 — 팀 비교 연속성).",
-    "열리는 조건: 그날 능동 흔적(산출물 저장·발신·수락한 회의·창 샘플러·종일 행사·수동 기록)이 있어야 열린다. 수신·CC 만 "
-    "있는 날은 닫힌다(단 수동 흔적 8통 이상이 3시간 이상에 걸치면 연다 — mm.passiveFloorMinN·passiveFloorMinH).",
-    "깎는 것: PC 꺼짐·절전 공백, 흔적 없는 점심 12~13시, 야근일 흔적 없는 저녁 식사, 하루 상한 11h. "
-    "반차인 날은 바닥값을 표준일의 절반까지만 둡니다 — 나머지 반나절은 유급휴가라 일하지 않은 날로 세지 않고 가용에서 뺍니다. "
-    "창 샘플러가 덮은 시간은 하한 대신 실측을 쓴다.",
-    "퇴근 후: 퇴근 경계(PC 하한 창 끝, 기본 19:00 — 그 뒤 PC 를 켰으면 켠 시각)부터 마지막 저녁 산출물 시각까지 전체를 "
-    "인정한다(+30분 꼬리 없음). PC 밖 발신은 발신 세션만 인정하고 따로 센다.",
-    "한계와 선택: PC 를 08~19 켜 두고 흔적이 하나라도 있으면 최대 10h 가 잡힐 수 있다(정규 09~18 근무자의 08~09·18~19 포함). "
-    "정규 시간만 바닥으로 쓰려면 mm.pcFloorWindow=[9,18](퇴근 경계도 18:00 이 됨). 이 보고서에 쓴 값은 아래 '산식 설정' 에 남는다.",
-]
-# ── LM30(2026-10-18) 출퇴근 추정 — 투입 MM 을 맡았으면 꼬리표·초과근무 줄은 그 값이고, LM29 의 PC 하한·저녁 인정 줄은 비교용 근거다 ──
-LM29_TAG = "LM29 방식(비교용) 근거"
-ATT_TAG_KO = {"night_h": "야간(22~06 — 위 시간과 겹쳐 셈)", "holiday_night_h": "휴일 중 야간(겹쳐 셈)"}
-LM29_ONLY = ("pc_floor_h", "pc_floor_days", "lunch_deducted_h", "evening_credit_h", "weekend_window_h",
-             "floor_blocked_passive_days", "dinner_deducted_h", "flex_edge_h", "sampler_bridge_h", "trace_window_days",
-             "trace_window_h", "pc_record_missing_days", "passive_capped_days", "weekend_pc_days", "sim_night")
-ATT_LABEL = {"overtime_h": "초과근무(h — 연장 + 휴일, 출퇴근 추정)", "night_days": "20시 넘어 퇴근한 날(일)",
-             "weekend_days": "주말·휴일 근무(일)", "absent_worked_h": "휴가일 근무(h)"}
-ATT_DOW = "월화수목금토일"
-
-
-def _leave_report_lines(meta, b, att=None, local=True):
-    r"""유급휴가 줄(1절·8절 — core\attendance 머리말 22 · leave_lines_for). local(이 PC 의 리포트)이면 날짜까지, 아니면(공유폴더로 복사되는
-    분석리포트) 일수만."""
-    import attendance as _at
-    return _at.leave_lines_for(meta, b, att, local=local)
-
-
-def att_used(meta, b):
-    """출퇴근 추정이 투입 MM 을 맡았나 — mm_basis.attendance.used_for_mm 또는 measure.method == '출퇴근 추정'."""
-    a = _obj(_pick(meta, b, "attendance")) or {}
-    if a.get("used_for_mm"):
-        return True
-    ms = _obj(_pick(meta, b, "measure")) or {}
-    return ms.get("method") == "출퇴근 추정"
-
-
-def attendance_section(meta, b, att=None, per_day=True, max_days=31, max_weeks=26):
-    r"""8절 '출퇴근·시간외 근무'(LM30 2026-10-18 — 순수 함수 · 분석리포트 freeze.py 도 같은 함수) → HTML 조각 목록(출퇴근 추정이 없으면 []).
-      meta·b = mm_meta·mm_basis — 달·주·전체 합계·근태 기록 비교 합계(시각 없음) · att = report\attendance_<기간>.json(이 PC 전용 —
-      날짜별 출근·퇴근·평소 시각). per_day=False(공유폴더로 복사되는 분석리포트)면 att 를 쓰지 않는다 — 날짜별 표·평소 시각이 없다.
-    담는 것: 결론 한 줄(가장 최근 달) · 재는 법 · 달 합계 표 · 주 합계 표(최근 max_weeks 주) · 평소 출근·퇴근 · 날짜별 표(최근 max_days 일) ·
-    근태 기록 비교 · 무엇이 이 PC 에만 있나. 문구는 core\attendance(화면 카드와 같은 함수).
-    LM30(2026-10-19) +@ — 맨 위 +@ 줄 · 설명 줄 · 달·주 표의 +@ 칸 · 날짜별 표의 근태 출근·퇴근·입실·퇴실·+@·까닭. 근태 기록과 견준
-    값(attendance 파일 agg 의 근태 칸 — attendance.hr_view)은 per_day 일 때만(이 PC 리포트). 합계는 늘 근태 칸을 뺀 사본(strip_hr)이고,
-    per_day=False 면 +@ 는 근태 없이 추정한 값·근태 기록 비교 줄은 '본인 PC 에서만'(attendance.FROZEN_REC_TEXT)이다."""
-    import copy
-
-    import attendance as _at
-    from datetime import date, timedelta
-    att = att if (per_day and isinstance(att, dict)) else {}
-    agg = copy.deepcopy(_obj(_pick(meta, b, "attendance")) or _obj(att.get("agg")) or {})
-    _at.strip_hr(agg)                                   # 근태 칸은 hr 로만(옛 mm_meta 에 남은 것도 뺀다)
-    hr = _at.hr_view(att.get("agg")) if per_day and att else None
-    months = agg.get("months") if isinstance(agg.get("months"), dict) else {}
-    weeks = agg.get("weeks") if isinstance(agg.get("weeks"), dict) else {}
-    if not months:
-        return []
-    cu = _obj(_pick(meta, b, "cfg_used")) or {}
-    p = cu.get("attendance") if isinstance(cu.get("attendance"), dict) else {}
-    wk_h = _h(p.get("weekHours")) or float(_at.DEFAULTS["weekHours"])
-    per = meta.get("period") if isinstance(meta.get("period"), list) else []
-    d1 = str(per[-1])[:10] if per else ""
-    std = cu.get("standardDayHours")
-    h_mo = (hr or {}).get("months") or {}
-    h_wk = (hr or {}).get("weeks") or {}
-
-    def h1(v):
-        return f"{_h(v):.1f}h"
-
-    def plus_td(v, hv):
-        """+@ 칸 — 근태와 견준 칸이 있으면 합(굵게), 없으면 추정"""
-        if isinstance(hv, dict) and "plus_all_h" in hv:
-            return f"<td><b>{h1(hv.get('plus_all_h'))}</b></td>"
-        return f"<td>{h1(_at.est_of(v))}</td>"
-    h = ["<h3 style='font-size:14px;margin:18px 0 4px'>출퇴근·시간외 근무</h3>",
-         f"<div><b>{esc(_at.plus_line(agg, hr, d1, None, std))}</b></div>",
-         f"<div><b>{esc(_at.headline(agg, d1))}</b> — "
-         + ("이 근무시간으로 투입 MM을 쟀습니다." if agg.get("used_for_mm")
-            else "투입 MM은 LM29 방식으로 쟀습니다(이 절은 참고 — 설정 attendance.useForMM).") + "</div>",
-         f"<div class='dim'>{esc(_at.plus_note(std))}</div>",
-         f"<div class='dim'>{esc(_at.rule_text(p or None, cu.get('standardDayHours'), cu.get('nightWindow'), cu.get('pcFloorWindow')))}"
-         "</div>"]
-    # LM30(2026-10-21) 유급휴가 줄 — 이 PC 리포트는 날짜까지, 분석리포트(per_day=False — 공유폴더로 복사)는 일수만(머리말 22)
-    for i, t in enumerate(_leave_report_lines(meta, b, att, local=per_day)):
-        h.insert(3 + i, f"<div>{esc(t)}</div>")
-    plus_th = "<th>+@</th>" if hr else "<th>+@(추정)</th>"
-    tot = agg.get("total") if isinstance(agg.get("total"), dict) else {}
-    # LM30(2026-10-19) 시간외 나눠 보기 — 저녁(19~22시) 칸(evening_h 가 있는 합계만 — 예전 합계면 칸이 없다) · 분석 기간 한 줄 ·
-    # 발신 흔적 빈 곳 경고(mm_basis.send_gap — 건수만 본 고정 문구). 모두 합계뿐이라 분석리포트(공유폴더 사본)에도 실린다
-    ev_on = any(isinstance(v, dict) and "evening_h" in v for v in list(months.values()) + [tot])
-    sg_t = _at.send_gap_text(_obj(_pick(meta, b, "send_gap")))
-    if sg_t:
-        h.insert(1, f"<div style='color:#b54708'><b>{esc(sg_t)}</b></div>")
-    # LM30(2026-10-21) 달마다 근거 — 하루 8시간으로 채운 달·발신 0건인 달·Windows 보관 주 수(일수·건수만 — 분석리포트에도)
-    sg0 = _obj(_pick(meta, b, "send_gap")) or {}
-    pm_lines = _at.month_lines(_obj(_pick(meta, b, "pc_months")) or {}, (sg0.get("months") or []) if sg0.get("warn") else (),
-                               _obj(_pick(meta, b, "pc_log")))
-    for i, t in enumerate(pm_lines):
-        h.insert(1 + (1 if sg_t else 0) + i, f"<div style='color:#b54708'><b>{esc(t)}</b></div>")
-    h.append("<table><tr><th>월</th><th>근무</th><th>정규</th><th>연장</th>" + ("<th>저녁(19~22시)</th>" if ev_on else "")
-             + "<th>야간</th><th>휴일</th><th>PC 밖</th>"
-             "<th>LM29 방식</th><th>근무일</th><th>20시 넘은 퇴근</th><th>휴가일 근무</th><th>52시간 넘은 주</th>"
-             + plus_th + "</tr>")
-    for lab, v in [(mk, months[mk]) for mk in sorted(months)] + ([("합계", tot)] if tot else []):
-        v = v if isinstance(v, dict) else {}
-        b0, b1 = ("<b>", "</b>") if lab == "합계" else ("", "")
-        hv = (hr or {}).get("total") if lab == "합계" else h_mo.get(lab)
-        h.append(f"<tr><td>{b0}{esc(lab)}{b1}</td><td><b>{h1(v.get('work_h'))}</b></td><td>{h1(v.get('regular_h'))}</td>"
-                 f"<td>{h1(v.get('ext_h'))}</td>" + (f"<td>{h1(v.get('evening_h'))}</td>" if ev_on else "")
-                 + f"<td>{h1(v.get('night_h'))}</td><td>{h1(v.get('holiday_h'))}</td>"
-                 f"<td>{h1(v.get('offpc_h'))}</td><td>{h1(v.get('lm29_h'))}</td><td>{_n(v.get('days'))}일</td>"
-                 f"<td>{_n(v.get('late_days'))}일</td><td>{_n(v.get('leave_work_days'))}일</td>"
-                 f"<td>{_n(v.get('over52_weeks'))}주</td>" + plus_td(v, hv) + "</tr>")
-    h.append("</table>")
-    if tot:
-        h.append(f"<div class='dim'><b>시간외(분석 기간)</b> — "
-                 f"{esc(_at.offhours_line(tot, cu.get('nightWindow'), bool(agg.get('used_for_mm'))))}</div>")
-    # LM30(2026-10-20) PC 사용 시간 줄(attendance 머리말 19 — 분석 기간 PC 를 쓴 시간·켜 둔 날 · 합계뿐이라 분석리포트에도)
-    for t in _at.pc_usage_lines(tot, cu.get("pcFloorWindow")):
-        h.append(f"<div class='dim'>{esc(t)}</div>")
-    if hr:
-        ht = hr.get("total") if isinstance(hr.get("total"), dict) else {}
-        h.append(f"<div class='dim'>+@ 나눔(분석 기간 전체) — 근태 기록과 견준 것 {h1(ht.get('plus_h'))} · 기록 없이 추정한 것 "
-                 f"{h1(ht.get('plus_est_h'))} · 그중 PC 밖 {h1(_h(ht.get('plus_offpc_h')) + _h(ht.get('plus_est_offpc_h')))} · "
-                 f"근태 시간 중 PC 흔적 없는 시간 {h1(ht.get('missing_h'))}(참고) · 입실·퇴실로 본 근태 밖 체류 "
-                 f"{h1(ht.get('gate_plus_h'))}(참고)</div>")
-    wk = sorted(((k, v) for k, v in weeks.items() if isinstance(v, dict)), reverse=True)[:max_weeks]
-    if wk:
-        h.append(f"<div class='dim'>주 합계(월~일) — 최근 {len(wk)}주"
-                 + (f"(전체 {len(weeks)}주 중)" if len(weeks) > len(wk) else "")
-                 + f" · {wk_h:g}시간 초과 = 그 주 근무에서 {wk_h:g}시간을 넘은 시간 · '일부' = 분석 기간에 걸친 주</div>")
-        h.append(f"<table><tr><th>주(월~일)</th><th>근무</th><th>연장</th><th>야간</th><th>휴일</th><th>PC 밖</th>"
-                 f"<th>{wk_h:g}시간 초과</th><th>52시간</th>{plus_th}</tr>")
-        for k, w in wk:
-            o52 = "<b style='color:#c0122f'>넘음</b>" if w.get("over52") else "–"
-            h.append(f"<tr><td>{esc(str(w.get('from'))[5:])}~{esc(str(w.get('to'))[5:])}"
-                     + (" <span class='dim'>일부</span>" if w.get("partial") else "") + "</td>"
-                     f"<td><b>{h1(w.get('work_h'))}</b></td><td>{h1(w.get('ext_h'))}</td><td>{h1(w.get('night_h'))}</td>"
-                     f"<td>{h1(w.get('holiday_h'))}</td><td>{h1(w.get('offpc_h'))}</td>"
-                     f"<td>{h1(w.get('over40_h')) if _h(w.get('over40_h')) > 0 else '–'}</td><td>{o52}</td>"
-                     + plus_td(w, h_wk.get(k)) + "</tr>")
-        h.append("</table>")
-    days = att.get("days") if isinstance(att.get("days"), dict) else {}
-    if per_day and att:
-        h.append(f"<div class='dim'>{esc(_at.usual_text(att.get('usual')))}</div>")
-    try:
-        end = date.fromisoformat(d1 or str(max(days))[:10]) if days else None
-    except ValueError:
-        end = None
-    if per_day and days and end is not None:
-        lo = (end - timedelta(days=max_days - 1)).isoformat()
-        rows = [(k, days[k]) for k in sorted(days, reverse=True)
-                if isinstance(days[k], dict) and lo <= str(k)[:10] <= end.isoformat()]
-        h.append(f"<div class='dim'>날짜별 출근·퇴근 — 최근 {max_days}일({len(rows)}일 · 최신순) · 근거 = 출근 쪽 → 퇴근 쪽 · "
-                 "+@ = 근태 기록 밖 근무(근태 기록이 없는 날은 추정)</div>"
-                 "<table><tr><th>날짜(요일)</th><th>출근</th><th>퇴근</th><th>근무</th><th>연장</th><th>야간</th><th>휴일</th>"
-                 "<th>PC 밖</th><th>LM29 방식</th><th>근거</th><th>확실성</th>"
-                 "<th>근태 출근·퇴근</th><th>입실·퇴실</th><th>+@</th><th>+@ 까닭</th></tr>")
-        for k, r in rows:
-            try:
-                dow = ATT_DOW[date.fromisoformat(str(k)[:10]).weekday()]
-            except ValueError:
-                dow = ""
-            lv = (("다음 날 " if _n(r.get("leave_day")) > 0 else "") + str(r.get("leave"))) if r.get("leave") else "–"
-            rc = r.get("rec") if isinstance(r.get("rec"), dict) else None
-            pl = _at.day_plus(r, std)
-            pv = (f"<b>{h1(pl['h'])}</b>" + (" <span class='dim'>추정</span>" if pl["est"] else "")) if pl["h"] > 0 else "–"
-            h.append(f"<tr><td>{esc(str(k)[5:10])}({dow})</td><td>{esc(r.get('arrive') or '–')}</td><td>{esc(lv)}</td>"
-                     f"<td><b>{h1(r.get('work_h'))}</b></td><td>{h1(r.get('ext_h'))}</td><td>{h1(r.get('night_h'))}</td>"
-                     f"<td>{h1(r.get('holiday_h'))}</td><td>{h1(r.get('offpc_h'))}</td><td>{h1(r.get('lm29_h'))}</td>"
-                     f"<td class='dim'>{esc(_at.day_why(r, p or None))}</td>"
-                     f"<td>{esc(_at.CONF_KO.get(r.get('conf'), '–'))}</td>"
-                     f"<td>{esc(_rec_span(rc))}</td><td>{esc(_gate_span(rc))}</td><td>{pv}</td>"
-                     f"<td class='dim'>{esc(pl['why'])}</td></tr>")
-        h.append("</table>")
-    h.append(f"<div class='dim'><b>근태 기록 비교</b> — "
-             f"{esc(_at.records_text((hr or {}).get('records')) if per_day else _at.FROZEN_REC_TEXT)}</div>")
-    h.append("<div class='dim'>" + ("날짜별 출근·퇴근 추정 시각과 근태 기록(GERP 포함)에서 나온 값은 이 PC의 이 리포트와 대시보드에만 "
-                                    "있습니다 — 팀 서버와 공유폴더로 복사되는 보고서에는 근태 기록 없이 잰 주·달 합계 시간만 갑니다."
-                                    if per_day else
-                                    "날짜별 출근·퇴근 시각과 근태 기록은 본인 PC의 대시보드·리포트에서만 보입니다 — 이 분석리포트에는 "
-                                    "주·달 합계만 담았습니다.") + "</div>")
-    return h
-
-
-def _rec_span(rc):
-    """날짜별 행의 rec → '근태 출근·퇴근' 칸 글(LM30 2026-10-19 — 이 PC 리포트만)"""
-    if not isinstance(rc, dict):
-        return "–"
-    if rc.get("in") and rc.get("out"):
-        return f"{rc['in']}~" + ("다음 날 " if _n(rc.get("out_day")) > 0 else "") + str(rc["out"])
-    if _h(rc.get("leave")) >= 1:
-        return "휴가"
-    return "기록 없음" if rc.get("missing") else "시각 없음"
-
-
-def _gate_span(rc):
-    """날짜별 행의 rec → '입실·퇴실' 칸 글(태깅 — 참고)"""
-    if not isinstance(rc, dict) or not (rc.get("gate_in") or rc.get("gate_out")):
-        return "–"
-    return (f"{rc.get('gate_in') or '?'}~" + ("다음 날 " if _n(rc.get("gate_out_day")) > 0 else "")
-            + str(rc.get("gate_out") or "?"))
-
-
-def day_method(db):
-    """day_basis[날짜] → 그날 어느 방식으로 셌나(종일 행사·수동 기록·흔적 창·PC 하한·표준일 추정·시각 미상 발신·
-    샘플러/흔적 실측). 0h 날(LM28 E — 0h 평일도 day_basis 에 남는다)은 흔적 없음(PC 기록도 없으면 기록 없음).
-    LM30(2026-10-21) 하루 휴가인 0h 날은 '유급휴가', 휴가로 본 평일(inf — PC 기록도 흔적도 없어 휴가로 보고 가용에서 뺀 날)은
-    '휴가로 본 평일'(core\\attendance 머리말 22 — 일하지 않은 날로 보이지 않게)."""
-    db = db if isinstance(db, dict) else {}
-    if db.get("offsite"):
-        return "종일 행사"
-    if db.get("manual"):
-        return "수동 기록"
-    fl = db.get("floor") if isinstance(db.get("floor"), dict) else None
-    if fl:
-        m = FLOOR_KIND_KO.get(str(fl.get("kind") or ""), "PC 하한")
-        return m + (" · 표준일 추정" if fl.get("est") and "표준일 추정" not in m else "")
-    if _h(db.get("h")) <= 0:
-        if _h(db.get("absent")) >= 1:
-            return "유급휴가"
-        if db.get("inf"):
-            return "휴가로 본 평일"
-        pc = db.get("pc") if isinstance(db.get("pc"), dict) else {}
-        return "기록 없음" if str(pc.get("rec") or "") == "none" else "흔적 없음"
-    return "샘플러·흔적 실측"
-
-
-INF_DAY_TEXT = "PC 기록도 흔적도 없는 평일 — 휴가로 보고 가용에서 뺐습니다"      # LM30(2026-10-21) 휴가로 본 평일(inf)의 '퇴근 후·시각' 칸
-
-
-def after_text(db, edge="19:00"):
-    """'퇴근 후·시각' 칸(LM28 E) — 퇴근 경계 뒤 PC 가동·내 흔적·받은 흔적·인정한 창·빠진 이유(ev) · 날짜만 아는 발신(untimed) ·
-    AI 비업무 발신 시간 유지(ai_n_kept) · PC 기록 종류(브라우저 기록만·항상 켜짐) · 유급휴가(하루·반차) · 휴가로 본 평일(inf).
-    edge = 퇴근 경계(하한 창 끝)."""
-    db = db if isinstance(db, dict) else {}
-    bits = []
-    ev = db.get("ev") if isinstance(db.get("ev"), dict) else {}
-    why = str(ev.get("why") or "")
-    if why == "no_active_after":
-        bits.append(f"PC {edge} 이후 {_h(ev.get('pc_after_h')):.1f}h · 내 흔적 0 · 받은 {_n(ev.get('pas_after'))} → 미인정")
-    elif why == "credited":
-        bits.append(f"퇴근 후 {_h(ev.get('credit_h')):.1f}h 인정")
-    elif why == "capped":
-        bits.append(f"PC 야간 가동 한도로 일부만 인정 {_h(ev.get('credit_h')):.1f}h")
-    elif why == "no_pc_after":
-        bits.append(f"내 흔적 {_n(ev.get('act_after'))}건 · 퇴근 후 PC 기록 없음(발신 세션만)")
-    un = db.get("untimed") if isinstance(db.get("untimed"), dict) else {}
-    if _n(un.get("n")):
-        cm = _n(un.get("credit_min"))
-        bits.append(f"날짜만 아는 발신 {_n(un.get('n'))}통" + (f"({cm}분 인정)" if cm else "(하한에 포함)"))
-    if _n(db.get("ai_n_kept")):
-        bits.append(f"AI 비업무 발신 {_n(db.get('ai_n_kept'))}건 시간 유지")
-    pc = db.get("pc") if isinstance(db.get("pc"), dict) else {}
-    if str(pc.get("rec") or "") == "hint":
-        bits.append("브라우저 기록만")
-    if pc.get("always_on"):
-        bits.append("PC 항상 켜짐")
-    ab = _h(db.get("absent"))
-    if ab > 0:
-        bits.append("유급휴가(하루)" if ab >= 1 else f"반차(유급휴가 {ab:g}일)")
-    elif db.get("inf"):
-        bits.append(INF_DAY_TEXT)
-    return " · ".join(bits)
-
-
-def time_basis_line(meta, b):
-    """LM28(E) 시간 근거 합계 한 줄 — 퇴근 후 미인정·시각 미상 발신·표준일 추정(PC 기록 없는 달)·브라우저 기록만 있는 평일·
-    AI 비업무 발신 시간 유지(값이 있는 것만, 없으면 ""). mine 요약 줄·대시보드 MM 카드와 같은 숫자(mm_basis 키 — 재산정 뒤에는
-    judge 가 바꾼 mm_basis · ai_n_time_kept 는 mm_meta 최상위에도 있다)."""
-    bits = []
-    if _n(_pick(meta, b, "evening_missed_days")):
-        bits.append(f"퇴근 후 미인정 {_n(_pick(meta, b, 'evening_missed_days'))}일·PC "
-                    f"{_h(_pick(meta, b, 'evening_missed_pc_h')):.1f}h(퇴근 뒤 PC 는 켜져 있었는데 내 흔적 없음)")
-    if _n(_pick(meta, b, "untimed_sends")):
-        bits.append(f"시각 미상 발신 {_n(_pick(meta, b, 'untimed_sends'))}통"
-                    f"({_h(_pick(meta, b, 'untimed_credit_h')):.1f}h 인정)")
-    if _n(_pick(meta, b, "std_nopc_days")):
-        bits.append(f"표준일 추정 {_n(_pick(meta, b, 'std_nopc_days'))}일"
-                    f"(+{_h(_pick(meta, b, 'std_nopc_h')):.1f}h — PC 기록 없는 달)")
-    if _n(_pick(meta, b, "hint_only_days")):
-        bits.append(f"브라우저 기록만 있는 평일 {_n(_pick(meta, b, 'hint_only_days'))}일")
-    if _n(_pick(meta, b, "ai_n_time_kept")):
-        bits.append(f"AI 비업무 발신 시간 유지 {_n(_pick(meta, b, 'ai_n_time_kept'))}건")
-    return " · ".join(bits)
-
-
-def floor_day_rows(day_basis, limit=None, edge="19:00", lm29=False):
-    """day_basis → [{date, h, method, open, add_h, cut, tags, extra, after}] **최신순**(LM28 E — 0h 평일·흔적 있는 휴일 포함 ·
-    after = '퇴근 후·시각' 칸). limit 이면 최근 limit 일만.
-    LM30(2026-10-18): lm29=True(출퇴근 추정이 투입을 맡은 결과)면 이 표는 'LM29 방식(비교용) 근거' 다 — h 는 LM29 방식 시간(lm29_h)이고
-    꼬리표 칸은 비운다(날짜별 꼬리표가 출퇴근 추정 값으로 바뀌었다). 출퇴근 추정 시간은 그 밖 칸에 적는다."""
-    out = []
-    for d in sorted(((day_basis or {}) if isinstance(day_basis, dict) else {}), reverse=True):
-        db = day_basis[d] if isinstance(day_basis[d], dict) else {}
-        att = db.get("att") if isinstance(db.get("att"), dict) else {}
-        l29v = bool(lm29 and att and db.get("lm29_h") is not None)
-        if l29v:
-            db = dict(db, h=db.get("lm29_h"))
-        fl = db.get("floor") if isinstance(db.get("floor"), dict) else {}
-        cut = fl.get("cut") if isinstance(fl.get("cut"), dict) else {}
-        # LM30(2026-10-21) 반차는 깎은 것이 아니다(유급휴가 — '퇴근 후·시각' 칸이 '반차(유급휴가 0.5일)'로 보인다)
-        cut_s = " · ".join(f"{CUT_KO.get(k, k)} {_h(v):.2f}h" for k, v in cut.items() if v and k != "half_day")
-        tags = db.get("tags") if isinstance(db.get("tags"), dict) and not l29v else {}
-        tag_s = " · ".join(f"{lab} {_h(tags.get(k[:-2])):.1f}h" for k, lab in TAG_KO if _h(tags.get(k[:-2])) > 0)
-        extra = []
-        if db.get("evening"):
-            extra.append("저녁 " + ", ".join("~".join(str(x) for x in w) for w in db["evening"] if isinstance(w, list)))
-        elif _h(db.get("evening_h")) > 0:
-            # LM30(2026-10-18) — mm_meta 에는 저녁 창의 시각 대신 길이만 남는다(날짜별 시각은 이 PC 의 attendance 파일에만)
-            extra.append(f"저녁 {_h(db.get('evening_h')):.1f}h")
-        conf_ko = ({'high': '높음', 'mid': '보통', 'low': '낮음'}).get(att.get('conf'), '–') if att else ""
-        if l29v:
-            extra.append(f"출퇴근 추정 {_h(att.get('work')):.2f}h(신뢰도 {conf_ko})")
-        elif att:
-            extra.append(f"출퇴근 추정 신뢰도 {conf_ko}"
-                         + (f" · LM29 방식 {_h(db.get('lm29_h')):.2f}h" if db.get("lm29_h") is not None else ""))
-        if db.get("remote_send"):
-            extra.append(f"PC 밖 발신 {_n(db.get('remote_send'))}통")
-        if db.get("private_min"):
-            extra.append(f"사적 차감 {_n(db.get('private_min'))}분")
-        out.append({"date": d, "h": _h(db.get("h")), "method": day_method(db),
-                    "open": ", ".join(str(x) for x in (fl.get("open") or [])),
-                    "add_h": _h(fl.get("add_h")), "cut": cut_s, "tags": tag_s, "extra": " · ".join(extra),
-                    "after": after_text(db, edge)})
-    return out[:limit] if limit else out
-
-
-def floor_section(meta, b, max_rows=62):
-    """'산출 방식 — PC 가동 하한의 근거' 절(★ 사용자 지시 2026-10-07 ②) → HTML 조각 목록.
-    LM28(E): 날짜표는 최신순(최근 max_rows 일)이고 0h 평일도 들어간다 · '퇴근 후·시각' 열 · 표 위에 시간 근거 합계 한 줄.
-    LM30(2026-10-18): 출퇴근 추정이 투입을 맡았으면(att_used) 이 절은 'LM29 방식(비교용) 근거' 다 — 제목·합계 줄·표 머리를 그렇게 적고
-    날짜표의 시간은 LM29 방식 시간이다(floor_day_rows lm29=True)."""
-    cu = b.get("cfg_used") if isinstance(b.get("cfg_used"), dict) else (meta.get("cfg_used") or {})
-    cu = cu if isinstance(cu, dict) else {}
-    a_on = att_used(meta, b)
-    win = cu.get("pcFloorWindow")
-    win_s = "~".join(str(x) for x in win) if isinstance(win, (list, tuple)) else "08:00~19:00"
-    edge = str(win[1]) if isinstance(win, (list, tuple)) and len(win) == 2 and win[1] else "19:00"
-    head = (f"<h2>{LM29_TAG} — PC 가동 하한</h2><div class='dim'>투입 MM은 출퇴근 추정으로 쟀습니다(위 '출퇴근·시간외 근무'). "
-            "아래는 LM29 방식으로 쟀다면의 근거로, 비교용입니다. " if a_on else
-            "<h2>산출 방식 — PC 가동 하한의 근거</h2><div class='dim'>")
-    h = [head + f"이 보고서의 하한 창: <b>{esc(win_s)}</b>"
-         + (f" · 근거 문구: {esc(cu.get('floorBasis'))}" if cu.get("floorBasis") else "") + "</div><ul>"]
-    h += [f"<li style='margin:3px 0'>{t}</li>" for t in FLOOR_WHY]
-    h.append("</ul>")
-    tb = time_basis_line(meta, b)
-    if tb:
-        h.append(f"<div class='dim'><b>시간 근거 합계{'(LM29 방식)' if a_on else ''}</b> — {esc(tb)}</div>")
-    rows = floor_day_rows(b.get("day_basis") or meta.get("day_basis"), edge=edge, lm29=a_on)
-    if rows:
-        cnt = {}
-        for r in rows:
-            cnt[r["method"]] = cnt.get(r["method"], 0) + 1
-        h.append("<div class='dim'>날짜별로 어느 방식으로 셌는지 — " + esc(" · ".join(f"{k} {v}일" for k, v in
-                                                                         sorted(cnt.items(), key=lambda x: -x[1])))
-                 + (f" (최근 {max_rows}일만 표시 · 전체는 mm_meta 의 mm_basis.day_basis)" if len(rows) > max_rows else "")
-                 + "</div>")
-        h.append(f"<table><tr><th>날짜</th><th>{'LM29 방식' if a_on else '인정'}</th><th>방식</th><th>하한을 연 흔적</th>"
-                 "<th>하한이 더한 시간</th><th>깎은 것</th><th>꼬리표</th><th>퇴근 후·시각</th><th>그 밖</th></tr>")
-        for r in rows[:max_rows]:
-            h.append(f"<tr><td>{esc(r['date'])}</td><td>{r['h']:.2f}h</td><td>{esc(r['method'])}</td>"
-                     f"<td class='dim'>{esc(r['open']) or '–'}</td>"
-                     f"<td>{(format(r['add_h'], '.2f') + 'h') if r['add_h'] else '–'}</td>"
-                     f"<td class='dim'>{esc(r['cut']) or '–'}</td><td class='dim'>{esc(r['tags'])}</td>"
-                     f"<td class='dim'>{esc(r['after']) or '–'}</td>"
-                     f"<td class='dim'>{esc(r['extra'])}</td></tr>")
-        h.append("</table>")
-    return h
-
-
-def overtime_rows(meta, b):
-    """8절 초과근무 세분(A-22) — [(라벨, 값 문자열)]. 값이 없는 키는 뺀다.
-    LM30(2026-10-18): 출퇴근 추정이 투입을 맡았으면(att_used) 꼬리표 줄은 출퇴근 추정 값(야간은 겹쳐 셈)이고, LM29 에만 있는 줄
-    (퇴근 후 인정 창·사적 차감·PC 밖 발신 통수·야간 해석 CPU)은 'LM29 방식(비교용) 근거' 로 적는다."""
-    a_on = att_used(meta, b)
-    pre = f"{LM29_TAG} — " if a_on else ""
-    out = []
-    for k, lab in TAG_KO:
-        v = _pick(meta, b, k)
-        if v is not None:
-            out.append((f"출퇴근 추정 — {ATT_TAG_KO.get(k, lab)}(h)" if a_on else f"근무 꼬리표 — {lab}(h)",
-                        f"{_h(v):.1f}h"))
-    for k, lab in (("evening_window_h", "퇴근 후 인정 창(h)"), ("private_deducted_h", "사적 차감(h — 샘플러 연속 실측만)")):
-        v = _pick(meta, b, k)
-        if v is not None:
-            out.append((pre + lab, f"{_h(v):.1f}h"))
-    rs = _pick(meta, b, "remote_send")
-    if rs:
-        out.append((pre + "PC 밖 발신(통)", f"{_n(rs)}통"))
-    if _pick(meta, b, "sim_night_cpu_denied"):
-        out.append((pre + "야간 해석 CPU 미확인(인정 안 함, 일)", f"{_n(_pick(meta, b, 'sim_night_cpu_denied'))}일"))
-    un = _pick(meta, b, "unobserved_days")
-    if un is not None:
-        out.append(("미관측 평일(원장 — 근거 없음, 0h 로 세지 않음)", _fmt_days(un)))
-    ev = _pick(meta, b, "evidence_none_observed")
-    if ev is not None:
-        out.append(("관측했는데 흔적 없는 평일", _fmt_days(ev)))
-    bl = _pick(meta, b, "inferred_absence_blocked_unobserved")
-    if bl is not None:
-        out.append(("미관측이라 휴가로 보지 않은 평일(일)", _fmt_days(bl)))
-    return out
-
-
-def _flags(r):
-    return {x.strip() for x in str(r.get("flag") or "").replace(";", ",").split(",") if x.strip()}
-
-
-def _attendees(r):
-    for k in ("attendees", "n_attendees", "rcpt_n", "recipients_n"):
-        try:
-            if str(r.get(k) or "").strip():
-                return int(float(r.get(k)))
-        except (TypeError, ValueError):
-            continue
-    return 0
-
-
-def peers(sig_rows, summary=False, ctx=None, top=20):
-    r"""같이 일한 동료(A-37·W2-10) — 판정 신호(signals) 행에서 직접 관계(메일 수신·팀즈·팀즈 오더·회의)만 센다.
-    빼는 것: 본인·빈 이름, CC·단체 발송·수신전용(bulk)으로만 엮인 사람, 10명 넘는 회의로만 엮인 사람, 광고 의심(flag ad)·
-    사적(flag priv) 행. 외부인은 사람이 아니라 도메인 계급(고객사·협력사·외부)으로 묶는다(core\privacy.who_class).
-    summary=True(요약판)면 사내 사람 이름을 [사람] 으로 가린다. 정렬: 함께한 가중치 ↓ → 함께한 과제 수 ↓ → 키, 상위 top.
-    → [{key, kind(사람|계급), rel{관계: 횟수}, n, w, projects[상위 3], first, last}]"""
-    try:
-        import privacy as _pv          # core\ — 실패해도 동료 절은 사내/외부를 '(외부)' 표기로만 가른다
-    except Exception:  # noqa: BLE001
-        _pv = None
-    agg = {}
-    for r in sig_rows or []:
-        src = str(r.get("source") or "")
-        who = str(r.get("who") or "").strip()
-        if not who or who in ("나", "[나]") or src not in PEER_DIRECT:
-            continue
-        fl = _flags(r)
-        if "ad" in fl or "priv" in fl or "private" in fl:
-            continue
-        if src == "회의" and _attendees(r) > MEETING_MAX:
-            continue
-        cls = ""
-        try:
-            cls = _pv.who_class(who, ctx) if _pv else ("외부" if "(외부)" in who else "사내")
-        except Exception:  # noqa: BLE001
-            cls = "사내"
-        key, kind = (who, "사람") if cls in ("사내", "") else (cls, "계급")
-        a = agg.setdefault(key, {"key": key, "kind": kind, "rel": {}, "n": 0, "w": 0.0, "pj": {}, "first": "",
-                                 "last": ""})
-        rel = PEER_REL.get(src, src)
-        a["rel"][rel] = a["rel"].get(rel, 0) + 1
-        a["n"] += 1
-        a["w"] += _h(r.get("weight"))
-        pj = str(r.get("model") or r.get("project") or "").strip()
-        if pj:
-            a["pj"][pj] = a["pj"].get(pj, 0) + 1
-        t = str(r.get("time") or "")[:10]
-        if t:
-            a["first"] = min(a["first"] or t, t)
-            a["last"] = max(a["last"], t)
-    out = sorted(agg.values(), key=lambda a: (-a["w"], -len(a["pj"]), a["key"]))[:top]
-    for a in out:
-        a["projects"] = [k for k, _v in sorted(a.pop("pj").items(), key=lambda kv: -kv[1])[:3]]
-        a["w"] = round(a["w"], 2)
-        if summary and a["kind"] == "사람":
-            a["key"] = "[사람]"
-    return out
-
-
-def task_edges(sig_rows):
-    r"""과제 → {people: 동료 집합, files: 산출물 집합} — 대시보드 상세 리뷰의 '업무 연결성' 간선(ui\app.review)과 같은 규칙:
-    who 가 있고 '나' 가 아니면 사람, source 가 파일·커밋이면 산출물(본문 앞 60자). 연관 업무 표의 재료."""
-    out = {}
-    for r in sig_rows or []:
-        pj = str(r.get("model") or r.get("project") or "").strip() or "미지정"
-        e = out.setdefault(pj, {"people": set(), "files": set()})
-        who = str(r.get("who") or "").strip()
-        src = str(r.get("source") or "")
-        if "ad" in _flags(r):
-            continue
-        if who and who not in ("나", "[나]") and src in PEER_DIRECT:
-            e["people"].add(who)
-        if src.startswith(("파일", "커밋")):
-            t = str(r.get("text") or "").strip()[:60]
-            if t:
-                e["files"].add(t)
-    return out
-
-
-def _jac(a, b):
-    u = len(a | b)
-    return (len(a & b) / u) if u else 0.0
-
-
-def related_tasks(sig_rows, top=10):
-    r"""연관 업무(REQ-38·A-38 최소판) — 과제 쌍마다 공유 산출물·공유 동료의 자카드. 연관도 = 0.4·J(산출물) + 0.3·J(동료)
-    (A-38 식에서 앱·선행 항은 계산하지 않는다 — 그래프 엔진 없음). 공유가 하나도 없는 쌍은 뺀다. 연관도 ↓ 상위 top.
-    → [{a, b, files, people, j_files, j_people, rel}] (자카드·연관도는 소수 4자리)"""
-    e = task_edges(sig_rows)
-    names = sorted(e)
-    out = []
-    for i, a in enumerate(names):
-        for b2 in names[i + 1:]:
-            fa, fb, pa, pb = e[a]["files"], e[b2]["files"], e[a]["people"], e[b2]["people"]
-            sf, sp = len(fa & fb), len(pa & pb)
-            if not (sf or sp):
-                continue
-            jf, jp = _jac(fa, fb), _jac(pa, pb)
-            out.append({"a": a, "b": b2, "files": sf, "people": sp, "j_files": round(jf, 4),
-                        "j_people": round(jp, 4), "rel": round(0.4 * jf + 0.3 * jp, 4)})
-    out.sort(key=lambda x: (-x["rel"], x["a"], x["b"]))
-    return out[:top]
-
-
-def workflow_summary(wf, rows=None):
-    r"""업무 영역·과제 워크플로 요약(REQ-37) — workflow_<tag>.json 의 흐름을 (업무 영역, 과제)로 묶어 단계 이름별 빈도
-    (그 단계를 밟는 흐름 수). 업무 영역은 흐름의 level1 → 없으면 mm_rows 의 Level 1. Copilot 추가 호출 없음.
-    → [{"area", "project", "flows", "steps": [(단계, 빈도)]}] — (업무 영역, 과제) 한 쌍이 한 행."""
-    l1_of = {}
-    for r in rows or []:
-        if isinstance(r, dict) and r.get("Level 2") and r.get("Level 1"):
-            l1_of.setdefault(str(r["Level 2"]), str(r["Level 1"]))
-    grp = {}
-    for fl in ((wf or {}).get("flows") or []) if isinstance(wf, dict) else []:
-        if not isinstance(fl, dict):
-            continue
-        pj = str(fl.get("project") or "").strip() or str(fl.get("model") or "").split(" / ")[0].strip() or "과제 미상"
-        area = str(fl.get("level1") or "").strip() or l1_of.get(pj, "") or "영역 미분류"
-        g = grp.setdefault((area, pj), {"area": area, "project": pj, "flows": 0, "steps": {}})
-        g["flows"] += 1
-        seen = set()
-        for s in fl.get("steps") or []:
-            nm = str((s or {}).get("name") or "").strip() if isinstance(s, dict) else ""
-            if nm and nm not in seen:
-                seen.add(nm)
-                g["steps"][nm] = g["steps"].get(nm, 0) + 1
-    out = []
-    for g in sorted(grp.values(), key=lambda g: (g["area"], -g["flows"], g["project"])):
-        g["steps"] = sorted(g["steps"].items(), key=lambda kv: (-kv[1], kv[0]))
-        out.append(g)
-    return out
-
-
-def new_sections(sig, wf, rows, pv, summary=False, ctx=None, n0=10):
-    r"""리포트·분석리포트 공용 새 절(동료·연관 업무·영역/과제 워크플로·단위업무) → HTML 조각 목록. n0 = 첫 절 번호."""
-    h = []
-    pe = peers(sig, summary=summary, ctx=ctx)
-    h.append(f"<h2 id='peers'>{n0}. 같이 일한 동료</h2><div class='dim'>직접 관계(받은 메일·팀즈·팀즈 오더·회의)만 셉니다 — "
-             "CC·단체 발송으로만 엮인 사람, 10명 넘는 회의로만 엮인 사람, 광고·사적 상대는 뺐습니다. "
-             "외부인은 사람 대신 도메인 계급(고객사·협력사·외부)으로 묶었습니다"
-             + (" · 요약판이라 사내 이름은 [사람] 으로 가렸습니다" if summary else "") + ". 상위 20.</div>")
-    if pe:
-        h.append("<table class='peers'><tr><th>동료</th><th>관계(횟수)</th><th>신호</th><th>함께한 과제(상위 3)</th>"
-                 "<th>처음~마지막</th></tr>")
-        for a in pe:
-            h.append(f"<tr><td><b>{esc(a['key'])}</b>{' <span class=dim>(계급)</span>' if a['kind'] == '계급' else ''}</td>"
-                     f"<td>{esc(' · '.join(f'{k} {v}' for k, v in sorted(a['rel'].items(), key=lambda x: -x[1])))}</td>"
-                     f"<td>{a['n']}</td><td>{esc(', '.join(a['projects']))}</td>"
-                     f"<td class='dim'>{esc(a['first'])} ~ {esc(a['last'])}</td></tr>")
-        h.append("</table>")
-    else:
-        h.append("<div class='dim'>직접 관계로 엮인 동료가 없습니다(판정 신호에 받은 메일·팀즈·회의 상대가 없음).</div>")
-    rt = related_tasks(sig)
-    h.append(f"<h2 id='related'>{n0 + 1}. 연관 업무</h2><div class='dim'>과제 쌍마다 공유 산출물·공유 동료의 자카드 — "
-             "연관도 = 0.4 × J(산출물) + 0.3 × J(동료). 상위 10. 같은 문서·같은 사람이 겹치는 과제는 함께 보거나 합칠 후보입니다.</div>")
-    if rt:
-        h.append("<table class='related'><tr><th>과제 A</th><th>과제 B</th><th>공유 산출물</th><th>J(산출물)</th>"
-                 "<th>공유 동료</th><th>J(동료)</th><th>연관도</th></tr>")
-        for x in rt:
-            h.append(f"<tr><td>{esc(x['a'])}</td><td>{esc(x['b'])}</td><td>{x['files']}</td><td>{x['j_files']:.4f}</td>"
-                     f"<td>{x['people']}</td><td>{x['j_people']:.4f}</td><td><b>{x['rel']:.4f}</b></td></tr>")
-        h.append("</table>")
-    else:
-        h.append("<div class='dim'>산출물이나 동료를 공유하는 과제 쌍이 없습니다.</div>")
-    ws = workflow_summary(wf, rows)
-    h.append(f"<h2 id='wfsum'>{n0 + 2}. 업무 영역·과제 워크플로 요약</h2><div class='dim'>담당자 워크플로우를 업무 영역·과제로 묶어 "
-             "단계 이름과 빈도(그 단계를 밟는 흐름 수)를 셉니다 — Copilot 추가 호출 없음.</div>")
-    if ws:
-        h.append("<table class='wfsum'><tr><th>업무 영역</th><th>과제</th><th>흐름</th><th>단계(빈도)</th></tr>")
-        for g in ws:
-            h.append(f"<tr><td>{esc(g['area'])}</td><td><b>{esc(g['project'])}</b></td><td>{g['flows']}</td><td>"
-                     + " · ".join(f"{esc(nm)}{(' ×' + str(c)) if c > 1 else ''}" for nm, c in g["steps"][:12])
-                     + ("" if len(g["steps"]) <= 12 else f" <span class='dim'>… +{len(g['steps']) - 12}</span>")
+def _local_flows(d):
+    flows = _flows(d)
+    h = ["<div class=\"card\"><h2>3. 워크플로우와 Agent 가능성 <span class=\"state\">업무의 단계 → 단계별 Agent 가능성"
+         "(상·중·하)</span></h2>"]
+    prev = None
+    for fl, steps in flows:
+        l1 = str(fl.get("level1") or "").strip() or "업무 영역 미분류"
+        if l1 != prev:
+            h.append(f"<div class=\"area\">{esc(l1)}</div>")
+            prev = l1
+        pj = str(fl.get("project") or "").strip()
+        det = str(fl.get("detail") or "").strip()
+        title = det or str(fl.get("model") or "").strip() or pj or "업무"
+        h.append("<div class=\"flow\"><div class=\"ft\">" + esc(title)
+                 + (f" <span class=\"state\">{esc(pj)}</span>" if pj and det else "") + "</div>"
+                 + (f"<div class=\"sub\">{esc(fl.get('summary'))}</div>" if fl.get("summary") else "")
+                 + "<table><tr><th></th><th>단계</th><th>입력 → 출력</th><th>Agent 가능성</th></tr>")
+        for i, s in enumerate(steps, 1):
+            io_txt = " → ".join(x for x in (str(s.get("input") or "").strip(), str(s.get("output") or "").strip()) if x)
+            h.append(f"<tr><td class=\"ord\">{i}</td><td><b>{esc(s.get('name'))}</b></td><td>{esc(io_txt)}</td>"
+                     f"<td class=\"agc\">{_pill(s.get('agent')) or DASH}"
+                     + (f"<div class=\"sub\">{esc(s.get('agent_how'))}</div>" if s.get("agent_how") else "")
                      + "</td></tr>")
+        h.append("</table></div>")
+    if not flows:
+        h.append("<div class=\"note\">워크플로우 분석 결과가 없습니다 — 화면의 [워크플로우] 탭에서 만들 수 있습니다.</div>")
+    if _int(d["workflow"].get("failed_chunks")):
+        h.append("<div class=\"warn\">일부 업무의 워크플로우를 만들지 못했습니다 — 다시 실행하면 채웁니다</div>")
+    h.append("</div>")
+    return "".join(h)
+
+
+def _local_taxonomy(d):
+    rows = d["rows"]
+    bw = d["pivots"].get("by_worktype") if isinstance(d["pivots"].get("by_worktype"), dict) else {}
+    h = ["<div class=\"card\"><h2>4. 업무 분류 <span class=\"state\">업무 영역(Level 1) / 과제(Level 2) / 세부업무(Level 3) · "
+         "근거건수 많은 순</span></h2>"]
+    if bw:
+        h.append("<div>" + " ".join(_worktype(k) + f"<span class=\"dim\">{_int(v):,}건</span>"
+                                    for k, v in sorted(bw.items(), key=lambda kv: -_int(kv[1]))) + "</div>")
+    if rows:
+        groups = {}
+        for r in rows:
+            groups.setdefault(str(r.get("Level 1") or "").strip() or "업무 영역 미분류", []).append(r)
+        order = sorted(groups, key=lambda g: (-sum(_int(r.get("근거건수")) for r in groups[g]), g))
+        h.append("<table><tr><th>업무분류</th><th>과제</th><th>세부업무</th><th class=\"num\">근거건수</th></tr>")
+        for g in order:
+            rs = sorted(groups[g], key=lambda r: -_int(r.get("근거건수")))
+            h.append(f"<tr class=\"l1\"><td colspan=\"3\">{esc(g)}</td>"
+                     f"<td class=\"num\">{sum(_int(r.get('근거건수')) for r in rs):,}</td></tr>")
+            for r in rs:
+                h.append(f"<tr><td>{_worktype(r.get('유형'))}</td><td>{esc(r.get('Level 2'))}</td>"
+                         f"<td><b>{esc(r.get('Level 3'))}</b>"
+                         + (f"<div class=\"sub\">{esc(r.get('상세설명'))}</div>" if r.get("상세설명") else "")
+                         + f"</td><td class=\"num\">{_int(r.get('근거건수')):,}</td></tr>")
         h.append("</table>")
     else:
-        h.append("<div class='dim'>워크플로우 분석이 없습니다 — 대시보드 [담당자 워크플로우] 탭에서 만들 수 있습니다.</div>")
-    ep = (pv or {}).get("episodes") if isinstance(pv, dict) else None
-    units = [u for u in ((ep or {}).get("units") or []) if isinstance(u, dict)] if isinstance(ep, dict) else []
-    if units:
-        gr = (ep or {}).get("unit_grades") or {}
-        h.append("<h3 style='font-size:14px;margin:14px 0 4px'>단위업무(시작 단서 → 종료 단서)</h3>"
-                 "<div class='dim'>등급: 확정(요청·보고/최종본 단서) · 근거(한쪽 단서) · 추정(휴면·정체로 끝을 추정) — "
-                 + esc(" · ".join(f"{k} {v}" for k, v in gr.items())) + "</div>"
-                 "<table class='units'><tr><th>과제</th><th>세부업무</th><th>시작</th><th>끝</th><th>리드(h)</th>"
-                 "<th>등급</th></tr>")
-        for u in units[:30]:
-            h.append(f"<tr><td>{esc(u.get('model'))}</td><td>{esc(u.get('detail'))}</td>"
-                     f"<td class='dim'>{esc(str(u.get('start') or '')[:16])} {esc(u.get('start_cue'))}</td>"
-                     f"<td class='dim'>{esc(str(u.get('end') or '진행 중')[:16])} {esc(u.get('end_cue') or '')}</td>"
-                     f"<td>{'' if u.get('lead_h') is None else esc(u.get('lead_h'))}</td><td><b>{esc(u.get('grade'))}</b></td></tr>")
-        h.append("</table>")
-    return h
+        h.append("<div class=\"note\">업무 분류 결과가 없습니다.</div>")
+    h.append("</div>")
+    return "".join(h)
 
 
-def _privacy_ctx():
-    """동료 절의 외부 계급 판정 문맥(core\\privacy.make_ctx) — 실패하면 None(기본 규칙)"""
-    try:
-        if os.path.join(ROOT, "core") not in sys.path:
-            sys.path.insert(0, os.path.join(ROOT, "core"))
-        import privacy as _pv
-        cfg = _json(os.path.join(ROOT, "config", "config.json"))
-        return _pv.make_ctx(cfg if isinstance(cfg, dict) else {}, os.path.join(ROOT, "data"))
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def build(tag, summary=False):
-    meta = _json(os.path.join(REP, f"mm_meta_{tag}.json"))
-    if not meta:
-        return None
-    # 오래된 정제본은 쓰지 않는다 (aggregate·flow 와 같은 규칙)
-    rows = ((_rows(os.path.join(REP, f"mm_rows_{tag}_refined.csv"))
-             if _fresh_refined(os.path.join(REP, f"mm_rows_{tag}.csv"),
-                               os.path.join(REP, f"mm_rows_{tag}_refined.csv")) else [])
-            or _rows(os.path.join(REP, f"mm_rows_{tag}.csv")))
-    pv = _json(os.path.join(REP, f"pivots_{tag}.json"))
-    # 월별 코멘트 — 이 기간 파일의 달 + 빠진 달은 다른 기간 파일에서(core/narratives.load_merged — judge·화면과 같은 이월 규칙,
-    # 기간 밖의 달은 섞지 않는다). 예전에는 정확한 tag 파일만 읽어, 기간이 날마다 바뀌면 5절이 통째로 빠졌다(진단 C).
-    try:
-        import narratives as _nv
-        nar = _nv.load_merged(REP, tag, months=_nv.period_months(tag)) or {}
-    except Exception:  # noqa: BLE001 - 코멘트 판독 실패가 리포트를 막지 않게(예전 방식으로)
-        nar = _json(os.path.join(REP, f"ai_narratives_{tag}.json"))
-    ent = _json(os.path.join(REP, f"entities_{tag}.json"))
-    sig = _rows(os.path.join(REP, f"signals_{tag}.csv"))
-    b = meta.get("mm_basis") or {}
-    period = " ~ ".join(meta.get("period") or [tag])
-    inmm = meta.get("total_mm") or 0
-    avmm = meta.get("avail_mm") or 0
-    pct = meta.get("load_pct")
-    if pct is None and avmm:
-        pct = round(inmm / avmm * 100, 1)
-
-    WT = {"개발": "#2a78d6", "사무": "#e08a00", "현장": "#0e8c7a", "협업": "#6c4fb8"}
-    h = ["<!doctype html><meta charset='utf-8'><title>업무 로드 리포트</title>",
-         "<style>body{font-family:'Malgun Gothic',sans-serif;max-width:960px;margin:28px auto;",
-         "color:#1b1f24;line-height:1.6;padding:0 16px}h1{font-size:22px;margin-bottom:2px}",
-         "h2{font-size:16px;margin:26px 0 6px;padding-bottom:4px;border-bottom:2px solid #e4e7eb}",
-         "table{border-collapse:collapse;width:100%;margin:8px 0 14px;font-size:13px}",
-         "th,td{border:1px solid #dde1e6;padding:5px 8px;text-align:left}th{background:#f5f7fa}",
-         ".dim{color:#6b7280;font-size:12px}.kpi{display:flex;gap:26px;margin:14px 0 6px}",
-         ".kpi div b{display:block;font-size:26px;line-height:1.2}",
-         ".tag{display:inline-block;background:#f0f3f7;border-radius:3px;padding:1px 7px;",
-         "margin:1px 3px 1px 0;font-size:11.5px}</style>",
-         f"<h1>업무 로드 리포트</h1><div class='dim'>{esc(meta.get('owner') or '')} · 기간 {esc(period)}"
-         f" · 신호 {esc(meta.get('signals'))}건</div>",
-         "<div class='kpi'>",
-         f"<div><span class='dim'>로드율</span><b>{'–' if pct is None else str(pct)+'%'}</b>{coverage_badge(meta, b)}</div>",
-         f"<div><span class='dim'>투입 MM</span><b>{inmm:.2f}</b></div>",
-         f"<div><span class='dim'>가용 MM</span><b>{avmm:.2f}</b></div>",
-         f"<div><span class='dim'>인정 시간</span><b>{esc(meta.get('worked_h'))}h</b></div></div>",
-         "<div class='dim'>로드율 = 투입 ÷ 가용 · 1 MM = 8h × 그 달 평일수 · "
-         "가용은 유급휴가(연차·반차)와 휴가로 본 평일(PC 기록도 흔적도 없는 평일)을 뺀 값입니다 — 휴가는 일하지 않은 날로 세지 않습니다 · "
-         "투입은 상한 없이 실측 그대로(하루 24h 물리 한계만 · 이상치는 8절 표에 표시)</div>"]
-    ml = measure_line(meta, b)
-    if ml:
-        cv = _obj(_pick(meta, b, "coverage")) or {}
-        reasons = cv.get("reasons") if isinstance(cv.get("reasons"), list) else []
-        h.append(f"<div class='dim'>측정 방식: {ml}"
-                 + (" — " + esc(" · ".join(str(x) for x in reasons[:4])) if reasons else "")
-                 + (" · <b style='color:#c0122f'>측정 불충분 — 팀 비교에서 제외되는 결과</b>"
-                    if str(cv.get("grade") or "") == "unreliable" else "") + "</div>")
-    if meta.get("rehours"):
-        bef = meta.get("total_mm_before_rehours")
-        h.append(f"<div class='dim'>비업무 제외 {_n(meta.get('dropped_n'))}건 · −{_h(meta.get('dropped_h')):.1f}h — "
-                 "판정 후 시간을 다시 재어 투입 "
-                 + (f"{_h(bef):.2f} → " if bef is not None else "") + f"{inmm:.2f} MM 으로 갱신"
-                 "(버린 신호의 시간이 남은 행에 옮겨 붙지 않음)</div>")
-    fut, tf = _pick(meta, b, "future_days"), _pick(meta, b, "today_fraction")
-    if fut is not None or tf is not None:
-        h.append("<div class='dim'>가용 기준: "
-                 + (f"미래 평일 {_n(fut)}일은 가용에서 제외" if fut is not None else "")
-                 + (" · " if (fut is not None and tf is not None) else "")
-                 + (f"오늘은 {round(_h(tf) * 100)}% 만 가용(분석 시각 기준)" if tf is not None else "") + "</div>")
-
-    mo = sorted((meta.get("mm_months") or {}).items())
-    pcc = _obj(_pick(meta, b, "pc_coverage_by_month")) or {}
-    # LM30(2026-10-21) 달마다 근거(mm_basis.pc_months — 일수·건수만): 'PC 기록' 칸이 'PC 기록 있는 평일/평일 · 가져옴 · 브라우저만 · 8시간
-    # 채움' 이 된다(없는 예전 결과는 예전 비율 칸). 경고 줄은 카드와 같은 글자(core\attendance.month_lines)
-    pcm = {str(k): v for k, v in (_obj(_pick(meta, b, "pc_months")) or {}).items() if isinstance(v, dict)}
-    # LM30(2026-10-18) — 출퇴근 추정이 투입을 맡았으면 달마다 'LM29 방식이었다면' MM(같은 분모 — mm_months.mm_lm29)을 나란히
-    l29_on = any(isinstance(v, dict) and v.get("mm_lm29") is not None for _k, v in mo)
-    if mo:
-        import attendance as _at
-        h.append("<h2>1. 월별 로드</h2>")
-        sg0 = _obj(_pick(meta, b, "send_gap")) or {}
-        for t in _at.month_lines(pcm, (sg0.get("months") or []) if sg0.get("warn") else (), _obj(_pick(meta, b, "pc_log"))):
-            h.append(f"<div style='color:#b54708'><b>{esc(t)}</b></div>")
-        h.append("<table><tr><th>월</th><th>투입 MM</th>" + ("<th>LM29 방식 MM</th>" if l29_on else "")
-                 + "<th>가용 MM</th><th>로드율</th><th>투입 시간</th><th>유급휴가</th><th>그 달 평일</th>"
-                 + ("<th>PC 기록</th>" if (pcc or pcm) else "") + "</tr>")
-        for k, v in mo:
-            v = v if isinstance(v, dict) else {}
-            l29_td = ""
-            if l29_on:
-                l29_td = f"<td>{_h(v.get('mm_lm29')):.2f}</td>" if v.get("mm_lm29") is not None else "<td class='dim'>–</td>"
-            pc_td = ""
-            if pcm:
-                pc_td = f"<td>{esc(_at.month_cell(pcm.get(k)))}</td>"
-            elif pcc:
-                r = pcc.get(k)
-                if r is None:
-                    pc_td = "<td class='dim'>–</td>"
-                else:
-                    pc_td = (f"<td>{round(_h(r) * 100)}%"
-                             + (" <b style='color:#b54708'>8시간 채움(PC 기록 없음)</b>" if _h(r) < 0.4 else "")
-                             + "</td>")
-            h.append(f"<tr><td>{esc(k)}</td><td><b>{_h(v.get('mm')):.2f}</b></td>{l29_td}"
-                     f"<td>{_h(v.get('avail_mm')):.2f}</td>"
-                     f"<td><b>{'–' if v.get('load_pct') is None else str(v['load_pct'])+'%'}</b></td>"
-                     f"<td>{esc(v.get('worked'))}h</td><td>{esc(v.get('absent'))}일</td>"
-                     f"<td>{esc(v.get('workdays'))}일</td>{pc_td}</tr>")
-        h.append("</table>")
-        # LM30(2026-10-21) 유급휴가 보기(core\attendance 머리말 22) — 이 리포트는 이 PC 에만 있어 날짜까지(attendance 파일의 agg.leave) ·
-        # 그 칸이 없는 예전 결과는 일수만
-        for t in _leave_report_lines(meta, b, _json(os.path.join(REP, f"attendance_{tag}.json"))):
-            h.append(f"<div>{esc(t)}</div>")
-        if l29_on:
-            t29 = meta.get("mm_lm29")
-            h.append("<div class='dim'>투입 MM은 출퇴근 추정(LM30 방식)으로 쟀습니다"
-                     + (f" — LM29 방식이었다면 {_h(t29):.2f} MM(차이 {_h(inmm) - _h(t29):+.2f} MM)" if t29 is not None else "")
-                     + " · 같은 분모(8h × 그 달 평일수) · 근거는 8절 '출퇴근·시간외 근무'</div>")
-        # LM30(2026-10-20) PC 사용 시간 줄('MM 산정 근거' 카드와 같은 글자 — attendance 머리말 19 · mm_meta 의 출퇴근 합계(근태 기록 없이
-        # 잰 값)뿐이라 어디에 실려도 된다). PC 사용 시간으로 재지 않은 결과(그 칸이 없다)는 줄이 없다
-        _att_t = (_obj(_pick(meta, b, "attendance")) or {}).get("total")
-        for t in _at.pc_usage_lines(_att_t, (_obj(_pick(meta, b, "cfg_used")) or {}).get("pcFloorWindow")):
-            h.append(f"<div class='dim'>{esc(t)}</div>")
-        if pcm:
-            h.append("<div class='dim'>PC 기록 = 그 달 평일(오늘까지 · 유급휴가인 날은 빼고 셉니다) 중 PC를 켜고 끈 기록이 있는 날 · "
-                     "가져옴 = 예전 판에서 가져온 기록뿐인 날 · 브라우저만 = 브라우저 방문 기록만 있는 날 · 8시간 채움 = PC를 켜고 끈 기록이 "
-                     "없어(Windows가 지운 날) 메일·파일 흔적이 있는 평일을 하루 8시간으로 채운 날 — 그런 달의 야근·주말 근무는 거의 잡히지 "
-                     "않습니다 · 휴가 = 하루 휴가이거나 휴가로 본 평일(일하지 않은 날·기록 빠진 날로 세지 않습니다).</div>")
-        elif pcc:
-            h.append("<div class='dim'>PC 기록 = 그 달 평일 중 PC 가동 기록이 있는 날의 비율 — 40% 미만인 달은 PC 기록이 없는 평일 중 "
-                     "메일·파일 흔적이 있는 날을 하루 8시간으로 채우고 흔적 없는 날을 휴가로 보지 않습니다(야근·주말 근무는 거의 잡히지 "
-                     "않아 그 달이 낮게 나올 수 있습니다).</div>")
-
-    if rows:
-        h.append("<h2>2. 과제별 업무 로드</h2><table><tr><th>업무 영역</th><th>업무분류</th><th>과제</th><th>세부업무</th>"
-                 "<th>상세설명</th><th>MM</th><th>비중</th><th>근거</th><th>확신</th></tr>")
-        for r in sorted(rows, key=lambda x: -float(x.get("mm") or 0)):
-            h.append(f"<tr><td>{esc(r.get('Level 1'))}</td><td>{esc(r.get('유형'))}</td><td><b>{esc(r.get('Level 2'))}</b></td>"
-                     f"<td>{esc(r.get('Level 3'))}</td><td>{esc(r.get('상세설명'))}</td>"
-                     f"<td>{esc(r.get('mm'))}</td>"
-                     f"<td>{round(float(r.get('share') or 0)*100)}%</td>"
-                     f"<td class='dim'>{esc(r.get('근거'))}</td><td>{esc(r.get('확신도'))}</td></tr>")
-        h.append("</table>")
-
-    bw = pv.get("by_worktype") or {}
-    if bw:
-        h.append("<h2>3. 업무분류 배분</h2><table><tr><th>업무분류</th><th>MM</th><th>과제 배분</th></tr>")
-        for t, v in bw.items():
-            chips = "".join(f"<span class='tag'>{esc(k)} {x:.2f}</span>"
-                            for k, x in (v.get("models") or {}).items())
-            h.append(f"<tr><td><b style='color:{WT.get(t,'#333')}'>{esc(t)}</b></td>"
-                     f"<td>{v.get('mm',0):.2f}</td><td>{chips}</td></tr>")
-        h.append("</table>")
-
-    common = pv.get("common") or []
+def _local_common(d):
+    common = [c for c in (d["pivots"].get("common") or []) if isinstance(c, dict) and str(c.get("name") or "").strip()]
+    h = ["<div class=\"card\"><h2>5. 공통 업무 <span class=\"state\">여러 과제에서 되풀이되는 업무 — 표준화·자동화를 먼저 볼 "
+         "후보</span></h2>"]
     if common:
-        h.append("<h2>4. 공통업무 — 표준화·자동화 후보</h2>"
-                 "<div class='dim'>여러 과제에 반복되는 업무일수록 표준화·AI 대체 우선순위가 높다</div>"
-                 "<table><tr><th>세부업무</th><th>관련 과제</th><th>합산 MM</th></tr>")
-        for c in common:
-            h.append(f"<tr><td><b>{esc(c.get('detail'))}</b></td>"
-                     f"<td>{esc(', '.join(c.get('models') or []))}</td>"
-                     f"<td>{c.get('mm',0):.2f}</td></tr>")
+        h.append("<table><tr><th>업무</th><th>업무분류</th><th class=\"num\">근거건수</th></tr>")
+        for c in sorted(common, key=lambda c: -_int(c.get("근거건수"))):
+            h.append(f"<tr><td><b>{esc(c.get('name'))}</b></td><td>{_worktype(c.get('worktype'))}</td>"
+                     f"<td class=\"num\">{_int(c.get('근거건수')):,}</td></tr>")
         h.append("</table>")
-
-    if nar:
-        h.append("<h2>5. 월별 리뷰 코멘트</h2>")
-        for mk in sorted(nar):
-            v = nar[mk] or {}
-            if not isinstance(v, dict):
-                continue
-            # 다른 기간에서 이월했거나(from_tag) 이번 실행에서 새로 만들지 못한(earlier) 달 — 이전 분석의 코멘트임을 적는다
-            old = " <span class='dim'>(이전 분석 코멘트)</span>" if (v.get("from_tag") or v.get("earlier")) else ""
-            h.append(f"<h3 style='font-size:14px;margin:14px 0 4px'>{esc(mk)}{old}</h3>"
-                     f"<div>{esc(v.get('summary'))}</div>")
-            for p in (v.get("projects") or []):
-                if not isinstance(p, dict):          # AI가 문자열 배열로 줄 때도 리포트는 나와야 한다
-                    h.append(f"<div style='margin-top:3px'>· {esc(p)}</div>")
-                    continue
-                h.append(f"<div style='margin-top:3px'>· <b>{esc(p.get('name'))}</b> "
-                         f"{esc(p.get('story'))} <span class='dim'>{esc(p.get('worktypes'))}</span></div>")
-
-    if ent.get("models"):
-        models = [m for m in ent["models"] if isinstance(m, dict)]
-        has_l1 = any(m.get("l1") for m in models)          # 체계가 과제마다 고른 업무 영역(l1) — 있는 체계만 열을 보인다
-        h.append("<h2>6. 과제 체계</h2>"
-                 + ("<div class='dim'><b>규칙 폴백 체계(임시)</b> — 체계 수립 왕복이 실패해 규칙으로 만든 임시 체계입니다. "
-                    "다음 판정이 다시 세웁니다.</div>" if ent.get("fallback") else "")
-                 + ("<div class='dim'><b>지난 체계 재사용</b> — 새로 물을 신호가 없어 지난 정상 체계를 그대로 썼습니다.</div>"
-                    if ent.get("reused_from") else "")
-                 + "<table><tr><th>과제</th>" + ("<th>업무 영역</th>" if has_l1 else "")
-                 + "<th>식별 키워드</th><th>채택 근거</th></tr>")
-        pin_badge = "<span class='tag'>지정</span>"
-        for m in models:
-            badge = pin_badge if m.get("pinned") else ""
-            h.append(f"<tr><td><b>{esc(m.get('name'))}</b> {badge}</td>"
-                     + (f"<td>{esc(m.get('l1') or '–')}</td>" if has_l1 else "")
-                     + f"<td class='dim'>{esc(', '.join(m.get('match') or []))}</td>"
-                     f"<td class='dim'>{esc(m.get('obs'))}</td></tr>")
-        h.append("</table>")
-
-    # LM29부터 — Agentic AI 니즈 후보만(팀 과제 매칭·오할당 검증 없음). LM28 이 남긴 파일이면 match·misassigned 는 읽지 않는다.
-    ag = _json(os.path.join(REP, f"agentic_{tag}.json"))
-    ag = ag if isinstance(ag, dict) else {}
-    ag_new =[n for n in (ag.get("new") if isinstance(ag.get("new"), list) else []) if isinstance(n, dict)]
-    if ag:
-        h.append("<h2>7. Agentic AI 니즈 후보</h2>"
-                 "<div class='dim'>팀 과제와 매칭하지 않고, 내 반복 업무에서 Agentic AI 로 자동화할 만한 니즈 후보만 찾았습니다"
-                 "(Copilot 판정) · 근거 업무 N행 = 이 후보의 근거가 된 내 업무 행 수(MM 아님)</div>")
-        for n2 in ag_new:
-            # '대체 가능 MM' 은 보이지 않는다(A-33 RP4) — 근거 업무 행 수만
-            h.append(f"<div style='margin:6px 0'>· <b>{esc(n2.get('name'))}</b>"
-                     + (f" <span class='dim'>(근거 업무 {_n(n2.get('evidence_rows'))}행)</span>"
-                        if n2.get("evidence_rows") is not None else "")
-                     + (f"<br><span class='dim'>동작 로직: {esc(n2.get('logic'))}</span>" if n2.get("logic") else "")
-                     + (f"<br><span class='dim'>발굴 사유: {esc(n2.get('reason'))}</span>" if n2.get("reason") else "")
-                     + (f"<br><span class='dim'>근거 업무: {esc(', '.join(str(w) for w in (n2.get('work') or [])[:12]))}</span>"
-                        if isinstance(n2.get("work"), list) and n2.get("work") else "")
-                     + "</div>")
-        if not ag_new:
-            h.append("<div class='dim'>근거가 충분한 니즈 후보가 없습니다.</div>")
-        if _n(ag.get("rule_rows")):
-            # AI 판정 대기(신호 대부분이 규칙 판정이라 아직 묻지 않은 업무) — 후보가 적은 이유로 읽히게(진단 D)
-            h.append(f"<div class='dim'>AI 판정 대기 {_n(ag.get('rule_rows'))}행 — 신호 대부분이 규칙 판정이라 아직 보내지 "
-                     "않은 업무입니다(판정이 회복된 뒤 [니즈 후보 발굴 실행]).</div>")
-
-    h.append("<h2>8. 산정 근거와 신뢰도</h2><table>")
-    # LM22: 상한 없음 — 잘라낸 것이 아니라 '표시'한다(이상치·16h 초과·휴가일 근무). 값이 없는 키는 표에 없다.
-    # LM30(2026-10-21) 내부 키(absence_days·inferred_absence_days·absent_worked_h)는 그대로 두고 이름만 유급휴가 말로(core\attendance 머리말 22)
-    BASIS_ROWS = (("basis", "산정 방식"), ("method", "투입 산정"),
-                  ("absence_days", "유급휴가(일 — 일하지 않은 날로 세지 않고 가용에서 뺌)"),
-                  ("inferred_absence_days", "휴가로 본 평일(PC 기록도 흔적도 없는 평일 — 가용에서 뺌, 일)"),
-                  ("overtime_h", "초과근무(h)"), ("weekend_days", "주말 근무(일)"),
-                  ("night_days", "야근(일)"), ("no_evidence_days", "흔적 없는 평일(휴가로 본 평일 빼고)"),
-                  ("gap_days", "연속공백 제외(회)"), ("sampler_days", "창 샘플러 가동(일)"),
-                  ("sampler_partial_days", "샘플러 부분 가동 보정(일)"),
-                  ("holidays", "공휴일 제외(일)"),
-                  ("pc_floor_h", "PC가동 하한 보정(h)"), ("pc_floor_days", "PC가동 하한 보정(일)"),
-                  ("lunch_deducted_h", "점심 차감(h)"),
-                  ("evening_credit_h", "퇴근 후·새벽 인정(h — 퇴근 경계~마지막 산출물 전체, +30분 꼬리 없음)"),
-                  ("weekend_window_h", "주말 산출물 창(h)"),
-                  ("floor_blocked_passive_days", "수동 흔적만(하한 미적용, 일)"),
-                  ("absent_worked_h", "휴가일 근무(h)"),
-                  ("future_signals_dropped", "미래 시각 폐기(건)"),
-                  ("phys_cap_days", "24h 물리상한(일)"), ("day_cap_days", "설정 상한 적용(일)"),
-                  ("sampler_stuck_days", "샘플러 고착 의심(일)"),
-                  # ── LM22 2차(A6·A9·A13·A18·A33·A34·D3·D4·D5·D7) — 값이 있는 키만 표에 나온다 ──
-                  ("measure", "측정 방식"), ("coverage", "측정 신뢰도"),
-                  ("tool_usage", "프로그램 사용(참고)"),
-                  ("offsite_days", "종일 행사 — 출장·현장·교육(표준 8h 인정, 일)"),
-                  ("offsite_h", "종일 행사 인정(h)"),
-                  ("manual_days", "수동 기록 Add-WorkLog(일)"), ("manual_h", "수동 기록 인정(h)"),
-                  ("dinner_deducted_h", "저녁 식사 차감(h)"),
-                  ("flex_edge_h", "시차 근무 창 밖 인정(h)"),
-                  ("sampler_bridge_h", "샘플러 공백 다리(h)"),
-                  ("pc_record_missing_days", "PC 기록 결측 평일(흔적 창 폴백, 일)"),
-                  ("trace_window_days", "흔적 창 폴백(일)"), ("trace_window_h", "흔적 창 폴백(h)"),
-                  ("pc_coverage_by_month", "월별 PC 기록 비율"),
-                  ("passive_capped_days", "수동 세션 상한 적용(일)"),
-                  ("weekend_pc_days", "주말 PC 창 인정(일)"),
-                  ("sim_night", "야간 해석(솔버) 인정"),
-                  ("future_days", "미래 평일(가용 제외, 일)"), ("today_fraction", "오늘 진행 비율(가용 반영)"),
-                  ("cfg_used", "산식 설정"),
-                  ("anomalies", "이상치(PC 기록 오류·휴가일 근무 등, 일)"),
-                  ("long_days", "16h 초과(일)"), ("utc_suspect", "메일 시각 UTC 의심"),
-                  ("config_warnings", "설정 경고(기본값으로 대체)"))
-    NEW_KEYS = ("measure", "coverage", "cfg_used", "tool_usage", "offsite_days", "offsite_h", "manual_days", "manual_h",
-                "dinner_deducted_h", "flex_edge_h", "sampler_bridge_h", "pc_record_missing_days",
-                "trace_window_days", "trace_window_h", "pc_coverage_by_month", "passive_capped_days",
-                "weekend_pc_days", "future_days", "today_fraction")
-    bb = dict(b)
-    # LM30(2026-10-21) 유급휴가 일수는 가용에서 실제로 뺀 날(오늘까지 — mm_months.absent 합)로 보인다(기간 안 앞날 휴가는 아직 빼지 않았다).
-    # 휴가로 본 평일(absent_inferred — absent 에 든다)은 다음 줄에 따로 있으니 이 줄은 달력·근태 기록·직접 넣은 날만(두 줄 합 = 가용에서 뺀 날)
-    _mo = meta.get("mm_months") if isinstance(meta.get("mm_months"), dict) else {}
-    if any(isinstance(v, dict) for v in _mo.values()) and "absence_days" in bb:
-        import attendance as _at8
-        _lv_all, _lv_inf = _at8.leave_split(meta)
-        bb["absence_days"] = round(max(0.0, _lv_all - _lv_inf), 1)
-    # 흔적 없는 평일은 휴가로 본 평일을 뺀 수(대시보드 'MM 산정 근거' 카드와 같은 수 — 휴가를 일하지 않은 날처럼 보이지 않게)
-    if "no_evidence_days" in bb:
-        bb["no_evidence_days"] = max(0, _n(bb.get("no_evidence_days")) - _n(bb.get("inferred_absence_days")))
-    for k in NEW_KEYS:                       # mine 이 최상위/mm_info 에 실었을 수도 있다
-        if k not in bb and _pick(meta, b, k) is not None:
-            bb[k] = _pick(meta, b, k)
-    # 야간 해석(솔버) 인정(S4-N1) — 밤새 돌린 해석의 실행 구간. 값이 0 이면 줄을 만들지 않는다
-    if _h(_pick(meta, b, "sim_night_h")) or _n(_pick(meta, b, "sim_night_days")):
-        bb["sim_night"] = (f"{_h(_pick(meta, b, 'sim_night_h')):.1f}h · "
-                           f"{_n(_pick(meta, b, 'sim_night_days'))}일"
-                           f"(상한 {_n(_pick(meta, b, 'sim_night_capped_days'))}일 · "
-                           f"재실행으로 상한 해제 {_n(_pick(meta, b, 'sim_night_unlocked_days'))}일 · "
-                           f"PC 밖 {_h(_pick(meta, b, 'sim_night_remote_h')):.1f}h)")
-    if meta.get("rehours"):
-        bb["rehours"] = (f"비업무 제외 {_n(meta.get('dropped_n'))}건 · −{_h(meta.get('dropped_h')):.1f}h"
-                         + (f" (투입 {_h(meta.get('total_mm_before_rehours')):.2f} → {inmm:.2f} MM)"
-                            if meta.get("total_mm_before_rehours") is not None else ""))
-    BASIS_ROWS = BASIS_ROWS + (("rehours", "비업무 제외 재산정"),)
-    tool_tbl = ""                       # 프로그램 사용(참고) 상세 표 — 이 표(셀이 통째로 esc 된다) 뒤에 따로 붙인다
-    # LM30(2026-10-18) — 출퇴근 추정이 투입을 맡았으면 초과근무·야근일·주말 근무는 그 값(이름을 그렇게)이고, PC 하한·점심·저녁 인정
-    # 같은 LM29 줄은 'LM29 방식(비교용) 근거' 로 적는다
-    a_on = att_used(meta, b)
-    for k, label in BASIS_ROWS:
-        if a_on:
-            label = ATT_LABEL.get(k, label)
-            if k in LM29_ONLY:
-                label = f"{LM29_TAG} — {label}"
-        if k not in bb:
-            continue
-        v = bb[k]
-        if k in ("offsite_days", "manual_days", "pc_record_missing_days", "trace_window_days",
-                 "passive_capped_days", "weekend_pc_days", "future_days"):
-            v = _fmt_days(v)
-        elif k in ("offsite_h", "manual_h", "dinner_deducted_h", "flex_edge_h", "sampler_bridge_h",
-                   "trace_window_h"):
-            v = f"{_h(v):.1f}h"
-        elif k == "today_fraction":
-            v = f"{round(_h(v) * 100)}% (분석 시각까지의 주간 창 비율 — 그만큼만 가용)"
-        elif k == "pc_coverage_by_month":
-            if not isinstance(v, dict) or not v:
-                continue
-            v = " · ".join(f"{esc(mk)} {round(_h(r) * 100)}%" + (" [하한 미적용]" if _h(r) < 0.4 else "")
-                           for mk, r in sorted(v.items()))
-        elif k == "measure":
-            ms = v if isinstance(v, dict) else {}
-            v = measure_line(meta, {**b, **ms}) or "–"
-            if ms.get("floor_blocked_passive_days"):
-                v += f" · 수동 흔적만 {_n(ms.get('floor_blocked_passive_days'))}일"
-            if ms.get("pc_record_missing_days"):
-                v += f" · PC 기록 결측 {_n(ms.get('pc_record_missing_days'))}일"
-        elif k == "coverage":
-            cv = v if isinstance(v, dict) else {}
-            g = str(cv.get("grade") or "").lower()
-            reasons = cv.get("reasons") if isinstance(cv.get("reasons"), list) else (
-                cv.get("missing") if isinstance(cv.get("missing"), list) else [])
-            if g not in GRADE_LABEL and not reasons:
-                continue
-            v = (GRADE_LABEL.get(g, g or "–")
-                 + (" — " + " · ".join(str(x) for x in reasons[:6]) if reasons else "")
-                 + (" · 팀 비교에서 제외" if g == "unreliable" else ""))
-            r = cv.get("pc_weekday_ratio")
-            if isinstance(r, (int, float)) and not isinstance(r, bool):
-                v += f" · 평일 PC 기록 {round(float(r) * 100)}%"
-        elif k == "tool_usage":
-            # 참고 지표 — 투입 시간이 아니다(맨 앞 창을 띄우고 있던 시간). 로드율과 섞어 읽지 않도록 문구로 못 박는다.
-            # 이 표의 셀은 마지막에 통째로 esc() 되므로 여기서는 태그도 esc 도 쓰지 않는다(쓰면 글자로 박힌다).
-            # 새 꼴(출처·실행 횟수·포커스·마지막 실행·파일 일수 + 자체·프로토타입(추정))은 이 표 뒤의 상세 표(tool_tbl)로 —
-            # 옛 꼴(창기록만)도 같은 함수가 그린다.
-            tu = v if isinstance(v, dict) else {}
-            v = tool_usage_text(tu)
-            if not v:
-                continue
-            tool_tbl = tool_usage_table(tu)
-        elif k == "cfg_used":
-            cu = v if isinstance(v, dict) else {}
-            if not cu:
-                continue
-
-            def _win(x):
-                return "~".join(str(y) for y in x) if isinstance(x, (list, tuple)) else str(x or "")
-            v = (f"표준 {cu.get('standardDayHours', '–')}h · PC 하한 {'끔' if cu.get('usePcFloor') is False else '켬'}"
-                 + (f"({cu.get('pcFloorNeeds')})" if cu.get("pcFloorNeeds") else "")
-                 + f" · 주간 창 {_win(cu.get('dayWindow'))} · 점심 {_win(cu.get('lunch'))}"
-                 + (f" · 저녁 {_win(cu.get('dinner'))}" if cu.get("dinner") else "")
-                 + f" · 미정 회의 {cu.get('tentativeMeetings', '–')} · 공휴일 {_n(cu.get('holidays_n'))}일"
-                 + (" · 종일 행사 미인정" if cu.get("offsiteAsWork") is False else "")
-                 + (f" · 샘플러 공백 다리 {_n(cu.get('samplerGapBridgeMin'))}분"
-                    if cu.get("samplerGapBridgeMin") is not None else "")
-                 # LM28 — 하한 창(퇴근 경계)·야간 창·사적 차감 문턱·과제 몫 기준
-                 + (f" · PC 하한 창 {_win(cu.get('pcFloorWindow'))}" if cu.get("pcFloorWindow") else "")
-                 + (f" · 야간 {_win(cu.get('nightWindow'))}" if cu.get("nightWindow") else "")
-                 + (f" · 사적 차감 {cu.get('privateRunMin')}분 연속" if cu.get("privateRunMin") is not None else "")
-                 + (f" · 과제 몫 {cu.get('shareBasis')}" if cu.get("shareBasis") else "")
-                 # LM28(E) — PC 기록 없는 달의 평일: standard = 표준일 추정(기본) · trace = 흔적 창(예전)
-                 + (f" · PC 기록 없는 달 {'흔적 창(예전)' if cu.get('noPcMonthDay') == 'trace' else '표준일 추정(기본)'}"
-                    if cu.get("noPcMonthDay") else "")
-                 + " — 팀과 다르면 팀 취합에 '산식 설정 상이' 배지")
-        if k == "anomalies":
-            items = [a for a in (v or []) if isinstance(a, dict)]
-            v = f"{len(items)}일" + (" — " + " · ".join(
-                f"{str(a.get('date', ''))[5:]} {a.get('kind', '')}"
-                + (f" ({a.get('raw')} → {a.get('used')})" if a.get("raw") is not None else "")
-                for a in items[:12]) if items else "")
-        elif k == "long_days":
-            items = [x for x in (v or []) if isinstance(x, (list, tuple)) and len(x) == 2]
-            v = f"{len(items)}일" + (" — " + " · ".join(f"{str(x[0])[5:]} {x[1]}h" for x in items[:12])
-                                    if items else "")
-        elif k == "config_warnings":
-            items = [str(x) for x in (v or []) if str(x).strip()]
-            if not items:
-                continue
-            v = f"{len(items)}건 — " + " · ".join(items[:8]) + (" …" if len(items) > 8 else "")
-        elif k == "utc_suspect":
-            if not v:
-                continue
-            v = "예 — 발신 메일의 60% 이상이 00~08시. config.mm.mailTimeOffsetH(예: 9) 로 보정"
-        h.append(f"<tr><th style='width:180px'>{label}</th><td>{esc(v)}</td></tr>")
-    # LM28(A-22·C-31): 초과근무 세분(연장·야간·휴일)·사적 차감·미관측 일수 — WP8 mm_basis 새 키(값이 있는 것만)
-    for label, v in overtime_rows(meta, b):
-        h.append(f"<tr><th style='width:180px'>{esc(label)}</th><td>{esc(v)}</td></tr>")
-    h.append("</table>")
-    # LM30(2026-10-18) 출퇴근·시간외 근무 — 이 리포트는 이 PC 에만 있으므로(공유폴더로 복사되지 않는다) 날짜별 표까지 싣는다
-    h += attendance_section(meta, b, _json(os.path.join(REP, f"attendance_{tag}.json")), per_day=True)
-    if tool_tbl:
-        h.append(tool_tbl)
-    h.append("<div class='dim'>해석 참고: 애자일 관행(SAFe 등)은 명목 가용의 70~80%를 실질 "
-             "capacity로 본다 — 회의·전환비용을 감안하면 로드율 75~85%가 '꽉 찬 상태'에 가깝고, "
-             "지속적 100% 초과는 과부하 신호다.</div>")
-    if not b.get("sampler_days"):
-        h.append("<div class='dim'>※ 투입 시간은 PC 켜기·끄기 기록과 활동 흔적(회의·산출물·메일·커밋)으로 계산했습니다 "
-                 "(LM30 에는 창 샘플러가 없습니다).</div>")
-    # ★ 사용자 지시(2026-10-07 ②): 산출 방식 — PC 가동 하한의 근거 + 날짜별 방식·하한을 연 흔적·깎은 시간
-    h += floor_section(meta, b)
-
-    if sig:
-        by = defaultdict(list)
-        for r in sig:
-            by[r.get("project") or r.get("model") or "공통"].append(r)
-        h.append("<h2>9. raw 단서 (해석 검증용)</h2>"
-                 "<div class='dim'>수치가 이상하면 아래 원문으로 확인하세요. 전체는 "
-                 f"report\\signals_{esc(tag)}.csv 에 있습니다.</div>")
-        for pj, rs in sorted(by.items(), key=lambda kv: -len(kv[1]))[:8]:
-            h.append(f"<div style='margin-top:8px'><b>{esc(pj)}</b> "
-                     f"<span class='dim'>{len(rs)}건</span></div><div class='dim'>")
-            for r in rs[:6]:
-                h.append(f"· {esc(r.get('time','')[:16])} [{esc(r.get('source'))}] "
-                         f"{esc((r.get('text') or '')[:70])}<br>")
-            h.append("</div>")
-    # LM28(REQ-37·REQ-38·A-37·A-38·W2-10): 동료 · 연관 업무 · 업무 영역·과제 워크플로 요약(단위업무 등급)
-    wf = _json(os.path.join(REP, f"workflow_{tag}.json"))
-    h += new_sections(sig, wf, rows, pv, summary=summary, ctx=_privacy_ctx(), n0=10)     # 7절 = Agentic AI 니즈 후보
-    return "\n".join(h)
+    else:
+        h.append("<div class=\"note\">여러 과제에서 되풀이되는 업무가 없습니다.</div>")
+    h.append("</div>")
+    return "".join(h)
 
 
-def main():
-    d0, d1 = arg("--from"), arg("--to")
-    tag = f"{d0.replace('-','')}-{d1.replace('-','')}" if (d0 and d1) else latest_tag()
-    if not tag:
-        print("[report] 분석 결과가 없습니다 — 먼저 [분석 실행]")
-        print(json.dumps({"ok": False, "error": "no result"}))
-        return 1
-    doc = build(tag)
+def _build_local(d, cfg):
+    d0, d1 = d["period"]
+    return "".join([
+        _head(f"{LOCAL_TITLE} {d0}~{d1}", "local", d["tag"]),
+        f"<div class=\"top\">{esc(LOCAL_BANNER)}</div><div class=\"wrap\">",
+        f"<h1>{esc(LOCAL_TITLE)}</h1>",
+        f"<div class=\"meta\">{esc(lmname.DISPLAY_TITLE)} · 기간 {esc(d0)} ~ {esc(d1)} · 만든 날 {time.strftime('%Y-%m-%d')}</div>",
+        f"<div class=\"purpose\">{esc(consent.PURPOSE_LINE)}</div>",
+        _overview(d, cfg, d["root"]),
+        _local_candidates(d),
+        _local_flows(d),
+        _local_taxonomy(d),
+        _local_common(d),
+        "<div class=\"note\">이 리포트는 내 메일·일정 목록에서 업무 유형과 반복 업무를 찾은 결과입니다. 근거건수는 업무별 메일·회의 "
+        "수이고, 시각과 사람 이름은 담지 않습니다. 사람을 평가하거나 업무량을 견주는 데 쓰지 않습니다.</div>",
+        "</div></body></html>",
+    ])
+
+
+# ── share ─────────────────────────────────────────────────────────────────────────────────────
+def _typed(v):
+    """공유 탭에 적은 이름·파트 — 제어 문자를 빼고 공백을 줄여 TYPED_MAX 자까지(내용은 바꾸지 않는다)."""
+    s = re.sub(r"[\x00-\x1f\x7f  ]", " ", str(v or ""))
+    return re.sub(r"\s+", " ", s).strip()[:TYPED_MAX]
+
+
+def _id_key(root):
+    try:
+        return bytes.fromhex(install.salt(root))
+    except (OSError, ValueError, KeyError, TypeError):
+        return b"af32-share-item-id"
+
+
+def _mkid(key, prefix, parts, n):
+    msg = "\x1f".join(str(p or "") for p in parts).encode("utf-8")
+    return prefix + hmac.new(key, msg + b"\x1e" + str(n).encode("ascii"), hashlib.sha256).hexdigest()[:10]
+
+
+def _scrubber(cfg, root, tag):
+    import privacy
+    return privacy.ShareScrubber(cfg, root=root, tag=tag)
+
+
+def _fixed_or_scrub(v, fixed, sc):
+    v = str(v or "").strip()
+    if v in fixed:
+        return v
+    return sc.text(v).strip() if v else ""
+
+
+def _share_items(d, sc):
+    """공유본에 실릴 항목(가린 글) — share_items 와 build(variant="share")가 같은 것을 쓴다."""
+    key = _id_key(d["root"])
+    items, seen = [], set()
+
+    def uid(prefix, parts):
+        n = 0
+        while True:
+            i = _mkid(key, prefix, parts, n)
+            if i not in seen:
+                seen.add(i)
+                return i
+            n += 1
+    for n, _cnt, tt in _candidates(d):
+        raw = (str(n.get("name") or "").strip(), str(n.get("logic") or "").strip(), str(n.get("reason") or "").strip())
+        items.append({"id": uid("c-", ("c",) + raw), "kind": "candidate",
+                      "name": sc.text(raw[0]).strip(), "logic": sc.text(raw[1]).strip() if raw[1] else "",
+                      "reason": sc.text(raw[2]).strip() if raw[2] else "",
+                      "task_type": _fixed_or_scrub(tt, WORKTYPES, sc)})
+    for fl, steps in _flows(d):
+        fkey = (str(fl.get("model") or ""), str(fl.get("project") or ""), str(fl.get("detail") or ""))
+        fid = uid("f-", ("f",) + fkey)
+        for j, s in enumerate(steps):
+            nm = str(s.get("name") or "").strip()
+            how = str(s.get("agent_how") or "").strip()
+            items.append({"id": uid("s-", ("s",) + fkey + (str(j), nm)), "kind": "step", "flow": fid,
+                          "name": sc.text(nm).strip(), "agent": _agent(s.get("agent")),
+                          "agent_how": sc.text(how).strip() if how else ""})
+    return items
+
+
+def share_items(tag, *, scrubber=None, root=None, cfg=None):
+    """미리보기 항목(가린 글 그대로) → list | None(AF32 결과가 아님). scrubber 가 없으면 이 tag 로 만든다."""
+    d = _load(tag, root)
+    if d is None:
+        return None
+    if scrubber is None:
+        if cfg is None:
+            cfg, _w = afcfg.load_effective(d["root"])
+        scrubber = _scrubber(cfg, d["root"], tag)
+    return _share_items(d, scrubber)
+
+
+def _ym(s):
+    return str(s or "")[:7]
+
+
+def share_period(tag, *, root=None):
+    """공유본의 기간 'YYYY-MM~YYYY-MM' — AF32 결과가 아니면 ""."""
+    d = _load(tag, root)
+    if d is None:
+        return ""
+    d0, d1 = d["period"]
+    return f"{_ym(d0)}~{_ym(d1)}"
+
+
+def _build_share(d, sc, include, owner, function):
+    items = _share_items(d, sc)
+    if include is not None:
+        keep = {include} if isinstance(include, str) else {str(x) for x in include}
+        items = [it for it in items if it["id"] in keep]
+    cands = [it for it in items if it["kind"] == "candidate"]
+    flows = {}
+    for it in items:
+        if it["kind"] == "step":
+            flows.setdefault(it["flow"], []).append(it)
+    d0, d1 = d["period"]
+    who, part = _typed(owner), _typed(function)
+    h = [_head(f"{who} — {SHARE_TITLE}" if who else SHARE_TITLE, "share"),
+         f"<div class=\"top\">{esc(lmname.DISPLAY_TITLE)} · 조직장 공유본</div><div class=\"wrap\">",
+         "<h1>" + (esc(who) if who else esc(SHARE_TITLE)) + (f"<span class=\"sub\">{esc(part)}</span>" if part else "") + "</h1>",
+         f"<div class=\"meta\">기간 {esc(_ym(d0))}~{esc(_ym(d1))}</div>",
+         f"<div class=\"purpose\">{esc(SHARE_PURPOSE)}.</div>",
+         "<div class=\"card\"><h2>Agentic AI 전환 후보</h2>"]
+    for c in cands:
+        h.append("<div class=\"cand\"><div class=\"nm\">" + esc(c["name"]) + " " + _worktype(c["task_type"]) + "</div>"
+                 + (f"<div class=\"ln\"><b>동작 로직</b>{esc(c['logic'])}</div>" if c["logic"] else "")
+                 + (f"<div class=\"ln\"><b>발굴 사유</b>{esc(c['reason'])}</div>" if c["reason"] else "")
+                 + "</div>")
+    if not cands:
+        h.append("<div class=\"note\">싣는 후보가 없습니다.</div>")
+    h.append("</div><div class=\"card\"><h2>워크플로우와 Agent 가능성</h2>")
+    for steps in flows.values():
+        h.append("<div class=\"flow\"><div class=\"ft\">업무 흐름</div><ol class=\"steps\">")
+        for s in steps:
+            h.append(f"<li><b>{esc(s['name'])}</b>{_pill(s['agent'])}"
+                     + (f"<div class=\"sub\">{esc(s['agent_how'])}</div>" if s["agent_how"] else "") + "</li>")
+        h.append("</ol></div>")
+    if not flows:
+        h.append("<div class=\"note\">싣는 워크플로우가 없습니다.</div>")
+    h.append(f"</div><div class=\"note\">{esc(SHARE_MASK_NOTE)}</div></div></body></html>")
+    return "".join(h)
+
+
+# ── 진입점 ────────────────────────────────────────────────────────────────────────────────────
+def build(tag, *, variant="local", scrubber=None, include=None, owner=None, function=None, root=None, cfg=None):
+    """개인 리포트 HTML → str | None(tag 가 AF32 결과가 아님). variant 는 "local" 또는 "share"(머리말 참고).
+    share 에서 scrubber 가 없으면 core\\privacy.ShareScrubber(cfg, root, tag) 를 만든다 — 제한 고객 목록이 없으면
+    privacy.RestrictedListError(종료 코드 4 로 다룬다)."""
+    if variant not in VARIANTS:
+        raise ValueError(f"variant 는 {' · '.join(VARIANTS)} 중 하나입니다: {variant!r}")
+    d = _load(tag, root)
+    if d is None:
+        return None
+    if cfg is None:
+        cfg, _w = afcfg.load_effective(d["root"])
+    if variant == "local":
+        return _build_local(d, cfg)
+    if scrubber is None:
+        scrubber = _scrubber(cfg, d["root"], tag)
+    return _build_share(d, scrubber, include, owner, function)
+
+
+def out_path(tag, root=None):
+    r"""local 리포트 경로 report\개인리포트_<tag>.html."""
+    return os.path.join(_dirs(root)[1], f"{OUT_PREFIX}{tag}.html")
+
+
+def _write_atomic(path, text):
+    """같은 폴더의 임시 파일에 쓴 뒤 바꿔 끼운다(쓰다 만 파일을 남기지 않는다)."""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=os.path.basename(path) + ".", suffix=".tmp", dir=os.path.dirname(path) or ".")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+    return path
+
+
+def _arg(argv, flag):
+    if flag not in argv:
+        return None
+    i = argv.index(flag)
+    return argv[i + 1] if i + 1 < len(argv) else ""
+
+
+def _fail(rc, code, msg, tag="", reason=""):
+    print(f"[report] {msg}")
+    res = {"ok": False, "code": code, "msg": msg, "html": None, "tag": tag}
+    if reason:
+        res["reason"] = reason                    # 시작 확인이 막은 까닭(other_user | withdrawn) — 단계 CLI 와 같은 키
+    print(json.dumps(res, ensure_ascii=False))
+    return rc
+
+
+def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    root = ROOT
+    msg = install.startup_check(root)
+    if msg:
+        return _fail(4, "setup_refused", msg)
+    cfg, _w = afcfg.load_effective(root)
+    try:
+        consent.require(root, cfg)
+    except consent.ConsentRequired as e:
+        return _fail(4 if getattr(e, "code", 3) == 4 else 3, "no_consent", e.message, reason=e.reason)
+    variant = _arg(argv, "--variant")
+    if variant not in (None, "local"):
+        return _fail(1, "bad_variant", "공유본은 화면의 [공유] 탭에서만 만듭니다 — 이 명령은 이 PC 에서 보는 개인 리포트만 만듭니다")
+    d0, d1 = _arg(argv, "--from"), _arg(argv, "--to")
+    if d0 or d1:
+        if not (d0 and d1):
+            return _fail(1, "bad_period", "--from 과 --to 를 함께 주세요 (YYYY-MM-DD)")
+        try:
+            tag = period.tag_of(d0, d1)
+        except ValueError as e:
+            return _fail(1, "bad_period", str(e))
+    else:
+        tag = latest_tag()
+        if not tag:
+            return _fail(1, "no_result", "분석 결과가 없습니다 — 먼저 [분석 실행]을 하세요")
+    doc = build(tag, variant="local", cfg=cfg)
     if not doc:
-        print(f"[report] mm_meta_{tag}.json 이 없습니다")
-        print(json.dumps({"ok": False, "error": "no meta"}))
-        return 1
-    out_html = os.path.join(REP, f"리포트_{tag}.html")
-    with open(out_html, "w", encoding="utf-8") as f:
-        f.write(doc)
-    out_doc = os.path.join(REP, f"리포트_{tag}.doc")     # Word 가 HTML 을 그대로 연다
-    with open(out_doc, "w", encoding="utf-8") as f:
-        f.write(doc)
-    print(f"[report] → {out_html}")
-    print(f"[report] → {out_doc}  (더블클릭하면 Word로 열립니다)")
-    print(json.dumps({"ok": True, "html": out_html, "doc": out_doc, "tag": tag},
-                     ensure_ascii=False))
+        return _fail(1, "no_result", f"run_meta_{tag}.json 이 없거나 {PRODUCT} 분석 결과가 아닙니다", tag)
+    path = out_path(tag)
+    try:
+        _write_atomic(path, doc)
+    except OSError as e:
+        return _fail(1, "write_failed", f"리포트를 저장하지 못했습니다({type(e).__name__})", tag)
+    print(f"[report] → {path}")
+    print(json.dumps({"ok": True, "html": path, "tag": tag}, ensure_ascii=False))
     return 0
 
 
 if __name__ == "__main__":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, errors="replace", encoding=(
-        (sys.stdout.encoding or "utf-8") if sys.stdout.isatty() else "utf-8"))  # 콘솔(bat)=콘솔 코드페이지 · 파이프(UI)=utf-8
+        (sys.stdout.encoding or "utf-8") if sys.stdout.isatty() else "utf-8"))   # 콘솔(bat)=콘솔 코드페이지 · 파이프(UI)=utf-8
     sys.exit(main())

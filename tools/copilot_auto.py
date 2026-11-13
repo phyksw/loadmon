@@ -22,10 +22,10 @@ copilot_auto.py — 사람 개입 없는 M365 Copilot 연동 (Edge DevTools Prot
        이번 왕복만 모델을 바꾼다.
        LM28 — 답을 기다리는 동안에도 본다: 보낸 뒤의 답 머리(짧은 산문·JSON 없음)나 보낸 뒤 새로 뜬 알림(role=alert·aria-live·
        토스트 — js_notices)에 제한 문구가 있고 그 글이 그대로면(생성 중이 아니면 ~5초 · '중지' 버튼이 사라졌으면 한 폴) replyTimeoutSec·
-       새 채팅 사다리를 기다리지 않고 바로 throttled 로 돌려준다(그동안의 재전송 하나하나가 제한을 늘린다). 같은 실행(LM_RUN_ID)이
+       새 채팅 사다리를 기다리지 않고 바로 throttled 로 돌려준다(그동안의 재전송 하나하나가 제한을 늘린다). 같은 실행(AF32_RUN_ID)이
        사용량 제한으로 멈췄으면(run_stopped) 보내지 않고 바로 hard 'throttled'(run_stop_result). 보내기 사이에는
        copilotAuto.minGapSec(기본 15초 · 0 = 끔) 간격을 둔다 — 앞 전송 시각은 <프로필>.pace.json(프로세스를 넘어 · pace_wait).
-       한 실행(LM_RUN_ID)에서 Copilot 때문에 쉬는 시간은 모든 단계를 합쳐 copilotAuto.runWaitMaxSec(기본 300초 · 0 = 쉬지 않음)
+       한 실행(AF32_RUN_ID)에서 Copilot 때문에 쉬는 시간은 모든 단계를 합쳐 copilotAuto.runWaitMaxSec(기본 300초 · 0 = 쉬지 않음)
        안이다 — 쉰 초 합계는 <프로필>.wait.json(run_wait_left·add_run_wait — 쉬는 쪽은 judge·agentic·flow·run.py).
   cut: 답 꼬리에 '생성 중단' 문구("OK, I've stopped generating the response.")가 있다 — 재시도
        사다리(새 채팅)로도 반복되면 잘린 앞부분을 ok+cut 으로 돌려주고, 호출자(judge/refine)가
@@ -47,13 +47,23 @@ copilot_auto.py — 사람 개입 없는 M365 Copilot 연동 (Edge DevTools Prot
   · 나눔 조각에는 '새 채팅 재시도 사다리'를 쓰지 않는다(앞 조각 문맥이 지워진다) — 실패하면
     새 채팅에서 전체를 처음부터 1회 다시 보낸다.
 
-테스트 전용 스텁(LM_COPILOT_STUB=<dir>):
+테스트 전용 스텁(AF32_COPILOT_STUB=<dir>):
   · --send 가 Edge 를 띄우지 않고 <dir> 의 JSON 파일을 응답으로 돌려준다(phase "stub").
     회귀 시험(run.py 경로는 자식 프로세스라 in-process 패치가 닿지 않음)만을 위한 분기이며,
     산출물에는 phase 로 '스텁 판정'임이 드러난다. 배포 환경에서는 이 변수를 두지 말 것.
+  · 루프백 채팅 주소(시험용 가짜 채팅 페이지)는 이 변수의 폴더가 있을 때만 받는다 — config.json·--url 만으로는 받지 않는다.
+
+AF32 — 보내기 전 확인(R11·D12·D19):
+  · CLI 의 --send·--probe·--diagnose·--diagnose-model 은 다른 사용자의 자료거나 지우는 중이면(core\\consent.require) Edge 를 띄우지
+    않고 끝난다({"code":"no_consent"} — 종료 코드 4 다른 사용자의 자료 · 3 지우는 중). --close·--clear-site 는 닫기·지우기라 묻지 않는다.
+  · 채팅 주소는 https://m365.cloud.microsoft 만(역슬래시·사용자 정보가 든 주소는 받지 않는다). 업무 호스트여도 보내기 전에 화면에
+    로그인한 계정의 도메인이 회사 도메인(privacy.internalDomains ∪ 내 메일 주소의 도메인)인지 본다(account_check) — 못 읽었거나
+    회사 밖·개인 계정이면 R-ACCOUNT 로 아무것도 넣지 않는다.
+  · 계측은 날짜별 파일 report\\copilot_trace_YYYYMMDD.jsonl(지난날 파일은 보관기한 정리가 통째로 지운다).
+  · 입력창 진단 덤프(data\\copilot_auto_debug.json)는 구조만 — 주소는 scheme://host, 화면 제목·단추 이름 원문은 남기지 않는다.
 
 LM28 — 우리 Edge 만 다루고, 개인 계정·정책·잠금을 먼저 본다:
-  · ensure_edge 가 띄우면 data\\lm30_edge\\owner.json{pid,port,t,root,browser} 를 쓴다. close_own_edge 는 그 표식이 있고
+  · ensure_edge 가 띄우면 data\\af32_edge\\owner.json{pid,port,t(날짜만),root,browser} 를 쓴다. close_own_edge 는 그 표식이 있고
     브라우저 ID 가 같을 때만 CDP Browser.close 를 보낸다(taskkill 없음 · keepEdgeOpen·로그인 대기 중이면 두기).
   · Edge 는 CREATE_BREAKAWAY_FROM_JOB 로 띄운다 — 단계의 Job 정리에 휩쓸리지 않아 한 실행에 한 번만 뜬다.
     상위 Job 이 이탈을 막으면(ERROR_ACCESS_DENIED) 플래그 없이 1회.
@@ -64,7 +74,8 @@ LM28 — 우리 Edge 만 다루고, 개인 계정·정책·잠금을 먼저 본�
     보내지 않는다(개인 계정 화면은 R-PERSONAL · 미상은 로그인 대기). Outlook·Teams 탭은 닫거나 옮기지 않는다.
   · 로그인 화면은 AADSTS 번호만 읽어 사유를 나눈다(R-LOGIN-DEVICE·R-LOGIN-WAIT·R-CA). 안내는 프로세스당 1회(stderr).
   · --remote-allow-origins 는 http://127.0.0.1:<port> 만(예전 '*' 금지). WS 가 403 이면 그 Origin 으로 한 번 더 붙는다.
-  · 죽은 프로필(오류 화면)이 서로 다른 왕복에서 2회 연속이면 우리 Edge 를 닫고 <프로필>.bad-<시각> 으로 바꾼 뒤 새로 띄운다.
+  · 죽은 프로필(오류 화면)이 서로 다른 왕복에서 2회 연속이면 우리 Edge 를 닫고 <프로필>.bad-<시각> 으로 바꾼 뒤 새로 띄운다
+    (바꾼 사본과 지난 .bad-* 는 바로 지운다 — drop_bad_profiles).
   · send_inproc(prompt, fresh, deadline) — judge 등이 같은 프로세스에서 부르는 --send(왕복마다 파이썬을 띄우지 않는다).
     보내기 직전 G3 최종 검사(privacy.gate_prompt)에 걸리면 {status:'blocked'} 를 돌려주고 보내지 않는다. CLI --send 도 같은
     길(_send)을 탄다. gate_rows 는 프롬프트에 넣을 행을 privacy.gate_items 로 거른다(호출자 judge·refine·flow·agentic).
@@ -86,7 +97,7 @@ LM28 — Copilot 채팅 정리(copilotAuto.deleteChats, 기본 켬): LM28 이 �
     (_open_fresh — 한 번 더 새로 고쳐 열어 봄) 보내지 않는다(phase 'no_new_chat'). 나눠 보내는 둘째 조각부터도 같은 확인(phase 'moved').
   · LM28: 다음 단계(정제·Agentic·워크플로우)의 첫 왕복은 fresh=RESUME — 앞 단계의 우리 채팅이 온전하게 끝났고(last_ok) 20분 안이며
     화면이 그 채팅이면 새 채팅 없이 이어 쓴다(아니면 예전처럼 새 채팅).
-  · LM28(2026-10-17): 조각을 많이 보내는 호출자(Copilot 메일·일정·팀즈 수집기)는 ChatKeep 으로 한 채팅을 이어 쓴다 — 첫 조각(앞 단계의
+  · LM28(2026-10-17): 조각을 많이 보내는 호출자(Copilot 메일·일정 수집기)는 ChatKeep 으로 한 채팅을 이어 쓴다 — 첫 조각(앞 단계의
     우리 채팅이면 RESUME)·나쁜 조각 뒤·chatTurns 마다만 새 채팅. 이어 보내기(fresh 거짓) 직전 탭 주소의 대화 id 가 이 프로세스의 우리
     채팅과 다르면(사람이 전용 Edge 에서 다른 대화를 누름) 그 대화에 보내지 않고 새 채팅을 연다(_moved_away — 주소에 id 가 없으면 예전 그대로).
 
@@ -111,6 +122,7 @@ import json
 import os
 import re
 import socket
+import stat
 import struct
 import subprocess
 import sys
@@ -126,10 +138,10 @@ ERROR_ACCESS_DENIED = 5                  # 상위 Job 이 이탈(BREAKAWAY_OK)�
 _sleep = time.sleep                      # 시험이 대기를 0 으로 바꿀 수 있게(Edge 수명주기 함수만)
 if os.path.join(ROOT, "core") not in sys.path:
     sys.path.insert(0, os.path.join(ROOT, "core"))
-import lmname  # noqa: E402  — LM30 이름 단일원(CDP 포트·전용 Edge 프로필)
+import lmname  # noqa: E402  — AF32 이름 단일원(CDP 포트·전용 Edge 프로필)
 
 # ── 설정 (config.json 의 copilotAuto 로 덮어쓰기 가능) ──
-# 포트·프로필은 LM24·LM28·LM29 와 다르게 둔다(lmname.CDP_PORT · data\lm30_edge) — 같은 PC 의 LM24·LM28·LM29 Edge 를 재사용·조종하지 않게.
+# 포트·프로필은 LM24·LM28·LM29·LM30 과 다르게 둔다(lmname.CDP_PORT · data\af32_edge) — 같은 PC 의 LM24·LM28·LM29·LM30 Edge 를 재사용·조종하지 않게.
 DEFAULTS = {
     "url": "https://m365.cloud.microsoft/chat",
     "port": lmname.CDP_PORT,
@@ -176,13 +188,13 @@ DEFAULTS = {
     "diskCacheMB": 200,
     # LM28 — 키 설명은 config.default.json 의 _copilotAuto_옵션_설명.
     "inProcess": True,            # judge 등이 이 모듈을 임포트해 같은 프로세스에서 왕복(send_inproc). false = 자식 프로세스
-    "requireWorkAccount": True,   # 업무(회사) Copilot 화면에서만 보낸다 — 개인 계정이면 R-PERSONAL
+    "requireWorkAccount": True,   # 늘 true — 업무(회사) Copilot 화면에서만 보낸다(관문은 이 값을 보지 않는다 · 개인 계정이면 R-PERSONAL)
     "keepEdgeOpen": False,        # true 면 close_own_edge 가 닫지 않는다(종료 때 쿠키를 지우는 정책 PC)
     "deleteChats": True,          # LM28 이 연 Copilot 대화를 다 쓰면 대화 목록에서 지운다(false·"false"·0·"off" = 끔)
     # 프롬프트를 보내는 사이의 최소 간격(초) — 프로세스를 넘어(<프로필>.pace.json). 판정 묶음·재시도·다음 단계가 잇달아 보내 요청이
     # 몰리면 Copilot 이 「요청이 너무 많다」고 막는다(현장 제보). 0 = 끔. 평소 왕복은 답을 기다리는 동안 이미 지나 있어 느려지지 않는다.
     "minGapSec": 15,
-    # 한 번 분석(run.py 한 실행 — LM_RUN_ID)에서 Copilot 때문에 쉬는 시간의 합계 상한(초) — 판정·정제·월별 코멘트·Agentic·워크플로우를
+    # 한 번 분석(run.py 한 실행 — AF32_RUN_ID)에서 Copilot 때문에 쉬는 시간의 합계 상한(초) — 판정·정제·Agentic·워크플로우를
     # 모두 합친다(<프로필>.wait.json). 다 쓰면 그 단계의 남은 묶음은 보내지 않고 여기까지의 결과를 지킨다. 0 = 쉬지 않음(막히면 바로 멈춤).
     "runWaitMaxSec": 300,
 }
@@ -311,18 +323,60 @@ def load_cfg(cfg_path=None):
     try:
         with open(cfg_path or os.path.join(ROOT, "config", "config.json"), encoding="utf-8-sig") as f:
             user = json.load(f).get("copilotAuto") or {}
-        # 빈 값은 기본값을 쓰되, 명시한 false 는 받는다(inProcess·requireWorkAccount 를 끌 수 있게). KEEP_FALSY 는 0 도 받는다
+        # 빈 값은 기본값을 쓰되, 명시한 false 는 받는다(inProcess 를 끌 수 있게). KEEP_FALSY 는 0 도 받는다.
         cfg.update({k: v for k, v in user.items()
                     if v or v is False or (k in KEEP_FALSY and v is not None and v != "")})
     except Exception:
         pass
-    # LM24·LM28·LM29 의 config.json 을 그대로 옮겨 온 경우(옛 포트·옛 프로필) — lmname 값이 우선한다.
+    # requireWorkAccount 는 늘 true(afcfg 와 같다) — 보내기 관문(_sendable·page_gate·wait_page)은 이 값을 보지 않고 늘 업무
+    # 계정만 받는다(R11·D22 — 설정으로 회사 테넌트 밖 Copilot 에 보내게 만들 수 없다).
+    cfg["requireWorkAccount"] = True
+    # 채팅 주소는 https://m365.cloud.microsoft 만(CHAT_HOSTS) — 다른 AI·개인 계정·루프백 주소면 기본 주소로 되돌린다. 루프백(시험용 가짜
+    # 채팅)은 시험 스텁(AF32_COPILOT_STUB 폴더)이 켜졌을 때만 받는다 — config.json 만으로는 열 수 없다(_work_url_ok).
+    if not _work_url_ok(cfg.get("url")):
+        _notice(f"CFG-URL|{cfg_path or ''}",
+                "경고: copilotAuto.url 이 회사 M365 Copilot 주소가 아니라 기본 주소(" + DEFAULTS["url"] + ")를 씁니다", label="")
+        cfg["url"] = DEFAULTS["url"]
+    # LM24·LM28·LM29·LM30 의 config.json 을 그대로 옮겨 온 경우(옛 포트·옛 프로필) — lmname 값이 우선한다.
     # 경고는 stderr 로 1줄(stdout 은 결과 JSON 한 건 계약) — 인프로세스 왕복은 이 함수를 자주 부르므로 프로세스당 1회.
     fixed = lmname.fix_edge_cfg(cfg, ROOT)
     if fixed:
         _notice(f"CFG-OLD|{cfg_path or ''}|{','.join(fixed)}",
                 f"경고: config 의 옛 판 값을 {lmname.SHORT} 값으로 바꿔 씁니다 — " + ", ".join(fixed), label="")
     return cfg
+
+
+CHAT_HOSTS = ("m365.cloud.microsoft",)     # 채팅 시작 주소로 받는 호스트(정확 일치) — 회사 M365 Copilot
+
+
+def _plain_url(url):
+    """주소 글 → urlparse 결과 | None. 역슬래시·공백·제어 문자·사용자 정보(user@ · user:pw@)·잘못된 포트가 든 주소는 None —
+    크로미움은 역슬래시를 '/' 로 읽고 파이썬은 그대로 둬 둘이 다른 호스트를 본다('다른 호스트' + 역슬래시 + '@' + 회사 호스트 꼴)."""
+    s = str(url or "").strip()
+    if not s or "\\" in s or any(ord(c) <= 0x20 or ord(c) == 0x7F for c in s):
+        return None
+    try:
+        p = urlparse(s)
+        if p.port is not None and p.port <= 0:  # 잘못된 포트(글자·범위 밖)면 p.port 가 ValueError
+            return None
+    except ValueError:
+        return None
+    if "@" in (p.netloc or "") or p.username is not None or p.password is not None:
+        return None
+    return p
+
+
+def _work_url_ok(url):
+    """채팅 주소로 써도 되는가 — https://m365.cloud.microsoft 만(CHAT_HOSTS — 정확 일치 · 포트 없음 또는 443). 역슬래시·사용자 정보·
+    공백·제어 문자가 든 주소는 받지 않는다(_plain_url). 루프백(시험용 가짜 채팅 · http/https)은 시험 스텁(AF32_COPILOT_STUB 폴더)이
+    켜졌을 때만 — config.json·--url 만으로는 열 수 없다."""
+    p = _plain_url(url)
+    if p is None:
+        return False
+    host = (p.hostname or "").lower()
+    if host in LOOPBACK:
+        return bool(stub_dir()) and p.scheme in ("http", "https")
+    return p.scheme == "https" and host in CHAT_HOSTS and p.port in (None, 443)
 
 
 def _truthy(v, default=False):
@@ -339,7 +393,7 @@ R_EDGEBUSY = "R-EDGEBUSY"          # 다른 작업이 전용 Edge 를 쓰는 중
 R_EDGEFOREIGN = "R-EDGEFOREIGN"    # 그 포트의 디버그 Edge 가 우리 프로필 것이 아님 — 붙지 않는다
 R_EDGELAUNCH = "R-EDGELAUNCH"      # Edge 를 띄우지 못함(실행 오류·포트 안 열림)
 R_PERSONAL = "R-PERSONAL"          # 개인 Microsoft 계정 화면 — 업무 자료를 보내지 않는다(fatal)
-R_ACCOUNT = "R-ACCOUNT"            # 공용 호스트(office.com 등)에 머묾 — 계정 종류를 모르면 보내지 않는다
+R_ACCOUNT = "R-ACCOUNT"            # 회사 계정임을 확인하지 못함(공용 호스트에 머묾 · 로그인 계정을 못 읽음 · 회사 밖·개인 계정) — 보내지 않는다
 R_LOGIN = "R-LOGIN"                # 로그인 필요(회사 IdP 화면 포함)
 R_LOGIN_DEVICE = "R-LOGIN-DEVICE"  # 장치 기반 조건부 액세스 — Edge 프로필에 회사 계정 로그인으로 풀린다
 R_LOGIN_WAIT = "R-LOGIN-WAIT"      # 사용 약관·추가 인증 단계 — 사람이 그 화면에서 마친다
@@ -350,17 +404,19 @@ R_GATE = "R-GATE"                  # G3 최종 프롬프트 검사에 걸림 —
 R_THROTTLE = "R-THROTTLE"          # Copilot 사용량 제한 문구 — 사다리 없이 돌려주고 호출자가 쉬었다 다시 보낸다
 REASON_HINT = {
     R_EDGEPOL: "회사 Edge 정책(RemoteDebuggingAllowed=0 또는 UserDataDir 강제)이 전용 Edge 를 막습니다 — AI 단계는 "
-               "PC 자료(규칙)로 진행합니다. 프롬프트 파일(report\\judge_*.md)을 Copilot 에 직접 붙여 쓸 수는 있습니다",
+               "규칙 판정으로 진행합니다. 프롬프트 파일(report\\judge_*.md)을 손으로 붙여 쓸 때는 "
+               "회사 M365 Copilot(m365.cloud.microsoft, 회사 계정)에만 붙여 넣으세요",
     R_EDGEKEEP: "회사 Edge 정책이 브라우저를 닫을 때 쿠키를 지웁니다 — 매번 다시 로그인하지 않으려면 "
                 "config\\config.json 의 copilotAuto.keepEdgeOpen 을 true 로 두세요",
-    R_EDGEBUSY: "다른 작업(웹 메일·팀즈 읽기·AI 연결 진단 등)이 전용 Edge 를 쓰고 있습니다 — 그 작업이 끝난 뒤 다시 실행하세요",
+    R_EDGEBUSY: "다른 작업(웹 메일 읽기·AI 연결 진단 등)이 전용 Edge 를 쓰고 있습니다 — 그 작업이 끝난 뒤 다시 실행하세요",
     R_EDGEFOREIGN: "디버그 포트 {port} 를 다른 프로그램의 Edge 가 쓰고 있습니다 — 그 Edge 를 닫거나 "
                    "config\\config.json 의 copilotAuto.port 를 바꾸세요(우리 것이 아닌 브라우저는 조종하지 않습니다)",
-    R_EDGELAUNCH: "Edge 를 디버그 포트로 띄우지 못했습니다 — 열린 전용 Edge 창(data\\lm30_edge)을 닫고 다시 실행하세요",
+    R_EDGELAUNCH: "Edge 를 디버그 포트로 띄우지 못했습니다 — 열린 전용 Edge 창(data\\af32_edge)을 닫고 다시 실행하세요",
     R_PERSONAL: "전용 Edge 가 개인 Microsoft 계정 화면(copilot.microsoft.com·login.live.com 등)입니다 — 업무 자료는 "
                 "보내지 않았습니다. 전용 Edge 창에서 회사(조직) 계정으로 로그인하세요",
-    R_ACCOUNT: "전용 Edge 가 업무용 Copilot(m365.cloud.microsoft) 화면에 머물지 않아 계정 종류를 확인할 수 없습니다 — "
-               "보내지 않았습니다. 전용 Edge 창에서 회사(조직) 계정으로 로그인했는지 확인하세요",
+    R_ACCOUNT: "전용 Edge 의 Copilot 창이 회사 계정으로 로그인돼 있는지 확인하지 못해 보내지 않았습니다 — 전용 Edge 창에서 "
+               "회사(조직) 계정으로 로그인했는지 확인하세요. 회사 계정의 도메인이 메일 도메인과 다르면 운영 담당이 "
+               "config\\config.json 의 privacy.internalDomains 에 그 도메인을 넣습니다",
     R_LOGIN: "방금 열린 Edge 창에서 회사 계정으로 로그인해 두세요 — 이후에는 무개입으로 동작합니다",
     R_LOGIN_DEVICE: "회사 장치 조건부 액세스(AADSTS 53000 계열)입니다 — 전용 Edge 창 오른쪽 위 프로필 단추에서 회사 계정으로 "
                     "'Edge 에 로그인'한 뒤 다시 실행하세요",
@@ -368,7 +424,7 @@ REASON_HINT = {
     R_CA: "회사 조건부 액세스 정책이 이 브라우저의 접속을 막습니다(AADSTS 5300x) — IT 담당자에게 문의하세요",
     R_DEAD: "전용 Edge 가 오류 화면만 냅니다 — 서로 다른 실행에서 2회 연속이면 프로필을 새로 만듭니다(로그인 1회 다시)",
     R_NET: "네트워크(사내망·VPN) 연결을 확인한 뒤 다시 실행하세요",
-    R_THROTTLE: "Copilot 이 잠시 응답을 제한했습니다 — 몇 분 쉬었다 자동으로 이어 보냅니다. 계속되면 1~2시간 뒤 [재분석만]",
+    R_THROTTLE: "Copilot 이 잠시 응답을 제한했습니다 — 몇 분 쉬었다 자동으로 이어 보냅니다. 계속되면 1~2시간 뒤 [다시 읽지 않고 분석만]을 켜고 [분석 실행]",
 }
 LAST = {"reason": "", "keep": False, "breakaway": True}   # 마지막 ensure_edge 의 사유(웹 수집기는 진리값만 본다)
 _NOTICED = set()
@@ -399,9 +455,14 @@ def find_edge():
     return None
 
 
+# 전용 Edge 디버그 포트(127.0.0.1) 요청은 프록시를 거치지 않는다(R11) — 기본 opener 는 HTTP_PROXY·HTTPS_PROXY·시스템 프록시를
+# 따라 탭 주소·제목(/json/list)까지 프록시로 보낼 수 있다. teamup 과 같은 방식(ProxyHandler({})).
+_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
 def http_json(port, path, method="GET"):
     req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", method=method)
-    with urllib.request.urlopen(req, timeout=5) as r:
+    with _OPENER.open(req, timeout=5) as r:
         return json.loads(r.read().decode("utf-8"))
 
 
@@ -676,10 +737,10 @@ def _browser_path(ver):
 
 
 def _write_owner(cfg, pid):
-    """우리가 띄웠다는 표식 — close_own_edge 는 이것이 있고 브라우저 ID 가 같을 때만 닫는다."""
+    """우리가 띄웠다는 표식 — close_own_edge 는 이것이 있고 브라우저 ID 가 같을 때만 닫는다. t 는 띄운 날짜만(D10 — 읽는 쪽이 없다)."""
     port = int(cfg["port"])
     return _write_json(owner_path(cfg), {"pid": int(pid or 0), "port": port,
-                                         "t": time.strftime("%Y-%m-%d %H:%M:%S"), "root": ROOT,
+                                         "t": time.strftime("%Y-%m-%d"), "root": ROOT,
                                          "browser": _browser_path(_version(port))})
 
 
@@ -713,17 +774,29 @@ def _read_dap(profile_dir):
 
 def owns_port(cfg):
     """그 포트의 디버그 Edge 가 우리 전용 프로필의 것인가 — 프로필의 DevToolsActivePort(포트·브라우저 경로)로 확인.
-    표식이 없으면 판정할 수 없으므로 LM24 처럼 재사용(True), 표식이 있는데 포트·브라우저가 다르면 남의 것(False)."""
-    dap = _read_dap(cfg["profileDir"])
-    if not dap:
-        return True
+    Edge 는 디버그 포트를 열 때 그 프로필 폴더에 이 표식을 쓴다. 표식이 있으면 포트가 같고, 그 포트가 답하고, 브라우저 경로가
+    같아야 우리 것이다. 표식이 없으면 ensure_edge 가 띄울 때 쓴 owner 표식(포트·브라우저 경로)이 지금 그 포트의 브라우저와 같을
+    때만 우리 것이다. 둘 다 아니면 같은 PC 의 다른 설치·다른 사용자의 Edge 일 수 있으므로 남의 것(False)으로 보고 재사용·사이트
+    자료 지우기·채팅 지우기 같은 조작을 하지 않는다(판정할 수 없으면 손대지 않는다)."""
     port = int(cfg["port"])
-    if dap[0] != port:
+    dap = _read_dap(cfg["profileDir"])
+    if dap and dap[0] != port:
         return False
     v = _version(port)
-    if not v or not dap[1]:
-        return True
-    return str(v.get("webSocketDebuggerUrl") or "").endswith(dap[1])
+    if not v:
+        return False
+    cur = str(v.get("webSocketDebuggerUrl") or "")
+    if dap:
+        if not dap[1]:
+            return True                         # 브라우저 경로를 쓰지 않는 옛 Edge — 포트로만 확인한다
+        return cur.endswith(dap[1])
+    own = read_owner(cfg) or {}
+    try:
+        own_port = int(own.get("port") or 0)
+    except (TypeError, ValueError):
+        own_port = 0
+    browser = str(own.get("browser") or "")
+    return own_port == port and bool(browser) and cur.endswith(browser)
 
 
 # ── Edge 수명주기 ──
@@ -763,9 +836,9 @@ def _popen_edge(args):
 def ensure_edge(cfg):
     """디버그 포트가 살아 있고 우리 프로필의 것이면 재사용, 없으면 전용 프로필로 새로 띄운다 →
     'reused' | 'launched' | None. None 의 사유는 LAST['reason'](R-EDGEPOL·R-EDGEFOREIGN·R-EDGELAUNCH) —
-    웹 수집기(Get-OutlookWeb·Get-TeamsWeb)는 진리값만 보므로 반환 형식은 LM24 그대로다."""
+    웹 수집기(Get-OutlookWeb)는 진리값만 보므로 반환 형식은 LM24 그대로다."""
     LAST["reason"] = ""
-    if os.environ.get("LM_NO_BROWSER"):        # 회귀 시험용 — 실제 Edge 를 띄우지 않는다(스텁 드라이버는 무관)
+    if os.environ.get("AF32_NO_BROWSER"):        # 회귀 시험용 — 실제 Edge 를 띄우지 않는다(스텁 드라이버는 무관)
         return None
     port = cfg["port"]
     if debugger_alive(port):
@@ -816,11 +889,13 @@ def close_own_edge(cfg=None, reason="", force=False, tidy=True, budget=None):
     cfg = cfg if isinstance(cfg, dict) else load_cfg()
     if _truthy(cfg.get("keepEdgeOpen")) and not force:
         out = {"closed": False, "why": "keep"}
-        own = read_owner(cfg) if tidy else None
+        own = read_owner(cfg)
         if own and not own.get("login_pending"):
-            code = _tidy_chats(cfg, reason, budget)
-            if code != "none":
-                out["chats"] = code
+            if tidy:
+                code = _tidy_chats(cfg, reason, budget)
+                if code != "none":
+                    out["chats"] = code
+            out["site_clear"] = bool(clear_site_data(own.get("port") or cfg.get("port"), cfg).get("ok"))
         return out
     own = read_owner(cfg)
     if not own:
@@ -840,6 +915,8 @@ def close_own_edge(cfg=None, reason="", force=False, tidy=True, budget=None):
         _drop_owner(cfg)                        # 그 포트의 브라우저가 우리가 띄운 것이 아니다(표식이 낡았다)
         return {"closed": False, "why": "not_ours"}
     chats = _tidy_chats(cfg, reason, budget) if tidy else "none"
+    # D13 — 닫기 전에 Outlook·M365 원점의 사이트 자료(쿠키 제외)를 비운다(베스트 에포트 · 예외 없음)
+    site = clear_site_data(port, cfg)
     try:
         b = CDP(ws)
         try:
@@ -856,7 +933,7 @@ def close_own_edge(cfg=None, reason="", force=False, tidy=True, budget=None):
         _sleep(0.5)
     _drop_owner(cfg)
     trace("edge_close", why=str(reason or "")[:40], port=port)
-    out = {"closed": True, "why": str(reason or "done")}
+    out = {"closed": True, "why": str(reason or "done"), "site_clear": bool(site.get("ok"))}
     if chats != "none":
         out["chats"] = chats
     return out
@@ -952,8 +1029,8 @@ def _reset_dead(cfg):
 # ── 사용량 제한 기록(LM28 진단 A) — <프로필>.throttle.json {t, n, hard, hard_t} ──
 # 판정이 강한 제한(쉬고도 막힘)으로 멈춘 직후 다음 단계(정제·Agentic·워크플로우 — 다른 프로세스)가 15초 만에 같은 벽으로 들어갔다.
 # 기록을 남겨 다음 프로세스의 첫 왕복이 남은 시간만 쉬게 한다(judge.copilot_send). 성공 왕복이 지운다(_after).
-# LM28 — 사용량 제한(「요청이 너무 많음」)으로 멈춘 강한 제한은 실행 표식(run = LM_RUN_ID)·갈래(kind 'throttle')도 적는다 {…, run, kind}.
-# 같은 실행의 뒤 단계(다른 프로세스 — 월별 코멘트·정제·Agentic·워크플로우·메일/팀즈 확인)는 이 표식을 보고 보내지 않는다
+# LM28 — 사용량 제한(「요청이 너무 많음」)으로 멈춘 강한 제한은 실행 표식(run = AF32_RUN_ID)·갈래(kind 'throttle')도 적는다 {…, run, kind}.
+# 같은 실행의 뒤 단계(다른 프로세스 — 정제·Agentic·워크플로우·메일 확인)는 이 표식을 보고 보내지 않는다
 # (run_stopped — 남은 시간 쉬기도 없이). 지난 실행의 기록은 5분 안이면 남은 시간만 쉬고(이번 실행의 쉬는 시간 합계 안) 한 번 보낸다.
 # 옛 판 기록(run 없음)도 그대로 읽힌다.
 THROTTLE_FILE = ".throttle.json"
@@ -962,7 +1039,7 @@ THROTTLE_FILE = ".throttle.json"
 def note_throttle(cfg=None, hard=False, run=None, kind=None):
     """사용량 제한 관찰 1회 기록. 1시간 안의 관찰은 n 을 늘린다. hard(강한 제한)는 성공 왕복이 지울 때까지 남긴다
     (hard_t = 마지막 강한 제한 시각). 기록 실패는 무시한다(왕복을 막지 않는다).
-    run·kind 는 강한 제한일 때만 적는다 — 사용량 제한으로 멈춘 실행의 표식(LM_RUN_ID)과 갈래('throttle'). 강한 제한을 run 없이
+    run·kind 는 강한 제한일 때만 적는다 — 사용량 제한으로 멈춘 실행의 표식(AF32_RUN_ID)과 갈래('throttle'). 강한 제한을 run 없이
     다시 적으면(일시 오류 사다리 끝의 hard) 표식을 지운다 — 다음 단계는 예전처럼 남은 시간만 쉬고 한 번 보낸다. 약한 관찰은 둔다."""
     try:
         cfg = cfg or load_cfg()
@@ -1012,8 +1089,8 @@ def throttle_state(cfg=None, run=False):
 
 
 def run_id():
-    """이번 실행의 표식 — run.py 가 시작 때 LM_RUN_ID 에 싣고 자식(수집기·판정·정제·Agentic·워크플로우)이 물려받는다. 없으면 ""."""
-    return str(os.environ.get("LM_RUN_ID") or "").strip()
+    """이번 실행의 표식 — run.py 가 시작 때 AF32_RUN_ID 에 싣고 자식(수집기·판정·정제·Agentic·워크플로우)이 물려받는다. 없으면 ""."""
+    return str(os.environ.get("AF32_RUN_ID") or "").strip()
 
 
 def run_stopped(cfg=None):
@@ -1031,7 +1108,7 @@ def run_stop_result():
     남은 묶음을 보내지 않은 채 여기까지의 결과를 지킨다(규칙 판정·지난 결과 · abort_kind 'throttle')."""
     return {"ok": False, "phase": "throttled", "reason": R_THROTTLE, "hard": True, "run_stop": True,
             "error": "Copilot 사용량 제한 — 이번 실행은 더 보내지 않음",
-            "hint": "Copilot 이 「요청이 너무 많다」고 해 이번 실행의 AI 단계를 멈췄습니다 — 1~2시간 뒤 [재분석만]"}
+            "hint": "Copilot 이 「요청이 너무 많다」고 해 이번 실행의 AI 단계를 멈췄습니다 — 1~2시간 뒤 [다시 읽지 않고 분석만]을 켜고 [분석 실행]"}
 
 
 def clear_throttle(cfg):
@@ -1045,7 +1122,7 @@ def clear_throttle(cfg):
 
 
 # ── 보내기 간격(LM28) — <프로필>.pace.json {t} ──
-# 판정 묶음·재시도·월별 코멘트·정제·Agentic·워크플로우·메일/팀즈 확인이 프로세스를 넘어 잇달아 보내면 짧은 시간에 요청이 몰려 Copilot 이
+# 판정 묶음·재시도·정제·Agentic·워크플로우·메일 확인이 프로세스를 넘어 잇달아 보내면 짧은 시간에 요청이 몰려 Copilot 이
 # 「요청이 너무 많다」고 막는다(현장 제보). 앞 전송 시각을 프로필 옆 파일에 남기고 copilotAuto.minGapSec(기본 15초 · 0 = 끔)이 지나기
 # 전이면 남은 만큼만 기다린다. 파일이 없거나 깨졌으면 기다리지 않는다(첫 전송·옛 판).
 PACE_FILE = ".pace.json"
@@ -1093,7 +1170,7 @@ def mark_sent(cfg):
 
 # ── 실행의 쉬는 시간 합계(LM28) — <프로필>.wait.json {run, sec, t} ──
 # 쉬는 사다리·사용량 제한 대기·다음 단계의 남은 시간 쉬기·Agentic/워크플로우의 쉬기·run.py 의 재시도 대기는 단계(프로세스)마다 따로
-# 셌다 — 한 실행이 다 합쳐 반시간 넘게 쉴 수 있었다(사용자 요청 '분석이 길면 업무에도 지장'). 이 실행(LM_RUN_ID)에서 쉰 초를 프로세스를
+# 셌다 — 한 실행이 다 합쳐 반시간 넘게 쉴 수 있었다(사용자 요청 '분석이 길면 업무에도 지장'). 이 실행(AF32_RUN_ID)에서 쉰 초를 프로세스를
 # 넘어 모으고, 쉬는 쪽(judge._cool_room·run.py)은 copilotAuto.runWaitMaxSec(기본 300초 · 0 = 쉬지 않음)의 남은 몫 안에서만 쉰다.
 # 실행 표식이 없으면(단계를 따로 돌림) 합계 상한이 없다(예전처럼 프로세스 상한만). 다른 실행의 기록은 0 부터 다시 센다.
 WAIT_FILE = ".wait.json"
@@ -1111,7 +1188,7 @@ def run_wait_max(cfg=None):
 
 
 def run_waited(cfg=None):
-    """이번 실행(LM_RUN_ID)에서 지금까지 쉰 초 — 실행 표식이 없거나 기록이 없거나 깨졌거나 다른 실행의 것이면 0."""
+    """이번 실행(AF32_RUN_ID)에서 지금까지 쉰 초 — 실행 표식이 없거나 기록이 없거나 깨졌거나 다른 실행의 것이면 0."""
     rid = run_id()[:64]
     if not rid:
         return 0.0
@@ -1161,7 +1238,8 @@ def add_run_wait(sec, cfg=None):
 def recreate_profile(cfg):
     """죽은 프로필(서로 다른 왕복에서 오류 화면 2회 연속) — 우리 Edge 를 닫고 프로필 폴더를 <이름>.bad-<시각> 으로 바꾼 뒤
     새로 띄운다(로그인 1회 다시). 사람이 띄운 Edge 가 그 프로필을 쓰고 있으면(표식 없음·포트 살아 있음) 손대지 않는다.
-    옛 .bad-* 는 지우지 않는다(사람이 확인하고 지운다). 채팅 정리는 하지 않는다(tidy=False — 오류 화면에는 대화가 보이지 않는다)."""
+    바꾼 사본과 지난 .bad-* 는 바로 지운다(drop_bad_profiles — 회사 계정 쿠키·Outlook·Copilot 저장소가 남은 사본을 기한 없이 두지
+    않는다 · 못 지운 파일은 보관기한 정리가 다시 지운다). 채팅 정리는 하지 않는다(tidy=False — 오류 화면에는 대화가 보이지 않는다)."""
     close_own_edge(cfg, "dead_profile", force=True, tidy=False)
     if debugger_alive(cfg["port"]):
         return False
@@ -1171,10 +1249,90 @@ def recreate_profile(cfg):
             os.replace(src, f"{src}.bad-{time.strftime('%Y%m%d-%H%M%S')}")
         except OSError:
             return False
+    n_bad = drop_bad_profiles(cfg)
     _reset_dead(cfg)
-    trace("profile_recreated")
+    trace("profile_recreated", bad_removed=n_bad)
     ensure_edge(cfg)
     return True
+
+
+_FILE_REPARSE = 0x400                           # FILE_ATTRIBUTE_REPARSE_POINT — 정션·심볼릭 링크
+
+
+def _xpath(p):
+    r"""긴 경로(260자 넘음)도 지우게 확장 경로(\\?\)로 — 윈도가 아니면 그대로."""
+    p = os.path.abspath(str(p))
+    if os.name != "nt" or p.startswith("\\\\?\\"):
+        return p
+    return ("\\\\?\\UNC" + p[1:]) if p.startswith("\\\\") else ("\\\\?\\" + p)
+
+
+def _is_link(path):
+    """링크(정션·심볼릭)인가 — 알 수 없으면 링크로 본다(따라 들어가지도 지우지도 않는다)."""
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return True
+    return stat.S_ISLNK(st.st_mode) or bool(getattr(st, "st_file_attributes", 0) & _FILE_REPARSE)
+
+
+def _rm_tree(path):
+    """폴더를 지운다 → 다 지웠나. 링크는 따라 들어가지 않고 남긴다(그 너머를 지우지 않는다). 읽기 전용은 풀고 지운다."""
+    ok = True
+    try:
+        entries = list(os.scandir(path))
+    except OSError:
+        return False
+    for e in entries:
+        if _is_link(e.path):
+            ok = False
+            continue
+        try:
+            is_dir = e.is_dir(follow_symlinks=False)
+        except OSError:
+            ok = False
+            continue
+        if is_dir:
+            ok = _rm_tree(e.path) and ok
+            continue
+        try:
+            os.remove(e.path)
+        except OSError:
+            try:
+                os.chmod(e.path, stat.S_IWRITE)
+                os.remove(e.path)
+            except OSError:
+                ok = False
+    if ok:
+        try:
+            os.rmdir(path)
+        except OSError:
+            ok = False
+    return ok
+
+
+def drop_bad_profiles(cfg):
+    """죽은 프로필 사본(<프로필>.bad-YYYYMMDD-HHMMSS — recreate_profile 이 만든 것)을 모두 지운다 → 다 지운 사본 수. 이름이 그 꼴인
+    폴더만 본다. 링크 자체·링크 너머는 지우지 않는다. 예외를 내지 않는다."""
+    try:
+        base = str(cfg["profileDir"]).rstrip("\\/")
+        parent, name = os.path.split(os.path.abspath(base))
+        rx = re.compile(re.escape(name) + r"\.bad-\d{8}-\d{6}", re.I)
+        entries = list(os.scandir(parent))
+    except (KeyError, TypeError, OSError):
+        return 0
+    n = 0
+    for e in entries:
+        if not rx.fullmatch(e.name) or _is_link(e.path):
+            continue
+        try:
+            if not e.is_dir(follow_symlinks=False):
+                continue
+        except OSError:
+            continue
+        if _rm_tree(_xpath(e.path)):
+            n += 1
+    return n
 
 
 def edge_fail(cfg):
@@ -1182,7 +1340,7 @@ def edge_fail(cfg):
     (edge_not_found · launch_failed — 둘 다 사람이 손대야 풀리는 실패라 호출자가 남은 묶음을 보내지 않는다)."""
     out = {"ok": False, "phase": "edge_not_found" if not find_edge() else "launch_failed",
            "error": "Edge 실행 실패",
-           "hint": "Edge 설치 여부 확인 · 보안 정책이 디버그 포트를 막는 환경이면 클립보드(수동) 방식 사용"}
+           "hint": "Edge 설치 여부 확인 · 회사 보안 정책이 디버그 포트를 막으면 [AI 연결 진단]으로 확인"}
     r = LAST.get("reason") or ""
     if r:
         out.update(reason=r, hint=_hint(r, cfg),
@@ -1236,7 +1394,9 @@ def _host(url):
 def page_kind(url, cfg=None):
     """탭 URL → 'work'(업무 Copilot·M365 — 보내도 됨) · 'mixed'(office.com·microsoft365.com — 개인·회사 공용, 근거 아님)
     · 'personal'(개인 Microsoft 계정) · 'login' · 'adfs'(회사 IdP) · 'blank' · 'dead'(오류 화면) · 'other'(그 밖 — 회사
-    IdP 로그인 중으로 본다). cfg.url 의 호스트가 루프백(시험용 가짜 채팅)이면 그 호스트만 'work' 로 본다."""
+    IdP 로그인 중으로 본다). cfg.url 의 호스트가 루프백(시험용 가짜 채팅)이면 시험 스텁(AF32_COPILOT_STUB)이 켜졌을 때만 그 호스트를
+    'work' 로 본다. 역슬래시·사용자 정보(user@)가 든 주소는 'other' — 크로미움과 다른 호스트로 읽힐 수 있다.
+    호스트는 업무여도 계정은 아직 모른다 — 보내기 전 계정 확인은 page_gate(account_check)가 한다."""
     u = str(url or "").strip()
     low = u.lower()
     if not u or low.startswith(BLANK_PREFIXES):
@@ -1248,6 +1408,8 @@ def page_kind(url, cfg=None):
     try:
         p = urlparse(u)
     except ValueError:
+        return "other"
+    if "\\" in u or "@" in (p.netloc or ""):
         return "other"
     host = (p.hostname or "").lower()
     if not host:
@@ -1262,7 +1424,7 @@ def page_kind(url, cfg=None):
         return "work"
     if host_in(host, MIXED_HOSTS):
         return "mixed"
-    if cfg and host in LOOPBACK and host == _host(cfg.get("url")):
+    if cfg and host in LOOPBACK and host == _host(cfg.get("url")) and stub_dir():
         return "work"
     return "other"
 
@@ -1287,7 +1449,8 @@ def _is_chat_tab(url, want="", cfg=None):
 
 def _close_tab(port, tid):
     try:
-        urllib.request.urlopen(f"http://127.0.0.1:{port}/json/close/{tid}", timeout=5).read()
+        with _OPENER.open(urllib.request.Request(f"http://127.0.0.1:{port}/json/close/{tid}"), timeout=5) as r:
+            r.read()
         return True
     except Exception:
         return False
@@ -1447,12 +1610,11 @@ def wait_page(cdp, cfg, tries=30):
     """페이지가 준비되고 업무 Copilot 호스트에 닿을 때까지(최대 tries 초) — (state, kind).
     개인 계정 화면이면 바로 돌려준다(기다려도 회사 계정이 되지 않는다). 오류 화면·공용 호스트(office.com 등)면 채팅 주소로
     한 번 다시 들어가 본다 — 회사 계정이면 업무 호스트로 간다."""
-    require_work = _truthy(cfg.get("requireWorkAccount"), True)
     state, kind, nudged = {}, "", False
     for _ in range(max(1, int(tries))):
         state = cdp.eval(js_state()) or {}
         kind = page_kind(state.get("url"), cfg)
-        if kind == "personal" and require_work:
+        if kind == "personal":                  # 업무 계정만(설정으로 끌 수 없다 — R11)
             break
         if kind in ("dead", "mixed") and not nudged:
             nudged = True
@@ -1471,24 +1633,206 @@ def wait_page(cdp, cfg, tries=30):
     return state, kind
 
 
-def _sendable(kind, cfg):
-    """이 화면에 프롬프트를 넣어도 되는가 — 업무 호스트만(requireWorkAccount=false 면 LM24 처럼 로그인 화면만 아니면)."""
-    if kind == "work":
-        return True
-    if not _truthy(cfg.get("requireWorkAccount"), True):
-        return kind in ("mixed", "personal", "other")
-    return False
+def _sendable(kind, cfg=None):
+    """이 화면에 프롬프트를 넣어도 되는가 — 회사 M365 업무 호스트('work' — page_kind)만. 설정(copilotAuto.requireWorkAccount 등)으로
+    공용·개인 계정·다른 AI 화면을 열 수 없다(R11·D19·D22 — afcfg 도 이 키를 늘 true 로 둔다)."""
+    return kind == "work"
 
 
 def page_gate(cdp, cfg, state, kind):
-    """wait_page 결과 → 보내면 안 되는 상태의 결과 dict(None = 보내도 됨)."""
-    if kind == "personal" and _truthy(cfg.get("requireWorkAccount"), True):
+    """wait_page 결과 → 보내면 안 되는 상태의 결과 dict(None = 보내도 됨). 업무 호스트여도 로그인한 계정이 회사 계정임을 확인해야
+    보낸다(account_check — 못 읽었거나 회사 밖·개인 계정이면 R-ACCOUNT)."""
+    if kind == "personal":
         return _personal_result(cfg)
     if kind == "dead":
         return _dead_result(cdp, cfg)
     if not _sendable(kind, cfg):
         return _login_result(cdp, cfg, kind)
-    return None
+    return account_check(cdp, cfg)
+
+
+# ── 로그인 계정 확인(R11·D19) — 호스트만으로는 계정을 가르지 못한다 ─────────────────────────────────────────────
+# m365.cloud.microsoft 에는 개인 Microsoft 계정·다른 회사의 계정도 들어온다. 보내기 전에 화면의 계정 단추·계정 창(Me Control —
+# 보이지 않아도)과 로그인 라이브러리(MSAL)가 이 원점의 저장소에 둔 계정 항목·ID 토큰 클레임에서 메일 주소의 '@' 뒤 도메인만 읽는다
+# (이름·주소 앞부분·토큰 원문은 돌려받지 않는다). 읽은 도메인이 모두 회사 도메인(privacy.internalDomains ∪ 내 메일 주소의 도메인 —
+# G1 과 같은 목록)일 때만 보낸다. 못 읽었거나, 하나라도 회사 밖이거나, 개인 계정 표시(소비자 테넌트 id·개인 메일 도메인)가 있거나,
+# 회사 도메인 목록이 비었으면 R-ACCOUNT 로 아무것도 넣지 않는다(fail-closed). 계측(trace 'account')에는 코드·근거 종류만 남는다.
+ACCOUNT_POLLS = 8              # 계정을 읽을 때까지 기다리는 횟수(1초씩) — 막 연 화면은 계정 단추·저장소를 늦게 채운다
+CONSUMER_TENANT = "9188040d-6c67-4c5b-b112-36a304b66dad"      # 개인 Microsoft 계정(소비자) 테넌트의 고정 id
+SHARED_TENANT_SUFFIXES = ("onmicrosoft.com",)                 # 모든 회사가 함께 쓰는 접미 — 이것 하나로는 회사를 증명하지 못한다
+ACCOUNT_SELECTORS = ("#mectrl_currentAccount_secondary", "#mectrl_currentAccount_primary", "#mectrl_main_trigger",
+                     "#mectrl_headerPicture", "#O365_MainLink_Me", "#O365_MainLink_MePhoto",
+                     "button[aria-label^='Account manager']", "button[aria-label*='계정 관리자']")
+ACCOUNT_CODES = ("unknown", "external", "personal", "nolist")
+ACCOUNT_ERR = {"unknown": "Copilot 창에 로그인한 계정을 확인하지 못함 — 보내지 않음",
+               "external": "Copilot 창에 회사 밖 계정이 로그인돼 있음 — 보내지 않음",
+               "personal": "Copilot 창에 개인 Microsoft 계정이 로그인돼 있음 — 보내지 않음",
+               "nolist": "회사 메일 도메인을 몰라 Copilot 계정을 확인할 수 없음 — 보내지 않음"}
+ACCOUNT_HINT = {
+    "unknown": "전용 Edge 의 Copilot 창에서 로그인한 계정을 읽지 못해 보내지 않았습니다 — 그 창의 계정 단추를 한 번 눌러 회사 "
+               "계정으로 로그인돼 있는지 확인한 뒤 다시 실행하세요",
+    "external": "전용 Edge 의 Copilot 창에 회사 메일 도메인이 아닌 계정이 로그인돼 있어 보내지 않았습니다 — 그 창에서 그 계정을 "
+                "로그아웃하고 회사 계정으로 다시 로그인하세요. 회사 계정의 도메인이 메일 도메인과 다르면 운영 담당이 "
+                "config\\config.json 의 privacy.internalDomains 에 그 도메인을 넣습니다",
+    "personal": "전용 Edge 의 Copilot 창이 개인 Microsoft 계정으로 로그인돼 있어 보내지 않았습니다 — 그 창에서 개인 계정을 "
+                "로그아웃하고 회사(조직) 계정으로 로그인하세요",
+    "nolist": "회사 메일 도메인을 알 수 없어 Copilot 계정이 회사 계정인지 확인하지 못했습니다 — 보내지 않았습니다. "
+              "config\\config.json 의 privacy.internalDomains 에 회사 메일 도메인을 넣으세요",
+}
+_DOM_OK_RX = re.compile(r"[a-z0-9\-]+(?:\.[a-z0-9\-]+)+")
+
+
+def js_account():
+    """화면의 로그인 계정 → {d: [도메인…], s: [근거…], c: 소비자 테넌트 표시 0/1, n: 계정 항목 수}. 주소의 '@' 뒤 도메인만 돌려준다 —
+    이름·주소 앞부분·토큰은 돌려주지 않는다. 근거: dom(계정 단추·계정 창 — 보이지 않아도) · msal(로그인 라이브러리 계정 항목의
+    username) · idt(같은 저장소 ID 토큰의 preferred_username·upn 클레임 — 서명·원문은 읽어도 돌려주지 않는다)."""
+    return ("/*AF32:account*/(function(){const SEL=" + json.dumps(list(ACCOUNT_SELECTORS), ensure_ascii=False)
+            + ",CT=" + json.dumps(CONSUMER_TENANT) + ";" + r"""
+const RX=/[A-Za-z0-9._%+\-]+@([A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,24})(?![A-Za-z0-9\-])/g;
+const D={},S={};let c=0,n=0;
+const add=(t,k)=>{if(t===null||t===undefined)return;String(t).slice(0,4000).replace(RX,(m,d)=>{D[d.toLowerCase()]=1;S[k]=1;return m;});};
+const cons=o=>{for(const f of ["realm","tenantId","homeAccountId","tid","iss"]){if(String(o[f]||"").toLowerCase().indexOf(CT)>=0)c=1;}};
+for(const s of SEL){let es=[];try{es=document.querySelectorAll(s);}catch(_){continue;}
+  for(const e of Array.prototype.slice.call(es,0,10)){add(e.getAttribute("aria-label"),"dom");add(e.getAttribute("title"),"dom");add(e.textContent,"dom");}}
+const J=v=>{try{return JSON.parse(v);}catch(_){return null;}};
+const B=s=>{try{s=String(s).replace(/-/g,"+").replace(/_/g,"/");while(s.length%4)s+="=";return J(atob(s));}catch(_){return null;}};
+for(const st of [window.localStorage,window.sessionStorage]){let m=0;try{m=st.length;}catch(_){continue;}
+  for(let i=0;i<m&&i<3000;i++){let v="";try{v=st.getItem(st.key(i))||"";}catch(_){continue;}
+    if(v.length>200000||v.charAt(0)!=="{"||(v.indexOf('"username"')<0&&v.indexOf('"secret"')<0))continue;
+    const o=J(v);if(!o||typeof o!=="object")continue;
+    if(typeof o.username==="string"&&(o.homeAccountId||o.localAccountId||o.realm||o.authorityType)){n++;add(o.username,"msal");cons(o);}
+    if(String(o.credentialType||"").toLowerCase()==="idtoken"&&typeof o.secret==="string"){
+      const p=B(o.secret.split(".")[1]||"");if(p&&typeof p==="object"){add(p.preferred_username,"idt");add(p.upn,"idt");cons(p);}}}}
+return {d:Object.keys(D).slice(0,10),s:Object.keys(S),c:c,n:n};
+})()""")
+
+
+def _dom_clean(d):
+    s = str(d or "").strip().lower().strip(".")
+    return s if _DOM_OK_RX.fullmatch(s) else ""
+
+
+def account_read(cdp):
+    """화면에서 로그인 계정의 도메인을 읽는다 → (도메인 집합, 근거 목록, 소비자 테넌트 표시). 못 읽으면 (빈 집합, [], False)."""
+    try:
+        r = cdp.eval(js_account(), timeout=10)
+    except Exception:  # noqa: BLE001 - 못 읽으면 모른다(보내지 않는 판단은 부른 쪽)
+        return set(), [], False
+    if not isinstance(r, dict):
+        return set(), [], False
+    doms = {d for d in (_dom_clean(x) for x in list(r.get("d") or [])[:10]) if d}
+    srcs = [str(x)[:8] for x in list(r.get("s") or [])[:4]]
+    return doms, srcs, bool(r.get("c"))
+
+
+def account_verdict(doms, consumer=False, internal=(), personal=None):
+    """읽은 계정 도메인 → 'ok'(모두 회사 도메인 또는 그 하위) · 'personal'(소비자 테넌트 표시 · 개인 메일 도메인) · 'unknown'(못 읽음) ·
+    'nolist'(회사 도메인 목록이 비었음) · 'external'(하나라도 회사 밖). 회사 도메인 목록의 개인 메일 도메인·공용 접미(onmicrosoft.com
+    그 자체)는 회사를 증명하지 못하므로 뺀다."""
+    if personal is None:
+        personal = _personal_domains()
+    personal = {_dom_clean(x) for x in personal or ()} - {""}
+    if consumer:
+        return "personal"
+    doms = {_dom_clean(x) for x in doms or ()} - {""}
+    if not doms:
+        return "unknown"
+    if doms & personal:
+        return "personal"
+    ok = {x for x in (_dom_clean(y) for y in internal or ()) if x and x not in personal and x not in SHARED_TENANT_SUFFIXES}
+    if not ok:
+        return "nolist"
+    for d in doms:
+        if not any(d == x or d.endswith("." + x) for x in ok):
+            return "external"
+    return "ok"
+
+
+def _personal_domains():
+    try:
+        import privacy
+        return tuple(privacy.PERSONAL_MAIL_DOMAINS)
+    except Exception:  # noqa: BLE001
+        return ()
+
+
+def _account_key(cfg):
+    """계정 확인을 기억하는 열쇠 — '포트|브라우저 id'. 브라우저 id 는 프로필의 DevToolsActivePort·우리 표식(owner.json)에서 읽는다
+    (망 요청 없음) — Edge 를 다시 띄우면 바뀐다."""
+    try:
+        port = int(cfg.get("port") or 0)
+    except (TypeError, ValueError):
+        port = 0
+    bid = ""
+    try:
+        dap = _read_dap(cfg["profileDir"])
+        bid = (dap[1] if dap else "") or str((read_owner(cfg) or {}).get("browser") or "")
+    except (KeyError, TypeError):
+        bid = ""
+    return f"{port}|{bid}"
+
+
+def _account_proofs():
+    """이 프로세스에서 회사 계정임을 확인한 브라우저 열쇠들 — G3 문맥(_PRIV)과 함께 비워진다(회사 도메인 목록이 바뀌면 다시 본다)."""
+    d = _PRIV.get("acct")
+    if not isinstance(d, dict):
+        d = _PRIV["acct"] = {}
+    return d
+
+
+def account_check(cdp, cfg):
+    """보내기 전 계정 확인 → None(회사 계정임을 확인함) | 결과 dict(phase login_required · reason R-ACCOUNT · account 코드 — 보내지
+    않는다). 이 프로세스에서 이 브라우저의 계정을 이미 확인했으면 한 번만 다시 읽는다 — 회사 밖·개인 계정이 보이면 막고, 화면이 늦게
+    그려 아무것도 못 읽었으면 확인한 것으로 둔다(계정을 바꾸면 바뀐 계정의 도메인이 보인다). 처음이면 ACCOUNT_POLLS 초까지 기다린다."""
+    try:
+        _full, ctx, _cans = privacy_ctx()       # 먼저 — 문맥을 새로 세우면 지난 확인(_account_proofs)이 비워진다
+        internal = tuple(getattr(ctx, "internal_domains", ()) or ())
+        personal = tuple(getattr(ctx, "personal_domains", ()) or ()) + _personal_domains()
+    except Exception:  # noqa: BLE001 - 회사 도메인을 모르면 확인할 수 없다(nolist)
+        internal, personal = (), _personal_domains()
+    key = _account_key(cfg)
+    proofs = _account_proofs()
+    proven = key in proofs
+    polls = 1 if proven else max(1, min(ACCOUNT_POLLS, int(_dl_left(ACCOUNT_POLLS))))
+    doms, srcs, consumer = set(), [], False
+    for i in range(polls):
+        doms, srcs, consumer = account_read(cdp)
+        if doms or consumer:
+            break
+        if i + 1 < polls:
+            _sleep(1)
+    code = account_verdict(doms, consumer, internal, personal)
+    if code == "ok":
+        if not proven:
+            trace("account", code="ok", src=",".join(srcs))     # 처음 확인한 때만 — 어느 근거로 읽었는지(도메인은 남기지 않는다)
+        proofs[key] = 1
+        return None
+    if code == "unknown" and proven:
+        return None
+    proofs.pop(key, None)
+    trace("account", code=code, src=",".join(srcs))
+    _notice(f"{R_ACCOUNT}:{code}", ACCOUNT_HINT[code], label=R_ACCOUNT)
+    return {"ok": False, "phase": "login_required", "reason": R_ACCOUNT, "account": code,
+            "error": ACCOUNT_ERR[code], "hint": ACCOUNT_HINT[code]}
+
+
+def account_foreign(cdp, cfg=None):
+    """화면에 회사 밖·개인 계정이 **보이는가** — 한 번 읽어 'external'·'personal' 이면 그 코드, 아니면 ""(회사 계정이거나 계정을 읽지
+    못함·회사 도메인을 모름). 채팅 정리(sweep_owned)가 쓴다: 다른 계정으로 로그인한 화면의 대화 목록에는 이 도구가 연 채팅이 없어
+    '이미 없음'(gone)으로 기록만 버리게 된다 — 그런 화면에서는 아무것도 누르지 않고 기록을 남긴다. 계정을 읽지 못했을 때는 예전대로
+    정리한다(지우는 길은 자료를 보내지 않으므로 보내는 길처럼 확인을 요구하지는 않는다). 예외를 내지 않는다."""
+    try:
+        _full, ctx, _cans = privacy_ctx()
+        internal = tuple(getattr(ctx, "internal_domains", ()) or ())
+        personal = tuple(getattr(ctx, "personal_domains", ()) or ()) + _personal_domains()
+    except Exception:  # noqa: BLE001 - 회사 도메인을 모르면 개인 계정 표시만 본다
+        internal, personal = (), _personal_domains()
+    try:
+        doms, _srcs, consumer = account_read(cdp)
+        code = account_verdict(doms, consumer, internal, personal)
+    except Exception:  # noqa: BLE001
+        return ""
+    return code if code in ("external", "personal") else ""
 
 
 def js_chat_text(cfg):
@@ -1605,6 +1949,164 @@ def select_model(cdp, cfg, override=None):
         return f"모델 선택 실패({type(e).__name__}) — 기본 모델 사용"
 
 
+# ── 웹 콘텐츠 끄기(D19 — 베스트 에포트) ────────────────────────────────────────────────────────
+# 업무 Copilot 화면에 '웹 콘텐츠(Web content)' 참조 스위치가 보이면 끈다 — 우리 프롬프트는 "아래 목록만 사용하세요 …" 로
+# 시작하지만, 스위치가 켜져 있으면 Copilot 이 웹 검색을 덧붙일 수 있다. 보이는 role=switch·checkbox 중 이름이 웹 콘텐츠인 것만
+# 누른다(메뉴를 열거나 다른 단추를 누르지 않는다). 결과는 copilot_trace 에 stage 'web_toggle' 한 줄(상태 코드만)로 남긴다.
+_WEB_TOGGLE = {}                               # 대화 화면 주소(쿼리 뺀 것) → 마지막 결과 코드 — 같은 화면에서 되풀이하지 않는다
+
+
+def js_web_toggle():
+    return r"""(function(){
+  const vis=el=>{const r=el.getBoundingClientRect();return r.width>2&&r.height>2;};
+  const rx=/(web\s*content|web\s*search|웹\s*콘텐츠|웹\s*컨텐츠|웹\s*콘텐트|웹\s*검색)/i;
+  const nameOf=el=>{
+    let s=(el.getAttribute("aria-label")||"")+" "+(el.getAttribute("title")||"");
+    const lb=el.getAttribute("aria-labelledby");
+    if(lb){for(const id of lb.split(/\s+/)){const n=document.getElementById(id);if(n)s+=" "+(n.innerText||"");}}
+    if(el.id){const l=document.querySelector("label[for='"+el.id+"']");if(l)s+=" "+(l.innerText||"");}
+    const wrap=el.closest("label,[role='menuitemcheckbox'],[role='menuitem'],li");
+    if(wrap)s+=" "+(wrap.innerText||"").slice(0,80);
+    return s;
+  };
+  const cands=[...document.querySelectorAll("[role='switch'],input[type='checkbox'],[role='menuitemcheckbox']")]
+    .filter(el=>vis(el)||vis(el.parentElement||el)).filter(el=>rx.test(nameOf(el)));
+  if(!cands.length)return {state:"not_found"};
+  const on=el=>{const a=el.getAttribute("aria-checked");if(a!==null)return a==="true";return !!el.checked;};
+  const lit=cands.filter(on);
+  if(!lit.length)return {state:"already_off",n:cands.length};
+  for(const el of lit){try{el.click();}catch(e){}}
+  return {state:"clicked",n:lit.length};
+})()"""
+
+
+def js_web_toggle_check():
+    return r"""(function(){
+  const rx=/(web\s*content|web\s*search|웹\s*콘텐츠|웹\s*컨텐츠|웹\s*콘텐트|웹\s*검색)/i;
+  const els=[...document.querySelectorAll("[role='switch'],input[type='checkbox'],[role='menuitemcheckbox']")]
+    .filter(el=>rx.test((el.getAttribute("aria-label")||"")+" "+(el.getAttribute("title")||"")
+      +" "+((el.closest("label,[role='menuitemcheckbox'],li")||{}).innerText||"").slice(0,80)));
+  return {on:els.filter(el=>{const a=el.getAttribute("aria-checked");return a!==null?a==="true":!!el.checked;}).length,
+          n:els.length};
+})()"""
+
+
+def web_content_off(cdp):
+    """웹 콘텐츠 참조 스위치를 끈다(베스트 에포트) → 상태 코드 off · already_off · not_found · still_on · error.
+    같은 대화 화면에서는 한 번만 본다. 실패해도 왕복은 그대로 간다 — 머리말(AI_PREFIX)이 같은 지시를 글로 한다."""
+    try:
+        href = str(cdp.eval("location.href", timeout=10) or "").split("?")[0]
+    except Exception:  # noqa: BLE001
+        href = ""
+    if href and _WEB_TOGGLE.get(href) in ("off", "already_off", "not_found"):
+        return _WEB_TOGGLE[href]
+    code = "error"
+    try:
+        r = cdp.eval(js_web_toggle(), timeout=15) or {}
+        code = str(r.get("state") or "error")
+        if code == "clicked":
+            time.sleep(0.8)
+            chk = cdp.eval(js_web_toggle_check(), timeout=15) or {}
+            code = "off" if not int(chk.get("on") or 0) else "still_on"
+    except Exception as e:  # noqa: BLE001 - 스위치 하나가 왕복을 막지 않는다
+        code = f"error:{type(e).__name__}"
+    if href:
+        _WEB_TOGGLE[href] = code
+    trace("web_toggle", state=code)
+    return code
+
+
+# ── 사이트 자료 비우기(D13) ────────────────────────────────────────────────────────────────
+# OWA·Copilot 단계가 끝나면 전용 Edge 프로필의 Outlook·M365 원점 저장소(캐시·로컬 저장소·IndexedDB·서비스 워커 …)를 비운다 —
+# 메일 목록·답이 프로필 캐시에 남지 않게. 쿠키(로그인)는 남긴다. close_own_edge 가 닫기 전에 부르고, 단계 사이에 직접 불러도 된다.
+CLEAR_ORIGINS = ("https://outlook.office.com", "https://outlook.office365.com", "https://outlook.cloud.microsoft",
+                 "https://m365.cloud.microsoft", "https://www.office.com")
+CLEAR_SUFFIX = ".cloud.microsoft"             # 열린 탭에서 보이는 *.cloud.microsoft 원점도 함께
+CLEAR_TYPES = ("appcache,file_systems,indexeddb,local_storage,shader_cache,websql,service_workers,cache_storage,"
+               "interest_groups,shared_storage,storage_buckets")       # 쿠키 빼고 모두
+CLEAR_TYPES_MIN = "appcache,file_systems,indexeddb,local_storage,websql,service_workers,cache_storage"
+
+
+def _clear_origins(port):
+    """비울 원점 목록 — 고정 목록 + 열린 탭 중 https://*.cloud.microsoft 원점(중복 없이)."""
+    out = list(CLEAR_ORIGINS)
+    try:
+        tabs = http_json(port, "/json/list") or []
+    except Exception:  # noqa: BLE001
+        tabs = []
+    for t in tabs if isinstance(tabs, list) else []:
+        u = str((t or {}).get("url") or "")
+        m = re.match(r"(https://[^/?#]+)", u)
+        host = str(urlparse(m.group(1)).hostname or "") if m else ""
+        if host.endswith(CLEAR_SUFFIX) and m.group(1) not in out:
+            out.append(m.group(1))
+    return out
+
+
+def clear_site_data(port=None, cfg=None):
+    """전용 Edge 의 Outlook·M365 원점 사이트 자료를 비운다(쿠키 제외 — 로그인은 남는다) → {"ok","origins","cleared","cache",
+    "errors"[, "skipped"]}. CDP Storage.clearDataForOrigin(브라우저 연결) + Network.clearBrowserCache(열린 탭 하나).
+    베스트 에포트 — 예외를 내지 않는다. 디버그 포트가 닫혀 있거나 그 포트의 Edge 가 우리 전용 프로필이 아니면(프로필에
+    DevToolsActivePort 표식이 없는 경우 포함 — owns_port) 하지 않는다. 건너뛴 때도 계측(trace 'site_clear' · skipped)을 남긴다."""
+    out = {"ok": False, "origins": [], "cleared": 0, "cache": False, "errors": []}
+    try:
+        _clear_site_data(port, cfg, out)
+    except Exception as e:  # noqa: BLE001 - 정리가 단계를 막지 않는다
+        out["errors"].append(type(e).__name__)
+    trace("site_clear", ok=out["ok"], origins=len(out["origins"]), cleared=out["cleared"], cache=out["cache"],
+          errors=len(out["errors"]), skipped=out.get("skipped", ""))
+    return out
+
+
+def _clear_site_data(port, cfg, out):
+    """clear_site_data 의 본문 — out 을 채운다(건너뛰면 out['skipped'] 만 적고 돌아간다)."""
+    cfg = cfg if isinstance(cfg, dict) else load_cfg()
+    port = int(port or cfg.get("port") or 0)
+    if not port or not debugger_alive(port):
+        out["skipped"] = "edge_not_running"
+        return
+    if not owns_port(dict(cfg, port=port)):
+        out["skipped"] = "not_ours"
+        return
+    ver = _version(port) or {}
+    ws = str(ver.get("webSocketDebuggerUrl") or "")
+    origins = _clear_origins(port)
+    out["origins"] = origins
+    if ws:
+        b = CDP(ws)
+        try:
+            for o in origins:
+                try:
+                    b.call("Storage.clearDataForOrigin", {"origin": o, "storageTypes": CLEAR_TYPES}, timeout=15)
+                    out["cleared"] += 1
+                except RuntimeError:
+                    try:                    # 옛 Edge 가 모르는 종류가 섞였을 수 있다 — 기본 종류만으로 한 번 더
+                        b.call("Storage.clearDataForOrigin", {"origin": o, "storageTypes": CLEAR_TYPES_MIN},
+                               timeout=15)
+                        out["cleared"] += 1
+                    except (RuntimeError, TimeoutError, OSError) as e2:
+                        out["errors"].append(f"{o}:{type(e2).__name__}")
+                except (TimeoutError, OSError) as e1:
+                    out["errors"].append(f"{o}:{type(e1).__name__}")
+        finally:
+            b.close()
+    try:
+        tabs = [t for t in (http_json(port, "/json/list") or []) if (t or {}).get("type") == "page"
+                and t.get("webSocketDebuggerUrl")]
+    except Exception:  # noqa: BLE001
+        tabs = []
+    if tabs:
+        p = CDP(tabs[0]["webSocketDebuggerUrl"])
+        try:
+            p.call("Network.clearBrowserCache", timeout=15)
+            out["cache"] = True
+        except (RuntimeError, TimeoutError, OSError) as e3:
+            out["errors"].append(f"cache:{type(e3).__name__}")
+        finally:
+            p.close()
+    out["ok"] = out["cleared"] > 0 and not out["errors"]
+
+
 def js_focus(cfg):
     """입력창을 찾아 포커스만 준다 — 실제 주입은 CDP Input.insertText가 정석
     (React/Lexical류 리치 에디터는 execCommand/DOM 조작을 무시하는 경우가 많음)"""
@@ -1618,13 +2120,13 @@ def js_focus(cfg):
   }
   if(!el)return {ok:false,err:'input_not_found'};
   el.focus();
-  window.__lm_input=el;
+  window.__af32_input=el;
   return {ok:true,tag:el.tagName,sel:sel};
 })()""")
 
 
 def js_editor_text():
-    return ("(function(){const el=window.__lm_input;if(!el)return '';"
+    return ("(function(){const el=window.__af32_input;if(!el)return '';"
             "return el.value!==undefined&&el.tagName!=='DIV'?el.value:(el.innerText||el.textContent||'');})()")
 
 
@@ -1632,7 +2134,7 @@ def js_insert_fallback(prompt):
     """Input.insertText가 안 먹은 경우의 예비: execCommand → 값 직접 설정 + input 이벤트"""
     p = json.dumps(prompt)
     return ("""(function(){
-  const el=window.__lm_input; if(!el)return {ok:false};
+  const el=window.__af32_input; if(!el)return {ok:false};
   el.focus();
   const p=""" + p + """;
   if(el.tagName==='TEXTAREA'||el.tagName==='INPUT'){
@@ -1685,6 +2187,65 @@ def js_diagnose():
 })()"""
 
 
+# 디버그 덤프(data\copilot_auto_debug.json)에 이름을 그대로 남겨도 되는 단추·입력창 이름 — 드라이버가 찾는 조작 이름뿐이다(정확히 같을
+# 때만 · 대소문자·공백 무시). 그 밖의 이름(대화 기록 제목·추천 질문·메일 항목처럼 사람의 글이 든 것)·placeholder 글·화면 제목은 남기지
+# 않고 길이만 남긴다. 주소는 scheme://host 만.
+DEBUG_LABELS_EXTRA = ("보내기", "전송", "send", "메시지 보내기", "copilot에 메시지 보내기", "message copilot", "send a message",
+                      "새 채팅", "새 대화", "new chat", "모델 선택기", "모델", "model", "model selector", "웹 콘텐츠",
+                      "web content", "첨부", "파일 첨부", "attach", "더 보기", "추가 작업", "more", "more options", "탐색 창",
+                      "navigation", "메뉴", "menu", "닫기", "close", "취소", "cancel", "복사", "copy", "설정", "settings")
+_DEBUG_LABELS = {}
+
+
+def _debug_label(s):
+    """요소 이름 → 남겨도 되는 조작 이름(소문자 · 공백 정리) | ""."""
+    if "v" not in _DEBUG_LABELS:
+        _DEBUG_LABELS["v"] = frozenset(" ".join(str(x).split()).lower()
+                                       for x in (*DEBUG_LABELS_EXTRA, *STOP_LABELS, *CHAT_DELETE_LABELS))
+    t = " ".join(str(s or "").split()).lower()
+    return t if t in _DEBUG_LABELS["v"] else ""
+
+
+def _debug_id(s):
+    """testid·role 값 → 남겨도 되는 꼴(영문·숫자·-_.: 만 · 대화 id 꼴·4자리 이상 숫자는 가림 · 60자) | ""."""
+    t = _CONV_TOKEN.sub("<id>", str(s or "")[:60])
+    t = re.sub(r"\d{4,}", "<n>", t)
+    return t if re.fullmatch(r"[A-Za-z0-9_\-.:<>]*", t) else ""
+
+
+def debug_view(dbg):
+    """js_diagnose 결과 → 파일에 남겨도 되는 구조만: url = scheme://host · title = "" · 요소마다 tag·role·testid(_debug_id)·visible·w·
+    alen(aria-label 길이)·aria(드라이버가 아는 조작 이름일 때만)·plen(placeholder 길이)·ph(같은 규칙). 원문 글은 남기지 않는다."""
+    d = dbg if isinstance(dbg, dict) else {}
+    try:
+        p = urlparse(str(d.get("url") or ""))
+        url = f"{p.scheme}://{p.hostname}" if (p.scheme and p.hostname) else ""
+    except ValueError:
+        url = ""
+
+    def el(x):
+        x = x if isinstance(x, dict) else {}
+        aria, ph = str(x.get("aria") or ""), str(x.get("ph") or "")
+        try:
+            w = int(x.get("w") or 0)
+        except (TypeError, ValueError):
+            w = 0
+        return {"tag": _debug_id(str(x.get("tag") or "")[:16]), "role": _debug_id(x.get("role")),
+                "testid": _debug_id(x.get("testid")), "visible": bool(x.get("visible")), "w": w,
+                "alen": len(aria), "aria": _debug_label(aria), "plen": len(ph), "ph": _debug_label(ph)}
+    return {"url": url, "title": "", "editors": [el(x) for x in list(d.get("editors") or [])[:10]],
+            "buttons": [el(x) for x in list(d.get("buttons") or [])[:40]]}
+
+
+def write_debug(dbg):
+    """입력창 진단 덤프 → data\\copilot_auto_debug.json(구조만 — debug_view) → 그 경로. 예외는 부른 쪽으로."""
+    dump = os.path.join(ROOT, "data", "copilot_auto_debug.json")
+    os.makedirs(os.path.dirname(dump), exist_ok=True)
+    with open(dump, "w", encoding="utf-8") as f:
+        json.dump(debug_view(dbg), f, ensure_ascii=False, indent=1)
+    return dump
+
+
 # Copilot 일시 오류 응답 — 이 문구가 오면 내용이 아니라 서비스 상태 문제다 (실측 스크린샷)
 # '다시 시도' 단독은 정상 분석문에 인용될 수 있어 트리거에서 제외 — 서비스 오류를
 # 단정할 수 있는 정형 문구만 쓴다 (스크린샷 문구는 '응답할 수 없습니다'로 잡힌다)
@@ -1731,7 +2292,7 @@ def is_throttle_reply(reply):
 def js_notices():
     """화면에 보이는 알림·상태 영역의 글(600자 이하만, 최대 NOTICE_MAX) — 사용량 제한이 답 말풍선 대신 알림(토스트·배너·
     role=alert·aria-live)으로 뜨는 화면용(그때는 답 자리가 비어 firstTokenSec·사다리를 다 기다렸다). 숨은 읽기 전용 영역은 뺀다."""
-    return r"""/*LM28:notices*/(function(){
+    return r"""/*AF32:notices*/(function(){
   const sel="[role='alert'],[role='alertdialog'],[role='status'],[aria-live='assertive'],[aria-live='polite'],"+
     "[class*='toast' i],[class*='messagebar' i],[class*='notification' i],[class*='banner' i],[data-testid*='toast' i],"+
     "[data-testid*='error' i]";
@@ -1835,7 +2396,7 @@ def wait_idle(cdp, secs=45):
 SLOW_ALIVE_SEC = 90            # 답 몸통이 이 안에 SLOW_GROW_CHARS 자 이상 자랐으면 '살아 있음'
 SLOW_ALIVE_BUSY_SEC = 180      # '중지' 버튼이 보이면 이만큼 안에 자랐어도 살아 있음(긴 생각 사이의 멈춤)
 SLOW_GROW_CHARS = 20           # 이보다 적게 는 것은 자란 것으로 치지 않는다(상대 시각·'편집됨' 같은 화면 잡음)
-SLOW_NOTE_SEC = 60             # 연장 중 진행 줄 간격(초) — 단계 감시기가 산 것으로 본다
+SLOW_NOTE_SEC = 60             # 연장 중 진행 줄 간격(초) — 단계 진행 지킴이(core.watch)가 산 것으로 본다
 SLOW_MARGIN_SEC = 10           # 왕복 마감 직전 여유 — '중지'를 누르고 마지막 글을 읽을 몫
 SLOW_CAP_SEC = 900             # 왕복 예산이 꺼진(roundtripMaxSec 0) 경우 기본 마감 뒤 연장 상한
 # 누를 수 있는 '중지' 단추 이름 — js_is_generating 의 후보 문구 그대로(정확히 같을 때만 · 대소문자·공백 무시). 다른 단추는 보지 않는다.
@@ -1846,7 +2407,7 @@ def js_stop_button():
     """입력창의 생성 '중지' 단추 하나 → {r: ok · none · many · covered, x, y}(글은 돌려주지 않는다). aria-label → title → 보이는 글 순으로
     한 이름만 보고 STOP_LABELS 와 **정확히** 같을 때만 후보다. 메뉴·대화상자·대화 목록(nav·aside·listbox) 안의 단추는 보지 않는다.
     후보가 둘 이상이거나 그 점에 다른 요소가 있으면 누르지 않는다."""
-    return ("/*LM28:stop_btn*/(function(){\nconst WANT=" + json.dumps(list(STOP_LABELS), ensure_ascii=False) + ";" + r"""
+    return ("/*AF32:stop_btn*/(function(){\nconst WANT=" + json.dumps(list(STOP_LABELS), ensure_ascii=False) + ";" + r"""
 const vis=e=>{const r=e.getBoundingClientRect();return r.width>4&&r.height>4;};
 const PUA=new RegExp("["+String.fromCharCode(57344)+"-"+String.fromCharCode(63743)+"]","g");   // 아이콘 글꼴 문자
 const nrm=s=>(s||"").replace(PUA,"").replace(/\s+/g," ").trim().toLowerCase();
@@ -1884,7 +2445,7 @@ def _stop_generation(cdp):
 
 
 def _slow_note(waited, left, chars):
-    """연장 대기 중 진행 한 줄(stderr — stdout 은 결과 JSON 한 건 계약 · 단계 프로세스는 stderr 도 감시기에 간다). 글은 싣지 않는다."""
+    """연장 대기 중 진행 한 줄(stderr — stdout 은 결과 JSON 한 건 계약 · 단계 프로세스는 stderr 도 진행 지킴이(core.watch)에 간다). 글은 싣지 않는다."""
     try:
         print(f"[copilot_auto] 답이 길어 Copilot 이 아직 쓰는 중입니다 — 기다린 지 {waited / 60:.0f}분 · 지금 {int(chars):,}자 · "
               f"왕복 예산 안에서 최대 {max(0.0, left) / 60:.0f}분 더 기다립니다(같은 질문을 다시 보내지 않습니다)",
@@ -1953,18 +2514,17 @@ def reload_page(cdp, cfg, wait=15):
 
 
 # ── LM28 — Copilot 채팅 정리: LM28 이 연 대화만, 다 쓴 때에 지운다 ─────────────────────────────────────────────────────
-# 제보: 프로세스마다 첫 왕복·chatTurns 회전·실패 사다리(새 채팅 2번)·월별 코멘트(달마다 새 채팅)·Copilot 메일/팀즈 조각·
-# [AI 연결 진단]이 저마다 새 대화를 열어 사람의 Copilot 대화 목록이 LM28 채팅으로 도배됐다. LM30(2026-10-21): 월별 코멘트는 한 실행에 리뷰
-# 채팅 하나(첫 달만 새 채팅 · 달마다 '이 달만' 줄 · 다른 달이 섞이면 그 달만 새 채팅 — judge.narrate). LM28(2026-10-17): Copilot 메일·일정·팀즈 수집기는 이제 조각마다
+# 제보: 프로세스마다 첫 왕복·chatTurns 회전·실패 사다리(새 채팅 2번)·Copilot 메일 조각·
+# [AI 연결 진단]이 저마다 새 대화를 열어 사람의 Copilot 대화 목록이 도구 채팅으로 도배됐다. Copilot 메일·일정 수집기는 이제 조각마다
 # 새 채팅을 열지 않고 한 채팅을 이어 쓴다(ChatKeep — 첫 조각·나쁜 조각 뒤·chatTurns 마다만 새 채팅). 그래도 여는 대화는 LM28 이 다 쓴
 # 때(다음 새 채팅 직전 · 실행 끝 Edge 를 닫기 전)에 대화 목록에서 지운다. 판정·정제·Agentic·워크플로우·수집기가 같은 탭을 차례로 쓰는 다른 프로세스라 소유는
 # <프로필>.chats.json 이 기억한다(edge_lock 안에서만 고친다 · 원자적 교체):
 #   {ours, sent, anchor_sha, alen, hsha, hlen, tpre, conv, href, nav, pid, created_at, stage, t_last, key,
-#    owned: [{key, conv, href, nav, tpre, anchor_sha, alen, hsha, hlen, made, run, stage, tries, why, t_try, runs[]}],   ← LM30 기록
-#    runs: {실행 열쇠: {t, made, del, del_old, gone, gone_old, left{사유: 수}, left_old{사유: 수}, savefail}},           ← LM30 실행별 셈
+#    owned: [{key, conv, href, nav, tpre, anchor_sha, alen, hsha, hlen, made, run, stage, tries, why, t_try, runs[]}],   ← AF32 기록
+#    runs: {실행 열쇠: {t, made, del, del_old, gone, gone_old, left{사유: 수}, left_old{사유: 수}, savefail}},           ← AF32 실행별 셈
 #    totals: {made, deleted, kept, failed, why{사유: 수}, last{code, t}, last_fail, last_fail_t, hold{rev, run, runs[], t}, census}}
 #   LM30(2026-10-21): owned[] 는 LM 이 열고 보낸 채팅마다 하나(지운 것만 빠진다) — 지금 채팅 칸(ours…)이 다음 채팅으로 넘어가도 남아
-#   실행 끝 sweep_owned 가 다시 지운다. 실행 열쇠 = chat_run_key()(LM_CHAT_RUN · LM_RUN_ID · 없으면 이 프로세스).
+#   실행 끝 sweep_owned 가 다시 지운다. 실행 열쇠 = chat_run_key()(AF32_CHAT_RUN · AF32_RUN_ID · 없으면 이 프로세스).
 #   · 우리 것 = LM28 이 새 채팅을 열고(_fresh_chat — 주소의 대화 id 가 열기 전과 같으면 새 채팅이 아니다) 거기에 보낸 대화. 남이 연
 #     대화에 이어 보낸 것은 끝까지 우리 것이 아니다. 프롬프트 원문은 남기지 않는다 — 마지막 프롬프트의 끝 앵커(build_anchor, 공백 정리)와
 #     머리 앵커(첫 줄 앞 60자 — head_key)의 sha1·길이, 첫 프롬프트 앞부분 8~64자의 길이별 해시(tpre — title_prefixes · 목록 제목 확인용 ·
@@ -2014,7 +2574,7 @@ CHAT_WHY = {
     "nomenu": "메뉴가 열리지 않음", "nodelete": "메뉴에 '삭제' 없음", "noconfirm": "확인 창에 '삭제' 단추 없음",
     "mismatch": "지운 뒤에도 채팅이 화면에 남음", "error": "화면 조작 오류", "timeout": "시간 초과",
     "busy": "다른 작업이 전용 Edge 를 쓰는 중", "notab": "Copilot 탭 없음", "noedge": "전용 Edge 꺼짐",
-    "gen": "답을 쓰는 중이라 남김", "notitle": f"목록 항목의 제목이 {lmname.SHORT} 이 보낸 질문과 달라 남김",
+    "gen": "답을 쓰는 중이라 남김", "notitle": f"목록 항목의 제목이 {lmname.SHORT} 가 보낸 질문과 달라 남김",
     # LM30(2026-10-21) — 기록(owned[])·다시 지우기(sweep_owned)의 사유
     "menuown": "열린 메뉴가 그 대화의 것인지 확인하지 못함", "bulk": "여러 대화를 지우는 창이라 누르지 않음",
     "noid": "대화 주소를 몰라 다시 찾지 못함", "expired": "여러 번 지우지 못해 기록에서 뺌",
@@ -2062,7 +2622,7 @@ CHAT_WIDE_W = 1600             # 넓은 화면 흉내의 폭(CSS px) — 이만�
 CHAT_RESUME_SEC = 1200
 RESUME = "resume"              # fresh 자리의 값(judge.copilot_send → send_inproc) — 화면이 우리 채팅일 때만 이어 쓰고, 아니면 새 채팅
 _RESUMED = [None]              # 이번 _send 에서 RESUME 이 실제로 이어 썼나(None = RESUME 아님) — 결과의 resumed
-_CHAT_KILL = [False]           # 이 프로세스의 삭제 멈춤(mismatch 뒤 — 더 지우지 않는다) · LM30: 그 실행의 열쇠(다른 실행이면 풀림)
+_CHAT_KILL = [False]           # 이 프로세스의 삭제 멈춤(mismatch 뒤 — 더 지우지 않는다) · AF32: 그 실행의 열쇠(다른 실행이면 풀림)
 _RUN_KEY = [None]              # 이 프로세스 안에서 실행 열쇠를 덮어쓴다([LM이 연 Copilot 채팅 지우기] — 화면 프로세스의 버튼 한 번)
 _PROC_KEY = f"p{os.getpid()}-{time.strftime('%Y%m%d%H%M%S')}"   # 실행 표식이 없는 프로세스(단계를 따로 돌림·시험)의 열쇠
 _SWEEP_LAST = [None]           # 마지막 sweep_owned 의 결과(숫자 dict) — close_own_edge 를 부른 쪽이 읽는다
@@ -2115,11 +2675,11 @@ def _chats_save(cfg, st):
 
 
 def chat_run_key():
-    """채팅 기록의 '이번 실행' 열쇠 — 화면 버튼(_RUN_KEY) · LM_CHAT_RUN(화면 작업) · LM_RUN_ID(run.py — 자식 단계가 물려받는다) ·
+    """채팅 기록의 '이번 실행' 열쇠 — 화면 버튼(_RUN_KEY) · AF32_CHAT_RUN(화면 작업) · AF32_RUN_ID(run.py — 자식 단계가 물려받는다) ·
     없으면 이 프로세스(_PROC_KEY). 멈춤(hold)·실행 끝 한 줄(chat_run_report)이 이 열쇠로 실행을 가른다."""
     if _RUN_KEY[0]:
         return str(_RUN_KEY[0])[:64]
-    for k in ("LM_CHAT_RUN", "LM_RUN_ID"):
+    for k in ("AF32_CHAT_RUN", "AF32_RUN_ID"):
         v = str(os.environ.get(k) or "").strip()
         if v:
             return v[:64]
@@ -2185,7 +2745,7 @@ def _owned_sync(st):
     if e is None:
         key = f"{int(time.time() * 1000):x}{os.getpid() % 0xFFFF:04x}{len(xs) % 0xFF:02x}"
         st["key"] = key
-        e = {"key": key, "made": _now(), "run": chat_run_key(), "stage": str(os.environ.get("LM_STAGE") or "")[:40],
+        e = {"key": key, "made": _now(), "run": chat_run_key(), "stage": str(os.environ.get("AF32_STAGE") or "")[:40],
              "tries": 0, "why": "", "runs": []}
         xs.append(e)
     for k in ("anchor_sha", "alen", "hsha", "hlen", "tpre", "conv", "href", "nav"):
@@ -2238,7 +2798,7 @@ def _age_sec(ts):
 
 def _chat_held(st):
     """상태 파일의 삭제 멈춤(mismatch)이 지금 지우기를 막는가 — 지금 판(CHAT_REV)의 멈춤이고, 그 실행(hold.run)이 지금 실행이거나
-    서로 다른 실행에서 HOLD_RUNS 번 되풀이됐을 때만(LM30 — 예전에는 한 번이면 새 판까지 모든 삭제가 멈췄다). 실행 열쇠가 없는 멈춤(옛 꼴)은
+    서로 다른 실행에서 HOLD_RUNS 번 되풀이됐을 때만(AF32 — 예전에는 한 번이면 새 판까지 모든 삭제가 멈췄다). 실행 열쇠가 없는 멈춤(옛 꼴)은
     막는다(모르면 지우지 않는다)."""
     h = ((st or {}).get("totals") or {}).get("hold") if isinstance((st or {}).get("totals"), dict) else None
     if not (isinstance(h, dict) and h.get("rev") == CHAT_REV):
@@ -2413,7 +2973,7 @@ def js_pane_text(cfg):
     대화 목록을 품으면 목록 제목(첫 질문의 앞부분)이 '우리 앵커가 아직 보인다'로 읽혀 지운 뒤 확인이 늘 실패했다(조사 보고 2). 글은 소유 확인
     (해시)에만 쓴다."""
     sels = json.dumps(cfg["chatRootSelectors"])
-    return ("/*LM30:pane*/(function(){let root=null;for(const s of " + sels + "){const el=document.querySelector(s);"
+    return ("/*AF32:pane*/(function(){let root=null;for(const s of " + sels + "){const el=document.querySelector(s);"
             "if(el&&el.innerText&&el.innerText.length>0){root=el;break;}}"
             "if(!root)root=document.body;if(!root)return '';let t=root.innerText||'';"
             "for(const n of root.querySelectorAll(\"nav,aside,[role='navigation'],[role='tree']\")){"
@@ -2543,16 +3103,16 @@ def js_chat_row(conv="", act="find", tpre=None):
     항목만 가리키면 split. 항목 = 가장 가까운 li·listitem·treeitem·option·row(없으면 그 요소).
     act=find: 항목을 화면 안으로 굴리고(scrollIntoView) 가운데 점. act=more: 그 항목(없으면 항목 하나만 품은 부모) 안의 aria-haspopup
     또는 '…'·'More'·'기타'·'더 보기'·'옵션'·'추가 작업' 단추의 가운데 점 — 돌려주기 전에 지금 보이는 메뉴(menu·listbox — 대화 목록이
-    listbox 일 수도 있다)에 data-lm28-pre 표식을 단다(js_chat_menu 는 그 뒤에 열린 메뉴만 본다). 점마다 elementFromPoint 로 가림을 본다.
+    listbox 일 수도 있다)에 data-af32-pre 표식을 단다(js_chat_menu 는 그 뒤에 열린 메뉴만 본다). 점마다 elementFromPoint 로 가림을 본다.
     tm(LM28 2026-10-17 · ok 일 때): 그 항목의 제목(_JS_TITLE — 첫 줄 · 아이콘 글꼴 문자 뺌 · 공백 정리 · 끝 '…'·'...' 뗌)의 앞
     L(= min(길이, TITLE_MAX)) UTF-16 단위의 해시가 tpre[L](첫 프롬프트 앞부분 — title_prefixes)과 같으면 1, 아니면 0(L < TITLE_MIN 이면 0).
     항목을 고르는 규칙은 그대로다 — tm 은 호출자가 한 번 더 거르는 데만 쓴다.
     LM30(2026-10-21) — 더 엄격하게: '현재'·'선택' 표시 후보는 aria-label·title·보이는 글을 **따로** 탐색 이름(NAVW)·'새 채팅'과 맞춰 본다(예전에는
     셋을 이어 붙여 'Copilot Copilot' 같은 앱 레일 항목이 걸러지지 않았다) · 제목이 TITLE_MIN 자보다 짧은 항목은 후보가 아니다.
     find 결과에 nidl(목록 영역의 보이는 링크 중 경로에 대화 id 꼴이 든 수)을 싣는다 — 목록이 링크로 된 화면에서 주소에 대화 id 가 있는데
-    링크로 못 찾고 '현재' 표시로만 찾았으면 호출자가 누르지 않는다. more 는 고른 '…' 단추에 data-lm30-more 표식을 단다(js_chat_menu 가
+    링크로 못 찾고 '현재' 표시로만 찾았으면 호출자가 누르지 않는다. more 는 고른 '…' 단추에 data-af32-more 표식을 단다(js_chat_menu 가
     열린 메뉴가 그 단추 것인지 본다)."""
-    return ("/*LM28:chat_row*/(function(){\n"
+    return ("/*AF32:chat_row*/(function(){\n"
             "const CONV=" + json.dumps(str(conv or "")) + ",ACT=" + json.dumps(str(act or "find")) + ";\n"
             + _js_title(tpre) + r"""const vis=e=>{const r=e.getBoundingClientRect();return r.width>4&&r.height>4;};
 const nm=s=>String(s||"").replace(PUA,"").replace(/\s+/g," ").trim();
@@ -2608,10 +3168,10 @@ if(!bs.length&&up&&up.querySelectorAll("a[href],li,[role='treeitem'],[role='list
 if(!bs.length)return {r:"nomore",how:how};
 const b=bs.find(x=>x.getAttribute("aria-haspopup"))||bs[0];
 const p=pt(b);if(!p.ok)return {r:"covered",how:how};
-document.querySelectorAll("[data-lm28-pre]").forEach(x=>x.removeAttribute("data-lm28-pre"));
-document.querySelectorAll("[role='menu'],[role='listbox']").forEach(x=>{if(vis(x))x.setAttribute("data-lm28-pre","1");});
-document.querySelectorAll("[data-lm30-more]").forEach(x=>x.removeAttribute("data-lm30-more"));
-b.setAttribute("data-lm30-more","1");
+document.querySelectorAll("[data-af32-pre]").forEach(x=>x.removeAttribute("data-af32-pre"));
+document.querySelectorAll("[role='menu'],[role='listbox']").forEach(x=>{if(vis(x))x.setAttribute("data-af32-pre","1");});
+document.querySelectorAll("[data-af32-more]").forEach(x=>x.removeAttribute("data-af32-more"));
+b.setAttribute("data-af32-more","1");
 return {r:"ok",how:how,x:p.x,y:p.y,nb:bs.length,tm:tmOf(row)};
 })()""").replace("@MIN@", str(TITLE_MIN))
 
@@ -2623,7 +3183,7 @@ def js_chat_count(tpre=None):
     하나 빠졌나'를 메뉴를 열기 전에 센 수와 맞춰 보는 데만 쓴다(_retire_steps ⑤ — 무엇을 지울지는 정하지 않는다).
     LM30(2026-10-21): 대화 목록 영역만 센다 — 탐색 영역(nav·aside·navigation·tree) 안이거나 대화 창(main) 밖의 목록. 예전에는 답 안의 글머리
     목록(ul·li)까지 세어 셈이 흔들렸다(조사 보고 2)."""
-    return ("/*LM28:chat_count*/(function(){\n" + _js_title(tpre)
+    return ("/*AF32:chat_count*/(function(){\n" + _js_title(tpre)
             + r"""const vis=e=>{const q=e.getBoundingClientRect();return q.width>4&&q.height>4;};
 const POP="[role='menu'],[role='menubar'],[role='dialog'],[role='alertdialog'],[role='tooltip'],[role='combobox']";
 const REG="nav,aside,[role='navigation'],[role='tree'],[role='list'],[role='listbox'],[role='grid'],ul,ol";
@@ -2648,7 +3208,7 @@ def js_chat_navtg(skip=()):
     가림 확인) — 여럿이면 누르지 않는다(many). 길만 연다 — 무엇을 지울지는 정하지 않는다."""
     pts = [[int(p[0]), int(p[1])] for p in (skip or ()) if isinstance(p, (list, tuple)) and len(p) == 2
            and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in p)]
-    return ("/*LM28:chat_navtg*/(function(){\nconst SKIP=" + json.dumps(pts) + ";" + r"""
+    return ("/*AF32:chat_navtg*/(function(){\nconst SKIP=" + json.dumps(pts) + ";" + r"""
 const vis=e=>{const r=e.getBoundingClientRect();return r.width>4&&r.height>4;};
 const PUA=new RegExp("["+String.fromCharCode(57344)+"-"+String.fromCharCode(63743)+"]","g");   // 아이콘 글꼴 문자(U+E000~F8FF)
 const lab=e=>((e.getAttribute("aria-label")||"")+" "+(e.getAttribute("title")||"")+" "+(e.innerText||""))
@@ -2675,25 +3235,25 @@ return {r:"ok",x:x,y:y,n:1};
 
 def js_chat_view():
     """지금 뷰포트 크기(CSS px) → {w, h} — 넓은 화면 흉내(_chat_wide)의 기준."""
-    return "/*LM28:chat_view*/({w:Math.round(window.innerWidth||0),h:Math.round(window.innerHeight||0)})"
+    return "/*AF32:chat_view*/({w:Math.round(window.innerWidth||0),h:Math.round(window.innerHeight||0)})"
 
 
 def js_chat_menu():
-    """'추가 작업'을 누른 **뒤에 열린** 메뉴(menu·listbox — 그 전부터 보이던 것은 js_chat_row(more)가 단 data-lm28-pre 로 뺀다)에서
+    """'추가 작업'을 누른 **뒤에 열린** 메뉴(menu·listbox — 그 전부터 보이던 것은 js_chat_row(more)가 단 data-af32-pre 로 뺀다)에서
     글자가 **정확히** CHAT_DELETE_LABELS 중 하나인 항목 하나 → {r: ok · nomenu · nodelete · many · covered, x, y, n}(글은 돌려주지
     않는다). 보이는 글이 있으면 그 글로만, 없으면 aria-label 로 본다(아이콘 글꼴 문자는 뺀다). 같은 이름이 둘이면 누르지 않는다.
-    ok 를 돌려주기 전에 지금 보이는 대화상자에 data-lm28-pred 표식을 단다(js_chat_confirm 은 그 뒤에 뜬 확인 창만 본다).
-    LM30(2026-10-21) — 열린 메뉴가 우리 항목의 메뉴인가(menuown): js_chat_row(more)가 표식(data-lm30-more)을 단 '…' 단추가 있어야 하고, 그
+    ok 를 돌려주기 전에 지금 보이는 대화상자에 data-af32-pred 표식을 단다(js_chat_confirm 은 그 뒤에 뜬 확인 창만 본다).
+    LM30(2026-10-21) — 열린 메뉴가 우리 항목의 메뉴인가(menuown): js_chat_row(more)가 표식(data-af32-more)을 단 '…' 단추가 있어야 하고, 그
     단추가 팝업을 여는 단추(aria-haspopup)면 aria-expanded 가 'true' 여야 하며, aria-controls 가 있으면 그 id 의 메뉴만 본다. 고른 항목의 이름에
     '모두·전체·모든·all·everything' 이 있으면 누르지 않는다(bulk — 허용 목록에는 그런 이름이 없다 · 이중 잠금)."""
-    return ("/*LM28:chat_menu*/(function(){\nconst WANT=" + json.dumps(list(CHAT_DELETE_LABELS), ensure_ascii=False) + ";"
+    return ("/*AF32:chat_menu*/(function(){\nconst WANT=" + json.dumps(list(CHAT_DELETE_LABELS), ensure_ascii=False) + ";"
             + "\nconst BULK=new RegExp(" + json.dumps(_bulk_rx_src(), ensure_ascii=False) + ',"i");' + r"""
 const vis=e=>{const r=e.getBoundingClientRect();return r.width>4&&r.height>4;};
 const PUA=new RegExp("["+String.fromCharCode(57344)+"-"+String.fromCharCode(63743)+"]","g");   // 아이콘 글꼴 문자
 const nrm=s=>(s||"").replace(PUA,"").replace(/\s+/g," ").trim().toLowerCase();
-let pops=[...document.querySelectorAll("[role='menu'],[role='listbox']")].filter(e=>vis(e)&&!e.closest("[data-lm28-pre]"));
+let pops=[...document.querySelectorAll("[role='menu'],[role='listbox']")].filter(e=>vis(e)&&!e.closest("[data-af32-pre]"));
 if(!pops.length)return {r:"nomenu"};
-const trg=document.querySelector("[data-lm30-more]");
+const trg=document.querySelector("[data-af32-more]");
 if(!trg)return {r:"menuown",n:pops.length};
 if(trg.getAttribute("aria-haspopup")){
   if(trg.getAttribute("aria-expanded")!=="true")return {r:"menuown",n:pops.length};
@@ -2713,8 +3273,8 @@ if(BULK.test(nrm(hs[0].innerText)||nrm(hs[0].getAttribute("aria-label"))))return
 const q=hs[0].getBoundingClientRect(),x=Math.round(q.left+q.width/2),y=Math.round(q.top+q.height/2);
 const h=document.elementFromPoint(x,y);
 if(!(h&&(h===hs[0]||hs[0].contains(h))))return {r:"covered",n:n};
-document.querySelectorAll("[data-lm28-pred]").forEach(e=>e.removeAttribute("data-lm28-pred"));
-document.querySelectorAll("[role='dialog'],[role='alertdialog'],dialog[open]").forEach(e=>{if(vis(e))e.setAttribute("data-lm28-pred","1");});
+document.querySelectorAll("[data-af32-pred]").forEach(e=>e.removeAttribute("data-af32-pred"));
+document.querySelectorAll("[role='dialog'],[role='alertdialog'],dialog[open]").forEach(e=>{if(vis(e))e.setAttribute("data-af32-pred","1");});
 return {r:"ok",x:x,y:y,n:n};
 })()""")
 
@@ -2730,17 +3290,17 @@ def is_bulk_label(s):
 
 
 def js_chat_confirm():
-    """'삭제'를 누른 **뒤에 뜬** 확인 창(dialog·alertdialog·dialog[open] — 그 전부터 보이던 것은 data-lm28-pred 로 뺀다)의 단추 중
+    """'삭제'를 누른 **뒤에 뜬** 확인 창(dialog·alertdialog·dialog[open] — 그 전부터 보이던 것은 data-af32-pred 로 뺀다)의 단추 중
     글자가 **정확히** CHAT_CONFIRM_LABELS 인 것 하나 → {r: ok · none(창 없음) · nobtn · many · covered · bulk, x, y}.
     '취소'·'닫기' 는 보지도 않는다. LM30(2026-10-21): 허용 목록이 메뉴와 같아졌다('채팅 삭제'·'Delete chat' 단추도 누른다) · 확인 창의 제목
     (aria-label · aria-labelledby 가 가리키는 글 · 창 글의 첫 줄)이나 그 단추 이름에 '모두·전체·모든·all·everything' 이 있으면 누르지 않는다
     (bulk — 여러 대화를 지우는 창일 수 있다). 글은 돌려주지 않는다(0/1 코드만)."""
-    return ("/*LM28:chat_confirm*/(function(){\nconst WANT=" + json.dumps(list(CHAT_CONFIRM_LABELS), ensure_ascii=False) + ";"
+    return ("/*AF32:chat_confirm*/(function(){\nconst WANT=" + json.dumps(list(CHAT_CONFIRM_LABELS), ensure_ascii=False) + ";"
             + "\nconst BULK=new RegExp(" + json.dumps(_bulk_rx_src(), ensure_ascii=False) + ',"i");' + r"""
 const vis=e=>{const r=e.getBoundingClientRect();return r.width>4&&r.height>4;};
 const PUA=new RegExp("["+String.fromCharCode(57344)+"-"+String.fromCharCode(63743)+"]","g");   // 아이콘 글꼴 문자
 const nrm=s=>(s||"").replace(PUA,"").replace(/\s+/g," ").trim().toLowerCase();
-const ds=[...document.querySelectorAll("[role='dialog'],[role='alertdialog'],dialog[open]")].filter(e=>vis(e)&&!e.closest("[data-lm28-pred]"));
+const ds=[...document.querySelectorAll("[role='dialog'],[role='alertdialog'],dialog[open]")].filter(e=>vis(e)&&!e.closest("[data-af32-pred]"));
 if(!ds.length)return {r:"none"};
 let hs=[];
 for(const d of ds)for(const b of d.querySelectorAll("button,[role='button']")){
@@ -2764,7 +3324,7 @@ return {r:"ok",x:x,y:y,n:ds.length};
 
 
 def _chat_mouse(cdp, x, y, click=True):
-    """신뢰 입력 마우스(CDP Input.dispatchMouseEvent — Get-TeamsWeb._mouse 와 같은 꼴): 옮김(+ click 이면 누름·뗌 왼쪽 1번)."""
+    """신뢰 입력 마우스(CDP Input.dispatchMouseEvent): 옮김(+ click 이면 누름·뗌 왼쪽 1번)."""
     x, y = int(x), int(y)
     if x <= 0 or y <= 0:
         raise ValueError("누를 점 없음")
@@ -2806,7 +3366,7 @@ def _chat_opened(cdp, cfg, how, pre=""):
             trace("chat", act="open", code="notfresh")
         else:
             st.update(ours=True, sent=0, anchor_sha="", alen=0, hsha="", hlen=0, conv="", href="", pid=os.getpid(),
-                      created_at=_now(), stage=str(os.environ.get("LM_STAGE") or "")[:40])
+                      created_at=_now(), stage=str(os.environ.get("AF32_STAGE") or "")[:40])
         _chats_save(cfg, st)
     except Exception:  # noqa: BLE001 - 소유 기록이 왕복을 막지 않는다
         pass
@@ -2827,7 +3387,7 @@ def _chat_before_send(cdp, cfg, text):
             _chats_save(cfg, _chat_reset(st))
             return False
         cid, cid0 = conv_id(_chat_url(cdp), cfg), str(st.get("conv") or "")
-        pane = _pane_text(cdp, cfg)                   # LM30 — 대화 창의 글만(대화 목록 제목은 뺀다)
+        pane = _pane_text(cdp, cfg)                   # AF32 — 대화 창의 글만(대화 목록 제목은 뺀다)
         if _owns_screen(pane if pane is not None else text, st, cid) and not (cid and cid0 and cid != cid0):
             return True
         sent = int(st.get("sent") or 0)
@@ -2855,8 +3415,8 @@ def _chat_after_send(cdp, cfg, prompt, own):
         if sent <= 0:
             _chat_tally(st, "made")
             rt = _run_tally(st)
-            rt["made"] = int(rt.get("made") or 0) + 1              # LM30 — 이번 실행이 연 채팅 수(실행 끝 한 줄)
-            trace("chat", act="made", step=str(os.environ.get("LM_STAGE") or "")[:40])
+            rt["made"] = int(rt.get("made") or 0) + 1              # AF32 — 이번 실행이 연 채팅 수(실행 끝 한 줄)
+            trace("chat", act="made", step=str(os.environ.get("AF32_STAGE") or "")[:40])
             st["tpre"] = title_prefixes(prompt)
         sha, n = anchor_key(prompt)
         if not sha:
@@ -2868,7 +3428,7 @@ def _chat_after_send(cdp, cfg, prompt, own):
             return
         hs, hn = head_key(prompt)
         st.update(anchor_sha=sha, alen=n, hsha=hs, hlen=hn, sent=sent + 1, pid=os.getpid(), t_last=_now())
-        _owned_sync(st)                                                # LM30 — 지울 때까지 남는 기록(owned[] — 해시·주소만)
+        _owned_sync(st)                                                # AF32 — 지울 때까지 남는 기록(owned[] — 해시·주소만)
         _chats_save(cfg, st)
     except Exception:  # noqa: BLE001
         pass
@@ -2886,7 +3446,7 @@ def _chat_seen(cdp, cfg, ok=None):
         cid = conv_id(url, cfg)
         dirty = False
         if cid and (cid != st.get("conv") or not st.get("href")):
-            # nav(LM30) — 다시 열 주소: 대화 id 가 경로에 있으면 경로까지(href), 질의·# 에만 있으면 그 주소 그대로(id 가 든 경우만 · 300자)
+            # nav(AF32) — 다시 열 주소: 대화 id 가 경로에 있으면 경로까지(href), 질의·# 에만 있으면 그 주소 그대로(id 가 든 경우만 · 300자)
             nav = _plain_href(url)
             if conv_id(nav, cfg) != cid:
                 nav = str(url)[:300] if conv_id(str(url)[:300], cfg) == cid else ""
@@ -2929,7 +3489,7 @@ def _resume_ok(cdp, cfg):
                 and _age_sec(st.get("t_ok")) < CHAT_RESUME_SEC):
             return False
         cid, cid0 = conv_id(_chat_url(cdp), cfg), str(st.get("conv") or "")
-        if not _owns_screen(cdp.eval(js_pane_text(cfg), timeout=30), st, cid):     # LM30 — 더 엄격한 소유 확인
+        if not _owns_screen(cdp.eval(js_pane_text(cfg), timeout=30), st, cid):     # AF32 — 더 엄격한 소유 확인
             return False
         if cid0 and cid != cid0:
             return False
@@ -2951,7 +3511,7 @@ def _continue_why(cdp, cfg):
         if not (st.get("ours") and int(st.get("sent") or 0) > 0 and st.get("pid") == os.getpid()):
             return "unverified"
         cid = conv_id(_chat_url(cdp), cfg)
-        # LM30 — 대화 창의 글만 보고, 머리 앵커만 보이면 대화 id 까지 같아야 우리 채팅이다(_owns_screen)
+        # AF32 — 대화 창의 글만 보고, 머리 앵커만 보이면 대화 id 까지 같아야 우리 채팅이다(_owns_screen)
         return "" if _owns_screen(cdp.eval(js_pane_text(cfg), timeout=30), st, cid) else "unverified"
     except Exception:  # noqa: BLE001 - 확인하지 못하면 이어 보내지 않는다
         return "unverified"
@@ -3001,7 +3561,7 @@ def chat_turns(cfg=None):
 
 
 class ChatKeep:
-    """LM28(2026-10-17) — 혼자서 완결인 조각을 많이 보내는 호출자(Copilot 메일·일정·팀즈 수집기)의 '새 채팅이냐 이어 쓰기냐'(프로세스에 하나).
+    """LM28(2026-10-17) — 혼자서 완결인 조각을 많이 보내는 호출자(Copilot 메일·일정 수집기)의 '새 채팅이냐 이어 쓰기냐'(프로세스에 하나).
     왜: 조각마다 새 채팅(fresh=True)을 열어 사람의 Copilot 대화 목록에 조각 수만큼 LM28 채팅이 쌓였다(현장 사진 — '…부터 …까지' 제목이
     줄줄이). 다 쓴 채팅 지우기가 되지 않는 PC 가 있어(원인 조사 중) 여는 수 자체를 줄인다. 조각 프롬프트는 기간을 못 박고 파서는 요청
     구간 밖 날짜의 행을 버리므로, 앞 조각의 답이 문맥에 남아도 섞이지 않는다.
@@ -3116,7 +3676,7 @@ def js_chat_census(conv=""):
     영역 · nrow 목록 항목 · nlink 목록 링크 · nid 경로에 대화 id 꼴이 든 링크 · nhc 이 대화 id(conv)가 든 링크 · nhcv 그중 목록에 보임 ·
     ncur/ncurv aria-current(전체/목록 안) · nsel/nselv aria-selected · ntgc/ntgo 대화 기록 펼침 단추(접힘/펼침) · nmore 목록의 메뉴 단추 ·
     nmenu 열린 메뉴 · ndlg 열린 대화상자}. 제목·글·주소·id 는 돌려주지 않는다(conv 는 비교에만 쓴다). 영역·항목 기준은 js_chat_row 와 같다."""
-    return ("/*LM28:chat_census*/(function(){\nconst CONV=" + json.dumps(str(conv or "")) + ";" + r"""
+    return ("/*AF32:chat_census*/(function(){\nconst CONV=" + json.dumps(str(conv or "")) + ";" + r"""
 const vis=e=>{const r=e.getBoundingClientRect();return r.width>4&&r.height>4;};
 const POP="[role='menu'],[role='menubar'],[role='dialog'],[role='alertdialog'],[role='tooltip'],[role='combobox']";
 const REG="nav,aside,[role='navigation'],[role='tree'],[role='list'],[role='listbox'],[role='grid'],ul,ol";
@@ -3250,7 +3810,7 @@ def _chat_find(cdp, cid, tpre, ctx, press, left):
         if isinstance(tg, list) and len(tg) == 2:
             press({"x": tg[0], "y": tg[1]})
             done.append(tg)
-            ctx["drawer"] = 1                   # LM30 — 서랍을 열었다(지운 뒤 서랍이 닫히면 '항목 사라짐'을 믿지 않는다)
+            ctx["drawer"] = 1                   # AF32 — 서랍을 열었다(지운 뒤 서랍이 닫히면 '항목 사라짐'을 믿지 않는다)
             _sleep(1.2)
             r = look()
             if r.get("r") != "none":
@@ -3315,7 +3875,7 @@ def _retire_steps(cdp, cfg, st, t_end, touched, ctx=None):
     if cid and cid0 and cid != cid0:
         return "lost"
     ctx["cid"] = cid
-    # ⓪ 아직 답을 쓰는 중이면 지우지 않는다(LM28 — 남김 'gen'). LM30: 정리 상한 안에서 끝나기를 잠깐 기다려 본다(GEN_WAIT_SEC · 2초씩).
+    # ⓪ 아직 답을 쓰는 중이면 지우지 않는다(LM28 — 남김 'gen'). AF32: 정리 상한 안에서 끝나기를 잠깐 기다려 본다(GEN_WAIT_SEC · 2초씩).
     #   물어보지 못했으면 예전처럼 다음 단계로(아래 확인들이 그대로 지킨다)
     try:
         if cdp.eval(js_is_generating(), timeout=8) is True:
@@ -3337,7 +3897,7 @@ def _retire_steps(cdp, cfg, st, t_end, touched, ctx=None):
     r = _chat_find(cdp, cid, tpre, ctx, press, left)
     if r.get("r") != "ok":
         return {"many": "ambiguous", "split": "ambiguous", "covered": "covered"}.get(str(r.get("r") or ""), "noitem")
-    # LM30 — 목록이 대화 id 링크로 된 화면인데 우리 대화 id 의 링크가 없다: '현재' 표시만으로는 그 항목이 우리 대화인지 모른다
+    # AF32 — 목록이 대화 id 링크로 된 화면인데 우리 대화 id 의 링크가 없다: '현재' 표시만으로는 그 항목이 우리 대화인지 모른다
     nidl = r.get("nidl")
     if cid and r.get("how") == "cur" and isinstance(nidl, int) and not isinstance(nidl, bool) and nidl > 0:
         return "ambiguous"
@@ -3372,7 +3932,7 @@ def _retire_steps(cdp, cfg, st, t_end, touched, ctx=None):
     if left() <= 0:
         return "timeout"
     press(mn)
-    # ④ 확인 창 — 글자가 정확히 허용 목록인 단추만(LM30: 8초까지 기다린다). 창이 뜨지 않으면 메뉴 클릭이 끝(확인 없는 화면)으로 보고 ⑤ 로 —
+    # ④ 확인 창 — 글자가 정확히 허용 목록인 단추만(AF32: 8초까지 기다린다). 창이 뜨지 않으면 메뉴 클릭이 끝(확인 없는 화면)으로 보고 ⑤ 로 —
     #   창 없이 이미 지워진 화면(주소의 대화 id 가 바뀜)이면 기다리지 않는다
     seen = False
     for i in range(CONFIRM_POLLS):
@@ -3559,7 +4119,7 @@ def _chat_tab_ws(cfg):
 
 
 def retire_current(cfg=None, why="end", budget=CHAT_RETIRE_SEC):
-    """지금 탭의 우리 채팅을 지운다([AI 연결 진단] 왕복 뒤 — LM30: 실행 끝은 sweep_owned 가 지금 채팅과 기록의 지난 채팅을 함께 한다) →
+    """지금 탭의 우리 채팅을 지운다([AI 연결 진단] 왕복 뒤 — AF32: 실행 끝은 sweep_owned 가 지금 채팅과 기록의 지난 채팅을 함께 한다) →
     결과 코드. 우리 Edge(프로필 포트)가 살아 있고 채팅 탭이 있을 때만 화면에 닿는다 — 잠금(CHAT_LOCK_WAIT 초)을 못 얻으면 'busy',
     탭이 없으면 'notab', Edge 가 없으면 'noedge'(그때는 소유를 그대로 둔다 — 다음 프로세스가 확인한다). 못 지운 채팅은 기록에 남는다.
     예외를 내지 않는다."""
@@ -3601,7 +4161,7 @@ def js_chat_haslink(conv):
     """LM30(2026-10-21) — 문서 어디에든(보이지 않아도) 그 대화 id 가 든 링크가 있나 → {h: 0/1, n: 경로에 대화 id 꼴이 든 링크 수}(글·주소는
     돌려주지 않는다). 지난 채팅 주소로 옮겼는데 화면이 다른 곳으로 갔을 때, 대화 목록 링크가 그려져 있는데(n ≥ 1) 그 id 만 없으면
     '이미 목록에 없음(gone)'으로 본다(아무것도 누르지 않는다)."""
-    return ("/*LM30:haslink*/(function(){const C=" + json.dumps(str(conv or "")) + ";" + r"""
+    return ("/*AF32:haslink*/(function(){const C=" + json.dumps(str(conv or "")) + ";" + r"""
 const IDRX=/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|(?=[A-Za-z0-9_-]*\d)(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{16,}/i;
 let h=0,n=0;
 for(const a of document.querySelectorAll("a[href]")){
@@ -3674,7 +4234,7 @@ def _sweep_one(cdp, cfg, e, budget):
         url = str(s.get("url") or "")
         kind = page_kind(url, cfg)
         ready = s.get("ready") in ("interactive", "complete")
-        if kind in ("login", "adfs") or (kind == "personal" and _truthy(cfg.get("requireWorkAccount"), True)):
+        if kind in ("login", "adfs", "personal"):
             return "login", None, None
         if not ready or not _sendable(kind, cfg):
             continue
@@ -3761,12 +4321,32 @@ def sweep_owned(cfg=None, budget=SWEEP_SEC, per=SWEEP_PER_SEC, why="end", launch
             out["code"] = "error"
     finally:
         try:
-            out["left"] = len(_owned_list(chat_state(cfg)))
+            out["left"] = _left_count(chat_state(cfg))
         except Exception:  # noqa: BLE001
             pass
         _RUN_KEY[0] = prev
         _SWEEP_LAST[0] = dict(out, why=dict(out["why"]))
     return out
+
+
+def _left_count(st):
+    """남은 LM 채팅 수 — 기록(owned[]) + 기록에 없는 지금 채팅(보낸 적 있음 — 옛 꼴 상태 파일)."""
+    xs = _owned_list(st)
+    if st.get("ours") and int(st.get("sent") or 0) > 0:
+        key = str(st.get("key") or "")
+        if not key or not any(e.get("key") == key for e in xs):
+            return len(xs) + 1
+    return len(xs)
+
+
+def owned_count(cfg=None):
+    """이 도구가 열고 아직 지우지 못한 Copilot 채팅 수(기록 + 기록에 없는 지금 채팅) — 화면·Edge 에 닿지 않는다. 모두 지우기와 자료
+    지우기가 채팅 기록 파일을 지우기 전에 sweep_owned(None, why='withdraw', launch=True, lock_wait=30)를 부를지 정할 때 쓴다.
+    sweep_owned 결과의 left 가 0 보다 크거나 code 가 noedge·login·notab·hold·busy·off·error 면 채팅이 남았다. 예외를 내지 않는다."""
+    try:
+        return _left_count(chat_state(cfg))
+    except Exception:  # noqa: BLE001
+        return 0
 
 
 def _sweep_on(cdp, cfg, out, t0, budget, per, why):
@@ -3785,6 +4365,13 @@ def _sweep_on(cdp, cfg, out, t0, budget, per, why):
         _sleep(1)
     if not _sendable(page_kind(state.get("url"), cfg), cfg):
         out["code"], out["login"] = "login", True       # 로그인 화면·계정 화면 — LM 은 로그인하지 않는다(아무것도 누르지 않음)
+        return out
+    acct = account_foreign(cdp, cfg)
+    if acct:
+        # 회사 밖·개인 계정으로 로그인한 화면 — 이 계정의 대화 목록에는 우리 채팅이 없다. '이미 없음'으로 기록을 버리지 않게
+        # 아무것도 누르지 않고 기록을 남긴다(회사 계정으로 다시 로그인한 뒤의 정리가 지운다)
+        out["code"], out["login"] = "login", True
+        trace("account", code=acct, src="sweep")
         return out
     st = chat_state(cfg)
     _sweep_prune(cfg, st)
@@ -4019,23 +4606,42 @@ def chat_run_line(rep, button=False):
     return s
 
 
-TRACE_MAX = 4_000_000          # 이 크기를 넘으면 갈아 끼운다 — 로그가 조용히 커지지 않게
+TRACE_MAX = 4_000_000          # 그날 파일이 이 크기를 넘으면 그날의 .1 로 갈아 끼운다 — 로그가 조용히 커지지 않게
+TRACE_PREFIX = "copilot_trace_"                                # 날짜별 파일 report\copilot_trace_YYYYMMDD.jsonl(그날의 .1.jsonl)
+TRACE_LEGACY = ("copilot_trace.jsonl", "copilot_trace.jsonl.1")   # 예전 한 파일 기록 — 날마다 덧붙어 보관기한으로 지워지지 않았다
+_TRACE_TIDY = set()            # 이 프로세스가 예전 한 파일 기록을 지운 report 폴더(처음 쓸 때 한 번)
+
+
+def trace_path(day=None):
+    """그날(YYYY-MM-DD · 없으면 오늘)의 계측 파일 경로 — report\\copilot_trace_YYYYMMDD.jsonl."""
+    d = str(day or time.strftime("%Y-%m-%d"))[:10].replace("-", "")
+    return os.path.join(ROOT, "report", f"{TRACE_PREFIX}{d}.jsonl")
 
 
 def trace(stage, **kw):
-    """왕복 한 줄 기록 → report\\copilot_trace.jsonl.
-    남기는 것: 단계·시각·프롬프트/답 **길이**·소요 초·완료 판정 방식·새 채팅 여부·성공 여부.
-    남기지 않는 것: 프롬프트 원문·답 원문(신호 원문이 들어 있다·팀 서버로 나가지 않는다).
-    실패해도 왕복을 막지 않는다 — 계측이 도구를 죽이면 안 된다."""
+    """왕복 한 줄 기록 → report\\copilot_trace_YYYYMMDD.jsonl(그날 파일 — 날이 바뀌면 새 파일).
+    남기는 것: 단계·날짜·프롬프트/답 **길이**·소요 초·완료 판정 방식·새 채팅 여부·성공 여부.
+    남기지 않는 것: 프롬프트 원문·답 원문(신호 원문이 들어 있다·팀 서버로 나가지 않는다)·하루 중 시각.
+    날짜별 파일이라 지난날의 파일은 더 바뀌지 않고, 보관기한 정리(그 밖의 작업 파일 — intermediateDays)가 파일 날짜로 통째로 지운다
+    (예전 한 파일은 날마다 덧붙어 오래된 줄이 남았다 — 처음 쓸 때 지운다). 실패해도 왕복을 막지 않는다 — 계측이 도구를 죽이면 안 된다."""
     try:
-        p = os.path.join(ROOT, "report", "copilot_trace.jsonl")
-        os.makedirs(os.path.dirname(p), exist_ok=True)
+        rep = os.path.join(ROOT, "report")
+        os.makedirs(rep, exist_ok=True)
+        if rep not in _TRACE_TIDY:
+            _TRACE_TIDY.add(rep)
+            for n in TRACE_LEGACY:
+                try:
+                    os.remove(os.path.join(rep, n))
+                except OSError:
+                    pass
+        day = time.strftime("%Y-%m-%d")
+        p = trace_path(day)
         try:
             if os.path.getsize(p) > TRACE_MAX:
-                os.replace(p, p + ".1")
+                os.replace(p, p[:-len(".jsonl")] + ".1.jsonl")
         except OSError:
             pass
-        row = {"t": time.strftime("%Y-%m-%d %H:%M:%S"), "stage": stage}
+        row = {"t": day, "stage": stage}    # report\ 아래는 날짜만(D10) — 소요 초는 그대로
         row.update(kw)
         with open(p, "a", encoding="utf-8") as f:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -4050,7 +4656,7 @@ def _traced(fn):
         res = fn(cfg, prompt, fresh=fresh, **kw)
         try:
             r = res if isinstance(res, dict) else {}
-            trace(os.environ.get("LM_STAGE", "") or fn.__name__,
+            trace(os.environ.get("AF32_STAGE", "") or fn.__name__,
                   sec=round(time.time() - t0, 1), prompt=len(prompt or ""),
                   reply=len(r.get("reply") or ""), ok=bool(r.get("ok")),
                   done_by=r.get("done_by", ""), gen=r.get("gen_sec", 0),
@@ -4128,7 +4734,7 @@ def run_roundtrip(cfg, prompt, fresh=False, reload=False):
             ok_r = (not reload) and _resume_ok(cdp, cfg)
             _RESUMED[0] = ok_r
             fresh = not ok_r
-        # LM30 — 답을 남기지 않은 실패 뒤의 다시 보내기(RELOAD_KEEP): 같은 대화를 그 자리에서 새로 고친다(우리 대화 id 가 주소에 있을 때만)
+        # AF32 — 답을 남기지 않은 실패 뒤의 다시 보내기(RELOAD_KEEP): 같은 대화를 그 자리에서 새로 고친다(우리 대화 id 가 주소에 있을 때만)
         if keep and not fresh:
             _reload_same(cdp, cfg)
         # LM28(2026-10-17) — 이어 보내기 직전 화면이 이 프로세스의 우리 채팅임을 확인하지 못하면(사람이 전용 Edge 에서 자기 대화를 누름 ·
@@ -4142,7 +4748,7 @@ def run_roundtrip(cfg, prompt, fresh=False, reload=False):
         # 새 채팅은 늘 _open_fresh(→ _fresh_chat)로 연다 — 다 쓴 우리 채팅을 먼저 목록에서 지우고, 새 채팅을 '우리 것'으로 적는다(LM28 채팅
         # 정리). 새 채팅으로 옮긴 것을 확인하지 못하면 보내지 않는다(NO_NEW_CHAT — 열려 있던 대화는 사람의 것일 수 있다). 지금 화면이 우리
         # 채팅이 아닌 것을 알면(why_c) 단추 대신 채팅 시작 주소로 새로 들어가고, 화면 글이 그대로면 보내지 않는다(guard_text).
-        # LM30 — 이번 왕복이 방금 연 새 채팅에서 시작했나(사다리 ①이 새 채팅을 또 열지 않는다). 같은 대화 새로 고침(RELOAD_KEEP — judge 의
+        # AF32 — 이번 왕복이 방금 연 새 채팅에서 시작했나(사다리 ①이 새 채팅을 또 열지 않는다). 같은 대화 새로 고침(RELOAD_KEEP — judge 의
         # 쉬었다 다시 보내기)도 같다: 쉬기 사다리가 이미 느린 재시도이므로 ①이 새 채팅을 보태지 않는다.
         opened = bool(keep)
         if why_c:
@@ -4156,7 +4762,7 @@ def run_roundtrip(cfg, prompt, fresh=False, reload=False):
             opened = True
         elif fresh:
             # 판정처럼 '깨끗한 문맥'이 필요한 왕복은 새 채팅에서 시작한다 —
-            # 앞선 실패 대화(예: 팀즈 조회 거절)가 문맥에 남으면 답이 오염된다.
+            # 앞선 실패 대화(예: 조회 거절)가 문맥에 남으면 답이 오염된다.
             if not _open_fresh(cdp, cfg, "fresh"):
                 return _no_new_chat()
             opened = True
@@ -4171,7 +4777,7 @@ def run_roundtrip(cfg, prompt, fresh=False, reload=False):
         # 같은 길이의 답을 또 기다리고, Copilot 은 앞 채팅들의 답을 뒤에서 마저 써 대화 목록에 같은 답이 쌓인다(현장 제보).
         if res.get("slow"):
             return res
-        # LM30 — 끊긴 답(cut)도 사다리를 타지 않는다: 앞부분의 잘린 JSON 을 ok+cut 으로 돌려주고 호출자가 복구·부분 재시도한다(judge/refine 의
+        # AF32 — 끊긴 답(cut)도 사다리를 타지 않는다: 앞부분의 잘린 JSON 을 ok+cut 으로 돌려주고 호출자가 복구·부분 재시도한다(judge/refine 의
         # 적응 분할 · flow 의 빠진 단위만 작게) — 같은 채팅에서 이어서(새 채팅을 열지 않는다).
         if res.get("ok") and res.get("cut") and not is_error_reply(res.get("reply")):
             return res
@@ -4180,7 +4786,7 @@ def run_roundtrip(cfg, prompt, fresh=False, reload=False):
         if not bad:
             return res
         # ① 같은 모델로 재시도 — 이어 쓰던 채팅이었으면 새 채팅 하나(대화 문맥 오염·긴 대화의 느려짐 해소), 방금 연 새 채팅이었으면 그 채팅에
-        #   다시 보낸다(새 채팅을 또 열어도 얻는 것이 없다 · LM30). 재시도는 **더 짧게 기다린다** — 1차가 replyTimeoutSec 를 다 쓰고 실패했다면
+        #   다시 보낸다(새 채팅을 또 열어도 얻는 것이 없다 · AF32). 재시도는 **더 짧게 기다린다** — 1차가 replyTimeoutSec 를 다 쓰고 실패했다면
         #   그 채팅·그 시각의 Copilot 이 느린 것이고, 같은 예산으로 세 번 기다리면 왕복 하나에 최악 24분이 든다(감사 실측).
         cfg2 = dict(cfg)
         cfg2["replyTimeoutSec"] = max(120, int(cfg.get("replyTimeoutSec") or 480) // 2)
@@ -4219,7 +4825,7 @@ def run_roundtrip(cfg, prompt, fresh=False, reload=False):
         if res2.get("ok") and not is_error_reply(res2.get("reply")):
             res2["retry"] = f"1단계 재시도 성공 ({where2})"
             return res2
-        # ② ①의 채팅에 이어서 자동 모델로(특정 모델 라우팅 장애 대비) — 새 채팅을 더 열지 않는다(LM30). 그 채팅이 우리 채팅임을 다시 확인하지
+        # ② ①의 채팅에 이어서 자동 모델로(특정 모델 라우팅 장애 대비) — 새 채팅을 더 열지 않는다(AF32). 그 채팅이 우리 채팅임을 다시 확인하지
         #   못하면 보내지 않는다.
         if _rt_left() < 120:
             res2["retry"] = f"왕복 예산 {_rt_max // 60}분을 다 써 2단계 재시도는 하지 않았습니다"
@@ -4254,7 +4860,7 @@ def run_roundtrip(cfg, prompt, fresh=False, reload=False):
         cdp.close()
 
 
-RELOAD_KEEP = "keep"           # reload 자리의 값(LM30) — 새 채팅 대신 같은 대화를 그 자리에서 새로 고친다(_reload_same)
+RELOAD_KEEP = "keep"           # reload 자리의 값(AF32) — 새 채팅 대신 같은 대화를 그 자리에서 새로 고친다(_reload_same)
 
 
 def _reload_same(cdp, cfg, wait=15):
@@ -4350,6 +4956,7 @@ def _roundtrip_once(cdp, cfg, prompt, model_override=None):
         # 끊고(잘린 JSON) 이번 프롬프트는 입력창에 남는다. 큰 사람의 연속 실패가 여기서 시작됐다.
         waited = wait_idle(cdp, secs=int(min(45, max(5, _dl_left(45)))))
         note_model = select_model(cdp, cfg, override=model_override)
+        web_content_off(cdp)                   # D19 — 웹 콘텐츠 참조 스위치를 끈다(있을 때만 · 실패해도 보낸다)
 
         # 대형 DOM(긴 대화)에서 innerText 평가가 25초를 넘겨 왕복 전체가 error 로 죽던
         # 결함(검증 확정) — 응답 대기 루프(아래)와 같은 재수립 가드를 준다. 폴백은 0이
@@ -4377,14 +4984,14 @@ def _roundtrip_once(cdp, cfg, prompt, model_override=None):
             time.sleep(1)
             ins = cdp.eval(js_focus(cfg))
         if not (ins and ins.get("ok")):
-            dbg = cdp.eval(js_diagnose())
-            dump = os.path.join(ROOT, "data", "copilot_auto_debug.json")
-            os.makedirs(os.path.dirname(dump), exist_ok=True)
-            with open(dump, "w", encoding="utf-8") as f:
-                json.dump(dbg, f, ensure_ascii=False, indent=1)
+            try:
+                write_debug(cdp.eval(js_diagnose()))        # 구조만(이름·주소·제목 원문 없음 — debug_view)
+            except Exception:  # noqa: BLE001 - 덤프 실패가 결과를 바꾸지 않는다
+                pass
             return {"ok": False, "phase": "input_not_found",
                     "error": f"채팅 입력창을 찾지 못함({_ready_s}초 대기)",
-                    "hint": "data\\copilot_auto_debug.json 과 화면 스크린샷을 Claude에게 보여주면 선택자를 맞춰줄 수 있습니다"}
+                    "hint": "전용 Edge 창이 업무용 Copilot 채팅 화면인지 확인한 뒤 다시 실행하세요 — 반복되면 이 메시지를 운영 담당에게"
+                            " 알려 주세요"}
         # LM28 — 앞 전송(다른 단계 프로세스 포함)에서 minGapSec 이 지나야 보낸다(요청 몰림 → 「요청이 너무 많음」 방지).
         # 보내기 전에 이미 떠 있던 알림을 적어 둔다 — 보낸 뒤 새로 뜬 알림만 사용량 제한 근거로 본다.
         pace_wait(cfg)
@@ -4571,7 +5178,7 @@ def _roundtrip_once(cdp, cfg, prompt, model_override=None):
                                  ext_sec=ext)
         return {"ok": False, "phase": "no_reply", "error": "응답 시간 초과",
                 "reply": (last or "").strip(), "sentinel": False, "stopped": stopped,
-                "hint": "Copilot 창이 응답을 생성 중인지 확인 — 반복되면 화면 스크린샷을 Claude에게"}
+                "hint": "Copilot 창이 아직 답을 쓰는 중인지 확인하세요 — 반복되면 이 메시지를 운영 담당에게 알려 주세요"}
 
 
 def _stable_view(body):
@@ -4671,7 +5278,7 @@ def _run_parts(cdp, cfg, parts, fresh, deadline=None, reload=False):
     (ok — 호출자 run_roundtrip_split 이 새 채팅 전체 재전송을 하지 않는다). fresh=RESUME·이어 보내기 확인(_continue_why)·새 채팅 확인
     (_open_fresh — 확인 못 하면 보내지 않음)은 run_roundtrip 과 같다. 둘째 조각부터도 보내기 직전에 화면이 우리 채팅인지 보고, 아니면 남은
     조각을 보내지 않는다(LM28 2026-10-17 — 조각 사이에 사람이 다른 대화를 눌렀어도 그 대화에 넣지 않는다).
-    LM30: reload=RELOAD_KEEP 이면 같은 대화를 그 자리에서 새로 고친 뒤 이어 보낸다(run_roundtrip 과 같다)."""
+    AF32: reload=RELOAD_KEEP 이면 같은 대화를 그 자리에서 새로 고친 뒤 이어 보낸다(run_roundtrip 과 같다)."""
     total = len(parts)
     keep = reload == RELOAD_KEEP
     if keep:
@@ -4758,7 +5365,7 @@ def run_roundtrip_split(cfg, prompt, fresh=False, reload=False):
     결과 dict 형식은 run_roundtrip 과 같고 parts(조각 수)만 더한다. reload: 첫 시도 전에 채팅 페이지 새로 고침.
     사용량 제한(throttled)이면 새 채팅 전체 재시도도 하지 않는다."""
     parts = make_parts(prompt, reserve=len(PLEDGE_TAIL))
-    rl = RELOAD_KEEP if reload == RELOAD_KEEP else bool(reload)   # LM30 — 같은 대화 새로 고침(RELOAD_KEEP)은 그대로 넘긴다
+    rl = RELOAD_KEEP if reload == RELOAD_KEEP else bool(reload)   # AF32 — 같은 대화 새로 고침(RELOAD_KEEP)은 그대로 넘긴다
     if len(parts) == 1:
         res = (run_roundtrip(cfg, prompt + PLEDGE_TAIL, fresh=fresh, reload=rl) if rl
                else run_roundtrip(cfg, prompt + PLEDGE_TAIL, fresh=fresh))
@@ -4801,7 +5408,7 @@ def run_roundtrip_split(cfg, prompt, fresh=False, reload=False):
 
 
 # ── 테스트 전용 스텁 ─────────────────────────────────────────────────────
-# LM_COPILOT_STUB=<dir> 이면 --send 가 Edge 를 띄우지 않고 <dir> 의 JSON 파일을 응답으로
+# AF32_COPILOT_STUB=<dir> 이면 --send 가 Edge 를 띄우지 않고 <dir> 의 JSON 파일을 응답으로
 # 돌려준다. 회귀 시험 전용 — run.py 경로는 judge/refine/agentic/flow 가 자식 프로세스라
 # in-process 모의 sender 가 닿지 않기 때문에 드라이버에 분기가 있어야 한다.
 # 배포 환경에서는 이 변수를 두지 않는다. 산출물에는 phase "stub" 으로 흔적이 남는다.
@@ -4815,7 +5422,6 @@ STUB_KEYS = (
     ('"new"', ("agentic.json", "new.json")),                       # agentic.py(LM29부터 — 니즈 후보 {"new":[…]})
     ('"groups"', ("groups.json", "detail3.json")),                 # core/details 세부업무 병합
     ('"items"', ("refine.json", "items.json")),                    # refine.py
-    ('"summary"', ("narrative.json", "summary.json")),             # judge 월별 내러티브
     ('"j":', ("judge_rows.json", "judge.json", "j.json")),         # judge 신호 판정
     ('"models"', ("judge_models.json", "models.json")),            # judge 체계 수립·통합
 )
@@ -4844,7 +5450,7 @@ def stub_candidates(prompt):
 
 
 def stub_dir():
-    d = (os.environ.get("LM_COPILOT_STUB") or "").strip()
+    d = (os.environ.get("AF32_COPILOT_STUB") or "").strip()
     return d if d and os.path.isdir(d) else ""
 
 
@@ -4854,7 +5460,7 @@ def run_stub(cfg, prompt, fresh=False, sdir=None):
     prompt = str(prompt or "")
     parts = len(make_parts(prompt, reserve=len(PLEDGE_TAIL)))
     if not sdir:
-        return {"ok": False, "phase": "stub", "error": "LM_COPILOT_STUB 폴더 없음", "parts": parts}
+        return {"ok": False, "phase": "stub", "error": "AF32_COPILOT_STUB 폴더 없음", "parts": parts}
     cands = []
     try:
         with open(os.path.join(sdir, "stub_map.json"), encoding="utf-8-sig") as f:
@@ -4916,6 +5522,7 @@ def privacy_ctx(refresh=False):
     ctx = privacy.make_ctx(full, data_dir)
     org = _org_labels(getattr(ctx, "internal_domains", ()))
     cans = tuple(c for c in privacy.canaries(full, data_dir) if c not in org)
+    _PRIV.pop("acct", None)                     # 회사 도메인 목록이 새로 섰다 — 계정 확인(account_check)도 다시 한다
     _PRIV.update(cfg=full, ctx=ctx, cans=cans)
     return full, ctx, cans
 
@@ -4949,7 +5556,7 @@ def gate_ok(prompt):
 def blocked_result(prompt=""):
     return {"ok": False, "status": "blocked", "phase": "blocked", "reason": R_GATE,
             "error": "개인정보 관문(G3) — 최종 프롬프트에 고위험 잔여·카나리아가 있어 보내지 않았습니다",
-            "hint": "이 묶음은 PC 자료(규칙)로 처리합니다 — 재시도하지 않습니다",
+            "hint": "이 묶음은 규칙 판정으로 처리합니다 — 재시도하지 않습니다",
             "parts": len(make_parts(str(prompt or ""), reserve=len(PLEDGE_TAIL)))}
 
 
@@ -4964,7 +5571,7 @@ def _after(cfg, res):
     if not isinstance(res, dict):
         return
     if res.get("phase") == "login_required":
-        _update_owner(cfg, login_pending=time.strftime("%Y-%m-%d %H:%M:%S"))
+        _update_owner(cfg, login_pending=time.strftime("%Y-%m-%d"))     # 날짜만(D10 — 읽는 쪽은 있음·없음만 본다)
     elif res.get("ok") and res.get("phase") != "stub":
         _update_owner(cfg, login_pending="")
         _reset_dead(cfg)
@@ -4976,16 +5583,18 @@ def _after(cfg, res):
 def _send(cfg, prompt, fresh=False, no_split=False, lock_wait=EDGE_LOCK_WAIT, reload=False):
     """--send 와 send_inproc 의 공용 길 — G3 최종 검사 → (스텁) → 전용 Edge 잠금 안에서 왕복. 결과 dict 는 --send 의 JSON.
     reload(LM28): 보내기 전에 채팅 페이지 새로 고침 — 켜졌을 때만 왕복 함수에 넘긴다.
-    LM28: 이번 실행(LM_RUN_ID)이 사용량 제한으로 AI 단계를 멈췄으면 Edge 도 잠금도 건드리지 않고 바로 run_stop_result — judge 를
-    거치지 않는 호출자(메일·팀즈 Copilot 확인 등)도 같은 실행 안에서는 더 보내지 않는다."""
-    prompt = str(prompt or "")
+    LM28: 이번 실행(AF32_RUN_ID)이 사용량 제한으로 AI 단계를 멈췄으면 Edge 도 잠금도 건드리지 않고 바로 run_stop_result — judge 를
+    거치지 않는 호출자(메일 Copilot 확인 등)도 같은 실행 안에서는 더 보내지 않는다.
+    D10 — 하루 중 시각(HH:MM)은 Copilot 에 싣지 않는다: G2·G3 를 빠져나간 시각까지 여기서 [시각] 으로 가린다."""
+    import privacy
+    prompt = privacy.mask_clock(str(prompt or ""))
     if run_stopped(cfg):
         return run_stop_result()
     if not gate_ok(prompt):
         return blocked_result(prompt)
     if stub_dir():
         return run_stub(cfg, prompt, fresh=bool(fresh))       # 테스트 전용 — Edge 미기동
-    kw = {"reload": (RELOAD_KEEP if reload == RELOAD_KEEP else True)} if reload else {}   # LM30 — 같은 대화 새로 고침은 그대로
+    kw = {"reload": (RELOAD_KEEP if reload == RELOAD_KEEP else True)} if reload else {}   # AF32 — 같은 대화 새로 고침은 그대로
     fr = RESUME if fresh == RESUME else bool(fresh)          # RESUME(다음 단계의 첫 왕복)은 그대로 넘긴다 — 화면 확인은 왕복 함수
     _RESUMED[0] = None
     try:
@@ -5016,9 +5625,9 @@ def send_inproc(prompt, fresh=False, deadline=None, cfg=None, stage="", reload=F
         cap = int(max(60, left - 30))
         cfg["roundtripMaxSec"] = min(rt, cap) if rt > 0 else cap
         lock_wait = max(1.0, min(float(EDGE_LOCK_WAIT), left - 60))
-    old = os.environ.get("LM_STAGE")
+    old = os.environ.get("AF32_STAGE")
     if stage:
-        os.environ["LM_STAGE"] = str(stage)[:40]        # 계측(copilot_trace)의 단계 이름
+        os.environ["AF32_STAGE"] = str(stage)[:40]        # 계측(copilot_trace)의 단계 이름
     try:
         if reload:
             return _send(cfg, prompt, fresh=fresh, lock_wait=lock_wait,
@@ -5026,13 +5635,13 @@ def send_inproc(prompt, fresh=False, deadline=None, cfg=None, stage="", reload=F
         return _send(cfg, prompt, fresh=fresh, lock_wait=lock_wait)
     except Exception as e:  # noqa: BLE001 - --send 와 같은 꼴로
         return {"ok": False, "phase": "error", "error": f"{type(e).__name__}: {e}",
-                "hint": "이 메시지를 Claude에게 보여주세요"}
+                "hint": "반복되면 이 메시지를 운영 담당에게 알려 주세요"}
     finally:
         if stage:
             if old is None:
-                os.environ.pop("LM_STAGE", None)
+                os.environ.pop("AF32_STAGE", None)
             else:
-                os.environ["LM_STAGE"] = old
+                os.environ["AF32_STAGE"] = old
 
 
 def run_probe(cfg):
@@ -5065,9 +5674,7 @@ def run_diagnose(cfg):
     try:
         time.sleep(2)
         dbg = cdp.eval(js_diagnose())
-        dump = os.path.join(ROOT, "data", "copilot_auto_debug.json")
-        with open(dump, "w", encoding="utf-8") as f:
-            json.dump(dbg, f, ensure_ascii=False, indent=1)
+        dump = write_debug(dbg)                         # 구조만(이름·주소·제목 원문 없음 — debug_view)
         return {"ok": True, "phase": "ready", "debug_file": dump,
                 "editors": len((dbg or {}).get("editors", [])),
                 "buttons": len((dbg or {}).get("buttons", [])),
@@ -5109,6 +5716,28 @@ def run_diagnose_model(cfg):
         cdp.close()
 
 
+def cli_consent(root=None):
+    """CLI 시작 확인 → None(이 사용자의 자료이고 지우는 중이 아님) | 결과 dict({ok:false, phase/code 'no_consent', reason} —
+    main 의 종료 코드는 reason 이 other_user 면 4, 그 밖은 3).
+    --send·--probe·--diagnose·--diagnose-model 앞에서 부른다(--close·--clear-site 는 닫기·지우기라 묻지 않는다). 내 자료인지
+    확인하지 못하면(모듈·설정 오류 포함) 보내지 않는다."""
+    root = root or ROOT
+    try:
+        import afcfg
+        import consent
+    except Exception as e:  # noqa: BLE001 - 확인할 수 없으면 보내지 않는다
+        return {"ok": False, "phase": "no_consent", "code": "no_consent", "reason": type(e).__name__,
+                "error": "내 자료인지 확인하지 못해 보내지 않았습니다"}
+    try:
+        consent.require(root, afcfg.load(root))
+        return None
+    except consent.ConsentRequired as e:
+        return {"ok": False, "phase": "no_consent", "code": "no_consent", "reason": str(e.reason), "error": str(e)}
+    except Exception as e:  # noqa: BLE001 - 확인할 수 없으면 보내지 않는다
+        return {"ok": False, "phase": "no_consent", "code": "no_consent", "reason": type(e).__name__,
+                "error": "내 자료인지 확인하지 못해 보내지 않았습니다"}
+
+
 def main():
     try:
         sys.stdout.reconfigure(encoding="utf-8")  # CLI 만 — 임포트(인프로세스 왕복)한 쪽의 stdout 은 건드리지 않는다
@@ -5118,6 +5747,8 @@ def main():
     ap.add_argument("--send", help="프롬프트 파일(UTF-8) 전송 후 응답 회수")
     ap.add_argument("--close", action="store_true", help="우리가 띄운 전용 Edge 만 닫기(owner.json 이 있을 때)")
     ap.add_argument("--force", action="store_true", help="--close 와 함께: 로그인 대기·keepEdgeOpen 이어도 닫기")
+    ap.add_argument("--clear-site", action="store_true",
+                    help="전용 Edge 의 Outlook·M365 원점 사이트 자료(쿠키 제외)를 비우기 — OWA·Copilot 단계 뒤(D13)")
     ap.add_argument("--out", help="응답 저장 파일 (기본: stdout JSON에 포함)")
     ap.add_argument("--fresh", action="store_true",
                     help="새 채팅에서 시작 (앞선 대화 문맥 오염 방지 — 판정용)")
@@ -5131,14 +5762,23 @@ def main():
     ap.add_argument("--reload", action="store_true",
                     help="보내기 전에 채팅 페이지를 새로 고침 (오래 쓴 탭 — 판정의 쉬었다 다시 보내기)")
     ap.add_argument("--reload-keep", action="store_true",
-                    help="보내기 전에 같은 대화를 그 자리에서 새로 고침 (새 채팅 아님 — 답을 남기지 않은 실패 뒤 다시 보내기 · LM30)")
+                    help="보내기 전에 같은 대화를 그 자리에서 새로 고침 (새 채팅 아님 — 답을 남기지 않은 실패 뒤 다시 보내기 · AF32)")
     ap.add_argument("--model", help="이번 왕복만 모델 바꾸기 (config 의 model 대신 — 예: 자동)")
     ap.add_argument("--retire", action="store_true",
                     help="--send 와 함께: 왕복 뒤 이 채팅을 Copilot 대화 목록에서 지운다(우리가 연 채팅만 — [AI 연결 진단])")
     a = ap.parse_args()
+    if a.send or a.probe or a.diagnose or getattr(a, "diagnose_model", False):
+        nc = cli_consent()                    # Copilot 에 닿는 CLI 는 내 자료일 때만 돈다(아니거나 지우는 중이면 Edge 도 띄우지 않는다)
+        if nc is not None:
+            print(json.dumps(nc, ensure_ascii=False))
+            return 4 if nc.get("reason") == "other_user" else 3
     cfg = load_cfg()
     if a.url:
-        cfg["url"] = a.url
+        if _work_url_ok(a.url):
+            cfg["url"] = a.url
+        else:                                 # config 와 같은 규칙 — 회사 M365 Copilot 주소가 아니면 기본 주소 그대로
+            _notice("CLI-URL", "경고: --url 이 회사 M365 Copilot 주소가 아니라 기본 주소(" + cfg["url"] + ")를 씁니다",
+                    label="")
     if a.port:
         cfg["port"] = a.port
     if a.model:
@@ -5146,6 +5786,9 @@ def main():
     try:
         if a.close:
             res = dict(close_own_edge(cfg, "cli", force=bool(a.force)), ok=True)
+        elif getattr(a, "clear_site", False):
+            res = clear_site_data(cfg.get("port"), cfg)
+            res["ok"] = bool(res.get("ok") or res.get("skipped"))     # Edge 가 꺼져 있으면 비울 것이 없다(성공)
         elif a.probe or a.diagnose or getattr(a, "diagnose_model", False):
             # 진단은 화면 요청 안에서 돈다 — 분석이 전용 Edge 를 쓰는 중이면 오래 기다리지 않고 R-EDGEBUSY
             with edge_lock(cfg, timeout=PROBE_LOCK_WAIT):
@@ -5180,7 +5823,7 @@ def main():
         res = busy_result(e)
     except Exception as e:
         res = {"ok": False, "phase": "error", "error": f"{type(e).__name__}: {e}",
-               "hint": "이 메시지를 Claude에게 보여주세요"}
+               "hint": "반복되면 이 메시지를 운영 담당에게 알려 주세요"}
     print(json.dumps(res, ensure_ascii=False))
     return 0 if res.get("ok") else 1
 

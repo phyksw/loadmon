@@ -1,30 +1,46 @@
 # -*- coding: utf-8 -*-
-"""
-run.py — LoadMonitor30 통합 실행기: 수집 → 추출 → (AI 판정·내러티브) → 팀 내보내기.
+r"""
+run.py — AgentFinder32 통합 실행기: 시작 검사 → 내 Outlook 메일·일정 수집(G1 정제) → 업무 분류 추출 →
+(AI 판정·정제·Agentic AI 후보·업무 흐름) → 개인 리포트(이 PC 안) → 보관기한 정리.
 
-  python run.py --from 2026-05-19 --to 2026-08-17            # 수집 + 추출
-  python run.py --from ... --to ... --skip-collect            # 이미 모은 데이터로 추출만
-  python run.py --from ... --to ... --ai                      # AI 정제까지 (Copilot 무개입)
-  python run.py                                               # 기간 생략 = 올해 1월 1일 ~ 오늘 (화면·bat 기본과 같다)
-  python run.py --from ... --to ... --web-only mail|teams     # 웹 경로만(화면 버튼용 — 기간을 늘 넘긴다 · LM28)
-  python run.py --from ... --to ... --web-only gerp           # GERP 근무 기록 읽기만(LM30 시험 기능 — attendance.gerp, 기본 꺼짐)
-  python run.py --reset-cursors ...                           # 수집 커서·일자×축 원장을 지우고 처음부터 읽기(LM28)
+  python run.py                                      # 기간 생략 = 최근 3개월(어제까지 92일)
+  python run.py --from 2026-08-01 --to 2026-10-31    # 기간 지정 — 오늘은 넣지 않고 period.maxDays 일까지로 줄인다
+  python run.py ... --skip-collect                   # 이미 모은 자료로 분석만
+  python run.py ... --ai                             # Copilot 으로 판정·정제·Agentic AI 후보·업무 흐름까지
+  python run.py ... --web-only mail                  # Outlook 웹 읽기만(화면 버튼)
+  python run.py ... --reset-cursors                  # 수집 커서·일자 원장을 지우고 처음부터 읽기
+  python run.py ... --no-mail-web | --no-mail-copilot   # 이번 실행에서 Outlook 웹 · Copilot 경로를 건너뜀
 
-설계 원칙 (v5):
-  · MM = 인정 근무시간 / (8h × 그 달 평일수) — 평일 표준 8h 기준, 유급휴가는 일하지 않은 날로 세지 않고 가용에서 뺌, 야근·주말은 산출물 있을 때만 가산.
-  · 산출물(파일·커밋)이 회의보다 무겁다 → 설계·SW개발이 누락되지 않는다.
-  · AI는 분류기가 아니라 **판정자**다 → raw 원문을 읽고 [업무여부·과제·유형·세부업무]를 계층 판정.
-  · 배분(비중)은 신호 가중치, 총량(MM)은 가동시간 — 비율과 시간을 분리해 둘 다 정확하게.
+원칙
+  · 목적은 Agentic AI 로 바꿀 만한 업무를 찾는 것 하나입니다. 사람을 평가하거나 근태·업무량을 보는 데 쓰지 않습니다.
+  · 내 Outlook 메일·일정만 읽습니다(collect.channels — Outlook 앱 · Outlook 웹 · M365 Copilot). 오늘은 넣지 않습니다.
+  · 수집 직후 G1(core\privacy)이 비공개·휴가·행방·사외·제한 고객·민감·식별번호 항목을 빼고 이름을 가립니다.
+    Outlook 앱의 원자료(data\outlook\raw)는 정제한 뒤 바로 지웁니다(중간에 멈췄으면 다음 시작 때).
+  · 결과는 이 PC 에 남습니다. 이 실행기는 조직장에게 아무것도 보내지 않습니다(AI 분석은 회사 M365 Copilot 을 씁니다) —
+    공유는 화면의 [공유] 탭에서 본인이 고를 때만.
+
+시작 순서: 설치 위치·옛 LoadMonitor 파일·설치 폴더 권한(core\install.startup_check) → 끝나지 않은 [모두 지우기] 마저 하기
+  (consent.resume_withdrawal) → 분석 잠금(data\run.lock — 이 폴더의 다른 실행이 돌면 멈춤 · 실행 내내 쥔다) →
+  옛 자료 정리(retention.purge_legacy) → 보관기한 정리(retention.purge) → 시작 확인(consent.require — 이 폴더의 자료가 다른
+  사용자의 것이거나 주인을 모르면 종료 코드 4 · [모두 지우기]가 끝나지 않았으면 3) → 매일 정리 작업 맞추기(retention.sync_task) →
+  제한 고객 목록(privacy.load_restricted — 없으면 4) → 기간(period.clamp). 사내 메일 도메인은 수집 경로가 붙은 뒤에
+  확인합니다(모르면 4).
+  이 실행기는 쓰겠다는 뜻을 묻지 않습니다(서면으로 따로 받습니다). 시작할 때 끝나지 않은 [모두 지우기]를 만나면 마저 지우고,
+  그 시작에서는 분석하지 않습니다(종료 코드 3 — 다 지웠으면 다음 시작은 새 설치로 바로 씁니다).
+  시작 확인은 Outlook 앱 원자료 정제·병합·각 분석 단계 직전에 다시 합니다 — 그 사이 [모두 지우기]가 시작됐거나 설치 정보가
+  사라졌으면 이 실행이 쓴 수집·분석 파일과 원자료·실행 기록을 지우고 멈춥니다(종료 코드 3 · 주인을 모르게 됐으면 4).
+종료 코드: 0 정상 · 1 실패 · 2 일부만(로그인 필요·AI 단계 일부·리포트 못 만듦) · 3 [모두 지우기]가 끝나지 않음 ·
+  4 다른 사용자의 자료·주인을 모르는 자료 · 설정 거부(제한 고객 목록·사내 도메인·설치 위치·옛 파일). 자식의 종료 코드를 그대로
+  돌려주지 않습니다.
 """
+import glob
 import io
 import json
 import os
 import subprocess
-from datetime import datetime, timedelta
-import csv
 import sys
 import time
-from datetime import date
+from datetime import date, timedelta
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(ROOT, "core"))
@@ -32,43 +48,87 @@ if __name__ == "__main__":      # import 시엔 건드리지 않는다 — 임�
     # 교체·GC 되면서 버퍼가 닫혀 이후 출력이 전부 죽는다(refine.py 와 같은 관례)
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, errors="replace", encoding=(
         (sys.stdout.encoding or "utf-8") if sys.stdout.isatty() else "utf-8"))  # 콘솔(bat)=콘솔 코드페이지 · 파이프(UI)=utf-8
+import afcfg  # noqa: E402 - core\ (sys.path 위에서 등록)
+import collect_status  # noqa: E402
+import consent  # noqa: E402
+import coverage  # noqa: E402
+import install  # noqa: E402
+import lmname  # noqa: E402
+import period  # noqa: E402
+import proc  # noqa: E402
+import retention  # noqa: E402
+
 NO_WIN = 0x08000000
+EXIT_OK, EXIT_FAIL, EXIT_PARTIAL, EXIT_CONSENT, EXIT_SETUP = 0, 1, 2, 3, 4
+# EXIT_CONSENT(이름은 예전 그대로) = [모두 지우기]가 끝나지 않아 멈춤 · EXIT_SETUP = 다른 사용자의 자료·주인을 모르는 자료 · 설정 거부
 _AI_T0 = None            # AI 마감 기준 시각(선예약 반환용)
 _AI_TOT_MIN = None
-_AI_RES = {"flow": 0.0, "ag": 0.0}   # 선예약 몫(분) — 워크플로우·Agentic 니즈 발굴. Agentic 직전·flow 직전에 돌려준다
-# LM28(WP6): 수집 단계는 core\proc.run_step(Job 으로 감싸 트리째 정리 · 60초 진행 줄)으로 돌리고, 마지막 줄 LMSTATUS 를
+_AI_RES = {"flow": 0.0, "ag": 0.0}   # 선예약 몫(분) — 업무 흐름·Agentic AI 후보. Agentic 직전·flow 직전에 돌려준다
+# 수집 단계는 core\proc.run_step(Job 으로 감싸 트리째 정리 · 60초 진행 줄)으로 돌리고, 마지막 줄 AF32STATUS 를
 # core\collect_status 로 읽어 일자×축 원장(core\coverage — data\coverage_ledger.json)에 반영한다.
-import collect_status  # noqa: E402 - core\ (sys.path 위에서 등록)
-import coverage  # noqa: E402
-import proc  # noqa: E402
 _RUN_STEP = proc.run_step      # 시험이 바꿔 끼운다(사슬 시험 — 실제 수집기를 띄우지 않는다)
 _CLOSE_EDGE = None             # 시험 주입 — None 이면 tools\copilot_auto.close_own_edge
+_CLEAR_SITE = None             # 시험 주입 — None 이면 tools\copilot_auto.clear_site_data(Outlook·M365 사이트 자료 지우기)
 _CHAT_TOTALS = None            # 시험 주입 — None 이면 tools\copilot_auto.chat_totals(Copilot 채팅 정리 누계)
-_CHAT_REPORT = None            # 시험 주입 — None 이면 tools\copilot_auto.chat_run_report(이번 실행의 Copilot 채팅 셈 — LM30)
+_CHAT_REPORT = None            # 시험 주입 — None 이면 tools\copilot_auto.chat_run_report(이번 실행의 Copilot 채팅 셈)
 CHATS = {"t0": None}           # 이 실행 시작 때의 Copilot 채팅 정리 누계 — 실행 끝 단계 'Copilot 채팅 정리' 를 남길 실행인지의 표식
 CHAT_STAGE = "Copilot 채팅 정리"
 CHAT_LINE_HEAD = "[copilot] 채팅 정리"   # 단계 로그의 정리 한 줄(copilot_auto.CHAT_LINE_HEAD) — 실패 사유 줄로 집지 않는다
 REPORT_DIR = {"p": os.path.join(ROOT, "report")}     # last_run.json 위치(시험은 임시 폴더로 바꾼다)
 MAIL_AXES = coverage.MAIL_AXES
-EDGE = {"closed": False}       # 이 실행에서 Edge 정리를 이미 했나(수집만·웹만은 수집 끝, 전체 실행은 마지막 finally 1회)
+# 이 실행에서 Edge 정리를 했나(closed) · Outlook 웹·Copilot 이 전용 Edge 를 썼나(used — 쓴 뒤에는 그 사이트 자료를 지운다)
+EDGE = {"closed": False, "used": False}
 STATE = {"login_pending": False}   # 이 실행의 웹 경로 상태(rc 2 → login_pending — 남은 웹 경로·Edge 닫기 건너뜀)
+CFG = {"c": {}}                    # 이 실행의 실효 설정(_main 이 채운다 — 사이트 자료 지우기의 포트)
+MINE_STAGE = "업무 분류 추출"
+REPORT_STAGE = "개인 리포트 만들기"
+SETUP_STAGE = "설정 확인 필요"
+CONSENT_STAGE = "시작 확인"        # 시작 확인(consent.require)에 걸려 멈춘 실행의 단계 이름(상수 이름은 예전 그대로)
+# 자식 단계(수집기·분석 단계)는 시작 확인에 걸렸다고 하는데 여기서 다시 물으면 지나갈 때의 한 줄(자식이 확인하지 못했거나 그 사이 풀렸다)
+GATE_CHILD_MSG = "수집·분석 단계가 시작 확인(이 폴더의 자료가 내 것인지 · 지우는 중이 아닌지)을 지나지 못해 멈췄습니다"
+# 이 시작이 끝나지 않은 [모두 지우기]를 마쳤을 때 — 그 시작에서는 분석하지 않는다
+WIPED_MSG = "자료를 모두 지웠습니다 — 이번에는 분석하지 않습니다. 다시 시작하면 새로 시작합니다."
+# 수집기가 AF32STATUS 사유로 알리는 시작 거부(종료 코드 3·4) — 시작 확인(R-CONSENT: 내 자료가 아님 · 지우는 중) · 제한 고객 목록 ·
+# 사내 메일 도메인
+R_CONSENT, R_NORESTRICTED, R_NODOMAIN = "R-CONSENT", "R-NORESTRICTED", "R-NODOMAIN"
+EXCL_KO = {"private": "비공개", "admin": "휴가·행방", "sensitive": "민감", "identifier": "식별번호", "external": "사외",
+           "external_unknown": "사내 확인 불가", "restricted": "제한 고객"}
 
 
-def cfg():
-    """config 이 깨져도 실행은 계속한다 — 무방비면 [분석 실행]이 시작도 전에 매번 죽고
-    화면은 옛 결과를 계속 보여준다(실측). 설정가이드가 메모장 편집을 안내하므로
-    JSON 손상·ANSI 재저장은 예정된 사고다."""
+class RunStop(Exception):
+    """실행을 여기서 멈춘다(종료 코드 code · 사람에게 보일 message · last_run.json 단계 이름 stage)."""
+
+    def __init__(self, code, message, stage=SETUP_STAGE):
+        super().__init__(message)
+        self.code, self.message, self.stage = code, message, stage
+
+
+def cfg(verbose=False):
+    r"""config\config.json → 실효 설정(core\afcfg.effective — 기본값 + D22 하한). 깨져도 실행은 계속한다(기본 설정).
+    설정가이드가 메모장 편집을 안내하므로 JSON 손상·ANSI 재저장은 예정된 사고다 — verbose 면 한 번 알린다."""
     p = os.path.join(ROOT, "config", "config.json")
+    raw = {}
     try:
         with open(p, encoding="utf-8-sig") as f:
-            return json.load(f)
+            raw = json.load(f)
+        if not isinstance(raw, dict):
+            raw = {}
+            if verbose:
+                print("[!] config\\config.json 형식이 맞지 않습니다 — 기본 설정으로 진행합니다.")
     except FileNotFoundError:
-        print("[!] config\\config.json 이 없습니다 — 기본값으로 진행합니다 (복사 누락?)")
-        return {}
+        if verbose:
+            print("[!] config\\config.json 이 없습니다 — 기본 설정으로 진행합니다 (복사 누락?)")
+        raw = afcfg.load(ROOT)
     except (ValueError, UnicodeDecodeError, OSError) as e:
-        print(f"[!] config\\config.json 을 읽지 못했습니다 ({type(e).__name__}) — 기본값으로 진행.")
-        print("    메모장 저장 시 인코딩은 UTF-8, JSON 문법(마지막 쉼표·역슬래시)을 확인하세요.")
-        return {}
+        if verbose:
+            print(f"[!] config\\config.json 을 읽지 못했습니다 ({type(e).__name__}) — 기본 설정으로 진행합니다.")
+            print("    메모장 저장 시 인코딩은 UTF-8, JSON 문법(마지막 쉼표·역슬래시)을 확인하세요.")
+        raw = {}
+    eff, warns = afcfg.effective(raw)
+    if verbose:
+        for w in warns:
+            print(f"   [설정] {w}")
+    return eff
 
 
 def arg(flag, dflt=""):
@@ -81,48 +141,70 @@ def arg(flag, dflt=""):
     return sys.argv[i]
 
 
+def _child_env(**extra):
+    return dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1", **extra)
+
+
 # ── 실행 이력 — 중단돼도 '어디까지 갔는지'가 남아야 원인을 안다 ──────────
-# host 를 남긴다 — 배포본에 남의 report\ 가 딸려 오면 화면이 그것을 '남의 결과'로
-# 표시할 수 있어야 한다(실측: 배포 zip 에 개발 PC 산출물 17개가 동봉돼 있었다)
-RUN = {"stages": [], "host": os.environ.get("COMPUTERNAME", "")}
+# AF32 산출물 표식(D20) — 읽는 쪽(화면)은 이 표식이 있는 last_run.json 만 믿는다. PC 이름 같은 식별자는 싣지 않는다.
+RUN = {"product": lmname.PRODUCT, "stages": []}
+RUN_T0 = {"t": None}            # 이번 실행의 시작 시각(초) — 걸린 시간 셈에만. last_run.json 에는 날짜만 쓴다(D10)
+
+
+def _today():
+    r"""report\ 에 남기는 실행 날짜('YYYY-MM-DD' — 시각은 남기지 않는다 · D10)."""
+    return time.strftime("%Y-%m-%d")
+
+
+def _no_clock(o, depth=0):
+    r"""report\last_run.json 에 싣는 글(단계 note · 수집기 구조 줄 · counts)의 하루 중 시각 → [시각](privacy.mask_clock · D10).
+    수집기가 화면에서 옮긴 시각(못 읽은 일정 막대 꼴 등)이 report\ 에 남지 않게 — 수집기 출력 자체는 바꾸지 않는다."""
+    import privacy
+    if isinstance(o, str):
+        return privacy.mask_clock(o)
+    if depth < 8 and isinstance(o, dict):
+        return {k: _no_clock(v, depth + 1) for k, v in o.items()}
+    if depth < 8 and isinstance(o, list):
+        return [_no_clock(v, depth + 1) for v in o]
+    return o
 
 
 def record(name, ok, sec=0.0, note="", rc=None, reason="", counts=None, census=""):
     r"""단계 결과를 report\last_run.json 에 즉시 반영 (강제 종료돼도 흔적 보존).
-    LM28(F-34): 수집기 단계는 rc·reason·counts(짧은 숫자만)도 싣는다 — '불가' 사유는 실측 전까지 '의심'으로 적는다.
-    census = 수집기가 찍은 화면 구조 한 줄(웹 경로) — 수집 진단 화면이 note 아래에 그대로 보여 준다(사진 한 장으로 원인 확정)."""
+    수집기 단계는 rc·reason·counts(짧은 숫자만)도 싣는다 — '불가' 사유는 실측 전까지 '의심'으로 적는다.
+    census = 수집기가 찍은 화면 구조 한 줄(웹 경로) — 수집 진단 화면이 note 아래에 그대로 보여 준다.
+    report\ 아래에는 날짜만 둔다(D10) — note·census·counts 의 시각은 [시각] 으로 가린다."""
     RUN["stages"] = [x for x in RUN["stages"] if x["name"] != name]
-    ent = {"name": name, "ok": bool(ok), "sec": round(sec, 1), "note": (note or "")[:300]}
+    ent = {"name": name, "ok": bool(ok), "sec": round(sec, 1), "note": _no_clock((note or "")[:300])}
     if census:
-        ent["census"] = str(census)[:820]
+        ent["census"] = _no_clock(str(census)[:820])
     if rc is not None:
-        ent.update(rc=int(rc), reason=str(reason or "")[:120], counts=collect_status.compact(counts))
+        ent.update(rc=int(rc), reason=str(reason or "")[:120], counts=_no_clock(collect_status.compact(counts)))
     RUN["stages"].append(ent)
     _save_run()
 
 
 def _save_run():
-    r"""RUN 을 report\last_run.json 에 쓴다(실패는 조용히 — 기록이 실행을 막지 않는다)."""
+    r"""RUN 을 report\last_run.json 에 쓴다(실패는 조용히 — 기록이 실행을 막지 않는다). 표식 "product" 는 늘 싣는다(D20)."""
     try:
         rep_dir = REPORT_DIR["p"]
         os.makedirs(rep_dir, exist_ok=True)
         with open(os.path.join(rep_dir, "last_run.json"), "w", encoding="utf-8") as f:
-            json.dump(RUN, f, ensure_ascii=False, indent=1)
+            json.dump(dict(RUN, product=lmname.PRODUCT), f, ensure_ascii=False, indent=1)
     except OSError:
         pass
 
 
 def run_collector(name, cmd, timeout=420, src="", led=None):
-    r"""수집기 한 단계(LM28) → 해석한 상태 dict(collect_status.parse — rc·reason·counts·ranges·ok).
-    · core\proc.run_step: Job(KILL_ON_JOB_CLOSE·BREAKAWAY_OK)으로 감싸 시간 초과 때 손자까지 정리하고(W1-07, taskkill 없음),
-      60초마다 '진행 중' 줄을 낸다(화면의 15분 정체 감시 — W1-06). 전용 Edge 는 Job 에서 이탈해 띄워지므로 산다.
-    · 마지막 줄 LMSTATUS 를 읽는다(없으면 LM24 종료 코드 해석). 화면·last_run.json 에는 그 앞의 사람용 줄과 rc·사유를 쓴다.
+    r"""수집기 한 단계 → 해석한 상태 dict(collect_status.parse — rc·reason·counts·ranges·ok).
+    · core\proc.run_step: Job(KILL_ON_JOB_CLOSE·BREAKAWAY_OK)으로 감싸 시간 초과 때 손자까지 정리하고,
+      60초마다 '진행 중' 줄을 낸다(화면의 정체 감지). 전용 Edge 는 Job 에서 이탈해 띄워지므로 산다.
+    · 마지막 줄 AF32STATUS 를 읽는다. 화면·last_run.json 에는 그 앞의 사람용 줄과 rc·사유를 쓴다.
     · led(원장)를 주면 ranges 를 일자×축 원장에 반영하고 바로 저장한다(강제 종료돼도 흔적 보존)."""
     print(f"\n── {name}")
     t0 = time.time()
     rc, tail, how = _RUN_STEP(cmd, timeout, name)
     st = collect_status.parse(tail, rc, src=src, how=how)
-    # 마지막 12줄 — 수집기가 '왜 0건인지' 적는 줄이 잘려 나가지 않게(팀즈 0건 실측). LMSTATUS 줄은 화면에 찍지 않는다.
     for ln in st["lines"][-12:]:
         print("   " + ln)
     if st["rc"] or st["reason"]:
@@ -133,28 +215,6 @@ def run_collector(name, cmd, timeout=420, src="", led=None):
         led.apply(st)
         led.save()
     return st
-
-
-def step(name, cmd, timeout=420, src="", led=None):
-    """단계 실행 → 성공 여부(rc 0 정상·1 대상 없음·4 새 행 0 은 실패가 아니다). 성공해도 요약 줄을 남긴다 —
-    "PC 가동 2건"처럼 값이 이상할 때 어느 수집기가 무엇을 찾았는지 last_run.json 만으로 원격 진단이 되게 한다."""
-    return run_collector(name, cmd, timeout, src=src, led=led)["ok"]
-
-
-def _csv_has_rows(path):
-    try:
-        with open(path, encoding="utf-8-sig") as f:
-            return sum(1 for ln in f if ln.strip()) > 1
-    except OSError:
-        return False
-
-
-def _csv_rows(path):
-    try:
-        with open(path, encoding="utf-8-sig") as f:
-            return max(0, sum(1 for ln in f if ln.strip()) - 1)
-    except OSError:
-        return 0
 
 
 def _mtime(path):
@@ -173,48 +233,11 @@ def _read_json(path):
         return {}
 
 
-def _run_rc(cmd, timeout):
-    """수집기 실행 → (종료 코드, 출력 꼬리 6줄). 시간 초과 -1 · 실행 실패 -2. 단계 기록은 호출측이 한다.
-    LM28: core\\proc.run_step(Job — 시간 초과 때 트리째 정리)을 쓴다. 뜻 있는 해석은 run_collector(LMSTATUS)를 쓴다."""
-    rc, tail, _how = _RUN_STEP(cmd, timeout, os.path.basename(str(cmd[-1] if cmd else "")))
-    return rc, list(tail)[-6:]
-
-
-def collect_headless(c):
-    r"""[로컬PC 자료수집](--collect-only · 구 '추가 PC 수집'·'수집만' — 이름이 헷갈린다는 제보로 LM28 에서 바꿈) 모드에서
-    생략하는 것은 **Copilot 경로(메일·팀즈)만**이다(Copilot 은 판정 전용). 그 밖의 수집기는 [분석 실행]과 같은 코드를 그대로 돈다.
-    LM28: 예전(LM24)에는 Outlook 웹·팀즈 웹도 '본 PC 가 같은 사서함을 수집' 한다고 보고 건너뛰었다. 그런데 새 Outlook 인 PC
-    (COM·색인 없음)에서는 그러면 메일·일정·팀즈를 가져올 길이 하나도 남지 않았다(실측 2026-10-07 — 279일 전부 관측 없음).
-    그래서 웹 경로는 수집만 모드에서도 원장의 미검증 날에 대해 돈다 — 겹치는 행은 분석이 중복 제거한다.
-    2026-10-16: 로컬PC 자료수집은 이제 메일·일정·팀즈를 통째로 읽지 않는다(collect_account_data) — 이 함수는
-    collectOnlyMailTeams = true 로 다시 켠 예외 환경에서만 뜻이 있다."""
-    return "--collect-only" in sys.argv and bool(c.get("collectOnlyHeadless", True))
-
-
-ACCOUNT_SKIP = "메일·일정·팀즈 — 분석할 PC 가 읽음(로컬PC 자료수집)"
-
-
-def collect_account_data(c):
-    r"""메일·일정·팀즈(계정 자료)를 이 실행에서 읽는가. [분석 실행]은 늘 읽는다.
-    [로컬PC 자료수집](--collect-only)은 기본으로 읽지 않는다 — 메일·일정·팀즈는 PC 가 아니라 회사 계정(클라우드)에 있어,
-    같은 계정이면 폴더를 받은 마지막 PC(클라우드 PC)의 [분석 실행]이 기간 전체를 한 번에 읽는다. 로컬PC 자료수집은
-    이 PC 에만 있는 자료(PC 가동·파일·최근 문서·git·프로그램 기록)만 모아 빨리 끝난다(사용자 2026-10-16: "로컬수집은 좀
-    빠르게 하기위해 웹이나 앱 수집은 뺄까요? 계정이 같다면 클라우드에서 분석실행을 하면 금방 끝날것 같네요").
-    원장은 PC 마다 따로라(open_ledger — 다른 PC 의 원장은 비운 채로 연다) 받은 PC 는 메일·팀즈를 처음부터 읽는다.
-    계정이 다르거나 분석할 PC 에서 메일·팀즈를 못 읽는 예외만 config.collectOnlyMailTeams = true — 그때는 [분석 실행]과
-    같은 경로로 읽고 Copilot 경로는 collectOnlyHeadless 를 따른다."""
-    return "--collect-only" not in sys.argv or _truthy(c.get("collectOnlyMailTeams", False))
-
-
-def skip_account_data():
-    r"""로컬PC 자료수집에서 메일·일정·팀즈를 건너뛴 것을 진행 로그·last_run.json 에 남긴다 — 화면이 이 PC 의 메일·팀즈 0건을
-    '없음(빨강)' 이 아니라 '분석할 PC 가 읽음' 으로 보여 준다(RUN.account_data)."""
-    print("\n── 메일·일정·팀즈 — 이 버튼에서는 읽지 않습니다")
-    print("   회사 계정에 있는 자료라, 같은 계정이면 폴더를 받은 PC 의 [분석 실행]이 한 번에 읽습니다.")
-    print("   (이 PC 와 분석할 PC 의 계정이 다르면 config.json 의 collectOnlyMailTeams 를 true 로)")
-    RUN["account_data"] = "skipped"
-    record(ACCOUNT_SKIP, True, 0.0, "계정 자료 — 같은 계정이면 폴더를 받은 PC 의 [분석 실행]이 읽습니다"
-           " · 계정이 다르면 config.collectOnlyMailTeams = true")
+def _n(v):
+    try:
+        return max(0, int(v or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _months(a, b):
@@ -234,6 +257,12 @@ def _yday(d1):
     return d1 if d1 < y else y
 
 
+def channels(c):
+    """이번 실행에 쓰는 수집 경로(collect.channels ⊂ com·owa·copilot — afcfg 가 정리한 값)."""
+    ch = afcfg.get(c, "collect.channels")
+    return [x for x in (ch if isinstance(ch, list) else []) if x in afcfg.CHANNELS]
+
+
 def _only(gaps, flag):
     """원장 공백 → 수집기 종류 인자(메일·일정 둘 다 비면 [] = 둘 다)"""
     m = bool(gaps.get("mail_in") or gaps.get("mail_out"))
@@ -244,7 +273,7 @@ def _only(gaps, flag):
 
 
 def _edge_rc2(st, state, name, what):
-    """웹 경로 rc 2(로그인) — 이 실행의 남은 웹 경로는 건너뛴다(login_pending · F-17). 로그인은 사람이 1회."""
+    """웹 경로 rc 2(로그인) — 이 실행의 남은 웹 경로는 건너뛴다(login_pending). 로그인은 사람이 1회."""
     if st.get("rc") != 2:
         return
     state["login_pending"] = True
@@ -257,145 +286,261 @@ def _skip_login(name):
     record(name, True, 0.0, "건너뜀 — 이번 실행에서 웹 경로가 로그인을 기다리는 중(login_pending · 전용 Edge 창에서 로그인 1회)")
 
 
-def seed_legacy(data):
-    r"""첫 실행(data\outlook\src 가 없을 때) — LM24 의 공용 파일을 출처 'legacy'(우선순위 최하)로 옮겨 둔다. 읽기만 한다:
-    mail.csv → src\mail_legacy.csv · calendar.csv → src\cal_legacy.csv · mail_source.json → src\mail_source_legacy.json(me[])."""
-    src_dir = os.path.join(data, "outlook", "src")
-    if os.path.isdir(src_dir):
-        return []
-    import shutil
-    done = []
-    for a, b in (("mail.csv", "mail_legacy.csv"), ("calendar.csv", "cal_legacy.csv"),
-                 ("mail_source.json", "mail_source_legacy.json")):
-        p = os.path.join(data, "outlook", a)
-        if not os.path.isfile(p) or (a.endswith(".csv") and not _csv_has_rows(p)):
-            continue
+# ── G1(수집 직후 정제) — Outlook 앱 원자료 → 정제 파일 ─────────────────────────────────────────────────
+def raw_dir(data):
+    r"""Outlook 앱 수집기의 원자료 폴더 data\outlook\raw(§5.0 — 정제한 뒤 바로 지운다)."""
+    return os.path.join(data, "outlook", "raw")
+
+
+def _raw_left(data):
+    r"""data\outlook\raw 바로 아래의 보통 파일 경로 목록(retention.raw_left — 폴더·연결은 보지 않는다)."""
+    return retention.raw_left(os.path.dirname(os.path.abspath(data)))
+
+
+def drop_raw(data):
+    r"""정제하지 않고 원자료 폴더의 파일을 모두 지운다(시작 거부로 멈출 때·정제 뒤 남은 것 — 원자료는 남기지 않는다)
+    → 지운 수(retention.drop_raw — 화면·강제 종료·매일 정리와 같은 함수).
+    다른 사용자의 자료(D17 — 시작 확인의 other_user)에는 부르지 않는다: 그 자료는 본인이 화면·AgentFinder32.bat 에서 고를 때만 지운다."""
+    return retention.drop_raw(os.path.dirname(os.path.abspath(data)))
+
+
+# ── 실행 중 시작 확인 다시 하기(L2-06) ────────────────────────────────────────────────────────
+def _drop_run_writes(data):
+    r"""실행 중 시작 확인에 걸렸을 때(그 사이 [모두 지우기]가 시작됨 · 설치 정보 사라짐) — 이 실행이 시작 확인을 지난 뒤 쓴 것을
+    지운다 → 지운 수.
+      · Outlook 앱 원자료(data\outlook\raw\* — 이 실행이 모은 것이다: 지난 실행의 것은 시작할 때 정제하거나 지웠다)
+      · 그 뒤에 바뀐 수집·분석 파일: data\outlook\**·data\cache\**(연결 폴더에는 들어가지 않는다) · data\coverage_ledger.json ·
+        report\ 바로 아래(실행 기록 last_run.json 포함)
+    앞 단계의 실행 기록(수집 건수 등)도 비운다 — 이 뒤에 남기는 last_run.json 에는 멈춘 단계와 까닭만 들어간다. 시작 확인을 지나기
+    전(RUN_T0 없음)에는 아무것도 하지 않는다 — 그때의 파일은 이 실행의 것이 아니다. 시작 전의 파일은 건드리지 않는다([모두 지우기]가
+    시작됐다면 그것이 지운다)."""
+    t0 = RUN_T0.get("t")
+    if not t0:
+        return 0
+    RUN["stages"] = []
+    n = drop_raw(data)
+    since = float(t0)
+    root = os.path.dirname(os.path.abspath(data))
+
+    def mine(p):
         try:
-            os.makedirs(src_dir, exist_ok=True)
-            shutil.copyfile(p, os.path.join(src_dir, b))
-            done.append(b)
+            st = os.lstat(p)
         except OSError:
-            pass
-    if done:
-        print(f"   (첫 실행 — 지난 메일·일정 자료를 출처 'legacy'(최하 우선)로 보존: {', '.join(done)})")
-    return done
+            return False
+        return st.st_mtime >= since
 
-
-def _import_files(data):
-    r"""data\import 에 반입할 파일(.eml·.ics·.csv)이 있나 — 없으면 Import-MailCal 을 띄우지 않는다(프로세스 절약)."""
-    base = os.path.join(data, "import")
-    for _b, _d, fs in os.walk(base):
-        if any(os.path.splitext(n)[1].lower() in (".eml", ".ics", ".csv") for n in fs):
-            return base
-    return ""
-
-
-def g1_mail(c, data):
-    r"""G1(수집 직후 정제) — data\outlook\src\*.csv 의 제목·대화·장소를 core\privacy.scrub_csv 로 제자리 정제한다(머리글·열 불변).
-    웹·Copilot 출처는 정제 뒤 같은 키(편지함·시각·보낸이·제목 / 시작·끝·제목)를 접는다 — 그 수집기가 다음 실행에 원문 행을
-    다시 붙여도(키가 원문이라 못 알아봄) 1행이 된다. COM·색인·반입은 접지 않는다(같은 분 같은 제목 알림은 실제 2통).
-    LM28: 일정 파일의 body(회의 안건) 열은 먼저 core\meetnote.prep_body_csv 가 온라인 회의 안내문·링크·연락처를 걷고(600자)
-    자격증명이 남은 본문만 비운 뒤 제목·장소와 같이 정제한다 — 본문의 회의 암호 때문에 회의 행이 통째로 버려지지 않게.
-    body 열이 없는 옛 파일은 그대로다."""
-    import glob
-    import privacy
-    try:
-        import meetnote
-    except ImportError:          # 설치본에 core\meetnote.py 가 빠졌다 — 본문만 이번 정제에서 뺀다(회의 행·제목 정제는 그대로)
-        meetnote = None
-    ctx = privacy.make_ctx(c, data)
-    tot = {"files": 0, "dropped": 0, "folded": 0, "fail": []}
-    nb = {"cleaned": 0, "blanked": 0}
-    for p in sorted(glob.glob(os.path.join(data, "outlook", "src", "*.csv"))):
-        n = os.path.basename(p).lower()
-        tag = n.split("_", 1)[1][:-4] if "_" in n else ""
-        if n.startswith("mail_"):
-            cols, keys = ["subject", "conversation"], (["box", "time", "sender", "subject"] if tag in ("owa", "copilot") else None)
-        elif n.startswith("cal_"):
-            cols, keys = ["subject", "location", "body"], (["start", "end", "subject"] if tag in ("owa", "copilot") else None)
-            try:
-                pb = meetnote.prep_body_csv(p, ctx, key_cols=keys) if meetnote else {"ok": False}
-            except Exception:  # noqa: BLE001 - 본문 정리 실패가 G1 을 멈추지 않게(이번에는 본문만 뺀다)
-                pb = {"ok": False}
-            if pb.get("ok"):
-                nb["cleaned"] += int(pb.get("cleaned") or 0)
-                nb["blanked"] += int(pb.get("blanked") or 0)
-            else:
-                cols = cols[:2]      # 본문을 못 걸렀다 — 거르지 않은 본문의 회의 암호로 회의 행이 버려지지 않게(다음 실행에서 다시)
-        else:
+    tops = [(os.path.join(data, "outlook"), True), (os.path.join(data, "cache"), True),
+            (os.path.join(root, "report"), False)]
+    if retention._link_dir(data):
+        tops = tops[2:]
+    for top, deep in tops:
+        if not os.path.isdir(top) or retention._link_dir(top):
             continue
-        info = privacy.scrub_csv(p, cols, key_cols=keys, ctx=ctx, data_dir=data)
-        _g1_tally(tot, n, info)
-    ok = _g1_record("개인정보 정제(G1) — 메일·일정 출처 파일", tot)
-    if nb["cleaned"] or nb["blanked"]:
-        print(f"   일정 본문(회의 안건) {nb['cleaned']}건 정리"
-              + (f" · 자격증명이 남아 비운 본문 {nb['blanked']}건" if nb["blanked"] else ""))
-    return ok
+        for cur, dirs, files in os.walk(top, onerror=lambda e: None):
+            dirs[:] = [d for d in dirs if deep and not retention._link_dir(os.path.join(cur, d))]
+            for fn in files:
+                p = os.path.join(cur, fn)
+                if mine(p) and retention._rm_file(p):
+                    n += 1
+    led = os.path.join(data, coverage.FILE_NAME)
+    if not retention._link_dir(data) and os.path.isfile(led) and mine(led) and retention._rm_file(led):
+        n += 1
+    return n
 
 
-def g1_teams(c, data):
-    r"""G1 — data\m365\teams_*.csv(summary·chat)와 undated_teams_window.csv 를 정제하고, 정제된 키(날짜·시각·보낸이·방·요지)로
-    같은 메시지를 접는다 — 창 읽기(PS)는 원문 키로 중복을 거르므로 정제 뒤 다시 붙은 원문 행을 여기서 1행으로 만든다."""
-    import glob
+def gate_code(reason):
+    """시작 확인이 막은 까닭(consent.ConsentRequired.reason) → 이 실행의 종료 코드. "other_user"(다른 사용자의 자료 · 주인을
+    모르는 자료)는 4, 그 밖("withdrawn" — [모두 지우기]가 끝나지 않음)은 3."""
+    return EXIT_SETUP if reason == "other_user" else EXIT_CONSENT
+
+
+def gate_reason():
+    """지금 시작 확인(consent.require — 이 폴더의 자료가 이 사용자의 것인가 · [모두 지우기]가 끝나지 않았나)이 막는 까닭
+    → (reason, 한국어 한 줄) | None(막지 않는다). 이 확인은 설정에 달려 있지 않다 — 설정 파일을 다시 읽지 않는다."""
+    try:
+        consent.require(ROOT, CFG.get("c") or {})
+    except consent.ConsentRequired as e:
+        return e.reason, e.message
+    return None
+
+
+def gate_refused(data, reason="", msg=""):
+    r"""실행 중 시작 확인에 걸려 멈춘다 → RunStop(던지지 않고 돌려준다 · 단계 이름 CONSENT_STAGE). 이 실행이 쓴 수집·분석 파일과
+    원자료를 지운다(_drop_run_writes): 시작할 때는 이 사용자의 자료였으므로 그 뒤에 쓴 파일은 이 실행의 것이다 — 지금 '주인 모름'
+    으로 보여도(그 사이 설치 정보가 지워졌다) 지운다.
+    reason·msg = 부르는 쪽이 아는 까닭과 문장(자식 단계가 마지막 줄 JSON 으로 알린 것). 비어 있으면 지금 시작 확인에 묻고(gate_reason),
+    그것이 지나가면(자식이 확인하지 못했거나 그 사이 풀렸다) GATE_CHILD_MSG 와 종료 코드 3."""
+    if not (reason and msg):
+        now = gate_reason() or ("", "")
+        reason, msg = reason or now[0], msg or now[1]
+    n = _drop_run_writes(data)
+    note = (msg or GATE_CHILD_MSG) + (f" — 이 실행이 쓴 파일 {n}개를 지웠습니다" if n else "")
+    return RunStop(gate_code(reason), note, CONSENT_STAGE)
+
+
+def recheck_consent(data, stage):
+    r"""단계 직전에 시작 확인을 다시 한다(함수 이름은 예전 그대로) → 그대로면 None. 시작한 뒤 [모두 지우기]가 시작됐거나(화면·
+    다른 창) 설치 정보가 사라졌으면 이 실행이 쓴 수집·분석 파일과 원자료를 지우고(gate_refused) RunStop(3 · 주인을 모르게 됐으면 4)."""
+    now = gate_reason()
+    if now is None:
+        return None
+    e = gate_refused(data, now[0], now[1])
+    record(stage, False, 0.0, e.message)
+    raise e
+
+
+def g1_note(res):
+    """G1 결과 한 줄(숫자만) — '남김 받은 메일 N · 보낸 메일 M · 회의 K · 뺀 항목 X(사외 a · …)'."""
+    k = (res or {}).get("kept") or {}
+    ex = {a: _n(b) for a, b in ((res or {}).get("excluded") or {}).items() if _n(b)}
+    s = f"남김 받은 메일 {_n(k.get('mail_in'))} · 보낸 메일 {_n(k.get('mail_out'))} · 회의 {_n(k.get('meetings'))}"
+    if ex:
+        s += f" · 뺀 항목 {sum(ex.values())}(" + " · ".join(f"{EXCL_KO.get(a, a)} {b}" for a, b in ex.items()) + ")"
+    oop = _n((res or {}).get("out_of_period"))
+    if oop:
+        s += f" · 기간 밖 {oop}"
+    return s
+
+
+def g1_com(c, data, d0, d1, name="개인정보 정제(G1) — Outlook 앱"):
+    r"""Outlook 앱 원자료(data\outlook\raw\mail_com.csv·cal_com.csv·com_manifest.json) → core\mailmerge.g1_com(privacy.g1_file ·
+    이번에 읽은 달 구간만 옛 행과 바꿔 합침) → data\outlook\src\mail_com.csv·cal_com.csv. 원자료·구간 표는 결과와 상관없이
+    지우고, 원자료 폴더에 남은 그 밖의 파일도 지운다(원자료는 남기지 않는다).
+    제한 고객 목록 없음·사내 도메인 없음(privacy.SetupRefused)은 RunStop(4). → g1_com 결과 dict | None(정제할 원자료 없음).
+    정제 직전에 시작 확인을 다시 한다 — 수집하는 사이 [모두 지우기]가 시작됐으면 원자료를 정제하지 않고 지운 뒤 RunStop(3)."""
+    import mailmerge
     import privacy
-    ctx = privacy.make_ctx(c, data)
-    tot = {"files": 0, "dropped": 0, "folded": 0, "fail": []}
-    items = [(p, ["time", "from", "chat", "summary"])
-             for p in sorted(glob.glob(os.path.join(data, "m365", "teams_*.csv")))]
-    und = os.path.join(data, "m365", "undated_teams_window.csv")
-    if os.path.isfile(und):
-        items.append((und, ["hm", "from", "chat", "summary"]))
-    for p, keys in items:
-        info = privacy.scrub_csv(p, ["summary", "chat"], key_cols=keys, ctx=ctx, data_dir=data)
-        _g1_tally(tot, os.path.basename(p), info)
-    return _g1_record("개인정보 정제(G1) — 팀즈 파일", tot)
-
-
-def _g1_tally(tot, name, info):
-    if not info.get("ok"):
-        tot["fail"].append(f"{name}({info.get('error', '?')})")
-        return
-    tot["files"] += 1
-    tot["dropped"] += int(info.get("dropped") or 0)
-    tot["folded"] += int(info.get("folded") or 0)
-
-
-def _g1_record(name, tot):
-    if not tot["files"] and not tot["fail"]:
-        return True
-    note = (f"파일 {tot['files']}개 정제 · 자격증명 행 제외 {tot['dropped']} · 같은 메시지 접음 {tot['folded']}"
-            + (f" · 실패 {', '.join(tot['fail'])[:120]} — 다음 실행에서 다시" if tot["fail"] else ""))
+    if _raw_left(data):
+        recheck_consent(data, name)
+    t0 = time.time()
+    try:
+        res = mailmerge.g1_com(ROOT, c, period=(d0, d1), tag="com")
+    except privacy.SetupRefused as e:
+        drop_raw(data)
+        record(name, False, time.time() - t0, e.message)
+        raise RunStop(EXIT_SETUP, e.message) from None
+    except Exception as e:  # noqa: BLE001 - 정제 실패가 실행을 멈추지 않는다(그 달들은 다음 실행이 다시 읽는다)
+        drop_raw(data)
+        note = f"정제하지 못했습니다({type(e).__name__}) — 원자료는 지웠고 그 달들은 다음 실행이 다시 읽습니다"
+        print(f"\n── {name}\n   [!] {note}")
+        record(name, False, time.time() - t0, note)
+        return None
+    drop_raw(data)
+    if not res.get("ran"):
+        if res.get("error"):
+            note = "구간 표 없이 남은 원자료 — 합치지 않고 지웠습니다(그 달들은 다음 실행이 다시 읽습니다)"
+            print(f"\n── {name}\n   {note}")
+            record(name, False, time.time() - t0, note)
+        return None
+    note = g1_note(res) + ("" if res.get("committed") else " · 완료 표는 확정하지 않음(다음 실행이 그 달을 다시 읽습니다)")
     print(f"\n── {name}\n   {note}")
-    record(name, not tot["fail"], 0.0, note)
-    return not tot["fail"]
+    record(name, True, time.time() - t0, note)
+    return res
+
+
+def recover_raw(c, data, d0, d1):
+    r"""시작 때 — 지난 실행이 중간에 멈춰 남긴 원자료가 있으면 G1 으로 정제하고 지운다."""
+    if not _raw_left(data):
+        return None
+    print("\n── 지난 실행이 남긴 수집 원자료 — 정제(G1)한 뒤 지웁니다")
+    return g1_com(c, data, d0, d1, name="개인정보 정제(G1) — 남은 원자료")
+
+
+def check_rules(c):
+    r"""G1 규칙(privacy 설정·제한 고객 목록·제목 저장·일정 본문)이 지난 정제 때와 다르면 지난 정제 파일·공용 파일·원장을 지운다
+    (core\mailmerge.check_rules — 새 규칙으로 다시 모은다). → 지웠나(그러면 이번 실행은 수집부터 한다)."""
+    import mailmerge
+    try:
+        r = mailmerge.check_rules(ROOT, c)
+    except Exception as e:  # noqa: BLE001 - 규칙 확인 실패가 실행을 막지 않는다(다음 시작 때 다시)
+        print(f"   (정제 규칙 확인 건너뜀: {type(e).__name__})")
+        return False
+    if not r.get("changed"):
+        return False
+    note = (f"정제 규칙(개인정보 설정·제한 고객 목록 등)이 바뀌어 지난 정제 자료 {len(r.get('deleted') or [])}개를 지웠습니다"
+            " — 새 규칙으로 다시 모읍니다")
+    print(f"\n[!] {note}")
+    record("정제 규칙 바뀜", True, 0.0, note)
+    return True
+
+
+def check_setup(st, data):
+    r"""수집기가 시작을 거부했나(AF32STATUS 사유 R-CONSENT · R-NORESTRICTED · R-NODOMAIN) → 원자료를 지우고 RunStop(3·4).
+    R-CONSENT = 수집기의 시작 확인(내 자료가 아님 · 지우는 중 · 확인하지 못함). 여기서 다시 물어 지금도 막히면 이 실행이 쓴 파일까지
+    지우고 그 까닭으로 멈춘다(gate_refused). 지나가면(수집기가 확인하지 못했다 — 예 확인할 파이썬이 없음) 원자료만 지우고 3."""
+    rs = set(st.get("reasons") or [])
+    if not rs & {R_CONSENT, R_NORESTRICTED, R_NODOMAIN}:
+        return
+    import privacy
+    drop_raw(data)
+    if R_CONSENT in rs:
+        now = gate_reason()
+        if now:
+            raise gate_refused(data, now[0], now[1])
+        raise RunStop(EXIT_CONSENT, GATE_CHILD_MSG, CONSENT_STAGE)
+    if R_NORESTRICTED in rs:
+        raise RunStop(EXIT_SETUP, privacy.RESTRICTED_MSG)
+    raise RunStop(EXIT_SETUP, privacy.INTERNAL_MSG)
 
 
 def merge_mail(c, data, led, d0, d1):
-    r"""출처별 파일 → data\outlook\mail.csv·calendar.csv·mail_source.json(core\mailmerge — 분석이 읽는 공용 파일은 여기만 쓴다)."""
+    r"""출처별 정제 파일 → data\outlook\mail.csv·calendar.csv·mail_source.json(core\mailmerge — 분석이 읽는 공용 파일은 여기만
+    쓴다). 기간(d0~d1) 밖 행은 공용 파일에 넣지 않고 출처 파일·원장에서도 지운다. collect.channels 밖의 출처 파일은 읽지 않는다.
+    병합 직전에 시작 확인을 다시 한다(recheck_consent — 걸리면 이 실행이 쓴 정제 파일을 지우고 RunStop)."""
     import mailmerge
-    import privacy
-    ctx = privacy.make_ctx(c, data)
+    recheck_consent(data, "메일·일정 병합")
     t0 = time.time()
     info = mailmerge.merge(os.path.join(data, "outlook", "src"), os.path.join(data, "outlook"),
                            verified=(led.is_verified if led is not None else None), period=(d0, d1),
-                           norm=lambda s: privacy.sanitize(s, "subject", ctx)[0])
+                           cfg=c, channels=channels(c), ledger=led)
     if info.get("error") == "no_sources":
+        print("\n── 메일·일정 병합 — 정제된 출처 파일이 없습니다(이번 실행에서 남긴 메일·일정 없음)")
+        record("메일·일정 병합", False, time.time() - t0, "정제된 출처 파일 없음 — 수집 경로의 단계 기록을 확인하세요")
         return info
     srcs = " · ".join(f"{k} {v}" for k, v in sorted((info.get("sources") or {}).items(), key=lambda kv: -kv[1]))
     note = (f"메일 {info.get('mail', 0)}건({srcs or '없음'}) · 일정 {info.get('calendar', 0)}건 · 중복 제외 {info.get('dup', 0)}"
-            + (f" · Copilot 증인 행 {info['copilot']}" if info.get("copilot") else "")
+            + (f" · Copilot 확인 행 {info['copilot']}" if info.get("copilot") else "")
             + (f" · {info['error']}" if info.get("error") else ""))
     print(f"\n── 메일·일정 병합 (출처별 → mail.csv·calendar.csv)\n   {note}")
     record("메일·일정 병합", bool(info.get("ok")), time.time() - t0, note)
     return info
 
 
+def write_summary(c, data, d0, d1, clamp, rcs, info):
+    r"""data\outlook\collect_summary.json(§5.3 — 이 PC 안에서만: 화면의 수집·제외 현황 · 개인 리포트) — mailmerge.write_summary.
+    rcs = {경로: 이번 실행의 종료 코드 | None(돌지 않음)}. 경로별 G1 건수는 mailmerge 가 data\outlook\src\g1_<경로>.json 에서 모은다."""
+    try:
+        import mailmerge
+        o = mailmerge.write_summary(os.path.join(data, "outlook"), period=(d0, d1),
+                                    clamp=(clamp if isinstance(clamp, dict) and clamp.get("clamped") else None),
+                                    channels=dict(rcs), g1_counts=None, merge_info=(info if isinstance(info, dict) else {}))
+    except Exception as e:  # noqa: BLE001 - 요약을 못 써도 분석은 계속한다(화면이 그 칸을 비워 둔다)
+        record("수집 요약", False, 0.0, f"collect_summary.json 을 쓰지 못했습니다({type(e).__name__}: {str(e)[:80]})")
+        return None
+    note = g1_note(o if isinstance(o, dict) else {})
+    print(f"\n── 수집 요약 (data\\outlook\\collect_summary.json — 이 PC 안에서만)\n   {note}")
+    record("수집 요약", True, 0.0, note)
+    return o
+
+
 def _axis_ko(ax):
-    return {"mail_in": "받은 메일", "mail_out": "보낸 메일", "cal": "일정", "teams": "팀즈", "pc": "PC"}.get(ax, ax)
+    return {"mail_in": "받은 메일", "mail_out": "보낸 메일", "cal": "일정"}.get(ax, ax)
+
+
+def _owa_read_days(led, gaps):
+    """받은 메일을 확인하지 못한 날 가운데 Outlook 웹이 읽은 날(그날의 보낸 메일 칸이 '읽음')이 있나."""
+    for ax in coverage.SRC_BLIND.get("owa", ()):
+        for a, b in gaps.get(ax) or []:
+            day, end = date.fromisoformat(a), date.fromisoformat(b)
+            while day <= end:
+                if led.src_status(day.isoformat(), "mail_out", "owa") in coverage.VERIFIED:
+                    return True
+                day += timedelta(days=1)
+    return False
 
 
 def report_gaps(led, d0, d1, axes, name):
-    """원장의 남은 공백(오늘 제외)을 화면·last_run.json 에 — 미관측 날은 0시간이 아니라 '근거 없음'(C-31)."""
+    """원장의 남은 공백(오늘 제외)을 화면·last_run.json 에 — 확인하지 못한 날은 '없음'이 아니라 '아직 모름'이다."""
     hi = _yday(d1)
     if hi < d0:
         return
@@ -405,103 +550,18 @@ def report_gaps(led, d0, d1, axes, name):
     if not parts:
         note = "기간의 모든 날을 확인했습니다(오늘 제외)" + (f" · 해당 없음: {', '.join(na)}" if na else "")
     else:
-        note = (f"미확인 날 {' · '.join(parts)} — 그 날은 0시간이 아니라 '관측 없음'입니다(의심·실측 전, 다음 실행이 다시 읽습니다)"
-                + (f" · 해당 없음: {', '.join(na)}" if na else ""))
+        note = (f"확인하지 못한 날 {' · '.join(parts)} — 그 날의 메일·일정은 아직 확인하지 못했습니다"
+                "(의심·실측 전, 다음 실행이 다시 읽습니다)" + (f" · 해당 없음: {', '.join(na)}" if na else ""))
+        if _owa_read_days(led, g):
+            note += " · " + OWA_BLIND_NOTE
     print(f"   [{name}] {note}")
     record(name, not parts, 0.0, note)
 
 
-def mail_fallbacks(c, d0, d1, data, ps, col, t_run=None, led=None, state=None):
-    r"""LM28 메일 사슬(P3·REQ-18·F-13·C-09) — COM(collect_outlook) 다음에 돈다. 첫 성공에서 멈추지 않는다:
-      ① Windows Search 색인 — **늘**(COM 과 별개로) 돌려 일자별로 대조한다(COM zero_ok 인데 색인 행이 있거나 색인/COM>1.3 이면
-         그날은 'COM 누락 의심' — 원장이 확인으로 치지 않는다).
-      ② 원장(일자×축)에 미검증 날이 남으면 Outlook 웹 — 그 날의 범위만(--from·--to = 공백의 처음~끝, --only 메일|일정).
-      ③ 그래도 남고 mailViaCopilot 이면 Copilot — 남은 날만 --ranges(Copilot 은 증인 — '읽음'을 만들지 않고, 이미 답한 날은 다시
-         묻지 않는다). ④ data\import 에 반입 파일이 있으면 Import-MailCal.
-      → G1 정제(core\privacy.scrub_csv) → mailmerge(공용 mail.csv·calendar.csv·mail_source.json).
-    출처마다 자기 파일(data\outlook\src\mail_<tag>.csv·cal_<tag>.csv·mail_source_<tag>.json)만 쓴다 — LM24 의 'COM 이 0건을
-    썼으면 대체 경로 생략'과 'COM 달별 완료 표(coverage.json) 삭제'는 없앴다(0건이 정상인지는 원장이 일자 단위로 말한다).
-    한 실행에서 웹 경로가 rc 2(로그인)면 남은 웹 경로(Copilot·팀즈 웹)는 login_pending 으로 건너뛴다(state).
-    반환: 병합 정보 dict."""
-    state = state if isinstance(state, dict) else {}
-    led = led if led is not None else open_ledger(c, data)
-    src_dir = os.path.join(data, "outlook", "src")
-    seed_legacy(data)
-    os.makedirs(src_dir, exist_ok=True)
-    # ① 색인 — 늘. COM 과 별개(Outlook 을 띄우지 않고 읽는다). 반복 회의 마스터가 있으면 일정은 partial(웹이 다시 읽는다).
-    run_collector("Outlook 대체① Windows Search 색인 (늘 — COM 과 일자 대조)",
-                  ps + [os.path.join(col, "Get-OutlookIndex.ps1"), "-From", d0, "-To", d1,
-                        "-OutDir", src_dir, "-Tag", "index"], 240, src="index", led=led)
-    sus = led.comgap(coverage.src_counts(src_dir, "com"), coverage.src_counts(src_dir, "index"), d0, d1)
-    if sus:
-        days = sorted({d for d, _a in sus})
-        note = (f"COM 누락 의심 {len(days)}일({days[0]}~{days[-1]}) — 색인에는 메일·일정이 더 있습니다. COM 이 다른 프로필·계정에"
-                " 붙었거나 필터가 어긋났을 수 있어(의심·실측 전) 그 날은 대체 경로로 계속 확인합니다")
-        print(f"   [!] {note}")
-        record("메일 COM↔색인 대조", True, 0.0, note)
-    led.save()
-    headless = collect_headless(c)
-    # ② Outlook 웹 — 미검증 날만. 버전 무관·LLM 무관(지어낸 행 없음). 전용 Edge 프로필에 회사 계정 로그인 1회 필요.
-    gaps = led.gaps(MAIL_AXES, d0, d1)
-    sp = coverage.span(gaps)
-    if isinstance(c.get("collect"), dict) and _truthy(c["collect"].get("mailAllPaths")):
-        gaps, sp = {}, (d0, d1)            # collect.mailAllPaths — 앞 경로가 기간을 확인했어도 웹을 기간 전체로 돌려 합친다
-    name2 = "Outlook 대체② Outlook 웹 (전용 Edge 프로필 — 미검증 날만)"
-    if not sp:
-        record(name2, True, 0.0, "건너뜀 — 원장에 미검증 날 없음(COM·색인이 기간을 확인)")
-    elif state.get("login_pending"):
-        _skip_login(name2)
-    elif c.get("mailViaWeb", True) and "--no-mail-web" not in sys.argv:
-        st2 = run_collector(name2, [sys.executable, os.path.join(col, "Get-OutlookWeb.py"), "--from", sp[0], "--to", sp[1],
-                                    "--out-dir", src_dir, "--tag", "owa"] + _only(gaps, "--only"),
-                            180 + 150 * _months(sp[0], sp[1]), src="owa", led=led)
-        _edge_rc2(st2, state, name2, "Outlook")
-    else:
-        record(name2, True, 0.0, "건너뜀(config.mailViaWeb=false)")
-    # ③ Copilot — 남은 날만(증인). 이미 증언·답한 날은 다시 묻지 않는다.
-    name3 = "Outlook 대체③ Copilot 메일·일정 (남은 날만 — 증인)"
-    if headless:
-        record(name3, True, 0.0, "로컬PC 자료수집 모드 — Copilot 은 판정 전용이라 자료수집엔 쓰지 않습니다"
-               "(config.collectOnlyHeadless · [분석 실행]은 남은 날만 묻습니다)")
-    elif not c.get("mailViaCopilot", True) or "--no-mail-copilot" in sys.argv:
-        record(name3, True, 0.0, "건너뜀(config.mailViaCopilot=false)")
-    elif state.get("login_pending"):
-        _skip_login(name3)
-    else:
-        # 오늘은 묻지 않는다 — 아직 메일이 오는 날이고(웹·COM 도 partial), 매 실행 오늘 하루를 위해 왕복하지 않게
-        g3 = led.gaps(MAIL_AXES, d0, _yday(d1), witness="copilot") if _yday(d1) >= d0 else {}
-        rm = coverage.union(g3, ("mail_in", "mail_out"))
-        rc_ = g3.get("cal") or []
-        jobs = copilot_witness_jobs(rm, rc_)
-        if not jobs:
-            record(name3, True, 0.0, "건너뜀 — 남은 미검증 날 없음(또는 이미 Copilot 이 답한 날)")
-        for kind, extra, ndays in jobs:
-            if state.get("login_pending"):
-                _skip_login(name3)
-                break
-            nm = name3 + (f" — {'메일' if kind == 'mail' else '일정'}" if kind else "")
-            st3 = run_collector(nm, [sys.executable, os.path.join(col, "Get-MailViaCopilot.py"), "--from", d0, "--to", d1]
-                                + extra + ["--out-dir", src_dir, "--tag", "copilot"],
-                                300 + 600 * 2 * max(1, ndays // 30 + 1), src="copilot", led=led)
-            _edge_rc2(st3, state, nm, "Copilot")
-    # ④ 반입 파일(사람이 넣은 .eml·.ics·.csv) — 있을 때만
-    imp = _import_files(data)
-    if imp:
-        run_collector("메일·일정 반입 파일 (data\\import — .eml·.ics·.csv)",
-                      [sys.executable, os.path.join(col, "Import-MailCal.py"), "--in", imp, "--out-dir", src_dir,
-                       "--from", d0, "--to", d1], 300, src="import", led=led)
-    g1_mail(c, data)
-    info = merge_mail(c, data, led, d0, d1)
-    report_gaps(led, d0, d1, MAIL_AXES, "메일·일정 원장(미확인 날)")
-    led.save()
-    return info
-
-
 def copilot_witness_jobs(rm, rc):
-    r"""Copilot 메일·일정 증인 단계의 프로세스 목록 → [(종류 꼬리 ''|'mail'|'cal', 추가 인자, 물을 날 수)].
-    LM30(2026-10-21): 메일(rm)·일정(rc) 모두 물을 날이 있으면 구간이 달라도 **한 프로세스**로 부른다(--ranges 메일 · --ranges-cal 일정) —
-    그 프로세스의 ChatKeep 이 한 채팅을 메일·일정이 이어 쓴다(예전에는 구간이 다르면 종류마다 프로세스·새 채팅 하나 — 채팅 도배 제보).
-    한쪽만 있으면 그 종류만(--only)."""
+    r"""Copilot 메일·일정 확인 단계의 프로세스 목록 → [(종류 꼬리 ''|'mail'|'cal', 추가 인자, 물을 날 수)].
+    메일(rm)·일정(rc) 모두 물을 날이 있으면 구간이 달라도 **한 프로세스**로 부른다(--ranges 메일 · --ranges-cal 일정) —
+    그 프로세스의 채팅 하나를 메일·일정이 이어 쓴다(채팅이 늘어나지 않게). 한쪽만 있으면 그 종류만(--only)."""
     if rm and rc:
         if rm == rc:
             return [("", ["--ranges", coverage.fmt_ranges(rm)], coverage.n_days(rm))]
@@ -511,68 +571,172 @@ def copilot_witness_jobs(rm, rc):
             for k, r in (("mail", rm), ("cal", rc)) if r]
 
 
+# Outlook 웹은 받은 메일을 확인하지 못한다 — 목록이 받는 사람을 보여 주지 않아 그 행을 모두 뺀다(D7 · coverage.SRC_BLIND).
+OWA_BLIND_SKIP = "건너뜀 — 남은 것은 받은 메일뿐입니다(Outlook 웹은 받는 사람을 볼 수 없어 받은 메일을 남기지 않습니다)"
+OWA_BLIND_NOTE = ("Outlook 웹이 읽은 날의 받은 메일은 남기지 않습니다(받는 사람을 볼 수 없음 — 받은 메일은 Outlook 앱이나 "
+                  "Copilot 으로 채웁니다)")
+
+
+def mail_fallbacks(c, d0, d1, data, col, led, state, rcs):
+    r"""Outlook 앱(COM) 다음 — 원장(일자×축)에 확인하지 못한 날이 남으면
+      ① Outlook 웹(collect.channels 에 owa · --no-mail-web 아님) — 그 날의 범위만(--from·--to = 공백의 처음~끝, --only 메일|일정).
+         보낸 메일·일정에 확인하지 못한 날이 있을 때만 돈다 — Outlook 웹은 받은 메일을 확인하지 못한다(목록에 받는 사람이 없어 그
+         행을 뺀다 · coverage.SRC_BLIND). Outlook 웹이 읽은 날도 받은 메일은 확인하지 못한 날로 남아 ② 가 묻는다.
+      ② M365 Copilot(collect.channels 에 copilot · --no-mail-copilot 아님) — 남은 날만 --ranges(Copilot 은 확인용 —
+         '읽음'을 만들지 않고, 이미 답한 날은 다시 묻지 않는다).
+    두 수집기는 항목마다 privacy.g1_row 로 정제해 data\outlook\src\mail_<출처>.csv·cal_<출처>.csv 에 쓴다(원자료 파일 없음).
+    한 실행에서 웹 경로가 rc 2(로그인)면 남은 웹 경로는 login_pending 으로 건너뛴다(state). rcs[경로] = 이번 실행의 종료 코드."""
+    chans = channels(c)
+    src_dir = os.path.join(data, "outlook", "src")
+    os.makedirs(src_dir, exist_ok=True)
+    gaps = led.gaps(MAIL_AXES, d0, d1)
+    blind = coverage.SRC_BLIND.get("owa", ())           # Outlook 웹이 확인하지 못하는 축(받은 메일) — 그 공백으로는 웹을 돌리지 않는다
+    only_blind = any(gaps.get(ax) for ax in blind)
+    gaps = {ax: rs for ax, rs in gaps.items() if ax not in blind}
+    sp = coverage.span(gaps)
+    only_blind = only_blind and not sp
+    if _truthy(afcfg.get(c, "collect.mailAllPaths")):
+        gaps, sp = {}, (d0, d1)            # collect.mailAllPaths — 앞 경로가 기간을 확인했어도 웹을 기간 전체로 돌려 합친다
+    name2 = "Outlook 웹 (전용 Edge — 확인하지 못한 날만)"
+    if "owa" not in chans:
+        record(name2, True, 0.0, "건너뜀 — collect.channels 에 owa 가 없습니다")
+    elif "--no-mail-web" in sys.argv:
+        record(name2, True, 0.0, "건너뜀(--no-mail-web)")
+    elif not sp:
+        record(name2, True, 0.0, OWA_BLIND_SKIP if only_blind
+               else "건너뜀 — 원장에 확인하지 못한 날 없음(Outlook 앱이 기간을 확인)")
+    elif state.get("login_pending"):
+        _skip_login(name2)
+    else:
+        EDGE["used"] = True
+        st2 = run_collector(name2, [sys.executable, os.path.join(col, "Get-OutlookWeb.py"), "--from", sp[0], "--to", sp[1],
+                                    "--out-dir", src_dir, "--tag", "owa"] + _only(gaps, "--only"),
+                            180 + 150 * _months(sp[0], sp[1]), src="owa", led=led)
+        check_setup(st2, data)
+        rcs["owa"] = st2.get("rc")
+        _edge_rc2(st2, state, name2, "Outlook")
+    name3 = "M365 Copilot 메일·일정 (남은 날만 — 확인용)"
+    if "copilot" not in chans:
+        record(name3, True, 0.0, "건너뜀 — collect.channels 에 copilot 이 없습니다")
+        return
+    if "--no-mail-copilot" in sys.argv:
+        record(name3, True, 0.0, "건너뜀(--no-mail-copilot)")
+        return
+    if state.get("login_pending"):
+        _skip_login(name3)
+        return
+    # 오늘은 묻지 않는다 — 기간 끝은 늘 어제다(period.clamp)
+    g3 = led.gaps(MAIL_AXES, d0, _yday(d1), witness="copilot") if _yday(d1) >= d0 else {}
+    rm = coverage.union(g3, ("mail_in", "mail_out"))
+    rc_ = g3.get("cal") or []
+    jobs = copilot_witness_jobs(rm, rc_)
+    if not jobs:
+        record(name3, True, 0.0, "건너뜀 — 남은 날 없음(또는 이미 Copilot 이 답한 날)")
+    for kind, extra, ndays in jobs:
+        if state.get("login_pending"):
+            _skip_login(name3)
+            break
+        EDGE["used"] = True
+        nm = name3 + (f" — {'메일' if kind == 'mail' else '일정'}" if kind else "")
+        st3 = run_collector(nm, [sys.executable, os.path.join(col, "Get-MailViaCopilot.py"), "--from", d0, "--to", d1]
+                            + extra + ["--out-dir", src_dir, "--tag", "copilot"],
+                            300 + 600 * 2 * max(1, ndays // 30 + 1), src="copilot", led=led)
+        check_setup(st3, data)
+        rcs["copilot"] = st3.get("rc")
+        _edge_rc2(st3, state, nm, "Copilot")
+
+
 def _outlook_budget(c, d0, d1):
-    """Outlook COM 수집 한 회차의 시간 예산(초) — config.outlookBudgetSec(0 = 자동). 자동은 240 + 60×개월(360~900).
-    수집기가 달 단위로 이어서 읽으므로(data\\outlook\\src\\coverage_com.json) 예산 안에 못 끝내도 다음 회차·다음 실행이
-    남은 달을 잇는다 — 예전 고정 360초는 메일이 많은 PC 에서 오래된 달을 영영 빠뜨렸다(실측 제보: 1~5월 공백)."""
+    """Outlook 앱 수집 한 회차의 시간 예산(초) — config.outlookBudgetSec(0 = 자동). 자동은 240 + 60×개월(360~900).
+    수집기가 달 단위로 이어서 읽으므로 예산 안에 못 끝내도 다음 회차·다음 실행이 남은 달을 잇는다."""
     months = max(1, (date.fromisoformat(d1) - date.fromisoformat(d0)).days // 30 + 1)
     try:
-        v = int(c.get("outlookBudgetSec") or 0)
+        v = int(afcfg.get(c, "outlookBudgetSec") or 0)
     except (TypeError, ValueError):
         v = 0
     return v if v > 0 else max(360, min(900, 240 + 60 * months))
 
 
-def collect_outlook(c, d0, d1, data, ps, col, led=None):
-    r"""Outlook COM 수집 — 기간의 달을 최신 달부터 읽고, 예산에 닿아 못 읽은 달(coverage: partial)이 남으면
+def collect_outlook(c, d0, d1, data, ps, col, led, rcs):
+    r"""Outlook 앱(COM) — 내 기본 사서함의 메일·일정. 기간의 달을 최신 달부터 읽고, 예산에 닿아 못 읽은 달이 남으면
     진행이 있는 한 같은 실행 안에서 최대 2회 더 이어서 읽는다(회차마다 완료된 달은 건너뛰므로 앞으로만 간다).
-    그래도 남으면 last_run.json 에 미수집 달을 적고 화면(수집 데이터 현황·주간 활동 추이)이 그것을 보여 준다.
-    LM28: 출처별 파일(-OutDir data\outlook\src -Tag com → mail_com.csv·cal_com.csv·mail_source_com.json·coverage_com.json)에
-    쓰고, LMSTATUS ranges 를 원장(led)에 반영한다. 종료 코드: 0 정상 · 1 기간 0행 · 3 건너뜀·실패(사유)."""
+    수집기는 원자료를 data\outlook\raw\mail_com.csv·cal_com.csv 에 쓰고(§5.0) 상태를 -OutDir(data\outlook\src)의
+    mail_source_com.json 에 둔다. 회차가 끝날 때마다 바로 g1_com(mailmerge.g1_com — privacy.g1_file)이 정제하고 원자료를 지운다.
+    종료 코드: 0 정상 · 1 기간 0행 · 3 건너뜀·실패(사유)."""
     budget = _outlook_budget(c, d0, d1)
-    seed_legacy(data)                      # COM 이 src 폴더를 만들기 전에 — 첫 실행의 옛 공용 파일 보존
     src_dir = os.path.join(data, "outlook", "src")
+    os.makedirs(src_dir, exist_ok=True)
     src_p = os.path.join(src_dir, "mail_source_com.json")
     ok, prev_unc, src = False, None, {}
 
     def _fresh_src(t_start):
-        """이번 회차가 쓴 mail_source.json 만 믿는다 — 건너뜀·실패·시간 초과 뒤에는 지난 실행의 파일이 남아 있다(재검증 지적)"""
+        """이번 회차가 쓴 mail_source_com.json 만 믿는다 — 건너뜀·실패·시간 초과 뒤에는 지난 실행의 파일이 남아 있다"""
         mt = _mtime(src_p)
         return (_read_json(src_p) or {}) if (mt is not None and mt >= t_start - 2) else {}
 
     for i in range(3):
-        name = ("Outlook 메일·일정 (클래식 Outlook을 켜두세요)" if i == 0
-                else f"Outlook 메일·일정 이어서 수집 {i + 1}/3 (남은 달)")
-        # 2회차부터는 -NoRefresh — 1회차가 이미 읽은 최신·재수집 달을 건너뛰고 못 읽은 달만 잇는다(예산이 작으면
-        # 최신 달 재수집에 예산이 다 닳아 옛 달에 영영 못 가던 것, 재검증 실측)
+        name = ("Outlook 앱 메일·일정 (클래식 Outlook 을 켜 두세요)" if i == 0
+                else f"Outlook 앱 메일·일정 이어서 수집 {i + 1}/3 (남은 달)")
+        # 2회차부터는 -NoRefresh — 1회차가 이미 읽은 최신·재수집 달을 건너뛰고 못 읽은 달만 잇는다
         t_pass = time.time()
         st = run_collector(name, ps + [os.path.join(col, "Get-OutlookData.ps1"), "-From", d0, "-To", d1,
                                        "-BudgetSec", str(budget), "-OutDir", src_dir, "-Tag", "com"]
                            + (["-NoRefresh"] if i else []), budget + 120, src="com", led=led)
+        check_setup(st, data)
+        rcs["com"] = st.get("rc")
+        g1_com(c, data, d0, d1)                          # 수집기가 끝나자마자 — 원자료는 여기서 정제되고 지워진다
         ok = st["ok"]
         src = _fresh_src(t_pass)
         if st["rc"] not in (0, 1) or src.get("source") != "com" or src.get("coverage_complete", True):
             break
         unc = list(src.get("uncovered_months") or [])
         partial = list(src.get("partial_months") or [])
-        # 진행 = 미수집 달이 줄었거나, 같은 달을 이어 읽는 중(부분 표식) — 둘 다 아니면 멈춘다
         if prev_unc is not None and len(unc) >= len(prev_unc) and not partial:
             print("   (진행이 없어 이어서 수집을 멈춥니다 — Outlook 이 느리거나 응답하지 않습니다)")
             break
         prev_unc = unc
-        print(f"   미수집 달 {len(unc)}개({', '.join(unc[:6])}{' …' if len(unc) > 6 else ''}) — 이어서 읽습니다")
+        print(f"   읽지 못한 달 {len(unc)}개({', '.join(unc[:6])}{' …' if len(unc) > 6 else ''}) — 이어서 읽습니다")
     if src.get("source") == "com":
         ri = list(src.get("refresh_incomplete") or [])
         if ri:
-            print(f"   [!] 재수집이 끊긴 달 {', '.join(ri)} — 지난 수집분을 그대로 두었습니다(새 메일·일정 변경은 다음 실행에서)")
-            record("Outlook 재수집", False, 0.0, f"끊긴 재수집: {', '.join(ri)} — 지난 수집분 유지, 다음 실행에서 다시")
+            print(f"   [!] 다시 읽기가 끊긴 달 {', '.join(ri)} — 지난 수집분을 그대로 두었습니다(새 메일·일정 변경은 다음 실행에서)")
+            record("Outlook 앱 다시 읽기", False, 0.0, f"끊긴 달: {', '.join(ri)} — 지난 수집분 유지, 다음 실행에서 다시")
         if not src.get("coverage_complete", True):
             unc = list(src.get("uncovered_months") or [])
-            print(f"   [!] 메일·일정 미수집 달 {len(unc)}개: {', '.join(unc)} — 다음 [분석 실행]이 이어서 읽습니다"
-                  " (그동안 이 달들의 메일·회의는 로드율·주간 추이에 빠져 있습니다)")
-            record("Outlook 수집 범위", False, 0.0,
-                   f"미수집 달 {len(unc)}개: {', '.join(unc)} — 다음 실행이 이어서 수집(그 달의 메일·회의는 아직 빠짐)")
+            print(f"   [!] 메일·일정을 읽지 못한 달 {len(unc)}개: {', '.join(unc)} — 다음 [분석 실행]이 이어서 읽습니다"
+                  " (그동안 이 달들의 메일·회의는 과제 발굴 근거에 들어가지 않습니다)")
+            record("Outlook 앱 수집 범위", False, 0.0,
+                   f"읽지 못한 달 {len(unc)}개: {', '.join(unc)} — 다음 실행이 이어서 수집(그 달의 메일·회의는 아직 빠짐)")
     return ok
+
+
+def collect(c, d0, d1, data, clamp):
+    r"""수집 전체(§4): Outlook 앱 → G1 → Outlook 웹 → Copilot → 병합 → 수집 요약 → 전용 Edge 의 Outlook·M365 사이트 자료 지우기.
+    사내 메일 도메인은 수집 경로가 붙은 뒤에 확인한다 — 끝내 모르면 RunStop(4). → 병합 정보 dict."""
+    import privacy
+    ps = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]
+    col = os.path.join(ROOT, "collect")
+    chans = channels(c)
+    if not chans:
+        raise RunStop(EXIT_SETUP, "수집 경로가 없습니다 — 설정의 collect.channels 에 com·owa·copilot 중 하나 이상을 두세요")
+    led = open_ledger(c, data)
+    rcs = dict.fromkeys(chans)
+    if "com" in chans:
+        collect_outlook(c, d0, d1, data, ps, col, led, rcs)
+    else:
+        record("Outlook 앱 메일·일정", True, 0.0, "건너뜀 — collect.channels 에 com 이 없습니다")
+    mail_fallbacks(c, d0, d1, data, col, led, STATE, rcs)
+    led.save()
+    attached = any(rc in (0, 1) for rc in rcs.values())      # 수집 경로가 하나라도 내 사서함에 붙었나
+    if attached and not privacy.internal_domains(c, privacy.me_list(data)):
+        drop_raw(data)
+        raise RunStop(EXIT_SETUP, privacy.INTERNAL_MSG)
+    info = merge_mail(c, data, led, d0, d1)
+    report_gaps(led, d0, d1, MAIL_AXES, "메일·일정 원장(확인하지 못한 날)")
+    led.save()
+    write_summary(c, data, d0, d1, clamp, rcs, info)
+    clear_edge_site_data("collect_end")
+    return info
 
 
 # 다시 보내도 같은 벽에 닿는 중단 갈래(자식 마지막 줄 JSON 의 stop_kind) — 재시도하지 않는다.
@@ -580,17 +744,15 @@ def collect_outlook(c, d0, d1, data, ps, col, led=None):
 NO_RETRY_KINDS = ("budget", "gate", "login", "fatal", "throttle")
 AI2_STAGES = ("agentic.py", "flow.py")    # 판정 뒤 Copilot 단계 — 지난 결과 이어받기(--carry)·긴 재시도 대기
 
-# LM28 — Copilot 사용량 제한(「요청이 너무 많음」)으로 이번 실행의 AI 단계를 멈춘 경우. 어느 단계(judge.copilot_send)든 사용량 제한으로
-# 강한 제한에 닿으면 이 실행의 표식(LM_RUN_ID — start_run_id)과 함께 기록하고(copilot_auto.note_throttle), 같은 실행의 뒤 단계는
-# Copilot 에 보내지 않고 바로 접는다(copilot_auto.run_stopped — 예전에는 단계마다 10분을 쉬고 한 번씩 더 보내 한 실행이 한 시간 넘게
-# 멈춰 보였다 · 현장 제보). run.py 는 그것을 진행 로그에 한 줄로 알리고(실행에 1회) 단계 기록에 사유를 싣는다 — 멈춘 단계에는
-# THR_LINE 을 앞에(기록 300자 자르기에 잘리지 않게), 멈춘 뒤에 돈 단계에는 일반 실패 대신 THR_SKIP. 보고서·묶음·팀 보고는 그대로 간다.
-# 한 실행에서 Copilot 때문에 쉬는 시간은 모든 단계를 합쳐 copilotAuto.runWaitMaxSec(기본 5분) 안이다 — 단계 안의 쉬기(1·2·2분 사다리·
-# 사용량 제한 2분 한 번)도, run_ai_stage 의 재시도 대기(Agentic·워크플로우 120초)도 같은 합계에서 쓴다(copilot_auto.run_wait_left).
+# Copilot 사용량 제한(「요청이 너무 많음」)으로 이번 실행의 AI 단계를 멈춘 경우. 어느 단계든 강한 제한에 닿으면 이 실행의
+# 표식(AF32_RUN_ID — start_run_id)과 함께 기록하고(copilot_auto.note_throttle), 같은 실행의 뒤 단계는 Copilot 에 보내지 않고 바로
+# 접는다(copilot_auto.run_stopped). run.py 는 그것을 진행 로그에 한 줄로 알리고(실행에 1회) 단계 기록에 사유를 싣는다 — 멈춘 단계에는
+# THR_LINE 을 앞에, 멈춘 뒤에 돈 단계에는 일반 실패 대신 THR_SKIP. 개인 리포트는 그대로 만든다.
+# 한 실행에서 Copilot 때문에 쉬는 시간은 모든 단계를 합쳐 copilotAuto.runWaitMaxSec(기본 5분) 안이다(copilot_auto.run_wait_left).
 THR_LINE = ("Copilot 사용량 제한(요청이 너무 많음) — 이번 실행의 AI 단계를 멈췄습니다. 여기까지의 결과는 지켰고, "
-            "1~2시간 뒤 [재분석만]을 누르면 남은 것만 이어서 합니다.")
+            "1~2시간 뒤 [다시 읽지 않고 분석만]을 켜고 [분석 실행]을 누르면 남은 것만 이어서 합니다.")
 THR_SKIP = ("건너뜀 — Copilot 사용량 제한(요청이 너무 많음)으로 이번 실행의 AI 단계를 멈춰 Copilot 에 보내지 않았습니다 "
-            "(지난 결과·규칙 결과 유지 · 1~2시간 뒤 [재분석만])")
+            "(지난 결과·규칙 결과 유지 · 1~2시간 뒤 [다시 읽지 않고 분석만]을 켜고 [분석 실행])")
 THR = {"said": False}          # THR_LINE 을 이 실행에서 이미 찍었나
 _RUN_STOPPED = None            # 시험 주입 — None 이면 tools\copilot_auto.run_stopped
 _RUN_WAIT_LEFT = None          # 시험 주입 — None 이면 tools\copilot_auto.run_wait_left
@@ -599,10 +761,10 @@ RETRY_WAIT_MIN = 15            # 재시도 대기의 바닥(초) — 자식 프�
 
 
 def start_run_id():
-    """이번 실행의 표식을 정해 LM_RUN_ID 에 싣는다(자식 — 수집기·판정·정제·Agentic·워크플로우가 물려받는다). 시작 시각 + PID 라
-    실행마다 다르다. 사용량 제한으로 멈춘 기록이 '이번 실행' 것인지 가르는 데만 쓴다."""
-    rid = f"{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}"
-    os.environ["LM_RUN_ID"] = rid
+    """이번 실행의 표식을 정해 AF32_RUN_ID 에 싣는다(자식 — 수집기·판정·정제·Agentic·업무 흐름이 물려받는다). 날짜 + PID + 임의
+    값이라 실행마다 다르다(시각은 넣지 않는다 — last_run.json 에 남는다 · D10). 사용량 제한으로 멈춘 기록이 '이번 실행' 것인지 가르는 데만 쓴다."""
+    rid = f"{time.strftime('%Y%m%d')}-{os.getpid()}-{os.urandom(3).hex()}"
+    os.environ["AF32_RUN_ID"] = rid
     RUN["run_id"] = rid
     THR["said"] = False
     return rid
@@ -649,7 +811,7 @@ def say_throttle():
 
 
 def ai_note(before, note=""):
-    """AI 단계(정제·Agentic·워크플로우) 하나가 끝난 뒤의 기록 문구. before = 단계를 시작할 때 이미 사용량 제한으로 멈춰 있었나 —
+    """AI 단계(정제·Agentic·업무 흐름) 하나가 끝난 뒤의 기록 문구. before = 단계를 시작할 때 이미 사용량 제한으로 멈춰 있었나 —
     그 단계는 Copilot 에 보내지 않았으니 일반 실패 문구 대신 THR_SKIP. 이 단계에서 멈췄으면 THR_LINE 을 한 번 찍고 앞에 붙인다."""
     if before:
         return THR_SKIP
@@ -660,10 +822,9 @@ def ai_note(before, note=""):
 
 
 def ai_reserves(c, tot):
-    r"""AI 단계 전체 마감(tot 분) 안에서 미리 떼어 두는 몫 → (워크플로우 몫, Agentic 니즈 발굴 몫) 분.
-    워크플로우 몫은 flowBudgetMin 과 전체의 40% 중 작은 쪽(최소 60분). Agentic 몫은 config.agenticReserveMin
-    (없으면 전체의 10%를 15~30분으로) — 판정·내러티브·정제가 마감을 다 쓰면 Agentic 이 15분 하한만 받아
-    업무 대부분을 보내지 못했다(LM28 실측 — 묶음 5~10개 · rows_pending)."""
+    r"""AI 단계 전체 마감(tot 분) 안에서 미리 떼어 두는 몫 → (업무 흐름 몫, Agentic AI 후보 몫) 분.
+    업무 흐름 몫은 flowBudgetMin 과 전체의 40% 중 작은 쪽(최소 60분). Agentic 몫은 config.agenticReserveMin
+    (없으면 전체의 10%를 15~30분으로) — 판정·정제가 마감을 다 쓰면 Agentic 이 15분 하한만 받아 업무 대부분을 보내지 못했다."""
     try:
         fb = float(c.get("flowBudgetMin", 120) or 0) or 120.0
     except (ValueError, TypeError):
@@ -678,37 +839,52 @@ def ai_reserves(c, tot):
 
 
 def start_ai_clock(c, tot, now=None):
-    """--ai 시작 — AI 단계 전체 마감 기준(T0)과 선예약 몫을 정하고, 판정·정제가 쓸 마감을 LM_AI_DEADLINE 에 싣는다.
-    = T0 + (전체 − 워크플로우 몫 − Agentic 몫). Agentic 직전(agentic_deadline)·flow 직전(전체)에 몫을 돌려준다.
-    반환: (워크플로우 몫, Agentic 몫, 판정·정제 몫) 분."""
+    """--ai 시작 — AI 단계 전체 마감 기준(T0)과 선예약 몫을 정하고, 판정·정제가 쓸 마감을 AF32_AI_DEADLINE 에 싣는다.
+    = T0 + (전체 − 업무 흐름 몫 − Agentic 몫). Agentic 직전(agentic_deadline)·flow 직전(전체)에 몫을 돌려준다.
+    반환: (업무 흐름 몫, Agentic 몫, 판정·정제 몫) 분."""
     global _AI_T0, _AI_TOT_MIN
     flow_res, ag_res = ai_reserves(c, tot)
     _AI_T0, _AI_TOT_MIN = (time.time() if now is None else now), tot
     _AI_RES.update(flow=flow_res, ag=ag_res)
     pre = max(0.0, tot - flow_res - ag_res)
-    os.environ["LM_AI_DEADLINE"] = str(_AI_T0 + pre * 60.0)
+    os.environ["AF32_AI_DEADLINE"] = str(_AI_T0 + pre * 60.0)
     return flow_res, ag_res, pre
 
 
 def agentic_deadline(now=None):
-    """Agentic 니즈 발굴 직전의 전체 마감(epoch 초) — 선예약한 Agentic 몫을 돌려준다.
-    = max(T0 + (전체 − 워크플로우 몫), 지금 + Agentic 몫). 앞 단계가 늦게 끝나도 Agentic 은 제 몫을 받고(그만큼 워크플로우
-    몫에서 빠진다), 일찍 끝났으면 남은 시간을 다 쓴다. --ai 마감이 꺼져 있으면 None."""
+    """Agentic AI 후보 찾기 직전의 전체 마감(epoch 초) — 선예약한 Agentic 몫을 돌려준다.
+    = max(T0 + (전체 − 업무 흐름 몫), 지금 + Agentic 몫). --ai 마감이 꺼져 있으면 None."""
     if _AI_T0 is None or not _AI_TOT_MIN:
         return None
     now = time.time() if now is None else now
     return max(_AI_T0 + (_AI_TOT_MIN - _AI_RES["flow"]) * 60.0, now + _AI_RES["ag"] * 60.0)
 
 
+def consent_lost(stage):
+    """방금 끝난 단계가 시작 확인(details.consent_gate — 마지막 줄 JSON code "no_consent" · reason other_user | withdrawn)에
+    걸려 멈췄으면 이 실행이 쓴 파일을 지우고 RunStop(3 · 주인을 모르게 됐으면 4), 제한 고객 목록 없음(details.restricted_gate —
+    code "no_restricted")으로 멈췄으면 RunStop(4). 시작할 때 확인했어도 그 사이 [모두 지우기]가 시작되거나 설치 정보·목록이
+    지워지면 단계가 스스로 멈춘다 — 다시 보내지 않는다(함수 이름은 예전 그대로)."""
+    code = str(LAST_JSON.get("code") or "")
+    if code == "no_consent":
+        e = gate_refused(os.path.join(ROOT, "data"), str(LAST_JSON.get("reason") or ""), str(LAST_JSON.get("error") or ""))
+        record(stage, False, 0.0, e.message)
+        raise e
+    if code == "no_restricted":
+        import privacy
+        msg = str(LAST_JSON.get("error") or privacy.RESTRICTED_MSG)
+        record(stage, False, 0.0, msg)
+        raise RunStop(EXIT_SETUP, msg)
+
+
 def run_ai_stage(script, d0, d1, retry_wait=None, extra=()):
-    """판정 뒤 단계(Agentic 니즈 발굴·워크플로우)를 돌린다. Copilot 은 긴 판정 뒤에 일시적으로
+    """판정 뒤 단계(Agentic AI 후보·업무 흐름 등)를 돌린다. Copilot 은 긴 판정 뒤에 일시적으로
     응답을 거부하는 일이 있어(실측: 뒤 단계만 실패), 실패하면 잠시 쉬고 1회 재시도한다.
     · agentic.py·flow.py 는 늘 --carry — 기간 끝날짜가 바뀌어도 지난 결과를 이어받고 남은 것만 묻는다.
-    · 재시도 대기는 그 둘이 120초(Copilot 이 숨 돌릴 시간), 나머지는 15초. 15초를 넘는 대기는 이번 실행의 쉬는 시간 합계
-      (copilotAuto.runWaitMaxSec) 안에서만 쉬고(바닥 15초 — retry_wait_sec) 쉰 초를 합계에 적는다. 워크플로우 재시도는
-      --no-merge(세부 병합 왕복을 다시 하지 않는다 — 규칙 병합과 캐시만).
+    · 재시도 대기는 그 둘이 120초, 나머지는 15초. 15초를 넘는 대기는 이번 실행의 쉬는 시간 합계 안에서만 쉰다(바닥 15초).
+      업무 흐름 재시도는 --no-merge(세부 병합 왕복을 다시 하지 않는다 — 규칙 병합과 캐시만).
     · 자식 마지막 줄 JSON 의 stop_kind 가 budget·gate·login·fatal·throttle 이거나 사유가 Copilot 사용량 제한이면
-      재시도하지 않는다 — 다시 보내도 같은 벽이다(사용량 제한은 copilot_send 가 이미 쉬고 다시 보냈다).
+      재시도하지 않는다 — 다시 보내도 같은 벽이다.
     반환: (rc, note)."""
     base = os.path.basename(script)
     ai2 = base in AI2_STAGES
@@ -718,7 +894,7 @@ def run_ai_stage(script, d0, d1, retry_wait=None, extra=()):
     if ai2 and "--carry" not in extra:
         cmd.append("--carry")
     cmd += [str(x) for x in extra]
-    env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1", LM_LAUNCHER="run")
+    env = _child_env(AF32_LAUNCHER="run")
     _tag = f"{d0.replace('-', '')}-{d1.replace('-', '')}"
     _stage_id = {"agentic.py": "agentic", "flow.py": "flow", "refine.py": "refine",
                  "judge.py": "judge"}.get(base, base)
@@ -731,17 +907,15 @@ def run_ai_stage(script, d0, d1, retry_wait=None, extra=()):
     lj = dict(LAST_JSON)
     if rc == 0:
         return 0, ""
+    consent_lost(_stage_id)
     if rc == 2:
-        # v3 rc 규약: 2 = 부분(이어가기 가능 — 예산·정체 자가 중단으로 남은 묶음이 있다).
-        # 다음 실행이 이어서 하므로 재시도하지 않고, 뒤 단계는 계속 진행한다.
+        # rc 규약: 2 = 부분(이어가기 가능 — 예산·정체 자가 중단으로 남은 묶음이 있다). 재시도하지 않고 뒤 단계는 계속.
         return 2, str(why or "부분 완료 — 다시 실행하면 남은 것만 이어서")
     if "중단했습니다" in str(why or ""):
-        # 정체 감지·시간 상한으로 끊은 것은 다시 보내도 같은 벽에 닿는다 — 예전에는 이 경우도 재시도해
-        # 한 단계가 상한을 두 번 썼다(최악 360분, 감사 실측).
+        # 정체 감지·시간 상한으로 끊은 것은 다시 보내도 같은 벽에 닿는다
         print(f"   {script} 를 중단했습니다 — 같은 벽에 다시 닿으므로 재시도하지 않습니다")
         return rc, why
     if run_throttled():
-        # 이번 실행은 사용량 제한으로 AI 단계를 멈췄다 — 다시 띄워도 보내지 않으니 120초 쉬고 다시 띄우지 않는다(프로세스도 아낀다)
         print(f"   {script}: 이번 실행은 Copilot 사용량 제한으로 AI 단계를 멈춰 재시도하지 않습니다")
         return rc, why
     kind = str(lj.get("stop_kind") or "")
@@ -757,7 +931,7 @@ def run_ai_stage(script, d0, d1, retry_wait=None, extra=()):
           + (" (이번 실행의 Copilot 쉬는 시간 합계 안 — copilotAuto.runWaitMaxSec)" if wait < retry_wait else ""))
     time.sleep(wait)
     if retry_wait > RETRY_WAIT_MIN:
-        note_retry_wait(wait)                # Copilot 이 숨 돌릴 시간 — 이번 실행의 쉬는 시간 합계에 넣는다
+        note_retry_wait(wait)
     _WATCH_STATE_PATH["p"] = _state_p
     try:
         rc, why2 = _run_capture(cmd, env)
@@ -767,18 +941,17 @@ def run_ai_stage(script, d0, d1, retry_wait=None, extra=()):
         return 0, "1회 재시도 후 성공"
     if rc == 2:
         return 2, "1회 재시도 후 부분 완료" + (f" — {why2}" if why2 else " — 다시 실행하면 남은 것만 이어서")
-    # 사유를 기록에 남긴다 — 예전에는 '코드 1' 만 남아 사용자도 나도 원인을 볼 수 없었다
     return rc, (f"재시도에도 실패: {why2 or why}" if (why2 or why)
                 else f"재시도에도 실패(코드 {rc}) - 탭의 수동 실행으로 다시")
 
 
-# v3: 감시기 한 벌 — core/watch (run.py·ui/app.py 복제 3함수를 모았다 · 구조 감사 4계층).
-# 신판 자식은 상태 파일 하트비트로 생존을 알린다 — 긴 왕복의 stdout 침묵을 죽음으로 오진하지 않는다.
+# 정체 감지기 한 벌 — core/watch. 자식은 상태 파일 하트비트로 생존을 알린다 — 긴 왕복의 stdout 침묵을 죽음으로 오진하지 않는다.
 import watch as _watch_mod  # noqa: E402
 from watch import stage_limits as _core_stage_limits  # noqa: E402
 from watch import watch_child as _core_watch_child  # noqa: E402
-# LM28(P6·F-23): 이 프로세스 안에서 감시기가 멈춘 단계를 끊을 때 taskkill 대신 Job 으로(core\proc.kill_tree — 자식을 띄울 때
-# proc.attach 로 Job 에 넣어 둔다). 전용 Edge 는 Job 에서 이탈해 떠 있으므로 같이 죽지 않는다.
+
+# 멈춘 단계를 끊을 때 taskkill 대신 Job 으로(core\proc.kill_tree — 자식을 띄울 때 proc.attach 로 Job 에 넣어 둔다).
+# 전용 Edge 는 Job 에서 이탈해 떠 있으므로 같이 죽지 않는다.
 _watch_mod.kill_tree = proc.kill_tree
 kill_tree = proc.kill_tree  # 기존 호출부 이름 유지
 
@@ -787,21 +960,19 @@ LAST_JSON = {}                       # 마지막 _run_capture 자식의 마지�
 
 
 def _stage_limits():
-    return _core_stage_limits(cfg() if "cfg" in globals() else {})
+    return _core_stage_limits(cfg())
 
 
 def watch_child(p, on_line, label, beat_sec=120):
-    return _core_watch_child(p, on_line, label, beat_sec=beat_sec,
-                             cfg_dict=(cfg() if "cfg" in globals() else {}),
+    return _core_watch_child(p, on_line, label, beat_sec=beat_sec, cfg_dict=cfg(),
                              state_path=_WATCH_STATE_PATH.get("p"))
 
 
 def _run_capture(cmd, env):
     r"""자식 출력을 화면에 그대로 흘리면서, 실패 사유만 따로 건져 낸다.
 
-    자식은 마지막 줄에 JSON 한 줄을 낸다({"ok":false,"error":...}). 그 줄을 잡아
-    last_run.json 에 실어야 화면이 '왜 안 됐는지' 를 말할 수 있다. 그 JSON 전체는 LAST_JSON 에도 남긴다
-    (run_ai_stage 가 stop_kind 로 재시도 여부를 고른다 — 반환 꼴은 그대로)."""
+    자식은 마지막 줄에 JSON 한 줄을 낸다({"ok":false,"error":...}). 그 줄을 잡아 last_run.json 에 실어야 화면이
+    '왜 안 됐는지' 를 말할 수 있다. 그 JSON 전체는 LAST_JSON 에도 남긴다(run_ai_stage 의 stop_kind · 개인 리포트의 html)."""
     LAST_JSON.clear()
     try:
         p = subprocess.Popen(cmd, cwd=ROOT, env=env, stdout=subprocess.PIPE,
@@ -809,7 +980,7 @@ def _run_capture(cmd, env):
                              encoding="utf-8", errors="replace")
     except OSError as e:
         return 1, f"실행 실패({type(e).__name__})"
-    job = proc.attach(p)                 # LM28: 단계가 끝나면(정상·중단) 남은 손자까지 Job 째 정리 — Edge 는 이탈해 산다
+    job = proc.attach(p)                 # 단계가 끝나면(정상·중단) 남은 손자까지 Job 째 정리 — Edge 는 이탈해 산다
     tail, last_json = [], {}
     label = os.path.basename(str(cmd[1] if len(cmd) > 1 else "단계"))
 
@@ -844,17 +1015,14 @@ def _run_capture(cmd, env):
 
 
 def invalidate_ai_outputs(d0, d1):
-    r"""'업무 로드 추출' 성공 직후 — 같은 tag 의 지난 판정 산출물(정제본·판정 기록·버림 장부·정제 매핑)을
-    <이름>.stale 로 개명한다(V-01). 예전에는 무AI 재실행·판정 실패·중단 뒤에도 옛 정제본이 '현재 결과' 로 남아
-    대시보드 표(옛 정제본)·KPI(새 meta)·분석리포트(새 원본)가 서로 다른 값을 보였다. agentic/workflow 결과는
-    남긴다 — 화면이 '재추출 이후 결과' 로 표시하고, 무AI 실행이면 니즈 후보의 근거 행 수만 새 행으로 다시 센다.
-    반환: (개명한 이름 목록, 실패 목록). 실패해도 화면은 mtime 규칙(정제본 < 원본)으로 원본을 고른다."""
+    r"""업무 분류 추출 성공 직후 — 같은 tag 의 지난 판정 산출물(정제본·버림 장부·정제 매핑)을 <이름>.stale 로 바꾼다.
+    무AI 재실행·판정 실패·중단 뒤에도 옛 정제본이 '현재 결과' 로 남아 화면과 리포트가 서로 다른 값을 보이지 않게 한다.
+    agentic/workflow 결과는 남긴다 — 화면이 '재추출 이후 결과' 로 표시하고, 무AI 실행이면 후보의 근거 건수만 새 행으로 다시 센다.
+    .stale 은 중간 자료라 보관기한(retention intermediateDays)에 지워진다. 반환: (바꾼 이름 목록, 실패 목록)."""
     tag = f"{d0.replace('-', '')}-{d1.replace('-', '')}"
     rep = os.path.join(ROOT, "report")
-    # v3: ai_judgments 는 무효화하지 않는다 — judge 가 내용 sig 로 유효분만 회수한다('이어서 판정').
-    # v2 는 매 실행 .stale 개명이 재개 자료를 없애, 부분 실패의 재개 단위가 '스테이지 전체'였다.
-    names = [f"mm_rows_{tag}_refined.csv",
-             f"dropped_signals_{tag}.csv", f"refine_map_{tag}.json"]
+    # ai_judgments 는 무효화하지 않는다 — judge 가 내용 sig 로 유효분만 회수한다('이어서 판정').
+    names = [f"work_rows_{tag}_refined.csv", f"dropped_signals_{tag}.csv", f"refine_map_{tag}.json"]
     done, failed = [], []
     for n in names:
         p = os.path.join(rep, n)
@@ -873,9 +1041,9 @@ def invalidate_ai_outputs(d0, d1):
 
 
 def agentic_recalc_inproc(d0, d1):
-    """agentic_<tag>.json 니즈 후보의 근거 행 수를 지금 행으로 다시 센다(agentic.recalc_file, Copilot 왕복 없음 · 프로세스 없음).
-    워크플로우 단계 뒤에 부른다 — 세부업무 병합 맵이 그때 처음 생기기 때문(F5). 어떤 실패도
-    분석 전체를 실패로 만들지 않는다. 반환: 저장했으면 True."""
+    """agentic_<tag>.json 후보의 근거 건수를 지금 행으로 다시 센다(agentic.recalc_file, Copilot 왕복 없음 · 프로세스 없음).
+    업무 흐름 단계 뒤에 부른다 — 세부업무 병합 맵(data\\cache\\detail_aliases.json)이 그때 처음 생기기 때문.
+    어떤 실패도 분석 전체를 실패로 만들지 않는다. 반환: 저장했으면 True."""
     tag = f"{d0.replace('-', '')}-{d1.replace('-', '')}"
     try:
         if ROOT not in sys.path:
@@ -883,240 +1051,31 @@ def agentic_recalc_inproc(d0, d1):
         import agentic
         ap = agentic.recalc_file(tag, log=lambda m: print("   " + str(m)))
         if not ap:
-            print("   (Agentic 근거 행 다시 세기 생략 — agentic 결과 파일이나 업무 행이 없음)")
+            print("   (Agentic 근거 건수 다시 세기 생략 — agentic 결과 파일이나 업무 행이 없음)")
         return bool(ap)
     except Exception as e:  # noqa: BLE001 - 재계산 실패는 무시(기존 agentic 파일 그대로)
-        print(f"   (Agentic 근거 행 다시 세기 건너뜀: {type(e).__name__}: {str(e)[:80]})")
+        print(f"   (Agentic 근거 건수 다시 세기 건너뜀: {type(e).__name__}: {str(e)[:80]})")
         return False
-
-
-def machine_id():
-    r"""이 PC 의 안정적인 식별자(없으면 빈 문자열).
-
-    클라우드·VDI 는 접속할 때마다 COMPUTERNAME 이 바뀌는 경우가 있다. 이름만으로 '다른 PC' 를
-    판정하면 실행할 때마다 data\추가PC\<새 이름>\ 이 하나씩 생기고 매번 전량 재수집이 걸려,
-    프로필을 줄여 놔도 폴더가 이쪽으로 다시 부푼다(설계 검증 지적). 레지스트리의 MachineGuid 는
-    OS 설치 단위로 고정이라 세션 이름이 바뀌어도 같은 값이다. 못 읽으면 이름 비교로 되돌아간다.
-    """
-    try:
-        import winreg
-        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography",
-                            0, winreg.KEY_READ | winreg.KEY_WOW64_64KEY) as k:
-            return str(winreg.QueryValueEx(k, "MachineGuid")[0]).strip()
-    except (OSError, ImportError, IndexError, ValueError):
-        return ""
-
-
-def pc_history_gap(data, d0, d1, fresh_hours=None):
-    r"""저장된 PC 가동 기록이 요청 기간을 못 덮거나 오래됐나 → (갱신 필요, 사유).
-    화면의 추이 선과 분석의 PC 하한은 **저장된 data\pc** 만 본다. 그래서 수집이 그 기간에 대해
-    한 번도 돌지 않았거나(=0h) 오래된 채로 [재분석만] 을 눌러도 숫자가 낫지 않았다(제보 실측:
-    지금 수집하면 704.7h 인데 저장된 파일은 0h). 이 판단으로 PC 이력만 자동 보강한다."""
-    try:
-        fresh_hours = float(cfg().get("pcRefreshHours", 12) if fresh_hours is None else fresh_hours)
-    except (ValueError, TypeError):
-        fresh_hours = 12.0
-    pcdir = os.path.join(data, "pc")
-    on_p = os.path.join(pcdir, "pc_on.csv")
-    if not os.path.exists(on_p) or os.path.getsize(on_p) < 40:
-        return True, "저장된 PC 가동 기록이 없습니다"
-    # v3: 판정 근거를 pc_source.json 의 range(파생 캐시의 자기 신고)에서 **원장 실측**으로.
-    # v2 는 짧은 기간 수집이 range 를 좁혀 써서 '기간 못 덮음' 오판 → 12h 마다 파괴적 재작성이
-    # 반복됐다(구조 감사 실측). v3 재수집은 append 전용이라 잦아도 해가 없지만, 판정 자체를
-    # 실제 데이터로 한다. 요청 시작이 원장 첫 기록보다 훨씬 앞서는 것은 롤오버로 못 되살리는
-    # 과거라 재수집 사유가 아니다 — 끝(최근) 쪽만 본다.
-    dates = []
-    for f2 in (os.path.join(pcdir, "pc_on.csv"),):
-        try:
-            with open(f2, encoding="utf-8-sig", errors="replace", newline="") as fh:
-                dates = sorted({(r.get("date") or "")[:10] for r in csv.DictReader(fh)
-                                if (r.get("date") or "")[:10]})
-        except (OSError, csv.Error):
-            dates = []
-    if not dates:
-        return True, "저장된 PC 가동 기록이 비어 있습니다"
-    if dates[-1] < d1:
-        return True, f"저장된 기록은 {dates[-1]} 까지입니다 (요청 {d1})"
-    _hint_floor = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
-    if dates[0] > d0 and dates[0] > _hint_floor:
-        # 시작 쪽 확장 — 브라우저 힌트(≈90일)가 아직 닿는 범위만. 그보다 먼 과거는 어떤
-        # 재수집으로도 못 메우므로 매 실행 헛수고를 만들지 않는다(최종 검증 INFO).
-        return True, f"저장된 기록은 {dates[0]} 부터입니다 (요청 {d0} — 힌트가 닿는 만큼 보강)"
-    if fresh_hours > 0:
-        age_h = (time.time() - os.path.getmtime(on_p)) / 3600.0
-        if age_h > fresh_hours:
-            return True, f"저장된 기록이 {age_h:.0f}시간 전 것입니다"
-    return False, ""
-
-
-def collect_pc_only(data, d0, d1, ps, col, why=""):
-    r"""PC 가동 이력·힌트만 모은다 — [재분석만] 에서도 PC 시간이 최신이 되게(수집 전체는 켜지 않는다)."""
-    print("\n" + f"[PC 이력] {why} — PC 가동 기록만 다시 모읍니다(수십 초 · 수집 전체는 하지 않습니다)")
-    ok1 = step("PC 가동 이력(자동 보강)",
-               ps + [os.path.join(col, "Get-PcOnHistory.ps1"), "-From", d0, "-To", d1], 300)
-    step("PC 가동 보강 (브라우저 방문 시각 — URL 미수집)",
-         [sys.executable, os.path.join(col, "Get-PcOnHints.py"), "--from", d0, "--to", d1], 240)
-    return ok1
-
-
-def migrate_extra_pc_ledgers(data):
-    r"""추가PC\<이름>\pc 를 v3 원장으로 1회 이행한다(멱등 — 앵커가 생기면 다시 안 한다).
-    이행되면 그 폴더도 '캐시 ≡ 파생' 이 되어 본 PC 와 같은 규칙으로 읽힌다. 남의 폴더라
-    앵커는 그 폴더 자신의 첫 물리 이벤트로만 잡는다(--foreign)."""
-    base = os.path.join(data, "추가PC")
-    if not os.path.isdir(base):
-        return
-    try:
-        sys.path.insert(0, os.path.join(ROOT, "core"))
-        import pc_ledger
-    except ImportError:
-        return
-    for name in sorted(os.listdir(base)):
-        pcdir = os.path.join(base, name, "pc")
-        if not os.path.isdir(pcdir) or os.path.exists(os.path.join(pcdir, "pc_anchor.json")):
-            continue
-        try:
-            r = pc_ledger.ingest(pcdir, own_pc=False)
-            if r["migrated"] or r["days"]:
-                print("[원장] 추가PC" + chr(92) + f"{name}: 구판 기록 이행 {r['migrated']}건 · 파생 {r['days']}일")
-        except (OSError, ValueError) as e:
-            print("[원장] 추가PC" + chr(92) + f"{name}: 이행 보류({type(e).__name__}) — 기존 기록 그대로")
-
-
-def pc_import_hint(data, d0):
-    r"""LM30(2026-10-21) 예전 판(LM28·LM29 등) 설치 폴더에 이 설치가 아직 가져오지 않은 PC 가동 기록이 있으면 진행 로그에 한 줄 —
-    대시보드 'MM 산정 근거' 카드의 [예전 판 PC 가동 기록 가져오기]를 안내한다(core\pc_import.hint_line — 이 프로세스 안에서 폴더 목록과
-    원장만 읽는다 · 폴더 300개·2초 · 폴더 이름만 적는다). 이 설치가 직접 모은 PC 기록이 분석 시작(d0)까지 닿지 않을 때만 찾는다
-    (pc_import.needs_hint). 가져오기는 사람이 누를 때만 한다. 실패해도 실행은 계속한다."""
-    try:
-        import pc_import
-        if not pc_import.needs_hint(data, d0):
-            return ""
-        line = pc_import.hint_line(ROOT, data)
-    except Exception:  # noqa: BLE001 - 안내 한 줄 때문에 분석이 멈추지 않게
-        return ""
-    if line:
-        print("\n" + line, flush=True)
-    return line
-
-
-def own_data_empty(data):
-    r"""이 PC 가 직접 모은 자료가 없는가 — data\ 의 수집 폴더(추가PC 제외)에 쓸 만한 CSV 가 하나도 없으면 True.
-
-    폴더째 옮겨 오면 지난 PC 자료는 data\추가PC\<지난 PC>\ 로 보관되고 이 PC 것은 아직 없다. 그 상태에서
-    [재분석만]을 누르면 예전에는 수집을 건너뛰어 **옮겨 온 PC 의 자료만** 분석했다(제보). 이 함수로 그 상태를 알아낸다."""
-    for sub in ("outlook", "files", "pc", "m365", "activity", "manual"):
-        p = os.path.join(data, sub)
-        if not os.path.isdir(p):
-            continue
-        try:
-            for n in os.listdir(p):
-                if n.lower().endswith(".csv") and os.path.getsize(os.path.join(p, n)) > 200:
-                    return False
-        except OSError:
-            continue
-    return True
-
-
-def has_extra_pc(data):
-    r"""data\추가PC\<PC>\ 보관본이 하나라도 있는가"""
-    base = os.path.join(data, "추가PC")
-    try:
-        return os.path.isdir(base) and any(os.path.isdir(os.path.join(base, n)) for n in os.listdir(base))
-    except OSError:
-        return False
-
-def archive_other_pc(data):
-    r"""추가 PC 취합 — 폴더째 다른 PC 로 옮겨 왔으면, 지난 PC 의 수집 데이터를
-    data\추가PC\<지난 PC 이름>\ 으로 보관하고 이번 PC 것을 새로 수집하게 한다.
-    분석은 본 폴더 + 추가PC\* 를 전부 합쳐 계산한다(중복은 자동 제거)."""
-    try:
-        name_f = os.path.join(data, "pc_name.txt")
-        id_f = os.path.join(data, "pc_id.txt")
-        here = os.environ.get("COMPUTERNAME", "").strip()
-        here_id = machine_id()
-        prev = prev_id = ""
-        if os.path.exists(name_f):
-            prev = open(name_f, encoding="utf-8-sig").read().strip()
-        if os.path.exists(id_f):
-            prev_id = open(id_f, encoding="utf-8-sig").read().strip()
-        # 둘 다 식별자가 있으면 식별자로 판정한다(이름이 바뀌는 VDI 대응). 하나라도 없으면 —
-        # 예전 판본에서 올라온 폴더이거나 레지스트리를 못 읽는 환경 — 기존대로 이름으로 판정한다.
-        if prev_id and here_id:
-            moved_pc = prev_id != here_id
-        else:
-            moved_pc = bool(prev and here and prev != here)
-        if moved_pc:
-            # 폴더 이름은 사람이 읽는 것이라 이름표를 쓴다. 이름표가 없는데 식별자만 다른 경우
-            # (예전 판본에서 올라온 폴더)에도 폴더 이름은 있어야 하므로 대체 이름을 만든다.
-            keep = os.path.join(data, "추가PC", prev or ("이전PC-" + time.strftime("%Y%m%d")))
-            # 이미 있는 보관본은 지우지 않는다 — 옮기다 실패하면 그 PC 자료를 통째로 잃는다
-            # (검증 확정). 분석은 추가PC\* 를 전부 합치므로 형제 폴더로 두면 된다.
-            if os.path.isdir(keep):
-                keep = keep + "-" + time.strftime("%Y%m%d-%H%M%S")
-            os.makedirs(keep, exist_ok=True)
-            moved, failed = [], []
-            # programs = 실행 기록 스냅샷(LM28 — 장마다 PC 열쇠가 있어 섞여도 분석은 PC 별로 가른다 · 보관해 두면 본 폴더가 이 PC 것만 갖는다)
-            for sub in ("outlook", "files", "pc", "m365", "activity", "programs"):
-                src_d = os.path.join(data, sub)
-                if not os.path.isdir(src_d):
-                    continue
-                try:
-                    # 같은 볼륨 rename 은 원자적 — 실패해도 원본이 그대로 남는다.
-                    # shutil.move 는 복사+삭제로 넘어가며 실패 시 원본을 훼손할 수 있다.
-                    os.rename(src_d, os.path.join(keep, sub))
-                    moved.append(sub)
-                except OSError as ex2:
-                    failed.append(f"{sub}({type(ex2).__name__})")
-            # 보관하며 data\activity·data\pc 를 통째로 옮기면 그 폴더가 사라진다 — 빈 폴더를 되만들어
-            # 둔다(이 PC 의 새 수집이 같은 자리에 쌓인다).
-            for sub in ("activity", "pc"):
-                try:
-                    os.makedirs(os.path.join(data, sub), exist_ok=True)
-                except OSError:
-                    pass
-            print(f"\n[추가 PC 취합] 지난 수집({prev})을 {os.path.basename(keep)} 폴더로 보관했습니다"
-                  f" ({', '.join(moved) or '없음'})")
-            if failed:
-                print(f"               옮기지 못한 폴더: {', '.join(failed)} — 그 폴더를 쓰는 프로그램"
-                      "(탐색기·Excel 등)을 닫고 다시 실행하면 함께 보관됩니다. 자료는 지우지 않았습니다.")
-            print(f"               이번 PC({here})의 데이터를 새로 수집하고, 분석은 두 PC 를 합쳐 계산합니다.")
-            record("추가 PC 보관", not failed, 0.0,
-                   f"{prev} → {os.path.basename(keep)}"
-                   + (f" · 옮기지 못함: {', '.join(failed)}" if failed else ""))
-        if here_id:
-            # 식별자도 어떤 경우에도 남긴다(이름표와 같은 이유). 이것이 있어야 다음 실행이
-            # 이름이 바뀐 같은 PC 를 '다른 PC' 로 오해하지 않는다.
-            try:
-                with open(id_f, "w", encoding="utf-8") as f:
-                    f.write(here_id)
-            except OSError:
-                pass
-        if here:
-            # 이름표는 어떤 경우에도 남긴다 — 남기지 않으면 다음 실행이 같은 보관을 또 시도해
-            # 한 번의 일시적 오류가 영구 손실로 번진다(검증 지적)
-            try:
-                with open(name_f, "w", encoding="utf-8") as f:
-                    f.write(here)
-            except OSError:
-                pass
-    except OSError as ex:
-        print(f"[추가 PC 취합] 보관 건너뜀({type(ex).__name__}) — 이번 수집이 기존 데이터를 덮습니다")
 
 
 def open_ledger(c, data):
-    r"""일자×축 원장(data\coverage_ledger.json) — 판(LM28-COV-1|collect.cursorEpoch)·PC 가 다르면 비운 채로 연다."""
+    r"""일자×축 원장(data\coverage_ledger.json) — 판(AF32-COV-1|collect.cursorEpoch)·설치가 다르면 비운 채로 연다.
+    설치 표식은 data\install.json 의 install_id 앞 12자(폴더째 옮겨도 같은 설치 — 메일·일정은 계정에 있다)."""
     try:
-        epoch = int(((c.get("collect") or {}).get("cursorEpoch")) or 1)
-    except (TypeError, ValueError, AttributeError):
+        epoch = int(afcfg.get(c, "collect.cursorEpoch") or 1)
+    except (TypeError, ValueError):
         epoch = 1
-    host = machine_id() or os.environ.get("COMPUTERNAME", "")
+    try:
+        host = "i:" + install.install_id(ROOT)[:12]
+    except OSError:
+        host = ""
     led = coverage.Ledger.load(os.path.join(data, coverage.FILE_NAME), ver=f"{coverage.LEDGER_VER}|{epoch}", host=host)
     if led.dropped:
-        print("   (수집 원장을 처음부터 — " + ("collect.cursorEpoch 가 바뀌었습니다" if led.dropped == "ver"
-                                          else "다른 PC 의 원장입니다") + ")")
+        why = {"ver": "collect.cursorEpoch 가 바뀌었습니다",
+               "raw_purged": "보관기한이 지나 수집 자료를 지워 처음부터 읽습니다"}.get(led.dropped, "다른 설치의 원장입니다")
+        print("   (수집 원장을 처음부터 — " + why + ")")
     elif led.dropped_src:
-        names = {"owa": "Outlook 웹", "teams_web": "팀즈 웹"}
+        names = {"owa": "Outlook 웹"}
         print("   (" + "·".join(names.get(s, s) for s in led.dropped_src)
               + " 의 지난 '읽음' 표시를 지우고 그 날들을 다시 읽습니다 — 확인 규칙이 바뀌었습니다)")
     return led
@@ -1124,10 +1083,10 @@ def open_ledger(c, data):
 
 def reset_cursors(c, data):
     r"""--reset-cursors — 수집기 커서와 원장을 지운다(다음 수집이 기간 전체를 처음부터 읽는다):
-    COM 달별 완료 표(data\outlook\src\coverage_com.json·옛 data\outlook\coverage.json) · 팀즈 웹 방 커서
-    (data\m365\teams_web_rooms.json) · 원장(모든 축 not_attempted). 수집한 행(CSV)은 지우지 않는다."""
+    Outlook 앱 달별 완료 표(data\outlook\src\coverage_com.json) · 원장(모든 축 not_attempted).
+    정제된 행(CSV)은 지우지 않는다."""
     gone = []
-    for rel in (("outlook", "src", "coverage_com.json"), ("outlook", "coverage.json"), ("m365", "teams_web_rooms.json")):
+    for rel in (("outlook", "src", "coverage_com.json"),):
         p = os.path.join(data, *rel)
         try:
             os.remove(p)
@@ -1145,15 +1104,57 @@ def reset_cursors(c, data):
     return led
 
 
+def _cdp_port():
+    """전용 Edge 디버그 포트 — copilotAuto.port(옛 판 포트면 lmname.CDP_PORT)."""
+    try:
+        port = int(afcfg.get(CFG["c"], "copilotAuto.port") or lmname.CDP_PORT)
+    except (TypeError, ValueError):
+        port = lmname.CDP_PORT
+    return lmname.CDP_PORT if lmname.is_old_edge(port=port) else port
+
+
+def clear_edge_site_data(why):
+    r"""Outlook 웹·Copilot 단계 뒤 — 전용 Edge 프로필의 Outlook·M365 사이트 자료(캐시·저장소)를 지운다(쿠키는 남긴다 —
+    로그인 유지 · tools\copilot_auto.clear_site_data). 이 실행이 전용 Edge 를 썼을 때만, 로그인 대기 중이면 두고 안내만 한다.
+    실패해도 실행은 계속한다. → 결과 dict | None."""
+    if not EDGE.get("used"):
+        return None
+    if STATE.get("login_pending"):
+        print("   (전용 Edge 가 로그인을 기다리는 중이라 사이트 자료는 다음 실행 끝에 지웁니다)")
+        return None
+    EDGE["used"] = False
+    fn = _CLEAR_SITE
+    try:
+        if fn is None:
+            fn = _copilot_mod().clear_site_data
+        r = fn(_cdp_port())
+    except Exception as e:  # noqa: BLE001 - 정리 실패가 실행 결과를 바꾸지 않는다
+        EDGE["used"] = True
+        record("전용 Edge 사이트 자료 지우기", False, 0.0, f"지우지 못했습니다({type(e).__name__}) — 다음 실행 끝에 다시 지웁니다")
+        return None
+    if isinstance(r, dict) and r.get("skipped"):
+        return r                    # 전용 Edge 가 떠 있지 않다(또는 그 포트가 우리 프로필이 아니다) — 지울 것이 없다
+    errs = [str(x) for x in (r.get("errors") or [])] if isinstance(r, dict) else []
+    ok = not errs and not (isinstance(r, dict) and r.get("ok") is False and not (r.get("cleared") or r.get("cache")))
+    note = ("Outlook·M365 사이트의 캐시·저장소를 지웠습니다(로그인은 그대로)" if ok
+            else f"지우지 못했습니다({', '.join(errs[:3]) or '사유 미상'}) — 다음 실행 끝에 다시 지웁니다")
+    print(f"   ({note})")
+    record("전용 Edge 사이트 자료 지우기", ok, 0.0, note)
+    if not ok:
+        EDGE["used"] = True
+    return r
+
+
 def close_edge_once(state, why):
     r"""우리가 띄운 전용 Edge 를 닫는다(tools\copilot_auto.close_own_edge — owner.json 이 있을 때만, CDP Browser.close).
-    한 실행에 1회. 이 실행의 웹 경로가 로그인을 기다리는 중(rc 2)이면 닫지 않고 안내만 한다 — 사람이 그 창에서
-    로그인하는 중일 수 있고, 다음 실행이 owner.json 의 Edge 를 다시 쓴다(F-17).
-    LM28: close_own_edge 가 닫기 전에 마지막 우리 Copilot 채팅을 지운다 — 그 뒤 단계 'Copilot 채팅 정리'(chat_stage)를 남긴다."""
+    한 실행에 1회. 닫기 전에 이 실행이 쓴 Outlook·M365 사이트 자료를 지운다(clear_edge_site_data). 이 실행의 웹 경로가
+    로그인을 기다리는 중(rc 2)이면 닫지 않고 안내만 한다 — 사람이 그 창에서 로그인하는 중일 수 있다.
+    close_own_edge 가 닫기 전에 마지막 우리 Copilot 채팅을 지운다 — 그 뒤 단계 'Copilot 채팅 정리'(chat_stage)를 남긴다."""
     if EDGE["closed"]:
         return None
     EDGE["closed"] = True
     try:
+        clear_edge_site_data(why)
         return _close_edge(state, why)
     finally:
         chat_stage()
@@ -1182,7 +1183,7 @@ def _close_edge(state, why):
 
 
 def _copilot_mod():
-    r"""tools\copilot_auto(같은 프로세스에 이미 올라와 있으면 그것) — Edge 닫기·채팅 정리 누계."""
+    r"""tools\copilot_auto(같은 프로세스에 이미 올라와 있으면 그것) — Edge 닫기·사이트 자료 지우기·채팅 정리 누계."""
     tools = os.path.join(ROOT, "tools")
     if tools not in sys.path:
         sys.path.insert(0, tools)
@@ -1205,9 +1206,9 @@ SLOW_MIN_SEC = 180             # 이보다 오래 걸린 단계만 '오래 걸�
 
 
 def slow_stages(stages=None, top=4, min_sec=SLOW_MIN_SEC, started=None, now=None):
-    r"""실행 끝 한 줄 — '총 1시간 45분 · 오래 걸린 단계: Outlook 대체③ Copilot 메일·일정 38분 · AI 판정 25분 …'(min_sec 넘은 단계를
-    긴 순으로 top 개 · 이름은 괄호 앞까지). 오래 걸린 단계가 없으면 "". LM28(2026-10-17): 1시간 45분 걸린 실행을 찍은 사진만으로는 어느
-    단계에서 시간이 갔는지 알 수 없었다 — 진행 로그 끝과 '완료' 단계 note 에 남겨 사진 한 장으로 안다. started = RUN['started']('%Y-%m-%d %H:%M')."""
+    r"""실행 끝 한 줄 — '총 1시간 45분 · 오래 걸린 단계: M365 Copilot 메일·일정 38분 · AI 판정 25분 …'(min_sec 넘은 단계를
+    긴 순으로 top 개 · 이름은 괄호 앞까지). 오래 걸린 단계가 없으면 "". started = 시작 시각('%Y-%m-%d %H:%M' — 시험용) ·
+    없으면 이번 실행의 RUN_T0(last_run.json 에는 날짜만 있어 그것으로는 걸린 시간을 셀 수 없다)."""
     st = [x for x in (RUN["stages"] if stages is None else stages) if isinstance(x, dict)]
 
     def _sec(x):
@@ -1226,9 +1227,9 @@ def slow_stages(stages=None, top=4, min_sec=SLOW_MIN_SEC, started=None, now=None
     parts = [f"{str(x.get('name') or '').split(' (')[0].strip()} {_min(_sec(x))}" for x in slow]
     head = ""
     try:
-        t0 = time.mktime(time.strptime(str(started if started is not None else RUN.get("started") or ""), "%Y-%m-%d %H:%M"))
-        head = f"총 {_min(max(0.0, (now if now is not None else time.time()) - t0))} · "
-    except (ValueError, OverflowError):
+        t0 = (time.mktime(time.strptime(str(started), "%Y-%m-%d %H:%M")) if started is not None else RUN_T0["t"])
+        head = f"총 {_min(max(0.0, (now if now is not None else time.time()) - t0))} · " if t0 else ""
+    except (ValueError, OverflowError, TypeError):
         head = ""
     return head + "오래 걸린 단계: " + " · ".join(parts)
 
@@ -1244,12 +1245,10 @@ def chat_report():
 
 
 def chat_stage():
-    r"""실행 끝 단계 'Copilot 채팅 정리' — 한 실행에 1회(close_edge_once 끝 · 실행 끝 정리 sweep_owned 뒤).
-    LM30(2026-10-21): 이번 실행의 셈(copilot_auto.chat_run_report — LM 기록 owned[]·실행별 셈 runs)으로 한 줄을 만든다:
-    'Copilot 채팅: 이번 실행에서 연 N개 · 지운 M개 · 남긴 K개 (까닭: …)' (+ 지난 실행에서 남은 것을 지웠으면 그 수). 진행 로그·콘솔(stdout)·
-    last_run.json(단계 note · chats 숫자 · chats_line)에 남고 화면의 마지막 실행 줄이 그대로 보여 준다. 제목·글은 없다.
-    시작 때 표식(CHATS['t0'])이 없으면(시험·직접 호출) 적지 않는다 · 연·지운·남긴 것이 없으면 적지 않는다. 화면이 '마지막 단계' 로 실패
-    지점을 말하므로 끝 단계(완료·종료) 앞에 둔다. 화면 조작으로 못 지운 까닭이나 삭제 멈춤이 있으면 ok=False."""
+    r"""실행 끝 단계 'Copilot 채팅 정리' — 한 실행에 1회(close_edge_once 끝).
+    이번 실행의 셈(copilot_auto.chat_run_report)으로 한 줄을 만든다: 'Copilot 채팅: 이번 실행에서 연 N개 · 지운 M개 · 남긴 K개
+    (까닭: …)'. 진행 로그·last_run.json(단계 note · chats 숫자 · chats_line)에 남는다. 제목·글은 없다.
+    시작 때 표식(CHATS['t0'])이 없으면 적지 않는다 · 연·지운·남긴 것이 없으면 적지 않는다. 끝 단계(완료·종료) 앞에 둔다."""
     t0 = CHATS.get("t0")
     CHATS["t0"] = None
     if t0 is None:
@@ -1281,441 +1280,34 @@ def chat_stage():
     return rep
 
 
-def _teams_rows(data, d0, d1):
-    r"""data\m365\teams_*.csv 의 기간 안 행 수(팀즈 na 판정 — 모든 출처 0행인가)"""
-    import glob
-    n = 0
-    for p in glob.glob(os.path.join(data, "m365", "teams_*.csv")):
-        try:
-            with open(p, encoding="utf-8-sig", errors="replace", newline="") as f:
-                n += sum(1 for r in csv.DictReader(f) if d0 <= str(r.get("time") or "")[:10] <= d1)
-        except (OSError, csv.Error):
-            continue
-    return n
-
-
-def collect_teams(c, d0, d1, data, ps, col, led=None, state=None):
-    r"""LM28 팀즈 사슬(W1-01·F-08·REQ-18) — Graph(clientId 있을 때) → 앱 창 읽기(늘 · 단락 없음) → 웹(Graph 가 기간을
-    다 확인하지 못했으면) → Copilot(teamsViaCopilot · 원장 teams 공백만) → G1 정제.
-    앱 창에서 새 줄을 얻었다고 웹을 건너뛰지 않는다 — 창 읽기는 화면에 그려진 대화만 읽는 보조 경로다(LM24 preferApp 단락
-    제거). rc 4(새 행 0)는 실패가 아니다. 웹 경로가 rc 2 면 남은 웹 경로는 login_pending 으로 건너뛴다.
-    팀즈 흔적(counts.teams_present)도 행도 없으면 teams 축을 na(해당 없음)로 둔다."""
-    if "--no-teams" in sys.argv:
-        return
-    state = state if isinstance(state, dict) else {}
-    led = led if led is not None else open_ledger(c, data)
-    headless = collect_headless(c)
-    present, graph_full = False, False
-    if (c.get("graph") or {}).get("clientId"):
-        # 비대화 모드 — 토큰이 만료됐을 때 device-code 입력을 기다리며 300초를 버리지 않는다
-        # (여기엔 콘솔이 없어 사용자는 그 프롬프트를 볼 수도 없다). 로그인은 --login-only 로.
-        # Graph 의 R-GRAPH-LOGIN(rc 3)은 Edge 로그인과 별개 — login_pending 으로 보지 않는다.
-        stg = run_collector("팀즈 채팅 (Graph)", [sys.executable, os.path.join(col, "Get-TeamsChats.py"),
-                                              "--from", d0, "--to", d1, "--non-interactive"], 300, src="teams_graph", led=led)
-        yday = _yday(d1)
-        graph_full = stg["rc"] == 0 and not stg["reasons"] and (yday < d0 or not led.gaps(("teams",), d0, yday)["teams"])
-    # 앱 창 읽기 — 늘(보조 · 화면에 그려진 대화만). 웹을 건너뛰는 근거로 쓰지 않는다.
-    stw = run_collector("팀즈 채팅 (앱 창 읽기 — 보조, 켜져 있는 대화)", ps + [os.path.join(col, "Get-TeamsWindow.ps1")],
-                        120, src="teams_window", led=led)
-    present = present or bool(stw["counts"].get("teams_present"))
-    name_w = "팀즈 채팅 (웹 — 전용 Edge, 앱이 꺼져 있어도)"
-    if graph_full:
-        record(name_w, True, 0.0, "건너뜀 — Graph 가 기간 전체를 확인")
-    elif state.get("login_pending"):
-        _skip_login(name_w)
-    elif c.get("teamsWeb", True):
-        stb = run_collector(name_w, [sys.executable, os.path.join(col, "Get-TeamsWeb.py"), "--from", d0, "--to", d1],
-                            1200, src="teams_web", led=led)
-        present = present or bool(stb["counts"].get("teams_present"))
-        _edge_rc2(stb, state, name_w, "Teams")
-    # 팀즈 흔적(설치·프로세스·웹 목록의 방)도 행도 없으면 해당 없음(na) — 그 PC 의 팀즈 공백을 '미관측'으로 세지 않는다
-    led.set_na("teams", not present and _teams_rows(data, d0, d1) == 0)
-    led.save()
-    # Copilot 은 '판정 엔진'이다. 팀즈 조회는 테넌트에 커넥터가 있어야만 되는 별개 기능이라, 없는 환경에서 계속 물으면
-    # 판정에 쓸 세션만 소진된다(실측) — 켜져 있어도 원장 teams 공백(이미 답한 날 제외)만 묻는다.
-    name_c = "팀즈 채팅 (Copilot — 원장 공백만)"
-    if headless:
-        pass
-    elif not c.get("teamsViaCopilot"):
-        print("\n── 팀즈 채팅 (Copilot 경로 건너뜀 — config.teamsViaCopilot=false)")
-        print("   팀즈는 앱 창 읽기·웹 경로(전용 Edge)·Graph 로 모읍니다.")
-        print("   Copilot 은 AI 판정 전용으로 아껴 둡니다.")
-        record("팀즈 채팅", True, 0.0, "Copilot 경로 건너뜀(설정)")
-    elif state.get("login_pending"):
-        _skip_login(name_c)
-    else:
-        g = led.gaps(("teams",), d0, _yday(d1), witness="teams_copilot")["teams"] if _yday(d1) >= d0 else []
-        if not g:
-            record(name_c, True, 0.0, "건너뜀 — 원장에 팀즈 미검증 날 없음(또는 이미 Copilot 이 답한 날)")
-        else:
-            stc = run_collector(name_c, [sys.executable, os.path.join(col, "Get-TeamsViaCopilot.py"), "--from", d0, "--to", d1,
-                                         "--ranges", coverage.fmt_ranges(g)],
-                                300 + 600 * max(1, coverage.n_days(g) // 30 + 1), src="teams_copilot", led=led)
-            _edge_rc2(stc, state, name_c, "Copilot")
-    led.save()
-    g1_teams(c, data)
-    report_gaps(led, d0, d1, ("teams",), "팀즈 원장(미확인 날)")
-
-
-GERP_STAGE = "GERP 근무 기록 읽기"
-GERP_KINDS_OK = ("ok", "logged_out", "no_table", "disabled", "no_url")
-
-
-def gerp_stage(c):
-    r"""LM30(2026-10-19) GERP 근무 기록 읽기 — 시험 기능(config attendance.gerp.enabled · 기본 꺼짐 — 꺼져 있으면 단계도 없다).
-    [분석 실행](수집 끝·업무 로드 추출 전)과 화면 [GERP 근무 기록 읽기](--web-only gerp)에서만 돈다 — [로컬PC 자료수집]·[재분석만]은 하지 않는다.
-    collect\Get-GerpWork.py 한 번: 사람이 전용 Edge 에서 로그인해 둔 GERP 근무 현황 화면을 우리 탭 하나로 읽어(로그인하지 않는다 —
-    로그아웃이면 읽지 않음) 지난 날의 근무 기록을 data\근태\gerp.csv(근태 기록 칸)에 모은다 → 분석의 +@(근태 기록 밖에서 LM 이 찾은 근무 —
-    core\attendance 머리말 14 · 근태에서 나온 값은 이 PC 에만).
-    로그아웃·표 없음은 알림이 아닌 평범한 진행 줄(단계 ok)이고, 오류여도 실행은 계속한다(단계만 실패로 적는다 — 사유 코드 없이 쉬운 말).
-    → {"kind", "rows", "gate_days"} | None(꺼짐)"""
-    try:
-        import attendance as _att
-        g = _att.norm_gerp(c)[0]
-    except Exception:  # noqa: BLE001 - 설정을 못 읽으면 꺼진 것으로 본다
-        return None
-    if not g["enabled"]:
-        return None
-    print(f"\n── {GERP_STAGE} (시험 기능 — 로그인해 둔 GERP 화면만 읽습니다)")
-    t0 = time.time()
-    try:
-        import gerp as _gp
-        lim = _gp.timeout_sec(g)
-    except Exception:  # noqa: BLE001
-        _gp, lim = None, 330
-    if not g["url"]:
-        # 켰지만 주소가 비었거나 http(s) 주소가 아니다 — 수집기도 Edge 도 띄우지 않는다(상태 파일에만 남겨 화면 카드가 말한다)
-        note = "GERP 근무 현황 화면 주소(attendance.gerp.url)가 비어 있거나 http(s) 주소가 아니라 읽지 않았습니다"
-        print("   " + note)
-        if _gp is not None:
-            try:
-                data = os.path.join(ROOT, "data")
-                _gp.write_status(data, _gp.make_status("no_url", datetime.now(), why=note, prev=_gp.read_status(data)))
-            except Exception:  # noqa: BLE001 - 상태 파일을 못 써도 실행은 계속
-                pass
-        record(GERP_STAGE, True, time.time() - t0, note)
-        return {"kind": "no_url", "rows": 0, "gate_days": 0}
-    rc, tail, how = _RUN_STEP([sys.executable, os.path.join(ROOT, "collect", "Get-GerpWork.py")], lim, GERP_STAGE)
-    st = collect_status.parse(tail, rc, src="gerp", how=how)
-    cnt = st.get("counts") if isinstance(st.get("counts"), dict) else {}
-    kind = str(cnt.get("kind") or "")
-    lines = [str(ln).strip() for ln in st.get("lines") or [] if str(ln).strip()][-6:]
-    for ln in lines:
-        print("   " + ln)
-    if how != "ok" or kind not in GERP_KINDS_OK:
-        kind = "error"
-        if how == "timeout":
-            lines.append("GERP 화면이 제때 답하지 않아 멈췄습니다 — 이번 분석은 지난번까지 모은 GERP 기록으로 계속합니다")
-            print("   " + lines[-1])
-    note = lines[-1] if lines else ("GERP 근무 기록을 읽지 못했습니다" if kind == "error" else "")
-    record(GERP_STAGE, kind != "error", time.time() - t0, note)
-    return {"kind": kind, "rows": _n(cnt.get("rows")), "gate_days": _n(cnt.get("gate_days"))}
-
-
-def web_only(c, kind, d0, d1, data, col):
-    r"""--web-only mail|teams|gerp — 화면의 [Outlook 웹 읽기]·[팀즈 웹 읽기]용(LM28 F-14): 기간(d0·d1)을 늘 넘기고, 읽은 뒤
-    원장·G1 정제(·메일은 병합)까지 한다. 사람이 누른 것이라 공백만이 아니라 기간 전체를 읽는다. 끝에 이 실행이 띄운
-    전용 Edge 를 닫는다(로그인 대기면 둔다). → 종료 코드(0 정상 · 2 로그인 필요 · 1 실패)
-    LM30(2026-10-19) gerp — [GERP 근무 기록 읽기](gerp_stage 한 번 — 원장·정제 없음 · 기간은 쓰지 않는다: 화면에 보이는 급여 기간을 읽는다).
-    로그아웃·표 없음도 0(알림 아님 — 화면이 상태 파일로 말한다), 오류·꺼짐만 1."""
-    if kind == "gerp":
-        st = gerp_stage(c)
-        if st is None:
-            print("\n── GERP 근무 기록 읽기 — 꺼져 있습니다(config attendance.gerp.enabled) · 읽지 않았습니다")
-            return 1
-        close_edge_once({}, "web_only")
-        return 0 if st["kind"] != "error" else 1
-    state = {}
+def web_only(c, kind, d0, d1, data, col, clamp=None):
+    r"""--web-only mail — 화면의 [Outlook 웹 읽기]: 기간(d0·d1) 전체를 Outlook 웹으로 읽고(수집기 안에서 G1) 원장·병합·수집 요약까지
+    한다. 끝에 사이트 자료를 지우고 이 실행이 띄운 전용 Edge 를 닫는다(로그인 대기면 둔다).
+    → 종료 코드(0 정상 · 2 로그인 필요 · 1 실패). 시작 거부(시작 확인·제한 고객·사내 도메인)는 RunStop."""
+    if kind != "mail":
+        print("[!] --web-only 뒤에는 mail 만 쓸 수 있습니다 (예: --web-only mail)")
+        return EXIT_FAIL
+    nm = "Outlook 웹 (전용 Edge — 화면에서 실행)"
+    if "owa" not in channels(c):
+        print(f"\n── {nm} — collect.channels 에 owa 가 없어 읽지 않았습니다")
+        record(nm, False, 0.0, "건너뜀 — collect.channels 에 owa 가 없습니다")
+        return EXIT_FAIL
     led = open_ledger(c, data)
-    sts = []
-    if kind in ("mail", "all"):
-        src_dir = os.path.join(data, "outlook", "src")
-        seed_legacy(data)
-        os.makedirs(src_dir, exist_ok=True)
-        nm = "Outlook 대체② Outlook 웹 (전용 Edge 프로필 — 화면에서 실행)"
-        st = run_collector(nm, [sys.executable, os.path.join(col, "Get-OutlookWeb.py"), "--from", d0, "--to", d1,
-                                "--out-dir", src_dir, "--tag", "owa"], 180 + 150 * _months(d0, d1), src="owa", led=led)
-        _edge_rc2(st, state, nm, "Outlook")
-        sts.append(st)
-        g1_mail(c, data)
-        merge_mail(c, data, led, d0, d1)
-        report_gaps(led, d0, d1, MAIL_AXES, "메일·일정 원장(미확인 날)")
-    if kind in ("teams", "all"):
-        nm = "팀즈 채팅 (웹 — 화면에서 실행)"
-        if state.get("login_pending"):
-            _skip_login(nm)
-        else:
-            st = run_collector(nm, [sys.executable, os.path.join(col, "Get-TeamsWeb.py"), "--from", d0, "--to", d1],
-                               1200, src="teams_web", led=led)
-            _edge_rc2(st, state, nm, "Teams")
-            sts.append(st)
-            g1_teams(c, data)
-            report_gaps(led, d0, d1, ("teams",), "팀즈 원장(미확인 날)")
+    src_dir = os.path.join(data, "outlook", "src")
+    os.makedirs(src_dir, exist_ok=True)
+    EDGE["used"] = True
+    st = run_collector(nm, [sys.executable, os.path.join(col, "Get-OutlookWeb.py"), "--from", d0, "--to", d1,
+                            "--out-dir", src_dir, "--tag", "owa"], 180 + 150 * _months(d0, d1), src="owa", led=led)
+    check_setup(st, data)
+    _edge_rc2(st, STATE, nm, "Outlook")
+    info = merge_mail(c, data, led, d0, d1)
+    report_gaps(led, d0, d1, MAIL_AXES, "메일·일정 원장(확인하지 못한 날)")
     led.save()
-    close_edge_once(state, "web_only")
-    if state.get("login_pending"):
-        return 2
-    return 0 if sts and all(s["ok"] for s in sts) else 1
-
-
-# ── 팀 서버 자동 보고(LM28 — [분석 실행]의 마무리) ────────────────────────────────────────────────────────────────
-# 사유는 화면 알림·배너·last_run.json 이 그대로 쓴다. teamup.py --upload --json 의 기계용 표식(unreachable·no_url·
-# results[].kind)에서 고른다 — 한국어 문구의 부분 문자열로 가르지 않는다(문구를 다듬어도 분류가 깨지지 않게).
-TR_PENDING_HINT = "결과 묶음은 대기로 남았습니다. 사내망에서 [팀 서버 업로드]를 누르면 밀린 것까지 보내집니다."
-# teamup 실행 상한(초) — teamup 이 스스로 1분 남짓에서 멈추므로(연결 확인 3초×2 · 답 45초 · 닿지 않거나 늦으면 남은 묶음 멈춤 ·
-# 새 묶음은 75초까지만 시작) 이 상한은 그마저 걸린 경우의 안전판이다(예전 1200초 — 느린 서버에 자동 보고가 몇 분씩 붙잡혔다)
-TR_CAP_SEC = 150
-TR_KIND = {"unreachable": "서버에 닿지 않음", "rejected": "서버 거부", "blocked": "보낼 수 없는 묶음",
-           "slow": "서버 응답 지연"}
-# LM30 시험판 보호(teamup.upload_guard — kind no_test_server) 의 사유. 실패가 아니라 예상된 '보내지 않음'(ok None)이라
-# 화면 알림·배너·콘솔 끝 [!] 줄 없이 진행 로그·단계 기록·상태 파일(카드의 '자동 보고 건너뜀')에만 남긴다
-TR_TEST = "시험용 팀 서버 주소 없음"
-TR_HINT = {
-    "서버에 닿지 않음": TR_PENDING_HINT,
-    "서버 응답 지연": ("서버가 제때 답하지 않았습니다 — 서버에 이미 저장됐을 수 있습니다. 결과 묶음은 대기로 남겨 다음 실행 때 다시"
-                 " 보냅니다(덮어쓰기라 결과는 같습니다). 바로 보내려면 [팀 서버 업로드]를 누르세요."),
-    "시간 상한으로 남김": ("밀린 묶음이 많아 시간 상한(약 1분) 안에 이번 결과까지 보내지 못했습니다. 결과 묶음은 대기로 남았습니다 —"
-                   " [팀 서버 업로드]를 누르면 이어서 보냅니다."),
-    "서버 거부": TR_PENDING_HINT + " 같은 거부가 되풀이되면 팀 서버 담당자에게 서버 로그 확인을 부탁하세요.",
-    "보낼 수 없는 묶음": ("결과 묶음은 대기로 남았지만 이대로는 보낼 수 없습니다 — 팀 취합 업로드 카드의 '보낼 수 없음' 사유를"
-                     " 고친 뒤 [분석 실행]을 다시 하세요."),
-    "대기 묶음 없음": "보낼 결과 묶음이 만들어지지 않았습니다 — 진행 로그의 '팀 업로드 묶음 준비' 사유를 확인한 뒤 [분석 실행]을 다시 하세요.",
-    "이번 결과 묶음 없음": ("이번 결과 묶음이 만들어지지 않았습니다 — 진행 로그의 '팀 업로드 묶음 준비' 사유를 확인한 뒤"
-                       " [분석 실행]을 다시 하세요."),
-    "주소 없음": "결과 묶음은 대기로 남았습니다. LoadMonitor30-팀서버주소.bat 에서 서버 IP·포트를 저장한 뒤 [팀 서버 업로드]를 누르세요.",
-    TR_TEST: ("LoadMonitor30-팀서버주소.bat 으로 시험용 팀 서버 IP·포트를 저장한 뒤 [팀 서버 업로드]를 누르면 대기 묶음까지 보내집니다"
-              " — 그전에는 기존 팀 서버의 LM28·LM29 결과를 덮지 않도록 보내지 않습니다."),
-    "보고 결과를 읽지 못함": TR_PENDING_HINT + " (원인은 진행 로그의 [teamup] 줄에 있습니다)",
-}
-# 보내지 않고 멈추는 경우(team_report(hold=)) — (사유, 안내, 알림 여부). 규칙이 임시로 뽑은 결과가 서버에 있던 같은 기간의
-# AI 결과를 덮지 않게 한다. 판정 실패는 알림(ok False — 화면 알림·배너), AI 를 끄고 돌린 실행은 조용히 건너뜀(ok None).
-TR_HOLD = {
-    "AI 판정 실패": ("AI 판정 실패로 보내지 않음",
-                 "AI 판정이 실패해 이번 결과는 규칙이 임시로 뽑은 것입니다. 팀 서버에 있던 같은 기간 결과를 덮지 않도록 자동 보고를"
-                 " 멈췄습니다 — [AI 연결 진단]으로 Copilot 상태를 확인한 뒤 [분석 실행]을 다시 하세요"
-                 " (이 결과를 그대로 보내려면 [팀 서버 업로드]).", True),
-    "AI 없이 실행": ("AI 정제 없이 실행해 보내지 않음",
-                 "보내려면 [팀 서버 업로드]를 누르세요.", False),
-}
-
-
-def _pending_count():
-    r"""report\upload_pending\ 의 대기 묶음 수(못 세면 0)"""
-    pend = os.path.join(REPORT_DIR["p"], "upload_pending")
-    try:
-        return len([x for x in os.listdir(pend) if x.endswith(".json")]) if os.path.isdir(pend) else 0
-    except OSError:
-        return 0
-
-
-def _teamup_mod():
-    r"""설치 폴더 뿌리의 teamup 모듈 — 동봉 파이썬(python\python311._pth)은 스크립트 폴더를 sys.path 에 넣지 않는다
-    (export.py 머리 주석). core 가 앞서게 뒤에 붙인다(같은 이름 모듈이 생겨도 core 가 이긴다)."""
-    if ROOT not in sys.path:
-        sys.path.append(ROOT)
-    import teamup
-    return teamup
-
-
-def team_report_wanted(c):
-    """이번 [분석 실행] 끝에 팀 서버로 자동 보고할까 — teamup.auto_report_on(config.teamUpload.autoReport · 기본 켬) 한 곳.
-    못 읽으면 켬(기본값) — 이 판단 하나 때문에 분석 마무리가 죽지 않게."""
-    try:
-        return bool(_teamup_mod().auto_report_on(c))
-    except Exception:  # noqa: BLE001 - teamup 임포트 실패(손상 설치)는 보고 단계가 따로 알린다
-        return True
-
-
-def _n(v):
-    try:
-        return max(0, int(v or 0))
-    except (TypeError, ValueError):
-        return 0
-
-
-def team_report_outcome(res, tag="", built=True):
-    r"""teamup.py --upload --json 의 마지막 줄 → 자동 보고 결과 {ok, sent, failed, pending, reason, hint, detail}.
-    · 성공 = **이번 실행의 묶음(tag)** 이 서버에 갔다. 밀려 있던 다른 묶음이 실패해도 이번 보고는 성공으로 둔다 — 지난
-      실패 하나가 실행할 때마다 알림을 띄우지 않게(그 묶음은 업로드 카드에 '보낼 수 없음' 으로 남고 detail 이 건수를 적는다).
-    · 이번 묶음을 만들지 못했으면(built=False) 같은 기간의 지난 묶음이 대신 갔어도 실패다 — 이번 결과가 아니다.
-    · 사유: 서버에 닿지 않음 · 서버 응답 지연 · 서버 거부 · 보낼 수 없는 묶음 · 대기 묶음 없음 · 이번 결과 묶음 없음 · 주소 없음 ·
-      시간 상한으로 남김 · 보고 결과를 읽지 못함(JSON 없음 — 시간 초과·실행 실패) · 보고 실패(그 밖). detail 은 화면 알림·상태 파일에만 쓴다.
-    · LM30 — 시험용 팀 서버 주소 없음(teamup 의 kind no_test_server · 시험판 보호)은 실패가 아니다: ok None(알림·배너 없음).
-    · LM28 — teamup 은 닿지 않거나(unreachable) 답이 늦으면(slow) 남은 묶음을 보내지 않고(left) 멈춘다. 이번 묶음이 그 남은
-      쪽이면 멈춘 사유가 이번 실패의 사유다(밀려 있던 다른 묶음의 '보낼 수 없음' 보다 먼저)."""
-    res = res if isinstance(res, dict) else {}
-    rs = [x for x in (res.get("results") or []) if isinstance(x, dict)]
-    pend = res.get("pending")
-    out = {"ok": False, "sent": _n(res.get("sent")), "failed": _n(res.get("failed")),
-           "pending": pend if isinstance(pend, int) and not isinstance(pend, bool) and pend >= 0 else None,
-           "reason": "", "hint": "", "detail": ""}
-    mine = next((x for x in rs if tag and str(x.get("tag") or "") == tag), None)
-    bad = [x for x in rs if not x.get("ok")]
-    left = _n(res.get("left"))
-    halt = next((x for x in bad if str(x.get("kind") or "") in ("unreachable", "slow")), None)
-    why, pick = "", None
-    if not res:
-        why = "보고 결과를 읽지 못함"
-    elif res.get("no_test_server") or str(res.get("kind") or "") == "no_test_server":
-        why, out["ok"], out["kind"], out["detail"] = TR_TEST, None, "no_test_server", str(res.get("note") or "")
-    elif res.get("no_url"):
-        why, out["detail"] = "주소 없음", str(res.get("error") or "")
-    elif res.get("unreachable"):
-        why, out["detail"] = "서버에 닿지 않음", str(res.get("error") or "")
-    elif not built:
-        why = "이번 결과 묶음 없음" if rs else "대기 묶음 없음"
-    elif mine is not None:
-        out["ok"] = bool(mine.get("ok"))
-        pick = None if out["ok"] else mine
-    elif not rs:
-        why, out["detail"] = (("보고 실패", str(res.get("error") or "")) if res.get("ok") is False
-                              else ("대기 묶음 없음", ""))
-    elif halt is not None:
-        pick = halt
-    elif left:
-        why, out["detail"] = "시간 상한으로 남김", str(res.get("stopped") or "")
-    elif bad:
-        pick = bad[0]
-    else:
-        out["ok"] = True                 # 이번 묶음 표식(tag)을 못 맞춘 결과 — 실패 없이 보냈으면 성공
-    if pick is not None:
-        why, out["detail"] = TR_KIND.get(str(pick.get("kind") or ""), "보고 실패"), str(pick.get("msg") or "")
-    if out["ok"]:
-        others = [x for x in bad if x is not mine]
-        notes = []
-        if others:
-            notes.append(f"밀려 있던 다른 묶음 {len(others)}건은 보내지 못했습니다 — 팀 취합 업로드 카드에서 사유를 확인하세요")
-        if left:
-            notes.append(f"밀려 있던 묶음 {left}건은 이번에 보내지 않고 대기로 남겼습니다")
-        if notes:
-            out["detail"] = " · ".join(notes)
-    else:
-        out["reason"] = why
-        out["hint"] = TR_HINT.get(why, TR_PENDING_HINT)
-        if why == "이번 결과 묶음 없음" and out["sent"]:
-            out["hint"] += f" (밀려 있던 묶음 {out['sent']}건은 보냈습니다)"
-    out["detail"] = out["detail"][:200]
-    return out
-
-
-def team_report(c, d0, d1, built=True, on=None, hold=""):
-    r"""[분석 실행] 끝 팀 서버 자동 보고 → 결과 dict(team_report_outcome + tag·via) | None(꺼짐·스텁·AI 없이 실행·LM30 시험판
-    보호 — 보내지 않음).
-    · hold(TR_HOLD 의 열쇠)가 있으면 보내지 않고 멈춘다 — 'AI 판정 실패' 는 실패(ok False — 화면 알림·배너), 'AI 없이 실행' 은
-      건너뜀(ok None). 묶음은 대기로 남아 [팀 서버 업로드]로 직접 보낼 수 있다.
-    · LM30 시험판 보호(teamup.upload_guard — 시험용 팀 서버 주소를 정하기 전 · 기본 주소 = 기존 팀 서버)면 teamup 을 띄우지도,
-      연결 확인도 하지 않고 '보내지 않음'(ok None — 사유 TR_TEST)으로 진행 로그·단계 기록·상태 파일에 남긴다. 알림·배너는 없다.
-    · teamup.py --upload --json 을 수집기와 같은 실행기(_RUN_STEP = core\proc.run_step — Job·시간 상한·60초 진행 줄)로 돌린다.
-      teamup 이 먼저 ping(3초 × 최대 2번)해 닿지 않으면 곧바로 끝나고, 보내지 못한 묶음은 그대로 대기로 남는다(주소는 teamaddr 한 곳).
-      답이 늦거나 끊기면 teamup 이 거기서 멈추므로 1분 남짓이면 끝난다 — 상한 TR_CAP_SEC(150초)는 안전판이다.
-    · 사람용 줄만 콘솔·화면 로그에 옮기고 기계용 마지막 JSON 줄은 찍지 않는다(bat 화면이 읽기 쉽게).
-    · 남기는 곳: last_run.json 단계 '팀 서버 자동 보고'(사유·건수만 — 서버 응답·경로 원문은 싣지 않는다: 얼린 보고서의
-      /api/dash 에 굳는다)와 report\team_report_status.json(화면 알림·배너 재료 · /api/teamreport — 얼린 사본에는 없다).
-    · 스텁 판정(LM_COPILOT_STUB — 시험 전용)은 보내지 않는다 — 화면 배너가 '팀에 올리지 마세요' 라고 말하는 결과다."""
-    name = "팀 서버 자동 보고"
-    tag = f"{d0.replace('-', '')}-{d1.replace('-', '')}"
-    t0 = time.time()
-    try:
-        tu = _teamup_mod()
-    except Exception as e:  # noqa: BLE001 - 손상 설치(teamup.py 없음)여도 이미 저장된 분석 결과·마무리는 끝까지 간다
-        tu, st = None, team_report_outcome({})
-        st["detail"] = f"teamup 을 읽지 못했습니다({type(e).__name__})"
-    else:
-        on = tu.auto_report_on(c) if on is None else on
-        if not on or os.environ.get("LM_COPILOT_STUB"):
-            why = ("꺼짐(config.teamUpload.autoReport=false)" if not on
-                   else "스텁 판정(LM_COPILOT_STUB — 시험 전용) 결과라 보내지 않음")
-            note = f"{why} — 결과 묶음은 대기로 남습니다. 사내망에서 [팀 서버 업로드]로 보내세요"
-            print(f"\n── {name} — 건너뜀\n   {note}")
-            record(name, True, 0.0, note)
-            tu.write_report_status(REPORT_DIR["p"], {"ok": None, "off": True, "sent": 0, "failed": 0,
-                                                     "pending": _pending_count(), "reason": why, "hint": "",
-                                                     "tag": tag, "via": "auto"})
-            return None
-        if hold:
-            why, hint, alarm = TR_HOLD.get(hold, (hold, TR_PENDING_HINT, True))
-            st = {"ok": False if alarm else None, "sent": 0, "failed": 0, "pending": _pending_count(),
-                  "reason": why, "hint": hint, "detail": "", "tag": tag, "via": "auto"}
-            print(f"\n── {name} — 보내지 않음\n   {why} · 대기 {st['pending']}건 — {hint}")
-            record(name, not alarm, 0.0, f"{why} — {hint}")
-            tu.write_report_status(REPORT_DIR["p"], dict(st, at=time.strftime("%Y-%m-%d %H:%M:%S")))
-            return st if alarm else None
-        try:
-            guard = tu.upload_guard(c)
-        except Exception:  # noqa: BLE001 - 판단을 못 하면 teamup --upload 가 같은 함수로 다시 본다(거기서도 막힌다)
-            guard = ""
-        if guard:
-            print(f"\n── {name} — 보내지 않음(LM30 시험판)")
-            st = team_report_outcome({"ok": None, "kind": tu.NO_TEST_KIND, "note": guard, "pending": _pending_count()},
-                                     tag=tag, built=built)
-        else:
-            print(f"\n── {name} (서버에 닿는지 먼저 확인합니다 — 닿지 않으면 결과 묶음은 대기로 남습니다)")
-            rc, tail, how = _RUN_STEP([sys.executable, os.path.join(ROOT, "teamup.py"), "--upload", "--json"],
-                                      TR_CAP_SEC, name)
-            res = {}
-            for ln in tail:
-                s = str(ln or "").strip()
-                if s.startswith("{") and s.endswith("}"):
-                    try:
-                        o = json.loads(s)
-                    except ValueError:
-                        o = None
-                    if isinstance(o, dict):
-                        res = o
-                        continue
-                if s:
-                    print("   " + s)
-            st = team_report_outcome(res, tag=tag, built=built)
-            if not res:
-                st["detail"] = (f"{TR_CAP_SEC}초 안에 끝나지 않아 끊었습니다" if how == "timeout"
-                                else next((str(x) for x in reversed(tail) if str(x).strip()), f"teamup.py 종료 코드 {rc}"))[:200]
-    if st.get("pending") is None:
-        st["pending"] = _pending_count()
-    st.update(tag=tag, via="auto")
-    if st["ok"]:
-        note = (f"보냄 {st['sent']}건" + (f" · 대기 {st['pending']}건" if st["pending"] else "")
-                + (f" · {st['detail']}" if st.get("detail") else ""))
-        print(f"   → 팀 서버 보고 완료 — {st['sent']}건" + (f" ({st['detail']})" if st.get("detail") else ""))
-    elif st["ok"] is None:
-        # 보내지 않음(LM30 시험판 보호) — 실패 줄 없이 까닭과 할 일만. 단계 기록에는 주소를 싣지 않는다(얼린 사본의 /api/dash 에 굳는다)
-        note = f"보내지 않음: {st['reason']} — 대기 {st['pending']}건 — {st['hint']}"
-        print(f"   {st.get('detail') or st['reason']}")
-        print(f"   → 대기 {st['pending']}건 — {st['hint']}")
-    else:
-        note = f"실패: {st['reason']} — 보냄 {st['sent']}건 · 대기 {st['pending']}건 — {st['hint']}"
-        print(f"   [!] 팀 서버 자동 보고 실패 — {st['reason']}" + (f" ({st['detail'][:120]})" if st.get("detail") else ""))
-        print(f"       {st['hint']}")
-    record(name, st["ok"] is not False, time.time() - t0, note)
-    if tu is not None:
-        tu.write_report_status(REPORT_DIR["p"], dict(st, at=time.strftime("%Y-%m-%d %H:%M:%S")))
-    return None if st["ok"] is None else st
-
-
-# 팀 공유폴더 내보내기(export.py — config.teamShareDir 가 있을 때 [분석 실행]의 맨 끝) 상한(초). LM28(2026-10-19): 예전에는 상한 없이
-# 기다려, 닿지 않는 공유폴더(\\서버\… — 사내망 밖)에서 SMB 시간 초과가 실행을 몇 분씩 붙잡았다(그동안 화면은 '실행 중' — [데이터 리셋]도
-# 못 했다). 팀 서버 보고와 같은 실행기(_RUN_STEP — Job 째 끊기 · 60초 진행 줄)로 돌린다. 끊어도 공유폴더는 이전 결과 그대로다(export.py 는
-# 임시 폴더에 다 모은 뒤에만 옮긴다).
-EXPORT_CAP_SEC = 120
-
-
-def share_export(c, d0, d1):
-    r"""[분석 실행] 끝 팀 공유폴더 내보내기 → (rc, how) | None(teamShareDir 없음 — 하지 않음). export.py 의 사람용 줄을 그대로 옮기고,
-    EXPORT_CAP_SEC 안에 끝나지 않으면 끊고 한 줄로 알린다(분석 결과·팀 서버 보고와는 무관 — 다음 실행 때 다시 내보낸다)."""
-    if not (c.get("teamShareDir") or "").strip():
-        return None
-    name = "팀 공유폴더 내보내기"
-    print(f"\n── {name}")
-    rc, tail, how = _RUN_STEP([sys.executable, os.path.join(ROOT, "export.py"), "--from", d0, "--to", d1],
-                              EXPORT_CAP_SEC, name)
-    for ln in tail:
-        if str(ln or "").strip():
-            print("   " + str(ln).strip())
-    if how == "timeout":
-        print(f"   [!] 팀 공유폴더가 {EXPORT_CAP_SEC}초 안에 답하지 않아 내보내기를 멈췄습니다 — 공유폴더에 닿는 망에서 다음 "
-              "[분석 실행] 때 다시 내보냅니다(분석 결과와 공유폴더의 이전 결과는 그대로)")
-    elif how != "ok":
-        print(f"   [!] 팀 공유폴더 내보내기를 끝내지 못했습니다({how}) — 다음 [분석 실행] 때 다시 내보냅니다")
-    return rc, how
+    write_summary(c, data, d0, d1, clamp, {"owa": st.get("rc")}, info)
+    close_edge_once(STATE, "web_only")
+    if STATE.get("login_pending"):
+        return EXIT_PARTIAL
+    return EXIT_OK if st["ok"] else EXIT_FAIL
 
 
 STOP_STAGE = "중단(창 닫힘)"      # last_run.json 단계 이름(ui\app.py 와 같다) — 다음 화면이 '마지막 단계: 중단(창 닫힘)' 으로 말한다
@@ -1723,13 +1315,21 @@ EDGE_FAST_SEC = 2.5              # 콘솔 창 닫기 때 전용 Edge 닫기를 �
 
 
 def console_close(ev=None, budget=EDGE_FAST_SEC):
-    r"""콘솔 창(LoadMonitor30.bat)을 닫을 때(core\proc.on_console_close) — 윈도가 주는 몇 초 안에 끝나는 것만 한다.
+    r"""콘솔 창(AgentFinder32.bat)을 닫을 때(core\proc.on_console_close) — 윈도가 주는 몇 초 안에 끝나는 것만 한다.
     Job 에 든 자식(수집기·mine·judge·copilot_auto)은 이 프로세스와 함께 끝나지만, Job 에서 이탈한 전용 Edge 는 남는다 —
-    Job 을 먼저 끝내고(proc.kill_all) 그 Edge 를 채팅 정리 없이(tidy=False — 정리는 최대 25초) budget 초까지만 기다려 닫는다.
-    로그인 대기 중(rc 2)이면 Edge 는 두고(사람이 그 창에서 로그인하는 중), last_run.json 에 '중단(창 닫힘)' 을 남긴다.
-    예외를 내지 않는다."""
+    Job 을 먼저 끝내고(proc.kill_all) 그 Edge 를 채팅 정리 없이(tidy=False) budget 초까지만 기다려 닫는다.
+    로그인 대기 중(rc 2)이면 Edge 는 두고, last_run.json 에 '중단(창 닫힘)' 을 남긴다. 예외를 내지 않는다.
+    Outlook 앱 원자료가 남았으면 지운다(정제할 시간이 없다 — 원자료는 남기지 않는다)."""
     try:
         proc.kill_all()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        drop_raw(os.path.join(ROOT, "data"))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        drop_run_lock()
     except Exception:  # noqa: BLE001
         pass
     try:
@@ -1758,15 +1358,163 @@ def keep_awake_wanted(c=None):
     return not (v is False or str(v).strip().lower() in ("false", "0", "off", "no"))
 
 
+# ── 시작 검사 ─────────────────────────────────────────────────────────────────────────────────────
+LOCK = {"path": None}           # 이 실행이 쥔 data\run.lock(놓을 때 내 pid 의 것만 지운다)
+LOCK_MSG = "이 폴더의 분석이 이미 돌고 있습니다(pid {pid}) — 그 실행이 끝난 뒤 다시 하세요"
+
+
+def take_run_lock():
+    r"""분석 잠금 data\run.lock {product, pid, date} 를 쥔다(C5 — 실행 내내 · 날짜만) → None(쥠) | 이미 쥔 다른 실행의 pid.
+    화면의 지우기([모두 지우기] 포함)와 retention.py --purge-all 이 이것을 보고(retention.run_active) 거절한다. 끝난 실행이 남긴 잠금은 치우고
+    쥔다. 임시 파일에 다 쓴 뒤 이름을 바꿔 쥔다(윈도의 rename 은 같은 이름이 있으면 실패한다 — 두 실행이 함께 쥐지 못한다).
+    잠금을 쓰지 못하면(자료 폴더에 쓸 수 없음) 알리고 잠금 없이 계속한다 — 그런 폴더에서는 뒤 단계가 스스로 멈춘다."""
+    p = retention.run_lock_path(ROOT)
+    tmp = f"{p}.{os.getpid()}.tmp"
+    try:
+        for _ in range(3):
+            other = retention.run_lock_pid(ROOT)
+            if other and other != os.getpid():
+                return other
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            if os.path.lexists(p):
+                retention._rm_file(p)                      # 끝난 실행이 남긴 잠금
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"product": lmname.PRODUCT, "pid": os.getpid(), "date": _today()}, f, ensure_ascii=False)
+            try:
+                os.rename(tmp, p)
+            except FileExistsError:
+                continue                                   # 다른 실행이 방금 쥐었다 — 누구인지 다시 본다
+            LOCK["path"] = p
+            return None
+        return retention.run_lock_pid(ROOT) or None
+    except OSError as e:
+        print(f"   (분석 잠금을 쓰지 못했습니다: {type(e).__name__})")
+        return None
+    finally:
+        if os.path.lexists(tmp):
+            retention._rm_file(tmp)
+
+
+def drop_run_lock():
+    r"""쥔 분석 잠금을 놓는다 — data\run.lock 의 pid 가 이 실행일 때만 지운다."""
+    p = LOCK.get("path")
+    LOCK["path"] = None
+    if not p:
+        return
+    d = _read_json(p)
+    if isinstance(d, dict) and d.get("pid") == os.getpid():
+        retention._rm_file(p)
+
+
+def resume_withdrawal(c):
+    r"""끝나지 않은 [모두 지우기]를 마저 한다(consent.resume_withdrawal — data\withdrawal.json 의 state 가 in_progress 일 때만
+    일한다) → 그 결과 dict | None(할 일이 없었다). 한 일은 한 줄로 알린다. 실패는 알리기만 한다(다음 시작 때 다시)."""
+    try:
+        res = consent.resume_withdrawal(ROOT, c)
+    except Exception as e:  # noqa: BLE001 - 시작을 막지 않는다(다음 시작 때 다시)
+        print(f"[지우기] 끝나지 않은 [모두 지우기]를 마저 하지 못했습니다({type(e).__name__}) — 다음 시작 때 다시 합니다")
+        return None
+    if not isinstance(res, dict):
+        return None
+    print("[지우기] 끝나지 않은 [모두 지우기]를 이어서 했습니다 — " + consent.withdraw_message(res))
+    return res
+
+
+def startup_purge(c):
+    r"""옛 LoadMonitor 자료 정리(retention.purge_legacy — D20) → 보관기한이 지난 자료 정리(retention.purge — D13) →
+    [모두 지우기] 뒤 남은 서버 사본 다시 지우기. 끝나지 않은 [모두 지우기] 마저 하기(resume_withdrawal)는 _main 이 분석 잠금을
+    쥐기 전에 한다.
+    실패는 알리기만 하고 실행은 계속한다. → (옛 자료 지운 수, 기한 지난 자료 지운 수)."""
+    try:
+        lg = retention.purge_legacy(ROOT)
+    except Exception as e:  # noqa: BLE001 - 정리 실패가 실행을 막지 않는다(다음 시작 때 다시)
+        lg = {"deleted": 0, "errors": [{"path": "", "why": type(e).__name__}]}
+    try:
+        pg = retention.purge(ROOT, c)
+    except Exception as e:  # noqa: BLE001
+        pg = {"deleted": 0, "errors": [{"path": "", "why": type(e).__name__}]}
+    n1, n2 = _n(lg.get("deleted")), _n(pg.get("deleted"))
+    errs = len(lg.get("errors") or []) + len(pg.get("errors") or [])
+    if n1 or n2 or errs:
+        print(f"[보관기한] 옛 LoadMonitor 자료 {n1}개 · 보관기한이 지난 자료 {n2}개를 지웠습니다"
+              + (f" · 지우지 못한 것 {errs}개(다음 시작 때 다시)" if errs else ""))
+    retry_withdrawals(c)
+    return n1, n2
+
+
+def retry_withdrawals(c):
+    r"""[모두 지우기] 뒤 조직장 서버에서 아직 못 지운 공유가 남았으면 다시 지운다(spec §6.2 — 시작할 때마다 ·
+    teamup.retry_withdrawals: data\withdrawal.json 과 표시("withdraw")한 영수증이 있을 때만). 시작 확인보다 먼저 — 지우는 중이어도
+    서버 사본은 지운다. 실패해도 실행은 계속한다."""
+    if ROOT not in sys.path:
+        sys.path.append(ROOT)        # 동봉 파이썬(._pth)은 스크립트 폴더를 sys.path 에 넣지 않는다 — teamup.py 는 ROOT 에 있다
+    try:
+        import teamup
+        r = teamup.retry_withdrawals(ROOT, c, timeout=5)
+    except Exception as e:  # noqa: BLE001 - 서버 사본 지우기 실패는 다음 시작 때 다시
+        print(f"[지우기] 조직장 서버 사본 다시 지우기를 건너뜀({type(e).__name__})")
+        return None
+    if r is None:
+        return None
+    left = int(r.get("left") or 0) if isinstance(r, dict) else 0
+    print("[지우기] " + ("조직장 서버에 남아 있던 공유를 지웠습니다" if not left
+                      else f"조직장 서버에서 아직 지우지 못한 공유 {left}건 — 다음 시작 때 다시 지웁니다"))
+    return r
+
+
+def end_purge(c):
+    r"""실행 끝 보관기한 정리(retention.purge) — 지운 것·못 지운 것이 있을 때만 단계로 남긴다."""
+    try:
+        pg = retention.purge(ROOT, c)
+    except Exception as e:  # noqa: BLE001
+        pg = {"deleted": 0, "errors": [{"path": "", "why": type(e).__name__}]}
+    n, errs = _n(pg.get("deleted")), pg.get("errors") or []
+    if n or errs:
+        note = f"보관기한이 지난 파일 {n}개를 지웠습니다" + (f" · 지우지 못한 것 {len(errs)}개(다음 시작 때 다시)" if errs else "")
+        print(f"\n── 보관기한 정리\n   {note}")
+        record("보관기한 정리", not errs, 0.0, note)
+    return n
+
+
+def _latest_run_meta():
+    r"""report\run_meta_*.json 중 가장 새 AgentFinder32 것 → dict | {}."""
+    best, best_t = {}, -1.0
+    for p in glob.glob(os.path.join(ROOT, "report", "run_meta_*.json")):
+        t = _mtime(p) or 0.0
+        if t <= best_t:
+            continue
+        m = _read_json(p)
+        if m.get("product") == lmname.PRODUCT:
+            best, best_t = m, t
+    return best
+
+
+def restricted_changed(restricted):
+    r"""제한 고객 목록이 지난 분석 이후 바뀌었나(D9) — 가장 새 run_meta 의 restricted_sha256 과 지금 파일의 sha256 이 다르면 True.
+    지난 기록이 없으면 False."""
+    prev = str(_latest_run_meta().get("restricted_sha256") or "").strip().lower()
+    cur = str(getattr(restricted, "sha256", "") or "").strip().lower()
+    return bool(prev) and bool(cur) and prev != cur
+
+
+def _stop(e):
+    """RunStop → 화면·last_run.json 에 남기고 종료 코드."""
+    print(f"\n[!] {e.message}")
+    if RUN.get("started"):
+        record(e.stage, False, 0.0, e.message)
+        RUN["finished"] = _today()
+        record("종료", False, 0.0, e.message)
+    return e.code
+
+
 def main():
-    """실행 전체 — 마지막 finally 에서 이 실행이 띄운 전용 Edge 를 1회 닫는다(로그인 대기면 둔다 · P6).
+    """실행 전체 — 마지막 finally 에서 이 실행이 띄운 전용 Edge 를 1회 닫는다(로그인 대기면 둔다).
     콘솔 창을 X 로 닫으면 finally 가 돌지 않는다 — console_close 가 그 몇 초 안에 작업 트리와 전용 Edge 를 정리한다
-    (Ctrl+C 는 예전처럼 KeyboardInterrupt → finally)."""
+    (Ctrl+C 는 KeyboardInterrupt → finally)."""
     proc.on_console_close(console_close)
     proc.quiet_errors()          # 수집기가 못 켜질 때 Windows 오류 창(0xc0000142)이 떠 [확인]까지 멈추지 않게 — 자식이 물려받는다
-    start_run_id()               # LM28 — 이번 실행의 표식(LM_RUN_ID): 사용량 제한으로 멈춘 기록이 이번 실행 것인지 가른다
-    # LM28(2026-10-18) — 분석이 도는 동안 PC 가 절전에 들어가지 않게(화면 꺼짐·화면 보호기·잠금은 그대로). 이 프로세스가 끝나면 윈도가
-    # 저절로 놓는다. 끄기: config.json keepAwakeDuringRun=false. 제보: "화면보호기로 꺼지는 경우가 있다"
+    start_run_id()               # 이번 실행의 표식(AF32_RUN_ID): 사용량 제한으로 멈춘 기록이 이번 실행 것인지 가른다
+    # 분석이 도는 동안 PC 가 절전에 들어가지 않게(화면 꺼짐·화면 보호기·잠금은 그대로). 끄기: config.json keepAwakeDuringRun=false
     if keep_awake_wanted():
         proc.keep_awake(True)
     try:
@@ -1776,143 +1524,182 @@ def main():
 
 
 def _main():
-    c = cfg()
-    # 기본 기간은 화면(UI 칩 '올해')·LoadMonitor30.bat 과 같은 '올해 1월 1일부터' — 셋이 달라(이번 달 1일 / 최근 3개월 /
-    # 올해) 나중에 돈 짧은 결과가 mtime 최신 규칙으로 화면을 차지해 "1월부터 보던 추이가 2주짜리가 됐다" 로 읽혔다(감사 재현).
-    d0 = arg("--from") or date.today().replace(month=1, day=1).isoformat()
-    d1 = arg("--to") or date.today().isoformat()
     data = os.path.join(ROOT, "data")
-    ps = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]
-    col = os.path.join(ROOT, "collect")
-    try:                                   # 잘못된 날짜로 수집기 전부를 헛돌리지 않는다
-        if date.fromisoformat(d0) > date.fromisoformat(d1):
-            print(f"[!] 시작일이 종료일보다 늦습니다: {d0} > {d1}")
-            return 1
-    except ValueError:
-        print(f"[!] 날짜 형식이 잘못됐습니다 (YYYY-MM-DD): --from {d0} --to {d1}")
-        return 1
-    RUN.update(period=[d0, d1], started=time.strftime("%Y-%m-%d %H:%M"),
-               ai_requested=("--ai" in sys.argv), skip_collect=("--skip-collect" in sys.argv),
-               finished=None)
-    record("시작", True, 0.0)
-    CHATS["t0"] = chat_totals()            # Copilot 채팅 정리 누계 — 실행 끝 단계 'Copilot 채팅 정리' 가 이 차이를 적는다
-    print(f"[LoadMonitor30] {d0} ~ {d1}"
-          + ("  · AI 판정 포함" if "--ai" in sys.argv else "  · AI 판정 없음(규칙 결과만)"))
-    if "--reset-cursors" in sys.argv:
-        reset_cursors(c, data)
-    wo = arg("--web-only")
-    if "--web-only" in sys.argv:
-        if wo not in ("mail", "teams", "all", "gerp"):
-            print("[!] --web-only 뒤에 mail · teams · all · gerp 중 하나를 적으세요 (예: --web-only mail --from 2026-01-01 --to 2026-06-30)")
-            return 1
-        rc_w = web_only(c, wo, d0, d1, data, col)
-        RUN["finished"] = time.strftime("%Y-%m-%d %H:%M")
-        record("완료(웹 읽기)", rc_w == 0, 0.0, {0: "", 2: "로그인 필요 — 전용 Edge 창에서 회사 계정 1회"}.get(rc_w, "일부 실패"))
-        return rc_w
+    # ① 설치 위치(클라우드·네트워크 동기화 폴더)·옛 LoadMonitor 프로그램 파일·설치 폴더 권한 — 아무것도 쓰지 않고 멈춘다
+    msg = install.startup_check(ROOT)
+    if msg:
+        EDGE["closed"] = True
+        print(f"[!] {msg}")
+        return EXIT_SETUP
+    if install.acl_note():
+        print(f"   {install.acl_note()}")
+    c = cfg(verbose=True)
+    CFG["c"] = c
+    # ② 끝나지 않은 [모두 지우기] 마저 하기 — 분석 잠금보다 먼저(data\ 를 통째로 지운다 · 지우는 중에는 어떤 실행도 돌지 않는다)
+    wiped = resume_withdrawal(c)
+    # ③ 분석 잠금 — 이 폴더의 다른 실행(화면·bat)이 돌면 멈춘다. 실행 내내 쥐고 끝에 놓는다
+    other = take_run_lock()
+    if other:
+        EDGE["closed"] = True
+        print(f"[!] {LOCK_MSG.format(pid=other)}")
+        return EXIT_FAIL
+    try:
+        return _main_locked(data, c, wiped)
+    except install.OwnerUnknown:
+        # 실행 중 설치 정보가 사라졌다(그 사이 지워졌다) — 이 실행이 쓴 파일을 지우고 주인을 모르는 자료로 멈춘다(종료 코드 4)
+        return _stop(gate_refused(data, "other_user", install.UNKNOWN_OWNER_MSG))
+    finally:
+        drop_run_lock()
 
-    # 추가 PC 취합 — 폴더째 옮겨 온 경우 지난 PC 데이터를 자동 보관 (분석 시 합산)
-    # ★ [재분석만](--skip-collect)이어도 **이 PC 자료가 하나도 없고 옮겨 온 보관본이 있으면** 한 번은 수집한다.
-    #   예전에는 수집을 통째로 건너뛰어 옮겨 온 PC 의 자료만으로 분석됐다(제보: "현재 PC 것도 추가 집계돼야 한다").
-    #   이 PC 자료가 이미 있으면 예전대로 건너뛴다 — [재분석만] 의 뜻(수집 없이 판정만)을 지킨다.
-    _skip = "--skip-collect" in sys.argv
-    # [재분석만] 이어도 **PC 가동 기록만** 최신으로 만든다 — 화면의 추이 선·PC 하한은 저장된 파일만
-    # 보기 때문에, 오래된 채로 다시 눌러도 숫자가 낫지 않았다(제보: "한 번에 되게 하라").
-    if _skip:
-        _need, _why = pc_history_gap(data, d0, d1)
-        if _need:
-            collect_pc_only(data, d0, d1, ps, col, _why)
-    if _skip and own_data_empty(data) and has_extra_pc(data):
-        print("\n[추가 집계] 이 PC 에서 모은 자료가 없고 옮겨 온 보관본(data\\추가PC)만 있습니다 —")
-        print("           [재분석만] 이지만 이 PC 자료를 한 번 수집한 뒤 두 PC 를 합쳐 분석합니다.")
-        record("추가 집계", True, 0.0, "이 PC 자료 없음 + 추가PC 보관본 있음 — 재분석만이어도 이 PC 수집 1회")
-        _skip = False
-    if not _skip:
-        archive_other_pc(data)
-        migrate_extra_pc_ledgers(data)     # 추가PC 보관본 1회 이행(v3 원장·멱등) — 실패해도 계속
-        led = open_ledger(c, data)         # 일자×축 원장 — 수집기 LMSTATUS ranges 가 쌓이고, 메일·팀즈 사슬이 공백을 본다
-        step("PC 가동 이력", ps + [os.path.join(col, "Get-PcOnHistory.ps1"), "-From", d0, "-To", d1], 300,
-             src="pc_events", led=led)
-        # 이벤트 로그가 롤오버로 기간을 못 덮으면 브라우저 '방문 시각'만으로 보강
-        # (URL·제목은 조회하지 않는다)
-        step("PC 가동 보강 (브라우저 방문 시각 — URL 미수집)",
-             [sys.executable, os.path.join(col, "Get-PcOnHints.py"), "--from", d0, "--to", d1], 240,
-             src="pc_hints", led=led)
-        # 메일: COM(달 단위 이어서 · 최대 3회) → 색인(늘) → 원장 공백만 웹 → 남은 날만 Copilot → 반입 → G1 → 병합
-        # [로컬PC 자료수집]은 메일·일정·팀즈를 읽지 않는다 — 계정 자료라 폴더를 받은 PC 의 [분석 실행]이 읽는다
-        account = collect_account_data(c)
-        if account:
-            collect_outlook(c, d0, d1, data, ps, col, led)
-            mail_fallbacks(c, d0, d1, data, ps, col, None, led, STATE)
-        else:
-            skip_account_data()
-        step("파일 수정 이력", ps + [os.path.join(col, "Get-FileActivity.ps1"), "-From", d0, "-To", d1], 300, src="files")
-        step("최근 문서 (Recent·MRU)", ps + [os.path.join(col, "Get-RecentFiles.ps1"), "-From", d0, "-To", d1], 180,
-             src="recent", led=led)
-        step("git 커밋 (SW개발)", [sys.executable, os.path.join(col, "Get-GitActivity.py"),
-                                "--from", d0, "--to", d1], 240, src="git", led=led)
-        # 프로그램 사용 이력(참고 지표 — MM 과 무관): 이 계정의 실행 흔적(UserAssist·작업 표시줄·BAM) 스냅샷 1장 — 상주 수집 없이,
-        # 관리자 권한 없이 1초 안팎. [분석 실행]·[로컬PC 자료수집] 모두 찍는다(기간 무관 — 누적값이라 장 사이 차이가 사용량)
-        step("프로그램 실행 기록 (참고)", [sys.executable, os.path.join(col, "Get-ProgramUsage.py")], 60, src="programs")
-        # 팀즈: Graph(설정 시) → 앱 창(늘 · 보조) → 웹(전용 Edge) → Copilot(원장 공백만) → G1
-        if account:
-            collect_teams(c, d0, d1, data, ps, col, led, STATE)
-        led.save()
-        if "--collect-only" in sys.argv:
-            close_edge_once(STATE, "collect_end")    # 수집만 — 수집 끝에 닫는다(로그인 대기면 둔다)
-        else:
-            # LM30(2026-10-19) GERP 근무 기록 읽기 — 시험 기능(기본 꺼짐 — 꺼져 있으면 아무것도 하지 않는다). [분석 실행]에서만, 업무 로드
-            # 추출(근태 기록 칸을 읽는 곳) 전에. 로그아웃·표 없음은 진행 줄 하나이고 오류여도 실행은 계속한다.
-            gerp_stage(c)
 
-    if "--collect-only" in sys.argv:
-        # 근무시간 실측을 **로드바 안에서** 계산·저장한다 — 예전에는 화면이 열릴 때 재계산해
-        # '끝났는데 탐색하듯 도는' CPU 가 로드바 밖에 있었다(제보). 실패해도 수집은 유효.
-        try:
-            from progress import progress as _pg
-            import extract as _XW
-            _pg("근무시간 실측", 0, 1)
-            print("\n── 근무시간 실측(추이 실선 재료 — 이 계산까지가 수집입니다)")
-            _cfgw = _XW.load_cfg()
-            # 제외어 = 내장 ∪ config.excludePathKeywords — core\privacy 한 곳(LM28: mine 을 임포트하면 sys.stdout 이 바뀐다)
-            import privacy as _PV
-            _exw = _PV.excluded_keywords(_cfgw)
-            from datetime import date as _date
-            _dd0, _dd1 = _date.fromisoformat(d0), _date.fromisoformat(d1)
-            _rows, _metaw = _XW.load_signals(data, _dd0, _dd1, _exw, _cfgw)
-            if _rows:
-                _wh, _hi = _XW.day_work_hours(data, _rows, _dd0, _dd1, _cfgw,
-                                              file_times=_metaw.get("file_times"))
-                _tgw = f"{d0.replace('-', '')}-{d1.replace('-', '')}"
-                _XW.save_day_hours(os.path.join(ROOT, "report"), _tgw, _wh)
-                # LM30(2026-10-18): 출퇴근 추정의 날짜별 자료도 같은 자리에(이 PC 전용 — 팀 묶음·공유폴더 목록에 없다)
-                import attendance as _ATW
-                _ad, _au, _ag = _ATW.take_local(_hi)          # _ag — 근태 기록과 견준 합계(+@)까지(LM30 2026-10-19)
-                _XW.save_attendance(os.path.join(ROOT, "report"), _tgw, _ad, _au, _ag)
-                print(f"   근무 실측 {len(_wh)}일 저장 — 본 PC 추이 실선에 그대로 쓰입니다")
-            _pg("근무시간 실측", 1, 1)
-        except Exception as _e:  # noqa: BLE001
-            print(f"   근무 실측 저장 보류({type(_e).__name__}) — 본 PC 분석 때 다시 계산됩니다")
-        # 화면 버튼 이름은 [로컬PC 자료수집](구 '추가 PC 수집'·'수집만' — 헷갈린다는 제보로 LM28 에서 바꿈). 팀 서버 보고는
-        # 하지 않는다 — 분석하지 않은 자료라 보낼 결과가 없고, 보고는 그 폴더를 받은 PC 의 [분석 실행] 끝에서 한 번 한다.
-        print("\n[로컬PC 자료수집] 이 PC 의 자료 수집을 마쳤습니다 — AI 분석·팀 서버 보고는 하지 않았습니다.")
-        print("        폴더째 분석할 PC 로 옮겨 [분석 실행]을 누르면 두 PC 자료가 합쳐집니다")
-        print("        (같은 메일·일정 등 겹치는 자료는 분석 때 자동 제외).")
-        RUN["finished"] = time.strftime("%Y-%m-%d %H:%M")
-        record("완료(로컬PC 자료수집)", True, 0.0, "로컬PC 자료수집 — 분석·팀 서버 보고는 폴더를 옮긴 PC 의 [분석 실행]에서")
+def skip_prune(c, data, d0, d1):
+    r"""--skip-collect(다시 읽지 않고 분석만) — 수집을 건너뛰어도 기간 창 밖 행은 지운다(D13): data\outlook\src\*.csv·mail.csv·
+    calendar.csv 의 창 밖 행과 원장의 창 밖 날(mailmerge.prune_window). 원장은 지운 날이 있을 때만 다시 쓴다. → 지운 행 수."""
+    import mailmerge
+    try:
+        led = open_ledger(c, data)
+        res = mailmerge.prune_window(data, (d0, d1), c, ledger=led)
+        if res.get("ledger_days"):
+            led.save()
+    except Exception as e:  # noqa: BLE001 - 정리 실패가 분석을 막지 않는다(다음 실행 때 다시)
+        print(f"   (기간 밖 행 정리 건너뜀: {type(e).__name__})")
         return 0
+    n = _n(res.get("rows"))
+    if n:
+        note = f"기간 밖 행 {n}개를 지웠습니다({', '.join(res.get('files') or [])})"
+        print(f"\n── 기간 밖 자료 정리\n   {note}")
+        record("기간 밖 자료 정리", True, 0.0, note)
+    return n
 
-    pc_import_hint(data, d0)               # LM30(2026-10-21) 예전 판 PC 가동 기록이 남아 있으면 가져오기 안내 한 줄
-    print("\n── 업무 로드 추출 (주40h 근무일 기준)")
+
+def _main_locked(data, c, wiped=None):
+    # ④ 옛 자료 정리 → 보관기한 정리
+    startup_purge(c)
+    # ⑤ 시작 확인 — 다른 사용자의 자료·주인을 모르는 자료이거나 [모두 지우기]가 끝나지 않았으면 아무것도 읽지 않는다.
+    #    쓰겠다는 뜻은 묻지 않는다(서면으로 따로 받는다 — consent.PAPER_CONSENT_LINE)
+    try:
+        consent.require(ROOT, c)
+    except consent.ConsentRequired as e:
+        EDGE["closed"] = True
+        if e.reason != "other_user":
+            # 내 설치의 자료([모두 지우기]가 끝나지 않았다) — 지난 실행이 남긴 원자료(§5.0, 다른 사람 이름·주소)는 정제할 수
+            # 없으니 읽지 않고 지운다. 다른 사용자의 자료(D17)는 지우지 않는다 — 본인이 화면·AgentFinder32.bat 에서 고를 때만.
+            drop_raw(data)
+        print(f"[!] {e.message}")
+        if e.reason == "other_user":
+            print("    AgentFinder32.bat 또는 화면(AgentFinder32-UI.bat)에서 이 자료를 지운 뒤 새로 시작할 수 있습니다.")
+        else:
+            print("    지우지 못한 파일을 연 프로그램을 닫고 다시 시작하면 마저 지웁니다.")
+        return gate_code(e.reason)
+    if wiped:
+        # 이 시작이 끝나지 않은 [모두 지우기]를 마쳤다 — 자료를 다 지운 그 시작에서 곧바로 다시 모으지 않는다(다음 시작은 새 설치)
+        EDGE["closed"] = True
+        print(f"[!] {WIPED_MSG}")
+        return EXIT_CONSENT
+    # 매일 정리 예약 작업을 설정(retention.scheduledPurge)에 맞춘다 — 하루 한 번만 작업 스케줄러에 묻는다(AF32_NO_TASK 면 아무것도 안 함).
+    # 분석이 시작한다(starting_run) — 이제 지울 자료가 생기므로 빈 설치여도 그 작업을 만든다(화면만 열 때는 자료가 있을 때만)
+    task = retention.sync_task(ROOT, c, starting_run=True)
+    if isinstance(task, dict) and task.get("message"):
+        print(f"[보관기한] {task['message']}")
+    RUN_T0["t"] = time.time()
+    RUN.update(started=_today(), finished=None, ai_requested=("--ai" in sys.argv),
+               skip_collect=("--skip-collect" in sys.argv))
+    # ⑥ 제한 고객 목록 — 없거나 형식이 틀리면 분석하지 않는다(D9)
+    import privacy
+    try:
+        restricted = privacy.load_restricted(c, ROOT)
+    except privacy.SetupRefused as e:
+        EDGE["closed"] = True
+        drop_raw(data)                     # 지난 실행이 남긴 원자료(이름·주소가 든 §5.0)는 정제 없이 지운다 — g1_com 과 같다
+        return _stop(RunStop(EXIT_SETUP, e.message))
+    # ⑦ 기간 — 오늘은 넣지 않고 어제까지, 최대 period.maxDays 일(D2)
+    try:
+        d0d, d1d, clamp = period.clamp(arg("--from") or None, arg("--to") or None, c)
+    except ValueError as e:
+        EDGE["closed"] = True
+        drop_raw(data)                     # 기간 없이는 정제하지 못한다 — 남은 원자료는 지운다(그 달들은 다음 실행이 다시 읽는다)
+        return _stop(RunStop(EXIT_FAIL, str(e), "기간 확인 필요"))
+    d0, d1 = d0d.isoformat(), d1d.isoformat()
+    os.environ["AF32_CLAMP"] = json.dumps(clamp, ensure_ascii=False)    # 단계 CLI 가 run_meta.clamped 에 싣는다
+    notice = period.notice_text(clamp, d0d, d1d, c)
+    # 제한 고객 목록이 바뀌었으면 지난 수집·분석 자료를 먼저 지운다(D9) — last_run.json 도 지워지므로 기록보다 먼저
+    force_collect, rnote = False, ""
+    if restricted_changed(restricted):
+        res = retention.purge_classes(ROOT)
+        force_collect = True
+        rnote = (f"제한 고객 목록이 바뀌어 지난 수집·분석 자료 {_n(res.get('deleted'))}개를 지웠습니다 — 수집부터 다시 합니다")
+    RUN.update(period=[d0, d1], clamped=clamp)
+    record("시작", True, 0.0, notice)
+    if force_collect:
+        print(f"\n[!] {rnote}")
+        record("제한 고객 목록 바뀜", True, 0.0, rnote)
+    CHATS["t0"] = chat_totals()            # Copilot 채팅 정리 누계 — 실행 끝 단계 'Copilot 채팅 정리' 가 이 차이를 적는다
+    print(f"[{lmname.PRODUCT}] {d0} ~ {d1}"
+          + ("  · AI 판정 포함" if "--ai" in sys.argv else "  · AI 판정 없음(규칙 결과만)"))
+    print("   이 도구는 Agentic AI 로 바꿀 만한 업무를 찾는 데만 씁니다. 결과는 이 PC 에 남고, "
+          "공유는 화면의 [공유] 탭에서 고를 때만 보냅니다.")
+    if notice:
+        print(f"   [기간] {notice}")
+    try:
+        if check_rules(c):                 # 정제 규칙이 바뀌었으면 지난 정제 자료를 지웠다 — 이번에는 수집부터
+            force_collect = True
+        if "--reset-cursors" in sys.argv:
+            reset_cursors(c, data)
+        recover_raw(c, data, d0, d1)       # 지난 실행이 남긴 원자료 — 정제하고 지운다
+        if "--web-only" in sys.argv:
+            rc_w = web_only(c, arg("--web-only"), d0, d1, data, os.path.join(ROOT, "collect"), clamp)
+            RUN["finished"] = _today()
+            record("완료(웹 읽기)", rc_w == EXIT_OK, 0.0,
+                   {EXIT_OK: "", EXIT_PARTIAL: "로그인 필요 — 전용 Edge 창에서 회사 계정 1회"}.get(rc_w, "일부 실패"))
+            return rc_w
+        skip = "--skip-collect" in sys.argv and not force_collect
+        if "--skip-collect" in sys.argv and force_collect:
+            print("   ([다시 읽지 않고 분석만]을 골랐지만 지난 자료를 지웠으므로 이번에는 수집부터 합니다)")
+        if skip:
+            skip_prune(c, data, d0, d1)    # 다시 읽지 않아도 기간 창 밖 행은 지운다(D13)
+        else:
+            collect(c, d0, d1, data, clamp)
+        recheck_consent(data, MINE_STAGE)
+    except RunStop as e:
+        return _stop(e)
+
+    rc_m = run_mine(data, d0, d1)
+    if rc_m is not None:
+        return rc_m
+    try:
+        ai_partial = run_ai(c, d0, d1) if "--ai" in sys.argv else no_ai(d0, d1)
+        recheck_consent(data, REPORT_STAGE)
+    except RunStop as e:
+        return _stop(e)
+    report_ok = build_report(d0, d1)
+    end_purge(c)
+    print("\n   공유는 화면(AgentFinder32-UI.bat)의 [공유] 탭에서 본인이 고를 때만 합니다 — "
+          "이 실행은 조직장에게 아무것도 보내지 않았습니다(AI 분석은 회사 M365 Copilot 을 씁니다).")
+    _slow = slow_stages()
+    if _slow:
+        print(f"\n── {_slow}")
+    rc = EXIT_PARTIAL if (STATE.get("login_pending") or ai_partial or not report_ok) else EXIT_OK
+    if STATE.get("login_pending"):
+        print("\n[!] 전용 Edge 창에서 회사 계정으로 로그인한 뒤 다시 실행하면 남은 날을 이어서 읽습니다.")
+    RUN["finished"] = _today()
+    record("완료", True, 0.0, (_slow + (" · " if _slow else "") + "일부만 끝났습니다") if rc else _slow)
+    return rc
+
+
+def run_mine(data, d0, d1):
+    r"""업무 분류 추출(mine.py <data> --from --to) — 출력을 흘려보내면서 꼬리를 보관한다(mine 이 죽으면 마지막 오류 줄이
+    last_run.json 에 실려 화면 배너로 보인다). 성공이면 None, 아니면 이 실행의 종료 코드."""
+    print(f"\n── {MINE_STAGE} (메일·일정 신호 → 업무 분류)")
     _t = time.time()
-    # 출력을 흘려보내면서 꼬리를 보관한다 — mine 이 죽으면 마지막 오류 줄이 last_run.json 에
-    # 실려 화면 배너로 보인다. 예전엔 모든 실패가 "신호 0건"으로 기록돼(실측: 회사 PC 에
-    # 신호 수천 건이 있는데도 그 메시지) 원격 진단이 불가능했다.
-    p = subprocess.Popen([sys.executable, os.path.join(ROOT, "mine.py"), data,
-                          "--from", d0, "--to", d1,
-                          "--name", c.get("owner") or os.environ.get("USERNAME", ""),
-                          "--func", c.get("function", "")],
-                         cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                         env=dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1"))
+    try:
+        p = subprocess.Popen([sys.executable, os.path.join(ROOT, "mine.py"), data, "--from", d0, "--to", d1],
+                             cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=_child_env(),
+                             text=True, encoding="utf-8", errors="replace")
+    except OSError as e:
+        record(MINE_STAGE, False, time.time() - _t, f"실행 실패({type(e).__name__})")
+        RUN["finished"] = _today()
+        record("종료", False, 0.0, f"{MINE_STAGE} 실행 실패")
+        return EXIT_FAIL
     tail = []
 
     def _on_mine(line):
@@ -1920,246 +1707,220 @@ def _main():
         tail.append(line)
         del tail[:-12]
 
-    _job_m = proc.attach(p)                                  # 멈춰 끊을 때 Job 째(taskkill 없음 · LM28)
-    stop_m = watch_child(p, _on_mine, "업무 로드 추출")   # 멈추면 끊는다(정체 감지)
+    _job_m = proc.attach(p)                                  # 멈춰 끊을 때 Job 째(taskkill 없음)
+    stop_m = watch_child(p, _on_mine, MINE_STAGE)            # 멈추면 끊는다(정체 감지)
     rc_m = p.wait()
     proc.release(_job_m, p.pid)
+    t_end = _today()
     if stop_m:
-        record("업무 로드 추출", False, time.time() - _t, stop_m)
+        record(MINE_STAGE, False, time.time() - _t, stop_m)
+        RUN["finished"] = t_end
         record("종료", False, 0.0, stop_m)
-        return 1
+        return EXIT_FAIL
     if rc_m == 0:
-        # 지난 판정 산출물은 이 시점부터 '옛것' 이다(V-01) — 정제본이 화면에 그대로 남지 않게 개명한다
+        # 지난 판정 산출물은 이 시점부터 '옛것' 이다 — 정제본이 화면에 그대로 남지 않게 이름을 바꾼다
         _inv, _inv_fail = invalidate_ai_outputs(d0, d1)
-        record("업무 로드 추출", True, time.time() - _t,
+        record(MINE_STAGE, True, time.time() - _t,
                (f"지난 판정 산출물 {len(_inv)}개 무효화(.stale)" if _inv else "")
                + (f" · 무효화 실패: {', '.join(_inv_fail)}" if _inv_fail else ""))
-    elif rc_m == 4:
-        record("업무 로드 추출", False, time.time() - _t, "결과 파일이 다른 프로그램(Excel 등)에서 열려 있어 저장 실패")
+        return None
+    if rc_m == 3 or (rc_m == 4 and gate_reason()):
+        # mine 이 시작 확인에 걸려 멈췄다(그 사이 [모두 지우기]가 시작됐거나 설치 정보가 사라졌다 — mine 은 지우는 중이면 3,
+        # 주인을 모르면 4 로 끝난다) — 이 실행이 쓴 파일을 남기지 않는다
+        e = gate_refused(data)
+        record(MINE_STAGE, False, time.time() - _t, e.message)
+        RUN["finished"] = t_end
+        record("종료", False, 0.0, e.message)
+        return e.code
+    if rc_m == 4:
+        why = next((ln.split("] ", 1)[-1] for ln in reversed(tail) if ln.startswith("[mine]")), "") or "설정 확인 필요"
+        record(MINE_STAGE, False, time.time() - _t, why[:200])
+        RUN["finished"] = t_end
+        record("종료", False, 0.0, why[:200])
+        return EXIT_SETUP
+    if rc_m == 5:
+        record(MINE_STAGE, False, time.time() - _t, "결과 파일이 다른 프로그램(Excel 등)에서 열려 있어 저장 실패")
         print("\n[!] 결과 CSV/MD 가 열려 있어 저장하지 못했습니다 — 해당 파일을 닫고 다시 실행하세요.")
+        RUN["finished"] = t_end
         record("종료", False, 0.0, "결과 파일 잠김 — Excel 등에서 열어둔 결과 파일을 닫고 재실행")
-        return 1
-    elif rc_m == 2:
-        record("업무 로드 추출", False, time.time() - _t, "신호 0건")
-        print("\n[!] 신호가 없습니다 — config.watchFolders 를 실제 작업 폴더로 바꾸고 다시 실행하세요.")
-        record("종료", False, 0.0, "신호 0건 — 수집 데이터가 기간과 맞는지 확인")
-        return 1
-    else:
-        err = next((ln for ln in reversed(tail)
-                    if "Error" in ln or "오류" in ln or "Traceback" in ln), tail[-1] if tail else "")
-        record("업무 로드 추출", False, time.time() - _t, f"오류로 중단: {err[:200]}")
-        print("\n[!] 업무 로드 추출이 오류로 중단됐습니다 — 위 오류 줄을 확인하세요.")
-        record("종료", False, 0.0, f"업무 로드 추출 오류: {err[:200]}")
-        return 1
+        return EXIT_FAIL
+    if rc_m == 2:
+        record(MINE_STAGE, False, time.time() - _t, "신호 0건")
+        print("\n[!] 이 기간에 분석할 메일·일정이 없습니다 — 화면의 [수집·제외 현황]에서 남긴 행과 뺀 항목을 확인하세요.")
+        print("    (Outlook 앱은 클래식 Outlook 이 켜져 있어야 합니다 · Outlook 웹은 전용 Edge 창에서 로그인 1회가 필요합니다)")
+        RUN["finished"] = t_end
+        record("종료", False, 0.0, "신호 0건 — 수집 자료가 기간과 맞는지 확인")
+        return EXIT_FAIL
+    err = next((ln for ln in reversed(tail) if "Error" in ln or "오류" in ln or "Traceback" in ln), tail[-1] if tail else "")
+    record(MINE_STAGE, False, time.time() - _t, f"오류로 중단: {err[:200]}")
+    print(f"\n[!] {MINE_STAGE}이 오류로 중단됐습니다 — 위 오류 줄을 확인하세요.")
+    RUN["finished"] = t_end
+    record("종료", False, 0.0, f"{MINE_STAGE} 오류: {err[:200]}")
+    return EXIT_FAIL
 
-    # 팀 서버 자동 보고를 멈출 사유 — 규칙이 임시로 뽑은 결과(AI 판정 전부 실패·AI 없이 실행)가 서버에 있던 같은 기간의
-    # AI 결과를 덮지 않게 한다. 실패는 알림(ok False), AI 를 끄고 돌린 실행은 조용히 건너뜀(ok None) — team_report(hold=).
-    _ai_hold = ""
-    if "--ai" in sys.argv:
-        # 한 번의 [분석 실행] 전체(판정+정제+Agentic+워크플로우) 마감을 자식들에게 물려준다.
-        # 예전에는 단계마다 독립 상한이라 합계가 몇 시간이 될 수 있었다(감사 실측). 0 이면 끔.
+
+def no_ai(d0, d1):
+    """--ai 없이 — 판정은 건너뛰고, 지난 AI 실행의 후보가 있으면 근거 건수만 다시 센다. → 일부만인가(False)."""
+    record("AI 판정", False, 0.0, "AI 판정을 켜지 않고 실행했습니다(--ai 없음)")
+    if os.path.exists(os.path.join(ROOT, "report", f"agentic_{d0.replace('-', '')}-{d1.replace('-', '')}.json")):
+        print("\n── Agentic AI 후보는 지난 AI 실행 것 — 근거 건수만 새 업무 행으로 다시 셉니다(화면에 '재추출 이후 결과' 표시)")
+        agentic_recalc_inproc(d0, d1)
+    print(f"\n다음: python run.py --from {d0} --to {d1} --skip-collect --ai   (AI 판정)")
+    return False
+
+
+def run_ai(c, d0, d1):
+    r"""--ai — 판정(judge) → 정제(refine) → Agentic AI 후보(agentic) → 업무 흐름(flow). Copilot 은 회사 테넌트 안에서만
+    (tools\copilot_auto). → 일부만인가(어느 단계든 0 이 아니게 끝났으면 True)."""
+    EDGE["used"] = True                     # 판정 단계들이 전용 Edge 의 Copilot 을 쓴다 — 끝에 사이트 자료를 지운다
+    partial = False
+    try:
+        _tot = float(c.get("aiTotalBudgetMin", 300) or 0)
+    except (ValueError, TypeError):
+        _tot = 300.0
+    if _tot > 0:
+        # 한 번의 [분석 실행] 전체(판정+정제+Agentic+업무 흐름) 마감을 자식들에게 물려준다. 업무 흐름(마지막 단계)·Agentic 몫은
+        # 선예약 — 앞 단계에는 전체 − 예약분만 물려주고, 그 단계 직전에 돌려준다(합계는 aiTotalBudgetMin 안).
+        _flow_reserve, _ag_reserve, _pre = start_ai_clock(c, _tot)
+        print(f"   (AI 단계 전체 마감 {_tot:.0f}분 — 업무 흐름 몫 {_flow_reserve:.0f}분·Agentic 몫 {_ag_reserve:.0f}분"
+              f" 선예약, 판정·정제는 {_pre:.0f}분 안에서 · config.aiTotalBudgetMin/flowBudgetMin/agenticReserveMin)")
+    data = os.path.join(ROOT, "data")
+    recheck_consent(data, "AI 판정")       # 단계마다 직전에 시작 확인을 다시 한다(그 사이 [모두 지우기]가 시작됐으면 보내지 않고 멈춘다)
+    print("\n── AI 판정 (과제·유형·세부업무 분류) — 시간이 걸립니다")
+    _t2 = time.time()
+    tag = f"{d0.replace('-', '')}-{d1.replace('-', '')}"
+    # 판정 0건(왕복 전부 실패)이면 judge 는 코드 3 과 {"ok":false,"error","hint"} 를 낸다
+    _WATCH_STATE_PATH["p"] = os.path.join(ROOT, "report", f"stage_state_{tag}_judge.json")
+    try:
+        rc, why_j = _run_capture([sys.executable, os.path.join(ROOT, "judge.py"), "--from", d0, "--to", d1], _child_env())
+    finally:
+        _WATCH_STATE_PATH["p"] = None
+    if rc:
+        consent_lost("AI 판정")
+    _stub = "스텁 판정(AF32_COPILOT_STUB — 테스트 전용, 실제 Copilot 아님)" if os.environ.get("AF32_COPILOT_STUB") else ""
+    if rc == 0:
+        _note_j = _stub
+    elif rc == 3:
+        _note_j = "AI 판정 실패(왕복 전부 실패)"
+        if why_j and not why_j.startswith(_note_j):
+            _note_j += f" — {why_j}"
+        elif why_j:
+            _note_j = why_j
+    else:
+        _note_j = f"judge.py 종료코드 {rc}" + (f" — {why_j}" if why_j else "")
+    if _stub and rc != 0:
+        _note_j += " · " + _stub
+    _thr = run_throttled()
+    if _thr:
+        say_throttle()
+        _note_j = THR_LINE + (f" · {_note_j}" if _note_j else "")
+    record("AI 판정", rc in (0, 2), time.time() - _t2,
+           ("부분 판정 — 다시 실행하면 남은 신호만 이어서 · " if rc == 2 else "") + str(_note_j or ""))
+    if _stub:
+        print(f"   [!] {_stub}")
+    if rc != 0:
+        partial = True
+    # 판정이 0 이 아니게 끝났어도 이번 실행에서 판정된 행이 있으면 뒤 단계를 계속한다(정제할 재료는 있다)
+    _partial_ok = False
+    if rc not in (0, 2):
+        _jp = os.path.join(ROOT, "report", f"ai_judgments_{tag}.json")
         try:
-            _tot = float(c.get("aiTotalBudgetMin", 300) or 0)
-        except (ValueError, TypeError):
-            _tot = 300.0
-        if _tot > 0:
-            # flow(마지막 단계) 몫 **선예약** — 앞 단계에는 전체 − 예약분만 물려준다. 예전에는 앞
-            # 단계가 전체를 소진하면 flow 가 15분 floor 로 굶어 워크플로우가 반쪽이 됐다(실측:
-            # 잔여 0분에서 120업무 중 60개 소실). 총 벽시계 상한은 그대로다 — flow 직전에 마감을
-            # 전체로 되돌리므로 합계는 여전히 aiTotalBudgetMin 안이다.
-            # Agentic 니즈 발굴 몫도 따로 선예약한다 — 판정·내러티브·정제가 마감을 다 쓰면 Agentic 은 15분 하한만 받아
-            # 업무 대부분을 보내지 못했다(LM28 실측). Agentic 직전에 그 몫을 돌려준다(agentic_deadline).
-            _flow_reserve, _ag_reserve, _pre = start_ai_clock(c, _tot)
-            print(f"   (AI 단계 전체 마감 {_tot:.0f}분 — 워크플로우 몫 {_flow_reserve:.0f}분·Agentic 몫 {_ag_reserve:.0f}분"
-                  f" 선예약, 판정·정제는 {_pre:.0f}분 안에서"
-                  " · config.aiTotalBudgetMin/flowBudgetMin/agenticReserveMin)")
-        print("\n── AI 판정 (계층 엔티티: 과제↔유형↔세부업무 + 월별 내러티브) — 시간이 걸립니다")
-        _t2 = time.time()
-        # 출력을 흘려보내며 마지막 줄 JSON 을 건진다 — judge 는 판정 0건(왕복 전부 실패)이면
-        # 코드 3 과 {"ok":false,"error","hint"} 를 낸다(F3). 예전에는 그 경우도 0 이라
-        # 'AI 판정 ok' 로 적히고 정제·Agentic·워크플로우가 빈손으로 계속 돌았다.
-        _WATCH_STATE_PATH["p"] = os.path.join(ROOT, "report",
-                                              f"stage_state_{d0.replace('-', '')}-{d1.replace('-', '')}_judge.json")
-        rc, why_j = _run_capture([sys.executable, os.path.join(ROOT, "judge.py"),
-                                  "--from", d0, "--to", d1],
-                                 dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1"))
-        _stub = "스텁 판정(LM_COPILOT_STUB — 테스트 전용, 실제 Copilot 아님)"             if os.environ.get("LM_COPILOT_STUB") else ""
-        if rc == 0:
-            _note_j = _stub
-        elif rc == 3:
-            _note_j = "AI 판정 실패(왕복 전부 실패)"
-            if why_j and not why_j.startswith(_note_j):
-                _note_j += f" — {why_j}"
-            elif why_j:
-                _note_j = why_j              # judge 가 이미 같은 머리말로 사유를 적어 보냈다
-        else:
-            _note_j = f"judge.py 종료코드 {rc}" + (f" — {why_j}" if why_j else "")
-        if _stub and rc != 0:
-            _note_j += " · " + _stub
-        # LM28 — 판정(월별 코멘트 포함)이 Copilot 사용량 제한으로 이번 실행의 AI 단계를 멈췄으면 한 줄로 알리고 기록 맨 앞에 싣는다
-        _thr = run_throttled()
-        if _thr:
-            say_throttle()
-            _note_j = THR_LINE + (f" · {_note_j}" if _note_j else "")
-        record("AI 판정", rc in (0, 2), time.time() - _t2,
-               ("부분 판정 — 다시 실행하면 남은 신호만 이어서 · " if rc == 2 else "") + str(_note_j or ""))
-        if _stub:
-            print(f"   [!] {_stub}")
-        # 판정이 0 이 아니게 끝났어도 **이번 실행에서 판정된 행이 있으면** 뒤 단계를 계속한다.
-        # 예전에는 무조건 건너뛰어, 정체 감지·상한에 한 번 걸리면 정제·Agentic·워크플로우가 전부
-        # 사라졌다(제보: "진행되다가 안 된다"). 판정 결과가 남아 있으면 정제할 재료는 있는 것이다.
-        _partial_ok = False
-        if rc not in (0, 2):
-            _jp = os.path.join(ROOT, "report",
-                               f"ai_judgments_{d0.replace('-', '')}-{d1.replace('-', '')}.json")
-            try:
-                if os.path.exists(_jp) and os.path.getmtime(_jp) >= _t2 - 5:
-                    with open(_jp, encoding="utf-8") as _f:
-                        _jj = json.load(_f)
-                    _n_judged = int(_jj.get("judged") or 0)
-                    if _n_judged > 0:
-                        _partial_ok = True
-                        print(f"   [!] 판정이 끝까지 가지 못했지만 {_n_judged}건은 판정됐습니다 — "
-                              "그 결과로 정제·Agentic·워크플로우를 계속합니다")
-                        print("       (남은 신호는 다시 실행하면 이어서 판정합니다)")
-                        _note_j += f" · 부분 판정 {_n_judged}건으로 뒤 단계 계속"
-                        record("AI 판정", False, time.time() - _t2, _note_j)
-            except (OSError, ValueError, TypeError):
-                _partial_ok = False
-        if rc not in (0, 2) and not _partial_ok:
-            _ai_hold = "AI 판정 실패"
-            _skip = (THR_SKIP if _thr else "AI 판정 왕복 전부 실패로 건너뜀" if rc == 3 else "판정 실패로 건너뜀")
-            print("   [!] AI 판정 실패 — 화면의 과제는 AI가 정리한 것이 아니라 규칙이 뽑은")
-            print("       임시 결과입니다. 위 judge 로그의 마지막 오류를 보세요.")
-            if rc == 3:
-                print(f"       판정 왕복이 전부 실패했습니다({why_j[:120] if why_j else '사유 없음'})")
-                print("       — 지난 실행의 내러티브·과제 체계 파일은 그대로 보존됩니다.")
-                # 정제본은 추출 직후 이미 .stale 로 개명됐다(V-01) — 즉 이번 화면의 '상위(업무 성격)'
-                # 칸은 비어 있다. 예전에는 그것을 아무도 말해 주지 않아 '상위과제 분류가 고장났다'
-                # 로 보였다(실측 제보). 무엇이 비었고 무엇을 하면 되는지 화면 배너에도 실어 보낸다.
-                print("       이번 화면의 '상위(업무 성격)' 분류는 비어 있습니다 — 그 값은 AI 정제가"
-                      " 채우는 것이고, 판정이 실패하면 정제를 돌리지 않습니다.")
-                print("       → 위 사유를 해결한 뒤 [재분석만]을 누르면 상위 분류까지 다시 채워집니다.")
-                _note_j += " · 상위(업무 성격) 분류 비어 있음 — 해결 후 [재분석만]"
-                record("AI 판정", False, time.time() - _t2, _note_j)
-            if not _thr:                     # 사용량 제한이면 원인은 이미 위 한 줄(THR_LINE)이 말했다
-                print("       흔한 원인: ① Copilot 로그인 만료(UI [AI 연결 진단]으로 확인)")
-                print("                  ② 모델 선택 실패 ③ 회사망 차단")
-            print("   → AI 정제·Agentic 니즈 발굴·워크플로우 건너뜀 (판정 없는 결과를 정제하면 낡은 정제본만 남습니다)")
-            record("AI 정제", False, 0.0, _skip)
-            record("Agentic 니즈 발굴", False, 0.0, _skip)
-            record("워크플로우 분석", False, 0.0, _skip)
-        else:
-            print("\n── AI 정제 (Level1·상세설명 문장화)")
-            _t3 = time.time()
-            # 다른 AI 단계와 같은 감시를 받게 한다 — 예전에는 timeout 도 정체 감지도 없는
-            # subprocess.run 이어서 정제가 멈추면 분석 전체가 여기서 영원히 서 있었다(실측 감사).
-            _WATCH_STATE_PATH["p"] = os.path.join(ROOT, "report",
-                                                  f"stage_state_{d0.replace('-', '')}-{d1.replace('-', '')}_refine.json")
-            # 판정이 사용량 제한으로 멈췄어도 정제는 띄운다 — 보내지 않고 곧바로 접히며(copilot_auto.run_stopped) 기록만 '건너뜀'
-            rc2, why_r = _run_capture([sys.executable, os.path.join(ROOT, "refine.py"),
-                                       "--from", d0, "--to", d1],
-                                      dict(os.environ, PYTHONIOENCODING="utf-8",
-                                           PYTHONUNBUFFERED="1"))
-            record("AI 정제", rc2 in (0, 2), time.time() - _t3,
-                   ai_note(_thr, ("부분 완료 — 다시 실행하면 남은 것만 이어서 · " if rc2 == 2 else "") + str(why_r or "")))
-            if rc2 not in (0, 2) and not run_throttled():
-                print("   AI 정제 실패 — report 폴더의 evidence 파일을 Copilot에 붙여넣어도 됩니다")
+            if os.path.exists(_jp) and os.path.getmtime(_jp) >= _t2 - 5:
+                with open(_jp, encoding="utf-8") as _f:
+                    _jj = json.load(_f)
+                _n_judged = int(_jj.get("judged") or 0)
+                if _n_judged > 0:
+                    _partial_ok = True
+                    print(f"   [!] 판정이 끝까지 가지 못했지만 {_n_judged}건은 판정됐습니다 — "
+                          "그 결과로 정제·Agentic AI 후보·업무 흐름을 계속합니다")
+                    print("       (남은 신호는 다시 실행하면 이어서 판정합니다)")
+                    _note_j += f" · 부분 판정 {_n_judged}건으로 뒤 단계 계속"
+                    record("AI 판정", False, time.time() - _t2, _note_j)
+        except (OSError, ValueError, TypeError, AttributeError):
+            _partial_ok = False
+    if rc not in (0, 2) and not _partial_ok:
+        _skip = (THR_SKIP if _thr else "AI 판정 왕복 전부 실패로 건너뜀" if rc == 3 else "판정 실패로 건너뜀")
+        print("   [!] AI 판정 실패 — 화면의 과제는 AI 가 정리한 것이 아니라 규칙이 뽑은")
+        print("       임시 결과입니다. 위 judge 로그의 마지막 오류를 보세요.")
+        if rc == 3:
+            print(f"       판정 왕복이 전부 실패했습니다({why_j[:120] if why_j else '사유 없음'})")
+            print("       이번 화면의 '상위(업무 성격)' 분류는 비어 있습니다 — 그 값은 AI 정제가 채우는 것이고,"
+                  " 판정이 실패하면 정제를 돌리지 않습니다.")
+            print("       → 위 사유를 해결한 뒤 [다시 읽지 않고 분석만]을 켜고 [분석 실행]을 누르면 상위 분류까지 다시 채워집니다.")
+            _note_j += " · 상위(업무 성격) 분류 비어 있음 — 해결 후 [다시 읽지 않고 분석만]을 켜고 [분석 실행]"
+            record("AI 판정", False, time.time() - _t2, _note_j)
+        if not _thr:
+            print("       흔한 원인: ① Copilot 로그인 만료(UI [AI 연결 진단]으로 확인)")
+            print("                  ② 모델 선택 실패 ③ 회사망 차단")
+        print("   → AI 정제·Agentic AI 후보·업무 흐름 건너뜀 (판정 없는 결과를 정제하면 낡은 정제본만 남습니다)")
+        record("AI 정제", False, 0.0, _skip)
+        record("Agentic 니즈 발굴", False, 0.0, _skip)
+        record("워크플로우 분석", False, 0.0, _skip)
+        return True
+    recheck_consent(data, "AI 정제")
+    print("\n── AI 정제 (Level1·상세설명 문장화)")
+    _t3 = time.time()
+    _WATCH_STATE_PATH["p"] = os.path.join(ROOT, "report", f"stage_state_{tag}_refine.json")
+    try:
+        # 판정이 사용량 제한으로 멈췄어도 정제는 띄운다 — 보내지 않고 곧바로 접히며(copilot_auto.run_stopped) 기록만 '건너뜀'
+        rc2, why_r = _run_capture([sys.executable, os.path.join(ROOT, "refine.py"), "--from", d0, "--to", d1], _child_env())
+    finally:
+        _WATCH_STATE_PATH["p"] = None
+    if rc2:
+        consent_lost("AI 정제")
+    record("AI 정제", rc2 in (0, 2), time.time() - _t3,
+           ai_note(_thr, ("부분 완료 — 다시 실행하면 남은 것만 이어서 · " if rc2 == 2 else "") + str(why_r or "")))
+    partial = partial or rc2 != 0
+    if rc2 not in (0, 2) and not run_throttled():
+        print("   AI 정제 실패 — 화면의 업무 분류 탭에서 다시 실행할 수 있습니다")
+    # Agentic AI 후보 — 반복 업무에서 Agentic AI 로 바꿀 만한 후보만 찾는다. 선예약한 Agentic 몫을 돌려준다
+    _dl_ag = agentic_deadline()
+    if _dl_ag is not None:
+        os.environ["AF32_AI_DEADLINE"] = str(_dl_ag)
+    recheck_consent(data, "Agentic 니즈 발굴")
+    print("\n── Agentic AI 전환 후보 찾기 (반복 업무에서)")
+    _t3 = time.time()
+    _pre = run_throttled()
+    rc2, note2 = run_ai_stage("agentic.py", d0, d1)
+    record("Agentic 니즈 발굴", rc2 in (0, 2), time.time() - _t3, ai_note(_pre, note2))
+    partial = partial or rc2 != 0
+    if rc2 not in (0, 2) and not run_throttled():
+        print("   Agentic AI 후보 찾기 실패 — 화면의 Agentic AI 후보 탭에서 다시 시도하세요")
+    # 업무 흐름 — 과제별 일의 순서·Agent 가능성(실패해도 분석은 유효). 선예약분 반환 — 마감을 전체로 되돌린다
+    if _AI_T0 is not None and _AI_TOT_MIN:
+        os.environ["AF32_AI_DEADLINE"] = str(_AI_T0 + _AI_TOT_MIN * 60.0)
+    recheck_consent(data, "워크플로우 분석")
+    print("\n── 업무 흐름 (일의 순서·Agent 가능성)")
+    _t3 = time.time()
+    _pre = run_throttled()
+    rc2, note2 = run_ai_stage("flow.py", d0, d1)
+    record("워크플로우 분석", rc2 in (0, 2), time.time() - _t3, ai_note(_pre, note2))
+    partial = partial or rc2 != 0
+    if rc2 not in (0, 2) and not run_throttled():
+        print("   업무 흐름 분석 실패 — 화면의 워크플로우 탭에서 다시 시도하세요")
+    # 업무 흐름 단계가 만든 세부업무 병합 맵을 후보의 근거 건수에 반영 — 왕복 없음·실패 무시
+    agentic_recalc_inproc(d0, d1)
+    return partial
 
-            # Agentic AI 니즈 발굴 — 반복 업무에서 자동화 니즈 후보만 찾는다(LM29부터 — 팀 과제 매칭·오할당 검증 없음)
-            # 선예약한 Agentic 몫 반환 — 앞 단계가 늦게 끝났어도 Agentic 은 제 몫(agenticReserveMin)을 받는다
-            _dl_ag = agentic_deadline()
-            if _dl_ag is not None:
-                os.environ["LM_AI_DEADLINE"] = str(_dl_ag)
-            print("\n── Agentic AI 니즈 발굴 (반복 업무에서 자동화 니즈 후보 찾기)")
-            _t3 = time.time()
-            _pre = run_throttled()
-            rc2, note2 = run_ai_stage("agentic.py", d0, d1)
-            record("Agentic 니즈 발굴", rc2 in (0, 2), time.time() - _t3, ai_note(_pre, note2))
-            if rc2 not in (0, 2) and not run_throttled():
-                print("   Agentic 니즈 발굴 실패 — UI Agentic AI 탭의 [니즈 후보 발굴 실행]으로 다시 시도하세요")
 
-            # 담당자 워크플로우 — 과제별 역할·일의 순서·Agent 가능성 (실패해도 분석은 유효)
-            # 선예약분 반환 — 마감을 전체로 되돌린다(앞 단계가 일찍 끝났으면 flow 가 잔여를 다 쓴다)
-            if _AI_T0 is not None and _AI_TOT_MIN:
-                os.environ["LM_AI_DEADLINE"] = str(_AI_T0 + _AI_TOT_MIN * 60.0)
-            print("\n── 담당자 워크플로우 (역할·순서·Agent 가능성)")
-            _t3 = time.time()
-            _pre = run_throttled()
-            rc2, note2 = run_ai_stage("flow.py", d0, d1)
-            record("워크플로우 분석", rc2 in (0, 2), time.time() - _t3, ai_note(_pre, note2))
-            if rc2 not in (0, 2) and not run_throttled():
-                print("   워크플로우 분석 실패 — UI 담당자 워크플로우 탭의 [재분석]으로 다시 시도하세요")
-            # 워크플로우 단계가 만든 세부업무 병합 맵(config\detail_aliases.json)을 니즈 후보의 근거 행 수에 반영 —
-            # agentic 이 flow 보다 먼저 돌아 첫 --ai 실행(캐시 없음·리셋 뒤)의 근거가 맵 없이 세어진다(F5). 왕복 없음·실패 무시.
-            agentic_recalc_inproc(d0, d1)
+def build_report(d0, d1):
+    r"""개인 리포트(report_out.py --variant local — report\개인리포트_<tag>.html, 이 PC 안에서만). AI 없이 돌려도 만든다.
+    → 만들었나."""
+    print(f"\n── {REPORT_STAGE} (이 PC 안에서만 — 공유는 화면의 [공유] 탭에서 본인이 고를 때만)")
+    t = time.time()
+    rc, why = _run_capture([sys.executable, os.path.join(ROOT, "report_out.py"), "--from", d0, "--to", d1,
+                            "--variant", "local"], _child_env())
+    lj = dict(LAST_JSON)
+    ok = rc == 0 and lj.get("ok") is not False
+    html = str(lj.get("html") or "")
+    note = (os.path.basename(html) if html else "") if ok else (why or str(lj.get("error") or "") or f"report_out.py 종료 코드 {rc}")
+    record(REPORT_STAGE, ok, time.time() - t, note)
+    if ok:
+        if html:
+            print(f"   → report\\{os.path.basename(html)}")
     else:
-        record("AI 판정", False, 0.0, "AI 판정을 켜지 않고 실행했습니다(--ai 없음)")
-        _ai_hold = "AI 없이 실행"
-        # 지난 AI 실행의 니즈 후보가 남아 있으면 근거 행 수만 재추출된 행으로 다시 센다(왕복 없음) — 후보 자체는
-        # 옛 행 기준이라 화면이 '재추출 이후 결과' 로 표시한다(V-01). 보고서 생성 전에 해야 리포트 섬과 맞는다.
-        if os.path.exists(os.path.join(ROOT, "report", f"agentic_{d0.replace('-', '')}-{d1.replace('-', '')}.json")):
-            print("\n── Agentic 니즈 후보는 지난 AI 실행 것 — 근거 행 수만 재추출된 행으로 다시 셉니다(화면에 '재추출 이후 결과' 표시)")
-            agentic_recalc_inproc(d0, d1)
-        print(f"\n다음: python run.py --from {d0} --to {d1} --skip-collect --ai   (AI 판정)")
-
-    # 보고서 3종(리포트·분석리포트·얼린 보고서) — AI 없이 돌려도 만든다(규칙 결과도 얼릴 수 있다).
-    # teamup --build 보다 먼저 돌아야 공유폴더 저장 때 개인리포트가 함께 간다. HTML 은 팀 서버로
-    # 올리지 않는다(서버 파일명 규칙 불변) — 공유폴더(개인리포트\) 경로로만 간다.
-    print("\n── 보고서 생성 (리포트·분석리포트·얼린 보고서)")
-    _t = time.time()
-    rc_f, note_f = _run_capture([sys.executable, os.path.join(ROOT, "freeze.py"),
-                                 "--from", d0, "--to", d1, "--all"],
-                                dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1"))
-    # 0 전부 · 2 일부만(무엇이 빠졌는지는 note 에) · 그 밖은 실패 — 보고서가 없어도 묶음·업로드는 계속
-    record("보고서 생성", rc_f in (0, 2), time.time() - _t,
-           "" if rc_f == 0 else (note_f or f"freeze.py 종료코드 {rc_f}"))
-    if rc_f not in (0, 2):
-        print("   [!] 보고서 생성 실패 — 대시보드의 [보고서 만들기] 버튼으로 다시 시도할 수 있습니다")
-
-    # 팀 업로드 묶음은 보내기 **전에** report\upload_pending\ 에 먼저 만든다 — 팀 서버는 특정 망(사내망)에서만 닿는데 분석은
-    # 아무 망에서나 하므로(실측: LM19 이전 분석 끝 자동 전송은 대부분 실패했고 결과가 조용히 사라졌다), 보고가 실패해도 묶음은
-    # 대기로 남아 서버에 닿는 망에서 대시보드 [팀 서버 업로드](또는 LoadMonitor30-팀업로드.bat)로 밀린 것까지 한 번에 간다.
-    print("\n── 팀 업로드 묶음 준비")
-    _t4 = time.time()
-    _p4 = subprocess.run([sys.executable, os.path.join(ROOT, "teamup.py"),
-                          "--build", "--from", d0, "--to", d1], cwd=ROOT, capture_output=True,
-                         env=dict(os.environ, PYTHONIOENCODING="utf-8",
-                                  PYTHONUNBUFFERED="1"))
-    rcb = _p4.returncode
-    _o4 = ((_p4.stdout or b"").decode("utf-8", "replace")
-           + (_p4.stderr or b"").decode("utf-8", "replace")).strip()
-    for _ln in _o4.splitlines():
-        print("   " + _ln)
-    _why = " / ".join(_o4.splitlines()[-2:]) if _o4 else ""
-    n_pend = _pending_count()
-    _auto = team_report_wanted(c)
-    # 실패 사유는 teamup 이 말한 것을 그대로 옮긴다 — '산출물 없음'으로 단정하면 잠금·권한 오류가 가려진다
-    record("팀 업로드 묶음 준비", rcb == 0, time.time() - _t4,
-           (f"대기 {n_pend}건 — " + ("이어서 팀 서버로 자동 보고합니다" if _auto
-                                    else "서버망에서 [팀 서버 업로드] 버튼을 누르면 전송됩니다")
-            + (" · " + _why if "보낼 수 없습니다" in _why else "")
-            if rcb == 0 else (_why or "묶음 준비 실패")))
-    # LM28: [분석 실행]의 마무리 = 팀 서버 자동 보고(사용자 요청 — "분석실행 마무리는 팀서버로 자동으로 레포팅까지 …
-    # 안되면 안되었다고 알람이 뜨는 정도만"). 실패해도 묶음은 대기로 남고, 결과는 report\team_report_status.json 에 남아
-    # 화면이 끝난 실행 1번당 알림 1번 + 다음 성공까지 배너로 말한다. 끄기: config.teamUpload.autoReport=false.
-    # [로컬PC 자료수집](--collect-only)·웹 읽기(--web-only)는 위에서 먼저 끝나 여기에 오지 않는다 — 보고하지 않는다.
-    _rep = team_report(c, d0, d1, built=(rcb == 0), on=_auto, hold=_ai_hold)
-
-    # 팀 공유폴더 내보내기(teamShareDir 가 있을 때만) — LM28(2026-10-19) 상한 EXPORT_CAP_SEC · 팀 서버 보고와 같은 실행기(share_export)
-    share_export(c, d0, d1)
-    # 어디서 시간이 갔나 — 진행 로그 한 줄 + '완료' 단계 note(사진 한 장으로 오래 걸린 단계를 안다 · LM28 2026-10-17).
-    # 팀 서버 자동 보고 실패 두 줄(아래)이 콘솔 맨 끝에 남도록 그 앞에 찍는다.
-    _slow = slow_stages()
-    if _slow:
-        print(f"\n── {_slow}")
-    if isinstance(_rep, dict) and _rep.get("ok") is False:
-        # bat 으로 돌린 사람에게는 이 두 줄이 알람이다 — 콘솔 맨 끝(완료 안내 바로 위)에 한 번 더 적는다
-        print(f"\n[!] 팀 서버 자동 보고 실패 — {_rep.get('reason') or '사유 미상'}")
-        print(f"    {_rep.get('hint') or TR_PENDING_HINT}")
-    RUN["finished"] = time.strftime("%Y-%m-%d %H:%M")
-    record("완료", True, 0.0, _slow)
-    return 0
+        print("   [!] 개인 리포트를 만들지 못했습니다 — 화면에서 다시 만들 수 있습니다")
+    return ok
 
 
 if __name__ == "__main__":
